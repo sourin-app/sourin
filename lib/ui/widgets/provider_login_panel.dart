@@ -109,6 +109,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
 import 'overlay_motion.dart';
+import 'app_loading.dart';
 import 'qr_view.dart';
 import '../../ui/app_palette.dart';
 
@@ -875,7 +876,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
             const SizedBox(
               width: 200,
               height: 200,
-              child: CircularProgressIndicator(),
+              child: Center(child: AppLoading()),
             ),
             const SizedBox(height: Sp.x3),
             Text(

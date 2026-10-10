@@ -55,6 +55,7 @@ import '../../core/app_log.dart';
 import '../../core/models.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
+import 'app_loading.dart';
 
 /// 直播内嵌播放器
 ///
@@ -1156,13 +1157,7 @@ class _EmbedLoading extends StatelessWidget {
   const _EmbedLoading();
 
   @override
-  Widget build(BuildContext context) => const Center(
-        child: SizedBox(
-          width: 28,
-          height: 28,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-      );
+  Widget build(BuildContext context) => const Center(child: AppLoading());
 }
 
 class _EmbedError extends StatelessWidget {

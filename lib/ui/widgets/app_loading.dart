@@ -51,17 +51,26 @@
 //    ★ AppPalette.of 在祖先没有注入扩展时按 brightness 兜底
 //      （app_palette.dart:137-148），所以本组件**不依赖 MaterialApp** 也不会崩。
 //
-// # 已统一到这里的调用点（任务书第 3 条列出的 6 处）
+// # 已统一到这里的调用点
 // ```text
+//   OPS-14 那批（任务书第 3 条列出的 6 处）
 //   lib/ui/player_page.dart              _LoadingOverlay（遮罩）+ 缓冲指示
 //   lib/ui/cache_page.dart:1164          下载页整页 loading
 //   lib/ui/settings_page.dart:1796       设置页整页 loading
 //   lib/ui/detail_page.dart:2366         详情页 loading
 //   lib/ui/settings/about_page.dart:391  关于页按钮 busy
+
+//   T20 · D 行收口（2026-10-11）新增 5 处，判据是「整块区域等一件事」：
+//   lib/ui/cast/cast_device_sheet.dart      投屏弹窗的扫描空态
+//   lib/ui/widgets/live_embedded_player.dart  _EmbedLoading（画布整块等待）
+//   lib/ui/widgets/provider_login_panel.dart  200×200 二维码空态
+//   lib/ui/widgets/skip_marker_dialog.dart    _loading 时的弹窗内容空态
+//   lib/ui/widgets/skip_marker_dialog.dart    预览框上的 _loadingHint 转圈
 // ```
-// 其余 ~20 处 CircularProgressIndicator(strokeWidth: 2) 保持原样 ——
-// 它们多是**按钮内 / 小控件内**的忙指示，尺寸本来就小、底色也不确定，
-// 一次全改会扩大 diff 且没有实测依据（任务书第 3 条：不要一次改 28 处）。
+// ★ 剩下 14 处是**按钮内 / 小控件内**的忙指示（12~20px，底色不确定），
+//   保持原样 —— 但它们在 test/zz_cr_loading_style_test.dart 的 T20 组里
+//   **显式登记豁免**，且那条断言会反过来查「豁免条目是否仍然真的是裸转圈」，
+//   「点改完了、名单没删」这种假绿挡得住。
 // ⚠ 本文件**没有**直接 import Flutter 的 material 库（lib/ 全仓禁，
 //    见 test/theme_regression_test.dart 的全 lib 文本扫描）——
 //    上面只 import 本仓 material_ui（它已 re-export Flutter 的 widgets）。

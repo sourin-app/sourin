@@ -149,6 +149,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
+import 'app_loading.dart';
 import 'skip_timeline.dart';
 import '../../ui/app_palette.dart';
 
@@ -1946,7 +1947,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
         child: _loading
             ? const SizedBox(
                 height: 200,
-                child: Center(child: CircularProgressIndicator()),
+                child: Center(child: AppLoading()),
               )
             : Padding(
                 padding: const EdgeInsets.all(Sp.x5),
@@ -2518,14 +2519,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(
-              width: 22,
-              height: 22,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: Colors.white70,
-              ),
-            ),
+            const AppLoading(),
             const SizedBox(height: 10),
             Text(
               text,

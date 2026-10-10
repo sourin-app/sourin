@@ -14,6 +14,9 @@
 //    且 player 里不再有 CircularProgressIndicator(color: Colors.white)。
 // ```
 //
+// 4. T20 收口（D 行）：页级/遮罩级/弹窗空态级的 5 个点必须走 AppLoading；
+//    按钮内/小控件内的 14 个点**显式登记豁免**，且豁免条目必须仍然真的是裸转圈
+//    （防止「点改完了、豁免名单没删」这种假绿）。
 // ⚠ 为什么渲染盒直径和 strokeWidth 都要断言：
 //    只断言 strokeWidth 的话，一个「4px 描边但外面套 44 盒子」的圈照样能过
 //    —— 那正是现状（player 缓冲显式 SizedBox 44）。
@@ -211,4 +214,155 @@ void main() {
       );
     });
   });
+
+  // ══════════════════════════════════════════════════════════════════════
+  //  T20 · D 行收口 —— 页级 loading 统一到 AppLoading
+  // ══════════════════════════════════════════════════════════════════════
+  //
+  // 判决口径（20 个真调用点逐个判过，见 .probe/ops/t20-loading-unify.md）：
+  //   · 页级 / 遮罩级 / 弹窗空态级 —— 整块区域等一件事 ⇒ 必须走 AppLoading
+  //   · 按钮内 / 小控件内 / 分页增量 —— 尺寸本来就小、底色不确定 ⇒ 保持原样
+  // 豁免**不是免检**：下面那张表里的每个点都必须仍然真的是裸转圈，
+  // 否则说明它已被改掉（或锚点漂移）而名单没同步 —— 那也是假绿。
+  //
+  // ⚠ 用 List 而不是 Map 存表：同一个文件里有**两个**点（skip_marker_dialog、
+  //    plugin_speedtest），Map 的字面量 key 重复 ⇒ 常量求值直接报错。
+  group('T20 · 页级 loading 收口（D 行）', () {
+    /// 已统一的点：[文件, 唯一锚点] ⇒ 该锚点 ±400 字符窗口内必须是 AppLoading
+    const unified = <List<String>>[
+      <String>[
+        'lib/ui/cast/cast_device_sheet.dart',
+        'Widget _scanningView(ColorScheme colors)',
+      ],
+      <String>[
+        'lib/ui/widgets/live_embedded_player.dart',
+        'class _EmbedLoading',
+      ],
+      <String>[
+        'lib/ui/widgets/provider_login_panel.dart',
+        'if (_qrBusy) {',
+      ],
+      <String>[
+        'lib/ui/widgets/skip_marker_dialog.dart',
+        'child: _loading',
+      ],
+      <String>[
+        'lib/ui/widgets/skip_marker_dialog.dart',
+        'Widget _loadingHint(String text)',
+      ],
+    ];
+
+    /// 判决为「保持原样」的忙指示（14 处）—— 显式登记豁免
+    const exempt = <List<String>>[
+      <String>['lib/probe_cast.dart', "tooltip: '扫描设备'"],
+      <String>['lib/ui/browse_page.dart', 'child: _loadingMore'],
+      <String>['lib/ui/cast/cast_button.dart', 'final icon = _busy'],
+      <String>[
+        'lib/ui/search_page.dart',
+        'padding: const EdgeInsets.symmetric(vertical: Sp.x8),',
+      ],
+      <String>[
+        'lib/ui/subtitle/subtitle_panel.dart',
+        "st.isEmpty ? '只下载不播放，不会改动你的片库。' : st,",
+      ],
+      <String>['lib/ui/settings/emby_page.dart', 'for (final c in children) c,'],
+      <String>[
+        'lib/ui/widgets/bili_import_dialog.dart',
+        "label: const Text('立即更新'),",
+      ],
+      <String>[
+        'lib/ui/widgets/danmaku_settings_dialog.dart',
+        'if (s.loading) ...[',
+      ],
+      <String>[
+        'lib/ui/widgets/plugin_speedtest.dart',
+        'hasHistory ? Icons.speed : Icons.bolt',
+      ],
+      <String>[
+        'lib/ui/widgets/plugin_speedtest.dart',
+        "'测速 \$_done/\$_total'",
+      ],
+      <String>[
+        'lib/ui/widgets/provider_import_dialog.dart',
+        ': Text(_submitLabel)',
+      ],
+      <String>[
+        'lib/ui/widgets/proxy_panel.dart',
+        "label: Text(_testing ? '测试中…' : '测试连接')",
+      ],
+      <String>[
+        'lib/ui/widgets/sync_panel.dart',
+        'Widget _busyLine(ColorScheme colors)',
+      ],
+      <String>[
+        'lib/ui/widgets/source_switch_dialog.dart',
+        "'搜索中…（已搜 \$_settled'",
+      ],
+    ];
+
+    /// 锚点 ±400 字符的窗口（避免整文件匹配把别的点的转圈也算进来）
+    String windowAround(String src, String anchor) {
+      final at = src.indexOf(anchor);
+      if (at < 0) return '';
+      var lo = at - 400;
+      if (lo < 0) lo = 0;
+      var hi = at + 400;
+      if (hi > src.length) hi = src.length;
+      return src.substring(lo, hi);
+    }
+
+    test('页级点必须走 AppLoading，窗口内不得再有裸 CircularProgressIndicator', () {
+      final bad = <String>[];
+      for (final e in unified) {
+        final file = e[0];
+        final anchor = e[1];
+        final src = _stripComments(File(file).readAsStringSync());
+        expect(
+          src.contains(anchor),
+          isTrue,
+          reason: '$file 里找不到锚点「$anchor」—— 判据随代码漂移了，'
+              '必须重新判决这个点，而不是删掉这条断言',
+        );
+        final win = windowAround(src, anchor);
+        if (!win.contains('AppLoading')) {
+          bad.add('$file「$anchor」附近没有 AppLoading');
+        }
+        if (win.contains('CircularProgressIndicator')) {
+          bad.add('$file「$anchor」附近仍有裸 CircularProgressIndicator');
+        }
+      }
+      expect(
+        bad,
+        isEmpty,
+        reason: '这些页级/遮罩级点没走共享组件：\n  ${bad.join('\n  ')}',
+      );
+    });
+
+    test('豁免名单必须仍然是真的（豁免只能缩小，不能变成空条款）', () {
+      final gone = <String>[];
+      for (final e in exempt) {
+        final file = e[0];
+        final anchor = e[1];
+        final src = _stripComments(File(file).readAsStringSync());
+        expect(
+          src.contains(anchor),
+          isTrue,
+          reason: '$file 里找不到锚点「$anchor」—— 锚点漂移，'
+              '要么改锚点、要么把这个点重新判决',
+        );
+        final win = windowAround(src, anchor);
+        if (!win.contains('CircularProgressIndicator')) {
+          gone.add('$file「$anchor」附近已经没有裸转圈了');
+        }
+      }
+      expect(
+        gone,
+        isEmpty,
+        reason: '这些豁免条目已经不再是裸转圈（被改掉了？），'
+            '豁免名单要同步删条目 —— 留着的空条款会让门禁假装很严：\n  '
+            '${gone.join('\n  ')}',
+      );
+    });
+  });
+
 }

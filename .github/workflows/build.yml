@@ -173,6 +173,20 @@ jobs:
           if ($n -lt 5000000) {
             throw "app.so 只有 $n 字节 —— 很可能漏了 -t lib/shell.dart，编出来的是 spike"
           }
+          # ★ 播放内核 libmpv-2.dll 必须随产物一起发出去：缺了它业主双击
+          #   sourin_spike.exe 能开窗，但任何视频都放不出来（播放器建不起来）。
+          #   ★ 它不是手工放置的 —— 由 pub 依赖 media_kit_libs_windows_video
+          #     的 CMake 自动供给（下载并解包 mpv-dev 的 7z，再经
+          #     windows/flutter/generated_plugins.cmake 的
+          #     PLUGIN_BUNDLED_LIBRARIES 机制装进 runner/Release）。
+          #     所以这一条查的是「自动供给这条链有没有做成功」，
+          #     而不是「有没有人手动拷进来」。
+          $mpv = Join-Path $rel "libmpv-2.dll"
+          if (-not (Test-Path $mpv)) {
+            throw "缺少 $mpv —— 播放内核（libmpv）没被 media_kit_libs_windows_video 装进产物，业主的包里将放不出任何视频"
+          }
+          $n = (Get-Item $mpv).Length
+          "libmpv-2.dll = $n 字节"
 
       - name: 上传 Windows 产物
         uses: actions/upload-artifact@v4

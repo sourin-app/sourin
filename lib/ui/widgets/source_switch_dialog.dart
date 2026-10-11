@@ -373,10 +373,11 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const SizedBox(
+                    SizedBox(
                       width: 14,
                       height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      // T27-07：onSurface 随主题（dark #FAFAFA / light 近黑）。
+                      child: CircularProgressIndicator(color: colors.onSurface, strokeWidth: 2),
                     ),
                     const SizedBox(width: Sp.x2),
                     Text(

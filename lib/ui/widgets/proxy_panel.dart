@@ -557,10 +557,11 @@ class _ProxyPanelState extends State<ProxyPanel> {
                     ? null
                     : _test,
                 icon: _testing
-                    ? const SizedBox(
+                    ? SizedBox(
                         width: 12,
                         height: 12,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        // T27-07：AppPalette.foreground（dark #FAFAFA / light #0A0A0A）。
+                        child: CircularProgressIndicator(color: colors.foreground, strokeWidth: 2),
                       )
                     : const Icon(Icons.bolt_outlined, size: 15),
                 label: Text(_testing ? '测试中…' : '测试连接'),

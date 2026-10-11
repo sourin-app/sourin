@@ -43,6 +43,52 @@ import '../../core/danmaku.dart';
 import '../tokens.dart';
 import 'overlay_motion.dart';
 
+/// T27-01：弹幕面板文字统一灰阶 —— 全文件取色只走这里
+///
+/// # 为什么收口成一个常量类
+///
+/// 修复前文本色散落 Colors.white / white70 / white60 / white54 / white38，
+/// 还有两处 TextStyle 干脆没给 color；white38 一档对底色实测只有 3.30:1
+/// —— 业主原话「弹幕这里的文字都看不清」。现在每档对 panelBg
+/// （业主 fig1 实测 rgb(20,22,27)）的 WCAG 对比度钉在
+/// test/t27_w1_danmaku_contrast_test.dart：
+/// body 14.5:1 · secondary 9.7:1 · muted 5.9:1（正文线 4.5:1），
+/// border 2.2:1（边框线 ≥1.6:1 —— 弱化但可辨，不做正文）。
+abstract final class DanmakuTextColors {
+  /// 正文/强调文本与主动作 icon（旧 Colors.white 档）
+  static const Color body = Color(0xFFE6E6E6);
+
+  /// 次要文本/交互标签（旧 white70 档）
+  static const Color secondary = Color(0xFFB9BEC6);
+
+  /// 说明/占位/辅助 icon（旧 white60 / white54 / white38 档）
+  static const Color muted = Color(0xFF8E939B);
+
+  /// 边框/分隔线/关态指示点（旧 white24 档 —— 纯装饰）
+  static const Color border = Color(0xFF4A4E56);
+
+  /// 角标文字：叠在 black55 角标底上（任务口径：对纯黑 ≥4.5:1）
+  static const Color badgeText = body;
+
+  /// 面板卡片底色 —— 业主 fig1 实测 rgb(20,22,27)
+  static const Color panelBg = Color(0xFF14161B);
+
+  // ---- ★ 2026-10-11：显示区域引导遮罩（DanmakuAreaGuide）的三档色 ----
+  //
+  // 遮罩画在**视频画面**上，不是面板里 —— 所以对比度要求不是 WCAG 文本线，
+  // 而是"看得见、又不挡画面"：色相统一走白，靠 alpha 分档。
+  // 与 overlay 里弹幕描边（black α0.85）配套：白色遮罩在深色画面上同样可辨。
+
+  /// 边界线（半透明白，1.5px）—— 标出"弹幕区到此为止"
+  static const Color areaGuideLine = Color(0xCCFFFFFF);
+
+  /// 弹幕区内填充（极淡白 6%）—— 提示"这里能放弹幕"
+  static const Color areaGuideInside = Color(0x0FFFFFFF);
+
+  /// 区外填充（更暗的白 16%）—— "遮罩"感主体，提示"这里不再有弹幕"
+  static const Color areaGuideOutside = Color(0x29FFFFFF);
+}
+
 /// 对话框要展示的全部状态
 ///
 /// # 为什么由宿主传进来、而不是对话框自己读 `DanmakuConfig`
@@ -67,13 +113,20 @@ class DanmakuSettingsState {
     this.count = 0,
     this.lanes = 0,
     this.dropped = 0,
+    this.sourceLine = '',
   });
 
   /// 从当前偏好构造（打开面板时的初值）
+  ///
+  /// T27-12：内置凭证生效的半边**不预填**（留空串）——面板上写着
+  /// 「留空则用内置凭证」，框里就不能替用户填好内置值；用户覆盖的
+  /// 半边照常预填（那是用户自己填的，回显是本分）。签名链路读的是
+  /// DanmakuConfig.appId/appSecret（生效值），与这里的初值无关。
   factory DanmakuSettingsState.fromPrefs() => DanmakuSettingsState(
     enabled: DanmakuConfig.enabled,
-    appId: DanmakuConfig.appId,
-    appSecret: DanmakuConfig.appSecret,
+    appId: DanmakuConfig.usingBuiltinAppId ? '' : DanmakuConfig.appId,
+    appSecret:
+        DanmakuConfig.usingBuiltinAppSecret ? '' : DanmakuConfig.appSecret,
     fontScale: DanmakuConfig.fontScale,
     opacity: DanmakuConfig.opacity,
     speed: DanmakuConfig.speed,
@@ -102,6 +155,10 @@ class DanmakuSettingsState {
   final int lanes;
   final int dropped;
 
+  /// 弹幕数据源状态行（T27-05）：「检测到本机弹弹play 未运行」或
+  /// 「本机弹弹play（127.0.0.1:2080）已就绪」。空串 = 不显示该行。
+  final String sourceLine;
+
   DanmakuSettingsState copyWith({
     bool? enabled,
     String? appId,
@@ -117,6 +174,7 @@ class DanmakuSettingsState {
     int? count,
     int? lanes,
     int? dropped,
+    String? sourceLine,
   }) {
     return DanmakuSettingsState(
       enabled: enabled ?? this.enabled,
@@ -132,6 +190,7 @@ class DanmakuSettingsState {
       count: count ?? this.count,
       lanes: lanes ?? this.lanes,
       dropped: dropped ?? this.dropped,
+      sourceLine: sourceLine ?? this.sourceLine,
     );
   }
 }
@@ -274,9 +333,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                 width: 560,
                 constraints: const BoxConstraints(maxHeight: 620),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF14161C).withValues(alpha: 0.98),
+                  color: DanmakuTextColors.panelBg.withValues(alpha: 0.98),
                   borderRadius: Radii.rLg,
-                  border: Border.all(color: Colors.white24),
+                  border: Border.all(color: DanmakuTextColors.border),
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -372,7 +431,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                 Text(
                   '弹幕设置',
                   style: TextStyle(
-                    color: Colors.white,
+                    color: DanmakuTextColors.body,
                     fontSize: FontSizes.lg,
                     fontWeight: FontWeight.w600,
                   ),
@@ -381,7 +440,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                 Text(
                   '弹幕库凭证 / 显示 / 请求',
                   style: TextStyle(
-                    color: Colors.white38,
+                    color: DanmakuTextColors.muted,
                     fontSize: FontSizes.cap,
                   ),
                 ),
@@ -390,7 +449,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           ),
           IconButton(
             onPressed: widget.onClose,
-            icon: const Icon(Icons.close, color: Colors.white),
+            icon: const Icon(Icons.close, color: DanmakuTextColors.body),
             tooltip: '关闭',
           ),
         ],
@@ -400,7 +459,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
 
   Widget _divider() => const Padding(
     padding: EdgeInsets.symmetric(vertical: Sp.x4),
-    child: Divider(height: 1, color: Colors.white24),
+    child: Divider(height: 1, color: DanmakuTextColors.border),
   );
 
   /// 段落标题
@@ -412,7 +471,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           Text(
             text,
             style: const TextStyle(
-              color: Colors.white,
+              color: DanmakuTextColors.body,
               fontSize: FontSizes.base,
               fontWeight: FontWeight.w600,
             ),
@@ -423,7 +482,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               child: Text(
                 note,
                 style: const TextStyle(
-                  color: Colors.white38,
+                  color: DanmakuTextColors.muted,
                   fontSize: FontSizes.cap,
                 ),
               ),
@@ -439,7 +498,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       padding: const EdgeInsets.only(top: Sp.x2),
       child: Text(
         text,
-        style: const TextStyle(color: Colors.white38, fontSize: FontSizes.cap),
+        style: const TextStyle(color: DanmakuTextColors.muted, fontSize: FontSizes.cap),
       ),
     );
   }
@@ -458,7 +517,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               child: Text(
                 _statusText(s),
                 style: const TextStyle(
-                  color: Colors.white70,
+                  color: DanmakuTextColors.secondary,
                   fontSize: FontSizes.sm,
                 ),
               ),
@@ -475,7 +534,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       width: Sp.x2,
       height: Sp.x2,
       decoration: BoxDecoration(
-        color: on ? Colors.lightBlueAccent : Colors.white24,
+        color: on ? Colors.lightBlueAccent : DanmakuTextColors.border,
         shape: BoxShape.circle,
       ),
     );
@@ -487,6 +546,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     if (s.error != null) return '取弹幕失败（下方有服务端原文）';
     if (s.status.isNotEmpty) return s.status;
     if (s.appId.isEmpty || s.appSecret.isEmpty) {
+      // T27-12：两格空 ≠ 没凭证 —— 内置在生效时（T27-10）如实说内置。
+      // 没内置的构建 isConfigured 为假 ⇒ 走不到这条分支，旧文案逐字不变。
+      if (DanmakuConfig.isConfigured) {
+        return '弹幕已开启（内置凭证 AppId ${DanmakuConfig.maskedAppId}）';
+      }
       return '弹幕已开启，但还没填 AppId / AppSecret';
     }
     return '弹幕已开启（AppId ${_mask(s.appId)}）';
@@ -506,7 +570,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         const Expanded(
           child: Text(
             '显示弹幕',
-            style: TextStyle(color: Colors.white70, fontSize: FontSizes.sm),
+            style: TextStyle(color: DanmakuTextColors.secondary, fontSize: FontSizes.sm),
           ),
         ),
       ],
@@ -517,19 +581,46 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('弹幕库凭证', note: 'dandanplay 开放平台'),
+        // ★ T27-05：「数据源」状态行 —— 本机跑着弹弹play就优先用本地源
+        //   （免签名），没跑就退回官方 API。下面的两个 TextField 是**官方
+        //   开放平台**的凭证入口（dandanplay 本地接口不需要这对凭证）。
+        if (widget.state.sourceLine.isNotEmpty) ...[
+          _sectionTitle('数据源', note: widget.state.sourceLine),
+          const SizedBox(height: Sp.x3),
+        ],
+        // ★ T27-10：内置凭证（构建期 --dart-define 注入）
+        //   - 已生效 ⇒ 状态行写明「留空就用它」，输入框变成可选覆盖；
+        //   - 未注入 ⇒ 状态行如实说「没有内置」，并指出另外两条路
+        //     （本机弹弹play / B 站弹幕），不空喊去申请。
+        //   两个 TextField 始终渲染（t100:743 findsNWidgets(2) 钉着）——
+        //   内置只是**缺省值**，用户覆盖永远优先（DanmakuConfig 优先级）。
+        _sectionTitle(
+          '弹幕库凭证（可选）',
+          note: DanmakuConfig.hasBuiltinCredentials
+              ? '客户端已内置官方凭证'
+              : 'dandanplay 开放平台',
+        ),
+        _hint(
+          DanmakuConfig.hasBuiltinCredentials
+              ? '内置凭证：已生效 · AppId ${DanmakuConfig.maskedAppId}'
+                    '（留空则用内置凭证，填了就覆盖内置）'
+              : '内置凭证：未注入（本构建请用本机弹弹play / B 站弹幕，'
+                    '或填自己的凭证）',
+        ),
         TextField(
           controller: _appId,
           onChanged: widget.onSetAppId,
           style: const TextStyle(
             fontFamily: 'monospace',
             fontSize: FontSizes.sm,
-            color: Colors.white,
+            color: DanmakuTextColors.body,
           ),
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             labelText: 'AppId',
-            hintText: '在 dev.dandanplay.com 申请',
-            border: OutlineInputBorder(),
+            hintText: DanmakuConfig.hasBuiltinCredentials
+                ? '留空则用内置凭证（也可在 dev.dandanplay.com 申请）'
+                : '在 dev.dandanplay.com 申请',
+            border: const OutlineInputBorder(),
           ),
         ),
         const SizedBox(height: Sp.x3),
@@ -540,7 +631,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           style: const TextStyle(
             fontFamily: 'monospace',
             fontSize: FontSizes.sm,
-            color: Colors.white,
+            color: DanmakuTextColors.body,
           ),
           decoration: InputDecoration(
             labelText: 'AppSecret',
@@ -549,7 +640,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               onPressed: () => setState(() => _showSecret = !_showSecret),
               icon: Icon(
                 _showSecret ? Icons.visibility_off : Icons.visibility,
-                color: Colors.white54,
+                color: DanmakuTextColors.muted,
                 size: 18,
               ),
               tooltip: _showSecret ? '隐藏' : '显示',
@@ -567,10 +658,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               onPressed: widget.onClearCredentials,
               icon: const Icon(
                 Icons.delete_outline,
-                color: Colors.white,
+                color: DanmakuTextColors.body,
                 size: 18,
               ),
-              label: const Text('清除凭证', style: TextStyle(color: Colors.white)),
+              label: const Text('清除凭证', style: TextStyle(color: DanmakuTextColors.body)),
             ),
           ],
         ),
@@ -610,14 +701,15 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         ),
         _hint('一条弹幕从右边缘走到左边缘的秒数（越大越慢）'),
         _slider(
-          '占用区域',
+          '显示区域',
           s.area,
           DanmakuConfig.areaMin,
           DanmakuConfig.areaMax,
           widget.onSetArea,
           '${(s.area * 100).round()}%',
         ),
-        _hint('弹幕可占用的纵向比例（越小越集中在上方，避免挡住字幕）'),
+        _hint('弹幕从画面**顶部往下**能占用的高度比例（对齐 B 站）。'
+            '默认 50% = 只占上半屏，下半屏留给画面与字幕；拖到 100% 才铺满全屏。'),
       ],
     );
   }
@@ -664,7 +756,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       child: Row(
         children: [
           Expanded(
-            child: Text(label, style: const TextStyle(fontSize: 13)),
+            child: Text(label, style: const TextStyle(color: DanmakuTextColors.muted, fontSize: 13)),
           ),
           Switch(
             value: value,
@@ -689,7 +781,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       controller: _blockWords,
       maxLines: 4,
       minLines: 3,
-      style: const TextStyle(fontSize: 13),
+      style: const TextStyle(color: DanmakuTextColors.muted, fontSize: 13),
       decoration: const InputDecoration(
         hintText: '例如：\n剧透\n前方高能',
         border: OutlineInputBorder(),
@@ -715,11 +807,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       child: Row(
         children: [
           SizedBox(
-            width: 72,
+            width: 84,
             child: Text(
               label,
               style: const TextStyle(
-                color: Colors.white70,
+                color: DanmakuTextColors.secondary,
                 fontSize: FontSizes.sm,
               ),
             ),
@@ -738,7 +830,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               readout,
               textAlign: TextAlign.right,
               style: const TextStyle(
-                color: Colors.white60,
+                color: DanmakuTextColors.muted,
                 fontSize: FontSizes.cap,
               ),
             ),
@@ -758,10 +850,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           children: [
             TextButton.icon(
               onPressed: s.loading ? null : widget.onReload,
-              icon: const Icon(Icons.refresh, color: Colors.white, size: 18),
+              icon: const Icon(Icons.refresh, color: DanmakuTextColors.body, size: 18),
               label: const Text(
                 '重新获取弹幕',
-                style: TextStyle(color: Colors.white),
+                style: TextStyle(color: DanmakuTextColors.body),
               ),
             ),
             if (s.loading) ...[
@@ -769,7 +861,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               const SizedBox(
                 width: 16,
                 height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
+                // T27-07：显式给色 —— body #E6E6E6 对面板底 #14161B ≥4.5:1（t27_w1 钉过）。
+                child: CircularProgressIndicator(
+                  color: DanmakuTextColors.body,
+                  strokeWidth: 2,
+                ),
               ),
             ],
             if (widget.onOpenBili != null) ...[
@@ -778,12 +874,12 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                 onPressed: widget.onOpenBili,
                 icon: const Icon(
                   Icons.play_circle_outline,
-                  color: Colors.white,
+                  color: DanmakuTextColors.body,
                   size: 18,
                 ),
                 label: const Text(
                   '哔哩哔哩弹幕…',
-                  style: TextStyle(color: Colors.white),
+                  style: TextStyle(color: DanmakuTextColors.body),
                 ),
               ),
             ],
@@ -809,13 +905,13 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       children: [
         Row(
           children: [
-            const Icon(Icons.info_outline, size: 18, color: Colors.white70),
+            const Icon(Icons.info_outline, size: 18, color: DanmakuTextColors.muted),
             const SizedBox(width: Sp.x2),
             Flexible(
               child: Text(
                 h.title,
                 style: const TextStyle(
-                  color: Colors.white,
+                  color: DanmakuTextColors.body,
                   fontSize: FontSizes.base,
                   fontWeight: FontWeight.w600,
                 ),
@@ -826,7 +922,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         const SizedBox(height: Sp.x2),
         Text(
           h.text,
-          style: const TextStyle(color: Colors.white70, fontSize: FontSizes.sm),
+          style: const TextStyle(color: DanmakuTextColors.secondary, fontSize: FontSizes.sm),
         ),
         if (h.url.isNotEmpty) ...[
           const SizedBox(height: Sp.x2),
@@ -870,14 +966,14 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           decoration: BoxDecoration(
             color: Colors.black.withValues(alpha: 0.5),
             borderRadius: Radii.rSm,
-            border: Border.all(color: Colors.white24),
+            border: Border.all(color: DanmakuTextColors.border),
           ),
           child: Text(
             e.detail,
             style: const TextStyle(
               fontFamily: 'monospace',
               fontSize: FontSizes.cap,
-              color: Colors.white70,
+              color: DanmakuTextColors.secondary,
             ),
           ),
         ),

@@ -861,7 +861,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
                   onSelect: () => _selectInstance(inst.id),
                   onDelete: () => _deleteInstance(inst),
                 ),
-            _actions([_btn('刷新列表', () => _run(_load))]),
+            _actions(colors, [_btn('刷新列表', () => _run(_load))]),
           ],
         ),
         SettingsBlock(
@@ -884,7 +884,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
             SettingsInfoRow(label: '登录态', value: _sessionLabel()),
             if (_status.isNotEmpty) _note(colors, _status),
             if (_error != null) _note(colors, _error!, bad: true),
-            _actions([_btn('重新加载', _reload)]),
+            _actions(colors, [_btn('重新加载', _reload)]),
           ],
         ),
         SettingsBlock(
@@ -911,7 +911,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
               ),
             ),
             const SizedBox(height: Sp.x2),
-            _actions([_btn('从网址安装', _installFromUrl)]),
+            _actions(colors, [_btn('从网址安装', _installFromUrl)]),
             const SizedBox(height: Sp.x3),
             TextField(
               controller: _installSrc,
@@ -936,7 +936,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
               ),
               const SizedBox(height: Sp.x2),
             ],
-            _actions([_btn('粘贴源码安装', _installFromSource)]),
+            _actions(colors, [_btn('粘贴源码安装', _installFromSource)]),
           ],
         ),
         SettingsBlock(
@@ -992,7 +992,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
                 contentPadding: EdgeInsets.zero,
               ),
             ),
-            _actions([
+            _actions(colors, [
               _btn('保存配置', _save),
               _btn('登录', _login, primary: true),
               _btn('登出', _logout),
@@ -1006,7 +1006,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
               '不经过插件，本页直接打 Emby 的 REST API。'
               '用来确认「地址 / 账号 / 密码」本身是对的。',
             ),
-            _actions([_btn('测试连接', _runSelfCheck, primary: true)]),
+            _actions(colors, [_btn('测试连接', _runSelfCheck, primary: true)]),
             if (_selfCheck != null) ...[
               const SizedBox(height: Sp.x2),
               Row(
@@ -1095,7 +1095,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
     return OutlinedButton(onPressed: handler, child: child);
   }
 
-  Widget _actions(List<Widget> children) => Padding(
+  Widget _actions(ColorScheme colors, List<Widget> children) => Padding(
     padding: const EdgeInsets.only(top: Sp.x2),
     child: Wrap(
       spacing: Sp.x2,
@@ -1104,10 +1104,14 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
       children: [
         for (final c in children) c,
         if (_busy)
-          const SizedBox(
+          SizedBox(
             width: 16,
             height: 16,
-            child: CircularProgressIndicator(strokeWidth: 2),
+            // ★ T27-07（lead 集成补漏）：显式 onSurface，不落主题 primary 灰。
+            child: CircularProgressIndicator(
+              color: colors.onSurface,
+              strokeWidth: 2,
+            ),
           ),
       ],
     ),

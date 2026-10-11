@@ -84,6 +84,16 @@ jobs:
       #   回退到 pubspec 的版本号（见 lib/core/app_update/app_version.dart）。
       SOURIN_VERSION: ${{ inputs.release_tag }}
 
+      # 弹弹play 官方凭证：构建期从 GitHub Actions secrets 注入
+      # （官方文档 doc.dandanplay.com/open/「安全注意事项」允许开源客户端只留
+      #   占位符、构建时替换真值）。仓库 Settings → Secrets and variables →
+      #   Actions 里配置 DANDANPLAY_APP_ID / DANDANPLAY_APP_SECRET。
+      # pull_request（fork PR）按 GitHub 内建规则拿不到 secrets ⇒ 两个 env 为
+      #   空串 ⇒ dart-define 也是空串 ⇒ String.fromEnvironment 缺省空串，
+      #   App 回落到用户自填凭证，行为与未注入逐字一致，无需额外判断。
+      DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
+      DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
+
 
     steps:
       - name: 检出代码
@@ -156,6 +166,8 @@ jobs:
         run: >-
           flutter build windows --release --no-pub -t lib/shell.dart
           --dart-define=SOURIN_VERSION=${{ env.SOURIN_VERSION }}
+          --dart-define=DANDANPLAY_APP_ID="${{ env.DANDANPLAY_APP_ID }}"
+          --dart-define=DANDANPLAY_APP_SECRET="${{ env.DANDANPLAY_APP_SECRET }}"
 
       - name: 核验产物
         shell: pwsh
@@ -350,6 +362,16 @@ jobs:
       #   回退到 pubspec 的版本号（见 lib/core/app_update/app_version.dart）。
       SOURIN_VERSION: ${{ inputs.release_tag }}
 
+      # 弹弹play 官方凭证：构建期从 GitHub Actions secrets 注入
+      # （官方文档 doc.dandanplay.com/open/「安全注意事项」允许开源客户端只留
+      #   占位符、构建时替换真值）。仓库 Settings → Secrets and variables →
+      #   Actions 里配置 DANDANPLAY_APP_ID / DANDANPLAY_APP_SECRET。
+      # pull_request（fork PR）按 GitHub 内建规则拿不到 secrets ⇒ 两个 env 为
+      #   空串 ⇒ dart-define 也是空串 ⇒ String.fromEnvironment 缺省空串，
+      #   App 回落到用户自填凭证，行为与未注入逐字一致，无需额外判断。
+      DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
+      DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
+
 
     steps:
       - name: 检出代码
@@ -391,6 +413,8 @@ jobs:
         run: >-
           flutter build macos --release --no-pub -t lib/shell.dart
           --dart-define=SOURIN_VERSION=${{ env.SOURIN_VERSION }}
+          --dart-define=DANDANPLAY_APP_ID="${{ env.DANDANPLAY_APP_ID }}"
+          --dart-define=DANDANPLAY_APP_SECRET="${{ env.DANDANPLAY_APP_SECRET }}"
 
       - name: 核验产物
         shell: bash
@@ -597,6 +621,16 @@ jobs:
       #   回退到 pubspec 的版本号（见 lib/core/app_update/app_version.dart）。
       SOURIN_VERSION: ${{ inputs.release_tag }}
 
+      # 弹弹play 官方凭证：构建期从 GitHub Actions secrets 注入
+      # （官方文档 doc.dandanplay.com/open/「安全注意事项」允许开源客户端只留
+      #   占位符、构建时替换真值）。仓库 Settings → Secrets and variables →
+      #   Actions 里配置 DANDANPLAY_APP_ID / DANDANPLAY_APP_SECRET。
+      # pull_request（fork PR）按 GitHub 内建规则拿不到 secrets ⇒ 两个 env 为
+      #   空串 ⇒ dart-define 也是空串 ⇒ String.fromEnvironment 缺省空串，
+      #   App 回落到用户自填凭证，行为与未注入逐字一致，无需额外判断。
+      DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
+      DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
+
     if: github.event_name == 'workflow_dispatch' && inputs.build_android
 
     steps:
@@ -746,6 +780,8 @@ jobs:
           flutter build apk --release --no-pub --split-per-abi
           --target-platform android-arm64,android-arm -t lib/shell.dart
           --dart-define=SOURIN_VERSION=${{ env.SOURIN_VERSION }}
+          --dart-define=DANDANPLAY_APP_ID="${{ env.DANDANPLAY_APP_ID }}"
+          --dart-define=DANDANPLAY_APP_SECRET="${{ env.DANDANPLAY_APP_SECRET }}"
 
       - name: 核验 APK 的 Android TV 入口（手机入口 + TV 入口都要在）
         shell: bash

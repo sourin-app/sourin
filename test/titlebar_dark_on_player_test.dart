@@ -217,16 +217,42 @@ void main() {
       );
     });
 
-    test('★ `_TitleBarHost` 必须监听 `titleBarDark`（否则不重建）', () {
+    test('★ `_TitleBarHost` 必须**响应** `titleBarDark`（否则不重建）', () {
+      /*
+       * # 判据为什么在 2026-10-11 改了（不是放宽，是换了机制）
+       *
+       * 原判据钉的是 `titleBarDark.addListener(` —— 那时 `_TitleBarHostState`
+       * 监听 + `setState`。但那个 `setState` 会把 `widget.child`
+       * （= **整个 Navigator / 首页**）一起重建：从播放页返回时，
+       * OPS-12 ⑦ 把 `titleBarDark=false` 推到了返回帧之后，于是
+       * **后一帧**整棵首页子树被重建 —— 实测 457 个元素
+       * （`.probe/ops/zz_ops_return_probe2_test.dart`）。这正是 Owner
+       * 第 2 条「从播放页返回还是非常卡顿」的剩余成本。
+       *
+       * ⇒ 改成用 `ValueListenableBuilder` **只包标题栏那一支**，
+       *   翻转只重建 40px 标题栏，不波及首页。
+       *
+       * ★ 契约的**意图**没变、也没放松：标题栏必须**随着**
+       *   `titleBarDark` / `titleBarVisible` 变化而重建。只是把
+       *   "监听 + 全量 setState" 换成"局部重建"。
+       */
       expect(
-        shellSrc.contains('titleBarDark.addListener('),
+        shellSrc.contains('valueListenable: titleBarDark'),
         isTrue,
-        reason: '★ 不监听就不会重建，转暗不会生效',
+        reason: '★ 标题栏必须订阅 `titleBarDark`，否则转暗不会生效',
       );
       expect(
-        shellSrc.contains('titleBarDark.removeListener('),
+        shellSrc.contains('valueListenable: titleBarVisible'),
         isTrue,
-        reason: '★ 有 add 必须有 remove（否则泄漏 + 回调打到已销毁的 State）',
+        reason: '★ 同理必须订阅 `titleBarVisible`',
+      );
+      // ★ 反例守卫：不得再回到"监听 notifier + 整页 setState"的老写法
+      //   （那会重建 widget.child = 首页，正是要修掉的卡顿）。
+      expect(
+        shellSrc.contains('titleBarDark.addListener('),
+        isFalse,
+        reason: '★★ 不得再用 `titleBarDark.addListener` 触发整页 setState —— '
+            '那会在返回帧之后重建整个首页子树（Owner 第 2 条卡顿）',
       );
     });
   });

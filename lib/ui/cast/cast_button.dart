@@ -200,10 +200,14 @@ class _CastButtonState extends State<CastButton> {
     final failed = s != null && s.phase == CastPhase.failed;
 
     final icon = _busy
-        ? const SizedBox(
+        ? SizedBox(
             width: 18,
             height: 18,
-            child: CircularProgressIndicator(strokeWidth: 2),
+            // ★ T27-07（lead 集成补漏）：显式 onSurface，不落主题 primary 灰。
+            child: CircularProgressIndicator(
+              color: colors.onSurface,
+              strokeWidth: 2,
+            ),
           )
         : Icon(
             active ? Icons.cast_connected : Icons.cast,

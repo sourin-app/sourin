@@ -1419,6 +1419,10 @@ class _DetailPageState extends State<DetailPage> {
   /// 本地模式下「那几枚操作按钮」画不画（Owner ⑬：没网就不显示）
   bool get _showLocalActions => !widget.isLocalFile || _online;
 
+
+
+
+
   /// ★★★ OPS-9：**这一集磁盘上已经有可播文件** ⇒ 不画那枚「换源」
   ///
   /// # Owner 原话（逐字）
@@ -4224,8 +4228,49 @@ class _Info extends StatelessWidget {
             if (!hasLocalFile) ...[
               OutlinedButton.icon(
                 onPressed: onSwitchSource,
-                icon: const Icon(Icons.swap_horiz, size: 16),
+                /*
+                 * ══════════════════════════════════════════════════════════
+                 * ★★★ Owner 1011 反馈③：这一枚**原来没有 style** ⇒ 文字色脱离同组
+                 * ══════════════════════════════════════════════════════════
+                 *
+                 * # Owner 原话（逐字）
+                 * ```text
+                 * > 1.下载按钮的文字颜色不一致
+                 * ```
+                 *
+                 * # 真实像素取证（截取自 Owner 真机图 5.png，y≈266-287 那一排）
+                 * ```text
+                 * 收藏   (112,114,122)   ← 灰
+                 * 追更中 (59,111,224)    ← 蓝（激活态，另一码事）
+                 * 换源   (30,32,40)      ← ★ 深色（明显比其余三枚重）
+                 * 下载   (112,114,122)   ← 灰
+                 * ```
+                 * ⇒ **真正脱离同组的是「换源」**，不是下载。
+                 *   下载/收藏/追更三枚都显式传了 `_pillForeground`
+                 *   （= `colorScheme.onSurfaceVariant`，深色主题下就是那支灰），
+                 *   而这一枚**裸着**建 ⇒ 吃主题 `outlinedButtonTheme` 的
+                 *   `foregroundColor`（theme_bridge.dart）= `c.foreground`
+                 *   ⇒ 深色主题下是近白、浅色下是 (30,32,40)，与另三枚**不同源**。
+                 *
+                 * # 裁决（Owner 选的）
+                 * ```text
+                 * 四枚统一成**次要文字色**（onSurfaceVariant，即那支灰）——
+                 * 它们是同级的次要操作，不该抢详情区标题的视觉重心。
+                 * ```
+                 * ⚠️ 与 `_ToggleButton` / `_DownloadButton` 用**同一个**
+                 *    `_pillForeground(colors, on: false)` —— 不许在这里手写色值，
+                 *    否则又变成"第二处实现"（本仓反复踩过这个形态）。
+                 */
+                icon: Icon(
+                  Icons.swap_horiz,
+                  size: 16,
+                  color: _pillForeground(colors, on: false),
+                ),
                 label: const Text('换源'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _pillForeground(colors, on: false),
+                  side: _pillBorderStyle(colors, on: false),
+                ),
               ),
             ],
 
@@ -4259,6 +4304,7 @@ class _Info extends StatelessWidget {
           ],
         ),
         ],
+
 
         // ── 续播提示 ──
         if (resume != null && resume!.position > 5) ...[
@@ -4376,6 +4422,52 @@ class _Chip extends StatelessWidget {
   }
 }
 
+// ═════════════════════════════════════════════════════════════════════
+//  T27-03 —— 操作行四枚按钮的「同源」样式构造
+// ═════════════════════════════════════════════════════════════════════
+//
+// # 为什么必须有这一段（业主原话：图 3，「下载按钮跟前面的不一样 样式」）
+// ```text
+//   收藏/追更 = _ToggleButton → OutlinedButton.icon（吃全局按钮主题）
+//   下载      = _DownloadButton → 手画 Container 壳（不吃主题，参数手抄）
+// ⇒ 边框/内边距/圆角/字号/高度全靠手抄，抄哪版全凭当时心情。
+// ```
+// ⇒ 视觉参数**只允许**从下面这几个构造取（门禁
+//    test/t27_w3_download_button_style_test.dart 断言渲染事实逐一相等）。
+//    数值与全局按钮主题同档（theme_bridge.dart `_shared`）：
+//    padding 10×11、圆角 10、字号 sm=14、行高 1、描边 outlineVariant。
+//
+// ★★★ 2026-10-11（业主第 3 条：四枚按钮样式仍不一致）—— 手画壳整段删除
+// ```text
+//   上一版把下载按钮做成「手画 Container 壳 + PopupMenuButton.child」，
+//   壳上还硬塞了一条 `minHeight: kMinInteractiveDimension`（= 48）。
+//   实测（Windows 几何，两平台对照探针逐字读数）：
+//     收藏 / 追更 / 换源 = OutlinedButton ⇒ 72×32（shrinkWrap + density -2）
+//     下载               = 手画壳        ⇒ 71×48 ← 硬编码的 48 顶着
+//   ⇒ 同一行里「下载」比旁边三枚**高一档**，一眼就不是一套。
+//
+//   而旧门禁在 `flutter test` 里**全绿**：flutter_tester 的平台默认是
+//   android（padded + density 0）⇒ 两枚都量到 48，这一维根本没被看着。
+//   ⚠️ 教训：几何断言必须**显式指定平台**（debugDefaultTargetPlatformOverride），
+//      否则量到的是 tester 的 android 默认值，不是用户真机的那个值。
+// ```
+// ⇒ ★ 根治：下载触发器**不再手画几何**，直接用它旁边三枚**同一个 widget 类**
+//    （`OutlinedButton.icon`）—— 密度 / 最小触控尺寸 / 主题合并全部由
+//    `ButtonStyleButton` 内部算，两平台自动同档，不存在「手抄漏一维」。
+//    菜单改由 `onPressed` 里手写 `showMenu` 弹出（位置从按钮自己的
+//    RenderBox 现算，逐字等价于原来的 `PopupMenuPosition.under`）。
+// ⚠️ 反过来**不许**再给按钮套一层手画的几何壳：本文件历史上那层「胶囊壳」
+//    正是上一轮缺陷的载体（已整段删除），也不许再硬编码任何最小高度。
+
+/// 描边：开态 primary（强调），关态 outlineVariant（中性描边）
+BorderSide _pillBorderStyle(ColorScheme colors, {required bool on}) =>
+    BorderSide(color: on ? colors.primary : colors.outlineVariant);
+
+/// 前景色：图标与文字**必须**取同一处
+/// （T27-03 之前下载按钮的 icon/text 是两处独立硬编码）
+Color _pillForeground(ColorScheme colors, {required bool on}) =>
+    on ? colors.primary : colors.onSurfaceVariant;
+
 /// 可切换的按钮（收藏 / 追更）
 class _ToggleButton extends StatelessWidget {
   const _ToggleButton({
@@ -4395,14 +4487,14 @@ class _ToggleButton extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return OutlinedButton.icon(
       onPressed: onTap,
-      icon: Icon(icon, size: 16),
+      // ★ T27-03：icon 色与文字色取同一个构造 —— 主题的 iconColor 链走
+      //   foreground 派生色，与 styleFrom 的 foregroundColor 不同源，必须显式。
+      icon: Icon(icon, size: 16, color: _pillForeground(colors, on: on)),
       label: Text(label),
       style: OutlinedButton.styleFrom(
-        foregroundColor: on ? colors.primary : colors.onSurfaceVariant,
+        foregroundColor: _pillForeground(colors, on: on),
         backgroundColor: on ? colors.primary.withValues(alpha: 0.16) : null,
-        side: BorderSide(
-          color: on ? colors.primary : colors.outlineVariant,
-        ),
+        side: _pillBorderStyle(colors, on: on),
       ),
     );
   }
@@ -4416,8 +4508,11 @@ class _ToggleButton extends StatelessWidget {
 /// 而这两个动作**同一个心智模型**（下载），合成一枚更清楚。
 /// ```
 ///
-/// ⚠️ 用 `PopupMenuButton` 而不是 `showModalBottomSheet`：
-///    这一行在 `ListView` 里，弹层用 Overlay 才不会跟着滚。
+/// ⚠️ 弹层必须走 Overlay（`showMenu`）：这一行在 `ListView` 里，
+///    自建的内联弹层会跟着列表一起滚。
+///
+/// ★ 2026-10-11（业主第 3 条）：几何改由 `OutlinedButton.icon` 承担 ——
+///    见本文件 T27-03 段头「手画壳整段删除」那一段。这里只剩行为。
 class _DownloadButton extends StatelessWidget {
   const _DownloadButton({
     required this.episodeCount,
@@ -4431,31 +4526,43 @@ class _DownloadButton extends StatelessWidget {
   /// null = 没有剧集列表（电影）⇒ 菜单里不画「全部集」那一项
   final VoidCallback? onDownloadAll;
 
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
+  /// 弹出「本集 / 全部集」菜单，选中后回调对应动作
+  ///
+  /// # 为什么手写 `showMenu`（而不是继续用 `PopupMenuButton`）
+  /// ```text
+  /// PopupMenuButton 只给两种形态：
+  ///   ① child 模式 —— 壳要自己画 ⇒ 又回到「手画几何」（本缺陷的根因）；
+  ///   ② icon 模式  —— 它内部是 IconButton，与这一行的描边按钮不同类。
+  /// 我们要的是「几何 = 旁边那三枚 OutlinedButton，行为 = 弹菜单」
+  ///   ⇒ 用 OutlinedButton.icon 拿几何，在 onPressed 里自己弹菜单。
+  /// ```
+  /// ⚠️ 位置必须**从按钮自己现算**（`context.findRenderObject()`）：
+  ///    这一行会随列表滚动，任何提前算好的坐标都会过期。
+  ///    下面这几行逐字等价于 `PopupMenuPosition.under` 的取位方式
+  ///    （对照 material_ui 的 popup_menu.dart:1649 与 :1706-1712 ——
+  ///     它自己也是用 context.findRenderObject() 取锚点的）。
+  Future<void> _openMenu(BuildContext context) async {
+    final box = context.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (box == null || overlay == null || !box.hasSize) return;
+
+    // 等价于 PopupMenuPosition.under：把锚点整体下移一个按钮高度
+    final under = Offset(0, box.size.height);
+    final position = RelativeRect.fromRect(
+      Rect.fromPoints(
+        box.localToGlobal(under, ancestor: overlay),
+        box.localToGlobal(box.size.bottomRight(Offset.zero) + under,
+            ancestor: overlay),
+      ),
+      Offset.zero & overlay.size,
+    );
+
     final all = onDownloadAll;
-    /*
-     * ★ 用 `PopupMenuButton` 而不是 `OutlinedButton` + 自建弹层：
-     *   它与这一行的另外两枚在**视觉上**一致（同样是描边 + 图标 + 文字），
-     *   而点击语义是「打开菜单」—— 这正是我们要的（两个动作）。
-     *
-     * ⚠️ `child` 里**不能**放可点的 `OutlinedButton` —— 它会吃掉
-     *    点击事件，菜单永远弹不出来（`PopupMenuButton` 靠包一层
-     *    GestureDetector 工作，内层按钮会赢手势竞技场）。
-     *    所以这里手画一个形状一致的 Container。
-     */
-    return PopupMenuButton<String>(
-      tooltip: '下载',
-      position: PopupMenuPosition.under,
-      onSelected: (v) {
-        if (v == 'one') {
-          onDownloadCurrent();
-        } else if (v == 'all') {
-          all?.call();
-        }
-      },
-      itemBuilder: (_) => [
+    final picked = await showMenu<String>(
+      context: context,
+      position: position,
+      items: <PopupMenuEntry<String>>[
         const PopupMenuItem<String>(
           value: 'one',
           child: Text('下载本集'),
@@ -4466,32 +4573,39 @@ class _DownloadButton extends StatelessWidget {
             child: Text('下载全部集（$episodeCount 集）'),
           ),
       ],
-      child: Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x3,
-          vertical: 9,
+    );
+    // ⚠️ `await` 之后页面可能已经关掉/重建了（lint
+    //    use_build_context_synchronously 要求这道守卫）
+    if (!context.mounted) return;
+    if (picked == 'one') {
+      onDownloadCurrent();
+    } else if (picked == 'all') {
+      all?.call();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    // ⚠️ 悬停提示靠外层 Tooltip（`OutlinedButton` 本身没有 tooltip 参数）。
+    //    Tooltip 未弹出时外层只有 MouseRegion（RenderProxyBox）⇒ 不改变按钮几何。
+    return Tooltip(
+      message: '下载',
+      child: OutlinedButton.icon(
+        onPressed: () => unawaited(_openMenu(context)),
+        // ★ 图标色与文字色取同一个构造（与 _ToggleButton 逐字同源）
+        icon: Icon(
+          Icons.download_outlined,
+          size: 16,
+          color: _pillForeground(colors, on: false),
         ),
-        decoration: BoxDecoration(
-          borderRadius: Radii.rSm,
-          border: Border.all(color: colors.outlineVariant),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.download_outlined,
-              size: 16,
-              color: colors.onSurfaceVariant,
-            ),
-            const SizedBox(width: Sp.x1),
-            Text(
-              '下载',
-              style: TextStyle(
-                fontSize: FontSizes.sm,
-                color: colors.onSurfaceVariant,
-              ),
-            ),
-          ],
+        // ⚠️ label **不给** style：让它继承按钮主题那份 btnText
+        //    （字号 sm=14 / 行高 1 / 字重 w500）—— 这正是「同源」；
+        //    手抄任何一项都会重演 Owner 1011 反馈③（字重差一档）。
+        label: const Text('下载'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: _pillForeground(colors, on: false),
+          side: _pillBorderStyle(colors, on: false),
         ),
       ),
     );

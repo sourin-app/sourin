@@ -137,6 +137,32 @@ class SourinApi {
     debugHomeFetcher = getHome;
   }
 
+  /// 探针注入点：`get_live_stream`（T27-06 门禁用）
+  ///
+  /// ⚠️ 与上面的探针同一纪律：**生产路径永不为非 null**（默认全 null ⇒
+  ///    生产路径逐字不变）。
+  /// ⚠️ 语义：fake 顶替的是**核心层传输**（`SourinCore.callAsync`），
+  ///    不是缓存 —— 装上后缓存逻辑**照常生效**，门禁数的
+  ///    「真取次数」是缓存之下真实打到 fake 的次数（仪器与被测对象同源）。
+  @visibleForTesting
+  static Future<List<StreamCandidate>> Function(
+    String provider,
+    String channelId,
+  )? debugLiveStreamFetcher;
+
+  /// 清空直播取址缓存（T27-06）
+  ///
+  /// 换源 / 手动重试后的出口 —— 不留 30 秒内的旧地址。
+  /// 也被测试用来保证用例之间互不污染（tearDown）。
+  @visibleForTesting
+  static void debugClearLiveStreamCache() {
+    _liveStreamCache.clear();
+  }
+
+  /// 测试可见的缓存条目数（门禁断言「空结果不缓存」用）
+  @visibleForTesting
+  static int get debugLiveStreamCacheSize => _liveStreamCache.length;
+
   /// 核心是否已启动
   static bool get isStarted => SourinCore.isStarted;
 
@@ -492,22 +518,82 @@ class SourinApi {
   //  直播
   // ═══════════════════════════════════════════════════════════════════
 
+  /*
+   * ★★ T27-06：`get_live_stream` 的 30 秒结果缓存
+   *
+   * 业主原话：> 切换到直播播放页总是要反应很长时间才出现画面
+   *
+   * # 根因
+   * ```text
+   * 每次切台 `_adoptLiveChannel` 都同步 `await getLiveStream(...)`：
+   * 切回一个刚看过的台（↑↓ 按回去是最常见的动作）也要重新打穿核心层
+   * ⇒ 上游取址慢多少，切台就黑屏/转圈多少秒。
+   * ```
+   *
+   * # 为什么 TTL 是 30 秒
+   * ```text
+   * 直播地址不是恒久的（核心层探测/代理都有租期），不能永久缓存；
+   * 但切台↔切台的间隔远小于 30 秒，30s 窗口已覆盖「看 A → 看 B → 看 A」。
+   * 预取相邻台（player_page 侧）与这里共用同一份缓存 ⇒ 点选邻居 = 0 次取数。
+   * ```
+   *
+   * # 为什么空结果不缓存
+   * ```text
+   * 空结果多半是「探测暂时失败」，缓存它 = 把一次失败放大成 30 秒失败。
+   * ```
+   *
+   * # 为什么返回同一份 List（不拷贝）
+   * ```text
+   * 上游（player_page）对列表只做只读遍历/`where` 过滤，从不 mutate；
+   * 拷贝一份只会制造「两次结果 != identical」的假差异，还会多占内存。
+   * ```
+   */
+  static const Duration _liveStreamCacheTtl = Duration(seconds: 30);
+  static final Map<String, (DateTime, List<StreamCandidate>)> _liveStreamCache =
+      {};
+
   /// 全部直播频道（按源分组）
   static Future<List<LiveGroup>> getLiveChannels() async {
     final r = await SourinCore.callAsync('get_live_channels');
     return jlist<LiveGroup>(r, LiveGroup.fromJson).toList();
   }
 
-  /// 取某频道的播放地址（可能多个候选）
+  /// 取某频道的播放地址（可能多个候选；30s 内同台命中缓存）
   static Future<List<StreamCandidate>> getLiveStream(
     String provider,
     String channelId,
   ) async {
-    final r = await SourinCore.callAsync('get_live_stream', {
-      'provider': provider,
-      'channel_id': channelId,
-    });
-    return jlist<StreamCandidate>(r, StreamCandidate.fromJson).toList();
+    final key = '$provider|$channelId';
+    // ★ `|` 只是可读的分隔符 —— provider/channelId 由核心层保证非空且
+    //    不含 `|`（callAsync 的参数表）；即使含，也只影响可读性，
+    //    不影响正确性（两个分量拼在同一字符串里，'(a|bc,b)' 与
+    //    '(a,b|c)' 唯一性由核心层入参约束兜底）。
+    final hit = _liveStreamCache[key];
+    if (hit != null) {
+      final (at, cached) = hit;
+      if (DateTime.now().difference(at) < _liveStreamCacheTtl) {
+        return cached;
+      }
+      _liveStreamCache.remove(key);
+    }
+    final fake = debugLiveStreamFetcher;
+    final List<StreamCandidate> list;
+    if (fake != null) {
+      // 门禁/探针注入：fake 顶替核心层传输，**缓存逻辑照常生效**
+      // （仪器在缓存之下 —— 见 [debugLiveStreamFetcher] 的说明）。
+      // 生产路径永为 null。
+      list = await fake(provider, channelId);
+    } else {
+      final r = await SourinCore.callAsync('get_live_stream', {
+        'provider': provider,
+        'channel_id': channelId,
+      });
+      list = jlist<StreamCandidate>(r, StreamCandidate.fromJson).toList();
+    }
+    if (list.isNotEmpty) {
+      _liveStreamCache[key] = (DateTime.now(), list);
+    }
+    return list;
   }
 
   /// 电子节目单（EPG）

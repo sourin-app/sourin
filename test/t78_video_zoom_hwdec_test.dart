@@ -476,17 +476,26 @@ void main() {
       expect(_page.contains('!widget.isTv && !_anySheetOpen'), isTrue);
 
       // 底栏自己的门控（`t57_sheet_scrim_geometry_test.dart:380-415` 那四个）
-      final ib = _page.indexOf('_BottomBar(');
-      final before = _page.substring((ib - 600).clamp(0, ib), ib);
-      final cond = before.substring(before.lastIndexOf('if ('));
+      //
+      // ★★★ T27-13（Owner 第 3 / 5 条「上下栏必须同时消失/显示」）：底栏的
+      //   11 项门控已**收拢**进唯一真源 `bool get _chromeVisible`，底栏渲染点
+      //   现在写 `if (_chromeVisible)`。判据的**实质不变**（底栏仍受这四个
+      //   !_xxxSheetOpen 约束），只是它们现在活在 `_chromeVisible` 里。
+      final ci = _page.indexOf('bool get _chromeVisible =>');
+      expect(ci, greaterThan(0),
+          reason: '★ 唯一真源 `_chromeVisible` 不见了 —— 顶/底栏又各自算门控了');
+      final cond = _page.substring(ci, _page.indexOf(';', ci));
       for (final k in const [
         '!_episodeSheetOpen',
         '!_streamSheetOpen',
         '!_settingsOpen',
         '!_liveChannelsOpen',
       ]) {
-        expect(cond.contains(k), isTrue, reason: '★ 底栏绘制条件少了 $k');
+        expect(cond.contains(k), isTrue, reason: '★ 底栏绘制条件少了 $k（在 _chromeVisible 里）');
       }
+      // 底栏渲染点必须读唯一真源（用 ListenableBuilder 包住，淡出窗口内留树）
+      expect(_page.contains('if (!_chromeVisible && !keepForFade) {'), isTrue,
+          reason: '★ 底栏显隐必须读唯一真源 `_chromeVisible` —— T27-13 的唯一真源');
       // 自动收底栏时不能把滑条收掉（否则拖到一半条就没了）
       expect(_page.contains('!_hintsOpen && !_zoomOpen'), isTrue);
     });
@@ -600,8 +609,17 @@ void main() {
           why: '★ 音量滑杆（max: 100）全页只该有一根');
       indexOfExactly(bar, 'max: 200,', want: 1,
           why: '★ 缩放滑杆（max: 200）全页只该有一根');
-      expect(bar.contains('Icons.tune'), isFalse,
-          reason: '★ 弹幕设置已经收进「更多」菜单，不该留在底栏');
+      /*
+       * ★★★ Owner 1011 反馈第 1 条（弹幕做成 B 站那种形态）后**语义已变**：
+       *   改前这条钉「弹幕设置收进『更多』，不许留在底栏」。现在 Owner 明确
+       *   要「一个开关,一个设置」—— 设置必须回到**底栏**上、且一次点开就是
+       *   可操作面板。⇒ 判据反过来：底栏**必须**有一枚 Icons.tune 的设置入口
+       *   （它直连 onDanmakuSettings，不再套菜单）。
+       *   ⚠️ 这不是放松：真正要守的不变量从「底栏不许有设置入口」变成了
+       *      「底栏要有设置入口、且它不是两层菜单」—— 由 t27_w14 逐条钉。
+       */
+      expect(bar.contains('Icons.tune'), isTrue,
+          reason: '★ 弹幕设置回到底栏（Owner 第 1 条：一个开关,一个设置）');
     });
   });
 }

@@ -1477,6 +1477,11 @@ class _PlayerPageState extends State<PlayerPage>
   /// 弹幕设置面板是否打开
   bool _danmakuSheetOpen = false;
 
+  /// ★ Owner 2026-10-11：是否正在拖「显示区域」滑杆（true ⇒ 画面上点亮引导遮罩）
+  ///
+  /// 真源在宿主，底栏滑杆只发"起手/松手"事件（见 `_setDanmakuAreaGuide`）。
+  bool _showDanmakuAreaGuide = false;
+
   /// 正在取弹幕
   bool _danmakuLoading = false;
 
@@ -1490,6 +1495,26 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// HTTP 客户端（懒建；凭证改了必须重建 —— appId/appSecret 是构造快照）
   DandanplayClient? _danmakuClient;
+
+  /// 本机弹弹play探测结果（T27-05；进程内缓存，null = 还没探过）
+  DanmakuLocalStatus? _danmakuLocalStatus;
+
+  /// 「数据源」状态行文案（弹幕设置面板用；最近一次探测的结果）
+  String _danmakuSourceLine = '';
+
+  /// 最近一次选路结果（客户端是本地模式还是官方模式）。
+  /// appId/appSecret 与 baseUrl 都是 DandanplayClient 的**构造快照**
+  /// ⇒ 本地/官方互切时必须重建客户端，否则缓存里的旧模式一直被复用。
+  bool _danmakuUsingLocal = false;
+
+  /// ★ T27-08：上一次**判定用到的**本机在线事实（null = 还没取过弹幕）
+  ///
+  /// 为什么另起一个字段而不是现读 `_danmakuLocalStatus`：
+  /// 用户点了「改用本机弹弹play」时会把后者清成 null 让它重新探测 ——
+  /// 那一刻旧的失败提示还在屏幕上，若 hint 从它现读，标题会当场变回
+  /// 「没收到凭证」那一态（用户刚点的按钮像是自己消失了）。
+  /// 这里记的是**产生这条失败时**的真实读数，与提示同生共死。
+  bool? _danmakuHintLocalOnline;
 
   /// 上一次取弹幕的结果摘要（给面板与角标显示）
   String _danmakuStatus = '';
@@ -1869,6 +1894,37 @@ class _PlayerPageState extends State<PlayerPage>
     );
   }
 
+  /*
+   * ★★ T27-06 切台计时（业主原话：> 切换到直播播放页总是要反应很长时间才出现画面）
+   *
+   * 与 `_bootMark` 同一个两收口模式（打点收口 `_liveSwitchMark`，
+   * 起点收口 `_liveSwitchStartedAt`）：stage 序号与起播计时对齐 ——
+   * ```text
+   * ① 切台发起（_adoptLiveChannel 进入 / _load 直播分支）→ t0
+   * ② getLiveStream 返回 ⇒ ①→② = 取址耗时（缓存的直接收益在这里）
+   * ③ _player.open() 返回
+   * ④ 首帧（stream.width 非空）⇒ ①→④ = 用户「从按下去到看到画面」的真值
+   * ```
+   * 双通道输出：debugPrint（PLAYBACK_TIMING 构建）+ AppLog '切台'
+   * （**恒开**——真机取证靠它，不能要求取证机重编 PLAYBACK_TIMING）。
+   */
+
+  /// 本次切台的 t0（在 `_adoptLiveChannel`/`_load` 直播分支开头重置）
+  DateTime? _liveSwitchStartedAt;
+
+  /// 切台链路打点：AppLog（恒开）+ debugPrint（仅 PLAYBACK_TIMING 构建）
+  ///
+  /// [stage] 形如 `'① …'`；[detail] 可空。
+  void _liveSwitchMark(String stage, [String detail = '']) {
+    final t0 = _liveSwitchStartedAt;
+    final ms = t0 == null ? -1 : DateTime.now().difference(t0).inMilliseconds;
+    final line = '+${ms}ms  $stage${detail.isEmpty ? '' : '  ($detail)'}';
+    AppLog.write('切台', line);
+    if (kPlaybackTiming) {
+      debugPrint('[TIMING] [切台] $line');
+    }
+  }
+
   /// 首帧等待的代次号（与 `_hwdecToken` 同一个用途：换流后作废旧等待）
   int _firstFrameToken = 0;
 
@@ -1885,7 +1941,10 @@ class _PlayerPageState extends State<PlayerPage>
   /// 它最多等 30 秒。await 在这里会把 `_loading = false` 一起拖住 ——
   /// 为了打一行日志拖慢起播不值得（与 `_reportHwdecAfterReady` 同一个理由）。
   Future<void> _reportFirstFrame(int token) async {
-    if (!kPlaybackTiming) return;
+    // T27-06：切台取证（AppLog '切台'）**恒开** —— 直播即使不是
+    // PLAYBACK_TIMING 构建也要等首帧打 ④（「看到画面」的时刻）；
+    // 点播维持原早退（_liveSwitchStartedAt 恒为 null，零开销）。
+    if (!kPlaybackTiming && _liveSwitchStartedAt == null) return;
     const step = Duration(milliseconds: 50);
     final deadline = DateTime.now().add(const Duration(seconds: 30));
     var tick = 0;
@@ -1896,6 +1955,7 @@ class _PlayerPageState extends State<PlayerPage>
       if (w != null && w > 0) {
         final h = _player.state.height;
         _bootMark('④ 首个视频帧', '${w}x$h');
+        _liveSwitchMark('④ 首个视频帧', '${w}x$h');
         // 汇总行：一眼能对比慢源/快源
         debugPrint(
           '[TIMING] ★ 起播总耗时 ${_bootWatch?.elapsedMilliseconds}ms '
@@ -1916,7 +1976,8 @@ class _PlayerPageState extends State<PlayerPage>
        * ```
        * 这三种原因的**修法完全不同**，不区分就动手 = 猜。
        */
-      if (tick % 20 == 0) {
+      // mpv 内部采样只属于 PLAYBACK_TIMING 诊断（正式构建不采样、不打印）
+      if (tick % 20 == 0 && kPlaybackTiming) {
         await _dumpMpvDiag(tick ~/ 20);
       }
       tick++;
@@ -1924,6 +1985,7 @@ class _PlayerPageState extends State<PlayerPage>
     }
     if (token == _firstFrameToken) {
       _bootMark('④ 首帧超时', '30s 内没出视频帧');
+      _liveSwitchMark('④ 首帧超时', '30s 内没出视频帧');
     }
   }
 
@@ -2326,6 +2388,29 @@ class _PlayerPageState extends State<PlayerPage>
       // ← 原来那行（现在是 else 分支）——**逐字节不变**
       WidgetsBinding.instance.addPostFrameCallback((_) => _load());
     }
+
+    /*
+     * ★★★ Owner 2026-10-11 第⑤条：popover 从「开」变「关」时，重装隐藏计时器。
+     *
+     * # 为什么必须有这一条（否则本修复会引出第二个缺陷）
+     * ```text
+     * `_autoHideNow()` 的守卫加了「`_popover.openId == null`」之后：
+     * 用户开着倍速面板停手 3 秒 ⇒ 计时器到点，但守卫把隐藏拦下 ⇒ 底栏留着
+     * （这是对的，面板挂在底栏按钮旁，底栏不能先没）。
+     * ⚠️ 可那个 `_hideTimer` 已经**烧掉**了 —— 若关闭面板时不重装，
+     *   用户关掉面板之后底栏就**再也不会自动隐藏**了。
+     * # 实测各条关闭路径都不重装（见 `_autoHideNow` 同段注释）
+     * ```
+     * ⇒ 在这里监听控制器：只要它从「开着」翻到「关着」，就 `_armHideTimer()`
+     *   一次，让「关掉面板 ⇒ 再停手 3 秒 ⇒ 底栏正常收起」回到原节奏。
+     *
+     * ⚠️ 只在**开→关**这个**边沿**上装，不在「本来就没开」时装：
+     *    否则 hover 底栏时 _showControls() 已经装了一个，这里会把它重置，
+     *    等价于每次 notifyListeners 都续命（面板开着时控制器每帧复核几何
+     *    也会 notify）——那会让底栏在面板开着时反复续命。用 `_prevPopoverOpen`
+     *    记上一个值，只有真正跨过「开→关」才装。
+     */
+    _popover.addListener(_onPopoverChanged);
   }
 
   /// ★★★ task-12 ④：本地文件的起播路径（`initState` 短路后走这里）。
@@ -2904,6 +2989,23 @@ class _PlayerPageState extends State<PlayerPage>
     while (waited < 40) {
       // 用户换集/换源/退出 → 这一轮作废
       if (token != _videoOutputToken || !mounted) return;
+      /*
+       * ★★★ Owner 缺陷④（2026-10-11）：已经出过画面就**不许**再立旗。
+       *
+       * Owner 原话：
+       * > 你看播放正常还提示 无法显示
+       *
+       * 本看门狗的前提是「有视频轨，但画面上不来」。而 `_sawFirstFrame`
+       * （`stream.width` 报过 > 0）= 画面**确实上来了** ⇒ 前提直接为假。
+       * 改前这里**不看**它 ⇒ 那 10 秒里只要 `vo-configured` 因为任意时序
+       * 抖动没读成 'yes'，到点照样立旗；而立旗后 `_videoOutputDead`
+       * **没有清除路径**（只有换流才复位）⇒ 横幅赖着不走，
+       * 画面在底下正常播 = 「播放正常还提示无法显示」。
+       *
+       * ⚠️ 判据用 `_sawFirstFrame`（更硬：真的出了帧），
+       *    而不是 `videoParams.dw`（那只是"解析出视频轨"，是它自己的输入）。
+       */
+      if (_sawFirstFrame) return;
       if (_player.state.videoParams.dw != null) {
         if (await voConfigured()) {
           // 画面正常，收工
@@ -2920,6 +3022,8 @@ class _PlayerPageState extends State<PlayerPage>
 
     // 超时：最后再判一次，避免把"刚好在最后一刻起来"误报
     if (token != _videoOutputToken || !mounted) return;
+    // ★ 同一条纪律：出过帧 ⇒ 不立旗（否则会盖住正在正常播放的画面）
+    if (_sawFirstFrame) return;
     final hasVideo = _player.state.videoParams.dw != null;
     final ok = await voConfigured();
     if (token != _videoOutputToken || !mounted) return;
@@ -3220,8 +3324,18 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ 判据里**必须**带上 ${_error} —— 否则「起播时先报错、随后画面又出来了」
        *    这条路会把全屏错误层**永久留在屏幕上**：画面在底下正常播，
        *    用户却只能看到一个"播放失败"，而且没有任何办法关掉它。
+       *
+       * ★ Owner 缺陷④（2026-10-11）：还必须带上 `!_videoOutputDead`。
+       *   若看门狗**误**立了旗（见 _watchVideoOutput 的注释），早退会让这里
+       *   永远走不到清旗那一步 ⇒ 横幅赖着不走。把 `_videoOutputDead == false`
+       *   作为"没什么要收"的前提后，误立旗的这一刻就会走到底下 setState 清掉它。
        */
-      if (_sawFirstFrame && _playbackFailure == null && _error == null) return;
+      if (_sawFirstFrame &&
+          _playbackFailure == null &&
+          _error == null &&
+          !_videoOutputDead) {
+        return;
+      }
       /*
        * ★ 落一行日志：Owner 第 9 条的复现全靠它。
        *
@@ -3242,6 +3356,18 @@ class _PlayerPageState extends State<PlayerPage>
         _errorKind = null;
         _loading = false;
         _playbackFailure = null;
+        /*
+         * ★★★ Owner 缺陷④（2026-10-11）：「播放正常却提示无法显示」的自愈
+         *
+         * Owner 原话：
+         * > 你看播放正常还提示 无法显示
+         *
+         * 画面真的出帧了（`stream.width > 0`）⇒ 输出层显然是**活的**；
+         * 看门狗不管之前为何立旗（时序抖动 / 属性读歪），此刻都可 100%
+         * 断言它判错了。不在这里清，`_videoOutputDead` 就**没有**别的
+         * 清除路径（只有换流才复位）⇒ 横幅会一直压着正在播放的画面。
+         */
+        _videoOutputDead = false;
       });
     });
     _player.stream.completed.listen((done) {
@@ -3317,6 +3443,14 @@ class _PlayerPageState extends State<PlayerPage>
      */
     _bootWatch = Stopwatch()..start();
     _bootMark('① 点播放', _isLive ? '直播' : '点播 $_provider/$_contentId');
+    if (_isLive) {
+      /*
+       * ★ T27-06：直播进页也是「切到直播播放页」（业主原话的另一半场景）
+       *   —— 首播路径与切台路径共用同一条 ①→④ 链路。
+       */
+      _liveSwitchStartedAt = DateTime.now();
+      _liveSwitchMark('① 进页取地址', '$_provider/$_liveChannelId');
+    }
 
     setState(() {
       _loading = true;
@@ -3331,6 +3465,7 @@ class _PlayerPageState extends State<PlayerPage>
       final List<StreamCandidate> list;
       if (_isLive) {
         list = await SourinApi.getLiveStream(_provider, _liveChannelId!);
+        _liveSwitchMark('② 地址到手', '${list.length} 条候选');
       } else {
         list = await SourinApi.resolveStream(
           _provider,
@@ -3695,6 +3830,7 @@ class _PlayerPageState extends State<PlayerPage>
        *    两者之差 = **首帧解码 + 缓冲填充**的耗时，那才是"卡着不起来"的主体。
        */
       _bootMark('③ player.open() 返回', 'kind=${st.kind}');
+      if (_isLive) _liveSwitchMark('③ open 返回', 'kind=${st.kind}');
       /*
        * ★ 打出**真实地址**（task-24 诊断必需）
        *
@@ -4497,12 +4633,24 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ appId / appSecret 是 `DandanplayClient` 的**构造快照**
   ///    （见 core/danmaku.dart 的 ctor）⇒ 用户在面板里改了凭证，
   ///    必须把旧实例 close 掉重建，否则改了等于没改。
-  DandanplayClient _ensureDanmakuClient() {
+  DandanplayClient _ensureDanmakuClient({bool unsignedLocal = false}) {
     final c = _danmakuClient;
     if (c != null) return c;
-    final n = DandanplayClient();
+    final n = DandanplayClient(unsignedLocal: unsignedLocal);
     _danmakuClient = n;
     return n;
+  }
+
+  /// 本机弹弹play探测（T27-05）：进程内只探一次，之后读缓存。
+  ///
+  /// 刻意**不**放在面板打开时探测 —— 面板路径要保证零网络（t103 的
+  /// 注入式用例不许被真探针拖住）；只在取弹幕（起播/重取）时走到。
+  Future<DanmakuLocalStatus> _ensureDanmakuLocalStatus() async {
+    final cached = _danmakuLocalStatus;
+    if (cached != null) return cached;
+    final st = await DanmakuLocalService.probe();
+    _danmakuLocalStatus = st;
+    return st;
   }
 
   /// 凭证改了 ⇒ 必须重建客户端（构造快照的原因见上）
@@ -4831,8 +4979,22 @@ class _PlayerPageState extends State<PlayerPage>
       final ok = await _autoBindBili();
       if (ok) return;
     }
+    /*
+     * ★ T27-05：本机弹弹play优先 —— 桌面版在 127.0.0.1:2080 提供
+     *   **免签名**的本地接口（官方 api.dandanplay.net 才要 AppId/AppSecret）。
+     *   探测结果进程内缓存；本机不在线 ⇒ 走官方（行为与改前一致）。
+     *   本地服务就是 dandanplay 协议 ⇒ 成功状态仍用「dandanplay · 」前缀。
+     */
+    final localStatus = await _ensureDanmakuLocalStatus();
+    _danmakuSourceLine = '数据源：${localStatus.line}';
+    final usingLocal = localStatus.online;
+    if (usingLocal != _danmakuUsingLocal) {
+      // 模式切了 ⇒ 旧客户端（另一种 baseUrl/签名形态）必须 close 重建
+      _danmakuUsingLocal = usingLocal;
+      _resetDanmakuClient();
+    }
     final token = ++_danmakuFetchToken;
-    final client = _ensureDanmakuClient();
+    final client = _ensureDanmakuClient(unsignedLocal: usingLocal);
     if (mounted) {
       setState(() {
         _danmakuLoading = true;
@@ -4870,6 +5032,7 @@ class _PlayerPageState extends State<PlayerPage>
           loading: false,
           clearError: true,
           status: 'dandanplay · ${res.summary}',
+          sourceLine: _danmakuSourceLine,
         );
       });
       _armDanmakuBadgeExpiry(kDanmakuBadgeEmptyMs);
@@ -4881,9 +5044,28 @@ class _PlayerPageState extends State<PlayerPage>
         _danmakuError = e;
         _danmakuErrorAt = DateTime.now();
         _danmakuLoading = false;
+        // ★ T27-08：记下**产生这条失败时**的数据源事实（面板指引按它重算）
+        _danmakuHintLocalOnline = usingLocal;
+        /*
+         * ★★ T27-08：面板里那份异常也要带上**按数据源重算**的 hint
+         *
+         * 面板（danmaku_settings_dialog 的 `_hintSection`）画的是
+         * `s.error.hint`、**不是** `e.hint` —— 不同步就会出现
+         * 「提示条说改用本机、面板里却说去申请凭证」这种自相矛盾。
+         * 事实用**本次取弹幕**的 `usingLocal`（与提示条同一份读数）。
+         */
         _danmakuSettings = _danmakuSettings.copyWith(
           loading: false,
-          error: e,
+          error: DanmakuException(
+            e.message,
+            statusCode: e.statusCode,
+            xErrorMessage: e.xErrorMessage,
+            errorCode: e.errorCode,
+            errorMessage: e.errorMessage,
+            body: e.body,
+            uri: e.uri,
+            hint: DanmakuHint.of(e, localOnline: usingLocal),
+          ),
           status: '',
         );
       });
@@ -4907,7 +5089,22 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ 不把 hint.text 全文塞进提示条：它有一两百字，而提示条 1.2 秒
        *    就消失 —— 塞进去等于没写。标题 + 面板入口才是能用的形态。
        */
-      final h = e.hint;
+      /*
+       * ★★ T27-08（Owner 第 8 条）：提示按**真实数据源**重算
+       *
+       * 改前直接用异常自带的那条 hint —— 而它是**数据源无关**的，
+       * 于是本机弹弹play 明明在跑（T27-05 的免签名本地源），屏幕上
+       * 还是「去官网免费申请」：用户读到的是「没获取到凭证」，而真正
+       * 该做的是**切数据源**。这里把本机探测事实注入判据
+       * （`DanmakuHint.of` 是纯函数，事实只能由宿主给）。
+       *
+       * ⚠️ `e.hint` 那条**仍然保留**（非 401/403 ⇒ 它本来就是 null）：
+       *    只重算 403/401 这一支，事实取**产生这条失败时**的读数。
+       */
+      final localOnline = _danmakuHintLocalOnline ?? false;
+      final h = (e.statusCode == 401 || e.statusCode == 403)
+          ? DanmakuHint.of(e, localOnline: localOnline)
+          : e.hint;
       /*
        * ★★ Owner 第 9 条：点明**这句失败是谁的凭证**
        *
@@ -5006,11 +5203,36 @@ class _PlayerPageState extends State<PlayerPage>
   void _runDanmakuHintAction(DanmakuHintAction a) {
     if (a.openDanmakuSettings) _openDanmakuSettings();
     if (a.openBiliSheet) _openBiliSheet();
+    if (a.useLocalDanmaku) _useLocalDanmakuSource();
+  }
+
+  /// 「改用本机弹弹play」（T27-08 在线态那颗按钮的动作）
+  ///
+  /// # 为什么必须**重建客户端**（不是只改个 flag）
+  /// ```text
+  /// appId/appSecret 与 unsignedLocal/baseUrl 都是 DandanplayClient 的
+  /// **构造快照**（player_page.dart:4577 那段的说明）⇒ 不重建的话
+  /// 「改用本机」等于没改：旧实例照旧往 api.dandanplay.net 发签名请求，
+  /// 用户点了按钮还是同一句「没获取到凭证」。
+  /// ```
+  ///
+  /// # 为什么连探测缓存一起清
+  /// 用户很可能**刚**启动本机弹弹play 才点的这颗按钮 —— 缓存里那份
+  /// 「不在线」是过期读数，不清就永远不会切过去。
+  ///
+  /// ⚠️ 这里**只**做「清缓存 + 重取」；选路仍然由 `_loadDanmaku` 里
+  ///    w5 的 `localStatus.online` 那段决定（不抢数据源模型的权）。
+  void _useLocalDanmakuSource() {
+    _resetDanmakuClient();
+    _danmakuLocalStatus = null;
+    unawaited(_loadDanmaku());
   }
 
   /// 打开弹幕设置面板（不暂停播放 —— 与播放设置面板同一原则）
   void _openDanmakuSettings() {
     final st = debugDanmakuLastStats;
+    // ★★★ T27-09：浮层打开 ⇒ 顶/底栏一起收（显隐统一真源，见 _collapseControlsForSheet）
+    _collapseControlsForSheet();
     setState(() {
       _danmakuSheetOpen = true;
       _danmakuSettings = DanmakuSettingsState.fromPrefs().copyWith(
@@ -5020,6 +5242,7 @@ class _PlayerPageState extends State<PlayerPage>
         count: st?.visible ?? 0,
         lanes: st?.laneCount ?? 0,
         dropped: st?.dropped ?? 0,
+        sourceLine: _danmakuSourceLine,
       );
     });
   }
@@ -5073,6 +5296,57 @@ class _PlayerPageState extends State<PlayerPage>
   void _setDanmakuArea(double v) {
     DanmakuConfig.setArea(v);
     setState(() => _danmakuSettings = _danmakuSettings.copyWith(area: v));
+  }
+
+  /// ★★★ Owner 2026-10-11 反馈（显示区域按 B 站重做）：拖动「显示区域」滑杆时，
+  /// 在播放画面上点亮**半透明引导遮罩**（`DanmakuOverlay.areaGuide`）。
+  ///
+  /// 由底栏滑杆的起手/松手事件驱动（见 `DanmakuQuickPanelData.onAreaGuide`）：
+  /// ```text
+  /// true  ⇒ 显示（起手拖动）
+  /// false ⇒ 淡出（松手）—— 淡出动画在 DanmakuAreaGuide 内部，宿主只翻标志
+  /// ```
+  /// ⚠️ 只翻一个 bool + setState（重建播放页）—— 与其它弹幕设置同一条重建路，
+  ///    `DanmakuOverlay` 是 keep-alive 的 State，`areaGuide` 变了会让遮罩淡入/淡出，
+  ///    但**不会**触发弹幕重排（layoutKey 里没有 areaGuide）。
+  void _setDanmakuAreaGuide(bool on) {
+    if (_showDanmakuAreaGuide == on) return;
+    if (mounted) setState(() => _showDanmakuAreaGuide = on);
+  }
+
+  /// ★★★ Owner 1011 反馈第 1 条：轻量悬浮窗里三枚「按类型过滤」开关
+  ///
+  /// # 为什么走 `DanmakuConfig` 静态偏好 + 一个重建信号（与全屏大卡片同款）
+  /// ```text
+  /// 这三项（滚动/顶部/底部 显示开关）在 `DanmakuSettingsDialog` 里也是
+  /// 直接读写 `DanmakuConfig.showScroll/showTop/showBottom`，不改 `_danmakuSettings`
+  /// 那份快照（那份快照里根本没有这三个字段）。
+  /// ⇒ 悬浮窗用**同一条路**：落盘 + setState 让播放页重建。
+  ///   重建后 `DanmakuOverlay._ensureLayout` 的 key 里带了这三个值（见
+  ///   danmaku_overlay.dart:568-570）⇒ 命中新 key、按新规则重排 ⇒ 实时生效。
+  /// ```
+  void _setDanmakuShowScroll(bool v) {
+    DanmakuConfig.setShowScroll(v);
+    if (mounted) setState(() {});
+  }
+
+  void _setDanmakuShowTop(bool v) {
+    DanmakuConfig.setShowTop(v);
+    if (mounted) setState(() {});
+  }
+
+  void _setDanmakuShowBottom(bool v) {
+    DanmakuConfig.setShowBottom(v);
+    if (mounted) setState(() {});
+  }
+
+  /// ★ Owner 2026-10-11（悬浮窗第 4 枚类型开关「彩色」）：
+  /// 只显示彩色弹幕（白色弹幕隐藏）。与上面三枚同一条路 ——
+  /// 落盘 `DanmakuConfig.setColorOnly` + setState ⇒ `DanmakuOverlay._ensureLayout`
+  /// 的 layoutKey 里带了 `colorOnly` ⇒ 命中新 key、重排 ⇒ 实时生效。
+  void _setDanmakuColorOnly(bool v) {
+    DanmakuConfig.setColorOnly(v);
+    if (mounted) setState(() {});
   }
 
   void _clearDanmakuCredentials() {
@@ -5306,6 +5580,8 @@ class _PlayerPageState extends State<PlayerPage>
         trace: _biliApi?.trace ?? const <BiliHttpTrace>[],
       );
     });
+    // ★★★ T27-09：浮层打开 ⇒ 顶/底栏一起收（显隐统一真源，见 _collapseControlsForSheet）
+    _collapseControlsForSheet();
     /*
      * ★ 手动绑过 ⇒ 顺手把 P 列表补上（面板要画「第几 P」那一行）
      *
@@ -5804,6 +6080,8 @@ class _PlayerPageState extends State<PlayerPage>
       _danmakuSheetOpen = false;
       _subtitlePanelOpen = true;
     });
+    // ★★★ T27-09：浮层打开 ⇒ 顶/底栏一起收（显隐统一真源，见 _collapseControlsForSheet）
+    _collapseControlsForSheet();
     // ⚠️ 这里**故意不调** `_hideSettingsPortal()`：设置面板的真源是
     //   `_settingsOpen`，它变 false 后 portal 子树返回 `SizedBox.shrink()`，
     //   遮罩自然消失（与 `onClose: () => setState(() => _settingsOpen = false)`
@@ -5927,6 +6205,8 @@ class _PlayerPageState extends State<PlayerPage>
   ///    而这里根本**没有必要**等（面板不需要这些值才能画出来）。
   Future<void> _openSettings() async {
     // ① 纯 UI 动作先落地 —— 不依赖任何 mpv 往返
+    // ★★★ T27-09：浮层打开 ⇒ 顶/底栏一起收（显隐统一真源，见 _collapseControlsForSheet）
+    _collapseControlsForSheet();
     setState(() => _settingsOpen = true);
     _showSettingsPortal();
 
@@ -5975,6 +6255,8 @@ class _PlayerPageState extends State<PlayerPage>
   ///    `invalid_use_of_protected_member`（`setState` 是 protected）。
   ///    本文件本来就有 5 条同类 warning（既有探针），我不想再加第 6 条。
   void debugOpenSettingsForProbe() {
+    // ★★★ T27-09：与 _openSettings 同款 —— 探针必须走生产同一条显隐路径
+    _collapseControlsForSheet();
     setState(() => _settingsOpen = true);
     _showSettingsPortal();
   }
@@ -5984,11 +6266,16 @@ class _PlayerPageState extends State<PlayerPage>
   /// 把「停手 3 秒后自动隐藏」这条规则**同步**跑完 —— 判据与
   /// `_armHideTimer()` 里那个 `Timer` 回调**逐字相同**：
   /// ```text
-  /// if (mounted && _playing && !_hintsOpen && !_zoomOpen) {
+  /// if (mounted && _playing && !_hintsOpen && !_zoomOpen
+  ///     && _popover.openId == null) {
   ///   setState(() => _controlsVisible = false);
   ///   _applyControlsMotion();
   /// }
   /// ```
+  /// ⚠️ `_popover.openId == null` 这一条是 ★ Owner 2026-10-11 第⑤条加的
+  ///   （悬浮面板开着时不收）。它与 `_autoHideNow()` 的守卫**必须逐字一致**
+  ///   —— 两处任何一处漏掉，测试探针与生产 Timer 就会给出不同读数
+  ///   （这正是本仓 `debugAutoHideControlsForProbe` 存在的理由：探针验的是生产路径）。
   /// ★ 存在的意义：widget 测试里用 `pump(3s)` 推进 `Timer` 之后，
   ///   还要再 pump 若干帧才能让 260ms 的淡出动画走完，**帧数不好钉**；
   ///   这里直接走同一条代码路径，读数与真机一致且**确定性**。
@@ -6022,6 +6309,8 @@ class _PlayerPageState extends State<PlayerPage>
   /// ```
   bool debugOpenEpisodesForProbe() {
     if (!mounted) return false;
+    // ★★★ T27-09：与用户点「选集」同款 —— 浮层打开 ⇒ 顶/底栏一起收
+    _collapseControlsForSheet();
     setState(() => _episodeSheetOpen = true);
     return _episodeSheetOpen;
   }
@@ -7541,6 +7830,8 @@ class _PlayerPageState extends State<PlayerPage>
       // 新集从 0 开始（不是续播）
       _pendingSeek = null;
     });
+    // ★ Owner 2026-10-11 第 2 条：切集关掉了选集面板 ⇒ 顶/底栏一起回来。
+    _restoreBarsAfterSheet();
 
     // ★★★ 切集了 ⇒ 通知合并页（详情页靠它把"当前集"高亮 + 滚进可视区）
     _reportEpisodeChanged();
@@ -8105,6 +8396,49 @@ class _PlayerPageState extends State<PlayerPage>
   /// ```
   void _toggleLiveChannels() {
     setState(() => _liveChannelsOpen = !_liveChannelsOpen);
+    /*
+     * ★ T27-06：打开面板的瞬间预取相邻台（unawaited —— 预取绝不阻塞 UI）。
+     *   用户点开「所有直播」的意图就是马上换台：把邻居的取址结果提前
+     *   灌进 SourinApi 的 30s 缓存，点选时 ①→②≈0ms。
+     *   ⚠️ 只预取**地址**（SourinApi 层缓存）；频道列表的新鲜性纪律
+     *   （task-72：每次 build 现取）一行不动。
+     */
+    if (_liveChannelsOpen) {
+      // ★★★ T27-09：只在**开**分支收顶/底栏（关面板不碰控制条显隐）——
+      //    显隐统一真源，见 _collapseControlsForSheet。
+      _collapseControlsForSheet();
+      unawaited(_prefetchNextLiveChannel());
+    }
+  }
+
+  /// T27-06：预取当前台的相邻台（↑/↓ 最可能去的地方）
+  ///
+  /// # 为什么用 `_provider` 兜邻居的 provider
+  /// ```text
+  /// `onLiveChannels()` 给的平面列表不带 provider（live_page 要用
+  /// `_providerOf` 反查 _groups 才知道权威映射）——播放页拿不到。
+  /// 但列表按源分组，邻台与本台同源是大概率；取错 provider 时核心层
+  /// 只会返回空结果，而空结果**不进缓存**（SourinApi 的纪律）⇒ 无污染。
+  /// 真正切台时 `_adoptLiveChannel` 用权威 provider 取址，不受影响。
+  /// ```
+  Future<void> _prefetchNextLiveChannel() async {
+    final data = _liveChannels();
+    if (data == null) return;
+    final channels = data.channels;
+    if (channels.length < 2) return;
+    if (data.index < 0 || data.index >= channels.length) return;
+    final i = data.index;
+    for (final d in const [1, -1]) {
+      final j = i + d;
+      if (j < 0 || j >= channels.length) continue;
+      final c = channels[j];
+      if (c.id == _liveChannelId) continue;
+      try {
+        await SourinApi.getLiveStream(_provider, c.id);
+      } catch (_) {
+        // 预取失败静默 —— 切台时 adopt 会真取并把错误如实报给用户。
+      }
+    }
   }
 
   /// 现取可见频道列表（`null` = 没有/没接线）
@@ -8165,6 +8499,8 @@ class _PlayerPageState extends State<PlayerPage>
      *     放在 await **之前**，否则网络慢时面板会僵在那儿。）
      */
     setState(() => _liveChannelsOpen = false);
+    // ★ Owner 2026-10-11 第 2 条：点选频道关掉了「所有直播」面板 ⇒ 顶/底栏一起回来。
+    _restoreBarsAfterSheet();
     final pick = cb(channel);
     if (pick == null) {
       debugPrint('[PLAYER] 直播点选：直播页不认这个频道 ${channel.name}');
@@ -8205,6 +8541,13 @@ class _PlayerPageState extends State<PlayerPage>
   ) async {
     final next = pick.channel;
     debugPrint('[PLAYER] 直播切台 ⇒ ${next.name}（provider=${pick.provider}）');
+
+    /*
+     * ★ T27-06：切台 t0 —— 必须在第一个 await 之前（与 _bootWatch 同一纪律），
+     *   否则 setState/取站名的耗时会被算进 ①→②。
+     */
+    _liveSwitchStartedAt = DateTime.now();
+    _liveSwitchMark('① 切台发起', '${pick.provider}/${next.id} ${next.name}');
 
     setState(() {
       _provider = pick.provider;
@@ -8256,6 +8599,7 @@ class _PlayerPageState extends State<PlayerPage>
     try {
       final list = await SourinApi.getLiveStream(pick.provider, next.id);
       if (!mounted) return;
+      _liveSwitchMark('② 地址到手', '${list.length} 条候选');
       /*
        * ★★ 代次保护（与 `_loadProviderName` 同一手法）
        *
@@ -8542,6 +8886,116 @@ class _PlayerPageState extends State<PlayerPage>
   ///   `_controlsVisible` 仍为 true ⇒ 这一枚照旧可点 ⇒ 用户仍能从左上角退回上一层。
   bool get _canUseTopBarBack =>
       Device.isDesktop && _error != null && !_anySheetOpen && _controlsVisible;
+
+  /// ★★★ T27-13 —— 顶栏与底栏「该不该显示」的**唯一真源**（Owner 第 3 / 5 条）
+  ///
+  /// ══════════════════════════════════════════════════════════════════
+  /// # Owner 原话（逐字，两段）
+  /// ══════════════════════════════════════════════════════════════════
+  /// ```text
+  /// > 上下还是联动的不是一起的,就是错开显示的,你见过哪个播放器是这样子的,
+  /// > 这个必须纠正,必须同时消失 同时显示,并且要加上过渡动画
+  ///
+  /// > 还有这个奇怪的 bug,上面显示,无论怎么移动鼠标,下面的就是不显示,
+  /// > 点了暂停才显示
+  /// ```
+  ///
+  /// # 根因：同一件事（「控制条该不该显示」）原来有**三个不同的真源**
+  /// ```text
+  /// ① 底栏渲染门控（本文件 `_BottomBar(` 前那个 `if`）：
+  ///      _controlsVisible && _error == null && !7个浮层flag
+  ///        && _liveAudioOnlyNotice == null && !_videoOutputDead
+  /// ② 顶栏渐变条的 `visible:`（正常支）：
+  ///      (_controlsVisible && _error == null)
+  ///        && !_videoOutputDead && _liveAudioOnlyNotice == null
+  ///    ⇒ ★ **少了那 7 个浮层 flag**
+  /// ③ `_anySheetOpen`（grep 门控 / hover 复活护栏用）：
+  ///      7 个浮层 flag + _hintsOpen + _zoomOpen
+  ///    ⇒ **多了** _hintsOpen / _zoomOpen，**少了**两条降级横幅
+  /// ```
+  /// 三个集合两两不同 ⇒ 只要出现「① 为假、② 为真」的状态，
+  /// 屏幕上就是「顶栏在、底栏不在」的分裂 —— 正是 Owner 报的症状。
+  ///
+  /// 而 hover 叫不回底栏（`_showControls()` 的复活护栏只看 `_anySheetOpen`），
+  /// banner flag 又**不由 hover 负责**（它们归换流 / 看门狗管）
+  /// ⇒ 用户「无论怎么移动鼠标，下面的就是不显示」。
+  ///
+  /// # 修法：把「顶栏与底栏该不该显示」这**一件事**收拢成这一个 getter
+  /// ```text
+  /// 顶栏 `visible` 的正常支 与 底栏的渲染门控 都读它
+  /// ⇒ 从构造上**不可能**再分裂（同一表达式求值两次，结果恒相等）。
+  /// ```
+  ///
+  /// # 为什么成员是**这 11 项**（与底栏原门控逐字相同）
+  /// ```text
+  /// _controlsVisible      控制条的总开关（hover / 3 秒自动隐藏 / 浮层收口都在写它）
+  /// _error == null        起播失败的错误浮层要占整屏（它自带返回口）
+  /// !7 个浮层 flag         选集/线路/设置/弹幕/B站/字幕/所有直播：谁铺满底部谁独占
+  /// _liveAudioOnlyNotice==null  「只有音频能播」的降级横幅**替代**底栏
+  /// !_videoOutputDead          「画面无法显示」的降级横幅**替代**底栏
+  /// ```
+  ///
+  /// # ⚠️ 为什么**不含** `_hintsOpen` / `_zoomOpen`（可争议处，我的论证）
+  /// ```text
+  /// 这两个浮层虽然也在 `_anySheetOpen` 里，但它们**与底栏同层共存**：
+  ///   · 快捷键提示面板 `_HintsPanel` 是整屏卡，但它开着时底栏留着**不冲突**
+  ///     （它是覆盖层，不占底部条位）；
+  ///   · 画面缩放滑条 `zoomOpen` 更是**画在 `_BottomBar` 内部**的
+  ///     （player_bottom_bar.dart:448 `if (zoomOpen)`）—— 若把它加进本真源，
+  ///     一开滑条底栏整条被卸 ⇒ **滑条自己也跟着消失**（拖到一半条没了）。
+  /// ⇒ 它们只进 `_anySheetOpen`（管 Enter/Esc/hover 复活护栏），
+  ///    **不进**本真源。这也解释了两个 getter 为何成员不同。
+  /// ```
+  ///
+  /// # ⚠️ `_canUseTopBarBack`（错误态返回口）是**例外**，不被本真源统一掉
+  /// ```text
+  /// 错误态下 `_error == null` 让本真源恒 false，但 Owner 2026-10-09 专门报过
+  /// 「不能播放时左上角返回点不动」⇒ 顶栏在错误态必须仍留着那枚返回箭头。
+  /// 所以顶栏 `visible` = `_chromeVisible || _canUseTopBarBack`
+  /// （`_canUseTopBarBack` 与前半段**互斥**：它含 `_error != null`）。
+  /// t118 ⑧⑩ / t27_w9 S4 钉着这条互斥分支不许并进真源。
+  /// ```
+  bool get _chromeVisible =>
+      _controlsVisible &&
+      _error == null &&
+      !_episodeSheetOpen &&
+      !_streamSheetOpen &&
+      !_settingsOpen &&
+      !_danmakuSheetOpen &&
+      !_biliSheetOpen &&
+      !_subtitlePanelOpen &&
+      !_liveChannelsOpen &&
+      _liveAudioOnlyNotice == null &&
+      !_videoOutputDead;
+
+  /// 底部被「占据」——错误层 / 两条降级横幅 / 七个全屏浮层。
+  ///
+  /// 这些状态下底部那块**归占据者所有**（错误层/横幅是与底栏同位置的
+  /// `Positioned(bottom: 0)`，浮层是铺满的 scrim）⇒ 底栏必须**整条卸下**，
+  /// 而不是留在树里淡出（否则它会和占据者叠字、或抢走占据者的点击）。
+  bool get _bottomOccupied =>
+      _error != null ||
+      _episodeSheetOpen ||
+      _streamSheetOpen ||
+      _settingsOpen ||
+      _danmakuSheetOpen ||
+      _biliSheetOpen ||
+      _subtitlePanelOpen ||
+      _liveChannelsOpen ||
+      _liveAudioOnlyNotice != null ||
+      _videoOutputDead;
+
+  /// 底栏淡入淡出用的动画（与顶栏**镜像**）。
+  ///
+  /// · 底部被占据 ⇒ 钉 `kAlwaysDismissedAnimation`（硬收：那块归占据者）；
+  /// · 否则 ⇒ 与顶栏**同一个** `_controlsFade` 实例 ⇒ 同时淡入淡出。
+  ///
+  /// ★ 这正是 Owner 第 3 条要的「同时消失 / 同时显示 + 过渡动画」：
+  ///   顶栏的 `fade` 与这里的底栏 `fade` 是**同一个 `Animation` 实例**，
+  ///   时长/曲线（`Motion.base` / `Motion.easeOut`）由宿主唯一的
+  ///   `_controlsAnim` 决定 ⇒ 从构造上不可能错开。
+  Animation<double> get _bottomFade =>
+      _bottomOccupied ? kAlwaysDismissedAnimation : _controlsFade;
 
   /// 长按倍速是否启用（PC/TV 恒 false）
   /// 长按手势是否启用
@@ -9339,6 +9793,10 @@ class _PlayerPageState extends State<PlayerPage>
 
   void _toggleHints() {
     setState(() => _hintsOpen = !_hintsOpen);
+    // ★ Owner 2026-10-11 第 2 条：**关**掉提示面板时（开→关）把顶/底栏叫回来。
+    //   （提示面板本身不调 `_collapseControlsForSheet`，但 Esc 链会收口；
+    //    关闭后统一走这条自愈与其它浮层一致。）
+    if (!_hintsOpen) _restoreBarsAfterSheet();
   }
 
   void _showControls() {
@@ -9368,12 +9826,99 @@ class _PlayerPageState extends State<PlayerPage>
      * 它只是分配一个 Timer，**不触发重建** ⇒ 不是本次卡顿的主因，
      * 但删了会让控制条在鼠标移动中意外消失。
      */
-    if (mounted && !_controlsVisible) {
+    // ★★★ T27-09：浮层开着时 hover **不得**把顶/底栏叫回来 ——
+    //    否则「浮层开 → hover → 顶栏回来、底栏仍被 !flag 拦着」的分裂
+    //    会经 hover 路径复发（底栏渲染条件含 !_anySheetOpen 的全部 flag）。
+    if (mounted && !_controlsVisible && !_anySheetOpen) {
       setState(() => _controlsVisible = true);
     }
     // ★ 2026-10-08（Owner 第 9 条）：值翻转之后**同帧**同步动画目标态
     _applyControlsMotion();
     _armHideTimer();
+  }
+
+  /// ★★★ T27-09：浮层打开时把顶/底栏一起收掉（显隐联动）
+  ///
+  /// # 症状（Owner 第 9 条原话）
+  /// ```text
+  /// 「上面这个出现，下面的操作没一起联动显示」——
+  /// 点「播放设置 / 选集 / 线路 / 所有直播 / 弹幕设置 / B 站弹幕 / 字幕搜索」
+  /// 等打开浮层时，底栏立刻被它自己的渲染门控摘掉
+  /// （`!_xxxOpen` 全在 `_BottomBar` 的 if 里），而顶栏的 visible
+  /// 只看 `_controlsVisible` —— 浮层 open 点**不动它** ⇒ 顶栏还亮着。
+  /// ```
+  /// # 修法（显隐统一真源）
+  /// 所有浮层 open 点调用本助手：把 `_controlsVisible` 一并收掉，
+  /// 让顶栏与底栏走**同一个真源**。关闭浮层后由 Esc 关闭链 / 面板
+  /// onClose 的 `_showControls()`（或下次 hover）自然叫回。
+  ///
+  /// ⚠️ `_applyControlsMotion()` 必须在 `setState` **之后**（读新值，
+  ///    与 `_autoHideNow` 同款纪律）；值已是 false 时直接 return，
+  ///    不做无谓 setState（task-72 纪律）。
+  void _collapseControlsForSheet() {
+    if (!mounted || !_controlsVisible) return;
+    setState(() => _controlsVisible = false);
+    _applyControlsMotion();
+  }
+
+  /// ★★★ Owner 2026-10-11 第 2 条：**关掉浮层必须把顶/底栏叫回来**（自愈）
+  ///
+  /// ══════════════════════════════════════════════════════════════════
+  /// # Owner 原话（逐字）
+  /// ══════════════════════════════════════════════════════════════════
+  /// ```text
+  /// > 2.顶部和底部的还是一样没有联动,而且底部的也还是我点暂停才显示出来,
+  /// >   压根没休
+  /// ```
+  ///
+  /// # 为什么需要这个助手（T27-09 的**另一半没补**）
+  /// ```text
+  /// T27-09 的 open 点调 `_collapseControlsForSheet()` 把 `_controlsVisible`
+  /// 收成 false（显隐联动）。它的注释原话是：
+  ///   「关闭浮层后由 Esc 关闭链 / 面板 onClose 的 `_showControls()`（或下次
+  ///     hover）自然叫回。」
+  /// ★ 但实测：**只有播放设置面板**那一条真的调了 `_showControls()`
+  ///   （`_closeSettingsFromEsc` / 设置 onClose / 设置 X，三处都调）。
+  ///   其余 6 个浮层（弹幕设置 / B 站导入 / 在线字幕 / 选集 / 线路 / 所有直播）
+  ///   的 Esc 分支与 onClose **只翻 flag，不叫回控制条** ——
+  ///   ⇒ 关掉它们之后 `_controlsVisible` 仍是 false，底栏要等**下一次 hover**
+  ///     才回来。
+  /// ⇒ 一旦 hover 那条路在真机上不灵（鼠标停在浮层原位不动 / 挪到原生视频
+  ///   面上）、或在浮层刚淡出的那 260ms 里点不到底栏，用户看到的就是
+  ///   「关掉面板后底栏一直不回来，只有点一次暂停（走 `_togglePlay` →
+  ///     `_showControls()`）才回来」—— 正是 Owner 复报的症状。
+  /// ```
+  ///
+  /// # 为什么是「关」点补自愈，而不是动 `_showControls` 的护栏
+  /// ```text
+  /// `_showControls()` 里那条 `!_anySheetOpen` 护栏（T27-09）有它自己的
+  /// 职责：浮层开着时 hover 不得把控制条叫回来（否则「浮层开 → hover」
+  /// 这个**期间**会出现顶栏回来、底栏仍被 `!flag` 拦着的分裂）。
+  /// 本助手**不改那条护栏**：它在**关**的那一刻调 `_showControls()`——
+  /// 此刻 flag 已经翻成 false，`_anySheetOpen` 为假，护栏放行 ⇒ 两条栏
+  /// 一起回来（同一个 `_chromeVisible` 真源，构造上不可能分裂）。
+  /// ⇒ 与「设置面板关闭的三步自愈」**同一条纪律**，只是补齐到其余 6 个浮层。
+  /// ```
+  ///
+  /// ⚠️ 必须放在 `setState` 之后调用（`_showControls` 读的是新 flag）；
+  ///    调用点都在 `setState(() => _xOpen = false)` 的**下一句**。
+  void _restoreBarsAfterSheet() {
+    // `_showControls()` 自带「值没变就不重建」的守卫（task-72）⇒ 代价近零；
+    // 它还会顺手 `_applyControlsMotion()` + `_armHideTimer()`，
+    // 让「关掉面板 ⇒ 再停手 3 秒 ⇒ 底栏正常收起」回到原节奏。
+    _showControls();
+  }
+
+  /// Esc 链专用：翻掉一个浮层 flag **并**把顶/底栏叫回来（Owner 2026-10-11 第 2 条）
+  ///
+  /// ⚠️ 存在的唯一理由是**长度**：Esc 那条 `else if` 链被三条既有断言钉在
+  ///    「Esc 行之后 **700 字符**」的窗口里（见链上那段说明）。若在每个分支里
+  ///    写两行（`setState(...)` + `_restoreBarsAfterSheet()`）会把这几个
+  ///    分支关键字推出 700 窗口 ⇒ `t73` / `t78` / `player_capability` 集体红。
+  ///    收成**一行**调用后，链的长度与「只有 setState」时几乎一样。
+  void _escCloseSheet(VoidCallback flip) {
+    setState(flip);
+    _restoreBarsAfterSheet();
   }
 
   /// 重新装载「N 秒后自动隐藏控制条」的计时器（★ 2026-10-08 Owner 第 9 条）
@@ -9397,6 +9942,35 @@ class _PlayerPageState extends State<PlayerPage>
     _hideTimer = Timer(const Duration(seconds: 3), _autoHideNow);
   }
 
+  /// 上一次看到的「popover 是否开着」—— 用来只认**开→关**那个**边沿**
+  ///
+  /// 关联缺陷 ⑤（见 `_autoHideNow` / initState 里 `_onPopoverChanged` 的注册）。
+  bool _prevPopoverOpen = false;
+
+  /// ★★★ Owner 2026-10-11 第⑤条：popover 开→关的边沿上重装隐藏计时器。
+  ///
+  /// # 为什么需要它
+  /// ```text
+  /// `_autoHideNow()` 加了「popover 开着不收」之后，用户开着倍速面板停手 3 秒
+  /// ⇒ 计时器到点但守卫把隐藏拦下 ⇒ 底栏留着（对），可那个 `_hideTimer`
+  ///   **已经烧掉**。若关闭面板时不管它，底栏就**再也不会自动隐藏**。
+  /// 实测：底栏 popover 的三条关闭路径（点选中 / 悬停移出 / Esc）**都不**调
+  /// `_showControls()`，也就都不重装计时器。
+  /// ```
+  /// ⇒ 这里补上：只在真的跨过「开→关」时 `_armHideTimer()`。
+  ///
+  /// ⚠️ `changeNotifier` 在面板开着时也会 notify（`PopoverController`
+  ///    每帧复核锚点几何后可能 notifyListeners）⇒ **必须**靠 `_prevPopoverOpen`
+  ///    过滤，否则面板开着期间会被反复续命（底栏在面板开着时永远亮着）。
+  void _onPopoverChanged() {
+    final open = _popover.openId != null;
+    if (_prevPopoverOpen && !open) {
+      // 开 → 关：让「关掉面板 ⇒ 再停手 3 秒 ⇒ 底栏正常收起」回到原节奏。
+      _armHideTimer();
+    }
+    _prevPopoverOpen = open;
+  }
+
   /// 「停手 3 秒」到点时**真正**要做的事（★ 2026-10-08 Owner 追加）
   ///
   /// # 为什么从 _armHideTimer 里抽出来
@@ -9408,14 +9982,72 @@ class _PlayerPageState extends State<PlayerPage>
   /// 的「逐字复刻」说明）。
   /// ```
   ///
-  /// 判据（三条，缺一不可）：
+  /// 判据（四条，缺一不可）：
   /// ```text
-  /// _playing    播放中才自动隐藏（暂停时留着，方便操作）
-  /// !_hintsOpen 快捷键面板开着时不收（用户正在读）
-  /// !_zoomOpen  ★ task-22 P1-5：缩放滑条开着时不收（否则拖到一半条就没了）
+  /// _playing            播放中才自动隐藏（暂停时留着，方便操作）
+  /// !_hintsOpen         快捷键面板开着时不收（用户正在读）
+  /// !_zoomOpen          ★ task-22 P1-5：缩放滑条开着时不收（否则拖到一半条就没了）
+  /// _popover.openId==null  ★ Owner 2026-10-11 第⑤条：悬浮小窗（倍速/清晰度/
+  ///                     字幕/弹幕/更多）开着时不收 —— 见下方长注释
+  /// ```
+  ///
+  /// ══════════════════════════════════════════════════════════════════
+  /// ★★★ Owner 2026-10-11 第⑤条：漏了 popover ⇒ 「面板孤零零留在画面上」
+  /// ══════════════════════════════════════════════════════════════════
+  /// # Owner 原话（逐字）
+  /// ```text
+  /// > 鼠标悬浮在这里，然后不动之后控件消失，但是这个倍速的面板没消失，
+  /// > 其他悬浮的面板应该也是一样的
+  /// ```
+  /// # 症状
+  /// ```text
+  /// 鼠标悬浮底栏「倍速」按钮 → 倍速面板（0.5x…3x）弹出 → 鼠标停住不动 →
+  /// 3 秒后本回调把顶/底栏一起收掉，**但倍速面板还浮在画面上**，孤零零留在那里。
+  /// ```
+  /// # 根因
+  /// ```text
+  /// 本守卫只判了 _hintsOpen / _zoomOpen 两个「同级浮层」，
+  /// **漏掉了悬浮 popover**。而 popover 的真值源在
+  /// `_popover.openId`（`final PopoverController _popover`，
+  /// 状态在 `lib/ui/player/popover.dart` 的 PopoverController），
+  /// 底栏按钮（rate/quality/tracks/danmaku/more）全走这一个控制器。
+  /// ⇒ 面板开着、底栏却照收：面板挂在底栏按钮**旁边**，底栏一收，
+  ///   面板即失去依附，却因 _openId 仍非 null 而继续渲染。
+  /// ```
+  /// # 为什么「面板开着就不收」是对的取舍
+  /// ```text
+  /// 面板贴着底栏按钮弹出（`buildPopoverLayer` 把面板当底栏的兄弟挂在
+  /// 同一层 Stack，锚点在按钮上）。底栏一收，面板就**悬空**——
+  /// 既失去了它解释的那枚按钮，用户也无从判断「在给谁设倍速」。
+  /// ⇒ 与 _hintsOpen / _zoomOpen 同一条纪律：面板/滑条开着时不收。
+  /// （这不会让底栏「永不消失」：见下方「关闭后计时器会重装」。）
+  /// ```
+  /// # 关闭后计时器会重装（否则本守卫会引出第二个缺陷）
+  /// ```text
+  /// 守卫加严后，popover 开着时底栏本就收不掉；若「关闭」之后 _hideTimer
+  /// **不重新装**，那用户「开着面板 → 关掉」之后底栏就**再也不会自动隐藏**
+  /// —— 那是把「不消失」从 3 秒推迟成永久，比原缺陷更糟。
+  ///
+  /// 实测各条关闭路径（底栏 popover 全部走 `PopoverController.close()`）：
+  ///   · 点选项选中 ⇒ `controller.close()`（player_bottom_bar.dart 的
+  ///     _rateRow/_row/_trackRow/_danmakuPanel）。这些回调（onRate /
+  ///     onPickQuality / onPickTrack / onDanmakuToggle）**都不调** _showControls()
+  ///     ⇒ 计时器**不会**因选中而重装。
+  ///   · 悬停移出 ⇒ `PopoverController.armClose()` 250ms 后 close()。
+  ///     底栏还在（底栏 hover 一直叫 _showControls()），但用户停手后
+  ///     _hideTimer 仍是「3 秒前装的」——只要那时 popover 还开着，
+  ///     回调就被本守卫拦下 ⇒ 计时器已烧掉、**不再重装**。
+  ///   · Esc ⇒ `:10455 _popover.close()`，同样不重装。
+  /// ⇒ 三条路径下，popover 关闭后 _hideTimer 要么空、要么已经烧掉
+  ///   ⇒ **必须**在 popover 关闭时补一次 _armHideTimer()，否则底栏永不隐藏。
   /// ```
   void _autoHideNow() {
-    if (mounted && _playing && !_hintsOpen && !_zoomOpen) {
+    // ⚠️ `!_hintsOpen && !_zoomOpen` 必须保持在同一行：`test/t78_video_zoom_hwdec_test.dart`
+    //    的判据④对**剥注释后**的源码做字面量匹配（`_page.contains('!_hintsOpen && !_zoomOpen')`）。
+    if (mounted &&
+        _playing &&
+        !_hintsOpen && !_zoomOpen &&
+        _popover.openId == null) {
       setState(() => _controlsVisible = false);
       /*
          * ★★★ 2026-10-08（Owner 追加：顶栏要与底栏**联动**一起消失）
@@ -10169,18 +10801,18 @@ class _PlayerPageState extends State<PlayerPage>
      */
     if (k == LogicalKeyboardKey.escape || k == LogicalKeyboardKey.goBack) {
       if (_hintsOpen) {
-        setState(() => _hintsOpen = false);
+        _escCloseSheet(() => _hintsOpen = false);
       } else if (_biliSheetOpen) {
-        setState(() => _biliSheetOpen = false);
+        _escCloseSheet(() => _biliSheetOpen = false);
       } else if (_subtitlePanelOpen) {
-        setState(() => _subtitlePanelOpen = false);
+        _escCloseSheet(() => _subtitlePanelOpen = false);
       } else if (_danmakuSheetOpen) {
         /*
          * ★ task-13 ⑦ 弹幕设置面板 —— 它挂在设置面板**之后**
          *   （同一套 Positioned.fill 全屏 scrim）⇒ 层序更上，
          *   Esc 必须先关它。挂载顺序与这里的顺序必须一致。
          */
-        setState(() => _danmakuSheetOpen = false);
+        _escCloseSheet(() => _danmakuSheetOpen = false);
       } else if (_settingsOpen) {
         /*
          * ★ 设置面板排在最前面（它是**最后打开的**那一层）
@@ -10201,15 +10833,15 @@ class _PlayerPageState extends State<PlayerPage>
          * ⚠️ 不许挪到 `_settingsOpen` 之前：`player_capability_test.dart:981`
          *    在 Esc 分支后 700 字符的窗口里找 `else if (_settingsOpen)`。
          */
-        setState(() => _zoomOpen = false);
+        _escCloseSheet(() => _zoomOpen = false);
       } else if (_episodeSheetOpen) {
-        setState(() => _episodeSheetOpen = false);
+        _escCloseSheet(() => _episodeSheetOpen = false);
       } else if (_streamSheetOpen) {
-        setState(() => _streamSheetOpen = false);
+        _escCloseSheet(() => _streamSheetOpen = false);
       } else if (_liveChannelsOpen) {
         // ★ task-53【③】「所有直播」面板也要能被 Esc 关掉
         //   （与其它浮层同层级 —— 否则用户以为 Esc 坏了）
-        setState(() => _liveChannelsOpen = false);
+        _escCloseSheet(() => _liveChannelsOpen = false);
       } else if (_popover.openId != null) {
         // ★ 悬浮小窗（倍速 / 线路 / 字幕 / 弹幕 / 更多）
         //
@@ -10747,6 +11379,9 @@ class _PlayerPageState extends State<PlayerPage>
     _onFullscreenChanged = null;
     _onEpisodeChanged = null;
     // ★ popover 的唯一真值源（ChangeNotifier ⇒ 必须 dispose）
+    //   ⚠️ 先摘掉监听（缺陷 ⑤）再 dispose —— 顺序反了会在 removeListener
+    //     时撞上已 dispose 的 notifier 断言。
+    _popover.removeListener(_onPopoverChanged);
     _popover.dispose();
     _positionNotifier.dispose();
     /*
@@ -11213,6 +11848,8 @@ class _PlayerPageState extends State<PlayerPage>
                           opacity: _danmakuSettings.opacity,
                           speed: _danmakuSettings.speed,
                           area: _danmakuSettings.area,
+                          // ★ Owner 2026-10-11：拖动「显示区域」滑杆期间点亮引导遮罩
+                          areaGuide: _showDanmakuAreaGuide,
                           badge: _danmakuBadge,
                         ),
                       ),
@@ -11514,10 +12151,35 @@ class _PlayerPageState extends State<PlayerPage>
                          * ```
                          * ⚠️ 为什么**不是**复用 `_canUseFloatingBack`：那一位在错误态恒 false
                          *    （它含 `_error == null`），写进去等于没改。
+                         *
+                         * ★★★ Owner 缺陷④（2026-10-11）：正常支追加两条降级判据
+                         * ```text
+                         * Owner 原话：
+                         * > 然后上面的标题条和下面的操作条，根本就没一起联动显示，
+                         * > 他们是共用一块逻辑的！！
+                         *
+                         * 根因：底栏门控（下面那条 if）比顶栏多带了
+                         *   `_liveAudioOnlyNotice == null && !_videoOutputDead`。
+                         * ⇒ 两条降级横幅出现时：底栏被这两条拦掉（消失），
+                         *   顶栏照常 `(_controlsVisible && _error == null)`（还在）
+                         *   = 用户看到的「顶栏还在、底栏没了」的没联动。
+                         *
+                         * 为什么是「顶栏跟底栏一起收」而非「底栏也放开」：
+                         *   两条横幅都是 `Positioned(bottom: 0)`（替代底栏、同位置），
+                         *   放开底栏会让横幅重新压在控制条上 = 2026-10-01 的「排版混乱」。
+                         *   横幅自带「返回」按钮 ⇒ 一起收不会困住用户。
+                         *
+                         * ⚠️ 只 AND 在**正常播放**支，**不动** `_canUseTopBarBack`
+                         *    （那是错误态唯一的返回口，Owner 2026-10-09 专门报过）。
+                         * ```
                          */
-                      visible:
-                          (_controlsVisible && _error == null) ||
-                          _canUseTopBarBack,
+                      // ★★★ T27-13：顶栏正常支与底栏共读**唯一真源** `_chromeVisible`
+                      //   ——原来这里内联的
+                      //   `(_controlsVisible && _error == null) && !_videoOutputDead
+                      //    && _liveAudioOnlyNotice == null` 与底栏的 11 项门控
+                      //   **差 7 个浮层 flag**，两栏各算各的 ⇒ 会分裂。
+                      //   现在两者都是 `_chromeVisible` 求值 ⇒ 结果恒相等。
+                      visible: _chromeVisible || _canUseTopBarBack,
                       /*
                          * ★ 2026-10-08（Owner 第 9 条）：顶栏的淡入淡出。
                          *
@@ -11553,7 +12215,26 @@ class _PlayerPageState extends State<PlayerPage>
                          */
                       fade: _canUseTopBarBack
                           ? kAlwaysCompleteAnimation
-                          : _controlsFade,
+                          /*
+                           * ★★★ Owner 缺陷④（2026-10-11）：降级横幅出现 ⇒ 顶栏
+                           *     **必须真的淡出去**（不能只把 `visible` 设 false）。
+                           *
+                           * 为什么 `visible: false` 不够：`visible` 只驱动
+                           * `IgnorePointer`（挡指针），真正决定"看不看得见"的是
+                           * 这条 `fade`（`Opacity(fade.value)`）。横幅出现时
+                           * `_controlsVisible` 仍为 true ⇒ `_controlsFade` 仍是
+                           * 1.0 ⇒ 顶栏整条不透明地压在画面上，只是点不动
+                           * —— 那比"没消失"更糟（用户看得见却点不动）。
+                           *
+                           * ⚠️ 这里钉 `kAlwaysDismissedAnimation`（value 恒 0）
+                           *    而不是另开动画：与上面错误态钉 `kAlwaysComplete`
+                           *    同一手法（`_TopBar` 里是 `fade?.value ?? 1.0`）。
+                           * ⚠️ 只在**正常播放**这一支（`_error == null`）生效
+                           *    —— 见 `visible:` 那条注释，错误态返回口不许动。
+                           */
+                          : (_videoOutputDead || _liveAudioOnlyNotice != null)
+                              ? kAlwaysDismissedAnimation
+                              : _controlsFade,
                       backArrowKey: _topBarBackKey,
                       /*
                          * ★★★ task-16（Owner：「全屏左上角这个单独的返回icon,
@@ -11705,8 +12386,11 @@ class _PlayerPageState extends State<PlayerPage>
                          *       ⇒ t73 ② 报「找不到 if ( ⇒ 条件块已经长到 600 字符以外了」
                          * 改后：注释不参与条件长度 ⇒ 条件只剩 10 行代码（< 300 字符）
                          * ```
-                         * ★ 判据一条没放松：t57 / t73 仍然钉着「往回 600 里必须有 if (，
-                         *   且条件含全部 7 个标志」。
+                         * ★ 判据一条没放松：t57 / t73 仍然钉着「门控必须含全部 7 个标志」。
+                         * ★★★ T27-13 更新（Owner 第 3 / 5 条）：这 7 个标志**已收拢**进
+                         *   唯一真源 `_chromeVisible`（见该 getter 的文档），
+                         *   底栏渲染点不再内联它们 ⇒ t57 / t73 的判据对象也跟着搬到
+                         *   `_chromeVisible`（「往回 600 字符」那条启发式随之作废）。
                          */
                     // ★ 设置面板同理（它是全屏 scrim，控制条浮在上面会点不动）
                     /*
@@ -11769,18 +12453,34 @@ class _PlayerPageState extends State<PlayerPage>
                      *
                      * ⚠️ 两条横幅各自都带「返回」按钮 ⇒ 用户**不会**因此出不去。
                      */
-                    if (_controlsVisible &&
-                        _error == null &&
-                        !_episodeSheetOpen &&
-                        !_streamSheetOpen &&
-                        !_settingsOpen &&
-                        !_danmakuSheetOpen &&
-                        !_biliSheetOpen &&
-                        !_subtitlePanelOpen &&
-                        !_liveChannelsOpen &&
-                        _liveAudioOnlyNotice == null &&
-                        !_videoOutputDead)
-                      _BottomBar(
+                    /*
+                     * ★★★ T27-13（Owner 第 3 / 5 条）：底栏也必须**淡出**，
+                     *   不能像改前那样被 `if (_chromeVisible)` 同帧整条卸下
+                     *   （硬切）。顶栏是**常挂**的（靠 Opacity 淡出），底栏却
+                     *   被 `if` 立刻移除 ⇒ 隐藏时「顶栏淡出中、底栏已消失」=
+                     *   Owner 说的「错开显示」。修法两条：
+                     *   ① 占据态（错误层/横幅/浮层）⇒ 照旧**整条卸下**
+                     *      （那块归占据者，留在树里会叠字 / 抢点击）；
+                     *   ② 纯 C 驱动（hover / 3 秒自动隐藏）⇒ 在淡出窗口内
+                     *      **留在树上**，喂 `_bottomFade`（= 顶栏同一条
+                     *      `_controlsFade`）⇒ 与顶栏**同时**淡入淡出。
+                     */
+                    ListenableBuilder(
+                      listenable: _controlsAnim,
+                      builder: (context, child) {
+                        // 底栏在以下时刻可见：
+                        //  · 真源为真（该显示），或
+                        //  · 真源为假但**不是**被占据（= C 翻 false 触发的隐藏），
+                        //    且淡出还在进行（value>0）⇒ 留着播完这一帧动画。
+                        final keepForFade =
+                            !_bottomOccupied && _controlsAnim.value > 0;
+                        if (!_chromeVisible && !keepForFade) {
+                          return const SizedBox.shrink();
+                        }
+                        return child!;
+                      },
+                      child:
+                          _BottomBar(
                         playing: _playing,
                         positionNotifier: _positionNotifier,
                         duration: _duration,
@@ -11835,8 +12535,11 @@ class _PlayerPageState extends State<PlayerPage>
                      */
                         hasEpisodes:
                             _episodes.length > 1 && !widget.hasRightDetailBar,
-                        onEpisodes: () =>
-                            setState(() => _episodeSheetOpen = true),
+                        onEpisodes: () {
+                          // ★★★ T27-09：浮层打开 ⇒ 顶/底栏一起收（显隐统一真源）
+                          _collapseControlsForSheet();
+                          setState(() => _episodeSheetOpen = true);
+                        },
                         /*
                      * ★★★ task-53【③】「所有直播」入口（用户第 3 条）
                      *
@@ -11863,8 +12566,11 @@ class _PlayerPageState extends State<PlayerPage>
                         onLiveChannels: _toggleLiveChannels,
                         liveChannelsOpen: _liveChannelsOpen,
                         hasStreams: _streams.length > 1,
-                        onStreams: () =>
-                            setState(() => _streamSheetOpen = true),
+                        onStreams: () {
+                          // ★★★ T27-09：浮层打开 ⇒ 顶/底栏一起收（显隐统一真源）
+                          _collapseControlsForSheet();
+                          setState(() => _streamSheetOpen = true);
+                        },
                         /*
                      * ★★ 上一集 / 下一集（本次补的缺口）
                      *
@@ -11911,6 +12617,37 @@ class _PlayerPageState extends State<PlayerPage>
                         onDanmakuToggle: _toggleDanmaku,
                         onDanmakuSettings: _openDanmakuSettings,
                         /*
+                     * ★★★ Owner 1011 反馈第 1 条：弹幕齿轮弹出的**轻量悬浮窗**
+                     *   （B 站图 1 那种）。
+                     *
+                     * 值全部取自 `_danmakuSettings`（= DanmakuConfig 的快照，
+                     * 与全屏大卡片**同一份真源**）；三个类型开关读 DanmakuConfig
+                     * 静态偏好（与 DanmakuSettingsDialog 同款）。
+                     * 拖动滑杆 / 点开关 ⇒ 宿主 setState ⇒ 底栏与 popover 层
+                     * 一起重建 ⇒ 读数与画面**实时**跟着走。
+                     * 「高级设置」⇒ 回到 `_openDanmakuSettings`（全屏大卡片）。
+                     */
+                        danmakuQuick: DanmakuQuickPanelData(
+                          fontScale: _danmakuSettings.fontScale,
+                          opacity: _danmakuSettings.opacity,
+                          speed: _danmakuSettings.speed,
+                          area: _danmakuSettings.area,
+                          showScroll: DanmakuConfig.showScroll,
+                          showTop: DanmakuConfig.showTop,
+                          showBottom: DanmakuConfig.showBottom,
+                          colorOnly: DanmakuConfig.colorOnly,
+                          onSetFontScale: _setDanmakuFontScale,
+                          onSetOpacity: _setDanmakuOpacity,
+                          onSetSpeed: _setDanmakuSpeed,
+                          onSetArea: _setDanmakuArea,
+                          onSetShowScroll: _setDanmakuShowScroll,
+                          onSetShowTop: _setDanmakuShowTop,
+                          onSetShowBottom: _setDanmakuShowBottom,
+                          onSetColorOnly: _setDanmakuColorOnly,
+                          onAreaGuide: _setDanmakuAreaGuide,
+                          onOpenAdvanced: _openDanmakuSettings,
+                        ),
+                        /*
                      * ★★★ task-22 P1-5 / P1-11：画面缩放
                      *
                      * 短按 = 开/关那条滑动条，长按也开（用户原话是
@@ -11941,7 +12678,9 @@ class _PlayerPageState extends State<PlayerPage>
                      *    `_controlsFade` 实例 ⇒ 两条一起淡出，
                      *    不会出现「顶栏没了、底栏还在」的半截状态。
                      */
-                        fade: _controlsFade,
+                        // ★ T27-13：与顶栏**同一** `_controlsFade` 实例
+                        //   （占据态则钉 dismissed，见 `_bottomFade`）。
+                        fade: _bottomFade,
                         buffered: _isLive ? null : _bufferedRange,
                         bufferBarKey: _bufferBarKey,
                         /*
@@ -11960,6 +12699,7 @@ class _PlayerPageState extends State<PlayerPage>
                         moreGroups: _moreMenuGroups(context),
                         onBuilt: (b) => _bottomBarWidget = b,
                       ),
+                    ),
 
                     /*
                      * ★ popover 层 —— 与 `_BottomBar` **兄弟**，挂在整屏这个
@@ -12143,8 +12883,11 @@ class _PlayerPageState extends State<PlayerPage>
                           onChanged: () {
                             if (mounted) setState(() {});
                           },
-                          onClose: () =>
-                              setState(() => _danmakuSheetOpen = false),
+                          onClose: () {
+                            setState(() => _danmakuSheetOpen = false);
+                            // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
+                            _restoreBarsAfterSheet();
+                          },
                         ),
                       ),
                     ),
@@ -12173,7 +12916,11 @@ class _PlayerPageState extends State<PlayerPage>
                           onSetInterval: _biliSetInterval,
                           onUpdateNow: _biliUpdateNow,
                           onUnbind: _biliUnbind,
-                          onClose: () => setState(() => _biliSheetOpen = false),
+                          onClose: () {
+                            setState(() => _biliSheetOpen = false);
+                            // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
+                            _restoreBarsAfterSheet();
+                          },
                         ),
                       ),
                     ),
@@ -12195,8 +12942,11 @@ class _PlayerPageState extends State<PlayerPage>
                         visible: _subtitlePanelOpen,
                         child: SubtitlePanel(
                           fill: false,
-                          onClose: () =>
-                              setState(() => _subtitlePanelOpen = false),
+                          onClose: () {
+                            setState(() => _subtitlePanelOpen = false);
+                            // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
+                            _restoreBarsAfterSheet();
+                          },
                           // ★ task-31 ⑤：唯一的 SubtitlePanel 挂载点
                           videoTitle: widget.title,
                           episodeTitle: _currentEpisodeTitle ?? '',
@@ -12269,8 +13019,11 @@ class _PlayerPageState extends State<PlayerPage>
                                     episodes: _episodes,
                                     currentIndex: _epIndex,
                                     onPick: _gotoEpisode,
-                                    onClose: () =>
-                                        setState(() => _episodeSheetOpen = false),
+                                    onClose: () {
+                                      setState(() => _episodeSheetOpen = false);
+                                      // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
+                                      _restoreBarsAfterSheet();
+                                    },
                                     style: PlayerEpisodePanelStyle.rightDrawer,
                                   ),
                                 )
@@ -12280,8 +13033,11 @@ class _PlayerPageState extends State<PlayerPage>
                                     episodes: _episodes,
                                     currentIndex: _epIndex,
                                     onPick: _gotoEpisode,
-                                    onClose: () =>
-                                        setState(() => _episodeSheetOpen = false),
+                                    onClose: () {
+                                      setState(() => _episodeSheetOpen = false);
+                                      // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
+                                      _restoreBarsAfterSheet();
+                                    },
                                     style: PlayerEpisodePanelStyle.bottomSheet,
                                   ),
                                 ),
@@ -12366,8 +13122,11 @@ class _PlayerPageState extends State<PlayerPage>
                           //      抽屉关闭后它仍会吸收全屏点击
                           //      ⇒ **播放器彻底点不动**（比原 bug 更糟）。
                           child: _SheetScrim(
-                            onClose: () =>
-                                setState(() => _liveChannelsOpen = false),
+                            onClose: () {
+                              setState(() => _liveChannelsOpen = false);
+                              // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
+                              _restoreBarsAfterSheet();
+                            },
                             child: _LiveChannelsSheet(
                               // ★ task-72【④】抽屉**关着**时不要现取列表
                               //
@@ -12390,8 +13149,11 @@ class _PlayerPageState extends State<PlayerPage>
                               //   ⇒ 传进去也没人看。
                               data: _liveChannelsForSheet(),
                               onPick: _pickLiveChannel,
-                              onClose: () =>
-                                  setState(() => _liveChannelsOpen = false),
+                              onClose: () {
+                                setState(() => _liveChannelsOpen = false);
+                                // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
+                                _restoreBarsAfterSheet();
+                              },
                             ),
                           ),
                         ),
@@ -12497,17 +13259,25 @@ class _PlayerPageState extends State<PlayerPage>
                           //   穿透到下层。两个抽屉**一起**加屏障 —— 否则
                           //   一个能关一个不能，看起来更像坏了。
                           child: _SheetScrim(
-                            onClose: () =>
-                                setState(() => _streamSheetOpen = false),
+                            onClose: () {
+                              setState(() => _streamSheetOpen = false);
+                              // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
+                              _restoreBarsAfterSheet();
+                            },
                             child: _StreamSheet(
                               streams: _streams,
                               current: _current,
                               onPick: (s) {
                                 setState(() => _streamSheetOpen = false);
+                                // ★ Owner 2026-10-11 第 2 条：选完线路关面板 ⇒ 顶/底栏一起回来。
+                                _restoreBarsAfterSheet();
                                 _startPlayback(s);
                               },
-                              onClose: () =>
-                                  setState(() => _streamSheetOpen = false),
+                              onClose: () {
+                                setState(() => _streamSheetOpen = false);
+                                // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
+                                _restoreBarsAfterSheet();
+                              },
                             ),
                           ),
                         ),
@@ -13220,6 +13990,7 @@ bool debugPlayerSetStreamsForProbe(List<StreamCandidate> streams) {
 bool debugPlayerOpenStreamSheetForProbe() {
   final s = _livePlayerState;
   if (s == null) return false;
+  s._collapseControlsForSheet(); // ★★★ T27-09：与生产 open 点同一条显隐路径
   s.setState(() => s._streamSheetOpen = true);
   return s._streamSheetOpen;
 }
@@ -13250,6 +14021,7 @@ bool debugPlayerOpenStreamSheetForProbe() {
 bool debugPlayerOpenEpisodeSheetForProbe() {
   final s = _livePlayerState;
   if (s == null) return false;
+  s._collapseControlsForSheet(); // ★★★ T27-09：与生产 open 点同一条显隐路径
   s.setState(() => s._episodeSheetOpen = true);
   return s._episodeSheetOpen;
 }
@@ -13261,6 +14033,7 @@ bool debugPlayerOpenEpisodeSheetForProbe() {
 bool debugPlayerOpenLiveChannelsForProbe() {
   final s = _livePlayerState;
   if (s == null) return false;
+  s._collapseControlsForSheet(); // ★★★ T27-09：与生产 open 点同一条显隐路径
   s.setState(() => s._liveChannelsOpen = true);
   return s._liveChannelsOpen;
 }
@@ -14134,17 +14907,23 @@ Future<String> debugPlayerBiliLoadForProbe({
 bool debugPlayerOpenDanmakuSettingsForProbe() {
   final s = _livePlayerState;
   if (s == null) return false;
+  s._collapseControlsForSheet(); // ★★★ T27-09：与生产 open 点同一条显隐路径
   // ignore: invalid_use_of_protected_member
   s.setState(() => s._danmakuSheetOpen = true);
   return s._danmakuSheetOpen;
 }
 
 /// 关闭弹幕设置面板（探针用；返回关闭后面板是否确实关着）
+///
+/// ★ Owner 2026-10-11 第 2 条：与生产 `onClose` 同一路径 —— 关面板**顺带**
+///   把顶/底栏叫回来（`_restoreBarsAfterSheet()`）。不手抄副本，
+///   否则探针验不到「关掉面板 ⇒ 底栏自动回来」这条新契约。
 bool debugPlayerCloseDanmakuSettingsForProbe() {
   final s = _livePlayerState;
   if (s == null) return false;
   // ignore: invalid_use_of_protected_member
   s.setState(() => s._danmakuSheetOpen = false);
+  s._restoreBarsAfterSheet();
   return !s._danmakuSheetOpen;
 }
 
@@ -14160,17 +14939,21 @@ bool debugPlayerCloseDanmakuSettingsForProbe() {
 bool debugPlayerOpenBiliSheetForProbe() {
   final s = _livePlayerState;
   if (s == null) return false;
+  s._collapseControlsForSheet(); // ★★★ T27-09：与生产 open 点同一条显隐路径
   // ignore: invalid_use_of_protected_member
   s.setState(() => s._biliSheetOpen = true);
   return s._biliSheetOpen;
 }
 
 /// 关闭哔哩哔哩弹幕导入面板（探针用；返回关闭后面板是否确实关着）
+///
+/// ★ Owner 2026-10-11 第 2 条：与生产 `onClose` 同一路径（关面板顺带叫回控制条）。
 bool debugPlayerCloseBiliSheetForProbe() {
   final s = _livePlayerState;
   if (s == null) return false;
   // ignore: invalid_use_of_protected_member
   s.setState(() => s._biliSheetOpen = false);
+  s._restoreBarsAfterSheet();
   return !s._biliSheetOpen;
 }
 
@@ -14182,6 +14965,7 @@ bool debugPlayerCloseBiliSheetForProbe() {
 bool debugPlayerOpenSubtitlePanelForProbe() {
   final s = _livePlayerState;
   if (s == null) return false;
+  s._collapseControlsForSheet(); // ★★★ T27-09：与生产 open 点同一条显隐路径
   // ignore: invalid_use_of_protected_member
   s.setState(() => s._subtitlePanelOpen = true);
   return s._subtitlePanelOpen;
@@ -14193,6 +14977,8 @@ bool debugPlayerCloseSubtitlePanelForProbe() {
   if (s == null) return false;
   // ignore: invalid_use_of_protected_member
   s.setState(() => s._subtitlePanelOpen = false);
+  // ★ Owner 2026-10-11 第 2 条：与生产 `onClose` 同一路径（关面板顺带叫回控制条）。
+  s._restoreBarsAfterSheet();
   return !s._subtitlePanelOpen;
 }
 
@@ -15139,10 +15925,17 @@ class _BottomBar extends StatelessWidget {
     this.onPickTrack,
     this.moreGroups = const <MoreMenuGroup>[],
     this.onBuilt,
+    // ★★★ Owner 1011 反馈第 1 条：弹幕齿轮弹出的轻量悬浮窗数据
+    //   （带默认值 ⇒ 纯新增参数，不把既有调用点打红）
+    this.danmakuQuick,
   });
 
   /// 页面那层 popover 要用同一个底栏实例（见 `buildPopoverLayer` 的说明）
   final void Function(PlayerBottomBar bar)? onBuilt;
+
+  /// ★★★ Owner 1011 反馈第 1 条：弹幕齿轮那枚弹出的轻量悬浮窗数据
+  /// （null ⇒ 齿轮退回「直达全屏大卡片」的旧行为，见 player_bottom_bar.dart）
+  final DanmakuQuickPanelData? danmakuQuick;
 
   final bool playing;
 
@@ -15349,6 +16142,7 @@ class _BottomBar extends StatelessWidget {
       danmakuBusy: danmakuBusy,
       onDanmakuToggle: onDanmakuToggle,
       onDanmakuSettings: onDanmakuSettings,
+      danmakuQuick: danmakuQuick,
       zoomOpen: zoomOpen,
       videoZoom: videoZoom,
       onVideoZoom: onVideoZoom,

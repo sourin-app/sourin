@@ -232,8 +232,16 @@ void main() {
 
       expect(find.text('弹幕服务没收到凭证'), findsOneWidget,
           reason: '★ 这是用户唯一能看懂的那一句');
-      expect(find.textContaining('去官网免费申请'), findsOneWidget,
-          reason: '★ 光说"缺凭证"不够，得说去哪拿');
+      /*
+       * ★ T27-08（Owner 第 8 条「弹弹play提示没获取到凭证」）改词：
+       *   旧串「去官网免费申请」在**本机弹弹play 也在跑**时是指向错误的
+       *   （本地源免签名，根本不用申请）⇒ 离线支改成「两个数据源二选一」。
+       *   契约本身没变：缺凭证时**必须**给出可操作的下一步（去哪配/怎么选）。
+       *   在线支（探测到本机弹弹play）走 core/danmaku.dart 的 localOnline 分支，
+       *   标题变成「检测到本机弹弹play，但当前数据源是官方 API」—— 见 t27_w8。
+       */
+      expect(find.textContaining('在弹幕设置里选一个'), findsOneWidget,
+          reason: '★ 光说"缺凭证"不够，得说下一步怎么配');
       expect(find.text('https://dev.dandanplay.com'), findsOneWidget);
       /*
        * ★ 原文不是独立的一个 Text —— 它在 e.detail 里
@@ -262,7 +270,7 @@ void main() {
       expect(find.text('弹幕服务没收到凭证'), findsNothing);
       expect(find.text('凭证没通过'), findsNothing);
       expect(find.text('拿到的是网页，不是数据'), findsNothing);
-      expect(find.textContaining('去官网免费申请'), findsNothing,
+      expect(find.textContaining('在弹幕设置里选一个'), findsNothing,
           reason: '★ 猜错比不说更糟：会让用户去改一对本来没错的凭证');
       expect(find.text('弹幕接口返回 HTTP 500'), findsOneWidget);
     });

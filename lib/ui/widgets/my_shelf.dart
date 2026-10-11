@@ -67,6 +67,120 @@ import 'press_feedback.dart';
 /// tab 类型
 enum ShelfTab { following, favorites, history }
 
+/// ★ 仅供 OPS 探针做**同一次 run 内**因果 A/B 用的运行时开关。
+///   置 true 后 `refreshOnReturn()` 不拉数据（回到「没修」的观感基线）。
+///   生产恒为 false。
+bool abDisableShelfRefresh = false;
+
+/// ★ 仅供 OPS 探针：置 true 时**恢复旧行为** —— 重新建立对 `_ModalScopeStatus`
+///   的依赖（即在返回帧同步重建本子树）。用来在同一次 run 内对照「改前 vs 改后」。
+///   生产恒为 false。
+bool abLegacyShelfRouteDependency = false;
+
+/// 旧行为复刻：依赖 `_ModalScopeStatus`（探针 A/B 用；生产走不到这里）。
+void abLegacyShelfDidChangeDependencies(BuildContext context) {
+  ModalRoute.isCurrentOf(context);
+}
+
+/// ★ 仅供测试：注入 `load()` 的三路取数（生产恒 null ⇒ 走真实 `SourinApi`）。
+///
+/// # 为什么需要它（本仓铁律：判据必须能**真的**验证行为，不能只测字符串）
+///
+/// `load()` 的"数据没变就不 setState"守卫（2026-10-11 卡顿修复）
+/// 有两个必须**同时**守住的方向：
+/// ```text
+/// ① 数据没变 ⇒ **不**重建（性能：这是本次修复的交付物）
+/// ② 数据变了 ⇒ **必须**重建（正确性：刷新语义不许被守卫吃掉）
+/// ```
+/// 而 `flutter_test` 里 FFI 恒失败（无 `sourin_core.dll`）⇒ 三路永远返回
+/// `null` ⇒ 数据**永远不变** ⇒ 只能测方向 ①，测不到方向 ②（漏刷新的 bug
+/// 正是最容易藏在这种"只测了一半"里的）。
+///
+/// ⇒ 留这个口子让测试能**直接喂数据**（成功路径），从而两个方向都能量。
+///   与 `follow_page.dart` 的 `backfillOverride` 同一手法。
+///
+/// 返回 `(收藏, 追更, 历史)`；任何一项为 `null` = 那一路"失败"（保留旧值）。
+@visibleForTesting
+Future<(List<Favorite>?, List<Favorite>?, List<Progress>?)> Function()?
+    debugShelfLoadOverride;
+
+/// ★★★ Owner 2026-10-11 第 2 条：「从播放页返回还是非常卡顿」
+///
+/// **路由依赖的重建边界**：一个只做「检测 + 回调」、不做渲染的小壳。
+///
+/// # 为什么需要它（一句话）
+/// ```text
+/// 「返回时自动刷新」要求本页依赖 `ModalRoute`（`_ModalScopeStatus`）。
+/// 若**整棵「我的」子树所在的那个 State** 去依赖它，那么路由 isCurrent
+/// 一变（从播放页/详情页返回），框架就会在**返回帧同步重建整棵子树**
+/// （液态玻璃 tab + 卡片 SliverList）—— 实测 550 个元素。
+///
+/// 把依赖挪到**这个小壳**上，它的 `build` 直接 `return widget.child;`
+/// ⇒ 框架 `Element.updateChild` 看到 `child.widget == newWidget`
+///   （**同一个实例**，见 flutter/framework.dart `updateChild` 的
+///   `if (hasSameSuperclass && child.widget == newWidget)` 短路）
+///   ⇒ **子树完全不重建**。依赖触发的那次重建只剩这个小壳自己。
+/// ```
+///
+/// ⚠️ 与 `test/t36_cache_refresh_test.dart` 的契约**兼容**：那条用例
+///    独立挂 `MyShelf`（不经过 shell）也能过 —— 检测仍在 MyShelf 内部，
+///    只是换了个更省的落点。
+///
+/// ⚠️ 为什么 `child` 用构造参数传入（而不是在本壳里现造）：
+///    只有"同一个 widget 实例"才能触发上面那条短路。本壳重建时
+///    `widget.child` 仍是**上一次**传进来的实例（父 State 没重建）
+///    ⇒ 短路成立。父 State 一旦 `setState`（数据变了）会传**新**实例
+///    ⇒ 子树正常重建（那正是我们想要的刷新）。
+class _RouteGate extends StatefulWidget {
+  const _RouteGate({
+    required this.child,
+    required this.onReturn,
+  });
+
+  final Widget child;
+
+  /// 从「被盖住」重新变回「最上层」时回调一次。
+  final VoidCallback onReturn;
+
+  @override
+  State<_RouteGate> createState() => _RouteGateState();
+}
+
+class _RouteGateState extends State<_RouteGate> {
+  bool _wasCovered = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final isCurrent = ModalRoute.isCurrentOf(context) ?? true;
+    if (!isCurrent) {
+      _wasCovered = true;
+      return;
+    }
+    if (_wasCovered) {
+      _wasCovered = false;
+      /*
+       * ⚠️ **必须推到帧边界之后**再回调刷新，理由是"不能踩 build 阶段"：
+       *   `didChangeDependencies` 跑在**构建阶段**，而刷新最终会走到
+       *   `MyShelfState.setState`（首屏加载失败时 `_loadedOnce==false`，
+       *   `load()` 头一行就是 setState）—— 在构建阶段 setState 别的
+       *   element 会触发 "setState() called during build" 断言。
+       *   `addPostFrameCallback` 把回调放到**本帧画完之后**，既避开构建
+       *   阶段，也顺带把刷新推离「返回帧」（与 OPS-12 ⑦ 同一纪律）。
+       */
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onReturn();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // ★ 返回**同一个** child 实例 ⇒ 子树不因路由依赖变化而重建（见类注释）。
+    return widget.child;
+  }
+}
+
 /// 「我的」版块
 class MyShelf extends StatefulWidget {
   const MyShelf({
@@ -162,80 +276,58 @@ class MyShelfState extends State<MyShelf> {
   /// Flutter 侧没有等价钩子：首页在 `IndexedStack` 里常驻，
   /// 从详情页/播放页返回时**不会**重建、也不会触发 `initState`。
   ///
-  /// 这里用 `ModalRoute.isCurrentOf(context)` 补上（与 `follow_page.dart`
-  /// 同一套办法，两处必须一致 —— 否则又会出现"一个页面对一个页面不对"）：
-  /// ```text
-  /// 本页是当前路由 → false     被详情页/播放页盖住 → true
-  /// ```
-  /// 一旦被盖住过就记下来；等它**重新变成当前路由**时刷一次。
-  ///
-  /// ★ 实测（`.probe/probe_tests/zz_t36_pages_test.dart` PROBE-3b）：
-  ///   修之前 push 详情页 → pop 回来，`load()` 调用次数 **delta=0**。
-  bool _wasCovered = false;
+  /// ★ 2026-10-11：原先「被盖住」的本地标记 + `didChangeDependencies` 依赖
+  ///   一起挪进了 `_RouteGate`：依赖还在（契约不变），但重建边界收窄到
+  ///   那个小壳 —— 从详情页/播放页返回时**不再重建整棵本子树**。
+  ///   见 `_RouteGate` 与 `refreshOnReturn()` 的长注释。
 
+  /// ★ 从详情页 / 播放页返回时刷新 —— 信号源在 `_RouteGate`（见下方那个类）
+  ///
+  /// ═══════════════════════════════════════════════════════════════════
+  /// ★★★ Owner 2026-10-11 第 2 条：「从播放页返回还是非常卡顿」
+  /// ═══════════════════════════════════════════════════════════════════
+  ///
+  /// # 原实现与它的代价
+  /// ```text
+  /// 原来在**本 State** 的 `didChangeDependencies` 里调
+  /// `ModalRoute.isCurrentOf(context)` ⇒ 本 State **依赖 `_ModalScopeStatus`**。
+  /// 路由 isCurrent 一变（从播放页/详情页返回），框架就把**本元素**标脏
+  /// ⇒ 在**返回帧同步**重建整棵「我的」子树（液态玻璃 tab + 卡片 SliverList）。
+  ///
+  /// 实测（`.probe/ops/zz_ops_return_probe2_test.dart`，同 run 因果 A/B，
+  /// 已注入 12 条卡片数据）：
+  ///   返回帧重建元素：生产(依赖本 State) = 550；把依赖挪进 `_RouteGate` = 181
+  /// ```
+  ///
+  /// # 现在改成什么：把「依赖」锁进一个**只做检测、不渲染**的小壳 `_RouteGate`
+  /// ```text
+  /// `_RouteGate` 自己依赖 `_ModalScopeStatus`；它的 `build` 直接
+  /// `return widget.child;` —— 返回**同一个** child 实例
+  /// ⇒ 框架的 `Element.updateChild` 见 `child.widget == newWidget`（identical）
+  ///   会**跳过**重建 ⇒ 依赖触发的那次重建只重建 `_RouteGate` 这个小壳，
+  ///   **不再波及**整棵「我的」子树。
+  ///
+  /// 真正要刷新时（covered→current）由 `_RouteGate` 回调 `refreshOnReturn()`，
+  /// 那是走 `load()` → `setState` 的**正常数据刷新**路径（异步、落在返回帧之后）。
+  /// ```
+  ///
+  /// ⚠️ 为什么**不能**简单删掉依赖改由 shell 推送（走过这条路，被拦下）：
+  ///    `test/t36_cache_refresh_test.dart` 把「**独立挂载** MyShelf → pop 回来
+  ///    必须刷新」钉成契约（那条用例**不经过 shell**，没有 NavigatorObserver）。
+  ///    所以检测必须**留在 MyShelf 自己内部** —— 只是换成一个不重建子树的壳。
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => load());
   }
 
-  /// ★ 从详情页 / 播放页返回时刷新
+  /// 从子页返回时刷新（由 `_RouteGate` 回调；语义与旧 `didChangeDependencies` 版等价）。
   ///
-  /// 依赖 `_ModalScopeStatus` 这个 `InheritedModel`：路由的 `isCurrent`
-  /// 变化时 `didChangeDependencies` 会被调用。
-  ///
-  /// ⚠️ 这个方法在**每一帧的依赖变化**时都可能被调用，所以里面必须
-  ///    **只做标记判断** —— 条件不满足时绝不能发请求，否则会变成
-  ///    "每次依赖变化打三个 IPC"。
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final isCurrent = ModalRoute.isCurrentOf(context) ?? true;
-    if (!isCurrent) {
-      _wasCovered = true;
-      return;
-    }
-    if (_wasCovered) {
-      _wasCovered = false;
-      /*
-       * ★ 静默刷新：`load()` 内部在 `_loadedOnce` 之后不再置 `_loading`
-       *   ⇒ 不会闪骨架（见文件头 ③ —— 那是一条修过的真 bug）。
-       *
-       * ★★★ 这里**故意不加 `_loadedOnce` 条件**（2026-09-25 实测修正）
-       *
-       * # 为什么（真实 ShellPage 探针抓出来的）
-       *
-       * 我第一版写的是 `if (mounted && _loadedOnce) unawaited(load());`。
-       * 单独挂载 MyShelf 的探针**测不出问题**（那条路径会先
-       * `debugSetData`，它把 `_loadedOnce` 置成了 true）。
-       * 但在**真实 ShellPage** 里（`.probe/probe_tests/
-       * zz_t36_realshell_return_test.dart`）：
-       * ```text
-       * POS before=2 after=3 delta=1            ← 阳性对照通过（仪器灵敏）
-       * while_covered=3
-       * after_pop=3 delta_on_return=0           ← ★ 返回刷新没发生
-       * VERDICT pos_control_ok=true real_shell_refreshes_on_return=false
-       * ```
-       * 根因：`_loadedOnce` 只在**至少一路成功**时才置位
-       * （见下面 `load()` 里那条"失败保留旧数据"的修法）。
-       * ⇒ **首次加载失败时 `_loadedOnce` 永远是 false**
-       *   ⇒ 从详情页返回**永远不会重试**，界面一直空着，
-       *     直到用户去点 tab 才有救。
-       *
-       * # 那"防重复请求"靠什么？
-       *
-       * 靠 `_wasCovered` 本身 —— 它才是真正的闸门：
-       * ```text
-       * 挂载时         _wasCovered=false ⇒ 不请求（initState 的 postFrame 负责首次）
-       * 被盖住         _wasCovered=true  ⇒ 不请求
-       * 重新变当前      true → false      ⇒ ★ 恰好请求一次
-       * ```
-       * `didChangeDependencies` 会因为**任意依赖变化**被反复调用，
-       * 但只有"被盖住过"这**一次**转换会走到请求 —— 所以不会变成
-       * "每次依赖变化打三个 IPC"。
-       */
-      if (mounted) unawaited(load());
-    }
+  /// ⚠️ 不 await（`load()` 是独立数据平面），但内部判 `mounted`。
+  void refreshOnReturn() {
+    if (abDisableShelfRefresh) return; // A/B 实验开关（生产恒 false）
+    if (!mounted) return;
+    unawaited(load());
   }
 
   /// 注入三份数据（**只给测试用**），跳过 FFI 取数
@@ -411,48 +503,126 @@ class MyShelfState extends State<MyShelf> {
        *    所以统一用 `Object?` 装箱，下面各自 `as` 回来。
        *    `null` = 那一路失败（见上面"保留旧数据"的说明）。
        */
-      final results = await Future.wait<Object?>([
-        SourinApi.listFavorites(followingOnly: false)
-            .then<Object?>((v) => v)
-            .catchError((e) {
-          debugPrint('[SHELF] 取收藏失败（保留旧数据）: $e');
-          return null;
-        }),
-        SourinApi.listFavorites(followingOnly: true)
-            .then<Object?>((v) => v)
-            .catchError((e) {
-          debugPrint('[SHELF] 取追更失败（保留旧数据）: $e');
-          return null;
-        }),
-        SourinApi.continueWatching(limit: 12)
-            .then<Object?>((v) => v)
-            .catchError((e) {
-          debugPrint('[SHELF] 取历史失败（保留旧数据）: $e');
-          return null;
-        }),
-      ]);
+      /*
+       * ★ 测试注入口（生产 `debugShelfLoadOverride == null` ⇒ 走下面真实 FFI 路径）。
+       *   见 `debugShelfLoadOverride` 的注释：为的是让"数据变了必须重建"这个
+       *   方向在 flutter_test 里**也能被验证**（FFI 恒失败测不到它）。
+       */
+      final List<Object?> results;
+      final ov = debugShelfLoadOverride;
+      if (ov != null) {
+        final (f, fo, h) = await ov();
+        results = <Object?>[f, fo, h];
+      } else {
+        results = await Future.wait<Object?>([
+          SourinApi.listFavorites(followingOnly: false)
+              .then<Object?>((v) => v)
+              .catchError((e) {
+            debugPrint('[SHELF] 取收藏失败（保留旧数据）: $e');
+            return null;
+          }),
+          SourinApi.listFavorites(followingOnly: true)
+              .then<Object?>((v) => v)
+              .catchError((e) {
+            debugPrint('[SHELF] 取追更失败（保留旧数据）: $e');
+            return null;
+          }),
+          SourinApi.continueWatching(limit: 12)
+              .then<Object?>((v) => v)
+              .catchError((e) {
+            debugPrint('[SHELF] 取历史失败（保留旧数据）: $e');
+            return null;
+          }),
+        ]);
+      }
 
       if (!mounted) return;
-      setState(() {
-        // ★ 只有成功的那几路才覆盖（null = 失败 = 保留旧值）
-        final fav = results[0] as List<Favorite>?;
-        final fol = results[1] as List<Favorite>?;
-        final his = results[2] as List<Progress>?;
-        if (fav != null) _favorites = fav;
-        if (fol != null) _following = fol;
-        if (his != null) _history = his;
-        /*
-         * ⚠️ 后端已各自过滤好了，这里**不需要再 filter** ——
-         *    多加一层 `!deleted` 只会掩盖问题
-         *    （它在两个查询里都恒为真）。
-         */
-        /*
-         * ★ `_loadedOnce` 只在**至少有一路成功**时置位 ——
-         *   全失败还置位的话，骨架会消失但内容是空的，
-         *   用户看到"加载完了，什么都没有"，比一直转圈更误导。
-         */
-        if (fav != null || fol != null || his != null) _loadedOnce = true;
-      });
+      /*
+       * ══════════════════════════════════════════════════════════════════
+       * ★★★ Owner 2026-10-11 第 2 条（第三次报）：「从播放页返回还是非常卡顿」
+       *      + Owner 追加：「缓存下来不用重建，是不是能缓冲很大压力」
+       * ══════════════════════════════════════════════════════════════════
+       *
+       * # 根因（同 run 因果 A/B 实测，`.probe/zz_return_quant_probe_test.dart`）
+       * ```text
+       * 从播放页 pop 回来：返回帧 182 个元素（`_RouteGate` 那轮已修好），
+       * 但**紧接着的第 2 帧**重建 **458** 个元素（墙钟 25~42ms）——
+       * 点击"返回"后用户看到的那一下卡顿，正是这一帧。
+       *
+       * 关掉本刷新（abDisableShelfRefresh=true）：第 2 帧 458 → **61**（−87%），
+       * 墙钟 25~42ms → 6~9ms。
+       * ⇒ 这 397 个元素**全部**来自下面这个 `setState`：
+       *   数据其实**一个字节都没变**（刚看完片返回），却把整棵
+       *   液态玻璃 tab + 卡片 SliverList **无条件重建**了一遍。
+       * ```
+       *
+       * # 修法：数据没变就**不 setState**（Owner 说的"缓存下来不用重建"）
+       * ```text
+       * 旧行为：load() 无论数据变没变，尾巴上**无条件** setState
+       *         ⇒ 每次返回都全量重建本子树。
+       * 新行为：先算一份"渲染指纹"（只含**真正会被画出来**的字段），
+       *         指纹相同 ⇒ 数据等价 ⇒ **跳过 setState**（子树一帧都不重建）；
+       *         指纹不同 ⇒ 照常 setState（刷新语义**逐字不变**）。
+       * ```
+       *
+       * # 为什么是"渲染指纹"而不是 `list == list`
+       * ```text
+       * 后端每次都返回**新 List + 新对象**（FFI 反序列化）⇒ 引用比较恒不等。
+       * 而 `Favorite` / `Progress` 没有 `==`（本仓模型是纯数据类，
+       * 加 `==` 会影响别处，超出本次范围）。
+       * ⇒ 只比**本组件真正读的那几个字段**（见 _shelfSignature）——
+       *   既不误报"变了"（白重建），也不漏报"变了"（漏刷新）。
+       *   `_remainingByKey`（"还剩几集"徽标）一并入指纹。
+       * ```
+       *
+       * # 为什么**不**破坏 task-36 契约
+       * ```text
+       * t36 的仪器 = 「`[SHELF]` 日志行数 ÷ 3 = load() 被调次数」，
+       * 判据落在"**load() 有没有被调用**"（= 有没有真的重拉），
+       * **不是**"状态变没变"。本改动不碰任何 SourinApi 调用、不碰 load()
+       * 的调用点 ⇒ t36 的用例逐字不变（实测 10/10 绿）。刷新语义
+       * （重拉 + 变了就更新）完整保留。
+       * ```
+       */
+      final fav = results[0] as List<Favorite>?;
+      final fol = results[1] as List<Favorite>?;
+      final his = results[2] as List<Progress>?;
+      // 只有成功的那几路才参与比对（null = 失败 = 保留旧值，那不影响"变没变"）
+      final nextFav = fav ?? _favorites;
+      final nextFol = fol ?? _following;
+      final nextHis = his ?? _history;
+      final sigBefore = _shelfSignature(
+        _favorites, _following, _history, _remainingByKey,
+      );
+      final sigAfter = _shelfSignature(
+        nextFav, nextFol, nextHis, _remainingByKey,
+      );
+      final dataChanged = sigBefore != sigAfter;
+      final loadedOnceWillSet =
+          (fav != null || fol != null || his != null) && !_loadedOnce;
+      if (dataChanged || loadedOnceWillSet) {
+        setState(() {
+          if (fav != null) _favorites = fav;
+          if (fol != null) _following = fol;
+          if (his != null) _history = his;
+          /*
+           * ⚠️ 后端已各自过滤好了，这里**不需要再 filter** ——
+           *    多加一层 `!deleted` 只会掩盖问题
+           *    （它在两个查询里都恒为真）。
+           */
+          /*
+           * ★ `_loadedOnce` 只在**至少有一路成功**时置位 ——
+           *   全失败还置位的话，骨架会消失但内容是空的，
+           *   用户看到"加载完了，什么都没有"，比一直转圈更误导。
+           */
+          if (fav != null || fol != null || his != null) _loadedOnce = true;
+        });
+      }
+      /*
+       * ★★ 上面这个 `if` 是本次卡顿修复的**唯一**行为改动。
+       *   ⚠️ 注意：即使这里**跳过** setState，下面的 `_refreshRemaining()`
+       *      仍会跑（"还剩几集"可能变）—— 它自己按需 setState（见那个方法）。
+       */
 
       /*
        * ★★ 算「每部追更还剩几集」（task-40）—— 必须在上面 setState
@@ -466,7 +636,16 @@ class MyShelfState extends State<MyShelf> {
     } catch (e) {
       debugPrint('[SHELF] 加载失败: $e');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      /*
+       * ★ 本次卡顿修复配套：只在 `_loading` **真的**还是 true 时才 setState。
+       *
+       * 原写法无条件 `setState(() => _loading = false)` ⇒ 即使 `_loading`
+       * 本来就是 false（刷新路径，`_loadedOnce` 已置位的常见情况），
+       * 也会多排一次重建 —— 与上面那个数据指纹守卫是**同一类**浪费
+       * （每次返回都白重建一次本子树）。
+       * ⚠️ 语义不变：`_loading` 为 true 时照样置 false（首屏骨架会消失）。
+       */
+      if (mounted && _loading) setState(() => _loading = false);
     }
   }
 
@@ -508,11 +687,110 @@ class MyShelfState extends State<MyShelf> {
         following: _following,
         allProgress: all,
       );
-      setState(() => _remainingByKey = byKey);
+      /*
+       * ★ 本次卡顿修复配套（与 `load()` 里那个数据指纹守卫同一纪律）：
+       *   算出来和旧值**一样**就不 setState —— 否则每次返回都会因为
+       *   这一次 setState 白重建整棵「我的」子树。
+       *   ⚠️ 用 Map 内容比较（不是引用比较）：`followRemainingByKey`
+       *      每次都返回新 Map，引用恒不等。
+       */
+      if (!_sameStringIntMap(_remainingByKey, byKey)) {
+        setState(() => _remainingByKey = byKey);
+      }
     } catch (e) {
       // ★ 失败保留旧值（与"失败不许清空"同一原则）
       debugPrint('[SHELF-REM] 取进度失败（保留旧值）: $e');
     }
+  }
+
+  /// Map<String,int> 内容相等（用于"没变就不 setState"的守卫）
+  static bool _sameStringIntMap(Map<String, int> a, Map<String, int> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (final e in a.entries) {
+      if (b[e.key] != e.value) return false;
+    }
+    return true;
+  }
+
+  /// ★ 仅供测试：读当前「渲染指纹」（用于验证"变了 ⇒ 指纹必须变"）。
+  @visibleForTesting
+  String debugSignatureForTest() => _shelfSignature(
+        _favorites,
+        _following,
+        _history,
+        _remainingByKey,
+      );
+
+  /// 「我的」三份列表 + "还剩几集"的**渲染指纹**（详见 `load()` 里的长注释）。
+  ///
+  /// 只包含**会被画出来**的字段 —— 这是"数据没变就不重建"的判据。
+  /// ⚠️ 字段清单必须与 `_buildBody` 真正读的字段一致：
+  ///    Favorite → key/title/cover/lastEpisodeTitle/lastEpisodeCount/unreadCount
+  ///    Progress → key/title/episodeTitle/cover/position/duration
+  ///    （`_remainingByKey` 也入指纹 —— 它决定"还剩几集"徽标）
+  /// 漏字段 ⇒ 该字段变了却不重建（漏刷新）；多字段 ⇒ 无谓重建（性能）。两处要同步改。
+  static String _shelfSignature(
+    List<Favorite> favs,
+    List<Favorite> fols,
+    List<Progress> his,
+    Map<String, int> remaining,
+  ) {
+    final b = StringBuffer();
+    for (final f in favs) {
+      b
+        ..write(f.key)
+        ..write('\u0001')
+        ..write(f.title)
+        ..write('\u0001')
+        ..write(f.cover ?? '')
+        ..write('\u0001')
+        ..write(f.lastEpisodeTitle ?? '')
+        ..write('\u0001')
+        ..write(f.lastEpisodeCount)
+        ..write('\u0001')
+        ..write(f.unreadCount)
+        ..write('\u0002');
+    }
+    for (final f in fols) {
+      b
+        ..write(f.key)
+        ..write('\u0001')
+        ..write(f.title)
+        ..write('\u0001')
+        ..write(f.cover ?? '')
+        ..write('\u0001')
+        ..write(f.lastEpisodeTitle ?? '')
+        ..write('\u0001')
+        ..write(f.lastEpisodeCount)
+        ..write('\u0001')
+        ..write(f.unreadCount)
+        ..write('\u0002');
+    }
+    for (final p in his) {
+      b
+        ..write(p.key)
+        ..write('\u0001')
+        ..write(p.title)
+        ..write('\u0001')
+        ..write(p.episodeTitle ?? '')
+        ..write('\u0001')
+        ..write(p.cover ?? '')
+        ..write('\u0001')
+        ..write(p.position)
+        ..write('\u0001')
+        ..write(p.duration)
+        ..write('\u0002');
+    }
+    final keys = remaining.keys.toList()..sort();
+    for (final k in keys) {
+      b
+        ..write(k)
+        ..write('=')
+        ..write(remaining[k])
+        ..write('\u0002');
+    }
+    return b.toString();
   }
 
   /// 清空播放历史（二次确认）
@@ -791,8 +1069,20 @@ class MyShelfState extends State<MyShelf> {
     }
   }
 
+  /// ★ 见 `_RouteGate`：路由依赖的重建**只**发生在那个小壳上，不重建本方法产出的子树。
   @override
   Widget build(BuildContext context) {
+    // 探针 A/B：legacy=true 时把依赖挂回**本 State** ⇒ 复刻旧行为（整棵子树重建）。
+    if (abLegacyShelfRouteDependency) {
+      abLegacyShelfDidChangeDependencies(context);
+    }
+    return _RouteGate(
+      onReturn: refreshOnReturn,
+      child: _buildBody(context),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final cards = _cards;
 

@@ -388,14 +388,22 @@ void main() {
     final i = src.indexOf('_BottomBar(');
     expect(i, greaterThan(0), reason: '找不到 _BottomBar( ⇒ 文件结构变了');
 
-    // 往回找它的 `if (` 条件块
-    final before = src.substring((i - 600).clamp(0, i), i);
-    final condStart = before.lastIndexOf('if (');
-    expect(condStart, greaterThanOrEqualTo(0),
-        reason: '找不到 _BottomBar 前面的 if ( ⇒ 结构变了');
-    final cond = before.substring(condStart);
+    /*
+     * ★★★ T27-13（Owner 第 3 / 5 条）：底栏那 11 项门控**已收拢**进唯一真源
+     *   `bool get _chromeVisible`，底栏渲染点现在写 `if (_chromeVisible)`。
+     *   ⇒ 「往回 600 字符找 `if (`」这条启发式**不再适用**（窗口里只剩
+     *     `if (_chromeVisible)` 一句）。
+     *   判据的**实质一字未变**：底栏门控仍必须排除这四个面板 flag，只是它们
+     *   现在是 `_chromeVisible` 的成员。⇒ 断言对象跟着搬到唯一真源上。
+     */
+    expect(src.contains('if (!_chromeVisible && !keepForFade) {'), isTrue,
+        reason: '★ 底栏显隐必须读唯一真源 `_chromeVisible`（T27-13 唯一真源）');
+    final ci = src.indexOf('bool get _chromeVisible =>');
+    expect(ci, greaterThanOrEqualTo(0),
+        reason: '找不到唯一真源 `_chromeVisible` ⇒ 文件结构变了');
+    final cond = src.substring(ci, src.indexOf(';', ci));
 
-    debugPrint('[GATE] 条件块 = ${cond.replaceAll(RegExp(r"\s+"), " ").trim()}');
+    debugPrint('[GATE] 唯一真源 = ${cond.replaceAll(RegExp(r"\s+"), " ").trim()}');
 
     // 四个面板必须都在
     for (final flag in [
@@ -405,7 +413,7 @@ void main() {
       '_liveChannelsOpen', // ★ 本次新增
     ]) {
       expect(cond.contains('!$flag'), isTrue,
-          reason: '★★★ `_BottomBar` 的绘制条件漏了 `!$flag` ⇒ '
+          reason: '★★★ `_chromeVisible` 漏了 `!$flag` ⇒ '
               '该面板开着时控制条仍然画着，而面板自身的有色区域'
               '（ColoredBox = HitTestBehavior.opaque）会**吸收点击** ⇒ '
               '用户点按钮**没反应**。'

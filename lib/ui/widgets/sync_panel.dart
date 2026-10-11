@@ -568,10 +568,11 @@ class _SyncPanelState extends State<SyncPanel> {
   /// 动画交给 widget 自己跑，避免每次 `setState` 都重建整页。
   Widget _busyLine(ColorScheme colors) => Row(
         children: [
-          const SizedBox(
+          SizedBox(
             width: 14,
             height: 14,
-            child: CircularProgressIndicator(strokeWidth: 2),
+            // T27-07：onSurface 随主题（dark #FAFAFA / light 近黑）。
+            child: CircularProgressIndicator(color: colors.onSurface, strokeWidth: 2),
           ),
           const SizedBox(width: Sp.x2),
           Text(

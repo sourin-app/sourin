@@ -614,10 +614,15 @@ class BrowsePageState extends State<BrowsePage> {
                   padding: const EdgeInsets.symmetric(vertical: Sp.x10),
                   child: Center(
                     child: _loadingMore
-                        ? const SizedBox(
+                        ? SizedBox(
                             width: 20,
                             height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                            // ★ T27-07（lead 集成补漏）：裸 CPI 落 progressIndicatorTheme
+                            //   的 primary，浮层上观感发灰 ⇒ 显式 onSurface（对深底 ≥4.5:1）。
+                            child: CircularProgressIndicator(
+                              color: colors.onSurface,
+                              strokeWidth: 2,
+                            ),
                           )
                         : _hasMore
                             ? const SizedBox.shrink()

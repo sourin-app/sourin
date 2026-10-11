@@ -54,6 +54,52 @@ import 'widgets/follow_update_notice.dart';
 import 'widgets/poster_card.dart';
 
 /// 追更页
+bool abDisableFollowRefresh = false;
+/// ★ 仅供 OPS 探针：置 true 时恢复旧行为（依赖 `_ModalScopeStatus`）。生产恒 false。
+bool abLegacyFollowRouteDependency = false;
+
+/// ★★ Owner 2026-10-11 第 2 条：路由依赖的重建边界（与 `my_shelf.dart` 的
+/// `_RouteGate` **同一套办法**，两处必须一致）。
+///
+/// 只做「检测 + 回调」、不做渲染：`build` 直接 `return widget.child;`
+/// ⇒ 框架 `Element.updateChild` 见 `child.widget == newWidget`（同一实例）
+/// 会跳过重建 ⇒ 依赖触发的那次重建只重建本小壳，不波及整棵追更页子树。
+/// 详见 `my_shelf.dart` 里 `_RouteGate` 的长注释。
+class _FollowRouteGate extends StatefulWidget {
+  const _FollowRouteGate({required this.child, required this.onReturn});
+
+  final Widget child;
+  final VoidCallback onReturn;
+
+  @override
+  State<_FollowRouteGate> createState() => _FollowRouteGateState();
+}
+
+class _FollowRouteGateState extends State<_FollowRouteGate> {
+  bool _wasCovered = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final isCurrent = ModalRoute.isCurrentOf(context) ?? true;
+    if (!isCurrent) {
+      _wasCovered = true;
+      return;
+    }
+    if (_wasCovered) {
+      _wasCovered = false;
+      // ⚠️ 推到帧边界之后（避开构建阶段 + 推离返回帧）—— 与 my_shelf 的
+      //    `_RouteGate` 同一纪律，见那里的长注释。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onReturn();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
 class FollowPage extends StatefulWidget {
   const FollowPage({
     super.key,
@@ -214,12 +260,10 @@ class FollowPageState extends State<FollowPage>
   /// 切底栏 tab 那条路径由 shell 的 `_followKey.currentState?.loadAll()`
   /// 覆盖了，但「详情页返回」这条**没被覆盖**。
   ///
-  /// 这里用 `ModalRoute.isCurrentOf(context)` 补上：
-  /// ```text
-  /// 本页是当前路由 → false     被详情页/播放页盖住 → true
-  /// ```
-  /// 一旦被盖住过就记下来；等它**重新变成当前路由**时刷一次。
-  bool _wasCovered = false;
+  /// ★ 2026-10-11：这个「被盖住」标记与 `didChangeDependencies` 依赖一起
+  ///   挪进了 `_FollowRouteGate`：依赖还在（契约不变），但重建边界收窄到
+  ///   那个小壳 —— 从详情页/播放页返回时**不再重建整棵追更页子树**。
+  ///   见 `_FollowRouteGate` 与 `refreshOnReturn()` 的长注释。
 
   @override
   void initState() {
@@ -345,26 +389,36 @@ class FollowPageState extends State<FollowPage>
 
   /// ★ 从别的页面（详情页 / 播放页）返回时刷新
   ///
-  /// 依赖 `_ModalScopeStatus` 这个 `InheritedModel`：
-  /// 路由的 `isCurrent` 变化时，`didChangeDependencies` 会被调用
-  ///（Flutter 源码 `routes.dart` 的 `_ModalScopeStatus.updateShouldNotifyDependent`）。
+  /// ═══════════════════════════════════════════════════════════════════
+  /// ★★★ Owner 2026-10-11 第 2 条：「从播放页返回还是非常卡顿」
+  /// ═══════════════════════════════════════════════════════════════════
   ///
-  /// ⚠️ 这个方法在**每一帧的依赖变化**时都可能被调用，所以里面
-  ///    必须**只做标记判断**，不能在条件不满足时也发起网络请求 ——
-  ///    否则会变成"每次依赖变化打三个 IPC"。
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final isCurrent = ModalRoute.isCurrentOf(context) ?? true;
-    if (!isCurrent) {
-      // 被详情页/播放页盖住了 —— 记下来，等回来时刷
-      _wasCovered = true;
-      return;
-    }
-    if (_wasCovered) {
-      _wasCovered = false;
-      if (mounted && _loadedOnce) unawaited(_refreshOnEnter());
-    }
+  /// # 原实现与它的代价
+  /// ```text
+  /// 原来在**本 State** 的 `didChangeDependencies` 里依赖 `_ModalScopeStatus`
+  /// ⇒ 一 pop 就在**返回帧同步**重建整棵追更页子树。
+  /// 实测（.probe/ops/zz_ops_return_probe2_test.dart）：
+  ///   开本重建 → 返回帧 min 79.50ms；关掉本重建 → min 54.48ms
+  ///   ⇒ 这一条 ≈ 25ms（与首页 MyShelf 的 ~51ms 叠加）。
+  /// ```
+  ///
+  /// # 现在改成什么：把依赖锁进**只检测、不渲染**的小壳 `_FollowRouteGate`
+  /// ```text
+  /// 与 my_shelf.dart 的 `_RouteGate` **同一套办法**（两处必须一致）：
+  /// 小壳自己依赖 `_ModalScopeStatus`，`build` 直接 `return widget.child;`
+  /// ⇒ 依赖触发的那次重建只重建小壳，**不再波及**整棵追更页子树。
+  /// 真正刷新时由小壳回调 `refreshOnReturn()`（走 `_refreshOnEnter()`）。
+  /// ```
+  ///
+  /// ⚠️ 依赖必须**留在本页内部** —— `test/t36_cache_refresh_test.dart` 的
+  ///    同类契约要求「独立挂载也会在返回时刷新」（不经过 shell）。
+  ///
+  /// ★ 语义保持与原版**逐字一致**：仍然要求 `_loadedOnce`
+  ///   （原版的 `if (mounted && _loadedOnce)` 就是这条）。
+  void refreshOnReturn() {
+    if (abDisableFollowRefresh) return; // A/B 实验开关（生产恒 false）
+    if (!mounted) return;
+    if (_loadedOnce) unawaited(_refreshOnEnter());
   }
 
   /// ★ 自动更新三模块（**所有"回到本页"的入口都走这里**）
@@ -480,12 +534,29 @@ class FollowPageState extends State<FollowPage>
       ]);
 
       if (!mounted) return;
-      setState(() {
-        _following = results[0] as List<Favorite>;
-        _allFavs = results[1] as List<Favorite>;
-        _continueList = results[2] as List<Progress>;
-        _loadedOnce = true;
-      });
+      /*
+       * ★★★ Owner 2026-10-11 第 2 条（第三次报）：「从播放页返回还是非常卡顿」
+       *      + 「缓存下来不用重建，是不是能缓冲很大压力」
+       *
+       * 与 `my_shelf.dart::load()` **同一套办法、同一纪律**（两处必须一致）：
+       * 数据没变就**不 setState**，避免每次返回都无条件重建整棵追更页子树。
+       * 根因/A-B 实测见 `my_shelf.dart` 里那段长注释。
+       *
+       * ⚠️ 保**刷新语义**：数据真变了（新追更 / 进度变）⇒ 指纹变 ⇒ 照常 setState。
+       */
+      final nextF = results[0] as List<Favorite>;
+      final nextA = results[1] as List<Favorite>;
+      final nextC = results[2] as List<Progress>;
+      final sigBefore = _followSignature(_following, _allFavs, _continueList);
+      final sigAfter = _followSignature(nextF, nextA, nextC);
+      if (sigBefore != sigAfter || !_loadedOnce) {
+        setState(() {
+          _following = nextF;
+          _allFavs = nextA;
+          _continueList = nextC;
+          _loadedOnce = true;
+        });
+      }
 
       /*
        * ★★ task-74 ①：**渲染完之后**再回填标题（不阻塞首屏）
@@ -507,8 +578,64 @@ class FollowPageState extends State<FollowPage>
     } catch (e) {
       debugPrint('[FOLLOW] 加载追更失败: $e');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      // ★ 与 my_shelf 同款：只在 `_loading` 真的是 true 时才 setState
+      //   （刷新路径 `_loading` 本就 false ⇒ 无谓的重建去掉）。
+      if (mounted && _loading) setState(() => _loading = false);
     }
+  }
+
+  /// 「追更页」三份列表的**渲染指纹**（详见 `my_shelf.dart::_shelfSignature`）。
+  ///
+  /// 只含**会被画出来**的字段 —— 数据没变就不重建。字段清单必须与
+  /// 追更页卡片真正读的字段一致；两处要同步改（漏字段 ⇒ 漏刷新）。
+  static String _followSignature(
+    List<Favorite> following,
+    List<Favorite> allFavs,
+    List<Progress> cont,
+  ) {
+    final b = StringBuffer();
+    void addFav(Favorite f) {
+      b
+        ..write(f.key)
+        ..write('\u0001')
+        ..write(f.title)
+        ..write('\u0001')
+        ..write(f.cover ?? '')
+        ..write('\u0001')
+        ..write(f.lastEpisodeTitle ?? '')
+        ..write('\u0001')
+        ..write(f.lastEpisodeCount)
+        ..write('\u0001')
+        ..write(f.unreadCount)
+        ..write('\u0001')
+        ..write(f.following)
+        ..write('\u0002');
+    }
+
+    for (final f in following) {
+      addFav(f);
+    }
+    b.write('\u0003');
+    for (final f in allFavs) {
+      addFav(f);
+    }
+    b.write('\u0003');
+    for (final p in cont) {
+      b
+        ..write(p.key)
+        ..write('\u0001')
+        ..write(p.title)
+        ..write('\u0001')
+        ..write(p.episodeTitle ?? '')
+        ..write('\u0001')
+        ..write(p.cover ?? '')
+        ..write('\u0001')
+        ..write(p.position)
+        ..write('\u0001')
+        ..write(p.duration)
+        ..write('\u0002');
+    }
+    return b.toString();
   }
 
   /// ★★ task-74 ①：对「（标题未知）」的播放记录做**异步回填**
@@ -878,6 +1005,15 @@ class FollowPageState extends State<FollowPage>
 
   @override
   Widget build(BuildContext context) {
+    // 探针 A/B：legacy=true 时把依赖挂回**本 State**（复刻旧行为：整棵子树重建）。
+    if (abLegacyFollowRouteDependency) ModalRoute.isCurrentOf(context);
+    return _FollowRouteGate(
+      onReturn: refreshOnReturn,
+      child: _buildBody(context),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
 
     return Stack(

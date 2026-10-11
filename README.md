@@ -474,6 +474,8 @@ Android 那个 job 默认关掉：它最慢（要 NDK + 三个 target 交叉编�
 | 变量 | 说明 |
 |---|---|
 | `DATA_DIR_OVERRIDE` | 覆盖数据目录。**开发与测试必用** —— 指到临时目录就不会碰到你正在用的真实数据 |
+| `DANDANPLAY_APP_ID` | 弹弹play 官方 API 凭证（AppId）。仓库里只有空占位符，发版时构建期注入（见下发版说明）；空缺时回落到用户自填凭证 |
+| `DANDANPLAY_APP_SECRET` | 弹弹play 官方 API 凭证（AppSecret）。**敏感值** —— 只放 GitHub secrets，绝不写进仓库 |
 
 ```bash
 flutter build windows --release -t lib/shell.dart \
@@ -483,6 +485,24 @@ flutter build windows --release -t lib/shell.dart \
 > ⚠️ 这一条很重要：**真实用户数据目录是 `%APPDATA%\app.sourin.player`**，
 > 里面有真实的收藏、进度、片头片尾。开发调试时一定要用 `DATA_DIR_OVERRIDE` 隔离，
 > 否则一次写探针就可能把用户数据改掉。
+
+##### 弹弹play 凭证（发版说明）
+
+官方弹弹play 识别（番剧/条目匹配）需要一对官方凭证：`DANDANPLAY_APP_ID` /
+`DANDANPLAY_APP_SECRET`。开源仓库里只有空占位符 —— 发版时由 GitHub Actions
+在构建期注入真值（弹弹play 官方文档「安全注意事项」允许开源客户端这么做）：
+
+1. 到弹弹play 开放平台（doc.dandanplay.com/open/）申请一对 AppId / AppSecret。
+2. 本仓库 **Settings → Secrets and variables → Actions** 里新增两个 secret：
+   `DANDANPLAY_APP_ID` 与 `DANDANPLAY_APP_SECRET`。
+3. `.github/workflows/build.yml` 已接好通道：三个平台 job 的 env 声明
+   `DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}`（Secret 同理），
+   构建命令自动追加 `--dart-define=DANDANPLAY_APP_ID="${{ env.DANDANPLAY_APP_ID }}"`。
+4. fork 的 PR 拿不到 secrets（GitHub 内建规则）⇒ 构建出的包与未配置时行为逐字一致：
+   App 回落到用户自填凭证，无需任何额外处理。
+
+⚠️ 凭证真值只允许存在于 GitHub secrets 与开发者本机环境，**永远不要**写进
+README、源码、issue 或截图。
 
 #### 运行期（进程环境变量）
 

@@ -51,6 +51,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/danmaku.dart';
 import '../tokens.dart';
+import 'danmaku_settings_dialog.dart';
 
 /// 弹幕基准字号（px，逻辑像素）
 ///
@@ -390,6 +391,7 @@ class DanmakuOverlay extends StatefulWidget {
     this.opacity = DanmakuConfig.defaultOpacity,
     this.speed = DanmakuConfig.defaultSpeed,
     this.area = DanmakuConfig.defaultArea,
+    this.areaGuide = false,
     this.badge,
   });
 
@@ -419,8 +421,15 @@ class DanmakuOverlay extends StatefulWidget {
   /// 一条弹幕从右边缘走到左边缘的秒数（越大越慢）
   final double speed;
 
-  /// 纵向可占用比例（`DanmakuConfig.area`）
+  /// 纵向可占用比例（`DanmakuConfig.area`）—— 顶部往下量的显示区域
   final double area;
+
+  /// ★ 2026-10-11：是否显示「显示区域引导遮罩」（半透明边界 + 区域填充）。
+  ///
+  /// 由宿主（player_page）在**用户拖动"显示区域"滑杆期间**置 true ⇒ 画面上
+  /// 出现 B 站那种半透明分界；松手后宿主置 false，本层自己淡出（见
+  /// [DanmakuAreaGuide] 的类文档）。非拖动期间恒 false ⇒ 不挡画面。
+  final bool areaGuide;
 
   /// 画面左上角的角标文字（用来**如实标注**"这批弹幕是哪来的"）
   final String? badge;
@@ -572,6 +581,9 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
       DanmakuConfig.blockBottom,
       DanmakuConfig.blockRegex,
       DanmakuConfig.blockWords.join('\u0001'),
+      // ★ 2026-10-11：「只显示彩色」也必须进 key —— 少了它，开/关这枚开关时
+      //   _sameKey 命中旧 key 直接 return ⇒ 白色弹幕该消失没消失（"改了没反应"）。
+      DanmakuConfig.colorOnly,
     ];
     final old = _layoutKey;
     if (old != null && _sameKey(old, key)) return;
@@ -598,7 +610,12 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
      */
     final visible = <DanmakuComment>[
       for (final c in widget.comments)
-        if (DanmakuConfig.shouldShow(mode: c.mode, text: c.text)) c,
+        if (DanmakuConfig.shouldShow(
+          mode: c.mode,
+          text: c.text,
+          color: c.color,
+        ))
+          c,
     ];
     final l = DanmakuTrackAllocator.layout(
       comments: visible,
@@ -649,56 +666,75 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
 
         final index = _index;
         final layout = _layout;
+        /*
+         * ★ 2026-10-11（Owner 第 ① 条）：引导遮罩是**独立于弹幕数据**的一层。
+         *
+         * 判据：拖动"显示区域"滑杆时，即使当前**一条弹幕都没有 / 弹幕开关关着**
+         * （用户正拖的就是"弹幕显示区域"，很可能此刻没弹幕），画面上也必须出现
+         * 那条半透明分界线 —— 否则这枚滑杆就失去可视反馈（正是 Owner 的不满意点）。
+         * ⇒ 引导遮罩走"与 badge 同款"的常挂路径，不跟着弹幕层一起消失。
+         */
         if (!widget.enabled ||
             index == null ||
             layout == null ||
             index.length == 0) {
-          return _badgeOnly(rect);
+          return _overlayScaffold(rect, const SizedBox.shrink());
         }
 
-        return Stack(
-          children: [
-            Positioned(
-              left: rect.left,
-              top: rect.top,
-              width: rect.width,
-              height: rect.height,
-              child: RepaintBoundary(
-                child: CustomPaint(
-                  size: Size(rect.width, rect.height),
-                  painter: _DanmakuPainter(
-                    layout: layout,
-                    index: index,
-                    clock: () => _t,
-                    opacity: widget.opacity,
-                    cache: _cache,
-                    tracked: _tracked,
-                    repaint: _repaint,
-                  ),
-                ),
+        return _overlayScaffold(
+          rect,
+          RepaintBoundary(
+            child: CustomPaint(
+              size: Size(rect.width, rect.height),
+              painter: _DanmakuPainter(
+                layout: layout,
+                index: index,
+                clock: () => _t,
+                opacity: widget.opacity,
+                cache: _cache,
+                tracked: _tracked,
+                repaint: _repaint,
               ),
             ),
-            if (widget.badge != null && widget.badge!.isNotEmpty)
-              Positioned(
-                left: rect.left + Sp.x2,
-                top: rect.top + Sp.x2,
-                child: _badge(widget.badge!),
-              ),
-          ],
+          ),
         );
       },
     );
   }
 
-  Widget _badgeOnly(Rect rect) {
-    final b = widget.badge;
-    if (b == null || b.isEmpty) return const SizedBox.shrink();
+  /// 画布层 + 角标 + 显示区域引导遮罩（三者同层、都在 `rect` 之内）。
+  ///
+  /// [canvasChild] 传"没有弹幕"时为空盒；引导遮罩与角标**始终**在这里组装，
+  /// 于是「拖显示区域滑杆时弹幕恰好为空」也能看到分界线。
+  Widget _overlayScaffold(Rect rect, Widget canvasChild) {
     return Stack(
       children: [
         Positioned(
-          left: rect.left + Sp.x2,
-          top: rect.top + Sp.x2,
-          child: _badge(b),
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+          child: canvasChild,
+        ),
+        if (widget.badge != null && widget.badge!.isNotEmpty)
+          Positioned(
+            left: rect.left + Sp.x2,
+            top: rect.top + Sp.x2,
+            child: _badge(widget.badge!),
+          ),
+        /*
+         * ★ 引导遮罩放在**最后**（Stack 里最后画的在最上面）——
+         *   拖动中它必须盖过弹幕，用户才看得清"弹幕区到此为止"。
+         */
+        Positioned(
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+          child: DanmakuAreaGuide(
+            visible: widget.areaGuide,
+            area: widget.area,
+          ),
         ),
       ],
     );
@@ -717,12 +753,160 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
       child: Text(
         text,
         style: const TextStyle(
-          color: Colors.white70,
+          color: DanmakuTextColors.badgeText,
           fontSize: FontSizes.cap,
         ),
       ),
     );
   }
+}
+
+/// ★★★ 2026-10-11（Owner 第 ① 条）：弹幕**显示区域引导遮罩**。
+///
+/// # Owner 原话（逐字）
+/// ```text
+/// > 那个遮挡区域我对现在的不满意,要按照b站的那个去做
+/// 追问"哪一点不满意"⇒「1 2 3 4我都要」，其中第 ① 条就是本控件的由来：
+///   现在的弹幕设置**没有任何视觉反馈** —— 用户拖"显示区域"滑杆时，
+///   画面上什么也看不到，不知道弹幕会被限制在哪。
+/// ```
+///
+/// # B 站的真实行为（本控件的形态依据）
+/// ```text
+/// B 站拖"显示区域"滑杆时，播放画面上会出现一条**半透明分界线** + 下半区
+/// 被压暗，直观标出"弹幕只在这个范围内"。松手后淡出。
+/// ⇒ 本控件：拖动期间（[visible]==true）画 ① 半透明填充（弹幕区内浅、
+///   区外更暗）+ ② 一条 1px 的边界线；松手后 180ms 淡出。
+/// ```
+///
+/// # 为什么"只在拖动时显示 + 松手淡出"（保守取舍）
+/// ```text
+/// 一直显示会**持续遮挡画面**（用户看视频时不想总有一条线压在脸上）；
+/// 只在拖动时出现是 B 站的做法，也是"信息价值最高、干扰最小"的时刻。
+/// ⇒ 若做不到"精确复刻 B 站时机"，选这个最保守的形态（任务书要求的兜底方案）。
+/// ```
+///
+/// # 为什么放在 `DanmakuOverlay` **内部**（复用 danmakuContainRect）
+/// ```text
+/// 分界线必须落在**视频画面**的矩形里（不是整块黑底），而"画面矩形"正是
+/// DanmakuOverlay 已经算好的 `danmakuContainRect`（复刻 BoxFit.contain）。
+/// 放到播放页当独立 overlay 的话，要为它再算一遍同一套几何 —— 两处几何
+/// 一旦漂移，线就会画歪。⇒ 复用同一处，几何天然一致。
+/// ```
+class DanmakuAreaGuide extends StatefulWidget {
+  const DanmakuAreaGuide({
+    super.key,
+    required this.visible,
+    required this.area,
+  });
+
+  /// 是否处于"拖动显示区域"状态（false ⇒ 淡出后自动隐藏）
+  final bool visible;
+
+  /// 显示区域比例（0.1 ~ 1.0），**从顶部往下量**
+  final double area;
+
+  @override
+  State<DanmakuAreaGuide> createState() => _DanmakuAreaGuideState();
+}
+
+class _DanmakuAreaGuideState extends State<DanmakuAreaGuide>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _anim = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 180),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.visible) _anim.value = 1;
+  }
+
+  @override
+  void didUpdateWidget(DanmakuAreaGuide old) {
+    super.didUpdateWidget(old);
+    if (widget.visible) {
+      _anim.forward();
+    } else {
+      _anim.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _anim.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: FadeTransition(
+        opacity: _anim,
+        child: CustomPaint(
+          painter: _AreaGuidePainter(
+            area: widget.area,
+            lineColor: DanmakuTextColors.areaGuideLine,
+            insideColor: DanmakuTextColors.areaGuideInside,
+            outsideColor: DanmakuTextColors.areaGuideOutside,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AreaGuidePainter extends CustomPainter {
+  const _AreaGuidePainter({
+    required this.area,
+    required this.lineColor,
+    required this.insideColor,
+    required this.outsideColor,
+  });
+
+  final double area;
+  final Color lineColor;
+  final Color insideColor;
+  final Color outsideColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // 与 `DanmakuTrackAllocator.layout` 同一口径：区域高度 = 画面高 * area（顶部往下）
+    final boundary = (size.height * area.clamp(0.0, 1.0))
+        .clamp(0.0, size.height);
+    final inside = Rect.fromLTWH(0, 0, size.width, boundary);
+    final outside = Rect.fromLTWH(
+      0,
+      boundary,
+      size.width,
+      math.max(0, size.height - boundary),
+    );
+    // 弹幕区：极淡的白（提示"这里可以放弹幕"）
+    if (inside.height > 0) {
+      canvas.drawRect(inside, Paint()..color = insideColor);
+    }
+    // 区外：更暗一层（提示"这里不再有弹幕"）—— 这一层是"遮罩"感的主体
+    if (outside.height > 0) {
+      canvas.drawRect(outside, Paint()..color = outsideColor);
+    }
+    // 边界线：给出一条明确的"到此为止"，比纯遮罩更好读
+    final y = boundary;
+    canvas.drawLine(
+      Offset(0, y),
+      Offset(size.width, y),
+      Paint()
+        ..color = lineColor
+        ..strokeWidth = 1.5,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_AreaGuidePainter old) =>
+      old.area != area ||
+      old.lineColor != lineColor ||
+      old.insideColor != insideColor ||
+      old.outsideColor != outsideColor;
 }
 
 class _DanmakuPainter extends CustomPainter {

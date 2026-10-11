@@ -59,6 +59,8 @@
 //    那是**有缺陷的判据**（任何"窗口恰好等于屏幕"的场合都会误判）。
 //    事件来源是**结构性**的，比尺寸推断可靠。
 import 'dart:async';
+// ★ T27-04：收藏入口的本地会话要 stat 文件是否存在（File.existsSync）
+import 'dart:io' show File;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:window_manager/window_manager.dart';
@@ -307,6 +309,47 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
   ///   （它们是 final）。与 `player_page` 的 `_provider`/`_contentId` 同一理由。
   late String _provider = widget.provider;
   late String _contentId = widget.id;
+
+  /*
+   * ★★★ T27-04（首页收藏点本地条目播放失败）：本页的**本地会话裁决值**
+   *
+   * # 缺陷（Owner 图4/图5：从首页收藏点进来 ⇒「Failed to open http://127.0.0.1:…/s/…」）
+   * ```text
+   * 收藏（provider='local', id=文件绝对路径）经 shell._openDetail → _mediaRoute
+   *   进本页时**不带 localPath**（只有 shell._openCachedWork 那个入口带）。
+   * 本页旧判据全是 `widget.localPath != null` ⇒ 收藏腿判成在线会话
+   *   ⇒ PlayerPage 走 resolveStream('local', 路径) ⇒ 核心代理没有本地流 ⇒ 127.0.0.1 打不开。
+   * ```
+   *
+   * # 解析纪律（三档，与 _onDetailPlay 的三档语义同构）
+   * ```text
+   * ① widget.localPath != null（已缓存页入口）⇒ 逐字沿用，行为逐字节不变；
+   * ② provider == kLocalProvider 且 id 规范化后**真的指向存在的文件**
+   *    ⇒ 用 canonicalLocalPath(id) 当本地路径（复用 cache_page 的规范化，不手拼）；
+   * ③ 其它（在线条目 / 文件已不在磁盘）⇒ null ⇒ 走原来的在线解析
+   *    （在线报错由在线链路自然给出，**不静默短路**）。
+   * ```
+   * ★ 解析只做这一次（首帧前的 late 初始化），后续所有判据统一读
+   *   [_resolvedLocalPath] —— 与 _provider/_contentId 同一条「本页一份事实」的纪律。
+   */
+  late final String? _resolvedLocalPath = _resolveLocalSessionPath();
+
+  /// 三档解析（见 [_resolvedLocalPath] 的说明）。★ 纯读，无副作用。
+  String? _resolveLocalSessionPath() {
+    if (widget.localPath != null) return widget.localPath;
+    if (widget.provider != kLocalProvider) return null;
+    final id = widget.id;
+    if (id.isEmpty) return null;
+    final p = canonicalLocalPath(id);
+    // 文件不存在就不短路：继续走在线解析，让在线链路给出它自己的错误
+    //（与「幽灵收藏」的行为一致，不新增第二套错误文案）。
+    if (!File(p).existsSync()) return null;
+    return p;
+  }
+
+  /// 本地会话的最终裁决值（null = 在线会话）。测试读数出口（生产不用）。
+  @visibleForTesting
+  String? get resolvedLocalPath => _resolvedLocalPath;
 
   @override
   void initState() {
@@ -603,15 +646,15 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
      * ① req 自己**已经带了** localPath（右侧面板从磁盘选的第 N 集，
      *    `_onPlayDownloaded` 里传的是**选中那一集**的绝对路径）⇒ 原样用，
      *    ★ 绝不能覆盖成 widget.localPath —— 那会让「点第 2 集」回到第 1 集。
-     * ② 没带 + 本页是本地会话（widget.localPath != null）⇒
-     *    详情区的选集走这里 ⇒ 用 widget.localPath。
-     *    ⚠️ 这里只兜「同一部剧内换集」，所以 widget.localPath 是对的。
+     * ② 没带 + 本页是本地会话（_resolvedLocalPath != null）⇒
+     *    详情区的选集走这里 ⇒ 用 _resolvedLocalPath。
+     *    ⚠️ 这里只兜「同一部剧内换集」，所以 _resolvedLocalPath 是对的。
      * ③ 没带 + 在线会话 ⇒ 保持 null。
      *    ★ 硬编码成 widget.localPath 会把**在线作品**误当本地文件播
      *      （shell.dart:4769-4771 那段警告就是讲这个）。
      * ```
      */
-    if (req.localPath == null && widget.localPath != null) {
+    if (req.localPath == null && _resolvedLocalPath != null) {
       /*
        * ⚠️ `PlayRequestData` **没有** copyWith，而它归 ui-dev（改动 B）——
        *    我不去给别人的类加方法 ⇒ 这里**新建**一个（字段逐个搬，不猜）。
@@ -627,7 +670,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
         sourceCode: req.sourceCode,
         episodes: req.episodes,
         episodeIndex: req.episodeIndex,
-        localPath: widget.localPath,
+        localPath: _resolvedLocalPath,
       );
     }
 
@@ -927,7 +970,11 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
         // ★ 本地会话拿的正是宿主传下来的那一份 ⇒ 删完一集必须同步刷新它，
         //   否则列表会一直挂着已经被删掉的那一行（假刷新比不刷新更糟）。
         final meta = widget.localMeta;
-        if (widget.localPath != null && meta != null) {
+        // ★ T27-04：回填判据换成本页统一的 [_resolvedLocalPath]（语义不变：
+        //   只有带宿主 localMeta 的本地会话才回填 override；收藏入口没有
+        //   localMeta，走 _diskWorkForThis 的扫盘匹配，天然吃到新扫结果）。
+        final cur = _resolvedLocalPath;
+        if (cur != null && meta != null) {
           for (final w in works) {
             if (w.path == meta.path) {
               _localWorkOverride = w;
@@ -962,7 +1009,9 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
      *   扫盘仍保留：删完一集后用它做**真刷新**（见 _scanDiskWorks）。
      */
     final meta = _localWorkOverride ?? widget.localMeta;
-    if (widget.localPath != null && meta != null) return meta;
+    // ★ T27-04：判据从 widget.localPath 换成本页统一的 _resolvedLocalPath
+    //   （收藏入口也在此短路——这正是 leg① 右侧「已下载」列表的数据来源）。
+    if (_resolvedLocalPath != null && meta != null) return meta;
 
     final works = _diskWorks;
     if (works == null || works.isEmpty) return null;
@@ -972,7 +1021,47 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
       if (canonicalLocalPath(w.path) == want) return w;
     }
 
-    // 回退：按标题认（在线 id 的情况下只能靠标题）
+    /*
+     * ══════════════════════════════════════════════════════════════════════
+     * ★★★ Owner 1011 反馈①：**在线会话下不做标题回退**
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * # Owner 原话（逐字）
+     * ```text
+     * > 从首页进入已缓存的页面，跟从已缓存页面进入根本不一样，
+     * > 从已缓存页面进入是本地的文件，其他页面进（首页、播放历史这些）
+     * > 优先进在线播放页
+     * ```
+     *
+     * # 根因：标题回退让**磁盘上的同名剧**抢走了在线条目的右栏
+     * ```text
+     * 首页/历史/追更 ⇒ shell._openDetail ⇒ _mediaRoute（只带 provider/id）
+     *   ⇒ _resolvedLocalPath == null（在线会话，**判定本来就是对的**）
+     *   ⇒ 但本 getter 的标题回退仍会命中磁盘上同名的那部剧
+     *   ⇒ _downloadedItems 非空 ⇒ media_page.dart:1600-1608 的
+     *      `if (mine.isEmpty && onDisk.isEmpty) return detail;` 不成立
+     *   ⇒ 右栏**整块**从在线详情区换成 DownloadPanel
+     *      （没有封面 / 没有来源 / 没有剧集列表 / 操作按钮全没）
+     * ```
+     * ★ 而「已缓存页进入」看起来是"对的"，恰恰是因为它
+     *   `_resolvedLocalPath != null` ⇒ 在 :1600 那行**提前 return detail** 了，
+     *   **根本走不到这里** —— 两条入口的差别不在播放流，在右栏被谁抢走。
+     *
+     * # 为什么判据必须是 `_resolvedLocalPath == null`（在线会话）而不是别的
+     * ```text
+     * 标题回退**仍然需要**：本地会话下宿主没给 `localMeta` 的那个入口
+     *   （收藏/首页收藏里的本地条目，T27-04）只能靠标题认回它的 CachedWork，
+     *   那正是「已下载」列表的数据来源。
+     * ⇒ 它不是"坏代码"，只是**用错了会话**：在线条目的右栏不该被磁盘抢。
+     * ```
+     *
+     * ⚠️ 规范化路径那一档（上面 `canonicalLocalPath(_contentId) == w.path`）
+     *    **保持不变** —— 在线 id（如 `cycani:12345`）规范化后绝无可能等于
+     *    某个磁盘目录的绝对路径，所以它天然只在本地会话命中，无需再加守卫。
+     */
+    if (_resolvedLocalPath == null) return null;
+
+    // 回退：按标题认（本地会话且宿主没给 localMeta 时只能用标题）
     // ⚠️ `_detailTitleForDownloads` 的类型是**非空** String（见它的 getter），
     //    所以这里只能判 isEmpty，不能判 `!= null`（那会被 analyzer 判为死代码）。
     final t = _detailTitleForDownloads;
@@ -1141,7 +1230,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
 
   /// ⇒ 只在**本地会话**下查（在线页不需要，那里的进度在章节里就有）
   Future<void> _loadLocalProgress() async {
-    if (widget.localPath == null) return;
+    if (_resolvedLocalPath == null) return; // ★ T27-04：判据统一走本页裁决值
     try {
       final all = await SourinApi.listAllProgress();
       if (!mounted) return;
@@ -1413,17 +1502,19 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
       isTv: widget.isTv,
       isTouchOnly: widget.isTouchOnly,
       /*
-       * ★★★ task-12 ④：本地文件路径**原样转发**给播放器（见构造参数处的说明）。
+       * ★★★ task-12 ④ + T27-04：本地文件路径转发给播放器。
        *
-       * ⚠️ 必须**逐字转发**而不是在这里做判断 ——
-       *    「有没有旁文件 ⇒ 走在线还是走本地」这个裁决在 `shell.dart:4773` 已经做完，
-       *    本页只负责把值带下去。在这里再判一次就是重复实现，两边迟早不一致。
+       * T27-04 改动：转发值从 widget.localPath 换成 [_resolvedLocalPath] ——
+       *   已缓存页入口两者恒等（逐字节不变）；收藏入口（shell._openDetail，
+       *   不带 localPath）现在也解析出本地路径 ⇒ 播放器走本地短路，不再拿
+       *   「local:绝对路径」去问核心要 127.0.0.1 流（Owner 图4/图5 的失败）。
+       *   裁决在本页 initState 一次性做完，这里仍然不做第二次判断。
        *
        * ★ 加完之后，本构造点带 `widget.*` 直传的字段 = **12 个**
        *   （原本 11 个：provider/id/title/cover/episodeId/episodeTitle/sourceCode/
        *     episodes/episodeIndex/isTv/isTouchOnly；另加本页自算的 key 与 hasRightDetailBar）。
        */
-      localPath: widget.localPath,
+      localPath: _resolvedLocalPath,
       /*
        * ★★★ OPS-13（反馈 C）：原来源（站点 provider + 站点内容 id）转发给播放器。
        *
@@ -1468,19 +1559,21 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
        */
       currentEpisodeId: _currentEpisodeId,
       /*
-       * ★★★ task-12 ⑤：本地播放时把详情区切成**本地模式**（见 _localEpisodeRefs 上面那段）。
-       * ⚠️ localFile 直接取 widget.localPath —— 它是 shell.dart:4773 一次性裁决的结果，
-       *    本页**不重判**（重判就是第二个判据来源）。
+       * ★★★ task-12 ⑤ + T27-04：本地播放时把详情区切成**本地模式**（见 _localEpisodeRefs 上面那段）。
+       * ⚠️ T27-04：判据统一走本页 [_resolvedLocalPath] —— 已缓存页入口与
+       *    widget.localPath 恒等（逐字节不变）；收藏入口（不带 localPath）
+       *    现在也进本地模式（此前 localFile=null ⇒ 详情页走在线 getDetail ⇒「无法路由」。
+       *    裁决只在 initState 做一次，这里不重判）。
        */
-      localFile: widget.localPath,
+      localFile: _resolvedLocalPath,
       localTitle: widget.title,
       localCover: widget.cover,
       localMeta: widget.localMeta,
-      localEpisodeCount: widget.localPath == null ? 0 : _localEpisodeRefs.length,
-      localEpisodes: widget.localPath == null
+      localEpisodeCount: _resolvedLocalPath == null ? 0 : _localEpisodeRefs.length,
+      localEpisodes: _resolvedLocalPath == null
           ? const <LocalEpisodeRef>[]
           : _localEpisodeRefs,
-      onPlayLocalEpisode: widget.localPath == null ? null : _onPlayLocalEpisode,
+      onPlayLocalEpisode: _resolvedLocalPath == null ? null : _onPlayLocalEpisode,
       /*
        * ★ task-17 ③：删完**真刷新** —— 由本页重新扫盘（扫盘是本页的职责，
        *    详情区不自己扫，见 DetailPage.localEpisodes 的注释）。
@@ -1540,10 +1633,11 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
          * ⚠️ 这不是把功能删了：一集一行**还在**，只是搬进了详情区 ——
          *    因为 Owner 要的是「其他都要跟在线播放页一致」，
          *    而一个页面上放两套右栏做不到这件事。
-         * ⚠️ 判据用 widget.localPath（本地会话），**不**用 provider 等于 local：
+         * ⚠️ 判据用本页 [_resolvedLocalPath]（本地会话），**不**用 provider 等于 local：
          *    后者是一个字符串字面量，改名就静默失效。
+         *    T27-04：收藏入口（widget.localPath 为 null 但 id 指向存在文件）也在此收进详情区。
          */
-        if (widget.localPath != null) return detail;
+        if (_resolvedLocalPath != null) return detail;
 
         final mine = all.where((t) => t.title == _detailTitleForDownloads).toList();
         final onDisk = _downloadedItems;

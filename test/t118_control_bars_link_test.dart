@@ -460,12 +460,30 @@ void main() {
        *   ② 追加分支必须是 `_canUseTopBarBack`（**不是**写死 true、不是其它字段）。
        * ⚠️ 若有人把 ① 拿掉（写死 true 或换成别的），本条立刻红 —— 联动保护不丢。
        */
+      /*
+       * ★★★ T27-13（Owner 第 3 / 5 条「上下栏必须同时消失/显示」）更新
+       *
+       * # 为什么又改
+       * ```text
+       * 缺陷④ 之后顶栏正常支仍**内联**自己的判据：
+       *   visible = ((_controlsVisible && _error == null)
+       *              && !_videoOutputDead && _liveAudioOnlyNotice == null)
+       *             || _canUseTopBarBack
+       * 而底栏门控是 11 项（多 7 个 !_xSheetOpen）⇒ 两栏各算各的，会分裂。
+       * 修法 = 抽 `bool get _chromeVisible`（11 项），顶栏正常支与底栏门控
+       *       共读它。判据的**实质不变**：顶栏显隐仍由「控制条总开关」主导，
+       *       错误态返回口 `|| _canUseTopBarBack` 仍是互斥分支。
+       * ```
+       * ⇒ 断言从「顶栏内联的 11 项字面」改为「顶栏读唯一真源 `_chromeVisible`」，
+       *   并把 11 项门控的**字面**钉在 `_chromeVisible` 上（不再是渲染点 if）。
+       */
       expect(
-        src.contains('(_controlsVisible && _error == null) ||'),
+        src.contains('visible: _chromeVisible || _canUseTopBarBack,'),
         isTrue,
         reason:
-            '★ 顶栏 visible 的主真源必须仍是 `_controlsVisible && _error == null` ——'
-            '那是联动的唯一真源；改成别的判据（或写死 true）就不再联动了',
+            '★ 顶栏 visible 必须 = `_chromeVisible || _canUseTopBarBack` ——'
+            '正常支读与底栏**同一个**真源（T27-13），错误态返回口仍是互斥分支。'
+            '（改成别的判据、或把 11 项内联回来，本条红。）',
       );
       expect(
         src.contains('_canUseTopBarBack,'),
@@ -474,6 +492,19 @@ void main() {
             '★ task-7 追加的错误态分支必须还是 `_canUseTopBarBack`（互斥分支），'
             '不许换成写死 true 或别的字段',
       );
+      // ★ T27-13：唯一真源 `_chromeVisible` 必须存在且含那两条降级判据。
+      final iChrome = src.indexOf('bool get _chromeVisible =>');
+      expect(iChrome, greaterThanOrEqualTo(0),
+          reason: '★ 唯一真源 `_chromeVisible` 不见了（顶/底栏又各算各的门控了）');
+      final chromeExpr = src.substring(iChrome, iChrome + 400);
+      expect(chromeExpr.contains('!_videoOutputDead'), isTrue,
+          reason: '★★ 唯一真源必须含 `!_videoOutputDead` ——'
+              '否则「画面无法显示」横幅出现时两栏会分裂（Owner 缺陷④）');
+      expect(chromeExpr.contains('_liveAudioOnlyNotice == null'), isTrue,
+          reason: '★★ 唯一真源必须含 `_liveAudioOnlyNotice == null`'
+              '（同一条"两条横幅都替代底栏"的纪律）');
+      expect(chromeExpr.contains('_controlsVisible'), isTrue,
+          reason: '★ 唯一真源必须仍以 `_controlsVisible`（控制条总开关）为主真源');
       final iTop = src.indexOf('bool get _canUseTopBarBack =>');
       expect(iTop, greaterThan(0), reason: '★ `_canUseTopBarBack` 不见了');
       final topDef = src.substring(iTop, iTop + 200);
@@ -490,9 +521,10 @@ void main() {
         reason: '★★ 浮层打开时不许抢返回（与 `_canUseFloatingBack` 同一条纪律）',
       );
       expect(
-        src.contains('if (_controlsVisible &&'),
+        src.contains('if (!_chromeVisible && !keepForFade) {'),
         isTrue,
-        reason: '★ 底栏的门控消失了（两条读的必须是同一个字段）',
+        reason: '★ 底栏的显隐必须读唯一真源 `_chromeVisible`（T27-13）——'
+            '两条读的必须是同一个真源；`keepForFade` 是"淡出窗口内留在树上"那半支',
       );
     });
 

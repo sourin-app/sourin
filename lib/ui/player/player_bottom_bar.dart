@@ -30,6 +30,7 @@
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/danmaku.dart' show DanmakuConfig;
 import '../../core/models.dart' show StreamCandidate;
 import '../tokens.dart';
 import 'player_more_menu.dart';
@@ -42,7 +43,22 @@ class PlayerPopoverIds {
   static const rate = 'rate';
   static const quality = 'quality';
   static const tracks = 'tracks';
-  static const danmaku = 'danmaku';
+
+  /// ★★★ Owner 1011 反馈第 1 条：弹幕**轻量悬浮窗**的 id
+  ///
+  /// # 为什么又加回来了（上一轮刚删）
+  /// ```text
+  /// 上一轮把弹幕做成「开关 + 设置」两枚**直连**按钮（开关直连 onDanmakuToggle、
+  /// 设置直连 onDanmakuSettings 进全屏大卡片），于是 `danmaku` 这个 popover id
+  /// 被判为死常量、删掉了（见 t27_w14 A4）。
+  /// 但 Owner 这次的原话要的是 B 站那种**贴按钮的小卡片**（图 1）：
+  ///   点齿轮 ⇒ 弹出「按类型过滤 + 四个滑杆 + 高级设置」的轻量窗；
+  ///   最后一行「高级设置」⇒ 才进现在的全屏大卡片。
+  /// ⇒ 弹幕重新需要一个 popover 入口，id 取 `danmakuQuick`（不是旧的 `danmaku`
+  ///   —— 旧名会与「弹幕开关」那枚混淆，且旧名在 t27_w14 里被钉过"已下线"）。
+  /// ```
+  static const danmakuQuick = 'danmakuQuick';
+
   static const more = 'more';
 }
 
@@ -56,6 +72,7 @@ class _BarAction {
     this.enabled = true,
     this.active = false,
     this.popoverId,
+    this.key,
   });
 
   final IconData icon;
@@ -67,6 +84,10 @@ class _BarAction {
 
   /// 非 null ⇒ 这枚按钮的点击改由 popover 控制器接管（点一下开小窗）
   final String? popoverId;
+
+  /// 门禁/测试用 key（弹幕开关 / 弹幕设置两枚按 id 对齐；
+  /// 见 test/t27_w14_danmaku_bar_form_test.dart）
+  final Key? key;
 }
 
 /// 「更多」浮层需要的数据（宿主算好传进来）
@@ -83,6 +104,101 @@ class PlayerMoreMenuData {
   });
 
   final List<MoreMenuGroup> groups;
+}
+
+/// ★★★ Owner 1011 反馈第 1 条：弹幕**轻量悬浮窗**要展示的全部状态与回调
+///
+/// # 形态（对齐 B 站图 1）
+/// ```text
+/// ① 按类型过滤：滚动 / 顶部 / 底部（三枚一键开关）
+/// ② 四根滑杆（**可直接拖**）：字号 / 不透明度 / 速度 / 显示区域
+/// ③ 最后一行「高级设置」⇒ 进现在的全屏大卡片（DanmakuSettingsDialog）
+/// ```
+///
+/// # 为什么收成一个数据对象，而不是像底栏那样再摊成十几个参数
+/// ```text
+/// PlayerBottomBar 的构造参数已经很长（20+）。这次纯新增一组「弹幕快捷项」，
+/// 摊平会再长 14 行、且这 14 行永远一起传一起不传 ⇒ 收成 `DanmakuQuickPanelData`
+/// 一个可空参数：宿主不传（老调用点 / 测试夹具）⇒ 齿轮退回「直达大卡片」的
+/// 旧行为，一个字都不用改（见 `_actions` 里那枚齿轮的注释）。
+/// ```
+///
+/// # 值从哪来 —— 与全屏大卡片**同一份真源**（不许各读各的）
+/// ```text
+/// 四个滑杆的值 = player_page 的 `_danmakuSettings.fontScale/opacity/speed/area`
+/// （它本身就是 `DanmakuConfig` 的快照）；
+/// 三个类型开关 = `DanmakuConfig.showScroll/showTop/showBottom`。
+/// 拖动/点开关 ⇒ 走 `DanmakuConfig.setXxx` + 宿主 setState ⇒ 实时生效
+/// （DanmakuOverlay 的 `_ensureLayout` 会因 key 变化重排，与面板同一条路）。
+/// ```
+///
+/// ⚠️ 本项目**没有**的能力（B 站图 1 里有、这里如实不画假开关）：
+///   「彩色 / 高级」类型过滤、「弹幕随屏幕缩放」「防挡字幕」「智能防挡弹幕」
+///   「同步屏蔽列表」——`DanmakuConfig` / `DanmakuComment` 里都没有对应字段。
+class DanmakuQuickPanelData {
+  const DanmakuQuickPanelData({
+    required this.fontScale,
+    required this.opacity,
+    required this.speed,
+    required this.area,
+    required this.showScroll,
+    required this.showTop,
+    required this.showBottom,
+    required this.colorOnly,
+    required this.onSetFontScale,
+    required this.onSetOpacity,
+    required this.onSetSpeed,
+    required this.onSetArea,
+    required this.onSetShowScroll,
+    required this.onSetShowTop,
+    required this.onSetShowBottom,
+    required this.onSetColorOnly,
+    required this.onOpenAdvanced,
+    this.onAreaGuide,
+  });
+
+  /// 字号缩放（对应 `DanmakuConfig.fontScale`）
+  final double fontScale;
+
+  /// 不透明度（对应 `DanmakuConfig.opacity`）
+  final double opacity;
+
+  /// 一条弹幕从右到左的秒数（对应 `DanmakuConfig.speed`，越大越慢）
+  final double speed;
+
+  /// 纵向可占用比例（对应 `DanmakuConfig.area`）
+  final double area;
+
+  /// 三类弹幕的显示开关（对应 `DanmakuConfig.showScroll/showTop/showBottom`）
+  final bool showScroll;
+  final bool showTop;
+  final bool showBottom;
+
+  /// ★ 2026-10-11：「只显示彩色弹幕」开关（对应 `DanmakuConfig.colorOnly`）
+  final bool colorOnly;
+
+  final ValueChanged<double> onSetFontScale;
+  final ValueChanged<double> onSetOpacity;
+  final ValueChanged<double> onSetSpeed;
+  final ValueChanged<double> onSetArea;
+
+  final ValueChanged<bool> onSetShowScroll;
+  final ValueChanged<bool> onSetShowTop;
+  final ValueChanged<bool> onSetShowBottom;
+
+  /// ★ 2026-10-11：写「只显示彩色弹幕」
+  final ValueChanged<bool> onSetColorOnly;
+
+  /// ★ 2026-10-11（Owner 第 ④ 条）：拖动「显示区域」滑杆的**开始/结束**通知。
+  ///
+  /// 宿主（player_page）据此在拖动期间点亮画面上的引导遮罩
+  /// （`DanmakuOverlay.areaGuide`）。**不传**（null，老调用点 / 测试夹具）⇒
+  /// 滑杆照常拖动、逐帧回调 `onSetArea`，只是**不画**遮罩 —— 与只加遮罩前
+  /// 逐字一致，不会让老调用点编译不过。
+  final ValueChanged<bool>? onAreaGuide;
+
+  /// 「高级设置」⇒ 宿主打开全屏大卡片（`_openDanmakuSettings`）
+  final VoidCallback onOpenAdvanced;
 }
 
 /// 底栏（桌面 / 手机 / TV 共用）
@@ -122,6 +238,7 @@ class PlayerBottomBar extends StatelessWidget {
     this.danmakuBusy = false,
     this.onDanmakuToggle = _noop,
     this.onDanmakuSettings = _noop,
+    this.danmakuQuick,
     this.zoomOpen = false,
     this.videoZoom = 100,
     this.onVideoZoom,
@@ -181,6 +298,13 @@ class PlayerBottomBar extends StatelessWidget {
   final VoidCallback onDanmakuToggle;
   final VoidCallback onDanmakuSettings;
 
+  /// ★★★ Owner 1011 反馈第 1 条：齿轮那枚弹出的**轻量悬浮窗**数据。
+  ///
+  /// 传 null（老调用点 / 测试夹具）⇒ 齿轮退回「直达全屏大卡片」的旧行为。
+  /// 传非 null ⇒ 齿轮变成 popover 入口（`PlayerPopoverIds.danmakuQuick`），
+  /// 弹出的面板里最后一行「高级设置」仍回到 [onDanmakuSettings]。
+  final DanmakuQuickPanelData? danmakuQuick;
+
   final bool zoomOpen;
   final double videoZoom;
   final ValueChanged<double>? onVideoZoom;
@@ -208,6 +332,15 @@ class PlayerBottomBar extends StatelessWidget {
     2.0,
     3.0,
   ];
+
+  /// ★ Owner 1011 反馈第 1 条：弹幕的**两枚直连入口**（开关 / 设置）
+  ///
+  /// 与 `PlayerProgressSlider.thumbKey` 同款 —— 给门禁一个稳定的抓手，
+  /// 免得测试靠 tooltip（开关那枚是普通 `TextButton`，没有 `Tooltip` 祖先，
+  /// `find.byTooltip` 找不到）。见 test/t27_w14_danmaku_bar_form_test.dart。
+  static const Key danmakuToggleKey = ValueKey<String>('t27-danmaku-toggle');
+  static const Key danmakuSettingsKey =
+      ValueKey<String>('t27-danmaku-settings');
 
   List<PopoverOption<double>> rateOptions() => [
     for (final r in kRates)
@@ -268,11 +401,40 @@ class PlayerBottomBar extends StatelessWidget {
           active: controller.isOpen(PlayerPopoverIds.tracks),
         ),
       _BarAction(
+        // ★★★ Owner 1011 反馈第 1 条（弹幕做成 B 站那种形态）：
+        //   「一个开关,一个设置」⇒ 开关这枚**直接开关弹幕**（onTap 而不是
+        //   popoverId）—— 点一下就是开/关，不再弹那个「关闭弹幕 / 弹幕设置」
+        //   两层小菜单。设置那枚（下面紧接着的全新一枚）才是「弹出来面板
+        //   直接操作」。
+        //
+        //   图标/高亮沿用改前：开=subtitle 图标 + 青色高亮，关=subtitles_off。
+        key: danmakuToggleKey,
         icon: danmakuEnabled ? Icons.subtitles : Icons.subtitles_off,
         label: '弹幕',
-        tooltip: danmakuBusy ? '弹幕加载中…' : '弹幕',
+        tooltip: danmakuBusy ? '弹幕加载中…' : (danmakuEnabled ? '关闭弹幕' : '开启弹幕'),
         active: danmakuEnabled,
-        popoverId: PlayerPopoverIds.danmaku,
+        onTap: onDanmakuToggle,
+      ),
+      _BarAction(
+        // ★★★ Owner 1011 反馈第 1 条（弹幕做成 B 站那种形态）：
+        //   设置这枚点开的是一个**轻量悬浮窗**（B 站图 1 那种贴按钮的小卡片：
+        //   按类型过滤 + 四个可直接拖的滑杆 + 最后一行「高级设置」）。
+        //
+        //   ⚠️ 与「开关」那枚的区别（别照抄）：
+        //     开关那枚是**纯动作**（onTap，直连开关，不弹任何东西）；
+        //     设置这枚是 **popover 入口**（popoverId，点击/悬停弹小窗）。
+        //   ⚠️ 这里**不能**同时给 onTap：`_PopoverButton` 里一旦 onTap 非空
+        //      （player_bottom_bar.dart 的 `onPressed: onTap ?? toggle`），
+        //      点击就走 onTap、面板永远打不开 —— 于是「高级设置」那行就没了意义
+        //      （齿轮本该先弹小窗）。
+        //
+        //   宿主没给 `danmakuQuick`（老调用点 / 测试夹具）⇒ 退回旧行为：
+        //   直连 `onDanmakuSettings`（一次点开全屏大卡片），保兼容。
+        key: danmakuSettingsKey,
+        icon: Icons.tune,
+        tooltip: '弹幕设置',
+        popoverId: danmakuQuick == null ? null : PlayerPopoverIds.danmakuQuick,
+        onTap: danmakuQuick == null ? onDanmakuSettings : null,
       ),
       _BarAction(
         icon: Icons.more_horiz,
@@ -340,7 +502,7 @@ class PlayerBottomBar extends StatelessWidget {
         rateOptions().map(_rateRow).toList(),
       ),
       PlayerPopoverIds.quality when qualityOptions.isNotEmpty => _panelSurface(
-        qualityOptions.map(_row).toList(),
+        _qualityRows(),
       ),
       PlayerPopoverIds.tracks when trackGroups.isNotEmpty => _panelSurface([
         for (final entry in trackGroups.entries) ...[
@@ -348,7 +510,8 @@ class PlayerBottomBar extends StatelessWidget {
           for (final o in entry.value) _trackRow(entry.key, o),
         ],
       ], width: 220),
-      PlayerPopoverIds.danmaku => _danmakuPanel(),
+      PlayerPopoverIds.danmakuQuick when danmakuQuick != null =>
+        _danmakuQuickPanel(danmakuQuick!),
       PlayerPopoverIds.more => _morePanel(),
       _ => const SizedBox.shrink(),
     };
@@ -372,9 +535,287 @@ class PlayerBottomBar extends StatelessWidget {
         ),
       );
 
-  Widget _row(PopoverOption<String> o) => PopoverRow(
-    label: o.label,
-    hint: o.hint,
+  // ═══════════════════════════════════════════════════════════════════════
+  //  ★★★ Owner 1011 反馈第 1 条：弹幕轻量悬浮窗（B 站图 1 那种）
+  // ═══════════════════════════════════════════════════════════════════════
+  //
+  //  # 宽度为什么是 300（不是默认的 168）
+  //  ```text
+  //  168 只够放「一行文字 + 一个对勾」的倍速 / 清楚度选单。
+  //  这里每根滑杆都要三样东西并排：标签(56) + 滑杆(Expanded) + 读数(46)
+  //  ⇒ 168 会把滑杆挤成一根几乎拖不动的短棍（Owner 明确要「直接拖」
+  //    的操作感）。300 下中间那段滑杆约 150px，拖动手感够。
+  //  ```
+  //
+  //  # 最后一行「高级设置」
+  //  ```text
+  //  它**不关**面板（不像选清晰度那样点完 close）—— 用户进的是更深的一层，
+  //  关不关小窗无所谓，但保留小窗更自然（回来后还在原位）。
+  //  真正的关面板交给宿主的 `_openDanmakuSettings`（它会先把控制条收起来、
+  //  再挂全屏大卡片）。
+  //  ```
+  static const Key danmakuQuickPanelKey =
+      ValueKey<String>('t27-danmaku-quick-panel');
+  static const Key danmakuQuickAdvancedKey =
+      ValueKey<String>('t27-danmaku-quick-advanced');
+
+  /// 三类弹幕「一键开关」的 key（门禁抓手，按 id 对齐）
+  static const Key danmakuQuickScrollKey =
+      ValueKey<String>('t27-danmaku-quick-scroll');
+  static const Key danmakuQuickTopKey =
+      ValueKey<String>('t27-danmaku-quick-top');
+  static const Key danmakuQuickBottomKey =
+      ValueKey<String>('t27-danmaku-quick-bottom');
+
+  /// ★ 2026-10-11（Owner 第 1 条续）：第四枚类型开关「彩色」
+  /// （= 只显示彩色弹幕，对应 `DanmakuConfig.colorOnly`）
+  static const Key danmakuQuickColorOnlyKey =
+      ValueKey<String>('t27-danmaku-quick-coloronly');
+
+  /// 四根滑杆的 key（门禁抓手）
+  static const Key danmakuQuickFontScaleKey =
+      ValueKey<String>('t27-danmaku-quick-fontscale');
+  static const Key danmakuQuickOpacityKey =
+      ValueKey<String>('t27-danmaku-quick-opacity');
+  static const Key danmakuQuickSpeedKey =
+      ValueKey<String>('t27-danmaku-quick-speed');
+  static const Key danmakuQuickAreaKey =
+      ValueKey<String>('t27-danmaku-quick-area');
+
+  /// 弹幕轻量悬浮窗的本体
+  Widget _danmakuQuickPanel(DanmakuQuickPanelData d) => PlayerPopoverSurface(
+    width: 300,
+    child: Column(
+      key: danmakuQuickPanelKey,
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const PopoverGroupLabel('显示哪几类'),
+        // ① 按类型过滤 —— 四枚一键开关（滚动 / 顶部 / 底部 / 彩色）
+        //
+        // ★ 2026-10-11（Owner 第 1 条续）：补上第四枚「彩色」。
+        //   B 站图 1 里就是四枚；本项目的 `DanmakuComment.color` **有**颜色字段，
+        //   所以「彩色」是**有数据支持**的真开关（不是假开关）——
+        //   语义 = 只显示彩色弹幕（白色弹幕隐藏），见 `DanmakuConfig.colorOnly`。
+        //   ⚠️ 「高级」这一枚**不做**：`DanmakuComment` 里没有任何能区分
+        //   "高级弹幕"的字段（无样式/定位/动画信息）⇒ 无数据支持，如实不画。
+        Padding(
+          padding: const EdgeInsets.fromLTRB(Sp.x3, 0, Sp.x3, Sp.x1),
+          child: Row(
+            children: [
+              _quickTypeChip(
+                key: danmakuQuickScrollKey,
+                label: '滚动',
+                on: d.showScroll,
+                onTap: () => d.onSetShowScroll(!d.showScroll),
+              ),
+              const SizedBox(width: Sp.x2),
+              _quickTypeChip(
+                key: danmakuQuickTopKey,
+                label: '顶部',
+                on: d.showTop,
+                onTap: () => d.onSetShowTop(!d.showTop),
+              ),
+              const SizedBox(width: Sp.x2),
+              _quickTypeChip(
+                key: danmakuQuickBottomKey,
+                label: '底部',
+                on: d.showBottom,
+                onTap: () => d.onSetShowBottom(!d.showBottom),
+              ),
+              const SizedBox(width: Sp.x2),
+              _quickTypeChip(
+                key: danmakuQuickColorOnlyKey,
+                label: '彩色',
+                on: d.colorOnly,
+                onTap: () => d.onSetColorOnly(!d.colorOnly),
+              ),
+            ],
+          ),
+        ),
+        const PopoverDivider(),
+        const PopoverGroupLabel('显示'),
+        // ② 四根滑杆 —— **直接拖**（拖动中每一帧都回调，实时生效）
+        _quickSlider(
+          key: danmakuQuickFontScaleKey,
+          label: '字号',
+          value: d.fontScale,
+          min: DanmakuConfig.fontScaleMin,
+          max: DanmakuConfig.fontScaleMax,
+          readout: '${(d.fontScale * 100).round()}%',
+          onChanged: d.onSetFontScale,
+        ),
+        _quickSlider(
+          key: danmakuQuickOpacityKey,
+          label: '不透明度',
+          value: d.opacity,
+          min: DanmakuConfig.opacityMin,
+          max: DanmakuConfig.opacityMax,
+          readout: '${(d.opacity * 100).round()}%',
+          onChanged: d.onSetOpacity,
+        ),
+        _quickSlider(
+          key: danmakuQuickSpeedKey,
+          label: '速度',
+          value: d.speed,
+          min: DanmakuConfig.speedMin,
+          max: DanmakuConfig.speedMax,
+          readout: _speedLabel(d.speed),
+          onChanged: d.onSetSpeed,
+        ),
+        _quickSlider(
+          key: danmakuQuickAreaKey,
+          label: '显示区域',
+          value: d.area,
+          min: DanmakuConfig.areaMin,
+          max: DanmakuConfig.areaMax,
+          readout: '${(d.area * 100).round()}%',
+          onChanged: d.onSetArea,
+          // ★ 2026-10-11（Owner 第 ④ 条）：拖动期间点亮画面上的引导遮罩
+          //   （起手 = 开始拖 ⇒ 显示；松手 = 结束拖 ⇒ 淡出）。
+          //   `onAreaGuide` 为 null（老调用点 / 测试夹具）⇒ 传 null，不画遮罩。
+          onGuideStart: d.onAreaGuide == null
+              ? null
+              : () => d.onAreaGuide!(true),
+          onGuideEnd:
+              d.onAreaGuide == null ? null : () => d.onAreaGuide!(false),
+        ),
+        const PopoverDivider(),
+        // ③ 高级设置 ⇒ 进全屏大卡片（AppId / 屏蔽词 / 重新获取…都在那）
+        PopoverRow(
+          key: danmakuQuickAdvancedKey,
+          label: '高级设置',
+          hint: '凭证 / 屏蔽词',
+          onTap: d.onOpenAdvanced,
+        ),
+      ],
+    ),
+  );
+
+  /// 类型一键开关（B 站那种小图标按钮；开 = 青色高亮）
+  Widget _quickTypeChip({
+    required Key key,
+    required String label,
+    required bool on,
+    required VoidCallback onTap,
+  }) {
+    const accent = Color(0xFF32C7FF);
+    return Expanded(
+      child: InkWell(
+        key: key,
+        onTap: onTap,
+        borderRadius: Radii.rSm,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: Sp.x1),
+          decoration: BoxDecoration(
+            color: on ? accent.withValues(alpha: 0.18) : Colors.transparent,
+            borderRadius: Radii.rSm,
+            border: Border.all(
+              color: on ? accent : const Color(0x33FFFFFF),
+            ),
+          ),
+          child: Text(
+            label,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: on ? accent : const Color(0xFFB9BEC6),
+              fontSize: FontSizes.cap,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 弹幕速度读数：B 站是「极慢/慢/标准/快/极快」这种档位词。
+  /// 本项目的 `speed` 是「走完一屏的秒数」（越大越慢）⇒ 按分档给出中文，
+  /// 与全屏大卡片里那根滑杆显示的 `8.0s` 并存（档位词更好懂，秒数更精确）。
+  static String _speedLabel(double seconds) {
+    if (seconds >= 14) return '极慢';
+    if (seconds >= 10) return '慢';
+    if (seconds >= 6.5) return '标准';
+    if (seconds >= 4.5) return '快';
+    return '极快';
+  }
+
+  /// 面板里的一根滑杆：标签 + 滑杆（直接拖）+ 右侧读数
+  ///
+  /// [onGuideStart] / [onGuideEnd]：只在「显示区域」那根上传 —— 起手/松手时
+  /// 通知宿主开关画面上的引导遮罩（其它滑杆传 null，行为不变）。
+  Widget _quickSlider({
+    required Key key,
+    required String label,
+    required double value,
+    required double min,
+    required double max,
+    required String readout,
+    required ValueChanged<double> onChanged,
+    VoidCallback? onGuideStart,
+    VoidCallback? onGuideEnd,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Sp.x3, 0, Sp.x3, 0),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 56,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: Color(0xFFB9BEC6),
+                fontSize: FontSizes.cap,
+              ),
+            ),
+          ),
+          Expanded(
+            // ★ 用 Listener 抓"起手/松手"，包住 Slider —— 拖动中每一帧的 onChanged
+            //   仍由 Slider 自己发（实时生效那条线一个字没动）；
+            //   这里只**额外**加一对边界事件，去驱动引导遮罩的显隐。
+            child: Listener(
+              onPointerDown: onGuideStart == null
+                  ? null
+                  : (_) => onGuideStart(),
+              onPointerUp: onGuideEnd == null ? null : (_) => onGuideEnd(),
+              onPointerCancel: onGuideEnd == null ? null : (_) => onGuideEnd(),
+              child: Slider(
+                key: key,
+                value: value.clamp(min, max),
+                min: min,
+                max: max,
+                onChanged: onChanged,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 46,
+            child: Text(
+              readout,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                color: Color(0xFF8C8C8C),
+                fontSize: FontSizes.cap,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 清晰度行 —— [labelOverride] 用来把「只显示清晰度」的显示文字塞进来
+  /// （见 [_qualityRows] 的取舍说明）；传 null 时退回 `o.label`。
+  ///
+  /// ⚠️ **`labelOverride` 非空时必须同时抑制 `hint`**（Owner 1011 复报：
+  ///    「bilibili 的怎么还是两个重复的 1080p?」）。
+  /// ```text
+  /// 我第一版只换了 `label` 却仍传 `hint: o.hint` ⇒ 行里画出
+  ///   「1080P        1080P」——左边是 override、右边是原 hint，**同一个值画两遍**。
+  /// ⇒ override 非空时传 `hint: null`（那份信息已经在 label 里了）。
+  /// ```
+  Widget _row(PopoverOption<String> o, {String? labelOverride}) => PopoverRow(
+    label: labelOverride ?? o.label,
+    // ★ 只在**没被 override** 时才把 hint 画在右端，否则同一档会重复两次
+    hint: labelOverride == null ? o.hint : null,
     checked: o.checked,
     onTap: o.enabled
         ? () {
@@ -383,6 +824,79 @@ class PlayerBottomBar extends StatelessWidget {
           }
         : null,
   );
+
+  /// ★★★ Owner 1011 反馈第 4 条：清晰度面板**只显示清晰度**，不再显示来源名。
+  ///
+  /// # Owner 原话（逐字）
+  /// ```text
+  /// > 4.然后还有这个清晰度,前面的无关紧要的信息就不用展示了吧?
+  /// ```
+  /// 他后来澄清：「前面的无关紧要的信息」= 每行左侧的**来源名**
+  /// （截图里那个被省略号截断的「哔哩哔哩 …」），只保留「1080P / 720P / 480P」。
+  ///
+  /// # 数据口径（为什么 `hint` 才是清晰度、`label` 是来源名）
+  /// ```text
+  /// player_page.dart 的 `_qualityPopoverOptions()`：
+  ///   label: s.label ?? s.quality ?? '默认线路'   ← 来源 / 线路名（长，被 ellipsis 截断）
+  ///   hint : s.quality                            ← 清晰度档位（1080P）
+  /// 而 StreamCandidate（models.dart:393-398）里：
+  ///   quality = 清晰度标签（如 "1080P"）  ← 真正想给用户看的
+  ///   label   = 线路名（如 "官方 HLS" / "CDN 直连" / "声明式"）← Owner 说的「无关紧要」
+  /// ```
+  /// 所以「只显示清晰度」= 主文字取 `hint`（quality），
+  /// 而不是继续用 `label` 再补一个 hint。
+  ///
+  /// # ⚠️ 一个必须处理的坑：同清晰度多线路
+  /// ```text
+  /// 直接无脑丢掉来源名，会在「同一档清晰度来自不同线路」时**无法区分**
+  /// （两行都写 1080P，用户不知道该点哪个）。
+  /// ```
+  /// ## 这在本仓的真实数据里会发生吗 —— 已核实（读源码，不是猜）
+  /// ```text
+  /// ① declarative.rs:165 `variants: HashMap<String, String>` ⇒ 变体键**唯一**
+  ///    （键就是 quality，`.with_quality(label)`，label 恒为来源名 "声明式"）。
+  /// ② cctv.rs:593 的 [("hls1","高清"),("hls2","标清")] 与 :705 的四档 CDN
+  ///    （超清/高清/标清/流畅）—— 同一来源内 quality 逐条**不同**。
+  /// ③ `resolve_stream`（playback.rs:149）**不做任何去重或合并**：
+  ///    它只把一个 provider 的 `resolve()` 结果原样返回（仅套代理）。
+  /// ⇒ 内置源当前**不会**产生「同 quality 不同 label」。
+  /// ```
+  /// ## 但插件（JS）是**用户可装**的，不能假设这个不变量永远成立
+  /// ```text
+  /// 插件出口的 StreamCandidate 完全由脚本自己写（见 plugins/*.js），
+  /// 一个第三方插件完全可以返回两条 quality 都叫 "1080P"、label 不同的候选。
+  /// 与其赌「不可能」，这里做成**按需消歧**：
+  ///   默认 只显示清晰度；**仅当某一档清晰度出现不止一次**时，
+  ///   才给**那几行**附上来源名，保证任何情况下都点得对。
+  /// ⇒ 常见形态（Owner 截图那种每档一条）与他的要求**逐字一致**；
+  ///   罕见形态（同档多来源）也不会变成两行一模一样的字。
+  /// ```
+  ///
+  /// ⚠️ 复用 [_row]（不是新写一套）：`_row` 的 onTap / checked 逻辑必须原样保留
+  ///    （`_trackRow` 是 CR-17 明确要求**分开**的，别动它）。
+  List<Widget> _qualityRows() {
+    // 清晰度的显示文字：优先 quality（hint），退回 label，再退回占位。
+    String tierOf(PopoverOption<String> o) {
+      final q = o.hint;
+      if (q != null && q.isNotEmpty) return q;
+      return o.label.isEmpty ? '默认' : o.label;
+    }
+
+    final tiers = <String, int>{};
+    for (final o in qualityOptions) {
+      final t = tierOf(o);
+      tiers[t] = (tiers[t] ?? 0) + 1;
+    }
+
+    return [
+      for (final o in qualityOptions)
+        if ((tiers[tierOf(o)] ?? 0) > 1)
+          // 同档多条 ⇒ 附来源名消歧（`label` 就是来源名）。
+          _row(o, labelOverride: '${tierOf(o)} · ${o.label}')
+        else
+          _row(o, labelOverride: tierOf(o)),
+    ];
+  }
 
   /// ★ CR-17：字幕 / 音轨的行**不能**复用 [_row]。
   ///
@@ -408,25 +922,6 @@ class PlayerBottomBar extends StatelessWidget {
       controller.close();
     },
   );
-
-  Widget _danmakuPanel() => _panelSurface([
-    PopoverRow(
-      label: danmakuEnabled ? '关闭弹幕' : '开启弹幕',
-      checked: danmakuEnabled,
-      onTap: () {
-        onDanmakuToggle();
-        controller.close();
-      },
-    ),
-    const PopoverDivider(),
-    PopoverRow(
-      label: danmakuBusy ? '弹幕设置（加载中…）' : '弹幕设置',
-      onTap: () {
-        onDanmakuSettings();
-        controller.close();
-      },
-    ),
-  ]);
 
   Widget _morePanel() =>
       PlayerMoreMenu(groups: more.groups, onDismiss: controller.close);
@@ -533,6 +1028,7 @@ class PlayerBottomBar extends StatelessWidget {
           for (final a in actions)
             if (a.popoverId == null && a.onTap == null)
               _BarIconButton(
+                key: a.key,
                 icon: a.icon,
                 tooltip: a.tooltip,
                 enabled: a.enabled,
@@ -545,6 +1041,7 @@ class PlayerBottomBar extends StatelessWidget {
             //   ⇒ 永远点不动、永远灰着，弹层也就永远打不开。
             else if (a.label != null || a.popoverId != null)
               _PopoverButton(
+                key: a.key,
                 controller: controller,
                 id: a.popoverId ?? '',
                 icon: a.icon,
@@ -555,6 +1052,7 @@ class PlayerBottomBar extends StatelessWidget {
               )
             else
               _BarIconButton(
+                key: a.key,
                 icon: a.icon,
                 tooltip: a.tooltip,
                 enabled: a.enabled,
@@ -613,17 +1111,28 @@ class PlayerBottomBar extends StatelessWidget {
 ///   去 clamp）。这一步只是平移，不再触发一轮布局，没有循环风险。
 /// ```
 ///
-/// # 对齐规则（三条，按优先级）
+/// # 对齐规则（Owner 1011 第 4 条后的**终版**契约）
 /// ```text
-/// ① 右缘对齐：面板右缘 = 按钮右缘（B 站 / 腾讯那一档的观感）
-/// ② 不越窗口：整块 clamp 进 [Sp.x2, 窗口宽 - Sp.x2]
-///    （宿主本来就给了 `right: Sp.x2` 的边距，这里再兜一次底）
+/// ① 横向**居中对齐到触发它的那枚按钮**（Owner 亲口澄清）：
+///    面板中心 = 按钮中心。这是"贴近按钮"与"看起来正"之间的平衡——
+///    既不像「右缘贴按钮」那样明显偏、也不会跑到屏幕正中离按钮很远。
+/// ② 贴边放不下 ⇒ 往中间挪（clamp 进 [Sp.x2, 窗口宽 - Sp.x2]）——
+///    正是 Owner 说的「除了太侧边的没空间富裕的,可以不居中」。
 /// ③ 上下：面板底边贴在按钮上沿上方 Sp.x2 —— 由宿主的 `bottom: 96` 保证；
 ///    按钮因安全区抬高时再补一个 Δ，保证缝隙恒定
 /// ```
+/// ⚠️ **一次判据反转的记录**（别照着上一版回退）：
+/// ```text
+/// 上一版把 ① 实现成「居中于**播放器/屏幕**」——那是照 Owner 原话
+///   「明明空间很多…为什么不居中」的字面理解。Owner 复核截图后澄清：
+///   他要的是「居中于**按钮**（贴近但避开边缘）」，不是屏幕正中。
+/// ⇒ 差别是**基准点**：屏幕宽/2  vs  按钮中心。
+/// ```
+/// ⚠️ 这一层被**五个** popover 共用（倍速/清晰度/字幕/弹幕/更多）⇒
+///    该规则是**通用**的，见 [_PopoverAnchorDelegate.getPositionForChild]。
 ///
-/// ⚠️ 锚点还没登记（面板先于按钮挂载的那一帧）⇒ 原样交给宿主定位，
-///    绝不猜一个位置。
+/// ⚠️ 锚点还没登记（面板先于按钮挂载的那一帧）⇒ 退回宿主给的右下角基准，
+///    绝不猜一个横向位置。
 class _PopoverAnchorLayer extends StatelessWidget {
   const _PopoverAnchorLayer({
     required this.controller,
@@ -670,23 +1179,76 @@ class _PopoverAnchorDelegate extends SingleChildLayoutDelegate {
 
   @override
   Offset getPositionForChild(Size size, Size childSize) {
-    // 宿主给的是「面板右下角贴窗口右下角（留 Sp.x2）」⇒ 锚点缺失时原样沿用
+    // 宿主给的是「面板右下角贴窗口右下角（留 Sp.x2）」⇒ 竖向基准与锚点缺失时沿用
     final fallback = Offset(
       size.width - spacing - childSize.width,
       size.height - spacing - childSize.height,
     );
-    final a = anchor;
-    if (a == null) return fallback;
 
-    // ① 右缘对齐 + ② 左右都 clamp 进窗口（窗口太窄时优先保左缘）
+    // 左右可放区间（宿主本来就留了 `right: Sp.x2` 的边距，这里再兜一次底）
     final minLeft = spacing;
     final maxLeft = size.width - spacing - childSize.width;
-    var left = a.right - childSize.width;
-    if (left > maxLeft) left = maxLeft;
-    if (left < minLeft) left = minLeft;
 
-    // ③ 底边贴按钮上沿上方 Sp.x2（按钮被安全区抬高时跟着抬）
-    final desiredBottom = a.top - spacing;
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ Owner 1011 反馈第 4 条：面板横向**居中对齐到按钮**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # Owner 原话（逐字）
+     * ```text
+     * > 然后命名空间很多,侧边又不是没空间了,为什么不居中,请修复,
+     * > 除了太侧边的没空间富裕的,可以不居中,其他都应该居中显示
+     * ```
+     * （「命名空间」是打字错误，本意是「明明左右空间很充裕、
+     *   面板却没居中」。）
+     *
+     * # ★★ 基准点 = **按钮中心**，不是屏幕中心（Owner 复核后澄清）
+     * ```text
+     * 我上一版按字面理解做成了「居中于播放器/屏幕」——
+     * Owner 看完截图明确纠正：「居中于**按钮**（贴近但避开边缘）」。
+     * ⇒ 基准从 `size.width / 2` 换成 `a.center.dx`。
+     *   两者在按钮本身就在屏幕中间时结果相同，但底栏按钮多在左侧，
+     *   差别很大（屏幕居中会让面板离按钮很远）。
+     * ```
+     *
+     * # 规则
+     * ```text
+     * ① 面板中心 = 按钮中心（`a.center.dx - childSize.width / 2`）
+     * ② 这个位置放不下（贴边 / 窄屏）⇒ clamp 进 `[minLeft, maxLeft]`
+     *    —— 正是 Owner 说的「太侧边的没空间富裕的,可以不居中」
+     * ③ 锚点还没登记 ⇒ 退回宿主给的右下角基准（并 clamp）
+     * ```
+     *
+     * # 为什么是**所有** popover 共用的通用规则（而不是只给清晰度）
+     * ```text
+     * · 定位逻辑就在这一个 delegate 里，五个 popover（倍速/清晰度/字幕/弹幕/更多）
+     *   共用它 ⇒ 改成通用规则是**顺带**的，不需要任何按 id 的分支。
+     * · Owner 的措辞是通用规则（「其他都应该居中显示」），且面板都是同一种
+     *   小卡片形态 ⇒ 一致比「只有清晰度居中、别的贴按钮」更不割裂。
+     * ★ 这一点由 `test/t26_w5_popover_anchor_reposition_test.dart` 与
+     *   `test/zz_cr_speed_dup_anchor_test.dart` 钉住。
+     * ```
+     *
+     * ⚠️ 竖向**不动**：Owner 只说了横向。底边仍贴按钮上沿上方 Sp.x2
+     *    （由宿主的 `bottom: 96` 保证），否则面板会跑到屏幕顶上去。
+     */
+    final a = anchor;
+    double left;
+    if (a != null) {
+      // ① 面板中心对齐按钮中心（Owner 要的形态）
+      left = a.center.dx - childSize.width / 2;
+      // ② 贴边放不下 ⇒ 往中间挪（clamp）
+      if (left > maxLeft) left = maxLeft;
+      if (left < minLeft) left = minLeft;
+    } else {
+      // 锚点还没登记（面板先于按钮挂载的那一帧）⇒ 沿用宿主给的右下角基准
+      left = fallback.dx;
+      if (left > maxLeft) left = maxLeft;
+      if (left < minLeft) left = minLeft;
+    }
+
+    // 底边贴按钮上沿上方 Sp.x2（按钮被安全区抬高时跟着抬）
+    final desiredBottom = a == null ? size.height - spacing : a.top - spacing;
     var top = fallback.dy - (size.height - spacing - desiredBottom);
     final maxTop = size.height - spacing - childSize.height;
     if (top > maxTop) top = maxTop;
@@ -718,6 +1280,7 @@ class _PopoverAnchorDelegate extends SingleChildLayoutDelegate {
 /// 底栏图标按钮（深色系，不读主题）
 class _BarIconButton extends StatelessWidget {
   const _BarIconButton({
+    super.key,
     required this.icon,
     required this.tooltip,
     this.onTap,
@@ -755,6 +1318,7 @@ class _BarIconButton extends StatelessWidget {
 ///   「点击 / 悬停 → 控制器切换 → 弹层开合」的完整接线。
 class _PopoverButton extends StatelessWidget {
   const _PopoverButton({
+    super.key,
     required this.controller,
     required this.id,
     required this.icon,
@@ -916,7 +1480,25 @@ class PlayerBufferedRange {
 }
 
 /// 进度条 —— 拖动 = seek
+///
+/// # ★ T27-02：白色定位点（thumb）
+///
+/// 业主原话：「2.进度条这里的白色那个定位的没了」（fig2 996x49 全带扫描
+/// 无 >200 亮块 ⇒ 不是被盖住，是从来没画）。thumb 与已播进度走**同一份**
+/// `pos/total` 比例、同一条 `ValueListenableBuilder<Duration>` 重建路径
+/// （`_progressRow`），position 一变 thumb 同步走到新位置；seek 时
+/// 播放器把真实位置写回 notifier，视觉上即「拖到哪、点停在哪」。
 class PlayerProgressSlider extends StatelessWidget {
+  /// thumb 直径：轨道高 2px，圆点上下各溢出 5px（Stack 高 18 够放）
+  static const double thumbDiameter = 12;
+
+  /// thumb 颜色：与已播进度同色系但更亮 —— 完全不透明白，fig2 场景下
+  /// 对近黑底是最高对比（业主找的就是这枚白点）
+  static const Color thumbColor = Colors.white;
+
+  /// 门禁/测试用 key（test/t27_w2_progress_thumb_test.dart 按 id 对齐）
+  static const Key thumbKey = ValueKey<String>('t27-progress-thumb');
+
   const PlayerProgressSlider({
     required this.position,
     required this.duration,
@@ -939,8 +1521,43 @@ class PlayerProgressSlider extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, c) {
         final w = c.maxWidth <= 0 ? 1.0 : c.maxWidth;
+        /*
+         * ══════════════════════════════════════════════════════════════════
+         * ★★★ Owner 1011 反馈②：thumb 在**两端被截掉半个**
+         * ══════════════════════════════════════════════════════════════════
+         *
+         * # Owner 原话（逐字）
+         * ```text
+         * > 进度条那个圆圈在初始阶段被截掉了半个
+         * ```
+         *
+         * # 根因：thumb 中心跑到了 Stack 边界上/外，而 Stack **默认裁剪**
+         * ```text
+         * 旧写法：left = (pos/total)*w - thumbDiameter/2
+         *   pos = 0  ⇒ left = -6   ⇒ 圆的左半边在 Stack 左边界外
+         *   pos = 满 ⇒ left = w-6  ⇒ 圆的右半边在 Stack 右边界外
+         * 而 Stack 的 clipBehavior 默认 = Clip.hardEdge
+         * ⇒ 两端的圆都被**裁成半圆**（Owner 在初始位置看到的就是这个）。
+         * ```
+         *
+         * # 修法：把行进区间**内缩一个半径**（滑杆的标准几何）
+         * ```text
+         * 轨道与 thumb 都只在 [r, w-r] 这段里排布：
+         *   圆的**中心**最左只能到 r、最右只能到 w-r
+         *   ⇒ 圆的左端 = r - r = 0，右端 = (w-r) + r = w ⇒ **始终完整可见**。
+         * ```
+         * ★ 关键：`trackW` 与**坐标映射**必须一起用这段内缩区间，
+         *   否则「看得见的圆点位置」与「点下去跳到的位置」会差一个半径
+         *   （拖动时圆点会比手指偏 6px —— 那正是这类改动最常见的次生缺陷）。
+         */
+        const double r = thumbDiameter / 2;
+        final trackW = (w - thumbDiameter) <= 0 ? 1.0 : w - thumbDiameter;
+        /// 比例 → **圆点中心**的 x（内缩区间内）
+        double centerX(double ratio) => r + ratio * trackW;
+        /// **圆点中心**的 x → 比例（与 centerX 严格互逆）
+        double ratioAt(double dx) => (dx - r) / trackW;
         Duration at(double dx) =>
-            Duration(milliseconds: ((dx.clamp(0.0, w) / w) * total).round());
+            Duration(milliseconds: (ratioAt(dx).clamp(0.0, 1.0) * total).round());
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTapDown: (d) => onSeek(at(d.localPosition.dx)),
@@ -949,7 +1566,9 @@ class PlayerProgressSlider extends StatelessWidget {
             height: 18,
             child: Stack(
               children: [
-                Positioned.fill(
+                Positioned(
+                  left: r,
+                  width: trackW,
                   top: 8,
                   bottom: 8,
                   child: Container(
@@ -963,19 +1582,19 @@ class PlayerProgressSlider extends StatelessWidget {
                 // （后者在 start > 0 时算出的偏移会随宽度漂）
                 if (buffered != null)
                   Positioned(
-                    left:
-                        (buffered!.start.inMilliseconds.toDouble().clamp(
-                              0.0,
-                              total,
-                            ) /
-                            total) *
-                        w,
+                    left: centerX(
+                      buffered!.start.inMilliseconds.toDouble().clamp(
+                            0.0,
+                            total,
+                          ) /
+                          total,
+                    ),
                     width:
                         ((buffered!.end.inMilliseconds.toDouble() -
                                     buffered!.start.inMilliseconds.toDouble())
                                 .clamp(0.0, total) /
                             total) *
-                        w,
+                        trackW,
                     top: 8,
                     bottom: 8,
                     child: Container(
@@ -985,9 +1604,10 @@ class PlayerProgressSlider extends StatelessWidget {
                       ),
                     ),
                   ),
+                // 已播进度：从轨道左端画到 thumb 中心
                 Positioned(
-                  left: 0,
-                  width: (pos / total) * w,
+                  left: r,
+                  width: (pos / total) * trackW,
                   top: 8,
                   bottom: 8,
                   child: Container(
@@ -995,6 +1615,32 @@ class PlayerProgressSlider extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: const Color(0xFF32C7FF),
                       borderRadius: Radii.rSm,
+                    ),
+                  ),
+                ),
+                // ★ T27-02 补画定位点：中心 = centerX(pos/total)（内缩区间内，
+                // 两端都留了一个半径 ⇒ 不再被 Stack 裁掉）。
+                Positioned(
+                  key: thumbKey,
+                  left: centerX(pos / total) - r,
+                  top: (18 - thumbDiameter) / 2,
+                  child: GestureDetector(
+                    // ★ 纯视觉件：裸 DecoratedBox（RenderProxyBox、
+                    //   hitTestSelf=false）不会进命中路径，门禁就没法在
+                    //   (thumbX, centerY) 定位到它。translucent 只保证
+                    //   hitTest 命中自身、返回 false 不挡下层，拖/点 seek
+                    //   仍由整条进度条的 GestureDetector 统一处理（坐标
+                    //   映射只有一份，拇指不重复注册手势）。
+                    behavior: HitTestBehavior.translucent,
+                    child: const DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: thumbColor,
+                        shape: BoxShape.circle,
+                      ),
+                      child: SizedBox(
+                        width: thumbDiameter,
+                        height: thumbDiameter,
+                      ),
                     ),
                   ),
                 ),

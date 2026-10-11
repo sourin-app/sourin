@@ -3732,6 +3732,21 @@ class _Cover extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    /*
+     * ★ 2026-10-01 那次修法的**漏接点**就在这里（Owner 报「详情区封面糊」）。
+     *
+     * 卡片是 2:3 竖版（`AspectRatio` 用的就是 `AppMetrics.posterAspect`
+     * = 2/3 = 宽/高 ⇒ 下面这个高与布局**同源**），而 B 站封面是 16:9
+     * 横版（实测 2560×1440）⇒ `BoxFit.cover` 在源图比目标框更宽时**按
+     * 高度放大**，只按宽度解码（`coverDecodeWidth`）会让水平方向被拉
+     * 2.68 倍 ⇒ 糊。首页 `poster_card.dart` 早就改传 `layoutHeight`
+     * （`cover_image.dart` 的 doc 逐字记着这件事），只有这里漏了。
+     *
+     * ⚠️ **两条分支必须用同一个 `h`** —— Owner 原话「应该用同一张或同一
+     *    尺寸，而不是产生差异」：本地 `Image.file` 与网络 `coverImage`
+     *    若各算各的，就又造出一种新的不一致。
+     */
+    final coverH = width / AppMetrics.posterAspect;
     return SizedBox(
       width: width,
       child: AspectRatio(
@@ -3760,7 +3775,15 @@ class _Cover extends StatelessWidget {
                 Image.file(
                   File(detail.cover!),
                   fit: BoxFit.cover,
-                  cacheWidth: coverDecodeWidth(context, width),
+                  // ★ 本地分支没有 `layoutHeight` 参数机制，要自己换算成
+                  //   `cacheHeight`；用与网络分支**同一个** `coverH`（见上）。
+                  //   ⚠️ 不要再给 `cacheWidth`：两者互斥，同时给会把图拉伸变形
+                  //   （`cover_image.dart:196-206`）。
+                  cacheHeight: coverDecodeHeightFor(
+                    context,
+                    layoutWidth: width,
+                    layoutHeight: coverH,
+                  ),
                   errorBuilder: (_, __, ___) => Center(
                     child: Text(
                       detail.title.isEmpty ? '?' : detail.title.characters.first,
@@ -3777,6 +3800,9 @@ class _Cover extends StatelessWidget {
                   url: detail.cover!,
                   // 本组件自己就带 `width` 字段（三个调用点分别传 112 / coverW / 212）
                   layoutWidth: width,
+                  // ★ 与本地分支**同一个** `coverH`（见 build 顶部）——
+                  //   网络分支则靠 `coverImage` 把它翻成 `cacheHeight`。
+                  layoutHeight: coverH,
                   fit: BoxFit.cover,
                   // ★ 封面 URL 非空但加载失败时也要画首字 —— 语义与 PosterCard
                   //   （task-63：!_loaded || _failed 都画首字）一致。

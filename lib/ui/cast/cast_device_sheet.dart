@@ -19,6 +19,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../core/dlna/cast_manager.dart';
 import '../../core/dlna/dlna_http.dart';
 import '../tokens.dart';
+import '../widgets/app_loading.dart';
 import '../widgets/overlay_motion.dart';
 
 /// 打开设备选择弹窗；用户选了返回那台设备，取消返回 null
@@ -242,11 +243,7 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
     child: Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const SizedBox(
-          width: 26,
-          height: 26,
-          child: CircularProgressIndicator(strokeWidth: 2.4),
-        ),
+        const AppLoading(),
         const SizedBox(height: Sp.x4),
         Text(
           '正在搜索局域网里的投屏设备…',

@@ -1,0 +1,168 @@
+# ═══════════════════════════════════════════════════════════════════════
+#  源影 · PR 规模门禁
+# ═══════════════════════════════════════════════════════════════════════
+#
+#  ★ 它是 CI 的 job（会挡住合并），**不是** 必需检查（required check）。
+#    两者区别很要紧：
+#      · 必需检查 = 挡「这个 PR 能不能合」，被 skipped 时**也**要过；
+#      · job      = 自己跑、自己判红绿，你想合并就点按钮，GitHub 记一条日志。
+#    门禁的规矩是「超了必须拆」，但 owner 仍然有权「这次先合、并且写明理由」
+#    （就像分支保护里「破坏性回滚要临时放开保护，改完记得改回来」）。
+#    ⇒ 做成必需检查会把「这次先合」这条路也堵死，那不是我们想要的。
+#
+#  触发：pull_request（开 PR / 推新 commit 都会跑）。
+#  例外：owner 可以在 PR 上打 size/exempt 标签跳过门禁，
+#        理由照旧写进 PR 描述 —— 「豁免」也要留痕。
+#
+#  ★★ 实现要点（动这里的 `if:` / `continue-on-error` 之前先读完这一段）：
+#    · 「判规模」是 continue-on-error: true —— 它 exit 1 时**不连累**后面的 step、
+#      也**不直接**决定 job 结论；失败仍如实记在 steps.size.outcome 里。
+#      ⇒ job 的红绿改由最后两步**显式**裁决，不再由「哪个 step 先失败」隐式裁决。
+#      （不这么改的后果：下一步会被 GitHub 的隐式 success() 跳过 ⇒
+#        steps.label.outputs.exempt 永远为空 ⇒ 写在下面的「豁免」形同虚设。）
+#    · 「查豁免标签」也写 if: always()（**防御性**：理由见该步自己的注释 —— 现在
+#      「判规模」有 continue-on-error，它本来就不会被跳过）。
+#    · 末步「超限且未豁免 ⇒ 判红」是**门禁本体**：没有它，未豁免的超大 PR
+#      会静默变绿 —— 那就是放水。
+#    ⇒ 判红**只**发生在「超硬上限 且 没打 size/exempt」这一种组合上；
+#      超了但打了标签 ⇒ 记一条 notice 后放行（留痕，不静默）。
+#
+#  ★★★ 数据流（每条都必须成立，断一条豁免链路就死；动之前逐条核对）：
+#    ① pull_request.types 含 labeled / unlabeled ⇒ 打/撤标签会**重新评估**；
+#    ② 外部输入（分支名、标签名）一律经 `env:` 传进脚本，run 里只写 "$BASE_REF"
+#       这种变量 —— **绝不**把 ${{ github.base_ref }} 直接插进 shell 源码：分支名由
+#       有写权限的人控制，插进脚本就是命令注入面（`$(...)` 会在 runner 上执行）；
+#    ③ 「判规模」**不读标签**，只负责算规模 + 把读数 tee 进 pr-size.log；
+#       标签名对它只是入参，豁免与否由 ④⑤ 判定；
+#    ④ 「查豁免标签」if: always()（**防御性**：③ 现在有 continue-on-error，它本来
+#       就不会被跳过；留着 always() 是为了「以后谁把 continue-on-error 拿掉」时
+#       outputs.exempt 不会静默恒空 —— 那是豁免链最隐蔽的一种死法）；
+#    ⑤ 末步 if: always() && steps.size.outcome == 'failure' && exempt != 'yes'
+#       ⇒ **只有**「超硬上限 且 没打豁免标签」这一种组合判红，其余组合一律不判红。
+#
+#  阈值与 CONTRIBUTING.md「★★★ PR 规模」一节同源：
+#    目标 ≤600 行 / ≤30 文件（超了提醒）
+#    硬上限 ≤1200 行 / ≤60 文件（超了判红，除非 PR 带 size/exempt 标签）
+
+name: PR 规模
+
+on:
+  pull_request:
+    # ★ 必须显式列 labeled/unlabeled：pull_request 的默认活动类型只有
+    #   opened / synchronize / reopened —— 打完标签**不会**自动重跑。
+    #   少了这两个类型，「先跑红、再补打标签」的豁免路径就是死的（只能手动 Re-run）。
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  pr_size:
+    name: PR 规模
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # ★ 豁免标签名**只在这里写一次**（job 级 env）：工作流用它判标签，同一个值经
+    #   --exempt-label 传给 tools/pr_size.mjs ⇒ 两个文件不会各写一份而跑偏。
+    #   要换标签名就改这一行，并同步 CONTRIBUTING.md —— 那里目前只写了规模规矩
+    #   （目标/硬上限/必须拆），**没有**写这个标签名，改名前先确认别处的口径。
+    env:
+      EXEMPT_LABEL: size/exempt
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          # ★ 必须拿全部历史：门禁要算 merge-base 到 PR head 的完整 diff。
+          #   浅克隆（depth:1）下 merge-base 会算错，读数偏小 ⇒ 假绿。
+          fetch-depth: 0
+          # ★ 别把 GITHUB_TOKEN 留在本地 .git/config：下面「判规模」会执行 PR 自带的
+          #   tools/pr_size.mjs（**不受信代码**），它能读到 http.<url>.extraheader 里的
+          #   令牌并外传 —— contents: read 只限权限、不防泄露（CWE-522）。
+          #   代价是这一步之后 git 不能往 origin 写；本 job 从头到尾都不写远端，代价为零。
+          persist-credentials: false
+
+      - name: 判规模
+        id: size
+        # ★ continue-on-error：这一步 exit 1 **不再**阻断后面的 step，也**不直接**
+        #   决定 job 结论（不这样就会被隐式 success() 挡掉「查豁免标签」）。
+        #   失败仍如实记进 steps.size.outcome，红绿交给末步显式裁决。
+        continue-on-error: true
+        shell: bash
+        env:
+          # ★★ 经 env 传参，**不要**写成 --base "origin/${{ github.base_ref }}"：
+          #   分支名由有写权限的人控制，插进 shell 源码就是命令注入面（CWE-94）。
+          #   走 env + 双引号后它只是 node 的一个普通 argv，不参与 shell 解析。
+          #   （${{ }} 在 shell 之前求值，所以引号**不能**挡住注入 —— 必须走 env。）
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # tee：读数同时进日志和 pr-size.log —— 末步「判红」要用它打印「超限多少」。
+          # pipefail：node 的 exit 1 仍然是这一步的 exit 1（tee 不会把它吞掉）。
+          node tools/pr_size.mjs --base "origin/$BASE_REF" --exempt-label "$EXEMPT_LABEL" 2>&1 | tee pr-size.log
+
+      - name: 查豁免标签
+        id: label
+        # ★ if: always() 与下面两步同款，是**防御性**的：现在「判规模」有
+        #   continue-on-error ⇒ 它的 conclusion 是 success ⇒ 隐式 success() 为真，
+        #   这一步本来就不会被跳过。真正要防的是「哪天有人去掉 continue-on-error」：
+        #   那时隐式 success() 立刻变假，这一步被跳过 ⇒ steps.label.outputs.exempt
+        #   恒空 ⇒ 豁免标签永远失效。always() 把这个坑提前封死。
+        if: always()
+        # ★ 门禁 job 自己不能给自己发标签，所以只能读。
+        #   pull-requests: read 是读 PR 元数据；labels 需要 issues: read
+        #   （GitHub 把 PR 的标签算在 issues 命名空间下 —— 这是个常见坑）。
+        #   这里读的是事件载荷 context.payload.pull_request.labels，不额外发 API 请求。
+        uses: actions/github-script@v7
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        with:
+          script: |
+            // ★ 标签名从 job 级 env 来（同一个名字只写一处），不在这里硬编码。
+            const want = process.env.EXEMPT_LABEL || 'size/exempt';
+            const labels = (context.payload.pull_request.labels || []).map(l => l.name);
+            core.info('PR 标签：' + (labels.join(', ') || '(无)') + '；豁免标签：' + want);
+            core.setOutput('exempt', labels.includes(want) ? 'yes' : 'no');
+
+      - name: 按标签处理（豁免则改判）
+        # ★ 判据从 failure() 改成 steps.size.outcome：只看「判规模」这一步有没有超限，
+        #   不再看「整个 job 到目前为止有没有谁失败」。
+        # ★★ if: always() 是**防御性**写法，不是当前生效的救命稻草：
+        #    「判规模」有 continue-on-error ⇒ 它的 conclusion 是 success，隐式
+        #    success() 因此为真（见 kenmuse 那篇对 continue-on-error 的实测说明）。
+        #    但这条链最怕的是「有人日后去掉 continue-on-error，或在前面插一个会失败的
+        #    step」—— 那时只看 steps.size.outcome 的写法会被隐式 success() 整条跳过，
+        #    豁免静默失效。always() 只解除那层隐式条件；真正的判据仍是右边的
+        #    steps.size.outcome（它只反映「判规模」这一步，不看别的 step 红没红）。
+        if: always() && steps.size.outcome == 'failure' && steps.label.outputs.exempt == 'yes'
+        shell: bash
+        run: |
+          echo "::notice::本 PR 带了 $EXEMPT_LABEL 标签 ⇒ 规模门禁不阻塞。"
+          echo "请确认 PR 描述里写明了「为什么这次不拆」—— 规矩见 CONTRIBUTING.md「★★★ PR 规模」。"
+          exit 0
+
+      - name: 超限且未豁免 ⇒ 判红
+        # ★★ 门禁本体：超了硬上限、又没打豁免标签 ⇒ 这一步 exit 1，job 判红。
+        #    去掉它，未豁免的超大 PR 会静默变绿（放水）。
+        #    if: always() 同上（防御性）：本步是**最后一道**，绝不能因为「谁在前面
+        #    失败了」而被隐式 success() 静默跳过 —— 跳过就等于放水。
+        if: always() && steps.size.outcome == 'failure' && steps.label.outputs.exempt != 'yes'
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          echo "::error::本 PR 超规模硬上限，且没有豁免标签 ⇒ 规模门禁判红。"
+          echo "── 超限多少（判规模那一步的读数）──"
+          if [ -f pr-size.log ]; then
+            cat pr-size.log
+          else
+            echo "  （读数见上面「判规模」那一步的输出）"
+          fi
+          echo "── 怎么拆 ──"
+          echo "  一条 PR = 一个功能域：先切「改动最大的 10 个文件」里靠前的几个；"
+          echo "  确实拆不开（例如移除 forui 这种全站地基）时，改成两条：「先合地基、再合功能」。"
+          echo "── 要豁免走哪条路 ──"
+          echo "  owner 在 PR 上打 $EXEMPT_LABEL 标签（打上后本 workflow 会自动重跑并放行；"
+          echo "  标签若早已存在，推新 commit 或点 Re-run 也一样放行），"
+          echo "  并把「为什么这次不拆」写进 PR 描述 —— 规矩见 CONTRIBUTING.md「★★★ PR 规模」。"
+          echo "── 本地复现判据 ──"
+          echo "  git diff --ignore-all-space --ignore-blank-lines --shortstat origin/$BASE_REF...HEAD"
+          exit 1

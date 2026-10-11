@@ -11398,7 +11398,7 @@ class _PlayerPageState extends State<PlayerPage>
                     //   （Owner 原话：「那个转圈的颜色太浅了,然后这个圆圈是不是有点大?」）
                     // ⇒ 换成共享组件：直径 44 → 30、描边 4 → 2.8、颜色不再写死纯白。
                     if (_buffering && !_loading)
-                      const Center(child: AppLoading()),
+                      const Center(child: AppLoading(ground: Colors.black)),
 
                     // ── 加载中 ──
                     if (_loading) const _LoadingOverlay(),

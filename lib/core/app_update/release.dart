@@ -16,6 +16,7 @@ class ReleaseAsset {
     required this.size,
     required this.url,
     required this.browserUrl,
+    this.digest = '',
   });
 
   /// 文件名（CI 里给的名字）
@@ -29,6 +30,13 @@ class ReleaseAsset {
 
   /// 打开在浏览器里的页面（Android 降级方案用）
   final String browserUrl;
+
+  /// ★ CR-04：GitHub 给这条资产算的摘要，形如 `sha256:<hex>`
+  ///
+  /// 有它就能**离线**证明下载到的文件没被替换 —— 不必再去取
+  /// `SHA256SUMS.txt`（那次请求必须直连可信源，而镜像用户恰恰直连不通）。
+  /// 老 Release / 别的源没有这个字段，为空串 ⇒ 退回校验表那条路。
+  final String digest;
 
   /// 人类可读的体积（`28.4 MB`）
   String get prettySize {
@@ -99,6 +107,8 @@ ReleaseInfo parseReleaseJson(Map<String, dynamic> json) {
         size: _asInt(a['size']),
         url: url,
         browserUrl: (a['html_url'] ?? url).toString(),
+        // 原样存下来（形如 `sha256:<hex>`），规整与判定在 verifySha256 里做
+        digest: (a['digest'] ?? '').toString(),
       ));
     }
   }

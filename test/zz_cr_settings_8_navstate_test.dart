@@ -76,6 +76,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/device.dart';
+import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
@@ -90,7 +91,21 @@ void log(String s) => debugPrint(kTag + " " + s);
 const Timeout kTimeout = Timeout(Duration(minutes: 5));
 
 /// 交付件里的核心 DLL（lib/core/ffi.dart:169 只认**裸名**，所以要我们自己载）
-const String _dllRel = r'build\windows\x64\runner\Release\sourin_core.dll';
+///
+/// ★★★ 2026-10-11 修（CR-13）：路径必须用 [Platform.pathSeparator] 拼。
+/// 原写法 `r'build\windows\x64\runner\Release\sourin_core.dll'` 里是**字面
+/// 反斜杠**；在 POSIX 上反斜杠只是普通文件名字符、不是分隔符 ⇒ `File(...)`
+/// 查的是「仓库根下一个名字里带反斜杠的**单文件**」⇒ `existsSync()` 恒 false
+/// ⇒ 预加载被整块跳过。这同时也是 zz_cr_xplat_path_test.dart 那条 XPLAT 门禁
+/// 要挡的缺陷形态（本行就是它自己那份豁免之外的一个同类写法）。
+final String _dllRel = <String>[
+  'build',
+  'windows',
+  'x64',
+  'runner',
+  'Release',
+  'sourin_core.dll',
+].join(Platform.pathSeparator);
 
 /// 业主截图的逻辑尺寸（1444x805，像素比 1.0）
 const Size kOwnerViewport = Size(1444, 805);
@@ -106,13 +121,20 @@ const int kStaleDeltaThreshold = 4;
 /// Tab 最多按几次去找那一行（真输入，不是 requestFocus）
 const int kMaxTabs = 40;
 
-/// ★★★ 2026-10-10 新增（NAV）：核心库**此刻在不在交付目录里**
+/// ★★★ 2026-10-10 新增（NAV）／2026-10-11 修（CR-13）：核心库此刻在产品路径上
+/// **到底能不能用**
 ///
-/// CI（Windows STEP 11 / macOS STEP 9）跑 flutter test 时构建步还没跑 ⇒
-/// `build\windows\x64\runner\Release\sourin_core.dll` 不存在；本机存在。
-/// 这个布尔就是「CI 条件 / 本机条件」的**唯一**判据 —— 不是平台判断，
-/// 因为同一个平台两种条件都可能出现（把 dll 改名就能在本机造出 CI 条件）。
-final bool _dllReady = File(_dllRel).existsSync();
+/// ⚠️ 原判据是 `File(_dllRel).existsSync()`（「交付目录里有没有那个 dll 文件」）。
+/// 它有两个洞，CR-13 指的就是它：
+///   ① **平台相关**：`_dllRel` 用字面反斜杠写死 ⇒ 在 POSIX（macOS CI job）上
+///      恒 false ⇒ 预加载被跳过、本用例走「降级」分支；而产品在 macOS 上
+///      仍可能真的加载成功（`_openLibrary()` 有 `_bundledDylibPath()` 那条路）
+///      ⇒ 门禁断言降级文案、产品给真版本串 ⇒ **macOS 上必红**。
+///   ② **量的不是同一件事**：文件在不在 ≠ 产品的 `_openLibrary()` 能不能加载。
+/// 现在改成问**产品自己**：由 [_preloadCoreDll] 走一遍产品入口后写这里
+/// （`SourinCore.isLoaded`，lib/core/ffi.dart:209）。
+/// 两个分支都仍然是真断言：没有 skip、没有整块平台跳断言。
+bool _coreReady = false;
 
 /// ★★★ 2026-10-10 新增（NAV）：降级文案的**第二份**字面串
 ///
@@ -125,14 +147,37 @@ const String kCoreVersionFallbackLabelExpected = '核心未加载 · 架构与�
 /// ★★★ 2026-10-10 新增（NAV）：修复前「关于」行的版本串后缀（逐字）
 const String kCoreVersionLabelSuffix = ' · 架构与设备信息';
 
+/// 预加载交付目录里的核心库，并把「产品路径上能不能用」记进 [_coreReady]
+///
+/// ① 按**绝对路径**先载一次：产品的 `_openLibrary()` 用**裸名**
+///    `DynamicLibrary.open('sourin_core.dll')`，而 Windows 的模块搜索顺序里
+///    「已在进程内加载的同名模块」优先命中 ⇒ 先按绝对路径载入是裸名能成功的
+///    前提（跨套件**不**泄漏，见 :584 的实测记录 A）。
+/// ② 再走一遍**产品入口** `SourinApi.version`（→ `SourinCore._openLibrary()`），
+///    判据取「这一步成没成」—— 与 `SettingsPageState._probeCoreVersion()`
+///    （lib/ui/settings_page.dart:430-437）成功/降级的分支条件**同源**，
+///    所以 Windows / macOS / CI（库里没有这个库）三种条件下都对得上。
+///    ⚠️ 不能省掉第 ② 步只读 `SourinCore.isLoaded`：绝对路径那次 open 并**不**
+///    设置 `SourinCore._lib`，只有产品自己 open 过 `isLoaded` 才为 true。
+/// ③ 这里**不**抛异常：探不到就记 false，交给用例按条件断言。
 void _preloadCoreDll() {
   final f = File(_dllRel);
-  if (!f.existsSync()) {
-    log('DLL 不在（${f.absolute.path}）—— 本文件不读 FFI，继续跑');
-    return;
+  if (f.existsSync()) {
+    DynamicLibrary.open(f.absolute.path);
+    log('DLL 预加载 = OK（${f.absolute.path}）');
+  } else {
+    log('DLL 不在（${f.absolute.path}）—— 交给产品自己按平台找');
   }
-  DynamicLibrary.open(f.absolute.path);
-  log('DLL 预加载 = OK（${f.absolute.path}）');
+  var ok = false;
+  try {
+    final v = SourinApi.version;
+    ok = true;
+    log('产品核心入口可用：version=$v');
+  } catch (e) {
+    log('产品核心入口不可用（库里没有这个库时就是这条）：$e');
+  }
+  _coreReady = ok;
+  log('核心就绪判据 _coreReady=$_coreReady（SourinCore.isLoaded=${SourinCore.isLoaded}）');
 }
 
 /// 给真事件循环开窗口 + 抽干微任务（供 widget 自己发起的异步推进）
@@ -318,7 +363,7 @@ void main() {
       // 它把异常吞了，于是「整页崩」在测试里表现为「找不到 widget」而不是
       // 一个明确的读数。这里显式数 ErrorWidget，崩没崩一眼可见。
       final navErrWidgets = find.byType(ErrorWidget).evaluate().length;
-      log('整页崩溃读数：ErrorWidget=$navErrWidgets（dllReady=$_dllReady）');
+      log('整页崩溃读数：ErrorWidget=$navErrWidgets（coreReady=$_coreReady）');
       expect(find.byType(ErrorWidget), findsNothing,
           reason: '设置页 build() 抛了异常 ⇒ 整棵子树被换成 ErrorWidget（读数=$navErrWidgets）。'
               '这就是 CI 上那条唯一的红：核心库不在时不许让异常逃出 build()');
@@ -550,7 +595,7 @@ void main() {
   //
   // # 本用例怎么做到「两种环境都必须绿」
   //
-  // 判据只有一个：`_dllReady`（= 交付目录里此刻有没有 dll）。
+  // 判据只有一个：`_coreReady`（= 产品入口此刻能不能读到版本，见 _preloadCoreDll）。
   // 两个分支**都是真断言**，没有 `skip`、没有整块平台跳断言：
   //   • 无 dll（= CI 条件）：整页必须渲染出来、「关于」行必须存在、
   //     subtitle 必须是那句**常量**降级文案、且页面里不许有 ErrorWidget。
@@ -566,7 +611,7 @@ void main() {
       // ── ① 纯函数三态（不碰任何全局/平台状态，Windows 上就能把两侧语义钉死）──
       //
       // 范本：test/zz_t12_defect_a_probe_test.dart:237-280（显式参数的纯函数断言）。
-      log('纯函数：dllReady=$_dllReady '
+      log('纯函数：coreReady=$_coreReady '
           'coreVersionLabelFor("9.9.9")=${SettingsPageState.coreVersionLabelFor("9.9.9", null)}');
       expect(SettingsPageState.coreVersionLabelFor('9.9.9', null), '9.9.9$kCoreVersionLabelSuffix',
           reason: '核心可用时输出必须与修复前**逐字相同**（\'\$version · 架构与设备信息\'）');
@@ -615,7 +660,7 @@ void main() {
       await _settle(tester);
 
       final errs = find.byType(ErrorWidget).evaluate().length;
-      log('降级用例读数：dllReady=$_dllReady ErrorWidget=$errs '
+      log('降级用例读数：coreReady=$_coreReady ErrorWidget=$errs '
           'SettingsPage=${find.byType(SettingsPage).evaluate().length} '
           'EntryRow=${find.byType(SettingsEntryRow).evaluate().length} '
           'JS插件=${find.text('JS 插件').evaluate().length} '
@@ -636,7 +681,7 @@ void main() {
           tester.widget<SettingsEntryRow>(aboutRow).subtitle;
       log('关于行 subtitle = 「$aboutSubtitle」');
 
-      if (!_dllReady) {
+      if (!_coreReady) {
         // ===== CI 条件：核心库不在交付目录里 =====
         expect(aboutSubtitle, kCoreVersionFallbackLabelExpected,
             reason: '核心库不可用时「关于」行必须显示降级文案（逐字）—— '

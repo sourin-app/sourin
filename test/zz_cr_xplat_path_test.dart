@@ -241,7 +241,7 @@ const Map<String, String> kKnownEscapes = <String, String>{
   '0': '\u0000',
   "'": "'",
   '"': '"',
-  r'$': r'\',
+  r'$': r'$',
   r'\': r'\',
 };
 
@@ -559,6 +559,12 @@ final e = Link('out\\link');
 ''';
 
 /// ★ 阴性对照：这些都不是本缺陷 ⇒ 一个都不许报
+///
+/// ★ 2026-10-11 新增 `File('\$HOME/x.png')`（CR-12）：`\$` 是**转义**，
+///   运行时值就是一个 `$`、**不含反斜杠** ⇒ 判据不许报它。
+///   它钉死的是 [kKnownEscapes] 里 `'$'` 这一格：那一格原先错填成 `r'\'`
+///   （= 宣称「`'\$'` 的运行时值是一个反斜杠」），于是这一行会被误报成违规。
+///   这一格**没有别的样例覆盖** ⇒ 不钉进阴性对照就永远发现不了。
 const String kNegativeControlSource = r'''
 // 阴性对照：用 pathSeparator / p.join 拼路径（字面量里没有反斜杠）
 final a = File(p.join('a', 'b.png'));
@@ -567,6 +573,7 @@ final c = Directory(<String>['out', 'sub'].join(Platform.pathSeparator));
 final d = File('a\b.png');
 final e = File(x.replaceAll(r'\', '/'));
 final f = File(path);
+final g = File('\$HOME/x.png');
 // 注释里的样本：File('build\probe-shots\x.png') 不算
 ''';
 

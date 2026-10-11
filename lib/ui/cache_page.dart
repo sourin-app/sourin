@@ -625,22 +625,44 @@ bool _blank(String? s) => s == null || s.trim().isEmpty;
 //  盘上封面（Owner 第 1009 批）的几何与绘制
 // ═══════════════════════════════════════════════════════════════════════
 //
-// # 为什么这里的尺寸要**逐字抄** PosterCard
+// # 尺寸的**唯一来源**：网格格子宽（CR-09 修的就是这里）
 // ```text
-// PosterCard 算自己那一格：w = min(AppMetrics.posterWidth, 可用宽)，
-// 高 = w / AppMetrics.posterAspect。
-// 我们叠上去的那层必须**占同一块**，否则封面会偏出去半格。
-// ⇒ 但它又不能重算一遍「万一 PosterCard 改了默认值」的公式，
-//   所以这里把它的**当前**公式原样写下来，并在旁边钉死同步义务。
+// 改前：这一层按 `MediaQuery.sizeOf(context).width` + `AppMetrics.posterWidth`
+//       算尺寸 ⇒ 它只对「屏幕窄到 148 都放不下」的窗口成立。
+//       而「已缓存」页的卡片在 **SliverGrid 的格子**里，格子宽由
+//       `Layout.cellWidthFor` 决定：
+//         宽档(>640) 格子 ≥ 152 > 148 ⇒ 卡片就是 148 ⇒ 改前的算式**碰巧**对
+//         窄档(≤640) 格子可以小到 112 ⇒ 父约束把 PosterCard 压到格子宽，
+//                        而这一层还在按 148 画 ⇒ 宽出格子、高过海报格
+//       （实测 400px 窗口：格子 114.67，封面层 148 —— 宽出 33.3px，
+//         高 222 而海报格只有 172 ⇒ 多出的 50px 正压在标题上）。
+// ⇒ 现在：宽度从**父约束**（= 格子宽）拿，再按 PosterCard 的同一条
+//   夹取规则 `min(格子宽, 148)` 算这一层的宽高 ⇒ 三层永远同源。
 // ```
-double _posterBoxWidth(BuildContext context) {
-  final avail = MediaQuery.sizeOf(context).width;
-  const want = AppMetrics.posterWidth;
-  return want > avail ? avail : want;
+/// 网格**格子宽** —— 页面里 `SliverGrid` 排每一格时用的那个宽
+///
+/// ★ 正常情况下 `_CacheWorkCard` 走 `LayoutBuilder` 拿**真实**父约束，
+///   只有约束无界（`maxWidth == infinity`）时才退回本函数。
+///   这里的算式与页面 `SliverLayoutBuilder` 里那三行**同源**
+///   （`Layout.bandFor` 恒等于窗口宽，见 tokens.dart 的说明）。
+double _posterCellWidth(BuildContext context) {
+  final band = Layout.bandFor(MediaQuery.sizeOf(context).width);
+  return Layout.cellWidthFor(band, Layout.columnsForBand(band));
 }
 
-double _posterBoxHeight(BuildContext context) =>
-    _posterBoxWidth(context) / AppMetrics.posterAspect;
+/// 卡片**实际**占的宽 = `min(格子宽, AppMetrics.posterWidth)`
+///
+/// ★ 与 `PosterCard` 内部的夹取（`poster_card.dart`：
+///   `want > avail ? avail : want`）**同一语义**，逐字同源：
+///   宽档格子(162.29) ⇒ 卡片就是设计宽 148（与首页同款，视觉零变化）；
+///   窄档格子(114.67) ⇒ 卡片被父约束压到 114.67。
+/// ⇒ 叠在海报格上的盘上封面层必须用**这一个**数。
+double _posterBoxWidthFor(double cellWidth) =>
+    cellWidth > AppMetrics.posterWidth ? AppMetrics.posterWidth : cellWidth;
+
+/// 海报格高 —— 与 `PosterCard` 里 `AspectRatio(posterAspect)` 同源
+double _posterBoxHeightFor(double boxWidth) =>
+    boxWidth / AppMetrics.posterAspect;
 
 /// 画**盘上**的封面文件
 ///
@@ -652,8 +674,13 @@ double _posterBoxHeight(BuildContext context) =>
 /// # 失败时**让位**而不是画裂图标
 /// 占位块在下面（PosterCard 自己的底色）⇒ 这里返回 SizedBox.shrink()
 /// 就等于「让位给它」，不画任何东西，避免两层错误提示叠在一起。
-Widget _localCoverImage(BuildContext context, {required String path}) {
-  final w = _posterBoxWidth(context);
+/// ★ CR-09：宽度由调用点传进来（= 卡片实际占的宽），不再自己读 MediaQuery
+Widget _localCoverImage(
+  BuildContext context, {
+  required String path,
+  required double boxWidth,
+}) {
+  final w = boxWidth;
   return Image.file(
     File(path),
     fit: BoxFit.cover,
@@ -1671,7 +1698,27 @@ class _CacheWorkCardState extends State<_CacheWorkCard> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    /*
+     * ★★★ CR-09：宽度从**父约束**拿（= SliverGrid 给这一格的约束），
+     *     不再读 `MediaQuery` —— 见文件上半部分 `_posterCellWidth` 的说明。
+     * ```text
+     * 用 `LayoutBuilder` 而不是再算一遍列数：父约束是**权威**。
+     * 万一网格的算式以后变了（多一层 padding / 换 delegate），
+     * 这一层会跟着变，不会静默漂移成「封面比海报宽」。
+     * ```
+     */
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final cell = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : _posterCellWidth(context);
+        return _cardBody(context, colors, cell);
+      },
+    );
+  }
 
+  /// 卡片本体 —— `cellWidth` = 父约束给的格子宽（由 [build] 传入）
+  Widget _cardBody(BuildContext context, ColorScheme colors, double cellWidth) {
     final sub = StringBuffer(humanBytes(widget.work.bytes));
     sub.write(' · ');
     if (widget.work.partialCount > 0) {
@@ -1685,11 +1732,22 @@ class _CacheWorkCardState extends State<_CacheWorkCard> {
      * ★ 卡片本体就是 PosterCard（与首页海报卡同一组件、同一组参数）
      *   ⇒ 两页的排版（标题两行 + 「大小 · N 集」）天然一致。
      */
+    // ★ CR-09：卡片**实际**占的宽（宽档 = 148，窄档 = 被压到格子宽）
+    //   —— 下面叠上去的那层与它共用这一个数，三层不可能再漂移。
+    final boxW = _posterBoxWidthFor(cellWidth);
     final poster = PosterCard(
       title: widget.work.displayTitle,
       cover: widget.work.cover,
       subtitle: sub.toString(),
       titleLines: 2,
+      /*
+       * ★ CR-09：把**卡片实际占的宽**交给卡片（宽档 = 148，窄档 = 格子宽）。
+       *
+       * ⚠️ 这里**不能**直接传 `cellWidth`：实测宽档格子 162.29，
+       *    传进去卡片就撑成 162.29（比首页海报卡大 10%）——
+       *    本任务没要求改视觉。必须与下面那层用**同一个** `boxW`。
+       */
+      width: boxW,
       onTap: widget.onOpen,
     );
 
@@ -1729,8 +1787,8 @@ class _CacheWorkCardState extends State<_CacheWorkCard> {
               Positioned(
                 left: 0,
                 top: 0,
-                width: _posterBoxWidth(context),
-                height: _posterBoxHeight(context),
+                width: boxW,
+                height: _posterBoxHeightFor(boxW),
                 // 图片只是装饰，永远不参与命中测试（否则会盖掉海报卡的点击）
                 child: IgnorePointer(
                   child: ClipRRect(
@@ -1738,6 +1796,7 @@ class _CacheWorkCardState extends State<_CacheWorkCard> {
                     child: _localCoverImage(
                       context,
                       path: localCover,
+                      boxWidth: boxW,
                     ),
                   ),
                 ),

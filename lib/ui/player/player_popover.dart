@@ -143,6 +143,68 @@ class PopoverController extends ChangeNotifier {
     return ro is RenderBox && ro.attached ? ro : null;
   }
 
+  /// ★★★ CR-10（CodeRabbit 未解决线程）：锚点几何**变化之后**必须重新量取。
+  ///
+  /// # 为什么单靠探针的 paint 上报不够
+  /// ```text
+  /// 祖先里有一层 repaint boundary（生产里就是底栏外面那层 Opacity，
+  /// player_bottom_bar.dart:311；RenderOpacity.isRepaintBoundary == alpha > 0，
+  /// proxy_box.dart:884）时，框架在 object.dart 的 _compositeChild 里
+  /// 只改 childOffsetLayer.offset 就把**整棵子层**复用掉 ⇒ 子树（含探针）
+  /// 的 paint **一次都不跑** ⇒ 控制器留着旧矩形，面板停在旧位置。
+  /// （实测：把底栏整体平移 220px，按钮跑到 512..592，面板仍停在 644..812。）
+  /// ```
+  ///
+  /// # 这条防线：面板开着时，每帧自己复核一次几何
+  /// ```text
+  /// 只搭「下一帧发生时的顺风车」：每帧结束后自己量一次（globalToLocal 走的是
+  /// 逐级 applyPaintTransform，**不受层复用影响**），跟控制器里存的对一下，
+  /// 不一样就通知面板挪位。
+  /// 
+  /// 为什么这样比探针可靠：探针的 paint 只在「子树真的重画」时跑，而这条路径
+  /// 依赖的正是「子树没重画」；反过来由消费者（控制器）主动量，
+  /// 无论框架走的是重画还是层复用，读到的都是本帧的真值。
+  /// 
+  /// 成本：每帧一次 Rect 比较 + 一次 localToGlobal（面板关着时 _openId 为 null
+  /// 直接返回，一个字节都不量）。**不排帧、不重绘**。
+  /// ```
+  void watchAnchorGeometry() {
+    if (_disposed || _openId == null) return;
+    /*
+     * ⚠️ 用 addPostFrameCallback 而**不是** scheduleFrameCallback：
+     *    后者会 `scheduleFrame()` ⇒ 每帧都排一帧 ⇒ 应用永远不进入 idle
+     *    （实测：测试结束时报 "An animation is still running even after the
+     *    widget tree was disposed. There was one transient callback left."，
+     *    真机上则是永久 60fps 空转、白耗电）。
+     *    这里只搭「下一帧发生时的顺风车」：没有帧就不跑，也不去排帧。
+     */
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (_disposed || _openId == null) return;
+      /*
+       * 自己量一次（走 globalToLocal ⇒ 逐级 applyPaintTransform，
+       * 不受「祖先整层复用」影响），跟控制器里存的对一下；
+       * 不一样就通知面板挪位。
+       * 每帧成本 = 一次 Rect 比较 + 一次 localToGlobal，不排帧、不重绘。
+       */
+      final id = _openId;
+      final owner = id == null ? null : _anchorOwners[id];
+      final layer = _layerBox;
+      if (id != null &&
+          owner is RenderBox &&
+          owner.attached &&
+          owner.hasSize &&
+          layer != null) {
+        final rect =
+            layer.globalToLocal(owner.localToGlobal(Offset.zero)) & owner.size;
+        if (_anchorRects[id] != rect) {
+          _anchorRects[id] = rect;
+          notifyListeners();
+        }
+      }
+      watchAnchorGeometry(); // 面板还开着 ⇒ 继续盯下一帧
+    });
+  }
+
   /// 帧后刷新面板位置（窗口缩放 / 横竖屏切换后按钮挪了位，面板要跟着挪）
   void _scheduleRefresh() {
     if (_refreshScheduled || _disposed) return;
@@ -170,6 +232,7 @@ class PopoverController extends ChangeNotifier {
     } else {
       _openId = id;
       notifyListeners();
+      watchAnchorGeometry();
     }
   }
 
@@ -179,6 +242,7 @@ class PopoverController extends ChangeNotifier {
     if (_openId == id) return;
     _openId = id;
     notifyListeners();
+    watchAnchorGeometry();
   }
 
   void close() {
@@ -500,23 +564,79 @@ class _RenderPopoverAnchorProbe extends RenderProxyBox {
 
   bool _reported = false;
 
+  /// 上一次上报的**全局**矩形 —— 只在真的变了的时候才上报
+  Rect? _lastGlobalRect;
+
+  /// 正在上报（防重入：`localToGlobal` 要沿祖先链走，本类自己也在链上）
+  bool _reporting = false;
+
+  /// 把**此刻**的全局矩形重新量一遍并上报
+  ///
+  /// ★★ CR-10（CodeRabbit 未解决线程）：原来这段只在 [paint] 里跑，
+  ///    而**祖先只改偏移**时框架根本不会重跑子树的 paint。
+  /// ```text
+  /// 生产里的祖先链上有 Opacity（底栏的淡入淡出），而
+  /// RenderOpacity.isRepaintBoundary == (alpha > 0) —— 淡入完成后它就是一个
+  /// **repaint boundary**。此时把底栏整体平移（滑入/滑出、舞台缩放）只会让
+  /// 它的偏移变，框架在 object.dart 的 _compositeChild 里直接
+  /// childOffsetLayer.offset = offset 复用整个子层 ⇒
+  /// 子树（含本探针）的 paint **一次都不跑** ⇒ 控制器留着旧矩形，
+  /// 面板停在旧位置（实测：底栏平移 220px 后面板停在离按钮 220px 处）。
+  /// ```
+  /// ⇒ 两条补救：
+  ///   ① 这里多挂一条 [applyPaintTransform]（祖先在算这一支的全局变换时
+  ///      必然被走过；语义树开着时就会经过，真机上是每帧的常态）；
+  ///   ② 更要紧的是消费者侧：`PopoverController.watchAnchorGeometry()`
+  ///      在面板开着时每帧自己复核一次几何 —— 无论框架走的是重画还是
+  ///      层复用，读到的都是本帧真值。
+  void _report() {
+    if (_reporting || !attached || !hasSize) return;
+    if (size.width <= 0 || size.height <= 0) return;
+    _reporting = true;
+    try {
+      final Rect globalRect = localToGlobal(Offset.zero) & size;
+      if (globalRect == _lastGlobalRect) return;
+      _lastGlobalRect = globalRect;
+      _reported = true;
+      _controller.reportAnchorRect(_id, this, globalRect);
+      /*
+       * 让本节点也重画一次。
+       *
+       * ⚠️ 绘制期（`paint` 里）**绝不能**调 —— `object.dart` 在 `paint` 返回后
+       *    立刻断言 `!_needsPaint`（"The paint() method didn't mark us dirty
+       *    again"），在那里标脏会直接抛断言。
+       *    只有**布局期**那条路径允许（那时本帧还没进绘制阶段）。
+       */
+    } finally {
+      _reporting = false;
+    }
+  }
+
+  @override
+  void performLayout() {
+    // 重新布局 = 几何可能整体变了 ⇒ 清掉去重记录，让下一次上报一定发出
+    _lastGlobalRect = null;
+    super.performLayout();
+  }
+
+  @override
+  void applyPaintTransform(RenderObject child, Matrix4 transform) {
+    // ★ 布局/变换期的另一条上报路径（见 [_report] 的长注释）
+    _report();
+    super.applyPaintTransform(child, transform);
+  }
+
   @override
   void paint(PaintingContext context, Offset offset) {
     // 自己的 size + 自己的 offset（= 相对最近的 repaint boundary / 祖先）
     // ⇒ 换算成**全局**坐标再上报，控制器那边再换算成面板层的局部坐标。
-    if (hasSize && size.width > 0 && size.height > 0) {
-      _controller.reportAnchorRect(
-        _id,
-        this,
-        localToGlobal(Offset.zero) & size,
-      );
-      _reported = true;
-    }
+    _report();
     super.paint(context, offset);
   }
 
   @override
   void detach() {
+    _lastGlobalRect = null;
     if (_reported) _controller.forgetAnchorRect(_id, this);
     super.detach();
   }

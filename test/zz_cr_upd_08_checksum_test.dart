@@ -88,12 +88,34 @@ const _mir = '/$_mirrorPrefix$_tag/';
 const _githubPkg = '$_mirrorPrefix$_tag/$_setup';
 const _githubDmg = '$_mirrorPrefix$_tag/$_other';
 
+/// ★★★ 2026-10-11 修（CR-14）：期望名必须问**产品自己**的平台判定
+///
+/// 原写法是 `Platform.isWindows ? _setup : _other`，于是：
+///   · 平台判定**写了两份**：门禁一份（Platform.isWindows）、生产一份
+///     （`UpdateHttp.currentTarget()`，client.dart:46-55）。两份一旦分叉，
+///     门禁量的就不是生产干的事。
+///   · 分叉**真的存在**：Linux 上 `Platform.isWindows` 为 false ⇒ 期望 .dmg，
+///     而生产 `currentTarget()` 的兜底分支（client.dart:54）返回
+///     `UpdatePlatform.windows` ⇒ `selectAsset` 选 .exe（release.dart:187-194）
+///     ⇒ 本文件 CR-08-0 的 `expect(c.assetFor(rel)?.name, _pkg)` 必红。
+///     CI 的 flutter test 只跑 Windows（build.yml:149）与 macOS（:387）两个
+///     job，**没有 Linux 测试 job** ⇒ 这条红在 CI 上根本看不见；
+///     macOS 上 `_other` 恰好就是 .dmg、与生产 macos 分支一致 ⇒ 巧合地绿。
+/// ⇒ 现在直接取生产入口的返回值当期望名（同源，任何平台都不分叉，
+///   兜底分支也被覆盖）。
+///
+/// ⚠️ 本文件只挂 .exe 与 .dmg 两条资产（见 _release），所以除 windows/macos
+///   外的平台（android/TV）没有对应包 —— 但 `flutter test` 跑在**宿主**上，
+///   host 永远不是 Android ⇒ 那条分支不可达（CR-08-0 :219-229 里的
+///   `Platform.isAndroid` 分支同理，保留是为了平台映射本身可读）。
+final _platformUnderTest = UpdateHttp.currentTarget().$1;
+
 /// 当前平台该下的那个包 —— ★ UPD08：期望名必须按平台取
 /// （原来写死 _setup ⇒ macOS 上 selectAsset 返回 null ⇒ CI 红）
-final _pkg = Platform.isWindows ? _setup : _other;
+final _pkg = _platformUnderTest == UpdatePlatform.windows ? _setup : _other;
 
 /// **另一个**平台的包（CR-08-3 要造「表里只有别人的条目」）
-final _altPkg = Platform.isWindows ? _other : _setup;
+final _altPkg = _platformUnderTest == UpdatePlatform.windows ? _other : _setup;
 
 /// ★ UPD08：同时挂 .exe 与 .dmg 两条资产
 ///

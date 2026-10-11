@@ -193,9 +193,23 @@ class DownloadDir {
     final base = await root();
     final raw = title.trim().isEmpty ? '未命名' : title.trim();
     var name = ClipDownloader.safeName(raw);
+    // ★★ CR-05：Win32 会把路径**段**末尾的点与空格**规整掉**
+    //
+    // 本机实测（探针与逐字输出见 .probe/ops/t26-w3-download.md）：
+    //   Directory('<根>\...')    → 解析结果 = <根>        （塌回下载根本身）
+    //   Directory('<根>\. .')    → 解析结果 = <根>
+    //   Directory('<根>\.. .')   → 解析结果 = <根>
+    //   Directory('<根>\剧名. ')  → 解析结果 = <根>\剧名    （尾随点/空格被吃掉）
+    // ⇒ forWork('...') 返回的路径**就是下载根**，而 removeWork(force: true)
+    //   会对它 delete(recursive: true) ⇒ 把下载根连同里面所有作品一起删掉。
+    //   （实测：往 '<根>\...\x' 写文件会抛 PathNotFound，但 delete 会成功。）
+    //
+    // ★ 只在 Windows 上剥（POSIX 允许这种目录名，不许误改）；剥完可能是
+    //   空串 / '.' / '..' ⇒ 正好由下面那道 CR-16 的闸一并兜住。
+    if (Platform.isWindows) name = name.replaceFirst(RegExp(r'[ .]+$'), '');
     // ★ CR-16：'.' 会让目录等于下载根本身，'..' 会指向下载根的上级 ——
     //   两者都能让 removeWork(force) 的递归删除跳出下载根。
-    if (name == '.' || name == '..') name = '未命名';
+    if (name.isEmpty || name == '.' || name == '..') name = '未命名';
     final d = Directory('$base${Platform.pathSeparator}$name');
     if (!await d.exists()) await d.create(recursive: true);
     return d.path;

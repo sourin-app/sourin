@@ -151,7 +151,95 @@ int _bottomBarCount() => find.byType(PlayerBottomBar).evaluate().length;
 ///   CI 的回归，又把本机 `--run-skipped --tags native-media` 的例行 sweep 变成
 ///   假红。缺件是**环境事实**，不是被测代码的缺陷。
 ///   需要严格时用 `SOURIN_REQUIRE_LIBMPV=1` 一键要回硬失败。
-final File _libmpvDll = File('build/windows/x64/libmpv/libmpv-2.dll');
+/// ★★ 跨平台候选（2026-10-11，task-53 / CR-16 修）：原来这里写死
+/// `build/windows/x64/libmpv/libmpv-2.dll` **一条**路径 ⇒ 在 macOS 上
+/// **永远探不到**（即使夹具真的在：Makefile 把它塞进 app 包的
+/// `Contents/Frameworks/`）⇒ 本文件 ①②③ 三条**行为**用例在 macOS 上恒
+/// `markTestSkipped`（这条门禁在 macOS 上等于不存在），而
+/// `SOURIN_REQUIRE_LIBMPV=1` 的严格跑法又会硬失败。候选列表与
+/// `test/zz_cr_panel_notch_test.dart:83-112`（以及
+/// `test/t61_panel_radius_test.dart:167-200`）逐条一致 —— 本仓既有约定。
+///
+/// ★ `SOURIN_LIBMPV_PATH`：显式指定夹具路径时**只认它** ⇒ 指向不存在的
+///   路径就能在**不碰 `build/`** 的前提下真实复现「缺件」那一态
+///   （两态实测命令见文件末尾「夹具探测两态」组的注释）。
+const String _kLibmpvPathVar = 'SOURIN_LIBMPV_PATH';
+
+/// libmpv 的候选路径（**跨平台** —— 别只写 Windows 那一条）
+List<String> _libmpvCandidates() {
+  final explicit = Platform.environment[_kLibmpvPathVar];
+  if (explicit != null && explicit.isNotEmpty) {
+    // ★ 显式指定 ⇒ **只认它**：否则指向不存在的路径也探得到候选里的真夹具，
+    //   「缺件」那一态就永远复现不出来。
+    return <String>[explicit];
+  }
+  if (Platform.isWindows) {
+    return <String>[
+      r'build\windows\x64\libmpv\libmpv-2.dll',
+      r'build\windows\x64\runner\Release\libmpv-2.dll',
+    ];
+  }
+  if (Platform.isMacOS) {
+    final out = <String>[
+      // pod 的 vendored framework（`pod install` 之后）
+      'macos/Pods/media_kit_libs_macos_video/Frameworks/'
+          'Mpv.xcframework/macos-arm64_x86_64/libmpv-2.dylib',
+      'macos/Pods/media_kit_libs_macos_video/Frameworks/'
+          'Mpv.xcframework/macos-arm64/libmpv-2.dylib',
+    ];
+    // `flutter build macos` 之后 libmpv 就在 app 包里
+    // （★ app 名不一定是 `sourin_spike` —— 发布版是中文「源影」⇒ 扫目录）
+    for (final cfg in const <String>['Release', 'Debug', 'Profile']) {
+      final dir = Directory('build/macos/Build/Products/$cfg');
+      if (!dir.existsSync()) continue;
+      for (final e in dir.listSync()) {
+        if (e is Directory && e.path.endsWith('.app')) {
+          out.add('${e.path}/Contents/Frameworks/libmpv-2.dylib');
+        }
+      }
+    }
+    return out;
+  }
+  // Linux / 其它：libmpv 由系统包管理器提供
+  return <String>[
+    '/usr/lib/x86_64-linux-gnu/libmpv.so.2',
+    '/usr/lib/libmpv.so.2',
+  ];
+}
+
+/// 从候选里挑第一个**存在**的文件，返回其**绝对**路径；都没有 ⇒ `null`。
+///
+/// 纯函数（候选由参数给）⇒ 文件末尾「夹具探测两态」组可以**注入空列表**
+/// 把「缺件」态钉死，**不需要**去 move / rename / delete `build/` 下的任何 dll。
+String? _probeLibmpvPath(List<String> candidates) {
+  for (final rel in candidates) {
+    final f = File(rel);
+    if (f.existsSync()) return f.absolute.path;
+  }
+  return null;
+}
+
+/// 探测到的 libmpv **绝对**路径；`null` = 夹具缺失
+String? _libmpv;
+
+/// 夹具准备（`setUpAll` 用）：探到就初始化 MediaKit，探不到**什么都不做**。
+///
+/// ⚠️ 探不到时这里**绝不 fail** —— 理由见上面的注释块；守卫下沉到
+///   `_requireLibmpv()`，由每个**依赖播放器**的用例自己调（静态判据照常跑）。
+void _prepareLibmpvFixture() {
+  final candidates = _libmpvCandidates();
+  final found = _probeLibmpvPath(candidates);
+  if (found == null) {
+    // ignore: avoid_print
+    print('[LIBMPV] 夹具**缺失** ⇒ 依赖播放器的用例将 markTestSkipped；'
+        '候选 = $candidates');
+    return;
+  }
+  _libmpv = found;
+  MediaKit.ensureInitialized(libmpv: found);
+  // ignore: avoid_print
+  print('[LIBMPV] 夹具 = $found');
+}
 
 /// 依赖真播放器的用例开头调用：`if (!_requireLibmpv()) return;`
 ///
@@ -161,31 +249,29 @@ final File _libmpvDll = File('build/windows/x64/libmpv/libmpv-2.dll');
 ///
 /// 硬失败开关：环境变量 `SOURIN_REQUIRE_LIBMPV=1` ⇒ 缺件时 `fail(...)`。
 bool _requireLibmpv() {
-  if (_libmpvDll.existsSync()) return true;
+  if (_libmpv != null) return true;
   if (Platform.environment['SOURIN_REQUIRE_LIBMPV'] == '1') {
     fail(
-      'libmpv 夹具缺失：${_libmpvDll.absolute.path} 不存在'
+      'libmpv 夹具缺失：${File(_libmpvCandidates().first).absolute.path} 不存在'
       '（被 SOURIN_REQUIRE_LIBMPV=1 要求为硬失败）',
     );
   }
   markTestSkipped(
-    'libmpv 夹具缺失：${_libmpvDll.absolute.path} 不存在'
-    ' ⇒ 依赖播放器的用例无从断言。'
-    '手动跑：先 `flutter build windows` 生成该夹具；'
+    'libmpv 夹具缺失 ⇒ 依赖播放器的用例无从断言。'
+    '手动跑：先 `flutter build windows`（macOS 上 `flutter build macos`）；'
+    '候选路径 = ${_libmpvCandidates()}；'
     '要把缺件当失败跑：设 SOURIN_REQUIRE_LIBMPV=1',
   );
   return false;
 }
 
 void main() {
-  setUpAll(() {
-    final dll = _libmpvDll;
-    if (dll.existsSync()) {
-      MediaKit.ensureInitialized(libmpv: dll.absolute.path);
-    }
-    // else：夹具缺失 ⇒ **不 fail、不初始化**；守卫下沉到 `_requireLibmpv()`，
-    // 由每个**依赖播放器**的用例自己调（静态判据照常跑）。
-  });
+  // 夹具准备：探到就 MediaKit.ensureInitialized(同一个已找到的文件)，
+  // 探不到**不 fail**；守卫下沉到 `_requireLibmpv()`，由每个**依赖播放器**
+  // 的用例自己调（静态判据照常跑）。
+  // ★ 初始化与守卫读的是**同一个** `_libmpv` —— 原来两处各算一次
+  //   (`_libmpvDll.existsSync()` × 2)，这正是 CR-16 要修的第二半。
+  setUpAll(_prepareLibmpvFixture);
   setUp(() => RemoteBridge.instance.stop());
   tearDown(() => RemoteBridge.instance.stop());
 
@@ -350,6 +436,52 @@ void main() {
         RegExp(r'Icons\.arrow_back').allMatches(src).length,
         1,
         reason: '★ 玩家页只应有顶栏这一枚返回箭头',
+      );
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  //  ★ 夹具探测的**两态**（纯函数级 —— 不挂播放器、不需要真夹具）
+  // ══════════════════════════════════════════════════════════════════════
+  //
+  // 为什么抽 `_probeLibmpvPath(候选)` 出来：CR-16 要证明「缺件 ⇒ skip」这一态
+  // 真的成立，而**不许**去 move / rename / delete `build/` 下的任何 dll
+  // （那是别人的构建产物）⇒ 注入候选列表即可把「缺件」钉死。
+  //
+  // 真夹具两态的**端到端**复现（不碰 build/）：
+  //   PowerShell: `$env:SOURIN_LIBMPV_PATH='build/__no_such__.dll'` 然后
+  //   `flutter test test/zz_cr_backbtn_backarrow_test.dart --run-skipped --tags native-media`
+  //   ⇒ 打印「夹具**缺失**」+ ①②③ 三条行为用例 markTestSkipped；
+  //   再加 `$env:SOURIN_REQUIRE_LIBMPV='1'` ⇒ 那 3 条 `fail`（硬失败开关仍在）。
+  group('★ 夹具探测两态（纯函数，不需要真夹具）', () {
+    test('⑥ 候选里没有真文件 ⇒ 探不到（缺件态）', () {
+      expect(
+        _probeLibmpvPath(const <String>[]),
+        isNull,
+        reason: '★ 空候选必须探不到 —— 这就是「夹具缺失」那一态的定义',
+      );
+      expect(
+        _probeLibmpvPath(const <String>['build/__no_such_libmpv__.dll']),
+        isNull,
+        reason: '★ 候选写了但不存在的文件不算命中（否则缺件态会被假命中掩盖）',
+      );
+    });
+
+    test('⑦ 候选里有真文件 ⇒ 命中，且返回的是**绝对**路径', () {
+      final tmp = Directory.systemTemp.createTempSync('libmpv_probe_');
+      addTearDown(() => tmp.deleteSync(recursive: true));
+      final fake = File('${tmp.path}/libmpv-2.dll')..writeAsStringSync('x');
+      final hit = _probeLibmpvPath(<String>[
+        '${tmp.path}/__nope__.dll',
+        fake.path,
+      ]);
+      expect(hit, isNotNull, reason: '★ 真文件在候选里却探不到 ⇒ 探测函数坏了');
+      expect(
+        hit,
+        fake.absolute.path,
+        reason:
+            '★ 必须返回**绝对**路径 —— `MediaKit.ensureInitialized(libmpv:)` 收的就是'
+            '绝对路径（相对路径在别的 cwd 下会失效）',
       );
     });
   });

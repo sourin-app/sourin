@@ -7,8 +7,10 @@
 //
 //  用法：
 //    node tools/pr_size.mjs --base <ref> [--head <ref>] [--warn] [--exempt]
+//                           [--exempt-label <name>]
 //    node tools/pr_size.mjs --base main              # 本地开 PR 前自查
 //    node tools/pr_size.mjs --base main --warn       # 只报不失败
+//    # CI 里标签名由工作流经 --exempt-label 传入 ⇒ 两边不会各写一份而跑偏
 //
 //  ★ 判规模**必须**带 --ignore-all-space --ignore-blank-lines：
 //    移除 forui 那次重写行尾让 lib/ui/live_page.dart 报出 2878/2876，
@@ -26,6 +28,8 @@ const TARGET_LINES = 600;
 const TARGET_FILES = 30;
 const HARD_LINES = 1200;
 const HARD_FILES = 60;
+// ★ 默认豁免标签名。工作流用 --exempt-label 把同一个名字显式传进来，
+//   读数里会把它印出来 ⇒ 日志里一眼能看出这次读的是哪个标签。
 const EXEMPT_LABEL = 'size/exempt';
 
 function git(args) {
@@ -33,7 +37,7 @@ function git(args) {
 }
 
 function usage(msg) {
-  console.error('用法: node tools/pr_size.mjs --base <ref> [--head <ref>] [--warn] [--exempt]');
+  console.error('用法: node tools/pr_size.mjs --base <ref> [--head <ref>] [--warn] [--exempt] [--exempt-label <name>]');
   if (msg) console.error('  ' + msg);
   process.exit(2);
 }
@@ -43,12 +47,18 @@ let base = null;
 let head = 'HEAD';
 let warnOnly = false;
 let exempt = false;
+let exemptLabel = EXEMPT_LABEL;
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--base') base = argv[++i];
   else if (a === '--head') head = argv[++i];
   else if (a === '--warn') warnOnly = true;
   else if (a === '--exempt') exempt = true;
+  else if (a === '--exempt-label') {
+    const v = argv[++i];
+    if (!v) usage('--exempt-label 后面要跟标签名');
+    exemptLabel = v;
+  }
   else if (a === '-h' || a === '--help') usage('（这是帮助）');
   else usage('不认识的参数: ' + a);
 }
@@ -106,6 +116,8 @@ if (mb) {
 
 console.log('════ PR 规模（口径：--ignore-all-space --ignore-blank-lines）════');
 console.log('范围      : ' + base + '...' + head);
+console.log('豁免标签  : ' + exemptLabel +
+            (exempt ? '   ← 本次已按 --exempt 命中' : '   （本步不读标签；命中与否由工作流「查豁免标签」判定）'));
 console.log('文件数    : ' + files + '  (目标 ≤' + TARGET_FILES + ', 硬上限 ≤' + HARD_FILES + ')');
 console.log('增删行    : +' + add + ' −' + del + ' = ' + lines +
             '  (目标 ≤' + TARGET_LINES + ', 硬上限 ≤' + HARD_LINES + ')');
@@ -144,7 +156,7 @@ console.log('行数     : ' + bar(lines, HARD_LINES) + '(硬上限' + HARD_LINES
 console.log('文件数   : ' + bar(files, HARD_FILES) + '(硬上限' + HARD_FILES + ')');
 
 if (exempt) {
-  console.log('⚠ 本次按 **已豁免** 处理（PR 带了 ' + EXEMPT_LABEL + ' 标签）——');
+  console.log('⚠ 本次按 **已豁免** 处理（PR 带了 ' + exemptLabel + ' 标签）——');
   console.log('  请确认豁免是有意为之：规矩见 CONTRIBUTING.md「★★★ PR 规模」。');
   process.exit(0);
 }

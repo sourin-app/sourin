@@ -673,6 +673,56 @@ class DownloadQueue {
   /// 旁文件里「本地封面文件名」那个键（读侧 cache_page 必须引用同一个常量）
   static const String kSidecarCoverFileKey = 'coverFile';
 
+  /// ★★★ CR-06：同一个作品目录的收尾**必须串行**
+  ///
+  /// # 缺陷（机制已按代码逐行复核 + 探针复现，见 .probe/ops/t26-w3-download.md）
+  /// 同一个作品目录里的临时文件名是**固定**的（`_sourin-cover.jpg.tmp`、
+  /// `_sourin-cache.json.tmp`）。并发 ≥ 2 时同一部剧的两集会在**同一个目录**
+  /// 里同时收尾，于是：
+  /// ```text
+  /// A: 写 _sourin-cover.jpg.tmp → rename 到 _sourin-cover.jpg（tmp 被搬走了）
+  /// B: 写 _sourin-cover.jpg.tmp → rename ⇒ ENOENT（tmp 已经不在）
+  ///    ⇒ 重试 5 次（≈440ms）全失败 ⇒ 兜底 readAsBytes 也 ENOENT
+  ///    ⇒ 记「★ 封面原子替换彻底失败」⇒ cacheCoverImage 返回 null
+  ///    ⇒ 旁文件里 coverFile = null ⇒ 已缓存页丢本地封面
+  /// ```
+  /// 反序时则是 A 撞上 B 正在写的那个 tmp（两边字节互相踩踏）。旁文件那一侧
+  /// 是同一个洞（固定名 `_sourin-cache.json.tmp`）。
+  ///
+  /// # 为什么是「串行」而不是「给 tmp 起唯一名字」
+  /// 唯一名字同样能修好这里，但会让 `test/zz_cr_dl_sidecar_race_test.dart` 里
+  /// **5 处**「查固定名 `.tmp` 有没有残留」的断言永远查不到东西（假绿）——
+  /// 那些断言是 OPS-16 的牙齿，而本任务不许改既有测试。串行化**不改任何
+  /// 文件名** ⇒ 既有断言的强度逐字不变，`_atomicReplaceWith` 的重试语义
+  /// 也一个字都不用动。
+  ///
+  /// # 语义
+  /// 只把**同一个目录**的收尾排成队（不同作品互不影响）。
+  static final Map<String, Future<void>> _finishChains = <String, Future<void>>{};
+
+  /// 测试专用：关掉收尾串行化（默认 false ⇒ 生产行为逐字节不变）
+  ///
+  /// 只有一个用途：让 CR-06 的门禁能做出**阳性对照** —— 关掉它以后并发收尾
+  /// 必须**真的**撞名（出现「原子替换彻底失败」/ coverFile 变 null），否则那条
+  /// 门禁就是假绿（证明不了它声称要测的东西）。与 debugForceRenameFailures
+  /// 同一个范式：只多一次静态读 + 比较，为 0/false 时控制流与改前完全一致。
+  @visibleForTesting
+  static bool debugDisableFinishSerialization = false;
+
+  /// 把 [body] 排到「同一个 [dir] 的上一次收尾跑完之后」再跑
+  static Future<T> _serializeFinish<T>(String dir, Future<T> Function() body) {
+    if (debugDisableFinishSerialization) return body();
+    final prev = _finishChains[dir] ?? Future<void>.value();
+    final gate = Completer<void>();
+    _finishChains[dir] = gate.future;
+    return prev.then((_) => body()).whenComplete(() {
+      // ★ 用 gate 而不是把 body 的 future 存进表里：body 抛异常时 gate 仍正常
+      //   完成 ⇒ 队列**不会被一次失败毒死**（后来的任务照跑）。
+      gate.complete();
+      if (identical(_finishChains[dir], gate.future)) _finishChains.remove(dir);
+    });
+  }
+
   /// ★★★ 旁文件**原子写**（先写 .tmp 再 rename）
   ///
   /// 改前是直接 `writeAsString`：写到一半崩了/断电 ⇒ 盘上留下**半个 JSON**。
@@ -691,27 +741,34 @@ class DownloadQueue {
   static Future<void> _writeSidecarFor(DownloadTask t, String dir) async {
     try {
       /*
-       * ★ 封面图先抓：抓成功了才知道本地文件名，好一起写进旁文件。
-       * ⚠️ 抓图是网络 IO ⇒ 绝不能让它挡住后面的字段写入（顺序即此）。
+       * ★★★ CR-06：整段（抓封面 + 写旁文件）包进**同目录串行**里 ——
+       *   理由与缺陷机制见 _serializeFinish 上方那段长注释。
+       *   一句话：这一段用的两个 tmp 都是**固定名**，并发收尾必然撞名。
        */
-      final coverFile = await cacheCoverImage(t.cover, dir);
-      final f = File('$dir${Platform.pathSeparator}$kSidecarName');
-      final tmp = File('${f.path}.tmp');
-      await tmp.writeAsString(jsonEncode(<String, Object?>{
-        'provider': t.provider,
-        'id': t.mediaId,
-        'title': t.title,
-        'cover': t.cover,
-        kSidecarCoverFileKey: coverFile,
-        // ★ 以下给「本地播放页」补（Owner：封面介绍啥的在线播放器有的，
-        //   本地播放器也要有）。全部可空 —— 缺就缺，读侧降级，绝不编造。
-        'description': t.description,
-        'year': t.year,
-        'area': t.area,
-        'kind': t.kind,
-        'badges': t.badges,
-      }), flush: true);
-      await _atomicReplaceWith(tmp, f, what: '旁文件');
+      await _serializeFinish<void>(dir, () async {
+        /*
+         * ★ 封面图先抓：抓成功了才知道本地文件名，好一起写进旁文件。
+         * ⚠️ 抓图是网络 IO ⇒ 绝不能让它挡住后面的字段写入（顺序即此）。
+         */
+        final coverFile = await cacheCoverImage(t.cover, dir);
+        final f = File('$dir${Platform.pathSeparator}$kSidecarName');
+        final tmp = File('${f.path}.tmp');
+        await tmp.writeAsString(jsonEncode(<String, Object?>{
+          'provider': t.provider,
+          'id': t.mediaId,
+          'title': t.title,
+          'cover': t.cover,
+          kSidecarCoverFileKey: coverFile,
+          // ★ 以下给「本地播放页」补（Owner：封面介绍啥的在线播放器有的，
+          //   本地播放器也要有）。全部可空 —— 缺就缺，读侧降级，绝不编造。
+          'description': t.description,
+          'year': t.year,
+          'area': t.area,
+          'kind': t.kind,
+          'badges': t.badges,
+        }), flush: true);
+        await _atomicReplaceWith(tmp, f, what: '旁文件');
+      });
     } catch (e) {
       /*
        * 旁文件丢了是小事，把下载本身搞失败是大事 —— 但**不许再静默**

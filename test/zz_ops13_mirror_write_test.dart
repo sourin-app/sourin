@@ -18,13 +18,21 @@ library;
 // # 本文件钉住什么（★ 行为，不是「源码里有没有那行字」）
 //
 // ```text
-// ① 本地会话 _saveProgress() 走完之后，**另一个键**（站点 provider + 站点 id）
-//    上真的多了一条进度 —— 用注入点记录**那一次写入的真实载荷**。
-// ② 那条镜像**不带 episode_id**（带了就会被在线侧的「按集校验」挡掉 ⇒ 白写）。
-// ③ 那条镜像的标题是**去掉后缀的文件名**（本地会话手上没有集标题）。
-// ④ 没有来源（老下载 / 手拷进来的目录）⇒ **一条都不写**（不猜）。
-// ⑤ 端到端：真的落进 SQLite，SourinApi.getProgress 读得回来。
+// ① 本地会话手上的「集号」是**文件名** ⇒ 不是站点集 id ⇒ **一条镜像都不写**
+//    （写 episode_id=null 会把在线记录已有的集 ID 覆盖成 NULL；写文件名
+//     又会被在线那条「按集校验」挡掉 —— 两条路都是坏的，见 CR-08）。
+// ② 跳过镜像**不等于**跳过保存：会话自己那条（local 键）照常写。
+// ③ 没有来源（老下载 / 手拷进来的目录）⇒ **一条都不写**（不猜）。
+// ④ 端到端：站点键上那条**在线记录逐列不变**（作品标题 / 站点集 ID /
+//    集标题 / 位置 / updatedAt 一个都不许被动）。
 // ```
+//
+// # ★★ 本文件为什么**不**出现 `originEpisodeId`
+//
+// 那是**修复后**才有的形参。本文件要在**缺陷代码上也能编译** ——
+// 否则「修复前红」只是一句编译错误，证明不了任何行为。
+// ⇒ 「有站点集 id 时镜像真的写出去」那组正向契约放在
+//   `test/t26_w4_mirror_site_id_test.dart`，并如实标注它是**编译期红**。
 //
 // # ★ 为什么必须真挂 PlayerPage、真调 _saveProgress()
 //
@@ -35,6 +43,7 @@ library;
 //
 // ⚠️ 硬规则：数据目录指到 TEMP 沙盒，**绝不碰** %APPDATA% 下的用户真实库。
 
+import 'dart:ffi' show DynamicLibrary;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -62,6 +71,29 @@ Widget _appWith(Widget home) {
   );
 }
 
+/// 交付件里那颗 DLL —— `lib/core/ffi.dart:222-259` 的 Windows 分支只认**裸名**
+/// `DynamicLibrary.open('sourin_core.dll')`（按 exe 所在目录 / PATH 找），
+/// 而 flutter_tester.exe 的目录里没有它。
+///
+/// ★ 实测（2026-10-11）：**少了这一步本文件必然死在 setUpAll**
+///   `Invalid argument(s): Failed to load dynamic library 'sourin_core.dll':
+///    The specified module could not be found. (error code: 126)`
+///   —— 因为 `SourinCore.startAsync` 的工作 isolate **不会**继承主 isolate
+///   已经映射好的模块（`lib/core/ffi.dart:368-373` 的注释说 dlopen 幂等，
+///   在 Windows 上对**裸名** open 不成立）。
+///   ⇒ 先按**绝对路径**载进本进程，之后那次裸名 open 才命中已映射的模块。
+///
+/// 这条是 `test/task18_entry_test.dart:100-104` 与
+/// `test/t96_emby_multisource_live_test.dart:93-107` 的既有做法。
+const String _dllRel = r'build\windows\x64\runner\Release\sourin_core.dll';
+final bool _dllReady = File(_dllRel).existsSync();
+
+void _preloadCoreDll() {
+  if (!_dllReady) return;
+  DynamicLibrary.open(File(_dllRel).absolute.path);
+  debugPrint('OPS13-W DLL 预加载 = OK（${File(_dllRel).absolute.path}）');
+}
+
 void main() {
   late Directory sandbox;
   late Directory caseDir;
@@ -70,6 +102,10 @@ void main() {
   final mirrorCalls = <ProgressMirrorCall>[];
 
   setUpAll(() async {
+    /*
+     * ⓪ 真核心那颗 DLL 必须**先按绝对路径**载进本进程（见 _preloadCoreDll 的说明）
+     */
+    _preloadCoreDll();
     /*
      * ① libmpv：与 test/zz_t12_local_play_probe_test.dart 同一条（仓库自带 dll）。
      */
@@ -220,71 +256,49 @@ void main() {
             '下面的读数全是空的（本仓最经典的假绿形态）');
     debugPlayerPushPositionForProbe(const Duration(seconds: 30));
     await t.pump(const Duration(milliseconds: 20));
-    while (t.takeException() != null) {}
     final ok = await t.runAsync<bool>(() => debugPlayerSaveProgressForProbe(
           duration: const Duration(seconds: 100),
           position: const Duration(seconds: 30),
         ));
     return ok ?? false;
   }
-
-  group('① 写入侧：本地看完 ⇒ 站点键上多一条镜像', () {
-    testWidgets('★★★ 真跑 _saveProgress ⇒ 镜像那条落到 (站点, 站点内容 id)',
-        (t) async {
+  group('① 写入侧：拿不到**站点集 id** ⇒ 一条镜像都不写（CR-08 的安全修复）', () {
+    testWidgets('★★★ 真跑 _saveProgress ⇒ 镜像整条被跳过', (t) async {
       await mountLocal(t,
           originProvider: 'bilibili', originMediaId: 'BV1ops13write');
       debugPrint('OPS13-W 本会话会镜像到: '
           '${debugPlayerMirrorOriginForProbe()}');
+      expect(debugPlayerMirrorOriginForProbe(), isNotNull,
+          reason: '★ 前置：来源本身认得出来 —— 否则下面那条「跳过」'
+              '分不清是「来源没认出来」还是「站点集 id 拿不到」');
 
       final ok = await driveSave(t);
       expect(ok, isTrue, reason: '★ 必须真的走到了 _saveProgress');
 
       debugPrint('OPS13-W 拦截到 ${mirrorCalls.length} 条镜像: $mirrorCalls');
-      expect(mirrorCalls.length, 1,
-          reason: '★★★ 本地会话看完**必须**多写一条镜像 —— '
-              '一条都没有 = 「本地和线上彻底分开」原样没修');
-
-      final c = mirrorCalls.single;
-      expect(c.provider, 'bilibili',
-          reason: '★★ 镜像必须打到**原来源**的 provider 上');
-      expect(c.mediaId, 'BV1ops13write',
-          reason: '★★ 镜像必须打到**原来源**的站点内容 id 上');
-      expect(c.position, 30, reason: '★ 位置要原样带过去');
-      expect(c.duration, 100, reason: '★ 时长要原样带过去');
+      expect(mirrorCalls, isEmpty,
+          reason: '★★★ 本地会话手上的「集号」是**文件名**（shell.dart 传 '
+              'req.episode.fileName）⇒ 不是站点集 id ⇒ **必须整条跳过**：'
+              '写 episode_id=null 会在 upsert_progress（store.rs 的 ON CONFLICT '
+              '里 episode_id=excluded.episode_id，没有守卫）把在线记录已有的集 ID '
+              '覆盖成 NULL；写文件名又会被在线那条「按集校验」挡掉。'
+              '⇒ 「少写一条镜像」只是退化成今天的样子，'
+              '「写坏一条在线记录」是不可逆的数据损坏 —— 两者不对等');
     });
 
-    testWidgets('★★★ 镜像那条**不带** episode_id（带了会被在线守卫挡掉）',
-        (t) async {
-      /*
-       * # 为什么这条是硬判据
-       * ```text
-       * 本地会话的「集号」是**文件名**（shell.dart 传 req.episode.fileName），
-       * 在线的「集号」是站点集 id（如 51463）—— 二者**必然不等**。
-       * 若把文件名写进镜像的 episode_id，在线那条守卫
-       *   （player_page.dart 的 p.episodeId != curEpId）会判成
-       *   「进度属于另一集」而**拒绝续播** ⇒ 镜像白写。
-       * ```
-       */
+    testWidgets('★★★ 跳过镜像**不等于**跳过保存：会话自己那条照常写', (t) async {
       await mountLocal(t,
-          originProvider: 'bilibili', originMediaId: 'BV1ops13epid');
+          originProvider: 'bilibili', originMediaId: 'BV1ops13own');
       expect(await driveSave(t), isTrue);
 
-      expect(mirrorCalls.length, 1);
-      expect(mirrorCalls.single.episodeId, isNull,
-          reason: '★★★ 镜像的 episode_id 必须是 null —— '
-              '写文件名进去 = 在线永远续不上（功能白做，且日志看起来很正常）');
-    });
-
-    testWidgets('★★★ 镜像的标题 = 文件名去后缀（本地会话没有集标题）',
-        (t) async {
-      await mountLocal(t,
-          originProvider: 'bilibili', originMediaId: 'BV1ops13title');
-      expect(await driveSave(t), isTrue);
-
-      expect(mirrorCalls.length, 1);
-      expect(mirrorCalls.single.title, '第01集',
-          reason: '★★ 本地会话手上只有 第01集.mp4 ⇒ 写进播放记录的必须是'
-              '去掉后缀的 第01集（否则列表里出现「第01集.mp4」这种条目）');
+      final own = await t.runAsync<Progress?>(() =>
+          SourinApi.getProgress(kLocalProvider, localId));
+      debugPrint('OPS13-W 会话自己那条: key=${own?.key} pos=${own?.position}');
+      expect(own, isNotNull,
+          reason: '★★ 本地文件的观看进度必须能存能读 —— '
+              '「跳过镜像」修的是镜像那条，不是会话自己那条');
+      expect(own!.position, 30);
+      expect(own.duration, 100);
     });
   });
 
@@ -316,49 +330,73 @@ void main() {
     });
   });
 
-  group('③ 端到端：那条镜像真的落进了 SQLite', () {
-    testWidgets('★★★ 去掉注入点后，SourinApi.getProgress 能读回那条镜像',
-        (t) async {
+  group('③ 端到端：站点键上那条在线记录**逐列不变**', () {
+    testWidgets('★★★ 去掉注入点后，在线记录一个字都没被抹掉', (t) async {
       const originProvider = 'bilibili';
       const originMediaId = 'BV1ops13e2e';
       /*
        * ★ 这一步是「端到端」的硬证据：注入点只证明**调用了**，
        *   不证明**真的写进了库**（键拼错、参数名写错都照样绿）。
        * ⇒ 摘掉注入点，让 saveProgressWithMirror 走真 FFI。
+       *
+       * ★ 为什么先**种一条在线记录**：
+       *   CR-08 的危害是「镜像把在线记录已有的集 ID 覆盖成 NULL」，
+       *   只有站点键上**原本有**一条记录时才看得出来。
+       *   空键上写一条 null 的镜像看起来完全正常 —— 那正是这个 bug
+       *   在生产里活了这么久的原因。
        */
       debugProgressMirrorSink = null;
 
+      final seeded = await t.runAsync<Progress?>(() async {
+        await SourinApi.saveProgress(originProvider, originMediaId,
+            title: '在线剧',
+            episodeId: '51463',
+            episodeTitle: '第03集',
+            position: 600,
+            duration: 1200);
+        return SourinApi.getProgress(originProvider, originMediaId);
+      });
+      expect(seeded, isNotNull, reason: '★ 前置：在线那条种进去了');
+      debugPrint('OPS13-W 种下的在线记录: title=${seeded!.title} '
+          'episodeId=${seeded.episodeId} episodeTitle=${seeded.episodeTitle} '
+          'pos=${seeded.position}/${seeded.duration} '
+          'updatedAt=${seeded.updatedAt}');
+
       await mountLocal(t,
           originProvider: originProvider, originMediaId: originMediaId);
-
-      final pre = await t.runAsync<Progress?>(() =>
-          SourinApi.getProgress(originProvider, originMediaId));
-      expect(pre, isNull, reason: '★ 前置：这个键必须是空的（否则下面的读数没有分辨力）');
-
       expect(await driveSave(t), isTrue);
 
       final got = await t.runAsync<Progress?>(() =>
           SourinApi.getProgress(originProvider, originMediaId));
       debugPrint('OPS13-W 端到端读回: key=${got?.key} '
           'title=${got?.title} pos=${got?.position}/${got?.duration} '
-          'episodeId=${got?.episodeId}');
-      expect(got, isNotNull,
-          reason: '★★★ 本地看完之后，**站点键**上必须真的有一条进度 —— '
-              '这条不存在 = 「在线看时记不住本地看过」原样没修');
-      expect(got!.position, 30, reason: '★ 位置要对得上（不是写了个空记录）');
-      expect(got.duration, 100);
-      expect(got.title, '第01集',
-          reason: '★ 标题必须是去掉后缀的文件名');
-      expect(got.episodeId, isNull,
-          reason: '★★★ 落库那条也**不带** episode_id（JSON 里干脆没有这个键）');
+          'episodeId=${got?.episodeId} episodeTitle=${got?.episodeTitle} '
+          'updatedAt=${got?.updatedAt}');
+      expect(got, isNotNull);
+      expect(got!.title, '在线剧',
+          reason: '★★★ 作品标题不许被本地那条的「第01集」顶掉（CR-07）—— '
+              'detail_page._resolveLocalOrigin 正是按标题认回来源的');
+      expect(got.episodeId, '51463',
+          reason: '★★★ 站点集 ID 不许被抹成 NULL（CR-08）—— '
+              '抹掉之后「按集校验」就永远放行任何一集了');
+      expect(got.episodeTitle, '第03集',
+          reason: '★★ 集标题同上，不许被顶成 null');
+      expect(got.position, 600,
+          reason: '★★ 在线看到哪儿就还是哪儿 —— 本地那条 30 秒不许顶掉它');
+      expect(got.duration, 1200);
+      expect(got.updatedAt, seeded.updatedAt,
+          reason: '★★★ updatedAt 一个字都没变 = 这一行**根本没被写过** '
+              '（不是「写了个差不多的值」）—— '
+              'pickResumeProgress 正是按 updatedAt 挑较新的那条');
 
       // 会话自己的那条也必须在（既有行为逐字不变）
       final own = await t.runAsync<Progress?>(() =>
           SourinApi.getProgress(kLocalProvider, localId));
       debugPrint('OPS13-W 会话自己那条: key=${own?.key} pos=${own?.position}');
       expect(own, isNotNull,
-          reason: '★★ 镜像只是**补充** —— 会话自己的那条不许因此丢');
+          reason: '★★ 跳过镜像**不等于**跳过保存 —— 会话自己那条必须照写');
       expect(own!.position, 30);
+      expect(own.duration, 100);
     });
   });
 }

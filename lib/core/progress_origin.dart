@@ -272,22 +272,53 @@ class ProgressMirrorCall {
     required this.duration,
     this.finished,
     this.episodeId,
+    this.episodeTitle,
   });
 
   final String provider;
   final String mediaId;
+
+  /// ★★★ **作品标题**（会话的 `title`，如 `本地剧`）—— **不是**集标题
+  ///
+  /// CR-07（CodeRabbit #7，Major）：这里原来放的是**集标题**。Rust 的
+  /// `upsert_progress` 对非空 title 是**覆盖写**
+  /// （`rust/sourin_core/src/store.rs:932-941` 的
+  /// `CASE WHEN excluded.title <> '' THEN excluded.title ELSE title END`）
+  /// ⇒ 站点键上原本那条**在线记录**的作品标题被改成「第01集」
+  /// ⇒ `lib/ui/detail_page.dart:1689-1690` 的 `_resolveLocalOrigin`
+  ///    按标题认源随之失效 ⇒ 来源 chip 退回「本地」。
   final String title;
+
   final int position;
   final int duration;
   final bool? finished;
 
-  /// ★ 恒为 `null` —— 见 [saveProgressWithMirror] 的说明
+  /// ★★★ **站点集 id**（如 `51463`）—— 拿不到时**整条镜像不写**
+  ///
+  /// CR-08（CodeRabbit #8，Major）：这里原来**恒为 `null`**。两个后果：
+  /// ```text
+  /// ① 读侧：pickResumeProgress（本文件 :230-234）会选中较新的镜像，
+  ///    而 progressBelongsToCurrentEpisode（本文件 :254-262）在
+  ///    progressEpisodeId 为空时**返回 true** ⇒ 按集校验失效
+  ///    ⇒ 本地第 1 集的进度被在线第 3 集用上。
+  /// ② 写侧：store.rs:939 是 episode_id=excluded.episode_id，**没有**守卫
+  ///    ⇒ 镜像写入把在线记录已有的集 ID 覆盖成 NULL。
+  /// ```
+  /// ⇒ 现在的契约：**必须**是站点集 id；拿不到就跳过镜像
+  ///   （见 [saveProgressWithMirror] 的 `originEpisodeId`）。
+  ///   ⚠️ **绝不能**拿本地文件名充数 —— 二者必然不等。
   final String? episodeId;
+
+  /// ★★★ 镜像那条的**集标题**（`第01集`）—— CR-07 把它从 [title] 里拆出来
+  ///
+  /// 由 [mirrorProgressTitle] 推出：优先会话的 `episodeTitle`，
+  /// 没有就退回**文件名去后缀**（`第01集.mp4` -> `第01集`）。
+  final String? episodeTitle;
 
   @override
   String toString() => 'ProgressMirrorCall($provider:$mediaId '
       'title=$title pos=$position/$duration finished=$finished '
-      'episodeId=$episodeId)';
+      'episodeId=$episodeId episodeTitle=$episodeTitle)';
 }
 
 /// 镜像写入的**注入点**（`null` = 走真 `SourinApi.saveProgress`）
@@ -306,19 +337,26 @@ Future<void> Function(ProgressMirrorCall call)? debugProgressMirrorSink;
 /// 会话自己的进度**已经落盘**了 => 用户最多是「本地和在线还没打通」，
 /// 而不是「这次观看的进度整个丢了」。
 ///
-/// # ★★ 镜像那条为什么 `episodeId: null`（本轮最关键的一处推理）
+/// # ★★ 镜像那条的 `episodeId`：**只写站点集 id，拿不到就整条跳过**
 ///
-/// 在线播放同一集时：`_contentId` = 站点内容 id、续播守卫拿的 `curEpId` 是
-/// **站点集 id**（如 `51463`，`lib/ui/player_page.dart:3387-3389`）。
-/// 而本地会话手上的「集号」是**文件名**（`lib/shell.dart:4830` 传
-/// `req.episode.fileName`，如 `第01集 CR13.mp4`）—— 二者**必然不等**。
-/// 若把文件名写进镜像的 `episode_id`，在线那条守卫会判成
-/// 「进度属于另一集」而**拒绝续播**（`lib/ui/player_page.dart:3390`）=> 白写。
+/// （CR-08 / CodeRabbit #8 改的正是这一节 —— 它原来写的是「恒为 null」）
 ///
-/// => 镜像写 `episode_id = NULL`（JSON 里干脆不带这个键，Rust 收 `None`），
-///    守卫的第一个条件 `p.episodeId != null` 不成立 => **任意一集都能续上**。
-///    代价：镜像记的是「这部剧看到哪」，不精确到集。
-///    对本轮目标（本地看完 -> 在线接着看）完全够用，且**不触碰**任何既有守卫。
+/// ```
+/// 本地会话手上的「集号」是**文件名**（lib/shell.dart:4830 传
+///   req.episode.fileName，如 第01集 CR13.mp4），而在线侧比的是
+///   **站点集 id**（如 51463）—— 二者必然不等。
+/// ① 若把文件名写进镜像的 episode_id ⇒ 在线那条守卫
+///    （lib/ui/player_page.dart:3390）判成「进度属于另一集」⇒ 拒绝续播 ⇒ 白写。
+/// ② 若写 null（本轮修复前的做法）⇒ 两个方向都坏：
+///    读侧 progressBelongsToCurrentEpisode 在 progressEpisodeId 为空时
+///      返回 true ⇒ 本地第 1 集的进度被在线第 3 集用上；
+///    写侧 store.rs:939 的 episode_id=excluded.episode_id **没有**守卫
+///      ⇒ 把在线记录已有的集 ID 覆盖成 NULL。
+/// ```
+/// ⇒ 现在的契约：`originEpisodeId` **必须是站点集 id**；
+///    拿不到（老下载 / 手拷进来的目录 / 旁文件里没记）就**整条镜像不写**。
+///    「少写一条镜像」只是退化成今天的样子（本地和在线还没打通），
+///    「写坏一条在线记录」是**数据损坏** —— 两者不对等，所以选前者。
 ///
 /// # ★ 镜像为什么不带封面
 ///
@@ -338,6 +376,21 @@ Future<void> saveProgressWithMirror({
   required int duration,
   bool? finished,
   ProgressOrigin? mirror,
+  /*
+   * ★★★ CR-08（CodeRabbit #8）：镜像那条的**站点集 id**。
+   *
+   * # 为什么不复用 episodeId
+   * ```
+   * 形参 episodeId 是**会话自己的集号**：本地会话里它是**文件名**
+   *   （lib/shell.dart:4830 传 req.episode.fileName），在线会话里它是站点集 id。
+   * 拿它当镜像的 episode_id ⇒ 本地会话必然写进一个文件名 ⇒ 在线那条
+   *   「按集校验」（lib/ui/player_page.dart:3390）判成「另一集」⇒ 拒绝续播。
+   * ⇒ 镜像那条**必须**另开一个口子，由调用方显式给**站点**集 id。
+   * ```
+   *
+   * ⚠️ 默认 null = **不写镜像**（不是「写 null」）—— 见下面那段。
+   */
+  String? originEpisodeId,
 }) async {
   await SourinApi.saveProgress(
     provider,
@@ -353,21 +406,42 @@ Future<void> saveProgressWithMirror({
 
   final target = mirror;
   if (target == null) return;
-  final mTitle = mirrorProgressTitle(
+
+  // ★★★ CR-08 的安全修复：拿不到**站点集 id** ⇒ 整条镜像不写。
+  //
+  // 宁可「少写一条镜像」（退化成今天的样子：本地和在线还没打通），
+  // 也不写 episode_id=null —— 后者在 store.rs:939 那里**没有**守卫，
+  // 会把在线记录已有的集 ID 覆盖成 NULL（数据损坏，不可逆）。
+  final siteEpisodeId = originEpisodeId?.trim() ?? '';
+  if (siteEpisodeId.isEmpty) return;
+
+  // ★★★ CR-07：镜像的 title 用**会话的作品标题**，集标题走 episodeTitle。
+  //
+  // 作品标题为空时同样不写：Rust 对空标题是「保留旧值」
+  //   （store.rs:932-941 的 CASE WHEN excluded.title <> ''），
+  //   写一条空标题只会白刷 updated_at，把「取更新的那条」判据带偏。
+  final siteTitle = title.trim();
+  if (siteTitle.isEmpty) return;
+
+  // 集标题：优先会话的 episodeTitle，没有就退回文件名去后缀
+  final mEpisodeTitle = mirrorProgressTitle(
     episodeTitle: episodeTitle ?? '',
     episodeFileName: episodeId ?? '',
   );
-  // 连标题都推不出来 => 不写（写空标题只会白刷 updated_at，见上面那条注释）
-  if (mTitle == null) return;
+  // 连集标题都推不出来 => 不写（理由同上）
+  if (mEpisodeTitle == null) return;
 
   final call = ProgressMirrorCall(
     provider: target.provider,
     mediaId: target.mediaId,
-    title: mTitle,
+    // ★ 作品标题（不是集标题）—— CR-07
+    title: siteTitle,
     position: position,
     duration: duration,
     finished: finished,
-    episodeId: null,
+    // ★ 站点集 id（不是文件名、也不是 null）—— CR-08
+    episodeId: siteEpisodeId,
+    episodeTitle: mEpisodeTitle,
   );
 
   final sink = debugProgressMirrorSink;
@@ -382,7 +456,9 @@ Future<void> saveProgressWithMirror({
     position: call.position,
     duration: call.duration,
     finished: call.finished,
-    // ★ 逐字不带 episode_id（见本节说明）—— 传 null 就是「这个键不出现在 JSON 里」
+    // ★ 站点集 id（见本节说明）—— 修复前这里是 call.episodeId = null
     episodeId: call.episodeId,
+    // ★ 集标题终于有地方去了（修复前它被塞进了 title，覆盖掉作品标题）
+    episodeTitle: call.episodeTitle,
   );
 }

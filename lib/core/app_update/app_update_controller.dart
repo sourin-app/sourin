@@ -86,6 +86,43 @@ class UpdateDownloadState {
       );
 }
 
+/// 校验一个下载到的安装包的结果（CR-04：这几种情况必须能分开）
+///
+/// 旧接口是个 `bool`，于是「文件被换过」和「连不上校验表」在调用方眼里
+/// 长得一模一样 —— 而这两种情况的处置**正好相反**：
+/// ```text
+/// 内容对不上  ⇒ 文件已经被替换 / 下坏了 ⇒ 必须删掉，绝不能让用户去装；
+/// 根本没问到  ⇒ 文件还是从镜像好好下下来的 ⇒ **不能删** —— 镜像用户
+///              直连不通是常态，删了等于他永远更不了新（CR-04 就是这条）。
+/// ```
+enum UpdateVerifyResult {
+  /// 摘要对上了（资产自带的 digest，或可信源上的 `SHA256SUMS.txt`）
+  ok,
+
+  /// 内容对不上：被替换 / 下坏了 / 表里根本没有它 ⇒ **删掉**
+  mismatch,
+
+  /// 可信源明确回答「没有这张表」（HTTP 非 200）⇒ 以后也不会自己冒出来 ⇒ **删掉**
+  missingTable,
+
+  /// 无法判定：压根没问到答案（连不上 / 超时）⇒ 文件留着，但不给装
+  unverified;
+
+  /// 这个结果下，调用方该不该把安装包留在磁盘上
+  ///
+  /// 只有「压根没问到」才留 —— 那还有救（等会儿网络好了再校验一次）；
+  /// 「有答案且答案是否定的」留着没意义，也不该让用户拿着去双击。
+  bool get keepFile => this == UpdateVerifyResult.unverified;
+
+  /// 直接写进 [UpdateDownloadState.error] 的那句话
+  String get errorMessage => switch (this) {
+        UpdateVerifyResult.mismatch => '文件校验未通过，已删除，请重试',
+        UpdateVerifyResult.missingTable => '这个版本没有提供校验表，已删除，请重试',
+        UpdateVerifyResult.unverified => '取不到校验表，安装包已保留，请稍后重试',
+        UpdateVerifyResult.ok => '',
+      };
+}
+
 class AppUpdateController extends ChangeNotifier {
   AppUpdateController._();
 
@@ -303,9 +340,21 @@ class AppUpdateController extends ChangeNotifier {
   /// 下载某个 Release 的本平台安装包
   ///
   /// - [onDone] 返回可打开的文件路径；null 表示失败（已记进 [download].error）
-  /// 校验：用 Release 里的 `SHA256SUMS.txt` 对下载到的包做 SHA-256 比对。
-  /// 校验表**一律直连可信源**取（镜像模式下也不走镜像），取不到 / 缺条目 /
-  /// 哈希不符 ⇒ 一律判为失败，删掉安装包并返回 null（见 [verifySha256]）。
+  /// 校验分两段（见 [verifySha256]）：
+  ///
+  /// ```text
+  /// ① 资产自带 digest  ⇒ 离线比对，不发任何请求（首选）；
+  /// ② 没有 digest      ⇒ 取可信源的 SHA256SUMS.txt 比对。
+  /// ```
+  ///
+  /// 失败分两种，处置不同：
+  /// ```text
+  /// 有答案而答案是否定的（内容对不上 / 表里没有它 / 表确实不存在）
+  ///                                 ⇒ 删掉安装包，返回 null；
+  /// 压根没问到（连不上 / 超时）      ⇒ **保留**安装包，返回 null。
+  /// ```
+  /// ★ CR-04：以前两种情况都删包并报「文件校验未通过」，于是镜像用户
+  /// （镜像通、直连不通）永远更不了新。
   Future<File?> downloadRelease(
     ReleaseInfo rel, {
     void Function(UpdateDownloadState)? onProgress,
@@ -341,18 +390,28 @@ class AppUpdateController extends ChangeNotifier {
         cancelled: () async => _cancelled,
       );
 
-      final ok = await verifySha256(dest, asset.name, tag: rel.tag);
+      final vr = await verifySha256(
+        dest,
+        asset.name,
+        tag: rel.tag,
+        digest: asset.digest,
+      );
       _download = UpdateDownloadState(
         active: false,
         bytes: await dest.length(),
         total: await dest.length(),
       );
       notifyListeners();
-      if (!ok) {
-        _download = _download.copyWith(error: '文件校验未通过，已删除，请重试');
-        try {
-          dest.deleteSync();
-        } catch (_) {}
+      if (vr != UpdateVerifyResult.ok) {
+        _download = _download.copyWith(error: vr.errorMessage);
+        // ★ 只有「根本没问到」才留着文件 —— 镜像用户直连取不到校验表是
+        //   常态，删掉等于让他永远更不了新（CR-04）；有答案而答案是否定的
+        //   （哈希不符 / 表里没这个资产 / 表确实不存在）就没必要留。
+        if (!vr.keepFile) {
+          try {
+            dest.deleteSync();
+          } catch (_) {}
+        }
         notifyListeners();
         return null;
       }
@@ -388,6 +447,25 @@ class AppUpdateController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 把一个文件与「期望的 SHA-256」对一遍
+  ///
+  /// 只回答一件事：**字节是不是那些字节**。拿不到期望值（null）就返回
+  /// [UpdateVerifyResult.unverified] —— 那说的是「我没法判定」，不是「文件坏了」，
+  /// 调用方据此决定删不删（见 [downloadRelease]）。
+  Future<UpdateVerifyResult> verifyFileAgainstSha256(
+    File file,
+    String? want, {
+    required String what,
+  }) async {
+    if (want == null) return UpdateVerifyResult.unverified;
+    final got = await sha256OfFile(file);
+    if (got != want) {
+      AppLog.write('UPDATE', '校验不符（$what）：期望 $want 实得 $got');
+      return UpdateVerifyResult.mismatch;
+    }
+    return UpdateVerifyResult.ok;
+  }
+
   /// 用 Release 里的 `SHA256SUMS.txt` 校验一个文件
   ///
   /// # 校验表必须来自可信源（CR-08 / CWE-494）
@@ -396,35 +474,88 @@ class AppUpdateController extends ChangeNotifier {
   /// `SHA256SUMS.txt` 和安装包 —— 摘要对得上，校验形同虚设。
   /// 现在：镜像模式下校验表一律**直连**取，不经镜像。
   ///
-  /// # 失败一律拒绝安装
+  /// # 「取不到」和「对不上」是两回事（CR-04）
   ///
-  /// 取不到校验表 / 表里没有这个资产 ⇒ 无法证明完整性，返回 false 让调用方
-  /// 删掉安装包。CI 每个 Release 都会产出 `SHA256SUMS.txt`
-  /// （见 `.github/workflows/build.yml`），所以「取不到」只意味着网络或上游出
-  /// 了问题，不该拿来放行一个来路不明的可执行文件。
-  Future<bool> verifySha256(File file, String assetName, {required String tag}) async {
-    if (tag.isEmpty) return false;
-    final viaMirror = _route.route == UpdateRoute.mirror;
-    // 校验表只认直连：镜像模式下换一条 direct 配置去取
-    final verifyHttp =
-        UpdateHttp(viaMirror ? _route.copyWith(route: UpdateRoute.direct) : _route);
-    final sumsUrl = Uri.parse('$assetUrl/$tag/SHA256SUMS.txt');
-    try {
-      final text = await verifyHttp.getText(sumsUrl);
-      final want = expectedSha256(parseSha256Sums(text), assetName);
-      if (want == null) {
-        AppLog.write('UPDATE', '校验表里没有 $assetName ⇒ 判为校验失败');
-        return false;
-      }
-      final got = await sha256OfFile(file);
-      if (got != want) {
-        AppLog.write('UPDATE', '校验不符：期望 $want 实得 $got');
-        return false;
-      }
-      return true;
-    } catch (e) {
-      AppLog.write('UPDATE', '取校验表失败（判为校验失败，不放行）: $e');
-      return false;
+  /// 以前无论哪种情况都返回 false，调用方于是把**已经好好下下来的安装包**
+  /// 删掉，还告诉用户「文件校验未通过」。对镜像用户这是死路：镜像通、直连不通
+  /// ⇒ 校验表永远取不到 ⇒ 永远更不了新。现在这几种情况分开报：
+  /// ```text
+  /// ok           摘要对上（资产自带的 digest，或可信源上的 SHA256SUMS.txt）
+  /// mismatch     内容对不上，含「表里没有这个资产」⇒ 无法证明完整性，删掉
+  /// missingTable 可信源明确回答「没有这张表」⇒ 同样删掉（以后也不会自己冒出来）
+  /// unverified   没问到答案（连不上 / 超时）⇒ 文件留着，但不放行安装
+  /// ```
+  /// 注意 [unverified] **不等于放行**：调用方照样返回 null、不安装，只是不删文件。
+  ///
+  /// [digest] 是 GitHub 给这条资产算的摘要（形如 `sha256:<hex>`）。有它就不用
+  /// 发任何网络请求 —— 这正是 CR-04 要的「优先用资产自带 digest」。
+  Future<UpdateVerifyResult> verifySha256(
+    File file,
+    String assetName, {
+    required String tag,
+    String digest = '',
+  }) async {
+    // ① 首选：资产自带的摘要，离线就能判 —— 镜像用户没有任何额外网络要求
+    final wantFromDigest = sha256FromDigest(digest);
+    if (wantFromDigest != null) {
+      return verifyFileAgainstSha256(file, wantFromDigest, what: '资产自带的 digest');
     }
+    if (tag.isEmpty) return UpdateVerifyResult.mismatch;
+    // ② 退回校验表。
+    //
+    // ★ 取表的路线**一字未改**：仍然只从 [assetUrl]（可信源）取，绝不改写成
+    //   镜像地址 —— CR-08 / CWE-494 的牙必须留着：被控镜像若能同时换掉
+    //   「表」和「包」，摘要照样对得上，校验就形同虚设。镜像模式下这里依旧
+    //   把路线降级成 direct：镜像服务代理的是「一个具体文件」，不提供
+    //   校验表这类文本。
+    //
+    // ★ CR-04 的修复点在**下面那段异常判读**：以前无论哪种失败都返回 false，
+    //   调用方于是把已经好好下下来的包删掉，还报「文件校验未通过」。
+    final sumsHttp = UpdateHttp(_route.route == UpdateRoute.mirror
+        ? _route.copyWith(route: UpdateRoute.direct)
+        : _route);
+    final sumsUrl = Uri.parse('$assetUrl/$tag/SHA256SUMS.txt');
+    String text;
+    try {
+      text = await sumsHttp.getText(sumsUrl);
+    } catch (e) {
+      // 「对方答了」和「压根没问到」必须分开（CR-04）：
+      // [UpdateHttp.getText] 会把每个候选地址的错误都吞掉，最后统一抛
+      // [UpdateNetworkException]，所以要顺着它的 [UpdateNetworkException.cause]
+      // 看 —— 里面是 [HttpException] 就说明**可信源明确回答了**（非 200）。
+      if (e is UpdateNetworkException && e.cause is HttpException) {
+        AppLog.write('UPDATE', '可信源明确回答没有这张校验表（判为校验失败）: $e');
+        return UpdateVerifyResult.missingTable;
+      }
+      // 连不上 / 超时 —— 判「无法判定」，让调用方保留文件（CR-04）
+      AppLog.write('UPDATE', '取校验表失败（判为无法判定，不放行也不删包）: $e');
+      return UpdateVerifyResult.unverified;
+    }
+    final want = expectedSha256(parseSha256Sums(text), assetName);
+    if (want == null) {
+      AppLog.write('UPDATE', '校验表里没有 $assetName ⇒ 判为校验失败');
+      return UpdateVerifyResult.mismatch;
+    }
+    return verifyFileAgainstSha256(file, want, what: 'SHA256SUMS.txt');
+  }
+
+  /// 把 GitHub 的资产 `digest` 字段规整成裸的十六进制摘要
+  ///
+  /// 认的形状：`sha256:<64 位十六进制>`（GitHub 现在的写法），以及裸的
+  /// 64 位十六进制。**只认 sha256**：别的算法（sha512…）长度不同，不能被
+  /// 当成 sha256 去比对。认不出来（空 / 其它算法 / 长度不对）返回 null ⇒
+  /// 退回校验表那条路。
+  static String? sha256FromDigest(String raw) {
+    final s = raw.trim().toLowerCase();
+    if (s.isEmpty) return null;
+    var hex = s;
+    if (s.startsWith('sha256:')) {
+      hex = s.substring('sha256:'.length).trim();
+    } else if (s.contains(':')) {
+      // 形如 `sha512:…` / `md5:…`：不是 sha256，别猜
+      return null;
+    }
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(hex)) return null;
+    return hex;
   }
 }

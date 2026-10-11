@@ -5266,18 +5266,6 @@ class _PlayerPageState extends State<PlayerPage>
     }
   }
 
-  void _setDanmakuAppId(String v) {
-    DanmakuConfig.setAppId(v);
-    _resetDanmakuClient();
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(appId: v));
-  }
-
-  void _setDanmakuAppSecret(String v) {
-    DanmakuConfig.setAppSecret(v);
-    _resetDanmakuClient();
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(appSecret: v));
-  }
-
   void _setDanmakuFontScale(double v) {
     DanmakuConfig.setFontScale(v);
     setState(() => _danmakuSettings = _danmakuSettings.copyWith(fontScale: v));
@@ -5347,24 +5335,6 @@ class _PlayerPageState extends State<PlayerPage>
   void _setDanmakuColorOnly(bool v) {
     DanmakuConfig.setColorOnly(v);
     if (mounted) setState(() {});
-  }
-
-  void _clearDanmakuCredentials() {
-    DanmakuConfig.clearCredentials();
-    _resetDanmakuClient();
-    _danmakuFetchToken++;
-    setState(() {
-      _danmakuSettings = _danmakuSettings.copyWith(
-        appId: '',
-        appSecret: '',
-        clearError: true,
-      );
-      _danmakuComments = const <DanmakuComment>[];
-      _danmakuError = null;
-      _danmakuStatus = '';
-      _danmakuLoading = false;
-    });
-    _flash('已清除弹幕凭证');
   }
 
   void _reloadDanmaku() {
@@ -12916,13 +12886,10 @@ class _PlayerPageState extends State<PlayerPage>
                           fill: false,
                           state: _danmakuSettings,
                           onSetEnabled: _setDanmakuEnabled,
-                          onSetAppId: _setDanmakuAppId,
-                          onSetAppSecret: _setDanmakuAppSecret,
                           onSetFontScale: _setDanmakuFontScale,
                           onSetOpacity: _setDanmakuOpacity,
                           onSetSpeed: _setDanmakuSpeed,
                           onSetArea: _setDanmakuArea,
-                          onClearCredentials: _clearDanmakuCredentials,
                           onReload: _reloadDanmaku,
                           onOpenBili: _openBiliSheet,
                           onHintAction: _runDanmakuHintAction,

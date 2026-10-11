@@ -966,8 +966,18 @@ class DanmakuConfig {
 
   static void setEnabled(bool v) => UiPrefs.set(keyEnabled, v ? '1' : '0');
 
+  /// ★ 2026-10-11（Owner 反馈）：面板上的凭证输入框已整节移除 ⇒ 生产代码里
+  /// **不再有人调用** `setAppId` / `setAppSecret` / `clearCredentials`。
+  /// 保留它们（标 `@visibleForTesting`）而不是删掉，理由：
+  /// ① 签名链路（`appId` / `appSecret` getter + `usingBuiltin*`）仍读这两个键，
+  ///    测试要构造"用户覆盖 > 内置"的优先级场景，少了写入口就没法测；
+  /// ② 用户**以前手填并落盘**的旧值仍走同一条优先级（用户覆盖 > 内置），
+  ///    这几个方法是那套语义的可测锚点。
+  /// 产品行为零变化（没有任何 UI 再触发它们）。
+  @visibleForTesting
   static void setAppId(String v) => _writeTrimmed(keyAppId, v);
 
+  @visibleForTesting
   static void setAppSecret(String v) => _writeTrimmed(keyAppSecret, v);
 
   static void setFontScale(double v) =>
@@ -1010,7 +1020,11 @@ class DanmakuConfig {
   /// ★ 2026-10-11：写「只显示彩色弹幕」开关
   static void setColorOnly(bool v) => UiPrefs.set(keyColorOnly, v ? '1' : '0');
 
-  /// 清空凭证（用户点"清除"时用）
+  /// 清空凭证（原「清除凭证」按钮的动作；按钮已随凭证节一并移除）。
+  ///
+  /// @visibleForTesting：生产代码已无调用（见 [setAppId] 的说明），
+  /// 保留给测试验证优先级回落（清掉用户覆盖 ⇒ 回落到内置）。
+  @visibleForTesting
   static void clearCredentials() {
     UiPrefs.remove(keyAppId);
     UiPrefs.remove(keyAppSecret);
@@ -1228,8 +1242,8 @@ class DanmakuHint {
               '而这次弹幕是从官方 API 取的，所以要一对凭证。'
               '点下面的「改用本机弹弹play」就会切到本地源重取一次，'
               '不用申请任何凭证。'
-              '想继续用官方 API 的话，在弹幕设置里填 AppId / AppSecret，'
-              '再点「重新获取弹幕」。',
+              '想继续用官方 API 的话，客户端已**内置**官方凭证 —— '
+              '正常情况下直接点「重新获取弹幕」即可（面板上已不再提供凭证输入框）。',
           action: const DanmakuHintAction(
             label: '改用本机弹弹play',
             openDanmakuSettings: true,
@@ -1249,8 +1263,8 @@ class DanmakuHint {
         title: '弹幕服务没收到凭证',
         text: 'dandanplay 的弹幕有两个数据源，在弹幕设置里选一个：'
             '「本机弹弹play」（本机跑着弹弹play 就用它，免签名、不用申请任何凭证）'
-            '或「官方 API」（要一对 AppId / AppSecret，'
-            '在 https://dev.dandanplay.com 申请）。'
+            '或「官方 API」（它要一对 AppId / AppSecret —— 客户端已**内置**，'
+            '无需自己申请）。'
             '选好之后点「重新获取弹幕」。'
             '另外：B 站视频可以改用「哔哩哔哩弹幕」直接绑定，不需要这对凭证。',
         action: DanmakuHintAction(
@@ -1265,8 +1279,9 @@ class DanmakuHint {
     return DanmakuHint(
       title: '凭证没通过',
       text: '弹幕服务说这次请求的凭证不对（$xe）。'
-          '常见原因是 AppId / AppSecret 复制时带了空格，或者两者不是同一对，'
-          '在弹幕设置里重新填一次试试。',
+          '本次请求用的是客户端**内置**的官方凭证，面板上已不再提供填写入口；'
+          '可行的一步：改用「本机弹弹play」（免签名）或「哔哩哔哩弹幕」，'
+          '再点「重新获取弹幕」。',
       action: const DanmakuHintAction(label: '去弹幕设置', openDanmakuSettings: true),
       url: 'https://dev.dandanplay.com',
     );

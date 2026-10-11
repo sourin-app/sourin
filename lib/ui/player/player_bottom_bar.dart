@@ -461,25 +461,46 @@ class PlayerBottomBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final anim = fade ?? kAlwaysCompleteAnimation;
-    final opacity = (fade?.value ?? 1.0).clamp(0.0, 1.0);
+    /*
+     * ★★★ 2026-10-12：opacity 与 ignoring **必须每帧现读**，不能 build 期定格
+     *
+     * # 根因（逐帧实测确认）
+     * ```text
+     * 宿主用 `ListenableBuilder(listenable: _controlsAnim, child: _BottomBar(...))`
+     * 挂底栏，`child` 是**预建实例**。动画 tick 时 builder 只 `return child!`
+     * ⇒ Flutter canonicalization 发现 `identical(old, new)` ⇒ 底栏子树不重建。
+     * 于是 build() 里算好的 `opacity` / `ignoring` 被 builder 捕获成**常量**：
+     *   隐藏：底栏恒 1.0，直到整条被硬卸载；
+     *   显示：底栏恒 0.0，永不回来。
+     * ⇒ 顶栏（每帧现读 `fade.value`）已经对了，底栏这份必须**同形**。
+     * ```
+     * ⚠️ `IgnorePointer.ignoring` 也一并搬进 builder —— 否则会跟着冻结成
+     *    「看不见但能点到」（见 `player_page.dart:15649-15653` 顶栏那份警告）。
+     *    改前 build 期判 `opacity < 0.5`、改后每帧判 `o < 0.5`；两者用的都是
+     *    同一个 `fade.value`，阈值与判据完全一致，只是**采样时机**由「最后一次
+     *    整页 build」变成「每一帧」—— 正是与顶栏对齐所要求的语义，无行为回归。
+     */
     return Positioned(
       left: 0,
       right: 0,
       bottom: 0,
-      child: IgnorePointer(
-        ignoring: opacity < 0.5,
-        child: AnimatedBuilder(
-          animation: anim,
-          builder: (context, child) => Opacity(opacity: opacity, child: child),
-          /*
-           * ★ Stack：渐变条在下、popover 在上。
-           *   popover 不放在 `Container` 里 —— 那样它的背景渐变会盖住面板底部，
-           *   而且 `clipBehavior` 一变就会把超出条高的面板裁掉。
-           *   这里用 `clipBehavior: Clip.none` + `Stack`，面板可以自由地
-           *   长到条的上方去。
-           */
-          child: _body(context),
-        ),
+      child: AnimatedBuilder(
+        animation: anim,
+        builder: (context, child) {
+          final o = (fade?.value ?? 1.0).clamp(0.0, 1.0);
+          return IgnorePointer(
+            ignoring: o < 0.5,
+            child: Opacity(opacity: o, child: child),
+          );
+        },
+        /*
+         * ★ Stack：渐变条在下、popover 在上。
+         *   popover 不放在 `Container` 里 —— 那样它的背景渐变会盖住面板底部，
+         *   而且 `clipBehavior` 一变就会把超出条高的面板裁掉。
+         *   这里用 `clipBehavior: Clip.none` + `Stack`，面板可以自由地
+         *   长到条的上方去。
+         */
+        child: _body(context),
       ),
     );
   }

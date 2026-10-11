@@ -609,8 +609,157 @@ jobs:
           retention-days: 1
 
   # ═════════════════════════════════════════════════════════════════════
+  #  native-media —— 46 个 `native-media` 硬门禁（诊断用，**不拦合并**）
+  # ═════════════════════════════════════════════════════════════════════
+  #
+  #  # 为什么要有这个 job（这是本仓最大的一处「结构性假绿」）
+  #
+  #  `dart_test.yaml` 把 46 个依赖真实 media_kit（libmpv-2.dll）的测试标了
+  #  `native-media`，并让它们**默认 skip**（加载 libmpv 会让 flutter_tester
+  #  偶发 native 崩溃 —— 实测：不加载崩 0/25、加载崩 6/25；串行 8 次红 5 次）。
+  #  ⚠️ 代价是两个平台 job 跑的**裸** `flutter test`（windows:159 / macos:409）
+  #     **从来看不见**这 46 个文件 —— 它们不是变红、也不是变绿，是**从没跑过**。
+  #     而这里面恰恰是播放器 / 弹幕 / 片头片尾跳过这类**最核心**的硬门禁。
+  #     ⇒ 一条 0/46 执行率、却常年「绿」的门禁，正是本仓明令禁止的假绿。
+  #  本 job 的唯一目的：把真读数暴露出来（跑起来、记日志），**不为了绿而放宽**。
+  #
+  #  # 为什么**不**列进 required_status_checks（★ 关键设计约束）
+  #
+  #  崩溃根因在第三方 `libmpv-2.dll`，**我们改不了它的源码**（dart_test.yaml:60-61
+  #  已写明）。若把它设成必需检查，主流程会**随机变红** ⇒ 团队很快会养成
+  #  「重试直到绿」或「干脆删测试」的习惯 —— 那才是真正的反模式。
+  #  `CONTRIBUTING.md` 的必需检查一栏（第 26 行）明确写着「只列**真的在验证东西**
+  #  的那两个 job」，并在第 46-47 行点破：「列了也只是个恒过的门禁（本仓明令
+  #  禁止『恒真的假门禁』）」。⇒ 它是**诊断用**的：让批次跑起来、把真读数摆出来，
+  #  但由人去读结果，而不是让一个会随机翻脸的检查去否决合并。
+  #
+  #  # continue-on-error 为什么是**必须**的、而不是可选的
+  #
+  #  与上面同理：libmpv 的偶发崩溃会让本 job 随机失败。若不 `continue-on-error`，
+  #  它会把**整个 workflow** 拖成失败态（`gh run view` 一级就显示红），
+  #  而 windows / macos 是绿的 —— 读者无法一眼区分「核心 job 挂了」还是
+  #  「只是诊断 job 又碰到那个已知崩溃」。所以：允许它失败（不阻塞其他 job、
+  #  不阻塞合并），但**失败必须一眼可见** —— 见末尾那个 `if: failure()` 的汇总步。
+  #
+  #  # 为什么钉在**Windows** 而不是 macOS
+  #
+  #  Windows 的 libmpv 是 `build/windows/x64/libmpv/libmpv-2.dll`，且 **windows job
+  #  第 118-120 行已经把它编出来了**（`cargo build` 之后 `flutter pub get` 会触发
+  #  该 platform 的 CMake 配置，`media_kit_libs_windows_video` 的 CMake 在配置期
+  #  下载并解包 mpv-dev 7z，落点正是 `build/windows/x64/libmpv/`）。
+  #  ★ 先决条件：`flutter pub get` **必须发生在 `flutter test` 之前**（下面的步骤
+  #    就是按这个顺序排的）。少了它，libmpv-2.dll 不在那个路径上 ⇒
+  #    37/46 个文件的 `File('build/windows/x64/libmpv/libmpv-2.dll').existsSync()`
+  #    守卫判假 ⇒ **不初始化、静默跳过**，于是这批「硬门禁」在 CI 上**仍然一条
+  #    都没执行**，只是从「被标签 skip」变成了「被守卫 skip」—— 换了个姿势的假绿。
+  #    （对照：macOS 侧 libmpv 是 dylib，路径与加载方式都不同，风险更大。）
+  #
+  #  # 触发条件：与 windows / macos **保持一致**（push / PR / workflow_dispatch）
+  #
+  #  沿用 PR + push 两条：① 结果面更大 —— 每次改播放器代码都能看到这批本来被
+  #  隐藏的门禁到底什么读数，而不是等到有人手动触发才想起来；② `continue-on-error`
+  #  已经让它**不可能**拖红主流程，所以多跑的代价只是时间，不是稳定性。
+  #  （本 workflow 顶部的 `concurrency` 对 push 有 cancel-in-progress，
+  #    PR 上则无 —— 连续推多次会累积几次本 job，属可接受。）
+  #
+  #  ⚠️ 已知残余局限（如实记录，别把它当完美门禁）：本 job 里
+  #  （a）`SOURIN_SHOT_DIR` 未设 ⇒ 截图类文件（`@Tags(['needs-shot-dir'])`）仍默认 skip；
+  #  （b）`USERPROFILE` 未隔离 ⇒ `needs-isolated-userprofile` 那类仍默认 skip；
+  #  （c）**少数文件在 libmpv 缺失时是自己 `markTestSkipped` 的**，缺件时会走这条
+  #      兜底路径而非硬失败 —— 所以真正能拿来当「硬门禁」读数的，是那些
+  #      在 libmpv 就绪时**不**跳过的文件。`t118_control_bars_link_test.dart` 等 8 个
+  #      文件为此提供了 `SOURIN_REQUIRE_LIBMPV=1` 的严格开关，**本 job 未开**：
+  #      开了会让「缺件」从「如实 skip」变成「必红」，与 continue-on-error 的
+  #      诊断定位相冲突。要核查这批文件有没有真的执行，请把输出按文件逐行读一遍。
+  native-media:
+    name: native-media（诊断，不拦合并）
+    runs-on: windows-latest      # 理由见上：只有这条平台链在本地就能供出 libmpv-2.dll
+    timeout-minutes: 45
+    # ★★ 不阻塞 workflow / 不阻塞合并（理由见上）。但它**仍然**会被记录成失败，
+    #    供人查看 —— 只是不再把 windows / macos 的正常绿一起拖红。
+    continue-on-error: true
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # ★★ 装依赖**必须**在跑测试之前 —— 它触发 CMake 配置，
+      #    `media_kit_libs_windows_video` 才会把 libmpv-2.dll 落到
+      #    build/windows/x64/libmpv/。少了这一步，那 37 个文件的
+      #    `existsSync()` 守卫会全部判假 ⇒ 这批门禁又变成静默跳过（假绿）。
+      - name: 装依赖（触发 libmpv 供给）
+        run: flutter pub get
+
+      # ★ 核验 libmpv 真的在路径上 —— 否则本 job 是在**空跑**，
+      #   而那比不跑更糟（会让人以为门禁已经执行过了）。
+      - name: 核验 libmpv 就位
+        id: libmpv
+        shell: pwsh
+        run: |
+          $mpv = 'build/windows/x64/libmpv/libmpv-2.dll'
+          if (-not (Test-Path $mpv)) {
+            Write-Host '::warning::libmpv-2.dll 不在 $mpv —— 依赖真播放器的用例会静默跳过（假绿）'
+            Write-Host '  期望来源：media_kit_libs_windows_video 的 CMake（flutter pub get 时供给）'
+          } else {
+            "libmpv-2.dll = " + (Get-Item $mpv).Length + " 字节（就位）"
+          }
+
+      # ★★ 带 native-media 标签的那 46 个硬门禁 —— 默认被 dart_test.yaml skip，
+      #    必须 --run-skipped 才会跑；--tags native-media 只选这一批；
+      #    --concurrency=1 是 dart_test.yaml:57 明写的（串行**降低**、但**不能消除**
+      #    崩溃率 —— 实测串行仍会红，所以本 job 继续 keep continue-on-error）。
+      # ⚠️ 别删 :159 那条裸 `flutter test`：它跑的是**默认套件**，与本 job 互补，
+      #    不是重复。
+      - name: 跑 native-media 硬门禁（--run-skipped --tags native-media --concurrency=1）
+        id: tests
+        run: flutter test test/ --run-skipped --tags native-media --concurrency=1 --reporter expanded
+
+      # ★ 让失败**一眼可见**（不阻塞，但要被人读到）：把本 job 的结果与上面各步的
+      #   结论汇总到 job 摘要里。`continue-on-error` 会让步骤本身报绿，所以这里
+      #   按 `steps.*.outcome`（真实结果）而不是 `conclusion`（可能被覆盖）来判。
+      - name: 汇总（失败要一眼可见，但不阻塞）
+        if: always()
+        shell: pwsh
+        run: |
+          $mpv = 'build/windows/x64/libmpv/libmpv-2.dll'
+          $mpvOk = Test-Path $mpv
+          $fixtureOutcome = '${{ steps.libmpv.outcome }}'
+          $testOutcome = '${{ steps.tests.outcome }}'
+          "## native-media（诊断 job，不拦合并）" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "| 步骤 | 结果 |" >> $env:GITHUB_STEP_SUMMARY
+          "|---|---|" >> $env:GITHUB_STEP_SUMMARY
+          "| libmpv 核验 | $fixtureOutcome |" >> $env:GITHUB_STEP_SUMMARY
+          "| 46 个 native-media 硬门禁 | $testOutcome |" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          if (-not $mpvOk) {
+            "⚠️ libmpv-2.dll **不在** \`$mpv\` ⇒ 依赖真播放器的用例会走守卫静默跳过。" >> $env:GITHUB_STEP_SUMMARY
+            "本 job 的读数**不代表**那 46 个门禁真的执行过 —— 请先修供给链。" >> $env:GITHUB_STEP_SUMMARY
+          } elseif ($testOutcome -eq 'success') {
+            "✅ 46 个门禁本次**全过**（注意：偶发 native 崩溃仍可能出现，见 dart_test.yaml）。" >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            "❌ native-media 测试**未全过**（outcome=$testOutcome）。" >> $env:GITHUB_STEP_SUMMARY
+            "★ 这是**真读数**，不是放宽 —— 请展开上面的日志看是断言失败还是 libmpv 偶发崩溃。" >> $env:GITHUB_STEP_SUMMARY
+            "★ 本 job 是**诊断用**、`continue-on-error` 已开 ⇒ 它**不**阻塞合并。" >> $env:GITHUB_STEP_SUMMARY
+          }
+          # 同时往日志里打一行醒目的，方便 `gh run view` 一眼看到
+          if ($testOutcome -ne 'success') {
+            Write-Host "::warning::native-media 门禁未全过（outcome=$testOutcome）—— 诊断用，不阻塞合并"
+          }
+
+  # ═════════════════════════════════════════════════════════════════════
   #  Android（手机 + TV 同一个 APK）—— 默认关闭
   # ═════════════════════════════════════════════════════════════════════
+  #
+  # ⚠️ 手动触发 android 时**必然同时重跑 windows 与 macOS** ——
+  #   它们是这个 workflow 的必跑 job（`if:` 只加在 android 上）。
+  #   所以「只想验 android」也要按一次三端的时间预算（约 30-50 分钟）。
   android:
     name: Android
     runs-on: ubuntu-latest
@@ -661,10 +810,6 @@ jobs:
           # ★ 版本必须与 rust/sourin_core/.cargo/config.toml.example 里的一致
           ndk-version: r27
           link-to-sdk: true
-
-      # ⚠️ 手动触发 android 时**必然同时重跑 windows 与 macOS** ——
-      #   它们是这个 workflow 的必跑 job（`if:` 只加在 android 上）。
-      #   所以「只想验 android」也要按一次三端的时间预算（约 30-50 分钟）。
 
       - name: 编 Android 的 Rust 核心
         shell: bash

@@ -248,7 +248,17 @@ class MyShelfState extends State<MyShelf> {
   /// 是否已完成首次加载
   ///
   /// ★ 之后的刷新**不再显示骨架**（见文件头 ③ 的说明）。
+  /// ⚠️ 注意它**不是**"骨架是否显示过"—— 它只在**有一路取数成功**时才置位
+  ///    （见 `load()`），所以后端一直失败时它恒 false。骨架的"只显示一次"
+  ///    由下面的 `_skeletonShown` 独立记着（fix/return-jank-signature ③）。
   bool _loadedOnce = false;
+
+  /// 骨架是否**曾经显示过**（fix/return-jank-signature ③）
+  ///
+  /// 「只显示一次」的判据 —— 与 `_loadedOnce` 分开，因为后者在"取数一直失败"
+  /// 时恒 false，会导致每次返回都重新 setState(_loading=true) 白重建。
+  /// ⚠️ 一旦置位**永不回落**（本组件生命周期内）。
+  bool _skeletonShown = false;
 
   List<Favorite> _following = [];
   List<Favorite> _favorites = [];
@@ -452,7 +462,32 @@ class MyShelfState extends State<MyShelf> {
   /// 拉取三份数据
   Future<void> load() async {
     // ⚠️ 刷新时**不要**把 _loading 置回 true（见文件头 ③）
-    if (!_loadedOnce && mounted) setState(() => _loading = true);
+    //
+    // ★ fix/return-jank-signature ③：这里的 setState 加了**真正的首屏守卫**。
+    //
+    // # 原写法为什么是每次返回都白重建
+    // ```dart
+    // if (!_loadedOnce && mounted) setState(() => _loading = true);  // 旧
+    // ```
+    // `_loadedOnce` 只在**至少有一路成功**时才置位（见下面 setState 里那句）。
+    // 于是**后端慢 / 无核心库 / 一直失败**时它恒为 false，而 `finally` 每次
+    // 结束都把 `_loading` 抹回 false ⇒ 下一次 load() 又满足 `!_loadedOnce
+    // && !_loading` ⇒ **每次返回都 setState 一次**，白重建整棵子树
+    // （实测该帧 134 元素）。这正是一次"看起来像首屏、其实是重复"的重建。
+    //
+    // # 修法：骨架**这辈子只显示一次**（`_skeletonShown`）
+    // ```text
+    // 骨架的语义 = "还没拿到任何数据、先占位"
+    // ⇒ 只在**从未显示过骨架**时置 `_loading = true`；
+    //   显示过一次（无论后来成没成功）就绝不再闪 —— 用户已经看过内容了，
+    //   再闪一次骨架纯粹是"每次返回都白重建"。
+    // ```
+    // ⚠️ 这**不**放宽任何与"刷新语义"有关的断言：数据变了照样 setState
+    //    （见下面指纹比对）。它只去掉"重复显示骨架"这一个无意义重建。
+    if (!_skeletonShown && mounted) {
+      _skeletonShown = true;
+      if (!_loading) setState(() => _loading = true);
+    }
 
     try {
       /*
@@ -592,10 +627,10 @@ class MyShelfState extends State<MyShelf> {
       final nextFol = fol ?? _following;
       final nextHis = his ?? _history;
       final sigBefore = _shelfSignature(
-        _favorites, _following, _history, _remainingByKey,
+        _favorites, _following, _history, _remainingByKey, _tab,
       );
       final sigAfter = _shelfSignature(
-        nextFav, nextFol, nextHis, _remainingByKey,
+        nextFav, nextFol, nextHis, _remainingByKey, _tab,
       );
       final dataChanged = sigBefore != sigAfter;
       final loadedOnceWillSet =
@@ -714,29 +749,128 @@ class MyShelfState extends State<MyShelf> {
   }
 
   /// ★ 仅供测试：读当前「渲染指纹」（用于验证"变了 ⇒ 指纹必须变"）。
+  /// ⚠️ 指纹现在**按当前 tab 分栏**（fix/return-jank-signature ②）⇒ 这里
+  ///    也传 `_tab` —— 否则测试读的是"三份合起来的旧指纹"，与实际判据不符。
   @visibleForTesting
   String debugSignatureForTest() => _shelfSignature(
         _favorites,
         _following,
         _history,
         _remainingByKey,
+        _tab,
       );
 
-  /// 「我的」三份列表 + "还剩几集"的**渲染指纹**（详见 `load()` 里的长注释）。
+  /// 「我的」**当前 tab** 那份列表 + "还剩几集"的**渲染指纹**
+  /// （详见 `load()` 里的长注释）。
   ///
   /// 只包含**会被画出来**的字段 —— 这是"数据没变就不重建"的判据。
-  /// ⚠️ 字段清单必须与 `_buildBody` 真正读的字段一致：
-  ///    Favorite → key/title/cover/lastEpisodeTitle/lastEpisodeCount/unreadCount
-  ///    Progress → key/title/episodeTitle/cover/position/duration
-  ///    （`_remainingByKey` 也入指纹 —— 它决定"还剩几集"徽标）
+  /// ⚠️ 字段清单必须与 `_buildBody`/`_cards` 真正读的字段一致：
+  ///    Favorite（following/favorites tab）→ key/title/cover/lastEpisodeTitle/
+  ///      lastEpisodeCount/unreadCount
+  ///    Progress（history tab）→ key/title/episodeTitle/cover/**percent**/duration
+  ///    （`_remainingByKey` 也入指纹 —— 它决定"还剩几集"徽标，**只在该 tab**）
   /// 漏字段 ⇒ 该字段变了却不重建（漏刷新）；多字段 ⇒ 无谓重建（性能）。两处要同步改。
+  ///
+  /// ★ fix/return-jank-signature ②：`tab` **自己**也进指纹（`b.write(tab.index)`）
+  /// —— 因为本函数只纳入当前 tab 那份，切 tab 时"看到的数据"变了，
+  ///   但数组没变 ⇒ 不把 `tab` 写进去就会**漏刷新**（切过去还是旧的渲染）。
+  ///   详见函数体内注释。
+  ///
+  /// ★★★ 2026-10-12 fix/return-jank-signature ①：**裸 `position` 摘掉了**
+  ///
+  /// # 为什么（这是「返回卡顿」的**最大头**）
+  ///
+  /// `_cards`（history 分支）读的是 `pct: p.percent`，而
+  /// `Progress.percent = ((position * 100) ~/ duration)`。
+  /// 把**秒级** `position` 直接写进指纹 ⇒ 播完一集回到「我的」，
+  /// 只要进度多走了 **1 秒**，指纹就判"变了" ⇒ `setState` ⇒ 整棵子树重建
+  /// （实测 F1 = 442 元素 / 26~33ms）。
+  /// 而卡片上真正画出来的**只有** `percent`（一条 `LinearProgressIndicator`）。
+  ///
+  /// # 所以：把 `position` 换成**同一来源的 `percent`**
+  ///
+  /// ```text
+  /// 旧：..write(p.position)        ← 秒级 ⇒ 每次都判"变了"（假阳性）
+  /// 新：..write(percentOf(p))      ← 卡片真读的那一个量 ⇒ 精确
+  /// ```
+  ///
+  /// ⚠️ 为什么是 `percent` 而不是删掉/量化到分钟：
+  /// ```text
+  /// 删掉        ⇒ 进度从 4%→12% 也不重建 ⇒ 漏刷新（卡片停在旧进度）
+  /// 量化到分钟  ⇒ 一条 40 分钟的片子，percent 只覆盖 0~100 ⇒ 一"分钟档"
+  ///               跨好几个 percent ⇒ 量化到分钟仍会**漏刷新**真实进度
+  ///               且本页连"剩 N 分钟"都没显示（那是追更页的 `_remaining`）
+  /// ⇒ 直接拿卡片真正渲染的 `percent` 当指纹的一部分：既无假阳性、也无漏报。
+  /// ```
+  /// 把 `percent` 的计算下沉成 `percentOf`（与 `Progress.percent` **同一公式**），
+  /// 以免指纹与渲染各算一份、将来漂移。
+  ///
+  /// ★ 进度百分比 —— **与 `Progress.percent` 同一公式**（`models.dart`），
+  /// 是卡片进度条的**唯一**渲染输入。拎出来是为了让「指纹」与「渲染」
+  /// 共用**同一份**计算，不各算一份（否则将来公式一改、指纹还在比另一个量
+  /// ⇒ 静默漏刷新 / 白重建）。
+  static int percentOf(Progress p) =>
+      p.duration > 0 ? ((p.position * 100) ~/ p.duration).clamp(0, 100) : 0;
+
   static String _shelfSignature(
     List<Favorite> favs,
     List<Favorite> fols,
     List<Progress> his,
     Map<String, int> remaining,
+    ShelfTab tab,
   ) {
     final b = StringBuffer();
+    /*
+     * ★★★ 2026-10-12 fix/return-jank-signature ②：**只把当前 tab 那份入指纹**
+     *
+     * # 为什么（纯浪费）
+     *
+     * `_cards`（:907）**只按 `_tab` 渲染当前那一栏** —— 在「追更」tab 上
+     * 根本不读 `_history`。但旧指纹把 favs/fols/his 三份**全**纳入
+     * ⇒ 「追更」tab 上「历史」某条的进度变了，也会判"变了" ⇒ 整页重建
+     * （那 10 项全是屏幕上看不见的东西）。
+     *
+     * ⇒ 只比**当前 tab 对应的那一份**；另两份留到切到该 tab 时再比。
+     *
+     * # ⚠️ 为什么切 tab **仍然**会刷新（不引入"切 tab 不刷新"回归）
+     *
+     * 切 tab 的动作 = `_selectTab()`（:428）：先 `setState(_tab = t)`
+     * **再** `load()`。load() 里 `_tab` 已经是新的了 ⇒ 新指纹用的是**新
+     * tab 的那一份** ⇒ 与上一次 load()（旧 tab 那一份）自然不同
+     * ⇒ `dataChanged == true` ⇒ 照常 setState 显示新 tab 的数据。
+     * ★ 也就是说"切 tab 必重建"不再依赖"三份一起比"，而是靠 `_tab` 本身
+     *   进了比对 —— 本函数把 `tab` 写进指纹（下面 `b.write(tab.index)`）正是
+     *   为此：**同一份数据、只换了 tab，也必须重建**。
+     */
+    b.write(tab.index);
+    b.write('\u0003');
+    switch (tab) {
+      case ShelfTab.following:
+        _writeFavs(b, fols);
+      case ShelfTab.favorites:
+        _writeFavs(b, favs);
+      case ShelfTab.history:
+        _writeProgress(b, his);
+    }
+    /*
+     * ★ `remaining`（"还剩几集"徽标）**只在 following tab** 被渲染
+     *   （`_cards` 的 following 分支用 `_remainingOf(f)`；favorites/history
+     *   分支不传 unread）。所以也只在该 tab 入指纹。
+     */
+    if (tab == ShelfTab.following) {
+      final keys = remaining.keys.toList()..sort();
+      for (final k in keys) {
+        b
+          ..write(k)
+          ..write('=')
+          ..write(remaining[k])
+          ..write('\u0002');
+      }
+    }
+    return b.toString();
+  }
+
+  static void _writeFavs(StringBuffer b, List<Favorite> favs) {
     for (final f in favs) {
       b
         ..write(f.key)
@@ -752,21 +886,9 @@ class MyShelfState extends State<MyShelf> {
         ..write(f.unreadCount)
         ..write('\u0002');
     }
-    for (final f in fols) {
-      b
-        ..write(f.key)
-        ..write('\u0001')
-        ..write(f.title)
-        ..write('\u0001')
-        ..write(f.cover ?? '')
-        ..write('\u0001')
-        ..write(f.lastEpisodeTitle ?? '')
-        ..write('\u0001')
-        ..write(f.lastEpisodeCount)
-        ..write('\u0001')
-        ..write(f.unreadCount)
-        ..write('\u0002');
-    }
+  }
+
+  static void _writeProgress(StringBuffer b, List<Progress> his) {
     for (final p in his) {
       b
         ..write(p.key)
@@ -777,20 +899,11 @@ class MyShelfState extends State<MyShelf> {
         ..write('\u0001')
         ..write(p.cover ?? '')
         ..write('\u0001')
-        ..write(p.position)
+        ..write(percentOf(p))
         ..write('\u0001')
         ..write(p.duration)
         ..write('\u0002');
     }
-    final keys = remaining.keys.toList()..sort();
-    for (final k in keys) {
-      b
-        ..write(k)
-        ..write('=')
-        ..write(remaining[k])
-        ..write('\u0002');
-    }
-    return b.toString();
   }
 
   /// 清空播放历史（二次确认）

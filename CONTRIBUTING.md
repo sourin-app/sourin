@@ -47,6 +47,17 @@ remote: - 2 of 2 required status checks are expected.
 > 列了也只是个恒过的门禁（本仓明令禁止「恒真的假门禁」）。
 > 不是因为它们会卡住合并。
 
+> ⚠️ **`native-media` 是诊断 job，故意不列入必需检查**（2026-10-12 加）。
+> 背景：46 个带 `@Tags(['native-media'])` 的测试（播放器/弹幕/片头片尾这类
+> **最核心**的硬门禁）此前**从未在 CI 跑过** —— 两个 job 跑的都是裸
+> `flutter test`，而这批测试需要 `--run-skipped` 才会执行。
+> `build.yml` 新增的 `native-media` job 把它们跑起来，但设了
+> `continue-on-error: true` 且**不进 required checks**。
+> **理由**：这批测试依赖第三方 `libmpv-2.dll`，**已知会偶发 native 崩溃**
+> （`dart_test.yaml` 实测：不加载崩 0/25，加载崩 6/25；串行 8 次红 5 次）。
+> 若列为必需检查 ⇒ **主流程随机变红** ⇒ 团队会去「重试到绿」或删测试 ——
+> 那正是本节要防的反模式。它**是拿来看读数的，不是拿来拦合并的**。
+
 > ⚠️ **破坏性操作要临时放开保护**（例如紧急回滚 main）。
 > 那需要去 Settings → Branches 临时改规则，**改完记得改回来**。
 

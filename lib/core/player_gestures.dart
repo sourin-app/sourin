@@ -233,6 +233,9 @@ class PlayerGestures {
   // ── PC 键盘方向键 ──
 
   /// PC 方向键**单击**是否做步数控制
+  ///
+  /// ★ 与「PC 方向键**长按**快进快退」（[pcArrowHoldEnabled]）是**两个独立的
+  ///   开关** —— 用户原话：「这两个配置开关是单独配置的」。
   static bool get pcArrowSeekEnabled => _b(_kPcArrowSeekEnabled, true);
 
   /// PC 方向键单击跳多少秒
@@ -316,25 +319,6 @@ class PlayerGestures {
   /// 同上：PC 恒 false。PC 用数字键/`.``,` 调倍速，不需要长按。
   static bool longPressEnabledFor({required bool isTouch}) =>
       isTouch && longPressEnabled;
-
-  /// 该平台上「PC 左右区域手势」是否生效
-  ///
-  /// 只桌面生效 —— 手机/TV 上有触摸手势和遥控器。
-  ///
-  /// ⚠️ 它现在只管**长按**（单击跳秒已按用户要求删除，2026-09-25）。
-  static bool pcButtonsEnabledFor({required bool isDesktop}) =>
-      isDesktop && pcButtonsEnabled;
-
-  /// 该平台上 PC 方向键**单击步数**是否生效
-  ///
-  /// ★ 与 `pcArrowHoldEnabledFor` 是**两个独立的开关** ——
-  ///   用户原话：「这两个配置开关是单独配置的」。
-  static bool pcArrowSeekEnabledFor({required bool isDesktop}) =>
-      isDesktop && pcArrowSeekEnabled;
-
-  /// 该平台上 PC 方向键**长按快进快退**是否生效
-  static bool pcArrowHoldEnabledFor({required bool isDesktop}) =>
-      isDesktop && pcArrowHoldEnabled;
 
   /// 双击步长（按方向带符号）—— 只在启用时有意义
   ///

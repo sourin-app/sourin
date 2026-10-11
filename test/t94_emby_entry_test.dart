@@ -23,9 +23,18 @@
 //
 // # ★★★ 本文件最后一条是**通用**守卫（比 Emby 本身更重要）
 // ```text
-// 「设置页里每个 *SettingsPage 类都必须被自己文件之外引用至少一次」
-// ⇒ 将来任何人再写一个二级页却忘了接入口，这条会**当场报红**，
+// 「lib/ui 整棵树里每个公开的 *Page / *Panel / *Sheet / *Dialog 类，
+//   都必须被自己文件之外引用至少一次」
+// ⇒ 将来任何人再写一个二级页/浮层却忘了接入口，这条会**当场报红**，
 //   不用等到用户来报「点不进去」。
+//
+// ⚠️ 2026-10：扫描范围从只有 lib/ui/settings/ + *SettingsPage，
+//   扩到 lib/ui 整棵树 + 四类后缀。旧范围有**系统性盲区** ——
+//   widgets/ cast/ player/ subtitle/ 下的浮层完全不在射程，
+//   而这正是「二级页写好没入口」第二次犯案的地方。
+//   私有类（前导 `_`）不进守卫：本文件之外物理上引用不到。
+//   真·漏接 ⇒ 报红；合法例外（Owner 要求删的功能、探针专用件）
+//   ⇒ 逐条白名单 + 理由，**不用宽泛正则整类放过**（那是假门禁）。
 // ```
 
 import 'dart:io';
@@ -143,44 +152,71 @@ void main() {
       );
     });
 
-    test('★★★ 通用守卫：每个 *SettingsPage 都必须被外部引用（防下一个漏接）', () {
+    test('★★★ 通用守卫：每个 *Page/*Panel/*Sheet/*Dialog 都必须被外部引用（防下一个漏接）', () {
       /*
        * ★ 这条比 Emby 本身重要：它把「二级页写完了但没接入口」
        *   从「等用户报」变成「测试当场报红」。
        *
-       * ⚠️ 只在 lib/ui/settings/ 下扫「页面类」（*SettingsPage），
+       * ⚠️ 只在 lib/ui 整棵树（含 widgets / cast / player / subtitle 子目录）下扫
+       *   「页面/浮层类」（*Page / *Panel / *Sheet / *Dialog），
        *   不扫 _Hint / _Bullet 这类私有部件（它们本就不该被外部引用）。
        * ⚠️ 引用计数排除**定义它自己那个文件** ——
        *   类名在自身文件里当然出现，那不是接线。
        */
       final pageRe = RegExp(
-        r'^class (\w+SettingsPage) extends (?:StatefulWidget|StatelessWidget)',
+        r'^\s*(?:final |abstract |sealed )?class (\w+(?:Page|Panel|Sheet|Dialog))'
+        r' extends (?:StatefulWidget|StatelessWidget)',
         multiLine: true,
       );
-      final dir = Directory('lib/ui/settings');
+      final dir = Directory('lib/ui');
       final unreachable = <String>[];
       var scanned = 0;
 
-      for (final e in dir.listSync()) {
+      // ★ 每进一次循环重读全仓一次太贵 —— 先把 lib/ 下所有 .dart 的
+      //   去注释源码读进来缓存，再对每个类做内存扫描。
+      final sources = <String, String>{};
+      for (final f in Directory('lib').listSync(recursive: true)) {
+        if (f is! File || !f.path.endsWith('.dart')) continue;
+        sources[f.path.replaceAll(r'\', '/')] = stripComments(f.readAsStringSync());
+      }
+
+      // ★ 白名单：**公开**类，但故意不被外部引用。每条都要写清理由 ——
+      //   ⚠️ 严禁用宽泛正则把整类放过（那等于假门禁）。加新条目必须先在
+      //   全仓 grep 确认"真的没人接"，且原因属于下面三类之一。
+      final whitelist = <String, String>{
+        // Owner 明确要求删掉的功能 —— 组件源码留着（单测还直接挂它），
+        // 但**故意**没有任何宿主再构造它。见 lib/shell.dart:4683 与
+        // lib/ui/live_page.dart:1782 的说明（2026-09-26）。
+        'EpgPanel': 'Owner 2026-09-26 要求删除节目单 ⇒ 故意没人接（源码留、单测直挂）',
+        // 探针专用件 —— 只有 lib/probe_cast.dart（诊断探针）用它，
+        // 正式宿主故意不接。见 test/t80_cast_wiring_test.dart B④。
+        'CastStatusBar': '仅诊断探针 probe_cast.dart 用；正式界面故意不接（t80 B④ 已如实记录）',
+      };
+
+      for (final e in dir.listSync(recursive: true)) {
         if (e is! File || !e.path.endsWith('.dart')) continue;
         final path = e.path.replaceAll(r'\', '/');
-        final src = stripComments(e.readAsStringSync());
+        final src = sources[path]!;
         for (final m in pageRe.allMatches(src)) {
           final cls = m.group(1)!;
           scanned++;
+          // ★ 私有类（前导 `_`）在 Dart 里**本文件之外物理上引用不到**，
+          //   不进这个守卫 —— 这与旧守卫排除 `_Hint`/`_Bullet` 同一条理由。
+          //   （旧正则只匹配 `\w+...`，前导 `_` 会被 `\w` 吃掉，所以这里
+          //   显式排除才能与旧行为等价。）
+          if (cls.startsWith('_')) continue;
+          if (whitelist.containsKey(cls)) continue;
           var refs = 0;
-          for (final f in Directory('lib').listSync(recursive: true)) {
-            if (f is! File || !f.path.endsWith('.dart')) continue;
-            final fp = f.path.replaceAll(r'\', '/');
-            if (fp == path) continue;
-            if (stripComments(f.readAsStringSync()).contains(cls)) refs++;
+          for (final ent in sources.entries) {
+            if (ent.key == path) continue;
+            if (ent.value.contains(cls)) refs++;
           }
           if (refs == 0) unreachable.add('$cls ($path)');
         }
       }
 
-      expect(scanned, greaterThanOrEqualTo(8),
-          reason: '★ 前置：至少要扫到 8 个二级页类，否则是扫描口径坏了');
+      expect(scanned, greaterThanOrEqualTo(10),
+          reason: '★ 前置：至少要扫到 10 个页面/浮层类，否则是扫描口径坏了');
       expect(
         unreachable, isEmpty,
         reason: '★★★ 这些二级页写完了却没有任何入口 ⇒ 用户点不进去（task-18 / Emby 同型）',

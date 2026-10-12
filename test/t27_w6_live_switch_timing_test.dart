@@ -29,6 +29,7 @@
 //
 // ⚠️ 只打印事实 + 断言；不打印结论（与 t72 同一纪律）。
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -311,6 +312,113 @@ void main() {
       await SourinApi.getLiveStream('cctv', 'c1');
       expect(calls, 2, reason: '空列表必须每次真取（探测失败不该被缓存）');
       expect(SourinApi.debugLiveStreamCacheSize, 0, reason: '空结果不允许进缓存');
+    });
+
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     *  ★★★ CodeRabbit PR#5 N1：失效与「在飞取址」的**竞态**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 缺陷（复现方式就是本组的构造）
+     * ```text
+     * ① getLiveStream(cctv,c1) 未命中 ⇒ 发请求、**停在 await 里**（Completer）；
+     * ② 用户起播失败点「重试」⇒ invalidateLiveStream(cctv,c1)
+     *    —— 此刻表里**根本没有条目可删**（上一次取址还没写回）；
+     * ③ 放行 ① 的 Completer ⇒ 它把**旧的**地址写回缓存
+     *    ⇒ 失效白做，重试拿到的是同一份坏地址（30 秒内一直如此）。
+     * ```
+     *
+     * # 为什么这两条断言缺一不可（假绿形态 4「缺阴性对照」）
+     * ```text
+     * 只断言「缓存里没有那条」不够：改前那次 await 若**还会返回**，条目照样
+     * 在表里（断言会红 ✓）；但若取址返回的是空列表、或实现改成「清表后
+     * 连在飞的结果都不写」，单看这一条也能过 —— 分不清是**代次保护**还是
+     * 「碰巧没写」。所以必须同时钉：下一次 getLiveStream **真的重新取址**
+     * （calls 递增），这才是「失效生效」的可观察证据。
+     * ```
+     *
+     * # 阴性对照（撤销验证）
+     * ```text
+     * 把 `if (list.isNotEmpty && _liveStreamGenOf(key) == gen)` 里的
+     * 代次条件去掉（还原成改前的 `if (list.isNotEmpty)`）
+     * ⇒ ②e 两条断言**同时变红**（旧地址被写回、下一次命中缓存不重取）。
+     * ```
+     */
+    test('②e【N1】在飞取址期间失效 ⇒ 旧地址不许被写回（代次保护）', () async {
+      SourinApi.debugClearLiveStreamCache();
+      var calls = 0;
+      // 手动闸门：这次取址会**停在 await 里**，直到测试放行
+      final gate = Completer<void>();
+      SourinApi.debugLiveStreamFetcher = (provider, channelId) async {
+        calls++;
+        if (calls == 1) await gate.future; // 第一次取址：在飞
+        return <StreamCandidate>[
+          // 每次用**不同**地址，才能区分「写回的是不是那份旧结果」
+          StreamCandidate(url: 'https://x.invalid/v$calls.m3u8', kind: 'hls'),
+        ];
+      };
+
+      // ① 发起取址（在飞，尚未返回）
+      final inflight = SourinApi.getLiveStream('cctv', 'c1');
+      expect(calls, 1, reason: '请求已发起（停在 await）');
+
+      // ② 在飞期间失效（用户点「重试」的真实时序）
+      final genBefore = SourinApi.debugLiveStreamGen('cctv', 'c1');
+      SourinApi.invalidateLiveStream('cctv', 'c1');
+      expect(SourinApi.debugLiveStreamGen('cctv', 'c1'), greaterThan(genBefore),
+          reason: '★ 失效必须**抬代次** —— 只删条目删了个空气（此刻表里没条目）');
+
+      // ③ 放行：这次取址返回
+      gate.complete();
+      final first = await inflight;
+
+      // ★ 断言 1：缓存里**没有**那条被失效的条目（旧地址没被写回）
+      expect(SourinApi.debugLiveStreamCacheSize, 0,
+          reason: '★★ 被失效的键不许因在飞的结果返回而"复活"（失效白做的根因）');
+      expect(first.single.url, 'https://x.invalid/v1.m3u8',
+          reason: '调用方本次仍拿到自己的结果（丢弃的是**缓存写回**，不是返回值）');
+
+      // ★ 断言 2：随后的 getLiveStream 必须**重新取址**（不是拿旧的）
+      final second = await SourinApi.getLiveStream('cctv', 'c1');
+      expect(calls, 2, reason: '★★ 失效之后不允许再命中 ⇒ 必须真取第二次');
+      expect(second.single.url, 'https://x.invalid/v2.m3u8',
+          reason: '★ 重取拿到的必须是**新**地址，不是被失效的那份');
+    });
+
+    test('②f【N1】正常路径不受代次保护影响（代次未变 ⇒ 照常写回缓存）', () async {
+      SourinApi.debugClearLiveStreamCache();
+      var calls = 0;
+      final cand = StreamCandidate(url: 'https://x.invalid/ok.m3u8', kind: 'hls');
+      SourinApi.debugLiveStreamFetcher = (provider, channelId) async {
+        calls++;
+        return <StreamCandidate>[cand];
+      };
+      final a = await SourinApi.getLiveStream('cctv', 'c1');
+      final b = await SourinApi.getLiveStream('cctv', 'c1');
+      expect(calls, 1,
+          reason: '★ 阴性对照（假绿形态 2「只测A不测B」）：代次保护**不许**把正常缓存也关了');
+      expect(identical(a, b), isTrue);
+    });
+
+    test('②g【N1】debugClearLiveStreamCache 也要作废「在飞」的取址', () async {
+      SourinApi.debugClearLiveStreamCache();
+      var calls = 0;
+      final gate = Completer<void>();
+      SourinApi.debugLiveStreamFetcher = (provider, channelId) async {
+        calls++;
+        if (calls == 1) await gate.future;
+        return <StreamCandidate>[
+          StreamCandidate(url: 'https://x.invalid/v$calls.m3u8', kind: 'hls'),
+        ];
+      };
+      final inflight = SourinApi.getLiveStream('cctv', 'c1');
+      SourinApi.debugClearLiveStreamCache(); // 换源/重试的**全清**出口
+      gate.complete();
+      await inflight;
+      expect(SourinApi.debugLiveStreamCacheSize, 0,
+          reason: '★ 全清必须把在飞的结果一并作废（否则「清缓存」在竞态窗口内白做）');
+      await SourinApi.getLiveStream('cctv', 'c1');
+      expect(calls, 2, reason: '★ 清过之后必须重取');
     });
   });
 }

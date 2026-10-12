@@ -1518,7 +1518,29 @@ class _PlayerPageState extends State<PlayerPage>
   /// ```
   /// ⚠️ 只在**本次会话**内有效（不落盘）：它是"这次先这么试"的临时选择，
   ///    不是用户的持久数据源偏好（本仓没有那个偏好项）。重启即回到自动路由。
+  ///
+  /// ★★★ CodeRabbit PR#5 N2：这个标记**只置不清**曾造成「出口不对称」——
+  ///    A7 修好了「本机失败 ⇒ 能改走官方」，却留下「官方也失败 ⇒ 没有回头路」：
+  ///    本机在线 + 强制官方 ⇒ 官方（没凭证）也 403 ⇒ 提示走【第 2 态】，
+  ///    而第 2 态的动作只有 openDanmakuSettings / openBiliSheet，
+  ///    **没有**任何入口能把这个标记清回去 ⇒ 文案建议「选本机」，
+  ///    用户却无路可选，本会话内每次重取都被钉在官方。
+  ///    ⇒ 现在「改用本机弹弹play」也**清**这个标记（[_useLocalDanmakuSource]），
+  ///      且第 2 态在「强制官方**并且**已经真的试过一次官方」时提供那颗按钮。
   bool _danmakuForceOfficial = false;
+
+  /// ★★ N2：置了 [_danmakuForceOfficial] 之后**至少真的试过一次官方，且失败了**
+  ///
+  /// # 为什么光有 `_danmakuForceOfficial` 不足以给「改用本机」按钮
+  /// ```text
+  /// 本机**不在线**时用户也可能点「改用官方」（那一次本质上没换边）。
+  /// 若只看标记就挂按钮，则「本机不在线 + 没凭证」这台的提示会多出
+  /// 一颗点了必然连不上本机的按钮（t27_w8 ② 组正是在钉这一条）。
+  /// ⇒ 判据必须是「强制官方**确实换到了官方那条边，并且它失败了**」，
+  ///   即：localStatus.online && _danmakuForceOfficial（两者同时成立时
+  ///   usingLocal 才会是 false，官方这条路才**真的**被走过一次）。
+  /// ```
+  bool _danmakuOfficialFailed = false;
 
   /// ★ T27-08 / ★★★ T27-14：上一次失败的那次请求**走的是不是本机源**（null = 还没取过弹幕）
   ///
@@ -5037,6 +5059,12 @@ class _PlayerPageState extends State<PlayerPage>
      *   又走本机 ⇒ 又 401/403 ⇒ 提示原样回来）。
      */
     final usingLocal = localStatus.online && !_danmakuForceOfficial;
+    /*
+     * ★★ N2：本次**确实**走的是官方那条边、而它失败了 —— 只有这个组合才
+     *   为「改用本机」开一个回头路（见 [_danmakuOfficialFailed]）。
+     *   本机不在线时点「改用官方」没换边（本来就是官方）⇒ 不置位。
+     */
+    _danmakuOfficialFailed = !usingLocal && localStatus.online;
     if (usingLocal != _danmakuUsingLocal) {
       // 模式切了 ⇒ 旧客户端（另一种 baseUrl/签名形态）必须 close 重建
       _danmakuUsingLocal = usingLocal;
@@ -5114,7 +5142,10 @@ class _PlayerPageState extends State<PlayerPage>
             errorMessage: e.errorMessage,
             body: e.body,
             uri: e.uri,
-            hint: DanmakuHint.of(e, usedLocalSource: usingLocal),
+            hint: DanmakuHint.of(e, allowUseLocal: _danmakuOfficialFailed,
+              // ★★ N2：与提示条用**同一份判据**（面板画的是这份 error.hint），
+              //   两处若不一致就会出现「提示条有按钮、面板里没有」的自相矛盾。
+              usedLocalSource: usingLocal),
           ),
           status: '',
         );
@@ -5155,7 +5186,10 @@ class _PlayerPageState extends State<PlayerPage>
        */
       final usedLocalSource = _danmakuHintUsedLocalSource ?? false;
       final h = (e.statusCode == 401 || e.statusCode == 403)
-          ? DanmakuHint.of(e, usedLocalSource: usedLocalSource)
+          // ★★ N2：官方那条边**确实试过并失败了** ⇒ 第 2 态也要给回头路
+          //   （「改用本机弹弹play」）。否则文案建议「选本机」，用户没有入口。
+          ? DanmakuHint.of(e, allowUseLocal: _danmakuOfficialFailed,
+              usedLocalSource: usedLocalSource)
           : e.hint;
       /*
        * ★★ Owner 第 9 条：点明**这句失败是谁的凭证**
@@ -5256,6 +5290,7 @@ class _PlayerPageState extends State<PlayerPage>
     if (a.openDanmakuSettings) _openDanmakuSettings();
     if (a.openBiliSheet) _openBiliSheet();
     if (a.useLocalDanmaku) _useLocalDanmakuSource();
+    if (a.forceLocalDanmaku) _useLocalDanmakuSource();
     if (a.useOfficialDanmaku) _useOfficialDanmakuSource();
   }
 
@@ -5277,8 +5312,12 @@ class _PlayerPageState extends State<PlayerPage>
   ///    w5 的 `localStatus.online` 那段决定（不抢数据源模型的权）。
   /// ★ T27-14：顺手把 `_danmakuForceOfficial` 清掉 —— 用户这次**明确**要
   ///    本机源，不该再被上一次「改用官方」的粘性标记压住。
+  /// ★★★ N2（CodeRabbit PR#5）：这也是「官方失败」那一态的**唯一回头路**
+  ///    （见 `_runDanmakuHintAction` 里那条 `forceLocalDanmaku`）。只清标记
+  ///    不重建客户端是**假修**：appId/baseUrl 是构造快照，旧实例照旧打官方。
   void _useLocalDanmakuSource() {
     _danmakuForceOfficial = false;
+    _danmakuOfficialFailed = false;
     _resetDanmakuClient();
     _danmakuLocalStatus = null;
     unawaited(_loadDanmaku());

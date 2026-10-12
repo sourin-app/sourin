@@ -28,18 +28,19 @@
 library;
 // ignore_for_file: avoid_print
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/ui/widgets/my_shelf.dart';
 
-Favorite fav(String id, String title, {int unread = 0}) => Favorite(
+Favorite fav(String id, String title, {int unread = 0, String kind = 'series'}) =>
+    Favorite(
       key: 'cctv:$id',
       provider: 'cctv',
       nativeId: id,
       title: title,
+      kind: kind,
       following: true,
       unreadCount: unread,
     );
@@ -191,5 +192,70 @@ void main() {
     final after = key.currentState!.debugSignatureForTest();
     expect(after, isNot(equals(before)),
         reason: '★ 进度位置变了但渲染指纹没变 ⇒ 守卫会漏刷新（卡片停在旧进度）');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ①d 收藏的 `kind` 变了 ⇒ 指纹必须变（★ CodeRabbit PR#5 抓到的**真漏字段**）
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 缺陷（与 ①c 同一类：指纹漏了渲染真正读的字段）
+  // ```text
+  // `_cards` 在 `ShelfTab.favorites` 分支读 `f.kind`：
+  //     subtitle: f.kind == 'series' ? '剧集' : '影片'
+  // 但 `_shelfSignature` 的**收藏循环**没写 `f.kind`（追更循环也不读它，是对的）。
+  // ⇒ 同一 key 的收藏，kind 从 movie 变 series（如详情回填后更正类型），
+  //   其余渲染字段全同 ⇒ sigBefore == sigAfter ⇒ load() 跳过 setState
+  //   ⇒ 卡片**继续显示「影片」**，直到别的字段变化才更正。
+  // ```
+  // ★ 本用例只让两次 `debugShelfLoadOverride` **在 `kind` 上不同**，
+  //   其余逐字相同 ⇒ 断言指纹改变。修复前它会**失败**（正是红度证明）。
+  testWidgets('①d 收藏的 kind 变了 ⇒ 渲染指纹必须变（不漏刷新）', (t) async {
+    final key = GlobalKey<MyShelfState>();
+    await _mount(t, key);
+
+    List<Favorite> favs(String kind) => <Favorite>[
+          // 其余字段（key/title/cover/lastEpisodeTitle/lastEpisodeCount/
+          // unreadCount）**逐字相同**，只让 kind 不同。
+          Favorite(
+            key: 'cctv:k1',
+            provider: 'cctv',
+            nativeId: 'k1',
+            title: '类型会变的片',
+            kind: kind,
+          ),
+        ];
+
+    // ★ 先装 override 再喂数据 —— 与 ①c 同款：`_mount` 的 initState 会在
+    //   postFrame 触发一次真 load()（测试里 FFI 恒失败），这里用 override 把它
+    //   接管掉，避免那次失败路径的 null 覆盖掉 debugSetData 喂进来的数据。
+    debugShelfLoadOverride = () async => (
+          favs('movie'),
+          <Favorite>[], // 追更空 —— 只测**收藏循环**
+          <Progress>[],
+        );
+    key.currentState!.debugSetData(tab: ShelfTab.favorites);
+    await t.pump();
+    await key.currentState!.load();
+    await t.pump();
+    expect(find.text('影片'), findsOneWidget,
+        reason: '前置：kind=movie 时收藏卡副标题必须是「影片」');
+
+    // 只有 kind 变：movie → series（其余字段逐字相同）
+    debugShelfLoadOverride = () async => (
+          favs('series'),
+          <Favorite>[],
+          <Progress>[],
+        );
+    final before = key.currentState!.debugSignatureForTest();
+    await key.currentState!.load();
+    await t.pump();
+    final after = key.currentState!.debugSignatureForTest();
+
+    expect(after, isNot(equals(before)),
+        reason: '★ 收藏的 kind 变了但渲染指纹没变 ⇒ 守卫会漏刷新 '
+            '（卡片停在旧的「影片」，直到别的字段变化）');
+    // ★ 端到端：屏幕上的副标题必须真的跟着更正成「剧集」
+    expect(find.text('剧集'), findsOneWidget,
+        reason: '★ kind 已变成 series ⇒ 卡片必须显示「剧集」（不是停在「影片」）');
   });
 }

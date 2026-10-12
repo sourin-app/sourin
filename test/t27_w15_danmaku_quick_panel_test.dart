@@ -136,7 +136,15 @@ Future<void> _pump(
       ),
     ),
   );
-  while (tester.takeException() != null) {}
+  /*
+   * ★ 这里原来有一句 `while (tester.takeException() != null) {}` —— 已删。
+   *
+   * 那正是 `CONTRIBUTING.md`「⑥ 规矩二」要防的形态：把**失败静默吞掉**。
+   * 夹具构建（挂底栏 + 悬浮层）若抛错，异常被这里丢弃 ⇒ 下面各测试的回调
+   * 断言（fontScale/opacity/advanced…）**仍可能通过** ⇒ 门禁漏报。
+   * 本夹具不挂 PlayerPage（`PlayerBottomBar` 是纯 widget，无 FFI、无 libmpv）
+   * ⇒ **没有任何已知的原生异常需要放行**。构建期若抛错，就让它抛出来。
+   */
 }
 
 /// 打开悬浮窗（走**生产**那条：点齿轮 ⇒ controller.toggle）
@@ -160,7 +168,6 @@ void main() {
     addTearDown(controller.dispose);
     await _openPanel(t, spy, controller);
     expect(controller.openId, 'danmakuQuick');
-    while (t.takeException() != null) {}
   });
 
   testWidgets('Q2 四根滑杆都在，且**直接拖**会回调宿主（实时生效那条线）', (t) async {
@@ -193,7 +200,6 @@ void main() {
     );
     await t.pump();
     expect(spy.opacity, isNotEmpty, reason: '★★ 拖不透明度滑杆必须回调宿主');
-    while (t.takeException() != null) {}
   });
 
   testWidgets('Q3 四枚类型开关点一下 ⇒ 回调宿主（含彩色）', (t) async {
@@ -215,7 +221,6 @@ void main() {
     expect(spy.showTop, 1);
     expect(spy.showBottom, 1);
     expect(spy.colorOnly, 1, reason: '★★ 「彩色」开关点一下必须回调宿主');
-    while (t.takeException() != null) {}
   });
 
   testWidgets('Q4 点「高级设置」⇒ 回调 onOpenAdvanced（进全屏大卡片）', (t) async {
@@ -228,6 +233,5 @@ void main() {
     await t.pump();
     expect(spy.advanced, 1,
         reason: '★★ 「高级设置」必须把用户送进全屏大卡片（宿主 _openDanmakuSettings）');
-    while (t.takeException() != null) {}
   });
 }

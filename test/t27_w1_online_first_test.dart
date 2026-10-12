@@ -106,12 +106,69 @@ String? _resolvedOf(WidgetTester t) {
   return (st as dynamic).resolvedLocalPath as String?;
 }
 
+/// ★ 本套件**唯一**允许放行的异常源 —— 无 libmpv 的原生播放器构造失败。
+///
+/// # 为什么必须放行（且**只**放行这一个根因）
+/// ```text
+/// 本机/CI 无 libmpv-2.dll ⇒ PlayerPage.initState 里 `Player(...)` 构造抛
+///   ① Exception: MediaKit.ensureInitialized must be called before using any
+///      API from package:media_kit.
+///      （player_page.dart:2269 的 Player() 构造）
+///   ② 同一个构造在**首次同步构建**里抛出 ⇒ 紧接着框架再抛一条内部断言
+///        'framework.dart': Failed assertion: '_elements.contains(element)'
+///      —— 它是 ① 的**次生**异常（同一次构建里元素被丢弃后又重插），
+///      根因仍是"无 dll"，不是接缝/渲染/状态逻辑出错。
+/// ```
+/// # ⚠️ 这里原来是 `while (t.takeException() != null) {}`（无差别清空）
+///
+/// 那正是 `CONTRIBUTING.md`「⑥ 规矩二」要防的形态：把**失败静默吞掉**。
+/// 非原生媒体错误（接缝断言、渲染、状态）会被一起丢弃 ⇒ 门禁漏报。
+/// 现在只放行上面这一个根因（含其次生断言）；**其余异常抛出** ⇒ 测试变红。
+bool isKnownNativeMediaException(String s) =>
+    s.contains('MediaKit.ensureInitialized') ||
+    s.contains('_elements.contains(element)');
+
 /// 稳定推进若干帧（扫盘是异步 IO，必须给足时间让它落地）
+///
+/// ★ 放行口径：**只**放行已知的原生播放器异常；其余**让测试红**。
+///
+/// # 为什么必须从 `FlutterError.onError` 逐条取（不能只看 takeException）
+/// ```text
+/// 同一个 pump 里抛了**两条**异常时，`takeException()` 只返回一句
+///   'Multiple exceptions (2) were detected …'（正文全丢）——
+///   那正是"非预期异常被静默"的温床：既不知道抛了什么，也没法判定放行。
+/// ⇒ 抄本仓既有形态（test/t119_error_view_overflow_test.dart:146-169、
+///   test/t97_resume_chip_fit_test.dart:152-163）：
+///   临时挂 `FlutterError.onError` 把**每一条**正文收进 sink，逐条判定；
+///   非预期的**立刻抛出**（测试变红）；已知的放行。
+/// ```
 Future<void> _settle(WidgetTester t, {int rounds = 20}) async {
-  for (var i = 0; i < rounds; i++) {
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-    await t.pump();
-    while (t.takeException() != null) {}
+  final caught = <String>[];
+  final prev = FlutterError.onError;
+  FlutterError.onError = (details) {
+    caught.add(details.exceptionAsString());
+    prev?.call(details);
+  };
+  try {
+    for (var i = 0; i < rounds; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await t.pump();
+      /*
+       * ★ 逐条判定本帧收到的异常：非预期 ⇒ 立刻抛（测试变红）。
+       *   已知的放行，但仍要 `takeException()` 把 pending 清掉 ——
+       *   否则两条 pending 会触发框架的聚合，把正文替换成
+       *   "Multiple exceptions …"（上面注释说的那个坑）。
+       */
+      for (final e in caught) {
+        if (!isKnownNativeMediaException(e)) {
+          throw Exception('★ 非预期异常（改前被 `while (takeException)` 静默吞掉）:\n$e');
+        }
+      }
+      caught.clear();
+      while (t.takeException() != null) {}
+    }
+  } finally {
+    FlutterError.onError = prev;
   }
 }
 

@@ -97,7 +97,7 @@ abstract final class Radii {
 /// 字号（原版 `--fs-*`，桌面档）
 ///
 /// ⚠️ 原版在**大屏/TV** 下会整体放大（`--fs-base: 20px` 等）。
-///    见 [AppMetrics.textScaleFor] —— 那是"弱 TV 也要看得清"的落点。
+///    见 [AppMetrics.effectiveTextScale] —— 那是"弱 TV 也要看得清"的落点。
 abstract final class FontSizes {
   /// 角标、计数、辅助说明
   static const double cap = 12;
@@ -414,7 +414,7 @@ abstract final class AppMetrics {
   /// ⚠️ 这里**只管字号**。卡片宽度是另一回事 —— 它由 [Layout] 按「桌面 /
   ///    TV」两档算（TV 档走原版 `--poster-w: 216px`，见 [Layout.minCellTv]）。
   ///    两者不要互相引用：字号放大**不许**顺带改掉每行张数。
-  static double textScaleFor({required bool isTv}) => isTv ? tvScale : 1.0;
+  ///    谁真放大由 [effectiveTextScale] 说了算。
 
   /// 同一个系数的**常量**形态 —— 给 `const` 上下文用
   ///

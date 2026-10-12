@@ -1316,6 +1316,11 @@ class CachedDelete {
   }
 
   /// 批量删（先逐个判越界，再删）⇒ 返回（删掉几个文件, 放掉多少字节）
+  ///
+  /// ⚠️ `@visibleForTesting`：生产路径零调用（缓存页的删除走的是别的入口），
+  ///    只有 `test/zz_media_delete_guard_test.dart` 的 D-3 用它验证
+  ///    「越界判定在批量路径上同样生效」。保留是为了守住这条覆盖。
+  @visibleForTesting
   static Future<(int files, int bytes)> deleteEpisodes(
     String workDir,
     List<CachedEpisode> eps,

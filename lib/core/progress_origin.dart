@@ -154,8 +154,15 @@ class ProgressOrigin {
 /// 本地会话的 provider 恒为 `local`、id 是文件绝对路径 —— 那是**另一个命名空间**
 /// （见本文件头的镜像机制）。按集扩容**不会**把两个命名空间合并，
 /// 所以镜像机制仍然需要（见 [saveProgressWithMirror]）。
+///
+/// ⚠️ `episodeId` 拼进键之前**必须 trim** —— 这不是随手加的：
+/// Rust 侧的 `store::progress_key` 是 `episode_id.map(str::trim)`，
+/// 本函数的文档头声明两端**逐字同构**。若这里不 trim，
+/// `episodeId = ' 3 '` 会拼出 `...: 3 ` 而 Rust 拼出 `...:3`
+/// ⇒ 两条同构声明**当场失效**（CodeRabbit 在 PR #18 上点出）。
+/// 由 `test/zz_ops13_origin_test.dart` 的同构断言钉住（含空白样本）。
 String canonicalProgressKey(String provider, String mediaId, [String? episodeId]) =>
-    '$provider:$mediaId:${episodeId ?? ''}';
+    '$provider:$mediaId:${episodeId?.trim() ?? ''}';
 
 /// 从 `CachedPlayRequest` 的两个 origin 字段得到规范化的来源
 ///

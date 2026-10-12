@@ -616,10 +616,33 @@ impl SyncEngine {
 
         let remote_had_keys: std::collections::HashSet<String> =
             remote_had.iter().map(key_of).collect();
-        let remote_updated: std::collections::HashMap<String, i64> = remote_had
-            .iter()
-            .map(|p| (key_of(p), p.updated_at))
-            .collect();
+        /*
+         * ⚠️ 必须取**每个键的最大** updated_at，不能直接 `.collect()`
+         *
+         * `.collect::<HashMap<_,_>>()` 对同一个键是 **last-write-wins**
+         * （后遍历到的覆盖先前的），而下面 `pushed` 的比较基准需要的是
+         * **该键最新的**那个时间戳 —— `merge_lww` 正是按 max 选的赢家。
+         *
+         * ⇒ 远端 jsonl 里若出现**同键重复行**（并发写没去干净 / 手工合并过），
+         *   且较旧的那条**排在后面**：
+         * ```text
+         * 远端: [ (k, 2000), (k, 1000) ]   本机: (k, 1500)
+         * merge_lww 选 (k,2000) 为赢家     ✓ 数据是对的
+         * 但 .collect() 让 remote_updated[k] = 1000（最后遍历到的）
+         * ⇒ pushed 判据 1000 < 2000 ⇒ **多算一条"需要推送"**
+         * ```
+         * ★ 影响面：只影响 `pushed` 这个**统计数字**（SyncSummary 的读数），
+         *   落库路径由 `merge_lww` 决定、仍然正确。
+         *   但统计数字错了会误导诊断（"怎么每次都推这么多"）。
+         */
+        let mut remote_updated: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+        for p in &remote_had {
+            let ts = remote_updated.entry(key_of(p)).or_insert(p.updated_at);
+            if p.updated_at > *ts {
+                *ts = p.updated_at;
+            }
+        }
 
         let local = self.db.list_all_progress()?;
         let merged = merge_lww(local, remote_had, key_of, |p| p.updated_at);

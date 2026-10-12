@@ -99,6 +99,25 @@ void main() {
        */
       expect(canonicalProgressKey('local', 'D:/源影/第01集.mp4', '第01集.mp4'),
           'local:D:/源影/第01集.mp4:第01集.mp4');
+      /*
+       * ★★★ 空白必须被 trim —— 两端"逐字同构"的实际含义（CodeRabbit PR #18）
+       *
+       * Rust `store::progress_key` 是 `episode_id.map(str::trim)`，
+       *   ⇒ `Some(" 3 ")` 拼出 `...:3`
+       * Dart 若直接插值 ⇒ 拼出 `...: 3 ` ⇒ **与 Rust 不一致**
+       * ⇒ 两条"同构"声明当场失效。所以两侧都 trim，并由本组用例钉住。
+       */
+      expect(
+        canonicalProgressKey('bilibili', 'BV1', ' 3 '),
+        'bilibili:BV1:3',
+        reason: '★★ episodeId 前后空白必须被 trim —— '
+            'Rust 的 progress_key 是 str::trim，Dart 不 trim 就不同构了',
+      );
+      expect(
+        canonicalProgressKey('bilibili', 'BV1', '   '),
+        'bilibili:BV1:',
+        reason: '★ 全是空白 ⇒ trim 后为空 ⇒ 与"空串哨兵"同一形态',
+      );
     });
 
     test('★★★ 两端格式契约（源码扫描）：Rust 与 Dart 的拼法必须一致', () {
@@ -106,8 +125,10 @@ void main() {
       expect(rust.contains('format!("{provider}:{native_id}:{ep}")'), isTrue,
           reason: '★ Rust 侧的 progress_key 变了 —— Dart 侧必须同步（它是唯一拼键点）');
       final dart = _src('lib/core/progress_origin.dart');
-      expect(dart.contains(r"'$provider:$mediaId:${episodeId ?? ''}'"), isTrue,
-          reason: '★ Dart 侧的拼法必须是 provider + ":" + mediaId + ":" + (episodeId ?? "")');
+      expect(dart.contains(r"$provider:$mediaId:${episodeId?.trim() ?? ''}"), isTrue,
+          reason: '★ Dart 侧的拼法必须是 provider + ":" + mediaId + ":" + '
+              '(episodeId?.trim() ?? "") —— ★ **必须带 trim**，'
+              '因为 Rust 侧是 str::trim（不 trim 就不同构）');
     });
   });
 

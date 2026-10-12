@@ -350,8 +350,14 @@ void main() {
       // 滑杆：音量 max:100 一根、缩放 max:200 一根，各只该有一根
       indexOfExactly(bar, 'max: 100,', want: 1, why: '★ 音量滑杆只该一根');
       indexOfExactly(bar, 'max: 200,', want: 1, why: '★ 缩放滑杆只该一根');
-      expect(bar.contains('Icons.tune'), isFalse,
-          reason: '★ 弹幕设置已进「更多」菜单，不该留在底栏');
+      /*
+       * ★★★ Owner 1011 反馈第 1 条后本条语义反转：改前钉「弹幕设置已进
+       *   『更多』，底栏不该有 Icons.tune」；现在 Owner 要「一个开关,一个
+       *   设置」⇒ 底栏**必须**有 Icons.tune 的设置入口（直连
+       *   onDanmakuSettings）。常驻三项仍只看 primary 切片，不受影响。
+       */
+      expect(bar.contains('Icons.tune'), isTrue,
+          reason: '★ 弹幕设置回到底栏（Owner 第 1 条：一个开关,一个设置）');
       // 常驻三项按顺序：播放/暂停 → 音量 → 倍速。
       // ⚠️ 必须在 `primary` **切片内**量：`倍速` 这个词在文件里还出现在
       //   上面那个 popover 的定义处（258 行），全文件 indexOf 会量错。

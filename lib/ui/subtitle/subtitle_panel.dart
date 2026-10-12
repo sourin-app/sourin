@@ -728,10 +728,14 @@ class _SubtitlePanelState extends State<SubtitlePanel> {
       child: Row(
         children: <Widget>[
           if (_st.busy)
-            const SizedBox(
+            SizedBox(
               width: 14,
               height: 14,
-              child: CircularProgressIndicator(strokeWidth: 2),
+              // ★ T27-07（lead 集成补漏）：显式 onSurface，不落主题 primary 灰。
+              child: CircularProgressIndicator(
+                color: colors.onSurface,
+                strokeWidth: 2,
+              ),
             ),
           if (_st.busy) const SizedBox(width: Sp.x2),
           Expanded(

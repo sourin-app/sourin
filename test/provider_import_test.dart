@@ -42,12 +42,14 @@
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/ui/widgets/provider_import_dialog.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
+import 'package:sourin_spike/ui/app_theme.dart';
 
 /// 剥掉注释 —— 静态断言里做文本匹配**必须先剥**
 ///
@@ -1112,6 +1114,86 @@ void main() {
       ]) {
         expect(code.contains(cmd), isTrue, reason: '缺命令包装 $cmd');
       }
+    });
+  });
+  // ═══════════════════════════════════════════════════════════════════
+  //  B4（CodeRabbit PR#5）：FilledButton 内的加载指示器取色**对比度门禁**
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 意见原文（PR#5）
+  // ```text
+  // `CircularProgressIndicator(color: colors.onPrimary)` 在 FilledButton 内
+  // 与按钮前景同色 ⇒ 对比度可能不足；建议改 `colors.onSurface`。
+  // ```
+  //
+  // # ★ 核实结果：**误报**（onPrimary 才是对的，onSurface 反而不可读）
+  //
+  // FilledButton 的实心底**就是** `primary`（见 theme_bridge.dart `_shared` 里
+  // `backgroundNColor: dim(c.primary, …)`），而 `onPrimary == primaryForeground`
+  // 正是"主色之上的前景"（app_palette.dart `toColorScheme`）。实测 WCAG 对比度：
+  // ```text
+  //   深色  onPrimary(#171717) on 主色(#E5E5E5) = 14.23:1  ✅ 远超 3:1（非文字）
+  //   浅色  onPrimary(#FFFFFF) on 主色(#3B6FE0) =  4.63:1  ✅
+  //   若改成 onSurface：
+  //   深色  onSurface(#FAFAFA) on #E5E5E5 = 1.21:1  ✗ 几乎不可见
+  //   浅色  onSurface(#1E2028) on #3B6FE0 = 3.51:1  ✗ 低于 4.5
+  // ```
+  // ⇒ 采纳建议会**制造**对比度缺陷。本组两个用例把"为什么必须用 onPrimary"
+  //   钉成门禁：① 两个主题下 onPrimary/主色 ≥ 3:1；② onPrimary 严格优于
+  //   onSurface（防未来被"顺手改成 onSurface"）。
+  group('B4 加载指示器取色对比度（PR#5 意见的核实）', () {
+    double linC(double c) {
+      final n = c / 255.0;
+      return n <= 0.03928 ? n / 12.92 : math.pow((n + 0.055) / 1.055, 2.4).toDouble();
+    }
+
+    double lumC(Color c) =>
+        0.2126 * linC(c.r * 255) + 0.7152 * linC(c.g * 255) + 0.0722 * linC(c.b * 255);
+
+    double contrastC(Color a, Color b) {
+      final la = lumC(a), lb = lumC(b);
+      final hi = la > lb ? la : lb, lo = la > lb ? lb : la;
+      return (hi + 0.05) / (lo + 0.05);
+    }
+
+    test('两个主题下 onPrimary 对 FilledButton 实心底(primary) ≥ 3:1', () {
+      for (final b in [Brightness.dark, Brightness.light]) {
+        final cs = AppTheme.themeFor(b).colorScheme;
+        final r = contrastC(cs.onPrimary, cs.primary);
+        // ignore: avoid_print
+        print('B4 读数：${b.name} onPrimary=${cs.onPrimary} primary=${cs.primary} '
+            '对比度=${r.toStringAsFixed(2)}:1');
+        expect(r, greaterThanOrEqualTo(3.0),
+            reason: '★ ${b.name} 下加载指示器（onPrimary）对实心底 '
+                '对比度 ${r.toStringAsFixed(2)}:1 < 3:1 ⇒ 用户看不清转圈');
+      }
+    });
+
+    test('★ onPrimary 严格优于 onSurface（钉死"为什么不是 onSurface"）', () {
+      for (final b in [Brightness.dark, Brightness.light]) {
+        final cs = AppTheme.themeFor(b).colorScheme;
+        final onP = contrastC(cs.onPrimary, cs.primary);
+        final onS = contrastC(cs.onSurface, cs.primary);
+        // ignore: avoid_print
+        print('B4 读数：${b.name} onPrimary=${onP.toStringAsFixed(2)}:1 '
+            'onSurface=${onS.toStringAsFixed(2)}:1');
+        expect(onP, greaterThan(onS),
+            reason: '★ ${b.name} 下 onPrimary(${onP.toStringAsFixed(2)}:1) 必须优于 '
+                'onSurface(${onS.toStringAsFixed(2)}:1) —— PR#5 建议的 onSurface '
+                '在本主题上**更差**，采纳它就是制造对比度缺陷');
+      }
+    });
+
+    test('★ 接线契约：指示器取色**就是** onPrimary（防手滑改成 onSurface）', () {
+      final src = File('lib/ui/widgets/provider_import_dialog.dart')
+          .readAsStringSync();
+      expect(
+        src.contains('CircularProgressIndicator(color: colors.onPrimary'),
+        isTrue,
+        reason: '★ FilledButton 内的指示器必须与按钮前景同为 onPrimary —— '
+            '它=primaryForeground，正是主色之上的前景；改成 onSurface 会在'
+            '深色主题掉到 1.21:1（实测）',
+      );
     });
   });
 }

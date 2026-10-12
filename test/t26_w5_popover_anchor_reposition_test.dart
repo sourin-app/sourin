@@ -262,9 +262,31 @@ void main() {
               '改前只有 paint 会上报，而层被复用时 paint 不重跑 ⇒'
               ' 控制器留着旧矩形，面板停在旧位置。');
 
-      // ★ 端到端：面板必须贴在**新**按钮的上方（右缘对齐 + 缝隙 Sp.x2）
-      expect(panel.right, closeTo(btn1.right, 1.0),
-          reason: '★★ CR-10：面板右缘必须对齐按钮右缘（改前差 220px）');
+      /*
+       * ★★★ 2026-10-11（Owner 1011 第 4 条，**二次澄清**）：横向契约从
+       *     「右缘对齐按钮」→「居中于屏幕」→ **「居中对齐到按钮」**。
+       * ```text
+       * 这里**不再**断言 panel.right == btn1.right（旧契约）；
+       * 也不能断言 panel.center.dx == layer.width/2（那是"居中于屏幕"，
+       * Owner 复核后澄清要的是"居中于**按钮**"）。
+       * 本用例的核心（CR-10：`after == truth1`，锚点矩形必须重新量取）
+       * **一字未改** —— 居中是「位置算得对不对」，锚点新鲜是「几何读得准不准」，
+       * 两件事正交。锚点读旧值会让**竖向**（贴按钮上沿）也一起错位，
+       * 所以这条防线仍然必须存在。
+       * ```
+       */
+      final layer =
+          t.renderObject<RenderBox>(find.byKey(controller.layerKey));
+      final layerRect = layer.localToGlobal(Offset.zero) & layer.size;
+      // 居中于**按钮**：面板中心 = 按钮中心（贴边时允许 clamp 到层边）
+      final dCentered = (panel.center.dx - btn1.center.dx).abs();
+      final dClampL = (panel.left - (layerRect.left + Sp.x2)).abs();
+      final dClampR = (panel.right - (layerRect.right - Sp.x2)).abs();
+      expect(dCentered < 1.0 || dClampL < 1.5 || dClampR < 1.5, isTrue,
+          reason: '★★ Owner 1011 第 4 条：面板中心应 = **按钮**中心'
+              '（${btn1.center.dx}），贴边时 clamp 到层边。'
+              '实测 面板中心 ${panel.center.dx} 面板=$panel');
+      // 竖向仍贴在按钮上沿上方 Sp.x2（CR-10 端到端：用的是**新**按钮的顶部）
       expect(panel.bottom, closeTo(btn1.top - Sp.x2, 1.0),
           reason: '★ 面板底边 = 按钮上沿上方 Sp.x2');
       expect(panel.left, greaterThanOrEqualTo(Sp.x2 - 0.01),

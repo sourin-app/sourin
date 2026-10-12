@@ -816,7 +816,9 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           const SizedBox(
             width: 16,
             height: 16,
-            child: CircularProgressIndicator(strokeWidth: 2),
+            // T27-07：无 color 的 CPI 走主题灰（#E5E5E5 on #14161C 仅 1.6:1），
+            // 显式给白 #FAFAFA（对 #14161C ≈ 15.9:1）。
+            child: CircularProgressIndicator(color: Color(0xFFFAFAFA), strokeWidth: 2),
           ),
         if (s.bound && !s.loading)
           TextButton(

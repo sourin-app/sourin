@@ -25,8 +25,22 @@
 // dsh.danmaku.fontScale   字号比例，缺省 "1.0"
 // dsh.danmaku.opacity     不透明度，缺省 "1.0"
 // dsh.danmaku.speed       一条弹幕穿过画面的秒数，缺省 "8.0"
-// dsh.danmaku.area        显示区域占画面高度的比例，缺省 "1.0"
+// dsh.danmaku.area        ★ 弹幕显示区域占画面高度的比例（**从顶部往下量**），缺省 "0.5"
 // ```
+//
+// # ★★★ Owner 2026-10-11 反馈：显示区域按 B 站重做
+//
+// Owner 原话（逐字）：
+// > 那个遮挡区域我对现在的不满意,要按照b站的那个去做
+// 追问"哪一点不满意"⇒「1 2 3 4我都要」（四条全要）：
+// ```text
+// ① 拖动时画面上要有**半透明的分界线/遮罩**（B 站拖动时的视觉反馈）
+// ② 默认值不能是 1.0（铺满全屏）—— B 站默认约为上半屏
+// ③ 百分比含义对齐 B 站：从**顶部往下量**的"弹幕占用区"
+// ④ 拖动时**实时**生效（每帧都画）
+// ```
+// （②③ 的 `area` 语义与默认值见 [DanmakuConfig.area] / [DanmakuConfig.defaultArea]；
+//  ①④ 的渲染在 lib/ui/widgets/danmaku_overlay.dart 的 `DanmakuAreaGuide`。）
 //
 // # 为什么自己写 SHA-256、用 dart:io 而不是 package:crypto / package:http
 //
@@ -77,6 +91,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import 'ui_prefs.dart';
 
@@ -671,6 +687,33 @@ class DanmakuConfig {
   static const String keyBlockTop = 'dsh.danmaku.blockTop';
   static const String keyBlockBottom = 'dsh.danmaku.blockBottom';
 
+  /// ★ 2026-10-11 新增：「只显示彩色弹幕」开关（缺省关 = 彩色和白色都显示）
+  ///
+  /// # B 站语义（查证）
+  /// ```text
+  /// B 站「按类型过滤」里的「彩色」是一枚**只显示彩色弹幕**的开关：
+  ///   开 ⇒ 画面上**只留彩色弹幕**，白色（默认色）弹幕全部隐藏。
+  /// 参照：DPlayer 的 danmaku API（https://dplayer.diygod.dev/guide.html）
+  ///   把「只显示彩色弹幕」实现成一个布尔 API 项 —— 开 = 只留彩色。
+  /// ⇒ 本项目同语义：`colorOnly == true` ⇒ 只显示 color != 0xFFFFFF 的弹幕。
+  ///   （若 Owner 想要的是反过来的"过滤掉彩色"，把这里取反即可，
+  ///     单点可改；之所以选"只显示彩色"，是因为 B 站原图那枚开关的字面就是
+  ///     「彩色」+ 其它三枚「滚动/顶部/底部」也是"开 = 这一类要显示"的同构语义。）
+  /// ```
+  ///
+  /// ⚠️ 本项目**有** `DanmakuComment.color` 字段（24 位 RGB，见 [DanmakuComment.color]），
+  ///   所以这枚开关是**有数据支持**的，不是画个假开关。
+  static const String keyColorOnly = 'dsh.danmaku.colorOnly';
+
+  /// 白色弹幕的判定阈值：与 0xFFFFFF 的每通道差都 ≤ 它，就算「白」。
+  ///
+  /// 为什么不是 `== 0xFFFFFF`：dandanplay 的 `p` 第 3 段颜色写得很杂，
+  /// 实测有 `16777215`(纯白)、也有近白（如 `16777214`）。用**纯相等**会漏判，
+  /// 于是"只显示彩色"时这些近白弹幕会被当成彩色留下 —— 与用户预期相反。
+  /// 24 容差（每通道 ~2.4%）足以覆盖"肉眼看上去就是白"的抖动，又不会把
+  /// 真正的浅色（如淡粉 `0xFFFFE0E0` 差 32）误当白。
+  static const int whiteTolerance = 24;
+
   // ---- 显示参数的取值范围（UI 滑块与这里共用，别在两处写死） ----
 
   static const double fontScaleMin = 0.6;
@@ -679,21 +722,125 @@ class DanmakuConfig {
   static const double opacityMax = 1.0;
   static const double speedMin = 3.0;
   static const double speedMax = 16.0;
-  static const double areaMin = 0.3;
+
+  /// ★ 2026-10-11：`area` 下界从 0.3 收到 0.1（Owner 第 ③ 条：按 B 站）。
+  ///
+  /// # 为什么要改下界（不是拍脑袋）
+  /// ```text
+  /// 改前 0.3 = "给最下方的字幕预留 30% 高度"的**反推刻度**——
+  ///   刻度本身是对的（弹幕区从顶部往下铺），但 0.3 是个**下界猜测**：
+  ///   视频没有字幕、或用户就是想把弹幕压在最上面两条时，0.3 还是太大。
+  /// B 站那根滑杆允许一直拖到很小（弹幕只占顶上窄窄一条）。
+  /// ⇒ 下界收到 0.1（480px 画面上仍能放下 floor(48/27)=1 条轨道，
+  ///   `DanmakuTrackAllocator.layout` 里还有 `math.max(..., lh)` 与
+  ///   `math.max(1, ...)` 两道兜底 ⇒ 永远不会出现 0 轨道）。
+  /// ```
+  static const double areaMin = 0.1;
   static const double areaMax = 1.0;
 
   static const double defaultFontScale = 1.0;
   static const double defaultOpacity = 1.0;
   static const double defaultSpeed = 8.0;
-  static const double defaultArea = 1.0;
+
+  /// ★ 2026-10-11：默认显示区域 = **0.5（上半屏）**，对齐 B 站。
+  ///
+  /// # 依据（不是拍脑袋 —— Owner 第 ② 条）
+  /// ```text
+  /// B 站播放器弹幕设置的"显示区域"默认约为**上半屏**；DPlayer 的 danmaku
+  /// 也把"显示区域限制"缺省设为 `unlimited`（= 只受"底部给字幕留一段"约束，
+  /// 落到滑块刻度上正是 50%~ 这一档，见 https://dplayer.diygod.dev/guide.html）。
+  /// 改前本项目默认 1.0 = 铺满整个画面 ⇒ 弹幕压在下半屏的**字幕**上，
+  /// 这正是 Owner「那个遮挡区域…不满意」的直接观感来源。
+  /// ```
+  ///
+  /// # ⚠️ 为什么不给"已存偏好"的老用户做迁移
+  /// ```text
+  /// 用户若**主动**拖过这根滑杆，存下的就是他自己的选择，不该被我们改掉；
+  /// 而"用默认值"的用户根本没写过 `dsh.danmaku.area` 这个键 ——
+  /// 他们本来就走 defaultArea 这条支，改默认值**立刻**对他们生效。
+  /// ⇒ 真正需要迁移的只有"改前恰好把 1.0 存下来过"的极少数；
+  ///   为一个键引入一次性迁移（多一个 `dsh.danmaku.areaMigrated` 标记、
+  ///   多一条永远难测的分支）不值，且会**覆盖用户自己的 1.0 选择**。
+  ///   故：**不迁移**，只改缺省。老用户想回到铺满 ⇒ 把滑杆拖回 100% 即可
+  ///   （滑杆可拖范围仍是 0.1~1.0，能力没丢）。
+  /// ```
+  static const double defaultArea = 0.5;
+
+  // ---- ★ T27-10：内置凭证（构建期注入，仓库里只有占位符/空串） ----
+  //
+  // 业主在 dev.dandanplay.com 建好了应用（AppId xgmriqmqcq，2026-10-09
+  // 审核通过），但客户端从来没拿到过凭证 ⇒ 「弹幕服务没收到凭证」。
+  // 官方文档（doc.dandanplay.com/open/）明确允许开源客户端
+  // 「在开源代码中使用占位符，之后在构建时从机密中读取 AppSecret 后替换」。
+  //
+  // 注入通道：--dart-define=DANDANPLAY_APP_ID=… --dart-define=DANDANPLAY_APP_SECRET=…
+  // 缺省（没 define 也没运行时注入）就是空串 ⇒ 本构建行为与改前逐字一致。
+  // 仓库里**绝不**出现真实 Secret —— CI 从 GitHub Secrets 读，见 task-11。
+  //
+  // 优先级（appId/appSecret 各自独立）：UiPrefs 用户覆盖（非空）> builtin > ''。
+  // 覆盖/清除（clearCredentials）只动 UiPrefs，永远不写 builtin。
+
+  /// 构建期注入的 AppId（`String.fromEnvironment` 是 const，缺省 ''）
+  static const String builtinAppId =
+      String.fromEnvironment('DANDANPLAY_APP_ID');
+
+  /// 构建期注入的 AppSecret（同上；**不会**落盘，只在内存里给签名用）
+  static const String builtinAppSecret =
+      String.fromEnvironment('DANDANPLAY_APP_SECRET');
+
+  /// 内置凭证是否成对可用（只有 AppId 没有 Secret 没法签名 ⇒ 视为没有）。
+  ///
+  /// 看的是**生效的**内置值（= debugSetBuiltin 注入值 ?? 构建期 const），
+  /// 这样对话框的「内置凭证：已生效/未注入」状态行在两种注入通道下
+  /// 都说真话；没注入的构建里两者相同（都是空串）⇒ 行为与只读 const 一致。
+  static bool get hasBuiltinCredentials =>
+      _builtinAppId.isNotEmpty && _builtinAppSecret.isNotEmpty;
+
+  /// 测试注入口（`String.fromEnvironment` 是 const，运行时改不了）。
+  ///
+  /// 传 null = 恢复「读 const」的缺省路径 ⇒ 不调用它的构建**完全无害**。
+  /// 覆盖优先级不变：UiPrefs 用户覆盖仍然压过这里的内置值。
+  @visibleForTesting
+  static void debugSetBuiltin({String? appId, String? appSecret}) {
+    _debugBuiltinAppId = appId;
+    _debugBuiltinAppSecret = appSecret;
+  }
+
+  static String? _debugBuiltinAppId;
+  static String? _debugBuiltinAppSecret;
+
+  static String get _builtinAppId =>
+      _debugBuiltinAppId ?? builtinAppId; // null = 缺省读 const
+
+  static String get _builtinAppSecret =>
+      _debugBuiltinAppSecret ?? builtinAppSecret;
+
+  /// 用户没覆盖（UiPrefs 无非空值）且内置有值 ⇒ 这次用的是内置 AppId
+  static bool get usingBuiltinAppId =>
+      (UiPrefs.get(keyAppId) ?? '').trim().isEmpty && _builtinAppId.isNotEmpty;
+
+  /// 同上（AppSecret 半边）
+  static bool get usingBuiltinAppSecret =>
+      (UiPrefs.get(keyAppSecret) ?? '').trim().isEmpty &&
+      _builtinAppSecret.isNotEmpty;
 
   // ---- 读 ----
 
   static bool get enabled => UiPrefs.get(keyEnabled) == '1';
 
-  static String get appId => UiPrefs.get(keyAppId) ?? '';
+  /// 生效的 AppId：用户覆盖（UiPrefs 非空）优先，否则内置，否则空串
+  static String get appId {
+    final user = (UiPrefs.get(keyAppId) ?? '').trim();
+    if (user.isNotEmpty) return user;
+    return _builtinAppId;
+  }
 
-  static String get appSecret => UiPrefs.get(keyAppSecret) ?? '';
+  /// 生效的 AppSecret：优先级同 [appId]
+  static String get appSecret {
+    final user = (UiPrefs.get(keyAppSecret) ?? '').trim();
+    if (user.isNotEmpty) return user;
+    return _builtinAppSecret;
+  }
 
   /// 是否"有资格"发请求。
   ///
@@ -712,7 +859,16 @@ class DanmakuConfig {
   static double get speed =>
       _readDouble(keySpeed, defaultSpeed, speedMin, speedMax);
 
-  /// 弹幕纵向可占用区域占画面高度的比例（1.0 = 整个画面）
+  /// 弹幕显示区域占画面高度的比例 —— **从画面顶部往下量**（对齐 B 站）。
+  ///
+  /// 语义（Owner 第 ③ 条）：
+  /// ```text
+  /// area = 0.5  ⇒ 弹幕只排在画面顶部 50% 的高度里，下半屏完全留给画面/字幕；
+  /// area = 1.0  ⇒ 铺满整个画面高度（B 站滑杆拖到最右）。
+  /// ```
+  /// 渲染侧对应 `DanmakuTrackAllocator.layout(area:)`：轨道从顶部第 0 行
+  /// 往下铺，铺满 `canvasHeight * area` 为止（顶部固定弹幕从上往下、
+  /// 底部固定弹幕在这个区域内从下往上找轨，见该函数的 `_laneOrder`）。
   static double get area =>
       _readDouble(keyArea, defaultArea, areaMin, areaMax);
 
@@ -744,6 +900,23 @@ class DanmakuConfig {
 
   static bool get blockBottom => UiPrefs.get(keyBlockBottom) == '1';
 
+  /// ★ 「只显示彩色弹幕」开关（缺省关 ⇒ 彩色/白色都显示）
+  static bool get colorOnly => UiPrefs.get(keyColorOnly) == '1';
+
+  /// 一条弹幕是不是「白色（默认色）」—— 供「只显示彩色」过滤用。
+  ///
+  /// 判据：与 0xFFFFFF 的 R/G/B 三通道差都 ≤ [whiteTolerance]（见该常量注释）。
+  /// **纯函数**，可单测。
+  static bool isWhiteColor(int color) {
+    final rgb = color & 0xFFFFFF;
+    final r = (rgb >> 16) & 0xFF;
+    final g = (rgb >> 8) & 0xFF;
+    final b = rgb & 0xFF;
+    return (255 - r).abs() <= whiteTolerance &&
+        (255 - g).abs() <= whiteTolerance &&
+        (255 - b).abs() <= whiteTolerance;
+  }
+
   /// 一条弹幕该不该显示 —— **纯函数**，可单测。
   ///
   /// 判据（全部来自 B 站那套，逐条对应）：
@@ -751,6 +924,7 @@ class DanmakuConfig {
   /// ① 该类型的"显示"开关关着 ⇒ 不显示
   /// ② 该类型被"屏蔽类型"勾上 ⇒ 不显示
   /// ③ 文本命中屏蔽词 ⇒ 不显示（正则模式按正则，否则按子串包含）
+  /// ④ ★「只显示彩色」开着且这条是白色 ⇒ 不显示
   /// ```
   ///
   /// ⚠️ 正则**编译失败**时按"不匹配"处理（不是"全都屏蔽"）——
@@ -758,6 +932,7 @@ class DanmakuConfig {
   static bool shouldShow({
     required DanmakuMode mode,
     required String text,
+    int color = 0xFFFFFF,
   }) {
     switch (mode) {
       case DanmakuMode.scroll:
@@ -767,6 +942,8 @@ class DanmakuConfig {
       case DanmakuMode.bottom:
         if (!showBottom || blockBottom) return false;
     }
+    // ④ 「只显示彩色」—— 白色弹幕直接不进渲染队列（也就不占轨道）
+    if (colorOnly && isWhiteColor(color)) return false;
     final words = blockWords;
     if (words.isEmpty) return true;
     if (blockRegex) {
@@ -830,6 +1007,9 @@ class DanmakuConfig {
 
   static void setBlockBottom(bool v) => UiPrefs.set(keyBlockBottom, v ? '1' : '0');
 
+  /// ★ 2026-10-11：写「只显示彩色弹幕」开关
+  static void setColorOnly(bool v) => UiPrefs.set(keyColorOnly, v ? '1' : '0');
+
   /// 清空凭证（用户点"清除"时用）
   static void clearCredentials() {
     UiPrefs.remove(keyAppId);
@@ -849,9 +1029,13 @@ class DanmakuConfig {
   }
 
   /// 当前配置的一句话状态，给底栏提示 / 对话框标题用
+  ///
+  /// T27-10：内置凭证生效时给**可区分**的文案 —— 用户要能分清
+  /// 「这是客户端自带的」还是「我自己填的」（排错时这是第一件事）。
   static String get statusText {
     if (!enabled) return '弹幕已关闭';
     if (!isConfigured) return '弹幕已开启，但还没填 AppId / AppSecret';
+    if (usingBuiltinAppId) return '弹幕已开启（内置凭证 AppId $maskedAppId）';
     return '弹幕已开启（AppId $maskedAppId）';
   }
 }
@@ -943,13 +1127,15 @@ class DanmakuFetchResult {
 
 /// 提示里附带的一个「按钮」
 ///
-/// 刻意用两个 bool 而不是回调：本文件是 core 层，不许依赖任何 UI 包
+/// 刻意用 bool 而不是回调：本文件是 core 层，不许依赖任何 UI 包
 /// （理由见 lib/core/ui_prefs.dart 头部），导航由宿主（播放页）负责。
 class DanmakuHintAction {
   const DanmakuHintAction({
     required this.label,
     this.openDanmakuSettings = false,
     this.openBiliSheet = false,
+    this.useLocalDanmaku = false,
+    this.useOfficialDanmaku = false,
   });
 
   /// 按钮文案
@@ -960,6 +1146,22 @@ class DanmakuHintAction {
 
   /// 点了之后打开「哔哩哔哩弹幕」面板
   final bool openBiliSheet;
+
+  /// 点了之后**改用本机弹弹play**（T27-08）
+  ///
+  /// 与上面两个开关一样只是「请宿主做某件事」的标记，判据留在这一层：
+  /// 只有**本次请求确实走的是官方**（即本机不在线）时才置 true —— 反之
+  /// 「本次已经走了本机却还给『改用本机』」是一个**死循环**按钮（T27-14）。
+  /// 宿主（player_page）据此重建客户端并重取弹幕 —— 本机源的本地接口
+  /// **免签名**，不需要 AppId/AppSecret。
+  final bool useLocalDanmaku;
+
+  /// 点了之后**改用官方 API**（T27-14）
+  ///
+  /// 本次请求**确实走了本机弹弹play**、而本机却回了 401/403 ⇒ 真正该做的是
+  /// **换一条路**（官方 API），而不是再点一次「改用本机」（那会原样复现）。
+  /// 宿主据此粘住「强制官方」再重取一次。与 [useLocalDanmaku] 互斥。
+  final bool useOfficialDanmaku;
 }
 
 /// 「为什么失败 + 怎么办」——一句话解释 + 可选的动作按钮
@@ -993,7 +1195,43 @@ class DanmakuHint {
   ///   ⇒ 凭证填了但没通过。
   /// 其余 ⇒ 返回 null，让 UI 只说服务端原文（不猜）。
   /// ```
-  static DanmakuHint? of(DanmakuException e) {
+  ///
+  /// ## ★ T27-08（Owner 第 8 条）：「没收到凭证」这一态按**数据源事实**分两支
+  ///
+  /// 改前只有一句话「去官网免费申请」—— 而业主机器上本机弹弹play
+  /// 就在跑（T27-05 的本地源，**免签名**），叫他去申请凭证是**指向错误**的：
+  /// 真正该做的是把这次请求切到本地源。判据只有一个、且来自真实读数。
+  ///
+  /// ## ★★★ T27-14（CodeRabbit A7）：判据必须是「这次请求**走了哪个源**」，
+  ///    不是「本机在不在线」
+  ///
+  /// ```text
+  /// 改前的注入值是 host 的 `usingLocal`，而 host 的选路规则是
+  ///   usingLocal = localStatus.online（player_page.dart:5013）
+  /// ⇒ 只有「本机在线 ⇒ 本次走了本机 ⇒ 本机又回了 401/403」这一条路能进来。
+  ///   这时这段文案写「检测到本机弹弹play，但当前数据源是官方 API」——
+  ///   **与事实完全相反**（这次请求打的就是本机），且按钮「改用本机弹弹play」
+  ///   点了还是打本机 ⇒ 复现同一条失败 ⇒ **死循环**。
+  /// 反过来，「本机在线却走了官方」这个组合按自动路由**根本不会出现**。
+  /// ```
+  ///
+  /// ⇒ 入参语义改为 [usedLocalSource] = 「产生这条失败的那次请求**确实走了**
+  ///   本机弹弹play」。它决定的是**换哪条路**，不再是「本机在不在线」：
+  ///   · true（本机拒绝了这次请求）⇒ 实话实说 + 「改用官方 API」（真换路）；
+  ///   · false（官方拒绝了这次请求）⇒ 老文案（t100/t103/zz_t3 逐字钉着）。
+  ///
+  /// 刻意**不**在这里自己探测：本函数是**纯函数**（t100/t103 直接调它断言），
+  /// 一探测就变成异步 + 依赖网络，那些断言全得跟着改 —— 事实由宿主注入。
+  ///
+  /// ⚠️ 只有「没填凭证」这一支分两态。凭证填了被拒（Invalid AppId /
+  ///    Signature）那一支**一个字都没动**：换哪条源都救不了填错的凭证。
+  ///
+  /// [usedLocalSource] 缺省 false ⇒ 与改前**逐字同形**的「走的是官方」那一支，
+  /// 既有调用方（含 t100/t103）行为不变。
+  static DanmakuHint? of(
+    DanmakuException e, {
+    bool usedLocalSource = false,
+  }) {
     final rejected = e.statusCode == 401 || e.statusCode == 403;
     if (!rejected) return null;
 
@@ -1002,10 +1240,48 @@ class DanmakuHint {
     final missing = xe.isEmpty || lower.contains('missing authentication');
 
     if (missing) {
+      /*
+       * ★ 第 1 态：本次请求**走的是本机弹弹play**，而本机回了 401/403
+       *
+       * 这是本机源自己拒绝了请求（它免签名，正常绝不该 401/403）。
+       * ⇒ 文案必须**如实**说「本机拒绝了这次请求」，绝不能写「走的是官方 API」
+       *   （那是反的）。出路必须是**换一条路**：改用官方 API —— 而不是
+       *   再点一次「改用本机」（那正是原缺陷的死循环按钮）。
+       */
+      if (usedLocalSource) {
+        return DanmakuHint(
+          title: '本机弹弹play 拒绝了这次请求',
+          text: '这次弹幕是从本机弹弹play（${DanmakuLocalService.hostPort}）取的，'
+              '而它回了 401/403（原文：${xe.isEmpty ? "未提供原因" : xe}）。'
+              '本机弹弹play 的本地接口**免签名**、正常不需要凭证 ⇒ '
+              '这个报错多半说明 2080 端口上回应的不是弹弹play，'
+              '或者它的接口版本对不上。'
+              '点下面的「改用官方 API」换一条路重取一次'
+              '（官方那侧要一对 AppId / AppSecret，'
+              '在 https://dev.dandanplay.com 申请）。'
+              '也可以先去弹幕设置看看「数据源」状态行。',
+          action: const DanmakuHintAction(
+            label: '改用官方 API',
+            openDanmakuSettings: true,
+            useOfficialDanmaku: true,
+          ),
+          url: 'https://dev.dandanplay.com',
+        );
+      }
+      /*
+       * ★ 第 2 态：本次请求走的是官方 API，且没凭证
+       *
+       * 「去官网免费申请」在这里删掉：本机弹弹play 这条路不用申请，
+       * 先让用户知道有两条路，再让他自己选（默认仍是官方）。
+       * ⚠️ 标题保持 '弹幕服务没收到凭证' —— t100:534/551/608 逐字钉着它。
+       */
       return const DanmakuHint(
         title: '弹幕服务没收到凭证',
-        text: 'dandanplay 的弹幕要填一对 AppId / AppSecret 才能取，'
-            '在弹幕设置里填上就能用了（去官网免费申请，填完点「重新获取弹幕」）。'
+        text: 'dandanplay 的弹幕有两个数据源，在弹幕设置里选一个：'
+            '「本机弹弹play」（本机跑着弹弹play 就用它，免签名、不用申请任何凭证）'
+            '或「官方 API」（要一对 AppId / AppSecret，'
+            '在 https://dev.dandanplay.com 申请）。'
+            '选好之后点「重新获取弹幕」。'
             '另外：B 站视频可以改用「哔哩哔哩弹幕」直接绑定，不需要这对凭证。',
         action: DanmakuHintAction(
           label: '去弹幕设置',
@@ -1067,13 +1343,18 @@ class DandanplayClient {
     String? appId,
     String? appSecret,
     DateTime Function()? clock,
+    bool unsignedLocal = false,
   })  : _transport = transport ?? IoDanmakuTransport(),
         _appId = appId ?? DanmakuConfig.appId,
         _appSecret = appSecret ?? DanmakuConfig.appSecret,
-        _clock = clock ?? DateTime.now;
+        _clock = clock ?? DateTime.now,
+        _unsignedLocal = unsignedLocal;
 
   /// 官方唯一入口（swagger 的 `servers` 只有这一个）
   static const String host = 'api.dandanplay.net';
+
+  /// 本机弹弹play（dandanplay 协议的本地实例）——本地接口**免签名**
+  static const String localAuthority = '127.0.0.1:2080';
 
   /// `fileHash` 拿不到时的匹配模式（见文件头"拿不到 fileHash 的现实"）
   static const String defaultMatchMode = 'fileNameOnly';
@@ -1083,16 +1364,26 @@ class DandanplayClient {
   final String _appSecret;
   final DateTime Function() _clock;
 
+  /// true ⇒ 打本机弹弹play（127.0.0.1:2080，http、免签名）。
+  /// false ⇒ 官方 api.dandanplay.net（https、签名），行为与改前逐字一致。
+  final bool _unsignedLocal;
+
   bool get isConfigured => _appId.isNotEmpty && _appSecret.isNotEmpty;
 
   /// 当前 UTC 秒 —— 签名里的 `Timestamp` 要求是 UTC Unix 秒
   int get _nowSeconds => _clock().toUtc().millisecondsSinceEpoch ~/ 1000;
 
-  Uri _uri(String path, [Map<String, String>? query]) => Uri.https(
-        host,
-        path,
-        (query == null || query.isEmpty) ? null : query,
-      );
+  Uri _uri(String path, [Map<String, String>? query]) => _unsignedLocal
+      ? Uri.http(
+          localAuthority,
+          path,
+          (query == null || query.isEmpty) ? null : query,
+        )
+      : Uri.https(
+          host,
+          path,
+          (query == null || query.isEmpty) ? null : query,
+        );
 
   /// 构造鉴权头
   ///
@@ -1100,6 +1391,11 @@ class DandanplayClient {
   /// 其中 Path **以斜杠开头、不含协议/域名/查询参数**。
   /// 文档建议 Path 全小写、不做 URL 编码 —— 这里按文档来。
   Map<String, String> _authHeaders(String path) {
+    // 本机弹弹play的本地接口免签名：只带 Accept，**绝不**发签名三件套
+    // （发了反而可能被本地服务当非法头处理）。
+    if (_unsignedLocal) {
+      return <String, String>{'Accept': 'application/json'};
+    }
     final ts = _nowSeconds;
     final p = path.toLowerCase();
     final sig = sha256Base64('$_appId$ts$p$_appSecret');
@@ -1372,6 +1668,101 @@ class DandanplayClient {
   void close() => _transport.close();
 }
 
+/// 弹幕数据源：本机弹弹play（127.0.0.1:2080）或官方开放平台
+///
+/// T27-05：本机桌面版提供**免签名的本地接口**；官方接口则要
+/// AppId/AppSecret 签名。选路规则：本地在线 ⇒ 优先本地；否则退回官方。
+enum DanmakuSourceKind { local, official }
+
+/// 数据源选路：先探本机弹弹play，探不通再退回官方
+///
+/// 本机弹弹play（桌面版）在 127.0.0.1:2080 提供 dandanplay 协议的本地接口，
+/// **本地接口不需要签名**。探测方式：GET /api/v2/system/version，
+/// 2xx 且正文是 JSON ⇒ 本地在线。探测失败（连接拒绝 / 超时 / 返回的是
+/// 别的网页）一律安静退回官方，绝不让取弹幕这条路因为探测挂掉。
+class DanmakuSourceSelector {
+  /// 返回应该使用的数据源。
+  ///
+  /// [transport] 可注入假 transport 做双环境单测；[timeout] 限制探测
+  /// 最长等待，避免本地服务假死时拖住取弹幕。
+  static Future<DanmakuSourceKind> select({
+    DanmakuTransport? transport,
+    Duration timeout = const Duration(seconds: 2),
+  }) async {
+    final status = await DanmakuLocalService.probe(
+      transport: transport,
+      timeout: timeout,
+    );
+    return status.online ? DanmakuSourceKind.local : DanmakuSourceKind.official;
+  }
+}
+
+/// 本机弹弹play（127.0.0.1:2080）探测与状态文案
+///
+/// [describe] 一次探测 + 一行人话文案，给弹幕设置面板的「数据源」状态行。
+class DanmakuLocalService {
+  static const String hostPort = '127.0.0.1:2080';
+  static const String versionPath = '/api/v2/system/version';
+  static const String notRunningLine = '检测到本机弹弹play 未运行';
+
+  const DanmakuLocalService._();
+
+  /// 探测本机弹弹play是否在跑。
+  ///
+  /// 判定：2xx 且正文是 JSON（本地接口回 JSON；若有人在这个端口挂了
+  /// 别的网页服务，不算）。任何异常（连接拒绝/超时/非 JSON）⇒ 不在线。
+  static Future<DanmakuLocalStatus> probe({
+    DanmakuTransport? transport,
+    Duration timeout = const Duration(seconds: 2),
+  }) async {
+    final t = transport ?? IoDanmakuTransport(timeout: timeout);
+    final shouldClose = transport == null;
+    try {
+      final r = await t
+          .send(
+            method: 'GET',
+            uri: Uri.http(hostPort, versionPath),
+            headers: const {'Accept': 'application/json'},
+          )
+          .timeout(timeout);
+      if (!r.isOk || _looksLikeHtml(r.body)) {
+        return const DanmakuLocalStatus(online: false);
+      }
+      final j = jsonDecode(r.body);
+      return DanmakuLocalStatus(
+        online: j is Map,
+        version: j is Map ? j['versionCode']?.toString() : null,
+      );
+    } catch (_) {
+      return const DanmakuLocalStatus(online: false);
+    } finally {
+      if (shouldClose) t.close();
+    }
+  }
+
+  /// 「数据源」状态行文案：本机显示「检测到本机弹弹play 未运行」，
+  /// 在线时显示端口（带版本更好）。
+  static Future<DanmakuLocalStatus> describe({
+    DanmakuTransport? transport,
+    Duration timeout = const Duration(seconds: 2),
+  }) => probe(transport: transport, timeout: timeout);
+}
+
+/// 探测结果：是否在线 + （可选）版本号 + 状态行文案
+class DanmakuLocalStatus {
+  const DanmakuLocalStatus({required this.online, this.version});
+
+  final bool online;
+  final String? version;
+
+  /// 弹幕设置面板「数据源」一行的文案。
+  String get line {
+    if (!online) return DanmakuLocalService.notRunningLine;
+    final v = (version == null || version!.isEmpty) ? '' : ' · v$version';
+    return '本机弹弹play（${DanmakuLocalService.hostPort}）已就绪$v';
+  }
+}
+
 /// 正文看起来像网页吗（CDN 错误页 / 人机校验页）
 ///
 /// 只认**开头**的特征，不做全文搜索 —— 正常 JSON 正文里出现 "html"
@@ -1546,7 +1937,8 @@ class DanmakuTrackAllocator {
   /// * [fontSize] 字号（px）
   /// * [lineHeight] 单行占用的高度（px），通常 = fontSize * 1.35
   /// * [speed] 滚动弹幕速度（px/s）
-  /// * [area] 可用高度比例（0.3 ~ 1.0）
+  /// * [area] 弹幕显示区域占画面高度的比例（0.1 ~ 1.0），**从顶部往下量**：
+  ///   轨道从第 0 行往下铺，铺满 `canvasHeight * area` 为止。
   /// * [fixedSeconds] 固定弹幕停留时长
   /// * [gap] 同轨道两条滚动弹幕之间的最小空隙（px）
   /// * [measure] 文本宽度测量；缺省用 [estimateTextWidth]

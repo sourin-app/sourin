@@ -5205,33 +5205,19 @@ class _TitleBarHostState extends State<_TitleBarHost>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    titleBarVisible.addListener(_onVisibleChanged);
-    // ★ 播放页要把标题栏压暗（见 `titleBarDark` 的说明）
-    titleBarDark.addListener(_onVisibleChanged);
-    /*
-     * ⚠️ 只在桌面调 windowManager（实测踩到）
-     *
-     * Android 上直接调会抛：
-     * ```text
-     * MissingPluginException(No implementation found for method isMaximized
-     *   on channel window_manager)
-     * ```
-     * 因为 `window_manager` 的原生端只在桌面平台注册。
-     */
+    // ★ Owner 2026-10-11 第 2 条：**不再**监听 titleBarVisible / titleBarDark
+    //   —— 那两个值的重建边界已下沉到 `build` 里的 ValueListenableBuilder
+    //   （只包标题栏一支）。这里再监听 setState 会把整个 `widget.child`
+    //   （首页/路由栈）一起重建，正是要修的东西。见 build 顶部长注释。
     if (kIsDesktop) _syncMaximized();
   }
 
   @override
   void dispose() {
-    titleBarVisible.removeListener(_onVisibleChanged);
-    titleBarDark.removeListener(_onVisibleChanged);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  void _onVisibleChanged() {
-    if (mounted) setState(() {});
-  }
   /// 窗口尺寸变化 → 重新读最大化状态
   ///
   /// # 为什么需要（原版没有，是 Flutter 侧的必要补充）
@@ -5259,8 +5245,82 @@ class _TitleBarHostState extends State<_TitleBarHost>
     // 非桌面：没有窗口概念，不渲染标题栏
     if (!kIsDesktop) return widget.child;
 
-    final show = titleBarVisible.value;
-    final isDark = titleBarDark.value;
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ Owner 2026-10-11 第 2 条：「从播放页返回还是非常卡顿」
+     *      —— 标题栏状态翻转**不得**重建整棵内容子树
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 根因（这是 OPS-12 ⑦ 修法的**残留**，量出来的）
+     * ```text
+     * 本类挂在 `MaterialApp.builder` 上、**在 Navigator 之外**，
+     * 而 `widget.child` **就是** Navigator（整个路由栈 + 首页 + 追更页…）。
+     *
+     * 原实现把 `titleBarVisible` / `titleBarDark` 的**值**直接读在
+     * `build()` 里，翻转由 `_onVisibleChanged` → `setState` 驱动。
+     * 于是**一次标题栏状态翻转 = 整个 `widget.child`（首页！）重建**。
+     *
+     * OPS-12 ⑦ 把「退出播放页时 `titleBarDark=false`」从返回帧推到了
+     * 返回帧**之后**（post-frame）。返回帧是干净了，但那次翻转落到
+     * **后一帧** ⇒ 后一帧整棵首页子树重建。实测（.probe/ops/
+     * zz_ops_return_probe2_test.dart，返回后逐帧元素数）：
+     * ```text
+     * 返回帧之后第 1 帧 = 457 个元素重建（Text×37 + AutomaticKeepAlive×19
+     *   + KeepAlive×19 + _SelectionKeepAlive×19 + InkWell×14 …= 首页「我的」卡片）
+     * ```
+     * ⇒ 卡顿只是**从返回帧挪到了下一帧**，没有消失。
+     *
+     * # 修法：把「读标题栏状态」这件事**下沉**到只包标题栏的那一小层
+     * ```text
+     * 用 `ValueListenableBuilder` 包住**只有标题栏**（AnimatedSize 那一支），
+     * `widget.child`（Navigator）留在 builder **之外**。
+     * ⇒ 翻转 titleBarVisible / titleBarDark 只重建那条 40px 标题栏，
+     *    不再波及首页/追更页/整个路由栈。
+     * ```
+     *
+     * ⚠️ 因此 `_onVisibleChanged` 对这两个 notifier 的监听也一并去掉 ——
+     *    留着的话它仍会 `setState`（照样重建 child），就白改了。
+     *    `_maximized` 走 `didChangeMetrics`（窗口尺寸变化，罕见），
+     *    仍保留 `setState`。
+     */
+    final Widget column = Column(
+      children: [
+        /*
+         * ★★★ 标题栏本体的重建边界 —— 只包这一支（见上面长注释）。
+         *
+         * ⚠️ 顺序：dark 在**外**、visible 在**内**，与原来的读值顺序一致，
+         *    只是把重建范围收窄到标题栏。
+         */
+        ValueListenableBuilder<bool>(
+          valueListenable: titleBarDark,
+          builder: (context, isDark, _) => ValueListenableBuilder<bool>(
+            valueListenable: titleBarVisible,
+            builder: (context, show, _) => AnimatedSize(
+              // ★ 时长走 token（`Motion.medium` = 180ms）—— 本仓规矩
+              //   「动画统一走 token，不许硬编码 Duration」。该 token 保持
+              //   原有的 180ms ⇒ 收展节奏**逐帧不变**（只换写法，不改行为）。
+              duration: Motion.medium,
+              curve: Curves.easeOutCubic,
+              alignment: Alignment.topCenter,
+              child: show
+                  ? _CustomTitleBar(
+                      maximized: _maximized,
+                      dark: isDark,
+                      onMinimize: () => windowManager.minimize(),
+                      onToggleMaximize: () async {
+                        if (await windowManager.isMaximized()) {
+                          await windowManager.unmaximize();
+                        } else {
+                          await windowManager.maximize();
+                        }
+                        await _syncMaximized();
+                      },
+                      onClose: () => windowManager.close(),
+                    )
+                  : const SizedBox(width: double.infinity),
+            ),
+          ),
+        ),
     /*
      * ══════════════════════════════════════════════════════════════════
      * ★★★ OPS-20（业主反馈 ①）：整支**自己**钉死默认文字样式
@@ -5348,97 +5408,6 @@ class _TitleBarHostState extends State<_TitleBarHost>
      * ⇒ 用与主题同源的常量：字色 `0xFF0A0A0A` 取自
      *   `ui/app_typeface.dart:50`（亮色档），字族/字号同源同文件。
      */
-    final Widget column = Column(
-      children: [
-        /*
-         * ★ 用 AnimatedSize 做"收起"动画
-         *
-         * 原版是 CSS transition（`opacity` + `translateY`），
-         * 但 CSS 里元素**仍然占位**（`translateY(-100%)` 只是移出去）——
-         * 播放页那边是靠 `.app-main` 的 `padding-top` 配合。
-         *
-         * Flutter 里更直接：把高度收到 0，内容自然占满。
-         * 180ms 与原版动效时长接近。
-         *
-         * ⚠️ 用户报的「进播放页闪白条」**不是**这个动画造成的：
-         *    实测（`.probe/whitebar_capture.py`）标题栏在播放页
-         *    **根本不会收起**（`player_page.dart:627` 刻意保持显示，
-         *    因为桌面端它是唯一的拖动区）。真正的原因是
-         *    **浅色玻璃压在纯黑播放页上** —— 见 `titleBarDark`。
-         */
-        AnimatedSize(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
-          alignment: Alignment.topCenter,
-          child: show
-              ? _CustomTitleBar(
-                  maximized: _maximized,
-                  dark: isDark,
-                  onMinimize: () => windowManager.minimize(),
-                  onToggleMaximize: () async {
-                    if (await windowManager.isMaximized()) {
-                      await windowManager.unmaximize();
-                    } else {
-                      await windowManager.maximize();
-                    }
-                    await _syncMaximized();
-                  },
-                  onClose: () => windowManager.close(),
-                )
-              : const SizedBox(width: double.infinity),
-        ),
-        /*
-         * ══════════════════════════════════════════════════════════════════
-         * ★★★ `ClipRect` —— 修用户报的「白条覆盖操作条」（任务㉗④）
-         * ══════════════════════════════════════════════════════════════════
-         *
-         * # 用户原话
-         *
-         * > 打开播放详情页的时候还是有白色的条会覆盖操作条,
-         * > 这个不能优化掉吗?太影响观感了
-         *
-         * # 根因（逐帧实测，`.probe/t27_whitebar_map.py`）
-         *
-         * 白条**不是**标题栏的问题，也**不是** scrim —— 是**转场把上一页放大后
-         * 画到了标题栏上面**：
-         * ```text
-         * 正常     标题栏 y=0..39（40px，= preferredSize），内容从 y=40 开始
-         * 转场中   标题栏仍从 y=0 开始，但**被压到 y=0..22**
-         *          纯白 #ffffff 填满 y=23..39（正是被压掉的那 17px）
-         * ```
-         * 而且白条**上边缘在动**（t=213ms → y=23，t=375ms → y=21），
-         * 说明它在**变大** —— 这是缩放动画的特征，不是静态色块。
-         *
-         * 算术对得上 `ZoomPageTransitionsBuilder` 的离场缩放：
-         * ```text
-         * Navigator 高 = 800 − 40 = 760
-         * scale 1.04 → 页面顶部上溢 (760×0.04)/2 = 15.2px → y≈24.8
-         * scale 1.05 → 上溢 19.0px                      → y≈21.0
-         * ★ 实测 y=23..21 正好落在这两个值之间
-         * ```
-         * 也就是说：**离场页被放大，而 `Navigator` 不裁剪**，
-         * 于是它溢出到标题栏区域，把操作条盖住了。白色就是那一页自己的底色。
-         *
-         * # 为什么之前没修掉
-         *
-         * 上一轮修的是 `ZoomPageTransitionsBuilder.backgroundColor`
-         * （那层 scrim）—— 实测确实有用（scrim 不再是 `surface` 色），
-         * 但**没解决缩放溢出**：scrim 透明了，页面自己还是会放大画出来。
-         * 所以用户仍看到白条。
-         *
-         * # 修法：给 Navigator 加一层裁剪
-         *
-         * `ClipRect` 让内容**只能画在自己的矩形里**，缩放溢出被裁掉：
-         * ```text
-         * 不改动画       —— 用户只是嫌白条难看，不是要取消缩放淡入
-         * 不改 Navigator —— 只加一层裁剪，路由栈/返回全不受影响
-         * 不动标题栏     —— 桌面端它是**唯一**的拖动区，绝不能隐藏
-         * ```
-         *
-         * ⚠️ 用默认的 `Clip.hardEdge`（不是 `antiAlias`）：这里裁的是一条
-         *    **直边**（矩形边界），硬边没有任何视觉差异，而 `antiAlias` 会为
-         *    每个转场帧多付一次抗锯齿合成。直边用硬边是标准取舍。
-         */
         Expanded(child: ClipRect(child: widget.child)),
       ],
     );

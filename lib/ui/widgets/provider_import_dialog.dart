@@ -547,10 +547,12 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
         FilledButton(
           onPressed: _busy || !_canSubmit ? null : _submit,
           child: _busy
-              ? const SizedBox(
+              ? SizedBox(
                   width: 16,
                   height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  // T27-07：FilledButton 内的指示器用 onPrimary（按钮自身前景），
+                  // 禁用态下 Material 自动降透明仍 ≥ 灰弧。
+                  child: CircularProgressIndicator(color: colors.onPrimary, strokeWidth: 2),
                 )
               : Text(_submitLabel),
         ),

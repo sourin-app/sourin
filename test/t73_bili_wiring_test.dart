@@ -214,11 +214,18 @@ void main() {  // ════════════════════�
        */
       final i = _page.indexOf('_BottomBar(');
       expect(i, greaterThan(0));
-      final before = _page.substring((i - 600).clamp(0, i), i);
-      final condStart = before.lastIndexOf('if (');
-      expect(condStart, greaterThanOrEqualTo(0),
-          reason: '★ 找不到 if ( ⇒ 条件块已经长到 600 字符以外了');
-      final cond = before.substring(condStart);
+      /*
+       * ★★★ T27-13（Owner 第 3 / 5 条）：11 项门控已收拢进唯一真源
+       *   `_chromeVisible`，底栏渲染点写 `if (_chromeVisible)`。
+       *   ⇒ 「往回 600 字符找 if (」的启发式不适用了；判据的实质不变
+       *     （控制条门控必须排除这些面板 flag），断言对象搬到唯一真源上。
+       */
+      expect(_page.contains('if (!_chromeVisible && !keepForFade) {'), isTrue,
+          reason: '★ 底栏显隐必须读唯一真源 `_chromeVisible`（T27-13 唯一真源）');
+      final ci = _page.indexOf('bool get _chromeVisible =>');
+      expect(ci, greaterThan(0),
+          reason: '★ 找不到唯一真源 `_chromeVisible` ⇒ 控制条门控结构变了');
+      final cond = _page.substring(ci, _page.indexOf(';', ci));
       for (final flag in const [
         '_episodeSheetOpen',
         '_streamSheetOpen',
@@ -229,7 +236,7 @@ void main() {  // ════════════════════�
         '_subtitlePanelOpen',
       ]) {
         expect(cond.contains('!$flag'), isTrue,
-            reason: '★★ 控制条条件漏了 !$flag ⇒ 该面板开着时控制条仍然画着，'
+            reason: '★★ 唯一真源漏了 !$flag ⇒ 该面板开着时控制条仍然画着，'
                 '而面板自身的有色区域（ColoredBox = HitTestBehavior.opaque）会吸收点击');
       }
     });
@@ -314,7 +321,13 @@ void main() {  // ════════════════════�
       final iCid = _page.indexOf('final cid = biliBind.cidFor(_epIndex);', i0);
       final iLoad = _page.indexOf('await _loadBiliDanmaku(cid);', i0);
       final iToken = _page.indexOf('final token = ++_danmakuFetchToken;', i0);
-      final iClient = _page.indexOf('final client = _ensureDanmakuClient();', i0);
+      // T27-13：这根针只锚前缀 `final client = _ensureDanmakuClient(`，
+      // 不写死参数表 —— T27-05 给它加了 `unsignedLocal` 命名参数后调用点
+      // 变成 `_ensureDanmakuClient(unsignedLocal: usingLocal);`，写死 `()`
+      // 会让 indexOf 找不到返回 -1 ⇒ 假红（与被钉的顺序语义无关）。
+      // 语义不变：dandanplay 客户端的懒建必须在令牌之后（B 站分支
+      // return 掉了就不会建客户端），iClient > iToken 这条继续咬人。
+      final iClient = _page.indexOf('final client = _ensureDanmakuClient(', i0);
       expect(iBind, greaterThan(i0), reason: '★ 必须查绑定');
       expect(iCid, greaterThan(iBind), reason: '★ 必须按当前集算 cid');
       expect(iLoad, greaterThan(iCid), reason: '★ 必须走 B 站那条路');

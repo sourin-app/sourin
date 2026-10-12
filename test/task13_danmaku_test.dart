@@ -208,7 +208,8 @@ void main() {
       expect(DanmakuConfig.fontScale, 1.0);
       expect(DanmakuConfig.opacity, 1.0);
       expect(DanmakuConfig.speed, 8.0);
-      expect(DanmakuConfig.area, 1.0);
+      // ★ 2026-10-11：默认显示区域改成 0.5（上半屏，对齐 B 站）——见 DanmakuConfig.defaultArea
+      expect(DanmakuConfig.area, 0.5);
       DanmakuConfig.setFontScale(99);
       expect(DanmakuConfig.fontScale, DanmakuConfig.fontScaleMax);
       DanmakuConfig.setOpacity(-5);

@@ -39,9 +39,20 @@
 //  ② 锚点改成「贴着按钮自己」：`PopoverAnchorButton` 挂载时把自己的
 //     `GlobalKey` 登记进 `PopoverController`（`attachAnchor`），
 //     `buildPopoverLayer()` 在**布局期**读那枚按钮的屏幕矩形，把面板平移过去
-//     （右缘对齐按钮右缘、底边贴在按钮上沿上方 8px，并 clamp 进窗口）。
+//     （并 clamp 进窗口）。
 //     ★ 宿主那段 `Align(bottomRight)+Padding` **一个字没动** —— test/t68 E⑥
 //       钉的就是它（「面板由页面整屏 Stack 承载，不是底栏的子件」）。
+//
+//  # ★★★ 2026-10-11 契约再改（Owner 1011 反馈第 4 条）：横向从「贴按钮右缘」
+//     改成「**默认居中**」
+//  ```text
+//  Owner 原话（逐字）：
+//    > 然后命名空间很多,侧边又不是没空间了,为什么不居中,请修复,
+//    > 除了太侧边的没空间富裕的,可以不居中,其他都应该居中显示
+//  左右空间充裕 ⇒ 面板水平居中；只有居中放不下（窄屏/超宽面板）才退回贴边。
+//  ⇒ 本文件里「右缘对齐按钮」那几条断言是**旧契约**，已随生产一起更新为
+//    「居中」（见用例 ③⑤⑥）。**不可**把旧的右缘对齐断言当成不变量锁住。
+//  ```
 //
 //  # 为什么测试挂 PlayerBottomBar 而不是驱动整个 PlayerPage
 //  `sourin_core.dll` 在 flutter_tester 里加载失败（error 126，见
@@ -266,8 +277,8 @@ void main() {
     });
   });
 
-  group('OPS-5 ② 菜单贴着按钮、且不越窗口', () {
-    testWidgets('③ 面板右缘 = 按钮右缘，底边贴在按钮上沿上方', (tester) async {
+  group('OPS-5 ② 菜单水平居中、竖向贴按钮、且不越窗口', () {
+    testWidgets('③ 面板水平居中，底边贴在按钮上沿上方', (tester) async {
       final controller = PopoverController();
       addTearDown(controller.dispose);
       await _pumpBar(tester, controller, _Spy());
@@ -279,12 +290,33 @@ void main() {
       // ignore: avoid_print
       print('[OPS5] 倍速按钮=$anchor 面板=$panel 底栏=$bar');
 
-      // ★ 判别性断言（缺陷态这里差 1152px）：右缘贴按钮右缘
+      /*
+       * ★★★ 2026-10-11（Owner 1011 反馈第 4 条，**二次澄清**）：
+       *     契约从「右缘贴按钮」→「居中于屏幕」→ **「居中对齐到按钮」**。
+       *
+       * Owner 原话（逐字）：
+       * ```text
+       * > 然后命名空间很多,侧边又不是没空间了,为什么不居中,请修复,
+       * > 除了太侧边的没空间富裕的,可以不居中,其他都应该居中显示
+       * ```
+       * ⚠️ **一次判据反转**：上一版把「居中」做成并断言 `layer.width / 2`
+       *    （= 居中于**屏幕**）。Owner 复核截图后澄清：要的是
+       *    「居中于**按钮**（贴近但避开边缘）」⇒ 期望值 = `anchor.center.dx`。
+       *    屏幕居中那条**刻意删掉**（它会把"面板离按钮很远"当正确）。
+       *    见 player_bottom_bar.dart 的 `_PopoverAnchorDelegate.getPositionForChild`。
+       */
+      final layer =
+          tester.renderObject<RenderBox>(find.byKey(controller.layerKey));
+      final layerRect = layer.localToGlobal(Offset.zero) & layer.size;
+      final centered = (panel.center.dx - anchor.center.dx).abs() < 1.0;
+      final clamped =
+          (panel.left - (layerRect.left + Sp.x2)).abs() < 1.5 ||
+          (panel.right - (layerRect.right - Sp.x2)).abs() < 1.5;
       expect(
-        (panel.right - anchor.right).abs(),
-        lessThan(1.5),
-        reason: '★★ 面板必须贴着按钮：右缘差 ${panel.right - anchor.right}px'
-            '（缺陷态是甩到窗口右下角，差一整个控制条）',
+        centered || clamped,
+        isTrue,
+        reason: '★★ 面板中心必须 = 按钮中心（${anchor.center.dx}），'
+            '贴边时 clamp 到层边。实测 面板中心=${panel.center.dx} 面板=$panel',
       );
       // 以下两条是**不变量**（缺陷态也成立，用来防止「修好左右、上下飞了」）：
       // 面板整个在底栏上方，且下沿贴着底栏上沿（留 Sp.x2 的缝）
@@ -321,17 +353,27 @@ void main() {
           reason: '★ 面板被顶出窗口下沿：$panel');
     });
 
-    testWidgets('⑤ 五个 popover 各自贴**自己的**按钮（共用锚点那条已断）',
+    testWidgets('⑤ 四个（走 popover 的）入口面板都水平居中、且在各自按钮上方',
         (tester) async {
       final controller = PopoverController();
       addTearDown(controller.dispose);
       await _pumpBar(tester, controller, _Spy());
 
+      /*
+       * ★★★ Owner 1011 反馈第 1 条（弹幕做成 B 站那种形态）后本表只剩 4 项：
+       *   弹幕不再是 popover —— 它拆成底栏上**两枚直连按钮**（开关直连
+       *   onDanmakuToggle / 设置直连 onDanmakuSettings），不再弹「关闭弹幕 /
+       *   弹幕设置」两层小菜单。`PlayerPopoverIds.danmaku` 已随之下线
+       *   （bar 那份常量里已删）。
+       *   ⚠️ 这不是放松判据：本条的语义是「凡**走 popover 的**入口，其面板
+       *      必须贴住它自己那枚按钮、且在其上方」；弹幕不再走 popover，
+       *      自然不在本表里。它的新形态由 t27_w14_danmaku_bar_form_test.dart
+       *      （同一轮新增门禁）单独钉死。
+       */
       for (final id in <String>[
         PlayerPopoverIds.rate,
         PlayerPopoverIds.quality,
         PlayerPopoverIds.tracks,
-        PlayerPopoverIds.danmaku,
         PlayerPopoverIds.more,
       ]) {
         final anchor = _anchorRect(tester, id);
@@ -339,12 +381,25 @@ void main() {
         final panel = _panelRect(tester);
         // ignore: avoid_print
         print('[OPS5] $id 按钮=$anchor 面板=$panel');
-        expect(
-          (panel.right - anchor.right).abs(),
-          lessThan(1.5),
-          reason: '★★ $id 的面板没贴住自己的按钮（右缘差 '
-              '${panel.right - anchor.right}px）—— 五个 popover 共用了一个锚点',
-        );
+        /*
+         * ★★★ 2026-10-11（Owner 1011 第 4 条，**二次澄清**）：
+         *     「居中对齐到按钮」是**通用规则**。
+         *     这条原来钉「每个 popover 各自贴自己的按钮（右缘对齐）」（OPS-5 契约），
+         *     中间一度改成「居中于屏幕」（`layer.width/2`），
+         *     Owner 复核后澄清要的是「居中于**按钮**」⇒ 期望 = `anchor.center.dx`。
+         *     **保留**「在按钮上方」这条竖向不变量（防「左右改好了、上下飞了」）。
+         */
+        final layer =
+            tester.renderObject<RenderBox>(find.byKey(controller.layerKey));
+        final layerRect = layer.localToGlobal(Offset.zero) & layer.size;
+        final centered = (panel.center.dx - anchor.center.dx).abs() < 1.0;
+        final clamped =
+            (panel.left - (layerRect.left + Sp.x2)).abs() < 1.5 ||
+            (panel.right - (layerRect.right - Sp.x2)).abs() < 1.5;
+        expect(centered || clamped, isTrue,
+            reason: '★★ 「居中对齐到按钮」是通用规则：$id 的面板中心应 = '
+                '按钮中心（${anchor.center.dx}），贴边时 clamp 到层边。'
+                '实测 面板中心=${panel.center.dx} 面板=$panel');
         expect(panel.bottom, lessThanOrEqualTo(anchor.top + 0.5),
             reason: '★★ $id 的面板没在按钮上方：$panel vs $anchor');
         controller.close();
@@ -354,7 +409,7 @@ void main() {
       _claim(tester);
     });
 
-    testWidgets('⑥ 窄窗口（手机档 420 宽）面板被 clamp 进窗口，不再甩到右下角',
+    testWidgets('⑥ 窄窗口（手机档 420 宽）面板仍居中且不越窗口，不再甩到右下角',
         (tester) async {
       final controller = PopoverController();
       addTearDown(controller.dispose);
@@ -372,11 +427,23 @@ void main() {
           reason: '★★ 窄窗下面板越出左沿：$panel');
       expect(panel.right, lessThanOrEqualTo(vp.width - Sp.x2 + 0.5),
           reason: '★★ 窄窗下面板越出右沿：$panel');
-      expect(
-        panel.right,
-        lessThan(vp.width / 2),
-        reason: '★★ 窄窗下面板该靠按钮（左半屏），而不是贴窗口右下角：$panel',
-      );
+      /*
+       * ★★★ 2026-10-11（Owner 1011 第 4 条，**二次澄清**）：居中对齐到**按钮**。
+       *     旧断言「面板右缘 < 窗口一半」（靠左贴按钮）在新契约下是**错的**；
+       *     中间那版「居中于屏幕」（`layer.width/2`）也**不对** —— Owner
+       *     复核后要的是「居中于按钮」。⇒ 期望 = `anchor.center.dx`
+       *     （贴边时允许 clamp 到层边）。
+       */
+      final layer =
+          tester.renderObject<RenderBox>(find.byKey(controller.layerKey));
+      final layerRect = layer.localToGlobal(Offset.zero) & layer.size;
+      final centered = (panel.center.dx - anchor.center.dx).abs() < 1.0;
+      final clamped =
+          (panel.left - (layerRect.left + Sp.x2)).abs() < 1.5 ||
+          (panel.right - (layerRect.right - Sp.x2)).abs() < 1.5;
+      expect(centered || clamped, isTrue,
+          reason: '★★ 手机档面板中心应 = 按钮中心（${anchor.center.dx}），'
+              '贴边时 clamp 到层边。实测 面板中心=${panel.center.dx} 面板=$panel');
     });
 
     testWidgets('⑦ 点面板里的 1.25x ⇒ onRate 收到 1.25 且面板收起', (tester) async {

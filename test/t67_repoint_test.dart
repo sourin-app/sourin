@@ -588,9 +588,32 @@ void main() {
       final body = rustFnBody('rust/sourin_core/src/store.rs',
           'pub fn repoint_item(');
 
+      /*
+       * ══════════════════════════════════════════════════════════════
+       * ★★★ 2026-10-12 按集扩容：`progress` 的删除口径从 `key` 改成 `item_key`
+       * ══════════════════════════════════════════════════════════════
+       *
+       * ```text
+       * 老口径：progress 一个作品**一行**，主键就是作品键 ⇒ DELETE ... WHERE key=from
+       * 新口径：progress 一个作品**每集一行**（主键 = provider:native_id:episode_id）,
+       *         而 FROM 的那 N 行的**共同**标识是 item_key（= provider:native_id）
+       *         ⇒ 必须 DELETE ... WHERE item_key=from
+       * ```
+       *
+       * ★ 这两句**不是等价写法**，改动也不是「顺手改个列名」：
+       * ```text
+       * 用 key=    ⇒ 只删掉**恰好等于** from_key 的那一行
+       *              （而按集后 from_key 下面有 N 行，且**一行都不叫** from_key）
+       *              ⇒ 换源后旧源的 N 行**全部残留**
+       *              ⇒ 用户在「继续观看」里看到同一部剧两条（新旧源各一）
+       * ```
+       * ⇒ 下面**同时**用料正反两条钉住：必须用 item_key，且不许退回 key。
+       *   （只写正向那条的话，将来有人把另三张表也"统一"成 item_key 时不会红 ——
+       *     而 favorites/history/skip_markers 仍是按作品一行，用 item_key 也不算错，
+       *     所以这里只对 progress 加反向。）
+       */
       for (final t in const [
         'favorites',
-        'progress',
         'history',
         'skip_markers',
       ]) {
@@ -598,6 +621,19 @@ void main() {
             reason: '★★★ `$t` 的旧行必须 DELETE —— '
                 '★ skip_markers 也是 provider:id 分键的，漏它就是同一个坑');
       }
+
+      // ── progress：按集口径，必须按 item_key 删 ────────────────────
+      expect(body.contains('DELETE FROM progress WHERE item_key=?1'), isTrue,
+          reason: '★★★ `progress` 的旧行必须按 **item_key** 删 —— '
+              '按集后 FROM 作品有 N 行（每集一行），它们的共同标识是 item_key');
+      // ★ 反向：不许退回按 key 删（会漏删 N-1 行 ⇒ 换源后同一部剧两条）
+      expect(
+          RegExp(r'DELETE FROM progress WHERE key=\?1').hasMatch(body), isFalse,
+          reason: '★★★ `progress` 不许按 `key` 删 —— '
+              '按集后 FROM 的 N 行**一行都不叫** from_key ⇒ 等于一行没删 '
+              '⇒ 旧源的行全部残留 ⇒ 用户在列表里看到同一部剧两条。'
+              '★ 这条反向断言是本次（2026-10-12）**补回**的：'
+              '原正向断言改成 item_key 后，若没有它，这个坑就没人守了');
 
       // ★ 一个事务（不是四次独立写）
       expect(body.contains('unchecked_transaction'), isTrue,
@@ -653,15 +689,67 @@ void main() {
           reason: '★★ TO 无行必须**整行搬到 TO 的 key**（原值照搬）—— '
               '★ 这是最常见的触发场景（用户因当前源卡/坏而换源，新源从没看过）；'
               '在那里重置为 0 ⇒ 每次换源都丢进度 ⇒ 功能反而有害');
-      // ④ ★★★ 不匹配 ⇒ TO 行**原样返回**（不携带 FROM 的 position）
+      /*
+       * ④ ★★★ 不匹配 ⇒ TO 行**原样返回**（不携带 FROM 的 position）
+       *
+       * ══════════════════════════════════════════════════════════════
+       * ★★★ 2026-10-12 按集扩容：progress 侧的**形状变了**，判据必须跟着改
+       * ══════════════════════════════════════════════════════════════
+       *
+       * ```text
+       * 老：progress 一个作品一行 ⇒ 直接 `match to { None => …, Some(t) => … }`
+       *     不匹配时走 `else { t }`
+       * 新：progress 一个作品**每集一行** ⇒ 先要在 TO 里**找出同一集**：
+       *     to_same = to_rows.iter().find(|t| …集号判定…)
+       *     to_same 为 None ⇒ 该集在 TO 没有 ⇒ 整行搬过去
+       *     to_same 为 Some ⇒ 保留 TO 行
+       * ```
+       * ⇒ `else { t }` 这**一个**串被 `find` 的语义吸收了
+       *   （"没找到同一集"= 老口径的"不匹配"，两者都在 `find` 里返回 None）。
+       *
+       * ★ 但**语义不能丢**：本用例原来要防的是「集号不匹配却把 FROM 的
+       *   position 带过去」（用户在新源上被弹到没看过的位置）。
+       *   所以判据换成「**配对判据本身**」，而不是某个分支的写法：
+       */
+      // ④-a ★★★ 必须真的**按集配对**（`to_rows.iter().find`）—— 这是新形状的入口
       expect(
-          RegExp(r'else\s*\{\s*t\s*\}').allMatches(body).length,
+          RegExp(r'to_rows\s*\.\s*iter\(\)\s*\.\s*find\(').hasMatch(body), isTrue,
+          reason: '★★★ progress 必须**逐集**在 TO 里找同一集（`to_rows.iter().find(…)`）'
+              '—— 按集后 FROM 有 N 行，不逐集配对就会把别的集当成"同一集"');
+      // ④-b ★★★ 配对判据必须是**集号比较**（而不是按行号/下标这种位置猜测）
+      expect(
+          RegExp(r'if\s+ep_f\s*==\s*ep_t\s*\{').hasMatch(body), isTrue,
+          reason: '★★★ 配对判据必须是 `ep_f == ep_t` 的 Option 比较（同一套三态裁决）');
+      // ④-c ★★★ **history 必须与 progress 走同一套**（否则同一作品两张表各说各话）
+      //   ★ 这条是本次（2026-10-12）**补回**的：原判据靠"`else { t }` 出现 ≥2 次"
+      //     间接确立"两张表都有集号判定"，改成按集后那个计数不再成立，
+      //     若只删不加，两张表各说各话这个坑就没人守了。
+      //   ★ 用**正反两条**钉：两处都必须有集号判定，且都不许退回"不判定就携带"。
+      expect(
+          RegExp(r'episode_number_from_title\(').allMatches(body).length,
           greaterThanOrEqualTo(2),
-          reason: '★★★ 集号不匹配时 progress 与 history 都必须**原样返回 TO 行**'
-              '（`else { t }`）—— 若 else 里构造了结构体并把 `f.position` '
-              '带进来，就是"错位携带"（用户在新源上被弹到没看过的位置），'
-              '正是裁决要禁止的');
-      // ⑤ ★ history 与 progress 走**同一套**三态（否则同一作品两张表各说各话）
+          reason: '★★★ `episode_number_from_title` 至少出现在 **2 处** —— '
+              'progress（`to_rows.iter().find` 的判据）与 history（`Some(t) =>` 臂内的 '
+              '`if ep_f == ep_t`）**都要**做集号判定。'
+              '★ 只给 progress 加而漏了 history ⇒ 同一部作品在两张表里各说各话'
+              '（一张携带、一张不携带）⇒ 更难解释的 bug。'
+              '这正是原「`else { t }` ≥2 次」那条断言想守的东西');
+      // ④-d ★★ 反向：不许有「拿 FROM 的 position 却不过集号判定」的臂
+      //   老形态是 `else { Progress { … position: f.position … } }`（错位携带）。
+      //   新形态下这个坑同样可能被写出来 —— 只不过程序员不会用 `else`，
+      //   而会在 `find` 的闭包里写错。下面钉住「Progress 结构体字面量里
+      //   出现的 `f.position` 必须与 `f.position.max(t.position)` 是同一条」
+      //   （即：位置只在**配对成功**的臂里出现，且取的是 max）。
+      final progArmForCarry = rustMatchArm(body, 'Progress');
+      expect(
+          RegExp(r'position:\s*f\.position\s*[,}]').hasMatch(progArmForCarry),
+          isFalse,
+          reason: '★★★ progress 的合并臂不许直接 `position: f.position` —— '
+              'position 必须取 `f.position.max(t.position)`（单调不减）。'
+              '★ 直接取 FROM 的会让"看了一半"的进度在换源后**倒退**；'
+              '★ 而且这条同时守住了"只在配对成功的臂里才动 position" —— '
+              '若有人把 position 提到 `find` 之外的公共路径上，这里会红');
+      // ⑤ ★ history 段必须存在
       expect(body.contains('HistoryEntry'), isTrue,
           reason: '★ history 段必须存在且同样做集号判定');
     });
@@ -737,6 +825,52 @@ void main() {
       //   Lead 说的「防止以后悄悄多写一个取 FROM 的字段」。
       //   （实测四臂的字段集是量出来的，不是猜的：Progress 臂 941 字符、
       //    HistoryEntry 臂 928 字符，见 `.probe\t67_rule_attribution3.txt`。）
+      //
+      // ══════════════════════════════════════════════════════════════
+      // ★★★ 2026-10-12 仪器 bug：字段提取器会把**类型标注**读成字段名
+      // ══════════════════════════════════════════════════════════════
+      //
+      // 原判据是 `RegExp(r'([A-Za-z_][A-Za-z0-9_]*)\s*:')`。
+      // 按集扩容后 Progress 臂里出现了这一行：
+      // ```rust
+      // key: String::new(), // 落库时由 progress_key 重算
+      // ```
+      // ⇒ 正则把 `String` 也当成一个「字段名」抓了进来（`String` 后面正好跟着 `:`）
+      // ⇒ 白名单比对失败，报 `Actual: {key, String, provider, …}`。
+      //
+      // ★ **不能靠"把 String 加进白名单"来修** —— 那是拿白名单掩盖仪器故障：
+      //   提取器一旦会读进类型名，白名单就再也分不清
+      //   「真的多了一个字段」和「又一个类型标注」，本用例**零分辨力**。
+      // ⇒ 修的是**提取器本身**：只认「字段名后面**不是** `::`」的形态。
+      //   `key: String::new()` 里 `String:` 后面紧跟的是 `:`（`::` 的第二半）
+      //   ⇒ 用 `(?!:)` 排除掉；而真正的字段 `key:` 后面是 ` String::new()` ⇒ 保留。
+      //
+      // ★ 保留原有的仪器自检精神：下面额外断言提取结果里**不含任何 Rust 类型名**，
+      //   若提取器将来又被写出漏洞，这条会直接点名，而不是让白名单静默变宽。
+      final fieldOf = RegExp(r'([A-Za-z_][A-Za-z0-9_]*)\s*:(?!:)');
+      Set<String> extractFields(String arm) =>
+          fieldOf.allMatches(arm).map((m) => m.group(1)!).toSet();
+
+      // ★ 仪器自检 ①：提取器不许把 Rust 类型名当字段（用真臂自证）
+      const rustTypeNames = {
+        'String', 'Option', 'Vec', 'HashMap', 'HashSet', 'i32', 'i64', 'u32',
+        'u64', 'usize', 'bool', 'f64', 'Box', 'Some', 'None', 'Self',
+      };
+      for (final e in {'Progress': progArm, 'HistoryEntry': histArm}.entries) {
+        final bad = extractFields(e.value).intersection(rustTypeNames);
+        expect(bad, isEmpty,
+            reason: '★ 仪器自检：`${e.key}` 臂的字段提取结果里出现了 Rust 类型名 '
+                '$bad ⇒ **提取器坏了**（把类型标注读成了字段名）。'
+                '★ 这时下面的白名单比对**不再可信** —— '
+                '先把提取器修对（判据要排除 `::`），再跑本用例');
+      }
+      // ★ 仪器自检 ②：提取器在**人造样本**上的行为必须符合预期
+      //   （正例：真字段抓得到；反例：类型标注抓不到）
+      expect(extractFields('key: String::new(), provider: p, x: 1,'),
+          {'key', 'provider', 'x'},
+          reason: '★ 仪器自检：`key: String::new()` 只该贡献 `key`，'
+              '`String:` 必须被排除（它后面紧跟 `::` 的第二半）');
+
       final whitelists = <String, (String, Set<String>, String)>{
         'Progress': (
           progArm,
@@ -755,10 +889,7 @@ void main() {
       };
       for (final e in whitelists.entries) {
         final (arm, allow, why) = e.value;
-        final fields = RegExp(r'([A-Za-z_][A-Za-z0-9_]*)\s*:')
-            .allMatches(arm)
-            .map((m) => m.group(1)!)
-            .toSet();
+        final fields = extractFields(arm);
         expect(fields, allow,
             reason: '★★★ `${e.key}` 合并臂**显式写出**的字段必须恰好是 $allow —— '
                 '实际是 $fields。\n'
@@ -858,10 +989,17 @@ void main() {
         // ★ m00753 ③：position 取 max 的**唯一可区分锚点**（无职转生那组）
         'repoint_position_takes_max_when_to_is_larger_mushoku_case',
         // ★ m00753 ④⑤：三态匹配
-        'repoint_does_not_carry_when_episode_numbers_differ',
-        'repoint_does_not_carry_when_only_one_side_has_episode_number',
+        //   ⚠️ 2026-10-12 按集扩容：本名单从「缺陷刻画」口径改成了「按集保住」口径
+        //      —— `does_not_carry`（不携带）在按集后语义变成
+        //      `keeps_both_episodes`（两集各自留着）。名字改了**行为没变**，
+        //      但名单必须跟实测的 fn 名对齐，否则这条断言变成在检一个不存在的名字。
+        'repoint_keeps_both_episodes_when_episode_numbers_differ',
+        'repoint_keeps_separate_when_only_one_side_has_episode_number',
         'repoint_carries_when_both_sides_have_no_episode_number',
         'repoint_carries_whole_row_when_target_has_no_row',
+        // ★ 按集扩容新增：配对成功/失败的**保留 TO 集名**两个方向
+        'repoint_matched_arm_keeps_target_episode_title',
+        'repoint_matched_arm_keeps_target_episode_title_in_history',
         // ★ m00753 ⑥：两份实现被**同一张夹具**钉住
         'episode_number_fixture_matches_dart',
       ]) {

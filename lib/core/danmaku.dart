@@ -966,8 +966,18 @@ class DanmakuConfig {
 
   static void setEnabled(bool v) => UiPrefs.set(keyEnabled, v ? '1' : '0');
 
+  /// ★ 2026-10-11（Owner 反馈）：面板上的凭证输入框已整节移除 ⇒ 生产代码里
+  /// **不再有人调用** `setAppId` / `setAppSecret` / `clearCredentials`。
+  /// 保留它们（标 `@visibleForTesting`）而不是删掉，理由：
+  /// ① 签名链路（`appId` / `appSecret` getter + `usingBuiltin*`）仍读这两个键，
+  ///    测试要构造"用户覆盖 > 内置"的优先级场景，少了写入口就没法测；
+  /// ② 用户**以前手填并落盘**的旧值仍走同一条优先级（用户覆盖 > 内置），
+  ///    这几个方法是那套语义的可测锚点。
+  /// 产品行为零变化（没有任何 UI 再触发它们）。
+  @visibleForTesting
   static void setAppId(String v) => _writeTrimmed(keyAppId, v);
 
+  @visibleForTesting
   static void setAppSecret(String v) => _writeTrimmed(keyAppSecret, v);
 
   static void setFontScale(double v) =>
@@ -1010,7 +1020,11 @@ class DanmakuConfig {
   /// ★ 2026-10-11：写「只显示彩色弹幕」开关
   static void setColorOnly(bool v) => UiPrefs.set(keyColorOnly, v ? '1' : '0');
 
-  /// 清空凭证（用户点"清除"时用）
+  /// 清空凭证（原「清除凭证」按钮的动作；按钮已随凭证节一并移除）。
+  ///
+  /// @visibleForTesting：生产代码已无调用（见 [setAppId] 的说明），
+  /// 保留给测试验证优先级回落（清掉用户覆盖 ⇒ 回落到内置）。
+  @visibleForTesting
   static void clearCredentials() {
     UiPrefs.remove(keyAppId);
     UiPrefs.remove(keyAppSecret);
@@ -1136,6 +1150,7 @@ class DanmakuHintAction {
     this.openBiliSheet = false,
     this.useLocalDanmaku = false,
     this.useOfficialDanmaku = false,
+    this.forceLocalDanmaku = false,
   });
 
   /// 按钮文案
@@ -1162,6 +1177,20 @@ class DanmakuHintAction {
   /// **换一条路**（官方 API），而不是再点一次「改用本机」（那会原样复现）。
   /// 宿主据此粘住「强制官方」再重取一次。与 [useLocalDanmaku] 互斥。
   final bool useOfficialDanmaku;
+
+  /// 点了之后**改用本机弹弹play** —— 与 [useLocalDanmaku] 同一动作，但
+  ///   语义不同：`useLocalDanmaku` 是「本机不在线 ⇒ 建议你启动本机再用」，
+  ///   而这个是「用户此前点了『改用官方 API』、官方那条边**确实也失败了**
+  ///   ⇒ 给一条**回头路**」。
+  ///
+  /// ★★★ N2（CodeRabbit PR#5）：补它的原因是一个**出口不对称** ——
+  ///   A7 修好了「本机失败 ⇒ 能改走官方」，但官方也失败时提示走【第 2 态】，
+  ///   而第 2 态的动作只有 openDanmakuSettings / openBiliSheet，
+  ///   **没有任何入口**能清掉宿主那颗粘性的「强制官方」标记 ⇒ 文案写着
+  ///   「在弹幕设置里选本机」，用户却无处可选，本会话内每次重取都被钉在官方。
+  ///   ⇒ 由 [DanmakuHint.of] 的 [DanmakuHint.of.allowUseLocal] 置位，
+  ///     宿主消费它与 [useLocalDanmaku] 同一实现（重建客户端 = 真换边）。
+  final bool forceLocalDanmaku;
 }
 
 /// 「为什么失败 + 怎么办」——一句话解释 + 可选的动作按钮
@@ -1228,9 +1257,22 @@ class DanmakuHint {
   ///
   /// [usedLocalSource] 缺省 false ⇒ 与改前**逐字同形**的「走的是官方」那一支，
   /// 既有调用方（含 t100/t103）行为不变。
+  ///
+  /// ## ★★★ N2（CodeRabbit PR#5）：[allowUseLocal] —— 官方那条边也失败时的回头路
+  ///
+  /// ```text
+  /// A7 之后两条边是：本机失败 ⇒ useOfficialDanmaku（改用官方）；官方失败 ⇒ ？
+  /// 官方那一支的按钮里没有「改用本机」⇒ 用户只能停在官方，本会话内绕不回来，
+  /// 而文案还写着「在弹幕设置里选本机」（面板里其实没有那个控件）。
+  /// 这个参数由宿主置位，条件只有一个、且来自真实读数：**本机在线、且用户
+  /// 确实点过「改用官方 API」**（即官方这条路被真的走过一次、并失败了）。
+  /// ```
+  /// ⚠️ 缺省 false ⇒ 与改前**逐字同形**（本机不在线时不给「改用本机」，
+  ///    那颗按钮点了必然连不上）。
   static DanmakuHint? of(
     DanmakuException e, {
     bool usedLocalSource = false,
+    bool allowUseLocal = false,
   }) {
     final rejected = e.statusCode == 401 || e.statusCode == 403;
     if (!rejected) return null;
@@ -1274,19 +1316,31 @@ class DanmakuHint {
        * 「去官网免费申请」在这里删掉：本机弹弹play 这条路不用申请，
        * 先让用户知道有两条路，再让他自己选（默认仍是官方）。
        * ⚠️ 标题保持 '弹幕服务没收到凭证' —— t100:534/551/608 逐字钉着它。
+       *
+       * ★★★ N2（CodeRabbit PR#5）：[allowUseLocal] = 「官方那条边**确实**
+       *   试过并失败了」（本机在线 + 用户点过「改用官方」）。
+       *   此时必须补一颗**真正能换回本机**的按钮，否则：
+       *     · 文案写「在弹幕设置里选本机」，而面板里**没有**数据源切换控件；
+       *     · 清掉宿主那颗粘性「强制官方」标记的唯一入口是「改用本机」，
+       *       而这一态的按钮里没有它 ⇒ 用户被永久钉在官方，无路可走。
+       *   ⚠️ 默认（allowUseLocal=false，本机压根不在线）**一个字都不加** ——
+       *      那时给「改用本机」是点了必然连不上的死按钮（t27_w8 ② 组钉着）。
        */
-      return const DanmakuHint(
+      return DanmakuHint(
         title: '弹幕服务没收到凭证',
         text: 'dandanplay 的弹幕有两个数据源，在弹幕设置里选一个：'
             '「本机弹弹play」（本机跑着弹弹play 就用它，免签名、不用申请任何凭证）'
-            '或「官方 API」（要一对 AppId / AppSecret，'
-            '在 https://dev.dandanplay.com 申请）。'
+            '或「官方 API」（它要一对 AppId / AppSecret —— 客户端已**内置**，'
+            '无需自己申请）。'
             '选好之后点「重新获取弹幕」。'
             '另外：B 站视频可以改用「哔哩哔哩弹幕」直接绑定，不需要这对凭证。',
         action: DanmakuHintAction(
           label: '去弹幕设置',
           openDanmakuSettings: true,
           openBiliSheet: true,
+          // ★ N2：只有「官方也失败了」才追加回头路（与上面两个开关并存，
+          //   让用户自己选：去看设置 / 换回本机 / 改用 B 站）。
+          forceLocalDanmaku: allowUseLocal,
         ),
         url: 'https://dev.dandanplay.com',
       );
@@ -1295,8 +1349,9 @@ class DanmakuHint {
     return DanmakuHint(
       title: '凭证没通过',
       text: '弹幕服务说这次请求的凭证不对（$xe）。'
-          '常见原因是 AppId / AppSecret 复制时带了空格，或者两者不是同一对，'
-          '在弹幕设置里重新填一次试试。',
+          '本次请求用的是客户端**内置**的官方凭证，面板上已不再提供填写入口；'
+          '可行的一步：改用「本机弹弹play」（免签名）或「哔哩哔哩弹幕」，'
+          '再点「重新获取弹幕」。',
       action: const DanmakuHintAction(label: '去弹幕设置', openDanmakuSettings: true),
       url: 'https://dev.dandanplay.com',
     );

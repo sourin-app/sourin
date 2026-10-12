@@ -212,6 +212,7 @@ void main() {
     WidgetTester t, {
     String? originProvider,
     String? originMediaId,
+    String? originEpisodeId,
   }) async {
     await t.binding.setSurfaceSize(const Size(1280, 800));
     addTearDown(() => t.binding.setSurfaceSize(null));
@@ -236,6 +237,8 @@ void main() {
         localPath: videoPath,
         originProvider: originProvider,
         originMediaId: originMediaId,
+        // ★★★ 站点集 id（镜像那条的 episode_id 靠它）—— 修复后才有的口子
+        originEpisodeId: originEpisodeId,
       ),
     )));
     // 挂载期那条插件异常立刻收走（否则 testWidgets 记成失败）
@@ -299,6 +302,75 @@ void main() {
               '「跳过镜像」修的是镜像那条，不是会话自己那条');
       expect(own!.position, 30);
       expect(own.duration, 100);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ①b ★★★ 写入侧**接线**（治 ①）：带**完整来源**的本地会话 ⇒ 镜像真的写出去
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // # 为什么必须有这一组（上面①是**假绿**）
+  // ```text
+  // ① 组把「不写镜像」当成**正确的期望**（expect(mirrorCalls, isEmpty)）——
+  //   它区分不了「因缺站点集 id 而跳过（**缺陷**）」与「因该跳过而跳过（正确）」：
+  //   本地会话传的是文件名，拿不到站点集 id 时**两边都是空** ⇒ 恒绿。
+  // ⇒ 真正的门禁是：一个带 (provider + mediaId + **站点集 id**) 的本地会话，
+  //   断言镜像**长度为 1**、且 call.episodeId == **站点集 id**。
+  // ```
+  //
+  // # ★ 撤销验证（本仓铁律⑥规矩二）
+  // ```text
+  // 去掉 player_page._saveProgress 里那行 `originEpisodeId: widget.originEpisodeId,`
+  // ⇒ 这组**必须变红**（mirrorCalls 又变空）。已实测（见交付报告）。
+  // ```
+  group('①b ★★★ 完整来源（含站点集 id）⇒ 镜像**真的写出去**（治 ①）', () {
+    testWidgets('★★★ mirrorCalls 长度为 1，且 episodeId 是**站点集 id**', (t) async {
+      const siteEpId = '51463';
+      await mountLocal(t,
+          originProvider: 'cycani',
+          originMediaId: '3862',
+          originEpisodeId: siteEpId);
+
+      // ★ 前置：来源与**站点集 id** 都真的到了播放页（否则下面读不出东西）
+      expect(debugPlayerMirrorOriginForProbe(), 'cycani:3862',
+          reason: '★ 前置：镜像目标键认出来了');
+      expect(debugPlayerOriginEpisodeIdForProbe(), siteEpId,
+          reason: '★★ 前置：站点集 id 真的带到了播放页 —— '
+              '它是「因缺 id 跳过（缺陷）」与「因该跳过而跳过（正确）」的分水岭');
+
+      final ok = await driveSave(t);
+      expect(ok, isTrue, reason: '★ 必须真的走到了 _saveProgress');
+
+      debugPrint('OPS13-W 拦截到 ${mirrorCalls.length} 条镜像: $mirrorCalls');
+      expect(mirrorCalls.length, 1,
+          reason: '★★★ 站点集 id 拿得到时，镜像那条**必须**写出去 —— '
+              '一条都没有 = 「本地和线上彻底分开」原样没修（Owner 报的正是这个）');
+      final c = mirrorCalls.single;
+      expect(c.provider, 'cycani', reason: '★★ 打到原来源 provider');
+      expect(c.mediaId, '3862', reason: '★★ 打到原来源站点内容 id');
+      expect(c.episodeId, siteEpId,
+          reason: '★★★ 镜像的 episodeId 必须是**站点集 id**（51463）—— '
+              '既不是本地文件名（第01集.mp4），也不是 null（CR-08）');
+      expect(c.title, '本地剧', reason: '★ 作品标题（CR-07）');
+      expect(c.episodeTitle, '第01集',
+          reason: '★ 集标题：session 没有 episodeTitle ⇒ 退回文件名去后缀');
+      expect(c.position, 30);
+      expect(c.duration, 100);
+    });
+
+    testWidgets('★★ 带站点集 id **也不**影响会话自己那条（本地键仍是文件名）',
+        (t) async {
+      await mountLocal(t,
+          originProvider: 'cycani',
+          originMediaId: '3862',
+          originEpisodeId: '51463');
+      expect(await driveSave(t), isTrue);
+      final own = await t.runAsync<Progress?>(() =>
+          SourinApi.getProgress(kLocalProvider, localId));
+      expect(own, isNotNull);
+      expect(own!.episodeId, '第01集.mp4',
+          reason: '★★ 本地那条的集号**就该**是文件名 —— 两个标识不是一回事，'
+              '谁都不许替对方做主（CR-08 要求③的反面）');
     });
   });
 

@@ -200,13 +200,18 @@ void main() {
           reason: '探针打本地版本接口');
     });
 
-    test('dialog：数据源状态行与官方凭证入口共存', () {
+    test('dialog：数据源状态行保留；官方凭证输入入口已删除', () {
       expect(dialogSrc, contains('检测到本机弹弹play 未运行'));
       expect(dialogSrc, contains('本机弹弹play（127.0.0.1:2080）'));
-      // 分支③裁决：官方 API 凭证入口保留
-      expect(dialogSrc, contains('在 dev.dandanplay.com 申请'));
-      expect(dialogSrc, contains('AppId'));
-      expect(dialogSrc, contains('AppSecret'));
+      // ★ 2026-10-11（Owner 反馈）：官方 API 凭证**输入入口整节删除** ——
+      //   客户端已内置凭证（构建期 --dart-define 注入），用户不必手填。
+      //   改前这条断言是「凭证入口保留」，现在与新现实相反。
+      expect(dialogSrc.contains('在 dev.dandanplay.com 申请'), isFalse,
+          reason: '凭证输入入口已删除（内置凭证取代手填）');
+      expect(dialogSrc.contains("labelText: 'AppId'"), isFalse);
+      expect(dialogSrc.contains("labelText: 'AppSecret'"), isFalse);
+      // 但「数据源」这一节本身必须还在（它是本机弹弹play 的探测结果行）。
+      expect(dialogSrc, contains('数据源'));
     });
   });
 }

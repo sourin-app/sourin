@@ -530,6 +530,37 @@ String? sidecarPlatformViolation({
   //     「暂停的任务不许留下旁文件」，防止将来重构把它挪出去。
   // ══════════════════════════════════════════════════════════════════════
 
+  // ══════════════════════════════════════════════════════════════════════
+  //  ★★★ OPS-13 反馈 C ①：旁文件必须带**站点集 id**
+  //  —— 它是「本地进度镜像到站点键」时 episode_id 的**唯一**来源
+  // ══════════════════════════════════════════════════════════════════════
+  //
+  // # 为什么要写它进旁文件（而不是事后推）
+  // ```text
+  // 本地会话手上的「集号」是文件名（第01集.mp4），站点集 id（ep0）是另一套标识，
+  // 事后从磁盘/文件名根本推不出来 ⇒ 只能在**下载那一刻**（DownloadTask.episodeId）
+  // 随下载写进旁文件。缺了它，本地进度永远镜像不出去（本地与在线不同步）。
+  // ```
+  // # ★ 撤销验证：去掉 _writeSidecarFor 里那行 kSidecarEpisodeIdKey ⇒ 变红
+  test('★★★ 旁文件必须带站点集 id（kSidecarEpisodeIdKey）', () async {
+    final workDir = await DownloadDir.forWork('OPS16 剧');
+    final f = _sidecar(workDir);
+
+    final t = _task(0, cover: 'http://127.0.0.1:' + ups.port.toString() + '/cover.jpg');
+    expect(DownloadQueue.enqueue(t), isTrue, reason: '前置：入队必须成功');
+    final quiet = await _waitQuiet(timeoutMs: 60000);
+    expect(quiet, isTrue, reason: '★ 队列没跑完 ⇒ 用例失去意义');
+    expect(f.existsSync(), isTrue, reason: '前置：旁文件必须落盘');
+
+    final meta = _readSidecar(f);
+    expect(meta, isNotNull);
+    debugPrint('OPS13-C 旁文件: ' + jsonEncode(meta));
+    expect(meta![DownloadQueue.kSidecarEpisodeIdKey], t.episodeId,
+        reason: '★★★ 旁文件必须记下 DownloadTask.episodeId（站点集 id）—— '
+            '它是本地进度镜像到站点键时 episode_id 的唯一来源；'
+            '缺了它，镜像那条被 CR-08 守卫整条跳过 ⇒ 本地与在线永不同步');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
   test('护栏：暂停收尾**不许**留下旁文件（半截文件不该进「已缓存」列表）', () async {
     await ups.close();
     ups = Upstream(segDelayMs: 60); // 慢档：6 片 × 60ms ⇒ 有可靠的暂停窗口

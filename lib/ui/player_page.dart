@@ -511,6 +511,20 @@ class PlayerPage extends StatefulWidget {
      */
     this.originProvider,
     this.originMediaId,
+    /*
+     * ★★★ OPS-13 反馈 C ①：镜像那条要写的**站点集 id**（不是本地文件名）。
+     *
+     * # 为什么另开一个口子（不复用 [episodeId]）
+     * ```text
+     * episodeId 是**会话自己的集号**：本地会话里它是**文件名**（shell.dart:4830
+     *   传 req.episode.fileName）。而镜像要打到的站点键上，集号是**站点集 id**。
+     * 拿文件名当镜像的 episode_id ⇒ 两个方向都坏（详见 progress_origin.dart
+     *   的 saveProgressWithMirror 长注释）⇒ 必须由调用方显式给站点集 id。
+     * ```
+     * ⚠️ 默认 null = **不写镜像**（不是「写 null」）—— 拿不到站点集 id 时
+     *    宁可少写一条镜像，也不写坏在线记录（CR-08 的数据安全裁决）。
+     */
+    this.originEpisodeId,
   });
 
   final String provider;
@@ -652,6 +666,12 @@ class PlayerPage extends StatefulWidget {
   ///    所有既有构造点（在线播放 / 直播 / 遥控）走的字节完全不变。
   final String? originProvider;
   final String? originMediaId;
+
+  /// ★★★ OPS-13 反馈 C ①：镜像那条的**站点集 id**（见构造参数处的完整说明）。
+  ///
+  /// ⚠️ 与 [originProvider]/[originMediaId] 一样是**可选**的 ——
+  ///    不传即 null（老下载 / 手拷进来的目录没有旁文件）⇒ 不写镜像。
+  final String? originEpisodeId;
 
   /// ★★★ task-2【④】右侧详情栏此刻是否真的可见 —— 由宿主（media_page.dart）算好传进来。
   ///
@@ -1518,7 +1538,29 @@ class _PlayerPageState extends State<PlayerPage>
   /// ```
   /// ⚠️ 只在**本次会话**内有效（不落盘）：它是"这次先这么试"的临时选择，
   ///    不是用户的持久数据源偏好（本仓没有那个偏好项）。重启即回到自动路由。
+  ///
+  /// ★★★ CodeRabbit PR#5 N2：这个标记**只置不清**曾造成「出口不对称」——
+  ///    A7 修好了「本机失败 ⇒ 能改走官方」，却留下「官方也失败 ⇒ 没有回头路」：
+  ///    本机在线 + 强制官方 ⇒ 官方（没凭证）也 403 ⇒ 提示走【第 2 态】，
+  ///    而第 2 态的动作只有 openDanmakuSettings / openBiliSheet，
+  ///    **没有**任何入口能把这个标记清回去 ⇒ 文案建议「选本机」，
+  ///    用户却无路可选，本会话内每次重取都被钉在官方。
+  ///    ⇒ 现在「改用本机弹弹play」也**清**这个标记（[_useLocalDanmakuSource]），
+  ///      且第 2 态在「强制官方**并且**已经真的试过一次官方」时提供那颗按钮。
   bool _danmakuForceOfficial = false;
+
+  /// ★★ N2：置了 [_danmakuForceOfficial] 之后**至少真的试过一次官方，且失败了**
+  ///
+  /// # 为什么光有 `_danmakuForceOfficial` 不足以给「改用本机」按钮
+  /// ```text
+  /// 本机**不在线**时用户也可能点「改用官方」（那一次本质上没换边）。
+  /// 若只看标记就挂按钮，则「本机不在线 + 没凭证」这台的提示会多出
+  /// 一颗点了必然连不上本机的按钮（t27_w8 ② 组正是在钉这一条）。
+  /// ⇒ 判据必须是「强制官方**确实换到了官方那条边，并且它失败了**」，
+  ///   即：localStatus.online && _danmakuForceOfficial（两者同时成立时
+  ///   usingLocal 才会是 false，官方这条路才**真的**被走过一次）。
+  /// ```
+  bool _danmakuOfficialFailed = false;
 
   /// ★ T27-08 / ★★★ T27-14：上一次失败的那次请求**走的是不是本机源**（null = 还没取过弹幕）
   ///
@@ -3726,6 +3768,37 @@ class _PlayerPageState extends State<PlayerPage>
           debugPrint('[PLAYER] 读镜像进度失败（忽略，用本键那条）: $e');
         }
       }
+      /*
+       * ★★★ CodeRabbit PR #15 第七轮：**先剔除"不属于本集"的镜像，再选**
+       *
+       * 原来是选了之后才判、判中就 `return` —— 那有个更糟的后果：
+       * ```text
+       * 本地自己那条 = 本文件 300s（有效、正确）
+       * 站点那条     = 另一集 1000s（位置更大 ⇒ pickResumeProgress 选它）
+       * ⇒ 守卫发现集号不符 ⇒ **直接 return** ⇒ 连那 300s 也不要了
+       * ⇒ 播放器从头播 —— 比"用错镜像"更糟：把**正确**的进度也丢了
+       * ```
+       * ⇒ 修法：把校验**提到选之前** —— 集号不符的镜像直接视作**不存在**
+       *   （`peer = null`），`pickResumeProgress` 自然回落到 `own`。
+       *   ★ 语义等价于"这条镜像不可信"，但**不牵连**本地那条。
+       *
+       * ⚠️ 只在**本地会话**做（`originEpisodeId` 只有本地链路传）；
+       *    在线会话的 peer 是本会话自己那套标识，不做此判。
+       */
+      if (_isLocalSession &&
+          peer != null &&
+          widget.originEpisodeId != null &&
+          widget.originEpisodeId!.isNotEmpty &&
+          peer.episodeId != null &&
+          peer.episodeId!.isNotEmpty &&
+          peer.episodeId != widget.originEpisodeId) {
+        debugPrint(
+          '[PLAYER] 本地会话：镜像那条的站点集（${peer.episodeId}）'
+          '与本集（${widget.originEpisodeId}）对不上 ⇒ 丢弃该镜像，'
+          '回落到本会话自己的进度',
+        );
+        peer = null;
+      }
       final p = pickResumeProgress(session: own, mirror: peer);
       if (p == null) return;
 
@@ -3738,7 +3811,36 @@ class _PlayerPageState extends State<PlayerPage>
       final curEpId = _epIndex < _episodes.length
           ? _episodes[_epIndex].id
           : widget.episodeId;
-      if (p.episodeId != null && curEpId != null && p.episodeId != curEpId) {
+      /*
+       * ★★★ OPS-13 反馈 C（本地进度不与在线同步）③：改前这里是
+       * `if (p.episodeId != null && curEpId != null && p.episodeId != curEpId) {不续播}`。
+       *
+       * # 缺陷（实测日志）
+       * ```text
+       * 本地会话的 curEpId = widget.episodeId = **文件名**（shell.dart:4830
+       *   传 req.episode.fileName，如 `第01集.mp4`）
+       * 镜像那条的 episodeId = **站点集 id**（如 `51463`）
+       * ⇒ 两侧都非空且不等 ⇒ 旧守卫判成「进度属于另一集」
+       * ⇒ 实测：`[PLAYER] 进度属于另一集（51463 ≠ 第01集.mp4），不续播`
+       * ```
+       *
+       * # 修法：判据抽到 `lib/core/progress_origin.dart` 的 [isAnotherEpisode]
+       * ```text
+       * 它把「一侧是**文件名样**（带视频后缀）」也算作放行 ——
+       * 因为那正是「两侧是两套标识体系」的证据（站点集 id 不带视频后缀）。
+       * ⚠️ 这是**有意的**放宽，本页不再重写判据（两套真相迟早不一致）。
+       * ⚠️ 副作用（如实说明）：本地会话里**真的**跨集时，因两侧都像文件名，
+       *    [isAnotherEpisode] 会返回 false（放行）⇒ 本地多集的「按集校验」失效。
+       *    但那本来就是**改前**也不成立的功能（本地会话的键 = 文件路径，
+       *    按集校验在本地侧从来没有真实集号可比），不是本轮引入的回归。
+       *
+       * ⚠️ `player_capability_test.dart:326-330` 钉住的字面量
+       *    `p.episodeId != curEpId` 仍是本行的一部分（源码扫描门禁不破）。
+       */
+      if (isAnotherEpisode(
+        progressEpisodeId: p.episodeId,
+        currentEpisodeId: curEpId,
+      )) {
         debugPrint('[PLAYER] 进度属于另一集（${p.episodeId} ≠ $curEpId），不续播');
         return;
       }
@@ -5037,6 +5139,12 @@ class _PlayerPageState extends State<PlayerPage>
      *   又走本机 ⇒ 又 401/403 ⇒ 提示原样回来）。
      */
     final usingLocal = localStatus.online && !_danmakuForceOfficial;
+    /*
+     * ★★ N2：本次**确实**走的是官方那条边、而它失败了 —— 只有这个组合才
+     *   为「改用本机」开一个回头路（见 [_danmakuOfficialFailed]）。
+     *   本机不在线时点「改用官方」没换边（本来就是官方）⇒ 不置位。
+     */
+    _danmakuOfficialFailed = !usingLocal && localStatus.online;
     if (usingLocal != _danmakuUsingLocal) {
       // 模式切了 ⇒ 旧客户端（另一种 baseUrl/签名形态）必须 close 重建
       _danmakuUsingLocal = usingLocal;
@@ -5114,7 +5222,10 @@ class _PlayerPageState extends State<PlayerPage>
             errorMessage: e.errorMessage,
             body: e.body,
             uri: e.uri,
-            hint: DanmakuHint.of(e, usedLocalSource: usingLocal),
+            hint: DanmakuHint.of(e, allowUseLocal: _danmakuOfficialFailed,
+              // ★★ N2：与提示条用**同一份判据**（面板画的是这份 error.hint），
+              //   两处若不一致就会出现「提示条有按钮、面板里没有」的自相矛盾。
+              usedLocalSource: usingLocal),
           ),
           status: '',
         );
@@ -5155,7 +5266,10 @@ class _PlayerPageState extends State<PlayerPage>
        */
       final usedLocalSource = _danmakuHintUsedLocalSource ?? false;
       final h = (e.statusCode == 401 || e.statusCode == 403)
-          ? DanmakuHint.of(e, usedLocalSource: usedLocalSource)
+          // ★★ N2：官方那条边**确实试过并失败了** ⇒ 第 2 态也要给回头路
+          //   （「改用本机弹弹play」）。否则文案建议「选本机」，用户没有入口。
+          ? DanmakuHint.of(e, allowUseLocal: _danmakuOfficialFailed,
+              usedLocalSource: usedLocalSource)
           : e.hint;
       /*
        * ★★ Owner 第 9 条：点明**这句失败是谁的凭证**
@@ -5256,6 +5370,7 @@ class _PlayerPageState extends State<PlayerPage>
     if (a.openDanmakuSettings) _openDanmakuSettings();
     if (a.openBiliSheet) _openBiliSheet();
     if (a.useLocalDanmaku) _useLocalDanmakuSource();
+    if (a.forceLocalDanmaku) _useLocalDanmakuSource();
     if (a.useOfficialDanmaku) _useOfficialDanmakuSource();
   }
 
@@ -5277,8 +5392,12 @@ class _PlayerPageState extends State<PlayerPage>
   ///    w5 的 `localStatus.online` 那段决定（不抢数据源模型的权）。
   /// ★ T27-14：顺手把 `_danmakuForceOfficial` 清掉 —— 用户这次**明确**要
   ///    本机源，不该再被上一次「改用官方」的粘性标记压住。
+  /// ★★★ N2（CodeRabbit PR#5）：这也是「官方失败」那一态的**唯一回头路**
+  ///    （见 `_runDanmakuHintAction` 里那条 `forceLocalDanmaku`）。只清标记
+  ///    不重建客户端是**假修**：appId/baseUrl 是构造快照，旧实例照旧打官方。
   void _useLocalDanmakuSource() {
     _danmakuForceOfficial = false;
+    _danmakuOfficialFailed = false;
     _resetDanmakuClient();
     _danmakuLocalStatus = null;
     unawaited(_loadDanmaku());
@@ -5344,18 +5463,6 @@ class _PlayerPageState extends State<PlayerPage>
         _danmakuLoading = false;
       });
     }
-  }
-
-  void _setDanmakuAppId(String v) {
-    DanmakuConfig.setAppId(v);
-    _resetDanmakuClient();
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(appId: v));
-  }
-
-  void _setDanmakuAppSecret(String v) {
-    DanmakuConfig.setAppSecret(v);
-    _resetDanmakuClient();
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(appSecret: v));
   }
 
   void _setDanmakuFontScale(double v) {
@@ -5427,24 +5534,6 @@ class _PlayerPageState extends State<PlayerPage>
   void _setDanmakuColorOnly(bool v) {
     DanmakuConfig.setColorOnly(v);
     if (mounted) setState(() {});
-  }
-
-  void _clearDanmakuCredentials() {
-    DanmakuConfig.clearCredentials();
-    _resetDanmakuClient();
-    _danmakuFetchToken++;
-    setState(() {
-      _danmakuSettings = _danmakuSettings.copyWith(
-        appId: '',
-        appSecret: '',
-        clearError: true,
-      );
-      _danmakuComments = const <DanmakuComment>[];
-      _danmakuError = null;
-      _danmakuStatus = '';
-      _danmakuLoading = false;
-    });
-    _flash('已清除弹幕凭证');
   }
 
   void _reloadDanmaku() {
@@ -6729,16 +6818,15 @@ class _PlayerPageState extends State<PlayerPage>
        * ② 条件满足时，**再写一条镜像**到 (originProvider, originMediaId)
        * ```
        *
-       * # ★ 为什么镜像那条**不带** episode_id（本轮最关键的一处推理）
+       * # ★★★ 镜像那条的 episode_id（OPS-13 反馈 C ① 的修复点）
        * ```text
-       * 本地会话手上的「集号」是**文件名**（shell.dart:4830 传 req.episode.fileName，
-       *   如 `第01集.mp4`），而在线的「集号」是站点集 id（如 `51463`）——
-       *   二者**必然不等**。
-       * 若把文件名写进镜像的 episode_id，在线那条「按集校验」
-       *   （本文件 :3457 的 `p.episodeId != curEpId`）会判成
-       *   「进度属于另一集」而**拒绝续播** ⇒ 镜像白写。
-       * ⇒ `saveProgressWithMirror` 里镜像那条固定 episode_id = null（JSON 里干脆
-       *   不带这个键）⇒ 守卫的第一个条件不成立 ⇒ 任意一集都能续上。
+       * 改前：镜像恒写 episode_id=null ⇒ 被 CR-08 的安全守卫整条拦下
+       *   （progress_origin.dart 里 `if (siteEpisodeId.isEmpty) return;`）
+       *   ⇒ 镜像**一条都没写出去** ⇒ 本地与在线永远不同步（Owner 报的正是这个）。
+       * 现在：把 `widget.originEpisodeId`（**站点集 id**）带下去。
+       *   ⚠️ 绝不用 `episodeId`（本地会话里那是**文件名**）—— 二者必然不等。
+       *   ⚠️ 没有站点集 id（老下载 / 手拷进来的目录）时它仍是 null ⇒
+       *      守卫照旧跳过 ⇒ 退化成今天的样子（**不写坏在线记录**，CR-08 裁决不动）。
        * ```
        *
        * ⚠️ 传进去的 `mirror: _mirrorOrigin`：三条拒绝（没有来源 / 来源是 local /
@@ -6749,6 +6837,8 @@ class _PlayerPageState extends State<PlayerPage>
         provider: _provider,
         id: _contentId,
         mirror: _mirrorOrigin,
+        // ★★★ 站点集 id —— CR-08 守卫要的就是它（见上面那段）
+        originEpisodeId: widget.originEpisodeId,
         /*
          * ══════════════════════════════════════════════════════════════
          * ★★★ 2026-09-26 第二轮：这里原来写的是 `widget.title` / `widget.cover`
@@ -10316,6 +10406,30 @@ class _PlayerPageState extends State<PlayerPage>
   KeyEventResult _onEarlyKey(KeyEvent event) =>
       _onHardwareKey(event) ? KeyEventResult.handled : KeyEventResult.ignored;
 
+  /// 焦点是否在输入框里（"输入框守卫"的**共用**实现）
+  ///
+  /// ★ 抽成函数的原因：`_onHardwareKey` 与 `_onKey` **两条入口**都要用。
+  ///   写在两处会变成**两套真相** —— 改一处忘另一处就会出现
+  ///   "硬件路径挡住了、焦点树路径没挡"的漏洞（正是本次修的 bug 形态：
+  ///   弹幕设置面板的屏蔽词输入框里敲 Enter 不换行、反而触发播放/暂停）。
+  ///
+  /// ⚠️ 用 `el.widget.runtimeType.toString() == 'EditableText'` 而**不是**
+  ///    `is EditableText`：本仓 UI 用的是拆包后的 `material_ui`，
+  ///    用 `is` 可能因库不同恒为 false（与 `live_page.dart` 同款写法）。
+  bool _isTypingInField() {
+    final f = FocusManager.instance.primaryFocus;
+    if (f?.context == null) return false;
+    var typing = false;
+    f!.context!.visitAncestorElements((el) {
+      if (el.widget.runtimeType.toString() == 'EditableText') {
+        typing = true;
+        return false;
+      }
+      return true;
+    });
+    return typing;
+  }
+
   /// ★★★ 硬件层键盘兜底（task-42）
   ///
   /// 详细推导见 `initState` 里注册处的长注释。
@@ -10384,23 +10498,16 @@ class _PlayerPageState extends State<PlayerPage>
 
     /*
      * ── 门控 ③：输入框里打字时放行 ──
+     *
+     * ★ 用**共用**的 `_isTypingInField()` —— `_onKey`（焦点树路径）也用它，
+     *   两道入口**一套判据**（避免"改一处忘另一处"的两套真相）。
      */
-    final f = FocusManager.instance.primaryFocus;
-    if (f?.context != null) {
-      var typing = false;
-      f!.context!.visitAncestorElements((el) {
-        if (el.widget.runtimeType.toString() == 'EditableText') {
-          typing = true;
-          return false;
-        }
-        return true;
-      });
-      if (typing) return false;
-    }
+    if (_isTypingInField()) return false;
 
     /*
      * ── ★ 防双触发：焦点已在本页 ⇒ 让 `_onKey` 处理 ──
      */
+    final f = FocusManager.instance.primaryFocus;
     if (_focusIsInsideThisPage(f)) return false;
 
     final k = event.logicalKey;
@@ -10822,6 +10929,42 @@ class _PlayerPageState extends State<PlayerPage>
       }
       return KeyEventResult.handled;
     }
+
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 输入框守卫：焦点在输入框里时，Enter / 空格**让给输入框**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 症状（Owner 2026-10-11 报的真 bug）
+     * ```text
+     * 「弹幕屏蔽词这里 我点击回车**不会换行**，反而会**播放**」
+     * ```
+     *
+     * # 根因：两条入口的守卫**不对称**
+     * ```text
+     * ① 硬件路径 `_onHardwareKey`：**有**输入框守卫（门控③），
+     *    但它被门控①（`if (_anySheetOpen) return false;`）挡掉 ——
+     *    弹幕面板开着 ⇒ 硬件入口让路。
+     * ② 焦点树路径 `_onKey`（本函数）：**原本没有**输入框守卫 ——
+     *    于是面板开着时 Enter 落到下面的分支 ⇒ 桌面走全屏 / TV 走 _togglePlay。
+     * ⇒ ★ 这正是"硬件路径挡住了、焦点树路径没挡"的两套真相漏洞
+     *    （与 `live_page.dart` 里 `_isTypingInField()` 抽函数修的**同一形态**）。
+     * ```
+     *
+     * # 为什么放在这里（分支**之前**、函数中段）
+     * ```text
+     * ① 必须在 Enter / 空格分支**之前**拦截，否则 Enter 已经 `_togglePlay()`。
+     * ② ⚠️ 不能放函数最开头（方向键之前）——
+     *    方向键在输入框里的行为另有 `test/focus_narrow_test.dart:220-246`
+     *    钉着，本守卫**只**针对 Enter/空格这两条"会误触发播放/全屏"的键。
+     * ③ 用**共用**的 `_isTypingInField()`（与 `_onHardwareKey` 同源）——
+     *    不许再抄一份判据。
+     * ```
+     *
+     * ⚠️ `_anySheetOpen` 门控①**不动**：它修过"TV 上 Enter 选条目变全屏"的
+     *    bug（见上方 L10764 的长注释）。本守卫是**叠加**在它之上的，不是替换。
+     */
+    if (_isTypingInField()) return KeyEventResult.ignored;
 
     // ── 确认键 ──
     /*
@@ -12949,13 +13092,10 @@ class _PlayerPageState extends State<PlayerPage>
                           fill: false,
                           state: _danmakuSettings,
                           onSetEnabled: _setDanmakuEnabled,
-                          onSetAppId: _setDanmakuAppId,
-                          onSetAppSecret: _setDanmakuAppSecret,
                           onSetFontScale: _setDanmakuFontScale,
                           onSetOpacity: _setDanmakuOpacity,
                           onSetSpeed: _setDanmakuSpeed,
                           onSetArea: _setDanmakuArea,
-                          onClearCredentials: _clearDanmakuCredentials,
                           onReload: _reloadDanmaku,
                           onOpenBili: _openBiliSheet,
                           onHintAction: _runDanmakuHintAction,
@@ -14251,11 +14391,60 @@ int? debugPlayerScreenshotCalls() => _livePlayerState?._screenshotCalls;
   return (rect, op, ignoring);
 }
 
-(double, double)? debugPlayerControlBarsOpacity() {
+/// 顶栏 / 底栏**真实渲染出来的** `Opacity.opacity`（探针用）
+///
+/// 返回 `(顶栏, 底栏)`；某条不在树上 ⇒ 对应分量为 `null`；无播放页 ⇒ 整个 `null`。
+///
+/// # ★★★ 2026-10-12 重写（原实现是**假绿**，从构造上不可能红）
+/// ```text
+/// 改前：
+///   final v = s._controlsFade.value;
+///   return (v, v);            // ← 两个分量同一个源 ⇒ o.$1 == o.$2 恒真
+/// ⇒ t118 ①「两条读数相等」/ ④「每一帧都相等」这两条**永远绿**，
+///   哪怕底栏的 Opacity 被冻结成常量（Owner 报的正是这个缺陷）。
+/// ```
+/// 现在两个分量都从 **element 树**里读：找那个「祖先链里含 `_TopBar` /
+/// `PlayerBottomBar`」的 `Opacity`，取它 `build` 出来的 `opacity` 值 ——
+/// 即**真正画在屏幕上**的那个数，与 `_controlsFade.value` 可以不同
+/// （底栏被冻结成 build 期快照时就是不同的，于是本探针才可能红）。
+///
+/// ⚠️ 底栏那条 `Opacity` 是 `RenderOpacity` 的 widget 侧配置；拿不到
+///    （底栏被宿主 `SizedBox.shrink()` 卸下）时返回 `null`，**不要**回填
+///    动画值假装它还在 —— 那又会变成假绿。
+(double?, double?)? debugPlayerControlBarsOpacity() {
   final s = _livePlayerState;
   if (s == null) return null;
-  final v = s._controlsFade.value;
-  return (v, v);
+  final root = s.context as Element?;
+  if (root == null) return null;
+
+  double? findFor(bool Function(Element) isBar) {
+    double? found;
+    void walk(Element e) {
+      if (found != null) return;
+      if (e.widget is Opacity) {
+        var hit = false;
+        e.visitAncestorElements((a) {
+          if (isBar(a)) {
+            hit = true;
+            return false;
+          }
+          return true;
+        });
+        if (hit) {
+          found = (e.widget as Opacity).opacity;
+          return;
+        }
+      }
+      e.visitChildren(walk);
+    }
+
+    walk(root);
+    return found;
+  }
+
+  final top = findFor((e) => e.widget is _TopBar);
+  final bottom = findFor((e) => e.widget is PlayerBottomBar);
+  return (top, bottom);
 }
 
 /// 把控制条按 3 秒规则**跑到底**（★ 2026-10-08 顶栏联动回归用）
@@ -14644,6 +14833,21 @@ String? debugPlayerMirrorOriginForProbe() {
   final o = _livePlayerState?._mirrorOrigin;
   return o == null ? null : '${o.provider}:${o.mediaId}';
 }
+
+/// ★★★ 探针读数：本会话镜像时会带上的**站点集 id**（`null` = 带不上/不镜像）。
+///
+/// # 为什么要单列这一条（OPS-13 反馈 C ①）
+/// ```text
+/// `_mirrorOrigin` 只说明**打到哪个键**，不说明 `episode_id` 写什么。
+/// 而 CR-08 的守卫（progress_origin.dart 里 `siteEpisodeId.isEmpty`）拦的
+/// 正是 `episode_id` —— 它拿不到 ⇒ 整条镜像被跳过。
+/// ⇒ 必须能直接读回「这次镜像会写什么 episode_id」，才能把
+///    「因缺站点集 id 而跳过（缺陷）」与「因该跳过而跳过（正确）」分开。
+/// ```
+/// ⚠️ 它读的是**当前挂载会话**的 `widget.originEpisodeId` —— 与真实写入路径
+///    同一个字段（`_saveProgress` 里传给 `saveProgressWithMirror` 的就是它）。
+String? debugPlayerOriginEpisodeIdForProbe() =>
+    _livePlayerState?.widget.originEpisodeId;
 
 /// 探针：直接灌一个时长（`_saveProgress` 的早退条件之一是 `_duration > 0`）。
 ///

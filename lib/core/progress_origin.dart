@@ -216,21 +216,136 @@ String? mirrorProgressTitle({
   return base.isEmpty ? null : base;
 }
 
-/// 续播该用哪一条记录 —— **读两侧、取 updatedAt 更新的那条**
+/// 续播该用哪一条记录 —— **取位置更靠后的那条（单调合并），updatedAt 只破平局**
 ///
-/// # ★ 为什么不是「只读镜像」（这是存量数据能不能续播的关键）
+/// # ★★★ 为什么**不能**按 `updatedAt` 选边（这是本轮修的概念性错误）
 ///
-/// 本轮之前写的进度**只有** `local` 那条，镜像不存在。
-/// 只读镜像 => 老用户的续播**全部失效**。
-/// 两条都读、取新的 => 老数据、新数据都能续播，而且**可逆**：
-/// 镜像那条读失败/不存在时，行为退化成今天的样子。
+/// 改前这里是 `mirror.updatedAt > session.updatedAt ? mirror : session`。
+/// 它隐含「**更晚写的更权威**」，而实际上：
+/// ```text
+/// 本地会话每 5 秒落一次盘（player_page._startProgressSaver）⇒ 本地那条恒新
+/// ⇒ 在线的 254s（旧）永远压不过本地的 3s（新）⇒ 每次点进去都从 3s 重播
+///   = Owner 报的「每次都是重新播放，而不是从上次看的记录续看」。
+/// ```
+/// ★ 定性：`session` 与 `mirror` **不是两个竞争的真源** ——
+///   它们是**同一条进度的两个视图**（Owner 要的正是「互相同步、与在线一致」）。
+///   「谁更晚写谁赢」在两边都在看时是错的：用户在**同一集**上看到的
+///   只是「看到哪了」，哪条更靠后就是用户真实看过的位置。
 ///
-/// ⚠️ 平局取 `session`（本会话自己的键）—— 与「镜像只是补充」的定位一致，
-///    也让「镜像不存在」这条路径与今天**逐字同构**。
+/// # 正确判据：同一集 ⇒ 取**有效位置**里更靠后的那条（单调不减）
+///
+/// ```text
+/// ① 两侧都有效  → position 大的赢；相等时用 updatedAt 破平局（平局再取 session）
+/// ② 只有一侧有效 → 取那一侧（位置 <= 0 视作「无效/无进度」）
+/// ③ 都无效       → 取 session（与「镜像不存在」时的老路径逐字同构）
+/// ```
+/// 「有效」= `position > 0`。`position == 0` 是「没进度」而不是「看到第 0 秒」——
+/// 例如一条刚建出来还没看过（或只有元数据）的记录 —— 它不该**压掉**对侧
+/// 真实看过的位置。这也是 `_prepareResume` 里 `if (pos <= 0) return` 的同一条
+/// 语义（0 秒 = 不续播）。
+///
+/// ⚠️ **前提：两侧必须是同一集**。调用点（`player_page._prepareResume`）
+///    要么保证 `session` 就是本集（会话自己的键），要么对 `mirror` 走
+///    [isAnotherEpisode] 校验。
+///    「按位置取较大者」若跨集比较，会把**上一集**的长进度串到这一集 ——
+///    这个风险由调用点的按集校验挡住（见 [isAnotherEpisode]）。
+///
+/// ⚠️ 平局仍取 `session`（本会话自己的键）—— 与「镜像只是补充」的定位一致，
+///    也让「镜像不存在 / 两侧一样」这条路径与今天**逐字同构**。
 Progress? pickResumeProgress({Progress? session, Progress? mirror}) {
   if (session == null) return mirror;
   if (mirror == null) return session;
+
+  final sPos = session.position;
+  final mPos = mirror.position;
+  final sValid = sPos > 0;
+  final mValid = mPos > 0;
+
+  // ② 只有一侧有效 ⇒ 取那一侧（0 秒 = 没进度，不该压掉对侧真实看过的位置）
+  if (sValid && !mValid) return session;
+  if (mValid && !sValid) return mirror;
+  // ③ 都无效 ⇒ 取 session（与老路径同构）
+  if (!sValid && !mValid) return session;
+
+  // ① 两侧都有效 ⇒ 位置大的赢；相等才用 updatedAt 破平局
+  if (sPos != mPos) return sPos > mPos ? session : mirror;
   return mirror.updatedAt > session.updatedAt ? mirror : session;
+}
+
+/// 这条进度**属于另一集**吗 —— **双侧强校验**（治「文件名 ≠ 站点集 id」的误杀）
+///
+/// # ★ 与 [progressBelongsToCurrentEpisode] 的分工（两者都保留，判据不同）
+///
+/// ```text
+/// progressBelongsToCurrentEpisode（已有，宽松：任一侧空则放行）
+///   用途：**本会话自己的键**那条 —— 本会话写的集号一定是自己那套标识，
+///         「一侧为空」只可能是老数据/没写集号 ⇒ 放行最安全。
+///
+/// 本函数（双侧强校验）
+///   用途：**镜像/对侧键**那条 —— 它来自另一个命名空间，
+///         集号是**另一套标识**（站点集 id vs 本地文件名）⇒
+///         「两侧都非空且不等」**未必**是另一集，可能只是标识体系不同。
+/// ```
+///
+/// # ★★★ 为什么镜像是「文件名 vs 站点集 id」时必须放行（本轮 ③ 的根因）
+///
+/// ```text
+/// 本地会话：currentEpisodeId = widget.episodeId = **文件名**（shell.dart:4830
+///           传 req.episode.fileName，如 第01集.mp4）
+/// 镜像那条：progressEpisodeId = **站点集 id**（如 51463）
+/// ⇒ 旧守卫（player_page.dart:3708-3712 的 `p.episodeId != curEpId`）判成
+///   「进度属于另一集」⇒ 拒绝续播 ⇒
+///   实测日志：`[PLAYER] 进度属于另一集（51463 ≠ 第01集.mp4），不续播`
+/// ⇒ 只要**一侧像文件名**（带视频后缀），就说明两侧是**两套标识**，
+///   不该按「不等 ⇒ 另一集」处理。
+/// ```
+///
+/// # 判据（任一成立 ⇒ 放行）
+/// ```text
+/// ① 任一侧为空/空白         —— 没有集号可比，不猜（同宽松版）
+/// ② 两侧相等                —— 明明是同一集
+/// ③ 任一侧是**文件名样**     —— 另一套标识体系，不可直接比（见下）
+/// ```
+/// ★ 「文件名样」= 以小写视频后缀结尾（`.mp4/.mkv/...`，见 [_kVideoExts]）。
+///   ⚠️ 用「像不像文件名」而不是「能不能解析成整数」：站点集 id 也可能是
+///      **非数字**（如 bilibili 的 `BV…` cid、加密串）—— 只认「文件名样」
+///      这条路，判据单一、可单测、不会把两套标识误配成相等。
+bool isAnotherEpisode({
+  required String? progressEpisodeId,
+  required String? currentEpisodeId,
+}) {
+  final a = progressEpisodeId?.trim() ?? '';
+  final b = currentEpisodeId?.trim() ?? '';
+  if (a.isEmpty || b.isEmpty) return false; // ①
+  if (a == b) return false; // ②
+  if (isVideoFileName(a) || isVideoFileName(b)) return false; // ③
+  return true;
+}
+
+/// 这个标识**看起来像文件名**吗（以视频后缀结尾）
+///
+/// 只做**后缀**判断 —— 本地会话的「集号」恒为文件名（`shell.dart:4830`），
+/// 而站点集 id 是裸数字/字符串，不带视频后缀。
+/// ⚠️ 后缀表必须是**同一份真相**：这里与 `lib/ui/cache_page.dart:123` 的
+///    `kVideoExts` 保持同值 —— 但 core 不许 import ui（见文件头），
+///    所以本文件**自己声明一份**，并由
+///    `test/zz_ops13_origin_test.dart` 用源码扫描**双向钉住**两边相等。
+const Set<String> _kVideoExts = {
+  '.mp4',
+  '.mkv',
+  '.webm',
+  '.mov',
+  '.m4v',
+  '.ts',
+  '.flv',
+  '.avi',
+};
+
+bool isVideoFileName(String s) {
+  final t = s.trim().toLowerCase();
+  final dot = t.lastIndexOf('.');
+  if (dot <= 0) return false;
+  return _kVideoExts.contains(t.substring(dot));
 }
 
 /// 这条进度是不是**当前这一集**的 —— 与 `lib/ui/player_page.dart:3390` 的守卫同义

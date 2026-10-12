@@ -42,7 +42,7 @@
 //    ⇒ 那正是「转圈发灰」的另一条来源。
 // ⇒ 所以这里显式取语义角色，不用 primary：
 //    深底 → palette.foreground（深色板 = #FAFAFA，亮度 ~0.95，与 #0A0A0A 底差 ~0.95）
-//    浅底 → theme.colorScheme.onSurfaceVariant（= LightTokens.textSecondary #70727A）
+//    浅底 → theme.colorScheme.onSurfaceVariant（= LightTokens.textSecondary，浅色下 #60626B）
 // ```
 //
 // # ★★★ 底色优先于主题（CR #11 / T26-W6，2026-10-11 —— 这才是「太浅」的真根因）
@@ -51,8 +51,8 @@
 // 不是组件**背后那块底色**。两者在播放页上恰好相反：
 //   lib/ui/player_page.dart 的 _LoadingOverlay 固定 Colors.black54 作底
 //   （下面还是视频黑底），与主题无关；用户切到**浅色主题**打开播放页
-//   ⇒ isDark == false ⇒ 选 onSurfaceVariant(#70727A)
-//   ⇒ 灰圈灰字叠在近黑底上 —— 实测读数 (112,114,122)，逐位吻合。
+//   ⇒ isDark == false ⇒ 选 onSurfaceVariant（浅色 #60626B）
+//   ⇒ 灰圈灰字叠在近黑底上 —— 实测读数 (112,114,122)（旧值），逐位吻合。
 //
 // ⇒ 现在「背后那块实际底色」按**三级优先**取，取到谁就按谁选前景色：
 //   ① 调用方显式声明的 `ground:`
@@ -66,7 +66,7 @@
 //   ⚠ 全透明色块（含本仓路由转场那层）不算「底」，见 `_declaresGround`。
 //   判据是 Material 自己的 ThemeData.estimateBrightnessForColor（亮度 > 0.15 = 浅底），
 //   所以半透明的 black54 照样判成深底。
-//   深底 → #FAFAFA；浅底 → onSurfaceVariant（#70727A），与 ③ 的浅底分支同一档。
+//   深底 → #FAFAFA；浅底 → onSurfaceVariant（浅色 #60626B），与 ③ 的浅底分支同一档。
 // ⚠️ 深底那一支在浅色主题下**不能**取 palette.foreground：
 //    浅色板的 foreground 是近黑（#0A0A0A；实际生效的浅色板是 #1E2028），
 //    那是「浅底上的字」的颜色，压到黑底上等于隐形。
@@ -206,8 +206,8 @@ class AppLoading extends StatelessWidget {
   /// # 为什么「底色」必须压过「主题明暗」（CR #11 / T26-W6）
   /// ```text
   /// 播放页遮罩的底色是 Colors.black54、下面还是视频黑底 —— 与用户选的主题**无关**。
-  /// 只按 theme.brightness 判 ⇒ 浅色主题下取到 #70727A 的灰圈压在近黑底上，
-  /// 实测读数 (112,114,122) —— 正是 Owner 报的「太浅」。
+  /// 只按 theme.brightness 判 ⇒ 浅色主题下取到 #70727A（当时旧值）的灰圈压在近黑底上，
+  /// 实测读数 (112,114,122)（当时旧值）—— 正是 Owner 报的「太浅」。
   /// ```
   ///
   /// # 取色优先级（从高到低）
@@ -247,7 +247,7 @@ class AppLoading extends StatelessWidget {
         ? ThemeData.estimateBrightnessForColor(groundColor) == Brightness.dark
         : theme.brightness == Brightness.dark;
 
-    // 深底 → 深色板前景（#FAFAFA）；浅底 → onSurfaceVariant（#70727A）
+    // 深底 → 深色板前景（#FAFAFA）；浅底 → onSurfaceVariant（浅色 #60626B）
     final Color color;
     if (!onDark) {
       color = theme.colorScheme.onSurfaceVariant;

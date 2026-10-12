@@ -159,6 +159,22 @@ class SourinApi {
     _liveStreamCache.clear();
   }
 
+  /// 让**某一个**直播频道（`provider|channelId`）的缓存立即失效（生产出口）
+  ///
+  /// ★ 这是一个**非测试专用**的 API（不加 `@visibleForTesting`）—— 直播
+  ///   取址有 30 秒 TTL，但 TTL 内地址仍可能先坏掉：代理重启、上游换址、
+  ///   核心层探测出的地址在租期内失效。这时用户点「重试」若还命中同一份
+  ///   坏地址，就会**永远重试同一个坏结果直到 TTL 到期**（表现为"点重试
+  ///   没用"）；切回一个刚缓存过的频道也会拿到旧地址。
+  ///   ⇒ 直播**播放失败**与**手动重试**入口都应先调它，把该频道的缓存
+  ///   踢掉再重新取址。
+  ///
+  /// ⚠️ **只删对应的 `provider|channelId` 条目，不清空全部** ——
+  ///    其他频道的缓存（预取邻居台的成果）必须留着，否则一次失败就把
+  ///    "切台≈0ms" 的收益全丢掉。
+  static void invalidateLiveStream(String provider, String channelId) {
+    _liveStreamCache.remove('$provider|$channelId');
+  }
   /// 测试可见的缓存条目数（门禁断言「空结果不缓存」用）
   @visibleForTesting
   static int get debugLiveStreamCacheSize => _liveStreamCache.length;

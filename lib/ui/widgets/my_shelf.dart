@@ -812,6 +812,12 @@ class MyShelfState extends State<MyShelf> {
   static int percentOf(Progress p) =>
       p.duration > 0 ? ((p.position * 100) ~/ p.duration).clamp(0, 100) : 0;
 
+  ///
+  /// ★ 收藏与追更**共用 `Favorite` 类型但读的字段不同**：
+  ///   收藏分支的副标题是 `f.kind == 'series' ? '剧集' : '影片'`，
+  ///   而追更分支**不读** `kind` ⇒ 两条循环的字段清单**必须分开列**
+  ///   （这正是 `kind` 一度漏掉的原因：把两条循环当成"同一份字段"了）。
+  ///   ★ 本仓实现：两个 tab 各走一个写函数（`_writeFavs` 的 `withKind` 开关）。
   static String _shelfSignature(
     List<Favorite> favs,
     List<Favorite> fols,
@@ -846,9 +852,9 @@ class MyShelfState extends State<MyShelf> {
     b.write('\u0003');
     switch (tab) {
       case ShelfTab.following:
-        _writeFavs(b, fols);
+        _writeFavs(b, fols, withKind: false);
       case ShelfTab.favorites:
-        _writeFavs(b, favs);
+        _writeFavs(b, favs, withKind: true);
       case ShelfTab.history:
         _writeProgress(b, his);
     }
@@ -870,7 +876,13 @@ class MyShelfState extends State<MyShelf> {
     return b.toString();
   }
 
-  static void _writeFavs(StringBuffer b, List<Favorite> favs) {
+  /// 写收藏 / 追更两个 tab 的指纹。
+  ///
+  /// ⚠️ [withKind] 必须按 tab 区分 —— 收藏卡的副标题读 `f.kind`（剧集/影片），
+  ///    而追更卡**不读** `kind`。两条字段清单**不可合并**，
+  ///    否则要么漏刷新（收藏改类型不重建），要么白重建（追更被无关字段触发）。
+  static void _writeFavs(StringBuffer b, List<Favorite> favs,
+      {required bool withKind}) {
     for (final f in favs) {
       b
         ..write(f.key)
@@ -878,7 +890,16 @@ class MyShelfState extends State<MyShelf> {
         ..write(f.title)
         ..write('\u0001')
         ..write(f.cover ?? '')
-        ..write('\u0001')
+        ..write('\u0001');
+      // ★ 只有**收藏** tab 需要 `kind`（副标题「剧集/影片」）——
+        //   漏了它：同一 key 的 `kind` 从 movie 变 series（如详情回填后
+        //   更正类型），其余字段全同 ⇒ 指纹不变 ⇒ `load()` 跳过 setState
+        //   ⇒ 卡片**继续显示「影片」**直到别的字段变。
+        //   ★ 追更 tab 不读 `kind` ⇒ 有意不写（写了就是无谓重建）。
+      if (withKind) {
+        b..write(f.kind)..write('\u0001');
+      }
+      b
         ..write(f.lastEpisodeTitle ?? '')
         ..write('\u0001')
         ..write(f.lastEpisodeCount)

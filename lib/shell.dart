@@ -5296,7 +5296,10 @@ class _TitleBarHostState extends State<_TitleBarHost>
           builder: (context, isDark, _) => ValueListenableBuilder<bool>(
             valueListenable: titleBarVisible,
             builder: (context, show, _) => AnimatedSize(
-              duration: const Duration(milliseconds: 180),
+              // ★ 时长走 token（`Motion.medium` = 180ms）—— 本仓规矩
+              //   「动画统一走 token，不许硬编码 Duration」。该 token 保持
+              //   原有的 180ms ⇒ 收展节奏**逐帧不变**（只换写法，不改行为）。
+              duration: Motion.medium,
               curve: Curves.easeOutCubic,
               alignment: Alignment.topCenter,
               child: show

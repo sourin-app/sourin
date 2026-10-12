@@ -848,9 +848,37 @@ impl Db {
                     updated_at      INTEGER NOT NULL
                 );
 
-                -- key 回填：老 key 后拼 ":episode_id"（NULL ⇒ 空串哨兵）
-                -- item_key 回填：就是老 key（provider:native_id）
-                INSERT INTO progress_new
+                /*
+                 * key 回填：三列拼新 key（episode_id NULL ⇒ 空串哨兵）
+                 * item_key 回填：provider:native_id（按作品维度）
+                 *
+                 * ══════════════════════════════════════════════════════
+                 * ★★★ `INSERT OR IGNORE` + `ORDER BY updated_at DESC`
+                 *     —— 旧库**允许**两行拼出同一个新 key
+                 * ══════════════════════════════════════════════════════
+                 *
+                 * 老 schema 的主键是 `key`，而老 `upsert_progress` 把调用方
+                 * 传的 `p.key` **原样存**，不校验 `key == provider||':'||native_id`
+                 * ⇒ 库里可能有两行 key 不同、但 (provider,native_id,episode_id)
+                 * 完全相同：
+                 * ```text
+                 * 行 A: key="cycani:3611"     provider=cycani native_id=3611 ep="ep1"
+                 * 行 B: key="cycani-dup:9999" provider=cycani native_id=3611 ep="ep1"
+                 * ⇒ 两行都拼出 "cycani:3611:ep1" ⇒ 主键冲突
+                 * ```
+                 * ★ 若用普通 `INSERT`：冲突 ⇒ 事务失败 ⇒ `Db::open` 返回 Err
+                 *   ⇒ `State::new` **回退到内存库** ⇒ 用户"所有记录都没了"，
+                 *   且**每次启动都重试、每次都失败**（实测报错逐字：
+                 *   `UNIQUE constraint failed: progress_new.key`）。
+                 *
+                 * ⇒ 撞键时**保留 `updated_at` 最新的那条**：先按 updated_at
+                 *   倒序插入，后面的同键行被 `OR IGNORE` 丢掉 ——
+                 *   于是"先插进去的"就是最新的。与 `repoint_item` 的
+                 *   "取新/取 max" 是同一条裁决。
+                 * ★ 行数**允许减少**（这是预期的合并），下面按"合并了几条"
+                 *   如实记录，而不再当成错误。
+                 */
+                INSERT OR IGNORE INTO progress_new
                     (key,item_key,provider,native_id,title,cover,episode_id,
                      episode_title,position,duration,finished,updated_at)
                 SELECT
@@ -858,7 +886,8 @@ impl Db {
                     provider || ':' || native_id,
                     provider, native_id, title, cover, episode_id,
                     episode_title, position, duration, finished, updated_at
-                FROM progress;
+                FROM progress
+                ORDER BY updated_at DESC;
 
                 DROP TABLE progress;
                 ALTER TABLE progress_new RENAME TO progress;
@@ -882,16 +911,26 @@ impl Db {
             tx.commit()
                 .map_err(|e| format!("progress 迁移：提交事务失败: {e}"))?;
 
-            if before_count != after_count {
+            if after_count > before_count {
                 /*
-                 * ★ 决不允许静默改变行数 —— 老 key 是主键 ⇒ 每个作品一行 ⇒
-                 *   新 key 只会**更细**，行数**必须相等**。不等说明迁移逻辑错了，
-                 *   响亮地报出来（不吞）。
+                 * ★ 行数**变多**仍是硬错误（迁移只可能合并、不可能凭空造行）。
                  */
                 return Err(format!(
-                    "progress 迁移：行数不一致（迁移前 {before_count} / 迁移后 {after_count}）\
-                     —— 主键扩容不该增减行数，请检查迁移 SQL"
+                    "progress 迁移：行数异常增加（迁移前 {before_count} / 迁移后 {after_count}）\
+                     —— 迁移只可能合并重复行，不可能增加行数，请检查迁移 SQL"
                 ));
+            }
+            if after_count < before_count {
+                /*
+                 * ★ 行数**变少**是**预期**的合并结果（见上面 `INSERT OR IGNORE`
+                 *   的论证：老库允许两行拼出同一个新 key）。
+                 *   ★ 不报错，但**不许静默** —— 如实记下合并了几条。
+                 */
+                log::warn!(
+                    "progress 主键迁移：合并了 {} 条「新 key 相同」的旧记录\
+                     （保留 updated_at 最新的那条）：{before_count} 行 → {after_count} 行",
+                    before_count - after_count
+                );
             }
             log::info!(
                 "progress 主键迁移完成（按作品 → 按集）：{before_count} 行 → {after_count} 行"
@@ -1755,18 +1794,20 @@ impl Db {
              *
              * ```text
              * for FROM 的每一集 f:
-             *   to_same_ep = TO 里**同一集**的行（按 episode_id 配，退而按集号标题配）
-             *   TO 同一集无行        ⇒ f 整行搬到 TO（原值照搬）
-             *   TO 同一集有行 + 集号匹配 ⇒ 保留 TO 行，position 取 max、finished 取 FROM
-             *   TO 同一集有行 + 集号不匹配 ⇒ TO 行不动，f 删掉
+             *   to_same = TO 里**同一集**的行（判据 = 集号，见下）
+             *   to_same 为 None  ⇒ f 整行搬到 TO（原值照搬，position 不重置）
+             *   to_same 为 Some  ⇒ 保留 TO 行：position 取 max、finished 取 FROM、
+             *                      其余列取 TO（★ 被搬来的行不再单独存在）
              * ```
              *
-             * ★ 「TO 的哪一行算同一集」的判据：**episode_id 相等优先**；
-             *   两边都没有 episode_id（老数据 / 单片）时退化成按
-             *   `episode_number_from_title` 的集号比较（老口径的那套，
-             *   集号都解析不出 ⇒ 视为同一集）。
-             *   这套判据不是新发明 —— 老代码里"集号匹配"就是 `ep_f == ep_t`，
-             *   这里只是把它从"整部作品一行"细化到"逐集配对"。
+             * ★ 「TO 的哪一行算同一集」的判据是**集号**
+             *   （`episode_number_from_title`；两侧都解析不出 ⇒ 视为同一集）。
+             *
+             *   ⚠️ 2026-10-12 修正：**原来先比 `episode_id`，那是错的** ——
+             *   跨源时两边的 `episode_id` 属于**各自源的命名空间**
+             *   （cycani `48884` / bilibili `51463`），恒不相等且**不会退到**
+             *   集号比较 ⇒ 同一集被当成两集（详见 `to_same` 处的完整论证）。
+             *   ⇒ 现在只看集号，与 ③ 段 history 臂**同一套判据**。
              *
              * ⚠️ FROM 全部行迁移完成后统一 `DELETE ... WHERE item_key=from_key`
              *    —— 因为逐集 upsert 时新行的 item_key 已经变成 to_key。
@@ -1799,22 +1840,54 @@ impl Db {
             if !from_rows.is_empty() {
                 for f in &from_rows {
                     /*
-                     * 在 TO 里找**同一集**的行：
-                     * ① 先按 episode_id 精确配（两侧都有 episode_id 且相等）
-                     * ② 退化成按集号标题配（episode_number_from_title）
-                     *    —— 两侧集号都解析不出 ⇒ 视为同一集（单片，老口径语义）
+                     * 在 TO 里找**同一集**的行。
+                     *
+                     * ══════════════════════════════════════════════════════
+                     * ★★★ 判据是**集号**（`episode_number_from_title`），
+                     *     不是 `episode_id` —— 2026-10-12 修正
+                     * ══════════════════════════════════════════════════════
+                     *
+                     * # 为什么不能用 `episode_id` 配对（踩过）
+                     *
+                     * `repoint_item` **只在跨源时**被调用（`commands_write`
+                     * 有 `from_provider == to_provider` 的入口守卫）。而跨源时
+                     * 两边的 `episode_id` 来自**各自源自己的命名空间**：
+                     * ```text
+                     * cycani   「第01集」⇒ episode_id = "48884"
+                     * bilibili 「第01集」⇒ episode_id = "51463"
+                     * ```
+                     * ⇒ 老写法 `(Some(a), Some(b)) if a == b` 恒为 **false**，
+                     *   且因两侧都非空而**根本退不到**集号分支
+                     * ⇒ 同一集被判成两集 ⇒ TO 下出现**两行第01集**：
+                     * ```text
+                     * 实测（本文件的 repoint_pairs_across_sources_… 用例）：
+                     *   [("bilibili:999:51463", 51463), ("bilibili:999:48884", 48884)]
+                     *   ⇒ 用户「继续观看」里同一集两张卡
+                     *   ⇒ ★ 且 `position` 取 max（m00753 ③）**永不执行**
+                     *     ⇒ 无职转生那组（91 vs 766）走不到 ⇒ 进度**倒退**
+                     *   ⇒ ★ 被搬过去的那行带着 FROM 的 episode_id
+                     *     ⇒ 新源**找不到这一集**
+                     * ```
+                     *
+                     * # 为什么集号才是对的判据
+                     *
+                     * `episode_id` 是**源的内部 id**，跨源没有可比性；
+                     * 而集号（「第几集」）是**内容的属性**，跨源可比。
+                     * ★ 这正是 `history` 臂一直在用的判据（见下面第 ③ 段）
+                     *   —— 老写法让 progress 与 history **两张表各说各话**，
+                     *   现在统一到集号。
+                     *
+                     * ⚠️ 副作用（可接受）：同一源内若两集**集号相同**（罕见），
+                     *   会被并成一行。相比"跨源永远并错"，这是更小的害。
                      */
+                    let ep_f = episode_number_from_title(f.episode_title.as_deref());
                     let to_same: Option<&Progress> = to_rows.iter().find(|t| {
-                        match (f.episode_id.as_deref(), t.episode_id.as_deref()) {
-                            (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() => a == b,
-                            _ => {
-                                let ep_f =
-                                    episode_number_from_title(f.episode_title.as_deref());
-                                let ep_t =
-                                    episode_number_from_title(t.episode_title.as_deref());
-                                ep_f == ep_t
-                            }
-                        }
+                        let ep_t = episode_number_from_title(t.episode_title.as_deref());
+                        /*
+                         * ★ 两侧都解析不出集号 ⇒ 视为同一集（单片；
+                         *   原来 episode_id 的同款语义，改由集号表达）。
+                         */
+                        ep_f == ep_t
                     });
 
                     let merged = match to_same {
@@ -3230,6 +3303,122 @@ mod tests {
     /// ⇒ 本用例两侧集名**写法不同、语义相同**（都解析成 1 ⇒ 进匹配分支），
     ///   然后断言合并结果里的 `episode_title` 是 **TO 的 `'第1集'`**。
     ///   ★ 一旦把 `..t` 改成 `..f`，这条**立刻变红** —— 它才是真的回归锁。
+    /// ★★★ 跨源换源：两源的 `episode_id` **命名空间不同**时仍须配对
+    ///
+    /// ══════════════════════════════════════════════════════════════════
+    /// # 这是 CodeRabbit 在 PR #17 上点出的形态（2026-10-12）
+    /// ══════════════════════════════════════════════════════════════════
+    ///
+    /// `repoint_item` **只在跨源时**被调用（`commands_write::repoint_item`
+    /// 有 `from_provider == to_provider` 的入口守卫）。而跨源时两边的
+    /// `episode_id` 来自**各自源自己的命名空间**，压根不是一套：
+    ///
+    /// ```text
+    /// cycani    的「第01集」⇒ episode_id = "48884"
+    /// bilibili  的「第01集」⇒ episode_id = "51463"
+    /// ⇒ `(Some(a), Some(b)) if a == b` 恒为 **false**
+    /// ⇒ 两个 `Some` 都非空 ⇒ **根本退不到** `episode_number_from_title` 分支
+    /// ⇒ 同一集被判成两集 ⇒ TO 出现**两行第01集**
+    /// ```
+    ///
+    /// # 为什么现有用例抓不到（★ 仪器盲区）
+    ///
+    /// [`prog_ep`] 把 `episode_id` **由集名推导**（`第01集` ⇒ `Some("ep-1")`）
+    /// ⇒ FROM 与 TO **共用同一套 id 命名空间** ⇒ 匹配永远成功。
+    /// 真实世界的两个源**不会**共享命名空间 —— 本用例就是来补这个盲区的：
+    /// 两侧显式给**不同命名空间**的 `episode_id`。
+    ///
+    /// # 后果（不是"多一行"这么轻）
+    ///
+    /// ```text
+    /// ① 同一集在 TO 下出现两行（一行带 FROM 的 id、一行带 TO 的 id）
+    ///    ⇒ 「继续观看」里同一部剧同一集两张卡
+    /// ② `position` 取 max（m00753 ③）**永远不会执行** ⇒ 死代码
+    ///    ⇒ 无职转生那组（91 vs 766）实测走不到 ⇒ 用户进度**倒退**
+    /// ③ 被搬过去的那行带着 FROM 的 episode_id ⇒ 新源**找不到这一集**
+    /// ```
+    #[test]
+    fn repoint_pairs_across_sources_with_different_episode_id_namespaces() {
+        let db = Db::in_memory().unwrap();
+
+        // FROM = 旧源 cycani；TO = 新源 bilibili（★ provider 必须不同）
+        // ★ 两侧 episode_id **显式写成不同命名空间**（真实形态）
+        //   集名写法也不同（"第1集" vs "第01集"）但**集号相同**
+        let mut f = prog_ep("cycani:3611", "某片", 91, 1440, false, "第1集");
+        f.episode_id = Some("48884".into()); // cycani 自己的 id
+        db.upsert_progress(&f).unwrap();
+
+        let mut t = prog_ep("bilibili:999", "某片", 766, 1440, false, "第01集");
+        t.episode_id = Some("51463".into()); // bilibili 自己的 id —— 与 FROM 不同
+        db.upsert_progress(&t).unwrap();
+
+        // ★ 仪器自检：两个 id 必须**真的不同**，否则本用例退化成老形态、失去分辨力
+        assert_ne!(
+            "48884", "51463",
+            "★ 仪器自检：两侧 episode_id 必须不同（这正是跨源的真实形态）"
+        );
+
+        db.repoint_item("cycani:3611", "bilibili:999").unwrap();
+
+        let all = db.list_all_progress().unwrap();
+        assert_eq!(
+            all.len(),
+            1,
+            "★★★ 同一集跨源必须配成**一行** —— \
+             实际 {} 行。两源的 episode_id 命名空间不同，\
+             若配对**先**按 episode_id 比且**不再退**到集号，就会得到两行。\
+             行：{:?}",
+            all.len(),
+            all.iter().map(|p| (p.key.clone(), p.episode_id.clone())).collect::<Vec<_>>()
+        );
+
+        let merged = &all[0];
+        assert_eq!(
+            merged.position, 766,
+            "★★ position 取 **max(91,766)=766** —— \
+             若这里得到 91，说明「跨源配对失败 ⇒ 取 max 成了死代码」\
+             ⇒ 用户换源后进度**倒退** 675 秒"
+        );
+        assert_eq!(
+            merged.episode_id.as_deref(),
+            Some("51463"),
+            "★★ 合并后必须带 **TO（新源）** 的 episode_id —— \
+             带 FROM 的 id 新源**找不到这一集**"
+        );
+        assert_eq!(
+            merged.key, "bilibili:999:51463",
+            "★ 合并后的 key 用 TO 的身份 + TO 的 id"
+        );
+    }
+
+    /// ★★★ 跨源换源：两源的 `episode_id` **命名空间不同**时仍须配对（history 侧）
+    ///
+    /// ★ 与上面 progress 那条**同一形态**，但走 `HistoryEntry` 臂 ——
+    ///   两张表必须**同一套配对语义**，否则同一部作品在两张表里各说各话。
+    #[test]
+    fn repoint_history_pairs_across_sources_with_different_episode_id_namespaces() {
+        let db = Db::in_memory().unwrap();
+
+        db.add_history(&hist_ep("cycani:3611", 91, 1_000, "第1集"))
+            .unwrap();
+        db.add_history(&hist_ep("bilibili:999", 766, 2_000, "第01集"))
+            .unwrap();
+
+        db.repoint_item("cycani:3611", "bilibili:999").unwrap();
+
+        let h = db.list_history(50).unwrap();
+        assert_eq!(
+            h.len(),
+            1,
+            "★★★ history 侧：跨源同一集必须配成一行（与 progress 同一套语义）"
+        );
+        assert_eq!(
+            h[0].position, 766,
+            "★★ history 的 position 也取 max（91 vs 766）"
+        );
+        assert_eq!(h[0].watched_at, 2_000, "★ watched_at 取 max");
+    }
+
     #[test]
     fn repoint_matched_arm_keeps_target_episode_title() {
         let db = Db::in_memory().unwrap();
@@ -4107,6 +4296,75 @@ mod tests {
         // ④ 按作品键查最新一集也能查到（item_key 列回填正确）
         let by_item = db.get_progress("cycani:3611").unwrap().expect("按作品键应查到");
         assert_eq!(by_item.key, "cycani:3611:48884");
+
+        drop(db);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// ★★★ 迁移：旧行的 `key` 与 `provider:native_id` **不一致**时不许炸
+    ///
+    /// ══════════════════════════════════════════════════════════════════
+    /// # 为什么这是**真实**场景（不是构造出来的）
+    /// ══════════════════════════════════════════════════════════════════
+    ///
+    /// 老 schema 的主键是 `key`，而老 `upsert_progress` 把调用方传的
+    /// `p.key` **原样存进去** —— 它**不校验** `key == provider||':'||native_id`。
+    /// 所以库里完全可能有两行：
+    ///
+    /// ```text
+    /// 行 A: key = "cycani:3611"   provider=cycani native_id=3611 episode_id="ep1"
+    /// 行 B: key = "cycani-dup:3612" provider=cycani native_id=3611 episode_id="ep1"
+    ///       ↑ key 不同（主键不冲突，老库收得下）但 (provider,native_id,episode_id) 完全相同
+    /// ```
+    ///
+    /// 迁移按**三列**拼新 key ⇒ 两行都拼出 `cycani:3611:ep1`
+    /// ⇒ `INSERT INTO progress_new` **主键冲突** ⇒ 事务失败 ⇒ 迁移报错。
+    ///
+    /// # 后果（为什么必须修，而不是"反正数据脏"）
+    ///
+    /// ```text
+    /// 迁移失败 ⇒ Db::open 返回 Err ⇒ State::new 回退到**内存库**
+    /// ⇒ 该次运行磁盘库完全不可用，新写入也不持久化
+    /// ⇒ 用户看到"所有记录都没了"，而且**每次启动都重试、每次都失败**
+    /// ```
+    ///
+    /// ⇒ 迁移必须**容错**：撞键时保留 `updated_at` 较新的那条（与
+    ///   `repoint_item` 的"取 max/取新"一致），并**如实记录合并了几条**。
+    #[test]
+    fn progress_migration_tolerates_key_collisions_from_divergent_old_keys() {
+        // 两行的 (provider,native_id,episode_id) 完全相同 ⇒ 新 key 必然相撞
+        let tmp = old_schema_db(&[
+            // key 与 provider:native_id 一致（正常行），updated_at 较旧
+            ("cycani:3611", "cycani", "3611", "旧的那条", Some("ep1"), 10, 100, false, 111),
+            // ★ key 与三列**不一致**（老库允许），但三列与上一行相同，updated_at 较新
+            ("cycani-dup:9999", "cycani", "3611", "新的那条", Some("ep1"), 99, 100, false, 999),
+        ]);
+
+        // ★ 老库自己收得下这两行（key 不同 ⇒ 主键不冲突）
+        {
+            let c = Connection::open(&tmp).unwrap();
+            let n: i64 = c
+                .query_row("SELECT COUNT(*) FROM progress", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 2, "★ 仪器自检：老库确实同时存下了这两行");
+        }
+
+        // ★★★ 迁移不许失败（失败 ⇒ 回退内存库 ⇒ 用户数据"全没了"）
+        let db = Db::open(&tmp).expect(
+            "★★★ 迁移撞键不许让 Db::open 失败 —— \
+             失败会让 State 回退到内存库，用户看到所有记录消失",
+        );
+
+        let all = db.list_all_progress().unwrap();
+        assert_eq!(all.len(), 1, "★ 撞键的两行应合并成一行（不是报错、也不是留两行）");
+        let merged = &all[0];
+        assert_eq!(merged.key, "cycani:3611:ep1", "★ 合并后的 key 是三列口径");
+        assert_eq!(
+            merged.position, 99,
+            "★★ 撞键时保留 **updated_at 较新**的那条 —— \
+             与 repoint_item「取新/取 max」同一条裁决"
+        );
+        assert_eq!(merged.title, "新的那条", "★ 保留的是较新的那条整行");
 
         drop(db);
         let _ = std::fs::remove_file(&tmp);

@@ -58,6 +58,23 @@ int _matchParen(String src, int openIdx) {
   throw StateError('括号不配对（从 $openIdx 起）');
 }
 
+/// 从 [openIdx]（一个 `{`）起，返回配平 `}` 的**块原文**（含两端花括号）
+///
+/// ★ 与 `_matchParen` 同理：按嵌套深度配平，与块内注释长短无关。
+String _balancedBrace(String src, int openIdx) {
+  var depth = 0;
+  for (var i = openIdx; i < src.length; i++) {
+    final c = src[i];
+    if (c == '{') {
+      depth++;
+    } else if (c == '}') {
+      depth--;
+      if (depth == 0) return src.substring(openIdx, i + 1);
+    }
+  }
+  throw StateError('花括号不配对（从 $openIdx 起）');
+}
+
 /// 取每个 `PlayerPage(` 的**参数表原文**
 List<String> _playerPageArgLists(String src) {
   final out = <String>[];
@@ -354,15 +371,39 @@ void main() {
        * ⚠️ 断言的是 `player`（**已剥注释**）⇒ 不能把注释文本写进判据。
        *    我第一版写成 `'_liveChannelsOpen) {\n        // ★ task-53【③】'`
        *    —— 那串注释已经被 `stripComments` 替换成空白 ⇒ 永远找不到（假红）。
-       * ★ 正确判据：Esc 级联里出现 `else if (_liveChannelsOpen)` 且紧跟
-       *    把 `_liveChannelsOpen` 置 false 的语句。
+       *
+       * ★ 2026-10-12：也不能再钉**某一种写法**了。
+       *   基线批次把「关面板顺带叫回控制条」抽成了共用的
+       *   `_escCloseSheet(() => ...)` ⇒ 分支体从
+       *       `setState(() => _liveChannelsOpen = false)` 变成了
+       *       `_escCloseSheet(() => _liveChannelsOpen = false)`
+       *   ⇒ 旧正则（钉 `setState` 直写）**恒红**，尽管 Esc 仍能关掉面板。
+       *
+       * ★ 新判据按**语义**判，而不是钉形状：
+       *     ① Esc 级联里存在 `else if (_liveChannelsOpen)` 分支；
+       *     ② 该分支的**块体**（按括号配平截出，与注释长度无关）
+       *        里有把 `_liveChannelsOpen` 置 false 的效果
+       *        —— 同时接受 `setState(() => _liveChannelsOpen = false)`
+       *           与 `_escCloseSheet(() => _liveChannelsOpen = false)`。
        */
-      final m = RegExp(
-        r'else if \(_liveChannelsOpen\)\s*\{\s*setState\(\(\) => _liveChannelsOpen = false\)',
-      ).firstMatch(player);
-      expect(m, isNotNull,
-          reason: '★★ Esc 级联里没有"`_liveChannelsOpen` ⇒ 关掉它"的分支 ⇒ '
-              '用户按 Esc 关不掉面板（其它浮层都能关 ⇒ 不一致，用户以为 Esc 坏了）');
+      final at = player.indexOf('else if (_liveChannelsOpen)');
+      expect(
+        at,
+        greaterThanOrEqualTo(0),
+        reason: '★★ Esc 级联里没有 `else if (_liveChannelsOpen)` 分支 ⇒ '
+            '用户按 Esc 关不掉面板（其它浮层都能关 ⇒ 不一致，用户以为 Esc 坏了）',
+      );
+      // 分支块体：从 `else if (_liveChannelsOpen)` 之后第一个 `{` 起配平
+      final braceAt = player.indexOf('{', at);
+      expect(braceAt, greaterThan(at), reason: '分支后面没有 `{` ⇒ 结构变了');
+      final block = _balancedBrace(player, braceAt);
+      expect(
+        block.contains('_liveChannelsOpen = false'),
+        isTrue,
+        reason: '★★ `_liveChannelsOpen` 的 Esc 分支**存在**，但块里**没有**把它置 '
+            'false ⇒ 按 Esc 这个分支不关面板（其它分支都关）⇒ '
+            '用户以为 Esc 坏了。块体原文：\n$block',
+      );
     });
 
     test('★ 按钮判据是"直播 + 已接线"（非直播不显示）', () {

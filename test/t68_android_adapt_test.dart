@@ -414,15 +414,42 @@ void main() {
       //
       // ★ 2026-10-08（Owner 第 3 条收尾）：它从**一行 lambda** 改成了**块** ——
       //   关面板现在要做三件事：真源 + `_hideSettingsPortal()` + 底栏自愈。
-      //   ⚠️ 所以不能再钉整行字面量（那等于钉住"不许自愈"）；改钉
-      //   「块头 + 块内第一句」，语义（onClose 写回唯一真值源）不变。
-      final closeAt = indexOfExactly(_page, 'onClose: () {');
+      //   ⚠️ 所以不能再钉整行字面量（那等于钉住"不许自愈"）。
+      //
+      // ★ 2026-10-12：**块内第一句**也已经不能再钉了 ——
+      //   「关面板顺带叫回底栏」被补到了**每一个关点** ⇒ `onClose: () {`
+      //   这个**块头**在同文件里现在出现 **10 次**，`indexOfExactly(...)` 恒红。
+      //   ⇒ 判据改成**结构性的**：先定位 `PlayerSettingsSheet(` 的**调用点**，
+      //     按括号配平截出它的**实参区**，只在该实参区里找 `onClose:`。
+      //   这样：① 其它浮层的 onClose（hooks / 线路 / 弹幕…）天然被排除；
+      //        ② 设置面板的 onClose 被删 ⇒ 实参区里找不到 ⇒ 变红；
+      //        ③ onClose 里不写回 `_settingsOpen` ⇒ 变红。
+      final settingsCallAt = indexOfExactly(
+        _page,
+        'PlayerSettingsSheet(',
+        want: 1,
+        why: '★ 面板应只在 `_buildSettingsPortalChild` 里构造一次；'
+            '找不到 ⇒ 本测试的前提失效，必须重新审视',
+      );
+      final args = sliceBalanced(
+        _page,
+        settingsCallAt + 'PlayerSettingsSheet'.length,
+        '(',
+        ')',
+      );
+      final closeInArgs = args.indexOf('onClose:');
       expect(
-        _page
-            .substring(closeAt, closeAt + 200)
-            .contains('setState(() => _settingsOpen = false);'),
+        closeInArgs,
+        greaterThanOrEqualTo(0),
+        reason: '★ `PlayerSettingsSheet(...)` 的实参区里没有 `onClose:` ⇒ '
+            '设置面板没绑关闭回调 ⇒ 点 X / 关面板的动作不会回写真值源',
+      );
+      // 从 `onClose:` 起、到实参区末尾（onClose 是最后一个参数，见调用点）
+      final closeBody = args.substring(closeInArgs);
+      expect(
+        closeBody.contains('_settingsOpen = false'),
         isTrue,
-        reason: '★ 面板的 onClose 必须写回唯一真值源 _settingsOpen',
+        reason: '★ 面板 onClose 的块里必须写回唯一真值源 `_settingsOpen = false`',
       );
       // 关面板要顺手把 portal 收起来（否则可见性镜像与真值源不同步）
       // ★ 恰好 **2** 处**调用**：`_closeSettingsFromEsc()` 助手 + 面板 X 的 onClose

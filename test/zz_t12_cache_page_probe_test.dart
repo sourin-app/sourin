@@ -794,4 +794,76 @@ void main() {
     expect(req.provider == 'cctv' || req.provider == 'bilibili', isFalse,
         reason: '★★ 沿用站点 provider 会把在线记录的进度改成本地文件的');
   });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ⑤ OPS-13 反馈 C ①：**站点集 id 的取值**（数据管道，纯函数、不挂页面）
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 为什么这条要单独钉（它是「本地与在线同步」的**唯一输入**）
+  // ```text
+  // 镜像进度时 episode_id 必须是**站点集 id**。本地会话手上只有文件名，
+  // 站点集 id 只能从旁文件 / 库里带过来。多集作品的目录只有**一个**旁文件
+  // （记的是最后下载那一集的集号）⇒ 不判「对不对得上当前集」就照用，
+  // 会把某一集的进度写到**另一集**的站点键上（数据污染）。
+  // ⇒ localOriginEpisodeIdFor 是那道闸门，这里逐个情形钉住。
+  // ```
+  group('⑤ 站点集 id 取值（localOriginEpisodeIdFor）', () {
+    CachedEpisode ep(String name, {bool complete = true}) =>
+        CachedEpisode(fileName: name, bytes: 1024, isComplete: complete);
+
+    CachedWork work(List<CachedEpisode> eps, {String? epId}) => CachedWork(
+          dirName: '某剧',
+          path: '/x/某剧',
+          episodes: eps,
+          provider: 'cycani',
+          mediaId: '3862',
+          originEpisodeId: epId,
+        );
+
+    test('★★★ 单集 + 有集号 ⇒ 原样返回（这是能镜像的那条路）', () {
+      final w = work([ep('第01集.mp4')], epId: '51463');
+      expect(localOriginEpisodeIdFor(w, w.episodes.first), '51463');
+    });
+
+    test('★★★ 多集 ⇒ **保守放弃**（返回 null）—— 绝不张冠李戴', () {
+      final w = work([ep('第01集.mp4'), ep('第02集.mp4')], epId: '51463');
+      expect(localOriginEpisodeIdFor(w, w.episodes[0]), isNull,
+          reason: '★★★ 多集目录的旁文件只记了**一个**集号（最后下载那集）—— '
+              '照用会把第 1 集的进度写到第 2 集的站点键上（数据污染）');
+      expect(localOriginEpisodeIdFor(w, w.episodes[1]), isNull);
+    });
+
+    test('★★ 没记住集号 ⇒ null（不猜）', () {
+      final w = work([ep('第01集.mp4')]); // originEpisodeId 未给
+      expect(localOriginEpisodeIdFor(w, w.episodes.first), isNull);
+      final blank = work([ep('第01集.mp4')], epId: '   ');
+      expect(localOriginEpisodeIdFor(blank, blank.episodes.first), isNull,
+          reason: '★ 空白串不是集号');
+    });
+
+    test('★ 多集但只有**一集完成**（其余是 .part）⇒ 按单集处理，可用', () {
+      final w = work([
+        ep('第01集.mp4'),
+        ep('第02集.mp4.part', complete: false),
+      ], epId: '51463');
+      expect(localOriginEpisodeIdFor(w, w.episodes.first), '51463',
+          reason: '★ 只有一集「完成」= 真正的单集目录（.part 播不了）');
+    });
+
+    test('★★ buildLocalPlayRequest 把集号接到 CachedPlayRequest 上', () {
+      final w = work([ep('第01集.mp4')], epId: '51463');
+      final req = buildLocalPlayRequest(w);
+      expect(req, isNotNull);
+      expect(req!.originEpisodeId, '51463',
+          reason: '★★ 集号必须真的从 CachedWork 流到 CachedPlayRequest —— '
+              '否则 shell 那一层根本拿不到值，镜像仍然不会写');
+      expect(req.originProvider, 'cycani');
+      expect(req.originMediaId, '3862');
+    });
+
+    test('★ 多集 ⇒ buildLocalPlayRequest.originEpisodeId 为 null（退化）', () {
+      final w = work([ep('第01集.mp4'), ep('第02集.mp4')], epId: '51463');
+      expect(buildLocalPlayRequest(w)!.originEpisodeId, isNull);
+    });
+  });
 }

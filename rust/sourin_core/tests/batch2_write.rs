@@ -71,7 +71,15 @@ async fn progress_round_trip_writes_history_too() {
     assert_eq!(p.duration, 1420);
     assert_eq!(p.title, "某剧");
     assert_eq!(p.episode_title.as_deref(), Some("第01集"));
-    assert_eq!(p.key, "cycani:3862");
+    /*
+     * ★★★ 2026-10-12 按集扩容：进度 key = "provider:native_id:episode_id"
+     *   （episode_id 为 null 时空串哨兵）。
+     *   这里 episode_id = "ep1" ⇒ key = "cycani:3862:ep1"。
+     */
+    assert_eq!(
+        p.key, "cycani:3862:ep1",
+        "★ 按集主键 = provider:native_id:episode_id"
+    );
     println!("✓ 进度往返: pos={} dur={}", p.position, p.duration);
 
     // ② ★ 历史也必须有一条（原版行为 —— 两套数据都写）
@@ -116,6 +124,60 @@ async fn progress_auto_finishes_at_95_percent() {
     let p = commands::get_progress(&st, "p", "d").unwrap().unwrap();
     assert!(p.finished, "显式传 finished=true 应生效（哪怕只有 10%）");
     println!("✓ 显式 finished=true 覆盖自动判定");
+}
+
+/// ★★★ 按集共存的**命令层**验证（走 save_progress / get_progress 真实路径）
+///
+/// # Owner 的场景（2026-10-12）
+///
+/// > 如果第3集我看过了,时间是22分钟,我看到20分钟,然后我又从第2集看,
+/// > 正好第二集结束自动切换到下一集,那么第三集应该从头播放
+///
+/// 这个场景**要求第3集的进度不被第2集覆盖**。老口径（按作品主键）做不到：
+/// 两集写同一个 key ⇒ 后者顶掉前者。本用例从**命令层**（= FFI 同一路径）
+/// 钉死新口径：两集各自一行都在。
+#[tokio::test]
+async fn progress_coexists_per_episode_via_commands() {
+    let st = fresh_state("per-episode").await;
+
+    // 第3集：看到 20 分钟（1320s）
+    cw::save_progress(
+        &st, "cycani", "3611", "长剧", None,
+        Some("ep3".into()), Some("第03集".into()), 1320, 1320, Some(false),
+    )
+    .unwrap();
+    // 第2集：看到结束（会自动切下一集 —— 就是 Owner 的场景）
+    // ★ 隔 2ms：`save_progress` 的 updated_at = 当前毫秒，紧挨着调用会同值
+    //   （同值下"最近看的那集"就没有分辨力）—— 这是**仪器自检**的一部分。
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    cw::save_progress(
+        &st, "cycani", "3611", "长剧", None,
+        Some("ep2".into()), Some("第02集".into()), 1300, 1320, Some(false),
+    )
+    .unwrap();
+
+    /*
+     * ★ 关键断言：`list_all_progress` 里必须**两行都在**。
+     *   老口径下第2集的写入会把第3集顶掉 ⇒ 只有 1 行 ⇒ 这里红。
+     */
+    let all = commands::list_all_progress(&st).unwrap();
+    assert_eq!(
+        all.len(),
+        2,
+        "★★★ 同一作品的两集必须都留着（按集主键）—— 老口径只剩最后写的那集 ⇒ 红"
+    );
+    let ep3 = all.iter().find(|p| p.key == "cycani:3611:ep3").expect("第3集行");
+    assert_eq!(ep3.position, 1320, "★ 第3集的 20 分钟必须原样保留，不被第2集覆盖");
+    assert_eq!(ep3.episode_title.as_deref(), Some("第03集"));
+
+    // 按作品键（命令对外契约）取到的是**最近看的那集**（第2集，updated_at 更晚）
+    let latest = commands::get_progress(&st, "cycani", "3611").unwrap().unwrap();
+    assert_eq!(
+        latest.episode_id.as_deref(),
+        Some("ep2"),
+        "★ 按作品查返回最近看的那一集（第2集）"
+    );
+    println!("✓ 按集共存：ep3 与 ep2 各一行，整部作品查回最近看的 ep2");
 }
 
 /// ★★★ 封面 URL 落库前必须 unproxy（原版真 bug 的修复）

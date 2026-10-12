@@ -189,10 +189,21 @@ pub fn is_started() -> bool {
 // following）都用这个格式。**格式错了会静默查不到**（不报错、
 // 只是返回 None），所以每个命令都要照抄这段 format，不能自己发挥。
 
-/// progress 表的主键格式（原版全项目统一）
+/// progress 表的**按作品键**格式（原版全项目统一）
 ///
 /// 单独抽出来是为了**只在一处定义** —— 这是契约，
 /// 分散写两次就可能不一致，而后果是静默查不到。
+///
+/// ★★★ 2026-10-12：`progress` 的**落库主键**已从按作品扩成**按集**
+/// （`provider:native_id:episode_id`，见 `store::progress_key`）。
+/// 但这个 `item_key` 仍是**按作品键**，用途变成：
+/// ```text
+/// get_progress(provider,id) → 查该作品**最新一集**的进度
+///                             （store.rs 的 get_progress 按 item_key + MAX(updated_at)）
+/// ```
+/// ⇒ 对 [`get_progress`] 命令的**对外契约没变**（还是收 provider+id，返回一条），
+///   只是返回的那条从"唯一一行"变成"该作品最近看的那一集"。
+/// favorites / skip_markers / history 仍是按作品一行（未变）。
 fn item_key(provider: &str, id: &str) -> String {
     format!("{provider}:{id}")
 }

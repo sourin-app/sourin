@@ -84,15 +84,12 @@ jobs:
       #   回退到 pubspec 的版本号（见 lib/core/app_update/app_version.dart）。
       SOURIN_VERSION: ${{ inputs.release_tag }}
 
-      # 弹弹play 官方凭证：构建期从 GitHub Actions secrets 注入
-      # （官方文档 doc.dandanplay.com/open/「安全注意事项」允许开源客户端只留
-      #   占位符、构建时替换真值）。仓库 Settings → Secrets and variables →
-      #   Actions 里配置 DANDANPLAY_APP_ID / DANDANPLAY_APP_SECRET。
-      # pull_request（fork PR）按 GitHub 内建规则拿不到 secrets ⇒ 两个 env 为
-      #   空串 ⇒ dart-define 也是空串 ⇒ String.fromEnvironment 缺省空串，
-      #   App 回落到用户自填凭证，行为与未注入逐字一致，无需额外判断。
-      DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
-      DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
+    # ★ 弹弹play 官方凭证（DANDANPLAY_APP_ID / APP_SECRET）**不在这里**声明：
+    #   它只挂在下一条「构建 Windows 发布版」这一步的 env: 上。
+    #   为什么不能放 job 级：job 级 env 会注入到**本 job 的每一个步骤**，
+    #   于是「全量测试」与若干第三方 Action（checkout / flutter-action / …）
+    #   都能读到 Secret。凭证只有构建那一步需要 ⇒ 就只给那一步
+    #   （最小权限原则，对应 CWE-94 的注入面收窄）。
 
 
     steps:
@@ -160,14 +157,25 @@ jobs:
 
       # ── ③ 打包 ─────────────────────────────────────────────────────
       - name: 构建 Windows 发布版
+        # ★ 凭证 env 只挂在这一步（最小权限，理由见上面 job 里的说明）。
+        # ★ 用 $env:NAME 而非 ${{ env.NAME }} 展开：Windows 这一步是 pwsh，
+        #   环境变量语法是 $env:NAME。这样 Secret 的内容作为**环境变量值**
+        #   被 dart 的 --dart-define 直接取用（命令行是参数数组，不经 shell
+        #   二次解析）⇒ Secret 里若含双引号 / $ / 反引号也不会改变命令解析
+        #   （对应 CWE-94：把不可信输入从命令文本里挪出解析面）。
         # ★ -t 不能漏：入口是 shell.dart。lib/main.dart 是早期的 HEVC
         #   验收 spike（见那个文件头），编错了不会报错，只是行为完全不同。
+        env:
+          DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
+          DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
         # ★ --dart-define=SOURIN_VERSION 让 App 知道自己是谁（发版时为 tag）
+        # fork PR 拿不到 secrets ⇒ 两个 env 为空串 ⇒ dart-define 也是空串 ⇒
+        # String.fromEnvironment 缺省空串，App 回落到用户自填凭证，行为不变。
         run: >-
           flutter build windows --release --no-pub -t lib/shell.dart
           --dart-define=SOURIN_VERSION=${{ env.SOURIN_VERSION }}
-          --dart-define=DANDANPLAY_APP_ID="${{ env.DANDANPLAY_APP_ID }}"
-          --dart-define=DANDANPLAY_APP_SECRET="${{ env.DANDANPLAY_APP_SECRET }}"
+          --dart-define=DANDANPLAY_APP_ID="$env:DANDANPLAY_APP_ID"
+          --dart-define=DANDANPLAY_APP_SECRET="$env:DANDANPLAY_APP_SECRET"
 
       - name: 核验产物
         shell: pwsh
@@ -362,16 +370,12 @@ jobs:
       #   回退到 pubspec 的版本号（见 lib/core/app_update/app_version.dart）。
       SOURIN_VERSION: ${{ inputs.release_tag }}
 
-      # 弹弹play 官方凭证：构建期从 GitHub Actions secrets 注入
-      # （官方文档 doc.dandanplay.com/open/「安全注意事项」允许开源客户端只留
-      #   占位符、构建时替换真值）。仓库 Settings → Secrets and variables →
-      #   Actions 里配置 DANDANPLAY_APP_ID / DANDANPLAY_APP_SECRET。
-      # pull_request（fork PR）按 GitHub 内建规则拿不到 secrets ⇒ 两个 env 为
-      #   空串 ⇒ dart-define 也是空串 ⇒ String.fromEnvironment 缺省空串，
-      #   App 回落到用户自填凭证，行为与未注入逐字一致，无需额外判断。
-      DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
-      DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
-
+      # ★ 弹弹play 官方凭证（DANDANPLAY_APP_ID / APP_SECRET）**不在这里**声明：
+      #   它只挂在下一条「构建 macOS 发布版」这一步的 env: 上。
+      #   为什么不能放 job 级：job 级 env 会注入到**本 job 的每一个步骤**，
+      #   于是「全量测试」与若干第三方 Action（checkout / flutter-action / …）
+      #   都能读到 Secret。凭证只有构建那一步需要 ⇒ 就只给那一步
+      #   （最小权限原则，对应 CWE-94 的注入面收窄）。
 
     steps:
       - name: 检出代码
@@ -409,12 +413,19 @@ jobs:
         run: flutter test
 
       - name: 构建 macOS 发布版
+        # ★ 凭证 env 只挂在这一步（最小权限，理由见上面 job 里的说明）。
+        # ★ 用 $NAME 展开（macOS 这一步是 bash）：Secret 内容作为环境变量值
+        #   被 --dart-define 直接取用（命令行是参数数组，不经 shell 二次解析），
+        #   Secret 里含双引号 / $ / 反引号也不会改变命令解析（CWE-94）。
         # ★ --dart-define=SOURIN_VERSION 让 App 知道自己是谁（发版时为 tag）
+        env:
+          DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
+          DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
         run: >-
           flutter build macos --release --no-pub -t lib/shell.dart
           --dart-define=SOURIN_VERSION=${{ env.SOURIN_VERSION }}
-          --dart-define=DANDANPLAY_APP_ID="${{ env.DANDANPLAY_APP_ID }}"
-          --dart-define=DANDANPLAY_APP_SECRET="${{ env.DANDANPLAY_APP_SECRET }}"
+          --dart-define=DANDANPLAY_APP_ID="$DANDANPLAY_APP_ID"
+          --dart-define=DANDANPLAY_APP_SECRET="$DANDANPLAY_APP_SECRET"
 
       - name: 核验产物
         shell: bash
@@ -621,15 +632,12 @@ jobs:
       #   回退到 pubspec 的版本号（见 lib/core/app_update/app_version.dart）。
       SOURIN_VERSION: ${{ inputs.release_tag }}
 
-      # 弹弹play 官方凭证：构建期从 GitHub Actions secrets 注入
-      # （官方文档 doc.dandanplay.com/open/「安全注意事项」允许开源客户端只留
-      #   占位符、构建时替换真值）。仓库 Settings → Secrets and variables →
-      #   Actions 里配置 DANDANPLAY_APP_ID / DANDANPLAY_APP_SECRET。
-      # pull_request（fork PR）按 GitHub 内建规则拿不到 secrets ⇒ 两个 env 为
-      #   空串 ⇒ dart-define 也是空串 ⇒ String.fromEnvironment 缺省空串，
-      #   App 回落到用户自填凭证，行为与未注入逐字一致，无需额外判断。
-      DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
-      DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
+      # ★ 弹弹play 官方凭证（DANDANPLAY_APP_ID / APP_SECRET）**不在这里**声明：
+      #   它只挂在下一条「构建 APK（按 ABI 拆分 —— arm64 + armv7）」这一步的
+      #   env: 上。为什么不能放 job 级：job 级 env 会注入到**本 job 的每一个
+      #   步骤**，于是「全量测试」与若干第三方 Action（checkout / flutter-action /
+      #   rust-toolchain / …）都能读到 Secret。凭证只有构建那一步需要 ⇒ 就只给
+      #   那一步（最小权限原则，对应 CWE-94 的注入面收窄）。
 
     if: github.event_name == 'workflow_dispatch' && inputs.build_android
 
@@ -775,13 +783,20 @@ jobs:
         #   x86_64 那个 APK 里就会**不含 libsourin_core.so**，而下面「上传 APK」是
         #   `*.apk` 全量上传 ⇒ 用户会拿到一个**静默残废**的包（装上一调核心就 open 失败）。
         #   要加 x86_64，必须先在「拷进 jniLibs」里加上 x86_64 的交叉编译与拷贝。
+        # ★ 凭证 env 只挂在这一步（最小权限，理由见上面 job 里的说明）。
+        # ★ 用 $NAME 展开（Android 这一步是 bash）：Secret 内容作为环境变量值
+        #   被 --dart-define 直接取用（命令行是参数数组，不经 shell 二次解析），
+        #   Secret 里含双引号 / $ / 反引号也不会改变命令解析（CWE-94）。
         # ★ --dart-define=SOURIN_VERSION 让 App 知道自己是谁（发版时为 tag）
+        env:
+          DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
+          DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
         run: >-
           flutter build apk --release --no-pub --split-per-abi
           --target-platform android-arm64,android-arm -t lib/shell.dart
           --dart-define=SOURIN_VERSION=${{ env.SOURIN_VERSION }}
-          --dart-define=DANDANPLAY_APP_ID="${{ env.DANDANPLAY_APP_ID }}"
-          --dart-define=DANDANPLAY_APP_SECRET="${{ env.DANDANPLAY_APP_SECRET }}"
+          --dart-define=DANDANPLAY_APP_ID="$DANDANPLAY_APP_ID"
+          --dart-define=DANDANPLAY_APP_SECRET="$DANDANPLAY_APP_SECRET"
 
       - name: 核验 APK 的 Android TV 入口（手机入口 + TV 入口都要在）
         shell: bash

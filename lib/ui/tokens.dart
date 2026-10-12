@@ -220,6 +220,18 @@ abstract final class Motion {
   ///   ⇒ 200ms 是"能看清是过渡、又不觉得在等"的经验值
   /// ⚠️ 判据②要求 ≤300ms ✓
   static const Duration fade = Duration(milliseconds: 200);
+
+  /// 结构型尺寸过渡（`AnimatedSize` / 栏体收展）—— **180ms**
+  ///
+  /// ★ 为什么是 180（而不是复用 `fast`=150 或 `fade`=200）：
+  ///   这是本仓**既有**的一个时长档 —— 标题栏收展（`lib/shell.dart`）、
+  ///   直播页、空间导航、弹幕浮层、可重排网格都已用 180ms。
+  ///   本次只是把 `lib/shell.dart:5299` 那处**裸字面量**换成具名 token，
+  ///   **绝不改变任何一个动画的实际时长**（改 180 ⇒ 150/200 就是偷偷改节奏，
+  ///   会与上面那几处已对齐 180 的动效不一致）。
+  /// ⚠️ 命名用 `medium`（介于 fast/base 之间的"标准结构时长"）——
+  ///    与 `fade`(200, 专用于骨架淡入的语义档) 区分开。
+  static const Duration medium = Duration(milliseconds: 180);
 }
 
 /// 浮层（弹窗 / 抽屉 / 底部弹层）的动效档位 —— task-99 追加

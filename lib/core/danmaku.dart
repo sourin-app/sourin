@@ -1135,6 +1135,7 @@ class DanmakuHintAction {
     this.openDanmakuSettings = false,
     this.openBiliSheet = false,
     this.useLocalDanmaku = false,
+    this.useOfficialDanmaku = false,
   });
 
   /// 按钮文案
@@ -1149,10 +1150,18 @@ class DanmakuHintAction {
   /// 点了之后**改用本机弹弹play**（T27-08）
   ///
   /// 与上面两个开关一样只是「请宿主做某件事」的标记，判据留在这一层：
-  /// 只有**探测到本机弹弹play 在线**时才置 true（没探测到还给这个按钮，
-  /// 用户点了也连不上，等于骗他）。宿主（player_page）据此重建客户端
-  /// 并重取弹幕 —— 本机源的本地接口**免签名**，不需要 AppId/AppSecret。
+  /// 只有**本次请求确实走的是官方**（即本机不在线）时才置 true —— 反之
+  /// 「本次已经走了本机却还给『改用本机』」是一个**死循环**按钮（T27-14）。
+  /// 宿主（player_page）据此重建客户端并重取弹幕 —— 本机源的本地接口
+  /// **免签名**，不需要 AppId/AppSecret。
   final bool useLocalDanmaku;
+
+  /// 点了之后**改用官方 API**（T27-14）
+  ///
+  /// 本次请求**确实走了本机弹弹play**、而本机却回了 401/403 ⇒ 真正该做的是
+  /// **换一条路**（官方 API），而不是再点一次「改用本机」（那会原样复现）。
+  /// 宿主据此粘住「强制官方」再重取一次。与 [useLocalDanmaku] 互斥。
+  final bool useOfficialDanmaku;
 }
 
 /// 「为什么失败 + 怎么办」——一句话解释 + 可选的动作按钮
@@ -1191,20 +1200,38 @@ class DanmakuHint {
   ///
   /// 改前只有一句话「去官网免费申请」—— 而业主机器上本机弹弹play
   /// 就在跑（T27-05 的本地源，**免签名**），叫他去申请凭证是**指向错误**的：
-  /// 真正该做的是把这次请求切到本地源。判据只有一个、且来自真实读数：
-  /// 宿主探测到的本机弹弹play 是否在线（[DanmakuLocalService.probe]），
-  /// 经 [localOnline] 传进来。
+  /// 真正该做的是把这次请求切到本地源。判据只有一个、且来自真实读数。
+  ///
+  /// ## ★★★ T27-14（CodeRabbit A7）：判据必须是「这次请求**走了哪个源**」，
+  ///    不是「本机在不在线」
+  ///
+  /// ```text
+  /// 改前的注入值是 host 的 `usingLocal`，而 host 的选路规则是
+  ///   usingLocal = localStatus.online（player_page.dart:5013）
+  /// ⇒ 只有「本机在线 ⇒ 本次走了本机 ⇒ 本机又回了 401/403」这一条路能进来。
+  ///   这时这段文案写「检测到本机弹弹play，但当前数据源是官方 API」——
+  ///   **与事实完全相反**（这次请求打的就是本机），且按钮「改用本机弹弹play」
+  ///   点了还是打本机 ⇒ 复现同一条失败 ⇒ **死循环**。
+  /// 反过来，「本机在线却走了官方」这个组合按自动路由**根本不会出现**。
+  /// ```
+  ///
+  /// ⇒ 入参语义改为 [usedLocalSource] = 「产生这条失败的那次请求**确实走了**
+  ///   本机弹弹play」。它决定的是**换哪条路**，不再是「本机在不在线」：
+  ///   · true（本机拒绝了这次请求）⇒ 实话实说 + 「改用官方 API」（真换路）；
+  ///   · false（官方拒绝了这次请求）⇒ 老文案（t100/t103/zz_t3 逐字钉着）。
   ///
   /// 刻意**不**在这里自己探测：本函数是**纯函数**（t100/t103 直接调它断言），
   /// 一探测就变成异步 + 依赖网络，那些断言全得跟着改 —— 事实由宿主注入。
   ///
   /// ⚠️ 只有「没填凭证」这一支分两态。凭证填了被拒（Invalid AppId /
-  ///    Signature）那一支**一个字都没动**：本地源在线也救不了填错的凭证，
-  ///    把它改说成「改用本机」就是另一种误导。
+  ///    Signature）那一支**一个字都没动**：换哪条源都救不了填错的凭证。
   ///
-  /// [localOnline] 缺省 false ⇒ 与改前**逐字同形**的「没探测到本机」那一支，
+  /// [usedLocalSource] 缺省 false ⇒ 与改前**逐字同形**的「走的是官方」那一支，
   /// 既有调用方（含 t100/t103）行为不变。
-  static DanmakuHint? of(DanmakuException e, {bool localOnline = false}) {
+  static DanmakuHint? of(
+    DanmakuException e, {
+    bool usedLocalSource = false,
+  }) {
     final rejected = e.statusCode == 401 || e.statusCode == 403;
     if (!rejected) return null;
 
@@ -1214,32 +1241,35 @@ class DanmakuHint {
 
     if (missing) {
       /*
-       * ★ 第 1 态：本机弹弹play 在线 ⇒ 说清「这次为什么还走了官方」+ 一键切过去
+       * ★ 第 1 态：本次请求**走的是本机弹弹play**，而本机回了 401/403
        *
-       * 为什么标题要带「官方 API」：光说「检测到本机弹弹play」用户会以为
-       * 已经用上了，于是反复点「重新获取弹幕」而现象不变。必须点明
-       * **这一次请求走的是官方**（要凭证），而本机那条路不用。
+       * 这是本机源自己拒绝了请求（它免签名，正常绝不该 401/403）。
+       * ⇒ 文案必须**如实**说「本机拒绝了这次请求」，绝不能写「走的是官方 API」
+       *   （那是反的）。出路必须是**换一条路**：改用官方 API —— 而不是
+       *   再点一次「改用本机」（那正是原缺陷的死循环按钮）。
        */
-      if (localOnline) {
+      if (usedLocalSource) {
         return DanmakuHint(
-          title: '检测到本机弹弹play，但当前数据源是官方 API',
-          text: '本机弹弹play 正在运行（${DanmakuLocalService.hostPort}），'
-              '它的本地接口**不需要 AppId / AppSecret**，'
-              '而这次弹幕是从官方 API 取的，所以要一对凭证。'
-              '点下面的「改用本机弹弹play」就会切到本地源重取一次，'
-              '不用申请任何凭证。'
-              '想继续用官方 API 的话，在弹幕设置里填 AppId / AppSecret，'
-              '再点「重新获取弹幕」。',
+          title: '本机弹弹play 拒绝了这次请求',
+          text: '这次弹幕是从本机弹弹play（${DanmakuLocalService.hostPort}）取的，'
+              '而它回了 401/403（原文：${xe.isEmpty ? "未提供原因" : xe}）。'
+              '本机弹弹play 的本地接口**免签名**、正常不需要凭证 ⇒ '
+              '这个报错多半说明 2080 端口上回应的不是弹弹play，'
+              '或者它的接口版本对不上。'
+              '点下面的「改用官方 API」换一条路重取一次'
+              '（官方那侧要一对 AppId / AppSecret，'
+              '在 https://dev.dandanplay.com 申请）。'
+              '也可以先去弹幕设置看看「数据源」状态行。',
           action: const DanmakuHintAction(
-            label: '改用本机弹弹play',
+            label: '改用官方 API',
             openDanmakuSettings: true,
-            useLocalDanmaku: true,
+            useOfficialDanmaku: true,
           ),
           url: 'https://dev.dandanplay.com',
         );
       }
       /*
-       * ★ 第 2 态：本机不在线且没凭证 ⇒ 只说「在弹幕设置里选数据源」
+       * ★ 第 2 态：本次请求走的是官方 API，且没凭证
        *
        * 「去官网免费申请」在这里删掉：本机弹弹play 这条路不用申请，
        * 先让用户知道有两条路，再让他自己选（默认仍是官方）。

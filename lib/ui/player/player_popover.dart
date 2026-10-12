@@ -47,7 +47,6 @@ class PlayerPopoverIds {
   static const rate = 'rate';
   static const quality = 'quality';
   static const tracks = 'tracks';
-  static const danmaku = 'danmaku';
   static const more = 'more';
 }
 

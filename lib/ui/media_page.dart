@@ -193,6 +193,7 @@ class MediaPage extends StatefulWidget {
     this.localMeta,
     this.originProvider,
     this.originMediaId,
+    this.originEpisodeId,
   });
 
   final String provider;
@@ -242,6 +243,12 @@ class MediaPage extends StatefulWidget {
   ///    （那正是「宁可没有来源，也不要错的来源」）。
   final String? originProvider;
   final String? originMediaId;
+
+  /// ★★★ OPS-13 反馈 C ①：镜像进度时 `episode_id` 要写的**站点集 id**。
+  ///
+  /// ⚠️ 与 [originProvider]/[originMediaId] 同一条纪律：**原样转发**，
+  ///    本页不判、不猜。null = 拿不到（老下载 / 多集）⇒ 不写镜像。
+  final String? originEpisodeId;
 
   @override
   State<MediaPage> createState() => _MediaPageState();
@@ -1227,6 +1234,29 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
   /// ⚠️ 绝对路径**复用生产那个组织会话的函数**（[buildLocalPlayRequest]），
   ///    不在这里手拼 work.path + 分隔符 + fileName —— 那是第二个实现，
   ///    迟早与 cache_page 的规则漂移（本仓反复踩过这个形态）。
+  /// ★ CodeRabbit PR #15：只在**确认当前播的就是 originEpisodeId 那一集**时
+  /// 才把它转发给播放器（否则 null ⇒ 停用镜像）。完整理由见调用点注释。
+  ///
+  /// 判据是**逐文件比对**，不是数个数：
+  /// ```text
+  /// ① widget.originEpisodeId 为空 ⇒ null（本来就没得传）
+  /// ② 当前播的不是本地文件（_resolvedLocalPath == null）⇒ null
+  /// ③ 本地完成集里**恰好有一集**、且它的绝对路径 == 正在播的那条 ⇒ 转发
+  /// ④ 其余（多集 / 换了集 / 找不到）⇒ null  ← 宁可漏写不可写错
+  /// ```
+  /// ⚠️ ③ 的"恰好一集"与路径比对**缺一不可**：
+  ///    只数个数会漏掉「打开时 A → B 下完 → 删掉 A ⇒ 又只剩 1 个（B）」
+  ///    这个顺序；只比路径则无法排除"多个候选指向同一路径"的歧义。
+  String? _originEpisodeIdForCurrentLocal() {
+    final want = widget.originEpisodeId;
+    if (want == null || want.isEmpty) return null;
+    final playing = _resolvedLocalPath;
+    if (playing == null) return null;
+    final refs = _localEpisodeRefs;
+    if (refs.length != 1) return null;
+    return refs.single.absolutePath == playing ? want : null;
+  }
+
   List<LocalEpisodeRef> get _localEpisodeRefs {
     final w = _diskWorkForThis;
     if (w == null) return const <LocalEpisodeRef>[];
@@ -1567,6 +1597,38 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
        */
       originProvider: widget.originProvider,
       originMediaId: widget.originMediaId,
+      /*
+       * ★★★ OPS-13 反馈 C ①：站点集 id 一起转发（镜像的 episode_id 靠它）
+       *
+       * ⚠️⚠️ 2026-10-12 修正（CodeRabbit PR #15，两轮）：
+       *      只在**能确认"当前正在播的就是那个集"**时才转发，否则传 null。
+       *
+       * # 为什么不能无条件传
+       *
+       * `widget.originEpisodeId` 是**本页打开时**由 `localOriginEpisodeIdFor`
+       * 定下的 —— 而那条判据是「单集目录 ⇒ 直接返回该 id」。页面打开之后，
+       * 磁盘上的完成集**会变**（异步扫描 / 边下边播 / 删除），于是：
+       * ```text
+       * 打开时：只有完成集 A ⇒ originEpisodeId = A 的站点集 id
+       * 之后  ：B 下完了（或 A 被删、只剩 B）⇒ _localEpisodeRefs 变了
+       *         ⇒ 用户选的是 B
+       *         ⇒ 但 originEpisodeId 仍是 A 的
+       *         ⇒ 镜像把 B 的本地进度写到**在线集 A** 的键上 ⇒ 污染
+       * ```
+       *
+       * # 判据：**认"当前播的那个文件"，不是数个数**
+       *
+       * ⚠️ 第一版只看 `_localEpisodeRefs.length <= 1` —— **不够**：
+       *    "打开时只有 A → B 下完 → 删掉 A ⇒ 又只剩 1 个（B）"
+       *    这个顺序下计数仍是 1，但 A 早已不是 B。
+       * ⇒ 改成**逐文件比对**：只有当那一集存在、且它的绝对路径就是本页
+       *    正在播的路径（`_resolvedLocalPath`）时才转发。
+       *    这同时覆盖"多个完成集"与"换了一个完成集"两种情况。
+       *
+       * ⚠️ 恰好 1 个且就是它 ⇒ **照常传**（保住 OPS-13 反馈 C ① 的兜底场景）。
+       * ⇒ 认不出 ⇒ null ⇒ 停用镜像。与「宁可漏写不可写错」同一裁决。
+       */
+      originEpisodeId: _originEpisodeIdForCurrentLocal(),
       // ★ task-2【④】：右侧详情栏此刻是否真的可见（见 hasRightDetail 的注释）
       hasRightDetailBar: hasRightDetail,
     );

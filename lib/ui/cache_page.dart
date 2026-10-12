@@ -164,6 +164,7 @@ class CachedWork {
     required this.episodes,
     this.provider,
     this.mediaId,
+    this.originEpisodeId,
     this.cover,
     this.title,
     this.description,
@@ -184,6 +185,23 @@ class CachedWork {
   final String? mediaId;
   final String? cover;
   final String? title;
+
+  /// ★★★ OPS-13 反馈 C ①：**当前这一集**在原站上的集 id（如 `51463`）。
+  ///
+  /// # 从哪来（三条优先级，见 [_scanWork] 与 [resolveCacheMetaByDirName]）
+  /// ```text
+  /// ① 旁文件 _sourin-cache.json 的 episodeId 字段（**新下载**才有）
+  /// ② 旁文件没有 ⇒ 按目录名去库（history/favorites）反查**同标题**那条的
+  ///    原生 progress 的 episode_id（**老下载**的兜底，尽力而为）
+  /// ③ 都没有 ⇒ null（退化成「不写镜像」，**不猜**）
+  /// ```
+  ///
+  /// ⚠️ **只对单集作品可靠**：一部多集的作品，整个目录只有**一个**旁文件
+  ///    （见 download_queue._writeSidecarFor），它记的 episodeId 是**最后下载
+  ///    那一集**的 —— 本地打开别的集时会张冠李戴。
+  /// ⇒ 所以 [buildLocalPlayRequest] **只在「该集就是旁文件记的那一集，
+  ///    或整目录只有一集」时才敢用**（见那里的判断）。
+  final String? originEpisodeId;
 
   // ══════════════════════════════════════════════════════════════════
   //  ★★★ Owner 第 1009 批 13：随下载缓存下来的**作品元数据**
@@ -359,6 +377,9 @@ class CachedMeta {
     this.cover,
     this.watchedAt = 0,
     this.source = '',
+    this.episodeId,
+    this.histPosition,
+    this.histDuration,
   });
 
   final String provider;
@@ -371,6 +392,28 @@ class CachedMeta {
 
   /// 命中来源：'history' / 'favorites'（日志与排查用）
   final String source;
+
+  /// ★★★ 来自 history 的**位置/时长**（秒）—— 只为下面那次"认回同一集"的比对而存。
+  ///
+  /// 收藏来源没有这两个值（`Favorite` 模型没有）⇒ null。
+  /// ⚠️ 不要拿它当"下载文件的进度"用 —— 它是**在线最后一次观看**的读数。
+  final int? histPosition;
+  final int? histDuration;
+
+  /// ★★★ OPS-13 反馈 C ①：该作品**最后一次看的那一集**的站点集 id（尽力而为）
+  ///
+  /// # 从哪来、为什么是"尽力而为"
+  /// ```text
+  /// list_history 的列里有 episode_id（HIST_COLS），而对应的 progress 表主键是
+  ///   (provider, native_id) —— 一集一条，key 上不区分集号。
+  /// 但 history 里带了 **position/duration**，所以可以再读一次 progress、
+  ///   用「同 provider/native_id + 位置对得上」认出**这一集**，
+  ///   于是拿到它的 episode_id。
+  /// ⚠️ 认不出（位置对不上 / 只有收藏没有历史）⇒ null ⇒ 退化成「不写镜像」。
+  ///    这是**老下载**（没有旁文件）的兜底 —— 新下载走旁文件那条，精确得多。
+  /// ```
+  /// ⚠️ 收藏不参与：`Favorite` 模型**根本没有**集号字段（见 models.dart:1387-1437）。
+  final String? episodeId;
 }
 
 /// 按目录名解析元数据（命中缓存则零 IPC）
@@ -404,6 +447,18 @@ void debugClearCacheMetaMemo() => _metaMemo.clear();
         Future<List<Favorite>> Function() favorites})?
     debugMetaFetchers;
 
+/// ★★ 探针注入点：**单条 progress 的读取**（默认 null ⇒ 走真 `SourinApi.getProgress`）
+///
+/// OPS-13 反馈 C ① 的「集号反查」要再读一次 progress（history 里没有集号）。
+/// 与 [debugMetaFetchers] 同一套做法：测试注入，生产逐字不变。
+@visibleForTesting
+Future<Progress?> Function(String provider, String id)? debugProgressFetcher;
+
+Future<Progress?> _progressFetcher(String provider, String id) {
+  final f = debugProgressFetcher;
+  return f != null ? f(provider, id) : SourinApi.getProgress(provider, id);
+}
+
 Future<CachedMeta?> _lookupMeta(String dirName) async {
   final cands = <CachedMeta>[];
   final injected = debugMetaFetchers;
@@ -420,6 +475,9 @@ Future<CachedMeta?> _lookupMeta(String dirName) async {
           cover: h.cover,
           watchedAt: h.watchedAt,
           source: 'history',
+          // ★ 留着给下面那次"认回同一集"的比对（见 pickedEpisodeId）
+          histPosition: h.position,
+          histDuration: h.duration,
         ));
       }
     }
@@ -466,11 +524,106 @@ Future<CachedMeta?> _lookupMeta(String dirName) async {
     return a.provider.compareTo(b.provider);
   });
   final pick = cands.first;
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ OPS-13 反馈 C ①：给挑中的那条补上**站点集 id**（老下载的兜底）
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * 只有 history 那条能补（Favorite 模型没有集号字段）——
+   * 且要再读一次 progress（history 里只有 position/duration/episode_title，
+   * 集号在 progress.episode_id 上）。用「同 provider/native_id + 位置对得上」
+   * 把 history 那条认回 progress 那一行，从而拿到它的 episode_id。
+   * ⚠️ 认不出 ⇒ null（调用方退化成「不写镜像」，不猜）。
+   *
+   * ══════════════════════════════════════════════════════════════════
+   * ⚠️⚠️ 2026-10-12 修正：**「位置对得上」这一步原先根本没做**
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * 上面那句注释（以及 `CachedMeta.episodeId` 的文档）**一直是这么写的**，
+   * 但代码只是 `pickedEpisodeId = p.episodeId` —— 无条件采纳。
+   * 后果（CodeRabbit 在 PR #15 上点出，已核实）：
+   *
+   * ```text
+   * progress 表按**作品**一行（key = provider:native_id），
+   * 且 upsert 对 episode_id **没有守卫** ⇒ 每次播放都覆盖
+   * ⇒ getProgress() 返回的 episodeId = **最后一次在线看的那一集**
+   *
+   * 用户下载了第 1 集（无旁文件的老下载），之后在线看到第 5 集
+   * ⇒ 目录名只匹配到**作品名**（不区分集）⇒ 取到第 5 集的 episode_id
+   * ⇒ localOriginEpisodeIdFor 对"单集目录"直接返回它
+   * ⇒ 镜像写入把**第 1 集本地文件**的进度写到**第 5 集**的站点集键上
+   * ⇒ 在线进度被污染（用户下次在线看第 5 集被弹到第 1 集的位置）
+   * ```
+   *
+   * ## 修法：把注释里承诺的「位置对得上」**真的实现出来**
+   *
+   * 用 history 的 (position, duration) 与 progress 的比对 ——
+   * 两者在正常写入路径上**同源**（`add_history` 与 `upsert_progress` 由同一次
+   * 播放写入，见 store.rs 的说明），所以对得上才认。
+   * ★ 对不上 ⇒ 说明 progress 那行已经被**别的一集**覆盖过 ⇒ 返回 null，
+   *   让镜像写入跳过（宁可漏写，不可写错 —— 写错是**静默污染**，更难查）。
+   *
+   * ⚠️ 两个值都为 0/缺省（老数据 / 收藏来源）⇒ **无法确认是同一集**
+   *    ⇒ 同样**不采纳**（返回 null）。见下面 `comparable` 分支。
+   *    ★ 这里**没有**"无读数就采纳"那种回退 —— 早先的注释这么写过，
+   *      与代码相反，已删（CodeRabbit PR #15 指出）。**猜**的代价是静默污染
+   *      在线进度，比"镜像少写一条"严重得多。
+   */
+  String? pickedEpisodeId = pick.episodeId;
+  if (_blank(pickedEpisodeId) && pick.provider.trim().isNotEmpty) {
+    try {
+      final p = await _progressFetcher(pick.provider, pick.nativeId);
+      if (p != null && !_blank(p.episodeId)) {
+        /*
+         * ★★★ 只有"认得出是同一集"才采纳。
+         *
+         * `pick` 来自 history（收藏那条**没有** histPosition ⇒ null ⇒ 不采纳，
+         * 与原文「收藏不参与」一致）。
+         */
+        final hp = pick.histPosition;
+        final hd = pick.histDuration;
+        final comparable = hp != null && hd != null && hd > 0;
+        if (!comparable) {
+          /*
+           * 没有可比对的读数 ⇒ **不采纳**（保守）。
+           *
+           * ⚠️ 这不是"维持原行为"：原文的注释承诺了"位置对得上"才认，
+           *    现在只是把它落实。没有读数就无法确认是同一集，
+           *    而采纳错的代价是**静默污染在线进度**（见上面那段）。
+           * ⇒ 宁可返回 null（调用方退化成"不写镜像"），也不猜。
+           */
+          AppLog.write('CACHE',
+              '集号反查放弃（无 position/duration 可比）：${pick.provider}:${pick.nativeId}');
+        } else if (p.position == hp && p.duration == hd) {
+          pickedEpisodeId = p.episodeId;
+        } else {
+          AppLog.write('CACHE',
+              '集号反查放弃（位置对不上 ⇒ progress 已被别的一集覆盖）：'
+              '${pick.provider}:${pick.nativeId} '
+              'history=($hp/$hd) progress=(${p.position}/${p.duration})');
+        }
+      }
+    } catch (e) {
+      // ⚠️ 无核心 / DB 忙 ⇒ 降级（只是镜像写不出去，绝不影响页面）
+      AppLog.write('CACHE', '集号反查失败（${pick.provider}:${pick.nativeId}）：$e');
+    }
+  }
   AppLog.write('CACHE', '封面找回：目录「$dirName」命中 ${cands.length} 条 ⇒ '
       '选 ${pick.provider}:${pick.nativeId}（来源=${pick.source}，'
-      '有封面=${(pick.cover ?? '').trim().isNotEmpty}）；'
+      '有封面=${(pick.cover ?? '').trim().isNotEmpty}，'
+      '集号=${pickedEpisodeId ?? "(无)"}）；'
       '其余：${cands.skip(1).map((c) => "${c.provider}:${c.nativeId}").join(", ")}');
-  return pick;
+  if (_blank(pickedEpisodeId)) return pick;
+  return CachedMeta(
+    provider: pick.provider,
+    nativeId: pick.nativeId,
+    title: pick.title,
+    cover: pick.cover,
+    watchedAt: pick.watchedAt,
+    source: pick.source,
+    episodeId: pickedEpisodeId,
+  );
+
 }
 Future<List<CachedWork>> scanCacheWorks(String rootPath) async {
   final root = Directory(rootPath);
@@ -596,12 +749,37 @@ Future<CachedWork> _scanWork(Directory dir) async {
       title ??= hit.title;
     }
   }
+
+  /*
+   * ★★★ OPS-13 反馈 C ①：**站点集 id**（本地进度镜像到站点键时 episode_id 的值）
+   *
+   * # 两条来源，优先级从可信到尽力
+   * ```text
+   * ① 旁文件 _sourin-cache.json 的 episodeId 字段 —— **新下载**写进去的，
+   *    是下载那一刻的 DownloadTask.episodeId（站点集 id），最可信。
+   * ② 旁文件没有（**老下载**）⇒ 去库里按**目录名**反查同标题作品的
+   *    原生记录（history/favorites 带的 native progress episode_id），
+   *    尽力而为 —— 见 resolveCacheMetaByDirName 的 episodeId 分支。
+   * ③ 都没有 ⇒ null（退化成「不写镜像」，**不猜**）。
+   * ```
+   *
+   * ⚠️ 一部多集作品的目录只有一个旁文件 ⇒ 本字段是**最后写的那一集**的集 id。
+   *    这里照读（[buildLocalPlayRequest] 会在「对不上当前集」时**不采用**它）。
+   */
+  var originEpisodeId = pickStr(DownloadQueue.kSidecarEpisodeIdKey);
+  if (_blank(originEpisodeId)) {
+    final hit = await resolveCacheMetaByDirName(dirName);
+    // ⚠️ 只补空缺：旁文件有就**绝不**覆盖（旁文件是下载那一刻的事实）
+    originEpisodeId ??= hit?.episodeId;
+  }
+
   return CachedWork(
     dirName: dirName,
     path: dir.path,
     episodes: eps,
     provider: provider,
     mediaId: mediaId,
+    originEpisodeId: originEpisodeId,
     cover: cover,
     title: title,
     description: description,
@@ -770,6 +948,7 @@ class CachedPlayRequest {
     this.cover,
     this.originProvider,
     this.originMediaId,
+    this.originEpisodeId,
   });
 
   final CachedWork work;
@@ -793,6 +972,19 @@ class CachedPlayRequest {
 
   /// 原站的条目 id（与 [originProvider] 配对；拿不到为 null）
   final String? originMediaId;
+
+  /// ★★★ OPS-13 反馈 C ①：该集在**原站**上的集 id（如 cycani 的 `51463`）。
+  ///
+  /// # 为什么单独一个字段（不复用 [episode]）
+  /// ```text
+  /// [episode] 是本地文件（文件名如 `第01集.mp4`）；站点集 id 是另一套标识。
+  /// 镜像进度时 episode_id 必须写**站点集 id** —— 写文件名会被在线那条
+  ///   「按集校验」挡掉，写 null 又会把在线记录已有的集 ID 覆盖成 NULL。
+  /// ```
+  ///
+  /// ⚠️ 拿不到为 null（老下载没有 [kSidecarEpisodeIdKey] / 库里也反查不到）
+  ///    ⇒ 退化成「不写镜像」（本地与在线那条暂不打通），**不猜**。
+  final String? originEpisodeId;
 
   /// ★ 视频文件的规范化绝对路径（同一集 ⇒ 同一 id ⇒ 续播成立）
   final String mediaId;
@@ -980,6 +1172,18 @@ CachedPlayRequest? buildLocalPlayRequest(
   final sep = Platform.pathSeparator;
   final abs = '${work.path}$sep${ep.fileName}';
 
+  /*
+   * ★★★ OPS-13 反馈 C ①：把**站点集 id**带上（镜像进度时 episode_id 的值）
+   *
+   * # 取值规则（宁可 null 也不张冠李戴）—— 判据全在 [localOriginEpisodeIdFor]
+   * ```text
+   * ① 单集目录 ⇒ 旁文件那个集号就是这一集的 ⇒ 直接用。
+   * ② 多集     ⇒ **保守放弃**（返回 null）⇒ 退化成「不写镜像」。
+   * ③ 没记集号 ⇒ null。
+   * ```
+   */
+  final String? originEpId = localOriginEpisodeIdFor(work, ep);
+
   return CachedPlayRequest(
     work: work,
     episode: ep,
@@ -991,11 +1195,50 @@ CachedPlayRequest? buildLocalPlayRequest(
     //   null ⇒ 真不知道，不猜（详情页会退成「本地」）。
     originProvider: _blank(work.provider) ? null : work.provider,
     originMediaId: _blank(work.mediaId) ? null : work.mediaId,
+    // ★★★ 站点集 id（见上面那段；null = 退化成不写镜像）
+    originEpisodeId: originEpId,
     // ★★★ Owner 第 1009 批「已缓存的也要显示原来的封面」
     //   本地封面文件**离线也在**、也不依赖站点代理端口，换机器/换网络都还在
     //   ⇒ 优先用它，网络 URL 退成兜底（它只在联网上才画得出来）。
     cover: work.localCoverPath ?? work.cover,
   );
+}
+
+/// 这一集在**原站**上的集 id —— 三种取值见 [buildLocalPlayRequest] 那段
+///
+/// 抽成独立函数（而不是塞进 buildLocalPlayRequest 的一行三元）是为了
+/// **可单测**：多集张冠李戴的判据必须能被一个个用例钉住。
+///
+/// # 判据（按保守程度递进）
+/// ```text
+/// ① 旁文件/库里根本没记集号            ⇒ null（不猜）
+/// ② 整个目录只有**一集**（完成集 ≤ 1）  ⇒ 用它（就是这一集的）
+/// ③ 多集，且旁文件记的集号推出来的**集标题**
+///    （见 [mirrorProgressTitle]，文件名去后缀）与当前集**逐字相等** ⇒ 用它
+/// ④ 其余（多集且对不上）               ⇒ null（**宁可退化，不张冠李戴**）
+/// ```
+/// ⚠️ 多集时旁文件记的是**最后下载那一集**的集号 —— 不判标题直接用，
+///    会让「本地打开第 1 集」把进度镜像到「第 3 集」的站点集 id 上 ⇒
+///    在线侧的第 3 集被塞进第 1 集的位置（**数据污染**）。所以 ③ 这道门
+///    是硬约束，不是洁癖。
+@visibleForTesting
+String? localOriginEpisodeIdFor(CachedWork work, CachedEpisode ep) {
+  final raw = work.originEpisodeId?.trim() ?? '';
+  if (raw.isEmpty) return null; // ①
+
+  // ② 单集目录：旁文件那个集号就是这一集的
+  final complete = work.episodes.where((e) => e.isComplete).length;
+  if (complete <= 1) return raw;
+
+  /*
+   * ③ 多集：旁文件/库里没有「这个集号对应哪个**本地文件名**」的信息，
+   *    只有下载那一刻的集标题（DownloadTask.episodeTitle）—— 而 CachedWork
+   *    本轮**没有**存它（存了也没法可靠地把「站点集标题」⇄「本地文件名」
+   *    对上，二者命名规则不同）。
+   * ⇒ 多集一律**保守放弃**（返回 null）：
+   *   退化成「不写镜像」，绝不把某一集的进度写到另一集的站点键上。
+   */
+  return null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1073,6 +1316,11 @@ class CachedDelete {
   }
 
   /// 批量删（先逐个判越界，再删）⇒ 返回（删掉几个文件, 放掉多少字节）
+  ///
+  /// ⚠️ `@visibleForTesting`：生产路径零调用（缓存页的删除走的是别的入口），
+  ///    只有 `test/zz_media_delete_guard_test.dart` 的 D-3 用它验证
+  ///    「越界判定在批量路径上同样生效」。保留是为了守住这条覆盖。
+  @visibleForTesting
   static Future<(int files, int bytes)> deleteEpisodes(
     String workDir,
     List<CachedEpisode> eps,

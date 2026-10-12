@@ -1224,6 +1224,43 @@ class _PlayerPageState extends State<PlayerPage>
   /// 片头/片尾跳过点
   SkipMarker? _skipMarker;
 
+  /*
+   * ════════════════════════════════════════════════════════════════════
+   * ★★★ 播放会话代次 —— 丢弃「过期的片头标记响应」
+   * ════════════════════════════════════════════════════════════════════
+   *
+   * # 缺陷（CodeRabbit 在 PR #10 上点出，已核实成立）
+   *
+   * `_loadSkipMarker()` 里那一步是 `await` 的：
+   * ```dart
+   * final m = await SourinApi.getSkipMarker(_provider, widget.id);
+   * if (!mounted) return;
+   * setState(() => _skipMarker = m);   // ← 无条件写，且随后立刻补判 + 可能 seek
+   * _skipAfterMarkerLoad();
+   * ```
+   * 而**换集 / 换源 / applySession 三条路都会把 `_skipMarker` 清成 null**
+   * 并重新起播。于是：
+   * ```text
+   * t0  第 1 集起播 ⇒ _loadSkipMarker() 发出请求（await 中）
+   * t1  用户立刻切到第 2 集 ⇒ 三条路之一把 _skipMarker 清 null、_startPlayback
+   * t2  t0 那次请求**这才**返回第 1 集的标记
+   *     ⇒ setState(_skipMarker = 第1集的标记)  ← 污染了第 2 集
+   *     ⇒ _skipAfterMarkerLoad() 用**第 1 集**的片头秒数去 seek 第 2 集
+   * ```
+   * ★ 用户可见后果：切集/换源后「画面莫名跳到某个位置」或「片头没跳成」。
+   *   `mounted` 拦不住这个 —— widget 一直挂着，只是"会话"变了。
+   *
+   * # 修法：单调递增的会话代次
+   *
+   * ```text
+   * 发请求前 : gen = ++_playSessionGen（或在切换点 +1）
+   * 返回后   : gen != _playSessionGen ⇒ 丢弃（不 setState、不补判）
+   * ```
+   * ★ 与 `_introSkipped`/`_outroSkipped` 的清零**放在同一处**（那三处正是
+   *   "会话已变"的定义点）—— 两件事同源，分开写迟早漂。
+   */
+  int _playSessionGen = 0;
+
   /// 是否已触发过片头跳过（避免反复跳）
   bool _introSkipped = false;
 
@@ -6849,9 +6886,28 @@ class _PlayerPageState extends State<PlayerPage>
 
   Future<void> _loadSkipMarker() async {
     if (_isLive) return;
+    /*
+     * ★ 记下发请求那一刻的会话代次 —— 返回后要先核对它。
+     *   ⚠️ 必须在 `await` **之前**读，否则读到的已经是别人 bump 过的值。
+     */
+    final gen = _playSessionGen;
     try {
       final m = await SourinApi.getSkipMarker(_provider, widget.id);
       if (!mounted) return; // ⚠️ 卸载后 setState 会抛；也拦掉 unmounted 的补判
+      /*
+       * ★★★ 会话已变 ⇒ **丢弃**这次响应（CodeRabbit PR #10）
+       *
+       * 换集 / 换源 / applySession 三条路都会 bump 代次并清 `_skipMarker`。
+       * 若这里不判，就会把**上一集/上一个源**的片头秒数写进当前会话，
+       * 并立刻 `_skipAfterMarkerLoad()` ⇒ 按旧标记 seek 新播放。
+       * ★ 不 setState、不补判、直接 return —— 新会话自己有它的 `_loadSkipMarker`。
+       */
+      if (gen != _playSessionGen) {
+        debugPrint(
+          '[PLAYER] 丢弃过期的片头标记响应（会话代次 $gen → $_playSessionGen）',
+        );
+        return;
+      }
       setState(() => _skipMarker = m);
       /*
        * ★★★ fix/skip-auto-seek【B】：标记到手后**立刻**按当前位置补判一次
@@ -7436,6 +7492,7 @@ class _PlayerPageState extends State<PlayerPage>
         _current = null;
         _streams = [];
         _skipMarker = null;
+        _playSessionGen++; // ★ 换源 = 会话变了 ⇒ 丢弃在途的旧标记响应
         // ★ 换源 ⇒ 上一集下载过的那份文件不再代表「当前这一集」
         //   （Lead 审计 team-message-914508ce【低】第 4 条：这两个字段原先从不重置）
         _clipDownloaded = false;
@@ -7672,6 +7729,7 @@ class _PlayerPageState extends State<PlayerPage>
       _streams = [];
       _current = null;
       _skipMarker = null;
+      _playSessionGen++; // ★ 换会话 = 会话变了 ⇒ 丢弃在途的旧标记响应
       // ★ 换会话 ⇒ 同上去掉「已下载 / 上次失败」的残留状态
       _clipDownloaded = false;
       _clipDownloadError = null;
@@ -8018,6 +8076,7 @@ class _PlayerPageState extends State<PlayerPage>
       _introSkipped = false;
       _outroSkipped = false;
       _skipMarker = null;
+      _playSessionGen++; // ★ 切集 = 会话变了 ⇒ 丢弃在途的旧标记响应
       // ★ 换集 ⇒ 上一集的「已下载」不适用于这一集
       _clipDownloaded = false;
       _clipDownloadError = null;
@@ -14139,6 +14198,34 @@ Future<bool> debugPlayerLoadSkipMarkerForProbe() async {
   final s = _livePlayerState;
   if (s == null) return false;
   await s._loadSkipMarker();
+  return true;
+}
+
+/// ★ PR #10 探针：读当前播放会话代次（`_playSessionGen`）
+///
+/// 用来断言「换集/换源/换会话**真的** bump 了代次」—— 而不是只看
+/// "丢弃日志有没有打出来"（那可能因为别的原因没打）。
+int? debugPlayerSessionGenForProbe() => _livePlayerState?._playSessionGen;
+
+/// ★ PR #10 探针：读当前 `_skipMarker`（判「过期响应有没有污染当前会话」）
+///
+/// 返回 null = 既没挂页、也可能就是没标记 —— 用 [debugPlayerSessionGenForProbe]
+/// 区分"没挂页"与"值就是 null"（调用方先断代次非 null）。
+SkipMarker? debugPlayerSkipMarkerForProbe() => _livePlayerState?._skipMarker;
+
+/// ★ PR #10 探针：模拟「换集/换源把会话推进一代」——
+/// 走的是生产字段 `_playSessionGen` 与生产清理动作（清 `_skipMarker`），
+/// 不是另写一份。用于在**不加载 libmpv** 的前提下复现竞态。
+///
+/// ⚠️ 它不是"绕过生产路径"：三条真实切换路径（换源 `:7495`、换会话 `:7732`、
+///    切集 `:8079`）做的就是这两件事（`_playSessionGen++` + `_skipMarker = null`）。
+///    这里只是把同一对动作暴露给测试。
+/// 返回 false = 没挂页。
+bool debugPlayerBumpSessionForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._playSessionGen++;
+  s._skipMarker = null;
   return true;
 }
 

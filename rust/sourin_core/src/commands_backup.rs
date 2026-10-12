@@ -520,7 +520,16 @@ fn backup_import_sync(
                 sum.skipped.push("有一条进度格式不符，已跳过".into());
                 continue;
             };
-            let old = state.db.get_progress(&p.key).ok().flatten();
+            /*
+             * ⚠️ 用 `get_progress_exact`（按**集键**）而不是 `get_progress`
+             *    （按**作品键**取最新那集）—— 备份里的 `p.key` 是**按集键**
+             *    `provider:native_id:episode_id`，两者口径不同。
+             *    ★ 2026-10-12 按集扩容时这里踩过：先用 `get_progress(&p.key)`
+             *      查，它把 `p.key` 当成作品键 ⇒ 永远查不到 ⇒ 旧备份被当成
+             *      "本机没有的新行"照写 ⇒ 进度**倒退**（测试
+             *      `import_does_not_regress_newer_local_data` 抓到）。
+             */
+            let old = state.db.get_progress_exact(&p.key).ok().flatten();
             /*
              * 本机更新 → 跳过（不倒退）
              *

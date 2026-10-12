@@ -14290,11 +14290,60 @@ int? debugPlayerScreenshotCalls() => _livePlayerState?._screenshotCalls;
   return (rect, op, ignoring);
 }
 
-(double, double)? debugPlayerControlBarsOpacity() {
+/// 顶栏 / 底栏**真实渲染出来的** `Opacity.opacity`（探针用）
+///
+/// 返回 `(顶栏, 底栏)`；某条不在树上 ⇒ 对应分量为 `null`；无播放页 ⇒ 整个 `null`。
+///
+/// # ★★★ 2026-10-12 重写（原实现是**假绿**，从构造上不可能红）
+/// ```text
+/// 改前：
+///   final v = s._controlsFade.value;
+///   return (v, v);            // ← 两个分量同一个源 ⇒ o.$1 == o.$2 恒真
+/// ⇒ t118 ①「两条读数相等」/ ④「每一帧都相等」这两条**永远绿**，
+///   哪怕底栏的 Opacity 被冻结成常量（Owner 报的正是这个缺陷）。
+/// ```
+/// 现在两个分量都从 **element 树**里读：找那个「祖先链里含 `_TopBar` /
+/// `PlayerBottomBar`」的 `Opacity`，取它 `build` 出来的 `opacity` 值 ——
+/// 即**真正画在屏幕上**的那个数，与 `_controlsFade.value` 可以不同
+/// （底栏被冻结成 build 期快照时就是不同的，于是本探针才可能红）。
+///
+/// ⚠️ 底栏那条 `Opacity` 是 `RenderOpacity` 的 widget 侧配置；拿不到
+///    （底栏被宿主 `SizedBox.shrink()` 卸下）时返回 `null`，**不要**回填
+///    动画值假装它还在 —— 那又会变成假绿。
+(double?, double?)? debugPlayerControlBarsOpacity() {
   final s = _livePlayerState;
   if (s == null) return null;
-  final v = s._controlsFade.value;
-  return (v, v);
+  final root = s.context as Element?;
+  if (root == null) return null;
+
+  double? findFor(bool Function(Element) isBar) {
+    double? found;
+    void walk(Element e) {
+      if (found != null) return;
+      if (e.widget is Opacity) {
+        var hit = false;
+        e.visitAncestorElements((a) {
+          if (isBar(a)) {
+            hit = true;
+            return false;
+          }
+          return true;
+        });
+        if (hit) {
+          found = (e.widget as Opacity).opacity;
+          return;
+        }
+      }
+      e.visitChildren(walk);
+    }
+
+    walk(root);
+    return found;
+  }
+
+  final top = findFor((e) => e.widget is _TopBar);
+  final bottom = findFor((e) => e.widget is PlayerBottomBar);
+  return (top, bottom);
 }
 
 /// 把控制条按 3 秒规则**跑到底**（★ 2026-10-08 顶栏联动回归用）

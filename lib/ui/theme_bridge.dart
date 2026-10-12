@@ -630,8 +630,25 @@ class LightTokens {
   /// ⚠️ 不是纯黑 —— 原版注释：「不能纯黑（刺眼）」。合成后约 `#1E2028`。
   static const textPrimary = Color(0xFF1E2028);
 
-  /// `--text-secondary: rgb(16 18 26 / 0.60)` → 约 `#70727A`
-  static const textSecondary = Color(0xFF70727A);
+  /// 原版 `--text-secondary: rgb(16 18 26 / 0.60)`；本值 = **加深后**的等价色，
+  /// 不再照抄 CSS 的字面合成值。
+  ///
+  /// ⚠️ 为什么不能再写 `rgb(16 18 26 / 0.60)` 的合成值 `#70727A`：
+  /// 原版那支是**带 alpha** 的色，它在原版里合成在**抬升的白卡 `#ffffff`** 上
+  /// ⇒ `#70727A over #FFFFFF` = 4.80:1 ✓（那才是原设计的意图）。
+  /// Flutter 侧把它**压平成不透明常量**后，它就落到**页面底 `#EEF0F6`** 上
+  /// ⇒ **4.21:1 ✗**（< WCAG AA 4.5）。
+  /// 这正是「把 alpha 色压平」引入的回归：原设计在卡片上达标，压平后挂在页面底上不达标。
+  ///
+  /// ⇒ 修法：调**前景**（不动 `bgBase`，`#EEF0F6` 是原版 `--bg-base`，牵动整站底色），
+  ///    取 `#60626B`（同色相、更暗一档）：
+  /// ```text
+  /// 对页面底 #EEF0F6 = 5.33:1 ✓
+  /// 对白卡   #FFFFFF = 6.08:1 ✓
+  /// 对 surface2 #F5F7FA = 5.66:1 ✓
+  /// 与正文 #1E2028 仍明显不同 ⇒ 「次要 ≠ 正文」的层级保留
+  /// ```
+  static const textSecondary = Color(0xFF60626B);
 
   /// `--divider: rgb(16 18 26 / 0.07)` → 约 `#DFE1E8`
   static const divider = Color(0xFFDFE1E8);
@@ -645,7 +662,22 @@ class LightTokens {
   /// `--brand-2: #8b4de8`
   static const brand2 = Color(0xFF8B4DE8);
 
-  static const error = Color(0xFFD93025);
+  /// 原版 `--danger` 即 `#d93025`；本值 = **加深后**的等价色，不再照抄 CSS 的字面值。
+  ///
+  /// ⚠️ 为什么不用字面值 `#D93025`：它直接在**页面底 `#EEF0F6`** 上只有
+  /// **4.19:1 ✗**（< WCAG AA 4.5）—— 原版把它当**实心底 + 白字**用
+  /// （`onError = #FFFFFF` 对 `#D93025` = 4.77:1，那是另一种用法，不受影响），
+  /// 而 Flutter 侧把它当**页面底上的前景字色**（`colorScheme.error`、
+  /// `AppPalette.error`）用 ⇒ 必须自己够暗。
+  ///
+  /// ⇒ 修法：调**前景**、同色相加深一档 → `#C22A20`：
+  /// ```text
+  /// 对页面底 #EEF0F6 = 5.01:1 ✓
+  /// 对白卡   #FFFFFF = 5.71:1 ✓
+  /// 对 surface2 #F5F7FA = 5.32:1 ✓
+  /// ```
+  /// ⚠️ 只加深前景 ⇒ `onError`/白字仍保持 `#FFFFFF`（对比只会更高，不破坏实心红按钮）。
+  static const error = Color(0xFFC22A20);
   static const errorContainer = Color(0xFFFCE8E6);
 
   /// 次级容器（`--surface-2` 合成值）

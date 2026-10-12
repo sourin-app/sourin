@@ -610,10 +610,15 @@ abstract final class ThemePackStore {
   ///
   /// 沿用原版 `theme-light.css` 的那一套（`--bg-base: #eef0f6` /
   ///   `--brand-1: #3b6fe0`），已在项目里跑了很久，不重新发明。
+  /// ⚠️ `mutedForeground` / `error` 两处**不**照抄 CSS 的字面值 ——
+  ///   CSS 那两值是**带 alpha / 实心底**的用法，压平成不透明前景后
+  ///   挂到页面底 `#EEF0F6` 上不达 WCAG AA（4.21 / 4.19:1）。
+  ///   这里与 [LightTokens] 同步取加深后的值，详见 `theme_bridge.dart`
+  ///   `LightTokens.textSecondary` / `LightTokens.error` 的注释。
   static final AppPalette _daylight = AppPalette.light.copyWith(
         background: const Color(0xFFEEF0F6),
         foreground: const Color(0xFF1E2028),
-        mutedForeground: const Color(0xFF70727A),
+        mutedForeground: const Color(0xFF60626B),
         secondary: const Color(0xFFE8EAF0),
         secondaryForeground: const Color(0xFF1E2028),
         muted: const Color(0xFFE8EAF0),
@@ -621,6 +626,6 @@ abstract final class ThemePackStore {
         border: const Color(0xFFD7DAE4),
         primary: const Color(0xFF3B6FE0),
         primaryForeground: Colors.white,
-        error: const Color(0xFFD93025),
+        error: const Color(0xFFC22A20),
       );
 }

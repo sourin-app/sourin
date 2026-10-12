@@ -877,7 +877,8 @@ class _ReorderableCardGridState extends State<ReorderableCardGrid> {
   ///
   /// 第一版写的是 `onSurfaceVariant.withValues(alpha: 0.7)`，
   /// 结果把手在**浅色卡片上几乎看不见** —— 用红色块做标记测试才定位到
-  /// 「槽位在、图标淡到测不出」。算一下（`onSurfaceVariant` ≈ (112,114,122)）：
+  /// 「槽位在、图标淡到测不出」。算一下（`onSurfaceVariant` 当时 ≈ (112,114,122)，
+  /// 即 `#70727A`；浅色下现已加深为 `#60626B` = (96,98,107)，对比度只增不减）：
   /// ```text
   /// alpha 0.7 叠在卡片底 (252,252,253) 上
   ///   → 0.7*112 + 0.3*252 ≈ 154   ← 只比底色深 98

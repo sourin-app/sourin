@@ -563,8 +563,11 @@ Future<CachedMeta?> _lookupMeta(String dirName) async {
    * ★ 对不上 ⇒ 说明 progress 那行已经被**别的一集**覆盖过 ⇒ 返回 null，
    *   让镜像写入跳过（宁可漏写，不可写错 —— 写错是**静默污染**，更难查）。
    *
-   * ⚠️ 两个值都为 0/缺省时不做判断（老数据可能没有）—— 那种情况下
-   *    保持原行为（采纳），避免把**本来能用**的兜底一刀切掉。
+   * ⚠️ 两个值都为 0/缺省（老数据 / 收藏来源）⇒ **无法确认是同一集**
+   *    ⇒ 同样**不采纳**（返回 null）。见下面 `comparable` 分支。
+   *    ★ 这里**没有**"无读数就采纳"那种回退 —— 早先的注释这么写过，
+   *      与代码相反，已删（CodeRabbit PR #15 指出）。**猜**的代价是静默污染
+   *      在线进度，比"镜像少写一条"严重得多。
    */
   String? pickedEpisodeId = pick.episodeId;
   if (_blank(pickedEpisodeId) && pick.provider.trim().isNotEmpty) {

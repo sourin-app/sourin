@@ -1477,6 +1477,12 @@ class Progress {
     this.updatedAt = 0,
   });
 
+  /// ★ 按集主键 —— `provider:nativeId:episodeId`（episodeId 为空时空串哨兵）
+  ///
+  /// ⚠️ 2026-10-12 由「按作品」（`provider:nativeId`）改成**按集** —— 见
+  /// `rust/sourin_core/src/store.rs` 的 `progress_key`。Dart 侧**不构造**这个键
+  /// （读写都只传 `(provider, id)` 两半，键由 Rust 生成），它只被当作**不透明
+  /// 的唯一标识**用（如 `mergeBackfilled` 的 map 键）。
   final String key;
   final String provider;
   final String nativeId;

@@ -128,16 +128,34 @@ class ProgressOrigin {
   int get hashCode => Object.hash(provider, mediaId);
 }
 
-/// 进度主键 —— 与 Rust `item_key`（`commands_write.rs:42-44`）**同构**
+/// 进度**按集主键** —— 与 Rust `progress_key`（`store.rs`）**同构**的文档化对照
 ///
 /// ```text
-/// Rust : format!("{provider}:{id}")
-/// Dart : provider + ':' + mediaId
+/// Rust : format!("{provider}:{native_id}:{episode_id or ''}")
+/// Dart : provider + ':' + mediaId + ':' + (episodeId ?? '')
 /// ```
-/// 拼错不会报错、只会静默查不到（Rust 侧注释原话），所以两边的格式由
-/// `test/zz_ops13_origin_test.dart` 的源码扫描一起钉住。
-String canonicalProgressKey(String provider, String mediaId) =>
-    '$provider:$mediaId';
+///
+/// # ★★ 2026-10-12：主键由「按作品」扩成「**按集**」
+///
+/// ```text
+/// 老：provider:mediaId                   一个作品一行（换集就覆盖）
+/// 新：provider:mediaId:episodeId         一个作品**每集一行**
+///     episodeId 为 null ⇒ **空串哨兵**（不能留 null：SQLite 的唯一约束
+///     允许重复 NULL ⇒ 同一单片会被插成多行）
+/// ```
+///
+/// ⚠️ **Dart 侧不构造这个键**（读写都只传 `(provider, id[, episodeId])` 两半/三半，
+///    拼键**只有一处** = Rust）。本函数存在的意义是**把两端的格式并排写下来**，
+///    由 `test/zz_ops13_origin_test.dart` 的源码扫描钉住两边一致 ——
+///    谁改了一处而没改另一处，测试立刻红，不会静默漂。
+///
+/// # ★ 为什么不把「本地文件会话」也拼进按集键
+///
+/// 本地会话的 provider 恒为 `local`、id 是文件绝对路径 —— 那是**另一个命名空间**
+/// （见本文件头的镜像机制）。按集扩容**不会**把两个命名空间合并，
+/// 所以镜像机制仍然需要（见 [saveProgressWithMirror]）。
+String canonicalProgressKey(String provider, String mediaId, [String? episodeId]) =>
+    '$provider:$mediaId:${episodeId ?? ''}';
 
 /// 从 `CachedPlayRequest` 的两个 origin 字段得到规范化的来源
 ///

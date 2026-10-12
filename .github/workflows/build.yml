@@ -713,13 +713,27 @@ jobs:
         id: libmpv
         shell: pwsh
         run: |
+          # ══════════════════════════════════════════════════════════════
+          # ★★★ 必须 exit 1，不能只打 warning（CodeRabbit 点出，已核实）
+          # ══════════════════════════════════════════════════════════════
+          #
+          # 本文件上面那段注释自己写着：少了 flutter pub get 这一步 ⇒
+          # 「这批硬门禁在 CI 上仍然一条都没执行，只是从『被标签 skip』
+          #   变成了『被守卫 skip』—— **换了个姿势的假绿**」。
+          # 而只打 warning 恰好**就是**那个"换了个姿势"：job 继续跑、
+          # 46 条门禁一条没执行、汇总里也只写一句"就位检查成功"。
+          #
+          # ★ 本仓铁律（CONTRIBUTING.md）：
+          #   「任何『只打 warning 不 exit 1』的门禁都是假门禁」。
+          # ⇒ 前置条件不满足时**直接判红**。`if: always()` 的汇总步
+          #   仍会执行、仍会写 job summary（摘要不会因此丢失）。
           $mpv = 'build/windows/x64/libmpv/libmpv-2.dll'
           if (-not (Test-Path $mpv)) {
-            Write-Host '::warning::libmpv-2.dll 不在 $mpv —— 依赖真播放器的用例会静默跳过（假绿）'
+            Write-Host '::error::libmpv-2.dll 不在 build/windows/x64/libmpv/ —— 依赖真播放器的用例会静默跳过（假绿）'
             Write-Host '  期望来源：media_kit_libs_windows_video 的 CMake（flutter pub get 时供给）'
-          } else {
-            "libmpv-2.dll = " + (Get-Item $mpv).Length + " 字节（就位）"
+            exit 1
           }
+          "libmpv-2.dll = " + (Get-Item $mpv).Length + " 字节（就位）"
 
       # ★★ 带 native-media 标签的那 46 个硬门禁 —— 默认被 dart_test.yaml skip，
       #    必须 --run-skipped 才会跑；--tags native-media 只选这一批；

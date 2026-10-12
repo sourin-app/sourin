@@ -109,12 +109,8 @@ typedef ProgressSaver = Future<void> Function(
 
 /// 把回填后的记录**合并**回原列表（纯函数）
 ///
-/// 按 `key` 匹配（★ 2026-10-12 起是**按集主键** `provider:native_id:episode_id`，
-/// 见 `rust/sourin_core/src/store.rs` 的 `progress_key`；老口径是
-/// `item_key(provider, id)`）。匹配不到的原样保留 —— 回填**不许**增删列表项。
-///
-/// ⚠️ `patched` 与 `current` 的 key 同源（都由 Rust 生成），所以按 key 配对
-///    对口径变化**免疫** —— 这里只把它当不透明标识用。
+/// 按 `key` 匹配（`item_key(provider, id)`，见 `rust/sourin_core/src/commands.rs:196`）。
+/// 匹配不到的原样保留 —— 回填**不许**增删列表项。
 List<Progress> mergeBackfilled(List<Progress> current, List<Progress> patched) {
   if (patched.isEmpty) return current;
   final byKey = <String, Progress>{for (final p in patched) p.key: p};

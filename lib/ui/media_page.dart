@@ -60,7 +60,7 @@
 //    事件来源是**结构性**的，比尺寸推断可靠。
 import 'dart:async';
 // ★ T27-04：收藏入口的本地会话要 stat 文件是否存在（File.existsSync）
-import 'dart:io' show File;
+import 'dart:io' show File, Platform;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:window_manager/window_manager.dart';
@@ -1019,6 +1019,45 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
     final want = canonicalLocalPath(_contentId);
     for (final w in works) {
       if (canonicalLocalPath(w.path) == want) return w;
+    }
+
+    /*
+     * ══════════════════════════════════════════════════════════════════════
+     * ★★★ A6（CodeRabbit）：**先用文件路径定位所属 CachedWork**，再谈标题回退
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * # 缺陷
+     * ```text
+     * 收藏入口（首页/我的收藏里的本地条目）的 `_contentId` 是**剧集文件**
+     * 的规范化路径，而上面那条「精确匹配」比的是 `w.path`（**作品目录**）
+     * ⇒ 两者永不相等 ⇒ 精确匹配整条落空。
+     * 于是直接掉到下面的**标题回退**：`displayTitle == 详情真标题` 取
+     * **第一个**命中的作品 —— 当磁盘上有**两部同名剧**（如两个不同来源的
+     * 「某某 第一季」）时，即使被点的文件属于**另一个**目录，也会认成前者
+     * ⇒ 右栏「已下载」列出的是**前一个作品**的剧集，点下去**播错文件**。
+     * ```
+     *
+     * # 修法
+     * ```text
+     * 用 `_contentId`（规范化后）去比对**每个作品的每一集**的绝对路径
+     * （`work.path + sep + fileName`，与 buildLocalPlayRequest 同一个拼法）
+     * —— 命中即「这个文件就属于这部作品」的**确证**，比标题可靠得多。
+     * 只有全部作品都定位不到（老格式 / 路径写法异常）才退回标题匹配。
+     * ```
+     *
+     * ⚠️ 只在**本地会话**下做（与下面的标题回退同一守卫）：在线会话的
+     *    `_contentId`（如 `cycani:12345`）规范化后绝不可能等于某集文件路径，
+     *    天然不命中 —— 但仍显式守卫，避免将来 id 形态变化时误命中。
+     */
+    if (_resolvedLocalPath != null) {
+      final sep = Platform.pathSeparator;
+      for (final w in works) {
+        for (final e in w.episodes) {
+          if (canonicalLocalPath('${w.path}$sep${e.fileName}') == want) {
+            return w;
+          }
+        }
+      }
     }
 
     /*

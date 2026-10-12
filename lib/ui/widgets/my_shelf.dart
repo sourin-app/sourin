@@ -873,6 +873,39 @@ class MyShelfState extends State<MyShelf> {
           ..write('\u0002');
       }
     }
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 三个 tab 的**条数**必须**无条件**入指纹（CodeRabbit PR #11）
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * 上面那段按 tab 分流是对的（只哈希**当前** tab 的字段明细，省掉
+     * "看不见的东西也重建"）。但**条数**不一样：
+     *
+     * ```text
+     * `_ShelfTabs`（:1548）对**三个** tab 都读 `_countOf` ⇒ 每个 tab 头
+     *   上都画着条数徽标。`_countOf`（:1195）读的是
+     *   `_following.length` / `_favorites.length` / `_history.length`。
+     *
+     * ⇒ 停在 following tab 时，若这次 load() 把 `_favorites` 从 3 条变成 4 条：
+     *   指纹里**只有 following 那份** ⇒ 判"没变" ⇒ 跳过 setState
+     *   ⇒ `_favorites` 字段仍是旧的 3 条 ⇒ **收藏 tab 的徽标停在 3**。
+     * ⇒ 同理 `_refreshRemaining()`（:717）传的 `following: _following`
+     *   也会用**过期的**那份算「还剩几集」。
+     * ```
+     *
+     * ★ 为什么加"长度"就够、且**不**违背上面的分流初衷：
+     *   长度是 **O(1) 的标量**，不是把另外两份列表**逐字段哈希** ——
+     *   本轮省的是"另一个 tab 里每个字段的细节"，那部分照样没入指纹。
+     *   星标/封面变了但**条数没变**时，仍是切到那个 tab 才刷新（符合原意）。
+     */
+    b
+      ..write('\u0004')
+      ..write(favs.length)
+      ..write('\u0001')
+      ..write(fols.length)
+      ..write('\u0001')
+      ..write(his.length)
+      ..write('\u0004');
     return b.toString();
   }
 

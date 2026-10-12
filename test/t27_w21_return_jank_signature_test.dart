@@ -341,6 +341,71 @@ void main() {
   });
 
   // ───────────────────────────────────────────────────────────────────
+  //  ②b ★ CodeRabbit PR #11：另两个 tab 的**条数**必须入指纹
+  // ───────────────────────────────────────────────────────────────────
+  //
+  // ② 守的是"当前 tab 的**字段明细**只哈希当前那份"（省重建）。
+  // 但 `_ShelfTabs` 对**三个 tab 都**画条数徽标（`_countOf`），
+  // ⇒ **条数**必须无条件入指纹，否则停在 following tab 时
+  //   `_favorites` 从 3 条变 4 条 ⇒ 指纹判"没变" ⇒ 跳过 setState
+  //   ⇒ **收藏 tab 的徽标停在 3**。
+  testWidgets('②b ★ 停在 following tab 时收藏条数变了 ⇒ 必须重建（徽标要更新）',
+      (t) async {
+    final key = GlobalKey<MyShelfState>();
+    await _mount(t, key);
+
+    // 初始：following 10 部、收藏 3 部；停在 following tab
+    key.currentState!.debugSetData(
+      following: favs10(),
+      favorites: [for (var i = 0; i < 3; i++) fav('c$i', '收藏片$i')],
+      history: his10(),
+      tab: ShelfTab.following,
+    );
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 100));
+    expect(find.text('追更片0'), findsOneWidget, reason: '前置：following tab 有卡');
+
+    // 只把**收藏**从 3 条变 4 条（following / history 一字不动）
+    debugShelfLoadOverride = () async => shelfData(
+          favorites: [for (var i = 0; i < 4; i++) fav('c$i', '收藏片$i')],
+          following: favs10(),
+          history: his10(),
+        );
+    _install();
+    await key.currentState!.load();
+    await t.pump();
+    final rebuilt = _all;
+    _uninstall();
+    print('RJ②b|following tab 上收藏 3→4 条 load() 后重建=$rebuilt');
+
+    expect(
+      rebuilt,
+      greaterThan(100),
+      reason: '★★★ 收藏的**条数**变了（3→4）—— 收藏 tab 的徽标要跟着变 ⇒ '
+          '必须重建。若指纹里不含另两个 tab 的条数，这里会判"没变"跳过 setState '
+          '⇒ 用户切过去看到徽标还是 3（CodeRabbit PR #11 指出）',
+    );
+
+    // ★ 反面：条数**没变**时不许重建（否则 ② 省的又白省了）
+    debugShelfLoadOverride = () async => shelfData(
+          favorites: [for (var i = 0; i < 4; i++) fav('c$i', '收藏片$i')],
+          following: favs10(),
+          history: his10(),
+        );
+    await key.currentState!.load();
+    await t.pump();
+    _install();
+    await key.currentState!.load();
+    await t.pump();
+    final stable = _all;
+    _uninstall();
+    print('RJ②b|条数不变再次 load() 后重建=$stable');
+    expect(stable, lessThanOrEqualTo(20),
+        reason: '★ 反面：收藏**条数没变**（4→4）⇒ 不该重建 —— '
+            '否则「加长度」就变成了"每次 load 都全量重建"（把②的收益吃掉）');
+  });
+
+  // ───────────────────────────────────────────────────────────────────
   //  ③ `load()` 头部的多余 setState（首屏之外不再 setState）
   // ───────────────────────────────────────────────────────────────────
   //

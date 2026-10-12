@@ -191,6 +191,22 @@ void main() {
         // 探针专用件 —— 只有 lib/probe_cast.dart（诊断探针）用它，
         // 正式宿主故意不接。见 test/t80_cast_wiring_test.dart B④。
         'CastStatusBar': '仅诊断探针 probe_cast.dart 用；正式界面故意不接（t80 B④ 已如实记录）',
+        /*
+         * ★ EpisodeSheet 是 `EpisodePanel` 的**内部实现件**（同一个文件里）：
+         *   外面只能通过 `EpisodePanel`（公开入口）用它，而 `EpisodePanel`
+         *   是**真的被接了线的**（player_page / live_page 都在用）。
+         *   ```text
+         *   episode_strip.dart:
+         *     class EpisodePanel  ← 公开入口，被 player_page/live_page 使用 ✓
+         *     class EpisodeSheet  ← 内部件，只在本文件里被 _EpisodePanelState
+         *                           构造（`EpisodeSheet _sheet(...) => EpisodeSheet(...)`）
+         *   ```
+         * ⚠️ 本守卫"外部引用"的口径**看不见同文件内的构造** ⇒ 对"公开壳 +
+         *   内部件同文件"这种正当形态会误报。
+         * ★ 这不是"放它一马"：把 `EpisodePanel` 从调用点摘掉，守卫**照样会红**
+         *   （它是公开入口、在别的文件里被引用）⇒ 真正的"漏接线"仍被守住。
+         */
+        'EpisodeSheet': 'EpisodePanel 的内部实现件（同文件）；公开入口 EpisodePanel 已被接线',
       };
 
       for (final e in dir.listSync(recursive: true)) {
@@ -207,9 +223,41 @@ void main() {
           if (cls.startsWith('_')) continue;
           if (whitelist.containsKey(cls)) continue;
           var refs = 0;
+          /*
+           * ══════════════════════════════════════════════════════════
+           * ★★★ 必须按**完整标识符**匹配，不能用裸 `contains`
+           *     （CodeRabbit PR #13 点出，已核实）
+           * ══════════════════════════════════════════════════════════
+           *
+           * 裸子串匹配会把「类名是另一个更长类名的**后缀**」当成命中：
+           * ```text
+           * 候选 `SettingsPage`  vs  实际出现的 `EmbySettingsPage`
+           *   ⇒ 'class EmbySettingsPage' 里**包含** 'SettingsPage' ⇒ 假命中
+           * ```
+           * 实测本仓有 **9** 个候选踩这个坑（逐个脚本核过）：
+           * ```text
+           * SettingsPage ← EmbySettingsPage（settings/emby_page.dart）
+           *               （另被 about/backup/playback/theme/touch_gestures/
+           *                 skip/pc_gestures/sync_panel 等文件的后缀命中）
+           * HomePage     ← tokens.dart / emby_page.dart
+           * LivePage     ← browse_page.dart / remote_bridge.dart
+           * SearchPage / FollowPage / EpisodePanel / SyncPanel /
+           * SettingsDialog / ShellPage 同理
+           * ```
+           * ⇒ 守卫**不可靠**：一个真正没接线的页面，只要它的类名是某个已存在
+           *   类名的后缀，就会被误判成"已接线" ⇒ 这正是本守卫要防的
+           *   「下一个漏接的页面」（见本用例的 reason）。
+           *
+           * ★ 修法：加词边界。Dart 标识符由 `[A-Za-z0-9_$]` 组成，
+           *   所以用 `(?![\w$])` 与 `(?<![\w$])` 比 `\b` 更准
+           *   （`\b` 会把 `$` 当非单词字符 ⇒ `_$SettingsPageX` 这类会漏判）。
+           */
+          final refRe = RegExp('(?<![\\w\$])' +
+              RegExp.escape(cls) +
+              '(?![\\w\$])');
           for (final ent in sources.entries) {
             if (ent.key == path) continue;
-            if (ent.value.contains(cls)) refs++;
+            if (refRe.hasMatch(ent.value)) refs++;
           }
           if (refs == 0) unreachable.add('$cls ($path)');
         }

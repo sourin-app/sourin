@@ -54,6 +54,7 @@ import 'package:media_kit/media_kit.dart';
 
 import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/ui/player_page.dart';
+import 'package:sourin_spike/ui/player/player_bottom_bar.dart';
 import 'package:sourin_spike/ui/remote_bridge.dart';
 
 /// 挂一个真实 `PlayerPage`（与 t72_jank_test.dart 逐字同源）
@@ -82,16 +83,67 @@ Future<void> _mount(WidgetTester t, {bool playing = true}) async {
   await t.pump();
   await t.pump();
   /*
-   * ★ 必须显式置 `_playing = true`。
+   * ★★★ 2026-10-12（fix/bottom-bar-opacity）：必须**先清 `_error`** 底栏才挂得上。
    *
-   * `_autoHideNow()` 的第一条判据就是 `_playing`（暂停时不该收控制条，
-   * 那是**对**的）；而 flutter_tester 里没有真网络 ⇒ 起播必然失败
-   * ⇒ 不置位的话「自动隐藏」这条路径在测试里**根本走不到**，
-   * 而那正是本文件要验的东西。
+   * flutter_tester 里没有 `sourin_core.dll` / 真网络 ⇒ `_load()` 必然抛错
+   * ⇒ `_error != null` ⇒ `_chromeVisible` 恒 false ⇒ 底栏被宿主
+   * `ListenableBuilder` 卸成 `SizedBox.shrink()`（顶栏是**常挂**的，所以顶栏有值、
+   * 底栏整条不在树上）。`debugPlayerForceBarsForShot()` 清 `_error`/`_errorKind`、
+   * 置 `_playing`/`_controlsVisible` 为 true ⇒ 底栏才真的进入 element 树。
+   *
+   * ⚠️ 少了这一步，本文件所有「底栏读数」都只能是 `null` —— 而改前的假探针
+   *    （`return (v, v)`）会把这个 `null` 掩盖成两个相等的数 ⇒ 永远绿。
+   *    这正是本次要替换掉的假绿的一环。
    */
+  debugPlayerForceBarsForShot();
+  await t.pump();
   if (playing) debugPlayerSetPlayingForProbe(true);
   await t.pump();
 }
+
+/// 从 element 树读**真实渲染出来的** bar `Opacity`（祖先链含 [isBar] 命中的那个）
+///
+/// ★ 与 `debugPlayerControlBarsOpacity()` 的分工：
+///   · 本函数在**测试侧**独立实现一遍，用 `runtimeType.toString()` 判 `_TopBar`
+///     （它是**私有类**，测试 import 不到）⇒ 即使生产探针被改坏，
+///     测试这一份仍是独立的真值来源（探针与断言不该共用同一段可能出错的代码）；
+///   · `debugPlayerControlBarsOpacity()` 已在 2026-10-12 同步改成读真实渲染值，
+///     两处互为对照。
+///
+/// 返回 `null` = 那条 bar 的 `Opacity` 不在树上（被卸下）。
+double? _renderedBarOpacity(WidgetTester t, bool Function(Element) isBar) {
+  double? found;
+  void walk(Element e) {
+    if (found != null) return;
+    if (e.widget is Opacity) {
+      var hit = false;
+      e.visitAncestorElements((a) {
+        if (isBar(a)) {
+          hit = true;
+          return false;
+        }
+        return true;
+      });
+      if (hit) {
+        found = (e.widget as Opacity).opacity;
+        return;
+      }
+    }
+    e.visitChildren(walk);
+  }
+
+  walk(t.binding.rootElement!);
+  return found;
+}
+
+double? _renderedTop(WidgetTester t) =>
+    _renderedBarOpacity(t, (e) => e.widget.runtimeType.toString() == '_TopBar');
+
+double? _renderedBottom(WidgetTester t) =>
+    _renderedBarOpacity(t, (e) => e.widget.runtimeType.toString() == 'PlayerBottomBar');
+
+/// 底栏是否在 element 树上（真实渲染出的 `PlayerBottomBar` 实例数）
+int _bottomBarInTree() => find.byType(PlayerBottomBar).evaluate().length;
 
 /// 把淡出/淡入动画跑到停（260ms 的 token 值，多给一帧余量）
 Future<void> _settleMotion(WidgetTester t) async {
@@ -282,25 +334,59 @@ void main() {
   tearDown(() => RemoteBridge.instance.stop());
 
   group('★ 顶栏 / 底栏 显隐联动', () {
-    testWidgets('① 两条控制条读的是**同一个**动画值（结构性联动）', (t) async {
+    /*
+     * ★★★ 2026-10-12（fix/bottom-bar-opacity）：本组原来的读数是**假绿**。
+     *
+     * # 改前的两层假绿
+     * ```text
+     * ① 探针 `debugPlayerControlBarsOpacity()` 返回 `(v, v)`（两个分量同一个
+     *    源）⇒ `o.$1 == o.$2` 从构造上恒真 ⇒ ①②④ 永远绿。
+     * ② 底栏在 flutter_tester 里因 `_error != null` 根本不在树上
+     *    （`_chromeVisible` 恒 false）—— 但 ① 照样绿（假探针不看树）。
+     * ```
+     * # 改后
+     * ```text
+     * · 探针重写成「读 element 树里**真实渲染出来**的 Opacity.opacity」；
+     * · `_mount` 补一步 `debugPlayerForceBarsForShot()`（清 `_error`）⇒ 底栏
+     *   真的挂上树，读数才可能是 `null` ⇒ 断言才有意义；
+     * · 断言补上「底栏 Opacity 非 null 且等于顶栏」⇒ 底栏一旦被冻结成
+     *   build 期快照（1.0 / 0.0），本条立刻红。
+     * ```
+     */
+    testWidgets('① ★ 两条控制条**真实渲染**的 Opacity 相等（结构性联动）', (t) async {
       if (!_requireLibmpv()) return;
       await _mount(t);
-      final o = debugPlayerControlBarsOpacity();
-      expect(o, isNotNull, reason: '★ 没有播放页 ⇒ 探针拿不到读数');
+      // ★ 底栏必须在树上 —— 否则"两条相等"的断言退化成"两条都 null"
       expect(
-        o!.$1,
-        o.$2,
-        reason:
-            '★★ 顶栏与底栏必须是同一个 _controlsFade —— 两个数不等 '
-            '说明有人各开了一条动画（那就不是"联动"了）',
+        _bottomBarInTree(),
+        1,
+        reason: '★ 前提不成立：底栏不在树上（`_error` 没清干净？）——'
+            '那样底栏读数是 null，联动断言无从谈起',
       );
-      expect(o.$1, 1.0, reason: '★ 刚挂载时控制条应当是完全显示的');
+      final top = _renderedTop(t);
+      final bottom = _renderedBottom(t);
+      expect(top, isNotNull, reason: '★ 顶栏真实渲染的 Opacity 拿不到');
+      expect(
+        bottom,
+        isNotNull,
+        reason: '★★ 底栏真实渲染的 Opacity 拿不到 —— 它必须在树上（前提）',
+      );
+      expect(
+        bottom,
+        top,
+        reason:
+            '★★★ 顶栏与底栏**真实渲染**的不透明度必须相等。'
+            '不等 ⇒ 有一条把 `fade.value` 冻结成了 build 期快照'
+            '（改前底栏就是：恒 1.0 或恒 0.0）—— 这正是 Owner 报的'
+            '「错开显示 / 底栏不出现」。',
+      );
+      expect(top, 1.0, reason: '★ 刚挂载时控制条应当是完全显示的');
     });
 
-    testWidgets('② 触发隐藏条件 ⇒ 顶栏与底栏**一起**淡到 0', (t) async {
+    testWidgets('② ★ 触发隐藏条件 ⇒ 两条**真实渲染**的 Opacity 一起淡到 0', (t) async {
       if (!_requireLibmpv()) return;
       await _mount(t);
-      expect(debugPlayerControlBarsOpacity()!.$1, 1.0, reason: '前提：先完全显示');
+      expect(_renderedTop(t), 1.0, reason: '前提：先完全显示');
 
       final hid = debugPlayerAutoHideControlsForProbe();
       expect(
@@ -312,28 +398,49 @@ void main() {
       );
       await _settleMotion(t);
 
-      final o = debugPlayerControlBarsOpacity()!;
-      expect(o.$1, 0.0, reason: '★★ 顶栏没有淡出 —— 这正是用户报的「上面的不消失」');
-      expect(o.$2, 0.0, reason: '★★ 底栏没有淡出');
+      expect(_renderedTop(t), 0.0, reason: '★★ 顶栏没有淡出 —— 这正是用户报的「上面的不消失」');
+      // ★ 隐藏到底后底栏可能已被宿主整条卸下（`keepForFade` 窗口走完）
+      //   ⇒ 读数允许为 null（= 真的不在了）；若还在树上则必须是 0.0
+      //   （不能是 1.0 —— 那正是改前的"维持不透明到最后硬卸载"）。
+      final bottom = _renderedBottom(t);
+      expect(
+        bottom == null || bottom == 0.0,
+        isTrue,
+        reason:
+            '★★ 底栏没有淡出：读数 = $bottom。'
+            '改前它在这里恒为 1.0（build 期快照）直到整条被硬卸载；'
+            '修后要么已淡到 0 后卸载（null）、要么是 0.0。',
+      );
     });
 
-    testWidgets('③ 触发显示条件 ⇒ 两条**一起**回到 1', (t) async {
+    testWidgets('③ ★ 触发显示条件 ⇒ 两条**真实渲染**的 Opacity 一起回到 1', (t) async {
       if (!_requireLibmpv()) return;
       await _mount(t);
       debugPlayerAutoHideControlsForProbe();
       await _settleMotion(t);
-      expect(debugPlayerControlBarsOpacity()!.$1, 0.0, reason: '前提：先藏起来');
+      expect(_renderedTop(t), 0.0, reason: '前提：先藏起来');
 
       final shown = debugPlayerHoverControlsForProbe();
       expect(shown, isTrue, reason: '★ 晃动应当把 _controlsVisible 翻回 true');
       await _settleMotion(t);
 
-      final o = debugPlayerControlBarsOpacity()!;
-      expect(o.$1, 1.0, reason: '★★ 顶栏没有回来');
-      expect(o.$2, 1.0, reason: '★★ 底栏没有回来');
+      expect(_renderedTop(t), 1.0, reason: '★★ 顶栏没有回来');
+      expect(
+        _bottomBarInTree(),
+        1,
+        reason: '★★ 底栏必须回到树上',
+      );
+      expect(
+        _renderedBottom(t),
+        1.0,
+        reason:
+            '★★ 底栏没有回来：真实渲染的 Opacity = ${_renderedBottom(t)}。'
+            '改前它停在 0.0 永不回来（build 期快照 = 隐藏时最后一次整页 build 的值）'
+            '—— 这正是 Owner 报的「第二次只出现顶部」。',
+      );
     });
 
-    testWidgets('④ 来回切换多轮：两条的读数**每一帧都相等**', (t) async {
+    testWidgets('④ ★ 来回切换多轮：两条**真实渲染**的读数每一帧都相等', (t) async {
       if (!_requireLibmpv()) return;
       await _mount(t);
       for (var round = 0; round < 3; round++) {
@@ -341,26 +448,43 @@ void main() {
         // 不 settle 到底，中途也要采样 —— 抓"一个先动、一个后动"
         for (var i = 0; i < 4; i++) {
           await t.pump(const Duration(milliseconds: 20));
-          final o = debugPlayerControlBarsOpacity()!;
+          final top = _renderedTop(t);
+          final bottom = _renderedBottom(t);
           expect(
-            o.$1,
-            o.$2,
+            top,
+            isNotNull,
+            reason: '★ 第 $round 轮隐藏中顶栏读数没了（前提：顶栏常挂）',
+          );
+          expect(
+            bottom,
+            isNotNull,
+            reason: '★★ 第 $round 轮隐藏中底栏**不在树上**（读数 null）—— '
+                '淡出窗口还没走完它就该留着（keepForFade）。顶栏=$top',
+          );
+          expect(
+            bottom,
+            top,
             reason:
-                '★ 第 $round 轮隐藏过程中顶/底不一致（$o）—— '
-                '说明有人的动画起点或时长不同',
+                '★★★ 第 $round 轮隐藏过程中顶/底**真实渲染**的不透明度不一致'
+                '（top=$top, bottom=$bottom）—— 说明有一条是 build 期快照。',
           );
         }
         await _settleMotion(t);
-        expect(debugPlayerControlBarsOpacity()!.$1, 0.0);
+        expect(_renderedTop(t), 0.0);
 
         debugPlayerHoverControlsForProbe();
         for (var i = 0; i < 4; i++) {
           await t.pump(const Duration(milliseconds: 20));
-          final o = debugPlayerControlBarsOpacity()!;
-          expect(o.$1, o.$2, reason: '★ 第 $round 轮显示过程中顶/底不一致（$o）');
+          final top = _renderedTop(t);
+          final bottom = _renderedBottom(t);
+          expect(
+            bottom,
+            top,
+            reason: '★★★ 第 $round 轮显示过程中顶/底不一致（top=$top, bottom=$bottom）',
+          );
         }
         await _settleMotion(t);
-        expect(debugPlayerControlBarsOpacity()!.$1, 1.0);
+        expect(_renderedTop(t), 1.0);
       }
     });
 
@@ -377,7 +501,7 @@ void main() {
        */
       await t.pump();
       await t.pump(const Duration(milliseconds: 60));
-      final mid = debugPlayerControlBarsOpacity()!.$1;
+      final mid = _renderedTop(t);
       expect(
         mid,
         greaterThan(0.0),
@@ -385,7 +509,105 @@ void main() {
       );
       expect(mid, lessThan(1.0), reason: '★ 60ms 还没开始动 ⇒ 动画没被驱动');
       await _settleMotion(t);
-      expect(debugPlayerControlBarsOpacity()!.$1, 0.0);
+      expect(_renderedTop(t), 0.0);
+    });
+
+    // ══════════════════════════════════════════════════════════════════
+    //  ★★★ 2026-10-12 新增三条（fix/bottom-bar-opacity）
+    //  改前全部**红**，修后全部**绿**（撤销验证读数见交付报告）。
+    // ══════════════════════════════════════════════════════════════════
+
+    /// ⑭ 底栏淡出过程中必须**有中间帧**（≥1 个 0<o<1 的采样），
+    ///     而不是「恒 1.0 后突然整条卸载」。
+    ///
+    /// 改前：底栏 Opacity 在隐藏全程恒 1.0（build 期快照），到 fade 归零那一帧
+    ///      才被宿主整条卸下 ⇒ 采样里**一个**中间值都没有 ⇒ 本条红。
+    /// 修后：底栏与顶栏同步逐帧下降 ⇒ 采到中间值 ⇒ 绿。
+    testWidgets('⑭ ★ 底栏淡出**有中间帧**（不是「恒 1.0 后硬卸载」）', (t) async {
+      if (!_requireLibmpv()) return;
+      await _mount(t);
+      expect(_renderedBottom(t), 1.0, reason: '前提：底栏先完全显示');
+
+      debugPlayerAutoHideControlsForProbe();
+      await t.pump(); // ticker 取基准时间
+      final samples = <double?>[];
+      for (var i = 0; i < 12; i++) {
+        await t.pump(const Duration(milliseconds: 30));
+        samples.add(_renderedBottom(t));
+        if (_renderedBottom(t) == null) break; // 已卸载，停止采样
+      }
+      final mids = samples.whereType<double>().where((v) => v > 0.0 && v < 1.0);
+      expect(
+        mids.length,
+        greaterThanOrEqualTo(1),
+        reason:
+            '★★★ 底栏淡出过程**没有一个中间帧**（采样=$samples）。'
+            '改前就是「恒 1.0 → 突然 null（整条卸载）」⇒ 底栏要么满不透明、'
+            '要么消失，没有过渡 —— 正是 Owner 说的"错开显示"。',
+      );
+    });
+
+    /// ⑮ 底栏淡出过程的不透明度必须**单调不增**（逐帧现读的另一个侧面：
+    ///     不能忽高忽低，也不能先不变再跳）。
+    ///
+    /// 改前：全程 = 1.0（不变）然后 null ⇒ 严格来说"不增"也成立，
+    ///       所以本条单独不能红 —— 但它与 ⑭ 联合起来把「恒 1.0 后硬卸载」
+    ///       这一态的**两头**都堵死（⑭ 要求有中间值、⑮ 要求不乱跳）。
+    /// 真正能红的是 ⑭；⑮ 是防回归（例如有人把动画改成先升后降）。
+    testWidgets('⑮ ★ 底栏淡出读数**单调不增**', (t) async {
+      if (!_requireLibmpv()) return;
+      await _mount(t);
+      debugPlayerAutoHideControlsForProbe();
+      await t.pump();
+      var prev = _renderedBottom(t) ?? 1.0;
+      for (var i = 0; i < 12; i++) {
+        await t.pump(const Duration(milliseconds: 30));
+        final cur = _renderedBottom(t);
+        if (cur == null) break; // 卸载
+        expect(
+          cur,
+          lessThanOrEqualTo(prev + 1e-9),
+          reason: '★★ 底栏淡出读数**回升**了（$prev → $cur）—— 淡出必须是单调下降',
+        );
+        prev = cur;
+      }
+    });
+
+    /// ⑯ 显示到底后**真实渲染**的底栏可见（Opacity ≥ 0.99）且底栏在树上。
+    ///
+    /// 改前：底栏停在 0.0（build 期快照 = 隐藏时最后一次整页 build 的值）
+    ///       ⇒ 读数 < 0.99 ⇒ 本条红。
+    /// 修后：走完 `Motion.base` ⇒ 回到 1.0 ⇒ 绿。
+    /// 这正是 Owner 的「第二次只出现顶部 / 点暂停才出现」症状的定点回归。
+    testWidgets('⑯ ★ 显示到底后**底栏可见**（渲染 Opacity ≥ 0.99 且在树上）', (t) async {
+      if (!_requireLibmpv()) return;
+      await _mount(t);
+      debugPlayerAutoHideControlsForProbe();
+      await _settleMotion(t);
+      expect(_renderedTop(t), 0.0, reason: '前提：先藏到底');
+
+      debugPlayerHoverControlsForProbe();
+      await _settleMotion(t); // 走完 Motion.base
+
+      expect(_bottomBarInTree(), 1, reason: '★★ 底栏必须回到树上');
+      final bottom = _renderedBottom(t);
+      expect(
+        bottom,
+        isNotNull,
+        reason: '★★ 底栏在树上却拿不到渲染的 Opacity（探针坏了）',
+      );
+      expect(
+        bottom,
+        greaterThanOrEqualTo(0.99),
+        reason:
+            '★★★ 底栏显示到底后**真实渲染**仍不透明（读数=$bottom）。'
+            '改前它停在 0.0 永不回来 —— 用户看到「只有顶栏回来、底栏不见」。',
+      );
+      expect(
+        bottom,
+        _renderedTop(t),
+        reason: '★★ 显示到底后两条必须同时满不透明',
+      );
     });
 
     test('⑪ task-16 定案：独立悬浮返回键已删除（改前它会常驻在画面上）', () {
@@ -616,12 +838,12 @@ void main() {
       await _mount(t);
       debugPlayerAutoHideControlsForProbe();
       await _settleMotion(t);
-      final before = debugPlayerControlBarsOpacity()!.$1;
+      final before = debugPlayerControlBarsOpacity()?.$1;
       // 只推进时间，**不**调用任何 hover 探针
       for (var i = 0; i < 20; i++) {
         await t.pump(const Duration(milliseconds: 50));
       }
-      final after = debugPlayerControlBarsOpacity()!.$1;
+      final after = debugPlayerControlBarsOpacity()?.$1;
       expect(after, before, reason: '★ 没有任何交互却自己变回来了（$before → $after）');
     });
   });

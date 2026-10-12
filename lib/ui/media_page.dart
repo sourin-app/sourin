@@ -1574,8 +1574,28 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
        */
       originProvider: widget.originProvider,
       originMediaId: widget.originMediaId,
-      // ★★★ OPS-13 反馈 C ①：站点集 id 一起转发（镜像的 episode_id 靠它）
-      originEpisodeId: widget.originEpisodeId,
+      /*
+       * ★★★ OPS-13 反馈 C ①：站点集 id 一起转发（镜像的 episode_id 靠它）
+       *
+       * ⚠️⚠️ 2026-10-12 修正（CodeRabbit PR #15）：**本地集多于 1 个时必须传 null**
+       *
+       * `widget.originEpisodeId` 是**本页打开时**定下的那一个来源集 id。
+       * 而下面的 `localEpisodeCount` / `localEpisodes` 用的是**实时**的
+       * `_localEpisodeRefs` —— 两者可能不同步：
+       * ```text
+       * 打开页面时：本地只有 1 个完成集 ⇒ localOriginEpisodeIdFor 返回非空 id
+       * 挂载后异步扫描：另一个 .part 下载完了 ⇒ _localEpisodeRefs 变成 2 个
+       *   ⇒ 详情区允许选**第 2 个**本地集
+       *   ⇒ 但 PlayerPage 仍拿打开时那个 originEpisodeId
+       *   ⇒ 镜像进度写到**错误的站点集键**上（污染在线进度）
+       * ```
+       * ⇒ 本地集 >1 时无从判断"用户现在播的是哪一集"⇒ 停用镜像（传 null），
+       *   与「宁可漏写不可写错」同一条裁决（见 cache_page 的同一处理）。
+       * ⚠️ 恰好 1 个时**照常传** —— 那时"播的必然是它"，镜像是有意义的
+       *   （这也是 OPS-13 反馈 C ① 那条兜底要保住的场景）。
+       */
+      originEpisodeId:
+          _localEpisodeRefs.length <= 1 ? widget.originEpisodeId : null,
       // ★ task-2【④】：右侧详情栏此刻是否真的可见（见 hasRightDetail 的注释）
       hasRightDetailBar: hasRightDetail,
     );

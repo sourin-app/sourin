@@ -30,6 +30,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart' as mui;
 import 'package:sourin_spike/core/download_dir.dart';
+import 'package:sourin_spike/core/download_queue.dart' show DownloadQueue;
 import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart' show AppThemeHost;
@@ -84,13 +85,15 @@ File _writeRealPng(String path) {
   return f;
 }
 
-void _writeSidecar(String dirPath, {String? provider, String? id, String? title, String? cover, String? coverFile}) {
+void _writeSidecar(String dirPath, {String? provider, String? id, String? title, String? cover, String? coverFile, String? episodeId}) {
   File('$dirPath${Platform.pathSeparator}$kCacheSidecarName').writeAsStringSync(jsonEncode({
     'provider': provider,
     'id': id,
     'title': title,
     'cover': cover,
     'coverFile': coverFile,
+    // ★★★ OPS-13 反馈 C ①：站点集 id（本地进度镜像到站点键时 episode_id 的值）
+    if (episodeId != null) DownloadQueue.kSidecarEpisodeIdKey: episodeId,
   }));
 }
 
@@ -213,6 +216,8 @@ void main() {
   tearDown(() {
     debugClearCacheMetaMemo();
     debugMetaFetchers = null;
+    // ★ OPS-13 反馈 C ①：集号反查的注入点用完必须复位（否则污染同进程其它用例）
+    debugProgressFetcher = null;
     CachePage.debugScanRootOverride = null;
     DownloadDir.debugReset();
   });
@@ -443,4 +448,193 @@ void main() {
     expect(req.cover, isNull);
   });
 
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  OPS-13 反馈 C ①：站点集 id 从旁文件读进 CachedWork → 接进播放请求
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 为什么是「读进 CachedWork」而不是只测 JSON 字段
+  // ```text
+  // 站点集 id 只在**下载那一刻**知道（DownloadTask.episodeId）——
+  // 它必须一路流到 CachedPlayRequest.originEpisodeId，否则镜像进度那一步
+  // 又被 CR-08 守卫跳过（本地与在线永远不同步）。
+  // 这条从**真实扫盘的旁文件**读起，钉住整条读取链。
+  // ```
+  test('★★★ 旁文件带 episodeId ⇒ 扫进 CachedWork.originEpisodeId 并透出',
+      () async {
+    final dir = '${root.path}${Platform.pathSeparator}$kRealDirName';
+    _writeBytes('$dir${Platform.pathSeparator}第01集.mp4', 2 * 1024 * 1024);
+    _writeSidecar(dir,
+        provider: 'cycani',
+        id: '3862',
+        title: kRealDirName,
+        episodeId: '51463');
+
+    final w = (await scanCacheWorks(root.path)).single;
+    debugPrint('OPS13-C 扫出的 siteEpisodeId=${w.originEpisodeId}');
+    expect(w.originEpisodeId, '51463',
+        reason: '★★★ 旁文件的 episodeId 必须读进 CachedWork —— '
+            '它是镜像进度时 episode_id 的唯一来源');
+    final req = buildLocalPlayRequest(w)!;
+    expect(req.originEpisodeId, '51463',
+        reason: '★★★ 必须透出到播放请求（单集目录 ⇒ 直接可用）');
+    expect(req.originProvider, 'cycani');
+  });
+
+  test('★★ 旁文件**没有** episodeId ⇒ originEpisodeId 为 null（不猜）', () async {
+    final dir = '${root.path}${Platform.pathSeparator}$kRealDirName';
+    _writeBytes('$dir${Platform.pathSeparator}第01集.mp4', 2 * 1024 * 1024);
+    _writeSidecar(dir, provider: 'cycani', id: '3862', title: kRealDirName);
+    debugProgressFetcher = null;
+
+    final w = (await scanCacheWorks(root.path)).single;
+    expect(w.originEpisodeId, isNull,
+        reason: '★★ 旁文件没记集号、库里也反查不到 ⇒ null ⇒ '
+            '退化成「不写镜像」（宁可不同步，不张冠李戴）');
+    expect(buildLocalPlayRequest(w)!.originEpisodeId, isNull);
+  });
+
+  test('★★★ 老下载兜底：无旁文件 ⇒ 按目录名去库反查集号', () async {
+    // 业主真机的那种目录：只有 mp4，**没有** _sourin-cache.json
+    final dir = '${root.path}${Platform.pathSeparator}$kRealDirName';
+    _writeBytes('$dir${Platform.pathSeparator}第01集.mp4', 2 * 1024 * 1024);
+    debugMetaFetchers = (
+      history: () async => [
+            HistoryEntry(
+              key: 'cycani:3862',
+              provider: 'cycani',
+              nativeId: '3862',
+              title: kRealDirName,
+              position: 254,
+              duration: 1800,
+            ),
+          ],
+      favorites: () async => const <Favorite>[],
+    );
+    // ★ 反查集号：真 API 要 FFI 核心 ⇒ 注入（生产路径默认走 SourinApi.getProgress）
+    debugProgressFetcher = (provider, id) async => Progress(
+          key: '$provider:$id',
+          provider: provider,
+          nativeId: id,
+          title: kRealDirName,
+          episodeId: '51463',
+          position: 254,
+          duration: 1800,
+        );
+
+    final w = (await scanCacheWorks(root.path)).single;
+    debugPrint('OPS13-C 老下载反查 siteEpisodeId=${w.originEpisodeId}');
+    expect(w.provider, 'cycani', reason: '★ 前置：来源按目录名找回了');
+    expect(w.originEpisodeId, '51463',
+        reason: '★★★ 老下载（无旁文件）的兜底：按目录名去库反查同标题作品的'
+            'progress.episode_id —— 这条是「无旁文件也不完全退化」的证据');
+  });
+
+  test('★★★ 老下载反查：progress 已被**别的一集**覆盖 ⇒ 必须放弃（不许污染）',
+      () async {
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     *  CodeRabbit PR #15 点出的真缺陷（已核实），这条是它的回归门禁
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 缺陷机制
+     *
+     * ```text
+     * progress 表按**作品**一行（key = provider:native_id），且 upsert 对
+     *   episode_id 没有守卫 ⇒ 每次播放都覆盖
+     * ⇒ getProgress() 返回的 episodeId = **最后一次在线看的那一集**
+     *
+     * 用户：下载了第 1 集（老下载，无旁文件） → 之后在线看到第 5 集
+     *   目录名只匹配到**作品名**（不区分集）⇒ 取到第 5 集的 episode_id
+     *   ⇒ localOriginEpisodeIdFor 对"单集目录"直接返回它
+     *   ⇒ 镜像写入把**第 1 集本地文件**的进度写到**第 5 集**的站点集键上
+     *   ⇒ 在线进度被静默污染
+     * ```
+     *
+     * # 为什么旧代码抓不到
+     *
+     * 上面那条用例的注入 history 与 progress **位置完全一致**（都是 254/1800）
+     * ⇒ 只覆盖了良性情形 ⇒ 有无守卫它都绿。
+     *
+     * # 本用例
+     *
+     * 刻意让二者**对不上**（history 是第 1 集的读数，progress 已被第 5 集覆盖）
+     * ⇒ 期望 originEpisodeId **为 null**（放弃，让镜像写入跳过）。
+     */
+    final dir = '${root.path}${Platform.pathSeparator}$kRealDirName';
+    _writeBytes('$dir${Platform.pathSeparator}第01集.mp4', 2 * 1024 * 1024);
+    debugMetaFetchers = (
+      history: () async => [
+            HistoryEntry(
+              key: 'cycani:3862',
+              provider: 'cycani',
+              nativeId: '3862',
+              title: kRealDirName,
+              // ★ 第 1 集的读数（本地那个文件就是第 1 集）
+              position: 254,
+              duration: 1800,
+            ),
+          ],
+      favorites: () async => const <Favorite>[],
+    );
+    // ★ progress 已被**第 5 集**覆盖 —— 位置完全不同
+    debugProgressFetcher = (provider, id) async => Progress(
+          key: '$provider:$id',
+          provider: provider,
+          nativeId: id,
+          title: kRealDirName,
+          episodeId: '99999', // ← 第 5 集的站点集 id
+          position: 900, // ← 与 history 的 254 对不上
+          duration: 1800,
+        );
+
+    final w = (await scanCacheWorks(root.path)).single;
+    debugPrint('OPS13-C(污染) 老下载反查 siteEpisodeId=${w.originEpisodeId}');
+    expect(
+      w.originEpisodeId,
+      isNull,
+      reason: '★★★ progress 的 (position,duration) 与 history 对不上 ⇒ '
+          '说明那一行已被**别的一集**覆盖 ⇒ 必须**放弃**（返回 null）。'
+          '若这里得到 "99999"，就是把第 1 集本地文件的进度写到第 5 集的'
+          '站点集键上 ⇒ **在线进度被静默污染**',
+    );
+    expect(w.provider, 'cycani',
+        reason: '★ 前置：来源仍按目录名找回了 —— 放弃的**只是集号**，不是来源');
+  });
+
+  test('★ 阴性对照：history 缺 position/duration ⇒ 同样放弃（不猜）', () async {
+    // 找不到可比对的读数时也不许采纳 —— 与上一条同一裁决（宁可漏写不可写错）
+    final dir = '${root.path}${Platform.pathSeparator}$kRealDirName';
+    _writeBytes('$dir${Platform.pathSeparator}第01集.mp4', 2 * 1024 * 1024);
+    debugMetaFetchers = (
+      history: () async => [
+            HistoryEntry(
+              key: 'cycani:3862',
+              provider: 'cycani',
+              nativeId: '3862',
+              title: kRealDirName,
+              position: 0, // ★ 没有可信读数
+              duration: 0,
+            ),
+          ],
+      favorites: () async => const <Favorite>[],
+    );
+    debugProgressFetcher = (provider, id) async => Progress(
+          key: '$provider:$id',
+          provider: provider,
+          nativeId: id,
+          title: kRealDirName,
+          episodeId: '51463',
+          position: 254,
+          duration: 1800,
+        );
+
+    final w = (await scanCacheWorks(root.path)).single;
+    expect(
+      w.originEpisodeId,
+      isNull,
+      reason: '★★ history 没有 position/duration ⇒ 无法确认是同一集 ⇒ '
+          '返回 null（调用方退化成"不写镜像"）。**猜**的代价是静默污染在线进度',
+    );
+  });
 }

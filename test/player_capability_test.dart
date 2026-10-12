@@ -322,11 +322,30 @@ void real() {}
        *
        * 不校验的后果：用户看完第 3 集（进度 2400s），
        * 点开第 4 集（总长 2400s）→ 直接被 seek 到结尾 → 立刻触发"已播放完毕"。
+       *
+       * ★★★ OPS-13 反馈 C（本地进度不与在线同步）③ 改了实现：
+       *   原字面量 `p.episodeId != curEpId` 会**误杀**「站点集 id（51463）
+       *   vs 本地文件名（第01集.mp4）」这种两套标识的合法配对 ⇒ 本地播放
+       *   永远被拒续播（实测日志：进度属于另一集（51463 ≠ 第01集.mp4））。
+       *   ⇒ 判据抽到 `lib/core/progress_origin.dart` 的 [isAnotherEpisode]，
+       *     本页调用它。**旧字面量的等值比较仍在 core 里**（两套真集号不等时
+       *     照样拒绝）—— 这里改为钉住「调用点 + core 里那条真比较」两件事，
+       *     都读**真实源码文本**，不是喂进去的值。
        */
       expect(
-        page.contains('p.episodeId != curEpId'),
+        page.contains('isAnotherEpisode('),
         isTrue,
-        reason: '★★ 必须按 episode_id 校验 —— 否则上一集的进度会串到这一集',
+        reason: '★★ 播放页必须真的调用按集校验判据（不能整段删掉）—— '
+            '否则上一集的进度会串到这一集',
+      );
+      final core = File('lib/core/progress_origin.dart').readAsStringSync();
+      expect(
+        core.contains('return a == b;'),
+        isTrue,
+        reason: '★★ 校验判据本体（progress_origin.isAnotherEpisode）里'
+            '必须仍有「两侧真集号相等才放行」的比较 —— '
+            '放宽只针对「一侧像文件名」的两套标识，同一套标识里不等的集'
+            '照样要拒绝',
       );
     });
 

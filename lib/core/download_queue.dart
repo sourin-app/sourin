@@ -673,6 +673,24 @@ class DownloadQueue {
   /// 旁文件里「本地封面文件名」那个键（读侧 cache_page 必须引用同一个常量）
   static const String kSidecarCoverFileKey = 'coverFile';
 
+  /// ★★★ OPS-13 反馈 C ①：旁文件里「**站点集 id**」那个键
+  ///
+  /// # 为什么要写它（本地与在线进度打通的唯一来源）
+  /// ```text
+  /// 本地会话手上的「集号」是文件名（第01集.mp4），而镜像进度到站点键时
+  /// episode_id 必须是**站点集 id**（如 51463）—— 二者是两套标识。
+  /// 站点集 id 只有在**下载那一刻**才知道（DownloadTask.episodeId）——
+  /// 事后从磁盘/文件名都推不出来 ⇒ 必须随下载写进旁文件。
+  /// ```
+  ///
+  /// ⚠️ 读侧 cache_page._scanWork 必须引用**同一个**常量（两处写两份字面量
+  ///    会在改名时静默只改一处，症状又是「时有时无」）。
+  ///
+  /// ⚠️ 一部多集作品的目录只有**一个**旁文件 ⇒ 本字段记的是**最后写的那一集**
+  ///    的集 id。读侧（buildLocalPlayRequest）**只在能对上这一集时才用**
+  ///    （见那里的判断），否则张冠李戴。
+  static const String kSidecarEpisodeIdKey = 'episodeId';
+
   /// ★★★ CR-06：同一个作品目录的收尾**必须串行**
   ///
   /// # 缺陷（机制已按代码逐行复核 + 探针复现，见 .probe/ops/t26-w3-download.md）
@@ -759,6 +777,10 @@ class DownloadQueue {
           'title': t.title,
           'cover': t.cover,
           kSidecarCoverFileKey: coverFile,
+          // ★★★ OPS-13 反馈 C ①：站点集 id 随下载落旁文件 ——
+          //   它是本地进度镜像到站点键时 episode_id 的**唯一**来源
+          //   （本地文件名与站点集 id 是两套标识，事后推不出来）。
+          kSidecarEpisodeIdKey: t.episodeId,
           // ★ 以下给「本地播放页」补（Owner：封面介绍啥的在线播放器有的，
           //   本地播放器也要有）。全部可空 —— 缺就缺，读侧降级，绝不编造。
           'description': t.description,

@@ -4849,6 +4849,15 @@ class _ShellPageState extends State<ShellPage>
           originProvider: req.originProvider,
           originMediaId: req.originMediaId,
           /*
+           * ★★★ OPS-13 反馈 C ①：站点集 id 也一起带下去。
+           *
+           * 它是镜像进度时 episode_id 的值（**不是** [episodeId]，那一个是
+           * 本地文件名）—— 缺了它，`saveProgressWithMirror` 的 CR-08 守卫
+           * 整条跳过镜像 ⇒ 本地与在线进度永远不同步。
+           * ⚠️ 拿不到时为 null（老下载 / 多集）⇒ 退化成不写镜像，不猜。
+           */
+          originEpisodeId: req.originEpisodeId,
+          /*
            * ★ 作品信息（标题/简介/年份/地区/类型/角标）一并发过去 ——
            *   它就是在线播放页**同一个**详情区组件，差别只在数据来自哪。
            */

@@ -3300,6 +3300,16 @@ class _PlayerPageState extends State<PlayerPage>
        * 之前全走 `debugPrint` ⇒ Release 版什么都没有。
        */
       AppLog.write('PLAY', _sawFirstFrame ? '播放中断（已有画面，非阻断）：$e' : '起播失败：$e');
+      /*
+       * ★ 直播**起播失败**（未出画面）优先怀疑地址本身已坏 ⇒ 踢掉该频道
+       *   的取址缓存，让用户重试时能拿到新地址（否则 30s TTL 内一直命中
+       *   同一份坏地址，表现为"点重试没用"）。仅在从未出过画面时这样做：
+       *   出过画面后的中断是"可恢复抖动"（换流/缓冲），地址本身没错，
+       *   踢缓存反而把"切台≈0ms"的收益丢掉。
+       */
+      if (_isLive && !_sawFirstFrame) {
+        SourinApi.invalidateLiveStream(_provider, _liveChannelId!);
+      }
       setState(() {
         if (_sawFirstFrame) {
           _playbackFailure = e;
@@ -3450,6 +3460,19 @@ class _PlayerPageState extends State<PlayerPage>
        */
       _liveSwitchStartedAt = DateTime.now();
       _liveSwitchMark('① 进页取地址', '$_provider/$_liveChannelId');
+      /*
+       * ★★ 重试出口（CodeRabbit 指出的「直播缓存没有生产失效出口」）：
+       *   直播取址有 30s TTL，但 TTL 内地址仍可能先坏（代理重启、上游换址、
+       *   核心层探测的地址租期失效）。此时错误浮层的「重试」会再调 `_load()`，
+       *   若还命中同一份坏地址就会**永远重试同一个坏结果**（用户看起来
+       *   "点重试没用"）。判据：本次是**重试**（`_error` 上一轮非空）⇒
+       *   先踢掉该频道的缓存再重新取址，让重试真的能拿到新地址。
+       *   ⚠️ 只删当前频道那一份（`invalidateLiveStream` 不清空全部），
+       *      预取邻居台的缓存成果不受影响。
+       */
+      if (_error != null) {
+        SourinApi.invalidateLiveStream(_provider, _liveChannelId!);
+      }
     }
 
     setState(() {
@@ -8658,6 +8681,12 @@ class _PlayerPageState extends State<PlayerPage>
       if (!mounted) return;
       if (_liveChannelId != next.id) return;
       debugPrint('[PLAYER] 直播切台失败 ${next.name}: $e');
+      /*
+       * ★ 切台失败 ⇒ 踢掉这个台的取址缓存：否则用户再点一次同一个台
+       *   仍会命中同一份坏地址（30s TTL 内），"重试"等于白按。
+       *   只删 `next.id` 这一份，别的台（含预取）不受影响。
+       */
+      SourinApi.invalidateLiveStream(pick.provider, next.id);
       setState(() {
         _error = e.toString();
         _errorKind = _kindOf(e);

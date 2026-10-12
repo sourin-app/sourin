@@ -378,6 +378,8 @@ class CachedMeta {
     this.watchedAt = 0,
     this.source = '',
     this.episodeId,
+    this.histPosition,
+    this.histDuration,
   });
 
   final String provider;
@@ -390,6 +392,13 @@ class CachedMeta {
 
   /// 命中来源：'history' / 'favorites'（日志与排查用）
   final String source;
+
+  /// ★★★ 来自 history 的**位置/时长**（秒）—— 只为下面那次"认回同一集"的比对而存。
+  ///
+  /// 收藏来源没有这两个值（`Favorite` 模型没有）⇒ null。
+  /// ⚠️ 不要拿它当"下载文件的进度"用 —— 它是**在线最后一次观看**的读数。
+  final int? histPosition;
+  final int? histDuration;
 
   /// ★★★ OPS-13 反馈 C ①：该作品**最后一次看的那一集**的站点集 id（尽力而为）
   ///
@@ -466,6 +475,9 @@ Future<CachedMeta?> _lookupMeta(String dirName) async {
           cover: h.cover,
           watchedAt: h.watchedAt,
           source: 'history',
+          // ★ 留着给下面那次"认回同一集"的比对（见 pickedEpisodeId）
+          histPosition: h.position,
+          histDuration: h.duration,
         ));
       }
     }
@@ -513,20 +525,80 @@ Future<CachedMeta?> _lookupMeta(String dirName) async {
   });
   final pick = cands.first;
   /*
+   * ══════════════════════════════════════════════════════════════════
    * ★★★ OPS-13 反馈 C ①：给挑中的那条补上**站点集 id**（老下载的兜底）
+   * ══════════════════════════════════════════════════════════════════
    *
    * 只有 history 那条能补（Favorite 模型没有集号字段）——
    * 且要再读一次 progress（history 里只有 position/duration/episode_title，
    * 集号在 progress.episode_id 上）。用「同 provider/native_id + 位置对得上」
    * 把 history 那条认回 progress 那一行，从而拿到它的 episode_id。
    * ⚠️ 认不出 ⇒ null（调用方退化成「不写镜像」，不猜）。
+   *
+   * ══════════════════════════════════════════════════════════════════
+   * ⚠️⚠️ 2026-10-12 修正：**「位置对得上」这一步原先根本没做**
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * 上面那句注释（以及 `CachedMeta.episodeId` 的文档）**一直是这么写的**，
+   * 但代码只是 `pickedEpisodeId = p.episodeId` —— 无条件采纳。
+   * 后果（CodeRabbit 在 PR #15 上点出，已核实）：
+   *
+   * ```text
+   * progress 表按**作品**一行（key = provider:native_id），
+   * 且 upsert 对 episode_id **没有守卫** ⇒ 每次播放都覆盖
+   * ⇒ getProgress() 返回的 episodeId = **最后一次在线看的那一集**
+   *
+   * 用户下载了第 1 集（无旁文件的老下载），之后在线看到第 5 集
+   * ⇒ 目录名只匹配到**作品名**（不区分集）⇒ 取到第 5 集的 episode_id
+   * ⇒ localOriginEpisodeIdFor 对"单集目录"直接返回它
+   * ⇒ 镜像写入把**第 1 集本地文件**的进度写到**第 5 集**的站点集键上
+   * ⇒ 在线进度被污染（用户下次在线看第 5 集被弹到第 1 集的位置）
+   * ```
+   *
+   * ## 修法：把注释里承诺的「位置对得上」**真的实现出来**
+   *
+   * 用 history 的 (position, duration) 与 progress 的比对 ——
+   * 两者在正常写入路径上**同源**（`add_history` 与 `upsert_progress` 由同一次
+   * 播放写入，见 store.rs 的说明），所以对得上才认。
+   * ★ 对不上 ⇒ 说明 progress 那行已经被**别的一集**覆盖过 ⇒ 返回 null，
+   *   让镜像写入跳过（宁可漏写，不可写错 —— 写错是**静默污染**，更难查）。
+   *
+   * ⚠️ 两个值都为 0/缺省时不做判断（老数据可能没有）—— 那种情况下
+   *    保持原行为（采纳），避免把**本来能用**的兜底一刀切掉。
    */
   String? pickedEpisodeId = pick.episodeId;
   if (_blank(pickedEpisodeId) && pick.provider.trim().isNotEmpty) {
     try {
       final p = await _progressFetcher(pick.provider, pick.nativeId);
       if (p != null && !_blank(p.episodeId)) {
-        pickedEpisodeId = p.episodeId;
+        /*
+         * ★★★ 只有"认得出是同一集"才采纳。
+         *
+         * `pick` 来自 history（收藏那条**没有** histPosition ⇒ null ⇒ 不采纳，
+         * 与原文「收藏不参与」一致）。
+         */
+        final hp = pick.histPosition;
+        final hd = pick.histDuration;
+        final comparable = hp != null && hd != null && hd > 0;
+        if (!comparable) {
+          /*
+           * 没有可比对的读数 ⇒ **不采纳**（保守）。
+           *
+           * ⚠️ 这不是"维持原行为"：原文的注释承诺了"位置对得上"才认，
+           *    现在只是把它落实。没有读数就无法确认是同一集，
+           *    而采纳错的代价是**静默污染在线进度**（见上面那段）。
+           * ⇒ 宁可返回 null（调用方退化成"不写镜像"），也不猜。
+           */
+          AppLog.write('CACHE',
+              '集号反查放弃（无 position/duration 可比）：${pick.provider}:${pick.nativeId}');
+        } else if (p.position == hp && p.duration == hd) {
+          pickedEpisodeId = p.episodeId;
+        } else {
+          AppLog.write('CACHE',
+              '集号反查放弃（位置对不上 ⇒ progress 已被别的一集覆盖）：'
+              '${pick.provider}:${pick.nativeId} '
+              'history=($hp/$hd) progress=(${p.position}/${p.duration})');
+        }
       }
     } catch (e) {
       // ⚠️ 无核心 / DB 忙 ⇒ 降级（只是镜像写不出去，绝不影响页面）

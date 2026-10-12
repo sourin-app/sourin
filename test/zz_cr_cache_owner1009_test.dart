@@ -529,4 +529,112 @@ void main() {
         reason: '★★★ 老下载（无旁文件）的兜底：按目录名去库反查同标题作品的'
             'progress.episode_id —— 这条是「无旁文件也不完全退化」的证据');
   });
+
+  test('★★★ 老下载反查：progress 已被**别的一集**覆盖 ⇒ 必须放弃（不许污染）',
+      () async {
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     *  CodeRabbit PR #15 点出的真缺陷（已核实），这条是它的回归门禁
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 缺陷机制
+     *
+     * ```text
+     * progress 表按**作品**一行（key = provider:native_id），且 upsert 对
+     *   episode_id 没有守卫 ⇒ 每次播放都覆盖
+     * ⇒ getProgress() 返回的 episodeId = **最后一次在线看的那一集**
+     *
+     * 用户：下载了第 1 集（老下载，无旁文件） → 之后在线看到第 5 集
+     *   目录名只匹配到**作品名**（不区分集）⇒ 取到第 5 集的 episode_id
+     *   ⇒ localOriginEpisodeIdFor 对"单集目录"直接返回它
+     *   ⇒ 镜像写入把**第 1 集本地文件**的进度写到**第 5 集**的站点集键上
+     *   ⇒ 在线进度被静默污染
+     * ```
+     *
+     * # 为什么旧代码抓不到
+     *
+     * 上面那条用例的注入 history 与 progress **位置完全一致**（都是 254/1800）
+     * ⇒ 只覆盖了良性情形 ⇒ 有无守卫它都绿。
+     *
+     * # 本用例
+     *
+     * 刻意让二者**对不上**（history 是第 1 集的读数，progress 已被第 5 集覆盖）
+     * ⇒ 期望 originEpisodeId **为 null**（放弃，让镜像写入跳过）。
+     */
+    final dir = '${root.path}${Platform.pathSeparator}$kRealDirName';
+    _writeBytes('$dir${Platform.pathSeparator}第01集.mp4', 2 * 1024 * 1024);
+    debugMetaFetchers = (
+      history: () async => [
+            HistoryEntry(
+              key: 'cycani:3862',
+              provider: 'cycani',
+              nativeId: '3862',
+              title: kRealDirName,
+              // ★ 第 1 集的读数（本地那个文件就是第 1 集）
+              position: 254,
+              duration: 1800,
+            ),
+          ],
+      favorites: () async => const <Favorite>[],
+    );
+    // ★ progress 已被**第 5 集**覆盖 —— 位置完全不同
+    debugProgressFetcher = (provider, id) async => Progress(
+          key: '$provider:$id',
+          provider: provider,
+          nativeId: id,
+          title: kRealDirName,
+          episodeId: '99999', // ← 第 5 集的站点集 id
+          position: 900, // ← 与 history 的 254 对不上
+          duration: 1800,
+        );
+
+    final w = (await scanCacheWorks(root.path)).single;
+    debugPrint('OPS13-C(污染) 老下载反查 siteEpisodeId=${w.originEpisodeId}');
+    expect(
+      w.originEpisodeId,
+      isNull,
+      reason: '★★★ progress 的 (position,duration) 与 history 对不上 ⇒ '
+          '说明那一行已被**别的一集**覆盖 ⇒ 必须**放弃**（返回 null）。'
+          '若这里得到 "99999"，就是把第 1 集本地文件的进度写到第 5 集的'
+          '站点集键上 ⇒ **在线进度被静默污染**',
+    );
+    expect(w.provider, 'cycani',
+        reason: '★ 前置：来源仍按目录名找回了 —— 放弃的**只是集号**，不是来源');
+  });
+
+  test('★ 阴性对照：history 缺 position/duration ⇒ 同样放弃（不猜）', () async {
+    // 找不到可比对的读数时也不许采纳 —— 与上一条同一裁决（宁可漏写不可写错）
+    final dir = '${root.path}${Platform.pathSeparator}$kRealDirName';
+    _writeBytes('$dir${Platform.pathSeparator}第01集.mp4', 2 * 1024 * 1024);
+    debugMetaFetchers = (
+      history: () async => [
+            HistoryEntry(
+              key: 'cycani:3862',
+              provider: 'cycani',
+              nativeId: '3862',
+              title: kRealDirName,
+              position: 0, // ★ 没有可信读数
+              duration: 0,
+            ),
+          ],
+      favorites: () async => const <Favorite>[],
+    );
+    debugProgressFetcher = (provider, id) async => Progress(
+          key: '$provider:$id',
+          provider: provider,
+          nativeId: id,
+          title: kRealDirName,
+          episodeId: '51463',
+          position: 254,
+          duration: 1800,
+        );
+
+    final w = (await scanCacheWorks(root.path)).single;
+    expect(
+      w.originEpisodeId,
+      isNull,
+      reason: '★★ history 没有 position/duration ⇒ 无法确认是同一集 ⇒ '
+          '返回 null（调用方退化成"不写镜像"）。**猜**的代价是静默污染在线进度',
+    );
+  });
 }

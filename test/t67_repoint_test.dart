@@ -724,16 +724,32 @@ void main() {
       //   ★ 这条是本次（2026-10-12）**补回**的：原判据靠"`else { t }` 出现 ≥2 次"
       //     间接确立"两张表都有集号判定"，改成按集后那个计数不再成立，
       //     若只删不加，两张表各说各话这个坑就没人守了。
-      //   ★ 用**正反两条**钉：两处都必须有集号判定，且都不许退回"不判定就携带"。
+      //
+      //   ⚠️⚠️ 2026-10-12 二次修正（CodeRabbit 指出**我第一版写错了**）：
+      //     第一版是「**整个函数体**里 `episode_number_from_title(` ≥ 2 次」——
+      //     那是**假绿**：progress 臂自己就有 **2 次**调用
+      //     （`let ep_f = …` 与闭包里的 `let ep_t = …`）
+      //     ⇒ 满足 2 次**完全不依赖** history 有没有做集号判定。
+      //     实测（.probe 量过）：把 history 臂的两次调用**全部删掉**，
+      //     该断言**依然全绿** ⇒ 对本用例声称要守的东西**零分辨力**。
+      //   ⇒ 改成**按臂定位**：必须在 **history 段内**找到集号判定，
+      //     且必须成对（`ep_f` / `ep_t` 各一次）—— 那才是"两张表同一套语义"。
+      final histSection = body.substring(body.indexOf('HistoryEntry'));
       expect(
-          RegExp(r'episode_number_from_title\(').allMatches(body).length,
+          RegExp(r'episode_number_from_title\(').allMatches(histSection).length,
           greaterThanOrEqualTo(2),
-          reason: '★★★ `episode_number_from_title` 至少出现在 **2 处** —— '
-              'progress（`to_rows.iter().find` 的判据）与 history（`Some(t) =>` 臂内的 '
-              '`if ep_f == ep_t`）**都要**做集号判定。'
+          reason: '★★★ **history 段内**必须自己做集号判定（≥2 次：ep_f 与 ep_t）—— '
+              '★ 断言对象是 history 段**而不是整个函数体**：'
+              'progress 臂自己就有 2 次调用，按整体计数会**假绿**'
+              '（history 一次都不判也能过）。'
               '★ 只给 progress 加而漏了 history ⇒ 同一部作品在两张表里各说各话'
               '（一张携带、一张不携带）⇒ 更难解释的 bug。'
               '这正是原「`else { t }` ≥2 次」那条断言想守的东西');
+      //   ★ 反向：history 段不许退回"不判定就携带"
+      expect(
+          RegExp(r'if\s+ep_f\s*==\s*ep_t\s*\{').hasMatch(histSection), isTrue,
+          reason: '★★ history 段必须用 `if ep_f == ep_t` 的**同款三态判定** —— '
+              '与 progress 逐字同形；少这一句就是"两张表各说各话"');
       // ④-d ★★ 反向：不许有「拿 FROM 的 position 却不过集号判定」的臂
       //   老形态是 `else { Progress { … position: f.position … } }`（错位携带）。
       //   新形态下这个坑同样可能被写出来 —— 只不过程序员不会用 `else`，

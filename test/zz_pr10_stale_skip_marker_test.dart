@@ -32,7 +32,8 @@ library;
 // 而该库在 flutter_tester 里会偶发 native 崩溃（本仓已知，见
 // `.probe/native-media-tests.md`）。照仓规打 tag。
 // ⚠️ 后果：**裸 `flutter test` 会跳过本文件**（CI 空洞，如实标注）。
-//    跑法：`flutter test test/zz_pr10_stale_skip_marker_test.dart --tags native-media --concurrency=1`
+//    跑法（★ `--run-skipped` **不能漏** —— 少了它等于一条都没跑）：
+//    `flutter test test/zz_pr10_stale_skip_marker_test.dart --run-skipped --tags native-media --concurrency=1`
 //
 // # 数据隔离
 //

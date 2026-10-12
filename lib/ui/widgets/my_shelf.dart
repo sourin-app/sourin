@@ -725,11 +725,19 @@ class MyShelfState extends State<MyShelf> {
   /// 「我的」三份列表 + "还剩几集"的**渲染指纹**（详见 `load()` 里的长注释）。
   ///
   /// 只包含**会被画出来**的字段 —— 这是"数据没变就不重建"的判据。
-  /// ⚠️ 字段清单必须与 `_buildBody` 真正读的字段一致：
-  ///    Favorite → key/title/cover/lastEpisodeTitle/lastEpisodeCount/unreadCount
-  ///    Progress → key/title/episodeTitle/cover/position/duration
-  ///    （`_remainingByKey` 也入指纹 —— 它决定"还剩几集"徽标）
+  /// ⚠️ 字段清单必须与 `_cards` 真正读的字段一致：
+  ///    Favorite（`ShelfTab.favorites`）→ key/title/cover/kind
+  ///    Favorite（`ShelfTab.following`）→ key/title/cover/lastEpisodeTitle/
+  ///                                      lastEpisodeCount/unreadCount
+  ///    Progress（`ShelfTab.history`）  → key/title/episodeTitle/cover/position/
+  ///                                      duration ※ percent 是二者派生，不必入
+  ///    （`_remainingByKey` 也入指纹 —— 它决定追更"还剩几集"徽标）
   /// 漏字段 ⇒ 该字段变了却不重建（漏刷新）；多字段 ⇒ 无谓重建（性能）。两处要同步改。
+  ///
+  /// ★ 收藏与追更**共用 `Favorite` 类型但读的字段不同**：
+  ///   收藏分支的副标题是 `f.kind == 'series' ? '剧集' : '影片'`，
+  ///   而追更分支不读 `kind` ⇒ 两条循环的字段清单**必须分开列**
+  ///   （这正是 `kind` 一度漏掉的原因：把两条循环当成"同一份字段"了）。
   static String _shelfSignature(
     List<Favorite> favs,
     List<Favorite> fols,
@@ -745,6 +753,12 @@ class MyShelfState extends State<MyShelf> {
         ..write('\u0001')
         ..write(f.cover ?? '')
         ..write('\u0001')
+        // ★ 收藏卡片的副标题读 `f.kind`（见 `_cards` 的 `ShelfTab.favorites`
+        //   分支）⇒ 必须入指纹。漏了它：同一 key 的 `kind` 从 movie 变
+        //   series（如详情回填后更正类型），其余字段全同 ⇒ 指纹不变 ⇒
+        //   `load()` 跳过 setState ⇒ 卡片**继续显示「影片」**直到别的字段变。
+        ..write(f.kind)
+        ..write('\u0001')
         ..write(f.lastEpisodeTitle ?? '')
         ..write('\u0001')
         ..write(f.lastEpisodeCount)
@@ -752,6 +766,9 @@ class MyShelfState extends State<MyShelf> {
         ..write(f.unreadCount)
         ..write('\u0002');
     }
+    // ⚠️ 追更分支与收藏分支**字段清单不同**（上面那份是收藏的）：
+    //    追更不读 `kind`，所以这里**有意不写** `f.kind`。
+    //    两处不可合并成一个循环 —— 否则又会把"读的字段不同"这件事抹掉。
     for (final f in fols) {
       b
         ..write(f.key)

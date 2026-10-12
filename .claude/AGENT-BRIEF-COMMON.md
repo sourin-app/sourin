@@ -34,6 +34,14 @@ lead（协调者）负责分工、集成、开 PR。你只负责自己那一块�
 #   （CodeRabbit 指出：原来只在第一行 export，后面两条单独跑会 flutter: command not found）
 W="$REPO/.claude/worktrees/<你的名字>"
 T="$LOCALAPPDATA/Temp/sourin-agent-<你的名字>"; mkdir -p "$T/profile" "$T/data"
+# ★★★ 沙盒里的 ui-prefs.json 必须**一并**清掉下载目录键（CodeRabbit PR #7 指出）：
+#   `--dart-define=DATA_DIR_OVERRIDE` 只决定 ui-prefs.json **从哪读**，
+#   它**不校验** `dsh.download.dir` 的值 —— 若那份文件里已有**真实**下载路径，
+#   `_resolveConfigured()` 会照用 ⇒ 隔离不彻底（可能动到用户的真实「视频\源影」）。
+#   ⇒ 每次跑测试前，把沙盒那份里这两个键删掉，让它回落到沙盒默认：
+rm -f "$T/data/ui-prefs.json"        # 最省事：整份删掉（会回落默认）
+# 若需要保留别的偏好，改删键：把 ui-prefs.json 里的
+#   `dsh.download.dir` / `dsh.download.dir.migrated`  删掉再跑。
 # ★ 跑测试的唯一正确姿势（子 shell + 隔离真实数据目录 + 隔离真实「视频\源影」下载目录）：
 ( export PATH="$FLUTTER_BIN:$PATH"; cd "$W" && USERPROFILE="$(cygpath -w "$T/profile")" \
     flutter test <文件...> --concurrency=1 \
@@ -42,6 +50,8 @@ T="$LOCALAPPDATA/Temp/sourin-agent-<你的名字>"; mkdir -p "$T/profile" "$T/da
 ```
 ★ `FLUTTER_BIN` 由你的任务书给出（如 `<Flutter 安装目录>/bin`）。
   ⚠️ 逐条单独跑时**必须每条都带上 PATH** —— 上一条的 export 不会留到下一条。
+  ⚠️ 沙盒里的 `ui-prefs.json` 是**跨轮残留**的：上一条 `rm -f` 不能省，
+     否则可能复用到带真实下载路径的旧配置。
 - `--concurrency=1` 必须带（多文件混跑会出现 `did not complete` 假红）。
 - 一次别跑全量（2400 条、约 9 分钟，且会和其它 agent 抢 CPU）；跑与你改动相关的测试文件即可，
   收尾时再跑一次「你区域内的全部测试文件」。

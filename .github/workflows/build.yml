@@ -707,6 +707,37 @@ jobs:
       - name: 装依赖（触发 libmpv 供给）
         run: flutter pub get
 
+      # ══════════════════════════════════════════════════════════════════
+      # ★★★ 2026-10-12（CodeRabbit 指出，**已用 CI 实测证实**）：
+      #     光 `flutter pub get` **供不出** libmpv-2.dll
+      # ══════════════════════════════════════════════════════════════════
+      #
+      # 本文件上面那句「flutter pub get 会触发 CMake 配置」是**不完整的** ——
+      # 实测（run 38241155183：加上 `exit 1` 之后第一次真正暴露出来）：
+      # ```text
+      # 核验 libmpv 就位      ⇒ 打完 ::error:: 就 exit 1，**没有** "就位" 那行
+      # 跑 native-media 门禁  ⇒ outcome=skipped（上一步已失败）
+      # 汇总                  ⇒ "门禁未全过（outcome=skipped）"
+      # ```
+      # ⇒ **这个 job 此前一直在"空跑"** —— 46 条硬门禁一条没执行，
+      #   而汇总里只写一句"通过"。正是本文件自己反复警告的那种假绿
+      #   （加了 `exit 1` 之后，它才第一次**说出来**）。
+      #
+      # # 根因：少了真正触发 Windows 原生构建链的那一步
+      # ```text
+      # windows job: cargo build → flutter pub get → **flutter build windows**
+      #              ↑ 真正触发 CMake / native 配置的是最后那一步
+      # 本 job:      flutter pub get → 直接核验 ❌（从没编过 Windows 原生那半）
+      # ```
+      # ⇒ 补一步真正会走那条链的命令。
+      #   ★ 用 `--debug` 而不是 `--release`：本 job 只为**供出 DLL**
+      #     （debug 一样会编出 libmpv-2.dll），而 debug 快得多 ——
+      #     这个 job 已是 45 分钟 timeout 的大户。
+      #   ⚠️ 不传 `-t lib/shell.dart`：这里只借这条路触发 CMake 供件，
+      #     产物不用于发版（发版在 windows job 里，那里传了 -t）。
+      - name: 编 Windows 原生（触发 libmpv 供给 —— pub get 单独不够）
+        run: flutter build windows --debug --no-pub
+
       # ★ 核验 libmpv 真的在路径上 —— 否则本 job 是在**空跑**，
       #   而那比不跑更糟（会让人以为门禁已经执行过了）。
       - name: 核验 libmpv 就位

@@ -3830,17 +3830,36 @@ class _PlayerPageState extends State<PlayerPage>
        * ```
        * ⚠️ 只在**本地会话**生效（`originEpisodeId` 只有本地链路才传）——
        *    在线会话的行为逐字不变。
-       * ⚠️ 用 `p.provider == kLocalProvider` 判"是不是本地那条镜像"更准：
-       *    镜像记录的 provider 就是 `local`。两者都判，宁可保守。
+       * ⚠️ 用 `isLocalSessionProvider(p.provider)` 判"是不是本地那条镜像"——
+       *    镜像记录的 provider 就是 `local`。复用本文件已有的判据，不新引一个常量。
+       *
+       * ⚠️⚠️ 2026-10-12 再修（CodeRabbit PR #15 第五轮 + 第六轮）：
+       *      **只对"赢家是镜像那条"判**
+       *
+       * 上面这段判据一开始没区分 `p` 是哪来的 —— 而 `pickResumeProgress` 可能
+       * 返回**会话自己**那条（`own`，镜像是 null / 或 own 更大时就是它）。那时
+       * `p.episodeId` 是**本地文件名**（`第01集.mp4`），与站点集号天然不等
+       * ⇒ 我这条守卫会把**正常的本地续播也拒掉** ⇒ 本地会话每次从头播。
+       * ★ 这是**我自己引入的回归**（本仓既有用例没覆盖，是 CodeRabbit 抓的）。
+       *
+       * ⚠️ 第五轮我试过用 `isLocalSessionProvider(p.provider)` 来区分 —— **不对**：
+       *    本地会话里 `own` 的 provider **也是** `local`
+       *    ⇒ 那个条件恒真、等于没加（实测：回归用例仍然红）。
+       *
+       * ⇒ 正确的区分是**身份**：`pickResumeProgress(session:, mirror:)` 只会
+       *   原样返回它收到的两个引用之一。所以直接比 `identical(p, peer)`
+       *   —— 只有**镜像**那条赢家才做这道站点集号校验。
+       *   （`peer` 就是上面从对侧键读出来的那条，为 null 时也不可能 identical。）
        */
       if (_isLocalSession &&
+          identical(p, peer) &&
           widget.originEpisodeId != null &&
           widget.originEpisodeId!.isNotEmpty &&
           p.episodeId != null &&
           p.episodeId!.isNotEmpty &&
           p.episodeId != widget.originEpisodeId) {
         debugPrint(
-          '[PLAYER] 本地会话：这条进度的站点集（${p.episodeId}）'
+          '[PLAYER] 本地会话：这条**镜像**进度的站点集（${p.episodeId}）'
           '与本集（${widget.originEpisodeId}）对不上 ⇒ 不续播',
         );
         return;

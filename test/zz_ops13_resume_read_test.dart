@@ -295,6 +295,84 @@ void main() {
   // ══════════════════════════════════════════════════════════════════
   //  方向 ②：在线看完 ⇒ 本地续上（读两个键取新的那条）
   // ══════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════
+  //  ★★★ 本地**自己那条**记录：带 originEpisodeId 也必须照常续播
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // # 这条守的是**我自己引入的一条回归**（CodeRabbit PR #15 第五轮抓到）
+  //
+  // 我给本地会话加的"站点集号第二道校验"（见 player_page.dart 那段）
+  // 一开始**没区分 `p` 是哪来的** —— 而 `pickResumeProgress` 在镜像不存在时
+  // 返回的是**会话自己**那条（`own`），它的 `episodeId` 是**本地文件名**
+  // （`第01集.mp4`），与 `widget.originEpisodeId`（站点集号，如 `51463`）
+  // **天然不等** ⇒ 那条守卫会把**正常的本地续播也拒掉** ⇒ 每次都从头播。
+  //
+  // ⚠️ 本仓既有用例**没覆盖**这个组合（本地键有进度 + 同时带了 originEpisodeId），
+  //    所以它是靠外部评审抓到的 —— 本用例把它钉住。
+  group('★★★ 本地自己那条记录：带 originEpisodeId 也必须续播（回归锁）', () {
+    testWidgets('★★★ 本地键 300s + 站点键空 + 传了 originEpisodeId ⇒ 续到 300s',
+        (t) async {
+      const provider = 'bilibili';
+      const id = 'BV1ops13readD';
+
+      /*
+       * ⚠️ 本地那条**必须走真实保存路径**（不能手写 saveProgress）——
+       *    手写时 `episodeId` 落不到我们以为的值（实测 `own` 读回 null）。
+       *    照 `zz_ops13_mirror_write_test.dart` 的 `driveSave` 同款：
+       *    挂页 → 推位置 → 调 `_saveProgress` 探针。
+       */
+      // ① 先挂一次、真实落一条本地进度（30s）
+      await mountLocal(t,
+          originProvider: provider, originMediaId: id, tag: 'D1');
+      expect(
+        debugPlayerSetDurationForProbe(const Duration(seconds: 1800)),
+        isTrue,
+        reason: '★ 播放页没挂上 ⇒ 下面读数全空（本仓最经典的假绿形态）',
+      );
+      debugPlayerPushPositionForProbe(const Duration(seconds: 300));
+      await t.pump(const Duration(milliseconds: 20));
+      final saved = await t.runAsync<bool>(() => debugPlayerSaveProgressForProbe(
+            duration: const Duration(seconds: 1800),
+            position: const Duration(seconds: 300),
+          ));
+      expect(saved, isTrue, reason: '★ 必须真的走到了 _saveProgress');
+
+      // ② 站点键必须是空的（镜像不存在 ⇒ pickResumeProgress 只能返回 own）
+      final peer = await t.runAsync<Progress?>(() =>
+          SourinApi.getProgress(provider, id));
+      expect(peer, isNull, reason: '★ 前置：对侧键必须是空的（否则返回的是镜像）');
+
+      // ★ 仪器自检：own 那条必须真的在，且它的 episodeId 是**本地文件名**
+      final own = await t.runAsync<Progress?>(() =>
+          SourinApi.getProgress(kLocalProvider, localId));
+      expect(own, isNotNull, reason: '★ 前置：本地键必须真的有那条记录');
+      debugPrint('OPS13-R own: key=${own!.key} ep=${own.episodeId} '
+          'pos=${own.position}');
+      expect(own.position, 300, reason: '★ 前置：本地那条记的是 300s');
+
+      // ③ 重新挂页（新 key ⇒ 真的重走 initState），这次带 originEpisodeId
+      await mountLocal(
+        t,
+        originProvider: provider,
+        originMediaId: id,
+        originEpisodeId: '51463',
+        tag: 'D2',
+      );
+      final seek = await readResume(t);
+      debugPrint('OPS13-R 本地own+originEpisodeId 续播到 = $seek');
+
+      expect(
+        seek,
+        isNotNull,
+        reason: '★★★ 本地**自己**那条记录的 episodeId 是**文件名**，'
+            '与 originEpisodeId（站点集号）天然不等 —— '
+            '第二道校验若不加"只对镜像生效"的限定，就会把这条**正常续播**拒掉 '
+            '⇒ 本地每次都从头播。这条就是那个回归的锁',
+      );
+      expect(seek!.inSeconds, 300, reason: '★ 必须续到本地键记的那一秒');
+    });
+  });
+
   group('② 在线看完 ⇒ 本地续播接得上', () {
     testWidgets('★★★ 站点键有 321s、本地键空 ⇒ 本地会话续到 321s', (t) async {
       const provider = 'bilibili';

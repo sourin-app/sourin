@@ -1507,14 +1507,34 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⇒ 本地/官方互切时必须重建客户端，否则缓存里的旧模式一直被复用。
   bool _danmakuUsingLocal = false;
 
-  /// ★ T27-08：上一次**判定用到的**本机在线事实（null = 还没取过弹幕）
+  /// ★★★ T27-14（CodeRabbit A7）：用户点了「改用官方 API」⇒ **强制**走官方
+  ///
+  /// # 为什么必须有这个开关（否则那颗按钮又一个死循环）
+  /// ```text
+  /// 选路规则是 `usingLocal = localStatus.online`（见 _loadDanmaku）。
+  /// 本机在线 ⇒ 每次重取都还会走本机 ⇒ 若「改用官方」只是清缓存重探，
+  /// 探出来还是在线 ⇒ 又走本机 ⇒ 又 401/403 ⇒ 提示原样回来。
+  /// 所以「改用官方」必须**粘住**一个进程内的强制标记，让选路真的换边。
+  /// ```
+  /// ⚠️ 只在**本次会话**内有效（不落盘）：它是"这次先这么试"的临时选择，
+  ///    不是用户的持久数据源偏好（本仓没有那个偏好项）。重启即回到自动路由。
+  bool _danmakuForceOfficial = false;
+
+  /// ★ T27-08 / ★★★ T27-14：上一次失败的那次请求**走的是不是本机源**（null = 还没取过弹幕）
   ///
   /// 为什么另起一个字段而不是现读 `_danmakuLocalStatus`：
-  /// 用户点了「改用本机弹弹play」时会把后者清成 null 让它重新探测 ——
+  /// 用户点了「改用官方 API」时会把后者清成 null 让它重新探测 ——
   /// 那一刻旧的失败提示还在屏幕上，若 hint 从它现读，标题会当场变回
   /// 「没收到凭证」那一态（用户刚点的按钮像是自己消失了）。
   /// 这里记的是**产生这条失败时**的真实读数，与提示同生共死。
-  bool? _danmakuHintLocalOnline;
+  ///
+  /// ⚠️ T27-14（CodeRabbit A7）：这个字段的**语义**改过 —— 旧名
+  ///    `_danmakuHintLocalOnline` 记的是「本机**在不在线**」，而 host 的选路
+  ///    规则是 `usingLocal = localStatus.online` ⇒ 它恒等于 `usingLocal`，
+  ///    于是 core 的在线支文案「…但当前数据源是官方 API」**永远与事实相反**，
+  ///    那颗「改用本机」按钮也就成了死循环。现在它老老实实回答一个可判定
+  ///    的问题：**产生这条失败的那次请求，走的是本机源吗**。
+  bool? _danmakuHintUsedLocalSource;
 
   /// 上一次取弹幕的结果摘要（给面板与角标显示）
   String _danmakuStatus = '';
@@ -5010,7 +5030,13 @@ class _PlayerPageState extends State<PlayerPage>
      */
     final localStatus = await _ensureDanmakuLocalStatus();
     _danmakuSourceLine = '数据源：${localStatus.line}';
-    final usingLocal = localStatus.online;
+    /*
+     * ★★★ T27-14（CodeRabbit A7）：自动路由 = 「本机在线就优先本机」。
+     *   但用户点过「改用官方 API」后 `_danmakuForceOfficial` 为 true ⇒
+     *   这一次**真的**换边（否则那颗按钮又一次死循环：探出来还是在线 ⇒
+     *   又走本机 ⇒ 又 401/403 ⇒ 提示原样回来）。
+     */
+    final usingLocal = localStatus.online && !_danmakuForceOfficial;
     if (usingLocal != _danmakuUsingLocal) {
       // 模式切了 ⇒ 旧客户端（另一种 baseUrl/签名形态）必须 close 重建
       _danmakuUsingLocal = usingLocal;
@@ -5067,8 +5093,9 @@ class _PlayerPageState extends State<PlayerPage>
         _danmakuError = e;
         _danmakuErrorAt = DateTime.now();
         _danmakuLoading = false;
-        // ★ T27-08：记下**产生这条失败时**的数据源事实（面板指引按它重算）
-        _danmakuHintLocalOnline = usingLocal;
+        // ★ T27-08 / T27-14：记下**产生这条失败的那次请求走的是不是本机源**
+        //   （面板指引按它重算 —— 判据是「走了哪个源」，不是「本机在不在线」）
+        _danmakuHintUsedLocalSource = usingLocal;
         /*
          * ★★ T27-08：面板里那份异常也要带上**按数据源重算**的 hint
          *
@@ -5087,7 +5114,7 @@ class _PlayerPageState extends State<PlayerPage>
             errorMessage: e.errorMessage,
             body: e.body,
             uri: e.uri,
-            hint: DanmakuHint.of(e, localOnline: usingLocal),
+            hint: DanmakuHint.of(e, usedLocalSource: usingLocal),
           ),
           status: '',
         );
@@ -5118,15 +5145,17 @@ class _PlayerPageState extends State<PlayerPage>
        * 改前直接用异常自带的那条 hint —— 而它是**数据源无关**的，
        * 于是本机弹弹play 明明在跑（T27-05 的免签名本地源），屏幕上
        * 还是「去官网免费申请」：用户读到的是「没获取到凭证」，而真正
-       * 该做的是**切数据源**。这里把本机探测事实注入判据
+       * 该做的是**切数据源**。这里把「这次请求走了哪个源」注入判据
        * （`DanmakuHint.of` 是纯函数，事实只能由宿主给）。
        *
        * ⚠️ `e.hint` 那条**仍然保留**（非 401/403 ⇒ 它本来就是 null）：
        *    只重算 403/401 这一支，事实取**产生这条失败时**的读数。
+       * ⚠️ T27-14：判据是「那次请求**走的是不是本机源**」（`usingLocal`），
+       *    不是「本机在不在线」—— 后者会写出与事实相反的提示（见 core 文档）。
        */
-      final localOnline = _danmakuHintLocalOnline ?? false;
+      final usedLocalSource = _danmakuHintUsedLocalSource ?? false;
       final h = (e.statusCode == 401 || e.statusCode == 403)
-          ? DanmakuHint.of(e, localOnline: localOnline)
+          ? DanmakuHint.of(e, usedLocalSource: usedLocalSource)
           : e.hint;
       /*
        * ★★ Owner 第 9 条：点明**这句失败是谁的凭证**
@@ -5227,9 +5256,10 @@ class _PlayerPageState extends State<PlayerPage>
     if (a.openDanmakuSettings) _openDanmakuSettings();
     if (a.openBiliSheet) _openBiliSheet();
     if (a.useLocalDanmaku) _useLocalDanmakuSource();
+    if (a.useOfficialDanmaku) _useOfficialDanmakuSource();
   }
 
-  /// 「改用本机弹弹play」（T27-08 在线态那颗按钮的动作）
+  /// 「改用本机弹弹play」（T27-08 那颗按钮的动作）
   ///
   /// # 为什么必须**重建客户端**（不是只改个 flag）
   /// ```text
@@ -5245,7 +5275,34 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// ⚠️ 这里**只**做「清缓存 + 重取」；选路仍然由 `_loadDanmaku` 里
   ///    w5 的 `localStatus.online` 那段决定（不抢数据源模型的权）。
+  /// ★ T27-14：顺手把 `_danmakuForceOfficial` 清掉 —— 用户这次**明确**要
+  ///    本机源，不该再被上一次「改用官方」的粘性标记压住。
   void _useLocalDanmakuSource() {
+    _danmakuForceOfficial = false;
+    _resetDanmakuClient();
+    _danmakuLocalStatus = null;
+    unawaited(_loadDanmaku());
+  }
+
+  /// 「改用官方 API」（T27-14 本机源拒绝请求那颗按钮的动作）
+  ///
+  /// # 它解决的问题：**换一条真正不同的路**
+  /// ```text
+  /// 触发场景：本机弹弹play 在线 ⇒ 自动路由走本机 ⇒ 本机回了 401/403。
+  /// 旧提示给的是「改用本机弹弹play」—— 而这次**已经是**本机了，点了只会
+  /// 重新探测 ⇒ 还是在线 ⇒ 还是走本机 ⇒ 又失败 ⇒ 提示原样回来（死循环）。
+  /// ⇒ 正确出路是换到**另一条边**：官方 API。
+  /// ```
+  ///
+  /// # 为什么必须粘住 `_danmakuForceOfficial`（不是只清缓存）
+  /// ```text
+  /// 选路是 `usingLocal = localStatus.online && !_danmakuForceOfficial`。
+  /// 若只清缓存重探，探出来本机仍在线 ⇒ 又走本机 ⇒ 死循环照旧。
+  /// ⇒ 用进程内粘性标记把这次重取**真的**掰到官方；用户点「改用本机」
+  ///   时（`_useLocalDanmakuSource`）会把它清回 false。
+  /// ```
+  void _useOfficialDanmakuSource() {
+    _danmakuForceOfficial = true;
     _resetDanmakuClient();
     _danmakuLocalStatus = null;
     unawaited(_loadDanmaku());

@@ -7532,6 +7532,7 @@ class _PlayerPageState extends State<PlayerPage>
         _streams = [];
         _skipMarker = null;
         _playSessionGen++; // ★ 换源 = 会话变了 ⇒ 丢弃在途的旧标记响应
+        _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
         // ★ 换源 ⇒ 上一集下载过的那份文件不再代表「当前这一集」
         //   （Lead 审计 team-message-914508ce【低】第 4 条：这两个字段原先从不重置）
         _clipDownloaded = false;
@@ -7769,6 +7770,7 @@ class _PlayerPageState extends State<PlayerPage>
       _current = null;
       _skipMarker = null;
       _playSessionGen++; // ★ 换会话 = 会话变了 ⇒ 丢弃在途的旧标记响应
+        _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
       // ★ 换会话 ⇒ 同上去掉「已下载 / 上次失败」的残留状态
       _clipDownloaded = false;
       _clipDownloadError = null;
@@ -8116,6 +8118,7 @@ class _PlayerPageState extends State<PlayerPage>
       _outroSkipped = false;
       _skipMarker = null;
       _playSessionGen++; // ★ 切集 = 会话变了 ⇒ 丢弃在途的旧标记响应
+        _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
       // ★ 换集 ⇒ 上一集的「已下载」不适用于这一集
       _clipDownloaded = false;
       _clipDownloadError = null;
@@ -14257,16 +14260,43 @@ SkipMarker? debugPlayerSkipMarkerForProbe() => _livePlayerState?._skipMarker;
 /// 不是另写一份。用于在**不加载 libmpv** 的前提下复现竞态。
 ///
 /// ⚠️ 它不是"绕过生产路径"：三条真实切换路径（换源 `:7495`、换会话 `:7732`、
-///    切集 `:8079`）做的就是这两件事（`_playSessionGen++` + `_skipMarker = null`）。
-///    这里只是把同一对动作暴露给测试。
+///    切集 `:8079`）做的就是这三件事（`_playSessionGen++` + `_skipMarker = null`
+///    + `_position = Duration.zero`）。这里只是把同一组动作暴露给测试。
+/// ★ `_position` 复位是 CodeRabbit PR #10 第二轮点出的：少了它，
+///   `_currentSkipProbePosition()`（取 max(`state.position`, `_position`)）
+///   会读到**上一集**的位置 ⇒ 补判可能误判"已到片尾"⇒ 刚起播就弹下一集倒计时。
 /// 返回 false = 没挂页。
 bool debugPlayerBumpSessionForProbe() {
   final s = _livePlayerState;
   if (s == null) return false;
   s._playSessionGen++;
   s._skipMarker = null;
+  s._position = Duration.zero;
   return true;
 }
+
+/// ★ PR #10 第二轮探针：给会话塞一集列表（造"有下一集"的场景）
+///
+/// # 为什么需要它
+/// `_startNextCountdown()` 第一行就是 `if (_nextEpisode == null) return;`，
+/// 而 `_nextEpisode` 要求 `_episodes` 里 **≥2** 集。
+/// ⇒ 想验"换集后误触发片尾倒计时"，必须让会话**真的有下一集**
+///   （否则倒计时天然不启动 ⇒ 用例恒绿 —— 假的）。
+///
+/// 返回 false = 没挂页。
+bool debugPlayerSetEpisodesForProbe(List<Episode> eps, {int index = 0}) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._episodes = eps;
+  s._epIndex = index;
+  return true;
+}
+
+/// ★ PR #10 第二轮探针：读 `_nextCountdown`（"下一集倒计时"的秒数，0 = 没在倒数）
+///
+/// 用来钉「换集后**不许**因为读到上一集的位置而误触发片尾倒计时」——
+/// 返回 null = 没挂页。
+int? debugPlayerNextCountdownForProbe() => _livePlayerState?._nextCountdown;
 
 /// ★ fix/skip-auto-seek 探针：复位本文件新增的跳过探针（用例之间互不影响）
 void debugPlayerResetSkipProbe() {

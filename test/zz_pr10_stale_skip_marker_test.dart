@@ -189,5 +189,85 @@ void main() {
 
       await drainTimers(t);
     });
+
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ CodeRabbit PR #10 第二轮：换集后**位置也必须复位**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * 我给「会话代次」加的三处 `++` 只清了 `_skipMarker`，**没清 `_position`**。
+     * 而 `_currentSkipProbePosition()` 取的是
+     * `max(_player.state.position, _position)` ⇒ 换集后补判**读到上一集的位置**：
+     * ```text
+     * 第 1 集播到 1200s ⇒ _position = 1200
+     * 切到第 2 集（短集，outroStart = 600）⇒ 补判读到 1200 ≥ 600
+     * ⇒ 命中片尾分支 ⇒ **刚起播就弹"下一集"倒计时**
+     * ```
+     * ⇒ 修法：三处切换路径与 `_playSessionGen++` **一起**把 `_position` 归零。
+     */
+    testWidgets('★★★ 换会话后不许用上一集的位置误触发片尾倒计时', (t) async {
+      await mountPlayer(t);
+
+      /*
+       * ★ 必须**先造出"有下一集"** —— `_startNextCountdown()` 第一行是
+       *   `if (_nextEpisode == null) return;`，而 `_nextEpisode` 要求
+       *   `_episodes` 里 ≥2 集。
+       *   ⚠️ 少了这一步，倒计时**天然不会启动** ⇒ 用例恒绿（假绿）。
+       *   （我第一版就漏了它，红度证明时被抓住。）
+       */
+      expect(
+        debugPlayerSetEpisodesForProbe(const [
+          Episode(id: 'ep1', title: '第01集', index: 0),
+          Episode(id: 'ep2', title: '第02集', index: 1),
+        ]),
+        isTrue,
+        reason: '★ 仪器自检：必须挂上了播放页且成功塞入两集',
+      );
+
+      // ① 摆出「上一集播到 1200s」的状态
+      expect(debugPlayerSetPositionOnlyForProbe(const Duration(seconds: 1200)),
+          isTrue);
+
+      // ② 换集（会话推进）—— 生产路径会把 _position 一起复位
+      expect(debugPlayerBumpSessionForProbe(), isTrue);
+      await t.pump();
+
+      // ③ 新集是**短集**：片尾起点 600s（**小于**旧位置 1200）
+      expect(
+        debugPlayerSetSkipMarkerForProbe(outroStart: 600, outroEnd: 900),
+        isTrue,
+        reason: '★ 仪器自检：标记必须设进去了',
+      );
+
+      // ④ canplay 后的补判（【A】）
+      expect(debugPlayerSkipAfterCanplayForProbe(), isTrue);
+      await t.pump();
+
+      // ⑤ 若 _position 没复位 ⇒ 读到 1200 ⇒ 误判"已到片尾"⇒ 倒计时被拉起
+      expect(
+        debugPlayerNextCountdownForProbe(),
+        0,
+        reason: '★★★ 换集后 `_position` 必须归零 —— '
+            '否则补判读到**上一集**的 1200s，命中新集的片尾区间（600 起）'
+            '⇒ 刚起播就弹出「下一集」倒计时（用户看到莫名其妙）',
+      );
+
+      await drainTimers(t);
+    });
+
+    testWidgets('★ 阴性对照：同会话内位置**不该**被复位', (t) async {
+      await mountPlayer(t);
+      expect(debugPlayerSetPositionOnlyForProbe(const Duration(seconds: 1200)),
+          isTrue);
+      // ★ 不 bump —— 同会话内位置必须保留（否则正常续播/补判全乱）
+      await t.pump();
+      expect(
+        debugPlayerNextCountdownForProbe(),
+        0,
+        reason: '★ 阴性对照：没换会话时不该有任何倒计时（这条不证明复位，'
+            '只证明仪器没恒真）',
+      );
+      await drainTimers(t);
+    });
   });
 }

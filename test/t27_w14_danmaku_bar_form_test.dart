@@ -261,7 +261,15 @@ Future<void> _pump(
       ),
     ),
   );
-  while (tester.takeException() != null) {}
+  /*
+   * ★ 这里原来有一句 `while (tester.takeException() != null) {}` —— 已删。
+   *
+   * 那正是 `CONTRIBUTING.md`「⑥ 规矩二」要防的形态：把**失败静默吞掉**。
+   * 夹具构建（挂底栏 + 悬浮层）若抛错，异常被这里丢弃 ⇒ 下面各测试的回调
+   * 断言（toggles/settings/openId）**仍可能通过** ⇒ 门禁漏报。
+   * 本夹具不挂 PlayerPage（`PlayerBottomBar` 是纯 widget，无 FFI、无 libmpv）
+   * ⇒ **没有任何已知的原生异常需要放行**。构建期若抛错，就让它抛出来。
+   */
 }
 
 void main() {
@@ -360,7 +368,6 @@ void main() {
     expect(spy.settings, 0, reason: '★ 点开关不该顺带开设置面板');
     expect(controller.openId, isNull,
         reason: '★★ 点开关**不许**弹任何 popover —— 弹了就回到两层结构');
-    while (t.takeException() != null) {}
   });
 
   testWidgets('B2 点设置 ⇒ 打开 danmakuQuick 轻量悬浮窗（不直连大卡片）', (t) async {
@@ -385,7 +392,6 @@ void main() {
     // 悬浮窗本体真的画出来了（是「一次点开可操作」的判据）
     expect(find.byKey(PlayerBottomBar.danmakuQuickPanelKey), findsOneWidget,
         reason: '★ 轻量悬浮窗面板必须可见');
-    while (t.takeException() != null) {}
   });
 
   testWidgets('B3 底栏上有 danmakuQuick 的 popover 锚点（五枚 popover）', (t) async {
@@ -409,6 +415,5 @@ void main() {
       expect(ids.contains(id), isTrue,
           reason: '★ $id 的 popover 锚点必须还在（本轮只动弹幕）');
     }
-    while (t.takeException() != null) {}
   });
 }

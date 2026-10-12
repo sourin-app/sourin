@@ -119,6 +119,47 @@ enum PlayEndAction {
   final String hint;
 }
 
+/// 切到**另一集**时怎么起播（本仓新增，不是照抄原版 —— 原版没有这一项）
+///
+/// # 为什么需要它（Owner 原话）
+///
+/// > 如果第3集我看过了,时间是22分钟,我看到20分钟,然后我又从第2集看,正好第二集结束
+/// > 自动切换到下一集,那么第三集应该从头播放 **或者** 有个提示从头播放
+/// > (这个可以做成一个选项,默认是从头播放,然后可选 提示 从头播放)
+///
+/// ⇒ Owner 已确认形态：「弹个小浮层」，即**非阻断**的小卡片，
+///   两个动作「继续观看」/「从头播放」，**不操作 ⇒ 默认从头播放**。
+///
+/// # 为什么是**字符串枚举**而不是布尔开关（取值/缺省的裁决）
+///
+/// ```text
+/// ① 与既有 `PlayEndAction`（同为字符串枚举 + wire 白名单校验）**同一形态**，
+///    面板 `_playbackSection` 里那一组全是"两/三选一"的胶囊，不是开关。
+/// ② ★ 缺省必须是 **fromStart**：老用户升级后**行为一个字都不变**
+///    （切集从头播，与 `_gotoEpisode` 里写死的语义逐字一致）。
+///    用一个**未知/缺省都落到 fromStart** 的 `firstWhere(orElse:)` 达成 ——
+///    偏好文件被写坏、缺键、或者本来就是老版本写的，结果都是 fromStart。
+///    ⚠️ 故意**不用** `UiPrefs.get(...) != '0'` 那种布尔写法：那会让"缺键"
+///    与"显式设成 prompt" 无法区分，且将来加第三档要改判据。
+/// ```
+enum PlayEpisodeStartAction {
+  /// 切到看过的集也**从头播**（默认 —— 与改前行为逐字一致）
+  fromStart('fromStart', '从头播放', '切到看过的集也从第 0 秒开始'),
+
+  /// 切到看过的集时**弹一个小浮层**问「继续观看 / 从头播放」
+  prompt('prompt', '提示', '切到看过的集时弹浮层，可选继续观看或从头播放');
+
+  const PlayEpisodeStartAction(this.wire, this.label, this.hint);
+
+  final String wire;
+  final String label;
+  final String hint;
+
+  /// 反查（白名单校验）—— 非法/缺省一律回落到 [fromStart]
+  static PlayEpisodeStartAction fromWire(String? wire) =>
+      values.firstWhere((a) => a.wire == wire, orElse: () => fromStart);
+}
+
 /// ★★★ task-22 P2-9：解码模式（用户原话：「解码模式 Auto/HW+/HW/SW」）
 ///
 /// # 四个档位与 mpv 的 `--hwdec` 取值一一对应
@@ -382,6 +423,16 @@ class PlayerSettingsSheet extends StatefulWidget {
      * t62 / t68 / t78）一行都不用改。
      */
     this.onOpenSubtitleSearch,
+    /*
+     * ★★★ fix/rewatch-prompt：切集起播策略（本仓新增，**可选**）。
+     *
+     * 与上面四项（hwdecMode / videoZoom / onOpenSubtitleSearch）同一纪律：
+     * 带默认值 ⇒ 四个测试夹具（player_capability / t62 / t68 / t78）
+     * **一行都不用改**。默认 = `fromStart`（= 改前写死的行为），
+     * 所以所有没显式传参的构造点行为**逐字不变**。
+     */
+    this.episodeStartAction = PlayEpisodeStartAction.fromStart,
+    this.onSetEpisodeStartAction,
   });
 
   /// 直播 —— 隐藏"连播"整段（直播没有"播完"这回事）
@@ -514,6 +565,17 @@ class PlayerSettingsSheet extends StatefulWidget {
   /// 传 null ⇒ 按钮**不画**。面板本身不知道有 assrt 这回事，
   /// 也不知道搜索面板会怎么挂载 —— 单向数据流同上。
   final VoidCallback? onOpenSubtitleSearch;
+
+  /// ★★★ fix/rewatch-prompt：切到**另一集**时怎么起播（宿主从
+  /// `dsh.playprefs.episodeStartAction` 恢复；缺省 = [PlayEpisodeStartAction.fromStart]）
+  ///
+  /// 面板只把它画成**两选一**的胶囊（不是开关），值由宿主传进来 ——
+  /// 与 `endAction` 同款单向数据流。真正的行为落在
+  /// `PlayerPage._gotoEpisode` 里（`fromStart` 分支与改前逐字一致）。
+  final PlayEpisodeStartAction episodeStartAction;
+
+  /// 改「切集起播策略」。传 null ⇒ 这一档点不动（与 [onSetHwdecMode] 同款）
+  final ValueChanged<PlayEpisodeStartAction>? onSetEpisodeStartAction;
 
   @override
   State<PlayerSettingsSheet> createState() => _PlayerSettingsSheetState();
@@ -1376,6 +1438,39 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
           child: Text(
             widget.endAction.hint,
+            style: const TextStyle(color: Colors.white38, fontSize: FontSizes.cap),
+          ),
+        ),
+
+        /*
+         * ★★★ fix/rewatch-prompt：切到**另一集**时怎么起播。
+         *
+         * 与「播放完」同款（两选的胶囊 + 一行说明），紧跟其后 ——
+         * 两者都属于"连播/切集"这同一段策略，放一起用户才找得到。
+         * ⚠️ 默认 `fromStart`（= 改前写死的"换集从 0 开始"）⇒ 老用户升级
+         * 行为不变；只有主动切到「提示」才会弹浮层。
+         */
+        _row(
+          '切集起播',
+          Wrap(
+            spacing: Sp.x2,
+            runSpacing: Sp.x2,
+            children: [
+              for (final a in PlayEpisodeStartAction.values)
+                _chip(
+                  label: a.label,
+                  active: a == widget.episodeStartAction,
+                  onTap: widget.onSetEpisodeStartAction == null
+                      ? null
+                      : () => widget.onSetEpisodeStartAction!(a),
+                ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
+          child: Text(
+            widget.episodeStartAction.hint,
             style: const TextStyle(color: Colors.white38, fontSize: FontSizes.cap),
           ),
         ),

@@ -154,9 +154,18 @@ class SourinApi {
   ///
   /// 换源 / 手动重试后的出口 —— 不留 30 秒内的旧地址。
   /// 也被测试用来保证用例之间互不污染（tearDown）。
+  ///
+  /// ★ CodeRabbit PR#5 N1：**代次也要一起抬**（不只是清表）。
+  ///   清表只让**将来**的命中失败，却拦不住**此刻正在飞**的那次取址：
+  ///   它在 `await` 期间被清、返回后照样把旧地址写回（见 [_liveStreamGen]
+  ///   的长注释）—— 于是「清缓存」在竞态窗口内**恰好白做**。
+  ///   清，意味着「此前发起的取址结果一律作废」⇒ 每个键的代次都得前进。
   @visibleForTesting
   static void debugClearLiveStreamCache() {
     _liveStreamCache.clear();
+    // ★ CodeRabbit PR#5 N1：表里没有的键（正在飞、尚未写回）也必须作废
+    //   ⇒ 抬「全局代次基准」一次作废所有键。见 [_liveStreamGenBase]。
+    _liveStreamGenBase++;
   }
 
   /// 让**某一个**直播频道（`provider|channelId`）的缓存立即失效（生产出口）
@@ -173,11 +182,23 @@ class SourinApi {
   ///    其他频道的缓存（预取邻居台的成果）必须留着，否则一次失败就把
   ///    "切台≈0ms" 的收益全丢掉。
   static void invalidateLiveStream(String provider, String channelId) {
-    _liveStreamCache.remove('$provider|$channelId');
+    final key = '$provider|$channelId';
+    _liveStreamCache.remove(key);
+    // ★ CodeRabbit PR#5 N1：**只删条目是不够的** —— 见 [_liveStreamGen]。
+    _liveStreamGen[key] = (_liveStreamGen[key] ?? 0) + 1;
   }
   /// 测试可见的缓存条目数（门禁断言「空结果不缓存」用）
   @visibleForTesting
   static int get debugLiveStreamCacheSize => _liveStreamCache.length;
+
+  /// 测试可见的某键**代次**（CodeRabbit PR#5 N1 门禁用）
+  ///
+  /// 断言「失效真的抬了代次」—— 这是行为门禁的**阴性对照**：
+  /// 只测「缓存里没有旧条目」会被「本来就没缓存」蒙混过关，
+  /// 代次前进才证明失效**确实作用于在飞的那次取址**。
+  @visibleForTesting
+  static int debugLiveStreamGen(String provider, String channelId) =>
+      _liveStreamGenOf('$provider|$channelId');
 
   /// 核心是否已启动
   static bool get isStarted => SourinCore.isStarted;
@@ -568,6 +589,38 @@ class SourinApi {
   static final Map<String, (DateTime, List<StreamCandidate>)> _liveStreamCache =
       {};
 
+  /// ★★★ CodeRabbit PR#5 N1：缓存键的**代次** —— 失效与「在飞取址」之间的竞态保护
+  ///
+  /// # 缺陷（真问题，改前实测可复现）
+  /// ```text
+  /// t0: getLiveStream(A) 命中未缓存 ⇒ 发请求、await（核心层取址，几十 ms~秒级）
+  /// t1: （await 期间）用户起播失败点「重试」⇒ invalidateLiveStream(A)
+  ///     ⇒ 表里那条被删。**但此时根本没有条目可删**（上次取址还没写回！
+  ///       而且这次 await 更早的命中若已过期，条目也已 remove）⇒ 删了个空气。
+  /// t2: t0 那次 await 返回 ⇒ `_liveStreamCache[key] = (now, list)`
+  ///     ⇒ **把用户刚作废的旧地址又写回了缓存**，30 秒 TTL 重新开始计时。
+  /// ⇒ invalidateLiveStream 的语义是「重试必须拿到新地址」，却在
+  ///   **最容易命中的时刻**（重试与上一次取址在飞重叠）**恰好失效** ——
+  ///   用户点重试，取回的仍是同一份坏地址，直到 TTL 到期，表现为"点重试没用"。
+  /// ```
+  ///
+  /// # 修法（最小面：只碰缓存这一层，不重构）
+  /// ```text
+  /// 每个键一个代次计数：失效 ⇒ 该键代次 +1；取址**发起前**记下当时的代次；
+  /// `await` 回来后**只有代次未变**才允许写回。代次变了 = 这次取址的结果
+  /// 已被期间发生的失效作废 ⇒ 丢弃（不写缓存），调用方仍拿到本次结果自用。
+  /// ```
+  static final Map<String, int> _liveStreamGen = {};
+
+  /// 全局代次基准：`debugClearLiveStreamCache()` 用它一次作废**所有**键，
+  /// 包括「正在飞、还没写回」的那些（它们不在 [_liveStreamCache] 里，
+  /// 按键抬不到）。
+  static int _liveStreamGenBase = 0;
+
+  /// 读某键的当前代次（键代次 + 全局基准；两者都单调 ⇒ 和也单调）
+  static int _liveStreamGenOf(String key) =>
+      (_liveStreamGen[key] ?? 0) + _liveStreamGenBase;
+
   /// 全部直播频道（按源分组）
   static Future<List<LiveGroup>> getLiveChannels() async {
     final r = await SourinCore.callAsync('get_live_channels');
@@ -592,6 +645,10 @@ class SourinApi {
       }
       _liveStreamCache.remove(key);
     }
+    // ★★★ CodeRabbit PR#5 N1：记下**发起取址前**的代次。
+    //   之后的 await 期间若有 invalidateLiveStream / debugClearLiveStreamCache
+    //   发生，代次就会前进 ⇒ 这次的结果属于「已被作废的旧世界」，不许写回。
+    final gen = _liveStreamGenOf(key);
     final fake = debugLiveStreamFetcher;
     final List<StreamCandidate> list;
     if (fake != null) {
@@ -606,7 +663,10 @@ class SourinApi {
       });
       list = jlist<StreamCandidate>(r, StreamCandidate.fromJson).toList();
     }
-    if (list.isNotEmpty) {
+    // ★ N1：只有代次未变才写回 —— 变了说明这次取址已被期间的失效作废，
+    //   写回就等于把旧地址又塞回缓存（失效白做）。丢弃 ≠ 错：
+    //   调用方本次照样拿到 list，只是它不进缓存。
+    if (list.isNotEmpty && _liveStreamGenOf(key) == gen) {
       _liveStreamCache[key] = (DateTime.now(), list);
     }
     return list;

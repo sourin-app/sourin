@@ -495,9 +495,12 @@ flutter build windows --release -t lib/shell.dart \
 1. 到弹弹play 开放平台（doc.dandanplay.com/open/）申请一对 AppId / AppSecret。
 2. 本仓库 **Settings → Secrets and variables → Actions** 里新增两个 secret：
    `DANDANPLAY_APP_ID` 与 `DANDANPLAY_APP_SECRET`。
-3. `.github/workflows/build.yml` 已接好通道：三个平台 job 的 env 声明
-   `DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}`（Secret 同理），
-   构建命令自动追加 `--dart-define=DANDANPLAY_APP_ID="${{ env.DANDANPLAY_APP_ID }}"`。
+3. `.github/workflows/build.yml` 已接好通道：凭证 env 只挂在三个平台的
+   **构建那一步**（`env: DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}`，
+   Secret 同理）—— 不挂 job 级，避免「全量测试」与第三方 Action 也读到 Secret
+   （最小权限）。构建命令自动追加对应 shell 语法的引用：Windows 是
+   `--dart-define=DANDANPLAY_APP_ID="$env:DANDANPLAY_APP_ID"`，macOS / Android
+   是 `--dart-define=DANDANPLAY_APP_ID="$DANDANPLAY_APP_ID"`。
 4. fork 的 PR 拿不到 secrets（GitHub 内建规则）⇒ 构建出的包与未配置时行为逐字一致：
    App 回落到用户自填凭证，无需任何额外处理。
 

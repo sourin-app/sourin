@@ -4539,13 +4539,32 @@ class _DownloadButton extends StatelessWidget {
   /// ⚠️ 位置必须**从按钮自己现算**（`context.findRenderObject()`）：
   ///    这一行会随列表滚动，任何提前算好的坐标都会过期。
   ///    下面这几行逐字等价于 `PopupMenuPosition.under` 的取位方式
-  ///    （对照 material_ui 的 popup_menu.dart:1649 与 :1706-1712 ——
-  ///     它自己也是用 context.findRenderObject() 取锚点的）。
+  ///    （对照 material_ui 的 popup_menu.dart:1217 与 :1655-1663 —— 它自己
+  ///     用 `Navigator.of(context, rootNavigator: ...).overlay` 取锚点）。
+  ///
+  /// ★★★ 基准必须是**承载菜单的那一层 overlay**，不是「最近的那层」
+  ///     `showMenu` 把菜单 push 到 `Navigator.of(context).overlay`
+  ///     （popup_menu.dart:1217）；而 `Overlay.of(context)` 取的是
+  ///     **widget 树里最近的** Overlay。两者只有在本页与 Navigator 之间
+  ///     **没有**独立 Overlay 时才恰好是同一个对象。一旦中间夹了一层
+  ///     （曾在 `MaterialApp.builder` 里的 `FToaster` 就是 `Overlay.wrap`；
+  ///      将来若加回 toast / `OverlayPortal` / 嵌套 Navigator 同理），
+  ///     `Overlay.of(context)` 会拿到**错误坐标系** ⇒ `RelativeRect` 的
+  ///     L/T/R/B 全按错的原点算 ⇒ **菜单偏位**（离开按钮）。
+  ///     ⇒ 取位必须对齐菜单真正的宿主：`Navigator.of(context).overlay`。
   Future<void> _openMenu(BuildContext context) async {
     final box = context.findRenderObject() as RenderBox?;
-    final overlay =
-        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    // ★ 与 `showMenu` 用的是**同一个** navigator（它默认 useRootNavigator=true，
+    //   但从 `context` 起的 `Navigator.of` 在本应用里指向同一条根 Navigator；
+    //   若将来 `showMenu` 显式传 useRootNavigator，这里要一起对齐）。
+    final overlay = Navigator.of(context)
+        .overlay
+        ?.context
+        .findRenderObject() as RenderBox?;
     if (box == null || overlay == null || !box.hasSize) return;
+    // 防御：锚点与 overlay 必须同层可达 —— 否则 localToGlobal(ancestor:)
+    // 会抛（不在同一条渲染树）。不同就放弃弹菜单，绝不按错坐标系硬弹。
+    if (!box.attached) return;
 
     // 等价于 PopupMenuPosition.under：把锚点整体下移一个按钮高度
     final under = Offset(0, box.size.height);

@@ -96,6 +96,63 @@ String? _resolvedOf(WidgetTester t) {
   return (st as dynamic).resolvedLocalPath as String?;
 }
 
+/// ★ 本套件**唯一**允许放行的异常源 —— 无 libmpv 的原生播放器构造失败。
+///
+/// # 为什么必须放行（且**只**放行这一个根因）
+/// ```text
+/// 本机/CI 无 libmpv-2.dll ⇒ PlayerPage.initState 里 `Player(...)` 构造抛
+///   ① Exception: MediaKit.ensureInitialized must be called before using any
+///      API from package:media_kit.
+///   ② 同一个构造在**首次同步构建**里抛出 ⇒ 框架再抛一条次生内部断言
+///        'framework.dart': Failed assertion: '_elements.contains(element)'
+///      —— 根因仍是"无 dll"，不是接缝/渲染/状态逻辑出错。
+/// ```
+/// # ⚠️ 这里原来是**四处**相同的 `while (t.takeException() != null) {}`
+///
+/// 那正是 `CONTRIBUTING.md`「⑥ 规矩二」要防的形态：把**失败静默吞掉**。
+/// 非原生媒体错误（接缝断言、渲染、状态）会被一起丢弃 ⇒ 门禁漏报。
+/// 现在收敛成**同一项**预期异常检查：只放行上面这一个根因，其余抛出 ⇒ 测试变红。
+bool isKnownNativeMediaException(String s) =>
+    s.contains('MediaKit.ensureInitialized') ||
+    s.contains('_elements.contains(element)');
+
+/// 稳定推进若干帧（扫盘是异步 IO，必须给足时间让它落地）
+///
+/// ★ 放行口径：**只**放行已知的原生播放器异常；其余**让测试红**。
+///   四个测试原来各自写一遍 `while (t.takeException() != null) {}`，现统一走这里。
+///
+/// # 为什么必须从 `FlutterError.onError` 逐条取（不能只看 takeException）
+/// ```text
+/// 同一个 pump 里抛了**两条**异常时，`takeException()` 只返回一句
+///   'Multiple exceptions (2) were detected …'（正文全丢）——
+///   那正是"非预期异常被静默"的温床：既不知道抛了什么，也没法判定放行。
+/// ⇒ 抄本仓既有形态（test/t119_error_view_overflow_test.dart:146-169）：
+///   临时挂 `FlutterError.onError` 把**每一条**正文收进 sink，逐条判定。
+/// ```
+Future<void> _settle(WidgetTester t, {int rounds = 20}) async {
+  final caught = <String>[];
+  final prev = FlutterError.onError;
+  FlutterError.onError = (details) {
+    caught.add(details.exceptionAsString());
+    prev?.call(details);
+  };
+  try {
+    for (var i = 0; i < rounds; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await t.pump();
+      for (final e in caught) {
+        if (!isKnownNativeMediaException(e)) {
+          throw Exception('★ 非预期异常（改前被 `while (takeException)` 静默吞掉）:\n$e');
+        }
+      }
+      caught.clear();
+      while (t.takeException() != null) {}
+    }
+  } finally {
+    FlutterError.onError = prev;
+  }
+}
+
 void main() {
   late Directory root;
   late Directory workDir;
@@ -157,11 +214,7 @@ void main() {
         //   MediaPage(provider:'local', id=绝对路径)，**没有** localPath。
         MediaPage(provider: kLocalProvider, id: ep1Key, title: workTitle),
       ));
-      for (var i = 0; i < 20; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-        await t.pump();
-        while (t.takeException() != null) {}
-      }
+      await _settle(t);
     });
 
     // 右侧详情区必须切成本地模式（isLocalFile 判据 = DetailPage.localFile）。
@@ -202,11 +255,7 @@ void main() {
           localMeta: work,
         ),
       ));
-      for (var i = 0; i < 20; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-        await t.pump();
-        while (t.takeException() != null) {}
-      }
+      await _settle(t);
     });
 
     _expectDetailLocal(t, ep1Path);
@@ -223,11 +272,7 @@ void main() {
       await t.pumpWidget(_appWith(
         const MediaPage(provider: 'demo', id: 'demo-id-1', title: 'T27W4 在线剧'),
       ));
-      for (var i = 0; i < 20; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-        await t.pump();
-        while (t.takeException() != null) {}
-      }
+      await _settle(t);
     });
 
     _expectDetailLocal(t, ep1Path, expected: 0);
@@ -250,11 +295,7 @@ void main() {
           title: 'T27W4 幽灵剧',
         ),
       ));
-      for (var i = 0; i < 20; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-        await t.pump();
-        while (t.takeException() != null) {}
-      }
+      await _settle(t);
     });
 
     _expectDetailLocal(t, ep1Path, expected: 0);

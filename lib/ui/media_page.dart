@@ -193,6 +193,7 @@ class MediaPage extends StatefulWidget {
     this.localMeta,
     this.originProvider,
     this.originMediaId,
+    this.originEpisodeId,
   });
 
   final String provider;
@@ -242,6 +243,12 @@ class MediaPage extends StatefulWidget {
   ///    （那正是「宁可没有来源，也不要错的来源」）。
   final String? originProvider;
   final String? originMediaId;
+
+  /// ★★★ OPS-13 反馈 C ①：镜像进度时 `episode_id` 要写的**站点集 id**。
+  ///
+  /// ⚠️ 与 [originProvider]/[originMediaId] 同一条纪律：**原样转发**，
+  ///    本页不判、不猜。null = 拿不到（老下载 / 多集）⇒ 不写镜像。
+  final String? originEpisodeId;
 
   @override
   State<MediaPage> createState() => _MediaPageState();
@@ -1528,6 +1535,8 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
        */
       originProvider: widget.originProvider,
       originMediaId: widget.originMediaId,
+      // ★★★ OPS-13 反馈 C ①：站点集 id 一起转发（镜像的 episode_id 靠它）
+      originEpisodeId: widget.originEpisodeId,
       // ★ task-2【④】：右侧详情栏此刻是否真的可见（见 hasRightDetail 的注释）
       hasRightDetailBar: hasRightDetail,
     );

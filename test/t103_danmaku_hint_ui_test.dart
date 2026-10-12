@@ -234,8 +234,13 @@ void main() {
        *   旧串「去官网免费申请」在**本机弹弹play 也在跑**时是指向错误的
        *   （本地源免签名，根本不用申请）⇒ 离线支改成「两个数据源二选一」。
        *   契约本身没变：缺凭证时**必须**给出可操作的下一步（去哪配/怎么选）。
-       *   在线支（探测到本机弹弹play）走 core/danmaku.dart 的 localOnline 分支，
-       *   标题变成「检测到本机弹弹play，但当前数据源是官方 API」—— 见 t27_w8。
+       *
+       * ⚠️ 2026-10-12 更正本注释（CodeRabbit A7 的连带清理）：另一支
+       *   （本次请求**走了本机**、而本机回了 401/403）的标题现在是
+       *   「本机弹弹play 拒绝了这次请求」、动作是「改用官方 API」——
+       *   判据开关也由 `localOnline` 改名为 `usedLocalSource`（它记的是
+       *   「那次请求走了哪个源」，不是「本机在不在线」）。真源见
+       *   `lib/core/danmaku.dart` 的 `DanmakuHint.of`，门禁见 `t27_w8`。
        */
       expect(find.textContaining('在弹幕设置里选一个'), findsOneWidget,
           reason: '★ 光说"缺凭证"不够，得说下一步怎么配');

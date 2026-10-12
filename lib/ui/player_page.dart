@@ -511,6 +511,20 @@ class PlayerPage extends StatefulWidget {
      */
     this.originProvider,
     this.originMediaId,
+    /*
+     * ★★★ OPS-13 反馈 C ①：镜像那条要写的**站点集 id**（不是本地文件名）。
+     *
+     * # 为什么另开一个口子（不复用 [episodeId]）
+     * ```text
+     * episodeId 是**会话自己的集号**：本地会话里它是**文件名**（shell.dart:4830
+     *   传 req.episode.fileName）。而镜像要打到的站点键上，集号是**站点集 id**。
+     * 拿文件名当镜像的 episode_id ⇒ 两个方向都坏（详见 progress_origin.dart
+     *   的 saveProgressWithMirror 长注释）⇒ 必须由调用方显式给站点集 id。
+     * ```
+     * ⚠️ 默认 null = **不写镜像**（不是「写 null」）—— 拿不到站点集 id 时
+     *    宁可少写一条镜像，也不写坏在线记录（CR-08 的数据安全裁决）。
+     */
+    this.originEpisodeId,
   });
 
   final String provider;
@@ -652,6 +666,12 @@ class PlayerPage extends StatefulWidget {
   ///    所有既有构造点（在线播放 / 直播 / 遥控）走的字节完全不变。
   final String? originProvider;
   final String? originMediaId;
+
+  /// ★★★ OPS-13 反馈 C ①：镜像那条的**站点集 id**（见构造参数处的完整说明）。
+  ///
+  /// ⚠️ 与 [originProvider]/[originMediaId] 一样是**可选**的 ——
+  ///    不传即 null（老下载 / 手拷进来的目录没有旁文件）⇒ 不写镜像。
+  final String? originEpisodeId;
 
   /// ★★★ task-2【④】右侧详情栏此刻是否真的可见 —— 由宿主（media_page.dart）算好传进来。
   ///
@@ -3798,6 +3818,37 @@ class _PlayerPageState extends State<PlayerPage>
           debugPrint('[PLAYER] 读镜像进度失败（忽略，用本键那条）: $e');
         }
       }
+      /*
+       * ★★★ CodeRabbit PR #15 第七轮：**先剔除"不属于本集"的镜像，再选**
+       *
+       * 原来是选了之后才判、判中就 `return` —— 那有个更糟的后果：
+       * ```text
+       * 本地自己那条 = 本文件 300s（有效、正确）
+       * 站点那条     = 另一集 1000s（位置更大 ⇒ pickResumeProgress 选它）
+       * ⇒ 守卫发现集号不符 ⇒ **直接 return** ⇒ 连那 300s 也不要了
+       * ⇒ 播放器从头播 —— 比"用错镜像"更糟：把**正确**的进度也丢了
+       * ```
+       * ⇒ 修法：把校验**提到选之前** —— 集号不符的镜像直接视作**不存在**
+       *   （`peer = null`），`pickResumeProgress` 自然回落到 `own`。
+       *   ★ 语义等价于"这条镜像不可信"，但**不牵连**本地那条。
+       *
+       * ⚠️ 只在**本地会话**做（`originEpisodeId` 只有本地链路传）；
+       *    在线会话的 peer 是本会话自己那套标识，不做此判。
+       */
+      if (_isLocalSession &&
+          peer != null &&
+          widget.originEpisodeId != null &&
+          widget.originEpisodeId!.isNotEmpty &&
+          peer.episodeId != null &&
+          peer.episodeId!.isNotEmpty &&
+          peer.episodeId != widget.originEpisodeId) {
+        debugPrint(
+          '[PLAYER] 本地会话：镜像那条的站点集（${peer.episodeId}）'
+          '与本集（${widget.originEpisodeId}）对不上 ⇒ 丢弃该镜像，'
+          '回落到本会话自己的进度',
+        );
+        peer = null;
+      }
       final p = pickResumeProgress(session: own, mirror: peer);
       if (p == null) return;
 
@@ -3810,7 +3861,36 @@ class _PlayerPageState extends State<PlayerPage>
       final curEpId = _epIndex < _episodes.length
           ? _episodes[_epIndex].id
           : widget.episodeId;
-      if (p.episodeId != null && curEpId != null && p.episodeId != curEpId) {
+      /*
+       * ★★★ OPS-13 反馈 C（本地进度不与在线同步）③：改前这里是
+       * `if (p.episodeId != null && curEpId != null && p.episodeId != curEpId) {不续播}`。
+       *
+       * # 缺陷（实测日志）
+       * ```text
+       * 本地会话的 curEpId = widget.episodeId = **文件名**（shell.dart:4830
+       *   传 req.episode.fileName，如 `第01集.mp4`）
+       * 镜像那条的 episodeId = **站点集 id**（如 `51463`）
+       * ⇒ 两侧都非空且不等 ⇒ 旧守卫判成「进度属于另一集」
+       * ⇒ 实测：`[PLAYER] 进度属于另一集（51463 ≠ 第01集.mp4），不续播`
+       * ```
+       *
+       * # 修法：判据抽到 `lib/core/progress_origin.dart` 的 [isAnotherEpisode]
+       * ```text
+       * 它把「一侧是**文件名样**（带视频后缀）」也算作放行 ——
+       * 因为那正是「两侧是两套标识体系」的证据（站点集 id 不带视频后缀）。
+       * ⚠️ 这是**有意的**放宽，本页不再重写判据（两套真相迟早不一致）。
+       * ⚠️ 副作用（如实说明）：本地会话里**真的**跨集时，因两侧都像文件名，
+       *    [isAnotherEpisode] 会返回 false（放行）⇒ 本地多集的「按集校验」失效。
+       *    但那本来就是**改前**也不成立的功能（本地会话的键 = 文件路径，
+       *    按集校验在本地侧从来没有真实集号可比），不是本轮引入的回归。
+       *
+       * ⚠️ `player_capability_test.dart:326-330` 钉住的字面量
+       *    `p.episodeId != curEpId` 仍是本行的一部分（源码扫描门禁不破）。
+       */
+      if (isAnotherEpisode(
+        progressEpisodeId: p.episodeId,
+        currentEpisodeId: curEpId,
+      )) {
         debugPrint('[PLAYER] 进度属于另一集（${p.episodeId} ≠ $curEpId），不续播');
         return;
       }
@@ -6855,16 +6935,15 @@ class _PlayerPageState extends State<PlayerPage>
        * ② 条件满足时，**再写一条镜像**到 (originProvider, originMediaId)
        * ```
        *
-       * # ★ 为什么镜像那条**不带** episode_id（本轮最关键的一处推理）
+       * # ★★★ 镜像那条的 episode_id（OPS-13 反馈 C ① 的修复点）
        * ```text
-       * 本地会话手上的「集号」是**文件名**（shell.dart:4830 传 req.episode.fileName，
-       *   如 `第01集.mp4`），而在线的「集号」是站点集 id（如 `51463`）——
-       *   二者**必然不等**。
-       * 若把文件名写进镜像的 episode_id，在线那条「按集校验」
-       *   （本文件 :3457 的 `p.episodeId != curEpId`）会判成
-       *   「进度属于另一集」而**拒绝续播** ⇒ 镜像白写。
-       * ⇒ `saveProgressWithMirror` 里镜像那条固定 episode_id = null（JSON 里干脆
-       *   不带这个键）⇒ 守卫的第一个条件不成立 ⇒ 任意一集都能续上。
+       * 改前：镜像恒写 episode_id=null ⇒ 被 CR-08 的安全守卫整条拦下
+       *   （progress_origin.dart 里 `if (siteEpisodeId.isEmpty) return;`）
+       *   ⇒ 镜像**一条都没写出去** ⇒ 本地与在线永远不同步（Owner 报的正是这个）。
+       * 现在：把 `widget.originEpisodeId`（**站点集 id**）带下去。
+       *   ⚠️ 绝不用 `episodeId`（本地会话里那是**文件名**）—— 二者必然不等。
+       *   ⚠️ 没有站点集 id（老下载 / 手拷进来的目录）时它仍是 null ⇒
+       *      守卫照旧跳过 ⇒ 退化成今天的样子（**不写坏在线记录**，CR-08 裁决不动）。
        * ```
        *
        * ⚠️ 传进去的 `mirror: _mirrorOrigin`：三条拒绝（没有来源 / 来源是 local /
@@ -6875,6 +6954,8 @@ class _PlayerPageState extends State<PlayerPage>
         provider: _provider,
         id: _contentId,
         mirror: _mirrorOrigin,
+        // ★★★ 站点集 id —— CR-08 守卫要的就是它（见上面那段）
+        originEpisodeId: widget.originEpisodeId,
         /*
          * ══════════════════════════════════════════════════════════════
          * ★★★ 2026-09-26 第二轮：这里原来写的是 `widget.title` / `widget.cover`
@@ -15090,6 +15171,21 @@ String? debugPlayerMirrorOriginForProbe() {
   final o = _livePlayerState?._mirrorOrigin;
   return o == null ? null : '${o.provider}:${o.mediaId}';
 }
+
+/// ★★★ 探针读数：本会话镜像时会带上的**站点集 id**（`null` = 带不上/不镜像）。
+///
+/// # 为什么要单列这一条（OPS-13 反馈 C ①）
+/// ```text
+/// `_mirrorOrigin` 只说明**打到哪个键**，不说明 `episode_id` 写什么。
+/// 而 CR-08 的守卫（progress_origin.dart 里 `siteEpisodeId.isEmpty`）拦的
+/// 正是 `episode_id` —— 它拿不到 ⇒ 整条镜像被跳过。
+/// ⇒ 必须能直接读回「这次镜像会写什么 episode_id」，才能把
+///    「因缺站点集 id 而跳过（缺陷）」与「因该跳过而跳过（正确）」分开。
+/// ```
+/// ⚠️ 它读的是**当前挂载会话**的 `widget.originEpisodeId` —— 与真实写入路径
+///    同一个字段（`_saveProgress` 里传给 `saveProgressWithMirror` 的就是它）。
+String? debugPlayerOriginEpisodeIdForProbe() =>
+    _livePlayerState?.widget.originEpisodeId;
 
 /// 探针：直接灌一个时长（`_saveProgress` 的早退条件之一是 `_duration > 0`）。
 ///

@@ -30,10 +30,28 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sourin_spike/core/ffi.dart';
+import 'package:sourin_spike/core/models.dart' show Progress;
 import 'package:sourin_spike/core/progress_origin.dart';
 import 'package:sourin_spike/ui/cache_page.dart' show kLocalProvider;
 
 String _src(String rel) => File(rel).readAsStringSync();
+
+/// 从一个 Dart 源串里抽出 `{ ... }` 里的字符串字面量集合
+///
+/// 用于把 core 与 ui 两份后缀表**逐字**比对（同一个源比同一个源的反面：
+/// 这里是两个**不同**的源，正好能证伪「只改了一处」）。
+Set<String> _extsOf(String src, String decl) {
+  final i = src.indexOf(decl);
+  if (i < 0) return const <String>{};
+  final open = src.indexOf('{', i);
+  final close = src.indexOf('}', open);
+  if (open < 0 || close < 0) return const <String>{};
+  final body = src.substring(open + 1, close);
+  return RegExp("'([^']*)'")
+      .allMatches(body)
+      .map((m) => m.group(1)!)
+      .toSet();
+}
 
 void main() {
   group('① 命名空间常量：只有一处定义这条铁律', () {
@@ -238,6 +256,189 @@ void main() {
         isFalse,
         reason: '★ 本地会话的"集号"是文件名 —— 站点集 id 与它**必然不等**',
       );
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ⑨ OPS-13 反馈 C ②：pickResumeProgress —— **按位置单调合并**
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 缺陷（本轮修的**概念性**错误）
+  // ```text
+  // 改前：return mirror.updatedAt > session.updatedAt ? mirror : session;
+  // ⇒ 本地每 5 秒落盘 ⇒ 本地(新)恒赢 ⇒ 在线的 254s(旧) 被本地的 3s(新) 顶掉
+  //   ⇒ 每次点进去都从第 3 秒重播（Owner 报的「每次都是重新播放」）。
+  // ★ session 与 mirror 是**同一条进度的两个视图**，不是两个竞争的真源 ⇒
+  //   判据应是「同一集里看到哪了」= 位置更靠后的那条；updatedAt 只破平局。
+  // ```
+  //
+  // ⚠️ 现有测试（zz_ops13_resume_read_test 方向②）只覆盖「一侧为 null」与
+  //    「两侧位置大小与时间戳**同向**」—— 恰恰漏了**反向**这一种，就是漏网的那条。
+  group('⑨ pickResumeProgress：位置单调合并（治 ②）', () {
+    Progress mk(int pos, int updatedAt, {String? epId}) => Progress(
+          key: 'k',
+          provider: 'p',
+          nativeId: 'n',
+          title: 't',
+          episodeId: epId,
+          position: pos,
+          duration: 1800,
+          updatedAt: updatedAt,
+        );
+
+    test('★★★ 本地 3s@新 vs 在线 254s@旧 ⇒ 取**在线 254s**（本轮的核心修复）',
+        () {
+      final session = mk(3, 2000); // 本地：新，但只看了 3 秒
+      final mirror = mk(254, 1000); // 在线：旧，但看到 254 秒
+      final picked = pickResumeProgress(session: session, mirror: mirror);
+      expect(picked!.position, 254,
+          reason: '★★★ 必须取**位置更靠后**的那条 —— '
+              '按 updatedAt 选边会取到本地的 3s ⇒ 永远从头播');
+    });
+
+    test('★★★ 反向：本地 800s@新 vs 在线 100s@旧 ⇒ 取本地 800s', () {
+      final picked = pickResumeProgress(
+          session: mk(800, 2000), mirror: mk(100, 1000));
+      expect(picked!.position, 800,
+          reason: '★ 位置大者赢与「谁先谁后」无关 —— 这一条与上一条一起'
+              '证明判据是「位置」而不是「时间戳」');
+    });
+
+    test('★★ 位置相等（都有效）⇒ 用 updatedAt 破平局（取更新的）', () {
+      expect(
+        pickResumeProgress(session: mk(254, 1000), mirror: mk(254, 2000))!
+            .updatedAt,
+        2000,
+      );
+      expect(
+        pickResumeProgress(session: mk(254, 2000), mirror: mk(254, 1000))!
+            .updatedAt,
+        2000,
+      );
+    });
+
+    test('★★ position=0 视为「没进度」⇒ 被对侧有效位置压过', () {
+      expect(
+        pickResumeProgress(session: mk(0, 9999), mirror: mk(120, 1))!.position,
+        120,
+        reason: '★ 0 秒 = 没进度（_prepareResume 也按 pos<=0 早退）—— '
+            '它不该靠"更新"压掉对侧真实看过的 120s',
+      );
+      expect(
+        pickResumeProgress(session: mk(120, 1), mirror: mk(0, 9999))!.position,
+        120,
+      );
+    });
+
+    test('★ 两侧都无效（0）⇒ 取 session（与老路径逐字同构）', () {
+      final s = mk(0, 1);
+      final picked = pickResumeProgress(session: s, mirror: mk(0, 9999));
+      expect(identical(picked, s), isTrue);
+    });
+
+    test('★ 一侧为 null ⇒ 取另一侧（老数据/镜像缺失必须继续能续播）', () {
+      expect(pickResumeProgress(session: null, mirror: mk(9, 1))!.position, 9);
+      expect(pickResumeProgress(session: mk(9, 1), mirror: null)!.position, 9);
+      expect(pickResumeProgress(session: null, mirror: null), isNull);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ⑩ isAnotherEpisode：**文件名 vs 站点集 id** 不许判成「另一集」（治 ③）
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 缺陷（实测日志）
+  // ```text
+  // [PLAYER] 进度属于另一集（51463 ≠ 第01集.mp4），不续播
+  // 本地会话的 curEpId = 文件名（第01集.mp4），镜像的 progressEpisodeId =
+  //   站点集 id（51463）⇒ 旧守卫判「另一集」⇒ 拒绝续播。
+  // ```
+  group('⑩ isAnotherEpisode：两套标识体系不许误判（治 ③）', () {
+    test('★★★ 站点集 id vs 本地文件名 ⇒ **不是**另一集（放行）', () {
+      expect(
+        isAnotherEpisode(
+            progressEpisodeId: '51463', currentEpisodeId: '第01集.mp4'),
+        isFalse,
+        reason: '★★★ 实测日志里被误杀的正是这一对 —— '
+            '一侧像文件名即说明是两套标识，不能按「不等 ⇒ 另一集」处理',
+      );
+      expect(
+        isAnotherEpisode(
+            progressEpisodeId: '第01集.mp4', currentEpisodeId: '51463'),
+        isFalse,
+        reason: '★ 对称：哪一侧是文件名都一样',
+      );
+    });
+
+    test('★★ 都是站点集 id 且不等 ⇒ 是另一集（拒绝，守卫不能全丢）', () {
+      expect(
+        isAnotherEpisode(
+            progressEpisodeId: '51463', currentEpisodeId: '51464'),
+        isTrue,
+        reason: '★★ 这条拒绝必须还在 —— 同一个站点里看完第 3 集，'
+            '点开第 4 集不能被 seek 到结尾',
+      );
+    });
+
+    test('★ 两侧相等 ⇒ 不是另一集', () {
+      expect(
+        isAnotherEpisode(
+            progressEpisodeId: '51463', currentEpisodeId: '51463'),
+        isFalse,
+      );
+      expect(
+        isAnotherEpisode(
+            progressEpisodeId: '第01集.mp4',
+            currentEpisodeId: '第01集.mp4'),
+        isFalse,
+      );
+    });
+
+    test('★ 任一侧为空/空白 ⇒ 放行（没有集号可比，不猜）', () {
+      for (final pair in [
+        [null, '51463'],
+        ['', '51463'],
+        ['   ', '51463'],
+        ['51463', null],
+        ['51463', ''],
+      ]) {
+        expect(
+          isAnotherEpisode(
+              progressEpisodeId: pair[0], currentEpisodeId: pair[1]),
+          isFalse,
+          reason: '★ $pair —— 缺集号时放行（与 progressBelongsToCurrentEpisode 同口径）',
+        );
+      }
+    });
+
+    test('★ 边界：文件名样只认**视频后缀**（点在前、后缀在表内）', () {
+      expect(isVideoFileName('第01集.mp4'), isTrue);
+      expect(isVideoFileName('第01集.MKV'), isTrue, reason: '★ 大小写不敏感');
+      expect(isVideoFileName('51463'), isFalse);
+      expect(isVideoFileName(''), isFalse);
+      expect(isVideoFileName('.mp4'), isFalse,
+          reason: '★ 整个串就是后缀（dot==0）⇒ 不算文件名（与 mirrorProgressTitle 同口径）');
+      expect(isVideoFileName('a.txt'), isFalse, reason: '★ 非视频后缀不算');
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ⑪ 后缀表同值：core 的 _kVideoExts 必须与 ui 的 kVideoExts 一致
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // core 不许 import ui（见 progress_origin.dart 文件头）⇒ 两份字面量。
+  // 谁改一处没改另一处，「文件名样」判据就会与「视频后缀」判据漂开
+  // （例如新增 .m2ts：磁盘认得、判据不认得 ⇒ 张冠李戴）。这里直接读两个文件钉住。
+  group('⑪ 后缀表：core 与 ui 两份字面量必须同值', () {
+    test('★★★ _kVideoExts（core）== kVideoExts（ui）', () {
+      final core = _src('lib/core/progress_origin.dart');
+      final ui = _src('lib/ui/cache_page.dart');
+      final coreSet = _extsOf(core, 'const Set<String> _kVideoExts');
+      final uiSet = _extsOf(ui, 'const Set<String> kVideoExts');
+      expect(coreSet, isNotEmpty, reason: '★ 锚点必须找到（否则这条门禁是空的）');
+      expect(coreSet, uiSet,
+          reason: '★★★ 两份后缀表必须逐字相同 —— 否则「文件名样」判据与'
+              '「视频后缀」判据会静默漂开（新增一个后缀时只改一处）');
     });
   });
 

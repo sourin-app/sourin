@@ -72,42 +72,26 @@ void main() {
     });
   });
 
-  group('② 键格式：与 Rust progress_key 同构（两边一起钉）', () {
-    test('★★★ 键 = "provider:mediaId:episodeId"，与 Rust 的 format! 逐字同构', () {
-      /*
-       * ★★★ 2026-10-12：主键由「按作品」扩成「**按集**」。
-       *   老：`provider:mediaId`（一个作品一行，换集就覆盖）
-       *   新：`provider:mediaId:episodeId`（每集一行；null ⇒ 空串哨兵）
-       */
-      expect(canonicalProgressKey('bilibili', 'BV1xx411c7mD', '51463'),
-          'bilibili:BV1xx411c7mD:51463');
-      expect(canonicalProgressKey('dandanplay', '36578', '3'), 'dandanplay:36578:3');
-      /*
-       * ★ episodeId 为 null ⇒ **空串哨兵**（不能留 null：SQLite 唯一约束
-       *   允许重复 NULL ⇒ 同一单片会被插成多行）。
-       */
-      expect(
-        canonicalProgressKey('bilibili', 'BV1xx411c7mD', null),
-        'bilibili:BV1xx411c7mD:',
-        reason: '★ episodeId 为 null 时用空串哨兵，而不是省掉那一段',
-      );
-      expect(canonicalProgressKey('dandanplay', '36578'), 'dandanplay:36578:',
-          reason: '★ 不传 episodeId 等价于传 null ⇒ 空串哨兵');
+  group('② 键格式：与 Rust item_key 同构（两边一起钉）', () {
+    test('★★★ 键 = "provider:mediaId"，与 Rust 的 format! 逐字同构', () {
+      expect(canonicalProgressKey('bilibili', 'BV1xx411c7mD'),
+          'bilibili:BV1xx411c7mD');
+      expect(canonicalProgressKey('dandanplay', '36578'), 'dandanplay:36578');
       /*
        * ★ 本地键：绝对路径里既有 `:`（盘符）又有 `/`，**不做任何转义**。
        *   转义的话就与 Rust 那条键不一致了 —— 而 Rust 是唯一拼键的地方。
        */
-      expect(canonicalProgressKey('local', 'D:/源影/第01集.mp4', '第01集.mp4'),
-          'local:D:/源影/第01集.mp4:第01集.mp4');
+      expect(canonicalProgressKey('local', 'D:/源影/第01集.mp4'),
+          'local:D:/源影/第01集.mp4');
     });
 
     test('★★★ 两端格式契约（源码扫描）：Rust 与 Dart 的拼法必须一致', () {
-      final rust = _src('rust/sourin_core/src/store.rs');
-      expect(rust.contains('format!("{provider}:{native_id}:{ep}")'), isTrue,
-          reason: '★ Rust 侧的 progress_key 变了 —— Dart 侧必须同步（它是唯一拼键点）');
+      final rust = _src('rust/sourin_core/src/commands_write.rs');
+      expect(rust.contains('format!("{provider}:{id}")'), isTrue,
+          reason: '★ Rust 侧的 item_key 变了 —— Dart 侧必须同步（它是唯一拼键点）');
       final dart = _src('lib/core/progress_origin.dart');
-      expect(dart.contains(r"'$provider:$mediaId:${episodeId ?? ''}'"), isTrue,
-          reason: '★ Dart 侧的拼法必须是 provider + ":" + mediaId + ":" + (episodeId ?? "")');
+      expect(dart.contains("'\$provider:\$mediaId'"), isTrue,
+          reason: '★ Dart 侧的拼法必须是 provider + ":" + mediaId');
     });
   });
 

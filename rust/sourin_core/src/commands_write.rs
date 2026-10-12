@@ -39,17 +39,6 @@ use crate::store::{Favorite, HistoryEntry, Progress, SkipMarker};
 /// ⚠️ 这个格式是**契约**：原版全项目都是 `"{provider}:{id}"`。
 /// 拼错不会报错，只会静默查不到（返回 None）——
 /// 所以只在**一处**定义，不允许多处各写一遍。
-///
-/// ★★★ 2026-10-12：上句对 `progress` 要打个折扣 —— progress 的主键
-/// **已从按作品扩成按集**（`provider:native_id:episode_id`，见
-/// `store::progress_key`）。`item_key` 在这里仍是**按作品键**，用途变成：
-/// ```text
-/// · get_progress(provider,id)  → 查该作品**最新一集**的进度（store.rs 的 get_progress）
-/// · repoint_item(provider,id)  → 换源时按**作品**维度搬迁（逐集搬）
-/// ```
-/// ⇒ favorites / skip_markers / history 仍是按作品一行（未变）；
-///    progress 的**落库主键**由 `store::progress_key` 生成，与此处的
-///    `item_key` 只共享前两段（`progress_key` 内部用它拼 `item_key` 列）。
 fn item_key(provider: &str, id: &str) -> String {
     format!("{provider}:{id}")
 }

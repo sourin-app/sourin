@@ -30,14 +30,18 @@ lead（协调者）负责分工、集成、开 PR。你只负责自己那一块�
 ## 3. 环境与命令（Git Bash）
 
 ```bash
-export PATH="$FLUTTER_BIN:$PATH"   # FLUTTER_BIN 见任务书     # 每条命令都要带（shell 状态不保留）
+# ★ 每条命令**各自**带 PATH —— shell 状态不保留，上一行的 export 不影响下一行。
+#   （CodeRabbit 指出：原来只在第一行 export，后面两条单独跑会 flutter: command not found）
 W="$REPO/.claude/worktrees/<你的名字>"
 T="$LOCALAPPDATA/Temp/sourin-agent-<你的名字>"; mkdir -p "$T/profile" "$T/data"
 # ★ 跑测试的唯一正确姿势（子 shell + 隔离真实数据目录 + 隔离真实「视频\源影」下载目录）：
-( cd "$W" && USERPROFILE="$(cygpath -w "$T/profile")" flutter test <文件...> --concurrency=1 \
+( export PATH="$FLUTTER_BIN:$PATH"; cd "$W" && USERPROFILE="$(cygpath -w "$T/profile")" \
+    flutter test <文件...> --concurrency=1 \
     --dart-define=DATA_DIR_OVERRIDE="$(cygpath -w "$T/data")" )
-( cd "$W" && flutter analyze lib )      # 要求 0 error；不要新增 warning
+( export PATH="$FLUTTER_BIN:$PATH"; cd "$W" && flutter analyze lib )   # 0 error；不要新增 warning
 ```
+★ `FLUTTER_BIN` 由你的任务书给出（如 `<Flutter 安装目录>/bin`）。
+  ⚠️ 逐条单独跑时**必须每条都带上 PATH** —— 上一条的 export 不会留到下一条。
 - `--concurrency=1` 必须带（多文件混跑会出现 `did not complete` 假红）。
 - 一次别跑全量（2400 条、约 9 分钟，且会和其它 agent 抢 CPU）；跑与你改动相关的测试文件即可，
   收尾时再跑一次「你区域内的全部测试文件」。

@@ -109,13 +109,10 @@ Widget dialogHost(
             DanmakuSettingsDialog(
               state: state,
               onSetEnabled: (_) {},
-              onSetAppId: (_) {},
-              onSetAppSecret: (_) {},
               onSetFontScale: (_) {},
               onSetOpacity: (_) {},
               onSetSpeed: (_) {},
               onSetArea: (_) {},
-              onClearCredentials: () {},
               onReload: () {},
               onClose: () {},
               onHintAction: withAction ? (DanmakuHintAction a) => c.action = a : null,

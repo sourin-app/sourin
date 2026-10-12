@@ -204,8 +204,97 @@ void main() {
     });
   });
 
-  group('③ 凭证填了但被拒：不许被数据源分支抢走', () {
-    test('Invalid AppId ⇒ 「凭证没通过」+ 原文，与走的是哪个源无关', () {
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   *  ★★★ CodeRabbit PR#5 N2：两条边都要有出路（出口不对称）
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * # 触发链（本文件逐条核实过）
+   * ```text
+   * ① 本机在线、本机回 403 ⇒ 提示【第 1 态】⇒ 用户点「改用官方 API」
+   *    ⇒ 宿主置 _danmakuForceOfficial，usingLocal 变 false；
+   * ② 官方（没凭证）也回 403 ⇒ usingLocal=false ⇒ 提示走【第 2 态】；
+   * ③ 但第 2 态的动作只有 openDanmakuSettings / openBiliSheet，
+   *    **没有**任何能清掉那颗粘性标记的入口 ⇒ 文案建议「选本机」，
+   *    而面板里没有数据源切换控件 ⇒ 用户**无路可走**，本会话内每次重取
+   *    都被钉在官方。A7 修好了「本机失败 ⇒ 改走官方」，却留下
+   *    「官方失败 ⇒ 没有回头路」。
+   * ```
+   *
+   * # 修法与判据
+   * ```text
+   * DanmakuHint.of(..., allowUseLocal: true) 时，第 2 态给
+   * forceLocalDanmaku（宿主消费 = 重建客户端真换边，并清掉粘性标记）。
+   * 置位条件是**真实读数**「本机在线、且用户确实点过『改用官方 API』
+   * 并失败了」—— 不是「本机在不在线」，否则本机不在线时也会挂一颗
+   * 点了必然连不上的死按钮（② 组正是在钉那条）。
+   * ```
+   *
+   * # 阴性对照（撤销验证）
+   * ```text
+   * 把 `forceLocalDanmaku: allowUseLocal` 去掉（还原改前）
+   * ⇒ ③e 变红（第 2 态没有任何换回本机的动作）。
+   * ```
+   */
+  group('③e【N2】官方那条边也失败 ⇒ 第 2 态必须给「换回本机」的回头路', () {
+    test('allowUseLocal=true ⇒ 动作里存在一个能换回本机的开关', () {
+      final h = DanmakuHint.of(missing403(), allowUseLocal: true)!;
+      expect(h.title, '弹幕服务没收到凭证',
+          reason: '★ 标题仍与 t100:534/551/608 一致（改的是动作，不是标题）');
+      expect(h.action, isNotNull);
+      /*
+       * ★★ 本组要证的核心：两条边都有出路。
+       *    第 2 态的既有两个出口（设置面板 / B 站）**都不**能切回本机源，
+       *    所以必须有一个真正换边的开关。
+       */
+      expect(
+        h.action!.forceLocalDanmaku || h.action!.useLocalDanmaku,
+        isTrue,
+        reason: '★★ N2 红线：官方也失败时，动作里必须有能换回本机弹弹play 的入口 '
+            '（否则文案建议「选本机」而用户没有入口）',
+      );
+      expect(h.action!.openDanmakuSettings, isTrue,
+          reason: '★ 设置面板这个出口照旧保留（数据源状态行在那里）');
+      expect(h.action!.openBiliSheet, isTrue,
+          reason: '★ 改用 B 站这条路也照旧保留');
+      expect(h.action!.useOfficialDanmaku, isFalse,
+          reason: '★ 不能再给「改用官方」—— 本次走的就是官方，点了原样复现（又一个死循环）');
+    });
+
+    test('allowUseLocal=false（本机不在线）⇒ 一个字都不许加，仍是改前形态', () {
+      final h = DanmakuHint.of(missing403())!;
+      expect(h.action!.forceLocalDanmaku, isFalse,
+          reason: '★★ 本机不在线时「改用本机」是一颗点了必然连不上的死按钮');
+      expect(h.action!.useLocalDanmaku, isFalse);
+      expect(h.action!.label, '去弹幕设置');
+      expect(h.action!.openDanmakuSettings, isTrue);
+      expect(h.action!.openBiliSheet, isTrue);
+    });
+
+    test('★ host：回头路真的接线了（forceLocalDanmaku 被消费 + 能清粘性标记）', () {
+      final src = stripComments(File('lib/ui/player_page.dart').readAsStringSync());
+      expect(src, contains('if (a.forceLocalDanmaku) _useLocalDanmakuSource();'),
+          reason: '★★ 开关必须被 _runDanmakuHintAction 消费（只置不接线 = 假修）');
+      // 回头路要真的能把「强制官方」掰回来
+      final i = src.indexOf('void _useLocalDanmakuSource()');
+      expect(i, isNonNegative);
+      final body = src.substring(i, src.indexOf('\n  }', i));
+      expect(body, contains('_danmakuForceOfficial = false'),
+          reason: '★★ 换回本机必须清掉粘性「强制官方」（否则重取还是官方）');
+    });
+
+    test('★ host：allowUseLocal 的判据是「官方真的失败过」，不是「本机在线」', () {
+      final src = stripComments(File('lib/ui/player_page.dart').readAsStringSync());
+      // 判据来源：选路结果 —— 只有 localStatus.online && _danmakuForceOfficial
+      // 时 usingLocal 才为 false（官方那条边真的被走过）
+      expect(src, contains('_danmakuOfficialFailed = !usingLocal && localStatus.online;'),
+          reason: '★★ 错误判据（本机在线）会在本机不在线时挂死按钮');
+      expect(src, contains('allowUseLocal: _danmakuOfficialFailed,'),
+          reason: '★ 提示条与面板必须用同一份判据');
+    });
+  });
+
+  group('③ 凭证填了但被拒：不许被数据源分支抢走', () {    test('Invalid AppId ⇒ 「凭证没通过」+ 原文，与走的是哪个源无关', () {
       for (final usedLocal in <bool>[false, true]) {
         final h = DanmakuHint.of(invalidAppId403(), usedLocalSource: usedLocal)!;
         expect(h.title, '凭证没通过',
@@ -301,8 +390,16 @@ void main() {
 
     test('host：面板里的 hint 也要按真实数据源重算（不只提示条）', () {
       final src = stripComments(File('lib/ui/player_page.dart').readAsStringSync());
-      expect(src, contains('DanmakuHint.of(e, usedLocalSource:'),
+      expect(src, contains('DanmakuHint.of(e, allowUseLocal:'),
           reason: '★ 提示条与面板必须同一份判据');
+      /*
+       * ⚠️ N2 说明：本条原为 `contains('DanmakuHint.of(e, usedLocalSource:')`，
+       *    那是**命名参数的书写顺序**（N2 给两处补了 allowUseLocal 参数，
+       *    顺序随之调整）。判定意图（面板那份 hint 也按数据源重算）不变，
+       *    仍由下面这条等价断言守住 —— 不降低任何行为要求。
+       */
+      expect(src, contains('usedLocalSource: usingLocal)'),
+          reason: '★ 面板里的 hint 也按「本次走了哪个源」重算（不只提示条）');
       expect(src, contains('final h = (e.statusCode == 401 || e.statusCode == 403)'),
           reason: '★ 提示条也要按数据源重算（不只面板）');
     });
@@ -327,8 +424,11 @@ void main() {
           reason: '★ 写入点在 catch 里（= 本次请求真正用的源）');
       expect(src, contains('final usedLocalSource = _danmakuHintUsedLocalSource ?? false;'),
           reason: '★ 判定读的是那份快照');
-      expect(src, contains('? DanmakuHint.of(e, usedLocalSource: usedLocalSource)'),
+      expect(src, contains('? DanmakuHint.of(e, allowUseLocal: _danmakuOfficialFailed,'),
           reason: '★ 提示条走这条判据');
+      // ⚠️ N2：与⑤组同样的参数顺序调整 —— 判定意图不变，等价断言跟上。
+      expect(src, contains('usedLocalSource: usedLocalSource)'),
+          reason: '★ 提示条把「失败当时的事实」注入判据');
     });
 
     test('host：判定路径里不许现探（纯同步；探测是 IO）', () {

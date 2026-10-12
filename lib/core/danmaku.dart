@@ -1136,6 +1136,7 @@ class DanmakuHintAction {
     this.openBiliSheet = false,
     this.useLocalDanmaku = false,
     this.useOfficialDanmaku = false,
+    this.forceLocalDanmaku = false,
   });
 
   /// 按钮文案
@@ -1162,6 +1163,20 @@ class DanmakuHintAction {
   /// **换一条路**（官方 API），而不是再点一次「改用本机」（那会原样复现）。
   /// 宿主据此粘住「强制官方」再重取一次。与 [useLocalDanmaku] 互斥。
   final bool useOfficialDanmaku;
+
+  /// 点了之后**改用本机弹弹play** —— 与 [useLocalDanmaku] 同一动作，但
+  ///   语义不同：`useLocalDanmaku` 是「本机不在线 ⇒ 建议你启动本机再用」，
+  ///   而这个是「用户此前点了『改用官方 API』、官方那条边**确实也失败了**
+  ///   ⇒ 给一条**回头路**」。
+  ///
+  /// ★★★ N2（CodeRabbit PR#5）：补它的原因是一个**出口不对称** ——
+  ///   A7 修好了「本机失败 ⇒ 能改走官方」，但官方也失败时提示走【第 2 态】，
+  ///   而第 2 态的动作只有 openDanmakuSettings / openBiliSheet，
+  ///   **没有任何入口**能清掉宿主那颗粘性的「强制官方」标记 ⇒ 文案写着
+  ///   「在弹幕设置里选本机」，用户却无处可选，本会话内每次重取都被钉在官方。
+  ///   ⇒ 由 [DanmakuHint.of] 的 [DanmakuHint.of.allowUseLocal] 置位，
+  ///     宿主消费它与 [useLocalDanmaku] 同一实现（重建客户端 = 真换边）。
+  final bool forceLocalDanmaku;
 }
 
 /// 「为什么失败 + 怎么办」——一句话解释 + 可选的动作按钮
@@ -1228,9 +1243,22 @@ class DanmakuHint {
   ///
   /// [usedLocalSource] 缺省 false ⇒ 与改前**逐字同形**的「走的是官方」那一支，
   /// 既有调用方（含 t100/t103）行为不变。
+  ///
+  /// ## ★★★ N2（CodeRabbit PR#5）：[allowUseLocal] —— 官方那条边也失败时的回头路
+  ///
+  /// ```text
+  /// A7 之后两条边是：本机失败 ⇒ useOfficialDanmaku（改用官方）；官方失败 ⇒ ？
+  /// 官方那一支的按钮里没有「改用本机」⇒ 用户只能停在官方，本会话内绕不回来，
+  /// 而文案还写着「在弹幕设置里选本机」（面板里其实没有那个控件）。
+  /// 这个参数由宿主置位，条件只有一个、且来自真实读数：**本机在线、且用户
+  /// 确实点过「改用官方 API」**（即官方这条路被真的走过一次、并失败了）。
+  /// ```
+  /// ⚠️ 缺省 false ⇒ 与改前**逐字同形**（本机不在线时不给「改用本机」，
+  ///    那颗按钮点了必然连不上）。
   static DanmakuHint? of(
     DanmakuException e, {
     bool usedLocalSource = false,
+    bool allowUseLocal = false,
   }) {
     final rejected = e.statusCode == 401 || e.statusCode == 403;
     if (!rejected) return null;
@@ -1274,8 +1302,17 @@ class DanmakuHint {
        * 「去官网免费申请」在这里删掉：本机弹弹play 这条路不用申请，
        * 先让用户知道有两条路，再让他自己选（默认仍是官方）。
        * ⚠️ 标题保持 '弹幕服务没收到凭证' —— t100:534/551/608 逐字钉着它。
+       *
+       * ★★★ N2（CodeRabbit PR#5）：[allowUseLocal] = 「官方那条边**确实**
+       *   试过并失败了」（本机在线 + 用户点过「改用官方」）。
+       *   此时必须补一颗**真正能换回本机**的按钮，否则：
+       *     · 文案写「在弹幕设置里选本机」，而面板里**没有**数据源切换控件；
+       *     · 清掉宿主那颗粘性「强制官方」标记的唯一入口是「改用本机」，
+       *       而这一态的按钮里没有它 ⇒ 用户被永久钉在官方，无路可走。
+       *   ⚠️ 默认（allowUseLocal=false，本机压根不在线）**一个字都不加** ——
+       *      那时给「改用本机」是点了必然连不上的死按钮（t27_w8 ② 组钉着）。
        */
-      return const DanmakuHint(
+      return DanmakuHint(
         title: '弹幕服务没收到凭证',
         text: 'dandanplay 的弹幕有两个数据源，在弹幕设置里选一个：'
             '「本机弹弹play」（本机跑着弹弹play 就用它，免签名、不用申请任何凭证）'
@@ -1287,6 +1324,9 @@ class DanmakuHint {
           label: '去弹幕设置',
           openDanmakuSettings: true,
           openBiliSheet: true,
+          // ★ N2：只有「官方也失败了」才追加回头路（与上面两个开关并存，
+          //   让用户自己选：去看设置 / 换回本机 / 改用 B 站）。
+          forceLocalDanmaku: allowUseLocal,
         ),
         url: 'https://dev.dandanplay.com',
       );

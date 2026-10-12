@@ -5,7 +5,7 @@ lead（协调者）负责分工、集成、开 PR。你只负责自己那一块�
 
 ## 1. 项目速览（先读这些）
 
-- 仓库根（主工作区，只读参考）：`D:\WishProject\sourin-flutter-spike`
+- 仓库根（主工作区，只读参考）：`<仓库根>`（本机绝对路径见任务书；**不入库**）
 - 必读：`README.md`（架构/配置/坑）、`CONTRIBUTING.md`（流程与纪律）、
   主工作区里的 `HANDOFF.md`（上一轮交接，未入库，用绝对路径读）、
   `PLAYER-CONTRACT.md` / `INTERACTION-CONTRACT.md`（交互契约：快捷键、TV 遥控器、导航）
@@ -21,7 +21,7 @@ lead（协调者）负责分工、集成、开 PR。你只负责自己那一块�
 - **不要调用 `EnterWorktree` / `ExitWorktree` 工具**，Bash 里也**不要裸 `cd`**（会改掉整个会话的工作目录，波及其他 agent 与 lead —— lead 已实测踩到）。
   做法：所有文件读写一律用 **worktree 内的绝对路径**；每条 Bash 命令都包在**子 shell** 里：
   `( cd <你的 worktree> && <命令> )` —— 括号不能省，子 shell 的 cd 不会泄漏出去。
-  ⚠️ 主工作区 `D:\WishProject\sourin-flutter-spike` 本身（不含 `.claude\`）你**只读**，绝不在那里改文件、切分支、提交。
+  ⚠️ 主工作区（`<仓库根>`，本机绝对路径见任务书、**不入库**）本身（不含 `.claude\`）你**只读**，绝不在那里改文件、切分支、提交。
 - **第一步**：`( cd <worktree> && git merge --ff-only feat/owner-feedback-1009 && flutter pub get )`（拿到 lead 刚加的截图辅助等）。
 - worktree 根目录与 `rust/sourin_core/target/release/` 下已放好预编译的 `sourin_core.dll`（Rust 核心）。
 - **只改你被分配的文件**（见任务书「文件归属」与第 8 节总表）。确需改别人的文件时，改动要最小、集中，
@@ -30,8 +30,8 @@ lead（协调者）负责分工、集成、开 PR。你只负责自己那一块�
 ## 3. 环境与命令（Git Bash）
 
 ```bash
-export PATH="/c/Users/iuuuuuuuu/flutter/bin:$PATH"     # 每条命令都要带（shell 状态不保留）
-W="D:/WishProject/sourin-flutter-spike/.claude/worktrees/<你的名字>"
+export PATH="$FLUTTER_BIN:$PATH"   # FLUTTER_BIN 见任务书     # 每条命令都要带（shell 状态不保留）
+W="$REPO/.claude/worktrees/<你的名字>"
 T="$LOCALAPPDATA/Temp/sourin-agent-<你的名字>"; mkdir -p "$T/profile" "$T/data"
 # ★ 跑测试的唯一正确姿势（子 shell + 隔离真实数据目录 + 隔离真实「视频\源影」下载目录）：
 ( cd "$W" && USERPROFILE="$(cygpath -w "$T/profile")" flutter test <文件...> --concurrency=1 \
@@ -47,7 +47,7 @@ T="$LOCALAPPDATA/Temp/sourin-agent-<你的名字>"; mkdir -p "$T/profile" "$T/da
 ## 4. ★ 用户数据安全（违反任何一条都是严重事故）
 
 - **绝不**读写 `%APPDATA%\app.sourin.player`（Owner 的真实收藏/进度/片头片尾/凭据）。
-- **绝不**在 `C:\Users\iuuuuuuuu\Videos\源影`（Owner 的真实缓存视频）里创建/修改/删除任何东西。
+- **绝不**在 `<用户目录>\Videos\源影`（Owner 的真实缓存视频）里创建/修改/删除任何东西。
 - 跑测试必须用第 3 节的隔离命令。写探针/测试时，数据目录与下载目录一律注入临时目录。
 - 要真机启动客户端时：先 `flutter build windows --release -t lib/shell.dart`（在你自己的 worktree 里），然后
   ```powershell
@@ -69,12 +69,12 @@ T="$LOCALAPPDATA/Temp/sourin-agent-<你的名字>"; mkdir -p "$T/profile" "$T/da
   网络封面在测试里会是占位图（HttpClient 一律 400），可用本地图片模拟。
 - ★★ **Read 工具在这个会话里读不到图像**（返回空内容）。所以「看一眼截图」这一步要靠 ASCII 渲染：
   ```bash
-  python -I D:/WishProject/sourin-flutter-spike/.claude/tools/shot_ascii.py <png> [列数]
+  python -I $REPO/.claude/tools/shot_ascii.py <png> [列数]
   ```
   输出是字符画：左边是图标/按钮的暗块，右边是文字行 —— 能看出**间距、对齐、是否挤在一起、有没有大片空白**。
   窄页面（手机）用 60~80 列更清楚。另有一个统计工具（颜色数 / 暗亮占比 / 边缘密度，用于发现「整页死色」「全黑」）：
   ```bash
-  python -I D:/WishProject/sourin-flutter-spike/.claude/tools/shot_stats.py <png...>
+  python -I $REPO/.claude/tools/shot_stats.py <png...>
   ```
   ⚠️ ASCII **显示不出真实色值与 hover/涟漪态** ⇒ 对比度要靠可编程断言（按 WCAG 算比值，正文 ≥ 4.5:1），
     交互态要靠状态断言测试。ASCII 只是布局自查的补充。
@@ -82,7 +82,7 @@ T="$LOCALAPPDATA/Temp/sourin-agent-<你的名字>"; mkdir -p "$T/profile" "$T/da
   看到明显问题（文字挤成一团、左右边距不对称、大片空白、控件重叠）**自己修完再交**。
   不看图就交付 UI = 没做完。
 - 真机冒烟（可选）：按第 4 节方式隔离启动，确认进程存活、日志无异常（日志在 `<APPDATA>\app.sourin.player\logs\`）。
-- 共享窗口工具 `D:\WishProject\sourin-flutter-spike\.claude\tools\win.ps1`（按 PID 操作窗口，真鼠标键盘操作会自动排队拿全局锁）
+- 共享窗口工具 `<仓库根>/.claude/tools/win.ps1`（按 PID 操作窗口，真鼠标键盘操作会自动排队拿全局锁）
   今晚锁屏时基本用不上，Owner 解锁后才有效。
 
 ## 6. 代码规矩（本仓硬约束）
@@ -180,7 +180,7 @@ return (v, v);        // ← 两个分量同一个源 ⇒ o.$1 == o.$2 恒真
 - `git add` 一律**显式列路径**，**禁止** `git add -A` / `git add .`。**禁止 push**、禁止开 PR（lead 统一做）。
 - 两类全仓系统性测试失败由 **lead 统一修**，你不要动：① `A Timer is still pending even after the widget tree was disposed`
   （FFI 超时计时器悬空）② `SliverGeometry is not valid: layoutExtent exceeds paintExtent`。lead 修好后会通知你合并。
-- 基线失败清单：`D:\WishProject\sourin-flutter-spike\.claude\baseline-failures.txt`（202 条，按文件归类）。
+- 基线失败清单：`<仓库根>/.claude/baseline-failures.txt`（202 条，按文件归类）。
   你区域内的其它失败，由你甄别（真回归 / 既有 / 环境）并处理。
 - 完成时的**最终回复**（这就是你的报告，lead 只看得到它）必须包含：
   1. 完成了什么（对照任务书逐条），没完成什么及原因

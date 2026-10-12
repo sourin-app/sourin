@@ -3768,6 +3768,37 @@ class _PlayerPageState extends State<PlayerPage>
           debugPrint('[PLAYER] 读镜像进度失败（忽略，用本键那条）: $e');
         }
       }
+      /*
+       * ★★★ CodeRabbit PR #15 第七轮：**先剔除"不属于本集"的镜像，再选**
+       *
+       * 原来是选了之后才判、判中就 `return` —— 那有个更糟的后果：
+       * ```text
+       * 本地自己那条 = 本文件 300s（有效、正确）
+       * 站点那条     = 另一集 1000s（位置更大 ⇒ pickResumeProgress 选它）
+       * ⇒ 守卫发现集号不符 ⇒ **直接 return** ⇒ 连那 300s 也不要了
+       * ⇒ 播放器从头播 —— 比"用错镜像"更糟：把**正确**的进度也丢了
+       * ```
+       * ⇒ 修法：把校验**提到选之前** —— 集号不符的镜像直接视作**不存在**
+       *   （`peer = null`），`pickResumeProgress` 自然回落到 `own`。
+       *   ★ 语义等价于"这条镜像不可信"，但**不牵连**本地那条。
+       *
+       * ⚠️ 只在**本地会话**做（`originEpisodeId` 只有本地链路传）；
+       *    在线会话的 peer 是本会话自己那套标识，不做此判。
+       */
+      if (_isLocalSession &&
+          peer != null &&
+          widget.originEpisodeId != null &&
+          widget.originEpisodeId!.isNotEmpty &&
+          peer.episodeId != null &&
+          peer.episodeId!.isNotEmpty &&
+          peer.episodeId != widget.originEpisodeId) {
+        debugPrint(
+          '[PLAYER] 本地会话：镜像那条的站点集（${peer.episodeId}）'
+          '与本集（${widget.originEpisodeId}）对不上 ⇒ 丢弃该镜像，'
+          '回落到本会话自己的进度',
+        );
+        peer = null;
+      }
       final p = pickResumeProgress(session: own, mirror: peer);
       if (p == null) return;
 
@@ -3811,79 +3842,6 @@ class _PlayerPageState extends State<PlayerPage>
         currentEpisodeId: curEpId,
       )) {
         debugPrint('[PLAYER] 进度属于另一集（${p.episodeId} ≠ $curEpId），不续播');
-        return;
-      }
-
-      /*
-       * ══════════════════════════════════════════════════════════════════
-       * ★★★ OPS-13 / CodeRabbit PR #15 ④：本地会话的**第二道**按集校验
-       * ══════════════════════════════════════════════════════════════════
-       *
-       * # 上面那道守卫在本地会话里**恒定放行**（实测确认）
-       *
-       * ```text
-       * 本地会话：curEpId = widget.episodeId = **文件名**（如 第01集.mp4）
-       * 镜像那条：p.episodeId = **站点集 id**（如 51463）
-       * ⇒ isAnotherEpisode 第 ③ 条 `isVideoFileName(任一)` ⇒ 返回 false ⇒ 放行
-       * ```
-       * 那条 ③ 是**有意**放宽（见它的注释：两侧像文件名 = 两套标识体系），
-       * 代价就是本地侧的按集校验整个失效。
-       *
-       * # 后果（CodeRabbit 给的触发序列，已在代码里核实可达）
-       *
-       * ```text
-       * 作品是**单集目录**，旁文件里 originEpisodeId = 51463
-       * 用户之后**在线**看了同一作品的另一集 51464，看到 1000s
-       *   ⇒ progress 按**作品**存一行（key = provider:native_id）
-       *   ⇒ 它的 episode_id 现在是 51464、position 1000
-       * 用户再本地打开 第01集.mp4
-       *   ⇒ 位置靠后的 1000s 被 pickResumeProgress 选中
-       *   ⇒ 上面的按集校验**全放行**（就是这段）
-       *   ⇒ **续播到另一集的位置**（本该从 0 或按第 1 集的进度）
-       * ```
-       *
-       * # 修法：拿本页已有的正确对照值 `widget.originEpisodeId`
-       *
-       * 它就是"本地这一集对应的站点集 id"。**镜像记录胜出时**再比一次：
-       * ```text
-       * widget.originEpisodeId 非空、且 p.episodeId 非空、且两者不等
-       *   ⇒ 这条进度是**别的集**的 ⇒ 不续播
-       * 任一为空 / 相等 ⇒ 照旧（不新增限制）
-       * ```
-       * ⚠️ 只在**本地会话**生效（`originEpisodeId` 只有本地链路才传）——
-       *    在线会话的行为逐字不变。
-       * ⚠️ 用 `isLocalSessionProvider(p.provider)` 判"是不是本地那条镜像"——
-       *    镜像记录的 provider 就是 `local`。复用本文件已有的判据，不新引一个常量。
-       *
-       * ⚠️⚠️ 2026-10-12 再修（CodeRabbit PR #15 第五轮 + 第六轮）：
-       *      **只对"赢家是镜像那条"判**
-       *
-       * 上面这段判据一开始没区分 `p` 是哪来的 —— 而 `pickResumeProgress` 可能
-       * 返回**会话自己**那条（`own`，镜像是 null / 或 own 更大时就是它）。那时
-       * `p.episodeId` 是**本地文件名**（`第01集.mp4`），与站点集号天然不等
-       * ⇒ 我这条守卫会把**正常的本地续播也拒掉** ⇒ 本地会话每次从头播。
-       * ★ 这是**我自己引入的回归**（本仓既有用例没覆盖，是 CodeRabbit 抓的）。
-       *
-       * ⚠️ 第五轮我试过用 `isLocalSessionProvider(p.provider)` 来区分 —— **不对**：
-       *    本地会话里 `own` 的 provider **也是** `local`
-       *    ⇒ 那个条件恒真、等于没加（实测：回归用例仍然红）。
-       *
-       * ⇒ 正确的区分是**身份**：`pickResumeProgress(session:, mirror:)` 只会
-       *   原样返回它收到的两个引用之一。所以直接比 `identical(p, peer)`
-       *   —— 只有**镜像**那条赢家才做这道站点集号校验。
-       *   （`peer` 就是上面从对侧键读出来的那条，为 null 时也不可能 identical。）
-       */
-      if (_isLocalSession &&
-          identical(p, peer) &&
-          widget.originEpisodeId != null &&
-          widget.originEpisodeId!.isNotEmpty &&
-          p.episodeId != null &&
-          p.episodeId!.isNotEmpty &&
-          p.episodeId != widget.originEpisodeId) {
-        debugPrint(
-          '[PLAYER] 本地会话：这条**镜像**进度的站点集（${p.episodeId}）'
-          '与本集（${widget.originEpisodeId}）对不上 ⇒ 不续播',
-        );
         return;
       }
 

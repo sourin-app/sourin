@@ -371,6 +371,80 @@ void main() {
       );
       expect(seek!.inSeconds, 300, reason: '★ 必须续到本地键记的那一秒');
     });
+
+    testWidgets('★★★ 镜像那条属于**别的集** ⇒ 丢弃镜像、回落到本地那条', (t) async {
+      /*
+       * ★ CodeRabbit PR #15 第七轮给出的场景：
+       * ```text
+       * 本地自己那条 = 本文件 300s（有效、正确）
+       * 站点那条     = 另一集 1000s（位置更大 ⇒ pickResumeProgress 会选它）
+       * ⇒ 若判中镜像后**直接 return**，连那 300s 也不要了 ⇒ 从头播
+       * ⇒ 正确行为：丢弃那条镜像，**回落到 own** ⇒ 续到 300s
+       * ```
+       */
+      const provider = 'bilibili';
+      const id = 'BV1ops13readE';
+
+      // ① 真实落一条本地进度（300s）
+      await mountLocal(t,
+          originProvider: provider, originMediaId: id, tag: 'E1');
+      expect(
+        debugPlayerSetDurationForProbe(const Duration(seconds: 1800)),
+        isTrue,
+        reason: '★ 播放页没挂上 ⇒ 后面读数全空（本仓最经典的假绿形态）',
+      );
+      debugPlayerPushPositionForProbe(const Duration(seconds: 300));
+      await t.pump(const Duration(milliseconds: 20));
+      expect(
+        await t.runAsync<bool>(() => debugPlayerSaveProgressForProbe(
+              duration: const Duration(seconds: 1800),
+              position: const Duration(seconds: 300),
+            )),
+        isTrue,
+        reason: '★ 必须真的走到了 _saveProgress',
+      );
+
+      // ② 站点键写一条**位置更大**的、且 episodeId 是**另一集**的
+      await t.runAsync(() => SourinApi.saveProgress(
+            provider,
+            id,
+            title: '第05集',
+            episodeId: '99999', // ← 另一集的站点集 id（≠ originEpisodeId）
+            position: 1000, // ← 比本地那条大 ⇒ 不拦的话会被选中
+            duration: 1800,
+          ));
+
+      // ★ 仪器自检：两条都在，且站点那条位置更大、集号确实不同
+      final peer = await t.runAsync<Progress?>(() =>
+          SourinApi.getProgress(provider, id));
+      final own = await t.runAsync<Progress?>(() =>
+          SourinApi.getProgress(kLocalProvider, localId));
+      expect(peer?.position, 1000, reason: '★ 前置：站点那条位置更大');
+      expect(own?.position, 300, reason: '★ 前置：本地那条是 300s');
+      expect(peer?.episodeId, '99999',
+          reason: '★ 前置：站点那条的集号与 originEpisodeId(51463) 不同');
+
+      // ③ 重新挂页（带 originEpisodeId）⇒ 必须**丢掉镜像**、续到本地的 300s
+      await mountLocal(
+        t,
+        originProvider: provider,
+        originMediaId: id,
+        originEpisodeId: '51463',
+        tag: 'E2',
+      );
+      final seek = await readResume(t);
+      debugPrint('OPS13-R 镜像属别集 续播到 = $seek');
+
+      expect(
+        seek,
+        isNotNull,
+        reason: '★★★ 镜像那条属于别的集 ⇒ 必须**丢弃镜像**而不是直接不续播 —— '
+            '本地自己那条 300s 是**有效的**，丢掉它等于把正确进度也扔了 '
+            '（比"用错镜像"更糟：用户从头播）',
+      );
+      expect(seek!.inSeconds, 300,
+          reason: '★★ 必须回落到**本地那条**的 300s（不是镜像的 1000s）');
+    });
   });
 
   group('② 在线看完 ⇒ 本地续播接得上', () {

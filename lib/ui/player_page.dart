@@ -1088,6 +1088,19 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ 它**只增不减、不参与任何逻辑**，纯诊断用。
   int _seekByCalls = 0; // ★ 只读探针
 
+  /// 累计**真的发出了跳过 seek** 的次数（**只读探针**，fix/skip-auto-seek）
+  ///
+  /// # 为什么需要它（而不是只看 `_flash`/位置读数）
+  ///
+  /// 本次要证明的是"片头**真的**被 seek 到 introEnd"。
+  /// 位置读数会被播放推进/缓冲回退干扰；`_flash` 只证明提示条画出来了。
+  /// 这个计数器就钉在**生产代码里 `_player.seek(...)` 那一行的正上方** ——
+  /// 它 +1 就意味着那一行真的执行了（因果链上最直接的证据）。
+  ///
+  /// ⚠️ 同 `_seekByCalls`：只增不减、不参与任何逻辑，纯诊断用。
+  int _skipSeekCalls = 0; // ★ 只读探针
+  Duration? _lastSkipSeek; // ★ 只读探针
+
   /// 累计**真正执行**的切集次数（**只读探针**，task-28 ①-C）
   ///
   /// # 为什么必须有这个计数器（用户报的 bug 要它才能定论）
@@ -1230,6 +1243,43 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 片头/片尾跳过点
   SkipMarker? _skipMarker;
+
+  /*
+   * ════════════════════════════════════════════════════════════════════
+   * ★★★ 播放会话代次 —— 丢弃「过期的片头标记响应」
+   * ════════════════════════════════════════════════════════════════════
+   *
+   * # 缺陷（CodeRabbit 在 PR #10 上点出，已核实成立）
+   *
+   * `_loadSkipMarker()` 里那一步是 `await` 的：
+   * ```dart
+   * final m = await SourinApi.getSkipMarker(_provider, widget.id);
+   * if (!mounted) return;
+   * setState(() => _skipMarker = m);   // ← 无条件写，且随后立刻补判 + 可能 seek
+   * _skipAfterMarkerLoad();
+   * ```
+   * 而**换集 / 换源 / applySession 三条路都会把 `_skipMarker` 清成 null**
+   * 并重新起播。于是：
+   * ```text
+   * t0  第 1 集起播 ⇒ _loadSkipMarker() 发出请求（await 中）
+   * t1  用户立刻切到第 2 集 ⇒ 三条路之一把 _skipMarker 清 null、_startPlayback
+   * t2  t0 那次请求**这才**返回第 1 集的标记
+   *     ⇒ setState(_skipMarker = 第1集的标记)  ← 污染了第 2 集
+   *     ⇒ _skipAfterMarkerLoad() 用**第 1 集**的片头秒数去 seek 第 2 集
+   * ```
+   * ★ 用户可见后果：切集/换源后「画面莫名跳到某个位置」或「片头没跳成」。
+   *   `mounted` 拦不住这个 —— widget 一直挂着，只是"会话"变了。
+   *
+   * # 修法：单调递增的会话代次
+   *
+   * ```text
+   * 发请求前 : gen = ++_playSessionGen（或在切换点 +1）
+   * 返回后   : gen != _playSessionGen ⇒ 丢弃（不 setState、不补判）
+   * ```
+   * ★ 与 `_introSkipped`/`_outroSkipped` 的清零**放在同一处**（那三处正是
+   *   "会话已变"的定义点）—— 两件事同源，分开写迟早漂。
+   */
+  int _playSessionGen = 0;
 
   /// 是否已触发过片头跳过（避免反复跳）
   bool _introSkipped = false;
@@ -4172,6 +4222,43 @@ class _PlayerPageState extends State<PlayerPage>
        */
       _bootMark('③ player.open() 返回', 'kind=${st.kind}');
       if (_isLive) _liveSwitchMark('③ open 返回', 'kind=${st.kind}');
+
+      /*
+       * ★★★ fix/skip-auto-seek【A】：canplay 之后再判一次片头/片尾
+       *
+       * # 契约依据（`PLAYER-CONTRACT.md:206-213`，标题「一个真 bug 的修复（必须保留）」）
+       * ```text
+       * applySkipMarkers 从 loadedmetadata 调用时 readyState = 1（只有元数据、还不可 seek）
+       * → 设 currentTime 会「看起来成功却被后续加载重置回 0」
+       * 而 canplay 时 readyState >= 3，真正可以 seek → 所以 canplay 里【再调一次】
+       * 幂等由 introSkippedForThisLoad 保证
+       * ```
+       * 原版为此**两次调用**；本仓库此前**一次都没有**（全仓只有一个调用点，
+       * 挂在每秒 tick 的位置流上）⇒ 正是本次要补的缺口。
+       *
+       * # 为什么 `open()` 返回就是这个时机
+       *
+       * media_kit 的 `open()` 返回即 mpv 已 canplay（本文件 `_bootMark` 的注释
+       * 与 `_seekAfterReady` 的实测都印证：此刻才真正可 seek）。
+       * 与 `_seekAfterReady` 同款 —— 它也必须等到"可 seek"才 seek，
+       * 否则会被随后的事件链复位（那段长注释记录的真 bug）。
+       *
+       * # ⚠️ 幂等（两次调用不会重复跳）—— **已确认**
+       *
+       * `_maybeSkip` 内两处守卫：
+       * ```text
+       * _introSkipped：`if (!_introSkipped && m.introEnd != null) { ... _introSkipped = true; }`
+       * _outroSkipped：`if (!_outroSkipped && m.outroStart != null) { ... _outroSkipped = true; }`
+       * ```
+       * 跳过一次就置位，位置流此后的每次 tick 都进不来；
+       * ⇒ 本次 this-call 即便与【B】/位置流撞车，也只会跳一次（谁先谁置位）。
+       *
+       * ⚠️ 必须放在 `open()` **之后**（此刻才 canplay）。更早调用即便命中区间，
+       *    seek 也会被后续加载复位回 0（契约原文实测）。所以**不**放到 `open()` 之前。
+       * ⚠️ 此刻 `_skipMarker` 可能仍为 null（标记还在路上）—— 那就直接早退，
+       *    由【B】（`_loadSkipMarker` 完成后补判）兜住那一路。
+       */
+      _skipAfterCanplay();
       /*
        * ★ 打出**真实地址**（task-24 诊断必需）
        *
@@ -7097,13 +7184,94 @@ class _PlayerPageState extends State<PlayerPage>
 
   Future<void> _loadSkipMarker() async {
     if (_isLive) return;
+    /*
+     * ★ 记下发请求那一刻的会话代次 —— 返回后要先核对它。
+     *   ⚠️ 必须在 `await` **之前**读，否则读到的已经是别人 bump 过的值。
+     */
+    final gen = _playSessionGen;
     try {
       final m = await SourinApi.getSkipMarker(_provider, widget.id);
-      if (mounted) setState(() => _skipMarker = m);
+      if (!mounted) return; // ⚠️ 卸载后 setState 会抛；也拦掉 unmounted 的补判
+      /*
+       * ★★★ 会话已变 ⇒ **丢弃**这次响应（CodeRabbit PR #10）
+       *
+       * 换集 / 换源 / applySession 三条路都会 bump 代次并清 `_skipMarker`。
+       * 若这里不判，就会把**上一集/上一个源**的片头秒数写进当前会话，
+       * 并立刻 `_skipAfterMarkerLoad()` ⇒ 按旧标记 seek 新播放。
+       * ★ 不 setState、不补判、直接 return —— 新会话自己有它的 `_loadSkipMarker`。
+       */
+      if (gen != _playSessionGen) {
+        debugPrint(
+          '[PLAYER] 丢弃过期的片头标记响应（会话代次 $gen → $_playSessionGen）',
+        );
+        return;
+      }
+      setState(() => _skipMarker = m);
+      /*
+       * ★★★ fix/skip-auto-seek【B】：标记到手后**立刻**按当前位置补判一次
+       *
+       * # 为什么必须补这一下（"片头没跳"的直接根因之一）
+       *
+       * 起播链路是 `_startPlayback()` → `_loadSkipMarker()`（见 `_load()`），
+       * 而位置流在 `_startPlayback` **一开始**就 tick 了。于是存在一个窗口：
+       * ```text
+       * _startPlayback 返回 → _loadSkipMarker 还在 await 取数
+       *   ⇒ 此刻 _skipMarker 仍是 null
+       *   ⇒ 位置流每秒调 _maybeSkip，却全部在 `if (m == null) return;` 早退
+       * ⇒ 若片头区间很短（如 intro=[0,1]）或起播点本就落在区间内，
+       *   等标记到手时位置早已越过 introEnd ⇒ **整段片头被漏跳**。
+       * ```
+       * 契约依据：`PLAYER-CONTRACT.md:206-213` —— 标记就绪的时机必须**再判一次**，
+       * 不能只依赖"位置流自己会再 tick"（原版为此在 canplay 里二次调用）。
+       *
+       * ⚠️ 幂等由 `_maybeSkip` 内部的 `_introSkipped`/`_outroSkipped` 守卫保证
+       *    （见 `_maybeSkip` 内 `if (!_introSkipped ...)` / `if (!_outroSkipped ...)`）。
+       * ⚠️ `_autoSkip` 关掉时 `_maybeSkip` 第 717 行 `if (!_autoSkip) return;` 生效，
+       *    这里**不需要**（也不应该）自己再判一次 —— 判定语义只有一份。
+       * ⚠️ 直播已在上面 `if (_isLive) return;` 早退，**不破坏直播路径**。
+       */
+      _skipAfterMarkerLoad();
     } catch (e) {
       debugPrint('[PLAYER] 读跳过点失败: $e');
     }
   }
+
+  /// 取"此刻的播放位置"——供上面【B】与 `_startPlayback` 里【A】的补判用
+  ///
+  /// # 为什么不能直接读 `_position`
+  ///
+  /// `_position` 只在**位置流 tick 过**之后才有值（起播极早期它是 0）。
+  /// 而 `_player.state.position` 是 mpv 当下的真实读数，在 canplay 之后
+  /// 就已经可用。两者取**较大的那个**，保证：
+  /// ```text
+  /// · 起播点落在片头区间内（如续播到 2s，intro=[0,3]）→ 命中区间，真的跳
+  /// · 正常从头播                          → 读到 0 → 命中 introStart=0
+  /// ```
+  /// 取 max 而不是只读 `_player.state.position`：某些源在 open() 刚返回时
+  /// `state.position` 仍是 0 而 `_position` 已被位置流推到 1 —— 谁新用谁。
+  Duration _currentSkipProbePosition() {
+    Duration p;
+    try {
+      p = _player.state.position;
+    } catch (_) {
+      // 播放器尚未就绪时读属性可能抛 —— 退回内存里的 _position
+      p = Duration.zero;
+    }
+    return p > _position ? p : _position;
+  }
+
+  /// 【A】canplay 后的补判 —— `_startPlayback` 里 `open()` 返回后**唯一**的入口
+  ///
+  /// 抽成方法（而不是把 `_maybeSkip(...)` 内联在那 400 行里）是为了让
+  /// **行为测试能驱动同一段生产代码**：探针 `debugPlayerSkipAfterCanplayForProbe`
+  /// 调的就是本方法 ⇒ 改坏它，测试立刻红（见
+  /// `test/t27_w20_skip_auto_seek_test.dart` 的撤销验证）。
+  void _skipAfterCanplay() => _maybeSkip(_currentSkipProbePosition());
+
+  /// 【B】标记到手后的补判 —— `_loadSkipMarker()` 成功路径上**唯一**的入口
+  ///
+  /// 同【A】：抽方法是为了可被行为测试直接驱动。
+  void _skipAfterMarkerLoad() => _maybeSkip(_currentSkipProbePosition());
 
   /// 播放位置变化时检查要不要跳
   void _maybeSkip(Duration pos) {
@@ -7133,6 +7301,8 @@ class _PlayerPageState extends State<PlayerPage>
       if (sec >= start && sec < end) {
         _introSkipped = true;
         debugPrint('[PLAYER] 跳过片头 $start → $end');
+        _skipSeekCalls++; // ★ 只读探针（fix/skip-auto-seek）：真的发出了 seek
+        _lastSkipSeek = Duration(seconds: end);
         _player.seek(Duration(seconds: end));
         _flash('已跳过片头');
         return;
@@ -7620,6 +7790,8 @@ class _PlayerPageState extends State<PlayerPage>
         _current = null;
         _streams = [];
         _skipMarker = null;
+        _playSessionGen++; // ★ 换源 = 会话变了 ⇒ 丢弃在途的旧标记响应
+        _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
         // ★ 换源 ⇒ 上一集下载过的那份文件不再代表「当前这一集」
         //   （Lead 审计 team-message-914508ce【低】第 4 条：这两个字段原先从不重置）
         _clipDownloaded = false;
@@ -7856,6 +8028,8 @@ class _PlayerPageState extends State<PlayerPage>
       _streams = [];
       _current = null;
       _skipMarker = null;
+      _playSessionGen++; // ★ 换会话 = 会话变了 ⇒ 丢弃在途的旧标记响应
+        _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
       // ★ 换会话 ⇒ 同上去掉「已下载 / 上次失败」的残留状态
       _clipDownloaded = false;
       _clipDownloadError = null;
@@ -8221,6 +8395,8 @@ class _PlayerPageState extends State<PlayerPage>
       _introSkipped = false;
       _outroSkipped = false;
       _skipMarker = null;
+      _playSessionGen++; // ★ 切集 = 会话变了 ⇒ 丢弃在途的旧标记响应
+        _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
       // ★ 换集 ⇒ 上一集的「已下载」不适用于这一集
       _clipDownloaded = false;
       _clipDownloadError = null;
@@ -14325,6 +14501,188 @@ String? debugPlayerTipForProbe() => _livePlayerState?._tip;
 ///
 /// ⚠️ 只读探针，不影响任何行为。
 int? debugPlayerSeekByCalls() => _livePlayerState?._seekByCalls;
+
+/// ★ fix/skip-auto-seek 探针：生产代码里**真的发出过**多少次跳过 seek
+///
+/// 无播放页时返回 null（与"挂了页但一次没跳"的 0 **区分开**）。
+/// 见 `_skipSeekCalls` 的说明 —— 它钉在 `_player.seek(...)` 那一行上。
+int? debugPlayerSkipSeekCalls() => _livePlayerState?._skipSeekCalls;
+
+/// ★ fix/skip-auto-seek 探针：最近一次跳过 seek 的**目标位置**（null = 还没跳过）
+Duration? debugPlayerLastSkipSeek() => _livePlayerState?._lastSkipSeek;
+
+/// ★ fix/skip-auto-seek 探针：直接给播放页塞一个 `_skipMarker`（绕过库）
+///
+/// # 为什么需要这个接缝（而不是每个用例都去写隔离库）
+///
+/// `_loadSkipMarker()` 走的是 `SourinApi.getSkipMarker` → FFI → 真实库。
+/// 但本测试的**核心**是 `_maybeSkip` 的**判定与补判时机**，
+/// 那是一个纯内存状态机 —— 用真实库只是让它更慢、更脆。
+/// 所以：
+/// ```text
+/// · 主要用例：用本探针塞标记，直接验"【A】/【B】补判 + 幂等 + 阴性对照"
+/// · 另设一条"接缝"用例：用隔离库真的 setSkipMarker + getSkipMarker 读回，
+///   证明"隔离库里真写得进去、读得出来"（库读写这一环不被跳过）
+/// ```
+/// 返回 false = 播放页没挂上（**调用方必须据此判红**，否则"没挂页"
+/// 会伪装成"标记塞进去了"）。
+bool debugPlayerSetSkipMarkerForProbe({
+  int? introStart,
+  int? introEnd,
+  int? outroStart,
+  int? outroEnd,
+}) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._skipMarker = SkipMarker(
+    key: '${s._provider}:${s._contentId}',
+    provider: s._provider,
+    nativeId: s._contentId,
+    title: '',
+    introStart: introStart,
+    introEnd: introEnd,
+    outroStart: outroStart,
+    outroEnd: outroEnd,
+  );
+  return true;
+}
+
+/// ★ fix/skip-auto-seek 探针：**真的走一遍**生产 `_maybeSkip(pos)`
+///
+/// 与 `debugPlayerPushPositionForProbe` 不同 —— 那个走的是**位置流**处理路径
+/// （`_onPositionTick`，含 setState/节流），本探针直接打**跳过判定**这一环，
+/// 用来把【A】/【B】补判与闸门拆分测。
+///
+/// 返回 false = 没挂页。
+bool debugPlayerMaybeSkipForProbe(Duration pos) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._maybeSkip(pos);
+  return true;
+}
+
+/// ★ fix/skip-auto-seek 探针：直接驱动【A】`_skipAfterCanplay()`（生产方法本身）
+///
+/// ⚠️ 调的是 `_startPlayback` 里那个**同名生产方法**（不是测试里复刻一份），
+///    所以把它改成 no-op ⇒ 本探针与依赖它的用例立刻红（撤销验证）。
+/// 返回 false = 没挂页。
+bool debugPlayerSkipAfterCanplayForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._skipAfterCanplay();
+  return true;
+}
+
+/// ★ fix/skip-auto-seek 探针：直接驱动【B】`_skipAfterMarkerLoad()`（生产方法本身）
+///
+/// 同【A】—— 调的是 `_loadSkipMarker` 成功路径上那个**同名生产方法**。
+/// 返回 false = 没挂页。
+bool debugPlayerSkipAfterMarkerLoadForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._skipAfterMarkerLoad();
+  return true;
+}
+
+/// ★ fix/skip-auto-seek 探针：设 `_position` **但不触发** `_maybeSkip`
+///
+/// # 为什么需要它（这是让【B】用例真的能隔离 B 的关键）
+///
+/// `debugPlayerPushPositionForProbe(1s)` 走的是**位置流**处理路径
+/// （`_onPositionTick`），它内部**自己就会调** `_maybeSkip` ——
+/// 于是"跳了"这件事分不清是位置流干的还是【B】干的（**假绿**）。
+/// 本探针只写 `_position`，把"位置在片区"这个**前置状态**摆好，
+/// 让随后**只**调【B】的那一步成为唯一因果。返回 false = 没挂页。
+bool debugPlayerSetPositionOnlyForProbe(Duration pos) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._position = pos;
+  return true;
+}
+
+/// ★ fix/skip-auto-seek 探针：**真的走一遍** `_loadSkipMarker()`（含它成功路径上的【B】）
+///
+/// 返回 false = 没挂页。
+Future<bool> debugPlayerLoadSkipMarkerForProbe() async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  await s._loadSkipMarker();
+  return true;
+}
+
+/// ★ PR #10 探针：读当前播放会话代次（`_playSessionGen`）
+///
+/// 用来断言「换集/换源/换会话**真的** bump 了代次」—— 而不是只看
+/// "丢弃日志有没有打出来"（那可能因为别的原因没打）。
+int? debugPlayerSessionGenForProbe() => _livePlayerState?._playSessionGen;
+
+/// ★ PR #10 探针：读当前 `_skipMarker`（判「过期响应有没有污染当前会话」）
+///
+/// 返回 null = 既没挂页、也可能就是没标记 —— 用 [debugPlayerSessionGenForProbe]
+/// 区分"没挂页"与"值就是 null"（调用方先断代次非 null）。
+SkipMarker? debugPlayerSkipMarkerForProbe() => _livePlayerState?._skipMarker;
+
+/// ★ PR #10 探针：模拟「换集/换源把会话推进一代」——
+/// 走的是生产字段 `_playSessionGen` 与生产清理动作（清 `_skipMarker`），
+/// 不是另写一份。用于在**不加载 libmpv** 的前提下复现竞态。
+///
+/// ⚠️ 它不是"绕过生产路径"：三条真实切换路径（换源 `:7495`、换会话 `:7732`、
+///    切集 `:8079`）做的就是这三件事（`_playSessionGen++` + `_skipMarker = null`
+///    + `_position = Duration.zero`）。这里只是把同一组动作暴露给测试。
+/// ★ `_position` 复位是 CodeRabbit PR #10 第二轮点出的：少了它，
+///   `_currentSkipProbePosition()`（取 max(`state.position`, `_position`)）
+///   会读到**上一集**的位置 ⇒ 补判可能误判"已到片尾"⇒ 刚起播就弹下一集倒计时。
+/// 返回 false = 没挂页。
+bool debugPlayerBumpSessionForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._playSessionGen++;
+  s._skipMarker = null;
+  s._position = Duration.zero;
+  return true;
+}
+
+/// ★ PR #10 第二轮探针：给会话塞一集列表（造"有下一集"的场景）
+///
+/// # 为什么需要它
+/// `_startNextCountdown()` 第一行就是 `if (_nextEpisode == null) return;`，
+/// 而 `_nextEpisode` 要求 `_episodes` 里 **≥2** 集。
+/// ⇒ 想验"换集后误触发片尾倒计时"，必须让会话**真的有下一集**
+///   （否则倒计时天然不启动 ⇒ 用例恒绿 —— 假的）。
+///
+/// 返回 false = 没挂页。
+bool debugPlayerSetEpisodesForProbe(List<Episode> eps, {int index = 0}) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._episodes = eps;
+  s._epIndex = index;
+  return true;
+}
+
+/// ★ PR #10 第二轮探针：读 `_nextCountdown`（"下一集倒计时"的秒数，0 = 没在倒数）
+///
+/// 用来钉「换集后**不许**因为读到上一集的位置而误触发片尾倒计时」——
+/// 返回 null = 没挂页。
+int? debugPlayerNextCountdownForProbe() => _livePlayerState?._nextCountdown;
+
+/// ★ fix/skip-auto-seek 探针：复位本文件新增的跳过探针（用例之间互不影响）
+void debugPlayerResetSkipProbe() {
+  final s = _livePlayerState;
+  if (s == null) return;
+  s._skipSeekCalls = 0;
+  s._lastSkipSeek = null;
+}
+
+/// ★ fix/skip-auto-seek 探针：直接拨动页面内的「自动跳过片头」闸门 `_autoSkip`
+///
+/// 走的是**生产字段**（`_maybeSkip` 里 `if (!_autoSkip) return;` 判的就是它），
+/// 不是另写一份判定 —— 所以它验的是"真闸门"。返回 false = 没挂页。
+bool debugPlayerSetAutoSkipForProbe(bool v) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._autoSkip = v;
+  return true;
+}
 
 /// 累计调用 `_togglePlay` 的次数（探针用），无播放页时返回 null
 ///

@@ -36,6 +36,9 @@ const FAV_COLS: &str = "key,provider,native_id,title,cover,group_name,kind,favor
 /// `progress` 的列清单 —— **唯一来源**（理由同 [`FAV_COLS`]）
 ///
 /// ⚠️ 顺序必须与 [`row_to_progress`] 的 `r.get(N)` 下标**逐一对齐**。
+/// ⚠️ `item_key` **不在**这里 —— 它是**查询用**的派生列（`provider:native_id`），
+///    `Progress` 结构体不持有它（结构体只带按集的 `key`）。
+///    ⇒ `INSERT` 语句里要**显式**多写一列 `item_key`，其余 SELECT 不必带它。
 const PROG_COLS: &str = "key,provider,native_id,title,cover,episode_id,episode_title,\
      position,duration,finished,updated_at";
 
@@ -269,8 +272,23 @@ impl Normalize for Progress {
 }
 
 /// 观看进度
+///
+/// # ★★★ 主键口径（2026-10-12 由「按作品」改成「**按集**」）
+///
+/// ```text
+/// 老：key = "provider:native_id"              一个作品**一行** ⇒ 换集就覆盖
+/// 新：key = "provider:native_id:episode_id"   一个作品**每集一行**
+///     （episode_id 为 null 时空串哨兵 —— 见 `progress_key`）
+/// ```
+/// 另存一列 `item_key`（= `provider:native_id`，**非唯一**，有索引）用于
+/// 「按作品」维度的查询（续播入口 [`Db::get_progress`]、换源 `repoint_item`）。
+///
+/// ⚠️ `key` 仍然**保留**（不是冗余可删的）：它是**这一行**的身份，
+///    同步/备份的 jsonl 也带着它；但它**只能由 [`progress_key`] 一处生成** ——
+///    写库时由 `upsert_progress` **从三列重新推出**，不信任调用方传进来的值。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Progress {
+    /// ★ 按集主键 `provider:native_id:episode_id`（空串哨兵）—— **唯一**
     pub key: String,
     pub provider: String,
     pub native_id: String,
@@ -458,8 +476,33 @@ impl Db {
             CREATE INDEX IF NOT EXISTS idx_fav_following ON favorites(following, deleted);
 
             -- 观看进度（独立平面）
+            --
+            -- ★★★ 2026-10-12：主键从「**按作品**」改成「**按集**」
+            --
+            -- # 为什么要改（Owner 报的场景，老口径做不到）
+            --
+            -- > 如果第3集我看过了,时间是22分钟,我看到20分钟,然后我又从第2集看,
+            -- > 正好第二集结束自动切换到下一集,那么第三集应该从头播放
+            -- > 或者 有个提示从头播放
+            --
+            -- 老口径 `key = "provider:native_id"`（PRIMARY KEY）⇒ 一个作品**只有一行**
+            -- ⇒ 换集就覆盖 ⇒ 第3集看到 20 分钟的记录会被第2集顶掉 ⇒ 上面的场景
+            -- 根本表达不出来。实测用户真实库 52 行，每作品恰好一行。
+            --
+            -- # 新口径
+            --
+            -- ```text
+            -- key        = "provider:native_id:episode_id"（episode_id 为 null 时空串）
+            -- item_key   = "provider:native_id"（**非唯一**，作品维度查询用）
+            -- ```
+            -- ⚠️ `key` **保留**（不是冗余可删）：它是这一行的身份，同步 jsonl 也带它。
+            --    但只有一处生成它 —— `upsert_progress` 从三列**重新推出**（见 `progress_key`）。
+            --
+            -- ⚠️ `item_key` 列是**新增**的：`get_progress_for_item`（续播）、
+            --    `repoint_item`（换源）都按作品维度查，逐行解析 key 太脆且慢。
             CREATE TABLE IF NOT EXISTS progress (
-                key             TEXT PRIMARY KEY,
+                key             TEXT PRIMARY KEY,   -- provider:native_id:episode_id（空串哨兵）
+                item_key        TEXT NOT NULL,       -- provider:native_id（非唯一）
                 provider        TEXT NOT NULL,
                 native_id       TEXT NOT NULL,
                 title           TEXT NOT NULL,
@@ -472,6 +515,11 @@ impl Db {
                 updated_at      INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_prog_updated ON progress(updated_at DESC);
+            -- ⚠️ `idx_prog_item`（作品维度索引）**不在这里建**：
+            --    老库此刻的 progress 还是旧结构（**没有 item_key 列**），
+            --    在这里 CREATE INDEX 会因"no such column"报错。
+            --    ⇒ 统一挪到 `migrate()` 末尾、迁移完成**之后**再建
+            --    （新库 / 老库迁移后都走那一处，只一处真相）。
 
             -- 观看历史（独立平面，我们自己的）
             CREATE TABLE IF NOT EXISTS history (
@@ -684,6 +732,212 @@ impl Db {
         if fixed > 0 {
             log::info!("favorites 修复了 {fixed} 行不一致（墓碑却还开着追更）");
         }
+
+        /*
+         * ════════════════════════════════════════════════════════════════
+         * ★★★ progress 主键迁移：按作品 → **按集**（2026-10-12）
+         * ════════════════════════════════════════════════════════════════
+         *
+         * # 为什么必须重建表
+         *
+         * ```text
+         * SQLite **不支持** ALTER TABLE ... 改 PRIMARY KEY。
+         * 要把 key 的口径从 "provider:native_id" 换成
+         * "provider:native_id:episode_id"，只能：
+         *   建新表 → 搬数据 → 丢旧表 → 改名
+         * ```
+         *
+         * # 幂等性（两种情况都会走进来，都必须正确）
+         *
+         * ```text
+         * ① 老库：progress 有 key 但**没有** item_key 列 ⇒ 走迁移
+         * ② 新库 / 已迁移过的库：CREATE TABLE IF NOT EXISTS 已建好新表
+         *    （含 item_key）⇒ **跳过**，什么都不做
+         * ```
+         * 判据就是 `PRAGMA table_info(progress)` 里有没有 `item_key`
+         * —— 与上面 skip_markers / favorites 补列用的是同一套手法。
+         *
+         * # key 回填
+         *
+         * ```text
+         * 老 key = provider:native_id
+         * 新 key = provider:native_id || ':' || COALESCE(episode_id, '')
+         * ⇒ episode_id 为 NULL 的老行 ⇒ "provider:native_id:"（空串哨兵）
+         * ```
+         * ★ 老库里每个 (provider,native_id) **恰好一行**（老 key 是主键）
+         *   ⇒ 迁移**不可能**产生键冲突 ⇒ 迁移前后**行数不变**（由测试钉死）。
+         *
+         * # 备份
+         *
+         * 迁移前把 `progress` 的**行数 + 全部原始行**打进日志（前缀
+         * `progress 迁移`），即使出问题也能从日志回溯；行数前后相比不变
+         * 也在这里 log 出来作证据。
+         */
+        let prog_cols = columns_of("progress")?;
+        let needs_progress_migration = !prog_cols.iter().any(|c| c == "item_key");
+        if needs_progress_migration {
+            // ── 迁移前备份：把老行逐条落日志（可回溯）──
+            let before_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM progress", [], |r| r.get(0))
+                .map_err(|e| format!("progress 迁移：迁移前统计行数失败: {e}"))?;
+            {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT key,provider,native_id,title,episode_id,position,duration,\
+                         finished,updated_at FROM progress",
+                    )
+                    .map_err(|e| format!("progress 迁移：读取备份失败: {e}"))?;
+                let rows = stmt
+                    .query_map([], |r| {
+                        Ok(format!(
+                            "key={:?} provider={:?} native_id={:?} title={:?} \
+                             episode_id={:?} pos={} dur={} finished={} updated_at={}",
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, Option<String>>(4)?,
+                            r.get::<_, i64>(5)?,
+                            r.get::<_, i64>(6)?,
+                            r.get::<_, i32>(7)?,
+                            r.get::<_, i64>(8)?,
+                        ))
+                    })
+                    .map_err(|e| format!("progress 迁移：读取备份失败: {e}"))?;
+                for row in rows {
+                    log::info!("progress 迁移 备份: {}", row.map_err(|e| e.to_string())?);
+                }
+            }
+
+            /*
+             * ⚠️ 事务包裹：建新表 / 搬数据 / 丢旧表 / 改名 —— 要么全成、要么全不。
+             *    中途失败留下"半新半旧"的表是最难诊断的状态。
+             * ⚠️ `unchecked_transaction` 而不是 `transaction`：本函数只借到
+             *    `MutexGuard`（要 `&mut Connection`）—— 与本文件其它处同一手法。
+             */
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("progress 迁移：开启事务失败: {e}"))?;
+
+            /*
+             * ⚠️ 下面 `SELECT` 里拼 key/item_key 的**字符串拼法**必须与
+             *    `progress_key` / `item_key_of` **逐字一致**：
+             * ```text
+             * key      = provider || ':' || native_id || ':' || COALESCE(episode_id,'')
+             * item_key = provider || ':' || native_id
+             * ```
+             *    这是全仓唯一一处"在 SQL 里拼键"，无法复用 Rust 函数
+             *    （要一行 SQL 搞定整表搬迁）。一致性由迁移测试钉死：
+             *    `progress_migration_rewrites_key_and_preserves_data` 断言
+             *    迁移后的 key 逐字等于 `progress_key(...)` 的结果。
+             */
+            tx.execute_batch(
+                r#"
+                CREATE TABLE progress_new (
+                    key             TEXT PRIMARY KEY,
+                    item_key        TEXT NOT NULL,
+                    provider        TEXT NOT NULL,
+                    native_id       TEXT NOT NULL,
+                    title           TEXT NOT NULL,
+                    cover           TEXT,
+                    episode_id      TEXT,
+                    episode_title   TEXT,
+                    position        INTEGER NOT NULL DEFAULT 0,
+                    duration        INTEGER NOT NULL DEFAULT 0,
+                    finished        INTEGER NOT NULL DEFAULT 0,
+                    updated_at      INTEGER NOT NULL
+                );
+
+                -- key 回填：provider:native_id:episode_id（NULL ⇒ 空串哨兵）
+                -- item_key 回填：provider:native_id（按作品维度）
+                --
+                -- ⚠️⚠️ episode_id **不做 TRIM** —— 必须与 Rust 侧
+                --    `progress_key` 逐字一致（那边也**不 trim**，见其文档）。
+                --    SQLite 的 `TRIM(x)` 默认只去半角空格，而 Rust 的
+                --    `str::trim` 去所有 Unicode 空白 —— 两套规则永远追不平，
+                --    所以口径统一为「NULL ⇒ 空串，其余原样」。
+                --    若只在这里补 TRIM，带空白的行反而会与写入口径裂开。
+                INSERT INTO progress_new
+                    (key,item_key,provider,native_id,title,cover,episode_id,
+                     episode_title,position,duration,finished,updated_at)
+                SELECT
+                    provider || ':' || native_id || ':' || COALESCE(episode_id,''),
+                    provider || ':' || native_id,
+                    provider, native_id, title, cover, episode_id,
+                    episode_title, position, duration, finished, updated_at
+                FROM progress;
+
+                DROP TABLE progress;
+                ALTER TABLE progress_new RENAME TO progress;
+                "#,
+            )
+            .map_err(|e| format!("progress 迁移：重建表失败: {e}"))?;
+
+            // 索引随 DROP 一起没了 —— 重建（沿用原索引名，另加作品维度索引）
+            tx.execute_batch(
+                r#"
+                CREATE INDEX IF NOT EXISTS idx_prog_updated ON progress(updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_prog_item ON progress(item_key, updated_at DESC);
+                "#,
+            )
+            .map_err(|e| format!("progress 迁移：重建索引失败: {e}"))?;
+
+            let after_count: i64 = tx
+                .query_row("SELECT COUNT(*) FROM progress", [], |r| r.get(0))
+                .map_err(|e| format!("progress 迁移：迁移后统计行数失败: {e}"))?;
+
+            /*
+             * ★★★ 校验必须在 `commit()` **之前** —— 否则校验形同虚设
+             *
+             * ══════════════════════════════════════════════════════════════
+             * 2026-10-13 修正（CodeRabbit 在 PR #21 上点出，现场核实成立）
+             * ══════════════════════════════════════════════════════════════
+             *
+             * 原顺序是「先 commit、再比行数」。真出现不一致时：
+             * ```text
+             * 第一次 open：表已经替换完、事务已提交 ⇒ 才 return Err
+             * 第二次 open：`item_key` 列**已存在** ⇒ 迁移被跳过 ⇒ 静默成功
+             * ```
+             * ⇒ 注释写着"决不允许静默改变行数"，但用户只会在第一次启动时
+             *   看到一次报错，数据**已经**被替换掉了 —— 校验等于没有。
+             *
+             * ★ 移到 commit 前：`return Err` 时 `tx` 被 drop，
+             *   SQLite 事务**自动回滚** ⇒ 老表原样保留 ⇒ 下次启动重试。
+             */
+            if before_count != after_count {
+                /*
+                 * ★ 决不允许静默改变行数 —— 老 key 是主键 ⇒ 每个作品一行 ⇒
+                 *   新 key 只会**更细**，行数**必须相等**。不等说明迁移逻辑错了，
+                 *   响亮地报出来（不吞）。
+                 * ⚠️ 此处 `tx` 尚未 commit ⇒ 直接返回即回滚，磁盘不受影响。
+                 */
+                return Err(format!(
+                    "progress 迁移：行数不一致（迁移前 {before_count} / 迁移后 {after_count}）\
+                     —— 主键扩容不该增减行数，请检查迁移 SQL"
+                ));
+            }
+            tx.commit()
+                .map_err(|e| format!("progress 迁移：提交事务失败: {e}"))?;
+
+            log::info!(
+                "progress 主键迁移完成（按作品 → 按集）：{before_count} 行 → {after_count} 行"
+            );
+        }
+
+        /*
+         * ★ 作品维度索引 —— 只在这里建一次（迁移完成后）
+         *
+         * 新库：progress 一上来就有 item_key 列 ⇒ 直接建。
+         * 老库：上面刚迁移完 ⇒ 此刻也有 item_key 列 ⇒ 能建。
+         * ⚠️ **不能**放进开头那段 `execute_batch` —— 那里老库的 progress
+         *    还没有 item_key 列，`CREATE INDEX` 会因 "no such column" 报错。
+         * 幂等：`IF NOT EXISTS`。
+         */
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_prog_item ON progress(item_key, updated_at DESC)",
+            [],
+        )
+        .map_err(|e| format!("建进度作品维度索引失败: {e}"))?;
 
         Ok(())
     }
@@ -928,19 +1182,42 @@ impl Db {
          *
          * ⚠️ `position`/`duration`/`episode_id` **不加**守卫 ——
          *    它们是"当前播放状态"，本来就该被最新值覆盖（position=0 是合法的）。
+         *
+         * ════════════════════════════════════════════════════════════════
+         * ★★★ 2026-10-12：key **由本函数从三列推出**，不信任调用方
+         * ════════════════════════════════════════════════════════════════
+         *
+         * ```text
+         * 传进来的 p.key **不用于落库**：本函数用 progress_key(provider,
+         * native_id, episode_id) 重新算，并以它做 ON CONFLICT 的目标。
+         * ```
+         * 理由（本仓铁律「只在一处生成」）：
+         * ```text
+         * ① 若信任调用方传的 key，就有**两个生成点**（调用方 + 这里），
+         *    而调用方有多个（播放器 / 遥控 / 同步 / 备份导入）⇒ 迟早漂
+         * ② key 与 (provider,native_id,episode_id) 必须**始终一致**是不变量；
+         *    由本函数统一推导 ⇒ 不变量天然成立，调用方传错也只影响它自己那个字段
+         * ③ 同步/备份导进来的 jsonl 可能**带着老口径的 key**
+         *    （`provider:native_id`），忽略它、按三列重算 ⇒ 老数据自动升级
+         * ```
+         * ⚠️ `Progress.key` 字段本身**保留**（同步 jsonl / 返回给 Dart 都要它），
+         *    读出来时 `row_to_progress` 会填上（= 表里那条按集 key）。
          */
+        let key = progress_key(&p.provider, &p.native_id, p.episode_id.as_deref());
+        let item_key = item_key_of(&p.provider, &p.native_id);
         conn.execute(
             r#"INSERT INTO progress
-                 (key,provider,native_id,title,cover,episode_id,episode_title,position,duration,finished,updated_at)
-               VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+                 (key,item_key,provider,native_id,title,cover,episode_id,episode_title,position,duration,finished,updated_at)
+               VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
                ON CONFLICT(key) DO UPDATE SET
+                 item_key=excluded.item_key,
                  title=CASE WHEN excluded.title <> '' THEN excluded.title ELSE title END,
                  cover=COALESCE(excluded.cover, cover),
                  episode_id=excluded.episode_id, episode_title=excluded.episode_title,
                  position=excluded.position, duration=excluded.duration,
                  finished=excluded.finished, updated_at=excluded.updated_at"#,
             params![
-                p.key, p.provider, p.native_id, p.title, p.cover, p.episode_id,
+                key, item_key, p.provider, p.native_id, p.title, p.cover, p.episode_id,
                 p.episode_title, p.position, p.duration, p.finished as i32, p.updated_at
             ],
         )
@@ -949,14 +1226,20 @@ impl Db {
     }
 
     /// 续播入口：最近在看的
+    ///
+    /// ★ 按集扩容后同一作品可能有多行（每集一行）—— 这里**按作品去重**，
+    ///   每组取 `updated_at` 最新那一集（用户直觉上的「上次看到哪」）。
+    ///   ⚠️ 不去重的话同一部剧会在「继续观看」里刷屏（第3集、第2集、第1集各一张卡）。
     pub fn continue_watching(&self, limit: u32) -> Result<Vec<Progress>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare(
-                "SELECT key,provider,native_id,title,cover,episode_id,episode_title,position,duration,finished,updated_at
-                 FROM progress WHERE finished=0 AND position > 5
-                 ORDER BY updated_at DESC LIMIT ?1",
-            )
+            .prepare(&format!(
+                "SELECT {PROG_COLS} FROM progress p \
+                 WHERE finished=0 AND position > 5 \
+                   AND updated_at = (SELECT MAX(updated_at) FROM progress \
+                                     WHERE item_key = p.item_key) \
+                 ORDER BY updated_at DESC LIMIT ?1"
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![limit], row_to_progress)
@@ -966,15 +1249,16 @@ impl Db {
 
     /// 全部进度记录（**同步用**：需要全量，不能只看「最近在看的」）
     ///
-    /// 与 `continue_watching` 的区别：那个带 `finished=0 AND position>5` 的业务过滤，
-    /// 只适合首页展示；同步必须拿到全量，否则已看完的记录永远推不到其他设备。
+    /// 与 `continue_watching` 的区别：那个带 `finished=0 AND position>5` 的业务过滤
+    /// **且按作品去重**，只适合首页展示；同步必须拿到**每一集**的全量，
+    /// 否则另一台设备就只知道"最新那集"，中间几集的进度同步不过去
+    /// —— 而这正是本轮「按集扩容」要支持的场景。
     pub fn list_all_progress(&self) -> Result<Vec<Progress>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare(
-                "SELECT key,provider,native_id,title,cover,episode_id,episode_title,position,duration,finished,updated_at
-                 FROM progress ORDER BY updated_at DESC",
-            )
+            .prepare(&format!(
+                "SELECT {PROG_COLS} FROM progress ORDER BY updated_at DESC"
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], row_to_progress)
@@ -982,10 +1266,50 @@ impl Db {
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
-    pub fn get_progress(&self, key: &str) -> Result<Option<Progress>, String> {
+    /// 读某个**作品**的进度 —— 返回该作品里 **updated_at 最新**的那一集
+    ///
+    /// # 参数是**作品键**（`provider:native_id`），不是按集键
+    ///
+    /// 这是「详情页续播条」「继续观看」等入口要的语义：用户问的是
+    /// 「这部片我看到哪了」。按集扩容后同一作品有多行，取最新那一行
+    /// 正是用户直觉上的「上次看到哪」。
+    ///
+    /// ⚠️ 与 `commands::get_progress`（也用作品键 `item_key`）**同一个口径**。
+    ///    Dart 侧 `SourinApi.getProgress(provider, id)` 传的也是这两半。
+    pub fn get_progress(&self, item_key: &str) -> Result<Option<Progress>, String> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT key,provider,native_id,title,cover,episode_id,episode_title,position,duration,finished,updated_at FROM progress WHERE key=?1",
+            &format!(
+                "SELECT {PROG_COLS} FROM progress WHERE item_key=?1 \
+                 ORDER BY updated_at DESC LIMIT 1"
+            ),
+            params![item_key],
+            row_to_progress,
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// 读某个作品的**全部集**进度（按 updated_at DESC）—— 换源迁移用
+    pub fn list_progress_for_item(&self, item_key: &str) -> Result<Vec<Progress>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {PROG_COLS} FROM progress WHERE item_key=?1 \
+                 ORDER BY updated_at DESC"
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![item_key], row_to_progress)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// 按**按集键**精确读一行（内部/测试用；对外用作品键的 [`Self::get_progress`]）
+    pub fn get_progress_exact(&self, key: &str) -> Result<Option<Progress>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            &format!("SELECT {PROG_COLS} FROM progress WHERE key=?1"),
             params![key],
             row_to_progress,
         )
@@ -1036,8 +1360,9 @@ impl Db {
      * ```text
      * history   历史流水   每次播放追加一条，用于「播放历史」列表
      *                       （list_history）
-     * progress  进度记录   每个内容一行（key 唯一），存"看到第几秒"
-     *                       用于「继续观看」与续播（continue_watching）
+     * progress  进度记录   ★ 每个作品**每集一行**（key = provider:native_id:episode_id），
+     *                       存"看到第几秒"，用于「继续观看」与续播（continue_watching）
+     *                       （2026-10-12 前是"每个内容一行"，换集就覆盖）
      * ```
      *
      * `continue_watching` 读的是 **progress**，
@@ -1217,6 +1542,10 @@ impl Db {
      * 换源 ⇒ provider 变 ⇒ ★ key 变 ⇒ 写入是【新行】，旧行原样留着
      * 全项目没有任何 repoint / alias 路径
      * ```
+     * ⚠️ 2026-10-12 按集扩容后：`progress` 的**落库主键**变成按集
+     *    （`provider:native_id:episode_id`），但本操作的 `from_key` / `to_key`
+     *    仍是**作品键** —— progress 段改成**逐集配对迁移**（见 ② 段注释），
+     *    其余三张表仍按作品一行。
      * 实测用户库：`progress` 16 行但只有 15 个不同标题 ——
      * 《老舅》同时有 `360:86969`（pos=4）与 `caiji:74774`（pos=1）。
      *
@@ -1440,138 +1769,263 @@ impl Db {
             }
         }
 
-        // ── ② progress（★ 三态：TO 无行照搬 / 匹配取 max / 不匹配不携带）──
+        // ── ② progress（★ 按集：FROM 的每一集分别走三态）──
         {
-            let from: Option<Progress> = tx
-                .query_row(
-                    &format!("SELECT {PROG_COLS} FROM progress WHERE key=?1"),
-                    params![from_key],
-                    row_to_progress,
-                )
-                .optional()
-                .map_err(|e| format!("换源迁移：读 progress 失败: {e}"))?;
-
-            if let Some(f) = from {
-                let to: Option<Progress> = tx
-                    .query_row(
-                        &format!("SELECT {PROG_COLS} FROM progress WHERE key=?1"),
-                        params![to_key],
-                        row_to_progress,
-                    )
-                    .optional()
+            /*
+             * ══════════════════════════════════════════════════════════════
+             * ★★★ 2026-10-12 按集扩容后：**逐集**迁移
+             * ══════════════════════════════════════════════════════════════
+             *
+             * 老实现只处理「一行」（老 key 是主键）。现在 FROM 作品可能有多行
+             * （每集一行）⇒ 必须**逐集**配对：
+             *
+             * ```text
+             * for FROM 的每一集 f:
+             *   to_same = TO 里**同一集**的行（按 episode_id 配，退而按集号标题配）
+             *   to_same = None + 目标 key 未被 TO 占用 ⇒ f 整行搬到 TO（原值照搬）
+             *   to_same = None + 目标 key 已被 TO 占用 ⇒ TO 行不动，f 删掉
+             *   to_same = Some ⇒ 保留 TO 行，position 取 max、finished 取 FROM
+             * ```
+             *
+             * ★ 「TO 的哪一行算同一集」的判据：**episode_id 相等优先**；
+             *   两边都没有 episode_id（老数据 / 单片）时退化成按
+             *   `episode_number_from_title` 的集号比较（老口径的那套，
+             *   集号都解析不出 ⇒ 视为同一集）。
+             *   这套判据不是新发明 —— 老代码里"集号匹配"就是 `ep_f == ep_t`，
+             *   这里只是把它从"整部作品一行"细化到"逐集配对"。
+             *
+             * ★★★ 第二态（目标 key 已被占用）是 2026-10-13 补的守卫，
+             *   见下方 `if to_same.is_none()` 块的论证（#21:1826 Major）。
+             *   它正是注释原先写的「TO 行不动，f 删掉」——老实现**有**这条，
+             *   按集扩容时丢了，现在补回来。
+             *
+             * ⚠️ FROM 全部行迁移完成后统一 `DELETE ... WHERE item_key=from_key`
+             *    —— 因为逐集 upsert 时新行的 item_key 已经变成 to_key。
+             */
+            let from_rows: Vec<Progress> = {
+                let mut stmt = tx
+                    .prepare(&format!(
+                        "SELECT {PROG_COLS} FROM progress WHERE item_key=?1"
+                    ))
+                    .map_err(|e| format!("换源迁移：读 progress 失败: {e}"))?;
+                let rows = stmt
+                    .query_map(params![from_key], row_to_progress)
+                    .map_err(|e| format!("换源迁移：读 progress 失败: {e}"))?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("换源迁移：读 progress 失败: {e}"))?
+            };
+            /*
+             * ⚠️ `mut` 是必需的：本循环会**回写**配对结果（见下方
+             *    `to_rows[i] = written`）。不回写 ⇒ 多条 FROM 行配到同一
+             *    TO 行时，后一轮用**陈旧**的 `t.position` 算 max，
+             *    把前一轮写进去的较大值覆盖掉（用户进度倒退）。
+             *    论证与判据见 CodeRabbit #23:1891 / #24:1924 线程。
+             */
+            let mut to_rows: Vec<Progress> = {
+                let mut stmt = tx
+                    .prepare(&format!(
+                        "SELECT {PROG_COLS} FROM progress WHERE item_key=?1"
+                    ))
                     .map_err(|e| format!("换源迁移：读 progress(目标) 失败: {e}"))?;
+                let rows = stmt
+                    .query_map(params![to_key], row_to_progress)
+                    .map_err(|e| format!("换源迁移：读 progress(目标) 失败: {e}"))?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("换源迁移：读 progress(目标) 失败: {e}"))?
+            };
 
-                /*
-                 * ══════════════════════════════════════════════════════════
-                 * ★★★ 三态（m00753 ④⑤⑦）—— 不是一刀切
-                 * ══════════════════════════════════════════════════════════
-                 *
-                 * ```text
-                 * TO 无行                 ⇒ 整行搬到 TO 的 key（原值照搬，不重置）
-                 * TO 有行 + 集号【匹配】   ⇒ 保留 TO 行，只把 position 覆盖为 max
-                 * TO 有行 + 集号【不匹配】 ⇒ TO 行完全不动，FROM 行删掉
-                 * ```
-                 *
-                 * ★ 集号匹配的判定就是 `ep_f == ep_t`（`Option` 比较）：
-                 * ```text
-                 * 两边都解析不出 ⇒ None == None      ⇒ 匹配（单片：position 是
-                 *                                    同一段视频的时间偏移，有意义）
-                 * 只有一侧 null ⇒ None != Some(_)   ⇒ 不匹配（保守侧，m00753 ⑤）
-                 * ```
-                 */
-                let merged = match to {
-                    None => Progress {
-                        key: to_key.to_string(),
-                        provider: to_provider.clone(),
-                        native_id: to_native_id.clone(),
-                        ..f
-                    },
-                    Some(t) => {
-                        let ep_f = episode_number_from_title(f.episode_title.as_deref());
-                        let ep_t = episode_number_from_title(t.episode_title.as_deref());
-                        if ep_f == ep_t {
+            if !from_rows.is_empty() {
+                for f in &from_rows {
+                    /*
+                     * 在 TO 里找**同一集**的行：
+                     * ① 先按 episode_id 精确配（两侧都有 episode_id 且相等）
+                     * ② 退化成按集号标题配（episode_number_from_title）
+                     *    —— 两侧集号都解析不出 ⇒ 视为同一集（单片，老口径语义）
+                     */
+                    let to_same: Option<&Progress> = to_rows.iter().find(|t| {
+                        match (f.episode_id.as_deref(), t.episode_id.as_deref()) {
+                            (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() => a == b,
+                            _ => {
+                                let ep_f =
+                                    episode_number_from_title(f.episode_title.as_deref());
+                                let ep_t =
+                                    episode_number_from_title(t.episode_title.as_deref());
+                                ep_f == ep_t
+                            }
+                        }
+                    });
+
+                    /*
+                     * ══════════════════════════════════════════════════════════
+                     * ★★★ 空集号撞键守卫（CodeRabbit #21:1826 —— Major）
+                     * ══════════════════════════════════════════════════════════
+                     *
+                     * 两边的 episode_id **都为空**时，目标 key 退化成
+                     * `provider:native_id:`（空串哨兵）—— **整个作品只有一把**。
+                     * 于是出现这条路径：
+                     *
+                     * ```text
+                     * FROM a:1  episode_id=None  标题「第08集」 position=700
+                     * TO   b:2  episode_id=None  标题「第01集」 position=30
+                     *   ↓ 集号 8 ≠ 1 ⇒ to_same = None（"TO 里没有这一集"）
+                     *   ↓ 但 progress_key(to,to_id,None) == "b:2:" == TO 行的 key
+                     *   ↓ INSERT ... ON CONFLICT(key) DO UPDATE ⇒ 把 TO 的 30 秒
+                     *     用 FROM 第08集的 700 秒整行盖掉
+                     * ```
+                     *
+                     * ⇒ 用户看到的是「换源后第 01 集的进度变成了第 08 集的」。
+                     *   这正是本函数文档里那条「TO 同一集有行 + 集号不匹配
+                     *   ⇒ TO 行不动，f 删掉」的语义 —— 按集扩容时丢了，补回来。
+                     *
+                     * ★ 判据用 `progress_key` 现算，**不能**用 `t.key`：
+                     *   `Progress::key` 可能是空串（本函数自己构造的行就是），
+                     *   只有现算出来的 key 才与 INSERT 的冲突目标同口径。
+                     * ★ 只用 `to_same.is_none()` 时守：`Some` 臂走的是
+                     *   「保留 TO 行 + max(position)」，那是**同一集**的正常合并，
+                     *   不能因为 key 相同就丢。
+                     */
+                    if to_same.is_none()
+                        && to_rows.iter().any(|t| {
+                            progress_key(&t.provider, &t.native_id, t.episode_id.as_deref())
+                                == progress_key(
+                                    &to_provider,
+                                    &to_native_id,
+                                    f.episode_id.as_deref(),
+                                )
+                        })
+                    {
+                        /*
+                         * ★ 直接跳过 ⇒ 这一集的 FROM 行既不搬也不写
+                         *   （循环末尾统一 `DELETE ... WHERE item_key=from_key`
+                         *   会把它删掉）⇒ TO 那一行**一个字节都不动**。
+                         */
+                        continue;
+                    }
+                    let merged = match to_same {
+                        None => Progress {
+                            key: String::new(), // 落库时由 progress_key 重算
+                            provider: to_provider.clone(),
+                            native_id: to_native_id.clone(),
+                            ..f.clone()
+                        },
+                        Some(t) => {
+                            /*
+                             * ★ 集号匹配（走到这里必然匹配：要么 episode_id 相等，
+                             *   要么集号标题解析相等）⇒ 保留 TO 行，
+                             *   position 取 max、finished 取 FROM，其余列取 TO。
+                             *   规则与老实现逐字一致（m00753 ③⑦ / m01279）。
+                             */
                             Progress {
-                                key: to_key.to_string(),
+                                key: String::new(), // 落库时由 progress_key 重算
                                 provider: to_provider.clone(),
                                 native_id: to_native_id.clone(),
-                                /*
-                                 * ★★★ position 取 **max**（m00753 ③）
-                                 *
-                                 * 单调不减 —— 换源不该让进度**倒退**。
-                                 * 与 Legado 在 (chapterIndex, chapterPos) 上取
-                                 * 单调 max 一致，不是 LWW。
-                                 *
-                                 * ⚠️ 这条**取代**了 m00370 的"取 FROM 的"：
-                                 *    那条是**没有集号概念时**定的。
-                                 *    无职转生那组（FROM=91 / max=766）就是本规则
-                                 *    的**唯一可区分锚点** —— 其余样本两条规则同值。
-                                 */
+                                // ★ position 单调不减 —— 换源不该让进度倒退
                                 position: f.position.max(t.position),
                                 /*
                                  * ✅ `finished` 取 **FROM** 的 —— **已裁决**
                                  *    （m01279 第四节）。完整论证见 `repoint_item`
                                  *    文档的「`finished` 取 FROM 的」一节。
-                                 *    一句话：若 TO.finished=true 而 FROM=false，
-                                 *    取 TO 会让 `continue_watching` 的 `finished=0`
-                                 *    把这条**刚恢复的进度**直接滤掉 ——
-                                 *    用户刚换源就看到记录"消失"。
                                  */
                                 finished: f.finished,
                                 // ★ 其余列（title/cover/episode_id/episode_title/
                                 //   duration/updated_at）保持 **TO** 的（m00753 ⑦）
-                                ..t
+                                ..t.clone()
                             }
-                        } else {
-                            /*
-                             * ★ 集号不匹配 ⇒ TO 行**完全不动**（`t` 原样返回），
-                             *   FROM 行在下面照常 DELETE
-                             *   ⇒ 就是裁决要的"只保留**新源自己的**记录"。
-                             *
-                             * ⚠️ 这里仍然走下面的 INSERT：对同一行是一次
-                             *    **幂等 upsert**（写回刚读出来的值）。
-                             *    代价可忽略，换来"四条分支共用一条写路径"
-                             *    —— 少一条分支就少一处能写错的地方。
-                             */
-                            t
                         }
+                    };
+
+                    /*
+                     * ⚠️ 这里**不能**复用 `upsert_progress` —— 它带
+                     *    `title = CASE WHEN excluded.title <> '' ...` 的空值守卫，
+                     *    而本操作要的是**精确写入合并结果**。
+                     * ⚠️ 但 key/item_key **必须**与 `upsert_progress` 同一口径
+                     *    ⇒ 用同一对生成函数（`progress_key` / `item_key_of`）。
+                     */
+                    let new_key = progress_key(
+                        &merged.provider,
+                        &merged.native_id,
+                        merged.episode_id.as_deref(),
+                    );
+                    let new_item_key = item_key_of(&merged.provider, &merged.native_id);
+                    tx.execute(
+                        r#"INSERT INTO progress
+                             (key,item_key,provider,native_id,title,cover,episode_id,
+                              episode_title,position,duration,finished,updated_at)
+                           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+                           ON CONFLICT(key) DO UPDATE SET
+                             item_key=excluded.item_key,
+                             provider=excluded.provider, native_id=excluded.native_id,
+                             title=excluded.title, cover=excluded.cover,
+                             episode_id=excluded.episode_id,
+                             episode_title=excluded.episode_title,
+                             position=excluded.position, duration=excluded.duration,
+                             finished=excluded.finished, updated_at=excluded.updated_at"#,
+                        params![
+                            new_key,
+                            new_item_key,
+                            merged.provider,
+                            merged.native_id,
+                            merged.title,
+                            merged.cover,
+                            merged.episode_id,
+                            merged.episode_title,
+                            merged.position as i64,
+                            merged.duration as i64,
+                            merged.finished as i32,
+                            merged.updated_at,
+                        ],
+                    )
+                    .map_err(|e| format!("换源迁移：写 progress 失败: {e}"))?;
+
+                    /*
+                     * ══════════════════════════════════════════════════════════
+                     * ★★★ 把合并结果**回写**进 to_rows（CodeRabbit #23:1891 /
+                     *     #24:1924 —— 同一根因）
+                     * ══════════════════════════════════════════════════════════
+                     *
+                     * `to_rows` 是循环开始前的一次性快照。不回写 ⇒ 多条 FROM 行
+                     * 配到**同一** TO 行时，后面那轮拿到的还是**旧** `t.position`：
+                     *
+                     * ```text
+                     * FROM A position=800 ┐
+                     * FROM B position= 50 ┼─ 都配到 TO t（position=100）
+                     *                      ┘
+                     * 第 1 轮：max(800,100)=800 ⇒ 落库 800
+                     * 第 2 轮：max( 50,100)=100 ⇒ 落库 100   ← 800 秒被抹掉
+                     * ```
+                     *
+                     * ⇒ 直接违反本段自己声明的「position 单调不减」。
+                     *   修法：每轮写完把结果写回快照，让下一轮看到最新值。
+                     *
+                     * ★ 查找用**现算的 key**（与 INSERT 的冲突目标同口径），
+                     *   不是 `t.key`（可能是空串）。
+                     * ★ 命中的一定是「刚刚匹配上的那一行」：
+                     *   `Some` 臂里 merged 的 episode_id 来自 `..t` ⇒ key 就是
+                     *   t 的 key；`None` 臂的 key 已被上面的守卫证明**未被占用**
+                     *   ⇒ 必然走 `None => to_rows.push`。
+                     */
+                    let written = Progress {
+                        key: new_key.clone(),
+                        ..merged
+                    };
+                    match to_rows.iter().position(|t| {
+                        progress_key(&t.provider, &t.native_id, t.episode_id.as_deref())
+                            == written.key
+                    }) {
+                        Some(i) => to_rows[i] = written,
+                        None => to_rows.push(written),
                     }
-                };
+                }
+
                 /*
-                 * ⚠️ 这里**不能**复用 `upsert_progress` —— 它带
-                 *    `title = CASE WHEN excluded.title <> '' ...` 的空值守卫，
-                 *    而本操作要的是**精确写入合并结果**（守卫会让"TO 的标题"
-                 *    在为空时保留 FROM 的，与裁决的"取 TO 的"不一致）。
+                 * ★ 删掉 FROM 作品的**全部旧行**（逐集 upsert 后它们还留着，
+                 *   item_key 仍是 from_key）。
                  */
                 tx.execute(
-                    &format!(
-                        "INSERT INTO progress ({PROG_COLS}) \
-                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) \
-                         ON CONFLICT(key) DO UPDATE SET \
-                           provider=excluded.provider, native_id=excluded.native_id, \
-                           title=excluded.title, cover=excluded.cover, \
-                           episode_id=excluded.episode_id, \
-                           episode_title=excluded.episode_title, \
-                           position=excluded.position, duration=excluded.duration, \
-                           finished=excluded.finished, updated_at=excluded.updated_at"
-                    ),
-                    params![
-                        merged.key,
-                        merged.provider,
-                        merged.native_id,
-                        merged.title,
-                        merged.cover,
-                        merged.episode_id,
-                        merged.episode_title,
-                        merged.position as i64,
-                        merged.duration as i64,
-                        merged.finished as i32,
-                        merged.updated_at,
-                    ],
+                    "DELETE FROM progress WHERE item_key=?1",
+                    params![from_key],
                 )
-                .map_err(|e| format!("换源迁移：写 progress 失败: {e}"))?;
-
-                tx.execute("DELETE FROM progress WHERE key=?1", params![from_key])
-                    .map_err(|e| format!("换源迁移：删旧 progress 失败: {e}"))?;
+                .map_err(|e| format!("换源迁移：删旧 progress 失败: {e}"))?;
             }
         }
 
@@ -1876,6 +2330,74 @@ fn split_item_key(key: &str) -> Result<(String, String), String> {
         }
         _ => Err(format!("非法的记录 key（应为 <provider>:<id>）: {key:?}")),
     }
+}
+
+/// `progress` 的**按集主键** —— 全仓库**唯一**的生成点
+///
+/// ```text
+/// progress_key(provider, native_id, episode_id)
+///   = "{provider}:{native_id}:{episode_id or ''}"
+/// ```
+///
+/// # ★★ 为什么 `episode_id` 为 null 时用**空串哨兵**，而不是留 null
+///
+/// SQLite 的 `PRIMARY KEY` / `UNIQUE` **允许重复 NULL**（NULL ≠ NULL）——
+/// 若把 `episode_id` 直接放进主键，**所有 episode_id 为 NULL 的行会失去唯一约束**
+/// ⇒ 同一个单片会被反复插入成几百行。
+/// ⇒ 用空串显式表达「没有集号」：`"bilibili:BV1: "` 里的第三段是空串，
+///   于是 `provider:native_id:` 这个键**唯一**，单片也只有一行。
+///
+/// # ★★★ 与 `split_item_key`（`<provider>:<native_id>` 的逆运算）的关系
+///
+/// `split_item_key` 是**作品键**的拆分，本函数产出的是**按集键**——
+/// 二者**不是**逆运算（按集键多一段）。换源迁移（`repoint_item`）走的是
+/// **作品键**（`item_key` 列），不解析按集键；所以本函数不需要配套的 `split`。
+/// ⚠️ 但两者有**共同前缀**：`progress_key` 的前两段就是 `item_key`——
+///    生成 `item_key` 只在一处（[`item_key_of`]），别在这里手拼。
+pub(crate) fn progress_key(provider: &str, native_id: &str, episode_id: Option<&str>) -> String {
+    /*
+     * ⚠️ 这里**不做 trim** —— 与迁移 SQL 的 `COALESCE(episode_id,'')` 必须
+     *    逐字一致（见 `Db::migrate` 里 progress 重建表的注释）。
+     *
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-13 修正（CodeRabbit 在 PR #21 / #23 / #24 上各点了一次）
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * 原来这里是 `episode_id.map(str::trim)`，而迁移 SQL 只写
+     * `COALESCE(episode_id,'')` —— 两边口径不同：
+     *
+     * ```text
+     * 老库某行 episode_id = " ep1 "
+     *   迁移后 key = "p:1: ep1 "     （不 trim）
+     *   之后 upsert_progress 同集 ⇒ key = "p:1:ep1"（trim 过）
+     *   ⇒ 冲突目标不同 ⇒ **同一集裂成两行**
+     *   ⇒ get_progress 按 item_key + updated_at 排序取一行，
+     *     在两行之间"跳"；commands_backup 用 progress_key 重建 key 再
+     *     get_progress_exact ⇒ 查不到迁移来的那行 ⇒ 时间戳守卫失效
+     * ```
+     *
+     * # 为什么是「都不 trim」而不是「SQL 里也 TRIM」
+     *
+     * SQLite 的 `TRIM(x)` **默认只去半角空格**（要覆盖 	 
+  得显式
+     * 传字符集），而 Rust 的 `str::trim` 按 `char::is_whitespace` 去**所有
+     * Unicode 空白**（含 U+3000 全角空格、U+00A0 等）。
+     * 两套规则**永远追不平** —— 补字符集也只是把不等价的地方推远一点。
+     * ⇒ 唯一能"逐字一致"的规则是：**NULL ⇒ 空串，其余原样**。
+     *   代价：老库里带空白的 episode_id 会原样进 key（罕见到可以忽略），
+     *   好处：写入口径**只有一条**，不可能再漂移。
+     */
+    let ep = episode_id.unwrap_or("");
+    format!("{provider}:{native_id}:{ep}")
+}
+
+/// `progress` 的**作品键**（拆出来单列，索引用）—— 与 `commands_write::item_key` 同构
+///
+/// ⚠️ 这里再写一遍 `format!("{provider}:{id}")` 是因为 `store.rs` 拿不到
+///    `commands_write` 的私有 `item_key`（两者模块边界不同）；两处形状由
+///    `split_item_key` 的逆运算契约钉住（`store.rs:1883-1894`）。
+fn item_key_of(provider: &str, native_id: &str) -> String {
+    format!("{provider}:{native_id}")
 }
 
 // ─────────────── 集号解析（换源合并用，必须与 Dart 逐字一致）───────────────
@@ -2469,6 +2991,19 @@ mod tests {
     ) -> Progress {
         Progress {
             episode_title: Some(ep.into()),
+            /*
+             * ★ 2026-10-12 按集扩容后：`episode_id` 是**逐集不同**的真标识。
+             *   `prog_full` 原来把它恒设成 `Some("ep-1")`（老口径下它不影响
+             *   换源配对 —— 配对只看 episode_title 的集号）。现在配对视
+             *   **episode_id 优先**，若这里仍恒为 "ep-1"，两组不同集会被
+             *   误判成**同一集** ⇒ 老测试的语义就失真了。
+             *
+             * ⚠️ 只在集标题**真能解析出集号**时才合成 id：
+             *   "第08集" ⇒ Some("ep-8")；"正片" / "原声版"（解析不出）⇒ None
+             *   —— 于是「两侧都解析不出集号」的单片配对仍走**标题回退**分支
+             *   （两边都 None ⇒ 视为同一集），与老裁决逐字一致。
+             */
+            episode_id: episode_number_from_title(Some(ep)).map(|n| format!("ep-{n}")),
             ..prog_full(key, title, pos, dur, finished)
         }
     }
@@ -2717,18 +3252,20 @@ mod tests {
         assert_eq!(db.list_all_progress().unwrap().len(), 1, "★ 不许出现两行");
     }
 
-    /// ★★★ 集号**不匹配** ⇒ TO 行完全不动，FROM 行删掉（m00753 ⑦ 第二条）
+    /// ★★★ 集号**不同** ⇒ **两集各自独立存活**（按集扩容后的语义）
     ///
     /// ```text
-    /// 裁决原文：TO 有行 + 不匹配（集号不同 / 一侧 null）
-    ///           ⇒ TO 行完全不动，FROM 行删掉
-    ///             （= "只保留新源自己的记录"）
+    /// 老口径（一个作品一行）：TO 有行 + 集号不同 ⇒ TO 行不动，FROM 行删掉
+    /// 新口径（一个作品每集一行）：FROM 的第08集与 TO 的第01集**不是同一集**
+    ///   ⇒ 第08集搬到新源的作品下**自成一行**，第01集原样保留
+    ///   ★ 这正是 Owner 要的："第3集看过 20 分钟" 不该被 "第2集" 顶掉
     /// ```
+    ///
     /// ★ 真实形态：时光代理人那组（FROM='第08集' / TO='第01集'）。
-    ///   若**携带**了，用户会看到"第08集的进度出现在第01集上" —— **错位**，
-    ///   比从头开始更糟。
+    ///   迁移后**不许**把第08集的 700 秒**错位**到第01集上 ——
+    ///   但要保留成独立的一行。
     #[test]
-    fn repoint_does_not_carry_when_episode_numbers_differ() {
+    fn repoint_keeps_both_episodes_when_episode_numbers_differ() {
         let db = Db::in_memory().unwrap();
 
         // FROM 看到第 8 集 700 秒
@@ -2740,24 +3277,45 @@ mod tests {
 
         db.repoint_item("a:1", "b:2").unwrap();
 
-        let p = db.get_progress("b:2").unwrap().expect("TO 行必须还在");
+        // ★ 第01集那条：position 仍是 30（**不许**被第08集的 700 覆盖）
+        let ep1 = db
+            .get_progress_exact(&progress_key("b", "2", Some("ep-1")))
+            .unwrap()
+            .expect("TO 的第01集行必须还在");
         assert_eq!(
-            p.position, 30,
-            "★★★ 集号不同（8 vs 1）⇒ **不许携带** ⇒ TO 的 30 秒原样保留。\
-             ⚠️ 若携带（取 max 得 700）⇒ 用户会在'第01集'上看到第08集的进度 ⇒ 错位"
+            ep1.position, 30,
+            "★★★ 第08集（700s）**不许错位**到第01集上 ⇒ 第01集仍是 30s。\
+             若携带（取 max 得 700）⇒ 用户会在'第01集'上看到第08集的进度 ⇒ 错位"
         );
         assert_eq!(
-            p.episode_title.as_deref(),
+            ep1.episode_title.as_deref(),
             Some("第01集"),
-            "★ TO 行的 episode_title 不许被 FROM 覆盖"
+            "★ 第01集行的 episode_title 不许被 FROM 覆盖"
         );
-        assert!(db.get_progress("a:1").unwrap().is_none(), "★ FROM 行必须删掉");
-        assert_eq!(db.list_all_progress().unwrap().len(), 1, "★ 只剩一条");
+
+        // ★ 第08集那条：搬到新源作品下，**自成一行**，原值照搬
+        let ep8 = db
+            .get_progress_exact(&progress_key("b", "2", Some("ep-8")))
+            .unwrap()
+            .expect("★ 第08集必须作为**独立一行**搬过来 —— 这正是按集扩容的意义");
+        assert_eq!(ep8.position, 700, "★ 第08集的位置原值照搬");
+        assert_eq!(ep8.provider, "b");
+        assert_eq!(ep8.native_id, "2");
+
+        // ★ FROM 作品下不许再有任何行
+        assert!(db.get_progress("a:1").unwrap().is_none(), "★ FROM 作品必须清空");
+        assert_eq!(db.list_all_progress().unwrap().len(), 2, "★ 两集各自一行");
     }
 
-    /// ★★ 集号：**只有一侧 null** ⇒ 不匹配（保守侧，m00753 ⑤）
+    /// ★★ 集号：**只有一侧能解析出** ⇒ 判成**不同集** ⇒ 各自独立成行
+    ///
+    /// ```text
+    /// FROM='正片'（解析不出集号）/ TO='第01集'（集号 1）
+    /// ⇒ 不许把 FROM 的 500s 错位到 TO 的第01集上（保守侧，m00753 ⑤）
+    /// ⇒ 两者是不同集，各存一行
+    /// ```
     #[test]
-    fn repoint_does_not_carry_when_only_one_side_has_episode_number() {
+    fn repoint_keeps_separate_when_only_one_side_has_episode_number() {
         let db = Db::in_memory().unwrap();
         db.upsert_progress(&prog_ep("a:1", "某片", 500, 1440, false, "正片"))
             .unwrap();
@@ -2766,12 +3324,23 @@ mod tests {
 
         db.repoint_item("a:1", "b:2").unwrap();
 
-        let p = db.get_progress("b:2").unwrap().unwrap();
+        // TO 的第01集：20s **原样**（不许被 500 覆盖）
+        let ep1 = db
+            .get_progress_exact(&progress_key("b", "2", Some("ep-1")))
+            .unwrap()
+            .expect("TO 的第01集行必须还在");
         assert_eq!(
-            p.position, 20,
-            "★★ 一侧 null（'正片' 解析不出）⇒ 不匹配 ⇒ 取保守侧（不携带）。\
-             ★ 若写成'都 null 才不匹配'，这里会错误地携带 500 秒"
+            ep1.position, 20,
+            "★★ 一侧解析不出集号（'正片'）⇒ 判成不同集（保守侧）⇒ 不携带 500s。\
+             ★ 若写成'都 null 才不同集'，这里会错误地把 500s 携带到第01集上"
         );
+        // FROM 的'正片'（无集号 ⇒ 空串哨兵键）：独立成行搬过来
+        let zhengpian = db
+            .get_progress_exact(&progress_key("b", "2", None))
+            .unwrap()
+            .expect("★ '正片'也作为独立一行搬过来");
+        assert_eq!(zhengpian.position, 500);
+        assert_eq!(db.list_all_progress().unwrap().len(), 2, "★ 两行各自独立");
     }
 
     /// ★★ 集号：**两边都 null** ⇒ 视为匹配（单片，m00753 ⑤）
@@ -2791,6 +3360,156 @@ mod tests {
             "★★ 两边都解析不出集号 ⇒ **视为匹配**（单片：position 是同一段视频的\
              时间偏移，携带有意义）⇒ 取 max(500,20)=500。\
              ★ 若判成不匹配，用户换源后单片进度会**每次丢光**"
+        );
+    }
+
+    /// ★★★ 空集号撞键守卫（CodeRabbit #21:1826 —— Major）
+    ///
+    /// ```text
+    /// FROM cycani:1  episode_id=None  标题「第08集」 position=700
+    /// TO   cycani:2  episode_id=None  标题「第01集」 position= 30
+    /// ```
+    ///
+    /// 集号 8≠1 ⇒ `to_same = None` ⇒ 走 None 臂整行搬到 TO。
+    /// ★ 但 None 臂算出的目标 key 是
+    /// `progress_key(to_provider, to_native_id, f.episode_id)` ——
+    /// 而 `f.episode_id` 也是 None ⇒ key = `"cycani:2:"`，
+    /// **正是 TO 那行自己的 key**（老库 `episode_id` 为 NULL ⇒ 空串哨兵）。
+    /// ⇒ `INSERT … ON CONFLICT(key) DO UPDATE` 会把 TO 的 30 秒
+    /// **整行**换成 FROM 的 700 秒 ⇒ 用户在「第01集」上看到第08集的进度。
+    ///
+    /// ★ 守卫语义（CR 给的裁决）：键冲突时**退回老语义「保留 TO、丢弃 f」**
+    /// —— 这与 [`repoint_keeps_both_episodes_when_episode_numbers_differ`]
+    /// 的「第08集独立成行」不冲突：那里 `episode_id` 是 `Some("ep-8")`，
+    /// 目标 key 与 TO 的 `"b:2:ep-1"` 不同 ⇒ 守卫不触发、照旧搬过去。
+    #[test]
+    fn repoint_keeps_target_row_when_empty_episode_id_would_collide() {
+        let db = Db::in_memory().unwrap();
+
+        // FROM：episode_id=None（老库口径）+ 标题能解析出集号 8
+        let mut f = prog("cycani:1", "某片", None, 700);
+        f.episode_title = Some("第08集".into());
+        db.upsert_progress(&f).unwrap();
+
+        // TO：episode_id=None + 标题能解析出集号 1
+        let mut t = prog("cycani:2", "某片", None, 30);
+        t.episode_title = Some("第01集".into());
+        db.upsert_progress(&t).unwrap();
+
+        db.repoint_item("cycani:1", "cycani:2").unwrap();
+
+        let keep = db
+            .get_progress_exact("cycani:2:")
+            .unwrap()
+            .expect("TO 的空集号行必须还在（它就是老库里的那一行）");
+        assert_eq!(
+            keep.position, 30,
+            "★★★ 空集号撞键 ⇒ 必须**保留 TO、丢弃 FROM**：\
+             若携带（取 max 得 700）⇒ 用户在「第01集」上看到第08集的进度。\
+             修前这里会得到 700"
+        );
+        assert_eq!(
+            keep.episode_title.as_deref(),
+            Some("第01集"),
+            "★ 保留的必须是 TO 那一行 —— 标题不许被 FROM 的「第08集」覆盖"
+        );
+        assert_eq!(
+            db.list_all_progress().unwrap().len(),
+            1,
+            "★ 守卫 `continue` ⇒ FROM 那行被丢弃，TO 那行原样留下，总数仍是 1"
+        );
+    }
+
+    /// ★★★ 撞键守卫的**反向**：episode_id 非空 ⇒ 目标 key 不与 TO 相撞
+    /// ⇒ 第08集必须**照旧独立成行**搬过去（守卫不许误伤按集扩容的主路径）
+    ///
+    /// ★ 这条与上一条成对：单看任何一条，都可能被一个「永远 `continue`」
+    ///   或「永远不 `continue`」的实现骗过。
+    #[test]
+    fn repoint_still_moves_row_when_episode_id_makes_key_distinct() {
+        let db = Db::in_memory().unwrap();
+        db.upsert_progress(&prog_ep("cycani:1", "某片", 700, 1440, false, "第08集"))
+            .unwrap();
+        db.upsert_progress(&prog_ep("cycani:2", "某片", 30, 1440, false, "第01集"))
+            .unwrap();
+
+        db.repoint_item("cycani:1", "cycani:2").unwrap();
+
+        let ep8 = db
+            .get_progress_exact(&progress_key("cycani", "2", Some("ep-8")))
+            .unwrap()
+            .expect("★ 第08集必须独立成行搬过来（守卫只挡**撞键**，不挡正常搬运）");
+        assert_eq!(ep8.position, 700);
+        assert_eq!(ep8.provider, "cycani");
+        assert_eq!(ep8.native_id, "2");
+        let ep1 = db
+            .get_progress_exact(&progress_key("cycani", "2", Some("ep-1")))
+            .unwrap()
+            .expect("TO 的第01集行不动");
+        assert_eq!(ep1.position, 30);
+    }
+
+    /// ★★★ `to_rows` 必须**回写**（CodeRabbit #23:1891 / #24:1924）
+    ///
+    /// ```text
+    /// TO   cycani:9  episode_id=None  标题「第01集」 position=100
+    /// FROM cycani:1  episode_id=x1    标题「第01集」 position=800
+    /// FROM cycani:1  episode_id=x2    标题「第01集」 position= 50
+    /// ```
+    ///
+    /// 甲的 episode_id 是 `Some("x1")`、TO 的是 `None` ⇒ 不满足
+    /// 「两侧都非空」⇒ 退化成按集号配：`Some(1) == Some(1)` ⇒ 甲配到 TO；
+    /// 乙同理 ⇒ **两条 FROM 行配到同一 TO 行**。
+    ///
+    /// `to_rows` 是循环前的一次性快照 ⇒ 不回写时：
+    /// ```text
+    /// 第 1 轮：max(800,100)=800 ⇒ 落库 800
+    /// 第 2 轮：max( 50,100)=100 ⇒ 落库 100   ← 800 秒被抹掉
+    /// ```
+    /// ⇒ 直接违反本段自己声明的「position 单调不减」。
+    ///
+    /// ★ 甲、乙的 `episode_id` **必须不同**（x1 / x2）：
+    ///   否则两行算出的 key 相同 ⇒ `upsert_progress` 就把它们合并成一行 ⇒
+    ///   一次调用里根本不会出现「两条 FROM 行」。
+    #[test]
+    fn repoint_writeback_keeps_max_position_across_multiple_from_rows() {
+        let db = Db::in_memory().unwrap();
+
+        let mut to = prog("cycani:9", "某片", None, 100);
+        to.episode_title = Some("第01集".into());
+        db.upsert_progress(&to).unwrap();
+
+        let mut a = prog("cycani:1", "某片", None, 800);
+        a.episode_id = Some("x1".into());
+        a.episode_title = Some("第01集".into());
+        db.upsert_progress(&a).unwrap();
+
+        let mut b = prog("cycani:1", "某片", None, 50);
+        b.episode_id = Some("x2".into());
+        b.episode_title = Some("第01集".into());
+        db.upsert_progress(&b).unwrap();
+
+        assert_eq!(
+            db.list_progress_for_item("cycani:1").unwrap().len(),
+            2,
+            "★ 前置条件：FROM 作品下必须真有**两行**（episode_id 不同 ⇒ key 不同）"
+        );
+
+        db.repoint_item("cycani:1", "cycani:9").unwrap();
+
+        let merged = db
+            .get_progress_exact("cycani:9:")
+            .unwrap()
+            .expect("TO 的空集号行必须还在（merged 的 episode_id 来自 ..t ⇒ None）");
+        assert_eq!(
+            merged.position, 800,
+            "★★★ 同一次换源里两条 FROM 行配到同一 TO 行 ⇒ 必须取到最大的 800。\
+             修前第 2 轮拿的是**旧快照**的 100 ⇒ 落库 100，用户 800 秒被抹掉"
+        );
+        assert_eq!(
+            db.list_all_progress().unwrap().len(),
+            1,
+            "★ 两条 FROM 行都合进 TO 的同一行 ⇒ FROM 作品必须清空"
         );
     }
 
@@ -3583,5 +4302,255 @@ mod tests {
         drop(db);
         let _ = std::fs::remove_file(&tmp);
         eprintln!("[E2E] ✓ 真实数据实测通过（副本已删，用户库未被碰）");
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  ★★★ 进度主键迁移：按作品 → 按集（2026-10-12）
+    // ══════════════════════════════════════════════════════════════════
+    //
+    // 这一组测试的本质：**造一个老 schema 的库**（progress 的 key 是
+    // `provider:native_id`、**没有 item_key 列**），跑 `Db::open`（内部
+    // `migrate()`），断言迁移结果。全部用临时库，**绝不碰用户真实库**。
+
+    /// 造一个**老口径**的 progress 库（只有 key，无 item_key），并塞进给定行
+    ///
+    /// 返回临时文件路径。逐字建的是**迁移前**的表：
+    /// ```sql
+    /// CREATE TABLE progress (key TEXT PRIMARY KEY, ...);  -- 只有按作品 key
+    /// ```
+    fn old_schema_db(rows: &[(&str, &str, &str, &str, Option<&str>, i64, i64, bool, i64)]) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        // ★ 进程内唯一序号：单靠毫秒时间戳会让并发用例撞到同一个文件
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let tmp = std::env::temp_dir().join(format!(
+            "prog_mig_{}_{}_{}.db",
+            std::process::id(),
+            chrono::Utc::now().timestamp_millis(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&tmp);
+        let conn = Connection::open(&tmp).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE progress (
+                key             TEXT PRIMARY KEY,
+                provider        TEXT NOT NULL,
+                native_id       TEXT NOT NULL,
+                title           TEXT NOT NULL,
+                cover           TEXT,
+                episode_id      TEXT,
+                episode_title   TEXT,
+                position        INTEGER NOT NULL DEFAULT 0,
+                duration        INTEGER NOT NULL DEFAULT 0,
+                finished        INTEGER NOT NULL DEFAULT 0,
+                updated_at      INTEGER NOT NULL
+            );
+            CREATE INDEX idx_prog_updated ON progress(updated_at DESC);
+            "#,
+        )
+        .unwrap();
+        for (key, provider, native_id, title, episode_id, pos, dur, fin, up) in rows {
+            conn.execute(
+                "INSERT INTO progress \
+                 (key,provider,native_id,title,cover,episode_id,episode_title,position,duration,finished,updated_at) \
+                 VALUES (?1,?2,?3,?4,NULL,?5,NULL,?6,?7,?8,?9)",
+                params![key, provider, native_id, title, episode_id, pos, dur, *fin as i32, up],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        tmp
+    }
+
+    /// ★ 迁移正确性：老 schema → migrate() ⇒ 行数不变、key 换新口径、数据逐字保留
+    #[test]
+    fn progress_migration_rewrites_key_and_preserves_data() {
+        // 三行：一集有 id、一条 null 集（空串哨兵）、另一作品
+        let tmp = old_schema_db(&[
+            ("cycani:3611", "cycani", "3611", "长剧", Some("48884"), 2971, 9285, false, 111),
+            ("cycani:3612", "cycani", "3612", "单片", None, 42, 5400, false, 222),
+            ("bilibili:BV1", "bilibili", "BV1", "番", Some("51463"), 100, 1440, true, 333),
+        ]);
+
+        let db = Db::open(&tmp).unwrap();
+        let all = db.list_all_progress().unwrap();
+
+        // ① 行数不变（老 key 是主键 ⇒ 每作品一行 ⇒ 新 key 只更细 ⇒ 必须相等）
+        assert_eq!(all.len(), 3, "★ 迁移不得增减行数");
+
+        // ② 新 key 口径：provider:native_id:episode_id（null ⇒ 空串）
+        let long = all.iter().find(|p| p.title == "长剧").unwrap();
+        assert_eq!(long.key, "cycani:3611:48884", "★ 有集号 ⇒ 拼上集号");
+        let single = all.iter().find(|p| p.title == "单片").unwrap();
+        assert_eq!(
+            single.key, "cycani:3612:",
+            "★★ 老行 episode_id 为 NULL ⇒ 空串哨兵（不能留 null，否则唯一约束失效）"
+        );
+        /*
+         * ★★ SQL 迁移里拼的 key 必须**逐字等于** Rust `progress_key` 的结果
+         *    —— 这是全仓唯一一处"在 SQL 里拼键"（见迁移处的注释），
+         *    一致性只能靠这条断言钉死（改了任一处，这里必红）。
+         */
+        for p in &all {
+            assert_eq!(
+                p.key,
+                progress_key(&p.provider, &p.native_id, p.episode_id.as_deref()),
+                "★★ 迁移 SQL 拼出的 key 必须与 progress_key() 逐字一致（两处拼法漂了）"
+            );
+        }
+
+        // ③ 旧数据逐字保留
+        assert_eq!(long.position, 2971, "★ position 逐字保留");
+        assert_eq!(long.duration, 9285, "★ duration 逐字保留");
+        assert_eq!(long.provider, "cycani");
+        assert_eq!(long.native_id, "3611");
+        assert_eq!(long.episode_id.as_deref(), Some("48884"));
+        assert!(!long.finished);
+        assert_eq!(long.updated_at, 111);
+        assert_eq!(single.episode_id, None, "★ 老 null 集号仍是 null（列本身）");
+
+        // ④ 按作品键查最新一集也能查到（item_key 列回填正确）
+        let by_item = db.get_progress("cycani:3611").unwrap().expect("按作品键应查到");
+        assert_eq!(by_item.key, "cycani:3611:48884");
+
+        drop(db);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// ★ 迁移幂等：连跑两次 migrate() ⇒ 结果一致、不报错、不重复
+    #[test]
+    fn progress_migration_is_idempotent() {
+        let tmp = old_schema_db(&[(
+            "cycani:3611",
+            "cycani",
+            "3611",
+            "长剧",
+            Some("48884"),
+            2971,
+            9285,
+            false,
+            111,
+        )]);
+
+        let db1 = Db::open(&tmp).unwrap();
+        let first = db1.list_all_progress().unwrap();
+        drop(db1);
+
+        // 再打开一次（migrate 会再跑一遍）—— 必须幂等
+        let db2 = Db::open(&tmp).unwrap();
+        let second = db2.list_all_progress().unwrap();
+        assert_eq!(first.len(), second.len(), "★ 重复迁移不得增加行数");
+        assert_eq!(
+            first.iter().map(|p| p.key.clone()).collect::<Vec<_>>(),
+            second.iter().map(|p| p.key.clone()).collect::<Vec<_>>(),
+            "★ 重复迁移后 key 完全一致"
+        );
+        assert_eq!(second[0].position, 2971, "★ 重复迁移不得改动数据");
+        drop(db2);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// ★★ 按集共存（**核心 —— 这就是 Owner 要的**）
+    ///
+    /// 同一作品写两条不同 episode_id 的进度 ⇒ **两行都在**。
+    /// ⚠️ 改前（PK 按作品）⇒ 第二行覆盖第一行 ⇒ 只剩最后一行 ⇒ 本用例**红**。
+    #[test]
+    fn progress_coexists_per_episode() {
+        let db = Db::in_memory().unwrap();
+
+        // 第3集：看到 22 分钟里的 20 分钟
+        db.upsert_progress(&Progress {
+            key: String::new(),
+            provider: "cycani".into(),
+            native_id: "3611".into(),
+            title: "长剧".into(),
+            cover: None,
+            episode_id: Some("ep3".into()),
+            episode_title: Some("第03集".into()),
+            position: 1320,
+            duration: 1320,
+            finished: false,
+            updated_at: 1000,
+        })
+        .unwrap();
+        // 第2集：看到结束（会自动切下一集 —— Owner 的场景）
+        db.upsert_progress(&Progress {
+            key: String::new(),
+            provider: "cycani".into(),
+            native_id: "3611".into(),
+            title: "长剧".into(),
+            cover: None,
+            episode_id: Some("ep2".into()),
+            episode_title: Some("第02集".into()),
+            position: 1300,
+            duration: 1320,
+            finished: false,
+            updated_at: 2000,
+        })
+        .unwrap();
+
+        let all = db.list_all_progress().unwrap();
+        assert_eq!(
+            all.len(),
+            2,
+            "★★★ 同一作品的两集必须**都留着**（按集主键）—— \
+             老口径下第2集会把第3集顶掉，只剩 1 行 ⇒ 本断言红"
+        );
+        // 第3集的 20 分钟还在
+        let ep3 = db.get_progress_exact("cycani:3611:ep3").unwrap().expect("第3集行");
+        assert_eq!(ep3.position, 1320, "★ 第3集的位置必须原样保留，不被第2集覆盖");
+        // 按作品键取到的是**最新**那集（第2集，updated_at 更大）
+        let latest = db.get_progress("cycani:3611").unwrap().unwrap();
+        assert_eq!(latest.episode_id.as_deref(), Some("ep2"), "★ 按作品取最新一集");
+    }
+
+    /// ★ episode_id=NULL 行的唯一性（防 SQLite「重复 NULL」陷阱）
+    ///
+    /// 同一作品写两条 NULL 集的进度 ⇒ **只有一行**。
+    /// ⚠️ 若把 episode_id 直接进主键（不留空串哨兵），这里会变成 2 行 ⇒ 红。
+    #[test]
+    fn progress_null_episode_rows_stay_unique() {
+        let db = Db::in_memory().unwrap();
+        let mk = |pos: u64, up: i64| Progress {
+            key: String::new(),
+            provider: "cycani".into(),
+            native_id: "9999".into(),
+            title: "单片".into(),
+            cover: None,
+            episode_id: None,
+            episode_title: None,
+            position: pos,
+            duration: 5400,
+            finished: false,
+            updated_at: up,
+        };
+        db.upsert_progress(&mk(100, 1000)).unwrap();
+        db.upsert_progress(&mk(500, 2000)).unwrap();
+
+        let all = db.list_all_progress().unwrap();
+        assert_eq!(
+            all.len(),
+            1,
+            "★★ episode_id=NULL 的行必须唯一（空串哨兵）—— 直用 NULL 进主键会 \
+             因「NULL≠NULL」失去唯一约束 ⇒ 这里会变成 2 行"
+        );
+        assert_eq!(all[0].position, 500, "★ 后写覆盖先写（同一集）");
+        assert_eq!(all[0].key, "cycani:9999:", "★ 空串哨兵键");
+    }
+
+    /// ★ 换源迁移在新 key 下仍正确（单集：搬行 + 删旧）
+    #[test]
+    fn progress_repoint_moves_episode_rows() {
+        let db = Db::in_memory().unwrap();
+        db.upsert_progress(&prog_ep("360:86969", "老舅", 600, 2777, false, "第01集"))
+            .unwrap();
+        db.repoint_item("360:86969", "caiji:74774").unwrap();
+
+        assert!(db.get_progress("360:86969").unwrap().is_none(), "★ 旧作品必须清空");
+        let p = db.get_progress("caiji:74774").unwrap().expect("新作品应有行");
+        assert_eq!(p.provider, "caiji");
+        assert_eq!(p.native_id, "74774");
+        assert_eq!(p.position, 600);
+        assert_eq!(db.list_all_progress().unwrap().len(), 1, "★ 不重复");
     }
 }

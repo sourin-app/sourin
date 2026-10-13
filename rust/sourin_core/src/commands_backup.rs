@@ -520,7 +520,33 @@ fn backup_import_sync(
                 sum.skipped.push("有一条进度格式不符，已跳过".into());
                 continue;
             };
-            let old = state.db.get_progress(&p.key).ok().flatten();
+            /*
+             * ⚠️ 用 `get_progress_exact`（按**集键**）而不是 `get_progress`
+             *    （按**作品键**取最新那集）。
+             *
+             * ★★★ 查询键必须**按落库规则现算**，不能直接用备份里的 `p.key`
+             *     —— 备份有**两个时代**：
+             * ```text
+             * 按集扩容前导出的备份：p.key = 作品键   `360:86969`
+             * 按集扩容后导出的备份：p.key = 按集键   `360:86969:e1`
+             * 本机迁移后的行：       key  = 按集键   `360:86969:e1`
+             * ```
+             * 直接 `get_progress_exact(&p.key)` 在**旧备份**上永远查不到本机行
+             * ⇒ 下面的时间戳守卫不生效 ⇒ 旧备份把本机更新的进度**打回去**。
+             * 现算 `progress_key(provider, native_id, episode_id)` 则两个时代的
+             * 备份都能命中同一行。
+             * ★ 2026-10-12 按集扩容时这里踩过两次：第一次是误用
+             *   `get_progress(&p.key)`（把 `p.key` 当作品键，永远查不到），
+             *   第二次就是这里——假设了「备份里的 `p.key` 一定是按集键」。
+             *   测试 `import_does_not_regress_newer_local_data` 只覆盖了
+             *   新格式备份，所以漏了。
+             */
+            let exact = crate::store::progress_key(
+                &p.provider,
+                &p.native_id,
+                p.episode_id.as_deref(),
+            );
+            let old = state.db.get_progress_exact(&exact).ok().flatten();
             /*
              * 本机更新 → 跳过（不倒退）
              *

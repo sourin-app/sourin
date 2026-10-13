@@ -1,7 +1,7 @@
 /**
  * @id          cycani
  * @name        次元城动画
- * @version     1.0.0
+ * @version     1.0.1
  * @author      dsh
  * @description 次元城动画 —— 点播、搜索、榜单、平台历史
  * @homepage    https://www.cycani.org
@@ -495,11 +495,47 @@ globalThis.plugin = {
         count: typeof s.count === 'number' ? s.count : 0,
       }))
 
-    // 默认拉第一个源的剧集
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-13（Owner）：默认剧集**逐条线路回退**，不再只看 sources[0]
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * Owner 原话（逐字）：
+     * > 尼古喵喵不知道为什么播放失败,但是 次元城 这个源下的别的有些又可以看,
+     * > 这应该是个bug
+     *
+     * # 原写法为什么会"同一源下有的能看、有的不能"
+     * ```text
+     * 原：`episodes = await episodesOf(id, sources[0].code)` —— 只问**第一条**线路。
+     * 而 `play_from` 是**多条**线路（实测同一作品常有 2~4 条）：
+     *   · 第一条在线  ⇒ 正常（"别的有些可以看"）
+     *   · 第一条**失效/为空**（下架、换 CDN、该线路没这部番）
+     *     ⇒ episodes = [] ⇒ 详情页{选集为空} ⇒ resolve 抛
+     *        `not_found: 该作品没有可播放的剧集`（"尼古喵喵播放失败"）
+     *   ★ 而**第二条明明有** —— 我们从没问过它。
+     * ```
+     *
+     * # 修法
+     * ```text
+     * 按 `sources` 顺序**逐条尝试**，用**第一条真的有剧集**的线路。
+     * ⇒ 第一条挂了自动落到第二条 ⇒ 同源下不再"有的能看有的不能"。
+     * ⚠️ 仍未拿到任何剧集时**不抛**（返回空），让详情页如实显示"暂无剧集"
+     *    —— 抛异常会让整部作品的详情页直接失败，比空列表更糟。
+     * ⚠️ 保持"默认用第一条**有内容**的线路"这个语义，与
+     *    `detail_page.dart` 的 `srcs.first` 兜底**不冲突**（那里是 UI 选择）。
+     * ```
+     */
     let episodes = []
-    if (sources.length) {
-      episodes = await episodesOf(id, sources[0].code)
+    for (const s of sources) {
+      episodes = await episodesOf(id, s.code)
+      if (episodes.length) break
     }
+    /*
+     * ⚠️ 这里**故意**不调 `episodesForFirstUsableLine()`：
+     *    本函数手里已经有 `sources`（刚 parse 出来），再调那个 helper
+     *    会**重复拉一次作品详情**（多一次 HTTP）。策略一致，只是省一次往返。
+     *    helper 是给"手里没有 sources"的调用方（如 `resolve`）用的。
+     */
 
     /*
      * ★ 角标要如实反映「能看几集」
@@ -615,10 +651,28 @@ globalThis.plugin = {
     let sectionId = r.episodeId
 
     if (!sectionId) {
-      // 没指定集 → 用第一集（更符合直觉，也比报错友好）
-      const eps = r.sourceCode
-        ? await episodesOf(id, r.sourceCode)
-        : (await this.detail(id)).episodes
+      /*
+       * 没指定集 → 用**第一条真的有剧集**的线路的第一集。
+       *
+       * ★★★ 2026-10-13（Owner）：原写法是
+       * ```text
+       * r.sourceCode ? episodesOf(id, r.sourceCode)
+       *              : (await this.detail(id)).episodes
+       * ```
+       * 两条都**只问一条线路**：
+       *   · 前者问用户选的那条 —— 若它已失效 ⇒ eps 为空 ⇒ 抛
+       *     `该作品没有可播放的剧集`（"尼古喵喵播放失败"的一种形态）
+       *   · 后者问 `detail()` 的默认线路 —— 修复前是 `sources[0]`
+       * ⇒ 现在两条路径都**逐线路回退**，与 `detail()` 同一策略。
+       * ⚠️ 优先用户选的线路（尊重选择），失效才回退到别的线路。
+       */
+      let eps = []
+      if (r.sourceCode) {
+        eps = await episodesOf(id, r.sourceCode)
+      }
+      if (!eps.length) {
+        eps = await episodesForFirstUsableLine(id)
+      }
       if (!eps.length) throw new Error('not_found: 该作品没有可播放的剧集')
       sectionId = eps[0].id
     }
@@ -714,6 +768,47 @@ globalThis.plugin = {
       updatedAt: h.updated_at || undefined,
     }))
   },
+}
+
+/**
+ * ★★★ 2026-10-13（Owner）：按**线路顺序**取剧集，返回**第一条真的有剧集**的线路
+ *
+ * # 为什么需要（"同源下有的能看、有的不能"的根因）
+ * ```text
+ * 一个作品的 `play_from` 常有**多条**线路，而它们**不是等价的**：
+ * 某条可能已下架 / 换了 CDN / 就是没有这部番。
+ * 原来的 `detail()` 与 `resolve()` 都**只问第一条** ⇒ 第一条挂了就整部作品失败，
+ * 而第二条明明有 —— 我们从没问过它。
+ * ```
+ *
+ * # 策略
+ * ```text
+ * 按 `play_from` 给出的顺序逐条试，用**第一条非空**的。
+ * ⚠️ 全部为空 ⇒ 返回 []（**不抛**）：让上层决定是"暂无剧集"还是报错 ——
+ *    `detail()` 要如实显示空态（抛异常会让整个详情页失败）；
+ *    `resolve()` 才需要抛（播不了就是播不了）。
+ * ```
+ *
+ * ⚠️ 与 `episodesOf(id, sourceCode)` 的分工：
+ *    这个函数是**兜底**（不知道用哪条线时），
+ *    `episodesOf` 是**指定线路**（用户选了一条、或已知一条）。
+ *    有明确 sourceCode 时**不要**用这个 —— 那会覆盖用户的选择。
+ */
+async function episodesForFirstUsableLine(id) {
+  let sources = []
+  try {
+    const data = await get(`/videos/${encodeURIComponent(id)}`)
+    sources = (Array.isArray(data && data.play_from) ? data.play_from : [])
+      .filter((s) => s && s.code)
+  } catch (e) {
+    // 连作品详情都拿不到 ⇒ 没有线路可试，如实返回空
+    return []
+  }
+  for (const s of sources) {
+    const eps = await episodesOf(id, s.code)
+    if (eps.length) return eps
+  }
+  return []
 }
 
 /** 按播放源取剧集（detail 与 resolve 共用） */

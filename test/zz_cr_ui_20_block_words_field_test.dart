@@ -95,13 +95,10 @@ void main() {
               builder: (context, _, __) => DanmakuSettingsDialog(
                 state: state,
                 onSetEnabled: (_) {},
-                onSetAppId: (_) {},
-                onSetAppSecret: (_) {},
                 onSetFontScale: (_) {},
                 onSetOpacity: (_) {},
                 onSetSpeed: (_) {},
                 onSetArea: (_) {},
-                onClearCredentials: () {},
                 onReload: () {},
                 onClose: () {},
                 onChanged: () {

@@ -252,8 +252,64 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
         shell: pwsh
         run: |
-          # ★ 用 choco 装 NSIS。runner 上本来没有 makensis。
-          choco install nsis --no-progress -y
+          # ══════════════════════════════════════════════════════════════
+          # ★★★ 装 NSIS —— **必须能扛住 choco 社区源的瞬时故障**
+          # ══════════════════════════════════════════════════════════════
+          #
+          #  # 为什么加了重试 + 独立回退源（run 38384556818 的真实事故）
+          #
+          #  实测（v1.1.0 那次发布）：`choco install nsis` 单发一次，
+          #  社区源回了一个 **504 Gateway Timeout**：
+          # ```text
+          #   Failed to fetch results from V2 feed at
+          #     'https://community.chocolatey.org/api/v2/Packages(Id='nsis',Version='3.13.0')'
+          #     Response status code does not indicate success: 504 (Gateway Timeout).
+          #   Unable to find package 'nsis'.
+          #   Chocolatey installed 0/0 packages.
+          #   ⇒ 本步 throw ⇒ Windows job 红
+          #   ⇒ rel-windows-* 这个 artifact 根本没上传
+          #   ⇒ 发 Release job 只把「成功的平台」拼进去 ⇒
+          #      **v1.1.0 的 Release 少了 Windows 免安装 zip 与 NSIS 安装包**，
+          #      而用户看到的下载页就是缺了整整一个平台。
+          # ```
+          #  504 是**外部基础设施的瞬时故障**，与我们改的代码毫无关系 ——
+          #  绝不能因为它把整个 Windows 交付件从 Release 里抹掉。
+          #
+          #  # 两层防御
+          #  ① 重试：choco 单次失败多数是瞬时 5xx，退避重试 3 次能挡掉绝大多数。
+          #  ② 独立回退源：若重试仍失败，直接从 **SourceForge 的官方 NSIS zip**
+          #     下载解包。它与 choco 的 CDN **不是同一条链路** ——
+          #     choco 挂了它往往还是通的（这正是本仓「不要单点依赖」的一贯口径）。
+          #
+          #  # ★ 为什么不能只打 warning 就继续
+          #  本仓铁律（CONTRIBUTING.md ⑥ 规矩二）：门禁不许「只警告不失败」。
+          #  装不上 NSIS 就**编不出安装包**，而安装包是交付件之一 ⇒ 必须真失败，
+          #  不能降级成 warning 然后发出一个缺件的 Release。
+          $ErrorActionPreference = 'Continue'
+          $installed = $false
+          for ($i = 1; $i -le 3; $i++) {
+            "---- choco install nsis（第 $i/3 次）----"
+            choco install nsis --no-progress -y
+            if ($LASTEXITCODE -eq 0) { $installed = $true; break }
+            "choco 第 $i 次失败（exit=$LASTEXITCODE），10 秒后重试"
+            Start-Sleep -Seconds 10
+          }
+          if (-not $installed) {
+            "choco 三次都没装上 —— 改用 SourceForge 官方 NSIS zip 回退"
+            # ★ NSIS 官方发布在 SourceForge；3.10 是稳定版。
+            #   curl.exe（不是 Invoke-WebRequest）跟随 302 重定向更可靠，
+            #   且 GitHub runner 自带。 -L 跟随跳转、-f 遇到 4xx/5xx 直接失败。
+            $zip = "$env:RUNNER_TEMP\nsis.zip"
+            $dst = "$env:RUNNER_TEMP\nsis"
+            curl.exe -L -f --retry 3 --retry-delay 5 -o $zip `
+              'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.10/nsis-3.10.zip'
+            if (-not (Test-Path $zip) -or (Get-Item $zip).Length -lt 1000000) {
+              throw '回退也失败：没下到 NSIS zip（choco 与 SourceForge 都不通）'
+            }
+            "NSIS zip = $((Get-Item $zip).Length) 字节"
+            Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue
+            Expand-Archive -LiteralPath $zip -DestinationPath $dst -Force
+          }
           # ★★ 不要靠 PATH 找 makensis。
           #   实测（run 37788073987）：choco 明明报「Deployed to
           #   C:\Program Files (x86)\NSIS」，但刷新 Machine+User PATH 之后
@@ -280,12 +336,18 @@ jobs:
             if ($cmd) { $mk = $cmd.Source }
           }
           if (-not $mk) {
+            # 兜底：在回退解包目录里找（SourceForge zip 的顶层是 nsis-3.x\）
+            $found = Get-ChildItem "$env:RUNNER_TEMP\nsis" -Filter 'makensis.exe' -Recurse -ErrorAction SilentlyContinue |
+                     Select-Object -First 1
+            if ($found) { $mk = $found.FullName }
+          }
+          if (-not $mk) {
             # 最后兜底：整盘搜（慢，但比「莫名其妙装不上」好查）
             $found = Get-ChildItem 'C:\' -Filter 'makensis.exe' -Recurse -ErrorAction SilentlyContinue |
                      Select-Object -First 1
             if ($found) { $mk = $found.FullName }
           }
-          if (-not $mk) { throw '装完 NSIS 还是找不到 makensis（choco 报成功但文件不在预期位置）' }
+          if (-not $mk) { throw '装完 NSIS 还是找不到 makensis（choco 与回退源都试过了）' }
           "makensis = $mk"
           & $mk /VERSION
           # ★ 把路径交给后面那一步（同一次 job 内跨 step 传值）
@@ -1162,6 +1224,27 @@ jobs:
           if [ "${{ needs.android.result }}" = "success" ] && [ -f "$A64" ] && [ -f "$A7" ]; then
             FILES="$FILES $A64 $A7"; echo "✓ Android  $A64 $A7";
           else echo "· Android 未构建（job=${{ needs.android.result }}）—— 不发布 APK"; fi
+          # ★★ 硬断言：**必跑平台**（Windows / macOS）没有产物 ⇒ 直接红。
+          #
+          #   为什么必须红（run 38384556818 的真实事故，v1.1.0）：
+          #   Windows job 的「装 NSIS」被 choco 的 504 打挂 ⇒ 整个 Windows job 红
+          #   ⇒ rel-windows-* 没上传 ⇒ 本 job 上面那几条只打了行 `✗ Windows 包不可用`
+          #   **然后就照发不误** ⇒ Release 页面缺了整整一个平台
+          #   （免安装 zip + NSIS 安装包一个都没有），而本次 workflow 里
+          #     只有 Windows job 是红的、本 job 却是**绿的**。
+          #   ⇒ 这正是本仓反复点名的「静默漏发」（对照 fb32a5c 那次修的是同一类病，
+          #     那次修的是 artifact 路径结构，这次是平台 job 失败，同一个洞的不同入口）。
+          #
+          #   Windows / macOS 是 `if:` 无条件必跑的 job（只有 android 默认跳过）
+          #   ⇒ 它们缺席**不是**正常情况，必须显式失败，绝不发一个缺平台的 Release。
+          if [ "${{ needs.windows.result }}" != "success" ]; then
+            echo "::error::Windows 是必跑 job 却以 ${{ needs.windows.result }} 结束 —— 拒绝发一个缺 Windows 产物的 Release"
+            exit 1
+          fi
+          if [ "${{ needs.macos.result }}" != "success" ]; then
+            echo "::error::macOS 是必跑 job 却以 ${{ needs.macos.result }} 结束 —— 拒绝发一个缺 macOS 产物的 Release"
+            exit 1
+          fi
           if [ -z "$FILES" ]; then
             echo "::error::三个平台都没有可用产物，拒绝发空 Release"; exit 1
           fi
@@ -1214,12 +1297,37 @@ jobs:
           fi
           echo "---- notes 前 12 行（已替换版本号）----"
           head -12 "$NOTES"
-          gh release create "$TAG" \
-            --repo "${{ github.repository }}" \
-            --title "源影 $TAG" \
-            --notes-file "$NOTES" \
-            --target "${{ github.sha }}" \
-            ${{ steps.chk.outputs.files }} \
-            rel/SHA256SUMS.txt
-          echo "✓ Release 已创建"
+          # ★★ 幂等：Release 已存在 ⇒ **补传/覆盖**产物，而不是硬失败。
+          #
+          #   为什么必须幂等（run 38384556818 的真实事故，v1.1.0）：
+          #   Windows job 因 choco 504 挂了 ⇒ 那次 Release 少了 Windows 两个包。
+          #   修好 CI 之后**必须重跑同一个 tag** 才能补齐 —— 但重跑时
+          #   `gh release create` 会报 `release already exists` 直接红，
+          #   于是「重跑补包」这条路根本走不通，只能删了 Release 再来
+          #   （删 Release = 期间下载页 404，用户可见的破坏性动作）。
+          #   ⇒ 已存在就 `upload --clobber`（覆盖同名、补上缺的），
+          #     并把 notes 也刷一遍（`gh release edit`）—— 全程用户看到的是
+          #     「文件一个个补齐」，没有空窗期。
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "· Release $TAG 已存在 —— 走**补传/覆盖**路径（幂等重跑）"
+            gh release edit "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "源影 $TAG" \
+              --notes-file "$NOTES"
+            gh release upload "$TAG" \
+              --repo "${{ github.repository }}" \
+              --clobber \
+              ${{ steps.chk.outputs.files }} \
+              rel/SHA256SUMS.txt
+            echo "✓ Release 已更新（产物补齐 / 覆盖）"
+          else
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "源影 $TAG" \
+              --notes-file "$NOTES" \
+              --target "${{ github.sha }}" \
+              ${{ steps.chk.outputs.files }} \
+              rel/SHA256SUMS.txt
+            echo "✓ Release 已创建"
+          fi
           gh release view "$TAG" --repo "${{ github.repository }}"

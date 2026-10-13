@@ -359,12 +359,37 @@ void main() {
     expect(rs[PageTransitionStyle.fade]!.delta, Offset.zero,
         reason: 'fade 不该有位移（只改透明度）');
 
-    // ③ 结构：zoom 走 SDK 快照路径，其余风格走本项目 widget 层
-    expect(rs[PageTransitionStyle.zoom]!.snapN, greaterThanOrEqualTo(1),
-        reason: 'zoom 应该走 SDK 的 SnapshotWidget 快照路径');
+    /*
+     * ③ 结构：**每一种"有动画"的风格都该出现 SnapshotWidget**
+     *
+     * ★★★ 2026-10-13 契约更新（原契约是"只有 zoom 才有快照"）
+     *
+     * # 为什么改（不是放宽，是**判据对象变了**）
+     * ```text
+     * 原契约守的是「zoom 走 SDK 快照路径，其余走本项目 widget 层」——
+     * 那时快照只是 zoom 的实现细节。
+     * 但现在：离场页快照是**性能修复**（从播放页返回卡顿：raster p50
+     * 11989 → 2150us，见 page_transition_route.dart 里那段实测）。
+     * 它必须对**所有会动画的风格**生效，否则默认的 slideRight 依然卡。
+     * ⇒ 判据从「哪些风格走 SDK」升级为「哪些风格**该有快照**」。
+     * ```
+     *
+     * # 新的语义边界（这条才是真正要守的东西）
+     * ```text
+     * · 任何**有过渡层**的风格 ⇒ 必须有快照（离场页不每帧重绘）
+     * · `none`（Reduce Motion / 用户选"无动画"）⇒ **不许**有快照
+     *   ★ 这条最关键：`none` 的语义是"零开销、瞬间切换"，
+     *     若它偷偷挂一层 SnapshotWidget ⇒ 既违背语义、又白建一张图。
+     * ```
+     */
     for (final PageTransitionStyle s in PageTransitionStyle.values) {
-      if (s == PageTransitionStyle.zoom) continue;
-      expect(rs[s]!.snapN, 0, reason: '风格 ${s.name} 不该出现 SnapshotWidget');
+      if (s == PageTransitionStyle.none) {
+        expect(rs[s]!.snapN, 0,
+            reason: 'none 是"零开销、瞬间切换" ⇒ 不许有 SnapshotWidget');
+        continue;
+      }
+      expect(rs[s]!.snapN, greaterThanOrEqualTo(1),
+          reason: '风格 ${s.name} 有过渡层 ⇒ 离场页必须走快照（否则返回卡顿）');
     }
     for (final PageTransitionStyle s in <PageTransitionStyle>[
       PageTransitionStyle.slideRight,

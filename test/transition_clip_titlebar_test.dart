@@ -67,6 +67,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/ui/theme_bridge.dart';
+import 'package:sourin_spike/ui/widgets/page_transition_route.dart';
 
 /// 抓图用的 RepaintBoundary Key —— 必须是**我们自己的**，不能靠 `.first`
 const _captureKey = ValueKey<String>('t27-capture');
@@ -243,6 +244,25 @@ void main() {
     });
 
     testWidgets('红度证明：去掉 ClipRect 后标题栏会被溢出内容覆盖', (tester) async {
+      /*
+       * ★★ 2026-10-13：红度证明必须**绕过离场页快照**。
+       *
+       * # 为什么（否则这条证明会变成假的）
+       * 2026-10-13 给离场页加了光栅快照（修"从播放页返回卡顿"，
+       * 见 `page_transition_route.dart` 里那段实测）。快照把离场页
+       * 变成一张**有界**的图 ⇒ 去掉 ClipRect 也**看不到**溢出了
+       * ⇒ 本测试的 `worst` 恒为 0 ⇒ **它再也证不出反面**。
+       *
+       * 按本仓铁律「判据测不出反面 ⇒ 结论作废」——一条证不出反面的
+       * 红度证明，等于**没有**防护。所以这里显式关掉快照，
+       * 让本证明跑在**原生绘制路径**上（那正是它要证的那条路径：
+       * "离场页放大后确实会溢出，所以必须有 ClipRect 拦住"）。
+       *
+       * ⚠️ 与之配对的第一条测试（`clip: true` ⇒ 必须 0 偏差）**不用**
+       *    这个旁路 —— 它守的是**生产行为**（含快照），必须照常跑。
+       */
+      debugDisableExitSnapshot = true;
+      addTearDown(() => debugDisableExitSnapshot = false);
       setUpViewport(tester);
 
       await tester.pumpWidget(

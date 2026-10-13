@@ -903,19 +903,79 @@ class PlayerBottomBar extends StatelessWidget {
       return o.label.isEmpty ? '默认' : o.label;
     }
 
-    final tiers = <String, int>{};
-    for (final o in qualityOptions) {
-      final t = tierOf(o);
-      tiers[t] = (tiers[t] ?? 0) + 1;
+    // ── 规则（本修的核心）：同档能不能「分开显示」，由**消歧后的文字**说了算 ──
+    //
+    // ★ 为什么不能只看「同 tier 出现 >1」就展开（这是本修的根因）
+    // ```text
+    // 旧判据：同档 >1 ⇒ 给那几行附来源名。它**假设**同档多条 = 不同来源。
+    // 真机反例（Owner 截图：三个一模一样的 1080P）：
+    //   bilibili 这类第三方插件把 best + 全部 backupUrl 都当独立候选输出，
+    //   quality 全相同、**来源名也几乎相同**：
+    //     「哔哩哔哩 1080P」 / 「哔哩哔哩 1080P 备用」 / 「哔哩哔哩 1080P 备用」…
+    //   ⇒ 附来源名后那几行**仍然分不开** ⇒ 消歧失败，
+    //     用户看到重复字、还是不知道该点哪个。
+    // ```
+    // ⇒ 判据：对每一档，算出它**实际会画出来的文字集合**（消歧 = `tier · label`）；
+    //   · 全部互不相同 ⇒ 展开成多行（原正确行为，逐字不变）；
+    //   · 出现重复 ⇒ 怎么标都分不开 ⇒ **整档折叠成一行**。
+    //     折叠后只显示清晰度（`tier`），不再叠一堆来源名。
+    //
+    // ★ 折叠保留哪一条（顺序即优先级）：
+    //   ① 当前正在播放的那条（`o.checked`）—— 绝不能折叠掉，
+    //      否则「当前选中」对勾会消失（`_row` 的 `checked: o.checked`）；
+    //   ② 否则同档里**第一条**。
+    //   ⚠️ 保留下来的那条，其 `value` 就是 `onTap` 要交回给
+    //      `onPickQuality` 的值（见 [_row]）⇒ 点对是自动成立的。
+    //
+    // ★ 兼容（不许弄坏的两条）：
+    //   · 每档一条（1080P/720P/480P）⇒ 逐字不变，只显清晰度、不带来源名；
+    //   · 同档不同来源（「1080P · 官方 HLS」/「1080P · CDN 直连」）⇒ 文字确实
+    //     不同 ⇒ 仍展开，与原行为逐字一致（t27_w13 「A③」回归钉住）。
+    final byTier = <String, List<int>>{};
+    for (var i = 0; i < qualityOptions.length; i++) {
+      byTier.putIfAbsent(tierOf(qualityOptions[i]), () => <int>[]).add(i);
+    }
+
+    // tier → 选中要保留的候选下标（折叠档）或 null（展开档）
+    final collapsedTo = <String, int?>{};
+    for (final entry in byTier.entries) {
+      final tier = entry.key;
+      final idxs = entry.value;
+      if (idxs.length == 1) {
+        collapsedTo[tier] = null; // 单条档：原样显示（阴性对照，不误伤）
+        continue;
+      }
+      // 该档实际会画出来的文字（去重判断用）。label 为空时退回 tier。
+      final texts = <String>{
+        for (final i in idxs)
+          qualityOptions[i].label.isEmpty
+              ? tier
+              : '$tier · ${qualityOptions[i].label}',
+      };
+      if (texts.length == idxs.length) {
+        collapsedTo[tier] = null; // 消歧成功：整档展开
+      } else {
+        // 消歧失败 ⇒ 折叠。保留正在播放的（checked），否则第一条。
+        collapsedTo[tier] = idxs.firstWhere(
+          (i) => qualityOptions[i].checked,
+          orElse: () => idxs.first,
+        );
+      }
     }
 
     return [
-      for (final o in qualityOptions)
-        if ((tiers[tierOf(o)] ?? 0) > 1)
-          // 同档多条 ⇒ 附来源名消歧（`label` 就是来源名）。
-          _row(o, labelOverride: '${tierOf(o)} · ${o.label}')
-        else
-          _row(o, labelOverride: tierOf(o)),
+      for (var i = 0; i < qualityOptions.length; i++)
+        if (collapsedTo[tierOf(qualityOptions[i])] == null ||
+            collapsedTo[tierOf(qualityOptions[i])] == i)
+          _row(
+            qualityOptions[i],
+            labelOverride: collapsedTo[tierOf(qualityOptions[i])] == null &&
+                    (byTier[tierOf(qualityOptions[i])]?.length ?? 0) > 1
+                // 同档多条且能分开 ⇒ 附来源名消歧（`label` 就是来源名）。
+                ? '${tierOf(qualityOptions[i])} · ${qualityOptions[i].label}'
+                // 单条档 / 折叠档 ⇒ 只显示清晰度。
+                : tierOf(qualityOptions[i]),
+          ),
     ];
   }
 

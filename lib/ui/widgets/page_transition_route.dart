@@ -359,8 +359,14 @@ class _ExitSnapshotState extends State<_ExitSnapshot> {
   ///   · 盖完之后   → completed（停在 1.0，本页在后台）
   ///   · 上面那页pop → 往回走（动画在飞）→ dismissed（0.0，本页又可见）
   /// ★ 只有"动画在飞"的那两段时间需要快照（那也是卡顿发生的时间）。
-  ///   动画停 ⇒ 立刻 `clear()` 让子树回到**实时渲染**
+  ///   动画停 ⇒ **关掉** `allowSnapshotting` 让子树回到**实时渲染**
   ///   ⇒ 既拿到过渡期的性能，又不冻住页面。
+  ///
+  /// ⚠️⚠️ 旧注释这里写的是"立刻 `clear()`" —— **那是错的**（已改，见 `_onStatus`）：
+  ///   `clear()` 是"重拍一张"，而我们要的是"**以后别用快照了**"。
+  ///   真正的开关是 `_c.allowSnapshotting`。我第一版只 `clear()` + setState，
+  ///   controller 始终常开 ⇒ 页面被永久冻住 ⇒ 还吞掉了布局溢出异常
+  ///   （`t486` 的阳性对照抓出来的）。详见 `_onStatus` 里的说明。
   /// ```
   bool _snapshotting = false;
 

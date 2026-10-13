@@ -397,6 +397,7 @@ Android 那个 job 默认关掉：它最慢（要 NDK + 三个 target 交叉编�
 | `dsh.playprefs.lastVolume` | 0 ~ 100 | 95 | 上次的音量 |
 | `dsh.playprefs.lastSpeed` | 0.5 ~ 3.0 | 1.0 | 上次的倍速 |
 | `dsh.playprefs.endAction` | `none` / `next` / `loop` | — | 播完之后干什么 |
+| `dsh.playprefs.episodeStartAction` | `fromStart` / `prompt` | `fromStart` | 切集时从头播放或显示提示 |
 | `dsh.playprefs.countdownBeforeNext` | 秒 | — | 「下一集」倒计时秒数 |
 | `dsh.playprefs.keepSourceOnNext` | `0` / `1` | — | 连播时保持当前源（不自动换源） |
 | `dsh.playprefs.autoSkip` | `0` / `1` | — | 自动跳过片头片尾 |

@@ -5661,18 +5661,6 @@ class _PlayerPageState extends State<PlayerPage>
     }
   }
 
-  void _setDanmakuAppId(String v) {
-    DanmakuConfig.setAppId(v);
-    _resetDanmakuClient();
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(appId: v));
-  }
-
-  void _setDanmakuAppSecret(String v) {
-    DanmakuConfig.setAppSecret(v);
-    _resetDanmakuClient();
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(appSecret: v));
-  }
-
   void _setDanmakuFontScale(double v) {
     DanmakuConfig.setFontScale(v);
     setState(() => _danmakuSettings = _danmakuSettings.copyWith(fontScale: v));
@@ -5742,24 +5730,6 @@ class _PlayerPageState extends State<PlayerPage>
   void _setDanmakuColorOnly(bool v) {
     DanmakuConfig.setColorOnly(v);
     if (mounted) setState(() {});
-  }
-
-  void _clearDanmakuCredentials() {
-    DanmakuConfig.clearCredentials();
-    _resetDanmakuClient();
-    _danmakuFetchToken++;
-    setState(() {
-      _danmakuSettings = _danmakuSettings.copyWith(
-        appId: '',
-        appSecret: '',
-        clearError: true,
-      );
-      _danmakuComments = const <DanmakuComment>[];
-      _danmakuError = null;
-      _danmakuStatus = '';
-      _danmakuLoading = false;
-    });
-    _flash('已清除弹幕凭证');
   }
 
   void _reloadDanmaku() {
@@ -10686,6 +10656,30 @@ class _PlayerPageState extends State<PlayerPage>
   KeyEventResult _onEarlyKey(KeyEvent event) =>
       _onHardwareKey(event) ? KeyEventResult.handled : KeyEventResult.ignored;
 
+  /// 焦点是否在输入框里（"输入框守卫"的**共用**实现）
+  ///
+  /// ★ 抽成函数的原因：`_onHardwareKey` 与 `_onKey` **两条入口**都要用。
+  ///   写在两处会变成**两套真相** —— 改一处忘另一处就会出现
+  ///   "硬件路径挡住了、焦点树路径没挡"的漏洞（正是本次修的 bug 形态：
+  ///   弹幕设置面板的屏蔽词输入框里敲 Enter 不换行、反而触发播放/暂停）。
+  ///
+  /// ⚠️ 用 `el.widget.runtimeType.toString() == 'EditableText'` 而**不是**
+  ///    `is EditableText`：本仓 UI 用的是拆包后的 `material_ui`，
+  ///    用 `is` 可能因库不同恒为 false（与 `live_page.dart` 同款写法）。
+  bool _isTypingInField() {
+    final f = FocusManager.instance.primaryFocus;
+    if (f?.context == null) return false;
+    var typing = false;
+    f!.context!.visitAncestorElements((el) {
+      if (el.widget.runtimeType.toString() == 'EditableText') {
+        typing = true;
+        return false;
+      }
+      return true;
+    });
+    return typing;
+  }
+
   /// ★★★ 硬件层键盘兜底（task-42）
   ///
   /// 详细推导见 `initState` 里注册处的长注释。
@@ -10754,23 +10748,16 @@ class _PlayerPageState extends State<PlayerPage>
 
     /*
      * ── 门控 ③：输入框里打字时放行 ──
+     *
+     * ★ 用**共用**的 `_isTypingInField()` —— `_onKey`（焦点树路径）也用它，
+     *   两道入口**一套判据**（避免"改一处忘另一处"的两套真相）。
      */
-    final f = FocusManager.instance.primaryFocus;
-    if (f?.context != null) {
-      var typing = false;
-      f!.context!.visitAncestorElements((el) {
-        if (el.widget.runtimeType.toString() == 'EditableText') {
-          typing = true;
-          return false;
-        }
-        return true;
-      });
-      if (typing) return false;
-    }
+    if (_isTypingInField()) return false;
 
     /*
      * ── ★ 防双触发：焦点已在本页 ⇒ 让 `_onKey` 处理 ──
      */
+    final f = FocusManager.instance.primaryFocus;
     if (_focusIsInsideThisPage(f)) return false;
 
     final k = event.logicalKey;
@@ -11192,6 +11179,42 @@ class _PlayerPageState extends State<PlayerPage>
       }
       return KeyEventResult.handled;
     }
+
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 输入框守卫：焦点在输入框里时，Enter / 空格**让给输入框**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 症状（Owner 2026-10-11 报的真 bug）
+     * ```text
+     * 「弹幕屏蔽词这里 我点击回车**不会换行**，反而会**播放**」
+     * ```
+     *
+     * # 根因：两条入口的守卫**不对称**
+     * ```text
+     * ① 硬件路径 `_onHardwareKey`：**有**输入框守卫（门控③），
+     *    但它被门控①（`if (_anySheetOpen) return false;`）挡掉 ——
+     *    弹幕面板开着 ⇒ 硬件入口让路。
+     * ② 焦点树路径 `_onKey`（本函数）：**原本没有**输入框守卫 ——
+     *    于是面板开着时 Enter 落到下面的分支 ⇒ 桌面走全屏 / TV 走 _togglePlay。
+     * ⇒ ★ 这正是"硬件路径挡住了、焦点树路径没挡"的两套真相漏洞
+     *    （与 `live_page.dart` 里 `_isTypingInField()` 抽函数修的**同一形态**）。
+     * ```
+     *
+     * # 为什么放在这里（分支**之前**、函数中段）
+     * ```text
+     * ① 必须在 Enter / 空格分支**之前**拦截，否则 Enter 已经 `_togglePlay()`。
+     * ② ⚠️ 不能放函数最开头（方向键之前）——
+     *    方向键在输入框里的行为另有 `test/focus_narrow_test.dart:220-246`
+     *    钉着，本守卫**只**针对 Enter/空格这两条"会误触发播放/全屏"的键。
+     * ③ 用**共用**的 `_isTypingInField()`（与 `_onHardwareKey` 同源）——
+     *    不许再抄一份判据。
+     * ```
+     *
+     * ⚠️ `_anySheetOpen` 门控①**不动**：它修过"TV 上 Enter 选条目变全屏"的
+     *    bug（见上方 L10764 的长注释）。本守卫是**叠加**在它之上的，不是替换。
+     */
+    if (_isTypingInField()) return KeyEventResult.ignored;
 
     // ── 确认键 ──
     /*
@@ -13335,13 +13358,10 @@ class _PlayerPageState extends State<PlayerPage>
                           fill: false,
                           state: _danmakuSettings,
                           onSetEnabled: _setDanmakuEnabled,
-                          onSetAppId: _setDanmakuAppId,
-                          onSetAppSecret: _setDanmakuAppSecret,
                           onSetFontScale: _setDanmakuFontScale,
                           onSetOpacity: _setDanmakuOpacity,
                           onSetSpeed: _setDanmakuSpeed,
                           onSetArea: _setDanmakuArea,
-                          onClearCredentials: _clearDanmakuCredentials,
                           onReload: _reloadDanmaku,
                           onOpenBili: _openBiliSheet,
                           onHintAction: _runDanmakuHintAction,

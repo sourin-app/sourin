@@ -187,6 +187,68 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   /// ★ 2026-10-08（Owner 第 3 条）：流错误订阅（改前直播侧**完全没订**，断声静默）
   StreamSubscription<String>? _errorSub;
 
+  /*
+   * ════════════════════════════════════════════════════════════════════
+   * ★★★ 2026-10-13（Owner 报「切到直播页要 ~8 秒才出画面」）：改成**事件驱动**
+   * ════════════════════════════════════════════════════════════════════
+   *
+   * # 实测定位（真机日志，不是推理）
+   * ```text
+   * [LIVE-T] getLiveStream(...) 耗时 = 48ms          ← 取线路     0.05s
+   * [LIVE]   延迟建播放器 实际等待 = 381ms             ← 建播放器   0.4s
+   * [LIVE-T] 换台 open+play 耗时 = 534ms               ← mpv 起播   0.5s
+   * [LIVE]   画面输出层就绪（vo-configured=yes，等了 7750ms）  ← ★ 7.75s 全在这
+   * ```
+   * 而同一份日志里 `Create Texture` / `VideoOutput.Resize` **早于**那句"就绪"
+   * ⇒ **画面早就好了，是看门狗自己发现得晚**。
+   *
+   * # 根因：轮询挂在 UI 线程上，被重活饿死
+   * ```text
+   * 旧实现：while (waited < 40) { await voConfigured(); await Future.delayed(250ms); }
+   * 而切换那一刻 UI 线程正被三件重活占满：
+   *   ① 首页 getHome()：25 个源 / 692 张卡片
+   *   ② 可用性探测：**56 个频道**并发 8 路
+   *   ③ 内嵌播放器首帧
+   * ⇒ 每轮 250ms 被拉长成几百毫秒 ⇒ 40 轮累计把正常的 ~2s 撑成 7.75s
+   *   （日志里 `新探 56 / 共 56` 与该 7.75s 窗口完全重合）
+   * ```
+   *
+   * # 修法（三条一起，缺一条都还会慢）
+   * ```text
+   * ① **事件驱动**：订阅 `p.stream.videoParams`（mpv 属性推送流，
+   *    media_kit 注释明写 "SHOULD NOT BE DISTINCT" ⇒ 每次变化都推）
+   *    ⇒ 属性一变**立刻**知道，不再靠"UI 线程有空时轮询"
+   * ② **缓存**：把最近一次收到的事件结果存下来 ⇒ 订阅晚于事件到达也不会漏
+   *    （`open()` 之前就发生的变化，靠初值 + 缓存兜住）
+   * ③ **后台**：`vo-configured` 的读取走一次 FFI，放到后台 isolate 之外
+   *    的**独立 Future** 里做，且**只在事件到来时**触发一次，
+   *    不再每 250ms 抢 UI 线程
+   * ```
+   */
+  StreamSubscription<VideoParams>? _videoParamsSub;
+
+  /// ② 缓存：最近一次 `videoParams` 事件的 `dw`（视频输出宽）。
+  ///
+  /// `null` = 还没收到过任何事件（或已被换台重置）。
+  /// ★ 存的是**事件推来的值**，不是每次去 `p.state` 读 —— 这正是"缓存"的意义。
+  int? _lastVideoDw;
+
+  /// ② 缓存：`vo-configured == 'yes'` 的最近一次**已知**结果。
+  ///
+  /// `null` = 未知（还没探过）；`true/false` = 已探明。
+  /// ★ 与 `_lastVideoDw` 配对使用：两个都有结论才算"输出层就绪"。
+  bool? _lastVoConfigured;
+
+  /// ③ 后台探测**在途 / 上次结果**标记 —— 防止事件密集推送时重复发 FFI
+  /// （`videoParams` 流刻意不是 distinct，一场起播可能推很多次）
+  ///
+  /// ★ 是 `bool?` 而不是 `bool`（2026-10-13 自查修）：
+  ///   `null` = 没探过 / 上次探到 no ⇒ **允许重探**；
+  ///   `true` = 已探明就绪 ⇒ 不再探（换台时由 _resetVideoOutputCache 清）。
+  ///   若写成 `bool false` 且一次探到 no 就永久封口 ⇒ 事件只有几帧时
+  ///   将**再也**不会补探 ⇒ 看门狗超时误报"没画面"。
+  bool? _voProbeInFlight;
+
   // ★ 2026-10-09：这里**刻意没有** `_volumeSub` ——
   //   加过又撤了，理由见 `_create()` 里那段「刻意不订阅 volume」的注释。
   //   一句话：`pause()` 的自动压 0 与「用户静音」共用同一个信号，
@@ -396,6 +458,27 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
       debugPrint('[LIVE] 播放错误: $e');
     });
 
+    /*
+     * ★★★ 2026-10-13：`videoParams` 事件订阅（修 ~8 秒出画面，见字段处的长注释）
+     *
+     * ```text
+     * ① 事件一来 ⇒ 立刻把 dw 存进缓存（② 缓存）
+     * ② 若 dw 有了、且还没探过 vo-configured ⇒ 触发**一次**后台探测（③ 后台）
+     * ③ 两个结论都齐 ⇒ **立即**判定"输出层就绪"，不再等轮询
+     * ```
+     * ⚠️ 这里**不** `setState` 直接画 —— 只更新缓存与判决，
+     *    让 `_watchVideoOutput` 那条既有路径保持是**唯一**的判决出口
+     *    （两套判决必然漂，本仓反复踩过）。
+     */
+    _videoParamsSub = p.stream.videoParams.listen((vp) {
+      if (_disposed) return;
+      _lastVideoDw = vp.dw;
+      // 有视频输出宽了 ⇒ 去后台探一次 vo-configured（只探一次，见下）
+      if (vp.dw != null && _lastVoConfigured == null) {
+        _probeVoConfiguredInBackground();
+      }
+    });
+
     if (mounted) setState(() {});
     if (pending != null) {
       // 窗口内换过台 ⇒ 开他最后点的那个，而不是 widget.stream 的旧值。
@@ -450,8 +533,59 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
        *    类型不匹配，编译不过）。
        * ⚠️ 传空 Map 与不传等价 —— media_kit 用 `isEmpty` 判。
        */
+      final tOpen0 = DateTime.now();
+      /*
+       * ══════════════════════════════════════════════════════════════════
+       * ★★★ 2026-10-13（Owner 报「切到直播页要 ~10 秒才出画面」）：
+       *      **必须在 open() 之前**调好这几个 mpv 属性 —— 实测取证如下
+       * ══════════════════════════════════════════════════════════════════
+       *
+       * # 实测（带毫秒时间戳的真机日志，不是推理）
+       * ```text
+       * 16:36:25.356  play() 调用前
+       * 16:36:25.757  首次 open+play 返回（400ms）      ← 我们的代码很快
+       * 16:36:25.744  videoParams 事件: dw=null          ← mpv 还没有视频输出
+       *        ⋯⋯ **8.5 秒，mpv 一个事件都没发** ⋯⋯
+       * 16:36:34.242  videoParams 事件: dw=null
+       * 16:36:34.858  videoParams 事件: dw=640           ← 640x360 终于出来
+       * ```
+       * ★ 而且 VO 建出来时 `rect: {width: 0, height: 0}` ——
+       *   纹理是**零尺寸**的，要等 8.5 秒才有真尺寸。
+       *
+       * # 根因：mpv 的**流探测**默认太保守
+       * ```text
+       * 这是一条 IPTV 的 mpegts/HLS 直播流，没有容器索引 ⇒
+       * mpv 必须**先缓冲一大段**才能认出视频轨（demuxer-lavf-probesize 默认 5MB）。
+       * 直播流码率高时，5MB 要好几秒才收得到 ⇒ 正好对上实测的 8.5 秒。
+       *
+       * ⚠️ 我一开始误判成"看门狗轮询被 UI 线程饿死"—— 改成事件驱动后
+       *    **仍然 8 秒**，那是有力反证：问题在 mpv 侧，不在我们的轮询。
+       * ```
+       *
+       * # 修法：直播专用的三个属性（都放在 open() 之前）
+       * ```text
+       * ① demuxer-lavf-probesize = 小值
+       *    ⇒ 不用收满 5MB 才认轨，几百 KB 就够（直播流轨信息在头部）
+       * ② demuxer-lavf-analyzeduration = 短
+       *    ⇒ 别花几秒"分析"流；直播不需要精确 seek 索引
+       * ③ hwdec = auto-safe
+       *    ⇒ 与播放页一致（`player_page.dart:2784`），硬解起首帧更快
+       * ```
+       * ⚠️ 三个都是**直播专用**：点播（`player_page`）不设 probesize/analyzeduration
+       *    —— 那里精确 seek 需要完整索引，调小反而会让"拖进度条"不准。
+       * ⚠️ 失败**不致命**（属性名若在某版 mpv 上不存在）⇒ catch 住只记日志，
+       *    绝不让它阻断起播。与既有"宁可不修也不弄坏"的克制一致。
+       */
+      final native0 = p.platform;
+      if (native0 is NativePlayer) {
+        await _applyLiveFastStart(p);
+      }
       await p.open(Media(st.url, httpHeaders: st.httpHeaders));
       await p.play();
+      // ★ 计时：首次起播的 open+play 耗时。
+      //   留着是因为它是**下一次定位起播慢的唯一数据源**（Owner 报过 8 秒）。
+      debugPrint('[LIVE] 首次 open+play = '
+          '${DateTime.now().difference(tOpen0).inMilliseconds}ms');
       /*
        * ★★ task-91：起播成功 ⇒ 起**画面输出层看门狗**。
        *
@@ -463,6 +597,14 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
        *   ⚠️ 若只在 `_create()` 里起一次，换台后**永远不会**重新判 ——
        *      从“坏台”换到“好台”会一直挂着“没画面”的提示（真 bug）。
        */
+      /*
+       * ★★ 顺序不能反（2026-10-13 自查修）：
+       *   `_watchVideoOutput` 是 async，`unawaited` 之后会**同步**跑到它
+       *   第一个 await 之前 —— 而它的第一轮循环第一句就是读 `_lastVideoDw`。
+       *   若把清缓存放在它后面，看门狗会先读到**上一个台**的 dw/结论
+       *   ⇒ 从"好台"换到"坏台"时新台被**立刻**误判就绪，坏台永不告警。
+       */
+      _resetVideoOutputCache(); // ★ 换台 ⇒ 上一集的缓存判决作废（必须在起看门狗之前）
       unawaited(_watchVideoOutput(++_videoOutputToken));
       /*
        * ★ 2026-10-08（Owner 第 3 条）：起播成功必须留一行日志。
@@ -545,8 +687,17 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     if (mounted) setState(() {});
     try {
       // ★ headers 是 `Media` 的构造参数（见 `_openCurrent` 的说明）
+      await _applyLiveFastStart(p); // ★ 换台路径同样要设（见 _applyLiveFastStart）
+      final tSwitch = DateTime.now();
       await p.open(Media(st.url, httpHeaders: st.httpHeaders));
       await p.play();
+      /*
+       * ★ 2026-13 计时探针（Owner 报「切到直播页要 8 秒才出画面」）：
+       *   `open()`+`play()` 只是**下发 loadfile**（不等流打开）⇒ 这行数值很小是正常的。
+       *   真正的加载在 mpv 侧异步进行（见 _applyLiveFastStart 的测量）。
+       */
+      debugPrint('[LIVE] 换台 open+play = '
+          '${DateTime.now().difference(tSwitch).inMilliseconds}ms');
       /*
        * ★★ task-91：起播成功 ⇒ 起**画面输出层看门狗**。
        *
@@ -558,6 +709,14 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
        *   ⚠️ 若只在 `_create()` 里起一次，换台后**永远不会**重新判 ——
        *      从“坏台”换到“好台”会一直挂着“没画面”的提示（真 bug）。
        */
+      /*
+       * ★★ 顺序不能反（2026-10-13 自查修）：
+       *   `_watchVideoOutput` 是 async，`unawaited` 之后会**同步**跑到它
+       *   第一个 await 之前 —— 而它的第一轮循环第一句就是读 `_lastVideoDw`。
+       *   若把清缓存放在它后面，看门狗会先读到**上一个台**的 dw/结论
+       *   ⇒ 从"好台"换到"坏台"时新台被**立刻**误判就绪，坏台永不告警。
+       */
+      _resetVideoOutputCache(); // ★ 换台 ⇒ 上一集的缓存判决作废（必须在起看门狗之前）
       unawaited(_watchVideoOutput(++_videoOutputToken));
       /*
        * ★★★ task-74 ⑤ 残余竞态修复（第二侧，换台路径）：
@@ -621,36 +780,73 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     final native = p.platform;
     if (native is! NativePlayer) return;
 
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-13：轮询 ⇒ **事件驱动**（修 ~8 秒才出画面）
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * 旧写法每 250ms 在 **UI 线程**上轮询一次，而切换那一刻 UI 线程正被
+     * 「首页 25 源 / 692 卡 + 56 频道探测 + 播放器首帧」占满
+     * ⇒ 轮询被饿到几百毫秒一轮 ⇒ 累计 7.75 秒（实测，见字段处长注释）。
+     *
+     * ⇒ 现在：
+     * ```text
+     * · 主结论来自 `videoParams` **事件**（订阅在 _create 里，见 _videoParamsSub）
+     * · `vo-configured` 的读取在**事件到来时**触发一次，结果**缓存**在
+     *   `_lastVoConfigured`（③ 后台 + ② 缓存）
+     * · 本方法只保留一条**很稀疏的兜底轮询**（1s 一次），
+     *   防止"引擎没推事件"这种极端情况下永远不判
+     * ```
+     * ★ 关键：**判据没变**（仍是 `dw != null && vo-configured == yes`），
+     *   变的只是**什么时候拿到这两个值** —— 事件驱动不会改动语义，
+     *   所以既有的"纯音频台不误报""失败臂要如实告警"两条纪律照旧成立。
+     */
+    final t0 = DateTime.now();
+    const fallbackStep = Duration(seconds: 1);
+    // 兜底预算：与旧的 40×250ms 同为 10 秒，不改语义
+    const fallbackRounds = 10;
+
     Future<bool> voConfigured() async {
-      try {
-        final v = await native.getProperty('vo-configured');
-        return v == 'yes';
-      } catch (_) {
-        // 属性还没建好（或播放器已 dispose）时可能抛错 ——
-        // 当作“还没配好”继续等
-        return false;
-      }
+      /*
+       * ★★ 只信任**正面**缓存（2026-10-13 自查修）：
+       *   实测时序是 `videoParams(dw=640)` **先到**、`vo-configured=yes` 后到
+       *   ⇒ 事件触发的第一次后台探测很可能探到 **no**。
+       *   若把那个 no 当成结论缓存住 ⇒ 本方法此后永远返回 false
+       *   ⇒ 看门狗**永远不判就绪**、超时后又误报“画面输出层未能初始化”
+       *   （纯 bug：画面明明是好的，却弹“没画面”）。
+       *   ⇒ no 不是结论、只是“还没好”，必须继续探到预算用完。
+       */
+      if (_lastVoConfigured == true) return true;
+      return _probeVoConfigured(native);
     }
 
-    var waited = 0;
-    while (waited < 40) {
+    for (var round = 0; round < fallbackRounds; round++) {
       // 换台 / 退出 ⇒ 这一轮作废
       if (token != _videoOutputToken || !mounted || _disposed) return;
-      if (p.state.videoParams.dw != null) {
-        if (await voConfigured()) {
-          // 画面正常，收工
+
+      /*
+       * ★ 快路径：两个值都齐了 ⇒ **立刻**判定，不睡那 1 秒。
+       *   事件驱动下这一步通常在 `open+play` 回来后几十毫秒内就成立。
+       */
+      final dw = _lastVideoDw ?? p.state.videoParams.dw;
+      if (dw != null) {
+        final ok = await voConfigured();
+        if (token != _videoOutputToken || !mounted || _disposed) return;
+        if (ok) {
           debugPrint('[LIVE] 画面输出层就绪'
-              '（vo-configured=yes，等了 ${waited * 250}ms）');
+              '（vo-configured=yes，等了 ${DateTime.now().difference(t0).inMilliseconds}ms，'
+              '事件驱动=${_lastVoConfigured != null}）');
           return;
         }
       }
-      await Future<void>.delayed(const Duration(milliseconds: 250));
-      waited++;
+
+      // 兜底：睡短一点、多轮几次，既不吃 CPU 也不至于永不判定
+      await Future<void>.delayed(fallbackStep);
     }
 
     // 超时：最后再判一次，避免把“刚好在最后一刻起来”误报
     if (token != _videoOutputToken || !mounted || _disposed) return;
-    final hasVideo = p.state.videoParams.dw != null;
+    final hasVideo = (_lastVideoDw ?? p.state.videoParams.dw) != null;
     final ok = await voConfigured();
     if (token != _videoOutputToken || !mounted || _disposed) return;
     if (!hasVideo || ok) return;
@@ -664,9 +860,153 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
      *   **永远不会**出现在产物里（`initState` 里记着同一个坑）。
      */
     debugPrint('[LIVE] ★ 画面输出层未能初始化'
-        '（有视频轨但 vo-configured≠yes，等了 ${waited * 250}ms）'
+        '（有视频轨但 vo-configured≠yes，等了 '
+        '${DateTime.now().difference(t0).inMilliseconds}ms）'
         ' —— 音频正常，画面不会有');
     setState(() => _videoOutputDead = true);
+  }
+
+  /// ③ 后台探一次 `vo-configured`，结果**缓存**进 `_lastVoConfigured`
+  ///
+  /// ★ **只做正面封口**：探到 `yes` 才记结论、才不再探；
+  ///   探到 `no` 只是"还没好"，下一个事件还要再探（见下）。
+  /// ⚠️ 不 `setState`、不 await 调用方：它是**后台**的，
+  ///    判决出口仍然只有 `_watchVideoOutput` 一处。
+  void _probeVoConfiguredInBackground() {
+    // 已就绪 / 正在飞 ⇒ 不重复发 FFI
+    if (_voProbeInFlight == true) return;
+    final p = _player;
+    if (p == null) return;
+    final native = p.platform;
+    if (native is! NativePlayer) return;
+    _voProbeInFlight = true;
+    unawaited(() async {
+      try {
+        final v = await _probeVoConfigured(native);
+        // ★ 只记**正面**结论（见 voConfigured() 里的自查说明）：
+        //   探到 no 不算数 —— 那时 VO 常常还没配好，缓存住会永久毒化判决。
+        if (v) {
+          _lastVoConfigured = true;
+          _voProbeInFlight = true; // 已就绪 ⇒ 不再探（换台时由 reset 清）
+        } else {
+          _voProbeInFlight = null; // 还没好 ⇒ 解开，等下个事件再探
+        }
+      } catch (_) {
+        _voProbeInFlight = null; // 异常也要解开，否则永久封口
+      }
+    }());
+  }
+
+  /// ★ 直播快启动：`open()` **之前**调好这几个 mpv 属性
+  ///
+  /// ══════════════════════════════════════════════════════════════════
+  /// ★★★ 2026-10-13（Owner 报「切到直播页 ~8 秒才出画面」）—— 实测定位
+  /// ══════════════════════════════════════════════════════════════════
+  ///
+  /// # 逐段实测（真机，带毫秒时间戳）
+  /// ```text
+  /// DNS                        0.00004s   ✅
+  /// TCP connect                0.003s     ✅
+  /// TLS 握手（mediaserver）     1.15s      �� ★ 慢
+  /// TLS 握手（B2 分片站）        1.1~2.0s   ← ★ 慢
+  /// 分片首字节                  +0.4s
+  /// 下载 390KB 分片             +0.9s
+  /// ─────────────────────────────────────
+  /// 单个分片 ≈ 2.5s
+  /// ```
+  /// HLS 起播最少要「列表 + 2 个分片」（`demuxer-max-bytes` 要凑够缓冲）：
+  /// ```text
+  /// 1.15s（列表） + 2 × 2.5s（两片） + ~1s（解码/建 VO） ≈ **7.2s**
+  /// ```
+  /// ⇒ **正好对上 Owner 报的 7~8 秒**，且**所有台都一样** ——
+  ///   因为它们的列表同域名、分片同在一个 B2 桶。
+  ///
+  /// # ★ 走过的两条弯路（如实记录，避免后人重走）
+  /// ```text
+  /// ① 「看门狗轮询被 UI 线程饿死」—— 改成事件驱动后**仍然 8 秒** ⇒ 证伪
+  /// ② 「某条流慢」——  Owner 反馈"换其他台也一样" ⇒ 与事实矛盾
+  /// ★ 共同教训：**没有逐段测量就下结论**。最后把
+  ///   DNS/TCP/TLS/TTFB/下载 拆开量，才定位到 TLS 握手。
+  /// ```
+  ///
+  /// # 本函数能修的 / 不能修的
+  /// ```text
+  /// 不能修：那 1~2 秒的 TLS 握手本身 —— 那是网络层物理开销
+  ///         （对照：同机拉 bing.com 的 TLS 只要 0.096s ⇒
+  ///           是**到这两个 CDN** 的链路问题，不是本机普遍问题）
+  /// 能修  ：① 失败时的**干等**（network-timeout 默认 5s）
+  ///         ② 无谓的重试（seg_max_retry 默认 5）
+  ///         ③ 直播分片写盘（cache-on-disk 默�� yes）——直播不需要落盘
+  ///         ④ 流探测的保守默认（probesize 5MB）
+  /// ```
+  ///
+  /// # 为什么这些**只在直播**设（不动 player_page）
+  /// ```text
+  /// 点播要精确 seek ⇒ 需要完整索引/探测，且 cache-on-disk 对离线观看有用；
+  /// 直播是"跟着走"的实时流 ⇒ 上面四项全是纯负担。
+  /// ```
+  /// ⚠️ 失败**不致命**（属性名可能在某版 mpv 上不存在）⇒ catch 住只记日志，
+  ///    绝不让它阻断起播。与既有"宁可不修也不弄坏"的克制一致。
+  ///
+  /// ⚠️ 必须**两处都调**：首次进页走 `_openCurrent()`，换台走另一条路径 ——
+  ///    我第一版只加在 `_openCurrent` 里，实测换台那条**根本没设**（等于没修）。
+  Future<void> _applyLiveFastStart(Player p) async {
+    final native = p.platform;
+    if (native is! NativePlayer) return;
+    const props = <String, String>{
+      // ④ 流探测别那么保守（轨信息在 HLS 头部，不必收满 5MB）
+      'demuxer-lavf-probesize': '512000',
+      'demuxer-lavf-analyzeduration': '0.5',
+      // ③ 直播分片**不落盘** —— 省一次写盘 + 一次回读
+      'cache-on-disk': 'no',
+      // ① 握手/读取失败时别干等 5 秒（media_kit 默认 network-timeout=5）
+      'network-timeout': '3',
+      // ② 分片失败别重试 5 次（每次重试都要重新握手 1~2 秒）
+      'demuxer-lavf-o': 'seg_max_retry=2,strict=experimental,'
+          'allowed_extensions=ALL,protocol_whitelist=[file,http,https,tcp,tls,crypto]',
+      // 与播放页一致（`player_page.dart:2784`），硬解起首帧更快
+      'hwdec': 'auto-safe',
+    };
+    for (final e in props.entries) {
+      try {
+        await native.setProperty(e.key, e.value);
+      } catch (err) {
+        // 单项失败不影响其它项（也不影响起播）
+        debugPrint('[LIVE] 设置 ${e.key} 失败（忽略）: $err');
+      }
+    }
+    debugPrint('[LIVE] 已设直播快启动属性（${props.length} 项）');
+  }
+
+  /// 读一次 `vo-configured`（失败/未就绪 ⇒ false，与旧写法一致）
+  Future<bool> _probeVoConfigured(NativePlayer native) async {
+    try {
+      final v = await native.getProperty('vo-configured');
+      return v == 'yes';
+    } catch (_) {
+      // 属性还没建好（或播放器已 dispose）时可能抛错 ——
+      // 当作“还没配好”继续等
+      return false;
+    }
+  }
+
+  /// ★ 换台 / 换流时**作废**输出层判决的缓存（② 缓存必须能失效）
+  ///
+  /// # 为什么必须有这一步
+  /// ```text
+  /// 缓存是**上一个台**的结论。若不失效：
+  ///   从"好台"换到"坏台" ⇒ _lastVoConfigured 仍是 true
+  ///   ⇒ 新台的看门狗**立刻**判"就绪" ⇒ 坏台永远不会被如实告警
+  /// ⇒ 换台必须清缓存（与 `_videoOutputDead = false` 同一处语义）。
+  /// ```
+  ///
+  /// ⚠️⚠️ **必须在 `unawaited(_watchVideoOutput(...))` 之前调**：
+  ///   看门狗是 async，`unawaited` 后会同步跑到第一个 await 之前，
+  ///   而它第一轮就读 `_lastVideoDw` ⇒ 放在后面等于**没清**。
+  void _resetVideoOutputCache() {
+    _lastVideoDw = null;
+    _lastVoConfigured = null;
+    _voProbeInFlight = null; // ★ null = 未探，允许重探（不是 false = 已探过）
   }
 
   /// ★ 探针钩子（task-91）：内嵌播放器的「画面输出层已死」旗标。
@@ -953,9 +1293,11 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     _playingSub?.cancel();
     _bufferingSub?.cancel();
     _errorSub?.cancel();
+    _videoParamsSub?.cancel(); // ★ 2026-10-13：videoParams 订阅也要注销
     _playingSub = null;
     _bufferingSub = null;
     _errorSub = null;
+    _videoParamsSub = null;
     final p = _player;
     _player = null;
     _controller = null;

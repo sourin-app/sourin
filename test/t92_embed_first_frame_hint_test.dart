@@ -248,6 +248,139 @@ void main() {
     }
   });
   // ═══════════════════════════════════════════════════════════════════
+  //  ⑥⑦⑧⑨ ★★★ task-92b：收口必须由**权威证据**背书
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 缺陷（真机逐帧实测，`.probe/ops/nf9/result.txt`）
+  // ```text
+  //   t=10530  awaiting=true   settled=false  loading=true   center=5.2   ← 提示还在
+  //   t=11031  awaiting=false  settled=true   loading=false  center=0.0   ← ★ 提示被撤
+  //   t=15042  awaiting=false  settled=true   loading=false  center=0.0   ← 还是纯黑
+  //   t=15542  awaiting=false  settled=true   loading=false  center=129.7 ← 首帧才到
+  // ⇒ 看门狗 10 秒预算用尽后把「首帧慢」误判成「本条流没有视频轨」
+  //   ⇒ 提示撤掉 ⇒ **约 5 秒纯黑**（10.5s → 15.5s）。
+  // ```
+  //
+  // # 判据
+  // ```text
+  // 权威的「没有视频轨」= ① video 只有哨兵（length==2）
+  //                      ② 且**已认出真音频轨**（audio.length > 2）
+  // ② 不能省：media_kit 每次 open() 都会先发一份"什么都没有"的列表
+  //（real.dart:173-176 → :334-336），只看①会把"清场"当成"没有轨"。
+  // ```
+  testWidgets('⑥ ★★★ 证据不足（只有哨兵、无真音频轨）⇒ 不许判成"没有视频轨"', (t) async {
+    final key = GlobalKey<LiveEmbeddedPlayerState>();
+    try {
+      await t.pumpWidget(_mount(key: key));
+      await t.pump(const Duration(milliseconds: 60));
+
+      // 换台"清场"那一份列表：video/audio 都只有 auto/no 两个哨兵
+      key.currentState!
+          .debugSetTrackEvidence(hasVideo: false, hasRealAudio: false);
+      await t.pump(const Duration(milliseconds: 60));
+
+      expect(
+        key.currentState!.noVideoTrackAuthoritativeForTest,
+        isFalse,
+        reason: '★★★ 只有哨兵、又没认出真音频轨 ⇒ 这**不是**"没有视频轨"的结论，'
+            '只是"还没认"（或刚被清场）。'
+            '\n  改前正是在这里翻车：10 秒预算一到就按"dw==null"收口'
+            '\n  ⇒ 提示撤掉、首帧 15.5s 才来 ⇒ 5 秒纯黑。',
+      );
+      expect(
+        key.currentState!.awaitingFirstVideoFrameForTest,
+        isTrue,
+        reason: '★★ 证据不足 ⇒ 提示必须**继续**画着（这是"还在加载"的唯一线索）',
+      );
+      debugPrint('VERDICT F6 insufficient_evidence=not_authoritative hint=kept');
+    } finally {
+      await _unmount(t);
+    }
+  });
+
+  testWidgets('⑦ ★★★ 权威证据（哨兵 video + 真音频轨）⇒ 判成"没有视频轨"', (t) async {
+    final key = GlobalKey<LiveEmbeddedPlayerState>();
+    try {
+      await t.pumpWidget(_mount(key: key));
+      await t.pump(const Duration(milliseconds: 60));
+
+      // demuxer 认完轨：video 只有哨兵，audio 有真轨 ⇒ 纯音频台
+      key.currentState!
+          .debugSetTrackEvidence(hasVideo: false, hasRealAudio: true);
+      await t.pump(const Duration(milliseconds: 60));
+
+      expect(
+        key.currentState!.noVideoTrackAuthoritativeForTest,
+        isTrue,
+        reason: '★★★ 有真音频轨 = demuxer **认过轨**了 ⇒ 这个"没有视频轨"是'
+            '认完之后的结论，不是"还没认"。',
+      );
+      debugPrint('VERDICT F7 authoritative_no_video_track=true');
+    } finally {
+      await _unmount(t);
+    }
+  });
+
+  testWidgets('⑧ ★★ 有视频轨 ⇒ 结论恒假（不看 dw、不看音频）', (t) async {
+    final key = GlobalKey<LiveEmbeddedPlayerState>();
+    try {
+      await t.pumpWidget(_mount(key: key));
+      await t.pump(const Duration(milliseconds: 60));
+
+      key.currentState!
+          .debugSetTrackEvidence(hasVideo: true, hasRealAudio: true);
+      await t.pump(const Duration(milliseconds: 60));
+
+      expect(
+        key.currentState!.noVideoTrackAuthoritativeForTest,
+        isFalse,
+        reason: '★ 有视频轨时永远不许收口 —— 首帧慢是"慢"，不是"没有"。'
+            '\n  ★ 判据里**没有** `dw`：`dw` 是"视频输出建出来没"，与"有没有轨"'
+            '\n    是两件事（真机实测：dw 在 15.5s 才到，而轨信息在流头部就有）。',
+      );
+      debugPrint('VERDICT F8 has_video_track=never_authoritative');
+    } finally {
+      await _unmount(t);
+    }
+  });
+
+  testWidgets('⑨ ★★★ 自愈：先收口、后认出视频轨 ⇒ 提示必须回来', (t) async {
+    final key = GlobalKey<LiveEmbeddedPlayerState>();
+    try {
+      await t.pumpWidget(_mount(key: key));
+      await t.pump(const Duration(milliseconds: 60));
+
+      // 第一步：权威地判成"没有视频轨"并收口
+      key.currentState!
+          .debugSetTrackEvidence(hasVideo: false, hasRealAudio: true);
+      key.currentState!.debugSetNoVideoTrackSettled(true);
+      await t.pump(const Duration(milliseconds: 60));
+      expect(key.currentState!.awaitingFirstVideoFrameForTest, isFalse,
+          reason: '★ 前置：已收口（提示撤掉了）');
+
+      // 第二步：视频轨后来才被认出来（音视频分两批认的源）
+      key.currentState!
+          .debugSetTrackEvidence(hasVideo: true, hasRealAudio: true);
+      await t.pump(const Duration(milliseconds: 60));
+
+      expect(
+        key.currentState!.noVideoTrackSettledForTest,
+        isFalse,
+        reason: '★★★ 新事实推翻了旧结论 ⇒ 必须撤回，否则提示再也回不来，'
+            '用户看着纯黑却什么都不知道（本次缺陷的另一种形态）。',
+      );
+      expect(
+        key.currentState!.awaitingFirstVideoFrameForTest,
+        isTrue,
+        reason: '★★ 撤回之后提示要**重新**画出来（此刻首帧还没到）',
+      );
+      debugPrint('VERDICT F9 self_heal=settled_revoked hint=restored');
+    } finally {
+      await _unmount(t);
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
   //  ⑤ 静态契约：判据必须收口在一个 getter 上
   // ═══════════════════════════════════════════════════════════════════
   group('task-92 静态契约', () {

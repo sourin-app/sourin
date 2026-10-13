@@ -21,7 +21,14 @@
 // ```text
 // A① 本地页 + 有网 + 播放器已报告这一集  ⇒ 换源**不画**（修前：红 / 修后：绿）
 // A② 本地页 + 有网 + 播放器还没报告      ⇒ 换源**不画**（修前：红 / 修后：绿）
-//    两组都要 收藏/追更/下载 仍在 —— 证明"只是少了换源"，不是整行被藏了
+//    两组都要「下载」仍在 —— 证明"只是少了那几枚"，不是整行被藏了
+//
+// ★★★ 2026-10-13（Owner）：A①② 原本还要 收藏/追更 仍在，**现已反转** ——
+//     Owner 原话（逐字）：「本地播放详情页去掉 收藏 追更 按钮」。
+//     理由：这两枚需要 `provider:id`，而本地那一对是 `(local, 绝对路径)`，
+//     画出来点下去只会往收藏表里塞一条永远打不开的假条目。
+//     ⇒ A①② 改为断言这两枚 **findsNothing**。
+//     ⚠️ 它们**与换源是两条独立判据**：换源那条（`_hasLocalPlayable`）不变。
 // B  本地页 + 没网                      ⇒ 换源不画（旧行为：整行不画，本来就绿）
 // C  在线页 + 无本地文件                ⇒ 换源**画**（阳性对照：证明 A 的"找不到"不是行没了）
 // D  正在下载、已有可播片段             ⇒ 换源不画；done=0 的双胞胎 ⇒ 换源画
@@ -261,9 +268,12 @@ void main() {
       await _mountLocal(t, online: true);
       debugPrint('[LOCALBTN] A① online=true currentEpisodeId=$_ep01 ' + _row(t));
 
-      expect(find.text('收藏'), findsOneWidget, reason: '★ 操作行本身必须还在');
-      expect(find.text('追更'), findsOneWidget, reason: '★ 操作行本身必须还在');
       expect(find.text('下载'), findsOneWidget, reason: '★ 操作行本身必须还在');
+      expect(find.text('收藏'), findsNothing,
+          reason: '★★★ 本地页不画「收藏」（Owner 2026-10-13）—— '
+              '本地条目是 (local, 绝对路径)，落进收藏表就是一条打不开的假记录');
+      expect(find.text('追更'), findsNothing,
+          reason: '★★★ 同理，本地页不画「追更」');
       expect(find.text('换源'), findsNothing,
           reason: '★★★ 缓存到本地就不要显示换源按钮了（Owner 原话）—— '
               '这一集磁盘上就有 $_ep01，换源无处可落');
@@ -273,7 +283,9 @@ void main() {
       await _mountLocal(t, online: true, currentEpisodeId: null);
       debugPrint('[LOCALBTN] A② currentEpisodeId=null ' + _row(t));
 
-      expect(find.text('收藏'), findsOneWidget, reason: '★ 操作行本身必须还在');
+      expect(find.text('下载'), findsOneWidget, reason: '★ 操作行本身必须还在');
+      expect(find.text('收藏'), findsNothing,
+          reason: '★★★ 本地页不画「收藏」（Owner 2026-10-13）');
       expect(find.text('换源'), findsNothing,
           reason: '★★★ 进的就是本地页（本页在播一个本地文件），'
               '而"播放器还没报告"不等于"没有当前集"');

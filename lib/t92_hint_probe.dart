@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════
 //  task-92 真机探针：直播首帧黑窗期「正在加载直播画面…」是否真的画在屏幕上
+//  task-92b：**慢首帧窗口（10.5s→15.5s）里提示是否一直没被撤掉**
 // ═══════════════════════════════════════════════════════════════════════
 //
 // # 为什么需要它
@@ -26,9 +27,31 @@
 // ② 见到视频轨之后：`awaitingFirstVideoFrameForTest == false`（提示收口）
 // ③ 全程 `videoOutputDeadForTest == false`（慢源不许被误判成输出层死亡）
 //
+// # ★★ task-92b 新增的两条判据（本次修复的验收口径）
+//
+// ```text
+// nf9 实测（改前）逐帧：
+//   t=10530  awaiting=true   settled=false  loading=true   center=5.2   ← 提示还在
+//   t=11031  awaiting=false  settled=true   loading=false  center=0.0   ← ★ 提示被撤
+//   t=15042  awaiting=false  settled=true   loading=false  center=0.0   ← 还是纯黑
+//   t=15542  awaiting=false  settled=true   loading=false  center=129.7 ← 首帧才到
+// ⇒ 10.5s→15.5s **约 5 秒纯黑**。
+//
+// ④ windowHeld  —— t≥10.0s 且**首帧还没到**的每一帧都必须 awaiting=true
+//                  且 loading=true 且 center>2（提示**全程**在，且像素非黑）
+//                  ⚠️ 上界必须**跟着"首帧到没到"走**，不能写死毫秒：
+//                     nf9 首帧 15542ms、nf10 首帧 12032/14542ms —— 写死
+//                     会把"首帧已到、提示正确地撤了"的那一帧判成失败
+//                     （仪器错误，不是产品缺陷）。
+// ⑤ blackGap    —— 全程**不许**出现「已收口 + 无提示 + 中心纯黑」的帧
+//                  （t>8s 才算，避开起播瞬间的正常空档）
+// ⑥ settledEarly—— ★★★ **缺陷本体的直接计数**：首帧还没到（seen=false）
+//                  就被判成"没有视频轨"（settled=true）的帧数。改前 >0，改后必须 =0。
+// ```
+//
 // # 产物
 //
-// `.probe/ops/nf9/result.txt` + `t<ms>.png`；所有结论同时 debugPrint 到 stdout。
+// `.probe/ops/nf10/result.txt` + `t<ms>.png`；所有结论同时 debugPrint 到 stdout。
 
 import 'dart:async';
 import 'dart:io';
@@ -43,7 +66,7 @@ import 'core/models.dart';
 import 'ui/widgets/app_loading.dart';
 import 'ui/widgets/live_embedded_player.dart';
 
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe\ops\nf9';
+const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe\ops\nf10';
 
 /// ABN China —— 同机 ffprobe probe_ms=8005 的慢源（Owner 撞上的就是它）
 const _slowSource = 'https://mediaserver.abnvideos.com/streams/abnchina.m3u8';
@@ -138,6 +161,14 @@ Future<void> _drive() async {
   var hintNonBlack = false;
   var anyDead = false;
   var closedAfterTrack = true;
+  // ★★ task-92b 新增：慢首帧窗口（10.0s→15.6s）与「纯黑空档」计数
+  var windowSamples = 0;
+  var windowHeld = 0;
+  var blackGap = 0;
+  var firstFrameMs = -1;
+  var firstAuthMs = -1;
+  var anyRealAudio = false;
+  var settledEarly = 0;
   for (var k = 0; k < 44; k++) {
     final t = sw.elapsedMilliseconds;
     final st = _playerKey.currentState;
@@ -146,6 +177,10 @@ Future<void> _drive() async {
     final settled = st?.noVideoTrackSettledForTest;
     final dead = st?.videoOutputDeadForTest;
     final hasPlayer = st?.hasPlayerForTest;
+    // ★ task-92b：原始轨道证据（判据为什么收口 / 为什么不收口）
+    final hasVt = st?.hasVideoTrackForTest;
+    final realAudio = st?.realAudioTrackSeenForTest;
+    final auth = st?.noVideoTrackAuthoritativeForTest;
     final loading = hasLoading();
     final r = await shoot('t$t');
     if (awaiting == true) {
@@ -154,16 +189,44 @@ Future<void> _drive() async {
       if (loading && r.$2 > 2.0) hintNonBlack = true;
     }
     if (dead == true) anyDead = true;
+    if (realAudio == true) anyRealAudio = true;
+    if (seen == true && firstFrameMs < 0) firstFrameMs = t;
+    if (auth == true && firstAuthMs < 0) firstAuthMs = t;
     if (seen == true && awaiting != false) closedAfterTrack = false;
+    // ★④ 慢首帧窗口：提示必须**全程**在，且像素非黑
+    //    ★ 判据是「**首帧还没到**」（seen != true），不是按毫秒切窗口 ——
+    //      首帧到的那一帧本身 awaiting/loading 已经正确地翻了，
+    //      拿它当"窗口内"是**仪器 off-by-one**（实测 14542 那一帧）。
+    if (t >= 10000 && seen != true) {
+      windowSamples++;
+      if (awaiting == true && loading && r.$2 > 2.0) windowHeld++;
+    }
+    // ★⑥ 缺陷本体：首帧还没到就收口（改前正是这里 >0）
+    if (seen != true && settled == true) settledEarly++;
+    // ★⑤ 纯黑空档：已收口 + 提示没了 + 中心还是黑的
+    if (t > 8000 &&
+        settled == true &&
+        awaiting == false &&
+        loading == false &&
+        r.$2 <= 2.0) {
+      blackGap++;
+    }
     rows.add(
       '$t,player=$hasPlayer,awaiting=$awaiting,seen=$seen,settled=$settled,'
-      'dead=$dead,loading=$loading,colors=${r.$1},center=${r.$2.toStringAsFixed(1)},${r.$3}x${r.$4}',
+      'auth=$auth,hasVt=$hasVt,realAudio=$realAudio,dead=$dead,loading=$loading,'
+      'colors=${r.$1},center=${r.$2.toStringAsFixed(1)},${r.$3}x${r.$4}',
     );
     say(rows.last);
-    if (seen == true && t > 6000) break;
+    // ★ 跑满慢首帧窗口之后才允许提前收：首帧 15.5s 才到，
+    //   若在 6s 就 break（旧口径），10.5s→15.5s 那 5 秒根本没采到样。
+    if (seen == true && t >= 16000) break;
     final spent = sw.elapsedMilliseconds - t;
-    if (spent < 500) await Future<void>.delayed(Duration(milliseconds: 500 - spent));
+    if (spent < 500) {
+      await Future<void>.delayed(Duration(milliseconds: 500 - spent));
+    }
   }
+  final windowOk = windowSamples >= 2 && windowHeld == windowSamples;
+  final noBlackGap = blackGap == 0;
   final lines = <String>[
     'source=$_slowSource',
     'sawAwaiting=$sawAwaiting',
@@ -171,6 +234,16 @@ Future<void> _drive() async {
     'hintNonBlack=$hintNonBlack',
     'anyDead=$anyDead',
     'closedAfterTrack=$closedAfterTrack',
+    'windowSamples=$windowSamples',
+    'windowHeld=$windowHeld',
+    'windowOk=$windowOk',
+    'blackGap=$blackGap',
+    'noBlackGap=$noBlackGap',
+    'firstFrameMs=$firstFrameMs',
+    'firstAuthMs=$firstAuthMs',
+    'anyRealAudio=$anyRealAudio',
+    'settledEarly=$settledEarly',
+    'noSettledEarly=${settledEarly == 0}',
     '--- rows ---',
     ...rows,
   ];
@@ -183,5 +256,9 @@ Future<void> _drive() async {
   say('✓ ①b 黑窗期提示所在截图**中心非纯黑**: $hintNonBlack');
   say('✓ ② 见到视频轨后提示收口: $closedAfterTrack');
   say('✓ ③ 全程未误判输出层死亡: ${!anyDead}');
+  say('✓ ④ ★★★ 慢首帧窗口全程有提示且非黑: $windowOk ($windowHeld/$windowSamples)');
+  say('✓ ⑤ ★★★ 全程无「已收口+无提示+纯黑」空档: $noBlackGap (blackGap=$blackGap)');
+  say('✓ ⑥ ★★★ 首帧未到就被判"没有视频轨"的帧数（必须 0）: $settledEarly');
   exit(0);
 }
+

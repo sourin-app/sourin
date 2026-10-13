@@ -252,16 +252,51 @@ class PopoverController extends ChangeNotifier {
   }
 
   /// 指针**进了面板** —— 取消「收起」计时
-  void holdOpen() => _closeTimer?.cancel();
+  void holdOpen() {
+    _closeTimer?.cancel();
+  }
 
-  /// 指针**离开了面板** —— 重新武装那 250ms 的收起计时
+  /// 指针**离开了面板** —— 重新武装收起计时
   void armClose() {
     if (_openId == null) return;
     _closeTimer?.cancel();
     _closeTimer = Timer(closeDelay, close);
   }
 
-  static const Duration closeDelay = Duration(milliseconds: 250);
+  /*
+   * ══════════════════════════════════════════════════════════════════════
+   * ★★★ 2026-10-13（Owner）：250ms -> 450ms
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * Owner 原话（逐字）：
+   * ```text
+   * > 这个悬浮窗距离底部太多了,往上挪的过程中就可能悬浮窗关闭了
+   * ```
+   *
+   * # 250ms 为什么不够
+   * ```text
+   * 按钮上沿 ↔ 面板下沿之间有一条 `spacing = Sp.x2 = 8px` 的真空
+   * （player_bottom_bar.dart 的 `spacing: Sp.x2`）。
+   * 指针从按钮挪进面板**必须横穿它**，而在这 8px 里两边都不是 hover 区
+   * ⇒ onExit ⇒ armClose 起计时。
+   * 250ms 内没走到面板 ⇒ 关。Owner 观感就是"往上挪的过程中自己关了"。
+   * ```
+   *
+   * # 为什么是 450ms（不是无限长）
+   * ```text
+   * 太长 ⇒ 鼠标早移开、面板还赖着 ⇒ 观感是"关不掉"。
+   * 450ms 约等于"从容地挪 300px"所需时间，够跨 8px 缝。
+   * ★ 与 `hoverDelay`(150ms) 不对称是**有意的**：
+   *   进入要"跟手"，离开要"宽容"（急着关才是 bug）。
+   * ```
+   *
+   * ⚠️ 试过但**失败**的两种"填缝"方案（详见 `_PopoverKeepAliveState` 类文档）：
+   *    面板侧补桥（两个 MouseRegion 有竞态 / 一个 MouseRegion 框不住溢出）。
+   *    按钮侧包 Column 补桥会改布局、破坏按钮在底栏 Row 里的排布。
+   * ⇒ 本版只调这个延时值 —— 最小、最安全、不改任何几何。
+   */
+  static const Duration closeDelay = Duration(milliseconds: 450);
+
 
   @override
   void dispose() {
@@ -473,6 +508,23 @@ class PopoverKeepAlive extends StatefulWidget {
 }
 
 class _PopoverKeepAliveState extends State<PopoverKeepAlive> {
+  /// 本层**保持原样** —— 不在这里补桥。
+  ///
+  /// # 试过、且实测失败的三版（记下免得后人重走）
+  /// ```text
+  /// ① 面板 MouseRegion + 桥 MouseRegion（两个 region）:
+  ///    跨边界必有 exit/enter，**顺序不可控**（实测 armClose 赢）⇒ 仍会关。
+  /// ② 单 MouseRegion + Stack{child, Positioned(bottom:-12)}:
+  ///    `MouseRegion` 命中盒**只认自己 size**，Positioned 溢出部分不在盒里
+  ///    ⇒ 实测 getRect(MouseRegion) 只到面板下沿 ⇒ 进桥 = 离开区域。
+  /// ③ 单 MouseRegion + Column{child, SizedBox(12)}（把桥并进布局盒）:
+  ///    命中盒**确实**高了 12px，但 `_PopoverAnchorDelegate` 用 childSize.height
+  ///    定位 ⇒ 即便在 delegate 里减掉 12px，**面板也不再居中到按钮**
+  ///    （实测：面板中心 704 ≠ 按钮中心 207 ⇒ 锚点上报路径被这条改变打断）。
+  /// ```
+  /// ⇒ 结论：桥这条路在本仓的 popover 架构里**代价大于收益**。
+  ///   保留**唯一**那个安全改动：`PopoverController.closeDelay` 250ms → 450ms
+  ///   （见那里的推导）—— 它只改"给多少时间"，不动任何几何。
   @override
   Widget build(BuildContext context) => MouseRegion(
     onEnter: (_) => widget.controller.holdOpen(),

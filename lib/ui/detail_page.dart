@@ -4208,12 +4208,38 @@ class _Info extends StatelessWidget {
              * ⇒ 三个真实入口都在，删掉的是**唯一那个假的**。
              * ```
              */
-            _ToggleButton(
-              icon: isFav ? Icons.star : Icons.star_border,
-              label: isFav ? '已收藏' : '收藏',
-              on: isFav,
-              onTap: onToggleFav,
-            ),
+            /*
+             * ══════════════════════════════════════════════════════════════
+             * ★★★ 2026-10-13（Owner）：**本地文件不画「收藏」**
+             * ══════════════════════════════════════════════════════════════
+             *
+             * Owner 原话（逐字）：
+             * > 本地播放详情页去掉 收藏 追更 按钮
+             *
+             * # 真缺陷（原来只按"有没有网"判，本地在线时照画）
+             * ```text
+             * 本行上方那段注释早就写明「本地文件上这四枚按钮**每一枚都不成立**」，
+             * 但渲染条件 `showActions`（= `_showLocalActions` = `!isLocalFile || _online`）
+             * 只按**联网状态**判 ⇒ 本地播放**有网时**照样画出收藏/追更。
+             * ⇒ 是"注释的意图"与"实际条件"自相矛盾（注释说该没，条件说还在）。
+             * ```
+             *
+             * # 为什么本地不该有这两枚（不是"藏起来"，是**无处可落**）
+             * ```text
+             * 收藏/追更需要 `provider:id` —— 本地那一对是 `(local, 绝对路径)`，
+             * 写进去只会往收藏/追更表里塞一条**永远打不开**的假条目。
+             * ```
+             *
+             * ⚠️ 只摘这两枚，**不动** `showActions`（那样会把"下载"等也一起摘掉），
+             *    也不动"换源"那枚（它有自己的 `_hasLocalPlayable` 判据）。
+             */
+            if (!localMode)
+              _ToggleButton(
+                icon: isFav ? Icons.star : Icons.star_border,
+                label: isFav ? '已收藏' : '收藏',
+                on: isFav,
+                onTap: onToggleFav,
+              ),
             /*
              * ★ 追更按钮（与收藏**完全独立**）
              *
@@ -4221,13 +4247,16 @@ class _Info extends StatelessWidget {
              * > 追更并不代表就要收藏，这是独立的状态
              *
              * 所以：**不需要先收藏**，按钮也不禁用。
+             *
+             * ⚠️ 同理，本地文件不画（它与收藏同属"需要 provider:id"的一类）。
              */
-            _ToggleButton(
-              icon: following ? Icons.notifications : Icons.notifications_none,
-              label: following ? '追更中' : '追更',
-              on: following,
-              onTap: onToggleFollow,
-            ),
+            if (!localMode)
+              _ToggleButton(
+                icon: following ? Icons.notifications : Icons.notifications_none,
+                label: following ? '追更中' : '追更',
+                on: following,
+                onTap: onToggleFollow,
+              ),
 
             /*
              * ★★★ 跨源换源入口（与「播放源」是**两个不同层级**的功能）

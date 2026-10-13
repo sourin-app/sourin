@@ -168,7 +168,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
 
   /// ★★ task-91：看门狗代次号（与 `player_page.dart:510` 同一手法）
   ///
-  /// 看门狗是个最多跑 10 秒的 `while` 轮询，**没有 Timer 可以 cancel** ——
+  /// 看门狗是个最多跑 [_watchVideoOutput] 里那个预算（现为 20 秒）的
+  /// `while` 轮询，**没有 Timer 可以 cancel** ——
   /// 它靠代次号自证过期：每轮都查 `token != _videoOutputToken`。
   /// 换台 / 退出 / dispose 时把代次号推进一格，**已在飞行中的那一轮**立刻放弃，
   /// 而不是等它跑完再对着已卸载的 State 调 `setState`。
@@ -227,6 +228,65 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
    */
   StreamSubscription<VideoParams>? _videoParamsSub;
 
+  /// ★★★ task-92b：轨道列表订阅（`p.stream.tracks`）
+  ///   —— 「这条流有没有视频轨」的**唯一权威真源**（见 [_hasVideoTrack]）。
+  ///
+  /// ⚠️ 这里**不**参与判决（判决出口唯一：[_watchVideoOutput]），只更新事实；
+  ///   唯一例外是"结论被新事实推翻"时的自愈（见 [_hasVideoTrack] 处的说明）。
+  StreamSubscription<Tracks>? _tracksSub;
+
+  /// ★★★ task-92b：**权威**的「这条流到底有没有视频轨」。
+  ///
+  /// # 为什么必须有它（实机逐帧实测：10.5s → 15.5s 有**约 5 秒纯黑**）
+  /// ```text
+  /// `.probe/ops/nf9/result.txt`（真机 / 真 libmpv / 真慢源 ABN China）：
+  ///   t=10530  awaiting=true   settled=false  loading=true   center=5.2   ← 提示还在
+  ///   t=11031  awaiting=false  settled=true   loading=false  center=0.0   ← ★ 提示被撤了
+  ///   t=15042  awaiting=false  settled=true   loading=false  center=0.0   ← 还是纯黑
+  ///   t=15542  awaiting=false  settled=true   loading=false  center=129.7 ← 首帧才到
+  /// ⇒ 看门狗 10 秒预算用尽后，把「**首帧慢**」误判成「**这条流没有视频轨**」
+  ///   ⇒ `_noVideoTrackSettled=true` ⇒ 提示撤掉 ⇒ 中间 5 秒纯黑。
+  /// ```
+  ///
+  /// # 为什么 `dw == null` **不能**当「没有视频轨」
+  /// ```text
+  /// `dw` 是 `videoParams` 的字段 —— mpv **建出视频输出之后**才有值。
+  /// 而「有没有视频轨」是 **demuxer** 的事实（轨在流头部就认出来了），
+  /// 它比 `dw` 早得多，两者根本不是同一件事。
+  /// 拿 `dw == null` 反推「没有轨」= 把「解码器还没跑」当成「没有轨」。
+  /// ```
+  ///
+  /// # 真源：`p.stream.tracks`（media_kit 1.2.6）
+  /// ```text
+  /// `real.dart:1707-1909`：mpv 推 `track-list` 属性时解析成 [Tracks] 广播。
+  /// [Tracks] 的默认值里**已经放了两个哨兵**（`track.dart:371-384`）：
+  ///     video = [VideoTrack('auto', …), VideoTrack('no', …)]
+  /// ⇒ 判据是 `video.length > 2`（真轨是 `video.add(...)` 追加的，见 `:1831-1845`）
+  /// ★ 绝不能写成 `video.isNotEmpty` —— 那个**恒为 true**（哨兵就在里面）。
+  /// ```
+  ///
+  /// ⚠️ `null` = **还不知道**（订阅还没收到过 `track-list`），**不是**「没有」。
+  ///   看门狗只在它是 `false` **且** [_realAudioTrackSeen] 为真时才敢收口
+  ///   （见 [_noVideoTrackAuthoritative]）。
+  bool? _hasVideoTrack;
+
+  /// ★★ task-92b：**本次起播**是否已认出**真音频轨**（`audio.length > 2`）。
+  ///
+  /// # 它解决的是「清场」与「认完轨」分不开的问题
+  /// ```text
+  /// media_kit 在**每次 `open()`** 时都会先发一份**什么都没有**的轨道列表：
+  ///   `real.dart:173-176` `open()` → `stop(open: true)` → `:334-336`
+  ///   `tracksController.add(Tracks())`，而 `Tracks()` 的默认值就是两组哨兵。
+  /// ⇒ 「video.length == 2」既可能是"清场"，也可能是"真的没有视频轨"。
+  /// 区分办法：**认过轨的列表里一定有真音频轨**（纯音频台也有）。
+  ///   清场那份 audio.length == 2（哨兵），真列表 audio.length > 2。
+  /// ⇒ 只有"没有视频轨 **且** 有真音频轨"才是权威的「这条流没有视频轨」。
+  /// ```
+  ///
+  /// ⚠️ 是**每次起播**的旗标（[_resetVideoOutputCache] 里归零），
+  ///   不是"本播放器实例"的 —— 否则换台后旧台的"有音频"会污染新台。
+  bool _realAudioTrackSeen = false;
+
   /// ② 缓存：最近一次 `videoParams` 事件的 `dw`（视频输出宽）。
   ///
   /// `null` = 还没收到过任何事件（或已被换台重置）。
@@ -271,7 +331,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   ///   否则提示会闪，反而比纯黑更糟。
   bool _videoTrackSeen = false;
 
-  /// ★★ task-92：**已确认这条流没有视频轨**（看门狗预算用尽、`dw` 仍为 null）。
+  /// ★★ task-92：**已确认这条流没有视频轨**（**权威证据**，见
+  ///   [_noVideoTrackAuthoritative]：轨道列表里 video 只有哨兵、且已认出真音频轨）。
   ///
   /// # 为什么必须"封口"（否则修完比修前更糟）
   /// ```text
@@ -281,8 +342,11 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   ///   那是在对用户**撒谎**（本文件 `:1382-1383` 记着同一条纪律：
   ///   "输出层已死时不画转圈，因为转圈暗示马上就有"）。
   ///
-  /// ⇒ 预算用尽 + 没视频轨 = 合法终态，**静默**收口（不告警、不弹横幅）：
+  /// ⇒ 权威地没有视频轨 = 合法终态，**静默**收口（不告警、不弹横幅）：
   ///   音频在放，画面本来就没有 —— 这不是故障。
+  ///
+  /// ⚠️ 判据**不是**"预算用尽 + `dw` 仍为 null" —— 那是改前的错判，
+  ///   会把"首帧慢"当成"没有轨"（真机实测 10.5→15.5s 的 5 秒纯黑）。
   /// ```
   bool _noVideoTrackSettled = false;
 
@@ -532,6 +596,31 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
       }
     });
 
+    /*
+     * ★★★ task-92b：轨道列表订阅（`p.stream.tracks`）—— 「有没有视频轨」的权威真源
+     *
+     * # 为什么加在 `_create()` 里（而不是起播处）
+     * ```text
+     * `_create()` 每个播放器实例只跑一次，而 `tracks` 是**广播流**、
+     * 每次 `open()` 都会重新推 ⇒ 订阅一次就够，换台自动覆盖。
+     * 若放在 `_openCurrent()` / `open()` 里，每次换台都要重订
+     * ⇒ 会漏掉 `open()` 内部那一次"清场"推送（它在 `await p.open()`
+     *   返回**之前**就发了，而我们的重订在那之后）。
+     * ```
+     */
+    _tracksSub = p.stream.tracks.listen((t) {
+      if (_disposed) return;
+      /*
+       * ★ 判据是 `length > 2` 而**不是** `isNotEmpty` —— 见 [_hasVideoTrack]。
+       *   [Tracks] 默认就带 `auto`/`no` 两个哨兵，`isNotEmpty` 恒为 true。
+       */
+      final needRepaint = _applyTrackEvidence(
+        hasVideo: t.video.length > 2,
+        hasRealAudio: t.audio.length > 2,
+      );
+      if (needRepaint && mounted) setState(() {});
+    });
+
     if (mounted) setState(() {});
     if (pending != null) {
       // 窗口内换过台 ⇒ 开他最后点的那个，而不是 widget.stream 的旧值。
@@ -644,7 +733,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
        *
        * ★ 为什么放在这里（`play()` 之后）而不是 `_create()` 里：
        *   1. 判据要的是“**有视频轨**但输出层没起来” —— 轨是 `open()` 之后
-       *      才有的；提前起只会空转，还会把 10 秒预算浪费在 open 上。
+       *      才有的；提前起只会空转，还会把预算浪费在 open 上。
        *   2. 换台也走本方法 ⇒ 看门狗**跟着换台重启**（与 `player_page`
        *      在 `_startPlayback` 里起是同一处语义）。
        *   ⚠️ 若只在 `_create()` 里起一次，换台后**永远不会**重新判 ——
@@ -756,7 +845,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
        *
        * ★ 为什么放在这里（`play()` 之后）而不是 `_create()` 里：
        *   1. 判据要的是“**有视频轨**但输出层没起来” —— 轨是 `open()` 之后
-       *      才有的；提前起只会空转，还会把 10 秒预算浪费在 open 上。
+       *      才有的；提前起只会空转，还会把预算浪费在 open 上。
        *   2. 换台也走本方法 ⇒ 看门狗**跟着换台重启**（与 `player_page`
        *      在 `_startPlayback` 里起是同一处语义）。
        *   ⚠️ 若只在 `_create()` 里起一次，换台后**永远不会**重新判 ——
@@ -815,6 +904,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   /// 成功臂的 `vo-confirmed` 是 **t=1980ms 才变 yes**（首个采样 t=1143ms
   /// 时还是 `no`）⇒ 读一次就判会把正常播放误报成故障。
   /// ⇒ 预算 10 秒（40 × 250ms），远超实测的 1980ms。
+  /// ★ task-92b：现为 20 秒 —— 真机实测慢源首帧要 15.5 秒（见 _watchVideoOutput）。
   /// ```
   ///
   /// ⚠️ 没有视频轨（纯音频流）时**不告警** —— 那是合法状态，不是故障。
@@ -856,8 +946,40 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
      */
     final t0 = DateTime.now();
     const fallbackStep = Duration(seconds: 1);
-    // 兜底预算：与旧的 40×250ms 同为 10 秒，不改语义
-    const fallbackRounds = 10;
+    /*
+     * ★★★ task-92b：10 → 20 秒（真机实测：慢首帧要 **15.5 秒**）
+     *
+     * ```text
+     * `.probe/ops/nf9/result.txt`（真机 / 真 libmpv / 真慢源 ABN China）：
+     *   首帧（`seen=true`，画面真的亮起来）出现在 **t=15542ms**。
+     * 而本预算原来是 10 秒 ⇒ 必然在首帧之前用尽 ⇒ 必然要"判一个终态"。
+     * ```
+     *
+     * ⚠️ 预算**不是**"宁可长一点"就完事 —— 它是"多久之后必须给用户一个
+     *   交代"的上界。所以两条一起改（缺一条都不成立）：
+     *   ① 预算 20 秒：覆盖实测最慢的 15.5 秒，让"慢"不再被当成"没有"；
+     *   ② 收口判据换成**权威**的轨道事实（[_noVideoTrackAuthoritative]）：
+     *      纯音频台由"有真音频轨"当场证明 ⇒ 根本**不用等满预算**。
+     */
+    const fallbackRounds = 20;
+
+    /*
+     * ★★ task-92b：轨道事实的统一出口。
+     *
+     * ```text
+     * ① `_hasVideoTrack` —— 订阅收到的**事件**结论（权威，见字段处）；
+     * ② `p.state.tracks` —— 订阅晚于事件到达时的**补读**
+     *    （与 `dw = _lastVideoDw ?? p.state.videoParams.dw` 同一个道理）。
+     * ```
+     * ⚠️ 补读只在"还没收到过事件"时用 —— 一旦事件到了，事件就是真源
+     *   （否则会把过期的 state 快照当成新结论）。
+     */
+    bool? trackEvidence() {
+      if (_hasVideoTrack != null) return _hasVideoTrack;
+      final t = p.state.tracks;
+      if (t.audio.length > 2) _realAudioTrackSeen = true;
+      return t.video.length > 2;
+    }
 
     Future<bool> voConfigured() async {
       /*
@@ -881,6 +1003,25 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
        * ★ 快路径：两个值都齐了 ⇒ **立刻**判定，不睡那 1 秒。
        *   事件驱动下这一步通常在 `open+play` 回来后几十毫秒内就成立。
        */
+      /*
+       * ★★ task-92b：**权威**的"没有视频轨" ⇒ 立刻静默收口，不必等满预算。
+       *
+       * ```text
+       * 纯音频台（cctv 那种）在轨道列表到达时就已被证明没有视频轨
+       * ⇒ 原来要干等 10 秒（改后 20 秒）才收口 ⇒ 转圈白转 20 秒。
+       * 有真音频轨 = demuxer 认过轨了 ⇒ 这个"没有视频轨"不是"还没认"。
+       * ```
+       * ⚠️ 与"快路径判就绪"一样，上面的代次号复查已经覆盖本轮。
+       */
+      if (_noVideoTrackAuthoritative) {
+        debugPrint('[LIVE] 本条流没有视频轨（权威：轨道列表里只有哨兵、'
+            '且有真音频轨，等了 '
+            '${DateTime.now().difference(t0).inMilliseconds}ms）'
+            ' —— 纯音频播放，画面本来就没有');
+        if (mounted) setState(() => _noVideoTrackSettled = true);
+        return;
+      }
+
       final dw = _lastVideoDw ?? p.state.videoParams.dw;
       if (dw != null) {
         final ok = await voConfigured();
@@ -900,6 +1041,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     // 超时：最后再判一次，避免把“刚好在最后一刻起来”误报
     if (token != _videoOutputToken || !mounted || _disposed) return;
     final hasVideo = (_lastVideoDw ?? p.state.videoParams.dw) != null;
+    trackEvidence(); // ★ task-92b：顺带把补读到的"有真音频轨"记进 _realAudioTrackSeen
     final ok = await voConfigured();
     if (token != _videoOutputToken || !mounted || _disposed) return;
     /*
@@ -914,10 +1056,49 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
      *
      * 但**必须收口**：不收口则 [_awaitingFirstVideoFrame] 永远为 true
      * ⇒ 转圈永不消失（比原来的纯黑更糟，见字段处说明）。
+     *
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ task-92b：收口**必须**由权威证据背书（这是本次缺陷的正题）
+     * ══════════════════════════════════════════════════════════════════
+     * ```text
+     * 改前：`dw == null` + 预算用尽 ⇒ 直接判“本条流没有视频轨”。
+     * 而 `dw` 是“**视频输出**有没有建出来”，与“**有没有视频轨**”
+     * 是两件事（前者要解码器真的跑起来，后者 demuxer 在流头部就知道）。
+     * ⇒ 慢首帧被误判成“没有轨” ⇒ 提示撤掉 ⇒ **5 秒纯黑**
+     *   （真机实测 t=10530 提示还在、t=11031 被撤、t=15542 首帧才到）。
+     * ```
      */
     if (!hasVideo) {
-      debugPrint('[LIVE] 本条流没有视频轨（等了 '
-          '${DateTime.now().difference(t0).inMilliseconds}ms）'
+      final tv = trackEvidence();
+      /*
+       * ★ 与快路径**共用同一个 getter**（[_noVideoTrackAuthoritative]）——
+       *   两条路各写一遍判据必然漂（本仓反复踩过「两套判决」）。
+       *   `trackEvidence()` 的调用只为把补读到的"有真音频轨"记进
+       *   [_realAudioTrackSeen]，返回值不另用。
+       */
+      final authoritative = _noVideoTrackAuthoritative;
+      if (!authoritative) {
+        /*
+         * ⚠️ 证据不足 ⇒ **不撤提示**，也**不告警**。
+         *
+         * 为什么不告警：`_videoOutputDead` 的语义是“本机图形输出层建不起来”，
+         *   而这里的事实只是“还没认完 / 还没出画面” —— 弹“画面无法显示”
+         *   是对用户的误报（与 `:800-802` 的“纯音频台不误报”同一条纪律）。
+         * 为什么不撤提示：提示是“还在加载”的唯一线索，撤了就是纯黑
+         *   —— 那正是本次要修的缺陷。
+         *
+         * ★ 与“证据充分时立刻收口”**不冲突**：本分支只在
+         *   「预算用尽 + 证据不足」时到达，属极端兜底；真·纯音频台
+         *   在轨道列表到达时就走快路径收口了（见上面的 `_noVideoTrackAuthoritative`）。
+         */
+        debugPrint('[LIVE] 预算用尽仍未见画面，但**没有**“本条流没有视频轨”'
+            '的权威证据（tracks.video=$tv，真音频轨=$_realAudioTrackSeen）'
+            ' ⇒ 保持加载提示、不判故障（等了 '
+            '${DateTime.now().difference(t0).inMilliseconds}ms）');
+        return;
+      }
+      debugPrint('[LIVE] 本条流没有视频轨（权威：轨道列表里只有哨兵、'
+          '且有真音频轨，等了 ${DateTime.now().difference(t0).inMilliseconds}ms）'
           ' —— 纯音频播放，画面本来就没有');
       if (mounted) setState(() => _noVideoTrackSettled = true);
       return;
@@ -1076,6 +1257,55 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   /// ⚠️⚠️ **必须在 `unawaited(_watchVideoOutput(...))` 之前调**：
   ///   看门狗是 async，`unawaited` 后会同步跑到第一个 await 之前，
   ///   而它第一轮就读 `_lastVideoDw` ⇒ 放在后面等于**没清**。
+  /// ★★★ task-92b：轨道列表给出的「这条流没有视频轨」**权威吗**
+  ///
+  /// # 两条同时成立才算权威（缺一条都只是"还不知道"）
+  /// ```text
+  /// ① `_hasVideoTrack == false` —— 收到过"video 只有哨兵"的轨道列表
+  /// ② `_realAudioTrackSeen`     —— 同一份（或更晚的）列表里有**真音频轨**
+  ///    ⇒ 说明 demuxer **已经认过轨**了，① 那个"没有视频轨"是**认完之后
+  ///      的结论**，而不是"还没认"（换台清场也会发一份"什么都没有"的列表）
+  /// ```
+  ///
+  /// # 为什么②不能省（实测反例）
+  /// ```text
+  /// 慢首帧的 ABN China：`open()` 里的清场列表在 t≈0.6s 就到了
+  /// （video.length==2）⇒ 若只看①，10 秒预算一到就判"没有视频轨"
+  /// ⇒ 提示撤掉、首帧 15.5s 才来 ⇒ **5 秒纯黑**（本次要修的缺陷本身）。
+  /// ```
+  bool get _noVideoTrackAuthoritative =>
+      _hasVideoTrack == false && _realAudioTrackSeen;
+
+  /// ★★ task-92b：把一份轨道列表证据**落到事实**上（订阅与探针钩子**共用**）。
+  ///
+  /// # 返回"是否需要重画"
+  /// ```text
+  /// 唯一需要重画的情形是**自愈**：权威结论若被**新事实**推翻，必须撤回。
+  ///
+  /// 场景：某些 HLS 源的音频/视频是**分两批**认出来的 —— 先只有音频
+  /// ⇒ [_noVideoTrackAuthoritative] 一度成立 ⇒ 看门狗静默收口；
+  /// 随后视频轨才出现 ⇒ 若不撤回，提示就再也回不来，用户看着纯黑
+  /// 却什么都不知道（正是本次要修的缺陷的另一种形态）。
+  ///
+  /// ⚠️ 只撤"没有视频轨"这一条；`_videoOutputDead`（输出层已死）是**另
+  ///   一回事**，由看门狗独占判决，这里不许碰。
+  /// ```
+  ///
+  /// ★ 其余情况**不**重画：`_hasVideoTrack` / `_realAudioTrackSeen` 都不参与
+  ///   build，每份列表都 setState 就是白刷帧（`tracks` 每次起播至少推 1 份）。
+  bool _applyTrackEvidence({
+    required bool hasVideo,
+    required bool hasRealAudio,
+  }) {
+    _hasVideoTrack = hasVideo;
+    if (hasRealAudio) _realAudioTrackSeen = true;
+    if (hasVideo && _noVideoTrackSettled) {
+      _noVideoTrackSettled = false;
+      return true;
+    }
+    return false;
+  }
+
   void _resetVideoOutputCache() {
     _lastVideoDw = null;
     _lastVoConfigured = null;
@@ -1096,6 +1326,18 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
      */
     _videoTrackSeen = false;
     _noVideoTrackSettled = false;
+    /*
+     * ★★ task-92b：轨道结论也必须归零 —— 它同样是"本次起播"的状态。
+     *
+     * 不归零的后果（两条都真）：
+     *   ① 从"有视频轨的台"换到"纯音频台" ⇒ `_hasVideoTrack` 还是 true
+     *      ⇒ 新台的 [_noVideoTrackAuthoritative] 永远为假 ⇒ 转圈永不消失；
+     *   ② 从"纯音频台"换到"有视频轨的慢台" ⇒ `_realAudioTrackSeen` 还是 true
+     *      ⇒ 新台只要收到那份"清场"列表（video.length==2）就被判成
+     *        "权威地没有视频轨" ⇒ **又变成纯黑**（正是本次要修的缺陷）。
+     */
+    _hasVideoTrack = null;
+    _realAudioTrackSeen = false;
   }
 
   /// ★★ task-92：**正在等首帧** ⇒ 该显示「正在加载」提示。
@@ -1143,6 +1385,25 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   @visibleForTesting
   bool get noVideoTrackSettledForTest => _noVideoTrackSettled;
 
+  /// ★★ 探针钩子（task-92b）：原始轨道证据 —— `null` 表示**还不知道**。
+  ///
+  /// # 为什么连"还不知道"也要能读出来
+  /// ```text
+  /// 看门狗判决由两份证据合成（[noVideoTrackAuthoritativeForTest]）。
+  /// 真机出问题时，只看合成结论**分不清**下面两种情形：
+  ///   ① 轨道列表压根没推过来（订阅坏了 / 流的头部就没有轨信息）
+  ///   ② 推过来了，但只有哨兵、且没认出真音频轨（⇒ 判据拒绝收口，正确）
+  /// 两者的修法完全不同 ⇒ 原始证据必须能单独读。生产代码无调用点。
+  /// ```
+  @visibleForTesting
+  bool? get hasVideoTrackForTest => _hasVideoTrack;
+
+  /// ★★ 探针钩子（task-92b）：本次起播是否**已认出真音频轨**。
+  ///
+  /// 它与 [hasVideoTrackForTest] 一起构成"有没有权威地认过轨"。生产代码无调用点。
+  @visibleForTesting
+  bool get realAudioTrackSeenForTest => _realAudioTrackSeen;
+
   /// ★★ 探针钩子（task-92）：直接置“已见到视频轨”。
   ///
   /// # 为什么需要（与 [debugSetVideoOutputDead] 同一个理由）
@@ -1157,9 +1418,37 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   void debugSetVideoTrackSeen(bool v) =>
       setState(() => _videoTrackSeen = v);
 
+  /// ★★ 探针钩子（task-92b）：直接喂一份"轨道列表证据"。
+  ///
+  /// # 为什么需要
+  /// ```text
+  /// 真实路径（mpv 推 `track-list`）**只能**由真 libmpv 推出来 ⇒
+  /// 默认套件（不加载 libmpv）里永远到不了。而"什么样的证据才算权威"
+  /// 是**纯逻辑**（哨兵个数 + 有没有真音频轨），与 libmpv 无关。
+  /// 生产代码无调用点。
+  /// ```
+  ///
+  /// ⚠️ 语义与订阅回调**逐字一致**（`video.length > 2` / `audio.length > 2`）
+  ///   —— 若将来订阅改了判据，本钩子必须同步改，否则测试会假绿。
+  @visibleForTesting
+  void debugSetTrackEvidence({
+    required bool hasVideo,
+    required bool hasRealAudio,
+  }) {
+    _applyTrackEvidence(hasVideo: hasVideo, hasRealAudio: hasRealAudio);
+    if (mounted) setState(() {});
+  }
+
+  /// ★★ 探针钩子（task-92b）："这条流没有视频轨"是否**权威**。
+  ///
+  /// 这是看门狗收口前唯一允许的判据（[debugSetNoVideoTrackSettled] 只是
+  /// 直接置终态，验证不了"什么证据才配收口"这件事）。
+  @visibleForTesting
+  bool get noVideoTrackAuthoritativeForTest => _noVideoTrackAuthoritative;
+
   /// ★★ 探针钩子（task-92）：直接置“已判定为无视频轨”。
   ///
-  /// 理由同 [debugSetVideoTrackSeen] —— 看门狗那条路径要 10 秒预算
+  /// 理由同 [debugSetVideoTrackSeen] —— 看门狗那条路径要等预算
   /// 才收口，而这条判据本身只是“提示该不该继续画”。生产代码无调用点。
   @visibleForTesting
   void debugSetNoVideoTrackSettled(bool v) =>
@@ -1425,7 +1714,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     if (_disposed) return;
     _disposed = true;
     /*
-     * ★ task-91：画面输出层看门狗作废（它是个 while 轮询，最多 10 秒）
+     * ★ task-91：画面输出层看门狗作废（它是个 while 轮询，最多跑满预算）
      *
      * 没有 Timer 可以 cancel —— 它靠代次号自证过期（每轮都查
      * `token != _videoOutputToken || !mounted || _disposed`）。这里把代次号推进一格，
@@ -1450,10 +1739,12 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     _bufferingSub?.cancel();
     _errorSub?.cancel();
     _videoParamsSub?.cancel(); // ★ 2026-10-13：videoParams 订阅也要注销
+    _tracksSub?.cancel(); // ★ task-92b：轨道列表订阅（权威"有没有视频轨"）
     _playingSub = null;
     _bufferingSub = null;
     _errorSub = null;
     _videoParamsSub = null;
+    _tracksSub = null;
     final p = _player;
     _player = null;
     _controller = null;

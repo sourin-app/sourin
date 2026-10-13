@@ -188,12 +188,14 @@ impl AppState {
          */
         seed_tvbox_live_plugin(&data_dir);
         /*
-         * ★★★ 释放「哔哩哔哩直播」插件
+         * ★★★ 释放「哔哩哔哩」插件（直播 + 点播一体）
          *
          * 同样必须在 `load_plugins_hydrated` **之前**（理由见上）——
          * 否则这一次启动加载不到它，用户要重启两次才看到。
+         * ⚠️ 本函数内部还会**删除旧版 `bilibili-live.js`**（迁移），
+         *    同样必须在扫描之前做 —— 否则这一次仍会扫到旧文件。
          */
-        seed_bilibili_live_plugin(&data_dir);
+        seed_bilibili_plugin(&data_dir);
         let (js_plugins, js_bad) =
             crate::plugins::load_plugins_hydrated(&plugin_dir, Some(proxy.clone())).await;
         let js_count = js_plugins.len();
@@ -1172,47 +1174,116 @@ fn seed_tvbox_live_plugin(data_dir: &std::path::Path) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  ★★★ 随程序发布的「哔哩哔哩直播」插件
+//  ★★★ 随程序发布的「哔哩哔哩」插件（直播 + 点播一体）
 // ═══════════════════════════════════════════════════════════════════════
 
-/// 随程序发布的「哔哩哔哩直播」插件源码
+/// 随程序发布的「哔哩哔哩」插件源码
 ///
 /// 与 `IPTV_PLUGIN_SRC` 同样是 `include_str!`（编进二进制）。
 ///
-/// # ★ 为什么直播要**新开一个插件**，而不是改进已有的 `bilibili.js`
+/// # ★ 架构口径：没有「直播插件」这个类别
 ///
+/// Owner 逐字（两次纠正，本文件按此执行）：
 /// ```text
-/// `bilibili.js`（点播：热门/排行/搜索/番剧/弹幕）**不在本仓库里** ——
-/// 它只存在于用户数据目录 `%APPDATA%/app.sourin.player/plugins/`。
-/// ⇒ 那是用户手写的第三方插件，仓库里改它改不到用户手上那一份。
-///
-/// 而直播与点播的**取流模型完全不同**（点播返回 DASH 多候选，
-/// 直播是现签的 HLS 单路），且能力位（live / vod）应当各停各的 ——
-/// 合并成一个 provider 会让"停用点播源"连带停掉直播。
-/// ⇒ 新开 `bilibili-live`，走与 iptv/tvbox-live 同一套释放机制。
+/// ① 客户端只提供「直播能力」，不内置任何插件 ——
+///    插件以文件形式放仓库 plugins/，由 include_str! 编进 dll。
+/// ② 直播插件和点播插件**不区分** —— 点播和直播都是插件提供的能力，
+///    js 插件里的 capabilities 那个只是**做筛选**。
+///    ⇒ 一个插件**同时**声明 vod 与 live。
 /// ```
-const BILIBILI_LIVE_PLUGIN_SRC: &str = include_str!("../plugins/bilibili-live.js");
+///
+/// ⚠️ 本函数**曾经**是 `seed_bilibili_live_plugin`，放的是
+/// `bilibili-live.js`（`@id: bilibili-live`，`capabilities.vod: false`）——
+/// ★ 那正是"把自己做成一个直播插件"，违反上面第 ② 条，已纠正。
+/// 旧注释里论证过"为什么新开一个插件而不是并进 bilibili.js"：
+/// ```text
+/// 理由是"bilibili.js（点播）不在仓库里、改不到用户手上"——
+/// ★ 该理由**不成立**：本函数（seed_managed_plugin）本来就按 @id
+///   把仓库里的插件释放/覆盖到用户数据目录，仓库里的 bilibili.js
+///   会随版本升级覆盖用户的旧文件。⇒ 那段论证作废，已删。
+/// ```
+///
+/// ⚠️ 现文件名 `bilibili.js`、`@id` 是 `bilibili` ——
+///    **会覆盖用户数据目录里那份手写的点播 `bilibili.js`**
+///    （只要其版本低于本次发布的 2.0.0，判据见 `seed_managed_plugin`）。
+///    这是 Owner 要的形态：一个 bilibili 源，同时管直播与点播。
+const BILIBILI_PLUGIN_SRC: &str = include_str!("../plugins/bilibili.js");
 
-/// 释放「哔哩哔哩直播」插件
+/// 释放「哔哩哔哩」插件
 ///
 /// 判据与 `seed_iptv_plugin` / `seed_tvbox_live_plugin` **完全一致**，
 /// 完整的推理过程见 `seed_iptv_plugin` 上面那段长注释 —— 这里不重复。
 ///
-/// 本插件特有的两点：
+/// 本插件特有的三点：
 /// ```text
 /// ① 默认**启用**（照 iptv/tvbox-live，不照 demo）—— 它是真内容源。
 ///    默认停用等于没做，用户看不到直播间且**没有任何报错**。
-/// ② 标记文件必须**另起名字** `.bilibili-live-seeded-version`：
-///    与 iptv/tvbox-live 共用标记会让三者的「所有权证明」互相覆盖
+/// ② 标记文件必须**另起名字** `.bilibili-seeded-version`：
+///    与 iptv/tvbox-live 共用标记会让几者的「所有权证明」互相覆盖
 ///    ⇒ 版本判定错乱（`local_version == seeded_version` 判据全部失效）。
+/// ③ ★★ **必须删掉旧文件 `bilibili-live.js`**（见下面 remove 那段）。
 /// ```
-fn seed_bilibili_live_plugin(data_dir: &std::path::Path) {
+fn seed_bilibili_plugin(data_dir: &std::path::Path) {
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     *  ★★★ 旧文件迁移：删掉 `bilibili-live.js`（**不是可选的**）
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 为什么改名**不够**
+     *
+     * 插件扫描器 `plugins/mod.rs::load_plugins` 的判据是
+     * ★ **"扩展名是 .js 就加载"**，**不是**按文件名白名单：
+     * ```rust
+     * for e in read_dir(dir) {
+     *     if path.extension() == Some("js") { JsPluginProvider::from_source(..) }
+     * }
+     * ```
+     * 而注册去重（`Registry::register`）按**插件内部 `@id`**，不是文件名。
+     *
+     * ⇒ 后果（实测推演，不是猜测）：老用户数据目录里那份
+     *   `bilibili-live.js`（`@id: bilibili-live`）**仍会被扫到并注册**，
+     *   与新版 `bilibili.js`（`@id: bilibili`）**并存**：
+     * ```text
+     * 直播页会同时出现两个哔哩哔哩源：
+     *   旧 bilibili-live（1.0.0）+ 新 bilibili（2.0.0）
+     * ⇒ 频道列表翻倍/重复，且**没有任何报错**（两个 id 不同，不触发覆盖）。
+     * ```
+     *
+     * # 为什么删在这里、且**无条件删**
+     * ```text
+     * ① 删在释放之前/发布路径里 —— 它是"本插件的历史版本文件"，
+     *    所有权明确（@id bilibili-live 只可能来自我们）。
+     * ② ★ 无条件删（不判标记、不判版本）：那个文件的 @id 是 `bilibili-live`，
+     *    **只可能是我们发过的旧版**（用户手写的插件有自己的 id），
+     *    所以删它是安全的；判据越简单越不会漏（"每个用户目录都清理一次"）。
+     * ③ 幂等：文件不存在时 `remove_file` 返回 Err，直接忽略即可。
+     * ```
+     *
+     * ⚠️ 只删这一个具体文件名，**不做**"删掉所有 bilibili* 的 .js" ——
+     *    那会误删用户可能存在的其它自定义文件（保守优先）。
+     */
+    let legacy = plugins_dir(data_dir).join("bilibili-live.js");
+    if legacy.exists() {
+        // 它是我们发过的旧版（@id: bilibili-live）—— 留着会与新版重复注册
+        match std::fs::remove_file(&legacy) {
+            Ok(()) => {
+                log::info!("已删除旧版直播插件 {:?}（其能力已并入 bilibili.js）", legacy);
+                eprintln!(
+                    "[PLUGIN] ★ 已删除旧版 bilibili-live.js（直播能力已并入新版 bilibili.js）-> {}",
+                    legacy.display()
+                );
+            }
+            // 删不掉不致命（下次启动再试），但要让用户能看到原因
+            Err(e) => log::warn!("删除旧版 bilibili-live.js 失败（保持原样）: {e}"),
+        }
+    }
+
     seed_managed_plugin(
         data_dir,
-        "bilibili-live.js",
-        BILIBILI_LIVE_PLUGIN_SRC,
-        ".bilibili-live-seeded-version",
-        "哔哩哔哩直播",
+        "bilibili.js",
+        BILIBILI_PLUGIN_SRC,
+        ".bilibili-seeded-version",
+        "哔哩哔哩",
     );
 }
 
@@ -1569,12 +1640,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// ★★★ 接线门禁：随程序发布的 `bilibili-live.js` 必须**真的被释放并注册**
+    /// ★★★ 接线门禁：随程序发布的 `bilibili.js` 必须**真的被释放并注册**
     ///
     /// # 为什么需要这条（本仓规矩一：写了 ≠ 接线了）
     ///
     /// ```text
-    /// plugin 文件写好了、`seed_bilibili_live_plugin()` 也定义了 —— 但
+    /// plugin 文件写好了、`seed_bilibili_plugin()` 也定义了 —— 但
     /// 只要**忘了在 bootstrap 里调用它**，用户就永远看不到这个源，
     /// 而且**没有任何报错**（注册表里根本没有它）。
     /// ```
@@ -1584,17 +1655,20 @@ mod tests {
     ///
     /// ⚠️ `capabilities.live` 是 `Registry::live_all()` 的过滤条件 ——
     ///    它为假时直播页**看不到这个源**且无报错，正是最该守住的一环。
+    ///
+    /// ⚠️ `@id` 是 `bilibili`：**旧版 `bilibili-live` 已并入本插件**
+    ///    （vod+live 一体，见 `seed_bilibili_plugin` 的说明）。
     #[tokio::test]
-    async fn shipped_bilibili_live_is_seeded_and_registered() {
+    async fn shipped_bilibili_is_seeded_and_registered() {
         let dir = tmp_dir("bili-live");
-        // 空目录启动 ⇒ 走"文件不存在 ⇒ 释放"这条路径
+        // 空目录启动 => 走"文件不存在 => 释放"这条路径
         let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
 
         // ① 文件真的落到了插件目录
-        let js = crate::state::plugins_dir(&dir).join("bilibili-live.js");
+        let js = crate::state::plugins_dir(&dir).join("bilibili.js");
         assert!(
             js.exists(),
-            "bilibili-live.js 必须被释放到插件目录，实际不存在: {}",
+            "bilibili.js 必须被释放到插件目录，实际不存在: {}",
             js.display()
         );
 
@@ -1603,11 +1677,67 @@ mod tests {
             .registry
             .manifests()
             .into_iter()
-            .find(|m| m.id == "bilibili-live")
-            .expect("★ bilibili-live 必须出现在 registry —— 否则直播页看不到它且无报错");
+            .find(|m| m.id == "bilibili")
+            .expect("★ bilibili 必须出现在 registry —— 否则直播页看不到它且无报错");
         assert!(
             m.capabilities.live,
             "★ capabilities.live 必须为 true（Registry::live_all 按它过滤）"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★ 迁移门禁：旧版 `bilibili-live.js` 必须被**删除**
+    ///
+    /// # 为什么必须有这条（这是真实迁移问题，不是形式）
+    ///
+    /// 插件扫描器判据是"扩展名是 .js 就加载"（`plugins/mod.rs::load_plugins`），
+    /// 而注册去重按插件内部 `@id`（`Registry::register`）——
+    /// ⇒ 光把文件改名**不够**：老用户目录里的 `bilibili-live.js`
+    ///   （`@id: bilibili-live`）会与新版 `bilibili.js`（`@id: bilibili`）
+    ///   **同时注册**，直播页出现两个哔哩哔哩源（列表翻倍），且无报错。
+    ///
+    /// ⇒ `seed_bilibili_plugin()` 必须**显式删除**旧文件。
+    ///   本测试模拟"老用户升级"：先手工放一份旧 `bilibili-live.js`，
+    ///   再 bootstrap，断言它**消失**且只剩新版一个源。
+    #[tokio::test]
+    async fn legacy_bilibili_live_file_is_removed_on_bootstrap() {
+        let dir = tmp_dir("bili-legacy");
+
+        /*
+         * ① 铺好"老用户"的现场：插件目录里有一份旧的 bilibili-live.js。
+         *    内容不重要（删的依据是**文件名**，不是内容）——
+         *    但给一个最小合法的旧版骨架，贴近真实形态。
+         */
+        let pdir = crate::state::plugins_dir(&dir);
+        std::fs::create_dir_all(&pdir).unwrap();
+        let legacy = pdir.join("bilibili-live.js");
+        std::fs::write(
+            &legacy,
+            "/* @id bilibili-live @name 哔哩哔哩直播 @version 1.0.0 */\n\
+             globalThis.plugin = { id: 'bilibili-live', capabilities: { live: true } };\n",
+        )
+        .unwrap();
+        assert!(legacy.exists(), "前置条件：旧文件必须先存在");
+
+        // ② bootstrap —— 内部会释放新版 + 删除旧版
+        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+
+        // ③ 旧文件必须被删掉（否则会与新版并存、重复注册）
+        assert!(
+            !legacy.exists(),
+            "★ 旧版 bilibili-live.js 必须被删除，否则会与新 bilibili.js 并存（直播间列表翻倍）"
+        );
+
+        // ④ 而且注册表里**只有** bilibili，没有旧的 bilibili-live
+        let ids: Vec<String> = st.registry.manifests().into_iter().map(|m| m.id).collect();
+        assert!(
+            ids.iter().any(|x| x == "bilibili"),
+            "新版 bilibili 必须在 registry，实际: {ids:?}"
+        );
+        assert!(
+            !ids.iter().any(|x| x == "bilibili-live"),
+            "★ 旧版 bilibili-live 不该再出现（文件已删），实际: {ids:?}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

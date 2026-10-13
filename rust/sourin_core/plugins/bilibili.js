@@ -1,33 +1,94 @@
 /**
- * @id          bilibili-live
- * @name        哔哩哔哩直播
- * @version     1.0.0
+ * @id          bilibili
+ * @name        哔哩哔哩
+ * @version     2.0.0
  * @author      dsh
- * @description 哔哩哔哩直播间（热门推荐）—— 游客态可看，取流走 HLS
- * @homepage    https://live.bilibili.com
+ * @description 哔哩哔哩（直播直播间）+ 点播能力位（点播侧待补，见下）
+ * @homepage    https://www.bilibili.com
  *
  * ═══════════════════════════════════════════════════════════════════════
- *  为什么单开一个插件，而不是把 live 塞进已有的 `bilibili.js`
+ *  ★★★ 本插件是「直播 + 点播」一体的，不存在「直播插件」这个类别
  * ═══════════════════════════════════════════════════════════════════════
  *
- * `bilibili.js`（点播：热门 / 排行 / 搜索 / 番剧 / 弹幕）**不在本仓库里** ——
- * 它只存在于用户数据目录：
+ * 架构口径（Owner 逐字）：
  * ```text
- * %APPDATA%/app.sourin.player/plugins/bilibili.js
+ * 客户端只提供「直播能力」，不内置任何插件；
+ * 直播与点播**不区分** —— 点播和直播都是插件提供的能力，
+ * js 插件里的 capabilities 那个只是**做筛选**。
+ * ⇒ 一个插件**同时**声明 vod 与 live，不存在"直播插件"这类东西。
  * ```
- * ⇒ 那是**用户手写的第三方插件**（@author dsh，但在用户目录里）。
- *   本仓库里如果去改它，**改不到用户手上那一份**，等于没做。
  *
- * 而直播的取流模型与点播**完全不同**（见下），写成独立插件反而更干净：
+ * # 本文件的历史（★ 违反过上面那条，已纠正）
+ *
+ * 它原名 `bilibili-live.js`，`@id` 是 `bilibili-live`，
+ * `capabilities` 写的是 `{ vod: false, live: true }` ——
+ * ★ **把自己做成了一个"直播插件"**，正是被纠正的形态。
+ * 文件头当时还论证过"为什么单开一个插件而不是塞进 bilibili.js"：
  * ```text
- * · 点播：`resolve(id)` 返回 DASH 音视频分离的多个候选
- * · 直播：`liveStream(roomId)` 返回一路 HLS（或 FLV），且地址**带时效签名**
+ * 那段理由的核心是"bilibili.js（点播）不在本仓库里、改不到用户手上"。
+ * ★ 但那条理由**不成立**：本仓库本来就按 @id 释放/覆盖插件
+ *   （见 state.rs::seed_managed_plugin），仓库里的 bilibili.js
+ *   会随版本升级覆盖到用户数据目录。⇒ 那段理由作废，已删。
  * ```
- * 两者共用 provider 只会让能力位（live / vod）**互相污染** ——
- * 例如用户停用点播源会连带停掉直播。分开后各停各的。
  *
- * 所以：本插件由仓库 `include_str!` 释放（见 `state.rs::seed_managed_plugin`），
- * 默认**启用**、跟随版本升级，与 `iptv.js` / `tvbox-live.js` 同一套机制。
+ * ⚠️ 现在叫 `bilibili.js`、`@id` 是 `bilibili` ——
+ *    **这会覆盖用户数据目录里那份手写的点播 `bilibili.js`**
+ *    （只要它版本号低于 2.0.0，见下「迁移」一节）。
+ *    这是 Owner 要的形态：一个 bilibili 源，同时管直播与点播。
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ *  ⚠️⚠️ 点播侧（vod）当前**没有实现** —— 这是如实声明的现状
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * ```text
+ * 本仓库里**只有直播侧**被实测跑通（liveChannels / liveStream，见下）。
+ * 点播侧的函数（home / categories / list / detail / resolve / search）
+ * ★ **本文件一个都没写** —— 不写假实现（"不要凭空实现"）。
+ * ```
+ *
+ * 那为什么 `capabilities.vod` 仍声明 **true**？—— 这是**实测过**的决定，
+ * 不是拍脑袋：
+ * ```text
+ * 问题：声明 vod:true 会不会因为缺 home/categories/detail 而**加载失败**？
+ * 实测（读源码，非推测）：**不会**。
+ *   · `hydrate_capabilities()`（plugins/mod.rs:553）只执行脚本读
+ *     `globalThis.plugin.capabilities` 的**布尔值** ——
+ *     ★ 它**不检查**对应函数是否存在。能力位与函数**不是一一对应**的。
+ *   · 所以 vod 是 true 还是 false，插件都能加载、都能注册。
+ * ⇒ 既然不因缺函数失败，就按 Owner 的口径声明 `vod: true`
+ *   （本插件是 vod+live 一体的）。
+ * ```
+ *
+ * ⚠️ 但**必须知道**声明 `vod:true` 的**一个真实副作用**（别当没看见）：
+ * ```text
+ * Flutter 首页用 `providesHomeContent(p) <=> p.capabilities.vod`
+ * （lib/ui/home_page.dart:130）决定"这个源进不进首页的源切换条"。
+ * ⇒ vod:true ⇒ 本插件会出现在首页源条里；
+ *   而它的 home()/categories() 没实现 ⇒ 选中它时首页是**空态**。
+ * ★ 这是"点播侧待补"的直接表现，不是 bug —— 点播侧补上后自然消失。
+ * ```
+ * ⇒ **待办**：补齐点播侧（热门 / 排行 / 搜索 / 详情 / 取流）后，
+ *   把上面那句"空态"的说明删掉。在那之前，本段注释就是它的
+ *   唯一"施工中"标识。
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ *  ★ 旧文件迁移：`bilibili-live.js` 必须被删除
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * 老用户数据目录里躺着旧插件 `bilibili-live.js`（`@id: bilibili-live`）。
+ * 插件扫描器（`plugins/mod.rs::load_plugins`）的判据是
+ * ★ **"扩展名是 .js 就加载"**，**不是**按文件名白名单：
+ * ```text
+ * for e in read_dir(dir) { if ext == "js" { JsPluginProvider::from_source(..) } }
+ * ```
+ * ⇒ 光把本文件改名**不够**：旧的 `bilibili-live.js` 仍会被扫到并加载，
+ *   于是用户会同时看到**两个**哔哩哔哩直播源
+ *   （一个 `bilibili-live` 旧版 + 一个 `bilibili` 新版）——
+ *   频道列表翻倍、重复，且没有任何报错。
+ *
+ * ⇒ 因此在 `state.rs::seed_bilibili_plugin()` 里**显式删除**旧文件
+ *   （清理时机与理由见那里的注释）。本注释与那段代码是配套的，
+ *   改一处必须改另一处。
  *
  * ═══════════════════════════════════════════════════════════════════════
  *  实测结论（2026-10-13，本机直连、游客态、无任何 Cookie）
@@ -35,24 +96,24 @@
  *
  * ① **游客就能看直播**，不需要登录
  * ```text
- * GET api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=…  → code=0
+ * GET api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=…  -> code=0
  * ```
  * ⇒ 与点播一致（点播游客也能看 1080P）。所以本插件 **loginRequired: false**。
  *
  * ② ★★ **取流地址必须带 Referer + UA，否则 403**（实测，与点播同一个坑）
  * ```text
  * 同一条 m3u8：
- *   不带任何头        → HTTP 403
- *   Referer + UA      → HTTP 200 + 合法 #EXTM3U
+ *   不带任何头        -> HTTP 403
+ *   Referer + UA      -> HTTP 200 + 合法 #EXTM3U
  * ```
  * ⇒ 播放候选**必须**带 `headers` + `notWebReady: true`（由宿主代理转发）。
- *   这正是点播那份 `bilibili.js` 注释里记录的同一个 CDN 防盗链行为。
+ *   这正是点播那边注释里记录的同一个 CDN 防盗链行为。
  *
  * ③ **HLS 与 FLV 都可用，优先 HLS**
  * ```text
  * protocol=0,1 + format=0,1,2 的返回里两条协议都在：
- *   http_stream → flv   （avc / hevc）
- *   http_hls    → ts / fmp4（avc / hevc）
+ *   http_stream -> flv   （avc / hevc）
+ *   http_hls    -> ts / fmp4（avc / hevc）
  * ```
  * 选 HLS 的原因：直播页/播放器对 HLS 的处理路径**已经是验证过的**
  * （`iptv.js` 全量返回 kind:'hls'），而 FLV 要额外验证一遍。
@@ -114,7 +175,7 @@ const HDRS = {
 /**
  * ★★★ 取流请求头 —— **缺了必然 403**（实测，不是推测）
  *
- * 与点播那份 `bilibili.js` 记录的**完全同源**的 CDN 行为：
+ * 与点播侧记录的**完全同源**的 CDN 行为：
  * 只带 Referer 是不够的，reqwest 默认不发 UA ⇒ WAF 按"请求头完整性"
  * 判定是不是正常播放器。
  *
@@ -171,7 +232,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000
  * 缓存结构校验（第二层保险）
  *
  * ⚠️ 只认"有房间号 + 有标题"的表。
- *    结构不对 ⇒ 返回 false ⇒ 重新拉取（而不是把坏数据喂给界面）。
+ *    结构不对 => 返回 false => 重新拉取（而不是把坏数据喂给界面）。
  *    —— 这一层不依赖"我有没有记得改 CACHE_KEY"。
  */
 function cacheValid(c) {
@@ -186,8 +247,8 @@ function cacheValid(c) {
  *
  * 宿主 `host.http.get` 的契约（见 `plugins/mod.rs::do_http`）：
  * ```text
- * 成功 ⇒ 返回**响应体文本**
- * 失败 ⇒ 返回以 `__ERR__` 开头的串（**不抛异常**，必须自己查前缀）
+ * 成功 -> 返回**响应体文本**
+ * 失败 -> 返回以 `__ERR__` 开头的串（**不抛异常**，必须自己查前缀）
  * ```
  * ★ 不查前缀的后果：把 `__ERR__HTTP 403: …` 丢给 `JSON.parse`，
  *   报的是"返回不是合法 JSON"—— 排查方向完全错了。
@@ -232,7 +293,7 @@ async function loadRooms(force) {
         }
       }
     } catch {
-      /* 缓存读坏 ⇒ 当没有，走下面的重新拉取 */
+      /* 缓存读坏 => 当没有，走下面的重新拉取 */
     }
   }
 
@@ -272,7 +333,6 @@ async function loadRooms(force) {
          *
          * ⚠️ 为什么不用主播名（`uname`）：直播页要的是"现在在播什么"，
          *   标题正是它（如「【直播】WE vs FLY」）。
-         *   主播名放 group（见下），两者一起才信息完整。
          */
         name,
         // 封面当台标 —— 这是房间当前画面的封面，比默认头像更有辨识度
@@ -307,13 +367,13 @@ async function loadRooms(force) {
  *
  * # 返回结构（实测，字段路径逐级确认过）
  * ```text
- * data.playurl_info.playurl.stream[]         ← 协议层：http_stream / http_hls
+ * data.playurl_info.playurl.stream[]         <- 协议层：http_stream / http_hls
  *   .protocol_name === 'http_hls'
- *   .format[]                                ← 封装层：ts / fmp4
- *     .codec[]                               ← 编码层：avc / hevc
+ *   .format[]                                <- 封装层：ts / fmp4
+ *     .codec[]                               <- 编码层：avc / hevc
  *       .codec_name === 'avc'                ★ 必须挑 avc（见文件头 ④）
- *       .base_url                            ← 路径（**相对**，要拼 host）
- *       .url_info[0].{host, extra}           ← 主机 + 查询串（含签名）
+ *       .base_url                            <- 路径（**相对**，要拼 host）
+ *       .url_info[0].{host, extra}           <- 主机 + 查询串（含签名）
  * ```
  *
  * # ★ 地址是「host + base_url + extra」三段拼的，**不是**一个完整 URL
@@ -321,15 +381,15 @@ async function loadRooms(force) {
  * host     = https://d1--cn-gotcha104.bilivideo.com
  * base_url = /live-bvc/643136/live_50329118_9516950_2500.m3u8?
  * extra    = expires=…&sign=…&cdn=…
- * ⇒ 三者拼接才是可播地址。漏掉 extra 会 403（签名没了）。
+ * => 三者拼接才是可播地址。漏掉 extra 会 403（签名没了）。
  * ```
  *
  * # 多档清晰度怎么选
  * ```text
  * codec[] 是**同一档清晰度**的多个 CDN 镜像（url_info[]）+ 不同编码。
- * 而不同清晰度在**不同 format/codec 项的 accept_qn** 里，
+ * 而不同清晰度在**不同 format/codec 项**的 accept_qn 里，
  * 每一项自带 current_qn。
- * ⇒ 这里取 accept_qn 的**最大值**所在项 —— 即该房间能给的最高档；
+ * => 这里取 accept_qn 的**最大值**所在项 —— 即该房间能给的最高档；
  *   拿不到 accept_qn 就退回第一个 avc 项。
  * ```
  *
@@ -363,7 +423,7 @@ function pickHls(data) {
 }
 
 /**
- * 清晰度码 → 中文标签
+ * 清晰度码 -> 中文标签
  *
  * 实测该接口的 `g_qn_desc` 会带上这些（这里固化的是常用档，
  * 未命中回落 `原画`，不塞"未知"—— 直播默认就是原画）。
@@ -381,18 +441,35 @@ const QN_LABEL = {
 /* ─────────────────────── 插件出口 ─────────────────────── */
 
 globalThis.plugin = {
-  id: 'bilibili-live',
+  id: 'bilibili',
 
   capabilities: {
-    vod: false,
+    /*
+     * ★★ vod / live 都声明 true —— 本插件是**一体**的（见文件头）。
+     *
+     * ⚠️ 与函数**不是一一对应**：能力位只是"这个源提供哪类内容"，
+     *    `hydrate_capabilities()` 只读布尔值，**不校验对应函数是否存在**
+     *    ——实测，plugins/mod.rs:553）。
+     * ⇒ 下面**没有** home/categories/list/detail/resolve/search
+     *   （点播侧待补），但 vod 仍按 Owner 口径声明 true。
+     *   声明 true 的真实副作用（会进首页源条、选中时空态）见文件头。
+     */
+    vod: true,
     live: true,
     // 直播没有节目单（EPG 是电视台的概念，直播间只有"正在播什么"= 标题）
     epg: false,
+    /*
+     * ⚠️ `search: false` —— **如实**：搜索只可能来自点播侧，
+     *    而点播侧本文件没实现 ⇒ 不能声明 true（否则
+     *    `Registry::search_all()` 会把这个源算进搜索，
+     *    而它没有 `search()` 方法 ⇒ 每次搜索都报 not a function）。
+     *    点播侧补齐时再改 true。
+     */
     search: false,
     /*
-     * ★ 游客可看 ⇒ **不要**设 loginRequired。
+     * ★ 游客可看 => **不要**设 loginRequired。
      *   设了会让 Registry::ensure_session 挡住游客路径（本仓已有教训：
-     *   点播那份若设成必需登录，会丢掉"游客看 1080P"这个关键能力）。
+     *   点播侧若设成必需登录，会丢掉"游客看 1080P"这个关键能力）。
      */
     loginRequired: false,
   },
@@ -418,18 +495,23 @@ globalThis.plugin = {
    *
    * # 为什么这里**必须**发网络请求（不能像 iptv.js 那样从列表里取）
    * ```text
-   * iptv.js 的频道地址是 m3u 里的**固定地址** ⇒ 缓存列表即可，取流零网络。
+   * iptv.js 的频道地址是 m3u 里的**固定地址** => 缓存列表即可，取流零网络。
    * B 站直播地址是**每次现签的**（extra 里的 expires / sign 有时效），
-   * ⇒ 必须用 room_id 现场换地址。这是接口模型决定的，绕不过去。
+   * => 必须用 room_id 现场换地址。这是接口模型决定的，绕不过去。
    * ```
    * ⚠️ 代价：直播页的可用性探测会对每个频道打一次本函数。
    *    这是频道数要限量（MAX_ROOMS）的根本原因。
    */
   async liveStream(channelId) {
-    const id = String(channelId || '').replace(/^bilibili-live:/, '')
+    /*
+     * ⚠️ 前缀兼容：历史上本插件 `@id` 是 `bilibili-live`，
+     *    老版本可能把 `bilibili-live:<房间号>` 传进来 —— 一并剥掉，
+     *    两种前缀都认（迁移期容错，`bilibili:` 是新前缀）。
+     */
+    const id = String(channelId || '').replace(/^(bilibili-live|bilibili):/, '')
     /*
      * ⚠️ 房间号必须是纯数字：非数字说明传进来的不是本插件的频道 id
-     *    （可能是别的源串了，或上游契约变了）⇒ 明确报错，
+     *    （可能是别的源串了，或上游契约变了）=> 明确报错，
      *    而不是拼一个非法 URL 去撞接口。
      */
     if (!/^\d+$/.test(id)) {
@@ -454,7 +536,7 @@ globalThis.plugin = {
 
     /*
      * ⚠️ `live_status`：0=未开播 1=直播中 2=轮播
-     *    未开播时 playurl_info 为 null ⇒ 这里先给一句**人能看懂**的话，
+     *    未开播时 playurl_info 为 null => 这里先给一句**人能看懂**的话，
      *    否则用户点到一个下播的房间只会看到"取不到播放地址"（不知道是下播了）。
      */
     if (data.live_status === 0 || !data.playurl_info) {

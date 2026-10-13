@@ -3890,18 +3890,18 @@ globalThis.plugin = {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //  哔哩哔哩直播插件（bilibili-live.js）
+    //  哔哩哔哩插件（bilibili.js —— 直播 + 点播一体）
     // ═══════════════════════════════════════════════════════════════════
 
-    /// 读随程序发布的 `bilibili-live.js` 源码
-    fn bilibili_live_src() -> String {
+    /// 读随程序发布的 `bilibili.js` 源码
+    fn bilibili_src() -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("plugins/bilibili-live.js");
+            .join("plugins/bilibili.js");
         std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()))
     }
 
-    /// ★ 随程序发布的 bilibili-live.js 必须**合法、能加载、能力位正确**
+    /// ★ 随程序发布的 bilibili.js 必须**合法、能加载、能力位正确**
     ///
     /// # 为什么这条门禁是**必要的**（不是形式）
     /// ```text
@@ -3911,11 +3911,21 @@ globalThis.plugin = {
     ///     ⇒ 直播页**完全看不到这个源**，且**没有任何报错**
     ///   · 这正是"写了没接线"的典型形态（本仓规矩一）
     /// ```
+    ///
+    /// # ★ 这条测试还钉住一个**实测结论**：能力位与函数**不一一对应**
+    /// ```text
+    /// 本插件声明 `vod: true`，却**没有** home/categories/detail/resolve
+    /// （点播侧待补）。这里的断言证明：`from_source()` + `hydrate_capabilities()`
+    /// **不会因为缺这些函数而失败** —— 能力位只是被读取的布尔值
+    /// （见 `hydrate_capabilities` 的实现）。
+    /// ⇒ 若将来有人往加载路径加了"能力位必须对应实现"的校验，
+    ///   这条测试会先红，提醒他先想清楚（那会直接干掉本插件的直播能力）。
+    /// ```
     #[tokio::test]
-    async fn shipped_bilibili_live_is_loadable() {
-        let src = bilibili_live_src();
+    async fn shipped_bilibili_is_loadable() {
+        let src = bilibili_src();
         let mut p = JsPluginProvider::from_source(&src)
-            .unwrap_or_else(|e| panic!("bilibili-live.js 不是合法插件: {e}"));
+            .unwrap_or_else(|e| panic!("bilibili.js 不是合法插件: {e}"));
 
         /*
          * ★ 能力位必须**执行脚本**才拿得到（`from_source` 之后仍是
@@ -3925,9 +3935,9 @@ globalThis.plugin = {
         p.hydrate_capabilities().await;
 
         let m = p.manifest();
-        assert_eq!(m.id, "bilibili-live", "id 必须与 seed 的文件名/标记一致");
-        assert_eq!(m.name, "哔哩哔哩直播");
-        assert_eq!(m.version, "1.0.0");
+        assert_eq!(m.id, "bilibili", "id 必须与 seed 的文件名/标记一致");
+        assert_eq!(m.name, "哔哩哔哩");
+        assert_eq!(m.version, "2.0.0");
         /*
          * ★ 能力位是注册的**唯一判据**（在能力位补齐之前，
          *   这里是 `Capabilities::default()` 全 false）。
@@ -3937,7 +3947,26 @@ globalThis.plugin = {
             m.capabilities.live,
             "★ live 必须为 true，否则直播页看不到这个源（且无报错）"
         );
-        assert!(!m.capabilities.vod, "本插件只做直播");
+        /*
+         * ★★ `vod: true` —— 本插件是 **vod + live 一体**的
+         *    （Owner 口径：不存在"直播插件"这个类别，见 bilibili.js 文件头）。
+         *    ⚠️ 点播侧**尚未实现**，但 `vod` 仍按架构口径声明 true ——
+         *       上面那条注释已说明"缺函数不会导致加载失败"。
+         *    点播侧补齐后本断言不变（将来实现只是让声明名副其实）。
+         */
+        assert!(
+            m.capabilities.vod,
+            "★ vod 必须为 true（本插件是 vod+live 一体，不是纯直播源）"
+        );
+        /*
+         * ⚠️ `search: false` —— **如实**：搜索只在点播侧，
+         *    而点播侧没实现 ⇒ 声明 true 会让 `search_all()` 调不存在的
+         *    `plugin.search()`（每次搜索报 not a function）。
+         */
+        assert!(
+            !m.capabilities.search,
+            "本插件点播侧未实现 ⇒ search 必须如实为 false"
+        );
         /*
          * ⚠️ 必须是"游客可用"：`login_required` 为真会让
          *    `Registry::ensure_session` 挡住游客路径 ⇒ 直播页空。
@@ -3985,7 +4014,7 @@ globalThis.plugin = {
     /// 返回的 url 会缺 `expires=…&sign=…` ⇒ 真机 403。
     #[test]
     fn bilibili_live_pickhls_joins_host_baseurl_extra() {
-        let p = JsPluginProvider::from_source(&bilibili_live_src()).unwrap();
+        let p = JsPluginProvider::from_source(&bilibili_src()).unwrap();
         let fixture = serde_json::json!({
             "playurl_info": { "playurl": { "stream": [
                 { "protocol_name": "http_hls", "format": [
@@ -4017,7 +4046,7 @@ globalThis.plugin = {
     /// 下面的 fixture 里 hevc 项排在前面，会被选中 ⇒ 真机黑屏。
     #[test]
     fn bilibili_live_pickhls_rejects_hevc() {
-        let p = JsPluginProvider::from_source(&bilibili_live_src()).unwrap();
+        let p = JsPluginProvider::from_source(&bilibili_src()).unwrap();
         let fixture = serde_json::json!({
             "playurl_info": { "playurl": { "stream": [
                 { "protocol_name": "http_hls", "format": [
@@ -4045,7 +4074,7 @@ globalThis.plugin = {
     /// 撤销验证（`find(s => s.protocol_name === 'http_hls')` 改成取 `[0]`）⇒ 变红。
     #[test]
     fn bilibili_live_pickhls_prefers_http_hls() {
-        let p = JsPluginProvider::from_source(&bilibili_live_src()).unwrap();
+        let p = JsPluginProvider::from_source(&bilibili_src()).unwrap();
         let fixture = serde_json::json!({
             "playurl_info": { "playurl": { "stream": [
                 { "protocol_name": "http_stream", "format": [
@@ -4077,7 +4106,7 @@ globalThis.plugin = {
     /// 撤销验证（`if (!hls) return null` 改成返回一个占位地址）⇒ 变红。
     #[test]
     fn bilibili_live_pickhls_returns_null_without_hls() {
-        let p = JsPluginProvider::from_source(&bilibili_live_src()).unwrap();
+        let p = JsPluginProvider::from_source(&bilibili_src()).unwrap();
 
         // ① stream 里只有 http_stream（flv）
         let only_flv = serde_json::json!({
@@ -4123,7 +4152,7 @@ globalThis.plugin = {
     /// 必须校验结构本身**（"用旧代码写新 key"总会发生）。
     #[test]
     fn bilibili_live_cache_valid_rejects_bad_structure() {
-        let p = JsPluginProvider::from_source(&bilibili_live_src()).unwrap();
+        let p = JsPluginProvider::from_source(&bilibili_src()).unwrap();
 
         let call = |expr: &str| -> String {
             tokio::runtime::Runtime::new()

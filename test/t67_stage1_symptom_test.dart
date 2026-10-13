@@ -566,8 +566,34 @@ void main() {
        *     本文件的结论会**静默变成错的**（而测试全绿）。
        */
       final rs = File('rust/sourin_core/src/store.rs').readAsStringSync();
+      /*
+       * ⚠️ 2026-10-12 按集扩容：`continue_watching` 为了「同一作品按 updated_at
+       *    取最新一集」引入了表别名 `p`，于是 `FROM progress` 与 `WHERE` 之间
+       *    多了一个 ` p`：
+       * ```text
+       * 老：FROM progress WHERE finished=0 AND position > 5
+       * 新：FROM progress p \
+       *        WHERE finished=0 AND position > 5 \
+       *          AND updated_at = (SELECT MAX(updated_at) FROM progress
+       *                            WHERE item_key = p.item_key)
+       * ```
+       * ⇒ 判据从「字面串相等」改成「**先归一化空白再比对**」。
+       *
+       * ★ 为什么不是简单写个更松的正则：Rust 源码里这个 SQL 是**多行字符串**，
+       *   行与行之间是「反斜杠 + 换行 + 缩进」。只放宽到 `\s+` 挡不住那个
+       *   反斜杠（`\s` 不匹配 `\`）⇒ 仍会假红。所以这里先把
+       *   「反斜杠+换行+缩进」和所有连续空白**一起压成单个空格**，再比对。
+       *
+       * ★ 归一化只影响**空白**，不影响任何字符的取舍 ——
+       *   下面反向对照里 `>` 与 `5` 仍必须逐字保留。
+       */
+      final flat = rs
+          .replaceAll(RegExp(r'\\\s*\n\s*'), ' ')
+          .replaceAll(RegExp(r'\s+'), ' ');
+      // ★ 正向：带别名也要认（别名是无关的书写细节，钉它只会制造假红）
       expect(
-        rs.contains('FROM progress WHERE finished=0 AND position > 5'),
+        RegExp(r'FROM progress\s+\w+\s+WHERE finished=0 AND position > 5')
+            .hasMatch(flat),
         isTrue,
         reason: '★★★ 症状刻画的前提：continueWatching 必须带 `position > 5`。'
             '⚠️ 这条断言的对象是 **Rust 源码**（不是注释里的）—— '

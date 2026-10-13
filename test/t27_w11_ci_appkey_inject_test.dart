@@ -83,16 +83,35 @@ bool isSecretExpression(String value) {
   return v.startsWith(r'${{') && v.endsWith('}}');
 }
 
-/// 返回 workflow 里承载三条 flutter build 的那三个步骤块的完整文本
+/// 返回 workflow 里**需要注入凭证**的那三个发布构建步骤块的完整文本
+///
 /// （从 build 命令行向前找到步骤头 `- name:`，向后到下一个同级步骤为止）。
 /// 用来断言「dart-define 与 step env 出现在同一步骤块内」。
+///
+/// ⚠️⚠️ 2026-10-12（PR #6）：判据从「**所有** flutter build 步骤」收窄到
+///    「**发布用**的那三个」—— 起因是 native-media 诊断 job 需要
+///    `flutter build windows --debug` 来触发 CMake 供出 libmpv-2.dll
+///    （光 `flutter pub get` 供不出来，已实测；见 build.yml 里那段说明）。
+///    那一步**不注入任何凭证**，把它算进来会误报"每个 build 步骤都要有 env"。
+///
+/// ★ 收窄的是**范围**，不是**判据**：三条发布构建（windows/macos/apk）
+///   仍然逐个要求「恰好一次 AppId + 恰好一次 AppSecret，且在本步骤块内」。
+///   新增的无凭证构建步**不削弱**任何一条既有断言。
+///
+/// ★ 判据怎么认"发布用"：那三条都是 `--release`。诊断步用 `--debug`。
+///   （写死 `--release` 而不是"排除某个 job 名"—— job 名会改，语义不会。）
+bool _isReleaseBuildLine(String l) {
+  final isBuild = l.contains('flutter build windows') ||
+      l.contains('flutter build macos') ||
+      l.contains('flutter build apk');
+  return isBuild && l.contains('--release');
+}
+
 List<String> buildStepBlocks(List<String> allLines) {
   final blocks = <String>[];
   for (var i = 0; i < allLines.length; i++) {
     final l = allLines[i];
-    if (!(l.contains('flutter build windows') ||
-        l.contains('flutter build macos') ||
-        l.contains('flutter build apk'))) {
+    if (!_isReleaseBuildLine(l)) {
       continue;
     }
     // 向前找到本步骤的起始（`      - name:` 行，缩进 6 个空格）
@@ -151,13 +170,11 @@ void main() {
       }
     });
 
-    test('② 三条 flutter build 各追加两个 dart-define，且用对应 shell 语法引用', () {
-      final buildLines = allLines
-          .where((l) => l.contains('flutter build windows') ||
-              l.contains('flutter build macos') ||
-              l.contains('flutter build apk'))
-          .toList();
-      expect(buildLines.length, 3, reason: '改动面收敛：恰好三条 flutter build 命令');
+    test('② 三条发布用 flutter build 各追加两个 dart-define，且用对应 shell 语法引用', () {
+      // ★ 只取**发布用**那三条（--release）—— 诊断 job 那条 --debug 不注入凭证，
+      //   不该被要求带 dart-define。理由见 buildStepBlocks 的说明。
+      final buildLines = allLines.where(_isReleaseBuildLine).toList();
+      expect(buildLines.length, 3, reason: '改动面收敛：恰好三条**发布用** flutter build 命令');
       for (final line in buildLines) {
         final i = allLines.indexOf(line);
         final end = allLines.indexWhere((l) => l.trim().isEmpty, i + 1);
@@ -187,6 +204,8 @@ void main() {
     });
 
     test('③ 既有 SOURIN_VERSION 注入通道未被破坏', () {
+      // ★ 仍是 3：只有那三条**发布用**构建带 SOURIN_VERSION，
+      //   诊断 job 的 --debug 构建不带（它不发版，不需要知道自己是谁）。
       expect(occurrences(workflow, r'--dart-define=SOURIN_VERSION='), 3);
       expect(occurrences(workflow, r'${{ env.SOURIN_VERSION }}'), 3);
     });

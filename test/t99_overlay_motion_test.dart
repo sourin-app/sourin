@@ -147,13 +147,10 @@ DanmakuSettingsDialog _danmakuDialog({VoidCallback? onClose}) =>
     DanmakuSettingsDialog(
       state: _settingsState(),
       onSetEnabled: (_) {},
-      onSetAppId: (_) {},
-      onSetAppSecret: (_) {},
       onSetFontScale: (_) {},
       onSetOpacity: (_) {},
       onSetSpeed: (_) {},
       onSetArea: (_) {},
-      onClearCredentials: () {},
       onReload: () {},
       onClose: onClose ?? () {},
     );

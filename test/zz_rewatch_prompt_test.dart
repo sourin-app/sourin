@@ -44,7 +44,7 @@ library;
 //   （Rust schema 改动），**超出本次授权范围**——此处在文件头如实标注。
 // ```
 //
-// # 本文件的六条门禁（每条都做**撤销验证**：还原 ⇒ 变红）
+// # 本文件的十条门禁（每条都做**撤销验证**：还原 ⇒ 变红）
 //
 // ```text
 // ① 默认行为不变：缺省（没设偏好）⇒ 切集**不弹浮层**、从头播（_pendingSeek == null）
@@ -53,6 +53,10 @@ library;
 // ④ 不操作 ⇒ 默认从头：超时后位置仍是 0（不是续播位置）
 // ⑤ ★阴性对照：「继续观看」被点 ⇒ **确实** seek 到上次位置（两个动作真接线）
 // ⑥ 快看完的不提示（position >= duration-10）⇒ 不弹
+// ⑦ 设置入口：面板「切集起播」两选一真的接线（点「提示」回调带 prompt）
+// ⑧ ★先过滤再挑选：镜像那条属于**别的集**且位置更大 ⇒ 不许连坐本集自己那条
+// ⑨ ★代次守卫：慢的那次切集回来时（用户已切走）⇒ 不许弹过期浮层
+// ⑩ ★mounted 守卫：切集停在 `_reload()` 的 await 上时页面被销毁 ⇒ 不许抛异常
 // ```
 //
 // ⚠️ 断言读**真实渲染**的浮层文字（`find.text(...)`）与真实 `_pendingSeek` /
@@ -87,6 +91,84 @@ Widget _appWith(Widget home) {
   );
 }
 
+/// 门禁用假 `resolve_stream`：造出「有可播放候选」的世界
+///
+/// # 为什么门禁必须装它
+/// ```text
+/// `flutter test` 里没有核心层（`sourin_core.dll` 未加载），真 `resolve_stream`
+/// 会抛 `SourinCoreException(other): 无法路由: cycani:rewatch-3862`；
+/// `_reload()` 把它写进 `_error` ⇒ CR #22 ② 新增的 `_error == null` 守卫
+/// **在门禁里恒为假** ⇒ 提示永远弹不出来，门禁分不出「守卫对」与「守卫写错」。
+/// ```
+/// ★ 只顶替**核心层传输**（`SourinCore.callAsync`），不顶替任何 UI 逻辑。
+Future<List<StreamCandidate>> _fakeResolve(
+  String provider,
+  String id, {
+  PlayRequest? req,
+}) async =>
+    [
+      StreamCandidate(
+        url: 'http://127.0.0.1:1/fake.m3u8',
+        kind: 'hls',
+        quality: '1080P',
+      ),
+    ];
+
+/// 门禁⑨ 用：**第一次** `resolve_stream` 慢 400ms，之后立刻返回。
+///
+/// # 为什么需要它
+/// ```text
+/// 门禁⑨ 要制造**两次切集重叠**（第二次不等第一次就发出）——
+/// 只有第一次那条路在 `_reload()` 里停住，第二次才能"后发先至"。
+/// 停住的位置必须是 `_reload()` 里的 await（**不是**测试自己插的 sleep），
+/// 否则测的是测试的时序，不是生产的时序。
+/// ```
+Future<List<StreamCandidate>> _fakeResolveSlowFirst(
+  String provider,
+  String id, {
+  PlayRequest? req,
+}) async {
+  final n = ++_fakeResolveCalls;
+  if (n == 1) {
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+  }
+  return [
+    StreamCandidate(
+      url: 'http://127.0.0.1:1/fake.m3u8',
+      kind: 'hls',
+      quality: '1080P',
+    ),
+  ];
+}
+
+/// 门禁⑩ 用：**第一次** `resolve_stream` 慢 1500ms —— 窗口足够宽，
+/// 保证「拆页」这一步**确定**落在 `_reload()` 的 await 里面。
+///
+/// 为什么不用 `_fakeResolveSlowFirst` 的 400ms：拆页要等前面
+/// `readRewatchProgress` + `_saveProgress` 两次 FFI 跑完才发得出去，
+/// 400ms 的窗口**可能**在拆页前就结束了 ⇒ 门禁变成"测了个寂寞"
+/// （实测过一次：改前的代码在那种时序下仍然全绿）。
+Future<List<StreamCandidate>> _fakeResolveVerySlowFirst(
+  String provider,
+  String id, {
+  PlayRequest? req,
+}) async {
+  final n = ++_fakeResolveCalls;
+  if (n == 1) {
+    await Future<void>.delayed(const Duration(milliseconds: 1500));
+  }
+  return [
+    StreamCandidate(
+      url: 'http://127.0.0.1:1/fake.m3u8',
+      kind: 'hls',
+      quality: '1080P',
+    ),
+  ];
+}
+
+/// `_fakeResolveSlowFirst` 的调用计数（每个用例自己清零）
+int _fakeResolveCalls = 0;
+
 /// 浮层两个动作的**真实**渲染文字（`find.text` 的证据）
 const _kContinueLabel = '继续观看';
 const _kFromStartLabel = '从头播放';
@@ -98,6 +180,10 @@ void main() {
   const ep1Id = '51462';
   const ep2Id = '51463';
   const ep3Id = '51464';
+
+  /// 门禁⑧ 用的「镜像来源」provider —— 只要求 **≠ 会话 provider**
+  /// （`mirrorOriginFor` 只拒绝同 provider / local，见 progress_origin.dart:174-182）
+  const mirrorProvider = 'mirrorx';
 
   /// 每集 `id + title` —— 与站点路径同形（episode.id = 站点集 id）
   final episodes = <Episode>[
@@ -138,6 +224,13 @@ void main() {
 
   setUp(() {
     RemoteBridge.instance.stop();
+    // ★★ 门禁世界（两件必须一起装，见下面各自的说明）：
+    //   ① 假 resolve_stream ⇒ `_reload()` 能拿到可播放候选；
+    //   ② 跳过 `open()` ⇒ `_startPlayback()` 能**跑完**。
+    //   两件缺一，`_gotoEpisode()` 都走不到末尾的 `_error == null` 守卫
+    //   ⇒ 门禁②④⑤ 恒红（实测过，不是推测）。
+    SourinApi.debugResolveStreamFetcher = _fakeResolve;
+    debugPlayerSkipOpenForProbe = true;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
       const MethodChannel('com.alexmercerind/media_kit_video'),
@@ -155,12 +248,24 @@ void main() {
       null,
     );
     RemoteBridge.instance.stop();
+    // ★ 门禁注入点必须复位：否则会漏到同进程里的其它用例（假绿/假红都可能）
+    SourinApi.debugResolveStreamFetcher = null;
+    debugPlayerSkipOpenForProbe = false;
     // 每个用例都从"空偏好"开始 —— 缺省 = 从头（门禁①测的正是它）
     UiPrefs.debugResetForTest();
   });
 
   /// 挂一个**在线会话**页（真 PlayerPage）—— episodes 非空、可切集
-  Future<void> mountOnline(WidgetTester t, {String tag = 'x'}) async {
+  ///
+  /// [originProvider] / [originMediaId]：可选「镜像来源」（门禁⑧ 用）。
+  /// ★ 只在**来源 provider ≠ 会话 provider** 时才会形成镜像目标
+  ///   （判据在 `mirrorOriginFor`，本页不重写）—— 传同一个 provider 等于没传。
+  Future<void> mountOnline(
+    WidgetTester t, {
+    String tag = 'x',
+    String? originProvider,
+    String? originMediaId,
+  }) async {
     await t.binding.setSurfaceSize(const Size(1280, 800));
     addTearDown(() => t.binding.setSurfaceSize(null));
     await t.pumpWidget(_appWith(mui.Scaffold(
@@ -173,6 +278,8 @@ void main() {
         episodeId: ep1Id,
         episodes: episodes,
         episodeIndex: 0,
+        originProvider: originProvider,
+        originMediaId: originMediaId,
       ),
     )));
     while (t.takeException() != null) {}
@@ -210,6 +317,39 @@ void main() {
         '${back.duration}s');
   }
 
+  /// 造一条**任意键**的进度记录（门禁⑧ 用）
+  ///
+  /// 为什么要它：镜像那条住在**另一个 provider** 的键上
+  /// （`mirrorOriginFor` 只拒绝「同 provider」，见 progress_origin.dart:174-182）
+  /// ⇒ 必须能往 `atProvider:atId` 这个键上写。
+  Future<void> seedProgressRaw(
+    WidgetTester t, {
+    required String atProvider,
+    required String atId,
+    required String episodeId,
+    required String episodeTitle,
+    required int position,
+    int duration = 1320,
+    String title = '追更剧',
+  }) async {
+    await t.runAsync(() => SourinApi.saveProgress(
+          atProvider,
+          atId,
+          title: title,
+          episodeId: episodeId,
+          episodeTitle: episodeTitle,
+          position: position,
+          duration: duration,
+        ));
+    final back = await t.runAsync<Progress?>(
+        () => SourinApi.getProgress(atProvider, atId));
+    expect(back, isNotNull, reason: '★ 仪器自检：刚写的镜像进度必须真的读得回');
+    expect(back!.episodeId, episodeId,
+        reason: '★ 仪器自检：镜像那条的集号 = 刚写的那一集');
+    debugPrint('REWATCH 种入镜像进度 at=$atProvider:$atId ep=$episodeId '
+        'pos=${back.position}s/${back.duration}s');
+  }
+
   /// 驱动**生产方法** `_gotoEpisode(第3集)`
   Future<void> gotoEp3(WidgetTester t) async {
     final ok =
@@ -220,6 +360,11 @@ void main() {
     //   状态变了但**树还没重建** ⇒ 直接 find.text 会找不到（"浮层没渲染"的假象）。
     await t.pump();
     while (t.takeException() != null) {}
+    // ★ 环境态取证：`_error` / 候选数 / 浮层可见性一次打全 ——
+    //   门禁②④⑤ 全都依赖「起播成功 + 浮层真的弹了」，这两件事必须在日志里可见。
+    debugPrint('REWATCH 环境态：_error=${debugPlayerErrorForProbe()} '
+        'streams=${debugPlayerStreamUrlsForProbe().length} '
+        'promptVisible=${debugPlayerRewatchPromptVisible()}');
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -530,6 +675,188 @@ void main() {
       await t.pump();
       expect(picked, PlayEpisodeStartAction.prompt,
           reason: '★★ 点「提示」必须回调 `onSetEpisodeStartAction(prompt)`（真的接线）');
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ⑧ 先过滤、再挑选（CR #22 ①）—— 跨集镜像不许连坐本集自己那条
+  // ══════════════════════════════════════════════════════════════════
+  group('⑧ 先过滤再挑选（跨集镜像不许压掉本集自己的记录）', () {
+    testWidgets('★★★ 镜像那条是第2集且位置更大 ⇒ 仍按第3集自己那条提示', (t) async {
+      // 本会话键：第3集看到 05:00（300s）
+      await seedProgress(t, episodeId: ep3Id, position: 300);
+      // 镜像键（另一个 provider）：第2集看到 16:40（1000s）—— 位置**更大**
+      await seedProgressRaw(
+        t,
+        atProvider: mirrorProvider,
+        atId: contentId,
+        episodeId: ep2Id,
+        episodeTitle: '第2集',
+        position: 1000,
+      );
+      UiPrefs.debugResetForTest(
+          {'dsh.playprefs.episodeStartAction': 'prompt'});
+
+      await mountOnline(
+        t,
+        tag: 'mirror-cross',
+        originProvider: mirrorProvider,
+        originMediaId: contentId,
+      );
+      debugPrint('REWATCH ⑧ 镜像目标=${debugPlayerMirrorOriginForProbe()}'
+          '（必须是 $mirrorProvider:$contentId）');
+      await gotoEp3(t);
+
+      debugPrint('REWATCH ⑧ 跨集镜像：prompt='
+          '${debugPlayerRewatchPromptForProbe()}');
+      expect(debugPlayerRewatchPromptVisible(), isTrue,
+          reason: '★★★ 本集自己那条（05:00）满足提示条件 ⇒ 浮层必须弹');
+      expect(find.text('上次看到 05:00'), findsOneWidget,
+          reason: '★★★ 取的是**本集自己**那条 —— 第2集那条 16:40 更大，'
+              '但它属于另一集：既不许被选中，也不许把本集这条一起连坐丢掉');
+      expect(find.text('上次看到 16:40'), findsNothing,
+          reason: '★★ 第2集的位置绝不能显示成第3集的「上次看到」');
+      await drainTimers(t);
+    });
+
+    testWidgets('★★ 镜像那条**同集**且位置更大 ⇒ 仍取镜像（不过度过滤）', (t) async {
+      await seedProgress(t, episodeId: ep3Id, position: 300);
+      await seedProgressRaw(
+        t,
+        atProvider: mirrorProvider,
+        atId: contentId,
+        episodeId: ep3Id,
+        episodeTitle: '第3集',
+        position: 1000,
+      );
+      UiPrefs.debugResetForTest(
+          {'dsh.playprefs.episodeStartAction': 'prompt'});
+
+      await mountOnline(
+        t,
+        tag: 'mirror-same',
+        originProvider: mirrorProvider,
+        originMediaId: contentId,
+      );
+      await gotoEp3(t);
+
+      debugPrint('REWATCH ⑧ 同集镜像：prompt='
+          '${debugPlayerRewatchPromptForProbe()}');
+      expect(find.text('上次看到 16:40'), findsOneWidget,
+          reason: '★★ 镜像那条**也是第3集**、位置更大 ⇒ 仍取镜像'
+              '（过滤只该滤掉**别的集**，不许把同集的镜像一起滤掉）');
+      expect(find.text('上次看到 05:00'), findsNothing,
+          reason: '★ 同集时位置大的赢（pickResumeProgress 的既有语义）');
+      await drainTimers(t);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ⑨ 代次守卫（CR #22 ②）：后发先至的切集不许被慢的那次盖回去
+  // ══════════════════════════════════════════════════════════════════
+  group('⑨ 代次守卫（连续切集时过期的那次不许弹浮层）', () {
+    testWidgets('★★★ 先切第3集（慢）→ 再切第2集（快）⇒ 不许弹第3集的 20:00',
+        (t) async {
+      // 库里只有一条：第3集看到 20:00（1200s）
+      await seedProgress(t, episodeId: ep3Id, position: 1200);
+      UiPrefs.debugResetForTest(
+          {'dsh.playprefs.episodeStartAction': 'prompt'});
+
+      await mountOnline(t, tag: 'race');
+      // ★ 挂载那次的 resolve 已经用掉「第一次」—— 之后才换成慢的
+      SourinApi.debugResolveStreamFetcher = _fakeResolveSlowFirst;
+      _fakeResolveCalls = 0;
+
+      /*
+       * ★★ 两次切集必须塌进**同一个** runAsync 回调：
+       *    `runAsync` 明确禁止重入（binding.dart:3020 的
+       *    `fail('Reentrant call to runAsync() denied.')`）⇒ 拆成两次调用
+       *    会在第二次直接 fail。
+       * ★ 停住的位置是 `_reload()` 里那个 `await resolveStream`（慢的假
+       *    resolve 卡住它），**不是**测试自己插的 sleep。
+       */
+      await t.runAsync(() async {
+        final f1 = debugPlayerGotoEpisodeForProbe(episodes[2]); // 第3集：读到 20:00
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        await debugPlayerGotoEpisodeForProbe(episodes[1]); // 第2集：后发先至
+        await f1; // 等慢的那次收尾
+      });
+      await t.pump();
+      while (t.takeException() != null) {}
+
+      debugPrint('REWATCH ⑨ 竞态：prompt=${debugPlayerRewatchPromptForProbe()} '
+          '可见=${debugPlayerRewatchPromptVisible()}');
+      expect(debugPlayerRewatchPromptForProbe(), isNull,
+          reason: '★★★ 第一次切集（第3集 20:00）在 `_reload()` 的 await 上停住'
+              '期间用户又切到第2集 ⇒ 它回来时代次已变，**不许**再弹浮层'
+              '（弹了就是 CR #22 ② 说的「旧调用把第一目标集的进度显示出来」）');
+      expect(find.text('上次看到 20:00'), findsNothing,
+          reason: '★★ 真实渲染里也不许出现第3集那个 20:00');
+      await drainTimers(t);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ⑩ 每个 await 之后都要 mounted 守卫（CR #22 ④）
+  // ══════════════════════════════════════════════════════════════════
+  group('⑩ 每个 await 之后都要 mounted 守卫', () {
+    testWidgets('★★★ 切集停在 _reload 的 await 上时把页面拆掉 ⇒ 不抛异常',
+        (t) async {
+      await seedProgress(t, episodeId: ep3Id, position: 1200);
+      UiPrefs.debugResetForTest(
+          {'dsh.playprefs.episodeStartAction': 'prompt'});
+
+      await mountOnline(t, tag: 'dispose');
+      SourinApi.debugResolveStreamFetcher = _fakeResolveVerySlowFirst;
+      _fakeResolveCalls = 0;
+
+      /*
+       * 拆页必须发生在**切集停在 `_reload()` 的 await 上**时：
+       *   起播成功后 `_gotoEpisode` 的尾巴会调 `showRewatchPrompt`，
+       *   而那时页面已经被销毁 ⇒ `setState() called after dispose()`。
+       *
+       * ★ 撤销验证的**实测归属**（这一步必须说清，否则门禁的名字会骗人）：
+       * ```text
+       * 只摘掉 `_reload()` 里那句 `if (!mounted) return;`   ⇒ 仍然全绿
+       *   （`_reload` 的 setState 在 try 里，被自己的 catch 吞掉；
+       *     catch 里那句 `if (mounted)` 让异常不外泄）
+       * 同时摘掉 `_gotoEpisode` 尾部守卫的 `mounted` 与
+       *   `showRewatchPrompt` 开头那句 `if (!mounted) return;`  ⇒ **变红**
+       *   `setState() called after dispose(): _PlayerPageState#…(lifecycle
+       *    state: defunct, not mounted, ticker inactive)`（实测原文）
+       * ```
+       * ⇒ 这两处 `mounted` 是**一对**：任一句在，本场景就不炸；
+       *   两句都不在才炸。本门禁锁的是「这一对必须在」。
+       */
+      /*
+       * ★★ 拆页必须发生在**真实异步区之外**：
+       *   `runAsync` 内部 `pumpWidget` 不会真的把那棵旧树拆掉（实测：
+       *   改前的代码在这一版门禁下**仍然全绿** ⇒ 这条门禁没有分辨力），
+       *   所以把「起跑 + 等它停住」与「拆页 + 等它收尾」拆成两次
+       *   `runAsync`（顺序调用，不违反重入禁令）。
+       */
+      late Future<bool> f1;
+      await t.runAsync(() async {
+        f1 = debugPlayerGotoEpisodeForProbe(episodes[2]);
+        // ★ 等够 300ms：让 `readRewatchProgress` + `_saveProgress` 两次 FFI
+        //   跑完、`_reload()` 已经发出 resolve（此后它会停 1500ms）——
+        //   这样「拆页」就**确定**落在 `_reload()` 的 await 里面。
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      });
+      debugPrint('REWATCH ⑩ 拆页前：resolve 已发起 ${_fakeResolveCalls} 次'
+          '（必须是 1 ⇒ 说明 _reload 正在等它）');
+      expect(_fakeResolveCalls, 1,
+          reason: '★★ 仪器自检：拆页必须发生在 _reload() 等 resolve 期间，'
+              '否则这条门禁测不到 mounted 守卫');
+      await t.pumpWidget(const SizedBox()); // 拆页 ⇒ dispose
+      await t.runAsync(() => f1); // 让它带着「已销毁」跑完
+
+      final err = t.takeException();
+      debugPrint('REWATCH ⑩ 拆页后异常=$err');
+      expect(err, isNull,
+          reason: '★★★ 页面销毁后 `_reload()` 还在跑 ⇒ 必须靠 mounted 守卫'
+              '提前返回；抛出来就是 setState-after-dispose');
+      await drainTimers(t);
     });
   });
 }

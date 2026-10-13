@@ -4020,24 +4020,44 @@ class _PlayerPageState extends State<PlayerPage>
           debugPrint('[PLAYER] 读目标集镜像进度失败（忽略）: $e');
         }
       }
-      final p = pickResumeProgress(session: own, mirror: peer);
-      if (p == null) return null;
+      /*
+       * ★★★ CR #22 ①：**先过滤、再挑选**。
+       *
+       * # 为什么顺序不能反（这是一个真缺陷，不是风格问题）
+       * ```text
+       * `pickResumeProgress` 在两侧都有效时取 position 更大的那条。
+       * 若镜像那条属于**别的集**且位置更大，它就会被选中；
+       * 随后"按集校验"再把它丢掉 ⇒ 目标集自己那条（位置更小）
+       * 也一起没了 ⇒ 即使它满足提示条件，浮层也不会弹。
+       * ```
+       * 与 `_prepareResume`（本文件 `:3799-3828`）**同一个修法**：
+       * 在 `pickResumeProgress` **之前**把不属于目标集的记录滤掉，
+       * 两侧各自过滤 ⇒ 挑选时看到的只有合法候选。
+       */
+      Progress? targetProgress(Progress? candidate) {
+        if (candidate == null) return null;
+        if (isAnotherEpisode(
+          progressEpisodeId: candidate.episodeId,
+          currentEpisodeId: target,
+        )) {
+          debugPrint('[PLAYER] 目标集 $target 的候选进度属于另一集（${candidate.episodeId}），丢弃');
+          return null;
+        }
+        if (!progressBelongsToCurrentEpisode(
+          progressEpisodeId: candidate.episodeId,
+          currentEpisodeId: target,
+        )) {
+          debugPrint('[PLAYER] 候选记录（集=${candidate.episodeId}）≠ 目标集 $target，丢弃');
+          return null;
+        }
+        return candidate;
+      }
 
-      // ② 按集校验：这条进度必须属于**目标集**（不是别的集）
-      if (isAnotherEpisode(
-        progressEpisodeId: p.episodeId,
-        currentEpisodeId: target,
-      )) {
-        debugPrint('[PLAYER] 目标集 $target 的进度属于另一集（${p.episodeId}），不提示');
-        return null;
-      }
-      if (!progressBelongsToCurrentEpisode(
-        progressEpisodeId: p.episodeId,
-        currentEpisodeId: target,
-      )) {
-        debugPrint('[PLAYER] 记录（集=${p.episodeId}）≠ 目标集 $target，不提示');
-        return null;
-      }
+      final p = pickResumeProgress(
+        session: targetProgress(own),
+        mirror: targetProgress(peer),
+      );
+      if (p == null) return null;
 
       final pos = p.position;
       // ④ 刚点开不提示（看超过 5 秒才算"看过"）—— 与 `_prepareResume` 同义
@@ -4135,6 +4155,19 @@ class _PlayerPageState extends State<PlayerPage>
   /// 浮层自动消失的定时器（见 [showRewatchPrompt]）
   Timer? _rewatchTimer;
 
+  /// ★★★ CR #22 ②：切集**代次**（每次 [_gotoEpisode] 进来就自增）
+  ///
+  /// # 它挡的是什么
+  /// \`\`\`text
+  /// \`_gotoEpisode\` 中间有多次 await（读进度 / 落盘 / \`_reload\`）。
+  /// 用户连点两集时，**旧**调用会在**新**集已经起播之后才走到最后那句
+  /// \`showRewatchPrompt\`，把**第一目标集**的进度弹在第二集上；
+  /// 用户点「继续观看」⇒ 对**新集**执行一次错误位置的 seek。
+  /// \`\`\`
+  /// 每次切集自增一次，显示前比对 —— 只要中间又切过集，旧调用就**沉默退出**。
+  /// 与「当前集是不是目标集」双重把关（代次管时序，集号管身份）。
+  int _rewatchToken = 0;
+
   Future<void> _startPlayback(StreamCandidate st) async {
     setState(() {
       _current = st;
@@ -4206,7 +4239,9 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ headers 为空时传 `const {}` 与不传等价 —— media_kit 用
        *    `?? cache[...]` 兜底，空 Map 不会破坏任何东西。
        */
-      await _player.open(Media(st.url, httpHeaders: st.httpHeaders));
+      if (!debugPlayerSkipOpenForProbe) {
+        await _player.open(Media(st.url, httpHeaders: st.httpHeaders));
+      }
       /*
        * ★★★ task-22 P1-11：`video-zoom` 是**逐文件**属性 —— mpv 换文件时会
        *   把它复位。只在 `_setHwdec()` 里下发一次是不够的（换集后缩放就没了），
@@ -8354,6 +8389,15 @@ class _PlayerPageState extends State<PlayerPage>
      *    放在守卫之前会把"传了个不存在的 id"也算进去，
      *    那种情况并没有真的切集。
      */
+    /*
+     * ★★★ CR #22 ②：切集代次 —— 在任何 await **之前**自增。
+     *
+     * 连点两集时，先发出的那次调用会在后一次已经把新集播起来之后
+     * 才走到收尾的 `showRewatchPrompt`；靠这枚令牌让**旧**调用沉默。
+     * ⚠️ 必须在 `i < 0` 守卫之后（没真的切集就不该作废别人的令牌）。
+     */
+    final rewatchToken = ++_rewatchToken;
+
     _gotoEpisodeCalls++; // ★ 只读探针
     _probeLog(
       'gotoEpisode #$_gotoEpisodeCalls  '
@@ -8378,6 +8422,15 @@ class _PlayerPageState extends State<PlayerPage>
     Progress? rewatch;
     if (_episodeStartAction == PlayEpisodeStartAction.prompt) {
       rewatch = await readRewatchProgress(ep.id);
+      /*
+       * ★★★ CR #22 ③：每个 await 返回后立刻查 `mounted`。
+       *
+       * 页面销毁**不会**取消正在跑的 `_gotoEpisode`；用户在读取期间
+       * 按返回退出播放页时，下面 `_saveProgress` / `setState` /
+       * `_reload` 都会作用在一个已经 dispose 的 State 上
+       *（`setState() called after dispose()`）。
+       */
+      if (!mounted) return;
     }
 
     /*
@@ -8387,6 +8440,8 @@ class _PlayerPageState extends State<PlayerPage>
      *（定时器还没触发）。
      */
     await _saveProgress(immediate: true);
+    // ★★★ CR #22 ③：落盘同样是 await ⇒ 返回后补一次 `mounted` 检查
+    if (!mounted) return;
 
     _cancelNextCountdown();
     setState(() {
@@ -8440,8 +8495,25 @@ class _PlayerPageState extends State<PlayerPage>
      * ⚠️ **绝不影响起播**：这里只 `setState` 一个"要显示的秒数"，
      *    不暂停、不 seek（见 `showRewatchPrompt`）。
      * ⚠️ `mounted` 守卫：切集过程中页面可能已被销毁。
+     *
+     * # ★★★ CR #22 ②：四道门一起过才弹
+     * ```text
+     * ① mounted               —— 页面还在（否则 setState 会炸）
+     * ② rewatchToken == 当前   —— 中间**没有**又切过集（旧调用必须沉默，
+     *                            否则会把第一目标集的进度弹到新集上，
+     *                            用户点「继续观看」⇒ 对新集做一次错误 seek）
+     * ③ _error == null         —— 起播**成功**（`_reload` 失败时只设
+     *                            `_error`，那时弹续播浮层等于骗用户去 seek
+     *                            一个根本没在放的播放器）
+     * ④ 当前集 == 目标集        —— 身份核对（与 ② 是两件事：② 管时序，④ 管是谁）
+     * ```
      */
-    if (rewatch != null && mounted) {
+    if (rewatch != null &&
+        mounted &&
+        rewatchToken == _rewatchToken &&
+        _error == null &&
+        _epIndex < _episodes.length &&
+        _episodes[_epIndex].id == ep.id) {
       debugPrint('[PLAYER] 目标集看过（${rewatch.position}s）⇒ 弹「继续观看/从头播放」浮层');
       showRewatchPrompt(Duration(seconds: rewatch.position));
     }
@@ -15275,6 +15347,40 @@ bool debugPlayerMarkFirstFrameForProbe() {
   return s._sawFirstFrame;
 }
 
+/// ★★★ CR #22 ② 门禁用：把「起播失败」态**中性化**成干净态（不清别的字段）
+///
+/// # 为什么需要它
+/// ```text
+/// CR ② 要求「_error != null 时不许弹续播浮层」—— 这条守卫是对的：
+/// 起播失败时弹"继续观看"等于骗用户去 seek 一个没在放的播放器。
+///
+/// 但原生门禁（见 test/zz_rewatch_prompt_test.dart ②）是**正向**判据：
+/// "提示模式 + 这集看过 ⇒ 必须弹"。而那个夹具里 SourinApi.resolveStream
+/// 走真 FFI、必然失败 ⇒ 挂载期 _error 就已经被置上 ⇒ 守卫一落地，
+/// 那条正向门禁会**立刻变红**。
+/// ```
+/// 所以要一条能把 _error 清回干净态的钩子，门禁里**先自证它真生效**
+///（返回 false ⇒ 测试立刻红），再断言浮层弹出。
+///
+/// # 与 [debugPlayerMarkFirstFrameForProbe] 的区别（逐字对比过）
+/// ```text
+/// 本钩子**不设** _sawFirstFrame —— 只清"起播失败/中断"三件套。
+/// 不设它，是因为本钩子不假装"出过画面"，只把错误态抹平。
+/// ```
+bool debugPlayerClearErrorForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  AppLog.write('PLAY', '错误态已中性化（探针清空 _error/_errorKind/_playbackFailure）');
+  // ignore: invalid_use_of_protected_member
+  s.setState(() {
+    s._error = null;
+    s._errorKind = null;
+    s._loading = false;
+    s._playbackFailure = null;
+  });
+  return s._error == null;
+}
+
 /// 读第 9 条的两个状态（`hasFrame=<是否出过画面> failure=<非阻断横幅>`）
 String debugPlayerPlaybackFailureState() {
   final s = _livePlayerState;
@@ -15367,6 +15473,33 @@ void debugPlayerResetPositionSetStates() {
   debugPlayerPositionSetStates = 0;
   debugPlayerPositionTicks = 0;
 }
+
+/// 探针用：**跳过 `_player.open()` 那一句**（缺省 false ⇒ 生产逐字不变）
+///
+/// # 为什么必须有这个开关（实测，不是猜）
+/// ```text
+/// `await _player.open(...)` 在**挂了 `PlayerPage` 的** `testWidgets` 里
+/// **永不返回** —— 与 `MediaKit.ensureInitialized` 在哪个 zone 无关：
+///   · `.probe/open_probe.txt`：裸 `test()` 里 79ms 返回；`t.runAsync` 里 20s 超时
+///   · `.probe/open2a.txt` / `open2b.txt`：**没有 widget 树**的 testWidgets
+///     里两个变体都 60–79ms 正常返回
+/// ⇒ 挂住的真正条件是「页面上挂着一个真 Player + 有 pumpWidget 的树」。
+/// ```
+///
+/// # 为什么不能用「事后清 `_error`」的探针救场
+/// ```text
+/// CR #22 ② 的代次守卫（`_gotoEpisode` 末尾 `_error == null` 那一句）是
+/// 在 `_gotoEpisode` **内部**求值的 —— `open()` 挂住 ⇒ `_reload()` 永不返回
+/// ⇒ `_gotoEpisode()` 永不返回 ⇒ 事后任何清 `_error` 的探针都**跑不到**。
+/// 正向门禁（②④⑤）唯一出路：让 `_startPlayback` 能**跑完**。
+/// ```
+///
+/// ★ 只跳过 open **这一句**：`_applyVideoZoom` / `AppLog` / `_reportHwdecAfterReady`
+///   / `_reportFirstFrame` / `_watchVideoOutput` / audioUrl 挂载 / `_pendingSeek`
+///   / `_loading=false` / `_showControls` / `_armHideTimer` / `_startProgressSaver`
+///   / `_loadDanmaku` / `_applySubtitleStyle` **全照跑** ⇒ 门禁测的仍是生产流程。
+/// ★ 用法：门禁 `setUp` 置 `true`、`tearDown` 置回 `false`。
+bool debugPlayerSkipOpenForProbe = false;
 
 /// 探针用：把一次位置 tick **灌进真实处理路径**（见 `_onPositionTick`）
 ///

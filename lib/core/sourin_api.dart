@@ -150,6 +150,29 @@ class SourinApi {
     String channelId,
   )? debugLiveStreamFetcher;
 
+  /// 门禁注入点：`resolve_stream`（PR#22 切集续播提示门禁用）
+  ///
+  /// ⚠️ 与上面的探针同一纪律：**生产路径永不为非 null**（默认 null ⇒
+  ///    生产路径逐字不变，只是多一次判空）。
+  /// ⚠️ 语义：fake 顶替的是**核心层传输**（`SourinCore.callAsync`），
+  ///    不是缓存 —— [resolveStream] 本来就没有缓存。
+  ///
+  /// # 为什么需要它（门禁必须能造出「起播成功」的世界）
+  ///
+  /// `flutter test` 里没有核心层（`sourin_core.dll` 未加载），真实的
+  /// `resolve_stream` 会抛 `SourinCoreException(other): 无法路由: <provider>:<id>`。
+  /// 播放页 `_reload()` 把这条异常写进 `_error`，于是「切集续播提示」
+  /// 新增的 `_error == null` 守卫**在门禁里恒为假** —— 提示永远弹不出来，
+  /// 门禁无法区分「守卫正确工作」与「守卫写错了」。装上这个 fake 就能
+  /// 让 `_reload()` 走完 `_startPlayback()`（它会清 `_error`），
+  /// 把世界还原成「起播成功」，从而真正检验守卫。
+  @visibleForTesting
+  static Future<List<StreamCandidate>> Function(
+    String provider,
+    String id, {
+    PlayRequest? req,
+  })? debugResolveStreamFetcher;
+
   /// 清空直播取址缓存（T27-06）
   ///
   /// 换源 / 手动重试后的出口 —— 不留 30 秒内的旧地址。
@@ -443,6 +466,12 @@ class SourinApi {
     String id, {
     PlayRequest? req,
   }) async {
+    final fake = debugResolveStreamFetcher;
+    if (fake != null) {
+      // 门禁注入：fake 顶替核心层传输（生产路径永为 null）
+      // —— 见 [debugResolveStreamFetcher] 的说明。
+      return await fake(provider, id, req: req);
+    }
     final r = await SourinCore.callAsync('resolve_stream', {
       'provider': provider,
       'id': id,

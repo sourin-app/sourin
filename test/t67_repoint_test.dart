@@ -711,49 +711,86 @@ void main() {
        *   position 带过去」（用户在新源上被弹到没看过的位置）。
        *   所以判据换成「**配对判据本身**」，而不是某个分支的写法：
        */
-      // ④-a ★★★ 必须真的**按集配对**（`to_rows.iter().find`）—— 这是新形状的入口
+      // ④-a ★★★ 必须真的**按集配对**（`to_rows.iter().position`）—— 这是新形状的入口
+      //
+      //   ⚠️ 2026-10-13（CodeRabbit on #23）：判据从 `find(` 换成 `position(`。
+      //     `find` 返回的是 `&Progress` **引用**，而每轮写完库后必须把合并结果
+      //     写回 `to_rows` 快照（见 ④-e）—— 持有引用就没法写。换成下标即可两全。
       expect(
-          RegExp(r'to_rows\s*\.\s*iter\(\)\s*\.\s*find\(').hasMatch(body), isTrue,
-          reason: '★★★ progress 必须**逐集**在 TO 里找同一集（`to_rows.iter().find(…)`）'
-              '—— 按集后 FROM 有 N 行，不逐集配对就会把别的集当成"同一集"');
-      // ④-b ★★★ 配对判据必须是**集号比较**（而不是按行号/下标这种位置猜测）
+          RegExp(r'to_rows\s*\.\s*iter\(\)\s*\.\s*position\(').hasMatch(body), isTrue,
+          reason: '★★★ progress 必须**逐集**在 TO 里找同一集（`to_rows.iter().position(…)`）'
+              '—— 按集后 FROM 有 N 行，不逐集配对就会把别的集当成"同一集"；'
+              '★ 用 `position`（下标）而不是 `find`（引用）是因为每轮要把合并结果'
+              '**写回**快照，持有引用就写不了');
+      /*
+       * ④-b ★★★ 配对判据必须是**集号比较**（而不是按行号/下标这种位置猜测）
+       *
+       * ══════════════════════════════════════════════════════════════
+       * ⚠️⚠️ 2026-10-13 修正（CodeRabbit 在 PR #23 上点出**假绿**）
+       * ══════════════════════════════════════════════════════════════
+       *
+       * 原来这里是 `RegExp(r'if\s+ep_f\s*==\s*ep_t\s*\{').hasMatch(body)` ——
+       * 对**整个** 21KB 函数体做 hasMatch ⇒ 只要**任意一处**命中就绿。
+       * 而 history 臂里就有逐字同形的那一句（`if ep_f == ep_t {`）⇒
+       * **把 progress 臂的判定整段删掉，这条仍然全绿** ⇒ 零分辨力。
+       *
+       * ⇒ 改成**按段计数**：每个「集号判定段」= 从 `let ep_f =` 到 `ep_f == ep_t`
+       *   （history 用的是 `if ep_f == ep_t {`，落在同一段里）—— 两臂各贡献 1 个。
+       *   断 `>= 2` ⇒ progress 或 history 任一臂退回「不判定」，这里立刻变红。
+       *   ★ 比「整段 hasMatch」强，又不引入新的边界假设（不靠 HistoryEntry 找段）。
+       */
+      final judgeSegments = RegExp(
+              r'let\s+ep_f\s*=[\s\S]*?ep_f\s*==\s*ep_t')
+          .allMatches(body)
+          .length;
       expect(
-          RegExp(r'if\s+ep_f\s*==\s*ep_t\s*\{').hasMatch(body), isTrue,
-          reason: '★★★ 配对判据必须是 `ep_f == ep_t` 的 Option 比较（同一套三态裁决）');
+          judgeSegments,
+          greaterThanOrEqualTo(2),
+          reason: '★★★ 配对判据必须是 `ep_f == ep_t` 的 Option 比较（同一套三态裁决）——'
+              '★ progress 与 history **两臂各要有一次**（实测 $judgeSegments 次）。'
+              '★ 断言对象是**每个判定段**而不是整个函数体：history 臂里就有一句'
+              '逐字同形的 `if ep_f == ep_t {{`，对整体做 hasMatch 时'
+              '**把 progress 臂整段删掉也照样绿**（CodeRabbit 在 #23 上点出的假绿）');
       // ④-c ★★★ **history 必须与 progress 走同一套**（否则同一作品两张表各说各话）
-      //   ★ 这条是本次（2026-10-12）**补回**的：原判据靠"`else { t }` 出现 ≥2 次"
-      //     间接确立"两张表都有集号判定"，改成按集后那个计数不再成立，
+      //   ★ 这条是本次（2026-10-12）**补回**的：原判据靠「`else { t }` 出现 ≥2 次」
+      //     间接确立「两张表都有集号判定」，改成按集后那个计数不再成立，
       //     若只删不加，两张表各说各话这个坑就没人守了。
       //
-      //   ⚠️⚠️ 2026-10-12 二次修正（CodeRabbit 指出**我第一版写错了**）：
-      //     第一版是「**整个函数体**里 `episode_number_from_title(` ≥ 2 次」——
-      //     那是**假绿**：progress 臂自己就有 **2 次**调用
-      //     （`let ep_f = …` 与闭包里的 `let ep_t = …`）
-      //     ⇒ 满足 2 次**完全不依赖** history 有没有做集号判定。
-      //     实测（.probe 量过）：把 history 臂的两次调用**全部删掉**，
-      //     该断言**依然全绿** ⇒ 对本用例声称要守的东西**零分辨力**。
-      //   ⇒ 改成**按臂定位**：必须在 **history 段内**找到集号判定，
-      //     且必须成对（`ep_f` / `ep_t` 各一次）—— 那才是"两张表同一套语义"。
-      final histSection = body.substring(body.indexOf('HistoryEntry'));
+      //   ⚠️⚠️ 两次修正的经过（两版都是**假绿**，值得留着）：
+      //     ① 第一版：「**整个函数体**里 `episode_number_from_title(` ≥ 2 次」——
+      //        progress 臂自己就有 **2 次**调用（`let ep_f = …` 与闭包里的
+      //        `let ep_t = …`）⇒ 把 history 臂的两次调用**全删掉**它依然全绿。
+      //     ② 第二版：切 `histSection = body.substring(indexOf('HistoryEntry'))`
+      //        再在段内数 —— 段内确实有 2 次，但**切法本身是估的**：
+      //        `HistoryEntry` 在 ④-d 的臂里也出现，且 `indexOf` 命中的是
+      //        **第一处**，段尾一路延伸到函数末尾 ⇒ 数进去的其实是
+      //        「history 段 + 后面所有东西」。
+      //   ⇒ 2026-10-13 定稿：不再切段。**两臂各判一次集号**由 ④-b 的
+      //     `judgeSegments >= 2` 精确表达（每个段从 `let ep_f =` 起算，
+      //     到 `ep_f == ep_t` 结束）；本处只守「调用次数成对」这条下限。
+      /*
+       * ⚠️ 2026-10-13：这里**不再**切 `histSection`（`body.substring(indexOf(...))`）。
+       *   那个切法有两个毛病：① 用 `HistoryEntry` 当分界，而它在 ④-d 的臂里也出现；
+       *   ② 与 ④-b 的整段 hasMatch 是同一族「边界靠估」的写法。
+       *   「两臂各判一次集号」这件事现在由上面的 `judgeSegments >= 2` 精确表达
+       *   （每个段从 `let ep_f =` 起算），这里只保留 history 段内确实调用了这条。
+       */
       expect(
-          RegExp(r'episode_number_from_title\(').allMatches(histSection).length,
-          greaterThanOrEqualTo(2),
-          reason: '★★★ **history 段内**必须自己做集号判定（≥2 次：ep_f 与 ep_t）—— '
-              '★ 断言对象是 history 段**而不是整个函数体**：'
-              'progress 臂自己就有 2 次调用，按整体计数会**假绿**'
-              '（history 一次都不判也能过）。'
+          RegExp(r'episode_number_from_title\(').allMatches(body).length,
+          greaterThanOrEqualTo(4),
+          reason: '★★★ 集号解析调用必须**成对出现在两张表里**（progress 2 次 + '
+              'history 2 次 = 4 次）—— '
               '★ 只给 progress 加而漏了 history ⇒ 同一部作品在两张表里各说各话'
               '（一张携带、一张不携带）⇒ 更难解释的 bug。'
-              '这正是原「`else { t }` ≥2 次」那条断言想守的东西');
-      //   ★ 反向：history 段不许退回"不判定就携带"
-      expect(
-          RegExp(r'if\s+ep_f\s*==\s*ep_t\s*\{').hasMatch(histSection), isTrue,
-          reason: '★★ history 段必须用 `if ep_f == ep_t` 的**同款三态判定** —— '
-              '与 progress 逐字同形；少这一句就是"两张表各说各话"');
+              '★ 本条只守「次数下限」；「两臂**各自**成对」由 ④-b 的'
+              '`judgeSegments >= 2` 守（每个判定段从 `let ep_f =` 到 `ep_f == ep_t`）');
+      //   ★ 反向：history 臂不许退回「不判定就携带」—— 由 judgeSegments 覆盖：
+      //     它数的是**判定段**（从 `let ep_f =` 到 `ep_f == ep_t`），history 臂
+      //     若不判定就少一段 ⇒ 上面 `>= 2` 立刻变红。
       // ④-d ★★ 反向：不许有「拿 FROM 的 position 却不过集号判定」的臂
       //   老形态是 `else { Progress { … position: f.position … } }`（错位携带）。
       //   新形态下这个坑同样可能被写出来 —— 只不过程序员不会用 `else`，
-      //   而会在 `find` 的闭包里写错。下面钉住「Progress 结构体字面量里
+      //   而会在 `position` 的闭包里写错。下面钉住「Progress 结构体字面量里
       //   出现的 `f.position` 必须与 `f.position.max(t.position)` 是同一条」
       //   （即：位置只在**配对成功**的臂里出现，且取的是 max）。
       final progArmForCarry = rustMatchArm(body, 'Progress');
@@ -764,7 +801,35 @@ void main() {
               'position 必须取 `f.position.max(t.position)`（单调不减）。'
               '★ 直接取 FROM 的会让"看了一半"的进度在换源后**倒退**；'
               '★ 而且这条同时守住了"只在配对成功的臂里才动 position" —— '
-              '若有人把 position 提到 `find` 之外的公共路径上，这里会红');
+              '若有人把 position 提到 `position` 之外的公共路径上，这里会红');
+      /*
+       * ④-e ★★★ 每轮写完库必须**写回内存快照**（CodeRabbit on #23）
+       *
+       * ══════════════════════════════════════════════════════════════
+       * 为什么必须有这条：④-a 的配对是**多对一**的
+       * ══════════════════════════════════════════════════════════════
+       *
+       * 判据是**集号**，而集号会多对一 —— FROM 的 `第01集` 与 `第1集`
+       * （字符串不同、集号都是 1）会**同时**配到 TO 的同一行：
+       * ```text
+       * 改前：`to_rows` 是循环**开始前**读的一次快照，每轮都在它上面找
+       *   第一轮 f=800 ⇒ max(800, TO=100) = 800 写库 ✅
+       *   第二轮 f= 50 ⇒ 仍拿**原始** TO=100 重算 max(50,100) = 100 ❌
+       *   随后 FROM 的全部行被 DELETE ⇒ 用户 800 秒**永久丢失**
+       * ```
+       * ⇒ 修复 = 每轮把 `merged` 写回 `to_rows[i]`（`position` 单调不减
+       *   在写回前**根本不成立**）。
+       *
+       * ★ 这条断言守的是「写回这一句存在」，而**行为**由 Rust 侧用例
+       *   `store::tests::repoint_multi_from_same_to` 钉住（改前它得到 100）。
+       *   两处缺一不可：Dart 侧防「有人顺手删掉写回」，Rust 侧防「写回写错了」。
+       */
+      expect(body.contains('to_rows[i] = merged;'), isTrue,
+          reason: '★★★ 写完库必须把合并结果写回 `to_rows` 快照 —— '
+              'FROM 多行配到同一个 TO 行时（集号多对一），不写回就会用 TO 的'
+              '**原始** position 重算 max，把第一轮写进去的大值覆盖成小的，'
+              '而 FROM 行随后被 DELETE ⇒ 用户进度**永久丢失**。'
+              '★ 行为回归锁在 Rust 侧：`repoint_multi_from_same_to`');
       // ⑤ ★ history 段必须存在
       expect(body.contains('HistoryEntry'), isTrue,
           reason: '★ history 段必须存在且同样做集号判定');

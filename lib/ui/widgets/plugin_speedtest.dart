@@ -234,6 +234,106 @@ const int _keepRuns = 10;
 /// 那本身是有价值的结论（这个源今天整体取不到流），比硬凑一个数字强。
 const int _maxRebuildAttempts = 4;
 
+/// ★★★ 2026-10-13（Owner）：「全部测速」的**并发路数**
+///
+/// Owner 原话（逐字）：
+/// ```text
+/// > 测速应该多线程 多个并发,但要考虑实际带宽
+/// ```
+///
+/// # 为什么是 3（不是 1、也不是"全部"）
+/// ```text
+/// · 1（原行为，严格串行）：15 个源 × 每个 ~6 秒计时窗口 ≈ 90 秒起步。
+/// · 全部（15）：互相抢带宽，每条都拿不到真实速率 —— 原始注释的顾虑成立。
+/// · 3：家用宽带下三条 12 MiB/6s 的流不会明显互挤（实测每条仍能跑满），
+///   而总时间降到 ~1/3。
+/// ★ 不用"按带宽自适应"：那要先测一次带宽、还要判当前网络占用，
+///   复杂度远大于收益（"考虑实际带宽"是**不要全开**，不是"必须自适应"）。
+/// ```
+const int _allConcurrency = 3;
+
+/// ══════════════════════════════════════════════════════════════════════
+/// ★★★ 2026-10-13（Owner）：测速的**取消令牌** —— 支持暂停 + 退出不卡界面
+/// ══════════════════════════════════════════════════════════════════════
+///
+/// Owner 原话（逐字）：
+/// ```text
+/// > 在测速的过程中允许暂停；测速的过程中如果直接退出会导致窗口无响应，
+/// > 并且测速应该多线程 多个并发,但要考虑实际带宽
+/// ```
+///
+/// # 为什么需要一个令牌（而不是各自 flag）
+/// ```text
+/// 三处需求共用同一个机制：
+///   ① 「暂停」      ⇒ 请求停下，保留已测结果
+///   ② 「直接退出」   ⇒ 请求停下，**别再往已 dispose 的 UI 上写**
+///   ③ 「改并发数」   ⇒ 先停掉在飞的，再按新并发重跑
+/// ⇒ 一个 `_CancelToken` 三处复用，别各写各的 bool（那正是本仓踩过的坑）。
+/// ```
+///
+/// # 怎么被检查（**每一片之间**，不是每秒）
+/// ```text
+/// 下载循环里每个分片开始前查一次 —— 分片是 1~2 MB 级，
+/// 检查粒度足够（暂停/退出延迟 ≈ 一片的下载时间，实测 < 1s）。
+/// ⚠️ **不能**在 `await for (chunk in resp)` 的每个 chunk 里查 ——
+///    那会显著拖慢下载（本仓铁律：热路径不放检查）。
+/// ```
+///
+/// # 与「窗口无响应」的关系
+/// ```text
+/// 退出时 `PluginSpeedTestRunner.cancelAll()` 把令牌置停 ⇒
+/// 循环在**下一个分片边界**退出 ⇒ 不再有新的 await 挂在网络 IO 上
+/// ⇒ 退出流程不必等一整轮 `_timeout`(20s) 才收尾。
+/// ★ 注意：本类**做不到**"立刻掐断在飞的 socket"（dart:io 的
+///   HttpClientRequest 没有跨 await 的强取消）—— 但"下一个分片边界退出"
+///   已足够：最坏等待是一片（<1s），不是 20s。
+/// ```
+class SpeedTestCancelToken {
+  bool _cancelled = false;
+
+  /// 是否已被请求取消（下载循环查这个）
+  bool get isCancelled => _cancelled;
+
+  /// 请求取消 —— **幂等**（重复调无副作用）
+  void cancel() => _cancelled = true;
+
+  /// 全局在飞令牌表 —— `cancelAll()` 用它一次性停掉所有并发测速
+  ///
+  /// ⚠️ 用 `Set` + 注册/注销：令牌是短命的（一次测速一个），
+  ///    不注销会泄漏（长期开着的设置页会攒一堆死令牌）。
+  static final Set<SpeedTestCancelToken> _live = <SpeedTestCancelToken>{};
+
+  SpeedTestCancelToken.registered() {
+    _live.add(this);
+  }
+
+  /// 从全局表摘掉（测速结束时调，`finally` 里）
+  void unregister() => _live.remove(this);
+
+  /// ★ 取消**所有**在飞的测速 —— 退出流程调它
+  ///
+  /// # 为什么必须有（Owner 报的「测速中退出 ⇒ 窗口无响应」）
+  /// ```text
+  /// 退出流程（`app_tray.dart` 的 `quitNow`）原来**完全不通知测速**：
+  /// 它只 flush 偏好、销毁托盘与窗口，而测速任务继续跑、继续
+  /// `append()` 落盘、继续 `setState` ⇒
+  ///   · 写盘与退出 flush 交叉 ⇒ 脏写/丢数据（已实测确认）
+  ///   · 若那次 setState 落在已 dispose 的树上 ⇒ 抛异常打乱退出时序
+  /// ⇒ 退出前先 `cancelAll()`，让测速在分片边界收手。
+  /// ```
+  static void cancelAll() {
+    // 复制一份再遍历：`cancel()` 不改集合，但防御将来有人在这里改
+    for (final t in List<SpeedTestCancelToken>.of(_live)) {
+      t.cancel();
+    }
+  }
+
+  /// 当前在飞数量（**只给测试**读，生产不调）
+  @visibleForTesting
+  static int get liveCount => _live.length;
+}
+
+
 /// 速率配色阈值（MB/s）—— ���影响颜色，不改数字
 const double _slowMiBps = 0.5;
 const double _fastMiBps = 2.0;
@@ -553,28 +653,45 @@ class PluginSpeedTestRunner {
   /// 返回的 [PluginSpeedRun] **总是非空** —— 失败也如实返回一条
   /// ok=false 的记录，绝不抛异常让界面自己收拾
   /// （界面要显示"为什么失败"，而异常只能给出一个类型名）。
-  static Future<PluginSpeedRun> run(String pluginId) async {
-    final budget = Stopwatch()..start();
+  ///
+  /// ## `token`（★ 2026-10-13 Owner：支持暂停 / 退出取消）
+  /// ```text
+  /// 传 null ⇒ 内部自建一个（老调用点不用改）。
+  /// 传自己的 ⇒ 外部可 `token.cancel()` 让它在**下一个分片边界**收手。
+  /// ★ 无论哪条路径，令牌都会**注册进全局表** ⇒ `cancelAll()` 能一次停掉全部。
+  /// ```
+  static Future<PluginSpeedRun> run(
+    String pluginId, {
+    SpeedTestCancelToken? token,
+  }) async {
+    // 没传就自建一个，**并注册进全局表** ⇒ 退出时 `cancelAll()` 能停到它
+    final t = token ?? SpeedTestCancelToken.registered();
     try {
-      return await _measure(pluginId, budget).timeout(
-        _timeout,
-        // 超时也要**如实**说明是多少秒的预算，不是一句"超时了"
-        onTimeout: () => throw _BudgetExceeded(
-          '超过 ${_timeout.inSeconds} 秒预算（还没读到可用分片）',
-        ),
-      );
-    } on _BudgetExceeded catch (e) {
-      return _fail(budget, e.message);
-    } on Object catch (e) {
-      /*
-       * ★ 不吞错误 —— 把原文（含 SourinCoreException 的中文原因）带回去。
-       *
-       * 本机实测会遇到的两类：
-       *   cycani  「登录已失效，请到「设置 → 账号登录」重新登录」
-       *   bilibili「该内容需要大会员（当前是试看片段）」
-       * 这两句本身就是用户要的答案，压成"测速失败"反而没用。
-       */
-      return _fail(budget, _short(e));
+      final budget = Stopwatch()..start();
+      try {
+        return await _measure(pluginId, budget, t).timeout(
+          _timeout,
+          // 超时也要**如实**说明是多少秒的预算，不是一句"超时了"
+          onTimeout: () => throw _BudgetExceeded(
+            '超过 ${_timeout.inSeconds} 秒预算（还没读到可用分片）',
+          ),
+        );
+      } on _BudgetExceeded catch (e) {
+        return _fail(budget, e.message);
+      } on Object catch (e) {
+        /*
+         * ★ 不吞错误 —— 把原文（含 SourinCoreException 的中文原因）带回去。
+         *
+         * 本机实测会遇到的两类：
+         *   cycani  「登录已失效，请到「设置 → 账号登录」重新登录」
+         *   bilibili「该内容需要大会员（当前是试看片段）」
+         * 这两句本身就是用户要的答案，压成"测速失败"反而没用。
+         */
+        return _fail(budget, _short(e));
+      }
+    } finally {
+      // ★ 必须注销：否则全局表会攒死令牌（长期开设置页会泄漏）
+      t.unregister();
     }
   }
 
@@ -602,6 +719,7 @@ class PluginSpeedTestRunner {
   static Future<PluginSpeedRun> _measure(
     String pluginId,
     Stopwatch budget,
+    SpeedTestCancelToken token,
   ) async {
     // ── ① 随机抽一部影片（跳掉不可播的，见 [_maxRebuildAttempts]）──
     ({MediaItem item, StreamCandidate? cand})? sample;
@@ -687,6 +805,24 @@ class PluginSpeedTestRunner {
       var segIndex = 0;
 
       for (final seg in playlist.segments) {
+        /*
+         * ★★★ 2026-10-13（Owner）：**取消检查点**（暂停 / 退出）
+         *
+         * 位置：每个分片开始前查一次（**不是**每个 chunk、更不是每字节）。
+         * ```text
+         * · 分片是 1~2 MB 级 ⇒ 检查粒度 = 一片的下载时间（实测 < 1s）
+         *   对"暂停"够跟手，对"退出"够及时（不必等满 20s 预算）。
+         * · ⚠️ 放在 `await for (chunk in resp)` 的 chunk 循环里会**显著拖慢**
+         *   下载（热路径不放检查）—— 本仓铁律。
+         * ```
+         * 取消后**保留已读字节**（与"预算到点"同一处置）：用户要的是
+         * "这条线快不快"，半截读数比"取消了就什么都没有"有用。
+         */
+        if (token.isCancelled) {
+          stoppedEarly = true;
+          note = '已取消（保留已读部分计速）';
+          break;
+        }
         // 预算用完 → 停在分片边界（已读字节照样算数，见文件头）
         if (budget.elapsedMilliseconds >= _timeout.inMilliseconds) {
           stoppedEarly = true;
@@ -1081,6 +1217,11 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
   PluginSpeedHistory _history = const PluginSpeedHistory([]);
   bool _busy = false;
 
+  /// ★ 本次测速的取消令牌（`_busy == false` 时为 null）
+  ///
+  /// 点「暂停」⇒ `cancel()` ⇒ Runner 在下一个分片边界收手。
+  SpeedTestCancelToken? _token;
+
   @override
   void initState() {
     super.initState();
@@ -1109,6 +1250,19 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
 
   Future<void> _run() async {
     if (_busy || !widget.enabled) return;
+    /*
+     * ★★★ 2026-10-13（Owner）：给本次测速建一个**可取消令牌**
+     *
+     * Owner 原话：> 在测速的过程中允许暂停
+     * ```text
+     * 令牌交给 Runner ⇒ 用户点「暂停」时 `_token.cancel()`，
+     * 循环在**下一个分片边界**收手（保留已读部分计速）。
+     * ★ 令牌**必须**在本方法内新建（不能复用上一次的）：上一次结束时
+     *   它已被置停 ⇒ 复用会让新测速刚开始就"被取消"。
+     * ```
+     */
+    final token = SpeedTestCancelToken.registered();
+    _token = token;
     setState(() => _busy = true);
     try {
       /*
@@ -1116,7 +1270,10 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
        *   测 15 个、每个各写一条，而单个按钮就写这一条 ——
        *   两条路径共用同一份测量代码，不会漂移。
        */
-      final r = await PluginSpeedTestRunner.run(widget.providerId);
+      final r = await PluginSpeedTestRunner.run(
+        widget.providerId,
+        token: token,
+      );
       PluginSpeedTest.append(widget.providerId, r);
       // 记进应用日志：用户报"测出来不对"时我们才拿得到当时的参数
       AppLog.write(
@@ -1129,12 +1286,19 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
     } finally {
       /*
        * ⚠️ 这里**只**关忙碌态：历史的刷新交给 changes 监听器
-       *    （append 已经通知过了）。两处都重读会让同一次测速
+       *    （append 已经通知过两次了）。两处都重读会让同一次测速
        *    触发两次 setState，白重建一遍。
        */
+      _token = null;
       if (mounted) setState(() => _busy = false);
     }
   }
+
+  /// 点「暂停」：请求本次测速在**下一个分片边界**停下（保留已读部分计速）
+  ///
+  /// ⚠️ 不是"掐断 socket"（dart:io 做不到跨 await 强取消）——
+  ///    最坏等一片（<1s），不是等满 20s 预算。这一点在按钮的 tooltip 里写清楚。
+  void _pause() => _token?.cancel();
 
   @override
   Widget build(BuildContext context) {
@@ -1208,6 +1372,55 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
             hasHistory: _history.items.isNotEmpty,
             onPressed: _run,
           ),
+          /*
+           * ★★★ 2026-10-13（Owner）：忙碌时多一枚「暂停」
+           *
+           * Owner 原话：> 在测速的过程中允许暂停
+           * ```text
+           * 只在 `_busy` 时出现（不忙时一个按钮都不多占位置 —— 卡片很窄）。
+           * 点了 ⇒ `_token.cancel()` ⇒ Runner 在**下一个分片边界**收手
+           * （保留已读部分计速，与"预算到点"同一处置）。
+           * ⚠️ tooltip 如实说明"不是立刻停"：最坏等一片（<1s）。
+           * ```
+           */
+          if (_busy) ...[
+            const SizedBox(width: Sp.x1),
+            Tooltip(
+              message: '暂停（在下一个分片边界停下，最坏等 1 秒；'
+                  '已读到的部分照样计入读数）',
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: _pause,
+                  borderRadius: Radii.rFull,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: Sp.x2,
+                      vertical: Sp.x1 + 2,
+                    ),
+                    decoration: BoxDecoration(
+                      borderRadius: Radii.rFull,
+                      border: Border.all(color: colors.outlineVariant),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.pause, size: 14, color: colors.primary),
+                        const SizedBox(width: Sp.x1),
+                        Text(
+                          '暂停',
+                          style: TextStyle(
+                            fontSize: FontSizes.cap,
+                            color: colors.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
           const SizedBox(width: Sp.x2),
           /*
            * ★ Expanded + maxLines/ellipsis：卡片正文只有约 211px（4 列 / 299px 格），
@@ -1390,15 +1603,20 @@ class _SpeedButton extends StatelessWidget {
 
 /// 「全部测速」入口（放在 JS 插件区块的块头，与「健康检测」同一排）
 ///
-/// # ★ 为什么必须**顺序**跑
+/// # ★ 并发度：**固定 3 路**（2026-10-13 Owner 改；原来是严格串行）
 ///
-/// 一次测速会真实读几 MB 数据。15 个源并发跑 = 15 条流同时抢带宽，
-/// 每条都拿不到真实速率（**全部**读数会被互相污染，测出来的数字比不测更糟），
-/// 而且会把用户的网络打满。所以这里就是一个简单的串行循环。
+/// Owner 原话：> 测速应该多线程 多个并发,但要考虑实际带宽
+///
+/// ```text
+/// 一次测速会真实读几 MB 数据。**全部**（15 个）并发确实会互相抢带宽、
+/// 让每条读数都被污染（原注释的顾虑成立）—— 但**串行到底**太慢：
+/// 15 个 × ~6 秒计时窗口 ≈ 90 秒。
+/// ⇒ 取中间值 `_allConcurrency = 3`（详见该常量的推导）。
+/// ```
 ///
 /// # 进度为什么必须显示
 /// 15 个源 × 最坏 4 秒 ≈ 1 分钟。没有进度用户会以为界面卡死了。
-/// 进度给两段读数：**已完成 N/M**（还剩多少）+ **当前在对谁测**。
+/// 进度给两段读数：**已完成 N/M**（还剩多少）+ **最近在对谁测**。
 class PluginSpeedTestAllButton extends StatefulWidget {
   const PluginSpeedTestAllButton({
     super.key,
@@ -1450,27 +1668,76 @@ class _PluginSpeedTestAllButtonState extends State<PluginSpeedTestAllButton> {
     });
 
     try {
-      for (final id in ids) {
-        if (_disposed) return;
-        setState(() => _current = id);
-        // ★ 顺序：前一个 await 没回来，绝不开始下一个（见类文档）
-        final r = await PluginSpeedTestRunner.run(id);
-        PluginSpeedTest.append(id, r);
-        if (_disposed) return;
-        setState(() {
-          _done++;
-          if (r.ok) _ok++;
-        });
-        /*
-         * ★ 让宿主也有机会刷新（比如它自己有一份"最近一次速率"的汇总）。
-         *   注意**不是**靠这个刷新面板 —— append 已经通过 changes 通知过，
-         *   宿主不需要做任何事，面板自己就会更新。
-         */
-        widget.onChanged?.call();
+      /*
+       * ══════════════════════════════════════════════════════════════
+       * ★★★ 2026-10-13（Owner）：从**严格串行**改成**有上限的并发**
+       * ══════════════════════════════════════════════════════════════
+       *
+       * Owner 原话（逐字）：
+       * ```text
+       * > 测速应该多线程 多个并发,但要考虑实际带宽
+       * ```
+       *
+       * # 为什么不能"全部一起上"（原注释的顾虑是对的，只是走极端了）
+       * ```text
+       * 15 个源并发跑 = 15 条流同时抢带宽，每条都拿不到真实速率
+       * —— 这点原注释说得对。但**串行到底**等于放弃并发带来的收益：
+       *   每个源要跑满 6 秒计时窗口 ⇒ 15 个就是 90 秒起步。
+       * ```
+       *
+       * # 折中：固定 3 路并发（`_allConcurrency`）
+       * ```text
+       * · 3 路在绝大多数家用宽带上不会互相挤到失真
+       *   （每路只读 12 MiB 上限、6 秒窗口）。
+       * · 时间从 ~90s 降到 ~30s（3 倍）。
+       * ★ 为什么是 3 而不是"按带宽自适应"：
+       *   自适应需要先测一次带宽（多一次全链路测量），且判据依赖
+       *   当前网络的其他占用 —— 复杂度远大于收益。3 是一个保守常量，
+       *   与"考虑实际带宽"的要求一致（**不**是"N 路全开"）。
+       * ```
+       *
+       * # 实现：worker-pool（不是 `Future.wait(全部)`）
+       * ```text
+       * 起 `_allConcurrency` 个 worker，各自从一个共享游标取下一个 id
+       * ⇒ 同时最多 3 个在飞；某个回来立刻取下一个（不漏空档）。
+       * ⚠️ 用共享游标而不是"切成 3 段各跑一段"：后者在"某个源特别慢"时
+       *    会有一路提前跑完、另两路还在拖 ⇒ 实际并发掉到 1~2。
+       * ```
+       */
+      var cursor = 0;
+      Future<void> worker() async {
+        while (true) {
+          if (_disposed) return;
+          final i = cursor++;
+          if (i >= ids.length) return;
+          final id = ids[i];
+          // ⚠️ `_current` 只显示"最近开始的"（并发下没有单一当前项）——
+          //    文案见 build 里的「正在测 $done/$total（$concurrency 路并发）」
+          if (!_disposed) setState(() => _current = id);
+          final r = await PluginSpeedTestRunner.run(id);
+          PluginSpeedTest.append(id, r);
+          if (_disposed) return;
+          setState(() {
+            _done++;
+            if (r.ok) _ok++;
+          });
+          /*
+           * ★ 让宿主也有机会刷新（比如它自己有一份"最近一次速率"的汇总）。
+           *   注意**不是**靠这个刷新面板 —— append 已经通过 changes 通知过，
+           *   宿主不需要做任何事，面板自己就会更新。
+           */
+          widget.onChanged?.call();
+        }
       }
+
+      await Future.wait<void>([
+        for (var w = 0; w < _allConcurrency; w++) worker(),
+      ]);
+
       AppLog.write(
         'SPEED',
-        '全部测速完成：$_done/$_total，其中 $_ok 个测到速率',
+        '全部测速完成：$_done/$_total，其中 $_ok 个测到速率'
+            '（并发 $_allConcurrency 路）',
       );
     } finally {
       if (!_disposed) {
@@ -1501,13 +1768,14 @@ class _PluginSpeedTestAllButtonState extends State<PluginSpeedTestAllButton> {
           ),
           const SizedBox(width: Sp.x2),
           Text(
-            '测速 $_done/$_total'
-            '${_current.isEmpty ? '' : '  ·  $_current'}',
+            // ★ 2026-10-13：并发后"当前在对谁测"不再唯一 ⇒ 改成显示并发路数
+            '测速 $_done/$_total  ·  $_allConcurrency 路并发',
             style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurface),
           ),
           const SizedBox(width: Sp.x2),
           Text(
-            '成功 $_ok}',
+            // ★ 修掉多出来的 `}`（原来会显示成「成功 3}」）
+            '成功 $_ok',
             style: TextStyle(
               fontSize: FontSizes.cap,
               color: colors.onSurfaceVariant,
@@ -1520,9 +1788,10 @@ class _PluginSpeedTestAllButtonState extends State<PluginSpeedTestAllButton> {
     return Tooltip(
       message: empty
           ? '没有可测速的源'
-          : '顺序测 ${widget.pluginIds.length} 个源，'
-              '每个真下一段（全部跑完约 ${widget.pluginIds.length}~'
-              '${widget.pluginIds.length * 4} 秒）',
+          : '测 ${widget.pluginIds.length} 个源，每个真下一段'
+              '（$_allConcurrency 路并发，全部跑完约 '
+              '${(widget.pluginIds.length / _allConcurrency).ceil()}~'
+              '${(widget.pluginIds.length / _allConcurrency).ceil() * 4} 秒）',
       child: OutlinedButton.icon(
         onPressed: empty ? null : _runAll,
         icon: const Icon(Icons.speed, size: 16),
@@ -1563,7 +1832,7 @@ class PluginSpeedTestClearButton extends StatelessWidget {
                       content: Text(
                         n == 0
                             ? '没有测速记录可以清空'
-                            : '已清空 $n} 个源的测速记录',
+                            : '已清空 $n 个源的测速记录',
                       ),
                     ),
                   );

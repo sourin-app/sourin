@@ -249,6 +249,43 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   ///   将**再也**不会补探 ⇒ 看门狗超时误报"没画面"。
   bool? _voProbeInFlight;
 
+  /// ★★ task-92：本次起播**是否已经见到过视频轨**（`videoParams.dw != null`）。
+  ///
+  /// # 为什么必须有（实机实测到的产品缺陷：首帧黑窗期"纯黑无提示"）
+  /// ```text
+  /// 同一台机器、同一条流（ABN China），`.probe/ops/nf4/dual.csv` 逐帧采样：
+  ///   t=671 … 13027 播放器区域 mean=0.0 / brightRatio=0.000（**连一个像素都不亮**）
+  ///   同帧顶栏底栏恒 233.3 / 0.988 ⇒ 不是整窗黑、也不是截图失败
+  /// ⇒ 用户看到的是**纯黑一块**，没有任何"正在加载"的迹象。
+  ///
+  /// 而既有的那条 loading 判据 `(_buffering && !_ready)` 在整个黑窗期**恒 false**：
+  ///   media_kit `real.dart:1468-1485` 在 `MPV_EVENT_START_FILE` 上
+  ///   **同时**推 `playing=true` 与 `buffering=true`
+  ///   ⇒ `_ready=true`（_playingSub）与 `_buffering=true` 几乎同帧到
+  ///   ⇒ `(_buffering && !_ready)` 立刻变 false；
+  ///   随后 `core-idle=false`（`:1517-1535`）又把 buffering 置回 false。
+  /// ⇒ 判据必须换一个**与 media_kit 事件时序无关**的量：有没有视频轨。
+  /// ```
+  ///
+  /// ⚠️ 只做**单向**置位（false → true），不随 buffering 抖动 ——
+  ///   否则提示会闪，反而比纯黑更糟。
+  bool _videoTrackSeen = false;
+
+  /// ★★ task-92：**已确认这条流没有视频轨**（看门狗预算用尽、`dw` 仍为 null）。
+  ///
+  /// # 为什么必须"封口"（否则修完比修前更糟）
+  /// ```text
+  /// 纯音频台（cctv 那种"仅音频可播"的线）永远不会有 `dw`。
+  /// 若不封口，[_awaitingFirstVideoFrame] 就**永远**为 true
+  /// ⇒ 转圈**永不消失** —— 而转圈在语义上是"马上就有画面"，
+  ///   那是在对用户**撒谎**（本文件 `:1382-1383` 记着同一条纪律：
+  ///   "输出层已死时不画转圈，因为转圈暗示马上就有"）。
+  ///
+  /// ⇒ 预算用尽 + 没视频轨 = 合法终态，**静默**收口（不告警、不弹横幅）：
+  ///   音频在放，画面本来就没有 —— 这不是故障。
+  /// ```
+  bool _noVideoTrackSettled = false;
+
   // ★ 2026-10-09：这里**刻意没有** `_volumeSub` ——
   //   加过又撤了，理由见 `_create()` 里那段「刻意不订阅 volume」的注释。
   //   一句话：`pause()` 的自动压 0 与「用户静音」共用同一个信号，
@@ -473,6 +510,22 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     _videoParamsSub = p.stream.videoParams.listen((vp) {
       if (_disposed) return;
       _lastVideoDw = vp.dw;
+      /*
+       * ★★ task-92：见到视频轨 ⇒ 立刻撤掉"等首帧"的提示。
+       *
+       * ⚠️ 这里**必须** `setState`，与上面那条"不 setState、让看门狗做
+       *   唯一判决出口"的纪律**不冲突** —— 那条纪律管的是
+       *   「画面输出层是否已死」这个**判决**（两套判决必然漂）；
+       *   而 `_videoTrackSeen` 不是判决，是**提示该不该继续显示**的原始
+       *   事实（轨到了 = 起播在推进），没有第二个地方会得出它。
+       *
+       * ⚠️ 只在**第一次**见到轨时 setState（单向量 false→true）：
+       *   `videoParams` 流刻意不是 distinct，一场起播会推很多次，
+       *   每次都 setState 就是白刷帧。
+       */
+      if (vp.dw != null && !_videoTrackSeen) {
+        if (mounted) setState(() => _videoTrackSeen = true);
+      }
       // 有视频输出宽了 ⇒ 去后台探一次 vo-configured（只探一次，见下）
       if (vp.dw != null && _lastVoConfigured == null) {
         _probeVoConfiguredInBackground();
@@ -849,7 +902,27 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     final hasVideo = (_lastVideoDw ?? p.state.videoParams.dw) != null;
     final ok = await voConfigured();
     if (token != _videoOutputToken || !mounted || _disposed) return;
-    if (!hasVideo || ok) return;
+    /*
+     * ★★ task-92：预算用尽**仍然没有视频轨** ⇒ 这是“纯音频/无视频轨”的
+     *   **合法终态**（cctv 那种只剩音频线的台），不是故障。
+     *
+     * ⚠️ 必须与“输出层没起来”**分开处理**：
+     *   · 无视频轨 ⇒ 静默收口（[_noVideoTrackSettled]），**不**置
+     *     `_videoOutputDead`、**不**打告警 —— 音频在正常播，弹“画面不会有”
+     *     是误报（本文件 :800-802 记着“纯音频台不误报”这条纪律）。
+     *   · 有视频轨但 vo-configured≠yes ⇒ 才是真故障，走下面的告警臂。
+     *
+     * 但**必须收口**：不收口则 [_awaitingFirstVideoFrame] 永远为 true
+     * ⇒ 转圈永不消失（比原来的纯黑更糟，见字段处说明）。
+     */
+    if (!hasVideo) {
+      debugPrint('[LIVE] 本条流没有视频轨（等了 '
+          '${DateTime.now().difference(t0).inMilliseconds}ms）'
+          ' —— 纯音频播放，画面本来就没有');
+      if (mounted) setState(() => _noVideoTrackSettled = true);
+      return;
+    }
+    if (ok) return;
 
     /*
      * ★ 前缀必须是 `[LIVE]`（**不是** `[LIVE-EMBED]`）——
@@ -1007,7 +1080,90 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     _lastVideoDw = null;
     _lastVoConfigured = null;
     _voProbeInFlight = null; // ★ null = 未探，允许重探（不是 false = 已探过）
+    /*
+     * ★★ task-92：换台必须**重新等首帧**。
+     *
+     * 这两个字段是"本次起播"的状态，不是"本播放器实例"的状态：
+     *   从"已经出过画面的台"换到"新台" ⇒ 若不归零，
+     *   `_videoTrackSeen` 仍是上一个台的 true ⇒ 新台的黑窗期**又没有提示**
+     *   （就是本次要修的那个缺陷，换台时复发）。
+     * 同理 `_noVideoTrackSettled` 必须归零：上一个台若是纯音频、
+     *   新台有视频轨却慢 ⇒ 不归零会让新台的提示**永不出现**。
+     *
+     * ⚠️ 本方法**已经**是"换台/换流时作废判决"的唯一收口点
+     *   （两处调用：`_openCurrent` 与 `open()`，都在起看门狗之前）
+     *   ⇒ 放这里等于两条起播路径都覆盖，不需要在调用点各写一遍。
+     */
+    _videoTrackSeen = false;
+    _noVideoTrackSettled = false;
   }
+
+  /// ★★ task-92：**正在等首帧** ⇒ 该显示「正在加载」提示。
+  ///
+  /// # 判据（三条同时成立才为 true）
+  /// ```text
+  /// ① 还没见到视频轨（!_videoTrackSeen）
+  /// ② 也还没被看门狗判成“本来就没视频轨”（!_noVideoTrackSettled）
+  /// ③ 不是“仅音频”台（!widget.audioOnly）—— 那种台有 _AudioOnlyBadge，
+  ///    再叠一个转圈就是两个居中卡片互相盖字
+  /// ```
+  ///
+  /// ⚠️ 与 `(_buffering && !_ready)` **不是**替代关系，是**并列**：
+  ///   后者管“换台/缓冲的短暂闪烁”，前者管“START_FILE 之后、首帧之前
+  ///   那一整段” —— 实测那段有 6.5~13.4 秒（见字段 [_videoTrackSeen]）。
+  ///
+  /// ⚠️ 本 getter **只**回答“提示该不该画”，**不**参与“输出层是否已死”
+  ///   的判决（那个出口唯一：[_watchVideoOutput]）。
+  bool get _awaitingFirstVideoFrame =>
+      !_videoTrackSeen && !_noVideoTrackSettled && !widget.audioOnly;
+
+  /// ★★ 探针钩子（task-92）：把上面那条判据暴露给门禁。
+  ///
+  /// # 为什么需要（以及它**不能**替代什么）
+  /// ```text
+  /// 本控件要真走到「有 controller、但没有视频轨」那个状态，
+  /// 必须让 `_create()` 真的构造 `Player(...)` ⇒ 加载 libmpv-2.dll
+  /// ⇒ 默认套件里偶发 c0000005（`t48` 头部记着这条边界）。
+  /// 而在 `_createDelay`（380ms）窗口内 `_controller` 恒为 null
+  /// ⇒ build 里那条 `c == null` **已经**让提示为真 ⇒ 窗口内的渲染断言
+  ///   **分不出**本判据有没有生效（会假绿）。
+  ///
+  /// ⇒ 拆成两层守：
+  ///   · 本钩子：判据的四个状态（纯逻辑，任何机器可验）
+  ///   · `t92` 的静态契约：build 里**真的**用了这个判据（咬住真实路径）
+  /// ```
+  @visibleForTesting
+  bool get awaitingFirstVideoFrameForTest => _awaitingFirstVideoFrame;
+
+  /// ★ 探针钩子（task-92）：测试可读的“是否已见到视频轨”。
+  @visibleForTesting
+  bool get videoTrackSeenForTest => _videoTrackSeen;
+
+  /// ★ 探针钩子（task-92）：测试可读的“是否已被判定为无视频轨”。
+  @visibleForTesting
+  bool get noVideoTrackSettledForTest => _noVideoTrackSettled;
+
+  /// ★★ 探针钩子（task-92）：直接置“已见到视频轨”。
+  ///
+  /// # 为什么需要（与 [debugSetVideoOutputDead] 同一个理由）
+  /// ```text
+  /// 真实路径（`videoParams.dw != null`）**只能**由真 libmpv 推出来 ⇒
+  /// 默认套件（不加载 libmpv，见 `t48` 的说明）里**永远到不了**。
+  /// 但“见到轨之后提示要消失”这件事是**纯 UI 逻辑**，
+  /// 与 libmpv 无关 ⇒ 必须能在任何机器上单独验证。
+  /// 生产代码无调用点。
+  /// ```
+  @visibleForTesting
+  void debugSetVideoTrackSeen(bool v) =>
+      setState(() => _videoTrackSeen = v);
+
+  /// ★★ 探针钩子（task-92）：直接置“已判定为无视频轨”。
+  ///
+  /// 理由同 [debugSetVideoTrackSeen] —— 看门狗那条路径要 10 秒预算
+  /// 才收口，而这条判据本身只是“提示该不该继续画”。生产代码无调用点。
+  @visibleForTesting
+  void debugSetNoVideoTrackSettled(bool v) =>
+      setState(() => _noVideoTrackSettled = v);
 
   /// ★ 探针钩子（task-91）：内嵌播放器的「画面输出层已死」旗标。
   ///
@@ -1385,7 +1541,11 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
             if (!_videoOutputDead &&
                 (c == null ||
                     widget.stream == null ||
-                    (_buffering && !_ready)))
+                    (_buffering && !_ready) ||
+                    // ★★ task-92：START_FILE 之后、首帧之前的那一整段
+                    //   （实测 6.5~13.4s）原来**没有任何提示** —— 纯黑。
+                    //   详见 [_awaitingFirstVideoFrame] 与字段 [_videoTrackSeen]。
+                    _awaitingFirstVideoFrame))
               const _EmbedLoading(),
 
             // ── 错误 ──
@@ -1499,7 +1659,25 @@ class _EmbedLoading extends StatelessWidget {
   const _EmbedLoading();
 
   @override
-  Widget build(BuildContext context) => const Center(child: AppLoading());
+  Widget build(BuildContext context) =>
+      /*
+       * ★★ task-92：带文案（原来是光秃秃一个转圈）。
+       *
+       * 理由：本控件要盖住的是**6.5~13.4 秒**（实机逐帧实测，见
+       * `_videoTrackSeen` 字段处）的等待 —— 光一个转圈在这么长的时间里
+       * 会让用户以为是卡死；文案给出「在等什么」以及「为什么这么久」的
+       * 唯一线索（直播源侧缓冲，不是本机慢）。
+       *
+       * ⚠️ 走 [AppLoading] 自己的 label（`app_loading.dart:272-282`），
+       *   **不**在这里另包一层 Column —— 那个组件已经把
+       *   「转圈 + 间距 Sp.x3 + 同色文案」封好了，
+       *   这里再拼一遍就是第二套排版（本仓反复踩过“两套必然漂”）。
+       *
+       * ⚠️ 底色不用传：`_groundFromAncestors` 会取到本控件外面那层
+       *   `ColoredBox(color: Colors.black)`（build 里 Stack 的父级）
+       *   ⇒ 自动判成深底、取到 #FAFAFA 的亮圈，压黑底上看得清。
+       */
+      const Center(child: AppLoading(label: '正在加载直播画面…'));
 }
 
 class _EmbedError extends StatelessWidget {

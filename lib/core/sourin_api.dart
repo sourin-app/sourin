@@ -1013,7 +1013,23 @@ class SourinApi {
   // ═══════════════════════════════════════════════════════════════════
 
   /// 读某作品的跳过点
+  /// 探针注入点：`get_skip_marker`（PR #10 的「过期标记响应」门禁用）
+  ///
+  /// ⚠️ 与 `debugLiveStreamFetcher` 同一纪律：**生产路径永不为非 null**
+  ///    （默认 null ⇒ 生产路径逐字不变）。
+  /// ⚠️ 语义：fake 顶替的是**核心层传输**（`SourinCore.callAsync`）。
+  ///    ★ 它让门禁能在**不加载 libmpv** 的前提下驱动真实的 `_loadSkipMarker()`
+  ///      竞态路径（否则只能打 `native-media` 标签、在 CI 里被默认跳过）。
+  @visibleForTesting
+  static Future<SkipMarker?> Function(String provider, String id)?
+      debugSkipMarkerFetcher;
+
   static Future<SkipMarker?> getSkipMarker(String provider, String id) async {
+    final fake = debugSkipMarkerFetcher;
+    if (fake != null) {
+      // 门禁/探针注入：fake 顶替核心层传输。生产路径永为 null。
+      return fake(provider, id);
+    }
     final r = await SourinCore.callAsync('get_skip_marker', {
       'provider': provider,
       'id': id,

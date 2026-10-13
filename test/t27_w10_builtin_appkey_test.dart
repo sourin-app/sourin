@@ -145,26 +145,34 @@ void main() {
   });
 
   group('⑤ 源码契约（静态审计）', () {
-    test('dialog 有内置凭证状态行 + 输入框保留；player_page 不碰内置', () {
+    test('panel 凭证输入节已删除；数据源行仍在；player_page 不碰内置', () {
       final dlgSrc =
           File('lib/ui/widgets/danmaku_settings_dialog.dart').readAsStringSync();
       final ppSrc = File('lib/ui/player_page.dart').readAsStringSync();
 
-      // 节标题改「弹幕库凭证（可选）」
-      expect(dlgSrc.contains('弹幕库凭证（可选）'), isTrue,
-          reason: '节标题必须改成 弹幕库凭证（可选）');
+      // ★ 2026-10-11（Owner 反馈）：凭证输入节**整节删除**（AppId / AppSecret
+      //   两个 TextField + 「清除凭证」按钮 + 相关说明），因为客户端已内置凭证
+      //   （构建期 --dart-define 注入）。旧版本这几条断言要求"输入框必须存在"，
+      //   现在与新现实相反 —— 断言内容随之翻转。
+      expect(dlgSrc.contains("labelText: 'AppId'"), isFalse,
+          reason: 'AppId 输入框必须已删除（改由内置凭证）');
+      expect(dlgSrc.contains("labelText: 'AppSecret'"), isFalse,
+          reason: 'AppSecret 输入框必须已删除（改由内置凭证）');
+      expect(dlgSrc.contains('清除凭证'), isFalse,
+          reason: '「清除凭证」按钮必须一并删除（Owner 明确要求）');
+      expect(dlgSrc.contains('弹幕库凭证（可选）'), isFalse,
+          reason: '凭证节标题必须删除');
+      expect(dlgSrc.contains('内置凭证：已生效'), isFalse,
+          reason: '凭证节的「内置：已生效」状态行随节删除');
+      expect(dlgSrc.contains('内置凭证：未注入'), isFalse,
+          reason: '凭证节的「内置：未注入」状态行随节删除');
+      expect(dlgSrc.contains('留空则用内置凭证'), isFalse,
+          reason: '不再有输入框，也就没有「留空」一说');
 
-      // 内置状态行两种文案都在（生效/未注入）
-      expect(dlgSrc.contains('内置凭证：已生效'), isTrue);
-      expect(dlgSrc.contains('内置凭证：未注入'), isTrue);
-
-      // hintText 在内置生效时补「留空则用内置凭证」
-      expect(dlgSrc.contains('留空则用内置凭证'), isTrue);
-
-      // 两个 TextField 必须继续渲染 —— t100:743 findsNWidgets(2) 钉着
-      expect('TextField('.allMatches(dlgSrc).length, greaterThanOrEqualTo(2));
-      expect(dlgSrc.contains("labelText: 'AppId'"), isTrue);
-      expect(dlgSrc.contains("labelText: 'AppSecret'"), isTrue);
+      // 但「数据源」状态行必须留下（它是本机弹弹play 探测结果，与凭证无关）——
+      // 防止删过头。
+      expect(dlgSrc.contains('数据源'), isTrue,
+          reason: '「数据源」状态行必须保留（删的是凭证节，不是它）');
 
       // player_page 不出现内置字样（改动靠 getter 自动生效，无需接线）
       expect(ppSrc.contains('builtinAppId'), isFalse,

@@ -700,22 +700,28 @@ void main() {
        * 老：progress 一个作品一行 ⇒ 直接 `match to { None => …, Some(t) => … }`
        *     不匹配时走 `else { t }`
        * 新：progress 一个作品**每集一行** ⇒ 先要在 TO 里**找出同一集**：
-       *     to_same = to_rows.iter().find(|t| …集号判定…)
-       *     to_same 为 None ⇒ 该集在 TO 没有 ⇒ 整行搬过去
-       *     to_same 为 Some ⇒ 保留 TO 行
+       *     to_idx = to_rows.iter().position(|t| …集号判定…)
+       *     to_idx 为 None ⇒ 该集在 TO 没有 ⇒ 整行搬过去
+       *     to_idx 为 Some ⇒ 保留 TO 行
        * ```
-       * ⇒ `else { t }` 这**一个**串被 `find` 的语义吸收了
-       *   （"没找到同一集"= 老口径的"不匹配"，两者都在 `find` 里返回 None）。
+       * ⇒ `else { t }` 这**一个**串被 `position` 的语义吸收了
+       *   （"没找到同一集"= 老口径的"不匹配"，两者都在 `position` 里返回 None）。
        *
        * ★ 但**语义不能丢**：本用例原来要防的是「集号不匹配却把 FROM 的
        *   position 带过去」（用户在新源上被弹到没看过的位置）。
        *   所以判据换成「**配对判据本身**」，而不是某个分支的写法：
        */
-      // ④-a ★★★ 必须真的**按集配对**（`to_rows.iter().find`）—— 这是新形状的入口
+      // ④-a ★★★ 必须真的**按集配对**（`to_rows.iter().position`）—— 这是新形状的入口
+      //
+      //   ⚠️ 2026-10-13（CodeRabbit on #23）：判据从 `find(` 换成 `position(`。
+      //     `find` 返回的是 `&Progress` **引用**，而每轮写完库后必须把合并结果
+      //     写回 `to_rows` 快照（见 ④-e）—— 持有引用就没法写。换成下标即可两全。
       expect(
-          RegExp(r'to_rows\s*\.\s*iter\(\)\s*\.\s*find\(').hasMatch(body), isTrue,
-          reason: '★★★ progress 必须**逐集**在 TO 里找同一集（`to_rows.iter().find(…)`）'
-              '—— 按集后 FROM 有 N 行，不逐集配对就会把别的集当成"同一集"');
+          RegExp(r'to_rows\s*\.\s*iter\(\)\s*\.\s*position\(').hasMatch(body), isTrue,
+          reason: '★★★ progress 必须**逐集**在 TO 里找同一集（`to_rows.iter().position(…)`）'
+              '—— 按集后 FROM 有 N 行，不逐集配对就会把别的集当成"同一集"；'
+              '★ 用 `position`（下标）而不是 `find`（引用）是因为每轮要把合并结果'
+              '**写回**快照，持有引用就写不了');
       /*
        * ══════════════════════════════════════════════════════════════
        * ★★★ 2026-10-13：④-b / ④-c 从「整函数体」收紧为「按段断言」
@@ -724,7 +730,7 @@ void main() {
        *
        * 原判据的两个洞（逐条量过）：
        *   · ④-b `RegExp(r'if\s+ep_f\s*==\s*ep_t\s*\{')` 只可能命中 **history**
-       *     臂 —— progress 侧是 `find` 闭包里的**裸表达式** `ep_f == ep_t`，
+       *     臂 —— progress 侧是配对闭包（`find` / `position`）里的**裸表达式** `ep_f == ep_t`，
        *     没有 `if … {` ⇒ 把 progress 闭包改成 `ep_f.is_some() && ep_f == ep_t`
        *     甚至改成恒真，这条**仍然全绿**。
        *   · ④-c 计数在整个函数体上做 ⇒ 现计数 3（progress 闭包 2 + history 1）
@@ -752,13 +758,15 @@ void main() {
 
       // ④-b ★★★ progress 段的配对判据必须是**集号比较**（而不是按行号/下标这种位置猜测）
       expect(
-          RegExp(r'find\(\|t\|[\s\S]{0,800}?\bep_f\s*==\s*ep_t')
+          RegExp(r'(?:find|position)\(\|t\|[\s\S]{0,800}?\bep_f\s*==\s*ep_t')
               .hasMatch(progSection),
           isTrue,
-          reason: '★★★ progress 的 `find` 闭包里必须**真的**比集号'
+          reason: '★★★ progress 的配对闭包里必须**真的**比集号'
               '—— 判据限定在 progress 段内（且限定 800 字符窗口）⇒ '
               '换成恒真闭包（`|t| true`）立刻变红。'
-              '★ 老判据 `if\\s+ep_f\\s*==\\s*ep_t\\s*\\{` 只命中 history 臂');
+              '★ 老判据 `if\\s+ep_f\\s*==\\s*ep_t\\s*\\{` 只命中 history 臂；'
+              '★ 闭包名 `find` / `position` 都接受 —— #23 从 `find` 改下标'
+              '（`position`）是为了每轮能把合并结果写回快照，判据本身没变');
       /*
        * ★★ 而且必须**恰好是**这个比较 —— 不许加任何额外条件。
        *   CR 给的绕过形态就是 `ep_f.is_some() && ep_f == ep_t`：
@@ -774,9 +782,10 @@ void main() {
               '集号」的单片不再配对 ⇒ 用户换源后单片进度每次丢光');
       // ★ 反向：progress 段的配对判据不许退化成恒真/恒假
       expect(
-          RegExp(r'find\(\|\w+\|\s*(true|false)\s*\)').hasMatch(progSection),
+          RegExp(r'(?:find|position)\(\|\w+\|\s*(true|false)\s*\)')
+              .hasMatch(progSection),
           isFalse,
-          reason: '★★ progress 的 `find` 闭包不许恒真/恒假 —— 那等于**不做**集号判定');
+          reason: '★★ progress 的配对闭包不许恒真/恒假 —— 那等于**不做**集号判定');
       // ④-c ★★★ **history 必须与 progress 走同一套**（否则同一作品两张表各说各话）
       //   ★ 这条是 2026-10-12 **补回**的：原判据靠"`else { t }` 出现 ≥2 次"
       //     间接确立"两张表都有集号判定"，改成按集后那个计数不再成立。
@@ -797,7 +806,7 @@ void main() {
       // ④-d ★★ 反向：不许有「拿 FROM 的 position 却不过集号判定」的臂
       //   老形态是 `else { Progress { … position: f.position … } }`（错位携带）。
       //   新形态下这个坑同样可能被写出来 —— 只不过程序员不会用 `else`，
-      //   而会在 `find` 的闭包里写错。下面钉住「Progress 结构体字面量里
+      //   而会在配对闭包（`position`）里写错。下面钉住「Progress 结构体字面量里
       //   出现的 `f.position` 必须与 `f.position.max(t.position)` 是同一条」
       //   （即：位置只在**配对成功**的臂里出现，且取的是 max）。
       final progArmForCarry = rustMatchArm(body, 'Progress');
@@ -808,7 +817,37 @@ void main() {
               'position 必须取 `f.position.max(t.position)`（单调不减）。'
               '★ 直接取 FROM 的会让"看了一半"的进度在换源后**倒退**；'
               '★ 而且这条同时守住了"只在配对成功的臂里才动 position" —— '
-              '若有人把 position 提到 `find` 之外的公共路径上，这里会红');
+              '若有人把 position 提到 `position` 之外的公共路径上，这里会红');
+      /*
+       * ④-e ★★★ 每轮写完库必须**写回内存快照**（CodeRabbit on #23）
+       *
+       * ══════════════════════════════════════════════════════════════
+       * 为什么必须有这条：④-a 的配对是**多对一**的
+       * ══════════════════════════════════════════════════════════════
+       *
+       * 判据是**集号**，而集号会多对一 —— FROM 的 `第01集` 与 `第1集`
+       * （字符串不同、集号都是 1）会**同时**配到 TO 的同一行：
+       * ```text
+       * 改前：`to_rows` 是循环**开始前**读的一次快照，每轮都在它上面找
+       *   第一轮 f=800 ⇒ max(800, TO=100) = 800 写库 ✅
+       *   第二轮 f= 50 ⇒ 仍拿**原始** TO=100 重算 max(50,100) = 100 ❌
+       *   随后 FROM 的全部行被 DELETE ⇒ 用户 800 秒**永久丢失**
+       * ```
+       * ⇒ 修复 = 每轮把 `merged` 写回 `to_rows[i]`（`position` 单调不减
+       *   在写回前**根本不成立**）。
+       *
+       * ★ 这条断言守的是「写回这一句存在」，而**行为**由 Rust 侧用例
+       *   `store::tests::repoint_writeback_keeps_max_position_across_multiple_from_rows`
+       *   钉住（改前它得到 100）。
+       *   两处缺一不可：Dart 侧防「有人顺手删掉写回」，Rust 侧防「写回写错了」。
+       */
+      expect(body.contains('to_rows[i] = merged;'), isTrue,
+          reason: '★★★ 写完库必须把合并结果写回 `to_rows` 快照 —— '
+              'FROM 多行配到同一个 TO 行时（集号多对一），不写回就会用 TO 的'
+              '**原始** position 重算 max，把第一轮写进去的大值覆盖成小的，'
+              '而 FROM 行随后被 DELETE ⇒ 用户进度**永久丢失**。'
+              '★ 行为回归锁在 Rust 侧：'
+              '`repoint_writeback_keeps_max_position_across_multiple_from_rows`');
       // ⑤ ★ history 段必须存在
       expect(body.contains('HistoryEntry'), isTrue,
           reason: '★ history 段必须存在且同样做集号判定');

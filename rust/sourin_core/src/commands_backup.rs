@@ -522,24 +522,51 @@ fn backup_import_sync(
             };
             /*
              * ⚠️ 用 `get_progress_exact`（按**集键**）而不是 `get_progress`
-             *    （按**作品键**取最新那集）。
+             *    （按**作品键**取最新那集）—— 备份里的 `key` 应当是**按集键**
+             *    `provider:native_id:episode_id`，两者口径不同。
+             *    ★ 2026-10-12 按集扩容时这里踩过：先用 `get_progress(&p.key)`
+             *      查，它把 `p.key` 当成作品键 ⇒ 永远查不到 ⇒ 旧备份被当成
+             *      "本机没有的新行"照写 ⇒ 进度**倒退**（测试
+             *      `import_does_not_regress_newer_local_data` 抓到）。
              *
-             * ★★★ 查询键必须**按落库规则现算**，不能直接用备份里的 `p.key`
-             *     —— 备份有**两个时代**：
+             * ══════════════════════════════════════════════════════════════
+             * ★★★ 但不能**直接**用 `p.key` 查 —— 那是**老备份跨版本倒退**的坑
+             * ══════════════════════════════════════════════════════════════
+             *
+             * 备份有**两个时代**：
              * ```text
-             * 按集扩容前导出的备份：p.key = 作品键   `360:86969`
-             * 按集扩容后导出的备份：p.key = 按集键   `360:86969:e1`
-             * 本机迁移后的行：       key  = 按集键   `360:86969:e1`
+             * 老版本导出的备份   : key = "p:1"        （老口径，两段/作品键）
+             * 本机新库（按集后）  : key = "p:1:ep3"    （三段/按集键）
+             * 按集扩容后导出的   : key = "p:1:ep3"    （三段/按集键）
+             * ⇒ get_progress_exact("p:1") 查不到 "p:1:ep3" ⇒ old = None
+             * ⇒ **跳过下面的时间戳比较**
+             * ⇒ 而 `upsert_progress` 又会**按三列重算 key** ⇒ 落回 "p:1:ep3"
+             * ⇒ ★ 本机较新的进度被**一天前的旧备份**覆盖（进度倒退）
              * ```
-             * 直接 `get_progress_exact(&p.key)` 在**旧备份**上永远查不到本机行
-             * ⇒ 下面的时间戳守卫不生效 ⇒ 旧备份把本机更新的进度**打回去**。
-             * 现算 `progress_key(provider, native_id, episode_id)` 则两个时代的
-             * 备份都能命中同一行。
-             * ★ 2026-10-12 按集扩容时这里踩过两次：第一次是误用
+             *
+             * ⇒ 查本机那一行时**必须按三列重建键**（与落库同一口径，
+             *   即 `store::progress_key`），**不信任**备份里那个 `key` 字段。
+             *   这与 `upsert_progress` 的口径一致：key 只有一处生成。
+             *   ★ 现算 `progress_key(provider, native_id, episode_id)` 则
+             *   **两个时代**的备份都能命中同一行。
+             *
+             * ★ 副作用（正是我们要的）：`episode_id` 为 null 的老行，
+             *   重建后是 `p:1:`（空串哨兵）—— 而老备份里写的是 `p:1`。
+             *   两者**字面不同但语义同一**，靠**重建**统一，而不是靠字面比对。
+             *   ⚠️ 反过来：本机的行**永远是**重建后的形态（落库时也是重建的），
+             *   所以重建出来的键一定能查到本机那行。
+             *
+             * ★ 2026-10-12 按集扩容时这里踩过**两次**：第一次是误用
              *   `get_progress(&p.key)`（把 `p.key` 当作品键，永远查不到），
              *   第二次就是这里——假设了「备份里的 `p.key` 一定是按集键」。
              *   测试 `import_does_not_regress_newer_local_data` 只覆盖了
              *   新格式备份，所以漏了。
+             *
+             * ★ 门禁：`tests/batch6_backup.rs` 的
+             *   `old_format_backup_does_not_regress_newer_local_progress`
+             *   （构造一个 key="p:1" 的老格式 zip 备份 ⇒ 不重建就会红），
+             *   以及 origin/main 侧的 `import_does_not_regress_newer_local_data_legacy_key`
+             *   （本次合并一并带入）。
              */
             let exact = crate::store::progress_key(
                 &p.provider,

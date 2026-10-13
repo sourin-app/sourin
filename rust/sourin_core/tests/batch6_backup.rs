@@ -597,3 +597,126 @@ async fn platform_history_rejects_unknown_provider() {
     assert!(e.contains("找不到 Provider"), "{e}");
     println!("✓ backup_platform_history → {e}");
 }
+
+/// ★★★ 老格式备份**不许**覆盖较新的本机进度（按集扩容的跨版本兼容）
+///
+/// # 为什么上面那条 `import_does_not_regress_newer_local_data` 抓不到这个
+///
+/// 那条测试**导出与导入用的是同一份代码** ⇒ 备份里的 `key` 是按集键 ⇒
+/// 两侧口径一致 ⇒ 查得到 ⇒ 时间戳守卫生效。
+/// 但**真实用户**的备份是**老版本**导出的，里面那条 `key` 是**老口径**
+/// （作品键 `provider:native_id`，没有第三段）：
+///
+/// ```text
+/// 老备份（老版本导出）      : key = "p:1"      （两段）
+/// 本机新库（按集后，episode_id="ep3"）: key = "p:1:ep3"  （三段）
+/// ⇒ get_progress_exact("p:1") 查不到 "p:1:ep3" ⇒ old = None
+/// ⇒ **跳过时间戳比较** ⇒ 把备份里那条较旧的 position 写进去
+/// ⇒ ★ 且 upsert_progress 会**按三列重算 key** ⇒ 落回 "p:1:ep3"
+///   ⇒ **本机较新的进度被老备份覆盖**（进度倒退）
+/// ```
+///
+/// ⚠️ 注意：`episode_id` 为 null 时**两侧 key 字面量其实相同**（都是 `p:1`），
+///    所以必须用**有 episode_id 的行**才测得出这个 bug。
+///
+/// ★ 这正是本 PR（按集主键）引入的跨版本兼容缺口 ——
+///   `commands_backup.rs` 不能直接用 `p.key` 查询，必须**按三列重建**。
+#[tokio::test]
+async fn old_format_backup_does_not_regress_newer_local_progress() {
+    let st = fresh("oldfmt-target").await;
+
+    // 本机：第 3 集看到 900 秒（较新）
+    cw::save_progress(
+        &st, "p", "1", "剧", None,
+        Some("ep3".into()), Some("第03集".into()), 900, 1000, None,
+    )
+    .unwrap();
+    let before = st
+        .db
+        .get_progress_exact("p:1:ep3")
+        .unwrap()
+        .expect("本机应有一条按集行");
+    println!(
+        "✓ 本机: key={} pos={} updated_at={}",
+        before.key, before.position, before.updated_at
+    );
+
+    /*
+     * 构造一个**真 zip 备份**，但把 watch-data.json 里那条进度的 key
+     * 改写成**老口径两段**（模拟老版本导出的包）。
+     * ★ 必须走 zip —— `read_backup` 用 `ZipArchive` 解，不接受裸 JSON。
+     */
+    let dir = std::env::temp_dir().join(format!(
+        "sourin-b6-oldfmt-src-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let zip_path = dir.join("old-format-sourin-backup.zip");
+
+    {
+        use std::io::Write as _;
+        let f = std::fs::File::create(&zip_path).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opts: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+
+        let manifest = serde_json::json!({
+            "version": 1,
+            "exported_at": 1_700_000_000_000i64,
+            "device_id": "旧机器",
+            "app_version": "0.0.1-old",
+            "entries": [],
+        });
+        zw.start_file("manifest.json", opts).unwrap();
+        zw.write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+            .unwrap();
+
+        let watch_data = serde_json::json!({
+            "favorites": [],
+            "following": [],
+            "history": [],
+            "progress": [{
+                // ★★ 老口径：只有两段，没有 episode_id 那一段
+                "key": "p:1",
+                "provider": "p",
+                "native_id": "1",
+                "title": "剧",
+                "episode_id": "ep3",
+                "episode_title": "第03集",
+                "position": 100,                                  // ★ 较旧
+                "duration": 1000,
+                "finished": false,
+                "updated_at": before.updated_at - 86_400_000i64,  // 一天前
+            }],
+        });
+        zw.start_file("watch-data.json", opts).unwrap();
+        zw.write_all(serde_json::to_string(&watch_data).unwrap().as_bytes())
+            .unwrap();
+
+        for (name, val) in [
+            ("providers.json", serde_json::json!({})),
+            ("settings.json", serde_json::json!({})),
+        ] {
+            zw.start_file(name, opts).unwrap();
+            zw.write_all(serde_json::to_string(&val).unwrap().as_bytes())
+                .unwrap();
+        }
+        zw.finish().unwrap();
+    }
+    println!("✓ 已构造老格式 zip 备份（key=\"p:1\", pos=100，一天前）");
+
+    let sum = cb::backup_import(&st, zip_path.to_str().unwrap())
+        .await
+        .unwrap();
+    println!("✓ 导入结果: 进度更新 {} 条", sum.progress_updated);
+
+    let after = st.db.get_progress_exact("p:1:ep3").unwrap();
+    let after = after.expect("导入后本机那条应仍在");
+    assert_eq!(
+        after.position, 900,
+        "★★★ 老格式备份**不许**覆盖本机较新的进度 ——          备份里 pos=100 是一天前的，本机 pos=900 更新。         若这里得到 100，说明按集扩容后**跨版本备份导入会倒退进度**"
+    );
+    assert_eq!(sum.progress_updated, 0, "★ 较旧的备份项不该算作「更新」");
+    println!("✓ 本机进度保持 900 秒 —— 老格式备份未造成倒退");
+}

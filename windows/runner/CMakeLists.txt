@@ -35,6 +35,9 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
+# ★ IME：`ImmGetContext` / `ImmAssociateContext`（见 win32_window.cpp 的
+#   MaybeSubclassChild —— 修 Owner 报的「搜索框打不了中文」）。
+target_link_libraries(${BINARY_NAME} PRIVATE "imm32.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.

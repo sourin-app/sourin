@@ -187,6 +187,13 @@ impl AppState {
          * 同样必须在 `load_plugins_hydrated` **之前**（理由见上）。
          */
         seed_tvbox_live_plugin(&data_dir);
+        /*
+         * ★★★ 释放「哔哩哔哩直播」插件
+         *
+         * 同样必须在 `load_plugins_hydrated` **之前**（理由见上）——
+         * 否则这一次启动加载不到它，用户要重启两次才看到。
+         */
+        seed_bilibili_live_plugin(&data_dir);
         let (js_plugins, js_bad) =
             crate::plugins::load_plugins_hydrated(&plugin_dir, Some(proxy.clone())).await;
         let js_count = js_plugins.len();
@@ -1164,6 +1171,51 @@ fn seed_tvbox_live_plugin(data_dir: &std::path::Path) {
     );
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  ★★★ 随程序发布的「哔哩哔哩直播」插件
+// ═══════════════════════════════════════════════════════════════════════
+
+/// 随程序发布的「哔哩哔哩直播」插件源码
+///
+/// 与 `IPTV_PLUGIN_SRC` 同样是 `include_str!`（编进二进制）。
+///
+/// # ★ 为什么直播要**新开一个插件**，而不是改进已有的 `bilibili.js`
+///
+/// ```text
+/// `bilibili.js`（点播：热门/排行/搜索/番剧/弹幕）**不在本仓库里** ——
+/// 它只存在于用户数据目录 `%APPDATA%/app.sourin.player/plugins/`。
+/// ⇒ 那是用户手写的第三方插件，仓库里改它改不到用户手上那一份。
+///
+/// 而直播与点播的**取流模型完全不同**（点播返回 DASH 多候选，
+/// 直播是现签的 HLS 单路），且能力位（live / vod）应当各停各的 ——
+/// 合并成一个 provider 会让"停用点播源"连带停掉直播。
+/// ⇒ 新开 `bilibili-live`，走与 iptv/tvbox-live 同一套释放机制。
+/// ```
+const BILIBILI_LIVE_PLUGIN_SRC: &str = include_str!("../plugins/bilibili-live.js");
+
+/// 释放「哔哩哔哩直播」插件
+///
+/// 判据与 `seed_iptv_plugin` / `seed_tvbox_live_plugin` **完全一致**，
+/// 完整的推理过程见 `seed_iptv_plugin` 上面那段长注释 —— 这里不重复。
+///
+/// 本插件特有的两点：
+/// ```text
+/// ① 默认**启用**（照 iptv/tvbox-live，不照 demo）—— 它是真内容源。
+///    默认停用等于没做，用户看不到直播间且**没有任何报错**。
+/// ② 标记文件必须**另起名字** `.bilibili-live-seeded-version`：
+///    与 iptv/tvbox-live 共用标记会让三者的「所有权证明」互相覆盖
+///    ⇒ 版本判定错乱（`local_version == seeded_version` 判据全部失效）。
+/// ```
+fn seed_bilibili_live_plugin(data_dir: &std::path::Path) {
+    seed_managed_plugin(
+        data_dir,
+        "bilibili-live.js",
+        BILIBILI_LIVE_PLUGIN_SRC,
+        ".bilibili-live-seeded-version",
+        "哔哩哔哩直播",
+    );
+}
+
 /// 释放一个「随程序发布 + 默认启用 + 跟随版本升级」的插件
 ///
 /// 与 `seed_iptv_plugin` 的判定表逐条对应：
@@ -1513,6 +1565,50 @@ mod tests {
         // 同时清单也要留着 —— 否则用户「编辑」时读不到原始配置
         let cfg = crate::commands_provider::get_provider_config(&st, "tp-demo").unwrap();
         assert!(cfg.is_some(), "third_party 清单里必须还有这条，供「编辑」回填");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★ 接线门禁：随程序发布的 `bilibili-live.js` 必须**真的被释放并注册**
+    ///
+    /// # 为什么需要这条（本仓规矩一：写了 ≠ 接线了）
+    ///
+    /// ```text
+    /// plugin 文件写好了、`seed_bilibili_live_plugin()` 也定义了 —— 但
+    /// 只要**忘了在 bootstrap 里调用它**，用户就永远看不到这个源，
+    /// 而且**没有任何报错**（注册表里根本没有它）。
+    /// ```
+    /// 所以断言必须读**用户可见的结果**（文件被写到插件目录 +
+    /// `registry.manifests()` 里有它且 `capabilities.live == true`），
+    /// 而不是"某个函数被调用了"。
+    ///
+    /// ⚠️ `capabilities.live` 是 `Registry::live_all()` 的过滤条件 ——
+    ///    它为假时直播页**看不到这个源**且无报错，正是最该守住的一环。
+    #[tokio::test]
+    async fn shipped_bilibili_live_is_seeded_and_registered() {
+        let dir = tmp_dir("bili-live");
+        // 空目录启动 ⇒ 走"文件不存在 ⇒ 释放"这条路径
+        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+
+        // ① 文件真的落到了插件目录
+        let js = crate::state::plugins_dir(&dir).join("bilibili-live.js");
+        assert!(
+            js.exists(),
+            "bilibili-live.js 必须被释放到插件目录，实际不存在: {}",
+            js.display()
+        );
+
+        // ② 而且它作为一个 live 源注册进了 registry
+        let m = st
+            .registry
+            .manifests()
+            .into_iter()
+            .find(|m| m.id == "bilibili-live")
+            .expect("★ bilibili-live 必须出现在 registry —— 否则直播页看不到它且无报错");
+        assert!(
+            m.capabilities.live,
+            "★ capabilities.live 必须为 true（Registry::live_all 按它过滤）"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -3889,6 +3889,264 @@ globalThis.plugin = {
         assert!(!p.manifest().name.is_empty());
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    //  哔哩哔哩直播插件（bilibili-live.js）
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// 读随程序发布的 `bilibili-live.js` 源码
+    fn bilibili_live_src() -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins/bilibili-live.js");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()))
+    }
+
+    /// ★ 随程序发布的 bilibili-live.js 必须**合法、能加载、能力位正确**
+    ///
+    /// # 为什么这条门禁是**必要的**（不是形式）
+    /// ```text
+    /// 插件是 `include_str!` 编进 DLL 的（改 .js 必须重编 Rust）。
+    /// 若它语法错 / 缺 @id / capabilities.live 没打开：
+    ///   · `Registry::live_all()` 按 `capabilities.live` 过滤
+    ///     ⇒ 直播页**完全看不到这个源**，且**没有任何报错**
+    ///   · 这正是"写了没接线"的典型形态（本仓规矩一）
+    /// ```
+    #[tokio::test]
+    async fn shipped_bilibili_live_is_loadable() {
+        let src = bilibili_live_src();
+        let mut p = JsPluginProvider::from_source(&src)
+            .unwrap_or_else(|e| panic!("bilibili-live.js 不是合法插件: {e}"));
+
+        /*
+         * ★ 能力位必须**执行脚本**才拿得到（`from_source` 之后仍是
+         *   `Capabilities::default()` 全 false）。
+         *   完整背景见 `hydrate_capabilities` 的说明。
+         */
+        p.hydrate_capabilities().await;
+
+        let m = p.manifest();
+        assert_eq!(m.id, "bilibili-live", "id 必须与 seed 的文件名/标记一致");
+        assert_eq!(m.name, "哔哩哔哩直播");
+        assert_eq!(m.version, "1.0.0");
+        /*
+         * ★ 能力位是注册的**唯一判据**（在能力位补齐之前，
+         *   这里是 `Capabilities::default()` 全 false）。
+         *   `hydrate_capabilities()` 会执行脚本读 `globalThis.plugin.capabilities`。
+         */
+        assert!(
+            m.capabilities.live,
+            "★ live 必须为 true，否则直播页看不到这个源（且无报错）"
+        );
+        assert!(!m.capabilities.vod, "本插件只做直播");
+        /*
+         * ⚠️ 必须是"游客可用"：`login_required` 为真会让
+         *    `Registry::ensure_session` 挡住游客路径 ⇒ 直播页空。
+         */
+        assert!(
+            !m.capabilities.login_required,
+            "★ 直播接口游客可用，绝不能设成必需登录（会挡住整个源）"
+        );
+    }
+
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     *  `pickHls` —— 取流地址组装的**真假门禁**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 为什么用"喂固定 fixture 调纯函数"而不是走真网络
+     *
+     * `liveStream()` 需要 `host.http`（由宿主注入真实 proxy），
+     * 单测里 stub 不掉 —— 真网络又会让 CI 依赖外网与 B 站可用性
+     * （本仓不接受"时绿时红"的门禁）。
+     *
+     * 而 `pickHls(data)` 是**纯函数**：输入接口返回体、输出地址。
+     * 真实返回体里会**翻车**的每一处分支，都能用 fixture 精确复现：
+     * ```text
+     * ① host + base_url + extra 三段拼接（漏 extra ⇒ 签名没了 ⇒ 403）
+     * ② hevc 必须被过滤（选了会黑屏）
+     * ③ 只有 http_hls 才要（http_stream/flv 不要）
+     * ④ 未开播 / 无 HLS 线路 ⇒ 返回 null（调用方据此报 not_found）
+     * ```
+     * ★ 契约「函数名 = 全局」是 `ctx.eval(source)` 在**全局作用域**求值
+     *   决定的（顶层 `function` 变成全局）—— 与插件调用同一套，不是特制接缝。
+     */
+    fn pick_hls(p: &JsPluginProvider, fixture: serde_json::Value) -> String {
+        let expr = format!("pickHls({})", fixture);
+        // `call_js` 是 async；这里用 block_on 跑（测试里没有 runtime）
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(p.call_js(&expr))
+            .unwrap_or_else(|e| panic!("pickHls 调用失败: {}", e.message))
+    }
+
+    /// ★★★ 真门禁：地址 = host + base_url + extra（**三段缺一不可**）
+    ///
+    /// 撤销验证（把 `+ (ui.extra || '')` 去掉）⇒ 本测试**必须变红**：
+    /// 返回的 url 会缺 `expires=…&sign=…` ⇒ 真机 403。
+    #[test]
+    fn bilibili_live_pickhls_joins_host_baseurl_extra() {
+        let p = JsPluginProvider::from_source(&bilibili_live_src()).unwrap();
+        let fixture = serde_json::json!({
+            "playurl_info": { "playurl": { "stream": [
+                { "protocol_name": "http_hls", "format": [
+                    { "format_name": "ts", "codec": [
+                        { "codec_name": "avc",
+                          "current_qn": 10000,
+                          "accept_qn": [10000, 250],
+                          "base_url": "/live-bvc/x.m3u8?",
+                          "url_info": [{ "host": "https://h.example", "extra": "expires=1&sign=ab" }] }
+                    ] }
+                ] }
+            ] } }
+        });
+        let got = pick_hls(&p, fixture);
+
+        // 解析回 JSON 看结构（比断言整串稳）
+        let v: serde_json::Value = serde_json::from_str(&got).expect("必须是 JSON");
+        assert_eq!(
+            v["url"].as_str().unwrap(),
+            "https://h.example/live-bvc/x.m3u8?expires=1&sign=ab",
+            "★ 必须是三段拼接 —— 少了 extra 就没有签名，真机 403"
+        );
+        assert_eq!(v["qn"].as_u64().unwrap(), 10000, "应取 accept_qn 里最高档");
+    }
+
+    /// ★★★ 真门禁：**必须过滤掉 hevc**（选了会黑屏，不是画质差）
+    ///
+    /// 撤销验证（把 `if (c.codec_name !== 'avc') continue;` 去掉）⇒ 变红：
+    /// 下面的 fixture 里 hevc 项排在前面，会被选中 ⇒ 真机黑屏。
+    #[test]
+    fn bilibili_live_pickhls_rejects_hevc() {
+        let p = JsPluginProvider::from_source(&bilibili_live_src()).unwrap();
+        let fixture = serde_json::json!({
+            "playurl_info": { "playurl": { "stream": [
+                { "protocol_name": "http_hls", "format": [
+                    { "format_name": "ts", "codec": [
+                        // hevc 排在前、且清晰度更高 —— 若不过滤必胜出
+                        { "codec_name": "hevc", "current_qn": 20000, "accept_qn": [20000],
+                          "base_url": "/hevc.m3u8?", "url_info": [{ "host": "https://h", "extra": "e=1" }] },
+                        { "codec_name": "avc", "current_qn": 10000, "accept_qn": [10000],
+                          "base_url": "/avc.m3u8?", "url_info": [{ "host": "https://h", "extra": "e=2" }] }
+                    ] }
+                ] }
+            ] } }
+        });
+        let got = pick_hls(&p, fixture);
+        let v: serde_json::Value = serde_json::from_str(&got).unwrap();
+        assert!(
+            v["url"].as_str().unwrap().contains("/avc.m3u8"),
+            "★ 必须挑 avc —— 选 hevc 会黑屏（有声音有进度没画面）。实际: {}",
+            v["url"]
+        );
+    }
+
+    /// ★ 真门禁：**只要 http_hls** —— 不要 http_stream（flv）
+    ///
+    /// 撤销验证（`find(s => s.protocol_name === 'http_hls')` 改成取 `[0]`）⇒ 变红。
+    #[test]
+    fn bilibili_live_pickhls_prefers_http_hls() {
+        let p = JsPluginProvider::from_source(&bilibili_live_src()).unwrap();
+        let fixture = serde_json::json!({
+            "playurl_info": { "playurl": { "stream": [
+                { "protocol_name": "http_stream", "format": [
+                    { "format_name": "flv", "codec": [
+                        { "codec_name": "avc", "current_qn": 10000, "accept_qn": [10000],
+                          "base_url": "/x.flv?", "url_info": [{ "host": "https://h", "extra": "e=1" }] }
+                    ] }
+                ] },
+                { "protocol_name": "http_hls", "format": [
+                    { "format_name": "ts", "codec": [
+                        { "codec_name": "avc", "current_qn": 10000, "accept_qn": [10000],
+                          "base_url": "/x.m3u8?", "url_info": [{ "host": "https://h", "extra": "e=2" }] }
+                    ] }
+                ] }
+            ] } }
+        });
+        let got = pick_hls(&p, fixture);
+        let v: serde_json::Value = serde_json::from_str(&got).unwrap();
+        assert!(
+            v["url"].as_str().unwrap().ends_with("x.m3u8?e=2"),
+            "★ 必须走 http_hls（flv 是未验证过的路径）。实际: {}",
+            v["url"]
+        );
+    }
+
+    /// ★ 真门禁：**没有 HLS 线路 ⇒ null**（调用方据此报 not_found）
+    ///
+    /// 阴性对照 —— 上面三条都测"有 HLS 时怎样"，这条测"没有时怎样"。
+    /// 撤销验证（`if (!hls) return null` 改成返回一个占位地址）⇒ 变红。
+    #[test]
+    fn bilibili_live_pickhls_returns_null_without_hls() {
+        let p = JsPluginProvider::from_source(&bilibili_live_src()).unwrap();
+
+        // ① stream 里只有 http_stream（flv）
+        let only_flv = serde_json::json!({
+            "playurl_info": { "playurl": { "stream": [
+                { "protocol_name": "http_stream", "format": [
+                    { "format_name": "flv", "codec": [
+                        { "codec_name": "avc", "current_qn": 10000, "accept_qn": [10000],
+                          "base_url": "/x.flv?", "url_info": [{ "host": "https://h", "extra": "e=1" }] }
+                    ] }
+                ] }
+            ] } }
+        });
+        assert_eq!(pick_hls(&p, only_flv), "null", "只有 flv ⇒ 必须 null");
+
+        // ② playurl_info 整个缺失（下播房间的真实形态）
+        assert_eq!(
+            pick_hls(&p, serde_json::json!({ "live_status": 0 })),
+            "null",
+            "没有 playurl_info ⇒ 必须 null（而不是 panic）"
+        );
+
+        // ③ http_hls 在，但只有 hevc
+        let only_hevc = serde_json::json!({
+            "playurl_info": { "playurl": { "stream": [
+                { "protocol_name": "http_hls", "format": [
+                    { "format_name": "ts", "codec": [
+                        { "codec_name": "hevc", "current_qn": 10000, "accept_qn": [10000],
+                          "base_url": "/h.m3u8?", "url_info": [{ "host": "https://h", "extra": "e=1" }] }
+                    ] }
+                ] }
+            ] } }
+        });
+        assert_eq!(
+            pick_hls(&p, only_hevc),
+            "null",
+            "★ 只有 hevc ⇒ 宁可 null（明确报「没有可用线路」），也不要给一条会黑屏的"
+        );
+    }
+
+    /// ★ 真门禁：缓存结构校验（结构坏 ⇒ 判为无效，重新拉取）
+    ///
+    /// 这条守的是本仓 `iptv.js` 踩过的坑：**光换缓存 key 不够，
+    /// 必须校验结构本身**（"用旧代码写新 key"总会发生）。
+    #[test]
+    fn bilibili_live_cache_valid_rejects_bad_structure() {
+        let p = JsPluginProvider::from_source(&bilibili_live_src()).unwrap();
+
+        let call = |expr: &str| -> String {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(p.call_js(expr))
+                .unwrap()
+        };
+
+        // 空 / 缺时间戳 / 空列表 —— 全部判无效
+        assert_eq!(call("cacheValid(null)"), "false");
+        assert_eq!(call("cacheValid({rooms:[{id:'1',name:'a'}]})"), "false", "缺 at");
+        assert_eq!(call("cacheValid({at:1,rooms:[]})"), "false", "空列表");
+        // 条目缺 id / 缺 name —— 也判无效
+        assert_eq!(call("cacheValid({at:1,rooms:[{name:'a'}]})"), "false", "条目缺 id");
+        assert_eq!(call("cacheValid({at:1,rooms:[{id:'1'}]})"), "false", "条目缺 name");
+        // 阳性对照：结构完整 ⇒ true（否则上面的 false 可能恒真）
+        assert_eq!(
+            call("cacheValid({at:1,rooms:[{id:'1',name:'a'}]})"),
+            "true",
+            "★ 阳性对照：结构完整必须为 true，否则这条门禁等于恒 false"
+        );
+    }
+
     /// 一个坏插件不能影响其它插件加载（扫描目录时隔离失败）
     #[test]
     fn bad_plugin_does_not_block_others() {

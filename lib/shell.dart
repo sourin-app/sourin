@@ -49,6 +49,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart'
     show ValueListenable, ValueNotifier;
 import 'package:flutter/services.dart';
+import 'package:flutter/scheduler.dart' show SchedulerBinding, FrameTiming;
 import 'package:material_ui/material_ui.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:media_kit/media_kit.dart';
@@ -287,6 +288,46 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   /*
+   * ══════════════════════════════════════════════════════════════════════
+   * ★★★ task-98：帧耗时取证（**环境变量门控**，生产恒不开）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * Owner 报「从播放页返回还是会卡卡的」——前几轮已修两处（指纹含秒级
+   * position / `_RouteGate` 收窄重建面），但**还是**不流畅 ⇒ 要重新量。
+   *
+   * # 为什么不写独立的探针 app（我试过，**失败**，如实记录）
+   * ```text
+   * 第一版写了个 lib/t98_*.dart 独立入口：自己 runApp + 自己起核心。
+   * 两个致命问题：
+   *   ① `SourinCore.startAsync()` 放在 runApp **之前**会**挂死**
+   *      （实测卡在 startAsync 再也回不来 ⇒ 探针永远量不到数据）
+   *   ② 更要命：那个探针里首页**没有任何数据**（没起核心 ⇒ 三路取数全抛
+   *      "核心尚未启动"）⇒ `_cards` 一张卡都不画 ⇒ 量的是**空页**
+   *      ⇒ 读出「push/pop 全在预算内」——**假绿**，与 Owner 的体感矛盾
+   * ```
+   * ⇒ 改成**在真实入口 `shell.dart` 里**挂一个环境变量门控的帧记录器：
+   *   不换入口、不自己起核心、不重排启动顺序 ⇒ **量的就是 Owner 那个客户端**。
+   *
+   * # 用法
+   * ```powershell
+   * $env:SOURIN_FRAME_LOG = '1'
+   * .\build\windows\x64\runner\Release\sourin_spike.exe
+   * # 产物：.probe/frame_log.txt
+   * ```
+   * ⚠️ 生产**恒不开**（环境变量没设 ⇒ 一行都不执行、零开销）。
+   *
+   * # 附加开关 `SOURIN_WINDOW_SIZE=WxH`（**只用于填充率实验**）
+   * ```text
+   * 目的：判定那个 ~15ms 的 raster 地板是不是**填充率**（Impeller 每帧重绘整窗）。
+   * 判据：面积减半 ⇒ raster 地板**也减半** ⇒ 是填充率（引擎税，不是页面内容）。
+   * 用法：$env:SOURIN_WINDOW_SIZE='640x400'（默认 1280x800，逐字不变）
+   * ```
+   */
+  if (Platform.environment['SOURIN_FRAME_LOG'] == '1') {
+    _installFrameLogger();
+  }
+
+  /*
    * ★★★ 必须初始化 media_kit —— 否则**播放器根本起不来**
    *     （2026-09-23 交付实测发现的真 bug）
    *
@@ -344,8 +385,12 @@ Future<void> main() async {
   if (kIsDesktop) {
     await windowManager.ensureInitialized();
 
-    const windowOptions = WindowOptions(
-      size: Size(1280, 800),
+    /*
+     * ⚠️ task-98 填充率实验开关：`SOURIN_WINDOW_SIZE=WxH`（默认逐字 1280x800）。
+     *    只用于判定那 ~15ms 的 raster 地板是不是填充率（见 main() 的说明）。
+     */
+    final windowOptions = WindowOptions(
+      size: _probeWindowSize(),
       /*
        * ══════════════════════════════════════════════════════════════════
        * ★★★ 最小窗口尺寸 = **原版 Tauri 的值**（900×600）
@@ -721,7 +766,31 @@ Future<void> main() async {
    */
   ThemePackStore.debugSetDataDir(coreDataDir);
 
-  runApp(SourinApp(coreError: coreError, coreDataDir: coreDataDir));
+  /*
+   * ⚠️ task-98 对照开关：`SOURIN_NO_GLASS=1` ⇒ 关掉液态玻璃的模糊
+   *    （`GlassAccessibilityScope(reduceTransparency: true)`）。
+   *
+   * # 为什么加这个（**判定那 ~15ms 的 raster 是不是玻璃**）
+   * ```text
+   * 实测（.probe/frame_log.txt，真实客户端 1280x800）：
+   *   build : p50=756us   超预算 1 帧   ← Dart 侧很便宜
+   *   raster: p50=15484us 超预算 11 帧  ← ★ GPU 侧几乎每帧都超
+   * 而 640x400（1/4 面积）实测 raster **没降** ⇒ **不是填充率**
+   *   ⇒ 那就只剩"某个与面积无关的逐帧 GPU 成本"
+   *   ⇒ 头号嫌疑是**液态玻璃的 BackdropFilter**（它每帧要抓 backdrop 再模糊）
+   * ```
+   * ⚠️ 生产**恒不开**（变量没设 ⇒ 走的还是原来的树，逐字不变）。
+   */
+  final noGlass = Platform.environment['SOURIN_NO_GLASS'] == '1';
+  if (noGlass) {
+    debugPrint('[T98] SOURIN_NO_GLASS=1 ⇒ 玻璃模糊关闭（对照实验）');
+  }
+  runApp(noGlass
+      ? GlassAccessibilityScope(
+          reduceTransparency: true,
+          child: SourinApp(coreError: coreError, coreDataDir: coreDataDir),
+        )
+      : SourinApp(coreError: coreError, coreDataDir: coreDataDir));
 
   /*
    * ══════════════════════════════════════════════════════════════════
@@ -1367,6 +1436,13 @@ class _SourinAppState extends State<SourinApp>
   ///      （`StreamController` 的 broadcast 在没人听时会丢事件，
   ///       而遥控命令**恰好**可能早于页面订阅到达）
   final _liveChannelStep = ValueNotifier<int>(0);
+
+  /// ★★ 路由遮挡观察者（2026-10-13）—— 修「从播放页返回卡顿」
+  ///
+  /// 实例**由本 State 持有并注册进 `navigatorObservers`**，
+  /// 同时把它的 `occluders` 传给 `ShellPage`（只读）。
+  /// 详见 `ShellOcclusionObserver` 的说明。
+  final _occlusion = ShellOcclusionObserver();
 
   /// ★★ 遥控命令 `play_item` 的落地处 —— 手机端从搜索结果点进来
   ///
@@ -2162,6 +2238,33 @@ class _SourinAppState extends State<SourinApp>
        */
       navigatorObservers: <NavigatorObserver>[
         FocusPrimingObserver(),
+        /*
+         * ★★★ 路由遮挡 → shell 可见性（2026-10-13，修「从播放页返回卡顿」）
+         *
+         * # 缺陷（真根因，已读代码坐实）
+         * ```text
+         * _syncVisibility() 只认 _activeTab：
+         *   _liveVisible = (_activeTab == AppTab.live)
+         * ⇒ 在**直播 tab 上** push 播放页/详情页时，_liveVisible **仍是 true**
+         * ⇒ 直播内嵌播放器以为"我可见" ⇒ 继续解码 + 继续驱动原生视频输出层
+         * ⇒ 拉起播放页那一帧、以及 pop 回来那一帧，都要把这层仍然活着的
+         *    画面合成进去 ⇒ 这两处都卡（Owner 报的就是 pop 回来那一下）
+         * ```
+         * ★ 关键是：`Offstage` / `TickerMode` **只停 widget 侧**的工作；
+         *   live_embedded_player 走的是**原生视频输出层**（不画进 Flutter 层），
+         *   TickerMode 对它**完全无效** —— 只能靠 `visible` 门控。
+         *
+         * # 本观察者的职责
+         * ```text
+         * shell 自己的路由（home）被新路由盖住 ⇒ 记下来
+         * ⇒ _syncVisibility() 投影时把「被盖住」也算进去
+         * ⇒ 直播页在**被盖住**期间自认不可见
+         *   · 静音 / 停解码（live_embedded_player 的 _visibleNow 分支）
+         *   · pop 回来时再恢复（值一变，listener 触发续播）
+         * ```
+         * ⚠️ 只**观察**，绝不干预路由生成/转场。
+         */
+        _occlusion,
         ...kDeliveryTest
             ? <NavigatorObserver>[RouteNameObserver()]
             : const <NavigatorObserver>[],
@@ -2171,6 +2274,7 @@ class _SourinAppState extends State<SourinApp>
         coreError: widget.coreError,
         coreDataDir: widget.coreDataDir,
         liveChannelStep: _liveChannelStep,
+        occlusion: _occlusion.occluders,
       ),
       ),
     );
@@ -2184,6 +2288,7 @@ class ShellPage extends StatefulWidget {
     this.coreError,
     this.coreDataDir,
     this.liveChannelStep,
+    this.occlusion,
   });
 
   /// 核心启动失败时的错误消息（null = 成功）
@@ -2215,6 +2320,16 @@ class ShellPage extends StatefulWidget {
   ///    连按"下一个"时值恒为 `+1`，`ValueNotifier` 不会重复通知，
   ///    所以监听者必须"收到就执行"。
   final ValueNotifier<int>? liveChannelStep;
+
+  /// ★★ 路由遮挡计数（2026-10-13）—— 修「从播放页返回卡顿」
+  ///
+  /// 由 `ShellOcclusionObserver.occluders` 提供（见该类说明）：
+  /// ```text
+  /// 0 = shell 就是最上层 ⇒ 内容真的在被看
+  /// >0 = 上面盖了路由（播放页/详情页）⇒ 内容看不见
+  /// ```
+  /// ⚠️ 本页**只读**它。写它的是观察者（它比本页更早知道路由变化）。
+  final ValueListenable<int>? occlusion;
 
   @override
   State<ShellPage> createState() => _ShellPageState();
@@ -2260,6 +2375,79 @@ class RouteNameObserver extends NavigatorObserver {
 }
 
 final debugShellKey = GlobalKey<_ShellPageState>();
+
+/*
+ * ══════════════════════════════════════════════════════════════════════════
+ * ★★★ 路由遮挡观察者（2026-10-13）—— 修「从播放页返回卡顿」
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * # 它解决什么
+ *
+ * shell（home 那条路由）被别的路由盖住时，让 `_ShellPageState` 知道
+ * 「我现在被盖住了」⇒ 把直播页的 `visible` 投影**压成 false**。
+ *
+ * # 为什么必须是「路由」粒度而不是「tab」粒度
+ * ```text
+ * _syncVisibility() 原来只问：当前选中的是不是直播 tab？
+ * 但「选中的是直播 tab」与「直播画面真的在被看」是两回事：
+ *   · 选了直播 tab，然后 push 播放页/详情页
+ *     ⇒ 直播页**还在直播 tab 上**，但**已经被盖住、看不到了**
+ * ⇒ 粒度错了。补上「被盖住」这一维。
+ * ```
+ *
+ * # 为什么用 counter 而不是 bool
+ *
+ * 理论上 `didPush` 后必然是 `previousRoute == 本 shell`，
+ * 但「详情页 → 播放页」这类**连续 push** 会让 `previousRoute`
+ * 是详情页而不是 shell —— 若只判 `previousRoute is home`，第二次
+ * push 就会漏判成「没盖住」。用计数：每次"盖到我"就 +1，
+ * 每次"回到我"就 -1，双向都稳。
+ *
+ * ⚠️ 用 `_occluders` 计数 + 夹到 0，避免异常序列（如 didReplace）
+ *    把计数带成负数而**永久失效**。
+ */
+class ShellOcclusionObserver extends NavigatorObserver {
+  /// 盖在 shell 上面的路由条数（0 = shell 可见）
+  final ValueNotifier<int> occluders = ValueNotifier<int>(0);
+
+  /// 本观察者要盯的那条路由是不是「shell 自己」
+  ///
+  /// ⚠️ shell 是 `MaterialApp(home:)` 那条路由 ⇒ `isFirst` 为 true。
+  ///    用 `isFirst` 而不是比路由名：home 路由**没有 name**
+  ///    （settings.name == null），比名字会恒不相等。
+  bool _isShellRoute(Route<dynamic>? r) => r?.isFirst ?? false;
+
+  void _bump(int d) {
+    final v = (occluders.value + d).clamp(0, 1 << 30);
+    if (v != occluders.value) occluders.value = v;
+  }
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    // 新路由压上来时，若它下面就是 shell ⇒ shell 被盖住
+    if (_isShellRoute(previousRoute)) _bump(1);
+    super.didPush(route, previousRoute);
+  }
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    // 回到 shell（被 pop 掉的这条的下面就是 shell）⇒ shell 重新可见
+    if (_isShellRoute(previousRoute)) _bump(-1);
+    super.didPop(route, previousRoute);
+  }
+
+  @override
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    if (_isShellRoute(previousRoute)) _bump(-1);
+    super.didRemove(route, previousRoute);
+  }
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    // 替换不改变「shell 上面有几条」，无需调整。
+    super.didReplace(newRoute: newRoute, oldRoute: oldRoute);
+  }
+}
 
 class _ShellPageState extends State<ShellPage>
     with SingleTickerProviderStateMixin {
@@ -2452,8 +2640,38 @@ class _ShellPageState extends State<ShellPage>
   ///
   /// ★ 单向：`_activeTab` → `_liveVisible`。反方向不存在。
   ///   这样"可见性"永远只有一个权威值，投影只是给既有签名做兼容。
+  ///
+  /// ══════════════════════════════════════════════════════════════════
+  /// ★★★ 2026-10-13：投影**多了一维** —— 路由遮挡（修"返回卡顿"）
+  /// ══════════════════════════════════════════════════════════════════
+  ///
+  /// # 改之前（粒度错了）
+  /// ```text
+  /// v = (_activeTab.value == AppTab.live)
+  /// ```
+  /// 只回答「用户选的 tab 是不是直播」，**不回答**「直播画面是否真的在被看」。
+  ///
+  /// # 症状（Owner 报的「从播放页返回还是会卡」）
+  /// ```text
+  /// 在直播 tab 上 push 播放页 ⇒ _liveVisible 仍是 true
+  /// ⇒ 直播内嵌播放器继续解码 + 继续驱动**原生视频输出层**
+  ///   （那一层不画进 Flutter 层 ⇒ Offstage / TickerMode **管不到它**）
+  /// ⇒ push 那一帧、以及 pop 回来那一帧，都要把这层仍然活着的画面
+  ///    合成进去 ⇒ 两处都卡；Owner 看得到的就是 pop 回来那一下
+  /// ```
+  ///
+  /// # 改之后
+  /// ```text
+  /// v = (tab == live) && (shell 没有被别的路由盖住)
+  /// ```
+  /// ⇒ 被盖住期间直播页自认不可见 ⇒ 走它既有的 `_visibleNow` 分支
+  ///   （静音 / 停解码），pop 回来时值一变 ⇒ listener 自动续播。
+  ///   ★ 复用的是**已有**的可见性通路，没有新增状态机。
+  ///
+  /// ⚠️ `_occluders.value > 0` 而不是 `== 1`：连 push 两层也照样算被盖住。
   void _syncVisibility() {
-    final v = _activeTab.value == AppTab.live;
+    final v = _activeTab.value == AppTab.live &&
+        (widget.occlusion?.value ?? 0) == 0;
     if (_liveVisible.value != v) _liveVisible.value = v;
   }
 
@@ -2825,6 +3043,27 @@ class _ShellPageState extends State<ShellPage>
      *      收到通知就执行一次（而不是"按值执行"）。
      */
     widget.liveChannelStep?.addListener(_onLiveChannelStep);
+
+    /*
+     * ★★★ 2026-10-13：路由遮挡也影响可见性 ⇒ 必须**重投影**
+     *
+     * # 为什么 _syncVisibility 只在 _switchTo 里调用是**不够**的
+     * ```text
+     * _switchTo 只在**切 tab** 时跑。
+     * 而「在直播 tab 上 push 播放页」**不切 tab**（值没变）
+     * ⇒ 没有同步点 ⇒ _liveVisible 永远停在 true
+     * ⇒ 直播页在播放页盖着的时候仍在解码 + 驱动原生视频输出层
+     * ⇒ push / pop 那两帧要合成它 ⇒ 卡（Owner 报的就是 pop 那一下）
+     * ```
+     *
+     * # 修法
+     * 直接**订阅遮挡计数**：路由一有 push/pop，本 listener 就重投影。
+     * ★ 复用的还是同一个 `_syncVisibility()` —— 没有第二套可见性逻辑。
+     *
+     * ⚠️ 必须与 dispose 里的 `removeListener` **配对**
+     *    （本项目踩过"漏注销 ⇒ setState after dispose"）。
+     */
+    widget.occlusion?.addListener(_syncVisibility);
 
     /*
      * ⚠️ 首次可见性同步 —— 初始 tab 是首页，直播页**不可见**。
@@ -3371,6 +3610,8 @@ class _ShellPageState extends State<ShellPage>
     FocusManager.instance.removeEarlyKeyEventHandler(_onEarlyKey);
     // ★ task-39：注销遥控切频道信号（与 initState 的 addListener 配对）
     widget.liveChannelStep?.removeListener(_onLiveChannelStep);
+    // ★ 2026-10-13：路由遮挡 listener 也必须注销（与 initState 配对）
+    widget.occlusion?.removeListener(_syncVisibility);
     // ★ 释放可见性（task-41）：权威值 + 它的 bool 投影都要释放
     //   ⚠️ 顺序无所谓（两者独立），但**两个都必须释放** ——
     //      只释放一个会漏（本项目踩过"两处同构必须一起改"）。
@@ -7071,4 +7312,200 @@ class _BottomPalette {
     // `--tab-fg-strong: #ffffff`
     activeForeground: Colors.white,
   );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  task-98：帧耗时取证（环境变量门控，生产恒不开）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 用法与「为什么不写独立探针 app」见 `main()` 里那段说明。
+// 产物：`.probe/frame_log.txt`（★ 判据是**产物文件**，不是 stdout ——
+// Windows GUI 子系统程序的输出能否被父进程接住取决于句柄继承）。
+//
+// 记录内容：
+//   · 每个「超预算帧」（build 或 raster > 16.7ms）当场落盘一行，
+//     带**前后各 3 帧**的读数 ⇒ 能看出是哪一下、持续几帧。
+//   · 另外每 5 秒写一行「窗口汇总」（帧数 / p50 / p95 / max / 超预算数），
+//     这样即使没人操作也能看到稳态成本。
+void _installFrameLogger() {
+  final f = File('.probe/frame_log.txt');
+  final buf = StringBuffer();
+  final all = <FrameTiming>[];
+  var lastSummary = DateTime.now();
+  var marked = 0; // 已处理到 all 的哪个位置
+
+  void flush() {
+    try {
+      f.writeAsStringSync(buf.toString(), mode: FileMode.write);
+    } catch (_) {/* 落盘失败不致命 */}
+  }
+
+  buf.writeln('══════ task-98 帧耗时取证 ══════');
+  buf.writeln('启动 = ${DateTime.now().toIso8601String()}');
+  buf.writeln('SOURIN_FRAME_LOG=1 ⇒ 本文件才有内容；生产不设此变量');
+  flush();
+
+  int pct(List<int> xs, double p) {
+    if (xs.isEmpty) return -1;
+    final s = [...xs]..sort();
+    return s[((s.length - 1) * p).round().clamp(0, s.length - 1)];
+  }
+
+  SchedulerBinding.instance.addTimingsCallback((List<FrameTiming> t) {
+    all.addAll(t);
+
+    // ① 逐帧：超预算就记（带上下文）
+    while (marked < all.length) {
+      final i = marked++;
+      final ft = all[i];
+      final b = ft.buildDuration.inMicroseconds;
+      final r = ft.rasterDuration.inMicroseconds;
+      if (b <= 16700 && r <= 16700) continue;
+      buf.writeln('');
+      buf.writeln('★ 超预算帧 #$i  build=${b}us  raster=${r}us  '
+          '(${(b / 16700 * 100).round()}% / ${(r / 16700 * 100).round()}% of 16.7ms)');
+      // 前 3 帧
+      for (var k = i - 3; k < i; k++) {
+        if (k < 0) continue;
+        final p = all[k];
+        buf.writeln('    前${i - k}: build=${p.buildDuration.inMicroseconds}us '
+            'raster=${p.rasterDuration.inMicroseconds}us');
+      }
+      // 后 3 帧（下一批 timings 投递时才会有；先留空由下轮补）
+      /*
+       * ⚠️⚠️ 2026-10-13 **不许在这里 flush()** —— 这是**观测者效应**
+       *
+       * # 我第一版就是在这里每帧 `flush()`，而它是**同步写盘**
+       * ```text
+       * flush() → File.writeAsStringSync(...)   ← 阻塞 UI 线程
+       * 而本回调（addTimingsCallback）**跑在 UI 线程上**
+       * ⇒ 每记一帧就同步写一次盘 ⇒ **把卡顿自己造出来**
+       *   （实测那轮 raster 抖动特别大、超预算 26/107，其中有多少是它造的，
+       *     事后**分不清** —— 一个会改变被测量的仪器等于没有仪器）
+       * ```
+       * ⇒ 只在**每 5 秒的汇总**里落盘（那里一帧只写一次，且不在帧内高频路径）。
+       *   ⚠️ 代价：进程被强杀时最后几帧会丢 —— 可接受（汇总 5 秒一次）。
+       */
+    }
+
+    // ② 每 5 秒一次窗口汇总
+    final now = DateTime.now();
+    if (now.difference(lastSummary).inSeconds >= 5) {
+      lastSummary = now;
+      final builds = [for (final x in all) x.buildDuration.inMicroseconds];
+      final rasters = [for (final x in all) x.rasterDuration.inMicroseconds];
+      final jb = builds.where((x) => x > 16700).length;
+      final jr = rasters.where((x) => x > 16700).length;
+      buf.writeln('── 汇总 @${now.toIso8601String().substring(11, 19)} '
+          '累计帧=${all.length}');
+      buf.writeln('   build : p50=${pct(builds, .5)} p95=${pct(builds, .95)} '
+          'max=${builds.isEmpty ? -1 : builds.reduce((a, b) => a > b ? a : b)} '
+          '超预算=$jb');
+      buf.writeln('   raster: p50=${pct(rasters, .5)} p95=${pct(rasters, .95)} '
+          'max=${rasters.isEmpty ? -1 : rasters.reduce((a, b) => a > b ? a : b)} '
+          '超预算=$jr');
+      flush();
+    }
+  });
+
+  /*
+   * ★ 兜底落盘：每 2 秒把内存里的记录写一次盘。
+   *
+   * # 为什么单独起 Timer 而不是在帧回调里 flush（见上面那段观测者效应说明）
+   * ```text
+   * 帧回调里写盘 = 阻塞 UI 线程 = 仪器改变被测量对象。
+   * 定时器里写盘 = 不在任何一帧的 build/raster 窗口内 ⇒ **测不到自己**。
+   * ```
+   * ⚠️ 会丢最多 2 秒的记录（进程被强杀时）—— 判断趋势足够。
+   */
+  Timer.periodic(const Duration(seconds: 2), (_) => flush());
+
+  /*
+   * ══════════════════════════════════════════════════════════════════════
+   * ★★★ A/B 驱动：`SOURIN_AB=1` ⇒ 自动跑「push 播放页 → pop 回来」
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * # 为什么必须**自动**驱动，不能靠我手点
+   * ```text
+   * 手点 ⇒ 每次 push/pop 的时刻不同 ⇒ 无法与「帧号」对齐
+   *      ⇒ 两轮读数不可比（我之前几轮就是这么量的，结论飘）
+   * 自动 ⇒ 相位边界写进日志 ⇒ **帧号可对齐** ⇒ 真 A/B
+   * ```
+   *
+   * # 为什么不用 t98_return_step_probe.dart 那套
+   * 它是**独立入口**（`-t` 另一个 main），跑的是**复刻**的路由栈；
+   * 而 Owner 报的卡顿发生在**真 shell** 上 ⇒ 必须在真入口里量。
+   *
+   * ⚠️ 生产恒不开（无此环境变量 ⇒ 整段不执行）。
+   */
+  if (Platform.environment['SOURIN_AB'] == '1') {
+    var phase = 0;
+    Timer.periodic(const Duration(seconds: 6), (tm) async {
+      phase++;
+      final nav = AppTray.navigatorKey.currentState;
+      if (nav == null) return;
+      if (phase % 2 == 1) {
+        buf.writeln('── AB 相位 P$phase：PUSH 播放页（帧 ${all.length}）');
+        flush();
+        try {
+          unawaited(nav.push(MaterialPageRoute<void>(
+            builder: (_) => const _AbHeavyPage(),
+          )));
+        } catch (e) {
+          buf.writeln('   push 失败: $e');
+        }
+      } else {
+        buf.writeln('── AB 相位 P$phase：POP 回首页（帧 ${all.length}）');
+        flush();
+        try {
+          nav.pop();
+        } catch (e) {
+          buf.writeln('   pop 失败: $e');
+        }
+      }
+      if (phase >= 8) {
+        buf.writeln('── AB 结束（机内 ${DateTime.now().toIso8601String()}）');
+        flush();
+        tm.cancel();
+      }
+    });
+  }
+}
+
+/// A/B 实验里被 push 的那一页：**故意做重**（模拟播放页体量）。
+///
+/// ⚠️ 不引真播放器 —— 那会把「上游取流耗时」混进来，
+///    而本实验只问「首页在 push/pop 时要不要为**被盖住的直播页**付合成成本」。
+class _AbHeavyPage extends StatelessWidget {
+  const _AbHeavyPage();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF101014),
+      body: ListView.builder(
+        itemCount: 300,
+        itemBuilder: (_, i) => SizedBox(
+          height: 28,
+          child: Text('AB row $i',
+              style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        ),
+      ),
+    );
+  }
+}
+
+/// task-98 填充率实验：`SOURIN_WINDOW_SIZE=WxH` ⇒ 改窗口尺寸；否则**逐字** 1280x800
+///
+/// ⚠️ 只解析 `^(\d+)x(\d+)$`；解析不出 / 太小一律回落到 1280x800
+///    （生产不设这个变量 ⇒ 走的永远是回落值，行为逐字不变）。
+Size _probeWindowSize() {
+  final raw = Platform.environment['SOURIN_WINDOW_SIZE'] ?? '';
+  final m = RegExp(r'^(\d+)\s*[xX]\s*(\d+)$').firstMatch(raw.trim());
+  if (m == null) return const Size(1280, 800);
+  final w = int.tryParse(m.group(1)!) ?? 1280;
+  final h = int.tryParse(m.group(2)!) ?? 800;
+  if (w < 200 || h < 200) return const Size(1280, 800);
+  debugPrint('[T98] 窗口尺寸被 SOURIN_WINDOW_SIZE 覆盖为 ${w}x$h（填充率实验）');
+  return Size(w.toDouble(), h.toDouble());
 }

@@ -1,7 +1,7 @@
 /**
  * @id          iptv
  * @name        IPTV 直播
- * @version     1.2.0
+ * @version     1.2.1
  * @author      dsh
  * @description 整合 iptv-org 公共直播源（含 CCTV 全套），解决「央视官方源视频轨加密看不了」
  * @homepage    https://iptv-org.github.io
@@ -661,8 +661,23 @@ globalThis.plugin = {
     const allow = {}
     for (const id of VERIFIED_IDS) allow[id] = 1
 
+    /*
+     * ★★★ 2026-10-13：**按 VERIFIED_IDS 的顺序输出**（原写法不是）
+     *
+     * # 原来是个真 bug（不只是排序偏好）
+     * ```text
+     * 原写法：all.filter(allow) —— 顺序**完全跟着上游目录**走。
+     * ⇒ VERIFIED_IDS 里排的"先放常用的"被**静默丢弃**
+     *   ⇒ 改白名单顺序**没有任何效果**
+     *   （Owner 这次就撞上了：把 BaichengTV 挪到首位，界面上仍在 ABN 之后）
+     * ```
+     * ⇒ 按白名单顺序输出；找不到的 id 仍然跳过（下架了，不报错）。
+     */
+    const rank = new Map()
+    VERIFIED_IDS.forEach((id, i) => rank.set(id, i))
     const out = all
       .filter((c) => allow[c.id])
+      .sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9))
       .map((c) => ({
         id: c.id,
         // ★ v1.1.0：中文名 + 去噪音（见 displayName 的注释）

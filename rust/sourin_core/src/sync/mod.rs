@@ -1045,7 +1045,7 @@ pub struct MergeOutcome<T> {
 ///    `crate::sync`，可以直接复用 `crate::store` 的那个函数；
 ///    这里**刻意复用它**而不是抄一份（两套真相必然漂）。
 fn progress_sync_key(p: &Progress) -> String {
-    progress_key(&p.provider, &p.native_id, p.episode_id.as_deref())
+    crate::store::progress_key(&p.provider, &p.native_id, p.episode_id.as_deref())
 }
 
 /// ★ Last-Write-Wins 合并
@@ -1058,8 +1058,7 @@ fn progress_sync_key(p: &Progress) -> String {
 /// 关键性质：**可交换**（local/remote 换序结果相同，除同时刻的平手），
 /// 因此并发冲突时「重拉+重合并」是安全的。
 pub fn merge_lww<T, K, U>(local: Vec<T>, remote: Vec<T>, key_of: K, updated_of: U) -> MergeOutcome<T>
-where
-    T: Clone,
+where    T: Clone,
     K: Fn(&T) -> String,
     U: Fn(&T) -> i64,
 {

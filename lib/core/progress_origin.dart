@@ -128,16 +128,61 @@ class ProgressOrigin {
   int get hashCode => Object.hash(provider, mediaId);
 }
 
-/// 进度主键 —— 与 Rust `item_key`（`commands_write.rs:42-44`）**同构**
+/// 进度**按集主键** —— 与 Rust `progress_key`（`store.rs`）**同构**的文档化对照
 ///
 /// ```text
-/// Rust : format!("{provider}:{id}")
-/// Dart : provider + ':' + mediaId
+/// Rust : let ep = episode_id.unwrap_or("");
+///        format!("{provider}:{native_id}:{ep}")
+/// Dart : provider + ':' + mediaId + ':' + (episodeId ?? '')
 /// ```
-/// 拼错不会报错、只会静默查不到（Rust 侧注释原话），所以两边的格式由
-/// `test/zz_ops13_origin_test.dart` 的源码扫描一起钉住。
-String canonicalProgressKey(String provider, String mediaId) =>
-    '$provider:$mediaId';
+///
+/// # ★★ 2026-10-12：主键由「按作品」扩成「**按集**」
+///
+/// ```text
+/// 老：provider:mediaId                   一个作品一行（换集就覆盖）
+/// 新：provider:mediaId:episodeId         一个作品**每集一行**
+///     episodeId 为 null ⇒ **空串哨兵**（不能留 null：SQLite 的唯一约束
+///     允许重复 NULL ⇒ 同一单片会被插成多行）
+/// ```
+///
+/// ⚠️ **Dart 侧不构造这个键**（读写都只传 `(provider, id[, episodeId])` 两半/三半，
+///    拼键**只有一处** = Rust）。本函数存在的意义是**把两端的格式并排写下来**，
+///    由 `test/zz_ops13_origin_test.dart` 的源码扫描钉住两边一致 ——
+///    谁改了一处而没改另一处，测试立刻红，不会静默漂。
+///
+/// # ★ 为什么不把「本地文件会话」也拼进按集键
+///
+/// 本地会话的 provider 恒为 `local`、id 是文件绝对路径 —— 那是**另一个命名空间**
+/// （见本文件头的镜像机制）。按集扩容**不会**把两个命名空间合并，
+/// 所以镜像机制仍然需要（见 [saveProgressWithMirror]）。
+///
+/// # ⚠️⚠️ 空白**不 trim**（2026-10-13 翻转：以前这里带 `?.trim()`）
+///
+/// CodeRabbit 在 PR #18 上要求「两边一起 trim」，PR #21 / #23 / #24 又各点了
+/// 一次 —— 因为**真正的不变量不是「都 trim」，而是「两端逐字同构」**，
+/// 而 trim 恰好**做不到**这一点：
+///
+/// ```text
+/// Rust 的 `str::trim` 按 char::is_whitespace 去**所有 Unicode 空白**
+///   （含 U+3000 全角空格、U+00A0 NBSP、U+2028/2029 …）
+/// SQLite 的 TRIM(x) 默认**只去半角空格**
+///   （要覆盖 TAB/LF/CR 得显式传字符集，且**永远覆盖不到** Unicode 空白）
+/// 两套规则**永远追不平** ⇒ 补字符集也只是把不等价的地方推远一点
+/// ```
+///
+/// ⇒ 最终裁决：**两端都不 trim**，规则只有一条「`NULL` ⇒ 空串，其余原样」，
+///   与 `Db::migrate` 的 `COALESCE(episode_id,'')` 逐字一致（迁移 SQL 与
+///   `store::progress_key` 两处拼法由 Rust 测试
+///   `store::tests::progress_migration_rewrites_key_and_preserves_data` 里的
+///   `padded.key == "cycani:3613: ep1 "` 钉住）。
+///   代价：老库里带空白的 episode_id 会**原样**进键（罕见到可以忽略）。
+///
+/// ★ 所以这里**必须**是 `?? ''`，不能是 `?.trim() ?? ''` ——
+///   否则 `episodeId = ' 3 '` 会拼出 `...:3` 而 Rust 拼出 `...: 3 `
+///   ⇒ 同一集裂成两条记录 ⇒ 续播会在这两行之间跳。
+///   由 `test/zz_ops13_origin_test.dart` 的同构断言钉住（含空白样本）。
+String canonicalProgressKey(String provider, String mediaId, [String? episodeId]) =>
+    '$provider:$mediaId:${episodeId ?? ''}';
 
 /// 从 `CachedPlayRequest` 的两个 origin 字段得到规范化的来源
 ///

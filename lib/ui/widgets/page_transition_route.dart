@@ -321,8 +321,26 @@ class _ExitSnapshot extends StatefulWidget {
 }
 
 class _ExitSnapshotState extends State<_ExitSnapshot> {
+  /*
+   * ⚠️⚠️ 初值必须是 **false**（`allowSnapshotting: false`）。
+   *
+   * # 我第一版写的是 `true`，那是个真缺陷（2026-10-13 由 `t486` 抓出）
+   * ```text
+   * `allowSnapshotting: true` 是**持续**用快照替换子树 ——
+   * 它**不看**我下面那个 `_snapshotting` 布尔（那个变量当时只驱动 setState，
+   * 压根没接到 controller 上）⇒
+   *   ① 页面被**永久冻在**第一帧（正是我在注释里说要避免的那个 bug）
+   *   ② ★ 还会**吞掉布局溢出异常**：`t486` 的阳性对照
+   *      （「极窄 300 宽必须看到 RenderFlex overflowed」）因此恒为 0 条
+   *      ⇒ 那个测试的仪器自检失效。
+   * ③ ★ 而性能读数**照样好看** —— 冻住的图当然便宜。
+   *    ⇒ 这就是"测出来的数字是真的，但实现是错的"。
+   * ```
+   * ⇒ 现在**唯一**的开关就是 controller 上的 `allowSnapshotting`，
+   *   由 `_onStatus` 按「动画是否在飞」显式置位，别处不再有第二个真相。
+   */
   late final SnapshotController _c =
-      SnapshotController(allowSnapshotting: true);
+      SnapshotController(allowSnapshotting: false);
 
   /// 过渡是否在飞 —— 只有在这期间才允许用快照
   ///
@@ -367,11 +385,22 @@ class _ExitSnapshotState extends State<_ExitSnapshot> {
     final flying = st == AnimationStatus.forward ||
         st == AnimationStatus.reverse;
     if (flying == _snapshotting) return;
-    setState(() => _snapshotting = flying);
-    if (!flying) {
-      // 停止动画 ⇒ 立刻丢快照，回到实时渲染（见上面那段）
-      _c.clear();
-    }
+    /*
+     * ★★ 唯一开关：改 controller 的 `allowSnapshotting`（不是只 setState）。
+     *
+     * ```text
+     * flying = true  ⇒ allowSnapshotting = true  ⇒ 用快照（过渡期，省重绘）
+     * flying = false ⇒ allowSnapshotting = false ⇒ 回到**实时渲染**
+     * ```
+     * `allowSnapshotting` 的 setter 内部 `notifyListeners()` ⇒
+     * `SnapshotWidget` 会立刻换回来，**不需要**再手动 `clear()`
+     * （`clear()` 是"重拍一张"，而这里要的是"以后别用快照了"）。
+     *
+     * ⚠️ 别再引入第二个布尔（我第一版就是"`_snapshotting` + 只 setState"，
+     *    而 controller 始终 true ⇒ 两个真相打架，页面被永久冻住）。
+     */
+    _snapshotting = flying;
+    _c.allowSnapshotting = flying;
   }
 
   @override

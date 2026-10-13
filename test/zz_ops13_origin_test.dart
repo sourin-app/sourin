@@ -36,6 +36,80 @@ import 'package:sourin_spike/ui/cache_page.dart' show kLocalProvider;
 
 String _src(String rel) => File(rel).readAsStringSync();
 
+/// 剥掉行注释与块注释（判据对象是**代码**时必做）
+///
+/// ⚠️ 本仓大量长注释里**引用**了被删掉的旧代码 —— 只做 `contains`
+///    会让「旧代码还在」这类断言**假绿**（`t67_repoint_test.dart` 同款说明）。
+///
+/// # ★★★ 块注释必须**行首锚定**（这是实测踩出来的坑，不是洁癖）
+///
+/// 不锚定的话，**行注释里的 glob** 会被当成块注释开头：
+/// ```text
+/// //   拼键只有一处 = Rust（不 import `lib/ui/**`）
+///                                 ↑ 这个 `/*` 让 `/*…*/` 一路吞到下一个 `*/`
+/// ```
+/// 实测：本文件的行注释里写了 `lib/core/**` / `lib/ui/**` ⇒
+///   `lib/core/progress_origin.dart` 被吞掉 **13215 字符**（19435 → 6220），
+///   连 `String canonicalProgressKey(` 那行签名都被删掉 ⇒
+///   测试报 `Expected: a value greater than <-1> / Actual: <-1>`。
+///
+/// 本仓块注释**一律独占整行**（本文件与 `progress_origin.dart` 都如此），
+/// 所以 `^[ \t]*/\* … \*/[ \t]*$` 这个锚定**不丢**任何真注释。
+String _stripComments(String src) {
+  final noBlock = src.replaceAll(
+      RegExp(r'^[ \t]*/\*[\s\S]*?\*/[ \t]*$', multiLine: true), ' ');
+  return noBlock
+      .split('\n')
+      .map((l) {
+        final i = l.indexOf('//');
+        return i >= 0 ? l.substring(0, i) : l;
+      })
+      .join('\n');
+}
+
+/// 切出某个声明的**声明体**（块体 `{ … }` 或表达式体 `=> …;` 都行）
+///
+/// ★ 与 `test/t67_repoint_test.dart:200 rustFnBody()` 是**同一个手法**：
+///   从签名起找 `{`，数大括号到配平 —— 不依赖任何魔数。
+///   不精确切的话，断言会命中**后面另一个声明**里的同名符号（本仓踩过）。
+///
+/// ⚠️ 表达式体没有大括号（`canonicalProgressKey` 就是），此时切到
+///    其后的**第一个 `;`**。这个简化对「表达式里没有分号字面量」成立 ——
+///    本函数就是这种形状；若哪天改成块体，走的是上面那条配平分支。
+String _fnBodyOf(String src, String signature) {
+  /*
+   * ★★ 先**在原文上**找签名、切体，最后才剥注释（顺序不能反）：
+   * ```text
+   * ① 先剥再找：剥注释会**删掉行**，签名行可能一起没了（本文件踩过，
+   *    见 `_stripComments` 的说明）—— 那时 `indexOf` = -1，报错信息还
+   *    完全指不到真因
+   * ② 切完再剥：注释里的**旧代码**不会造成假绿，因为断言只看切出来的那段
+   * ```
+   */
+  final at = src.indexOf(signature);
+  expect(at, greaterThan(-1), reason: '★ 找不到 `$signature`');
+  final open = src.indexOf('{', at);
+  final arrow = src.indexOf('=>', at);
+  final semi = src.indexOf(';', at);
+  final isExprBody = arrow > -1 &&
+      (open < 0 || arrow < open) &&
+      (semi < 0 || arrow < semi);
+  if (isExprBody) {
+    expect(semi, greaterThan(arrow), reason: '表达式体必须以 `;` 结束');
+    return _stripComments(src.substring(at, semi + 1));
+  }
+  expect(open, greaterThan(-1), reason: '`$signature` 后面必须有 `{`');
+  var depth = 0;
+  for (var i = open; i < src.length; i++) {
+    if (src[i] == '{') depth++;
+    if (src[i] == '}') {
+      depth--;
+      if (depth == 0) return _stripComments(src.substring(at, i + 1));
+    }
+  }
+  fail('`$signature` 的大括号不配平');
+}
+
 /// 从一个 Dart 源串里抽出 `{ ... }` 里的字符串字面量集合
 ///
 /// 用于把 core 与 ui 两份后缀表**逐字**比对（同一个源比同一个源的反面：
@@ -100,35 +174,74 @@ void main() {
       expect(canonicalProgressKey('local', 'D:/源影/第01集.mp4', '第01集.mp4'),
           'local:D:/源影/第01集.mp4:第01集.mp4');
       /*
-       * ★★★ 空白必须被 trim —— 两端"逐字同构"的实际含义（CodeRabbit PR #18）
+       * ★★★ 空白**不 trim**（2026-10-13 翻转：以前这里断言 `' 3 '` ⇒ `'bilibili:BV1:3'`）
        *
-       * Rust `store::progress_key` 是 `episode_id.map(str::trim)`，
-       *   ⇒ `Some(" 3 ")` 拼出 `...:3`
-       * Dart 若直接插值 ⇒ 拼出 `...: 3 ` ⇒ **与 Rust 不一致**
-       * ⇒ 两条"同构"声明当场失效。所以两侧都 trim，并由本组用例钉住。
+       * # 为什么翻（CodeRabbit 在 PR #18 / #21 / #23 / #24 上各点了一次）
+       * ```text
+       * 老口径：两端都 trim
+       *   Rust   `episode_id.map(str::trim)`  按 char::is_whitespace 去**所有 Unicode 空白**
+       *   SQLite `TRIM(x)`                    默认**只去半角空格**
+       *   ⇒ 这两套规则**永远追不平** —— 补字符集也只是把不等价的地方推远一点
+       * ```
+       * 真正的不变量不是「都 trim」，而是「**两端逐字同构**」，
+       * 而 trim 恰好做不到这一点。最终裁决：
+       *
+       * ```text
+       * NULL ⇒ 空串，其余**原样**
+       *   （与 `Db::migrate` 的 `COALESCE(episode_id,'')` 逐字一致）
+       * ```
+       *
+       * 回归锁在 Rust 侧：`store::tests::progress_migration_rewrites_key_and_preserves_data`
+       * 的 `padded.key == "cycani:3613: ep1 "` —— 带空白的 episode_id 必须**原样**进键。
+       * 若哪天有人把 trim 加回任一侧，那条 Rust 用例先红。
        */
       expect(
         canonicalProgressKey('bilibili', 'BV1', ' 3 '),
-        'bilibili:BV1:3',
-        reason: '★★ episodeId 前后空白必须被 trim —— '
-            'Rust 的 progress_key 是 str::trim，Dart 不 trim 就不同构了',
+        'bilibili:BV1: 3 ',
+        reason: '★★ episodeId 前后空白**原样进键**（不 trim）—— '
+            'Rust 的 progress_key 现在是 `episode_id.unwrap_or("")`，'
+            'Dart 若 trim 就拼出 `...:3` ⇒ 同一集裂成两条记录',
       );
       expect(
         canonicalProgressKey('bilibili', 'BV1', '   '),
-        'bilibili:BV1:',
-        reason: '★ 全是空白 ⇒ trim 后为空 ⇒ 与"空串哨兵"同一形态',
+        'bilibili:BV1:   ',
+        reason: '★ 全是空白也**不**折叠成空串哨兵 —— 原样进键，'
+            "否则与 Rust 的 COALESCE(episode_id,'') 不同构",
       );
     });
 
     test('★★★ 两端格式契约（源码扫描）：Rust 与 Dart 的拼法必须一致', () {
       final rust = _src('rust/sourin_core/src/store.rs');
-      expect(rust.contains('format!("{provider}:{native_id}:{ep}")'), isTrue,
+      /*
+       * ★★ 同样收进**函数体内**：`str::trim` 只出现在 `progress_key` 的
+       *    文档注释里（作为「以前是这样」的反例）—— 对整文件 contains
+       *    永远命中 ⇒ 真把 trim 加回代码也照样绿。
+       */
+      final rustBody = _fnBodyOf(rust, 'pub(crate) fn progress_key(');
+      expect(rustBody.contains('format!("{provider}:{native_id}:{ep}")'), isTrue,
           reason: '★ Rust 侧的 progress_key 变了 —— Dart 侧必须同步（它是唯一拼键点）');
+      expect(rustBody.contains('episode_id.unwrap_or("")'), isTrue,
+          reason: '★ Rust 侧必须是「NULL ⇒ 空串」这一条规则');
+      expect(rustBody.contains('str::trim'), isFalse,
+          reason: '★★ progress_key 体内不许出现 str::trim —— 见 Dart 侧的同款理由');
       final dart = _src('lib/core/progress_origin.dart');
-      expect(dart.contains(r"$provider:$mediaId:${episodeId?.trim() ?? ''}"), isTrue,
+      /*
+       * ★★ 断言必须落在**声明体内**，且先剥注释 —— 少一条就假绿：
+       * ```text
+       * ① 不剥注释：本文件与 progress_origin.dart 的文档里**引用**了旧写法
+       *    `?.trim()` 作为反例 ⇒ 只 contains 就永远绿
+       * ② 不切体：命中文件里任何一处同名串 ⇒ 函数体改了也照样绿
+       * ```
+       * ⇒ `_fnBodyOf` 切体 + `_stripComments` 剥注释，两条一起才钉得住。
+       */
+      final body = _fnBodyOf(dart, 'String canonicalProgressKey(');
+      expect(body.contains(r"${episodeId ?? ''}"), isTrue,
           reason: '★ Dart 侧的拼法必须是 provider + ":" + mediaId + ":" + '
-              '(episodeId?.trim() ?? "") —— ★ **必须带 trim**，'
-              '因为 Rust 侧是 str::trim（不 trim 就不同构）');
+              '(episodeId ?? "") —— ★★ **不许带 trim**：Rust 侧是 '
+              '`episode_id.unwrap_or("")`（NULL ⇒ 空串，其余原样），'
+              'Dart 若 trim 就不同构');
+      expect(body.contains('.trim()'), isFalse,
+          reason: '★★ 声明体里不许出现 `.trim()` —— 见上一条的理由');
     });
   });
 

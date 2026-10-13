@@ -27,7 +27,7 @@
 //! 单文件 + ETag 乐观锁在数据量（几百条）下完全够用，
 //! 且「读-合并-写」的语义清晰。JSONL 只是便于人工查看/增量解析。
 
-use crate::store::{Db, Favorite, Normalize, Progress};
+use crate::store::{Db, Favorite, Normalize, Progress, progress_key};
 use crate::sync::webdav::{SyncBackend, WebdavBackend};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -1340,17 +1340,9 @@ mod tests {
         // 老设备同步过来（老 key 口径，无第三段），position 100（较旧）
         let remote_old = Progress {
             key: "cycani:3611".into(),
-            provider: "cycani".into(),
-            native_id: "3611".into(),
-            title: "长剧".into(),
-            cover: None,
-            episode_id: Some("48884".into()),
-            episode_title: Some("第03集".into()),
-            position: 100,
-            duration: 9285,
-            finished: false,
-            updated_at: 1000,
+            ..local.clone()
         };
+        let remote_old = Progress { position: 100, updated_at: 1000, ..remote_old };
 
         let out = merge_lww(
             vec![local],
@@ -1395,6 +1387,205 @@ mod tests {
             "★ 无论 jsonl 里 key 写的是老口径还是新口径，推导结果必须相同"
         );
         assert_eq!(progress_sync_key(&a), "cycani:3611:48884");
+    }
+
+    // ─────────── 假后端：把整条 `sync_progress()` 跑起来 ───────────
+
+    /// 内存里的假 WebDAV：够 `sync_progress` 走完「拉 → 合并 → 落库 → 推」
+    ///
+    /// ★ 为什么值得写：上面那些 `merge_lww` 单测只钉住**纯函数**，
+    ///   而 `sync_progress` 里的**合并键来源**（`p.key` 还是字段推导）
+    ///   只有走完整条链路才看得出来。实测：把 `let key_of =
+    ///   progress_sync_key;` 改回 `|p: &Progress| p.key.clone()`，
+    ///   纯函数单测**照样全绿**（就是下面这两条把它钉住的）。
+    #[derive(Default)]
+    struct FakeBackend {
+        files: std::sync::Mutex<std::collections::HashMap<String, (Vec<u8>, Option<String>)>>,
+    }
+
+    impl FakeBackend {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn seed(&self, path: &str, body: &str) {
+            self.files.lock().unwrap().insert(
+                path.to_string(),
+                (body.as_bytes().to_vec(), Some("etag-1".into())),
+            );
+        }
+
+        /// 当前远端文件的文本（测试用来数行数）
+        fn body_of(&self, path: &str) -> String {
+            self.files
+                .lock()
+                .unwrap()
+                .get(path)
+                .map(|(b, _)| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SyncBackend for FakeBackend {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        async fn get(&self, path: &str) -> Result<Option<(Vec<u8>, Option<String>)>, String> {
+            Ok(self.files.lock().unwrap().get(path).cloned())
+        }
+
+        async fn put(&self, path: &str, data: &[u8], if_match: Option<&str>) -> Result<(), String> {
+            let mut files = self.files.lock().unwrap();
+            let cur = files.get(path).and_then(|(_, e)| e.clone());
+            /*
+             * 契约里的两种条件写（见 `SyncBackend::put` 文档）：
+             *   Some("")   = 仅当**不存在**时创建
+             *   Some(etag) = 必须与当前 ETag 匹配
+             * 不实现的话，本测试就绕过了「并发写触发重合并」那条路径 ——
+             * 虽然本测试不触发它，但假后端失真会变成日后误判的来源。
+             */
+            match if_match {
+                Some("") => {
+                    if cur.is_some() {
+                        return Err("412 远端已存在".into());
+                    }
+                }
+                Some(m) => {
+                    if cur.as_deref() != Some(m) {
+                        return Err("412 已被其他设备修改".into());
+                    }
+                }
+                None => {}
+            }
+            files.insert(
+                path.to_string(),
+                (data.to_vec(), Some(format!("etag-{}", data.len()))),
+            );
+            Ok(())
+        }
+
+        async fn etag(&self, path: &str) -> Result<Option<String>, String> {
+            Ok(self.files.lock().unwrap().get(path).and_then(|(_, e)| e.clone()))
+        }
+
+        async fn ensure_dir(&self, _path: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn ping(&self) -> Result<String, String> {
+            Ok("fake".into())
+        }
+
+        async fn list(&self, _dir: &str) -> Result<Vec<crate::sync::webdav::RemoteEntry>, String> {
+            Ok(Vec::new())
+        }
+
+        async fn delete(&self, path: &str) -> Result<(), String> {
+            self.files.lock().unwrap().remove(path);
+            Ok(())
+        }
+    }
+
+    /// 造一个进度行（老设备的 jsonl 用 `to_jsonl` 生成，避免手写转义）
+    fn prog_row(key: &str, position: u64, updated_at: i64) -> Progress {
+        Progress {
+            key: key.into(),
+            provider: "cycani".into(),
+            native_id: "3611".into(),
+            title: "长剧".into(),
+            cover: None,
+            episode_id: Some("48884".into()),
+            episode_title: Some("第03集".into()),
+            position,
+            duration: 9285,
+            finished: false,
+            updated_at,
+        }
+    }
+
+    /// ★★★ **行为级**钉子：老设备 jsonl 的 `key` 是老口径，
+    ///     合并后同一条进度在**云端与本地都只许占一个槽**
+    ///
+    /// # 为什么纯函数单测不够
+    ///
+    /// 上面 `progress_merge_uses_field_derived_key_for_old_devices` 是
+    /// **自己把 `progress_sync_key` 传进** `merge_lww` 的 —— 它钉住的是
+    /// 那个函数本身，而不是 `sync_progress` **用不用**它。
+    /// 实测：把 `sync_progress` 里的 `let key_of = progress_sync_key;`
+    /// 改回 `|p: &Progress| p.key.clone()`：
+    /// ```text
+    /// 本机库:     key = "cycani:3611:48884"  position 500  较新
+    /// 远端 jsonl: key = "cycani:3611"        position 100  较旧
+    /// ⇒ 按 p.key 去重 ⇒ 当成**两条**记录 ⇒ merged.items 变 2 条
+    /// ⇒ ① 推回云端的 JSONL 也是 2 行（同一条记录存两份）
+    /// ⇒ ② 两条都 upsert 到**同一个**表主键，HashMap 顺序不定
+    ///      ⇒ 有 50% 概率把较旧的 100 写上去 ⇒ 用户进度倒退
+    /// ```
+    /// 上面那个纯函数单测对此**全绿** —— 所以这里必须走完整链路。
+    ///
+    /// ⚠️ 判据刻意选「推回去的**行数**」而不是只断 DB 的值：
+    ///   ② 是 HashMap 顺序决定的**随机**结果，只断它会有 50% 假绿；
+    ///   ① 是确定的（2 条 vs 1 条），先断它，再断用户可见的那个值。
+    #[tokio::test]
+    async fn sync_progress_keeps_one_slot_for_old_device_jsonl() {
+        let db = Arc::new(Db::in_memory().unwrap());
+        // 本机（新口径，较新）
+        db.upsert_progress(&prog_row("cycani:3611:48884", 500, 2000)).unwrap();
+
+        // 老设备推上来的那行：老口径 key（没第三段），且较旧
+        let backend = Arc::new(FakeBackend::new());
+        backend.seed(
+            "data/progress.jsonl",
+            &to_jsonl(&[prog_row("cycani:3611", 100, 1000)]).unwrap(),
+        );
+        let engine = SyncEngine::new(backend.clone(), db.clone(), "dev-a".into());
+        engine.sync_progress().await.unwrap();
+
+        assert_eq!(
+            backend.body_of("data/progress.jsonl").lines().count(),
+            1,
+            "★★★ 同一条进度（同 provider+native_id+episode_id）推回远端只许有 **1** 行 —— \
+             按 `p.key` 去重时老口径那条会被当成独立记录，merged.items 变 2 条，\
+             推回去的 JSONL 就是 2 行（云端同一条记录存两份，且互相覆盖）"
+        );
+        let rows = db.list_all_progress().unwrap();
+        assert_eq!(rows.len(), 1, "★ 同一条记录在本地库也只许占一行");
+        assert_eq!(
+            rows[0].position, 500,
+            "★★★ 老设备的**旧**数据不许把本机较新的进度顶回去 —— \
+             这正是 sync_progress 用 progress_sync_key 而不是 p.key 的理由"
+        );
+        assert_eq!(rows[0].updated_at, 2000, "★ 时间戳也该是较新那条");
+    }
+
+    /// ★ 反向控制：远端**确实更新**时，进度必须推上来
+    ///   （键改了口径 ≠ 只认本地 —— 少了这条，把合并键写成常量也能绿）
+    #[tokio::test]
+    async fn sync_progress_pulls_newer_remote_progress_for_old_device_jsonl() {
+        let db = Arc::new(Db::in_memory().unwrap());
+        db.upsert_progress(&prog_row("cycani:3611:48884", 100, 1000)).unwrap();
+
+        let backend = Arc::new(FakeBackend::new());
+        backend.seed(
+            "data/progress.jsonl",
+            &to_jsonl(&[prog_row("cycani:3611", 700, 2000)]).unwrap(),
+        );
+        let engine = SyncEngine::new(backend.clone(), db.clone(), "dev-a".into());
+        engine.sync_progress().await.unwrap();
+
+        assert_eq!(
+            backend.body_of("data/progress.jsonl").lines().count(),
+            1,
+            "★ 同样只许 1 行（两条记录归到同一个槽）"
+        );
+        let rows = db.list_all_progress().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].position, 700,
+            "★ 远端更新的那条必须推上来（老口径 key 也要认得出来是同一集）"
+        );
     }
 
     #[test]

@@ -588,6 +588,52 @@ class FollowPageState extends State<FollowPage>
   ///
   /// 只含**会被画出来**的字段 —— 数据没变就不重建。字段清单必须与
   /// 追更页卡片真正读的字段一致；两处要同步改（漏字段 ⇒ 漏刷新）。
+  ///
+  /// ★★★ 2026-10-12 fix/return-jank-signature ①：`position` 换成 `percentOf`
+  /// （与卡片进度条**同一个量** —— 见下方"为什么不是量化到分钟"）
+  ///
+  /// # 为什么不是裸 position（这是「返回卡顿」的第二个大头）
+  ///
+  /// 本页**确实**要显示进度，但读的是 `_remaining(p)`：
+  /// ```dart
+  /// String _remaining(Progress p) {
+  ///   final left = (p.duration - p.position).clamp(0, 1 << 30);
+  ///   final m = left ~/ 60;                       // ← 只到**分钟**粒度
+  ///   if (m >= 60) return '剩 ${m ~/ 60} 小时 ${m % 60} 分';
+  ///   return '剩 $m 分钟';
+  /// }
+  /// ```
+  /// ⇒ 秒级 `position` 每走 1 秒就变，但**屏幕上那行字一分钟才变一次**
+  /// ⇒ 裸 position 进指纹 = 每秒都判"变了" ⇒ 每次返回全量重建。
+  ///
+  /// # ⚠️ 为什么**不**照抄「我的」换 `percent`（那里换的是 percent）
+  ///
+  /// `follow_page.dart` 里**两处**画进度：
+  /// ```text
+  /// ① `_remaining` 文案         → 分钟粒度（上面）
+  /// ② 继续观看卡片底部进度条     → `p.percent / 100.0`（`_ContinueList`）
+  /// ```
+  /// 两处粒度不同 ⇒ 用其中一个当指纹都会漏报另一个。
+  /// ★ 指纹取**更细**的那个 = `percent`：`percent` 变了 `_remaining` 未必变
+  ///   （那是"多重建一点"，安全）；反过来 `_remaining` 变了 `percent` 必变
+  ///   （同源 `position/duration`）⇒ 用 `percent` 当指纹**既无假阳性、也无漏报**。
+  ///
+  /// 所以这里写的是 **`percentOf(p)`**（与卡片进度条同一个量），
+  /// 而不是 `p.position ~/ 60` —— 后者在 40 分钟片子上仍会漏掉真实的
+  /// percent 跳变（1 个"分钟档"跨好几个 percent）。
+  /// 测试可见的包装 —— 让门禁能**直接**比"同一份数据改动前后指纹是否变"，
+  /// 而不必靠"多 pump 几帧看重建数"间接推断。
+  ///
+  /// ⚠️ 直接转发 [_followSignature]，**不复制**一份逻辑
+  ///    （影子测试比没测试更糟 —— 本仓已有先例）。
+  @visibleForTesting
+  static String debugFollowSignature(
+    List<Favorite> following,
+    List<Favorite> allFavs,
+    List<Progress> cont,
+  ) =>
+      _followSignature(following, allFavs, cont);
+
   static String _followSignature(
     List<Favorite> following,
     List<Favorite> allFavs,
@@ -630,13 +676,54 @@ class FollowPageState extends State<FollowPage>
         ..write('\u0001')
         ..write(p.cover ?? '')
         ..write('\u0001')
-        ..write(p.position)
+        /*
+         * ★ fix/return-jank-signature ①：**不再是裸 `p.position`** ——
+         *   换成卡片进度条真正渲染的 `percentOf(p)`。
+         *   详见本方法头注释（`_remaining` 分钟粒度 + 进度条 percent）。
+         */
+        ..write(percentOf(p))
+        ..write('\u0001')
+        /*
+         * ⚠️⚠️ 2026-10-12（CodeRabbit PR #11）：**必须把 `_remaining` 的分钟数
+         *      也写进指纹** —— 上面那段"`percent` 变了 `_remaining` 未必变，
+         *      反之必变"的论证是**错的**，反例已实测：
+         * ```text
+         * duration=600, position 0 → 1
+         *   percentOf : (1*100)~/600 = 0  ⇒ 0 → 0（**没变**）
+         *   _remaining: (600-0)~/60=10 → (600-1)~/60=9  ⇒ 10 → 9 分钟（**变了**）
+         * ⇒ 指纹判"没变" ⇒ load() 跳过 setState ⇒ 卡片副标题停在旧的分钟数
+         * ```
+         * ★ 一般规律：percent 一格 = duration/100 秒，≥60 秒 当 duration > 6000s
+         *   （约 100 分钟）⇒ 长片上每分钟内 percent 抖动**只有 0~1 格**，
+         *   漏报是常态而不是边角。
+         * ⇒ 补上分钟数（与 `_remaining` 同一公式），让"屏幕上那行字变了"
+         *   **必然**改变指纹。这只是**多加一次重建**，不会少报。
+         */
+        ..write(_remainingMinutes(p))
         ..write('\u0001')
         ..write(p.duration)
         ..write('\u0002');
     }
     return b.toString();
   }
+
+  /// 与 `_remaining` **同一公式**的分钟数（只取"剩几分钟"那个整数）
+  ///
+  /// ⚠️ 与 [_remaining] 的 `left ~/ 60` 必须**同源** —— 两处各算一份迟早漂
+  ///    （本仓反复踩过"两处同构必须一起改"）。改 `_remaining` 的粒度时，
+  ///    这里要同步改，否则指纹又会漏报。
+  static int _remainingMinutes(Progress p) {
+    final left = (p.duration - p.position).clamp(0, 1 << 30);
+    return left ~/ 60;
+  }
+
+  /// fix/return-jank-signature ①：进度百分比 —— 与 `Progress.percent` / 卡片
+  /// 进度条（`_ContinueList` 的 `p.percent / 100.0`）**同一个量**。
+  ///
+  /// ⚠️ 与 `my_shelf.dart::percentOf` **同一公式**：两处都是"指纹要和渲染
+  ///    用同一个量"这条纪律（本仓已踩过"两处同构必须一起改"的坑）。
+  static int percentOf(Progress p) =>
+      p.duration > 0 ? ((p.position * 100) ~/ p.duration).clamp(0, 100) : 0;
 
   /// ★★ task-74 ①：对「（标题未知）」的播放记录做**异步回填**
   ///

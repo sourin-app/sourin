@@ -1774,6 +1774,23 @@ class _PlayerPageState extends State<PlayerPage>
   /// 是否自动跳过片头（原版 `prefs.autoSkip`，默认 true）
   bool _autoSkip = true;
 
+  /// ★★★ fix/rewatch-prompt：切到**另一集**时怎么起播（Owner 第 1011 条）
+  ///
+  /// # 默认值 = [PlayEpisodeStartAction.fromStart]（**必须**）
+  ///
+  /// 它与 `_gotoEpisode` 里写死的「换集一律从头」**逐字同义** ⇒
+  /// 老用户升级后行为一个字都不变（缺键、坏值都落回它，见
+  /// `_loadPlayPrefs` 与 `PlayEpisodeStartAction.fromWire`）。
+  ///
+  /// # 取值只有两个
+  ///
+  /// ```text
+  /// fromStart  换集从头播     —— 默认（= 改前行为）
+  /// prompt     换集时，若那一集看过 ⇒ 弹非阻断小浮层问
+  ///            「继续观看 / 从头播放」；不操作 ⇒ 默认从头
+  /// ```
+  PlayEpisodeStartAction _episodeStartAction = PlayEpisodeStartAction.fromStart;
+
   /// 全局音量偏好（原版 `prefs.lastVolume`，默认 1.0）
   double _lastVolume = 1.0;
 
@@ -2547,6 +2564,21 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// ⚠️ 默认值取 `widget.localPath`：调用方只在「换到另一个本地文件」时才需要显式传。
   Future<void> _bootLocalFile({String? path}) async {
+    /*
+     * ★★★ CR #22 ⑥ 的**第四条**会话替换路径：`applySession` 的本地支
+     *     走的是本方法（`req.localPath != null`），它自己推一次令牌 ——
+     *     否则「切集途中会话被换到**本地文件**」那一幕仍然会弹旧源的浮层：
+     *     `applySession` 上面那次 `_rewatchToken++` 在**同一个** setState 里，
+     *     推完令牌后 `_gotoEpisode` 那次 `_reload()` 已经会丢弃结果 —— 但
+     *     本地支**不经** `_reload`，而 `_gotoEpisode` 末尾那四道守卫
+     *     （令牌未变 / mounted / `_error == null` / 集 id 相同）在这里会**全部**
+     *     通过（集 id 确实没变）⇒ 浮层照弹。
+     * ⚠️ 本方法还有两个**非会话替换**的调用者：① `:2515` 的 `_load()`
+     *    首播、② 页面级 `widget.localPath` 那条。给它们多推一次令牌是
+     *    安全的（那一刻 `_gotoEpisode` 不可能在途 —— 页面还没起播），
+     *    而「推了没坏处、漏了会弹错浮层」⇒ 放在方法开头最省。
+     */
+    _rewatchToken++;
     final filePath = path ?? widget.localPath;
     // ① 换集那条路可能传 null（切换回在线）—— 调用方应自己分流，这里防御性兜住
     if (filePath == null) return;
@@ -2649,6 +2681,16 @@ class _PlayerPageState extends State<PlayerPage>
         UiPrefs.get('dsh.playprefs.countdownBeforeNext') != '0';
     _keepSourceOnNext = UiPrefs.get('dsh.playprefs.keepSourceOnNext') != '0';
     _autoSkip = UiPrefs.get('dsh.playprefs.autoSkip') != '0';
+    /*
+     * ★★★ fix/rewatch-prompt：切集起播策略（Owner 第 1011 条）。
+     *
+     * ⚠️ **缺省 = fromStart**（`fromWire(null) == fromStart`）——
+     *    老用户升级后行为不变（那个键以前根本不存在）。
+     *    白名单校验在枚举自己身上（非法值也落回 fromStart），本页不重写判据。
+     */
+    _episodeStartAction = PlayEpisodeStartAction.fromWire(
+      UiPrefs.get('dsh.playprefs.episodeStartAction'),
+    );
 
     final v = double.tryParse(UiPrefs.get('dsh.playprefs.lastVolume') ?? '');
     // 范围校验（原版同样做了：0–1 之外的值会让播放器静音或爆音）
@@ -3939,6 +3981,208 @@ class _PlayerPageState extends State<PlayerPage>
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  //  ★★★ fix/rewatch-prompt：切集「这一集看过没有 / 看到哪」的**独立读取**
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 为什么必须**另起一条**读取，不能复用 `_prepareResume`
+  //
+  // ```text
+  // ① `_prepareResume` 有 `if (_resumedThisSession) return;` 守卫，
+  //    而 `_resumedThisSession` 进页第一次续播后就**置位且换集不复位**
+  //    ⇒ 换集后再调它一律 early-return（读不到任何东西）。
+  // ② 但**不能**简单地把 `_resumedThisSession` 复位 —— 那会让换集
+  //    **自动续播**（`_prepareResume` 会把位置写进 `_pendingSeek`），
+  //    与「默认从头播」直接冲突。
+  // ⇒ 正确做法：**单独读一次**目标集的进度，**只读不改状态**
+  //    （不碰 `_pendingSeek` / `_resumedThisSession`）—— 读出来只用于
+  //    「决定要不要弹浮层」。是否真的续播，仍由用户点「继续观看」决定。
+  // ```
+  //
+  // # 判据与 `_prepareResume` **同源**（不重写一份）
+  // ```text
+  // 读两个键取更大位置   → `pickResumeProgress`（lib/core/progress_origin.dart）
+  // 按集校验             → `progressBelongsToCurrentEpisode` / `isAnotherEpisode`
+  // 守卫                → position > 5 且 position < duration - 10（快看完不提示）
+  // ```
+  // ❗ **已知边界（如实标注）**：`progress` 表是「**一个作品一行**」
+  //    （主键 `provider:native_id`，见 `rust/sourin_core/src/store.rs:461-472`），
+  //    `episode_id` 只是"最后看的那一集"。所以这里读到的"目标集进度"
+  //    只在**该集正是那唯一一条记录所指的集**时才存在。
+  //    详见 `test/zz_rewatch_prompt_test.dart` 文件头对 Owner 原场景的说明。
+  /// 只读：目标集 [episodeId] 已记录的观看进度（null = 没看过 / 不满足续播窗口）
+  ///
+  /// ⚠️ **绝不**修改任何状态（不写 `_pendingSeek` / 不动 `_resumedThisSession`）——
+  ///    它只回答"这一集以前看过吗、看到哪"。真正续播由用户点按钮后另走。
+  Future<Progress?> readRewatchProgress(String? episodeId) async {
+    if (_isLive) return null; // 直播没有"看过"这回事
+    final target = episodeId?.trim() ?? '';
+    if (target.isEmpty) return null;
+
+    try {
+      /*
+       * 读两侧（本会话键 + 对侧镜像键），取位置更靠后的那条 —— 与
+       * `_prepareResume` 用的是**同一个** `pickResumeProgress`，不另写判据。
+       */
+      final own = await SourinApi.getProgress(_provider, _contentId);
+      final mirrorTarget = _mirrorOrigin;
+      Progress? peer;
+      if (mirrorTarget != null) {
+        try {
+          peer = await SourinApi.getProgress(
+              mirrorTarget.provider, mirrorTarget.mediaId);
+        } catch (e) {
+          debugPrint('[PLAYER] 读目标集镜像进度失败（忽略）: $e');
+        }
+      }
+      /*
+       * ★★★ CR #22 ①：**先过滤、再挑选**。
+       *
+       * # 为什么顺序不能反（这是一个真缺陷，不是风格问题）
+       * ```text
+       * `pickResumeProgress` 在两侧都有效时取 position 更大的那条。
+       * 若镜像那条属于**别的集**且位置更大，它就会被选中；
+       * 随后"按集校验"再把它丢掉 ⇒ 目标集自己那条（位置更小）
+       * 也一起没了 ⇒ 即使它满足提示条件，浮层也不会弹。
+       * ```
+       * 与 `_prepareResume`（本文件 `:3799-3828`）**同一个修法**：
+       * 在 `pickResumeProgress` **之前**把不属于目标集的记录滤掉，
+       * 两侧各自过滤 ⇒ 挑选时看到的只有合法候选。
+       */
+      Progress? targetProgress(Progress? candidate) {
+        if (candidate == null) return null;
+        if (isAnotherEpisode(
+          progressEpisodeId: candidate.episodeId,
+          currentEpisodeId: target,
+        )) {
+          debugPrint('[PLAYER] 目标集 $target 的候选进度属于另一集（${candidate.episodeId}），丢弃');
+          return null;
+        }
+        if (!progressBelongsToCurrentEpisode(
+          progressEpisodeId: candidate.episodeId,
+          currentEpisodeId: target,
+        )) {
+          debugPrint('[PLAYER] 候选记录（集=${candidate.episodeId}）≠ 目标集 $target，丢弃');
+          return null;
+        }
+        return candidate;
+      }
+
+      final p = pickResumeProgress(
+        session: targetProgress(own),
+        mirror: targetProgress(peer),
+      );
+      if (p == null) return null;
+
+      final pos = p.position;
+      // ④ 刚点开不提示（看超过 5 秒才算"看过"）—— 与 `_prepareResume` 同义
+      if (pos <= 5) return null;
+      // ③ 快看完了不提示（剩不到 10 秒 ⇒ 从头播）—— 与 `_prepareResume` 同义
+      if (p.duration > 0 && pos >= p.duration - 10) {
+        debugPrint('[PLAYER] 目标集 $target 上次已看到 $pos/${p.duration}s（快结束），不提示');
+        return null;
+      }
+      return p;
+    } catch (e) {
+      debugPrint('[PLAYER] 读目标集进度失败（不提示）: $e');
+      return null;
+    }
+  }
+
+  /// 弹出「继续观看 / 从头播放」非阻断小浮层（把 [position] 记进 `_rewatchPrompt`）
+  ///
+  /// ⚠️ 只 `setState` 一个"要显示的秒数"，**不碰播放**（不暂停、不 seek）——
+  ///    默认从头播，这正是 `_gotoEpisode` 里既有的 `_pendingSeek = null` 语义。
+  ///
+  /// # ★ 消失策略：**8 秒后自动消失 ⇒ 默认从头播**（与 `_NextCountdown` 同款）
+  ///
+  /// 选「自动消失」而不是「一直留着」的两个理由（本任务的裁决项）：
+  /// ```text
+  /// ① Owner 的硬约束是「不操作 ⇒ 默认从头播放，**不能卡住流程**」。
+  ///    常驻浮层会一直盖在画面上（用户可能根本没想理它），
+  ///    "流程"被一个永不消失的东西悬着 —— 与约束相悖。
+  ///    自动消失 ⇒ 最坏情况就是"没看见 ⇒ 从头播"（= 默认行为），永远不卡。
+  /// ② 本仓已有**同一个范本** `_NextCountdown`（5 秒后自动下一集）——
+  ///    用同一种"倒计时小卡片"语言，用户不用学新交互。
+  /// ```
+  /// 秒数取 **8**（比 `_NextCountdown` 的 5 大）：那个是"已经在放片尾了"的
+  /// 顺水推舟，而这个是**要用户在两个动作里选一个** —— 读完一行"上次看到
+  /// 20:00" + 两个按钮（「继续观看」比「立即播放」长）需要多一点余量。
+  /// 8 秒既不至于仓促误点，也不至于让一个浮层赖在画面上太久。
+  void showRewatchPrompt(Duration position) {
+    if (!mounted) return;
+    _rewatchTimer?.cancel();
+    setState(() => _rewatchPrompt = position);
+    _rewatchTimer = Timer(const Duration(seconds: 8), () {
+      if (!mounted) return;
+      // 超时 ⇒ 什么都不做 = 从头播（浮层只是消失，不 seek）
+      debugPrint('[PLAYER] 「继续观看/从头播放」浮层超时 ⇒ 默认从头播');
+      dismissRewatchPrompt();
+    });
+    debugPrint('[PLAYER] 浮层「继续观看/从头播放」已弹出（上次 ${position.inSeconds}s）');
+  }
+
+  /// 关掉浮层（不操作 ⇒ 走默认：从头播 ⇒ **什么都不做**）
+  ///
+  /// # 为什么"关掉"不需要把位置 seek 回 0
+  /// ```text
+  /// 浮层出现时 `_pendingSeek` 已经是 null（`_gotoEpisode` 里既有的
+  ///   `_pendingSeek = null`）⇒ 起播本来就从 0 开始。
+  /// 所以"关掉浮层"只是一个纯视觉动作 —— **不能**再 seek（那会打断播放）。
+  /// ```
+  void dismissRewatchPrompt() {
+    _rewatchTimer?.cancel();
+    if (!mounted) return;
+    if (_rewatchPrompt == null) return;
+    setState(() => _rewatchPrompt = null);
+  }
+
+  /// 换集/退出时把浮层连同它的定时器一起收掉（幂等）
+  void _cancelRewatchPrompt() {
+    _rewatchTimer?.cancel();
+    _rewatchPrompt = null; // 在 setState 内部调用 ⇒ 不重复 setState
+  }
+
+  /// 用户点了「继续观看」（见 [showRewatchPrompt]）
+  ///
+  /// # 时序（为什么不能直接 seek 后立刻 play）
+  /// ```text
+  /// 浮层是在**起播完成之后**弹的（`_gotoEpisode` → `_reload()` 结束后），
+  /// 那一刻播放器已经在播第 0 秒。⇒ 直接 `seek(上次位置)` 即可，
+  /// 不需要经过 `_pendingSeek`（那条路只在起播**前**有效）。
+  /// ⚠️ seek 是异步的、但**绝不暂停**：`seek` 后播放自然继续。
+  /// ```
+  void continueFromRewatchPrompt() {
+    final pos = _rewatchPrompt;
+    if (pos == null) return;
+    _rewatchTimer?.cancel();
+    setState(() => _rewatchPrompt = null);
+    unawaited(_player.seek(pos));
+    _flash('已跳到上次观看位置');
+    debugPrint('[PLAYER] 浮层「继续观看」⇒ seek 到 ${pos.inSeconds}s');
+  }
+
+  /// ★ 待用户裁决的"上次看到哪"（null = 没有浮层）
+  ///
+  /// 只读探针也读它（见 `debugPlayerRewatchPromptForProbe`）。
+  Duration? _rewatchPrompt;
+
+  /// 浮层自动消失的定时器（见 [showRewatchPrompt]）
+  Timer? _rewatchTimer;
+
+  /// ★★★ CR #22 ②：切集**代次**（每次 [_gotoEpisode] 进来就自增）
+  ///
+  /// # 它挡的是什么
+  /// \`\`\`text
+  /// \`_gotoEpisode\` 中间有多次 await（读进度 / 落盘 / \`_reload\`）。
+  /// 用户连点两集时，**旧**调用会在**新**集已经起播之后才走到最后那句
+  /// \`showRewatchPrompt\`，把**第一目标集**的进度弹在第二集上；
+  /// 用户点「继续观看」⇒ 对**新集**执行一次错误位置的 seek。
+  /// \`\`\`
+  /// 每次切集自增一次，显示前比对 —— 只要中间又切过集，旧调用就**沉默退出**。
+  /// 与「当前集是不是目标集」双重把关（代次管时序，集号管身份）。
+  int _rewatchToken = 0;
+
   Future<void> _startPlayback(StreamCandidate st) async {
     setState(() {
       _current = st;
@@ -4010,7 +4254,9 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ headers 为空时传 `const {}` 与不传等价 —— media_kit 用
        *    `?? cache[...]` 兜底，空 Map 不会破坏任何东西。
        */
-      await _player.open(Media(st.url, httpHeaders: st.httpHeaders));
+      if (!debugPlayerSkipOpenForProbe) {
+        await _player.open(Media(st.url, httpHeaders: st.httpHeaders));
+      }
       /*
        * ★★★ task-22 P1-11：`video-zoom` 是**逐文件**属性 —— mpv 换文件时会
        *   把它复位。只在 `_setHwdec()` 里下发一次是不够的（换集后缩放就没了），
@@ -6772,6 +7018,18 @@ class _PlayerPageState extends State<PlayerPage>
         setState(() => _endAction = a);
         _savePlayPref('endAction', a.wire);
       },
+      /*
+       * ★★★ fix/rewatch-prompt：切集起播策略。
+       *
+       * 与 `onSetEndAction` 逐字同款：setState 改活值 + 落偏好。
+       * ⚠️ 值由宿主读出来后**传给面板**（面板不自己读偏好 —— 见文件头
+       *    「样式项的默认值不写死，从 mpv 读」附近对数据流的说明）。
+       */
+      episodeStartAction: _episodeStartAction,
+      onSetEpisodeStartAction: (a) {
+        setState(() => _episodeStartAction = a);
+        _savePlayPref('episodeStartAction', a.wire);
+      },
       onSetCountdown: (v) {
         setState(() => _countdownBeforeNext = v);
         _savePlayPref('countdownBeforeNext', v ? '1' : '0');
@@ -7821,7 +8079,21 @@ class _PlayerPageState extends State<PlayerPage>
       _current = null;
       _skipMarker = null;
       _playSessionGen++; // ★ 换会话 = 会话变了 ⇒ 丢弃在途的旧标记响应
-        _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
+      /*
+       * ★★★ CR #22 ⑥（PRRT_kwDOVAfO4s6rtKkC）：会话被换掉时**同时**作废
+       *      在途的「切集 → 续播浮层」链路（`_gotoEpisode`）。
+       *
+       * `_rewatchToken` 原来只在 `_gotoEpisode` 里自增 ⇒ 它挡得住"两次切集
+       * 互相超车"，挡不住"切集途中整个会话被换掉"：合并页这次可能给的是
+       * **另一个 provider 的同一集**（`episodeIndex` 一样、`episodes` 里的
+       * id 也一样），四道守卫（令牌/mounted/_error/集 id）会全部通过 ⇒
+       * 旧 provider 的"上次看到 20:00"浮层弹在**新源**上，用户一点就跳错位置。
+       * ⇒ 会话替换路径（本方法 / `_resolveAndPlay` / `_applySwitch` /
+       *    `_bootLocalFile`）都要推这枚令牌，与 `_playSessionGen` 同处、
+       *    同一理由。
+       */
+      _rewatchToken++;
+      _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
       // ★ 换会话 ⇒ 同上去掉「已下载 / 上次失败」的残留状态
       _clipDownloaded = false;
       _clipDownloadError = null;
@@ -8146,6 +8418,15 @@ class _PlayerPageState extends State<PlayerPage>
      *    放在守卫之前会把"传了个不存在的 id"也算进去，
      *    那种情况并没有真的切集。
      */
+    /*
+     * ★★★ CR #22 ②：切集代次 —— 在任何 await **之前**自增。
+     *
+     * 连点两集时，先发出的那次调用会在后一次已经把新集播起来之后
+     * 才走到收尾的 `showRewatchPrompt`；靠这枚令牌让**旧**调用沉默。
+     * ⚠️ 必须在 `i < 0` 守卫之后（没真的切集就不该作废别人的令牌）。
+     */
+    final rewatchToken = ++_rewatchToken;
+
     _gotoEpisodeCalls++; // ★ 只读探针
     _probeLog(
       'gotoEpisode #$_gotoEpisodeCalls  '
@@ -8154,12 +8435,54 @@ class _PlayerPageState extends State<PlayerPage>
     );
 
     /*
+     * ★★★ fix/rewatch-prompt：**先**读目标集"以前看过吗、看到哪"。
+     *
+     * # 为什么必须在 `_saveProgress` **之前**读
+     * ```text
+     * 下面 `await _saveProgress(immediate: true)` 会把**当前这一集**的进度
+     * 写进同一个键（progress 表一个作品一行）⇒ 目标集的旧记录会被顶掉
+     * ⇒ 再读就读不到了。所以读取必须先于落盘。
+     * ```
+     * ⚠️ 只在「提示」模式下读 —— 默认（`fromStart`）**一个字节都不多跑**
+     *    （与改前逐字同构，多一条 `if` 而已）。
+     * ⚠️ 这是一个**只读**调用：它不改 `_pendingSeek` / `_resumedThisSession`
+     *    ⇒ 默认「从头播」的语义**不被触碰**（见 `readRewatchProgress` 的说明）。
+     */
+    Progress? rewatch;
+    if (_episodeStartAction == PlayEpisodeStartAction.prompt) {
+      rewatch = await readRewatchProgress(ep.id);
+      /*
+       * ★★★ CR #22 ③：每个 await 返回后立刻查 `mounted`。
+       *
+       * 页面销毁**不会**取消正在跑的 `_gotoEpisode`；用户在读取期间
+       * 按返回退出播放页时，下面 `_saveProgress` / `setState` /
+       * `_reload` 都会作用在一个已经 dispose 的 State 上
+       *（`setState() called after dispose()`）。
+       *
+       * ★★★ CR #22 ⑤（PRRT_kwDOVAfO4s6rtKj8）：**还要**查令牌。
+       *
+       * 这次读进度可能停几百毫秒，期间用户又点了**另一集** —— 那次调用
+       * 会把 `_rewatchToken` 推到更大值并重新解析流。若这里只查 `mounted`，
+       * 本调用恢复后会继续往下走，把 `_epIndex` 改回**旧目标集**、
+       * `_reportEpisodeChanged()`、再 `_reload()` ⇒ 用户刚选的后集被顶掉。
+       * ⇒ 令牌已变 = 本次切集作废，原地返回，什么都不碰。
+       */
+      if (!mounted || rewatchToken != _rewatchToken) return;
+    }
+
+    /*
      * ★ 切集前**立刻**落盘当前进度
      *
      * 否则用户看了 20 分钟切下一集，那 20 分钟里最后几秒会丢
      *（定时器还没触发）。
      */
     await _saveProgress(immediate: true);
+    /*
+     * ★★★ CR #22 ③：落盘同样是 await ⇒ 返回后补一次 `mounted` 检查
+     * ★★★ CR #22 ⑤（PRRT_kwDOVAfO4s6rtKj8）：同上再查一次令牌 ——
+     *      本 await 期间用户可能已经切到别的集（那条路会把令牌推大）。
+     */
+    if (!mounted || rewatchToken != _rewatchToken) return;
 
     _cancelNextCountdown();
     setState(() {
@@ -8175,6 +8498,9 @@ class _PlayerPageState extends State<PlayerPage>
       _clipDownloadError = null;
       // 新集从 0 开始（不是续播）
       _pendingSeek = null;
+      // ★ fix/rewatch-prompt：换集 ⇒ 先把上一集残留的浮层收掉
+      //   （稍后若目标集看过，会在起播完成后重新弹）
+      _cancelRewatchPrompt();
     });
     // ★ Owner 2026-10-11 第 2 条：切集关掉了选集面板 ⇒ 顶/底栏一起回来。
     _restoreBarsAfterSheet();
@@ -8195,6 +8521,43 @@ class _PlayerPageState extends State<PlayerPage>
 
     // 重新解析这一集的流
     await _reload();
+
+    /*
+     * ★★★ fix/rewatch-prompt：目标集以前看过 ⇒ 弹非阻断小浮层
+     *
+     * # 为什么放在 `_reload()` **之后**
+     * ```text
+     * ① 起播已经完成、画面在放（用户看到的是"新集从头播"—— 默认行为不变）。
+     * ② 浮层是**纯附加**：`_pendingSeek` 此刻已是 null（上面 setState 写死的），
+     *    ⇒ 不操作就是从头播，用户点了「继续观看」才 seek。
+     * ③ 放在起播前弹的话，`_reload` 里 `_startPlayback` 会把浮层状态卷入
+     *    加载态渲染，且用户会先看到一个"还没画面"的浮层。
+     * ```
+     * ⚠️ **绝不影响起播**：这里只 `setState` 一个"要显示的秒数"，
+     *    不暂停、不 seek（见 `showRewatchPrompt`）。
+     * ⚠️ `mounted` 守卫：切集过程中页面可能已被销毁。
+     *
+     * # ★★★ CR #22 ②：四道门一起过才弹
+     * ```text
+     * ① mounted               —— 页面还在（否则 setState 会炸）
+     * ② rewatchToken == 当前   —— 中间**没有**又切过集（旧调用必须沉默，
+     *                            否则会把第一目标集的进度弹到新集上，
+     *                            用户点「继续观看」⇒ 对新集做一次错误 seek）
+     * ③ _error == null         —— 起播**成功**（`_reload` 失败时只设
+     *                            `_error`，那时弹续播浮层等于骗用户去 seek
+     *                            一个根本没在放的播放器）
+     * ④ 当前集 == 目标集        —— 身份核对（与 ② 是两件事：② 管时序，④ 管是谁）
+     * ```
+     */
+    if (rewatch != null &&
+        mounted &&
+        rewatchToken == _rewatchToken &&
+        _error == null &&
+        _epIndex < _episodes.length &&
+        _episodes[_epIndex].id == ep.id) {
+      debugPrint('[PLAYER] 目标集看过（${rewatch.position}s）⇒ 弹「继续观看/从头播放」浮层');
+      showRewatchPrompt(Duration(seconds: rewatch.position));
+    }
   }
 
   Future<void> _gotoNextEpisode() async {
@@ -8669,6 +9032,20 @@ class _PlayerPageState extends State<PlayerPage>
       _error = null;
       _errorKind = null;
     });
+    /*
+     * ★★★ CR #22 ⑤（PRRT_kwDOVAfO4s6rtKj8）：记下发请求那一刻的切集令牌。
+     *
+     * 本方法唯一的生产调用者是 `_gotoEpisode`（见它末尾）。解析流要几百
+     * 毫秒到几秒，期间用户可能又切了一集（或整个会话被换掉）—— 那时
+     * `_rewatchToken` 已经更大。若这里不核对，本调用会把**旧目标集**的流
+     * 重新起播（`_startPlayback`），把用户刚选的那一集顶掉。
+     * ⚠️ 与 `_loadSkipMarker()` 里 `final gen = _playSessionGen;` 同一纪律：
+     *    必须在 `await` **之前**读。
+     * ⚠️ 放弃时**不动 `_loading`** —— 新的那次调用自己会收尾（它先设 true、
+     *    成功或失败时设 false）；这里若补一个 false，反而会把新会话的
+     *    转圈提前掐掉。
+     */
+    final token = _rewatchToken;
     try {
       final ep = _epIndex < _episodes.length ? _episodes[_epIndex] : null;
       final list = await SourinApi.resolveStream(
@@ -8677,6 +9054,11 @@ class _PlayerPageState extends State<PlayerPage>
         req: PlayRequest(sourceCode: _sourceCode, episodeId: ep?.id),
       );
       if (!mounted) return;
+      if (token != _rewatchToken) {
+        debugPrint(
+            '[PLAYER] 丢弃过期的换集解析结果（切集令牌 $token → $_rewatchToken）');
+        return;
+      }
       setState(() => _streams = list);
       final first = list.where((s) => s.isPlayable).firstOrNull;
       if (first == null) {
@@ -8911,6 +9293,8 @@ class _PlayerPageState extends State<PlayerPage>
       _liveAudioOnlyNotice = null;
       // ★ 同理：画面输出层的判决也是按旧台那一次起播算的
       _videoOutputDead = false;
+      // ★★★ CR #22 ⑥：换台 = 换会话 ⇒ 作废在途的切集续播浮层（理由见 applySession 处）
+      _rewatchToken++;
       _loading = true;
       _error = null;
       _errorKind = null;
@@ -9061,6 +9445,8 @@ class _PlayerPageState extends State<PlayerPage>
         _contentId = contentId;
         _sourceCode = sourceCode;
         _streams = list;
+        // ★★★ CR #22 ⑥：换会话 ⇒ 作废在途的切集续播浮层（理由见 applySession 处）
+        _rewatchToken++;
       });
 
       /*
@@ -11805,6 +12191,7 @@ class _PlayerPageState extends State<PlayerPage>
     _pageFocusNode.dispose();
     _progressTimer?.cancel();
     _countdownTimer?.cancel();
+    _rewatchTimer?.cancel(); // ★ fix/rewatch-prompt：浮层自动消失定时器
     _hideTimer?.cancel();
     _rewindTimer?.cancel(); // ★ 左半屏长按的连续快退定时器
     /*
@@ -12718,6 +13105,21 @@ class _PlayerPageState extends State<PlayerPage>
                           _gotoNextEpisode();
                         },
                         onCancel: _cancelNextCountdown,
+                      ),
+
+                    /*
+                 * ── fix/rewatch-prompt：「上次看到 20:00 / 继续观看 / 从头播放」──
+                 *
+                 * ★ 与 `_NextCountdown` 并列（同一角落、同一形态）—— 两者
+                 *   都是"非阻断的小卡片"，且同时最多只会有一个有意义
+                 *   （换集时 `_cancelNextCountdown` 与 `_cancelRewatchPrompt`
+                 *   都会清）。不操作 ⇒ 8 秒后自动消失（见 `showRewatchPrompt`）。
+                 */
+                    if (_rewatchPrompt != null)
+                      _RewatchPrompt(
+                        position: _rewatchPrompt!,
+                        onContinue: continueFromRewatchPrompt,
+                        onFromStart: dismissRewatchPrompt,
                       ),
 
                     /*
@@ -15009,6 +15411,40 @@ bool debugPlayerMarkFirstFrameForProbe() {
   return s._sawFirstFrame;
 }
 
+/// ★★★ CR #22 ② 门禁用：把「起播失败」态**中性化**成干净态（不清别的字段）
+///
+/// # 为什么需要它
+/// ```text
+/// CR ② 要求「_error != null 时不许弹续播浮层」—— 这条守卫是对的：
+/// 起播失败时弹"继续观看"等于骗用户去 seek 一个没在放的播放器。
+///
+/// 但原生门禁（见 test/zz_rewatch_prompt_test.dart ②）是**正向**判据：
+/// "提示模式 + 这集看过 ⇒ 必须弹"。而那个夹具里 SourinApi.resolveStream
+/// 走真 FFI、必然失败 ⇒ 挂载期 _error 就已经被置上 ⇒ 守卫一落地，
+/// 那条正向门禁会**立刻变红**。
+/// ```
+/// 所以要一条能把 _error 清回干净态的钩子，门禁里**先自证它真生效**
+///（返回 false ⇒ 测试立刻红），再断言浮层弹出。
+///
+/// # 与 [debugPlayerMarkFirstFrameForProbe] 的区别（逐字对比过）
+/// ```text
+/// 本钩子**不设** _sawFirstFrame —— 只清"起播失败/中断"三件套。
+/// 不设它，是因为本钩子不假装"出过画面"，只把错误态抹平。
+/// ```
+bool debugPlayerClearErrorForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  AppLog.write('PLAY', '错误态已中性化（探针清空 _error/_errorKind/_playbackFailure）');
+  // ignore: invalid_use_of_protected_member
+  s.setState(() {
+    s._error = null;
+    s._errorKind = null;
+    s._loading = false;
+    s._playbackFailure = null;
+  });
+  return s._error == null;
+}
+
 /// 读第 9 条的两个状态（`hasFrame=<是否出过画面> failure=<非阻断横幅>`）
 String debugPlayerPlaybackFailureState() {
   final s = _livePlayerState;
@@ -15102,6 +15538,33 @@ void debugPlayerResetPositionSetStates() {
   debugPlayerPositionTicks = 0;
 }
 
+/// 探针用：**跳过 `_player.open()` 那一句**（缺省 false ⇒ 生产逐字不变）
+///
+/// # 为什么必须有这个开关（实测，不是猜）
+/// ```text
+/// `await _player.open(...)` 在**挂了 `PlayerPage` 的** `testWidgets` 里
+/// **永不返回** —— 与 `MediaKit.ensureInitialized` 在哪个 zone 无关：
+///   · `.probe/open_probe.txt`：裸 `test()` 里 79ms 返回；`t.runAsync` 里 20s 超时
+///   · `.probe/open2a.txt` / `open2b.txt`：**没有 widget 树**的 testWidgets
+///     里两个变体都 60–79ms 正常返回
+/// ⇒ 挂住的真正条件是「页面上挂着一个真 Player + 有 pumpWidget 的树」。
+/// ```
+///
+/// # 为什么不能用「事后清 `_error`」的探针救场
+/// ```text
+/// CR #22 ② 的代次守卫（`_gotoEpisode` 末尾 `_error == null` 那一句）是
+/// 在 `_gotoEpisode` **内部**求值的 —— `open()` 挂住 ⇒ `_reload()` 永不返回
+/// ⇒ `_gotoEpisode()` 永不返回 ⇒ 事后任何清 `_error` 的探针都**跑不到**。
+/// 正向门禁（②④⑤）唯一出路：让 `_startPlayback` 能**跑完**。
+/// ```
+///
+/// ★ 只跳过 open **这一句**：`_applyVideoZoom` / `AppLog` / `_reportHwdecAfterReady`
+///   / `_reportFirstFrame` / `_watchVideoOutput` / audioUrl 挂载 / `_pendingSeek`
+///   / `_loading=false` / `_showControls` / `_armHideTimer` / `_startProgressSaver`
+///   / `_loadDanmaku` / `_applySubtitleStyle` **全照跑** ⇒ 门禁测的仍是生产流程。
+/// ★ 用法：门禁 `setUp` 置 `true`、`tearDown` 置回 `false`。
+bool debugPlayerSkipOpenForProbe = false;
+
 /// 探针用：把一次位置 tick **灌进真实处理路径**（见 `_onPositionTick`）
 ///
 /// 用于 widget 测试里模拟"1 秒内来了 100 个 tick" ——
@@ -15166,6 +15629,56 @@ Future<bool> debugPlayerPrepareResumeForProbe() async {
 /// ⚠️ 无播放页时返回 `null` —— 与「有播放页但不续播」**同值**，
 ///    所以调用方必须先断言 [debugPlayerPrepareResumeForProbe] 返回 true。
 Duration? debugPlayerPendingSeekForProbe() => _livePlayerState?._pendingSeek;
+
+/// ★★★ fix/rewatch-prompt 探针：当前浮层要显示的"上次看到哪"（null = 没有浮层）
+///
+/// 与真实渲染的浮层是**同一个字段**（`_rewatchPrompt`）——「有没有弹」与
+/// 「弹的秒数」用这一个读数即可，不必另造一个"是否显示"的布尔（两个真相会漂）。
+Duration? debugPlayerRewatchPromptForProbe() => _livePlayerState?._rewatchPrompt;
+
+/// ★★★ 探针：驱动一次"切集"（走**生产方法** `_gotoEpisode`），返回是否成功。
+///
+/// # 为什么需要它（不能只 pumpWidget 一个带 episodes 的页面就完事）
+/// ```text
+/// `_gotoEpisode` 是 async，里面 `await _saveProgress` / `await _reload()`
+/// 都要真跑（读进度、解析流）—— 用 `t.runAsync` 驱动它，读数才确定。
+/// 用例拿到 `Episode` 后传进来；`i < 0`（不在列表里）⇒ 返回 false。
+/// ```
+Future<bool> debugPlayerGotoEpisodeForProbe(Episode ep) async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  await s._gotoEpisode(ep);
+  return true;
+}
+
+/// ★★★ CR #22 ⑥ 探针：把**真正的** `applySession`（生产方法）暴露给用例。
+///
+/// # 为什么必须走真方法
+/// ```text
+/// ⑥ 的缺陷是"会话被**别的路径**换掉时，在途的切集链路仍会弹浮层"。
+/// 断言要成立，就必须让用例能触发那条路径 —— 自己拼一个
+/// `PlayRequestData` 然后调真 `applySession`，测的才是生产分流
+///（`isSameSessionAs` 早退 / `_rewatchToken++` / `_resolveAndPlay`）。
+/// ```
+/// 返回 false = 没挂页（调用方必须先断言挂上了）。
+Future<bool> debugPlayerApplySessionForProbe(PlayRequestData req) async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  await s.applySession(req);
+  return true;
+}
+
+/// 探针：直接调**生产方法** `showRewatchPrompt`（把浮层摆出来）
+bool debugPlayerShowRewatchPromptForProbe(Duration position) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s.showRewatchPrompt(position);
+  return true;
+}
+
+/// 探针：读"浮层是否正在显示"（与渲染用的是同一个字段）
+bool debugPlayerRewatchPromptVisible() =>
+    _livePlayerState?._rewatchPrompt != null;
 
 /// ★★★ 探针读数：当前会话**自己那把键**（`provider:id`），`null` = 没挂上。
 ///
@@ -16297,6 +16810,91 @@ class _NextCountdown extends StatelessWidget {
                 TextButton(onPressed: onCancel, child: const Text('取消')),
                 const SizedBox(width: Sp.x2),
                 FilledButton(onPressed: onPlayNow, child: const Text('立即播放')),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// ★★★ fix/rewatch-prompt：切到「看过的集」时的**非阻断**小浮层
+///
+/// # 形态照 `_NextCountdown`（本仓既有的"非阻断小浮层"范本）
+/// ```text
+/// Positioned(right: Sp.x6, bottom: 120) + 半透明圆角卡片 —— 与倒计时同一套。
+/// ```
+/// # 它**不是** Dialog / 不是全屏遮罩 / 不暂停播放
+///
+/// Owner 要的是一个"浮层"，不是"必须处理才能继续的弹窗"：
+/// ```text
+/// ① 卡片只占右下角一小块 ⇒ 画面照常可见、照常播放（非阻断）
+/// ② 不操作（超时/关闭）⇒ 默认从头播（`_pendingSeek` 本就是 null）
+/// ③ 「继续观看」才 seek 到上次位置 —— 两个动作都**真的接线**（见 caller）
+/// ```
+class _RewatchPrompt extends StatelessWidget {
+  const _RewatchPrompt({
+    required this.position,
+    required this.onContinue,
+    required this.onFromStart,
+  });
+
+  /// 上次看到哪儿（显示成 `上次看到 20:00`）
+  final Duration position;
+
+  /// 「继续观看」—— seek 到 [position]
+  final VoidCallback onContinue;
+
+  /// 「从头播放」—— 关掉浮层（不 seek；起播本就从头）
+  final VoidCallback onFromStart;
+
+  /// `mm:ss` / `h:mm:ss`（与底栏 `PlayerBottomBar._fmt` 同款算法）
+  static String _fmt(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60);
+    final s = d.inSeconds.remainder(60);
+    String two(int n) => n.toString().padLeft(2, '0');
+    return h > 0 ? '$h:${two(m)}:${two(s)}' : '${two(m)}:${two(s)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      right: Sp.x6,
+      bottom: 120,
+      child: Container(
+        padding: const EdgeInsets.all(Sp.x4),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.85),
+          borderRadius: Radii.rMd,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '上次看到 ${_fmt(position)}',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: FontSizes.sm,
+              ),
+            ),
+            const SizedBox(height: Sp.x1),
+            const Text(
+              '这一集以前看过',
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: FontSizes.cap,
+              ),
+            ),
+            const SizedBox(height: Sp.x3),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextButton(onPressed: onFromStart, child: const Text('从头播放')),
+                const SizedBox(width: Sp.x2),
+                FilledButton(onPressed: onContinue, child: const Text('继续观看')),
               ],
             ),
           ],

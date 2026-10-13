@@ -175,6 +175,144 @@ async fn import_does_not_regress_newer_local_data() {
     assert_eq!(sum2.progress_updated, 1, "应计为 1 条更新");
 }
 
+/// ★★★ 关键：**旧格式**备份（`key` 还是作品键）也不许把本机更新的进度打回去
+///
+/// # 这条守的是什么（CR #21 `PRRT_kwDOVAfO4s6rqqYb` 的判据）
+///
+/// ```text
+/// 备份有**两个时代**（`commands_backup.rs:523-543`）：
+///   按集扩容前：progress 行 key = 作品键 `p:1`
+///   按集扩容后：progress 行 key = 按集键 `p:1:e1`
+/// 本机迁移后，同一行是 `p:1:e1`。
+///
+/// 改前的合并用 `get_progress_exact(&p.key)` 查本机行 ——
+/// 旧备份的 `p.key` 是 `p:1` ⇒ **永远查不到**本机那行
+/// ⇒ 下面的 `p.updated_at <= o.updated_at` 时间戳守卫形同虚设
+/// ⇒ 旧备份把本机更新的进度**打回去**（用户进度倒退）。
+/// ```
+///
+/// # 为什么必须手搓 zip
+///
+/// 本仓的 `backup_export` 现在只会导出**新格式**（按集键）——
+/// 想造一个旧格式包，只能自己写 `watch-data.json` 再压进 zip。
+/// 这恰好也是「真实用户手上那个三天前的包」的样子。
+#[tokio::test]
+async fn import_does_not_regress_newer_local_data_legacy_key() {
+    use std::io::Write;
+
+    let st = fresh("merge-legacy").await;
+
+    // 本机：同一集（e1）看到 900 秒
+    cw::save_progress(&st, "a", "1", "剧", None, Some("e1".into()), Some("第1集".into()), 900, 1000, None)
+        .unwrap();
+    let before = commands::get_progress(&st, "a", "1").unwrap().unwrap();
+    assert_eq!(before.position, 900);
+    println!("✓ 本机进度 {} 秒（updated_at={}）", before.position, before.updated_at);
+
+    /*
+     * 旧格式备份：`key` = **作品键** `a:1`（按集扩容前导出的样子），
+     * `updated_at` 比本机**更旧** ⇒ 按合并规则应**跳过**。
+     * 位置 200 是故意写小的：真被打回去，断言立刻能看见。
+     */
+    let watch = serde_json::json!({
+        "progress": [{
+            "key": "a:1",
+            "provider": "a",
+            "native_id": "1",
+            "title": "剧",
+            "episode_id": "e1",
+            "episode_title": "第1集",
+            "position": 200,
+            "duration": 1000,
+            "finished": false,
+            "updated_at": before.updated_at - 600_000
+        }]
+    });
+    let manifest = serde_json::json!({
+        "version": 1,
+        "exported_at": before.updated_at - 600_000,
+        "device_id": "legacy-device",
+        "app_version": "0.0.1",
+        "entries": []
+    });
+
+    let zip_path = st.data_dir.join("legacy.json.zip");
+    {
+        let f = std::fs::File::create(&zip_path).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opts: zip::write::SimpleFileOptions =
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+        zw.start_file("manifest.json", opts).unwrap();
+        zw.write_all(serde_json::to_string_pretty(&manifest).unwrap().as_bytes())
+            .unwrap();
+        zw.start_file("watch-data.json", opts).unwrap();
+        zw.write_all(serde_json::to_string_pretty(&watch).unwrap().as_bytes())
+            .unwrap();
+        zw.finish().unwrap();
+    }
+    println!("✓ 手搓了一个**旧格式**备份包（key=a:1，位置 200 秒，时间戳更旧）");
+
+    let sum = cb::backup_import(&st, zip_path.to_str().unwrap()).await.unwrap();
+    let after = commands::get_progress(&st, "a", "1").unwrap().unwrap();
+    println!(
+        "✓ 导入旧格式备份后 {} 秒（进度更新 {} 条）",
+        after.position, sum.progress_updated
+    );
+    assert_eq!(
+        after.position, 900,
+        "★★★ 旧格式备份里那条更旧 ⇒ 本机 900 秒**不许**被打回 200"
+    );
+    assert_eq!(sum.progress_updated, 0, "★ 更旧的数据不该算作「更新」");
+
+    // ★ 阴性对照：把备份那条调成**更新** ⇒ 必须真的被采用（守卫不是恒跳过）
+    let st2 = fresh("merge-legacy-new").await;
+    cw::save_progress(&st2, "a", "1", "剧", None, Some("e1".into()), Some("第1集".into()), 900, 1000, None)
+        .unwrap();
+    {
+        let mut p = commands::get_progress(&st2, "a", "1").unwrap().unwrap();
+        p.updated_at = 946_684_800_000; // 2000 年：本机故意做旧
+        st2.db.upsert_progress(&p).unwrap();
+    }
+    let watch2 = serde_json::json!({
+        "progress": [{
+            "key": "a:1",
+            "provider": "a",
+            "native_id": "1",
+            "title": "剧",
+            "episode_id": "e1",
+            "episode_title": "第1集",
+            "position": 700,
+            "duration": 1000,
+            "finished": false,
+            "updated_at": 1_600_000_000_000i64
+        }]
+    });
+    let zip2 = st2.data_dir.join("legacy2.json.zip");
+    {
+        let f = std::fs::File::create(&zip2).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opts: zip::write::SimpleFileOptions =
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+        zw.start_file("manifest.json", opts).unwrap();
+        zw.write_all(serde_json::to_string_pretty(&manifest).unwrap().as_bytes())
+            .unwrap();
+        zw.start_file("watch-data.json", opts).unwrap();
+        zw.write_all(serde_json::to_string_pretty(&watch2).unwrap().as_bytes())
+            .unwrap();
+        zw.finish().unwrap();
+    }
+    let sum2 = cb::backup_import(&st2, zip2.to_str().unwrap()).await.unwrap();
+    let a2 = commands::get_progress(&st2, "a", "1").unwrap().unwrap();
+    println!(
+        "✓ 反向：本机做旧 ⇒ 旧格式备份（更新）被采用：{} 秒（更新 {} 条）",
+        a2.position, sum2.progress_updated
+    );
+    assert_eq!(a2.position, 700, "★ 本机较旧时，旧格式备份的值应被采用");
+    assert_eq!(sum2.progress_updated, 1, "应计为 1 条更新");
+}
+
 /// 合并时保留本机的分组 / 别名
 #[tokio::test]
 async fn import_preserves_local_group_and_note() {

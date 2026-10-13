@@ -414,24 +414,41 @@ void main() {
 
   group('③ 数据源：三个列表**都没有**任何去重/迁移', () {
     test('★★★ my_shelf 的 _cards 是裸 map —— 没有按标题去重', () {
-      final code = stripComments(
-          File('lib/ui/widgets/my_shelf.dart').readAsStringSync());
+      // ══════════════════════════════════════════════════════════════════
+      //  ★★★ 判据边界必须**算出来**（2026-10-13 修：这条曾经自己假红）
+      // ══════════════════════════════════════════════════════════════════
+      // 旧写法是 `code.indexOf('case ShelfTab.following:')` 取**首个**匹配，
+      // 再 `substring(i, i + 2500)` —— 正是本文件 `:72-88` 记的那笔血账。
+      // PR#11 在 `_cards` **之前**新增了 `_shelfSignature()`，它同样写着
+      // 这三个 `case ShelfTab.X:` 字面串 ⇒ 首个 `indexOf` 命中的是指纹代码，
+      // `substring(i, i + 2500)` 里根本没有 `.map((`（实测在 +2630 / +2553）
+      // ⇒ following / favorites **假红**（history 侥幸绿）。
+      // ⇒ 改成 `dartFnBody()` 把判据钉死在 `_cards` 的**函数体**内，
+      //    再按三个 case 字面串把函数体切成三段，逐段断言。
+      final body = dartFnBody(
+          'lib/ui/widgets/my_shelf.dart', 'List<_Card> get _cards');
 
       // 三个 tab 的构造都必须是**裸 .map(...).toList()**
-      for (final anchor in const [
+      const anchors = [
         'case ShelfTab.following:',
         'case ShelfTab.favorites:',
         'case ShelfTab.history:',
-      ]) {
-        final i = code.indexOf(anchor);
-        expect(i, greaterThan(-1), reason: '必须找到 $anchor');
-        final body = code.substring(i, i + 2500);
-        expect(RegExp(r'\.map\(\(').hasMatch(body), isTrue,
+      ];
+      for (var k = 0; k < anchors.length; k++) {
+        final anchor = anchors[k];
+        final i = body.indexOf(anchor);
+        expect(i, greaterThan(-1), reason: '★ `_cards` 里必须找到 $anchor');
+        final end =
+            k + 1 < anchors.length ? body.indexOf(anchors[k + 1]) : body.length;
+        expect(end, greaterThan(i),
+            reason: '★ $anchor 与下一个 case 的**顺序**必须保持');
+        final arm = body.substring(i, end);
+        expect(RegExp(r'\.map\(\(').hasMatch(arm), isTrue,
             reason: '★ $anchor 必须仍是裸 .map(...)');
-        expect(RegExp(r'\.toList\(\)').hasMatch(body), isTrue,
+        expect(RegExp(r'\.toList\(\)').hasMatch(arm), isTrue,
             reason: '★ $anchor 必须仍是 .toList()');
         // 反向：不许出现按 title 去重的痕迹
-        expect(body.contains('distinct'), isFalse,
+        expect(arm.contains('distinct'), isFalse,
             reason: '★ $anchor 里**不许**有 distinct（否则就是偷偷去重）');
       }
     });
@@ -549,8 +566,34 @@ void main() {
        *     本文件的结论会**静默变成错的**（而测试全绿）。
        */
       final rs = File('rust/sourin_core/src/store.rs').readAsStringSync();
+      /*
+       * ⚠️ 2026-10-12 按集扩容：`continue_watching` 为了「同一作品按 updated_at
+       *    取最新一集」引入了表别名 `p`，于是 `FROM progress` 与 `WHERE` 之间
+       *    多了一个 ` p`：
+       * ```text
+       * 老：FROM progress WHERE finished=0 AND position > 5
+       * 新：FROM progress p \
+       *        WHERE finished=0 AND position > 5 \
+       *          AND updated_at = (SELECT MAX(updated_at) FROM progress
+       *                            WHERE item_key = p.item_key)
+       * ```
+       * ⇒ 判据从「字面串相等」改成「**先归一化空白再比对**」。
+       *
+       * ★ 为什么不是简单写个更松的正则：Rust 源码里这个 SQL 是**多行字符串**，
+       *   行与行之间是「反斜杠 + 换行 + 缩进」。只放宽到 `\s+` 挡不住那个
+       *   反斜杠（`\s` 不匹配 `\`）⇒ 仍会假红。所以这里先把
+       *   「反斜杠+换行+缩进」和所有连续空白**一起压成单个空格**，再比对。
+       *
+       * ★ 归一化只影响**空白**，不影响任何字符的取舍 ——
+       *   下面反向对照里 `>` 与 `5` 仍必须逐字保留。
+       */
+      final flat = rs
+          .replaceAll(RegExp(r'\\\s*\n\s*'), ' ')
+          .replaceAll(RegExp(r'\s+'), ' ');
+      // ★ 正向：带别名也要认（别名是无关的书写细节，钉它只会制造假红）
       expect(
-        rs.contains('FROM progress WHERE finished=0 AND position > 5'),
+        RegExp(r'FROM progress\s+\w+\s+WHERE finished=0 AND position > 5')
+            .hasMatch(flat),
         isTrue,
         reason: '★★★ 症状刻画的前提：continueWatching 必须带 `position > 5`。'
             '⚠️ 这条断言的对象是 **Rust 源码**（不是注释里的）—— '

@@ -1329,9 +1329,54 @@ class _PopoverAnchorDelegate extends SingleChildLayoutDelegate {
     }
 
     // 底边贴按钮上沿上方 Sp.x2（按钮被安全区抬高时跟着抬）
-    final desiredBottom = a == null ? size.height - spacing : a.top - spacing;
+    /*
+     * ══════════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-13（Owner）：面板底边**贴死底栏上沿**（去掉那 8px 缝）
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * Owner 原话（逐字）：
+     * ```text
+     * > 这个悬浮窗距离底部太多了,往上挪的过程中就可能悬浮窗关闭了
+     * ```
+     * 追问后 Owner 明确：**贴紧底栏（去掉 8px 缝）**。
+     *
+     * # 改哪一处
+     * ```text
+     * 原：`desiredBottom = size.height - spacing`（层底 - 8px 留白）
+     * 新：`desiredBottom = size.height`（层底，0 留白）
+     * 层底 == 底栏上沿（宿主把本层挂在
+     *   `Padding(bottom: _kPlayerBottomBarHeight)` 里）
+     * ⇒ 面板底边**正贴在底栏上沿**：那 8px 缝没了。
+     * ```
+     *
+     * ⚠️ **只动竖向这一处**：横向仍按按钮中心居中（Owner 1011 第 4 条），
+     *    `spacing` 也**保持不变**（它还管着"别顶到窗口边缘"的横向 clamp）。
+     * ⚠️ 面板本来贴的是**按钮上沿**（`a.top - spacing`）—— 但按钮在底栏里偏下，
+     *    实测底栏顶 y=694、按钮顶 y=751 ⇒ 面板会悬在底栏上方 ~49px
+     *    （这正是 Owner 说的"距离底部太多"）。改成贴**层底**后，那 ~49px 也没了。
+     * ★ 两者（去 8px 缝 + 不再贴按钮上沿）合起来才是 Owner 要的"贴紧底栏"。
+     * ```
+     */
+    final desiredBottom = size.height;
     var top = fallback.dy - (size.height - spacing - desiredBottom);
-    final maxTop = size.height - spacing - childSize.height;
+    /*
+     * ⚠️⚠️ 真正把面板钉住的是**这一行**（不是上面的 `desiredBottom`）。
+     *
+     * # 我上一版只改 `desiredBottom`，实测面板**一个像素没动** —— 原因在这
+     * ```text
+     * `maxTop = size.height - spacing - childSize.height`
+     * ⇒ 面板的 `top` 被夹在 `size.height - spacing - 高度`
+     * ⇒ 底边 = `size.height - spacing`（= 层底 - 8px）
+     * ⇒ **那 8px 缝其实来自这个 `spacing`**，与 `desiredBottom` 无关
+     *   （后者算出来的位置比 `maxTop` 更低，被夹掉了）。
+     * ```
+     * # 所以竖向的留白必须在这里去掉
+     * ```text
+     * 改成 `size.height - childSize.height`（0 留白）⇒ 底边 = 层底 = 底栏上沿。
+     * ⚠️ 横向 clamp（`minLeft`/`maxLeft`）与竖向兜底仍用 `spacing` ——
+     *    它们管的是"别顶到窗口**左右**边缘"，与"贴底栏"是两件事。
+     */
+    final maxTop = size.height - childSize.height;
     if (top > maxTop) top = maxTop;
     // 上沿还要让开状态栏 / 刘海（viewPadding 在无安全区时是 0）
     final minTop = viewPadding.top + spacing;

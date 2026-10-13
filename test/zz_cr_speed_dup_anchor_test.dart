@@ -108,7 +108,7 @@ Widget _host(PlayerBottomBar bar, PopoverController controller) => Stack(
             child: Align(
               alignment: Alignment.bottomRight,
               child: Padding(
-                padding: const EdgeInsets.only(right: Sp.x2, bottom: 96),
+                padding: const EdgeInsets.only(right: Sp.x2, bottom: 106), // 生产真值（Owner 1013 修正 96→106）
                 child: bar.buildPopoverLayer(),
               ),
             ),

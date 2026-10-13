@@ -286,9 +286,25 @@ void main() {
           reason: '★★ Owner 1011 第 4 条：面板中心应 = **按钮**中心'
               '（${btn1.center.dx}），贴边时 clamp 到层边。'
               '实测 面板中心 ${panel.center.dx} 面板=$panel');
-      // 竖向仍贴在按钮上沿上方 Sp.x2（CR-10 端到端：用的是**新**按钮的顶部）
-      expect(panel.bottom, closeTo(btn1.top - Sp.x2, 1.0),
-          reason: '★ 面板底边 = 按钮上沿上方 Sp.x2');
+      /*
+       * 竖向：面板底边贴**层底**（= 底栏上沿），不再贴按钮上沿。
+       *
+       * ★★★ 2026-10-13（Owner）契约更新：原式 `panel.bottom == btn1.top - Sp.x2`
+       * ```text
+       * Owner 原话：> 这个悬浮窗距离底部太多了,往上挪的过程中就可能悬浮窗关闭了
+       * 追问后明确：**贴紧底栏（去掉 8px 缝）**。
+       * 原因：按钮在底栏里**偏下**（实测底栏顶 794 / 按钮顶 840），
+       *   贴按钮上沿会让面板底边停在 832 —— 比底栏顶高 38px，看着悬空。
+       * ⇒ 新契约：面板底边 = **层底**（宿主 `Padding(bottom: _kPlayerBottomBarHeight)`
+       *   把层底钉在底栏上沿）⇒ 面板正贴底栏。
+       * ★ 本用例的核心（CR-10：锚点必须**重新量取**）**一字未改** ——
+       *   横向那条 `dCentered` 断言仍然守着"锚点读的是新值"；
+       *   竖向改成贴层底后，锚点读旧值会让**横向**居中先错，防线依然有效。
+       * ```
+       */
+      expect(panel.bottom, closeTo(layerRect.bottom, 1.0),
+          reason: '★ 面板底边 = 层底（= 底栏上沿）—— Owner 1013「贴紧底栏」。'
+              '实测 面板底 ${panel.bottom} vs 层底 ${layerRect.bottom}');
       expect(panel.left, greaterThanOrEqualTo(Sp.x2 - 0.01),
           reason: '★ 面板必须整块留在窗口里');
 

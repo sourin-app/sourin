@@ -44,7 +44,7 @@ library;
 //   （Rust schema 改动），**超出本次授权范围**——此处在文件头如实标注。
 // ```
 //
-// # 本文件的十条门禁（每条都做**撤销验证**：还原 ⇒ 变红）
+// # 本文件的十一条门禁（每条都做**撤销验证**：还原 ⇒ 变红）
 //
 // ```text
 // ① 默认行为不变：缺省（没设偏好）⇒ 切集**不弹浮层**、从头播（_pendingSeek == null）
@@ -57,6 +57,8 @@ library;
 // ⑧ ★先过滤再挑选：镜像那条属于**别的集**且位置更大 ⇒ 不许连坐本集自己那条
 // ⑨ ★代次守卫：慢的那次切集回来时（用户已切走）⇒ 不许弹过期浮层
 // ⑩ ★mounted 守卫：切集停在 `_reload()` 的 await 上时页面被销毁 ⇒ 不许抛异常
+// ⑪ ★会话被别的路径换掉：切集停在 `_reload()` 的 await 上时 `applySession`
+//    送来另一个 provider 的同一集 ⇒ 不许弹浮层、也不许把旧流盖回去
 // ```
 //
 // ⚠️ 断言读**真实渲染**的浮层文字（`find.text(...)`）与真实 `_pendingSeek` /
@@ -77,6 +79,7 @@ import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/ui/media_session.dart'; // 门禁⑪：拼 PlayRequestData
 import 'package:sourin_spike/ui/player_page.dart';
 import 'package:sourin_spike/ui/remote_bridge.dart';
 import 'package:sourin_spike/ui/widgets/player_settings_sheet.dart';
@@ -129,12 +132,32 @@ Future<List<StreamCandidate>> _fakeResolveSlowFirst(
   PlayRequest? req,
 }) async {
   final n = ++_fakeResolveCalls;
+  /*
+   * ★★★ 把**请求里的集 id** 编进 url —— 这是门禁⑨/⑪ 唯一的"哪一集的流"读数。
+   *
+   * 为什么不另加一个探针：`debugPlayerStreamUrlsForProbe()` 已经是**只读**的
+   * `_streams` 视图（本仓既有探针，见 player_page.dart:15312）。让 url 自带
+   * 集 id，就等于「过期的那次 `_reload()` 有没有把 `_streams` 盖回去」直接
+   * 可断言 —— 不必为测试在生产代码里再开一个后门字段。
+   * ⚠️ 只改**慢的**这两个（门禁⑨⑩⑪ 专用）；`_fakeResolve` 仍是 /fake.m3u8。
+   */
+  final epId = req?.episodeId ?? 'none';
+  /*
+   * ★★★ 日志必须在 `await` **之前**记 —— 它记的是**请求发生的顺序**。
+   *
+   * 门禁⑪ 里两次请求的集 id 相同、provider 不同：旧会话那次先发（然后
+   * 停 400ms），新会话那次晚 80ms 发却**先**返回。若把日志写在 `await`
+   * 之后，记的就变成**完成顺序**（实测 = [othersrc/51464, cycani/51464]），
+   * 于是"第一条必须是旧会话"这句自检会**误判**成失败 —— 被测行为其实
+   * 是对的（`prompt=null`、`_streams` 已是新会话那份）。
+   */
+  _resolveLog.add('$provider/$epId');
   if (n == 1) {
     await Future<void>.delayed(const Duration(milliseconds: 400));
   }
   return [
     StreamCandidate(
-      url: 'http://127.0.0.1:1/fake.m3u8',
+      url: 'http://127.0.0.1:1/$provider/$epId.m3u8',
       kind: 'hls',
       quality: '1080P',
     ),
@@ -159,7 +182,7 @@ Future<List<StreamCandidate>> _fakeResolveVerySlowFirst(
   }
   return [
     StreamCandidate(
-      url: 'http://127.0.0.1:1/fake.m3u8',
+      url: 'http://127.0.0.1:1/${req?.episodeId ?? "none"}.m3u8',
       kind: 'hls',
       quality: '1080P',
     ),
@@ -168,6 +191,22 @@ Future<List<StreamCandidate>> _fakeResolveVerySlowFirst(
 
 /// `_fakeResolveSlowFirst` 的调用计数（每个用例自己清零）
 int _fakeResolveCalls = 0;
+
+/// 门禁⑪ 用：**每一次** resolve 请求的 `provider/集id`（按发生顺序）
+///
+/// # 为什么必须记它
+/// ```text
+/// 门禁⑪ 要断言的是「**过期**的那次 `_reload()` 有没有把 `_streams` 盖回去」。
+/// 但 `_streams` 只是一份当前值 —— 没有这份顺序日志，就分不清
+/// ```
+///   ① 现在这份 `_streams` 是**新会话**解析出来的（正确），还是
+///   ② 旧会话那次**晚到**的解析结果（过期覆盖，正是要抓的缺陷）。
+/// ```
+/// 有了顺序日志 + url 里带 `provider/集id`（见 `_fakeResolveSlowFirst`），
+/// 「谁写的最后一份」就直接可读。
+/// ★ 仪器自检也靠它：断言第 1 条一定是**旧会话**发出的，
+///   否则「换会话」发生在过期解析之前 ⇒ 门禁测了个寂寞。
+final List<String> _resolveLog = <String>[];
 
 /// 浮层两个动作的**真实**渲染文字（`find.text` 的证据）
 const _kContinueLabel = '继续观看';
@@ -250,6 +289,7 @@ void main() {
     RemoteBridge.instance.stop();
     // ★ 门禁注入点必须复位：否则会漏到同进程里的其它用例（假绿/假红都可能）
     SourinApi.debugResolveStreamFetcher = null;
+    _resolveLog.clear();
     debugPlayerSkipOpenForProbe = false;
     // 每个用例都从"空偏好"开始 —— 缺省 = 从头（门禁①测的正是它）
     UiPrefs.debugResetForTest();
@@ -792,6 +832,21 @@ void main() {
               '（弹了就是 CR #22 ② 说的「旧调用把第一目标集的进度显示出来」）');
       expect(find.text('上次看到 20:00'), findsNothing,
           reason: '★★ 真实渲染里也不许出现第3集那个 20:00');
+      /*
+       * ★★★ CR #22 ⑤ 的另一半（过期的那次 `_reload()`）：
+       *   上面那条断言只锁住「浮层不许弹」。但过期的那次调用**还**会
+       *   把第3集的流重新起播（`_streams` 被它晚到的结果盖回去）——
+       *   用户看到的就是「点了第2集，画面又跳回第3集」。
+       *   慢 fetcher 把 `provider/集id` 编进了 url（见 `_fakeResolveSlowFirst`）
+       *   ⇒ 这一条直接断言**哪一集的流在 `_streams` 里**。
+       */
+      debugPrint('REWATCH ⑨ 流=${debugPlayerStreamUrlsForProbe()}');
+      expect(debugPlayerStreamUrlsForProbe().join('|'), contains('/$ep2Id.'),
+          reason: '★★★ `_reload()` 里那句令牌核对必须挡住过期结果：'
+              '第3集那次晚到的 resolve **不许**把 `_streams` 盖回去'
+              '（摘掉那句 `if (token != _rewatchToken) return;` ⇒ 本条变红）');
+      expect(debugPlayerStreamUrlsForProbe().join('|'), isNot(contains('/$ep3Id.')),
+          reason: '★★ 过期那次的 url 不许出现在 `_streams` 里');
       await drainTimers(t);
     });
   });
@@ -843,7 +898,7 @@ void main() {
         //   这样「拆页」就**确定**落在 `_reload()` 的 await 里面。
         await Future<void>.delayed(const Duration(milliseconds: 300));
       });
-      debugPrint('REWATCH ⑩ 拆页前：resolve 已发起 ${_fakeResolveCalls} 次'
+      debugPrint('REWATCH ⑩ 拆页前：resolve 已发起 $_fakeResolveCalls 次'
           '（必须是 1 ⇒ 说明 _reload 正在等它）');
       expect(_fakeResolveCalls, 1,
           reason: '★★ 仪器自检：拆页必须发生在 _reload() 等 resolve 期间，'
@@ -856,6 +911,120 @@ void main() {
       expect(err, isNull,
           reason: '★★★ 页面销毁后 `_reload()` 还在跑 ⇒ 必须靠 mounted 守卫'
               '提前返回；抛出来就是 setState-after-dispose');
+      await drainTimers(t);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ⑪ 会话被**别的路径**换掉时，在途的切集链路要作废（CR #22 ⑥）
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // # 与 ⑨ 的区别（两条门禁锁的是**不同**的漏洞）
+  // ```text
+  // ⑨：令牌由 `_gotoEpisode` 自己推 —— 抓的是「两次切集互相超车」。
+  // ⑪：令牌由**会话替换路径**推（这里用 `applySession`）—— 抓的是
+  //    「切集途中整个会话被换掉」。`_rewatchToken` 原来只在
+  //    `_gotoEpisode` 里自增 ⇒ ⑨ 全绿也挡不住下面这一幕：
+  //
+  //      ① `_gotoEpisode(第3集)` 停在 `_reload()` 的 await 上；
+  //      ② 合并页 `applySession` 送来**另一个 provider 的同一集**
+  //         （`episodeIndex` 一样、`episodes` 里的 id 也一样）；
+  //      ③ 新会话起播完成 ⇒ 旧调用的四道守卫**全部**通过
+  //         （令牌没变 / mounted / `_error == null` / 集 id 相同）
+  //         ⇒ 旧 provider 的「上次看到 20:00」弹在**新源**上，
+  //            用户点「继续观看」就跳到错误位置。
+  // ```
+  //
+  // # ★★ 撤销验证的实测结论（如实记录，别把归属写反）
+  // ```text
+  // A) 摘掉 `_reload()` 里那句 `if (token != _rewatchToken) return;`
+  //    ⇒ ⑨ 与 ⑪ **都变红**（`_streams` 被过期那次盖回旧集）。
+  //    ⇒ 本门禁（以及 ⑨）的**主判据**就是那句令牌核对。
+  //
+  // B) 只摘掉 `applySession` 里那句 `_rewatchToken++` ⇒ ⑪ **仍然全绿**。
+  //    机制：`applySession` 在线支会走 `_resolveAndPlay`，而它也推令牌，
+  //    且新会话那次假 resolve 立即返回 ⇒ 旧 `_reload()` 的 400ms 回来时
+  //    令牌已经变了。⇒ 那句 bump 单独摘掉**测不出来**，它覆盖的是
+  //    「新会话的 resolve 还没回来」这段窗口，以及**本地支**
+  //    （`req.localPath != null` ⇒ `_bootLocalFile`，**不经**
+  //    `_resolveAndPlay`）。本地支那句 bump 见 `_bootLocalFile` 开头。
+  // ```
+  //
+  // ⇒ 会话替换路径上的 bump 共 4 处：`_bootLocalFile` / `applySession` /
+  //    `_applySwitch`（直播换台）/ `_resolveAndPlay`；`_gotoEpisode` 自己
+  //    在 `final rewatchToken = ++_rewatchToken;` 处也推。
+  group('⑪ 会话被别的路径换掉时，在途的切集链路必须作废（CR #22 ⑥）', () {
+    testWidgets('★★★ 切集停在 _reload 的 await 上时会话被换掉 ⇒ 不许弹浮层，也不许把旧流盖回去',
+        (t) async {
+      await seedProgress(t, episodeId: ep3Id, position: 1200);
+      UiPrefs.debugResetForTest(
+          {'dsh.playprefs.episodeStartAction': 'prompt'});
+
+      await mountOnline(t, tag: 'session-swap');
+      // ★ 挂载那次的 resolve 已经用掉「第一次」—— 之后才换成慢的
+      SourinApi.debugResolveStreamFetcher = _fakeResolveSlowFirst;
+      _fakeResolveCalls = 0;
+
+      /*
+       * ★★ 与 ⑨ 一样必须塌进**同一个** `runAsync` 回调（重入禁令）。
+       * ★ 80ms：此刻 `_gotoEpisode` 已经过了 `readRewatchProgress` +
+       *   `_saveProgress`，正停在 `_reload()` 的 `await resolveStream` 上
+       *   （那一次的假 resolve 要 400ms 才返回）。
+       */
+      await t.runAsync(() async {
+        final f1 = debugPlayerGotoEpisodeForProbe(episodes[2]); // 第3集：读到 20:00
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        /*
+         * ★★★ 换会话走**生产方法** `applySession`（探针只是转发）。
+         *   `isSameSessionAs` 的四元组是 provider/id/episodeId/sourceCode
+         *   ⇒ 换 provider 必然判为「换会话」，不会被早退挡掉。
+         *   `episodeIndex: 2` ⇒ 新会话的当前集**仍是第3集**
+         *   （`_episodes[2].id == ep3Id`）—— 旧调用末尾那两道身份守卫
+         *   （集 id 相同 / 令牌未变）在**改前**会全部通过，所以这条门禁
+         *   才有分辨力。
+         */
+        final swapped = await debugPlayerApplySessionForProbe(PlayRequestData(
+          provider: 'othersrc',
+          id: contentId,
+          title: '追更剧',
+          episodeId: ep3Id,
+          episodeTitle: '第3集',
+          episodes: episodes,
+          episodeIndex: 2,
+        ));
+        expect(swapped, isTrue, reason: '★ 仪器自检：页面必须还挂着，否则测不到换会话那条路');
+        await f1; // 等慢的那次收尾
+      });
+      await t.pump();
+      while (t.takeException() != null) {}
+
+      /*
+       * ★★ 仪器自检：第 1 条请求必须是**旧会话**（cycani）发出的。
+       *   若「换会话」发生在它之前 ⇒ 过期解析根本没发生 ⇒ 本门禁
+       *   测了个寂寞（会假绿）。
+       */
+      debugPrint('REWATCH ⑪ resolve 顺序=$_resolveLog '
+          '流=${debugPlayerStreamUrlsForProbe()} '
+          '会话=${debugPlayerSessionKeyForProbe()} '
+          'prompt=${debugPlayerRewatchPromptForProbe()}');
+      expect(_resolveLog.length, greaterThanOrEqualTo(2),
+          reason: '★★ 仪器自检：必须真的发生了两次 resolve（旧会话那次 + 新会话那次）');
+      expect(_resolveLog.first, '$provider/$ep3Id',
+          reason: '★★ 仪器自检：第 1 条必须是旧会话 cycani 的第3集请求');
+      expect(debugPlayerSessionKeyForProbe(), 'othersrc:$contentId',
+          reason: '★★ 仪器自检：会话必须真的被换掉了');
+
+      expect(debugPlayerRewatchPromptForProbe(), isNull,
+          reason: '★★★ CR #22 ⑥：会话被换掉后，旧 provider 那次切集的'
+              '「上次看到 20:00」**不许**弹在**新源**上（用户点「继续观看」'
+              '会跳到错误位置）—— 靠会话替换路径上的 `_rewatchToken++` '
+              '推大令牌 + `_reload()` 里那句令牌核对共同挡');
+      expect(find.text('上次看到 20:00'), findsNothing,
+          reason: '★★ 真实渲染里也不许出现那个 20:00');
+      expect(debugPlayerStreamUrlsForProbe().join('|'), contains('/othersrc/'),
+          reason: '★★ `_streams` 必须是**新会话**解析出来的那份');
+      expect(debugPlayerStreamUrlsForProbe().join('|'), isNot(contains('/cycani/')),
+          reason: '★★★ 旧会话那次晚到的 resolve 不许把 `_streams` 盖回去');
       await drainTimers(t);
     });
   });

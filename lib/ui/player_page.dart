@@ -2564,6 +2564,21 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// ⚠️ 默认值取 `widget.localPath`：调用方只在「换到另一个本地文件」时才需要显式传。
   Future<void> _bootLocalFile({String? path}) async {
+    /*
+     * ★★★ CR #22 ⑥ 的**第四条**会话替换路径：`applySession` 的本地支
+     *     走的是本方法（`req.localPath != null`），它自己推一次令牌 ——
+     *     否则「切集途中会话被换到**本地文件**」那一幕仍然会弹旧源的浮层：
+     *     `applySession` 上面那次 `_rewatchToken++` 在**同一个** setState 里，
+     *     推完令牌后 `_gotoEpisode` 那次 `_reload()` 已经会丢弃结果 —— 但
+     *     本地支**不经** `_reload`，而 `_gotoEpisode` 末尾那四道守卫
+     *     （令牌未变 / mounted / `_error == null` / 集 id 相同）在这里会**全部**
+     *     通过（集 id 确实没变）⇒ 浮层照弹。
+     * ⚠️ 本方法还有两个**非会话替换**的调用者：① `:2515` 的 `_load()`
+     *    首播、② 页面级 `widget.localPath` 那条。给它们多推一次令牌是
+     *    安全的（那一刻 `_gotoEpisode` 不可能在途 —— 页面还没起播），
+     *    而「推了没坏处、漏了会弹错浮层」⇒ 放在方法开头最省。
+     */
+    _rewatchToken++;
     final filePath = path ?? widget.localPath;
     // ① 换集那条路可能传 null（切换回在线）—— 调用方应自己分流，这里防御性兜住
     if (filePath == null) return;
@@ -8064,7 +8079,21 @@ class _PlayerPageState extends State<PlayerPage>
       _current = null;
       _skipMarker = null;
       _playSessionGen++; // ★ 换会话 = 会话变了 ⇒ 丢弃在途的旧标记响应
-        _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
+      /*
+       * ★★★ CR #22 ⑥（PRRT_kwDOVAfO4s6rtKkC）：会话被换掉时**同时**作废
+       *      在途的「切集 → 续播浮层」链路（`_gotoEpisode`）。
+       *
+       * `_rewatchToken` 原来只在 `_gotoEpisode` 里自增 ⇒ 它挡得住"两次切集
+       * 互相超车"，挡不住"切集途中整个会话被换掉"：合并页这次可能给的是
+       * **另一个 provider 的同一集**（`episodeIndex` 一样、`episodes` 里的
+       * id 也一样），四道守卫（令牌/mounted/_error/集 id）会全部通过 ⇒
+       * 旧 provider 的"上次看到 20:00"浮层弹在**新源**上，用户一点就跳错位置。
+       * ⇒ 会话替换路径（本方法 / `_resolveAndPlay` / `_applySwitch` /
+       *    `_bootLocalFile`）都要推这枚令牌，与 `_playSessionGen` 同处、
+       *    同一理由。
+       */
+      _rewatchToken++;
+      _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
       // ★ 换会话 ⇒ 同上去掉「已下载 / 上次失败」的残留状态
       _clipDownloaded = false;
       _clipDownloadError = null;
@@ -8429,8 +8458,16 @@ class _PlayerPageState extends State<PlayerPage>
        * 按返回退出播放页时，下面 `_saveProgress` / `setState` /
        * `_reload` 都会作用在一个已经 dispose 的 State 上
        *（`setState() called after dispose()`）。
+       *
+       * ★★★ CR #22 ⑤（PRRT_kwDOVAfO4s6rtKj8）：**还要**查令牌。
+       *
+       * 这次读进度可能停几百毫秒，期间用户又点了**另一集** —— 那次调用
+       * 会把 `_rewatchToken` 推到更大值并重新解析流。若这里只查 `mounted`，
+       * 本调用恢复后会继续往下走，把 `_epIndex` 改回**旧目标集**、
+       * `_reportEpisodeChanged()`、再 `_reload()` ⇒ 用户刚选的后集被顶掉。
+       * ⇒ 令牌已变 = 本次切集作废，原地返回，什么都不碰。
        */
-      if (!mounted) return;
+      if (!mounted || rewatchToken != _rewatchToken) return;
     }
 
     /*
@@ -8440,8 +8477,12 @@ class _PlayerPageState extends State<PlayerPage>
      *（定时器还没触发）。
      */
     await _saveProgress(immediate: true);
-    // ★★★ CR #22 ③：落盘同样是 await ⇒ 返回后补一次 `mounted` 检查
-    if (!mounted) return;
+    /*
+     * ★★★ CR #22 ③：落盘同样是 await ⇒ 返回后补一次 `mounted` 检查
+     * ★★★ CR #22 ⑤（PRRT_kwDOVAfO4s6rtKj8）：同上再查一次令牌 ——
+     *      本 await 期间用户可能已经切到别的集（那条路会把令牌推大）。
+     */
+    if (!mounted || rewatchToken != _rewatchToken) return;
 
     _cancelNextCountdown();
     setState(() {
@@ -8991,6 +9032,20 @@ class _PlayerPageState extends State<PlayerPage>
       _error = null;
       _errorKind = null;
     });
+    /*
+     * ★★★ CR #22 ⑤（PRRT_kwDOVAfO4s6rtKj8）：记下发请求那一刻的切集令牌。
+     *
+     * 本方法唯一的生产调用者是 `_gotoEpisode`（见它末尾）。解析流要几百
+     * 毫秒到几秒，期间用户可能又切了一集（或整个会话被换掉）—— 那时
+     * `_rewatchToken` 已经更大。若这里不核对，本调用会把**旧目标集**的流
+     * 重新起播（`_startPlayback`），把用户刚选的那一集顶掉。
+     * ⚠️ 与 `_loadSkipMarker()` 里 `final gen = _playSessionGen;` 同一纪律：
+     *    必须在 `await` **之前**读。
+     * ⚠️ 放弃时**不动 `_loading`** —— 新的那次调用自己会收尾（它先设 true、
+     *    成功或失败时设 false）；这里若补一个 false，反而会把新会话的
+     *    转圈提前掐掉。
+     */
+    final token = _rewatchToken;
     try {
       final ep = _epIndex < _episodes.length ? _episodes[_epIndex] : null;
       final list = await SourinApi.resolveStream(
@@ -8999,6 +9054,11 @@ class _PlayerPageState extends State<PlayerPage>
         req: PlayRequest(sourceCode: _sourceCode, episodeId: ep?.id),
       );
       if (!mounted) return;
+      if (token != _rewatchToken) {
+        debugPrint(
+            '[PLAYER] 丢弃过期的换集解析结果（切集令牌 $token → $_rewatchToken）');
+        return;
+      }
       setState(() => _streams = list);
       final first = list.where((s) => s.isPlayable).firstOrNull;
       if (first == null) {
@@ -9233,6 +9293,8 @@ class _PlayerPageState extends State<PlayerPage>
       _liveAudioOnlyNotice = null;
       // ★ 同理：画面输出层的判决也是按旧台那一次起播算的
       _videoOutputDead = false;
+      // ★★★ CR #22 ⑥：换台 = 换会话 ⇒ 作废在途的切集续播浮层（理由见 applySession 处）
+      _rewatchToken++;
       _loading = true;
       _error = null;
       _errorKind = null;
@@ -9383,6 +9445,8 @@ class _PlayerPageState extends State<PlayerPage>
         _contentId = contentId;
         _sourceCode = sourceCode;
         _streams = list;
+        // ★★★ CR #22 ⑥：换会话 ⇒ 作废在途的切集续播浮层（理由见 applySession 处）
+        _rewatchToken++;
       });
 
       /*
@@ -15584,6 +15648,23 @@ Future<bool> debugPlayerGotoEpisodeForProbe(Episode ep) async {
   final s = _livePlayerState;
   if (s == null) return false;
   await s._gotoEpisode(ep);
+  return true;
+}
+
+/// ★★★ CR #22 ⑥ 探针：把**真正的** `applySession`（生产方法）暴露给用例。
+///
+/// # 为什么必须走真方法
+/// ```text
+/// ⑥ 的缺陷是"会话被**别的路径**换掉时，在途的切集链路仍会弹浮层"。
+/// 断言要成立，就必须让用例能触发那条路径 —— 自己拼一个
+/// `PlayRequestData` 然后调真 `applySession`，测的才是生产分流
+///（`isSameSessionAs` 早退 / `_rewatchToken++` / `_resolveAndPlay`）。
+/// ```
+/// 返回 false = 没挂页（调用方必须先断言挂上了）。
+Future<bool> debugPlayerApplySessionForProbe(PlayRequestData req) async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  await s.applySession(req);
   return true;
 }
 

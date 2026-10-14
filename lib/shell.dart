@@ -1000,6 +1000,60 @@ Future<String> _resolveDataDir() async {
 /// **每次进入都从 -0.02 补到 0**（即使目标值一直是 0）——
 /// `TweenAnimationBuilder` 用 `key` 也不行（同样会重建子树），
 /// 所以用**自己的 AnimationController**：进入时 `forward(from: 0)`。
+/// ★★★ 2026-10-14：把「离开的那一页」**光栅快照**成一张图（切 tab 时用）
+///
+/// # 为什么要它（实测）
+/// ```text
+/// `SOURIN_TABS=1` 逐页取证：切 tab 那几帧的 raster 冲到 20~45ms（超预算），
+/// 而 **build 只有 0.4~1.5ms** ⇒ 纯光栅成本。
+/// 根因与「从播放页返回卡顿」同一个：过渡期间两页各自**整页重绘**
+/// （离场页构图不变，只是整体淡出）。
+/// ```
+///
+/// # 与路由那处的异同
+/// ```text
+/// 同：都用 `SnapshotWidget`（Flutter 官方 `allowSnapshotting` 的做法）。
+/// 异：**本处不需要门控开关** —— 它只在 `widget.leaving && leavingFade != null`
+///     时被挂上，生命周期恰好等于"这一段退场动画"，动画一结束整个
+///     `_KeepAliveTransition` 就回到 `Offstage`（见父级 build）
+///     ⇒ 不会被永久快照、不会冻住页面。
+///     而路由那处的离场页是**常驻**的（路由还在栈里），所以必须显式门控。
+/// ```
+///
+/// ⚠️ 快照失败（如平台视图）时 `SnapshotMode.permissive` 会自动回落到
+///    正常绘制 ⇒ 最坏情况等于"没优化"，不会画错。
+class _SnapshotOnce extends StatefulWidget {
+  const _SnapshotOnce({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_SnapshotOnce> createState() => _SnapshotOnceState();
+}
+
+class _SnapshotOnceState extends State<_SnapshotOnce> {
+  /// `allowSnapshotting: true` ⇒ 用快照替换子树。
+  ///
+  /// ⚠️ 本组件**只在退场动画期间存在**（父级按 `leaving` 挂/卸）——
+  ///    所以"一直开着"在这里**不会**把页面冻住（生命周期就是短的那一段）。
+  ///    ★ 与路由那处不同：那里离场页常驻，必须由动画状态显式开关。
+  final SnapshotController _c = SnapshotController(allowSnapshotting: true);
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SnapshotWidget(
+    controller: _c,
+    mode: SnapshotMode.permissive,
+    autoresize: true,
+    child: widget.child,
+  );
+}
+
 class _KeepAliveTransition extends StatefulWidget {
   const _KeepAliveTransition({
     required this.active,
@@ -1240,6 +1294,35 @@ class _KeepAliveTransitionState extends State<_KeepAliveTransition>
         ? transitioned
         : FadeTransition(opacity: lf, child: transitioned);
 
+    /*
+     * ══════════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-14（Owner「死磕每个页面的性能」）：离场页**光栅快照**
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * # 实测（`SOURIN_TABS=1` 自动轮流切 tab，逐页 raster p50）
+     * ```text
+     * 切 tab 那几帧的 raster 会冲到 20~45ms（超预算），而 **build 只有
+     * 0.4~1.5ms** —— 全是**光栅**成本。
+     * ⇒ 与"从播放页返回卡顿"是**同一个根因**：过渡期间两页各自
+     *   **整页重绘**（页面构图不变，只是整体淡入/滑动）。
+     * ```
+     *
+     * # 修法：与 `page_transition_route.dart` 的离场页快照**同一招**
+     * ```text
+     * Flutter 官方 Zoom 过渡就是这么做的（`allowSnapshotting`）：
+     * 把**构图不变**的离场页光栅化成一张图 ⇒ 过渡期每帧只搬图。
+     * ⇒ 这里用同一套：只在"有离场页正在淡出"（`leavingFade != null`）时挂快照。
+     * ```
+     *
+     * ⚠️ 与路由那处的**关键差异**：本层是**纯内部组合**，没有测试读它的
+     *    widget 结构（路由那处有 `t50c` / `transition_clip_titlebar` 读树）。
+     *    所以这里**不需要** `debugDisableExitSnapshot` 那种旁路。
+     * ⚠️ 只在 `lf != null` 时加 —— 其余四种情况（当前页/隐藏页/未访问页）
+     *    的树与改动前**逐层一致**（与上面那条注释同一纪律）。
+     */
+    final Widget finalWrapped =
+        widget.leaving && lf != null ? _SnapshotOnce(child: wrapped) : wrapped;
+
     return IgnorePointer(
       /*
        * ★ 只有**当前可见**的那一页能收指针事件。
@@ -1252,7 +1335,7 @@ class _KeepAliveTransitionState extends State<_KeepAliveTransition>
        * ⚠️ 当前页 ignoring: false ⇒ 它的无障碍语义完全不变。
        */
       ignoring: !widget.active,
-      child: wrapped,
+      child: finalWrapped,
     );
   }
 }
@@ -7465,6 +7548,50 @@ void _installFrameLogger() {
       }
       if (phase >= 8) {
         buf.writeln('── AB 结束（机内 ${DateTime.now().toIso8601String()}）');
+        flush();
+        tm.cancel();
+      }
+    });
+  }
+
+  /*
+   * ══════════════════════════════════════════════════════════════════════
+   * ★★★ 逐页性能取证：`SOURIN_TABS=1` ⇒ 轮流切到每个 tab 并记帧
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * Owner 原话（逐字）：
+   * ```text
+   * > 然后上面的问题解决完,再死磕每个页面的性能,确保性能已经优化
+   * > 无可优化的地步了,才能停止!
+   * ```
+   *
+   * # 为什么要它（而不是手点）
+   * ```text
+   * 手点 ⇒ 切换时刻与帧号对不上 ⇒ 两页读数不可比（本仓已有教训）。
+   * 自动 ⇒ 把「切到 X 页」的帧号写进日志 ⇒ 每页的 raster 分布可**逐页**读。
+   * ```
+   *
+   * # 相位设计
+   * ```text
+   * 每个 tab 停 5 秒（够稳定下来 + 采到该页的稳态帧），再切下一个。
+   * 切**第一轮**时各页首次挂载（含首建成本），**第二轮**才是稳态 ⇒
+   * 日志里两轮的帧号都能看到，分析时以第二轮为准。
+   * ```
+   *
+   * ⚠️ 生产恒不开（无此环境变量 ⇒ 整段不执行）。
+   */
+  if (Platform.environment['SOURIN_TABS'] == '1') {
+    var i = 0;
+    const tabs = AppTab.values;
+    Timer.periodic(const Duration(seconds: 5), (tm) {
+      buf.writeln('── TABS 相位 ${i + 1}：切到 ${tabs[i % tabs.length].name}'
+          '（帧 ${all.length}）');
+      flush();
+      debugShellKey.currentState?.debugSwitchTo(tabs[i % tabs.length]);
+      i++;
+      // 两轮（每页访问两次：首建 + 稳态）后停
+      if (i >= tabs.length * 2) {
+        buf.writeln('── TABS 结束（机内 ${DateTime.now().toIso8601String()}）');
         flush();
         tm.cancel();
       }

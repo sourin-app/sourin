@@ -148,147 +148,140 @@ bool? _injectedLiveVisible() {
 
 void main() {
   // ═══════════════════════════════════════════════════════════════════════
-  // group-1：ShellOcclusionObserver 单测（不挂 widget）
+  // group-1：ShellOcclusionObserver 判据单测（不挂 widget）
   // ═══════════════════════════════════════════════════════════════════════
   //
-  // 守的判据：
+  // 守的判据（★ 2026-10-14 按 CR #27 的意见**重写**过 —— 见 group 内的长注释）：
   // ```text
-  // ① 空序列 ⇒ 0（不误报「被盖住」）
-  // ② push 一层（previousRoute == shell）⇒ 1
-  // ③ 再 push 一层（previousRoute 是**详情页**、不是 shell）
-  //      ⇒ ★ 计数**仍为 1**（不累加）
-  // ④ pop 回 shell ⇒ 递减到 0；pop 掉中间层 ⇒ 不变
-  // ⑤ 递减**夹到 0**（异常序列不把计数带成负数而永久失效）
+  // ① 空序列 ⇒ 0（不误报"被盖住"）
+  // ② shell 上 push 一条 **PageRoute** ⇒ 1
+  // ③ 弹窗（PopupRoute）**不算**遮挡 ⇒ 直播不被静音（CR 缺陷①）
+  // ④ 移除**中间**那条、上面还有 ⇒ 仍算被盖住（CR 缺陷②）
+  // ⑤ pop 回 shell ⇒ 0；多余 pop 夹到 0（不为负）
+  // ⑥ didReplace 也要重算（原实现漏了）
   // ```
-  //
-  // ═══════════════════════════════════════════════════════════════════════
-  // ★★★ 与任务书描述的**不符处**（以源码为准，实测坐实）
-  // ═══════════════════════════════════════════════════════════════════════
-  //
-  // 任务书判据 1 写：「连 push 两层（详情页→播放页，第二次 previousRoute
-  // 不是 shell）时计数仍为 **2**」。
-  //
-  // ★ 源码**不是**这样。`ShellOcclusionObserver.didPush`
-  //   （lib/shell.dart:2427）逐字是：
-  // ```dart
-  // void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
-  //   if (_isShellRoute(previousRoute)) _bump(1);   // ← 只在「下面就是 shell」时 +1
-  //   super.didPush(route, previousRoute);
-  // }
-  // ```
-  //   ⇒ 第二次 push 的 previousRoute 是**详情页**（非 first）⇒ **不 +1**
-  //   ⇒ 连 push 两层后计数是 **1**，不是 2。
-  //
-  // ★ 这个语义**仍然正确**（并且是对称的）：
-  // ```text
-  //   push detail (prev=shell)  ⇒ +1 ⇒ 1      ← shell 被盖住
-  //   push player (prev=detail) ⇒ +0 ⇒ 1      ← 仍被盖住（复合 >0 判据照样成立）
-  //   pop  player (prev=detail) ⇒ -0 ⇒ 1      ← detail 还在 ⇒ 仍盖住 ✓
-  //   pop  detail (prev=shell)  ⇒ -1 ⇒ 0      ← 回到 shell ⇒ 可见 ✓
-  // ```
-  //   计数实际表达的是「shell 有没有被盖住」（>0 即盖住），**不是**
-  //   「上面有几条路由」。任务书里 `_syncVisibility` 的 `_occluders.value > 0`
-  //   与此一致（没写 `== 1` 是稳妥的写法，但当前观察者也不会产出 >1）。
-  //   ★ 所以本文件的 group-1 **按源码的真实语义**断言（③ 断「仍为 1」），
-  //     不硬套任务书的「= 2」——否则测的就不是这份代码了（会给个假红/假绿）。
-  //   ★ 红度：把 `didPush` 里的 `if (_isShellRoute(previousRoute))` 整条删掉
-  //     （无条件 `_bump(1)`）⇒ ③ 会读到 2 ⇒ **红**（守得住）。
-  group('group-1 ★ ShellOcclusionObserver 计数逻辑（单元）', () {
-    test('① 初始为 0；② push 一层 ⇒ 1', () {
+  // ⚠️ 旧版这里断言的是"增量计数"语义（含一条"与任务书不符"的说明）——
+  //    那套语义**本身就是错的**（弹窗误判 + 中间移除误判），已被 CR 指出并修，
+  //    相应断言一并重写；不再是"以错误实现为准"。
+  group('group-1 ★ ShellOcclusionObserver 判据逻辑（单元）', () {
+    /*
+     * # 原实现（增量计数）错在哪
+     * ```text
+     * ① `didPush` 无条件（只看"下面是不是 shell"）+1
+     *    ⇒ **弹窗/底部面板**（`PopupRoute`，且 `showAppDialog` 走根 Navigator）
+     *      也会让计数 =1 ⇒ 直播被静音、停解码。
+     *      ★ 可弹窗**不是不透明遮挡** —— 用户仍看得见画面。
+     * ② 增量法在"移除**中间**那条"时算错：
+     *    `shell → detail → player`，移除 detail ⇒ 原实现按
+     *    "previousRoute 是不是 shell" 减 ⇒ 误判 shell 露出（而 player 还在上面）。
+     * ```
+     *
+     * # 新实现（本组守的）
+     * ```text
+     * 观察者**自己维护整条栈**，每次事件后**整体重算**：
+     *   计数 = shell（最底那条，`isFirst`）之上有**几条 `PageRoute`**
+     * · `PopupRoute`（弹窗/面板）**一律不算** ⇒ 修①
+     * · 整体重算 ⇒ 移除中间那条也算得对 ⇒ 修②
+     * ```
+     *
+     * ★ 因此本组**必须**用**真的 `PageRoute`**（`MaterialPageRoute`）与
+     *   真的 `PopupRoute`（`showDialog` 那条）当夹具 ——
+     *   用"万能 `_FakeRoute`"就**测不出**这两条判据（原版本就是这么漏的）。
+     */
+    test('① 初始为 0（不许一开始就把直播判成不可见）', () {
       final obs = ShellOcclusionObserver();
       addTearDown(obs.occluders.dispose);
-
-      // 初始
       expect(obs.occluders.value, 0,
           reason: '初始 shell 没被任何路由盖住 ⇒ 计数必须是 0。\n'
-              '★ 若这里非 0 ⇒ 直播页会**一开始就被判不可见**（真机症状：'
-              '切到直播页黑屏/沉默）。');
-
-      // shell 是 home 路由；在它上面 push 一个详情页
-      final shell = _FakeRoute('home', first: true);
-      final detail = _FakeRoute('detail');
-      obs.didPush(detail, shell);
-      expect(obs.occluders.value, 1,
-          reason: '在 shell 上 push 一条路由 ⇒ shell 被盖住 ⇒ 计数 = 1。\n'
-              '★ 反证：把 observer 的 didPush 变成 no-op ⇒ 这里读到 0 ⇒ 红。');
+              '★ 非 0 ⇒ 直播页一开始就被判不可见（真机症状：切过去黑屏/沉默）。');
     });
 
-    test('③ 连 push 两层（第二次 previousRoute 不是 shell）⇒ 计数仍为 1', () {
+    test('② shell 上 push 一条 **PageRoute** ⇒ 1', () {
       final obs = ShellOcclusionObserver();
       addTearDown(obs.occluders.dispose);
-
-      final shell = _FakeRoute('home', first: true);
-      final detail = _FakeRoute('detail');
-      final player = _FakeRoute('player');
-
-      // 第 1 层：shell → detail
-      obs.didPush(detail, shell);
-      expect(obs.occluders.value, 1,
-          reason: '第一次 push（previousRoute == shell）⇒ +1');
-
-      // 第 2 层：detail → player（previousRoute 是 detail，**不是** shell）
-      obs.didPush(player, detail);
-      expect(obs.occluders.value, 1,
-          reason: '★★ 与任务书描述不符处（以源码为准）：\n'
-              '  观察者只在「**下面就是 shell**」时 +1（lib/shell.dart:2427），\n'
-              '  第二层 push 的 previousRoute 是 detail ⇒ **不 +1** ⇒ 仍为 1。\n'
-              '  计数表达的是「shell 是否被盖住」（>0 即盖住），不是「上面几条」。\n'
-              '  ★ 为什么仍正确：`_syncVisibility` 判的是 `> 0`，1 与 2 等价；\n'
-              '    且「回到 shell」时也只减一次（对称）⇒ 不会永久失效。\n'
-              '  ★ 红度：删掉 didPush 里的 `if (_isShellRoute(previousRoute))`\n'
-              '    （无条件 +1）⇒ 这里读到 2 ⇒ 红。');
+      final shell = MaterialPageRoute<void>(
+          settings: const RouteSettings(name: 'home'), builder: (_) => const SizedBox());
+      final detail = MaterialPageRoute<void>(
+          settings: const RouteSettings(name: 'detail'), builder: (_) => const SizedBox());
+      obs.didPush(shell, null); // shell 自己先入栈（isFirst 由 MaterialPageRoute 默认 false？）
+      // ⚠️ `isFirst` 在单测里恒 false（真值是"是不是栈底"，依赖已装进 Navigator）——
+      //    所以这里**显式**给出栈底语义：用一条覆盖 isFirst 的假路由当 shell，
+      //    其余用真 PageRoute（判据只认 `is PageRoute`）。
+      final obs2 = ShellOcclusionObserver();
+      addTearDown(obs2.occluders.dispose);
+      obs2.didPush(_ShellMarkerRoute(), null);
+      obs2.didPush(detail, null);
+      expect(obs2.occluders.value, 1,
+          reason: 'shell 之上有一条 **PageRoute** ⇒ 计数 = 1。\n'
+              '★ 反证：把 `_recompute` 改成恒 0 ⇒ 红。');
     });
 
-    test('④ pop 回 shell ⇒ 递减；pop 中间层不变；⑤ 递减夹到 0 不为负', () {
+    test('★★ 弹窗（PopupRoute）**不算**遮挡（CR #27 缺陷①）', () {
       final obs = ShellOcclusionObserver();
       addTearDown(obs.occluders.dispose);
-
-      final shell = _FakeRoute('home', first: true);
-      final detail = _FakeRoute('detail');
-      final player = _FakeRoute('player');
-
-      obs.didPush(detail, shell); // previousRoute == shell  ⇒ +1
-      obs.didPush(player, detail); // previousRoute == detail ⇒ +0
-      expect(obs.occluders.value, 1,
-          reason: '前置（与 ③ 一致）：连 push 两层后计数 = 1（源码只在贴 shell 时 +1）。');
-
-      // pop player：被 pop 的这条的下面是 detail（不是 shell）⇒ 不减
-      obs.didPop(player, detail);
-      expect(obs.occluders.value, 1,
-          reason: '★ pop 掉**中间层**（player）时 previousRoute == detail（非 shell）\n'
-              '  ⇒ `_isShellRoute(previousRoute)` 不成立 ⇒ **不减**。\n'
-              '  ★ 这是对的：detail 仍盖着 shell ⇒ 直播页**必须继续不可见**。\n'
-              '  （若这里误减到 0 ⇒ shell 还盖着却被判可见 ⇒ 回到原 bug。）');
-
-      // 再 pop detail：previousRoute == shell ⇒ 减 ⇒ 0
-      obs.didPop(detail, shell);
+      obs.didPush(_ShellMarkerRoute(), null);
+      // 模拟 `showAppDialog` 走根 Navigator 推一条 PopupRoute
+      obs.didPush(_PopupMarkerRoute(), null);
       expect(obs.occluders.value, 0,
-          reason: 'pop 回 shell（previousRoute == shell）⇒ 减到 0 ⇒ shell 重新可见。');
-
-      // ⑤ 多余的一次 pop（异常序列）⇒ 必须**夹到 0**，不能变负
-      obs.didPop(shell, null);
-      expect(obs.occluders.value, 0,
-          reason: '★★ 异常序列下计数必须**夹到 0**、绝不为负。\n'
-              '  若变负 ⇒ 之后每次 push 都要先把负数补回来才 >0 ⇒\n'
-              '  「被盖住」判据**永久失效** ⇒ 直播页永远自认可见（回到原 bug）。\n'
-              '  ★ 反证：把 `_bump` 里的 `.clamp(0, ...)` 去掉 ⇒ 这里读到 -1 ⇒ 红。');
+          reason: '★★★ 弹窗**不是不透明遮挡** —— 用户仍看得见直播画面。\n'
+              '旧实现会把它算成 1 ⇒ 直播被静音/停解码（CR 抓到的真缺陷）。\n'
+              '★ 反证：把 `if (r is PageRoute)` 改成 `if (true)` ⇒ 这里读到 1 ⇒ 红。');
     });
 
-    test('didRemove(_, previousRoute == shell) 也递减（路由被移除而非 pop）', () {
+    test('★★ 移除**中间**那条：上面的还在 ⇒ 仍算被盖住（CR #27 缺陷②）', () {
       final obs = ShellOcclusionObserver();
       addTearDown(obs.occluders.dispose);
+      final shell = _ShellMarkerRoute();
+      final detail = MaterialPageRoute<void>(builder: (_) => const SizedBox());
+      final player = MaterialPageRoute<void>(builder: (_) => const SizedBox());
 
-      final shell = _FakeRoute('home', first: true);
-      final modal = _FakeRoute('modal');
+      obs.didPush(shell, null);
+      obs.didPush(detail, null);
+      obs.didPush(player, null);
+      expect(obs.occluders.value, 2, reason: '前置：两条 PageRoute 盖着');
 
-      obs.didPush(modal, shell);
+      // 移除**中间**的 detail —— player 还在上面
+      obs.didRemove(detail, shell);
+      expect(obs.occluders.value, 1,
+          reason: '★★★ 移除中间那条后，**player 仍在上面** ⇒ 计数必须仍是 1。\n'
+              '旧增量法会按 "previousRoute == shell ⇒ 减 1" 得到 0 ⇒ '
+              '误判 shell 露出 ⇒ 直播被错误唤醒（CR 抓到的真缺陷）。\n'
+              '★ 反证：把 `_recompute` 换回"增量 ±1" ⇒ 这里读到 0 ⇒ 红。');
+    });
+
+    test('③ pop 回 shell ⇒ 0；④ pop 多余 ⇒ 夹到 0 不为负', () {
+      final obs = ShellOcclusionObserver();
+      addTearDown(obs.occluders.dispose);
+      final shell = _ShellMarkerRoute();
+      final detail = MaterialPageRoute<void>(builder: (_) => const SizedBox());
+
+      obs.didPush(shell, null);
+      obs.didPush(detail, null);
       expect(obs.occluders.value, 1);
 
-      // didRemove 是路由被**移除**（不是经用户 pop）—— 例如替换/清栈
-      obs.didRemove(modal, shell);
+      obs.didPop(detail, shell);
+      expect(obs.occluders.value, 0, reason: 'pop 掉唯一的遮盖页 ⇒ 回 0');
+
+      // 异常序列：多余 pop ⇒ 不许变负（负值会让 `> 0` 判据永远失效）
+      obs.didPop(detail, shell);
       expect(obs.occluders.value, 0,
-          reason: 'didRemove 时若下面就是 shell，说明盖在 shell 上的那条没了\n'
-              '⇒ 必须减回来，否则计数**虚高** ⇒ 直播页**永久不可见**（黑屏）。');
+          reason: '★ 多余 pop 必须夹到 0 —— 负值会让"是否被盖住"永远判错。');
+    });
+
+    test('⑤ didReplace 也重算（原实现直接跳过）', () {
+      final obs = ShellOcclusionObserver();
+      addTearDown(obs.occluders.dispose);
+      final shell = _ShellMarkerRoute();
+      final a = MaterialPageRoute<void>(builder: (_) => const SizedBox());
+      final b = MaterialPageRoute<void>(builder: (_) => const SizedBox());
+      obs.didPush(shell, null);
+      obs.didPush(a, null);
+      expect(obs.occluders.value, 1);
+      obs.didReplace(newRoute: b, oldRoute: a);
+      expect(obs.occluders.value, 1,
+          reason: '替换一条 PageRoute ⇒ 仍是 1（原实现不重算 ⇒ 可能滞留旧值）');
+      obs.didReplace(newRoute: null, oldRoute: b);
+      expect(obs.occluders.value, 0, reason: '替换成"没有" ⇒ 回 0');
     });
   });
 
@@ -449,4 +442,73 @@ void main() {
       _claim(tester);
     });
   });
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// group-1 用的**结构性**夹具（CR #27 后新增）
+// ───────────────────────────────────────────────────────────────────────
+//
+// # 为什么不能再用"万能 `_FakeRoute`"
+// ```text
+// 新判据认的是**路由类型**（`is PageRoute` / `is PopupRoute`）与 **`isFirst`**。
+// 一个"什么都能冒充"的假路由**测不出**这两条 —— 原版本正是这么漏掉
+// "弹窗被当成遮挡"那个真缺陷的。
+// ⇒ 这里每种类型各用一个**最小但真实**的子类：
+//    · `_ShellMarkerRoute`  —— 冒充"栈底那条 shell"（只覆盖 `isFirst`）
+//    · `_PopupMarkerRoute`  —— 真的 `PopupRoute` 子类（模拟弹窗）
+//    其余用**真的** `MaterialPageRoute`（那才是生产里真正会盖住页面的东西）。
+// ```
+//
+// ⚠️ `isFirst` 的真值（`navigator.dart`）是"是不是 `currentRouteEntry` 的栈底"，
+//    依赖路由**已装进某个 Navigator**；单测里没有 Navigator ⇒ 恒 false。
+//    所以"栈底"这一点必须用子类显式覆盖（与既有 `_FakeRoute` 同一手法）。
+
+/// 冒充「shell 自己那条路由」：只覆盖 `isFirst`
+///
+/// ★ 必须是 `PageRoute` —— 新判据只数 `PageRoute`，shell ��不是一个
+///   `PageRoute`，它**自己**会被算成"遮挡"（虽然它前面没有别的路由，
+///   遍历从它开始算，见 `_recompute` 的 `seenShell`）。
+class _ShellMarkerRoute extends PageRoute<void> {
+  _ShellMarkerRoute();
+
+  @override
+  bool get isFirst => true;
+
+  @override
+  Duration get transitionDuration => Duration.zero;
+  @override
+  Color? get barrierColor => null;
+  @override
+  String? get barrierLabel => null;
+  @override
+  bool get maintainState => true;
+  @override
+  bool get opaque => true;
+
+  @override
+  Widget buildPage(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+  ) =>
+      const SizedBox.shrink();
+}
+
+/// 真的 `PopupRoute` 子类 —— 模拟 `showDialog` / `showAppDialog` 那条路
+class _PopupMarkerRoute extends PopupRoute<void> {
+  @override
+  Duration get transitionDuration => Duration.zero;
+  @override
+  Color? get barrierColor => null;
+  @override
+  String? get barrierLabel => null;
+  @override
+  bool get barrierDismissible => true;
+  @override
+  Widget buildPage(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+  ) =>
+      const SizedBox.shrink();
 }

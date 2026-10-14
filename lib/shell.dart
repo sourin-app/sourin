@@ -2490,45 +2490,119 @@ final debugShellKey = GlobalKey<_ShellPageState>();
  *    把计数带成负数而**永久失效**。
  */
 class ShellOcclusionObserver extends NavigatorObserver {
-  /// 盖在 shell 上面的路由条数（0 = shell 可见）
+  /// 盖在 shell 上面的、**不透明 PageRoute** 的条数（0 = shell 可见）
   final ValueNotifier<int> occluders = ValueNotifier<int>(0);
 
-  /// 本观察者要盯的那条路由是不是「shell 自己」
+  /*
+   * ══════════════════════════════════════════════════════════════════════
+   * ★★★ 2026-10-14（CR #27）：判据从"计数增减"改成"**按栈重算**"，
+   *      且只数**不透明 PageRoute**
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * # CR 抓到的两个真缺陷（都核实属实）
+   * ```text
+   * ① **弹窗不该算遮挡**：
+   *    `showAppDialog` 走**根 Navigator**（`useRootNavigator: true` 默认）
+   *    ⇒ 在直播 tab 上打开弹幕设置/任何弹窗，都会 didPush 一个 **PopupRoute**
+   *    ⇒ 原计数 +1 ⇒ `_liveVisible=false` ⇒ **直播被静音、停解码**。
+   *    ★ 可弹窗**不是不透明遮挡** —— 用户仍看得见直播画面。
+   *
+   * ② **中间路由被移除时计数错**：
+   *    `shell → detail → player`，移除中间的 detail ⇒
+   *    `didRemove(previousRoute == shell)` ⇒ 计数 -1 ⇒ 以为 shell 露出，
+   *    而 **player 还在上面** ⇒ 直播被错误唤醒（反向错）。
+   * ```
+   *
+   * # 修法：不维护计数，改成**每次事件后按实际路由栈重算**
+   * ```text
+   * `navigator.routes` 给出真实的栈（底 → 顶）。
+   * 判据 = 「在 shell 之上的那些路由里，有几个是**不透明 PageRoute**」。
+   * · 只数 `PageRoute`（`MaterialPageRoute` 等）—— 它们整屏不透明；
+   *   `PopupRoute`（Dialog/BottomSheet/下拉）**一律不算**（用户仍看得见底下）。
+   * · 用 `route.isFirst` 找 shell 自己（home 路由没有 name ⇒ 不能比名字）。
+   * ⇒ ① 弹窗不入计数；② 中间移除后重算必然正确（不依赖增量）。
+   * ```
+   *
+   * # ⚠️ 关于 `PopupRoute` 的取舍（故意宁可"不静音"）
+   * ```text
+   * 本判据只在 **PageRoute** 上遮挡 ⇒ 全屏 `showDialog` 那种**完全不透明**的
+   * 弹窗、若恰好盖满直播画面，我们**不**静音（多解一点码）。
+   * ★ 这是**有意**的方向：漏静音的代价是"多耗一点"，而误静音的代价是
+   *   "用户正看着的画面忽然停了"（更糟）。CR 也提示过
+   *   `showModalBottomSheet` 的 `useRootNavigator` 依调用点而异 ⇒
+   *   用"路由类型"这条**结构性**判据比"猜某个 API 用了哪个 Navigator"稳。
+   * ```
+   */
+  /// 本观察者**自己维护**的路由栈（底 → 顶）
   ///
-  /// ⚠️ shell 是 `MaterialApp(home:)` 那条路由 ⇒ `isFirst` 为 true。
-  ///    用 `isFirst` 而不是比路由名：home 路由**没有 name**
-  ///    （settings.name == null），比名字会恒不相等。
-  bool _isShellRoute(Route<dynamic>? r) => r?.isFirst ?? false;
+  /// ⚠️ 为什么自己维护而不用 `navigator.routes`：那个是**私有**的
+  ///    （`_history`，无公开访问器，见 `navigator.dart`）。
+  ///    观察者的四个回调足以**准确**维护一个列表：
+  ///    `didPush` 追加、`didPop`/`didRemove` 移除、`didReplace` 替换。
+  ///    ★ 与"增量计数"的区别：这里存的是**完整的栈**，
+  ///      所以"移除中间那条"能算对（计数法会算错 —— CR 指出的缺陷②）。
+  final List<Route<dynamic>> _stack = <Route<dynamic>>[];
 
-  void _bump(int d) {
-    final v = (occluders.value + d).clamp(0, 1 << 30);
-    if (v != occluders.value) occluders.value = v;
+  void _recompute() {
+    /*
+     * 判据 = 「shell（最底那条）之上，有几个**不透明 PageRoute**」。
+     * · 只数 `PageRoute`（整屏不透明）；`PopupRoute`（弹窗/底部面板）**不算**
+     *   —— 用户仍看得见底下的直播（CR 缺陷①）。
+     * · shell 用 `isFirst` 认（home 路由没有 name ⇒ 不能比名字）。
+     */
+    var n = 0;
+    var seenShell = false;
+    for (final r in _stack) {
+      if (!seenShell) {
+        if (r.isFirst) seenShell = true;
+        continue;
+      }
+      if (r is PageRoute) n++;
+    }
+    if (n != occluders.value) occluders.value = n;
   }
 
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    // 新路由压上来时，若它下面就是 shell ⇒ shell 被盖住
-    if (_isShellRoute(previousRoute)) _bump(1);
     super.didPush(route, previousRoute);
+    _stack.add(route);
+    _recompute();
   }
 
   @override
   void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    // 回到 shell（被 pop 掉的这条的下面就是 shell）⇒ shell 重新可见
-    if (_isShellRoute(previousRoute)) _bump(-1);
     super.didPop(route, previousRoute);
+    _stack.remove(route);
+    _recompute();
   }
 
   @override
   void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    if (_isShellRoute(previousRoute)) _bump(-1);
     super.didRemove(route, previousRoute);
+    // ★ 关键：移除的是**这一条**（可能是中间那条）—— 从栈里精确删它，
+    //   然后**整体重算**。原实现按"previousRoute 是不是 shell"增减，
+    //   在 `shell → detail → player` 移除 detail 时会误判（CR 缺陷②）。
+    _stack.remove(route);
+    _recompute();
   }
 
   @override
   void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
-    // 替换不改变「shell 上面有几条」，无需调整。
     super.didReplace(newRoute: newRoute, oldRoute: oldRoute);
+    if (oldRoute != null) {
+      final i = _stack.indexOf(oldRoute);
+      if (i >= 0 && newRoute != null) {
+        _stack[i] = newRoute;
+      } else if (i >= 0) {
+        _stack.removeAt(i);
+      } else if (newRoute != null) {
+        _stack.add(newRoute);
+      }
+    } else if (newRoute != null) {
+      _stack.add(newRoute);
+    }
+    // ★ 替换也要重算（原实现直接跳过 —— 那是漏的）
+    _recompute();
   }
 }
 

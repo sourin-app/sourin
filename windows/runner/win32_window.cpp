@@ -2096,13 +2096,16 @@ LRESULT CALLBACK SourinChildWndProc(HWND child,
       break;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
-      ImeTrace("child %s vk=0x%02llX repeat=%d", ImeMsgName(message),
-               static_cast<unsigned long long>(wparam),
-               static_cast<int>((lparam >> 30) & 1));
+      // WM_KEYDOWN/SYSKEYDOWN: log ONLY whether the key was handed to IME
+      //   (VK_PROCESSKEY=0xE5). Do NOT log the vk code itself --
+      //   it can reconstruct most ASCII input (CR #27, CWE-532).
+      ImeTrace("child %s (key event, isProcessKey=%d)", ImeMsgName(message),
+               static_cast<unsigned long long>(wparam) == 0xE5 ? 1 : 0);
       break;
     case WM_CHAR:
-      ImeTrace("child WM_CHAR code=0x%04llX",
-               static_cast<unsigned long long>(wparam));
+      // WM_CHAR: do NOT log the code point -- that IS the typed character
+      //   (incl. passwords). Only the event matters for this diagnosis.
+      ImeTrace("child WM_CHAR (char delivered, value not logged)");
       break;
     default:
       break;

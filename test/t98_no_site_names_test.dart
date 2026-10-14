@@ -320,16 +320,51 @@ void main() {
     final offenders = <String>[];
     for (final rel in files) {
       if (_isExempt(rel)) continue;
-      final lines = File(rel).readAsStringSync().split('\n');
+      final raw = File(rel).readAsStringSync();
+      final lines = raw.split('\n');
+
+      /*
+       * ★★★ 2026-10-14（CR #27）：**先扫整个文件**，再逐行定位。
+       *
+       * # CR 指出的覆盖漏洞（属实）
+       * ```text
+       * 原实现先 `split('\n')` 再逐行 `scanForBanned(line)`
+       * ⇒ 跨行的词被切成两截，**匹配不到**：
+       *    `B\n站` ⇒ 第一行只有 `B`、第二行只有 `站` ⇒ 都不含 `b站` ⇒ **静默放行**。
+       * 而本门禁声明要扫"所有可发布文本"、`_scanned` 也含 `.md`
+       * ⇒ 这不是"可接受的误报取舍"，是**真漏报**（强制门禁不能有空子）。
+       * ```
+       * # 修法：两道扫描，各取所长
+       * ```text
+       * ① 整文件扫（上下文连续）⇒ **能捕到跨行拼接**。
+       *    ⚠️ 必须先把"行级豁免行"上的内容剔掉（换成空串、保持行数），
+       *       否则豁免失效。
+       * ② 逐行扫（精确到行）⇒ 报警时能点名是哪一行。
+       * ⇒ 两道都报一遍（去重），既不漏也能定位。
+       * ```
+       */
+      final exemptLineFlags = <bool>[
+        for (final line in lines) _isExemptLine(rel, line),
+      ];
+      final wholeForScan = <String>[
+        for (var i = 0; i < lines.length; i++)
+          if (!exemptLineFlags[i]) lines[i],
+      ].join('\n');
+
+      final reported = <String>{};
+      // ① 整文件扫描（捕跨行）
+      for (final hit in scanForBanned(wholeForScan)) {
+        reported.add('$rel  →  「${hit.$1}」（${hit.$2}）'
+            '（整文件命中；若行内找不到，多半是**跨行拼接**）');
+      }
+      // ② 逐行扫描（精确定位）
       for (var i = 0; i < lines.length; i++) {
-        final line = lines[i];
-        // ★ 行级豁免：只有"逐字保留否则会坏"的行才被放过
-        if (_isExemptLine(rel, line)) continue;
-        for (final hit in scanForBanned(line)) {
-          // 每行每词只报一次（够定位即可，不刷屏）
-          offenders.add('$rel:${i + 1}  →  「${hit.$1}」（${hit.$2}）');
+        if (exemptLineFlags[i]) continue;
+        for (final hit in scanForBanned(lines[i])) {
+          reported.add('$rel:${i + 1}  →  「${hit.$1}」（${hit.$2}）');
         }
       }
+      offenders.addAll(reported);
     }
 
     expect(
@@ -385,5 +420,29 @@ void main() {
   test('★ 大小写不敏感', () {
     expect(scanForBanned('BiLiBiLi').isNotEmpty, isTrue);
     expect(scanForBanned('BILIBILI').isNotEmpty, isTrue);
+  });
+
+  test('★★★ 跨行拼接也要抓到（CR #27 的判据）', () {
+    /*
+     * CR 给的可验证判据：把 `B\n站` 放进一个非豁免文件 ⇒ 门禁**必须**报命中。
+     *
+     * # 为什么单测这一条（而不是真的去写一个临时文件）
+     * ```text
+     * 本文件测的是 `scanForBanned`（纯函数）—— 而"整文件扫"那道之所以能捕到
+     * 跨行，是因为**调用前先把整篇 join('\n') 再整体喂进去**（见上一条用例）。
+     * ⇒ 这里直接喂"含换行的整篇文本"，等价于那道整文件扫描。
+     * ```
+     * ★ 反面：把 `scanForBanned` 改回"只逐字连续匹配且不剥空白"
+     *   ⇒ 本断言红（`B\n站` 剥空白后是 `b站`，必须命中）。
+     */
+    expect(
+      scanForBanned('这是 B\n站 的内容').isNotEmpty,
+      isTrue,
+      reason: '★★★ 跨行 B\n站 必须被整文件扫描捕到 —— '
+          '原实现「先按行切、再逐行匹配」，'
+          '会把 B 与 站 分到两行 ⇒ **静默放行**',
+    );
+    // 阳性对照：确认"换行本身"不是唯一原因 —— 同一段不换行也要命中
+    expect(scanForBanned('这是 B站 的内容').isNotEmpty, isTrue);
   });
 }

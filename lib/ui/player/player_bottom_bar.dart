@@ -106,6 +106,57 @@ class PlayerMoreMenuData {
   final List<MoreMenuGroup> groups;
 }
 
+/// ★★★ 2026-10-14：弹幕轻量悬浮窗「四根滑杆」的**实时值载体**
+///
+/// # 为什么要有这个类（Owner：「弹窗…而且还非常的卡顿（这里必须解决）」）
+/// ```text
+/// 改前：四个 `onSetFontScale/...` 回调每个都 `setState` ⇒ **拖动中每一帧**
+///       整页 `PlayerPage.build()` 重建 884 行（含 `Video` / `DanmakuOverlay`
+///       / 全部浮层）。本仓自己的实测（player_page.dart 旧探针）：
+///       60 次鼠标移动 ⇒ PlayerPage 重建 60 次、元素重建 9960 次
+///       （平均每次移动 166 个元素）。
+/// 改后：滑杆的值 + 读数走一个 `ValueListenable`，**只有那四根滑杆**重建；
+///       画面侧的实时更新由 `DanmakuOverlay` **自己的重绘**承担（见下）。
+/// ```
+///
+/// # 「画面实时跟手」靠什么（别把它弄丢）
+/// ```text
+/// `_DanmakuPainter` **每帧现读** `widget.fontScale`（字号，排版时用）
+/// 与 `widget.opacity`（不透明度，绘制时用），且宿主每秒 tick 都在
+/// `_repaint.value++` 触发重绘。⇒ 只要 `widget.*` 换成新值：
+///   · opacity 下一帧就跟着变（painter 现读）；
+///   · fontScale/speed/area 走 `_ensureLayout` 的 key ⇒ 重排 ⇒ 字号/速度/
+///     显示区域跟着变。
+/// 关键是"**让 widget.* 拿到新值**"——不需要整页 setState。见
+/// player_page.dart 的 `_pushDanmakuQuickLive()` 上方那段推导，
+/// 以及 build 里包 `DanmakuOverlay` 的那层 `ValueListenableBuilder`。
+/// ```
+class DanmakuQuickValues {
+  const DanmakuQuickValues({
+    required this.fontScale,
+    required this.opacity,
+    required this.speed,
+    required this.area,
+  });
+
+  final double fontScale;
+  final double opacity;
+  final double speed;
+  final double area;
+
+  DanmakuQuickValues copyWith({
+    double? fontScale,
+    double? opacity,
+    double? speed,
+    double? area,
+  }) => DanmakuQuickValues(
+    fontScale: fontScale ?? this.fontScale,
+    opacity: opacity ?? this.opacity,
+    speed: speed ?? this.speed,
+    area: area ?? this.area,
+  );
+}
+
 /// ★★★ Owner 1011 反馈第 1 条：弹幕**轻量悬浮窗**要展示的全部状态与回调
 ///
 /// # 形态（对齐 B 站图 1）
@@ -128,9 +179,15 @@ class PlayerMoreMenuData {
 /// 四个滑杆的值 = player_page 的 `_danmakuSettings.fontScale/opacity/speed/area`
 /// （它本身就是 `DanmakuConfig` 的快照）；
 /// 三个类型开关 = `DanmakuConfig.showScroll/showTop/showBottom`。
-/// 拖动/点开关 ⇒ 走 `DanmakuConfig.setXxx` + 宿主 setState ⇒ 实时生效
-/// （DanmakuOverlay 的 `_ensureLayout` 会因 key 变化重排，与面板同一条路）。
+/// 拖动/点开关 ⇒ 走 `DanmakuConfig.setXxx`（落盘 + 通知弹幕层）；**拖动**额外
+/// 只推 `live`（见 `DanmakuQuickValues`），不再整页 setState。
 /// ```
+///
+/// ★ 2026-10-14（卡顿修复）：四个**可拖动**的值多了一条「实时通道」：
+///   `live`。为 null（老调用点 / 测试夹具）⇒ 四根滑杆回落到上面的
+///   `fontScale/opacity/speed/area` 静态字段 —— 逐字兼容，测试夹具不传也能跑。
+///   非 null ⇒ 四根滑杆只订阅它、只重建滑杆那一小块（见 `_danmakuQuickPanel`）。
+///   三个**类型开关**不在 `live` 里（点击，频率低，仍走宿主 setState）。
 ///
 /// ⚠️ 本项目**没有**的能力（B 站图 1 里有、这里如实不画假开关）：
 ///   「彩色 / 高级」类型过滤、「弹幕随屏幕缩放」「防挡字幕」「智能防挡弹幕」
@@ -155,6 +212,7 @@ class DanmakuQuickPanelData {
     required this.onSetColorOnly,
     required this.onOpenAdvanced,
     this.onAreaGuide,
+    this.live,
   });
 
   /// 字号缩放（对应 `DanmakuConfig.fontScale`）
@@ -199,6 +257,12 @@ class DanmakuQuickPanelData {
 
   /// 「高级设置」⇒ 宿主打开全屏大卡片（`_openDanmakuSettings`）
   final VoidCallback onOpenAdvanced;
+
+  /// ★ 2026-10-14（卡顿修复）：四根**可拖动**滑杆的实时值载体。
+  ///
+  /// 见类头「值从哪来」第二节。为 null ⇒ 回落到上面的静态字段
+  /// `fontScale/opacity/speed/area`（老调用点 / 测试夹具，逐字兼容）。
+  final ValueListenable<DanmakuQuickValues>? live;
 }
 
 /// 底栏（桌面 / 手机 / TV 共用）
@@ -657,50 +721,22 @@ class PlayerBottomBar extends StatelessWidget {
         const PopoverDivider(),
         const PopoverGroupLabel('显示'),
         // ② 四根滑杆 —— **直接拖**（拖动中每一帧都回调，实时生效）
-        _quickSlider(
-          key: danmakuQuickFontScaleKey,
-          label: '字号',
-          value: d.fontScale,
-          min: DanmakuConfig.fontScaleMin,
-          max: DanmakuConfig.fontScaleMax,
-          readout: '${(d.fontScale * 100).round()}%',
-          onChanged: d.onSetFontScale,
-        ),
-        _quickSlider(
-          key: danmakuQuickOpacityKey,
-          label: '不透明度',
-          value: d.opacity,
-          min: DanmakuConfig.opacityMin,
-          max: DanmakuConfig.opacityMax,
-          readout: '${(d.opacity * 100).round()}%',
-          onChanged: d.onSetOpacity,
-        ),
-        _quickSlider(
-          key: danmakuQuickSpeedKey,
-          label: '速度',
-          value: d.speed,
-          min: DanmakuConfig.speedMin,
-          max: DanmakuConfig.speedMax,
-          readout: _speedLabel(d.speed),
-          onChanged: d.onSetSpeed,
-        ),
-        _quickSlider(
-          key: danmakuQuickAreaKey,
-          label: '显示区域',
-          value: d.area,
-          min: DanmakuConfig.areaMin,
-          max: DanmakuConfig.areaMax,
-          readout: '${(d.area * 100).round()}%',
-          onChanged: d.onSetArea,
-          // ★ 2026-10-11（Owner 第 ④ 条）：拖动期间点亮画面上的引导遮罩
-          //   （起手 = 开始拖 ⇒ 显示；松手 = 结束拖 ⇒ 淡出）。
-          //   `onAreaGuide` 为 null（老调用点 / 测试夹具）⇒ 传 null，不画遮罩。
-          onGuideStart: d.onAreaGuide == null
-              ? null
-              : () => d.onAreaGuide!(true),
-          onGuideEnd:
-              d.onAreaGuide == null ? null : () => d.onAreaGuide!(false),
-        ),
+        //
+        // ★★★ 2026-10-14（卡顿修复）：四根滑杆**只包这一小块**。
+        //
+        // # 为什么只包「滑杆」、不包整个面板
+        // ```text
+        // 拖动中每一帧都回调 ⇒ 若把它包在面板外层，四枚类型开关 / 分隔线 /
+        // 「高级设置」行都会跟着逐帧重建（那又是「整块重建」的老毛病，只是
+        // 从整页缩小到整面板）。这里给出的 builder 只渲染这四根滑杆一行都不多
+        // ⇒ 逐帧重建的**只有四根滑杆**。
+        // ```
+        //
+        // # 为 null 分支（老调用点 / 测试夹具）
+        //   直接读 `d` 的静态字段，与改前**逐字一致**：
+        //   拖动中宿主若走老路 setState 更新 `d` ⇒ 读数照样实时刷新。
+        //   生产宿主改用 `live`（见 player_page），不会再整页 setState。
+        _quickSliders(d),
         const PopoverDivider(),
         // ③ 高级设置 ⇒ 进全屏大卡片（AppId / 屏蔽词 / 重新获取…都在那）
         PopoverRow(
@@ -712,6 +748,95 @@ class PlayerBottomBar extends StatelessWidget {
       ],
     ),
   );
+
+  /// ★★★ 2026-10-14（卡顿修复）：四根可拖滑杆的**独立重建单元**。
+  ///
+  /// # 它解决什么
+  /// ```text
+  /// 四个滑杆的值改前直接读 `DanmakuQuickPanelData` 的静态字段、由宿主
+  /// 整页 setState 刷新 ⇒ 拖动中每帧重建整页（884 行 build）。
+  /// 本方法只让这四根滑杆订阅 `d.live`，把「逐帧重建」关进**只有这四根滑杆**。
+  /// ```
+  ///
+  /// # 为什么用 `ValueListenableBuilder` 而不是自己 addListener + setState
+  /// ```text
+  /// 两者都只重建这一小块。选前者是因为：`live` 若在宿主侧被换成一个新
+  /// 实例（本仓不会，但老调用点可能），`ValueListenableBuilder` 会**自动**
+  /// 重新订阅（它在 didUpdateWidget 里比 listenable 引用）；手写 addListener
+  /// 则要在 didUpdateWidget 里自己换订阅，多一处容易漏的成对逻辑，
+  /// 而且要在 `_PlayerBottomBar` 里塞一个 State（本类是 StatelessWidget）。
+  /// ```
+  ///
+  /// # 为 null（老调用点 / 测试夹具）
+  ///   直接读静态字段渲染，**不套** ValueListenableBuilder —— 与改前逐字一致。
+  Widget _quickSliders(DanmakuQuickPanelData d) {
+    final live = d.live;
+    Widget build(DanmakuQuickValues v) => Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _quickSlider(
+          key: danmakuQuickFontScaleKey,
+          label: '字号',
+          value: v.fontScale,
+          min: DanmakuConfig.fontScaleMin,
+          max: DanmakuConfig.fontScaleMax,
+          readout: '${(v.fontScale * 100).round()}%',
+          onChanged: d.onSetFontScale,
+        ),
+        _quickSlider(
+          key: danmakuQuickOpacityKey,
+          label: '不透明度',
+          value: v.opacity,
+          min: DanmakuConfig.opacityMin,
+          max: DanmakuConfig.opacityMax,
+          readout: '${(v.opacity * 100).round()}%',
+          onChanged: d.onSetOpacity,
+        ),
+        _quickSlider(
+          key: danmakuQuickSpeedKey,
+          label: '速度',
+          value: v.speed,
+          min: DanmakuConfig.speedMin,
+          max: DanmakuConfig.speedMax,
+          readout: _speedLabel(v.speed),
+          onChanged: d.onSetSpeed,
+        ),
+        _quickSlider(
+          key: danmakuQuickAreaKey,
+          label: '显示区域',
+          value: v.area,
+          min: DanmakuConfig.areaMin,
+          max: DanmakuConfig.areaMax,
+          readout: '${(v.area * 100).round()}%',
+          onChanged: d.onSetArea,
+          // ★ 2026-10-11（Owner 第 ④ 条）：拖动期间点亮画面上的引导遮罩
+          //   （起手 = 开始拖 ⇒ 显示；松手 = 结束拖 ⇒ 淡出）。
+          //   `onAreaGuide` 为 null（老调用点 / 测试夹具）⇒ 传 null，不画遮罩。
+          onGuideStart: d.onAreaGuide == null
+              ? null
+              : () => d.onAreaGuide!(true),
+          onGuideEnd:
+              d.onAreaGuide == null ? null : () => d.onAreaGuide!(false),
+        ),
+      ],
+    );
+
+    if (live == null) {
+      return build(
+        DanmakuQuickValues(
+          fontScale: d.fontScale,
+          opacity: d.opacity,
+          speed: d.speed,
+          area: d.area,
+        ),
+      );
+    }
+    return ValueListenableBuilder<DanmakuQuickValues>(
+      valueListenable: live,
+      builder: (context, v, _) => build(v),
+    );
+  }
 
   /// 类型一键开关（B 站那种小图标按钮；开 = 青色高亮）
   Widget _quickTypeChip({

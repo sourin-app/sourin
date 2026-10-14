@@ -1637,6 +1637,26 @@ class _PlayerPageState extends State<PlayerPage>
   /// 面板的状态快照（面板是纯 UI，所有读写都经过宿主）
   DanmakuSettingsState _danmakuSettings = DanmakuSettingsState.fromPrefs();
 
+  /// ★★★ 2026-10-14（卡顿修复）：弹幕轻量悬浮窗**四根滑杆**的实时真源。
+  ///
+  /// 拖动滑杆 ⇒ 只推它（不整页 setState）⇒ 只有四根滑杆那一小块重建。
+  /// 同一个 notifier 还被 `build` 里那层包 `DanmakuOverlay` 的
+  /// `ValueListenableBuilder` 订阅 ⇒ 画面**逐帧跟手**且整页不重建。
+  /// 完整推导见 `_pushDanmakuQuickLive()` 上方那段长注释。
+  ///
+  /// ★ 初值直接读 `DanmakuConfig`（与 `_danmakuSettings` 的初值同源）
+  ///   ⇒ 第一帧就对得上，无需额外补种。拖动后两者由 `_pushDanmakuQuickLive()`
+  ///   一起更新 ⇒ 永远同源。
+  final ValueNotifier<DanmakuQuickValues> _danmakuQuickLive =
+      ValueNotifier<DanmakuQuickValues>(
+        DanmakuQuickValues(
+          fontScale: DanmakuConfig.fontScale,
+          opacity: DanmakuConfig.opacity,
+          speed: DanmakuConfig.speed,
+          area: DanmakuConfig.area,
+        ),
+      );
+
   /*
    * ══════════════════════════════════════════════════════════════════
    *  ★★★ task-31 ④：哔哩哔哩弹幕（导入 + 绑定 + 自动更新）
@@ -5798,24 +5818,81 @@ class _PlayerPageState extends State<PlayerPage>
     }
   }
 
+  /// ★★★ Owner 1013：「播放页那些弹窗…而且还非常的卡顿（这里必须解决）」
+  ///
+  /// # 根因（有实测，别重查）
+  /// ```text
+  /// 这四个回调改前每个都 `setState`，而本页 `build()` 是**一个 884 行
+  /// 的整页 build**（含 `Video` / `DanmakuOverlay` / 全部浮层）。
+  /// 轻量悬浮窗的四根滑杆「拖动中每一帧都回调」（见
+  /// player_bottom_bar.dart 的 `_quickSlider`）⇒ **每一帧整页重建**。
+  /// 本仓旧探针实测：60 次鼠标移动 ⇒ PlayerPage 重建 60 次、
+  /// 元素重建 9960 次（平均每次移动 166 个元素）。
+  /// ```
+  ///
+  /// # 改法：拖动只推 `_danmakuQuickLive`，**不 setState**
+  /// ```text
+  /// · 滑杆读数：`DanmakuQuickPanelData.live` → 只有四根滑杆重建
+  ///   （player_bottom_bar.dart 的 `_quickSliders`）。
+  /// · **画面实时跟手**：绝不能丢 —— 这是 Owner 明确要的
+  ///   （见 build 里 `danmakuQuick:` 那段旧注释）。
+  /// ```
+  ///
+  /// # 画面为什么**不用**整页 setState 也能实时跟手（以源码为准推导）
+  /// ```text
+  /// ① 值先落进 `_danmakuSettings`（本页状态），再推 `_danmakuQuickLive`。
+  /// ② build 里 `DanmakuOverlay` 被包在一层
+  ///    `ValueListenableBuilder<DanmakuQuickValues>`（搜 player_page 的
+  ///    「overlay 自己订阅」）⇒ **只有 overlay 那一小块**重建，
+  ///    `PlayerPage.build()`（884 行）**一次都不跑**。
+  /// ③ 重建只是换了 `DanmakuOverlay` 的入参；`_DanmakuOverlayState` 是
+  ///    keep-alive State，复用不重建。真正应用新值在下一帧 build 的
+  ///    `_ensureLayout(...)`：
+  ///      · fontScale/speed/area 进了 `_layoutKey` ⇒ 命中新 key ⇒ 重排；
+  ///      · opacity 由 `_DanmakuPainter` 每帧现读 `widget.opacity`
+  ///        （shouldRepaint 也比它）⇒ 下一帧就变。
+  ///    而宿主每秒 tick 都在 `_repaint.value++` ⇒ 拖动中本就逐帧在重绘
+  ///    ⇒ 画面**下一帧**就是新值。
+  /// ```
+  /// ⚠️ 于是这里**不需要**（也不该）为「传新值给 overlay」保留整页 setState。
+  ///    这条通路（`ValueListenableBuilder` 包 overlay）就是"画面实时跟手"
+  ///    的落点；把它删成 `_danmakuSettings.*` 静态传值，画面就不跟手了。
+  ///
+  /// ⚠️ `_danmakuSettings` 的这四个字段在**拖动期间也会被写**
+  ///    （为了与本页别处读它的地方保持一致，例如全屏大卡片的只读回显）——
+  ///    但拖动**不** setState，所以它不会触发任何重建；overlay 读的是
+  ///    `live.value`，不是这份快照。⇒ 两者不会打架。
+  void _pushDanmakuQuickLive() {
+    _danmakuQuickLive.value = DanmakuQuickValues(
+      fontScale: _danmakuSettings.fontScale,
+      opacity: _danmakuSettings.opacity,
+      speed: _danmakuSettings.speed,
+      area: _danmakuSettings.area,
+    );
+  }
+
   void _setDanmakuFontScale(double v) {
     DanmakuConfig.setFontScale(v);
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(fontScale: v));
+    _danmakuSettings = _danmakuSettings.copyWith(fontScale: v);
+    _pushDanmakuQuickLive();
   }
 
   void _setDanmakuOpacity(double v) {
     DanmakuConfig.setOpacity(v);
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(opacity: v));
+    _danmakuSettings = _danmakuSettings.copyWith(opacity: v);
+    _pushDanmakuQuickLive();
   }
 
   void _setDanmakuSpeed(double v) {
     DanmakuConfig.setSpeed(v);
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(speed: v));
+    _danmakuSettings = _danmakuSettings.copyWith(speed: v);
+    _pushDanmakuQuickLive();
   }
 
   void _setDanmakuArea(double v) {
     DanmakuConfig.setArea(v);
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(area: v));
+    _danmakuSettings = _danmakuSettings.copyWith(area: v);
+    _pushDanmakuQuickLive();
   }
 
   /// ★★★ Owner 2026-10-11 反馈（显示区域按 B 站重做）：拖动「显示区域」滑杆时，
@@ -12175,6 +12252,10 @@ class _PlayerPageState extends State<PlayerPage>
     _popover.removeListener(_onPopoverChanged);
     _popover.dispose();
     _positionNotifier.dispose();
+    // ★ 2026-10-14：弹幕轻量悬浮窗的实时值载体（ChangeNotifier ⇒ 必须释放）
+    //   ⚠️ 无监听者需要摘（订阅它的 `ValueListenableBuilder` 在 dispose 前
+    //     已随树拆掉，它自己会 removeListener）—— 直接 dispose 即可。
+    _danmakuQuickLive.dispose();
     /*
      * ★ 注销 early handler + 释放显式 FocusNode（task-42）
      *
@@ -12629,20 +12710,46 @@ class _PlayerPageState extends State<PlayerPage>
                  */
                     Positioned.fill(
                       child: IgnorePointer(
-                        child: DanmakuOverlay(
-                          aspect: _displayAspect,
-                          comments: _danmakuComments,
-                          position: _position,
-                          playing: _playing,
-                          rate: _rate,
-                          enabled: _danmakuEnabled,
-                          fontScale: _danmakuSettings.fontScale,
-                          opacity: _danmakuSettings.opacity,
-                          speed: _danmakuSettings.speed,
-                          area: _danmakuSettings.area,
-                          // ★ Owner 2026-10-11：拖动「显示区域」滑杆期间点亮引导遮罩
-                          areaGuide: _showDanmakuAreaGuide,
-                          badge: _danmakuBadge,
+                        /*
+                     * ★★★ 2026-10-14（卡顿修复）：overlay **自己**订阅
+                     *   `_danmakuQuickLive` —— 拖动滑杆 ⇒ **只有这一小块**
+                     *   重建（整页 `PlayerPage.build()` 一次都不跑）。
+                     *
+                     * # 为什么包在这里，而不是让 `_danmakuQuickLive` 的监听者
+                     *   在 State 里 setState
+                     * ```text
+                     * State 里 setState ⇒ 整页 884 行 build 重跑（就是我们要
+                     * 消灭的那个形态）。包在这一层 ⇒ 重建被限制在
+                     * `_DanmakuOverlay` 这棵子树里，而它是 keep-alive 的 StatefulWidget
+                     * （`_DanmakuOverlayState` 复用，不重建 State）⇒
+                     *   · 只有 `build()` 拿到**新** `fontScale/opacity/speed/area`；
+                     *   · `_ensureLayout` 在下一帧按新值重排（key 含 fontScale/
+                     *     speed/area）；painter 每帧现读 opacity ⇒ **画面逐帧跟手**。
+                     * ```
+                     *
+                     * # 其余入参为什么不放进来
+                     * `comments/position/playing/rate/...` 仍由宿主整页 build 传入 ——
+                     * 拖动滑杆**不会**改它们，所以这份 builder 只需覆盖四个实值。
+                     * （context 里 `_danmakuSettings` 的这四个字段在拖动期间**不更新**
+                     *  —— 见 `_pushDanmakuQuickLive`；真值只在 `live.value` 里。）
+                     */
+                        child: ValueListenableBuilder<DanmakuQuickValues>(
+                          valueListenable: _danmakuQuickLive,
+                          builder: (context, qv, _) => DanmakuOverlay(
+                            aspect: _displayAspect,
+                            comments: _danmakuComments,
+                            position: _position,
+                            playing: _playing,
+                            rate: _rate,
+                            enabled: _danmakuEnabled,
+                            fontScale: qv.fontScale,
+                            opacity: qv.opacity,
+                            speed: qv.speed,
+                            area: qv.area,
+                            // ★ Owner 2026-10-11：拖动「显示区域」滑杆期间点亮引导遮罩
+                            areaGuide: _showDanmakuAreaGuide,
+                            badge: _danmakuBadge,
+                          ),
                         ),
                       ),
                     ),
@@ -13430,15 +13537,24 @@ class _PlayerPageState extends State<PlayerPage>
                      * 值全部取自 `_danmakuSettings`（= DanmakuConfig 的快照，
                      * 与全屏大卡片**同一份真源**）；三个类型开关读 DanmakuConfig
                      * 静态偏好（与 DanmakuSettingsDialog 同款）。
-                     * 拖动滑杆 / 点开关 ⇒ 宿主 setState ⇒ 底栏与 popover 层
+                     * 拖动滑杆 ⇒ 宿主 setState ⇒ 底栏与 popover 层
                      * 一起重建 ⇒ 读数与画面**实时**跟着走。
                      * 「高级设置」⇒ 回到 `_openDanmakuSettings`（全屏大卡片）。
+                     *
+                     * ★★★ 2026-10-14（卡顿修复）——上面的「拖动滑杆 ⇒ 宿主
+                     * setState」已被**替换**：拖动改走 `live:`（只重建四根
+                     * 滑杆），画面侧由 build 里包 `DanmakuOverlay` 的那层
+                     * `ValueListenableBuilder` 重建（整页 884 行 build 一次不跑；
+                     * 完整推导见 `_pushDanmakuQuickLive()` 上方）。
+                     * 下面四个 `fontScale/...` 静态字段**保留**：`live` 为 null
+                     * 的老调用点/夹具回落到它们（生产宿主始终传 live）。
                      */
                         danmakuQuick: DanmakuQuickPanelData(
                           fontScale: _danmakuSettings.fontScale,
                           opacity: _danmakuSettings.opacity,
                           speed: _danmakuSettings.speed,
                           area: _danmakuSettings.area,
+                          live: _danmakuQuickLive,
                           showScroll: DanmakuConfig.showScroll,
                           showTop: DanmakuConfig.showTop,
                           showBottom: DanmakuConfig.showBottom,

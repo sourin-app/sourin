@@ -18,7 +18,7 @@ Windows · macOS · Android · Android TV
 ## 这是什么
 
 「源影」是一个**跨端视频聚合客户端**：把多个内容源（CMS 站点、内置站点、外部视频站、
-Emby、IPTV 直播）聚合成一个界面，统一搜索、收藏、追更、播放与下载。
+Emby、公共直播源）聚合成一个界面，统一搜索、收藏、追更、播放与下载。
 
 这个仓库是它的 **Flutter 重写版**，取代了最初的 Tauri + Vue 实现。重写的动机是
 **播放内核**：原版跑在 WebView2 上，走 Media Foundation 解码，而 Windows 默认

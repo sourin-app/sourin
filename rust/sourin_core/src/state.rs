@@ -411,6 +411,46 @@ impl AppState {
                     };
                     match r {
                         Ok(p) => {
+                            /*
+                             * ★★★ 2026-10-14（CR #27）：**不许 HTTP 源顶掉本地插件**
+                             *
+                             * # 缺陷（CR 指出，属实）
+                             * ```text
+                             * `Registry::register` 对**同 id** 是"先删旧的再插新的"
+                             * （registry.rs:29-30，那是有意的热重载机制）。
+                             * 而 HTTP 源的 id 来自**远端 manifest** ⇒
+                             * 一个声明了已存在本地插件 id 的远端源，会**静默替换**它。
+                             * ⇒ 用户的本地插件被远端悄悄换掉（数据/行为都可能变），
+                             *   且**没有任何提示**。
+                             * ```
+                             * # 修法：同 id 已被**非 HTTP 源**（插件/声明式）占用 ⇒ 拒绝
+                             * ```text
+                             * 判据用"注册表里同 id 那个是不是也是 http kind"：
+                             *   · 是 http（重连同 id 的 HTTP 源）⇒ 照常覆盖（热重载语义）
+                             *   · 不是 http（插件/声明式）⇒ **拒绝 + 明确 warn**，
+                             *     不顶掉别人的源。
+                             * ⚠️ 不用 `.expect()` panic —— 隔离失败（只这一个源不可用）。
+                             * ```
+                             */
+                            // ⚠️ 用循环里的 `id`（= 该 HTTP 源的 manifest id，
+                            //   走到这里必然与它一致）—— `HttpProvider` 的
+                            //   `manifest` 是**私有字段**，没有公开 getter。
+                            let pid = id.clone();
+                            let clash = registry_for_http
+                                .get(&pid)
+                                .map(|e| e.manifest().kind.clone());
+                            if let Some(kind) = clash {
+                                if kind != "http" {
+                                    log::warn!(
+                                        "★ 拒绝 HTTP 源 {pid}：本地已有一个同 id 的 {kind} 源 \
+                                         —— 远端 manifest 不得顶掉本地源"
+                                    );
+                                    eprintln!(
+                                        "[HTTP] ★ 拒绝 HTTP 源 {pid}（与本地 {kind} 源撞 id）"
+                                    );
+                                    continue;
+                                }
+                            }
                             registry_for_http
                                 .register(Arc::new(p.with_proxy(proxy_for_http.clone())));
                             done += 1;

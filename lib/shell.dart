@@ -1000,60 +1000,6 @@ Future<String> _resolveDataDir() async {
 /// **每次进入都从 -0.02 补到 0**（即使目标值一直是 0）——
 /// `TweenAnimationBuilder` 用 `key` 也不行（同样会重建子树），
 /// 所以用**自己的 AnimationController**：进入时 `forward(from: 0)`。
-/// ★★★ 2026-10-14：把「离开的那一页」**光栅快照**成一张图（切 tab 时用）
-///
-/// # 为什么要它（实测）
-/// ```text
-/// `SOURIN_TABS=1` 逐页取证：切 tab 那几帧的 raster 冲到 20~45ms（超预算），
-/// 而 **build 只有 0.4~1.5ms** ⇒ 纯光栅成本。
-/// 根因与「从播放页返回卡顿」同一个：过渡期间两页各自**整页重绘**
-/// （离场页构图不变，只是整体淡出）。
-/// ```
-///
-/// # 与路由那处的异同
-/// ```text
-/// 同：都用 `SnapshotWidget`（Flutter 官方 `allowSnapshotting` 的做法）。
-/// 异：**本处不需要门控开关** —— 它只在 `widget.leaving && leavingFade != null`
-///     时被挂上，生命周期恰好等于"这一段退场动画"，动画一结束整个
-///     `_KeepAliveTransition` 就回到 `Offstage`（见父级 build）
-///     ⇒ 不会被永久快照、不会冻住页面。
-///     而路由那处的离场页是**常驻**的（路由还在栈里），所以必须显式门控。
-/// ```
-///
-/// ⚠️ 快照失败（如平台视图）时 `SnapshotMode.permissive` 会自动回落到
-///    正常绘制 ⇒ 最坏情况等于"没优化"，不会画错。
-class _SnapshotOnce extends StatefulWidget {
-  const _SnapshotOnce({required this.child});
-
-  final Widget child;
-
-  @override
-  State<_SnapshotOnce> createState() => _SnapshotOnceState();
-}
-
-class _SnapshotOnceState extends State<_SnapshotOnce> {
-  /// `allowSnapshotting: true` ⇒ 用快照替换子树。
-  ///
-  /// ⚠️ 本组件**只在退场动画期间存在**（父级按 `leaving` 挂/卸）——
-  ///    所以"一直开着"在这里**不会**把页面冻住（生命周期就是短的那一段）。
-  ///    ★ 与路由那处不同：那里离场页常驻，必须由动画状态显式开关。
-  final SnapshotController _c = SnapshotController(allowSnapshotting: true);
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => SnapshotWidget(
-    controller: _c,
-    mode: SnapshotMode.permissive,
-    autoresize: true,
-    child: widget.child,
-  );
-}
-
 class _KeepAliveTransition extends StatefulWidget {
   const _KeepAliveTransition({
     required this.active,
@@ -1299,29 +1245,39 @@ class _KeepAliveTransitionState extends State<_KeepAliveTransition>
      * ★★★ 2026-10-14（Owner「死磕每个页面的性能」）：离场页**光栅快照**
      * ══════════════════════════════════════════════════════════════════════
      *
-     * # 实测（`SOURIN_TABS=1` 自动轮流切 tab，逐页 raster p50）
+     * ⚠️⚠️ 2026-10-14 **已回退**（Owner 报「页面切换出现这个情况」+ 截图）
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * # 当初为什么加（性能）
      * ```text
-     * 切 tab 那几帧的 raster 会冲到 20~45ms（超预算），而 **build 只有
-     * 0.4~1.5ms** —— 全是**光栅**成本。
-     * ⇒ 与"从播放页返回卡顿"是**同一个根因**：过渡期间两页各自
-     *   **整页重绘**（页面构图不变，只是整体淡入/滑动）。
+     * `SOURIN_TABS=1` 实测：切 tab 那几帧 raster 冲到 20~45ms（超预算），
+     * 而 **build 只有 0.4~1.5ms** ⇒ 全是光栅成本
+     * ⇒ 与"从播放页返回卡顿"同源：过渡期两页各自整页重绘。
+     * ⇒ 试了"离场页光栅快照"（Flutter 官方 Zoom 的 `allowSnapshotting` 那招）。
      * ```
      *
-     * # 修法：与 `page_transition_route.dart` 的离场页快照**同一招**
+     * # 为什么回退（**视觉坏了**，性能再好也不能要）
      * ```text
-     * Flutter 官方 Zoom 过渡就是这么做的（`allowSnapshotting`）：
-     * 把**构图不变**的离场页光栅化成一张图 ⇒ 过渡期每帧只搬图。
-     * ⇒ 这里用同一套：只在"有离场页正在淡出"（`leavingFade != null`）时挂快照。
+     * Owner 截图：切页时**两页叠在一起**（首页与直播页同时可见、
+     * 且停在那个状态）。实测复现：
+     *   · 挂快照   ⇒ 叠影
+     *   · 不挂快照 ⇒ 正常（同一驱动、同一时刻）
+     * ⇒ `SnapshotWidget` 与本层的过渡结构**不兼容**：
+     *   它把子树换成一张**光栅图**（引入新的 layer 边界），
+     *   而本层的 `FadeTransition`/`SlideTransition`/离场放大是作用在
+     *   **子树**上的 —— 换成图之后那条变换链与快照层没有正确复合，
+     *   于是离场页以**全不透明、未变换**的形态留在屏幕上。
      * ```
-     *
-     * ⚠️ 与路由那处的**关键差异**：本层是**纯内部组合**，没有测试读它的
-     *    widget 结构（路由那处有 `t50c` / `transition_clip_titlebar` 读树）。
-     *    所以这里**不需要** `debugDisableExitSnapshot` 那种旁路。
-     * ⚠️ 只在 `lf != null` 时加 —— 其余四种情况（当前页/隐藏页/未访问页）
-     *    的树与改动前**逐层一致**（与上面那条注释同一纪律）。
+     * ★ 教训（值得记）：`SnapshotWidget` 在**路由**那处能用（已验证），
+     *   是因为那条链的形状不同（`page_transition_route.dart` 里
+     *   快照只包**过渡层内部的 child**，且外层没有本处这种
+     *   "同页叠多层 Transform + 兄弟页交叉淡出"的结构）。
+     *   ⇒ **同一个组件换一个组合位置就未必成立** —— 必须**看像素**，
+     *     不能只看"它能编译 + 单测绿 + 读数变好"。
+     * ★ 本文件的 `t1013_tab_snapshot_test.dart` 转为**记录这次回退**
+     *   （断言"这里**不许**再挂快照"），防止有人再按"性能更好"的理由加回来。
      */
-    final Widget finalWrapped =
-        widget.leaving && lf != null ? _SnapshotOnce(child: wrapped) : wrapped;
+    final Widget finalWrapped = wrapped;
 
     return IgnorePointer(
       /*

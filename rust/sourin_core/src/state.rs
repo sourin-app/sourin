@@ -36,7 +36,7 @@
 //
 // ## ② 零内置 Provider
 //
-// Owner 明确要求：「零内置插件，cctv 和次元城都是外置的，
+// Owner 明确要求：「零内置插件，srcl 和某动画站都是外置的，
 // 我要能看到代码怎么写的」。所以核心**不注册任何内置源**，
 // 全部由 `plugins/*.js` 提供。
 
@@ -175,27 +175,20 @@ impl AppState {
         let plugin_dir = plugins_dir(&data_dir);
         seed_demo_plugin(&data_dir);
         /*
-         * ★★★ 释放「IPTV 直播」插件（task-34）
+         * ★★★ 清理历史遗留的「某旧版直播插件」文件（迁移，task-34/48 时代的遗留）
          *
-         * 必须在 `load_plugins_hydrated` **之前** —— 否则这一次启动
-         * 加载不到它，用户要重启两次才看到（实测过这类"要重启两遍"的坑）。
-         */
-        seed_iptv_plugin(&data_dir);
-        /*
-         * ★★★ 释放「TVBox 直播」插件（task-48 缺口 B）
+         * 必须在 `load_plugins_hydrated` **之前** —— 否则这一次启动仍会
+         * 扫到那个旧文件并注册它（扫描器的判据是"扩展名是 .js 就加载"），
+         * 与用户自己的插件重复注册，**没有任何报错**。
          *
-         * 同样必须在 `load_plugins_hydrated` **之前**（理由见上）。
+         * ⚠️ 架构口径（Owner 逐字）：客户端只提供**视频播放能力**；
+         *    具体的视频网站由用户的**本地插件**提供，不进仓库。
+         *    ⇒ 我们**不再**随程序释放任何"某个具体网站"的插件，
+         *       只保留这里"清理老用户机器上残留的旧版文件"这一步 ——
+         *       删掉它对老用户仍是**正确**的（避免重复注册）。
+         *    理由与"为什么改名不够 / 为什么无条件删"见 `remove_legacy_live_plugin` 的注释。
          */
-        seed_tvbox_live_plugin(&data_dir);
-        /*
-         * ★★★ 释放「哔哩哔哩」插件（直播 + 点播一体）
-         *
-         * 同样必须在 `load_plugins_hydrated` **之前**（理由见上）——
-         * 否则这一次启动加载不到它，用户要重启两次才看到。
-         * ⚠️ 本函数内部还会**删除旧版 `bilibili-live.js`**（迁移），
-         *    同样必须在扫描之前做 —— 否则这一次仍会扫到旧文件。
-         */
-        seed_bilibili_plugin(&data_dir);
+        remove_legacy_live_plugin(&data_dir);
         let (js_plugins, js_bad) =
             crate::plugins::load_plugins_hydrated(&plugin_dir, Some(proxy.clone())).await;
         let js_count = js_plugins.len();
@@ -802,628 +795,71 @@ fn ensure_demo_disabled_once(data_dir: &std::path::Path) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  ★★★ 随程序发布的「真内容源」插件（2026-09-25 task-34）
+//  清理历史遗留的「旧版直播插件」文件（迁移）
 // ═══════════════════════════════════════════════════════════════════════
+//
+// ★ 架构口径（Owner 逐字）：
+// > 拆分成插件,只存在本地,并不发布到仓库…他们都是插件提供,
+// > 我们是提供的视频播放能力,这个是重点,不要搞错了
+// ⇒ 客户端只提供**视频播放能力**；具体的视频网站由用户的**本地插件**
+//    提供，**不进仓库**。下面这个函数**不释放任何插件**，只负责
+//    在启动时**删掉老用户机器上残留的旧版文件**，避免与用户的插件
+//    **重复注册**（这在用户侧是好事，且与"仓库里不放具体网站"不冲突）。
 
-/// 随程序发布的 IPTV 直播插件源码
+/// 删除历史遗留的旧版直播插件的**残留文件**（一次性迁移，不是 seed）
 ///
-/// 与 `DEMO_PLUGIN_SRC` 同样是 `include_str!`（编进二进制）。
-const IPTV_PLUGIN_SRC: &str = include_str!("../plugins/iptv.js");
-
-/// ★★★ 释放「IPTV 直播」插件到用户的插件目录
+/// # 它删什么
 ///
-/// # 为什么必须自动释放（用户原话）
+/// 旧版本里我们曾随程序释放过一个直播插件，其**文件名**与**插件 @id**
+/// 相同（见下面代码里的字符串常量 —— 那是**真实的历史文件名，必须逐字
+/// 保留**，否则匹配不到老用户机器上的旧文件）。
 ///
-/// > 「cctv的直播还是不行，之前给你参考的tvbox源应该也有包含直播的，
-/// >   你看看  都没整合进去」
+/// ⚠️ 现在那份"新版"插件**也已从仓库移除**（见上面的架构口径），
+///    但**老用户的插件目录里可能还留着旧的残留文件** —— 它仍会被
+///    扫描器加载并注册。所以这一步保留。
 ///
-/// 实测用户的真实目录 `%APPDATA%\app.sourin.player\plugins\` 有 26 个 `.js`
-/// 但**没有** `iptv.js` —— 因为 `cctv.js` / `cycani.js` 都是**人工放进去**的
-/// （只有 `demo.js` 走 `include_str!` 自动 seed）。
+/// # 为什么改名**不够**（"文件已改名，为什么还要在老用户目录里删文件"）
 ///
-/// ⇒ 如果新插件也走"人工放"，用户升级后**依然看不到** ⇒ 等于没做，
-///    他会**再报一次同样的 bug**。所以必须走"能到达用户"的那条路。
-///
-/// # 与 `seed_demo_plugin` 的三个差别
-///
+/// 插件扫描器 `plugins/mod.rs::load_plugins` 的判据是
+/// ★ **"扩展名是 .js 就加载"**，**不是**按文件名白名单：
 /// ```text
-/// ① demo 默认**停用**（它是模板，返回假数据，混进首页会误导）
-///    iptv 默认**启用**（它是真内容源 —— 用户要的就是"能用"，
-///                        默认停用等于没做）
-/// ② demo 只写一次；iptv 要能**跟随版本升级**
-/// ③ demo 不看内容；iptv 要能识别"用户改过"从而不覆盖
+/// for e in read_dir(dir) {
+///     if path.extension() == Some("js") { JsPluginProvider::from_source(..) }
+/// }
+/// ```
+/// 而注册去重（`Registry::register`）按**插件内部 `@id`**，不是文件名。
+///
+/// ⇒ 后果（实测推演，不是猜测）：老用户数据目录里那份旧文件
+///   仍会被扫到并注册，与用户后来装的新插件**并存**，
+///   出现两个同类源，且**没有任何报错**（两个 id 不同，不触发覆盖）。
+///
+/// # 为什么删在这里、且**无条件删**
+/// ```text
+/// ① 删在扫描之前 —— 否则这一次仍会扫到旧文件。
+/// ② ★ 无条件删（不判标记、不判版本）：那个文件名**只可能是我们发过的
+///    旧版**（用户手写的插件用自己的文件名/id），
+///    所以删它是安全的；判据越简单越不会漏（"每个用户目录都清理一次"）。
+/// ③ 幂等：文件不存在时 `exists()` 为假，直接跳过（下次启动还会再试）。
 /// ```
 ///
-/// # ★★★ 版本策略：用「我们发过哪个版本」的标记来区分两种情况
-///
-/// 直觉写法是"比 `@version`，不同就覆盖"，但那**分不清**这两件事：
-/// ```text
-/// · 用户手上是我们发的【旧版】  → 该覆盖（否则白名单永久过期）
-/// · 用户自己改过文件            → 不该覆盖（那是他的选择）
-/// ```
-/// 两者在"只有文件内容"时**看起来一样**（都是版本号不等于内置版本）。
-///
-/// ⇒ 所以额外记一个标记 `plugins/.data/.iptv-seeded-version`：
-///    **我们最后一次发出去的版本号**。判据就清楚了：
-/// ```text
-/// 文件不存在                        → 释放
-/// 文件版本 == 内置版本              → 已最新，不动
-/// 文件版本 == 我们发过的版本        → 是【我们发的旧版】⇒ 覆盖升级
-/// 文件版本 != 我们发过的版本        → 用户改过 ⇒ 不动（尊重他）
-/// ```
-/// ★ 这个标记就是"所有权证明"—— 没有它就无法区分上面两种情况。
-///
-/// # 用户改过怎么办
-///
-/// ```text
-/// 用户改版本号（≠ 我们发的）  ⇒ 永不覆盖（那是他的文件了）
-/// 用户删掉文件               ⇒ 下次启动重新释放（"恢复默认"的自然语义）
-/// 用户停用它                 ⇒ 不动（停用状态在 disabled 列表，与文件无关）
-/// ```
-///
-/// ★ 判据用**文件里的 @version**，不是 mtime ——
-///   mtime 会被解压/复制改变，不是内容的可靠标识（见 VERIFY-LESSONS 铁律 3）。
-///
-/// # ⚠️ 我验证过"用现成的插件更新机制"这条路走不通
-///
-/// `check_plugin_update`（`commands_provider.rs:537`）需要
-/// `plugins/.meta/<id>.json` 里的 `source_url`，而那个文件**只有**
-/// "通过 URL 安装插件"才会写。seed 出来的插件没有它
-/// ⇒ 那条命令会如实报 `needs_source=true`（"无法检测"）
-/// ⇒ **对 seed 的插件永远不生效**。
-/// 所以这里必须自己管版本，而不是复用那条链。
-fn seed_iptv_plugin(data_dir: &std::path::Path) {
-    let dir = plugins_dir(data_dir);
-    let path = dir.join("iptv.js");
-
-    // 发布版版本号（从源码头部解析 —— 与 `@version` 单一真相，不另写常量）
-    let bundled = crate::plugins::parse_meta(IPTV_PLUGIN_SRC);
-
-    /*
-     * 「我们最后发出去的版本」标记 —— 所有权证明（见上面说明）。
-     * 放在 `.data/` 下（与插件私有存储同级，用户一般不会去动）。
-     */
-    let marker = dir.join(".data").join(".iptv-seeded-version");
-
-    let mut should_write = true;
-    if path.exists() {
-        let local_src = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                // 读不了（权限/编码）—— 不动它，如实记日志
-                log::warn!("读取已有 iptv.js 失败（保持原样）: {e}");
-                return;
-            }
-        };
-        let local_version = crate::plugins::parse_meta(&local_src).version;
-        let seeded_version = std::fs::read_to_string(&marker)
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-
-        /*
-         * ══════════════════════════════════════════════════════════════
-         * ★★★ 三分支判定（2026-09-25 实测补了一条）
-         * ══════════════════════════════════════════════════════════════
-         *
-         * # 为什么"版本相同就跳过"**不够**（v1.1.0 实测踩到）
-         *
-         * 我改 `iptv.js` 的内容（加 Outdoor 分组映射）但**忘了提升 @version**，
-         * 于是：
-         * ```text
-         * 源码（内置）   ：26 609 字节，含 Outdoor 映射
-         * 用户目录里的   ：25 624 字节，**不含** Outdoor 映射（旧内容）
-         * 两者 @version 都是 1.1.0
-         * ⇒ `local_version == bundled.version` 成立 ⇒ **跳过不写**
-         * ⇒ 用户永远拿到旧内容，而**没有任何报错**
-         * ```
-         * ★ 这是典型的**假阴性**：功能看着在跑，只是内容旧。
-         *   开发期尤其容易发生（改了内容忘了升版本）。
-         *
-         * # 修法：版本相同再看**内容指纹**
-         *
-         * ```text
-         * 相同                        ⇒ 真的什么都不用做（绝大多数启动）
-         * 不同 + 本地 == 我们发过的   ⇒ 我们改过内容（未升版本）⇒ 覆盖
-         * 不同 + 本地 != 我们发过的   ⇒ 用户改过 ⇒ 不动
-         * ```
-         * ⚠️ 判据仍以**"我们发过哪一个"**为前提 —— 只有能证明
-         *    那个文件是我们写的，才敢覆盖。用户改过的仍然不碰。
-         *
-         * ★ 指纹用源码字节比对（不是 mtime —— mtime 是弱判据，见铁律 3）。
-         */
-        let same_content = local_src == IPTV_PLUGIN_SRC;
-
-        /*
-         * ══════════════════════════════════════════════════════════════
-         * ★★★ 四分支判定 + 标记自愈（2026-09-25 v1.1.0 后修）
-         * ══════════════════════════════════════════════════════════════
-         *
-         * | 版本 | 内容 | 能证明是我们发的 | 动作 |
-         * |---|---|---|---|
-         * | 同 | 同 | —(不需要) | **补标记**（幂等自愈）+ 不动文件 |
-         * | 同 | 异 | 是 | 覆盖（我们改了内容没升版本） |
-         * | 同 | 异 | 否 | 不动（保守：证明不了就当用户改过） |
-         * | 异 | — | 是 | 升级（我们发过旧版） |
-         * | 异 | — | 否 | 不动（用户改过） |
-         *
-         * # ★ 第一行的"补标记"是修一个真 bug（2026-09-25 实测）
-         *
-         * 原实现「版本+内容都相同 ⇒ `should_write = false` 后直接 return」，
-         * **走不到写标记那一步** ⇒ 标记一旦丢失（用户手删 `.data`、
-         * 备份/重装只带 `plugins/` 下的 js 不带 `.data`、标记写入时磁盘满）
-         * 就**永远补不回来**：
-         * ```text
-         * 标记丢了 + 我们后来发新版
-         *   ⇒ seeded_version 为空 ⇒ 无法证明这文件是我们发的
-         *   ⇒ 落到"用户改过 ⇒ 不动" ⇒ ★ 永远不升级
-         * ```
-         * ★ 这是**假阴性**：功能表面正常，只是以后永远收不到更新。
-         * ⇒ 修法：这一支也**顺便确保标记存在**（内容不需要改 ⇒ 不重写文件，
-         *    只补标记）—— 于是标记变成"幂等自愈"，不再依赖
-         *    "上一次启动是否走过写文件路径"。
-         */
-        if local_version == bundled.version && same_content {
-            /*
-             * 版本与内容都一致 ⇒ 文件不用动（**绝大多数启动走这条**）。
-             * ★ 但标记要**自愈**：缺了或值不对就补上。
-             */
-            let need_marker = seeded_version != bundled.version;
-            should_write = false;
-            if need_marker {
-                log::info!(
-                    "iptv.js 已是最新，但版本标记缺失/不符（标记={}，应为 {}）⇒ 补写标记",
-                    if seeded_version.is_empty() { "无" } else { &seeded_version },
-                    bundled.version
-                );
-                ensure_marker(&marker, &bundled.version);
-            }
-        } else if !seeded_version.is_empty()
-            && local_version == seeded_version
-            && !same_content
-        {
-            /*
-             * ★★ 我们自己改了内容但**没升版本** ⇒ 也要覆盖。
-             *
-             * ⚠️ 前提：`local_version == seeded_version` —— 即"这个文件
-             *    确实是我们上次发出去的"。用户改过的文件版本号会变，
-             *    走不到这个分支。
-             */
-            log::info!(
-                "IPTV 插件内容有更新（版本仍为 {}，我们发过的版本也是 {}）⇒ 覆盖",
-                bundled.version,
-                seeded_version
-            );
-        } else if local_version == bundled.version && !seeded_version.is_empty() {
-            /*
-             * ══════════════════════════════════════════════════════════
-             * ★★★ 场景 E：**版本与内置相同、内容不同、且标记指向别的版本**
-             * ══════════════════════════════════════════════════════════
-             *
-             * # 这是哪种情况？
-             * ```text
-             * local_version == bundled.version    ⇒ 文件自称是当前版本
-             * seeded_version != bundled.version   ⇒ 但我们**发过的是别的版本**
-             * same_content == false               ⇒ 内容也不对
-             * ```
-             * 换句话说：**这个文件的版本号是"当前版本"，但它不是我们发的那一份**。
-             *
-             * # 两种可能，必须区分
-             * ```text
-             * ① 用户改了内容，但**没改版本号**
-             *    （比如他只把白名单删了几个台、或调了 URL）
-             *    ⇒ 该**不动**（尊重用户修改）
-             * ② 我们发过的版本被谁改回了内置版本号（诡异）
-             *    ⇒ 罕见，不值得为它冒险
-             * ```
-             * ★ 两者**无法从文件本身区分**（版本号相同、内容都不是我们的）。
-             *   ⇒ 保守选**不动** —— 宁可少更新一次，也不抹掉用户的修改。
-             *
-             * ★★ 与 lead 的倾向（"补标记 + 覆盖"）的差别与理由：
-             *   lead 的理由是"版本号等于内置 ⇒ 无论如何都该更新到内置内容"。
-             *   但 `local_version == bundled.version` 这个事实**本身不可信** ——
-             *   用户完全可以（且很容易）改内容而不动版本号；此时
-             *   "版本号等于内置"**不构成"这是我们发的"的证明**。
-             *   ⇒ 所以我的选择是：**不动，但用 eprintln 明确告知**
-             *     （因为标记指向别的版本 ⇒ 我们知道"这不是我们发的"）。
-             *
-             * ⚠️ 注意与上一支的区别：上一支 `local_version == seeded_version`
-             *    ⇒ **能证明是我们发的**（标记记住了我们发过那个版本）
-             *    ⇒ 所以那一支可以放心覆盖。
-             *    本支证明不了 ⇒ 不动。**差别就在"能不能证明"。**
-             */
-            log::info!(
-                "iptv.js 版本与内置相同（{}）但内容不同，且我们发过的是 {} \
-                 ⇒ 判定为用户改了内容未改版本号，保持原样",
-                bundled.version,
-                seeded_version
-            );
-            // ★ lead 要求：这条要让**用户/我们能看见**（log 在本项目不输出）
-            eprintln!(
-                "[PLUGIN] iptv.js 被判定为用户自行修改（版本 {}，我们发过 {}）—— \
-                 保持原样，不再自动更新。想恢复官方版本请删除该文件后重启。",
-                bundled.version,
-                seeded_version
-            );
-            should_write = false;
-        } else if local_version == bundled.version {
-            /*
-             * 版本相同但内容不同，且**无法证明**这个版本是我们发的
-             * （标记空或版本对不上）⇒ 保守：当成用户改过，不动。
-             */
-            log::info!(
-                "iptv.js 版本与内置相同但内容不同，且无法确认是我们发布的\
-                 （我们发过 {}）—— 保持原样不覆盖",
-                if seeded_version.is_empty() { "无" } else { &seeded_version }
-            );
-            should_write = false;
-        } else if !seeded_version.is_empty() && local_version == seeded_version {
-            /*
-             * ★ 是我们发过的旧版 ⇒ 安全升级。
-             *   （`seeded_version` 非空才敢这么判 —— 空的话说明标记丢了，
-             *     那就无法证明这个文件是我们的，宁可不动。）
-             */
-            log::info!(
-                "IPTV 插件从我们发过的版本 {} 升级到 {}",
-                seeded_version,
-                bundled.version
-            );
-        } else {
-            /*
-             * ★ 用户改过（版本号既不等于内置，也不等于我们发过的）
-             *   ⇒ **不动他的文件**。这是 lead 要求的"不覆盖用户修改"。
-             *
-             * ★ 用 eprintln 而不是只 log::info —— 本项目**没有初始化 logger**
-             *   （见自启那段注释），`log::info!` 的输出**完全看不到**。
-             *   而"用户改过之后收不到更新"是**用户需要知道**的事：
-             *   否则他会困惑"为什么台名还是英文/为什么少了新台"。
-             */
-            log::info!(
-                "iptv.js 版本 {} 不是我们发布的（我们发过 {}）—— \
-                 判定为用户自行修改，保持原样不覆盖",
-                if local_version.is_empty() { "无" } else { &local_version },
-                if seeded_version.is_empty() { "无" } else { &seeded_version }
-            );
-            eprintln!(
-                "[PLUGIN] iptv.js 被判定为用户自行修改（版本 {}，我们发过 {}）—— \
-                 保持原样，不再自动更新。想恢复官方版本请删除该文件后重启。",
-                if local_version.is_empty() { "无" } else { &local_version },
-                if seeded_version.is_empty() { "无" } else { &seeded_version }
-            );
-            should_write = false;
-        }
-    } else if let Err(e) = std::fs::create_dir_all(&dir) {
-        log::warn!("创建插件目录失败 {:?}: {e}", dir);
-        return;
-    }
-
-    if !should_write {
-        return;
-    }
-
-    match std::fs::write(&path, IPTV_PLUGIN_SRC) {
-        Ok(()) => {
-            // ★ 记下"我们发了哪个版本"（所有权证明，供下次升级判断）
-            ensure_marker(&marker, &bundled.version);
-            /*
-             * ★ 日志要能被 grep 到 —— 用户报"没有直播"时，
-             *   我们要能一眼确认"插件到底释放了没有"。
-             */
-            log::info!(
-                "已释放 IPTV 直播插件到 {:?}（版本 {}，默认启用）",
-                path,
-                bundled.version
-            );
-            eprintln!(
-                "[PLUGIN] ★ 已释放 IPTV 直播插件（版本 {}）-> {}",
-                bundled.version,
-                path.display()
-            );
-        }
-        Err(e) => log::warn!("写入 IPTV 插件失败: {e}"),
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-//  ★★★ 随程序发布的「TVBox 直播」插件（2026-09-30 task-48 缺口 B）
-// ═══════════════════════════════════════════════════════════════════════
-
-/// 随程序发布的「TVBox 直播」插件源码
-///
-/// 与 `IPTV_PLUGIN_SRC` 同样是 `include_str!`（编进二进制）。
-///
-/// # ★ 为什么频道表是**硬编码**的，而不是运行时抓上游 m3u
-///
-/// 上游那份 82 条里，实测（2026-09-30）：
-/// ```text
-/// 55 条（67.1%）是 IPv6 字面量，而本机**没有 IPv6 出口**
-///              （t48l：4 个 IPv6 目标 TCP 全部超时，含频道主机本身）
-/// 13 条       livestream-bt.nmtv.cn 带签名 URL，全死
-///  3 条       ParkLogic 域名停放页（不是播放列表）
-/// 12 条       ★ 真能解码（ffprobe = FFmpeg = 与 mpv 同层）
-/// ```
-/// ⇒ 运行时去抓会把 67% 打不开的频道拉进来，还给"点开直播页"这个
-///   热路径加一次网络依赖。所以只把**验过的 12 条**编进文件。
-const TVBOX_LIVE_PLUGIN_SRC: &str = include_str!("../plugins/tvbox-live.js");
-
-/// 释放「TVBox 直播」插件
-///
-/// 判据与 `seed_iptv_plugin` **完全一致**，完整的推理过程（为什么必须用
-/// 「我们发过的版本」标记做所有权证明、忘了升版本会假阴性、标记丢失后
-/// 为什么必须幂等自愈）见 `seed_iptv_plugin` 上面那段长注释 —— 这里不重复。
-///
-/// 本插件特有的三点：
-/// ```text
-/// ① 默认**启用**（照 iptv，不照 demo）—— 它是真内容源。默认停用
-///    等于没做，用户看不到这 12 个台且**没有任何报错**。
-/// ② 标记文件必须**另起名字** `.tvbox-live-seeded-version`：
-///    若与 iptv 共用 `.iptv-seeded-version`，两个插件的「所有权证明」
-///    会互相覆盖 ⇒ 版本判定错乱（`local_version == seeded_version`
-///    这类判据全部失效）。
-/// ③ 本函数**没有**改写成 `seed_iptv_plugin` 的通用版：那个函数已在
-///    用户真实 profile 上验证可用，把它改成通用的需要它自己的 A/B
-///    验证。宁可多一份代码，也不动已验证的路径。
-/// ```
-fn seed_tvbox_live_plugin(data_dir: &std::path::Path) {
-    seed_managed_plugin(
-        data_dir,
-        "tvbox-live.js",
-        TVBOX_LIVE_PLUGIN_SRC,
-        ".tvbox-live-seeded-version",
-        "TVBox 直播",
-    );
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-//  ★★★ 随程序发布的「哔哩哔哩」插件（直播 + 点播一体）
-// ═══════════════════════════════════════════════════════════════════════
-
-/// 随程序发布的「哔哩哔哩」插件源码
-///
-/// 与 `IPTV_PLUGIN_SRC` 同样是 `include_str!`（编进二进制）。
-///
-/// # ★ 架构口径：没有「直播插件」这个类别
-///
-/// Owner 逐字（两次纠正，本文件按此执行）：
-/// ```text
-/// ① 客户端只提供「直播能力」，不内置任何插件 ——
-///    插件以文件形式放仓库 plugins/，由 include_str! 编进 dll。
-/// ② 直播插件和点播插件**不区分** —— 点播和直播都是插件提供的能力，
-///    js 插件里的 capabilities 那个只是**做筛选**。
-///    ⇒ 一个插件**同时**声明 vod 与 live。
-/// ```
-///
-/// ⚠️ 本函数**曾经**是 `seed_bilibili_live_plugin`，放的是
-/// `bilibili-live.js`（`@id: bilibili-live`，`capabilities.vod: false`）——
-/// ★ 那正是"把自己做成一个直播插件"，违反上面第 ② 条，已纠正。
-/// 旧注释里论证过"为什么新开一个插件而不是并进 bilibili.js"：
-/// ```text
-/// 理由是"bilibili.js（点播）不在仓库里、改不到用户手上"——
-/// ★ 该理由**不成立**：本函数（seed_managed_plugin）本来就按 @id
-///   把仓库里的插件释放/覆盖到用户数据目录，仓库里的 bilibili.js
-///   会随版本升级覆盖用户的旧文件。⇒ 那段论证作废，已删。
-/// ```
-///
-/// ⚠️ 现文件名 `bilibili.js`、`@id` 是 `bilibili` ——
-///    **会覆盖用户数据目录里那份手写的点播 `bilibili.js`**
-///    （只要其版本低于本次发布的 2.0.0，判据见 `seed_managed_plugin`）。
-///    这是 Owner 要的形态：一个 bilibili 源，同时管直播与点播。
-const BILIBILI_PLUGIN_SRC: &str = include_str!("../plugins/bilibili.js");
-
-/// 释放「哔哩哔哩」插件
-///
-/// 判据与 `seed_iptv_plugin` / `seed_tvbox_live_plugin` **完全一致**，
-/// 完整的推理过程见 `seed_iptv_plugin` 上面那段长注释 —— 这里不重复。
-///
-/// 本插件特有的三点：
-/// ```text
-/// ① 默认**启用**（照 iptv/tvbox-live，不照 demo）—— 它是真内容源。
-///    默认停用等于没做，用户看不到直播间且**没有任何报错**。
-/// ② 标记文件必须**另起名字** `.bilibili-seeded-version`：
-///    与 iptv/tvbox-live 共用标记会让几者的「所有权证明」互相覆盖
-///    ⇒ 版本判定错乱（`local_version == seeded_version` 判据全部失效）。
-/// ③ ★★ **必须删掉旧文件 `bilibili-live.js`**（见下面 remove 那段）。
-/// ```
-fn seed_bilibili_plugin(data_dir: &std::path::Path) {
-    /*
-     * ══════════════════════════════════════════════════════════════════
-     *  ★★★ 旧文件迁移：删掉 `bilibili-live.js`（**不是可选的**）
-     * ══════════════════════════════════════════════════════════════════
-     *
-     * # 为什么改名**不够**
-     *
-     * 插件扫描器 `plugins/mod.rs::load_plugins` 的判据是
-     * ★ **"扩展名是 .js 就加载"**，**不是**按文件名白名单：
-     * ```rust
-     * for e in read_dir(dir) {
-     *     if path.extension() == Some("js") { JsPluginProvider::from_source(..) }
-     * }
-     * ```
-     * 而注册去重（`Registry::register`）按**插件内部 `@id`**，不是文件名。
-     *
-     * ⇒ 后果（实测推演，不是猜测）：老用户数据目录里那份
-     *   `bilibili-live.js`（`@id: bilibili-live`）**仍会被扫到并注册**，
-     *   与新版 `bilibili.js`（`@id: bilibili`）**并存**：
-     * ```text
-     * 直播页会同时出现两个哔哩哔哩源：
-     *   旧 bilibili-live（1.0.0）+ 新 bilibili（2.0.0）
-     * ⇒ 频道列表翻倍/重复，且**没有任何报错**（两个 id 不同，不触发覆盖）。
-     * ```
-     *
-     * # 为什么删在这里、且**无条件删**
-     * ```text
-     * ① 删在释放之前/发布路径里 —— 它是"本插件的历史版本文件"，
-     *    所有权明确（@id bilibili-live 只可能来自我们）。
-     * ② ★ 无条件删（不判标记、不判版本）：那个文件的 @id 是 `bilibili-live`，
-     *    **只可能是我们发过的旧版**（用户手写的插件有自己的 id），
-     *    所以删它是安全的；判据越简单越不会漏（"每个用户目录都清理一次"）。
-     * ③ 幂等：文件不存在时 `remove_file` 返回 Err，直接忽略即可。
-     * ```
-     *
-     * ⚠️ 只删这一个具体文件名，**不做**"删掉所有 bilibili* 的 .js" ——
-     *    那会误删用户可能存在的其它自定义文件（保守优先）。
-     */
+/// ⚠️ 只删这一个具体文件名，**不做**"删掉所有同类前缀的 .js" ——
+///    那会误删用户可能存在的其它自定义文件（保守优先）。
+fn remove_legacy_live_plugin(data_dir: &std::path::Path) {
+    // ★ 这是**历史文件名**，必须逐字保留（只在"清理老用户残留文件"时匹配）：
+    //   见本函数文档的「它删什么」。
     let legacy = plugins_dir(data_dir).join("bilibili-live.js");
     if legacy.exists() {
-        // 它是我们发过的旧版（@id: bilibili-live）—— 留着会与新版重复注册
+        // 它是我们发过的旧版残留 —— 留着会与用户的新插件重复注册
         match std::fs::remove_file(&legacy) {
             Ok(()) => {
-                log::info!("已删除旧版直播插件 {:?}（其能力已并入 bilibili.js）", legacy);
+                log::info!("已删除遗留的旧版直播插件 {:?}（能力已被新版插件取代）", legacy);
                 eprintln!(
-                    "[PLUGIN] ★ 已删除旧版 bilibili-live.js（直播能力已并入新版 bilibili.js）-> {}",
+                    "[PLUGIN] ★ 已删除遗留的旧版直播插件（能力已被新版插件取代）-> {}",
                     legacy.display()
                 );
             }
             // 删不掉不致命（下次启动再试），但要让用户能看到原因
-            Err(e) => log::warn!("删除旧版 bilibili-live.js 失败（保持原样）: {e}"),
-        }
-    }
-
-    seed_managed_plugin(
-        data_dir,
-        "bilibili.js",
-        BILIBILI_PLUGIN_SRC,
-        ".bilibili-seeded-version",
-        "哔哩哔哩",
-    );
-}
-
-/// 释放一个「随程序发布 + 默认启用 + 跟随版本升级」的插件
-///
-/// 与 `seed_iptv_plugin` 的判定表逐条对应：
-/// ```text
-/// 文件不存在                     ⇒ 释放
-/// 版本同 + 内容同                ⇒ 只补标记（幂等自愈），不动文件
-/// 能证明是我们发的（版本==标记） ⇒ 覆盖（含"改了内容没升版本"）
-/// 证明不了                       ⇒ 不动（保守当用户改过），并 eprintln 告知
-/// ```
-/// ⚠️ `eprintln!` 不是可选的：本项目**没有初始化 logger**，
-///    `log::info!` 的输出完全看不到（见 `seed_iptv_plugin` 的说明）。
-fn seed_managed_plugin(
-    data_dir: &std::path::Path,
-    file_name: &str,
-    src: &str,
-    marker_name: &str,
-    label: &str,
-) {
-    let dir = plugins_dir(data_dir);
-    let path = dir.join(file_name);
-    let bundled = crate::plugins::parse_meta(src);
-    let marker = dir.join(".data").join(marker_name);
-
-    let mut should_write = true;
-    if path.exists() {
-        let local_src = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("读取已有 {file_name} 失败（保持原样）: {e}");
-                return;
-            }
-        };
-        let local_version = crate::plugins::parse_meta(&local_src).version;
-        let seeded_version = std::fs::read_to_string(&marker)
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-
-        // 内容指纹用**源码字节**比对，不是 mtime（mtime 会被解压/复制改变）
-        let same_content = local_src == src;
-        // 「所有权证明」：标记非空 **且** 本地版本 == 我们发过的版本
-        let ours = !seeded_version.is_empty() && local_version == seeded_version;
-
-        if local_version == bundled.version && same_content {
-            // 绝大多数启动走这条：文件不用动，但标记要幂等自愈
-            should_write = false;
-            if seeded_version != bundled.version {
-                ensure_marker(&marker, &bundled.version);
-            }
-        } else if ours {
-            log::info!(
-                "{label} 插件从我们发过的版本 {seeded_version} 更新到 {}",
-                bundled.version
-            );
-        } else {
-            log::info!(
-                "{label} 插件（版本 {}，我们发过 {}）判定为用户自行修改 —— 保持原样",
-                if local_version.is_empty() { "无" } else { &local_version },
-                if seeded_version.is_empty() { "无" } else { &seeded_version }
-            );
-            eprintln!(
-                "[PLUGIN] {label} 被判定为用户自行修改（版本 {}，我们发过 {}）—— \
-                 保持原样，不再自动更新。想恢复官方版本请删除该文件后重启。",
-                if local_version.is_empty() { "无" } else { &local_version },
-                if seeded_version.is_empty() { "无" } else { &seeded_version }
-            );
-            should_write = false;
-        }
-    } else if let Err(e) = std::fs::create_dir_all(&dir) {
-        log::warn!("创建插件目录失败 {:?}: {e}", dir);
-        return;
-    }
-
-    if !should_write {
-        return;
-    }
-
-    match std::fs::write(&path, src) {
-        Ok(()) => {
-            ensure_marker(&marker, &bundled.version);
-            log::info!("已释放{label}插件到 {:?}（版本 {}）", path, bundled.version);
-            eprintln!(
-                "[PLUGIN] ★ 已释放{label}插件（版本 {}）-> {}",
-                bundled.version,
-                path.display()
-            );
-        }
-        Err(e) => log::warn!("写入{label}插件失败: {e}"),
-    }
-}
-
-/// ★★★ 确保「我们发过哪个版本」的标记存在且正确（幂等）
-///
-/// # 这是"所有权证明"的写入点，必须是**幂等自愈**的
-///
-/// 原实现只在"真的写了 iptv.js"那条路径里顺手写标记 —— 于是：
-/// ```text
-/// 标记丢失（用户手删 .data / 备份只带 plugins/*.js / 磁盘满导致写失败）
-///   + iptv.js 恰好是最新的（版本+内容都相同）
-///   ⇒ 走"什么都不用做"分支 ⇒ 标记**永远补不回来**
-///   ⇒ 将来我们发新版时无法证明这文件是我们的
-///   ⇒ 落到"用户改过 ⇒ 不动" ⇒ ★ 永远不升级（假阴性）
-/// ```
-/// ⇒ 把写标记抽成独立函数，在**每一条"文件已是最新"的路径上都调一次**。
-///
-/// # 为什么写失败要用 `eprintln!`
-///
-/// 本项目**没有初始化 logger**（`log::info/warn` 的输出全部被丢弃，
-/// 见自启那段注释）。而"标记写不进去"的后果很严重：
-/// ```text
-/// ⇒ 用户以后**再也收不到**我们的插件更新
-/// ⇒ 而我们**什么都不知道**（连日志都看不到）
-/// ```
-/// 所以必须走 stderr（`eprintln!`）。
-///
-/// ⚠️ **不重试**：标记写失败通常是权限/磁盘问题，启动时反复重试
-///    只会拖慢启动。留一条可见的日志即可 —— 下次启动还会再试一次
-///    （因为这条路径现在是**幂等**的）。
-fn ensure_marker(marker: &std::path::Path, version: &str) {
-    if let Some(parent) = marker.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!(
-                "[PLUGIN] ★ 无法创建插件数据目录（iptv 版本标记写不进去，\
-                 以后不会自动更新）: {e}"
-            );
-            return;
-        }
-    }
-    match std::fs::write(marker, version.as_bytes()) {
-        Ok(()) => {}
-        Err(e) => {
-            // ★ 用 eprintln：log 在本项目不输出（见上面说明）
-            eprintln!(
-                "[PLUGIN] ★ 无法写入 iptv 版本标记（{}）：{e}\n\
-                 [PLUGIN]   ⇒ 后果：**以后不会再自动更新**这个插件。\
-                 请检查插件目录的写权限/磁盘空间。",
-                marker.display()
-            );
+            Err(e) => log::warn!("删除遗留的旧版直播插件失败（保持原样）: {e}"),
         }
     }
 }
@@ -1640,72 +1076,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// ★★★ 接线门禁：随程序发布的 `bilibili.js` 必须**真的被释放并注册**
-    ///
-    /// # 为什么需要这条（本仓规矩一：写了 ≠ 接线了）
-    ///
-    /// ```text
-    /// plugin 文件写好了、`seed_bilibili_plugin()` 也定义了 —— 但
-    /// 只要**忘了在 bootstrap 里调用它**，用户就永远看不到这个源，
-    /// 而且**没有任何报错**（注册表里根本没有它）。
-    /// ```
-    /// 所以断言必须读**用户可见的结果**（文件被写到插件目录 +
-    /// `registry.manifests()` 里有它且 `capabilities.live == true`），
-    /// 而不是"某个函数被调用了"。
-    ///
-    /// ⚠️ `capabilities.live` 是 `Registry::live_all()` 的过滤条件 ——
-    ///    它为假时直播页**看不到这个源**且无报错，正是最该守住的一环。
-    ///
-    /// ⚠️ `@id` 是 `bilibili`：**旧版 `bilibili-live` 已并入本插件**
-    ///    （vod+live 一体，见 `seed_bilibili_plugin` 的说明）。
-    #[tokio::test]
-    async fn shipped_bilibili_is_seeded_and_registered() {
-        let dir = tmp_dir("bili-live");
-        // 空目录启动 => 走"文件不存在 => 释放"这条路径
-        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
-
-        // ① 文件真的落到了插件目录
-        let js = crate::state::plugins_dir(&dir).join("bilibili.js");
-        assert!(
-            js.exists(),
-            "bilibili.js 必须被释放到插件目录，实际不存在: {}",
-            js.display()
-        );
-
-        // ② 而且它作为一个 live 源注册进了 registry
-        let m = st
-            .registry
-            .manifests()
-            .into_iter()
-            .find(|m| m.id == "bilibili")
-            .expect("★ bilibili 必须出现在 registry —— 否则直播页看不到它且无报错");
-        assert!(
-            m.capabilities.live,
-            "★ capabilities.live 必须为 true（Registry::live_all 按它过滤）"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// ★★★ 迁移门禁：旧版 `bilibili-live.js` 必须被**删除**
+    /// ★★★ 迁移门禁：遗留的旧版直播插件文件必须被**删除**
     ///
     /// # 为什么必须有这条（这是真实迁移问题，不是形式）
     ///
     /// 插件扫描器判据是"扩展名是 .js 就加载"（`plugins/mod.rs::load_plugins`），
     /// 而注册去重按插件内部 `@id`（`Registry::register`）——
-    /// ⇒ 光把文件改名**不够**：老用户目录里的 `bilibili-live.js`
-    ///   （`@id: bilibili-live`）会与新版 `bilibili.js`（`@id: bilibili`）
-    ///   **同时注册**，直播页出现两个哔哩哔哩源（列表翻倍），且无报错。
+    /// ⇒ 老用户目录里遗留的旧版文件会与用户自己后来装的插件
+    ///   **同时注册**，同类源出现两份（列表翻倍），且无报错。
     ///
-    /// ⇒ `seed_bilibili_plugin()` 必须**显式删除**旧文件。
-    ///   本测试模拟"老用户升级"：先手工放一份旧 `bilibili-live.js`，
-    ///   再 bootstrap，断言它**消失**且只剩新版一个源。
+    /// ⇒ `remove_legacy_live_plugin()` 必须**显式删除**旧文件。
+    ///   本测试模拟"老用户升级"：先手工放一份旧文件，再 bootstrap，
+    ///   断言它**消失**（且不会作为源留在 registry 里）。
+    ///
+    /// ⚠️ 我们**不再随程序释放任何具体网站插件** —— 本测试断言的是
+    ///   "旧文件被清掉"，**不是**"某个内置源被释放/注册"。
     #[tokio::test]
-    async fn legacy_bilibili_live_file_is_removed_on_bootstrap() {
-        let dir = tmp_dir("bili-legacy");
+    async fn legacy_live_plugin_file_is_removed_on_bootstrap() {
+        let dir = tmp_dir("legacy-live");
 
         /*
-         * ① 铺好"老用户"的现场：插件目录里有一份旧的 bilibili-live.js。
+         * ① 铺好"老用户"的现场：插件目录里有一份遗留的旧版文件。
          *    内容不重要（删的依据是**文件名**，不是内容）——
          *    但给一个最小合法的旧版骨架，贴近真实形态。
          */
@@ -1714,30 +1105,26 @@ mod tests {
         let legacy = pdir.join("bilibili-live.js");
         std::fs::write(
             &legacy,
-            "/* @id bilibili-live @name 哔哩哔哩直播 @version 1.0.0 */\n\
+            "/* @id bilibili-live @name legacy-live @version 1.0.0 */\n\
              globalThis.plugin = { id: 'bilibili-live', capabilities: { live: true } };\n",
         )
         .unwrap();
         assert!(legacy.exists(), "前置条件：旧文件必须先存在");
 
-        // ② bootstrap —— 内部会释放新版 + 删除旧版
+        // ② bootstrap —— 内部会删除遗留的旧文件
         let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
 
-        // ③ 旧文件必须被删掉（否则会与新版并存、重复注册）
+        // ③ 旧文件必须被删掉（否则会与用户的插件并存、重复注册）
         assert!(
             !legacy.exists(),
-            "★ 旧版 bilibili-live.js 必须被删除，否则会与新 bilibili.js 并存（直播间列表翻倍）"
+            "★ 遗留的旧版直播插件文件必须被删除，否则会与用户自己的插件并存（列表翻倍）"
         );
 
-        // ④ 而且注册表里**只有** bilibili，没有旧的 bilibili-live
+        // ④ 而且注册表里不该有这个遗留的源
         let ids: Vec<String> = st.registry.manifests().into_iter().map(|m| m.id).collect();
         assert!(
-            ids.iter().any(|x| x == "bilibili"),
-            "新版 bilibili 必须在 registry，实际: {ids:?}"
-        );
-        assert!(
             !ids.iter().any(|x| x == "bilibili-live"),
-            "★ 旧版 bilibili-live 不该再出现（文件已删），实际: {ids:?}"
+            "★ 遗留的旧版源不该出现（文件已删），实际: {ids:?}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -18,7 +18,7 @@
 // 有 EPG 数据就显示节目单，没有就显示「暂无节目单」空态。
 //
 // 而本机真实数据里这两件事是等价的 —— 唯一声明 `epg` 的源
-// （`.probe/testdata/plugins/cctv.js:374`）同时也实现了 `epg()`：
+// （开发期探针目录里那份直播插件样例也实现了 `epg()`）：
 // ```js
 // capabilities: { vod: true, live: true, epg: true, timeshift: true, … }
 // async epg(channelId)  { … }
@@ -86,6 +86,23 @@ import 'widgets/cover_image.dart';
 //   `widgets/collapsible_epg.dart` / `widgets/epg_panel.dart`
 //   （那两个文件本身**保留** —— 别的页面可能还在用；只删本页的引用）
 import 'widgets/live_embedded_player.dart';
+
+/// ★ task-1013：源筛选 chip 的稳定测试锚点
+///
+/// # 为什么需要 Key（不能只靠 `find.text`）
+/// ```text
+/// 源名在**两处**出现：① 源筛选 chip ② 频道行尾的来源 tag
+/// ⇒ `find.text('甲源')` 会命中多个 ⇒ `tap()` 报"歧义"。
+/// ★ 给 chip 一个**语义化 key** ⇒ 测试能精确点到 chip 本身，
+///   而不是"碰巧点到第一个同名文本"。
+/// ★ 生产里这个 key 无害（`ValueKey` 只用于 element 复用/测试定位）。
+/// ```
+Key sourceFilterChipKey(String? provider) =>
+    ValueKey('live-source-filter-${provider ?? "__all__"}');
+
+/// ★ task-1013：分类筛选 chip 的稳定测试锚点（理由同上）
+Key groupFilterChipKey(String? group) =>
+    ValueKey('live-group-filter-${group ?? "__all__"}');
 
 /// 直播页
 class LivePage extends StatefulWidget {
@@ -181,10 +198,10 @@ class LivePageState extends State<LivePage> {
 
   /// ★★ 可用性探测（动态判定"不可用" —— 见 `live_availability.dart` 的长注释）
   ///
-  /// 为什么必须动态而不是硬编码"cctv 全不可用"：
+  /// 为什么必须动态而不是硬编码"srcl 全不可用"：
   /// ```text
-  /// 我实测 20/20 个 cctv 频道视频线全 DRM，但那只是**此刻快照**。
-  /// 央视 CDN 会变；哪天加密取消了，硬编码过滤会让用户**永远看不到**
+  /// 我实测 20/20 个 srcl 频道视频线全 DRM，但那只是**此刻快照**。
+  /// 某电视台 CDN 会变；哪天加密取消了，硬编码过滤会让用户**永远看不到**
   /// ⇒ 永久性假阴性，比"多显示几个台"危险得多。
   /// ```
   final _probe = LiveAvailabilityProbe();
@@ -879,7 +896,7 @@ class LivePageState extends State<LivePage> {
        * ★★ 先探测可用性，**再**选频道
        *
        * 顺序很重要：若先选第一个频道，可能选中的是一个"视频线全 DRM"
-       * 的台（cctv1 就是）⇒ 用户一进页面就看到黑屏 —— 正是他报的问题。
+       * 的台（srcl1 就是）⇒ 用户一进页面就看到黑屏 —— 正是他报的问题。
        * ⇒ 探测完再选，选到的第一个就是**能播的**。
        */
       unawaited(_probeAll());
@@ -938,7 +955,7 @@ class LivePageState extends State<LivePage> {
      * ★ 为什么这确实会卡（用户第 8 条「直播好像有点卡顿」）：
      *   探测并发数是 **8**（`LiveAvailabilityProbe.concurrency = 8`）
      *   ⇒ 8 个 worker 各自 `onProgress()` ⇒ 回调**密集且突发**
-     *   ⇒ 每次 `setState` 都**重建整页**（含 `_ChannelList` 的 ListView）
+     *   ⇒ 每次 `setState` 都**重建整页**（含 `LiveChannelList` 的 ListView）
      *   ⇒ 进页面那 1-2 秒里会连续重建 **N 次**（N = 频道数，本例 28）
      *
      * ★ 修法：**节流到「每 8 个频道一次」**（而非每个一次）
@@ -1015,7 +1032,7 @@ class LivePageState extends State<LivePage> {
   /// # 用户原话（本轮 6 条之一）
   /// ```text
   /// 直播页面,左侧不再分组,直接平铺下去,然后把不能有画面的都直接删了(直播源)
-  /// 比如现在的 央视网分组,平铺下去 以分组加 tag 作为标记
+  /// 比如现在的 某电视台站分组,平铺下去 以分组加 tag 作为标记
   /// ```
   ///
   /// # 与 task-39 的三个**行为变化**（都是用户明确要求）
@@ -1075,7 +1092,7 @@ class LivePageState extends State<LivePage> {
   ///    本页**不再**往这里 add/remove ⇒ 它恒为空集
   /// ② 而"关掉的源不显示"这件事**仍然成立** —— 但由**核心**负责：
   ///    `get_live_channels` 已按 `disabled-providers.json` 过滤
-  ///    （task-D 实测：隔离副本里 cctv 被 disabled ⇒ 返回里**没有它**）
+  ///    （task-D 实测：隔离副本里 srcl 被 disabled ⇒ 返回里**没有它**）
   /// ⇒ ★ 所以 `_providerEnabled()` 现在**恒为 true**，
   ///    那几处 `if (!_providerEnabled(g.provider)) continue;` 是**冗余但无害**的。
   /// ```
@@ -1099,8 +1116,8 @@ class LivePageState extends State<LivePage> {
   ///
   /// # 为什么要有这一层（用户说"把不能有画面的都直接删了(直播源)"）
   /// ```text
-  /// ★ 他举的例子是「现在的 央视网分组」——
-  ///   央视网（cctv）实测 20/20 个频道视频线全 DRM ⇒ **整组都不可用**
+  /// ★ 他举的例子是「现在的 某电视台站分组」——
+  ///   某电视台站（srcl）实测 20/20 个频道视频线全 DRM ⇒ **整组都不可用**
   /// ⇒ 那就不该在源列表里留着它（否则用户以为"这源能用但没台"）
   /// ```
   /// 判据：该源**至少有一个** playable 频道。
@@ -1136,10 +1153,10 @@ class LivePageState extends State<LivePage> {
   /// # tag 显示什么
   /// ```text
   /// 用户说"以**分组**加 tag" —— 这里的"分组"指的是他前一句说的
-  /// 「比如现在的 **央视网**分组」⇒ 即 **providerName**（源名），
+  /// 「比如现在的 **某电视台站**分组」⇒ 即 **providerName**（源名），
   /// 不是频道的 `group` 字段。
-  /// ★ 依据：他把"央视网"称作一个"分组"，而央视网是**源**。
-  ///   （`cctv.js` 的 group 字段其实是"央视"/"国际"，不是"央视网"）
+  /// ★ 依据：他把"某电视台站"称作一个"分组"，而某电视台站是**源**。
+  ///   （`srcl.js` 的 group 字段其实是"某电视台"/"国际"，不是"某电视台站"）
   /// ```
   ///
   /// # 排序
@@ -1148,8 +1165,8 @@ class LivePageState extends State<LivePage> {
   /// 虽然视觉上没有分组标题了，但"同源的台在一起"更符合直觉。
   /// ★ 用户说"直接平铺下去"，重点是**去掉分组标题**，不是"打乱顺序"。
   /// ```
-  List<({LiveChannel channel, String tag})> get _flatChannels {
-    final out = <({LiveChannel channel, String tag})>[];
+  List<({LiveChannel channel, String tag, String provider})> get _flatChannels {
+    final out = <({LiveChannel channel, String tag, String provider})>[];
     for (final g in _groups) {
       if (!_providerEnabled(g.provider)) continue;
       if (!_providerHasVideo(g.provider)) continue;
@@ -1158,7 +1175,7 @@ class LivePageState extends State<LivePage> {
         // ★ 用户要"把不能有画面的都直接删了" ⇒ audioOnly 也不显示
         if (a == LiveAvailability.audioOnly) continue;
         if (a == LiveAvailability.unavailable) continue;
-        out.add((channel: c, tag: g.providerName));
+        out.add((channel: c, tag: g.providerName, provider: g.provider));
       }
     }
     return out;
@@ -1276,7 +1293,7 @@ class LivePageState extends State<LivePage> {
   ///
   /// # 为什么必须"选能播的"而不是 `list.first`
   /// ```text
-  /// cctv1 的返回顺序是 [高清(drm) , 标清(drm) , 仅音频(可播)]
+  /// srcl1 的返回顺序是 [高清(drm) , 标清(drm) , 仅音频(可播)]
   /// 用 list.first ⇒ 拿到 drm 那条 ⇒ 播放器黑屏
   ///   ★ 这正是 `player_page.dart` 那条日志的成因
   /// ⇒ 与它保持一致：`list.find((x) => !x.drm_protected) ?? list[0]`
@@ -1661,7 +1678,7 @@ class LivePageState extends State<LivePage> {
       );
     }
 
-    final list = _ChannelList(
+    final list = LiveChannelList(
       providers: _visibleProviders,
       enabledProviders: {
         for (final g in _groups)
@@ -1671,18 +1688,21 @@ class LivePageState extends State<LivePage> {
       selectedId: _selected?.id,
       /*
        * ★ 2026-09-26【②】`onToggleProvider` **已移除** ——
-       *   用户要求把"直播源启停"挪到设置页（第 4 条原话），
-       *   所以本页的源标签条改成**只读**（见 `_ChannelList` 里那段说明）。
+       *   用户要求把"直播源启停"挪到设置页（第 4 条原话）。
+       *
+       * ★★ task-1013：源 chip 现在是**筛选**（`LiveChannelList` 内部自持
+       *   `_sourceFilter` + 分类 `_groupFilter`），**仍然没有** onToggleProvider
+       *   —— 筛选与"启停"是两件事，见 `LiveChannelList` 的类注释。
        *
        * ⚠️ 但**能力没丢**：
        *   · 设置页「JS 插件」里每张源卡片的启用/停用走**同一个**
        *     `setProviderEnabled`
        *   · 而核心**已按 disabled 过滤** `get_live_channels`
-       *     （task-D 实测：隔离副本里 cctv 被 disabled ⇒ 返回里**没有它**）
+       *     （task-D 实测：隔离副本里 srcl 被 disabled ⇒ 返回里**没有它**）
        *   ⇒ ★ 设置页改完，本页下次 `loadAll()` 自然生效 —— **不需要**本地镜像
        *
        * ⚠️ 那 `_disabledProviders` 为什么**还留着**？
-       *   它仍是本页的**显示**依据（`enabledProviders` 用它决定标签高亮）。
+       *   它仍是本页的**显示**依据（`enabledProviders` 用它决定 chip 是否弱化）。
        *   ★ 而它现在**只由 `loadAll()` 从核心同步**，不再由本页写入
        *     ⇒ 单一写入点（设置页），单一真相（核心的 json）—— 更干净。
        */
@@ -1698,7 +1718,7 @@ class LivePageState extends State<LivePage> {
      *
      * ⚠️ EPG（节目单）**不许默默删掉**（已有功能）——
      *    lead 裁决【设计点 3】= A（放播放器下方）+ **可折叠**
-     *    （因为 cctv 被隐藏后 EPG 会整块空）。
+     *    （因为 srcl 被隐藏后 EPG 会整块空）。
      */
     final player = LiveEmbeddedPlayer(
       key: _embedKey,
@@ -1842,7 +1862,7 @@ class LivePageState extends State<LivePage> {
       for (var i = 0; i < allChannelEntries.length; i++)
         Episode(
           id: allChannelEntries[i].channel.id,
-          // ★ 带来源 tag —— 与左栏列表同一口径（`_FlatEntry.tag`）
+          // ★ 带来源 tag —— 与左栏列表同一口径（`LiveFlatEntry.tag`）
           title: '${allChannelEntries[i].channel.name}'
               '  · ${allChannelEntries[i].tag}',
           index: i,
@@ -1858,7 +1878,7 @@ class LivePageState extends State<LivePage> {
      *
      * # 为什么需要
      * ```text
-     * cctv1 返回 [高清(drm) / 标清(drm) / 仅音频(可播)]
+     * srcl1 返回 [高清(drm) / 标清(drm) / 仅音频(可播)]
      *   ⇒ 可播的只有一条 ⇒ 不显示切换器（没得选）
      * 但别的源常有 高清/标清/备用 多条可播线
      *   ⇒ 用户需要能在"清晰但可能卡"和"糊但流畅"之间选
@@ -1950,7 +1970,7 @@ class LivePageState extends State<LivePage> {
          *   ⇒ 滚一下页头就跑了，左右两栏**跟着一起滚**
          *   ⇒ 用户说的"固定"就是反对这个
          * 现在：外层改成 **`Padding` + `Column`** ⇒ 整页**不滚动**
-         *   · 左栏：自己内部滚（`_ChannelList` 自带 ListView）
+         *   · 左栏：自己内部滚（`LiveChannelList` 自带 ListView）
          *   · 右栏：播放器 + 线路切换，**高度固定**
          * ```
          * ⚠️ 为什么不是 `SingleChildScrollView`：那仍然"整页可滚"，
@@ -2120,7 +2140,7 @@ class LivePageState extends State<LivePage> {
   ///
   /// # 为什么会差（结构原因，不是算错了）
   /// ```text
-  /// 左栏 `_ChannelList` 的根是 `Column(mainAxisSize: max)` + `Expanded(ListView)`
+  /// 左栏 `LiveChannelList` 的根是 `Column(mainAxisSize: max)` + `Expanded(ListView)`
   ///   ⇒ 它**吃满**父级给的高度 ⇒ 728
   /// 右栏是 `AspectRatio(16/9)` —— 它的高度由**宽度**决定：
   ///   912 ÷ 16 × 9 = **513**（与宽度绑死，与可用高度无关）
@@ -2211,15 +2231,65 @@ class LivePageState extends State<LivePage> {
 ///   （同一个频道理论上可能被多个源提供）。
 /// ⇒ 用轻量 record 在**渲染层**组合，不改数据模型。
 /// ```
-typedef _FlatEntry = ({LiveChannel channel, String tag});
+///
+/// ★ task-1013 新增 `provider`（源 **id**）——
+///   `tag` 是**展示名**（源名），筛选要按**稳定 id** 比对，
+///   两者不能混用（源名可改、可重名；id 不会）。
+typedef LiveFlatEntry = ({LiveChannel channel, String tag, String provider});
 
-class _ChannelList extends StatelessWidget {
-  const _ChannelList({
+/// ★★★ 源 / 分类**筛选**后的频道列表（task-1013 用户要求）
+///
+/// # 用户原话
+/// ```text
+/// > 直播页面,支持一下按照源筛选,还有支持分类筛选
+/// ```
+///
+/// # ⚠️⚠️ 先读这段历史 —— 这里改过三次，别再踩同一个坑
+/// ```text
+/// task-39：chip = **筛选**（一次只看一个源）
+/// task-42：用户要"平铺" ⇒ 筛选没意义 ⇒ chip 改成**开关**
+///          （用户当时说"直播源要支持单独的开启与关闭"）
+/// task-53：★ 用户**否定了开关长在这里** ——
+///          "配置该在**设置页**，不该长在**内容页**"
+///          ⇒（`setProviderEnabled` 的唯一写入点搬到设置页）
+/// ```
+///
+/// ★★ 关键结论（注释里早已写明）：**用户否定的是"开关"的位置，不是"筛选"这个能力**
+/// ```text
+/// · 被否定的形态 ⇒ "点一下 = 启停某个源"（改配置、有副作用、和设置页两个写入点）
+/// · 本次新增     ⇒ "点一下 = 只改**视图**"（看什么，不写任何持久状态）
+/// ```
+///
+/// # ★ 本次如何**避免**踩回 task-53 那个坑（逐条可核）
+/// ```text
+/// ① **不碰** `setProviderEnabled` —— 本组件里**没有任何**对它的调用，
+///    点击只改本 widget 的 `_sourceFilter` / `_groupFilter` 两个内存字段
+///    （连 `setProviderEnabled` 这个标识符都不出现在源码里 ⇒ 机器可验）。
+/// ② **不做开关语义** —— 一次只选**一个**源（单选），不存在"多个开关叠加"；
+///    且默认是「全部源」，点已选中的那个**回到全部**，不产生"启用状态"。
+/// ③ **配置的写入点仍是设置页** —— 本页连"关掉某个源"的入口都没有；
+///    哪一行可点、点了会怎样，Tooltip 里明说"只改显示，不改配置"。
+/// ```
+///
+/// # 为什么把筛选状态放在**本组件内**（而不是 `LivePageState`）
+/// ```text
+/// ① 筛选是**纯视图状态**，与页面/取数无关（不产生副作用、不需要落盘）
+///     ⇒ 放在最靠近被它影响的列表处，重建面最小。
+/// ② ★ 可测性：本组件是**公开**的 `LiveChannelList`（见下），
+///    测试可以只 pump 它、喂假 `channels` 就**真的渲染**出筛选结果 ——
+///    而 `LivePage` 的 `_groups` 只由 FFI 填（flutter test 里恒为空），
+///    整页层面无法喂数据（`t48_live_page_all_channels_test.dart` 记着这道墙）。
+/// ```
+class LiveChannelList extends StatefulWidget {
+  const LiveChannelList({
+    super.key,
     required this.providers,
     required this.enabledProviders,
     required this.channels,
     required this.selectedId,
     required this.onPickChannel,
+    this.onPickProvider,
+    this.onPickGroup,
   });
 
   /// 有可播视频的源（②：整组不可用的源不出现）
@@ -2232,15 +2302,110 @@ class _ChannelList extends StatelessWidget {
   final Set<String> enabledProviders;
 
   /// ★ 平铺的频道（跨源混合，每项带来源 tag）
-  final List<_FlatEntry> channels;
+  final List<LiveFlatEntry> channels;
 
   final String? selectedId;
 
   final ValueChanged<LiveChannel> onPickChannel;
 
+  /// ★ 测试用注入口（**生产路径永不传**）：源筛选被点击时回调
+  ///
+  /// # 为什么需要它（守卫 task-53 那个坑）
+  /// ```text
+  /// 用户否定的形态是"点 tag 就去改 provider 启用状态"。
+  /// ⇒ 本组件**自己**绝不调 `setProviderEnabled`（源码里根本不出现它）。
+  ///   但光靠"我没写"不足以**防止将来有人加** —— 所以留一个**可观测**的
+  ///   出口：筛选点击只走 `onPickProvider`，测试拿它计数；
+  ///   同时装一个 `setProviderEnabled` 探针证明**它一次都没被调**。
+  /// ```
+  final ValueChanged<String?>? onPickProvider;
+
+  /// ★ 测试用注入口（**生产路径永不传**）：分类筛选被点击时回调
+  final ValueChanged<String?>? onPickGroup;
+
+  @override
+  State<LiveChannelList> createState() => LiveChannelListState();
+}
+
+class LiveChannelListState extends State<LiveChannelList> {
+  /// ★ 当前筛的源（`null` = 全部源）—— **纯视图状态**，不落盘、不调 API
+  String? _sourceFilter;
+
+  /// ★ 当前筛的分类（`null` = 全部分类）—— 同上
+  String? _groupFilter;
+
+  @override
+  void didUpdateWidget(covariant LiveChannelList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    /*
+     * ★ 世界变了就清掉失效的筛选（否则用户会看到"空的列表"却不知道为什么）
+     *
+     * ```text
+     * · 筛的源**不在**新列表里了（源被停用 / 整组不可用被剔除）
+     *   ⇒ 清回"全部源"（否则筛选恒空 ⇒ 用户以为坏了）
+     * · 筛的分类在新列表里**一个频道都没有**了
+     *   ⇒ 同样清回"全部分类"
+     * ```
+     * ⚠️ **不是** `initState` 里能做 —— 源/频道列表随时会变（探测陆续完成）。
+     */
+    if (_sourceFilter != null &&
+        !widget.providers.any((g) => g.provider == _sourceFilter)) {
+      _sourceFilter = null;
+    }
+    if (_groupFilter != null && !_groups.contains(_groupFilter)) {
+      _groupFilter = null;
+    }
+  }
+
+  /// 当前可见频道里动态收集的分类（去重 + 稳定顺序）
+  ///
+  /// ★ 用户要求"从**当前可见频道**里动态收集" —— 不硬编码任何分类名。
+  /// ★ 顺序 = **首次出现**的顺序（稳定，不随 set 迭代顺序抖动）。
+  ///
+  /// # ★ 为什么从**全部可见频道**（`widget.channels`）收集，
+  ///   而不是"源筛选之后"的集合
+  /// ```text
+  /// ① 若从"源筛选之后"收集 ⇒ 分类条会随源塌缩，用户**永远选不出空集**
+  ///    ⇒ "源 ∩ 分类"的 AND 就没有实际意义（恒等于"只看源"），
+  ///      与用户要的两个**独立**维度不符。
+  /// ② 从全部频道收集 ⇒ 分类是**全局词汇表**（这个直播页有哪些分类），
+  ///    两个维度真正正交：
+  ///      选源 ⇒ 只看该源；再选分类 ⇒ 再按分类收窄；两者无交集 ⇒ **空态**。
+  /// ③ ★ 空态因此**可达**（这正是用户要求的"筛选后为空要有明确文案"）——
+  ///    若分类随源塌缩，"空态"就永远走不到，那条要求会变成**死代码**。
+  /// ```
+  List<String> get _groups {
+    final seen = <String>{}; // 去重
+    final out = <String>[];
+    for (final e in widget.channels) {
+      final g = e.channel.group;
+      if (g == null || g.isEmpty) continue; // 无分类的频道不产出 chip
+      if (seen.add(g)) out.add(g);
+    }
+    return out;
+  }
+
+  /// 只过了**源筛选**（+ 可用性）的频道
+  List<LiveFlatEntry> get _sourceFiltered {
+    if (_sourceFilter == null) return widget.channels;
+    return widget.channels.where((e) => e.provider == _sourceFilter).toList();
+  }
+
+  /// 最终要显示的频道（源 ∩ 分类，AND）
+  List<LiveFlatEntry> get _filtered {
+    if (_groupFilter == null) return _sourceFiltered;
+    return _sourceFiltered
+        .where((e) => e.channel.group == _groupFilter)
+        .toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final groups = _groups;
+    final shown = _filtered;
+    // ★ 有筛选生效吗（决定空态文案要说"没有频道"还是"这个筛选下没有频道"）
+    final filtering = _sourceFilter != null || _groupFilter != null;
 
     return Container(
       decoration: BoxDecoration(
@@ -2252,134 +2417,174 @@ class _ChannelList extends StatelessWidget {
         children: [
           /*
            * ════════════════════════════════════════════════════════════
-           * ★★★ task-53【②】源标签条：**从"开关"改回"只读展示"**
+           * ★★★ task-1013【筛选】源 chip 排 —— 现在是**可点的筛选**
            * ════════════════════════════════════════════════════════════
            *
-           * 用户原话（第 4 条）：
+           * # 用户原话（本轮）
            * ```text
-           * > 直播 配置源的开启**不是**上面出现 tag 点击开关的,
-           * > 是有个配置的地方,可以配置 **放在设置页面吧**
+           * > 直播页面,支持一下按照源筛选,还有支持分类筛选
            * ```
            *
-           * # 变更历史（为什么这里改过三次）
+           * # ★★★ 这条排改过三次 —— 读懂了再动（history）
            * ```text
            * task-39：chip = **筛选**（一次只看一个源）
-           * task-42：用户要"平铺" ⇒ 筛选没意义 ⇒ chip 改成**开关**
-           *          （用户当时说"直播源要支持单独的开启与关闭"）
+           * task-42：用户要"平铺" ⇒ 当时判定"筛选没意义" ⇒ chip 改成**开关**
            * task-53：★ 用户**否定了开关长在这里** ——
-           *          "配置"该在**设置页**，不该长在**内容页**
+           *          "配置该在设置页，不该长在内容页"
+           * task-1013（本次）：★★ 用户**重新要"筛选"** ——
+           *          「支持一下按照源筛选,还有支持分类筛选」
            * ```
            *
-           * ★★ 关键：用户否定的是**位置**，不是**能力**
+           * ★★ 关键判据（task-53 注释里早已写明，本次是它的**兑现**）：
            * ```text
-           * · 能力（单独启停某个直播源）⇒ ★ **保留**，已挪到设置页
-           *   （`settings_page.dart` 的 JS 插件列表，走**同一个**
-           *    `setProviderEnabled` ⇒ 两处天然一致）
-           * · 位置 ⇒ ★ 本页不再提供"点击开关"
+           * 用户否定的是【开关的位置】（写配置、有副作用），
+           * **不是**"筛选"这个能力本身。
+           * ⇒ 本次把它做回**筛选语义**：
+           *    · 点一下 = **只改视图**（`_sourceFilter` 一个内存字段）
+           *    · **不碰** `setProviderEnabled`（源码里根本不出现该标识符）
+           *    · 配置仍只在设置页写 —— 本页连"关掉源"的入口都没有
            * ```
            *
-           * ⚠️ 但**不能整行删掉** —— 用户仍需知道"这些频道来自哪些源"
-           *   （task-42 用户原话："以分组加 tag 作为标记"）。
-           *   ⇒ 所以保留**只读**的源名，去掉可点性。
-           *   ★ 若整行删除，用户就失去了"我在看哪些源"的信息。
+           * # 为什么**保留**在**同一排**（而不是另加一排）
+           * ```text
+           * ① 用户仍需知道"这些频道来自哪些源"（task-42 原话"以分组加 tag"）
+           *    ⇒ 源名照旧可见，只是**多了一层"可点 = 筛选"**语义。
+           * ② 加第二排会让右栏(300px)**更挤**，且两排"源"信息重复、易混淆。
+           * ③ ★ 形态与 `_LineChip` / 分类 chip **完全一致**（同款选中高亮）——
+           *    用户一眼就知道"这是筛选条"，不会误读成开关。
+           * ```
+           *
+           * ⚠️ 首次多出一个「全部源」chip（`null` = 不筛）——
+           *    否则用户选了一个源后**没法回到全部**（点已选中的那个回到全部，
+           *    但不够显式）。「全部源」把"回到全部"变成**可见**的操作。
            */
-          if (providers.isNotEmpty)
+          if (widget.providers.isNotEmpty)
             SizedBox(
               height: 40,
-              child: ListView.separated(
+              child: ListView(
                 clipBehavior: Clip.antiAlias,
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(
                   horizontal: Sp.x3,
                   vertical: Sp.x2,
                 ),
-                itemCount: providers.length,
-                separatorBuilder: (_, __) => const SizedBox(width: Sp.x2),
-                itemBuilder: (context, i) {
-                  final g = providers[i];
-                  final on = enabledProviders.contains(g.provider);
-                  /*
-                   * ★ 只读标签：**没有 InkWell / onTap** ——
-                   *   启停请去 设置 → JS 插件（2026-09-28 起直播源已并入）。
-                   *   ⚠️ 保留 `on` 的视觉区分：关掉的源仍可能在列表里
-                   *     短暂出现（启停是异步的），用弱化色表达。
-                   */
-                  return Center(
-                    child: Tooltip(
-                      // ★ 提示里**指明去哪配置** —— 否则用户会在这里反复点
-                      message: '${g.providerName}（在 设置 → JS 插件 里配置）',
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: Sp.x3,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: on
-                              ? colors.primary.withValues(alpha: 0.16)
-                              : null,
-                          borderRadius: Radii.rFull,
-                          border: Border.all(
-                            color: on
-                                ? colors.primary
-                                : colors.outlineVariant,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              on
-                                  ? Icons.visibility_outlined
-                                  : Icons.visibility_off_outlined,
-                              size: 13,
-                              color: on
-                                  ? colors.primary
-                                  : colors.onSurfaceVariant,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              g.providerName,
-                              style: TextStyle(
-                                fontSize: FontSizes.cap,
-                                color: on
-                                    ? colors.primary
-                                    : colors.onSurfaceVariant,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+                children: [
+                  // 「全部源」—— 显式的"回到不筛"
+                  _FilterChip(
+                    key: sourceFilterChipKey(null),
+                    label: '全部源',
+                    active: _sourceFilter == null,
+                    onTap: () => _pickSource(null),
+                  ),
+                  for (final g in widget.providers) ...[
+                    const SizedBox(width: Sp.x2),
+                    _FilterChip(
+                      // ★ 测试锚点（见 [sourceFilterChipKey]：源名在行尾 tag 里也出现
+                      //   ⇒ 光靠 `find.text` 会歧义）
+                      key: sourceFilterChipKey(g.provider),
+                      // ★ 只显示**源名**（"当前有哪些源"的可读性保留）
+                      //   ⚠️ 提示明说"只改显示,不改配置" —— 否则用户以为点了会启停；
+                      //      并且点明配置该去哪：**设置 → JS 插件**
+                      //   ★ 注释与下面的 tooltip **必须指向同一个位置** ——
+                      //     只改一处，下一个人读注释会以为入口还在旧地方
+                      //     （`test/merge_live_into_plugins_test.dart` 用"这句话
+                      //       在源码里恰好出现 2 次"钉住它们同步）。
+                      //   ⚠️ 与 `tooltip` 里的写法**逐字一致**（含那个 `→`）——
+                      //     否则计数断言会因"两处字面不同"而红。
+                      label: g.providerName,
+                      tooltip: '只看来自这个源的频道'
+                          '（只改显示，不改配置；配置请去 设置 → JS 插件）',
+                      active: _sourceFilter == g.provider,
+                      // ★ 关掉的源弱化：仍是"可读性"信息（task-53 保留的那点）
+                      dimmed: !widget.enabledProviders.contains(g.provider),
+                      onTap: () => _pickSource(g.provider),
                     ),
-                  );
-                },
+                  ],
+                ],
               ),
             ),
 
-          // ── 频道（★ task-42：**平铺**，不再分组）──
+          /*
+           * ★★★ task-1013【筛选】分类 chip 排 —— 用 `LiveChannel.group`
+           *
+           * # 数据来源（用户要求"从当前可见频道里动态收集"）
+           * ```text
+           * ★ 不硬编码任何分类名 —— 全从 `widget.channels` 里 `group` 去重收集
+           *   （见 `_groups` getter：去重 + 保持首次出现顺序 ⇒ 稳定）。
+           * ⚠️ 只在**源筛选之后**的集合上收集 ⇒ 换源后分类条跟着换
+           *   （"这个源有哪些分类" —— 比"所有源的分类并集"更贴合当前视图）。
+           * ```
+           *
+           * # 为什么只在**多于一个分类**时才显示这一排
+           * ```text
+           * 只有一个分类时，"筛选"没有任何可筛的 —— 多一排只会挤占列表高度。
+           * ⚠️ 但「全部分类」也算在列里 ⇒ 判据是 `groups.length > 1`
+           *   （即至少有两个真实分类，选了才有区别）。
+           * ```
+           */
+          if (groups.isNotEmpty)
+            SizedBox(
+              height: 40,
+              child: ListView(
+                clipBehavior: Clip.antiAlias,
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: Sp.x3,
+                  vertical: Sp.x2,
+                ),
+                children: [
+                  _FilterChip(
+                    key: groupFilterChipKey(null),
+                    label: '全部分类',
+                    active: _groupFilter == null,
+                    onTap: () => _pickGroup(null),
+                  ),
+                  for (final g in groups) ...[
+                    const SizedBox(width: Sp.x2),
+                    _FilterChip(
+                      key: groupFilterChipKey(g),
+                      label: g,
+                      tooltip: '只看这个分类的频道',
+                      active: _groupFilter == g,
+                      onTap: () => _pickGroup(g),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+
+          // ── 频道（★ task-42：**平铺**；task-1013：按当前筛选过滤）──
           Expanded(
             child: ListView(
               clipBehavior: Clip.antiAlias,
               padding: const EdgeInsets.all(Sp.x3),
               children: [
-                for (final entry in channels)
+                for (final entry in shown)
                   _ChannelTile(
                     channel: entry.channel,
                     // ★ tag = 它来自哪个源（用户说"以分组加 tag 作为标记"）
                     tag: entry.tag,
-                    active: entry.channel.id == selectedId,
-                    onTap: () => onPickChannel(entry.channel),
+                    active: entry.channel.id == widget.selectedId,
+                    onTap: () => widget.onPickChannel(entry.channel),
                   ),
                 /*
                  * ★ 全被剔除时的空态 —— 不能只留一片空白
                  *
                  * 否则用户看到"列表是空的"，第一反应是"源坏了"。
                  */
-                if (channels.isEmpty)
+                if (shown.isEmpty)
                   Padding(
                     padding: const EdgeInsets.all(Sp.x5),
                     child: Text(
-                      '这些直播源的频道都没有可播放的画面'
-                      '（视频线路受内容方保护）。',
+                      // ★★ task-1013：空态文案**分两种**（用户要求"明确的空态"）
+                      //    · 有筛选生效 ⇒ 说清"是这个筛选下没有"，**并告诉怎么退出**
+                      //      （否则用户以为整个功能坏了 / 以为源没了）
+                      //    · 没筛选（源本身没频道）⇒ 原来那句（视频线受保护）
+                      filtering
+                          ? '这个筛选下没有频道。\n'
+                              '换一个源或分类，或点「全部源」「全部分类」看全部。'
+                          : '这些直播源的频道都没有可播放的画面'
+                              '（视频线路受内容方保护）。',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: FontSizes.cap,
@@ -2393,6 +2598,80 @@ class _ChannelList extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// 点某个源 chip（`null` = 全部源）
+  ///
+  /// ★ 只改**视图**：写 `_sourceFilter` + 一个 `setState`。
+  /// ⚠️ **绝不**在这里调 `setProviderEnabled` —— 那正是 task-53 被否定的形态
+  ///   （"点 tag 启停源"）。本组件源码里不存在该标识符，机器可查。
+  void _pickSource(String? provider) {
+    setState(() => _sourceFilter = provider);
+    widget.onPickProvider?.call(provider);
+  }
+
+  /// 点某个分类 chip（`null` = 全部分类）—— 同上，纯视图
+  void _pickGroup(String? group) {
+    setState(() => _groupFilter = group);
+    widget.onPickGroup?.call(group);
+  }
+}
+
+/// ★ task-1013：筛选 chip（源 / 分类**同款**）
+///
+/// # 与 `_LineChip` 的关系
+/// ```text
+/// 视觉同族（`primary` 选中高亮 + 圆角胶囊），但**语义不同**：
+/// · `_LineChip` = 选播放线路（有副作用：换流）
+/// · `_FilterChip` = 筛列表（**纯视图**，不产生任何副作用）
+/// ⇒ 不合并成一个类：合并会让"哪种 chip 有副作用"变得含糊。
+/// ```
+class _FilterChip extends StatelessWidget {
+  const _FilterChip({
+    super.key,
+    required this.label,
+    required this.active,
+    required this.onTap,
+    this.tooltip,
+    this.dimmed = false,
+  });
+
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+  final String? tooltip;
+
+  /// 弱化显示（用于"源被停用"的视觉区分，task-53 保留的那点可读性）
+  final bool dimmed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final fg = active
+        ? colors.primary
+        : (dimmed ? colors.onSurfaceVariant.withValues(alpha: 0.6)
+            : colors.onSurfaceVariant);
+
+    final chip = InkWell(
+      onTap: onTap,
+      borderRadius: Radii.rFull,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 4),
+        decoration: BoxDecoration(
+          color: active ? colors.primary.withValues(alpha: 0.16) : null,
+          borderRadius: Radii.rFull,
+          border: Border.all(
+            color: active ? colors.primary : colors.outlineVariant,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(fontSize: FontSizes.cap, color: fg),
+        ),
+      ),
+    );
+
+    return tooltip == null ? chip : Tooltip(message: tooltip!, child: chip);
   }
 }
 
@@ -2452,7 +2731,7 @@ class _ChannelTile extends StatefulWidget {
 
   /// ★★ task-42：来源 tag（用户要求"以分组加 tag 作为标记"）
   ///
-  /// 显示在行尾，表明这个频道来自哪个源（如「央视网」/「IPTV 直播」）。
+  /// 显示在行尾，表明这个频道来自哪个源（如「某电视台站」/「IPTV 直播」）。
   final String? tag;
 
   @override

@@ -268,10 +268,13 @@ void main() {
       await _mountLocal(t, online: true);
       debugPrint('[LOCALBTN] A① online=true currentEpisodeId=$_ep01 ' + _row(t));
 
-      expect(find.text('下载'), findsOneWidget, reason: '★ 操作行本身必须还在');
+      expect(find.text('下载'), findsOneWidget,
+          reason: '★★ Owner 2026-10-14：「**有网**的时候才显示 下载按钮」'
+              '⇒ 本地 + 有网 ⇒ 下载**必须画**（这条同时挡"把下载也一并藏掉"的过度修复）');
       expect(find.text('收藏'), findsNothing,
           reason: '★★★ 本地页不画「收藏」（Owner 2026-10-13）—— '
-              '本地条目是 (local, 绝对路径)，落进收藏表就是一条打不开的假记录');
+              '本地条目是 (local, 绝对路径)，落进收藏表就是一条打不开的假记录。'
+              '★ 与"有没有网"无关：本地页**永远**不画这两枚。');
       expect(find.text('追更'), findsNothing,
           reason: '★★★ 同理，本地页不画「追更」');
       expect(find.text('换源'), findsNothing,
@@ -283,9 +286,12 @@ void main() {
       await _mountLocal(t, online: true, currentEpisodeId: null);
       debugPrint('[LOCALBTN] A② currentEpisodeId=null ' + _row(t));
 
-      expect(find.text('下载'), findsOneWidget, reason: '★ 操作行本身必须还在');
+      expect(find.text('下载'), findsOneWidget,
+          reason: '★ 操作行本身必须还在（本地 + 有网 ⇒ 下载画，见 A① 的长注释）');
       expect(find.text('收藏'), findsNothing,
           reason: '★★★ 本地页不画「收藏」（Owner 2026-10-13）');
+      expect(find.text('追更'), findsNothing,
+          reason: '★★★ 同理，本地页不画「追更」（与收藏同一类：要 provider:id）');
       expect(find.text('换源'), findsNothing,
           reason: '★★★ 进的就是本地页（本页在播一个本地文件），'
               '而"播放器还没报告"不等于"没有当前集"');
@@ -297,6 +303,26 @@ void main() {
 
       expect(find.text('换源'), findsNothing, reason: '★ 没网时整行不画（Owner ⑬）');
       expect(find.text('收藏'), findsNothing, reason: '★ 没网时整行不画（Owner ⑬）');
+      /*
+       * ★★★ 2026-10-14（Owner 追问后的**最终口径**）：
+       * ```text
+       * Owner 原话：
+       * > 有网的时候才显示 下载按钮,没网还是不显示
+       * ```
+       * ⇒ 三枚按钮的判据**不是同一条**，必须分清：
+       * ```text
+       * 收藏 / 追更  ⇒ 本地页**永远**不画（与有没有网无关 ——
+       *                它们要 provider:id，本地那对是 (local, 绝对路径)，
+       *                画出来只会塞一条打不开的假记录）
+       * 下载         ⇒ **有网才画**（没网下载本来也没意义）★ 本条钉这个
+       * 换源         ⇒ 另有判据（_hasLocalPlayable，见 A/D 组）
+       * ```
+       * ⚠️ 反面：若有人把「收藏/追更」的 `!localMode` 顺手也套到「下载」上
+       *    ⇒ 本地 + 有网时下载会消失 ⇒ 红。
+       */
+      expect(find.text('下载'), findsNothing,
+          reason: '★★ Owner 2026-10-14：「有网的时候才显示 下载按钮,'
+              '没网还是不显示」⇒ 本地 + 没网时下载**必须不画**。');
     });
 
     testWidgets('★C 在线页 + 无本地文件 ⇒ 换源照画（阳性对照）', (t) async {

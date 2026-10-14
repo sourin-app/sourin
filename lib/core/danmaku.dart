@@ -842,6 +842,17 @@ class DanmakuConfig {
     return _builtinAppSecret;
   }
 
+  /// **用户自己填的** AppId（只看 UiPrefs 覆盖，不看内置）；没填返回空串。
+  ///
+  /// ★ 2026-10-14：给凭证输入框做**预填**用 —— 面板要能看见用户上次填的值。
+  /// ⚠️ 与 [appId]（**生效值**）分开是有意的：生效值可能是内置凭证，
+  ///    把它塞进输入框会让用户误以为"这是我填的"，一点保存反而用真内置值
+  ///    覆盖掉原值。预填只看用户覆盖，生效值走 `maskedAppId` 在状态行展示。
+  static String get userAppId => (UiPrefs.get(keyAppId) ?? '').trim();
+
+  /// 用户自己填的 AppSecret（只看 UiPrefs 覆盖，不看内置）；没填返回空串。
+  static String get userAppSecret => (UiPrefs.get(keyAppSecret) ?? '').trim();
+
   /// 是否"有资格"发请求。
   ///
   /// 注意：这**不代表**凭证一定有效 —— 有效性只有服务端说了算，
@@ -966,18 +977,22 @@ class DanmakuConfig {
 
   static void setEnabled(bool v) => UiPrefs.set(keyEnabled, v ? '1' : '0');
 
-  /// ★ 2026-10-11（Owner 反馈）：面板上的凭证输入框已整节移除 ⇒ 生产代码里
-  /// **不再有人调用** `setAppId` / `setAppSecret` / `clearCredentials`。
-  /// 保留它们（标 `@visibleForTesting`）而不是删掉，理由：
-  /// ① 签名链路（`appId` / `appSecret` getter + `usingBuiltin*`）仍读这两个键，
-  ///    测试要构造"用户覆盖 > 内置"的优先级场景，少了写入口就没法测；
-  /// ② 用户**以前手填并落盘**的旧值仍走同一条优先级（用户覆盖 > 内置），
-  ///    这几个方法是那套语义的可测锚点。
-  /// 产品行为零变化（没有任何 UI 再触发它们）。
-  @visibleForTesting
+  /// ★★★ 2026-10-14（Owner 反馈「外部弹幕服务的凭证流程根本没走通」）：
+  /// 面板上的凭证输入框**恢复**了（见 `danmaku_settings_dialog.dart` 的
+  /// `_credentialsSection`）⇒ 这三个写入口重新有了**生产调用者**，
+  /// 不再是"只给测试用"。
+  ///
+  /// 改前它们被标 `@visibleForTesting`，因为 2026-10-11 把输入框整节删了
+  /// （当时的设想是"客户端内置凭证、用户不必手填"）。但**本地构建没有
+  /// `--dart-define`** ⇒ 没有内置值、`UiPrefs` 也没值 ⇒ 官方那条边必然
+  /// 403「弹幕服务没收到凭证」，且**没有入路**把它配起来。
+  /// ⇒ 恢复手动写入口，让没有内置凭证的构建也能用。
+  ///
+  /// # 纪律：用户填的是**他自己的**配置，存 UiPrefs（本机），不进仓库
+  /// 落盘的是用户本机数据目录的 `ui-prefs.json`；仓库里仍然**绝无**真实
+  /// Secret（内置值只经 `--dart-define` 从 CI Secrets 注入，见 [builtinAppId]）。
   static void setAppId(String v) => _writeTrimmed(keyAppId, v);
 
-  @visibleForTesting
   static void setAppSecret(String v) => _writeTrimmed(keyAppSecret, v);
 
   static void setFontScale(double v) =>
@@ -1020,11 +1035,11 @@ class DanmakuConfig {
   /// ★ 2026-10-11：写「只显示彩色弹幕」开关
   static void setColorOnly(bool v) => UiPrefs.set(keyColorOnly, v ? '1' : '0');
 
-  /// 清空凭证（原「清除凭证」按钮的动作；按钮已随凭证节一并移除）。
+  /// 清空凭证（面板上「清除」按钮的动作）。
   ///
-  /// @visibleForTesting：生产代码已无调用（见 [setAppId] 的说明），
-  /// 保留给测试验证优先级回落（清掉用户覆盖 ⇒ 回落到内置）。
-  @visibleForTesting
+  /// ★ 2026-10-14：恢复为生产 API（见 [setAppId] 的说明）—— 面板的
+  /// 「清除」按钮调用它，优先级随之回落到内置（若该构建有内置值）。
+  /// 只动 UiPrefs，**永远不写 builtin**。
   static void clearCredentials() {
     UiPrefs.remove(keyAppId);
     UiPrefs.remove(keyAppSecret);

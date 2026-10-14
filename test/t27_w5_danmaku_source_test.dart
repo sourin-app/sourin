@@ -200,16 +200,19 @@ void main() {
           reason: '探针打本地版本接口');
     });
 
-    test('dialog：数据源状态行保留；官方凭证输入入口已删除', () {
+    test('dialog：数据源状态行保留；官方凭证输入入口**恢复**（2026-10-14）', () {
       expect(dialogSrc, contains('检测到本机外部弹幕 未运行'));
       expect(dialogSrc, contains('本机外部弹幕（127.0.0.1:2080）'));
-      // ★ 2026-10-11（Owner 反馈）：官方 API 凭证**输入入口整节删除** ——
-      //   客户端已内置凭证（构建期 --dart-define 注入），用户不必手填。
-      //   改前这条断言是「凭证入口保留」，现在与新现实相反。
-      expect(dialogSrc.contains('在 dev.dandanplay.com 申请'), isFalse,
-          reason: '凭证输入入口已删除（内置凭证取代手填）');
-      expect(dialogSrc.contains("labelText: 'AppId'"), isFalse);
-      expect(dialogSrc.contains("labelText: 'AppSecret'"), isFalse);
+      /*
+       * ★★★ 2026-10-14（Owner「凭证流程根本没走通」）：断言**翻转**。
+       *
+       * 改前（2026-10-11）这里要求凭证入口**必须已删除**，理由是"客户端内置
+       * 凭证、用户不必手填"。但本地构建没有 --dart-define ⇒ 无内置值 ⇒
+       * 官方边必然 403 且无入路可配 ⇒ 输入框恢复。
+       */
+      expect(dialogSrc.contains("labelText: 'AppId'"), isTrue,
+          reason: '凭证输入入口必须恢复（无内置凭证的构建靠它）');
+      expect(dialogSrc.contains("labelText: 'AppSecret'"), isTrue);
       // 但「数据源」这一节本身必须还在（它是本机外部弹幕 的探测结果行）。
       expect(dialogSrc, contains('数据源'));
     });

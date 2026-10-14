@@ -6172,6 +6172,55 @@ class _PlayerPageState extends State<PlayerPage>
     if (mounted) setState(() {});
   }
 
+  /// ★★★ 2026-10-14（Owner 反馈「外部弹幕服务的凭证流程根本没走通」）：
+  /// 面板凭证节点了「保存」—— 把用户填的一对 AppId / AppSecret 落盘。
+  ///
+  /// # 为什么要**重建客户端**（这是"真的走通"的关键）
+  /// ```text
+  /// appId/appSecret 是 `ExternalDanmakuClient` 的**构造快照**
+  /// （见 _resetDanmakuClient 的注释与 4577 那段）⇒ 不重建的话，
+  /// 旧实例照旧用**空**凭证去签名，用户点保存再点「重新获取」还是同一句
+  /// 「没收到凭证」—— 这正是 Owner 说的"根本没走通"。
+  /// ```
+  ///
+  /// # 只记「已保存」提示，**不**自动重取
+  /// ```text
+  /// 保存是"改配置"，重取是"发一次网络请求"。自动重取会让用户正看着的画面
+  /// 忽然换一批弹幕（甚至换到另一集），比"什么都不发生"更糟。
+  /// ⇒ 宿主把 credentialSaved 置真，面板据此提示「已保存，点重新获取生效」。
+  /// ```
+  void _setDanmakuCredentials(String appId, String appSecret) {
+    DanmakuConfig.setAppId(appId);
+    DanmakuConfig.setAppSecret(appSecret);
+    _resetDanmakuClient();
+    if (!mounted) return;
+    setState(() {
+      _danmakuSettings = _danmakuSettings.copyWith(
+        // 回填**用户覆盖**（可能被 trim 过），让输入框与落盘一致
+        appId: DanmakuConfig.userAppId,
+        appSecret: DanmakuConfig.userAppSecret,
+        credentialSaved: true,
+      );
+    });
+  }
+
+  /// 面板凭证节点了「清除」—— 清掉用户覆盖（回落到内置，若该构建有内置值）。
+  ///
+  /// 同 [_setDanmakuCredentials]：必须重建客户端，否则旧实例还揣着刚清掉的
+  /// 凭证照旧签名。清完的状态行由 `DanmakuConfig` 的真实 getter 如实反映。
+  void _clearDanmakuCredentials() {
+    DanmakuConfig.clearCredentials();
+    _resetDanmakuClient();
+    if (!mounted) return;
+    setState(() {
+      _danmakuSettings = _danmakuSettings.copyWith(
+        appId: '',
+        appSecret: '',
+        clearCredentialSaved: true,
+      );
+    });
+  }
+
   void _reloadDanmaku() {
     /*
      * ★ 2026-10-14：「重新获取」= 丢掉用户的**手动选择**
@@ -14032,6 +14081,10 @@ class _PlayerPageState extends State<PlayerPage>
                           onSearch: (kw) => unawaited(_searchDanmaku(kw)),
                           onPickMatch: _pickDanmakuMatch,
                           onHintAction: _runDanmakuHintAction,
+                          // ★★★ 2026-10-14（Owner）：凭证节的保存 / 清除
+                          //   面板只递值，写盘与状态更新全在宿主（同 onSearch 分工）。
+                          onSetCredentials: _setDanmakuCredentials,
+                          onClearCredentials: _clearDanmakuCredentials,
                           /*
                            * ★ 2026-10-09：屏蔽词 / 分类开关改了就重建播放页 ——
                            *   过滤发生在 danmaku_overlay 的排版那一层，

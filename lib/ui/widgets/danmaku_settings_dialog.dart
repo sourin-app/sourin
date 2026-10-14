@@ -9,18 +9,38 @@
 // 所以齿轮挂在播放页底栏的「弹幕」按钮旁边，面板是 `Positioned.fill` 的
 // 全屏浮层（与「播放设置」「片头片尾」同一套视觉语言，**不暂停播放**）。
 //
-// # ★★★ 凭证从哪来（2026-10-11 Owner 反馈后：面板上**不再**有凭证输入框）
+// # ★★★ 凭证从哪来（2026-10-14 Owner 反馈后：面板上**恢复**凭证输入框）
 //
-// 客户端**内置** 外部弹幕服务 官方凭证（构建期 `--dart-define` 注入：
-// `DANDANPLAY_APP_ID` / `DANDANPLAY_APP_SECRET`，见 `.github/workflows/build.yml`；
-// 仓库里**只有占位符 / 空串**，真值只在 CI Secrets 里）。
-// 官方文档（doc.dandanplay.com/open/）明确允许开源客户端「用占位符，
-// 构建时从机密读取后替换」⇒ 所以本次把面板上的 AppId / AppSecret 两个
-// 输入框 + 那枚删除按钮**整节删除** —— 用户不必也不该手填。
-// 需要换源时，面板里给的是两条**不用凭证**的路：本机外部弹幕 / 某视频站弹幕。
+// # Owner 原话（逐字）
+// ```text
+// > 本地播放提示 [弹幕服务] 没有收到凭证,说明 [弹幕服务] 流程根本没走通
+// ```
+//
+// # 走不通的根因（改前）
+// ```text
+// ① 2026-10-11 把面板上的凭证输入框**整节删除**了 —— 当时的设想是
+//    "客户端已内置官方凭证（构建期 --dart-define 注入），用户不必手填"；
+// ② 但那把"内置已注入"当成了**普遍**成立。本地构建没有 --dart-define ⇒
+//    `DanmakuConfig.hasBuiltinCredentials == false`，而 `UiPrefs` 也没值
+//    ⇒ 打官方那条边**必然** 403「弹幕服务没收到凭证」；
+// ③ 更糟的是写入口（`setAppId` / `setAppSecret` / `clearCredentials`）
+//    虽然定义还在，却**全仓 0 个调用者** ⇒ 用户**无路可走**。
+// ⇒ 所以本节恢复：两个输入框 + 「保存」/「清除」，让没有内置凭证的构建也能用。
+// ```
+//
+// # 三样东西现在**都在**（优先级从高到低）
+// ```text
+// ① `UiPrefs` 用户覆盖（键 `dsh.danmaku.appId` / `dsh.danmaku.appSecret`）  ← 本面板写
+// ② 构建期 `--dart-define=DANDANPLAY_APP_ID/SECRET`（`String.fromEnvironment`）
+// ③ 两者都空 ⇒ 未配置（官方边会失败，面板必须**如实**说）
+// ```
+//
+// 内置值仍然只在 CI Secrets 里 —— 仓库里**只有占位符 / 空串**
+// （官方文档 doc.dandanplay.com/open/ 允许开源客户端「用占位符，
+//  构建时从机密读取后替换」）。面板给用户填的是**他自己的**配置。
 //
 // 保留的只读链路（`DanmakuConfig` 的 getter / `usingBuiltin*` /
-// `maskedAppId` / `isConfigured` / `statusText`）仍然是签名与状态展示的来源。
+// `maskedAppId` / `isConfigured` / `statusText`）是签名与状态展示的来源。
 //
 // # 为什么没配凭证也**照样**发请求
 //
@@ -30,12 +50,10 @@
 // ⇒ 所以本面板把 `DanmakuException.detail`（含 `X-Error-Message` 原文）
 //   原样显示出来，**一个字都不改写**。
 //
-// # ⚠️ AppSecret 的存储（历史说明）
+// # ⚠️ AppSecret 的存储
 //
-// 移除输入框**之前**，用户手填的 AppSecret 是**明文**存在数据目录的
-// `ui-prefs.json` 里的。这些**用户自己填的旧值**不在本次清理范围内
-// （Owner 原话「用户自己填的旧值不管」）—— 一旦落盘就仍然生效，
-// 且优先于内置值（`DanmakuConfig` 优先级：用户覆盖 > 内置）。
+// 用户手填的 AppSecret 是**明文**存在数据目录的 `ui-prefs.json` 里的
+// —— 这是**用户自己的本机配置**，不进仓库（仓库纪律见上）。
 // 迁移到系统凭据存储仍是**独立的一项工作**，不在本任务范围内。
 //
 // # 禁止 `package:flutter/material.dart`
@@ -125,19 +143,21 @@ class DanmakuSettingsState {
     this.searchResults = const <DanmakuMatch>[],
     this.searchKeyword = '',
     this.searchStale = false,
+    this.credentialSaved = false,
   });
 
   /// 从当前偏好构造（打开面板时的初值）
   ///
-  /// ★ 2026-10-11（Owner 反馈）：面板上的 AppId / AppSecret 输入框已整节删除
-  /// ⇒ 这两个字段**不再用于渲染**，只是签名链路与宿主状态的只读回显
-  /// （保留字段以免波及大量测试与 `copyWith`；签名读的是
-  /// `DanmakuConfig.appId/appSecret` 生效值，与此处初值无关）。
-  /// 记录生效值即可，不再有"内置生效就不预填"那套（那是为已删除的输入框服务的）。
+  /// ★ 2026-10-14（Owner 反馈「凭证流程根本没走通」）：凭证输入框**恢复**了
+  /// ⇒ 这两个字段重新用来**预填**输入框（用户此前填过值，打开面板要能看见）。
+  /// 预填只看**用户自己的覆盖**（`UiPrefs` 那两个键），不看 [DanmakuConfig.appId]
+  /// 的**生效值** —— 生效值可能是内置凭证（构建期注入），把它塞进输入框会
+  /// 让用户误以为"这是我自己填的"，他一点保存反而用**打码前的真内置值**
+  /// 覆盖掉原值。真正的生效值走 `maskedAppId` 在状态行里展示。
   factory DanmakuSettingsState.fromPrefs() => DanmakuSettingsState(
     enabled: DanmakuConfig.enabled,
-    appId: DanmakuConfig.appId,
-    appSecret: DanmakuConfig.appSecret,
+    appId: DanmakuConfig.userAppId,
+    appSecret: DanmakuConfig.userAppSecret,
     fontScale: DanmakuConfig.fontScale,
     opacity: DanmakuConfig.opacity,
     speed: DanmakuConfig.speed,
@@ -145,6 +165,9 @@ class DanmakuSettingsState {
   );
 
   final bool enabled;
+
+  /// 凭证输入框的**预填值** —— 只放**用户自己的覆盖**（`UiPrefs`），
+  /// 不含内置凭证（见 [DanmakuSettingsState.fromPrefs] 的说明）。
   final String appId;
   final String appSecret;
   final double fontScale;
@@ -218,6 +241,14 @@ class DanmakuSettingsState {
   /// ```
   final bool searchStale;
 
+  /// ★ 2026-10-14：用户**本次会话里刚保存过凭证** ⇒ 面板提示
+  /// 「已保存，点『重新获取弹幕』生效」。
+  ///
+  /// 为什么不自动重取：保存凭证是"改配置"，重取是"发一次网络请求"。
+  /// 自动重取会让用户正在看的画面**忽然换一批弹幕**（甚至换到另一集），
+  /// 比"什么都不发生"更糟。⇒ 明确提示一次，把时机留给用户。
+  final bool credentialSaved;
+
   DanmakuSettingsState copyWith({
     bool? enabled,
     String? appId,
@@ -241,6 +272,8 @@ class DanmakuSettingsState {
     List<DanmakuMatch>? searchResults,
     String? searchKeyword,
     bool? searchStale,
+    bool? credentialSaved,
+    bool clearCredentialSaved = false,
   }) {
     return DanmakuSettingsState(
       enabled: enabled ?? this.enabled,
@@ -265,6 +298,8 @@ class DanmakuSettingsState {
       searchResults: searchResults ?? this.searchResults,
       searchKeyword: searchKeyword ?? this.searchKeyword,
       searchStale: searchStale ?? this.searchStale,
+      credentialSaved:
+          clearCredentialSaved ? false : (credentialSaved ?? this.credentialSaved),
     );
   }
 }
@@ -288,6 +323,8 @@ class DanmakuSettingsDialog extends StatefulWidget {
     this.onSearch,
     this.onPickMatch,
     this.onHintAction,
+    this.onSetCredentials,
+    this.onClearCredentials,
     this.onChanged,
     this.fill = true,
   });
@@ -342,6 +379,27 @@ class DanmakuSettingsDialog extends StatefulWidget {
   /// `DanmakuHint.action` 原样递出去。
   final ValueChanged<DanmakuHintAction>? onHintAction;
 
+  /// ★★★ 2026-10-14（Owner 反馈「外部弹幕服务的凭证流程根本没走通」）：
+  /// 用户点了凭证节的「保存」。
+  ///
+  /// # 为什么走宿主（不是面板自己落盘）
+  /// ```text
+  /// 面板是**纯 UI**（见 DanmakuSettingsState 的类文档）。凭证落盘本身
+  /// 可以面板自己调 `DanmakuConfig.setAppId/setAppSecret`，但**保存之后
+  /// 要触达**（重建客户端 / 让"已保存"提示出现）—— 那属于宿主的状态。
+  /// ⇒ 与 [onSearch] / [onReload] 同一条分工：面板把两个值原样递出去，
+  ///   宿主写盘 + 更新 [DanmakuSettingsState]。
+  /// ```
+  ///
+  /// 传 null ⇒ **凭证节整节不画**（与 [onOpenBili] 同一条规矩：面板不认识
+  /// 宿主的开关，也不该猜；画了却点了没反应比不画更糟）。
+  final void Function(String appId, String appSecret)? onSetCredentials;
+
+  /// 用户点了凭证节的「清除」⇒ 清掉用户覆盖（回落内置，若该构建有内置值）。
+  ///
+  /// 与 [onSetCredentials] 配对：**两个一起给**才画凭证节。
+  final VoidCallback? onClearCredentials;
+
   /// 用户改了「显示哪些弹幕 / 屏蔽词」时回调 —— 让宿主重建播放页，
   /// 好让新的过滤规则**立刻**反映到正在播的那一集上。
   ///
@@ -391,10 +449,24 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 会把用户刚敲的关键词整段吃掉。
   final TextEditingController _searchKeyword = TextEditingController();
 
+  /// ★★★ 2026-10-14：凭证输入框的两个 controller。
+  ///
+  /// 与 [_blockWords] / [_searchKeyword] **同一条教训**：不能在 build 里 new。
+  /// 这里多一条更硬的理由 —— 保存后宿主会 setState 回填 `state.appId/appSecret`，
+  /// 若用 `TextEditingController(text: ...)` 每次重建新造，用户正在输入的
+  /// 一半内容会被回填值顶掉（而且光标会跳）。
+  /// ⇒ 初值取 `widget.state` 的**用户覆盖值**，之后完全由用户输入驱动。
+  late final TextEditingController _credAppId =
+      TextEditingController(text: widget.state.appId);
+  late final TextEditingController _credAppSecret =
+      TextEditingController(text: widget.state.appSecret);
+
   @override
   void dispose() {
     _blockWords.dispose();
     _searchKeyword.dispose();
+    _credAppId.dispose();
+    _credAppSecret.dispose();
     super.dispose();
   }
 
@@ -454,6 +526,22 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                             _divider(),
                             _switchSection(),
                             _divider(),
+                            /*
+                             * ★★★ 2026-10-14（Owner）：「凭证」节 —— 恢复输入框
+                             *
+                             * Owner 原话：> 本地播放提示 [弹幕服务] 没有收到凭证,
+                             *            说明 [弹幕服务] 流程根本没走通
+                             *
+                             * 排在「显示」之上、紧接开关 —— 没配凭证时它是
+                             * 用户最先要做的一件事；配好之后就退成一块普通设置
+                             * （状态行会如实说"当前用的是内置/用户填写"）。
+                             *
+                             * 回调没接时整节不画（与搜索区同一条门控）。
+                             */
+                            if (_showCredentialsSection) ...[
+                              _credentialsSection(),
+                              _divider(),
+                            ],
                             _displaySection(),
                             _divider(),
                             _filterSection(),
@@ -655,21 +743,20 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     if (s.error != null) return '取弹幕失败（下方有服务端原文）';
     if (s.status.isNotEmpty) return s.status;
     /*
-     * ★ 2026-10-11（Owner 反馈）：面板上的 AppId / AppSecret 输入框已整节移除
-     *   ⇒ 判据不能再是 s.appId/s.appSecret（那两格**永远不会**再有用户输入）。
-     *   改成看**生效**的凭证（用户旧覆盖 > 内置，见 DanmakuConfig.isConfigured）：
-     *   - 有凭证（内置已注入，或用户以前填过并仍在生效）⇒ 如实说在用哪一份，
-     *     且**绝口不提**"去输入框填"，因为已经没有输入框了；
-     *   - 没凭证 ⇒ 只指两条**真实存在**的路（本机外部弹幕 / 某视频站弹幕），
-     *     不再对用户说「还没填 AppId / AppSecret」。
+     * ★ 2026-10-14（Owner 反馈「凭证流程根本没走通」）：判据仍是**生效**的
+     *   凭证（用户覆盖 > 内置，见 `DanmakuConfig.isConfigured`），但口径改了：
+     *   改前（输入框被删的那版）说「凭证未就绪（…不需要凭证）」——
+     *   听着像"不用管"，而用户真去打官方边就是 403。
+     *   现在有输入框了 ⇒ 缺凭证时**如实**说是缺凭证，并给出两条出路
+     *   （下面填 / 改用免签名的那两条路）。
      */
     if (!DanmakuConfig.isConfigured) {
-      return '弹幕已开启，但凭证未就绪（本机外部弹幕 / 某视频站弹幕不需要凭证）';
+      return '弹幕已开启，但凭证未配置（官方边会失败）';
     }
     if (DanmakuConfig.usingBuiltinAppId) {
       return '弹幕已开启（内置凭证 AppId ${DanmakuConfig.maskedAppId}）';
     }
-    return '弹幕已开启（AppId ${DanmakuConfig.maskedAppId}）';
+    return '弹幕已开启（用户填写 AppId ${DanmakuConfig.maskedAppId}）';
   }
 
   Widget _switchSection() {
@@ -691,11 +778,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 没跑就退回官方 API。
   ///
   /// ★ 2026-10-11（Owner 反馈）：这里**原来**还挂着 外部弹幕服务 开放平台的
-  ///   AppId / AppSecret 两个输入框 + 那枚删除按钮。已整节移除 ——
-  ///   客户端**内置了官方凭证**（构建期 `--dart-define` 注入，见
-  ///   `.github/workflows/build.yml` 与 `DanmakuConfig.hasBuiltinCredentials`），
-  ///   用户不必也不该手填；需要换源时用下面的「数据源」/ 某视频站弹幕两条路。
-  ///   ⇒ 本方法现在只剩这一行**只读**状态，凭证相关的输入 UI 一概不画。
+  ///   AppId / AppSecret 两个输入框 + 那枚删除按钮，当次整节移除了。
+  /// ★ 2026-10-14（Owner 反馈「凭证流程根本没走通」）：输入框**恢复**，
+  ///   但不再挂在这一节里 —— 它独立成 [_credentialsSection]（可门控、带如实
+  ///   状态行）。本节现在只剩这一行**只读**的本机探测结果。
   Widget _sourceSection() {
     if (widget.state.sourceLine.isEmpty) return const SizedBox.shrink();
     return Column(
@@ -705,6 +791,136 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         const SizedBox(height: Sp.x3),
       ],
     );
+  }
+
+  /// 凭证节是否显示 —— 两个回调**都在**才画（与 [_showSearchSection] 同一条规矩）。
+  ///
+  /// 只给 `onSetCredentials` 会出现「保存」有反应、「清除」点了没反应；
+  /// 只给 `onClearCredentials` 则输入框画得出来却存不下去。两头都是残废形态。
+  bool get _showCredentialsSection =>
+      widget.onSetCredentials != null && widget.onClearCredentials != null;
+
+  /// ★★★ 2026-10-14（Owner）：「凭证」节 —— 两个输入框 + 保存 / 清除 + **如实**状态行
+  ///
+  /// Owner 原话：> 本地播放提示 [弹幕服务] 没有收到凭证,说明 [弹幕服务] 流程根本没走通
+  ///
+  /// # 状态行逐字段都从 `DanmakuConfig` 的**真实 getter** 读
+  /// ```text
+  /// 内置是否可用 ⇒ hasBuiltinCredentials（不是猜"有没有注入"）
+  /// 生效的是哪一份 ⇒ usingBuiltinAppId ? 内置 : 用户填写
+  /// 两者都没有     ⇒ 明说"官方边会失败"，并给两条**真实存在**的免签名路
+  /// ```
+  /// 这三档与 [_statusText] 是**两个不同的问题**：[_statusText] 说"弹幕现在
+  /// 什么状态"，本节说"凭证这个配置项现在什么情况"。两条都如实、且都不许
+  /// 在 UI 里自己拼字符串判断 —— 判据全在 `DanmakuConfig`。
+  Widget _credentialsSection() {
+    final s = widget.state;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionTitle('凭证', note: '外部弹幕服务'),
+        // ── 状态行（如实）──
+        Row(
+          children: [
+            _dot(DanmakuConfig.isConfigured),
+            const SizedBox(width: Sp.x2),
+            Flexible(
+              child: Text(
+                _credentialStatusText,
+                style: const TextStyle(
+                  color: DanmakuTextColors.secondary,
+                  fontSize: FontSizes.sm,
+                ),
+              ),
+            ),
+          ],
+        ),
+        // 两者都没有 ⇒ 说清后果 + 两条出路（别让用户猜"为什么没反应"）
+        if (!DanmakuConfig.isConfigured) ...[
+          _hint(
+            '未配置凭证，官方边会失败（服务端会回「没收到凭证」）。'
+            '可以在下面填一对 AppId / AppSecret，'
+            '或改用本机外部弹幕 / 外部视频源弹幕 —— 那两条路**免签名**、不需要凭证。',
+          ),
+        ],
+        const SizedBox(height: Sp.x2),
+        // ── 输入框 ──
+        TextField(
+          controller: _credAppId,
+          style: const TextStyle(color: DanmakuTextColors.body, fontSize: FontSizes.sm),
+          decoration: const InputDecoration(
+            labelText: 'AppId',
+            border: OutlineInputBorder(),
+            isDense: true,
+          ),
+        ),
+        const SizedBox(height: Sp.x2),
+        TextField(
+          controller: _credAppSecret,
+          // ★ obscure：肩窥防护（面板可能被投屏 / 录屏）
+          obscureText: true,
+          style: const TextStyle(color: DanmakuTextColors.body, fontSize: FontSizes.sm),
+          decoration: const InputDecoration(
+            labelText: 'AppSecret',
+            border: OutlineInputBorder(),
+            isDense: true,
+          ),
+        ),
+        const SizedBox(height: Sp.x2),
+        // ── 动作 ──
+        Row(
+          children: [
+            FilledButton.icon(
+              onPressed: () => widget.onSetCredentials!(
+                _credAppId.text.trim(),
+                _credAppSecret.text.trim(),
+              ),
+              icon: const Icon(Icons.save_outlined, size: 18),
+              label: const Text('保存'),
+            ),
+            const SizedBox(width: Sp.x2),
+            TextButton.icon(
+              onPressed: () {
+                // 清空输入框显示（与落盘同步），再请宿主清 UiPrefs
+                _credAppId.clear();
+                _credAppSecret.clear();
+                widget.onClearCredentials!();
+              },
+              icon: const Icon(
+                Icons.delete_outline,
+                color: DanmakuTextColors.body,
+                size: 18,
+              ),
+              label: const Text(
+                '清除',
+                style: TextStyle(color: DanmakuTextColors.body),
+              ),
+            ),
+          ],
+        ),
+        // ── 保存后的触达（⚠️ 只提示，不自动重取 —— 理由见 credentialSaved 字段）──
+        if (s.credentialSaved)
+          _hint('已保存，点上面的「重新获取弹幕」生效'),
+        _hint(
+          '填的是**你自己的**配置，只存在本机（数据目录的 ui-prefs.json），不进仓库。'
+          'AppSecret 目前是明文存储。',
+        ),
+      ],
+    );
+  }
+
+  /// 凭证状态的一句话 —— 三档，逐字段读 `DanmakuConfig` 真实 getter。
+  String get _credentialStatusText {
+    // ① 生效的是**用户填写**的（优先级最高，压过内置）
+    if (DanmakuConfig.isConfigured && !DanmakuConfig.usingBuiltinAppId) {
+      return '当前生效：用户填写（AppId ${DanmakuConfig.maskedAppId}）';
+    }
+    // ② 只剩内置可用
+    if (DanmakuConfig.usingBuiltinAppId) {
+      return '当前生效：内置凭证（AppId ${DanmakuConfig.maskedAppId}）';
+    }
+    // ③ 内置也没注入（本地构建常见）—— 如实说
+    return '未配置凭证';
   }
 
   Widget _displaySection() {
@@ -1228,9 +1444,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         ),
         if (e.isAuthProblem)
           _hint(
-            '这是凭证问题。面板上已经没有填写凭证的输入框了 —— 客户端**内置**了'
-            '官方凭证，正常情况下不该出现这条。可行的一步：改用本机外部弹幕'
-            '（免签名）或 某视频站弹幕，再点「重新获取弹幕」。',
+            '这是凭证问题。可行的几步（按代价从低到高）：'
+            '改用本机外部弹幕（免签名）或 外部视频源弹幕；'
+            '或在上面的「凭证」节填一对 AppId / AppSecret 并保存，'
+            '再点「重新获取弹幕」。',
           ),
       ],
     );

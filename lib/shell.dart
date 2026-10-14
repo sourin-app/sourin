@@ -50,6 +50,9 @@ import 'package:flutter/foundation.dart'
     show ValueListenable, ValueNotifier;
 import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart' show SchedulerBinding, FrameTiming;
+// ★ 自拍用（SOURIN_SHOT=1）：RenderRepaintBoundary + toImage
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
+import 'dart:ui' as ui;
 import 'package:material_ui/material_ui.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:media_kit/media_kit.dart';
@@ -785,12 +788,28 @@ Future<void> main() async {
   if (noGlass) {
     debugPrint('[T98] SOURIN_NO_GLASS=1 ⇒ 玻璃模糊关闭（对照实验）');
   }
-  runApp(noGlass
+  /*
+   * ★★ 2026-10-14：`SOURIN_SHOT=1` 时在根上包一层**有名的 RepaintBoundary**。
+   *
+   * # 为什么需要它
+   * ```text
+   * “切页时两页叠在一起”这类缺陷**读数看不出来**（build/raster 都正常）
+   * ⇒ 必须**看像素**。而屏幕截图对窗口坐标敏感（本机抓不到窗口）。
+   * ⇒ 自拍：`RenderRepaintBoundary.toImage()` 在**进程内**光栅化，不靠屏幕。
+   * ```
+   * ⚠️ 只在环境变量开时才包这一层（生产零开销）。
+   */
+  final shotMode = Platform.environment['SOURIN_SHOT'] == '1';
+  Widget app = noGlass
       ? GlassAccessibilityScope(
           reduceTransparency: true,
           child: SourinApp(coreError: coreError, coreDataDir: coreDataDir),
         )
-      : SourinApp(coreError: coreError, coreDataDir: coreDataDir));
+      : SourinApp(coreError: coreError, coreDataDir: coreDataDir);
+  if (shotMode) {
+    app = RepaintBoundary(key: _probeShotKey, child: app);
+  }
+  runApp(app);
 
   /*
    * ══════════════════════════════════════════════════════════════════
@@ -7440,6 +7459,10 @@ class _BottomPalette {
 //     带**前后各 3 帧**的读数 ⇒ 能看出是哪一下、持续几帧。
 //   · 另外每 5 秒写一行「窗口汇总」（帧数 / p50 / p95 / max / 超预算数），
 //     这样即使没人操作也能看到稳态成本。
+/// **只给 `SOURIN_SHOT=1` 用**：根上的 RepaintBoundary ⇒ 可自拍。
+/// 生产不包这层（不影响渲染树）。
+final GlobalKey _probeShotKey = GlobalKey();
+
 void _installFrameLogger() {
   final f = File('.probe/frame_log.txt');
   final buf = StringBuffer();
@@ -7660,11 +7683,37 @@ void _installFrameLogger() {
   if (Platform.environment['SOURIN_TABS'] == '1') {
     var i = 0;
     const tabs = AppTab.values;
+    /*
+     * ★★ 2026-10-14：`SOURIN_SHOT=1` 时**同时自拍**。
+     *   为什么要自拍：屏幕截图对窗口坐标敏感（本机上抓不到源影窗口）。
+     *   而 `RenderRepaintBoundary.toImage()` 在**进程内**光栅化，
+     *   与窗口在不在前台无关 —— 本仓既有手法
+     *   （见 `lib/merge_view_probe.dart` / `t513_danmaku_probe.dart`）。
+     */
+    final shot = Platform.environment['SOURIN_SHOT'] == '1';
+    if (shot) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_selfCaptureOnce('.probe/tabshot_000.png'));
+      });
+    }
     Timer.periodic(const Duration(seconds: 5), (tm) {
       buf.writeln('── TABS 相位 ${i + 1}：切到 ${tabs[i % tabs.length].name}'
           '（帧 ${all.length}）');
       flush();
       debugShellKey.currentState?.debugSwitchTo(tabs[i % tabs.length]);
+      /*
+       * ★ 切完**立刻**连拍几帧（正好落在过渡窗口内）。
+       *   只在 `SOURIN_SHOT=1` 时做（生产零开销）。
+       */
+      if (shot) {
+        for (var k = 0; k < 6; k++) {
+          final idx = (i + 1) * 10 + k;
+          Future<void>.delayed(Duration(milliseconds: 40 * k), () async {
+            await _selfCaptureOnce(
+                '.probe/tabshot_${idx.toString().padLeft(3, '0')}.png');
+          });
+        }
+      }
       i++;
       // 两轮（每页访问两次：首建 + 稳态）后停
       if (i >= tabs.length * 2) {
@@ -7673,6 +7722,29 @@ void _installFrameLogger() {
         tm.cancel();
       }
     });
+  }
+}
+
+/// 自拍一帧（**进程内**光栅化，与窗口前台/屏幕坐标无关）
+///
+/// 用途：给“切页时两页叠在一起”这类**视觉**缺陷取证（读数看不出这种问题）。
+/// ⚠️ 只在 `SOURIN_TABS=1` + `SOURIN_SHOT=1` 时被调（生产零开销）。
+Future<void> _selfCaptureOnce(String path) async {
+  try {
+    /*
+     * ★ 用**根视图的 RepaintBoundary**，不是 navigator 的 context ——
+     *   后者的 render object 不一定是 RepaintBoundary（会静默 return）。
+     *   `RendererBinding.renderViews.first` 就是整个应用根，可 toImage。
+     */
+    final ro = _probeShotKey.currentContext?.findRenderObject();
+    if (ro is! RenderRepaintBoundary) return;
+    final img = await ro.toImage(pixelRatio: 1.0);
+    final bd = await img.toByteData(format: ui.ImageByteFormat.png);
+    if (bd == null) return;
+    await File(path).writeAsBytes(bd.buffer.asUint8List(), flush: true);
+    debugPrint('[SHOT] 已写 $path');
+  } catch (e) {
+    debugPrint('[SHOT] 失败: $e');
   }
 }
 

@@ -2281,7 +2281,11 @@ void MaybeSubclassChild(HWND parent, HWND child) {
              child, static_cast<void*>(ime_ctx), created ? 1 : 0, assoc ? 1 : 0,
              static_cast<void*>(verify));
   } else {
-    ImeTrace("assoc ImmGetContext/ImmCreateContext 均为空，中文输入可能不可用");
+    // ⚠️ 2026-10-14（CI 实测 C4566）：**字符串字面量里不放中文**
+    //   MSVC 在非 936 代码页下会报 C4566（而本仓开了 /WX）。
+    //   中文说明放**注释**里（注释不参与编码检查）。
+    ImeTrace("assoc: ImmGetContext/ImmCreateContext both null "
+             "(chinese input may be unavailable)");
     return;  // ← 没有 ctx 可放，且上面两次取都失败（无 handle 需释放）
   }
   /*

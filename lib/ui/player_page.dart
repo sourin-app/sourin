@@ -5516,9 +5516,39 @@ class _PlayerPageState extends State<PlayerPage>
       });
     }
     try {
+      /*
+       * ★★★ 2026-10-13（Owner）：把标题喂给**搜索退路**
+       *
+       * Owner 原话：> 弹幕我没有看到弹弹play的搜索功能
+       *
+       * # 真缺陷：搜索退路**每次都在空搜**（已证实）
+       * ```text
+       * `loadFor()` 的签名有 `anime` / `episode` 两个参数并喂给
+       * `searchEpisodes()`；但全仓**唯一**的调用点（就是这里）**不传**。
+       * ⇒ `searchEpisodes` 里 `if (anime.isNotEmpty)` / `if (episode.isNotEmpty)`
+       *   双双为 false ⇒ `GET /api/v2/search/episodes` **不带任何查询词**
+       *   ⇒ 空搜必然搜不到。
+       * ★ 而面板的 UI 文案却向用户承诺"匹配不到时会自动退到按番剧名 + 集数搜索"
+       *   —— 文案与实现不符（那是"假承诺"，比没有更糟）。
+       * ```
+       *
+       * # 修法：把**片名**当关键词
+       * ```text
+       * `loadFor` 先用文件名走 `match()`（精确匹配，最准）。
+       * 只有匹配不到才退到搜索 ⇒ 这时我们手上唯一的相关信息就是标题。
+       * ⇒ 把 `_danmakuFileName`（= 标题去扩展名）作为 `anime` 传进去。
+       *   `episode` 留空（我们没有可靠的"第几集"文本：
+       *   集号在站点侧是 id、在本地是路径后缀，都不该当搜索词）。
+       * ```
+       * ⚠️ 为什么不用 `_liveTitle` 原串：它可能带扩展名（`第01集.mp4`），
+       *    而搜索接口按"番剧名"匹配 ⇒ 去掉扩展名更准（`_danmakuFileName` 就是干这个的）。
+       *    ★ 这与 `match()` 用的是**同一个**串（都取 `_danmakuFileName`）——
+       *      两处同源，不会出现"匹配用 A、搜索用 B"的漂移。
+       */
       final res = await client.loadFor(
         fileName: fileName,
         videoDuration: _duration.inSeconds,
+        anime: fileName,
       );
       if (!mounted || token != _danmakuFetchToken) return;
       setState(() {

@@ -17,8 +17,8 @@
 // ```
 // ⇒ OPS-10 B 给状态文案加了**来源前缀**。当前工作树实测（剥离注释后）：
 // ```text
-// lib/ui/player_page.dart:4733   _danmakuStatus = 'dandanplay · ${res.summary}';  ← 本文件守它
-// lib/ui/player_page.dart:4741   status: 'dandanplay · ${res.summary}',           ← 同一支（面板读数）
+// lib/ui/player_page.dart:4733   _danmakuStatus = 'danmaku-service · ${res.summary}';  ← 本文件守它
+// lib/ui/player_page.dart:4741   status: 'danmaku-service · ${res.summary}',           ← 同一支（面板读数）
 // lib/ui/player_page.dart:5468   _danmakuStatus = 'B 站 · ${r.summary}';          ← t73 守
 // lib/ui/player_page.dart:5510   _danmakuStatus = 'B 站 · ${r.summary}';          ← t73 守
 // ```
@@ -71,7 +71,7 @@ import 'package:flutter_test/flutter_test.dart';
 /// 剥掉 // 行注释、/// 文档注释、/* */ 块注释（保留字符串字面量）。
 ///
 /// ⚠️ 必须剥：本仓踩过「把注释文本写进判据 ⇒ 永远找不到 ⇒ 假红」的坑，
-///    而 player_page.dart 的注释里**正写着** _danmakuStatus = 'dandanplay · ...'
+///    而 player_page.dart 的注释里**正写着** _danmakuStatus = 'danmaku-service · ...'
 ///    这段说明（:4723-4732）—— 不剥的话本判据会在**注释**上通过，等于假绿。
 String stripComments(String src) {
   final out = StringBuffer();
@@ -135,16 +135,21 @@ int _rawLineOf(String raw, String needle) {
 /// 锚点：dandanplay 支所在的函数。
 const String _kAnchor = 'Future<void> _loadDanmakuNamed(';
 
-/// 窗口大小 —— **实测后定的 2600**，不是猜的（读数见 test ①）：
+/// 窗口大小 —— **实测后定的**，不是猜的（读数见 test ①）。
+///
 /// ```text
-/// i0（锚点绝对偏移，剥离注释后）= 51189
-/// 针 _danmakuStatus = 'dandanplay · ${res.summary}'; 相对 i0 的命中偏移 = 1154，针长 47
-/// ⇒ 末端相对偏移 1201，距 2600 上限还有 1399 字符余量
-/// 面板读数那一针 status: 'dandanplay · ${res.summary}', 相对偏移 = 1453，末端 1491
-/// 函数体本身到 i0+2865 结束（整根针都在窗口内、且余量充足）
+/// 原值 2600 是按"函数体到 i0+2865 结束"量的。
+/// ★★ 2026-10-14 改成 12000：函数里新增了"点选搜索结果直达
+///    fetchComments"那一段（~1.8k 字符），把**面板读数那一针顶出了窗口**
+///    （实测距锚点 8619 > 2600）⇒ 本门禁会**假红**。
+/// ⇒ 窗口必须**盖得住整个函数体**（这是本判据的真正前提）。
 /// ```
-/// ★ 与 t73 用同一个 2600：这是本仓源码级判据的既有口径，不另立一套。
-const int _kWindow = 2600;
+/// ⚠️ 窗口是一个**脆弱的仪器** —— 函数变长就会失效。
+///    本次的教训：**只要这个函数再长到超过窗口，就会再假红**。
+///    下一次动这个函数时，请跑 test ① 看它打的"余量"读数。
+///    （更稳的做法是改成"从锚点到**下一个 `Future<` 或类级声明**"的动态窗口 ——
+///     但那要改工具，本次先把窗口调足，并把风险写在这里。）
+const int _kWindow = 12000;
 
 /// 锚点与针在**原始文件**里的行号（仅用于失败信息点名；不参与判据，
 /// 所以文件上方增删行不会让本门禁变红）。
@@ -155,16 +160,16 @@ final int _kAnchorRawLine = _rawLineOf(_pageRaw, _kAnchor);
 /// 这一根针**同时**钉住两条语义：
 ///   ① 右侧逐字 res.summary（不能换字段、不能写死字符串、不能换成 r.summary）；
 ///   ② 左侧逐字「dandanplay · 」前缀（不能退回无前缀形态、不能抄成别的源名）。
-const String _kPin = r"_danmakuStatus = 'dandanplay · ${res.summary}';";
+const String _kPin = r"_danmakuStatus = 'danmaku-service · ${res.summary}';";
 
 /// 针的左半：赋值 + 来源前缀（逐字，含前缀后那个空格与间隔号 ·）。
-const String _kPinLeft = r"_danmakuStatus = 'dandanplay · ";
+const String _kPinLeft = r"_danmakuStatus = 'danmaku-service · ";
 
 /// 针的右半：必须逐字仍是 res.summary。
 const String _kPinRight = r"${res.summary}';";
 
 /// 面板读数（_danmakuSettings.status）那一行，同一个来源前缀。
-const String _kPinStatus = r"status: 'dandanplay · ${res.summary}',";
+const String _kPinStatus = r"status: 'danmaku-service · ${res.summary}',";
 
 /// 回退形态（OPS-10 B 改之前的样子）—— 只允许出现在**注释**里，代码里不许有。
 /// 本针在原始文件里的行号（实测 = 4733；仅用于失败信息点名）。

@@ -52,7 +52,7 @@ class _RecTransport implements DanmakuTransport {
 }
 
 void main() {
-  group('DandanplayClient 本地模式（unsignedLocal）', () {
+  group('ExternalDanmakuClient 本地模式（unsignedLocal）', () {
     test('本地模式：请求落在 127.0.0.1:2080，且不带任何签名头', () async {
       final t = _RecTransport((method, uri, headers, body) async {
         if (uri.path == _matchPath) {
@@ -70,7 +70,7 @@ void main() {
           ],
         });
       });
-      final c = DandanplayClient(
+      final c = ExternalDanmakuClient(
         transport: t,
         unsignedLocal: true,
         // 故意带上凭证：本地模式也**绝不**发签名头
@@ -81,7 +81,7 @@ void main() {
       expect(res.comments, isNotEmpty);
       for (final call in t.calls) {
         expect(call.uri.host, '127.0.0.1',
-            reason: '本地模式必须打本机弹弹play端口，请求实际落在 ' + call.uri.toString());
+            reason: '本地模式必须打本机外部弹幕端口，请求实际落在 ' + call.uri.toString());
         expect(call.uri.port, 2080);
         expect(call.uri.scheme, 'http',
             reason: '本机回环不需要 https');
@@ -101,7 +101,7 @@ void main() {
           ],
         });
       });
-      final c = DandanplayClient(transport: t, appId: 'myid', appSecret: 'b');
+      final c = ExternalDanmakuClient(transport: t, appId: 'myid', appSecret: 'b');
       await c.loadFor(fileName: 'A.mp4');
       expect(t.calls, isNotEmpty);
       final call = t.calls.first;
@@ -142,11 +142,11 @@ void main() {
   });
 
   group('DanmakuLocalService.describe（状态行文案）', () {
-    test('探测失败 ⇒ 含「检测到本机弹弹play 未运行」', () async {
+    test('探测失败 ⇒ 含「检测到本机外部弹幕 未运行」', () async {
       final t = _RecTransport((m, u, h, b) async =>
           throw StateError('connection refused'));
       final d = await DanmakuLocalService.describe(transport: t);
-      expect(d.line, contains('检测到本机弹弹play 未运行'));
+      expect(d.line, contains('检测到本机外部弹幕 未运行'));
       expect(d.online, isFalse);
     });
 
@@ -154,7 +154,7 @@ void main() {
       final t = _RecTransport((m, u, h, b) async => await _okJson({'success': true, 'versionCode': '100100'}));
       final d = await DanmakuLocalService.describe(transport: t);
       expect(d.online, isTrue);
-      expect(d.line, contains('本机弹弹play'));
+      expect(d.line, contains('本机外部弹幕'));
       expect(d.line, contains('2080'));
       expect(d.line, isNot(contains('未运行')));
     });
@@ -183,7 +183,7 @@ void main() {
 
     test('player_page：本地源支复用同一 setState（成功赋值形态唯一）', () {
       expect(
-        "_danmakuStatus = 'dandanplay · ".allMatches(playerSrc).length,
+        "_danmakuStatus = 'danmaku-service · ".allMatches(playerSrc).length,
         1,
         reason: 'zz_cr_dmk_b 钉死：成功 setState 前缀赋值形态源码里只能一份'
             ' ⇒ 本地支必须复用它，不能复制第二份',
@@ -200,17 +200,20 @@ void main() {
           reason: '探针打本地版本接口');
     });
 
-    test('dialog：数据源状态行保留；官方凭证输入入口已删除', () {
-      expect(dialogSrc, contains('检测到本机弹弹play 未运行'));
-      expect(dialogSrc, contains('本机弹弹play（127.0.0.1:2080）'));
-      // ★ 2026-10-11（Owner 反馈）：官方 API 凭证**输入入口整节删除** ——
-      //   客户端已内置凭证（构建期 --dart-define 注入），用户不必手填。
-      //   改前这条断言是「凭证入口保留」，现在与新现实相反。
-      expect(dialogSrc.contains('在 dev.dandanplay.com 申请'), isFalse,
-          reason: '凭证输入入口已删除（内置凭证取代手填）');
-      expect(dialogSrc.contains("labelText: 'AppId'"), isFalse);
-      expect(dialogSrc.contains("labelText: 'AppSecret'"), isFalse);
-      // 但「数据源」这一节本身必须还在（它是本机弹弹play 的探测结果行）。
+    test('dialog：数据源状态行保留；官方凭证输入入口**恢复**（2026-10-14）', () {
+      expect(dialogSrc, contains('检测到本机外部弹幕 未运行'));
+      expect(dialogSrc, contains('本机外部弹幕（127.0.0.1:2080）'));
+      /*
+       * ★★★ 2026-10-14（Owner「凭证流程根本没走通」）：断言**翻转**。
+       *
+       * 改前（2026-10-11）这里要求凭证入口**必须已删除**，理由是"客户端内置
+       * 凭证、用户不必手填"。但本地构建没有 --dart-define ⇒ 无内置值 ⇒
+       * 官方边必然 403 且无入路可配 ⇒ 输入框恢复。
+       */
+      expect(dialogSrc.contains("labelText: 'AppId'"), isTrue,
+          reason: '凭证输入入口必须恢复（无内置凭证的构建靠它）');
+      expect(dialogSrc.contains("labelText: 'AppSecret'"), isTrue);
+      // 但「数据源」这一节本身必须还在（它是本机外部弹幕 的探测结果行）。
       expect(dialogSrc, contains('数据源'));
     });
   });

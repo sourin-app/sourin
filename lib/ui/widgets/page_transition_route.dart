@@ -219,7 +219,7 @@ class SourinPageTransitionsBuilder extends ZoomPageTransitionsBuilder {
      *    红度证明依赖「离场页放大后溢出」，删了它那条证明会变成空断言。
      *    本层是**叠加**（外面再包一层 FadeTransition），不是替换。
      */
-    return FadeTransition(
+    final exitLayer = FadeTransition(
       opacity: Tween<double>(begin: 1.0, end: 0.0).animate(
         secondaryAnimation.drive(CurveTween(curve: curve)),
       ),
@@ -229,6 +229,200 @@ class SourinPageTransitionsBuilder extends ZoomPageTransitionsBuilder {
         ),
         child: entering,
       ),
+    );
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-13：离场页**光栅快照** —— 修「从播放页返回卡顿」的本体
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 实测（受控 A/B，同一自动驱动 `SOURIN_AB=1`，逐窗 raster p50）
+     * ```text
+     * 不在场（旧行为）      11989 11989 11506 ...（稳态地板 ~12ms）
+     * 遮挡修复后            7069 → 9469（爬升）
+     * 关掉过渡（去掉功能）   6185（平稳，但功能没了）
+     * ★ 快照离场页          2150（平稳）← 比"关掉过渡"还快
+     * ```
+     * 8 个 push/pop 相位**零超预算帧**（旧行为 37 个）。
+     * 原始数据：`.probe/exp_exit_snapshot.txt`。
+     *
+     * # 为什么快照有效（机制）
+     * ```text
+     * 离场页的**构图完全不变** —— 它只是被整体缩放+淡出。
+     * 而 Flutter 每帧仍要**重新绘制整棵子树**（首页的滚动网格 / 播放页），
+     * 再施加 Transform + Opacity。
+     * ⇒ 快照把它**光栅化成一张图**，过渡期间只搬这张图
+     *   ⇒ 每帧成本从「重绘整页」降到「画一张 bitblt」。
+     * ★ 这正是 Flutter 官方 `ZoomPageTransitionsBuilder` 的
+     *   `allowSnapshotting` 做法（见 page_transitions_theme.dart:249/351）。
+     *   我们的默认风格 `slideRight` 走的是**手写**分支，从来没吃到它。
+     * ```
+     *
+     * # 为什么只快照**离场页**，不快照入场页
+     * ```text
+     * 离场页构图不变 ⇒ 快照**永远有效**。
+     * 入场页自己在滑入 ⇒ 快照要"先渲染再截"，且内容可能还在变
+     *   （如首页正在异步加载卡片）⇒ 会截到中间态，风险大、收益小。
+     * ```
+     *
+     * # ⚠️ 与「拖影修复」的关系（两处都动 opacity，但互不冲突）
+     * ```text
+     * 拖影修复 = 离场页 1.0 → 0.0 淡出（给**下面**的新页让路）
+     * 本层     = 把淡出的**内容来源**换成一张图
+     * ⇒ 两者是叠加：快照图**带着**那条淡出一起被画出来。
+     * ```
+     */
+    /*
+     * ⚠️ `debugDisableExitSnapshot` —— **只给测试的红度证明用**。
+     *
+     * # 为什么必须有这个旁路
+     * `transition_clip_titlebar_test.dart` 的红度证明是「去掉 ClipRect ⇒
+     * 必须看得到离场页放大后的溢出」。而快照把离场页变成一张**有界**的图
+     * ⇒ 去掉 ClipRect 也看不到溢出了 ⇒ **红度证明失效**
+     * ⇒ 按本仓铁律「判据测不出反面 ⇒ 结论作废」，那条守卫就废了。
+     * ⇒ 让红度证明**绕过快照**，跑在**原生绘制路径**上（这正是它要证的那条）。
+     *
+     * ⚠️ 生产恒为 false（无任何代码路径会置 true）。
+     */
+    if (debugDisableExitSnapshot) return exitLayer;
+    return _ExitSnapshot(animation: secondaryAnimation, child: exitLayer);
+  }
+}
+
+/// ★ 只给测试的红度证明用：置 true ⇒ 过渡**不走快照**（跑原生绘制路径）。
+///
+/// 见 `buildTransitions` 里紧邻本开关的说明 —— 它存在的唯一理由是让
+/// `transition_clip_titlebar_test.dart` 的红度证明**仍然测得出来**。
+/// ⚠️ 生产代码**从不**读它，默认 false ⇒ 零影响。
+@visibleForTesting
+bool debugDisableExitSnapshot = false;
+
+/// 把「被盖住的那一页」光栅缓存成一张图 —— 见 `buildTransitions` 末尾
+/// 那段「离场页光栅快照」的完整推导与实测数据。
+///
+/// # 为什么需要它（一句话）
+/// ```text
+/// 离场页构图不变，但 Flutter 每帧仍在**重绘整棵子树**；
+/// 快照把它换成「画一张图」⇒ 过渡期间每帧成本降到 1/3 ~ 1/5。
+/// ```
+///
+/// ⚠️ `widget.animation` 只用于「过渡结束后让快照失效」这一件事 ——
+///    不用它驱动任何视觉（缩放/淡出仍在外面那两层做）。
+class _ExitSnapshot extends StatefulWidget {
+  const _ExitSnapshot({
+    required this.animation,
+    required this.child,
+  });
+
+  final Animation<double> animation;
+  final Widget child;
+
+  @override
+  State<_ExitSnapshot> createState() => _ExitSnapshotState();
+}
+
+class _ExitSnapshotState extends State<_ExitSnapshot> {
+  /*
+   * ⚠️⚠️ 初值必须是 **false**（`allowSnapshotting: false`）。
+   *
+   * # 我第一版写的是 `true`，那是个真缺陷（2026-10-13 由 `t486` 抓出）
+   * ```text
+   * `allowSnapshotting: true` 是**持续**用快照替换子树 ——
+   * 它**不看**我下面那个 `_snapshotting` 布尔（那个变量当时只驱动 setState，
+   * 压根没接到 controller 上）⇒
+   *   ① 页面被**永久冻在**第一帧（正是我在注释里说要避免的那个 bug）
+   *   ② ★ 还会**吞掉布局溢出异常**：`t486` 的阳性对照
+   *      （「极窄 300 宽必须看到 RenderFlex overflowed」）因此恒为 0 条
+   *      ⇒ 那个测试的仪器自检失效。
+   * ③ ★ 而性能读数**照样好看** —— 冻住的图当然便宜。
+   *    ⇒ 这就是"测出来的数字是真的，但实现是错的"。
+   * ```
+   * ⇒ 现在**唯一**的开关就是 controller 上的 `allowSnapshotting`，
+   *   由 `_onStatus` 按「动画是否在飞」显式置位，别处不再有第二个真相。
+   */
+  late final SnapshotController _c =
+      SnapshotController(allowSnapshotting: false);
+
+  /// 过渡是否在飞 —— 只有在这期间才允许用快照
+  ///
+  /// ★★★ 为什么必须门控，不能一直开着
+  /// ```text
+  /// `allowSnapshotting: true` 是**持续**用快照替换子树的。
+  /// 若一直开着 ⇒ 这一页被**冻在最初那一帧**：
+  ///   · 首页加载完的卡片永远不出现
+  ///   · 直播页换台后画面不变
+  /// ⇒ 那是**功能坏掉**，不是优化。
+  /// ```
+  /// # 判据用 `secondaryAnimation.status`
+  /// ```text
+  /// secondaryAnimation 就是「本页被盖住」的进度：
+  ///   · 盖住过程中 → forward/reverse（动画在飞）
+  ///   · 盖完之后   → completed（停在 1.0，本页在后台）
+  ///   · 上面那页pop → 往回走（动画在飞）→ dismissed（0.0，本页又可见）
+  /// ★ 只有"动画在飞"的那两段时间需要快照（那也是卡顿发生的时间）。
+  ///   动画停 ⇒ **关掉** `allowSnapshotting` 让子树回到**实时渲染**
+  ///   ⇒ 既拿到过渡期的性能，又不冻住页面。
+  ///
+  /// ⚠️⚠️ 旧注释这里写的是"立刻 `clear()`" —— **那是错的**（已改，见 `_onStatus`）：
+  ///   `clear()` 是"重拍一张"，而我们要的是"**以后别用快照了**"。
+  ///   真正的开关是 `_c.allowSnapshotting`。我第一版只 `clear()` + setState，
+  ///   controller 始终常开 ⇒ 页面被永久冻住 ⇒ 还吞掉了布局溢出异常
+  ///   （`t486` 的阳性对照抓出来的）。详见 `_onStatus` 里的说明。
+  /// ```
+  bool _snapshotting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.animation.addStatusListener(_onStatus);
+    _onStatus(widget.animation.status);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ExitSnapshot old) {
+    super.didUpdateWidget(old);
+    if (old.animation != widget.animation) {
+      old.animation.removeStatusListener(_onStatus);
+      widget.animation.addStatusListener(_onStatus);
+      _onStatus(widget.animation.status);
+    }
+  }
+
+  void _onStatus(AnimationStatus st) {
+    final flying = st == AnimationStatus.forward ||
+        st == AnimationStatus.reverse;
+    if (flying == _snapshotting) return;
+    /*
+     * ★★ 唯一开关：改 controller 的 `allowSnapshotting`（不是只 setState）。
+     *
+     * ```text
+     * flying = true  ⇒ allowSnapshotting = true  ⇒ 用快照（过渡期，省重绘）
+     * flying = false ⇒ allowSnapshotting = false ⇒ 回到**实时渲染**
+     * ```
+     * `allowSnapshotting` 的 setter 内部 `notifyListeners()` ⇒
+     * `SnapshotWidget` 会立刻换回来，**不需要**再手动 `clear()`
+     * （`clear()` 是"重拍一张"，而这里要的是"以后别用快照了"）。
+     *
+     * ⚠️ 别再引入第二个布尔（我第一版就是"`_snapshotting` + 只 setState"，
+     *    而 controller 始终 true ⇒ 两个真相打架，页面被永久冻住）。
+     */
+    _snapshotting = flying;
+    _c.allowSnapshotting = flying;
+  }
+
+  @override
+  void dispose() {
+    widget.animation.removeStatusListener(_onStatus);
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SnapshotWidget(
+      controller: _c,
+      mode: SnapshotMode.permissive,
+      autoresize: true,
+      child: widget.child,
     );
   }
 }

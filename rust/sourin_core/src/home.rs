@@ -11,7 +11,7 @@
 // ```text
 // get_home       跨源聚合首页（错误隔离）
 // get_categories 某源的分类列表
-// get_rank       榜单内容（cycani 这类源用）
+// get_rank       榜单内容（srca 这类源用）
 // ```
 //
 // # 搬运规则（同 commands.rs）
@@ -31,14 +31,14 @@ use crate::state::AppState;
 /// # ★ 关键：错误隔离
 ///
 /// `registry.home_all()` 内部对每个源做了错误隔离 ——
-/// 一个源挂了（比如 cycani 需要登录），**不该让整个首页白屏**。
-/// 这是实测踩出来的：原先没有隔离时，cycani 未登录会导致
+/// 一个源挂了（比如 srca 需要登录），**不该让整个首页白屏**。
+/// 这是实测踩出来的：原先没有隔离时，srca 未登录会导致
 /// 首页完全没有内容。
 ///
 /// # 返回结构
 ///
 /// ```json
-/// [ { "provider": "cctv", "providerName": "央视网", "sections": [...] } ]
+/// [ { "provider": "srcl", "providerName": "某电视台站", "sections": [...] } ]
 /// ```
 /// 前端按 provider 分组渲染（首页的源切换条就是这么来的）。
 pub async fn get_home(state: &AppState) -> Result<Vec<serde_json::Value>, String> {
@@ -71,7 +71,7 @@ pub async fn get_categories(
 ///
 /// # 缺少这个命令的后果（原版注释记录）
 ///
-/// 「声明了榜单的源（cycani）在首页会**永远显示「暂无内容」**」
+/// 「声明了榜单的源（srca）在首页会**永远显示「暂无内容」**」
 pub async fn get_rank(
     state: &AppState,
     provider: &str,
@@ -132,7 +132,7 @@ pub async fn get_list(
 ///
 /// # 为什么必须代理封面
 ///
-/// 部分源（尤其 B 站）的图片 CDN **白名单校验 Referer** ——
+/// 部分源（尤其 外部视频站）的图片 CDN **白名单校验 Referer** ——
 /// 直接请求返回 403，界面上就是一片裂图。
 ///
 /// # 三个关键细节（原版实测得来）

@@ -1623,7 +1623,7 @@ class _FollowTabChip extends StatelessWidget {
          * > 8px 上下内边距 + 14px 行高只到 31px，差一点不达标，故加到 10px。
          * 而它的实际取值是 `padding: 10px 14px`。
          *
-         * 项目规范（`cctv_to_client/DEVELOPMENT.md` 坑 35）：
+         * 项目规范（`srcl_to_client/DEVELOPMENT.md` 坑 35）：
          * > ★ 触控目标不得小于 ~34px —— 实测巡检发现 52 处偏小
          *
          * # 我们的实测（task-36，仪器有阳性对照）
@@ -1703,7 +1703,7 @@ class _FollowTabChip extends StatelessWidget {
 /// ```
 /// ★ 两者读**同一张表、同一条 SQL**（`continueWatching`）——
 ///   所以 task-63 只修首页时，Owner 那句投诉在追更页**依然存在**。
-///   活库实测（只读）：`cycani:3841` `title=''` `cover=NULL`
+///   活库实测（只读）：`srca:3841` `title=''` `cover=NULL`
 ///   ⇒ 追更页「历史」tab 仍会画出 `?`。
 ///
 /// # 兜底顺序（与 `my_shelf.dart::_historyTitle` **同一套口径**）
@@ -1715,7 +1715,7 @@ class _FollowTabChip extends StatelessWidget {
 /// ```
 /// ⚠️ ③ **必须存在**，不能只靠 ②：
 ///    实测那 3 条坏记录 `episode_title` **也是 NULL**
-///    （`360:86969` / `cycani:3862` / `cycani:3841` 三条全为 None）
+///    （`360:86969` / `srca:3862` / `srca:3841` 三条全为 None）
 ///    ⇒ 只做 ② 的话它们仍然是空，等于没修。
 ///
 /// # ★ 为什么占位是「（标题未知）」而不是别的

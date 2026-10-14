@@ -436,9 +436,9 @@ mod tests {
 
     #[test]
     fn reads_required_string() {
-        let r = req(json!({ "id": "cycani" }));
+        let r = req(json!({ "id": "srca" }));
         let a = Args::new(&r, "test_cmd");
-        assert_eq!(a.str("id").unwrap(), "cycani");
+        assert_eq!(a.str("id").unwrap(), "srca");
     }
 
     /// ★ 缺参数的错误必须包含三样东西：命令名、参数名、实际收到的键
@@ -563,7 +563,7 @@ mod tests {
         let cases: &[(&str, Value)] = &[
             ("category_id", json!({ "categoryId": "TOP123" })),
             ("rank_id", json!({ "rankId": "rank-A" })),
-            ("channel_id", json!({ "channelId": "cctv1" })),
+            ("channel_id", json!({ "channelId": "srcl1" })),
         ];
         for (rust_name, args) in cases {
             let r = req(args.clone());

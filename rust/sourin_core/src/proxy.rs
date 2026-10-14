@@ -49,7 +49,7 @@ use std::time::Duration;
 /// ```text
 /// dsh-media-client-proxy   ← 本站（代理密码）
 /// dsh-media-client-sync    ← WebDAV 密码（sync/mod.rs）
-/// dsh-media-client         ← 次元城账号（providers/cycani.rs）
+/// dsh-media-client         ← 某动画站账号（providers/srca.rs）
 /// ```
 /// 三者都**保持原值** —— 虽然应用已改名「源影 Sourin」，
 /// 但服务名对用户**完全不可见**，且不含任何敏感信息，
@@ -474,7 +474,7 @@ mod tests {
         let store = ProxyStore::new();
         store
             .set(
-                "cycani",
+                "srca",
                 ProxyConfig {
                     mode: ProxyMode::Custom,
                     url: Some("http://127.0.0.1:7890".into()),
@@ -483,13 +483,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            store.get("cycani").url.as_deref(),
+            store.get("srca").url.as_deref(),
             Some("http://127.0.0.1:7890")
         );
 
         // 非法地址 → 报错且**不覆盖**已存的好值
         let bad = store.set(
-            "cycani",
+            "srca",
             ProxyConfig {
                 mode: ProxyMode::Custom,
                 url: Some("nonsense".into()),
@@ -498,7 +498,7 @@ mod tests {
         );
         assert!(bad.is_err());
         assert_eq!(
-            store.get("cycani").url.as_deref(),
+            store.get("srca").url.as_deref(),
             Some("http://127.0.0.1:7890"),
             "校验失败不应破坏已有配置"
         );
@@ -521,8 +521,8 @@ mod tests {
     #[test]
     fn direct_client_builds_and_is_cached() {
         let store = ProxyStore::new();
-        let c1 = store.client_for("cctv", None).unwrap();
-        let c2 = store.client_for("cctv", None).unwrap();
+        let c1 = store.client_for("srcl", None).unwrap();
+        let c2 = store.client_for("srcl", None).unwrap();
         // 缓存生效（同一个 Arc 内的连接池被复用）
         assert!(c1.get("http://example.invalid").build().is_ok() || true);
         drop(c2);

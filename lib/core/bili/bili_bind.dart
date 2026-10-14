@@ -1,21 +1,21 @@
 
 // ═══════════════════════════════════════════════════════════════════════
-//  哔哩哔哩弹幕绑定（自动绑定剧集 + 持久化）—— task-28
+//  外部视频源弹幕绑定（自动绑定剧集 + 持久化）—— task-28
 // ═══════════════════════════════════════════════════════════════════════
 //
 // # 这个文件解决什么
 //
-// 用户原话：「支持一下 哔哩哔哩填入链接导入弹幕，并且自动绑定剧集和
+// 用户原话：「支持一下 外部视频源填入链接导入弹幕，并且自动绑定剧集和
 // 自动更新弹幕」。
 //
-// 「绑定」= 记住「本机某个剧集的第 N 集」对应「B 站某个视频的第 M P」。
+// 「绑定」= 记住「本机某个剧集的第 N 集」对应「某视频站某个视频的第 M P」。
 // 下次用户点进同一集，不用再填链接，弹幕自动到位。
 //
-// # 为什么不用 danmaku.dart 里那套 dandanplay 的匹配
+// # 为什么不用 danmaku.dart 里那套 弹弹play 的匹配
 //
-// dandanplay 是「按文件名搜番剧」，靠的是一个远程数据库；
-// B 站没有这样的接口，只有 /x/web-interface/view 拿标题。
-// 所以自动绑定走的是**标题相似度**：拿我们的剧集标题去和 B 站视频标题
+// 弹弹play 是「按文件名搜番剧」，靠的是一个远程数据库；
+// 某视频站没有这样的接口，只有 /x/web-interface/view 拿标题。
+// 所以自动绑定走的是**标题相似度**：拿我们的剧集标题去和 某视频站视频标题
 // 比，够像就自动绑。
 //
 // 相似度算法直接复用 lib/core/title_match.dart 的 titleSimilarity
@@ -24,12 +24,12 @@
 // # 分集怎么对齐（★ 这是最容易做错的地方）
 //
 // 三种情况：
-//   A. B 站视频是**单 P**（videos == 1）
+//   A. 某视频站视频是**单 P**（videos == 1）
 //      ⇒ 整部剧的每一集都指向这同一个 cid。
 //        弹幕时间轴对不上是必然的（一 P 只有一条时间轴），但这是用户
 //        自己选的，且比「什么都没有」强。故允许，且标注出来。
-//   B. B 站视频是**多 P**（videos > 1）
-//      ⇒ 按 P 序对齐：我们第 N 集 ↔ B 站第 N P。
+//   B. 某视频站视频是**多 P**（videos > 1）
+//      ⇒ 按 P 序对齐：我们第 N 集 ↔ 某视频站第 N P。
 //        若我们的集数比 P 多，多出来的集**不绑**（宁缺勿错）。
 //   C. 用户手动指定了 P
 //      ⇒ 只绑这一集，不扩散到其它集。
@@ -59,7 +59,7 @@ import 'bili_api.dart';
 /// 通常 < 0.15。0.34 落在中间，宁可让用户手动补，也不要错绑。
 const double kBiliAutoBindThreshold = 0.34;
 
-/// 一集 ↔ 一个 B 站分 P 的对应关系。
+/// 一集 ↔ 一个 某视频站分 P 的对应关系。
 class BiliEpisodeBinding {
   const BiliEpisodeBinding({
     required this.episodeIndex,
@@ -71,7 +71,7 @@ class BiliEpisodeBinding {
   /// 我们的第几集（0 基，与 PlayRequestData.episodeIndex 同一坐标系）。
   final int episodeIndex;
 
-  /// B 站第几 P（1 基）。
+  /// 某视频站第几 P（1 基）。
   final int page;
 
   /// 该 P 的 cid（弹幕的 oid）。
@@ -106,7 +106,7 @@ class BiliEpisodeBinding {
   String toString() => 'E$episodeIndex -> P$page(cid=$cid)';
 }
 
-/// 一部作品上挂着的全部 B 站绑定。
+/// 一部作品上挂着的全部 某视频站绑定。
 class BiliBinding {
   const BiliBinding({
     required this.bvid,
@@ -117,10 +117,10 @@ class BiliBinding {
     this.updatedAt = 0,
   });
 
-  /// B 站视频号。
+  /// 某视频站视频号。
   final String bvid;
 
-  /// B 站视频标题（给用户看「绑到哪去了」）。
+  /// 某视频站视频标题（给用户看「绑到哪去了」）。
   final String title;
 
   final int aid;
@@ -211,7 +211,7 @@ class BiliBinding {
 //  一、偏好键与读写
 // ══════════════════════════════════════════════════════════════════════
 
-/// 所有 B 站绑定相关的偏好键都在这里造，别处不要手写字符串。
+/// 所有 某视频站绑定相关的偏好键都在这里造，别处不要手写字符串。
 abstract final class BiliPrefs {
   static const String _ns = 'dsh.bili';
 
@@ -278,9 +278,9 @@ bool isManualBinding(String provider, String id) =>
 //  二、分集对齐
 // ══════════════════════════════════════════════════════════════════════
 
-/// 把「B 站视频的分 P 表」铺到「我们的剧集表」上。
+/// 把「某视频站视频的分 P 表」铺到「我们的剧集表」上。
 ///
-/// [episodeTitles] 是本地剧集的标题（按集序），[pages] 是 B 站的分 P。
+/// [episodeTitles] 是本地剧集的标题（按集序），[pages] 是 某视频站的分 P。
 /// [forcedPage] > 0 时只绑这一集（用户手动指定 P 的情形）。
 ///
 /// 返回的 episodeIndex 是**本地**集序（0 基）。
@@ -345,7 +345,7 @@ List<BiliEpisodeBinding> alignEpisodes({
 
 /// 多 P 时，若本地某一集的标题与某个 P 明显更像，就用它覆盖按序的结论。
 ///
-/// 为什么需要：B 站的 P 顺序和我们的集顺序**未必**一致
+/// 为什么需要：某视频站的 P 顺序和我们的集顺序**未必**一致
 /// （搬运工把 P 顺序放乱是常事）。按序对齐是默认，标题对齐是修正。
 ///
 /// 只有当标题相似度 >= [kBiliAutoBindThreshold] 时才覆盖，且一个 P 只能
@@ -439,7 +439,7 @@ class BiliBindOutcome {
       'score=${score.toStringAsFixed(3)}, $reason)';
 }
 
-/// 根据 B 站视频信息，给一部作品自动建/更新绑定。
+/// 根据 某视频站视频信息，给一部作品自动建/更新绑定。
 ///
 /// [episodeTitles] 按集序；[localTitle] 是作品标题（用来算相似度）。
 /// [existing] 是已有绑定（会保留手动标记，且**不会**覆盖手动绑定）。
@@ -489,13 +489,13 @@ BiliBindOutcome planBinding({
 
   final String reason;
   if (episodes.isEmpty) {
-    reason = 'B 站那边一个分 P 都没有，没法绑';
+    reason = '某视频站那边一个分 P 都没有，没法绑';
   } else if (forcedPage > 0) {
     reason = '按你指定的 P$forcedPage 绑了第 ${forcedEpisode + 1} 集';
   } else if (info.pages.length == 1) {
-    reason = 'B 站是单 P 视频，${episodes.length} 集共用这一条弹幕时间轴';
+    reason = '某视频站是单 P 视频，${episodes.length} 集共用这一条弹幕时间轴';
   } else if (episodes.length < episodeTitles.length) {
-    reason = 'B 站只有 ${info.pages.length} P，本地 '
+    reason = '某视频站只有 ${info.pages.length} P，本地 '
         '${episodeTitles.length} 集，多出来的集没绑';
   } else {
     reason = '按 P 序对齐了 ${episodes.length} 集';
@@ -521,7 +521,7 @@ bool shouldRejectAutoBind(BiliBindOutcome o, {bool isMultiPart = false}) {
 ///
 /// # ★★★ 2026-10-09 修复：**空绑定不许落盘**
 ///
-/// # 症状（Owner 真机报的「bilibili 也选了但就是没显示弹幕」）
+/// # 症状（Owner 真机报的「srcv 也选了但就是没显示弹幕」）
 /// ```text
 /// 他机器上的 ui-prefs.json 里躺着这样一条：
 ///   dsh.bili.bind.local:c:/users/.../第01集 第01集.mp4
@@ -530,15 +530,15 @@ bool shouldRejectAutoBind(BiliBindOutcome o, {bool isMultiPart = false}) {
 /// 因为 `toJson` 里写的是 `if (episodes.isNotEmpty) 'e': …`。
 ///
 /// ⇒ `episodes` 为空 ⇒ `BiliBinding.isEmpty == true` ⇒ `cidFor()` 恒返回 0
-/// ⇒ 播放页走「绑了 B 站但这一集没 cid」那条分支
-/// ⇒ 屏幕上「B 站弹幕：这一集没匹配到分 P（cid），已改用 dandanplay」
-/// ⇒ 接着 dandanplay 没凭证 ⇒ 403 ⇒ 「弹幕失败：Missing Authentication Headers」。
+/// ⇒ 播放页走「绑了 某视频站但这一集没 cid」那条分支
+/// ⇒ 屏幕上「某视频站弹幕：这一集没匹配到分 P（cid），已改用 弹弹play」
+/// ⇒ 接着 弹弹play 没凭证 ⇒ 403 ⇒ 「弹幕失败：Missing Authentication Headers」。
 /// ```
 ///
 /// # 根因：`bindFromInput` 会**无条件**落盘
 /// ```text
-/// 它拿到视频信息后算 `planBinding`；若 B 站那边一个分 P 都没有
-/// （`episodes.isEmpty`），`planBinding` 的 reason 是「B 站那边一个分 P
+/// 它拿到视频信息后算 `planBinding`；若 某视频站那边一个分 P 都没有
+/// （`episodes.isEmpty`），`planBinding` 的 reason 是「某视频站那边一个分 P
 /// 都没有，没法绑」—— **但它照样返回一个 binding**，于是照样落盘。
 ///
 /// 结果是一条"存在但没用"的绑定：
@@ -575,7 +575,7 @@ void persistOutcome(
 //  四、高层入口
 // ══════════════════════════════════════════════════════════════════════
 
-/// 一部作品 + 一个 B 站链接 → 绑定（含真实网络请求）。
+/// 一部作品 + 一个 某视频站链接 → 绑定（含真实网络请求）。
 ///
 /// 这是 UI 层唯一需要调的函数。它做四件事：
 ///   1. 解析输入（BV / av / 链接 / b23 短链）
@@ -620,12 +620,12 @@ Future<BiliBindOutcome> bindFromInput({
 //  五、取某一集该用哪个 cid
 // ══════════════════════════════════════════════════════════════════════
 
-/// 给定「作品 + 第几集」，算出该用哪个 B 站 cid 去拉弹幕。
+/// 给定「作品 + 第几集」，算出该用哪个 某视频站 cid 去拉弹幕。
 ///
 /// 返回 0 = 这一集没有绑定。
 ///
 /// [episodeIndex] 是 0 基；[episodeId] 是可选的作品内集 id（有些源的集
-/// 没有稳定序号，用 id 更靠得住 —— 但我们没有它的 B 站映射，故只用于
+/// 没有稳定序号，用 id 更靠得住 —— 但我们没有它的 某视频站映射，故只用于
 /// 单 P 情形的兜底判定）。
 int resolveCid({
   required String provider,
@@ -643,25 +643,25 @@ int resolveCid({
 }
 
 // ══════════════════════════════════════════════════════════════════════
-//  六、自动匹配（免登录搜 B 站 → 选最像的那条 → 绑定）
+//  六、自动匹配（免登录搜 某视频站 → 选最像的那条 → 绑定）
 // ══════════════════════════════════════════════════════════════════════
 
-/// 自动搜 B 站并绑定 —— **不需要用户提供任何链接**。
+/// 自动搜 某视频站并绑定 —— **不需要用户提供任何链接**。
 ///
 /// # 为什么需要它（Owner 2026-10-09 报的「弹幕流程有问题」）
 ///
 /// ```text
 /// 改前：播放页只做两件事 ——
 ///   ① 有绑定 ⇒ 用绑定；
-///   ② 没绑定 ⇒ 直接走 dandanplay（而它要 AppId/AppSecret）⇒ 没配就 403
+///   ② 没绑定 ⇒ 直接走 弹弹play（而它要 AppId/AppSecret）⇒ 没配就 403
 ///      ⇒ 屏幕上那句「弹幕失败：Missing Authentication Headers」。
 /// ```
-/// 于是「bilibili 明明支持搜索、也选了，但就是没显示弹幕」——
+/// 于是「srcv 明明支持搜索、也选了，但就是没显示弹幕」——
 /// 因为**搜索是用户手动点的**，而播放时那条自动路径压根没走搜索。
 ///
 /// # 为什么免登录也成立
 /// ```text
-/// B 站搜索（/x/web-interface/search/type）与弹幕 XML
+/// 某视频站搜索（/x/web-interface/search/type）与弹幕 XML
 /// （comment.bilibili.com/<cid>.xml）**都不需要登录** ——
 /// 实测（2026-10-09，无任何 Cookie）：
 ///   GET comment.bilibili.com/279786.xml → 200 text/xml，1200 条弹幕
@@ -712,7 +712,7 @@ Future<BiliBindOutcome?> autoBindBySearch({
   /*
    * ★ 按相似度挑最像的一条。
    *
-   * ⚠️ 用相似度而不是"取第一条"：B 站搜索第一条经常是
+   * ⚠️ 用相似度而不是"取第一条"：某视频站搜索第一条经常是
    *    预告/PV/解说，直接取会把弹幕绑到错的视频上（时间轴全错）。
    *
    * ★★★ 2026-10-09 关键修正：用 `titleCoverage` 而**不是** `titleSimilarity`。
@@ -720,7 +720,7 @@ Future<BiliBindOutcome?> autoBindBySearch({
    * # 为什么不能用 titleSimilarity（我第一版就错在这）
    * ```text
    * 它是 bigram **Jaccard**（交集 / 并集）—— 而并集里含**候选标题**
-   * 的全部 bigram。B 站的标题很长（带栏目名/画质/集数/字幕组），
+   * 的全部 bigram。某视频站的标题很长（带栏目名/画质/集数/字幕组），
    * 于是并集被撑大、分数被压低：
    *
    *   查询「无职转生 第三季」

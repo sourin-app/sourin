@@ -8,12 +8,13 @@ import 'package:sourin_spike/ui/widgets/danmaku_settings_dialog.dart';
 
 /// T27-12：面板内置凭证收口（task-12）。
 ///
-/// ★ 2026-10-11（Owner 反馈）现状：面板上的 AppId / AppSecret 输入框**整节删除**，
-///   因为客户端已内置官方凭证（构建期 `--dart-define` 注入）。本文件随之改写：
-///   ① 不再断言输入框/预填（那一节已不存在）；
+/// ★ 2026-10-14（Owner 反馈「外部弹幕服务的凭证流程根本没走通」）现状：
+///   输入框**恢复**了（本地构建没有 `--dart-define` ⇒ 无内置值 ⇒ 官方边必失败，
+///   且改前**无入路**可配）。本文件随之改写：
+///   ① 断言输入框与两个回调（`onSetCredentials` / `onClearCredentials`）**都在**；
 ///   ② 保留对**签名链路**（`DanmakuConfig` getter / `usingBuiltin*` / 优先级）
-///      的锁定 —— 那才是"内置生效"的真相，不随 UI 删除而改变；
-///   ③ 状态行断言改为"不再把用户指去输入框填凭证"。
+///      的锁定 —— 那是"凭证生效"的真相，不随 UI 增删而改变；
+///   ③ 状态行断言：缺凭证时**如实**说"未配置、官方边会失败"，并给免签名的退路。
 
 Widget dialogHost(DanmakuSettingsState state) => MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -29,6 +30,10 @@ Widget dialogHost(DanmakuSettingsState state) => MaterialApp(
               onSetArea: (_) {},
               onReload: () {},
               onClose: () {},
+              // ★ 2026-10-14：凭证节的两个回调 —— 不接的话整节不画
+              //   （门控见 `_showCredentialsSection`），状态行断言就看不到它。
+              onSetCredentials: (_, __) {},
+              onClearCredentials: () {},
             ),
           ],
         ),
@@ -77,22 +82,36 @@ void main() {
     });
   });
 
-  group('③ 状态行不再把用户指去输入框（真树渲染）', () {
-    testWidgets('内置生效 ⇒ 面板不含 AppId/AppSecret 输入框，状态行说内置', (t) async {
+  group('③ 状态行如实说"用的是内置"（真树渲染）', () {
+    testWidgets('内置生效 ⇒ 输入框**空着**（内置不预填），状态行说内置', (t) async {
       DanmakuConfig.debugSetBuiltin(appId: 'xgmriqmqcq', appSecret: 's3cret');
       DanmakuConfig.setEnabled(true);
       await pumpPanel(t, DanmakuSettingsState.fromPrefs());
-      // 凭证输入框已删除：面板里再也找不到这两个 label。
-      expect(find.text('AppId'), findsNothing);
-      expect(find.text('AppSecret'), findsNothing);
+      /*
+       * ★ 2026-10-14 改口径：输入框**恢复了**，但内置凭证**不预填**进去
+       *   （`fromPrefs` 只取 `userAppId/userAppSecret`）—— 否则用户会误以为
+       *   "这是我填的"，一点保存反而用真内置值覆盖掉原值。
+       *   ⇒ 输入框的文本应为空。
+       */
+      final fields = t.widgetList<TextField>(find.byType(TextField)).toList();
+      final credFields = fields
+          .where((f) => f.controller != null &&
+              (f.decoration?.labelText == 'AppId' ||
+                  f.decoration?.labelText == 'AppSecret'))
+          .toList();
+      expect(credFields.length, 2, reason: '两个凭证输入框都在');
+      for (final f in credFields) {
+        expect(f.controller!.text, isEmpty,
+            reason: '内置凭证**不**预填进输入框（别让用户误以为是自己填的）');
+      }
       // 状态行如实说在用内置凭证；且**不再**出现「还没填」这种不存在的指引。
       expect(find.textContaining('还没填'), findsNothing,
-          reason: '输入框已删，状态行不能再叫用户去"填"');
+          reason: '有内置凭证 ⇒ 不该说"还没填"');
       expect(find.textContaining('内置凭证'), findsWidgets);
     });
   });
 
-  group('④ 无内置 + 无覆盖 ⇒ 状态行不再谎称"去填凭证"', () {
+  group('④ 无内置 + 无覆盖 ⇒ 面板如实说"未配置凭证 + 有出路"', () {
     test('core 的 statusText 原样保留（它描述"有没有凭证"，仍成立）', () {
       DanmakuConfig.debugSetBuiltin(); // 恢复读 const（无注入构建 == 无内置）
       DanmakuConfig.setEnabled(true); // statusText 要求开着（reset 后缺省关）
@@ -101,46 +120,60 @@ void main() {
       expect(DanmakuConfig.statusText, '弹幕已开启，但还没填 AppId / AppSecret');
     });
 
-    testWidgets('面板状态行改口径：说"凭证未就绪 + 两条免凭证的路"，不说"还没填"',
+    testWidgets('面板状态行如实说"凭证未配置"，并指两条免签名的路 + 可手填的输入框',
         (t) async {
       DanmakuConfig.debugSetBuiltin();
       DanmakuConfig.setEnabled(true);
       await pumpPanel(t, DanmakuSettingsState.fromPrefs());
-      expect(find.textContaining('还没填'), findsNothing,
-          reason: '面板上已无输入框，不能再说"还没填 AppId / AppSecret"');
-      expect(find.textContaining('凭证未就绪'), findsWidgets);
+      // ★ 2026-10-14（Owner「凭证流程根本没走通」）改口径：
+      //   面板现在**有**凭证输入框了 ⇒ 缺凭证要**如实**说（官方边会失败），
+      //   而不是改前那句听着像"不用管"的「凭证未就绪（…不需要凭证）」。
+      expect(find.textContaining('凭证未配置'), findsWidgets,
+          reason: '缺凭证要如实说，别让用户以为"不需要凭证"');
+      expect(find.textContaining('官方边会失败'), findsWidgets,
+          reason: '得说清后果，用户才知道为什么要配');
+      expect(find.textContaining('免签名'), findsWidgets,
+          reason: '给两条真实存在的免签名退路');
     });
   });
 
   group('⑤ 源码契约', () {
-    test('凭证输入节删除 + 数据源行保留 + player_page 红线继续有效', () {
+    test('凭证输入节**恢复** + 数据源行保留 + player_page 红线继续有效', () {
       final dlg =
           File('lib/ui/widgets/danmaku_settings_dialog.dart').readAsStringSync();
       final pp = File('lib/ui/player_page.dart').readAsStringSync();
 
-      // 凭证节相关标识符全部消失（回调 / 输入框 / 删除按钮 / 预填逻辑）。
-      expect(dlg.contains('onSetAppId'), isFalse,
-          reason: '面板不再有凭证回调（输入框已删）');
-      expect(dlg.contains('onSetAppSecret'), isFalse);
-      expect(dlg.contains('onClearCredentials'), isFalse);
-      expect(dlg.contains("labelText: 'AppId'"), isFalse);
-      expect(dlg.contains("labelText: 'AppSecret'"), isFalse);
-      expect(dlg.contains('清除凭证'), isFalse);
-      // usingBuiltinAppId 仍在 `_statusText` 里（状态行如实说"用的是内置"），
-      // 但**不再**出现在任何预填/渲染逻辑里 —— 冻结调用点数量以防回归。
-      expect('usingBuiltinAppId'.allMatches(dlg).length, 1,
-          reason: 'usingBuiltinAppId 只该在 _statusText 出现一次（状态展示）');
-      expect(dlg.contains('usingBuiltinAppSecret'), isFalse,
-          reason: 'usingBuiltinAppSecret 已无用处（预填逻辑删除）');
+      /*
+       * ★★★ 2026-10-14（Owner 反馈「凭证流程根本没走通」）：断言内容**翻转**。
+       *
+       * 改前（2026-10-11）这几条要求"凭证输入节必须已删除"，因为当时认为
+       * 客户端内置凭证、用户不必手填。但**本地构建没有 --dart-define** ⇒
+       * 没有内置值、UiPrefs 也没值 ⇒ 官方边必然 403，且无入路可配。
+       * ⇒ 现在要求输入框与两个回调**必须都在**（否则用户又无路可走）。
+       */
+      expect(dlg.contains("labelText: 'AppId'"), isTrue,
+          reason: 'AppId 输入框必须恢复（没有内置凭证的构建靠它）');
+      expect(dlg.contains("labelText: 'AppSecret'"), isTrue,
+          reason: 'AppSecret 输入框必须恢复（同上）');
+      expect(dlg.contains('onSetCredentials'), isTrue,
+          reason: '保存回调必须存在（面板是纯 UI，落盘走宿主）');
+      expect(dlg.contains('onClearCredentials'), isTrue,
+          reason: '清除回调必须存在');
+      // 输入框两个 + 保存/清除两枚按钮。
+      expect(dlg.contains("labelText: 'AppId'"), isTrue);
+      // usingBuiltinAppId 在**状态行**与**凭证状态行**两处如实展示"用的是内置"。
+      expect('usingBuiltinAppId'.allMatches(dlg).length, greaterThanOrEqualTo(1),
+          reason: 'usingBuiltinAppId 状态展示用（如实说用的是内置）');
 
-      // 数据源行必须还在（删的是凭证节，不是它）。
+      // 数据源行必须还在（凭证节恢复的是输入，不是把它并掉）。
       expect(dlg.contains('数据源'), isTrue,
           reason: '「数据源」状态行保留（T27-05）');
 
-      // player_page 红线（task-10 起持续有效）
+      // player_page 红线（task-10 起持续有效）：不许直接读内置常量，
+      // 一律走 DanmakuConfig 的 getter（面板与宿主都不碰构建期注入细节）。
       expect(pp.contains('builtinAppId'), isFalse,
-          reason: 'player_page 绝不许动（w6-live 在改）');
-      expect(pp.contains('usingBuiltinAppId'), isFalse);
+          reason: 'player_page 不许直接读 builtinAppId 常量');
+      expect(pp.contains('builtinAppSecret'), isFalse);
     });
   });
 }

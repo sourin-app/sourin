@@ -318,7 +318,7 @@ pub async fn list_favorites(
      * 库里存的是**原始 URL**（`set_favorite` 里刻意 unproxy 过 ——
      * 临时代理地址不能落库，端口每次启动都变）。但展示时如果直接用原始 URL：
      * ```text
-     * B站封面 https://i1.hdslb.com/...  + 页面 Referer = tauri.localhost
+     * 某视频站封面 https://i1.hdslb.com/...  + 页面 Referer = tauri.localhost
      *   → HTTP 403（实测确认，CDN 有防盗链）
      * ```
      * 所以必须在这里重新登记一次代理，前端拿到的才是能加载的地址。
@@ -327,7 +327,7 @@ pub async fn list_favorites(
      * 详情页每次都走 `proxy_cover_one`，而这里原先什么都没做。
      *
      * ⚠️ 每个源用它自己的 `cover_headers` —— 不同 CDN 要的头不一样
-     *    （B站要 Referer，其他源可能不要）。
+     *    （某视频站要 Referer，其他源可能不要）。
      *    没有声明 `coverHeaders` 的源跳过（直连本来就能加载）。
      *
      * ⚠️ 代理启动失败时**保持原 URL 不变** ——
@@ -424,7 +424,7 @@ pub fn list_platform_history(
 // > 与详情页同理 —— 这是**第三个（也是最后一个）**会出现封面的出口。
 // > 三处都覆盖到才算完整：`get_list` / `get_rank` / `get_detail` / `search_all`
 //
-// 漏掉这里的后果是「搜索页的 B 站结果全是裂图」，而列表页正常 ——
+// 漏掉这里的后果是「搜索页的 外部视频站结果全是裂图」，而列表页正常 ——
 // 那种"只有某个页面裂"的表现很难联想到代理，值得记住这条注释。
 
 /// 跨源搜索（等全部源返回后一次性给结果）
@@ -528,7 +528,7 @@ pub enum SearchStreamEvent {
 /// tokio::join! 让两者并发（取封面不阻塞后面的源开始搜索）
 /// ```
 /// 我第一版试图让回调直接发事件（不取封面），并把这个差异写进注释 ——
-/// 但那是**功能缺失**（搜索页的 B 站封面会全裂），不是可以接受的近似。
+/// 但那是**功能缺失**（搜索页的 外部视频站封面会全裂），不是可以接受的近似。
 /// 所以按原版结构重做。
 /// # ★★ 为什么生产者必须 `tokio::spawn`（2026-09-22 实测踩到死锁）
 ///
@@ -842,10 +842,10 @@ mod tests {
     #[test]
     fn disabled_roundtrip() {
         let dir = tmp_dir("disabled-rt");
-        save_disabled(&dir, &["cycani".into(), "cctv".into()]).unwrap();
+        save_disabled(&dir, &["srca".into(), "srcl".into()]).unwrap();
         let back = load_disabled(&dir);
         assert_eq!(back.len(), 2);
-        assert!(back.contains(&"cycani".to_string()));
+        assert!(back.contains(&"srca".to_string()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

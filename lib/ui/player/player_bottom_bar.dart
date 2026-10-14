@@ -7,7 +7,7 @@
 //
 //  ```text
 //  ① 「选择类」操作全部换成 popover（倍速 / 线路 / 字幕音轨 / 弹幕 / 更多）
-//     —— 不再弹窗、不再抽屉（B 站 / 腾讯视频那一档）
+//     —— 不再弹窗、不再抽屉（某视频站 / 某长视频站那一档）
 //  ② 低频项收进一个「更多」浮层；功能**一个没删**，只是换了入口
 //  ③ 四个档位共用**同一套按钮定义**（`_barActions`），不再三份复制
 //     —— 改一处就三处生效，也终于能保证各档功能集合一致
@@ -51,7 +51,7 @@ class PlayerPopoverIds {
   /// 上一轮把弹幕做成「开关 + 设置」两枚**直连**按钮（开关直连 onDanmakuToggle、
   /// 设置直连 onDanmakuSettings 进全屏大卡片），于是 `danmaku` 这个 popover id
   /// 被判为死常量、删掉了（见 t27_w14 A4）。
-  /// 但 Owner 这次的原话要的是 B 站那种**贴按钮的小卡片**（图 1）：
+  /// 但 Owner 这次的原话要的是 某视频站那种**贴按钮的小卡片**（图 1）：
   ///   点齿轮 ⇒ 弹出「按类型过滤 + 四个滑杆 + 高级设置」的轻量窗；
   ///   最后一行「高级设置」⇒ 才进现在的全屏大卡片。
   /// ⇒ 弹幕重新需要一个 popover 入口，id 取 `danmakuQuick`（不是旧的 `danmaku`
@@ -106,9 +106,60 @@ class PlayerMoreMenuData {
   final List<MoreMenuGroup> groups;
 }
 
+/// ★★★ 2026-10-14：弹幕轻量悬浮窗「四根滑杆」的**实时值载体**
+///
+/// # 为什么要有这个类（Owner：「弹窗…而且还非常的卡顿（这里必须解决）」）
+/// ```text
+/// 改前：四个 `onSetFontScale/...` 回调每个都 `setState` ⇒ **拖动中每一帧**
+///       整页 `PlayerPage.build()` 重建 884 行（含 `Video` / `DanmakuOverlay`
+///       / 全部浮层）。本仓自己的实测（player_page.dart 旧探针）：
+///       60 次鼠标移动 ⇒ PlayerPage 重建 60 次、元素重建 9960 次
+///       （平均每次移动 166 个元素）。
+/// 改后：滑杆的值 + 读数走一个 `ValueListenable`，**只有那四根滑杆**重建；
+///       画面侧的实时更新由 `DanmakuOverlay` **自己的重绘**承担（见下）。
+/// ```
+///
+/// # 「画面实时跟手」靠什么（别把它弄丢）
+/// ```text
+/// `_DanmakuPainter` **每帧现读** `widget.fontScale`（字号，排版时用）
+/// 与 `widget.opacity`（不透明度，绘制时用），且宿主每秒 tick 都在
+/// `_repaint.value++` 触发重绘。⇒ 只要 `widget.*` 换成新值：
+///   · opacity 下一帧就跟着变（painter 现读）；
+///   · fontScale/speed/area 走 `_ensureLayout` 的 key ⇒ 重排 ⇒ 字号/速度/
+///     显示区域跟着变。
+/// 关键是"**让 widget.* 拿到新值**"——不需要整页 setState。见
+/// player_page.dart 的 `_pushDanmakuQuickLive()` 上方那段推导，
+/// 以及 build 里包 `DanmakuOverlay` 的那层 `ValueListenableBuilder`。
+/// ```
+class DanmakuQuickValues {
+  const DanmakuQuickValues({
+    required this.fontScale,
+    required this.opacity,
+    required this.speed,
+    required this.area,
+  });
+
+  final double fontScale;
+  final double opacity;
+  final double speed;
+  final double area;
+
+  DanmakuQuickValues copyWith({
+    double? fontScale,
+    double? opacity,
+    double? speed,
+    double? area,
+  }) => DanmakuQuickValues(
+    fontScale: fontScale ?? this.fontScale,
+    opacity: opacity ?? this.opacity,
+    speed: speed ?? this.speed,
+    area: area ?? this.area,
+  );
+}
+
 /// ★★★ Owner 1011 反馈第 1 条：弹幕**轻量悬浮窗**要展示的全部状态与回调
 ///
-/// # 形态（对齐 B 站图 1）
+/// # 形态（对齐 某视频站图 1）
 /// ```text
 /// ① 按类型过滤：滚动 / 顶部 / 底部（三枚一键开关）
 /// ② 四根滑杆（**可直接拖**）：字号 / 不透明度 / 速度 / 显示区域
@@ -128,11 +179,17 @@ class PlayerMoreMenuData {
 /// 四个滑杆的值 = player_page 的 `_danmakuSettings.fontScale/opacity/speed/area`
 /// （它本身就是 `DanmakuConfig` 的快照）；
 /// 三个类型开关 = `DanmakuConfig.showScroll/showTop/showBottom`。
-/// 拖动/点开关 ⇒ 走 `DanmakuConfig.setXxx` + 宿主 setState ⇒ 实时生效
-/// （DanmakuOverlay 的 `_ensureLayout` 会因 key 变化重排，与面板同一条路）。
+/// 拖动/点开关 ⇒ 走 `DanmakuConfig.setXxx`（落盘 + 通知弹幕层）；**拖动**额外
+/// 只推 `live`（见 `DanmakuQuickValues`），不再整页 setState。
 /// ```
 ///
-/// ⚠️ 本项目**没有**的能力（B 站图 1 里有、这里如实不画假开关）：
+/// ★ 2026-10-14（卡顿修复）：四个**可拖动**的值多了一条「实时通道」：
+///   `live`。为 null（老调用点 / 测试夹具）⇒ 四根滑杆回落到上面的
+///   `fontScale/opacity/speed/area` 静态字段 —— 逐字兼容，测试夹具不传也能跑。
+///   非 null ⇒ 四根滑杆只订阅它、只重建滑杆那一小块（见 `_danmakuQuickPanel`）。
+///   三个**类型开关**不在 `live` 里（点击，频率低，仍走宿主 setState）。
+///
+/// ⚠️ 本项目**没有**的能力（某视频站图 1 里有、这里如实不画假开关）：
 ///   「彩色 / 高级」类型过滤、「弹幕随屏幕缩放」「防挡字幕」「智能防挡弹幕」
 ///   「同步屏蔽列表」——`DanmakuConfig` / `DanmakuComment` 里都没有对应字段。
 class DanmakuQuickPanelData {
@@ -155,6 +212,7 @@ class DanmakuQuickPanelData {
     required this.onSetColorOnly,
     required this.onOpenAdvanced,
     this.onAreaGuide,
+    this.live,
   });
 
   /// 字号缩放（对应 `DanmakuConfig.fontScale`）
@@ -199,6 +257,12 @@ class DanmakuQuickPanelData {
 
   /// 「高级设置」⇒ 宿主打开全屏大卡片（`_openDanmakuSettings`）
   final VoidCallback onOpenAdvanced;
+
+  /// ★ 2026-10-14（卡顿修复）：四根**可拖动**滑杆的实时值载体。
+  ///
+  /// 见类头「值从哪来」第二节。为 null ⇒ 回落到上面的静态字段
+  /// `fontScale/opacity/speed/area`（老调用点 / 测试夹具，逐字兼容）。
+  final ValueListenable<DanmakuQuickValues>? live;
 }
 
 /// 底栏（桌面 / 手机 / TV 共用）
@@ -401,7 +465,7 @@ class PlayerBottomBar extends StatelessWidget {
           active: controller.isOpen(PlayerPopoverIds.tracks),
         ),
       _BarAction(
-        // ★★★ Owner 1011 反馈第 1 条（弹幕做成 B 站那种形态）：
+        // ★★★ Owner 1011 反馈第 1 条（弹幕做成 某视频站那种形态）：
         //   「一个开关,一个设置」⇒ 开关这枚**直接开关弹幕**（onTap 而不是
         //   popoverId）—— 点一下就是开/关，不再弹那个「关闭弹幕 / 弹幕设置」
         //   两层小菜单。设置那枚（下面紧接着的全新一枚）才是「弹出来面板
@@ -416,8 +480,8 @@ class PlayerBottomBar extends StatelessWidget {
         onTap: onDanmakuToggle,
       ),
       _BarAction(
-        // ★★★ Owner 1011 反馈第 1 条（弹幕做成 B 站那种形态）：
-        //   设置这枚点开的是一个**轻量悬浮窗**（B 站图 1 那种贴按钮的小卡片：
+        // ★★★ Owner 1011 反馈第 1 条（弹幕做成 某视频站那种形态）：
+        //   设置这枚点开的是一个**轻量悬浮窗**（某视频站图 1 那种贴按钮的小卡片：
         //   按类型过滤 + 四个可直接拖的滑杆 + 最后一行「高级设置」）。
         //
         //   ⚠️ 与「开关」那枚的区别（别照抄）：
@@ -557,7 +621,7 @@ class PlayerBottomBar extends StatelessWidget {
       );
 
   // ═══════════════════════════════════════════════════════════════════════
-  //  ★★★ Owner 1011 反馈第 1 条：弹幕轻量悬浮窗（B 站图 1 那种）
+  //  ★★★ Owner 1011 反馈第 1 条：弹幕轻量悬浮窗（某视频站图 1 那种）
   // ═══════════════════════════════════════════════════════════════════════
   //
   //  # 宽度为什么是 300（不是默认的 168）
@@ -615,7 +679,7 @@ class PlayerBottomBar extends StatelessWidget {
         // ① 按类型过滤 —— 四枚一键开关（滚动 / 顶部 / 底部 / 彩色）
         //
         // ★ 2026-10-11（Owner 第 1 条续）：补上第四枚「彩色」。
-        //   B 站图 1 里就是四枚；本项目的 `DanmakuComment.color` **有**颜色字段，
+        //   某视频站图 1 里就是四枚；本项目的 `DanmakuComment.color` **有**颜色字段，
         //   所以「彩色」是**有数据支持**的真开关（不是假开关）——
         //   语义 = 只显示彩色弹幕（白色弹幕隐藏），见 `DanmakuConfig.colorOnly`。
         //   ⚠️ 「高级」这一枚**不做**：`DanmakuComment` 里没有任何能区分
@@ -657,50 +721,22 @@ class PlayerBottomBar extends StatelessWidget {
         const PopoverDivider(),
         const PopoverGroupLabel('显示'),
         // ② 四根滑杆 —— **直接拖**（拖动中每一帧都回调，实时生效）
-        _quickSlider(
-          key: danmakuQuickFontScaleKey,
-          label: '字号',
-          value: d.fontScale,
-          min: DanmakuConfig.fontScaleMin,
-          max: DanmakuConfig.fontScaleMax,
-          readout: '${(d.fontScale * 100).round()}%',
-          onChanged: d.onSetFontScale,
-        ),
-        _quickSlider(
-          key: danmakuQuickOpacityKey,
-          label: '不透明度',
-          value: d.opacity,
-          min: DanmakuConfig.opacityMin,
-          max: DanmakuConfig.opacityMax,
-          readout: '${(d.opacity * 100).round()}%',
-          onChanged: d.onSetOpacity,
-        ),
-        _quickSlider(
-          key: danmakuQuickSpeedKey,
-          label: '速度',
-          value: d.speed,
-          min: DanmakuConfig.speedMin,
-          max: DanmakuConfig.speedMax,
-          readout: _speedLabel(d.speed),
-          onChanged: d.onSetSpeed,
-        ),
-        _quickSlider(
-          key: danmakuQuickAreaKey,
-          label: '显示区域',
-          value: d.area,
-          min: DanmakuConfig.areaMin,
-          max: DanmakuConfig.areaMax,
-          readout: '${(d.area * 100).round()}%',
-          onChanged: d.onSetArea,
-          // ★ 2026-10-11（Owner 第 ④ 条）：拖动期间点亮画面上的引导遮罩
-          //   （起手 = 开始拖 ⇒ 显示；松手 = 结束拖 ⇒ 淡出）。
-          //   `onAreaGuide` 为 null（老调用点 / 测试夹具）⇒ 传 null，不画遮罩。
-          onGuideStart: d.onAreaGuide == null
-              ? null
-              : () => d.onAreaGuide!(true),
-          onGuideEnd:
-              d.onAreaGuide == null ? null : () => d.onAreaGuide!(false),
-        ),
+        //
+        // ★★★ 2026-10-14（卡顿修复）：四根滑杆**只包这一小块**。
+        //
+        // # 为什么只包「滑杆」、不包整个面板
+        // ```text
+        // 拖动中每一帧都回调 ⇒ 若把它包在面板外层，四枚类型开关 / 分隔线 /
+        // 「高级设置」行都会跟着逐帧重建（那又是「整块重建」的老毛病，只是
+        // 从整页缩小到整面板）。这里给出的 builder 只渲染这四根滑杆一行都不多
+        // ⇒ 逐帧重建的**只有四根滑杆**。
+        // ```
+        //
+        // # 为 null 分支（老调用点 / 测试夹具）
+        //   直接读 `d` 的静态字段，与改前**逐字一致**：
+        //   拖动中宿主若走老路 setState 更新 `d` ⇒ 读数照样实时刷新。
+        //   生产宿主改用 `live`（见 player_page），不会再整页 setState。
+        _quickSliders(d),
         const PopoverDivider(),
         // ③ 高级设置 ⇒ 进全屏大卡片（AppId / 屏蔽词 / 重新获取…都在那）
         PopoverRow(
@@ -713,7 +749,96 @@ class PlayerBottomBar extends StatelessWidget {
     ),
   );
 
-  /// 类型一键开关（B 站那种小图标按钮；开 = 青色高亮）
+  /// ★★★ 2026-10-14（卡顿修复）：四根可拖滑杆的**独立重建单元**。
+  ///
+  /// # 它解决什么
+  /// ```text
+  /// 四个滑杆的值改前直接读 `DanmakuQuickPanelData` 的静态字段、由宿主
+  /// 整页 setState 刷新 ⇒ 拖动中每帧重建整页（884 行 build）。
+  /// 本方法只让这四根滑杆订阅 `d.live`，把「逐帧重建」关进**只有这四根滑杆**。
+  /// ```
+  ///
+  /// # 为什么用 `ValueListenableBuilder` 而不是自己 addListener + setState
+  /// ```text
+  /// 两者都只重建这一小块。选前者是因为：`live` 若在宿主侧被换成一个新
+  /// 实例（本仓不会，但老调用点可能），`ValueListenableBuilder` 会**自动**
+  /// 重新订阅（它在 didUpdateWidget 里比 listenable 引用）；手写 addListener
+  /// 则要在 didUpdateWidget 里自己换订阅，多一处容易漏的成对逻辑，
+  /// 而且要在 `_PlayerBottomBar` 里塞一个 State（本类是 StatelessWidget）。
+  /// ```
+  ///
+  /// # 为 null（老调用点 / 测试夹具）
+  ///   直接读静态字段渲染，**不套** ValueListenableBuilder —— 与改前逐字一致。
+  Widget _quickSliders(DanmakuQuickPanelData d) {
+    final live = d.live;
+    Widget build(DanmakuQuickValues v) => Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _quickSlider(
+          key: danmakuQuickFontScaleKey,
+          label: '字号',
+          value: v.fontScale,
+          min: DanmakuConfig.fontScaleMin,
+          max: DanmakuConfig.fontScaleMax,
+          readout: '${(v.fontScale * 100).round()}%',
+          onChanged: d.onSetFontScale,
+        ),
+        _quickSlider(
+          key: danmakuQuickOpacityKey,
+          label: '不透明度',
+          value: v.opacity,
+          min: DanmakuConfig.opacityMin,
+          max: DanmakuConfig.opacityMax,
+          readout: '${(v.opacity * 100).round()}%',
+          onChanged: d.onSetOpacity,
+        ),
+        _quickSlider(
+          key: danmakuQuickSpeedKey,
+          label: '速度',
+          value: v.speed,
+          min: DanmakuConfig.speedMin,
+          max: DanmakuConfig.speedMax,
+          readout: _speedLabel(v.speed),
+          onChanged: d.onSetSpeed,
+        ),
+        _quickSlider(
+          key: danmakuQuickAreaKey,
+          label: '显示区域',
+          value: v.area,
+          min: DanmakuConfig.areaMin,
+          max: DanmakuConfig.areaMax,
+          readout: '${(v.area * 100).round()}%',
+          onChanged: d.onSetArea,
+          // ★ 2026-10-11（Owner 第 ④ 条）：拖动期间点亮画面上的引导遮罩
+          //   （起手 = 开始拖 ⇒ 显示；松手 = 结束拖 ⇒ 淡出）。
+          //   `onAreaGuide` 为 null（老调用点 / 测试夹具）⇒ 传 null，不画遮罩。
+          onGuideStart: d.onAreaGuide == null
+              ? null
+              : () => d.onAreaGuide!(true),
+          onGuideEnd:
+              d.onAreaGuide == null ? null : () => d.onAreaGuide!(false),
+        ),
+      ],
+    );
+
+    if (live == null) {
+      return build(
+        DanmakuQuickValues(
+          fontScale: d.fontScale,
+          opacity: d.opacity,
+          speed: d.speed,
+          area: d.area,
+        ),
+      );
+    }
+    return ValueListenableBuilder<DanmakuQuickValues>(
+      valueListenable: live,
+      builder: (context, v, _) => build(v),
+    );
+  }
+
+  /// 类型一键开关（某视频站那种小图标按钮；开 = 青色高亮）
   Widget _quickTypeChip({
     required Key key,
     required String label,
@@ -748,7 +873,7 @@ class PlayerBottomBar extends StatelessWidget {
     );
   }
 
-  /// 弹幕速度读数：B 站是「极慢/慢/标准/快/极快」这种档位词。
+  /// 弹幕速度读数：某视频站是「极慢/慢/标准/快/极快」这种档位词。
   /// 本项目的 `speed` 是「走完一屏的秒数」（越大越慢）⇒ 按分档给出中文，
   /// 与全屏大卡片里那根滑杆显示的 `8.0s` 并存（档位词更好懂，秒数更精确）。
   static String _speedLabel(double seconds) {
@@ -827,7 +952,7 @@ class PlayerBottomBar extends StatelessWidget {
   /// （见 [_qualityRows] 的取舍说明）；传 null 时退回 `o.label`。
   ///
   /// ⚠️ **`labelOverride` 非空时必须同时抑制 `hint`**（Owner 1011 复报：
-  ///    「bilibili 的怎么还是两个重复的 1080p?」）。
+  ///    「srcv 的怎么还是两个重复的 1080p?」）。
   /// ```text
   /// 我第一版只换了 `label` 却仍传 `hint: o.hint` ⇒ 行里画出
   ///   「1080P        1080P」——左边是 override、右边是原 hint，**同一个值画两遍**。
@@ -853,7 +978,7 @@ class PlayerBottomBar extends StatelessWidget {
   /// > 4.然后还有这个清晰度,前面的无关紧要的信息就不用展示了吧?
   /// ```
   /// 他后来澄清：「前面的无关紧要的信息」= 每行左侧的**来源名**
-  /// （截图里那个被省略号截断的「哔哩哔哩 …」），只保留「1080P / 720P / 480P」。
+  /// （截图里那个被省略号截断的「外部视频源 …」），只保留「1080P / 720P / 480P」。
   ///
   /// # 数据口径（为什么 `hint` 才是清晰度、`label` 是来源名）
   /// ```text
@@ -876,7 +1001,7 @@ class PlayerBottomBar extends StatelessWidget {
   /// ```text
   /// ① declarative.rs:165 `variants: HashMap<String, String>` ⇒ 变体键**唯一**
   ///    （键就是 quality，`.with_quality(label)`，label 恒为来源名 "声明式"）。
-  /// ② cctv.rs:593 的 [("hls1","高清"),("hls2","标清")] 与 :705 的四档 CDN
+  /// ② srcl.rs:593 的 [("hls1","高清"),("hls2","标清")] 与 :705 的四档 CDN
   ///    （超清/高清/标清/流畅）—— 同一来源内 quality 逐条**不同**。
   /// ③ `resolve_stream`（playback.rs:149）**不做任何去重或合并**：
   ///    它只把一个 provider 的 `resolve()` 结果原样返回（仅套代理）。
@@ -909,9 +1034,9 @@ class PlayerBottomBar extends StatelessWidget {
     // ```text
     // 旧判据：同档 >1 ⇒ 给那几行附来源名。它**假设**同档多条 = 不同来源。
     // 真机反例（Owner 截图：三个一模一样的 1080P）：
-    //   bilibili 这类第三方插件把 best + 全部 backupUrl 都当独立候选输出，
+    //   srcv 这类第三方插件把 best + 全部 backupUrl 都当独立候选输出，
     //   quality 全相同、**来源名也几乎相同**：
-    //     「哔哩哔哩 1080P」 / 「哔哩哔哩 1080P 备用」 / 「哔哩哔哩 1080P 备用」…
+    //     「外部视频源 1080P」 / 「外部视频源 1080P 备用」 / 「外部视频源 1080P 备用」…
     //   ⇒ 附来源名后那几行**仍然分不开** ⇒ 消歧失败，
     //     用户看到重复字、还是不知道该点哪个。
     // ```
@@ -1329,9 +1454,54 @@ class _PopoverAnchorDelegate extends SingleChildLayoutDelegate {
     }
 
     // 底边贴按钮上沿上方 Sp.x2（按钮被安全区抬高时跟着抬）
-    final desiredBottom = a == null ? size.height - spacing : a.top - spacing;
+    /*
+     * ══════════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-13（Owner）：面板底边**贴死底栏上沿**（去掉那 8px 缝）
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * Owner 原话（逐字）：
+     * ```text
+     * > 这个悬浮窗距离底部太多了,往上挪的过程中就可能悬浮窗关闭了
+     * ```
+     * 追问后 Owner 明确：**贴紧底栏（去掉 8px 缝）**。
+     *
+     * # 改哪一处
+     * ```text
+     * 原：`desiredBottom = size.height - spacing`（层底 - 8px 留白）
+     * 新：`desiredBottom = size.height`（层底，0 留白）
+     * 层底 == 底栏上沿（宿主把本层挂在
+     *   `Padding(bottom: _kPlayerBottomBarHeight)` 里）
+     * ⇒ 面板底边**正贴在底栏上沿**：那 8px 缝没了。
+     * ```
+     *
+     * ⚠️ **只动竖向这一处**：横向仍按按钮中心居中（Owner 1011 第 4 条），
+     *    `spacing` 也**保持不变**（它还管着"别顶到窗口边缘"的横向 clamp）。
+     * ⚠️ 面板本来贴的是**按钮上沿**（`a.top - spacing`）—— 但按钮在底栏里偏下，
+     *    实测底栏顶 y=694、按钮顶 y=751 ⇒ 面板会悬在底栏上方 ~49px
+     *    （这正是 Owner 说的"距离底部太多"）。改成贴**层底**后，那 ~49px 也没了。
+     * ★ 两者（去 8px 缝 + 不再贴按钮上沿）合起来才是 Owner 要的"贴紧底栏"。
+     * ```
+     */
+    final desiredBottom = size.height;
     var top = fallback.dy - (size.height - spacing - desiredBottom);
-    final maxTop = size.height - spacing - childSize.height;
+    /*
+     * ⚠️⚠️ 真正把面板钉住的是**这一行**（不是上面的 `desiredBottom`）。
+     *
+     * # 我上一版只改 `desiredBottom`，实测面板**一个像素没动** —— 原因在这
+     * ```text
+     * `maxTop = size.height - spacing - childSize.height`
+     * ⇒ 面板的 `top` 被夹在 `size.height - spacing - 高度`
+     * ⇒ 底边 = `size.height - spacing`（= 层底 - 8px）
+     * ⇒ **那 8px 缝其实来自这个 `spacing`**，与 `desiredBottom` 无关
+     *   （后者算出来的位置比 `maxTop` 更低，被夹掉了）。
+     * ```
+     * # 所以竖向的留白必须在这里去掉
+     * ```text
+     * 改成 `size.height - childSize.height`（0 留白）⇒ 底边 = 层底 = 底栏上沿。
+     * ⚠️ 横向 clamp（`minLeft`/`maxLeft`）与竖向兜底仍用 `spacing` ——
+     *    它们管的是"别顶到窗口**左右**边缘"，与"贴底栏"是两件事。
+     */
+    final maxTop = size.height - childSize.height;
     if (top > maxTop) top = maxTop;
     // 上沿还要让开状态栏 / 刘海（viewPadding 在无安全区时是 0）
     final minTop = viewPadding.top + spacing;

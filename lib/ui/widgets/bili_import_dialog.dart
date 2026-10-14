@@ -1,10 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════════
-//  哔哩哔哩弹幕导入面板（task-28）
+//  外部视频源弹幕导入面板（task-28）
 // ═══════════════════════════════════════════════════════════════════════
 //
 // # 这个面板干什么
 //
-// 用户原话：「支持一下 哔哩哔哩填入链接导入弹幕，并且自动绑定剧集和
+// 用户原话：「支持一下 外部视频源填入链接导入弹幕，并且自动绑定剧集和
 // 自动更新弹幕」。
 //
 // 一个输入框（BV 号 / av 号 / 链接 / b23 短链都能吃）→ 一个「导入」
@@ -83,7 +83,7 @@ class BiliImportState {
   /// 当前作品的绑定（null = 还没绑）。
   final BiliBinding? binding;
 
-  /// B 站视频信息（绑上了才有）。
+  /// 某视频站视频信息（绑上了才有）。
   final BiliVideoInfo? info;
 
   /// 可选的 P 列表（手动指定用）。
@@ -116,7 +116,7 @@ class BiliImportState {
   /// 当前这一集绑定的弹幕条数。
   final int comments;
 
-  /// 「搜 B 站视频」的结果（空 = 还没搜过）。
+  /// 「搜 某视频站视频」的结果（空 = 还没搜过）。
   ///
   /// 搜索**由宿主发**（面板是纯 UI，自己不碰网络，见文件头）——
   /// 面板只负责把结果显示出来、把点中的那条回传。
@@ -172,7 +172,7 @@ class BiliImportState {
   }
 }
 
-/// 哔哩哔哩弹幕导入面板。
+/// 外部视频源弹幕导入面板。
 class BiliImportDialog extends StatefulWidget {
   const BiliImportDialog({
     super.key,
@@ -207,7 +207,7 @@ class BiliImportDialog extends StatefulWidget {
 
   final VoidCallback onClose;
 
-  /// 「搜 B 站视频」—— 宿主去发请求，结果通过 [BiliImportState.searchResults]
+  /// 「搜 某视频站视频」—— 宿主去发请求，结果通过 [BiliImportState.searchResults]
   /// 回传（与其它动作同一条分工：面板不碰网络）。
   ///
   /// 可空：老宿主不接这个回调时，「搜索」按钮**不显示**（而不是点了没反应）。
@@ -336,7 +336,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
       child: Row(
         children: [
           const Text(
-            '哔哩哔哩弹幕',
+            '外部视频源弹幕',
             style: TextStyle(
               color: Colors.white,
               fontSize: FontSizes.lg,
@@ -422,7 +422,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           ),
           onSubmitted: (v) => _submit(v),
         ),
-        _hint('弹幕是免登录抓的，不需要 B 站账号。'),
+        _hint('弹幕是免登录抓的，不需要外部站账号。'),
       ],
     );
   }
@@ -437,9 +437,9 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
 
   // ── 搜索区 ─────────────────────────────────────────────────────────
 
-  /// 按关键词搜 B 站视频，点一条直接绑定
+  /// 按关键词搜 某视频站视频，点一条直接绑定
   ///
-  /// 为什么要有这一块：原来的面板只吃"链接"，用户得先去 B 站自己搜、
+  /// 为什么要有这一块：原来的面板只吃"链接"，用户得先去 某视频站自己搜、
   /// 复制链接、再回来粘贴。多一个搜索框就把这三步省掉了。
   ///
   /// 状态全部来自宿主（[BiliImportState.searchResults] / [searchKeyword]），
@@ -609,10 +609,10 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           ],
         ),
         if (s.binding != null) ...[
-          _hint('B 站视频：${s.binding!.title}'),
+          _hint('某视频站视频：${s.binding!.title}'),
           _hint(
             '本机第 ${s.episodeIndex + 1} 集 / 共 ${s.episodeCount} 集'
-            '　→　B 站 P${_pageOfCurrent(s)}（cid ${_cidOfCurrent(s)}）',
+            '　→　某视频站 P${_pageOfCurrent(s)}（cid ${_cidOfCurrent(s)}）',
           ),
           if (s.comments > 0) _hint('这一集挂了 ${s.comments} 条弹幕'),
         ],
@@ -653,7 +653,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
       return s.busyLabel.isEmpty ? '正在取…' : s.busyLabel;
     }
     if (s.error != null) return '上次导入失败（下方有服务端原文）';
-    if (!s.bound) return '还没绑定 B 站弹幕';
+    if (!s.bound) return '还没绑定外部弹幕';
     if (s.autoUpdate) {
       return '已绑定 · 自动更新每 ${s.intervalMinutes} 分钟一次';
     }
@@ -677,7 +677,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           ],
         ),
         _hint(
-          '这个 B 站视频有 ${s.pages.length} P。选「自动」时：'
+          '这个 某视频站视频有 ${s.pages.length} P。选「自动」时：'
           '多 P 按顺序对齐；只有 1 P 时所有集共用这一条时间轴。',
         ),
       ],
@@ -742,7 +742,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           '${s.intervalMinutes} 分钟',
         ),
         _hint(
-          'B 站的弹幕接口没有「只取新增」的参数，每次都是全量返回；'
+          '某视频站的弹幕接口没有「只取新增」的参数，每次都是全量返回；'
           '「增量」是在本机按弹幕 ID 求差集算出来的。',
         ),
       ],

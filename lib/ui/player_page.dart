@@ -110,7 +110,7 @@ import '../core/device.dart';
 // `sourin_api.dart` 里没有导出这个类型（它在 ffi.dart 定义），
 // 而 `_isAuthError` 现在**优先**用结构化 kind 判"是不是登录问题"，
 // 不再只靠 `toString()` 里找词。
-// ★ task-31 ④⑤：B 站弹幕导入（④） + assrt 在线字幕（⑤）
+// ★ task-31 ④⑤：外部视频站弹幕导入（④） + assrt 在线字幕（⑤）
 import '../core/bili/bili_api.dart';
 import '../core/bili/bili_auto_update.dart';
 import '../core/bili/bili_bind.dart';
@@ -741,7 +741,7 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 直播只剩音频线路时的**非阻断提示**（不是错误）
   ///
-  /// 用户报「cctv看得到但是点开黑屏」的根因：央视视频轨被 DRM 加密，
+  /// 用户报「tvsrc看得到但是点开黑屏」的根因：央视视频轨被 DRM 加密，
   /// 三条线路里只有「仅音频」能播 → 有声无画面。
   /// 原版会明确告知（`PlayerView.vue:4281-4299`），我们之前是静默开播。
   ///
@@ -1235,7 +1235,7 @@ class _PlayerPageState extends State<PlayerPage>
   // ═══════════════════════════════════════════════════════════════════
   //
   //  倍速 / 线路 / 字幕 / 音轨 / 弹幕 / 更多 —— 这些「选择类」操作
-  //  不再走弹窗或抽屉，改为贴在按钮旁的小卡片（B 站 / 腾讯视频那一档）。
+  //  不再走弹窗或抽屉，改为贴在按钮旁的小卡片（外部视频站 / 某视频站那一档）。
   //
   //  ★ 一份真值源：同时只可能有一个 popover 开着。Esc / 遥控器返回键
   //    只要 `close()` 就能把当前那个关掉（见 `_onEarlyKey`）。
@@ -1454,7 +1454,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// # 为什么是站点名而不是线路名
   ///
   /// 与详情页同一口径（见 `detail_page.dart::_providerName`）：
-  /// 用户说的"源"= **站点**（cycani / tyyszy / cctv）。
+  /// 用户说的"源"= **站点**（animesource / tyyszy / tvsrc）。
   /// 站内的线路/清晰度由底部栏「线路」按钮那个面板回答。
   ///
   /// ⚠️ 换源（`_switchSource`）会改 `_provider` —— 那时必须**重新取**
@@ -1527,11 +1527,11 @@ class _PlayerPageState extends State<PlayerPage>
   final OverlayPortalController _settingsPortal = OverlayPortalController();
 
   // ═══════════════════════════════════════════════════════════════════
-  //  ★★★ dandanplay 弹幕（task-13 ⑦）
+  //  ★★★ danmaku-service 弹幕（task-13 ⑦）
   // ═══════════════════════════════════════════════════════════════════
   //
   // 用户原话：
-  // > 接入一下 dandanplay 的弹幕功能
+  // > 接入一下 danmaku-service 的弹幕功能
   //
   // 核心层在 core/danmaku.dart（协议 / 签名 / 解析 / 排版），
   // 渲染层在 widgets/danmaku_overlay.dart（自驱帧循环），
@@ -1564,7 +1564,7 @@ class _PlayerPageState extends State<PlayerPage>
   List<DanmakuComment> _danmakuComments = const <DanmakuComment>[];
 
   /// HTTP 客户端（懒建；凭证改了必须重建 —— appId/appSecret 是构造快照）
-  DandanplayClient? _danmakuClient;
+  ExternalDanmakuClient? _danmakuClient;
 
   /// 本机弹弹play探测结果（T27-05；进程内缓存，null = 还没探过）
   DanmakuLocalStatus? _danmakuLocalStatus;
@@ -1572,8 +1572,42 @@ class _PlayerPageState extends State<PlayerPage>
   /// 「数据源」状态行文案（弹幕设置面板用；最近一次探测的结果）
   String _danmakuSourceLine = '';
 
+  // ── ★★★ 2026-10-14（Owner）：手动搜索番剧的状态 ────────────────────
+  //
+  // Owner 原话：> 弹幕我没有看到[弹幕服务]的搜索功能和绑定
+  //
+  // 后端弹幕客户端的 `searchEpisodes()` 一直都有（真 HTTP），
+  // 只是**没有 UI 调它**。这一组字段承载面板「搜索番剧」区的状态 ——
+  // 分工与 `_danmakuLoading/_danmakuError` 逐字相同（宿主持有、面板只管画）。
+  //
+  // ⚠️ 刻意**不**复用 `_danmakuLoading`：搜索只动面板，**绝不许**碰
+  //   `_danmakuComments` / 播放器 / 流地址（见 `_searchDanmaku` 的硬约束注释）。
+
+  /// 正在搜索（面板的按钮转圈 + 禁用）
+  bool _danmakuSearchLoading = false;
+
+  /// 上一次搜索的失败原因（沿用 DanmakuException 通路 ⇒ 服务端原文照透）
+  DanmakuException? _danmakuSearchError;
+
+  /// 是否已经搜过一次（区分「还没搜」与「搜了但空结果」—— 见面板的空态门控）
+  bool _danmakuSearchSearched = false;
+
+  /// 上一次搜索命中的剧集（点一条 ⇒ `_pickDanmakuMatch` 载入）
+  List<DanmakuMatch> _danmakuSearchResults = const <DanmakuMatch>[];
+
+  /// 最近一次搜索用的关键词（回填面板输入框）
+  String _danmakuSearchKeyword = '';
+
+  /// 搜索**发起时**的取弹幕令牌 —— 结果回来时若令牌变了，说明这一集已经
+  /// 换过（或重取过）⇒ 结果**对不上画面**，只提示、不自动载入。
+  ///
+  /// ★ 判据与 `_loadDanmaku` 里的 `token != _danmakuFetchToken` 是**同一个**
+  ///   `_danmakuFetchToken`（换集/重取都会 ++）—— 不另造一枚令牌，
+  ///   否则两套判断会漂移（这正是"两份判据"的经典坑）。
+  int _danmakuSearchToken = -1;
+
   /// 最近一次选路结果（客户端是本地模式还是官方模式）。
-  /// appId/appSecret 与 baseUrl 都是 DandanplayClient 的**构造快照**
+  /// appId/appSecret 与 baseUrl 都是 ExternalDanmakuClient 的**构造快照**
   /// ⇒ 本地/官方互切时必须重建客户端，否则缓存里的旧模式一直被复用。
   bool _danmakuUsingLocal = false;
 
@@ -1637,27 +1671,47 @@ class _PlayerPageState extends State<PlayerPage>
   /// 面板的状态快照（面板是纯 UI，所有读写都经过宿主）
   DanmakuSettingsState _danmakuSettings = DanmakuSettingsState.fromPrefs();
 
+  /// ★★★ 2026-10-14（卡顿修复）：弹幕轻量悬浮窗**四根滑杆**的实时真源。
+  ///
+  /// 拖动滑杆 ⇒ 只推它（不整页 setState）⇒ 只有四根滑杆那一小块重建。
+  /// 同一个 notifier 还被 `build` 里那层包 `DanmakuOverlay` 的
+  /// `ValueListenableBuilder` 订阅 ⇒ 画面**逐帧跟手**且整页不重建。
+  /// 完整推导见 `_pushDanmakuQuickLive()` 上方那段长注释。
+  ///
+  /// ★ 初值直接读 `DanmakuConfig`（与 `_danmakuSettings` 的初值同源）
+  ///   ⇒ 第一帧就对得上，无需额外补种。拖动后两者由 `_pushDanmakuQuickLive()`
+  ///   一起更新 ⇒ 永远同源。
+  final ValueNotifier<DanmakuQuickValues> _danmakuQuickLive =
+      ValueNotifier<DanmakuQuickValues>(
+        DanmakuQuickValues(
+          fontScale: DanmakuConfig.fontScale,
+          opacity: DanmakuConfig.opacity,
+          speed: DanmakuConfig.speed,
+          area: DanmakuConfig.area,
+        ),
+      );
+
   /*
    * ══════════════════════════════════════════════════════════════════
-   *  ★★★ task-31 ④：哔哩哔哩弹幕（导入 + 绑定 + 自动更新）
+   *  ★★★ task-31 ④：外部弹幕弹幕（导入 + 绑定 + 自动更新）
    * ══════════════════════════════════════════════════════════════════
    *
-   * 与 dandanplay 的关系：**同一时刻只有一个源在工作**。
+   * 与 danmaku-service 的关系：**同一时刻只有一个源在工作**。
    * ```text
-   * 绑了 B 站 ⇒ `_loadDanmakuNamed` 里 B 站优先，dandanplay 一条请求都不发
+   * 绑了 外部视频站 ⇒ `_loadDanmakuNamed` 里 外部视频站优先，danmaku-service 一条请求都不发
    * 没绑     ⇒ 行为与接线前**逐字节相同**（新代码全部走 BiliPrefs 判据）
-   * 解绑     ⇒ 下次起播自动退回 dandanplay
+   * 解绑     ⇒ 下次起播自动退回 danmaku-service
    * ```
    * 两条路的产物都是 `DanmakuComment` ⇒ 渲染层（DanmakuOverlay /
    * DanmakuTrackAllocator）**零改动**。
    */
-  /// 「哔哩哔哩弹幕」面板是否打开
+  /// 「外部弹幕弹幕」面板是否打开
   bool _biliSheetOpen = false;
 
   /// 面板的状态快照（面板是纯 UI，所有读写都经过宿主）
   BiliImportState _biliState = const BiliImportState();
 
-  /// B 站 HTTP 客户端（懒建 —— 没绑过的用户一个连接池都不建）
+  /// 外部视频站 HTTP 客户端（懒建 —— 没绑过的用户一个连接池都不建）
   BiliApi? _biliApi;
 
   /// 绑定时缓存下来的视频信息（P 列表 / 标题）
@@ -1669,7 +1723,26 @@ class _PlayerPageState extends State<PlayerPage>
   BiliVideoInfo? _biliInfoCache;
 
   /// 当前这一集实际用的 cid（0 = 没有）
+  ///
+  /// ★ 2026-10-14：现在有**两个**写者 —— 外部视频站那条路（起播/导入时写）
+  ///   与「搜索番剧」选中一条时（`_pickDanmakuMatch` 写 episodeId 语系的
+  ///   "弹幕库 id"）。两者都是"这一集该挂哪份弹幕"的身份，语义同构 ——
+  ///   共用一个字段是**有意**的（分成两个会出现"到底是哪个源"的二义）。
   int _biliCid = 0;
+
+  /// ★★★ 2026-10-14（CR #27）：用户**明确点选**的弹幕库集 id（一次性）
+  ///
+  /// # 为什么需要它（`_biliCid` 不够）
+  /// ```text
+  /// `_biliCid` 是"这一集挂哪份弹幕"的**持久身份**（外部视频站用、也被点选写）。
+  /// 但 `_loadDanmakuNamed` 走的是 `loadFor()` 的**模糊匹配**链路 ——
+  /// 它**不读** `_biliCid` ⇒ 用户点了「第 2 集」仍可能载入第 1 集/别的作品。
+  /// ⇒ 本字段表达的是**另一件事**：「用户刚刚点了一条，就取**这一条**」。
+  ///    消费一次即清（`_loadDanmakuNamed` 里）。
+  /// ```
+  /// ⚠️ 与 `_biliCid` **不合并**：那个是"当前这一集的弹幕身份"（跨集保留），
+  ///    这个是"刚刚点的那一下"（一次性）。两者生命周期不同。
+  int? _pinnedEpisodeId;
 
   /// ★ 打开面板那一刻的 `_danmakuFetchToken`
   ///
@@ -2808,7 +2881,7 @@ class _PlayerPageState extends State<PlayerPage>
          * # 为什么必须开（而不是"保持默认更安全"）
          *
          * ```text
-         * 流地址来自**用户自己安装的插件**（cctv.js 等），
+         * 流地址来自**用户自己安装的插件**（tvsrc.js 等），
          * 本来就是要播放任意第三方 CDN 的内容 ——
          * 不开这个选项等于"所有走主/子播放列表的直播全废"。
          * 这里没有引入新的信任边界：插件本来就能返回任意 URL。
@@ -2823,7 +2896,7 @@ class _PlayerPageState extends State<PlayerPage>
          * ```
          *
          * ⚠️ 它**不是万能药**：开了之后央视这条继续走到
-         *    `Cannot open file '/ldcctvwbnd/ldcctv1_2_hd.m3u8'` ——
+         *    `Cannot open file '/ldtvsrcwbnd/ldtvsrc1_2_hd.m3u8'` ——
          *    那是该 CDN 返回了**主列表内嵌的绝对路径**，
          *    属于上游/网络层面的问题（本机到该 CDN 也不稳定）。
          *    如实记录，不把它说成"已完全修好"。
@@ -3692,9 +3765,9 @@ class _PlayerPageState extends State<PlayerPage>
        * ★★★ 不许"静默播成黑屏" —— 直播只剩音频线路时必须如实告知
        * ══════════════════════════════════════════════════════════════════
        *
-       * # 用户报的就是这个（「cctv看得到但是点开黑屏」）
+       * # 用户报的就是这个（「tvsrc看得到但是点开黑屏」）
        *
-       * 实测核心层对 `get_live_stream(cctv, cctv1)` 返回三条（已核对原始 JSON）：
+       * 实测核心层对 `get_live_stream(tvsrc, tvsrc1)` 返回三条（已核对原始 JSON）：
        * ```text
        * ① 高清   drm_protected: true    ← 被 isPlayable 过滤
        * ② 标清   drm_protected: true    ← 被过滤
@@ -3711,7 +3784,7 @@ class _PlayerPageState extends State<PlayerPage>
        *           [dec] corrupt decoded frame
        *           [h264] Cannot use next picture in error concealment
        *           [h264] Reference 3 >= 3
-       *           ↑ 与 cctv.js 注释里"实测 video 轨 61~80 个解码错误"完全吻合
+       *           ↑ 与 tvsrc.js 注释里"实测 video 轨 61~80 个解码错误"完全吻合
        * 本地对照  450 帧、0 错误                          ← 证明这套判据有效
        * ```
        * ⇒ **视频轨确实被加密**（插件标 `drmProtected: true` 是对的），
@@ -4209,7 +4282,7 @@ class _PlayerPageState extends State<PlayerPage>
        * # 用户原话
        *
        * > 直播为什么不能看?我做的是插件,为什么不能播放我的源?
-       * > （澄清后）cctv看得到但是点开黑屏
+       * > （澄清后）tvsrc看得到但是点开黑屏
        *
        * # 根因（实测，不是推断）
        *
@@ -4220,9 +4293,9 @@ class _PlayerPageState extends State<PlayerPage>
        *   url = http://127.0.0.1:56008/s/...   ← 核心层已做本地代理，防盗链在代理里处理
        *   → 不传 headers 也能播
        *
-       * 直播 get_live_stream(cctv, cctv1)
-       *   url = https://ldncctv...myqcloud.com/...   ← ★ 原始地址，**没有代理**
-       *   headers = [["Referer","https://tv.cctv.com/"]]
+       * 直播 get_live_stream(tvsrc, tvsrc1)
+       *   url = https://ldntvsrc...myqcloud.com/...   ← ★ 原始地址，**没有代理**
+       *   headers = [["Referer","https://tv.tvsrc.com/"]]
        *   → ★ 必须有 Referer，否则 403
        * ```
        * 实测（curl 同一条 m3u8）：
@@ -4231,7 +4304,7 @@ class _PlayerPageState extends State<PlayerPage>
        * 带 Referer    → HTTP 200 + 合法 m3u8
        *   #EXTM3U
        *   #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=960x540
-       *   /ldcctvwbnd/ldcctv1_2_hd.m3u8
+       *   /ldtvsrcwbnd/ldtvsrc1_2_hd.m3u8
        * ```
        * 403 对 mpv 就是"打不开这个流" → 用户看到**黑屏**（不是错误弹窗，
        * 因为 `open()` 失败被 catch 成 `_error`，而直播页那层没显示出来）。
@@ -4392,7 +4465,7 @@ class _PlayerPageState extends State<PlayerPage>
       unawaited(_watchVideoOutput(++_videoOutputToken));
 
       /*
-       * ★★ DASH 音视频分离（B 站 1080P 必然如此）
+       * ★★ DASH 音视频分离（外部视频站 1080P 必然如此）
        *
        * 原版注释：
        * > 音轨也要走同一个代理（同样的 headers），
@@ -4875,7 +4948,7 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// ⚠️ `_streams` 既是「线路」也是「清晰度」的那份数据（一条线路对应一种清晰度），
   ///   所以两枚按钮看到的是同一张表 —— 但入口分开：用户按「清晰度」想到的是
-  ///   画质档位，按「线路」想到的是源。**表一样、入口不同**是 B 站的形态。
+  ///   画质档位，按「线路」想到的是源。**表一样、入口不同**是 外部视频站的形态。
   List<PopoverOption<String>> _qualityPopoverOptions() {
     final cur = _current;
     return [
@@ -5095,11 +5168,11 @@ class _PlayerPageState extends State<PlayerPage>
   /// 用户调字号时**需要看着画面**才知道调得对不对 —— 暂停反而没法调。
   /// 这一点与原版不冲突：原版 ArtPlayer 的设置面板也是**不暂停**的。
   // ═══════════════════════════════════════════════════════════════════
-  //  ★★★ dandanplay 弹幕（task-13 ⑦）
+  //  ★★★ danmaku-service 弹幕（task-13 ⑦）
   // ═══════════════════════════════════════════════════════════════════
   //
   // 用户原话：
-  // > 接入一下 dandanplay 的弹幕功能
+  // > 接入一下 danmaku-service 的弹幕功能
   //
   // 分工：core/danmaku.dart = 协议/签名/解析/排版；
   //       widgets/danmaku_overlay.dart = 自驱帧循环的渲染层；
@@ -5108,13 +5181,13 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 拿弹幕客户端（懒建）
   ///
-  /// ⚠️ appId / appSecret 是 `DandanplayClient` 的**构造快照**
+  /// ⚠️ appId / appSecret 是 `ExternalDanmakuClient` 的**构造快照**
   ///    （见 core/danmaku.dart 的 ctor）⇒ 用户在面板里改了凭证，
   ///    必须把旧实例 close 掉重建，否则改了等于没改。
-  DandanplayClient _ensureDanmakuClient({bool unsignedLocal = false}) {
+  ExternalDanmakuClient _ensureDanmakuClient({bool unsignedLocal = false}) {
     final c = _danmakuClient;
     if (c != null) return c;
-    final n = DandanplayClient(unsignedLocal: unsignedLocal);
+    final n = ExternalDanmakuClient(unsignedLocal: unsignedLocal);
     _danmakuClient = n;
     return n;
   }
@@ -5331,13 +5404,13 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// # 为什么只能按文件名匹配（能力限制，不是 bug）
   ///
-  /// dandanplay 的 `POST /api/v2/match` 要的是**真实视频文件**的
+  /// danmaku-service 的 `POST /api/v2/match` 要的是**真实视频文件**的
   /// 文件名 + 前 16MB 的 MD5 + 文件大小；而我们这边
   /// `StreamCandidate`（core/models.dart）只有一条**流地址**，
   /// 既拿不到 fileHash 也拿不到 fileSize ⇒ 只能退化成
   /// `matchMode: fileNameOnly` 的"只看文件名"匹配。
   ///
-  /// 去掉扩展名：dandanplay 库里存的是「某某 第01集.mp4」这种，
+  /// 去掉扩展名：danmaku-service 库里存的是「某某 第01集.mp4」这种，
   /// 而我们这边的 `title` 是「某某 第01集」——带上扩展名反而匹配不到。
   String get _danmakuFileName {
     final t = _liveTitle.trim();
@@ -5353,36 +5426,36 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 按指定文件名取一次弹幕
   ///
-  /// ⚠️ **没配凭证也照发**：本地短路会把 dandanplay 的
+  /// ⚠️ **没配凭证也照发**：本地短路会把 danmaku-service 的
   ///    `X-Error-Message` 这条唯一能说明"为什么失败"的信息永久埋掉
   ///    （见 core/danmaku.dart 文件头的错误透传策略）。
   Future<void> _loadDanmakuNamed(String fileName) async {
     /*
-     * ★★★ OPS-10 ⑤（Owner 逐字：「导入bilibili弹幕之后,并没有提示任何信息
+     * ★★★ OPS-10 ⑤（Owner 逐字：「导入externaldanmaku弹幕之后,并没有提示任何信息
      *     和反馈,返回播放页继续,也没有出现弹幕」）
      *
-     * # 改前：开关判据排在**最前面**，于是「有 B 站绑定」这条路也被一起挡掉
+     * # 改前：开关判据排在**最前面**，于是「有 外部视频站绑定」这条路也被一起挡掉
      * ```text
      * 原第 2 行就是 `if (!_danmakuEnabled) return;`，而弹幕开关的**缺省是关**
      * （core/danmaku.dart:19 记着 dsh.danmaku.enabled 缺省 "0"）。
-     * 用户导入完 B 站弹幕、回到播放页 ⇒ _danmakuEnabled 仍是 false ⇒
-     * 这一行直接 return —— B 站那条**免登录、有 cid、一次请求就成**的路
+     * 用户导入完 外部视频站弹幕、回到播放页 ⇒ _danmakuEnabled 仍是 false ⇒
+     * 这一行直接 return —— 外部视频站那条**免登录、有 cid、一次请求就成**的路
      * 根本没走，用户看到的就是「导入成功了但还是没有弹幕」。
      * ```
      *
      * # 改法：把「有没有绑定」与「开关开没开」拆成两件事
      * ```text
-     * 有绑定 + 这一集有 cid ⇒ **先取**（B 站不要凭证，没理由被开关挡住），
+     * 有绑定 + 这一集有 cid ⇒ **先取**（外部视频站不要凭证，没理由被开关挡住），
      *   取回来顺手把开关真的打开（见 _loadBiliDanmaku 成功支）。
      * 没绑定 ⇒ 与改前**逐字节相同**：仍然由下面那句开关判据管，
      *   关着就一个请求都不发。
      * ```
      */
     /*
-     * ★★★ task-31 ④：绑了 B 站 ⇒ **B 站优先**，dandanplay 一条请求都不发。
+     * ★★★ task-31 ④：绑了 外部视频站 ⇒ **外部视频站优先**，danmaku-service 一条请求都不发。
      *
      * 没绑（或这一集没有 cid）⇒ 直接往下走 —— 行为与接线前**逐字节相同**。
-     * 解绑后下一次起播就自动退回 dandanplay。
+     * 解绑后下一次起播就自动退回 danmaku-service。
      */
     final biliBind = loadBinding(widget.provider, widget.id);
     if (biliBind != null && !biliBind.isEmpty) {
@@ -5392,65 +5465,65 @@ class _PlayerPageState extends State<PlayerPage>
         return;
       }
       /*
-       * ★★ Owner 第 9 条（2026-10-09）：绑了 B 站、但这一集没有 cid ⇒ **必须说出来**
+       * ★★ Owner 第 9 条（2026-10-09）：绑了 外部视频站、但这一集没有 cid ⇒ **必须说出来**
        *
        * # 改前这里是**静默**落空（`}` 直接闭合）
        * ```text
-       * 用户绑了 B 站 ⇒ 下面 dandanplay 那条必定没有凭证 ⇒ 403 ⇒
+       * 用户绑了 外部视频站 ⇒ 下面 danmaku-service 那条必定没有凭证 ⇒ 403 ⇒
        *   _flash('弹幕失败：Missing Authentication Headers ｜ 弹幕服务没收到凭证…')
-       * 用户看到这句会以为「B 站要登录」——**完全不是**。
+       * 用户看到这句会以为「外部视频站要登录」——**完全不是**。
        * 真实原因是「这一集没匹配到分 P」⇒ 两件事必须分开说。
        * ```
        *
-       * # ★ 为什么"B 站搜索免登录"不是问题所在（诊断时先排除了这条）
+       * # ★ 为什么"外部视频站搜索免登录"不是问题所在（诊断时先排除了这条）
        * ```text
-       * lib/core/bili/bili_api.dart:3 记着：B 站搜索接口本来就免登录，
+       * lib/core/bili/bili_api.dart:3 记着：外部视频站搜索接口本来就免登录，
        * 未登录一样能搜。所以用户报的「未登录应该都能搜索」**本来就成立** ——
-       * 挡路的从来不是登录态，而是「绑定了 B 站之后就不再走搜索」这条路。
+       * 挡路的从来不是登录态，而是「绑定了 外部视频站之后就不再走搜索」这条路。
        * ```
        *
        * # 为什么是 _flash 而不是角标/弹窗
        * 与下面那条失败提示**同一条通道**（`_flash` → `_tip` → `_TipBubble`）：
-       * 用户先看到「已改用 dandanplay」，紧接着看到 dandanplay 的失败 ——
-       * 两句话连起来才是一个完整因果，用户就知道该去查分 P 而不是去登录 B 站。
+       * 用户先看到「已改用 danmaku-service」，紧接着看到 danmaku-service 的失败 ——
+       * 两句话连起来才是一个完整因果，用户就知道该去查分 P 而不是去登录 外部视频站。
        *
        * ⚠️ 这句话**逐字**是 `test/zz_t3_flash_probe_test.dart:46` 的 `kTipFallThrough`，
        *    改一个字那个探针就会红（它是**故意**钉住这条文案的）。
        */
       if (!_danmakuEnabled) return;
-      _flash('B 站弹幕：这一集没匹配到分 P（cid），已改用 dandanplay');
+      _flash('外部视频站弹幕：这一集没匹配到分 P（cid），已改用 danmaku-service');
     }
 
     // ★ OPS-10 ⑤：没绑定（或这一集没 cid）才回到「开关说了算」
     if (!_danmakuEnabled) return;
 
     /*
-     * ★★★ 2026-10-09（Owner：「bilibili都支持搜索了,也选择了,但就是没显示弹幕这个流程有问题」）
+     * ★★★ 2026-10-09（Owner：「externaldanmaku都支持搜索了,也选择了,但就是没显示弹幕这个流程有问题」）
      *
-     * # 这里补上**缺失的那一步**：没绑定时自动去 B 站搜一次
+     * # 这里补上**缺失的那一步**：没绑定时自动去 外部视频站搜一次
      * ```text
      * 改前的两条路：
      *   ① 有绑定      ⇒ 用绑定（走上面那个 if）；
-     *   ② 没绑定      ⇒ **直接落到下面的 dandanplay** ——
-     *      而 dandanplay 要 AppId/AppSecret，没配就 403
+     *   ② 没绑定      ⇒ **直接落到下面的 danmaku-service** ——
+     *      而 danmaku-service 要 AppId/AppSecret，没配就 403
      *      ⇒ 屏幕上那句「弹幕失败：Missing Authentication Headers」。
      *
-     * 用户看到的观感就是「B 站明明能搜、我也选了，怎么还是没弹幕」——
+     * 用户看到的观感就是「外部视频站明明能搜、我也选了，怎么还是没弹幕」——
      * 因为**自动这条路压根没走搜索**：搜索只有用户手动点面板才会触发。
      * ```
      *
      * # 为什么免登录就能搜（不是"登录了才行"）
      * ```text
      * 实测 2026-10-09（无 Cookie）：
-     *   comment.bilibili.com/279786.xml → 200，1200 条弹幕
-     * B 站搜索与弹幕 XML **都免登录** ⇒ 缺的从来不是登录态，是这一步。
+     *   comment.externaldanmaku.com/279786.xml → 200，1200 条弹幕
+     * 外部视频站搜索与弹幕 XML **都免登录** ⇒ 缺的从来不是登录态，是这一步。
      * ```
      *
-     * # 失败要**如实**、且不挡 dandanplay
+     * # 失败要**如实**、且不挡 danmaku-service
      * ```text
      * autoBindBySearch 返回 null（没匹配到 / 网络失败）⇒ 什么都不说，
-     * 继续往下走 dandanplay —— 行为与改前**完全一致**，
-     * 不会因为多了这一步而让原本能用 dandanplay 的用户变差。
+     * 继续往下走 danmaku-service —— 行为与改前**完全一致**，
+     * 不会因为多了这一步而让原本能用 danmaku-service 的用户变差。
      * ```
      */
     if (_danmakuEnabled && biliBind == null) {
@@ -5459,9 +5532,9 @@ class _PlayerPageState extends State<PlayerPage>
     }
     /*
      * ★ T27-05：本机弹弹play优先 —— 桌面版在 127.0.0.1:2080 提供
-     *   **免签名**的本地接口（官方 api.dandanplay.net 才要 AppId/AppSecret）。
+     *   **免签名**的本地接口（官方 api.danmaku-service.net 才要 AppId/AppSecret）。
      *   探测结果进程内缓存；本机不在线 ⇒ 走官方（行为与改前一致）。
-     *   本地服务就是 dandanplay 协议 ⇒ 成功状态仍用「dandanplay · 」前缀。
+     *   本地服务就是 danmaku-service 协议 ⇒ 成功状态仍用「danmaku-service · 」前缀。
      */
     final localStatus = await _ensureDanmakuLocalStatus();
     _danmakuSourceLine = '数据源：${localStatus.line}';
@@ -5496,9 +5569,88 @@ class _PlayerPageState extends State<PlayerPage>
       });
     }
     try {
+      /*
+       * ★★★ 2026-10-13（Owner）：把标题喂给**搜索退路**
+       *
+       * Owner 原话：> 弹幕我没有看到[弹幕服务]的搜索功能
+       *
+       * # 真缺陷：搜索退路**每次都在空搜**（已证实）
+       * ```text
+       * `loadFor()` 的签名有 `anime` / `episode` 两个参数并喂给
+       * `searchEpisodes()`；但全仓**唯一**的调用点（就是这里）**不传**。
+       * ⇒ `searchEpisodes` 里 `if (anime.isNotEmpty)` / `if (episode.isNotEmpty)`
+       *   双双为 false ⇒ `GET /api/v2/search/episodes` **不带任何查询词**
+       *   ⇒ 空搜必然搜不到。
+       * ★ 而面板的 UI 文案却向用户承诺"匹配不到时会自动退到按番剧名 + 集数搜索"
+       *   —— 文案与实现不符（那是"假承诺"，比没有更糟）。
+       * ```
+       *
+       * # 修法：把**片名**当关键词
+       * ```text
+       * `loadFor` 先用文件名走 `match()`（精确匹配，最准）。
+       * 只有匹配不到才退到搜索 ⇒ 这时我们手上唯一的相关信息就是标题。
+       * ⇒ 把 `_danmakuFileName`（= 标题去扩展名）作为 `anime` 传进去。
+       *   `episode` 留空（我们没有可靠的"第几集"文本：
+       *   集号在站点侧是 id、在本地是路径后缀，都不该当搜索词）。
+       * ```
+       * ⚠️ 为什么不用 `_liveTitle` 原串：它可能带扩展名（`第01集.mp4`），
+       *    而搜索接口按"番剧名"匹配 ⇒ 去掉扩展名更准（`_danmakuFileName` 就是干这个的）。
+       *    ★ 这与 `match()` 用的是**同一个**串（都取 `_danmakuFileName`）——
+       *      两处同源，不会出现"匹配用 A、搜索用 B"的漂移。
+       */
+      /*
+       * ══════════════════════════════════════════════════════════════════
+       * ★★★ 2026-10-14（CR #27）：用户**明确点选**的那一集 ⇒ 直接取，不走模糊匹配
+       * ══════════════════════════════════════════════════════════════════
+       *
+       * # 真缺陷（CodeRabbit 在 PR #27 上抓到的，属实）
+       * ```text
+       * `_pickDanmakuMatch` 把用户选中的 `m.episodeId` 记进 `_biliCid`，
+       * 然后调 `_loadDanmakuNamed(m.label)` —— 而本函数**从不读 `_biliCid`**！
+       * ⇒ 走的是 `loadFor(fileName: label)`：
+       *     `match()` 模糊匹配 ⇒ 取 `matches.first`；匹配不到再空搜。
+       * ⇒ 用户点了「第 2 集」，实际可能载入**第 1 集 / 别的作品 / 另一路源**。
+       * ★ 这与源码注释承诺的"用户点了哪条就取哪条"**不符** ——
+       *   是"假承诺"（比没有更糟）。
+       * ```
+       *
+       * # 修法：有明确 episodeId 时**直达** `fetchComments(episodeId)`
+       * ```text
+       * `DanmakuMatch.episodeId` 就是弹幕库里的**唯一集 id** ⇒
+       *   `fetchComments(id)` 一次请求拿到那**一集**的弹幕（与 `loadFor`
+       *   内部匹配到之后用的是**同一个**调用）。
+       * ⇒ 有 `_episodeIdPinned` 时**跳过** match()/搜索，直接取那一条。
+       * ```
+       * ⚠️ `_episodeIdPinned` 是**一次性**的（取完即清）——它表达的是
+       *    "用户刚刚点了这一条"，不是"这一集永远钉在这条"。
+       *    下次正常起播仍走既有的匹配链路（否则换了片名也不更新）。
+       * ⚠️ 一旦请求失败 ⇒ **清掉** pin 并**继续**走原链路（不能因为
+       *    用户点的那条失效就什么都不取）。
+       */
+      final pinned = _pinnedEpisodeId;
+      if (pinned != null) {
+        _pinnedEpisodeId = null; // 一次性
+        try {
+          final cs = await client.fetchComments(pinned);
+          if (!mounted || token != _danmakuFetchToken) return;
+          setState(() {
+            _danmakuComments = cs;
+            _danmakuError = null;
+            _danmakuLoading = false;
+            _danmakuStatus = '已载入「$fileName」（弹幕库 #$pinned · ${cs.length} 条）';
+          });
+          debugPrint('[DMK] 按用户点选的 episodeId 直达：#$pinned ⇒ ${cs.length} 条');
+          return;
+        } catch (e) {
+          debugPrint('[DMK] 点选的那一条取失败（回落到匹配链路）: $e');
+          // 不 return —— 继续走下面的正常链路
+        }
+      }
+
       final res = await client.loadFor(
         fileName: fileName,
         videoDuration: _duration.inSeconds,
+        anime: fileName,
       );
       if (!mounted || token != _danmakuFetchToken) return;
       setState(() {
@@ -5507,13 +5659,13 @@ class _PlayerPageState extends State<PlayerPage>
          * ★ OPS-10 B：「在 UI 上如实反映实际用的是哪个源的弹幕」
          *
          * `res.summary` 自己是「某番 第 3 集 · 842 条弹幕」（danmaku.dart:919-923），
-         * **不含源名**；B 站那条（bili_auto_update.dart:89-96）也不含。
+         * **不含源名**；外部视频站那条（bili_auto_update.dart:89-96）也不含。
          * 两条路都取回来之后，用户从读数上分不出这些弹幕是谁给的 ——
-         * 而 B 站那侧**不需要凭证**、dandanplay 那侧**要**，这个区别
+         * 而 外部视频站那侧**不需要凭证**、danmaku-service 那侧**要**，这个区别
          * 恰恰是他排错时唯一要分清的事（见下面 DanmakuHint 的说明）。
          * ⇒ 在宿主这一层补前缀，不改 core 的文案（t70 逐字钉着它们）。
          */
-        _danmakuStatus = 'dandanplay · ${res.summary}';
+        _danmakuStatus = 'danmaku-service · ${res.summary}';
         _danmakuError = null;
         _danmakuErrorAt = null;
         _danmakuEmptyExpired = false;
@@ -5521,7 +5673,7 @@ class _PlayerPageState extends State<PlayerPage>
         _danmakuSettings = _danmakuSettings.copyWith(
           loading: false,
           clearError: true,
-          status: 'dandanplay · ${res.summary}',
+          status: 'danmaku-service · ${res.summary}',
           sourceLine: _danmakuSourceLine,
         );
       });
@@ -5567,7 +5719,7 @@ class _PlayerPageState extends State<PlayerPage>
        * ★ 把原文直接糊在画面上（角标）+ 在面板的"详情"里给全文
        *
        * 不吞、不改写、不翻译成"网络错误" —— 用户要看到的是
-       * dandanplay 自己说的那句话（例如 Missing Authentication Headers）。
+       * danmaku-service 自己说的那句话（例如 Missing Authentication Headers）。
        */
       _armDanmakuBadgeExpiry();
       final why = e.xErrorMessage.isNotEmpty ? e.xErrorMessage : e.message;
@@ -5575,7 +5727,7 @@ class _PlayerPageState extends State<PlayerPage>
        * ★★ Owner 第 1 条（2026-10-08）：报错要**可操作**
        *
        * 用户截图里只有一句「弹幕失败：Missing Authentication Headers」——
-       * 那是 dandanplay 自己说的话，它没错，但**用户看不懂要做什么**。
+       * 那是 danmaku-service 自己说的话，它没错，但**用户看不懂要做什么**。
        * 现在 `DanmakuException.hint`（core/danmaku.dart）会把 403/401 翻成
        * 中文指引（缺凭证 / 凭证不对），这里把**标题**带在提示条上，
        * 全文与一键入口在「弹幕设置」面板里（见那里的 `_errorSection`）。
@@ -5609,23 +5761,23 @@ class _PlayerPageState extends State<PlayerPage>
        *
        * # 为什么非加不可（Lead 追加 2）
        * ```text
-       * 走到这一行 = dandanplay 这条路失败了。而**绑了 B 站的用户**
-       * 看到「弹幕服务没收到凭证」会去 B 站找 AppId —— 找错地方，
-       * 因为 B 站那侧压根不用填 AppId（bili_api.dart:3：搜索免登录）。
-       * 「没收到凭证」这四个字里的"凭证"指的是 **dandanplay 开放平台**
+       * 走到这一行 = danmaku-service 这条路失败了。而**绑了 外部视频站的用户**
+       * 看到「弹幕服务没收到凭证」会去 外部视频站找 AppId —— 找错地方，
+       * 因为 外部视频站那侧压根不用填 AppId（bili_api.dart:3：搜索免登录）。
+       * 「没收到凭证」这四个字里的"凭证"指的是 **danmaku-service 开放平台**
        * 的 AppId/AppSecret，必须写出来，否则提示是**指向错误**的。
        * ```
        *
        * ⚠️ 括号里那半句**逐字**是 `test/zz_t3_flash_probe_test.dart:43` 的
        *    `kTipAfter`（完整句是「弹幕失败：…（打开弹幕设置可一键处理；
-       *    这是 dandanplay 的凭证，与 B 站弹幕无关）」）。
+       *    这是 danmaku-service 的凭证，与 外部视频站弹幕无关）」）。
        * ⚠️ 公共前缀 `'弹幕失败：… （打开弹幕设置可一键处理'` **一个字符都没动** ——
        *    那是 t100/t103 既有断言面（探针 :147-149 专门守着这条）。
        */
       _flash(
         h == null
             ? '弹幕失败：$why'
-            : '弹幕失败：$why ｜ ${h.title}（打开弹幕设置可一键处理；这是 dandanplay 的凭证，与 B 站弹幕无关）',
+            : '弹幕失败：$why ｜ ${h.title}（打开弹幕设置可一键处理；这是 danmaku-service 的凭证，与 外部视频站弹幕无关）',
       );
     } catch (e) {
       if (!mounted || token != _danmakuFetchToken) return;
@@ -5697,7 +5849,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// 面板不认识 `_danmakuSheetOpen` / `_biliSheetOpen`，也不该认识。
   ///
   /// ★ 缺凭证那条指引**两个开关都是 true**：用户可能选"去申请凭证"，
-  ///   也可能选"改用 B 站弹幕"（后者不需要那对凭证）。两个面板都给，
+  ///   也可能选"改用 外部视频站弹幕"（后者不需要那对凭证）。两个面板都给，
   ///   让用户自己选 —— 直接把他扔进某一个里等于替他做了决定。
   void _runDanmakuHintAction(DanmakuHintAction a) {
     if (a.openDanmakuSettings) _openDanmakuSettings();
@@ -5711,9 +5863,9 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// # 为什么必须**重建客户端**（不是只改个 flag）
   /// ```text
-  /// appId/appSecret 与 unsignedLocal/baseUrl 都是 DandanplayClient 的
+  /// appId/appSecret 与 unsignedLocal/baseUrl 都是 ExternalDanmakuClient 的
   /// **构造快照**（player_page.dart:4577 那段的说明）⇒ 不重建的话
-  /// 「改用本机」等于没改：旧实例照旧往 api.dandanplay.net 发签名请求，
+  /// 「改用本机」等于没改：旧实例照旧往 api.danmaku-service.net 发签名请求，
   /// 用户点了按钮还是同一句「没获取到凭证」。
   /// ```
   ///
@@ -5775,6 +5927,19 @@ class _PlayerPageState extends State<PlayerPage>
         lanes: st?.laneCount ?? 0,
         dropped: st?.dropped ?? 0,
         sourceLine: _danmakuSourceLine,
+        // ★★★ 2026-10-14：把搜索区状态一并搬进面板
+        //   （面板是纯 UI，不自己读字段 —— 与上面几行同一条分工）
+        searchLoading: _danmakuSearchLoading,
+        searchError: _danmakuSearchError,
+        searchSearched: _danmakuSearchSearched,
+        searchResults: _danmakuSearchResults,
+        searchKeyword: _danmakuSearchKeyword,
+        // ★ 打开面板时**重算**"这批结果还对不对得上"：
+        //   用户可能在上次搜索之后换过集、再打开面板 —— 那时 stale 必须为真。
+        //   这是 `_danmakuSearchToken` 的**第二个**消费点（另一个在结果回来时）。
+        searchStale:
+            _danmakuSearchToken >= 0 &&
+            _danmakuSearchToken != _danmakuFetchToken,
       );
     });
   }
@@ -5798,27 +5963,234 @@ class _PlayerPageState extends State<PlayerPage>
     }
   }
 
+  /// ★★★ 2026-10-14（Owner）：面板里点了「搜索」—— 手动按番剧名找剧集
+  ///
+  /// Owner 原话：> 弹幕我没有看到[弹幕服务]的搜索功能和绑定
+  ///
+  /// # ★ 硬约束：搜索**不得**影响正在播放的流
+  /// ```text
+  /// 这个函数里**只有** `_danmakuSearch*` 这几个面板字段被改动。
+  /// 刻意不碰：`_danmakuComments`（画面里挂着的弹幕）、`_danmakuFetchToken`
+  /// （那是"这一集的弹幕身份"，++ 会让正在播的那一份被判过期）、
+  /// 播放器 / mpv / 流地址 / `pause` / `play` —— 一个都不碰。
+  /// ⇒ 用户搜到一半、搜了又放弃，正在播的那一集**一帧都不会变**
+  ///   （t108 有真渲染回归钉这一条）。
+  /// ```
+  ///
+  /// # 为什么走本机优先那条边（与 `_loadDanmaku` 同源）
+  /// ```text
+  /// 「本机有就跑本机」是 T27-05 定下的选路（本机免签名、不打官方）。
+  /// 搜索复用同一份读数（`_danmakuLocalStatus` / `_danmakuForceOfficial`）
+  /// 与**同一个**客户端实例（`_ensureDanmakuClient`）—— 不另起一个，
+  /// 否则会出现"取弹幕走本机、搜索走官方"这种自相矛盾的组合。
+  /// ```
+  Future<void> _searchDanmaku(String keyword) async {
+    final kw = keyword.trim();
+    if (kw.isEmpty) return;
+    // 探一次本机（同 `_loadDanmaku`：进程内缓存，面板路径本身不探）
+    final localStatus = await _ensureDanmakuLocalStatus();
+    _danmakuSourceLine = '数据源：${localStatus.line}';
+    final usingLocal = localStatus.online && !_danmakuForceOfficial;
+    if (usingLocal != _danmakuUsingLocal) {
+      // 选路变了 ⇒ 旧客户端是另一种 baseUrl/签名形态，必须重建（同 `_loadDanmaku`）
+      _danmakuUsingLocal = usingLocal;
+      _resetDanmakuClient();
+    }
+    final client = _ensureDanmakuClient(unsignedLocal: usingLocal);
+    // ★ 记下"发起搜索时的令牌"，回来时用它判是否已换集（见字段注释）
+    final searchToken = _danmakuFetchToken;
+    if (!mounted) return;
+    setState(() {
+      _danmakuSearchLoading = true;
+      _danmakuSearchError = null;
+      _danmakuSearchSearched = true;
+      _danmakuSearchKeyword = kw;
+      _danmakuSearchToken = searchToken;
+      // 结果清空：上一次的关键词结果留着会被误读成"这次搜到的"
+      _danmakuSearchResults = const <DanmakuMatch>[];
+      _danmakuSettings = _danmakuSettings.copyWith(
+        searchLoading: true,
+        clearSearchError: true,
+        searchSearched: true,
+        searchKeyword: kw,
+        searchResults: const <DanmakuMatch>[],
+        searchStale: false,
+      );
+    });
+    try {
+      final found = await client.searchEpisodes(anime: kw);
+      if (!mounted) return;
+      final stale = searchToken != _danmakuFetchToken;
+      setState(() {
+        _danmakuSearchResults = found;
+        _danmakuSearchLoading = false;
+        _danmakuSearchError = null;
+        _danmakuSettings = _danmakuSettings.copyWith(
+          searchLoading: false,
+          clearSearchError: true,
+          searchResults: found,
+          searchKeyword: kw,
+          searchStale: stale,
+        );
+      });
+    } on DanmakuException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _danmakuSearchLoading = false;
+        _danmakuSearchError = e;
+        _danmakuSearchResults = const <DanmakuMatch>[];
+        _danmakuSettings = _danmakuSettings.copyWith(
+          searchLoading: false,
+          searchError: e,
+          searchResults: const <DanmakuMatch>[],
+          searchStale: false,
+        );
+      });
+      _flash('搜索失败：${e.message}');
+    } catch (e) {
+      if (!mounted) return;
+      final wrapped = DanmakuException(e.toString());
+      setState(() {
+        _danmakuSearchLoading = false;
+        _danmakuSearchError = wrapped;
+        _danmakuSearchResults = const <DanmakuMatch>[];
+        _danmakuSettings = _danmakuSettings.copyWith(
+          searchLoading: false,
+          searchError: wrapped,
+          searchResults: const <DanmakuMatch>[],
+          searchStale: false,
+        );
+      });
+      _flash('搜索失败：$e');
+    }
+  }
+
+  /// ★★★ 2026-10-14（Owner）：用户在搜索结果里点了某一条 ⇒ 载入那一集的弹幕
+  ///
+  /// # 与 `loadFor` 那条路**同一份实现**（硬要求）
+  /// ```text
+  /// 载入这一步**不**另写一套：走 `_loadDanmakuNamed` —— 它就是
+  /// `loadFor` → `fetchComments` 那条路的宿主入口（外部视频站分支、状态行、
+  /// 失败原文、令牌、角标寿命全都在里面）。
+  /// 这里只做两件事：① 把 `episodeId` 记上（下次「重新获取弹幕」才有身份）；
+  ///                    ② 触发那一条路。
+  /// ```
+  ///
+  /// # 为什么直接按 episodeId 取，而不是再喂关键词给 `loadFor`
+  /// ```text
+  /// 用户**明确点了一条** —— 再让他走一次 `match()`/`searchEpisodes()`
+  /// 的模糊匹配，等于把"用户的选择"重新交给猜测，还可能选到另一集。
+  /// ⇒ 用户点了哪条，就取哪条（`episodeId` 是弹幕库里的唯一钥匙）。
+  /// ```
+  void _pickDanmakuMatch(DanmakuMatch m) {
+    /*
+     * ★ 先把「用户的选择」记成这一集的弹幕身份（`_biliCid` —— 见它的字段
+     *   注释：外部视频站那条路也写这个字段，两者语义同构）
+     *
+     * 语义与 外部视频站那条路一致：它同样是"一个 id 代表这一集该挂哪份弹幕"。
+     * 记上之后，用户再点「重新获取弹幕」时，下次起播/重取就能认得出
+     * 这一份是他选的 —— 否则又会退回"按片名模糊搜"。
+     */
+    _biliCid = m.episodeId;
+    /*
+     * ★★★ 2026-10-14（CR #27）：把"用户刚点的这一条"**钉一下**，
+     *     让 `_loadDanmakuNamed` 直达它（否则会退化成按片名模糊匹配，
+     *     落到的**不是**用户点的那一集 —— 见 `_pinnedEpisodeId` 的说明）。
+     */
+    _pinnedEpisodeId = m.episodeId;
+    /*
+     * ★ 载入成功与否都**关掉面板**：用户点了一条 = 他要看结果
+     *   （同 `_openBiliSheet` 的语义 —— 动作落地就收起遮罩）。
+     *   `_loadDanmakuNamed` 是异步的，失败会走 `_flash` 提示条，
+     *   不需要面板留着显示错误（面板里的 searchError 是**搜索**的错误，
+     *   载入的错误由既有的弹幕失败角标 + 提示条负责 —— 两条通路不混）。
+     */
+    if (mounted) {
+      setState(() => _danmakuSheetOpen = false);
+      _restoreBarsAfterSheet();
+    }
+    _flash('正在载入「${m.label}」的弹幕…');
+    unawaited(_loadDanmakuNamed(m.label.isNotEmpty ? m.label : '弹幕库#${m.episodeId}'));
+  }
+
+  /// ★★★ Owner 1013：「播放页那些弹窗…而且还非常的卡顿（这里必须解决）」
+  ///
+  /// # 根因（有实测，别重查）
+  /// ```text
+  /// 这四个回调改前每个都 `setState`，而本页 `build()` 是**一个 884 行
+  /// 的整页 build**（含 `Video` / `DanmakuOverlay` / 全部浮层）。
+  /// 轻量悬浮窗的四根滑杆「拖动中每一帧都回调」（见
+  /// player_bottom_bar.dart 的 `_quickSlider`）⇒ **每一帧整页重建**。
+  /// 本仓旧探针实测：60 次鼠标移动 ⇒ PlayerPage 重建 60 次、
+  /// 元素重建 9960 次（平均每次移动 166 个元素）。
+  /// ```
+  ///
+  /// # 改法：拖动只推 `_danmakuQuickLive`，**不 setState**
+  /// ```text
+  /// · 滑杆读数：`DanmakuQuickPanelData.live` → 只有四根滑杆重建
+  ///   （player_bottom_bar.dart 的 `_quickSliders`）。
+  /// · **画面实时跟手**：绝不能丢 —— 这是 Owner 明确要的
+  ///   （见 build 里 `danmakuQuick:` 那段旧注释）。
+  /// ```
+  ///
+  /// # 画面为什么**不用**整页 setState 也能实时跟手（以源码为准推导）
+  /// ```text
+  /// ① 值先落进 `_danmakuSettings`（本页状态），再推 `_danmakuQuickLive`。
+  /// ② build 里 `DanmakuOverlay` 被包在一层
+  ///    `ValueListenableBuilder<DanmakuQuickValues>`（搜 player_page 的
+  ///    「overlay 自己订阅」）⇒ **只有 overlay 那一小块**重建，
+  ///    `PlayerPage.build()`（884 行）**一次都不跑**。
+  /// ③ 重建只是换了 `DanmakuOverlay` 的入参；`_DanmakuOverlayState` 是
+  ///    keep-alive State，复用不重建。真正应用新值在下一帧 build 的
+  ///    `_ensureLayout(...)`：
+  ///      · fontScale/speed/area 进了 `_layoutKey` ⇒ 命中新 key ⇒ 重排；
+  ///      · opacity 由 `_DanmakuPainter` 每帧现读 `widget.opacity`
+  ///        （shouldRepaint 也比它）⇒ 下一帧就变。
+  ///    而宿主每秒 tick 都在 `_repaint.value++` ⇒ 拖动中本就逐帧在重绘
+  ///    ⇒ 画面**下一帧**就是新值。
+  /// ```
+  /// ⚠️ 于是这里**不需要**（也不该）为「传新值给 overlay」保留整页 setState。
+  ///    这条通路（`ValueListenableBuilder` 包 overlay）就是"画面实时跟手"
+  ///    的落点；把它删成 `_danmakuSettings.*` 静态传值，画面就不跟手了。
+  ///
+  /// ⚠️ `_danmakuSettings` 的这四个字段在**拖动期间也会被写**
+  ///    （为了与本页别处读它的地方保持一致，例如全屏大卡片的只读回显）——
+  ///    但拖动**不** setState，所以它不会触发任何重建；overlay 读的是
+  ///    `live.value`，不是这份快照。⇒ 两者不会打架。
+  void _pushDanmakuQuickLive() {
+    _danmakuQuickLive.value = DanmakuQuickValues(
+      fontScale: _danmakuSettings.fontScale,
+      opacity: _danmakuSettings.opacity,
+      speed: _danmakuSettings.speed,
+      area: _danmakuSettings.area,
+    );
+  }
+
   void _setDanmakuFontScale(double v) {
     DanmakuConfig.setFontScale(v);
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(fontScale: v));
+    _danmakuSettings = _danmakuSettings.copyWith(fontScale: v);
+    _pushDanmakuQuickLive();
   }
 
   void _setDanmakuOpacity(double v) {
     DanmakuConfig.setOpacity(v);
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(opacity: v));
+    _danmakuSettings = _danmakuSettings.copyWith(opacity: v);
+    _pushDanmakuQuickLive();
   }
 
   void _setDanmakuSpeed(double v) {
     DanmakuConfig.setSpeed(v);
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(speed: v));
+    _danmakuSettings = _danmakuSettings.copyWith(speed: v);
+    _pushDanmakuQuickLive();
   }
 
   void _setDanmakuArea(double v) {
     DanmakuConfig.setArea(v);
-    setState(() => _danmakuSettings = _danmakuSettings.copyWith(area: v));
+    _danmakuSettings = _danmakuSettings.copyWith(area: v);
+    _pushDanmakuQuickLive();
   }
 
-  /// ★★★ Owner 2026-10-11 反馈（显示区域按 B 站重做）：拖动「显示区域」滑杆时，
+  /// ★★★ Owner 2026-10-11 反馈（显示区域按 外部视频站重做）：拖动「显示区域」滑杆时，
   /// 在播放画面上点亮**半透明引导遮罩**（`DanmakuOverlay.areaGuide`）。
   ///
   /// 由底栏滑杆的起手/松手事件驱动（见 `DanmakuQuickPanelData.onAreaGuide`）：
@@ -5869,7 +6241,65 @@ class _PlayerPageState extends State<PlayerPage>
     if (mounted) setState(() {});
   }
 
+  /// ★★★ 2026-10-14（Owner 反馈「弹弹play的凭证流程根本没走通」）：
+  /// 面板凭证节点了「保存」—— 把用户填的一对 AppId / AppSecret 落盘。
+  ///
+  /// # 为什么要**重建客户端**（这是"真的走通"的关键）
+  /// ```text
+  /// appId/appSecret 是 `ExternalDanmakuClient` 的**构造快照**
+  /// （见 _resetDanmakuClient 的注释与 4577 那段）⇒ 不重建的话，
+  /// 旧实例照旧用**空**凭证去签名，用户点保存再点「重新获取」还是同一句
+  /// 「没收到凭证」—— 这正是 Owner 说的"根本没走通"。
+  /// ```
+  ///
+  /// # 只记「已保存」提示，**不**自动重取
+  /// ```text
+  /// 保存是"改配置"，重取是"发一次网络请求"。自动重取会让用户正看着的画面
+  /// 忽然换一批弹幕（甚至换到另一集），比"什么都不发生"更糟。
+  /// ⇒ 宿主把 credentialSaved 置真，面板据此提示「已保存，点重新获取生效」。
+  /// ```
+  void _setDanmakuCredentials(String appId, String appSecret) {
+    DanmakuConfig.setAppId(appId);
+    DanmakuConfig.setAppSecret(appSecret);
+    _resetDanmakuClient();
+    if (!mounted) return;
+    setState(() {
+      _danmakuSettings = _danmakuSettings.copyWith(
+        // 回填**用户覆盖**（可能被 trim 过），让输入框与落盘一致
+        appId: DanmakuConfig.userAppId,
+        appSecret: DanmakuConfig.userAppSecret,
+        credentialSaved: true,
+      );
+    });
+  }
+
+  /// 面板凭证节点了「清除」—— 清掉用户覆盖（回落到内置，若该构建有内置值）。
+  ///
+  /// 同 [_setDanmakuCredentials]：必须重建客户端，否则旧实例还揣着刚清掉的
+  /// 凭证照旧签名。清完的状态行由 `DanmakuConfig` 的真实 getter 如实反映。
+  void _clearDanmakuCredentials() {
+    DanmakuConfig.clearCredentials();
+    _resetDanmakuClient();
+    if (!mounted) return;
+    setState(() {
+      _danmakuSettings = _danmakuSettings.copyWith(
+        appId: '',
+        appSecret: '',
+        clearCredentialSaved: true,
+      );
+    });
+  }
+
   void _reloadDanmaku() {
+    /*
+     * ★ 2026-10-14：「重新获取」= 丢掉用户的**手动选择**
+     *
+     * `_pickDanmakuMatch` 会把选中的 episodeId 记进 `_biliCid`（"这一集
+     * 挂哪份弹幕"的身份）。用户点「重新获取弹幕」的语义就是"别按我上次
+     * 选的来了，你自己重新找一遍" ⇒ 这个身份必须清掉，否则 `_loadDanmaku`
+     * 里的 外部视频站/搜索退路会一直盯着旧 id。
+     */
+    _biliCid = 0;
     if (!_danmakuEnabled) {
       // 面板里直接点「重新取一次」= 用户就是想要弹幕 ⇒ 顺手开开关
       _setDanmakuEnabled(true);
@@ -5891,7 +6321,7 @@ class _PlayerPageState extends State<PlayerPage>
      * # 改前这一行排在**失败分支之前**
      * ```text
      * `if (!_danmakuEnabled) return null;` 是最先执行的一句。
-     * 而弹幕开关出厂是**关**（core/danmaku.dart:19），B 站那条路取失败时
+     * 而弹幕开关出厂是**关**（core/danmaku.dart:19），外部视频站那条路取失败时
      * `_danmakuEnabled` 仍然是 false ⇒ 这里直接 return null ——
      * **失败角标在「开关关着」这个最常见的情形下根本不会显示**。
      * 用户报的是「失败提示一直不消失」，但在探针里量到的是它的另一面：
@@ -5914,7 +6344,7 @@ class _PlayerPageState extends State<PlayerPage>
      * # 用户报的是哪一条
      * ```text
      * 截图上是两条**叠在一起**的：
-     *   ① _flash 那条（「…（打开弹幕设置可一键处理；这是 dandanplay 的凭证…）」）
+     *   ① _flash 那条（「…（打开弹幕设置可一键处理；这是 danmaku-service 的凭证…）」）
      *      —— 它 1.2 秒就消失，不是用户说的那个；
      *   ② ★ 本角标 —— 它**故意常驻**（见下面 4601 的旧注释），
      *      而用户读作「一直也不消失」。
@@ -5990,19 +6420,19 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  //  ★★★ task-31 ④：哔哩哔哩弹幕
+  //  ★★★ task-31 ④：外部弹幕弹幕
   //
   //  面板（`BiliImportDialog`）是**纯 UI** —— 它自己不发请求、不读偏好，
   //  所有网络与落盘都在这一节里。这与 `DanmakuSettingsDialog` 同一分工。
   // ═══════════════════════════════════════════════════════════════════
 
-  /// B 站 HTTP 客户端（懒建）
+  /// 外部视频站 HTTP 客户端（懒建）
   ///
   /// ⚠️ 与 `_ensureDanmakuClient()` 分开：两个源的超时/追踪策略不同，
   ///    而且**没绑过的用户不该建这个连接池**。
   BiliApi _ensureBiliApi() => _biliApi ??= BiliApi();
 
-  /// 打开「哔哩哔哩弹幕」面板
+  /// 打开「外部弹幕弹幕」面板
   void _openBiliSheet() {
     final b = loadBinding(widget.provider, widget.id);
     final manual = isManualBinding(widget.provider, widget.id);
@@ -6059,7 +6489,7 @@ class _PlayerPageState extends State<PlayerPage>
          */
         searchResults: const <BiliSearchItem>[],
         /*
-         * ★★★ 2026-10-09（Owner：「获取弹幕 bilibili和弹弹都应该支持 自动填入名字」）
+         * ★★★ 2026-10-09（Owner：「获取弹幕 externaldanmaku和弹弹都应该支持 自动填入名字」）
          *
          * # 改前是空串，用户每次都要手打一遍剧名
          * ```text
@@ -6071,7 +6501,7 @@ class _PlayerPageState extends State<PlayerPage>
          *
          * # 为什么预填 `_liveTitle` 而不是 `_danmakuFileName`
          * ```text
-         * `_danmakuFileName` 是给 dandanplay 的 match 用的（去掉了扩展名，
+         * `_danmakuFileName` 是给 danmaku-service 的 match 用的（去掉了扩展名，
          * 有时还带"第01集"这种后缀）；而**搜索**要的是**作品名**，
          * 带上集数反而搜不准。`_liveTitle` 就是标题栏上那串，最贴近用户认知。
          * ```
@@ -6139,7 +6569,7 @@ class _PlayerPageState extends State<PlayerPage>
     setState(() {
       _biliState = _biliState.copyWith(
         loading: true,
-        busyLabel: '正在搜 B 站…',
+        busyLabel: '正在搜 外部视频站…',
         clearError: true,
         searchKeyword: kw,
         searchResults: const <BiliSearchItem>[],
@@ -6240,7 +6670,7 @@ class _PlayerPageState extends State<PlayerPage>
     }
   }
 
-  /// 取一次 B 站弹幕（**这一集**的 cid）
+  /// 取一次 外部视频站弹幕（**这一集**的 cid）
   ///
   /// 与 `_loadBiliDanmaku` 的分工：
   /// ```text
@@ -6260,7 +6690,7 @@ class _PlayerPageState extends State<PlayerPage>
         removed: 0,
         fromCache: false,
         changed: false,
-        error: '这一集还没有绑定 B 站弹幕',
+        error: '这一集还没有绑定 外部视频站弹幕',
       );
     }
     return updateDanmaku(
@@ -6271,17 +6701,17 @@ class _PlayerPageState extends State<PlayerPage>
     );
   }
 
-  /// 起播时按 cid 取一次 B 站弹幕（照抄 dandanplay 那套骨架）
+  /// 起播时按 cid 取一次 外部视频站弹幕（照抄 danmaku-service 那套骨架）
   ///
   /// ⚠️ 令牌判据**不能省** —— 换集后旧的响应必须被丢掉，
   ///    否则第 5 集会短暂显示第 3 集的弹幕。
-  /// 自动搜 B 站 → 绑定 → 取弹幕。成功返回 true（调用方据此 return）。
+  /// 自动搜 外部视频站 → 绑定 → 取弹幕。成功返回 true（调用方据此 return）。
   ///
   /// 判据与设计见 `_loadDanmakuNamed` 里那段长注释（为什么需要这一步、
   /// 为什么免登录成立、失败为什么要静默）。这里只补**执行**细节：
   ///
   /// ```text
-  /// ① 标题取 `_liveTitle`（与 dandanplay 那条路同一个来源，保证两边一致）
+  /// ① 标题取 `_liveTitle`（与 danmaku-service 那条路同一个来源，保证两边一致）
   /// ② 集名用 `_episodes` 的标题（分 P 对齐要靠它）
   /// ③ 成功 ⇒ 落盘 + 立刻用刚拿到的 cid 拉弹幕（不多发一次请求）
   /// ```
@@ -6312,11 +6742,11 @@ class _PlayerPageState extends State<PlayerPage>
       /*
        * ★ 这里**必须**吞掉异常。
        *
-       * 自动匹配是"锦上添花"：失败就退回 dandanplay（改前的行为），
+       * 自动匹配是"锦上添花"：失败就退回 danmaku-service（改前的行为），
        * 绝不能因为多了这一步而让原本能用的路径变差。
        * 但要留日志 —— 本项目的一贯纪律是"可以降级，不许静默"。
        */
-      debugPrint('[BILI] 自动匹配失败（退回 dandanplay）：$e');
+      debugPrint('[BILI] 自动匹配失败（退回 danmaku-service）：$e');
       return false;
     }
   }
@@ -6355,8 +6785,8 @@ class _PlayerPageState extends State<PlayerPage>
          * `_danmakuBadge` 的失败寿命判据是 `_danmakuErrorAt` 的差值
          * （player_page.dart:4932-4936），而这里只写了 `_danmakuError`、
          * 没写 `_danmakuErrorAt`、也没起计时器 ⇒ 判据恒为 false ⇒
-         * 角标**永远**画着。dandanplay 那一支（:4659/:4673）早就写了，
-         * 只有 B 站这一支漏了 —— 这正是用户看到「常驻」的那一条。
+         * 角标**永远**画着。danmaku-service 那一支（:4659/:4673）早就写了，
+         * 只有 外部视频站这一支漏了 —— 这正是用户看到「常驻」的那一条。
          * ```
          */
         _danmakuErrorAt = DateTime.now();
@@ -6374,7 +6804,7 @@ class _PlayerPageState extends State<PlayerPage>
     setState(() {
       _danmakuComments = r.comments;
       // ★ OPS-10 B：UI 如实反映来源（见 _loadDanmakuNamed 里那段说明）
-      _danmakuStatus = 'B 站 · ${r.summary}';
+      _danmakuStatus = '外部视频站 · ${r.summary}';
       _danmakuError = null;
       /*
        * ★ OPS-10 ⑤：取回来了 ⇒ 上一次的失败态必须**真的**被清掉。
@@ -6387,7 +6817,7 @@ class _PlayerPageState extends State<PlayerPage>
       /*
        * ★ OPS-10 ⑤：`_danmakuEnabled = true` 是**真的把开关打开**
        *   （用户下次点底栏那颗按钮时 `_toggleDanmaku` 会把它写回偏好）。
-       *   用户导入完 B 站弹幕、回到播放页 ⇒ 弹幕本来就该出现，
+       *   用户导入完 外部视频站弹幕、回到播放页 ⇒ 弹幕本来就该出现，
        *   而不是先让他去点一次开关。
        */
       _danmakuEnabled = true;
@@ -6395,7 +6825,7 @@ class _PlayerPageState extends State<PlayerPage>
         enabled: true,
         loading: false,
         clearError: true,
-        status: 'B 站 · ${r.summary}',
+        status: '外部视频站 · ${r.summary}',
       );
     });
     _biliCid = cid;
@@ -6416,10 +6846,10 @@ class _PlayerPageState extends State<PlayerPage>
     setState(() {
       _danmakuComments = r.comments;
       // ★ OPS-10 B：UI 如实反映来源（见 _loadDanmakuNamed 里那段说明）
-      _danmakuStatus = 'B 站 · ${r.summary}';
+      _danmakuStatus = '外部视频站 · ${r.summary}';
       _danmakuError = null;
       /*
-       * ★★★ OPS-10 ⑤（Owner 逐字：「导入bilibili弹幕之后,并没有提示任何信息
+       * ★★★ OPS-10 ⑤（Owner 逐字：「导入externaldanmaku弹幕之后,并没有提示任何信息
        *     和反馈,返回播放页继续,也没有出现弹幕」）
        *
        * # 改前这里只写了上面四行 —— 三件事一起漏掉
@@ -6435,10 +6865,10 @@ class _PlayerPageState extends State<PlayerPage>
        *
        * # 文案为什么是这一句
        * ```text
-       * 用户要知道的是**三件事**：用的是哪个源（B 站，不是 dandanplay）、
+       * 用户要知道的是**三件事**：用的是哪个源（外部视频站，不是 danmaku-service）、
        * 成了多少条、这一集到底有没有东西上屏。
        * `r.summary` 自己只说「新增 N 条，共 M 条」（bili_auto_update.dart:89-96），
-       * 不含源名 ⇒ 这里补上「B 站」二字。
+       * 不含源名 ⇒ 这里补上「外部视频站」二字。
        * ```
        */
       _danmakuErrorAt = null;
@@ -6449,13 +6879,13 @@ class _PlayerPageState extends State<PlayerPage>
         enabled: true,
         loading: false,
         clearError: true,
-        status: 'B 站 · ${r.summary}',
+        status: '外部视频站 · ${r.summary}',
       );
     });
     _biliCid = r.cid;
     markBiliSynced();
     // ★ OPS-10 ⑤：成功也必须**说一句**（改前这条路上一个字都没有）
-    _flash('B 站弹幕已导入：这一集 ${r.total} 条（新增 ${r.added} 条）');
+    _flash('外部视频站弹幕已导入：这一集 ${r.total} 条（新增 ${r.added} 条）');
   }
 
   /// 自动刷新（切集 / 集列表变了时调用）
@@ -6542,8 +6972,8 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 面板里点了「解除绑定」
   ///
-  /// ★ 解绑后**下一次起播**就自动退回 dandanplay（`_loadDanmakuNamed` 里
-  ///   那条 B 站优先分支查不到绑定了）。这里顺手把画面上的弹幕也清掉 ——
+  /// ★ 解绑后**下一次起播**就自动退回 danmaku-service（`_loadDanmakuNamed` 里
+  ///   那条 外部视频站优先分支查不到绑定了）。这里顺手把画面上的弹幕也清掉 ——
   ///   留着会让用户以为解绑没生效。
   void _biliUnbind() {
     clearBinding(widget.provider, widget.id);
@@ -6555,7 +6985,7 @@ class _PlayerPageState extends State<PlayerPage>
       _danmakuStatus = '';
       _danmakuError = null;
     });
-    _flash('已解除 B 站弹幕绑定');
+    _flash('已解除 外部视频站弹幕绑定');
   }
 
   /// 面板里的一次失败（把面板切回可操作态 + 提示一句）
@@ -7905,7 +8335,7 @@ class _PlayerPageState extends State<PlayerPage>
   // 地址。**电视机在另一台设备上**，`127.0.0.1` 对它毫无意义 ——
   // 所以代理由 `CastButton` 按需自己建（它知道电视的 IP）。
   // 我们只管把「播放器现在拿的那条」原样递过去，连 headers 一起
-  // （B 站类源少了 Referer，电视拉到的就是 403）。
+  // （外部视频站类源少了 Referer，电视拉到的就是 403）。
 
   /// 投屏到电视（底栏投屏按钮的**回调**）
   ///
@@ -8289,7 +8719,7 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// 实测（真机 pid 6868，日志）：
   /// ```text
-  /// [NAV] 打开合并页: cycani:3862          ← 首页入口只给了 id
+  /// [NAV] 打开合并页: animesource:3862          ← 首页入口只给了 id
   /// [PLAYER-KEY] ⓪ 入口：收到 N            ← 按了「下一集」
   /// （之后**什么都没有**）                 ← ★ 因为 episodes 是空的
   /// ```
@@ -8509,7 +8939,7 @@ class _PlayerPageState extends State<PlayerPage>
     _reportEpisodeChanged();
 
     /*
-     * ★ task-31 ④：切集后**立刻**刷新 B 站弹幕
+     * ★ task-31 ④：切集后**立刻**刷新 外部视频站弹幕
      *
      * `_reload()` 会重新起播，而起播里那条 `_loadDanmaku()` 是
      * `unawaited` 的 —— 不等它。这里先刷一次，用户切过去时弹幕就已经是
@@ -9561,7 +9991,7 @@ class _PlayerPageState extends State<PlayerPage>
       _liveChannelsOpen ||
       // ★ task-13 ⑦ 弹幕设置面板（同样是 Positioned.fill 的全屏浮层）
       _danmakuSheetOpen ||
-      // ★ task-31 ④ 哔哩哔哩弹幕导入面板（同款全屏浮层）
+      // ★ task-31 ④ 外部弹幕弹幕导入面板（同款全屏浮层）
       _biliSheetOpen ||
       // ★ task-31 ⑤ 在线搜索字幕面板（同款全屏浮层）
       _subtitlePanelOpen;
@@ -9668,7 +10098,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// ```text
   /// _controlsVisible      控制条的总开关（hover / 3 秒自动隐藏 / 浮层收口都在写它）
   /// _error == null        起播失败的错误浮层要占整屏（它自带返回口）
-  /// !7 个浮层 flag         选集/线路/设置/弹幕/B站/字幕/所有直播：谁铺满底部谁独占
+  /// !7 个浮层 flag         选集/线路/设置/弹幕/外部弹幕站/字幕/所有直播：谁铺满底部谁独占
   /// _liveAudioOnlyNotice==null  「只有音频能播」的降级横幅**替代**底栏
   /// !_videoOutputDead          「画面无法显示」的降级横幅**替代**底栏
   /// ```
@@ -10580,7 +11010,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// # 症状（Owner 第 9 条原话）
   /// ```text
   /// 「上面这个出现，下面的操作没一起联动显示」——
-  /// 点「播放设置 / 选集 / 线路 / 所有直播 / 弹幕设置 / B 站弹幕 / 字幕搜索」
+  /// 点「播放设置 / 选集 / 线路 / 所有直播 / 弹幕设置 / 外部视频站弹幕 / 字幕搜索」
   /// 等打开浮层时，底栏立刻被它自己的渲染门控摘掉
   /// （`!_xxxOpen` 全在 `_BottomBar` 的 if 里），而顶栏的 visible
   /// 只看 `_controlsVisible` —— 浮层 open 点**不动它** ⇒ 顶栏还亮着。
@@ -10617,7 +11047,7 @@ class _PlayerPageState extends State<PlayerPage>
   ///     hover）自然叫回。」
   /// ★ 但实测：**只有播放设置面板**那一条真的调了 `_showControls()`
   ///   （`_closeSettingsFromEsc` / 设置 onClose / 设置 X，三处都调）。
-  ///   其余 6 个浮层（弹幕设置 / B 站导入 / 在线字幕 / 选集 / 线路 / 所有直播）
+  ///   其余 6 个浮层（弹幕设置 / 外部视频站导入 / 在线字幕 / 选集 / 线路 / 所有直播）
   ///   的 Esc 分支与 onClose **只翻 flag，不叫回控制条** ——
   ///   ⇒ 关掉它们之后 `_controlsVisible` 仍是 false，底栏要等**下一次 hover**
   ///     才回来。
@@ -11103,7 +11533,7 @@ class _PlayerPageState extends State<PlayerPage>
      * ★ 但 `onLiveChannelStep` 在 L3199，而它所属的 `PlayerPage(` 在 **L3163** ——
      *   中间隔了 **31 行注释**（我写的分工说明）⇒ 只扫"紧邻十来行"会**漏判**。
      * ★ 反证（同一二进制上取的读数）：
-     *   `[LIVE-KEY] 全屏切台 ⇒ CCTV+ 2：本页只改选中，起播交给播放页`
+     *   `[LIVE-KEY] 全屏切台 ⇒ TVSRC+ 2：本页只改选中，起播交给播放页`
      *   ★ 这行**只能**由 `stepChannelForFullscreen` 产生，
      *     而它**只能**经 shell 传的 `onLiveChannelStep` 到达
      *   ⇒ 接线存在，且真的跑过。
@@ -11817,7 +12247,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// ① `_errorKind == 'unauthorized'`  → true
   ///    ★ 来自 FFI 的结构化字段，**不受文案影响**
   /// ② 否则回退到字符串匹配（老路径 / 本页自拼的中文串 / media_kit 错误）
-  ///    · 'unauthorized'  ← 插件自己抛的（cycani.js: 'unauthorized: 登录已失效…'）
+  ///    · 'unauthorized'  ← 插件自己抛的（animesource.js: 'unauthorized: 登录已失效…'）
   ///    · '登录已失效'     ← playback.rs:157 的固定文案
   /// ```
   /// ⚠️ 保留兜底是**有意**的：`_errorKind` 为 null 的情况真实存在
@@ -11868,7 +12298,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// 而且会把用户刚输错密码的提示冲掉，让他以为"点了没反应"。
   Future<void> _loginAndRetry() async {
     /*
-     * 弹窗标题要显示源的**中文名**（"登录 次元城"），而不是 id（"cycani"）。
+     * 弹窗标题要显示源的**中文名**（"登录 某动画站"），而不是 id（"animesource"）。
      * 播放页只持有 id（`widget.provider`），所以现查一次 ——
      * `listProviders()` 走的是本地注册表，没有网络开销。
      *
@@ -12175,6 +12605,10 @@ class _PlayerPageState extends State<PlayerPage>
     _popover.removeListener(_onPopoverChanged);
     _popover.dispose();
     _positionNotifier.dispose();
+    // ★ 2026-10-14：弹幕轻量悬浮窗的实时值载体（ChangeNotifier ⇒ 必须释放）
+    //   ⚠️ 无监听者需要摘（订阅它的 `ValueListenableBuilder` 在 dispose 前
+    //     已随树拆掉，它自己会 removeListener）—— 直接 dispose 即可。
+    _danmakuQuickLive.dispose();
     /*
      * ★ 注销 early handler + 释放显式 FocusNode（task-42）
      *
@@ -12285,7 +12719,7 @@ class _PlayerPageState extends State<PlayerPage>
     _danmakuClient = null;
 
     /*
-     * ★ task-31 ④：B 站客户端同理（里面也是一个 dart:io HttpClient）。
+     * ★ task-31 ④：外部视频站客户端同理（里面也是一个 dart:io HttpClient）。
      *
      * ⚠️ 不 close 会在热重载/换页时留下悬挂连接 —— 与上面那条同一个理由。
      */
@@ -12423,7 +12857,7 @@ class _PlayerPageState extends State<PlayerPage>
              * ```
              *
              * **这是可接受的**（标准行为：所有"单击 + 双击"共存的播放器
-             * 都这样，YouTube / B站 / 原版 WebView 同理），但要知道有这个延迟。
+             * 都这样，主流播放器 / 原版 WebView 同理），但要知道有这个延迟。
              *
              * ⚠️ PC 上**没有**这个延迟 —— PC 的 `onDoubleTapDown` 是 null
              *    （见下面的条件挂载），竞技场里没有双击竞争者，
@@ -12607,11 +13041,11 @@ class _PlayerPageState extends State<PlayerPage>
                     ),
 
                     /*
-                 * ── ★★★ dandanplay 弹幕层（task-13 ⑦）──
+                 * ── ★★★ danmaku-service 弹幕层（task-13 ⑦）──
                  *
                  * # 用户原话
                  *
-                 * ┌ 接入一下 dandanplay 的弹幕功能
+                 * ┌ 接入一下 danmaku-service 的弹幕功能
                  * └
                  *
                  * # 为什么要套 IgnorePointer
@@ -12629,20 +13063,46 @@ class _PlayerPageState extends State<PlayerPage>
                  */
                     Positioned.fill(
                       child: IgnorePointer(
-                        child: DanmakuOverlay(
-                          aspect: _displayAspect,
-                          comments: _danmakuComments,
-                          position: _position,
-                          playing: _playing,
-                          rate: _rate,
-                          enabled: _danmakuEnabled,
-                          fontScale: _danmakuSettings.fontScale,
-                          opacity: _danmakuSettings.opacity,
-                          speed: _danmakuSettings.speed,
-                          area: _danmakuSettings.area,
-                          // ★ Owner 2026-10-11：拖动「显示区域」滑杆期间点亮引导遮罩
-                          areaGuide: _showDanmakuAreaGuide,
-                          badge: _danmakuBadge,
+                        /*
+                     * ★★★ 2026-10-14（卡顿修复）：overlay **自己**订阅
+                     *   `_danmakuQuickLive` —— 拖动滑杆 ⇒ **只有这一小块**
+                     *   重建（整页 `PlayerPage.build()` 一次都不跑）。
+                     *
+                     * # 为什么包在这里，而不是让 `_danmakuQuickLive` 的监听者
+                     *   在 State 里 setState
+                     * ```text
+                     * State 里 setState ⇒ 整页 884 行 build 重跑（就是我们要
+                     * 消灭的那个形态）。包在这一层 ⇒ 重建被限制在
+                     * `_DanmakuOverlay` 这棵子树里，而它是 keep-alive 的 StatefulWidget
+                     * （`_DanmakuOverlayState` 复用，不重建 State）⇒
+                     *   · 只有 `build()` 拿到**新** `fontScale/opacity/speed/area`；
+                     *   · `_ensureLayout` 在下一帧按新值重排（key 含 fontScale/
+                     *     speed/area）；painter 每帧现读 opacity ⇒ **画面逐帧跟手**。
+                     * ```
+                     *
+                     * # 其余入参为什么不放进来
+                     * `comments/position/playing/rate/...` 仍由宿主整页 build 传入 ——
+                     * 拖动滑杆**不会**改它们，所以这份 builder 只需覆盖四个实值。
+                     * （context 里 `_danmakuSettings` 的这四个字段在拖动期间**不更新**
+                     *  —— 见 `_pushDanmakuQuickLive`；真值只在 `live.value` 里。）
+                     */
+                        child: ValueListenableBuilder<DanmakuQuickValues>(
+                          valueListenable: _danmakuQuickLive,
+                          builder: (context, qv, _) => DanmakuOverlay(
+                            aspect: _displayAspect,
+                            comments: _danmakuComments,
+                            position: _position,
+                            playing: _playing,
+                            rate: _rate,
+                            enabled: _danmakuEnabled,
+                            fontScale: qv.fontScale,
+                            opacity: qv.opacity,
+                            speed: qv.speed,
+                            area: qv.area,
+                            // ★ Owner 2026-10-11：拖动「显示区域」滑杆期间点亮引导遮罩
+                            areaGuide: _showDanmakuAreaGuide,
+                            badge: _danmakuBadge,
+                          ),
                         ),
                       ),
                     ),
@@ -13418,27 +13878,36 @@ class _PlayerPageState extends State<PlayerPage>
                         onSettings: _openSettings,
                         // ★ task-21 P1-30：截图（相机按钮 / PC 键 S 的同一个落点）
                         onScreenshot: () => unawaited(_takeScreenshot()),
-                        // ★★★ task-13 ⑦ 弹幕（用户原话：接入一下 dandanplay 的弹幕功能）
+                        // ★★★ task-13 ⑦ 弹幕（用户原话：接入一下 danmaku-service 的弹幕功能）
                         danmakuEnabled: _danmakuEnabled,
                         danmakuBusy: _danmakuLoading,
                         onDanmakuToggle: _toggleDanmaku,
                         onDanmakuSettings: _openDanmakuSettings,
                         /*
                      * ★★★ Owner 1011 反馈第 1 条：弹幕齿轮弹出的**轻量悬浮窗**
-                     *   （B 站图 1 那种）。
+                     *   （外部视频站图 1 那种）。
                      *
                      * 值全部取自 `_danmakuSettings`（= DanmakuConfig 的快照，
                      * 与全屏大卡片**同一份真源**）；三个类型开关读 DanmakuConfig
                      * 静态偏好（与 DanmakuSettingsDialog 同款）。
-                     * 拖动滑杆 / 点开关 ⇒ 宿主 setState ⇒ 底栏与 popover 层
+                     * 拖动滑杆 ⇒ 宿主 setState ⇒ 底栏与 popover 层
                      * 一起重建 ⇒ 读数与画面**实时**跟着走。
                      * 「高级设置」⇒ 回到 `_openDanmakuSettings`（全屏大卡片）。
+                     *
+                     * ★★★ 2026-10-14（卡顿修复）——上面的「拖动滑杆 ⇒ 宿主
+                     * setState」已被**替换**：拖动改走 `live:`（只重建四根
+                     * 滑杆），画面侧由 build 里包 `DanmakuOverlay` 的那层
+                     * `ValueListenableBuilder` 重建（整页 884 行 build 一次不跑；
+                     * 完整推导见 `_pushDanmakuQuickLive()` 上方）。
+                     * 下面四个 `fontScale/...` 静态字段**保留**：`live` 为 null
+                     * 的老调用点/夹具回落到它们（生产宿主始终传 live）。
                      */
                         danmakuQuick: DanmakuQuickPanelData(
                           fontScale: _danmakuSettings.fontScale,
                           opacity: _danmakuSettings.opacity,
                           speed: _danmakuSettings.speed,
                           area: _danmakuSettings.area,
+                          live: _danmakuQuickLive,
                           showScroll: DanmakuConfig.showScroll,
                           showTop: DanmakuConfig.showTop,
                           showBottom: DanmakuConfig.showBottom,
@@ -13533,7 +14002,7 @@ class _PlayerPageState extends State<PlayerPage>
      *
      * ★★★ OPS-10 ⑤：它**必须**排在所有全屏面板之后（原来在上面那个位置）。
      * ```text
-     * 两个面板（弹幕设置 / B 站导入）都是 `Positioned.fill` + 0.72 黑底的
+     * 两个面板（弹幕设置 / 外部视频站导入）都是 `Positioned.fill` + 0.72 黑底的
      * **全屏 scrim**（player_page.dart:11606 / :11650）。`_flash` 写的是
      * `_tip`，气泡画在这个 Stack 里 ⇒ 谁在后面谁盖住谁。
      * 导入是**在面板里**点的按钮：气泡排在面板前面时，用户刚点完
@@ -13676,7 +14145,15 @@ class _PlayerPageState extends State<PlayerPage>
                           onSetArea: _setDanmakuArea,
                           onReload: _reloadDanmaku,
                           onOpenBili: _openBiliSheet,
+                          // ★★★ 2026-10-14（Owner）：「搜索番剧」区的两个回调
+                          //   面板只把关键词 / 选中的一条递过来，网络与状态全在宿主。
+                          onSearch: (kw) => unawaited(_searchDanmaku(kw)),
+                          onPickMatch: _pickDanmakuMatch,
                           onHintAction: _runDanmakuHintAction,
+                          // ★★★ 2026-10-14（Owner）：凭证节的保存 / 清除
+                          //   面板只递值，写盘与状态更新全在宿主（同 onSearch 分工）。
+                          onSetCredentials: _setDanmakuCredentials,
+                          onClearCredentials: _clearDanmakuCredentials,
                           /*
                            * ★ 2026-10-09：屏蔽词 / 分类开关改了就重建播放页 ——
                            *   过滤发生在 danmaku_overlay 的排版那一层，
@@ -13697,13 +14174,13 @@ class _PlayerPageState extends State<PlayerPage>
                     ),
 
                     /*
-                 * ── 哔哩哔哩弹幕导入面板（task-31 ④）──
+                 * ── 外部弹幕弹幕导入面板（task-31 ④）──
                  *
                  * ⚠️ 与上面两个面板同一套规则：`Positioned.fill` 的全屏 scrim，
                  *    层序必须盖住控制条与其它浮层；Esc 分支里它排在**弹幕设置
                  *    面板之前** —— 两处必须一致（施工单 §3.2 的第 ③④ 条）。
                  *
-                 * ★ 它从 `DanmakuSettingsDialog` 的「哔哩哔哩弹幕…」按钮打开，
+                 * ★ 它从 `DanmakuSettingsDialog` 的「外部弹幕弹幕…」按钮打开，
                  *   所以打开时弹幕面板会被关掉（见 `_openBiliSheet` 的调用点）——
                  *   同一时刻只留一个 scrim，层序才不会有歧义。
                  */
@@ -14200,7 +14677,7 @@ class _ErrorOverlay extends StatelessWidget {
 
 /// 直播"只有音频线路能播"的**非阻断**提示
 ///
-/// # 它解决的是用户原话「cctv看得到但是点开黑屏」
+/// # 它解决的是用户原话「tvsrc看得到但是点开黑屏」
 ///
 /// 央视直播的视频轨被 DRM 加密 —— 这不是我们的 bug，是内容方的保护。
 /// 独立实测（ffmpeg，与 mpv 不同解码器）：
@@ -15793,13 +16270,13 @@ const kProbeVideo = String.fromEnvironment('PROBE_VIDEO');
 // ═══════════════════════════════════════════════════════════════════════
 //
 // 用户原话：
-// > 接入一下 dandanplay 的弹幕功能
+// > 接入一下 danmaku-service 的弹幕功能
 //
 // # 为什么要这些探针
 //
 // 弹幕这条链路有三段**只有真进程里才成立**：
 // ----
-// ① 取：真的发 HTTP 到 api.dandanplay.net（签名 / 302 / 错误头）
+// ① 取：真的发 HTTP 到 api.danmaku-service.net（签名 / 302 / 错误头）
 // ② 排：真的把 N 条弹幕铺到 N 条泳道上（不重叠）
 // ③ 滚：真的随时间往左移动（帧循环 / 时间轴对齐）
 // ----
@@ -15829,6 +16306,42 @@ String? debugPlayerDanmakuError() {
 /// 面板里「详情」那段全文（含 HTTP 状态码 / 请求 URL / 响应正文）
 String? debugPlayerDanmakuErrorDetail() =>
     _livePlayerState?._danmakuError?.detail;
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ★★★ 2026-10-14（Owner）：「搜索番剧」的探针钩子
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 为什么必须是一等探针（而不是测试里自己点 UI）：
+// ```text
+// flutter_tester 里 PlayerPage 整棵树的**指针回调不触发**（见 t98 文件头
+// 与 .probe/probe_tests/README.md）⇒ 搜索框敲字、点「搜索」、点结果行
+// 这些动作都走不了真指针。所以：
+//   ① 打开面板：用**既有的** `debugPlayerOpenDanmakuSettingsForProbe`
+//      （它已驱动生产那棵树，见它的注释）
+//   ② 触发搜索：`debugPlayerDanmakuSearchForProbe` 直调**生产**的
+//      `_searchDanmaku()` —— 网络经 `debugSetDanmakuTransportForTest`
+//      注入的假传输，于是判据是**确定性的**，不是"跑到网上碰运气"
+//   ③ 点结果：直调生产的 `_pickDanmakuMatch()`
+// 三个入口都指向生产代码本身 ⇒ 测的是行为，不是手抄的副本。
+// ```
+
+/// 面板里当前那份状态（只读）—— 供测试断言"宿主真收到了什么"
+DanmakuSettingsState? debugPlayerDanmakuSettingsState() =>
+    _livePlayerState?._danmakuSettings;
+
+/// 走生产 `_searchDanmaku(keyword)`（网络由注入的假传输接管）
+Future<void> debugPlayerDanmakuSearchForProbe(String keyword) async {
+  await _livePlayerState?._searchDanmaku(keyword);
+}
+
+/// 走生产 `_pickDanmakuMatch(match)`（= 用户点了结果里的一条）
+void debugPlayerPickDanmakuMatchForProbe(DanmakuMatch m) {
+  _livePlayerState?._pickDanmakuMatch(m);
+}
+
+/// 当前这一集"挂哪份弹幕"的身份（`_biliCid`）——
+/// 点中一条结果后就该 = 那条的 episodeId。
+int? debugPlayerDanmakuBoundId() => _livePlayerState?._biliCid;
 
 /// 开关弹幕（探针用；会真的走 _toggleDanmaku 那条路）
 Future<bool> debugPlayerToggleDanmakuForProbe() async {
@@ -15956,7 +16469,7 @@ bool debugPlayerSetDanmakuEmptyResultForProbe(String status) {
 /// 前者已被别的探针引用（改名会连带改别人），这里对齐 OPS-10 ⑤ 的用例。
 String? debugPlayerFlashForProbeText() => _livePlayerState?._tip;
 
-/// 走**真实导入链**导入一条 B 站链接（探针用；返回导入后上屏的弹幕条数）
+/// 走**真实导入链**导入一条 外部视频站链接（探针用；返回导入后上屏的弹幕条数）
 ///
 /// # 为什么必须注入假 HttpClient 而不是发真请求
 /// ```text
@@ -16037,7 +16550,7 @@ Future<int> debugPlayerReloadDanmakuForProbe({HttpClient? fake}) async {
   return s._danmakuComments.length;
 }
 
-/// 用假 HttpClient 走一次**起播取 B 站弹幕**（探针用）
+/// 用假 HttpClient 走一次**起播取 外部视频站弹幕**（探针用）
 ///
 /// 返回失败原文（成功 = 空串）。专门给 OPS-10 现象 A 的
 /// 「失败角标会不会自己消失」用：_loadBiliDanmaku 的失败支
@@ -16088,7 +16601,7 @@ bool debugPlayerCloseDanmakuSettingsForProbe() {
   return !s._danmakuSheetOpen;
 }
 
-/// 打开哔哩哔哩弹幕导入面板（探针用；返回面板是否处于打开态）
+/// 打开外部弹幕弹幕导入面板（探针用；返回面板是否处于打开态）
 ///
 /// ★ task-104：与 [debugPlayerOpenDanmakuSettingsForProbe] 同款 —— 播放页
 ///   在 flutter_tester 里点不动（`_load()` 必然失败，见 .probe/probe_tests/README.md），
@@ -16106,7 +16619,7 @@ bool debugPlayerOpenBiliSheetForProbe() {
   return s._biliSheetOpen;
 }
 
-/// 关闭哔哩哔哩弹幕导入面板（探针用；返回关闭后面板是否确实关着）
+/// 关闭外部弹幕弹幕导入面板（探针用；返回关闭后面板是否确实关着）
 ///
 /// ★ Owner 2026-10-11 第 2 条：与生产 `onClose` 同一路径（关面板顺带叫回控制条）。
 bool debugPlayerCloseBiliSheetForProbe() {
@@ -16145,7 +16658,7 @@ bool debugPlayerCloseSubtitlePanelForProbe() {
 
 /// 当前用于取弹幕的文件名（探针用；无播放页时返回 null）
 ///
-/// 探针要断言「送去 dandanplay 的 fileName 到底长什么样」——
+/// 探针要断言「送去 danmaku-service 的 fileName 到底长什么样」——
 /// 这条链路上最容易出错的地方就是它（多带了扩展名 / 多带了目录）。
 String? debugPlayerDanmakuFileName() => _livePlayerState?._danmakuFileName;
 
@@ -16529,7 +17042,7 @@ class _TopBar extends StatelessWidget {
   /// 1280px 宽  → 顶栏可用 ~1200px，站名 pill 自然远小于 180
   /// 900px 宽   → 仍然只占 ≤180，标题保得住
   /// ```
-  /// 180 是实测值：最长站名（「哔哩哔哩」5 字 ≈ 70px + padding ≈ 100px）
+  /// 180 是实测值：最长站名（「外部弹幕」5 字 ≈ 70px + padding ≈ 100px）
   /// 留了一倍余量，同时不至于在窄窗口下喧宾夺主。
   static const double _kNameMaxW = 180;
 
@@ -17081,7 +17594,33 @@ const double _kBottomBarMiniWidth = 528;
 ///   为什么用常量而不是量：面板若去读某个按钮的 `GlobalKey` 再定位，
 ///   那一帧 key 的 RenderObject 可能还没布局（首帧）⇒ 面板先落在屏幕中间、
 ///   下一帧才跳上去。用常量则位置**每一帧都对**。
-const double _kPlayerBottomBarHeight = 96;
+///
+/// ══════════════════════════════════════════════════════════════════════
+/// ★★★ 2026-10-13（Owner）：96 -> **106** —— 这个数一直是错的
+/// ══════════════════════════════════════════════════════════════════════
+///
+/// Owner 原话（逐字）：
+/// ```text
+/// > 这个悬浮窗距离底部太多了
+/// ```
+///
+/// # 实测：底栏真实高度是 **106**，不是 96
+/// ```text
+/// `tester.getRect(PlayerBottomBar)` = Rect(0, 794, 1280, 900) ⇒ height = 106
+/// （本文件 512 行的注释其实早就写着"高约 106px"—— 常量却填了 96，
+///   两处**互相矛盾**，而没有任何测试钉住它们一致。）
+/// ```
+///
+/// # 这 10px 差在哪（正是"距离底部太多"的一半）
+/// ```text
+/// 本常量把 popover 层的**下边界**钉在「窗口底往上 N」处：
+///   填 96  ⇒ 层底 = 窗口底 - 96 = 804（**钻进底栏 10px**）
+///   应填 106 ⇒ 层底 = 窗口底 - 106 = 794（**正好= 底栏上沿**）
+/// ⇒ 填 96 时面板被顶高了 10px（观感：悬浮窗离底栏远了一截）。
+/// ```
+/// ⚠️ 配合 `_PopoverAnchorDelegate` 里竖向留白改成 0（见那里），
+///    两者合起来才让面板**底边正贴在底栏上沿**。
+const double _kPlayerBottomBarHeight = 106;
 
 class _BottomBar extends StatelessWidget {
   const _BottomBar({
@@ -17120,10 +17659,10 @@ class _BottomBar extends StatelessWidget {
     // ★ task-21 P1-30：截图（与 onSettings 同理 —— 恒有值，不像 onSkipMarkers 那样可空）
     required this.onScreenshot,
     /*
-     * ★★★ task-13 ⑦ 弹幕（用户原话：接入一下 dandanplay 的弹幕功能）
+     * ★★★ task-13 ⑦ 弹幕（用户原话：接入一下 danmaku-service 的弹幕功能）
      *
      * ⚠️ 与 `onSkipMarkers` 不同：这几个**恒有值** —— 直播也有弹幕
-     *    （dandanplay 有直播番剧的库），所以不做成可空参数。
+     *    （danmaku-service 有直播番剧的库），所以不做成可空参数。
      */
     required this.danmakuEnabled,
     required this.danmakuBusy,
@@ -17304,7 +17843,7 @@ class _BottomBar extends StatelessWidget {
   ///    能点、点了才弹提示的按钮最糟 —— 用户会以为是投屏坏了。
   final String castUrl;
 
-  /// 拉这条流要带的头（B 站类源少了 Referer，电视拉到的就是 403）
+  /// 拉这条流要带的头（外部视频站类源少了 Referer，电视拉到的就是 403）
   final Map<String, String> castHeaders;
 
   /// 投屏时显示在电视上的名字（DIDL 元数据里的 title）
@@ -17621,15 +18160,15 @@ class _HintsPanel extends StatelessWidget {
 ///
 /// # ★ 数据一直都在（我逐个读了各 provider 的构造点）
 /// ```text
-/// 次元城   label="次元城"        quality="原画"
+/// 某动画站   label="某动画站"        quality="原画"
 /// 央视     label="官方 HLS"      quality="自适应"
 /// 央视     label="CDN 直连"      quality=<清晰度>
 /// 央视     label="时移回看"      quality="回看"
 /// 声明式   label="声明式"        quality=<清晰度>
-/// 哔哩哔哩 label="哔哩哔哩 1080P" quality="1080P"   ← ★ label 里**已经含**清晰度
+/// 外部弹幕 label="外部弹幕 1080P" quality="1080P"   ← ★ label 里**已经含**清晰度
 /// ```
-/// ⇒ 所以**不能**无脑把 quality 也贴上去 —— 哔哩哔哩那类会变成
-///   「哔哩哔哩 1080P  1080P」。
+/// ⇒ 所以**不能**无脑把 quality 也贴上去 —— 外部弹幕那类会变成
+///   「外部弹幕 1080P  1080P」。
 ///
 /// # 判据（三条，覆盖全部情形）
 /// ```text
@@ -17723,10 +18262,10 @@ class _SheetScrim extends StatelessWidget {
 /// ══════════════════════════════════════════════════════════════════
 /// 面板表头写的是「**线路 / 清晰度**」—— 两样是**并列**的属性：
 /// ```text
-/// 线路  = 从哪个 provider 来（次元城 / 官方 HLS / 哔哩哔哩 …）
+/// 线路  = 从哪个 provider 来（某动画站 / 官方 HLS / 外部弹幕 …）
 /// 清晰度 = 这条流多大（原画 / 自适应 / 1080P …）
 /// ```
-/// ⇒ 拼成一行「次元城 · 原画」会让长名字被 ellipsis 截掉时
+/// ⇒ 拼成一行「某动画站 · 原画」会让长名字被 ellipsis 截掉时
 ///   先丢掉清晰度（信息优先级正好反了）；分红徽章则两者各自独立。
 ///
 /// # 样式与 `_HintsPanel` 的按键小牌子同构（本文件既有的 `k` 标签）
@@ -17787,7 +18326,7 @@ class _StreamSheet extends StatelessWidget {
      *
      * # Owner 原话（逐字）
      * ```text
-     * > bilibili视频我点一个播放,然后点击线路 就直接出现一个蒙层,
+     * > externaldanmaku视频我点一个播放,然后点击线路 就直接出现一个蒙层,
      * > 啥也无法点击了,切换源也一样
      * ```
      *
@@ -17910,7 +18449,7 @@ class _StreamSheet extends StatelessWidget {
                         //   · 数据源是 `s.quality`（一直都在，只是被
                         //     `displayName` 的 `??` 短路吃掉了）
                         //   · 何时该显示 / 何时不该显示 ⇒ 见 `qualityBadgeFor`
-                        //     （关键是哔哩哔哩那类 label 已含清晰度的**不许重复**）
+                        //     （关键是外部弹幕那类 label 已含清晰度的**不许重复**）
                         //   · 徽章与线路名**同排**而不是塞进 subtitle ——
                         //     subtitle 已被 DRM 提示占用，且清晰度是"这条线路
                         //     是什么"的属性，与名字同级。
@@ -18010,7 +18549,7 @@ class _StreamSheet extends StatelessWidget {
 // 频道天然有分组（`LiveChannel.group`，实测值如「新闻」「综合」「财经」「综艺」
 // 「科教」「戏曲文化」「其它」），
 // ★ 而用户要"查看**所有**的直播" —— 28 个台平铺一列时，
-//   他要找"CCTV-9 纪录"得从头滚到底。
+//   他要找"TVSRC-9 纪录"得从头滚到底。
 // ⇒ 分组 + 组内按源给的顺序（**不重排**：源里的顺序就是用户习惯的顺序）。
 // ```
 //

@@ -113,7 +113,7 @@ tests/batch5_provider.rs   需 --ignored（真实插件）
 搜索「庆余年」        → 19 源命中 / 169 条结果 / 5 源跳过
 流式搜索              → 首个事件 0.25s（总耗时 37.4s，提前 37.14s）
 取消语义              → 0.66s 立即返回
-直播（央视网）        → 20 个频道 / 3 个可播候选 / EPG 36 条节目
+直播（某电视台站）    → 20 个频道 / 3 个可播候选 / EPG 36 条节目
 插件                  → 26/26 加载成功
 ```
 
@@ -272,13 +272,13 @@ categories: [ { id: "1", name: "电影片" }, ... ]    // ← 22 个插件
 let json = self.call_js("plugin.categories()").await?;   // ← 数组当函数调
 ```
 
-只有 4 个插件（bilibili / cctv / cycani / demo）写成函数，所以能用。
+只有少数插件写成函数形式，所以能用。
 
 **这不是我引入的** —— 我的 `plugins/mod.rs` L1562 与原版 L1562 **逐字相同**。
 原版前端 `BrowseView.vue` L49 直接调 `content.categories(provider)`，没有 fallback。
 
 **影响面（查了真实用户库）**：用户实际在用的源里 **154 / tyyszy 是数组形式**
-（`cycani` / `cctv` / `bilibili` 是函数形式，不受影响）。
+（函数形式的插件不受影响）。
 
 **能不能修**：能，且改动很小 —— 在 `categories()` 里加一层兼容：
 

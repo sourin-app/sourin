@@ -197,8 +197,8 @@ int liveChannelsCalls = 0;
   liveChannelsCalls++;
   return (
     channels: const [
-      LiveChannel(id: 'cctv1', name: 'CCTV-1 综合', group: '央视'),
-      LiveChannel(id: 'cctv2', name: 'CCTV-2 财经', group: '央视'),
+      LiveChannel(id: 'srcl1', name: 'SRCL-1 综合', group: '某电视台'),
+      LiveChannel(id: 'srcl2', name: 'SRCL-2 财经', group: '某电视台'),
       LiveChannel(id: 'hunan', name: '湖南卫视', group: '卫视'),
     ],
     index: 0,

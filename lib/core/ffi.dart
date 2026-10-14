@@ -632,7 +632,7 @@ class SourinCore {
   ///
   /// ```dart
   /// final detail = await SourinCore.callAsync('get_detail', {
-  ///   'provider': 'cycani', 'id': '3611',
+  ///   'provider': 'srca', 'id': '3611',
   /// });
   /// ```
   static Future<dynamic> callAsync(String cmd, [Map<String, dynamic>? args]) {

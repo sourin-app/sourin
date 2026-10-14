@@ -486,7 +486,7 @@ void main() {
       final referer = client.headers.single.value(HttpHeaders.refererHeader);
       expect(referer, kBiliSearchReferer);
       expect(referer, isNot(kBiliReferer),
-          reason: '★ 用 www.bilibili.com 会拿到 200 + text/html 的风控页');
+          reason: '★ 用 www 域名会拿到 200 + text/html 的风控页');
       expect(client.headers.single.value(HttpHeaders.userAgentHeader),
           kBiliUserAgent);
     });
@@ -534,13 +534,13 @@ void main() {
       expect(h!.title, '弹幕服务没收到凭证');
       expect(h.text, contains('AppId'));
       expect(h.text, contains('AppSecret'));
-      expect(h.text, contains('哔哩哔哩弹幕'), reason: '要给"另一条路"');
+      expect(h.text, contains('外部视频源弹幕'), reason: '要给"另一条路"');
       expect(h.url, 'https://dev.dandanplay.com');
       expect(h.action, isNotNull);
       expect(h.action!.label, isNotEmpty);
       expect(h.action!.openDanmakuSettings, isTrue);
       expect(h.action!.openBiliSheet, isTrue,
-          reason: '两个入口都要给：填凭证 / 改走 B 站');
+          reason: '两个入口都要给：填凭证 / 改走外部弹幕导入');
     });
 
     test('★ 403 但 X-Error-Message 为空，同样算没填凭证', () {
@@ -588,7 +588,7 @@ void main() {
           },
         ),
       );
-      final c = DandanplayClient(transport: t, appId: '', appSecret: '');
+      final c = ExternalDanmakuClient(transport: t, appId: '', appSecret: '');
 
       DanmakuException? caught;
       try {
@@ -612,7 +612,7 @@ void main() {
       final t = _FakeTransport(
         (Uri uri) => const DanmakuHttpResponse(statusCode: 412, body: ''),
       );
-      final c = DandanplayClient(transport: t);
+      final c = ExternalDanmakuClient(transport: t);
       DanmakuException? caught;
       try {
         await c.match(fileName: '第01话');
@@ -632,7 +632,7 @@ void main() {
           headers: <String, String>{'content-type': 'text/html'},
         ),
       );
-      final c = DandanplayClient(transport: t);
+      final c = ExternalDanmakuClient(transport: t);
       DanmakuException? caught;
       try {
         await c.match(fileName: '第01话');
@@ -660,7 +660,7 @@ void main() {
           headers: const <String, String>{'content-type': 'application/json'},
         ),
       );
-      final c = DandanplayClient(transport: t);
+      final c = ExternalDanmakuClient(transport: t);
 
       // ① match() 在"一条都没匹配上"时是**返回空表**，不抛
       expect(await c.match(fileName: '第01话'), isEmpty);
@@ -719,7 +719,7 @@ void main() {
 
       // 老的输入区还在（不能被搜索区顶掉）
       expect(find.text('视频链接'), findsOneWidget);
-      expect(find.text('弹幕是免登录抓的，不需要 B 站账号。'), findsOneWidget);
+      expect(find.text('弹幕是免登录抓的，不需要外部站账号。'), findsOneWidget);
     });
 
     testWidgets('★ 点一条 ⇒ 把它的 BV 号当输入喂给导入流程', (WidgetTester t) async {

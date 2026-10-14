@@ -241,7 +241,7 @@ void main() {
   group('HTTP 客户端（假传输层，确定性）', () {
     test('签名头：X-Signature = base64(sha256(AppId + Timestamp + Path + AppSecret))', () async {
       final fake = FakeTransport((m, u, h, b) => _json(<String, dynamic>{'success': true, 'matches': <dynamic>[]}));
-      final client = DandanplayClient(
+      final client = ExternalDanmakuClient(
         transport: fake,
         appId: 'myid',
         appSecret: 'mysecret',
@@ -265,7 +265,7 @@ void main() {
 
     test('查询参数不进签名（官方要求 Path 不含问号后的内容）', () async {
       final fake = FakeTransport((m, u, h, b) => _json(<String, dynamic>{'success': true, 'comments': <dynamic>[]}));
-      final client = DandanplayClient(
+      final client = ExternalDanmakuClient(
         transport: fake,
         appId: 'id1',
         appSecret: 'sec1',
@@ -285,7 +285,7 @@ void main() {
             body: '',
             headers: <String, String>{'x-error-message': 'Missing Authentication Headers'},
           ));
-      final client = DandanplayClient(transport: fake, appId: '', appSecret: '');
+      final client = ExternalDanmakuClient(transport: fake, appId: '', appSecret: '');
       try {
         await client.fetchComments(1);
         fail('应该抛异常');
@@ -304,7 +304,7 @@ void main() {
             body: '',
             headers: <String, String>{'x-error-message': 'Invalid Signature'},
           ));
-      final client = DandanplayClient(transport: fake, appId: 'a', appSecret: 'b');
+      final client = ExternalDanmakuClient(transport: fake, appId: 'a', appSecret: 'b');
       final e = await _capture(() => client.match(fileName: 'x'));
       expect(e!.xErrorMessage, 'Invalid Signature');
       expect(e.errorCode, 0);
@@ -316,7 +316,7 @@ void main() {
             'errorCode': 404,
             'errorMessage': '弹幕库不存在',
           }));
-      final client = DandanplayClient(transport: fake, appId: 'a', appSecret: 'b');
+      final client = ExternalDanmakuClient(transport: fake, appId: 'a', appSecret: 'b');
       final e = await _capture(() => client.fetchComments(5));
       expect(e!.errorCode, 404);
       expect(e.errorMessage, '弹幕库不存在');
@@ -345,7 +345,7 @@ void main() {
           ],
         });
       });
-      final client = DandanplayClient(transport: fake, appId: 'a', appSecret: 'b');
+      final client = ExternalDanmakuClient(transport: fake, appId: 'a', appSecret: 'b');
       final ms = await client.match(fileName: 'x');
       expect(ms, hasLength(2));
       expect(ms.first.episodeId, 100);
@@ -381,7 +381,7 @@ void main() {
           'comments': <dynamic>[<String, dynamic>{'cid': 1, 'p': '1,1,0,u', 'm': 'x'}],
         });
       });
-      final client = DandanplayClient(transport: fake, appId: 'a', appSecret: 'b');
+      final client = ExternalDanmakuClient(transport: fake, appId: 'a', appSecret: 'b');
       final r = await client.loadFor(fileName: 'EP03', anime: '某番', episode: '3');
       expect(r.matchedBy, 'search');
       expect(r.match!.episodeId, 777);
@@ -394,7 +394,7 @@ void main() {
         if (u.path == '/api/v2/match') return _json(<String, dynamic>{'success': true, 'matches': <dynamic>[]});
         return _json(<String, dynamic>{'success': true, 'animes': <dynamic>[]});
       });
-      final client = DandanplayClient(transport: fake, appId: 'a', appSecret: 'b');
+      final client = ExternalDanmakuClient(transport: fake, appId: 'a', appSecret: 'b');
       final e = await _capture(() => client.loadFor(fileName: 'nothing'));
       expect(e, isNotNull);
       expect(e!.message.contains('没有匹配到弹幕库'), isTrue);
@@ -402,7 +402,7 @@ void main() {
 
     test('close 会透传到传输层', () {
       final fake = FakeTransport((m, u, h, b) => _json(<String, dynamic>{'success': true}));
-      DandanplayClient(transport: fake).close();
+      ExternalDanmakuClient(transport: fake).close();
       expect(fake.closed, isTrue);
     });
   });

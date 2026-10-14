@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════
-//  临时探针：Owner 缺陷 8（央视直播整组只能黑屏 → 应直接不出现）
+//  临时探针：Owner 缺陷 8（某电视台直播整组只能黑屏 → 应直接不出现）
 //           + Owner 缺陷 14（同一源下部分作品报「没有可播放的地址」）
 // ═══════════════════════════════════════════════════════════════════════
 //
@@ -8,7 +8,7 @@
 // 用来区分三种病因：
 //   (a) 源站没给地址      → 候选 0 条，或候选全空 url
 //   (b) 我们过滤掉了      → 候选有、url 非空、drm=false，却被某处丢掉
-//   (c) 候选被标 DRM      → drm_protected=true（央视视频线）
+//   (c) 候选被标 DRM      → drm_protected=true（某电视台视频线）
 //
 // 运行（真网络，必须 --ignored）：
 //   cargo test --manifest-path rust/sourin_core/Cargo.toml --test t84_live_8_14_probe -- --ignored --nocapture --test-threads=1
@@ -84,11 +84,11 @@ fn dump_candidates(prefix: &str, list: &[sourin_core::model::StreamCandidate]) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  A. 缺陷 8：央视直播频道真实可用性（真调核心 get_live_channels / get_live_stream）
+//  A. 缺陷 8：某电视台直播频道真实可用性（真调核心 get_live_channels / get_live_stream）
 // ═══════════════════════════════════════════════════════════════════════
 #[tokio::test]
 #[ignore = "真网络探针，显式 --ignored 运行"]
-async fn cctv_live_availability_matrix() {
+async fn srcl_live_availability_matrix() {
     let st = with_real_plugins("live").await;
     let all = cmds::get_live_channels(&st).await.expect("get_live_channels");
     println!("[t84] 直播源 {} 个", all.len());
@@ -105,16 +105,16 @@ async fn cctv_live_availability_matrix() {
         );
     }
 
-    let cctv = all
+    let srcl = all
         .iter()
-        .find(|v| v["provider"].as_str() == Some("cctv"))
+        .find(|v| v["provider"].as_str() == Some("srcl"))
         .cloned();
-    let Some(cctv) = cctv else {
-        println!("[t84] ★ cctv 源未注册（插件未加载）—— 探针终止");
+    let Some(srcl) = srcl else {
+        println!("[t84] ★ srcl 源未注册（插件未加载）—— 探针终止");
         return;
     };
-    let chs = cctv["channels"].as_array().cloned().unwrap_or_default();
-    println!("[t84] ==== cctv 频道表 {} 个，逐个真取流 ====", chs.len());
+    let chs = srcl["channels"].as_array().cloned().unwrap_or_default();
+    println!("[t84] ==== srcl 频道表 {} 个，逐个真取流 ====", chs.len());
 
     let mut n_ok_any = 0usize;
     let mut n_playable = 0usize;
@@ -128,7 +128,7 @@ async fn cctv_live_availability_matrix() {
         let name = c["name"].as_str().unwrap_or("").to_string();
         let group = c["group"].as_str().unwrap_or("").to_string();
         let t0 = std::time::Instant::now();
-        match cmds::get_live_stream(&st, "cctv", &id).await {
+        match cmds::get_live_stream(&st, "srcl", &id).await {
             Ok(list) => {
                 let playable: Vec<_> = list
                     .iter()
@@ -190,7 +190,7 @@ async fn cctv_live_availability_matrix() {
         }
     }
     println!(
-        "[t84] ==== cctv 汇总：频道 {} | 有候选 {} | 有非DRM视频线 {} | 仅音频 {} | 空候选 {} | 报错 {}",
+        "[t84] ==== srcl 汇总：频道 {} | 有候选 {} | 有非DRM视频线 {} | 仅音频 {} | 空候选 {} | 报错 {}",
         chs.len(),
         n_ok_any,
         n_playable,
@@ -314,7 +314,7 @@ async fn resolve_empty_candidate_matrix() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  C. 缺陷 8 的决定性证据：直接抓央视 hls1（标 DRM 的那条）看是否真被加密
+//  C. 缺陷 8 的决定性证据：直接抓某电视台 hls1（标 DRM 的那条）看是否真被加密
 //     判据：ffprobe 能列出 h264 视频轨，但 ffmpeg 解码 3 秒出现
 //           error while decoding MB / top block unavailable ⇒ 载荷加密
 // ═══════════════════════════════════════════════════════════════════════
@@ -354,15 +354,15 @@ async fn run_cmd(mut cmd: tokio::process::Command) -> String {
 
 #[tokio::test]
 #[ignore = "真网络探针，显式 --ignored 运行"]
-async fn cctv_hls_drm_decode_probe() {
+async fn srcl_hls_drm_decode_probe() {
     let st = with_real_plugins("drm").await;
     let chs = cmds::get_live_channels(&st).await.expect("channels");
-    let cctv = chs
+    let srcl = chs
         .iter()
-        .find(|v| v["provider"].as_str() == Some("cctv"))
+        .find(|v| v["provider"].as_str() == Some("srcl"))
         .cloned()
-        .expect("cctv 源");
-    let ids: Vec<String> = cctv["channels"]
+        .expect("srcl 源");
+    let ids: Vec<String> = srcl["channels"]
         .as_array()
         .unwrap()
         .iter()
@@ -371,7 +371,7 @@ async fn cctv_hls_drm_decode_probe() {
         .collect();
 
     for id in ids {
-        let list = match cmds::get_live_stream(&st, "cctv", &id).await {
+        let list = match cmds::get_live_stream(&st, "srcl", &id).await {
             Ok(l) => l,
             Err(e) => {
                 println!("[t84] 频道 {id} 取流失败: {e}");

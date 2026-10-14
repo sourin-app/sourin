@@ -280,7 +280,7 @@ Future<void> body() async {
   final src = File(abs).readAsStringSync();
   ok('弹幕设置面板挂载点走 SheetExitMotion',
       src.contains('visible: _danmakuSheetOpen,'));
-  ok('B 站导入面板挂载点走 SheetExitMotion',
+  ok('某视频站导入面板挂载点走 SheetExitMotion',
       src.contains('visible: _biliSheetOpen,'));
   ok('字幕面板挂载点走 SheetExitMotion',
       src.contains('visible: _subtitlePanelOpen,'));

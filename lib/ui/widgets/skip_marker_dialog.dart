@@ -51,7 +51,7 @@
 //
 // 编排者的日志（`.probe/FINAL3-LAUNCH.txt`）里**观测到过一次**：
 // ```text
-// L221 [NAV] 打开播放器: cycani:3862          ← 主播放器开始 open
+// L221 [NAV] 打开播放器: srca:3862          ← 主播放器开始 open
 // L232 media_kit: ANGLESurfaceManager ...     ← ★ 预览播放器也起来了
 // L239 [SKIPDLG] 独立预览播放器已启动
 // L242 [PLAYER] hwdec-current = （就绪=否，等待 12000ms 超时）

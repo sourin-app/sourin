@@ -56,7 +56,7 @@ impl Registry {
     ///
     /// # 为什么不用 `priority` 字段
     ///
-    /// `priority` 是给「跨平台聚合时的优先级」用的（如央视优先于第三方），
+    /// `priority` 是给「跨平台聚合时的优先级」用的（如某电视台优先于第三方），
     /// 与「用户想先看哪个源」是**两件事**。混用会导致：
     /// 用户排完序后，某个源的业务优先级一变，顺序又被打乱。
     ///
@@ -512,7 +512,7 @@ impl Registry {
     pub async fn ensure_session(&self, provider_id: &str) -> Option<bool> {
         let p = self.get(provider_id)?;
 
-        // 1) 不需要登录的源（央视等）直接放行
+        // 1) 不需要登录的源（某电视台等）直接放行
         if !p.manifest().capabilities.login_required {
             return Some(true);
         }
@@ -559,9 +559,9 @@ impl Registry {
     /// # ★★★ 2026-09-21 修：「游客可用但支持登录」的源永远显示不出「已登录」
     ///
     /// 原先是「`login_required == false` → 直接返回 `NotRequired`」。
-    /// 这对央视那类**完全不支持登录**的源是对的，但对 B站 是错的：
+    /// 这对某电视台那类**完全不支持登录**的源是对的，但对 某视频站 是错的：
     /// ```text
-    /// bilibili  login_required = false   （游客也能看 1080P）
+    /// srcv  login_required = false   （游客也能看 1080P）
     ///           login_supported = true    （登录后能同步关注/收藏）
     /// ```
     /// 于是用户明明扫码登录成功了，设置页却一直显示「游客可用」，
@@ -589,7 +589,7 @@ impl Registry {
                 /*
                  * ★★★ 2026-09-24 修：「已过期」不能报成「即将过期」
                  *
-                 * 用户报「次元城明明已登录了，也提示未登录」——
+                 * 用户报「某动画站明明已登录了，也提示未登录」——
                  * 实际是**反过来**：界面显示「已登录」，但一点播就 unauthorized。
                  *
                  * 根因链（实测确认）：
@@ -603,7 +603,7 @@ impl Registry {
                  *
                  * 修法：先问「**真的过期了吗**」（`session_expired()`）。
                  * 过期且**没有凭据能自动恢复** → 只能人工登录 → `Expired`。
-                 * 过期但**有凭据**（如 cycani 存了账号密码）→ 宿主下次点播会
+                 * 过期但**有凭据**（如 srca 存了账号密码）→ 宿主下次点播会
                  * 自动重登，报 `Expiring` 是诚实的，不该吓用户去手动登录。
                  *
                  * ⚠️ 顺序不能反：`Expiring` 是「还能自愈」，`Expired` 是
@@ -631,7 +631,7 @@ impl Registry {
                     Some(SessionState::Expired)
                 } else {
                     /*
-                     * ★ 可选登录（如 B站）+ 没有会话 → **不是"失效"**
+                     * ★ 可选登录（如 某视频站）+ 没有会话 → **不是"失效"**
                      *
                      * 用户从没登录过是完全正常的状态（游客就能用），
                      * 报「已失效」会让人以为出问题了、被催着去登录。
@@ -656,12 +656,12 @@ impl Registry {
              * ⚠️ 而实际上下一行 `ensure_session()` 就能用凭据把它救活 ——
              *    同一份判据在两处得出**互相矛盾**的结论，这本身就是错的。
              *
-             * ★ 实测触发条件比预想的窄：`cycani.js` 自己 try/catch 了
+             * ★ 实测触发条件比预想的窄：`srca.js` 自己 try/catch 了
              *   `JSON.parse`，store 写坏时它返回 `Ok(None)`（走上面那条安全分支）。
              *   但仍然要改 —— 理由：
              * ```text
              * ① 逻辑一致性：判据在别处都看凭据，这里不看是**没有理由的例外**
-             * ② 别的插件未必像 cycani 那样自己兜底（用户自己能写插件）
+             * ② 别的插件未必像 srca 那样自己兜底（用户自己能写插件）
              * ③ 代价为零：多一次 can_auto_login() 调用（本地读文件，微秒级）
              * ④ 方向安全：`Expiring` 不催用户动手；真救不活时点播会如实报错
              * ```
@@ -755,10 +755,10 @@ mod tests {
             Self::with_login_supported(login_required, false, can_refresh, has_cred, auto_login_ok)
         }
 
-        /// 带 `login_supported` 的构造 —— 用来造出「B站那种源」
+        /// 带 `login_supported` 的构造 —— 用来造出「某视频站那种源」
         ///
         /// ```text
-        /// B站：login_required = false   （游客能看 1080P）
+        /// 某视频站：login_required = false   （游客能看 1080P）
         ///      login_supported = true   （登录后能同步关注/收藏）
         /// ```
         fn with_login_supported(
@@ -927,7 +927,7 @@ mod tests {
         assert_eq!(home.len(), 1, "有有效会话的源应展示");
     }
 
-    /// 不需要登录的源（如央视）→ 恒展示
+    /// 不需要登录的源（如某电视台）→ 恒展示
     #[tokio::test]
     async fn home_keeps_source_without_login_requirement() {
         let reg = Registry::new();
@@ -970,7 +970,7 @@ mod tests {
     /// # 这个测试锁的是什么
     ///
     /// 原实现是「`login_required == false` → 直接 `NotRequired`」，
-    /// 于是 **B站 扫码登录成功后界面仍显示「游客可用」**，
+    /// 于是 **某视频站 扫码登录成功后界面仍显示「游客可用」**，
     /// 看起来像"登录没生效"（Owner 实测踩到）。
     ///
     /// 修复：判据从「需不需要登录」改成「支不支持登录」。
@@ -978,7 +978,7 @@ mod tests {
     #[tokio::test]
     async fn optional_login_reports_active_after_login() {
         let reg = Registry::new();
-        // B站那种源：不必须登录，但支持登录
+        // 某视频站那种源：不必须登录，但支持登录
         let p = Arc::new(
             FakeProvider::with_login_supported(false, true, false, false, false).with_session(7200),
         );
@@ -1006,7 +1006,7 @@ mod tests {
     ///
     /// 上面那个修复放宽了判据，这个测试守住另一头 ——
     /// 不能因为放宽而把"真的失效了"也说成 `NotRequired`，
-    /// 那会让 cycani 这类源失效后**不被隐藏**（首页展示点了播不了的源）。
+    /// 那会让 srca 这类源失效后**不被隐藏**（首页展示点了播不了的源）。
     #[tokio::test]
     async fn required_login_without_session_is_still_expired() {
         let reg = Registry::new();

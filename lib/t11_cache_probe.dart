@@ -39,8 +39,8 @@
 // # 数据目录隔离（铁律）
 //
 // 真核心 + 真网络，但**绝不指向用户真库**：走 T11_DATA_DIR 环境变量。
-// ⚠️ 全新数据目录里没有 cctv.js（核心只释放 demo/iptv/tvbox-live），
-//    所以 runner 脚本要在**进程外**把仓库里的 cctv.js 拷进去
+// ⚠️ 全新数据目录里没有 srcl.js（核心只释放 demo/iptv/tvbox-live），
+//    所以 runner 脚本要在**进程外**把仓库里的 srcl.js 拷进去
 //    （t6 探针的教训：debug 构建在进程内拷文件会 0xC0000005）。
 //
 // # 怎么跑
@@ -416,10 +416,10 @@ Future<void> main() async {
    *
    * ```text
    * 上一版：直接 loadAll(force) 然后 debugEnsureSections(srcA)。
-   * 实测读数：`冷启动后读数: source=cctv 分区=9 卡片=160`
-   *   ⇒ 当前源还是 **cctv**（用户真库里的源），根本不是 A。
-   * ⇒ 那次的 `_ensureSections(t11a)` 是在"当前源=cctv"下预取别的源，
-   *   而 `_groups` 那时已被 loadAll 收窄成 cctv 一份 ⇒ 找不到骨架 ⇒ 静默返回
+   * 实测读数：`冷启动后读数: source=srcl 分区=9 卡片=160`
+   *   ⇒ 当前源还是 **srcl**（用户真库里的源），根本不是 A。
+   * ⇒ 那次的 `_ensureSections(t11a)` 是在"当前源=srcl"下预取别的源，
+   *   而 `_groups` 那时已被 loadAll 收窄成 srcl 一份 ⇒ 找不到骨架 ⇒ 静默返回
    *   ⇒ **A 的快照从来没被写进缓存** ⇒ 后面"切回 A"当然不命中（720ms/2 请求）。
    * ```
    * ⚠️ 这同时暴露了产品侧一个真缺陷（已修）：`_ensureSections` / `_loadSectionsOf`

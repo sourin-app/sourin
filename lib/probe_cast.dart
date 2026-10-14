@@ -40,7 +40,7 @@ class CastProbePage extends StatefulWidget {
 }
 
 class _CastProbePageState extends State<CastProbePage> {
-  /// 默认拿一条**真的会做防盗链**的地址：B 站 CDN 只认 Referer
+  /// 默认拿一条**真的会做防盗链**的地址：某视频站 CDN 只认 Referer
   /// （只带 UA → 403，只带 Referer → 206，两个都不带 → 403）。
   /// 探针页填的是宿主/假 renderer 能直接拉到的直链，方便对着假 renderer 取证。
   final _urlCtl = TextEditingController(

@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 #include <flutter_windows.h>
+#include <imm.h>       // ★ IME：ImmGetContext/ImmAssociateContext（见 MaybeSubclassChild）
 #include <windowsx.h>  // GET_X_LPARAM / GET_Y_LPARAM（WM_NCHITTEST 用）
 
 #include <cstdio>
@@ -10,7 +11,80 @@
 #include "resource.h"
 #include "window_shadow.h"  // ★ 窗口投影（独立 layered 窗口，见该文件头）
 
+#include <cstdarg>
+
 namespace {
+
+/// IME 取证日志 —— 追加写到 `%TEMP%\sourin_ime.log`
+///
+/// # 为什么写文件而不是 stderr
+///
+/// Owner 是**双击 exe** 启动的，stderr 没有接收者、直接丢掉；而
+/// 「搜索框打不了中文」这个判定**必须拿到真实一次中文输入的消息序列**。
+/// 写文件后无论怎么启动都能取到证据。
+///
+/// # 只记「消息类型 + 标志位」，不记用户内容
+///
+/// 记的是 `WM_KEYDOWN` 的虚拟键码、`WM_IME_COMPOSITION` 的 lparam 标志、
+/// `ImmGetContext` 的句柄值 —— **不含**合成字符串、不含任何输入文本。
+///
+/// ⚠️ 有行数上限：正常打字频率下够一次排查，也不会让文件无限增长。
+void ImeTrace(const char* fmt, ...) {
+  constexpr int kImeTraceMaxLines = 20000;
+  static int s_lines = 0;
+  if (s_lines >= kImeTraceMaxLines) {
+    return;
+  }
+  char path[MAX_PATH] = {0};
+  const DWORD n = ::GetTempPathA(MAX_PATH, path);
+  if (n == 0 || n >= static_cast<DWORD>(MAX_PATH) - 16) {
+    return;
+  }
+  ::lstrcatA(path, "sourin_ime.log");
+  FILE* fp = nullptr;
+  if (::fopen_s(&fp, path, "a") != 0 || fp == nullptr) {
+    return;
+  }
+  SYSTEMTIME st;
+  ::GetLocalTime(&st);
+  std::fprintf(fp, "%02u:%02u:%02u.%03u ", static_cast<unsigned>(st.wHour),
+               static_cast<unsigned>(st.wMinute),
+               static_cast<unsigned>(st.wSecond),
+               static_cast<unsigned>(st.wMilliseconds));
+  va_list ap;
+  va_start(ap, fmt);
+  std::vfprintf(fp, fmt, ap);
+  va_end(ap);
+  std::fputc('\n', fp);
+  std::fclose(fp);
+  ++s_lines;
+}
+
+/// IME / 键盘消息名 —— 只为日志可读，不参与任何逻辑
+const char* ImeMsgName(UINT message) {
+  switch (message) {
+    case WM_IME_SETCONTEXT:
+      return "WM_IME_SETCONTEXT";
+    case WM_IME_STARTCOMPOSITION:
+      return "WM_IME_STARTCOMPOSITION";
+    case WM_IME_COMPOSITION:
+      return "WM_IME_COMPOSITION";
+    case WM_IME_ENDCOMPOSITION:
+      return "WM_IME_ENDCOMPOSITION";
+    case WM_SETFOCUS:
+      return "WM_SETFOCUS";
+    case WM_KILLFOCUS:
+      return "WM_KILLFOCUS";
+    case WM_KEYDOWN:
+      return "WM_KEYDOWN";
+    case WM_SYSKEYDOWN:
+      return "WM_SYSKEYDOWN";
+    case WM_CHAR:
+      return "WM_CHAR";
+    default:
+      return "(other)";
+  }
+}
 
 /// Window attribute that enables dark mode window decorations.
 ///
@@ -1945,6 +2019,98 @@ LRESULT CALLBACK SourinChildWndProc(HWND child,
     return ::DefWindowProcW(child, message, wparam, lparam);
   }
 
+  /*
+   * ★★★ IME 取证（**只读**日志，绝不改行为）
+   *
+   * # 为什么必须记这几条（2026-10-13 实测后重写）
+   *
+   * Owner 报「搜索框打不了中文」。外挂探针跨进程读 `ImmGetContext`
+   * **恒为 0**（`_cap14.cs` 对照实验已证：跨进程读这个 API 没有任何意义，
+   * 连系统窗口也读成 0）。所以只能从**子窗口自己的 WndProc** 里取证：
+   * 这里与 FLUTTERVIEW 同线程，读到的才是真值。
+   *
+   * 已经用 `_cap13.cs` 在同线程读到过真值：
+   *   `[IME] child=...3D218A ctx=...174146D created=0 assoc=1 verify=...174146D`
+   * ⇒ **上下文本来就存在**、`ImmAssociateContextEx` 返回成功、读回一致。
+   * 也就是说"上下文没挂上"这条假设**已经被推翻**了。
+   *
+   * 剩下的分叉只有两条，必须靠"真实打一次中文"的消息序列来分：
+   *   · 收到 `WM_KEYDOWN`(VK_PROCESSKEY=0xE5) 却**没有**
+   *     `WM_IME_STARTCOMPOSITION` / `WM_IME_COMPOSITION`
+   *     ⇒ 按键进了窗口，但 IME **没有开始合成**（IME 侧/TSF 侧问题）；
+   *   · 收到 `WM_IME_COMPOSITION` 但界面无反应
+   *     ⇒ 合成有、是 Flutter 框架/引擎没把结果交给 `EditableText`。
+   *
+   * 因此这里记：
+   *   · `WM_IME_SETCONTEXT` —— wparam=1 表示该窗口被选为 IME 目标；
+   *   · `WM_IME_STARTCOMPOSITION` / `WM_IME_COMPOSITION` /
+   *     `WM_IME_ENDCOMPOSITION` —— 合成的**开始/更新/结束**；
+   *   · `WM_SETFOCUS` / `WM_KILLFOCUS` —— 焦点变更（IME 只认焦点窗口）；
+   *   · `WM_KEYDOWN` / `WM_SYSKEYDOWN` —— 记虚拟键码，用来确认
+   *     "键盘到底有没有到窗口"（`0xE5` = VK_PROCESSKEY 表示已交给 IME）；
+   *   · `WM_CHAR` —— 只记 `wparam`（码位），**英文能打进来**时应当出现。
+   *
+   * # 隐私
+   *
+   * **只记消息类型、标志位与键码，不记任何用户输入内容**：
+   * `WM_IME_COMPOSITION` 只记 lparam 的 `GCS_*` 标志，不去取合成字符串。
+   * 日志上限 20000 行，落在 `%TEMP%\sourin_ime.log`。
+   *
+   * ⚠️ 绝不 return / 吞消息，全部原样交回 `CallWindowProcW`。
+   */
+  switch (message) {
+    case WM_IME_SETCONTEXT:
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS: {
+      /*
+       * ★★★ 2026-10-14（CR #27）：`ImmGetContext` 必须配对 `ImmReleaseContext`
+       *
+       * # 缺陷（CR 指出，属实）
+       * ```text
+       * Win32 契约：每次 `ImmGetContext(hwnd)` 之后都要 `ImmReleaseContext(hwnd, himc)`。
+       * 这里原来只取不还 —— 而本分支在**每次** WM_SETFOCUS / WM_KILLFOCUS /
+       *   WM_IME_SETCONTEXT 都会跑 ⇒ 泄漏随焦点切换**持续累积**。
+       * （另两处见 `MaybeSubclassChild`，同样已配对。）
+       * ```
+       * ⚠️ 这里只是为了**打印**一个句柄值 ⇒ 取完立刻还，语义不变、成本可忽略。
+       */
+      HIMC trace_ctx = ::ImmGetContext(child);
+      ImeTrace("child %s wparam=%llu ctx=%p", ImeMsgName(message),
+               static_cast<unsigned long long>(wparam),
+               static_cast<void*>(trace_ctx));
+      if (trace_ctx != nullptr) {
+        ::ImmReleaseContext(child, trace_ctx);
+      }
+      break;
+    }
+    case WM_IME_STARTCOMPOSITION:
+    case WM_IME_ENDCOMPOSITION:
+      ImeTrace("child %s (composition boundary)", ImeMsgName(message));
+      break;
+    case WM_IME_COMPOSITION:
+      ImeTrace("child WM_IME_COMPOSITION lparam=0x%08llX%s%s%s",
+               static_cast<unsigned long long>(lparam),
+               (lparam & GCS_RESULTSTR) ? " RESULTSTR" : "",
+               (lparam & GCS_COMPSTR) ? " COMPSTR" : "",
+               (lparam & GCS_CURSORPOS) ? " CURSORPOS" : "");
+      break;
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+      // WM_KEYDOWN/SYSKEYDOWN: log ONLY whether the key was handed to IME
+      //   (VK_PROCESSKEY=0xE5). Do NOT log the vk code itself --
+      //   it can reconstruct most ASCII input (CR #27, CWE-532).
+      ImeTrace("child %s (key event, isProcessKey=%d)", ImeMsgName(message),
+               static_cast<unsigned long long>(wparam) == 0xE5 ? 1 : 0);
+      break;
+    case WM_CHAR:
+      // WM_CHAR: do NOT log the code point -- that IS the typed character
+      //   (incl. passwords). Only the event matters for this diagnosis.
+      ImeTrace("child WM_CHAR (char delivered, value not logged)");
+      break;
+    default:
+      break;
+  }
+
   if (message == WM_NCHITTEST) {
     HWND parent = ::GetAncestor(child, GA_ROOT);
     if (parent != nullptr && parent != child && !IsMaximizedWindow(parent) &&
@@ -1968,6 +2134,84 @@ LRESULT CALLBACK SourinChildWndProc(HWND child,
 }
 
 /// 幂等地给 child 装子类化（见 SourinChildWndProc 上方长注释）
+///
+/// ======================================================================
+/// ★★★ 2026-10-13：IME 取证与"上下文关联"的**如实结论**
+/// ======================================================================
+///
+/// # 一、被推翻的旧结论（写在这里是为了不再重犯）
+///
+/// ```text
+/// 旧版注释曾断言「子窗口没有 IME 上下文，所以打不了中文」，
+/// 依据是外挂探针读到 `ImmGetContext(child) == 0`。
+///
+/// ⚠️ 那个 0 **完全读不出结论**：`ImmGetContext` 只在**同一线程**里
+///    才有意义；跨进程读别人的窗口一律返回 0。
+///    对照实验（`.probe/ops/_cap14.cs`）：本进程自建窗口 → 非 0；
+///    跨进程读对方窗口（**含系统的 CoreWindow**）→ 全是 0。
+/// ⇒ 跨进程的 0 是"读不到"，不是"没有"。
+/// ```
+///
+/// # 二、同线程取到的真值（`.probe/ops/_cap13.cs`，实机 stderr）
+///
+/// ```text
+/// [IME] child=00000000003D218A ctx=000000000174146D created=0 assoc=1
+///       verify=000000000174146D            @2516 ms
+/// WM_IME_SETCONTEXT wparam=1               @3049 ms
+/// WM_SETFOCUS wparam=0                     @3058 ms
+/// ```
+///
+/// 三件事同时成立：
+///   ① `created=0` ⇒ 上下文**本来就存在**，我们一个都没新建；
+///   ② `assoc=1`  ⇒ `ImmAssociateContextEx` 返回成功；
+///   ③ `verify=` 与 `ctx=` **相等** ⇒ 关联读回一致。
+/// 再加 `WM_IME_SETCONTEXT wparam=1`：**IME 确实把 FLUTTERVIEW
+/// 当成了输入目标**。
+///
+/// ⇒ 「上下文没挂上」这条假设**已被实测推翻**。
+///
+/// # 三、`ImmAssociateContextEx` 在这里是**成功的空操作**
+///
+/// ```text
+/// 上游 flutter/flutter#190042 的后续结论与我们完全一致：
+///   · ImmAssociateContextEx(..., 0) 与 IACE_DEFAULT **都返回成功**，
+///     但 HIMC / TSF compartment 状态**不变**；
+///   · 记者实测 474 条 WM_KEYDOWN、**零条合成消息**；
+///   · 草稿 PR #190043（自己新建 HIMC 再挂）**同样无效**；
+///   · issue 最后因缺少信息被 bot 关闭，**上游至今未修**。
+/// ⇒ 在 TSF 形态的 IME（如微软拼音）下，IMM32 这套 associate 调用
+///   对"IME 要不要开始合成"**没有决定权**。
+/// ```
+///
+/// ⚠️ 因此下面这段代码**修不了中文输入**。保留它的理由只有两条，
+///    都不是"它是解药"：① 幂等、零副作用；② 在**旧式 IMM32 输入法**
+///    （非 TSF）上它仍可能有用。**真正的判据是日志，不是这段代码。**
+///
+/// # 四、还站得住的疑点（未被证实，也没被推翻）
+///
+/// ```text
+/// Flutter 引擎把 FLUTTERVIEW 建在 **HWND_MESSAGE** 父窗口下
+/// （`fw_flutter_window.cc:489-492` InitializeChild），之后才
+/// `SetParent` 到顶层窗口。挂在 HWND_MESSAGE 下的窗口是否错过了
+/// 窗口创建期那套 IME 初始化 —— 目前**只有代码依据，没有实测证据**。
+///
+/// 注意：英文走纯 `WM_CHAR`、不经 IME，所以「能打英文」**不能**
+///       反证 IME 是好的。
+/// ```
+///
+/// # 五、下一步唯一有判定力的实验
+///
+/// ```text
+/// 让 Owner 在搜索框里**真实打一次中文**，看 %TEMP%\sourin_ime.log：
+///   · 有 WM_KEYDOWN(vk=0xE5) 却**没有** WM_IME_STARTCOMPOSITION
+///     ⇒ 按键到了窗口，但 IME 没开始合成（IME/TSF 侧）；
+///   · 有 WM_IME_COMPOSITION 但界面无反应
+///     ⇒ 合成有，是 Flutter 框架/引擎没把结果交给 EditableText。
+/// 两条分支的修法完全不同，所以**必须先把这一条测出来**。
+/// ```
+///
+/// ⚠️ 失败不致命（只是打不了中文），所以**不抛**、只记一条日志，
+///    与既有"宁可不修缩放也不破坏鼠标输入"的克制一致。
 void MaybeSubclassChild(HWND parent, HWND child) {
   (void)parent;
   if (child == nullptr) {
@@ -1985,6 +2229,78 @@ void MaybeSubclassChild(HWND parent, HWND child) {
     return;
   }
   ::SetPropW(child, L"SOURIN_ORIG_WNDPROC", reinterpret_cast<HANDLE>(old));
+
+  /*
+   * -- IME：记录真值 + 幂等关联（见上面那段长注释）--
+   *
+   * ⚠️ 顺序不能提前：必须紧跟在 SetWindowLongPtrW 之后、且只做一次
+   *    （本函数开头已有属性哨兵，所以天然幂等）。
+   *
+   * ⚠️⚠️ 这段代码**不修中文输入**，别把它当解药（理由见上方长注释
+   *    第三段：上游 #190042 已证明 `ImmAssociateContextEx` 在 TSF
+   *    形态的 IME 下是"返回成功但什么都不改"的空操作）。
+   *
+   * ⚠️ 这里**不做**"读到旧上下文就原样恢复"的分支：那是我上一版
+   *    基于已被推翻的假设写的 —— 它会让"本来有、但我们不确定还能不能用"
+   *    的情况直接放弃修复。现在是"显式再关联一次 + 读回复验 + 记日志"，
+   *    关联自己是幂等的，所以对本来正常的窗口零风险。
+   */
+  /*
+   * ★★★ 2026-10-14（CR #27）：三处 `ImmGetContext` **取完必须还**
+   *
+   * # 缺陷（CR 指出，属实）
+   * ```text
+   * ① 本函数里两次 `ImmGetContext`（下面 ime_ctx 与 verify）都没配对
+   *    `ImmReleaseContext` ⇒ 泄漏。本函数在每次子窗口挂载时跑，累积。
+   * ② 更细的一处：`created && verify != ime_ctx` 时销毁了**自建**的上下文，
+   *    但**上一行已经把它关联给窗口**了 ——
+   *    经 CR 提醒核对 Win32 语义：`ImmAssociateContextEx` 失败时不会建立关联，
+   *    所以"没挂上就销毁"是对的；但**读回用的那个 handle 同样要还**。
+   * ```
+   * ⚠️ 本函数**不做**"关联后释放"——`ImmAssociateContextEx` 要求传入的
+   *    HIMC 在关联期间有效（它不是"借一下"的语义）。自建的那个由窗口持有，
+   *    窗口销毁时系统回收；我们**不**在此销毁它（只销毁"没挂上"的那个）。
+   */
+  HIMC ime_ctx = ::ImmGetContext(child);
+  const bool created = (ime_ctx == nullptr);
+  if (created) {
+    // ⚠️ 自建的不是"取来的" ⇒ 不需要 ReleaseContext（下面分支各自处置）
+    ime_ctx = ::ImmCreateContext();
+  }
+  if (ime_ctx != nullptr) {
+    // IACE_DEFAULT：把默认的 IME 上下文关联给这个窗口
+    const BOOL assoc = ::ImmAssociateContextEx(child, ime_ctx, IACE_DEFAULT);
+    // ★ 读回复验：这是**同线程**真值（跨进程探针读 ImmGetContext 恒为 0）
+    HIMC verify = ::ImmGetContext(child);
+    if (created && verify != ime_ctx) {
+      // 没挂上 ⇒ 销毁我们建的那个（否则纯泄漏）；已挂上则由窗口持有
+      ::ImmDestroyContext(ime_ctx);
+    }
+    // ★ CR #27：读回的这个 handle 也要还（取一次还一次）
+    if (verify != nullptr) {
+      ::ImmReleaseContext(child, verify);
+    }
+    ImeTrace("assoc child=%p ctx=%p created=%d assoc=%d verify=%p",
+             child, static_cast<void*>(ime_ctx), created ? 1 : 0, assoc ? 1 : 0,
+             static_cast<void*>(verify));
+  } else {
+    // ⚠️ 2026-10-14（CI 实测 C4566）：**字符串字面量里不放中文**
+    //   MSVC 在非 936 代码页下会报 C4566（而本仓开了 /WX）。
+    //   中文说明放**注释**里（注释不参与编码检查）。
+    ImeTrace("assoc: ImmGetContext/ImmCreateContext both null "
+             "(chinese input may be unavailable)");
+    return;  // ← 没有 ctx 可放，且上面两次取都失败（无 handle 需释放）
+  }
+  /*
+   * ⚠️ 若 ime_ctx 是**取来的**（created == false）⇒ 这是我们从系统借的，
+   *    用完必须还。而"还"会不会解除已建立的关联？
+   *    经核对：`ImmReleaseContext` 只释放**这次取用**，不动
+   *    `ImmAssociateContextEx` 建立的**关联**（两者是不同层面的东西）。
+   * ⇒ 所以要还。
+   */
+  if (!created) {
+    ::ImmReleaseContext(child, ime_ctx);
+  }
 }
 
 /// 可选：关闭 DWM 的非客户区渲染（A/B 复测用，默认不动）

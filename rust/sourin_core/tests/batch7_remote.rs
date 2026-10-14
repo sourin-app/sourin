@@ -351,7 +351,7 @@ async fn toggle_favorite_matches_original_semantics() {
 
     // 第一次：新建 → favorited = true
     let f = cr::toggle_favorite(
-        &st, "cycani", "1", "剧A".into(), None, Some("series".into()), None,
+        &st, "srca", "1", "剧A".into(), None, Some("series".into()), None,
     )
     .await
     .expect("toggle 1");
@@ -365,7 +365,7 @@ async fn toggle_favorite_matches_original_semantics() {
 
     // ★ 第二次：**不切换**（原版行为 —— 保持 favorited=true）
     let f2 = cr::toggle_favorite(
-        &st, "cycani", "1", "剧A".into(), None, None, None,
+        &st, "srca", "1", "剧A".into(), None, None, None,
     )
     .await
     .expect("toggle 2");
@@ -377,7 +377,7 @@ async fn toggle_favorite_matches_original_semantics() {
 
     // 元信息会被更新
     let f3 = cr::toggle_favorite(
-        &st, "cycani", "1", "剧A改名".into(), None, Some("movie".into()), Some(true),
+        &st, "srca", "1", "剧A改名".into(), None, Some("movie".into()), Some(true),
     )
     .await
     .expect("toggle 3");
@@ -388,7 +388,7 @@ async fn toggle_favorite_matches_original_semantics() {
     assert!(f3.favorited, "favorited 仍保持不变");
 
     // 真正取消收藏要用 set_favorite(on=false)
-    let f4 = cw::set_favorite(&st, "cycani", "1", false, None, None, None, None)
+    let f4 = cw::set_favorite(&st, "srca", "1", false, None, None, None, None)
         .await
         .expect("set_favorite(false)");
     println!("✓ 用 set_favorite(on=false) 取消: favorited={}", f4.favorited);

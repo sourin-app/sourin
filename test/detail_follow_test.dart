@@ -437,8 +437,8 @@ expect(
        * 原版 `DetailView.vue:588`         * ```vue
        * <span v-for="b in detail.badges" class="chip chip--brand">{{ b }}</span>
        * ```
-       * `badges` 是 *后端拼好的 *（cycani 插件拼「连载中 / 更新至 12 集 / 9.2 分」，
-       * 见 `plugins/cycani.js:499-518`），顺序与措辞都是产品决定　        *
+       * `badges` 是 *后端拼好的 *（如某动画站的插件拼「连载中 / 更新至 12 集 / 9.2 分」，
+       * 见对应插件的源码），顺序与措辞都是产品决定　        *
        * 而 `models.dart` 的 `MediaDetail` **没有 badges 字段** →
 * 我们这边那排角标**一个都没显示过**　        */
       expect(
@@ -1133,13 +1133,13 @@ group / section 概念　        * 用户要求「操作逻辑必须与原版一
     /*
      * ⚠️ 这里的 JSON **逐字段抄自 Rust 源码**，不是我自己编的       *
      * ```rust
-     * // rust/sourin_core/src/providers/cctv.rs:947-962 —— 央视最 2 个源
+     * // 某直播源 Provider 的字段形状（原实现已移出仓库）—— 直播侧 2 个源
      * sources.push(PlaySource { code: "official".into(),
      *                           title: "官方 HLS".into(), count: 1, nested: vec![] });
      * sources.push(PlaySource { code: "cdn".into(),
      *                           title: "CDN 直连".into(), count: 4, nested: vec![] });
      *
-     * // rust/sourin_core/src/providers/cycani.rs:906-924 —— 后端拼好的 badges
+     * // 某动画源 Provider 的字段形状（原实现已移出仓库）—— 后端拼好的 badges
      * badges.push(format!("共 {n} 集
 ));
      * badges.push(if completed { "已完组 .into() } else { "连载中 .into() });

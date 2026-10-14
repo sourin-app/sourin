@@ -132,7 +132,7 @@ class _SkipMarkersSettingsPageState extends State<SkipMarkersSettingsPage> {
   ///    而改前二级页**根本没有列表** ⇒ 他就是要把列表铺出来再配搜索
   /// ③ 排除"搜设置项"：本页只有 1 个区块 + 1 个按钮，没有可搜项集
   /// ```
-  /// ⇒ 搜**作品**。标题为主，provider 兜底（用户可能记得"是 cycani 设的"）。
+  /// ⇒ 搜**作品**。标题为主，provider 兜底（用户可能记得"是 srca 设的"）。
   ///
   /// ⚠️ 与 `episode_strip.dart` 的 `_query` 同一范式（单一数据源：
   ///    过滤逻辑集中在 `_shown`，控件只报 `onChanged`）。

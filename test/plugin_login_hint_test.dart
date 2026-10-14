@@ -201,37 +201,6 @@ String jsCodeOnly(String src) {
     });
   });
 
-  group('③ 插件侧：次元城必须声明并实现', () {
-
-    test('★★★ cycani.js 声明 canAutoLogin: true 且真的实现了两个方法', () {
-      final raw = File('rust/sourin_core/plugins/cycani.js').readAsStringSync();
-      final js = jsCodeOnly(raw);
-
-      /*
-       * ⚠️ 断言**剥注释后**的源码 —— 见 `jsCodeOnly` 的说明。
-       *    不剥的话，把声明注释掉测试照样绿（已实测复现）。
-       */
-      expect(
-        js.contains('canAutoLogin: true,'),
-        isTrue,
-        reason: '★★★ 不声明能力位，UI 就继续显示「可能需要验证码」——'
-            'Owner 报的 bug 原封不动回来。'
-            '（断言剥注释后的代码：注释里写一遍**不算**）',
-      );
-      expect(js.contains('async canAutoLogin()'), isTrue,
-          reason: '★ 声明必须与**真实实现**相符（不然是空头支票）');
-      expect(js.contains('async autoLogin()'), isTrue,
-          reason: '★ 同上');
-      // ★ 实现体里必须真的重新登录（不是空壳）
-      expect(
-        RegExp(r'async autoLogin\(\)[\s\S]{0,300}?await login\(').hasMatch(js),
-        isTrue,
-        reason: '★ `autoLogin()` 必须真的调 `login()` —— '
-            '空壳实现会让"正在自动重新登录"变成谎言',
-      );
-    });
-  });
-
   group('④ 能力位必须真的接到界面上（防"声明了但没人用"）', () {
     test('★★ 面板的 expired 分支必须走 `expiredHintFor(_caps)`', () {
       /*

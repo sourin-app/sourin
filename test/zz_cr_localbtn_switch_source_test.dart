@@ -21,7 +21,14 @@
 // ```text
 // A① 本地页 + 有网 + 播放器已报告这一集  ⇒ 换源**不画**（修前：红 / 修后：绿）
 // A② 本地页 + 有网 + 播放器还没报告      ⇒ 换源**不画**（修前：红 / 修后：绿）
-//    两组都要 收藏/追更/下载 仍在 —— 证明"只是少了换源"，不是整行被藏了
+//    两组都要「下载」仍在 —— 证明"只是少了那几枚"，不是整行被藏了
+//
+// ★★★ 2026-10-13（Owner）：A①② 原本还要 收藏/追更 仍在，**现已反转** ——
+//     Owner 原话（逐字）：「本地播放详情页去掉 收藏 追更 按钮」。
+//     理由：这两枚需要 `provider:id`，而本地那一对是 `(local, 绝对路径)`，
+//     画出来点下去只会往收藏表里塞一条永远打不开的假条目。
+//     ⇒ A①② 改为断言这两枚 **findsNothing**。
+//     ⚠️ 它们**与换源是两条独立判据**：换源那条（`_hasLocalPlayable`）不变。
 // B  本地页 + 没网                      ⇒ 换源不画（旧行为：整行不画，本来就绿）
 // C  在线页 + 无本地文件                ⇒ 换源**画**（阳性对照：证明 A 的"找不到"不是行没了）
 // D  正在下载、已有可播片段             ⇒ 换源不画；done=0 的双胞胎 ⇒ 换源画
@@ -261,9 +268,15 @@ void main() {
       await _mountLocal(t, online: true);
       debugPrint('[LOCALBTN] A① online=true currentEpisodeId=$_ep01 ' + _row(t));
 
-      expect(find.text('收藏'), findsOneWidget, reason: '★ 操作行本身必须还在');
-      expect(find.text('追更'), findsOneWidget, reason: '★ 操作行本身必须还在');
-      expect(find.text('下载'), findsOneWidget, reason: '★ 操作行本身必须还在');
+      expect(find.text('下载'), findsOneWidget,
+          reason: '★★ Owner 2026-10-14：「**有网**的时候才显示 下载按钮」'
+              '⇒ 本地 + 有网 ⇒ 下载**必须画**（这条同时挡"把下载也一并藏掉"的过度修复）');
+      expect(find.text('收藏'), findsNothing,
+          reason: '★★★ 本地页不画「收藏」（Owner 2026-10-13）—— '
+              '本地条目是 (local, 绝对路径)，落进收藏表就是一条打不开的假记录。'
+              '★ 与"有没有网"无关：本地页**永远**不画这两枚。');
+      expect(find.text('追更'), findsNothing,
+          reason: '★★★ 同理，本地页不画「追更」');
       expect(find.text('换源'), findsNothing,
           reason: '★★★ 缓存到本地就不要显示换源按钮了（Owner 原话）—— '
               '这一集磁盘上就有 $_ep01，换源无处可落');
@@ -273,7 +286,12 @@ void main() {
       await _mountLocal(t, online: true, currentEpisodeId: null);
       debugPrint('[LOCALBTN] A② currentEpisodeId=null ' + _row(t));
 
-      expect(find.text('收藏'), findsOneWidget, reason: '★ 操作行本身必须还在');
+      expect(find.text('下载'), findsOneWidget,
+          reason: '★ 操作行本身必须还在（本地 + 有网 ⇒ 下载画，见 A① 的长注释）');
+      expect(find.text('收藏'), findsNothing,
+          reason: '★★★ 本地页不画「收藏」（Owner 2026-10-13）');
+      expect(find.text('追更'), findsNothing,
+          reason: '★★★ 同理，本地页不画「追更」（与收藏同一类：要 provider:id）');
       expect(find.text('换源'), findsNothing,
           reason: '★★★ 进的就是本地页（本页在播一个本地文件），'
               '而"播放器还没报告"不等于"没有当前集"');
@@ -285,6 +303,26 @@ void main() {
 
       expect(find.text('换源'), findsNothing, reason: '★ 没网时整行不画（Owner ⑬）');
       expect(find.text('收藏'), findsNothing, reason: '★ 没网时整行不画（Owner ⑬）');
+      /*
+       * ★★★ 2026-10-14（Owner 追问后的**最终口径**）：
+       * ```text
+       * Owner 原话：
+       * > 有网的时候才显示 下载按钮,没网还是不显示
+       * ```
+       * ⇒ 三枚按钮的判据**不是同一条**，必须分清：
+       * ```text
+       * 收藏 / 追更  ⇒ 本地页**永远**不画（与有没有网无关 ——
+       *                它们要 provider:id，本地那对是 (local, 绝对路径)，
+       *                画出来只会塞一条打不开的假记录）
+       * 下载         ⇒ **有网才画**（没网下载本来也没意义）★ 本条钉这个
+       * 换源         ⇒ 另有判据（_hasLocalPlayable，见 A/D 组）
+       * ```
+       * ⚠️ 反面：若有人把「收藏/追更」的 `!localMode` 顺手也套到「下载」上
+       *    ⇒ 本地 + 有网时下载会消失 ⇒ 红。
+       */
+      expect(find.text('下载'), findsNothing,
+          reason: '★★ Owner 2026-10-14：「有网的时候才显示 下载按钮,'
+              '没网还是不显示」⇒ 本地 + 没网时下载**必须不画**。');
     });
 
     testWidgets('★C 在线页 + 无本地文件 ⇒ 换源照画（阳性对照）', (t) async {

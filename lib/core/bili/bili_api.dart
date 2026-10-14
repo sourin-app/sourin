@@ -1,11 +1,11 @@
 
 // ═══════════════════════════════════════════════════════════════════════
-//  哔哩哔哩弹幕 API 客户端（免登录）—— task-28
+//  外部视频源弹幕 API 客户端（免登录）—— task-28
 // ═══════════════════════════════════════════════════════════════════════
 //
 // # 这个文件解决什么
 //
-// 用户原话：「支持一下 哔哩哔哩填入链接导入弹幕，并且自动绑定剧集和
+// 用户原话：「支持一下 外部视频源填入链接导入弹幕，并且自动绑定剧集和
 // 自动更新弹幕」。
 //
 // 三条端点（全部免登录、全部已实测）：
@@ -62,9 +62,9 @@
 //
 // pubspec.yaml 里没有 http / crypto / xml（已核对）。所以：
 //   · HTTP  → dart:io 的 HttpClient
-//   · XML   → 本文件自带的扫描器（B 站这个 XML 的形状极固定，见下）
+//   · XML   → 本文件自带的扫描器（某视频站这个 XML 的形状极固定，见下）
 //
-// # B 站弹幕 XML 的形状（实测 1200 条的样本）
+// # 某视频站弹幕 XML 的形状（实测 1200 条的样本）
 //
 //   整个文件**一行到底**（换行数 = 0），开头是
 //   <?xml version="1.0" encoding="UTF-8"?><i><chatserver>...<d p="...">正文</d>
@@ -72,13 +72,13 @@
 //   所以**不能**按行切，必须整串扫描。正文里可能出现任何字符，
 //   包括引号、尖括号（已实体转义）。
 //
-// # p 属性是 9 段，与 dandanplay 的 4 段**不同**
+// # p 属性是 9 段，与 弹弹play 的 4 段**不同**
 //
 //   时间秒,模式,字号,十进制颜色,时间戳,池,hash,弹幕ID,权重
 //   0.60100,4,25,15138834,1604742895,0,9e5adeaa,40685126698926083,10
 //
 //   ⚠️ 颜色在第 4 段（下标 3）。danmaku.dart:178 的 DanmakuComment.parse
-//   读的是 parts[2]（那是 dandanplay 的布局）⇒ **绝不能**把 B 站的 p 丢给它。
+//   读的是 parts[2]（那是 弹弹play 的布局）⇒ **绝不能**把 某视频站的 p 丢给它。
 //   本文件自己解析，然后直接构造 DanmakuComment(...)。
 //
 //   模式直方图（该 1200 条样本）：{"1":815,"4":68,"5":309,"7":8}
@@ -90,7 +90,7 @@ import 'dart:io';
 
 import '../danmaku.dart';
 
-/// 移动端 UA —— 实测能过 B 站的 UA 校验。
+/// 移动端 UA —— 实测能过 某视频站的 UA 校验。
 const String kBiliUserAgent =
     'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
     '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
@@ -177,7 +177,7 @@ BiliRef? parseBiliInput(String raw) {
   final s = raw.trim();
   if (s.isEmpty) return null;
 
-  // 1) BV 号。B 站的 BV 号是 BV + 10 位 base58 字符。
+  // 1) BV 号。某视频站的 BV 号是 BV + 10 位 base58 字符。
   final bv = RegExp(r'BV[0-9A-Za-z]{10}').firstMatch(s);
   if (bv != null) {
     return BiliRef(bvid: bv.group(0)!, page: _pageOf(s), raw: s);
@@ -345,7 +345,7 @@ class BiliHttpTrace {
   String toString() => line;
 }
 
-/// B 站 API 客户端。**用完记得 close()**。
+/// 某视频站 API 客户端。**用完记得 close()**。
 class BiliApi {
   BiliApi({
     HttpClient? client,
@@ -433,7 +433,7 @@ class BiliApi {
     final r = await _get(uri, referer: referer);
     if (r.status < 200 || r.status >= 300) {
       throw DanmakuException(
-        'B 站接口返回 HTTP ${r.status}',
+        '某视频站接口返回 HTTP ${r.status}',
         statusCode: r.status,
         uri: uri.toString(),
       );
@@ -444,7 +444,7 @@ class BiliApi {
       decoded = jsonDecode(text);
     } catch (e) {
       throw DanmakuException(
-        'B 站接口返回的不是 JSON',
+        '某视频站接口返回的不是 JSON',
         statusCode: r.status,
         body: text.length > 2000 ? text.substring(0, 2000) : text,
         uri: uri.toString(),
@@ -452,7 +452,7 @@ class BiliApi {
     }
     if (decoded is! Map) {
       throw DanmakuException(
-        'B 站接口返回的 JSON 不是对象',
+        '某视频站接口返回的 JSON 不是对象',
         statusCode: r.status,
         uri: uri.toString(),
       );
@@ -461,7 +461,7 @@ class BiliApi {
     final code = _int(m['code']);
     if (code != 0) {
       throw DanmakuException(
-        'B 站接口报错：${_str(m['message'], fallback: '未知错误')}',
+        '某视频站接口报错：${_str(m['message'], fallback: '未知错误')}',
         statusCode: r.status,
         errorCode: code,
         errorMessage: _str(m['message']),
@@ -474,7 +474,7 @@ class BiliApi {
 
   // ── 搜索 ───────────────────────────────────────────────────────────
 
-  /// 按关键词搜 B 站视频 —— 给"知道要看什么、但不想自己去翻链接"的用户。
+  /// 按关键词搜 某视频站视频 —— 给"知道要看什么、但不想自己去翻链接"的用户。
   ///
   /// 端点 `/x/web-interface/search/type?search_type=video`，
   /// **不传 `page_size`**（实测加了会 412），每页固定 20 条。
@@ -682,11 +682,11 @@ class BiliFetchResult {
 ///
 /// 清洗的三件事（都是线上响应里真实存在的坑，见 [parseBiliSearchItems]）：
 /// ```text
-/// title    B 站把命中的关键词包成 <em class="keyword">…</em> ⇒ 必须剥掉，
+/// title    某视频站把命中的关键词包成 <em class="keyword">…</em> ⇒ 必须剥掉，
 ///          否则界面上会出现一串 HTML 标签
 /// pic      线上是 "//i0.hdslb.com/..." ⇒ 补 https:，否则 Image 加载不出来
 /// duration 线上是 "m:ss" / "mm:ss" 字符串（个位数秒会写成 "1:2"）⇒ 原样保留，
-///          不要解析成秒再格式化（会变成 "01:02"，与 B 站自己显示的不一致）
+///          不要解析成秒再格式化（会变成 "01:02"，与 某视频站自己显示的不一致）
 /// ```
 class BiliSearchItem {
   const BiliSearchItem({
@@ -719,7 +719,7 @@ class BiliSearchItem {
   /// 时长，**原样**保留线上给的 "mm:ss" 字符串
   final String duration;
 
-  /// 播放量（B 站给的是原始数字）
+  /// 播放量（某视频站给的是原始数字）
   final int play;
 
   /// 分区名（"电子竞技" / "手机游戏" …）
@@ -748,7 +748,7 @@ class BiliSearchItem {
 /// ⚠️ 两种"看起来正常其实不是数据"的响应都要当**空结果**处理，不能抛：
 /// ```text
 /// ① 风控页：HTTP 200 + text/html（Referer 不对时就是这样）
-///    —— 走到这里时已经由 DandanplayClient 的 JSON 解析拦下，抛的是
+///    —— 走到这里时已经由 ExternalDanmakuClient 的 JSON 解析拦下，抛的是
 ///       "弹幕服务返回的是一张网页"，不是本函数的责任；
 /// ② data 缺失 / result 不是 List（例如 code!=0 的降级响应）⇒ 返回空列表。
 /// ```
@@ -795,7 +795,7 @@ Object? _tryJson(String s) {
 
 final RegExp _reEmTag = RegExp(r'</?em[^>]*>', caseSensitive: false);
 
-/// 剥掉标题里的 `<em class="keyword">` / `</em>`（B 站用来高亮命中词）
+/// 剥掉标题里的 `<em class="keyword">` / `</em>`（某视频站用来高亮命中词）
 ///
 /// 只认 `<em …>` / `</em>` 这两种标签，**不做**通用 HTML 剥离 ——
 /// 标题里合法的 `<` / `>`（例如「1<2>3」）不该被吃掉。
@@ -828,7 +828,7 @@ class _Raw {
 ///
 /// 为什么不用 zlib.decode：实测它抛
 /// FormatException: Filter error, bad data
-/// （.probe/bili/recon_deflate.dart 的 C 路），因为 B 站发的是 raw deflate。
+/// （.probe/bili/recon_deflate.dart 的 C 路），因为 某视频站发的是 raw deflate。
 ///
 /// RawZLibFilter 的签名（dart-sdk/lib/io/data_transformer.dart:450）：
 ///   List<int>? processed({bool flush = true, bool end = false});
@@ -853,7 +853,7 @@ List<int> rawInflate(List<int> data) {
 /// <d p="...">正文</d> —— 整串扫描，不依赖换行。
 final RegExp _reDanmakuTag = RegExp(r'<d p="([^"]*)">([\s\S]*?)</d>');
 
-/// 把 B 站弹幕 XML 解析成 DanmakuComment。
+/// 把 某视频站弹幕 XML 解析成 DanmakuComment。
 ///
 /// · 结果按 time 升序（排版器 DanmakuTrackAllocator.layout 要求已排序）
 /// · 时间非法 / 正文为空的条目直接跳过
@@ -886,12 +886,12 @@ List<DanmakuComment> parseBiliDanmakuXml(
 
 /// 解析单条 <d>。
 ///
-/// p 的 9 段（B 站）：
+/// p 的 9 段（某视频站）：
 ///   0 时间(秒)  1 模式  2 字号  3 颜色(十进制 RGB)  4 时间戳
 ///   5 池        6 hash  7 弹幕ID(dmid)             8 权重
 ///
 /// ⚠️ 颜色在**下标 3**。danmaku.dart 的 DanmakuComment.parse 读下标 2
-/// （那是 dandanplay 的 4 段布局），所以这里**不能**复用它 —— 自己解析后
+/// （那是 弹弹play 的 4 段布局），所以这里**不能**复用它 —— 自己解析后
 /// 直接构造 DanmakuComment。
 DanmakuComment? parseBiliDanmakuEntry({
   required String p,
@@ -911,7 +911,7 @@ DanmakuComment? parseBiliDanmakuEntry({
 
   final mode = int.tryParse(parts[1].trim()) ?? 1;
 
-  // 颜色：十进制 RGB。0 或非法值一律按白色（B 站自己也是这么兜的）。
+  // 颜色：十进制 RGB。0 或非法值一律按白色（某视频站自己也是这么兜的）。
   var color = int.tryParse(parts[3].trim()) ?? 0xFFFFFF;
   if (color <= 0) {
     color = 0xFFFFFF;
@@ -926,7 +926,7 @@ DanmakuComment? parseBiliDanmakuEntry({
     dmid = (t * 1000).round() ^ (body.hashCode & 0xFFFF);
   }
 
-  // 用户 id：B 站的 p 里只有 hash（下标 6），拿它当 uid。
+  // 用户 id：某视频站的 p 里只有 hash（下标 6），拿它当 uid。
   final uid = parts.length > 6 ? parts[6].trim() : '';
 
   return DanmakuComment(
@@ -939,7 +939,7 @@ DanmakuComment? parseBiliDanmakuEntry({
   );
 }
 
-/// 反转义 XML 实体。B 站正文里常见 &amp; &lt; &gt; &quot; &#39;。
+/// 反转义 XML 实体。某视频站正文里常见 &amp; &lt; &gt; &quot; &#39;。
 String unescapeXml(String s) {
   if (!s.contains('&')) return s;
   var out = s

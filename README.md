@@ -17,8 +17,8 @@ Windows · macOS · Android · Android TV
 
 ## 这是什么
 
-「源影」是一个**跨端视频聚合客户端**：把多个内容源（CMS 站点、内置站点、B 站、
-Emby、IPTV 直播）聚合成一个界面，统一搜索、收藏、追更、播放与下载。
+「源影」是一个**跨端视频聚合客户端**：把多个内容源（CMS 站点、内置站点、外部视频站、
+Emby、公共直播源）聚合成一个界面，统一搜索、收藏、追更、播放与下载。
 
 这个仓库是它的 **Flutter 重写版**，取代了最初的 Tauri + Vue 实现。重写的动机是
 **播放内核**：原版跑在 WebView2 上，走 Media Foundation 解码，而 Windows 默认
@@ -58,10 +58,9 @@ Flutter 版用 **media_kit + libmpv**（自带完整 FFmpeg，完全不碰 Media
 | **跨源搜索** | 一次搜索并发打全部源，**边搜边出**（流式返回，不等最慢的那个） |
 | **跨源换源** | 同一部剧在别的源上也能看 —— 按标题相似度排序，带进度迁移 |
 | **TVBox 直连** | 直接填 TVBox 配置**地址**或 JSON，内部解析成源，**不需要转换脚本** |
-| **B 站** | 二维码扫码登录、搜索、弹幕（含分 P）、自动更新 |
 | **Emby / Jellyfin** | 登录、媒体库、直接播放 |
-| **IPTV 直播** | iptv-org 频道表、分组、上下键切台 |
-| **CCTV** | 央视栏目与直播（含 DRM 流的「仅音频可播」如实提示） |
+| **外部弹幕** | 从外部站导入弹幕（含分 P 绑定、自动更新） |
+| **直播** | 插件提供的频道表、分组、上下键切台 |
 
 ### 播放
 
@@ -70,7 +69,7 @@ Flutter 版用 **media_kit + libmpv**（自带完整 FFmpeg，完全不碰 Media
 | **内核** | libmpv（media_kit），硬解 d3d11va / MediaCodec |
 | **格式** | HEVC / H.264 / AV1、AC3 / DTS / AAC、ASS / SRT 字幕 |
 | **字幕** | 内封轨切换、外挂字幕、ASS 样式（字号/颜色/位置）、Assrt 字幕库 |
-| **弹幕** | B 站弹幕、自定义弹幕服务器、速度/透明度/密度/区域可调 |
+| **弹幕** | 外部视频站弹幕、自定义弹幕服务器、速度/透明度/密度/区域可调 |
 | **手势** | PC 与触摸两套（双击全屏、长按倍速、左右滑动跳转、上下滑音量/亮度） |
 | **控件自动隐藏** | 鼠标停手 3 秒后**顶栏与底栏一起淡出**（同一个动画源），一晃动一起回来 |
 | **画中画** | 独立窗口，可从播放页一键切出 |
@@ -430,7 +429,7 @@ Android 那个 job 默认关掉：它最慢（要 NDK + 三个 target 交叉编�
 | `dsh.danmaku.appSecret` | 字符串 | 空 | 自定义弹幕服务器的 AppSecret |
 
 > ⚠️ **`appId` / `appSecret` 目前是明文存在 `ui-prefs.json` 里**。设置页里也如实
-> 写明了这一点。只有你自己填了自定义弹幕服务器才会用到；B 站弹幕走扫码登录的
+> 写明了这一点。只有你自己填了自定义弹幕服务器才会用到；外部视频站弹幕走扫码登录的
 > cookie，不需要这两项。
 
 #### 字幕
@@ -448,7 +447,7 @@ Android 那个 job 默认关掉：它最慢（要 NDK + 三个 target 交叉编�
 | 键 | 取值 | 说明 |
 |---|---|---|
 | `dsh.srcpref.<provider>:<id>` | 源 id | 每部剧**单独记住**上次用的源。换源之后下次打开还是那个源 |
-| `dsh.bili.*` | — | B 站相关（登录态、自动更新开关与间隔、上次同步时间） |
+| `dsh.bili.*` | — | 外部视频站相关（登录态、自动更新开关与间隔、上次同步时间） |
 
 ### ② 数据目录文件
 
@@ -463,7 +462,7 @@ Android 那个 job 默认关掉：它最慢（要 NDK + 三个 target 交叉编�
 | `sync-settings.json` | WebDAV 云同步配置 | ⚠️ **密码不在这个文件里**（走系统凭据存储） |
 | `dsh-media.db` | SQLite：收藏 / 历史 / 进度 / 片头片尾 | ⚠️ 建议只读 |
 | `plugins/*.js` | 已安装的插件 | ✅ 见「插件开发」 |
-| `plugins/.data/*.json` | 插件的私有数据（如 B 站 cookie） | ⚠️ 含凭据 |
+| `plugins/.data/*.json` | 插件的私有数据（如 外部视频站 cookie） | ⚠️ 含凭据 |
 | `logs/` | 运行日志（按天） | ✅ 排查问题看这个 |
 | `mpv-cache/` | 播放缓存 | ✅ 可随时删 |
 | `clip-cache/` | 片段下载缓存 | ✅ 可随时删（设置页有「清空」） |
@@ -475,8 +474,8 @@ Android 那个 job 默认关掉：它最慢（要 NDK + 三个 target 交叉编�
 | 变量 | 说明 |
 |---|---|
 | `DATA_DIR_OVERRIDE` | 覆盖数据目录。**开发与测试必用** —— 指到临时目录就不会碰到你正在用的真实数据 |
-| `DANDANPLAY_APP_ID` | 弹弹play 官方 API 凭证（AppId）。仓库里只有空占位符，发版时构建期注入（见下发版说明）；空缺时回落到用户自填凭证 |
-| `DANDANPLAY_APP_SECRET` | 弹弹play 官方 API 凭证（AppSecret）。**敏感值** —— 只放 GitHub secrets，绝不写进仓库 |
+| `DANDANPLAY_APP_ID` | 外部弹幕服务的官方 API 凭证（AppId）。仓库里只有空占位符，发版时构建期注入（见下发版说明）；空缺时回落到用户自填凭证 |
+| `DANDANPLAY_APP_SECRET` | 外部弹幕服务的官方 API 凭证（AppSecret）。**敏感值** —— 只放 GitHub secrets，绝不写进仓库 |
 
 ```bash
 flutter build windows --release -t lib/shell.dart \
@@ -487,13 +486,13 @@ flutter build windows --release -t lib/shell.dart \
 > 里面有真实的收藏、进度、片头片尾。开发调试时一定要用 `DATA_DIR_OVERRIDE` 隔离，
 > 否则一次写探针就可能把用户数据改掉。
 
-##### 弹弹play 凭证（发版说明）
+##### 外部弹幕服务凭证（发版说明）
 
-官方弹弹play 识别（番剧/条目匹配）需要一对官方凭证：`DANDANPLAY_APP_ID` /
+外部弹幕识别（番剧/条目匹配）需要一对官方凭证：`DANDANPLAY_APP_ID` /
 `DANDANPLAY_APP_SECRET`。开源仓库里只有空占位符 —— 发版时由 GitHub Actions
-在构建期注入真值（弹弹play 官方文档「安全注意事项」允许开源客户端这么做）：
+在构建期注入真值（该服务的官方文档「安全注意事项」允许开源客户端这么做）：
 
-1. 到弹弹play 开放平台（doc.dandanplay.com/open/）申请一对 AppId / AppSecret。
+1. 到该外部弹幕服务的开放平台申请一对 AppId / AppSecret。
 2. 本仓库 **Settings → Secrets and variables → Actions** 里新增两个 secret：
    `DANDANPLAY_APP_ID` 与 `DANDANPLAY_APP_SECRET`。
 3. `.github/workflows/build.yml` 已接好通道：凭证 env 只挂在三个平台的
@@ -980,7 +979,7 @@ Flutter 版用 libmpv，**自带 FFmpeg**，理论上都支持。如果遇到黑
 
 1. 设置 → 播放与下载 → 把「硬解模式」改成 `no`（软解）试试；
 2. 看 `logs/` 里的日志，搜 `[PLAY]`；
-3. 部分源是 DRM 加密的（尤其央视），**只有音频能播** —— 这种情况界面会明确提示
+3. 部分源是 DRM 加密的（部分直播源），**只有音频能播** —— 这种情况界面会明确提示
    「仅音频可播」，不是 bug。
 
 </details>
@@ -1066,7 +1065,7 @@ sourin/
 │   │   ├── download_dir.dart   下载目录解析（按组存放）
 │   │   ├── download_queue.dart 整片下载串行队列
 │   │   ├── app_tray.dart       托盘 + 关闭确认
-│   │   └── bili/ danmaku.dart  B 站与弹幕
+│   │   └── bili/ danmaku.dart  外部视频站与弹幕
 │   └── ui/                   UI 页面与组件
 │       ├── player_page.dart    播放页（最大单文件，约 65 万字节）
 │       ├── detail_page.dart    详情页
@@ -1100,7 +1099,6 @@ sourin/
 - [forui](https://github.com/duobaseio/forui) —— 桌面风格组件库
 - [liquid_glass_widgets](https://pub.dev/packages/liquid_glass_widgets) —— 玻璃拟态
 - [rquickjs](https://github.com/DelSkayn/rquickjs) —— 插件沙箱
-- [iptv-org](https://github.com/iptv-org/iptv) —— IPTV 频道表
 
 ---
 

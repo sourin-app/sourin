@@ -233,15 +233,9 @@ impl HttpProvider {
             ));
         }
 
-        // id 不能与内置源冲突（否则会覆盖掉内置实现）
+        // id 不能为空（否则注册表里无法去重）
         if rm.id.trim().is_empty() {
             return Err(ProviderError::parse("manifest 缺少 id"));
-        }
-        if rm.id == "cctv" || rm.id == "cycani" {
-            return Err(ProviderError::new(
-                ErrorKind::Other,
-                format!("Provider id「{}」与内置源冲突，请换一个", rm.id),
-            ));
         }
 
         let manifest = ProviderManifest {
@@ -263,7 +257,7 @@ impl HttpProvider {
                 favorites: rm.capabilities.favorites,
                 timeshift: rm.capabilities.timeshift,
                 danmaku: rm.capabilities.danmaku,
-                // 登录（「游客可用 + 支持登录」这一档，供 B站这类源用）
+                // 登录（「游客可用 + 支持登录」这一档，供 某视频站这类源用）
                 login_supported: rm.capabilities.login_supported,
                 login_hint: rm.capabilities.login_hint.clone(),
                 login_needs_username: rm.capabilities.login_needs_username,

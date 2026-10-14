@@ -18,7 +18,7 @@
 //!   6 种前缀 + 3 种组合符 + 6 种插值的自研语言，官方教程标题是《从入门到入土》，
 //!   最终不得不加 `mainJs` 全代码逃生舱（其 `BookSource.kt` L99）。
 //!   → 我们**只用 JSONPath**（成熟标准），不发明新语法。
-//! - **必须支持「两级取值」**：央视就是「先取列表的 guid，再套 URL 模板」。
+//! - **必须支持「两级取值」**：某电视台就是「先取列表的 guid，再套 URL 模板」。
 //!   故 `resolve` 支持 `from_list` + `url_template` 两阶段。
 
 use crate::model::*;
@@ -634,7 +634,7 @@ impl MediaProvider for DeclarativeProvider {
             }
         }
 
-        // ★ 方式二：两级取值（央视式）
+        // ★ 方式二：两级取值（某电视台式）
         if let Some(fl) = &r.from_list {
             let mut vars = HashMap::new();
             vars.insert("id".into(), id.native.clone());

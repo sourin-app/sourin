@@ -130,7 +130,7 @@ void main() {
     test('标题如实说「本机弹弹play 拒绝了这次请求」（不许写成走了官方）', () {
       final h = DanmakuHint.of(missing403(), usedLocalSource: true);
       expect(h, isNotNull);
-      expect(h!.title, contains('本机弹弹play'));
+      expect(h!.title, contains('本机外部弹幕'));
       expect(h.title, contains('拒绝'),
           reason: '★ 本次请求打的就是本机 ⇒ 必须说「本机拒绝了这次请求」');
       expect(h.title.contains('官方 API'), isFalse,
@@ -171,18 +171,18 @@ void main() {
       expect(h, isNotNull);
       expect(h!.title, '弹幕服务没收到凭证',
           reason: '★ t100:534/551/608 逐字钉着这个标题，不许改');
-      expect(h.title, isNot(contains('本机弹弹play')),
+      expect(h.title, isNot(contains('本机外部弹幕')),
           reason: '★ 没探测到本机就不能说「检测到本机」');
     });
 
     test('正文说清两个数据源 + 保留 B 站这条路', () {
       final h = DanmakuHint.of(missing403(), usedLocalSource: false)!;
-      expect(h.text, contains('本机弹弹play'));
+      expect(h.text, contains('本机外部弹幕'));
       expect(h.text, contains('官方 API'));
       expect(h.text, contains('AppId'));
       expect(h.text, contains('AppSecret'));
       expect(h.text, contains('弹幕设置'));
-      expect(h.text, contains('哔哩哔哩弹幕'),
+      expect(h.text, contains('外部视频源弹幕'),
           reason: '★ t100:537 钉着：必须给「另一条路」');
     });
 

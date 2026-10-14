@@ -5,7 +5,7 @@
 // # 三级嵌套选择
 //
 // ```text
-// 一级：播放源   （cycani 的 play_from / 央视的 CDN）
+// 一级：播放源   （srca 的 play_from / 某电视台的 CDN）
 // 二级：剧集     （sections）
 // 三级：清晰度   （播放页的候选流切换）
 // ```
@@ -432,7 +432,7 @@ String _normalizeTitle(String raw) =>
 /// `lib/core/assrt/assrt_api.dart:276 htmlUnescape` 与
 /// `lib/core/bili/bili_api.dart:943 unescapeXml` 已经有同样的解码。
 /// 这里**不 import 它们**，因为：
-///   · 那两个是**源专属**文件（assrt 的 API / B 站的 API），
+///   · 那两个是**源专属**文件（assrt 的 API / 某视频站的 API），
 ///     详情页 import 它们是错的依赖方向（详情页不认识任何具体源）；
 ///   · 它们俩自己也互相重复（谁都不是"公共 util"）。
 /// ⇒ 本函数与 bili 那份**逐条等价**（实体表相同、顺序相同），
@@ -948,7 +948,7 @@ class _DetailPageState extends State<DetailPage> {
   /// # 为什么显示的是**站点名**而不是线路名
   ///
   /// ```text
-  /// widget.provider   = 站点（cycani / tyyszy / cctv）  ← 用户说的"源"
+  /// widget.provider   = 站点（srca / tyyszy / srcl）  ← 用户说的"源"
   /// _activeSource     = 站内的线路 code（cychub / cdn）  ← 另一层
   /// ```
   /// 用户在这个 app 的词汇里（首页 SourceBar / 设置页 / 换源弹层）
@@ -1625,11 +1625,11 @@ class _DetailPageState extends State<DetailPage> {
   ///
   /// 只读核实的证据（2026-10-09，真 SQL 查 dsh-media.db 的 progress 表）：
   /// ```text
-  /// cycani:3862        无职转生 第三季 ～到了异世界就拿出真本事～  cover=有 updated_at=1791548661356
+  /// srca:3862        无职转生 第三季 ～到了异世界就拿出真本事～  cover=有 updated_at=1791548661356
   /// hongniuzy2:150722  无职转生 第三季 ～到了异世界就拿出真本事～  cover=有 updated_at=1790593398542
   /// ffzy:98495         无职转生Ⅲ～到了异世界就拿出真本事         ← ★ 不命中（Ⅲ ≠ 第三季）
   /// ```
-  /// ⇒ 前两条**逐字相同** ⇒ 都是候选 ⇒ 按③（更近）选 **cycani:3862**。
+  /// ⇒ 前两条**逐字相同** ⇒ 都是候选 ⇒ 按③（更近）选 **srca:3862**。
   /// ⇒ 第三条**不该**命中 —— 这正说明"逐字相等"这个判据是有鉴别力的，
   ///    换成模糊相似反而会把 ffzy 也拉进来（那是**另一部**剧的记录）。
   ///
@@ -1808,7 +1808,7 @@ class _DetailPageState extends State<DetailPage> {
        * 默认选中第一个源，并加载其剧集
        *
        * ⚠️ 这里**不能**用 `sources.length > 1` 作为「是否拉取剧集」的条件：
-       *    原版注释记录过实测 —— cycani 的《指名！》只有一个源（cychub），
+       *    原版注释记录过实测 —— srca 的《指名！》只有一个源（cychub），
        *    但下面挂着 24 集。只在多源时才拉，会导致单源多集的内容
        *    **一集都看不到**，只能播第一集。
        *    正确判据是「是否声明了源」—— 有源就按该源拉一次。
@@ -3674,7 +3674,7 @@ class _DetailPageState extends State<DetailPage> {
 ///    有后端 badges 时**一个字都不加** —— 保证与原版一致。
 ///
 /// ⚠️ 严格限制在三个**后端 meta 里确实会有**的键
-///   （`providers/cycani.rs:845-861` 写的是 `year` / `area` / `score`），
+///   （某动画源的后端实现里写的是 `year` / `area` / `score`），
 ///    且必须在 JSON 里非空。**不做**"什么键都拿来显示"的通用枚举 ——
 ///    那会把 `tags` 数组、内部 id 之类的脏数据糊到用户脸上。
 List<String> _metaFallbackBadges(Map<String, dynamic> meta) {
@@ -3736,7 +3736,7 @@ class _Cover extends StatelessWidget {
      * ★ 2026-10-01 那次修法的**漏接点**就在这里（Owner 报「详情区封面糊」）。
      *
      * 卡片是 2:3 竖版（`AspectRatio` 用的就是 `AppMetrics.posterAspect`
-     * = 2/3 = 宽/高 ⇒ 下面这个高与布局**同源**），而 B 站封面是 16:9
+     * = 2/3 = 宽/高 ⇒ 下面这个高与布局**同源**），而 某视频站封面是 16:9
      * 横版（实测 2560×1440）⇒ `BoxFit.cover` 在源图比目标框更宽时**按
      * 高度放大**，只按宽度解码（`coverDecodeWidth`）会让水平方向被拉
      * 2.68 倍 ⇒ 糊。首页 `poster_card.dart` 早就改传 `layoutHeight`
@@ -4033,8 +4033,7 @@ class _Info extends StatelessWidget {
      * ```
      *
      * ★ 原版**直接渲染后端的 `badges`**，不在前端重拼 —— 那是产品决定的
-     *   文案与顺序（cycani 插件拼的「连载中 / 更新至 12 集 / 9.2 分」，
-     *   见 `plugins/cycani.js:499-518`）。
+     *   文案与顺序（如某动画站的插件拼的「连载中 / 更新至 12 集 / 9.2 分」）。
      *
      * ⚠️ 这里**删掉了原来自己拼的「年份 / 地区 / 类型」徽章**：
      *    `MediaDetail.year` / `.area` 在 Rust 的 `MediaDetail`
@@ -4208,12 +4207,38 @@ class _Info extends StatelessWidget {
              * ⇒ 三个真实入口都在，删掉的是**唯一那个假的**。
              * ```
              */
-            _ToggleButton(
-              icon: isFav ? Icons.star : Icons.star_border,
-              label: isFav ? '已收藏' : '收藏',
-              on: isFav,
-              onTap: onToggleFav,
-            ),
+            /*
+             * ══════════════════════════════════════════════════════════════
+             * ★★★ 2026-10-13（Owner）：**本地文件不画「收藏」**
+             * ══════════════════════════════════════════════════════════════
+             *
+             * Owner 原话（逐字）：
+             * > 本地播放详情页去掉 收藏 追更 按钮
+             *
+             * # 真缺陷（原来只按"有没有网"判，本地在线时照画）
+             * ```text
+             * 本行上方那段注释早就写明「本地文件上这四枚按钮**每一枚都不成立**」，
+             * 但渲染条件 `showActions`（= `_showLocalActions` = `!isLocalFile || _online`）
+             * 只按**联网状态**判 ⇒ 本地播放**有网时**照样画出收藏/追更。
+             * ⇒ 是"注释的意图"与"实际条件"自相矛盾（注释说该没，条件说还在）。
+             * ```
+             *
+             * # 为什么本地不该有这两枚（不是"藏起来"，是**无处可落**）
+             * ```text
+             * 收藏/追更需要 `provider:id` —— 本地那一对是 `(local, 绝对路径)`，
+             * 写进去只会往收藏/追更表里塞一条**永远打不开**的假条目。
+             * ```
+             *
+             * ⚠️ 只摘这两枚，**不动** `showActions`（那样会把"下载"等也一起摘掉），
+             *    也不动"换源"那枚（它有自己的 `_hasLocalPlayable` 判据）。
+             */
+            if (!localMode)
+              _ToggleButton(
+                icon: isFav ? Icons.star : Icons.star_border,
+                label: isFav ? '已收藏' : '收藏',
+                on: isFav,
+                onTap: onToggleFav,
+              ),
             /*
              * ★ 追更按钮（与收藏**完全独立**）
              *
@@ -4221,13 +4246,16 @@ class _Info extends StatelessWidget {
              * > 追更并不代表就要收藏，这是独立的状态
              *
              * 所以：**不需要先收藏**，按钮也不禁用。
+             *
+             * ⚠️ 同理，本地文件不画（它与收藏同属"需要 provider:id"的一类）。
              */
-            _ToggleButton(
-              icon: following ? Icons.notifications : Icons.notifications_none,
-              label: following ? '追更中' : '追更',
-              on: following,
-              onTap: onToggleFollow,
-            ),
+            if (!localMode)
+              _ToggleButton(
+                icon: following ? Icons.notifications : Icons.notifications_none,
+                label: following ? '追更中' : '追更',
+                on: following,
+                onTap: onToggleFollow,
+              ),
 
             /*
              * ★★★ 跨源换源入口（与「播放源」是**两个不同层级**的功能）
@@ -4367,7 +4395,7 @@ class _Info extends StatelessWidget {
                  * > 然后左侧的上次看到，文字也超出了
                  *
                  * # 根因
-                 * `resumeLabel` 原先拼的是**整条视频标题**（B 站投稿
+                 * `resumeLabel` 原先拼的是**整条视频标题**（某视频站投稿
                  * 标题动辄 30+ 字），而这个 `Row` 是 `MainAxisSize.min`、
                  * 两个 `Text` 都没有 `Flexible`/`maxLines`/`overflow`
                  * ⇒ 文本按自身固有宽度铺开，超出面板右边界被**硬裁**

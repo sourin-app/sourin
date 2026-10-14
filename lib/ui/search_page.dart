@@ -511,7 +511,32 @@ class SearchPageState extends State<SearchPage> {
                         onChanged: (_) => setState(() {}),
                         decoration: const InputDecoration(
                           hintText: '输入片名、剧名或关键词…',
+                          /*
+                           * ⚠️⚠️ 2026-10-13 修（Owner 反馈「聚焦时有奇怪的边界线」）：
+                           *      **只写 `border: none` 不够！**
+                           *
+                           * `InputDecoration` 的各级描边**优先级高于 `border`**：
+                           * ```text
+                           * focusedBorder > enabledBorder > border
+                           * ```
+                           * 而全局主题（`theme_bridge.dart:480-505`）给这几级**都**设了
+                           * `OutlineInputBorder`（聚焦还转主色）⇒ 本框一聚焦就画出
+                           * 一条**主色圆角描边**，叠在外层 `Container` 已有的
+                           * `outlineVariant` 描边里面 ⇒ 看上去就是"奇怪的边界线"。
+                           *
+                           * ⇒ 本框的边框由**外层 Container** 负责（见上面
+                           *   `Border.all(color: colors.outlineVariant)`），
+                           *   所以这里要把**每一级**都显式压成 `none`。
+                           * ```
+                           * ★ 教训：`InputBorder.none` 是"默认态"的开关，不是"全部态"的。
+                           * ```
+                           */
                           border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          errorBorder: InputBorder.none,
+                          focusedErrorBorder: InputBorder.none,
+                          disabledBorder: InputBorder.none,
                         ),
                         style: const TextStyle(fontSize: FontSizes.base),
                       ),
@@ -545,7 +570,7 @@ class SearchPageState extends State<SearchPage> {
             child: EmptyState(
               icon: Icons.travel_explore_outlined,
               title: '当前没有支持搜索的内容源',
-              hint: '央视官方无公开搜索接口。启用其它内容源后即可在这里一起搜索。',
+              hint: '某电视台官方无公开搜索接口。启用其它内容源后即可在这里一起搜索。',
             ),
           )
 

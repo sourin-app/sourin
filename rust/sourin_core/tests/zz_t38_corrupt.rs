@@ -13,11 +13,11 @@
 // ```
 //
 // 用户看到「可能需要验证码」= `Expired`。所以只要 `session()` **报错**
-//（而不是干净地返回 None），有凭据的次元城也会被说成"需人工登录"。
+//（而不是干净地返回 None），有凭据的某动画站也会被说成"需人工登录"。
 //
 // # 怎么让 `session()` 报错（真实可达的路径）
 //
-// `cycani.js` 的 `session()` 里有 `JSON.parse(raw)` ——
+// `srca.js` 的 `session()` 里有 `JSON.parse(raw)` ——
 // **store 里的 session 值被写坏时它抛异常**，`call_js` 把它变成 `Err`。
 // 什么时候会写坏？历史版本 / 别的工具动过 / 写盘中途断电。
 // 本机 users 目录里已有一堆 `backup-*` / `.rescue-*`，说明这种脏数据**现实存在**。
@@ -42,9 +42,9 @@ fn probe_dir(tag: &str) -> std::path::PathBuf {
     d
 }
 
-async fn cycani_at(dir: std::path::PathBuf) -> JsPluginProvider {
+async fn srca_at(dir: std::path::PathBuf) -> JsPluginProvider {
     let src =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/plugins/cycani.js"))
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/plugins/srca.js"))
             .unwrap();
     let mut p = JsPluginProvider::from_source(&src).unwrap().with_data_dir(dir);
     p.hydrate_capabilities().await;
@@ -59,17 +59,17 @@ async fn t38_corrupt_session_with_credentials_reports_expired() {
         return;
     }
     let dir = probe_dir("corrupt");
-    let src = std::path::PathBuf::from(REAL_STORE).join("cycani.json");
-    std::fs::copy(&src, dir.join("cycani.json")).unwrap();
+    let src = std::path::PathBuf::from(REAL_STORE).join("srca.json");
+    std::fs::copy(&src, dir.join("srca.json")).unwrap();
 
     // ── 把 `session` 写坏（保留 credentials 完好）──
-    let path = dir.join("cycani.json");
+    let path = dir.join("srca.json");
     let raw = std::fs::read_to_string(&path).unwrap();
     let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
     v["session"] = serde_json::Value::String("{ 这不是合法 JSON".to_string());
     std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
-    let p = cycani_at(dir.clone()).await;
+    let p = srca_at(dir.clone()).await;
 
     println!("\n=========== ★ session 值损坏 + 凭据完好 ===========");
     println!("can_auto_login() = {}", p.can_auto_login().await);
@@ -84,10 +84,10 @@ async fn t38_corrupt_session_with_credentials_reports_expired() {
 
     let reg = Registry::new();
     reg.register(Arc::new(p));
-    let st = reg.session_state("cycani").await;
+    let st = reg.session_state("srca").await;
     println!("session_state()  = {st:?}");
 
-    let ok = reg.ensure_session("cycani").await;
+    let ok = reg.ensure_session("srca").await;
     println!("ensure_session() = {ok:?}   ★ 凭据还在，能不能救活？");
 
     /*

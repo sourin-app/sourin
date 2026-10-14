@@ -780,8 +780,13 @@ void main() {
       );
       indexOfExactly(
         _page,
-        'const double _kPlayerBottomBarHeight = 96;',
-        why: '★ 面板定位用的底栏高度必须是命名常量（两处要能对得上）',
+        'const double _kPlayerBottomBarHeight = 106;',
+        why: '★ 面板定位用的底栏高度必须是命名常量（两处要能对得上）。'
+            '★★ 2026-10-13（Owner「悬浮窗距离底部太多」）：这个数从 96 修正为 **106**'
+            '—— 实测底栏真实高度是 106（`getRect(PlayerBottomBar)` = '
+            'Rect(0,794,1280,900)），而常量一直填着 96（本文件另一半的注释也写着'
+            '"高约 106px"，两处互相矛盾且无人钉）。填小了 10px ⇒ popover 层的底边'
+            '钻进底栏 10px ⇒ 面板被顶高、看着"离底栏很远"。',
       );
     });
   });

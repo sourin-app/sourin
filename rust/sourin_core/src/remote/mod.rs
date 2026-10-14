@@ -126,7 +126,7 @@ pub enum RemoteCommand {
     /// id 不存在   → 无操作 + **如实记日志**（不 panic、不报错）
     /// ```
     MoveProvider {
-        /// 要移动的内容源 id（如 `cycani`）
+        /// 要移动的内容源 id（如 `srca`）
         id: String,
         /// `-1` 上移一格，`+1` 下移一格
         ///
@@ -265,7 +265,7 @@ pub enum SkipKind {
 ///
 /// `sources: Vec<(String, String)>` 是 `(code, 名称)`，两个字段都是
 /// 字符串，看代码能猜出来。而这里要带一个 `bool` ——
-/// `("cycani", "次元城", true)` 里那个 `true` 是什么？
+/// `("srca", "某动画站", true)` 里那个 `true` 是什么？
 /// 看的人（和写 Dart 的人）都猜不到，只能回来翻 Rust 定义。
 ///
 /// 排序面板是**手机上要显示完整名字**的界面，字段名值得多这几行。
@@ -328,7 +328,7 @@ pub struct RemoteState {
      * ```text
      * sources   当前这部片子的**播放线路**（如「线路1 / 线路2」）——
      *           随片子变，手机端用来 `switch_source`。
-     * providers **全局内容源**（央视 / 次元城 / …）的显示顺序 ——
+     * providers **全局内容源**（某电视台 / 某动画站 / …）的显示顺序 ——
      *           与应用当前在播什么**无关**，手机端用来排序。
      * ```
      * 名字接近但语义完全不同：`sources` 是「这个片子的第几路流」，
@@ -986,8 +986,8 @@ pub fn qr_svg(port: u16) -> Option<String> {
 ///
 /// # 为什么从 `qr_svg` 抽出来（2026-09-21）
 ///
-/// 扫码登录要画的是**站点给的 url**（如 B站的
-/// `account.bilibili.com/h5/account-h5/auth/scan-web?...`），
+/// 扫码登录要画的是**站点给的 url**（如 某视频站的
+/// `account.srcv.com/h5/account-h5/auth/scan-web?...`），
 /// 与遥控的 url 只是"内容不同"，渲染要求完全一样：
 /// ```text
 /// · 留白 ≥4 模块（QR 规范，少了识别率明显下降）
@@ -1449,19 +1449,19 @@ mod tests {
     /// ⚠️ Dart 侧 `models.dart` 的 `fromJson` 把 `kind` 以外的**所有字段
     ///    塞进 `args`**，也就是它只认**扁平**结构：
     /// ```text
-    /// {"kind":"move_provider","id":"cycani","delta":-1}          ← ✓ 能取到
+    /// {"kind":"move_provider","id":"srca","delta":-1}          ← ✓ 能取到
     /// {"kind":"move_provider","payload":{"id":"…","delta":-1}}   ← ✗ 取不到
     /// ```
     /// 所以这里显式断言**没有** `payload` 这一层。
     #[test]
     fn move_provider_wire_format_is_flat_snake_case() {
         // ── 反序列化：手机端发来的确切 JSON ──
-        let raw = r#"{"kind":"move_provider","id":"cycani","delta":-1}"#;
+        let raw = r#"{"kind":"move_provider","id":"srca","delta":-1}"#;
         let cmd: RemoteCommand = serde_json::from_str(raw).expect("手机端这条 JSON 必须能解析");
         assert_eq!(
             cmd,
             RemoteCommand::MoveProvider {
-                id: "cycani".into(),
+                id: "srca".into(),
                 delta: -1,
             },
             "★ kind 必须是 snake_case 的 move_provider（枚举上没有 rename_all，靠 serde 默认）"
@@ -1471,7 +1471,7 @@ mod tests {
         let back = serde_json::to_value(&cmd).unwrap();
         assert_eq!(
             back,
-            serde_json::json!({"kind":"move_provider","id":"cycani","delta":-1}),
+            serde_json::json!({"kind":"move_provider","id":"srca","delta":-1}),
             "序列化出来的 JSON 必须与手机端手写的那条同构"
         );
         // ★ 扁平：不能有 payload 这一层（Dart 侧只认扁平）
@@ -1581,12 +1581,12 @@ mod tests {
             command: RemoteCommand,
         }
 
-        let body = r#"{"pin":"123456","kind":"move_provider","id":"cycani","delta":-1}"#;
+        let body = r#"{"pin":"123456","kind":"move_provider","id":"srca","delta":-1}"#;
         let parsed: CmdBody = serde_json::from_str(body).expect("flatten + 内部 tag 必须能解析");
         assert_eq!(parsed.pin, "123456", "pin 不能被 flatten 吃掉");
         assert_eq!(
             parsed.command,
-            RemoteCommand::MoveProvider { id: "cycani".into(), delta: -1 },
+            RemoteCommand::MoveProvider { id: "srca".into(), delta: -1 },
             "★ 命令字段必须是扁平的（同层），不能是嵌套 payload"
         );
 
@@ -1621,15 +1621,15 @@ mod tests {
         let st = RemoteState {
             has_media: true,
             providers: vec![
-                ProviderEntry { id: "cycani".into(), name: "次元城".into(), enabled: true },
-                ProviderEntry { id: "cctv".into(), name: "央视".into(), enabled: false },
+                ProviderEntry { id: "srca".into(), name: "某动画站".into(), enabled: true },
+                ProviderEntry { id: "srcl".into(), name: "某电视台".into(), enabled: false },
             ],
             ..Default::default()
         };
         h.update_state(st);
         let got = h.state();
         assert_eq!(got.providers.len(), 2);
-        assert_eq!(got.providers[0].name, "次元城", "中文名要原样往返");
+        assert_eq!(got.providers[0].name, "某动画站", "中文名要原样往返");
         assert!(got.providers[0].enabled);
         assert!(!got.providers[1].enabled, "停用的源也在列表里（保留位置）");
 
@@ -1638,8 +1638,8 @@ mod tests {
         assert_eq!(
             j["providers"],
             serde_json::json!([
-                {"id":"cycani","name":"次元城","enabled":true},
-                {"id":"cctv","name":"央视","enabled":false}
+                {"id":"srca","name":"某动画站","enabled":true},
+                {"id":"srcl","name":"某电视台","enabled":false}
             ])
         );
     }

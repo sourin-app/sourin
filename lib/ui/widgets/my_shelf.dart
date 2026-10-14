@@ -1101,7 +1101,7 @@ class MyShelfState extends State<MyShelf> {
                    * ⚠️ ③ **必须存在**，不能只靠 ②：
                    *    实测用户库里那 3 条坏记录 `episode_title` **也是 NULL**
                    *    （`.probe/t63_read_db.py` 读数：
-                   *      `360:86969` / `cycani:3862` / `cycani:3841` 三条全为 None）
+                   *      `360:86969` / `srca:3862` / `srca:3841` 三条全为 None）
                    *    ⇒ 只做 ② 的话那三条**仍然是空**，等于没修。
                    */
                   title: _historyTitle(p),
@@ -2277,7 +2277,7 @@ class _ShelfTabChipState extends State<_ShelfTabChip> {
          * > 8px 上下内边距 + 14px 行高只到 31px，差一点不达标，故加到 10px。
          * 而它的实际取值是 `padding: 10px 14px`。
          *
-         * 项目规范（`cctv_to_client/DEVELOPMENT.md` 坑 35）：
+         * 项目规范（`srcl_to_client/DEVELOPMENT.md` 坑 35）：
          * > ★ 触控目标不得小于 ~34px —— 实测巡检发现 52 处偏小
          *
          * # 我们的实测（task-36，仪器有阳性对照）

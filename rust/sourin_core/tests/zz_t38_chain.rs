@@ -36,8 +36,8 @@ fn probe_dir(tag: &str) -> std::path::PathBuf {
 }
 
 fn seed(dir: &std::path::Path) {
-    let src = std::path::PathBuf::from(REAL_STORE).join("cycani.json");
-    std::fs::copy(&src, dir.join("cycani.json")).expect("copy real store");
+    let src = std::path::PathBuf::from(REAL_STORE).join("srca.json");
+    std::fs::copy(&src, dir.join("srca.json")).expect("copy real store");
 }
 
 /// ⚠️ **必须**调 `hydrate_capabilities()`（实测踩到）
@@ -53,10 +53,10 @@ fn seed(dir: &std::path::Path) {
 /// 看起来像"状态判定坏了"，实际是**探针自己少调了一步**
 ///（真实应用走 `load_plugins_hydrated`，它内部会调）。
 /// ⚠️ 这正是 VERIFY-LESSONS 里"假红/假绿"那一类：**先确认脚手架对了再信结论**。
-async fn cycani_at(dir: std::path::PathBuf) -> JsPluginProvider {
+async fn srca_at(dir: std::path::PathBuf) -> JsPluginProvider {
     let src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/plugins/cycani.js"
+        "/plugins/srca.js"
     ))
     .unwrap();
     let mut p = JsPluginProvider::from_source(&src).unwrap().with_data_dir(dir);
@@ -167,7 +167,7 @@ async fn t38_expired_token_full_chain() {
     seed(&dir);
 
     // ── 把 token 换成已过期的 ──
-    let path = dir.join("cycani.json");
+    let path = dir.join("srca.json");
     let raw = std::fs::read_to_string(&path).unwrap();
     let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let sess_str = v["session"].as_str().unwrap().to_string();
@@ -182,7 +182,7 @@ async fn t38_expired_token_full_chain() {
     std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
     println!("\n=========== ★ 场景：token 已过期 ===========");
-    let p = cycani_at(dir.clone()).await;
+    let p = srca_at(dir.clone()).await;
     println!("login_required = {}", p.manifest().capabilities.login_required);
     println!("login_supported= {}", p.manifest().capabilities.login_supported);
     println!("session_expired()      = {}", p.session_expired().await);
@@ -194,14 +194,14 @@ async fn t38_expired_token_full_chain() {
     reg.register(Arc::new(p));
     println!("Registry::len()        = {}", reg.len());
 
-    let st = reg.session_state("cycani").await;
+    let st = reg.session_state("srca").await;
     println!("session_state()        = {st:?}   ★ 这决定 UI 文案");
 
     println!("\n--- ensure_session()（播放前会调它）---");
-    let ok = reg.ensure_session("cycani").await;
+    let ok = reg.ensure_session("srca").await;
     println!("ensure_session()       = {ok:?}   ★ Some(true) = 救活了");
 
-    let st2 = reg.session_state("cycani").await;
+    let st2 = reg.session_state("srca").await;
     println!("救活后 session_state() = {st2:?}");
 
     // ── 救活后磁盘上是什么 ──
@@ -219,7 +219,7 @@ async fn t38_expired_token_full_chain() {
     assert_eq!(
         ok,
         Some(true),
-        "★★★ 次元城**没有验证码**、凭据还在 → \
+        "★★★ 某动画站**没有验证码**、凭据还在 → \
          ensure_session() 必须能自动重登成功。返回 {ok:?} 说明自动重登链路断了"
     );
     assert_eq!(
@@ -241,7 +241,7 @@ async fn t38_no_credentials_is_expired() {
     seed(&dir);
 
     // 删掉 credentials（模拟"凭据丢了"）
-    let path = dir.join("cycani.json");
+    let path = dir.join("srca.json");
     let raw = std::fs::read_to_string(&path).unwrap();
     let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
     v.as_object_mut().unwrap().remove("credentials");
@@ -259,7 +259,7 @@ async fn t38_no_credentials_is_expired() {
     v["session"] = serde_json::Value::String(serde_json::to_string(&sess).unwrap());
     std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
-    let p = cycani_at(dir).await;
+    let p = srca_at(dir).await;
     println!("\n=========== 阳性对照：无凭据 + token 过期 ===========");
     println!("login_required = {}", p.manifest().capabilities.login_required);
     println!("can_auto_login() = {}", p.can_auto_login().await);
@@ -267,9 +267,9 @@ async fn t38_no_credentials_is_expired() {
 
     let reg = Registry::new();
     reg.register(Arc::new(p));
-    let st = reg.session_state("cycani").await;
+    let st = reg.session_state("srca").await;
     println!("session_state()  = {st:?}   ★ 这时才是「登录已失效」");
-    let ok = reg.ensure_session("cycani").await;
+    let ok = reg.ensure_session("srca").await;
     println!("ensure_session() = {ok:?}");
 
     assert_eq!(

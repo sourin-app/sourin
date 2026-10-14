@@ -31,7 +31,7 @@
 // epg.value = await liveApi.epg(activeProvider.value, ch.id);  // 失败就空
 // ```
 //
-// 而**实测本机真实数据**（`cctv.js`，仓库自带、唯一声明 epg 的源）：
+// 而**实测本机真实数据**（`srcl.js`，仓库自带、唯一声明 epg 的源）：
 // ```js
 // capabilities: { vod: true, live: true, epg: true, timeshift: true, … }
 // async epg(channelId)   { … }   ← 声明了也实现了

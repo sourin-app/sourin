@@ -2,7 +2,7 @@
 //!
 //! # 为什么做这个
 //!
-//! 原先 cctv / cycani 是**编译进程序**的 Rust 代码，用户看不到也改不了。
+//! 原先 srcl / srca 是**编译进程序**的 Rust 代码，用户看不到也改不了。
 //! 现在把它们搬到外置 JS 文件，好处：
 //!   · 用户能打开文件看「这个源是怎么写的」
 //!   · 改一行不用重新编译
@@ -67,7 +67,7 @@ pub struct PluginMeta {
 ///
 /// ⚠️ **必须全局扫描而不是按行首前缀匹配**。
 /// 实测：真实写法常把多个 tag 放同一行 ——
-/// `/** @name 央视网 @version 1.0.0 @author dsh @id cctv */`
+/// `/** @name 某电视台站 @version 1.0.0 @author dsh @id srcl */`
 /// 按行首匹配**一个都匹配不到**。
 ///
 /// 值取到「下一个 `@` / 换行 / 注释结束符」为止。
@@ -121,7 +121,7 @@ pub fn parse_meta(src: &str) -> PluginMeta {
 /// 头部注释：` * 上游接口（苹果CMS v10）：http://tyyszy.com/api.php/provide/vod`
 ///   ⇒ 转换器专门写给人看的**来源说明**，22 个转换插件全有 ⇒ 认
 ///
-/// 正文常量：`const API = 'https://api.bilibili.com'`
+/// 正文常量：`const API = 'https://api.example-v.com'`
 ///   ⇒ 这是**接口地址**，不是来源 ⇒ ✗ 不认（2026-10-09 修掉的 bug）
 /// ```
 ///
@@ -168,12 +168,12 @@ pub fn upstream_of(src: &str) -> String {
      * 原来还有一条：找不到头部注释时，去正文找 `const API = 'https://…'` 当上游。
      * 但那个常量是**接口地址**，不是**安装来源**，两者根本不是一回事：
      * ```text
-     * bilibili.js 正文第 91 行  const API = 'https://api.bilibili.com'
-     *   ⇒ upstream = "https://api.bilibili.com"
+     * srcv.js 正文第 91 行  const API = 'https://api.example-v.com'
+     *   ⇒ upstream = "https://api.example-v.com"
      *   ⇒ 编辑对话框判成「链接型」⇒ 预填这个地址、类型锁死
-     *   ⇒ 用户点保存会去拉 api.bilibili.com 当插件装 ⇒ **本地插件被覆盖坏**
+     *   ⇒ 用户点保存会去拉 api.example-v.com 当插件装 ⇒ **本地插件被覆盖坏**
      * ```
-     * 手写插件（bilibili 就是）根本没有"安装来源"这个概念 ——
+     * 手写插件（srcv 就是）根本没有"安装来源"这个概念 ——
      * 它的来源是用户自己写的。宁可为空，也不能编一个。
      *
      * ★ 真正的安装来源在 `plugins/.meta/<id>.json` 的 `source_url`
@@ -337,11 +337,11 @@ impl JsPluginProvider {
     /// `episodes`），必须还原成插件认识的那个 id。
     ///
     /// ⚠️ **漏掉这一步的后果**（实测踩到）：
-    /// 插件收到 `cctv:c899032a...` 却拿它当 pid 去请求，接口返回空，
+    /// 插件收到 `srcl:c899032a...` 却拿它当 pid 去请求，接口返回空，
     /// 于是详情页标题显示成一串 guid、剧集列表为空 ——
     /// 但**不报错**，看起来像「这个视频本来就没信息」，极难排查。
     ///
-    /// 只剥自己那一份前缀：`cctv:xxx` → `xxx`；
+    /// 只剥自己那一份前缀：`srcl:xxx` → `xxx`；
     /// 其它形态（无前缀、别的 provider 前缀）原样返回。
     fn strip_prefix(&self, id: &str) -> String {
         let prefix = format!("{}:", self.manifest.id);
@@ -379,8 +379,8 @@ impl JsPluginProvider {
     ///
     /// # ⚠️ 判据必须精确（不许无条件替换）
     ///
-    /// 别的插件用 episode_id 表达**别的东西** —— 最典型的是 cycani，
-    /// 它拿它当 section_id（纯数字 51463）。一律替换会把次元城打坏。
+    /// 别的插件用 episode_id 表达**别的东西** —— 最典型的是 srca，
+    /// 它拿它当 section_id（纯数字 51463）。一律替换会把某动画站打坏。
     /// ⇒ 只有 `starts_http` 为真才替换；否则**原样**返回条目 id
     ///   （= 改动前行为，逐字相同）。
     fn resolve_first_arg(&self, id: &MediaId, req: &PlayRequest) -> String {
@@ -392,7 +392,7 @@ impl JsPluginProvider {
     pub fn from_source(source: &str) -> std::result::Result<Self, String> {
         let meta = parse_meta(source);
         if meta.id.is_empty() {
-            return Err("插件缺少 @id（头部注释里必须有，如 `@id cctv`）".into());
+            return Err("插件缺少 @id（头部注释里必须有，如 `@id srcl`）".into());
         }
         if meta.name.is_empty() {
             return Err(format!("插件 {} 缺少 @name", meta.id));
@@ -637,7 +637,7 @@ impl JsPluginProvider {
          * 到这里已经变成 `login_required`。
          *
          * **实测踩过**：第一版按 `loginRequired` 读，永远读到 false，
-         * 于是 cycani 的 `loginRequired: true` 完全没生效 ——
+         * 于是 srca 的 `loginRequired: true` 完全没生效 ——
          * 表现是「界面上不显示登录入口」「会话状态是 not_required」，
          * 用户根本没法登录这个源。
          */
@@ -718,7 +718,7 @@ impl JsPluginProvider {
          * 这个函数是**逐字段**读的（不是整体 `serde::from_value`），
          * 所以往 `Capabilities` 结构体加字段**不会**自动生效 ——
          * 实测踩到：加了 `login_supported` 但插件侧一直是 false，
-         * 表现是「B站 声明了 loginSupported: true，登录入口却不出现」。
+         * 表现是「某视频站 声明了 loginSupported: true，登录入口却不出现」。
          *
          * ⚠️ 键名同理是 snake_case（`call_js` 已做过 camelCase 转换）。
          */
@@ -765,13 +765,13 @@ impl JsPluginProvider {
          *
          * 声明**不一定送得到用户手里**。实测：
          * ```text
-         * repo    rust/sourin_core/plugins/cycani.js     17882 B  声明在
-         * deployed %APPDATA%\...\plugins\cycani.js       17457 B  声明**不在**
+         * repo    rust/sourin_core/plugins/srca.js     17882 B  声明在
+         * deployed %APPDATA%\...\plugins\srca.js       17457 B  声明**不在**
          * ```
-         * 根因：`cycani.js`（和 `cctv.js`）**从来不由程序投放** ——
+         * 根因：`srca.js`（和 `srcl.js`）**从来不由程序投放** ——
          * `state.rs` 只有 `seed_demo_plugin` / `seed_iptv_plugin` 两个，
          * 而那里自己的注释就写着：
-         * > 但**没有** `iptv.js` —— 因为 `cctv.js` / `cycani.js` 都是**人工放进去**的
+         * > 但**没有** `iptv.js` —— 因为 `srcl.js` / `srca.js` 都是**人工放进去**的
          *
          * ⇒ 所以「等插件声明」= **等一次永远不会发生的插件更新**
          *   （插件是人工投放的，没有升级通道）
@@ -779,7 +779,7 @@ impl JsPluginProvider {
          *   Owner 报的那句「还提示 验证码」原封不动。
          *
          * ★ 但**运行时方法**在用户那份插件里**是存在的**
-         *   （`cycani.js` L309 `async canAutoLogin()`）——
+         *   （`srca.js` L309 `async canAutoLogin()`）——
          *   直接问它就能立刻拿到正确答案。
          *
          * # 语义：声明是"缓存"，实现是"真相"
@@ -829,7 +829,7 @@ impl JsPluginProvider {
          * ```
          * ⇒ 总代价 = **「有登录能力的插件数」× 2 ms**，
          *    **不是** × 全部插件数（门控正是为此）。
-         *    实测本机 27 个插件里只有 2 个有登录能力（cycani / bilibili）
+         *    实测本机 27 个插件里只有 2 个有登录能力（srca / srcv）
          *    ⇒ 约 **4 ms 一次性**，一次进程生命周期只付一次。
          *
          * ⚠️ **绝不能**把这段探测搬到 `can_auto_login()` 或 `session_state()` ——
@@ -941,7 +941,7 @@ impl JsPluginProvider {
              *
              * # 为什么需要（扫码登录的前提）
              *
-             * `get`/`post` 只返回响应体。而 B站 扫码登录成功时，
+             * `get`/`post` 只返回响应体。而 某视频站 扫码登录成功时，
              * 凭据是通过 **`Set-Cookie` 响应头**下发的 —— 不在 body 里。
              * 没有这个 API，插件就拿不到登录态。
              *
@@ -996,7 +996,7 @@ impl JsPluginProvider {
              *   读进内存，之后就是内存查表。
              *
              * ⚠️ 这里**不走系统钥匙串**：插件的 token 是插件自己的凭据，
-             *   与应用级凭据（如 cycani 的登录态）分开存放，
+             *   与应用级凭据（如 srca 的登录态）分开存放，
              *   避免插件互相读到对方的敏感值。
              */
             let store = Object::new(ctx.clone())?;
@@ -1160,7 +1160,7 @@ impl JsPluginProvider {
              * ⚠️ 这里**必须把 options 透传下去**。
              * 第一版写的是 `get: (u, o) => host_http.get(u)` ——
              * 把第二个参数（headers）**丢掉了**，
-             * 于是插件的 `Referer` 从来没发出去过（央视接口要它）。
+             * 于是插件的 `Referer` 从来没发出去过（某电视台接口要它）。
              * 这种 bug 不报错、只是偶尔拿到错误页，极难查。
              */
             ctx.eval::<(), _>(
@@ -1366,7 +1366,7 @@ impl JsPluginProvider {
         // ★ 给插件返回的条目补上 provider 前缀
         //
         // 契约承诺「插件只写自己的 id，宿主自动加前缀」——
-        // 插件作者不该关心 `MediaId` 是 `"cctv:xxx"` 这种形态。
+        // 插件作者不该关心 `MediaId` 是 `"srcl:xxx"` 这种形态。
         self.prefix_media_ids(&mut rust);
 
         serde_json::to_string(&rust)
@@ -1390,10 +1390,10 @@ impl JsPluginProvider {
                  *
                  * `MediaItem` 的特征是「有 `id`，且有 `title`/`cover`」。
                  * 但 `Episode` 也长这样 —— `{id, title, order}` ——
-                 * 于是剧集 id 被加了前缀变成 `cycani:51463`，
+                 * 于是剧集 id 被加了前缀变成 `srca:51463`，
                  * 前端把它放进 `PlayRequest.episode_id` 传回来，
                  * 插件拿它当数字 id 用 → 服务端报
-                 * `bind uri "section_id": parsing "cycani:51463": invalid syntax`
+                 * `bind uri "section_id": parsing "srca:51463": invalid syntax`
                  * （Owner 实测报的错）。
                  *
                  * 判据：`Episode` **一定带 `order`**（契约里是必填），
@@ -1417,13 +1417,13 @@ impl JsPluginProvider {
                         /*
                          * ★★ 判据必须是「有没有**本插件的**前缀」，而不是「含不含冒号」
                          *
-                         * # 这是一个真 bug（Owner 报「B站的这些点开，显示没有路由」）
+                         * # 这是一个真 bug（Owner 报「某视频站的这些点开，显示没有路由」）
                          *
                          * 原实现是 `if !id.contains(':')` —— 本意是"已带前缀的不重复加"，
                          * 但**冒号不等于前缀**：
                          *
                          * ```text
-                         * 插件返回 id = "av:BV1u9ew6yEEP"      ← B 站插件的内部命名空间
+                         * 插件返回 id = "av:BV1u9ew6yEEP"      ← 外部视频站插件的内部命名空间
                          * contains(':') == true
                          *   → 判定"已有前缀"，跳过
                          *   → 前端拿到 "av:BV1u9ew6yEEP"
@@ -1431,8 +1431,8 @@ impl JsPluginProvider {
                          *   → 后端 route("av") 找不到 → 「无法路由: av:BV1u9ew6yEEP」
                          * ```
                          *
-                         * 对照：央视插件返回 `1f6ed843…`（不含冒号）→ 正常加上 `cctv:`
-                         * 前缀 → 一直正常。**所以只有 B 站坏，而且坏得很隐蔽。**
+                         * 对照：某电视台插件返回 `1f6ed843…`（不含冒号）→ 正常加上 `srcl:`
+                         * 前缀 → 一直正常。**所以只有 外部视频站坏，而且坏得很隐蔽。**
                          *
                          * # 为什么"含冒号"这个判据根本不成立
                          *
@@ -1511,7 +1511,7 @@ async fn do_http(
      * ★ POST 且调用方没指定 Content-Type 时，默认 `application/json`
      *
      * 实测踩过：reqwest 的 `.body(String)` 默认发 `text/plain`，
-     * 而几乎所有 JSON 接口（次元城、苹果 CMS 系）都要求
+     * 而几乎所有 JSON 接口（某动画站、苹果 CMS 系）都要求
      * `application/json` —— 服务端会报
      * `Username is a required field` 这种**看起来像参数没传**的错误，
      * 实际是 body 根本没被解析。这类问题极难从报错里看出来。
@@ -1555,9 +1555,9 @@ async fn do_http(
 /// # 为什么需要它（2026-09-20，为扫码登录加）
 ///
 /// [`do_http`] 只返回响应体，**响应头被丢掉**。
-/// 而 B站 扫码登录成功时，凭据是通过 **`Set-Cookie` 响应头**下发的：
+/// 而 某视频站 扫码登录成功时，凭据是通过 **`Set-Cookie` 响应头**下发的：
 /// ```text
-/// POST/GET passport.bilibili.com/x/passport-login/web/qrcode/poll
+/// POST/GET passport.example-v.com/x/passport-login/web/qrcode/poll
 ///   ← Set-Cookie: SESSDATA=…; bili_jct=…; DedeUserID=…
 /// ```
 /// 那些值**不在 body 里** —— 所以光有 `do_http` 读不到登录态。
@@ -1974,7 +1974,7 @@ impl MediaProvider for JsPluginProvider {
     /// 分类列表
     ///
     /// ★ `categories` 在这个生态里有**两种合法形态**，两种都要认：
-    ///   · **方法** —— `async categories() { ... }`（内置 `cctv.js` 这样写）
+    ///   · **方法** —— `async categories() { ... }`（内置 `srcl.js` 这样写）
     ///   · **数据数组** —— `categories: [ { id, name }, ... ]`
     ///     （`tools/tvbox-convert.mjs` 生成的插件这样写 —— 分类是
     ///      转换时探测到的固定清单，苹果CMS 的分类很少变）
@@ -1984,7 +1984,7 @@ impl MediaProvider for JsPluginProvider {
     /// get_categories("360")  =>  {"error":"插件报错: not a function"}
     /// => 浏览页顶部的分类切换栏是空的（列表本身照常显示）
     /// ```
-    /// 实测：22 个转换来的 TVBox 源**全部**报这一条；而内置 `cctv`
+    /// 实测：22 个转换来的 TVBox 源**全部**报这一条；而内置 `srcl`
     /// （`categories` 是方法）在同一台宿主上取到 8 个真分类 => 链是好的。
     /// 取证：`.probe/t359_vod_final.py`（`RESULT pass=14 fail=0`）。
     ///
@@ -2034,7 +2034,7 @@ impl MediaProvider for JsPluginProvider {
     /// ★ 榜单内容（首页 `SectionSource::Rank` 区块用）
     ///
     /// ⚠️ **漏掉这个方法会静默出错**（实测踩到）：
-    /// 次元城的 `home()` 声明了两个 `SectionSource::Rank` 区块
+    /// 某动画站的 `home()` 声明了两个 `SectionSource::Rank` 区块
     /// （「TV番组榜」「剧场番组榜」），插件里也实现了 `rank()`，
     /// 但宿主没桥接 → 走 trait 默认实现 → 返回
     /// `Unsupported("该源不支持榜单")` → **首页那两个区块永远空白**，
@@ -2080,7 +2080,7 @@ impl MediaProvider for JsPluginProvider {
     /// ★ 按播放源取剧集
     ///
     /// ⚠️ 漏桥接的后果（与 `rank` 同类）：trait 默认实现会去调 `detail()`，
-    /// 而插件可能**只为某个特定源实现了 `episodes()`**（如 cycani 的
+    /// 而插件可能**只为某个特定源实现了 `episodes()`**（如 srca 的
     /// `/videos/{id}/sections?player_code=`）—— 用 detail 的结果代替，
     /// 用户切换线路后会看到**上一个线路的剧集**。
     async fn episodes(&self, id: &MediaId, source_code: &str) -> Result<Vec<Episode>> {
@@ -2121,13 +2121,13 @@ impl MediaProvider for JsPluginProvider {
     /// `detail()` 返回的 `episodes[].id` 会经 `prefix_media_ids` 被加上
     /// `"{provider}:"` 前缀（那是给**媒体条目**用的，避免跨源撞 id）。
     /// 但 `Episode.id` 在 Rust 侧是**普通字符串**，前端把它原样放进
-    /// `PlayRequest.episode_id` 传回来时，插件收到的是 `cycani:51463`。
+    /// `PlayRequest.episode_id` 传回来时，插件收到的是 `srca:51463`。
     ///
     /// 后果（Owner 实测报的错）：
     /// ```text
-    /// bind uri "section_id": parsing "cycani:51463": invalid syntax
+    /// bind uri "section_id": parsing "srca:51463": invalid syntax
     /// ```
-    /// 次元城的取流接口拿它当数字 id 用，直接 400。
+    /// 某动画站的取流接口拿它当数字 id 用，直接 400。
     ///
     /// 所以这里要把前缀剥掉再给插件。
     async fn resolve(&self, id: &MediaId, req: &PlayRequest) -> Result<Vec<StreamCandidate>> {
@@ -2173,16 +2173,16 @@ impl MediaProvider for JsPluginProvider {
          * # ⚠️ 判据必须**精确**：只有明确是 http(s) URL 才替换
          *
          * 别的插件用 episode_id 表达**别的东西** ——
-         * 最典型的是 cycani：它拿 episode_id 当 section_id
+         * 最典型的是 srca：它拿 episode_id 当 section_id
          * （见上面那段前缀坑，插件要的是纯数字 51463）。
-         * 若不加判断地一律替换，次元城那条路会被打坏。
+         * 若不加判断地一律替换，某动画站那条路会被打坏。
          * ⇒ 用 starts_http（与 tvbox.rs 同一份语义：大小写不敏感、
          *   必须是完整 http:// / https:// 前缀），
          *   不是 URL 就**原样**传条目 id（= 改前行为，逐字相同）。
          *
          * # 反向控制（必须逐字不变）
          *
-         * episode_id 为 None / 空串 / "150758" / "cycani:51463"
+         * episode_id 为 None / 空串 / "150758" / "srca:51463"
          * 时，走的都是 else 分支 ⇒ 第一个参数仍是 strip_prefix(id.native)
          * ⇒ 与改动前**完全一致**，不影响从播放历史/追更直接续播的路径。
          */
@@ -2201,7 +2201,7 @@ impl MediaProvider for JsPluginProvider {
     // ── 登录（可选能力）──
     //
     // ⚠️ 每个方法都要先判断插件**是否实现了它**。
-    //    不判断的话，一个不需要登录的插件（如央视）被问到
+    //    不判断的话，一个不需要登录的插件（如某电视台）被问到
     //    `session()` 时会抛 `plugin.session is not a function` ——
     //    而宿主在启动时会普遍地问一遍，于是**每次启动都刷一堆错误日志**，
     //    真正的问题反而被淹没。
@@ -2370,7 +2370,7 @@ impl MediaProvider for JsPluginProvider {
          * 复现（`.probe/t42_epg_repro.py`，真实 FFI）：
          * ```text
          * get_epg("iptv", …)  ⇒ {"error":"插件报错: not a function"}   ★ 失败
-         * get_epg("cctv", …)  ⇒ [{"title":"…","start":…}]              ★ 阳性对照通过
+         * get_epg("srcl", …)  ⇒ [{"title":"…","start":…}]              ★ 阳性对照通过
          * ```
          *
          * # 根因：**能力位声明 false，但桥接层无条件调用**
@@ -2436,7 +2436,7 @@ impl MediaProvider for JsPluginProvider {
          * # 复现（我实测，`.probe/t42_epg_repro.py`）
          * ```text
          * get_timeshift("iptv", …)  ⇒ ★ **空响应**（不是报错，也不是流）
-         * get_timeshift("cctv", …)  ⇒ {"url":"https://…index.m3u8","kind":"hls",…}
+         * get_timeshift("srcl", …)  ⇒ {"url":"https://…index.m3u8","kind":"hls",…}
          * ```
          * ★ iptv.js 同样声明 `timeshift` 未实现（只声明了 `live: true`）
          * ⇒ 无条件调用 ⇒ `plugin.timeshift is not a function`。
@@ -3066,13 +3066,13 @@ mod tests {
     /// ★ 元信息解析：多个 tag 在同一行也要能解析
     ///
     /// 实测踩过：按「行首前缀」匹配时**一个都匹配不到**，
-    /// 因为真实写法常是 `/** @name 央视网 @version 1.0.0 @id cctv */`。
+    /// 因为真实写法常是 `/** @name 某电视台站 @version 1.0.0 @id srcl */`。
     #[test]
     fn parses_meta_on_single_line() {
-        let src = "/** @name 央视网 @version 1.0.0 @author dsh @id cctv */\ncode";
+        let src = "/** @name 某电视台站 @version 1.0.0 @author dsh @id srcl */\ncode";
         let m = parse_meta(src);
-        assert_eq!(m.id, "cctv");
-        assert_eq!(m.name, "央视网");
+        assert_eq!(m.id, "srcl");
+        assert_eq!(m.name, "某电视台站");
         assert_eq!(m.version, "1.0.0");
         assert_eq!(m.author, "dsh");
     }
@@ -3094,8 +3094,8 @@ mod tests {
 
     /// ★★★ 手写插件**不能**拿正文 `const API` 当来源（2026-10-09 修掉的 bug）
     ///
-    /// Owner 报的症状（截图）：源码装的 `bilibili` 插件，点「编辑」显示成了
-    /// 「链接安装」并预填 `https://api.bilibili.com` —— 那是**接口地址**。
+    /// Owner 报的症状（截图）：源码装的 `srcv` 插件，点「编辑」显示成了
+    /// 「链接安装」并预填 `https://api.example-v.com` —— 那是**接口地址**。
     ///
     /// # 原实现与危害
     /// ```text
@@ -3106,11 +3106,11 @@ mod tests {
     /// ```
     ///
     /// ⇒ 现在只认头部注释的「上游接口」；正文常量一律不认，返回空串。
-    ///   `bilibili` 属于"用户自己写的源码"，本来就没有安装来源。
+    ///   `srcv` 属于"用户自己写的源码"，本来就没有安装来源。
     #[test]
     fn upstream_ignores_body_const_api() {
-        // ① 头部只有元信息、正文有 const API ⇒ 必须为空（这正是 bilibili 的形状）
-        let bili = "/** @id bilibili @name 哔哩哔哩 @author dsh */\nconst API = 'https://api.bilibili.com';";
+        // ① 头部只有元信息、正文有 const API ⇒ 必须为空（这正是 srcv 的形状）
+        let bili = "/** @id srcv @name 外部视频源 @author dsh */\nconst API = 'https://api.example-v.com';";
         assert_eq!(upstream_of(bili), "", "接口地址不能被当成安装来源");
         // ② 三种引号都不认（整条回退都删了，不是只改一种）
         assert_eq!(upstream_of("const API = \"https://a.example.com\""), "");
@@ -3126,7 +3126,7 @@ mod tests {
     /// ```text
     /// ① 相对路径    用户复制出来是个不能用的东西
     /// ② 非 http 协议 file:// / javascript: 之类不该出现在"上游"位置
-    /// ③ 没有链接     本机 4 个内置源（cctv/cycani/iptv/tvbox-live）就是这种
+    /// ③ 没有链接     本机 4 个内置源（srcl/srca/iptv/tvbox-live）就是这种
     /// ```
     #[test]
     fn upstream_is_empty_rather_than_wrong() {
@@ -3135,7 +3135,7 @@ mod tests {
         // ② 非 http(s)
         assert_eq!(upstream_of("const API = 'ftp://x.example.com'"), "");
         // ③ 完全没有
-        assert_eq!(upstream_of("globalThis.plugin = { id: 'cctv' };"), "");
+        assert_eq!(upstream_of("globalThis.plugin = { id: 'srcl' };"), "");
         // ④ 头部那行是相对路径时，**不再**去看正文 —— 正文那条已删（会误判成来源）
         let src = "/** 上游接口（苹果CMS v10）：/api.php/provide/vod */\nconst API = 'https://real.example.com';";
         assert_eq!(upstream_of(src), "", "相对路径照旧不认，且不回头扫正文");
@@ -3327,15 +3327,15 @@ mod tests {
     /// 正常插件应能构建，且元信息落到 manifest
     #[test]
     fn builds_provider_from_valid_source() {
-        let src = "/** @id cctv @name 央视网 @version 2.0.0 */\n";
+        let src = "/** @id srcl @name 某电视台站 @version 2.0.0 */\n";
         let p = JsPluginProvider::from_source(src).unwrap();
         let m = p.manifest();
-        assert_eq!(m.id, "cctv");
-        assert_eq!(m.name, "央视网");
+        assert_eq!(m.id, "srcl");
+        assert_eq!(m.name, "某电视台站");
         assert_eq!(m.version, "2.0.0");
         assert_eq!(m.kind, "js");
         // id 前缀要带上，避免与其它源撞 id
-        assert_eq!(m.id_prefixes, vec!["cctv:".to_string()]);
+        assert_eq!(m.id_prefixes, vec!["srcl:".to_string()]);
     }
 
     /// 缺版本号时给默认值（不阻断加载）
@@ -3474,15 +3474,15 @@ globalThis.plugin = {
 
     /// ★ 插件真的能发 HTTP 并解析响应
     ///
-    /// 打真实站点（央视栏目接口，公开无需鉴权）。
+    /// 打真实站点（某电视台栏目接口，公开无需鉴权）。
     /// 这条通过 = 「插件自己发请求 → 解析 → 返回结构化数据」全链路可用，
-    /// 也就是 cctv 能被搬成插件的前提。
+    /// 也就是 srcl 能被搬成插件的前提。
     #[tokio::test]
     #[ignore = "需要网络"]
     async fn plugin_can_fetch_and_parse_real_http() {
         let src = r#"
 /** @id net @name 联网测试 */
-const API = 'https://api.cntv.cn/lanmu/columnSearch?&fl=&p=1&n=3&serviceId=tvcctv';
+const API = 'https://api.example-l.cn/lanmu/columnSearch?&fl=&p=1&n=3&serviceId=tv-l1';
 globalThis.plugin = {
   async home() {
     const raw = await host.http.get(API);
@@ -3499,7 +3499,7 @@ globalThis.plugin = {
         let sections = p.home().await.expect("联网取栏目应成功");
 
         assert!(!sections.is_empty(), "应至少拿到一个栏目");
-        // 央视「新闻联播」是稳定存在的栏目
+        // 某电视台「新闻联播」是稳定存在的栏目
         let titles: Vec<&str> = sections.iter().map(|s| s.title.as_str()).collect();
         assert!(
             titles.iter().any(|t| t.contains("新闻联播")),
@@ -3509,7 +3509,7 @@ globalThis.plugin = {
 
     /// ★★ POST 必须带 `Content-Type: application/json`
     ///
-    /// 实测踩过（cycani 登录）：reqwest 的 `.body(String)` 默认发
+    /// 实测踩过（srca 登录）：reqwest 的 `.body(String)` 默认发
     /// `text/plain`，服务端解析不了 JSON body，报的却是
     /// `Username is a required field` —— **看起来像参数没传**，
     /// 实际是 body 根本没被解析。这类问题极难从报错里看出来。
@@ -3589,7 +3589,7 @@ globalThis.plugin = {
     /// ★★ 插件的每个可选方法都必须**真的被桥接**
     ///
     /// 实测踩过两次同类问题：
-    ///   · `rank()` —— cycani 首页声明了「TV番组榜」区块、插件也实现了
+    ///   · `rank()` —— srca 首页声明了「TV番组榜」区块、插件也实现了
     ///     `rank()`，但宿主漏桥接 → 走 trait 默认实现 →
     ///     首页那两个区块**永远空白**，插件作者完全不知道为什么
     ///   · `episodes()` / `sources()` —— 同理
@@ -3670,7 +3670,7 @@ globalThis.plugin = {
     /// # 真实复现（`.probe/t42_epg_repro.py`，走真实 FFI）
     /// ```text
     /// get_epg("iptv", …)  ⇒ {"error":"插件报错: not a function"}   ← 修前
-    /// get_epg("cctv", …)  ⇒ [{"title":…}]                          ← 阳性对照
+    /// get_epg("srcl", …)  ⇒ [{"title":…}]                          ← 阳性对照
     /// ```
     ///
     /// # 两者的**不同**降级方式（不是笔误，是刻意区分）
@@ -3888,8 +3888,292 @@ globalThis.plugin = {
         assert_eq!(p.manifest().id, "demo");
         assert!(!p.manifest().name.is_empty());
     }
+    // ═══════════════════════════════════════════════════════════════════
+    //  直播插件取流/缓存辅助函数的门禁（**自建最简夹具，不依赖仓库里的具体网站插件**）
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // ★ 架构口径（Owner 逐字）：客户端只提供**视频播放能力**，
+    //   具体的视频网站由用户的本地插件提供，不进仓库。
+    //   ⇒ 仓库里**没有**任何具体网站的插件文件。
+    //   但"直播取流地址组装 / 缓存结构校验"这两类**通用**逻辑的回归
+    //   门禁仍然有价值，所以这里用一份**自建的最简夹具**（函数名与
+    //   真实插件一致：`pickHls` / `cacheValid`）来钉住它们 ——
+    //   夹具**只在测试里**，不进 `plugins/` 目录、不打真实站点。
 
-    /// 一个坏插件不能影响其它插件加载（扫描目录时隔离失败）
+    /// 自建最简直播夹具：`pickHls`（取流地址组装）+ `cacheValid`（缓存结构校验）
+    ///
+    /// # 为什么这两个是被单独拎出来测的
+    ///
+    /// `liveStream()` 需要 `host.http`（由宿主注入真实 proxy），
+    /// 单测里 stub 不掉 —— 真网络又会让 CI 依赖外网可用性
+    /// （本仓不接受"时绿时红"的门禁）。
+    ///
+    /// 而 `pickHls(data)` 是**纯函数**：输入接口返回体、输出地址。
+    /// 真实返回体里会**翻车**的每一处分支，都能用 fixture 精确复现：
+    /// ```text
+    /// ① host + base_url + extra 三段拼接（漏 extra = 签名没了 = 403）
+    /// ② hevc 必须被过滤（选了会黑屏）
+    /// ③ 只有 http_hls 才要（http_stream/flv 不要）
+    /// ④ 未开播 / 无 HLS 线路 = 返回 null（调用方据此报 not_found）
+    /// ```
+    /// ★ 契约「函数名 = 全局」是 `ctx.eval(source)` 在**全局作用域**求值
+    ///   决定的（顶层 `function` 变成全局）—— 与插件调用同一套，不是特制接缝。
+    ///
+    /// ⚠️ 夹具里的站点域名一律用 `example`（中性），不含任何具体网站名。
+    const LIVE_FIXTURE_SRC: &str = r#"
+/** @id live-fixture @name 直播夹具 @version 1.0.0 */
+function cacheValid(c) {
+  if (!c || !c.at || !Array.isArray(c.rooms) || !c.rooms.length) return false
+  return c.rooms.slice(0, 3).every((x) => x && x.id && x.name)
+}
+
+function pickHls(data) {
+  const streams = (data && data.playurl_info && data.playurl_info.playurl
+    && data.playurl_info.playurl.stream) || []
+
+  const hls = streams.find((s) => s.protocol_name === 'http_hls')
+  if (!hls || !Array.isArray(hls.format)) return null
+
+  const avcItems = []
+  for (const f of hls.format) {
+    for (const c of f.codec || []) {
+      if (c.codec_name !== 'avc') continue
+      const ui = (c.url_info || [])[0]
+      if (!ui || !ui.host || !c.base_url) continue
+      const qn = Array.isArray(c.accept_qn) && c.accept_qn.length
+        ? Math.max.apply(null, c.accept_qn)
+        : (c.current_qn || 0)
+      avcItems.push({ url: ui.host + c.base_url + (ui.extra || ''), qn })
+    }
+  }
+  if (!avcItems.length) return null
+
+  avcItems.sort((a, b) => b.qn - a.qn)
+  return avcItems[0]
+}
+
+globalThis.plugin = {
+  id: 'live-fixture',
+  capabilities: { live: true },
+  async home() { return [] },
+};
+"#;
+
+    /// 读自建直播夹具的源码
+    fn live_fixture_src() -> &'static str {
+        LIVE_FIXTURE_SRC
+    }
+
+    /// 喂 fixture 调夹具里的纯函数 `pickHls`
+    fn pick_hls(p: &JsPluginProvider, fixture: serde_json::Value) -> String {
+        let expr = format!("pickHls({})", fixture);
+        // `call_js` 是 async；这里用 block_on 跑（测试里没有 runtime）
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(p.call_js(&expr))
+            .unwrap_or_else(|e| panic!("pickHls 调用失败: {}", e.message))
+    }
+
+    /// ★★ 自建夹具必须**合法、能加载、能力位正确**
+    ///
+    /// # 为什么这条门禁是**必要的**（不是形式）
+    /// ```text
+    /// 插件由 `from_source()` 现场求值。若它语法错 / 缺 @id /
+    /// capabilities.live 没打开：
+    ///   · `Registry::live_all()` 按 `capabilities.live` 过滤
+    ///     = 直播页**完全看不到这个源**，且**没有任何报错**
+    /// ```
+    /// ⚠️ 断言读的是**用户可见的结果**（manifest 的能力位），
+    ///    而不是"某个函数被调用了"。
+    #[tokio::test]
+    async fn live_fixture_is_loadable_with_live_capability() {
+        let src = live_fixture_src();
+        let mut p = JsPluginProvider::from_source(src)
+            .unwrap_or_else(|e| panic!("夹具不是合法插件: {e}"));
+
+        /*
+         * ★ 能力位必须**执行脚本**才拿得到（`from_source` 之后仍是
+         *   `Capabilities::default()` 全 false）。
+         *   完整背景见 `hydrate_capabilities` 的说明。
+         */
+        p.hydrate_capabilities().await;
+
+        let m = p.manifest();
+        assert_eq!(m.id, "live-fixture");
+        assert!(
+            m.capabilities.live,
+            "★ live 必须为 true，否则直播页看不到这个源（且无报错）"
+        );
+    }
+
+    /// ★★★ 真门禁：地址 = host + base_url + extra（**三段缺一不可**）
+    ///
+    /// 撤销验证（把 `+ (ui.extra || '')` 去掉）= 本测试**必须变红**：
+    /// 返回的 url 会缺 `expires=…&sign=…` = 真机 403。
+    #[test]
+    fn live_pickhls_joins_host_baseurl_extra() {
+        let p = JsPluginProvider::from_source(live_fixture_src()).unwrap();
+        let fixture = serde_json::json!({
+            "playurl_info": { "playurl": { "stream": [
+                { "protocol_name": "http_hls", "format": [
+                    { "format_name": "ts", "codec": [
+                        { "codec_name": "avc",
+                          "current_qn": 10000,
+                          "accept_qn": [10000, 250],
+                          "base_url": "/live-bvc/x.m3u8?",
+                          "url_info": [{ "host": "https://h.example", "extra": "expires=1&sign=ab" }] }
+                    ] }
+                ] }
+            ] } }
+        });
+        let got = pick_hls(&p, fixture);
+
+        // 解析回 JSON 看结构（比断言整串稳）
+        let v: serde_json::Value = serde_json::from_str(&got).expect("必须是 JSON");
+        assert_eq!(
+            v["url"].as_str().unwrap(),
+            "https://h.example/live-bvc/x.m3u8?expires=1&sign=ab",
+            "★ 必须是三段拼接 —— 少了 extra 就没有签名，真机 403"
+        );
+        assert_eq!(v["qn"].as_u64().unwrap(), 10000, "应取 accept_qn 里最高档");
+    }
+
+    /// ★★★ 真门禁：**必须过滤掉 hevc**（选了会黑屏，不是画质差）
+    ///
+    /// 撤销验证（把 `if (c.codec_name !== 'avc') continue;` 去掉）= 变红：
+    /// 下面的 fixture 里 hevc 项排在前面，会被选中 = 真机黑屏。
+    #[test]
+    fn live_pickhls_rejects_hevc() {
+        let p = JsPluginProvider::from_source(live_fixture_src()).unwrap();
+        let fixture = serde_json::json!({
+            "playurl_info": { "playurl": { "stream": [
+                { "protocol_name": "http_hls", "format": [
+                    { "format_name": "ts", "codec": [
+                        // hevc 排在前、且清晰度更高 —— 若不过滤必胜出
+                        { "codec_name": "hevc", "current_qn": 20000, "accept_qn": [20000],
+                          "base_url": "/hevc.m3u8?", "url_info": [{ "host": "https://h", "extra": "e=1" }] },
+                        { "codec_name": "avc", "current_qn": 10000, "accept_qn": [10000],
+                          "base_url": "/avc.m3u8?", "url_info": [{ "host": "https://h", "extra": "e=2" }] }
+                    ] }
+                ] }
+            ] } }
+        });
+        let got = pick_hls(&p, fixture);
+        let v: serde_json::Value = serde_json::from_str(&got).unwrap();
+        assert!(
+            v["url"].as_str().unwrap().contains("/avc.m3u8"),
+            "★ 必须挑 avc —— 选 hevc 会黑屏（有声音有进度没画面）。实际: {}",
+            v["url"]
+        );
+    }
+
+    /// ★ 真门禁：**只要 http_hls** —— 不要 http_stream（flv）
+    ///
+    /// 撤销验证（`find(s => s.protocol_name === 'http_hls')` 改成取 `[0]`）= 变红。
+    #[test]
+    fn live_pickhls_prefers_http_hls() {
+        let p = JsPluginProvider::from_source(live_fixture_src()).unwrap();
+        let fixture = serde_json::json!({
+            "playurl_info": { "playurl": { "stream": [
+                { "protocol_name": "http_stream", "format": [
+                    { "format_name": "flv", "codec": [
+                        { "codec_name": "avc", "current_qn": 10000, "accept_qn": [10000],
+                          "base_url": "/x.flv?", "url_info": [{ "host": "https://h", "extra": "e=1" }] }
+                    ] }
+                ] },
+                { "protocol_name": "http_hls", "format": [
+                    { "format_name": "ts", "codec": [
+                        { "codec_name": "avc", "current_qn": 10000, "accept_qn": [10000],
+                          "base_url": "/x.m3u8?", "url_info": [{ "host": "https://h", "extra": "e=2" }] }
+                    ] }
+                ] }
+            ] } }
+        });
+        let got = pick_hls(&p, fixture);
+        let v: serde_json::Value = serde_json::from_str(&got).unwrap();
+        assert!(
+            v["url"].as_str().unwrap().ends_with("x.m3u8?e=2"),
+            "★ 必须走 http_hls（flv 是未验证过的路径）。实际: {}",
+            v["url"]
+        );
+    }
+
+    /// ★ 真门禁：**没有 HLS 线路 = null**（调用方据此报 not_found）
+    ///
+    /// 阴性对照 —— 上面三条都测"有 HLS 时怎样"，这条测"没有时怎样"。
+    /// 撤销验证（`if (!hls) return null` 改成返回一个占位地址）= 变红。
+    #[test]
+    fn live_pickhls_returns_null_without_hls() {
+        let p = JsPluginProvider::from_source(live_fixture_src()).unwrap();
+
+        // ① stream 里只有 http_stream（flv）
+        let only_flv = serde_json::json!({
+            "playurl_info": { "playurl": { "stream": [
+                { "protocol_name": "http_stream", "format": [
+                    { "format_name": "flv", "codec": [
+                        { "codec_name": "avc", "current_qn": 10000, "accept_qn": [10000],
+                          "base_url": "/x.flv?", "url_info": [{ "host": "https://h", "extra": "e=1" }] }
+                    ] }
+                ] }
+            ] } }
+        });
+        assert_eq!(pick_hls(&p, only_flv), "null", "只有 flv = 必须 null");
+
+        // ② playurl_info 整个缺失（下播房间的真实形态）
+        assert_eq!(
+            pick_hls(&p, serde_json::json!({ "live_status": 0 })),
+            "null",
+            "没有 playurl_info = 必须 null（而不是 panic）"
+        );
+
+        // ③ http_hls 在，但只有 hevc
+        let only_hevc = serde_json::json!({
+            "playurl_info": { "playurl": { "stream": [
+                { "protocol_name": "http_hls", "format": [
+                    { "format_name": "ts", "codec": [
+                        { "codec_name": "hevc", "current_qn": 10000, "accept_qn": [10000],
+                          "base_url": "/h.m3u8?", "url_info": [{ "host": "https://h", "extra": "e=1" }] }
+                    ] }
+                ] }
+            ] } }
+        });
+        assert_eq!(
+            pick_hls(&p, only_hevc),
+            "null",
+            "★ 只有 hevc = 宁可 null（明确报「没有可用线路」），也不要给一条会黑屏的"
+        );
+    }
+
+    /// ★ 真门禁：缓存结构校验（结构坏 = 判为无效，重新拉取）
+    ///
+    /// 这条守的是本仓某直播插件踩过的坑：**光换缓存 key 不够，
+    /// 必须校验结构本身**（"用旧代码写新 key"总会发生）。
+    #[test]
+    fn live_cache_valid_rejects_bad_structure() {
+        let p = JsPluginProvider::from_source(live_fixture_src()).unwrap();
+
+        let call = |expr: &str| -> String {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(p.call_js(expr))
+                .unwrap()
+        };
+
+        // 空 / 缺时间戳 / 空列表 —— 全部判无效
+        assert_eq!(call("cacheValid(null)"), "false");
+        assert_eq!(call("cacheValid({rooms:[{id:'1',name:'a'}]})"), "false", "缺 at");
+        assert_eq!(call("cacheValid({at:1,rooms:[]})"), "false", "空列表");
+        // 条目缺 id / 缺 name —— 也判无效
+        assert_eq!(call("cacheValid({at:1,rooms:[{name:'a'}]})"), "false", "条目缺 id");
+        assert_eq!(call("cacheValid({at:1,rooms:[{id:'1'}]})"), "false", "条目缺 name");
+        // 阳性对照：结构完整 = true（否则上面的 false 可能恒真）
+        assert_eq!(
+            call("cacheValid({at:1,rooms:[{id:'1',name:'a'}]})"),
+            "true",
+            "★ 阳性对照：结构完整必须为 true，否则这条门禁等于恒 false"
+        );
+    }
+
     #[test]
     fn bad_plugin_does_not_block_others() {
         let dir = std::env::temp_dir().join(format!("dsh-plugin-test-{}", std::process::id()));
@@ -3964,7 +4248,7 @@ globalThis.plugin = {
     ///
     /// 实测踩过：`hydrate_capabilities` 读的是 `loginRequired`，
     /// 但 `call_js` 出口已经把键转成 `login_required` 了 ——
-    /// 于是 cycani 的 `loginRequired: true` **完全没生效**：
+    /// 于是 srca 的 `loginRequired: true` **完全没生效**：
     /// 界面不显示登录入口、会话状态是 `not_required`，用户没法登录。
     ///
     /// 这条测试覆盖「插件写 camelCase → 能力位正确落到 manifest」全链路。
@@ -4033,15 +4317,15 @@ globalThis.plugin = {
 
     /// ★★ 反向控制：episode_id **不是** URL ⇒ 与改前**逐字相同**（传条目 id）
     ///
-    /// 这条是"不许把次元城打坏"的护栏：cycani 拿 ¤episode_id¤ 当 section_id，
+    /// 这条是"不许把某动画站打坏"的护栏：srca 拿 ¤episode_id¤ 当 section_id，
     /// 若不加判断地一律替换，它收到的东西就变了。
     #[test]
     fn resolve_first_arg_keeps_native_id_for_non_url() {
-        let src = "/** @id cycani @name 测试 */\n";
+        let src = "/** @id srca @name 测试 */\n";
         let p = JsPluginProvider::from_source(src).unwrap();
-        let id = MediaId::new("cycani", "51463");
+        let id = MediaId::new("srca", "51463");
 
-        for ep in [Some("51463"), Some("cycani:51463"), Some(""), None] {
+        for ep in [Some("51463"), Some("srca:51463"), Some(""), None] {
             let req = PlayRequest {
                 source_code: None,
                 episode_id: ep.map(|s| s.to_string()),
@@ -4058,21 +4342,21 @@ globalThis.plugin = {
     /// ★ 前缀剥除仍然生效（改动的另一条护栏）
     #[test]
     fn resolve_first_arg_still_strips_prefix() {
-        let src = "/** @id cycani @name 测试 */\n";
+        let src = "/** @id srca @name 测试 */\n";
         let p = JsPluginProvider::from_source(src).unwrap();
         let req = PlayRequest {
             source_code: None,
-            episode_id: Some("cycani:51463".into()),
+            episode_id: Some("srca:51463".into()),
             quality: None,
         };
         // 条目 id 带自己的前缀 ⇒ 剥掉
         assert_eq!(
-            p.resolve_first_arg(&MediaId::new("cycani", "cycani:51463"), &req),
+            p.resolve_first_arg(&MediaId::new("srca", "srca:51463"), &req),
             "51463"
         );
         // 别的 provider 的前缀不动
         assert_eq!(
-            p.resolve_first_arg(&MediaId::new("cycani", "other:abc"), &req),
+            p.resolve_first_arg(&MediaId::new("srca", "other:abc"), &req),
             "other:abc"
         );
     }
@@ -4081,12 +4365,12 @@ globalThis.plugin = {
     ///
     /// 实测踩到（Owner 报「从追更进入报错」）：
     /// `Episode` 也长着 `{id, title}` 的样子，于是剧集 id 被加前缀
-    /// 变成 `cycani:51463`，前端放进 `PlayRequest.episode_id` 传回来，
+    /// 变成 `srca:51463`，前端放进 `PlayRequest.episode_id` 传回来，
     /// 插件拿它当数字 id → 服务端报
-    /// `bind uri "section_id": parsing "cycani:51463": invalid syntax`。
+    /// `bind uri "section_id": parsing "srca:51463": invalid syntax`。
     #[test]
     fn prefix_only_applies_to_media_items() {
-        let src = "/** @id cycani @name 测试 */\n";
+        let src = "/** @id srca @name 测试 */\n";
         let p = JsPluginProvider::from_source(src).unwrap();
 
         let mut v = serde_json::json!({
@@ -4101,13 +4385,13 @@ globalThis.plugin = {
             "sources": [{ "code": "CYC_Main", "title": "线路", "count": 12 }],
             // 区块 → 不该加（有 source）
             "sections": [
-                { "id": "cycani-rank-1", "title": "榜单", "source": { "type": "rank", "rankId": "1" } }
+                { "id": "srca-rank-1", "title": "榜单", "source": { "type": "rank", "rankId": "1" } }
             ]
         });
         p.prefix_media_ids(&mut v);
 
         // 媒体条目：加了
-        assert_eq!(v["items"][0]["id"], "cycani:900", "媒体条目应加前缀");
+        assert_eq!(v["items"][0]["id"], "srca:900", "媒体条目应加前缀");
 
         // ★ 剧集：必须保持原样（这是 bug 的核心）
         assert_eq!(
@@ -4118,7 +4402,7 @@ globalThis.plugin = {
 
         // 播放源 / 区块：保持原样
         assert_eq!(v["sources"][0]["code"], "CYC_Main");
-        assert_eq!(v["sections"][0]["id"], "cycani-rank-1");
+        assert_eq!(v["sections"][0]["id"], "srca-rank-1");
     }
 
     /// ★ 转换函数本身要正确（含边界）
@@ -4441,14 +4725,14 @@ globalThis.plugin = {{ id: '{id}', async home() {{ return [] }} }};"#
         JsPluginProvider::from_source(&src).unwrap()
     }
 
-    /// ★★ id **含冒号**时也必须加前缀（Owner 报「B站点开显示没有路由」的根因）
+    /// ★★ id **含冒号**时也必须加前缀（Owner 报「某视频站点开显示没有路由」的根因）
     ///
     /// 原实现用 `!id.contains(':')` 判断"是否已加过前缀"，
-    /// 于是 B 站插件的 `av:BV1u9ew6yEEP` 被误判为"已有前缀"而跳过 →
+    /// 于是 外部视频站插件的 `av:BV1u9ew6yEEP` 被误判为"已有前缀"而跳过 →
     /// 前端切第一个冒号拿到 `provider="av"` → 后端路由不到。
     #[test]
     fn prefix_added_even_when_id_contains_colon() {
-        let p = provider_with_id("bilibili");
+        let p = provider_with_id("src-a");
 
         let mut v = serde_json::json!({
             "items": [
@@ -4461,12 +4745,12 @@ globalThis.plugin = {{ id: '{id}', async home() {{ return [] }} }};"#
         let items = v.get("items").unwrap().as_array().unwrap();
         assert_eq!(
             items[0].get("id").unwrap().as_str().unwrap(),
-            "bilibili:av:BV1u9ew6yEEP",
+            "src-a:av:BV1u9ew6yEEP",
             "★ 含冒号的 id 也必须加前缀（否则前端切出来 provider=av）"
         );
         assert_eq!(
             items[1].get("id").unwrap().as_str().unwrap(),
-            "bilibili:BV1cSec6tEux"
+            "src-a:BV1cSec6tEux"
         );
     }
 
@@ -4476,18 +4760,18 @@ globalThis.plugin = {{ id: '{id}', async home() {{ return [] }} }};"#
     /// 所以这个函数必须能被安全地反复调用。
     #[test]
     fn prefix_is_idempotent() {
-        let p = provider_with_id("bilibili");
+        let p = provider_with_id("src-a");
 
         let mut v = serde_json::json!({
-            "items": [{ "id": "bilibili:av:BV1u9ew6yEEP", "title": "已带前缀" }]
+            "items": [{ "id": "src-a:av:BV1u9ew6yEEP", "title": "已带前缀" }]
         });
         p.prefix_media_ids(&mut v);
         p.prefix_media_ids(&mut v);
 
         assert_eq!(
             v["items"][0]["id"].as_str().unwrap(),
-            "bilibili:av:BV1u9ew6yEEP",
-            "反复调用不能变成 bilibili:bilibili:..."
+            "src-a:av:BV1u9ew6yEEP",
+            "反复调用不能变成 src-a:src-a:..."
         );
     }
 
@@ -4497,16 +4781,16 @@ globalThis.plugin = {{ id: '{id}', async home() {{ return [] }} }};"#
     /// **不是**自己的前缀，应当照常加上 A 的前缀（由 A 负责解释它）。
     #[test]
     fn prefix_of_other_provider_is_not_treated_as_own() {
-        let p = provider_with_id("bilibili");
+        let p = provider_with_id("src-a");
 
         let mut v = serde_json::json!({
-            "items": [{ "id": "cctv:abc123", "title": "别的源的 id" }]
+            "items": [{ "id": "src-b:abc123", "title": "别的源的 id" }]
         });
         p.prefix_media_ids(&mut v);
 
         assert_eq!(
             v["items"][0]["id"].as_str().unwrap(),
-            "bilibili:cctv:abc123",
+            "src-a:src-b:abc123",
             "别人的前缀不是我的前缀 —— 判据必须精确匹配"
         );
     }
@@ -4517,10 +4801,10 @@ globalThis.plugin = {{ id: '{id}', async home() {{ return [] }} }};"#
     /// 否则详情/取流/剧集全都拿不到数据（而且不报错，极难查）。
     #[test]
     fn prefix_and_strip_are_inverse() {
-        let p = provider_with_id("bilibili");
+        let p = provider_with_id("src-a");
 
         for native in [
-            "av:BV1u9ew6yEEP", // 含冒号（B 站真实形态）
+            "av:BV1u9ew6yEEP", // 含冒号（外部视频站真实形态）
             "BV1cSec6tEux",    // 不含冒号
             "a:b:c:d",         // 多冒号
             "中文id",           // 非 ASCII
@@ -4542,11 +4826,11 @@ globalThis.plugin = {{ id: '{id}', async home() {{ return [] }} }};"#
     /// 剧集 / 播放源 / 分区**不能**被加前缀（回归保护）
     ///
     /// 实测踩过：`Episode` 也有 `{id, title}`，被加前缀后
-    /// 插件拿 `cycani:51463` 当数字 id 用 → 服务端报
-    /// `parsing "cycani:51463": invalid syntax`。
+    /// 插件拿 `srca:51463` 当数字 id 用 → 服务端报
+    /// `parsing "srca:51463": invalid syntax`。
     #[test]
     fn non_media_objects_are_not_prefixed() {
-        let p = provider_with_id("cycani");
+        let p = provider_with_id("src-a");
 
         let mut v = serde_json::json!({
             "episodes": [{ "id": "51463", "title": "第 1 集", "order": 1 }],

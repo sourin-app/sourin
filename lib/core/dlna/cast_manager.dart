@@ -275,7 +275,7 @@ class CastManager {
 
   /// 把 [url] 投到 [device]
   ///
-  /// [headers] 会由本地代理注入上游（B 站等防盗链源必须带 Referer）。
+  /// [headers] 会由本地代理注入上游（某视频站等防盗链源必须带 Referer）。
   /// 成功返回 session；失败**不抛异常**，返回 phase=failed 的 session ——
   /// UI 只需要看一个对象，不用同时处理返回值和异常两条路。
   Future<CastSession> cast(

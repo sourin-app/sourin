@@ -600,7 +600,7 @@ class RemoteBridge {
   /// # 上报形状（必须与 Rust 的 `ProviderEntry` 逐字对齐）
   ///
   /// ```json
-  /// [{"id":"cycani","name":"次元城","enabled":true}]
+  /// [{"id":"srca","name":"某动画站","enabled":true}]
   /// ```
   Future<void> _refreshProviders() async {
     try {
@@ -771,8 +771,8 @@ class RemoteBridge {
        * # wire 格式（**扁平**，与 Rust 的 `MoveProvider` 逐字对应）
        *
        * ```text
-       * {"kind":"move_provider","id":"cycani","delta":-1}   ↑ 上移一格
-       * {"kind":"move_provider","id":"cycani","delta": 1}   ↓ 下移一格
+       * {"kind":"move_provider","id":"srca","delta":-1}   ↑ 上移一格
+       * {"kind":"move_provider","id":"srca","delta": 1}   ↓ 下移一格
        * ```
        * `id` 是内容源 id，`delta` 是**相对**位移（负数上移、正数下移）。
        *
@@ -1017,13 +1017,13 @@ abstract final class RemoteCapabilities {
   ///
   /// # ★ 保留「按轮次交替取」（round-robin）
   ///
-  /// 原版注释记录过这个**真 bug**（Owner 搜「从零开始」找不到次元城的番）：
+  /// 原版注释记录过这个**真 bug**（Owner 搜「从零开始」找不到某动画站的番）：
   /// > 原先的写法是外层遍历源、内层遍历条目，凑够 60 条就 `break` 两层循环
-  /// > —— 于是**第一个源（央视）用 60 条配额全吃掉了**，
-  /// > 次元城的 12 条完全没机会出现。
+  /// > —— 于是**第一个源（某电视台）用 60 条配额全吃掉了**，
+  /// > 某动画站的 12 条完全没机会出现。
   /// >
   /// > 而用户搜「从零开始」想找的多半是《Re:从零开始的异世界生活》
-  /// > （在次元城），结果满屏都是央视的《老兵你好》之类 ——
+  /// > （在某动画站），结果满屏都是某电视台的《老兵你好》之类 ——
   /// > 看着就像「搜索坏了」。
   ///
   /// ★ 流式 + round-robin 的组合方式：**把"已知的源"作为一个整体轮转**。

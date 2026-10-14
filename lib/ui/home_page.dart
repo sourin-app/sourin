@@ -33,7 +33,7 @@
 //
 // 原版注释：
 // > 原先无条件重拉全部区块 —— 实测后果：切走再切回首页要 **4.2 秒**
-// > （13 个区块 × 每个一次插件调用，央视的栏目列表单次就 ~690ms）。
+// > （13 个区块 × 每个一次插件调用，某电视台的栏目列表单次就 ~690ms）。
 // > 再加一条：**只拉当前显示的源** —— 4 源 × 8 区块 ≈ 30 次请求
 // > 降到 **8 次**。
 //
@@ -62,16 +62,16 @@ import 'widgets/source_bar.dart';
 /// 首页直播条只展示这几个常用频道，完整列表在「直播」页
 ///
 /// ⚠️ 与原版 `HomeView.vue` L31 的 `LIVE_PREVIEW` **完全一致** ——
-///    顺序、id、显示名都不要改（id 是 cctv 源的频道标识）。
+///    顺序、id、显示名都不要改（id 是 srcl 源的频道标识）。
 const kLivePreview = <({String id, String name})>[
-  (id: 'cctv1', name: 'CCTV-1'),
-  (id: 'cctv2', name: 'CCTV-2'),
-  (id: 'cctv5', name: 'CCTV-5'),
-  (id: 'cctv6', name: 'CCTV-6'),
-  (id: 'cctv8', name: 'CCTV-8'),
-  (id: 'cctv13', name: 'CCTV-13'),
-  (id: 'cctvjilu', name: 'CCTV-9'),
-  (id: 'cctvchild', name: 'CCTV-14'),
+  (id: 'srcl1', name: 'SRCL-1'),
+  (id: 'srcl2', name: 'SRCL-2'),
+  (id: 'srcl5', name: 'SRCL-5'),
+  (id: 'srcl6', name: 'SRCL-6'),
+  (id: 'srcl8', name: 'SRCL-8'),
+  (id: 'srcl13', name: 'SRCL-13'),
+  (id: 'srcljilu', name: 'SRCL-9'),
+  (id: 'srclchild', name: 'SRCL-14'),
 ];
 
 /// 这个源能不能给**首页**提供内容（首页分区）
@@ -92,13 +92,13 @@ const kLivePreview = <({String id, String name})>[
 /// 的源放进聚合（`:428 if let Ok(sections) = p.home().await { if !sections.is_empty() {`）。
 /// 而 `MediaProvider::home()` 的默认实现就是 `Ok(vec![])`
 /// （`rust/sourin_core/src/provider.rs:230-232`）——
-/// 纯直播源**没有覆写它**（实测全仓只有 `cctv.js:386` / `cycani.js:361` /
+/// 纯直播源**没有覆写它**（实测全仓只有 `srcl.js:386` / `srca.js:361` /
 /// `demo.js:81` 覆写了 `home()`；`iptv.js` / `tvbox-live.js` 里
 /// `home` 零命中）。
 /// ```text
 /// iptv.js:642-647        vod: false, live: true   ← 纯直播
 /// tvbox-live.js:44-49    vod: false, live: true   ← 纯直播
-/// cctv.js:371            vod: true,  live: true   ← ★ 不是纯直播，必须留下
+/// srcl.js:371            vod: true,  live: true   ← ★ 不是纯直播，必须留下
 /// ```
 /// ⇒ 选中纯直播源时首页必然只剩空态 —— 而源**明明是启用的**，
 ///   用户看到「还没有可用的内容源 / 在设置里启用或导入一个内容源」
@@ -122,7 +122,7 @@ const kLivePreview = <({String id, String name})>[
 /// # 实测读数（真实 28 个源：`.probe/t352-vod/out/01_providers.json`）
 ///
 /// ```text
-/// vod == true    26 个  ← 保留（cycani / bilibili / cctv / 154 / demo /
+/// vod == true    26 个  ← 保留（srca / srcv / srcl / 154 / demo /
 ///                          各 api-* 与 *zyapi 聚合站 …）
 /// vod == false    2 个  ← 只有这两个被排除（iptv / tvbox-live）
 /// ```
@@ -162,9 +162,9 @@ List<ProviderManifest> homeSourceList(List<ProviderManifest> all) =>
 // # 真机读数（隔离数据目录 + 真核心 + 真网络，task-6 探针产物）
 //
 // ```text
-// 源: cctv（已启用 3 个；首页可用 1 个 —— 纯直播源被 homeSourceList 排除）
+// 源: srcl（已启用 3 个；首页可用 1 个 —— 纯直播源被 homeSourceList 排除）
 // 实测 getHome 耗时: 1597ms / 803ms（同一台机器两次读数）
-// 待加载区块 9 个（当前源=cctv）        ← 9 次 get_list
+// 待加载区块 9 个（当前源=srcl）        ← 9 次 get_list
 // 渲染完成: 分区=9 卡片=160
 // ```
 // ⇒ 冷切一次源 ≈ 1 次 get_home（0.8~1.6s）+ 9 次 get_list（网络往返）。
@@ -192,7 +192,7 @@ List<ProviderManifest> homeSourceList(List<ProviderManifest> all) =>
 /// ```text
 /// 一个条目 ≈ 该源的 _groups（分区骨架，很小）
 ///          + 各区块 items 的**引用**（列表对象共享，不做深拷贝）
-/// 实测 cctv 源 9 个区块 / 160 张卡 ⇒ 一个条目 ≈ 160 个引用
+/// 实测 srcl 源 9 个区块 / 160 张卡 ⇒ 一个条目 ≈ 160 个引用
 /// 12 个条目 ≈ 2000 个引用 ⇒ 与"一屏 160 张卡"同一个量级，不会失控
 /// ```
 /// ★ 定成 12 而不是"无限"：用户可能装几十个源，来回切不能让内存线性涨。
@@ -406,7 +406,7 @@ final List<({bool force, String reason})> debugLoadAllCalls =
 /// M = 过完可用性闸之后**真正画出来**的 chip 数
 /// ```
 /// ★ 只报 M 没有意义：M=0 既可能是"闸生效了"，也可能是"直播条压根没渲染"
-///   （当前源不是 cctv / 页面还在骨架态）—— 两个原因读数**相同**。
+///   （当前源不是 srcl / 页面还在骨架态）—— 两个原因读数**相同**。
 /// ⇒ 必须成对记录，且由**渲染路径自己**写（同 `debugLoadAllCalls` 的教训：
 ///   要测"画了几个"，就直接记渲染时那个数，不要记它的副作用）。
 ///
@@ -454,9 +454,9 @@ class HomePage extends StatefulWidget {
   /// # 错在哪
   ///
   /// 旧签名不带源 ⇒ 接收方（`shell.dart:4913 _openLiveChannel`）只能把
-  /// `provider` **写死成 'cctv'`**（`shell.dart:4923`）。
+  /// `provider` **写死成 'srcl'`**（`shell.dart:4923`）。
   /// 于是"从哪个源看到的频道"这个信息**在回调边界上被丢掉了**，
-  /// 播放器永远去 cctv 取流 —— 换成别的源必然取不到流（黑屏/报错）。
+  /// 播放器永远去 srcl 取流 —— 换成别的源必然取不到流（黑屏/报错）。
   ///
   /// # 为什么这么改
   ///
@@ -654,10 +654,10 @@ class HomePageState extends State<HomePage> {
   //   用户点进去 ⇒ 播放器取到的全是 `drmProtected: true` 的线
   //   ⇒ 黑屏。用户看到的就是"一排能点、点了全黑"的假入口。
   //
-  // # 为什么这么改（而不是"写死 cctv 不可用"）
+  // # 为什么这么改（而不是"写死 srcl 不可用"）
   //
   // 判据必须**动态探测**，理由见 `live_availability.dart` 文件头：
-  // 央视 CDN 地址会过期/更换，内容方哪天取消加密就会变成可用 ——
+  // 某电视台 CDN 地址会过期/更换，内容方哪天取消加密就会变成可用 ——
   // 写死过滤会造成**永久性假阴性**，比多显示几个台危险得多。
   //
   // 所以复用直播页（`live_page.dart:188`）那一套：
@@ -1285,7 +1285,7 @@ class HomePageState extends State<HomePage> {
        * 生命周期**天然对齐**：内容刷新了，可用性跟着重判一次。
        *
        * ★ 只探**当前源**且该源真的声明了 `type:'custom'` 区块 ——
-       *   实测（task-4）28 个源里只有 `cctv` 有这种区块，
+       *   实测（task-4）28 个源里只有 `srcl` 有这种区块，
        *   其余源在这里**零请求**（见下面 `hasCustom`）。
        *
        * ⚠️ **不 await**：直播条探测要发 8 个取流请求，
@@ -1311,7 +1311,7 @@ class HomePageState extends State<HomePage> {
   /// # ★ 必须**同时支持 category 与 rank 两种来源**
   ///
   /// 原版注释：
-  /// > 早先只处理 `category`，而 cycani 的首页声明的是
+  /// > 早先只处理 `category`，而 srca 的首页声明的是
   /// > `SectionSource::Rank`（「TV番组榜」「剧场番组榜」）——
   /// > 于是那两个区块永远显示「暂无内容」
   /// > （声明了却拉不到，是真实的半成品缺陷）。
@@ -1437,7 +1437,7 @@ class HomePageState extends State<HomePage> {
      * `loadAll` 会把 `_groups` 收窄成"当前源的那一份"（keepSubset）⇒
      *   对**非当前源**，`_groups.where(provider==x)` 是**空的** ⇒ 这里 `return`，
      *   一个区块都不拉、快照也不写。
-     * ★ 真机读数就是这么露出来的：探针在"当前源=cctv"时预热 t11a ⇒
+     * ★ 真机读数就是这么露出来的：探针在"当前源=srcl"时预热 t11a ⇒
      *   预热静默失效 ⇒ 后面切回 t11a **永远不命中**（读数 720ms/2 请求，与冷加载一样）。
      * ⇒ 那不是缓存坏了，是**找不到骨架就悄悄放弃**。
      * ```
@@ -1457,7 +1457,7 @@ class HomePageState extends State<HomePage> {
        * `custom` / `static` / `recent` 由界面自己画（见 `_loadSection` 的说明）——
        * 对它们调 `_loadSection` 是**空操作**：一个请求都不发，但会进 `pending`，
        * 于是日志里出现"补拉 1 个区块"而实际零请求 ⇒ 读数与日志对不上。
-       * ★ cctv 源的「正在直播」正是 custom ⇒ 这条不加，切到 cctv 每次都多一行假日志。
+       * ★ srcl 源的「正在直播」正是 custom ⇒ 这条不加，切到 srcl 每次都多一行假日志。
        */
       final fetchable = (s.source.isCategory && s.source.categoryId != null) ||
           (s.source.isRank && s.source.rankId != null);
@@ -1622,7 +1622,7 @@ class HomePageState extends State<HomePage> {
     /*
      * ★ task-6：切源后重探直播条
      *
-     * 两个源的可播线路完全无关（cctv 全 DRM，iptv 全可播）——
+     * 两个源的可播线路完全无关（srcl 全 DRM，iptv 全可播）——
      * 不重探就会拿 A 源的结论去画 B 源的条（串台）。
      * ★ 探针按 (provider, channelId) 分键缓存 ⇒ 切回来时是**命中缓存**，
      *   不会重复发请求。
@@ -1711,7 +1711,7 @@ class HomePageState extends State<HomePage> {
         "${homeListCache.maxEntries}");
   }
 
-  /// `cctv:abc` → (provider, id)
+  /// `srcl:abc` → (provider, id)
   (String, String) _splitKey(String key) {
     final i = key.indexOf(':');
     if (i < 0) return ('', key);
@@ -1993,8 +1993,8 @@ class HomePageState extends State<HomePage> {
                          * # 为什么 `custom` 型才过闸
                          *
                          * `custom` 是"区块内容由界面自己画"的类型
-                         *（实测只有 `cctv` 的「正在直播」用了它，
-                         * 见 `cctv.js:391`）⇒ 只有它才需要直播条的判定；
+                         *（实测只有 `srcl` 的「正在直播」用了它，
+                         * 见 `srcl.js:391`）⇒ 只有它才需要直播条的判定；
                          * 其它类型的区块传空名单，不产生任何请求/查询。
                          */
                         liveStrip: s.source.type == 'custom'
@@ -2171,7 +2171,7 @@ class _SectionBlock extends StatelessWidget {
   /// 点直播频道 → 进播放器
   ///
   /// ★ task-6：第一个参数是**频道所属的源**（旧签名丢了它，
-  ///   接收方只能把 provider 写死成 'cctv'）。详见 [HomePage.onOpenLive]。
+  ///   接收方只能把 provider 写死成 'srcl'）。详见 [HomePage.onOpenLive]。
   final void Function(String provider, String channelId, String name)?
       onOpenLive;
 
@@ -2303,7 +2303,7 @@ class _SectionBlock extends StatelessWidget {
            * ★ 为什么榜单用「带序号」而不是普通海报轨道
            *
            * 原版注释：
-           * > 主流站点（Netflix Top 10 / B站排行榜 / 腾讯热榜）都用大序号，
+           * > 主流站点（Netflix Top 10 / 某视频站排行榜 / 腾讯热榜）都用大序号，
            * > 因为「排行」本身就是核心信息 —— 用海报轨道会把这个信息丢掉。
            * > 仍然可横向滚动，信息与操作与原来完全一致。
            */
@@ -2465,7 +2465,7 @@ class _Rail extends StatelessWidget {
 /// :1288  final ch = kLivePreview[i]
 /// ```
 /// 它**不接收任何"哪些台可用"的输入**，也从不发请求 ⇒ 8 个台名
-/// 必然画出来。而实测（task-4）这 8 个台在 cctv 源里**全部**只有
+/// 必然画出来。而实测（task-4）这 8 个台在 srcl 源里**全部**只有
 /// `drmProtected: true` 的视频线（0 个非 DRM 视频线、20/20 仅音频）
 /// ⇒ 用户点任意一个都是黑屏。这就是"一排能点、点了全黑"的假入口。
 ///
@@ -2499,7 +2499,7 @@ class _LiveStrip extends StatelessWidget {
   /// 点频道 → 进播放器
   ///
   /// ★ task-6：第一个参数是 `provider`（本组件自己那份，不是猜的）——
-  ///   旧签名只有 `(channelId, name)`，接收方只能写死 'cctv'。
+  ///   旧签名只有 `(channelId, name)`，接收方只能写死 'srcl'。
   final void Function(String provider, String channelId, String name)?
       onOpenLive;
 

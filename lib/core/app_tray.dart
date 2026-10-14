@@ -46,6 +46,7 @@ import 'package:window_manager/window_manager.dart';
 import '../ui/tokens.dart';
 import '../ui/widgets/overlay_motion.dart';
 import 'ui_prefs.dart';
+import '../ui/widgets/plugin_speedtest.dart' show SpeedTestCancelToken;
 
 /// 关闭行为（落盘在 `dsh.closeAction`）
 enum CloseAction {
@@ -439,6 +440,31 @@ class AppTray with TrayListener, WindowListener {
   /// 彻底退出（托盘菜单「退出」与关闭确认都走这里）
   Future<void> quitNow() async {
     _quitting = true;
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-13（Owner）：退出前**先停掉在飞的测速**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * Owner 原话（逐字）：
+     * ```text
+     * > 测速的过程中如果直接退出会导致窗口无响应
+     * ```
+     *
+     * # 为什么放在**最前**（在 flush 偏好之前）
+     * ```text
+     * 测速每完成一个源就 `PluginSpeedTest.append()` ⇒ `UiPrefs.set()`
+     * ⇒ 起一个 300ms 去抖写盘定时器。
+     * 若它晚于本次退出流程完成 ⇒
+     *   · 与 `_flushPrefsBeforeExit()` 交叉 ⇒ **脏写/丢数据**（已实测确认）
+     *   · 若它再 setState 到已 dispose 的树上 ⇒ 抛异常、打乱退出时序
+     * ⇒ 必须先让测速收手，再 flush。
+     * ```
+     *
+     * ⚠️ `cancelAll()` 是**同步**的（只置标志位），不会阻塞退出：
+     *    它只是让下载循环在**下一个分片边界**退出（最坏 ~1s）。
+     *    我们**不 await** 那些任务 —— 等它们反而会把退出拖慢。
+     */
+    SpeedTestCancelToken.cancelAll();
     await _flushPrefsBeforeExit();
     await dispose();
     await _destroyAndClose();

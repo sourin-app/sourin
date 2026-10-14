@@ -4,7 +4,7 @@
 //
 // `zz_t38_chain.rs` / `zz_t38_corrupt.rs` / `zz_t38_diag.rs` 做的是**端到端诊断**：
 // 从开发机的 `%APPDATA%\app.sourin.player\plugins\.data` 拷一份真实的
-// `cycani.json`，伪造一个过期 token，然后让真 Registry 去**真的重新登录**那个站点。
+// `srca.json`，伪造一个过期 token，然后让真 Registry 去**真的重新登录**那个站点。
 //
 // 两个条件缺一不可：
 // ① 本机有那份真实凭据文件；
@@ -24,10 +24,10 @@
 // cargo test --test zz_t38_chain -- --ignored --nocapture
 // ```
 pub fn real_creds_required() -> Option<&'static str> {
-    let p = std::path::Path::new(super::REAL_STORE).join("cycani.json");
+    let p = std::path::Path::new(super::REAL_STORE).join("srca.json");
     if !p.exists() {
         return Some(
-            "需要开发机上的真实凭据（REAL_STORE/cycani.json）+ 能连上该第三方站点。\
+            "需要开发机上的真实凭据（REAL_STORE/srca.json）+ 能连上该第三方站点。\
              本机没有凭据 ⇒ 跳过。手动跑：cargo test -- --ignored --nocapture",
         );
     }

@@ -599,14 +599,14 @@ impl SyncEngine {
          * `upsert_progress` 落库时**从 (provider,native_id,episode_id) 重算**主键，
          * 不信任传进来的 `key`。若合并这里却按 `p.key` 去重，就会出现：
          * ```text
-         * 老设备的 jsonl: key = "cycani:3611"        （老口径，没第三段）
-         * 本机新库那条:   key = "cycani:3611:48884"  （新口径）
+         * 老设备的 jsonl: key = "srca:3611"        （老口径，没第三段）
+         * 本机新库那条:   key = "srca:3611:48884"  （新口径）
          * ⇒ 按 p.key 去重 ⇒ 当成**两条不同**的记录
          * ⇒ merged.items 里两份都会被 upsert，落在**同一个**表主键上
          * ⇒ 谁后写谁赢（HashMap 顺序不定）⇒ 可能把**较旧**的一条写上去
          *   ⇒ 进度倒退（正是同步最不能出的错）
          * ```
-         * ⇒ 改成按**字段推导**的键去重：老行 `(cycani,3611,48884)` 与本机那条
+         * ⇒ 改成按**字段推导**的键去重：老行 `(srca,3611,48884)` 与本机那条
          *   推导出**同一个** key ⇒ 正确走 LWW 取新的那条。
          *
          * ⚠️ 这也让「老设备同步过来」天然兼容：老 key 字段被**忽略**，按三列
@@ -1030,13 +1030,13 @@ pub struct MergeOutcome<T> {
 /// `upsert_progress` 落库时**从 (provider,native_id,episode_id) 重算**主键，
 /// 不信任传进来的 `key`。**合并/去重也必须用同一个推导**，否则：
 /// ```text
-/// 老设备 jsonl: key = "cycani:3611"        （老口径，没第三段）
-/// 本机新库那条: key = "cycani:3611:48884"  （新口径）
+/// 老设备 jsonl: key = "srca:3611"        （老口径，没第三段）
+/// 本机新库那条: key = "srca:3611:48884"  （新口径）
 /// ⇒ 按 p.key 去重 ⇒ 当成两条不同记录
 /// ⇒ 两份都 upsert 到**同一个**表主键 ⇒ HashMap 顺序不定 ⇒ 可能写进较旧的一条
 /// ⇒ 进度倒退（同步最不能出的错）
 /// ```
-/// ⇒ 用**同一口径**推导 ⇒ 老行 `(cycani,3611,48884)` 与本机那条推出同一个键
+/// ⇒ 用**同一口径**推导 ⇒ 老行 `(srca,3611,48884)` 与本机那条推出同一个键
 ///   ⇒ 正确走 LWW 取新的。老设备同步过来的数据也据此**自动升级**成按集口径
 ///   （它 jsonl 里的 `key` 字段被忽略，只看三列）。
 ///
@@ -1325,8 +1325,8 @@ mod tests {
     fn progress_merge_uses_field_derived_key_for_old_devices() {
         // 本机（新口径）：episode_id = Some("48884")，position 500（较新）
         let local = Progress {
-            key: "cycani:3611:48884".into(),
-            provider: "cycani".into(),
+            key: "srca:3611:48884".into(),
+            provider: "srca".into(),
             native_id: "3611".into(),
             title: "长剧".into(),
             cover: None,
@@ -1339,7 +1339,7 @@ mod tests {
         };
         // 老设备同步过来（老 key 口径，无第三段），position 100（较旧）
         let remote_old = Progress {
-            key: "cycani:3611".into(),
+            key: "srca:3611".into(),
             ..local.clone()
         };
         let remote_old = Progress { position: 100, updated_at: 1000, ..remote_old };
@@ -1367,8 +1367,8 @@ mod tests {
     #[test]
     fn sync_key_ignores_stored_key_field() {
         let a = Progress {
-            key: "cycani:3611".into(), // 老口径
-            provider: "cycani".into(),
+            key: "srca:3611".into(), // 老口径
+            provider: "srca".into(),
             native_id: "3611".into(),
             title: "t".into(),
             cover: None,
@@ -1380,13 +1380,13 @@ mod tests {
             updated_at: 0,
         };
         let mut b = a.clone();
-        b.key = "cycani:3611:48884".into(); // 新口径
+        b.key = "srca:3611:48884".into(); // 新口径
         assert_eq!(
             progress_sync_key(&a),
             progress_sync_key(&b),
             "★ 无论 jsonl 里 key 写的是老口径还是新口径，推导结果必须相同"
         );
-        assert_eq!(progress_sync_key(&a), "cycani:3611:48884");
+        assert_eq!(progress_sync_key(&a), "srca:3611:48884");
     }
 
     // ─────────── 假后端：把整条 `sync_progress()` 跑起来 ───────────
@@ -1492,7 +1492,7 @@ mod tests {
     fn prog_row(key: &str, position: u64, updated_at: i64) -> Progress {
         Progress {
             key: key.into(),
-            provider: "cycani".into(),
+            provider: "srca".into(),
             native_id: "3611".into(),
             title: "长剧".into(),
             cover: None,
@@ -1516,8 +1516,8 @@ mod tests {
     /// 实测：把 `sync_progress` 里的 `let key_of = progress_sync_key;`
     /// 改回 `|p: &Progress| p.key.clone()`：
     /// ```text
-    /// 本机库:     key = "cycani:3611:48884"  position 500  较新
-    /// 远端 jsonl: key = "cycani:3611"        position 100  较旧
+    /// 本机库:     key = "srca:3611:48884"  position 500  较新
+    /// 远端 jsonl: key = "srca:3611"        position 100  较旧
     /// ⇒ 按 p.key 去重 ⇒ 当成**两条**记录 ⇒ merged.items 变 2 条
     /// ⇒ ① 推回云端的 JSONL 也是 2 行（同一条记录存两份）
     /// ⇒ ② 两条都 upsert 到**同一个**表主键，HashMap 顺序不定
@@ -1532,13 +1532,13 @@ mod tests {
     async fn sync_progress_keeps_one_slot_for_old_device_jsonl() {
         let db = Arc::new(Db::in_memory().unwrap());
         // 本机（新口径，较新）
-        db.upsert_progress(&prog_row("cycani:3611:48884", 500, 2000)).unwrap();
+        db.upsert_progress(&prog_row("srca:3611:48884", 500, 2000)).unwrap();
 
         // 老设备推上来的那行：老口径 key（没第三段），且较旧
         let backend = Arc::new(FakeBackend::new());
         backend.seed(
             "data/progress.jsonl",
-            &to_jsonl(&[prog_row("cycani:3611", 100, 1000)]).unwrap(),
+            &to_jsonl(&[prog_row("srca:3611", 100, 1000)]).unwrap(),
         );
         let engine = SyncEngine::new(backend.clone(), db.clone(), "dev-a".into());
         engine.sync_progress().await.unwrap();
@@ -1565,12 +1565,12 @@ mod tests {
     #[tokio::test]
     async fn sync_progress_pulls_newer_remote_progress_for_old_device_jsonl() {
         let db = Arc::new(Db::in_memory().unwrap());
-        db.upsert_progress(&prog_row("cycani:3611:48884", 100, 1000)).unwrap();
+        db.upsert_progress(&prog_row("srca:3611:48884", 100, 1000)).unwrap();
 
         let backend = Arc::new(FakeBackend::new());
         backend.seed(
             "data/progress.jsonl",
-            &to_jsonl(&[prog_row("cycani:3611", 700, 2000)]).unwrap(),
+            &to_jsonl(&[prog_row("srca:3611", 700, 2000)]).unwrap(),
         );
         let engine = SyncEngine::new(backend.clone(), db.clone(), "dev-a".into());
         engine.sync_progress().await.unwrap();

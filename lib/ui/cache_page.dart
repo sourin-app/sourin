@@ -351,7 +351,7 @@ Future<List<CachedWork>> scanCacheWorksAtRoot() async {
 //
 // # 命中多条怎么办（Owner 要求"显示出来"，不是"绝不猜"）
 // ```text
-// 同一部剧在多个站点都有记录（cycani:3862、hongniuzy2:150722）——
+// 同一部剧在多个站点都有记录（srca:3862、hongniuzy2:150722）——
 //   上一轮 detail_page 的策略是"不唯一就放弃" ⇒ 显示「本地」⇒ Owner 不满意。
 // ⇒ 这里改成**排序后选第一条**，排序规则写死并留日志：
 //     ① 有 cover 的优先（没封面就没解决 Owner 的问题）
@@ -957,13 +957,13 @@ class CachedPlayRequest {
   /// ★ 恒为 [kLocalProvider]（见上面「为什么必须独立命名空间」）
   final String provider;
 
-  /// ★★ **原下载源**（B站 / 弹弹play / cycani …），拿不到时为 null
+  /// ★★ **原下载源**（某视频站 / 外部弹幕 / srca …），拿不到时为 null
   ///
   /// # 为什么单独拎一个字段（Owner 第 1009 批：「要显示原来源，而不是 local」）
   /// ```text
   /// [provider] 恒为 'local' —— 它是**续播的命名空间**，不能改（改了旧进度全丢）。
   /// 但「原来源」是**给人看的**：详情页/播放页那个「来源」标签要的是
-  /// 「B站」而不是「local」。
+  /// 「某视频站」而不是「local」。
   /// ⇒ 两者**必须分开存**：一个当主键用，一个当文案用。
   ///
   /// 来源是 [CachedWork.provider]（扫盘时从旁文件或库里找回，见 _scanWork）。
@@ -973,7 +973,7 @@ class CachedPlayRequest {
   /// 原站的条目 id（与 [originProvider] 配对；拿不到为 null）
   final String? originMediaId;
 
-  /// ★★★ OPS-13 反馈 C ①：该集在**原站**上的集 id（如 cycani 的 `51463`）。
+  /// ★★★ OPS-13 反馈 C ①：该集在**原站**上的集 id（如 srca 的 `51463`）。
   ///
   /// # 为什么单独一个字段（不复用 [episode]）
   /// ```text

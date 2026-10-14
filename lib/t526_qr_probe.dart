@@ -30,9 +30,9 @@
 // # 两个必须先做的前置（否则探针只会打印「获取失败」）
 //
 // ```text
-// ① 隔离目录里要有**部署版** bilibili.js（63,437 B，带 qrLoginStart/qrLoginPoll）
+// ① 隔离目录里要有**部署版** srcv.js（63,437 B，带 qrLoginStart/qrLoginPoll）
 //    —— Rust 侧只 include_str! 释放 demo / iptv / tvbox-live 三个，
-//       bilibili.js 历来是**人工放**的（见 state.rs:811-813 的注释）
+//       srcv.js 历来是**人工放**的（见 state.rs:811-813 的注释）
 // ② build\windows\x64\runner\Release\sourin_core.dll 必须是**新**的
 //    —— flutter build windows **不重建也不同步**这个 DLL（CMake 里没有拷贝规则），
 //       手工复制 rust\sourin_core\target\release\sourin_core.dll 过去
@@ -351,8 +351,8 @@ Future<void> _body(String dir) async {
 
   ok('⓪ 数据目录是隔离目录（含 .probe，绝不写用户库）',
       dir.toLowerCase().contains('.probe'), dir);
-  ok('⓪ 隔离目录里有部署版 bilibili.js',
-      File('$dir\\plugins\\bilibili.js').existsSync(),
+  ok('⓪ 隔离目录里有部署版 srcv.js',
+      File('$dir\\plugins\\srcv.js').existsSync(),
       '$_outDir 之外的用户库一个字节都没碰');
 
   // ─────────────────────────────────────────────────────────────────
@@ -363,7 +363,7 @@ Future<void> _body(String dir) async {
   Map<String, dynamic> start = <String, dynamic>{};
   String startErr = '';
   try {
-    start = await SourinApi.providerQrLoginStart('bilibili');
+    start = await SourinApi.providerQrLoginStart('srcv');
   } catch (e) {
     startErr = '$e';
   }
@@ -374,7 +374,7 @@ Future<void> _body(String dir) async {
   final hint = (start['hint'] as String?) ?? '';
   note('key len=${key.length}  url len=${url.length}  svg len=${svg.length}');
   note('hint = $hint');
-  ok('① key 非空（B站 qrcode_key 为 32 位十六进制）',
+  ok('① key 非空（某视频站 qrcode_key 为 32 位十六进制）',
       key.length == 32, 'len=${key.length}');
   ok('① url 是 https 且带 qrcode_key=<key>',
       url.startsWith('https://') && url.contains('qrcode_key=') && url.contains(key),
@@ -399,7 +399,7 @@ Future<void> _body(String dir) async {
   // ─────────────────────────────────────────────────────────────────
   //  ② UI：真的把二维码画到窗口里
   // ─────────────────────────────────────────────────────────────────
-  say('──────── ② UI：设置页 → JS 插件 → B站 登录面板 ────────');
+  say('──────── ② UI：设置页 → JS 插件 → 某视频站 登录面板 ────────');
 
   ok('⓪ 开局没有任何 AlertDialog',
       countWidget(root0, (w) => w is AlertDialog) == 0);
@@ -420,7 +420,7 @@ Future<void> _body(String dir) async {
   ok('② 找到 SettingsPage 元素', settingsEl != null);
   if (settingsEl == null) await finish(1);
 
-  // 一级页 → 二级页「JS 插件」（B站 的卡片在二级页里）
+  // 一级页 → 二级页「JS 插件」（某视频站 的卡片在二级页里）
   Element? entryFinder() => findText(settingsEl, 'JS 插件');
   var entryEl = entryFinder();
   if (entryEl != null) {
@@ -446,16 +446,16 @@ Future<void> _body(String dir) async {
 
   final panelUp = await waitUntil(
     () => findWidget(root0,
-            (w) => w is ProviderLoginPanel && w.providerId == 'bilibili') !=
+            (w) => w is ProviderLoginPanel && w.providerId == 'srcv') !=
         null,
     timeout: const Duration(seconds: 25),
-    label: 'B站 登录面板',
+    label: '某视频站 登录面板',
   );
-  ok('② 二级页里出现 B站 的 ProviderLoginPanel', panelUp);
+  ok('② 二级页里出现 某视频站 的 ProviderLoginPanel', panelUp);
   if (!panelUp) await finish(1);
 
   var panelEl = findWidget(
-      root0, (w) => w is ProviderLoginPanel && w.providerId == 'bilibili');
+      root0, (w) => w is ProviderLoginPanel && w.providerId == 'srcv');
   ok('② 面板显示「游客可用」（loginSupported=true / 未登录）',
       findText(panelEl!, '游客可用') != null);
   ok('② 展开前没有扫码页签（页签只在展开后渲染）',
@@ -472,7 +472,7 @@ Future<void> _body(String dir) async {
     note('ensureVisible(panel) 失败（继续）: $e');
   }
   panelEl = findWidget(
-      root0, (w) => w is ProviderLoginPanel && w.providerId == 'bilibili');
+      root0, (w) => w is ProviderLoginPanel && w.providerId == 'srcv');
 
   final loginTextEl = findText(panelEl!, '登录');
   final loginRect = rectOf(loginTextEl);
@@ -531,11 +531,11 @@ Future<void> _body(String dir) async {
       boxColor == Colors.white, '$boxColor');
 
   // ─────────────────────────────────────────────────────────────────
-  //  ②b 轮询真的在跑：等 B站 把这张码判过期（真实 ≈180 s）
+  //  ②b 轮询真的在跑：等 某视频站 把这张码判过期（真实 ≈180 s）
   //
   //  这是**唯一**能证明「Timer 真的在按 2 秒一次打 poll 接口」的判据：
   //  t525 只证明了「刚申请完的那一次 poll 返回 pending」，证明不了轮询在跑。
-  //  B站 的码约 180 秒失效（实测 179.9 s，见 .probe 里的 t527_expire.txt），
+  //  某视频站 的码约 180 秒失效（实测 179.9 s，见 .probe 里的 t527_expire.txt），
   //  所以这一段必须真等 —— 没有别的捷径。
   // ─────────────────────────────────────────────────────────────────
   say('──────── ②b 等二维码自然过期（真轮询，≈180 s） ────────');
@@ -624,7 +624,7 @@ Future<void> _body(String dir) async {
     await Future<void>.delayed(const Duration(milliseconds: 300));
     await pumpFrame();
     panelEl = findWidget(
-        root0, (w) => w is ProviderLoginPanel && w.providerId == 'bilibili');
+        root0, (w) => w is ProviderLoginPanel && w.providerId == 'srcv');
     ok('② 切到「其它方式」后出现账号/Cookie 表单（TextField）',
         countWidget(panelEl!, (w) => w is TextField) > 0,
         'TextField 数 = ${countWidget(panelEl, (w) => w is TextField)}');
@@ -637,7 +637,7 @@ Future<void> _body(String dir) async {
     }
   }
   panelEl = findWidget(
-      root0, (w) => w is ProviderLoginPanel && w.providerId == 'bilibili');
+      root0, (w) => w is ProviderLoginPanel && w.providerId == 'srcv');
 
   // ─────────────────────────────────────────────────────────────────
   //  ③ 截图（python 侧会裁剪 + cv2 解码）

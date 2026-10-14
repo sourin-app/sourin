@@ -34,7 +34,7 @@
 // 落地前 grep 过：
 //   rust/sourin_core/src/ 里 download 只命中 backup.rs:396 dirs_download()
 //     （那是系统「下载」目录，不是下载器）；cache 只命中 proxy.rs:522/532
-//     的测试函数名与 cctv.rs:987 的注释。
+//     的测试函数名与 srcl.rs:987 的注释。
 //   lib/ 里「片段」2 处、「下载」5 处，全是注释与文案。
 //   lib/core/sourin_api.dart:1853 的 ProxyCache 是**进程内配置缓存**，
 //     与媒体磁盘缓存无关。

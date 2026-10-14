@@ -10,7 +10,7 @@
 //    漏一处就是一个真实 bug，而它们全在 player_page.dart 里 ——
 //    挂真 PlayerPage 要 libmpv，flutter_tester 会崩 ⇒ 只能源码级判据
 // ② 起播取弹幕的优先级（绑了 B 站 ⇒ 不发 dandanplay 的请求）
-// ③ 入口（弹幕面板里那枚「哔哩哔哩弹幕…」）
+// ③ 入口（弹幕面板里那枚「外部弹幕…」）
 // ④ 自动刷新（切集 / 集列表被换掉）
 // ⑤ 面板真渲染 + 真点击（宿主回调记账）
 // ```
@@ -356,10 +356,10 @@ void main() {  // ════════════════════�
        *
        * ⚠️ 这一针钉的是**两条**语义，比旧针更严：
        *   ① 赋值右边必须仍是 `r.summary`（不能换字段、不能写死字符串）；
-       *   ② 左边必须带「B 站 · 」前缀（不能退回无前缀形态）。
+       *   ② 左边必须带「外部视频站 · 」前缀（不能退回无前缀形态）。
        *   用 r"..." 原串是为了让 `${r.summary}` 里的 `$` 保持字面量。
        */
-      expect(body.contains(r"_danmakuStatus = 'B 站 · ${r.summary}';"), isTrue,
+      expect(body.contains(r"_danmakuStatus = '外部视频站 · ${r.summary}';"), isTrue,
           reason: '★★ OPS-10 B：B 站这一支的状态文案必须带来源前缀 —— '
               '业主 1009 B② 要求能分清弹幕来自哪个源');
 
@@ -380,16 +380,16 @@ void main() {  // ════════════════════�
        *   ⚠️ 两条独立针写在**计数断言之前**：退回某一条时失败信息才能点名是
        *      5489 还是 5543（计数断言先跑的话只会说「实测 1 次」）。
        */
-      const panelPinHead = r"status: 'B 站 · ${r.summary}',";
+      const panelPinHead = r"status: '外部视频站 · ${r.summary}',";
       // 针身用**插值**拼接：相邻字面量接不了标识符，而 '+' 拼串会被
       // prefer_interpolation_to_compose_strings 报 lint（const 也不允许 '+'）。
       const pin5489 = '$panelPinHead\n      );\n    });\n    _biliCid = cid;';
       const pin5543 = '$panelPinHead\n      );\n    });\n    _biliCid = r.cid;';
       expect(body.contains(pin5489), isTrue,
-          reason: '★★ 5489（_loadBiliDanmaku 收尾）的面板读数必须带「B 站 · 」前缀，'
+          reason: '★★ 5489（_loadBiliDanmaku 收尾）的面板读数必须带「外部视频站 · 」前缀，'
               '且后面紧跟 _biliCid = cid; —— 退回 status: r.summary, 当场红');
       expect(body.contains(pin5543), isTrue,
-          reason: '★★ 5543（_biliApplyComments 收尾）的面板读数必须带「B 站 · 」前缀，'
+          reason: '★★ 5543（_biliApplyComments 收尾）的面板读数必须带「外部视频站 · 」前缀，'
               '且后面紧跟 _biliCid = r.cid; —— 退回 status: r.summary, 当场红');
       indexOfExactly(body, panelPinHead, want: 2,
           why: '★★ 5489 与 5543 是两条独立的面板读数，这个窗口里必须**两条都在**；'
@@ -464,7 +464,7 @@ void main() {  // ════════════════════�
   //  3. 入口（弹幕面板 → B 站面板）
   // ═══════════════════════════════════════════════════════════════════
 
-  group('3. 入口：弹幕面板里的「哔哩哔哩弹幕…」', () {
+  group('3. 入口：弹幕面板里的「外部弹幕…」', () {
     test('① 宿主把 onOpenBili 接上了', () {
       expect(_page.contains('onOpenBili: _openBiliSheet,'), isTrue,
           reason: '★ 不接 ⇒ 面板里那枚按钮永远是 null ⇒ 不画（用户找不到入口）');
@@ -482,7 +482,7 @@ void main() {  // ════════════════════�
       var opened = 0;
       await t.pumpWidget(_host(_danmakuDialog(onOpenBili: () => opened++)));
       await t.pumpAndSettle();
-      final btn = find.widgetWithText(TextButton, '哔哩哔哩弹幕…');
+      final btn = find.widgetWithText(TextButton, '外部弹幕…');
       expect(btn, findsOneWidget);
       /*
        * ⚠️ 按钮在面板最末尾 —— 800×600 的测试面里它在 y=956（屏幕外），
@@ -506,7 +506,7 @@ void main() {  // ════════════════════�
     testWidgets('③ 没传 onOpenBili ⇒ 按钮不画（旧宿主零破坏）', (t) async {
       await t.pumpWidget(_host(_danmakuDialog()));
       await t.pumpAndSettle();
-      expect(find.text('哔哩哔哩弹幕…'), findsNothing,
+      expect(find.text('外部弹幕…'), findsNothing,
           reason: '★ 面板可以被别的宿主复用而不带上 B 站 —— 那时不该有这枚按钮');
       expect(find.text('重新获取弹幕'), findsOneWidget, reason: '阳性对照');
     });

@@ -37,7 +37,7 @@ import 'cast_device_sheet.dart';
 /// 投屏入口按钮
 ///
 /// [url] 是**原始播放地址**（不要预先替换成代理地址 —— 代理由本组件按需建）。
-/// [headers] 是防盗链头（B 站类源必须给 Referer，否则电视拉到 403）。
+/// [headers] 是防盗链头（某视频站类源必须给 Referer，否则电视拉到 403）。
 class CastButton extends StatefulWidget {
   const CastButton({
     super.key,

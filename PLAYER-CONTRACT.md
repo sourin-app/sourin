@@ -1,6 +1,6 @@
 # PlayerView 交互契约 —— Flutter 重写的验收基准
 
-> **来源**：`cctv_to_client/src/views/PlayerView.vue`（4775 行 script + 518 行 template）
+> **来源**：早期原型工程的 `PlayerView.vue`（4775 行 script + 518 行 template）
 > 逐段读取提取，**每个条目都带源码行号**便于核对。
 >
 > **Owner 的硬要求（2026-09-22 原话）**：

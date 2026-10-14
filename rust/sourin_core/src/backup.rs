@@ -15,7 +15,7 @@
 //! ├── providers.json   声明式源 + 第三方源配置
 //! ├── settings.json    片头片尾 / 同步元数据
 //! └── plugins/         插件 .js 全文
-//!     ├── bilibili.js
+//!     ├── srcv.js
 //!     └── ...
 //! ```
 //!

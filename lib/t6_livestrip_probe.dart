@@ -10,11 +10,11 @@
 // # 判据（四个场景，全部要**读数**）
 //
 // ```text
-// C  反向控制（假 fetch：cctv1 伪造成可播）  ⇒ N=8 M=1 块高 44 chip=CCTV-1
+// C  反向控制（假 fetch：srcl1 伪造成可播）  ⇒ N=8 M=1 块高 44 chip=SRCL-1
 //                                            ★ 先做它：保证"块**能**出现"
 // A  真实网络（真 getLiveStream）            ⇒ N=8 M=0 块高 0x0（全 audioOnly）
 // A2 同一批候选的 M 从 1 → 0                 ⇒ ★★ 证明闸是**动态**的
-//                                              （不是"写死 cctv 不可用"）
+//                                              （不是"写死 srcl 不可用"）
 // B  独立复核（探针自己取流分类）             ⇒ playable 计数 == A 的 M
 // D  切到 iptv 源 + 调真回调                 ⇒ 播放器 provider == 'iptv'
 // ```
@@ -25,7 +25,7 @@
 // ① flutter_test 里 **加载不了 sourin_core.dll**（error 126）⇒ FFI 永不执行
 //    ⇒ 探针拿不到真流 ⇒ 「闸前/闸后」两个数**都不是真的**
 // ② 闸判据是"这个台此刻有没有可播线路"，取决于**真实网络 + 真实插件**
-//    （cctv.js 把视频线标成 drmProtected）⇒ 只有真进程能量到真数
+//    （srcl.js 把视频线标成 drmProtected）⇒ 只有真进程能量到真数
 // ③ 参数透传的终点是 Navigator.push(PlayerPage(provider: …))
 //    ⇒ 只有真树里能读到那个 PlayerPage 的 widget.provider
 // ```
@@ -35,9 +35,9 @@
 // 本探针挂的是**真**首页 + **真**播放器（点 chip 会 push PlayerPage），
 // ⇒ 绝不指向用户的真库。走 T6_DATA_DIR 环境变量（运行时读）。
 //
-// ⚠️ 全新数据目录里**没有 cctv.js** —— 核心只释放三个随程序发布的插件
+// ⚠️ 全新数据目录里**没有 srcl.js** —— 核心只释放三个随程序发布的插件
 //    （state.rs:176/183/189 = demo/iptv/tvbox-live）。所以本探针自己把
-//    仓库里的 cctv.js 复制进隔离插件目录，并把**版本号**记进产物。
+//    仓库里的 srcl.js 复制进隔离插件目录，并把**版本号**记进产物。
 //
 // # 仪器：读数全部取自**渲染树**与**被测对象自己**
 //
@@ -53,7 +53,7 @@
 // ```text
 // ① 探针 exe 被拷到 .probe/t6-run 运行（那里有 libmpv-2.dll 与
 //    sourin_core.dll）⇒ Directory.current = .probe/t6-run
-//    ⇒ 用相对路径找仓库里的 cctv.js **必然找不到**（第一次跑就是这样，
+//    ⇒ 用相对路径找仓库里的 srcl.js **必然找不到**（第一次跑就是这样，
 //      源只有 3 个、首页可用 0 个源 ⇒ 直播条压根没渲染、一条读数都没有）
 //    ⇒ 仓库路径必须用 --dart-define=PROBE_REPO=… 编译期注入。
 // ② 探针窗口弹在**正在被人使用**的桌面上 ⇒ 人点了几下底栏，
@@ -153,24 +153,24 @@ Future<String> _resolveDataDir() async {
   throw StateError('必须给 T6_DATA_DIR 或 DATA_DIR_OVERRIDE（隔离数据目录）');
 }
 
-/// 核对"隔离插件目录里有没有 cctv.js"，并把**版本号**记进产物
+/// 核对"隔离插件目录里有没有 srcl.js"，并把**版本号**记进产物
 ///
 /// # 为什么种子不在 Dart 里放（实测踩到）
 ///
-/// 第一版是本探针自己把仓库里的 cctv.js 复制进隔离目录 ——
-/// **release** 构建跑得好好的（"插件种子: cctv.js v1.0.0（19692 B）"），
+/// 第一版是本探针自己把仓库里的 srcl.js 复制进隔离目录 ——
+/// **release** 构建跑得好好的（"插件种子: srcl.js v1.0.0（19692 B）"），
 /// 但同一份代码换成 **debug** 构建后，进程在**这一句之前**就以
 /// 0xC0000005（访问冲突，错误模块 unknown、偏移 0x258d4e647d3）崩掉，
 /// 连下面一行日志都打不出来。
 /// ⇒ 改成由 runner 脚本（.probe/t6_build_run.ps1）在**进程外**拷好，
 ///   本函数只做**只读核对**：不写文件、不解析插件源码。
 ///   （探针读的是 debug-only 计数器，所以必须用 debug 构建 ⇒ 只能这样绕。）
-String _checkCctv(String dataDir) {
+String _checkSrcl(String dataDir) {
   final p = '$dataDir${Platform.pathSeparator}plugins'
-      '${Platform.pathSeparator}cctv.js';
+      '${Platform.pathSeparator}srcl.js';
   final f = File(p);
-  if (!f.existsSync()) return '★ 缺 cctv.js: $p（runner 脚本应先拷好）';
-  return 'cctv.js 就位（${f.lengthSync()} B）→ $p';
+  if (!f.existsSync()) return '★ 缺 srcl.js: $p（runner 脚本应先拷好）';
+  return 'srcl.js 就位（${f.lengthSync()} B）→ $p';
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -400,7 +400,7 @@ ScrollPosition? homeScroll() {
 ///
 /// 两个构建里同一份产品代码，读数却不一样：
 /// ¤¤¤text
-/// release 跑：C 直播条元素 size=1392x44 itemCount=1 channels=[cctv1]  ← 找得到
+/// release 跑：C 直播条元素 size=1392x44 itemCount=1 channels=[srcl1]  ← 找得到
 /// debug   跑：C 直播条元素 不存在                                     ← 找不到
 /// ¤¤¤
 /// 而**两个构建里** `[HOME] 直播条: 闸前候选=…` 这一行**都没有出现**
@@ -578,11 +578,11 @@ Future<List<StreamCandidate>> countingRealFetch(
   return SourinApi.getLiveStream(provider, channelId);
 }
 
-/// 反向控制用的假 fetch：cctv1 伪造成"有视频的可播线路"，其余只有音频线
+/// 反向控制用的假 fetch：srcl1 伪造成"有视频的可播线路"，其余只有音频线
 Future<List<StreamCandidate>> fakeFetch(
     String provider, String channelId) async {
   fetchCalls++;
-  if (channelId == 'cctv1') {
+  if (channelId == 'srcl1') {
     // ★ 必须能被 classifyStreams 判成 playable：
     //   isPlayable = !drmProtected && url 非空，且 quality/label 不能命中
     //   isAudioOnlyLine（音频/广播/audio）
@@ -655,7 +655,7 @@ Future<void> main() async {
   say('数据目录: $dir');
   say('PROBE_REPO: ${const String.fromEnvironment('PROBE_REPO')}');
   say('══════════════════════════════════════════════════════════');
-  say('插件核对: ${_checkCctv(dir)}');
+  say('插件核对: ${_checkSrcl(dir)}');
 
   if (Platform.isWindows) {
     await windowManager.ensureInitialized();
@@ -727,7 +727,7 @@ Future<void> main() async {
   await guardHome();
   say('当前 tab = ${debugShellKey.currentState?.debugCurrentTab}');
 
-  // ── 源清单（写进报告，证明"这台机器上确实有 cctv"）──
+  // ── 源清单（写进报告，证明"这台机器上确实有 srcl"）──
   try {
     final ps = await SourinApi.listProviders();
     final en = ps.where((p) => p.enabled).toList();
@@ -744,7 +744,7 @@ Future<void> main() async {
   //  场景 C：反向控制（**先做** —— 保证"块能出现"这件事一定能量到）
   // ══════════════════════════════════════════════════════════════════
   say('');
-  say('── C 反向控制（假 fetch：cctv1 = 可播视频线，其余 = 仅音频）──');
+  say('── C 反向控制（假 fetch：srcl1 = 可播视频线，其余 = 仅音频）──');
   await guardHome();
   final cBase = debugHomeLiveStrip.length;
   // ignore: invalid_use_of_visible_for_testing_member
@@ -795,8 +795,8 @@ Future<void> main() async {
   ok('C4 画出来的 chip 数 == 过闸名单长度',
       cStrip.chipNames.length == cStrip.channelIds.length,
       'chipTexts=${cStrip.chipNames} channels=${cStrip.channelIds}');
-  ok('C5 chip 标签 == CCTV-1（正是被放行的那一个）',
-      cStrip.chipNames.length == 1 && cStrip.chipNames.first == 'CCTV-1',
+  ok('C5 chip 标签 == SRCL-1（正是被放行的那一个）',
+      cStrip.chipNames.length == 1 && cStrip.chipNames.first == 'SRCL-1',
       'chipTexts=${cStrip.chipNames}');
   ok('C6 strip.provider == 该区块的源', cStrip.provider != null,
       'provider=${cStrip.provider}');
@@ -831,8 +831,8 @@ Future<void> main() async {
        * ★ 这里**只能**比 provider —— 不能比 id。
        *
        * 实测（本轮）：点 chip 之后被 push 的 PlayerPage 是
-       *   provider=cctv  id=f69e57e407984aa49f31eb44033b3c44  liveChannelId=null
-       * 而我期望的 id 是 'cctv1'。
+       *   provider=srcl  id=f69e57e407984aa49f31eb44033b3c44  liveChannelId=null
+       * 而我期望的 id 是 'srcl1'。
        * # 为什么 id 不是频道 id：`_openLiveChannel` push 出来的那条
        *   `PlayerPage` 只是**外壳** —— 它接着会去核心换播放地址，
        *   拿到的是**带鉴权的真实流地址**（那段 hex 就是），
@@ -841,7 +841,7 @@ Future<void> main() async {
        *     （拿一个此刻必然不同的字段去比）。真正要证的是
        *     「播放器去**哪个源**取流」—— 那就是 provider。
        */
-      ok('C2.2 ★ 播放器 provider == chip 所属的源（不是写死的 cctv）',
+      ok('C2.2 ★ 播放器 provider == chip 所属的源（不是写死的 srcl）',
           pp.provider == cStrip.provider,
           '实测 provider=${pp.provider} 期望=${cStrip.provider}');
       say('C2.3 被 push 的 PlayerPage.id=${pp.id}（= 核心换出来的真实流地址，'
@@ -855,10 +855,10 @@ Future<void> main() async {
   //
   //  ★★ A2 是本探针最有说服力的一条：同一批 8 个候选，
   //     注入时 M=1，真探测回来后 M=0 ——
-  //     证明闸是**动态**的（"写死 cctv 不可用"不会有这个跳变）。
+  //     证明闸是**动态**的（"写死 srcl 不可用"不会有这个跳变）。
   // ══════════════════════════════════════════════════════════════════
   say('');
-  say('── A 真实网络（拆掉注入，重新探测 cctv 的 8 个候选）──');
+  say('── A 真实网络（拆掉注入，重新探测 srcl 的 8 个候选）──');
   await guardHome();
   final aBase = debugHomeLiveStrip.length;
   final aCalls0 = fetchCalls;
@@ -907,7 +907,7 @@ Future<void> main() async {
    * [T6] C 读数: 闸前候选=null 闸后渲染=null
    * ```
    * 而同一轮里 `_LiveStrip` 的 widget 字段（provider / channels）**读得到**
-   * （C 场景实测 size=1392x44、channels=[cctv1]）。
+   * （C 场景实测 size=1392x44、channels=[srcl1]）。
    * ⇒ 结论：`kDebugMode` 在 Windows 上**不等于"debug 构建"**
    *   （Flutter 的 kDebugMode = `!kReleaseMode && !kProfileMode`，
    *    在 Windows 桌面下受 `flutter build` 的模式参数影响，
@@ -941,7 +941,7 @@ Future<void> main() async {
   // ══════════════════════════════════════════════════════════════════
   say('');
   say('── B 独立复核（探针自己 getLiveStream + classifyStreams）──');
-  final prov = cStrip.provider ?? 'cctv';
+  final prov = cStrip.provider ?? 'srcl';
   final bMap = await classifyAll(prov, kLivePreview);
   final bCounts = <String, int>{};
   for (final v in bMap.values) {
@@ -959,10 +959,10 @@ Future<void> main() async {
       'unknown=$bUnknown');
 
   // ══════════════════════════════════════════════════════════════════
-  //  场景 D：切到**非 cctv 源**（iptv）⇒ 真回调带 iptv 进播放器
+  //  场景 D：切到**非 srcl 源**（iptv）⇒ 真回调带 iptv 进播放器
   //
-  //  ★ 实测全仓只有 cctv 声明了 type:'custom' 区块（cctv.js:391 是唯一一处）
-  //    ⇒ "直播条"本身只可能出现在 cctv 那一页；换源的验法只能走
+  //  ★ 实测全仓只有 srcl 声明了 type:'custom' 区块（srcl.js:391 是唯一一处）
+  //    ⇒ "直播条"本身只可能出现在 srcl 那一页；换源的验法只能走
   //      **同一个真回调**（就是直播条 onTap 调的那个字段）。
   // ══════════════════════════════════════════════════════════════════
   say('');
@@ -981,24 +981,24 @@ Future<void> main() async {
     ok('D1 源真的切到 iptv', after == 'iptv', '实测 after=$after');
     final dStrip = readStrip();
     say('D iptv 页上的 _LiveStrip: ${dStrip.desc}');
-    ok('D2 ★ 非 cctv 源没有直播条（该源没声明 custom 区块）⇒ 零请求',
+    ok('D2 ★ 非 srcl 源没有直播条（该源没声明 custom 区块）⇒ 零请求',
         dStrip.el == null, '实测 ${dStrip.el == null ? "不存在" : dStrip.desc}');
 
     say('');
-    say('── D3 调真回调 onOpenLive(iptv, cctv1, CCTV-1) ⇒ 看播放器 provider ──');
+    say('── D3 调真回调 onOpenLive(iptv, srcl1, SRCL-1) ⇒ 看播放器 provider ──');
     final cb = homeState.widget.onOpenLive;
     ok('D3.0 HomePage.onOpenLive 已带 provider 参数（新签名）', cb != null);
     if (cb != null) {
-      cb('iptv', 'cctv1', 'CCTV-1');
+      cb('iptv', 'srcl1', 'SRCL-1');
       final pushed =
           await waitUntil(() => find(PlayerPage) != null, 10000, 'wait-d3');
       say('D3 被 push 的 PlayerPage: ${playerInfo()}');
       ok('D3.1 真回调 push 出了 PlayerPage', pushed);
       final pp = find(PlayerPage)?.widget as PlayerPage?;
       if (pp != null) {
-        ok('D3.2 ★★ 播放器 provider == iptv（旧代码在这里恒为 cctv）',
+        ok('D3.2 ★★ 播放器 provider == iptv（旧代码在这里恒为 srcl）',
             pp.provider == 'iptv', '实测 provider=${pp.provider}');
-        ok('D3.3 liveChannelId == cctv1', pp.liveChannelId == 'cctv1',
+        ok('D3.3 liveChannelId == srcl1', pp.liveChannelId == 'srcl1',
             '实测=${pp.liveChannelId}');
       }
       await popPlayer();

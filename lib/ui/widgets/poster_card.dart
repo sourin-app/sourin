@@ -21,7 +21,7 @@
 // > 带 http://tauri.localhost/ → HTTP 403 ★
 //
 // 那是 **WebView2 特有的问题** —— 浏览器会自动带上"当前页面地址"作为
-// Referer，B站 CDN 拒绝 `tauri.localhost` 这类来源。
+// Referer，某视频站 CDN 拒绝 `tauri.localhost` 这类来源。
 //
 // **Flutter 没有这个问题**：`Image.network` 由 Dart 的 HTTP 客户端直接
 // 发起请求，默认**不带 Referer**（没有"页面地址"这个概念）。
@@ -289,11 +289,11 @@ class _PosterCardState extends State<PosterCard> {
                               layoutWidth: w,
                               /*
                                * ★★★ 2026-10-01：把**目标框高度**与**源图宽高比**
-                               * 一起传下去 —— 修 Owner 报的「哔哩哔哩封面糊」
+                               * 一起传下去 —— 修 Owner 报的「外部视频源封面糊」
                                *
                                * # 为什么需要高度
                                * 卡片是 **2:3 竖版**（`AppMetrics.posterAspect`），
-                               * 而 B 站封面是 **16:9 横版**（实测 API 返回 2560×1440）。
+                               * 而 某视频站封面是 **16:9 横版**（实测 API 返回 2560×1440）。
                                * `BoxFit.cover` 在"源图比目标框更宽"时**按高度放大**：
                                * ```text
                                * 目标 148×223、源 2560×1440

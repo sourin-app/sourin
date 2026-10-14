@@ -85,7 +85,7 @@ void main() {
             }),
             headers: const {'content-type': 'application/json'},
           ));
-      final client = DandanplayClient(transport: fake); // 不传 appId ⇒ 读 DanmakuConfig
+      final client = ExternalDanmakuClient(transport: fake); // 不传 appId ⇒ 读 DanmakuConfig
       await client.match(fileName: 'EP01');
       expect(fake.calls, hasLength(1));
       final h = fake.calls.first.headers;
@@ -145,38 +145,41 @@ void main() {
   });
 
   group('⑤ 源码契约（静态审计）', () {
-    test('panel 凭证输入节已删除；数据源行仍在；player_page 不碰内置', () {
+    test('panel 凭证输入节**已恢复**；数据源行仍在；player_page 不碰内置常量', () {
       final dlgSrc =
           File('lib/ui/widgets/danmaku_settings_dialog.dart').readAsStringSync();
       final ppSrc = File('lib/ui/player_page.dart').readAsStringSync();
 
-      // ★ 2026-10-11（Owner 反馈）：凭证输入节**整节删除**（AppId / AppSecret
-      //   两个 TextField + 「清除凭证」按钮 + 相关说明），因为客户端已内置凭证
-      //   （构建期 --dart-define 注入）。旧版本这几条断言要求"输入框必须存在"，
-      //   现在与新现实相反 —— 断言内容随之翻转。
-      expect(dlgSrc.contains("labelText: 'AppId'"), isFalse,
-          reason: 'AppId 输入框必须已删除（改由内置凭证）');
-      expect(dlgSrc.contains("labelText: 'AppSecret'"), isFalse,
-          reason: 'AppSecret 输入框必须已删除（改由内置凭证）');
-      expect(dlgSrc.contains('清除凭证'), isFalse,
-          reason: '「清除凭证」按钮必须一并删除（Owner 明确要求）');
-      expect(dlgSrc.contains('弹幕库凭证（可选）'), isFalse,
-          reason: '凭证节标题必须删除');
-      expect(dlgSrc.contains('内置凭证：已生效'), isFalse,
-          reason: '凭证节的「内置：已生效」状态行随节删除');
-      expect(dlgSrc.contains('内置凭证：未注入'), isFalse,
-          reason: '凭证节的「内置：未注入」状态行随节删除');
-      expect(dlgSrc.contains('留空则用内置凭证'), isFalse,
-          reason: '不再有输入框，也就没有「留空」一说');
+      /*
+       * ★★★ 2026-10-14（Owner「外部弹幕服务的凭证流程根本没走通」）：断言**翻转**。
+       *
+       * 改前（2026-10-11）这里要求"凭证输入节必须已删除"（当时认为内置凭证
+       * 够了）。实际上**本地构建没有 --dart-define** ⇒ hasBuiltinCredentials
+       * 为 false、UiPrefs 也无值 ⇒ 官方边必然 403，而写入口全仓 0 调用者 ⇒
+       * 用户无路可走。⇒ 现在要求输入框与保存/清除回调**都在**。
+       */
+      expect(dlgSrc.contains("labelText: 'AppId'"), isTrue,
+          reason: 'AppId 输入框必须恢复（无内置凭证的构建靠它）');
+      expect(dlgSrc.contains("labelText: 'AppSecret'"), isTrue,
+          reason: 'AppSecret 输入框必须恢复');
+      expect(dlgSrc.contains('onSetCredentials'), isTrue,
+          reason: '保存回调必须存在（面板纯 UI，落盘走宿主）');
+      expect(dlgSrc.contains('onClearCredentials'), isTrue,
+          reason: '清除回调必须存在');
+      // 清白纪律：不许出现"把用户指去官网申请"的话术（面板只让用户直接填，
+      // 不引导去外部站点）。这条两侧都成立，保留它。
+      expect(dlgSrc.contains('在 dev.dandanplay.com 申请'), isFalse,
+          reason: '面板不引导用户去官网申请（只提供直接填写）');
 
-      // 但「数据源」状态行必须留下（它是本机弹弹play 探测结果，与凭证无关）——
-      // 防止删过头。
+      // 但「数据源」状态行必须留下（它是本机外部弹幕 探测结果，与凭证无关）——
+      // 防止改过头把它并掉。
       expect(dlgSrc.contains('数据源'), isTrue,
-          reason: '「数据源」状态行必须保留（删的是凭证节，不是它）');
+          reason: '「数据源」状态行必须保留');
 
-      // player_page 不出现内置字样（改动靠 getter 自动生效，无需接线）
+      // player_page 不许**直接**读构建期注入常量（一律走 DanmakuConfig getter，
+      // 面板与宿主都不碰注入细节）。
       expect(ppSrc.contains('builtinAppId'), isFalse,
-          reason: 'player_page 绝不许动（w6-live 在改同一文件）');
+          reason: 'player_page 不许直接读 builtinAppId 常量');
       expect(ppSrc.contains('builtinAppSecret'), isFalse);
     });
   });

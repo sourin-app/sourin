@@ -41,13 +41,13 @@ async fn backup_preview_reports_counts() {
     let st = fresh("preview").await;
 
     // 造点数据
-    cw::save_progress(&st, "cycani", "1", "剧A", None, None, Some("第1集".into()), 100, 1000, None)
+    cw::save_progress(&st, "srca", "1", "剧A", None, None, Some("第1集".into()), 100, 1000, None)
         .unwrap();
-    cw::save_progress(&st, "cycani", "2", "剧B", None, None, None, 200, 1000, None).unwrap();
-    cw::set_favorite(&st, "cycani", "1", true, Some("剧A".into()), None, None, None)
+    cw::save_progress(&st, "srca", "2", "剧B", None, None, None, 200, 1000, None).unwrap();
+    cw::set_favorite(&st, "srca", "1", true, Some("剧A".into()), None, None, None)
         .await
         .unwrap();
-    cw::set_skip_marker(&st, "cycani", "1", Some("剧A".into()), Some(0), Some(60), None, None, None)
+    cw::set_skip_marker(&st, "srca", "1", Some("剧A".into()), Some(0), Some(60), None, None, None)
         .unwrap();
 
     let p = cb::backup_preview(&st).expect("preview");
@@ -68,9 +68,9 @@ async fn backup_preview_reports_counts() {
 async fn backup_round_trip() {
     let st = fresh("roundtrip").await;
 
-    cw::save_progress(&st, "cycani", "1", "剧A", None, Some("ep1".into()), Some("第1集".into()), 100, 1000, None).unwrap();
-    cw::set_favorite(&st, "cycani", "1", true, Some("剧A".into()), None, None, None).await.unwrap();
-    cw::set_skip_marker(&st, "cycani", "1", Some("剧A".into()), Some(0), Some(60), None, None, Some(true)).unwrap();
+    cw::save_progress(&st, "srca", "1", "剧A", None, Some("ep1".into()), Some("第1集".into()), 100, 1000, None).unwrap();
+    cw::set_favorite(&st, "srca", "1", true, Some("剧A".into()), None, None, None).await.unwrap();
+    cw::set_skip_marker(&st, "srca", "1", Some("剧A".into()), Some(0), Some(60), None, None, Some(true)).unwrap();
 
     let backup_path = st.data_dir.join("test-backup.json");
     let exported = cb::backup_export(&st, backup_path.to_str().unwrap()).expect("export");
@@ -102,7 +102,7 @@ async fn backup_round_trip() {
     }
 
     // 数据应该都在新库里
-    let p = commands::get_progress(&st2, "cycani", "1").unwrap().expect("应有进度");
+    let p = commands::get_progress(&st2, "srca", "1").unwrap().expect("应有进度");
     assert_eq!(p.position, 100);
     assert_eq!(p.duration, 1000);
     println!("✓ 进度已恢复: pos={} dur={}", p.position, p.duration);
@@ -111,7 +111,7 @@ async fn backup_round_trip() {
     assert_eq!(favs.len(), 1, "收藏应恢复");
     println!("✓ 收藏已恢复: {}", favs[0].title);
 
-    let m = commands::get_skip_marker(&st2, "cycani", "1").unwrap().expect("应有跳过点");
+    let m = commands::get_skip_marker(&st2, "srca", "1").unwrap().expect("应有跳过点");
     assert_eq!(m.intro_end, Some(60));
     println!("✓ 跳过点已恢复: intro_end={:?}", m.intro_end);
 }
@@ -480,15 +480,15 @@ async fn proxy_config_round_trip() {
         "url": "http://127.0.0.1:7890",
     }))
     .expect("构造 ProxyConfig");
-    cb::set_proxy_config(&st, "cycani", cfg).expect("set");
-    println!("✓ 已设置 cycani 的代理");
+    cb::set_proxy_config(&st, "srca", cfg).expect("set");
+    println!("✓ 已设置 srca 的代理");
 
     let all = cb::list_proxy_configs(&st).expect("list");
-    assert!(all.contains_key("cycani"), "应含 cycani");
+    assert!(all.contains_key("srca"), "应含 srca");
     println!("✓ 读回: {} 条", all.len());
 
     // 清除
-    cb::clear_proxy_config(&st, "cycani").expect("clear");
+    cb::clear_proxy_config(&st, "srca").expect("clear");
     let all = cb::list_proxy_configs(&st).expect("list");
     println!("✓ 清除后: {} 条", all.len());
 }

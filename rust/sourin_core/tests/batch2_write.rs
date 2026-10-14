@@ -51,7 +51,7 @@ async fn progress_round_trip_writes_history_too() {
 
     cw::save_progress(
         &st,
-        "cycani",
+        "srca",
         "3862",
         "某剧",
         Some("https://real.example/cover.jpg".into()),
@@ -64,7 +64,7 @@ async fn progress_round_trip_writes_history_too() {
     .expect("save_progress");
 
     // ① 进度读得回来
-    let p = commands::get_progress(&st, "cycani", "3862")
+    let p = commands::get_progress(&st, "srca", "3862")
         .expect("get_progress")
         .expect("应有进度");
     assert_eq!(p.position, 149);
@@ -74,10 +74,10 @@ async fn progress_round_trip_writes_history_too() {
     /*
      * ★★★ 2026-10-12 按集扩容：进度 key = "provider:native_id:episode_id"
      *   （episode_id 为 null 时空串哨兵）。
-     *   这里 episode_id = "ep1" ⇒ key = "cycani:3862:ep1"。
+     *   这里 episode_id = "ep1" ⇒ key = "srca:3862:ep1"。
      */
     assert_eq!(
-        p.key, "cycani:3862:ep1",
+        p.key, "srca:3862:ep1",
         "★ 按集主键 = provider:native_id:episode_id"
     );
     println!("✓ 进度往返: pos={} dur={}", p.position, p.duration);
@@ -85,7 +85,7 @@ async fn progress_round_trip_writes_history_too() {
     // ② ★ 历史也必须有一条（原版行为 —— 两套数据都写）
     let h = commands::list_history(&st, None).expect("list_history");
     assert_eq!(h.len(), 1, "save_progress 应同时写一条历史");
-    assert_eq!(h[0].key, "cycani:3862");
+    assert_eq!(h[0].key, "srca:3862");
     println!("✓ 同时写入历史 1 条");
 }
 
@@ -142,7 +142,7 @@ async fn progress_coexists_per_episode_via_commands() {
 
     // 第3集：看到 20 分钟（1320s）
     cw::save_progress(
-        &st, "cycani", "3611", "长剧", None,
+        &st, "srca", "3611", "长剧", None,
         Some("ep3".into()), Some("第03集".into()), 1320, 1320, Some(false),
     )
     .unwrap();
@@ -151,7 +151,7 @@ async fn progress_coexists_per_episode_via_commands() {
     //   （同值下"最近看的那集"就没有分辨力）—— 这是**仪器自检**的一部分。
     tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     cw::save_progress(
-        &st, "cycani", "3611", "长剧", None,
+        &st, "srca", "3611", "长剧", None,
         Some("ep2".into()), Some("第02集".into()), 1300, 1320, Some(false),
     )
     .unwrap();
@@ -166,12 +166,12 @@ async fn progress_coexists_per_episode_via_commands() {
         2,
         "★★★ 同一作品的两集必须都留着（按集主键）—— 老口径只剩最后写的那集 ⇒ 红"
     );
-    let ep3 = all.iter().find(|p| p.key == "cycani:3611:ep3").expect("第3集行");
+    let ep3 = all.iter().find(|p| p.key == "srca:3611:ep3").expect("第3集行");
     assert_eq!(ep3.position, 1320, "★ 第3集的 20 分钟必须原样保留，不被第2集覆盖");
     assert_eq!(ep3.episode_title.as_deref(), Some("第03集"));
 
     // 按作品键（命令对外契约）取到的是**最近看的那集**（第2集，updated_at 更晚）
-    let latest = commands::get_progress(&st, "cycani", "3611").unwrap().unwrap();
+    let latest = commands::get_progress(&st, "srca", "3611").unwrap().unwrap();
     assert_eq!(
         latest.episode_id.as_deref(),
         Some("ep2"),
@@ -238,7 +238,7 @@ async fn skip_marker_round_trip() {
 
     cw::set_skip_marker(
         &st,
-        "cycani",
+        "srca",
         "3862",
         Some("某剧".into()),
         Some(0),
@@ -249,7 +249,7 @@ async fn skip_marker_round_trip() {
     )
     .expect("set_skip_marker");
 
-    let m = commands::get_skip_marker(&st, "cycani", "3862")
+    let m = commands::get_skip_marker(&st, "srca", "3862")
         .unwrap()
         .expect("应有跳过点");
     assert_eq!(m.intro_end, Some(69));
@@ -261,9 +261,9 @@ async fn skip_marker_round_trip() {
     );
 
     // 清除
-    cw::clear_skip_marker(&st, "cycani", "3862").unwrap();
+    cw::clear_skip_marker(&st, "srca", "3862").unwrap();
     assert!(
-        commands::get_skip_marker(&st, "cycani", "3862").unwrap().is_none(),
+        commands::get_skip_marker(&st, "srca", "3862").unwrap().is_none(),
         "清除后应查不到"
     );
     println!("✓ 清除生效");
@@ -335,7 +335,7 @@ async fn favorite_without_following() {
 
     let f = cw::set_favorite(
         &st,
-        "cycani",
+        "srca",
         "3862",
         true,
         Some("某剧".into()),
@@ -365,7 +365,7 @@ async fn following_without_favorite() {
 
     let f = cw::set_following(
         &st,
-        "cycani",
+        "srca",
         "9999",
         true,
         Some("某剧".into()),

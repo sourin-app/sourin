@@ -356,10 +356,10 @@ void main() {  // ════════════════════�
        *
        * ⚠️ 这一针钉的是**两条**语义，比旧针更严：
        *   ① 赋值右边必须仍是 `r.summary`（不能换字段、不能写死字符串）；
-       *   ② 左边必须带「B 站 · 」前缀（不能退回无前缀形态）。
+       *   ② 左边必须带「外部视频站 · 」前缀（不能退回无前缀形态）。
        *   用 r"..." 原串是为了让 `${r.summary}` 里的 `$` 保持字面量。
        */
-      expect(body.contains(r"_danmakuStatus = 'B 站 · ${r.summary}';"), isTrue,
+      expect(body.contains(r"_danmakuStatus = '外部视频站 · ${r.summary}';"), isTrue,
           reason: '★★ OPS-10 B：B 站这一支的状态文案必须带来源前缀 —— '
               '业主 1009 B② 要求能分清弹幕来自哪个源');
 
@@ -380,16 +380,16 @@ void main() {  // ════════════════════�
        *   ⚠️ 两条独立针写在**计数断言之前**：退回某一条时失败信息才能点名是
        *      5489 还是 5543（计数断言先跑的话只会说「实测 1 次」）。
        */
-      const panelPinHead = r"status: 'B 站 · ${r.summary}',";
+      const panelPinHead = r"status: '外部视频站 · ${r.summary}',";
       // 针身用**插值**拼接：相邻字面量接不了标识符，而 '+' 拼串会被
       // prefer_interpolation_to_compose_strings 报 lint（const 也不允许 '+'）。
       const pin5489 = '$panelPinHead\n      );\n    });\n    _biliCid = cid;';
       const pin5543 = '$panelPinHead\n      );\n    });\n    _biliCid = r.cid;';
       expect(body.contains(pin5489), isTrue,
-          reason: '★★ 5489（_loadBiliDanmaku 收尾）的面板读数必须带「B 站 · 」前缀，'
+          reason: '★★ 5489（_loadBiliDanmaku 收尾）的面板读数必须带「外部视频站 · 」前缀，'
               '且后面紧跟 _biliCid = cid; —— 退回 status: r.summary, 当场红');
       expect(body.contains(pin5543), isTrue,
-          reason: '★★ 5543（_biliApplyComments 收尾）的面板读数必须带「B 站 · 」前缀，'
+          reason: '★★ 5543（_biliApplyComments 收尾）的面板读数必须带「外部视频站 · 」前缀，'
               '且后面紧跟 _biliCid = r.cid; —— 退回 status: r.summary, 当场红');
       indexOfExactly(body, panelPinHead, want: 2,
           why: '★★ 5489 与 5543 是两条独立的面板读数，这个窗口里必须**两条都在**；'

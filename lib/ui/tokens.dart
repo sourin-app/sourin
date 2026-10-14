@@ -487,7 +487,7 @@ abstract final class AppMetrics {
 
   /// 标题**单行**高度 —— 原版 `line-height: 1.35` × 16px = 21.6
   ///
-  /// 依据 `D:\WishProject\cctv_to_client\src\design\base.css:844-854`：
+  /// 依据 `D:\WishProject\srcl_to_client\src\design\base.css:844-854`：
   /// ```css
   /// .poster-meta__title { font-size: var(--fs-base); line-height: 1.35; }
   /// ```

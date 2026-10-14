@@ -10,7 +10,7 @@
 //    漏一处就是一个真实 bug，而它们全在 player_page.dart 里 ——
 //    挂真 PlayerPage 要 libmpv，flutter_tester 会崩 ⇒ 只能源码级判据
 // ② 起播取弹幕的优先级（绑了 B 站 ⇒ 不发 dandanplay 的请求）
-// ③ 入口（弹幕面板里那枚「哔哩哔哩弹幕…」）
+// ③ 入口（弹幕面板里那枚「外部弹幕…」）
 // ④ 自动刷新（切集 / 集列表被换掉）
 // ⑤ 面板真渲染 + 真点击（宿主回调记账）
 // ```
@@ -464,7 +464,7 @@ void main() {  // ════════════════════�
   //  3. 入口（弹幕面板 → B 站面板）
   // ═══════════════════════════════════════════════════════════════════
 
-  group('3. 入口：弹幕面板里的「哔哩哔哩弹幕…」', () {
+  group('3. 入口：弹幕面板里的「外部弹幕…」', () {
     test('① 宿主把 onOpenBili 接上了', () {
       expect(_page.contains('onOpenBili: _openBiliSheet,'), isTrue,
           reason: '★ 不接 ⇒ 面板里那枚按钮永远是 null ⇒ 不画（用户找不到入口）');
@@ -482,7 +482,7 @@ void main() {  // ════════════════════�
       var opened = 0;
       await t.pumpWidget(_host(_danmakuDialog(onOpenBili: () => opened++)));
       await t.pumpAndSettle();
-      final btn = find.widgetWithText(TextButton, '哔哩哔哩弹幕…');
+      final btn = find.widgetWithText(TextButton, '外部弹幕…');
       expect(btn, findsOneWidget);
       /*
        * ⚠️ 按钮在面板最末尾 —— 800×600 的测试面里它在 y=956（屏幕外），
@@ -506,7 +506,7 @@ void main() {  // ════════════════════�
     testWidgets('③ 没传 onOpenBili ⇒ 按钮不画（旧宿主零破坏）', (t) async {
       await t.pumpWidget(_host(_danmakuDialog()));
       await t.pumpAndSettle();
-      expect(find.text('哔哩哔哩弹幕…'), findsNothing,
+      expect(find.text('外部弹幕…'), findsNothing,
           reason: '★ 面板可以被别的宿主复用而不带上 B 站 —— 那时不该有这枚按钮');
       expect(find.text('重新获取弹幕'), findsOneWidget, reason: '阳性对照');
     });

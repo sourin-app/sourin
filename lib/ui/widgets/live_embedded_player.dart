@@ -32,14 +32,14 @@
 // 做  ：播放/暂停、音量、静音、全屏入口、加载/错误态、仅音频提示
 // ```
 //
-// # 关于"仅音频"（cctv 源的实际情况）
+// # 关于"仅音频"（srcl 源的实际情况）
 //
 // ```text
 // 实测（.probe/t39_decode_v2.py，ffmpeg 真解码）：
-//   cctv 高清线  drm_protected=true   197 帧 / 223 个解码错误  ⇒ 不可播
-//   cctv 标清线  连不上（myqcloud 那条 403/超时）
-//   cctv 仅音频  ★ 可播（OK(音频)）
-// ⇒ ★ cctv 频道**不是"全坏"**，它剩一条能用的音频线
+//   srcl 高清线  drm_protected=true   197 帧 / 223 个解码错误  ⇒ 不可播
+//   srcl 标清线  连不上（myqcloud 那条 403/超时）
+//   srcl 仅音频  ★ 可播（OK(音频)）
+// ⇒ ★ srcl 频道**不是"全坏"**，它剩一条能用的音频线
 //   ⇒ 所以本页对这类频道**默认隐藏但可展开**（lead 裁决 ②）
 //     而不是永久剔除 —— 用户可能就想听广播
 // ```
@@ -85,7 +85,7 @@ class LiveEmbeddedPlayer extends StatefulWidget {
   /// 次要信息（分组 / "仅音频"等）
   final String? subtitle;
 
-  /// 是不是"只有音频线可播"（cctv 的情况）⇒ 显示明确提示，不留黑屏
+  /// 是不是"只有音频线可播"（srcl 的情况）⇒ 显示明确提示，不留黑屏
   final bool audioOnly;
 
   /// 右上角"全屏"按钮（lead 约束 3：必须保留全屏入口）
@@ -336,7 +336,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   ///
   /// # 为什么必须"封口"（否则修完比修前更糟）
   /// ```text
-  /// 纯音频台（cctv 那种"仅音频可播"的线）永远不会有 `dw`。
+  /// 纯音频台（srcl 那种"仅音频可播"的线）永远不会有 `dw`。
   /// 若不封口，[_awaitingFirstVideoFrame] 就**永远**为 true
   /// ⇒ 转圈**永不消失** —— 而转圈在语义上是"马上就有画面"，
   ///   那是在对用户**撒谎**（本文件 `:1382-1383` 记着同一条纪律：
@@ -1007,7 +1007,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
        * ★★ task-92b：**权威**的"没有视频轨" ⇒ 立刻静默收口，不必等满预算。
        *
        * ```text
-       * 纯音频台（cctv 那种）在轨道列表到达时就已被证明没有视频轨
+       * 纯音频台（srcl 那种）在轨道列表到达时就已被证明没有视频轨
        * ⇒ 原来要干等 10 秒（改后 20 秒）才收口 ⇒ 转圈白转 20 秒。
        * 有真音频轨 = demuxer 认过轨了 ⇒ 这个"没有视频轨"不是"还没认"。
        * ```
@@ -1046,7 +1046,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     if (token != _videoOutputToken || !mounted || _disposed) return;
     /*
      * ★★ task-92：预算用尽**仍然没有视频轨** ⇒ 这是“纯音频/无视频轨”的
-     *   **合法终态**（cctv 那种只剩音频线的台），不是故障。
+     *   **合法终态**（srcl 那种只剩音频线的台），不是故障。
      *
      * ⚠️ 必须与“输出层没起来”**分开处理**：
      *   · 无视频轨 ⇒ 静默收口（[_noVideoTrackSettled]），**不**置
@@ -1842,7 +1842,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
             // ── 错误 ──
             if (_error != null) _EmbedError(message: _error!, onRetry: retry),
 
-            // ── 仅音频提示（cctv）──
+            // ── 仅音频提示（srcl）──
             //   ★ task-91：与“输出层已死”互斥 —— 两者都是居中卡片，同时出现会叠字。
             if (widget.audioOnly && _error == null && !_videoOutputDead)
               const _AudioOnlyBadge(),
@@ -1999,9 +1999,9 @@ class _EmbedError extends StatelessWidget {
       );
 }
 
-/// 「仅音频」角标 —— cctv 的实际情况（视频线全 DRM，只剩音频）
+/// 「仅音频」角标 —— srcl 的实际情况（视频线全 DRM，只剩音频）
 ///
-/// ★ 用户报过「cctv看得到但是点开黑屏」⇒ 必须**明确告知**，不能静默黑屏
+/// ★ 用户报过「srcl看得到但是点开黑屏」⇒ 必须**明确告知**，不能静默黑屏
 ///   （与 `player_page.dart` 的 `_LiveAudioOnlyBanner` 同一结论）。
 class _AudioOnlyBadge extends StatelessWidget {
   const _AudioOnlyBadge();

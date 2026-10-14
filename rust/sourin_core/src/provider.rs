@@ -13,7 +13,7 @@
 //!
 //! | 层 | 机制 | 说明 |
 //! |---|---|---|
-//! | 内置 Provider | 编译期实现本 trait | 央视 / cycani 等复杂场景 |
+//! | 内置 Provider | 编译期实现本 trait | 某电视台 / srca 等复杂场景 |
 //! | HTTP Provider | 进程外 HTTP 契约 | 第三方，任意语言，天然隔离 |
 //! | 声明式 Provider | JSON 描述 + JSONPath | 标准 CMS，用户零代码 |
 //!
@@ -86,7 +86,7 @@ impl Session {
     ///
     /// # 为什么必须兜底（2026-09-24 用户报的 bug）
     ///
-    /// 插件契约允许只返回 `token` 而不返回 `expires_at`（`cycani.js` 里
+    /// 插件契约允许只返回 `token` 而不返回 `expires_at`（`srca.js` 里
     /// `expiresAt: … ? … : undefined` 就会产生这种会话）。旧逻辑遇到
     /// `expires_at == None` 一律当作「永不过期」：
     /// ```text
@@ -123,7 +123,7 @@ impl Session {
 /// 解析不出（不是 JWT、没有 `exp`、编码坏了）一律返回 `None` ——
 /// 调用方据此回退到「无到期信息」的保守分支。
 fn jwt_exp_secs(token: &str) -> Option<i64> {
-    // `Bearer xxx` → `xxx`（cycani 的 token 是带前缀存的）
+    // `Bearer xxx` → `xxx`（srca 的 token 是带前缀存的）
     let t = token.trim();
     let t = t
         .strip_prefix("Bearer ")
@@ -201,7 +201,7 @@ pub struct UserRecord {
     pub position: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<u64>,
-    /// 平台特有字段（如 cycani 的 category: want/watching/watched）
+    /// 平台特有字段（如 srca 的 category: want/watching/watched）
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub payload: serde_json::Map<String, serde_json::Value>,
     /// ★ 毫秒时间戳，冲突解决（LWW）依据
@@ -255,7 +255,7 @@ pub trait MediaProvider: Send + Sync {
     ///
     /// 为什么单独一个方法而不是复用 `list`：
     /// 榜单是**独立资源**（有自己的 id 与分页），跟「分类」的维度不同 ——
-    /// cycani 的 `/ranks/{id}/videos` 与 `/videos?zone_id=` 就是两条不同的接口。
+    /// srca 的 `/ranks/{id}/videos` 与 `/videos?zone_id=` 就是两条不同的接口。
     ///
     /// 默认不支持：只有声明了 `SectionSource::Rank` 区块的源才需要实现，
     /// 否则它的首页会出现「永远空白」的区块（本项目踩过这个坑）。
@@ -354,7 +354,7 @@ pub trait MediaProvider: Send + Sync {
     // 典型调用方是 `Registry::ensure_session()`：
     //   需要登录 → 快过期？→ refresh_session() → 还不行？→ auto_login()
     //
-    // 默认实现面向「不需要登录」的源（如央视），它们天然满足，无需覆写。
+    // 默认实现面向「不需要登录」的源（如某电视台），它们天然满足，无需覆写。
 
     /// ★ 会话是否**需要**续期
     ///
@@ -549,9 +549,9 @@ pub enum SessionState {
 
 // ─────────────────────────── 扫码登录（2026-09-21）───────────────────────────
 //
-// # 为什么做成**通用契约**而不是「B站专用」
+// # 为什么做成**通用契约**而不是「某视频站专用」
 //
-// 扫码登录不是 B站 独有的（B站 / 优酷 / 腾讯视频 / 网易云…都是这套）：
+// 扫码登录不是 某视频站 独有的（某视频站 / 某长视频站 / 某长视频站 / 网易云…都是这套）：
 // ```text
 // ① 申请二维码  → 拿到 { key, url }
 // ② 把 url 画成二维码给用户扫
@@ -581,7 +581,7 @@ pub struct QrLoginStart {
     /// **由宿主渲染**的二维码 SVG（插件不提供）
     #[serde(default)]
     pub svg: String,
-    /// 提示语（插件可给，如"请用 B站 App 扫码"）
+    /// 提示语（插件可给，如"请用 某视频站 App 扫码"）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
 }
@@ -640,7 +640,7 @@ impl ProviderHandle {
 //
 // # 这组测试为什么存在
 //
-// 用户报「次元城明明已登录了，也提示未登录」+「显示已登录但实际不能播」。
+// 用户报「某动画站明明已登录了，也提示未登录」+「显示已登录但实际不能播」。
 // 实测根因：token 真的过期了，但 `expires_at` 缺失时旧逻辑一律当「永不过期」，
 // 于是 `session_state` 报 `Expiring`，UI 渲染成「已登录 · 无需操作」。
 //
@@ -719,7 +719,7 @@ mod session_expiry_tests {
         assert_eq!(
             session(bare, None).effective_expires_at(),
             session(with_prefix, None).effective_expires_at(),
-            "`Bearer ` 前缀不该影响 exp 解析（cycani 存的就是带前缀的 token）"
+            "`Bearer ` 前缀不该影响 exp 解析（srca 存的就是带前缀的 token）"
         );
     }
 

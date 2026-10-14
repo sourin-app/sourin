@@ -27,10 +27,10 @@
 // > 两者在后端都是 `not_required`（会话校验只管 `login_required`），
 // > 但界面上该说的话完全不同：
 // > ```text
-// > · 央视        → 「无需登录」     （确实没有登录这回事）
-// > · B站         → 「游客可用」     （能登录，只是不登也能用）
+// > · 某电视台        → 「无需登录」     （确实没有登录这回事）
+// > · 某视频站         → 「游客可用」     （能登录，只是不登也能用）
 // > ```
-// > ⚠️ 给 B站 显示「无需登录」是**错的** —— 它旁边就有个「登录」按钮，
+// > ⚠️ 给 某视频站 显示「无需登录」是**错的** —— 它旁边就有个「登录」按钮，
 // >    用户会以为是 bug。
 //
 // 判据是 `capabilities.login_supported`。
@@ -43,7 +43,7 @@
 // ```
 //
 // 后端注释：
-// > ⚠️ **绝不能**给 B站 设 `login_required = true`：
+// > ⚠️ **绝不能**给 某视频站 设 `login_required = true`：
 // >    `Registry::ensure_session` 会因此**挡住游客播放**
 // >    （`if !login_required { return Some(true) }` 那条捷径失效），
 // >    而「不登录就能看 1080P」正是 Owner 明确要的能力。
@@ -91,7 +91,7 @@
 //      + lib/core/sourin_api.dart:1110 / :1128 两个包装
 //   2) 真请求：cargo test --test t525_qr_login => 4 passed / 0 failed
 //      start 拿到 key + 145 字符 url + 22972 字符 svg；poll 立即返回 Pending
-//   3) 插件层：部署版 bilibili.js（63,437 B）已实现 qrLoginStart / qrLoginPoll，
+//   3) 插件层：部署版 srcv.js（63,437 B）已实现 qrLoginStart / qrLoginPoll，
 //      返回结构与本面板用到的字段（key / url / svg / hint / status / message /
 //      session）逐字对齐 —— 插件一行都不用改
 //
@@ -159,7 +159,7 @@ enum Tone { ok, warn, err }
 ///
 /// # 用户报的问题（原话）
 ///
-/// > 次元城登录失效 明明不需要验证码就可以自动登录，还提示 验证码
+/// > 某动画站登录失效 明明不需要验证码就可以自动登录，还提示 验证码
 ///
 /// # 实测诊断（用真实凭据跑过全链路）
 ///
@@ -301,7 +301,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
 
   /// ★ 轮询定时器必须持有句柄并在 dispose / 切回表单时清掉。
   ///   原版注释（SettingsView.vue:230-232）：不定时清掉的话，弹窗关了
-  ///   定时器还在跑，会一直打 B站 的轮询接口 —— 风控风险 + 无谓流量。
+  ///   定时器还在跑，会一直打 某视频站 的轮询接口 —— 风控风险 + 无谓流量。
   Timer? _qrTimer;
 
   /// 防重叠：一次 poll 还没回来就不发第二次
@@ -456,7 +456,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
          *
          * # 用户原话（本次反馈）
          *
-         * > 像次元城支持自动登录的应该**无感登录**，哔哩哔哩如果遇到片源
+         * > 像某动画站支持自动登录的应该**无感登录**，外部视频源如果遇到片源
          * > 需要会员或者登录，**这时候才提示出来**（账号过期也是同理）
          *
          * 即：**提示的触发点应该是「内容需要」，不是「会话状态」**。
@@ -464,14 +464,14 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
          * # 为什么两种状态都不该自动展开
          *
          * ```text
-         * canAutoLogin = true（次元城）
+         * canAutoLogin = true（某动画站）
          *   → 用户**永远不需要动手**：点播时 ensure_session() 会自动重登
          *     （实测 0.46 秒成功）
          *   → 自动展开纯属打扰。更糟的是：它配上旧文案
          *     「需重新登录（可能需要验证码，请手动完成）」——
          *     用户以为要人工介入，实际什么都不用做。**这正是 Owner 报的 bug。**
          *
-         * canAutoLogin = false（B站这类）
+         * canAutoLogin = false（某视频站这类）
          *   → 用户**此刻**也不用动手 —— 他只是在逛设置页。
          *     真要动手的时刻是**播放失败那一刻**（`player_page` 的失败页
          *     会给「登录」按钮，那条路径本来就有）。
@@ -495,7 +495,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
          * 它一度写在 `build()` 里，结果是：每次重建都把 `_tab` 掰回 `'qr'` ⇒
          * 用户点「其它方式」**根本切不过去**（切了立刻被下一次 build 掰回来）。
          * 这是 t526 设备端探针实测抓到的缺陷：点完「其它方式」后
-         * `TextField` 数 = 0，Cookie 表单永远出不来 —— 而 B站 插件自己的
+         * `TextField` 数 = 0，Cookie 表单永远出不来 —— 而 某视频站 插件自己的
          * `login_hint` 恰恰写着「若扫码不可用，也可以切到「Cookie 导入」」。
          *
          * 原版（SettingsView.vue:202）也是**开弹窗时设一次**：
@@ -528,7 +528,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
         /*
          * ★★★ 2026-09-24 修：这里原来无条件说「令牌将在到期前自动续期，无需操作」
          *
-         * 用户报「次元城明明已登录了，也提示未登录」+「显示已登录但实际不能播」。
+         * 用户报「某动画站明明已登录了，也提示未登录」+「显示已登录但实际不能播」。
          * 根因是 Rust 侧把「**已经过期**」和「**即将过期**」都报成 `expiring`
          * （见 `provider.rs::session_needs_refresh` 的说明），
          * 而这里又把它渲染成「已登录 · 无需操作」——
@@ -554,7 +554,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
         /*
          * ★★★ 这两种**必须分开**（原版专门修过的 bug）
          *
-         * > ⚠️ 给 B站 显示「无需登录」是**错的** ——
+         * > ⚠️ 给 某视频站 显示「无需登录」是**错的** ——
          * >    它旁边就有个「登录」按钮，用户会以为是 bug。
          */
         return _caps.loginSupported
@@ -567,17 +567,17 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
          *   `SettingsView.vue:2280-2283`）：
          * ```text
          * login_required = true  → 「该源需要登录后才能播放」
-         *                          （如 cycani：从来没登录过，或登录失效了）
+         *                          （如 srca：从来没登录过，或登录失效了）
          * login_required = false → 「登录已失效」
-         *                          （如 B站：游客本来能用，只是登录态过期了）
+         *                          （如 某视频站：游客本来能用，只是登录态过期了）
          * ```
-         * ⚠️ 对 B站 说「需要登录后才能播放」是错的 —— 它不登录也能看
-         *    1080P（Owner 明确要的能力）。反过来对 cycani 说「登录已失效」
+         * ⚠️ 对 某视频站 说「需要登录后才能播放」是错的 —— 它不登录也能看
+         *    1080P（Owner 明确要的能力）。反过来对 srca 说「登录已失效」
          *    会让从没登录过的用户以为"我什么时候登录过？"。
          *
          * ★★★ 2026-09-24 补：光看 `login_required` **还不够**
          *
-         * 用户报「明明已登录了，也提示未登录」。cycani 的 `login_required`
+         * 用户报「明明已登录了，也提示未登录」。srca 的 `login_required`
          * 恒为 true，所以它**登录过、且刚失效**时也会说「该源需要登录后才能播放」——
          * 用户看到的是一句"从没登录过"的口吻，跟他记忆里的"我刚登录过"冲突，
          * 于是困惑（这正是用户原话里那个「也提示未登录」）。
@@ -597,7 +597,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
          *
          * # Owner 报的问题（原话）
          *
-         * > 次元城登录失效 明明不需要验证码就可以自动登录，还提示 验证码
+         * > 某动画站登录失效 明明不需要验证码就可以自动登录，还提示 验证码
          *
          * # 实测诊断（探针 `.probe` + `tests/zz_t38_*`）
          *
@@ -615,7 +615,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
          * # 为什么按能力位而不是写死 provider id
          *
          * 「有账号密码就能自动重登」是**插件自身的能力**（它实现了
-         * `autoLogin()`）。写死 `id == 'cycani'` 会让下一个类似插件
+         * `autoLogin()`）。写死 `id == 'srca'` 会让下一个类似插件
          * （用户自己写的、也实现了 `autoLogin`）继续看到"验证码"。
          *
          * # 两种文案的取舍依据
@@ -719,7 +719,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
     }
   }
 
-  // ═══ 扫码登录（支持 login_qr_supported 的源，例如 B站）═══
+  // ═══ 扫码登录（支持 login_qr_supported 的源，例如 某视频站）═══
 
   /// 切到扫码页签。第一次切过去才申请二维码（原版 switchToQr 的等价物）
   void _switchToQr() {
@@ -776,7 +776,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
   /// 起 2 秒一次的轮询（幂等：先停旧的）。
   ///
   /// ★ 为什么是 2 秒（原版 SettingsView.vue:289-305 注释）：
-  ///   B站 poll 接口返回 ttl: 1，二维码有效期约 180 秒，
+  ///   某视频站 poll 接口返回 ttl: 1，二维码有效期约 180 秒，
   ///   2 秒一次约 90 次足够及时；1 秒太密有风控风险。
   void _startQrPolling(String key) {
     _stopQrPolling();
@@ -1163,7 +1163,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
            * ★ 插件自带的登录说明（`login_hint`）**必须显示**
            *
            * 后端注释举例：
-           * > 例：B站要「从浏览器复制 Cookie 粘进来」，不写清楚用户不知道做什么。
+           * > 例：某视频站要「从浏览器复制 Cookie 粘进来」，不写清楚用户不知道做什么。
            */
             if ((_caps.loginHint ?? '').isNotEmpty) ...[
               Container(
@@ -1201,7 +1201,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
            * ⚠️ 账号框按 `loginNeedsUsername` 显示
            *
            * 后端注释：
-           * > B站的 Cookie 导入**不需要账号**，只有密码框（用来粘 Cookie）。
+           * > 某视频站的 Cookie 导入**不需要账号**，只有密码框（用来粘 Cookie）。
            * > 设 false 时前端隐藏账号框，也**不再要求它非空**
            * > （否则登录按钮永远是禁用状态）。
            *

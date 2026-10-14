@@ -105,8 +105,9 @@ pub async fn ensure_provider_session(
 /// （`plugins/.data/<id>.json`），而不是应用的系统钥匙串 ——
 /// 所以清理由插件自己负责。
 ///
-/// 回退：插件没实现该方法时，用内置源的钥匙串清理
-///（cycani 的 Rust 实现仍在源码里，保留兼容）。
+/// 回退：插件没实现该方法时，交由内置源自己处理。
+/// ★ 现在**没有内置的具体网站源**了（客户端只提供视频播放能力，
+///   具体网站由用户的本地插件提供）—— 所以这里只需如实返回"不支持"。
 pub async fn forget_provider_credentials(
     state: &AppState,
     provider: &str,
@@ -120,15 +121,7 @@ pub async fn forget_provider_credentials(
         return p.forget_credentials().await.map_err(|e| e.message);
     }
 
-    match provider {
-        "cycani" => {
-            crate::providers::cycani::forget_credentials().map_err(|e| e.message)?;
-            // 同时清掉内存会话，避免出现「凭据没了但 token 还在」的中间态
-            let _ = p.logout().await;
-            Ok(())
-        }
-        other => Err(format!("{other} 不支持凭据管理")),
-    }
+    Err(format!("{provider} 不支持凭据管理"))
 }
 
 /// ★ 申请一个登录二维码（扫码登录第一步，2026-10-05）

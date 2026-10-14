@@ -257,8 +257,29 @@ class SourinApi {
     return r == true;
   }
 
+  /// 门禁注入点：`set_provider_enabled`（直播页筛选的反向守卫用）
+  ///
+  /// ⚠️ 与 `debugLiveStreamFetcher` 同一纪律：**生产路径永不为非 null**
+  ///   （默认 null ⇒ 生产路径逐字不变，只多一次判空）。
+  ///
+  /// # 为什么需要它
+  /// ```text
+  /// task-53 用户**否定**了"点直播页的源 tag 就去启停源"那个形态
+  /// （配置该在设置页）。task-1013 给直播页加了"按源筛选" ——
+  /// 它**看起来**又像可点的源标签 ⇒ 必须能**机器证明**它不启停源。
+  /// 装一个探针数调用次数即可（调用为 0 才合格）。
+  /// 没有这个钩子时，测试只能断言"没抛异常" —— 那**区分不了**
+  /// 「没调」与「调了但恰好没抛」，属于假绿。
+  /// ```
+  @visibleForTesting
+  static Future<bool> Function(String id, bool enabled)?
+      debugProviderEnabledHook;
+
   /// 启用/停用某个源（**会落盘**，重启后保持）
   static Future<bool> setProviderEnabled(String id, bool enabled) async {
+    // ★ 探针注入点（默认 null ⇒ 生产路径逐字不变）
+    final hook = debugProviderEnabledHook;
+    if (hook != null) return hook(id, enabled);
     final r = await SourinCore.callAsync(
       'set_provider_enabled',
       {'id': id, 'enabled': enabled},

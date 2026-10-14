@@ -28,7 +28,7 @@
 // ```
 //
 // ⚠️ 判据必须精确：别的 provider 用 episode_id 表达别的东西
-//    （cycani 拿它当 section_id），所以只有明确是 http(s) URL 才替换。
+//    （srca 拿它当 section_id），所以只有明确是 http(s) URL 才替换。
 //
 // # 本文件怎么验（不依赖真实网络，可重复）
 //
@@ -188,8 +188,8 @@ fn starts_http_judgement_is_precise() {
 
     // 反例 —— 这些**绝不能**被当成剧集地址
     assert!(!starts_http("150758"), "纯数字条目 id");
-    assert!(!starts_http("cycani:51463"), "★ cycani 的 section_id（带前缀）");
-    assert!(!starts_http("51463"), "★ cycani 的裸 section_id");
+    assert!(!starts_http("srca:51463"), "★ srca 的 section_id（带前缀）");
+    assert!(!starts_http("51463"), "★ srca 的裸 section_id");
     assert!(!starts_http(""), "空串");
     assert!(!starts_http("ftp://a.com/x"), "非 http(s) 协议");
     assert!(!starts_http("//a.com/x"), "协议相对");

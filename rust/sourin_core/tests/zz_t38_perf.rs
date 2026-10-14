@@ -54,10 +54,12 @@ fn median(mut v: Vec<f64>) -> f64 {
 #[tokio::test]
 async fn measure_probe_cost() {
     let dir = tmp("perf");
-    let dep = std::fs::read_to_string(
-        std::path::PathBuf::from(REAL_PLUGINS).join("cycani.js"),
-    )
-    .expect("读部署版");
+    // ★ 依赖**用户本机部署**的那份插件（不进仓库）⇒ 缺席则跳过（不是失败）。
+    let plugin_path = std::path::PathBuf::from(REAL_PLUGINS).join("srca.js");
+    let Ok(dep) = std::fs::read_to_string(&plugin_path) else {
+        println!("[t38-perf] skip: 本机未部署 {}（该插件不进仓库）", plugin_path.display());
+        return;
+    };
 
     // 前置：确认它**没有**声明（否则不会走探测分支，量不到东西）
     assert!(
@@ -69,8 +71,8 @@ async fn measure_probe_cost() {
     let data = dir.join(".data");
     std::fs::create_dir_all(&data).unwrap();
     let real_data = std::path::PathBuf::from(REAL_PLUGINS).join(".data");
-    if real_data.join("cycani.json").exists() {
-        std::fs::copy(real_data.join("cycani.json"), data.join("cycani.json")).unwrap();
+    if real_data.join("srca.json").exists() {
+        std::fs::copy(real_data.join("srca.json"), data.join("srca.json")).unwrap();
     }
 
     let make = |d: std::path::PathBuf| {

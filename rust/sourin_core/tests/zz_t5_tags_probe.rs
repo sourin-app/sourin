@@ -96,8 +96,8 @@ async fn probe_iptv_live_stream_really_carries_tags() {
         }
     };
     eprintln!("真机读数：频道数 = {}", chans.len());
-    let Some(first) = chans.iter().find(|c| c.id.contains("CCTV1")) else {
-        eprintln!("[跳过] 列表里找不到 CCTV-1");
+    let Some(first) = chans.iter().find(|c| c.id.contains("SRCL1")) else {
+        eprintln!("[跳过] 列表里找不到 SRCL-1");
         return;
     };
     eprintln!("真机读数：选定频道 id = {} name = {}", first.id, first.name);
@@ -142,7 +142,7 @@ async fn probe_iptv_live_stream_really_carries_tags() {
 fn probe_tags_survive_bridge() {
     let plugin_out: Value = serde_json::from_str(
         r#"[{"url":"https://cdn.example/live/sdtv.m3u8","kind":"hls","label":"综合",
-             "tags":{"tvg-id":"CCTV1@SD","group-title":"China","tvg-logo":"https://x/logo.png"}}]"#,
+             "tags":{"tvg-id":"SRCL1@SD","group-title":"China","tvg-logo":"https://x/logo.png"}}]"#,
     )
     .expect("json");
     let bridged = js_value_to_rust(plugin_out.clone());

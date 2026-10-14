@@ -4,7 +4,7 @@
 //
 //  # 为什么要有这个组件（Owner 2026-10-09 第 12 条）
 //
-//  > 清晰度,可以像 bilibili 或者腾讯视频那样,悬浮上去出现一个小小的
+//  > 清晰度,可以像 srcv 或者某长视频站那样,悬浮上去出现一个小小的
 //  > 操作窗口,而不是非要弹窗、抽屉,本来就不用展示太多数据,
 //  > 干嘛要搞个弹窗
 //
@@ -27,7 +27,7 @@
 //  # 动画：≤150ms 的淡入 + 6px 位移，不用 BackdropFilter
 //
 //  `BackdropFilter` 在视频层上代价极高（每帧一次全屏读回），
-//  播放器页面绝不加；半透明白/黑卡片就够（B 站 / 腾讯都是这个观感）。
+//  播放器页面绝不加；半透明白/黑卡片就够（某视频站 / 腾讯都是这个观感）。
 
 import 'dart:async';
 
@@ -306,7 +306,7 @@ class PopoverController extends ChangeNotifier {
   }
 }
 
-/// 面板外观 —— B 站 / 腾讯视频那一档
+/// 面板外观 —— 某视频站 / 某长视频站那一档
 class PlayerPopoverSurface extends StatelessWidget {
   const PlayerPopoverSurface({
     super.key,
@@ -537,12 +537,12 @@ class _PopoverKeepAliveState extends State<PopoverKeepAlive> {
 ///
 /// # 三种输入的分工（同一个按钮上）
 /// ```text
-/// 悬停 150ms   → 展开（`_openHoverTimer`）——「鼠标只是路过就弹出」是 B 站的观感
+/// 悬停 150ms   → 展开（`_openHoverTimer`）——「鼠标只是路过就弹出」是 某视频站的观感
 /// 移出         → 250ms 后收起（`_closeHoverTimer`）—— 给「从按钮挪进面板」留路
 /// 点击 / 确认键 → 切换（`_onTap`）—— 触摸与 TV 走这条；桌面也支持不靠悬停
 /// ```
 ///
-/// ⚠️ 那 250ms 的延迟**不能省**：B 站/腾讯的按钮与面板之间有一条空隙，
+/// ⚠️ 那 250ms 的延迟**不能省**：某视频站/腾讯的按钮与面板之间有一条空隙，
 ///   用户要移过那条缝；零延迟会让指针一离开按钮面板就消失，永远点不进去。
 ///
 /// # 为什么不用 `MenuAnchor` / `Tooltip`
@@ -716,7 +716,7 @@ class PopoverAnchorButtonState extends State<PopoverAnchorButton> {
   Timer? _openTimer;
   Timer? _closeTimer;
 
-  /// 悬停展开的等待时间 —— 150ms：B 站那一档，短到像"跟手"，长到不会路过就弹
+  /// 悬停展开的等待时间 —— 150ms：某视频站那一档，短到像"跟手"，长到不会路过就弹
   static const Duration hoverDelay = Duration(milliseconds: 150);
 
   /// 移出后收起的等待 —— 与 `PopoverController.closeDelay` 同一份

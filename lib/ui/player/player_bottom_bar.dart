@@ -7,7 +7,7 @@
 //
 //  ```text
 //  ① 「选择类」操作全部换成 popover（倍速 / 线路 / 字幕音轨 / 弹幕 / 更多）
-//     —— 不再弹窗、不再抽屉（B 站 / 腾讯视频那一档）
+//     —— 不再弹窗、不再抽屉（某视频站 / 某长视频站那一档）
 //  ② 低频项收进一个「更多」浮层；功能**一个没删**，只是换了入口
 //  ③ 四个档位共用**同一套按钮定义**（`_barActions`），不再三份复制
 //     —— 改一处就三处生效，也终于能保证各档功能集合一致
@@ -51,7 +51,7 @@ class PlayerPopoverIds {
   /// 上一轮把弹幕做成「开关 + 设置」两枚**直连**按钮（开关直连 onDanmakuToggle、
   /// 设置直连 onDanmakuSettings 进全屏大卡片），于是 `danmaku` 这个 popover id
   /// 被判为死常量、删掉了（见 t27_w14 A4）。
-  /// 但 Owner 这次的原话要的是 B 站那种**贴按钮的小卡片**（图 1）：
+  /// 但 Owner 这次的原话要的是 某视频站那种**贴按钮的小卡片**（图 1）：
   ///   点齿轮 ⇒ 弹出「按类型过滤 + 四个滑杆 + 高级设置」的轻量窗；
   ///   最后一行「高级设置」⇒ 才进现在的全屏大卡片。
   /// ⇒ 弹幕重新需要一个 popover 入口，id 取 `danmakuQuick`（不是旧的 `danmaku`
@@ -159,7 +159,7 @@ class DanmakuQuickValues {
 
 /// ★★★ Owner 1011 反馈第 1 条：弹幕**轻量悬浮窗**要展示的全部状态与回调
 ///
-/// # 形态（对齐 B 站图 1）
+/// # 形态（对齐 某视频站图 1）
 /// ```text
 /// ① 按类型过滤：滚动 / 顶部 / 底部（三枚一键开关）
 /// ② 四根滑杆（**可直接拖**）：字号 / 不透明度 / 速度 / 显示区域
@@ -189,7 +189,7 @@ class DanmakuQuickValues {
 ///   非 null ⇒ 四根滑杆只订阅它、只重建滑杆那一小块（见 `_danmakuQuickPanel`）。
 ///   三个**类型开关**不在 `live` 里（点击，频率低，仍走宿主 setState）。
 ///
-/// ⚠️ 本项目**没有**的能力（B 站图 1 里有、这里如实不画假开关）：
+/// ⚠️ 本项目**没有**的能力（某视频站图 1 里有、这里如实不画假开关）：
 ///   「彩色 / 高级」类型过滤、「弹幕随屏幕缩放」「防挡字幕」「智能防挡弹幕」
 ///   「同步屏蔽列表」——`DanmakuConfig` / `DanmakuComment` 里都没有对应字段。
 class DanmakuQuickPanelData {
@@ -465,7 +465,7 @@ class PlayerBottomBar extends StatelessWidget {
           active: controller.isOpen(PlayerPopoverIds.tracks),
         ),
       _BarAction(
-        // ★★★ Owner 1011 反馈第 1 条（弹幕做成 B 站那种形态）：
+        // ★★★ Owner 1011 反馈第 1 条（弹幕做成 某视频站那种形态）：
         //   「一个开关,一个设置」⇒ 开关这枚**直接开关弹幕**（onTap 而不是
         //   popoverId）—— 点一下就是开/关，不再弹那个「关闭弹幕 / 弹幕设置」
         //   两层小菜单。设置那枚（下面紧接着的全新一枚）才是「弹出来面板
@@ -480,8 +480,8 @@ class PlayerBottomBar extends StatelessWidget {
         onTap: onDanmakuToggle,
       ),
       _BarAction(
-        // ★★★ Owner 1011 反馈第 1 条（弹幕做成 B 站那种形态）：
-        //   设置这枚点开的是一个**轻量悬浮窗**（B 站图 1 那种贴按钮的小卡片：
+        // ★★★ Owner 1011 反馈第 1 条（弹幕做成 某视频站那种形态）：
+        //   设置这枚点开的是一个**轻量悬浮窗**（某视频站图 1 那种贴按钮的小卡片：
         //   按类型过滤 + 四个可直接拖的滑杆 + 最后一行「高级设置」）。
         //
         //   ⚠️ 与「开关」那枚的区别（别照抄）：
@@ -621,7 +621,7 @@ class PlayerBottomBar extends StatelessWidget {
       );
 
   // ═══════════════════════════════════════════════════════════════════════
-  //  ★★★ Owner 1011 反馈第 1 条：弹幕轻量悬浮窗（B 站图 1 那种）
+  //  ★★★ Owner 1011 反馈第 1 条：弹幕轻量悬浮窗（某视频站图 1 那种）
   // ═══════════════════════════════════════════════════════════════════════
   //
   //  # 宽度为什么是 300（不是默认的 168）
@@ -679,7 +679,7 @@ class PlayerBottomBar extends StatelessWidget {
         // ① 按类型过滤 —— 四枚一键开关（滚动 / 顶部 / 底部 / 彩色）
         //
         // ★ 2026-10-11（Owner 第 1 条续）：补上第四枚「彩色」。
-        //   B 站图 1 里就是四枚；本项目的 `DanmakuComment.color` **有**颜色字段，
+        //   某视频站图 1 里就是四枚；本项目的 `DanmakuComment.color` **有**颜色字段，
         //   所以「彩色」是**有数据支持**的真开关（不是假开关）——
         //   语义 = 只显示彩色弹幕（白色弹幕隐藏），见 `DanmakuConfig.colorOnly`。
         //   ⚠️ 「高级」这一枚**不做**：`DanmakuComment` 里没有任何能区分
@@ -838,7 +838,7 @@ class PlayerBottomBar extends StatelessWidget {
     );
   }
 
-  /// 类型一键开关（B 站那种小图标按钮；开 = 青色高亮）
+  /// 类型一键开关（某视频站那种小图标按钮；开 = 青色高亮）
   Widget _quickTypeChip({
     required Key key,
     required String label,
@@ -873,7 +873,7 @@ class PlayerBottomBar extends StatelessWidget {
     );
   }
 
-  /// 弹幕速度读数：B 站是「极慢/慢/标准/快/极快」这种档位词。
+  /// 弹幕速度读数：某视频站是「极慢/慢/标准/快/极快」这种档位词。
   /// 本项目的 `speed` 是「走完一屏的秒数」（越大越慢）⇒ 按分档给出中文，
   /// 与全屏大卡片里那根滑杆显示的 `8.0s` 并存（档位词更好懂，秒数更精确）。
   static String _speedLabel(double seconds) {
@@ -952,7 +952,7 @@ class PlayerBottomBar extends StatelessWidget {
   /// （见 [_qualityRows] 的取舍说明）；传 null 时退回 `o.label`。
   ///
   /// ⚠️ **`labelOverride` 非空时必须同时抑制 `hint`**（Owner 1011 复报：
-  ///    「bilibili 的怎么还是两个重复的 1080p?」）。
+  ///    「srcv 的怎么还是两个重复的 1080p?」）。
   /// ```text
   /// 我第一版只换了 `label` 却仍传 `hint: o.hint` ⇒ 行里画出
   ///   「1080P        1080P」——左边是 override、右边是原 hint，**同一个值画两遍**。
@@ -978,7 +978,7 @@ class PlayerBottomBar extends StatelessWidget {
   /// > 4.然后还有这个清晰度,前面的无关紧要的信息就不用展示了吧?
   /// ```
   /// 他后来澄清：「前面的无关紧要的信息」= 每行左侧的**来源名**
-  /// （截图里那个被省略号截断的「哔哩哔哩 …」），只保留「1080P / 720P / 480P」。
+  /// （截图里那个被省略号截断的「外部视频源 …」），只保留「1080P / 720P / 480P」。
   ///
   /// # 数据口径（为什么 `hint` 才是清晰度、`label` 是来源名）
   /// ```text
@@ -1001,7 +1001,7 @@ class PlayerBottomBar extends StatelessWidget {
   /// ```text
   /// ① declarative.rs:165 `variants: HashMap<String, String>` ⇒ 变体键**唯一**
   ///    （键就是 quality，`.with_quality(label)`，label 恒为来源名 "声明式"）。
-  /// ② cctv.rs:593 的 [("hls1","高清"),("hls2","标清")] 与 :705 的四档 CDN
+  /// ② srcl.rs:593 的 [("hls1","高清"),("hls2","标清")] 与 :705 的四档 CDN
   ///    （超清/高清/标清/流畅）—— 同一来源内 quality 逐条**不同**。
   /// ③ `resolve_stream`（playback.rs:149）**不做任何去重或合并**：
   ///    它只把一个 provider 的 `resolve()` 结果原样返回（仅套代理）。
@@ -1034,9 +1034,9 @@ class PlayerBottomBar extends StatelessWidget {
     // ```text
     // 旧判据：同档 >1 ⇒ 给那几行附来源名。它**假设**同档多条 = 不同来源。
     // 真机反例（Owner 截图：三个一模一样的 1080P）：
-    //   bilibili 这类第三方插件把 best + 全部 backupUrl 都当独立候选输出，
+    //   srcv 这类第三方插件把 best + 全部 backupUrl 都当独立候选输出，
     //   quality 全相同、**来源名也几乎相同**：
-    //     「哔哩哔哩 1080P」 / 「哔哩哔哩 1080P 备用」 / 「哔哩哔哩 1080P 备用」…
+    //     「外部视频源 1080P」 / 「外部视频源 1080P 备用」 / 「外部视频源 1080P 备用」…
     //   ⇒ 附来源名后那几行**仍然分不开** ⇒ 消歧失败，
     //     用户看到重复字、还是不知道该点哪个。
     // ```

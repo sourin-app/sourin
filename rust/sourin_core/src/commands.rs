@@ -318,7 +318,7 @@ pub async fn list_favorites(
      * 库里存的是**原始 URL**（`set_favorite` 里刻意 unproxy 过 ——
      * 临时代理地址不能落库，端口每次启动都变）。但展示时如果直接用原始 URL：
      * ```text
-     * B站封面 https://i1.hdslb.com/...  + 页面 Referer = tauri.localhost
+     * 某视频站封面 https://i1.hdslb.com/...  + 页面 Referer = tauri.localhost
      *   → HTTP 403（实测确认，CDN 有防盗链）
      * ```
      * 所以必须在这里重新登记一次代理，前端拿到的才是能加载的地址。
@@ -327,7 +327,7 @@ pub async fn list_favorites(
      * 详情页每次都走 `proxy_cover_one`，而这里原先什么都没做。
      *
      * ⚠️ 每个源用它自己的 `cover_headers` —— 不同 CDN 要的头不一样
-     *    （B站要 Referer，其他源可能不要）。
+     *    （某视频站要 Referer，其他源可能不要）。
      *    没有声明 `coverHeaders` 的源跳过（直连本来就能加载）。
      *
      * ⚠️ 代理启动失败时**保持原 URL 不变** ——
@@ -842,10 +842,10 @@ mod tests {
     #[test]
     fn disabled_roundtrip() {
         let dir = tmp_dir("disabled-rt");
-        save_disabled(&dir, &["cycani".into(), "cctv".into()]).unwrap();
+        save_disabled(&dir, &["srca".into(), "srcl".into()]).unwrap();
         let back = load_disabled(&dir);
         assert_eq!(back.len(), 2);
-        assert!(back.contains(&"cycani".to_string()));
+        assert!(back.contains(&"srca".to_string()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

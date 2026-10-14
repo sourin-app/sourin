@@ -107,7 +107,7 @@ const String _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
 const String _tag = String.fromEnvironment('T87_TAG', defaultValue: 'cloudsync');
 
 /// 页面底色应有的值 —— 来自**原版 Tauri 浅色主题**
-/// `D:\WishProject\cctv_to_client\src\design\theme-light.css:32`
+/// `D:\WishProject\srcl_to_client\src\design\theme-light.css:32`
 ///   `--bg-base: #eef0f6;`
 /// 与 `lib/ui/app_theme.dart` 的 `LightTokens.bgBase` 逐字一致。
 /// ★ 2026-09-29 的灰带修复（`shell.dart:2929-2931`）就是为了让

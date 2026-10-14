@@ -6,8 +6,8 @@
 //
 // > 播放页和详情页都不能看到当前播放源是哪一个
 //
-// 两个页面拿到的都只有**源 id**（`widget.provider`，如 `cycani`），
-// 而用户认的是**显示名**（`次元城`）。显示名只存在于
+// 两个页面拿到的都只有**源 id**（`widget.provider`，如 `srca`），
+// 而用户认的是**显示名**（`某动画站`）。显示名只存在于
 // `ProviderManifest.name`（`listProviders()` 的返回里）。
 //
 // # 为什么单独一个文件而不是各页各写一份
@@ -34,7 +34,7 @@
 // 与 `player_page.dart::_loginAndRetry` 同一条原则：
 // ```text
 // 用户此刻要的是"知道自己在哪个源"，不是"名字好看"。
-// 显示 `cycani` 仍然回答了"是哪一个"；显示空字符串则什么都没回答。
+// 显示 `srca` 仍然回答了"是哪一个"；显示空字符串则什么都没回答。
 // ```
 import 'package:flutter/foundation.dart';
 

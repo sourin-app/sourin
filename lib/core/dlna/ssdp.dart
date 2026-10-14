@@ -4,7 +4,7 @@
 //
 // # 为什么要从零写
 //
-// Owner 要求「安卓端要支持投屏功能」。原版 `cctv_to_client` **没有任何投屏
+// Owner 要求「安卓端要支持投屏功能」。原版 `srcl_to_client` **没有任何投屏
 // 代码**（dlna / ssdp / upnp / cast 命中 0），而本机 **pub.dev 不可达**
 // ⇒ 不能 `upnp_client` / `dlna_dart` 这类包，只能自己实现协议。
 //

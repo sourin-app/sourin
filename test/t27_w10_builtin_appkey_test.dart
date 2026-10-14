@@ -85,7 +85,7 @@ void main() {
             }),
             headers: const {'content-type': 'application/json'},
           ));
-      final client = DandanplayClient(transport: fake); // 不传 appId ⇒ 读 DanmakuConfig
+      final client = ExternalDanmakuClient(transport: fake); // 不传 appId ⇒ 读 DanmakuConfig
       await client.match(fileName: 'EP01');
       expect(fake.calls, hasLength(1));
       final h = fake.calls.first.headers;

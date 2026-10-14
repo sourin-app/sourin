@@ -6,8 +6,8 @@
 //
 // 实测发现的关键问题：
 // ```text
-// repo    rust/sourin_core/plugins/cycani.js     有 canAutoLogin: true 声明
-// deployed %APPDATA%\...\plugins\cycani.js       **没有**（cycani.js 从不自动投放）
+// repo    rust/sourin_core/plugins/srca.js     有 canAutoLogin: true 声明
+// deployed %APPDATA%\...\plugins\srca.js       **没有**（srca.js 从不自动投放）
 // ⇒ 只靠声明 ⇒ 用户永远看不到「正在自动重新登录」 ⇒ Owner 报的 bug 不变
 // ```
 // 所以 `hydrate_capabilities` 现在做「**声明 或 运行时探测**」。
@@ -57,12 +57,25 @@ fn seed_real(tag: &str) -> std::path::PathBuf {
 }
 
 /// ★★★ 核心：**部署版**（无声明）也必须被探测出 can_auto_login = true
+/// 本机是否部署了这个插件（用户机器相关，CI 上必然没有）
+///
+/// ★ 按 Owner 口径「具体网站插件不进仓库」—— 这个插件现在只在**用户本机**。
+///   ⇒ 依赖它的测试在**夹具缺席时跳过**（而不是 panic 失败）。
+fn has_deployed(name: &str) -> bool {
+    std::path::PathBuf::from(REAL_PLUGINS).join(name).exists()
+}
+
 #[tokio::test]
 async fn deployed_plugin_gets_can_auto_login_via_probe() {
+    // ★ 夹具缺席则跳过（本机没部署这份插件 ⇒ 无从验证）
+    if !has_deployed("srca.js") {
+        println!("[t38-probe] skip: 本机未部署 srca.js（该插件不进仓库）");
+        return;
+    }
     let dir = seed_real("deployed");
 
     // 先确认前提：部署版**真的没有**声明（否则本测试变成假绿）
-    let dep = std::fs::read_to_string(dir.join("cycani.js")).unwrap();
+    let dep = std::fs::read_to_string(dir.join("srca.js")).unwrap();
     println!(
         "\n[前提] 部署版含 `canAutoLogin: true` 声明 = {}",
         dep.contains("canAutoLogin: true")
@@ -85,12 +98,12 @@ async fn deployed_plugin_gets_can_auto_login_via_probe() {
     let (plugins, bad) = load_plugins_hydrated(&dir, None).await;
     println!("[加载] 成功 {} 个，失败 {} 个", plugins.len(), bad.len());
 
-    let cycani = plugins
+    let srca = plugins
         .iter()
-        .find(|p| p.manifest().id == "cycani")
-        .expect("应加载到 cycani");
+        .find(|p| p.manifest().id == "srca")
+        .expect("应加载到 srca");
 
-    let caps = &cycani.manifest().capabilities;
+    let caps = &srca.manifest().capabilities;
     println!(
         "[结果] can_auto_login = {}  ← 声明=false 但探测应为 true",
         caps.can_auto_login
@@ -105,7 +118,7 @@ async fn deployed_plugin_gets_can_auto_login_via_probe() {
 
     // ★ 运行时方法本身也应为 true（与上面互相印证）
     assert!(
-        cycani.can_auto_login().await,
+        srca.can_auto_login().await,
         "★ 运行时方法本身应是 true"
     );
 }
@@ -231,9 +244,14 @@ globalThis.plugin = {
     );
 }
 
-/// ★ 整机视角：真实 26 个插件里，**恰好 cycani 一个**拿到 can_auto_login
+/// ★ 整机视角：真实 26 个插件里，**恰好 srca 一个**拿到 can_auto_login
 #[tokio::test]
-async fn only_cycani_gets_auto_login_among_real_plugins() {
+async fn only_srca_gets_auto_login_among_real_plugins() {
+    // ★ 夹具缺席则跳过（该插件不进仓库，CI / 干净机器上没有）
+    if !has_deployed("srca.js") {
+        println!("[t38-probe] skip: 本机未部署 srca.js（该插件不进仓库）");
+        return;
+    }
     let dir = seed_real("real-all");
     let (plugins, _) = load_plugins_hydrated(&dir, None).await;
 
@@ -249,8 +267,8 @@ async fn only_cycani_gets_auto_login_among_real_plugins() {
     );
     assert_eq!(
         yes,
-        vec!["cycani".to_string()],
-        "★ 真实插件里应**只有** cycani（它实现了 canAutoLogin + store 里有凭据）。\
-         bilibili 既没实现方法也没凭据 ⇒ 必须是 false。实际 {yes:?}"
+        vec!["srca".to_string()],
+        "★ 真实插件里应**只有** srca（它实现了 canAutoLogin + store 里有凭据）。\
+         srcv 既没实现方法也没凭据 ⇒ 必须是 false。实际 {yes:?}"
     );
 }

@@ -5118,7 +5118,7 @@ class _ShellPageState extends State<ShellPage>
   /// ══════════════════════════════════════════════════════════════════════
   ///
   /// ```text
-  /// ① 布局：**上播放器 + 下详情**（B站那种）
+  /// ① 布局：**上播放器 + 下详情**（某视频站那种）
   /// ② 全屏：全屏时只剩视频，退出后回到合并页
   /// ③ 旧详情页：**完全去掉**，所有入口直接进合并页
   /// ```
@@ -5126,7 +5126,7 @@ class _ShellPageState extends State<ShellPage>
   /// # 为什么仍然必须"先跳这一页"（而不是直接开播放器）
   ///
   /// 旧注释的顾虑**仍然成立**：
-  /// > 多集内容（如 cycani 的 24 集）需要选集、多源内容需要换源。
+  /// > 多集内容（如 srca 的 24 集）需要选集、多源内容需要换源。
   ///
   /// 只是那些能力现在**长在合并页内部**了：
   /// ```text
@@ -5282,17 +5282,17 @@ class _ShellPageState extends State<ShellPage>
   /// # 错在哪
   ///
   /// 旧签名只有 `(channelId, name)`，而下面 push 的 `PlayerPage` 里
-  /// `provider` 被**写死成 'cctv'`**：
+  /// `provider` 被**写死成 'srcl'`**：
   /// ```text
   /// 旧 :4913  void _openLiveChannel(String channelId, String name)
-  /// 旧 :4923    provider: 'cctv',        ← ★ 无论频道来自哪个源都写 cctv
+  /// 旧 :4923    provider: 'srcl',        ← ★ 无论频道来自哪个源都写 srcl
   /// ```
   /// 而调用方（首页直播条的 `onOpenLive`）**本来就知道源** ——
   /// 它每个频道都是按 `(provider, channelId)` 探出来的。
   /// 信息在回调边界上被丢掉 ⇒ 一旦用户在首页切到别的源再看直播，
-  /// 播放器仍然去 cctv 取流 ⇒ 取不到 ⇒ **黑屏**。
-  /// （正是 Owner 第 8 条要消灭的症状；task-4 实测：cctv 的 20 个频道
-  ///   视频线 100% `drmProtected: true`，写死 cctv 等于写死黑屏。）
+  /// 播放器仍然去 srcl 取流 ⇒ 取不到 ⇒ **黑屏**。
+  /// （正是 Owner 第 8 条要消灭的症状；task-4 实测：srcl 的 20 个频道
+  ///   视频线 100% `drmProtected: true`，写死 srcl 等于写死黑屏。）
   ///
   /// # 为什么这么改
   ///
@@ -5300,7 +5300,7 @@ class _ShellPageState extends State<ShellPage>
   /// `HomePage.onOpenLive` / `LivePage.onWatchLive`（`(provider, channelId, name)`）
   /// 保持一致 —— 同一个语义在三个回调上用同一种形状，少一次"顺序记错"的机会。
   ///
-  /// ⚠️ 刻意**不给默认值**：写死 'cctv' 正是本次要修的 bug，
+  /// ⚠️ 刻意**不给默认值**：写死 'srcl' 正是本次要修的 bug，
   ///    留个默认值等于把它换个地方留着（下一个人漏传时静默回到黑屏）。
   ///    没有默认值 ⇒ 漏传是**编译错误**。
   void _openLiveChannel(String provider, String channelId, String name) {
@@ -5313,7 +5313,7 @@ class _ShellPageState extends State<ShellPage>
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => PlayerPage(
-          // ★ task-6：源来自调用方（旧代码在这里写死 'cctv'）
+          // ★ task-6：源来自调用方（旧代码在这里写死 'srcl'）
           provider: provider,
           id: channelId,
           title: name,
@@ -5999,7 +5999,7 @@ class _WinButtonState extends State<_WinButton> {
 // 而真相是核心根本没起来。这就是"静默失败"：
 // 失败被如实记录了（日志里有），却**从没到达用户**。
 //
-// # 原版怎么做（`cctv_to_client` 的基准）
+// # 原版怎么做（`srcl_to_client` 的基准）
 //
 // 原版是 Tauri，Rust 核心**在进程内**，`lib.rs:3643` 的 `setup()` 里
 // 初始化失败时**降级而不是中断**：

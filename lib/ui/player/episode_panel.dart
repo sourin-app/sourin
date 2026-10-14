@@ -82,7 +82,7 @@ class PlayerEpisodePanel extends StatefulWidget {
 class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
   final _controller = ScrollController();
 
-  /// ★ true = 最新一集在最上面（B 站/腾讯的「倒序」开关）
+  /// ★ true = 最新一集在最上面（某视频站/腾讯的「倒序」开关）
   bool _descending = false;
 
   int _segment = 0;
@@ -223,7 +223,7 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
         ),
       ),
       const Spacer(),
-      // ★ 倒序开关：Owner 明确要的形态（B 站/腾讯都有）
+      // ★ 倒序开关：Owner 明确要的形态（某视频站/腾讯都有）
       IconButton(
         onPressed: () {
           setState(() => _descending = !_descending);

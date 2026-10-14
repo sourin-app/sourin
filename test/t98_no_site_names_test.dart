@@ -82,6 +82,7 @@ const List<String> _exempt = <String>[
   'CONTRIBUTING.md', // ★ 规范本身要举例说明"哪些词被禁"
   'test/t98_no_site_names_test.dart', // ★ 本文件（名单就在这里）
   '.probe/', // 开发期一次性探针（gitignore，不发布）
+  '.dsh_baseline_hashes.json', // ★ 本机基线哈希缓存（gitignore，不发布）
   'test/', // ⚠️ 见下方 _exemptTestReason 的长注释
 ];
 
@@ -90,6 +91,137 @@ const String _exemptTestReason =
     '⚠️ 这条豁免是**有意的取舍**：测试夹具遍地是历史遗留的站名，'
     '一次性全改会淹没本门禁的信号。计划：先保证**产品代码 + 文档**干净'
     '（那是用户看得见、也是 Owner 真正在意的），测试夹具随后分批清。';
+
+/// 允许出现的**具体行**（比整文件豁免精确得多）。
+///
+/// 每条 = (文件相对路径子串, 该行必须包含的唯一子串, 理由)。
+/// ★ 只有**真正负载、必须逐字保留**的字符串才配得上行级豁免 ——
+///   不是"懒得改"，而是"改了会坏"。
+/// ★ 豁免只对**那一行**生效：同文件里其它新加的站名照样报。
+const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
+    <(String, String, String)>[
+  (
+    'rust/sourin_core/src/state.rs',
+    'bilibili-live.js',
+    '真实迁移：老用户数据目录里可能还留着这个**历史文件名**，'
+        '不删会与用户自己的插件重复注册。它只在"删除/探测老文件"路径上出现，'
+        '不是产品文案、不对外可见。'
+  ),
+  (
+    'rust/sourin_core/src/state.rs',
+    '@id bilibili-live',
+    '同上：测试模拟"老用户升级"时铺的旧文件骨架，必须用真实的历史 @id，'
+        '否则测不出"旧文件被清掉"。'
+  ),
+  (
+    'rust/sourin_core/src/state.rs',
+    "id: 'bilibili-live'",
+    '同上：旧文件骨架里插件对象的 @id 必须逐字是历史值（同一条迁移测试）。'
+  ),
+  (
+    'rust/sourin_core/src/state.rs',
+    'x == "bilibili-live"',
+    '同上：断言"遗留的旧源不再出现"，必须逐字写历史 @id。'
+  ),
+  (
+    'lib/core/danmaku.dart',
+    'DANDANPLAY_APP_',
+    '构建期注入契约：`String.fromEnvironment("DANDANPLAY_APP_ID")` 必须与'
+        '`.github/workflows/build.yml` 的 `--dart-define` 逐字一致，'
+        '改名会**破坏发版时注入凭证**（功能坏死）。不是产品文案。'
+  ),
+  (
+    'lib/ui/widgets/danmaku_settings_dialog.dart',
+    'DANDANPLAY_APP_',
+    '注释里指回上面那对**构建期变量名**（改名会破坏发版凭证注入）。'
+        '不是用户可见文案。'
+  ),
+  (
+    'README.md',
+    'DANDANPLAY_APP_',
+    '文档必须写清**构建期注入的变量名**：它与 `.github/workflows/build.yml` 的'
+        '`--dart-define` 逐字一致，改名会**破坏发版凭证注入**。'
+        '（站名已从中性化后的说明里去掉，只剩这个必须保留的变量名。）'
+  ),
+  (
+    '.github/workflows/build.yml',
+    'DANDANPLAY_',
+    'CI 构建期注入契约：env / `--dart-define` 里的变量名必须与 Dart 侧'
+        '`String.fromEnvironment` 逐字一致；删了会**破坏 CI 的凭证注入**。'
+        '（按 Owner 口径：这个变量名先留着，只中性化注释里的站名。）'
+  ),
+  // ── 运行期**必需的真实 API 主机名**（删/改 ⇒ 功能坏死）──────────────
+  //
+  // ★ 这一类与上面的"品牌名"性质不同：它们是**客户端真正要连的端点**，
+  //   不是"支持某站"的文案。删掉或换成假域名 ⇒ 弹幕/视频接口直接拿不到数据
+  //   （且不会有编译错误，是**静默功能坏死**）。
+  //   ⇒ 按 Owner 口径「不许为了删而删功能」，这些字符串**必须逐字保留**。
+  //   ★ 只豁免**含该主机名的那一行**；同文件别处提到站名的文案照样被抓。
+  (
+    'lib/core/danmaku.dart',
+    'dandanplay.',  // api./dev./doc.dandanplay.* 端点
+    '外部弹幕服务的**真实 API 主机名**：客户端要请求它取弹幕、'
+        '用户要点它去申请凭证。换假域名 ⇒ 弹幕功能静默失效。不是品牌文案。'
+  ),
+  (
+    'lib/core/bili/bili_api.dart',
+    'bilibili.',
+    '视频源弹幕导入用到的**真实 API 主机名**（api./comment./search./www.）：'
+        '换假域名 ⇒ 取流与弹幕静默失效。不是"支持某站"的文案。'
+  ),
+  (
+    'lib/core/bili/bili_bind.dart',
+    'bilibili.',
+    '同上：绑定逻辑里引用的真实端点（comment. 弹幕 XML）。'
+  ),
+  (
+    'lib/core/dlna/referer_proxy.dart',
+    'bilibili.',
+    '同上：防盗链 Referer 的**真实域名示例**（DLNA 转发的运行期参数）。'
+  ),
+  (
+    'lib/ui/widgets/bili_import_dialog.dart',
+    'bilibili.',
+    '同上：输入框 placeholder 展示的**真实链接形态**（用户要照着填）。'
+  ),
+  (
+    'lib/ui/widgets/plugin_edit_dialog.dart',
+    'bilibili.',
+    '同上：注释里举例说明"上游来源 URL"的真实形态（`const API = ...`）。'
+  ),
+  (
+    'lib/probe_cast.dart',
+    'bilibili.',
+    '同上：DLNA 探针里的真实 Referer 域名。'
+  ),
+  (
+    'lib/t513_danmaku_probe.dart',
+    'dandanplay.',
+    '同上：弹幕探针里要打**真实端点**（探针本身就是拿它测网络的）。'
+  ),
+  (
+    'lib/ui/widgets/danmaku_settings_dialog.dart',
+    'dandanplay.',
+    '同上：注释里指回真实凭证申请地址（doc.dandanplay.*）。'
+  ),
+  (
+    'rust/sourin_core/tests/t525_qr_login.rs',
+    'bilibili',
+    '★ 集成测试的**夹具引用**：它从用户本机 `%APPDATA%\\...\\plugins\\` '
+        '只读复制那份插件的**真实文件名**（`bilibili.js`），并用它的**真实 @id** '
+        '调命令层 —— 这不是产品文案，改名会让测试读不到夹具。'
+        '（夹具缺席时该测试跳过，见文件内的 skip 分支。）'
+  ),
+];
+
+/// 该行是否命中某条行级豁免
+bool _isExemptLine(String rel, String line) {
+  final p = rel.replaceAll('\\', '/');
+  for (final e in _exemptLines) {
+    if (p.contains(e.$1) && line.contains(e.$2)) return true;
+  }
+  return false;
+}
 
 /// 仓库里**会被发布**的文本文件（按扩展名）
 const List<String> _scanned = <String>[
@@ -104,7 +236,7 @@ const List<String> _scanned = <String>[
   '.sh',
 ];
 
-/// 跳过的目录（第三方 / 产物 / 版本库）
+/// 跳过的目录（第三方 / 产物 / 版本库 / 本机 agent 工具）
 const List<String> _skipDirs = <String>[
   '.git',
   'build',
@@ -112,6 +244,15 @@ const List<String> _skipDirs = <String>[
   '.dart_tool',
   'node_modules',
   '.probe',
+  // ★ 以下都是**本机 agent/开发工具目录**，不是仓库内容、也不随包发布：
+  //   · `.claude/`      —— 本机 Claude 会话产物（报告、worktree、缓存）
+  //   · `.probe_i12/`  等 —— 开发期一次性探针（已在 .gitignore）
+  //   · `.local/`       —— 本机临时脚本/中间文件
+  //   ⇒ 跳过它们，否则本门禁会被工具产物淹没（假阳性）。
+  '.claude',
+  '.local',
+  '.probe_i12',
+  '.probe_i56',
 ];
 
 /// 扫描 [text]，返回命中的 (词, 说明)
@@ -173,10 +314,15 @@ void main() {
     final offenders = <String>[];
     for (final rel in files) {
       if (_isExempt(rel)) continue;
-      final text = File(rel).readAsStringSync();
-      for (final hit in scanForBanned(text)) {
-        // 每文件每词只报一次（够定位即可，不刷屏）
-        offenders.add('$rel  →  「${hit.$1}」（${hit.$2}）');
+      final lines = File(rel).readAsStringSync().split('\n');
+      for (var i = 0; i < lines.length; i++) {
+        final line = lines[i];
+        // ★ 行级豁免：只有"逐字保留否则会坏"的行才被放过
+        if (_isExemptLine(rel, line)) continue;
+        for (final hit in scanForBanned(line)) {
+          // 每行每词只报一次（够定位即可，不刷屏）
+          offenders.add('$rel:${i + 1}  →  「${hit.$1}」（${hit.$2}）');
+        }
       }
     }
 
@@ -199,6 +345,29 @@ void main() {
     expect(hits.contains('bilibili'), isTrue,
         reason: '★ 扫描器抓不到 bilibili ⇒ 上面那条"零命中"毫无意义');
     expect(hits.contains('斗鱼'), isTrue, reason: '★ 同理，中文词也要能抓到');
+  });
+
+  test('★★ 阳性对照：行级豁免**精确到行** —— 非豁免行仍会被抓到', () {
+    // ★ 反面：把 _isExemptLine 改成恒返回 true ⇒ 本断言红。
+    final rel = 'rust/sourin_core/src/state.rs';
+    // ① 命中豁免的那一行 ⇒ 被放过
+    expect(
+      _isExemptLine(rel, 'let legacy = plugins_dir(data_dir).join("bilibili-live.js");'),
+      isTrue,
+      reason: '★ 迁移路径的**历史文件名**那一行应当被豁免',
+    );
+    // ② ★ 同文件里**别的一行**（没有豁免 marker）带着站名 ⇒ 仍必须被抓到
+    expect(
+      _isExemptLine(rel, '// 我们以前支持过 bilibili，后来删了'),
+      isFalse,
+      reason: '★★ 豁免只对那一行生效 —— 同文件新加的站名不能被一起放过',
+    );
+    // ③ 换个文件、同样的行内容 ⇒ 不豁免
+    expect(
+      _isExemptLine('lib/foo.dart', 'String.fromEnvironment("DANDANPLAY_APP_ID")'),
+      isFalse,
+      reason: '★ 豁免绑到具体文件，不能跨文件生效',
+    );
   });
 
   test('★ 阴性对照：干净文本不该被误报', () {

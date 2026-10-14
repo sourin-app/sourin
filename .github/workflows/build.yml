@@ -84,7 +84,7 @@ jobs:
       #   回退到 pubspec 的版本号（见 lib/core/app_update/app_version.dart）。
       SOURIN_VERSION: ${{ inputs.release_tag }}
 
-    # ★ 弹弹play 官方凭证（DANDANPLAY_APP_ID / APP_SECRET）**不在这里**声明：
+    # ★ 外部弹幕服务的官方凭证（DANDANPLAY_APP_ID / APP_SECRET）**不在这里**声明：
     #   它只挂在下一条「构建 Windows 发布版」这一步的 env: 上。
     #   为什么不能放 job 级：job 级 env 会注入到**本 job 的每一个步骤**，
     #   于是「全量测试」与若干第三方 Action（checkout / flutter-action / …）
@@ -370,7 +370,7 @@ jobs:
       #   回退到 pubspec 的版本号（见 lib/core/app_update/app_version.dart）。
       SOURIN_VERSION: ${{ inputs.release_tag }}
 
-      # ★ 弹弹play 官方凭证（DANDANPLAY_APP_ID / APP_SECRET）**不在这里**声明：
+      # ★ 外部弹幕服务的官方凭证（DANDANPLAY_APP_ID / APP_SECRET）**不在这里**声明：
       #   它只挂在下一条「构建 macOS 发布版」这一步的 env: 上。
       #   为什么不能放 job 级：job 级 env 会注入到**本 job 的每一个步骤**，
       #   于是「全量测试」与若干第三方 Action（checkout / flutter-action / …）
@@ -826,7 +826,7 @@ jobs:
       #   回退到 pubspec 的版本号（见 lib/core/app_update/app_version.dart）。
       SOURIN_VERSION: ${{ inputs.release_tag }}
 
-      # ★ 弹弹play 官方凭证（DANDANPLAY_APP_ID / APP_SECRET）**不在这里**声明：
+      # ★ 外部弹幕服务的官方凭证（DANDANPLAY_APP_ID / APP_SECRET）**不在这里**声明：
       #   它只挂在下一条「构建 APK（按 ABI 拆分 —— arm64 + armv7）」这一步的
       #   env: 上。为什么不能放 job 级：job 级 env 会注入到**本 job 的每一个
       #   步骤**，于是「全量测试」与若干第三方 Action（checkout / flutter-action /

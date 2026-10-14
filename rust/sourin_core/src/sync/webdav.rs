@@ -774,7 +774,7 @@ impl SyncBackend for WebdavBackend {
     /// `405`（已存在）视为成功（幂等）。
     ///
     /// ⚠️ 累积路径时**不能带尾斜杠再拼下一段** —— 否则会造出
-    /// `/backup//cycani/` 这种双斜杠路径，服务器直接 400。
+    /// `/backup//srca/` 这种双斜杠路径，服务器直接 400。
     async fn ensure_dir(&self, path: &str) -> Result<(), String> {
         let clean = path.trim_matches('/');
 
@@ -1099,8 +1099,8 @@ mod tests {
             out
         }
 
-        let steps = build_steps("backup/cycani");
-        assert_eq!(steps, vec!["/backup/", "/backup/cycani/"]);
+        let steps = build_steps("backup/srca");
+        assert_eq!(steps, vec!["/backup/", "/backup/srca/"]);
         for s in &steps {
             assert!(!s.contains("//"), "路径不应出现双斜杠: {s}");
         }

@@ -170,11 +170,11 @@ class ProviderManifest {
 ///
 /// Rust 注释（`model.rs:583-597`）写得非常明确：
 /// ```text
-/// cycani    必须登录才能取流          → login_required = true
-/// bilibili  游客就能看 1080P，
+/// srca    必须登录才能取流          → login_required = true
+/// srcv  游客就能看 1080P，
 ///           但登录后能同步关注/收藏  → login_supported = true
 /// ```
-/// 而**绝不能**给 B站 设 `login_required = true` ——
+/// 而**绝不能**给 某视频站 设 `login_required = true` ——
 /// `Registry::ensure_session` 会因此**挡住游客播放**
 ///（`if !login_required { return Some(true) }` 那条捷径失效）。
 ///
@@ -214,10 +214,10 @@ class Capabilities {
   /// 支持搜索
   final bool search;
 
-  /// **必须**登录才能取流（如 cycani）
+  /// **必须**登录才能取流（如 srca）
   final bool loginRequired;
 
-  /// 支持平台内多播放源（如 cycani 的 `play_from`）
+  /// 支持平台内多播放源（如 srca 的 `play_from`）
   final bool multiSource;
 
   /// 平台自带服务端观看历史
@@ -235,14 +235,14 @@ class Capabilities {
   /// 支持弹幕
   final bool danmaku;
 
-  /// **可以**登录，但不是必须 —— 游客态照样能用（如 B站）
+  /// **可以**登录，但不是必须 —— 游客态照样能用（如 某视频站）
   ///
   /// ⚠️ 与 [loginRequired] 是两件事，见类文档。
   final bool loginSupported;
 
   /// 登录弹窗里的一段说明（告诉用户该怎么操作）
   ///
-  /// 例：B站要「从浏览器复制 Cookie 粘进来」，不写清楚用户不知道做什么。
+  /// 例：某视频站要「从浏览器复制 Cookie 粘进来」，不写清楚用户不知道做什么。
   final String? loginHint;
 
   /// 登录是否需要「账号」字段
@@ -251,7 +251,7 @@ class Capabilities {
   ///    `#[serde(default = "default_true")]`。
   ///    写成 false 会让所有老插件**都不显示账号框**，登录直接坏掉。
   ///
-  /// B站的 Cookie 导入不需要账号，只有密码框（用来粘 Cookie）；
+  /// 某视频站的 Cookie 导入不需要账号，只有密码框（用来粘 Cookie）；
   /// 设 false 时前端隐藏账号框，也**不再要求它非空**
   /// （否则登录按钮永远是禁用状态）。
   final bool loginNeedsUsername;
@@ -269,14 +269,14 @@ class Capabilities {
   ///
   /// # 为什么需要（Owner 报的真问题）
   ///
-  /// > 次元城登录失效 明明不需要验证码就可以自动登录，还提示 验证码
+  /// > 某动画站登录失效 明明不需要验证码就可以自动登录，还提示 验证码
   ///
   /// 登录态失效时设置页原本对**所有源**都写同一句原版通用文案
   /// （`SettingsView.vue:175`）：
   /// ```text
   /// 「需重新登录（可能需要验证码，请手动完成）」
   /// ```
-  /// 但对实现了 `autoLogin()` 的插件（次元城：账号密码存在
+  /// 但对实现了 `autoLogin()` 的插件（某动画站：账号密码存在
   /// `plugins/.data/<id>.json`，token 一过期就能自己重登）这句是**误导**：
   /// 用户以为必须人工介入，实际他**只要点一下播放**就会自动恢复。
   ///
@@ -291,7 +291,7 @@ class Capabilities {
   /// 设置页是否显示登录入口
   ///
   /// Rust 注释：过滤条件是 `login_required || login_supported`。
-  /// 用错会让 B站 这种"游客可用"的源**没有登录入口**。
+  /// 用错会让 某视频站 这种"游客可用"的源**没有登录入口**。
   bool get showLoginEntry => loginRequired || loginSupported;
 
   factory Capabilities.fromJson(Map<String, dynamic> j) => Capabilities(
@@ -451,7 +451,7 @@ class MediaItem {
     this.badges = const [],
   });
 
-  /// 带源前缀的完整 id（如 `cycani:3862`）
+  /// 带源前缀的完整 id（如 `srca:3862`）
   final String id;
 
   final String title;
@@ -462,16 +462,16 @@ class MediaItem {
   /// ⚠️ 它由 **`subtitle`** 填充（后端字段名），见 [MediaItem.fromJson]。
   final String? note;
 
-  /// 角标（如「全 27 集」「7.0 分」「CCTV-8电视剧频道」）
+  /// 角标（如「全 27 集」「7.0 分」「SRCL-8电视剧频道」）
   ///
   /// ★ 为什么必须解析它：**有的源把集数只放在这里**。
   ///   实测（task-69，`.probe/t69_field_split.txt`）：
   ///   ```text
-  ///   cctv   ：subtitle = "全 27 集"                    ← 集数在 subtitle
-  ///   cycani ：subtitle = null
+  ///   srcl   ：subtitle = "全 27 集"                    ← 集数在 subtitle
+  ///   srca ：subtitle = null
   ///            badges   = ["全 1 集", "7.0 分"]          ← 集数**只**在 badges
   ///   ```
-  ///   ⇒ 不接 badges 就会漏掉整个 cycani 的集数。
+  ///   ⇒ 不接 badges 就会漏掉整个 srca 的集数。
   final List<String> badges;
 
   final String? year;
@@ -507,14 +507,14 @@ class MediaItem {
          * # 为什么三段兜底（`subtitle` → `note` → badges 里的「N 集」）
          *
          * ```text
-         * ① `subtitle`  —— 后端的标准字段（cctv 的「全 27 集」走这里）
+         * ① `subtitle`  —— 后端的标准字段（srcl 的「全 27 集」走这里）
          * ② `note`      —— 保留：万一将来某个源/导入模板直接发 note
-         * ③ badges 兜底 —— ★ cycani 把集数**只**放在 badges（"全 1 集"）
+         * ③ badges 兜底 —— ★ srca 把集数**只**放在 badges（"全 1 集"）
          *                  不兜底就会漏掉它整个源的集数
          * ```
          *
          * ⚠️ 兜底**只挑含「集」的那条**角标 —— 否则会把「7.0 分」或
-         *    「CCTV-8电视剧频道」当成副标题显示出来（那是噪音）。
+         *    「SRCL-8电视剧频道」当成副标题显示出来（那是噪音）。
          *
          * # ★ 为什么改在这里而不是给调用点加 getter
          *
@@ -538,13 +538,13 @@ class MediaItem {
 ///
 /// # 为什么需要它（task-69 实测）
 /// ```text
-/// cctv   ：集数在 subtitle
-/// cycani ：集数**只**在 badges —— 实测 ["全 1 集", "7.0 分"]
+/// srcl   ：集数在 subtitle
+/// srca ：集数**只**在 badges —— 实测 ["全 1 集", "7.0 分"]
 /// ```
 /// ⇒ 这是「来源有多少集」这条需求的**必要兜底**（Owner 原话：
 ///   「结果都应该展示出来来源有多少集，这样子可以很方便的知道那个源最好最快」）。
 ///
-/// ⚠️ 只认含「集」的 —— 否则会把「7.0 分」「CCTV-8电视剧频道」
+/// ⚠️ 只认含「集」的 —— 否则会把「7.0 分」「SRCL-8电视剧频道」
 ///    这类角标误当副标题（那是噪音，不是用户要的集数）。
 ///
 /// ★ 为什么用「集」而不是解析数字：各源文案不一（「全 27 集」
@@ -722,7 +722,7 @@ class SectionSource {
 ///
 /// # 关于 `drmProtected`（原版注释里的实测背景）
 ///
-/// 央视直播的视频轨被 `udrm` 加密 —— 容器与 NAL 头是明文
+/// 某电视台直播的视频轨被 `udrm` 加密 —— 容器与 NAL 头是明文
 ///（ffprobe 能看到 `h264` + `1024x576`），但**负载被加密**，
 /// 解码时报 `top block unavailable for requested intra mode`。
 ///
@@ -732,7 +732,7 @@ class SectionSource {
 ///
 /// # 关于 `audioUrl`（DASH 音视频分离）
 ///
-/// B 站 1080P 必须走 DASH，而 DASH **必然音视频分离**。
+/// 某视频站 1080P 必须走 DASH，而 DASH **必然音视频分离**。
 /// 音轨也要走同一个代理（同样的 headers），
 /// 否则表现是「画面正常但完全没声音，且不报错」。
 class StreamCandidate {
@@ -758,13 +758,13 @@ class StreamCandidate {
   ///   url = http://127.0.0.1:56008/s/18d83422f8a0934032177997e100/   ← ✅ 本地代理
   ///   → 核心层已处理防盗链，headers 传不传都行
   ///
-  /// 直播 get_live_stream(cctv, cctv1)
-  ///   url = https://ldncctvcpudtxy.liveplay.myqcloud.com/...          ← ❌ 原始地址
-  ///   headers = [["Referer","https://tv.cctv.com/"]]                  ← ★ 必需
+  /// 直播 get_live_stream(srcl, srcl1)
+  ///   url = https://ldnsrclcpudtxy.liveplay.myqcloud.com/...          ← ❌ 原始地址
+  ///   headers = [["Referer","https://tv.srcl.com/"]]                  ← ★ 必需
   ///   → ★ 核心层【没有】给直播做代理！headers 丢了就 403
   /// ```
   /// 所以**必须**把 [headers] 传给播放器（见 [httpHeaders]）。
-  /// 漏传的后果就是用户报的「cctv 看得到但点开黑屏」。
+  /// 漏传的后果就是用户报的「srcl 看得到但点开黑屏」。
   final String url;
 
   /// `"hls"` 或 `"mp4"`
@@ -794,7 +794,7 @@ class StreamCandidate {
   /// ```
   ///
   /// ⚠️ 同名头只保留**第一个**：`Map` 无法表达重复键。
-  ///    实测央视的 `headers` 只有一个 Referer，其它源同理，
+  ///    实测某电视台的 `headers` 只有一个 Referer，其它源同理，
   ///    所以这个取舍在实践中无影响 —— 如实记录，避免误以为"全保住了"。
   Map<String, String> get httpHeaders {
     if (headers.isEmpty) return const <String, String>{};
@@ -873,7 +873,7 @@ class StreamCandidate {
 /// ```
 ///
 /// ★ 为什么**必须**读后端拼好的 `badges` 而不是自己拼：
-///   cycani 插件（`plugins/cycani.js:499-518`）已经把
+///   某动画站的插件已经把
 ///   「连载中 / 更新至 12 集 / 9.2 分」拼好了，**顺序和措辞都是产品决定**。
 ///   前端重拼一遍就会出现两套文案（且插件改了我们不会跟着改）。
 ///
@@ -976,7 +976,7 @@ class MediaDetail {
 /// 的 `interface PlaySource` 交叉验证过）：
 /// ```rust
 /// pub struct PlaySource {
-///     /// 该源的唯一编码，用于拉取剧集（如 cycani 的 `cychub`）
+///     /// 该源的唯一编码，用于拉取剧集（如 srca 的 `cychub`）
 ///     pub code: String,
 ///     pub title: String,
 ///     /// 该源下的剧集数量（0 表示未知）
@@ -1278,7 +1278,7 @@ class LiveChannel {
   final String name;
   final String? logo;
 
-  /// 频道分组（如「央视」「卫视」）—— 列表按它分栏
+  /// 频道分组（如「某电视台」「卫视」）—— 列表按它分栏
   final String? group;
 
   /// 当前节目名（若源已知）
@@ -1568,7 +1568,7 @@ class Progress {
 //    · commands_write.rs:450 新开追更时也记基准
 // ② 已看到第几集 = Progress.episodeId 在**详情页集列表**里的**下标**
 //    · ⚠️ episodeId **不能**直接当序号用：实测用户真实数据里它是
-//      '51699'（内部 id）、'BV1o2eM6kEDT|41961327629'（B 站复合）、
+//      '51699'（内部 id）、'BV1o2eM6kEDT|41961327629'（某视频站复合）、
 //      甚至一个完整 URL ⇒ 数字 id 与集号**毫无关系**
 //    · 所以必须拿真正的集列表去查下标
 // ```
@@ -1595,7 +1595,7 @@ class Progress {
 // # 边缘情况（逐条定义）
 //
 // ```text
-// · total <= 0（源没有集数信息，如电影/B 站单视频）
+// · total <= 0（源没有集数信息，如电影/某视频站单视频）
 //     ⇒ 返回 0（不显示徽标）—— 没有集数就谈不上"还剩几集"
 // · watched == null（没看过，或上面那条偏差）
 //     ⇒ 返回 0（不显示）—— 而不是返回 total
@@ -1615,7 +1615,7 @@ class Progress {
 /// `Progress.episodeId` **不是**集号 —— 用户真实数据里它是：
 /// ```text
 /// '51699'                       内部数字 id，与集号无关
-/// 'BV1o2eM6kEDT|41961327629'    B 站复合 id
+/// 'BV1o2eM6kEDT|41961327629'    某视频站复合 id
 /// 'https://vod1.../index.m3u8'  一个完整 URL
 /// ```
 /// 而 `episodeTitle` 对中文源是**稳定**的（实测）：
@@ -1949,7 +1949,7 @@ class PluginEntry {
   ///    逐字写进了生成的 `.js`（头部注释 ` * 上游接口（苹果CMS v10）：http://...`），
   ///    只是界面从来没显示过。Rust 侧 [PluginEntry.upstream] 解析它。
   ///
-  /// ⚠️ 空串 = 没有可用的上游地址（内置源 `cctv` 等就是这种）——
+  /// ⚠️ 空串 = 没有可用的上游地址（内置源 `srcl` 等就是这种）——
   ///    界面据此不显示「上游」入口，而不是显示一个点不开的链接。
   final String upstream;
 

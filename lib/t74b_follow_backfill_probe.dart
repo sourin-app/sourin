@@ -40,7 +40,7 @@
 // `.probe\t74_db_wal_check.py` 实测（只读）：
 // ```text
 // 用户库 progress 共 26 行，其中**恰好 1 行**需要回填：
-//   ('cycani', '3841', title='', episode_title=NULL, position=122, duration=1422)
+//   ('srca', '3841', title='', episode_title=NULL, position=122, duration=1422)
 // ```
 // 这就是 Owner 说的那个「未知」卡片。本探针在**隔离数据目录**里对它的**副本**
 // 操作（原库只读，绝不触碰）。
@@ -78,7 +78,7 @@ import 'ui/follow_page.dart';
 import 'ui/app_scaffold.dart';
 
 /// 被取证的那一行（实测来自用户库，见文件头）
-const String kBadProvider = 'cycani';
+const String kBadProvider = 'srca';
 const String kBadId = '3841';
 
 const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
@@ -531,7 +531,7 @@ Future<void> main() async {
     fetchDetail: (p, id) async {
       okFetchCount++;
       return const MediaDetail(
-        id: 'cycani:3841',
+        id: 'srca:3841',
         title: '无职转生 第二季',
         cover: 'https://example.invalid/cover.jpg',
       );
@@ -569,7 +569,7 @@ Future<void> main() async {
   var emptySaves = 0;
   final emptyBf = ProgressTitleBackfill(
     fetchDetail: (p, id) async =>
-        const MediaDetail(id: 'cycani:3841', title: '   '),
+        const MediaDetail(id: 'srca:3841', title: '   '),
     saveProgress: (p, {required title, cover}) async {
       emptySaves++;
     },

@@ -7,9 +7,9 @@
 //!
 //! | 站点  | 取流要求 |
 //! |-------|---------|
-//! | 央视  | 无防盗链（Referer 留空也能播）|
-//! | 次元城 | 直链即可 |
-//! | **B 站** | **必须带 `Referer: https://www.bilibili.com`** |
+//! | 某电视台  | 无防盗链（Referer 留空也能播）|
+//! | 某动画站 | 直链即可 |
+//! | **B 站** | **必须带 `Referer: https://www.example-v.com`** |
 //!
 //! B 站实测（未登录、无 Cookie）：
 //! ```text
@@ -30,7 +30,7 @@
 //! 播放器 ──► http://127.0.0.1:<port>/s/<token>
 //!                     │
 //!                     ├─ 查 token 表拿到 (真实URL, 需要的头)
-//!                     └─ 带头发请求 ──► B站 CDN
+//!                     └─ 带头发请求 ──► 某视频站 CDN
 //!                          并把响应**流式**转发回去
 //! ```
 //!
@@ -581,7 +581,7 @@ impl StreamProxy {
     /// B 站图片 CDN（`i0/i1/i2.hdslb.com`）**白名单校验 Referer**（实测）：
     ///
     /// ```text
-    /// Referer: https://www.bilibili.com  → HTTP 200 ✅
+    /// Referer: https://www.example-v.com  → HTTP 200 ✅
     /// Referer: http://tauri.localhost/   → HTTP 403 ❌  ← 我们的应用
     /// 无 Referer                          → HTTP 200 ✅
     /// ```
@@ -2019,7 +2019,7 @@ async fn forward_request(
      * 实测症状：hls.js 请求代理 → XHR status 0（被浏览器拦掉）→
      * MSE 建好了 blob，但一个分片都下不来 → 界面永远「正在加载…」。
      *
-     * 为什么 B站/央视没暴露：央视不走代理；B站虽是 mp4 走代理，
+     * 为什么 某视频站/某电视台没暴露：某电视台不走代理；某视频站虽是 mp4 走代理，
      * 但也是 `<video src>` 原生加载，不受 CORS 约束。
      * 只有「**HLS + 走代理**」才会用 XHR，才踩到这个坑。
      */
@@ -3724,7 +3724,7 @@ mod tests {
     ///
     /// ★ 若播放器发 `bytes=0-262143`（256KB），而代理强制先取 1MB：
     ///   ⇒ 首字节延迟 = 取满 1MB 的时间（而不是 256KB 的）
-    ///   ⇒ 按央视 215 KB/s：1MB = 4.9s，256KB = 1.2s ⇒ 慢 3.7 秒
+    ///   ⇒ 按某电视台 215 KB/s：1MB = 4.9s，256KB = 1.2s ⇒ 慢 3.7 秒
     /// ```
     ///
     /// # 这条测试**不做断言失败**（它是调研，不是护栏）
@@ -4267,7 +4267,7 @@ mod tests {
     #[tokio::test]
     async fn only_not_web_ready_streams_are_proxied() {
         let p = Arc::new(StreamProxy::new());
-        let h = vec![("Referer".to_string(), "https://www.bilibili.com".to_string())];
+        let h = vec![("Referer".to_string(), "https://www.example-v.com".to_string())];
 
         // 直连流：不代理
         assert!(maybe_proxy(&p, "https://x/a.mp4", &h, false).await.is_none());
@@ -4318,14 +4318,14 @@ mod tests {
         proxy.ensure_started().await.unwrap();
         let local = proxy.register(
             &format!("http://127.0.0.1:{up_port}/echo"),
-            vec![("Referer".to_string(), "https://www.bilibili.com".to_string())],
+            vec![("Referer".to_string(), "https://www.example-v.com".to_string())],
         );
 
         let resp = reqwest::get(&local).await.unwrap();
         let status = resp.status();
         let got = resp.text().await.unwrap();
         assert_eq!(
-            got, "https://www.bilibili.com",
+            got, "https://www.example-v.com",
             "代理必须把登记的头（Referer）真的发到上游 —— 否则 B 站一律 403\n\
              （请求 URL: {local}，响应状态: {status}）"
         );
@@ -4357,8 +4357,8 @@ mod tests {
     async fn bili_cdn_reqwest_with_referer() {
         // 先拿一个新鲜的播放地址
         let j: serde_json::Value = reqwest::Client::new()
-            .get("https://api.bilibili.com/x/web-interface/view?bvid=BV1bbL46AEYj")
-            .header("Referer", "https://www.bilibili.com")
+            .get("https://api.example-v.com/x/web-interface/view?bvid=BV1bbL46AEYj")
+            .header("Referer", "https://www.example-v.com")
             .send()
             .await
             .expect("拿视频信息失败")
@@ -4369,9 +4369,9 @@ mod tests {
 
         let p: serde_json::Value = reqwest::Client::new()
             .get(format!(
-                "https://api.bilibili.com/x/player/playurl?bvid=BV1bbL46AEYj&cid={cid}&qn=64&fnval=1&fnver=0&fourk=1"
+                "https://api.example-v.com/x/player/playurl?bvid=BV1bbL46AEYj&cid={cid}&qn=64&fnval=1&fnver=0&fourk=1"
             ))
-            .header("Referer", "https://www.bilibili.com")
+            .header("Referer", "https://www.example-v.com")
             .send()
             .await
             .expect("取流失败")
@@ -4419,14 +4419,14 @@ mod tests {
         for (label, c, full) in &variants {
             let mut rb = c
                 .get(&url)
-                .header("Referer", "https://www.bilibili.com")
+                .header("Referer", "https://www.example-v.com")
                 .header("Range", "bytes=0-1023");
             if *full {
                 rb = rb
                     .header("User-Agent", ua)
                     .header("Accept", "*/*")
                     .header("Accept-Language", "zh-CN,zh;q=0.9")
-                    .header("Origin", "https://www.bilibili.com");
+                    .header("Origin", "https://www.example-v.com");
             }
             let r = rb.send().await.expect("请求失败");
             let st = r.status();

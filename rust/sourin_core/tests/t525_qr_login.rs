@@ -1,6 +1,6 @@
 
 // ═══════════════════════════════════════════════════════════════════════
-//  t525 —— B站扫码登录（2026-10-05 补的命令层）
+//  t525 —— 某视频站扫码登录（2026-10-05 补的命令层）
 // ═══════════════════════════════════════════════════════════════════════
 //
 // # 为什么要有这个测试
@@ -32,7 +32,7 @@
 // 与 batch5 同一个理由：测试会写文件，所以用独立数据目录。
 // 但这里**只**复制 `bilibili.js`（不复制 26 个），因为：
 //   ① 少复制 = 少一次 reload 的干扰
-//   ② 断言"只有 bilibili 支持扫码"时不会被别的插件干扰
+//   ② 断言"只有该源支持扫码"时不会被别的插件干扰
 //
 // # ⚠️ 复制完必须 `reload_plugins()`
 //
@@ -120,9 +120,9 @@ async fn qr_login_start_real_request() {
     println!("[t525] hint={:?}", r.hint);
     println!("[t525] svg len={}", r.svg.len());
 
-    // ① key 是轮询凭据（B站叫 qrcode_key，32 位十六进制）
+    // ① key 是轮询凭据（该站叫 qrcode_key，32 位十六进制）
     assert!(!r.key.is_empty(), "key 不能为空");
-    assert_eq!(r.key.len(), 32, "B站 qrcode_key 是 32 位，实际 {}", r.key.len());
+    assert_eq!(r.key.len(), 32, "该站 qrcode_key 是 32 位，实际 {}", r.key.len());
 
     // ② url 是二维码里要编码的地址
     //
@@ -211,7 +211,7 @@ async fn qr_login_unknown_provider_errors() {
 async fn qr_login_unsupported_provider_errors() {
     let Some(st) = with_bilibili("unsupported").await else { return };
 
-    // 找一个**不是** bilibili 的源（内置源都没有扫码能力）
+    // 找一个**不是**该源的源（内置源都没有扫码能力）
     let ids: Vec<String> = st.registry.manifests().iter().map(|m| m.id.clone()).collect();
     println!("[t525] 已加载源：{ids:?}");
     let other = ids

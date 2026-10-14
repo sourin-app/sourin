@@ -862,9 +862,9 @@ impl Db {
                  * ⇒ 库里可能有两行 key 不同、但 (provider,native_id,episode_id)
                  * 完全相同：
                  * ```text
-                 * 行 A: key="cycani:3611"     provider=cycani native_id=3611 ep="ep1"
-                 * 行 B: key="cycani-dup:9999" provider=cycani native_id=3611 ep="ep1"
-                 * ⇒ 两行都拼出 "cycani:3611:ep1" ⇒ 主键冲突
+                 * 行 A: key="srca:3611"     provider=srca native_id=3611 ep="ep1"
+                 * 行 B: key="srca-dup:9999" provider=srca native_id=3611 ep="ep1"
+                 * ⇒ 两行都拼出 "srca:3611:ep1" ⇒ 主键冲突
                  * ```
                  * ★ 若用普通 `INSERT`：冲突 ⇒ 事务失败 ⇒ `Db::open` 返回 Err
                  *   ⇒ `State::new` **回退到内存库** ⇒ 用户"所有记录都没了"，
@@ -1928,7 +1928,7 @@ impl Db {
                      *
                      * ★★ ② 里「两侧都有但**不相等**」必须**回退**，不能直接判成不同集：
                      *    跨源时两边的 `episode_id` 属于**各自源的命名空间**
-                     *    （cycani `48884` / bilibili `51463`），恒不相等；
+                     *    （srca `48884` / srcv `51463`），恒不相等；
                      *    不回退 ⇒ 同一集被拆成两行（实测见本文件
                      *    `repoint_pairs_across_sources_with_different_episode_id_namespaces`）。
                      *    `local:rewatch-*`（本地缓存页会话）的 `episode_id` 是**文件名**，
@@ -2418,8 +2418,8 @@ impl Db {
 ///
 /// `native_id` **本身可能含冒号** —— 实测用户库里有：
 /// ```text
-/// bilibili:av:BV1Bfex6tEEH        provider=bilibili  native_id=av:BV1Bfex6tEEH
-/// bilibili:bilibili:av:BV1B8ZJYTEPg  ★ provider=bilibili  native_id=bilibili:av:BV1B8ZJYTEPg
+/// srcv:av:BV1Bfex6tEEH        provider=srcv  native_id=av:BV1Bfex6tEEH
+/// srcv:srcv:av:BV1B8ZJYTEPg  ★ provider=srcv  native_id=srcv:av:BV1B8ZJYTEPg
 /// ```
 /// ⇒ 只能按**第一个**冒号切。用 `split(':')` 取第二段会把
 ///   `native_id` 截断成 `av`（**静默**写错 provider/native_id）。
@@ -2447,7 +2447,7 @@ fn split_item_key(key: &str) -> Result<(String, String), String> {
 /// SQLite 的 `PRIMARY KEY` / `UNIQUE` **允许重复 NULL**（NULL ≠ NULL）——
 /// 若把 `episode_id` 直接放进主键，**所有 episode_id 为 NULL 的行会失去唯一约束**
 /// ⇒ 同一个单片会被反复插入成几百行。
-/// ⇒ 用空串显式表达「没有集号」：`"bilibili:BV1: "` 里的第三段是空串，
+/// ⇒ 用空串显式表达「没有集号」：`"srcv:BV1: "` 里的第三段是空串，
 ///   于是 `provider:native_id:` 这个键**唯一**，单片也只有一行。
 ///
 /// # ★★★ 与 `split_item_key`（`<provider>:<native_id>` 的逆运算）的关系
@@ -2671,7 +2671,7 @@ mod tests {
     fn fav(key: &str, following: bool) -> Favorite {
         Favorite {
             key: key.into(),
-            provider: "cctv".into(),
+            provider: "srcl".into(),
             native_id: key.split(':').nth(1).unwrap_or("x").into(),
             title: format!("测试 {key}"),
             cover: None,
@@ -2695,18 +2695,18 @@ mod tests {
     #[test]
     fn favorite_roundtrip() {
         let db = Db::in_memory().unwrap();
-        db.upsert_favorite(&fav("cctv:a", true)).unwrap();
+        db.upsert_favorite(&fav("srcl:a", true)).unwrap();
         let list = db.list_favorites(false).unwrap();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].title, "测试 cctv:a");
+        assert_eq!(list[0].title, "测试 srcl:a");
         assert!(list[0].following);
     }
 
     #[test]
     fn tombstone_hides_but_keeps() {
         let db = Db::in_memory().unwrap();
-        db.upsert_favorite(&fav("cctv:a", false)).unwrap();
-        db.tombstone_favorite("cctv:a", 2000).unwrap();
+        db.upsert_favorite(&fav("srcl:a", false)).unwrap();
+        db.tombstone_favorite("srcl:a", 2000).unwrap();
 
         // 正常查询看不到
         assert_eq!(db.list_favorites(false).unwrap().len(), 0);
@@ -2719,8 +2719,8 @@ mod tests {
     #[test]
     fn tombstone_purge_respects_cutoff() {
         let db = Db::in_memory().unwrap();
-        db.upsert_favorite(&fav("cctv:old", false)).unwrap();
-        db.tombstone_favorite("cctv:old", 1000).unwrap();
+        db.upsert_favorite(&fav("srcl:old", false)).unwrap();
+        db.tombstone_favorite("srcl:old", 1000).unwrap();
         // cutoff 之后，不应被清理
         assert_eq!(db.purge_tombstones(500).unwrap(), 0);
         // cutoff 之前，应被清理
@@ -2751,11 +2751,11 @@ mod tests {
     fn unfavorite_does_not_touch_following() {
         let db = Db::in_memory().unwrap();
         // 既收藏又追更
-        db.upsert_favorite(&fav("cctv:a", true)).unwrap();
+        db.upsert_favorite(&fav("srcl:a", true)).unwrap();
 
-        db.unfavorite("cctv:a", 2000).unwrap();
+        db.unfavorite("srcl:a", 2000).unwrap();
 
-        let f = db.get_favorite("cctv:a").unwrap().expect("行应仍在");
+        let f = db.get_favorite("srcl:a").unwrap().expect("行应仍在");
         assert!(!f.favorited, "收藏应被取消");
         assert!(f.following, "★ 追更必须原样保留 —— 两个状态不联动");
         assert!(
@@ -2772,11 +2772,11 @@ mod tests {
     #[test]
     fn unfollow_does_not_touch_favorited() {
         let db = Db::in_memory().unwrap();
-        db.upsert_favorite(&fav("cctv:a", true)).unwrap();
+        db.upsert_favorite(&fav("srcl:a", true)).unwrap();
 
-        db.unfollow("cctv:a", 2000).unwrap();
+        db.unfollow("srcl:a", 2000).unwrap();
 
-        let f = db.get_favorite("cctv:a").unwrap().expect("行应仍在");
+        let f = db.get_favorite("srcl:a").unwrap().expect("行应仍在");
         assert!(f.favorited, "★ 收藏必须原样保留 —— 两个状态不联动");
         assert!(!f.following, "追更应被关闭");
         assert!(!f.deleted, "收藏还开着时不能写墓碑");
@@ -2789,13 +2789,13 @@ mod tests {
     #[test]
     fn tombstone_only_after_both_states_off() {
         let db = Db::in_memory().unwrap();
-        db.upsert_favorite(&fav("cctv:a", true)).unwrap();
+        db.upsert_favorite(&fav("srcl:a", true)).unwrap();
 
-        db.unfavorite("cctv:a", 2000).unwrap();
-        assert!(!db.get_favorite("cctv:a").unwrap().unwrap().deleted);
+        db.unfavorite("srcl:a", 2000).unwrap();
+        assert!(!db.get_favorite("srcl:a").unwrap().unwrap().deleted);
 
-        db.unfollow("cctv:a", 3000).unwrap();
-        let f = db.get_favorite("cctv:a").unwrap().unwrap();
+        db.unfollow("srcl:a", 3000).unwrap();
+        let f = db.get_favorite("srcl:a").unwrap().unwrap();
         assert!(f.deleted, "两个状态都没了 → 才写墓碑");
         assert!(!f.favorited && !f.following);
     }
@@ -2809,7 +2809,7 @@ mod tests {
     #[test]
     fn follow_only_row_is_listed_in_following_not_favorites() {
         let db = Db::in_memory().unwrap();
-        let mut f = fav("cctv:only-follow", true);
+        let mut f = fav("srcl:only-follow", true);
         f.favorited = false; // ★ 只追更、不收藏
         db.upsert_favorite(&f).unwrap();
 
@@ -2828,19 +2828,19 @@ mod tests {
     #[test]
     fn follow_list_and_unread() {
         let db = Db::in_memory().unwrap();
-        db.upsert_favorite(&fav("cctv:a", true)).unwrap();
-        db.upsert_favorite(&fav("cctv:b", false)).unwrap();
+        db.upsert_favorite(&fav("srcl:a", true)).unwrap();
+        db.upsert_favorite(&fav("srcl:b", false)).unwrap();
 
         assert_eq!(db.list_following().unwrap().len(), 1);
 
         // 模拟追更：新增 2 集，未读 2
-        let mut f = db.get_favorite("cctv:a").unwrap().unwrap();
+        let mut f = db.get_favorite("srcl:a").unwrap().unwrap();
         f.unread_count = 2;
         f.last_episode_count = 12;
         db.upsert_favorite(&f).unwrap();
         assert_eq!(db.total_unread().unwrap(), 2);
 
-        db.mark_favorite_read("cctv:a", 3000).unwrap();
+        db.mark_favorite_read("srcl:a", 3000).unwrap();
         assert_eq!(db.total_unread().unwrap(), 0);
     }
 
@@ -2849,8 +2849,8 @@ mod tests {
         let db = Db::in_memory().unwrap();
         // position <= 5 的不应出现在续播（避免误点即记录）
         db.upsert_progress(&Progress {
-            key: "cctv:x".into(),
-            provider: "cctv".into(),
+            key: "srcl:x".into(),
+            provider: "srcl".into(),
             native_id: "x".into(),
             title: "X".into(),
             cover: None,
@@ -2866,8 +2866,8 @@ mod tests {
 
         // 正常进度应出现
         db.upsert_progress(&Progress {
-            key: "cctv:y".into(),
-            provider: "cctv".into(),
+            key: "srcl:y".into(),
+            provider: "srcl".into(),
             native_id: "y".into(),
             title: "Y".into(),
             cover: None,
@@ -2890,8 +2890,8 @@ mod tests {
 
         // 独立平面：我们自己的历史
         db.add_history(&HistoryEntry {
-            key: "cctv:a".into(),
-            provider: "cctv".into(),
+            key: "srcl:a".into(),
+            provider: "srcl".into(),
             native_id: "a".into(),
             title: "我们的记录".into(),
             cover: None,
@@ -2905,8 +2905,8 @@ mod tests {
 
         // 备份平面：平台自带历史（镜像）
         let rec = UserRecord {
-            key: "cycani:history:51720".into(),
-            provider: "cycani".into(),
+            key: "srca:history:51720".into(),
+            provider: "srca".into(),
             kind: "history".into(),
             native_id: "51720".into(),
             title: "平台番剧".into(),
@@ -2921,7 +2921,7 @@ mod tests {
             deleted: false,
         };
         assert_eq!(
-            db.save_platform_history("cycani", "dev1", &[rec]).unwrap(),
+            db.save_platform_history("srca", "dev1", &[rec]).unwrap(),
             1
         );
         assert_eq!(db.list_platform_history(10).unwrap().len(), 1);
@@ -2961,7 +2961,7 @@ mod tests {
     fn prog(key: &str, title: &str, cover: Option<&str>, pos: u64) -> Progress {
         Progress {
             key: key.into(),
-            provider: "cycani".into(),
+            provider: "srca".into(),
             native_id: key.split(':').nth(1).unwrap_or("x").into(),
             title: title.into(),
             cover: cover.map(|s| s.to_string()),
@@ -2978,10 +2978,10 @@ mod tests {
     fn empty_title_must_not_overwrite_existing() {
         let db = Db::in_memory().unwrap();
         // ① 先写入**正确**的标题与封面
-        db.upsert_progress(&prog("cycani:3862", "无职转生", Some("https://x/c.jpg"), 77))
+        db.upsert_progress(&prog("srca:3862", "无职转生", Some("https://x/c.jpg"), 77))
             .unwrap();
         // ② 再写入**还不知道标题**的一次（合并页起播那几秒的真实形态）
-        db.upsert_progress(&prog("cycani:3862", "", None, 80)).unwrap();
+        db.upsert_progress(&prog("srca:3862", "", None, 80)).unwrap();
 
         let list = db.list_all_progress().unwrap();
         assert_eq!(list.len(), 1);
@@ -3001,9 +3001,9 @@ mod tests {
     #[test]
     fn nonempty_title_and_cover_still_update() {
         let db = Db::in_memory().unwrap();
-        db.upsert_progress(&prog("cycani:a", "旧名", Some("https://x/old.jpg"), 10))
+        db.upsert_progress(&prog("srca:a", "旧名", Some("https://x/old.jpg"), 10))
             .unwrap();
-        db.upsert_progress(&prog("cycani:a", "新名", Some("https://x/new.jpg"), 20))
+        db.upsert_progress(&prog("srca:a", "新名", Some("https://x/new.jpg"), 20))
             .unwrap();
 
         let list = db.list_all_progress().unwrap();
@@ -3021,7 +3021,7 @@ mod tests {
         let db = Db::in_memory().unwrap();
         // 首次插入（没有旧行可保留）⇒ 守卫**不**适用 ⇒ 就是空
         // ★ 这条防的是"守卫写成了无条件 COALESCE(旧值)"那种越界修复。
-        db.upsert_progress(&prog("cycani:b", "", None, 5)).unwrap();
+        db.upsert_progress(&prog("srca:b", "", None, 5)).unwrap();
         let list = db.list_all_progress().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "", "首次插入没有旧值可保留 ⇒ 空就是空");
@@ -3138,10 +3138,10 @@ mod tests {
 
     #[test]
     fn split_item_key_handles_colons_inside_native_id() {
-        // ★ 实测用户库里真的有这种 key（bilibili 的 native_id 自带 "av:"）
+        // ★ 实测用户库里真的有这种 key（srcv 的 native_id 自带 "av:"）
         assert_eq!(
-            split_item_key("bilibili:av:BV1Bfex6tEEH").unwrap(),
-            ("bilibili".to_string(), "av:BV1Bfex6tEEH".to_string()),
+            split_item_key("srcv:av:BV1Bfex6tEEH").unwrap(),
+            ("srcv".to_string(), "av:BV1Bfex6tEEH".to_string()),
             "★ 只能按**第一个**冒号切 —— 否则 native_id 会被截断成 av"
         );
         assert!(split_item_key("nocolon").is_err());
@@ -3326,7 +3326,7 @@ mod tests {
     /// # 真实读数（`.probe/dbcopy-t67c`）
     ///
     /// ```text
-    /// cycani:3862      pos=91    dur=...  （旧源）
+    /// srca:3862      pos=91    dur=...  （旧源）
     /// 另一源同作品      pos=766             （新源）
     /// ⇒ 换源后必须 = 766（单调不减）；若取 FROM 的会**倒退**成 91
     /// ```
@@ -3337,13 +3337,13 @@ mod tests {
         let db = Db::in_memory().unwrap();
 
         // FROM = 旧源，只看到 91 秒
-        db.upsert_progress(&prog_ep("cycani:3862", "无职转生", 91, 1440, false, "第01集"))
+        db.upsert_progress(&prog_ep("srca:3862", "无职转生", 91, 1440, false, "第01集"))
             .unwrap();
         // TO = 新源，已经看到 766 秒（★ 刻意让 TO 更大）
         db.upsert_progress(&prog_ep("other:999", "无职转生", 766, 1440, false, "第01集"))
             .unwrap();
 
-        db.repoint_item("cycani:3862", "other:999").unwrap();
+        db.repoint_item("srca:3862", "other:999").unwrap();
 
         let p = db.get_progress("other:999").unwrap().expect("合并后必须有行");
         assert_eq!(
@@ -3474,14 +3474,14 @@ mod tests {
     /// ★★★ 空集号撞键守卫（CodeRabbit #21:1826 —— Major）
     ///
     /// ```text
-    /// FROM cycani:1  episode_id=None  标题「第08集」 position=700
-    /// TO   cycani:2  episode_id=None  标题「第01集」 position= 30
+    /// FROM srca:1  episode_id=None  标题「第08集」 position=700
+    /// TO   srca:2  episode_id=None  标题「第01集」 position= 30
     /// ```
     ///
     /// 集号 8≠1 ⇒ `to_same = None` ⇒ 走 None 臂整行搬到 TO。
     /// ★ 但 None 臂算出的目标 key 是
     /// `progress_key(to_provider, to_native_id, f.episode_id)` ——
-    /// 而 `f.episode_id` 也是 None ⇒ key = `"cycani:2:"`，
+    /// 而 `f.episode_id` 也是 None ⇒ key = `"srca:2:"`，
     /// **正是 TO 那行自己的 key**（老库 `episode_id` 为 NULL ⇒ 空串哨兵）。
     /// ⇒ `INSERT … ON CONFLICT(key) DO UPDATE` 会把 TO 的 30 秒
     /// **整行**换成 FROM 的 700 秒 ⇒ 用户在「第01集」上看到第08集的进度。
@@ -3495,19 +3495,19 @@ mod tests {
         let db = Db::in_memory().unwrap();
 
         // FROM：episode_id=None（老库口径）+ 标题能解析出集号 8
-        let mut f = prog("cycani:1", "某片", None, 700);
+        let mut f = prog("srca:1", "某片", None, 700);
         f.episode_title = Some("第08集".into());
         db.upsert_progress(&f).unwrap();
 
         // TO：episode_id=None + 标题能解析出集号 1
-        let mut t = prog("cycani:2", "某片", None, 30);
+        let mut t = prog("srca:2", "某片", None, 30);
         t.episode_title = Some("第01集".into());
         db.upsert_progress(&t).unwrap();
 
-        db.repoint_item("cycani:1", "cycani:2").unwrap();
+        db.repoint_item("srca:1", "srca:2").unwrap();
 
         let keep = db
-            .get_progress_exact("cycani:2:")
+            .get_progress_exact("srca:2:")
             .unwrap()
             .expect("TO 的空集号行必须还在（它就是老库里的那一行）");
         assert_eq!(
@@ -3542,26 +3542,26 @@ mod tests {
     ///   各自命名空间、恒不相等；不回退会把同一集拆成两行，见
     ///   `repoint_pairs_across_sources_with_different_episode_id_namespaces`）。
     ///   ⇒ 本用例改成让 **FROM 的 `episode_id` 为 `None`**：
-    ///   `progress_key(cycani, 2, None) == "cycani:2:"` 与 TO 的
-    ///   `"cycani:2:ep-1"` **不同** ⇒ 守卫不误伤（守卫只在 id 都为空时触发）。
+    ///   `progress_key(srca, 2, None) == "srca:2:"` 与 TO 的
+    ///   `"srca:2:ep-1"` **不同** ⇒ 守卫不误伤（守卫只在 id 都为空时触发）。
     #[test]
     fn repoint_still_moves_row_when_episode_id_makes_key_distinct() {
         let db = Db::in_memory().unwrap();
         // FROM：老库口径的**空** episode_id（标题仍能解析出集号 8）
-        let mut f = prog("cycani:1", "某片", None, 700);
+        let mut f = prog("srca:1", "某片", None, 700);
         f.episode_title = Some("第08集".into());
         db.upsert_progress(&f).unwrap();
-        db.upsert_progress(&prog_ep("cycani:2", "某片", 30, 1440, false, "第01集"))
+        db.upsert_progress(&prog_ep("srca:2", "某片", 30, 1440, false, "第01集"))
             .unwrap();
 
-        db.repoint_item("cycani:1", "cycani:2").unwrap();
+        db.repoint_item("srca:1", "srca:2").unwrap();
 
         let ep8 = db
-            .get_progress_exact("cycani:2:")
+            .get_progress_exact("srca:2:")
             .unwrap()
             .expect("★ 第08集必须独立成行搬过来（守卫只挡**撞键**，不挡正常搬运）");
         assert_eq!(ep8.position, 700);
-        assert_eq!(ep8.provider, "cycani");
+        assert_eq!(ep8.provider, "srca");
         assert_eq!(ep8.native_id, "2");
         assert_eq!(
             ep8.episode_title.as_deref(),
@@ -3569,7 +3569,7 @@ mod tests {
             "★ 搬过来的行保留 FROM 的集标题（None 臂整行照搬）"
         );
         let ep1 = db
-            .get_progress_exact(&progress_key("cycani", "2", Some("ep-1")))
+            .get_progress_exact(&progress_key("srca", "2", Some("ep-1")))
             .unwrap()
             .expect("TO 的第01集行不动");
         assert_eq!(ep1.position, 30);
@@ -3578,9 +3578,9 @@ mod tests {
     /// ★★★ `to_rows` 必须**回写**（CodeRabbit #23:1891 / #24:1924）
     ///
     /// ```text
-    /// TO   cycani:9  episode_id=None  标题「第01集」 position=100
-    /// FROM cycani:1  episode_id=x1    标题「第01集」 position=800
-    /// FROM cycani:1  episode_id=x2    标题「第01集」 position= 50
+    /// TO   srca:9  episode_id=None  标题「第01集」 position=100
+    /// FROM srca:1  episode_id=x1    标题「第01集」 position=800
+    /// FROM srca:1  episode_id=x2    标题「第01集」 position= 50
     /// ```
     ///
     /// 甲的 episode_id 是 `Some("x1")`、TO 的是 `None` ⇒ 不满足
@@ -3601,30 +3601,30 @@ mod tests {
     fn repoint_writeback_keeps_max_position_across_multiple_from_rows() {
         let db = Db::in_memory().unwrap();
 
-        let mut to = prog("cycani:9", "某片", None, 100);
+        let mut to = prog("srca:9", "某片", None, 100);
         to.episode_title = Some("第01集".into());
         db.upsert_progress(&to).unwrap();
 
-        let mut a = prog("cycani:1", "某片", None, 800);
+        let mut a = prog("srca:1", "某片", None, 800);
         a.episode_id = Some("x1".into());
         a.episode_title = Some("第01集".into());
         db.upsert_progress(&a).unwrap();
 
-        let mut b = prog("cycani:1", "某片", None, 50);
+        let mut b = prog("srca:1", "某片", None, 50);
         b.episode_id = Some("x2".into());
         b.episode_title = Some("第01集".into());
         db.upsert_progress(&b).unwrap();
 
         assert_eq!(
-            db.list_progress_for_item("cycani:1").unwrap().len(),
+            db.list_progress_for_item("srca:1").unwrap().len(),
             2,
             "★ 前置条件：FROM 作品下必须真有**两行**（episode_id 不同 ⇒ key 不同）"
         );
 
-        db.repoint_item("cycani:1", "cycani:9").unwrap();
+        db.repoint_item("srca:1", "srca:9").unwrap();
 
         let merged = db
-            .get_progress_exact("cycani:9:")
+            .get_progress_exact("srca:9:")
             .unwrap()
             .expect("TO 的空集号行必须还在（merged 的 episode_id 来自 ..t ⇒ None）");
         assert_eq!(
@@ -3735,8 +3735,8 @@ mod tests {
     /// `episode_id` 来自**各自源自己的命名空间**，压根不是一套：
     ///
     /// ```text
-    /// cycani    的「第01集」⇒ episode_id = "48884"
-    /// bilibili  的「第01集」⇒ episode_id = "51463"
+    /// srca    的「第01集」⇒ episode_id = "48884"
+    /// srcv  的「第01集」⇒ episode_id = "51463"
     /// ⇒ `(Some(a), Some(b)) if a == b` 恒为 **false**
     /// ⇒ 两个 `Some` 都非空 ⇒ **根本退不到** `episode_number_from_title` 分支
     /// ⇒ 同一集被判成两集 ⇒ TO 出现**两行第01集**
@@ -3762,15 +3762,15 @@ mod tests {
     fn repoint_pairs_across_sources_with_different_episode_id_namespaces() {
         let db = Db::in_memory().unwrap();
 
-        // FROM = 旧源 cycani；TO = 新源 bilibili（★ provider 必须不同）
+        // FROM = 旧源 srca；TO = 新源 srcv（★ provider 必须不同）
         // ★ 两侧 episode_id **显式写成不同命名空间**（真实形态）
         //   集名写法也不同（"第1集" vs "第01集"）但**集号相同**
-        let mut f = prog_ep("cycani:3611", "某片", 91, 1440, false, "第1集");
-        f.episode_id = Some("48884".into()); // cycani 自己的 id
+        let mut f = prog_ep("srca:3611", "某片", 91, 1440, false, "第1集");
+        f.episode_id = Some("48884".into()); // srca 自己的 id
         db.upsert_progress(&f).unwrap();
 
-        let mut t = prog_ep("bilibili:999", "某片", 766, 1440, false, "第01集");
-        t.episode_id = Some("51463".into()); // bilibili 自己的 id —— 与 FROM 不同
+        let mut t = prog_ep("srcv:999", "某片", 766, 1440, false, "第01集");
+        t.episode_id = Some("51463".into()); // srcv 自己的 id —— 与 FROM 不同
         db.upsert_progress(&t).unwrap();
 
         // ★ 仪器自检：两个 id 必须**真的不同**，否则本用例退化成老形态、失去分辨力
@@ -3779,7 +3779,7 @@ mod tests {
             "★ 仪器自检：两侧 episode_id 必须不同（这正是跨源的真实形态）"
         );
 
-        db.repoint_item("cycani:3611", "bilibili:999").unwrap();
+        db.repoint_item("srca:3611", "srcv:999").unwrap();
 
         let all = db.list_all_progress().unwrap();
         assert_eq!(
@@ -3807,7 +3807,7 @@ mod tests {
              带 FROM 的 id 新源**找不到这一集**"
         );
         assert_eq!(
-            merged.key, "bilibili:999:51463",
+            merged.key, "srcv:999:51463",
             "★ 合并后的 key 用 TO 的身份 + TO 的 id"
         );
     }
@@ -3820,12 +3820,12 @@ mod tests {
     fn repoint_history_pairs_across_sources_with_different_episode_id_namespaces() {
         let db = Db::in_memory().unwrap();
 
-        db.add_history(&hist_ep("cycani:3611", 91, 1_000, "第1集"))
+        db.add_history(&hist_ep("srca:3611", 91, 1_000, "第1集"))
             .unwrap();
-        db.add_history(&hist_ep("bilibili:999", 766, 2_000, "第01集"))
+        db.add_history(&hist_ep("srcv:999", 766, 2_000, "第01集"))
             .unwrap();
 
-        db.repoint_item("cycani:3611", "bilibili:999").unwrap();
+        db.repoint_item("srca:3611", "srcv:999").unwrap();
 
         let h = db.list_history(50).unwrap();
         assert_eq!(
@@ -3845,7 +3845,7 @@ mod tests {
         let db = Db::in_memory().unwrap();
         // ★ FROM 用 "第01集"、TO 用 "第1集" —— 字符串**不同**，
         //   但 episode_number_from_title 都得到 Some(1) ⇒ 进匹配分支。
-        //   ★ 这正是**真实用户库**里的写法（cycani 写 "第01集"、
+        //   ★ 这正是**真实用户库**里的写法（srca 写 "第01集"、
         //     hongniuzy2 写 "第1集"，见 .probe/dbcopy-t67c 的读数）。
         db.upsert_progress(&prog_ep("a:1", "某片", 100, 1440, false, "第01集"))
             .unwrap();
@@ -4012,30 +4012,30 @@ mod tests {
     ///
     /// `.probe/dbcopy-t67c` 里有这条 key：
     /// ```text
-    /// bilibili:bilibili:av:BV1B8ZJYTEPg
+    /// srcv:srcv:av:BV1B8ZJYTEPg
     ///   ^^^^^^^^  ^^^^^^^^ ^^^^^^^^^^^^
     ///   provider  多余前缀  native_id 的真身
     /// ```
-    /// ⇒ 按**第一个**冒号切 ⇒ native_id = `bilibili:av:BV1B8ZJYTEPg`（完整）。
+    /// ⇒ 按**第一个**冒号切 ⇒ native_id = `srcv:av:BV1B8ZJYTEPg`（完整）。
     ///
-    /// ⚠️ 若用 `split(':')` 取第二段 ⇒ native_id 变成 `bilibili`
+    /// ⚠️ 若用 `split(':')` 取第二段 ⇒ native_id 变成 `srcv`
     ///   ⇒ 换源迁移会把它**迁到错误的作品**上（静默、且不可逆）。
     /// ★ 这是 m00753 ② 点名要单独加的一条。
     #[test]
     fn split_item_key_keeps_double_prefixed_native_id_intact() {
         assert_eq!(
-            split_item_key("bilibili:bilibili:av:BV1B8ZJYTEPg").unwrap(),
+            split_item_key("srcv:srcv:av:BV1B8ZJYTEPg").unwrap(),
             (
-                "bilibili".to_string(),
-                "bilibili:av:BV1B8ZJYTEPg".to_string()
+                "srcv".to_string(),
+                "srcv:av:BV1B8ZJYTEPg".to_string()
             ),
             "★★★ 双前缀行：provider 取第一段，native_id 必须是**剩下全部**。\
-             截断成 'bilibili' 会把记录迁到错误作品上"
+             截断成 'srcv' 会把记录迁到错误作品上"
         );
         // ★ 与既有单前缀用例并存，证明两种形态都对
         assert_eq!(
-            split_item_key("bilibili:av:BV1Bfex6tEEH").unwrap(),
-            ("bilibili".to_string(), "av:BV1Bfex6tEEH".to_string()),
+            split_item_key("srcv:av:BV1Bfex6tEEH").unwrap(),
+            ("srcv".to_string(), "av:BV1Bfex6tEEH".to_string()),
         );
     }
 
@@ -4366,7 +4366,7 @@ mod tests {
         // ═══════════════════════════════════════════════════════════════
         //  ★★★★ m00753 ③ 的**唯一可区分锚点**：无职转生那组
         //
-        //  FROM = cycani:3862        pos=91   dur=1420  ep='第01集' ⇒ 集号 1
+        //  FROM = srca:3862        pos=91   dur=1420  ep='第01集' ⇒ 集号 1
         //  TO   = hongniuzy2:150722  pos=766  dur=1420  ep='第1集'  ⇒ 集号 1
         //  ⇒ 集号**匹配** ⇒ position = max(91, 766) = **766**
         //
@@ -4375,7 +4375,7 @@ mod tests {
         //    两条规则给出**不同**答案（91 vs 766）⇒ 有分辨力。
         //    ⚠️ 若这里得到 91，说明实现退化回 m00370 的"取 FROM"。
         // ═══════════════════════════════════════════════════════════════
-        let m_from_key = "cycani:3862";
+        let m_from_key = "srca:3862";
         let m_to_key = "hongniuzy2:150722";
 
         let m_before: Vec<Progress> = db
@@ -4385,10 +4385,10 @@ mod tests {
             .filter(|p| p.key == m_from_key || p.key == m_to_key)
             .collect();
         assert_eq!(m_before.len(), 2, "前置：无职转生那组必须两条都在");
-        let mf = m_before.iter().find(|p| p.key == m_from_key).expect("cycani 行");
+        let mf = m_before.iter().find(|p| p.key == m_from_key).expect("srca 行");
         let mt = m_before.iter().find(|p| p.key == m_to_key).expect("hongniuzy2 行");
         eprintln!(
-            "[E2E] 无职转生 改前: cycani:3862 pos={} dur={} ep={:?} | \
+            "[E2E] 无职转生 改前: srca:3862 pos={} dur={} ep={:?} | \
              hongniuzy2:150722 pos={} dur={} ep={:?}",
             mf.position, mf.duration, mf.episode_title, mt.position, mt.duration, mt.episode_title
         );
@@ -4422,7 +4422,7 @@ mod tests {
         let m_fav_before = db.list_favorites(true).unwrap();
         assert!(
             m_fav_before.iter().any(|f| f.key == m_from_key),
-            "前置：favorites 里必须有 cycani:3862（following=1 那行）"
+            "前置：favorites 里必须有 srca:3862（following=1 那行）"
         );
         assert!(
             !m_fav_before.iter().any(|f| f.key == m_to_key),
@@ -4430,7 +4430,7 @@ mod tests {
         );
         assert!(
             db.get_skip_marker(m_from_key).unwrap().is_some(),
-            "前置：skip_markers 里必须有 cycani:3862"
+            "前置：skip_markers 里必须有 srca:3862"
         );
         assert!(
             db.get_skip_marker(m_to_key).unwrap().is_none(),
@@ -4488,7 +4488,7 @@ mod tests {
         // ★ 旧行必须消失
         assert!(
             db.get_progress(m_from_key).unwrap().is_none(),
-            "★★ cycani:3862 的 progress 行必须被删（不丢进度也不能留重影）"
+            "★★ srca:3862 的 progress 行必须被删（不丢进度也不能留重影）"
         );
 
         // ── 后置 ⑦：history 同步（同一套三态）──
@@ -4513,11 +4513,11 @@ mod tests {
             "★★ history 的 episode_title 同样保持 TO 的"
         );
 
-        // ── 后置 ⑧：favorites 的 cycani:3862 行**整行搬**到 hongniuzy2:150722 ──
+        // ── 后置 ⑧：favorites 的 srca:3862 行**整行搬**到 hongniuzy2:150722 ──
         let m_fav_after = db.list_favorites(true).unwrap();
         assert!(
             m_fav_after.iter().all(|f| f.key != m_from_key),
-            "★★ favorites 里 cycani:3862 必须没了"
+            "★★ favorites 里 srca:3862 必须没了"
         );
         let m_fav_new = m_fav_after
             .iter()
@@ -4545,10 +4545,10 @@ mod tests {
             "★ 原本 favorited=0 ⇒ 搬过来仍是 0（TO 无行，没有 OR 对象）"
         );
 
-        // ── 后置 ⑨：skip_markers 的 cycani:3862 行整行搬到 hongniuzy2:150722 ──
+        // ── 后置 ⑨：skip_markers 的 srca:3862 行整行搬到 hongniuzy2:150722 ──
         assert!(
             db.get_skip_marker(m_from_key).unwrap().is_none(),
-            "★★ skip_markers 里 cycani:3862 必须没了"
+            "★★ skip_markers 里 srca:3862 必须没了"
         );
         let m_skip = db
             .get_skip_marker(m_to_key)
@@ -4560,25 +4560,25 @@ mod tests {
         // ═══════════════════════════════════════════════════════════════
         //  ★★ m00753 ②：双前缀坏行必须**完整保留** native_id
         //
-        //  t67c 里 `bilibili:bilibili:av:BV1B8ZJYTEPg` 与
-        //  `bilibili:av:BV1B8ZJYTEPg` **并存**（前者是生产数据里已有的坏行）。
+        //  t67c 里 `srcv:srcv:av:BV1B8ZJYTEPg` 与
+        //  `srcv:av:BV1B8ZJYTEPg` **并存**（前者是生产数据里已有的坏行）。
         //  `split_item_key` 用 `split_once(':')` ⇒
-        //      provider='bilibili', native_id='bilibili:av:BV1B8ZJYTEPg'
-        //  ★ 若用 `split(':')` 取第二段，native_id 会被截成 'bilibili'
+        //      provider='srcv', native_id='srcv:av:BV1B8ZJYTEPg'
+        //  ★ 若用 `split(':')` 取第二段，native_id 会被截成 'srcv'
         //    ⇒ 迁到**错误作品**。
         // ═══════════════════════════════════════════════════════════════
-        let dbl = "bilibili:bilibili:av:BV1B8ZJYTEPg";
-        let single = "bilibili:av:BV1B8ZJYTEPg";
+        let dbl = "srcv:srcv:av:BV1B8ZJYTEPg";
+        let single = "srcv:av:BV1B8ZJYTEPg";
         let dbl_row = db
             .get_progress(dbl)
             .unwrap()
             .expect("★★ 前置：t67c 里必须存在双前缀那条 progress 行");
         assert_eq!(
-            dbl_row.native_id, "bilibili:av:BV1B8ZJYTEPg",
-            "★★★ 双前缀行的 native_id 必须**完整**（含内层 'bilibili:'）—— \
-             截断成 'bilibili' 会把它迁到错误作品"
+            dbl_row.native_id, "srcv:av:BV1B8ZJYTEPg",
+            "★★★ 双前缀行的 native_id 必须**完整**（含内层 'srcv:'）—— \
+             截断成 'srcv' 会把它迁到错误作品"
         );
-        assert_eq!(dbl_row.provider, "bilibili", "★ provider 仍是第一段");
+        assert_eq!(dbl_row.provider, "srcv", "★ provider 仍是第一段");
         assert_eq!(dbl_row.position, 15, "★ 双前缀行 pos=15（对照单前缀行 pos=6）");
         let single_row = db
             .get_progress(single)
@@ -4591,7 +4591,7 @@ mod tests {
             "★ 仪器自检：两条 position 必须不同（15 vs 6），否则无法分辨它们是否被混淆"
         );
         /*
-         * ★ 两者 provider **相同**（都是 'bilibili'）⇒
+         * ★ 两者 provider **相同**（都是 'srcv'）⇒
          *   `commands_write::repoint_item` 的 `from_provider == to_provider`
          *   守卫会**正确拦住** —— 它们不该被迁移（同一源内的 id 漂移）。
          *   这里直接调 `Db::repoint_item`（无守卫），所以只验证
@@ -4600,7 +4600,7 @@ mod tests {
         let (dp, dn) = split_item_key(dbl).unwrap();
         assert_eq!(
             (dp.as_str(), dn.as_str()),
-            ("bilibili", "bilibili:av:BV1B8ZJYTEPg"),
+            ("srcv", "srcv:av:BV1B8ZJYTEPg"),
             "★★★ split_item_key 必须用 split_once：双前缀 ⇒ native_id 完整不丢"
         );
 
@@ -4672,10 +4672,10 @@ mod tests {
     fn progress_migration_rewrites_key_and_preserves_data() {
         // 四行：一集有 id、一条 null 集（空串哨兵）、另一作品、一条**带空白**的集号
         let tmp = old_schema_db(&[
-            ("cycani:3611", "cycani", "3611", "长剧", Some("48884"), 2971, 9285, false, 111),
-            ("cycani:3612", "cycani", "3612", "单片", None, 42, 5400, false, 222),
-            ("bilibili:BV1", "bilibili", "BV1", "番", Some("51463"), 100, 1440, true, 333),
-            ("cycani:3613", "cycani", "3613", "留白集", Some(" ep1 "), 7, 1440, false, 444),
+            ("srca:3611", "srca", "3611", "长剧", Some("48884"), 2971, 9285, false, 111),
+            ("srca:3612", "srca", "3612", "单片", None, 42, 5400, false, 222),
+            ("srcv:BV1", "srcv", "BV1", "番", Some("51463"), 100, 1440, true, 333),
+            ("srca:3613", "srca", "3613", "留白集", Some(" ep1 "), 7, 1440, false, 444),
         ]);
 
         let db = Db::open(&tmp).unwrap();
@@ -4686,10 +4686,10 @@ mod tests {
 
         // ② 新 key 口径：provider:native_id:episode_id（null ⇒ 空串）
         let long = all.iter().find(|p| p.title == "长剧").unwrap();
-        assert_eq!(long.key, "cycani:3611:48884", "★ 有集号 ⇒ 拼上集号");
+        assert_eq!(long.key, "srca:3611:48884", "★ 有集号 ⇒ 拼上集号");
         let single = all.iter().find(|p| p.title == "单片").unwrap();
         assert_eq!(
-            single.key, "cycani:3612:",
+            single.key, "srca:3612:",
             "★★ 老行 episode_id 为 NULL ⇒ 空串哨兵（不能留 null，否则唯一约束失效）"
         );
         /*
@@ -4708,7 +4708,7 @@ mod tests {
         // ③ 旧数据逐字保留
         assert_eq!(long.position, 2971, "★ position 逐字保留");
         assert_eq!(long.duration, 9285, "★ duration 逐字保留");
-        assert_eq!(long.provider, "cycani");
+        assert_eq!(long.provider, "srca");
         assert_eq!(long.native_id, "3611");
         assert_eq!(long.episode_id.as_deref(), Some("48884"));
         assert!(!long.finished);
@@ -4724,14 +4724,14 @@ mod tests {
          * 两套规则永远追不平）。
          *
          * ★ 本行就是那条裁决的**回归锁**：若哪天有人把 `str::trim` 加回去，
-         *   `progress_key` 会得到 `"cycani:3613:ep1"` ⇒ 与下面这个字面量不等 ⇒ 红。
+         *   `progress_key` 会得到 `"srca:3613:ep1"` ⇒ 与下面这个字面量不等 ⇒ 红。
          */
         let padded = all.iter().find(|p| p.title == "留白集").unwrap();
         assert_eq!(
-            padded.key, "cycani:3613: ep1 ",
+            padded.key, "srca:3613: ep1 ",
             "★★★ 带空白的 episode_id 必须**原样**进 key（不 trim）—— \
              与迁移 SQL 的 COALESCE(episode_id,'') 逐字一致。\
-             若这里是 \"cycani:3613:ep1\"，说明 progress_key 又 trim 了 ⇒ \
+             若这里是 \"srca:3613:ep1\"，说明 progress_key 又 trim 了 ⇒ \
              与迁移来的行**裂成两条** ⇒ 续播会在这两行之间跳"
         );
         assert_eq!(
@@ -4740,8 +4740,8 @@ mod tests {
         );
 
         // ④ 按作品键查最新一集也能查到（item_key 列回填正确）
-        let by_item = db.get_progress("cycani:3611").unwrap().expect("按作品键应查到");
-        assert_eq!(by_item.key, "cycani:3611:48884");
+        let by_item = db.get_progress("srca:3611").unwrap().expect("按作品键应查到");
+        assert_eq!(by_item.key, "srca:3611:48884");
 
         drop(db);
         let _ = std::fs::remove_file(&tmp);
@@ -4758,12 +4758,12 @@ mod tests {
     /// 所以库里完全可能有两行：
     ///
     /// ```text
-    /// 行 A: key = "cycani:3611"   provider=cycani native_id=3611 episode_id="ep1"
-    /// 行 B: key = "cycani-dup:3612" provider=cycani native_id=3611 episode_id="ep1"
+    /// 行 A: key = "srca:3611"   provider=srca native_id=3611 episode_id="ep1"
+    /// 行 B: key = "srca-dup:3612" provider=srca native_id=3611 episode_id="ep1"
     ///       ↑ key 不同（主键不冲突，老库收得下）但 (provider,native_id,episode_id) 完全相同
     /// ```
     ///
-    /// 迁移按**三列**拼新 key ⇒ 两行都拼出 `cycani:3611:ep1`
+    /// 迁移按**三列**拼新 key ⇒ 两行都拼出 `srca:3611:ep1`
     /// ⇒ `INSERT INTO progress_new` **主键冲突** ⇒ 事务失败 ⇒ 迁移报错。
     ///
     /// # 后果（为什么必须修，而不是"反正数据脏"）
@@ -4781,9 +4781,9 @@ mod tests {
         // 两行的 (provider,native_id,episode_id) 完全相同 ⇒ 新 key 必然相撞
         let tmp = old_schema_db(&[
             // key 与 provider:native_id 一致（正常行），updated_at 较旧
-            ("cycani:3611", "cycani", "3611", "旧的那条", Some("ep1"), 10, 100, false, 111),
+            ("srca:3611", "srca", "3611", "旧的那条", Some("ep1"), 10, 100, false, 111),
             // ★ key 与三列**不一致**（老库允许），但三列与上一行相同，updated_at 较新
-            ("cycani-dup:9999", "cycani", "3611", "新的那条", Some("ep1"), 99, 100, false, 999),
+            ("srca-dup:9999", "srca", "3611", "新的那条", Some("ep1"), 99, 100, false, 999),
         ]);
 
         // ★ 老库自己收得下这两行（key 不同 ⇒ 主键不冲突）
@@ -4804,7 +4804,7 @@ mod tests {
         let all = db.list_all_progress().unwrap();
         assert_eq!(all.len(), 1, "★ 撞键的两行应合并成一行（不是报错、也不是留两行）");
         let merged = &all[0];
-        assert_eq!(merged.key, "cycani:3611:ep1", "★ 合并后的 key 是三列口径");
+        assert_eq!(merged.key, "srca:3611:ep1", "★ 合并后的 key 是三列口径");
         assert_eq!(
             merged.position, 99,
             "★★ 撞键时保留 **updated_at 较新**的那条 —— \
@@ -4820,8 +4820,8 @@ mod tests {
     #[test]
     fn progress_migration_is_idempotent() {
         let tmp = old_schema_db(&[(
-            "cycani:3611",
-            "cycani",
+            "srca:3611",
+            "srca",
             "3611",
             "长剧",
             Some("48884"),
@@ -4860,7 +4860,7 @@ mod tests {
         // 第3集：看到 22 分钟里的 20 分钟
         db.upsert_progress(&Progress {
             key: String::new(),
-            provider: "cycani".into(),
+            provider: "srca".into(),
             native_id: "3611".into(),
             title: "长剧".into(),
             cover: None,
@@ -4875,7 +4875,7 @@ mod tests {
         // 第2集：看到结束（会自动切下一集 —— Owner 的场景）
         db.upsert_progress(&Progress {
             key: String::new(),
-            provider: "cycani".into(),
+            provider: "srca".into(),
             native_id: "3611".into(),
             title: "长剧".into(),
             cover: None,
@@ -4896,10 +4896,10 @@ mod tests {
              老口径下第2集会把第3集顶掉，只剩 1 行 ⇒ 本断言红"
         );
         // 第3集的 20 分钟还在
-        let ep3 = db.get_progress_exact("cycani:3611:ep3").unwrap().expect("第3集行");
+        let ep3 = db.get_progress_exact("srca:3611:ep3").unwrap().expect("第3集行");
         assert_eq!(ep3.position, 1320, "★ 第3集的位置必须原样保留，不被第2集覆盖");
         // 按作品键取到的是**最新**那集（第2集，updated_at 更大）
-        let latest = db.get_progress("cycani:3611").unwrap().unwrap();
+        let latest = db.get_progress("srca:3611").unwrap().unwrap();
         assert_eq!(latest.episode_id.as_deref(), Some("ep2"), "★ 按作品取最新一集");
     }
 
@@ -4912,7 +4912,7 @@ mod tests {
         let db = Db::in_memory().unwrap();
         let mk = |pos: u64, up: i64| Progress {
             key: String::new(),
-            provider: "cycani".into(),
+            provider: "srca".into(),
             native_id: "9999".into(),
             title: "单片".into(),
             cover: None,
@@ -4934,7 +4934,7 @@ mod tests {
              因「NULL≠NULL」失去唯一约束 ⇒ 这里会变成 2 行"
         );
         assert_eq!(all[0].position, 500, "★ 后写覆盖先写（同一集）");
-        assert_eq!(all[0].key, "cycani:9999:", "★ 空串哨兵键");
+        assert_eq!(all[0].key, "srca:9999:", "★ 空串哨兵键");
     }
 
     /// ★ 换源迁移在新 key 下仍正确（单集：搬行 + 删旧）

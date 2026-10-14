@@ -570,7 +570,7 @@ class SearchPageState extends State<SearchPage> {
             child: EmptyState(
               icon: Icons.travel_explore_outlined,
               title: '当前没有支持搜索的内容源',
-              hint: '央视官方无公开搜索接口。启用其它内容源后即可在这里一起搜索。',
+              hint: '某电视台官方无公开搜索接口。启用其它内容源后即可在这里一起搜索。',
             ),
           )
 

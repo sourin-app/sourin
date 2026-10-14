@@ -26,7 +26,7 @@
 // 本地会话（provider=local, id=D:/…/第01集.mp4）
 //   ├─ ① 原样写 local 键        —— 既有行为逐字不变
 //   └─ ② 原来源可知时，再写一条 (站点, 站点内容 id) 的镜像
-// 在线会话（provider=bilibili, id=BV…）
+// 在线会话（provider=srcv, id=BV…）
 //   └─ 原样写站点键             —— 既有行为逐字不变
 // 读的时候（PlayerPage._prepareResume）
 //   ├─ 先读本会话自己的键（逐字不变，老数据必须继续能续播）
@@ -97,7 +97,7 @@ const String kProgressLocalProvider = 'local';
 class ProgressOrigin {
   const ProgressOrigin({required this.provider, required this.mediaId});
 
-  /// 站点 id（如 `bilibili` / `dandanplay`）—— **绝不是** `local`
+  /// 站点 id（如 `srcv` / `外部弹幕服务`）—— **绝不是** `local`
   final String provider;
 
   /// 该站点上的内容 id（如 `BV1xx411c7mD` / `36578`）
@@ -174,7 +174,7 @@ class ProgressOrigin {
 ///   与 `Db::migrate` 的 `COALESCE(episode_id,'')` 逐字一致（迁移 SQL 与
 ///   `store::progress_key` 两处拼法由 Rust 测试
 ///   `store::tests::progress_migration_rewrites_key_and_preserves_data` 里的
-///   `padded.key == "cycani:3613: ep1 "` 钉住）。
+///   `padded.key == "srca:3613: ep1 "` 钉住）。
 ///   代价：老库里带空白的 episode_id 会**原样**进键（罕见到可以忽略）。
 ///
 /// ★ 所以这里**必须**是 `?? ''`，不能是 `?.trim() ?? ''` ——
@@ -353,7 +353,7 @@ Progress? pickResumeProgress({Progress? session, Progress? mirror}) {
 /// ```
 /// ★ 「文件名样」= 以小写视频后缀结尾（`.mp4/.mkv/...`，见 [_kVideoExts]）。
 ///   ⚠️ 用「像不像文件名」而不是「能不能解析成整数」：站点集 id 也可能是
-///      **非数字**（如 bilibili 的 `BV…` cid、加密串）—— 只认「文件名样」
+///      **非数字**（如 srcv 的 `BV…` cid、加密串）—— 只认「文件名样」
 ///      这条路，判据单一、可单测、不会把两套标识误配成相等。
 bool isAnotherEpisode({
   required String? progressEpisodeId,

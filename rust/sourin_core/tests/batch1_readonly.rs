@@ -21,7 +21,7 @@
 // ```text
 // 我造的假数据    → 我会按自己的理解造，验证不出误解
 // 真实数据副本    → 含真实的 provider 名、真实的中文标题、
-//                   真实的复合键（cycani:3862、bilibili:av:BVxxx）、
+//                   真实的复合键（srca:3862、srcv:av:BVxxx）、
 //                   真实的 NULL 字段
 // ```
 //
@@ -94,17 +94,17 @@ mod batch1_readonly {
 
         // ★ 单个进度：用真实库里确实存在的键
         //
-        // 这条同时验证了**键格式** —— `cycani:3862` 是真实库里的
+        // 这条同时验证了**键格式** —— `srca:3862` 是真实库里的
         // `key` 字段值。如果我的 item_key() 拼错（比如用了 `-` 分隔），
         // 这里会返回 None 而失败。
-        let p = commands::get_progress(&st, "cycani", "3862").expect("get_progress");
-        assert!(p.is_some(), "cycani:3862 应有进度（键格式错了才会是 None）");
+        let p = commands::get_progress(&st, "srca", "3862").expect("get_progress");
+        assert!(p.is_some(), "srca:3862 应有进度（键格式错了才会是 None）");
         let p = p.unwrap();
-        assert_eq!(p.provider, "cycani");
+        assert_eq!(p.provider, "srca");
         assert_eq!(p.native_id, "3862");
-        assert_eq!(p.key, "cycani:3862", "复合键格式必须是 provider:native_id");
+        assert_eq!(p.key, "srca:3862", "复合键格式必须是 provider:native_id");
         println!(
-            "✓ get_progress(cycani, 3862) = 《{}》 pos={}s dur={}s",
+            "✓ get_progress(srca, 3862) = 《{}》 pos={}s dur={}s",
             p.title, p.position, p.duration
         );
 
@@ -127,11 +127,11 @@ mod batch1_readonly {
         println!("✓ list_skip_markers = {} 条", sm.len());
 
         // ★ 单条跳过点 + 数值正确
-        let one = commands::get_skip_marker(&st, "cycani", "3862").expect("get_skip_marker");
-        assert!(one.is_some(), "cycani:3862 应有跳过点");
+        let one = commands::get_skip_marker(&st, "srca", "3862").expect("get_skip_marker");
+        assert!(one.is_some(), "srca:3862 应有跳过点");
         let one = one.unwrap();
         assert_eq!(one.intro_end, Some(69), "真实库里 intro_end 是 69");
-        println!("✓ get_skip_marker(cycani, 3862) intro_end={:?}", one.intro_end);
+        println!("✓ get_skip_marker(srca, 3862) intro_end={:?}", one.intro_end);
 
         // ── 收藏 ──
         //
@@ -185,7 +185,7 @@ mod batch1_readonly {
     #[ignore = "需要真实数据副本，显式 --ignored 运行"]
     async fn preserves_unicode_titles() {
         let st = state().await;
-        let p = commands::get_progress(&st, "cycani", "3862")
+        let p = commands::get_progress(&st, "srca", "3862")
             .expect("get_progress")
             .expect("应有数据");
 
@@ -235,9 +235,9 @@ mod batch1_readonly {
             let st = state().await;
             let _ = commands::list_all_progress(&st);
             let _ = commands::continue_watching(&st, Some(10));
-            let _ = commands::get_progress(&st, "cycani", "3862");
+            let _ = commands::get_progress(&st, "srca", "3862");
             let _ = commands::list_history(&st, Some(50));
-            let _ = commands::get_skip_marker(&st, "cycani", "3862");
+            let _ = commands::get_skip_marker(&st, "srca", "3862");
             let _ = commands::list_skip_markers(&st);
             let _ = commands::list_favorites(&st, false).await;
             let _ = commands::list_favorites(&st, true).await;

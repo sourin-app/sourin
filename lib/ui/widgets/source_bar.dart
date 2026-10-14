@@ -42,7 +42,7 @@ import '../../ui/app_palette.dart';
 /// > 原实现用 `working` 过滤 —— 后果：**用户在设置里停用的源
 /// > 仍然出现在首页/搜索/直播里**（`enabled=false` 被完全忽略）。
 /// >
-/// > 实测证据：停用 cctv 后 `get_provider_enabled('cctv')` 返回 `false`，
+/// > 实测证据：停用 srcl 后 `get_provider_enabled('srcl')` 返回 `false`，
 /// > 但首页的切换条里它还在，`list_providers` 也把它算作可用。
 /// >
 /// > 修法：`working` 与 `enabled` **都要**满足。
@@ -153,7 +153,7 @@ class _SourceBarState extends State<SourceBar> {
   ///
   /// # 这就是原版修掉的那个 bug 的落点
   ///
-  /// 原版实测：停用 cctv 后 `get_provider_enabled('cctv')` 返回 `false`，
+  /// 原版实测：停用 srcl 后 `get_provider_enabled('srcl')` 返回 `false`，
   /// 但首页切换条里**它还在**（旧实现只看 `working`）。
   ///
   /// ⚠️ 过滤放在**组件内部**而不是只靠调用方传干净的列表：

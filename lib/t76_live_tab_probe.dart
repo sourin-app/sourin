@@ -33,7 +33,7 @@
  *     ⇒ `_dataRev.value++`。断言块头 chip `直播 N/M` 的 M **= 运行时读到的基线+1**，
  *     且新插件的 `@name` 真的出现在直播 tab 里。
  *     ★ M **绝不写死**：两个种子目录的 live 数不同（`.probe\testdata\plugins\`
- *       有 cctv+iptv 两个；`.probe\t74p-data\plugins\` 只有 cctv 一个）。
+ *       有 srcl+iptv 两个；`.probe\t74p-data\plugins\` 只有 srcl 一个）。
  *  ⑤ **js 插件变更 ⇒ 也自动更新**：用同一个 `@id` 再装一次、但把
  *     `capabilities.live` 改成 false ⇒ 该源必须从直播 tab **消失**，chip 回到基线。
  *

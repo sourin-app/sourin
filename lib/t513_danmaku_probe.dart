@@ -3,11 +3,11 @@
 // ignore_for_file: prefer_const_declarations
 
 /*
- * ★★★ task-13 ⑦ dandanplay 弹幕 —— **真进程**取证探针
+ * ★★★ task-13 ⑦ 外部弹幕服务 弹幕 —— **真进程**取证探针
  *
  * # 用户原话（m00002）
  *
- * > 接入一下 dandanplay 的弹幕功能
+ * > 接入一下 外部弹幕服务 的弹幕功能
  *
  * # 这个探针要证明什么（三段只有真进程里才成立）
  *
@@ -19,7 +19,7 @@
  *
  * # 为什么分两层（层 a / 层 b）
  *
- * dandanplay 开放平台的弹幕接口**强制**要求 AppId + AppSecret
+ * 外部弹幕服务 开放平台的弹幕接口**强制**要求 AppId + AppSecret
  * （官方文档 + 实测：无头请求恒回 `HTTP 403` + `X-Error-Message`）。
  * 仓库里没有任何可用的公开 AppId ⇒ 「真实弹幕真的滚起来」这件事
  * **只能由 Owner 注册后填凭证**，探针不能伪造。
@@ -539,7 +539,7 @@ Future<void> main() async {
       /*
        * 标题带 .mp4 后缀是**故意的**：
        * `_danmakuFileName`（player_page.dart:3088-3095）的职责就是
-       * 「去掉目录、去掉扩展名」⇒ 送进 dandanplay 的应该是 t465_43。
+       * 「去掉目录、去掉扩展名」⇒ 送进 外部弹幕服务 的应该是 t465_43。
        * 不给后缀就测不到那段裁剪逻辑。
        */
       home: const PlayerPage(
@@ -610,7 +610,7 @@ Future<void> body() async {
   ok('PlayerPage 实例已就绪（读得到 _danmakuFileName）',
       debugPlayerDanmakuFileName() != null,
       'fileName=' + debugPlayerDanmakuFileName().toString());
-  ok('★ 文件名裁剪：送去 dandanplay 的不带目录、不带扩展名',
+  ok('★ 文件名裁剪：送去 外部弹幕服务 的不带目录、不带扩展名',
       debugPlayerDanmakuFileName() == 't465_43',
       '期望 t465_43，实际 ' + debugPlayerDanmakuFileName().toString());
   ok('初始状态：弹幕是关的（默认值）', debugPlayerDanmakuEnabled() == false,
@@ -680,7 +680,7 @@ Future<void> body() async {
           (debugPlayerDanmakuStatus() ?? '').isNotEmpty,
       timeout: const Duration(seconds: 30),
       label: '起播尾部自动取弹幕');
-  ok('★ 起播成功后**自动**取了一次弹幕（真 HTTP 打到 dandanplay）', fired);
+  ok('★ 起播成功后**自动**取了一次弹幕（真 HTTP 打到 外部弹幕服务）', fired);
   note('状态 = ' + (debugPlayerDanmakuStatus() ?? '<空>'));
   note('错误 = ' + (debugPlayerDanmakuError() ?? '<空>'));
 
@@ -735,7 +735,7 @@ Future<void> body() async {
   for (final k in knownReasons) {
     if (err.contains(k)) hitReason = k;
   }
-  ok('★ 错误原因 = dandanplay 官方 X-Error-Message 原文（未被改写/未翻译）',
+  ok('★ 错误原因 = 外部弹幕服务 官方 X-Error-Message 原文（未被改写/未翻译）',
       hitReason.isNotEmpty, '命中: ' + hitReason);
   note('原文 = ' + err);
 

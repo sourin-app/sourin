@@ -1,6 +1,6 @@
 //! 统一领域模型 —— 所有 Provider 的输出都归一化到这里
 //!
-//! **设计原则**：UI 层完全不知道上游是什么协议（央视私有 API / 苹果 CMS / drpy / 进程外 HTTP），
+//! **设计原则**：UI 层完全不知道上游是什么协议（某电视台私有 API / 苹果 CMS / drpy / 进程外 HTTP），
 //! 只消费本模块定义的类型。接入新站点 = 新增一个 Provider 实现，UI 零改动。
 
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// 带来源前缀的复合 ID，避免跨平台冲突
 ///
-/// 序列化为 `"{provider}:{native}"`，例如 `"cctv:c4447dc4..."`。
+/// 序列化为 `"{provider}:{native}"`，例如 `"srcl:c4447dc4..."`。
 ///
 /// ⚠️ **这条「序列化为字符串」不是装饰性说明，是前后端的硬契约**：
 /// 前端 `src/api/types.ts` 把 id 声明为 `MediaKey = string`，
@@ -33,7 +33,7 @@ impl<'de> Deserialize<'de> for MediaId {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         use serde::de::Error;
 
-        // 既接受 `"cctv:xxx"` 字符串，也兼容旧的 `{provider, native}` 对象形态
+        // 既接受 `"srcl:xxx"` 字符串，也兼容旧的 `{provider, native}` 对象形态
         // （落库数据 / 旧前端可能仍是对象，不能一升级就崩）
         #[derive(Deserialize)]
         #[serde(untagged)]
@@ -175,7 +175,7 @@ pub struct Page<T> {
 /// 播放源 / 线路 —— **支持任意深度嵌套**（对应「嵌套选择」需求）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaySource {
-    /// 该源的唯一编码，用于拉取剧集（如 cycani 的 `cychub`）
+    /// 该源的唯一编码，用于拉取剧集（如 srca 的 `cychub`）
     pub code: String,
     pub title: String,
     /// 该源下的剧集数量（0 表示未知）
@@ -246,7 +246,7 @@ impl StreamKind {
     ///
     /// # 为什么这里只做保守判断
     ///
-    /// URL 后缀**根本不可靠** —— 实测 cycani 的 MP4 直链被站点伪装成 `.mp3`：
+    /// URL 后缀**根本不可靠** —— 实测 srca 的 MP4 直链被站点伪装成 `.mp3`：
     ///
     /// ```text
     /// https://x.cycstream.com/<base64>.mp3?expires=..&md5=..
@@ -282,7 +282,7 @@ impl StreamKind {
     /// ★ 按 HTTP `Content-Type` 判断（**比 URL 后缀可靠得多**）
     ///
     /// Provider 若已拿到响应头，应当优先用这个，再用 `from_url` 兜底。
-    /// 实测 cycani 返回 `video/mp4`，而 URL 后缀是 `.mp3` —— 只有看响应头才对。
+    /// 实测 srca 返回 `video/mp4`，而 URL 后缀是 `.mp3` —— 只有看响应头才对。
     pub fn from_content_type(ct: &str) -> Option<Self> {
         let ct = ct.to_lowercase();
         // 取分号前的主类型
@@ -297,7 +297,7 @@ impl StreamKind {
             // video/mp4、video/webm、video/x-flv… 都交给 <video> 原生播放
             Some(StreamKind::Mp4)
         } else if main.starts_with("audio/") {
-            // ⚠️ 注意：`audio/mpeg` 也可能是**伪装**的 MP4（cycani 就出现过
+            // ⚠️ 注意：`audio/mpeg` 也可能是**伪装**的 MP4（srca 就出现过
             //    content-type 是 video/mp4 而后缀是 .mp3，反过来也可能）。
             //    所以这里只标 AudioOnly，**播放器仍应尝试原生加载**。
             Some(StreamKind::AudioOnly)
@@ -311,7 +311,7 @@ impl StreamKind {
 mod stream_kind_tests {
     use super::StreamKind;
 
-    /// ★ 实测回归：cycani 把 MP4 直链伪装成 `.mp3`
+    /// ★ 实测回归：srca 把 MP4 直链伪装成 `.mp3`
     ///
     /// 真实情况：URL 以 `.mp3` 结尾，但 `content-type: video/mp4`、
     /// 文件头 `ftypisom`，base64 解码后文件名是 `xxx01zm.mp4`。
@@ -404,7 +404,7 @@ pub struct StreamCandidate {
     pub not_web_ready: bool,
     /// ★★ 该流受 **DRM 保护**，客户端无法解码
     ///
-    /// 实测背景（2026-09-15）：央视直播的视频轨被 `udrm` 加密 ——
+    /// 实测背景（2026-09-15）：某电视台直播的视频轨被 `udrm` 加密 ——
     /// 容器与 NAL 头是明文（ffprobe 能看到 `h264` + `1024x576`），
     /// 但**载荷被加密**，解码时报
     /// `top block unavailable for requested intra mode` /
@@ -412,8 +412,8 @@ pub struct StreamCandidate {
     ///
     /// 对照实验（同一台机器、同一个 ffmpeg）：
     ///   · 公开测试 HLS        → 0 个解码错误
-    ///   · 央视**音频**流       → 0 个解码错误
-    ///   · 央视**视频**流（全线路）→ 61~80 个解码错误
+    ///   · 某电视台**音频**流       → 0 个解码错误
+    ///   · 某电视台**视频**流（全线路）→ 61~80 个解码错误
     /// ⇒ 网络与工具都正常，**是流本身加密**。
     ///
     /// 为什么要在模型里显式声明：这类流的表现是**画面花屏/绿屏但时间在走**，
@@ -479,7 +479,7 @@ pub struct StreamCandidate {
     /// 于是 tag 会在桥接出口静默消失 —— 不报错、不警告，查起来极难。
     /// 实测读数（rust/sourin_core/tests/zz_t5_tags_probe.rs）：
     ///   · 桥接后 JSON = {...,tags:{group-title:China,
-    ///        tvg-id:CCTV1@SD,tvg-logo:...}}   <- 键名完好（连字符不受
+    ///        tvg-id:SRCL1@SD,tvg-logo:...}}   <- 键名完好（连字符不受
     ///        plugins/mod.rs:129 camel_to_snake 影响）
     ///   · StreamCandidate 回序列化 = {kind:hls,label:综合,
     ///        not_web_ready:false,url:...}          <- tags 没了
@@ -504,7 +504,7 @@ impl StreamCandidate {
     /// 用构造器把「大多数情况」收口，新增字段时只改这里。
     ///
     /// `not_web_ready` 与 `drm_protected` 默认 `false`；
-    /// 前者目前无消费方（保留字段），后者由央视直播显式设置。
+    /// 前者目前无消费方（保留字段），后者由某电视台直播显式设置。
     pub fn new(url: impl Into<String>, kind: StreamKind) -> Self {
         Self {
             url: url.into(),
@@ -600,9 +600,9 @@ pub struct Capabilities {
     pub live: bool,
     pub epg: bool,
     pub search: bool,
-    /// 需要登录才能取流（如 cycani）
+    /// 需要登录才能取流（如 srca）
     pub login_required: bool,
-    /// 支持平台内多播放源（如 cycani 的 play_from）
+    /// 支持平台内多播放源（如 srca 的 play_from）
     pub multi_source: bool,
     /// 平台自带服务端观看历史
     pub server_side_history: bool,
@@ -613,19 +613,19 @@ pub struct Capabilities {
     /// 支持弹幕
     pub danmaku: bool,
 
-    // ─────────── 登录（2026-09-20 新增，为 B站这类"游客也能用"的源）───────────
+    // ─────────── 登录（2026-09-20 新增，为 某视频站这类"游客也能用"的源）───────────
     /// **可以登录，但不是必须** —— 游客态照样能用
     ///
     /// # 为什么需要它与 `login_required` 分开
     ///
     /// 「必须登录」与「支持登录」是**两件事**：
     /// ```text
-    /// cycani  必须登录才能取流        → login_required = true
-    /// bilibili 游客就能看 1080P，
+    /// srca  必须登录才能取流        → login_required = true
+    /// srcv 游客就能看 1080P，
     ///          但登录后能同步关注/收藏 → login_supported = true
     /// ```
     ///
-    /// ⚠️ **绝不能**给 B站 设 `login_required = true`：
+    /// ⚠️ **绝不能**给 某视频站 设 `login_required = true`：
     ///    `Registry::ensure_session` 会因此**挡住游客播放**
     ///    （`if !login_required { return Some(true) }` 那条捷径失效），
     ///    而「不登录就能看 1080P」正是 Owner 明确要的能力。
@@ -637,12 +637,12 @@ pub struct Capabilities {
     pub login_supported: bool,
     /// 登录弹窗里的一段说明（告诉用户该怎么操作）
     ///
-    /// 例：B站要「从浏览器复制 Cookie 粘进来」，不写清楚用户不知道做什么。
+    /// 例：某视频站要「从浏览器复制 Cookie 粘进来」，不写清楚用户不知道做什么。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login_hint: Option<String>,
     /// 登录是否需要「账号」字段（默认 true）
     ///
-    /// B站的 Cookie 导入**不需要账号**，只有密码框（用来粘 Cookie）。
+    /// 某视频站的 Cookie 导入**不需要账号**，只有密码框（用来粘 Cookie）。
     /// 设 false 时前端隐藏账号框，也**不再要求它非空**
     /// （否则登录按钮永远是禁用状态）。
     #[serde(default = "default_true", alias = "loginNeedsUsername")]
@@ -665,7 +665,7 @@ pub struct Capabilities {
     ///
     /// # 为什么需要这个能力位（Owner 报的真问题）
     ///
-    /// > 次元城登录失效 明明不需要验证码就可以自动登录，还提示 验证码
+    /// > 某动画站登录失效 明明不需要验证码就可以自动登录，还提示 验证码
     ///
     /// 登录态失效时，设置页原本对**所有源**都写同一句话：
     /// ```text
@@ -673,7 +673,7 @@ pub struct Capabilities {
     /// ```
     /// 那是原版 `SettingsView.vue:175` 的**通用文案**（给真有验证码的源用的）。
     ///
-    /// 但对**实现了 `autoLogin()` 的插件**（如次元城：账号密码存在
+    /// 但对**实现了 `autoLogin()` 的插件**（如某动画站：账号密码存在
     /// `plugins/.data/<id>.json`，token 一过期就能自己重登）这句话是**误导**：
     /// ```text
     /// 用户看到「可能需要验证码，请手动完成」
@@ -885,7 +885,7 @@ impl ConfigField {
 /// Provider 身份
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderManifest {
-    /// 唯一 id，如 "cctv" / "cycani"
+    /// 唯一 id，如 "srcl" / "srca"
     ///
     /// ⚠️ **设计要求：id 由内容派生（稳定），不要用序号。**
     /// NewPipe 的扩展 PR（#4054，2020 年被否决）作者亲自承认：
@@ -912,7 +912,7 @@ pub struct ProviderManifest {
     /// B 站图片 CDN（`i0/i1/i2.hdslb.com`）**白名单校验 Referer**：
     ///
     /// ```text
-    /// Referer: https://www.bilibili.com  → HTTP 200 ✅
+    /// Referer: https://www.example-v.com  → HTTP 200 ✅
     /// Referer: http://tauri.localhost/   → HTTP 403 ❌  ← 我们的应用
     /// ```
     ///
@@ -923,7 +923,7 @@ pub struct ProviderManifest {
     ///
     /// 宿主不知道哪个站的图床要什么头。让插件声明：
     /// **软件端一行站点代码都没有**（与 `config` 同一个原则）。
-    /// 不需要防盗链的站点（如次元城走百度 CDN）声明空对象即可，
+    /// 不需要防盗链的站点（如某动画站走百度 CDN）声明空对象即可，
     /// 宿主会直接放行原始 URL（少一跳、更快）。
     ///
     /// # 与 `StreamCandidate.headers` 的关系
@@ -1047,9 +1047,9 @@ mod tests {
     /// 一旦退回 derive 的对象形态，前端 `indexOf(":")` 全线崩溃（点海报没反应）。
     #[test]
     fn media_id_serializes_as_prefixed_string() {
-        let id = MediaId::new("cctv", "abc123");
+        let id = MediaId::new("srcl", "abc123");
         let json = serde_json::to_string(&id).unwrap();
-        assert_eq!(json, "\"cctv:abc123\"", "必须是字符串，不能是对象");
+        assert_eq!(json, "\"srcl:abc123\"", "必须是字符串，不能是对象");
 
         // 且必须能嵌在结构体里保持同一形态（前端读的是 item.id）
         #[derive(Serialize)]
@@ -1057,12 +1057,12 @@ mod tests {
             id: MediaId,
         }
         let w = serde_json::to_string(&Wrap { id }).unwrap();
-        assert_eq!(w, "{\"id\":\"cctv:abc123\"}");
+        assert_eq!(w, "{\"id\":\"srcl:abc123\"}");
     }
 
     #[test]
     fn media_id_roundtrips() {
-        let id = MediaId::new("cycani", "3885");
+        let id = MediaId::new("srca", "3885");
         let json = serde_json::to_string(&id).unwrap();
         let back: MediaId = serde_json::from_str(&json).unwrap();
         assert_eq!(back, id);
@@ -1071,10 +1071,10 @@ mod tests {
     /// native 里可能含 `:`（部分站点 id 带冒号），只切第一个冒号
     #[test]
     fn media_id_handles_colon_in_native() {
-        let id = MediaId::new("cycani", "a:b:c");
-        assert_eq!(id.as_key(), "cycani:a:b:c");
-        let back: MediaId = serde_json::from_str("\"cycani:a:b:c\"").unwrap();
-        assert_eq!(back.provider, "cycani");
+        let id = MediaId::new("srca", "a:b:c");
+        assert_eq!(id.as_key(), "srca:a:b:c");
+        let back: MediaId = serde_json::from_str("\"srca:a:b:c\"").unwrap();
+        assert_eq!(back.provider, "srca");
         assert_eq!(back.native, "a:b:c");
     }
 
@@ -1083,8 +1083,8 @@ mod tests {
     #[test]
     fn media_id_accepts_legacy_object_form() {
         let back: MediaId =
-            serde_json::from_str(r#"{"provider":"cctv","native":"x1"}"#).unwrap();
-        assert_eq!(back, MediaId::new("cctv", "x1"));
+            serde_json::from_str(r#"{"provider":"srcl","native":"x1"}"#).unwrap();
+        assert_eq!(back, MediaId::new("srcl", "x1"));
     }
 
     #[test]

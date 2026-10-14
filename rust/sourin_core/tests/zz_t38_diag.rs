@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════════════
-//  task-38 诊断：次元城「自动重登」链路到底走到哪一步、为什么失败
+//  task-38 诊断：某动画站「自动重登」链路到底走到哪一步、为什么失败
 // ═══════════════════════════════════════════════════════════════════════
 //
 // 用户原话：
-// > 次元城登录失效 明明不需要验证码就可以自动登录，还提示 验证码
+// > 某动画站登录失效 明明不需要验证码就可以自动登录，还提示 验证码
 //
 // # 这个探针要回答的问题（按证据链排序）
 //
@@ -22,7 +22,7 @@
 // 用 `with_data_dir(.probe/t38)` 让插件读写那个副本 ——
 // 用户的 `%APPDATA%\app.sourin.player` **零写入**。
 //
-// ⚠️ 本探针会**真的联网**（cycani.org），因为"自动重登是否成功"
+// ⚠️ 本探针会**真的联网**（srca.org），因为"自动重登是否成功"
 //    只能靠真实站点回答；mock 掉就失去意义了。
 
 use sourin_core::plugins::JsPluginProvider;
@@ -58,14 +58,14 @@ fn seed_probe_store(id: &str) -> std::path::PathBuf {
     dir
 }
 
-fn load_cycani(dir: std::path::PathBuf) -> JsPluginProvider {
+fn load_srca(dir: std::path::PathBuf) -> JsPluginProvider {
     let src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/plugins/cycani.js"
+        "/plugins/srca.js"
     ))
-    .expect("读 cycani.js");
+    .expect("读 srca.js");
     JsPluginProvider::from_source(&src)
-        .expect("解析 cycani.js")
+        .expect("解析 srca.js")
         .with_data_dir(dir)
 }
 
@@ -76,8 +76,8 @@ async fn t38_diagnose_auto_login_chain() {
     if let Some(_why) = real_creds_required_echo("t38_diagnose_auto_login_chain") {
         return;
     }
-    let dir = seed_probe_store("cycani");
-    let p = load_cycani(dir.clone());
+    let dir = seed_probe_store("srca");
+    let p = load_srca(dir.clone());
 
     println!("\n================ ① 会话 / 凭据 ================");
     let sess = p.session().await;
@@ -144,7 +144,7 @@ async fn t38_diagnose_auto_login_chain() {
     }
 
     println!("\n================ ⑤ 磁盘上写回了什么 ================");
-    let after = std::fs::read_to_string(dir.join("cycani.json")).unwrap_or_default();
+    let after = std::fs::read_to_string(dir.join("srca.json")).unwrap_or_default();
     let v: serde_json::Value = serde_json::from_str(&after).unwrap_or(serde_json::Value::Null);
     let keys: Vec<String> = v
         .as_object()
@@ -174,8 +174,8 @@ async fn t38_session_state_verdict() {
      * ```
      * 所以"看到验证码" ⟺ `can_auto_login() == false`。
      */
-    let dir = seed_probe_store("cycani");
-    let p = load_cycani(dir);
+    let dir = seed_probe_store("srca");
+    let p = load_srca(dir);
 
     let has_session = matches!(p.session().await, Ok(Some(_)));
     let can = p.can_auto_login().await;

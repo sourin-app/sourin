@@ -691,7 +691,7 @@ void main() {
       );
 
       expect(o.binding.episodeCount, 3);
-      expect(o.reason, 'B 站是单 P 视频，3 集共用这一条弹幕时间轴');
+      expect(o.reason, '某视频站是单 P 视频，3 集共用这一条弹幕时间轴');
     });
 
     test('P 比本地集少 ⇒ 明说「多出来的集没绑」', () {
@@ -702,7 +702,7 @@ void main() {
       );
 
       expect(o.binding.episodeCount, 2);
-      expect(o.reason, 'B 站只有 2 P，本地 4 集，多出来的集没绑');
+      expect(o.reason, '某视频站只有 2 P，本地 4 集，多出来的集没绑');
     });
 
     test('B 站一个 P 都没有 ⇒ 绑不上', () {
@@ -714,7 +714,7 @@ void main() {
 
       expect(o.binding.isEmpty, isTrue);
       expect(o.ok, isFalse);
-      expect(o.reason, 'B 站那边一个分 P 都没有，没法绑');
+      expect(o.reason, '某视频站那边一个分 P 都没有，没法绑');
     });
 
     test('手动指定的文案带上 P 号与集号', () {
@@ -1000,7 +1000,7 @@ void main() {
 
       expect(api.calls, 0, reason: '★★ 这是本文件最重要的一条「不发请求」断言');
       expect(r.ok, isFalse);
-      expect(r.error, '这一集还没有绑定 B 站弹幕');
+      expect(r.error, '这一集还没有绑定 某视频站弹幕');
       expect(r.cid, 0);
       expect(r.total, 0);
     });
@@ -1083,13 +1083,13 @@ void main() {
       await t.pumpWidget(_host(const BiliImportState(), c));
       await t.pump();
 
-      expect(find.text('哔哩哔哩弹幕'), findsOneWidget);
+      expect(find.text('外部视频源弹幕'), findsOneWidget);
       expect(find.text('视频链接'), findsOneWidget);
       expect(find.text('BV 号 / av 号 / 完整链接 / b23.tv 短链都行'), findsOneWidget);
       expect(find.text('https://www.bilibili.com/video/BV1GJ411x7h7'), findsOneWidget);
-      expect(find.text('弹幕是免登录抓的，不需要 B 站账号。'), findsOneWidget);
+      expect(find.text('弹幕是免登录抓的，不需要外部站账号。'), findsOneWidget);
 
-      expect(find.text('还没绑定 B 站弹幕'), findsOneWidget);
+      expect(find.text('还没绑定外部弹幕'), findsOneWidget);
 
       // 三个按钮：只有「导入并绑定」可用
       final FilledButton import = t.widget<FilledButton>(
@@ -1171,8 +1171,8 @@ void main() {
       await t.pump();
 
       expect(find.text('已绑定 · 自动更新每 30 分钟一次'), findsOneWidget);
-      expect(find.text('B 站视频：某番剧 第一季'), findsOneWidget);
-      expect(find.text('本机第 2 集 / 共 3 集　→　B 站 P2（cid 102）'), findsOneWidget);
+      expect(find.text('某视频站视频：某番剧 第一季'), findsOneWidget);
+      expect(find.text('本机第 2 集 / 共 3 集　→　某视频站 P2（cid 102）'), findsOneWidget);
       expect(find.text('这一集挂了 42 条弹幕'), findsOneWidget);
 
       expect(
@@ -1206,7 +1206,7 @@ void main() {
       expect(find.text('分 P 对齐'), findsOneWidget);
       expect(find.text('默认按顺序一集对一 P'), findsOneWidget);
       expect(
-        find.text('这个 B 站视频有 2 P。选「自动」时：多 P 按顺序对齐；只有 1 P 时所有集共用这一条时间轴。'),
+        find.text('这个 某视频站视频有 2 P。选「自动」时：多 P 按顺序对齐；只有 1 P 时所有集共用这一条时间轴。'),
         findsOneWidget,
       );
       expect(find.text('自动'), findsOneWidget);

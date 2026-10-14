@@ -407,7 +407,7 @@ Future<T?> showAppDialog<T>({
 /// SheetTransition   自实现全屏浮层的**入场 + 退场**（带位移：右抽屉 (24,0) /
 ///                   底部 (0,24)）—— 用在选集 / 直播 / 线路三个面板上，
 ///                   它们的父链是 Positioned.fill → SheetTransition → …
-/// SheetExitMotion   只做**退场淡出**（无位移）—— 用在弹幕设置 / B 站导入 /
+/// SheetExitMotion   只做**退场淡出**（无位移）—— 用在弹幕设置 / 某视频站导入 /
 ///                   字幕面板上；入场由 OverlayScrim / OverlayCardMotion 负责
 ///                   ⇒ 同一个方向不会动两次（避免"抖动/双重动画"）
 /// ```

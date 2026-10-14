@@ -12,7 +12,7 @@
 // ¤¤¤text
 // ① 三个候选环节，谁在"有的时候"失效？
 //    a) 上游 API 间歇抽风（videolist 空/超时）
-//    b) 分享页（爱奇艺/优酷网页）间歇拿不到 m3u8
+//    b) 分享页（某长视频站/某长视频站网页）间歇拿不到 m3u8
 //    c) tryParsers 第三方解析接口间歇不可用
 // ② 「有的能看有的不能」取决于**作品**还是**时间**？
 // ¤¤¤
@@ -74,7 +74,7 @@ enum Outcome {
     Ok(String),
     /// 报"没有可直接播放的地址"
     NoAddr,
-    /// 报"只提供爱奇艺/优酷等站点的网页链接"（解析服务全挂）
+    /// 报"只提供某长视频站/某长视频站等站点的网页链接"（解析服务全挂）
     ThirdPartyOnly,
     /// 上游列表/详情就失败了
     Upstream(String),
@@ -109,7 +109,7 @@ async fn once(p: &dyn MediaProvider, id: &MediaId) -> Outcome {
             let m = &e.message;
             if m.contains("没有可直接播放的地址") {
                 Outcome::NoAddr
-            } else if m.contains("需要在线解析服务") || m.contains("只提供爱奇艺") {
+            } else if m.contains("需要在线解析服务") || m.contains("只提供某长视频站") {
                 Outcome::ThirdPartyOnly
             } else if m.contains("请求失败") || m.contains("network") || m.contains("超时") {
                 Outcome::Upstream(m.clone())
@@ -262,8 +262,8 @@ async fn b_item_dimension_many_items() {
             "直链 m3u8"
         } else if ep.to_lowercase().contains(".mp4") {
             "直链 mp4"
-        } else if ep.contains("iqiyi") || ep.contains("youku") || ep.contains("qq.com")
-            || ep.contains("mgtv") || ep.contains("bilibili") || ep.contains("le.com")
+        } else if ep.contains("srclong") || ep.contains("srclong2") || ep.contains("qq.com")
+            || ep.contains("mgtv") || ep.contains("srcv") || ep.contains("le.com")
             || ep.contains("sohu")
         {
             "第三方网页（需解析）"
@@ -332,7 +332,7 @@ async fn c_stage_dimension() {
 
     // ② 解析服务（插件里那两个）
     println!("\n  ② 第三方解析服务可用性（对同一个网页 URL 各试 3 次）");
-    let probe_page = "https://www.iqiyi.com/v_1hn0p07xxls.html";
+    let probe_page = "https://www.srclong.com/v_1hn0p07xxls.html";
     for base in [
         "https://player.gimy.bot/u/parse.php?url=",
         // ★ 2026-10-10：这里原来还有 `api.huaqi.pro/api/?key=<真实凭据>`。

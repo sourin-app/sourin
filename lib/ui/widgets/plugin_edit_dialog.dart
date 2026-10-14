@@ -157,7 +157,7 @@ Future<PluginEditResult?> showPluginEditDialog({
 /// 原来的判据写死在 `initState` 里，用了 `PluginEntry.upstream` —— 而那是
 /// **上游接口地址**（不是安装来源），于是手写插件被误判成「按链接安装」：
 /// ```text
-/// bilibili.js → upstream = "https://api.bilibili.com"
+/// srcv.js → upstream = "https://api.bilibili.com"
 ///   ⇒ 编辑框预填接口地址 + 类型锁死成「链接」
 ///   ⇒ 点保存走 installPlugin(接口地址) ⇒ **把本地插件覆盖坏**
 /// ```
@@ -223,7 +223,7 @@ class _PluginEditDialogState extends State<PluginEditDialogBody> {
        * 用 `PluginEntry.upstream` 判：非空就当"按链接装的"。
        * 但 `upstream` 的语义是**上游接口地址**（task-5 为 TVBox 转换插件加的显示字段），
        * 而且它当时还会去正文扫 `const API` ⇒ 手写插件的接口地址被当成安装来源：
-       *   bilibili.js → upstream = "https://api.bilibili.com"
+       *   srcv.js → upstream = "https://api.bilibili.com"
        *   ⇒ 判成链接型 ⇒ 预填接口地址 + 类型锁死
        *   ⇒ 点保存走 install_plugin(接口地址) ⇒ **本地插件被覆盖坏**
        * ```

@@ -10,7 +10,7 @@
 // ```text
 // 内容源       启用/停用/排序/移除、导入插件
 // JS 插件      列表、编辑、删除、配置项
-// 账号登录     需要登录的源（B站等）
+// 账号登录     需要登录的源（某视频站等）
 // 局域网遥控   开关/PIN/二维码/固定码/自启
 // 云盘同步     WebDAV 配置/测试/立即同步   ★ 2026-09-29 已移入「备份与恢复」二级页
 // 片头 / 片尾  全局开关与默认值
@@ -715,7 +715,7 @@ class SettingsPageState extends State<SettingsPage> {
   /// > | `working` | **站点自身**是否可用（探测出来的）| 用户改不了 |
   /// > | `enabled` | **用户**是否要使用它（持久化的偏好）| 用户的选择 |
   /// >
-  /// > 实测证据：停用 cctv 后 `get_provider_enabled('cctv')` 返回 `false`，
+  /// > 实测证据：停用 srcl 后 `get_provider_enabled('srcl')` 返回 `false`，
   /// > 但首页的切换条里它还在。
   ///
   /// # 为什么不能只信内存里那个 `p.enabled`
@@ -3743,10 +3743,10 @@ class _Section extends StatelessWidget {
 /// ⚠️ `login_required` 与 `login_supported` **不是一回事**
 ///（`models.dart` 的类文档专门讲过）：
 /// ```text
-/// cycani    必须登录才能取流          → 打「需登录」
-/// bilibili  游客能看 1080P，登录是增强 → **不打**，它旁边有「登录」按钮
+/// srca    必须登录才能取流          → 打「需登录」
+/// srcv  游客能看 1080P，登录是增强 → **不打**，它旁边有「登录」按钮
 /// ```
-/// 所以这里**只**判 `loginRequired` —— 判 `loginSupported` 会给 B站
+/// 所以这里**只**判 `loginRequired` —— 判 `loginSupported` 会给 某视频站
 /// 也打上「需登录」，那是错的（游客明明能看）。
 ///
 /// 顺序照原版 `SettingsView.vue:1831-1839` 的语义分组
@@ -4233,7 +4233,7 @@ class _ProviderCard extends StatelessWidget {
                        *    再往里塞必然把文件名挤没（见 `_descLine` 注释）。
                        *
                        * ⚠️ 两样都没有时**整行不画** —— 卡片高度与改动前
-                       *    逐像素相同（内置源里 `cctv` 有 @author 但没链接，
+                       *    逐像素相同（内置源里 `srcl` 有 @author 但没链接，
                        *    只画标识 chip；只有"连作者都没写"的源才完全不画）。
                        */
                               if (_sourceLabel != null ||
@@ -4583,7 +4583,7 @@ class _ProviderCard extends StatelessWidget {
   ///
   /// ```text
   /// kind  == 'js'            TVBox **插件**转换来的源
-  ///                           和手写 JS 插件（内置 cctv.js / emby.js）
+  ///                           和手写 JS 插件（内置 srcl.js / emby.js）
   ///                           **完全无法区分** ⇒ kind 做不到这件事
   /// @author == 'tvbox-convert'  ★ 转换器生成的（本机 22 个全是它）
   /// @author == 'dsh'            ★ 内置源模板（本机 6 个，从原版继承的名字）

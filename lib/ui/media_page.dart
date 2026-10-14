@@ -5,7 +5,7 @@
 // # Owner 的三条裁决（2026-09-26，不要重新设计）
 //
 // ```text
-// ① 布局：**上播放器 + 下详情**（B站那种）
+// ① 布局：**上播放器 + 下详情**（某视频站那种）
 // ② 全屏：**全屏时只剩视频**，退出后回到合并页
 // ③ 旧详情页：**完全去掉**，所有入口（首页卡片/搜索/追更/浏览）直接进合并页
 // ```
@@ -1000,7 +1000,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
   /// 判据：把**双方**都规范化后再比。
   /// ```text
   /// · 我方：`canonicalLocalPath(_contentId)` —— 它可能就是绝对路径；
-  ///   但**也可能是在线 id**（比如 cctv1）⇒ 那种情况规范化后仍不匹配目录名，
+  ///   但**也可能是在线 id**（比如 srcl1）⇒ 那种情况规范化后仍不匹配目录名，
   ///   于是回退到「按标题匹配」（旁文件里的 title == 详情真标题）。
   /// · 磁盘那侧：用**目录绝对路径**规范化（works[i].path）。
   /// ```
@@ -1053,7 +1053,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
      * ```
      *
      * ⚠️ 只在**本地会话**下做（与下面的标题回退同一守卫）：在线会话的
-     *    `_contentId`（如 `cycani:12345`）规范化后绝不可能等于某集文件路径，
+     *    `_contentId`（如 `srca:12345`）规范化后绝不可能等于某集文件路径，
      *    天然不命中 —— 但仍显式守卫，避免将来 id 形态变化时误命中。
      */
     if (_resolvedLocalPath != null) {
@@ -1102,7 +1102,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
      * ```
      *
      * ⚠️ 规范化路径那一档（上面 `canonicalLocalPath(_contentId) == w.path`）
-     *    **保持不变** —— 在线 id（如 `cycani:12345`）规范化后绝无可能等于
+     *    **保持不变** —— 在线 id（如 `srca:12345`）规范化后绝无可能等于
      *    某个磁盘目录的绝对路径，所以它天然只在本地会话命中，无需再加守卫。
      */
     if (_resolvedLocalPath == null) return null;
@@ -1432,7 +1432,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
     /*
      * ★ task-59：轴向阈值 —— 宽屏左右分栏，窄屏回退上下
      *
-     * Owner 要求「参照腾讯视频：**左侧播放器右侧是视频的信息**」。
+     * Owner 要求「参照某长视频站：**左侧播放器右侧是视频的信息**」。
      * ⚠️ 但手机上左右分栏会把两者都挤到不可用（播放器只剩 ~390px 宽）
      *    ⇒ 所以 <900px 回退**上下**（原 task-58 形态）。
      * ★ 900 这个数与 `live_page.dart` 的窄屏断点**同源**（原版 @media max-width: 900px），
@@ -1468,7 +1468,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
     /*
      * ★ 右侧信息栏宽度：30% 视口，夹在 [340, 440]
      *   · 下限 340 ⇒ 保证卡片/按钮不被压变形（详情区最小可用宽度）
-     *   · 上限 440 ⇒ 超宽屏上不让信息栏无限拉伸（腾讯视频也是定宽侧栏）
+     *   · 上限 440 ⇒ 超宽屏上不让信息栏无限拉伸（某长视频站也是定宽侧栏）
      */
     /*
      * ★★★ 2026-10-07 修复：**取整到设备像素**（Owner 报的「右侧卡片两根竖线」）

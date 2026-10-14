@@ -4,19 +4,19 @@
 //
 // # 为什么必须有它（不是"优化"，是"没有就投不了"）
 //
-// 原版 D:\WishProject\cctv_to_client\src-tauri\src\streamproxy.rs 的文件头
+// 原版 D:\WishProject\srcl_to_client\src-tauri\src\streamproxy.rs 的文件头
 // 记录了一组实测结论（第 10-22 行）：
 //
 // ```text
-//   央视直播源    无防盗链，直连可播
-//   B 站 CDN      只认 Referer：
+//   某电视台直播源    无防盗链，直连可播
+//   某视频站 CDN      只认 Referer：
 //                   只带 UA      → HTTP 403
 //                   只带 Referer → HTTP 206（正常）
 //                   两个都不带   → HTTP 403
 // ```
 //
 // 投屏时电视是自己去拉那个 URL 的 —— 它**不可能**带我们 App 才知道的
-// Referer。所以把原始 URL 直接投过去，B 站源 100% 黑屏。
+// Referer。所以把原始 URL 直接投过去，某视频站源 100% 黑屏。
 //
 // 解法：App 内起一个 HTTP 代理，把原始 URL 注册进去并绑定附加头；
 // 投给电视的是 `http://<手机在局域网里的地址>:PORT/m/<token>`。

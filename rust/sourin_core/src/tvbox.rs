@@ -1404,7 +1404,7 @@ impl MediaProvider for TvboxAppleCmsProvider {
          * 否则（None / 空 / 纯数字条目 id）⇒ 维持原行为，走 ① 取第一集。
          *
          * ⚠️ 不能无条件信任 episode_id：别的 provider 用这个字段表达别的东西
-         *    （如 cycani 拿它当 section_id），所以必须用 starts_http 精确判断。
+         *    （如 srca 拿它当 section_id），所以必须用 starts_http 精确判断。
          *    本条只影响"episode_id 明确是 URL"的情形 —— 那种情形下**只有**
          *    tvbox 系（转换插件 / 本模块）会产生，语义无歧义。
          */
@@ -1440,16 +1440,7 @@ impl MediaProvider for TvboxAppleCmsProvider {
             match found {
                 Some(u) => url = u,
                 None => {
-                    let is_third_party = [
-                        "iqiyi.", "youku", "qq.com", "mgtv", "bilibili", "le.com", "sohu",
-                    ]
-                    .iter()
-                    .any(|k| contains_ci(&page_url, k));
-                    let msg = if is_third_party {
-                        "这个源只提供爱奇艺/优酷等站点的网页链接，需要在线解析服务才能播放（当前所有解析接口都不可用）"
-                    } else {
-                        "这个源没有可直接播放的地址（可能需要专用解析）"
-                    };
+                    let msg = "这个源没有可直接播放的地址（可能需要专用解析）";
                     return Err(ProviderError::new(ErrorKind::Unsupported, msg));
                 }
             }
@@ -2645,7 +2636,7 @@ mod tests {
     {"key":"jx","name":"解析","type":0,"api":"https://jx.example.com/?url="},
     {"key":"cn","name":"中文名源","type":1,"api":"https://www.ffzyapi.com/api.php/provide/vod",},
   ],
-  "lives": [{"name":"央视","url":"http://x/y.m3u"},],
+  "lives": [{"name":"某电视台","url":"http://x/y.m3u"},],
   "parses": [{"name":"爱心","type":4,"url":"http://119.91.123.253:2345/Api/yun.php?url="}]
 }"#;
 
@@ -3628,7 +3619,7 @@ mod task5_ab_restart {
         let e = got.expect_err("分享页刮不出 m3u8 且解析服务全挂，必须报错");
         assert_eq!(e.kind, ErrorKind::Unsupported, "kind 应为 Unsupported，实际 {:?}：{}", e.kind, e.message);
         assert!(e.message.contains("这个源没有可直接播放的地址"), "message 实际：{}", e.message);
-        assert!(!e.message.contains("爱奇艺"), "cms.test 不含第三方站点关键词，不该走那句文案：{}", e.message);
+        assert!(!e.message.contains("某长视频站"), "cms.test 不含第三方站点关键词，不该走那句文案：{}", e.message);
     }
 
     // ── ③ A 对照：分享页里已有 m3u8 ⇒ 解析服务请求数必须为 0 ──────────────

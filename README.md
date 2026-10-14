@@ -58,10 +58,9 @@ Flutter 版用 **media_kit + libmpv**（自带完整 FFmpeg，完全不碰 Media
 | **跨源搜索** | 一次搜索并发打全部源，**边搜边出**（流式返回，不等最慢的那个） |
 | **跨源换源** | 同一部剧在别的源上也能看 —— 按标题相似度排序，带进度迁移 |
 | **TVBox 直连** | 直接填 TVBox 配置**地址**或 JSON，内部解析成源，**不需要转换脚本** |
-| **B 站** | 二维码扫码登录、搜索、弹幕（含分 P）、自动更新 |
 | **Emby / Jellyfin** | 登录、媒体库、直接播放 |
-| **IPTV 直播** | iptv-org 频道表、分组、上下键切台 |
-| **CCTV** | 央视栏目与直播（含 DRM 流的「仅音频可播」如实提示） |
+| **外部弹幕** | 从外部站导入弹幕（含分 P 绑定、自动更新） |
+| **直播** | 插件提供的频道表、分组、上下键切台 |
 
 ### 播放
 
@@ -475,8 +474,8 @@ Android 那个 job 默认关掉：它最慢（要 NDK + 三个 target 交叉编�
 | 变量 | 说明 |
 |---|---|
 | `DATA_DIR_OVERRIDE` | 覆盖数据目录。**开发与测试必用** —— 指到临时目录就不会碰到你正在用的真实数据 |
-| `DANDANPLAY_APP_ID` | 弹弹play 官方 API 凭证（AppId）。仓库里只有空占位符，发版时构建期注入（见下发版说明）；空缺时回落到用户自填凭证 |
-| `DANDANPLAY_APP_SECRET` | 弹弹play 官方 API 凭证（AppSecret）。**敏感值** —— 只放 GitHub secrets，绝不写进仓库 |
+| `DANDANPLAY_APP_ID` | 外部弹幕服务的官方 API 凭证（AppId）。仓库里只有空占位符，发版时构建期注入（见下发版说明）；空缺时回落到用户自填凭证 |
+| `DANDANPLAY_APP_SECRET` | 外部弹幕服务的官方 API 凭证（AppSecret）。**敏感值** —— 只放 GitHub secrets，绝不写进仓库 |
 
 ```bash
 flutter build windows --release -t lib/shell.dart \
@@ -487,13 +486,13 @@ flutter build windows --release -t lib/shell.dart \
 > 里面有真实的收藏、进度、片头片尾。开发调试时一定要用 `DATA_DIR_OVERRIDE` 隔离，
 > 否则一次写探针就可能把用户数据改掉。
 
-##### 弹弹play 凭证（发版说明）
+##### 外部弹幕服务凭证（发版说明）
 
-官方弹弹play 识别（番剧/条目匹配）需要一对官方凭证：`DANDANPLAY_APP_ID` /
+外部弹幕识别（番剧/条目匹配）需要一对官方凭证：`DANDANPLAY_APP_ID` /
 `DANDANPLAY_APP_SECRET`。开源仓库里只有空占位符 —— 发版时由 GitHub Actions
-在构建期注入真值（弹弹play 官方文档「安全注意事项」允许开源客户端这么做）：
+在构建期注入真值（该服务的官方文档「安全注意事项」允许开源客户端这么做）：
 
-1. 到弹弹play 开放平台（doc.dandanplay.com/open/）申请一对 AppId / AppSecret。
+1. 到该外部弹幕服务的开放平台申请一对 AppId / AppSecret。
 2. 本仓库 **Settings → Secrets and variables → Actions** 里新增两个 secret：
    `DANDANPLAY_APP_ID` 与 `DANDANPLAY_APP_SECRET`。
 3. `.github/workflows/build.yml` 已接好通道：凭证 env 只挂在三个平台的
@@ -980,7 +979,7 @@ Flutter 版用 libmpv，**自带 FFmpeg**，理论上都支持。如果遇到黑
 
 1. 设置 → 播放与下载 → 把「硬解模式」改成 `no`（软解）试试；
 2. 看 `logs/` 里的日志，搜 `[PLAY]`；
-3. 部分源是 DRM 加密的（尤其央视），**只有音频能播** —— 这种情况界面会明确提示
+3. 部分源是 DRM 加密的（部分直播源），**只有音频能播** —— 这种情况界面会明确提示
    「仅音频可播」，不是 bug。
 
 </details>
@@ -1100,7 +1099,6 @@ sourin/
 - [forui](https://github.com/duobaseio/forui) —— 桌面风格组件库
 - [liquid_glass_widgets](https://pub.dev/packages/liquid_glass_widgets) —— 玻璃拟态
 - [rquickjs](https://github.com/DelSkayn/rquickjs) —— 插件沙箱
-- [iptv-org](https://github.com/iptv-org/iptv) —— IPTV 频道表
 
 ---
 

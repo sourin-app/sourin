@@ -1238,6 +1238,29 @@ jobs:
             if [ -f "$D" ]; then FILES="$FILES $D"; echo "✓ macOS dmg $D";
             else echo "::warning::macOS DMG $D 不在 —— 本次只发 zip"; fi
           else echo "✗ macOS 包不可用（job=${{ needs.macos.result }}）"; fi
+          # ★★★ 2026-10-14（CR #25）：**产物文件**缺失也要硬失败。
+          #
+          #   # 上面那条 job 结果断言为什么不够（CR 指出的真洞）
+          #   ```text
+          #   job 返回 success **不等于** rel/ 下有它的包 ——
+          #   artifact 下载/路径结构出问题时，job 是绿的、文件却没到。
+          #   而那时上面只打了一行 `✗ macOS 包不可用`，
+          #   ★ 只要 Windows 的文件在 ⇒ `FILES` 非空 ⇒ **Release 照发**，
+          #     只是**少了整个 macOS 平台** —— 正是本 job 存在的意义要防的那件事。
+          #   ```
+          #   ⇒ 与 Windows 同样处理：**文件缺席 = 硬失败**。
+          #   ★ 判据用"文件在不在"（结果）而不是"job 绿不绿"（过程）——
+          #     后者我们已经有了，两条**都要**（job 红 → 早失败；文件缺 → 也失败）。
+          if [ "${{ needs.windows.result }}" = "success" ] && [ ! -f "$W" ]; then
+            echo "::error::Windows job 绿，但 $W 不在 rel/ 下 —— 拒绝发一个缺 Windows 包的 Release"
+            ls -la rel || true
+            exit 1
+          fi
+          if [ "${{ needs.macos.result }}" = "success" ] && [ ! -f "$M" ]; then
+            echo "::error::macOS job 绿，但 $M 不在 rel/ 下 —— 拒绝发一个缺 macOS 包的 Release"
+            ls -la rel || true
+            exit 1
+          fi
           if [ "${{ needs.android.result }}" = "success" ] && [ -f "$A64" ] && [ -f "$A7" ]; then
             FILES="$FILES $A64 $A7"; echo "✓ Android  $A64 $A7";
           else echo "· Android 未构建（job=${{ needs.android.result }}）—— 不发布 APK"; fi

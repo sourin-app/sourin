@@ -280,7 +280,12 @@ void main() {
       ],
       <String>[
         'lib/ui/widgets/plugin_speedtest.dart',
-        "'测速 \$_done/\$_total'",
+        // ★ 2026-10-14：锚点跟着源码更新 —— 该处文案加了并发路数
+        //   （'测速 \$_done/\$_total' ⇒ '测速 \$_done/\$_total  ·  \$_allConcurrency 路并发'）。
+        //   豁免的**语义不变**：这里仍是"整块忙碌态自带转圈"的合法点。
+        //   ⚠️ 锚点必须只取**不变的那一段前缀**，别再钉整句
+        //      （否则下次改文案又会假红 —— 本条已有过一次）。
+        r"'测速 $_done/$_total",
       ],
       <String>[
         'lib/ui/widgets/provider_import_dialog.dart',

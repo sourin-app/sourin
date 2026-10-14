@@ -425,9 +425,9 @@ pub struct StreamCandidate {
 
     /// ★★★ 独立的**音频轨**地址（DASH 用）
     ///
-    /// # 为什么需要它（B 站 1080P 的实测结论，2026-09-19）
+    /// # 为什么需要它（外部视频站 1080P 的实测结论，2026-09-19）
     ///
-    /// B 站的 `playurl` 接口有两种返回：
+    /// 外部视频站的 `playurl` 接口有两种返回：
     ///
     /// ```text
     /// fnval=1  (durl)  → 音视频**已合并**的 mp4，但**恒为 720P**
@@ -448,7 +448,7 @@ pub struct StreamCandidate {
     /// 再用一个 `<audio src=audio_url>` 播声音，两者同步。
     ///
     /// 之所以可行（实测确认）：
-    ///   · B 站的 DASH 轨是**单个 fMP4 文件**（不是分片列表），
+    ///   · 外部视频站的 DASH 轨是**单个 fMP4 文件**（不是分片列表），
     ///     `moov` 在最前面（偏移 36）→ `<video>` 能直接流式播
     ///   · MSE 支持 `avc1.640032`（1080P H.264）与 `mp4a.40.2`（AAC）
     ///   · ⚠️ **不支持** `hvc1.1.6.L150.90`（HEVC）→
@@ -909,7 +909,7 @@ pub struct ProviderManifest {
     ///
     /// # 为什么需要（实测根因）
     ///
-    /// B 站图片 CDN（`i0/i1/i2.hdslb.com`）**白名单校验 Referer**：
+    /// 外部视频站图片 CDN（`i0/i1/i2.hdslb.com`）**白名单校验 Referer**：
     ///
     /// ```text
     /// Referer: https://www.example-v.com  → HTTP 200 ✅

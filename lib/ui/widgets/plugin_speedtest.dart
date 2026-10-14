@@ -1705,34 +1705,60 @@ class _PluginSpeedTestAllButtonState extends State<PluginSpeedTestAllButton> {
        * ```
        */
       var cursor = 0;
-      Future<void> worker() async {
-        while (true) {
-          if (_disposed) return;
-          final i = cursor++;
-          if (i >= ids.length) return;
-          final id = ids[i];
-          // ⚠️ `_current` 只显示"最近开始的"（并发下没有单一当前项）——
-          //    文案见 build 里的「正在测 $done/$total（$concurrency 路并发）」
-          if (!_disposed) setState(() => _current = id);
-          final r = await PluginSpeedTestRunner.run(id);
-          PluginSpeedTest.append(id, r);
-          if (_disposed) return;
-          setState(() {
-            _done++;
-            if (r.ok) _ok++;
-          });
-          /*
-           * ★ 让宿主也有机会刷新（比如它自己有一份"最近一次速率"的汇总）。
-           *   注意**不是**靠这个刷新面板 —— append 已经通过 changes 通知过，
-           *   宿主不需要做任何事，面板自己就会更新。
-           */
-          widget.onChanged?.call();
+      /*
+       * ★★★ 2026-10-14（CR #27）：worker 必须**共享同一个**取消令牌，
+       *     且每轮派活前查它。原来的两个真缺陷：
+       * ```text
+       * ① 原 `run(id)` **不传令牌** ⇒ runner 内部自建一个并注册 ——
+       *    而它是在 `cancelAll()` **之后**才建的 ⇒ **永远停不到**。
+       *    （`cancelAll()` 只置停当时在表里的那些。）
+       * ② 原循环只查 `_disposed`。退出时本 State 通常**还没** dispose
+       *    ⇒ 循环继续取下一个 id、继续真下载、继续写盘 ——
+       *    正是 `app_tray.dart` 注释里要避免的"退出后脏写"。
+       * ```
+       * ⇒ 现在：一个令牌贯穿整批；`cancelAll()`（退出时调）置停它 ⇒
+       *   每个 worker 在**下一轮派活前**看到就退出，且**不再 append**。
+       */
+      final token = SpeedTestCancelToken.registered();
+      try {
+        Future<void> worker() async {
+          while (true) {
+            if (_disposed || token.isCancelled) return;
+            final i = cursor++;
+            if (i >= ids.length) return;
+            final id = ids[i];
+            // ⚠️ `_current` 只显示"最近开始的"（并发下没有单一当前项）——
+            //    文案见 build 里的「正在测 $done/$total（3 路并发）」
+            if (!_disposed) setState(() => _current = id);
+            final r = await PluginSpeedTestRunner.run(id, token: token);
+            /*
+             * ★ 取消后**不许写盘**（CR #27 的第 ① 条）：
+             *   append ⇒ UiPrefs.set ⇒ 300ms 去抖写盘。退出流程已经走过
+             *   `_flushPrefsBeforeExit()` ⇒ 这次写入要么丢失、要么与它交叉
+             *   形成脏写。⇒ 取消态直接丢弃这次读数。
+             */
+            if (_disposed || token.isCancelled) return;
+            PluginSpeedTest.append(id, r);
+            setState(() {
+              _done++;
+              if (r.ok) _ok++;
+            });
+            /*
+             * ★ 让宿主也有机会刷新（比如它自己有一份"最近一次速率"的汇总）。
+             *   注意**不是**靠这个刷新面板 —— append 已经通过 changes 通知过，
+             *   宿主不需要做任何事，面板自己就会更新。
+             */
+            widget.onChanged?.call();
+          }
         }
-      }
 
-      await Future.wait<void>([
-        for (var w = 0; w < _allConcurrency; w++) worker(),
-      ]);
+        await Future.wait<void>([
+          for (var w = 0; w < _allConcurrency; w++) worker(),
+        ]);
+      } finally {
+        // 必须注销，否则全局表会攒死令牌
+        token.unregister();
+      }
 
       AppLog.write(
         'SPEED',

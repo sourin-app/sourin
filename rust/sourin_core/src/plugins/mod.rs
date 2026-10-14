@@ -1423,7 +1423,7 @@ impl JsPluginProvider {
                          * 但**冒号不等于前缀**：
                          *
                          * ```text
-                         * 插件返回 id = "av:BV1u9ew6yEEP"      ← B 站插件的内部命名空间
+                         * 插件返回 id = "av:BV1u9ew6yEEP"      ← 外部视频站插件的内部命名空间
                          * contains(':') == true
                          *   → 判定"已有前缀"，跳过
                          *   → 前端拿到 "av:BV1u9ew6yEEP"
@@ -1432,7 +1432,7 @@ impl JsPluginProvider {
                          * ```
                          *
                          * 对照：某电视台插件返回 `1f6ed843…`（不含冒号）→ 正常加上 `srcl:`
-                         * 前缀 → 一直正常。**所以只有 B 站坏，而且坏得很隐蔽。**
+                         * 前缀 → 一直正常。**所以只有 外部视频站坏，而且坏得很隐蔽。**
                          *
                          * # 为什么"含冒号"这个判据根本不成立
                          *
@@ -4728,7 +4728,7 @@ globalThis.plugin = {{ id: '{id}', async home() {{ return [] }} }};"#
     /// ★★ id **含冒号**时也必须加前缀（Owner 报「某视频站点开显示没有路由」的根因）
     ///
     /// 原实现用 `!id.contains(':')` 判断"是否已加过前缀"，
-    /// 于是 B 站插件的 `av:BV1u9ew6yEEP` 被误判为"已有前缀"而跳过 →
+    /// 于是 外部视频站插件的 `av:BV1u9ew6yEEP` 被误判为"已有前缀"而跳过 →
     /// 前端切第一个冒号拿到 `provider="av"` → 后端路由不到。
     #[test]
     fn prefix_added_even_when_id_contains_colon() {
@@ -4804,7 +4804,7 @@ globalThis.plugin = {{ id: '{id}', async home() {{ return [] }} }};"#
         let p = provider_with_id("src-a");
 
         for native in [
-            "av:BV1u9ew6yEEP", // 含冒号（B 站真实形态）
+            "av:BV1u9ew6yEEP", // 含冒号（外部视频站真实形态）
             "BV1cSec6tEux",    // 不含冒号
             "a:b:c:d",         // 多冒号
             "中文id",           // 非 ASCII

@@ -9,9 +9,9 @@
 //! |-------|---------|
 //! | 某电视台  | 无防盗链（Referer 留空也能播）|
 //! | 某动画站 | 直链即可 |
-//! | **B 站** | **必须带 `Referer: https://www.example-v.com`** |
+//! | **外部视频站** | **必须带 `Referer: https://www.example-v.com`** |
 //!
-//! B 站实测（未登录、无 Cookie）：
+//! 外部视频站实测（未登录、无 Cookie）：
 //! ```text
 //! 仅 UA（无 Referer）        → HTTP 403
 //! 无 header                  → HTTP 403
@@ -46,7 +46,7 @@
 //!
 //! 3. **必须支持 Range 透传**。视频拖进度条靠的是 `Range` 请求；
 //!    不透传的话进度条一拖就回到开头（或直接报错）。
-//!    实测 B 站 CDN 对 `Range: bytes=0-1023` 返回 `206 Partial Content`。
+//!    实测 外部视频站 CDN 对 `Range: bytes=0-1023` 返回 `206 Partial Content`。
 //!
 //! 4. **响应头要挑着转发**，不能全带 —— 尤其不能把上游的
 //!    `Access-Control-Allow-Origin`、`Set-Cookie` 原样透给页面。
@@ -135,7 +135,7 @@ fn hdr_names(hs: &[(String, String)]) -> String {
 #[derive(Debug, Clone)]
 pub struct StreamEntry {
     pub url: String,
-    /// 需要附加到上游请求的头（如 B 站的 `Referer`）
+    /// 需要附加到上游请求的头（如 外部视频站的 `Referer`）
     pub headers: Vec<(String, String)>,
     /// ★ 播放列表改写用的 token
     ///
@@ -252,7 +252,7 @@ pub struct StreamProxy {
      *
      * # ⚠️ 为什么共享是安全的（不是"为了快而快"）
      *
-     * · 连接池是**按目标 host** 分桶的，不会把 A 站的头带到 B 站
+     * · 连接池是**按目标 host** 分桶的，不会把 A 站的头带到 外部视频站
      * · 我们**不用 cookie store**（默认就没有）⇒ 无跨源会话串味
      * · `timeout` 是**每请求**的（不是整个 Client 的全局预算）
      *   ⇒ 一个慢请求不会"吃掉"后续请求的时间
@@ -578,7 +578,7 @@ impl StreamProxy {
     ///
     /// # 为什么需要它（根因）
     ///
-    /// B 站图片 CDN（`i0/i1/i2.hdslb.com`）**白名单校验 Referer**（实测）：
+    /// 外部视频站图片 CDN（`i0/i1/i2.hdslb.com`）**白名单校验 Referer**（实测）：
     ///
     /// ```text
     /// Referer: https://www.example-v.com  → HTTP 200 ✅
@@ -1910,7 +1910,7 @@ async fn forward_request(
 
     let mut rb = client.request(reqwest::Method::GET, upstream_url);
 
-    // 插件声明的头（如 B 站的 Referer —— 少它就是 403）
+    // 插件声明的头（如 外部视频站的 Referer —— 少它就是 403）
     for (k, v) in headers {
         rb = rb.header(k.as_str(), v.as_str());
     }
@@ -4275,7 +4275,7 @@ mod tests {
         assert!(maybe_proxy(&p, "https://x/a.mp4", &[], true).await.is_none());
         // 需要头 + not_web_ready：必须代理
         let got = maybe_proxy(&p, "https://x/a.mp4", &h, true).await;
-        assert!(got.is_some(), "B 站这类流必须走代理（否则 403）");
+        assert!(got.is_some(), "外部视频站这类流必须走代理（否则 403）");
         assert!(got.unwrap().starts_with("http://127.0.0.1:"));
     }
 
@@ -4283,7 +4283,7 @@ mod tests {
     ///
     /// # 为什么专门测这个
     ///
-    /// B 站的 CDN 只认 `Referer`（实测：仅 UA → 403，仅 Referer → 206）。
+    /// 外部视频站的 CDN 只认 `Referer`（实测：仅 UA → 403，仅 Referer → 206）。
     /// 而「代码里写了 `.header("Referer", ...)` 但实际没发出去」是
     /// **静默失败**——代理会一直返回 403，日志里也看不出哪里不对。
     ///
@@ -4326,12 +4326,12 @@ mod tests {
         let got = resp.text().await.unwrap();
         assert_eq!(
             got, "https://www.example-v.com",
-            "代理必须把登记的头（Referer）真的发到上游 —— 否则 B 站一律 403\n\
+            "代理必须把登记的头（Referer）真的发到上游 —— 否则 外部视频站一律 403\n\
              （请求 URL: {local}，响应状态: {status}）"
         );
     }
 
-    /// ★★★ 联网对照：reqwest 用 Referer 能否真的取到 B 站 CDN 的数据
+    /// ★★★ 联网对照：reqwest 用 Referer 能否真的取到 外部视频站 CDN 的数据
     ///
     /// # 为什么必须有这条
     ///
@@ -4442,7 +4442,7 @@ mod tests {
         println!("\n★ 放行的组合: {winner:?}");
         assert!(
             winner.is_some(),
-            "四种组合全部被拒 —— B 站 CDN 的拦截比预期严格。\
+            "四种组合全部被拒 —— 外部视频站 CDN 的拦截比预期严格。\
              这意味着不能简单转发，需要换 HTTP 栈或改「宿主代下载 + 本地分片」。"
         );
     }

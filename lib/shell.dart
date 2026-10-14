@@ -7417,9 +7417,56 @@ void _installFrameLogger() {
   var lastSummary = DateTime.now();
   var marked = 0; // 已处理到 all 的哪个位置
 
+  /*
+   * ══════════════════════════════════════════════════════════════════════
+   * ★★★ 2026-10-14（CR #27）：写盘改成**追加 + 异步**，不再是"整串重写"
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * # CR 指出的两个真问题（属实，都改）
+   * ```text
+   * ① 原 `writeAsStringSync(buf.toString(), mode: FileMode.write)`：
+   *    · 每次把**整个** buf 重写一遍 —— buf 只增不减 ⇒ 写盘耗时随运行时长
+   *      **线性增长**（跑 10 分钟就开始明显）。
+   *    · 而 `Timer.periodic` 的回调**同样跑在 UI isolate 上** ⇒ 同步写盘期间
+   *      事件循环被占住，vsync 回调与 build 被推迟 ——
+   *      这些推迟会以掉帧的形式进入下一批 `FrameTiming`。
+   *      ⇒ 我原注释说"定时器里写盘不在帧窗口内、所以测不到自己" ——
+   *        **那句话不成立**（CR 说得对）：它不在**那一帧**的窗口内，
+   *        但它在**事件循环**上，照样推迟**后面的**帧。
+   * ```
+   *
+   * # 改法：只追加"上次之后新写的那一段"，且用**异步**写
+   * ```text
+   * ① 记一个 `flushedLen`（已落盘的字符数）⇒ 每次只 append
+   *    `buf.substring(flushedLen)` —— 写盘量与**新增量**成正比，不再随时间增长。
+   * ② 用 `writeAsString`（**异步**，不返回 Future 也无妨：dart:io 的 File
+   *    写入是排队到 IO 线程的）⇒ 不再阻塞 UI isolate 的事件循环。
+   * ③ 首次写用 `FileMode.write`（截断旧文件），之后一律 `FileMode.append`。
+   * ```
+   * ⚠️ 这仍是**诊断仪器**（`SOURIN_FRAME_LOG=1` 才开，生产零开销）；
+   *    但既然本次交付的性能读数由它产出，"仪器不改变被测对象"就必须成立。
+   */
+  var flushedLen = 0;
+  var firstWrite = true;
+
   void flush() {
     try {
-      f.writeAsStringSync(buf.toString(), mode: FileMode.write);
+      final src = buf.toString();
+      if (src.length <= flushedLen) return; // 没有新内容 ⇒ 不写
+      final chunk = src.substring(flushedLen);
+      flushedLen = src.length;
+      // ★ 异步写：不阻塞 UI isolate（CR #27）；追加而非重写。
+      unawaited(
+        f
+            .writeAsString(
+          chunk,
+          mode: firstWrite ? FileMode.write : FileMode.append,
+        )
+            .catchError((Object e) {
+          /* 落盘失败不致命 */
+        }),
+      );
+      firstWrite = false;
     } catch (_) {/* 落盘失败不致命 */}
   }
 

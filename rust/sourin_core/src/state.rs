@@ -72,7 +72,7 @@ pub struct AppState {
     pub third_party: RwLock<Vec<PersistedProvider>>,
     /// ★ 局域网遥控的共享状态（手机遥控 TV/客户端）
     pub remote: Arc<RemoteHub>,
-    /// ★ 本地流代理（给「播放需要自定义请求头」的流用，如 B 站的 Referer）
+    /// ★ 本地流代理（给「播放需要自定义请求头」的流用，如 外部视频站的 Referer）
     pub stream_proxy: Arc<StreamProxy>,
     /// ★ 内容源配置的最后修改时间（毫秒）—— 云同步的 LWW 判据
     ///

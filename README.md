@@ -17,7 +17,7 @@ Windows · macOS · Android · Android TV
 
 ## 这是什么
 
-「源影」是一个**跨端视频聚合客户端**：把多个内容源（CMS 站点、内置站点、B 站、
+「源影」是一个**跨端视频聚合客户端**：把多个内容源（CMS 站点、内置站点、外部视频站、
 Emby、IPTV 直播）聚合成一个界面，统一搜索、收藏、追更、播放与下载。
 
 这个仓库是它的 **Flutter 重写版**，取代了最初的 Tauri + Vue 实现。重写的动机是
@@ -69,7 +69,7 @@ Flutter 版用 **media_kit + libmpv**（自带完整 FFmpeg，完全不碰 Media
 | **内核** | libmpv（media_kit），硬解 d3d11va / MediaCodec |
 | **格式** | HEVC / H.264 / AV1、AC3 / DTS / AAC、ASS / SRT 字幕 |
 | **字幕** | 内封轨切换、外挂字幕、ASS 样式（字号/颜色/位置）、Assrt 字幕库 |
-| **弹幕** | B 站弹幕、自定义弹幕服务器、速度/透明度/密度/区域可调 |
+| **弹幕** | 外部视频站弹幕、自定义弹幕服务器、速度/透明度/密度/区域可调 |
 | **手势** | PC 与触摸两套（双击全屏、长按倍速、左右滑动跳转、上下滑音量/亮度） |
 | **控件自动隐藏** | 鼠标停手 3 秒后**顶栏与底栏一起淡出**（同一个动画源），一晃动一起回来 |
 | **画中画** | 独立窗口，可从播放页一键切出 |
@@ -429,7 +429,7 @@ Android 那个 job 默认关掉：它最慢（要 NDK + 三个 target 交叉编�
 | `dsh.danmaku.appSecret` | 字符串 | 空 | 自定义弹幕服务器的 AppSecret |
 
 > ⚠️ **`appId` / `appSecret` 目前是明文存在 `ui-prefs.json` 里**。设置页里也如实
-> 写明了这一点。只有你自己填了自定义弹幕服务器才会用到；B 站弹幕走扫码登录的
+> 写明了这一点。只有你自己填了自定义弹幕服务器才会用到；外部视频站弹幕走扫码登录的
 > cookie，不需要这两项。
 
 #### 字幕
@@ -447,7 +447,7 @@ Android 那个 job 默认关掉：它最慢（要 NDK + 三个 target 交叉编�
 | 键 | 取值 | 说明 |
 |---|---|---|
 | `dsh.srcpref.<provider>:<id>` | 源 id | 每部剧**单独记住**上次用的源。换源之后下次打开还是那个源 |
-| `dsh.bili.*` | — | B 站相关（登录态、自动更新开关与间隔、上次同步时间） |
+| `dsh.bili.*` | — | 外部视频站相关（登录态、自动更新开关与间隔、上次同步时间） |
 
 ### ② 数据目录文件
 
@@ -462,7 +462,7 @@ Android 那个 job 默认关掉：它最慢（要 NDK + 三个 target 交叉编�
 | `sync-settings.json` | WebDAV 云同步配置 | ⚠️ **密码不在这个文件里**（走系统凭据存储） |
 | `dsh-media.db` | SQLite：收藏 / 历史 / 进度 / 片头片尾 | ⚠️ 建议只读 |
 | `plugins/*.js` | 已安装的插件 | ✅ 见「插件开发」 |
-| `plugins/.data/*.json` | 插件的私有数据（如 B 站 cookie） | ⚠️ 含凭据 |
+| `plugins/.data/*.json` | 插件的私有数据（如 外部视频站 cookie） | ⚠️ 含凭据 |
 | `logs/` | 运行日志（按天） | ✅ 排查问题看这个 |
 | `mpv-cache/` | 播放缓存 | ✅ 可随时删 |
 | `clip-cache/` | 片段下载缓存 | ✅ 可随时删（设置页有「清空」） |
@@ -1065,7 +1065,7 @@ sourin/
 │   │   ├── download_dir.dart   下载目录解析（按组存放）
 │   │   ├── download_queue.dart 整片下载串行队列
 │   │   ├── app_tray.dart       托盘 + 关闭确认
-│   │   └── bili/ danmaku.dart  B 站与弹幕
+│   │   └── bili/ danmaku.dart  外部视频站与弹幕
 │   └── ui/                   UI 页面与组件
 │       ├── player_page.dart    播放页（最大单文件，约 65 万字节）
 │       ├── detail_page.dart    详情页

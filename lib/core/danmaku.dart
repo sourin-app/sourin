@@ -1345,8 +1345,10 @@ class DanmakuHint {
         title: '弹幕服务没收到凭证',
         text: '弹弹play有两个数据源，在弹幕设置里选一个：'
             '「本机外部弹幕」（本机跑着外部弹幕 就用它，免签名、不用申请任何凭证）'
-            '或「官方 API」（它要一对 AppId / AppSecret —— 客户端已**内置**，'
-            '无需自己申请）。'
+            '或「官方 API」（它要一对 AppId / AppSecret —— '
+            '构建期若已注入则**直接用**；没注入的构建，'
+            '在弹幕设置的「凭证」一节**填进去**即可，'
+            '或去 doc.dandanplay.com/open 申请一对）。'
             '选好之后点「重新获取弹幕」。'
             '另外：外部站视频可以改用「外部视频源弹幕」直接绑定，不需要这对凭证。',
         action: DanmakuHintAction(
@@ -1364,8 +1366,10 @@ class DanmakuHint {
     return DanmakuHint(
       title: '凭证没通过',
       text: '弹幕服务说这次请求的凭证不对（$xe）。'
-          '本次请求用的是客户端**内置**的官方凭证，面板上已不再提供填写入口；'
-          '可行的一步：改用「本机外部弹幕」（免签名）或「外部视频源弹幕」，'
+          '本次请求用的是客户端**内置**的官方凭证；'
+          '★ 若要换成你自己的，去弹幕设置的「凭证」一节填一对 AppId / AppSecret'
+          '（构建期没注入内置凭证时，那一节就是**唯一**的补救入口）。'
+          '也可以改用「本机外部弹幕」（免签名）或「外部视频源弹幕」，'
           '再点「重新获取弹幕」。',
       action: const DanmakuHintAction(label: '去弹幕设置', openDanmakuSettings: true),
       url: 'https://dev.dandanplay.com',

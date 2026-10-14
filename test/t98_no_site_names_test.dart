@@ -61,11 +61,29 @@ const Map<String, String> _banned = <String, String>{
   'iqiyi': '具体视频网站名',
   '优酷': '具体视频网站名',
   'youku': '具体视频网站名',
-  '芒果tv': '具体视频网站名',
+  '芒果tv': '具��视频网站名',
   'cntv': '具体视频网站域名',
   '央视网': '具体视频网站名',
   'cctv': '具体电视频道/网站代号',
   'iptv-org': '具体公共源清单项目名',
+  /*
+   * ★★★ 2026-10-14：`iptv` / `tvbox` **不禁**（我一度加进去，又撤回）。
+   *
+   * # 判据边界（Owner 只针对「**对接的某个具体的视频网站**」）
+   * ```text
+   * · `iptv`  = **协议名**（Internet Protocol Television），
+   *             本项目用它指"从公共 m3u 清单取直播"—— 不是某个网站。
+   * · `tvbox` = **配置格式/生态名**（一份描述 sites/lives/parses 的 JSON），
+   *             本项目**自己解析**它 ⇒ 与 `emby`（自建媒体服务器）同类。
+   * ⇒ 两者都不是"某个具体的视频网站" ⇒ **不在禁名单**。
+   * ```
+   * ★ 但我**保留了 `iptv-org`**：那是一个**具体的公共清单项目**（指向具体来源）。
+   *
+   * ⚠️ 教训（与本文件里"弹幕服务"那次同一种错）：
+   *    **判据要锚在"具体视频网站"上**，别扩大到"任何出现过的人名/项目名/协议名"
+   *    —— 扩大会把协议名、配置格式名也卷进来，那是**过度删改**
+   *    （同轮的 `弹弹play` 就是这么被我误伤的，已撤回）。
+   */
   'cycani': '具体动画网站代号',
   '次元城': '具体动画网站名',
   /*
@@ -232,9 +250,25 @@ const List<String> _skipDirs = <String>[
 /// ★ 抽成**纯函数**是为了让阳性对照能直接喂假输入测它
 List<(String word, String why)> scanForBanned(String text) {
   final lower = text.toLowerCase();
+  /*
+   * ★★★ 2026-10-14（CR #27）：匹配前**剥掉所有空白**。
+   *
+   * # 为什么（实测漏报）
+   * ```text
+   * README 里写的是「B 站」（**B 与站之间有空格**），而名单里的键是 `b站`
+   * ⇒ 原来的 `lower.contains('b站')` **匹配不到** ⇒ 漏报。
+   * ★ 中文文本里"在词中间插一个空格"是**常见排版**（尤其英文缩写+中文），
+   *   所以按"逐字连续"匹配会系统性漏掉这一类。
+   * ```
+   * ⇒ 把两边都**去掉空白**再比。代价：理论上会多报"跨词的偶然相邻"
+   *   （如「…A 站B 站…」这类），但那本来就该人工看一眼，**漏报更糟**。
+   * ⚠️ 行级豁免的 `lineMarker` 匹配**不**做这个处理（它要精确到行）。
+   */
+  final compact = lower.replaceAll(RegExp(r'\s+'), '');
   final hits = <(String, String)>[];
   for (final e in _banned.entries) {
-    if (lower.contains(e.key.toLowerCase())) {
+    final key = e.key.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+    if (compact.contains(key)) {
       hits.add((e.key, e.value));
     }
   }

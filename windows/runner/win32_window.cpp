@@ -2061,11 +2061,28 @@ LRESULT CALLBACK SourinChildWndProc(HWND child,
   switch (message) {
     case WM_IME_SETCONTEXT:
     case WM_SETFOCUS:
-    case WM_KILLFOCUS:
+    case WM_KILLFOCUS: {
+      /*
+       * ★★★ 2026-10-14（CR #27）：`ImmGetContext` 必须配对 `ImmReleaseContext`
+       *
+       * # 缺陷（CR 指出，属实）
+       * ```text
+       * Win32 契约：每次 `ImmGetContext(hwnd)` 之后都要 `ImmReleaseContext(hwnd, himc)`。
+       * 这里原来只取不还 —— 而本分支在**每次** WM_SETFOCUS / WM_KILLFOCUS /
+       *   WM_IME_SETCONTEXT 都会跑 ⇒ 泄漏随焦点切换**持续累积**。
+       * （另两处见 `MaybeSubclassChild`，同样已配对。）
+       * ```
+       * ⚠️ 这里只是为了**打印**一个句柄值 ⇒ 取完立刻还，语义不变、成本可忽略。
+       */
+      HIMC trace_ctx = ::ImmGetContext(child);
       ImeTrace("child %s wparam=%llu ctx=%p", ImeMsgName(message),
                static_cast<unsigned long long>(wparam),
-               static_cast<void*>(::ImmGetContext(child)));
+               static_cast<void*>(trace_ctx));
+      if (trace_ctx != nullptr) {
+        ::ImmReleaseContext(child, trace_ctx);
+      }
       break;
+    }
     case WM_IME_STARTCOMPOSITION:
     case WM_IME_ENDCOMPOSITION:
       ImeTrace("child %s (composition boundary)", ImeMsgName(message));
@@ -2225,9 +2242,26 @@ void MaybeSubclassChild(HWND parent, HWND child) {
    *    的情况直接放弃修复。现在是"显式再关联一次 + 读回复验 + 记日志"，
    *    关联自己是幂等的，所以对本来正常的窗口零风险。
    */
+  /*
+   * ★★★ 2026-10-14（CR #27）：三处 `ImmGetContext` **取完必须还**
+   *
+   * # 缺陷（CR 指出，属实）
+   * ```text
+   * ① 本函数里两次 `ImmGetContext`（下面 ime_ctx 与 verify）都没配对
+   *    `ImmReleaseContext` ⇒ 泄漏。本函数在每次子窗口挂载时跑，累积。
+   * ② 更细的一处：`created && verify != ime_ctx` 时销毁了**自建**的上下文，
+   *    但**上一行已经把它关联给窗口**了 ——
+   *    经 CR 提醒核对 Win32 语义：`ImmAssociateContextEx` 失败时不会建立关联，
+   *    所以"没挂上就销毁"是对的；但**读回用的那个 handle 同样要还**。
+   * ```
+   * ⚠️ 本函数**不做**"关联后释放"——`ImmAssociateContextEx` 要求传入的
+   *    HIMC 在关联期间有效（它不是"借一下"的语义）。自建的那个由窗口持有，
+   *    窗口销毁时系统回收；我们**不**在此销毁它（只销毁"没挂上"的那个）。
+   */
   HIMC ime_ctx = ::ImmGetContext(child);
   const bool created = (ime_ctx == nullptr);
   if (created) {
+    // ⚠️ 自建的不是"取来的" ⇒ 不需要 ReleaseContext（下面分支各自处置）
     ime_ctx = ::ImmCreateContext();
   }
   if (ime_ctx != nullptr) {
@@ -2236,13 +2270,29 @@ void MaybeSubclassChild(HWND parent, HWND child) {
     // ★ 读回复验：这是**同线程**真值（跨进程探针读 ImmGetContext 恒为 0）
     HIMC verify = ::ImmGetContext(child);
     if (created && verify != ime_ctx) {
-      ::ImmDestroyContext(ime_ctx);  // 没挂上，别泄漏我们建的那个
+      // 没挂上 ⇒ 销毁我们建的那个（否则纯泄漏）；已挂上则由窗口持有
+      ::ImmDestroyContext(ime_ctx);
+    }
+    // ★ CR #27：读回的这个 handle 也要还（取一次还一次）
+    if (verify != nullptr) {
+      ::ImmReleaseContext(child, verify);
     }
     ImeTrace("assoc child=%p ctx=%p created=%d assoc=%d verify=%p",
              child, static_cast<void*>(ime_ctx), created ? 1 : 0, assoc ? 1 : 0,
              static_cast<void*>(verify));
   } else {
     ImeTrace("assoc ImmGetContext/ImmCreateContext 均为空，中文输入可能不可用");
+    return;  // ← 没有 ctx 可放，且上面两次取都失败（无 handle 需释放）
+  }
+  /*
+   * ⚠️ 若 ime_ctx 是**取来的**（created == false）⇒ 这是我们从系统借的，
+   *    用完必须还。而"还"会不会解除已建立的关联？
+   *    经核对：`ImmReleaseContext` 只释放**这次取用**，不动
+   *    `ImmAssociateContextEx` 建立的**关联**（两者是不同层面的东西）。
+   * ⇒ 所以要还。
+   */
+  if (!created) {
+    ::ImmReleaseContext(child, ime_ctx);
   }
 }
 

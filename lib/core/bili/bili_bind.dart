@@ -11,9 +11,9 @@
 // 「绑定」= 记住「本机某个剧集的第 N 集」对应「某视频站某个视频的第 M P」。
 // 下次用户点进同一集，不用再填链接，弹幕自动到位。
 //
-// # 为什么不用 danmaku.dart 里那套 外部弹幕服务 的匹配
+// # 为什么不用 danmaku.dart 里那套 弹弹play 的匹配
 //
-// 外部弹幕服务 是「按文件名搜番剧」，靠的是一个远程数据库；
+// 弹弹play 是「按文件名搜番剧」，靠的是一个远程数据库；
 // 某视频站没有这样的接口，只有 /x/web-interface/view 拿标题。
 // 所以自动绑定走的是**标题相似度**：拿我们的剧集标题去和 某视频站视频标题
 // 比，够像就自动绑。
@@ -531,8 +531,8 @@ bool shouldRejectAutoBind(BiliBindOutcome o, {bool isMultiPart = false}) {
 ///
 /// ⇒ `episodes` 为空 ⇒ `BiliBinding.isEmpty == true` ⇒ `cidFor()` 恒返回 0
 /// ⇒ 播放页走「绑了 某视频站但这一集没 cid」那条分支
-/// ⇒ 屏幕上「某视频站弹幕：这一集没匹配到分 P（cid），已改用 外部弹幕服务」
-/// ⇒ 接着 外部弹幕服务 没凭证 ⇒ 403 ⇒ 「弹幕失败：Missing Authentication Headers」。
+/// ⇒ 屏幕上「某视频站弹幕：这一集没匹配到分 P（cid），已改用 弹弹play」
+/// ⇒ 接着 弹弹play 没凭证 ⇒ 403 ⇒ 「弹幕失败：Missing Authentication Headers」。
 /// ```
 ///
 /// # 根因：`bindFromInput` 会**无条件**落盘
@@ -653,7 +653,7 @@ int resolveCid({
 /// ```text
 /// 改前：播放页只做两件事 ——
 ///   ① 有绑定 ⇒ 用绑定；
-///   ② 没绑定 ⇒ 直接走 外部弹幕服务（而它要 AppId/AppSecret）⇒ 没配就 403
+///   ② 没绑定 ⇒ 直接走 弹弹play（而它要 AppId/AppSecret）⇒ 没配就 403
 ///      ⇒ 屏幕上那句「弹幕失败：Missing Authentication Headers」。
 /// ```
 /// 于是「srcv 明明支持搜索、也选了，但就是没显示弹幕」——

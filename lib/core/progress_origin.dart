@@ -97,7 +97,7 @@ const String kProgressLocalProvider = 'local';
 class ProgressOrigin {
   const ProgressOrigin({required this.provider, required this.mediaId});
 
-  /// 站点 id（如 `srcv` / `外部弹幕服务`）—— **绝不是** `local`
+  /// 站点 id（如 `srcv` / `弹弹play`）—— **绝不是** `local`
   final String provider;
 
   /// 该站点上的内容 id（如 `BV1xx411c7mD` / `36578`）

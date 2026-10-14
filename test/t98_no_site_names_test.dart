@@ -68,8 +68,23 @@ const Map<String, String> _banned = <String, String>{
   'iptv-org': '具体公共源清单项目名',
   'cycani': '具体动画网站代号',
   '次元城': '具体动画网站名',
-  'dandanplay': '具体弹幕服务名',
-  '弹弹play': '具体弹幕服务名',
+  /*
+   * ⚠️⚠️ 2026-10-14 Owner 澄清：**弹幕服务不算「视频网站」**，不删。
+   *
+   * Owner 原话（逐字）：
+   * ```text
+   * > 弹弹play这种不用删除的,只有对接的某个具体的网站和视频网站
+   * > 这种才需要删除
+   * ```
+   *
+   * # 判据（本名单的**唯一**准入标准）
+   * ```text
+   * 禁 = 本软件**对接的、具体的视频网站**（用户在那儿看视频/直播）。
+   * 放 = 弹幕服务 / 自建媒体服务器 / 通用协议 —— 它们不是"视频网站"。
+   * ```
+   * ⇒ 我一度把弹幕服务也加进名单（**过严**），已移除：
+   *   `dandanplay` / `弹弹play` 不再被禁。
+   */
   // ── 自建/其它服务 ──
   // ⚠️ `emby` **不在**名单里：它是「自建媒体服务器」，不是视频网站
   //    （Owner 1013 明确保留 `emby.js`）。
@@ -123,33 +138,6 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
     'x == "bilibili-live"',
     '同上：断言"遗留的旧源不再出现"，必须逐字写历史 @id。'
   ),
-  (
-    'lib/core/danmaku.dart',
-    'DANDANPLAY_APP_',
-    '构建期注入契约：`String.fromEnvironment("DANDANPLAY_APP_ID")` 必须与'
-        '`.github/workflows/build.yml` 的 `--dart-define` 逐字一致，'
-        '改名会**破坏发版时注入凭证**（功能坏死）。不是产品文案。'
-  ),
-  (
-    'lib/ui/widgets/danmaku_settings_dialog.dart',
-    'DANDANPLAY_APP_',
-    '注释里指回上面那对**构建期变量名**（改名会破坏发版凭证注入）。'
-        '不是用户可见文案。'
-  ),
-  (
-    'README.md',
-    'DANDANPLAY_APP_',
-    '文档必须写清**构建期注入的变量名**：它与 `.github/workflows/build.yml` 的'
-        '`--dart-define` 逐字一致，改名会**破坏发版凭证注入**。'
-        '（站名已从中性化后的说明里去掉，只剩这个必须保留的变量名。）'
-  ),
-  (
-    '.github/workflows/build.yml',
-    'DANDANPLAY_',
-    'CI 构建期注入契约：env / `--dart-define` 里的变量名必须与 Dart 侧'
-        '`String.fromEnvironment` 逐字一致；删了会**破坏 CI 的凭证注入**。'
-        '（按 Owner 口径：这个变量名先留着，只中性化注释里的站名。）'
-  ),
   // ── 运行期**必需的真实 API 主机名**（删/改 ⇒ 功能坏死）──────────────
   //
   // ★ 这一类与上面的"品牌名"性质不同：它们是**客户端真正要连的端点**，
@@ -157,12 +145,6 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
   //   （且不会有编译错误，是**静默功能坏死**）。
   //   ⇒ 按 Owner 口径「不许为了删而删功能」，这些字符串**必须逐字保留**。
   //   ★ 只豁免**含该主机名的那一行**；同文件别处提到站名的文案照样被抓。
-  (
-    'lib/core/danmaku.dart',
-    'dandanplay.',  // api./dev./doc.dandanplay.* 端点
-    '外部弹幕服务的**真实 API 主机名**：客户端要请求它取弹幕、'
-        '用户要点它去申请凭证。换假域名 ⇒ 弹幕功能静默失效。不是品牌文案。'
-  ),
   (
     'lib/core/bili/bili_api.dart',
     'bilibili.',
@@ -193,16 +175,6 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
     'lib/probe_cast.dart',
     'bilibili.',
     '同上：DLNA 探针里的真实 Referer 域名。'
-  ),
-  (
-    'lib/t513_danmaku_probe.dart',
-    'dandanplay.',
-    '同上：弹幕探针里要打**真实端点**（探针本身就是拿它测网络的）。'
-  ),
-  (
-    'lib/ui/widgets/danmaku_settings_dialog.dart',
-    'dandanplay.',
-    '同上：注释里指回真实凭证申请地址（doc.dandanplay.*）。'
   ),
   (
     'rust/sourin_core/tests/t525_qr_login.rs',

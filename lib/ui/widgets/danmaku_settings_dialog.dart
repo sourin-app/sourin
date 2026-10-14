@@ -345,7 +345,7 @@ class DanmakuSettingsDialog extends StatefulWidget {
   /// 打开「外部视频源弹幕」面板（task-31 ④）。
   ///
   /// 传 null ⇒ 按钮**不画** —— 面板本身不认识 某视频站，也不知道宿主有没有接。
-  /// 这只是「另一个弹幕源」的入口，与 外部弹幕服务 凭证同层。
+  /// 这只是「另一个弹幕源」的入口，与 弹弹play 凭证同层。
   final VoidCallback? onOpenBili;
 
   /// ★★★ 2026-10-14（Owner）：用户点了「搜索番剧」区的「搜索」按钮。
@@ -379,7 +379,7 @@ class DanmakuSettingsDialog extends StatefulWidget {
   /// `DanmakuHint.action` 原样递出去。
   final ValueChanged<DanmakuHintAction>? onHintAction;
 
-  /// ★★★ 2026-10-14（Owner 反馈「外部弹幕服务的凭证流程根本没走通」）：
+  /// ★★★ 2026-10-14（Owner 反馈「弹弹play的凭证流程根本没走通」）：
   /// 用户点了凭证节的「保存」。
   ///
   /// # 为什么走宿主（不是面板自己落盘）
@@ -777,7 +777,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 「数据源」状态行（T27-05）—— 本机跑着外部弹幕 就优先用本地源（免签名），
   /// 没跑就退回官方 API。
   ///
-  /// ★ 2026-10-11（Owner 反馈）：这里**原来**还挂着 外部弹幕服务 开放平台的
+  /// ★ 2026-10-11（Owner 反馈）：这里**原来**还挂着 弹弹play 开放平台的
   ///   AppId / AppSecret 两个输入框 + 那枚删除按钮，当次整节移除了。
   /// ★ 2026-10-14（Owner 反馈「凭证流程根本没走通」）：输入框**恢复**，
   ///   但不再挂在这一节里 —— 它独立成 [_credentialsSection]（可门控、带如实
@@ -818,7 +818,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('凭证', note: '外部弹幕服务'),
+        _sectionTitle('凭证', note: '弹弹play'),
         // ── 状态行（如实）──
         Row(
           children: [

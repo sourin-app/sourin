@@ -1,11 +1,11 @@
 // =======================================================================
-//  弹幕（外部弹幕服务 外部弹幕 开放弹幕网络）—— 客户端
+//  弹幕（弹弹play 外部弹幕 开放弹幕网络）—— 客户端
 // =======================================================================
 //
 // # 这个文件解决什么
 //
 // 用户 2026-10-04 要求（逐字）：
-// > 接入一下 外部弹幕服务 的弹幕功能
+// > 接入一下 弹弹play 的弹幕功能
 //
 // 这里实现三件事：
 // ```text
@@ -98,7 +98,7 @@ import 'ui_prefs.dart';
 
 /// 一条弹幕的显示模式
 ///
-/// 值来自 外部弹幕服务 的 `p` 字段第 2 段（`出现时间,模式,颜色,用户ID`）：
+/// 值来自 弹弹play 的 `p` 字段第 2 段（`出现时间,模式,颜色,用户ID`）：
 /// ```text
 /// 1 = 滚动（从右往左）
 /// 4 = 底部固定
@@ -140,7 +140,7 @@ enum DanmakuMode {
 
 /// 一条弹幕（已经解析、已经算好出现时间）
 ///
-/// 外部弹幕服务 返回的原始形态是 `CommentData{ cid, p, m }`，
+/// 弹弹play 返回的原始形态是 `CommentData{ cid, p, m }`，
 /// 其中 `p` 是一串**逗号分隔的字符串**：`出现时间,模式,颜色,用户ID`。
 /// 本类把它拆开并做三件规范化：
 /// ```text
@@ -168,7 +168,7 @@ class DanmakuComment {
     this.userId = '',
   });
 
-  /// 弹幕库内的唯一编号（外部弹幕服务 的 `cid`）
+  /// 弹幕库内的唯一编号（弹弹play 的 `cid`）
   final int cid;
 
   /// 出现时间，单位**秒**，已经叠加过 shift
@@ -225,7 +225,7 @@ class DanmakuComment {
     );
   }
 
-  /// 从 外部弹幕服务 的 JSON 对象解析（`{cid, p, m}`）
+  /// 从 弹弹play 的 JSON 对象解析（`{cid, p, m}`）
   static DanmakuComment? fromJson(Map<String, dynamic> j, {double shift = 0}) {
     final cid = _asInt(j['cid']);
     final p = j['p']?.toString() ?? '';
@@ -239,7 +239,7 @@ class DanmakuComment {
       '${mode.label} #${color.toRadixString(16).padLeft(6, "0")} "$text")';
 }
 
-/// 外部弹幕服务 的整数可能以 int 或 String 出现（int64 走 JSON 时常见），
+/// 弹弹play 的整数可能以 int 或 String 出现（int64 走 JSON 时常见），
 /// 这里统一成 int。
 int? _asInt(Object? v) {
   if (v == null) return null;
@@ -423,7 +423,7 @@ Uint8List sha256Bytes(List<int> input) {
   return out;
 }
 
-/// `base64(sha256(text))` —— 就是 外部弹幕服务 要求的 `X-Signature`
+/// `base64(sha256(text))` —— 就是 弹弹play 要求的 `X-Signature`
 String sha256Base64(String text) =>
     base64.encode(sha256Bytes(utf8.encode(text)));
 
@@ -594,7 +594,7 @@ class IoDanmakuTransport implements DanmakuTransport {
       req.add(bytes);
     }
     final resp = await req.close().timeout(timeout);
-    // 外部弹幕服务 全站 UTF-8；allowMalformed 保证偶发坏字节不会把整次请求炸掉
+    // 弹弹play 全站 UTF-8；allowMalformed 保证偶发坏字节不会把整次请求炸掉
     final text = await resp
         .transform(const Utf8Decoder(allowMalformed: true))
         .join()
@@ -641,10 +641,10 @@ class DanmakuConfig {
   /// `"1"` 开 / `"0"` 关；缺省 `"0"`
   static const String keyEnabled = 'dsh.danmaku.enabled';
 
-  /// 外部弹幕服务 开放平台申请到的 AppId；缺省 `""`
+  /// 弹弹play 开放平台申请到的 AppId；缺省 `""`
   static const String keyAppId = 'dsh.danmaku.appId';
 
-  /// 外部弹幕服务 开放平台申请到的 AppSecret；缺省 `""`
+  /// 弹弹play 开放平台申请到的 AppSecret；缺省 `""`
   static const String keyAppSecret = 'dsh.danmaku.appSecret';
 
   // ---- 显示参数（本文件新增，非锁定） ----
@@ -707,7 +707,7 @@ class DanmakuConfig {
 
   /// 白色弹幕的判定阈值：与 0xFFFFFF 的每通道差都 ≤ 它，就算「白」。
   ///
-  /// 为什么不是 `== 0xFFFFFF`：外部弹幕服务 的 `p` 第 3 段颜色写得很杂，
+  /// 为什么不是 `== 0xFFFFFF`：弹弹play 的 `p` 第 3 段颜色写得很杂，
   /// 实测有 `16777215`(纯白)、也有近白（如 `16777214`）。用**纯相等**会漏判，
   /// 于是"只显示彩色"时这些近白弹幕会被当成彩色留下 —— 与用户预期相反。
   /// 24 容差（每通道 ~2.4%）足以覆盖"肉眼看上去就是白"的抖动，又不会把
@@ -977,7 +977,7 @@ class DanmakuConfig {
 
   static void setEnabled(bool v) => UiPrefs.set(keyEnabled, v ? '1' : '0');
 
-  /// ★★★ 2026-10-14（Owner 反馈「外部弹幕服务的凭证流程根本没走通」）：
+  /// ★★★ 2026-10-14（Owner 反馈「弹弹play的凭证流程根本没走通」）：
   /// 面板上的凭证输入框**恢复**了（见 `danmaku_settings_dialog.dart` 的
   /// `_credentialsSection`）⇒ 这三个写入口重新有了**生产调用者**，
   /// 不再是"只给测试用"。
@@ -1143,7 +1143,7 @@ class DanmakuFetchResult {
 // Owner 反馈（2026-10-08，逐字）：「弹幕报错，如图1」，截图里那句话是
 // `弹幕失败：Missing Authentication Headers`。
 //
-// 这句英文是 外部弹幕服务 的原话，**必须原样保留**（它是排错的唯一线索，
+// 这句英文是 弹弹play 的原话，**必须原样保留**（它是排错的唯一线索，
 // 见文件头"错误必须原文透出"），但光有它用户不知道该干什么 ——
 // 实测 Owner 机器上 `dsh.danmaku.appId` / `dsh.danmaku.appSecret` 两个键
 // 根本不存在，所以这句话会出现在每一台"还没填凭证"的机器上。
@@ -1343,7 +1343,7 @@ class DanmakuHint {
        */
       return DanmakuHint(
         title: '弹幕服务没收到凭证',
-        text: '外部弹幕服务有两个数据源，在弹幕设置里选一个：'
+        text: '弹弹play有两个数据源，在弹幕设置里选一个：'
             '「本机外部弹幕」（本机跑着外部弹幕 就用它，免签名、不用申请任何凭证）'
             '或「官方 API」（它要一对 AppId / AppSecret —— 客户端已**内置**，'
             '无需自己申请）。'
@@ -1387,7 +1387,7 @@ class DanmakuHint {
   String toString() => 'DanmakuHint($title)';
 }
 
-/// 外部弹幕服务 开放弹幕网络客户端
+/// 弹弹play 开放弹幕网络客户端
 ///
 /// ## 三步流程（对应官方文档）
 /// ```text
@@ -1441,7 +1441,7 @@ class ExternalDanmakuClient {
         _clock = clock ?? DateTime.now,
         _unsignedLocal = unsignedLocal;
 
-  /// 外部弹幕服务后端的**默认**主机名（客户端要连的 API 端点）。
+  /// 弹弹play后端的**默认**主机名（客户端要连的 API 端点）。
   ///
   /// ⚠️ 这是"实现细节"（客户端默认后端），**不是**"产品在宣传某个站"。
   ///   它**可被覆盖**：`DanmakuConfig` 的 appId/appSecret 已有 UiPrefs 覆盖链，
@@ -1450,7 +1450,7 @@ class ExternalDanmakuClient {
   ///     仓库里不含任何"支持某站"的文案。
   static const String host = 'api.dandanplay.net';
 
-  /// 本机外部弹幕（外部弹幕服务 协议的本地实例）——本地接口**免签名**
+  /// 本机外部弹幕（弹弹play 协议的本地实例）——本地接口**免签名**
   static const String localAuthority = '127.0.0.1:2080';
 
   /// `fileHash` 拿不到时的匹配模式（见文件头"拿不到 fileHash 的现实"）
@@ -1773,7 +1773,7 @@ enum DanmakuSourceKind { local, official }
 
 /// 数据源选路：先探本机外部弹幕，探不通再退回官方
 ///
-/// 本机外部弹幕（桌面版）在 127.0.0.1:2080 提供 外部弹幕服务 协议的本地接口，
+/// 本机外部弹幕（桌面版）在 127.0.0.1:2080 提供 弹弹play 协议的本地接口，
 /// **本地接口不需要签名**。探测方式：GET /api/v2/system/version，
 /// 2xx 且正文是 JSON ⇒ 本地在线。探测失败（连接拒绝 / 超时 / 返回的是
 /// 别的网页）一律安静退回官方，绝不让取弹幕这条路因为探测挂掉。

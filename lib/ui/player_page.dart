@@ -1566,7 +1566,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// HTTP 客户端（懒建；凭证改了必须重建 —— appId/appSecret 是构造快照）
   ExternalDanmakuClient? _danmakuClient;
 
-  /// 本机外部弹幕服务探测结果（T27-05；进程内缓存，null = 还没探过）
+  /// 本机弹弹play探测结果（T27-05；进程内缓存，null = 还没探过）
   DanmakuLocalStatus? _danmakuLocalStatus;
 
   /// 「数据源」状态行文案（弹幕设置面板用；最近一次探测的结果）
@@ -1629,7 +1629,7 @@ class _PlayerPageState extends State<PlayerPage>
   ///    而第 2 态的动作只有 openDanmakuSettings / openBiliSheet，
   ///    **没有**任何入口能把这个标记清回去 ⇒ 文案建议「选本机」，
   ///    用户却无路可选，本会话内每次重取都被钉在官方。
-  ///    ⇒ 现在「改用本机外部弹幕服务」也**清**这个标记（[_useLocalDanmakuSource]），
+  ///    ⇒ 现在「改用本机弹弹play」也**清**这个标记（[_useLocalDanmakuSource]），
   ///      且第 2 态在「强制官方**并且**已经真的试过一次官方」时提供那颗按钮。
   bool _danmakuForceOfficial = false;
 
@@ -5178,7 +5178,7 @@ class _PlayerPageState extends State<PlayerPage>
     return n;
   }
 
-  /// 本机外部弹幕服务探测（T27-05）：进程内只探一次，之后读缓存。
+  /// 本机弹弹play探测（T27-05）：进程内只探一次，之后读缓存。
   ///
   /// 刻意**不**放在面板打开时探测 —— 面板路径要保证零网络（t103 的
   /// 注入式用例不许被真探针拖住）；只在取弹幕（起播/重取）时走到。
@@ -5517,7 +5517,7 @@ class _PlayerPageState extends State<PlayerPage>
       if (ok) return;
     }
     /*
-     * ★ T27-05：本机外部弹幕服务优先 —— 桌面版在 127.0.0.1:2080 提供
+     * ★ T27-05：本机弹弹play优先 —— 桌面版在 127.0.0.1:2080 提供
      *   **免签名**的本地接口（官方 api.danmaku-service.net 才要 AppId/AppSecret）。
      *   探测结果进程内缓存；本机不在线 ⇒ 走官方（行为与改前一致）。
      *   本地服务就是 danmaku-service 协议 ⇒ 成功状态仍用「danmaku-service · 」前缀。
@@ -5676,7 +5676,7 @@ class _PlayerPageState extends State<PlayerPage>
        * ★★ T27-08（Owner 第 8 条）：提示按**真实数据源**重算
        *
        * 改前直接用异常自带的那条 hint —— 而它是**数据源无关**的，
-       * 于是本机外部弹幕服务 明明在跑（T27-05 的免签名本地源），屏幕上
+       * 于是本机弹弹play 明明在跑（T27-05 的免签名本地源），屏幕上
        * 还是「去官网免费申请」：用户读到的是「没获取到凭证」，而真正
        * 该做的是**切数据源**。这里把「这次请求走了哪个源」注入判据
        * （`DanmakuHint.of` 是纯函数，事实只能由宿主给）。
@@ -5689,7 +5689,7 @@ class _PlayerPageState extends State<PlayerPage>
       final usedLocalSource = _danmakuHintUsedLocalSource ?? false;
       final h = (e.statusCode == 401 || e.statusCode == 403)
           // ★★ N2：官方那条边**确实试过并失败了** ⇒ 第 2 态也要给回头路
-          //   （「改用本机外部弹幕服务」）。否则文案建议「选本机」，用户没有入口。
+          //   （「改用本机弹弹play」）。否则文案建议「选本机」，用户没有入口。
           ? DanmakuHint.of(e, allowUseLocal: _danmakuOfficialFailed,
               usedLocalSource: usedLocalSource)
           : e.hint;
@@ -5796,7 +5796,7 @@ class _PlayerPageState extends State<PlayerPage>
     if (a.useOfficialDanmaku) _useOfficialDanmakuSource();
   }
 
-  /// 「改用本机外部弹幕服务」（T27-08 那颗按钮的动作）
+  /// 「改用本机弹弹play」（T27-08 那颗按钮的动作）
   ///
   /// # 为什么必须**重建客户端**（不是只改个 flag）
   /// ```text
@@ -5807,7 +5807,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// ```
   ///
   /// # 为什么连探测缓存一起清
-  /// 用户很可能**刚**启动本机外部弹幕服务 才点的这颗按钮 —— 缓存里那份
+  /// 用户很可能**刚**启动本机弹弹play 才点的这颗按钮 —— 缓存里那份
   /// 「不在线」是过期读数，不清就永远不会切过去。
   ///
   /// ⚠️ 这里**只**做「清缓存 + 重取」；选路仍然由 `_loadDanmaku` 里
@@ -5829,8 +5829,8 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// # 它解决的问题：**换一条真正不同的路**
   /// ```text
-  /// 触发场景：本机外部弹幕服务 在线 ⇒ 自动路由走本机 ⇒ 本机回了 401/403。
-  /// 旧提示给的是「改用本机外部弹幕服务」—— 而这次**已经是**本机了，点了只会
+  /// 触发场景：本机弹弹play 在线 ⇒ 自动路由走本机 ⇒ 本机回了 401/403。
+  /// 旧提示给的是「改用本机弹弹play」—— 而这次**已经是**本机了，点了只会
   /// 重新探测 ⇒ 还是在线 ⇒ 还是走本机 ⇒ 又失败 ⇒ 提示原样回来（死循环）。
   /// ⇒ 正确出路是换到**另一条边**：官方 API。
   /// ```
@@ -6172,7 +6172,7 @@ class _PlayerPageState extends State<PlayerPage>
     if (mounted) setState(() {});
   }
 
-  /// ★★★ 2026-10-14（Owner 反馈「外部弹幕服务的凭证流程根本没走通」）：
+  /// ★★★ 2026-10-14（Owner 反馈「弹弹play的凭证流程根本没走通」）：
   /// 面板凭证节点了「保存」—— 把用户填的一对 AppId / AppSecret 落盘。
   ///
   /// # 为什么要**重建客户端**（这是"真的走通"的关键）

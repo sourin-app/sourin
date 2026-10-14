@@ -252,8 +252,81 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
         shell: pwsh
         run: |
-          # ★ 用 choco 装 NSIS。runner 上本来没有 makensis。
-          choco install nsis --no-progress -y
+          # ══════════════════════════════════════════════════════════════
+          # ★★★ 装 NSIS —— **必须能扛住 choco 社区源的瞬时故障**
+          # ══════════════════════════════════════════════════════════════
+          #
+          #  # 为什么加了重试 + 独立回退源（run 38384556818 的真实事故）
+          #
+          #  实测（v1.1.0 那次发布）：`choco install nsis` 单发一次，
+          #  社区源回了一个 **504 Gateway Timeout**：
+          # ```text
+          #   Failed to fetch results from V2 feed at
+          #     'https://community.chocolatey.org/api/v2/Packages(Id='nsis',Version='3.13.0')'
+          #     Response status code does not indicate success: 504 (Gateway Timeout).
+          #   Unable to find package 'nsis'.
+          #   Chocolatey installed 0/0 packages.
+          #   ⇒ 本步 throw ⇒ Windows job 红
+          #   ⇒ rel-windows-* 这个 artifact 根本没上传
+          #   ⇒ 发 Release job 只把「成功的平台」拼进去 ⇒
+          #      **v1.1.0 的 Release 少了 Windows 免安装 zip 与 NSIS 安装包**，
+          #      而用户看到的下载页就是缺了整整一个平台。
+          # ```
+          #  504 是**外部基础设施的瞬时故障**，与我们改的代码毫无关系 ——
+          #  绝不能因为它把整个 Windows 交付件从 Release 里抹掉。
+          #
+          #  # 两层防御
+          #  ① 重试：choco 单次失败多数是瞬时 5xx，退避重试 3 次能挡掉绝大多数。
+          #  ② 独立回退源：若重试仍失败，直接从 **SourceForge 的官方 NSIS zip**
+          #     下载解包。它与 choco 的 CDN **不是同一条链路** ——
+          #     choco 挂了它往往还是通的（这正是本仓「不要单点依赖」的一贯口径）。
+          #
+          #  # ★ 为什么不能只打 warning 就继续
+          #  本仓铁律（CONTRIBUTING.md ⑥ 规矩二）：门禁不许「只警告不失败」。
+          #  装不上 NSIS 就**编不出安装包**，而安装包是交付件之一 ⇒ 必须真失败，
+          #  不能降级成 warning 然后发出一个缺件的 Release。
+          $ErrorActionPreference = 'Continue'
+          $installed = $false
+          for ($i = 1; $i -le 3; $i++) {
+            "---- choco install nsis（第 $i/3 次）----"
+            choco install nsis --no-progress -y
+            if ($LASTEXITCODE -eq 0) { $installed = $true; break }
+            "choco 第 $i 次失败（exit=$LASTEXITCODE），10 秒后重试"
+            Start-Sleep -Seconds 10
+          }
+          if (-not $installed) {
+            "choco 三次都没装上 —— 改用 SourceForge 官方 NSIS zip 回退"
+            # ★ NSIS 官方发布在 SourceForge；3.10 是稳定版。
+            #   curl.exe（不是 Invoke-WebRequest）跟随 302 重定向更可靠，
+            #   且 GitHub runner 自带。 -L 跟随跳转、-f 遇到 4xx/5xx 直接失败。
+            # ★★ `--proto-redir =https`（CodeRabbit 指出，已采纳）：
+            #   SourceForge 是 302 跳到镜像站的，`-L` 默认**允许**中途降级到
+            #   http:// —— 那样下载内容可被中间人替换，而我们会解压并**执行**
+            #   其中的 makensis.exe。限制重定向只许 https（=https 是「只允许
+            #   https」的写法，注意等号与值之间不能有空格）。
+            # ★★ 下载后必须校验 **固定 SHA-256**（CWE-494：无完整性校验地
+            #   下载并执行代码）。这个摘要是本地实测得到、两次独立下载一致：
+            #     nsis-3.10.zip
+            #     sha256 = fcdce3229717a2a148e7cda0ab5bdb667f39d8fb33ede1da8dabc336bd5ad110
+            #     大小   = 2358406 字节
+            #   摘要对不上就 throw —— 绝不执行来路不明的 makensis.exe。
+            #   升级 NSIS 版本时**必须**同步更新下面两个常量。
+            $zip = "$env:RUNNER_TEMP\nsis.zip"
+            $dst = "$env:RUNNER_TEMP\nsis"
+            $wantSha = 'FCDCE3229717A2A148E7CDA0AB5BDB667F39D8FB33EDE1DA8DABC336BD5AD110'
+            curl.exe -L -f --proto-redir =https --retry 3 --retry-delay 5 -o $zip `
+              'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.10/nsis-3.10.zip'
+            if (-not (Test-Path $zip)) {
+              throw '回退也失败：没下到 NSIS zip（choco 与 SourceForge 都不通）'
+            }
+            $gotSha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+            "NSIS zip = $((Get-Item $zip).Length) 字节，sha256 = $gotSha"
+            if ($gotSha -ne $wantSha) {
+              throw "NSIS zip 的 sha256 不匹配（期望 $wantSha，实得 $gotSha）—— 拒绝执行来路不明的 makensis.exe"
+            }
+            Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue
+            Expand-Archive -LiteralPath $zip -DestinationPath $dst -Force
+          }
           # ★★ 不要靠 PATH 找 makensis。
           #   实测（run 37788073987）：choco 明明报「Deployed to
           #   C:\Program Files (x86)\NSIS」，但刷新 Machine+User PATH 之后
@@ -280,12 +353,18 @@ jobs:
             if ($cmd) { $mk = $cmd.Source }
           }
           if (-not $mk) {
+            # 兜底：在回退解包目录里找（SourceForge zip 的顶层是 nsis-3.x\）
+            $found = Get-ChildItem "$env:RUNNER_TEMP\nsis" -Filter 'makensis.exe' -Recurse -ErrorAction SilentlyContinue |
+                     Select-Object -First 1
+            if ($found) { $mk = $found.FullName }
+          }
+          if (-not $mk) {
             # 最后兜底：整盘搜（慢，但比「莫名其妙装不上」好查）
             $found = Get-ChildItem 'C:\' -Filter 'makensis.exe' -Recurse -ErrorAction SilentlyContinue |
                      Select-Object -First 1
             if ($found) { $mk = $found.FullName }
           }
-          if (-not $mk) { throw '装完 NSIS 还是找不到 makensis（choco 报成功但文件不在预期位置）' }
+          if (-not $mk) { throw '装完 NSIS 还是找不到 makensis（choco 与回退源都试过了）' }
           "makensis = $mk"
           & $mk /VERSION
           # ★ 把路径交给后面那一步（同一次 job 内跨 step 传值）
@@ -1159,9 +1238,53 @@ jobs:
             if [ -f "$D" ]; then FILES="$FILES $D"; echo "✓ macOS dmg $D";
             else echo "::warning::macOS DMG $D 不在 —— 本次只发 zip"; fi
           else echo "✗ macOS 包不可用（job=${{ needs.macos.result }}）"; fi
+          # ★★★ 2026-10-14（CR #25）：**产物文件**缺失也要硬失败。
+          #
+          #   # 上面那条 job 结果断言为什么不够（CR 指出的真洞）
+          #   ```text
+          #   job 返回 success **不等于** rel/ 下有它的包 ——
+          #   artifact 下载/路径结构出问题时，job 是绿的、文件却没到。
+          #   而那时上面只打了一行 `✗ macOS 包不可用`，
+          #   ★ 只要 Windows 的文件在 ⇒ `FILES` 非空 ⇒ **Release 照发**，
+          #     只是**少了整个 macOS 平台** —— 正是本 job 存在的意义要防的那件事。
+          #   ```
+          #   ⇒ 与 Windows 同样处理：**文件缺席 = 硬失败**。
+          #   ★ 判据用"文件在不在"（结果）而不是"job 绿不绿"（过程）——
+          #     后者我们已经有了，两条**都要**（job 红 → 早失败；文件缺 → 也失败）。
+          if [ "${{ needs.windows.result }}" = "success" ] && [ ! -f "$W" ]; then
+            echo "::error::Windows job 绿，但 $W 不在 rel/ 下 —— 拒绝发一个缺 Windows 包的 Release"
+            ls -la rel || true
+            exit 1
+          fi
+          if [ "${{ needs.macos.result }}" = "success" ] && [ ! -f "$M" ]; then
+            echo "::error::macOS job 绿，但 $M 不在 rel/ 下 —— 拒绝发一个缺 macOS 包的 Release"
+            ls -la rel || true
+            exit 1
+          fi
           if [ "${{ needs.android.result }}" = "success" ] && [ -f "$A64" ] && [ -f "$A7" ]; then
             FILES="$FILES $A64 $A7"; echo "✓ Android  $A64 $A7";
           else echo "· Android 未构建（job=${{ needs.android.result }}）—— 不发布 APK"; fi
+          # ★★ 硬断言：**必跑平台**（Windows / macOS）没有产物 ⇒ 直接红。
+          #
+          #   为什么必须红（run 38384556818 的真实事故，v1.1.0）：
+          #   Windows job 的「装 NSIS」被 choco 的 504 打挂 ⇒ 整个 Windows job 红
+          #   ⇒ rel-windows-* 没上传 ⇒ 本 job 上面那几条只打了行 `✗ Windows 包不可用`
+          #   **然后就照发不误** ⇒ Release 页面缺了整整一个平台
+          #   （免安装 zip + NSIS 安装包一个都没有），而本次 workflow 里
+          #     只有 Windows job 是红的、本 job 却是**绿的**。
+          #   ⇒ 这正是本仓反复点名的「静默漏发」（对照 fb32a5c 那次修的是同一类病，
+          #     那次修的是 artifact 路径结构，这次是平台 job 失败，同一个洞的不同入口）。
+          #
+          #   Windows / macOS 是 `if:` 无条件必跑的 job（只有 android 默认跳过）
+          #   ⇒ 它们缺席**不是**正常情况，必须显式失败，绝不发一个缺平台的 Release。
+          if [ "${{ needs.windows.result }}" != "success" ]; then
+            echo "::error::Windows 是必跑 job 却以 ${{ needs.windows.result }} 结束 —— 拒绝发一个缺 Windows 产物的 Release"
+            exit 1
+          fi
+          if [ "${{ needs.macos.result }}" != "success" ]; then
+            echo "::error::macOS 是必跑 job 却以 ${{ needs.macos.result }} 结束 —— 拒绝发一个缺 macOS 产物的 Release"
+            exit 1
+          fi
           if [ -z "$FILES" ]; then
             echo "::error::三个平台都没有可用产物，拒绝发空 Release"; exit 1
           fi
@@ -1185,6 +1308,16 @@ jobs:
           fi
           if [ "${{ needs.windows.result }}" = "success" ] && [ ! -f "$SETUP" ]; then
             echo "::error::Windows job 成功但安装包 $SETUP 不在 —— 不接受只发免安装版"; exit 1
+          fi
+          # ★★ 对称断言 macOS（CodeRabbit 指出，已采纳）：macOS job 成功却
+          #   没下到它的 zip/dmg ⇒ 直接红。理由与上面 Windows 那两条完全相同 ——
+          #   否则只要 Windows 文件在、FILES 就非空，发布仍会继续，
+          #   于是发出一个**少了 macOS 平台**的 Release（同一类「静默漏发」）。
+          if [ "${{ needs.macos.result }}" = "success" ] && [ ! -f "$M" ]; then
+            echo "::error::macOS job 成功但 $M 不在 —— 不接受「少发一个平台」"; exit 1
+          fi
+          if [ "${{ needs.macos.result }}" = "success" ] && [ ! -f "$D" ]; then
+            echo "::error::macOS job 成功但 DMG $D 不在 —— 不接受只发 zip"; exit 1
           fi
           echo "files=$FILES" >> "$GITHUB_OUTPUT"
           # ★ 校验和清单（用户拿到包能自己核对完整性）
@@ -1214,12 +1347,76 @@ jobs:
           fi
           echo "---- notes 前 12 行（已替换版本号）----"
           head -12 "$NOTES"
-          gh release create "$TAG" \
-            --repo "${{ github.repository }}" \
-            --title "源影 $TAG" \
-            --notes-file "$NOTES" \
-            --target "${{ github.sha }}" \
-            ${{ steps.chk.outputs.files }} \
-            rel/SHA256SUMS.txt
-          echo "✓ Release 已创建"
+          # ★★ 幂等：Release 已存在 ⇒ **补传/覆盖**产物，而不是硬失败。
+          #
+          #   为什么必须幂等（run 38384556818 的真实事故，v1.1.0）：
+          #   Windows job 因 choco 504 挂了 ⇒ 那次 Release 少了 Windows 两个包。
+          #   修好 CI 之后**必须重跑同一个 tag** 才能补齐 —— 但重跑时
+          #   `gh release create` 会报 `release already exists` 直接红，
+          #   于是「重跑补包」这条路根本走不通，只能删了 Release 再来
+          #   （删 Release = 期间下载页 404，用户可见的破坏性动作）。
+          #   ⇒ 已存在就 `upload --clobber`（覆盖同名、补上缺的），
+          #     并把 notes 也刷一遍（`gh release edit`）—— 全程用户看到的是
+          #     「文件一个个补齐」，没有空窗期。
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "· Release $TAG 已存在 —— 走**补传/覆盖**路径（幂等重跑）"
+            # ★★ 补包前**必须**核对：本次构建的提交 == 该 tag 指向的提交。
+            #   （CodeRabbit 指出，已采纳）否则从已经前进的 main 上重跑一个
+            #   **旧 tag** 时，会用**新提交**构建出的产物去覆盖旧 Release 的资产，
+            #   而版本号标签仍是旧的 —— 用户下到的包与它标称的版本对不上，
+            #   且 `--target` 只作用于 create、对已存在的 Release 不生效。
+            #   ⇒ 提交不匹配就硬失败，让人明确用**该 tag 对应的 ref** 重跑。
+            TAG_SHA=$(gh api "repos/${{ github.repository }}/commits/$TAG" --jq '.sha')
+            echo "tag $TAG 指向 $TAG_SHA / 本次构建 ${{ github.sha }}"
+            if [ "$TAG_SHA" != "${{ github.sha }}" ]; then
+              echo "::error::拒绝补包：tag $TAG 指向 $TAG_SHA，而本次构建的提交是 ${{ github.sha }} —— 会用错版本的产物覆盖 Release 资产。请用该 tag 对应的 ref 重跑。"
+              exit 1
+            fi
+            gh release edit "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "源影 $TAG" \
+              --notes-file "$NOTES"
+            gh release upload "$TAG" \
+              --repo "${{ github.repository }}" \
+              --clobber \
+              ${{ steps.chk.outputs.files }} \
+              rel/SHA256SUMS.txt
+            echo "✓ Release 已更新（产物补齐 / 覆盖）"
+          else
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "源影 $TAG" \
+              --notes-file "$NOTES" \
+              --target "${{ github.sha }}" \
+              ${{ steps.chk.outputs.files }} \
+              rel/SHA256SUMS.txt
+            echo "✓ Release 已创建"
+          fi
           gh release view "$TAG" --repo "${{ github.repository }}"
+          # ★★ 发布后**逐个核对**资产真的挂上去了，且字节数非零
+          #   （CodeRabbit 指出，已采纳）：`gh release upload --clobber`
+          #   （以及 create）**不是原子操作** —— 中途失败可能留下
+          #   「少了一个包」或「包存在但为 0 字节」的状态，而命令本身退出 0。
+          #   ⇒ 从**服务端**读回真实资产清单来核对，绝不凭命令成功就信。
+          echo "---- 核对 Release 资产（从服务端读回）----"
+          gh release view "$TAG" --repo "${{ github.repository }}" \
+            --json assets --jq '.assets[] | "\(.name)\t\(.size)\t\(.state)"'
+          EXPECTED="sourin-windows-$TAG.zip Sourin-Setup-${TAG#v}.exe sourin-macos-$TAG.zip sourin-macos-$TAG.dmg SHA256SUMS.txt"
+          MISSING=""
+          for f in $EXPECTED; do
+            # 取该资产的字节数；不存在 ⇒ 空串
+            sz=$(gh release view "$TAG" --repo "${{ github.repository }}" \
+                   --json assets --jq ".assets[] | select(.name==\"$f\") | .size")
+            if [ -z "$sz" ]; then
+              MISSING="$MISSING $f(不存在)"; echo "✗ $f 不在 Release 上"
+            elif [ "$sz" -le 0 ]; then
+              MISSING="$MISSING $f(0 字节)"; echo "✗ $f 是 0 字节"
+            else
+              echo "✓ $f = $sz 字节"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Release $TAG 的资产不完整/损坏：$MISSING"
+            exit 1
+          fi
+          echo "✓ 全部必备资产都在 Release 上且字节数非零"

@@ -718,6 +718,27 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
        * ⚠️ 失败**不致命**（属性名若在某版 mpv 上不存在）⇒ catch 住只记日志，
        *    绝不让它阻断起播。与既有"宁可不修也不弄坏"的克制一致。
        */
+      /*
+       * ★★★ 2026-10-14（CR #27）：清缓存必须挪到 `open()` **之前** ——
+       *     原来在 `open()+play()` **之后**，那两个 await 期间新台事件
+       *     可能已经到达，随后的 reset 会把**新台**的判决清掉。
+       * ```text
+       * 原顺序：… await open(); await play(); → _resetVideoOutputCache()
+       * 问题：`_tracksSub` / `_videoParamsSub` 在 open/play 的 await 期间
+       *   就可能收到**新台**的事件（写入 _hasVideoTrack / _videoTrackSeen /
+       *   _realAudioTrackSeen / _lastVideoDw）
+       *   ⇒ 紧接着的 reset 把这些**新台的**结果清掉：
+       *      · 纯音频流：`trackEvidence()` 的补读只更新 `_realAudioTrackSeen`、
+       *        不写回 `_hasVideoTrack` ⇒ `_noVideoTrackAuthoritative` 永假
+       *        ⇒ **"正在加载画面"提示一直不消失**。
+       *      · 视频流：清掉 `_videoTrackSeen` ⇒ 提示继续盖住**已经显示的画面**。
+       * ```
+       * ⇒ 挪到 `open()` 之前：清的是**上一个台**的残留（这才是本意），
+       *   而新台的事件在 open 之后到达时不会被误清。
+       * ⚠️ 仍必须**在看门狗之前**（下面那条 2026-10-13 的教训不变：
+       *    `_watchVideoOutput` 会同步读到 `_lastVideoDw`）。
+       */
+      _resetVideoOutputCache();
       final native0 = p.platform;
       if (native0 is NativePlayer) {
         await _applyLiveFastStart(p);
@@ -746,7 +767,15 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
        *   若把清缓存放在它后面，看门狗会先读到**上一个台**的 dw/结论
        *   ⇒ 从"好台"换到"坏台"时新台被**立刻**误判就绪，坏台永不告警。
        */
-      _resetVideoOutputCache(); // ★ 换台 ⇒ 上一集的缓存判决作废（必须在起看门狗之前）
+      /*
+       * ⚠️ 2026-10-14（CR #27）：这里的清缓存**已删** ——
+       *   它已上移到**本方法开头**（`open()` 之前）。
+       *   原位置（`open()+play()` 之后）会把**新台**在 await 期间
+       *   到达的事件清掉 ⇒ "正在加载画面"提示可能一直不消失
+       *   （纯音频流）或继续盖住**已经显示的画面**（视频流）。
+       * ⚠️ 2026-10-13 那条"必须在起看门狗之前"的认知**仍然成立** ——
+       *   本方法开头的 reset 仍在 `unawaited(_watchVideoOutput(...))` 之前。
+       */
       unawaited(_watchVideoOutput(++_videoOutputToken));
       /*
        * ★ 2026-10-08（Owner 第 3 条）：起播成功必须留一行日志。
@@ -858,7 +887,15 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
        *   若把清缓存放在它后面，看门狗会先读到**上一个台**的 dw/结论
        *   ⇒ 从"好台"换到"坏台"时新台被**立刻**误判就绪，坏台永不告警。
        */
-      _resetVideoOutputCache(); // ★ 换台 ⇒ 上一集的缓存判决作废（必须在起看门狗之前）
+      /*
+       * ⚠️ 2026-10-14（CR #27）：这里的清缓存**已删** ——
+       *   它已上移到**本方法开头**（`open()` 之前）。
+       *   原位置（`open()+play()` 之后）会把**新台**在 await 期间
+       *   到达的事件清掉 ⇒ "正在加载画面"提示可能一直不消失
+       *   （纯音频流）或继续盖住**已经显示的画面**（视频流）。
+       * ⚠️ 2026-10-13 那条"必须在起看门狗之前"的认知**仍然成立** ——
+       *   本方法开头的 reset 仍在 `unawaited(_watchVideoOutput(...))` 之前。
+       */
       unawaited(_watchVideoOutput(++_videoOutputToken));
       /*
        * ★★★ task-74 ⑤ 残余竞态修复（第二侧，换台路径）：

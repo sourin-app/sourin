@@ -331,6 +331,30 @@ Future<void> main() async {
   }
 
   /*
+   * ★★★ 2026-10-14（CR #28）：逐 tab 取证/自拍**独立于帧日志开关**。
+   *
+   * # 缺陷（CR 指出，属实）
+   * ```text
+   * 原实现把「逐 tab 调度 + 自拍」写在 `_installFrameLogger()` **里面**
+   * ⇒ 只设 `SOURIN_TABS=1 SOURIN_SHOT=1`（不设 SOURIN_FRAME_LOG）时，
+   *   那个函数根本不被调用 ⇒ **一张截图都不会产出**。
+   *   ★ 我本地恰好三条都设了 ⇒ 掩盖了这个缺陷。
+   * ```
+   * # 修法：拆开——帧日志归帧日志，逐 tab/自拍归这里
+   * ```text
+   * `_installFrameLogger` 只负责"记帧 + 落盘"；
+   * `_installTabProbe` 只负责"轮切 tab（+ 可选自拍）"。
+   * 两者各自读自己的环境变量 ⇒ 任意组合都能单独用。
+   *   · 只要逐 tab 取证      ⇒ SOURIN_TABS=1
+   *   · 只要截图             ⇒ SOURIN_TABS=1 SOURIN_SHOT=1
+   *   · 要"取证 + 帧读数"    ⇒ 再加 SOURIN_FRAME_LOG=1
+   * ```
+   */
+  if (Platform.environment['SOURIN_TABS'] == '1') {
+    _installTabProbe();
+  }
+
+  /*
    * ★★★ 必须初始化 media_kit —— 否则**播放器根本起不来**
    *     （2026-09-23 交付实测发现的真 bug）
    *
@@ -7680,49 +7704,69 @@ void _installFrameLogger() {
    *
    * ⚠️ 生产恒不开（无此环境变量 ⇒ 整段不执行）。
    */
-  if (Platform.environment['SOURIN_TABS'] == '1') {
-    var i = 0;
-    const tabs = AppTab.values;
-    /*
-     * ★★ 2026-10-14：`SOURIN_SHOT=1` 时**同时自拍**。
-     *   为什么要自拍：屏幕截图对窗口坐标敏感（本机上抓不到源影窗口）。
-     *   而 `RenderRepaintBoundary.toImage()` 在**进程内**光栅化，
-     *   与窗口在不在前台无关 —— 本仓既有手法
-     *   （见 `lib/merge_view_probe.dart` / `t513_danmaku_probe.dart`）。
-     */
-    final shot = Platform.environment['SOURIN_SHOT'] == '1';
-    if (shot) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        unawaited(_selfCaptureOnce('.probe/tabshot_000.png'));
+}
+
+/// **逐 tab 取证 / 自拍** —— `SOURIN_TABS=1` 时挂上（**独立于帧日志开关**）。
+///
+/// # 做什么
+/// ```text
+/// 每个 tab 停 5 秒（够稳定 + 采到稳态帧），再切下一个。共两轮：
+///   第一轮 = 各页首次挂载（含首建成本）
+///   第二轮 = 稳态（分析以它为准）
+/// ```
+///
+/// # 与帧日志的关系（2026-10-14 CR #28）
+/// ```text
+/// ★ 本函数**独立**于 `_installFrameLogger` —— 后者只在 `SOURIN_FRAME_LOG=1` 时跑。
+///   我第一版把整段写在那个函数里 ⇒ 只设 SOURIN_TABS 时**什么都不会发生**
+///   （CR 抓到；我本地恰好三个变量都设了，掩盖了它）。
+/// ⇒ 现在的组合：
+///     SOURIN_TABS=1                      ⇒ 只轮切（日志打到 stdout）
+///     SOURIN_TABS=1 SOURIN_SHOT=1        ⇒ 轮切 + 自拍（产物 .probe/tabshot_*.png）
+///     ＋ SOURIN_FRAME_LOG=1              ⇒ 再加逐帧读数（.probe/frame_log.txt）
+/// ```
+///
+/// ⚠️ 生产恒不开（无 `SOURIN_TABS=1` ⇒ 整段不执行）。
+void _installTabProbe() {
+  var i = 0;
+  const tabs = AppTab.values;
+
+  /// 自拍一帧（`SOURIN_SHOT=1` 才用）
+  final shot = Platform.environment['SOURIN_SHOT'] == '1';
+
+  /// 切页后连拍几帧（正好落在过渡窗口内）
+  ///
+  /// ⚠️ 相位编号规则：第 n 次切页的 6 张 = `n0..n5`
+  ///    （n 从 1 开始，两张表：`010..015` 是第 1 次切页）。
+  void burst(int phase) {
+    for (var k = 0; k < 6; k++) {
+      final idx = phase * 10 + k;
+      Future<void>.delayed(Duration(milliseconds: 40 * k), () async {
+        await _selfCaptureOnce(
+            '.probe/tabshot_${idx.toString().padLeft(3, '0')}.png');
       });
     }
-    Timer.periodic(const Duration(seconds: 5), (tm) {
-      buf.writeln('── TABS 相位 ${i + 1}：切到 ${tabs[i % tabs.length].name}'
-          '（帧 ${all.length}）');
-      flush();
-      debugShellKey.currentState?.debugSwitchTo(tabs[i % tabs.length]);
-      /*
-       * ★ 切完**立刻**连拍几帧（正好落在过渡窗口内）。
-       *   只在 `SOURIN_SHOT=1` 时做（生产零开销）。
-       */
-      if (shot) {
-        for (var k = 0; k < 6; k++) {
-          final idx = (i + 1) * 10 + k;
-          Future<void>.delayed(Duration(milliseconds: 40 * k), () async {
-            await _selfCaptureOnce(
-                '.probe/tabshot_${idx.toString().padLeft(3, '0')}.png');
-          });
-        }
-      }
-      i++;
-      // 两轮（每页访问两次：首建 + 稳态）后停
-      if (i >= tabs.length * 2) {
-        buf.writeln('── TABS 结束（机内 ${DateTime.now().toIso8601String()}）');
-        flush();
-        tm.cancel();
-      }
+  }
+
+  if (shot) {
+    // 启动首帧也留一张（对照：切换前长什么样）
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_selfCaptureOnce('.probe/tabshot_000.png'));
     });
   }
+
+  Timer.periodic(const Duration(seconds: 5), (tm) {
+    final t = tabs[i % tabs.length];
+    debugPrint('── TABS 相位 ${i + 1}：切到 ${t.name}');
+    debugShellKey.currentState?.debugSwitchTo(t);
+    if (shot) burst(i + 1);
+    i++;
+    // 两轮（每页访问两次：首建 + 稳态）后停
+    if (i >= tabs.length * 2) {
+      debugPrint('── TABS 结束（机内 ${DateTime.now().toIso8601String()}）');
+      tm.cancel();
+    }
+  });
 }
 
 /// 自拍一帧（**进程内**光栅化，与窗口前台/屏幕坐标无关）

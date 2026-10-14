@@ -50,6 +50,9 @@ import 'package:flutter/foundation.dart'
     show ValueListenable, ValueNotifier;
 import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart' show SchedulerBinding, FrameTiming;
+// ★ 自拍用（SOURIN_SHOT=1）：RenderRepaintBoundary + toImage
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
+import 'dart:ui' as ui;
 import 'package:material_ui/material_ui.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:media_kit/media_kit.dart';
@@ -325,6 +328,30 @@ Future<void> main() async {
    */
   if (Platform.environment['SOURIN_FRAME_LOG'] == '1') {
     _installFrameLogger();
+  }
+
+  /*
+   * ★★★ 2026-10-14（CR #28）：逐 tab 取证/自拍**独立于帧日志开关**。
+   *
+   * # 缺陷（CR 指出，属实）
+   * ```text
+   * 原实现把「逐 tab 调度 + 自拍」写在 `_installFrameLogger()` **里面**
+   * ⇒ 只设 `SOURIN_TABS=1 SOURIN_SHOT=1`（不设 SOURIN_FRAME_LOG）时，
+   *   那个函数根本不被调用 ⇒ **一张截图都不会产出**。
+   *   ★ 我本地恰好三条都设了 ⇒ 掩盖了这个缺陷。
+   * ```
+   * # 修法：拆开——帧日志归帧日志，逐 tab/自拍归这里
+   * ```text
+   * `_installFrameLogger` 只负责"记帧 + 落盘"；
+   * `_installTabProbe` 只负责"轮切 tab（+ 可选自拍）"。
+   * 两者各自读自己的环境变量 ⇒ 任意组合都能单独用。
+   *   · 只要逐 tab 取证      ⇒ SOURIN_TABS=1
+   *   · 只要截图             ⇒ SOURIN_TABS=1 SOURIN_SHOT=1
+   *   · 要"取证 + 帧读数"    ⇒ 再加 SOURIN_FRAME_LOG=1
+   * ```
+   */
+  if (Platform.environment['SOURIN_TABS'] == '1') {
+    _installTabProbe();
   }
 
   /*
@@ -785,12 +812,28 @@ Future<void> main() async {
   if (noGlass) {
     debugPrint('[T98] SOURIN_NO_GLASS=1 ⇒ 玻璃模糊关闭（对照实验）');
   }
-  runApp(noGlass
+  /*
+   * ★★ 2026-10-14：`SOURIN_SHOT=1` 时在根上包一层**有名的 RepaintBoundary**。
+   *
+   * # 为什么需要它
+   * ```text
+   * “切页时两页叠在一起”这类缺陷**读数看不出来**（build/raster 都正常）
+   * ⇒ 必须**看像素**。而屏幕截图对窗口坐标敏感（本机抓不到窗口）。
+   * ⇒ 自拍：`RenderRepaintBoundary.toImage()` 在**进程内**光栅化，不靠屏幕。
+   * ```
+   * ⚠️ 只在环境变量开时才包这一层（生产零开销）。
+   */
+  final shotMode = Platform.environment['SOURIN_SHOT'] == '1';
+  Widget app = noGlass
       ? GlassAccessibilityScope(
           reduceTransparency: true,
           child: SourinApp(coreError: coreError, coreDataDir: coreDataDir),
         )
-      : SourinApp(coreError: coreError, coreDataDir: coreDataDir));
+      : SourinApp(coreError: coreError, coreDataDir: coreDataDir);
+  if (shotMode) {
+    app = RepaintBoundary(key: _probeShotKey, child: app);
+  }
+  runApp(app);
 
   /*
    * ══════════════════════════════════════════════════════════════════
@@ -1000,60 +1043,6 @@ Future<String> _resolveDataDir() async {
 /// **每次进入都从 -0.02 补到 0**（即使目标值一直是 0）——
 /// `TweenAnimationBuilder` 用 `key` 也不行（同样会重建子树），
 /// 所以用**自己的 AnimationController**：进入时 `forward(from: 0)`。
-/// ★★★ 2026-10-14：把「离开的那一页」**光栅快照**成一张图（切 tab 时用）
-///
-/// # 为什么要它（实测）
-/// ```text
-/// `SOURIN_TABS=1` 逐页取证：切 tab 那几帧的 raster 冲到 20~45ms（超预算），
-/// 而 **build 只有 0.4~1.5ms** ⇒ 纯光栅成本。
-/// 根因与「从播放页返回卡顿」同一个：过渡期间两页各自**整页重绘**
-/// （离场页构图不变，只是整体淡出）。
-/// ```
-///
-/// # 与路由那处的异同
-/// ```text
-/// 同：都用 `SnapshotWidget`（Flutter 官方 `allowSnapshotting` 的做法）。
-/// 异：**本处不需要门控开关** —— 它只在 `widget.leaving && leavingFade != null`
-///     时被挂上，生命周期恰好等于"这一段退场动画"，动画一结束整个
-///     `_KeepAliveTransition` 就回到 `Offstage`（见父级 build）
-///     ⇒ 不会被永久快照、不会冻住页面。
-///     而路由那处的离场页是**常驻**的（路由还在栈里），所以必须显式门控。
-/// ```
-///
-/// ⚠️ 快照失败（如平台视图）时 `SnapshotMode.permissive` 会自动回落到
-///    正常绘制 ⇒ 最坏情况等于"没优化"，不会画错。
-class _SnapshotOnce extends StatefulWidget {
-  const _SnapshotOnce({required this.child});
-
-  final Widget child;
-
-  @override
-  State<_SnapshotOnce> createState() => _SnapshotOnceState();
-}
-
-class _SnapshotOnceState extends State<_SnapshotOnce> {
-  /// `allowSnapshotting: true` ⇒ 用快照替换子树。
-  ///
-  /// ⚠️ 本组件**只在退场动画期间存在**（父级按 `leaving` 挂/卸）——
-  ///    所以"一直开着"在这里**不会**把页面冻住（生命周期就是短的那一段）。
-  ///    ★ 与路由那处不同：那里离场页常驻，必须由动画状态显式开关。
-  final SnapshotController _c = SnapshotController(allowSnapshotting: true);
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => SnapshotWidget(
-    controller: _c,
-    mode: SnapshotMode.permissive,
-    autoresize: true,
-    child: widget.child,
-  );
-}
-
 class _KeepAliveTransition extends StatefulWidget {
   const _KeepAliveTransition({
     required this.active,
@@ -1299,29 +1288,39 @@ class _KeepAliveTransitionState extends State<_KeepAliveTransition>
      * ★★★ 2026-10-14（Owner「死磕每个页面的性能」）：离场页**光栅快照**
      * ══════════════════════════════════════════════════════════════════════
      *
-     * # 实测（`SOURIN_TABS=1` 自动轮流切 tab，逐页 raster p50）
+     * ⚠️⚠️ 2026-10-14 **已回退**（Owner 报「页面切换出现这个情况」+ 截图）
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * # 当初为什么加（性能）
      * ```text
-     * 切 tab 那几帧的 raster 会冲到 20~45ms（超预算），而 **build 只有
-     * 0.4~1.5ms** —— 全是**光栅**成本。
-     * ⇒ 与"从播放页返回卡顿"是**同一个根因**：过渡期间两页各自
-     *   **整页重绘**（页面构图不变，只是整体淡入/滑动）。
+     * `SOURIN_TABS=1` 实测：切 tab 那几帧 raster 冲到 20~45ms（超预算），
+     * 而 **build 只有 0.4~1.5ms** ⇒ 全是光栅成本
+     * ⇒ 与"从播放页返回卡顿"同源：过渡期两页各自整页重绘。
+     * ⇒ 试了"离场页光栅快照"（Flutter 官方 Zoom 的 `allowSnapshotting` 那招）。
      * ```
      *
-     * # 修法：与 `page_transition_route.dart` 的离场页快照**同一招**
+     * # 为什么回退（**视觉坏了**，性能再好也不能要）
      * ```text
-     * Flutter 官方 Zoom 过渡就是这么做的（`allowSnapshotting`）：
-     * 把**构图不变**的离场页光栅化成一张图 ⇒ 过渡期每帧只搬图。
-     * ⇒ 这里用同一套：只在"有离场页正在淡出"（`leavingFade != null`）时挂快照。
+     * Owner 截图：切页时**两页叠在一起**（首页与直播页同时可见、
+     * 且停在那个状态）。实测复现：
+     *   · 挂快照   ⇒ 叠影
+     *   · 不挂快照 ⇒ 正常（同一驱动、同一时刻）
+     * ⇒ `SnapshotWidget` 与本层的过渡结构**不兼容**：
+     *   它把子树换成一张**光栅图**（引入新的 layer 边界），
+     *   而本层的 `FadeTransition`/`SlideTransition`/离场放大是作用在
+     *   **子树**上的 —— 换成图之后那条变换链与快照层没有正确复合，
+     *   于是离场页以**全不透明、未变换**的形态留在屏幕上。
      * ```
-     *
-     * ⚠️ 与路由那处的**关键差异**：本层是**纯内部组合**，没有测试读它的
-     *    widget 结构（路由那处有 `t50c` / `transition_clip_titlebar` 读树）。
-     *    所以这里**不需要** `debugDisableExitSnapshot` 那种旁路。
-     * ⚠️ 只在 `lf != null` 时加 —— 其余四种情况（当前页/隐藏页/未访问页）
-     *    的树与改动前**逐层一致**（与上面那条注释同一纪律）。
+     * ★ 教训（值得记）：`SnapshotWidget` 在**路由**那处能用（已验证），
+     *   是因为那条链的形状不同（`page_transition_route.dart` 里
+     *   快照只包**过渡层内部的 child**，且外层没有本处这种
+     *   "同页叠多层 Transform + 兄弟页交叉淡出"的结构）。
+     *   ⇒ **同一个组件换一个组合位置就未必成立** —— 必须**看像素**，
+     *     不能只看"它能编译 + 单测绿 + 读数变好"。
+     * ★ 本文件的 `t1013_tab_snapshot_test.dart` 转为**记录这次回退**
+     *   （断言"这里**不许**再挂快照"），防止有人再按"性能更好"的理由加回来。
      */
-    final Widget finalWrapped =
-        widget.leaving && lf != null ? _SnapshotOnce(child: wrapped) : wrapped;
+    final Widget finalWrapped = wrapped;
 
     return IgnorePointer(
       /*
@@ -7484,6 +7483,10 @@ class _BottomPalette {
 //     带**前后各 3 帧**的读数 ⇒ 能看出是哪一下、持续几帧。
 //   · 另外每 5 秒写一行「窗口汇总」（帧数 / p50 / p95 / max / 超预算数），
 //     这样即使没人操作也能看到稳态成本。
+/// **只给 `SOURIN_SHOT=1` 用**：根上的 RepaintBoundary ⇒ 可自拍。
+/// 生产不包这层（不影响渲染树）。
+final GlobalKey _probeShotKey = GlobalKey();
+
 void _installFrameLogger() {
   final f = File('.probe/frame_log.txt');
   final buf = StringBuffer();
@@ -7701,22 +7704,91 @@ void _installFrameLogger() {
    *
    * ⚠️ 生产恒不开（无此环境变量 ⇒ 整段不执行）。
    */
-  if (Platform.environment['SOURIN_TABS'] == '1') {
-    var i = 0;
-    const tabs = AppTab.values;
-    Timer.periodic(const Duration(seconds: 5), (tm) {
-      buf.writeln('── TABS 相位 ${i + 1}：切到 ${tabs[i % tabs.length].name}'
-          '（帧 ${all.length}）');
-      flush();
-      debugShellKey.currentState?.debugSwitchTo(tabs[i % tabs.length]);
-      i++;
-      // 两轮（每页访问两次：首建 + 稳态）后停
-      if (i >= tabs.length * 2) {
-        buf.writeln('── TABS 结束（机内 ${DateTime.now().toIso8601String()}）');
-        flush();
-        tm.cancel();
-      }
+}
+
+/// **逐 tab 取证 / 自拍** —— `SOURIN_TABS=1` 时挂上（**独立于帧日志开关**）。
+///
+/// # 做什么
+/// ```text
+/// 每个 tab 停 5 秒（够稳定 + 采到稳态帧），再切下一个。共两轮：
+///   第一轮 = 各页首次挂载（含首建成本）
+///   第二轮 = 稳态（分析以它为准）
+/// ```
+///
+/// # 与帧日志的关系（2026-10-14 CR #28）
+/// ```text
+/// ★ 本函数**独立**于 `_installFrameLogger` —— 后者只在 `SOURIN_FRAME_LOG=1` 时跑。
+///   我第一版把整段写在那个函数里 ⇒ 只设 SOURIN_TABS 时**什么都不会发生**
+///   （CR 抓到；我本地恰好三个变量都设了，掩盖了它）。
+/// ⇒ 现在的组合：
+///     SOURIN_TABS=1                      ⇒ 只轮切（日志打到 stdout）
+///     SOURIN_TABS=1 SOURIN_SHOT=1        ⇒ 轮切 + 自拍（产物 .probe/tabshot_*.png）
+///     ＋ SOURIN_FRAME_LOG=1              ⇒ 再加逐帧读数（.probe/frame_log.txt）
+/// ```
+///
+/// ⚠️ 生产恒不开（无 `SOURIN_TABS=1` ⇒ 整段不执行）。
+void _installTabProbe() {
+  var i = 0;
+  const tabs = AppTab.values;
+
+  /// 自拍一帧（`SOURIN_SHOT=1` 才用）
+  final shot = Platform.environment['SOURIN_SHOT'] == '1';
+
+  /// 切页后连拍几帧（正好落在过渡窗口内）
+  ///
+  /// ⚠️ 相位编号规则：第 n 次切页的 6 张 = `n0..n5`
+  ///    （n 从 1 开始，两张表：`010..015` 是第 1 次切页）。
+  void burst(int phase) {
+    for (var k = 0; k < 6; k++) {
+      final idx = phase * 10 + k;
+      Future<void>.delayed(Duration(milliseconds: 40 * k), () async {
+        await _selfCaptureOnce(
+            '.probe/tabshot_${idx.toString().padLeft(3, '0')}.png');
+      });
+    }
+  }
+
+  if (shot) {
+    // 启动首帧也留一张（对照：切换前长什么样）
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_selfCaptureOnce('.probe/tabshot_000.png'));
     });
+  }
+
+  Timer.periodic(const Duration(seconds: 5), (tm) {
+    final t = tabs[i % tabs.length];
+    debugPrint('── TABS 相位 ${i + 1}：切到 ${t.name}');
+    debugShellKey.currentState?.debugSwitchTo(t);
+    if (shot) burst(i + 1);
+    i++;
+    // 两轮（每页访问两次：首建 + 稳态）后停
+    if (i >= tabs.length * 2) {
+      debugPrint('── TABS 结束（机内 ${DateTime.now().toIso8601String()}）');
+      tm.cancel();
+    }
+  });
+}
+
+/// 自拍一帧（**进程内**光栅化，与窗口前台/屏幕坐标无关）
+///
+/// 用途：给“切页时两页叠在一起”这类**视觉**缺陷取证（读数看不出这种问题）。
+/// ⚠️ 只在 `SOURIN_TABS=1` + `SOURIN_SHOT=1` 时被调（生产零开销）。
+Future<void> _selfCaptureOnce(String path) async {
+  try {
+    /*
+     * ★ 用**根视图的 RepaintBoundary**，不是 navigator 的 context ——
+     *   后者的 render object 不一定是 RepaintBoundary（会静默 return）。
+     *   `RendererBinding.renderViews.first` 就是整个应用根，可 toImage。
+     */
+    final ro = _probeShotKey.currentContext?.findRenderObject();
+    if (ro is! RenderRepaintBoundary) return;
+    final img = await ro.toImage(pixelRatio: 1.0);
+    final bd = await img.toByteData(format: ui.ImageByteFormat.png);
+    if (bd == null) return;
+    await File(path).writeAsBytes(bd.buffer.asUint8List(), flush: true);
+    debugPrint('[SHOT] 已写 $path');
+  } catch (e) {
+    debugPrint('[SHOT] 失败: $e');
   }
 }
 

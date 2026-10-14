@@ -13,7 +13,7 @@
 //
 // 判据不是"不报错"，而是：
 // ```text
-// ① 频道列表非空，且是真实中文频道名（央视/卫视）
+// ① 频道列表非空，且是真实中文频道名（某电视台/卫视）
 // ② 播放地址是**真实 URL**（http/m3u8），不是空串
 // ③ EPG 若有则结构正确
 // ```
@@ -230,15 +230,15 @@ async fn live_commands_reject_unknown_provider() {
 // ═══════════════════════════════════════════════════════════════════════
 //
 // # 为什么加这个源（用户原话）
-// > 「cctv的直播还是不行，之前给你参考的tvbox源应该也有包含直播的，
+// > 「srcl的直播还是不行，之前给你参考的tvbox源应该也有包含直播的，
 // >   你看看  都没整合进去」
 //
-// # 央视官方源为什么"不行"（实测，不是猜）
-// `cctv.js` 的注释记录过：官方直播**视频轨被加密**（udrm）——
+// # 某电视台官方源为什么"不行"（实测，不是猜）
+// `srcl.js` 的注释记录过：官方直播**视频轨被加密**（udrm）——
 // 容器/NAL 头明文，但载荷加密，解码报
 // `top block unavailable for requested intra mode`。
-// 我实测 16 个央视频道**全部**如此（204~262 个解码错误）⇒ 内容方保护，绕不过。
-// ⇒ 出路是**换一条不加密的源**（iptv-org）。
+// 我实测 16 个某电视台频道**全部**如此（204~262 个解码错误）⇒ 内容方保护，绕不过。
+// ⇒ 出路是**换一条不加密的源**（public-iptv-list）。
 //
 // # ★★ 选频道的判据：必须**真解码**，不能只看 HTTP
 // ```text
@@ -249,7 +249,7 @@ async fn live_commands_reject_unknown_provider() {
 // ★ 我第一版探针只数"解码错误数"，于是**连不上的 URL 得到 0 错误**
 //   ⇒ 被判成"可播"（假阴性）⇒ 修法：`connected AND decoded AND errs==0`。
 //
-// 全量实测（cn.m3u 144 条）：真能解码的 CCTV 相关 = **28 个**
+// 全量实测（cn.m3u 144 条）：真能解码的 SRCL 相关 = **28 个**
 // ⇒ 白名单 `VERIFIED_IDS` 就是这 28 个（`.probe/t34_check_ids.py` 可复核）。
 //
 // # ⚠️ 白名单是"外部数据"，必须脚本核对
@@ -270,18 +270,19 @@ fn tmp_data(tag: &str) -> std::path::PathBuf {
     d
 }
 
-/// ★ 离线：m3u 解析契约（用真实 iptv-org 片段，含各种边界）
+/// ★ 离线：**随仓库发布的插件**必须能加载（不需要网络）
+///
+/// # 2026-10-13 改造（原为 `iptv_m3u_parse_contract`）
+/// ```text
+/// 原来这条断言"iptv 插件必须被加载"。而按 Owner 的架构口径，
+/// **具体视频网站的插件不进仓库**（客户端只提供播放能力）⇒
+/// 该类插件已移出 ⇒ 原来断言的那个 id 不存在了。
+/// ⇒ 改成断言**仓库里实际发布的那些插件**（不点名具体站点）：
+///   逐个加载、语法/元信息正确。这保留了本测试的**真实价值**
+///   （"发布的插件能不能加载"），且不再依赖任何被移除的站点插件。
+/// ```
 #[test]
-fn iptv_m3u_parse_contract() {
-    /*
-     * 直接测 JS 的解析函数 —— 通过插件宿主跑。
-     * ⚠️ `parseM3u` 不是 plugin 的方法（是内部函数），
-     *    所以这里用 `liveChannels()` 的**间接**验证太弱。
-     *    改为：把解析逻辑的关键行为写成**宿主侧可调**的形式 ——
-     *    见 `plugin.liveChannels()` 的结果断言（下面的集成测试）。
-     *
-     * 本测试只验证"插件能被加载 + 能力位正确"（不需要网络）。
-     */
+fn shipped_plugins_load() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -302,15 +303,17 @@ fn iptv_m3u_parse_contract() {
         println!("  ✗ {f}: {why}");
     }
 
-    let iptv = plugins
-        .iter()
-        .find(|p| p.manifest().id == "iptv")
-        .expect("★ iptv 插件必须被加载（加载失败说明语法/元信息有错）");
-    let m = iptv.manifest();
-    assert!(m.capabilities.live, "★ iptv 必须声明 live 能力");
-    assert!(!m.capabilities.vod, "iptv 是纯直播源，不该声明 vod");
-    assert_eq!(m.name, "IPTV 直播");
-    println!("✓ iptv 插件加载成功，能力位正确");
+    // ① 仓库里**至少**要有一个能加载的插件（否则"一个都没有"也算通过，是假绿）
+    assert!(
+        !plugins.is_empty(),
+        "★ 随仓库发布的插件一个都没加载成功 —— 不是「没有站点插件」的意思，\
+         而是**连 demo 都挂了**。看上面的 bad 列表。"
+    );
+    // ② 不该有坏插件（随包发布的，语法/元信息必须全对）
+    assert!(
+        bad.is_empty(),
+        "★ 随仓库发布的插件里有加载失败的：{bad:?}（发布物必须全部可用）"
+    );
     let _ = data;
 }
 
@@ -335,7 +338,7 @@ async fn iptv_live_channels_matches_whitelist() {
     }
 
     /*
-     * ★★ 核心断言：**28 个**（我逐个真解码验证过的 CCTV 数量）
+     * ★★ 核心断言：**28 个**（我逐个真解码验证过的 SRCL 数量）
      *
      * 若少于 28 ⇒ 白名单里有 tvg-id 拼错/已下架（用户会少看到台）
      * 若多于 28 ⇒ 过滤没生效（用户会看到不可播的台）
@@ -355,12 +358,12 @@ async fn iptv_live_channels_matches_whitelist() {
     );
     // 每个频道 id 必须非空（id 是 liveStream 的入参）
     assert!(chans.iter().all(|c| !c.id.is_empty()), "★ 有频道 id 为空");
-    // ★ 必须有 CCTV-1（用户最关心的那个）
+    // ★ 必须有 SRCL-1（用户最关心的那个）
     assert!(
-        chans.iter().any(|c| c.id == "CCTV1.cn@SD"),
-        "★ 必须有 CCTV-1 —— 没有的话用户最直观的需求就没满足"
+        chans.iter().any(|c| c.id == "SRCL1.cn@SD"),
+        "★ 必须有 SRCL-1 —— 没有的话用户最直观的需求就没满足"
     );
-    println!("✓ 白名单过滤生效，且含 CCTV-1");
+    println!("✓ 白名单过滤生效，且含 SRCL-1");
     let _ = data;
 }
 
@@ -377,10 +380,10 @@ async fn iptv_live_stream_returns_url() {
         .expect("iptv 插件");
 
     let cands = iptv
-        .live_stream("CCTV1.cn@SD")
+        .live_stream("SRCL1.cn@SD")
         .await
-        .expect("CCTV-1 的 liveStream 不该失败");
-    println!("\n★ CCTV-1 候选流:");
+        .expect("SRCL-1 的 liveStream 不该失败");
+    println!("\n★ SRCL-1 候选流:");
     for c in &cands {
         println!("  {:?} {} {:?}", c.kind, c.url, c.label);
     }
@@ -407,9 +410,9 @@ async fn iptv_live_stream_returns_url() {
 //
 // v1.0.0 用户会看到：
 // ```text
-// 分栏标题： "General" / "News"          ← iptv-org 的英文分组
-// 频道名  ： "CCTV-1 (720p)"             ← 带画质噪音
-// 而且与 cctv.js 源不一致（那边是 "CCTV-1 综合"）⇒ 用户困惑
+// 分栏标题： "General" / "News"          ← public-iptv-list 的英文分组
+// 频道名  ： "SRCL-1 (720p)"             ← 带画质噪音
+// 而且与 srcl.js 源不一致（那边是 "SRCL-1 综合"）⇒ 用户困惑
 // ```
 // 坏了的表现很"安静"：只是显示英文/空，**不会崩**，所以必须显式守。
 
@@ -417,8 +420,8 @@ async fn iptv_live_stream_returns_url() {
 ///
 /// # 这条守的是一个**真踩过的坑**
 /// ```text
-/// 我们的 tvg_id       ： 'CCTV1.cn@SD'   ← 带画质后缀
-/// channels.json 的 id ： 'CCTV1.cn'      ← 不带
+/// 我们的 tvg_id       ： 'SRCL1.cn@SD'   ← 带画质后缀
+/// channels.json 的 id ： 'SRCL1.cn'      ← 不带
 /// ⇒ 拿带后缀的去查表 **永远查不到**（会静默回落到英文名）
 /// ★ lead 的检查脚本第一版就是这么错的：报"28 个都不在表里"
 /// ```
@@ -456,14 +459,14 @@ async fn iptv_v110_suffix_stripping_finds_chinese_name() {
         chans.len()
     );
 
-    // ★ 具体点名：CCTV-1 必须显示成 "CCTV-1 综合"
+    // ★ 具体点名：SRCL-1 必须显示成 "SRCL-1 综合"
     let c1 = chans
         .iter()
-        .find(|c| c.id == "CCTV1.cn@SD")
-        .expect("必须有 CCTV-1");
+        .find(|c| c.id == "SRCL1.cn@SD")
+        .expect("必须有 SRCL-1");
     assert!(
         c1.name.contains("综合"),
-        "★ CCTV-1 应显示为 'CCTV-1 综合'（与 cctv.js 一致），实际 {:?}",
+        "★ SRCL-1 应显示为 'SRCL-1 综合'（与 srcl.js 一致），实际 {:?}",
         c1.name
     );
     // ★ 且**不能**再有画质噪音
@@ -472,7 +475,7 @@ async fn iptv_v110_suffix_stripping_finds_chinese_name() {
         "★ 名字里不该再有 '(720p)' 这类噪音，实际 {:?}",
         c1.name
     );
-    println!("✓ CCTV-1 = {:?}（中文 + 无噪音）", c1.name);
+    println!("✓ SRCL-1 = {:?}（中文 + 无噪音）", c1.name);
 
     if let Some(c) = sd {
         println!("  @SD 样本: {} -> {}", c.id, c.name);
@@ -617,7 +620,7 @@ async fn iptv_v110_group_is_chinese_with_fallback() {
 ///                         ⇒ 分支A 没有 `\)` ⇒ 只吃掉 "(600p" ⇒ 剩下 ")"
 /// 对：/\s*\((?:(?:480|...)[pi]|SD|HD)\)\s*/gi   ← 两分支都在括号内
 /// ```
-/// ★ 表现是 "CCTV+ 1 (600p) [Not 24/7]" → **"CCTV+ 1 )"** ——
+/// ★ 表现是 "SRCL+ 1 (600p) [Not 24/7]" → **"SRCL+ 1 )"** ——
 ///   不崩不报错，只是难看 ⇒ 必须显式守。
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "需要真实网络；显式 --ignored 运行"]
@@ -661,12 +664,12 @@ async fn iptv_v110_no_stray_parens() {
     );
     println!("✓ 全部 {} 个名字无孤儿括号/噪音/多余空白", chans.len());
 
-    // ★ 具体点名：CCTV+ 1 应恰好是 "CCTV+ 1"（无中文名，保留英文但去噪音）
-    if let Some(c) = chans.iter().find(|c| c.id == "CCTVPlus1.cn@SD") {
+    // ★ 具体点名：SRCL+ 1 应恰好是 "SRCL+ 1"（无中文名，保留英文但去噪音）
+    if let Some(c) = chans.iter().find(|c| c.id == "SRCLPlus1.cn@SD") {
         assert_eq!(
-            c.name, "CCTV+ 1",
-            "★ CCTV+ 1 应恰好是 'CCTV+ 1'（官方无中文名 ⇒ 保留英文 + 去噪音）"
+            c.name, "SRCL+ 1",
+            "★ SRCL+ 1 应恰好是 'SRCL+ 1'（官方无中文名 ⇒ 保留英文 + 去噪音）"
         );
-        println!("✓ CCTV+ 1 = {:?}（英文保留、噪音已去）", c.name);
+        println!("✓ SRCL+ 1 = {:?}（英文保留、噪音已去）", c.name);
     }
 }

@@ -631,33 +631,15 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               child: Container(
                 width: 560,
                 constraints: const BoxConstraints(maxHeight: 620),
-                decoration: BoxDecoration(
+                child: Material(
                   color: DanmakuTextColors.panelBg.withValues(alpha: 0.98),
-                  borderRadius: Radii.rLg,
-                  border: Border.all(color: DanmakuTextColors.border),
-                ),
-                /*
-                 * ★★★ 2026-10-15 第二版（Owner）：
-                 * > 只有 tab 的内容区域上下滚动,其他区域不滚动
-                 *
-                 * # 为什么不能再把整张卡片塞进一个滚动区
-                 * ```text
-                 * 改前：标题 + 状态 + 状态条 + 页签 + 内容 —— **全部**在同一个
-                 *      SingleChildScrollView 里。
-                 *
-                 * 后果：当前在哪个页签、每个源有多少条，会随着内容
-                 *      一起滚出去。而它们正是“决定点哪个页签”时要看的东西。
-                 * ```
-                 *
-                 * 现在：标题 / 状态 / 状态条 / 页签 四块**钉在外面**，
-                 *      只有 `Expanded` 里那一块随内容滚动。
-                 *
-                 * ⚠️ 实现上必须用 `Expanded` 而不是 `Flexible`：
-                 *    `Flexible` 在内容短时会**缩到内容高度**，于是“固定区”
-                 *    在窗口大时不占满，页签会跟着往上跳。
-                 *    外层已有 `maxHeight: 620`，所以不会无限伸。
-                 */
-                child: Column(
+                  type: MaterialType.card,
+                  clipBehavior: Clip.antiAlias,
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: Radii.rLg,
+                    side: BorderSide(color: DanmakuTextColors.border),
+                  ),
+                  child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     // ── 以下四块固定，不随内容滚动 ────────────
@@ -722,6 +704,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                   ],
                 ),
               ),
+                ),
             ),
           ),
         ),
@@ -1034,18 +1017,34 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     return '弹幕已开启（用户填写 AppId ${DanmakuConfig.maskedAppId}）';
   }
 
+  /*
+   * ★ 2026-10-15（Owner：「这个弹窗好丑…换成 ui 框架提供的」）
+   *
+   * 改前这里是手写 `Row`：**开关在左、文字在右**；而紧挨着的下面三行
+   * （`_typeSwitch`）是**文字在左、开关在右**。同一个面板里两种相反布局，
+   * 看着就是「没对齐」。
+   *
+   * 现在四处开关统一走 `SwitchListTile` —— 它带来三样手写 Row 没有的东西：
+   * ```text
+   * ① 整行可点（不只是那枚 52×32 的开关本身）
+   * ② 点击涟漪 + 水波纹（Material 交互反馈）
+   * ③ 读屏语义（会读成「显示弹幕，开关，已开启」）
+   * ```
+   *
+   * ⚠️ `contentPadding: EdgeInsets.zero`：面板自己已有 24 的左右内边距，
+   *    再叠一层 ListTile 默认的 16 就会比别的行缩进一截。
+   * ⚠️ `dense: true`：面板窄（560），默认行高会让四处开关之间空隙过大。
+   */
   Widget _switchSection() {
-    return Row(
-      children: [
-        Switch(value: widget.state.enabled, onChanged: widget.onSetEnabled),
-        const SizedBox(width: Sp.x2),
-        const Expanded(
-          child: Text(
-            '显示弹幕',
-            style: TextStyle(color: DanmakuTextColors.secondary, fontSize: FontSizes.sm),
-          ),
-        ),
-      ],
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      value: widget.state.enabled,
+      onChanged: widget.onSetEnabled,
+      title: const Text(
+        '显示弹幕',
+        style: TextStyle(color: DanmakuTextColors.secondary, fontSize: FontSizes.sm),
+      ),
     );
   }
 
@@ -1255,23 +1254,24 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   }
 
   /// 三类弹幕的显示开关
+  /// 三类弹幕的显示开关 + 「按正则匹配」
+  ///
+  /// ★ 2026-10-15：与 `_switchSection()` 统一成 `SwitchListTile`
+  ///   （原来这里是手写 Row + Switch）。四处开关现在**同一套布局**：
+  ///   文字在左、开关在右、整行可点、带涟漪与读屏语义。
   Widget _typeSwitch(String label, bool value, void Function(bool) set) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(label, style: const TextStyle(color: DanmakuTextColors.muted, fontSize: 13)),
-          ),
-          Switch(
-            value: value,
-            onChanged: (v) {
-              set(v);
-              // 立刻重建对话框，让开关与渲染同步（父层也会收到回调）
-              widget.onChanged?.call();
-            },
-          ),
-        ],
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      value: value,
+      onChanged: (v) {
+        set(v);
+        // 立刻重建对话框，让开关与渲染同步（父层也会收到回调）
+        widget.onChanged?.call();
+      },
+      title: Text(
+        label,
+        style: const TextStyle(color: DanmakuTextColors.muted, fontSize: 13),
       ),
     );
   }

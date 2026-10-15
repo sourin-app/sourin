@@ -497,12 +497,99 @@ class AppTray with TrayListener, WindowListener {
     await _flushPrefsBeforeExit();
     try {
       await windowManager.setPreventClose(false);
+      /*
+       * ══════════════════════════════════════════════════════════════════
+       * ★★★ 2026-10-14（Owner：「右键任务栏退出会导致卡死，但并不退出」）
+       * ══════════════════════════════════════════════════════════════════
+       *
+       * # 必须走 close()，**不能**走 destroy()
+       *
+       * 两者在原生侧是完全不同的东西（window_manager.cpp:232/236）：
+       * ```text
+       * destroy() → PostQuitMessage(0)                   ← 只往线程队列塞 WM_QUIT
+       * close()   → PostMessage(WM_SYSCOMMAND, SC_CLOSE) ← 走正常的「关窗」路
+       * ```
+       *
+       * destroy() **不销毁窗口**。于是：
+       * ```text
+       * 消息循环拿到 WM_QUIT 退出（wWinMain 返回 EXIT_SUCCESS）
+       * ⇒ 但主窗口还活着、Flutter 引擎还挂在它上面
+       * ⇒ 析构时引擎在「窗口未销毁」的状态下拆除 ⇒ 死锁
+       * ⇒ 进程不退出、窗口也不再响应 = Owner 报的「卡死但不退出」
+       * ```
+       *
+       * close() 走的是**点 X 那条路**：
+       * ```text
+       * WM_SYSCOMMAND/SC_CLOSE ⇒ WM_CLOSE ⇒ DefWindowProc ⇒ DestroyWindow
+       * ⇒ WM_DESTROY ⇒ 主循环 PostQuitMessage ⇒ 引擎干净收尾
+       * ```
+       *
+       * # 实测（2026-10-14，非侵入探针，同一构建切模式对照）
+       * ```text
+       * destroy() ⇒ 卡死（窗口 vis=True 且不再响应 SendMessageTimeout）
+       * close()   ⇒ 1452ms 正常退出
+       * ```
+       *
+       * ⚠️ 必须**先** setPreventClose(false)：否则 WM_CLOSE 会被 window_manager
+       *    拦下（window_manager_plugin.cpp:319-323 返回 -1），窗口关不掉。
+       *
+       * # ★ 也不能只调一次就完事 —— `close()` 在原生侧是
+       *   `PostMessage(hWnd, WM_SYSCOMMAND, SC_CLOSE, 0)`：**异步投递**。
+       *
+       * 而托盘菜单是 `TrackPopupMenu`（同步模态、自带嵌套消息循环）。
+       * 用户从菜单点「退出」时，那个 `SC_CLOSE` 是在**菜单还开着**的时候
+       * 投出去的 ⇒ 可能被那个嵌套循环吃掉 / 在窗口已进入关闭流程时丢掉。
+       * 实测（同一构建连续两次，只差偏好文件）：
+       * ```text
+       * 第一次 EXIT 2446ms；第二次整条 Dart 流程都跑完了（连
+       * 「windowManager.close() 已返回」都打出来了）进程却仍然活着。
+       * ```
+       * ⇒ 关窗必须**确认落地**，没落地就再投一次。
+       */
+      for (var attempt = 0; attempt < 3; attempt++) {
+        await windowManager.close();
+        // 关窗是异步的：给平台侧一点时间把 WM_CLOSE/DestroyWindow 走完。
+        // 窗口真被销毁了，后面的探测会失败（见 _windowStillAlive）。
+        await Future<void>.delayed(const Duration(milliseconds: 120), () {});
+        if (!await _windowStillAlive()) {
+          return;
+        }
+        debugPrint('[TRAY] 关窗没落地（第 ${attempt + 1} 次）⇒ 再投一次');
+      }
+      // 三次都没关掉 ⇒ 用 destroy() 兜底（PostQuitMessage，至少让进程退出）
+      debugPrint('[TRAY] 关窗三次未落地 ⇒ 退回 destroy()');
       await windowManager.destroy();
     } catch (e) {
-      debugPrint('[TRAY] 退出失败，退回 close(): $e');
+      debugPrint('[TRAY] 退出失败，退回 destroy(): $e');
       try {
-        await windowManager.close();
+        await windowManager.destroy();
       } catch (_) {}
+    }
+  }
+
+  /// 窗口是否还活着 —— 关窗是**异步**的，`close()` 返回 ≠ 窗口已经没了。
+  ///
+  /// # 为什么用 `getBounds()` 而不是 `isVisible()`
+  /// ```text
+  /// 「最小化到托盘」时主窗口是 **SW_HIDE** 的 ⇒ `isVisible()` 返回 false，
+  /// 但那不是「窗口没了」，而是 Owner 最常见的使用形态
+  /// （从托盘右键退出往往正发生在窗口已收起时）。
+  /// 用 isVisible() 判活 ⇒ 这种情况会**误判为已关闭** ⇒ 不再重投，
+  /// 卡死照旧。
+  ///
+  /// `getBounds()` 原生侧是 `GetWindowRect(hwnd, &rect)`
+  /// （`window_manager.cpp:726`）：**与可见性无关**，窗口还在就成功；
+  /// 窗口真被销毁 ⇒ 那个 map 是空的 ⇒ Dart 侧 `Rect.fromLTWH` 拿不到值
+  /// 直接抛 ⇒ 正好当作「已经关掉了」。
+  /// ```
+  static Future<bool> _windowStillAlive() async {
+    try {
+      final r = await windowManager.getBounds();
+      // 尺寸拿不到（0 或非有限）也当成已销毁，避免死循环重投。
+      return r.width > 0 && r.height > 0;
+    } catch (_) {
+      // 窗口已销毁 ⇒ GetWindowRect 失败 ⇒ 这里必然抛 ⇒ 不在重投。
+      return false;
     }
   }
 }

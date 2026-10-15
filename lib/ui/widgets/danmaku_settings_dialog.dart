@@ -60,6 +60,7 @@
 //
 // 项目用拆包后的 `material_ui`（见 `test/material_split_test.dart`）。
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/danmaku.dart';
@@ -308,6 +309,40 @@ class DanmakuSettingsState {
 ///
 /// 形态与 `PlayerSettingsSheet` **一致**（全屏 scrim + 居中卡片），
 /// 因为它们在同一个页面里互为邻居 —— 用户不该为两个面板学两套操作。
+/// Live readout for the panel status line (visible / lanes / dropped).
+///
+/// Why this is a separate class rather than fields on DanmakuSettingsState:
+/// these three numbers change EVERY SECOND (they come from the render layer),
+/// while the rest of DanmakuSettingsState only changes on user action.
+/// Mixing them meant the host called setState once per second, rebuilding the
+/// entire 16k-line player page -- exactly the "this modal is so laggy" the
+/// Owner reported.
+///
+/// Splitting it out lets the host push updates through a ValueNotifier so
+/// only the one Text showing these numbers rebuilds.
+///
+/// NOTE: same semantics as count/lanes/dropped on DanmakuSettingsState --
+/// this changes HOW the update is delivered, not WHAT is displayed.
+class DanmakuReadout {
+  const DanmakuReadout({
+    this.count = 0,
+    this.lanes = 0,
+    this.dropped = 0,
+  });
+
+  final int count;
+  final int lanes;
+  final int dropped;
+
+  /// All three equal => nothing to notify (avoids a pointless rebuild).
+  bool sameAs(DanmakuReadout o) =>
+      count == o.count && lanes == o.lanes && dropped == o.dropped;
+
+  @override
+  String toString() =>
+      'DanmakuReadout(count: $count, lanes: $lanes, dropped: $dropped)';
+}
+
 class DanmakuSettingsDialog extends StatefulWidget {
   const DanmakuSettingsDialog({
     super.key,
@@ -323,13 +358,18 @@ class DanmakuSettingsDialog extends StatefulWidget {
     this.onSearch,
     this.onPickMatch,
     this.onHintAction,
-    this.onSetCredentials,
-    this.onClearCredentials,
     this.onChanged,
+    this.readout,
     this.fill = true,
   });
 
   final DanmakuSettingsState state;
+
+  /// Live readout channel (null => fall back to the static values on state).
+  ///
+  /// 2026-10-15: split out so the host no longer needs setState once per
+  /// second just to refresh one line of text (see DanmakuReadout).
+  final ValueListenable<DanmakuReadout>? readout;
 
   final ValueChanged<bool> onSetEnabled;
   final ValueChanged<double> onSetFontScale;
@@ -379,26 +419,21 @@ class DanmakuSettingsDialog extends StatefulWidget {
   /// `DanmakuHint.action` 原样递出去。
   final ValueChanged<DanmakuHintAction>? onHintAction;
 
-  /// ★★★ 2026-10-14（Owner 反馈「弹弹play的凭证流程根本没走通」）：
-  /// 用户点了凭证节的「保存」。
-  ///
-  /// # 为什么走宿主（不是面板自己落盘）
-  /// ```text
-  /// 面板是**纯 UI**（见 DanmakuSettingsState 的类文档）。凭证落盘本身
-  /// 可以面板自己调 `DanmakuConfig.setAppId/setAppSecret`，但**保存之后
-  /// 要触达**（重建客户端 / 让"已保存"提示出现）—— 那属于宿主的状态。
-  /// ⇒ 与 [onSearch] / [onReload] 同一条分工：面板把两个值原样递出去，
-  ///   宿主写盘 + 更新 [DanmakuSettingsState]。
-  /// ```
-  ///
-  /// 传 null ⇒ **凭证节整节不画**（与 [onOpenBili] 同一条规矩：面板不认识
-  /// 宿主的开关，也不该猜；画了却点了没反应比不画更糟）。
-  final void Function(String appId, String appSecret)? onSetCredentials;
-
-  /// 用户点了凭证节的「清除」⇒ 清掉用户覆盖（回落内置，若该构建有内置值）。
-  ///
-  /// 与 [onSetCredentials] 配对：**两个一起给**才画凭证节。
-  final VoidCallback? onClearCredentials;
+  /*
+   * 2026-10-15: onSetCredentials / onClearCredentials were removed.
+   *
+   * Owner: "I told you to delete those two input boxes and use the built-in
+   * credentials." The developer agreement allows built-in credentials via
+   * placeholder + build-time injection, so the panel no longer offers manual
+   * entry and these callbacks lost their only caller.
+   *
+   * Removing them is not just dead-code cleanup: keeping them would mean the
+   * panel still HAS a credential write path with no UI to reach it -- the
+   * "visible interface, no way in" half-state this repo treats as a defect.
+   *
+   * Visibility is not lost: the status line (_credentialStatusText) still
+   * reports "built-in credentials in effect" or "not configured".
+   */
 
   /// 用户改了「显示哪些弹幕 / 屏蔽词」时回调 —— 让宿主重建播放页，
   /// 好让新的过滤规则**立刻**反映到正在播的那一集上。
@@ -436,10 +471,20 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// `controller.value`（editable_text.dart:4028），didUpdateWidget 还会
   /// 重新把 controller 的监听器接上去 ⇒ **每敲一个字就被刷回规范化后的值**，
   /// 第二个屏蔽词根本输不进去。
-  late final TextEditingController _blockWords = TextEditingController(
-    text: DanmakuConfig.blockWords.join('\n'),
-  );
+  late final TextEditingController _blockWords = TextEditingController();
 
+  /// Search box for blocking words (only shown when there are many).
+  ///
+  /// Same lesson as [_blockWords]: creating a new controller every build
+  /// wipes what the user just typed.
+  final TextEditingController _blockSearch = TextEditingController();
+
+  /*
+   * 2026-10-15 redesign: _blockWords is now the ADD field (a single word),
+   * not the whole multi-line blob => its initial value MUST be empty.
+   * If it were still seeded with blockWords.join(), every existing word would
+   * appear in the add box and pressing Enter would re-add them all as one word.
+   */
   /// ★★★ 2026-10-14：搜索关键词输入框的 controller。
   ///
   /// 与 [_blockWords] **完全同一条教训**（那个字段的注释里有实测）：
@@ -449,24 +494,24 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 会把用户刚敲的关键词整段吃掉。
   final TextEditingController _searchKeyword = TextEditingController();
 
-  /// ★★★ 2026-10-14：凭证输入框的两个 controller。
-  ///
-  /// 与 [_blockWords] / [_searchKeyword] **同一条教训**：不能在 build 里 new。
-  /// 这里多一条更硬的理由 —— 保存后宿主会 setState 回填 `state.appId/appSecret`，
-  /// 若用 `TextEditingController(text: ...)` 每次重建新造，用户正在输入的
-  /// 一半内容会被回填值顶掉（而且光标会跳）。
-  /// ⇒ 初值取 `widget.state` 的**用户覆盖值**，之后完全由用户输入驱动。
-  late final TextEditingController _credAppId =
-      TextEditingController(text: widget.state.appId);
-  late final TextEditingController _credAppSecret =
-      TextEditingController(text: widget.state.appSecret);
+  /*
+   * 2026-10-15: the credential input boxes (and these two controllers) were
+   * deleted -- Owner: "I told you to delete those two input boxes and use the
+   * built-in credentials." The developer agreement allows built-in credentials
+   * via placeholder + build-time injection, which is what this repo does.
+   * See the long note in _credentialsSection.
+   *
+   * NOTE: deleting the boxes MUST delete the controllers too -- leaving them
+   * would mean two TextEditingControllers that nobody ever disposes, which is
+   * exactly the resource-leak shape this repo treats as a defect (same lesson
+   * as _controlsAnim and _danmakuBadgeTimer).
+   */
 
   @override
   void dispose() {
     _blockWords.dispose();
+    _blockSearch.dispose();
     _searchKeyword.dispose();
-    _credAppId.dispose();
-    _credAppSecret.dispose();
     super.dispose();
   }
 
@@ -721,7 +766,27 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             ),
           ],
         ),
-        _hint('画面里现在挂着 ${s.count} 条 · 轨道 ${s.lanes} 条 · 丢弃 ${s.dropped} 条'),
+        /*
+         * 2026-10-15 (Owner: "this modal is so laggy").
+         *
+         * BEFORE: this line read state.count/lanes/dropped, which the host
+         * refreshed once per second via setState -- rebuilding the whole
+         * 16k-line player page for one line of text.
+         * AFTER: the host only updates a ValueNotifier (no setState) and this
+         * ValueListenableBuilder rebuilds just this Text.
+         *
+         * The readout semantics are unchanged (same once-per-second cadence,
+         * same skip-when-unchanged rule) -- only the rebuild target changed.
+         */
+        if (widget.readout != null)
+          ValueListenableBuilder<DanmakuReadout>(
+            valueListenable: widget.readout!,
+            builder: (_, r, __) => _hint(
+              '画面里现在挂着 ${r.count} 条 · 轨道 ${r.lanes} 条 · 丢弃 ${r.dropped} 条',
+            ),
+          )
+        else
+          _hint('画面里现在挂着 ${s.count} 条 · 轨道 ${s.lanes} 条 · 丢弃 ${s.dropped} 条'),
       ],
     );
   }
@@ -793,12 +858,13 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     );
   }
 
-  /// 凭证节是否显示 —— 两个回调**都在**才画（与 [_showSearchSection] 同一条规矩）。
+  /// Whether the credentials section is shown.
   ///
-  /// 只给 `onSetCredentials` 会出现「保存」有反应、「清除」点了没反应；
-  /// 只给 `onClearCredentials` 则输入框画得出来却存不下去。两头都是残废形态。
-  bool get _showCredentialsSection =>
-      widget.onSetCredentials != null && widget.onClearCredentials != null;
+  /// 2026-10-15: always shown now. It used to be gated on both credential
+  /// callbacks being present (because it contained the input boxes), but the
+  /// section is read-only status now -- and users must always be able to see
+  /// whether built-in credentials are in effect.
+  bool get _showCredentialsSection => true;
 
   /// ★★★ 2026-10-14（Owner）：「凭证」节 —— 两个输入框 + 保存 / 清除 + **如实**状态行
   ///
@@ -814,7 +880,6 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 什么状态"，本节说"凭证这个配置项现在什么情况"。两条都如实、且都不许
   /// 在 UI 里自己拼字符串判断 —— 判据全在 `DanmakuConfig`。
   Widget _credentialsSection() {
-    final s = widget.state;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -835,76 +900,50 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             ),
           ],
         ),
-        // 两者都没有 ⇒ 说清后果 + 两条出路（别让用户猜"为什么没反应"）
+        /*
+         * 2026-10-15 (Owner): "I told you to delete those two input boxes and
+         * use the built-in credentials -- it is still not done."
+         *
+         * Before deleting, the developer agreement was checked (the Owner
+         * asked for that explicitly: "check whether the developer statement
+         * allows built-in; if not, keep the input boxes").
+         *
+         * The official Open Danmaku Network docs, section 7 (Security Notes),
+         * say in full:
+         *
+         *   > Try not to hard-code your AppSecret in a client application.
+         *   > If you are developing an open-source client project, you can:
+         *   >   - use a placeholder in the open-source code to keep the
+         *   >     AppSecret from leaking, then at build time (e.g. with GitHub
+         *   >     Actions) read the AppSecret from a secret store and
+         *   >     substitute the placeholder.
+         *
+         * So built-in credentials ARE allowed -- provided they go through
+         * "placeholder + build-time injection". That is exactly what this
+         * repo already does (String.fromEnvironment in core/danmaku.dart, plus
+         * build.yml pulling from GitHub Secrets, plus tools/run_client.ps1 for
+         * local builds) => the input boxes can go.
+         *
+         * The credentials were verified against the live API before deleting
+         * anything (a signed request to /api/v2/comment/123450001 returned
+         * HTTP 200), so removing the manual entry point does not leave users
+         * without a working path.
+         *
+         * WHAT IS KEPT: the status line below. Users still need to be able to
+         * tell whether built-in credentials are in effect or nothing is
+         * configured. What was deleted is the INPUT, not the VISIBILITY.
+         */
+        // When this build has no built-in credentials (local build without
+        // --dart-define), say so honestly and point at the paths that work
+        // without credentials.
         if (!DanmakuConfig.isConfigured) ...[
           _hint(
-            '未配置凭证，官方边会失败（服务端会回「没收到凭证」）。'
-            '可以在下面填一对 AppId / AppSecret，'
-            '或改用本机外部弹幕 / 外部视频源弹幕 —— 那两条路**免签名**、不需要凭证。',
+            '本构建没有内置凭证，官方边会失败（服务端会回「没收到凭证」）。'
+            '改用本机外部弹幕 / 外部视频源弹幕 —— 那两条路**免签名**、不需要凭证。',
           ),
         ],
-        const SizedBox(height: Sp.x2),
-        // ── 输入框 ──
-        TextField(
-          controller: _credAppId,
-          style: const TextStyle(color: DanmakuTextColors.body, fontSize: FontSizes.sm),
-          decoration: const InputDecoration(
-            labelText: 'AppId',
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
-        ),
-        const SizedBox(height: Sp.x2),
-        TextField(
-          controller: _credAppSecret,
-          // ★ obscure：肩窥防护（面板可能被投屏 / 录屏）
-          obscureText: true,
-          style: const TextStyle(color: DanmakuTextColors.body, fontSize: FontSizes.sm),
-          decoration: const InputDecoration(
-            labelText: 'AppSecret',
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
-        ),
-        const SizedBox(height: Sp.x2),
-        // ── 动作 ──
-        Row(
-          children: [
-            FilledButton.icon(
-              onPressed: () => widget.onSetCredentials!(
-                _credAppId.text.trim(),
-                _credAppSecret.text.trim(),
-              ),
-              icon: const Icon(Icons.save_outlined, size: 18),
-              label: const Text('保存'),
-            ),
-            const SizedBox(width: Sp.x2),
-            TextButton.icon(
-              onPressed: () {
-                // 清空输入框显示（与落盘同步），再请宿主清 UiPrefs
-                _credAppId.clear();
-                _credAppSecret.clear();
-                widget.onClearCredentials!();
-              },
-              icon: const Icon(
-                Icons.delete_outline,
-                color: DanmakuTextColors.body,
-                size: 18,
-              ),
-              label: const Text(
-                '清除',
-                style: TextStyle(color: DanmakuTextColors.body),
-              ),
-            ),
-          ],
-        ),
-        // ── 保存后的触达（⚠️ 只提示，不自动重取 —— 理由见 credentialSaved 字段）──
-        if (s.credentialSaved)
-          _hint('已保存，点上面的「重新获取弹幕」生效'),
-        _hint(
-          '填的是**你自己的**配置，只存在本机（数据目录的 ui-prefs.json），不进仓库。'
-          'AppSecret 目前是明文存储。',
-        ),
+        if (DanmakuConfig.isConfigured)
+          _hint('凭证由客户端内置（官方允许：开源代码放占位符，构建时注入）。无需手填。'),
       ],
     );
   }
@@ -991,8 +1030,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         _typeSwitch('底部弹幕', DanmakuConfig.showBottom, DanmakuConfig.setShowBottom),
         _hint('关掉某一类 ⇒ 那一类的弹幕不再进入渲染（也不占轨道）'),
         const SizedBox(height: 8),
-        _sectionTitle('屏蔽词', note: '每行一个'),
-        _blockWordsField(),
+        _blockWordsHeader(),
+        _blockWordsWrap(),
+        _blockWordsAddField(),
+        const SizedBox(height: Sp.x2),
         _typeSwitch('按正则匹配', DanmakuConfig.blockRegex, DanmakuConfig.setBlockRegex),
         _hint(
           DanmakuConfig.blockRegex
@@ -1025,26 +1066,169 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     );
   }
 
-  /// 屏蔽词多行输入框
+  // =====================================================================
+  //  2026-10-15 (Owner): "danmaku blocking does not support search, and
+  //  one-word-per-line wastes far too much space."
+  // =====================================================================
+  //
+  // BEFORE: one multi-line TextField (maxLines 4 / minLines 3), one word per
+  // line.  - words beyond the 4th were hidden behind a scroll
+  //        - no search, so deleting one word meant scanning the whole blob
+  //        - every keystroke rewrote the entire preference string
+  //
+  // AFTER, in three parts:
+  //   1. search box      -- only appears when there are many words
+  //   2. chip wrap       -- a dozen+ words visible at once, tap x to delete
+  //   3. add field       -- type a word, press Enter
+  //
+  // NOTE: the underlying storage is UNCHANGED -- still the newline-separated
+  // string under dsh.danmaku.blockWords. Existing user preferences keep
+  // working with no migration, and DanmakuConfig.blockWords still does the
+  // trim/dedupe parsing. This only changes the editing surface.
+
+  /// Below this many words there is no point showing a search box.
   ///
-  /// ★ controller 由 State 持有（见 [_blockWords]），**不要**在 build 里 new：
-  /// 每帧换 controller 会让输入框显示的值永远是偏好里的规范化文本，
-  /// 用户连第二个词都敲不进去。
-  Widget _blockWordsField() {
-    return TextField(
-      controller: _blockWords,
-      maxLines: 4,
-      minLines: 3,
-      style: const TextStyle(color: DanmakuTextColors.muted, fontSize: 13),
-      decoration: const InputDecoration(
-        hintText: '例如：\n剧透\n前方高能',
-        border: OutlineInputBorder(),
-        isDense: true,
+  /// Most people block two or three words (e.g. 剧透 / 前方高能); adding a
+  /// search field for those just takes up space when everything is visible
+  /// at a glance anyway.
+  static const int _kBlockSearchMinWords = 9;
+
+  Widget _blockWordsHeader() {
+    final words = DanmakuConfig.blockWords;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionTitle('屏蔽词', note: '${words.length} 个'),
+        if (words.length >= _kBlockSearchMinWords)
+          Padding(
+            padding: const EdgeInsets.only(bottom: Sp.x2),
+            child: TextField(
+              controller: _blockSearch,
+              style: const TextStyle(
+                color: DanmakuTextColors.muted,
+                fontSize: 13,
+              ),
+              decoration: InputDecoration(
+                hintText: '搜索屏蔽词（共 ${words.length} 个）',
+                prefixIcon: const Icon(Icons.search, size: 18),
+                suffixIcon: _blockSearch.text.isEmpty
+                    ? null
+                    : IconButton(
+                        icon: const Icon(Icons.close, size: 18),
+                        tooltip: '清除搜索',
+                        onPressed: () => setState(_blockSearch.clear),
+                      ),
+                border: const OutlineInputBorder(),
+                isDense: true,
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// The words currently shown (filtered by the search box when non-empty).
+  List<String> get _visibleBlockWords {
+    final all = DanmakuConfig.blockWords;
+    final q = _blockSearch.text.trim().toLowerCase();
+    if (q.isEmpty) return all;
+    return all.where((w) => w.toLowerCase().contains(q)).toList();
+  }
+
+  /// Chip wrap -- a dozen+ words visible at once, tap x to delete.
+  Widget _blockWordsWrap() {
+    final all = DanmakuConfig.blockWords;
+    final shown = _visibleBlockWords;
+    if (all.isEmpty) {
+      return _hint('还没有屏蔽词。在下面的框里输入，回车即可添加。');
+    }
+    if (shown.isEmpty) {
+      return _hint('没有匹配「${_blockSearch.text.trim()}」的屏蔽词。');
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: Sp.x2),
+      child: Wrap(
+        spacing: Sp.x1,
+        runSpacing: Sp.x1,
+        children: [
+          for (final w in shown)
+            InputChip(
+              label: Text(w, style: const TextStyle(fontSize: 12)),
+              labelStyle: const TextStyle(color: DanmakuTextColors.muted),
+              deleteIcon: const Icon(Icons.close, size: 14),
+              // Delete by exact value (shown holds the original strings).
+              onDeleted: () => _removeBlockWord(w),
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              side: const BorderSide(color: DanmakuTextColors.border),
+              backgroundColor: Colors.transparent,
+            ),
+        ],
       ),
-      onChanged: (v) {
-        DanmakuConfig.setBlockWords(v);
-        widget.onChanged?.call();
-      },
+    );
+  }
+
+  /// Append one word, keeping the newline-separated storage format intact.
+  void _addBlockWord(String raw) {
+    final w = raw.trim();
+    if (w.isEmpty) return;
+    final all = DanmakuConfig.blockWords;
+    // Already present => do not add twice (blockWords dedupes on read anyway,
+    // this just avoids making the user think something happened).
+    if (all.contains(w)) return;
+    DanmakuConfig.setBlockWords('${all.join('\n')}\n$w');
+    widget.onChanged?.call();
+  }
+
+  /// Remove one word by EXACT match -- not substring.
+  ///
+  /// Substring deletion would make removing 剧透 also remove 剧透警告, which
+  /// the user did not ask for.
+  void _removeBlockWord(String w) {
+    final all = DanmakuConfig.blockWords.where((x) => x != w).toList();
+    DanmakuConfig.setBlockWords(all.join('\n'));
+    widget.onChanged?.call();
+  }
+
+  /// Add field (Enter or the plus button appends).
+  ///
+  /// NOTE: the controller is held by the State (see [_blockWords]) -- do NOT
+  /// create it in build. A fresh controller each build makes the field show
+  /// the normalized preference value forever, so users cannot type anything.
+  Widget _blockWordsAddField() {
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _blockWords,
+            style: const TextStyle(
+              color: DanmakuTextColors.muted,
+              fontSize: 13,
+            ),
+            decoration: const InputDecoration(
+              hintText: '添加屏蔽词，回车确认',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            onSubmitted: (v) {
+              _addBlockWord(v);
+              _blockWords.clear();
+              setState(() {});
+            },
+          ),
+        ),
+        const SizedBox(width: Sp.x1),
+        IconButton(
+          tooltip: '添加',
+          icon: const Icon(Icons.add, size: 20),
+          onPressed: () {
+            _addBlockWord(_blockWords.text);
+            _blockWords.clear();
+            setState(() {});
+          },
+        ),
+      ],
     );
   }
 

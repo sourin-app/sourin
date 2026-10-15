@@ -134,3 +134,10 @@ key.properties
 # flutter tooling scratch
 .flutter_tool_state
 /undefined/
+
+# Local danmaku service credentials (read by tools/run_client.ps1 at build time).
+# NEVER commit. Shape: { appId, appSecret } - see that script for details.
+# Listed explicitly rather than relying on *credential*: that glob does not match
+# a .json filename, and leaking this file means leaking a live API secret.
+tools/.dandanplay.local.json
+*.dandanplay.local.json

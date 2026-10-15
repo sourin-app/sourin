@@ -171,7 +171,29 @@ class DiskCache {
     if (f == null) return false;
     final now = at ?? DateTime.now();
     try {
-      final tmp = File('${f.path}.tmp');
+      /*
+       * 2026-10-15: the temp file name MUST be unique per write.
+       *
+       * The first version used a fixed '${f.path}.tmp' and real-machine
+       * testing caught the resulting race:
+       *
+       *   writer A: write tmp      -> creates
+       *   writer B: write tmp      -> overwrites the SAME path
+       *   writer A: rename tmp     -> succeeds; the tmp is now consumed
+       *   writer B: rename tmp     -> errno 2 (no such file)
+       *   writer B: fallback read  -> errno 2 as well
+       *
+       * i.e. B's snapshot was silently lost and the log showed
+       * 'shelf-cache.json 写入彻底失败 ... errno = 2'.
+       * Concurrent writes really happen: MyShelf.load() persists after a
+       * Future.wait, and load() can run more than once.
+       *
+       * Giving each write its own temp name removes the race entirely:
+       * whoever finishes last still publishes a complete file, and no
+       * writer can ever steal another's temp file.
+       */
+      final tmp = File('${f.path}.$pid.$_tmpSeq.tmp');
+      _tmpSeq++;
       await tmp.writeAsString(
         jsonEncode(<String, Object?>{
           'v': kDiskCacheVersion,
@@ -204,6 +226,9 @@ class DiskCache {
   /// 真实占用者都是**短命**的：杀软实时扫描刚写出的文件（几十毫秒）、
   /// 并发读同一份 JSON（微秒级）。440ms 足够覆盖，又不会让用户可感地卡。
   static const List<int> _backoffMs = <int>[20, 50, 120, 250];
+
+  /// Per-write counter that makes temp file names unique (see [write]).
+  static int _tmpSeq = 0;
 
   /// 把 [tmp] 换成 [target]
   ///

@@ -60,6 +60,76 @@ if (-not (Test-Path $flutter)) {
     $flutter = $cmd.Source
 }
 
+
+# =======================================================================
+#  Dandanplay official credentials (injected at build time)
+# =======================================================================
+#
+# WHY THIS EXISTS
+#
+# The "official" danmaku path needs an AppId/AppSecret pair to sign requests.
+# The service's own developer docs (Open Danmaku Network, section 7 "Security
+# Notes") explicitly ALLOW shipping credentials inside an open-source client,
+# but only this way:
+#
+#   > Use a placeholder in the open-source code to keep the AppSecret from
+#   > leaking, then at build time (e.g. with GitHub Actions) read the
+#   > AppSecret from a secret store and substitute the placeholder.
+#
+# CI already does this (.github/workflows/build.yml pulls from GitHub
+# Secrets). The LOCAL build had no such channel, so locally built binaries
+# could never reach the official API and the panel had to let the user type
+# credentials by hand. The owner asked for those input boxes to be removed
+# in favour of built-in credentials, so this closes the local gap.
+#
+# WHERE THE CREDENTIALS LIVE (never in the repo)
+#
+#   tools/.dandanplay.local.json    <- local file, gitignored
+#   { "appId": "...", "appSecret": "..." }
+#
+# Environment variables also work (CI / one-off runs):
+#   $env:DANDANPLAY_APP_ID / $env:DANDANPLAY_APP_SECRET
+#
+# When neither is present we simply do not inject - the build still
+# succeeds and the app falls back to the "no credentials" path, exactly
+# as before. External danmaku sources do not depend on this and keep
+# working, so a missing credential must never fail the build.
+#
+# NOTE: the repository contains only an empty placeholder. This script
+# itself holds no secret value.
+
+$credFile = Join-Path $PSScriptRoot ".dandanplay.local.json"
+$ddpId = ""
+$ddpSecret = ""
+if (Test-Path $credFile) {
+    $cred = Get-Content $credFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $ddpId = "$($cred.appId)".Trim()
+    $ddpSecret = "$($cred.appSecret)".Trim()
+} elseif ($env:DANDANPLAY_APP_ID -and $env:DANDANPLAY_APP_SECRET) {
+    $ddpId = $env:DANDANPLAY_APP_ID.Trim()
+    $ddpSecret = $env:DANDANPLAY_APP_SECRET.Trim()
+}
+
+$credArgs = @()
+if ($ddpId -and $ddpSecret) {
+    $credArgs = @(
+        "--dart-define=DANDANPLAY_APP_ID=$ddpId",
+        "--dart-define=DANDANPLAY_APP_SECRET=$ddpSecret"
+    )
+}
+
+function ReportCred() {
+    if ($ddpId -and $ddpSecret) {
+        # Print only the first 4 chars of the AppId (same masking the app
+        # uses). Never print any part of the Secret - script output tends to
+        # get pasted into issues and logs.
+        $mask = if ($ddpId.Length -le 4) { "****" } else { $ddpId.Substring(0, 4) + "****" }
+        Ok "danmaku credentials: injected (AppId $mask)"
+    } else {
+        Write-Host "  - danmaku credentials: NOT injected (official path will fail; external sources unaffected)" -ForegroundColor DarkGray
+        Write-Host "    to inject, create $credFile (see the header of this script)" -ForegroundColor DarkGray
+    }
+}
 function Step($n, $msg) { Write-Host ""; Write-Host "=== [$n] $msg ===" -ForegroundColor Cyan }
 function Ok($msg)   { Write-Host "  ✓ $msg" -ForegroundColor Green }
 function Bad($msg)  { Write-Host "  ✗ $msg" -ForegroundColor Red }
@@ -81,14 +151,16 @@ if ($Dev) {
     Step 2 "开发模式：flutter run（数据目录 = $DataDir）"
     Write-Host "  ⚠️ README:857-865 —— 默认数据目录里是你的真实收藏/进度，已隔离。" -ForegroundColor Yellow
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-    & $flutter run -t lib/shell.dart "--dart-define=DATA_DIR_OVERRIDE=$DataDir"
+    ReportCred
+    & $flutter run -t lib/shell.dart "--dart-define=DATA_DIR_OVERRIDE=$DataDir" @credArgs
     exit $LASTEXITCODE
 }
 
 # ── ③ 编（**-t lib/shell.dart 是硬编码的，改不了**）──
 if (-not $NoBuild) {
     Step 3 "flutter build windows --release -t lib/shell.dart"
-    & $flutter build windows --release -t lib/shell.dart
+    ReportCred
+    & $flutter build windows --release -t lib/shell.dart @credArgs
     $rc = $LASTEXITCODE
     # ★ 构建失败就到此为止：绝不在失败的构建上动 bundle ——
     #   否则会往客户端里塞一颗没有对应产物的核心。

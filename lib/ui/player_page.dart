@@ -1671,6 +1671,27 @@ class _PlayerPageState extends State<PlayerPage>
   /// 面板的状态快照（面板是纯 UI，所有读写都经过宿主）
   DanmakuSettingsState _danmakuSettings = DanmakuSettingsState.fromPrefs();
 
+  /// Readout channel for the danmaku panel status line.
+  ///
+  /// 2026-10-15 (Owner: "this modal is so laggy, and so are the other
+  /// overlay panels shown inside it") -- root cause and fix.
+  ///
+  /// BEFORE: _refreshDanmakuReadout() used setState once per second, which
+  /// rebuilt the ENTIRE player page (about 16k lines: video layer, danmaku
+  /// layer, top bar, bottom bar and every overlay). Only one line of text
+  /// in the panel actually changed.
+  ///
+  /// WHY "the other overlays are laggy too" has the same explanation: the
+  /// subtitle panel, episode panel and playback-settings panel are all
+  /// mounted on the SAME player page tree. When the host rebuilds itself,
+  /// every one of them rebuilds with it.
+  ///
+  /// AFTER: the readout goes through this notifier and the panel listens
+  /// with ValueListenableBuilder, so only that one Text rebuilds.
+  /// Same technique as _positionNotifier (fixed there on 2026-10-09).
+  final ValueNotifier<DanmakuReadout> _danmakuReadout =
+      ValueNotifier<DanmakuReadout>(const DanmakuReadout());
+
   /// ★★★ 2026-10-14（卡顿修复）：弹幕轻量悬浮窗**四根滑杆**的实时真源。
   ///
   /// 拖动滑杆 ⇒ 只推它（不整页 setState）⇒ 只有四根滑杆那一小块重建。
@@ -5848,18 +5869,10 @@ class _PlayerPageState extends State<PlayerPage>
     final n = st?.visible ?? 0;
     final lanes = st?.laneCount ?? 0;
     final dropped = st?.dropped ?? 0;
-    if (n == _danmakuSettings.count &&
-        lanes == _danmakuSettings.lanes &&
-        dropped == _danmakuSettings.dropped) {
-      return;
-    }
-    setState(() {
-      _danmakuSettings = _danmakuSettings.copyWith(
-        count: n,
-        lanes: lanes,
-        dropped: dropped,
-      );
-    });
+    final next = DanmakuReadout(count: n, lanes: lanes, dropped: dropped);
+    if (next.sameAs(_danmakuReadout.value)) return;
+    // NOTE: deliberately NOT setState -- that is the whole point of the fix.
+    _danmakuReadout.value = next;
   }
 
   /// 底栏「弹幕」按钮：开 / 关
@@ -5957,6 +5970,11 @@ class _PlayerPageState extends State<PlayerPage>
   /// 打开弹幕设置面板（不暂停播放 —— 与播放设置面板同一原则）
   void _openDanmakuSettings() {
     final st = debugDanmakuLastStats;
+    _danmakuReadout.value = DanmakuReadout(
+      count: st?.visible ?? 0,
+      lanes: st?.laneCount ?? 0,
+      dropped: st?.dropped ?? 0,
+    );
     // ★★★ T27-09：浮层打开 ⇒ 顶/底栏一起收（显隐统一真源，见 _collapseControlsForSheet）
     _collapseControlsForSheet();
     setState(() {
@@ -6300,37 +6318,19 @@ class _PlayerPageState extends State<PlayerPage>
   /// 忽然换一批弹幕（甚至换到另一集），比"什么都不发生"更糟。
   /// ⇒ 宿主把 credentialSaved 置真，面板据此提示「已保存，点重新获取生效」。
   /// ```
-  void _setDanmakuCredentials(String appId, String appSecret) {
-    DanmakuConfig.setAppId(appId);
-    DanmakuConfig.setAppSecret(appSecret);
-    _resetDanmakuClient();
-    if (!mounted) return;
-    setState(() {
-      _danmakuSettings = _danmakuSettings.copyWith(
-        // 回填**用户覆盖**（可能被 trim 过），让输入框与落盘一致
-        appId: DanmakuConfig.userAppId,
-        appSecret: DanmakuConfig.userAppSecret,
-        credentialSaved: true,
-      );
-    });
-  }
-
-  /// 面板凭证节点了「清除」—— 清掉用户覆盖（回落到内置，若该构建有内置值）。
-  ///
-  /// 同 [_setDanmakuCredentials]：必须重建客户端，否则旧实例还揣着刚清掉的
-  /// 凭证照旧签名。清完的状态行由 `DanmakuConfig` 的真实 getter 如实反映。
-  void _clearDanmakuCredentials() {
-    DanmakuConfig.clearCredentials();
-    _resetDanmakuClient();
-    if (!mounted) return;
-    setState(() {
-      _danmakuSettings = _danmakuSettings.copyWith(
-        appId: '',
-        appSecret: '',
-        clearCredentialSaved: true,
-      );
-    });
-  }
+  /*
+   * 2026-10-15: _setDanmakuCredentials / _clearDanmakuCredentials removed.
+   *
+   * Owner: "I told you to delete those two input boxes and use the built-in
+   * credentials." The developer agreement allows built-in credentials via
+   * placeholder + build-time injection, so the panel no longer offers manual
+   * entry and these two write paths lost their only caller. A write path the
+   * UI cannot reach should not stay in the code.
+   *
+   * Credentials now come from build-time --dart-define=DANDANPLAY_APP_ID /
+   * _APP_SECRET (see builtinAppId/builtinAppSecret in core/danmaku.dart, the
+   * CI workflow, and tools/run_client.ps1 for local builds).
+   */
 
   void _reloadDanmaku() {
     /*
@@ -12615,6 +12615,7 @@ class _PlayerPageState extends State<PlayerPage>
      *   否则 flutter_test 会判红（AnimationController 泄漏）。
      */
     _controlsAnim.dispose();
+    _danmakuReadout.dispose();
     // 缺陷 13：轮询定时器必须跟着本页停掉
     _bufferPoller?.stop();
     _bufferPoller?.clear();
@@ -14180,6 +14181,7 @@ class _PlayerPageState extends State<PlayerPage>
                         child: DanmakuSettingsDialog(
                           fill: false,
                           state: _danmakuSettings,
+                          readout: _danmakuReadout,
                           onSetEnabled: _setDanmakuEnabled,
                           onSetFontScale: _setDanmakuFontScale,
                           onSetOpacity: _setDanmakuOpacity,
@@ -14194,8 +14196,6 @@ class _PlayerPageState extends State<PlayerPage>
                           onHintAction: _runDanmakuHintAction,
                           // ★★★ 2026-10-14（Owner）：凭证节的保存 / 清除
                           //   面板只递值，写盘与状态更新全在宿主（同 onSearch 分工）。
-                          onSetCredentials: _setDanmakuCredentials,
-                          onClearCredentials: _clearDanmakuCredentials,
                           /*
                            * ★ 2026-10-09：屏蔽词 / 分类开关改了就重建播放页 ——
                            *   过滤发生在 danmaku_overlay 的排版那一层，

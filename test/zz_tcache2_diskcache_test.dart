@@ -160,4 +160,52 @@ void main() {
       await DiskCache.remove('d.json'); // 再删一次不该抛
     });
   });
+
+  group('⑤ 并发写（实机抓到的真缺陷，2026-10-15）', () {
+    test('★★ 同一份缓存并发写：每一笔都必须成功，且盘上留下完整 JSON', () async {
+      /*
+       * # 这个缺陷是实机跑出来的，不是想出来的
+       *
+       * 真机上日志出现：
+       *   [DISK-CACHE] shelf-cache.json 写入彻底失败:
+       *     rename=PathNotFoundException ... errno = 2
+       *     fallback=PathNotFoundException ... errno = 2
+       *
+       * # 根因
+       *     改前每一笔写都用**同一个**固定临时名 '<target>.tmp'：
+       *       writer A: 写 tmp  -> 创建
+       *       writer B: 写 tmp  -> 覆盖同一个路径
+       *       writer A: rename  -> 成功（tmp 被消费掉）
+       *       writer B: rename  -> errno 2（tmp 没了）
+       *       writer B: 兜底读 -> 也是 errno 2
+       *     ⇒ B 那份快照**静默丢失**，而且日志说"彻底失败"。
+       *
+       * 并发是真会发生的：MyShelf.load() 在 Future.wait 之后落盘，
+       * 而 load() 可以被触发不止一次。
+       *
+       * # 判据
+       *     并发写 N 笔 ⇒ **每一笔都返回 true**（不许静默丢数据），
+       *     且最终盘上是一份**完整可解析**的 JSON，
+       *     且不留下任何 .tmp 垃圾。
+       */
+      const n = 12;
+      final results = await Future.wait(<Future<bool>>[
+        for (var i = 0; i < n; i++) DiskCache.write('race.json', {'who': i}),
+      ]);
+      expect(results.where((r) => r).length, n,
+          reason: '★ 并发写每一笔都必须成功 —— 任何一笔 false 都是静默丢数据');
+
+      final e = await DiskCache.read('race.json');
+      expect(e, isNotNull, reason: '最终盘上必须是一份完整可解析的信封');
+      expect(e!.data, isA<Map>(), reason: '内容必须完整（不是半个 JSON）');
+
+      // 不留临时文件垃圾
+      final leftovers = tmp
+          .listSync()
+          .where((x) => x.path.endsWith('.tmp'))
+          .toList();
+      expect(leftovers, isEmpty,
+          reason: '★ 并发写之后不许在数据目录留 .tmp 垃圾');
+    });
+  });
 }

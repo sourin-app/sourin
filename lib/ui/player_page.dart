@@ -4465,23 +4465,64 @@ class _PlayerPageState extends State<PlayerPage>
       unawaited(_watchVideoOutput(++_videoOutputToken));
 
       /*
-       * ★★ DASH 音视频分离（外部视频站 1080P 必然如此）
+       * ══════════════════════════════════════════════════════════════
+       * ★★★ 2026-10-15（Owner：「bibili源没有声音，你看看应该是插件的问题」）
+       * ══════════════════════════════════════════════════════════════
        *
-       * 原版注释：
-       * > 音轨也要走同一个代理（同样的 headers），
-       * > 否则表现是「画面正常但完全没声音，且不报错」。
+       * # 结论先说：插件没问题，是**这里**挂了空档
+       * ```text
+       * 插件侧实测（拿 Owner 机器上那份 bilibili.js 的原样参数打真接口）：
+       *   playurl code=0、dash.audio 3 条全是正常 AAC（mp4a.40.2/.5）
+       *   音频地址带 Referer 拉回来 = HTTP 206 + 合法 ftyp 头
+       * ⇒ 取流、防盗链、audioUrl 声明**全都正常**。
+       * ```
        *
-       * libmpv 支持 `audio-add` —— 把外挂音轨加进来。
+       * # 真根因：`audio-file` **不是**运行期属性，设了等于没设
+       * ```text
+       * mpv 官方手册（DOCS/man/options.rst）：
+       *   `--audio-file=<file>`
+       *     CLI/config file only alias for `--audio-files-append`.
+       *
+       * 也就是说它是**加载期命令行选项**（每出现一次加一条音轨），
+       * 根本没有对应的运行期属性。
+       *
+       * 实测（直接 FFI 打本仓自带的 libmpv-2.dll）：
+       *   mpv_set_property_string(ctx, "audio-file", url) → -8 property not found
+       *   mpv_set_property_string(ctx, "audio-files-append", url) → -8 property not found
+       *   mpv_command(ctx, ["audio-add", url, "select", ...]) → 0 success
+       *
+       * 而 media_kit 的 `setProperty` **丢掉返回码**
+       *   （media_kit-1.2.6/.../real.dart:1239：mpv_set_property_string(...) 不检查返回值）
+       * ⇒ 失败**完全静默**，于是：
+       *     日志照打「已挂载外挂音轨」、画面正常、就是没声音 —— 正是 Owner 报的现象。
+       * ```
+       *
+       * # 修法：改用运行期命令 `audio-add`
+       * ```text
+       * media_kit 把它包装成了 `setAudioTrack(AudioTrack.uri(url))`
+       *   （real.dart:1023-1040 ⇒ mpv_command(["audio-add", uri, "select", title, lang])）
+       * ⇒ 用官方那条运行期路径，而不是伪装成属性去设一个不存在的选项。
+       * ```
+       *
+       * ⚠️ 音轨同样要带 headers（走的是同一个代理地址，原因见原注释）：
+       *    这里音轨 URL 已经由 Rust 侧 `playback.rs:180-191` 套过代理，
+       *    与视频轨共用同一套 http-header-fields，所以不必在此重复设置。
        */
       if (st.audioUrl != null && st.audioUrl!.isNotEmpty) {
         try {
-          final native = _player.platform;
-          if (native is NativePlayer) {
-            await native.setProperty('audio-file', st.audioUrl!);
-            debugPrint('[PLAYER] 已挂载外挂音轨（DASH 分离）');
-          }
+          await _player.setAudioTrack(
+            AudioTrack.uri(
+              st.audioUrl!,
+              title: '外挂音轨（DASH 分离）',
+              language: 'auto',
+            ),
+          );
+          // ★ 落 AppLog 而不是 debugPrint：release 构建里 debugPrint 不进日志文件，
+          //   2026-10-15 查「没声音」时整份日志里一条 [PLAYER] 都没有，
+          //   就是因为这里只打了 debugPrint ⇒ 线上根本无从判断音轨到底挂上没有。
+          AppLog.write('PLAY', '已挂载外挂音轨（DASH 分离）');
         } catch (e) {
-          debugPrint('[PLAYER] 挂载外挂音轨失败: $e');
+          AppLog.write('PLAY', '挂载外挂音轨失败（该源可能只有画面没声音）：$e');
         }
       }
 
@@ -4507,7 +4548,8 @@ class _PlayerPageState extends State<PlayerPage>
        * 于是：
        * ```text
        * ① 对 duration=0 的流 seek(276s) → mpv 排队，但还没 demux 完
-       * ② 紧接着 `audio-file` 挂外挂音轨 → mpv 重新初始化音频链
+       * ② 紧接着挂外挂音轨（现走 `audio-add` / setAudioTrack）
+       *    → mpv 重新初始化音频链
        * ③ 音视频链重建时**播放位置被复位到 0**
        * ④ 用户看到的就是"从头开始播"（实测 00:29 ≈ 起播后的正常推进）
        * ```

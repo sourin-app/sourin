@@ -152,6 +152,10 @@ if ($Dev) {
     Write-Host "  ⚠️ README:857-865 —— 默认数据目录里是你的真实收藏/进度，已隔离。" -ForegroundColor Yellow
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
     ReportCred
+    # ── 把真实目录的「内容」播一份进来（用户自己装的插件 + 收藏/历史/偏好）──
+    # 只读真实目录，只往 $DataDir 写；已有的文件不覆盖（见该脚本头部）。
+    & (Join-Path $PSScriptRoot "seed_dev_data.ps1") -Target $DataDir
+    if ($LASTEXITCODE -ne 0) { throw "seed_dev_data.ps1 失败（exit $LASTEXITCODE）" }
     & $flutter run -t lib/shell.dart "--dart-define=DATA_DIR_OVERRIDE=$DataDir" @credArgs
     exit $LASTEXITCODE
 }

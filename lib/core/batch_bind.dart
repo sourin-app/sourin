@@ -73,8 +73,11 @@
 // ⚠️ 本文件**不写盘**：产出的是"计划"，落盘由调用方走既有的
 //    `saveBinding` / `saveBiliDanmakuBinding`（单一写入口，不新开一条）。
 
+import 'dart:convert';
+
 import 'danmaku.dart';
 import 'title_match.dart';
+import 'ui_prefs.dart';
 
 /// 批量绑定里"一集要对到哪一条弹幕"。
 class BatchBindPlanItem {
@@ -283,4 +286,96 @@ List<({String provider, String id, double score})> findInterconnectedSources({
   }
   out.sort((p, q) => q.score.compareTo(p.score));
   return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  落盘：整部绑定的**弹幕库**对应关系
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠⚠ 2026-10-15（我自己写错过一次，记下来）
+// ```text
+// 第一版我把这些 episodeId 写进了 `saveBinding`
+// （= 外部视频站的 `BiliBinding`）。
+//
+// 而 `BiliBinding` 被 `_loadBiliDanmaku(cid)` 消费 —— 那是**外部视频站的
+// 评论接口**。把弹幕库的 id 往里面塞，下次起播就会拿着
+// 弹幕库的 id 去调外部站的接口 ⇒ 请求必失败。
+//
+// ★ 两个 id 语系**不能混**：它们碰巧都是整数，
+//   但各自属于不同的服务。编译器看不出来，只能靠存储分开。
+// ```
+//
+// ⇒ 本模块自带一条**独立**的存储，键与 `BiliBinding` 那套完全分开。
+
+/// 弹幕库整部绑定的存储前缀。
+///
+/// ⚠️ 与 `dsh.bili.bind.*` **不同命名空间** —— 那一套是外部视频站的。
+const String kDanmakuBindPrefix = 'dsh.danmaku.bind';
+
+/// 一部作品的弹幕库绑定（本地第 N 集 → 弹幕库第 M 集）。
+class DanmakuBindStore {
+  const DanmakuBindStore({
+    required this.workTitle,
+    required this.episodes,
+    this.updatedAt = 0,
+  });
+
+  /// 这次铺的是哪部作品（给用户看“绑到哪去了”）。
+  final String workTitle;
+
+  /// 本地第 N 集（0 基） → 弹幕库 episodeId。
+  final Map<int, int> episodes;
+
+  final int updatedAt;
+
+  bool get isEmpty => episodes.isEmpty;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        't': workTitle,
+        // 键必须转字符串：JSON 的键只能是字符串。
+        'e': <String, int>{
+          for (final e in episodes.entries) '${e.key}': e.value,
+        },
+        'u': updatedAt,
+      };
+
+  static DanmakuBindStore? fromJson(Object? j) {
+    if (j is! Map) return null;
+    final raw = j['e'];
+    if (raw is! Map) return null;
+    final eps = <int, int>{};
+    for (final e in raw.entries) {
+      final k = int.tryParse('${e.key}');
+      final v = e.value;
+      if (k == null || v is! int || v <= 0) continue;
+      eps[k] = v;
+    }
+    return DanmakuBindStore(
+      workTitle: j['t'] is String ? j['t'] as String : '',
+      episodes: eps,
+      updatedAt: j['u'] is int ? j['u'] as int : 0,
+    );
+  }
+}
+
+/// 读一部作品的弹幕库绑定；没有 / 损坏都返回 null（不抛）。
+DanmakuBindStore? loadDanmakuBind(String provider, String id) {
+  final raw = UiPrefs.get('$kDanmakuBindPrefix.$provider:$id');
+  if (raw == null || raw.isEmpty) return null;
+  try {
+    return DanmakuBindStore.fromJson(jsonDecode(raw));
+  } catch (_) {
+    // 坏数据不能把播放页拖崩 —— 当成“没绑过”处理。
+    return null;
+  }
+}
+
+/// 写一部作品的弹幕库绑定。
+void saveDanmakuBind(String provider, String id, DanmakuBindStore s) {
+  UiPrefs.set('$kDanmakuBindPrefix.$provider:$id', jsonEncode(s.toJson()));
+}
+
+/// 删一部作品的弹幕库绑定。
+void clearDanmakuBind(String provider, String id) {
+  UiPrefs.remove('$kDanmakuBindPrefix.$provider:$id');
 }

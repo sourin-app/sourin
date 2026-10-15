@@ -5534,6 +5534,27 @@ class _PlayerPageState extends State<PlayerPage>
      * 没绑（或这一集没有 cid）⇒ 直接往下走 —— 行为与接线前**逐字节相同**。
      * 解绑后下一次起播就自动退回 danmaku-service。
      */
+    /*
+     * ★★★ 2026-10-15（整部绑定）：用户手动绑过的弹幕库对应关系**优先**。
+     *
+     * # 为什么必须在这里读
+     * ```text
+     * “整部绑定”如果只写不读，那就是**假功能**：
+     * 用户点了「整部绑定」、看到成功提示，
+     * 结果下一集起播还是按片名模糊搜。
+     * ```
+     *
+     * ⚠️ 排在外部视频站绑定**后面**、模糊搜索**前面**：
+     *    外部站绑定是用户另一次明确选择，且它自己就是精确的；
+     *    而模糊搜索是“没人选过才轮到它”。
+     */
+    final dmBind = loadDanmakuBind(widget.provider, widget.id);
+    final boundId = dmBind?.episodes[_epIndex] ?? 0;
+    if (boundId > 0) {
+      _pinnedEpisodeId = boundId;
+      debugPrint('[DMK] 整部绑定命中：第${_epIndex + 1}集 ⇒ #$boundId');
+    }
+
     final biliBind = loadBinding(widget.provider, widget.id);
     if (biliBind != null && !biliBind.isEmpty) {
       final cid = biliBind.cidFor(_epIndex);
@@ -6216,39 +6237,29 @@ class _PlayerPageState extends State<PlayerPage>
       return;
     }
     /*
-     * 写盘：逐集写入既有的绑定存储（单一写入口，不新开一条）。
+     * 写盘：进**弹幕库自己**那条存储。
      *
-     * ⚠️ `manual: true` —— 这是用户点的，不是自动猜的；
-     *    不标手动的话，下一次自动流程会把它覆盖掉。
+     * ⚠⚠⚠ 这里我第一版写错了 —— 写成了 `saveBinding`
+     * （外部视频站的 `BiliBinding`）。
+     * ```text
+     * 那一套被 `_loadBiliDanmaku(cid)` 消费 ⇒ 拿着弹幕库的 id
+     * 去调**外部站的评论接口** ⇒ 下次起播必失败。
+     *
+     * ★ 两个 id 语系碰巧都是整数，编译器看不出来，
+     *   只能靠**存储分开**。
+     * ```
      */
-    final b = BiliBinding(
-      bvid: '',
-      title: plan.workTitle,
-      episodes: <BiliEpisodeBinding>[
-        for (final it in plan.items)
-          BiliEpisodeBinding(
-            episodeIndex: it.episodeIndex,
-            /*
-             * 这里是**弹幕库**的对应关系，不是某视频站的 P 号。
-             *
-             * `BiliEpisodeBinding.page` 在外部视频站那条路上是真实的 P
-             * 序号（用来拼 comment 接口）；弹幕库这边只有 episodeId，
-             * 没有 P 的概念。
-             *
-             * ⚠️ 填 `episodeIndex + 1` 而**不是** 0：字段声明是 1 基，
-             *    填 0 会让后续读它的代码把第 0 P 当成有效值。
-             *    这里填的值不参与弹幕拉取（只有 episodeId 参与），
-             *    但保持它自洽可读。
-             */
-            page: it.episodeIndex + 1,
-            cid: it.episodeId,
-            part: it.episodeTitle,
-          ),
-      ],
-      manual: true,
-      updatedAt: DateTime.now().millisecondsSinceEpoch,
+    saveDanmakuBind(
+      widget.provider,
+      widget.id,
+      DanmakuBindStore(
+        workTitle: plan.workTitle,
+        episodes: <int, int>{
+          for (final it in plan.items) it.episodeIndex: it.episodeId,
+        },
+        updatedAt: DateTime.now().millisecondsSinceEpoch,
+      ),
     );
-    saveBinding(widget.provider, widget.id, b);
     if (!mounted) return;
     /*
      * 如实报数 —— 尤其是**没绑上的那几集**。

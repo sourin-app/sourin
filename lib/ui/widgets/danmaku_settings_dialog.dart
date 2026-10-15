@@ -360,29 +360,44 @@ const Key blockWordsAddFieldKey = Key('danmaku-blockwords-add-field');
 ///    同文件里再写别的站名**照样会被抓**。
 const String _kBiliSourceLabel = 'bilibili'; // 弹幕源（Owner 明确允许具名）
 
-/// 弹幕面板的两个页签（2026-10-15，Owner）。
+/// 弹幕面板的**三个**页签（2026-10-15 第二版，Owner）。
 ///
-/// Owner 原话：
-/// > 然后弹幕设置,和弹幕的填充拆开,弹幕的快捷开关啊什么的,
-/// > 就那个悬浮小窗解决就行了
-/// > 然后[外部视频站]和弹弹来源,就在哪个面板中,然后交互也改一下,改成 tabs,
-/// > 然后最上面显示状态,弹弹play多少条,[外部视频站]多少条,
+/// # Owner 原话（第二版，逐字）
+/// ```text
+/// > 我的意思,弹幕的配置就不要在这里了左边的挪到那个悬浮小窗里面去,快捷的操作
+/// > 然后这个tabs,一个是bilibili的弹幕配置,一个是弹弹play的弹幕配置,
+/// > 如果必须要有的话,那就拆分成三个tab,第一个是配置,二三分别是bilib和弹弹,
+/// > 好像确实少不了,那就拆分成三个tab吧,然后上面显示状态,
+/// > 只有tab的内容区域上下滚动,其他区域不滚动
+/// ```
 ///
-/// ⚠️ 上面两行把 Owner 原话里的站名换成了中性词 —— `t98_no_site_names_test`
-///    禁止仓库出现具体视频网站名（CONTRIBUTING「⑥ 规矩三」）。
-///    语义不变，只是不把站名写进代码。
-/// > 每个tab下负责对应的配置就行了
+/// # 三个页签各自负责什么
+/// ```text
+/// ① 配置   —— 跨来源的东西：开关、屏蔽词、正则
+/// ② bilibili —— **这个弹幕源自己**的：请求 / 搜索 / 绑定
+/// ③ 弹弹play  —— 同上，另一个源：数据源探测 / 凭证
+/// ```
 ///
-/// 拆分依据：两类东西的**频率差一个量级**。
-/// 显示设置（字号/不透明度/速度/显示区域）是调一次就定下来的；
-/// 而「现在挂的是哪个源、这一集有没有弹幕」是每集都要看一眼的。
-/// 摊在同一屏上，后者会被前者的 4 根滑杆淹没。
+/// # 为什么把“显示设置”从面板拿走（而不是留一份）
+/// ```text
+/// 字号 / 不透明度 / 速度 / 显示区域 / 类型过滤（滚动·顶部·底部·彩色）
+/// —— 这些在悬浮小窗里**已经是全套**（四根可拖滑杆 + 四枚类型开关）。
+///
+/// 留一份在面板里，就是**同一个 bool 的第二道门** —— Owner 已经因同一理由
+/// 叫我删过一次（「更多」里那个重复的弹幕开关）。
+/// ```
+///
+/// ⚠️ 上面把 Owner 原话里的弹幕源名保留了 `bilibili`（Owner 2026-10-15 明确
+///    「弹幕这个允许使用」）；其余地方仍用中性词。
 enum DanmakuPanelTab {
-  /// 显示：类型过滤 + 字号/不透明度/速度/显示区域
-  display,
+  /// 配置：跨来源的通用项（开关 / 屏蔽词 / 正则）
+  general,
 
-  /// 来源：这一集用哪个弹幕库（弹弹play / 外部视频站）+ 搜索绑定
-  source,
+  /// bilibili：外部弹幕源自己的配置
+  bili,
+
+  /// 弹弹play：本机数据源探测 + 官方凭证
+  dandan,
 }
 
 class DanmakuSettingsDialog extends StatefulWidget {
@@ -553,8 +568,12 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 会把用户刚敲的关键词整段吃掉。
   final TextEditingController _searchKeyword = TextEditingController();
 
-  /// 当前页签。默认「显示」——它是最常调的一个。
-  DanmakuPanelTab _tab = DanmakuPanelTab.display;
+  /// 当前页签。默认「配置」。
+  ///
+  /// 为什么不默认到某个源：两个源是**互斥**的，
+  /// 默认点哪一个都等于假设了用户用哪个；
+  /// 而「配置」是两边都成立的中立落点。
+  DanmakuPanelTab _tab = DanmakuPanelTab.general;
 
   /// 外部视频站这一集的弹幕条数。
   ///
@@ -617,58 +636,66 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                   borderRadius: Radii.rLg,
                   border: Border.all(color: DanmakuTextColors.border),
                 ),
+                /*
+                 * ★★★ 2026-10-15 第二版（Owner）：
+                 * > 只有 tab 的内容区域上下滚动,其他区域不滚动
+                 *
+                 * # 为什么不能再把整张卡片塞进一个滚动区
+                 * ```text
+                 * 改前：标题 + 状态 + 状态条 + 页签 + 内容 —— **全部**在同一个
+                 *      SingleChildScrollView 里。
+                 *
+                 * 后果：当前在哪个页签、每个源有多少条，会随着内容
+                 *      一起滚出去。而它们正是“决定点哪个页签”时要看的东西。
+                 * ```
+                 *
+                 * 现在：标题 / 状态 / 状态条 / 页签 四块**钉在外面**，
+                 *      只有 `Expanded` 里那一块随内容滚动。
+                 *
+                 * ⚠️ 实现上必须用 `Expanded` 而不是 `Flexible`：
+                 *    `Flexible` 在内容短时会**缩到内容高度**，于是“固定区”
+                 *    在窗口大时不占满，页签会跟着往上跳。
+                 *    外层已有 `maxHeight: 620`，所以不会无限伸。
+                 */
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    // ── 以下四块固定，不随内容滚动 ────────────
                     _header(),
+                    _statusSection(),
+                    _sourceStatusStrip(),
+                    _tabBar(),
+                    // ── 只有这一块滚 ───────────────────────
                     Flexible(
                       child: SingleChildScrollView(
                         clipBehavior: Clip.antiAlias,
                         padding: const EdgeInsets.fromLTRB(
                           Sp.x6,
-                          0,
+                          Sp.x3,
                           Sp.x6,
                           Sp.x4,
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _statusSection(),
-                            _divider(),
-                            /*
-                             * 2026-10-15 (Owner): tabs, with a status strip above them.
-                             *
-                             * The status strip is deliberately OUTSIDE the tab bodies:
-                             * "which source is live and how many rows each one has" is
-                             * what the user checks before deciding which tab to open,
-                             * so it must not scroll away with the tab's content.
-                             */
-                            _sourceStatusStrip(),
-                            const SizedBox(height: Sp.x3),
-                            _tabBar(),
-                            const SizedBox(height: Sp.x3),
-                            if (_tab == DanmakuPanelTab.display) ...[
-                              _filterSection(),
-                              _divider(),
-                              _displaySection(),
-                              _divider(),
+                            if (_tab == DanmakuPanelTab.general) ...[
                               _switchSection(),
-                            ] else ...[
+                              _divider(),
+                              _filterSection(),
+                            ] else if (_tab == DanmakuPanelTab.bili) ...[
                               _requestSection(),
                               if (_showSearchSection) ...[
                                 _divider(),
                                 _searchSection(),
                               ],
+                            ] else ...[
+                              _sourceSection(),
                               if (_showCredentialsSection) ...[
                                 _divider(),
                                 _credentialsSection(),
                               ],
                             ],
                             _divider(),
-                            // ★ 「数据源」状态行（T27-05）—— 原来是凭证节的一部分，
-                            //   凭证输入框整节删掉后单独保留（只读状态，与凭证无关）。
-                            //   sourceLine 为空时 _sourceSection() 返回 SizedBox.shrink()。
-                            _sourceSection(),
                             /*
                              * ★★ Owner 第 1 条：把 403/401 翻成**能照着做**的中文
                              *
@@ -810,23 +837,30 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     );
   }
 
-  /// 两个页签。用 `SegmentedButton` 而不是自写一套：
+  /// 三个页签。用 `SegmentedButton` 而不是自写一套：
   /// 它自带选中态语义、键盘导航与无障碍读屏支持，
   /// 而且与本仓其他地方的选择控件同一套。
+  ///
+  /// ⚠️ 三个弹幕相关标签都很短（配置 / bilibili / 弹弹play），
+  ///    但卡片宽 560、内容区还要扣掉左右 padding，
+  ///    所以**不给图标** —— 三个图标会把文字挤成省略号，
+  ///    而省略号比没图标难认得多。
   Widget _tabBar() {
     return SizedBox(
       width: double.infinity,
       child: SegmentedButton<DanmakuPanelTab>(
         segments: const <ButtonSegment<DanmakuPanelTab>>[
           ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.display,
-            label: Text('显示'),
-            icon: Icon(Icons.tune, size: 16),
+            value: DanmakuPanelTab.general,
+            label: Text('配置'),
           ),
           ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.source,
-            label: Text('来源'),
-            icon: Icon(Icons.cloud_outlined, size: 16),
+            value: DanmakuPanelTab.bili,
+            label: Text(_kBiliSourceLabel),
+          ),
+          ButtonSegment<DanmakuPanelTab>(
+            value: DanmakuPanelTab.dandan,
+            label: Text('弹弹play'),
           ),
         ],
         selected: <DanmakuPanelTab>{_tab},

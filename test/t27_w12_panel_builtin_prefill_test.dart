@@ -152,7 +152,7 @@ void main() {
        * about missing credentials and point at the sign-free fallbacks) has not
        * changed, only where it is rendered.
        */
-      await t.tap(find.text('来源'));
+      await t.tap(find.text('弹弹play'));
       await t.pumpAndSettle();
       // ★ 2026-10-14（Owner「凭证流程根本没走通」）改口径：
       //   面板现在**有**凭证输入框了 ⇒ 缺凭证要**如实**说（官方边会失败），

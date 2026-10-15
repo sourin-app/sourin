@@ -91,14 +91,27 @@ void main() {
       expect(body, isNotEmpty, reason: 'handler must exist');
       expect(body.contains('buildBatchBindPlan('), isTrue,
           reason: '*** must use the core alignment, not hand-rolled pairing');
-      expect(body.contains('saveBinding('), isTrue,
+      /*
+       * 2026-10-15 (corrected): this used to assert `saveBinding(`, which is
+       * the EXTERNAL VIDEO SITE store.  That was the bug, not the contract --
+       * writing dandanplay episodeIds there makes the next play call the other
+       * site's comment API with the wrong id.  The store separation itself is
+       * pinned in zz_t113c; here we only require that SOMETHING persists.
+       */
+      expect(body.contains('saveDanmakuBind('), isTrue,
           reason: '*** a plan that is never persisted does nothing');
     });
 
-    test('*** manual: true -- a user action must not be overwritten later', () {
+    test('*** the binding records which work it came from', () {
       final body = bodyOf(page, 'Future<void> _batchBindDanmaku(');
-      expect(body.contains('manual: true'), isTrue,
-          reason: '*** without this the next auto pass silently rebinds it');
+      /*
+       * 2026-10-15 (corrected): `manual: true` belonged to the video-site
+       * binding model.  The danmaku store has no auto-overwrite path at all,
+       * so the durable contract here is that the work title is recorded --
+       * that is what tells the user (and us) which show got bound.
+       */
+      expect(body.contains('workTitle:'), isTrue,
+          reason: '*** without it there is no record of what was bound');
     });
 
     test('*** unbound episodes are reported to the user, not swallowed', () {

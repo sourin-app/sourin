@@ -486,13 +486,17 @@ void main() {  // ════════════════════�
        * 2026-10-15: the panel now has tabs, and the bili entry lives under the
        * "来源" (source) tab -- the "显示" (display) tab is what opens first.
        *
-       * So the real user flow is: open panel -> tap "来源" -> tap the button.
+       * So the real user flow is: open panel -> tap "bilibili" -> tap the button.
        * The test has to do the same; asserting the button is on screen without
        * switching tabs would be asserting a layout we deliberately moved away
        * from. The contract being guarded (a passed onOpenBili really renders and
        * really fires) is unchanged.
+       *
+       * 2026-10-15 (second revision): the panel now has three tabs
+       * (配置 / bilibili / 弹弹play), so the tab is named after the source itself
+       * instead of the generic "来源".
        */
-      await t.tap(find.text('来源'));
+      await t.tap(find.text('bilibili'));
       await t.pumpAndSettle();
       final btn = find.widgetWithText(TextButton, '外部弹幕…');
       expect(btn, findsOneWidget);
@@ -518,8 +522,8 @@ void main() {  // ════════════════════�
     testWidgets('③ 没传 onOpenBili ⇒ 按钮不画（旧宿主零破坏）', (t) async {
       await t.pumpWidget(_host(_danmakuDialog()));
       await t.pumpAndSettle();
-      // 同上：弹幕源相关的东西现在在「来源」页签下。
-      await t.tap(find.text('来源'));
+      // 同上：外部弹幕源相关的东西现在在 bilibili 页签下。
+      await t.tap(find.text('bilibili'));
       await t.pumpAndSettle();
       expect(find.text('外部弹幕…'), findsNothing,
           reason: '★ 面板可以被别的宿主复用而不带上 B 站 —— 那时不该有这枚按钮');

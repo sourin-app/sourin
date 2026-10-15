@@ -154,6 +154,38 @@ class AppUpdateController extends ChangeNotifier {
   @visibleForTesting
   static String assetUrl = 'https://github.com/$repoOwner/$repoName/releases/download';
 
+  // ── 开发/探针构建 ──
+
+  /// 数据目录是不是被 `--dart-define=DATA_DIR_OVERRIDE=…` 顶掉了
+  ///
+  /// 编译期常量，生产构建里是空串（见 `lib/shell.dart` 的 `_resolveDataDir`）。
+  static const bool _dataDirOverridden =
+      String.fromEnvironment('DATA_DIR_OVERRIDE') != '';
+
+  static bool? _devModeOverride;
+
+  /// 跑在开发/探针构建里吗（数据目录被顶掉 ⇒ 不是用户的那份数据）
+  ///
+  /// # ★ 为什么开发模式**必须**关掉自动更新检查（Owner 2026-10-15）
+  /// ```text
+  /// -Dev 用的一间**空**数据目录里没有 appupdate.lastCheckAt ⇒ 24 小时节流
+  /// 形同不存在 ⇒ 每起一次开发版就查一次、就弹一次窗。而开发版永远比线上新
+  /// （线上最新 v1.2.0，本地 HEAD 早过了）⇒ 这个弹窗对开发者**恒为噪声**，
+  /// 没有一次是有用的。Owner 的原话：「开发模式不应该弹这个」。
+  /// ```
+  ///
+  /// ⚠️ 只挡**自动**检查：关于页的「检查更新」按钮走 [check] 的 `manual` 路径，
+  ///    不经 [shouldAutoCheck] ⇒ 要验更新流程照样能验（只是得自己点一下）。
+  static bool get isDevMode => _devModeOverride ?? _dataDirOverridden;
+
+  /// 测试用：覆盖开发模式判定
+  ///
+  /// 为什么需要：`String.fromEnvironment` 是**编译期**常量，测试进程里改不了，
+  /// 不开口子就没法同时测「开发模式不查」与「正常模式照查」两条路。
+  @visibleForTesting
+  // ignore: avoid_setters_without_getters
+  static void debugSetDevModeForTest(bool? v) => _devModeOverride = v;
+
   // ── 状态 ──
   UpdateRouteConfig _route = const UpdateRouteConfig();
   bool _autoCheck = true;
@@ -176,7 +208,9 @@ class AppUpdateController extends ChangeNotifier {
   /// 是否该在启动时自动查一次
   ///
   /// 规则：开着 + 从没查过（或距上次超过 [_autoInterval]）+ 没在下载中。
+  /// ★ 开发/探针构建**永远不自动查** —— 理由见 [isDevMode]。
   bool get shouldAutoCheck {
+    if (isDevMode) return false;
     if (!_autoCheck || _checking || _download.active) return false;
     if (_lastCheckAt == null) return true;
     return DateTime.now().difference(_lastCheckAt!) >= _autoInterval;
@@ -224,11 +258,27 @@ class AppUpdateController extends ChangeNotifier {
   }
 
   /// 忽略某个版本（之后不再提示它）
-  void ignoreVersion(String tag) {
+  ///
+  /// ★ 返回的 Future 在**这份偏好真的落到磁盘上**之后才完成 ——
+  ///   调用方（「忽略此版本」按钮）必须 await 它再关窗。
+  ///
+  /// # 为什么必须 await 而不是 fire-and-forget（CR-1015 实测）
+  /// ```text
+  /// 用户点完「忽略」随时可能直接关窗退出，而这一次点击的**全部意义**
+  /// 就是「下次别再弹」。旧写法有**两道**都可能丢掉它：
+  ///   ① UiPrefs.set() 只改内存，真正写盘的是 300ms 去抖定时器；
+  ///   ② 就算这里补一句 unawaited(flush())，也只保证「开始写」——
+  ///      写是异步的，进程比它先走照样丢。
+  /// ⇒ 只有 await 到写完成，才真的对得起用户这一次点击。
+  /// ```
+  ///
+  /// flush() 幂等：没脏数据时立即返回，不会拖慢点击。
+  Future<void> ignoreVersion(String tag) async {
     _ignoredVersion = tag;
     UiPrefs.set(_kIgnored, tag);
     if (_available?.tag == tag) _available = null;
     notifyListeners();
+    await UiPrefs.flush();
   }
 
   String get ignoredVersion => _ignoredVersion;

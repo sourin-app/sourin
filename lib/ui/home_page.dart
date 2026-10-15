@@ -139,6 +139,44 @@ bool providesHomeContent(ProviderManifest p) => p.capabilities.vod;
 List<ProviderManifest> homeSourceList(List<ProviderManifest> all) =>
     all.where(providesHomeContent).toList();
 
+/// 空态该说哪句话 —— **分情况**（2026-10-15 修正）
+///
+/// 返回 `(标题, 说明, 是不是"真的没启用源")`。
+///
+/// # 为什么不能只有一句「还没有可用的内容源」
+///
+/// 那句话只在**一个**情形下是真的：用户确实一个能上首页的源都没启用。
+/// 其余情形说它都是**误导** —— 本文件早先的注释自己就承认过这一点
+///（`loadAll` 里「空态那句文案…是误导的…本轮不改」那段），现在补上。
+///
+/// ```text
+/// ① enabled 为空          → 真的没启用源     → 「还没有可用的内容源」
+/// ② 有源但当前源取不到    → 该源这次没给内容 → 「『源名』暂时没有内容」
+/// ③ 有源但 id 对不上      → 解析异常，同 ① 的兜底（不猜源名）
+/// ```
+///
+/// ⚠️ 判据是 `enabled.isEmpty` 而**不是** `current.isEmpty`：
+///    后者在「只启用了纯直播源」时也为空，那种情况说「去设置里启用」
+///    同样对不上（用户启用了，只是首页用不了）。
+///
+/// ⚠️ 情形 ② **不**断言「需要登录」：登录态是宿主**猜**的
+///   （`login_required` 只挡取流、不挡浏览），猜错就把用户引到登录页白跑一趟。
+///    只说「暂时没有内容」这个**确定的事实**。
+(String, String, bool) emptyStateText({
+  required List<ProviderManifest> enabled,
+  required String current,
+}) {
+  final name = enabled
+      .where((p) => p.id == current)
+      .map((p) => p.name)
+      .firstOrNull;
+
+  if (enabled.isEmpty || name == null) {
+    return ('还没有可用的内容源', '在设置里启用或导入一个内容源即可开始', true);
+  }
+  return ('「$name」暂时没有内容', '换一个源看看，或稍后下拉刷新重试', false);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  ★★★ task-11：首页列表的**进程级内存缓存**（切源不重拉 = stale-while-revalidate）
 // ═══════════════════════════════════════════════════════════════════════
@@ -1171,10 +1209,9 @@ class HomePageState extends State<HomePage> {
        * ⇒ `visible` 为空 ⇒ 显示空态。这是**唯一自洽**的结果：
        * 首页确实一个可展示的源都没有。此时不会与解析打架 ——
        * 两者用的是同一个列表，不存在「有当前源但没内容」的中间态。
-       * ⚠️ 但空态那句文案（`_EmptyState` 的
-       *    `title: '还没有可用的内容源'`）在这种情形下**是误导的** ——
-       *    用户明明启用了源。
-       *    本轮**不改**（超出「一处过滤」的范围），已记入交付报告。
+       * ✅ 空态文案已在 2026-10-15 修正：由 `_buildEmptyState()` **分情况**选，
+       *    这种「启用了源但首页用不了」的情形不再说「还没有可用的内容源」。
+       *    （原文案确实**是误导的** —— 用户明明启用了源。）
        *    ★ 这里刻意**不写行号** —— 本文件每次改动都会让行号漂，
        *      写死行号的注释必然过期（我自己这一轮就把空态从 :714
        *      推到了 :837）。引用**内容**比引用**位置**耐用。
@@ -1930,6 +1967,19 @@ class HomePageState extends State<HomePage> {
     el.visitChildElements(walk);
     return n;
   }
+  /// 空态：文案由顶层纯函数 [emptyStateText] 决定（便于单测直接覆盖）
+  Widget _buildEmptyState() {
+    final (title, desc, noSourceAtAll) = emptyStateText(
+      enabled: _enabled,
+      current: _currentSource,
+    );
+    return _EmptyState(
+      icon: noSourceAtAll ? Icons.movie_outlined : Icons.inbox_outlined,
+      title: title,
+      desc: desc,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final visible = _groups.where((g) => g.provider == _currentSource).toList();
@@ -2139,13 +2189,9 @@ class HomePageState extends State<HomePage> {
 
           // ── 空状态（★ 淡入）──
           if (!_loading && visible.isEmpty)
-            const FadeInSliver(
+            FadeInSliver(
               sliver: SliverToBoxAdapter(
-                child: _EmptyState(
-                  icon: Icons.movie_outlined,
-                  title: '还没有可用的内容源',
-                  desc: '在设置里启用或导入一个内容源即可开始',
-                ),
+                child: _buildEmptyState(),
               ),
             ),
 

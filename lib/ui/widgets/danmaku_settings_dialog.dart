@@ -344,6 +344,12 @@ class DanmakuReadout {
       'DanmakuReadout(count: $count, lanes: $lanes, dropped: $dropped)';
 }
 
+/// Key of the "add a block word" input (see [_blockWordsAddField]).
+///
+/// Exposed so tests can target the field without depending on layout
+/// properties that the 2026-10-15 redesign changed.
+const Key blockWordsAddFieldKey = Key('danmaku-blockwords-add-field');
+
 class DanmakuSettingsDialog extends StatefulWidget {
   const DanmakuSettingsDialog({
     super.key,
@@ -1202,6 +1208,15 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       children: [
         Expanded(
           child: TextField(
+            /*
+             * Stable key for tests. Before the 2026-10-15 redesign the block
+             * word box was the panel's only maxLines==4 EditableText, so tests
+             * found it by that property. The redesign turned it into a set of
+             * chips plus this one-line add field, so the old finder matches
+             * nothing. Keying the field keeps the lookup unambiguous without
+             * pinning a layout detail that may change again.
+             */
+            key: blockWordsAddFieldKey,
             controller: _blockWords,
             style: const TextStyle(
               color: DanmakuTextColors.muted,

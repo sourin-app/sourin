@@ -29,7 +29,7 @@
 | 文档 | 内容 |
 |---|---|
 | [BUILD.md](BUILD.md) | 前置依赖、编 Rust 核心、编 Flutter、Android 交叉编译、CI 与打包 |
-| [RUNBOOK.md](RUNBOOK.md) | 发版、本机跑客户端、排障的非显然步骤 |
+| [RUNBOOK.md](RUNBOOK.md) | 发版、本机跑客户端（含 `-Dev` 数据播种）、排障的非显然步骤 |
 | [TESTING.md](TESTING.md) | 跑测试、`native-media` 标签、测试纪律 |
 | [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) | 目录结构 + 规模取数快照 |
 
@@ -39,7 +39,7 @@
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 分层、为什么业务逻辑在 Rust、FFI 契约 |
 | [CONFIG.md](CONFIG.md) | 界面偏好 `ui-prefs.json`、环境变量、凭证注入 |
-| [DATA-DIR.md](DATA-DIR.md) | 数据目录文件清单、备份与恢复 |
+| [DATA-DIR.md](DATA-DIR.md) | 数据目录文件清单、备份与恢复、**开发模式的第二份数据目录** |
 | [PLATFORMS.md](PLATFORMS.md) | Windows / macOS / Android / Android TV（同一 APK） |
 | [THEMES.md](THEMES.md) | 主题包（JSON 配色，零门槛） |
 | [PLUGINS.md](PLUGINS.md) | 插件开发（QuickJS 沙箱、host API、安装） |

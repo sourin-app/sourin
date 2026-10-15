@@ -56,6 +56,23 @@ flutter analyze lib            # 0 error；不要新增 warning
 脚本会把「`data/app.so` 大小」变成硬闸，编出 spike 就直接报错退出。
 非 `-Dev` 的 Release 启动**会用真实数据目录**（产品正常行为）。
 
+`-Dev` 起来前会调 `tools/seed_dev_data.ps1`，把你**真实数据目录里的内容**
+（插件源码、收藏/历史/进度、界面偏好）播一份到隔离目录 —— 否则开发环境是空的，
+插件调试、追更、播放进度一条都验不了。播种是**单向的**：
+
+```powershell
+.\tools\seed_dev_data.ps1 -Target "$env:TEMP\sourin-dev"            # 手动播一次
+.\tools\seed_dev_data.ps1 -Target D:\tmp\dev -Force                # 覆盖式重播
+```
+
+⚠️ 两条硬约束（由 `test/zz_t1015_dev_seed_test.dart` 守着）：
+
+```text
+· 只读真实目录：跑完源目录必须逐文件哈希不变（脚本里没有任何一行写源目录）
+· 凭据一律不带：sync-settings.json / remote-pref.json / plugins/.data/ 都不拷；
+  ui-prefs.json 按 key 过滤（分P绑定、测速历史、源级偏好都留在真实目录里）
+```
+
 ---
 
 ## 3. 用户数据安全（违反任何一条都是事故）
@@ -69,6 +86,8 @@ flutter analyze lib            # 0 error；不要新增 warning
 · 只结束**你自己启动的 PID**（taskkill //PID <pid> //F），绝不按进程名批量杀
 · 不碰 Windows 凭据管理器里的真实凭据；不拷真实数据目录里的 sync-settings.json /
   remote-pref.json / plugins/.data/（含凭据，且会自动同步或占端口）
+  ★ 唯一例外是 tools/seed_dev_data.ps1 的**只读**播种：它读真实目录、只往隔离目录写，
+    且上面三样**仍然不拷**（ui-prefs.json 也只搬界面偏好，按 key 过滤）
 ```
 
 数据目录的完整清单见 [DATA-DIR.md](DATA-DIR.md)。
@@ -171,3 +190,5 @@ flutter analyze lib            # 0 error；不要新增 warning
 | `flutter test test/` 偶发 `did not complete` | `flutter_tester` 加载 libmpv 原生崩溃（第三方库）。判断「是不是我改坏的」时**先单跑那个文件** |
 | Android 上所有命令都超时 | `jniLibs/*/libsourin_core.so` 是**手动拷贝**的产物，改过 `ffi.rs` 要重编三个 target 并重拷 |
 | 深色主题「看不见字」但不报错 | 主题角色取值有回归门禁 `test/theme_regression_test.dart`（含 WCAG 对比度断言） |
+| 开发版**不弹**更新窗（要验更新流程时） | 有意为之：开发/探针构建跳过启动检查（本地 HEAD 永远比线上新，弹了对开发者是纯噪声）。要验就手动点「设置 → 关于 → 检查更新」 |
+| 开发版「忽略此版本」像没记住 | 「忽略」现在会**等到落盘才关窗**（`ignoreVersion` 返回 Future）。若仍旧弹，先看数据目录里 `ui-prefs.json` 的 `appupdate.ignoredVersion` 在不在 |

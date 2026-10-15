@@ -63,6 +63,7 @@ import 'package:path_provider/path_provider.dart';
 import 'core/app_tray.dart';
 import 'ui/app_update_bootstrap.dart';
 import 'core/device.dart';
+import 'core/disk_cache.dart';
 import 'core/ffi.dart';
 import 'core/ui_prefs.dart';
 import 'core/window_bounds.dart';
@@ -629,6 +630,38 @@ Future<void> main() async {
      *    晚加载的话第一次进详情页会读不到（表现为"记住的源没生效"）。
      */
     await UiPrefs.load(dir);
+
+    /*
+     * ★★★ 磁盘缓存：注入数据目录 + 预热首页快照（Owner 2026-10-15）
+     *
+     * Owner 原话：
+     * ```text
+     * > 我希望这个页面的数据可以缓存,而不是每次打开都是彻底的请求重载,
+     * > 太影响观感,可以缓存然后异步
+     * > （追加）对的,我就是希望持久化的,而不是重启软件就没了
+     * ```
+     *
+     * # 为什么必须在 runApp 之前 `await` 预热
+     * ```text
+     * 首页 initState → loadAll → homeListCache.take() 就在**首帧**发生
+     * ⇒ 缓存没提前躺进内存 ⇒ 首帧还是骨架（等于没做）
+     * ```
+     * ⚠️ 这里多花的是**一次本地文件读**（几十 KB，毫秒级）；
+     *    换来的是「重启后首页第一帧就有卡片」。
+     *    与 Owner 抱怨的"彻底重载"（25 个源、几秒）不是一个量级。
+     *
+     * ★ 失败绝不影响启动：DiskCache 内部全程 try/catch，
+     *   读不到就当作没有缓存（见 core/disk_cache.dart 文件头）。
+     * ★ 用 `dir`（_resolveDataDir 的结果）⇒ DATA_DIR_OVERRIDE 自动生效，
+     *   探针跑在隔离目录里，碰不到用户的真实数据。
+     */
+    DiskCache.init(dir);
+    try {
+      final preloaded = await homeListCache.preload();
+      debugPrint('[SHELL] 首页磁盘缓存预热：$preloaded 个源');
+    } catch (e) {
+      debugPrint('[SHELL] 首页磁盘缓存预热失败（当作无缓存）: $e');
+    }
 
     /*
      * ★★ task-55：`UiPrefs` 加载完成后，把"动画风格"同步进运行期缓存

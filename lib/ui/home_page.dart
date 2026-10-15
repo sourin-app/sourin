@@ -45,10 +45,13 @@
 // ```
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
 import 'package:material_ui/material_ui.dart';
 
+import '../core/disk_cache.dart';
+import '../core/json_utils.dart' show jmapOrNull;
 import '../core/sourin_api.dart';
 import '../core/ui_prefs.dart';
 import 'live_availability.dart';
@@ -198,15 +201,29 @@ List<ProviderManifest> homeSourceList(List<ProviderManifest> all) =>
 /// ★ 定成 12 而不是"无限"：用户可能装几十个源，来回切不能让内存线性涨。
 const int kHomeCacheMaxEntries = 12;
 
-/// 快照的**存活时长**：超过就不当"可用缓存"（宁可直接冷加载一次）
+/// 快照的**存活时长**：null = **永不失效**（默认，Owner 2026-10-15 明确要求）
 ///
-/// ★ 为什么有后台刷新还要有 TTL（两者不是一回事）
+/// # Owner 原话
 /// ```text
-/// 后台刷新 → 保证"命中之后内容会变新"（stale-while-revalidate 的 revalidate）
-/// TTL      → 保证"命中之前不会拿**很久以前**的数据当秒开"
-///            （应用在后台搁了几小时、期间一次都没刷新 ⇒ 宁可直接冷加载）
+/// > 不限制时间,可以启动后异步刷新替换,切换源检测时间对比 然后再替换
 /// ```
-const Duration kHomeCacheTtl = Duration(minutes: 10);
+/// ⇒ 缓存**不因为"存了多久"而作废**。旧数据照样先画出来，
+///   紧接着由后台刷新替换成新的（stale-while-revalidate 的 revalidate 那一半）。
+///
+/// # 为什么还留着这个参数（而不是直接删掉）
+/// ```text
+/// ① 它是**机制**不是策略：`take()` 里那段判断仍然被测着
+///    （t11_cache_unit_test 显式传一个 ttl 来验它真的会作废）
+/// ② 以后若有别的调用方需要"只认 5 分钟内的"，注入即可，不必重写
+/// ```
+/// ★ 默认 null（不限）—— 生产走的**就是**这一条，与 Owner 的要求一致。
+///
+/// ⚠️ 别把它和 [kHomeCacheFreshFor] 混为一谈：
+/// ```text
+/// freshFor(30s) → 命中之后**要不要去后台对新的**（revalidate 的节流）
+/// ttl(null)     → 命中**之前**这份快照还算不算数（本参数，默认永不作废）
+/// ```
+const Duration? kHomeCacheTtl = null;
 
 /// 「新鲜窗口」：快照存下来不到这么久 ⇒ **连后台刷新都不用发**
 ///
@@ -258,6 +275,61 @@ class HomeSnapshot {
     }
     return n;
   }
+
+  /// 序列化 —— **给磁盘缓存用**（见 core/disk_cache.dart）
+  ///
+  /// # 为什么要带 fingerprint 和 at
+  /// ```text
+  /// fingerprint → 读回来时判"骨架还是不是同一个"（源被启停过就不作数）
+  /// at          → Owner 要的"检测时间对比"：够新就不发请求，旧了才异步替换
+  /// ```
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'fingerprint': fingerprint,
+        'at': at.millisecondsSinceEpoch,
+        'groups': [for (final g in groups) g.toJson()],
+        // ⚠️ items 的键是 'provider::sectionId' —— 原样存（它就是 _sectionItems 的键）
+        'items': <String, dynamic>{
+          for (final e in items.entries)
+            e.key: [for (final it in e.value) it.toJson()],
+        },
+      };
+
+  /// 反序列化 —— 与 [toJson] 逐键对称
+  ///
+  /// ★ 复用**现成的** ProviderGroup.fromJson / MediaItem.fromJson ——
+  ///   不另写一套映射（那样必然与线上报文漂移，见 models.dart 里
+  ///   note/subtitle 那个静默 bug）。
+  static HomeSnapshot? fromJson(Map<String, dynamic> j) {
+    try {
+      final fp = j['fingerprint'] as String?;
+      final atMs = (j['at'] as num?)?.toInt();
+      if (fp == null || atMs == null) return null;
+      final groups = <ProviderGroup>[
+        for (final g in (j['groups'] as List? ?? const []))
+          ProviderGroup.fromJson(jmapOrNull(g) ?? const {}),
+      ];
+      final items = <String, List<MediaItem>>{};
+      final rawItems = j['items'];
+      if (rawItems is Map) {
+        for (final e in rawItems.entries) {
+          final list = e.value;
+          if (list is! List) continue;
+          items[e.key.toString()] = <MediaItem>[
+            for (final it in list) MediaItem.fromJson(jmapOrNull(it) ?? const {}),
+          ];
+        }
+      }
+      return HomeSnapshot(
+        fingerprint: fp,
+        groups: groups,
+        items: items,
+        at: DateTime.fromMillisecondsSinceEpoch(atMs),
+      );
+    } catch (_) {
+      // 坏数据 ⇒ 当作没有缓存（调用方走冷加载）
+      return null;
+    }
+  }
 }
 
 /// 首页列表的**进程级**缓存（LRU + TTL）
@@ -278,7 +350,9 @@ class HomeListCache {
   });
 
   final int maxEntries;
-  final Duration ttl;
+
+  /// null = 永不失效（默认）—— 见 [kHomeCacheTtl] 的说明
+  final Duration? ttl;
 
   /// ★ 用 `Map` 的**插入序**当 LRU 序：命中时先 remove 再写回 = 挪到末尾。
   ///   不引第三方 LRU 实现（本仓不许加依赖）。
@@ -319,6 +393,27 @@ class HomeListCache {
   /// 取快照：**未过期** 且 **指纹一致** 才算命中（命中会做 LRU 提升）
   ///
   /// ⚠️ 不命中时**顺手删掉**这一条（过期/作废的数据不占名额、不占内存）。
+  ///
+  /// # ★★★ `fingerprint` 传空串 = "我还不知道骨架，先给我这份"（2026-10-15）
+  ///
+  /// # 为什么必须留这个口子（实机抓到的真缺陷）
+  ///
+  /// ```text
+  /// 冷启动时序（探针 .probe/ops/cachedemo 实测）：
+  ///   shell 预热读盘 → homeListCache 里已有快照 ✓
+  ///   home.initState → loadAll() → take(current, fingerprint: _fingerprint)
+  ///     ⚠️ 此刻 _fingerprint 还是初始值 **空串**！
+  ///        （它要等 getHome() 返回后才被填上）
+  ///   ⇒ 快照指纹("srca:...|...") ≠ 空串 ⇒ **判不命中**
+  ///   ⇒ ★ 更糟：take() 顺手把那条**删掉了** ⇒ 等真指纹到手也找不回来
+  /// ⇒ 表现：预热日志写着"N 个源"（读盘确实成功），
+  ///   但一条 [HOME] 缓存命中 都没有 ⇒ 重启后**照样冷加载**。
+  /// ```
+  /// ⇒ 空串是"未知"，不是"不符"。未知时**先信这份缓存**：
+  ///   反正紧接着的 `loadAll` 会拿到全量骨架，指纹随后就被填真；
+  ///   而内容马上会被后台刷新替换（Owner 要的 stale-while-revalidate）。
+  ///
+  /// ⚠️ 指纹**非空**时判据逐字不变（用户启停过源 ⇒ 旧快照仍然作废）。
   HomeSnapshot? take(
     String provider, {
     required String fingerprint,
@@ -333,7 +428,11 @@ class HomeListCache {
       misses++;
       return null;
     }
-    if (now.difference(s.at) > ttl || s.fingerprint != fingerprint) {
+    // ★ ttl == null ⇒ 只比指纹，不因"存了多久"作废（Owner：不限制时间）
+    final expired = ttl != null && now.difference(s.at) > ttl!;
+    // ★ 空串 = 调用方还不知道骨架 ⇒ 不当成"不符"（见上面那段）
+    final fpMismatch = fingerprint.isNotEmpty && s.fingerprint != fingerprint;
+    if (expired || fpMismatch) {
       misses++;
       return null;
     }
@@ -351,6 +450,89 @@ class HomeListCache {
       final oldest = _entries.keys.first; // 插入序最前 = 最久未用
       _entries.remove(oldest);
       evictions++;
+    }
+    // ★ 落盘（写穿）—— Owner 要的"重启后还在"就靠这一行
+    unawaited(_persist(provider, s));
+  }
+
+  /// 磁盘缓存的文件名（**每个源一个文件**）
+  ///
+  /// # 为什么按源分文件，而不是一个大 JSON
+  /// ```text
+  /// 大 JSON  → 写一个源要把**所有**源重写一遍（12 个源 × 160 卡）
+  ///             而且任意一次写坏 = 全部源的缓存一起丢
+  /// 每源一个 → 只写动过的那个；坏一个只丢一个源
+  /// ```
+  /// ⚠️ 文件名要**净化**：provider id 来自插件（可能含路径分隔符），
+  ///    直接拼进路径等于把用户目录交给插件控制。
+  static String _fileNameFor(String provider) {
+    final safe = provider.replaceAll(RegExp(r'[^A-Za-z0-9_.-]'), '_');
+    return 'home-cache-$safe.json';
+  }
+
+  static Future<void> _persist(String provider, HomeSnapshot s) async {
+    await DiskCache.write(_fileNameFor(provider), s.toJson(), at: s.at);
+  }
+
+  /// ★ 启动预热：把磁盘上的快照读回内存
+  ///
+  /// # 为什么必须 await（不能 unawaited）
+  /// ```text
+  /// 首帧就要命中 ⇒ 缓存必须**在 build 之前**已经躺在 _entries 里
+  ///   否则第一帧仍然是骨架（那就等于没做）
+  /// ```
+  /// ⚠️ 只读**上限条数**：磁盘上可能躺着几十个源的旧文件
+  ///    （maxEntries 淘汰只作用于内存），全读进来就绕过了 LRU 上限。
+  ///    取最近修改的 maxEntries 个 —— 与 LRU 的意图一致（最近用过的）。
+  ///
+  /// 返回读回来的条数（探针/门禁读数）。
+  Future<int> preload() async {
+    if (!enabled) return 0;
+    try {
+      final d = DiskCache.dataDir;
+      if (d == null || d.isEmpty) return 0;
+      final dir = Directory(d);
+      if (!await dir.exists()) return 0;
+      final files = <FileSystemEntity>[];
+      await for (final e in dir.list()) {
+        final n = e.path.split(Platform.pathSeparator).last;
+        if (n.startsWith('home-cache-') && n.endsWith('.json')) {
+          files.add(e);
+        }
+      }
+      if (files.isEmpty) return 0;
+      // 最近修改的优先（≈ 最近用过的源）
+      final withTime = <(File, DateTime)>[];
+      for (final e in files) {
+        try {
+          withTime.add((File(e.path), await File(e.path).lastModified()));
+        } catch (_) {}
+      }
+      withTime.sort((a, b) => b.$2.compareTo(a.$2));
+      var loaded = 0;
+      for (final (f, _) in withTime.take(maxEntries)) {
+        final name = f.path.split(Platform.pathSeparator).last;
+        final entry = await DiskCache.read(name);
+        if (entry?.data == null) continue;
+        final snap = HomeSnapshot.fromJson(jmapOrNull(entry!.data) ?? const {});
+        if (snap == null) continue;
+        /*
+         * ⚠️ provider 名从**快照内容**里取，不从文件名取 ——
+         *    文件名是净化过的（正则把非 [A-Za-z0-9_.-] 换成了 _），
+         *    不可逆：'某源:主' 与 '某源_主' 会撞成同一个文件名。
+         *    而 _entries 的键必须是**真 provider**（take() 按它查）。
+         */
+        final pid = snap.groups.isNotEmpty ? snap.groups.first.provider : '';
+        if (pid.isEmpty) continue;
+        // ⚠️ 不走 put()：put 会再写一次盘（预热不该产生写）
+        _entries.remove(pid);
+        _entries[pid] = snap;
+        loaded++;
+      }
+      return loaded;
+    } catch (e) {
+      debugPrint('[HOME] 磁盘缓存预热失败（当作无缓存）: $e');
+      return 0;
     }
   }
 

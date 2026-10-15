@@ -532,6 +532,30 @@ class MediaItem {
         category: j['category'] as String?,
         provider: j['provider'] as String?,
       );
+
+  /// 序列化 —— **键名一律用 Rust 的真名**（与 [MediaItem.fromJson] 逐键对称）
+  ///
+  /// # 为什么必须与 fromJson 严格对称
+  ///
+  /// 这个 toJson 的**唯一用途**是磁盘缓存（见 core/disk_cache.dart）：
+  /// 写进文件 → 下次启动读回来喂给 [MediaItem.fromJson]。
+  /// ⇒ 只要有一个键名对不上，缓存读回来就是**静默缺字段**
+  ///   （as String? ?? '' 兜底、不抛异常），正是本项目栽过的那类 bug
+  ///   （见上面 note 来自 subtitle 那段）。
+  ///
+  /// ★ 所以 note 发的是 **subtitle** —— 那是 Rust 的字段名，
+  ///   也是 [MediaItem.fromJson] 读的第一个键。发 note 也能读回，
+  ///   但那样存的文件就**不是线上报文的样子**了（以后排查会对不上）。
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'title': title,
+        if (cover != null) 'cover': cover,
+        if (note != null) 'subtitle': note,
+        if (badges.isNotEmpty) 'badges': badges,
+        if (year != null) 'year': year,
+        if (category != null) 'category': category,
+        if (provider != null) 'provider': provider,
+      };
 }
 
 /// 从 `badges` 里挑出**含「集」**的那一条（没有则 null）
@@ -605,6 +629,13 @@ class ProviderGroup {
             jstr(j, 'provider'),
         sections: jlist<Section>(j['sections'], Section.fromJson),
       );
+
+  /// 序列化 —— 与 [ProviderGroup.fromJson] 对称（providerName 是线上真名）
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'provider': provider,
+        'providerName': providerName,
+        'sections': [for (final s in sections) s.toJson()],
+      };
 }
 
 /// 首页的一个区块（如「热门电影」「最近更新」）
@@ -643,6 +674,14 @@ class Section {
         ),
         items: jlist<MediaItem>(j['items'], MediaItem.fromJson),
       );
+
+  /// 序列化 —— 与 [Section.fromJson] 对称
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'title': title,
+        'source': source.toJson(),
+        'items': [for (final it in items) it.toJson()],
+      };
 }
 
 /// 区块的数据来源
@@ -712,6 +751,14 @@ class SectionSource {
         rankId: j['rank_id']?.toString(),
         key: j['key']?.toString(),
       );
+
+  /// 序列化 —— 与 [SectionSource.fromJson] 对称（扁平结构，type 作标签）
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'type': type,
+        if (categoryId != null) 'category_id': categoryId,
+        if (rankId != null) 'rank_id': rankId,
+        if (key != null) 'key': key,
+      };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1459,6 +1506,33 @@ class Favorite {
         updatedAt: (j['updated_at'] as num?)?.toInt() ?? 0,
         deleted: j['deleted'] as bool? ?? false,
       );
+
+  /// 序列化 —— 与 [Favorite.fromJson] 逐键对称（键名一律 Rust 真名）
+  ///
+  /// ★ 用途同 [MediaItem.toJson]：磁盘缓存往返。
+  ///   ⚠️ 可空字段用 if (x != null) 省略 —— 与 Rust 的
+  ///      skip_serializing_if="Option::is_none" 一致，
+  ///      也让存下来的文件与线上报文同形。
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'key': key,
+        'provider': provider,
+        'native_id': nativeId,
+        'title': title,
+        if (cover != null) 'cover': cover,
+        if (groupName != null) 'group_name': groupName,
+        'kind': kind,
+        'favorited': favorited,
+        'following': following,
+        'last_episode_count': lastEpisodeCount,
+        if (lastEpisodeTitle != null) 'last_episode_title': lastEpisodeTitle,
+        'unread_count': unreadCount,
+        'last_checked_at': lastCheckedAt,
+        'last_update_at': lastUpdateAt,
+        if (note != null) 'note': note,
+        'created_at': createdAt,
+        'updated_at': updatedAt,
+        'deleted': deleted,
+      };
 }
 
 /// 播放进度
@@ -1519,6 +1593,21 @@ class Progress {
         finished: j['finished'] as bool? ?? false,
         updatedAt: (j['updated_at'] as num?)?.toInt() ?? 0,
       );
+
+  /// 序列化 —— 与 [Progress.fromJson] 逐键对称（键名一律 Rust 真名）
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'key': key,
+        'provider': provider,
+        'native_id': nativeId,
+        'title': title,
+        if (cover != null) 'cover': cover,
+        if (episodeId != null) 'episode_id': episodeId,
+        if (episodeTitle != null) 'episode_title': episodeTitle,
+        'position': position,
+        'duration': duration,
+        'finished': finished,
+        'updated_at': updatedAt,
+      };
 }
 
 // ═══════════════════════════════════════════════════════════════════════

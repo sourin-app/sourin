@@ -59,6 +59,8 @@ import 'dart:math' as math;
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/disk_cache.dart';
+import '../../core/json_utils.dart' show jmapOrNull;
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
 import 'poster_card.dart';
@@ -66,6 +68,17 @@ import 'press_feedback.dart';
 
 /// tab 类型
 enum ShelfTab { following, favorites, history }
+
+/// 「我的」三份数据的磁盘缓存文件名（Owner 2026-10-15 要求持久化）
+///
+/// # 为什么三份**合成一个文件**（与首页的「每源一个文件」相反）
+/// ```text
+/// 首页：一个源一个文件 —— 因为每个源独立刷新、独立失效
+/// 我的：三份数据**永远一起取、一起画**（load() 里是 Future.wait）
+///        ⇒ 分开存只会多两次 I/O，还得处理"三份时间戳不一致"
+/// ```
+/// 体积也不大：收藏/追更/历史各几十条（历史只取 12 条）。
+const String kShelfCacheFile = 'shelf-cache.json';
 
 /// ★ 仅供 OPS 探针做**同一次 run 内**因果 A/B 用的运行时开关。
 ///   置 true 后 `refreshOnReturn()` 不拉数据（回到「没修」的观感基线）。
@@ -328,7 +341,99 @@ class MyShelfState extends State<MyShelf> {
   @override
   void initState() {
     super.initState();
+    /*
+     * ★★★ 磁盘缓存预热（Owner 2026-10-15）
+     *
+     * Owner 原话：
+     * ```text
+     * > 我希望这个页面的数据可以缓存,而不是每次打开都是彻底的请求重载,
+     * > 太影响观感,可以缓存然后异步
+     * > （追加）对的,我就是希望持久化的,而不是重启软件就没了
+     * ```
+     *
+     * # 顺序：**先读盘（同步语义上"立刻有数据"）→ 再 load() 拉新的**
+     * ```text
+     * 预热拿到数据 ⇒ 首帧就有卡片（不等 FFI）
+     * load() 照常发（本方法下面那行，**逐字不变**）
+     *   ⇒ 拿到新数据后按渲染指纹决定要不要 setState（task-36 那套）
+     * ```
+     * ⚠️ 预热**不 setState**：它只填 `_favorites/_following/_history` 三个字段，
+     *    而 `load()` 紧接着就会发；用 setState 会多排一帧重建
+     *    （正是 task-36 修掉的那类浪费）。
+     *    首个真正需要画的帧由 load() 的守卫负责 —— 那时字段已经有值了。
+     *
+     * ★ 读盘失败/文件坏 ⇒ 静默降级（DiskCache 内部全程 try/catch）。
+     */
+    unawaited(_preloadFromDisk());
     WidgetsBinding.instance.addPostFrameCallback((_) => load());
+  }
+
+  /// 从磁盘预热三份数据（Owner 要的"重启后还在"）
+  ///
+  /// ⚠️ 与 `load()` **无关**：它不调任何 SourinApi、不计入 task-36 的
+  ///    `[SHELF]` 日志仪器（本方法不打那个 tag）⇒ 那些用例逐字不变。
+  Future<void> _preloadFromDisk() async {
+    try {
+      final e = await DiskCache.read(kShelfCacheFile);
+      final m = jmapOrNull(e?.data);
+      if (m == null) return;
+      final fav = _favListFrom(m['favorites']);
+      final fol = _favListFrom(m['following']);
+      final his = _progListFrom(m['history']);
+      if (!mounted) return;
+      if (fav.isEmpty && fol.isEmpty && his.isEmpty) return;
+      setState(() {
+        if (fav.isNotEmpty) _favorites = fav;
+        if (fol.isNotEmpty) _following = fol;
+        if (his.isNotEmpty) _history = his;
+        // ★ 有数据就算"加载过" ⇒ 骨架不闪（用户已经看到内容了）
+        _loadedOnce = true;
+        _loading = false;
+      });
+      debugPrint('[SHELF-DISK] 预热：收藏=${fav.length} 追更=${fol.length} '
+          '历史=${his.length}（存了 ${e!.ageFrom(DateTime.now()).inMinutes} 分钟）');
+    } catch (e) {
+      debugPrint('[SHELF-DISK] 预热失败（当作无缓存）: $e');
+    }
+  }
+
+  static List<Favorite> _favListFrom(Object? raw) {
+    if (raw is! List) return const [];
+    final out = <Favorite>[];
+    for (final e in raw) {
+      final m = jmapOrNull(e);
+      if (m == null) continue;
+      try {
+        out.add(Favorite.fromJson(m));
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  static List<Progress> _progListFrom(Object? raw) {
+    if (raw is! List) return const [];
+    final out = <Progress>[];
+    for (final e in raw) {
+      final m = jmapOrNull(e);
+      if (m == null) continue;
+      try {
+        out.add(Progress.fromJson(m));
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  /// 把三份数据写盘（只在**有成功的一路**时写）
+  ///
+  /// ★ 用 `?? 旧值` 而不是 `?? 空列表`：那三路失败时 load() 会保留旧数据
+  ///   （见 load() 里"保留旧数据"那段），写盘也要保持同一语义 ——
+  ///   否则一次瞬时失败会把盘上好好的缓存**清成空**。
+  Future<void> _persistToDisk() async {
+    await DiskCache.write(kShelfCacheFile, <String, Object?>{
+      'favorites': [for (final f in _favorites) f.toJson()],
+      'following': [for (final f in _following) f.toJson()],
+      'history': [for (final p in _history) p.toJson()],
+    });
   }
 
   /// 从子页返回时刷新（由 `_RouteGate` 回调；语义与旧 `didChangeDependencies` 版等价）。
@@ -652,6 +757,20 @@ class MyShelfState extends State<MyShelf> {
            */
           if (fav != null || fol != null || his != null) _loadedOnce = true;
         });
+      }
+      /*
+       * ★★★ 落盘（Owner 要的"重启后还在"）
+       *
+       * ⚠️ 放在这个 if **之后、外面** —— 即使上面跳过了 setState
+       *    （数据没变、task-36 那个指纹守卫），也**照样写盘**：
+       *    "数据没变"不等于"盘上有一份"（可能是本次会话第一次成功加载）。
+       *
+       * ⚠️ 只在**至少有一路成功**时写：全失败时 _favorites 等还是旧值
+       *    （load() 的语义就是保留旧值），此时写盘等于把旧值又抄一遍 ——
+       *    无害但没意义。更重要的是**绝不能**写成空（见 _persistToDisk 注释）。
+       */
+      if (fav != null || fol != null || his != null) {
+        unawaited(_persistToDisk());
       }
       /*
        * ★★ 上面这个 `if` 是本次卡顿修复的**唯一**行为改动。

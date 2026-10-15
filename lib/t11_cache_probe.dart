@@ -748,20 +748,43 @@ Future<void> main() async {
   ok('★D3 最近用过的还在（最后一个键 $lastKey）',
       cache.take(lastKey, fingerprint: 'fp', now: now) != null);
 
-  // ── D4：TTL 过期 ⇒ 不算命中 ──
-  final stale = HomeListCache();
+  /*
+   * ── D4：TTL 过期 ⇒ 不算命中 ──
+   *
+   * ★★★ 2026-10-15：生产默认 **不再有 TTL**（Owner：「不限制时间」）⇒
+   *     kHomeCacheTtl 变成 `Duration?` 且默认 null。
+   *     ⚠️ 探针不能再用它算"过期时刻"（null 会编不过）——
+   *        显式注入一个 ttl 来验**机制本身**仍然生效（与单测同一做法）。
+   */
+  const ttl10 = Duration(minutes: 10);
+  final stale = HomeListCache(ttl: ttl10);
   stale.put(
     'x',
     HomeSnapshot(
       fingerprint: 'fp',
       groups: const <ProviderGroup>[],
       items: const <String, List<MediaItem>>{},
-      at: now.subtract(kHomeCacheTtl + const Duration(minutes: 1)),
+      at: now.subtract(ttl10 + const Duration(minutes: 1)),
     ),
   );
-  ok('★D4 超过 TTL 的快照不算命中（且顺手被删掉）',
+  ok('★D4 超过注入 TTL 的快照不算命中（且顺手被删掉）',
       stale.take('x', fingerprint: 'fp', now: now) == null && stale.length == 0,
       '驻留=${stale.length}');
+
+  // ── D4b：生产默认（ttl=null）⇒ 再老也命中（Owner：不限制时间）──
+  final ancient = HomeListCache();
+  ancient.put(
+    'x',
+    HomeSnapshot(
+      fingerprint: 'fp',
+      groups: const <ProviderGroup>[],
+      items: const <String, List<MediaItem>>{},
+      at: now.subtract(const Duration(days: 30)),
+    ),
+  );
+  ok('★D4b 生产默认不限制时间：存了 30 天照样命中',
+      ancient.take('x', fingerprint: 'fp', now: now) != null,
+      '驻留=${ancient.length}');
 
   // ── D5：指纹不符 ⇒ 不算命中 ──
   final fpMismatch = HomeListCache();

@@ -268,15 +268,32 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           child: GestureDetector(
             // 卡片内部的点击不能穿透到背景（否则点输入框也会关掉面板）
             onTap: () {},
-            child: Container(
+            /*
+             * ★★ 2026-10-15（Owner：「换成 ui 框架提供的」）
+             *
+             * 改前是 `Container(decoration: ...)` —— 只画背景的盒子。
+             * 框架的 `SwitchListTile` 把涟漪画在**最近的 Material 祖先**上；
+             * 盒子里没有 Material ⇒ 框架抛断言「ink splashes may be invisible」。
+             * 断言是对的：涟漪**真的会看不见**。
+             *
+             * 改用 `Material`：同样的背景色 / 圆角 / 边框 / 尺寸，
+             * 但它**就是** Material 面 ⇒ 涟漪、水波纹、裁剪都正常。
+             * 尺寸改挂在外层 `SizedBox`/`ConstrainedBox` 上（Material 不接这俩参数），
+             * 所以几何与改前一致。
+             */
+            child: SizedBox(
               width: 560,
-              constraints: const BoxConstraints(maxHeight: 620),
-              decoration: BoxDecoration(
-                color: const Color(0xFF14161C).withValues(alpha: 0.98),
-                borderRadius: Radii.rLg,
-                border: Border.all(color: Colors.white24),
-              ),
-              child: Column(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 620),
+                child: Material(
+                  color: const Color(0xFF14161C).withValues(alpha: 0.98),
+                  type: MaterialType.card,
+                  clipBehavior: Clip.antiAlias,
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: Radii.rLg,
+                    side: BorderSide(color: Colors.white24),
+                  ),
+                  child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   _header(),
@@ -320,6 +337,8 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
                     ),
                   ),
                 ],
+              ),
+                ),
               ),
             ),
           ),
@@ -718,20 +737,22 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _sectionTitle('自动更新'),
-        Row(
-          children: [
-            Switch(
-              value: s.autoUpdate,
-              onChanged: s.loading ? null : widget.onSetAutoUpdate,
-            ),
-            const SizedBox(width: Sp.x2),
-            const Expanded(
-              child: Text(
-                '重新进入这一集时自动比对增量',
-                style: TextStyle(color: Colors.white70, fontSize: FontSizes.sm),
-              ),
-            ),
-          ],
+        /*
+         * ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）
+         *
+         * 改前是手写 Row：**开关在左、文字在右**，整行只有开关能点。
+         * 换成 `SwitchListTile`：文字在左、开关在右、整行可点、
+         * 带涟漪与读屏语义。文案与禁用逻辑（`s.loading`）逐字不变。
+         */
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          dense: true,
+          value: s.autoUpdate,
+          onChanged: s.loading ? null : widget.onSetAutoUpdate,
+          title: const Text(
+            '重新进入这一集时自动比对增量',
+            style: TextStyle(color: Colors.white70, fontSize: FontSizes.sm),
+          ),
         ),
         _slider(
           '间隔',

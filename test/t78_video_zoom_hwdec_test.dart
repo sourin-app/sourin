@@ -617,8 +617,11 @@ void main() {
        *   （它直连 onDanmakuSettings，不再套菜单）。
        *   ⚠️ 这不是放松：真正要守的不变量从「底栏不许有设置入口」变成了
        *      「底栏要有设置入口、且它不是两层菜单」—— 由 t27_w14 逐条钉。
+       *
+       * ★ 2026-10-15（Owner：「弹幕设置的 icon 不符」）：图标从 tune 换成齿轮。
+       *   钉住的语义没变：底栏**必须有**设置入口。
        */
-      expect(bar.contains('Icons.tune'), isTrue,
+      expect(bar.contains('Icons.settings'), isTrue,
           reason: '★ 弹幕设置回到底栏（Owner 第 1 条：一个开关,一个设置）');
     });
   });

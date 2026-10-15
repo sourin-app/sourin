@@ -103,6 +103,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../core/app_log.dart';
 import '../core/clip_download.dart';
+import '../core/batch_bind.dart';
 import '../core/danmaku.dart';
 import '../core/device.dart';
 // ★ task-38：为了 `SourinCoreException.kind`（结构化错误类别）
@@ -6187,6 +6188,83 @@ class _PlayerPageState extends State<PlayerPage>
   /// 的模糊匹配，等于把"用户的选择"重新交给猜测，还可能选到另一集。
   /// ⇒ 用户点了哪条，就取哪条（`episodeId` 是弹幕库里的唯一钥匙）。
   /// ```
+  /// 整部绑定：把搜索结果铺到这一部的每一集
+  ///
+  /// 2026-10-15 (Owner): "番剧的批量绑定弹幕".
+  ///
+  /// # 分工（与 `_pickDanmakuMatch` 同一条规矩）
+  /// ```text
+  /// 对齐规则在 core（`buildBatchBindPlan`，有自己的门禁）；
+  /// 这里只做两件事：① 拿到本地剧集表 ② 写盘。
+  /// ```
+  /// ⚠️ **不在这里重写一份对齐逻辑** —— 那样两份定义必然漂移，
+  ///    而对齐错一次就是“12 集全在放第1集”这种看不出来的错。
+  Future<void> _batchBindDanmaku(List<DanmakuMatch> results) async {
+    if (results.isEmpty) return;
+    final titles = _episodes.map((e) => e.title).toList();
+    if (titles.isEmpty) {
+      _flash('整部绑定：还不知道这一部有几集（等剧集列表加载完）');
+      return;
+    }
+    final plan = buildBatchBindPlan(
+      localTitles: titles,
+      matches: results,
+      workTitle: results.first.animeTitle,
+    );
+    if (plan.isEmpty) {
+      _flash('整部绑定：这批结果对不上任何一集');
+      return;
+    }
+    /*
+     * 写盘：逐集写入既有的绑定存储（单一写入口，不新开一条）。
+     *
+     * ⚠️ `manual: true` —— 这是用户点的，不是自动猜的；
+     *    不标手动的话，下一次自动流程会把它覆盖掉。
+     */
+    final b = BiliBinding(
+      bvid: '',
+      title: plan.workTitle,
+      episodes: <BiliEpisodeBinding>[
+        for (final it in plan.items)
+          BiliEpisodeBinding(
+            episodeIndex: it.episodeIndex,
+            /*
+             * 这里是**弹幕库**的对应关系，不是某视频站的 P 号。
+             *
+             * `BiliEpisodeBinding.page` 在外部视频站那条路上是真实的 P
+             * 序号（用来拼 comment 接口）；弹幕库这边只有 episodeId，
+             * 没有 P 的概念。
+             *
+             * ⚠️ 填 `episodeIndex + 1` 而**不是** 0：字段声明是 1 基，
+             *    填 0 会让后续读它的代码把第 0 P 当成有效值。
+             *    这里填的值不参与弹幕拉取（只有 episodeId 参与），
+             *    但保持它自洽可读。
+             */
+            page: it.episodeIndex + 1,
+            cid: it.episodeId,
+            part: it.episodeTitle,
+          ),
+      ],
+      manual: true,
+      updatedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    saveBinding(widget.provider, widget.id, b);
+    if (!mounted) return;
+    /*
+     * 如实报数 —— 尤其是**没绑上的那几集**。
+     * 只报“绑了 N 集”而吞掉“有 3 集没绑”，
+     * 用户会以为整部都好了，直到播到第 10 集才发现没弹幕。
+     */
+    final miss = plan.unmatchedLocal.length;
+    _flash(
+      '整部绑定完成：「${plan.workTitle}」绑了 ${plan.count}/${plan.totalLocal} 集'
+      '${miss == 0 ? '' : '，还有 $miss 集没对上（可单独选）'}',
+    );
+    setState(() {
+      _danmakuStatus = '整部绑定：${plan.count}/${plan.totalLocal} 集';
+    });
+  }
+
   void _pickDanmakuMatch(DanmakuMatch m) {
     /*
      * ★ 先把「用户的选择」记成这一集的弹幕身份（`_biliCid` —— 见它的字段
@@ -14249,6 +14327,7 @@ class _PlayerPageState extends State<PlayerPage>
                           //   面板只把关键词 / 选中的一条递过来，网络与状态全在宿主。
                           onSearch: (kw) => unawaited(_searchDanmaku(kw)),
                           onPickMatch: _pickDanmakuMatch,
+                          onBatchBind: (rs) => unawaited(_batchBindDanmaku(rs)),
                           onHintAction: _runDanmakuHintAction,
                           // ★★★ 2026-10-14（Owner）：凭证节的保存 / 清除
                           //   面板只递值，写盘与状态更新全在宿主（同 onSearch 分工）。

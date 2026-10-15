@@ -403,6 +403,7 @@ class DanmakuSettingsDialog extends StatefulWidget {
     this.onChanged,
     this.readout,
     this.biliCount,
+    this.onBatchBind,
     this.fill = true,
   });
 
@@ -420,6 +421,14 @@ class DanmakuSettingsDialog extends StatefulWidget {
   /// "this source has none" and "we never asked" are different facts, and the
   /// status strip exists precisely to tell them apart.
   final int? biliCount;
+
+  /// Called with the current search results when the user asks to bind the
+  /// WHOLE work instead of one episode.
+  ///
+  /// The panel deliberately does NOT build the plan itself: alignment is a
+  /// core concern with its own gate (lib/core/batch_bind.dart), and having a
+  /// second implementation here would let the two drift.
+  final ValueChanged<List<DanmakuMatch>>? onBatchBind;
 
   final ValueChanged<bool> onSetEnabled;
   final ValueChanged<double> onSetFontScale;
@@ -1679,6 +1688,33 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           ),        ],
         const SizedBox(height: Sp.x1),
         for (final m in s.searchResults) _matchTile(m, s.searchStale),
+        /*
+         * 2026-10-15 (Owner): batch binding.
+         *
+         * Placed right under the result list because that is where the user
+         * has just decided WHICH work this is.  Asking them to bind 12
+         * episodes one at a time after that is busywork -- the results are
+         * the same every time, only the episode number changes.
+         *
+         * Only shown when there is something to batch, and only when the host
+         * actually wired the callback (same gating rule as every other action
+         * in this panel: no callback, no button).
+         */
+        if (widget.onBatchBind != null) ...[
+          const SizedBox(height: Sp.x2),
+          TextButton.icon(
+            onPressed: () => widget.onBatchBind!(s.searchResults),
+            icon: const Icon(
+              Icons.playlist_add_check,
+              color: DanmakuTextColors.body,
+              size: 18,
+            ),
+            label: const Text(
+              '整部绑定',
+              style: TextStyle(color: DanmakuTextColors.body),
+            ),
+          ),
+        ],
       ],
     );
   }

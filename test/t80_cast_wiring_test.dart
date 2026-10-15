@@ -353,10 +353,13 @@ void main() {
       /*
        * ★★★ Owner 1011 反馈第 1 条后本条语义反转：改前钉「弹幕设置已进
        *   『更多』，底栏不该有 Icons.tune」；现在 Owner 要「一个开关,一个
-       *   设置」⇒ 底栏**必须**有 Icons.tune 的设置入口（直连
-       *   onDanmakuSettings）。常驻三项仍只看 primary 切片，不受影响。
+       *   设置」⇒ 底栏**必须**有设置入口（直连 onDanmakuSettings）。
+       *   常驻三项仍只看 primary 切片，不受影响。
+       *
+       * ★ 2026-10-15（Owner：「弹幕设置的 icon 不符」）：该入口的图标从 tune 换成齿轮。
+       *   钉住的语义不变：底栏必须有设置入口。
        */
-      expect(bar.contains('Icons.tune'), isTrue,
+      expect(bar.contains('Icons.settings'), isTrue,
           reason: '★ 弹幕设置回到底栏（Owner 第 1 条：一个开关,一个设置）');
       // 常驻三项按顺序：播放/暂停 → 音量 → 倍速。
       // ⚠️ 必须在 `primary` **切片内**量：`倍速` 这个词在文件里还出现在

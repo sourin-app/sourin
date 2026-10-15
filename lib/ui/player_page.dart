@@ -5160,11 +5160,24 @@ class _PlayerPageState extends State<PlayerPage>
           ),
       ]),
       MoreMenuGroup('弹幕', [
-        MoreMenuEntry(
-          label: _danmakuEnabled ? '关闭弹幕' : '开启弹幕',
-          icon: _danmakuEnabled ? Icons.subtitles : Icons.subtitles_off,
-          onTap: () => unawaited(_toggleDanmaku()),
-        ),
+        /*
+         * 2026-10-15 (Owner): "the danmaku switch in More can go too -- it is
+         * duplicate functionality, it can already be changed outside."
+         *
+         * Correct: the bottom bar has had a dedicated on/off button since the
+         * 1011 rework, so this menu row was a second door to the same bool.
+         * Two entry points for one toggle also meant two places to keep in
+         * sync -- and the menu copy would go stale while the bar's did not.
+         *
+         * NOTE: the '弹幕设置' row below STAYS. It is not a duplicate: the
+         * bar's gear opens the lightweight quick popover, while this row opens
+         * the full settings panel directly (and it is the only route in when
+         * the bar is hidden).
+         *
+         * ⚠️ Keep the group itself (even though it now holds one row):
+         *    t68_android_adapt_test and zz_cr_local_session_player_test both
+         *    assert on `MoreMenuGroup('弹幕'` by name.
+         */
         MoreMenuEntry(
           label: '弹幕设置',
           icon: Icons.tune,
@@ -6101,7 +6114,16 @@ class _PlayerPageState extends State<PlayerPage>
       );
     });
     try {
-      final found = await client.searchEpisodes(anime: kw);
+      /*
+       * 2026-10-15: multi-keyword search.
+       *
+       * A full episode title like
+       *   「无职转生Ⅲ ～到了异世界就拿出真本事～ 第1话 燃烧吧，狂犬」
+       * yields ZERO works from the official search even though the show and that
+       * very episode (187270001, 2709 comments) are in the library. Dropping to
+       * the first whitespace segment finds it. Measured against the live API.
+       */
+      final found = await client.searchEpisodesSmart(kw);
       if (!mounted) return;
       final stale = searchToken != _danmakuFetchToken;
       setState(() {
@@ -14205,6 +14227,17 @@ class _PlayerPageState extends State<PlayerPage>
                           fill: false,
                           state: _danmakuSettings,
                           readout: _danmakuReadout,
+                          /*
+                           * 2026-10-15 (Owner): the status strip shows how many
+                           * rows EACH source has, so the panel needs both counts --
+                           * but `state.count` is only "whatever is live right now".
+                           *
+                           * `_biliCid > 0` = this episode really is bound to the
+                           * external video site. That is the only case where its row
+                           * count is meaningful; otherwise the honest answer is
+                           * null ("we never asked") rather than 0 ("it has none").
+                           */
+                          biliCount: _biliCid > 0 ? _danmakuComments.length : null,
                           onSetEnabled: _setDanmakuEnabled,
                           onSetFontScale: _setDanmakuFontScale,
                           onSetOpacity: _setDanmakuOpacity,
@@ -17979,6 +18012,8 @@ class _BottomBar extends StatelessWidget {
       showEpisodeNav: showEpisodeNav,
       hasNext: hasNext,
       onNext: onNext,
+      hasPrev: hasPrev,
+      onPrev: onPrev,
       more: PlayerMoreMenuData(groups: moreGroups),
       streams: streams,
       currentStream: currentStream,

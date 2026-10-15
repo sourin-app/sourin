@@ -200,19 +200,27 @@ void main() {
           reason: '探针打本地版本接口');
     });
 
-    test('dialog：数据源状态行保留；官方凭证输入入口**恢复**（2026-10-14）', () {
+    test('dialog：数据源状态行保留；凭证输入框**已删**（2026-10-15）', () {
       expect(dialogSrc, contains('检测到本机外部弹幕 未运行'));
       expect(dialogSrc, contains('本机外部弹幕（127.0.0.1:2080）'));
       /*
-       * ★★★ 2026-10-14（Owner「凭证流程根本没走通」）：断言**翻转**。
+       * ★★★ 2026-10-15（Owner）：断言**再次翻转** —— 输入框已删。
        *
-       * 改前（2026-10-11）这里要求凭证入口**必须已删除**，理由是"客户端内置
-       * 凭证、用户不必手填"。但本地构建没有 --dart-define ⇒ 无内置值 ⇒
-       * 官方边必然 403 且无入路可配 ⇒ 输入框恢复。
+       * 历史（别再翻回去）：
+       * ```text
+       * 2026-10-11  要求删（理由：客户端内置）
+       * 2026-10-14  要求恢复（理由：**本地构建没有 --dart-define** ⇒ 无内置
+       *            值 ⇒ 官方边必 403 且无入路可配。这个理由是**真的**。）
+       * 2026-10-15  又删（Owner：「弹弹play我说过删除那两个输入框,改用内置的」）
+       * ```
+       * ★ 2026-10-14 那个理由之所以不再成立，是因为修了**根因**：
+       *   `tools/run_client.ps1` 现在会从 `tools/.dandanplay.local.json`（已 gitignore）
+       *   读凭证并注入 `--dart-define` ⇒ 本地构建**也有**内置值了。
+       *   （删前已实测真 API：HTTP 200。见 lib/ui/player_page.dart 里那段说明。）
        */
-      expect(dialogSrc.contains("labelText: 'AppId'"), isTrue,
-          reason: '凭证输入入口必须恢复（无内置凭证的构建靠它）');
-      expect(dialogSrc.contains("labelText: 'AppSecret'"), isTrue);
+      expect(dialogSrc.contains("labelText: 'AppId'"), isFalse,
+          reason: '★ 输入框已删 —— 凭证改由构建期注入（官方 §7 允许的那条路）');
+      expect(dialogSrc.contains("labelText: 'AppSecret'"), isFalse);
       // 但「数据源」这一节本身必须还在（它是本机外部弹幕 的探测结果行）。
       expect(dialogSrc, contains('数据源'));
     });

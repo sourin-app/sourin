@@ -22,7 +22,7 @@
 // 底栏两枚直连按钮：
 //   ① 开关（subtitles / subtitles_off 图标）—— 点一下**直接**开关弹幕
 //      （onTap: onDanmakuToggle，不再是 popoverId）
-//   ② 设置（Icons.tune）—— 点一下**一次**打开可直接操作的面板
+//   ② 设置（Icons.settings 齿轮，2026-10-15 换成齿轮）—— 点一下**一次**打开可直接操作的面板
 //      （onTap: onDanmakuSettings → DanmakuSettingsDialog：滑杆直接拖）
 // ```
 //   ★ 为什么是 (a) 两枚按钮而不是 (b) 一枚按钮弹「开关+设置」面板：
@@ -295,8 +295,15 @@ void main() {
         reason: '★★ 开关这枚不许再挂 popover —— 一挂就回到两层结构');
     expect(slice.contains('key: danmakuToggleKey'), isTrue,
         reason: '★ 开关必须带 danmakuToggleKey（门禁抓手）');
-    expect(slice.contains('icon: danmakuEnabled ? Icons.subtitles'), isTrue,
-        reason: '★ 开关图标随开关态切换（开=subtitles / 关=subtitles_off）');
+    /*
+     * ★ 2026-10-15（Owner：「弹幕设置的 icon 不符，找一下有没有跟弹幕类似的 icon」）
+     *   从 subtitles/subtitles_off（**字幕**图标）换成 comment/comments_disabled
+     *   （**弹幕气泡**）—— 弹幕是飘过去的评论，不是字幕，
+     *   字幕图标是那个“圆角方框+几道横线”的闭幕形状。
+     *   钉住的**语义**没变：图标随开关态切换（开/关 各一枚）。
+     */
+    expect(slice.contains('icon: danmakuEnabled ? Icons.comment'), isTrue,
+        reason: '★ 开关图标随开关态切换（开=comment / 关=comments_disabled）');
   });
 
   test('A3 设置那枚是 popover 入口（弹轻量悬浮窗，不再直连大卡片）', () {
@@ -307,8 +314,9 @@ void main() {
         reason: '★★ 设置必须弹 popover 小窗（Owner 要 B 站那种悬浮窗）');
     expect(slice.contains('PlayerPopoverIds.danmakuQuick'), isTrue,
         reason: '★ 入口 id = danmakuQuick');
-    expect(slice.contains('icon: Icons.tune,'), isTrue,
-        reason: '★ 设置图标 = Icons.tune');
+    // ★ 2026-10-15（Owner：「弹旁边加一个设置的齿轮」）—— tune（滑杆图标）→ settings（齿轮）
+    expect(slice.contains('icon: Icons.settings,'), isTrue,
+        reason: '★ 设置图标 = 齿轮（与弹幕开关配成一对）');
   });
 
   test('A4 轻量悬浮窗有「高级设置」一行 ⇒ 回到全屏大卡片', () {

@@ -145,6 +145,15 @@ void main() {
       DanmakuConfig.debugSetBuiltin();
       DanmakuConfig.setEnabled(true);
       await pumpPanel(t, DanmakuSettingsState.fromPrefs());
+      /*
+       * 2026-10-15: the panel gained tabs (Owner asked for display/source split)
+       * and the credential status moved under the "来源" tab. Switch to it the
+       * way a user would before asserting on its copy -- the contract (be honest
+       * about missing credentials and point at the sign-free fallbacks) has not
+       * changed, only where it is rendered.
+       */
+      await t.tap(find.text('来源'));
+      await t.pumpAndSettle();
       // ★ 2026-10-14（Owner「凭证流程根本没走通」）改口径：
       //   面板现在**有**凭证输入框了 ⇒ 缺凭证要**如实**说（官方边会失败），
       //   而不是改前那句听着像"不用管"的「凭证未就绪（…不需要凭证）」。

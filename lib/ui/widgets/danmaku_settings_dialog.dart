@@ -350,6 +350,41 @@ class DanmakuReadout {
 /// properties that the 2026-10-15 redesign changed.
 const Key blockWordsAddFieldKey = Key('danmaku-blockwords-add-field');
 
+/// 外部弹幕源的显示名。
+///
+/// Owner 2026-10-15：「bilibili 这个**弹幕**允许使用，别的不允许」。
+/// 弹幕服务与「本软件对接的视频网站」性质不同（同 `弹弹play`），
+/// 所以这一个名字可以直接写出来 —— 用户一眼就知道当前挂的是哪个弹幕源。
+///
+/// ⚠️ 只有这一个名字被豁免（见 test/t98_no_site_names_test.dart 的行级豁免）；
+///    同文件里再写别的站名**照样会被抓**。
+const String _kBiliSourceLabel = 'bilibili'; // 弹幕源（Owner 明确允许具名）
+
+/// 弹幕面板的两个页签（2026-10-15，Owner）。
+///
+/// Owner 原话：
+/// > 然后弹幕设置,和弹幕的填充拆开,弹幕的快捷开关啊什么的,
+/// > 就那个悬浮小窗解决就行了
+/// > 然后[外部视频站]和弹弹来源,就在哪个面板中,然后交互也改一下,改成 tabs,
+/// > 然后最上面显示状态,弹弹play多少条,[外部视频站]多少条,
+///
+/// ⚠️ 上面两行把 Owner 原话里的站名换成了中性词 —— `t98_no_site_names_test`
+///    禁止仓库出现具体视频网站名（CONTRIBUTING「⑥ 规矩三」）。
+///    语义不变，只是不把站名写进代码。
+/// > 每个tab下负责对应的配置就行了
+///
+/// 拆分依据：两类东西的**频率差一个量级**。
+/// 显示设置（字号/不透明度/速度/显示区域）是调一次就定下来的；
+/// 而「现在挂的是哪个源、这一集有没有弹幕」是每集都要看一眼的。
+/// 摊在同一屏上，后者会被前者的 4 根滑杆淹没。
+enum DanmakuPanelTab {
+  /// 显示：类型过滤 + 字号/不透明度/速度/显示区域
+  display,
+
+  /// 来源：这一集用哪个弹幕库（弹弹play / 外部视频站）+ 搜索绑定
+  source,
+}
+
 class DanmakuSettingsDialog extends StatefulWidget {
   const DanmakuSettingsDialog({
     super.key,
@@ -367,6 +402,7 @@ class DanmakuSettingsDialog extends StatefulWidget {
     this.onHintAction,
     this.onChanged,
     this.readout,
+    this.biliCount,
     this.fill = true,
   });
 
@@ -377,6 +413,13 @@ class DanmakuSettingsDialog extends StatefulWidget {
   /// 2026-10-15: split out so the host no longer needs setState once per
   /// second just to refresh one line of text (see DanmakuReadout).
   final ValueListenable<DanmakuReadout>? readout;
+
+  /// How many danmaku the external video site has for this episode.
+  ///
+  /// null means "unknown" and renders as a dash. Do NOT default it to 0:
+  /// "this source has none" and "we never asked" are different facts, and the
+  /// status strip exists precisely to tell them apart.
+  final int? biliCount;
 
   final ValueChanged<bool> onSetEnabled;
   final ValueChanged<double> onSetFontScale;
@@ -501,6 +544,18 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 会把用户刚敲的关键词整段吃掉。
   final TextEditingController _searchKeyword = TextEditingController();
 
+  /// 当前页签。默认「显示」——它是最常调的一个。
+  DanmakuPanelTab _tab = DanmakuPanelTab.display;
+
+  /// 外部视频站这一集的弹幕条数。
+  ///
+  /// 为什么面板自己不去取：弹幕数据在**宿主**那侧（两条路各自写不同的字段），
+  /// 面板再去读一遍就是第二份真源 ⇒ 必然会漂移。这里只是个只读展示位。
+  ///
+  /// ⚠️ 取不到就是 null（显示「—」），**不用 0 冒充** ——
+  ///    0 是“这个源真的没弹幕”，两者对用户意义完全不同。
+  int? get _biliCount => widget.biliCount;
+
   /*
    * 2026-10-15: the credential input boxes (and these two controllers) were
    * deleted -- Owner: "I told you to delete those two input boxes and use the
@@ -571,55 +626,51 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                           children: [
                             _statusSection(),
                             _divider(),
+                            /*
+                             * 2026-10-15 (Owner): tabs, with a status strip above them.
+                             *
+                             * The status strip is deliberately OUTSIDE the tab bodies:
+                             * "which source is live and how many rows each one has" is
+                             * what the user checks before deciding which tab to open,
+                             * so it must not scroll away with the tab's content.
+                             */
+                            _sourceStatusStrip(),
+                            const SizedBox(height: Sp.x3),
+                            _tabBar(),
+                            const SizedBox(height: Sp.x3),
+                            if (_tab == DanmakuPanelTab.display) ...[
+                              _filterSection(),
+                              _divider(),
+                              _displaySection(),
+                              _divider(),
+                              _switchSection(),
+                            ] else ...[
+                              _requestSection(),
+                              if (_showSearchSection) ...[
+                                _divider(),
+                                _searchSection(),
+                              ],
+                              if (_showCredentialsSection) ...[
+                                _divider(),
+                                _credentialsSection(),
+                              ],
+                            ],
+                            _divider(),
                             // ★ 「数据源」状态行（T27-05）—— 原来是凭证节的一部分，
                             //   凭证输入框整节删掉后单独保留（只读状态，与凭证无关）。
                             //   sourceLine 为空时 _sourceSection() 返回 SizedBox.shrink()。
                             _sourceSection(),
-                            _divider(),
-                            _switchSection(),
-                            _divider(),
                             /*
-                             * ★★★ 2026-10-14（Owner）：「凭证」节 —— 恢复输入框
+                             * ★★ Owner 第 1 条：把 403/401 翻成**能照着做**的中文
                              *
-                             * Owner 原话：> 本地播放提示 [弹幕服务] 没有收到凭证,
-                             *            说明 [弹幕服务] 流程根本没走通
+                             * 位置有讲究：排在「服务端返回」**上面** ——
+                             * 原文（Missing Authentication Headers）是证据，
+                             * 中文指引是结论；用户先看到结论才知道证据在说什么。
                              *
-                             * 排在「显示」之上、紧接开关 —— 没配凭证时它是
-                             * 用户最先要做的一件事；配好之后就退成一块普通设置
-                             * （状态行会如实说"当前用的是内置/用户填写"）。
-                             *
-                             * 回调没接时整节不画（与搜索区同一条门控）。
+                             * ⚠️ 错误/指引**不受页签影响**：它们是“出事了”的反馈，
+                             *    而不是“一项设置”。藏在某个页签后面 ⇒ 用户在另一页签时
+                             *   只看到“没弹幕”而看不到为什么。
                              */
-                            if (_showCredentialsSection) ...[
-                              _credentialsSection(),
-                              _divider(),
-                            ],
-                            _displaySection(),
-                            _divider(),
-                            _filterSection(),
-                            _divider(),
-                            _requestSection(),
-                            /*
-                             * ★★★ 2026-10-14（Owner）：「手动搜索番剧」
-                             *
-                             * Owner 原话：> 弹幕我没有看到[弹幕服务]的搜索功能和绑定
-                             *
-                             * 紧跟在「请求」下面 —— 两节是同一件事的两半：
-                             * 「请求」= 让程序自己去找（自动匹配），
-                             * 本节    = 用户**手动**指定要哪一集。
-                             * 自动匹配不中时，用户顺着往下看就能找到手动的路。
-                             */
-                            if (_showSearchSection) ...[
-                              _divider(),
-                              _searchSection(),
-                            ],
-                            /*
-                               * ★★ Owner 第 1 条：把 403/401 翻成**能照着做**的中文
-                               *
-                               * 位置有讲究：排在「服务端返回」**上面** ——
-                               * 原文（Missing Authentication Headers）是证据，
-                               * 中文指引是结论；用户先看到结论才知道证据在说什么。
-                               */
                             if (s.error?.hint != null) ...[
                               _divider(),
                               _hintSection(s.error!.hint!),
@@ -667,6 +718,115 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   ///    既有测试 `test/t99_overlay_motion_test.dart:538/542/569` 用的是
   ///    `find.text('弹幕设置')` ⇒ 多一个 `Text('显示 / 过滤 / 请求')`
   ///    之类的新串不会撞上它（那是不同的字符串，`find.text` 是精确匹配）。
+  /// 顶部状态条：两个源各自多少条（Owner：「最上面显示状态」）
+  ///
+  /// 为什么放在**页签之外**：“现在挂的是哪个源、各有多少条”是用户
+  /// **决定点哪个页签**前就要看的信息 ⇒ 不能跟着页签内容一起滚走。
+  ///
+  /// ⚠️ 取不到的一边显示「—」，**不用 0 冒充** ——
+  ///    0 是“这个源真的没弹幕”，两者对用户意义完全不同。
+  Widget _sourceStatusStrip() {
+    final s = widget.state;
+    // 哪个源在生效：看状态行里有没有外部视频站的字样。
+    final biliLive = _biliCount != null;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(
+        horizontal: Sp.x3,
+        vertical: Sp.x2,
+      ),
+      decoration: BoxDecoration(
+        borderRadius: Radii.rSm,
+        border: Border.all(color: DanmakuTextColors.border),
+        color: Colors.white.withValues(alpha: 0.02),
+      ),
+      child: Row(
+        children: [
+          _sourceChip(
+            label: '弹弹play',
+            count: biliLive ? null : s.count,
+            live: !biliLive,
+          ),
+          const SizedBox(width: Sp.x2),
+          _sourceChip(
+            label: _kBiliSourceLabel,
+            count: _biliCount,
+            live: biliLive,
+          ),
+          const Spacer(),
+          if (widget.readout != null)
+            ValueListenableBuilder<DanmakuReadout>(
+              valueListenable: widget.readout!,
+              builder: (_, r, __) => Text(
+                '画面 ${r.count} 条 · 轨道 ${r.lanes}',
+                style: const TextStyle(
+                  color: DanmakuTextColors.muted,
+                  fontSize: FontSizes.cap,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sourceChip({
+    required String label,
+    required int? count,
+    required bool live,
+  }) {
+    final n = count == null ? '—' : '$count';
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 6,
+          height: 6,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            // 当前生效那一个才点亮（与底栏「当前源」高亮同一语言）
+            color: live ? const Color(0xFF4FD1C5) : DanmakuTextColors.border,
+          ),
+        ),
+        const SizedBox(width: Sp.x1),
+        Text(
+          '$label $n 条',
+          style: TextStyle(
+            color: live ? DanmakuTextColors.body : DanmakuTextColors.muted,
+            fontSize: FontSizes.cap,
+            fontWeight: live ? FontWeight.w600 : FontWeight.normal,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 两个页签。用 `SegmentedButton` 而不是自写一套：
+  /// 它自带选中态语义、键盘导航与无障碍读屏支持，
+  /// 而且与本仓其他地方的选择控件同一套。
+  Widget _tabBar() {
+    return SizedBox(
+      width: double.infinity,
+      child: SegmentedButton<DanmakuPanelTab>(
+        segments: const <ButtonSegment<DanmakuPanelTab>>[
+          ButtonSegment<DanmakuPanelTab>(
+            value: DanmakuPanelTab.display,
+            label: Text('显示'),
+            icon: Icon(Icons.tune, size: 16),
+          ),
+          ButtonSegment<DanmakuPanelTab>(
+            value: DanmakuPanelTab.source,
+            label: Text('来源'),
+            icon: Icon(Icons.cloud_outlined, size: 16),
+          ),
+        ],
+        selected: <DanmakuPanelTab>{_tab},
+        showSelectedIcon: false,
+        onSelectionChanged: (v) => setState(() => _tab = v.first),
+      ),
+    );
+  }
+
   Widget _header() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(Sp.x6, Sp.x4, Sp.x3, Sp.x2),
@@ -1161,7 +1321,21 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         children: [
           for (final w in shown)
             InputChip(
-              label: Text(w, style: const TextStyle(fontSize: 12)),
+              /*
+               * ⚠️ The TextStyle MUST carry a colour. `t27_w1_danmaku_contrast_test`
+               * scans the source for `TextStyle(` without `color:`/`foreground:` and
+               * fails on it -- a style with no colour silently inherits the theme's
+               * default, which on this dark panel can end up unreadable.
+               * `labelStyle` below sets the colour too; this one is the label's own
+               * override and has to stand on its own.
+               */
+              label: Text(
+                w,
+                style: const TextStyle(
+                  color: DanmakuTextColors.body,
+                  fontSize: 12,
+                ),
+              ),
               labelStyle: const TextStyle(color: DanmakuTextColors.muted),
               deleteIcon: const Icon(Icons.close, size: 14),
               // Delete by exact value (shown holds the original strings).

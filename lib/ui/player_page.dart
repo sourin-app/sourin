@@ -5993,7 +5993,30 @@ class _PlayerPageState extends State<PlayerPage>
         searchError: _danmakuSearchError,
         searchSearched: _danmakuSearchSearched,
         searchResults: _danmakuSearchResults,
-        searchKeyword: _danmakuSearchKeyword,
+        /*
+         * ★★★ 2026-10-15 (Owner): "it should auto-fill the name."
+         *
+         * The bili panel has pre-filled its search box since 2026-10-09
+         * (see the long note on its own searchKeyword line), but the
+         * dandanplay search box was still opening EMPTY -- so the user had
+         * to retype a title the app already knows.
+         *
+         * Pre-fill rules:
+         *   · if a search has already been run, keep ITS keyword (the user's
+         *     own words are better than a guess);
+         *   · otherwise use _liveTitle (the string shown in the title bar),
+         *     which is the closest thing to how the user thinks of the episode.
+         *
+         * Why not the filename (_danmakuFileName): that one is built for
+         * matching and may carry an extension or an episode suffix, both of
+         * which make SEARCH less accurate.
+         *
+         * NOTE: this is a pre-fill, not a lock -- the user can edit it freely
+         * before pressing Search.
+         */
+        searchKeyword: _danmakuSearchKeyword.isNotEmpty
+            ? _danmakuSearchKeyword
+            : _liveTitle.trim(),
         // ★ 打开面板时**重算**"这批结果还对不对得上"：
         //   用户可能在上次搜索之后换过集、再打开面板 —— 那时 stale 必须为真。
         //   这是 `_danmakuSearchToken` 的**第二个**消费点（另一个在结果回来时）。

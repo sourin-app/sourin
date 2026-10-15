@@ -65,6 +65,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/danmaku.dart';
 import '../tokens.dart';
+import 'cover_image.dart';
 import 'overlay_motion.dart';
 
 /// T27-01：弹幕面板文字统一灰阶 —— 全文件取色只走这里
@@ -1516,15 +1517,84 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         ),
         child: Row(
           children: [
+            /*
+             * 2026-10-15 (Owner: "I remember it could show covers? see if you
+             * can.") -- yes it can, via /api/v2/bangumi/{animeId}.
+             *
+             * The poster is 2:3, so the box is 2:3 (28x42).  That ratio
+             * matters: coverImage() picks cacheHeight based on layoutHeight,
+             * and ResizeImage keeps the aspect ratio, so a 2:3 box decodes a
+             * 2:3 thumbnail rather than scaling a 16:9 still down.
+             *
+             * cover == '' means the lookup failed (offline, unknown work, or
+             * the request was swallowed on purpose so search still works) =>
+             * fall back to a neutral placeholder rather than an empty gap,
+             * so the rows keep a consistent baseline.
+             */
+            SizedBox(
+              width: 28,
+              height: 42,
+              child: m.cover.isEmpty
+                  ? Container(
+                      decoration: BoxDecoration(
+                        borderRadius: Radii.rSm,
+                        border: Border.all(color: DanmakuTextColors.border),
+                      ),
+                      child: const Icon(
+                        Icons.movie_outlined,
+                        size: 14,
+                        color: DanmakuTextColors.muted,
+                      ),
+                    )
+                  : ClipRRect(
+                      borderRadius: Radii.rSm,
+                      child: coverImage(
+                        context,
+                        url: m.cover,
+                        layoutWidth: 28,
+                        layoutHeight: 42,
+                        fit: BoxFit.cover,
+                        // A broken poster URL must not blow up the row.
+                        errorBuilder: (_, __, ___) => Container(
+                          decoration: BoxDecoration(
+                            borderRadius: Radii.rSm,
+                            border:
+                                Border.all(color: DanmakuTextColors.border),
+                          ),
+                          child: const Icon(
+                            Icons.movie_outlined,
+                            size: 14,
+                            color: DanmakuTextColors.muted,
+                          ),
+                        ),
+                      ),
+                    ),
+            ),
+            const SizedBox(width: Sp.x2),
             Expanded(
-              child: Text(
-                '$title · $ep',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: DanmakuTextColors.body,
-                  fontSize: FontSizes.sm,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: DanmakuTextColors.body,
+                      fontSize: FontSizes.sm,
+                    ),
+                  ),
+                  Text(
+                    ep,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: DanmakuTextColors.muted,
+                      fontSize: FontSizes.cap,
+                    ),
+                  ),
+                ],
               ),
             ),
             const SizedBox(width: Sp.x2),

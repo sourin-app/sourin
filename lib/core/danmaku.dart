@@ -264,12 +264,27 @@ class DanmakuMatch {
     this.animeTitle = '',
     this.episodeTitle = '',
     this.shift = 0,
+    this.cover = '',
   });
 
   final int episodeId;
   final String animeTitle;
   final String episodeTitle;
   final double shift;
+
+  /// Poster URL for the work (empty = none available).
+  ///
+  /// 2026-10-15 (Owner: "I remember it could show covers? see if you can").
+  ///
+  /// IMPORTANT: /api/v2/search/episodes does NOT return a cover at all --
+  /// verified against the live API: animes[] there only carries animeId,
+  /// animeTitle, type, typeDescription and episodes. The image lives on
+  /// /api/v2/bangumi/{animeId} as bangumi.imageUrl (that endpoint also
+  /// returns the episode list, so one request gets both).
+  ///
+  /// Empty string rather than null: matches how the rest of this class
+  /// treats missing text, and keeps `?.toString() ?? ''` call sites simple.
+  final String cover;
 
   static DanmakuMatch? fromJson(Map<String, dynamic> j) {
     final id = _asInt(j['episodeId']);
@@ -1686,6 +1701,25 @@ class ExternalDanmakuClient {
       for (final a in animes) {
         if (a is! Map<String, dynamic>) continue;
         final title = a['animeTitle']?.toString() ?? '';
+        final animeId = _asInt(a['animeId']);
+        /*
+         * 2026-10-15 (Owner asked for covers): this endpoint has no image,
+         * so fetch the poster from /api/v2/bangumi/{animeId}.
+         *
+         * Two things worth knowing:
+         *   · verified live -- animes[] here carries only animeId,
+         *     animeTitle, type, typeDescription, episodes. There is no
+         *     imageUrl anywhere in this response.
+         *   · that endpoint also returns the episode list, so this is ONE
+         *     extra request per work, not per episode.
+         *
+         * Failures are swallowed on purpose: a missing poster must never
+         * break search (it is decoration, the episode list is the point).
+         */
+        var cover = '';
+        if (animeId != null && animeId > 0) {
+          cover = await _fetchCover(animeId);
+        }
         final eps = a['episodes'];
         if (eps is! List) continue;
         for (final e in eps) {
@@ -1696,11 +1730,34 @@ class ExternalDanmakuClient {
             episodeId: id,
             animeTitle: title,
             episodeTitle: e['episodeTitle']?.toString() ?? '',
+            cover: cover,
           ));
         }
       }
     }
     return out;
+  }
+
+  /// Poster URL for a work, or '' when unavailable.
+  ///
+  /// 2026-10-15: lives on /api/v2/bangumi/{animeId} as `bangumi.imageUrl`.
+  /// Deliberately never throws -- a missing cover must not break search.
+  Future<String> _fetchCover(int animeId) async {
+    final path = '/api/v2/bangumi/$animeId';
+    try {
+      final resp = await _transport.send(
+        method: 'GET',
+        uri: _uri(path, const <String, String>{}),
+        headers: _authHeaders(path),
+      );
+      final j = _decode(resp, '作品详情', _uri(path, const <String, String>{}));
+      final b = j['bangumi'];
+      if (b is! Map<String, dynamic>) return '';
+      return b['imageUrl']?.toString() ?? '';
+    } catch (_) {
+      // Decoration only -- swallow and move on.
+      return '';
+    }
   }
 
   /// 一条龙：文件名 -> 弹幕列表（匹配不到就自动走 search 退路）

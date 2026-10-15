@@ -6,7 +6,8 @@ lead（协调者）负责分工、集成、开 PR。你只负责自己那一块�
 ## 1. 项目速览（先读这些）
 
 - 仓库根（主工作区，只读参考）：`<仓库根>`（本机绝对路径见任务书；**不入库**）
-- 必读：`README.md`（架构/配置/坑）、`CONTRIBUTING.md`（流程与纪律）、
+- 必读：`docs/AGENTS.md`（开发入口/硬约束）、`docs/ARCHITECTURE.md` 与 `docs/CONFIG.md`（架构/配置/坑）、
+  `CONTRIBUTING.md`（流程与纪律）、
   主工作区里的 `HANDOFF.md`（上一轮交接，未入库，用绝对路径读）、
   `PLAYER-CONTRACT.md` / `INTERACTION-CONTRACT.md`（交互契约：快捷键、TV 遥控器、导航）
 - 架构：Flutter（`lib/`，只做 UI）+ Rust 核心（`rust/sourin_core`，cdylib，dart:ffi 直调，命令走 JSON）。

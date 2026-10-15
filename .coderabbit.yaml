@@ -136,8 +136,8 @@ reviews:
            这类开关应该做成**实例字段**。
         3. **同步 vs 异步状态访问**要分清：`with_state`（同步）与
            `with_state_async`（异步）。在异步上下文里调同步版本会阻塞 runtime。
-        4. 新增导出符号会让 README 里「Rust 侧只导出 N 个符号」那句失准 ——
-           如果改了导出集，提醒同步 README 与 CI 里那条 `nm | grep -c '_sourin_'` 门禁。
+        4. 新增导出符号会让 docs/ARCHITECTURE.md 里「Rust 侧只导出 N 个符号」那句失准 ——
+           如果改了导出集，提醒同步 docs/ARCHITECTURE.md 与 CI 里那条 `nm | grep -c '_sourin_'` 门禁。
 
     - path: ".github/workflows/**"
       instructions: |
@@ -202,13 +202,13 @@ reviews:
           OverlayMotion.*），**不要硬编码 Duration**。
         · 弹窗统一走 `lib/ui/widgets/overlay_motion.dart` 的 `showAppDialog`，
           **不要直接用裸 `showDialog`**。
-        · 加了新的 UI 文案/图标时，检查 README 的对应章节是否要同步。
+        · 加了新的 UI 文案/图标时，检查文档（README / docs/）的对应章节是否要同步。
 
 chat:
   auto_reply: true
 
 knowledge_base:
-  # 让 CodeRabbit 读本仓的文档作为评审依据 —— 本仓 README 里写了大量
+  # 让 CodeRabbit 读本仓的文档作为评审依据 —— 本仓文档（README + docs/）里写了大量
   # 「为什么这么做」，是很好的上下文来源。
   opt_out: false
   web_search:

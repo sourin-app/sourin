@@ -423,4 +423,4 @@ chore/<描述>     杂项
 > 想要它把所有文件从头再看一遍，用 `@coderabbitai full review`。
 
 **公开仓库免费**。装它需要在 GitHub 上给 `coderabbitai` 这个 App 授权本仓 ——
-详见仓库 README 的「开发流程」一节。
+详见 [docs/BUILD.md](docs/BUILD.md) 的「开发流程：走 PR，不走直推 main」一节。

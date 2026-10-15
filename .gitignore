@@ -103,6 +103,8 @@ key.properties
 /.probe/
 /.probe_i12/
 /.probe_i56/
+/.local/
+/%SystemDrive%/
 /%TEMP%/
 /ANALYZE/
 /emulator-5556/

@@ -197,15 +197,35 @@ function Copy-One([string]$Rel) {
 
 foreach ($rel in $seedFiles) { Copy-One $rel }
 
+# ★ 从「绝对路径」求「相对 Source 的路径」——**不能**用 $f.FullName.Substring($Source.Length + 1)。
+#
+# # 为什么（2026-10-16 CI 实测踩到）
+# ```text
+# Get-ChildItem 回的是**长名**绝对路径，而 -Source 可能传进来的是**8.3 短名**
+# （CI runner 的 TEMP 就是 `C:\Users\RUNNER~1\AppData\Local\Temp\...`）。
+# 两者长度不同 ⇒ Substring 切出来的「相对路径」是错的 ⇒ 拷贝静默变成 0 个。
+#
+# 实测（本机复现）：Source=C:\...\T1015_~2、FullName=C:\...\t1015_shortname_probe\plugins\mine.js
+#   ⇒ 切出来的相对路径指向不存在的文件 ⇒ 日志「新拷 0 个」，插件没带过去。
+# ```
+# ⇒ 用 Uri 规范化后取相对段：短名/长名、大小写、分隔符差异都被吃掉。
+function Get-RelPath([string]$Full) {
+    $base = [IO.Path]::GetFullPath($Source).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $full = [IO.Path]::GetFullPath($Full)
+    $baseUri = [Uri]($base + [IO.Path]::DirectorySeparatorChar)
+    $fullUri = [Uri]$full
+    return [Uri]::UnescapeDataString($baseUri.MakeRelativeUri($fullUri).ToString())
+}
+
 foreach ($pattern in $seedFileGlob) {
     foreach ($f in (Get-ChildItem -Path (Join-Path $Source $pattern) -File -Force -ErrorAction SilentlyContinue)) {
-        Copy-One $f.FullName.Substring($Source.Length + 1)
+        Copy-One (Get-RelPath $f.FullName)
     }
 }
 
 foreach ($pattern in $seedPluginGlob) {
     foreach ($f in (Get-ChildItem -Path (Join-Path $Source $pattern) -File -Force -ErrorAction SilentlyContinue)) {
-        Copy-One $f.FullName.Substring($Source.Length + 1)
+        Copy-One (Get-RelPath $f.FullName)
     }
 }
 

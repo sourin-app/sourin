@@ -253,6 +253,44 @@ void main() {
           reason: '-Force 就该真的覆盖');
     });
 
+    test('★ 8.3 短名源目录：插件照样要带进来（CI runner 的形状）', () {
+      if (!requirePs()) return;
+      /*
+       * # 这条守的是什么（2026-10-16 CI 实测踩到）
+       *
+       * 脚本原来用 `$f.FullName.Substring($Source.Length + 1)` 求相对路径。
+       * 但 `Get-ChildItem` 回的是**长名**，而 `-Source` 可能是 **8.3 短名**：
+       *
+       * ```text
+       * -Source  = C:\...\T1015_~2                      （短名，CI 的 RUNNER~1 同形）
+       * FullName = C:\...\t1015_shortname_probe\plugins\mine.js  （长名）
+       * ```
+       * 两者长度不同 ⇒ 切出来的「相对路径」指向不存在的文件 ⇒ **静默拷 0 个**。
+       * 本机（TEMP 没有短名）永远绿，CI 上必红 —— 典型的「只在别人机器上炸」。
+       *
+       * ★ 所以这条必须**真的造一个短名路径**来跑，不能只读源码。
+       */
+      final fso = Process.runSync(ps!, <String>[
+        '-NoProfile', '-Command',
+        r'(New-Object -ComObject Scripting.FileSystemObject).GetFolder('
+            "'" + src.path.replaceAll("'", "''") + "').ShortPath",
+      ]);
+      final short = fso.stdout.toString().trim();
+      if (short.isEmpty || short == src.path) {
+        markTestSkipped('本机该临时目录没有 8.3 短名 ⇒ 复现不了 CI 的形状');
+        return;
+      }
+
+      final r = Process.runSync(ps!, <String>[
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', kScript,
+        '-Source', short, '-Target', dst.path,
+      ]);
+      expect(r.exitCode, 0,
+          reason: '短名源目录也要能播种：' + r.stdout.toString() + r.stderr.toString());
+      expect(File(dst.path + '/plugins/mine.js').existsSync(), isTrue,
+          reason: '★★ 短名 Source 下插件也必须带进来 —— 这正是 CI 上静默拷 0 个的那个 bug');
+    });
+
     test('★ 护栏：-Target 指到源目录本身 ⇒ 硬失败，且源目录仍然没变', () {
       if (!requirePs()) return;
       final before = snapshot(src);

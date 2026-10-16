@@ -352,20 +352,20 @@ const Key blockWordsAddFieldKey = Key('danmaku-blockwords-add-field');
 
 /// 外部弹幕源的显示名。
 ///
-/// Owner 2026-10-15：「bilibili 这个**弹幕**允许使用，别的不允许」。
+/// Owner 2026-10-15：「bilibili 这个**弹幕**允许使用，别的不允许」。  // site-ok: danmaku-source
 /// 弹幕服务与「本软件对接的视频网站」性质不同（同 `弹弹play`），
 /// 所以这一个名字可以直接写出来 —— 用户一眼就知道当前挂的是哪个弹幕源。
 ///
 /// ⚠️ 只有这一个名字被豁免（见 test/t98_no_site_names_test.dart 的行级豁免）；
 ///    同文件里再写别的站名**照样会被抓**。
-const String _kBiliSourceLabel = 'bilibili'; // 弹幕源（Owner 明确允许具名）
+const String _kBiliSourceLabel = 'bilibili'; // 弹幕源（Owner 明确允许具名）  // site-ok: danmaku-source
 
 /// 弹幕面板的**三个**页签（2026-10-15 第二版，Owner）。
 ///
 /// # Owner 原话（第二版，逐字）
 /// ```text
 /// > 我的意思,弹幕的配置就不要在这里了左边的挪到那个悬浮小窗里面去,快捷的操作
-/// > 然后这个tabs,一个是bilibili的弹幕配置,一个是弹弹play的弹幕配置,
+/// > 然后这个tabs,一个是bilibili的弹幕配置,一个是弹弹play的弹幕配置,  // site-ok: danmaku-source
 /// > 如果必须要有的话,那就拆分成三个tab,第一个是配置,二三分别是bilib和弹弹,
 /// > 好像确实少不了,那就拆分成三个tab吧,然后上面显示状态,
 /// > 只有tab的内容区域上下滚动,其他区域不滚动
@@ -374,7 +374,7 @@ const String _kBiliSourceLabel = 'bilibili'; // 弹幕源（Owner 明确允许�
 /// # 三个页签各自负责什么
 /// ```text
 /// ① 配置   —— 跨来源的东西：开关、屏蔽词、正则
-/// ② bilibili —— **这个弹幕源自己**的：请求 / 搜索 / 绑定
+/// ② bilibili —— **这个弹幕源自己**的：请求 / 搜索 / 绑定  // site-ok: danmaku-source
 /// ③ 弹弹play  —— 同上，另一个源：数据源探测 / 凭证
 /// ```
 ///
@@ -387,13 +387,13 @@ const String _kBiliSourceLabel = 'bilibili'; // 弹幕源（Owner 明确允许�
 /// 叫我删过一次（「更多」里那个重复的弹幕开关）。
 /// ```
 ///
-/// ⚠️ 上面把 Owner 原话里的弹幕源名保留了 `bilibili`（Owner 2026-10-15 明确
+/// ⚠️ 上面把 Owner 原话里的弹幕源名保留了 `bilibili`（Owner 2026-10-15 明确  // site-ok: danmaku-source
 ///    「弹幕这个允许使用」）；其余地方仍用中性词。
 enum DanmakuPanelTab {
   /// 配置：跨来源的通用项（开关 / 屏蔽词 / 正则）
   general,
 
-  /// bilibili：外部弹幕源自己的配置
+  /// bilibili：外部弹幕源自己的配置  // site-ok: danmaku-source
   bili,
 
   /// 弹弹play：本机数据源探测 + 官方凭证
@@ -824,7 +824,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 它自带选中态语义、键盘导航与无障碍读屏支持，
   /// 而且与本仓其他地方的选择控件同一套。
   ///
-  /// ⚠️ 三个弹幕相关标签都很短（配置 / bilibili / 弹弹play），
+  /// ⚠️ 三个弹幕相关标签都很短（配置 / bilibili / 弹弹play），  // site-ok: danmaku-source
   ///    但卡片宽 560、内容区还要扣掉左右 padding，
   ///    所以**不给图标** —— 三个图标会把文字挤成省略号，
   ///    而省略号比没图标难认得多。

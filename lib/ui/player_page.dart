@@ -5551,9 +5551,23 @@ class _PlayerPageState extends State<PlayerPage>
     final dmBind = loadDanmakuBind(widget.provider, widget.id);
     final boundId = dmBind?.episodes[_epIndex] ?? 0;
     if (boundId > 0) {
-      _pinnedEpisodeId = boundId;
       debugPrint('[DMK] 整部绑定命中：第${_epIndex + 1}集 ⇒ #$boundId');
     }
+    /*
+     * ⚠️ 这里**只读不算数**，赋值放到真正消费它的地方（下面 dandanplay 分支）。
+     *
+     * # 为什么（2026-10-16 实测踩到）
+     * ```text
+     * 原来在本行就 `_pinnedEpisodeId = boundId`。但本函数有 3 条提前 return
+     * （外部站绑定命中 / 弹幕开关关着 ×2）**都不会走到消费点**，
+     * pin 就残留下来：
+     *   第 1 集有整部绑定 #101、同时外部站也命中 ⇒ 走外部站分支 return，pin=101
+     *   切到第 2 集，第 2 集 boundId==0、也没外部站 ⇒ 走到 dandanplay
+     *   ⇒ pinned=101 ⇒ **第 2 集载入的是第 1 集的弹幕**。
+     * 开关关着时同样残留。
+     * ```
+     * ⇒ 只在「马上要用」的那一行之前赋值，提前 return 的路径就不会污染它。
+     */
 
     final biliBind = loadBinding(widget.provider, widget.id);
     if (biliBind != null && !biliBind.isEmpty) {
@@ -5725,6 +5739,8 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ 一旦请求失败 ⇒ **清掉** pin 并**继续**走原链路（不能因为
        *    用户点的那条失效就什么都不取）。
        */
+      // ★ 整部绑定的 pin 在这里才生效 —— 提前 return 的路径不会污染它（见函数上方说明）
+      if (boundId > 0) _pinnedEpisodeId = boundId;
       final pinned = _pinnedEpisodeId;
       if (pinned != null) {
         _pinnedEpisodeId = null; // 一次性

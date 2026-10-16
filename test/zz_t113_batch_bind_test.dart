@@ -92,6 +92,29 @@ void main() {
       expect(plan.items[1].episodeId, 88);
     });
 
+    test('★★ 库这侧带集号却没配上时，退路不许拿别人的 id（会两集撞同一集）', () {
+      /*
+       * 本地集号已知、但库里没有对应集 ⇒ 必须记进 unmatchedLocal，
+       * **不能**退到下标去拿一条已经有主的记录。
+       *
+       * 改前：第 2 集退路拿到 matches[1] = #33，第 3 集按集号也配 #33 ⇒
+       *       两集共享 episodeId，第 2 集放的是第 3 集的弹幕，
+       *       而且 unmatchedLocal 是空的（用户以为全绑好了）。
+       */
+      final plan = buildBatchBindPlan(
+        localTitles: ['第1集', '第2集', '第3集'],
+        matches: [_m(11, '第1话'), _m(33, '第3话')],
+      );
+
+      final ids = plan.items.map((e) => e.episodeId).toList();
+      expect(ids.length, ids.toSet().length,
+          reason: '★★ 两集撞同一个 episodeId = 有一集在放别人的弹幕');
+      expect(plan.unmatchedLocal, contains(1),
+          reason: '★ 第 2 集在库里没对应集 ⇒ 必须如实报告没配上，而不是随便配一个');
+      expect(plan.items.firstWhere((e) => e.episodeIndex == 0).episodeId, 11);
+      expect(plan.items.firstWhere((e) => e.episodeIndex == 2).episodeId, 33);
+    });
+
     test('* empty input does not crash and reports zero bound', () {
       final a = buildBatchBindPlan(localTitles: [], matches: [_m(1, '第1话')]);
       expect(a.isEmpty, isTrue);

@@ -221,9 +221,13 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
    */
   (
     'lib/ui/widgets/danmaku_settings_dialog.dart',
-    '弹幕',
+    'site-ok: danmaku-source',
     '★ 弹幕源标记：Owner 2026-10-15 明确「bilibili 这个**弹幕**允许使用」'
-        '（与弹弹play 同类，不是“对接的视频网站”）。行内必须同时有「弹幕」二字。'
+        '（与弹弹play 同类，不是“对接的视频网站”）。'
+        '⚠️ 锚串必须是**唯一**的 `site-ok: danmaku-source`，不能是「弹幕」二字 ——'
+        '2026-10-16 实测：「弹幕」在该文件里到处都是，'
+        '写成「弹幕」等于**整文件放行**（注入一行 `douyu` + 「弹幕」照样绿），'
+        '而注释却声称「把站名当视频网站用照样会被抓」= 假绿。'
   ),
   /*
    * 下面两条是**存量**命中（HEAD 里就有，不是本轮新增），
@@ -246,6 +250,12 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
 ];
 
 /// 该行是否命中某条行级豁免
+/// 测试可见版本：给「豁免宽度」的自检用（见 ★★★ 行级豁免那条用例）。
+///
+/// ⚠️ 存在的意义就是让那条用例能**直接**问「这一行会不会被豁免」，
+///    而不必真的往产品文件里插脏数据（插脏数据会污染工作区）。
+bool isExemptLineForTest(String rel, String line) => _isExemptLine(rel, line);
+
 bool _isExemptLine(String rel, String line) {
   final p = rel.replaceAll('\\', '/');
   for (final e in _exemptLines) {
@@ -450,6 +460,40 @@ void main() {
       isFalse,
       reason: '★ 豁免绑到具体文件，不能跨文件生效',
     );
+  });
+
+  test('★★★ 行级豁免必须是**唯一锚串**，不许被常见词放大成整文件放行', () {
+    /*
+     * # 这条防的是什么（2026-10-16 实测）
+     *
+     * `danmaku_settings_dialog.dart` 的豁免标记原来是「弹幕」二字。
+     * 但该文件**本身就是弹幕面板**，几乎每行都含「弹幕」⇒
+     * 实际效果是**整文件放行**，而注释却声称「把站名当视频网站用照样会被抓」。
+     *
+     * ```text
+     * 实测：往该文件插一行 `// 去 douyu 看直播，弹幕也在那`
+     *   改前 → 门禁**照样绿**（假绿）
+     *   改后 → 门禁变红，并点名 douyu
+     * ```
+     *
+     * ⇒ 锚串收紧为 `site-ok: danmaku-source`，只给**确实该豁免的那几行**加。
+     */
+    const rel = 'lib/ui/widgets/danmaku_settings_dialog.dart';
+
+    // ① 带锚串的行：该豁免
+    expect(
+        isExemptLineForTest(rel, "const String _k = 'bilibili';  // site-ok: danmaku-source"),
+        isTrue,
+        reason: '★ 明确标了锚串的行应当被豁免');
+
+    // ② ★ 关键：只有「弹幕」二字、没有锚串 ⇒ **不许**豁免
+    expect(isExemptLineForTest(rel, '// 去 douyu 看直播，弹幕也在那'), isFalse,
+        reason: '★★ 只凭「弹幕」二字就豁免 = 整文件放行；这条必须为 false，'
+            '否则任何站名只要同行带「弹幕」就混进来');
+
+    // ③ 同一文件里，普通行含站名 ⇒ 不许豁免
+    expect(isExemptLineForTest(rel, "final url = 'https://bilibili.com/x';"), isFalse,
+        reason: '★ 没标锚串的行必须照抓');
   });
 
   test('★ 阴性对照：干净文本不该被误报', () {

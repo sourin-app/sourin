@@ -214,7 +214,7 @@ BatchBindPlan buildBatchBindPlan({
 
   final items = <BatchBindPlanItem>[];
   final unmatched = <int>[];
-  var seq = 0; // 退到下标对齐时的游标
+  var seq = 0; // 退到下标对齐时的游标（★ 只吃 unnumbered 池，见下）
 
   for (var i = 0; i < localTitles.length; i++) {
     final localNo = episodeNumberFrom(localTitles[i]);
@@ -222,9 +222,29 @@ BatchBindPlan buildBatchBindPlan({
     if (localNo != null) {
       hit = byNumber[localNo];
     }
-    if (hit == null && seq < matches.length) {
-      // 退路：按下标顺序取。⚠️ 只在"按集号没配上"时用，避免把已配好的挤掉。
-      hit = matches[seq];
+    /*
+     * 退路：按下标顺序取，**只从 unnumbered 池里取**。
+     *
+     * # 为什么不能从整个 matches 里取（2026-10-16 实测踩到）
+     *
+     * 原来是 `matches[seq]`。当**弹幕库这侧是带集号的**、而本地某一集
+     * 在库里没有对应集时，退路会把游标停在一条**已经有主的**记录上：
+     *
+     * ```text
+     * 本地 [第1集, 第2集, 第3集]  库 [第1话(#11), 第3话(#33)]
+     *   → 第1集 按集号配 #11
+     *   → 第2集 库里没有第2话 ⇒ 退路拿到 matches[1] = #33   ← 错！
+     *   → 第3集 按集号配 #33                                ← 和第2集撞了
+     * 结果：两集共享同一个 episodeId，第2集放的是第3集的弹幕，
+     *       而且 unmatchedLocal 是空的 —— 用户以为全绑好了。
+     * ```
+     *
+     * 这正是本文件开头那条铁律要防的事（错配比不配更糟）。
+     * ⇒ 退路只允许消耗**库里没集号**的那些条目（它们本来就没法按号配）；
+     *   库这侧带集号却没配上时，老实记进 unmatchedLocal。
+     */
+    if (hit == null && seq < unnumbered.length) {
+      hit = unnumbered[seq];
     }
     seq++;
     if (hit == null) {

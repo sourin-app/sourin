@@ -2641,7 +2641,7 @@ class _FilterChip extends StatelessWidget {
   final VoidCallback onTap;
   final String? tooltip;
 
-  /// 弱化显示（用于"源被停用"的视觉区分，task-53 保留的那点可读性）
+  /// 弱化显示（用于「源被停用」的视觉区分，task-53 保留的那点可读性）
   final bool dimmed;
 
   @override
@@ -2649,29 +2649,43 @@ class _FilterChip extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     final fg = active
         ? colors.primary
-        : (dimmed ? colors.onSurfaceVariant.withValues(alpha: 0.6)
-            : colors.onSurfaceVariant);
-
-    final chip = InkWell(
-      onTap: onTap,
-      borderRadius: Radii.rFull,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 4),
-        decoration: BoxDecoration(
-          color: active ? colors.primary.withValues(alpha: 0.16) : null,
-          borderRadius: Radii.rFull,
-          border: Border.all(
-            color: active ? colors.primary : colors.outlineVariant,
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(fontSize: FontSizes.cap, color: fg),
-        ),
+        : (dimmed
+              ? colors.onSurfaceVariant.withValues(alpha: 0.6)
+              : colors.onSurfaceVariant);
+    /*
+     * ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）
+     *
+     * 改前是 InkWell + Container(decoration:) 手写胶囊。换成框架的
+     * `FilterChip` —— 它是「筛选」语义，与这边「纯视图、无副作用」正好对上
+     * （`_LineChip` 那种「选了会换流」的才用 ChoiceChip）。
+     *
+     * 颜色 / 描边 / 圆角 / 内边距全部显式给死 ⇒ 长相与改前一致；
+     * 换来涟漪、焦点环、禁用态、以及读屏的「筛选」语义。
+     *
+     * ⚠️ `showCheckmark: false`：FilterChip 默认选中时左侧加对勾，
+     *    会把胶囊撑宽、文字右移；这边「选中＝染色」已经表达清楚。
+     * ⚠️ `tooltip` 交给 FilterChip 自己的参数（原来手写 Tooltip 包装）。
+     */
+    return FilterChip(
+      label: Text(
+        label,
+        style: TextStyle(fontSize: FontSizes.cap, color: fg),
       ),
+      selected: active,
+      onSelected: (_) => onTap(),
+      showCheckmark: false,
+      tooltip: tooltip,
+      backgroundColor: Colors.transparent,
+      selectedColor: colors.primary.withValues(alpha: 0.16),
+      side: BorderSide(
+        color: active ? colors.primary : colors.outlineVariant,
+      ),
+      shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 4),
+      labelPadding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
-
-    return tooltip == null ? chip : Tooltip(message: tooltip!, child: chip);
   }
 }
 
@@ -2692,26 +2706,34 @@ class _LineChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: Radii.rFull,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 4),
-        decoration: BoxDecoration(
-          color: active ? colors.primary.withValues(alpha: 0.16) : null,
-          borderRadius: Radii.rFull,
-          border: Border.all(
-            color: active ? colors.primary : colors.outlineVariant,
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: FontSizes.cap,
-            color: active ? colors.primary : colors.onSurfaceVariant,
-          ),
+    /*
+     * ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）
+     *
+     * 与 `_FilterChip` 同族但语义不同：这条是**选择**（选了会换流），
+     * 所以用 `ChoiceChip` 而不是 FilterChip。颜色 / 描边 / 圆角 / 内边距
+     * 显式给死 ⇒ 长相与改前一致。
+     */
+    return ChoiceChip(
+      label: Text(
+        label,
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: active ? colors.primary : colors.onSurfaceVariant,
         ),
       ),
+      selected: active,
+      onSelected: (_) => onTap(),
+      showCheckmark: false,
+      backgroundColor: Colors.transparent,
+      selectedColor: colors.primary.withValues(alpha: 0.16),
+      side: BorderSide(
+        color: active ? colors.primary : colors.outlineVariant,
+      ),
+      shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 4),
+      labelPadding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
   }
 }
@@ -3048,38 +3070,32 @@ class _PageHead extends StatelessWidget {
           if (onShowAll != null)
             Tooltip(
               message: '看所有直播频道',
-              child: InkWell(
-                onTap: onShowAll,
-                borderRadius: Radii.rFull,
-                child: Container(
+              child: ActionChip(
+                  onPressed: onShowAll,
+                  avatar: Icon(
+                    Icons.list_alt,
+                    size: 16,
+                    color: colors.onSurfaceVariant,
+                  ),
+                  label: Text(
+                    '全部',
+                    style: TextStyle(
+                      fontSize: FontSizes.sm,
+                      color: colors.onSurface,
+                    ),
+                  ),
+                  side: BorderSide(color: colors.outlineVariant),
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: Radii.rFull,
+                  ),
                   padding: const EdgeInsets.symmetric(
                     horizontal: Sp.x3,
                     vertical: 6,
                   ),
-                  decoration: BoxDecoration(
-                    borderRadius: Radii.rFull,
-                    border: Border.all(color: colors.outlineVariant),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.list_alt,
-                        size: 16,
-                        color: colors.onSurfaceVariant,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        '所有直播',
-                        style: TextStyle(
-                          fontSize: FontSizes.sm,
-                          color: colors.onSurface,
-                        ),
-                      ),
-                    ],
-                  ),
+                  labelPadding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
-              ),
             ),
         ],
       ),

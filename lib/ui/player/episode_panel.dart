@@ -258,24 +258,29 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
       itemBuilder: (context, i) {
         final seg = _segments[i];
         final active = i == _segment;
-        return InkWell(
-          onTap: () => _switchSegment(seg.startIndex ~/ widget.segmentSize),
-          borderRadius: BorderRadius.circular(Radii.full),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 5),
-            decoration: BoxDecoration(
-              color: active ? const Color(0xFF32C7FF) : const Color(0x1FFFFFFF),
-              borderRadius: BorderRadius.circular(Radii.full),
-            ),
-            child: Text(
-              seg.label,
-              style: TextStyle(
-                color: active ? const Color(0xFF07212B) : Colors.white,
-                fontSize: FontSizes.cap,
-                fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-              ),
+        return ChoiceChip(
+          label: Text(
+            seg.label,
+            style: TextStyle(
+              color: active ? const Color(0xFF07212B) : Colors.white,
+              fontSize: FontSizes.cap,
+              fontWeight: active ? FontWeight.w600 : FontWeight.w400,
             ),
           ),
+          selected: active,
+          onSelected: (_) =>
+              _switchSegment(seg.startIndex ~/ widget.segmentSize),
+          showCheckmark: false,
+          backgroundColor: const Color(0x1FFFFFFF),
+          selectedColor: const Color(0xFF32C7FF),
+          side: BorderSide.none,
+          shape: const RoundedRectangleBorder(
+            borderRadius: Radii.rFull,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 5),
+          labelPadding: EdgeInsets.zero,
+          visualDensity: VisualDensity.compact,
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
         );
       },
     ),

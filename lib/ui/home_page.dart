@@ -2792,43 +2792,43 @@ class _LiveStrip extends StatelessWidget {
         separatorBuilder: (_, __) => const SizedBox(width: Sp.x2),
         itemBuilder: (context, i) {
           final ch = channels[i];
+          /*
+           * ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）
+           *
+           * 改前是 InkWell + Container(decoration:) 手写胶囊。这是「点一下
+           * 去直播」的动作入口 ⇒ 换成框架的 `ActionChip`（圆点走 avatar）。
+           * 描边 / 圆角 / 内边距 / 字号全部显式给死 ⇒ 长相与改前一致。
+           */
           return Center(
-            child: InkWell(
+            child: ActionChip(
               // ★ task-6：把 provider 原样带上 —— 接收方不再猜源
-              onTap: () => onOpenLive?.call(provider, ch.id, ch.name),
-              borderRadius: Radii.rFull,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: Sp.x4,
-                  vertical: Sp.x2,
-                ),
-                decoration: BoxDecoration(
-                  borderRadius: Radii.rFull,
-                  border: Border.all(color: colors.outlineVariant),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // 「正在播」的圆点
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: const BoxDecoration(
-                        color: AppColors.liveDot,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: Sp.x2),
-                    Text(
-                      ch.name,
-                      style: TextStyle(
-                        fontSize: FontSizes.sm,
-                        color: colors.onSurface,
-                      ),
-                    ),
-                  ],
+              onPressed: () => onOpenLive?.call(provider, ch.id, ch.name),
+              label: Text(
+                ch.name,
+                style: TextStyle(
+                  fontSize: FontSizes.sm,
+                  color: colors.onSurface,
                 ),
               ),
+              avatar: Container(
+                width: 6,
+                height: 6,
+                decoration: const BoxDecoration(
+                  color: AppColors.liveDot,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              side: BorderSide(color: colors.outlineVariant),
+              shape: const RoundedRectangleBorder(
+                borderRadius: Radii.rFull,
+              ),
+              padding: const EdgeInsets.symmetric(
+                horizontal: Sp.x4,
+                vertical: Sp.x2,
+              ),
+              labelPadding: EdgeInsets.zero,
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
           );
         },

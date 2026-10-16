@@ -49,6 +49,30 @@
 #
 # # ★ 显式跑（改播放器 / media_kit 相关代码时**应该**跑）
 # flutter test test/ --run-skipped --tags native-media --concurrency=1
+# ```
+#
+# ═══════════════════════════════════════════════════════════════════════
+#  ★★ 2026-10-17（PR #30 取证时踩到）：「skip ≠ pass」会制造假回归信号
+# ═══════════════════════════════════════════════════════════════════════
+#
+# 现场：为了判断"某条红是不是本轮引入"，我在 `git worktree` 里建了**基线副本**，
+# 跑全量得到 `+3250 ~92 全绿` —— 看起来是"基线干净、当前有回归"。
+#
+# 但真相是：
+# ```text
+# 基线工作树里**没有** build/windows/x64/libmpv/libmpv-2.dll（构建产物，不入库）
+#   ⇒ 所有依赖 libmpv 的文件整文件 **skip**
+#   ⇒ 而当前工作区刚 `flutter build windows` 过，夹具在 ⇒ 那些文件**真跑**
+#   ⇒ 真跑才暴露它们自身的 flaky（本文件上方记载的 native 崩溃）
+# ```
+#
+# ⇒ 教训：**用"基线全绿 vs 当前红"判定回归之前，必须先确认那条用例
+#   在两边都真的跑了。** `~N` 里的 N 就是"没跑"，它既不算通过也不算失败。
+#
+# 具体症状（本次实测）：全量跑时每次咬到的文件**都不同**
+# （`t61_panel_radius` / `t72_stream_sheet` / `zz_media_r1_local_open_probe` /
+#  `zz_t12_defect_a_probe`），且它们**单独跑全部 exit=0**、**全都碰 media_kit**。
+# 这就是本文件记载的那个 native 崩溃，不是被测代码的缺陷。
 #
 # # 只看被排除的清单
 # flutter test test/ --run-skipped --tags native-media --reporter=expanded

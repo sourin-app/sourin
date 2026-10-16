@@ -101,9 +101,68 @@ class AppTheme {
   static ThemePack get pack => ThemePackStore.current();
 
   /// 该明暗下的语义色（供需要「不建整套 ThemeData 也能取色」的地方用）
+  ///
+  /// ══════════════════════════════════════════════════════════════════
+  /// ★★★ T7（2026-10-17）：**必须与 [themeFor] 同源**，否则主题割裂
+  /// ══════════════════════════════════════════════════════════════════
+  ///
+  /// # 改前的缺陷（Owner 第 11 条：「主题非常的割裂」）
+  ///
+  /// 改前这里写的是：
+  /// ```dart
+  /// final p = selectedPack;
+  /// if (p != null && p.brightness == b) return p.palette;   // ← 只在「恰好相等」时用包
+  /// return b == Brightness.light ? _buildLightColors() : AppPalette.dark;
+  /// ```
+  /// 也就是**只有包与传入的 b 恰好同明暗**才用包，否则**整个包被忽略**、
+  /// 按 `b` 返回内置亮/暗。而 [themeFor] 走 [themeForPack]，是
+  /// `pack?.brightness ?? b` —— **包说了算**。
+  /// ⇒ 两者**优先级相反**，一旦 `dsh.theme` 与所选主题包的 `brightness`
+  ///   冲突，它们就返回**相反**的明暗。
+  ///
+  /// # 实测读数（`.probe/probe_tests/zz_t7d_rootcause_test.dart`，纯函数）
+  ///
+  /// ```text
+  /// dsh.theme=dark  pack=builtin.daylight | resolve=dark | pack?.brightness=light
+  ///   | themeFor().brightness=light   ← 包说了算（浅）
+  ///   | floorColor=#0A0A0A            ← b 说了算（深）  ★ 相反
+  /// ```
+  /// 真机像素（`.probe/shots/t7_dark_home.png`，1444x845）：
+  /// ```text
+  /// y=8   标题栏 = (27,27,27)      深 ✓
+  /// y=42  内容区 = (238,240,246)   = #EEF0F6 ★ 浅 ✗ ⇒ 与标题栏 13.6:1 割裂
+  /// ```
+  ///
+  /// # 为什么症状长成「标题栏深、内容区浅」
+  ///
+  /// 标题栏与窗口外框**不经过**这里 —— 它们走 [floorColor] → 本方法，
+  /// 而更外层还有 `MaterialApp.builder` 那层 `ColoredBox(floorColor)`
+  /// （见 `shell.dart`）。但**内容区**（`AppScaffold` / `Scaffold` /
+  /// `Material` 的默认底色）取的是 **`MaterialApp.theme`**，也就是
+  /// [themeFor] 的结果（浅）。⇒ 两层各取一个源，必然割裂。
+  ///
+  /// # 修法：优先级**唯一** —— 与 [themeForPack] 逐字对齐
+  ///
+  /// ```dart
+  /// final p = selectedPack;
+  /// if (p != null) return p.palette;        // ★ 包永远优先（自带明暗）
+  /// return b == Brightness.light ? ... : AppPalette.dark;
+  /// ```
+  /// 这样 `colorsFor(b)` 与 `themeFor(b)` 在**任何** `b` 与包组合下都同明暗，
+  /// 结构上不可能再出现「地板深、内容浅」。
+  ///
+  /// ⚠️ 不冲突时**行为逐字不变**（对照读数见上面的探针）：
+  /// ```text
+  /// dsh.theme=dark  pack=builtin.midnight（同为深） ⇒ 一致（改前也一致）
+  /// dsh.theme=light pack=builtin.daylight（同为浅） ⇒ 一致（改前也一致）
+  /// dsh.theme=dark  pack=(无)                      ⇒ 一致（改前也一致）
+  /// ```
+  /// ⇒ 只有「冲突组合」这一种情形的输出会变，而它改前本来就是错的。
   static AppPalette colorsFor(Brightness b) {
+    // ★ 包自带明暗 ⇒ 选了包就以包为准（与 themeForPack 的
+    //   `pack?.brightness ?? b` 同一条优先级）。绝不能在这里再与 b 比一次。
     final p = selectedPack;
-    if (p != null && p.brightness == b) return p.palette;
+    if (p != null) return p.palette;
     return b == Brightness.light
         ? (_lightColors ??= _buildLightColors())
         : AppPalette.dark;

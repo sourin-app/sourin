@@ -1401,9 +1401,22 @@ void main() {
        *     `fill: false` 只给播放页的 SheetExitMotion 用（那里不能再写
        *     Positioned —— 会抛 Incorrect use of ParentDataWidget），由 t104 门禁单独钉。
        */
-      expect(code.contains('return widget.fill ? Positioned.fill(child: body) : body;'),
-          isTrue,
-          reason: '★ 改了这个，本文件 ⑥ 组所有 widget 测试都会炸 —— 提前给出人话');
+      /*
+       * ★★ 2026-10-16：本面板把根节点交给了统一外壳 `AppDialogShell`。
+       *
+       * 改前：面板自己写 `return widget.fill ? Positioned.fill(child: body) : body;`
+       * 现在：外壳**自建 Stack** 并承担定位（`Stack(fit: StackFit.expand)`），
+       *       面板只需 `fill: widget.fill` 原样透传。
+       *
+       * ⚠️ 本断言**没有放宽**，只是判据跟着责任走：
+       *   · 面板必须走外壳 **且** 把 fill 原样透传（写死 true 会丢 fill=false 语义）
+       *   · 外壳必须真的按 fill 分流（下面那条）
+       * 任一侧删掉分流都会红。
+       */
+      expect(code.contains('AppDialogShell('), isTrue,
+          reason: '★ 面板没走统一外壳 —— 弹窗样式会与其它 6 个不一致');
+      expect(code.contains('fill: widget.fill,'), isTrue,
+          reason: '★ 没把 fill 原样透传 —— fill=false 的宿主语义会丢');
       expect(code.contains('this.fill = true,'), isTrue,
           reason: '★ 默认必须是 true —— 否则单测必须套 Stack 的前提就没了');
     });

@@ -56,6 +56,7 @@ import 'app_theme.dart';
 import 'remote_bridge.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
+import 'widgets/app_menu.dart';
 import 'widgets/qr_view.dart';
 /*
  * ═══════════════════════════════════════════════════════════════════════
@@ -163,6 +164,7 @@ import 'widgets/provider_import_dialog.dart';
  */
 import 'settings/about_page.dart';
 import 'settings/backup_page.dart';
+import 'settings/live_groups_page.dart';
 import 'settings/pc_gestures_page.dart';
 import 'settings/playback_page.dart';
 import 'settings/skip_page.dart';
@@ -2115,6 +2117,33 @@ class SettingsPageState extends State<SettingsPage> {
              *    而 Emby 页自己会读插件状态（`plugin_config_get`），
              *    这里再算一次等于两份真相。
              */
+            /*
+             * ★★★ Owner 第 12 条：直播分组入口
+             *
+             * # 为什么在**设置页**而不是直播页（task-53 纪律）
+             * ```text
+             * task-53 用户否定的正是「配置长在内容页」：
+             * > 配置该在设置页，不该长在内容页
+             * ⇒ 直播页只保留**筛选**（纯视图、点一下只改内存字段）；
+             *   建组 / 改组 / 删组这些**写配置**的动作收在本页。
+             * ```
+             *
+             * # 为什么放在「内容源与插件」组里、紧跟 JS 插件
+             * ```text
+             * 分组分的就是「JS 插件」里那些**直播源** ——
+             * 用户从「JS 插件」往下看一行就能找到它，
+             * 与 Emby 那条同理（同一组的两个二级页入口）。
+             * ```
+             *
+             * ⚠️ 副标题按本页规矩写清「里面有什么」，并点明建完组去哪用——
+             *    否则用户建完组不知道要回**直播页右侧**切分组。
+             */
+            SettingsEntryRow(
+              icon: Icons.playlist_add_check_circle_outlined,
+              title: '直播分组',
+              subtitle: '把常用的直播源分组 · 直播页右侧可一键只看某一组',
+              onTap: () => _openSubPage(const LiveGroupsPage()),
+            ),
             SettingsEntryRow(
               icon: Icons.album_outlined,
               title: 'Emby',
@@ -2977,9 +3006,24 @@ class SettingsPageState extends State<SettingsPage> {
                 icon: const Icon(Icons.download, size: 16),
                 label: const Text('从网址安装'),
               ),
-              PopupMenuButton<String>(
+              /*
+               * ★★ 2026-10-17（Owner 第 8 条：「插件那个点击出来操作菜单的也好难看」）
+               *
+               * 从裸 `PopupMenuButton` 换成全仓统一的 [AppMenuButton] ——
+               * 菜单面（底色/描边/圆角/条目高）与 `detail_page` 的「下载」菜单**同源**
+               * （两者共用 app_menu.dart 的 `AppMenuSurface` 与
+               *  `kAppMenuConstraints`）。
+               *
+               * ⚠️ 行为**逐字不变**：
+               *   · 5 项、顺序、`switch` 的五个分支一字不改；
+               *   · busy 时「健康检测 / 重新加载」的文案仍变成「处理中…」
+               *     （文案优先于"用 disabled 表达"—— AppMenuItem 的 label 现算，
+               *      再配 `enabled: !_sweeping` 保住禁用语义）；
+               *   · 每一项仍走共用的 `_menuRow`（图标+文案），不是裸 Text。
+               */
+              AppMenuButton<String>(
                 tooltip: '更多操作',
-                icon: const Icon(Icons.more_vert, size: 18),
+                iconSize: 18,
                 onSelected: (v) {
                   switch (v) {
                     case 'order':
@@ -2994,12 +3038,20 @@ class SettingsPageState extends State<SettingsPage> {
                       _installPluginSource();
                   }
                 },
-                itemBuilder: (_) => [
-                  PopupMenuItem(
+                /*
+                 * ★ `AppMenuItem` 本身装的是「文案 + 图标」（值类型），装不下
+                 *   `_menuRow` 这个现成 widget。为了**一行都不重写**文案与图标
+                 *   （`provider_import_test` 与 `provider_layout_test` 都逐字断言
+                 *   了 `_menuRow(...)` 的写法），这里用 AppMenuItem 的 `child`
+                 *   口子把 `_menuRow` 的结果带过去。
+                 *   条目外观（高度/图标色/危险色）仍由 app_menu.dart 统一画。
+                 */
+                items: <AppMenuItem<String>>[
+                  AppMenuItem<String>(
                     value: 'order',
                     child: _menuRow(Icons.reorder, '调整顺序'),
                   ),
-                  PopupMenuItem(
+                  AppMenuItem<String>(
                     value: 'health',
                     enabled: !_sweeping,
                     child: _menuRow(
@@ -3007,11 +3059,11 @@ class SettingsPageState extends State<SettingsPage> {
                       _sweeping ? '处理中…' : '健康检测',
                     ),
                   ),
-                  PopupMenuItem(
+                  AppMenuItem<String>(
                     value: 'import',
                     child: _menuRow(Icons.add, '导入源'),
                   ),
-                  PopupMenuItem(
+                  AppMenuItem<String>(
                     value: 'reload',
                     enabled: !_pluginBusy,
                     child: _menuRow(
@@ -3019,7 +3071,7 @@ class SettingsPageState extends State<SettingsPage> {
                       _pluginBusy ? '处理中…' : '重新加载',
                     ),
                   ),
-                  PopupMenuItem(
+                  AppMenuItem<String>(
                     value: 'source',
                     child: _menuRow(Icons.code, '粘贴源码安装'),
                   ),
@@ -4866,39 +4918,37 @@ class _ProviderCard extends StatelessWidget {
          *    > JS 插件当然该能编辑 —— 它就是磁盘上的一个 .js 文件。
          *    所以 `_canEdit` 里必须有 `'js'`。
          */
+        /*
+         * ★ 2026-10-16（Owner 第 8 条）：换成全仓统一的 [AppMenuButton]。
+         *
+         * Owner 原话：「还有插件那个点击出来操作菜单的也好难看,
+         *            不要用谷歌那个matrial那个啥设计规范了」
+         *
+         * 改前是裸 `PopupMenuButton` ⇒ 菜单面走 Material 默认（灰雾阴影、无描边、
+         * 圆角与卡片不一致、条目 48px 空）。改后底色/描边/圆角与卡片同源。
+         * 行为（itemBuilder 语义、onSelected）逐字不变。
+         */
         if (_canEdit || _isThirdParty)
-          PopupMenuButton<String>(
-            tooltip: '更多操作',
-            padding: EdgeInsets.zero,
-            icon: Icon(
-              Icons.more_vert,
-              size: 17,
-              color: colors.onSurfaceVariant,
-            ),
+          AppMenuButton<String>(
+            items: [
+              if (_canEdit)
+                const AppMenuItem(
+                  value: 'edit',
+                  label: '编辑',
+                  icon: Icons.edit_outlined,
+                ),
+              if (_isThirdParty)
+                const AppMenuItem(
+                  value: 'remove',
+                  label: '移除这个源',
+                  icon: Icons.delete_outline,
+                  danger: true,
+                ),
+            ],
             onSelected: (v) {
               if (v == 'edit') onEdit();
               if (v == 'remove') onRemove();
             },
-            itemBuilder: (_) => [
-              if (_canEdit)
-                const PopupMenuItem(
-                  value: 'edit',
-                  child: Row(children: [
-                    Icon(Icons.edit_outlined, size: 16),
-                    SizedBox(width: Sp.x3),
-                    Text('编辑'),
-                  ]),
-                ),
-              if (_isThirdParty)
-                PopupMenuItem(
-                  value: 'remove',
-                  child: Row(children: [
-                    Icon(Icons.delete_outline, size: 16, color: colors.error),
-                    SizedBox(width: Sp.x3),
-                    Text('移除这个源', style: TextStyle(color: colors.error)),
-                  ]),
-                ),
-            ],
           ),
       ],
     );

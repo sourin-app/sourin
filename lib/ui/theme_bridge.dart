@@ -53,6 +53,7 @@ import 'package:material_ui/material_ui.dart';
 import 'app_palette.dart';
 import 'app_typeface.dart';
 import 'tokens.dart';
+import 'theme/theme_language.dart';
 import 'theme/theme_pack.dart';
 
 // ★ task-50 候选 C2：二级页转场改为「用户选的风格」
@@ -113,40 +114,38 @@ ThemeData buildAppTheme(Brightness brightness, {ThemePack? pack}) {
       ? _buildLight(pack?.palette)
       : _buildDark(pack?.palette);
 
-  // 主题包可以微调**形状**，让不同调色板有自己的"性格"（圆角更方的科技风、
-  // 更圆的卡片风）。只允许这两个参数 —— 字号/间距一放开，主题包就能把
-  // 全站排版搞乱，那不叫"主题"叫"换皮"。
-  final r = pack?.radius;
-  if (r == null || r == _defaultRadius) return td;
-
-  final radius = BorderRadius.all(Radius.circular(r));
-  final shape = WidgetStateProperty.all(
-      RoundedSuperellipseBorder(borderRadius: radius));
-  return td.copyWith(
-    cardTheme: td.cardTheme.copyWith(
-      shape: RoundedSuperellipseBorder(
-          borderRadius: radius, side: td.cardTheme.shape is OutlinedBorder
-              ? (td.cardTheme.shape as OutlinedBorder).side
-              : BorderSide.none),
-    ),
-    dialogTheme: DialogThemeData(
-        shape: RoundedSuperellipseBorder(borderRadius: radius)),
-    bottomSheetTheme: BottomSheetThemeData(
-        shape: RoundedSuperellipseBorder(borderRadius: radius)),
-    snackBarTheme: td.snackBarTheme.copyWith(
-        shape: RoundedSuperellipseBorder(borderRadius: radius)),
-    listTileTheme: ListTileThemeData(
-        shape: RoundedSuperellipseBorder(borderRadius: radius)),
-    chipTheme: ChipThemeData(shape: RoundedSuperellipseBorder(borderRadius: radius)),
-    filledButtonTheme: FilledButtonThemeData(
-        style: td.filledButtonTheme.style?.copyWith(shape: shape)),
-    elevatedButtonTheme: ElevatedButtonThemeData(
-        style: td.elevatedButtonTheme.style?.copyWith(shape: shape)),
-    outlinedButtonTheme: OutlinedButtonThemeData(
-        style: td.outlinedButtonTheme.style?.copyWith(shape: shape)),
-    textButtonTheme: TextButtonThemeData(
-        style: td.textButtonTheme.style?.copyWith(shape: shape)),
-  );
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ T14 接线（2026-10-17）：设计语言统一走 `ThemeLanguage.apply`
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * # 改前这里只做**一件事**：按 `pack.radius` 覆盖圆角
+   *
+   * 于是主题包上的另外三个「设计语言」维度 —— `borderWidth` /
+   * `dividerThickness` / `buttonPadding` —— **全仓没有一处读它们**：
+   * 用户在主题包里写了也不生效，而且**不报错**（本仓已经踩过的
+   * "假接口"形态：能解析、能序列化、能导出 JSON，就是没人消费）。
+   *
+   * ⇒ 现在把这段**整块换掉**，交给 `ThemeLanguage.apply(td, pack)`：
+   * ```text
+   * 面     card / dialog / bottomSheet / snackBar / listTile / chip
+   * 按钮   四类（圆角 + 内边距 + 描边粗细）
+   * 输入框 圆角 + 六态描边
+   * 分隔线 粗细
+   * ```
+   *
+   * # ★ 默认零变化（这是本仓的回归纪律，不是优化）
+   *
+   * `pack == null`（跟随系统 / 明暗三态）或四个维度**全为默认值**时，
+   * `ThemeLanguage.apply` **原样返回同一个 ThemeData 实例**（`identical`）
+   * —— 由 `zz_t14_theme_language_test.dart` 的 ③ 组钉死。
+   * ⇒ 既有 6 套主题与"跟随系统"路径的渲染结果**逐像素不变**。
+   *
+   * ⚠️ 不能在这里自己再判一次 `pack?.radius == null`：判据必须只有
+   *    **一份**（`ThemeLanguage.of(pack).isDefault`）。两处判据迟早漂移，
+   *    而漂移的表现正是"某个维度在某个主题包上不生效"。
+   */
+  return ThemeLanguage.apply(td, pack);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

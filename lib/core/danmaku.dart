@@ -87,6 +87,7 @@
 // TODO(security): AppSecret 目前明文存 ui-prefs.json，需迁移到系统凭据存储
 // （Windows DPAPI / Android Keystore）。见 danmaku_settings_dialog.dart 头部。
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -947,6 +948,22 @@ class DanmakuConfig {
   /// 用户自己填的 AppSecret（只看 UiPrefs 覆盖，不看内置）；没填返回空串。
   static String get userAppSecret => (UiPrefs.get(keyAppSecret) ?? '').trim();
 
+  /// 用户配置的自建弹幕后端（[UiPrefs.danmakuEndpoint] / [UiPrefs.danmakuToken]）。
+  ///
+  /// # 为什么放在 `DanmakuConfig` 上（而不是让每个调用点自己读）
+  /// ```text
+  /// 与 [appId] / [appSecret] **同一条纪律**：偏好读进来的地方只有一个，
+  /// 于是「面板写 UiPrefs」⇒「客户端构造时自动生效」是**天然**的，
+  /// 不需要宿主在构造参数上再传一遍（少一处会漂移的接线）。
+  /// ```
+  ///
+  /// ⚠️ 非法/空的地址 ⇒ 返回 null ⇒ 完全退回内置的官方/本机路径，
+  ///    行为与没有这个功能时**逐字一致**（[DanmakuEndpoint.tryParse] 不抛）。
+  static DanmakuEndpoint? get danmakuEndpoint => DanmakuEndpoint.tryParse(
+    UiPrefs.danmakuEndpoint,
+    token: UiPrefs.danmakuToken,
+  );
+
   /// 是否"有资格"发请求。
   ///
   /// 注意：这**不代表**凭证一定有效 —— 有效性只有服务端说了算，
@@ -1526,6 +1543,93 @@ void debugSetDanmakuTransportForTest(DanmakuTransport? t) {
   _debugTransportOverride = t;
 }
 
+/// 用户配置的弹幕后端（自建服务，如 danmu_api）
+///
+/// ══════════════════════════════════════════════════════════════════════
+/// # 为什么需要它
+/// ══════════════════════════════════════════════════════════════════════
+/// 改前 [ExternalDanmakuClient] 只有**两条写死**的路：
+/// ```text
+/// unsignedLocal = true   → http://127.0.0.1:2080（弹弹play 桌面版，免签名）
+/// unsignedLocal = false  → https://api.dandanplay.net（官方，要签名）
+/// ```
+/// 两者都是 `static const` ⇒ 用户**没法**填一个自己部署的地址。
+/// 而自建弹幕服务（danmu_api 这类）是免凭证的第三方实现，
+/// 正好能解决「官方要凭证、本仓又没凭证」的死结。
+///
+/// # 协议契约（实测确认，2026-10-16）
+/// ```text
+/// 该后端与弹弹play **协议同构**：/api/v2/{search/anime,search/episodes,
+/// match,bangumi,comment} 的请求/响应形状一致 ⇒ 解析层零改动。
+/// 实测把返回的 10157 条弹幕喂给 DanmakuComment.parse：10157/10157 通过。
+/// ```
+///
+/// ⚠️ 该模式下**不发签名头**：这类自建服务默认免凭证。
+///    若将来要接「需要签名的自建弹弹play」，需另开参数（本类当前不覆盖）。
+class DanmakuEndpoint {
+  const DanmakuEndpoint({required this.baseUrl, this.token = ''});
+
+  /// 基址，如 `http://127.0.0.1:9321`（不带协议时按 http 处理）
+  final String baseUrl;
+
+  /// 可选 token。
+  ///
+  /// 某些自建服务把 token 放在**路径前缀**上（`/{token}/api/v2/…`），
+  /// 例如 danmu_api：默认 token `87654321` 时可不带，自定义后必须带。
+  /// 空串 = 不带前缀。
+  final String token;
+
+  /// 解析用户输入；不可用（空/无主机）时返回 null。
+  ///
+  /// 刻意**不抛异常** —— 用户填错一个地址不该让取弹幕这条路崩掉，
+  /// 而是安静地退回内置的官方/本机路径（同 [DanmakuSourceSelector] 的纪律）。
+  static DanmakuEndpoint? tryParse(String baseUrl, {String token = ''}) {
+    final e = DanmakuEndpoint(baseUrl: baseUrl.trim(), token: token.trim());
+    return e.isUsable ? e : null;
+  }
+
+  Uri? get _base {
+    final raw = baseUrl.trim();
+    if (raw.isEmpty) return null;
+    // 允许用户只填 `127.0.0.1:9321`（不带协议）
+    final withScheme = raw.contains('://') ? raw : 'http://$raw';
+    final u = Uri.tryParse(withScheme);
+    if (u == null || u.host.isEmpty) return null;
+    return u;
+  }
+
+  bool get isUsable => _base != null;
+
+  String get scheme => _base?.scheme ?? 'http';
+  String get host => _base?.host ?? '';
+  bool get hasPort => _base?.hasPort ?? false;
+  int get port => _base?.port ?? 0;
+
+  /// 把一条协议路径拼成完整请求 URI（自动带 token 前缀）
+  Uri resolve(String path, [Map<String, String>? query]) => Uri(
+    scheme: scheme,
+    host: host,
+    port: hasPort ? port : null,
+    path: prefixedPath(path),
+    queryParameters: (query == null || query.isEmpty) ? null : query,
+  );
+
+  /// 把 token 前缀拼进路径（空 token 时原样返回）
+  String prefixedPath(String path) {
+    final t = token.trim();
+    final p = path.startsWith('/') ? path : '/$path';
+    return t.isEmpty ? p : '/$t$p';
+  }
+
+  /// 归一化后的展示串（给状态行用；**不含 token**，避免把它显示出来）
+  String get display =>
+      isUsable ? '$scheme://$host${hasPort ? ':$port' : ''}' : '';
+
+  @override
+  String toString() =>
+      'DanmakuEndpoint($display${token.isEmpty ? '' : ' +token'})';
+}
+
 class ExternalDanmakuClient {
   ExternalDanmakuClient({
     DanmakuTransport? transport,
@@ -1533,11 +1637,13 @@ class ExternalDanmakuClient {
     String? appSecret,
     DateTime Function()? clock,
     bool unsignedLocal = false,
+    DanmakuEndpoint? endpoint,
   })  : _transport = transport ?? _debugTransportOverride ?? IoDanmakuTransport(),
         _appId = appId ?? DanmakuConfig.appId,
         _appSecret = appSecret ?? DanmakuConfig.appSecret,
         _clock = clock ?? DateTime.now,
-        _unsignedLocal = unsignedLocal;
+        _unsignedLocal = unsignedLocal,
+        _endpointExplicit = endpoint;
 
   /// 弹弹play后端的**默认**主机名（客户端要连的 API 端点）。
   ///
@@ -1563,22 +1669,73 @@ class ExternalDanmakuClient {
   /// false ⇒ 官方 api.dandanplay.net（https、签名），行为与改前逐字一致。
   final bool _unsignedLocal;
 
+  /// **显式**传入的自建后端（构造参数）。null = 没显式传。
+  ///
+  /// ⚠️ 与 [_endpoint] 分开：这个只在构造时定一次，[_endpoint] 每次请求
+  ///    重新解析用户偏好（见那里的说明）。测试注入走这个。
+  final DanmakuEndpoint? _endpointExplicit;
+
+  /// 本次请求实际要打的自建后端。
+  ///
+  /// # 为什么每次请求重新解析（而不是构造时快照一次）
+  /// ```text
+  /// 构造快照（改前的做法）有个真实代价：用户刚在面板里填好地址、
+  /// 点「测试连接」成功，可**正在用的客户端**还拿着旧值 ⇒ 地址改了等于没改，
+  /// 除非宿主记得 close + 重建。而「记得重建」是容易漏的接线
+  /// （player_page 里就有 _resetDanmakuClient 这类补丁），
+  /// 正确性不该依赖调用方记得重置。
+  /// ```
+  ///
+  /// # 优先序（尊重宿主的选路结果）
+  /// ```text
+  /// ① 显式传入的 endpoint      → 用它（测试注入 / 调用方明确指定）
+  /// ② unsignedLocal = true     → 返回 null，走本机 2080
+  ///                              （宿主**已经**探测并决定用本机了，别抢它的决定）
+  /// ③ 否则                     → 动态读用户偏好（UiPrefs）
+  /// ```
+  ///
+  /// null ⇒ 完全退回内置的官方/本机路径，行为与没有这个功能时逐字一致。
+  DanmakuEndpoint? get _endpoint {
+    final explicit = _endpointExplicit;
+    if (explicit != null) return explicit;
+    if (_unsignedLocal) return null;
+    return DanmakuConfig.danmakuEndpoint;
+  }
+
+  /// 本次是否走「免签名」路径（自建后端 或 本机弹弹play）
+  bool get _signatureFree => _endpoint != null || _unsignedLocal;
+
   bool get isConfigured => _appId.isNotEmpty && _appSecret.isNotEmpty;
 
   /// 当前 UTC 秒 —— 签名里的 `Timestamp` 要求是 UTC Unix 秒
   int get _nowSeconds => _clock().toUtc().millisecondsSinceEpoch ~/ 1000;
 
-  Uri _uri(String path, [Map<String, String>? query]) => _unsignedLocal
-      ? Uri.http(
-          localAuthority,
-          path,
-          (query == null || query.isEmpty) ? null : query,
-        )
-      : Uri.https(
-          host,
-          path,
-          (query == null || query.isEmpty) ? null : query,
-        );
+  /// 构造请求 URI
+  ///
+  /// 三条路（优先级从高到低）：
+  /// ```text
+  /// ① endpoint 非空    → 用户自建后端（协议/主机/端口由用户填的地址决定）
+  /// ② unsignedLocal    → 本机弹弹play（127.0.0.1:2080，http、免签名）
+  /// ③ 默认             → 官方 api.dandanplay.net（https、签名）
+  /// ```
+  /// ★ ① 与 ② 都不发签名头（见 [_authHeaders]）。
+  Uri _uri(String path, [Map<String, String>? query]) {
+    final q = (query == null || query.isEmpty) ? null : query;
+    final ep = _endpoint;
+    if (ep != null) {
+      // 自建后端：协议/主机/端口全部来自用户配置，路径带上可选 token 前缀
+      return Uri(
+        scheme: ep.scheme,
+        host: ep.host,
+        port: ep.hasPort ? ep.port : null,
+        path: ep.prefixedPath(path),
+        queryParameters: q,
+      );
+    }
+    return _unsignedLocal
+        ? Uri.http(localAuthority, path, q)
+        : Uri.https(host, path, q);
+  }
 
   /// 构造鉴权头
   ///
@@ -1586,9 +1743,10 @@ class ExternalDanmakuClient {
   /// 其中 Path **以斜杠开头、不含协议/域名/查询参数**。
   /// 文档建议 Path 全小写、不做 URL 编码 —— 这里按文档来。
   Map<String, String> _authHeaders(String path) {
-    // 本机外部弹幕的本地接口免签名：只带 Accept，**绝不**发签名三件套
-    // （发了反而可能被本地服务当非法头处理）。
-    if (_unsignedLocal) {
+    // 免签名路径（自建后端 / 本机弹弹play）：只带 Accept，**绝不**发签名三件套
+    // （发了反而可能被这类服务当非法头处理）。
+    // ★ 自建服务默认免凭证 —— 这正是它能替代官方路（要 AppId/Secret）的原因。
+    if (_signatureFree) {
       return <String, String>{'Accept': 'application/json'};
     }
     final ts = _nowSeconds;
@@ -1602,7 +1760,106 @@ class ExternalDanmakuClient {
     };
   }
 
+  /// 请求地址的**脱敏形态** —— 只用于异常里记录/展示，**绝不**用于发请求。
+  ///
+  /// # 为什么必须脱敏（CWE-532：敏感信息进日志）
+  /// ```text
+  /// 自建后端把 token 放在**路径前缀**上（见 [DanmakuEndpoint.prefixedPath]）
+  /// ⇒ 完整 URI 形如 http://host:9321/<token>/api/v2/comment/9527
+  /// 而 [DanmakuException.uri] 会进 `detail` / `toString()`，异常又会显示给用户、
+  /// 也进日志 ⇒ **token 明文泄露**。
+  /// ```
+  ///
+  /// # 判据为什么用**结构**而不是比对 `_endpoint.token`
+  /// ```text
+  /// 本客户端所有协议路径都以 /api 开头（各处 `const path = '/api/v2/…'`）
+  /// ⇒ 路径第一段不是 `api` 时，它就是 token 前缀。
+  ///
+  /// ⚠️ 刻意**不**拿 `_endpoint.token` 去比：请求在途时用户可能改了地址
+  ///    （见 _probeSeq 那条竞态的同类窗口）——那时 `_endpoint` 已指向新 token，
+  ///    而这条 URI 上带的还是**旧** token ⇒ 比对会放行，**漏脱敏**。
+  ///    结构判据没有这个时间窗口。
+  /// ```
+  ///
+  /// ⚠️ 过度脱敏是**安全方向**的取舍：宁可多打一段码，也不能漏一个 token。
+  String _safeUri(Uri u) {
+    final segs = u.pathSegments;
+    if (segs.length < 2 || segs.first == 'api') return u.toString();
+    return u.replace(pathSegments: <String>['***', ...segs.skip(1)]).toString();
+  }
+
+  /// 发一次请求，并把**网络层异常**翻译成带打码地址的 [DanmakuException]。
+  ///
+  /// # 为什么必须有这一层（CWE-532 的**第二个口子**）
+  /// ```text
+  /// 上一轮修的是 _decode 里那 6 处（响应到手之后、解析失败时）。
+  /// 但 _transport.send 本身还会**抛异常**（网络层），而它抛的是
+  /// HttpException / SocketException / TimeoutException ——
+  /// ★ 这三者**都不是 DanmakuException** ⇒ 它们**绕过 _decode** 直接冒到上层。
+  ///
+  /// 实测（2026-10-17）：
+  ///   SocketException.toString() = SocketException: failed, address = 127.0.0.1, port = 9321
+  ///   HttpException.toString()   = HttpException: bad, uri = http://…/<token>/api/v2/…
+  ///                                  ↑ 这条**逐字带 URI**（SDK 行为）
+  /// ⇒ 打码必须在这一层做，_safeUri 帮不上忙（异常还没被我们构造出来）。
+  /// ```
+  ///
+  /// # 上层怎么用它（证明这不是防御性代码而是真链路）
+  /// ```text
+  /// player_page.dart 的取弹幕失败分支：
+  ///   on DanmakuException catch (e) ⇒ 写进 _danmakuError / _flash
+  ///   catch (e)                     ⇒ DanmakuException(e.toString()) ⇒ ★ 原文进 UI
+  /// ⇒ 未翻译的网络异常会把带 token 的 URI 显示给用户、也写进日志。
+  /// ```
+  ///
+  /// # ⚠️ 三种网络异常要**区分**，不能一律同一句话
+  /// ```text
+  /// 用户据此判断「该重试」还是「该改配置」：
+  ///   超时      ⇒ 服务慢/网络差 ⇒ 重试有意义
+  ///   连不上    ⇒ 地址填错/服务没起 ⇒ 该去改配置
+  ///   协议错    ⇒ 地址不是这个服务 ⇒ 该去改配置
+  /// ```
+  Future<DanmakuHttpResponse> _send({
+    required String method,
+    required Uri uri,
+    required Map<String, String> headers,
+    String? body,
+  }) async {
+    try {
+      return await _transport.send(
+        method: method,
+        uri: uri,
+        headers: headers,
+        body: body,
+      );
+    } on TimeoutException {
+      throw DanmakuException(
+        '弹幕服务没有响应（超时）。可以稍后重试。',
+        // statusCode 0 = 还没拿到响应（同 DanmakuException 的既有约定）
+        uri: _safeUri(uri),
+      );
+    } on SocketException {
+      throw DanmakuException(
+        '连不上弹幕服务（地址不通或服务没起来）。请检查地址 / 服务是否在运行。',
+        uri: _safeUri(uri),
+      );
+    } on HttpException {
+      /*
+       * ⚠️ **不要**把 e.message 拼进文案：
+       *    HttpException.message 可能由 SDK 生成、也可能带上原始 URI，
+       *    拼进来就等于把刚打掉的码又加回去。只保留「协议层出错」这个结论。
+       */
+      throw DanmakuException(
+        '弹幕服务返回了不合法的响应（协议错误）。请确认这个地址是弹幕服务。',
+        uri: _safeUri(uri),
+      );
+    }
+  }
+
   /// 把一次响应翻译成"要么是数据、要么是带原文的异常"
+  ///
+  /// ⚠️ 记录到异常里的地址一律走 [_safeUri]（去掉 token 前缀），
+  ///    但**请求本身**用的仍是原始 [uri] —— 两件事不能混。
   Map<String, dynamic> _decode(DanmakuHttpResponse r, String what, Uri uri) {
     if (r.statusCode == 403 || r.statusCode == 401) {
       final xe = r.xErrorMessage;
@@ -1611,7 +1868,7 @@ class ExternalDanmakuClient {
         statusCode: r.statusCode,
         xErrorMessage: xe,
         body: _clip(r.body),
-        uri: uri.toString(),
+        uri: _safeUri(uri),
       );
       // ★ 原文照旧（上面那个 message），额外挂一句"下一步做什么"
       throw DanmakuException(
@@ -1629,7 +1886,7 @@ class ExternalDanmakuClient {
         statusCode: r.statusCode,
         xErrorMessage: r.xErrorMessage,
         body: _clip(r.body),
-        uri: uri.toString(),
+        uri: _safeUri(uri),
         // 412/429 是"被限流"，不是"坏了" —— 用户该做的是等一下
         hint: r.statusCode == 412 || r.statusCode == 429
             ? const DanmakuHint(
@@ -1647,7 +1904,7 @@ class ExternalDanmakuClient {
         '弹幕服务返回的是一张网页，不是数据（$what）',
         statusCode: r.statusCode,
         body: _clip(r.body),
-        uri: uri.toString(),
+        uri: _safeUri(uri),
         hint: DanmakuHint.htmlPage(what: what),
       );
     }
@@ -1660,7 +1917,7 @@ class ExternalDanmakuClient {
         statusCode: r.statusCode,
         xErrorMessage: r.xErrorMessage,
         body: _clip(r.body),
-        uri: uri.toString(),
+        uri: _safeUri(uri),
       );
     }
     if (parsed is! Map<String, dynamic>) {
@@ -1668,7 +1925,7 @@ class ExternalDanmakuClient {
         '弹幕服务返回的 JSON 结构不对（$what）',
         statusCode: r.statusCode,
         body: _clip(r.body),
-        uri: uri.toString(),
+        uri: _safeUri(uri),
       );
     }
     // 业务错误：HTTP 200 + success:false + errorCode/errorMessage
@@ -1681,7 +1938,7 @@ class ExternalDanmakuClient {
         errorCode: code,
         errorMessage: msg,
         body: _clip(r.body),
-        uri: uri.toString(),
+        uri: _safeUri(uri),
       );
     }
     return parsed;
@@ -1710,7 +1967,7 @@ class ExternalDanmakuClient {
     };
     final headers = _authHeaders(path);
     headers['Content-Type'] = 'application/json; charset=utf-8';
-    final resp = await _transport.send(
+    final resp = await _send(
       method: 'POST',
       uri: uri,
       headers: headers,
@@ -1746,7 +2003,7 @@ class ExternalDanmakuClient {
       'withRelated': withRelated ? 'true' : 'false',
       if (chConvert != 0) 'chConvert': '$chConvert',
     });
-    final resp = await _transport.send(
+    final resp = await _send(
       method: 'GET',
       uri: uri,
       headers: _authHeaders(path),
@@ -1763,12 +2020,36 @@ class ExternalDanmakuClient {
     String anime = '',
     String episode = '',
   }) async {
+    /*
+     * ★ 2026-10-17：空关键词**不发请求**（Lead 裁决：收紧这条存量缺陷）。
+     *
+     * # 为什么（实测 danmu_api，2026-10-16）
+     * ```text
+     * GET /api/v2/search/episodes              → HTTP 400 Missing anime parameter
+     * GET /api/v2/search/episodes?episode=1    → HTTP 400 Missing anime parameter
+     * GET /api/v2/search/episodes?anime=火影   → HTTP 200
+     * ```
+     * 一个**没有任何关键词**的搜索请求本来就没有意义：发出去只是
+     * 浪费一次往返 + 换回一个 400，再被 _decode 包成异常抛给上层。
+     *
+     * # 为什么返回空列表而不是抛错
+     * 语义是「这个后端没得搜」；对调用方而言它与「搜了但没有」**同路**：
+     * [loadFor] 随后统一走 found.isEmpty 分支抛「没有匹配到弹幕库」，
+     * 错误文案与改前**逐字一致**（t100 / task13 逐字钉着它）。
+     * ⇒ 不会出现「静默空结果被误当成没有弹幕」：该抛的地方照样抛。
+     *
+     * ⚠️ 与 [searchEpisodesSmart] 的 `kws.isEmpty` 守卫同一条纪律 ——
+     *    那条早就在了，这里只是把同一个判据补到直接调用入口。
+     */
+    if (anime.trim().isEmpty && episode.trim().isEmpty) {
+      return const <DanmakuMatch>[];
+    }
     const path = '/api/v2/search/episodes';
     final uri = _uri(path, <String, String>{
       if (anime.isNotEmpty) 'anime': anime,
       if (episode.isNotEmpty) 'episode': episode,
     });
-    final resp = await _transport.send(
+    final resp = await _send(
       method: 'GET',
       uri: uri,
       headers: _authHeaders(path),
@@ -1880,7 +2161,7 @@ class ExternalDanmakuClient {
   Future<String> _fetchCover(int animeId) async {
     final path = '/api/v2/bangumi/$animeId';
     try {
-      final resp = await _transport.send(
+      final resp = await _send(
         method: 'GET',
         uri: _uri(path, const <String, String>{}),
         headers: _authHeaders(path),
@@ -1975,28 +2256,46 @@ class ExternalDanmakuClient {
 ///
 /// T27-05：本机桌面版提供**免签名的本地接口**；官方接口则要
 /// AppId/AppSecret 签名。选路规则：本地在线 ⇒ 优先本地；否则退回官方。
-enum DanmakuSourceKind { local, official }
+enum DanmakuSourceKind {
+  /// 本机弹弹play 桌面版（127.0.0.1:2080，免签名）
+  local,
 
-/// 数据源选路：先探本机外部弹幕，探不通再退回官方
+  /// 用户配置的自建后端（[DanmakuEndpoint]，免签名）
+  ///
+  /// ★ 与 [local] **分开**而不是合并：两者都免签名，但「探到谁」决定了
+  ///   状态行文案与排错方向（本机没启动 vs 自建地址填错）。
+  custom,
+
+  /// 官方 api.dandanplay.net（https + AppId/AppSecret 签名）
+  official,
+}
+
+/// 数据源选路：先探自建后端 / 本机外部弹幕，探不通再退回官方
 ///
 /// 本机外部弹幕（桌面版）在 127.0.0.1:2080 提供 弹弹play 协议的本地接口，
-/// **本地接口不需要签名**。探测方式：GET /api/v2/system/version，
-/// 2xx 且正文是 JSON ⇒ 本地在线。探测失败（连接拒绝 / 超时 / 返回的是
-/// 别的网页）一律安静退回官方，绝不让取弹幕这条路因为探测挂掉。
+/// **本地接口不需要签名**；用户配置的自建后端（[DanmakuEndpoint]）同理。
+/// 探测失败（连接拒绝 / 超时 / 返回的是别的网页）一律安静退回官方，
+/// 绝不让取弹幕这条路因为探测挂掉。
 class DanmakuSourceSelector {
   /// 返回应该使用的数据源。
   ///
   /// [transport] 可注入假 transport 做双环境单测；[timeout] 限制探测
   /// 最长等待，避免本地服务假死时拖住取弹幕。
+  /// [endpoint] 非空时**优先**探用户自建后端（见 [DanmakuEndpoint]）。
   static Future<DanmakuSourceKind> select({
     DanmakuTransport? transport,
     Duration timeout = const Duration(seconds: 2),
+    DanmakuEndpoint? endpoint,
   }) async {
     final status = await DanmakuLocalService.probe(
       transport: transport,
       timeout: timeout,
+      endpoint: endpoint,
     );
-    return status.online ? DanmakuSourceKind.local : DanmakuSourceKind.official;
+    if (!status.online) return DanmakuSourceKind.official;
+    return endpoint != null
+        ? DanmakuSourceKind.custom
+        : DanmakuSourceKind.local;
   }
 }
 
@@ -2005,41 +2304,107 @@ class DanmakuSourceSelector {
 /// [describe] 一次探测 + 一行人话文案，给弹幕设置面板的「数据源」状态行。
 class DanmakuLocalService {
   static const String hostPort = '127.0.0.1:2080';
+
+  /// 弹弹play 桌面版的原生探测端点
   static const String versionPath = '/api/v2/system/version';
+
+  /// ★ 2026-10-16 修：自建后端（danmu_api 这类）**没有** [versionPath]。
+  ///
+  /// # 这是真缺陷，不是洁癖
+  /// ```text
+  /// 实测 danmu_api：GET /api/v2/system/version → HTTP 404
+  ///                  GET /api/config            → HTTP 200 + {"version":"1.21.5",…}
+  /// ```
+  /// 改前只认 [versionPath] ⇒ **服务明明活着却被判成不可用**，
+  /// 用户会看到「未运行」而实际能取到弹幕（假阴性）。
+  /// ⇒ 探测按序试两个端点，任一命中即算在线。
+  static const String configPath = '/api/config';
+
   static const String notRunningLine = '检测到本机外部弹幕 未运行';
 
   const DanmakuLocalService._();
 
-  /// 探测本机外部弹幕是否在跑。
+  /// 探测某个弹幕后端是否在跑。
   ///
-  /// 判定：2xx 且正文是 JSON（本地接口回 JSON；若有人在这个端口挂了
+  /// 判定：2xx 且正文是 JSON（这类服务回 JSON；若有人在这个端口挂了
   /// 别的网页服务，不算）。任何异常（连接拒绝/超时/非 JSON）⇒ 不在线。
+  ///
+  /// [endpoint] 非空时探**用户自建后端**（按 [DanmakuEndpoint.resolve] 拼路径）；
+  /// 为空时探本机弹弹play（行为与改前逐字一致，只是多试一个端点）。
   static Future<DanmakuLocalStatus> probe({
     DanmakuTransport? transport,
     Duration timeout = const Duration(seconds: 2),
+    DanmakuEndpoint? endpoint,
   }) async {
     final t = transport ?? IoDanmakuTransport(timeout: timeout);
     final shouldClose = transport == null;
     try {
-      final r = await t
-          .send(
-            method: 'GET',
-            uri: Uri.http(hostPort, versionPath),
-            headers: const {'Accept': 'application/json'},
-          )
-          .timeout(timeout);
-      if (!r.isOk || _looksLikeHtml(r.body)) {
-        return const DanmakuLocalStatus(online: false);
-      }
-      final j = jsonDecode(r.body);
-      return DanmakuLocalStatus(
-        online: j is Map,
-        version: j is Map ? j['versionCode']?.toString() : null,
+      // ① 首选：弹弹play 桌面版的原生端点（本机 2080 与本机自建实例同款拼法）
+      final st0 = await _probeOne(
+        t,
+        endpoint?.resolve(versionPath) ?? Uri.http(hostPort, versionPath),
+        timeout,
+        endpoint: endpoint,
       );
+      if (st0 != null) return st0;
+
+      // ② 退路：★ 自建后端（danmu_api 这类）**没有** versionPath，
+      //    只有 /api/config。少了这一步，活着的自建服务会被判成不可用
+      //    —— 实测 404 vs 200，是本轮修掉的真缺陷（假阴性）。
+      final st1 = await _probeOne(
+        t,
+        endpoint?.resolve(configPath) ?? Uri.http(hostPort, configPath),
+        timeout,
+        endpoint: endpoint,
+      );
+      if (st1 != null) return st1;
+
+      return const DanmakuLocalStatus(online: false);
     } catch (_) {
       return const DanmakuLocalStatus(online: false);
     } finally {
       if (shouldClose) t.close();
+    }
+  }
+
+  /// 探一个端点：在线返回状态，不在线返回 null（让调用方试下一个）。
+  ///
+  /// ⚠️ 这里**故意吞掉异常**并返回 null 而不是直接判离线：
+  ///    404 会让部分服务直接抛，那是「这个端点没有」而不是「服务没起来」。
+  static Future<DanmakuLocalStatus?> _probeOne(
+    DanmakuTransport t,
+    Uri uri,
+    Duration timeout, {
+    DanmakuEndpoint? endpoint,
+  }) async {
+    try {
+      final r = await t
+          .send(
+            method: 'GET',
+            uri: uri,
+            headers: const {'Accept': 'application/json'},
+          )
+          .timeout(timeout);
+      if (!r.isOk || _looksLikeHtml(r.body)) return null;
+      final j = jsonDecode(r.body);
+      if (j is! Map) return null;
+      // 两个端点的版本字段名不同：弹弹play 用 versionCode，danmu_api 用 version
+      final v = j['versionCode'] ?? j['version'];
+      return DanmakuLocalStatus(
+        online: true,
+        version: v?.toString(),
+        /*
+         * 记住命中的是哪个端点（诊断用）。
+         * ⚠️ 只留**最后一段**（version / config），不留整条 path ——
+         *    self-hosted 后端的 path 带 token 前缀（/<token>/api/config），
+         *    整条存下来就是一个**潜伏的泄漏面**（今天没人显示它，
+         *    明天加一行调试输出就泄了）。同 _safeUri 的纪律。
+         */
+        viaPath: uri.pathSegments.isEmpty ? '' : uri.pathSegments.last,
+        endpoint: endpoint,
+      );
+    } catch (_) {
+      return null;
     }
   }
 
@@ -2048,20 +2413,41 @@ class DanmakuLocalService {
   static Future<DanmakuLocalStatus> describe({
     DanmakuTransport? transport,
     Duration timeout = const Duration(seconds: 2),
-  }) => probe(transport: transport, timeout: timeout);
+    DanmakuEndpoint? endpoint,
+  }) => probe(transport: transport, timeout: timeout, endpoint: endpoint);
 }
 
 /// 探测结果：是否在线 + （可选）版本号 + 状态行文案
 class DanmakuLocalStatus {
-  const DanmakuLocalStatus({required this.online, this.version});
+  const DanmakuLocalStatus({
+    required this.online,
+    this.version,
+    this.viaPath,
+    this.endpoint,
+  });
 
   final bool online;
   final String? version;
 
+  /// 命中的探测端点（诊断用；不在线时为 null）
+  final String? viaPath;
+
+  /// 探的是哪个自建后端（null = 本机弹弹play）
+  final DanmakuEndpoint? endpoint;
+
   /// 弹幕设置面板「数据源」一行的文案。
   String get line {
-    if (!online) return DanmakuLocalService.notRunningLine;
+    final ep = endpoint;
+    if (!online) {
+      return ep == null
+          ? DanmakuLocalService.notRunningLine
+          : '自建弹幕服务（${ep.display}）未运行';
+    }
     final v = (version == null || version!.isEmpty) ? '' : ' · v$version';
+    // ★ 2026-10-16：自建后端与本机弹弹play **必须分开说** ——
+    //   两者都能让 online 为 true，但用户要做的事完全不同
+    //   （前者去配置里改地址，后者去启动桌面版弹弹play）。
+    if (ep != null) return '自建弹幕服务（${ep.display}）已就绪$v';
     return '本机外部弹幕（${DanmakuLocalService.hostPort}）已就绪$v';
   }
 }

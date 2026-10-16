@@ -13,8 +13,9 @@
 // # 形态为什么照抄 DanmakuSettingsDialog
 //
 // 它们在同一个页面里互为邻居（都挂在播放页的浮层里），用户不该为两个
-// 面板学两套操作。所以：全屏 scrim（alpha 0.72）+ 居中卡片（宽 560，
-// maxHeight 620）+ 同一套 _header / _divider / _sectionTitle / _hint。
+// 面板学两套操作。所以：外壳走全仓统一的 AppDialogShell
+// （app_dialog_shell.dart —— 遮罩 / 定位 / 标题栏 / 卡片几何都归它），
+// 面板只留 _divider / _sectionTitle / _hint 这套内容级排版。
 //
 // # 这个文件是**纯 UI**
 //
@@ -41,6 +42,8 @@ import '../tokens.dart';
 //   test/t74_cover_image_test.dart 的 D3 会**不剥注释**地扫全 lib/，
 //   断言网络图构造只许出现在 cover_image.dart 一处（连注释里都不许写）。
 import 'cover_image.dart';
+import 'app_dialog_section.dart';
+import 'app_dialog_shell.dart';
 
 /// 导入面板要展示的全部状态。
 ///
@@ -234,6 +237,37 @@ const double _thumbWidth = 96;
 const double _thumbHeight = 54;
 
 class _BiliImportDialogState extends State<BiliImportDialog> {
+  /// 本面板的**取色唯一入口** —— 全部走主题角色，不写死任何颜色。
+  ///
+  /// # ★ task-13（2026-10-16）：为什么必须有这个 getter
+  ///
+  /// 改前本文件有 **24 处** `Colors.white*` 写死白。本面板的底色是
+  /// `colorScheme.surface`（**跟随主题**），所以浅色主题下：
+  /// ```text
+  /// 白字 压 白底  ⇒ 标题/正文/状态行全部隐形
+  /// 白线 压 白底  ⇒ 输入框 hint、分隔线、卡片描边全部隐形
+  /// ```
+  /// ⇒ 现在统一从这里取色。映射（旧 → 新）：
+  /// ```text
+  /// Colors.white      → colors.onSurface
+  /// Colors.white70    → colors.onSurfaceVariant
+  /// Colors.white60    → colors.onSurfaceVariant   （并入 70 档）
+  /// Colors.white38    → colors.onSurfaceVariant   （并入 70 档）
+  /// Colors.white24    → colors.outlineVariant     （hint / 描边 / 分隔线）
+  /// Colors.white10    → colors.onSurface.withValues(alpha: 0.04)（chip 未选中底）
+  /// ```
+  ///
+  /// ⚠️ **保留写死色的三处**（理由逐条见各自调用点）：
+  /// `Colors.black.withValues(alpha: 0.5)` ×2（等宽代码块底 —— 那块底是
+  /// **本文件自己写死的黑**，里面的文字必须与主题解耦）、
+  /// `Colors.lightBlueAccent`（选中态强调）、`Colors.orangeAccent`（错误/解绑）。
+  ///
+  /// ⚠️ 不用 `AppPalette.of(context)`：ColorScheme 由
+  /// `theme_bridge.dart` 从 AppPalette 派生（onSurface←foreground、
+  /// onSurfaceVariant←mutedForeground、outlineVariant←border），
+  /// 走 ColorScheme 与全仓其它弹窗一致，且 `theme_regression_test` 的
+  /// 对比度门禁盯的就是这几个角色。
+  ColorScheme get _colors => Theme.of(context).colorScheme;
   late final TextEditingController _input = TextEditingController(
     text: widget.state.input,
   );
@@ -259,161 +293,110 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
      *   fill = true （默认，= 改前行为）  Positioned.fill(...) → 只能直接挂在 Stack 下
      *   fill = false（SheetExitMotion 包着） 直接返回内容 → 定位交给宿主
      */
-    final body = GestureDetector(
-      // 点背景关闭（与播放页其它面板一致）
-      onTap: widget.onClose,
-      child: ColoredBox(
-        color: Colors.black.withValues(alpha: 0.72),
-        child: Center(
-          child: GestureDetector(
-            // 卡片内部的点击不能穿透到背景（否则点输入框也会关掉面板）
-            onTap: () {},
-            /*
-             * ★★ 2026-10-15（Owner：「换成 ui 框架提供的」）
-             *
-             * 改前是 `Container(decoration: ...)` —— 只画背景的盒子。
-             * 框架的 `SwitchListTile` 把涟漪画在**最近的 Material 祖先**上；
-             * 盒子里没有 Material ⇒ 框架抛断言「ink splashes may be invisible」。
-             * 断言是对的：涟漪**真的会看不见**。
-             *
-             * 改用 `Material`：同样的背景色 / 圆角 / 边框 / 尺寸，
-             * 但它**就是** Material 面 ⇒ 涟漪、水波纹、裁剪都正常。
-             * 尺寸改挂在外层 `SizedBox`/`ConstrainedBox` 上（Material 不接这俩参数），
-             * 所以几何与改前一致。
-             */
-            child: SizedBox(
-              width: 560,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 620),
-                child: Material(
-                  color: const Color(0xFF14161C).withValues(alpha: 0.98),
-                  type: MaterialType.card,
-                  clipBehavior: Clip.antiAlias,
-                  shape: const RoundedRectangleBorder(
-                    borderRadius: Radii.rLg,
-                    side: BorderSide(color: Colors.white24),
-                  ),
-                  child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _header(),
-                  Flexible(
-                    child: SingleChildScrollView(
-                      clipBehavior: Clip.antiAlias,
-                      padding: const EdgeInsets.fromLTRB(
-                        Sp.x6,
-                        0,
-                        Sp.x6,
-                        Sp.x4,
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _inputSection(),
-                          if (widget.onSearch != null) ...[
-                            _divider(),
-                            _searchSection(),
-                          ],
-                          _divider(),
-                          _statusSection(),
-                          if (s.pages.length > 1) ...[
-                            _divider(),
-                            _pageSection(),
-                          ],
-                          _divider(),
-                          _autoUpdateSection(),
-                          _divider(),
-                          _actionSection(),
-                          if (s.trace.isNotEmpty) ...[
-                            _divider(),
-                            _traceSection(),
-                          ],
-                          if (s.error != null) ...[
-                            _divider(),
-                            _errorSection(s.error!),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    // ★ 默认形态与改前**逐像素相同**（只多一个局部变量）
-    return widget.fill ? Positioned.fill(child: body) : body;
-  }
-
-  Widget _header() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(Sp.x6, Sp.x4, Sp.x3, Sp.x2),
-      child: Row(
-        children: [
-          const Text(
-            '外部视频源弹幕',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: FontSizes.lg,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const Spacer(),
-          IconButton(
-            onPressed: widget.onClose,
-            icon: const Icon(Icons.close, color: Colors.white),
-            tooltip: '关闭',
-          ),
+    /*
+     * ★ 2026-10-16（Owner：「弹窗样式没统一」）
+     *
+     * 外壳改走全仓统一的 `AppDialogShell`（docs/AGENTS.md 第 3.5 节）。
+     * 改前这里自己写了一整套 GestureDetector + ColoredBox(scrim) + Center +
+     * SizedBox(560) + ConstrainedBox(620) + Material + 自写 `_header()`，
+     * 与另外 6 个弹窗各写各的（宽度 560 / maxHeight 620 都是硬编码）。
+     *
+     * ⚠️ 本面板的内容是**一整条连续**的滚动体（输入 → 搜索 → 状态 → 分 P →
+     *    自动更新 → 动作 → 真实请求 → 错误），没有需要钉死不滚的区块
+     *    ⇒ 直接交给外壳的 `SingleChildScrollView`（`scrollable` 默认 true），
+     *    本方法自己不再套一层。
+     */
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _inputSection(),
+        if (widget.onSearch != null) ...[
+          const AppDialogSection.divider(),
+          _searchSection(),
         ],
-      ),
-    );
-  }
-
-  Widget _divider() => const Padding(
-    padding: EdgeInsets.symmetric(vertical: Sp.x4),
-    child: Divider(height: 1, color: Colors.white24),
-  );
-
-  Widget _sectionTitle(String text, {String? note}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: Sp.x3),
-      child: Row(
-        children: [
-          Text(
-            text,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: FontSizes.base,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          if (note != null) ...[
-            const SizedBox(width: Sp.x2),
-            Flexible(
-              child: Text(
-                note,
-                style: const TextStyle(
-                  color: Colors.white38,
-                  fontSize: FontSizes.cap,
-                ),
-              ),
-            ),
-          ],
+        const AppDialogSection.divider(),
+        _statusSection(),
+        if (s.pages.length > 1) ...[
+          const AppDialogSection.divider(),
+          _pageSection(),
         ],
-      ),
+        const AppDialogSection.divider(),
+        _autoUpdateSection(),
+        const AppDialogSection.divider(),
+        _actionSection(),
+        if (s.trace.isNotEmpty) ...[
+          const AppDialogSection.divider(),
+          _traceSection(),
+        ],
+        if (s.error != null) ...[
+          const AppDialogSection.divider(),
+          _errorSection(s.error!),
+        ],
+      ],
     );
+
+    // ★ 外壳接管遮罩 / 定位 / 标题栏 / 卡片几何（标题栏由外壳的 _Header 画）；
+    //   `fill: widget.fill` 必须**原样透传** —— 本面板的挂载点有两种形态
+    //   （Stack 的直接孩子 = true；被 SheetExitMotion 包着 = false），
+    //   语义逐字见 `fill` 字段的文档。
+    final body = AppDialogShell(
+      title: '外部视频源弹幕',
+      onClose: widget.onClose,
+      fill: widget.fill,
+      child: content,
+    );
+
+    /*
+     * ★ 默认形态与改前**逐像素相同**（fill 语义由外壳接管）。
+     *
+     * ⚠️⚠️ 这里**不能**再写 `Positioned.fill(child: body)` —— 实测直接抛
+     *    `Incorrect use of ParentDataWidget`（两个 ParentDataWidget 争同一个
+     *    StackParentData）：
+     *
+     *     _GestureSemantics -> RawGestureDetector -> GestureDetector
+     *       -> Positioned -> AppDialogShell -> Positioned -> BiliImportDialog
+     *       -> Stack
+     *
+     * 根因：外壳在 `fill: true` 时**自己**已经写了 `Positioned.fill`，而它的
+     * 根节点就是 `GestureDetector`（StatelessWidget 不产生 RenderObject）
+     * ⇒ 面板再套一层，两层 `Positioned` 会落到**同一个** RenderObject 上。
+     * 这与 `player_page.dart` 的 `_SheetScrim` / `SheetExitMotion` 类文档记的
+     * 是**同一个坑**（那里的结论同样是「面板自己不许再写 Positioned」）。
+     * ⇒ 定位一律由外壳负责：`fill: true` 由它写 `Positioned.fill`，
+     *   `fill: false` 时它只返回卡片、定位交给宿主的 `SheetExitMotion`。
+     */
+    return body;
   }
+
+  /*
+   * ★ task-13（2026-10-16）：这里的 `_divider()` 与 `_sectionTitle()` 已删除。
+   *
+   * 两段实现与另外两个弹窗**逐字相同**，已抽成共享件：
+   * ```text
+   * _sectionTitle  bili_import_dialog.dart:345（改前）
+   *                danmaku_settings_dialog.dart:957
+   *                player_settings_sheet.dart:806
+   * _divider       bili_import_dialog.dart:340（改前）
+   *                player_settings_sheet.dart:800
+   * ```
+   * ⇒ 现在统一走 `lib/ui/widgets/app_dialog_section.dart`：
+   *   `AppDialogSection.title(...)` / `AppDialogSection.divider()`。
+   *
+   * ★ 顺带修掉的缺陷：这两个方法原来写死了 `Colors.white` /
+   *   `Colors.white38` / `Colors.white24` —— 本面板的底色是
+   *   `colorScheme.surface`（跟随主题），**浅色主题下白字白线直接隐形**。
+   *   共享件按主题角色取色（onSurface / onSurfaceVariant / outlineVariant）。
+   */
+
 
   Widget _hint(String text) {
     return Padding(
       padding: const EdgeInsets.only(top: Sp.x2),
       child: Text(
         text,
-        style: const TextStyle(color: Colors.white38, fontSize: FontSizes.cap),
+        // 说明文字：Colors.white38 → onSurfaceVariant（浅色下白 38% 压白底=隐形）
+        style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
       ),
     );
   }
@@ -425,19 +408,20 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('视频链接', note: 'BV 号 / av 号 / 完整链接 / b23.tv 短链都行'),
+        const AppDialogSection.title('视频链接', note: 'BV 号 / av 号 / 完整链接 / b23.tv 短链都行'),
         TextField(
           controller: _input,
           enabled: !s.loading,
-          style: const TextStyle(
+          style: TextStyle(
             fontFamily: 'monospace',
             fontSize: FontSizes.sm,
-            color: Colors.white,
+            color: _colors.onSurface,
           ),
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             hintText: 'https://www.bilibili.com/video/BV1GJ411x7h7',
-            hintStyle: TextStyle(color: Colors.white24),
-            border: OutlineInputBorder(),
+            // 占位符：Colors.white24 → outlineVariant（浅色下白 24% 压白底=隐形）
+            hintStyle: TextStyle(color: _colors.outlineVariant),
+            border: const OutlineInputBorder(),
           ),
           onSubmitted: (v) => _submit(v),
         ),
@@ -470,21 +454,21 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('搜索视频', note: '按关键词找，点一条就绑定'),
+        const AppDialogSection.title('搜索视频', note: '按关键词找，点一条就绑定'),
         Row(
           children: [
             Expanded(
               child: TextField(
                 controller: _searchInput,
                 enabled: !s.loading,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: FontSizes.sm,
-                  color: Colors.white,
+                  color: _colors.onSurface,
                 ),
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   hintText: '片名 / 关键词',
-                  hintStyle: TextStyle(color: Colors.white24),
-                  border: OutlineInputBorder(),
+                  hintStyle: TextStyle(color: _colors.outlineVariant),
+                  border: const OutlineInputBorder(),
                 ),
                 onSubmitted: (v) => _searchSubmit(v),
               ),
@@ -563,8 +547,8 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
                     item.title,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
+                    style: TextStyle(
+                      color: _colors.onSurface,
                       fontSize: FontSizes.sm,
                     ),
                   ),
@@ -573,8 +557,8 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
                     _searchMeta(item),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white38,
+                    style: TextStyle(
+                      color: _colors.onSurfaceVariant,
                       fontSize: FontSizes.cap,
                     ),
                   ),
@@ -588,10 +572,20 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
   }
 
   /// 没有封面 / 封面加载失败时的占位（深色块，与面板底色同系）
+  ///
+  /// ★ task-13：**故意不跟随主题** —— 这块底是下面那行写死的半透明黑
+  ///   （它压在缩略图位、不属于主题化容器），里面的图标必须跟它配对。
+  ///   若把图标改成 `_colors.onSurfaceVariant`，浅色主题下会变成
+  ///   #60626B 压在黑底上 —— 对比度掉到 2:1 以下，图标消失。
+  ///   ⇒ 保留固定白 + alpha（与 `Colors.black.withValues` 同族）。
   Widget _thumbPlaceholder() => ColoredBox(
     color: Colors.black.withValues(alpha: 0.5),
     child: const Center(
-      child: Icon(Icons.movie_outlined, size: 18, color: Colors.white24),
+      child: Icon(
+        Icons.movie_outlined,
+        size: 18,
+        color: Colors.white24,
+      ),
     ),
   );
 
@@ -611,7 +605,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('状态'),
+        const AppDialogSection.title('状态'),
         Row(
           children: [
             _dot(s.bound),
@@ -619,8 +613,8 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
             Flexible(
               child: Text(
                 _statusText(s),
-                style: const TextStyle(
-                  color: Colors.white70,
+                style: TextStyle(
+                  color: _colors.onSurfaceVariant,
                   fontSize: FontSizes.sm,
                 ),
               ),
@@ -661,7 +655,10 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
       width: Sp.x2,
       height: Sp.x2,
       decoration: BoxDecoration(
-        color: on ? Colors.lightBlueAccent : Colors.white24,
+        // ★ on（已绑定）**故意保留** Colors.lightBlueAccent：它是跨主题的
+        //   「已连接」信号色，不是主题色（同族的还有下面 chip 的选中态）。
+        //   关态白点则必须走主题 —— Colors.white24 在浅色底上是个白点。
+        color: on ? Colors.lightBlueAccent : _colors.outlineVariant,
         shape: BoxShape.circle,
       ),
     );
@@ -686,7 +683,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('分 P 对齐', note: '默认按顺序一集对一 P'),
+        const AppDialogSection.title('分 P 对齐', note: '默认按顺序一集对一 P'),
         Wrap(
           spacing: Sp.x2,
           runSpacing: Sp.x2,
@@ -710,18 +707,21 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x1),
         decoration: BoxDecoration(
+          // ★ 选中态**故意保留** Colors.lightBlueAccent（跨主题的强调色，
+          //   与状态点同族）；未选中态则走主题 —— 改前 Colors.white10 的
+          //   底 + Colors.white24 的描边在浅色主题下等于没有边界。
           color: sel
               ? Colors.lightBlueAccent.withValues(alpha: 0.22)
-              : Colors.white10,
+              : _colors.onSurface.withValues(alpha: 0.04),
           borderRadius: Radii.rSm,
           border: Border.all(
-            color: sel ? Colors.lightBlueAccent : Colors.white24,
+            color: sel ? Colors.lightBlueAccent : _colors.outlineVariant,
           ),
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: sel ? Colors.lightBlueAccent : Colors.white70,
+            color: sel ? Colors.lightBlueAccent : _colors.onSurfaceVariant,
             fontSize: FontSizes.cap,
           ),
         ),
@@ -736,7 +736,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('自动更新'),
+        const AppDialogSection.title('自动更新'),
         /*
          * ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）
          *
@@ -749,9 +749,9 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           dense: true,
           value: s.autoUpdate,
           onChanged: s.loading ? null : widget.onSetAutoUpdate,
-          title: const Text(
+          title: Text(
             '重新进入这一集时自动比对增量',
-            style: TextStyle(color: Colors.white70, fontSize: FontSizes.sm),
+            style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.sm),
           ),
         ),
         _slider(
@@ -784,8 +784,8 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           width: 72,
           child: Text(
             label,
-            style: const TextStyle(
-              color: Colors.white70,
+            style: TextStyle(
+              color: _colors.onSurfaceVariant,
               fontSize: FontSizes.sm,
             ),
           ),
@@ -803,8 +803,9 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           child: Text(
             readout,
             textAlign: TextAlign.right,
-            style: const TextStyle(
-              color: Colors.white60,
+            style: TextStyle(
+              // white60 并入 white70 档（同一语义：次要读数）
+              color: _colors.onSurfaceVariant,
               fontSize: FontSizes.cap,
             ),
           ),
@@ -829,7 +830,10 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           onPressed: s.loading || !s.bound
               ? null
               : () => unawaited(widget.onUpdateNow()),
-          icon: const Icon(Icons.refresh, color: Colors.white, size: 18),
+          // ★ Colors.white → onSurface。这里**必须**显式给色：
+          //   TextButton.icon 的 iconColor 不读 foregroundColor（见
+          //   theme_bridge.dart 同款注释），不给就落到主题兜底色。
+          icon: Icon(Icons.refresh, color: _colors.onSurface, size: 18),
           label: const Text('立即更新'),
         ),
         const Spacer(),
@@ -864,10 +868,26 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('真实请求', note: '共 ${t.length} 条，显示最近 ${recent.length} 条'),
+        AppDialogSection.title('真实请求', note: '共 ${t.length} 条，显示最近 ${recent.length} 条'),
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(Sp.x3),
+          /*
+           * ★ task-13：这一块**整块保留写死色**（底/描边/文字），不改主题色。
+           *
+           * 判据是「底色的来源」：它是**固定深色的代码块**（半透明黑压出来的
+           * 等宽原文证据区），与主题无关 —— 就像播放器遮罩上的那种。
+           *
+           * 逐条反证（为什么三样都不能单独改主题色）：
+           * ```text
+           * 底 → onSurface@低alpha  深色下会从「明显更暗的凹陷」变成「更亮」
+           *                         ⇒ 证据区在深色主题里消失（观感回归）
+           * 描边 → outlineVariant   深色 #222222 压在黑块上 ≈ 看不见
+           * 文字 → onSurfaceVariant 浅色 #60626B 压在黑块上 ≈ 1.6:1，更差
+           * ```
+           * ⇒ 三样是一个整体，要改只能整块改；而整块改会动深色主题的观感
+           *   （超出「修浅色下隐形」的范围）⇒ 保留，已报 lead 裁决。
+           */
           decoration: BoxDecoration(
             color: Colors.black.withValues(alpha: 0.5),
             borderRadius: Radii.rSm,
@@ -907,6 +927,8 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           ),
         ),
         const SizedBox(height: Sp.x2),
+        // ★ task-13：与上面的「真实请求」同款 —— 固定深色代码块，整块保留
+        //   写死色（底/描边/文字），理由逐条见 _traceSection 里的长注释。
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(Sp.x3),

@@ -202,9 +202,28 @@ void main() {
             reason: '插件区块缺入口「$label」（常驻按钮或菜单项都没有）');
       }
 
-      // ★ 反向对照：菜单确实被用上了（否则上面那些字符串可能只是注释）
-      expect(code.contains('PopupMenuButton<String>'), isTrue,
-          reason: '★ 低频入口必须收进 PopupMenuButton（否则又变回一排描边按钮）');
+      /*
+       * ★ 反向对照：菜单确实被用上了（否则上面那些字符串可能只是注释）
+       *
+       * ⚠️ 2026-10-16（Owner 第 8 条）判据从**承载件**改成**语义**：
+       * ```text
+       * 改前：断言字面量 `PopupMenuButton<String>`
+       * 改后：断言「收进了统一的菜单件」—— `AppMenuButton` 或 `PopupMenuButton` 都算
+       * ```
+       * 为什么这不是「放松门禁」：
+       *   这条判据的**语义**是「低频入口必须收进 ⋮ 菜单，不许摊成一排描边按钮」，
+       *   `PopupMenuButton` 只是当时的**实现手段**。
+       *   Owner 要求换掉 Material 默认菜单外观 ⇒ 手段换成 `AppMenuButton`，
+       *   而 `AppMenuButton` **内部仍然**是 `PopupMenuButton`（见 app_menu.dart），
+       *   语义一字未变。
+       * ★ 仍然会变红的情形：把它换回一排 `OutlinedButton`（判据照红）。
+       */
+      expect(
+          code.contains('AppMenuButton<String>') ||
+              code.contains('PopupMenuButton<String>'),
+          isTrue,
+          reason: '★ 低频入口必须收进统一的 ⋮ 菜单件（AppMenuButton / PopupMenuButton），'
+              '否则又变回一排描边按钮');
       expect(code.contains("_menuRow("), isTrue,
           reason: '★ 菜单项要用共用的 _menuRow（图标+文案），不是裸 Text');
 

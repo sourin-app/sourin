@@ -64,9 +64,10 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/danmaku.dart';
+import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import 'cover_image.dart';
-import 'overlay_motion.dart';
+import 'app_dialog_shell.dart';
 
 /// T27-01：弹幕面板文字统一灰阶 —— 全文件取色只走这里
 ///
@@ -420,6 +421,7 @@ class DanmakuSettingsDialog extends StatefulWidget {
     this.biliCount,
     this.onBatchBind,
     this.fill = true,
+    this.probeOverride,
   });
 
   final DanmakuSettingsState state;
@@ -531,6 +533,19 @@ class DanmakuSettingsDialog extends StatefulWidget {
   ///   与 `Positioned.fill` 几何等价）。
   final bool fill;
 
+  /// 连通性测试的注入口（测试用；null = 走真实的 [DanmakuLocalService.describe]）。
+  ///
+  /// # 为什么要可注入（而不是面板直接调真探针）
+  /// ```text
+  /// 面板本身**零网络**是本仓既有纪律（t103 的注入式用例不许被真探针拖住）。
+  /// 而「测试连接」这个按钮语义上就是要发一次请求 ⇒ 唯一两头都成立的做法：
+  /// 生产走真探针，测试注入假探针。
+  /// ```
+  /// ⚠️ 与 [_endpointUrl] 同一条：面板不认识宿主的开关，但**认得出**这是
+  ///    一次由用户点击触发的、针对用户自己填的地址的请求 ——
+  ///    它不读任何宿主状态，所以自持无妨。
+  final Future<DanmakuLocalStatus> Function(DanmakuEndpoint?)? probeOverride;
+
   @override
   State<DanmakuSettingsDialog> createState() => _DanmakuSettingsDialogState();
 }
@@ -568,6 +583,58 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 会把用户刚敲的关键词整段吃掉。
   final TextEditingController _searchKeyword = TextEditingController();
 
+  /// 自建弹幕服务地址输入框（owner 第 6 条的落地点）。
+  ///
+  /// ⚠️ 同 [_blockWords] / [_searchKeyword] 的教训：每帧 new 一个 controller
+  ///    会让用户敲一个字就被刷回初值。
+  final TextEditingController _endpointUrl = TextEditingController();
+
+  /// 自建弹幕服务 token 输入框（可选；某些自建服务把它放在路径前缀上）。
+  final TextEditingController _endpointToken = TextEditingController();
+
+  /// 「测试连接」的结果（null = 还没测过 / 用户改过地址后已作废）。
+  DanmakuLocalStatus? _probeResult;
+
+  /// 走不到 [DanmakuLocalStatus] 的那种结果（目前只有「地址格式不对」）。
+  ///
+  /// ⚠️ 单独一个字段，是因为**不能**拿 status 硬凑：地址非法时探针根本没跑，
+  ///    而 `DanmakuLocalStatus(online: false).line` 会说「检测到本机外部弹幕
+  ///    未运行」—— 那是**本机 2080** 的结论，与用户填错的地址无关。
+  ///    对用户来说这是最坏的一种假话：他会以为自己的地址没问题、是服务没起来。
+  String? _probeCustomMessage;
+
+  /// 正在测试连接 —— 记录**是哪个序号**的请求在跑（null = 没有在途请求）。
+  ///
+  /// # 为什么不是 bool（★ 这条是修竞态时暴露出来的第二个 bug）
+  /// ```text
+  /// 只挡「过期结果不许写状态」还不够：过期请求 return 之后，
+  /// 那个 bool 永远停在 true ⇒ **转圈图标永远转下去**（pumpAndSettle 超时）。
+  /// ⇒ 必须让 spinner 有明确的归属：哪个序号发起的，只有它（或接管者）
+  ///    才能把它关掉。
+  /// ```
+  int? _probeRunningSeq;
+
+  /// 有没有在途请求（btn 的禁用态 / 转圈图标都读它）
+  bool get _probeRunning => _probeRunningSeq != null;
+
+  /// 「测试连接」的**请求序号**（防旧结果覆盖新输入）。
+  ///
+  /// # 它守的是什么（CodeRabbit PR #30 抓到的真竞态）
+  /// ```text
+  /// 填 A 点测试（请求在途）→ 用户改成 B → A 的结果回来
+  /// ⇒ 旧代码会把 A 的结论写进 _probeResult、还把 A 写进偏好。
+  /// 结果：输入框 B、偏好 A、状态行显示 A 的结论 —— 三者互相矛盾。
+  /// ```
+  ///
+  /// # 判据为什么是**序号**而不是「地址字符串变没变」
+  /// ```text
+  /// 用户可能 A → B → A：字符串比出来相同，但 B 那一轮的结论
+  /// 语义上已经作废（它属于上一轮）。字符串判据会**漏放**这种。
+  /// ```
+  ///
+  /// ⚠️ 每次发起测试 / 用户改输入 / 点清除 都要 ++，见各自的调用点。
+  int _probeSeq = 0;
+
   /// 当前页签。默认「配置」。
   ///
   /// 为什么不默认到某个源：两个源是**互斥**的，
@@ -598,10 +665,28 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
    */
 
   @override
+  void initState() {
+    super.initState();
+    /*
+     * ★ 自建服务地址/token 的预填放在 initState（**不是** build 里）。
+     *
+     * 在 build 里写 controller.text 会让它的 listener 触发 setState ——
+     * 也就是 "setState() or markNeedsBuild() called during build"。
+     * 本文件 [_syncKeyword] 遇到同一个坑时用的是 addPostFrameCallback（会闪一帧），
+     * 而这里没有"值来自宿主、会变"的问题（只读一次偏好）⇒
+     * 直接在 initState 里定下初值，一帧都不闪。
+     */
+    _endpointUrl.text = UiPrefs.danmakuEndpoint;
+    _endpointToken.text = UiPrefs.danmakuToken;
+  }
+
+  @override
   void dispose() {
     _blockWords.dispose();
     _blockSearch.dispose();
     _searchKeyword.dispose();
+    _endpointUrl.dispose();
+    _endpointToken.dispose();
     super.dispose();
   }
 
@@ -615,103 +700,150 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
      * 两者内容**逐字相同**，只是少/多一层 `Positioned.fill`
      * （理由见 `fill` 字段的文档）。
      */
-    final body = GestureDetector(
-      // 点背景关闭（与播放页其它面板一致）
-      onTap: widget.onClose,
-      // ★ task-99：遮罩**淡入**（原来是一帧硬切 —— Owner 说的「生硬」）
-      //   颜色/覆盖范围一字不改，动画结束后 Opacity 恒为 1.0。
-      child: OverlayScrim(
-        color: Colors.black.withValues(alpha: 0.72),
-        child: Center(
-          child: GestureDetector(
-            // 卡片内部的点击不能穿透到背景（否则点滑块也会关掉面板）
-            onTap: () {},
-            // ★ task-99：卡片**淡入 + 轻微上浮**（24px，Motion.base）
-            child: OverlayCardMotion(
-              child: Container(
-                width: 560,
-                constraints: const BoxConstraints(maxHeight: 620),
-                child: Material(
-                  color: DanmakuTextColors.panelBg.withValues(alpha: 0.98),
-                  type: MaterialType.card,
-                  clipBehavior: Clip.antiAlias,
-                  shape: const RoundedRectangleBorder(
-                    borderRadius: Radii.rLg,
-                    side: BorderSide(color: DanmakuTextColors.border),
-                  ),
-                  child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // ── 以下四块固定，不随内容滚动 ────────────
-                    _header(),
-                    _statusSection(),
-                    _sourceStatusStrip(),
-                    _tabBar(),
-                    // ── 只有这一块滚 ───────────────────────
-                    Flexible(
-                      child: SingleChildScrollView(
-                        clipBehavior: Clip.antiAlias,
-                        padding: const EdgeInsets.fromLTRB(
-                          Sp.x6,
-                          Sp.x3,
-                          Sp.x6,
-                          Sp.x4,
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (_tab == DanmakuPanelTab.general) ...[
-                              _switchSection(),
-                              _divider(),
-                              _filterSection(),
-                            ] else if (_tab == DanmakuPanelTab.bili) ...[
-                              _requestSection(),
-                              if (_showSearchSection) ...[
-                                _divider(),
-                                _searchSection(),
-                              ],
-                            ] else ...[
-                              _sourceSection(),
-                              if (_showCredentialsSection) ...[
-                                _divider(),
-                                _credentialsSection(),
-                              ],
-                            ],
-                            _divider(),
-                            /*
-                             * ★★ Owner 第 1 条：把 403/401 翻成**能照着做**的中文
-                             *
-                             * 位置有讲究：排在「服务端返回」**上面** ——
-                             * 原文（Missing Authentication Headers）是证据，
-                             * 中文指引是结论；用户先看到结论才知道证据在说什么。
-                             *
-                             * ⚠️ 错误/指引**不受页签影响**：它们是“出事了”的反馈，
-                             *    而不是“一项设置”。藏在某个页签后面 ⇒ 用户在另一页签时
-                             *   只看到“没弹幕”而看不到为什么。
-                             */
-                            if (s.error?.hint != null) ...[
-                              _divider(),
-                              _hintSection(s.error!.hint!),
-                            ],
-                            if (s.error != null) ...[
-                              _divider(),
-                              _errorSection(s.error!),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-                ),
+    /*
+     * ★ 2026-10-16（Owner：「弹幕设置这里非常的丑」+ 「弹窗样式没统一」）
+     *
+     * 外壳改走全仓统一的 `AppDialogShell`（docs/AGENTS.md 第 3.5 节）。
+     * 改前这里自己写了一整套 Container + Material + OverlayScrim +
+     * OverlayCardMotion + Positioned.fill，与另外 6 个弹窗各写各的
+     * （宽度 560 硬编码、maxHeight 620 硬编码）。
+     *
+     * ⚠️ 本面板**不是**「标题 + 整块内容滚动」的标准形态：
+     *    `_statusSection` / `_sourceStatusStrip` / `_tabBar` 三块必须
+     *    **钉死不滚**（切页签时它们要一直在），只有下面的设置项滚。
+     *    ⇒ 所以 `scrollable: false`，滚动区由本方法自己套。
+     */
+    final settings = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (_tab == DanmakuPanelTab.general) ...[
+          _group(_switchSection()),
+          _gap(),
+          /*
+           * ★★ 2026-10-16：补上 [_displaySection]（字号/透明度/速度/显示区域）
+           *
+           * 改前它**全仓零调用** —— 「配置」页签里只有开关和屏蔽词，
+           * 四个滑块加两条说明一整节都没渲染出来（Owner 截图可见）。
+           * 这不是本次重构改坏的：`grep -rn _displaySection lib/ test/`
+           * 改前只有定义处一行命中。
+           */
+          _group(_displaySection()),
+          _gap(),
+          _group(_filterSection()),
+        ] else if (_tab == DanmakuPanelTab.bili) ...[
+          _group(_requestSection()),
+          if (_showSearchSection) ...[
+            _gap(),
+            _group(_searchSection()),
+          ],
+        ] else ...[
+          _group(_sourceSection()),
+          if (_showCredentialsSection) ...[
+            _gap(),
+            _group(_credentialsSection()),
+          ],
+          /*
+           * ★★★ 2026-10-17（Owner 第 6 条「搜索弹幕提示失败」）：
+           * 自建弹幕服务入口落在这个页签 —— 它与「凭证」是**同一个问题的两条路**：
+           * 官方边要凭证（这构建没有）、自建边免凭证。
+           * 放在一处，用户才看得见"此路不通、但那条通"。
+           */
+          _gap(),
+          _group(_selfHostedSection()),
+        ],
+        _gap(),
+        /*
+         * ★★ Owner 第 1 条：把 403/401 翻成**能照着做**的中文
+         *
+         * 位置有讲究：排在「服务端返回」**上面** ——
+         * 原文（Missing Authentication Headers）是证据，
+         * 中文指引是结论；用户先看到结论才知道证据在说什么。
+         *
+         * ⚠️ 错误/指引**不受页签影响**：它们是“出事了”的反馈，
+         *    而不是“一项设置”。藏在某个页签后面 ⇒ 用户在另一页签时
+         *    只看到“没弹幕”而看不到为什么。
+         */
+        if (s.error?.hint != null) ...[
+          _gap(),
+          _group(_hintSection(s.error!.hint!)),
+        ],
+        if (s.error != null) ...[
+          _gap(),
+          _group(_errorSection(s.error!)),
+        ],
+      ],
+    );
+
+    /*
+     * 三块固定 + 一块滚动（见上面说明）。
+     *
+     * ★★ 2026-10-16：左右内边距提到这一层（卡片级）——
+     *   见 `contentPadding` 处的说明。三块固定区与滚动区因此**共享**
+     *   同一个 Sp.x6，谁都不会贴到卡片圆角上。
+     *   ⚠️ 上下留白也收在这里：固定区之间 / 与滚动区之间不再各自加
+     *      （否则会与外壳的 contentPadding 叠成双份）。
+     */
+    final body = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _statusSection(),
+          _sourceStatusStrip(),
+          _tabBar(),
+          Flexible(
+            child: SingleChildScrollView(
+              clipBehavior: Clip.antiAlias,
+              padding: const EdgeInsets.only(top: Sp.x3, bottom: Sp.x4),
+              child: settings,
             ),
           ),
-        ),
+        ],
       ),
     );
-    // ★ 默认形态与改前**逐像素相同**（只多一个局部变量）
-    return widget.fill ? Positioned.fill(child: body) : body;
+
+    // ★ 外壳接管遮罩/动效/定位；标题与副标题逐字不变
+    final shelled = AppDialogShell(
+      title: '弹幕设置',
+      subtitle: '显示 / 过滤 / 请求',
+      onClose: widget.onClose,
+      fill: widget.fill,
+      // ★ 本面板改前就用 OverlayScrim + OverlayCardMotion（t99 门禁钉着）
+      motion: true,
+      // ★★ 强制深色卡片（2026-10-16 Owner 实测「字都看不清了」的修复）
+      //
+      // 本面板文字走 `DanmakuTextColors` —— 那是**为深色底 #14161B 设计的固定灰阶**
+      // （body #E6E6E6 / secondary #B9BEC6 / muted #8E939B），
+      // t27_w1_danmaku_contrast_test 钉着它们对那个底的对比度。
+      //
+      // 外壳把卡片底统一成跟随主题的 surfaceContainerHighest 之后，**浅色主题**
+      // 下底变浅、灰阶仍是浅色 ⇒ 几乎看不见。
+      // 不能靠"把灰阶改主题色"解决：41 处灰阶与 t27_w1 门禁是一起设计的。
+      // ⇒ 让它保持原本的深色（业主 fig1 实测底色就是 #14161B）。
+      forceDarkCard: true,
+      // 本面板自管滚动（三块钉死不滚）⇒ 不套外壳的 SingleChildScrollView
+      scrollable: false,
+      /*
+       * ★★ 2026-10-16（Owner 实测截图：「弹幕设置这个两边没有边距」）
+       *
+       * 根因：`contentPadding` 只管**滚动区**（外壳把它交给
+       * `SingleChildScrollView`），而本面板三块**固定区**
+       * （`_statusSection` / `_sourceStatusStrip` / `_tabBar`）在
+       * `scrollable: false` 下**原样透传**、吃不到那个 padding
+       * ⇒ 它们左右直接顶到卡片圆角上（实测：状态条与 Tab 栏贴边）。
+       *
+       * ⇒ 左右内边距必须提到**卡片级**（`body` 外面那一层），让三块固定区
+       *   与滚动区**吃到同一个** Sp.x6。滚动区的左右 padding 同步归零
+       *   （否则左右变成 48，比改前还宽）。
+       */
+      contentPadding: const EdgeInsets.only(top: Sp.x3),
+      child: body,
+    );
+
+    // ★ 默认形态与改前**逐像素相同**（fill 语义由外壳接管）
+    return shelled;
+
   }
 
   /// 面板标题 —— 缺陷 17：**细节说明的落点**
@@ -757,7 +889,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       decoration: BoxDecoration(
         borderRadius: Radii.rSm,
         border: Border.all(color: DanmakuTextColors.border),
-        color: Colors.white.withValues(alpha: 0.02),
+        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.03),
       ),
       child: Row(
         children: [
@@ -848,54 +980,425 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         ],
         selected: <DanmakuPanelTab>{_tab},
         showSelectedIcon: false,
+        /*
+         * ★★ 2026-10-16（Owner 实测截图：「未选中的 tab 文字看不清」）
+         *
+         * 根因：不给 `style` 时，未选中项走框架默认的
+         * `_SegmentedButtonDefaultsM3` —— 它的前景色是
+         * `colorScheme.onSurface`。本面板是**强制深色卡片**
+         * （`forceDarkCard: true`），而灰色档是给 #14161B 这个
+         * 深底设计的固定灰阶 ⇒ 未选中项与卡片底几乎同色（实测均值 ≈ 卡片底）。
+         *
+         * ⇒ 显式给色，两档都走 `DanmakuTextColors`：
+         *     未选中  secondary #B9BEC6（对深底 9.7:1，t27_w1 门禁钉着）
+         *     选中    body      #E6E6E6（对深底 14.5:1）
+         *   ⚠️ 面板是强制深色 ⇒ **不许**用 colorScheme（明暗主题下会各取一色，
+         *      浅色主题下又变成看不清 —— 那正是本面板上一次的回归）。
+         *   ⚠️ 用 `styleFrom` 而不是手写 `ButtonStyle`：
+         *      它是框架提供的那条路（见 `segmented_button.dart:281`）。
+         *      底纹/边框仍由主题给 —— 只改**文字色**，不动几何。
+         */
+        style: SegmentedButton.styleFrom(
+          foregroundColor: DanmakuTextColors.secondary,
+          selectedForegroundColor: DanmakuTextColors.body,
+        ),
         onSelectionChanged: (v) => setState(() => _tab = v.first),
       ),
     );
   }
 
-  Widget _header() {
+
+  /// 段间距。
+  ///
+  /// ★ 2026-10-16（Owner：「弹幕设置这里非常的丑」）：
+  ///   改前这里是 `Divider`（一条横线 + 上下各 16px）。全面板共 7 处，
+  ///   加起来 7 条横线贯穿整页 —— 这是"丑"的主要来源。
+  ///   现在改为**纯留白**：分组靠 [_group] 的卡片底色区分，不再画线。
+  Widget _gap() => const SizedBox(height: Sp.x3);
+
+  /// 分组卡片 —— 一组设置一个浅底圆角容器。
+  ///
+  /// 为什么用底色而不是横线（2026-10-16 改）：
+  /// ```text
+  /// 改前：标题 + 内容 + ─────────────── + 标题 + 内容 …
+  ///       ⇒ 7 条横线把面板切成一长条，像表格，视觉噪音大
+  /// 改后：┌ 标题 ─────────┐  ┌ 标题 ─────────┐
+  ///       │ 内容            │  │ 内容            │
+  ///       └───────────────┘  └───────────────┘
+  ///       ⇒ 分组靠"块"区分，一眼能数出几组
+  /// ```
+  /// 底色用 `onSurface` 的极低 alpha（而非写死白/黑）⇒ 明暗主题都成立。
+  Widget _group(Widget child) {
+    final scheme = Theme.of(context).colorScheme;
+    final bg = scheme.onSurface.withValues(alpha: 0.04);
+    /*
+     * ★★ 必须用 `Material` 而不是 `Container` + `BoxDecoration`（2026-10-16）
+     *
+     * 我第一版写的是 `Container(decoration: BoxDecoration(color: bg))` ——
+     * 里面装着 `SwitchListTile`（内部是 ListTile）⇒ 框架当场抛断言：
+     * ```text
+     * ListTile background color or ink splashes may be invisible.
+     * The ListTile is wrapped in a DecoratedBox that has a background color.
+     * Because ListTile paints its background and ink splashes on the nearest
+     * Material ancestor, this DecoratedBox will hide those effects.
+     * ```
+     * t99 因此红了 4 条（①②③④ 全部断言「首帧 <1 → 中间态 → 终态」时被异常打断）。
+     *
+     * 同一个坑 `bili_import_dialog.dart:275` 早就记过，我又踩了一次：
+     * 「同样的背景色/圆角/边框/尺寸，但 Material **就是** Material 面
+     *  ⇒ 涟漪、水波纹、裁剪都正常」。
+     *
+     * `Material` 不接 padding ⇒ 内边距挂在外层 `Padding` 上。
+     */
     return Padding(
-      padding: const EdgeInsets.fromLTRB(Sp.x6, Sp.x4, Sp.x3, Sp.x2),
-      child: Row(
-        children: [
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '弹幕设置',
-                  style: TextStyle(
-                    color: DanmakuTextColors.body,
-                    fontSize: FontSizes.lg,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                SizedBox(height: Sp.x1),
-                Text(
-                  '显示 / 过滤 / 请求',
-                  style: TextStyle(
-                    color: DanmakuTextColors.muted,
-                    fontSize: FontSizes.cap,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          IconButton(
-            onPressed: widget.onClose,
-            icon: const Icon(Icons.close, color: DanmakuTextColors.body),
-            tooltip: '关闭',
-          ),
-        ],
+      padding: const EdgeInsets.all(Sp.x4),
+      child: Material(
+        color: bg,
+        type: MaterialType.card,
+        clipBehavior: Clip.antiAlias,
+        shape: const RoundedRectangleBorder(borderRadius: Radii.rMd),
+        child: SizedBox(width: double.infinity, child: child),
       ),
     );
   }
 
-  Widget _divider() => const Padding(
-    padding: EdgeInsets.symmetric(vertical: Sp.x4),
-    child: Divider(height: 1, color: DanmakuTextColors.border),
-  );
+  /// 统一开关行 —— 全面板的开关都走这里。
+  ///
+  /// ★ 2026-10-16：改前同一种"开关行"有**三套**写法，实测差异：
+  /// ```text
+  /// _switchSection  FontSizes.sm（14）  color: secondary（0xFFB9BEC6）
+  /// _typeSwitch     硬编码 13          color: muted（0xFF8E939B）
+  /// ```
+  /// 同一个面板里同一类控件两种字号、两种颜色 —— 这是 Owner 说的
+  /// 「设计没统一」。现在收敛到一处。
+  Widget _switchRow({
+    required String label,
+    required bool value,
+    required void Function(bool) onChanged,
+    String? hint,
+  }) {
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      value: value,
+      onChanged: onChanged,
+      title: Text(
+        label,
+        style: const TextStyle(
+          color: DanmakuTextColors.secondary,
+          fontSize: FontSizes.sm,
+        ),
+      ),
+      subtitle: hint == null
+          ? null
+          : Text(
+              hint,
+              style: const TextStyle(
+                color: DanmakuTextColors.muted,
+                fontSize: FontSizes.cap,
+              ),
+            ),
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ★★★ 2026-10-17：自建弹幕服务（Owner 第 6 条「搜索弹幕提示失败」）
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // # 为什么这是**解法**而不是绕路
+  // ```text
+  // Owner 第 6 条的根因是官方边 403「Missing Authentication Headers」——
+  // **没有凭证**（本构建没注入 AppId/AppSecret）。
+  // 而自建弹幕服务（danmu_api 这类）**免凭证**、且协议同构：
+  // 实测 10157/10157 条弹幕全部解析通过（见 .probe/danapi-research/REPORT.md）。
+  // ⇒ 给用户一个「填地址就能用」的入口，是该问题的直接解法。
+  // ```
+  //
+  // # 三种来源的区别（用户排错时唯一要分清的事）
+  // ```text
+  // ① 自建弹幕服务   —— 用户填的地址，**免凭证**；没起来 ⇒ 连接被拒
+  // ② 本机弹弹play   —— 127.0.0.1:2080，**免凭证**；没起来 ⇒ 连接被拒
+  // ③ 官方弹弹play   —— api.dandanplay.net，**要** AppId/AppSecret；没有 ⇒ 403
+  // ```
+  // 本节的连通性测试 + 状态行就是让用户一眼知道**自己现在挂在哪条上**。
+  Widget _selfHostedSection() {
+    final saved = UiPrefs.danmakuEndpoint;
+    final res = _probeResult;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionTitle('自建弹幕服务', note: '免凭证 · 可选'),
+        // ── 地址 ──
+        TextField(
+          controller: _endpointUrl,
+          style: const TextStyle(
+            color: DanmakuTextColors.body,
+            fontSize: FontSizes.sm,
+          ),
+          keyboardType: TextInputType.url,
+          decoration: const InputDecoration(
+            labelText: '服务地址',
+            hintText: 'http://127.0.0.1:9321',
+            border: OutlineInputBorder(),
+            isDense: true,
+          ),
+          // 地址一改，上一次的测试结果就**作废** —— 否则会显示一个
+          // 与当前地址无关的「已就绪」，那是撒谎。
+          onChanged: (_) {
+            /*
+             * ★★ 输入一变：① 序号前进（在途结果作废）② 交出 spinner 归属
+             *    （用户既然改了地址，那个在途请求就与他无关了 ⇒ 按钮要能再点）。
+             *
+             * ⚠️ 两件事都**必须无条件执行**，不能包在下面的 if 里：
+             *    判据是「输入变过」，不是「当前显示了什么」。
+             */
+            _probeSeq++;
+            _probeRunningSeq = null;
+            if (_probeResult != null || _probeCustomMessage != null) {
+              setState(() {
+                _probeResult = null;
+                _probeCustomMessage = null;
+              });
+            } else {
+              setState(() {});
+            }
+          },
+          onSubmitted: (_) => _runProbe(),
+        ),
+        const SizedBox(height: Sp.x2),
+        // ── token（可选）──
+        TextField(
+          controller: _endpointToken,
+          style: const TextStyle(
+            color: DanmakuTextColors.body,
+            fontSize: FontSizes.sm,
+          ),
+          decoration: const InputDecoration(
+            labelText: 'Token（可选）',
+            hintText: '默认服务不用填',
+            border: OutlineInputBorder(),
+            isDense: true,
+          ),
+          onChanged: (_) {
+            // token 也参与探测 ⇒ 改了同样让在途结果过期、同交还 spinner
+            _probeSeq++;
+            _probeRunningSeq = null;
+            setState(() {
+              _probeResult = null;
+              _probeCustomMessage = null;
+            });
+          },
+        ),
+        const SizedBox(height: Sp.x3),
+        // ── 动作行 ──
+        Row(
+          children: [
+            FilledButton.icon(
+              onPressed: _probeRunning ? null : _runProbe,
+              icon: _probeRunning
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        color: DanmakuTextColors.body,
+                        strokeWidth: 2,
+                      ),
+                    )
+                  : const Icon(Icons.wifi_tethering, size: 18),
+              label: const Text('测试连接'),
+            ),
+            const SizedBox(width: Sp.x2),
+            TextButton(
+              // 没有存过地址 ⇒ 「清除」无意义，禁用比画一个点了没反应的按钮好
+              onPressed: saved.isEmpty ? null : _clearEndpoint,
+              child: const Text('清除'),
+            ),
+          ],
+        ),
+        const SizedBox(height: Sp.x2),
+        // ── 如实结果行 ──
+        if (res != null) _probeResultRow(res),
+        if (_probeCustomMessage != null) ...[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.error_outline,
+                  size: 14, color: Colors.orangeAccent),
+              const SizedBox(width: Sp.x2),
+              Flexible(
+                child: Text(
+                  _probeCustomMessage!,
+                  style: const TextStyle(
+                    color: Colors.orangeAccent,
+                    fontSize: FontSizes.sm,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+        if (res == null && _probeCustomMessage == null && saved.isNotEmpty) ...[
+          Row(
+            children: [
+              const Icon(Icons.check_circle_outline,
+                  size: 14, color: DanmakuTextColors.muted),
+              const SizedBox(width: Sp.x2),
+              Flexible(
+                child: Text(
+                  '当前生效：${_maskedEndpoint(saved)}（点「测试连接」确认）',
+                  style: const TextStyle(
+                    color: DanmakuTextColors.secondary,
+                    fontSize: FontSizes.cap,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+        if (saved.isEmpty)
+          _hint('没填就按内置路径走：本机 弹弹play（127.0.0.1:2080，免凭证）→ 官方（要凭证）。'),
+      ],
+    );
+  }
+
+  /// 地址的**打码**展示（状态行用）。
+  ///
+  /// ★ 与本仓既有的 `DanmakuConfig.maskedAppId` 同一条纪律：
+  ///   地址本身通常不是秘密，但**token 是** ⇒ 这里只展示 `scheme://host:port`，
+  ///   去掉 path —— token 就在 path 前缀上（见 `DanmakuEndpoint.prefixedPath`）。
+  String _maskedEndpoint(String raw) {
+    final ep = DanmakuEndpoint.tryParse(raw, token: _endpointToken.text);
+    if (ep == null) return raw;
+    return ep.display;
+  }
+
+  Widget _probeResultRow(DanmakuLocalStatus res) {
+    final ok = res.online;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          ok ? Icons.check_circle : Icons.error_outline,
+          size: 14,
+          color: ok ? Colors.greenAccent : Colors.orangeAccent,
+        ),
+        const SizedBox(width: Sp.x2),
+        Flexible(
+          child: Text(
+            // ★ res.line 是 core 给的**如实**文案（自建/本机分开说），
+            //   面板不自己拼字符串判断 —— 拼一遍就是第二份判据。
+            res.line,
+            style: TextStyle(
+              color: ok ? Colors.greenAccent : Colors.orangeAccent,
+              fontSize: FontSizes.sm,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 测一次连通性。
+  ///
+  /// ⚠️ 地址非法 ⇒ **提示用户**，不要静默回退到内置路径去测一个他没填的地址
+  ///    （那样会显示「本机外部弹幕已就绪」，用户以为自己填对了）。
+  Future<void> _runProbe() async {
+    /*
+     * ★★ 2026-10-17（CodeRabbit PR #30）：**作废所有在途请求**并记下本次序号。
+     *
+     * # 原来漏掉的竞态（真 bug，不是洁癖）
+     * ```text
+     * ① 填地址 A，点「测试连接」⇒ 请求在途
+     * ② 用户把地址改成 B（onChanged 把 _probeRunning 放回 false ⇒ 按钮可再点）
+     * ③ A 的请求返回 ⇒ 旧代码 setState(_probeResult = A 的结果)
+     *    并且 UiPrefs.setDanmakuEndpoint(A)
+     * ⇒ 输入框里是 B、偏好里存的是 A、状态行显示的是 A 的结论 —— 三者互相矛盾
+     * ```
+     *
+     * # 为什么用**序号**而不是比较地址字符串
+     * ```text
+     * 用户可能 A → B → A：字符串比出来相同，但 B 那一轮的结果
+     * 语义上早已作废（它属于「上一轮」）⇒ 字符串判据会**漏放**这种。
+     * 序号判据对「任何一次输入变化」都成立，不依赖值的形状。
+     * ```
+     *
+     * # 谁会让序号前进
+     * ```text
+     * · 每次发起测试（这里）
+     * · 地址框 / token 框 的 onChanged（用户改了输入 ⇒ 在途结果过期）
+     * · 「清除」（用户要求回到内置路径 ⇒ 在途结果绝不许把它写回来）
+     * ```
+     */
+    final mySeq = ++_probeSeq;
+    final raw = _endpointUrl.text.trim();
+    // ⚠️ token 也要**在发起时**捕获：落盘时再读 _endpointToken.text 会拿到
+    //    用户后来敲的值（与地址同一类竞态，同一条纪律）。
+    final rawToken = _endpointToken.text;
+    final ep = DanmakuEndpoint.tryParse(raw, token: rawToken);
+    if (raw.isNotEmpty && ep == null) {
+      setState(() {
+        _probeRunningSeq = null;
+        _probeResult = null;
+        // ★ 不说「本机外部弹幕未运行」——那与用户填的地址无关，是误导。
+        _probeCustomMessage = '地址格式不对（例：http://127.0.0.1:9321）';
+      });
+      return;
+    }
+    // ★ spinner 归属本次序号：只有发起它的这一轮（或接管者）能关掉
+    setState(() => _probeRunningSeq = mySeq);
+    final probe = widget.probeOverride ??
+        (DanmakuEndpoint? e) => DanmakuLocalService.describe(endpoint: e);
+    DanmakuLocalStatus st;
+    try {
+      st = await probe(ep);
+    } catch (e) {
+      /*
+       * ★ 过期 ⇒ 一个字都不改（失败结论同样属于旧地址，写上去也是撒谎）。
+       * ⚠️ 也**不要**在这里关 spinner：此刻 _probeRunningSeq 已经不属于
+       *    本次（要么被 onChanged 置空、要么被新一轮接管）。关它就是
+       *    去动别人的状态 —— 那正是这个竞态的另一半。
+       */
+      if (!mounted || mySeq != _probeSeq) return;
+      setState(() {
+        _probeRunningSeq = null;
+        _probeResult = null;
+        // 探针自己异常（不是「服务没起来」）⇒ 如实说这次测试失败了
+        _probeCustomMessage = '测试失败：$e';
+      });
+      return;
+    }
+    // ★★ 核心守卫：await 期间输入变过 ⇒ 这次结果作废。
+    //    不 setState、不落盘、**也不关 spinner** —— 三件事都必须被挡住。
+    if (!mounted || mySeq != _probeSeq) return;
+    setState(() {
+      _probeRunningSeq = null;
+      _probeResult = st;
+    });
+    // 测通了 ⇒ 落盘（用户点的就是「这个地址可用」，不落盘等于白填）
+    // ⚠️ 落盘用**发起时捕获**的 raw/rawToken，不是当前输入框的值。
+    if (st.online) {
+      UiPrefs.setDanmakuEndpoint(raw);
+      UiPrefs.setDanmakuToken(rawToken);
+    }
+  }
+
+  /// 清除 ⇒ 回到内置路径（本机 2080 → 官方）。
+  void _clearEndpoint() {
+    // ★ 在途的测试结果绝不许把清空后的偏好写回来（同一条竞态纪律）；
+    //   spinner 同时交还 —— 用户已经要求回到内置路径，那个请求与他无关了。
+    _probeSeq++;
+    _probeRunningSeq = null;
+    UiPrefs.setDanmakuEndpoint('');
+    UiPrefs.setDanmakuToken('');
+    setState(() {
+      _endpointUrl.text = '';
+      _endpointToken.text = '';
+      _probeResult = null;
+      _probeCustomMessage = null;
+    });
+    widget.onChanged?.call();
+  }
 
   /// 段落标题
   Widget _sectionTitle(String text, {String? note}) {
@@ -1036,15 +1539,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
    * ⚠️ `dense: true`：面板窄（560），默认行高会让四处开关之间空隙过大。
    */
   Widget _switchSection() {
-    return SwitchListTile(
-      contentPadding: EdgeInsets.zero,
-      dense: true,
+    return _switchRow(
+      label: '显示弹幕',
       value: widget.state.enabled,
       onChanged: widget.onSetEnabled,
-      title: const Text(
-        '显示弹幕',
-        style: TextStyle(color: DanmakuTextColors.secondary, fontSize: FontSizes.sm),
-      ),
     );
   }
 
@@ -1260,19 +1758,14 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   ///   （原来这里是手写 Row + Switch）。四处开关现在**同一套布局**：
   ///   文字在左、开关在右、整行可点、带涟漪与读屏语义。
   Widget _typeSwitch(String label, bool value, void Function(bool) set) {
-    return SwitchListTile(
-      contentPadding: EdgeInsets.zero,
-      dense: true,
+    return _switchRow(
+      label: label,
       value: value,
       onChanged: (v) {
         set(v);
         // 立刻重建对话框，让开关与渲染同步（父层也会收到回调）
         widget.onChanged?.call();
       },
-      title: Text(
-        label,
-        style: const TextStyle(color: DanmakuTextColors.muted, fontSize: 13),
-      ),
     );
   }
 
@@ -1316,7 +1809,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               controller: _blockSearch,
               style: const TextStyle(
                 color: DanmakuTextColors.muted,
-                fontSize: 13,
+                fontSize: FontSizes.sm,
               ),
               decoration: InputDecoration(
                 hintText: '搜索屏蔽词（共 ${words.length} 个）',
@@ -1379,14 +1872,33 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                   fontSize: 12,
                 ),
               ),
-              labelStyle: const TextStyle(color: DanmakuTextColors.muted),
-              deleteIcon: const Icon(Icons.close, size: 14),
+              /*
+               * ★★ 2026-10-16（Owner 实测截图：「屏蔽词」下面的药丸看不清）
+               *
+               * 改前 `labelStyle` 是 muted 而 `backgroundColor` 是
+               * `Colors.transparent` ⇒ 药丸**没有自己的底**，直接露出分组卡片的
+               * 浅底；而「1 个」这种计数与药丸挤在同一行时，整体就是一片浅灰
+               * ⇒ 药丸与文字都糊在一起。
+               *
+               * ⇒ 三处都收到 `DanmakuTextColors` 既有灰阶上：
+               *     药丸底  border @35%（比分组卡片略抬一档 ⇒ 看得出是个`药丸`）
+               *     描边    border（与分组卡片同一支灰，1.6:1 装饰线）
+               *     文字    body #E6E6E6（14.5:1，t27_w1 门禁钉着）
+               *     ✕       secondary #B9BEC6（9.7:1）
+               * ⚠️ 面板强制深色 ⇒ 一律不引 colorScheme（见外壳 forceDarkCard）。
+               */
+              labelStyle: const TextStyle(color: DanmakuTextColors.body),
+              deleteIcon: const Icon(
+                Icons.close,
+                size: 14,
+                color: DanmakuTextColors.secondary,
+              ),
               // Delete by exact value (shown holds the original strings).
               onDeleted: () => _removeBlockWord(w),
               visualDensity: VisualDensity.compact,
               materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               side: const BorderSide(color: DanmakuTextColors.border),
-              backgroundColor: Colors.transparent,
+              backgroundColor: DanmakuTextColors.border.withValues(alpha: 0.35),
             ),
         ],
       ),
@@ -1437,7 +1949,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             controller: _blockWords,
             style: const TextStyle(
               color: DanmakuTextColors.muted,
-              fontSize: 13,
+              fontSize: FontSizes.sm,
             ),
             decoration: const InputDecoration(
               hintText: '添加屏蔽词，回车确认',
@@ -1772,7 +2284,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         decoration: BoxDecoration(
           borderRadius: Radii.rSm,
           border: Border.all(color: DanmakuTextColors.border),
-          color: stale ? null : Colors.white.withValues(alpha: 0.02),
+          color: stale
+              ? null
+              : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.03),
         ),
         child: Row(
           children: [

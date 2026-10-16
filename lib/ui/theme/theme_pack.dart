@@ -46,6 +46,8 @@ class ThemePack {
     required this.palette,
     this.radius,
     this.buttonPadding,
+    this.borderWidth,
+    this.dividerThickness,
     this.builtin = false,
     this.sourcePath,
   });
@@ -67,7 +69,23 @@ class ThemePack {
   final double? radius;
 
   /// 按钮内边距（null = 用默认 `EdgeInsets.symmetric(horizontal: 10, vertical: 11)`）
+  ///
+  /// ⚠️ 2026-10-16 之前这个字段**全仓零消费**（只解析、只序列化，没人读）——
+  ///    声明了不生效等于骗用户。现在由 `theme_language.dart` 的
+  ///    `ThemeLanguage.apply` 真正接到四类按钮上。
   final EdgeInsets? buttonPadding;
+
+  /// 描边粗细（null = 用默认 1）
+  ///
+  /// ★ 这是「设计语言」维度，不是装饰：1px 细线是**精致/极简**的语言，
+  ///   2~3px 硬边是**新粗野主义**的语言 —— 同一套配色换这一个数，
+  ///   观感就从「现代 App」变成「海报」。只靠颜色做不到这件事。
+  final double? borderWidth;
+
+  /// 分隔线粗细（null = 用默认 1）
+  ///
+  /// 与 [borderWidth] 同源的理由：列表/区块之间的那条线是**排版语言**的一部分。
+  final double? dividerThickness;
 
   /// 是否内置（内置的不可删除）
   final bool builtin;
@@ -94,6 +112,8 @@ class ThemePack {
           'error': _hex(palette.error),
         },
         if (radius != null) 'radius': radius,
+        if (borderWidth != null) 'borderWidth': borderWidth,
+        if (dividerThickness != null) 'dividerThickness': dividerThickness,
         if (buttonPadding != null)
           'buttonPadding': {
             'horizontal': buttonPadding!.left,
@@ -198,6 +218,29 @@ class ThemePack {
       warnings.add('radius=$radius 超出合理范围 [0,40]，已忽略');
     }
 
+    /*
+     * ★ 2026-10-16：两个「设计语言」维度的取值。
+     *
+     * # 为什么也走 _FieldReader + 范围校验（与 radius 同一套纪律）
+     * ```text
+     * borderWidth: 3.5   ⇒ 描边比卡片还厚，界面变成一坨
+     * borderWidth: -1    ⇒ 负宽度会让 paint 抛断言
+     * borderWidth: 1e9   ⇒ 整屏被描边填满
+     * ```
+     * 都是**用户手写 JSON 时会真的写出来**的值（这个功能的卖点就是让用户手写），
+     * 所以必须与 radius 一样：超范围 ⇒ 忽略 + 点名警告，绝不带进渲染层。
+     * 合法上界取 6：新粗野主义用到 3 已经非常重，6 是「再厚就不叫 UI」的边界。
+     */
+    final borderWidth = f.number('borderWidth')?.toDouble();
+    if (borderWidth != null && (borderWidth < 0 || borderWidth > 6)) {
+      warnings.add('borderWidth=$borderWidth 超出合理范围 [0,6]，已忽略');
+    }
+    final dividerThickness = f.number('dividerThickness')?.toDouble();
+    if (dividerThickness != null &&
+        (dividerThickness < 0 || dividerThickness > 6)) {
+      warnings.add('dividerThickness=$dividerThickness 超出合理范围 [0,6]，已忽略');
+    }
+
     EdgeInsets? pad;
     final bp = f.map('buttonPadding');
     if (bp != null) {
@@ -221,6 +264,15 @@ class ThemePack {
         palette: palette,
         radius: (radius != null && radius >= 0 && radius <= 40) ? radius : null,
         buttonPadding: pad,
+        borderWidth:
+            (borderWidth != null && borderWidth >= 0 && borderWidth <= 6)
+                ? borderWidth
+                : null,
+        dividerThickness: (dividerThickness != null &&
+                dividerThickness >= 0 &&
+                dividerThickness <= 6)
+            ? dividerThickness
+            : null,
         sourcePath: path,
       ),
       warnings,
@@ -264,6 +316,8 @@ class ThemePack {
     AppPalette? palette,
     double? radius,
     EdgeInsets? buttonPadding,
+    double? borderWidth,
+    double? dividerThickness,
     bool? builtin,
     String? sourcePath,
   }) =>
@@ -274,6 +328,8 @@ class ThemePack {
         palette: palette ?? this.palette,
         radius: radius ?? this.radius,
         buttonPadding: buttonPadding ?? this.buttonPadding,
+        borderWidth: borderWidth ?? this.borderWidth,
+        dividerThickness: dividerThickness ?? this.dividerThickness,
         builtin: builtin ?? this.builtin,
         sourcePath: sourcePath ?? this.sourcePath,
       );
@@ -554,11 +610,170 @@ abstract final class ThemePackStore {
   // 每套都按 WCAG 调过（见 theme_invariants_test.dart 的对比度断言）。
   // 命名用**用户能懂**的说法，不是色号。
 
-  static ThemePack _dark(String id, String name, AppPalette p) =>
-      ThemePack(id: id, name: name, brightness: Brightness.dark, palette: p, builtin: true);
+  static ThemePack _dark(
+    String id,
+    String name,
+    AppPalette p, {
+    double? radius,
+    double? borderWidth,
+    double? dividerThickness,
+    EdgeInsets? buttonPadding,
+  }) =>
+      ThemePack(
+        id: id,
+        name: name,
+        brightness: Brightness.dark,
+        palette: p,
+        radius: radius,
+        borderWidth: borderWidth,
+        dividerThickness: dividerThickness,
+        buttonPadding: buttonPadding,
+        builtin: true,
+      );
 
-  static ThemePack _light(String id, String name, AppPalette p) =>
-      ThemePack(id: id, name: name, brightness: Brightness.light, palette: p, builtin: true);
+  static ThemePack _light(
+    String id,
+    String name,
+    AppPalette p, {
+    double? radius,
+    double? borderWidth,
+    double? dividerThickness,
+    EdgeInsets? buttonPadding,
+  }) =>
+      ThemePack(
+        id: id,
+        name: name,
+        brightness: Brightness.light,
+        palette: p,
+        radius: radius,
+        borderWidth: borderWidth,
+        dividerThickness: dividerThickness,
+        buttonPadding: buttonPadding,
+        builtin: true,
+      );
+
+  // ── 三套「设计语言」主题（2026-10-16 · Owner 第 14 条）────────────────────
+  //
+  // ⚠️ 与上面 6 套的**性质不同**：那 6 套是「同一个 App 换配色」
+  //    （圆角/描边/按钮几何全是默认值），这三套要的是
+  //    **看起来像三个不同的 App**。所以每套同时给出四个维度：
+  //    ```text
+  //    配色      background / card / primary …      ← 颜色
+  //    radius    圆角：22 胶囊 / 0 直角 / 4 克制     ← 形状
+  //    borderWidth      1 细线 / 2.5 硬边 / 1 发丝   ← 边缘语言
+  //    dividerThickness 1 / 3 / 1                    ← 排版语言
+  //    buttonPadding    松 / 厚重 / 紧               ← 控件手感
+  //    ```
+  //    ★ 只换颜色做不到「像另一个 App」—— 直角 vs 胶囊的差别比配色大得多。
+  //
+  // 三套的**对比度全部按 WCAG 算过**（正文 ≥4.5、次要 ≥3、按钮 ≥4.5、
+  // 描边合成后在 (1.10, 3.0)、卡片底在 (1.02, 3.0)），
+  // 由 `theme_pack_test.dart` 的「③ 内置主题的对比度」与
+  // `theme_regression_test.dart` 守着。
+
+  /// ① 液态玻璃 —— 深色，半透明感 + 冷蓝光晕 + 大圆角胶囊
+  ///
+  /// # 设计语言
+  /// ```text
+  /// 底色   近黑蓝（#0B0E14）—— 不是纯黑，留出"玻璃底下有东西"的余地
+  /// 卡片   比底色亮 1.35:1 的蓝灰 + 冷色描边 ⇒ 读起来像一层"浮起来的玻璃"
+  /// 主色   冰蓝 #7FB2FF（唯一的高饱和色，只用在选中/强调）
+  /// 形状   圆角 22（胶囊级）+ 1px 细描边 ⇒ 圆润、轻、没有硬边
+  /// 按钮   内边距松（16/12）⇒ 呼吸感
+  /// ```
+  /// ⚠️ 本主题**不依赖** `liquid_glass_widgets` 的运行时模糊 ——
+  ///    它是一套**配色+形状**语言，在没有 shader 的环境（测试/旧显卡）下
+  ///    仍然是同一套观感；真正的玻璃折射由标题栏/底栏那两处 GlassContainer 给。
+  static final AppPalette _glassPalette = AppPalette.dark.copyWith(
+    background: const Color(0xFF0B0E14),
+    card: const Color(0xFF232A3A),
+    foreground: const Color(0xFFF2F5FA),
+    mutedForeground: const Color(0xFF9AA6BF),
+    primary: const Color(0xFF7FB2FF),
+    primaryForeground: const Color(0xFF06111F),
+    secondary: const Color(0xFF1A2130),
+    secondaryForeground: const Color(0xFFEAF0FA),
+    muted: const Color(0xFF1A2130),
+    error: const Color(0xFFFF8A93),
+    border: const Color(0xFF405274),
+    barrier: const Color(0x7A05070C),
+  );
+
+  /// ② 新粗野主义 —— 近黑纸 + 酸性黄 + 2.5px 硬边 + 直角
+  ///
+  /// # 设计语言
+  /// ```text
+  /// 底色   暖近黑（#12100E）—— 比"液态玻璃"的冷蓝黑更暖、更"油墨"
+  /// 描边   **2.5px 硬边**（#5E5426，合成后 2.5:1）—— 本套的灵魂
+  /// 圆角   **0**（直角）—— 与圆角 22 的那套形成最极端的对照
+  /// 主色   酸性黄 #FFE24A 压近黑字（14.4:1）—— 高饱和撞色
+  /// 按钮   厚重（内边距 18/14 + 2.5px 描边）⇒ 像可点的实体方块
+  /// 分隔线 3px ⇒ 区块之间是"印刷分隔条"，不是发丝线
+  /// ```
+  ///
+  /// # ★ 为什么这一套是**深色**而不是"奶油纸浅色"（我改过一次，有理由）
+  /// ```text
+  /// 我先做的是浅色版（#F2EFE6 奶油纸 + 酸性黄主色）—— 实测截图发现问题：
+  /// 本仓的图标色**取的就是 primary**（theme_bridge.dart:194
+  ///   iconTheme: IconThemeData(color: c.primary, size: 20)），
+  /// 而酸性黄压在奶油纸上只有 **1.13:1** ⇒ 设置页里每个列表项的
+  /// 前导图标（palette / play 那一列）几乎看不见。
+  /// 那不是"风格"，是**看不见**。
+  /// ⇒ 改成深色：酸性黄压近黑是 **14.4:1**，同一套配色语言
+  ///   （酸性黄 + 直角 + 硬边 + 厚重按钮）一个都没丢，
+  ///   而且与"液态玻璃"的差异反而更大（暖黑 vs 冷蓝黑）。
+  /// ```
+  /// ⚠️ 主色是**亮黄**，所以 `primaryForeground` 必须是近黑（#141210）——
+  ///    写成白字会得到 1.22:1 的"黄底白字"（本仓踩过的同类坑）。
+  static final AppPalette _brutalPalette = AppPalette.dark.copyWith(
+    background: const Color(0xFF12100E),
+    card: const Color(0xFF1E1B16),
+    foreground: const Color(0xFFFFF8E7),
+    mutedForeground: const Color(0xFFC9BFA6),
+    primary: const Color(0xFFFFE24A),
+    primaryForeground: const Color(0xFF141210),
+    secondary: const Color(0xFF2A2620),
+    secondaryForeground: const Color(0xFFFFF8E7),
+    muted: const Color(0xFF2A2620),
+    error: const Color(0xFFFF6B57),
+    border: const Color(0xFF5E5426),
+    barrier: const Color(0x80000000),
+  );
+
+  /// ③ 极简留白 —— 暖白纸 + 墨绿单色 + 发丝线
+  ///
+  /// # 设计语言
+  /// ```text
+  /// 底色   暖白（#FAFAF8）—— 比纯白少一点屏幕感
+  /// 卡片   **纯白**（1.045:1）—— 与底色的差小到"只是一层纸"，靠 1px 发丝线分界
+  /// 主色   墨绿 #3D5A4C —— 低饱和、单色系，全站只有这一个强调色
+  /// 形状   圆角 **4**（近乎直角但留一点）—— 克制，不圆润也不锋利
+  /// 描边   1px #DEDDD6（1.30:1）—— 看得见但几乎不占视觉重量
+  /// 按钮   紧（内边距 12/10）⇒ 安静、不抢视线
+  /// ```
+  /// ★ 与「新粗野主义」**没有任何一个维度相同**：
+  ///    明暗 light vs dark、底色暖白 vs 暖近黑、主色墨绿 vs 酸性黄、圆角 4 vs 0、
+  ///    描边 1px vs 2.5px、按钮紧 vs 厚重、分隔线 1px vs 3px。
+  ///
+  /// ⚠️ 2026-10-17（CodeRabbit CR）：上面这行原写「共用浅色档」，
+  ///   那是**旧设计**的描述 —— 「新粗野主义」后来改成了**深色**
+  ///   （原因：酸黄配奶油只有 1.13:1，列表行图标几乎不可见；
+  ///    酸黄配近黑是 14.4:1）。本仓注释承担记录设计决策的职责，
+  ///   过期描述会误导后续修改，故修正。
+  static final AppPalette _minimalPalette = AppPalette.light.copyWith(
+    background: const Color(0xFFFAFAF8),
+    card: const Color(0xFFFFFFFF),
+    foreground: const Color(0xFF22252A),
+    mutedForeground: const Color(0xFF6E737C),
+    primary: const Color(0xFF3D5A4C),
+    primaryForeground: const Color(0xFFF7F9F7),
+    secondary: const Color(0xFFF0F0EC),
+    secondaryForeground: const Color(0xFF22252A),
+    muted: const Color(0xFFF0F0EC),
+    error: const Color(0xFFA83A2E),
+    border: const Color(0xFFDEDDD6),
+    barrier: const Color(0x40000000),
+  );
 
   /// 内置主题清单
   ///
@@ -604,6 +819,40 @@ abstract final class ThemePackStore {
       primaryForeground: const Color(0xFF0C1A11),
       error: const Color(0xFFFF9E8A),
     )),
+
+    // 以下三套是「设计语言」主题（Owner 第 14 条，2026-10-16）
+    // 与上面 6 套的区别：那 6 套只换颜色，这三套**连形状/边缘/按钮几何
+    // 一起换** —— 目标是看起来像三个不同的 App。详见各自 palettes 的文档。
+    //
+    // 顺序说明：放在最后而不是最前，是为了不动既有 6 套的展示顺序
+    // （第一套是默认值，builtin.midnight 必须继续排第一）。
+    _dark(
+      'builtin.glass',
+      '液态玻璃',
+      _glassPalette,
+      radius: 22,
+      borderWidth: 1,
+      dividerThickness: 1,
+      buttonPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+    ),
+    _dark(
+      'builtin.neoBrutal',
+      '新粗野主义',
+      _brutalPalette,
+      radius: 0,
+      borderWidth: 2.5,
+      dividerThickness: 3,
+      buttonPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+    ),
+    _light(
+      'builtin.minimal',
+      '极简留白',
+      _minimalPalette,
+      radius: 4,
+      borderWidth: 1,
+      dividerThickness: 1,
+      buttonPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+    ),
   ];
 
   /// 日间（浅色）

@@ -224,6 +224,8 @@ impl DeclarativeProvider {
             favorites: false,
             timeshift: false,
             danmaku: false,
+            // task-T2：声明式源是纯 JSON 拉取模型，没有弹幕通道（也不该假装有）
+            danmaku_send: false,
             // 声明式源的 schema 里还没有登录声明（它是纯 HTTP 拉取模型）
             login_supported: false,
             login_hint: None,

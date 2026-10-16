@@ -31,17 +31,23 @@ DanmakuSettingsState _state({int count = 111}) => DanmakuSettingsState(
       sourceLine: '本机未探测到外部弹幕服务',
     );
 
-Future<void> _pump(WidgetTester t, Widget child) async {
+Future<void> _pump(
+  WidgetTester t,
+  Widget child, {
+  Brightness brightness = Brightness.dark,
+}) async {
   await setShotViewport(t, const Size(700, 1000));
   await t.pumpWidget(MaterialApp(
     debugShowCheckedModeBanner: false,
-    theme: AppTheme.themeFor(Brightness.dark),
+    theme: AppTheme.themeFor(brightness),
     builder: (context, c) => AppThemeHost(
-      data: AppTheme.themeFor(Brightness.dark),
+      data: AppTheme.themeFor(brightness),
       child: c ?? const SizedBox(),
     ),
     home: Scaffold(
-      backgroundColor: const Color(0xFF101014),
+      backgroundColor: brightness == Brightness.dark
+          ? const Color(0xFF101014)
+          : const Color(0xFFEEF0F6),
       body: Center(
         child: SizedBox(width: 560, child: child),
       ),
@@ -65,8 +71,16 @@ Widget _dialog(DanmakuSettingsState s) => DanmakuSettingsDialog(
 void main() {
   setUpAll(loadRealFonts);
 
-  testWidgets('弹幕面板 改前/改后 对照图', (t) async {
+  testWidgets('弹幕面板 深色', (t) async {
     await _pump(t, _dialog(_state()));
-    await saveViewShot(t, 'danmaku_panel');
+    await saveViewShot(t, 'danmaku_panel_dark');
+  });
+
+  // ★ 2026-10-16：Owner 实测「弹幕这里的字都看不清了」是**浅色主题**下发生的
+  //   （外壳把卡片底统一成跟随主题后，深色专用灰阶压在浅底上）。
+  //   所以浅色这一态必须也出图 —— 只看深色图会漏掉这个回归。
+  testWidgets('弹幕面板 浅色（回归位）', (t) async {
+    await _pump(t, _dialog(_state()), brightness: Brightness.light);
+    await saveViewShot(t, 'danmaku_panel_light');
   });
 }

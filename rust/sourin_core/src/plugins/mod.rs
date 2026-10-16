@@ -713,6 +713,20 @@ impl JsPluginProvider {
         c.danmaku = flag("danmaku");
 
         /*
+         * ★★ 发送弹幕（task-T2，2026-10-16）
+         *
+         * ⚠️ 与上面每一项同一个坑：本函数是**逐字段**读的，往
+         *    `Capabilities` 加字段**不会**自动生效 —— 必须在这里显式赋值。
+         *    忘了写的话表现是「插件声明了 danmakuSend: true，
+         *    界面上却不出现发送入口」，且**不报错**。
+         *
+         * ⚠️ 默认 false（老插件没有这个能力）。
+         *    与 `danmaku` **刻意分开**：能取弹幕的站点远多于能发弹幕的，
+         *    合成一个位宿主就无法如实告诉用户「这个源只能看不能发」。
+         */
+        c.danmaku_send = flag("danmaku_send");
+
+        /*
          * ★★ 登录三项（2026-09-20 新增）—— **必须在这里逐个赋，不能只加字段**
          *
          * 这个函数是**逐字段**读的（不是整体 `serde::from_value`），
@@ -1466,10 +1480,89 @@ impl JsPluginProvider {
 
 /// 把 JS 异常映射成 `ProviderError`
 ///
-/// 插件按契约用前缀声明错误类型：
-/// `unauthorized:` / `not_found:` / `unsupported:` / `network:`
+/// 插件按契约用前缀声明错误类型（见 `docs/PLUGINS.md`）：
+/// `unauthorized:` / `not_found:` / `unsupported:` / `network:` / `parse:`
+///
+/// # ★★★ 为什么「前缀优先」，而不是按顺序 if-else 混着判
+///
+/// # 实测踩到的真 bug（2026-10-17）
+///
+/// 改前是「裸关键词与前缀混在一条 if-else 链里」，且顺序是：
+/// ```text
+/// unauthorized / 401  →  not_found / 404  →  unsupported  →  network / timeout
+/// ```
+/// 看起来没问题，但**前缀与消息正文会互相抢**：
+/// ```text
+/// 插件抛：parse: 返回不是合法 JSON — <html><title>404 Not Found</title>
+///                     ↑ 正文里带 404
+/// ⇒ 先命中的是 `404` 那一支 ⇒ 判成 NotFound（**错的，应该是 Parse**）
+/// ```
+/// 而这恰恰是 `parse:` 最典型的触发场景：**上游返回 404/风控 HTML 页**，
+/// 插件 `JSON.parse` 失败 ⇒ 抛 `parse:` 并把响应片段带进消息。
+/// 同类还有：登录页返回 401、限流文案里带 timeout 等。
+///
+/// ⇒ 结论：**显式前缀是权威声明，必须先判**；裸关键词（401/404/timeout）
+///    只是给「没按契约写前缀的老插件」兜底的启发式，**只能在后**。
+///
+/// ⚠️ 别把这条改成「把 404 删掉」—— 老插件确实会裸抛 `HTTP 404`，
+///    删了它们的错误种类就全退化成 Other。
 fn map_js_error(msg: &str) -> ProviderError {
     let lower = msg.to_lowercase();
+    /*
+     * 容忍前缀被「包裹」的写法：前导空白、反引号、引号。
+     *
+     * 典型来源是插件作者在错误消息里**引用**前缀，或从模板字符串拼出来
+     * 时把定界符一起带进了消息。真实等价消息本身不该有这些字符，
+     * 所以只 trim **前导标点**、不改消息本体。
+     *
+     * ⚠️ 只剥前导、且只剥标点 —— 不剥数字/字母，
+     *    否则 `404: xxx` 这种前缀形态会被自己吃掉。
+     */
+    let t = lower.trim_start_matches(|c: char| {
+        c.is_whitespace() || c == '`' || c == '"' || c == '\''
+    });
+
+    /*
+     * ── ① 显式前缀（权威）────────────────────────────────────
+     *
+     * ⚠️ `unauthorized` 这一支**故意返回固定文案**（不带 msg）——
+     *    与改前逐字一致：登录失败时插件常把 token 片段带进消息，
+     *    原样透出可能泄露凭据，也不便用户阅读。
+     */
+    if t.starts_with("unauthorized:") || t.starts_with("401:") {
+        return ProviderError::unauthorized("需要登录或登录已失效");
+    }
+    if t.starts_with("not_found:") || t.starts_with("404:") {
+        return ProviderError::new(ErrorKind::NotFound, msg.to_string());
+    }
+    if t.starts_with("unsupported:") {
+        return ProviderError::unsupported(msg.to_string());
+    }
+    if t.starts_with("network:") {
+        return ProviderError::network(msg.to_string());
+    }
+    /*
+     * ★★★ 本支是本次修的缺口（task：map_js_error 漏了 parse）
+     *
+     * 改前没有这一支 ⇒ `parse: xxx` 落到最后的 else，变成
+     * `Other` + 多一层 `插件报错: ` 包装：
+     * ```text
+     * 用户看到：「插件报错: parse: 找不到该条目…」
+     * 前端按 ErrorKind 分支的逻辑（如「上游改版」提示）全部失效
+     * ```
+     * ⚠️ 消息**原样透出、不加任何包装**：前缀本身就是给用户看的语义，
+     *    再包一层只会让排错更难（本仓「错误必须原文透出」的纪律）。
+     */
+    if t.starts_with("parse:") {
+        return ProviderError::parse(msg.to_string());
+    }
+
+    /*
+     * ── ② 裸关键词兜底（老插件没写前缀时的启发式）──────────────
+     *
+     * ⚠️ 必须在前缀之后 —— 否则正文里的 `404` / `401` / `timeout`
+     *    会抢走带前缀消息的判定（见函数头的实测 bug）。
+     */
     if lower.contains("unauthorized") || lower.contains("401") {
         ProviderError::unauthorized("需要登录或登录已失效")
     } else if lower.contains("not_found") || lower.contains("404") {
@@ -2459,6 +2552,101 @@ impl MediaProvider for JsPluginProvider {
         serde_json::from_str(&json)
             .map_err(|e| ProviderError::parse(format!("timeshift() 返回格式不符: {e}")))
     }
+
+    // ── 弹幕（task-T2，2026-10-16）────────────────────────────────
+    //
+    // # ★ 为什么必须桥接（漏掉的后果与 rank/episodes/sources 同类）
+    //
+    // `Capabilities.danmaku` 早就在界面上显示「弹幕」标签，
+    // 但宿主**没有任何地方拿它去调插件** —— 插件作者想实现也无从下手。
+    // 这类 bug **不报错、只是没内容**，最难发现（见本文件 L2036 的长注释）。
+    //
+    // ⚠️ 判形态用**三元式**而不是 try/catch —— 与 `rank()` / `epg()` 同纪律：
+    //    先判方法在不在，让「方法存在但内部报错」原样透出，
+    //    不被「捕获所有错误都当成不支持」吞掉。
+
+    /// 取某一集的弹幕列表 —— 调插件的 `plugin.danmakuList(req)`
+    async fn danmaku_list(&self, req: DanmakuRequest) -> Result<DanmakuBundle> {
+        /*
+         * ★ 剥掉 `{provider}:` 前缀再给插件 —— 与 `resolve()` / `detail()` 同纪律。
+         *   `episodes[].id` 会被 `prefix_media_ids()` 加上前缀，插件收到
+         *   `srca:51463` 会拿去当数字 id 用 → 上游 400（实测记录见本文件 L2119）。
+         */
+        let mut req = req;
+        req.provider = self.manifest.id.clone();
+        req.media_id = self.strip_prefix(&req.media_id);
+        req.episode_id = self.strip_prefix(&req.episode_id);
+        let req_js = rust_value_to_js(
+            serde_json::to_value(&req).unwrap_or(serde_json::Value::Object(Default::default())),
+        );
+        let expr = format!(
+            "(plugin.danmakuList ? plugin.danmakuList({}) : Promise.reject(new Error('unsupported: 该源不支持弹幕')))",
+            serde_json::to_string(&req_js).unwrap_or_else(|_| "{}".into())
+        );
+        let json = self.call_js(&expr).await?;
+        let mut bundle: DanmakuBundle = serde_json::from_str(&json)
+            .map_err(|e| ProviderError::parse(format!("danmakuList() 返回格式不符: {e}")))?;
+
+        /*
+         * ★★★ 给缺 cid 的弹幕补位 —— **没有这一步，插件弹幕会静默全丢**
+         *
+         * 宿主 `lib/core/danmaku.dart` 的 `DanmakuComment.fromJson` 在
+         * `cid == null` 时**直接 return null（整条丢弃）**，且不抛异常。
+         * 实测（`.probe/plugin-work/danmaku_wire_crosscheck_test.dart`）：
+         * 3 条只有 {p, m} 的 wire 喂进去 ⇒ 3 条**全部**被丢弃。
+         *
+         * ⇒ 不补的话，表现是「弹幕加载成功但一条都没有」，
+         *   用户与插件作者都**无从排查**。补位规则见 `fill_missing_cids`。
+         */
+        let filled = bundle.fill_missing_cids();
+        if filled > 0 {
+            log::debug!(
+                "插件 {} 的 danmakuList 有 {} 条未带 cid，已按「下标+1」补位（宿主 fromJson 在 cid 缺失时会整条丢弃）",
+                self.manifest.id,
+                filled
+            );
+        }
+        Ok(bundle)
+    }
+
+    /// 发送一条弹幕 —— 调插件的 `plugin.danmakuSend(req)`
+    async fn danmaku_send(&self, req: DanmakuSendRequest) -> Result<DanmakuSendResult> {
+        // 同样剥前缀（见 danmaku_list 里的说明）
+        let mut req = req;
+        req.provider = self.manifest.id.clone();
+        req.episode_id = self.strip_prefix(&req.episode_id);
+        let req_js = rust_value_to_js(
+            serde_json::to_value(&req).unwrap_or(serde_json::Value::Object(Default::default())),
+        );
+        let expr = format!(
+            "(plugin.danmakuSend ? plugin.danmakuSend({}) : Promise.reject(new Error('unsupported: 该源不支持发送弹幕')))",
+            serde_json::to_string(&req_js).unwrap_or_else(|_| "{}".into())
+        );
+        let json = self.call_js(&expr).await?;
+        let r: DanmakuSendResult = serde_json::from_str(&json)
+            .map_err(|e| ProviderError::parse(format!("danmakuSend() 返回格式不符: {e}")))?;
+
+        /*
+         * ★★ 纪律兜底：`ok: false` **不是**合法结果
+         *
+         * 契约要求「未实现 / 被上游拒绝 ⇒ 抛 unsupported:/unauthorized:」。
+         * 但插件作者可能写成 `return { ok: false }` —— 若宿主把它当
+         * 「软失败」放过去，调用方就会以为**发送成功了**：
+         * ```text
+         * 用户以为发出去了 → 刷新找不到 → 反复发 →
+         * 在真站点上可能**已经触发风控封禁**
+         * ```
+         * ⇒ 在这里就把它转成明确的 Unsupported，让 UI 能如实告知。
+         *   宁可报错，也不给一个「看起来成功」的返回值。
+         */
+        if !r.ok {
+            return Err(ProviderError::unsupported(
+                "插件返回 ok=false —— 发送未成功。按契约应抛 unsupported:/unauthorized: 而不是返回 false（宿主不能把它当成软失败）",
+            ));
+        }
+        Ok(r)
+    }
+
 }
 
 // ─────────────────────────── 扫描插件目录 ───────────────────────────
@@ -3355,7 +3543,157 @@ mod tests {
         assert_eq!(map_js_error("not_found: 没有这个视频").kind, ErrorKind::NotFound);
         assert_eq!(map_js_error("unsupported: 不支持搜索").kind, ErrorKind::Unsupported);
         assert_eq!(map_js_error("network: 站点无响应").kind, ErrorKind::Network);
+        assert_eq!(map_js_error("parse: 返回不是合法 JSON").kind, ErrorKind::Parse);
     }
+
+    /// ★★★ `parse:` 必须映射成 `ErrorKind::Parse`，且消息**不加包装**
+    ///
+    /// # 修的是什么
+    ///
+    /// `map_js_error` 漏了 `parse:` 这一支 —— 而契约（`docs/PLUGINS.md`）
+    /// 与 `ProviderError::parse` 都早就有了。后果：
+    /// ```text
+    /// 插件抛 parse: xxx  ⇒  落到最后的 else
+    /// ⇒ kind = Other（前端按类型分支的逻辑全部失效）
+    /// ⇒ 消息变成「插件报错: parse: xxx」（多一层无意义包装）
+    /// ```
+    ///
+    /// ⚠️ 这条测试**必须**同时钉住两件事（kind + 消息），只钉 kind 不够：
+    ///    包装那层是用户**直接看到**的东西（本仓「错误必须原文透出」纪律）。
+    #[test]
+    fn parse_prefix_maps_to_parse_kind_without_wrapping() {
+        let msg = "parse: 找不到该条目（上游搜索结果已变化）";
+        let e = map_js_error(msg);
+
+        assert_eq!(
+            e.kind,
+            ErrorKind::Parse,
+            "★ parse: 必须映射成 ErrorKind::Parse（改前落到 Other），实际 {:?}",
+            e.kind
+        );
+        assert_eq!(
+            e.message,
+            msg,
+            "★ 消息必须**原样透出**：多一层「插件报错: 」会让用户看不懂，实际: {}",
+            e.message
+        );
+        assert!(
+            !e.message.contains("插件报错"),
+            "★ 绝不能带「插件报错: 」前缀（那是 Other 分支的包装），实际: {}",
+            e.message
+        );
+        // 前缀本身要保留 —— 它是给用户看的语义，不是内部标记
+        assert!(
+            e.message.starts_with("parse:"),
+            "原文要完整保留（排错靠它），实际: {}",
+            e.message
+        );
+    }
+
+    /// ★★★ 顺序门禁：**消息正文里的 404 不许抢走 `parse:` 的判定**
+    ///
+    /// # 这是实测出来的真 bug（不是我推测的）
+    ///
+    /// 改前 `404` 那一支排在前面，于是：
+    /// ```text
+    /// 插件抛：parse: 返回不是合法 JSON — <html><title>404 Not Found</title>
+    /// ⇒ 先命中 `404` ⇒ 判成 NotFound（**错的**）
+    /// ```
+    /// 而这正是 `parse:` 最典型的触发场景 —— **上游返回 404 / 风控 HTML 页**，
+    /// 插件 `JSON.parse` 失败，把响应片段带进消息。
+    ///
+    /// ⇒ 契约：**显式前缀是权威声明，必须先判**；
+    ///    裸关键词只是给老插件兜底的启发式，只能在后。
+    #[test]
+    fn explicit_prefix_beats_bare_code_in_body() {
+        // 真实形态：parse: + 正文里带 404（上游返回了 Not Found 的 HTML 页）
+        let real = "parse: 返回不是合法 JSON — <html><head><title>404 Not Found</title></head>";
+        assert_eq!(
+            map_js_error(real).kind,
+            ErrorKind::Parse,
+            "★ 正文里的 404 不许抢走 parse: 的判定（前缀优先），实际: {}",
+            map_js_error(real).message
+        );
+
+        // 同类：正文带 401 / timeout 也不能抢
+        assert_eq!(
+            map_js_error("parse: 上游返回了 401 登录页而不是 JSON").kind,
+            ErrorKind::Parse
+        );
+        assert_eq!(
+            map_js_error("parse: 响应超时片段 timeout after 5s").kind,
+            ErrorKind::Parse
+        );
+        // 反向：network: 消息里带 404 也不许被判成 NotFound
+        assert_eq!(
+            map_js_error("network: 站点返回 404").kind,
+            ErrorKind::Network,
+            "★ 前缀仍优先于正文里的裸编码"
+        );
+        // 反向：unsupported: 里带 unauthorized 字样同理
+        assert_eq!(
+            map_js_error("unsupported: 本接口需要 unauthorized 处理，未实现").kind,
+            ErrorKind::Unsupported
+        );
+    }
+
+    /// ★ 老插件兼容：**没写前缀**时裸关键词仍要能分类（不许为了修 parse 把它们弄坏）
+    ///
+    /// ⚠️ 这条是「撤销验证」的另一半：如果我把 401/404/timeout 那几支删掉，
+    ///    前缀那一侧照样绿，但**这四条会红** —— 两边的门禁都要在。
+    #[test]
+    fn bare_keywords_still_classified_for_legacy_plugins() {
+        assert_eq!(map_js_error("HTTP 401 Unauthorized").kind, ErrorKind::Unauthorized);
+        assert_eq!(map_js_error("HTTP 404").kind, ErrorKind::NotFound);
+        assert_eq!(map_js_error("request timeout").kind, ErrorKind::Network);
+        // 什么都没命中 ⇒ Other，且**保留**包装（那正是 Other 该有的样子）
+        let o = map_js_error("something odd");
+        assert_eq!(o.kind, ErrorKind::Other);
+        assert!(
+            o.message.contains("插件报错"),
+            "Other 分支保留包装（与 parse: 分支的区别就在这里）"
+        );
+    }
+
+    /// ★ 前缀判定的健壮性：反引号 / 首尾空白 / 大小写都要认
+    #[test]
+    fn parse_prefix_tolerates_quotes_and_case() {
+        assert_eq!(map_js_error("PARSE: 上游改版").kind, ErrorKind::Parse);
+        assert_eq!(map_js_error("  parse: 前导空白").kind, ErrorKind::Parse);
+        assert_eq!(map_js_error("`parse: 反引号包裹`").kind, ErrorKind::Parse);
+    }
+
+    /// ★ 端到端：插件真的抛 `parse:` ⇒ 宿主收到的 ErrorKind 是 Parse
+    ///
+    /// ⚠️ 上面几条直接测 `map_js_error`（纯函数）。这条走**真 JS 引擎**，
+    ///    证明「插件 throw → JS 侧 catch 带出消息 → map_js_error」整条链是通的
+    ///    （中间那段 `{ok:false, error:msg}` 的打包/拆包也是 bug 高发区）。
+    #[tokio::test]
+    async fn plugin_thrown_parse_prefix_reaches_parse_kind() {
+        let src = r#"/** @id pfx @name 前缀测试源 */
+globalThis.plugin = {
+  async home() {
+    // 真实形态：上游返回了 404 的 HTML 页 ⇒ JSON.parse 失败 ⇒ 抛 parse:
+    throw new Error('parse: 返回不是合法 JSON — <html><title>404 Not Found</title>');
+  },
+};
+"#;
+        let p = JsPluginProvider::from_source(src).unwrap();
+        let err = p.home().await.unwrap_err();
+        assert_eq!(
+            err.kind,
+            ErrorKind::Parse,
+            "★ 插件抛 parse: ⇒ 必须判成 Parse（正文里的 404 不许抢），实际: {:?} / {}",
+            err.kind,
+            err.message
+        );
+        assert!(
+            !err.message.contains("插件报错"),
+            "★ 不许有「插件报错: 」包装，实际: {}",
+            err.message
+        );
+    }
+
 
     // ─────────── ★ 端到端：插件真的能跑 ───────────
 
@@ -4841,5 +5179,328 @@ globalThis.plugin = {{ id: '{id}', async home() {{ return [] }} }};"#
 
         assert_eq!(v["episodes"][0]["id"].as_str().unwrap(), "51463", "剧集不该加前缀");
         assert_eq!(v["sections"][0]["id"].as_str().unwrap(), "rank-1", "分区不该加前缀");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  弹幕（task-T2，2026-10-16）
+    // ═══════════════════════════════════════════════════════════════
+
+    /// 一个「实现了弹幕两个方法」的插件源码
+    ///
+    /// `cidMode` 控制返回的弹幕**带不带 cid** —— 这是本组测试的核心变量：
+    /// ```text
+    /// "with"    每条都带 cid（dandanplay 风格，上游本来就给）
+    /// "without" 一条都不带（外部视频源 XML 风格，上游没有这个概念）
+    /// "mixed"   一半带一半不带（真实世界里最常见的形态）
+    /// ```
+    fn danmaku_plugin_src(cidMode: &str) -> String {
+        let items = match cidMode {
+            "with" => "{ cid: 101, p: '1.5,1,16777215,u1', m: '第一条' },\
+                       { cid: 102, p: '3.0,5,255,u2', m: '第二条' }",
+            "without" => "{ p: '1.5,1,16777215,u1', m: '第一条' },\
+                          { p: '3.0,5,255,u2', m: '第二条' }",
+            _ => "{ cid: 101, p: '1.5,1,16777215,u1', m: '第一条' },\
+                   { p: '3.0,5,255,u2', m: '第二条' }",
+        };
+        format!(
+            r#"/** @id dmp @name 弹幕插件 */
+globalThis.plugin = {{
+  id: 'dmp',
+  capabilities: {{ vod: true, danmaku: true, danmakuSend: true }},
+  async danmakuList(req) {{
+    return {{
+      items: [{items}],
+      source: 'test:' + req.episodeId
+    }};
+  }},
+  async danmakuSend(req) {{ return {{ ok: true, id: 'sent-1' }}; }},
+}};"#
+        )
+    }
+
+    /// ★★★ 核心：插件能提供弹幕，且**桥接真的接上了**
+    ///
+    /// 改前 `Capabilities.danmaku` 是个**假能力位** —— 界面上显示「弹幕」
+    /// 标签，但宿主没有任何地方拿它去调插件。这条测试钉住「真的调了」。
+    #[tokio::test]
+    async fn danmaku_list_is_bridged_to_plugin() {
+        let p = JsPluginProvider::from_source(&danmaku_plugin_src("with")).unwrap();
+        let b = p
+            .danmaku_list(DanmakuRequest {
+                media_id: "m1".into(),
+                episode_id: "ep1".into(),
+                ..Default::default()
+            })
+            .await
+            .expect("★ danmakuList 必须被桥接（改前是假能力位，永远不调插件）");
+        assert_eq!(b.items.len(), 2, "应拿到插件返回的 2 条");
+        assert_eq!(b.items[0].m, "第一条");
+        assert_eq!(b.items[0].p, "1.5,1,16777215,u1");
+        assert_eq!(b.source.as_deref(), Some("test:ep1"), "source 要如实带上剧集 id");
+    }
+
+    /// ★★★ 没有这一步，插件弹幕会**静默全丢**（本任务最关键的一条）
+    ///
+    /// # 依据（不是推测，是实测出来的）
+    ///
+    /// 宿主 `lib/core/danmaku.dart` 的 `DanmakuComment.fromJson` 逐字是：
+    /// ```dart
+    /// final cid = _asInt(j['cid']);
+    /// if (cid == null) return null;   // ★ 整条丢弃
+    /// ```
+    /// 实测（`.probe/plugin-work/danmaku_wire_crosscheck_test.dart`）：
+    /// 3 条只有 `{p, m}` 的 wire 喂进去 ⇒ **3 条全部被丢弃，且不抛异常**。
+    /// 表现是「弹幕加载成功但一条都没有」—— 用户与插件作者都无从排查。
+    ///
+    /// ⇒ 桥接层必须给缺 cid 的弹幕补位（`fill_missing_cids`）。
+    #[tokio::test]
+    async fn danmaku_list_backfills_missing_cid() {
+        let p = JsPluginProvider::from_source(&danmaku_plugin_src("without")).unwrap();
+        let b = p
+            .danmaku_list(DanmakuRequest { episode_id: "ep1".into(), ..Default::default() })
+            .await
+            .unwrap();
+
+        assert_eq!(b.items.len(), 2, "两条都要在（不许因为缺 cid 就丢）");
+        for (i, c) in b.items.iter().enumerate() {
+            assert!(
+                c.cid.is_some(),
+                "★ 第 {i} 条必须被补上 cid —— 否则宿主 fromJson 会**静默丢弃整条**"
+            );
+        }
+        // 补位规则：下标 + 1 ⇒ 1、2（从 1 开始，与真实 cid 习惯一致）
+        assert_eq!(b.items[0].cid, Some(1), "第一条补 1");
+        assert_eq!(b.items[1].cid, Some(2), "第二条补 2");
+        // 补位不能破坏原有字段
+        assert_eq!(b.items[0].m, "第一条");
+        assert_eq!(b.items[1].p, "3.0,5,255,u2");
+    }
+
+    /// ★ 插件给的真 cid **不许被覆盖**（补位只补 None）
+    #[tokio::test]
+    async fn danmaku_list_keeps_real_cid() {
+        let p = JsPluginProvider::from_source(&danmaku_plugin_src("mixed")).unwrap();
+        let b = p
+            .danmaku_list(DanmakuRequest { episode_id: "ep1".into(), ..Default::default() })
+            .await
+            .unwrap();
+        assert_eq!(b.items[0].cid, Some(101), "第 1 条有真 cid ⇒ 必须原样保留");
+        assert_eq!(b.items[1].cid, Some(2), "第 2 条缺 cid ⇒ 按下标+1 补成 2");
+    }
+
+    /// ★★ 「不支持」与「有但返回空」必须是**两件可区分的事**
+    ///
+    /// Lead 明确要求：否则用户没法判断是源不支持还是真没弹幕。
+    #[tokio::test]
+    async fn danmaku_unsupported_is_distinguishable_from_empty() {
+        // ① 插件没实现 danmakuList ⇒ Unsupported（明确的不支持）
+        let src_no = r#"/** @id no_dm @name 无弹幕插件 */
+globalThis.plugin = { id: 'no_dm', capabilities: { vod: true } };
+"#;
+        let p = JsPluginProvider::from_source(src_no).unwrap();
+        let e = p
+            .danmaku_list(DanmakuRequest { episode_id: "ep1".into(), ..Default::default() })
+            .await
+            .expect_err("没实现 danmakuList ⇒ 必须报错，不能静默返回空列表");
+        assert_eq!(
+            e.kind,
+            ErrorKind::Unsupported,
+            "★ 必须是 Unsupported（调用方据此隐藏弹幕入口），实际: {:?} / {}",
+            e.kind,
+            e.message
+        );
+
+        // ② 插件实现了但这一集真没弹幕 ⇒ Ok(空列表)，**不是**错误
+        let src_empty = r#"/** @id empty_dm @name 空弹幕插件 */
+globalThis.plugin = {
+  id: 'empty_dm',
+  capabilities: { vod: true, danmaku: true },
+  async danmakuList(req) { return { items: [], source: 'test:empty' }; },
+};
+"#;
+        let p2 = JsPluginProvider::from_source(src_empty).unwrap();
+        let b = p2
+            .danmaku_list(DanmakuRequest { episode_id: "ep1".into(), ..Default::default() })
+            .await
+            .expect("★ 这一集真没弹幕是**合法结果**，不能报错");
+        assert!(b.items.is_empty(), "空列表如实返回");
+    }
+
+    /// ★ 剧集 id 上的 `{provider}:` 前缀必须剥掉再给插件
+    ///
+    /// 不剥的后果实测过（本文件 L2119）：插件拿 `srca:51463` 当数字 id 用 → 上游 400。
+    #[tokio::test]
+    async fn danmaku_strips_provider_prefix_from_ids() {
+        let src = r#"/** @id pf @name 前缀插件 */
+globalThis.plugin = {
+  id: 'pf',
+  async danmakuList(req) {
+    return { items: [], source: req.mediaId + '|' + req.episodeId };
+  },
+};
+"#;
+        let p = JsPluginProvider::from_source(src).unwrap();
+        let b = p
+            .danmaku_list(DanmakuRequest {
+                media_id: "pf:m1".into(),
+                episode_id: "pf:ep1".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            b.source.as_deref(),
+            Some("m1|ep1"),
+            "★ 插件收到的必须是裸 id（前缀已剥），否则上游会 400"
+        );
+    }
+
+    /// ★★ 发送弹幕：能发就真的发，并把上游 id 带回来
+    #[tokio::test]
+    async fn danmaku_send_is_bridged_and_returns_id() {
+        let p = JsPluginProvider::from_source(&danmaku_plugin_src("with")).unwrap();
+        let r = p
+            .danmaku_send(DanmakuSendRequest {
+                episode_id: "ep1".into(),
+                text: "你好".into(),
+                ..Default::default()
+            })
+            .await
+            .expect("danmakuSend 必须被桥接");
+        assert!(r.ok, "ok 必须为 true");
+        assert_eq!(r.id.as_deref(), Some("sent-1"), "上游 id 要带回来");
+    }
+
+    /// ★★★ 纪律：没实现发送 ⇒ **必须如实说不支持**，绝不假装成功
+    ///
+    /// 假装成功的后果最坏：用户以为发出去了 → 刷新找不到 → 反复发 →
+    /// 在真站点上可能**已经触发风控封禁**。
+    #[tokio::test]
+    async fn danmaku_send_unsupported_when_not_implemented() {
+        let src = r#"/** @id no_send @name 不能发的插件 */
+globalThis.plugin = {
+  id: 'no_send',
+  capabilities: { vod: true, danmaku: true },
+  async danmakuList(req) { return { items: [] }; },
+};
+"#;
+        let p = JsPluginProvider::from_source(src).unwrap();
+        let e = p
+            .danmaku_send(DanmakuSendRequest { episode_id: "ep1".into(), text: "x".into(), ..Default::default() })
+            .await
+            .expect_err("★ 没实现发送 ⇒ 必须报 Unsupported，绝不能返回成功");
+        assert_eq!(e.kind, ErrorKind::Unsupported, "实际: {:?} / {}", e.kind, e.message);
+    }
+
+    /// ★★★ 纪律兜底：插件返回 `{ok: false}` 也要被拒（不能当软失败放过去）
+    ///
+    /// 契约要求抛 `unsupported:`，但作者可能写成 `return { ok: false }`。
+    /// 若宿主放过去，调用方会以为**发送成功了**。
+    #[tokio::test]
+    async fn danmaku_send_ok_false_is_rejected() {
+        let src = r#"/** @id soft @name 软失败插件 */
+globalThis.plugin = {
+  id: 'soft',
+  async danmakuSend(req) { return { ok: false }; },
+};
+"#;
+        let p = JsPluginProvider::from_source(src).unwrap();
+        let e = p
+            .danmaku_send(DanmakuSendRequest { episode_id: "ep1".into(), text: "x".into(), ..Default::default() })
+            .await
+            .expect_err("★ ok=false 必须转成明确的 Unsupported，不能被当成「发过了」");
+        assert_eq!(e.kind, ErrorKind::Unsupported, "实际: {:?} / {}", e.kind, e.message);
+    }
+
+    /// ★ 能力位：`danmaku` / `danmakuSend` 两个都要被读进来
+    ///
+    /// ⚠️ `hydrate_capabilities` 是**逐字段**读的，往结构体加字段**不会**
+    ///    自动生效 —— 忘了在这里赋值，表现是「插件声明了却不出现入口」且不报错。
+    #[tokio::test]
+    async fn danmaku_capability_bits_are_hydrated() {
+        let p = JsPluginProvider::from_source(&danmaku_plugin_src("with")).unwrap();
+        let mut p = p;
+        p.hydrate_capabilities().await;
+        let c = &p.manifest().capabilities;
+        assert!(c.danmaku, "danmaku 能力位必须被读进来");
+        assert!(c.danmaku_send, "★ danmaku_send 能力位必须被读进来（漏了不报错）");
+    }
+
+    /// ★ 老插件（不声明弹幕）⇒ 两个能力位都必须是 **false**（行为与今天逐字相同）
+    #[tokio::test]
+    async fn danmaku_capability_defaults_to_false_for_old_plugins() {
+        let src = r#"/** @id old @name 老插件 */
+globalThis.plugin = { id: 'old', capabilities: { vod: true, search: true } };
+"#;
+        let mut p = JsPluginProvider::from_source(src).unwrap();
+        p.hydrate_capabilities().await;
+        let c = &p.manifest().capabilities;
+        assert!(!c.danmaku, "★ 老插件不声明 ⇒ 必须是 false（否则界面会突然多出弹幕入口）");
+        assert!(!c.danmaku_send, "★ 同上");
+    }
+
+
+    /// ★★★ 端到端：插件 → 宿主桥接 → 真实 wire JSON（供 Dart 侧交叉验证）
+    ///
+    /// # 这条测试为什么必须存在
+    ///
+    /// 上面那些测试各自只证明**一段**是对的：
+    /// ```text
+    /// danmaku_list_backfills_missing_cid  ⇒ 桥接层补了 cid
+    /// （Dart 侧）danmaku_wire_crosscheck  ⇒ 真解析器能吃掉 wire
+    /// ```
+    /// 但**两段接起来**才是用户实际走的路。协议真正的风险恰恰在接缝上：
+    /// 「插件输出的形状 ≠ 宿主能解析的形状」—— 那种 bug 不报错，
+    /// 表现是「弹幕加载成功但一条都不显示」，最难查。
+    ///
+    /// # 它怎么把两段接起来
+    /// ```text
+    /// ① 本测试跑**真插件**（含故意不带 cid 的形态）过**真桥接层**
+    /// ② 把桥接层吐出的 wire 打成一行带前缀的 JSON 打到 stdout
+    /// ③ 外部脚本把那一行落成文件，交给 Dart 侧的真解析器
+    ///    （.probe/plugin-work/e2e_danmaku_chain_test.dart）
+    /// ```
+    /// ⚠️ 用「打印」而不是「测试里写文件」：单元测试不该有副作用，
+    ///    而且打印出来的**原始 cargo 输出本身就是证据**。
+    #[tokio::test]
+    async fn e2e_plugin_to_wire_json_for_dart() {
+        // 故意用 "without"：一条 cid 都不给 —— 这正是最容易静默全丢的形态
+        let p = JsPluginProvider::from_source(&danmaku_plugin_src("without")).unwrap();
+        let b = p
+            .danmaku_list(DanmakuRequest {
+                media_id: "m1".into(),
+                episode_id: "ep-e2e".into(),
+                ..Default::default()
+            })
+            .await
+            .expect("桥接必须成功");
+
+        // 桥接层已补位 —— 这里断言，然后才打出去
+        assert_eq!(b.items.len(), 2, "两条都要在");
+        assert!(b.items.iter().all(|c| c.cid.is_some()), "★ 每条都必须有 cid");
+
+        let wire = serde_json::json!({
+            "items": b.items,
+            "source": b.source,
+            "truncated": b.truncated,
+        });
+        // ★ 这一行是给外部脚本抓的（前缀是约定，别改）
+        println!("E2E_WIRE_JSON={}", serde_json::to_string(&wire).unwrap());
+    }
+
+    /// ★ 没实现弹幕的源，走 trait 默认实现必须是 Unsupported（不是 panic、不是空）
+    #[tokio::test]
+    async fn danmaku_default_impl_is_unsupported() {
+        let p = provider_with_id("plain");
+        let e = p
+            .danmaku_list(DanmakuRequest::default())
+            .await
+            .expect_err("默认实现必须报 Unsupported");
+        assert_eq!(e.kind, ErrorKind::Unsupported);
+        let e2 = p
+            .danmaku_send(DanmakuSendRequest::default())
+            .await
+            .expect_err("默认实现必须报 Unsupported");
+        assert_eq!(e2.kind, ErrorKind::Unsupported);
     }
 }

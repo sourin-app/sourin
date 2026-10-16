@@ -85,6 +85,54 @@ pub async fn provider_session_state(
     Ok(state.registry.session_state(provider).await)
 }
 
+
+// ── 弹幕（task-T2，2026-10-16）────────────────────────────────────────
+
+/// 取某一集的弹幕列表
+///
+/// # 返回值语义（调用方**必须**区分这三件事）
+/// ```text
+/// Ok(items 非空)    这一集有弹幕
+/// Ok(items 为空)    ★ 这一集**真的**没人发弹幕（合法结果，不是错误）
+/// Err(Unsupported)  ★ 这个源**不支持**弹幕（另一件事）
+/// ```
+/// 混起来用户就无法判断「是源不支持还是真没弹幕」—— 这是 Lead 明确的要求。
+///
+/// ⚠️ `Err` 的 `message` 里带 `Unsupported` 前缀串由上层映射成 error kind，
+///    本层只把 `ProviderError.message` 原样透出（与其它 provider_* 同做法）。
+pub async fn provider_danmaku_list(
+    state: &AppState,
+    provider: &str,
+    req: crate::model::DanmakuRequest,
+) -> Result<crate::model::DanmakuBundle, String> {
+    let p = state
+        .registry
+        .get(provider)
+        .ok_or_else(|| format!("找不到 Provider: {provider}"))?;
+    p.danmaku_list(req).await.map_err(|e| e.message)
+}
+
+/// 发送一条弹幕
+///
+/// # ★★ 纪律：不支持的站点必须**如实报错**，绝不假装成功
+///
+/// 本函数只在**上游确实收下**时返回 `Ok(ok: true)`。
+/// 未实现 / 上游拒绝 ⇒ `Err`（插件抛 `unsupported:` / `unauthorized:`）。
+///
+/// 假装成功的后果最坏：用户以为发出去了 → 刷新找不到 → 反复发 →
+/// 在真站点上可能**已经触发风控封禁**。
+pub async fn provider_danmaku_send(
+    state: &AppState,
+    provider: &str,
+    req: crate::model::DanmakuSendRequest,
+) -> Result<crate::model::DanmakuSendResult, String> {
+    let p = state
+        .registry
+        .get(provider)
+        .ok_or_else(|| format!("找不到 Provider: {provider}"))?;
+    p.danmaku_send(req).await.map_err(|e| e.message)
+}
+
 /// 确保会话可用（必要时自动登录）
 pub async fn ensure_provider_session(
     state: &AppState,

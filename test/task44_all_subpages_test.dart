@@ -124,6 +124,7 @@ const subPages = <String>[
   'lib/ui/settings/playback_page.dart',
   'lib/ui/settings/touch_gestures_page.dart',
   'lib/ui/settings/emby_page.dart',
+  'lib/ui/settings/live_groups_page.dart',
 ];
 
 void main() {

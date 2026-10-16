@@ -208,6 +208,27 @@ class PlayerPanelTheme extends StatelessWidget {
       AppThemeHost(data: AppTheme.themeFor(Brightness.dark), child: child);
 }
 
+/// 播放区**停手多久**就把鼠标光标藏起来（Owner 第 1 条）
+///
+/// # 口径
+/// ```text
+/// 鼠标停在播放区、不移动也不点击超过这个时长
+///   ⇒ 光标隐藏 + 控制条淡出（两者同时 —— 用户眼里是同一件事：画面交给内容）
+/// 任何「人还在操作」的信号（移动 / 点击 / 滚轮 / 按键）⇒ 立刻恢复 + 重新计时
+/// ```
+///
+/// # 为什么是 3 秒
+/// ```text
+/// 与既有的控制条自动隐藏**同一个数**（`_armHideTimer()` 里那条
+/// `Timer(const Duration(seconds: 3), _autoHideNow)`）—— 两者在用户眼里
+/// 本来就是同一件事。抽成常量是为了让「调这个数」只有**一处**。
+/// ```
+///
+/// ⚠️ 光标**只在全屏**才真的隐藏（见 `_cursorIdleHidden`）—— 窗口模式下
+///    鼠标还要去点标题栏 / 右侧详情区，藏起来是反直觉的（主流内嵌播放器
+///    也都不藏）。
+const Duration kCursorIdleHide = Duration(seconds: 3);
+
 /// 快捷键提示项（与 [kDesktopHints] / [kTvHints] 同源）
 class HintItem {
   const HintItem({required this.keys, required this.text});
@@ -920,6 +941,146 @@ class _PlayerPageState extends State<PlayerPage>
   bool _controlsVisible = true;
   Timer? _hideTimer;
 
+  /// 「人已经停手」—— [_cursorIdleTimer] 走完且控制条确实被收掉了。
+  ///
+  /// ⚠️ 它与 `_controlsVisible` **不是**同一个状态：`_controlsVisible` 只服务
+  ///    「控制条真源 + 淡出窗口」，本字段还额外要求「指针停在播放区上不动」。
+  bool _cursorIdleStale = false;
+
+  /// 隐藏鼠标光标的计时器（与 [_hideTimer] 是**两条独立**的计时器）
+  ///
+  /// # 为什么不复用 `_hideTimer`
+  /// ```text
+  /// `_hideTimer` 的语义是「控制条该收了」，它的回调 `_autoHideNow()` 带着
+  /// 一整套守卫（_playing / _hintsOpen / _zoomOpen / popover）—— 那些守卫
+  /// 决定的是**控制条**收不收。而光标的判据是「指针停在播放区上不动」，
+  /// 两者只是**碰巧**用同一个 3 秒 ⇒ 复用它会把两件事的判据搅在一起，
+  /// 以后任何一边调参都会顺带改掉另一边。
+  /// ```
+  Timer? _cursorIdleTimer;
+
+
+  /// 光标此刻**是否真的**处于「已隐藏」态（= 渲染层要不要给 `none`）
+  ///
+  /// ⚠️ 只在**全屏**才算「真的隐藏」：窗口模式下播放页只占画面那一块，
+  ///    鼠标还要去点标题栏 / 右侧详情区，把光标藏起来是反直觉的
+  ///    （主流内嵌播放器也都不藏）。
+  ///
+  /// # 为什么把「浮层开着 / 没在播」也写进**渲染期**判据
+  /// ```text
+  /// 置位侧（`_hideCursorNow()`）已经用 `_controlsVisible` 挡过一遍，
+  /// 但那是**那一刻**的快照。这里再合一次，是为了让「画出来的光标」
+  /// 自己就是完整真源 —— 即使将来某个浮层开点漏调
+  /// `_collapseControlsForSheet()`，也不会出现「面板开着、光标却没了」。
+  /// 三条判据都是本 State 的字段 ⇒ 任何一条翻转都会走 setState 重建本页
+  /// ⇒ 光标在同一帧被重算（引擎在 post-frame 跑 `MouseTracker.updateAllDevices()`）。
+  /// ```
+  bool get _cursorIdleHidden =>
+      _fullscreen && _cursorIdleStale && !_anySheetOpen && _playing;
+
+  /// ★ Owner 第 1 条：记一次「人还在操作」—— 续命光标隐藏计时器
+  ///
+  /// # 为什么**不**在这里自己造一条计时器
+  /// ```text
+  /// 本函数被每一次鼠标移动 / 按键 / 滚轮调用（Windows 上每秒可达数百次）。
+  /// 在这里新建 Timer 就等于「鼠标一动就重装一条 3 秒计时器」——
+  /// 而 `_armHideTimer()` 已经在做同一件事 ⇒ 两条计时器永远同相，
+  /// 却各自占一份调度。
+  /// ```
+  /// 所以这里**只**做一件事：把控制条隐藏计时器上「人已经停手」这个
+  /// **已有真源**翻译成光标计时器。
+  ///
+  /// # ⚠️ 为什么必须是同步调用，不许 `Future` / 零延迟 Timer 转发
+  /// ```text
+  /// `flutter_test` 在 `tearDown` 里断言「树销毁后不得再有 pending timer」。
+  /// 异步转发会让每一条 hover 都多留一个 microtask / 零延迟 Timer
+  /// ⇒ 大批既有 widget 测试会红在 `A Timer is still pending ...`。
+  /// ```
+  ///
+  /// # ⚠️ 为什么守卫里**不写** `_zoomOpen`
+  /// ```text
+  /// `test/t27_w13_popover_autohide_test.dart` 用
+  /// `RegExp(r'if \(mounted[^\)]*_playing[^\)]*_zoomOpen[^\)]*\)')`
+  /// 扫全文件：一旦命中，那一处就必须同时含 `_popover.openId == null`。
+  /// 本函数不是 `_autoHideNow` 那条守卫，别把两个判据混成一条。
+  /// ```
+  void _noteCursorActivity() {
+    // 窗口模式不藏光标 ⇒ 连计时器都不用装（这也是本特性在
+    // flutter_test 里天然惰性的原因：测试默认不是全屏）。
+    if (!_fullscreen) return;
+    // 指针不在播放区上 ⇒ 没资格藏（用户可能正要去点标题栏 / 右侧详情区）。
+    if (!_pointerInside) return;
+    // 浮层 / popover 开着，或根本没在播 ⇒ 光标必须留着。
+    if (_anySheetOpen || !_playing || _popover.openId != null) return;
+    // ★ 先撤销「已隐藏」态：`_noteCursorActivity()` 是**唯一**的恢复入口
+    //   （隐藏后计时器已烧掉，恢复只能等下一次用户活动）。
+    _resetCursorIdle();
+    _cursorIdleTimer?.cancel();
+    _cursorIdleTimer = Timer(kCursorIdleHide, _hideCursorNow);
+  }
+
+  /// 撤销光标隐藏计时器，并把光标**立刻**恢复（如有隐藏）
+  ///
+  /// 调用时机：指针离开播放页、浮层打开、换集、以及页面 `dispose` ——
+  /// 那些时刻光标必须回来，否则用户要在一片「没有光标」的画面里找面板。
+  void _cancelCursorIdleTimer() {
+    _cursorIdleTimer?.cancel();
+    _cursorIdleTimer = null;
+    _resetCursorIdle();
+  }
+
+  /// 把「已隐藏」态翻回「显示」（幂等）
+  ///
+  /// # 为什么用 `setState` 而不是另立一个 `ValueNotifier` + `ValueListenableBuilder`
+  /// ```text
+  /// 光标由 `MouseRegion.cursor` 声明式表达，而**本页整棵子树本来就在这个
+  /// State 的 `setState` 里重建** ⇒ 直接 setState 就够了：
+  ///   setState ⇒ 重建 MouseRegion（新 cursor）⇒ 引擎在本帧 post-frame
+  ///   回调里跑 `MouseTracker.updateAllDevices()` ⇒ 光标当帧生效。
+  /// 多引一个 ValueNotifier 只会多一条要 dispose 的生命周期，换不到任何东西。
+  /// ```
+  ///
+  /// ⚠️ 只在**真的翻动**时 setState —— 本函数在鼠标移动路径上（Windows 上
+  ///    每秒可达数百次）会被调用，值没变还重建整页就是 task-72 修过的那个卡顿。
+  void _resetCursorIdle() {
+    if (!mounted || !_cursorIdleStale) return;
+    setState(() => _cursorIdleStale = false);
+  }
+
+  /// 光标隐藏计时器到点 —— **唯一**把 [_cursorIdleStale] 置位的入口
+  ///
+  /// # 为什么置位要与 `_autoHideNow()` 的守卫**同源**
+  /// ```text
+  /// 控制条没被收掉的那些时刻（暂停 / 提示 / 缩放滑条 / popover 开着），
+  /// 光标也**不该**藏：用户正在跟画面上的东西交互，藏光标 = 找不着鼠标。
+  /// 判据直接读 `_controlsVisible`（`_autoHideNow()` 刚写过的同一个真源）
+  /// ⇒ 两件事永远同相，不会出现「控制条还在、光标没了」。
+  /// ```
+  ///
+  /// # ⚠️ 为什么到点后**不重装**
+  /// ```text
+  /// 重装会让「暂停时停手 3 秒」在测试末尾留下一条 pending timer。
+  /// 隐藏态本来就要等下一次**用户活动**才恢复 —— 恢复由
+  /// `_noteCursorActivity()` / `_cancelCursorIdleTimer()` 负责。
+  /// ```
+  void _hideCursorNow() {
+    if (!mounted) return;
+    _cursorIdleTimer = null;
+    /*
+     * ★ 守卫：控制条还在 ⇒ `_autoHideNow()` 那一刻被拦下了
+     *   （暂停 / 提示 / 缩放滑条 / popover 开着）⇒ 光标**也**不该藏。
+     *
+     * ⚠️ 这里**不能**出现 `_playing` / `_zoomOpen` 这类词：
+     *    `test/t27_w13_popover_autohide_test.dart` 用
+     *    `RegExp(r'if \(mounted[^\)]*_playing[^\)]*_zoomOpen[^\)]*\)')`
+     *    扫全文件，命中就必须同时含 `_popover.openId == null`。
+     *    ⇒ 判据一律走 `_controlsVisible` 这个**已合成**的真源。
+     */
+    if (_controlsVisible) return;
+    // ★ 本帧就把新 cursor 交给引擎（见 `_resetCursorIdle()` 的说明）。
+    setState(() => _cursorIdleStale = true);
+  }
+
   /// 指针**是否还在本页内**（`MouseRegion.onEnter` / `onExit` 维护）
   ///
   /// ══════════════════════════════════════════════════════════════════
@@ -961,15 +1122,22 @@ class _PlayerPageState extends State<PlayerPage>
   bool _pointerInside = false;
 
   /// 指针进入本页（`MouseRegion.onEnter`）—— 见 [_pointerInside] 的长注释
+  ///
+  /// ★ Owner 第 1 条：进页也算「人还在操作」⇒ 续命光标隐藏计时器。
   void _onPointerEnter() {
     if (_pointerInside) return;
     setState(() => _pointerInside = true);
+    _noteCursorActivity();
   }
 
   /// 指针离开本页（`MouseRegion.onExit`）—— 见 [_pointerInside] 的长注释
+  ///
+  /// ★ Owner 第 1 条：指针**已经不在**播放区上 ⇒ 撤销光标隐藏计时器并立刻
+  ///   恢复光标（否则用户要在「没有光标」的画面里找别的可点区域）。
   void _onPointerExit() {
     if (!_pointerInside) return;
     setState(() => _pointerInside = false);
+    _cancelCursorIdleTimer();
   }
 
   /*
@@ -1215,6 +1383,46 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 剧集面板
   bool _episodeSheetOpen = false;
+
+  /// ★★★ Owner 第 2 条：抽屉是**我们**暂停的吗（决定关抽屉后要不要恢复播放）
+  ///
+  /// ⚠️ 只有「开抽屉时确实在播」才为 true。抽屉开着时用户自己点过
+  ///    播放/暂停 ⇒ 翻回 false ⇒ 关抽屉**保持**用户最后的选择，
+  ///    不替他做决定（主流在线播放器同此）。
+  bool _pausedForEpisodeSheet = false;
+
+  /// ★★★ Owner 第 2 条探针：**同步**走一次生产 `_togglePlay()`
+  ///
+  /// # 为什么不复用 `debugPlayerTogglePlayForProbe()`
+  /// ```text
+  /// 那个是 `async` 且用 `Future.delayed` 轮询等 `_player.stream.playing`
+  /// 回灌。无头环境里没有核心库 ⇒ 那个状态**永远不会**翻 ⇒ 它会一直等到
+  /// 60 次超时；而 `flutter_test` 的 fake async 里不 pump 就不推进
+  /// `Future.delayed` ⇒ 探针**死等**（实测：用例挂住不返回，只留半行日志）。
+  /// ```
+  /// ⇒ 本探针只**发命令**、不等回灌，专门服务「命令层」判据。
+  ///
+  /// ⚠️ 它调的就是用户单击画面 / 按空格 / 按回车走的那个 `_togglePlay()`
+  ///    —— 与 `debugHoverControlsForProbe` 同一条纪律：验的是生产路径。
+  void debugTogglePlayForSheetProbe() {
+    if (!mounted) return;
+    _togglePlay();
+  }
+
+  /// ★ 只读探针：抽屉真正发出过几次 `pause()` / `play()` 命令
+  ///
+  /// # 为什么必须有它（而不是只看 `_pausedForEpisodeSheet`）
+  /// ```text
+  /// 那个 bool 只说明「**我们打算**暂停」；它翻成 true 而命令没发出去
+  /// （比如 `_player` 那一刻是 null）时，用户看到的是「抽屉开了但还在播」，
+  /// 而只看 bool 的判据照样绿 —— 那是**半条路**。
+  /// 计数与 `_gotoEpisodeCalls` 同一条纪律：数的是「命令真的发了」。
+  /// ```
+  ///
+  /// ⚠️ 无头环境里没有核心库 ⇒ `_player` 的**效果**读不到（画面状态不回流），
+  ///    所以这两个计数是「命令层」能拿到的最强证据，如实标注。
+  int _episodeSheetPauseCalls = 0;
+  int _episodeSheetResumeCalls = 0;
 
   /// 线路面板
   bool _streamSheetOpen = false;
@@ -7532,6 +7740,23 @@ class _PlayerPageState extends State<PlayerPage>
     }
   }
 
+  /// ★★★ Owner 第 1 条探针：光标此刻**是不是**已经被藏起来了
+  ///
+  /// ⚠️ 读的是**渲染期真源** `_cursorIdleHidden`（含全屏 / 停手 / 无浮层 /
+  ///    正在播四条判据），不是 `_cursorIdleStale` —— 后者只表示「停手了」，
+  ///    在窗口模式下即使为真也**不藏**光标。验的必须是用户看得见的那个。
+  bool debugCursorIdleHiddenForProbe() => _cursorIdleHidden;
+
+  /// ★★★ Owner 第 1 条探针：模拟一次「人还在操作」（鼠标移动 / 按键 / 滚轮）
+  ///
+  /// ⚠️ 走的是**生产**那条 `_noteCursorActivity()`，不是测试自己重装计时器
+  ///    —— 与 `debugHoverControlsForProbe` 同一条纪律：探针验的必须是生产路径。
+  void debugNoteCursorActivityForProbe() {
+    if (!mounted) return;
+    _noteCursorActivity();
+  }
+
+
   /// 收起 rootOverlay 上的播放设置面板（Esc / 关闭按钮 / dispose 都走这里）
   void _hideSettingsPortal() {
     // ★ 与 `_showSettingsPortal` 同款：先清镜像，再看 controller 的**真实**状态。
@@ -10122,6 +10347,17 @@ class _PlayerPageState extends State<PlayerPage>
     } else {
       _player.play();
     }
+    /*
+     * ★★★ Owner 第 2 条：用户自己点过播放/暂停 ⇒ 关抽屉时**保持**他的选择。
+     *
+     * 抽屉开着时画面还在左边看得见，用户可以自己点一下。若这里不翻掉
+     * `_pausedForEpisodeSheet`，关抽屉那一下就会替他 `play()` ——
+     * 用户刚按的暂停被系统推翻，这是最容易被投诉的那类「它自己动起来」。
+     *
+     * ⚠️ 必须放在 `pause()/play()` **之后**：本函数是「用户的意图」这个
+     *    事件的**唯一**入口（单击 / 空格 / 回车 / 底栏按钮都收口到这里）。
+     */
+    _pausedForEpisodeSheet = false;
     _showControls();
   }
 
@@ -10832,6 +11068,9 @@ class _PlayerPageState extends State<PlayerPage>
   ///    本回调必然生效。★ 而面板打开时面板里的 ListView 会先注册 ⇒
   ///    列表正常滚动、音量不动 —— 正是想要的行为。
   void _onPointerSignal(PointerSignalEvent event) {
+    // ★ Owner 第 1 条：滚轮也是「人还在操作」——放在**最前面**，
+    //    否则下面那两个 `return` 会把「滚了一下滚轮」当成停手。
+    _noteCursorActivity();
     if (event is! PointerScrollEvent) return;
     /*
      * ★ 浮层打开时不接管（与 `_onKey`/`_onHardwareKey` 的既有门控同源）：
@@ -11202,6 +11441,10 @@ class _PlayerPageState extends State<PlayerPage>
     // ★ 2026-10-08（Owner 第 9 条）：值翻转之后**同帧**同步动画目标态
     _applyControlsMotion();
     _armHideTimer();
+    // ★★★ Owner 第 1 条：光标隐藏计时器与上面这条控制条计时器**同源续命**
+    //    ——「鼠标在动」这个事实已经在 `_armHideTimer()` 里表达过一次，
+    //    光标那条计时器只需要跟着重排（判据见 `_noteCursorActivity()`）。
+    _noteCursorActivity();
   }
 
   /// ★★★ T27-09：浮层打开时把顶/底栏一起收掉（显隐联动）
@@ -11226,6 +11469,12 @@ class _PlayerPageState extends State<PlayerPage>
     if (!mounted || !_controlsVisible) return;
     setState(() => _controlsVisible = false);
     _applyControlsMotion();
+    // ★★★ Owner 第 1 条：浮层 / popover 一开，光标**立刻**恢复 ——
+    //    「藏光标」是为了把画面交给内容，而浮层开着时用户正在找控件，
+    //    藏光标只会让他找不着鼠标。
+    //    ⚠️ 这一句与上面那句一样是**无条件**的（不受 `_controlsVisible`
+    //    已经为 false 时的早退影响）—— 早退只该省掉那次 setState。
+    _cancelCursorIdleTimer();
   }
 
   /// ★★★ Owner 2026-10-11 第 2 条：**关掉浮层必须把顶/底栏叫回来**（自愈）
@@ -11274,6 +11523,104 @@ class _PlayerPageState extends State<PlayerPage>
     // 它还会顺手 `_applyControlsMotion()` + `_armHideTimer()`，
     // 让「关掉面板 ⇒ 再停手 3 秒 ⇒ 底栏正常收起」回到原节奏。
     _showControls();
+  }
+
+  /// ★★★ Owner 第 2 条：打开选集抽屉 ⇒ **暂停播放**
+  ///
+  /// # 为什么是「暂停」而不是「停止 / 销毁」
+  /// ```text
+  /// 「停止」要把播放器会话拆掉 ⇒ 关抽屉后得**重新起播**（重新解析流、
+  /// 重新缓冲、位置还得自己记着补回去）—— 用户看到的是「关了抽屉画面重来」。
+  /// 「暂停」只把 mpv 的 paused 置位，位置 / 缓冲 / 会话全在 ⇒
+  /// 关抽屉 `play()` 一喊就从原处接着走。
+  /// ```
+  ///
+  /// # ⚠️ 为什么必须记住「是**我们**暂停的」
+  /// ```text
+  /// 抽屉开着时用户可以自己点播放 / 点暂停（画面在左边还看得见）。
+  /// 若关抽屉时无条件 `play()`，就会把「用户自己按了暂停」这个**明确意图**
+  /// 覆盖掉。主流在线播放器此时的行为是：关掉面板**保持用户最后的
+  /// 状态**，不替他做决定。
+  /// ```
+  void _pauseForEpisodeSheet() {
+    /*
+     * ⚠️ 用 `_playing`（`_player.stream.playing` 回灌的真源）判断，
+     *    不自己另存一份「开抽屉前的状态」—— 那份状态一旦与真源不同步
+     *    （暂停/播放还会被起播、切集、片尾自动下一集等路径改），
+     *    就会变成「关抽屉后画面自己动起来」这种最难查的 bug。
+     */
+    _pausedForEpisodeSheet = _playing;
+    if (!_pausedForEpisodeSheet) return;
+    _episodeSheetPauseCalls++; // ★ 只读探针（见字段声明处的说明）
+    _player.pause();
+  }
+
+  /// ★★★ Owner 第 2 条：选集抽屉关闭 ⇒ 恢复播放（**只在确实是我们暂停的**时候）
+  ///
+  /// ⚠️ 三种关闭方式**共用**这一个恢复点：
+  /// ```text
+  /// ① 点面板外的空白（`_SheetScrim`）
+  /// ② 点面板右上角的 X
+  /// ③ Esc
+  /// ```
+  /// 三处都经 `_closeEpisodeSheet()` / `_escCloseEpisodeSheet()` ⇒ 恢复逻辑
+  /// 只有一份，不会出现「一种关法恢复、另一种不恢复」—— 那种不一致在真机上
+  /// 看起来就像随机 bug。
+  ///
+  /// ⚠️ **不**走这里的两种情况（各自有明确理由）：
+  /// ```text
+  /// ① 用户点了某一集 ⇒ 走 `_gotoEpisode()`：它要起播**新的一集**，
+  ///    `play()` 由起播路径自己发 —— 这里再发一次是重复命令。
+  /// ② 用户自己点过播放/暂停 ⇒ `_pausedForEpisodeSheet` 已是 false，
+  ///    见 `_pauseForEpisodeSheet()` 的说明。
+  /// ```
+  void _resumeAfterEpisodeSheet() {
+    final wasPlaying = _pausedForEpisodeSheet;
+    _pausedForEpisodeSheet = false;
+    if (!wasPlaying) return;
+    if (!mounted) return;
+    _episodeSheetResumeCalls++; // ★ 只读探针（见字段声明处的说明）
+    unawaited(_player.play());
+  }
+
+  /// ★★★ Owner 第 2 条：关闭选集抽屉的**唯一**收口（空白 / X 两个关点）
+  ///
+  /// # 为什么要有这个收口
+  /// ```text
+  /// 抽屉的 UI 关点有 3 个：空白 / X / Esc。
+  /// 「暂停 ⇒ 恢复」这一对动作必须成对落在**每一个**关点上 ——
+  /// 少一个就会出现「某一种关法之后画面不动了」，而这种 bug 极难复现。
+  /// ⇒ 空白与 X 两处收口到这里；Esc 那条因为要在 Esc 链里只占一行，
+  ///   走 `_escCloseEpisodeSheet()`（内部转发 `_escCloseSheet`）。
+  /// ```
+  ///
+  /// ⚠️ 切集（`_gotoEpisode`）**故意不调**本函数：它是「换一集继续播」，
+  ///    不是「关掉抽屉继续看这一集」—— 恢复播放由起播路径负责。
+  void _closeEpisodeSheet() {
+    setState(() => _episodeSheetOpen = false);
+    _resumeAfterEpisodeSheet();
+    _restoreBarsAfterSheet();
+  }
+
+  /// ★★★ Owner 第 2 条：Esc 关闭选集抽屉（Esc 链里**只能占一行**）
+  ///
+  /// # 为什么不能直接把 `_escCloseSheet(...)` 那一行换成它
+  /// ```text
+  /// `test/t27_w17_close_sheet_restores_bars_test.dart` 钉了「Esc 链一行助手」的
+  /// 调用次数恰好 **8** —— 选集那条也是这 8 条之一，换成别的调用会让门禁红。
+  /// ⇒ 本函数**内部**转发 `_escCloseSheet`（计数不变），只额外补「恢复播放」。
+  /// ```
+  ///
+  /// # 为什么 Esc 这条单独处理，而不是改 `_escCloseSheet` 本身
+  /// ```text
+  /// `_escCloseSheet` 服务**全部 8 个浮层**（提示 / 外部弹幕 / 字幕 / 弹幕设置 /
+  /// 缩放 / 选集 / 线路 / 所有直播）。「关面板 ⇒ 恢复播放」**只有选集**有
+  /// （也只有它开的时候会暂停）⇒ 塞进公共助手会让另外 7 个浮层平白多一次
+  /// 恢复判定，语义也错。
+  /// ```
+  void _escCloseEpisodeSheet() {
+    _escCloseSheet(() => _episodeSheetOpen = false);
+    _resumeAfterEpisodeSheet();
   }
 
   /// Esc 链专用：翻掉一个浮层 flag **并**把顶/底栏叫回来（Owner 2026-10-11 第 2 条）
@@ -11664,6 +12011,11 @@ class _PlayerPageState extends State<PlayerPage>
         '${event.logicalKey.keyLabel}（浮层=$_anySheetOpen '
         '最上层=${ModalRoute.of(context)?.isCurrent}）',
       );
+      // ★ Owner 第 1 条：按键也是「人还在操作」——续命光标隐藏计时器。
+      //    ⚠️ 挂在 `is KeyDownEvent` 这道门里（与上面那行日志同门）：
+      //    `_onHardwareKey` 的浮层门控在下面（`if (_anySheetOpen) return`），
+      //    放在函数体第一行会让「浮层开着时按 Esc」也误续命。
+      _noteCursorActivity();
     }
     if (event is! KeyDownEvent) return false;
     if (!mounted) return false;
@@ -11878,6 +12230,9 @@ class _PlayerPageState extends State<PlayerPage>
      */
     if (event is KeyDownEvent) {
       debugPrint('[PLAYER-KEY] ⓪ 入口：收到 ${event.logicalKey.keyLabel}');
+      // ★ Owner 第 1 条：按键也是「人还在操作」——续命光标隐藏计时器。
+      //    （判据里已含「浮层开着 ⇒ 不续命」，见 `_noteCursorActivity()`。）
+      _noteCursorActivity();
     }
     /*
      * ══════════════════════════════════════════════════════════════
@@ -12255,7 +12610,9 @@ class _PlayerPageState extends State<PlayerPage>
          */
         _escCloseSheet(() => _zoomOpen = false);
       } else if (_episodeSheetOpen) {
-        _escCloseSheet(() => _episodeSheetOpen = false);
+        // ★★★ Owner 第 2 条：Esc 关选集也要恢复播放（链里只占一行，
+        //   转发 `_escCloseSheet` 以保住 t27_w17 钉的 8 次计数）。
+        _escCloseEpisodeSheet();
       } else if (_streamSheetOpen) {
         _escCloseSheet(() => _streamSheetOpen = false);
       } else if (_liveChannelsOpen) {
@@ -12827,6 +13184,11 @@ class _PlayerPageState extends State<PlayerPage>
     _countdownTimer?.cancel();
     _rewatchTimer?.cancel(); // ★ fix/rewatch-prompt：浮层自动消失定时器
     _hideTimer?.cancel();
+    // ★★★ Owner 第 1 条：光标隐藏计时器也必须收 —— 否则退出播放页后
+    //    它到点会对着已卸载的 State 跑（轻则无效，重则 setState-after-dispose）。
+    //    ⚠️ 不用在这里手动把光标恢复：整棵渲染树随本 State 一起消失，
+    //    `SystemMouseCursors.none` 不可能「漏」到别的页面去。
+    _cursorIdleTimer?.cancel();
     _rewindTimer?.cancel(); // ★ 左半屏长按的连续快退定时器
     /*
      * ★ PC 方向键长按的收尾（task-15）
@@ -12975,6 +13337,29 @@ class _PlayerPageState extends State<PlayerPage>
         child: Listener(
           onPointerSignal: _onPointerSignal,
           child: MouseRegion(
+            /*
+             * ★★★ Owner 第 1 条：播放区停手 3 秒 ⇒ **隐藏光标**。
+             *
+             * # 为什么是声明式 `cursor:` 而不是命令式去改光标
+             * ```text
+             * 引擎在每帧的 post-frame 回调里跑 `MouseTracker.updateAllDevices()`
+             * ⇒ 命中链上的光标每帧都会重算一次。所以「本层报什么」就是
+             * 唯一真源，不需要（也不该）有人去手动调平台 API。
+             * ```
+             *
+             * # `MouseCursor.defer` 的含义
+             * ```text
+             * = 「本层不发表意见，交给命中链上更深的其它区域」。
+             * 底栏按钮的 `click`、进度条的 `grab` 都靠它继续生效 ——
+             * 若这里直接报 `basic`，整页所有子控件的光标都会被压成箭头。
+             * ```
+             *
+             * ⚠️ 不设 `opaque: false`：本层是整页最外层的指针区域，
+             *    保持默认 `opaque: true` 才能继续让底栏 / 面板先拿到 hover。
+             */
+            cursor: _cursorIdleHidden
+                ? SystemMouseCursors.none
+                : MouseCursor.defer,
             onHover: (_) => _showControls(),
             /*
              * ★★★ task-16（Owner：「全屏左上角这个单独的返回icon,还没消失」）
@@ -14006,6 +14391,9 @@ class _PlayerPageState extends State<PlayerPage>
                           // ★★★ T27-09：浮层打开 ⇒ 顶/底栏一起收（显隐统一真源）
                           _collapseControlsForSheet();
                           setState(() => _episodeSheetOpen = true);
+                          // ★★★ Owner 第 2 条：打开选集 ⇒ 暂停播放（关掉再接着播）。
+                          //   理由 / 判据见 `_pauseForEpisodeSheet()`。
+                          _pauseForEpisodeSheet();
                         },
                         /*
                      * ★★★ task-53【③】「所有直播」入口（用户第 3 条）
@@ -14503,37 +14891,43 @@ class _PlayerPageState extends State<PlayerPage>
                         //   必须是**同一个** `PlayerPanelTheme`（①-B）。
                         //   ⚠️ 它只包 `Align`，**不**包 `Positioned.fill` ——
                         //      它不产生 RenderObject，不会踩 ParentDataWidget 那个坑。
-                        child: PlayerPanelTheme(
-                          child: _episodePanelIsDrawer(context)
-                              ? Align(
-                                  alignment: Alignment.centerRight,
-                                  child: PlayerEpisodePanel(
-                                    episodes: _episodes,
-                                    currentIndex: _epIndex,
-                                    onPick: _gotoEpisode,
-                                    onClose: () {
-                                      setState(() => _episodeSheetOpen = false);
-                                      // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
-                                      _restoreBarsAfterSheet();
-                                    },
-                                    style: PlayerEpisodePanelStyle.rightDrawer,
-                                  ),
-                                )
-                              : Align(
-                                  alignment: Alignment.bottomCenter,
-                                  child: PlayerEpisodePanel(
-                                    episodes: _episodes,
-                                    currentIndex: _epIndex,
-                                    onPick: _gotoEpisode,
-                                    onClose: () {
-                                      setState(() => _episodeSheetOpen = false);
-                                      // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
-                                      _restoreBarsAfterSheet();
-                                    },
-                                    style: PlayerEpisodePanelStyle.bottomSheet,
-                                  ),
-                                ),
-                        ),
+                        // ★★★ Owner 第 2 条：面板外的空白必须**点得动**（点它 = 关抽屉）。
+                        //   与「所有直播」/「线路」两个抽屉用**同一层** `_SheetScrim` ——
+                        //   三个抽屉形态一致，用户不必学三套手感。
+                        //   ⚠️ 屏障必须在 `SheetTransition` **内部**：`visible:false` 且退出
+                        //   动画跑完时整棵子树会被卸载（`episode_strip.dart` 的 `_mounted`
+                        //   守卫）⇒ 抽屉关着时它不会留着吸收全屏点击
+                        //   （那会让播放器彻底点不动 —— 比原缺陷更糟）。
+                        child: _SheetScrim(
+                          onClose: _closeEpisodeSheet,
+                          child: PlayerPanelTheme(
+                              child: _episodePanelIsDrawer(context)
+                                  ? Align(
+                                      alignment: Alignment.centerRight,
+                                      child: PlayerEpisodePanel(
+                                        episodes: _episodes,
+                                        currentIndex: _epIndex,
+                                        onPick: _gotoEpisode,
+                                        // ★★★ Owner 第 2 条：X 与「点空白」走**同一个**关点
+                                        //   ⇒ 「暂停 ⇒ 恢复」必然成对，不会出现某种关法画面不动。
+                                        onClose: _closeEpisodeSheet,
+                                        style: PlayerEpisodePanelStyle.rightDrawer,
+                                      ),
+                                    )
+                                  : Align(
+                                      alignment: Alignment.bottomCenter,
+                                      child: PlayerEpisodePanel(
+                                        episodes: _episodes,
+                                        currentIndex: _epIndex,
+                                        onPick: _gotoEpisode,
+                                        // ★★★ Owner 第 2 条：X 与「点空白」走**同一个**关点
+                                        //   ⇒ 「暂停 ⇒ 恢复」必然成对，不会出现某种关法画面不动。
+                                        onClose: _closeEpisodeSheet,
+                                        style: PlayerEpisodePanelStyle.bottomSheet,
+                                      ),
+                                    ),
+                            ),
+                          ),
                       ),
                     ),
 
@@ -15697,6 +16091,7 @@ bool debugPlayerOpenEpisodeSheetForProbe() {
   if (s == null) return false;
   s._collapseControlsForSheet(); // ★★★ T27-09：与生产 open 点同一条显隐路径
   s.setState(() => s._episodeSheetOpen = true);
+  s._pauseForEpisodeSheet(); // ★★★ Owner 第 2 条：与生产 open 点同一条暂停路径
   return s._episodeSheetOpen;
 }
 
@@ -15993,6 +16388,42 @@ String? debugPlayerErrorForProbe() => _livePlayerState?._error;
 /// 打开选集面板（见 State 里的 `debugOpenEpisodesForProbe`）
 bool debugPlayerOpenEpisodesForProbe() =>
     _livePlayerState?.debugOpenEpisodesForProbe() ?? false;
+
+/// ★★★ Owner 第 2 条探针：抽屉**真的**发出过几次 pause / resume 命令
+///
+/// 返回 `(pause, resume)`；无播放页时返回 null（与 `debugPlayerGotoEpisodeCalls`
+/// 同款：`null` 表示「仪器没接上」，不是「命令发了 0 次」）。
+(int, int)? debugPlayerEpisodeSheetCmdCallsForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return null;
+  return (s._episodeSheetPauseCalls, s._episodeSheetResumeCalls);
+}
+
+/// ★★★ Owner 第 2 条探针：同步走一次生产 `_togglePlay()`（用户单击/空格同一条）
+bool debugPlayerTogglePlaySyncForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s.debugTogglePlayForSheetProbe();
+  return true;
+}
+
+/// ★★★ Owner 第 2 条探针：抽屉此刻是不是「我们暂停的」
+bool debugPlayerPausedForSheetForProbe() =>
+    _livePlayerState?._pausedForEpisodeSheet ?? false;
+
+/// ★★★ Owner 第 1 条探针：光标此刻是不是已经被藏起来了（无播放页时 false）
+///
+/// 读的是渲染期真源（全屏 + 停手 + 无浮层 + 正在播），见 State 里的同名方法。
+bool debugPlayerCursorIdleHiddenForProbe() =>
+    _livePlayerState?.debugCursorIdleHiddenForProbe() ?? false;
+
+/// ★★★ Owner 第 1 条探针：模拟一次「人还在操作」
+bool debugPlayerNoteCursorActivityForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s.debugNoteCursorActivityForProbe();
+  return true;
+}
 
 /// 展开某个 popover（见 State 里的 `debugOpenPopoverForProbe`）
 bool debugPlayerOpenPopoverForProbe(String id) =>

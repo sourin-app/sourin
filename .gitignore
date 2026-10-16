@@ -141,3 +141,9 @@ key.properties
 # a .json filename, and leaking this file means leaking a live API secret.
 tools/.dandanplay.local.json
 *.dandanplay.local.json
+
+# Agent 工作树（属临时脚手架，与 .probe/ 同类）。
+# ⚠️ 2026-10-17：本目录一度没被忽略 —— 建在仓库内的 git worktree
+#   会让 t98 的全仓扫描把**基线副本**也扫进来（同一份源码两份命中），
+#   表现为"莫名其妙多出一堆站名违规"。必须忽略。
+.agents/

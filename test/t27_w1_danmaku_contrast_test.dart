@@ -208,16 +208,23 @@ void main() {
     /// 边框/分隔线白名单：[文件, 锚点行, 理由]
     /// ⚠ 豁免不是免检：条目必须仍然逐字存在（防「改掉了、名单没删」假绿），
     ///   且颜色必须真的来自 DanmakuTextColors.border（写在锚点行里）。
+    /*
+     * ★ 2026-10-16 重新判决：删掉原「② 段落分隔线」那一条。
+     *
+     * 为什么删：原锚点是 `child: Divider(height: 1, color: DanmakuTextColors.border),`
+     * —— 弹幕设置面板改版时把 7 条满屏横线换成了「分组卡片 + 留白」
+     * （见 danmaku_settings_dialog.dart 的 `_group()` / `_gap()`），
+     * 那条 Divider 已**不存在**，留着就是空条款（本文件第 3 组断言正是防这个）。
+     *
+     * ★ 这不是放宽门禁：豁免的对象没了，条款就该撤。
+     *   若以后面板里再出现 Divider，本文件第 2 组规则（不许把 white*
+     *   当颜色实参）会重新抓到它 —— 那时再按需登记新豁免。
+     */
     const borderWhitelist = <List<String>>[
       <String>[
         'lib/ui/widgets/danmaku_settings_dialog.dart',
         'border: Border.all(color: DanmakuTextColors.border),',
         '① 面板卡片外框：1px 弱化描边，与近黑底保持可辨但不抢文本',
-      ],
-      <String>[
-        'lib/ui/widgets/danmaku_settings_dialog.dart',
-        'child: Divider(height: 1, color: DanmakuTextColors.border),',
-        '② 段落分隔线：Divider 的语义就是弱化，≥1.6:1 足够可见',
       ],
       <String>[
         'lib/ui/widgets/danmaku_settings_dialog.dart',

@@ -29,8 +29,9 @@
 // 显式导入（不用 glob）：glob 会把 `model::Result` 别名带进来，遮蔽标准库 `Result<T, E>`，
 // 也会让 `ProviderManifest` 等类型变成"私有重导出"，调用方无法直接从本模块导入。
 use crate::model::{
-    Category, Episode, EpgEntry, LiveChannel, MediaDetail, MediaId, MediaItem, Page, PlayRequest,
-    PlaySource, ProviderError, ProviderManifest, Section, StreamCandidate,
+    Category, DanmakuBundle, DanmakuRequest, DanmakuSendRequest, DanmakuSendResult, Episode,
+    EpgEntry, LiveChannel, MediaDetail, MediaId, MediaItem, Page, PlayRequest, PlaySource,
+    ProviderError, ProviderManifest, Section, StreamCandidate,
 };
 // `Result<T>` 是领域层的单参数别名（错误固定为 ProviderError）
 use crate::model::Result;
@@ -306,6 +307,52 @@ pub trait MediaProvider: Send + Sync {
         _end: i64,
     ) -> Result<StreamCandidate> {
         Err(ProviderError::unsupported("该源不支持时移回看"))
+    }
+
+    // ── 弹幕（可选；task-T2，2026-10-16）──────────────────────
+    //
+    // # 为什么这两个方法要加（现状是「假能力位」）
+    //
+    // `Capabilities.danmaku` 早就存在、也早就在设置页显示「弹幕」标签，
+    // 但**宿主侧没有任何地方拿它去调插件** —— 连方法名都没有。
+    // ⇒ 插件作者想实现也无从下手；而插件若声明了 danmaku: true，
+    //   用户会看到标签、点进去什么都没有，**且不报错**。
+    //
+    // 这正是本文件反复记录的那类 bug（对照 `rank()` / `episodes()` /
+    // `sources()` 三处漏桥接的教训）：
+    // > 这类 bug **不报错、只是没内容**，最难发现。
+
+    /// 取某一集的弹幕列表
+    ///
+    /// 默认「不支持」—— 与 `live_channels` / `epg` 同一个模子。
+    ///
+    /// # ⚠️ 返回值语义（调用方必须区分这三件事）
+    /// ```text
+    /// Ok(items 非空)   这一集有弹幕
+    /// Ok(items 为空)   ★ 这一集**真的**没人发弹幕（合法结果，不是错误）
+    /// Err(Unsupported) ★ 这个源**不支持**弹幕（另一件事）
+    /// ```
+    /// 把两者混起来（例如不支持时也返回空列表）用户就无法判断
+    /// 「是源不支持还是真没弹幕」—— 这是 Lead 明确点出的要求。
+    async fn danmaku_list(&self, _req: DanmakuRequest) -> Result<DanmakuBundle> {
+        Err(ProviderError::unsupported("该源不支持弹幕"))
+    }
+
+    /// 发送一条弹幕
+    ///
+    /// 默认「不支持」。
+    ///
+    /// # ★★ 纪律：不支持的站点必须如实报错，**绝不假装成功**
+    ///
+    /// `Ok(DanmakuSendResult { ok: true })` 是「**上游确实收下了**」的承诺。
+    /// 未实现时返回它（或 `ok: false`）会造成最坏的一种误导：
+    /// ```text
+    /// 用户以为发出去了 → 刷新却找不到 → 反复发 →
+    /// 在真站点上可能**已经触发风控封禁**
+    /// ```
+    /// 所以这里返回 `Unsupported`，让 UI 能如实说「该源不支持发送」。
+    async fn danmaku_send(&self, _req: DanmakuSendRequest) -> Result<DanmakuSendResult> {
+        Err(ProviderError::unsupported("该源不支持发送弹幕"))
     }
 
     // ── 登录（可选）─────────────────────────────────────────

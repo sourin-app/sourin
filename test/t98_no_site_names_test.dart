@@ -290,6 +290,17 @@ const List<String> _skipDirs = <String>[
   //   · `.probe_i12/`  等 —— 开发期一次性探针（已在 .gitignore）
   //   · `.local/`       —— 本机临时脚本/中间文件
   //   ⇒ 跳过它们，否则本门禁会被工具产物淹没（假阳性）。
+  /*
+   * ★ 2026-10-17（CodeRabbit CR）：`.agents/` 必须在这里显式跳过，**不能只靠 `.gitignore`**。
+   *
+   * 本扫描器是**自己递归遍历文件系统**的（见下面的 walk），它不读 `.gitignore`。
+   * 我在本 PR 里建 `git worktree`（落在 `.agents/worktrees/`）时就踩过：
+   * 基线副本被当成仓库内容扫进来 ⇒ **同一份源码两份命中** ⇒
+   * 表现为"莫名其妙多出一堆站名违规"，而真因是扫描范围错了。
+   *
+   * ⇒ 加到 `.gitignore` 只是第二道保险；**第一道必须是这个白名单**。
+   */
+  '.agents',
   '.claude',
   '.local',
   '.probe_i12',

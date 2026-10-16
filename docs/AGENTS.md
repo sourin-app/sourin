@@ -90,9 +90,47 @@ flutter analyze lib            # 0 error；不要新增 warning
     且上面三样**仍然不拷**（ui-prefs.json 也只搬界面偏好，按 key 过滤）
 ```
 
+· 只读纪律：「看代码」≠ 下载/安装/运行 —— 复核源码只读源码与仓库元数据，禁下载 release
+  产物、禁解压、禁运行 exe，不得让被测软件写注册表或用户目录；确需实际运行先要用户授权，
+  误装误跑立刻还原并如实汇报
 数据目录的完整清单见 [DATA-DIR.md](DATA-DIR.md)。
 
 ---
+
+
+## 3.5 弹窗外壳统一规范
+
+所有弹窗必须走 AppDialogShell（lib/ui/widgets/app_dialog_shell.dart），
+不许各写各的 Container + Material + 标题栏。
+
+```text
+宽度      默认 560；窄弹窗 460、宽版面 820 需显式传 width 并注释原因
+最大高度  绝对值 620，再按视口夹取（maxHeight 可覆盖）
+圆角      Radii.rLg
+标题栏    title + subtitle + 右侧关闭 IconButton
+内容区    SingleChildScrollView，padding fromLTRB(Sp.x6, 0, Sp.x6, Sp.x2)
+
+⚠️ 2026-10-17（CodeRabbit CR）：上面两条**改前写的是**
+   「视口高度 * 0.8」与「fromLTRB(Sp.x6, Sp.x3, Sp.x6, Sp.x4)」，
+   与 app_dialog_shell.dart 的实际实现不符 —— 那是**实现先改、文档没跟上**：
+   ```text
+   _kMaxHeight = 620（绝对值）
+     原因：「视口 × 0.8」在 800×600 的测试视口下只有 480，比改前的 620 更矮，
+           内容被挤、t70 的 3 条 tap 测试红。0.8 那个数是拍的，没依据。
+   padding = fromLTRB(x6, 0, x6, x2)
+   ```
+   ★ 本节的数**一律以外壳代码为准**；改外壳的间距/高度必须同步改这里，
+     否则新弹窗会按过期的文档写，重现同一批失败。
+底部操作  可选 actions，与内容区分隔、按钮靠右
+```
+
+间距一律 Sp.x*、圆角一律 Radii.*、字号一律 FontSizes.*，禁硬编码。
+新增控件优先用 material_ui 框架控件，SwitchListTile / ChoiceChip / FilterChip 等，
+非必要不手写。
+
+背景：改前 7 个弹窗宽度有 460 / 560 / 620 / 820 四种、高度有 620 / 640 / 740 三种，
+全凭各写各的；showAppDialog 只统一动效、不管样式，所以样式必须靠外壳组件收拢。
+
 
 ## 4. 全仓硬约束（写代码前必须知道）
 

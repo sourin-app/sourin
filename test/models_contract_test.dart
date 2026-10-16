@@ -26,7 +26,7 @@
 // ① ProxyConfig  纯 Dart 的 toJson/fromJson 往返 + **权威键集合比对**
 //                （键集合写死在测试里，抄自 Rust 源码；模型多一个键、
 //                  少一个键都会红）
-// ② Capabilities 15 个字段逐个往返 + **反向断言**：
+// ② Capabilities 16 个字段逐个往返 + **反向断言**：
 //                旧字段名（login/rank/category/platform_history）
 //                必须**读不出来**（后端从不发送它们）
 // ```
@@ -364,7 +364,7 @@ void main() {
   });
 
   // ═════════════════════════════════════════════════════════════════════
-  //  ② Capabilities —— 15 个字段，抄自 Rust
+  //  ② Capabilities —— 16 个字段，抄自 Rust
   // ═════════════════════════════════════════════════════════════════════
 
   /// `rust/sourin_core/src/model.rs` 的 `pub struct Capabilities`
@@ -375,7 +375,7 @@ void main() {
   ///    Rust 侧真的改了字段而失败时，**指出期望值是什么**。
   ///
   /// ★ 2026-09-25（task-38）：`can_auto_login` 是第 15 个 —— 本轮新增。
-  ///   它让本测试的"字段数交叉核对"红了（Rust 15 / 这里 14），
+  ///   它让本测试的"字段数交叉核对"红了（Rust 16 / 这里 14），
   ///   **那正是它该有的行为**（Rust 加了字段、Dart 侧清单没跟上）。
   const _rustCapKeys = {
     'vod',
@@ -394,6 +394,14 @@ void main() {
     'login_qr_supported',
     // ★ task-38 新增：能否用保存的凭据自动重新登录
     'can_auto_login',
+    /*
+     * ★ 2026-10-16（Owner 第 2 条）：插件能否**发送**弹幕。
+     *
+     * 与 `danmaku`（能不能**取**弹幕）拆成两位 —— Owner 原话：
+     * 「如果是最好支持一下该站点支持的弹幕发送功能就更好了」。
+     * 取和发是两条独立能力：很多插件能取不能发。
+     */
+    'danmaku_send',
   };
 
   group('② Capabilities ↔ Rust Capabilities', () {
@@ -460,10 +468,10 @@ void main() {
       );
     });
 
-    test('★★★ Dart 的 fromJson 必须真的读那 15 个键（逐键单独验证）', () {
+    test('★★★ Dart 的 fromJson 必须真的读那 16 个键（逐键单独验证）', () {
       /*
-       * 上一条证明"Rust 侧就是这 15 个字段"。这条证明
-       * "Dart 侧**确实在读**这 15 个键"。
+       * 上一条证明"Rust 侧就是这 16 个字段"。这条证明
+       * "Dart 侧**确实在读**这 16 个键"。
        *
        * 手法：**一次只给一个键**、值设成与该字段默认值**相反**的那个，
        * 然后看对应字段有没有跟着变。这样任何"键名写错/漏读"
@@ -485,6 +493,7 @@ void main() {
         'favorites': ((c) => c.favorites, false),
         'timeshift': ((c) => c.timeshift, false),
         'danmaku': ((c) => c.danmaku, false),
+        'danmaku_send': ((c) => c.danmakuSend, false),
         'login_supported': ((c) => c.loginSupported, false),
         'login_qr_supported': ((c) => c.loginQrSupported, false),
         // ★ 默认值是 **true** —— 所以这里反过来给 false 才能看出"读到了"
@@ -538,14 +547,15 @@ void main() {
        *
        * 这条留着只做**自检**：确认这份期望常量本身没写重复/漏项。
        */
-      expect(_rustCapKeys.length, 15,
-          reason: 'Rust 的 `Capabilities` 就是 15 个字段（model.rs）—— '
-              '★ 2026-09-25 task-38 加了 `can_auto_login`（第 15 个）');
+      expect(_rustCapKeys.length, 16,
+          reason: 'Rust 的 `Capabilities` 就是 16 个字段（model.rs）—— '
+              '★ 2026-09-25 task-38 加了 `can_auto_login`（第 15 个）；'
+              '★ 2026-10-16 Owner 第 2 条加了 `danmaku_send`（第 16 个）');
       expect(_rustCapKeys, hasLength(_rustCapKeys.toSet().length),
           reason: '期望常量里不该有重复项');
     });
 
-    test('★★★ 15 个字段逐个往返（全 true / 全 false 各测一遍）', () {
+    test('★★★ 16 个字段逐个往返（全 true / 全 false 各测一遍）', () {
       /*
        * ★ 核心验收：**逐字段**往返，不是"没抛异常"。
        *

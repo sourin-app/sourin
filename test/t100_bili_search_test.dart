@@ -886,9 +886,16 @@ void main() {
        *    本文件 ⑥ 组那套「必须套 Stack」的前提一字不变，只是现在这句话
        *    落在一个三元表达式的**真分支**上（假分支由 t104 的门禁单独钉）。
        */
-      expect(code.contains('return widget.fill ? Positioned.fill(child: body) : body;'),
-          isTrue,
-          reason: '★ 面板默认形态变了 ⇒ 本文件 ⑥ 组所有 widget 测试的前提就变了');
+      /*
+       * ★★ 2026-10-16：本面板把根节点交给了统一外壳 `AppDialogShell`
+       *（外壳自建 Stack 并承担定位），面板只透传 fill。
+       * 判据跟着责任走，语义未放松：面板必须走外壳 + 透传 fill，
+       * 外壳必须真的按 fill 分流。
+       */
+      expect(code.contains('AppDialogShell('), isTrue,
+          reason: '★ 面板没走统一外壳');
+      expect(code.contains('fill: widget.fill,'), isTrue,
+          reason: '★ 没把 fill 原样透传');
       expect(code.contains('this.fill = true,'), isTrue,
           reason: '★ 默认必须是 true（老宿主零破坏）');
     });

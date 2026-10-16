@@ -5331,9 +5331,212 @@ class _ShellPageState extends State<ShellPage>
   /// 「打开详情」再「打开播放器」」。
   /// ⇒ 文案必须能**区分新旧路径**（旧的是「打开详情」+「打开播放器」两条），
   ///   否则这条判据没有区分力。
+  /*
+   * ★★★ CodeRabbit PR#30（2026-10-17，Major·稳定性）：防重入 + 解析期反馈。
+   *
+   * # 缺陷（CodeRabbit 原话）
+   * ```text
+   * 续播定位要先等两次请求才 push 页面，重复点击会叠出多个合并页。
+   * ... pushed 是每次调用里的局部变量，挡不住第二次调用。
+   * ⇒ 结果是 push 出两个 MediaPage，每个都带一个 Player。
+   *   PlayerPage 被盖住时不会暂停 ⇒ 两个播放器会同时出声。
+   * ```
+   *
+   * # 为什么 `pushed` 挡不住
+   * ```text
+   * `pushed` 是**每次调用的局部变量** ⇒ 第二次调用重新 `pushed = false`
+   * ⇒ 它只能挡住"同一次调用内重复 push"（那也确实该挡），
+   *   挡不住"同一张卡片被点两次"。
+   * ```
+   *
+   * # 修法：**跨调用**、**按 (provider, id) 去重**的 in-flight 集合
+   * ```text
+   * 按 (provider, id) 而不是"全局只允许一个"：
+   *   用户点 A 再点 B 是**合法**的（两部不同的剧），不能被串行化挡住。
+   * 解析结束（成功/失败/任何早退）一律在 finally 里清除 ⇒ 不会永久卡死该条目。
+   * ```
+   */
+
+  /// 正在解析续播位置的条目 —— 键 = `provider|id`（见上面那段注释）
+  final Set<String> _resumeResolveInFlight = <String>{};
+
+  /// 测试门禁：给"解析续播位置"注入延迟（默认 null ⇒ 生产路径逐字不变）
+  ///
+  /// CodeRabbit 给的验证方法是"给 getDetail 注入 2 秒延迟，1 秒内连点两次"。
+  /// 延迟必须能注入到 `_openDetail` 与 push **之间**，否则复现不出
+  /// "等待窗口里再点一次"这个关键时序（那正是这个缺陷的成因）。
+  Future<void> Function(String provider, String id)? debugResumeResolveDelay;
+
+  /// 测试门禁：**关掉防重入**（默认 false ⇒ 生产路径逐字不变）
+  ///
+  /// ★ 唯一用途是**红度证明**：门禁测试必须能证明"去掉这个守卫就会叠出两个
+  ///   合并页"，否则那条断言不知道自己到底在测什么（本仓铁律）。
+  bool debugResumeDedupeOff = false;
+
+  /// 测试门禁：当前正在解析的条目数（断言被挡下的第二次没有进入解析）
+  int get debugResumeResolveInFlightCount => _resumeResolveInFlight.length;
+
   void _openDetail(String provider, String id) {
     debugPrint('[NAV] 打开合并页: $provider:$id');
-    Navigator.of(context).push(_mediaRoute(provider, id));
+    /*
+     * ★★★ T9（2026-10-16）：本方法原来只 push 一次就完事 —— 现在先解析
+     *      "该从哪一集开始"，再 push（解析逻辑见 [_openDetailResolvingResume]）。
+     *
+     * ⚠️ 本方法是首页卡片 / 「我的」三合一 / 追更页 / 搜索 / 浏览页**共用的
+     *    唯一收口**（见它上面的注释），所以修在这里 = 五个入口一起对。
+     */
+    unawaited(_openDetailResolvingResume(provider, id));
+  }
+
+  /// ★★★ T9：解析"该从哪一集开始"—— 治「最近追更点进去播第 1 集」
+  ///
+  /// # 缺陷（Owner 原话，2026-10-16，第 13 条）
+  ///
+  /// > 最近追更记录，现实看到14集了，但是点进去却是从第一集开始播放。
+  ///
+  /// # 根因链（**真核心实测**，逐环都有日志，不是推测）
+  ///
+  /// ```text
+  /// ① 卡片不带集号（my_shelf.dart 的 following 分支只给 provider/nativeId）
+  /// ② 本收口只有 (provider, id) ⇒ _mediaRoute 不传 episodeId/episodeIndex/episodes
+  /// ③ PlayerPage._epIndex = widget.episodeIndex ?? 0 = 0
+  /// ④ _load() 的 req 为 null ⇒ 插件回退 eps[0]（第01集）
+  /// ⑤ updateEpisodes 只补列表、且只**向下**夹取 ⇒ _epIndex 恒为 0
+  /// ⇒ 播第01集；随后 _saveProgress 又按 _episodes[0] 把进度写成第01集
+  ///   ⇒ 记录被反复污染 ⇒ 下次进来还是第01集（自我复现的闭环）
+  /// ```
+  ///
+  /// # 判据：**用用户自己的按集进度行**，取"看过的最靠后那一集"
+  ///
+  /// ```text
+  /// 为什么不是"最近更新那一行"（max updated_at，即 get_progress 的语义）：
+  ///   本 bug 自己刚写下的第01集行 updated_at **更晚**
+  ///   （真库实测：第01集 1792147953105 > 第14集 1792147933188，差约 20 秒）
+  ///   ⇒ 按 updated_at 取到的正是**被污染那行** ⇒ 修完仍然播第01集。
+  /// 为什么不是 Favorite.lastEpisodeTitle：
+  ///   那是 Rust 巡检写进去的「**最新可用**集」（follow.rs 取 episodes.last()），
+  ///   不是"我看到哪一集" ⇒ 语义不同，不能当观看记录用。
+  /// ⇒ 取"集序最靠后"的进度行：看过第14集 ⇒ 必然已经走过第01集。
+  /// ```
+  ///
+  /// ⚠️ 代价与边界（有意取舍，不是疏漏）：
+  /// ```text
+  /// · 仅当本地确有**按集进度行**时才多一次 get_detail —— 因为要把集号换成
+  ///   下标，并且必须**连 episodes 一起**给 PlayerPage：
+  ///   只给 episodeIndex 而列表为空 ⇒ _prevEpisode（_episodes[_epIndex-1]）
+  ///   在空列表上越界 ⇒ 实测踩到 RangeError（player_page.dart:8595）。
+  /// · 没有按集进度的条目（搜索/浏览里第一次点开的）走**原路径，零额外开销**。
+  /// · 失败一律回退原路径（宁可慢一点/退回旧行为，也不能打不开）。
+  /// ```
+  Future<void> _openDetailResolvingResume(String provider, String id) async {
+    /*
+     * ★ ⓪ 本地条目**先短路** —— 别白等那次注定失败的请求（CodeRabbit PR#30）。
+     *
+     * 本地条目（provider == local）的 `getDetail` 必然抛「无法路由」，
+     * 最后回退到默认路由，用户却白等了一次网络往返。
+     * ⇒ 它**根本不可能**有"按集进度行 → 在线剧集列表"这套映射
+     *   （本地进度的命名空间是文件名，见 progress_origin.dart 的说明），
+     *   所以在这儿直接走原路径，语义与结果都和原来一致，只是不再白等。
+     */
+    if (provider == kLocalProvider) {
+      debugPrint('[NAV] 本地条目 ⇒ 跳过续播定位（不做注定失败的详情请求）');
+      Navigator.of(context).push(_mediaRoute(provider, id));
+      return;
+    }
+
+    /*
+     * ★ ① 防重入：同一个 (provider, id) 正在解析 ⇒ 第二次点击**直接忽略**。
+     *
+     * ⚠️ 这就是 `pushed` 挡不住的那一层（见上面那段长注释）。
+     *   reason 里带上这个键，是为了让日志能区分"被防重入挡掉"与"没点中"。
+     */
+    final inFlightKey = '$provider|$id';
+    if (!debugResumeDedupeOff && _resumeResolveInFlight.contains(inFlightKey)) {
+      debugPrint('[NAV] ★ 续播定位进行中 ⇒ 忽略重复点击（$inFlightKey）');
+      return;
+    }
+    if (!debugResumeDedupeOff) _resumeResolveInFlight.add(inFlightKey);
+
+    var pushed = false;
+    void pushDefault() {
+      if (pushed || !mounted) return;
+      pushed = true;
+      Navigator.of(context).push(_mediaRoute(provider, id));
+    }
+
+    try {
+      /*
+       * ★ ② 解析期要有反馈（CodeRabbit：「这段等待里界面没有任何反馈。
+       *   用户以为没点中，会再点一次」）。
+       *
+       * 反馈必须打在这一行 —— 它是两次请求**之前**，也就是用户真正在等的那段。
+       */
+      debugPrint('[NAV] ⏳ 正在解析续播位置：$provider:$id …');
+      final delay = debugResumeResolveDelay;
+      if (delay != null) await delay(provider, id);
+
+      final rows = await SourinApi.listAllProgress();
+      final mine = rows
+          .where((p) =>
+              p.provider == provider &&
+              p.nativeId == id &&
+              (p.episodeId?.isNotEmpty ?? false))
+          .toList();
+      if (mine.isEmpty) {
+        pushDefault();
+        return;
+      }
+
+      final d = await SourinApi.getDetail(provider, id);
+      var eps = d.episodes;
+      if (eps.isEmpty) {
+        final code = d.sources.isNotEmpty ? d.sources.first.code : null;
+        if (code != null && code.isNotEmpty) {
+          eps = await SourinApi.getEpisodes(provider, id, code);
+        }
+      }
+
+      // 集序最靠后的那条进度行 = 该续播的集
+      var best = -1;
+      for (final p in mine) {
+        final i = eps.indexWhere((e) => e.id == p.episodeId);
+        if (i > best) best = i;
+      }
+
+      if (best <= 0 || best >= eps.length) {
+        debugPrint('[NAV] 无可续播集（best=$best）⇒ 按原路径打开');
+        pushDefault();
+        return;
+      }
+
+      final ep = eps[best];
+      debugPrint(
+        '[NAV] 续播定位：$provider:$id ⇒ 第 ${best + 1}/${eps.length} 集 (${ep.id})',
+      );
+      if (pushed || !mounted) return;
+      pushed = true;
+      Navigator.of(context).push(_mediaRoute(
+        provider,
+        id,
+        episodeId: ep.id,
+        episodeTitle: ep.title,
+        episodeIndex: best,
+        episodes: eps,
+      ));
+    } catch (e) {
+      debugPrint('[NAV] 续播定位失败（$e）⇒ 按原路径打开');
+      pushDefault();
+    } finally {
+      /*
+       * ★ ③ 无论成功/失败/任何早退，都必须**解锁**这个条目。
+       *
+       * ⚠️ 不放在各条 return 前面，是因为本方法有**五条**早退路径
+       *    （本地短路 / 无进度 / 无可续播集 / 已 push / 异常）——
+       *    逐条清必然漏一处，而漏掉的那一处会让该条目**永久点不开**。
+       *    finally 是唯一不用逐条维护的写法（本仓铁律：同一纪律只有一个实现）。
+       */
+      _resumeResolveInFlight.remove(inFlightKey);
+    }
   }
 
   /// 合并页路由
@@ -5352,7 +5555,21 @@ class _ShellPageState extends State<ShellPage>
   ///
   /// ⚠️ 这也顺带修掉了旧结构的一个隐患：`pushReplacement` 换源时
   ///    会把**正在播的播放器**一起销毁（新路由 = 新 `Player`）。
-  MaterialPageRoute<void> _mediaRoute(String provider, String id) {
+  /// ★★★ T9：新增 4 个可选参数 —— **只为"从哪一集开始"服务**。
+  ///
+  /// ⚠️ 全部可选且默认 null / 空：既有四个调用点**一个字都不用改**，
+  ///    行为逐字不变（只有 [_openDetailResolvingResume] 会传）。
+  ///
+  /// ⚠️ `episodeIndex` 与 `episodes` **必须同传**（见上面那段注释）：
+  ///    只给下标而列表为空 ⇒ `PlayerPage._prevEpisode` 越界 RangeError。
+  MaterialPageRoute<void> _mediaRoute(
+    String provider,
+    String id, {
+    String? episodeId,
+    String? episodeTitle,
+    int? episodeIndex,
+    List<Episode> episodes = const <Episode>[],
+  }) {
     return MaterialPageRoute<void>(
       builder: (ctx) => MediaPage(
         provider: provider,
@@ -5360,6 +5577,11 @@ class _ShellPageState extends State<ShellPage>
         // ⚠️ 标题此刻还不知道（要详情才有）——
         //    合并页会在详情加载完后用 `updateDisplayTitle` 补上。
         title: '',
+        // ★ T9：把"从哪一集开始"透传给播放器（三者同传，理由见上）。
+        episodeId: episodeId,
+        episodeTitle: episodeTitle,
+        episodeIndex: episodeIndex,
+        episodes: episodes,
         isTv: Device.isTv,
         /*
          * ★★ `isTouchOnly` 必须一起传（漏传已修）

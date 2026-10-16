@@ -164,6 +164,118 @@ class UiPrefs {
       set(homeSourceKey, id);
     }
   }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ★★★ Owner 第 12 条：自定义直播源分组
+  // ══════════════════════════════════════════════════════════════════
+
+  /// 存储键（**故意不复用** dsh.srcpref.* 命名空间）
+  ///
+  /// # 为什么不塞进 dsh.srcpref.*
+  /// ```text
+  /// dsh.srcpref.<provider>:<id> 的语义是「**某作品**用哪个播放线路」，
+  /// 与本条「**直播源**怎么分组」完全不相干 —— 同 [homeSourceKey] 的注释：
+  /// 混在一起的话，「清空播放偏好」会顺带把分组也清掉。
+  /// ```
+  static const liveSourceGroupsKey = 'live_source_groups';
+
+  /// 读全部直播源分组：分组名 → 源 id 列表
+  ///
+  /// # 返回值的形态（对外契约）
+  /// ```text
+  /// · 没存过 / 存的是垃圾 ⇒ 返回**空 Map**（不是 null）——
+  ///   调用方只需判 isEmpty，不必再处理 null。
+  /// · 值的顺序**保留**（用户建组的顺序 / 组内源的顺序都有意义）。
+  /// · 一个源是否只能属于一个组？**本层不强制** —— 不做去重、不做互斥，
+  ///   那是编辑 UI 的职责（数据层保持如实存取，便于将来放宽）。
+  /// ```
+  ///
+  /// # ★ 向前兼容（Lead 明确要求）
+  /// ```text
+  /// 存的是 JSON **对象**（不是数组）⇒ 以后要加字段（组的颜色 / 排序权重）
+  /// 时只需新增**键**：老版本读到不认识的键会**忽略**，
+  /// 新版本读到老数据也能跑（缺的键用默认值）。
+  /// ⚠️ 所以解析必须**逐键宽松**：任何一个键坏了只丢那个键，
+  ///    **不**让整份数据作废（否则手改坏一个字符 ⇒ 用户分组全没了）。
+  /// ```
+  static Map<String, List<String>> liveSourceGroups() {
+    final raw = _data[liveSourceGroupsKey];
+    if (raw == null || raw.isEmpty) return <String, List<String>>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return <String, List<String>>{};
+      final out = <String, List<String>>{};
+      decoded.forEach((k, v) {
+        // ⚠️ 逐键宽松：坏的那一项跳过，其余照收（见上面的向前兼容说明）
+        if (k is! String || k.isEmpty) return;
+        if (v is! List) return;
+        out[k] = [
+          for (final e in v)
+            if (e is String && e.isNotEmpty) e,
+        ];
+      });
+      return out;
+    } catch (e) {
+      debugLog('直播分组解析失败（按空处理，不炸）: $e');
+      return <String, List<String>>{};
+    }
+  }
+
+  /// 写全部直播源分组（整体覆盖）
+  ///
+  /// ⚠️ 传空 Map = **清除键**（与 [setHomeSource] 同一条纪律：不留垃圾键）。
+  static void setLiveSourceGroups(Map<String, List<String>> groups) {
+    if (groups.isEmpty) {
+      remove(liveSourceGroupsKey);
+      return;
+    }
+    set(liveSourceGroupsKey, jsonEncode(groups));
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  自建弹幕服务地址（T3 · dan-api 调研落地）
+  // ══════════════════════════════════════════════════════════════════
+
+  /// 存储键：自建弹幕服务基址
+  ///
+  /// # 为什么单独一个键（不复用弹弹play 那套）
+  /// ```text
+  /// 弹弹play 的凭证键（dsh.danmaku.appId / appSecret）语义是「给官方签名用」，
+  /// 而这里是「换一个免凭证的后端地址」—— 两件事互不相干：
+  /// 用户可能同时保留官方凭证、又临时切到自建服务。
+  /// 混在一起 ⇒ 清其中一个会顺带清掉另一个。
+  /// ```
+  static const danmakuEndpointKey = 'dsh.danmaku.endpoint';
+
+  /// 自建弹幕服务基址（空串 = 没配 ⇒ 走内置的官方/本机路径）
+  static String get danmakuEndpoint => _data[danmakuEndpointKey] ?? '';
+
+  /// 记住自建弹幕服务基址
+  ///
+  /// ⚠️ 传空串 = **清除键**（与 [setHomeSource] / [setLiveSourceGroups] 同一纪律：
+  ///    不留垃圾键）。用户在设置里清空地址时必须能真的回到内置路径。
+  static void setDanmakuEndpoint(String baseUrl) {
+    if (baseUrl.trim().isEmpty) {
+      remove(danmakuEndpointKey);
+    } else {
+      set(danmakuEndpointKey, baseUrl.trim());
+    }
+  }
+
+  /// 存储键：自建弹幕服务的可选 token（放在路径前缀上，见 DanmakuEndpoint）
+  static const danmakuTokenKey = 'dsh.danmaku.endpoint.token';
+
+  /// 自建弹幕服务 token（空串 = 不带前缀）
+  static String get danmakuToken => _data[danmakuTokenKey] ?? '';
+
+  /// 记住 token（传空串 = 清除键）
+  static void setDanmakuToken(String token) {
+    if (token.trim().isEmpty) {
+      remove(danmakuTokenKey);
+    } else {
+      set(danmakuTokenKey, token.trim());
+    }
+  }
 }
 
 /// 轻量日志（这个文件不依赖 Flutter，所以用 print）

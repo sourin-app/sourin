@@ -39,9 +39,10 @@ import 'dart:convert';
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/sourin_api.dart';
+import 'app_dialog_shell.dart';
+import 'source_composer_dialog.dart';
 import 'overlay_motion.dart';
 import '../tokens.dart';
-import 'settings_kit.dart';
 
 /// 接入方式
 enum ImportMode {
@@ -168,13 +169,34 @@ class ProviderImportCancelled extends ProviderImportResult {
 
 /// Provider 导入 / 编辑弹窗
 class ProviderImportDialog extends StatefulWidget {
-  const ProviderImportDialog({super.key, this.seed, this.editingName});
+  const ProviderImportDialog({
+    super.key,
+    this.seed,
+    this.editingName,
+    this.fill = true,
+  });
 
   /// 编辑态的原配置（null = 新增态）
   final ProviderImportSeed? seed;
 
   /// 编辑态显示在标题里的源名（`seed` 只有 id，名字要从卡片带过来）
   final String? editingName;
+
+  /// 根节点的定位是否由**外壳**写成 `Positioned.fill`（默认 true = 既有行为）
+  ///
+  /// ★ 这是 `AppDialogShell` 的 `fill`，本弹窗只做**原样透传**，
+  ///   语义与 `DanmakuSettingsDialog.fill` 完全一致（见该字段的文档）：
+  /// ```text
+  /// fill = true （默认）  外壳根节点是 Positioned.fill ⇒ 只能做 Stack 的直接孩子
+  /// fill = false          外壳直接返回卡片内容（不写 Positioned.fill）
+  ///                       ⇒ 供 SheetExitMotion 包裹（它要在中间插
+  ///                       Opacity / IgnorePointer）
+  /// ```
+  /// ⚠️ 两种形态的内容**逐字相同**，差别只在最外面那一层 `Positioned`。
+  ///    写死成 true 的话，将来谁用 `SheetExitMotion` 包住本弹窗，都会抛
+  ///    `Incorrect use of ParentDataWidget`（两个 ParentDataWidget 争
+  ///    同一个 StackParentData）。
+  final bool fill;
 
   /// 打开「导入源」（新增）—— 清空所有输入
   ///
@@ -446,7 +468,24 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
      */
     final colors = Theme.of(context).colorScheme;
 
-    return SettingsDialog(
+    /*
+     * ★ 2026-10-16：外壳改走全仓统一的 `AppDialogShell`
+     *   （docs/AGENTS.md 第 3.5 节），与 `danmaku_settings_dialog.dart` 同一形态。
+     *
+     * 改前这里用的是 `SettingsDialog`（`settings_kit.dart` 里的
+     * `AlertDialog` 外壳）—— 那是**第二套**外壳：宽度 560 由它自己
+     * `ConstrainedBox` 限制、圆角/标题栏/按钮排布全走 Material 默认，
+     * 与 `AppDialogShell`（560 定宽 + Radii.rLg + 自绘标题栏 + 分隔线操作区）
+     * 不是同一套视觉。全仓只允许一套外壳。
+     *
+     * ⚠️ 滚动区**交给外壳**（`scrollable` 默认 true）：
+     *    `SettingsDialog` 那层 `SingleChildScrollView` 已随它一起删掉，
+     *    这里再套一层就是"滚动里再滚动"。
+     *
+     * ⚠️ 标题栏、`width`、`maxHeight` 一律**不传** —— 外壳的 `_Header`
+     *    与默认 560 接管（本弹窗没有需要显式改宽/改高的理由）。
+     */
+    return AppDialogShell(
       title: _titleText,
       // ★ 2026-10-10：统一外壳，顺手把「这个对话框在干嘛」说清楚
       subtitle: _isEditing
@@ -456,108 +495,159 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
               ImportMode.http => '填一个 HTTP 插件地址，它会跑在独立进程里',
               ImportMode.tvbox => '粘贴 TVBox 配置，自动展开成多个内容源',
             },
-      child: SingleChildScrollView(
-        clipBehavior: Clip.antiAlias,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // ── 接入方式切换（编辑态隐藏，原版 :2751）──
-            /*
-               * ⚠️ 编辑态对 TVBox 源**不可达**（task-5）
-               *
-               * TVBox 源没有可回填的原始配置 —— `ProviderImportSeed.fromJson`
-               * 对 kind='tvbox' 返回 null，设置页的「编辑」按钮因此不显示
-               * （见 lib/core/sourin_api.dart 与 settings_page.dart 的 _canEdit）。
-               * 所以下面这个 else 分支的文案里不需要 TVBox 分支；
-               * 真要加编辑能力，得先让后端能吐出原始 sites 片段。
-               */
-            if (!_isEditing) ...[
-              _modeTabs(colors),
-              const SizedBox(height: Sp.x3),
-            ] else
-              Padding(
-                padding: const EdgeInsets.only(bottom: Sp.x3),
-                child: Text(
-                  '正在编辑${_mode == ImportMode.http ? "HTTP 插件" : "声明式源"}，'
-                  '保存后立即生效',
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ),
-
-            // ── 表单 ──
-            if (_mode == ImportMode.declarative)
-              ..._declarativeForm(colors)
-            else if (_mode == ImportMode.http)
-              ..._httpForm(colors)
-            else
-              ..._tvboxForm(colors),
-
-            // ── TVBox 导入结果（导入成功后留在弹窗里给用户看明细）──
-            //
-            // 多仓是**另一种结局**：后端一个源都没产出，所以必须用
-            // 另一块面板（列出子仓供选择），不能显示"成功 0 个"了事。
-            if (_tvboxResult != null) ...[
-              const SizedBox(height: Sp.x3),
-              if (_tvboxResult!.multiRepo)
-                _tvboxMultiRepoPanel(colors, _tvboxResult!)
-              else
-                _tvboxResultPanel(colors, _tvboxResult!),
-            ],
-
-            if (_error.isNotEmpty) ...[
-              const SizedBox(height: Sp.x3),
-              Text(
-                _error,
-                style: TextStyle(fontSize: FontSizes.sm, color: colors.error),
-              ),
-            ],
+      /*
+       * ★ 关闭 = 取消（与底部那枚「取消 / 完成」按钮**同一个出口**）
+       *
+       * 两条路都必须走 [_closeResult]：TVBox 已经探测完、源**已经落库**时，
+       * 右上角关闭与「完成」在事实层面是同一件事 —— 直接 pop 一个
+       * `ProviderImportCancelled()`（不带 done）会让设置页当成"用户什么都没做"
+       * 而不刷新列表（理由见 [ProviderImportCancelled.done] 的文档）。
+       */
+      onClose: _busy ? null : () => Navigator.pop(context, _closeResult()),
+      // ★ 原样透传（见 [ProviderImportDialog.fill]）—— 不许写死 true
+      fill: widget.fill,
+      /*
+       * ★ 外壳的 `actions` 是**单个 Widget**（它自己套
+       *   `Row(mainAxisAlignment: end)` + 分隔线），不是列表 ——
+       *   所以这里用一枚 `Row` 装原来的三颗按钮。
+       *
+       * ⚠️ 内层 Row **必须** `mainAxisSize.min`：默认的 `.max` 会吃掉
+       *    外壳那一行的整宽，按钮就会靠左而不是靠右（外壳的对齐失效）。
+       * ⚠️ 按钮的顺序、文案、onPressed、禁用条件**一字未改**。
+       */
+      actions: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          /*
+           * ★ 2026-10-16（Owner 第 9 条）：新增「可视化编排」入口。
+           *
+           * Owner 原话：「我希望这些最好可以给一个可视化编排插件的一个功能」
+           *
+           * 它是**同一个 JSON 的另一种编辑方式** —— 编排器拼出来的东西
+           * 直接写回 `_jsonCtl`，用户可以在可视化/手写之间随时切换，
+           * 产物**逐字节同构**（见 source_composer_model.dart 的 toJson）。
+           * ⇒ 不新增格式、不新增运行时，只是把「写 JSON」变成「填表单」。
+           *
+           * ⚠️ 只在声明式模式 + 新增态显示：编辑态改的是已有配置，
+           *    走编排会丢掉原有未覆盖字段（编排器只认识模板里那几个键）。
+           */
+          if (!_isEditing && _mode == ImportMode.declarative) ...[
+            TextButton(
+              onPressed: _busy
+                  ? null
+                  : () => setState(() => _jsonCtl.text = kDeclarativeTemplate),
+              child: const Text('填入模板'),
+            ),
+            TextButton.icon(
+              onPressed: _busy ? null : _openComposer,
+              icon: const Icon(Icons.auto_fix_high_outlined, size: 16),
+              label: const Text('可视化编排'),
+            ),
           ],
-        ),
-      ),
-      actions: [
-        // 「填入模板」只在新增态显示（原版 :2788 `v-if="!isEditing"`）
-        if (!_isEditing && _mode == ImportMode.declarative)
+          /*
+           * ★ TVBox 出结果后，「取消」会变成「完成」
+           *
+           * 为什么不能保留「取消」：用户看到「导入 5 个」的面板后
+           * 点「取消」在语义上是**撤销**，但源其实已经落库了 ——
+           * 那是最坏的一种误导。所以出结果后这个按钮改名「完成」，
+           * 且**照样把结果带回去**（设置页据此刷新列表 + 弹 toast）。
+           */
           TextButton(
             onPressed: _busy
                 ? null
-                : () => setState(() => _jsonCtl.text = kDeclarativeTemplate),
-            child: const Text('填入模板'),
+                : () => Navigator.pop(context, _closeResult()),
+            // 多仓时**仍然是「取消」**：一个源都没导入，叫「完成」是骗人。
+            child: Text(
+              _tvboxResult == null || _tvboxResult!.multiRepo ? '取消' : '完成',
+            ),
           ),
-        /*
-         * ★ TVBox 出结果后，「取消」会变成「完成」
-         *
-         * 为什么不能保留「取消」：用户看到「导入 5 个」的面板后
-         * 点「取消」在语义上是**撤销**，但源其实已经落库了 ——
-         * 那是最坏的一种误导。所以出结果后这个按钮改名「完成」，
-         * 且**照样把结果带回去**（设置页据此刷新列表 + 弹 toast）。
-         */
-        TextButton(
-          onPressed: _busy
-              ? null
-              : () => Navigator.pop(context, _closeResult()),
-          // 多仓时**仍然是「取消」**：一个源都没导入，叫「完成」是骗人。
-          child: Text(
-            _tvboxResult == null || _tvboxResult!.multiRepo ? '取消' : '完成',
+          FilledButton(
+            onPressed: _busy || !_canSubmit ? null : _submit,
+            child: _busy
+                ? SizedBox(
+                    width: 16,
+                    height: 16,
+                    // T27-07：FilledButton 内的指示器用 onPrimary（按钮自身前景），
+                    // 禁用态下 Material 自动降透明仍 ≥ 灰弧。
+                    child: CircularProgressIndicator(color: colors.onPrimary, strokeWidth: 2),
+                  )
+                : Text(_submitLabel),
           ),
-        ),
-        FilledButton(
-          onPressed: _busy || !_canSubmit ? null : _submit,
-          child: _busy
-              ? SizedBox(
-                  width: 16,
-                  height: 16,
-                  // T27-07：FilledButton 内的指示器用 onPrimary（按钮自身前景），
-                  // 禁用态下 Material 自动降透明仍 ≥ 灰弧。
-                  child: CircularProgressIndicator(color: colors.onPrimary, strokeWidth: 2),
-                )
-              : Text(_submitLabel),
-        ),
-      ],
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // ── 接入方式切换（编辑态隐藏，原版 :2751）──
+          /*
+             * ⚠️ 编辑态对 TVBox 源**不可达**（task-5）
+             *
+             * TVBox 源没有可回填的原始配置 —— `ProviderImportSeed.fromJson`
+             * 对 kind='tvbox' 返回 null，设置页的「编辑」按钮因此不显示
+             * （见 lib/core/sourin_api.dart 与 settings_page.dart 的 _canEdit）。
+             * 所以下面这个 else 分支的文案里不需要 TVBox 分支；
+             * 真要加编辑能力，得先让后端能吐出原始 sites 片段。
+             */
+          if (!_isEditing) ...[
+            _modeTabs(colors),
+            const SizedBox(height: Sp.x3),
+          ] else
+            Padding(
+              padding: const EdgeInsets.only(bottom: Sp.x3),
+              child: Text(
+                '正在编辑${_mode == ImportMode.http ? "HTTP 插件" : "声明式源"}，'
+                '保存后立即生效',
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+            ),
+
+          // ── 表单 ──
+          if (_mode == ImportMode.declarative)
+            ..._declarativeForm(colors)
+          else if (_mode == ImportMode.http)
+            ..._httpForm(colors)
+          else
+            ..._tvboxForm(colors),
+
+          // ── TVBox 导入结果（导入成功后留在弹窗里给用户看明细）──
+          //
+          // 多仓是**另一种结局**：后端一个源都没产出，所以必须用
+          // 另一块面板（列出子仓供选择），不能显示"成功 0 个"了事。
+          if (_tvboxResult != null) ...[
+            const SizedBox(height: Sp.x3),
+            if (_tvboxResult!.multiRepo)
+              _tvboxMultiRepoPanel(colors, _tvboxResult!)
+            else
+              _tvboxResultPanel(colors, _tvboxResult!),
+          ],
+
+          if (_error.isNotEmpty) ...[
+            const SizedBox(height: Sp.x3),
+            Text(
+              _error,
+              style: TextStyle(fontSize: FontSizes.sm, color: colors.error),
+            ),
+          ],
+        ],
+      ),
     );
+  }
+
+  /// 打开可视化编排器 —— 拼好后把 JSON 写回输入框
+  Future<void> _openComposer() async {
+    final json = await showAppDialog<Map<String, Object?>>(
+      context: context,
+      builder: (_) => SourceComposerDialog(
+        onSubmit: (j) => Navigator.of(context).pop(j),
+      ),
+    );
+    if (json == null || !mounted) return;
+    const enc = JsonEncoder.withIndent('  ');
+    setState(() => _jsonCtl.text = enc.convert(json));
   }
 
   String get _titleText {
@@ -685,7 +775,17 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
         hintStyle: TextStyle(
           fontFamily: 'monospace',
           fontSize: FontSizes.cap,
-          color: colors.onSurfaceVariant.withValues(alpha: 0.5),
+          // ★ 2026-10-16 修：原来这里是 `onSurfaceVariant.withValues(alpha: 0.5)`
+          //   —— 那层 50% 透明度把本来就不高的对比度又砍一半。
+          //   实测（两态都算过）：
+          //     深色 hint 实际 #5C5C5C 压 #171717 ⇒ 2.68:1
+          //     浅色 hint 实际 #ABADB3 压 #F5F7FA ⇒ 2.09:1
+          //   都**远低于 WCAG AA 正文线 4.5:1**。
+          //
+          //   而这段 hint 不是"占位提示" —— 它是**整段 JSON 模板**，
+          //   用户要照着它填配置。看不清等于这个功能不可用。
+          //   ⇒ 去掉那层 alpha，直接用 onSurfaceVariant（主题里"次要文字"的角色色）。
+          color: colors.onSurfaceVariant,
         ),
       ),
     ),
@@ -756,7 +856,17 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
         hintStyle: TextStyle(
           fontFamily: 'monospace',
           fontSize: FontSizes.cap,
-          color: colors.onSurfaceVariant.withValues(alpha: 0.5),
+          // ★ 2026-10-16 修：原来这里是 `onSurfaceVariant.withValues(alpha: 0.5)`
+          //   —— 那层 50% 透明度把本来就不高的对比度又砍一半。
+          //   实测（两态都算过）：
+          //     深色 hint 实际 #5C5C5C 压 #171717 ⇒ 2.68:1
+          //     浅色 hint 实际 #ABADB3 压 #F5F7FA ⇒ 2.09:1
+          //   都**远低于 WCAG AA 正文线 4.5:1**。
+          //
+          //   而这段 hint 不是"占位提示" —— 它是**整段 JSON 模板**，
+          //   用户要照着它填配置。看不清等于这个功能不可用。
+          //   ⇒ 去掉那层 alpha，直接用 onSurfaceVariant（主题里"次要文字"的角色色）。
+          color: colors.onSurfaceVariant,
         ),
       ),
     ),

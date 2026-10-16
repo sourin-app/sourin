@@ -306,6 +306,10 @@ void main() {
        *
        * ⚠️ 需要 mklink /J 权限；拿不到就跳过（不假装通过）。
        */
+      if (!Platform.isWindows) {
+        markTestSkipped('junction 是 Windows 概念，本平台没有 mklink');
+        return;
+      }
       final link = Directory.systemTemp.createTempSync('t1015_junc_');
       link.deleteSync();
       final mk = Process.runSync('cmd', <String>[
@@ -367,7 +371,19 @@ void main() {
        * ⚠️ 校验要靠 python 的 sqlite3；没有 python 时脚本会**明说跳过**，
        *    那种情况本机没法断言 ⇒ 跳过（不假装通过）。
        */
-      final hasPy = Process.runSync('python', <String>['-c', 'import sqlite3']).exitCode == 0;
+      // ⚠️ 不能直接 runSync('python')：macOS 上只有 python3，
+      //    可执行文件不存在时 runSync 会抛 ProcessException（不是返回非零）。
+      var hasPy = false;
+      for (final exe in <String>['python', 'python3', 'py']) {
+        try {
+          if (Process.runSync(exe, <String>['-c', 'import sqlite3']).exitCode == 0) {
+            hasPy = true;
+            break;
+          }
+        } on ProcessException {
+          continue;
+        }
+      }
       if (!hasPy) {
         markTestSkipped('本机没有 python ⇒ 无从验证 integrity_check 这条');
         return;

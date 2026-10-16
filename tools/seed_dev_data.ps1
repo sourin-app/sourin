@@ -72,6 +72,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# ★ 输出统一 UTF-8。
+#
+# 为什么（2026-10-16 CI 实测）：`Write-Host` 默认按**控制台代码页**编码输出。
+# 中文 Windows（本机）是 936，读回来对得上；英文 runner 是 437/1252，
+# 中文直接变成 `?` ⇒ 测试里「失败要给出人话」那条断言在 CI 上必红，
+# 而本机永远绿。两边都显式钉成 UTF-8 才跨机器一致。
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
+
 if (-not $Source) { $Source = Join-Path $env:APPDATA "app.sourin.player" }
 # 去掉尾部反斜杠，下面按长度切相对路径才不会多带一个分隔符
 $Source = $Source.TrimEnd("\")

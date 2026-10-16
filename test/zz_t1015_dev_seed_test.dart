@@ -32,7 +32,8 @@ const String kRunner = 'tools/run_client.ps1';
 String? resolvePowerShell() {
   for (final exe in <String>['pwsh', 'powershell']) {
     try {
-      final r = Process.runSync(exe, <String>['-NoProfile', '-Command', 'exit 0']);
+      final r = Process.runSync(exe, <String>['-NoProfile', '-Command', 'exit 0'],
+        stdoutEncoding: utf8, stderrEncoding: utf8);
       if (r.exitCode == 0) return exe;
     } on ProcessException {
       // PATH 上没有，试下一个
@@ -129,7 +130,8 @@ void main() {
       '-Target',
       dst.path,
       ...extra,
-    ]);
+    ],
+        stdoutEncoding: utf8, stderrEncoding: utf8);
   }
 
   /// 前提不成立就 skip（macOS 上可能真没有 PowerShell）
@@ -274,7 +276,8 @@ void main() {
         '-NoProfile', '-Command',
         r'(New-Object -ComObject Scripting.FileSystemObject).GetFolder('
             "'" + src.path.replaceAll("'", "''") + "').ShortPath",
-      ]);
+      ],
+        stdoutEncoding: utf8, stderrEncoding: utf8);
       final short = fso.stdout.toString().trim();
       if (short.isEmpty || short == src.path) {
         markTestSkipped('本机该临时目录没有 8.3 短名 ⇒ 复现不了 CI 的形状');
@@ -284,7 +287,8 @@ void main() {
       final r = Process.runSync(ps!, <String>[
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', kScript,
         '-Source', short, '-Target', dst.path,
-      ]);
+      ],
+        stdoutEncoding: utf8, stderrEncoding: utf8);
       expect(r.exitCode, 0,
           reason: '短名源目录也要能播种：' + r.stdout.toString() + r.stderr.toString());
       expect(File(dst.path + '/plugins/mine.js').existsSync(), isTrue,
@@ -298,7 +302,8 @@ void main() {
       final r = Process.runSync(ps!, <String>[
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', kScript,
         '-Source', src.path, '-Target', src.path, '-Force',
-      ]);
+      ],
+        stdoutEncoding: utf8, stderrEncoding: utf8);
 
       expect(r.exitCode, isNot(0),
           reason: '★ 目标=源必须硬失败 —— 否则 -Force 会拿文件盖自己，而且下面那步会改写用户真实的 sync-settings.json');
@@ -316,7 +321,8 @@ void main() {
       final r = Process.runSync(ps!, <String>[
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', kScript,
         '-Source', gonePath, '-Target', dst.path,
-      ]);
+      ],
+        stdoutEncoding: utf8, stderrEncoding: utf8);
 
       expect(r.exitCode, 0, reason: '没装过 App 的机器不该因此起不来开发模式');
     });
@@ -374,7 +380,8 @@ void main() {
               p +
               r'").Path,[ref]$t,[ref]$e); ' +
               r'if ($e.Count -eq 0) { exit 0 } else { Write-Host $e[0].Message; exit 1 }',
-        ]);
+        ],
+        stdoutEncoding: utf8, stderrEncoding: utf8);
         expect(r.exitCode, 0,
             reason: '★ ' + p + ' 解析失败 ⇒ 脚本跑不起来：' + r.stdout.toString() + r.stderr.toString());
       }

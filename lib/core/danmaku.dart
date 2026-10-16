@@ -87,6 +87,7 @@
 // TODO(security): AppSecret 目前明文存 ui-prefs.json，需迁移到系统凭据存储
 // （Windows DPAPI / Android Keystore）。见 danmaku_settings_dialog.dart 头部。
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -1787,6 +1788,74 @@ class ExternalDanmakuClient {
     return u.replace(pathSegments: <String>['***', ...segs.skip(1)]).toString();
   }
 
+  /// 发一次请求，并把**网络层异常**翻译成带打码地址的 [DanmakuException]。
+  ///
+  /// # 为什么必须有这一层（CWE-532 的**第二个口子**）
+  /// ```text
+  /// 上一轮修的是 _decode 里那 6 处（响应到手之后、解析失败时）。
+  /// 但 _transport.send 本身还会**抛异常**（网络层），而它抛的是
+  /// HttpException / SocketException / TimeoutException ——
+  /// ★ 这三者**都不是 DanmakuException** ⇒ 它们**绕过 _decode** 直接冒到上层。
+  ///
+  /// 实测（2026-10-17）：
+  ///   SocketException.toString() = SocketException: failed, address = 127.0.0.1, port = 9321
+  ///   HttpException.toString()   = HttpException: bad, uri = http://…/<token>/api/v2/…
+  ///                                  ↑ 这条**逐字带 URI**（SDK 行为）
+  /// ⇒ 打码必须在这一层做，_safeUri 帮不上忙（异常还没被我们构造出来）。
+  /// ```
+  ///
+  /// # 上层怎么用它（证明这不是防御性代码而是真链路）
+  /// ```text
+  /// player_page.dart 的取弹幕失败分支：
+  ///   on DanmakuException catch (e) ⇒ 写进 _danmakuError / _flash
+  ///   catch (e)                     ⇒ DanmakuException(e.toString()) ⇒ ★ 原文进 UI
+  /// ⇒ 未翻译的网络异常会把带 token 的 URI 显示给用户、也写进日志。
+  /// ```
+  ///
+  /// # ⚠️ 三种网络异常要**区分**，不能一律同一句话
+  /// ```text
+  /// 用户据此判断「该重试」还是「该改配置」：
+  ///   超时      ⇒ 服务慢/网络差 ⇒ 重试有意义
+  ///   连不上    ⇒ 地址填错/服务没起 ⇒ 该去改配置
+  ///   协议错    ⇒ 地址不是这个服务 ⇒ 该去改配置
+  /// ```
+  Future<DanmakuHttpResponse> _send({
+    required String method,
+    required Uri uri,
+    required Map<String, String> headers,
+    String? body,
+  }) async {
+    try {
+      return await _transport.send(
+        method: method,
+        uri: uri,
+        headers: headers,
+        body: body,
+      );
+    } on TimeoutException {
+      throw DanmakuException(
+        '弹幕服务没有响应（超时）。可以稍后重试。',
+        // statusCode 0 = 还没拿到响应（同 DanmakuException 的既有约定）
+        uri: _safeUri(uri),
+      );
+    } on SocketException {
+      throw DanmakuException(
+        '连不上弹幕服务（地址不通或服务没起来）。请检查地址 / 服务是否在运行。',
+        uri: _safeUri(uri),
+      );
+    } on HttpException {
+      /*
+       * ⚠️ **不要**把 e.message 拼进文案：
+       *    HttpException.message 可能由 SDK 生成、也可能带上原始 URI，
+       *    拼进来就等于把刚打掉的码又加回去。只保留「协议层出错」这个结论。
+       */
+      throw DanmakuException(
+        '弹幕服务返回了不合法的响应（协议错误）。请确认这个地址是弹幕服务。',
+        uri: _safeUri(uri),
+      );
+    }
+  }
+
   /// 把一次响应翻译成"要么是数据、要么是带原文的异常"
   ///
   /// ⚠️ 记录到异常里的地址一律走 [_safeUri]（去掉 token 前缀），
@@ -1898,7 +1967,7 @@ class ExternalDanmakuClient {
     };
     final headers = _authHeaders(path);
     headers['Content-Type'] = 'application/json; charset=utf-8';
-    final resp = await _transport.send(
+    final resp = await _send(
       method: 'POST',
       uri: uri,
       headers: headers,
@@ -1934,7 +2003,7 @@ class ExternalDanmakuClient {
       'withRelated': withRelated ? 'true' : 'false',
       if (chConvert != 0) 'chConvert': '$chConvert',
     });
-    final resp = await _transport.send(
+    final resp = await _send(
       method: 'GET',
       uri: uri,
       headers: _authHeaders(path),
@@ -1980,7 +2049,7 @@ class ExternalDanmakuClient {
       if (anime.isNotEmpty) 'anime': anime,
       if (episode.isNotEmpty) 'episode': episode,
     });
-    final resp = await _transport.send(
+    final resp = await _send(
       method: 'GET',
       uri: uri,
       headers: _authHeaders(path),
@@ -2092,7 +2161,7 @@ class ExternalDanmakuClient {
   Future<String> _fetchCover(int animeId) async {
     final path = '/api/v2/bangumi/$animeId';
     try {
-      final resp = await _transport.send(
+      final resp = await _send(
         method: 'GET',
         uri: _uri(path, const <String, String>{}),
         headers: _authHeaders(path),
@@ -2324,8 +2393,14 @@ class DanmakuLocalService {
       return DanmakuLocalStatus(
         online: true,
         version: v?.toString(),
-        // 记住命中的是哪个端点（状态行要如实显示探的是自建后端）
-        viaPath: uri.path,
+        /*
+         * 记住命中的是哪个端点（诊断用）。
+         * ⚠️ 只留**最后一段**（version / config），不留整条 path ——
+         *    self-hosted 后端的 path 带 token 前缀（/<token>/api/config），
+         *    整条存下来就是一个**潜伏的泄漏面**（今天没人显示它，
+         *    明天加一行调试输出就泄了）。同 _safeUri 的纪律。
+         */
+        viaPath: uri.pathSegments.isEmpty ? '' : uri.pathSegments.last,
         endpoint: endpoint,
       );
     } catch (_) {

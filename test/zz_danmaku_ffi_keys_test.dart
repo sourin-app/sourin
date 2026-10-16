@@ -99,7 +99,11 @@ void main() {
         break;
       }
     }
-    if (dllPath == null) return;
+    if (dllPath == null) {
+      installNote = '找不到含 danmaku 命令的 sourin_core 产物'
+          '（候选: ${_dllCandidates.join(', ')}）—— 真链路测试无法进行';
+      return;
+    }
 
     /*
      * ① 先把 DLL 载进本进程（绝对路径）—— 见 _dllCandidates 的说明
@@ -112,22 +116,60 @@ void main() {
     }
 
     /*
-     * ② 起真核心（隔离目录 —— 绝不碰用户真实数据目录，见 docs/AGENTS.md §3）
+     * ② ★★★ 共享状态守卫：核心**已被别处启动** ⇒ 直接跳过，绝不往它装插件
+     *
+     * # 为什么必须有这一步（CodeRabbit 在 PR #30 提的真问题）
+     *
+     * `SourinCore` 是**进程级单例**，而 `startAsync` 在已启动时会返回
+     * 「已经是启动状态」。改前这里写的是：
+     * ```dart
+     * if (!SourinCore.isStarted) await SourinCore.startAsync(sandbox.path);
+     * coreUp = SourinCore.isStarted;      // ← 已启动也照样 true
+     * // …接着 installPluginSource(…)    // ← 往**别人的**核心里装插件
+     * ```
+     * 于是 `sandbox` 只决定了「数据目录」，**挡不住「往一个正在运行的核心装插件」**：
+     * ```text
+     * 核心已被别的测试/文件启动
+     *   ⇒ 我们往它装上 ffi_keys / ffi_keys2 / ffi_keys3 三个测试插件
+     *   ⇒ 那个核心的 provider 列表被**污染**，且它会写进 sandbox 之外的库
+     *   ⇒ 后续用例（甚至别的文件）看到凭空多出来的源
+     * ```
+     * ★ 关键：这种污染**不会报错**，只会让别处莫名其妙地多出东西 ——
+     *   正是本仓反复强调的「静默」类缺陷。
+     *
+     * ⇒ 判据：**只有「本来没启动、由本文件自己起」时才继续**。
+     *   已启动 ⇒ 如实跳过（不装、不跑、不拆）。
+     */
+    if (SourinCore.isStarted) {
+      installNote = '核心已被别处启动（SourinCore 是进程级单例）'
+          '⇒ 不往它装测试插件，以免污染共享状态。'
+          '本文件的真链路用例因此跳过；'
+          '静态交叉核对那组不依赖核心，照常执行。';
+      debugPrint('FFIKEYS 跳过真链路: $installNote');
+      return;
+    }
+
+    /*
+     * ③ 起真核心（隔离目录 —— 绝不碰用户真实数据目录，见 docs/AGENTS.md §3）
      */
     sandbox = Directory(
         '${Directory.systemTemp.absolute.path}${Platform.pathSeparator}'
         'ffi_keys_${DateTime.now().microsecondsSinceEpoch}');
     sandbox.createSync(recursive: true);
     try {
-      if (!SourinCore.isStarted) await SourinCore.startAsync(sandbox.path);
+      await SourinCore.startAsync(sandbox.path);
       coreUp = SourinCore.isStarted;
     } catch (e) {
       installNote = '核心起不来: $e';
       return;
     }
+    if (!coreUp) {
+      installNote = 'startAsync 返回了但 isStarted=false —— 核心实际没起来';
+      return;
+    }
 
     /*
-     * ③ 装插件 —— 用 Dart 侧唯一入口，装完 `install_plugin_source`
+     * ④ 装插件 —— 用 Dart 侧唯一入口，装完 `install_plugin_source`
      *    自己会 `reload_plugins()`，所以之后直接可调。
      */
     try {
@@ -140,6 +182,10 @@ void main() {
   });
 
   tearDownAll(() {
+    /*
+     * ⚠️ 只在**本文件自己起的核心**上收尾（coreUp 为真 = 我们起的、我们装的）。
+     *    跳过分支里 coreUp 恒为 false ⇒ 不碰 sandbox，也不动别人的核心。
+     */
     if (coreUp) {
       try {
         if (sandbox.existsSync()) sandbox.deleteSync(recursive: true);

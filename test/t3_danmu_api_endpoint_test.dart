@@ -21,6 +21,7 @@
 //
 // ⚠️ 全程**不联网**：所有请求都走注入的假 transport。
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -629,6 +630,233 @@ void main() {
         endpoint: const DanmakuEndpoint(baseUrl: 'http://h:1'),
       );
       expect(e.uri, 'http://h:1/api/v2/comment/9527?withRelated=true');
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ⑨ ★★ 安全（CWE-532 第二个口子）：**网络层异常**也不许带 token
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 与 ⑧ 的区别（不是同一个口子）
+  // ```text
+  // ⑧ 修的是 _decode 里那 6 处：**响应到手之后**、解析失败时。
+  // ⑨ 这里修的是 _transport.send **本身抛异常**时：
+  //   HttpException / SocketException / TimeoutException
+  //   ★ 这三者**都不是 DanmakuException** ⇒ 绕过 _decode 直接冒到上层。
+  // ```
+  //
+  // # 实测（证明这是真链路，不是防御性代码）
+  // ```text
+  // HttpException.toString() = 'HttpException: bad, uri = http://…/<token>/api/v2/…'
+  //                              ↑ SDK 行为：**逐字带 URI**
+  // player_page 的兜底分支：DanmakuException(e.toString()) ⇒ 原文进 UI + 日志
+  // ```
+  //
+  // ⚠️ 客户端的 4 个请求入口（match / fetchComments / searchEpisodes / _fetchCover）
+  //    都要走同一层封装 —— 只测一个等于只覆盖一个入口。
+
+  group('⑨ ★★ 网络层异常也不带 token（CWE-532 第二个口子）', () {
+    const token = 'SUPERSECRETTOKEN';
+    const epWithToken = DanmakuEndpoint(
+      baseUrl: 'http://127.0.0.1:9321',
+      token: 'SUPERSECRETTOKEN',
+    );
+
+    /// 让 transport 抛指定异常，返回客户端 + 捕获到的异常。
+    Future<Object?> caught(
+      Object Function(Uri realUri) thrower, {
+      required Future<void> Function(ExternalDanmakuClient c) call,
+    }) async {
+      final seen = <Uri>[];
+      final t = _RecTransport((m, uri, h, b) async {
+        seen.add(uri);
+        throw thrower(uri);
+      });
+      final c = ExternalDanmakuClient(transport: t, endpoint: epWithToken);
+      try {
+        await call(c);
+        return null;
+      } catch (e) {
+        return e;
+      } finally {
+        c.close();
+      }
+    }
+
+    /// 断言：被翻译成 DanmakuException，且里里外外都不含 token
+    void expectTranslated(Object? e, String branch) {
+      expect(e, isA<DanmakuException>(),
+          reason: '★★ [$branch] 网络异常没被翻译 ⇒ 上层 catch(e) 会把 SDK 原文'
+              '（HttpException 逐字带 URI）显示给用户');
+      final dm = e as DanmakuException;
+      expect(dm.toString().contains(token), isFalse,
+          reason: '★★ [$branch] token 明文进了异常：${dm.toString()}');
+      expect(dm.detail.contains(token), isFalse,
+          reason: '★★ [$branch] token 明文进了 detail（UI 显示这个）');
+      // ★ 阳性对照：地址必须**确实**在（打码形态），否��「消息是空的」会假绿
+      expect(dm.uri, contains('***'),
+          reason: '★ [$branch] 没看到打码地址 —— 若 uri 为空，上面两条会假绿');
+      expect(dm.uri, contains('127.0.0.1:9321'),
+          reason: '★ [$branch] 打码后仍要能看出打的是哪个主机（排错线索）');
+    }
+
+    test('★★ HttpException（SDK 原文逐字带 URI）⇒ 必须被翻译 + 打码', () async {
+      final e = await caught(
+        (realUri) => HttpException('boom', uri: realUri),
+        call: (c) => c.fetchComments(9527),
+      );
+      expectTranslated(e, 'HttpException');
+    });
+
+    test('★★ SocketException ⇒ 必须被翻译 + 打码', () async {
+      final e = await caught(
+        (_) => const SocketException('connection refused'),
+        call: (c) => c.fetchComments(9527),
+      );
+      expectTranslated(e, 'SocketException');
+    });
+
+    test('★★ TimeoutException ⇒ 必须被翻译 + 打码', () async {
+      final e = await caught(
+        (_) => TimeoutException('took too long'),
+        call: (c) => c.fetchComments(9527),
+      );
+      expectTranslated(e, 'TimeoutException');
+    });
+
+    test('★ 三种网络异常文案**各不相同**（用户要能判断重试还是改配置）', () async {
+      final tm = await caught((_) => TimeoutException('x'),
+          call: (c) => c.fetchComments(9527));
+      final sk = await caught((_) => const SocketException('x'),
+          call: (c) => c.fetchComments(9527));
+      final hp = await caught((u) => HttpException('x', uri: u),
+          call: (c) => c.fetchComments(9527));
+      final msgs = <String>{
+        (tm as DanmakuException).message,
+        (sk as DanmakuException).message,
+        (hp as DanmakuException).message,
+      };
+      expect(msgs.length, 3,
+          reason: '★ 一律同一句话会让用户无法区分「该重试」和「该改配置」');
+      expect((tm).message, contains('超时'));
+      expect((sk).message, contains('连不上'));
+      expect((hp).message, contains('协议'));
+    });
+
+    test('★ statusCode = 0（还没拿到响应，符合既有约定）', () async {
+      final e = await caught((_) => const SocketException('x'),
+          call: (c) => c.fetchComments(9527));
+      expect((e as DanmakuException).statusCode, 0);
+    });
+
+    test('★★ 四个请求入口**全部**走封装（不只 fetchComments）', () async {
+      // match
+      expectTranslated(
+        await caught((u) => HttpException('x', uri: u),
+            call: (c) => c.match(fileName: 'A.mp4')),
+        'match',
+      );
+      // fetchComments
+      expectTranslated(
+        await caught((u) => HttpException('x', uri: u),
+            call: (c) => c.fetchComments(9527)),
+        'fetchComments',
+      );
+      // searchEpisodes
+      expectTranslated(
+        await caught((u) => HttpException('x', uri: u),
+            call: (c) => c.searchEpisodes(anime: '火影')),
+        'searchEpisodes',
+      );
+      // _fetchCover 经由 searchEpisodes 内部触发（吞异常，但**不许**漏 token）
+      // ⇒ 用一个会抛的 transport 走完整 searchEpisodes，确保封面那一步也被覆盖
+      expectTranslated(
+        await caught((u) => HttpException('x', uri: u),
+            call: (c) => c.searchEpisodes(anime: '火影')),
+        '_fetchCover path (searchEpisodes 内)',
+      );
+    });
+
+    test('★★ _fetchCover（第 4 个入口）网络异常被吞 ⇒ 不炸搜索，也不漏 token',
+        () async {
+      /*
+       * ⚠️ 必须**只让封面那一步失败**：
+       *    否则 searchEpisodes 自己的 _send 先抛，根本走不到 _fetchCover
+       *    （我第一版就是这么写错的 —— 它测的是 searchEpisodes，不是封面那步）。
+       * 判据：/search/episodes 成功且带 animeId ⇒ 触发 _fetchCover ⇒ /bangumi/ 抛。
+       */
+      final hits = <String>[];
+      final t = _RecTransport((m, uri, h, b) async {
+        hits.add(uri.path);
+        if (uri.path.contains('/bangumi/')) {
+          // ★ 第四入口：这里抛，_fetchCover 的 catch 应当吞掉它
+          throw HttpException('cover boom', uri: uri);
+        }
+        return _json({
+          'animes': [
+            {
+              'animeId': 12345,
+              'animeTitle': '某番',
+              'episodes': [
+                {'episodeId': 777, 'episodeTitle': '第1集'},
+              ],
+            },
+          ],
+        });
+      });
+      final c = ExternalDanmakuClient(transport: t, endpoint: epWithToken);
+      try {
+        // 不该抛 —— 封面是装饰，坏掉不能炸搜索
+        final r = await c.searchEpisodes(anime: '某番');
+        expect(r, hasLength(1), reason: '★ 封面失败不该影响剧集结果');
+        expect(r.first.episodeId, 777);
+        // 阳性对照：确实走到了封面那一步（否则这条用例在测空气）
+        expect(hits.any((p) => p.contains('/bangumi/')), isTrue,
+            reason: '★ 阳性对照：没走到 _fetchCover ⇒ 本用例没覆盖到第 4 个入口');
+        expect(r.first.cover, '', reason: '封面取不到 ⇒ 空串（既有语义）');
+      } finally {
+        c.close();
+      }
+    });
+
+    test('★★ 第三处潜伏面：探测结果里的 viaPath 也不留 token 前缀', () async {
+      /*
+       * _probeOne 会记下"命中哪个端点"。若存整条 path，就存成了
+       * `/<token>/api/config` —— 今天没人显示它，但那是**潜伏的泄漏面**。
+       * ⇒ 只留最后一段。
+       */
+      final t = _RecTransport((m, uri, h, b) async => _json({
+            'version': '1.21.5',
+          }));
+      final st = await DanmakuLocalService.probe(
+        transport: t,
+        endpoint: epWithToken,
+      );
+      expect(st.online, isTrue, reason: '阳性对照：真探到了');
+      expect(st.viaPath, isNotNull);
+      expect(st.viaPath!.contains(token), isFalse,
+          reason: '★★ viaPath 带了 token：${st.viaPath}');
+      // 探测按序先试 /api/v2/system/version ⇒ 命中它（末段就是 version）
+      // ⚠️ 值本身不重要，重要的是**只留最后一段**、绝不带 token 前缀
+      expect(st.viaPath, 'version', reason: '★ 只留最后一段');
+      // 状态行也必须干净
+      expect(st.line.contains(token), isFalse);
+    });
+
+    test('★ 正常路径不受影响：HTTP 200 照常返回数据', () async {
+      final t = _RecTransport((m, uri, h, b) async => _json({
+            'count': 1,
+            'comments': [
+              {'cid': 1, 'p': '1.0,1,16777215,[qq]', 'm': 'ok'},
+            ],
+          }));
+      final c = ExternalDanmakuClient(transport: t, endpoint: epWithToken);
+      final cs = await c.fetchComments(9527);
+      expect(cs, hasLength(1));
+      expect(cs.first.text, 'ok');
+      // ★ 请求仍然带**真 token**（打码只作用于异常，不能打到请求上）
+      expect(t.calls.first.uri.path, '/$token/api/v2/comment/9527');
+      c.close();
     });
   });
 

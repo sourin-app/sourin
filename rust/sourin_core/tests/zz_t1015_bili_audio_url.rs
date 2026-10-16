@@ -68,8 +68,7 @@ async fn bili_audio_url_survives_bridge() {
     let mid = MediaId::new("bilibili", bvid.clone());
 
     let Some(p) = st.registry.route(&mid) else {
-        println!("[t1015] ★ 源 bilibili 未注册 —— 插件没被加载？");
-        return;
+        panic!("[t1015] ★ 源 bilibili 未注册 —— 插件没被加载，本条探针无从断言");
     };
 
     match p.resolve(&mid, &PlayRequest::default()).await {
@@ -89,11 +88,14 @@ async fn bili_audio_url_survives_bridge() {
                 }
             }
             if with_audio == 0 {
-                println!("[t1015] ★★ 没有任何候选带 audio_url —— 缺口在插件/桥这一侧");
+                panic!(
+                    "[t1015] ★★ 没有任何候选带 audio_url —— 缺口在插件/桥这一侧（{} 条候选全部缺 audio_url）",
+                    list.len()
+                );
             } else {
                 println!("[t1015] ✓ audio_url 确实过了桥（缺口不在这里）");
             }
         }
-        Err(e) => println!("[t1015] ★ resolve 报错: {}", e.message),
+        Err(e) => panic!("[t1015] ★ resolve 报错: {}", e.message),
     }
 }

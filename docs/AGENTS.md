@@ -105,10 +105,22 @@ flutter analyze lib            # 0 error；不要新增 warning
 
 ```text
 宽度      默认 560；窄弹窗 460、宽版面 820 需显式传 width 并注释原因
-最大高度  视口高度 * 0.8（MediaQuery，不写死数值）
+最大高度  绝对值 620，再按视口夹取（maxHeight 可覆盖）
 圆角      Radii.rLg
 标题栏    title + subtitle + 右侧关闭 IconButton
-内容区    SingleChildScrollView，padding fromLTRB(Sp.x6, Sp.x3, Sp.x6, Sp.x4)
+内容区    SingleChildScrollView，padding fromLTRB(Sp.x6, 0, Sp.x6, Sp.x2)
+
+⚠️ 2026-10-17（CodeRabbit CR）：上面两条**改前写的是**
+   「视口高度 * 0.8」与「fromLTRB(Sp.x6, Sp.x3, Sp.x6, Sp.x4)」，
+   与 app_dialog_shell.dart 的实际实现不符 —— 那是**实现先改、文档没跟上**：
+   ```text
+   _kMaxHeight = 620（绝对值）
+     原因：「视口 × 0.8」在 800×600 的测试视口下只有 480，比改前的 620 更矮，
+           内容被挤、t70 的 3 条 tap 测试红。0.8 那个数是拍的，没依据。
+   padding = fromLTRB(x6, 0, x6, x2)
+   ```
+   ★ 本节的数**一律以外壳代码为准**；改外壳的间距/高度必须同步改这里，
+     否则新弹窗会按过期的文档写，重现同一批失败。
 底部操作  可选 actions，与内容区分隔、按钮靠右
 ```
 

@@ -1759,7 +1759,38 @@ class ExternalDanmakuClient {
     };
   }
 
+  /// 请求地址的**脱敏形态** —— 只用于异常里记录/展示，**绝不**用于发请求。
+  ///
+  /// # 为什么必须脱敏（CWE-532：敏感信息进日志）
+  /// ```text
+  /// 自建后端把 token 放在**路径前缀**上（见 [DanmakuEndpoint.prefixedPath]）
+  /// ⇒ 完整 URI 形如 http://host:9321/<token>/api/v2/comment/9527
+  /// 而 [DanmakuException.uri] 会进 `detail` / `toString()`，异常又会显示给用户、
+  /// 也进日志 ⇒ **token 明文泄露**。
+  /// ```
+  ///
+  /// # 判据为什么用**结构**而不是比对 `_endpoint.token`
+  /// ```text
+  /// 本客户端所有协议路径都以 /api 开头（各处 `const path = '/api/v2/…'`）
+  /// ⇒ 路径第一段不是 `api` 时，它就是 token 前缀。
+  ///
+  /// ⚠️ 刻意**不**拿 `_endpoint.token` 去比：请求在途时用户可能改了地址
+  ///    （见 _probeSeq 那条竞态的同类窗口）——那时 `_endpoint` 已指向新 token，
+  ///    而这条 URI 上带的还是**旧** token ⇒ 比对会放行，**漏脱敏**。
+  ///    结构判据没有这个时间窗口。
+  /// ```
+  ///
+  /// ⚠️ 过度脱敏是**安全方向**的取舍：宁可多打一段码，也不能漏一个 token。
+  String _safeUri(Uri u) {
+    final segs = u.pathSegments;
+    if (segs.length < 2 || segs.first == 'api') return u.toString();
+    return u.replace(pathSegments: <String>['***', ...segs.skip(1)]).toString();
+  }
+
   /// 把一次响应翻译成"要么是数据、要么是带原文的异常"
+  ///
+  /// ⚠️ 记录到异常里的地址一律走 [_safeUri]（去掉 token 前缀），
+  ///    但**请求本身**用的仍是原始 [uri] —— 两件事不能混。
   Map<String, dynamic> _decode(DanmakuHttpResponse r, String what, Uri uri) {
     if (r.statusCode == 403 || r.statusCode == 401) {
       final xe = r.xErrorMessage;
@@ -1768,7 +1799,7 @@ class ExternalDanmakuClient {
         statusCode: r.statusCode,
         xErrorMessage: xe,
         body: _clip(r.body),
-        uri: uri.toString(),
+        uri: _safeUri(uri),
       );
       // ★ 原文照旧（上面那个 message），额外挂一句"下一步做什么"
       throw DanmakuException(
@@ -1786,7 +1817,7 @@ class ExternalDanmakuClient {
         statusCode: r.statusCode,
         xErrorMessage: r.xErrorMessage,
         body: _clip(r.body),
-        uri: uri.toString(),
+        uri: _safeUri(uri),
         // 412/429 是"被限流"，不是"坏了" —— 用户该做的是等一下
         hint: r.statusCode == 412 || r.statusCode == 429
             ? const DanmakuHint(
@@ -1804,7 +1835,7 @@ class ExternalDanmakuClient {
         '弹幕服务返回的是一张网页，不是数据（$what）',
         statusCode: r.statusCode,
         body: _clip(r.body),
-        uri: uri.toString(),
+        uri: _safeUri(uri),
         hint: DanmakuHint.htmlPage(what: what),
       );
     }
@@ -1817,7 +1848,7 @@ class ExternalDanmakuClient {
         statusCode: r.statusCode,
         xErrorMessage: r.xErrorMessage,
         body: _clip(r.body),
-        uri: uri.toString(),
+        uri: _safeUri(uri),
       );
     }
     if (parsed is! Map<String, dynamic>) {
@@ -1825,7 +1856,7 @@ class ExternalDanmakuClient {
         '弹幕服务返回的 JSON 结构不对（$what）',
         statusCode: r.statusCode,
         body: _clip(r.body),
-        uri: uri.toString(),
+        uri: _safeUri(uri),
       );
     }
     // 业务错误：HTTP 200 + success:false + errorCode/errorMessage
@@ -1838,7 +1869,7 @@ class ExternalDanmakuClient {
         errorCode: code,
         errorMessage: msg,
         body: _clip(r.body),
-        uri: uri.toString(),
+        uri: _safeUri(uri),
       );
     }
     return parsed;

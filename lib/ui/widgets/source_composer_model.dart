@@ -98,11 +98,17 @@ class ComposerDraft {
       endpoints.entries.where((e) => e.value.enabled).map((e) => e.key);
 
   /// 编出来的 JSON —— 与 `kDeclarativeTemplate` 的形状**逐字一致**
+  ///
+  /// ⚠️ 2026-10-17（CodeRabbit CR）：`id`/`name`/`base` 必须 **trim** 后再输出。
+  ///   改前 `_canSubmit` 用 `trim()` **判断**非空、但 `toJson()` 输出的是
+  ///   **原始值** ⇒ 用户输入 `" a "` 会生成带首尾空白的 JSON，
+  ///   而 `base` 带空白会让 URL 拼接失败（`https://x.com /api`）。
+  ///   ★ 「判据用 trim、产物不用」是典型的不一致 —— 判据和产物必须同源。
   Map<String, Object?> toJson() {
     return <String, Object?>{
-      'id': id,
-      'name': name,
-      'base': base,
+      'id': id.trim(),
+      'name': name.trim(),
+      'base': base.trim(),
       if (headers.isNotEmpty) 'headers': headers,
       'capabilities': <String, Object?>{
         for (final e in enabled) e.key: true,

@@ -488,6 +488,151 @@ void main() {
   });
 
   // ═══════════════════════════════════════════════════════════════════
+  //  ⑧ ★★ 安全（CWE-532）：异常里的地址不许带 token 明文
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 漏洞链
+  // ```text
+  // ① 自建后端把 token 放**路径前缀**（/<token>/api/v2/…）
+  // ② _decode 抛 DanmakuException 时把 uri.toString() 原样带进去
+  // ③ 该异常会显示给用户、也进日志 ⇒ token 明文泄露
+  // ```
+  //
+  // ⚠️ _decode 里有 **6 处** uri.toString()（6 条不同的失败分支）。
+  //    只测一条 = 只覆盖一个渲染分支 —— 这正是上一轮 token 不回显踩过的坑。
+  //    ⇒ 下面**逐条**覆盖全部 6 条分支。
+
+  group('⑧ ★★ 异常里的地址不含 token 明文（CWE-532）', () {
+    const token = 'SUPERSECRETTOKEN';
+    const endpointWithToken = DanmakuEndpoint(
+      baseUrl: 'http://127.0.0.1:9321',
+      token: 'SUPERSECRETTOKEN',
+    );
+
+    /// 造假 transport + 带 token 的客户端，捕获 [fetchComments] 抛出的异常。
+    Future<DanmakuException> failing(
+      DanmakuHttpResponse resp, {
+      DanmakuEndpoint? endpoint = endpointWithToken,
+    }) async {
+      final t = _RecTransport((m, uri, h, b) async => resp);
+      final c = ExternalDanmakuClient(transport: t, endpoint: endpoint);
+      try {
+        await c.fetchComments(9527);
+        fail('这条响应本应抛异常');
+      } on DanmakuException catch (e) {
+        return e;
+      } finally {
+        c.close();
+      }
+    }
+
+    /// 一条用例要同时成立的三件事（脱敏 + 可读 + 请求仍用原地址）
+    void expectRedacted(DanmakuException e, String branch) {
+      expect(e.uri.contains(token), isFalse,
+          reason: '★★ [$branch] token 明文进了异常：${e.uri}');
+      expect(e.detail.contains(token), isFalse,
+          reason: '★★ [$branch] token 明文进了 detail（UI 会显示这个）：${e.detail}');
+      expect(e.toString().contains(token), isFalse,
+          reason: '★★ [$branch] token 明文进了 toString（日志会打这个）');
+      // ★ 阳性对照：必须**确实**做了替换，而不是恰好没记录地址
+      expect(e.uri, contains('***'),
+          reason: '★ [$branch] 没看到打码形态 —— 若 uri 本来就是空的，'
+              '上面那三条会「因为没写地址」而假绿');
+      expect(e.uri, contains('/api/v2/comment/9527'),
+          reason: '★ [$branch] 打码后仍要能看出打的是哪个端点（否则排错没线索）');
+    }
+
+    test('★ 分支①：403（业务拒绝）', () async {
+      final e = await failing(const DanmakuHttpResponse(
+          statusCode: 403, body: 'nope', headers: <String, String>{}));
+      expectRedacted(e, '403');
+    });
+
+    test('★ 分支②：非 2xx（HTTP 500）', () async {
+      final e = await failing(const DanmakuHttpResponse(
+          statusCode: 500, body: 'boom', headers: <String, String>{}));
+      expectRedacted(e, '500');
+    });
+
+    test('★ 分支③：200 但正文是网页（风控页）', () async {
+      final e = await failing(const DanmakuHttpResponse(
+          statusCode: 200,
+          body: '<!DOCTYPE html><html></html>',
+          headers: <String, String>{}));
+      expectRedacted(e, 'html');
+    });
+
+    test('★ 分支④：200 但不是 JSON', () async {
+      final e = await failing(const DanmakuHttpResponse(
+          statusCode: 200, body: 'not json at all', headers: <String, String>{}));
+      expectRedacted(e, 'non-json');
+    });
+
+    test('★ 分支⑤：JSON 但结构不对（不是对象）', () async {
+      final e = await failing(const DanmakuHttpResponse(
+          statusCode: 200, body: '[1,2,3]', headers: <String, String>{}));
+      expectRedacted(e, 'non-map');
+    });
+
+    test('★ 分支⑥：业务错误（success:false）', () async {
+      final e = await failing(const DanmakuHttpResponse(
+          statusCode: 200,
+          body: '{"success":false,"errorCode":9,"errorMessage":"nope"}',
+          headers: <String, String>{}));
+      expectRedacted(e, 'business');
+    });
+
+    test('★★ 实际请求仍用**原始** URI（只打码异常里的记录）', () async {
+      final seen = <Uri>[];
+      final t = _RecTransport((m, uri, h, b) async {
+        seen.add(uri);
+        return const DanmakuHttpResponse(
+            statusCode: 500, body: 'boom', headers: <String, String>{});
+      });
+      final c = ExternalDanmakuClient(
+          transport: t, endpoint: endpointWithToken);
+      try {
+        await c.fetchComments(9527);
+      } catch (_) {}
+      c.close();
+      expect(seen, isNotEmpty, reason: '阳性对照：确实发出过请求');
+      expect(seen.first.path, '/$token/api/v2/comment/9527',
+          reason: '★★ 请求必须带真 token（打码不能打到请求上，否则服务端不认）');
+    });
+
+    test('★ token 为空 ⇒ 地址**逐字不变**（老路径不受影响）', () async {
+      final e = await failing(
+        const DanmakuHttpResponse(
+            statusCode: 500, body: 'x', headers: <String, String>{}),
+        endpoint: const DanmakuEndpoint(baseUrl: 'http://127.0.0.1:9321'),
+      );
+      expect(e.uri, 'http://127.0.0.1:9321/api/v2/comment/9527?withRelated=true',
+          reason: '★ 没有 token 就不该多出 *** —— 行为与改前逐字一致');
+    });
+
+    test('★ 没配自建后端（官方路径）⇒ 地址**逐字不变**', () async {
+      final e = await failing(
+        const DanmakuHttpResponse(
+            statusCode: 500, body: 'x', headers: <String, String>{}),
+        endpoint: null,
+      );
+      expect(e.uri, contains('api.dandanplay.net/api/v2/comment/9527'),
+          reason: '★ 官方路没有 token，一个字符都不该动');
+      expect(e.uri.contains('***'), isFalse);
+    });
+
+    test('★ 协议路径本来就以 /api 开头 ⇒ 不误伤（不会把 api 打成 ***）', () async {
+      // 这是阳性对照的反面：_safeUri 只认「第一段不是 api」才是 token
+      final e = await failing(
+        const DanmakuHttpResponse(
+            statusCode: 500, body: 'x', headers: <String, String>{}),
+        endpoint: const DanmakuEndpoint(baseUrl: 'http://h:1'),
+      );
+      expect(e.uri, 'http://h:1/api/v2/comment/9527?withRelated=true');
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
   //  ⑥ UiPrefs 偏好读写
   // ═══════════════════════════════════════════════════════════════════
 

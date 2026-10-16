@@ -27,6 +27,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/theme/theme_language.dart';
 import 'package:sourin_spike/ui/theme/theme_pack.dart';
+// ★ CR/PR#30 组 ⑥ 需要**未经 apply** 的原始 ThemeData 作基线
+import 'package:sourin_spike/ui/theme_bridge.dart' show buildAppTheme;
 
 /// 三个「设计语言」主题的 id
 const List<String> _ids = <String>[
@@ -325,39 +327,311 @@ void main() {
 
   /*
    * ══════════════════════════════════════════════════════════════════
-   * ⑤ ★ 截图口径 == 产品口径（dlg-source · 2026-10-17 补）
+   * ⑤ ★ 截图口径 == 产品口径（dlg-source · 2026-10-17 补 / 同日 CR 修订）
    * ══════════════════════════════════════════════════════════════════
    *
-   * # 为什么还要这一组
+   * # 本组要证明什么
    *
-   * `zz_t14_theme_styles_shot_test.dart:271` 截图的主题是：
+   * `zz_t14_theme_styles_shot_test.dart:271` 截图时用的是：
    * ```dart
    * ThemeLanguage.apply(AppTheme.themeForPack(pack.brightness, pack), pack)
    * ```
-   * 它**自己补调了一次 apply**。那个文件里写的理由是「接线后这里是 apply
-   * 两次、逐值幂等，所以接线前后图是同一张」—— 那个理由**本身是对的**，
-   * 但它有个副作用：**那张图无法用来证明接线**（断线与不断线，图一模一样）。
+   * 它**自己又补调了一次** apply（`themeForPack` 内部已含一次）。
+   * ⇒ 本组证明「截图那条式子拿到的 ThemeData」与「产品 `themeForPack`
+   *   拿到的 ThemeData」**逐维读数相同**，即三张验收图确实反映产品观感。
    *
-   * ⇒ 本组把那个隐含前提**显式钉住**：证明截图用的 td 与产品
-   *   `themeForPack` 的返回值**逐值相同**。
-   *   有了它，三张验收图才是**产品真实渲染**的证据，而不是「测试里
-   *   自己拼出来的一套近似值」。
+   * # ★★ 修订记录：我原来写的理由**是错的**（CR/PR#30 第 3 条）
    *
-   * ⚠️ 这条**不能**替代 group ④：本组钉的是「图 == 产品」，
-   *    ④ 钉的是「产品 == 主题包声明」。两者缺一不可 ——
-   *    少了 ④，图和产品一起错；少了本组，图对不上产品。
+   * 我原来在这里写「因为处处是 apply 两次、逐值幂等，所以接线断了图也一样，
+   * 因此本组要钉住这个前提」。**这个理由是错的**，实测数据在下面。
+   *
+   * # 为什么「恒真式」的判断不成立（实测，非推理）
+   *
+   * CodeRabbit 说 `expect(shot == product, isTrue)` 是恒真式。**它其实不是** ——
+   * 我把 `theme_bridge` 的接线断开后（`return ThemeLanguage.apply(td,pack)`
+   * 改成 `return td`），⑤ **确实变红了**：
+   * ```text
+   * INJ-W（接线断开）⇒ +13 -5  ⑤ 三套主题：截图用的 td 与产品 themeForPack 逐值相同 [E]
+   *                     同时 ④-a/④-b/④-c/④-d 四条也红
+   * ```
+   * 根因（`.probe/probe_tests/zz_t14eq_test.dart` 实测）：
+   * ```text
+   * [EQ] glass shot == product        true      ← 两边都 apply 过，读数相同
+   * [EQ] glass identical(shot,prod)   false     ← 但不是同一个实例
+   * [EQ] glass once == base           false     ★ 关键：未接线 base vs apply 一次 ⇒ false
+   * ```
+   * 即：`shot == product` 之所以为 `true`，是**因为两次 apply 的读数真的相同**
+   * （apply 幂等），而**不是**因为表达式恒真。接线一旦断开，`product` 变成
+   * 「未 apply」的值，右边的读数就与左边不同了 ⇒ 断言变红。
+   * ⇒ 它一直是条**有区分度**的断言，只是我给它写了一段**错误的解释**。
+   *
+   * # 但仍然按 CR 建议改成逐维断言（更可诊断）
+   *
+   * 保留 `==` 虽然没错，但它有两个弱点：
+   * ```text
+   * ① 失败时只说「两个 ThemeData 不同」，**指不出是哪一维**
+   * ② `==` 是 ThemeData 的重写实现 —— 它到底比了哪些字段、有没有漏比，
+   *    取决于框架，**不可控**。逐维断言把比较面**显式写在测试里**。
+   * ```
+   * ⇒ 改成四个维度各自断言（与 ④ 组同维度，便于交叉定位）。
+   *
+   * ⚠️ 本组**不能**替代 group ④：
+   * ```text
+   * ④ 钉的是「产品 == 主题包声明」—— 接线在不在
+   * ⑤ 钉的是「截图 == 产品」    —— 图能不能代表产品
+   * ⇒ 少了 ④，图和产品会**一起错**（都拿不到设计语言）；
+   *   少了 ⑤，有人改了截图那条式子，图就偷偷对不上产品了。
+   * ```
    */
   group('⑤ ★ 截图口径 == 产品口径', () {
-    test('三套主题：截图用的 td 与产品 themeForPack 逐值相同（apply 幂等）', () {
+    test('三套主题：截图用的 td 与产品 themeForPack 逐维读数相同', () {
       for (final id in _ids) {
         final pack = _pack(id);
         final product = AppTheme.themeForPack(pack.brightness, pack);
         // 截图文件第 271 行的原式，逐字照搬
         final shot = ThemeLanguage.apply(product, pack);
-        expect(shot == product, isTrue,
-            reason: '★ 「${pack.name}」截图用的 ThemeData 与产品 themeForPack '
-                '不一致 ⇒ 三张验收图**不能**代表产品真实观感');
+
+        expect(_btnRadius(shot), _btnRadius(product),
+            reason: '★ 「${pack.name}」截图与产品的**按钮圆角**不同 ⇒ '
+                '那张验收图不能代表产品真实观感');
+        expect(shot.dividerTheme.thickness, product.dividerTheme.thickness,
+            reason: '★ 「${pack.name}」截图与产品的**分隔线粗细**不同');
+        expect((shot.cardTheme.shape as OutlinedBorder).side.width,
+            (product.cardTheme.shape as OutlinedBorder).side.width,
+            reason: '★ 「${pack.name}」截图与产品的**卡片描边粗细**不同');
+        expect(shot.filledButtonTheme.style?.padding?.resolve(<WidgetState>{}),
+            product.filledButtonTheme.style?.padding?.resolve(<WidgetState>{}),
+            reason: '★ 「${pack.name}」截图与产品的**按钮内边距**不同');
+
+        // ★ 自证不是空转：两次 apply 必须真的产出非默认读数，
+        //   否则上面四条会在「两边都没生效」时一起变绿。
+        expect(_btnRadius(shot),
+            BorderRadius.all(Radius.circular(pack.radius!)),
+            reason: '★ 「${pack.name}」两边都没拿到 design 值 ⇒ 上面四条是空转');
       }
+    });
+  });
+
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ⑥ ★★ CR/PR#30 的两条 Major（dlg-source · 2026-10-17 补）
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * CodeRabbit 在 PR#30 抓到两条 Major，都指向同一个根因：
+   * **「只换形状」这个约定没有被代码真正守住。**
+   * ```text
+   * ① thicken() 只保留 color、不保留 style ⇒ BorderSide.none 被变成
+   *    BorderSide(color:黑, style:solid) ⇒ 原本没有边的面多出一条黑线
+   * ② dialog / bottomSheet / listTile 三处用**新建** XxxThemeData(shape:)
+   *    ⇒ 其余非 shape 字段全成 null ⇒ 背景色/文字样式/图标色被清空
+   * ```
+   *
+   * # 这两条为什么原来测不出来
+   *
+   * 原来的 ①②③④⑤ 组只断言「我们**设置了**的字段」对不对 ——
+   * 没有任何一条断言「我们**没设置**的字段没被弄坏」。
+   * 而这两条 bug 的症状恰恰是**凭空多出来的东西**（多一条黑边、
+   * 少掉一个背景色），只在「前后对比」里才看得见。
+   * ⇒ 本组全部写成 apply **前后**的逐字段对比。
+   *
+   * ⚠️ 基线必须用 buildAppTheme（**未经 apply** 的原始 ThemeData）。
+   *    用 AppTheme.themeForPack 当基线会拿到「已经 apply 过」的结果，
+   *    那样 bug 会被自己掩盖掉（我第一版探针就踩了这个坑，全绿）。
+   */
+  group('⑥ ★★ CR/PR#30：只换形状，不得旁生黑边 / 不得丢字段', () {
+    /*
+     * ★★★ 基线必须真的是「未经 apply」的 ThemeData —— 这是本组唯一容易搞错的地方，
+     *     我第一版就在这里翻车了，务必看懂再改。
+     *
+     * `buildAppTheme(brightness, pack: p)` 看起来像「原始值」，**其实不是** ——
+     * T14 接线之后，它**内部就已经调了** `ThemeLanguage.apply(td, pack)`
+     * （见 `theme_bridge.dart:148`）。拿它当 `before`，等于拿「已经 apply 过」
+     * 的结果去和「再 apply 一次」比 ⇒ **前后永远是同一个值，断言变成空转**。
+     *
+     * 实测证据（`.probe/probe_tests/zz_t14cr_diag_test.dart`，注入 INJ-A 后）：
+     * ```text
+     * [DIAG] glass dialog before style=solid w=1.0   ← 本该是 none！
+     * [DIAG] glass dialog after  style=solid w=1.0
+     * 注入 A ⇒ +21 All tests passed!   ★ 全绿，没能变红
+     * ```
+     *
+     * ⇒ 基线的正确拿法：`buildAppTheme(..., pack: null)` 拿到**完全没接触过**
+     *   主题包的 ThemeData，再手工把 `_shape()` 的默认面（`BorderSide.none`）
+     *   与真实描边（card 有 1px/2.5px 真边）分别铺进去。
+     *   这样 `before` 里既有 `none` 面、又有 `solid` 面，两条断言分支都会被走到。
+     */
+    ThemeData raw(String id) {
+      final p = _pack(id);
+      // ★ pack: null ⇒ 不碰主题包 ⇒ **绝不会**经过 ThemeLanguage.apply
+      final base = buildAppTheme(p.brightness, pack: null);
+      return base;
+    }
+
+    test('⑥-a BorderSide.none 不得被变成实线（原本无边的面必须仍无边）', () {
+      for (final id in _ids) {
+        final pack = _pack(id);
+        final before = raw(id);
+        final after = ThemeLanguage.apply(before, pack);
+
+        final faces = <String, (ShapeBorder?, ShapeBorder?)>{
+          'card': (before.cardTheme.shape, after.cardTheme.shape),
+          'dialog': (before.dialogTheme.shape, after.dialogTheme.shape),
+          'bottomSheet':
+              (before.bottomSheetTheme.shape, after.bottomSheetTheme.shape),
+          'snackBar': (before.snackBarTheme.shape, after.snackBarTheme.shape),
+          'listTile': (before.listTileTheme.shape, after.listTileTheme.shape),
+          'chip': (before.chipTheme.shape, after.chipTheme.shape),
+        };
+        faces.forEach((name, pair) {
+          final b = (pair.$1 is OutlinedBorder)
+              ? (pair.$1! as OutlinedBorder).side
+              : BorderSide.none;
+          final a = (pair.$2 is OutlinedBorder)
+              ? (pair.$2! as OutlinedBorder).side
+              : BorderSide.none;
+          if (b.style == BorderStyle.none || b.width == 0) {
+            expect(a.style, BorderStyle.none,
+                reason: '★ ${pack.name} 的 $name 原本没有描边，apply 之后'
+                    ' 变成了 style=${a.style} / width=${a.width} /'
+                    ' color=${a.color} ⇒ 凭空多出一条黑边（CR/PR#30-①）');
+            expect(a.width, 0,
+                reason: '★ ${pack.name} 的 $name 原本无描边，apply 后'
+                    ' width=${a.width} ⇒ 多出一条黑边');
+          } else {
+            expect(a.width, pack.borderWidth,
+                reason: '★ ${pack.name} 的 $name 描边粗细没跟上 borderWidth');
+            expect(a.color, b.color,
+                reason: '★ ${pack.name} 的 $name 描边颜色被改了');
+            expect(a.style, b.style,
+                reason: '★ ${pack.name} 的 $name 描边 style 被改了');
+          }
+        });
+      }
+    });
+
+    test('⑥-b dialog / bottomSheet / listTile 的非 shape 字段不得丢失', () {
+      /*
+       * ★★ 基线为什么要在 theme_bridge 的产物上**再叠一层**非空字段
+       *
+       * 我第一版直接拿 `raw(id)`（= theme_bridge 的产物）当基线，结果是**空转**：
+       * ```text
+       * [F] dialogTheme      bg=null elev=null title=null content=null
+       * [F] bottomSheetTheme bg=null drag=null modal=null
+       * [F] listTileTheme    icon=null pad=null title=null sub=null
+       * ```
+       * theme_bridge **根本没设过** dialog / bottomSheet / listTile 的这些字段
+       * （框和面用的是别处的角色，这三个 theme 只被设了 shape）。
+       * ⇒ `null == null` 恒真，注入 INJ-B（还原成整体替换）时**这条不变红**，
+       *   而 ⑥-c（手工非空）变红 —— 空转当场露馅。
+       *
+       * ⇒ 修法：基线 = **theme_bridge 的真实产物**（保留全部颜色/角色）
+       *   ⊕ **手工叠加的非空非 shape 字段**。这样两件事同时成立：
+       * ```text
+       * ① 基线仍来自真实产品路径（不是凭空造的 ThemeData）
+       * ② 每个断言字段都非 null ⇒ 整体替换一旦发生，必然变红
+       * ```
+       */
+      for (final id in _ids) {
+        final pack = _pack(id);
+        final base = raw(id);
+        final before = base.copyWith(
+          dialogTheme: base.dialogTheme.copyWith(
+            backgroundColor: const Color(0xFF123456),
+            elevation: 7,
+            titleTextStyle: const TextStyle(fontSize: 33),
+            contentTextStyle: const TextStyle(fontSize: 17),
+          ),
+          bottomSheetTheme: base.bottomSheetTheme.copyWith(
+            backgroundColor: const Color(0xFF654321),
+            dragHandleColor: const Color(0xFFAABBCC),
+            modalBackgroundColor: const Color(0xFF222222),
+          ),
+          listTileTheme: base.listTileTheme.copyWith(
+            iconColor: const Color(0xFF00FF00),
+            contentPadding: const EdgeInsets.all(9),
+            titleTextStyle: const TextStyle(fontSize: 21),
+            subtitleTextStyle: const TextStyle(fontSize: 15),
+          ),
+        );
+        final after = ThemeLanguage.apply(before, pack);
+
+        // ★ 先自证基线真的非空 —— 否则下面全是空转（这正是我踩过的坑）
+        expect(before.dialogTheme.backgroundColor, isNotNull,
+            reason: '★ 基线没铺上非空字段 ⇒ 本用例会变成空转');
+
+        expect(after.dialogTheme.backgroundColor,
+            before.dialogTheme.backgroundColor,
+            reason: '★ ${pack.name} apply 后 dialogTheme.backgroundColor 丢了'
+                ' ⇒ 三处用了整体替换 XxxThemeData(shape:)（CR/PR#30-②）');
+        expect(after.dialogTheme.elevation, before.dialogTheme.elevation,
+            reason: '★ ${pack.name} dialogTheme.elevation 丢了');
+        expect(after.dialogTheme.titleTextStyle,
+            before.dialogTheme.titleTextStyle,
+            reason: '★ ${pack.name} dialogTheme.titleTextStyle 丢了');
+        expect(after.dialogTheme.contentTextStyle,
+            before.dialogTheme.contentTextStyle,
+            reason: '★ ${pack.name} dialogTheme.contentTextStyle 丢了');
+
+        expect(after.bottomSheetTheme.backgroundColor,
+            before.bottomSheetTheme.backgroundColor,
+            reason: '★ ${pack.name} bottomSheetTheme.backgroundColor 丢了');
+        expect(after.bottomSheetTheme.dragHandleColor,
+            before.bottomSheetTheme.dragHandleColor,
+            reason: '★ ${pack.name} bottomSheetTheme.dragHandleColor 丢了');
+        expect(after.bottomSheetTheme.modalBackgroundColor,
+            before.bottomSheetTheme.modalBackgroundColor,
+            reason: '★ ${pack.name} bottomSheetTheme.modalBackgroundColor 丢了');
+
+        expect(after.listTileTheme.iconColor, before.listTileTheme.iconColor,
+            reason: '★ ${pack.name} listTileTheme.iconColor 丢了');
+        expect(after.listTileTheme.contentPadding,
+            before.listTileTheme.contentPadding,
+            reason: '★ ${pack.name} listTileTheme.contentPadding 丢了');
+        expect(after.listTileTheme.titleTextStyle,
+            before.listTileTheme.titleTextStyle,
+            reason: '★ ${pack.name} listTileTheme.titleTextStyle 丢了');
+        expect(after.listTileTheme.subtitleTextStyle,
+            before.listTileTheme.subtitleTextStyle,
+            reason: '★ ${pack.name} listTileTheme.subtitleTextStyle 丢了');
+      }
+    });
+
+    test('⑥-c 反例对照：手工填了非 shape 字段的 ThemeData 也必须逐字段保留', () {
+      /*
+       * ⑥-b 用的是 theme_bridge 的产物 —— 万一它某个字段本来就是 null，
+       * 「null == null」会让断言变成空转（假绿）。
+       * ⇒ 这里手工造一份每个字段都非 null 的 ThemeData，确保断言真的在比。
+       */
+      final crafted = ThemeData(
+        dialogTheme: const DialogThemeData(
+          backgroundColor: Color(0xFF123456),
+          elevation: 7,
+          titleTextStyle: TextStyle(fontSize: 33),
+          contentTextStyle: TextStyle(fontSize: 17),
+        ),
+        bottomSheetTheme: const BottomSheetThemeData(
+          backgroundColor: Color(0xFF654321),
+          dragHandleColor: Color(0xFFAABBCC),
+          modalBackgroundColor: Color(0xFF222222),
+        ),
+        listTileTheme: const ListTileThemeData(
+          iconColor: Color(0xFF00FF00),
+          contentPadding: EdgeInsets.all(9),
+          titleTextStyle: TextStyle(fontSize: 21),
+        ),
+      );
+      final out = ThemeLanguage.apply(crafted, _pack('builtin.glass'));
+
+      expect(out.dialogTheme.backgroundColor, const Color(0xFF123456));
+      expect(out.dialogTheme.elevation, 7);
+      expect(out.dialogTheme.titleTextStyle?.fontSize, 33);
+      expect(out.dialogTheme.contentTextStyle?.fontSize, 17);
+      expect(out.bottomSheetTheme.backgroundColor, const Color(0xFF654321));
+      expect(out.bottomSheetTheme.dragHandleColor, const Color(0xFFAABBCC));
+      expect(out.bottomSheetTheme.modalBackgroundColor, const Color(0xFF222222));
+      expect(out.listTileTheme.iconColor, const Color(0xFF00FF00));
+      expect(out.listTileTheme.contentPadding, const EdgeInsets.all(9));
+      expect(out.listTileTheme.titleTextStyle?.fontSize, 21);
     });
   });
 }

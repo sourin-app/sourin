@@ -283,8 +283,25 @@ class AppDialogShell extends StatelessWidget {
       ),
     );
     final overlay = GestureDetector(
-      // 点背景关闭（与播放页其它面板一致）
-      onTap: onClose,
+      /*
+       * 点背景关闭（与播放页其它面板一致）
+       *
+       * ⚠️ 2026-10-17（CodeRabbit CR）：**必须也检查 `closeEnabled`**。
+       *
+       * 改前只有这一条路径没检查 —— 于是三条关闭路径不一致：
+       * ```text
+       *   X 按钮   → 检查 closeEnabled ✓
+       *   Esc      → 检查 closeEnabled ✓
+       *   点遮罩   → **不检查** ✗  ⇒ 忙碌时点背景仍能关
+       * ```
+       * 具体受害场景：字幕面板忙碌时传 `closeEnabled: !_st.busy`，
+       * 原意是"搜索进行中不许关"，但点遮罩能绕过去。
+       *
+       * ⇒ 与 Esc 用**同一个判据**（`closeEnabled ? onClose : null`）。
+       *   注意这里**不能**写成 `closeEnabled ? onClose : () {}` —— 空回调
+       *   仍会吞掉点击（虽然行为上等价，但留一个死回调容易误导）。
+       */
+      onTap: closeEnabled ? onClose : null,
       child: _scrim(context,
         Center(
           child: Padding(

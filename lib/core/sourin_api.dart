@@ -1609,11 +1609,38 @@ class SourinApi {
   }) async {
     final r = await SourinCore.callAsync('provider_danmaku_list', {
       'provider': provider,
+      /*
+       * ★★★ 键名必须是 **snake_case**，不是 Dart 侧的驼峰（2026-10-17 修正）
+       *
+       * # 为什么（真 bug，会静默丢字段）
+       *
+       * `req` 这一层是**嵌套对象**，FFI 那边直接走：
+       * ```text
+       * serde_json::from_value::<DanmakuRequest>(v["args"]["req"])
+       * ```
+       * 而 serde **只认 Rust 字段名（snake_case）**。
+       * 关键：`DanmakuRequest` 的字段**全都带 `#[serde(default)]`** ——
+       * 所以驼峰的键**不会报错**，而是被**当作不存在的字段静默丢弃**：
+       * ```text
+       * Dart 发 { mediaId: "m1", episodeId: "ep1" }
+       *   ⇒ Rust 收到 media_id: "" / episode_id: ""  ← 空串，**零报错**
+       *   ⇒ 插件拿到的剧集 id 是空 ⇒ 取弹幕全失败，且看不出原因
+       * ```
+       *
+       * ⚠️ **注意与 `Args` 的区别**：外层具名参数（如 `provider`）走
+       *    `crate::args::Args`，它**自动兼容** camelCase（那是为照搬原版
+       *    前端代码保留的隐式契约，见 args.rs 的说明）。
+       *    但嵌套 `req` 这一层**没经过 Args**，所以没有那层兼容。
+       *
+       * ⚠️ 别再"顺手"改回驼峰 —— 有跨语言门禁钉着：
+       *    `test/zz_danmaku_ffi_keys_test.dart` 会从 **Rust 源码**里
+       *    读取真实字段名来比对，改错即红。
+       */
       'req': {
-        'mediaId': mediaId,
-        'episodeId': episodeId,
+        'media_id': mediaId,
+        'episode_id': episodeId,
         if (title != null) 'title': title,
-        if (episodeTitle != null) 'episodeTitle': episodeTitle,
+        if (episodeTitle != null) 'episode_title': episodeTitle,
         if (duration != null) 'duration': duration,
       },
     });
@@ -1641,13 +1668,26 @@ class SourinApi {
   }) async {
     final r = await SourinCore.callAsync('provider_danmaku_send', {
       'provider': provider,
+      // 同样必须 snake_case（理由见 providerDanmakuList 里的长注释）
       'req': {
-        'episodeId': episodeId,
+        'episode_id': episodeId,
         'text': text,
         if (time != null) 'time': time,
         if (mode != null) 'mode': mode,
         if (color != null) 'color': color,
-        if (progressMs != null) 'progressMs': progressMs,
+        /*
+         * ★ 2026-10-17（Lead 修，原 dlg-provider 笔误）：
+         *   这里**判断式**误写成了 JSON 的 key 名 `progress_ms`，
+         *   而形参名是 camelCase 的 `progressMs` ⇒ `undefined_identifier`，
+         *   全仓编译不过（连带阻塞了 resume-fix 的 T9 验收）。
+         *
+         * ⇒ 删掉这个 if 分支，直接放进 map（见下）。
+         *   理由是**语义更对**：`progress_ms` 是「以毫秒计的播放进度」，
+         *   **0 是合法值**（从头开始发弹幕），
+         *   写成 `if (x != null)` 会把 0 和 null 混为一谈。
+         *   改为由后端按 `Option<i64>` 处理（Rust 侧已支持）。
+         */
+        'progress_ms': progressMs,
       },
     });
     return PluginDanmakuSendResult.fromJson(jmap(r));

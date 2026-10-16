@@ -13,6 +13,8 @@
 //
 // ⚠️ 全程**不联网**：连通性测试注入假探针（见 DanmakuSettingsDialog.probeOverride）。
 
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -100,6 +102,183 @@ void main() {
   tearDown(() {
     UiPrefs.debugResetForTest(<String, String>{});
     DanmakuConfig.debugSetBuiltin();
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ⑥ ★★ 竞态：旧请求不许覆盖新输入（CodeRabbit PR #30 抓到的真 bug）
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // 复现手法（CodeRabbit 指定）：用 Completer 让探针**悬在 await 里**，
+  // 期间 enterText 改地址，再 complete 掉探针，最后断言偏好没被旧地址写脏。
+  //
+  // ⚠️ 这些用例必须能在**没有序号守卫**时变红（见交付报告里的故障注入）。
+
+  group('⑥ ★★ 竞态：旧请求不许覆盖新输入', () {
+    testWidgets('★★ 在途时改地址 ⇒ 旧结果既不显示也不落盘', (t) async {
+      final gate = Completer<DanmakuLocalStatus>();
+      // 记下探针**实际收到**的参数，证明它拿到的是发起时那个地址
+      DanmakuEndpoint? seen;
+      await _pumpOnDandanTab(t, probe: (e) {
+        seen = e;
+        return gate.future;
+      });
+
+      // ① 填 A，点「测试连接」⇒ 请求悬在 await 里
+      await t.enterText(_urlField, 'http://10.0.0.1:1111');
+      await t.pump();
+      await t.tap(find.text('测试连接'));
+      await t.pump();
+      expect(seen?.host, '10.0.0.1', reason: '阳性对照：探针确实被调用且拿到 A');
+
+      // ② 请求还没回来时，用户改成 B
+      await t.enterText(_urlField, 'http://10.0.0.2:2222');
+      await t.pump();
+
+      // ③ A 的请求现在才返回（声称在线 —— 若守卫失效就会被写进去）
+      gate.complete(const DanmakuLocalStatus(
+        online: true,
+        version: '1.0',
+        endpoint: DanmakuEndpoint(baseUrl: 'http://10.0.0.1:1111'),
+      ));
+      await t.pumpAndSettle();
+
+      // ④ 三处都不许被旧地址污染
+      expect(UiPrefs.danmakuEndpoint, isNot('http://10.0.0.1:1111'),
+          reason: '★★ 旧地址被写进偏好 = CodeRabbit 报的那个 bug');
+      expect(UiPrefs.danmakuEndpoint, '',
+          reason: '★ 过期结果连「落盘」这一步都不该走到（B 并没测过）');
+      expect(find.textContaining('已就绪'), findsNothing,
+          reason: '★★ 状态行显示旧地址的结论 = 撒谎');
+      // 输入框仍然是我们敲的 B（没被过期结果回写）
+      expect(t.widget<TextField>(_urlField).controller!.text,
+          'http://10.0.0.2:2222');
+    });
+
+    testWidgets('★★ A→B→A：字符串相同也必须丢弃（序号判据的理由）', (t) async {
+      final gate = Completer<DanmakuLocalStatus>();
+      var calls = 0;
+      await _pumpOnDandanTab(t, probe: (e) {
+        calls++;
+        return gate.future;
+      });
+
+      await t.enterText(_urlField, 'http://10.0.0.1:1111');
+      await t.pump();
+      await t.tap(find.text('测试连接'));
+      await t.pump();
+      expect(calls, 1);
+
+      // A → B → A（绕一圈回到 A）
+      await t.enterText(_urlField, 'http://10.0.0.2:2222');
+      await t.pump();
+      await t.enterText(_urlField, 'http://10.0.0.1:1111');
+      await t.pump();
+
+      gate.complete(const DanmakuLocalStatus(
+        online: true,
+        version: '1.0',
+        endpoint: DanmakuEndpoint(baseUrl: 'http://10.0.0.1:1111'),
+      ));
+      await t.pumpAndSettle();
+
+      /*
+       * ★ 这一条是**判据选择**的证明：
+       *   此刻输入框里就是 A（与发起时字符串**相同**）⇒
+       *   若守卫写成「地址字符串没变就接受」，这里会错误地接受 A 的结论。
+       *   序号判据则认为「中间变过」⇒ 丢弃。
+       */
+      expect(find.textContaining('已就绪'), findsNothing,
+          reason: '★★ A→B→A 之后仍然显示 A 的结论 = 用了字符串判据（漏放）');
+      expect(UiPrefs.danmakuEndpoint, '',
+          reason: '★ 中间变过 ⇒ 这一轮结果作废，不许落盘');
+    });
+
+    testWidgets('★★ 在途时点「清除」⇒ 过期结果不许把偏好写回来', (t) async {
+      final gate = Completer<DanmakuLocalStatus>();
+      UiPrefs.setDanmakuEndpoint('http://10.0.0.1:1111');
+      await _pumpOnDandanTab(t, probe: (e) => gate.future);
+
+      await t.tap(find.text('测试连接'));
+      await t.pump();
+      // 请求在途时用户点「清除」
+      await t.tap(find.text('清除'));
+      await t.pumpAndSettle();
+      expect(UiPrefs.danmakuEndpoint, '', reason: '阳性对照：清除先生效了');
+
+      gate.complete(const DanmakuLocalStatus(
+        online: true,
+        version: '1.0',
+        endpoint: DanmakuEndpoint(baseUrl: 'http://10.0.0.1:1111'),
+      ));
+      await t.pumpAndSettle();
+
+      expect(UiPrefs.danmakuEndpoint, '',
+          reason: '★★ 清空之后过期结果又把它写回来 = 清除按钮被架空');
+      expect(find.textContaining('已就绪'), findsNothing);
+    });
+
+    testWidgets('★ 在途时改 token ⇒ 同样作废（token 也参与探测）', (t) async {
+      final gate = Completer<DanmakuLocalStatus>();
+      await _pumpOnDandanTab(t, probe: (e) => gate.future);
+
+      await t.enterText(_urlField, 'http://10.0.0.1:1111');
+      await t.pump();
+      await t.tap(find.text('测试连接'));
+      await t.pump();
+      await t.enterText(_tokenField, 'newtoken');
+      await t.pump();
+
+      gate.complete(const DanmakuLocalStatus(
+        online: true,
+        version: '1.0',
+        endpoint: DanmakuEndpoint(baseUrl: 'http://10.0.0.1:1111'),
+      ));
+      await t.pumpAndSettle();
+
+      expect(UiPrefs.danmakuEndpoint, '',
+          reason: '★ 改了 token ⇒ 这一轮结果过期');
+      expect(UiPrefs.danmakuToken, '',
+          reason: '★ 不许把旧 token 写回去');
+    });
+
+    testWidgets('★★ 阳性对照：不改输入 ⇒ 结果**必须**照常生效（守卫不许过度触发）',
+        (t) async {
+      final gate = Completer<DanmakuLocalStatus>();
+      await _pumpOnDandanTab(t, probe: (e) => gate.future);
+
+      await t.enterText(_urlField, 'http://10.0.0.1:1111');
+      await t.pump();
+      await t.tap(find.text('测试连接'));
+      await t.pump();
+      // 全程不改输入 ⇒ 序号不变
+      gate.complete(const DanmakuLocalStatus(
+        online: true,
+        version: '1.0',
+        endpoint: DanmakuEndpoint(baseUrl: 'http://10.0.0.1:1111'),
+      ));
+      await t.pumpAndSettle();
+
+      expect(find.textContaining('已就绪'), findsOneWidget,
+          reason: '★ 没改输入就必须正常显示 —— 否则守卫把正常路径也杀死了');
+      expect(UiPrefs.danmakuEndpoint, 'http://10.0.0.1:1111');
+    });
+
+    testWidgets('★ 过期结果里的**失败**也不许显示（错误同样属于旧地址）', (t) async {
+      final gate = Completer<DanmakuLocalStatus>();
+      await _pumpOnDandanTab(t, probe: (e) => gate.future);
+
+      await t.enterText(_urlField, 'http://10.0.0.1:1111');
+      await t.pump();
+      await t.tap(find.text('测试连接'));
+      await t.pump();
+      await t.enterText(_urlField, 'http://10.0.0.2:2222');
+      await t.pump();
+      gate.completeError(StateError('boom'));
+      await t.pumpAndSettle();
+
+      expect(find.textContaining('测试失败'), findsNothing,
+          reason: '★ 失败结论也属于旧地址 —— 显示它同样是撒谎');
+    });
   });
 
   group('① 区块渲染', () {

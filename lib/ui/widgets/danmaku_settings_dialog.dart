@@ -603,8 +603,37 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   ///    对用户来说这是最坏的一种假话：他会以为自己的地址没问题、是服务没起来。
   String? _probeCustomMessage;
 
-  /// 正在测试连接。
-  bool _probeRunning = false;
+  /// 正在测试连接 —— 记录**是哪个序号**的请求在跑（null = 没有在途请求）。
+  ///
+  /// # 为什么不是 bool（★ 这条是修竞态时暴露出来的第二个 bug）
+  /// ```text
+  /// 只挡「过期结果不许写状态」还不够：过期请求 return 之后，
+  /// 那个 bool 永远停在 true ⇒ **转圈图标永远转下去**（pumpAndSettle 超时）。
+  /// ⇒ 必须让 spinner 有明确的归属：哪个序号发起的，只有它（或接管者）
+  ///    才能把它关掉。
+  /// ```
+  int? _probeRunningSeq;
+
+  /// 有没有在途请求（btn 的禁用态 / 转圈图标都读它）
+  bool get _probeRunning => _probeRunningSeq != null;
+
+  /// 「测试连接」的**请求序号**（防旧结果覆盖新输入）。
+  ///
+  /// # 它守的是什么（CodeRabbit PR #30 抓到的真竞态）
+  /// ```text
+  /// 填 A 点测试（请求在途）→ 用户改成 B → A 的结果回来
+  /// ⇒ 旧代码会把 A 的结论写进 _probeResult、还把 A 写进偏好。
+  /// 结果：输入框 B、偏好 A、状态行显示 A 的结论 —— 三者互相矛盾。
+  /// ```
+  ///
+  /// # 判据为什么是**序号**而不是「地址字符串变没变」
+  /// ```text
+  /// 用户可能 A → B → A：字符串比出来相同，但 B 那一轮的结论
+  /// 语义上已经作废（它属于上一轮）。字符串判据会**漏放**这种。
+  /// ```
+  ///
+  /// ⚠️ 每次发起测试 / 用户改输入 / 点清除 都要 ++，见各自的调用点。
+  int _probeSeq = 0;
 
   /// 当前页签。默认「配置」。
   ///
@@ -1117,14 +1146,22 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           // 地址一改，上一次的测试结果就**作废** —— 否则会显示一个
           // 与当前地址无关的「已就绪」，那是撒谎。
           onChanged: (_) {
-            if (_probeResult != null ||
-                _probeCustomMessage != null ||
-                _probeRunning) {
+            /*
+             * ★★ 输入一变：① 序号前进（在途结果作废）② 交出 spinner 归属
+             *    （用户既然改了地址，那个在途请求就与他无关了 ⇒ 按钮要能再点）。
+             *
+             * ⚠️ 两件事都**必须无条件执行**，不能包在下面的 if 里：
+             *    判据是「输入变过」，不是「当前显示了什么」。
+             */
+            _probeSeq++;
+            _probeRunningSeq = null;
+            if (_probeResult != null || _probeCustomMessage != null) {
               setState(() {
                 _probeResult = null;
                 _probeCustomMessage = null;
-                _probeRunning = false;
               });
+            } else {
+              setState(() {});
             }
           },
           onSubmitted: (_) => _runProbe(),
@@ -1144,12 +1181,13 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             isDense: true,
           ),
           onChanged: (_) {
-            if (_probeResult != null || _probeCustomMessage != null) {
-              setState(() {
-                _probeResult = null;
-                _probeCustomMessage = null;
-              });
-            }
+            // token 也参与探测 ⇒ 改了同样让在途结果过期、同交还 spinner
+            _probeSeq++;
+            _probeRunningSeq = null;
+            setState(() {
+              _probeResult = null;
+              _probeCustomMessage = null;
+            });
           },
         ),
         const SizedBox(height: Sp.x3),
@@ -1266,45 +1304,91 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// ⚠️ 地址非法 ⇒ **提示用户**，不要静默回退到内置路径去测一个他没填的地址
   ///    （那样会显示「本机外部弹幕已就绪」，用户以为自己填对了）。
   Future<void> _runProbe() async {
+    /*
+     * ★★ 2026-10-17（CodeRabbit PR #30）：**作废所有在途请求**并记下本次序号。
+     *
+     * # 原来漏掉的竞态（真 bug，不是洁癖）
+     * ```text
+     * ① 填地址 A，点「测试连接」⇒ 请求在途
+     * ② 用户把地址改成 B（onChanged 把 _probeRunning 放回 false ⇒ 按钮可再点）
+     * ③ A 的请求返回 ⇒ 旧代码 setState(_probeResult = A 的结果)
+     *    并且 UiPrefs.setDanmakuEndpoint(A)
+     * ⇒ 输入框里是 B、偏好里存的是 A、状态行显示的是 A 的结论 —— 三者互相矛盾
+     * ```
+     *
+     * # 为什么用**序号**而不是比较地址字符串
+     * ```text
+     * 用户可能 A → B → A：字符串比出来相同，但 B 那一轮的结果
+     * 语义上早已作废（它属于「上一轮」）⇒ 字符串判据会**漏放**这种。
+     * 序号判据对「任何一次输入变化」都成立，不依赖值的形状。
+     * ```
+     *
+     * # 谁会让序号前进
+     * ```text
+     * · 每次发起测试（这里）
+     * · 地址框 / token 框 的 onChanged（用户改了输入 ⇒ 在途结果过期）
+     * · 「清除」（用户要求回到内置路径 ⇒ 在途结果绝不许把它写回来）
+     * ```
+     */
+    final mySeq = ++_probeSeq;
     final raw = _endpointUrl.text.trim();
-    final ep = DanmakuEndpoint.tryParse(raw, token: _endpointToken.text);
+    // ⚠️ token 也要**在发起时**捕获：落盘时再读 _endpointToken.text 会拿到
+    //    用户后来敲的值（与地址同一类竞态，同一条纪律）。
+    final rawToken = _endpointToken.text;
+    final ep = DanmakuEndpoint.tryParse(raw, token: rawToken);
     if (raw.isNotEmpty && ep == null) {
       setState(() {
-        _probeRunning = false;
+        _probeRunningSeq = null;
         _probeResult = null;
         // ★ 不说「本机外部弹幕未运行」——那与用户填的地址无关，是误导。
         _probeCustomMessage = '地址格式不对（例：http://127.0.0.1:9321）';
       });
       return;
     }
-    setState(() => _probeRunning = true);
+    // ★ spinner 归属本次序号：只有发起它的这一轮（或接管者）能关掉
+    setState(() => _probeRunningSeq = mySeq);
     final probe = widget.probeOverride ??
         (DanmakuEndpoint? e) => DanmakuLocalService.describe(endpoint: e);
+    DanmakuLocalStatus st;
     try {
-      final st = await probe(ep);
-      if (!mounted) return;
-      setState(() {
-        _probeRunning = false;
-        _probeResult = st;
-      });
-      // 测通了 ⇒ 落盘（用户点的就是「这个地址可用」，不落盘等于白填）
-      if (st.online) {
-        UiPrefs.setDanmakuEndpoint(raw);
-        UiPrefs.setDanmakuToken(_endpointToken.text);
-      }
+      st = await probe(ep);
     } catch (e) {
-      if (!mounted) return;
+      /*
+       * ★ 过期 ⇒ 一个字都不改（失败结论同样属于旧地址，写上去也是撒谎）。
+       * ⚠️ 也**不要**在这里关 spinner：此刻 _probeRunningSeq 已经不属于
+       *    本次（要么被 onChanged 置空、要么被新一轮接管）。关它就是
+       *    去动别人的状态 —— 那正是这个竞态的另一半。
+       */
+      if (!mounted || mySeq != _probeSeq) return;
       setState(() {
-        _probeRunning = false;
+        _probeRunningSeq = null;
         _probeResult = null;
         // 探针自己异常（不是「服务没起来」）⇒ 如实说这次测试失败了
         _probeCustomMessage = '测试失败：$e';
       });
+      return;
+    }
+    // ★★ 核心守卫：await 期间输入变过 ⇒ 这次结果作废。
+    //    不 setState、不落盘、**也不关 spinner** —— 三件事都必须被挡住。
+    if (!mounted || mySeq != _probeSeq) return;
+    setState(() {
+      _probeRunningSeq = null;
+      _probeResult = st;
+    });
+    // 测通了 ⇒ 落盘（用户点的就是「这个地址可用」，不落盘等于白填）
+    // ⚠️ 落盘用**发起时捕获**的 raw/rawToken，不是当前输入框的值。
+    if (st.online) {
+      UiPrefs.setDanmakuEndpoint(raw);
+      UiPrefs.setDanmakuToken(rawToken);
     }
   }
 
   /// 清除 ⇒ 回到内置路径（本机 2080 → 官方）。
   void _clearEndpoint() {
+    // ★ 在途的测试结果绝不许把清空后的偏好写回来（同一条竞态纪律）；
+    //   spinner 同时交还 —— 用户已经要求回到内置路径，那个请求与他无关了。
+    _probeSeq++;
+    _probeRunningSeq = null;
     UiPrefs.setDanmakuEndpoint('');
     UiPrefs.setDanmakuToken('');
     setState(() {

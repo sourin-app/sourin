@@ -5331,6 +5331,51 @@ class _ShellPageState extends State<ShellPage>
   /// 「打开详情」再「打开播放器」」。
   /// ⇒ 文案必须能**区分新旧路径**（旧的是「打开详情」+「打开播放器」两条），
   ///   否则这条判据没有区分力。
+  /*
+   * ★★★ CodeRabbit PR#30（2026-10-17，Major·稳定性）：防重入 + 解析期反馈。
+   *
+   * # 缺陷（CodeRabbit 原话）
+   * ```text
+   * 续播定位要先等两次请求才 push 页面，重复点击会叠出多个合并页。
+   * ... pushed 是每次调用里的局部变量，挡不住第二次调用。
+   * ⇒ 结果是 push 出两个 MediaPage，每个都带一个 Player。
+   *   PlayerPage 被盖住时不会暂停 ⇒ 两个播放器会同时出声。
+   * ```
+   *
+   * # 为什么 `pushed` 挡不住
+   * ```text
+   * `pushed` 是**每次调用的局部变量** ⇒ 第二次调用重新 `pushed = false`
+   * ⇒ 它只能挡住"同一次调用内重复 push"（那也确实该挡），
+   *   挡不住"同一张卡片被点两次"。
+   * ```
+   *
+   * # 修法：**跨调用**、**按 (provider, id) 去重**的 in-flight 集合
+   * ```text
+   * 按 (provider, id) 而不是"全局只允许一个"：
+   *   用户点 A 再点 B 是**合法**的（两部不同的剧），不能被串行化挡住。
+   * 解析结束（成功/失败/任何早退）一律在 finally 里清除 ⇒ 不会永久卡死该条目。
+   * ```
+   */
+
+  /// 正在解析续播位置的条目 —— 键 = `provider|id`（见上面那段注释）
+  final Set<String> _resumeResolveInFlight = <String>{};
+
+  /// 测试门禁：给"解析续播位置"注入延迟（默认 null ⇒ 生产路径逐字不变）
+  ///
+  /// CodeRabbit 给的验证方法是"给 getDetail 注入 2 秒延迟，1 秒内连点两次"。
+  /// 延迟必须能注入到 `_openDetail` 与 push **之间**，否则复现不出
+  /// "等待窗口里再点一次"这个关键时序（那正是这个缺陷的成因）。
+  Future<void> Function(String provider, String id)? debugResumeResolveDelay;
+
+  /// 测试门禁：**关掉防重入**（默认 false ⇒ 生产路径逐字不变）
+  ///
+  /// ★ 唯一用途是**红度证明**：门禁测试必须能证明"去掉这个守卫就会叠出两个
+  ///   合并页"，否则那条断言不知道自己到底在测什么（本仓铁律）。
+  bool debugResumeDedupeOff = false;
+
+  /// 测试门禁：当前正在解析的条目数（断言被挡下的第二次没有进入解析）
+  int get debugResumeResolveInFlightCount => _resumeResolveInFlight.length;
+
   void _openDetail(String provider, String id) {
     debugPrint('[NAV] 打开合并页: $provider:$id');
     /*
@@ -5384,6 +5429,34 @@ class _ShellPageState extends State<ShellPage>
   /// · 失败一律回退原路径（宁可慢一点/退回旧行为，也不能打不开）。
   /// ```
   Future<void> _openDetailResolvingResume(String provider, String id) async {
+    /*
+     * ★ ⓪ 本地条目**先短路** —— 别白等那次注定失败的请求（CodeRabbit PR#30）。
+     *
+     * 本地条目（provider == local）的 `getDetail` 必然抛「无法路由」，
+     * 最后回退到默认路由，用户却白等了一次网络往返。
+     * ⇒ 它**根本不可能**有"按集进度行 → 在线剧集列表"这套映射
+     *   （本地进度的命名空间是文件名，见 progress_origin.dart 的说明），
+     *   所以在这儿直接走原路径，语义与结果都和原来一致，只是不再白等。
+     */
+    if (provider == kLocalProvider) {
+      debugPrint('[NAV] 本地条目 ⇒ 跳过续播定位（不做注定失败的详情请求）');
+      Navigator.of(context).push(_mediaRoute(provider, id));
+      return;
+    }
+
+    /*
+     * ★ ① 防重入：同一个 (provider, id) 正在解析 ⇒ 第二次点击**直接忽略**。
+     *
+     * ⚠️ 这就是 `pushed` 挡不住的那一层（见上面那段长注释）。
+     *   reason 里带上这个键，是为了让日志能区分"被防重入挡掉"与"没点中"。
+     */
+    final inFlightKey = '$provider|$id';
+    if (!debugResumeDedupeOff && _resumeResolveInFlight.contains(inFlightKey)) {
+      debugPrint('[NAV] ★ 续播定位进行中 ⇒ 忽略重复点击（$inFlightKey）');
+      return;
+    }
+    if (!debugResumeDedupeOff) _resumeResolveInFlight.add(inFlightKey);
+
     var pushed = false;
     void pushDefault() {
       if (pushed || !mounted) return;
@@ -5392,6 +5465,16 @@ class _ShellPageState extends State<ShellPage>
     }
 
     try {
+      /*
+       * ★ ② 解析期要有反馈（CodeRabbit：「这段等待里界面没有任何反馈。
+       *   用户以为没点中，会再点一次」）。
+       *
+       * 反馈必须打在这一行 —— 它是两次请求**之前**，也就是用户真正在等的那段。
+       */
+      debugPrint('[NAV] ⏳ 正在解析续播位置：$provider:$id …');
+      final delay = debugResumeResolveDelay;
+      if (delay != null) await delay(provider, id);
+
       final rows = await SourinApi.listAllProgress();
       final mine = rows
           .where((p) =>
@@ -5443,6 +5526,16 @@ class _ShellPageState extends State<ShellPage>
     } catch (e) {
       debugPrint('[NAV] 续播定位失败（$e）⇒ 按原路径打开');
       pushDefault();
+    } finally {
+      /*
+       * ★ ③ 无论成功/失败/任何早退，都必须**解锁**这个条目。
+       *
+       * ⚠️ 不放在各条 return 前面，是因为本方法有**五条**早退路径
+       *    （本地短路 / 无进度 / 无可续播集 / 已 push / 异常）——
+       *    逐条清必然漏一处，而漏掉的那一处会让该条目**永久点不开**。
+       *    finally 是唯一不用逐条维护的写法（本仓铁律：同一纪律只有一个实现）。
+       */
+      _resumeResolveInFlight.remove(inFlightKey);
     }
   }
 

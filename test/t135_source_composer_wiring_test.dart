@@ -7,6 +7,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/widgets/provider_import_dialog.dart';
+import 'package:sourin_spike/ui/widgets/source_composer_dialog.dart';
 
 
 void main() {
@@ -42,6 +43,16 @@ void main() {
         reason: '★★ 按钮存在但 onPressed 为 null ⇒ 点了没反应，等于没接线');
     await t.tap(find.text('可视化编排'));
     await t.pumpAndSettle();
-    expect(find.text('可视化编排'), findsWidgets);
+    /*
+     * ★★ 2026-10-17（CodeRabbit CR）：改前这里断言 find.text(可视化编排) ——
+     *   但**按钮文字本身就是这个字符串** ⇒ 点击前后都能命中 ⇒
+     *   onPressed 改成空函数后照样绿（假绿）。
+     *
+     * ⇒ 改成断言**编排器独有的内容**，而不是那句按钮文案。
+     */
+    expect(find.byType(SourceComposerDialog), findsOneWidget,
+        reason: '★ 点击后编排器必须真的弹出来（不是"按钮文字还在"）');
+    expect(find.text('这个源叫什么'), findsOneWidget,
+        reason: '★ 三步向导第 1 步的标题必须在（证明真的进到第 1 步）');
     });
 }

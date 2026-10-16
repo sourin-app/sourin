@@ -131,8 +131,45 @@ class ThemeLanguage {
     );
 
     /// 保留原描边颜色，只换粗细
-    BorderSide thicken(BorderSide s) =>
-        BorderSide(color: s.color, width: lang.borderWidth);
+    ///
+    /// ══════════════════════════════════════════════════════════════════
+    /// ★★★ CR/PR#30-①（2026-10-17）：`BorderSide.none` **不能**变成实线
+    /// ══════════════════════════════════════════════════════════════════
+    ///
+    /// 改前这里只写了 `BorderSide(color: s.color, width: lang.borderWidth)` ——
+    /// 而 `BorderSide` 构造函数的 `style` **默认是 `BorderStyle.solid`**
+    /// （`flutter/lib/src/painting/borders.dart:72`），于是一笔
+    /// `BorderSide.none`（= `width:0, style:none`）会被变成
+    /// `BorderSide(color: 黑, width: 2.5, style: solid)`：
+    /// **原本没有边的面凭空多出一条 1~2.5px 的黑色实线。**
+    ///
+    /// 实测（`.probe/probe_tests/zz_t14cr_repro_test.dart`）：
+    /// ```text
+    /// [CR1a] base dialog   style=none w=0.0     ← theme_bridge 的 _shape() 默认无边
+    /// [CR1b] dialog before style=none  →  after style=solid w=1.0 color=ff000000
+    /// [CR1a] thicken(none) 模拟 -> style=solid w=2.5 color=ff000000
+    /// ```
+    /// 「面」那一组里只有 card 在 theme_bridge 里有真描边，其余
+    /// dialog / bottomSheet / snackBar / listTile / chip **全是 none** ⇒ 全中招。
+    ///
+    /// ⇒ 判据分两档，与 `BorderStyle` 的语义对齐：
+    /// ```text
+    /// ① style == BorderStyle.none（或 width == 0）⇒ **原样返回**，不造边
+    /// ② 否则 ⇒ 只换 width，**显式带上 style**（不靠构造函数默认值）
+    /// ```
+    /// 第 ② 档要显式写 `style: s.style` 也是必要的：将来若有人给某个面配了
+    /// solid 之外的值，这里不能又悄悄把它压回 solid。
+    BorderSide thicken(BorderSide s) {
+      // ① 原本无描边 ⇒ 保持无描边（判据与 CSS 的 border-width:0 一致）
+      // ① 原本无描边 ⇒ 保持无描边（判据与 CSS 的 border-width:0 一致）
+      if (s.style == BorderStyle.none || s.width == 0) return s;
+      // ② 有描边 ⇒ 只改粗细，颜色与 style 都沿用原值
+      return BorderSide(
+        color: s.color,
+        width: lang.borderWidth,
+        style: s.style,
+      );
+    }
 
     /// 从任意 shape 里安全取出它当前的描边（取不到就当没有描边）
     BorderSide sideOf(ShapeBorder? s) =>
@@ -144,15 +181,40 @@ class ThemeLanguage {
           side: thicken(sideOf(s)),
         );
 
+    // ══════════════════════════════════════════════════════════════════
+    // ★★★ CR/PR#30-②（2026-10-17）：一律 `copyWith(shape:)`，不得整体替换
+    // ══════════════════════════════════════════════════════════════════
+    //
+    // 改前 dialog / bottomSheet / listTile 三处写的是**新建**：
+    // ```dart
+    // dialogTheme: DialogThemeData(shape: face(...)),        // ← 丢了 backgroundColor、
+    // bottomSheetTheme: BottomSheetThemeData(shape: ...),    //    titleTextStyle、
+    // listTileTheme: ListTileThemeData(shape: ...),          //    dragHandleColor、iconColor…
+    // ```
+    // `XxxThemeData(shape: x)` 的**其余字段全是 null** ⇒ 凡是 theme_bridge
+    // 填过的非 shape 字段（背景色、文字样式、拖拽柄颜色、图标色…）**一律被清空**，
+    // 回退到 Material 默认值。实测（同一探针）：
+    // ```text
+    // [CR2] dialog bg        before=Color(0xff123456) after=null
+    // [CR2] dialog elevation before=7.0               after=null
+    // [CR2] dialog title     before=33.0              after=null
+    // [CR2] sheet dragHandle before=Color(0xffaabbcc) after=null
+    // [CR2] listTile icon    before=Color(0xff00ff00) after=null
+    // [CR2] listTile pad     before=EdgeInsets.all(9.0) after=null
+    // ```
+    // 这与文件头那条「只换形状」的约定**直接矛盾** —— 约定没被代码守住。
+    //
+    // ⇒ 三处统一改成 `td.xxxTheme.copyWith(shape: ...)`，与 card / snackBar /
+    //   chip 完全一致（本来就是对的写法）。这样非 shape 字段**逐字段原样保留**。
     return td.copyWith(
       cardTheme: td.cardTheme.copyWith(shape: face(td.cardTheme.shape)),
-      dialogTheme: DialogThemeData(shape: face(td.dialogTheme.shape)),
-      bottomSheetTheme:
-          BottomSheetThemeData(shape: face(td.bottomSheetTheme.shape)),
+      dialogTheme: td.dialogTheme.copyWith(shape: face(td.dialogTheme.shape)),
+      bottomSheetTheme: td.bottomSheetTheme
+          .copyWith(shape: face(td.bottomSheetTheme.shape)),
       snackBarTheme:
           td.snackBarTheme.copyWith(shape: face(td.snackBarTheme.shape)),
       listTileTheme:
-          ListTileThemeData(shape: face(td.listTileTheme.shape)),
+          td.listTileTheme.copyWith(shape: face(td.listTileTheme.shape)),
       chipTheme: td.chipTheme.copyWith(shape: face(td.chipTheme.shape)),
 
       // ── 四类按钮：圆角 + 内边距 ──

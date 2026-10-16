@@ -1231,7 +1231,17 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
               font ?? '读不到',
               style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.sm),
             ),
-            dropdownColor: const Color(0xFF14161C),
+            /*
+             * ⚠️ 2026-10-17（CodeRabbit CR）：这里原来**写死深色** `0xFF14161C`。
+             *
+             * 而选项文字同批次已改成 `_colors.onSurface` —— 浅色主题下它是 `#1E2028`，
+             * 压在 `#14161C` 上对比度只有 **1.11:1**（本文件 `_colors` 文档里实测过）
+             * ⇒ **选项完全看不见**。
+             *
+             * 这违反了本文件自己写的通则：「**底写死 ⇒ 前景也写死**」——
+             * 这里方向反了（底写死、前景跟着主题走）。
+             */
+            dropdownColor: _colors.surfaceContainerHighest,
             isExpanded: true,
             onChanged: (v) {
               if (v != null) widget.onSetMpvProperty('sub-font', v);

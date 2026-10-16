@@ -72,6 +72,17 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
     _id.dispose();
     _name.dispose();
     _base.dispose();
+    /*
+     * ★ 2026-10-17（CodeRabbit CR）：`_mapCtls` 里的 controller **必须一起释放**。
+     *
+     * 它们按「端点 × 字段」懒建（见 `_mapRow` 的 `putIfAbsent`），
+     * 每次打开再关闭编排器都会遗留一批 —— 连同它们挂的 listener。
+     * 长会话里反复开关会持续泄漏。
+     */
+    for (final c in _mapCtls.values) {
+      c.dispose();
+    }
+    _mapCtls.clear();
     super.dispose();
   }
 

@@ -64,6 +64,16 @@ fn host_loads_all_user_plugins() {
     for (name, err) in &bad {
         eprintln!("  FAIL {} ⇒ {}", name, err);
     }
-    let probe_bad = bad.iter().find(|(n, _)| n == "PLUGIN_FILE");
-    assert!(probe_bad.is_none(), "PLUGIN_FILE 加载失败: {probe_bad:?}");
+    /*
+     * ★ 判据必须比较**真实的文件名**，不能是字面量。
+     *
+     * ⚠️ 2026-10-17（CodeRabbit CR）：改中性名时这里残留了字面量 "PLUGIN_FILE"，
+     *   而 bad 里存的是真实文件名（如 demo.js）⇒ find **恒为 None** ⇒
+     *   **即使插件加载失败，断言照样通过**（永远为真的假绿）。
+     *
+     * ⇒ 比较 probe_file()（真正被探测的那个文件名）。
+     */
+    let want = probe_file();
+    let probe_bad = bad.iter().find(|(n, _)| *n == want);
+    assert!(probe_bad.is_none(), "{want} 加载失败: {probe_bad:?}");
 }

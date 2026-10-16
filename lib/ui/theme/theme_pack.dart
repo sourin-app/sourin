@@ -751,9 +751,15 @@ abstract final class ThemePackStore {
   /// 描边   1px #DEDDD6（1.30:1）—— 看得见但几乎不占视觉重量
   /// 按钮   紧（内边距 12/10）⇒ 安静、不抢视线
   /// ```
-  /// ★ 与「新粗野主义」共用浅色档，但两者**没有任何一个维度相同**：
-  ///    底色暖白 vs 奶油、主色墨绿 vs 酸性黄、圆角 4 vs 0、
+  /// ★ 与「新粗野主义」**没有任何一个维度相同**：
+  ///    明暗 light vs dark、底色暖白 vs 暖近黑、主色墨绿 vs 酸性黄、圆角 4 vs 0、
   ///    描边 1px vs 2.5px、按钮紧 vs 厚重、分隔线 1px vs 3px。
+  ///
+  /// ⚠️ 2026-10-17（CodeRabbit CR）：上面这行原写「共用浅色档」，
+  ///   那是**旧设计**的描述 —— 「新粗野主义」后来改成了**深色**
+  ///   （原因：酸黄配奶油只有 1.13:1，列表行图标几乎不可见；
+  ///    酸黄配近黑是 14.4:1）。本仓注释承担记录设计决策的职责，
+  ///   过期描述会误导后续修改，故修正。
   static final AppPalette _minimalPalette = AppPalette.light.copyWith(
     background: const Color(0xFFFAFAF8),
     card: const Color(0xFFFFFFFF),

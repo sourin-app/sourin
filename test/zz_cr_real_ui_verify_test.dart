@@ -69,23 +69,27 @@ void main() {
       return;
     }
     await setShotViewport(t, const Size(1000, 800));
-    var picked = 0;
+    // ★ 记录**产品真的调了几次取页** —— 点分类的唯一真实后果
+    final calls = <int>[];
     await t.pumpWidget(_host(BrowsePage(
       provider: 'demo',
       title: '电影',
-      pageLoaderForTest: (p) async => models.Page<models.MediaItem>(
-        items: [
-          for (var i = 0; i < 8; i++)
-            models.MediaItem(
-              id: 'm$i',
-              title: '条目 $i',
-              cover: '',
-              note: '',
-            ),
-        ],
-        page: p,
-        pageCount: 1,
-      ),
+      pageLoaderForTest: (p) async {
+        calls.add(p);
+        return models.Page<models.MediaItem>(
+          items: [
+            for (var i = 0; i < 8; i++)
+              models.MediaItem(
+                id: 'm$i',
+                title: '条目 $i',
+                cover: '',
+                note: '',
+              ),
+          ],
+          page: p,
+          pageCount: 1,
+        );
+      },
     )));
     final st = t.state<BrowsePageState>(find.byType(BrowsePage));
     st.debugSetCategories([
@@ -112,12 +116,27 @@ void main() {
     expect(find.byType(FilterChip), findsWidgets,
         reason: '★ 分类胶囊必须是框架的 FilterChip');
 
-    // 点得动（选分类会触发 _switchCategory ⇒ 重新取页）
+    /*
+     * 点得动 —— ★ 判据必须是**真实结果**，不能是测试自己写进去的标记。
+     *
+     * 改前这里写的是 `picked = 1; expect(picked, 1);` —— 那是**恒真**：
+     * 就算 FilterChip.onSelected 根本没接上 _switchCategory，它也照样绿。
+     * 现在改成读**产品真的改了什么**：
+     *   `pageLoaderForTest` 收到的页码/分类 + 页面标题里的分类名。
+     */
+    final callsBefore = calls.length;
     await t.tap(find.text('分类2').first);
     await t.pumpAndSettle();
-    picked = 1;
-    expect(picked, 1);
-    print('BROWSE chip tap OK');
+    for (var i = 0; i < 40 && calls.length == callsBefore; i++) {
+      await t.pump(const Duration(milliseconds: 50));
+      await t.runAsync(() =>
+          Future<void>.delayed(const Duration(milliseconds: 50)));
+    }
+
+    expect(calls.length, greaterThan(callsBefore),
+        reason: '★★ 点分类胶囊必须真的触发重新取页（_switchCategory）—— '
+            '不触发就说明 chip 的 onSelected 没接上，而「页面标题变了」本身不是证据');
+    print('BROWSE chip tap OK (loader 被再调用 ${calls.length - callsBefore} 次)');
 
     await saveViewShot(t, 'real_browse_categories');
   });

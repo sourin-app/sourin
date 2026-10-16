@@ -29,10 +29,19 @@ PathAccessException: Deletion failed,
 ② AppLog（lib/core/app_log.dart:189）往 <dataDir>/logs/ 写日志
    它用 writeAsString(mode: append, flush: false) —— 每次写自己开关句柄，
    所以它【不长期持有】句柄。
-③ 但 flush: false ⇒ 数据在 OS 层还没落地，写入可能仍在途
+③ ★ 真正的因果（CodeRabbit CR 纠正了我第一版的错说法）：
+   `AppLog.write` 与那个批量定时器都通过 `unawaited(...)` **异步**发起写入，
+   `_flushBuffer` 把 `writeAsString` 的 Future 存进 `_pending`；
+   而**测试清理前没有 await 那个 Future**。
+   ⇒ `deleteSync` 执行时，写入**可能尚未完成** —— 该目录正被那个在途写入持有。
 ④ 测试收尾 deleteSync(recursive: true) 删整个 <dataDir>
 ⑤ Windows 不允许删除被占用的目录 ⇒ errno 32
    （Linux/macOS 允许 unlink 正在使用的文件 ⇒ 只有 Windows 会这样）
+
+⚠️ **不要**据此推断"文件句柄一直开着"或"flush: false 导致句柄泄漏"：
+   `writeAsString(..., flush: false)` **每次写自己开关句柄**，
+   `AppLog` 并不长期持有句柄。问题出在**异步写入与删除之间的竞态**，
+   不是句柄泄漏。
 ```
 
 ---
@@ -44,18 +53,27 @@ PathAccessException: Deletion failed,
 ```dart
 try {
   e.deleteSync(recursive: true);
-} on PathAccessException {
-  // 被其他进程/句柄占用 ⇒ 留给系统临时目录回收，不影响本用例判据
+} on PathAccessException catch (err) {
+  // ★ 必须看**错误码**，不能无条件吞（CodeRabbit CR）：
+  //   只有 32 = ERROR_SHARING_VIOLATION（被占用）才容忍；
+  //   errno 2（找不到）、5（拒绝访问）等**都是真错误，必须炸出来**。
+  if (err.osError?.errorCode != 32) rethrow;
 } on FileSystemException catch (err) {
-  if (!err.toString().contains('errno = 32')) rethrow;   // ★ 别的错误照炸
+  if (err.osError?.errorCode != 32) rethrow;
 }
 ```
 
 **验证**（catch 语义逐例真跑）：
 ```text
-① PathAccessException（CI 原样那种）    ⇒ 被吞 ✓
-② FileSystemException errno 32          ⇒ 被吞 ✓
-③ FileSystemException errno 2（真错误） ⇒ rethrow ✓
+① PathAccessException errno 32（CI 原样）⇒ 被吞 ✓
+② FileSystemException  errno 32          ⇒ 被吞 ✓
+③ PathAccessException errno 5（拒绝访问）⇒ **rethrow** ✓
+④ PathAccessException errno 2（找不到）  ⇒ **rethrow** ✓
+
+实测读数：
+```text
+PROBE swallowed=2 rethrow5=true rethrow2=true
+```
 ```
 ★ ③ 是关键：证明这不是「遇到删除失败就静默放过」。
 

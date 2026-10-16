@@ -172,11 +172,15 @@ void main() {
        */
       try {
         e.deleteSync(recursive: true);
-      } on PathAccessException {
+      } on PathAccessException catch (err) {
+        // ★ 必须看**错误码**，不能无条件吞（CodeRabbit CR）。
+        //   只有 32 = ERROR_SHARING_VIOLATION（被占用）才容忍；
+        //   errno 2（找不到）、5（拒绝访问）等**都是真错误，必须炸出来**。
+        if (err.osError?.errorCode != 32) rethrow;
         // 被其他进程/句柄占用 ⇒ 留给系统临时目录回收，不影响本用例判据
       } on FileSystemException catch (err) {
         // Windows 也可能报 FileSystemException(errno 32) 而非 PathAccessException
-        if (!err.toString().contains('errno = 32')) rethrow;
+        if (err.osError?.errorCode != 32) rethrow;
       }
     }
     ClipDownloader.debugSetDataDir(root.path);

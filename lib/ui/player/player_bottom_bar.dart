@@ -289,6 +289,11 @@ class PlayerBottomBar extends StatelessWidget {
     required this.showEpisodeNav,
     required this.onNext,
     required this.hasNext,
+    // 2026-10-15: the prev-episode pair. Both were declared on the host-side
+    // wrapper and passed down as far as `_EpisodeNavBar`, but this bar never
+    // accepted them -- which is exactly why the button never rendered.
+    this.onPrev = _noop,
+    this.hasPrev = false,
     required this.more,
     this.streams = const <StreamCandidate>[],
     this.currentStream,
@@ -340,6 +345,13 @@ class PlayerBottomBar extends StatelessWidget {
   final bool hasEpisodes;
   final VoidCallback onEpisodes;
   final bool showEpisodeNav;
+
+  /// Go to the previous episode (no-op when the caller has none).
+  final VoidCallback onPrev;
+
+  /// Whether a previous episode exists. Drives `enabled` -- NOT visibility --
+  /// so on episode 1 the button shows up disabled instead of disappearing.
+  final bool hasPrev;
   final bool hasNext;
   final VoidCallback onNext;
 
@@ -471,9 +483,22 @@ class PlayerBottomBar extends StatelessWidget {
         //   两层小菜单。设置那枚（下面紧接着的全新一枚）才是「弹出来面板
         //   直接操作」。
         //
-        //   图标/高亮沿用改前：开=subtitle 图标 + 青色高亮，关=subtitles_off。
+        /*
+         * 2026-10-15 (Owner): "the danmaku settings icon does not match; look
+         * for something like the one streaming sites use -- a poster/bubble
+         * style icon, and put a gear next to it."
+         *
+         * Why subtitles/subtitles_off was wrong: those are the CLOSED-CAPTION
+         * glyphs (a rounded rectangle with lines). Danmaku are flying
+         * comments, so the comment-bubble family reads correctly -- and it is
+         * what the streaming sites this app aggregates actually use.
+         *
+         * The toggle uses `comment` (bubble = "there is commentary") and
+         * `comments_disabled` (bubble with a slash = "commentary off") so the
+         * on/off pair stays as legible as subtitles/subtitles_off was.
+         */
         key: danmakuToggleKey,
-        icon: danmakuEnabled ? Icons.subtitles : Icons.subtitles_off,
+        icon: danmakuEnabled ? Icons.comment : Icons.comments_disabled,
         label: '弹幕',
         tooltip: danmakuBusy ? '弹幕加载中…' : (danmakuEnabled ? '关闭弹幕' : '开启弹幕'),
         active: danmakuEnabled,
@@ -495,7 +520,9 @@ class PlayerBottomBar extends StatelessWidget {
         //   宿主没给 `danmakuQuick`（老调用点 / 测试夹具）⇒ 退回旧行为：
         //   直连 `onDanmakuSettings`（一次点开全屏大卡片），保兼容。
         key: danmakuSettingsKey,
-        icon: Icons.tune,
+        // 2026-10-15 (Owner): a gear, not the slider/tune glyph -- the gear is
+        // what the streaming sites pair with the danmaku toggle.
+        icon: Icons.settings,
         tooltip: '弹幕设置',
         popoverId: danmakuQuick == null ? null : PlayerPopoverIds.danmakuQuick,
         onTap: danmakuQuick == null ? onDanmakuSettings : null,
@@ -507,13 +534,34 @@ class PlayerBottomBar extends StatelessWidget {
         popoverId: PlayerPopoverIds.more,
         active: controller.isOpen(PlayerPopoverIds.more),
       ),
-      if (showEpisodeNav)
+      if (showEpisodeNav) ...[
+        /*
+         * 2026-10-15 (Owner): "when I get to episode 2 there should also be a
+         * previous-episode button; right now I only see next."
+         *
+         * That was accurate, and the cause was embarrassing: `hasPrev` and
+         * `onPrev` were already declared and already wired all the way from
+         * the host, but this list only ever built the NEXT button. So the
+         * comment above about "both buttons stay visible, prev just greys out
+         * on episode 1" described behaviour that was never implemented.
+         *
+         * Both buttons now render, and `enabled` (not visibility) is what
+         * tracks availability -- so on episode 1 the prev button is visibly
+         * disabled rather than absent, which is what the original design said.
+         */
+        _BarAction(
+          icon: Icons.skip_previous,
+          tooltip: '上一集',
+          enabled: hasPrev,
+          onTap: onPrev,
+        ),
         _BarAction(
           icon: Icons.skip_next,
           tooltip: '下一集',
           enabled: hasNext,
           onTap: onNext,
         ),
+      ],
       _BarAction(
         icon: fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
         tooltip: fullscreen ? '退出全屏' : '全屏',

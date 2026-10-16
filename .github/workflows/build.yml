@@ -31,7 +31,7 @@
 #   ⇒ 手机装上出现在桌面，电视装上出现在 TV 主界面，同一个文件。
 # 运行时靠 `sourin/device` 平台通道读系统 feature 判定设备类型
 # （MainActivity.kt 的 leanback / touchscreen），UI 自动切 TV 形态。
-# 详见 README 的「Android TV」一节。
+# 详见 docs/PLATFORMS.md 的「Android TV」一节。
 # ```
 
 name: 构建
@@ -61,7 +61,7 @@ concurrency:
 
 env:
   # ★ 硬要求：Flutter 3.47 把 Material 拆成了独立的 material_ui 包，
-  #   低于这个版本 pubspec 解析不过。详见 README「从源码构建 → 前置依赖」。
+  #   低于这个版本 pubspec 解析不过。详见 docs/BUILD.md「前置依赖」。
   FLUTTER_VERSION: "3.47.5"
   # ★ 注入到二进制的版本号（`String.fromEnvironment('SOURIN_VERSION')`）。
   #   非发版构建（push / PR）为空 ⇒ AppVersion 回退到 pubspec 的 1.0.0；
@@ -537,7 +537,8 @@ jobs:
           #   而 `lib/core/ffi.dart:173-174` 是 `DynamicLibrary.open('libsourin_core.dylib')`
           #   ⇒ 一调核心就抛。对照 Windows 侧有机制（`windows/CMakeLists.txt:122-133` 的
           #   `install(FILES ...)`），macOS 侧原本没有。
-          #   ⚠️ `README.md:525-526` 写的「由 macos/ 的 Xcode 工程自动带上」—— 那个「自动」并不存在。
+          #   ⚠️ 早期 README 里「由 macos/ 的 Xcode 工程自动带上」那句是**错的** —— 那个「自动」当时
+          #      并不存在（该阶段是 2026-10-08 后加的）。现状见 docs/PLATFORMS.md「构建 macOS」。
           #
           #   ★ 为什么必须是**硬门禁**而不是 warning：这个缺陷**已经在 CI 里绿着通过了**。
           #     只警告 = 假门禁，比红更糟（红会被看见，警告会被忽略）——
@@ -552,7 +553,7 @@ jobs:
             exit 1
           fi
           # ★ 再核验导出符号数：编了个旧的/空的 dylib 同样会让功能全挂。
-          #   （`nm -gU` 列出外部符号；Rust 侧导出 7 个 `sourin_*`，见 README「Rust 侧只导出 7 个符号」。）
+          #   （`nm -gU` 列出外部符号；Rust 侧导出 7 个 `sourin_*`，见 docs/ARCHITECTURE.md「FFI 契约」。）
           n=$(nm -gU "$CORE" 2>/dev/null | grep -c '_sourin_' || true)
           echo "Rust 核心导出符号数：$n"
           if [ "$n" -lt 7 ]; then

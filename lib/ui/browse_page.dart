@@ -507,38 +507,55 @@ class BrowsePageState extends State<BrowsePage> {
                     itemBuilder: (context, i) {
                       final c = _categories[i];
                       final active = c.id == _categoryId;
+                      /*
+                       * ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）
+                       *
+                       * 改前是 InkWell + Container(decoration:) 手写胶囊。
+                       * 换成框架的 `FilterChip` —— 选分类是「筛列表」（纯视图、
+                       * 无副作用），正是 FilterChip 的语义。
+                       *
+                       * 颜色 / 描边 / 圆角 / 内边距全部显式给死 ⇒ 长相与改前一致；
+                       * 换来涟漪、焦点环、禁用态与读屏的「筛选」语义。
+                       *
+                       * ⚠️ `showCheckmark: false`：默认选中时左侧加对勾，会把
+                       *    胶囊撑宽、文字右移；这边「选中＝染色」已经表达清楚。
+                       */
                       return Center(
-                        child: InkWell(
-                          onTap: () => _switchCategory(c),
-                          borderRadius: Radii.rFull,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: Sp.x4,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
+                        child: FilterChip(
+                          label: Text(
+                            c.name,
+                            style: TextStyle(
+                              fontSize: FontSizes.sm,
+                              fontWeight:
+                                  active ? FontWeight.w600 : FontWeight.w400,
                               color: active
-                                  ? colors.primary.withValues(alpha: 0.16)
-                                  : Colors.transparent,
-                              borderRadius: Radii.rFull,
-                              border: Border.all(
-                                color: active
-                                    ? colors.primary
-                                    : colors.outlineVariant,
-                              ),
-                            ),
-                            child: Text(
-                              c.name,
-                              style: TextStyle(
-                                fontSize: FontSizes.sm,
-                                fontWeight:
-                                    active ? FontWeight.w600 : FontWeight.w400,
-                                color: active
-                                    ? colors.primary
-                                    : colors.onSurfaceVariant,
-                              ),
+                                  ? colors.primary
+                                  : colors.onSurfaceVariant,
                             ),
                           ),
+                          selected: active,
+                          onSelected: (_) => _switchCategory(c),
+                          showCheckmark: false,
+                          backgroundColor: Colors.transparent,
+                          selectedColor: colors.primary.withValues(
+                            alpha: 0.16,
+                          ),
+                          side: BorderSide(
+                            color: active
+                                ? colors.primary
+                                : colors.outlineVariant,
+                          ),
+                          shape: const RoundedRectangleBorder(
+                            borderRadius: Radii.rFull,
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: Sp.x4,
+                            vertical: 6,
+                          ),
+                          labelPadding: EdgeInsets.zero,
+                          visualDensity: VisualDensity.compact,
+                          materialTapTargetSize:
+                              MaterialTapTargetSize.shrinkWrap,
                         ),
                       );
                     },

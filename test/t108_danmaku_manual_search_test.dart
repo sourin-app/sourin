@@ -238,9 +238,16 @@ void main() {
     expect(_searched, contains('某番'),
         reason: '★ 宿主没把关键词送到搜索接口 ⇒ 搜索框是假 UI');
 
-    // 结果渲染成两行（面板真画出来了）
-    expect(find.textContaining('某番 · 第 1 集'), findsOneWidget);
-    expect(find.textContaining('某番 · 第 2 集'), findsOneWidget);
+    /*
+     * 2026-10-15：结果行改成**两行**显示（标题 / 集数分开）。
+     *
+     * 改前是一行 `'$title · $ep'`；加了封面之后横排空间不够，
+     * 所以拆成「作品名」+「集数」两行，不再用「·」拼。
+     * ⚠️ 这条断言就是那次改版的**回归守卫** —— 别改回一行。
+     */
+    expect(find.text('某番'), findsWidgets, reason: '作品名要单独一行');
+    expect(find.text('第 1 集'), findsOneWidget);
+    expect(find.text('第 2 集'), findsOneWidget);
     await _settleTimers(t);
   });
 
@@ -292,7 +299,7 @@ void main() {
     await t.pump();
     await t.pump(const Duration(milliseconds: 200));
     _claim(t);
-    expect(find.textContaining('某番 · 第 1 集'), findsOneWidget);
+    expect(find.text('第 1 集'), findsOneWidget);
 
     // 再搜一个"没有的" ⇒ 结果列表清空 + 空态文案出现
     await debugPlayerDanmakuSearchForProbe('查无此番');
@@ -300,7 +307,7 @@ void main() {
     await t.pump(const Duration(milliseconds: 200));
     _claim(t);
 
-    expect(find.textContaining('某番 · 第 1 集'), findsNothing,
+    expect(find.text('第 1 集'), findsNothing,
         reason: '★ 新搜索必须清掉上一次的结果（否则会被误读成"这次搜到的"）');
     expect(find.text('没搜到，换个关键词试试'), findsOneWidget,
         reason: '★★ 空结果显示空白 ⇒ 用户以为程序卡住了');

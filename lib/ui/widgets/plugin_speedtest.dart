@@ -1390,33 +1390,22 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
                   '已读到的部分照样计入读数）',
               child: Material(
                 color: Colors.transparent,
-                child: InkWell(
-                  onTap: _pause,
-                  borderRadius: Radii.rFull,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: Sp.x2,
-                      vertical: Sp.x1 + 2,
-                    ),
-                    decoration: BoxDecoration(
-                      borderRadius: Radii.rFull,
-                      border: Border.all(color: colors.outlineVariant),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.pause, size: 14, color: colors.primary),
-                        const SizedBox(width: Sp.x1),
-                        Text(
-                          '暂停',
-                          style: TextStyle(
-                            fontSize: FontSizes.cap,
-                            color: colors.primary,
-                          ),
-                        ),
-                      ],
-                    ),
+                child: ActionChip(
+                  onPressed: _pause,
+                  avatar: Icon(Icons.pause, size: 14, color: colors.primary),
+                  label: Text(
+                    '暂停',
+                    style: TextStyle(fontSize: FontSizes.cap, color: colors.primary),
                   ),
+                  side: BorderSide(color: colors.outlineVariant),
+                  shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: Sp.x2,
+                    vertical: Sp.x1 + 2,
+                  ),
+                  labelPadding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
               ),
             ),
@@ -1557,44 +1546,35 @@ class _SpeedButton extends StatelessWidget {
           : '随机挑一部影片，真下一段算下载速率',
       child: Material(
         color: Colors.transparent,
-        child: InkWell(
-          onTap: on ? onPressed : null,
-          borderRadius: Radii.rFull,
-          child: Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: Sp.x3,
-              vertical: Sp.x1 + 2,
-            ),
-            decoration: BoxDecoration(
-              borderRadius: Radii.rFull,
-              border: Border.all(color: colors.outlineVariant),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (busy)
-                  SizedBox(
-                    width: 13,
-                    height: 13,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: colors.primary,
-                    ),
-                  )
-                else
-                  Icon(
-                    hasHistory ? Icons.speed : Icons.bolt,
-                    size: 15,
-                    color: fg,
+        child: ActionChip(
+          onPressed: on ? onPressed : null,
+          avatar: busy
+              ? SizedBox(
+                  width: 13,
+                  height: 13,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: colors.primary,
                   ),
-                const SizedBox(width: Sp.x1 + 2),
-                Text(
-                  busy ? '测速中' : '测速',
-                  style: TextStyle(fontSize: FontSizes.cap, color: fg),
+                )
+              : Icon(
+                  hasHistory ? Icons.speed : Icons.bolt,
+                  size: 15,
+                  color: fg,
                 ),
-              ],
-            ),
+          label: Text(
+            busy ? '测速中' : '测速',
+            style: TextStyle(fontSize: FontSizes.cap, color: fg),
           ),
+          side: BorderSide(color: colors.outlineVariant),
+          shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
+          padding: const EdgeInsets.symmetric(
+            horizontal: Sp.x3,
+            vertical: Sp.x1 + 2,
+          ),
+          labelPadding: EdgeInsets.zero,
+          visualDensity: VisualDensity.compact,
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
       ),
     );

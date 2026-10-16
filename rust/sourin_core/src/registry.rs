@@ -400,9 +400,40 @@ impl Registry {
 
     /// ★ 跨 Provider 聚合首页（每个 provider 一个分区组）
     ///
-    /// **会过滤掉会话不可用的源**（需求 6）：登录失效的源内容点了也播不了，
-    /// 展示在首页只会误导用户。过滤后用户看不到它，
-    /// 而设置页仍会显示「需要重新登录」的状态供人工处理。
+    /// # 判据是「`home()` 拿不拿得到内容」，**不是**「登录态好不好」
+    ///
+    /// ⚠️ 这里**刻意不再**按 `session_usable()` 过滤（2026-10-15 修正）。
+    ///
+    /// # 为什么（Owner 报的真问题）
+    ///
+    /// > 某个动画源不登录都可以看，只不过视频播放需要登录而已，这应该是 bug！
+    ///
+    /// `login_required` 的定义是「需要登录才能**取流**」
+    ///（见 `Capabilities::login_required`）—— 它管的是**播放**，
+    /// 不管**浏览**。而旧代码把它当成了浏览门禁：
+    /// ```text
+    /// 某源 login_required = true、用户还没登录
+    ///   → session_usable() == false
+    ///   → 首页**整个源被跳过**（哪怕它的 home() 游客态完全可用）
+    /// ```
+    /// 实测后果：该源的 `home()` 游客态能返回 4 个分区，宿主却一个都不展示，
+    /// 首页直接落到空态「还没有可用的内容源」—— 而用户明明启用了它。
+    ///
+    /// # 那「失效账号不展示」怎么办
+    ///
+    /// 交给**下面那段错误隔离** —— 它拿到的才是真信号：
+    /// ```text
+    /// home() 真需要登录 → Err(Unauthorized) → 被隔离掉（不展示）✅
+    /// home() 游客态能用  → Ok(sections)     → 正常展示          ✅
+    /// ```
+    /// 比按登录态**猜**准：猜错的代价正是本次这个 bug。
+    ///
+    /// ⚠️ 顺带澄清一个长期误读：`session_usable()` **从不**过滤「失效账号」——
+    ///    会话过期也走 `Ok(Some(_)) => true`。它唯一返回 false 的情形是
+    ///    「需要登录 + **从没登录过** + 无凭据」，也就是**游客**。
+    ///    即旧行为实际是「游客看不到这个源」，而非注释里写的「失效账号」。
+    ///
+    /// 设置页仍照旧显示各源的登录状态（`session_state`），那是**另一个**职责。
     pub async fn home_all(&self) -> Vec<(String, String, Vec<Section>)> {
         let targets: Vec<_> = self
             .providers
@@ -419,11 +450,11 @@ impl Registry {
             if !m.working {
                 continue;
             }
-            // ★ 会话失效则不展示（首页是「能看什么」，不是「有什么源」）
-            if !p.session_usable().await {
-                log::debug!("{}: 会话不可用，跳过首页聚合", m.id);
-                continue;
-            }
+            /*
+             * ★ 这里**不再**按会话过滤（2026-10-15）—— 详见上面那段长注释。
+             *   一句话：`login_required` 只挡取流，不挡浏览；
+             *   真要登录的源会由下面这行 `home()` 自己返回 Unauthorized。
+             */
             // 错误隔离
             if let Ok(sections) = p.home().await {
                 if !sections.is_empty() {
@@ -448,10 +479,11 @@ impl Registry {
         let mut out = Vec::new();
         for p in targets {
             let m = p.manifest();
-            // 直播同样过滤失效会话
-            if !p.session_usable().await {
-                continue;
-            }
+            /*
+             * ★ 与 `home_all()` 同理：会话状态不是浏览门禁（2026-10-15）。
+             *   直播源「游客能不能列频道」由 `live_channels()` 自己回答，
+             *   它返回 Err 时下面的错误隔离会挡掉。
+             */
             if let Ok(chans) = p.live_channels().await {
                 if !chans.is_empty() {
                     out.push((m.id.clone(), m.name.clone(), chans));
@@ -685,10 +717,13 @@ impl Registry {
         }
     }
 
-    /// ★ 批量查询：哪些源当前**可用**（首页据此过滤）
+    /// ★ 批量查询：哪些源当前**登录态可用**（会话维度，**不是**首页门禁）
     ///
-    /// 需求：登录失效的源不该出现在首页 —— 因为它的内容点了也播不了，
-    /// 展示出来只会让用户困惑。这里返回「可展示」的源 id 集合。
+    /// ⚠️ 首页**不再**用它过滤（2026-10-15）—— 见 `home_all()` 的长注释。
+    ///    `login_required` 只挡取流，游客照样能浏览，所以「会话可用」
+    ///    与「首页该不该展示」是两件事，别再拿本方法当首页判据。
+    ///
+    /// 本方法现在只回答「会话这一维度好不好」，供设置页/诊断使用。
     pub async fn usable_provider_ids(&self) -> Vec<String> {
         let targets: Vec<_> = self
             .providers
@@ -748,6 +783,8 @@ mod tests {
         refresh_calls: AtomicUsize,
         /// 自动登录是否成功
         auto_login_ok: bool,
+        /// ★ 让 `home()` 返回 Unauthorized（模拟「连浏览都要登录」的源）
+        home_unauthorized: bool,
     }
 
     impl FakeProvider {
@@ -795,6 +832,7 @@ mod tests {
                 has_cred,
                 refresh_calls: AtomicUsize::new(0),
                 auto_login_ok,
+                home_unauthorized: false,
             }
         }
 
@@ -806,6 +844,15 @@ mod tests {
                 display_name: Some("tester".into()),
                 avatar: None,
             }));
+            self
+        }
+
+        /// ★ 造一个「连浏览都要登录」的源（2026-10-15）
+        ///
+        /// 用来证明「失效账号不展示」这条需求**仍然成立** ——
+        /// 只是判据换成了 `home()` 的真实结果，而不是宿主猜登录态。
+        fn with_home_unauthorized(mut self) -> Self {
+            self.home_unauthorized = true;
             self
         }
     }
@@ -869,7 +916,14 @@ mod tests {
         }
 
         /// 返回一个固定的分区，便于验证首页聚合的**过滤行为**
+        ///
+        /// ★ 2026-10-15：可由 [FakeProvider::with_home_unauthorized] 切成
+        ///   「连浏览都要登录」的源 —— 那种源该由**错误隔离**挡掉，
+        ///   而不是靠宿主猜登录态。
         async fn home(&self) -> Result<Vec<Section>> {
+            if self.home_unauthorized {
+                return Err(ProviderError::unauthorized("该源浏览也需登录"));
+            }
             Ok(vec![Section {
                 id: "s1".into(),
                 title: "假源分区".into(),
@@ -879,24 +933,54 @@ mod tests {
         }
     }
 
-    // ─────────── 需求 6：失效账号不在首页展示 ───────────
+    // ─────────── 首页判据：看 `home()` 拿不拿得到内容（2026-10-15 修正）───────────
 
-    /// ★★ 会话彻底失效（无会话且无法自动登录）→ **首页不展示该源**
+    /// ★★ 需要登录的源，**游客态**照样上首页（前提：它的 `home()` 游客可用）
     ///
-    /// 需求原文：「失效账号不在首页展示」。
-    /// 首页是「现在能看什么」，不是「装过哪些源」——
-    /// 展示一个点了也播不了的源只会误导用户。
+    /// # 这是 Owner 报的真 bug 的回归测试
+    ///
+    /// > 某个动画源不登录都可以看，只不过视频播放需要登录而已，这应该是 bug！
+    ///
+    /// 旧行为：`login_required = true` + 没登录 ⇒ `session_usable() == false`
+    /// ⇒ 首页**整个源被跳过**，哪怕它的 `home()` 游客态能返回分区。
+    /// 后果是首页落到空态「还没有可用的内容源」，而用户明明启用了它。
+    ///
+    /// 修正后的判据是「`home()` 拿不拿得到内容」——
+    /// `login_required` 只挡取流，不挡浏览（见 `Capabilities::login_required`）。
+    ///
+    /// ⚠️ 别把这条测试改回 `home.is_empty()`：那正是被修掉的行为。
     #[tokio::test]
-    async fn home_excludes_source_with_dead_session() {
+    async fn home_keeps_guest_source_whose_home_works() {
         let reg = Registry::new();
-        // 需要登录 + 无会话 + 无凭据 → session_usable() == false
+        // 需要登录 + 无会话 + 无凭据 —— 但 home() 游客态可用
         reg.register(Arc::new(FakeProvider::new(true, false, false, false)));
 
         let home = reg.home_all().await;
+        assert_eq!(
+            home.len(),
+            1,
+            "游客态能取到 home 内容的源必须展示（login_required 只挡取流，不挡浏览）"
+        );
+        assert_eq!(home[0].0, "fake");
+    }
+
+    /// ★★ 「失效账号不展示」的真正判据：`home()` 自己返回 Unauthorized
+    ///
+    /// 需求原文：「失效账号不在首页展示」—— 这条**仍然成立**，
+    /// 只是判据从「宿主猜登录态」换成了「`home()` 的真实结果」：
+    /// 真需要登录的源会返回 `Unauthorized`，下面的错误隔离自然挡掉。
+    ///
+    /// 比猜准 —— 猜错的代价正是上一条测试守着的那个 bug。
+    #[tokio::test]
+    async fn home_excludes_source_whose_home_requires_login() {
+        let reg = Registry::new();
+        reg.register(Arc::new(
+            FakeProvider::new(true, false, false, false).with_home_unauthorized(),
+        ));
+
         assert!(
-            home.is_empty(),
-            "会话失效的源不该出现在首页，实际: {:?}",
-            home.iter().map(|g| g.0.clone()).collect::<Vec<_>>()
+            reg.home_all().await.is_empty(),
+            "home() 返回 Unauthorized 的源不该出现在首页"
         );
     }
 
@@ -1077,24 +1161,30 @@ mod tests {
         );
     }
 
-    /// ★ 会话失效的源不该出现在首页（需求 6）
+    /// ★ 游客态（没登录过）的登录源，在**会话维度**上不算「可用」
+    ///
+    /// ⚠️ 注意本测试**不再**声称任何首页行为（2026-10-15）。
+    ///    `usable_provider_ids()` 现在只是会话维度的查询，
+    ///    首页判据已改成「`home()` 拿不拿得到内容」——
+    ///    见 `home_keeps_guest_source_whose_home_works`。
+    ///    别把它当首页门禁用：那正是被修掉的 bug。
     #[tokio::test]
-    async fn expired_provider_is_hidden_from_home() {
+    async fn guest_provider_is_not_session_usable() {
         let reg = Registry::new();
-        // 需要登录 + 没会话 + 没凭据 → 不可用
+        // 需要登录 + 没会话 + 没凭据 → 会话维度不可用
         reg.register(Arc::new(FakeProvider::new(true, false, false, false)));
 
         let usable = reg.usable_provider_ids().await;
         assert!(
             !usable.contains(&"fake".to_string()),
-            "失效的登录源不该出现在可用列表里: {usable:?}"
+            "游客态的登录源在会话维度不该算可用: {usable:?}"
         );
 
         // 它仍会被列出（设置页要看得到状态）
         assert_eq!(reg.manifests().len(), 1);
     }
 
-    /// 不需登录的源照常出现在首页
+    /// 不需登录的源照常在会话维度可用
     #[tokio::test]
     async fn open_provider_is_usable() {
         let reg = Registry::new();
@@ -1102,7 +1192,7 @@ mod tests {
         assert!(reg.usable_provider_ids().await.contains(&"fake".to_string()));
     }
 
-    /// 有凭据的失效会话仍算「可用」—— 因为首次点播会自动恢复
+    /// 有凭据的失效会话仍算「会话可用」—— 因为首次点播会自动恢复
     #[tokio::test]
     async fn recoverable_provider_stays_usable() {
         let reg = Registry::new();

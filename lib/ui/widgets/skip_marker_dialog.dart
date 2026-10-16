@@ -2828,24 +2828,24 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
     );
   }
 
+  /// 自动跳过开关
+  ///
+  /// ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）：
+  ///   改前是手写 Row（开关在左、文字在右、只有开关能点）⇒
+  ///   换成 `SwitchListTile`（文字在左、整行可点、带涟漪与读屏语义）。
   Widget _autoSkipRow(AppPalette colors) {
-    return Row(
-      children: [
-        Switch(
-          value: _autoSkip,
-          onChanged: (v) => setState(() => _autoSkip = v),
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      value: _autoSkip,
+      onChanged: (v) => setState(() => _autoSkip = v),
+      title: Text(
+        '自动跳过（关掉则只在到达时提示，需手动点）',
+        style: TextStyle(
+          fontSize: FontSizes.sm,
+          color: colors.mutedForeground,
         ),
-        const SizedBox(width: Sp.x2),
-        Expanded(
-          child: Text(
-            '自动跳过（关掉则只在到达时提示，需手动点）',
-            style: TextStyle(
-              fontSize: FontSizes.sm,
-              color: colors.mutedForeground,
-            ),
-          ),
-        ),
-      ],
+      ),
     );
   }
 

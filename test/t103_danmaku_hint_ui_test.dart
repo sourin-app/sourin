@@ -361,7 +361,18 @@ void main() {
       // 令牌守卫：面板是哪一集打开的，中途换集后回来的结果必须丢掉
       expect(src.contains('if (!mounted || token != _biliPanelToken) return;'),
           isTrue);
-      expect(src.contains("busyLabel: '正在搜 B 站…'"), isTrue,
+      /*
+       * ★ 2026-10-15：文案已从 `正在搜 B 站…` 改为 `正在搜 外部视频站…`
+       *   （b05e1b6 去掉了对具体站点的指名），但本文件当时没跟上。
+       *
+       *   ⚠️ 为什么一直没发现：本文件带 `native-media` 标签，
+       *      默认 `flutter test` 会**跳过**它 ⇒ 它从改文案那天起就一直是红的，
+       *      只是没人看到。这正是"默认跑不到的门禁等于没有门禁"。
+       *
+       *   钉住的语义没变：搜索是网络请求 ⇒ 必须告诉用户"在搜"。
+       *   所以这里改钉**有 busyLabel 这件事** + 具体文案。
+       */
+      expect(src.contains("busyLabel: '正在搜 外部视频站…'"), isTrue,
           reason: '★ 搜索是网络请求，必须告诉用户"在搜"');
     });
 

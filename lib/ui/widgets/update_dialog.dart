@@ -95,8 +95,14 @@ class _UpdateDialogState extends State<_UpdateDialog> {
               child: const Text('稍后'),
             ),
             TextButton(
-              onPressed: () {
-                c.ignoreVersion(widget.release.tag);
+              // ★ 必须先 await 落盘再关窗（CR-1015）：
+              //   用户点「忽略」往往就是不想再看到它了，随后可能立刻退出 ——
+              //   而这一按的全部意义就是「下次别再弹」。写盘是异步的，
+              //   fire-and-forget 会让进程比写盘先走 ⇒ 下次照样弹。
+              //   落盘只有几毫秒，且 flush() 幂等，用户感知不到。
+              onPressed: () async {
+                await c.ignoreVersion(widget.release.tag);
+                if (!context.mounted) return;
                 Navigator.pop(context, false);
               },
               child: const Text('忽略此版本'),

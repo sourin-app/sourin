@@ -103,6 +103,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../core/app_log.dart';
 import '../core/clip_download.dart';
+import '../core/batch_bind.dart';
 import '../core/danmaku.dart';
 import '../core/device.dart';
 // ★ task-38：为了 `SourinCoreException.kind`（结构化错误类别）
@@ -1670,6 +1671,27 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 面板的状态快照（面板是纯 UI，所有读写都经过宿主）
   DanmakuSettingsState _danmakuSettings = DanmakuSettingsState.fromPrefs();
+
+  /// Readout channel for the danmaku panel status line.
+  ///
+  /// 2026-10-15 (Owner: "this modal is so laggy, and so are the other
+  /// overlay panels shown inside it") -- root cause and fix.
+  ///
+  /// BEFORE: _refreshDanmakuReadout() used setState once per second, which
+  /// rebuilt the ENTIRE player page (about 16k lines: video layer, danmaku
+  /// layer, top bar, bottom bar and every overlay). Only one line of text
+  /// in the panel actually changed.
+  ///
+  /// WHY "the other overlays are laggy too" has the same explanation: the
+  /// subtitle panel, episode panel and playback-settings panel are all
+  /// mounted on the SAME player page tree. When the host rebuilds itself,
+  /// every one of them rebuilds with it.
+  ///
+  /// AFTER: the readout goes through this notifier and the panel listens
+  /// with ValueListenableBuilder, so only that one Text rebuilds.
+  /// Same technique as _positionNotifier (fixed there on 2026-10-09).
+  final ValueNotifier<DanmakuReadout> _danmakuReadout =
+      ValueNotifier<DanmakuReadout>(const DanmakuReadout());
 
   /// ★★★ 2026-10-14（卡顿修复）：弹幕轻量悬浮窗**四根滑杆**的实时真源。
   ///
@@ -4465,23 +4487,64 @@ class _PlayerPageState extends State<PlayerPage>
       unawaited(_watchVideoOutput(++_videoOutputToken));
 
       /*
-       * ★★ DASH 音视频分离（外部视频站 1080P 必然如此）
+       * ══════════════════════════════════════════════════════════════
+       * ★★★ 2026-10-15（Owner：「bibili源没有声音，你看看应该是插件的问题」）
+       * ══════════════════════════════════════════════════════════════
        *
-       * 原版注释：
-       * > 音轨也要走同一个代理（同样的 headers），
-       * > 否则表现是「画面正常但完全没声音，且不报错」。
+       * # 结论先说：插件没问题，是**这里**挂了空档
+       * ```text
+       * 插件侧实测（拿 Owner 机器上那份 bilibili.js 的原样参数打真接口）：
+       *   playurl code=0、dash.audio 3 条全是正常 AAC（mp4a.40.2/.5）
+       *   音频地址带 Referer 拉回来 = HTTP 206 + 合法 ftyp 头
+       * ⇒ 取流、防盗链、audioUrl 声明**全都正常**。
+       * ```
        *
-       * libmpv 支持 `audio-add` —— 把外挂音轨加进来。
+       * # 真根因：`audio-file` **不是**运行期属性，设了等于没设
+       * ```text
+       * mpv 官方手册（DOCS/man/options.rst）：
+       *   `--audio-file=<file>`
+       *     CLI/config file only alias for `--audio-files-append`.
+       *
+       * 也就是说它是**加载期命令行选项**（每出现一次加一条音轨），
+       * 根本没有对应的运行期属性。
+       *
+       * 实测（直接 FFI 打本仓自带的 libmpv-2.dll）：
+       *   mpv_set_property_string(ctx, "audio-file", url) → -8 property not found
+       *   mpv_set_property_string(ctx, "audio-files-append", url) → -8 property not found
+       *   mpv_command(ctx, ["audio-add", url, "select", ...]) → 0 success
+       *
+       * 而 media_kit 的 `setProperty` **丢掉返回码**
+       *   （media_kit-1.2.6/.../real.dart:1239：mpv_set_property_string(...) 不检查返回值）
+       * ⇒ 失败**完全静默**，于是：
+       *     日志照打「已挂载外挂音轨」、画面正常、就是没声音 —— 正是 Owner 报的现象。
+       * ```
+       *
+       * # 修法：改用运行期命令 `audio-add`
+       * ```text
+       * media_kit 把它包装成了 `setAudioTrack(AudioTrack.uri(url))`
+       *   （real.dart:1023-1040 ⇒ mpv_command(["audio-add", uri, "select", title, lang])）
+       * ⇒ 用官方那条运行期路径，而不是伪装成属性去设一个不存在的选项。
+       * ```
+       *
+       * ⚠️ 音轨同样要带 headers（走的是同一个代理地址，原因见原注释）：
+       *    这里音轨 URL 已经由 Rust 侧 `playback.rs:180-191` 套过代理，
+       *    与视频轨共用同一套 http-header-fields，所以不必在此重复设置。
        */
       if (st.audioUrl != null && st.audioUrl!.isNotEmpty) {
         try {
-          final native = _player.platform;
-          if (native is NativePlayer) {
-            await native.setProperty('audio-file', st.audioUrl!);
-            debugPrint('[PLAYER] 已挂载外挂音轨（DASH 分离）');
-          }
+          await _player.setAudioTrack(
+            AudioTrack.uri(
+              st.audioUrl!,
+              title: '外挂音轨（DASH 分离）',
+              language: 'auto',
+            ),
+          );
+          // ★ 落 AppLog 而不是 debugPrint：release 构建里 debugPrint 不进日志文件，
+          //   2026-10-15 查「没声音」时整份日志里一条 [PLAYER] 都没有，
+          //   就是因为这里只打了 debugPrint ⇒ 线上根本无从判断音轨到底挂上没有。
+          AppLog.write('PLAY', '已挂载外挂音轨（DASH 分离）');
         } catch (e) {
-          debugPrint('[PLAYER] 挂载外挂音轨失败: $e');
+          AppLog.write('PLAY', '挂载外挂音轨失败（该源可能只有画面没声音）：$e');
         }
       }
 
@@ -4507,7 +4570,8 @@ class _PlayerPageState extends State<PlayerPage>
        * 于是：
        * ```text
        * ① 对 duration=0 的流 seek(276s) → mpv 排队，但还没 demux 完
-       * ② 紧接着 `audio-file` 挂外挂音轨 → mpv 重新初始化音频链
+       * ② 紧接着挂外挂音轨（现走 `audio-add` / setAudioTrack）
+       *    → mpv 重新初始化音频链
        * ③ 音视频链重建时**播放位置被复位到 0**
        * ④ 用户看到的就是"从头开始播"（实测 00:29 ≈ 起播后的正常推进）
        * ```
@@ -5097,11 +5161,24 @@ class _PlayerPageState extends State<PlayerPage>
           ),
       ]),
       MoreMenuGroup('弹幕', [
-        MoreMenuEntry(
-          label: _danmakuEnabled ? '关闭弹幕' : '开启弹幕',
-          icon: _danmakuEnabled ? Icons.subtitles : Icons.subtitles_off,
-          onTap: () => unawaited(_toggleDanmaku()),
-        ),
+        /*
+         * 2026-10-15 (Owner): "the danmaku switch in More can go too -- it is
+         * duplicate functionality, it can already be changed outside."
+         *
+         * Correct: the bottom bar has had a dedicated on/off button since the
+         * 1011 rework, so this menu row was a second door to the same bool.
+         * Two entry points for one toggle also meant two places to keep in
+         * sync -- and the menu copy would go stale while the bar's did not.
+         *
+         * NOTE: the '弹幕设置' row below STAYS. It is not a duplicate: the
+         * bar's gear opens the lightweight quick popover, while this row opens
+         * the full settings panel directly (and it is the only route in when
+         * the bar is hidden).
+         *
+         * ⚠️ Keep the group itself (even though it now holds one row):
+         *    t68_android_adapt_test and zz_cr_local_session_player_test both
+         *    assert on `MoreMenuGroup('弹幕'` by name.
+         */
         MoreMenuEntry(
           label: '弹幕设置',
           icon: Icons.tune,
@@ -5457,6 +5534,41 @@ class _PlayerPageState extends State<PlayerPage>
      * 没绑（或这一集没有 cid）⇒ 直接往下走 —— 行为与接线前**逐字节相同**。
      * 解绑后下一次起播就自动退回 danmaku-service。
      */
+    /*
+     * ★★★ 2026-10-15（整部绑定）：用户手动绑过的弹幕库对应关系**优先**。
+     *
+     * # 为什么必须在这里读
+     * ```text
+     * “整部绑定”如果只写不读，那就是**假功能**：
+     * 用户点了「整部绑定」、看到成功提示，
+     * 结果下一集起播还是按片名模糊搜。
+     * ```
+     *
+     * ⚠️ 排在外部视频站绑定**后面**、模糊搜索**前面**：
+     *    外部站绑定是用户另一次明确选择，且它自己就是精确的；
+     *    而模糊搜索是“没人选过才轮到它”。
+     */
+    final dmBind = loadDanmakuBind(widget.provider, widget.id);
+    final boundId = dmBind?.episodes[_epIndex] ?? 0;
+    if (boundId > 0) {
+      debugPrint('[DMK] 整部绑定命中：第${_epIndex + 1}集 ⇒ #$boundId');
+    }
+    /*
+     * ⚠️ 这里**只读不算数**，赋值放到真正消费它的地方（下面 dandanplay 分支）。
+     *
+     * # 为什么（2026-10-16 实测踩到）
+     * ```text
+     * 原来在本行就 `_pinnedEpisodeId = boundId`。但本函数有 3 条提前 return
+     * （外部站绑定命中 / 弹幕开关关着 ×2）**都不会走到消费点**，
+     * pin 就残留下来：
+     *   第 1 集有整部绑定 #101、同时外部站也命中 ⇒ 走外部站分支 return，pin=101
+     *   切到第 2 集，第 2 集 boundId==0、也没外部站 ⇒ 走到 dandanplay
+     *   ⇒ pinned=101 ⇒ **第 2 集载入的是第 1 集的弹幕**。
+     * 开关关着时同样残留。
+     * ```
+     * ⇒ 只在「马上要用」的那一行之前赋值，提前 return 的路径就不会污染它。
+     */
+
     final biliBind = loadBinding(widget.provider, widget.id);
     if (biliBind != null && !biliBind.isEmpty) {
       final cid = biliBind.cidFor(_epIndex);
@@ -5627,6 +5739,15 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ 一旦请求失败 ⇒ **清掉** pin 并**继续**走原链路（不能因为
        *    用户点的那条失效就什么都不取）。
        */
+      /*
+       * ★ 整部绑定的 pin 在这里才生效 —— 提前 return 的路径不会污染它（见函数上方说明）。
+       *
+       * ⚠️ 但**不许覆盖**已有的 pin：`_pickDanmakuMatch` 会把用户刚手选的那条写进
+       *    `_pinnedEpisodeId`。若这里无条件 `= boundId`，用户点了搜索结果里的第 5 集，
+       *    却会取回「整部绑定」里第 1 集的那条 —— 手选被静默吞掉。
+       * ⇒ 只在**没有**手选 pin 时才用整部绑定。
+       */
+      if (_pinnedEpisodeId == null && boundId > 0) _pinnedEpisodeId = boundId;
       final pinned = _pinnedEpisodeId;
       if (pinned != null) {
         _pinnedEpisodeId = null; // 一次性
@@ -5806,18 +5927,10 @@ class _PlayerPageState extends State<PlayerPage>
     final n = st?.visible ?? 0;
     final lanes = st?.laneCount ?? 0;
     final dropped = st?.dropped ?? 0;
-    if (n == _danmakuSettings.count &&
-        lanes == _danmakuSettings.lanes &&
-        dropped == _danmakuSettings.dropped) {
-      return;
-    }
-    setState(() {
-      _danmakuSettings = _danmakuSettings.copyWith(
-        count: n,
-        lanes: lanes,
-        dropped: dropped,
-      );
-    });
+    final next = DanmakuReadout(count: n, lanes: lanes, dropped: dropped);
+    if (next.sameAs(_danmakuReadout.value)) return;
+    // NOTE: deliberately NOT setState -- that is the whole point of the fix.
+    _danmakuReadout.value = next;
   }
 
   /// 底栏「弹幕」按钮：开 / 关
@@ -5915,6 +6028,11 @@ class _PlayerPageState extends State<PlayerPage>
   /// 打开弹幕设置面板（不暂停播放 —— 与播放设置面板同一原则）
   void _openDanmakuSettings() {
     final st = debugDanmakuLastStats;
+    _danmakuReadout.value = DanmakuReadout(
+      count: st?.visible ?? 0,
+      lanes: st?.laneCount ?? 0,
+      dropped: st?.dropped ?? 0,
+    );
     // ★★★ T27-09：浮层打开 ⇒ 顶/底栏一起收（显隐统一真源，见 _collapseControlsForSheet）
     _collapseControlsForSheet();
     setState(() {
@@ -5933,7 +6051,30 @@ class _PlayerPageState extends State<PlayerPage>
         searchError: _danmakuSearchError,
         searchSearched: _danmakuSearchSearched,
         searchResults: _danmakuSearchResults,
-        searchKeyword: _danmakuSearchKeyword,
+        /*
+         * ★★★ 2026-10-15 (Owner): "it should auto-fill the name."
+         *
+         * The bili panel has pre-filled its search box since 2026-10-09
+         * (see the long note on its own searchKeyword line), but the
+         * dandanplay search box was still opening EMPTY -- so the user had
+         * to retype a title the app already knows.
+         *
+         * Pre-fill rules:
+         *   · if a search has already been run, keep ITS keyword (the user's
+         *     own words are better than a guess);
+         *   · otherwise use _liveTitle (the string shown in the title bar),
+         *     which is the closest thing to how the user thinks of the episode.
+         *
+         * Why not the filename (_danmakuFileName): that one is built for
+         * matching and may carry an extension or an episode suffix, both of
+         * which make SEARCH less accurate.
+         *
+         * NOTE: this is a pre-fill, not a lock -- the user can edit it freely
+         * before pressing Search.
+         */
+        searchKeyword: _danmakuSearchKeyword.isNotEmpty
+            ? _danmakuSearchKeyword
+            : _liveTitle.trim(),
         // ★ 打开面板时**重算**"这批结果还对不对得上"：
         //   用户可能在上次搜索之后换过集、再打开面板 —— 那时 stale 必须为真。
         //   这是 `_danmakuSearchToken` 的**第二个**消费点（另一个在结果回来时）。
@@ -6018,7 +6159,16 @@ class _PlayerPageState extends State<PlayerPage>
       );
     });
     try {
-      final found = await client.searchEpisodes(anime: kw);
+      /*
+       * 2026-10-15: multi-keyword search.
+       *
+       * A full episode title like
+       *   「无职转生Ⅲ ～到了异世界就拿出真本事～ 第1话 燃烧吧，狂犬」
+       * yields ZERO works from the official search even though the show and that
+       * very episode (187270001, 2709 comments) are in the library. Dropping to
+       * the first whitespace segment finds it. Measured against the live API.
+       */
+      final found = await client.searchEpisodesSmart(kw);
       if (!mounted) return;
       final stale = searchToken != _danmakuFetchToken;
       setState(() {
@@ -6082,6 +6232,73 @@ class _PlayerPageState extends State<PlayerPage>
   /// 的模糊匹配，等于把"用户的选择"重新交给猜测，还可能选到另一集。
   /// ⇒ 用户点了哪条，就取哪条（`episodeId` 是弹幕库里的唯一钥匙）。
   /// ```
+  /// 整部绑定：把搜索结果铺到这一部的每一集
+  ///
+  /// 2026-10-15 (Owner): "番剧的批量绑定弹幕".
+  ///
+  /// # 分工（与 `_pickDanmakuMatch` 同一条规矩）
+  /// ```text
+  /// 对齐规则在 core（`buildBatchBindPlan`，有自己的门禁）；
+  /// 这里只做两件事：① 拿到本地剧集表 ② 写盘。
+  /// ```
+  /// ⚠️ **不在这里重写一份对齐逻辑** —— 那样两份定义必然漂移，
+  ///    而对齐错一次就是“12 集全在放第1集”这种看不出来的错。
+  Future<void> _batchBindDanmaku(List<DanmakuMatch> results) async {
+    if (results.isEmpty) return;
+    final titles = _episodes.map((e) => e.title).toList();
+    if (titles.isEmpty) {
+      _flash('整部绑定：还不知道这一部有几集（等剧集列表加载完）');
+      return;
+    }
+    final plan = buildBatchBindPlan(
+      localTitles: titles,
+      matches: results,
+      workTitle: results.first.animeTitle,
+    );
+    if (plan.isEmpty) {
+      _flash('整部绑定：这批结果对不上任何一集');
+      return;
+    }
+    /*
+     * 写盘：进**弹幕库自己**那条存储。
+     *
+     * ⚠⚠⚠ 这里我第一版写错了 —— 写成了 `saveBinding`
+     * （外部视频站的 `BiliBinding`）。
+     * ```text
+     * 那一套被 `_loadBiliDanmaku(cid)` 消费 ⇒ 拿着弹幕库的 id
+     * 去调**外部站的评论接口** ⇒ 下次起播必失败。
+     *
+     * ★ 两个 id 语系碰巧都是整数，编译器看不出来，
+     *   只能靠**存储分开**。
+     * ```
+     */
+    saveDanmakuBind(
+      widget.provider,
+      widget.id,
+      DanmakuBindStore(
+        workTitle: plan.workTitle,
+        episodes: <int, int>{
+          for (final it in plan.items) it.episodeIndex: it.episodeId,
+        },
+        updatedAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (!mounted) return;
+    /*
+     * 如实报数 —— 尤其是**没绑上的那几集**。
+     * 只报“绑了 N 集”而吞掉“有 3 集没绑”，
+     * 用户会以为整部都好了，直到播到第 10 集才发现没弹幕。
+     */
+    final miss = plan.unmatchedLocal.length;
+    _flash(
+      '整部绑定完成：「${plan.workTitle}」绑了 ${plan.count}/${plan.totalLocal} 集'
+      '${miss == 0 ? '' : '，还有 $miss 集没对上（可单独选）'}',
+    );
+    setState(() {
+      _danmakuStatus = '整部绑定：${plan.count}/${plan.totalLocal} 集';
+    });
+  }
+
   void _pickDanmakuMatch(DanmakuMatch m) {
     /*
      * ★ 先把「用户的选择」记成这一集的弹幕身份（`_biliCid` —— 见它的字段
@@ -6258,37 +6475,19 @@ class _PlayerPageState extends State<PlayerPage>
   /// 忽然换一批弹幕（甚至换到另一集），比"什么都不发生"更糟。
   /// ⇒ 宿主把 credentialSaved 置真，面板据此提示「已保存，点重新获取生效」。
   /// ```
-  void _setDanmakuCredentials(String appId, String appSecret) {
-    DanmakuConfig.setAppId(appId);
-    DanmakuConfig.setAppSecret(appSecret);
-    _resetDanmakuClient();
-    if (!mounted) return;
-    setState(() {
-      _danmakuSettings = _danmakuSettings.copyWith(
-        // 回填**用户覆盖**（可能被 trim 过），让输入框与落盘一致
-        appId: DanmakuConfig.userAppId,
-        appSecret: DanmakuConfig.userAppSecret,
-        credentialSaved: true,
-      );
-    });
-  }
-
-  /// 面板凭证节点了「清除」—— 清掉用户覆盖（回落到内置，若该构建有内置值）。
-  ///
-  /// 同 [_setDanmakuCredentials]：必须重建客户端，否则旧实例还揣着刚清掉的
-  /// 凭证照旧签名。清完的状态行由 `DanmakuConfig` 的真实 getter 如实反映。
-  void _clearDanmakuCredentials() {
-    DanmakuConfig.clearCredentials();
-    _resetDanmakuClient();
-    if (!mounted) return;
-    setState(() {
-      _danmakuSettings = _danmakuSettings.copyWith(
-        appId: '',
-        appSecret: '',
-        clearCredentialSaved: true,
-      );
-    });
-  }
+  /*
+   * 2026-10-15: _setDanmakuCredentials / _clearDanmakuCredentials removed.
+   *
+   * Owner: "I told you to delete those two input boxes and use the built-in
+   * credentials." The developer agreement allows built-in credentials via
+   * placeholder + build-time injection, so the panel no longer offers manual
+   * entry and these two write paths lost their only caller. A write path the
+   * UI cannot reach should not stay in the code.
+   *
+   * Credentials now come from build-time --dart-define=DANDANPLAY_APP_ID /
+   * _APP_SECRET (see builtinAppId/builtinAppSecret in core/danmaku.dart, the
+   * CI workflow, and tools/run_client.ps1 for local builds).
+   */
 
   void _reloadDanmaku() {
     /*
@@ -12573,6 +12772,7 @@ class _PlayerPageState extends State<PlayerPage>
      *   否则 flutter_test 会判红（AnimationController 泄漏）。
      */
     _controlsAnim.dispose();
+    _danmakuReadout.dispose();
     // 缺陷 13：轮询定时器必须跟着本页停掉
     _bufferPoller?.stop();
     _bufferPoller?.clear();
@@ -14138,6 +14338,18 @@ class _PlayerPageState extends State<PlayerPage>
                         child: DanmakuSettingsDialog(
                           fill: false,
                           state: _danmakuSettings,
+                          readout: _danmakuReadout,
+                          /*
+                           * 2026-10-15 (Owner): the status strip shows how many
+                           * rows EACH source has, so the panel needs both counts --
+                           * but `state.count` is only "whatever is live right now".
+                           *
+                           * `_biliCid > 0` = this episode really is bound to the
+                           * external video site. That is the only case where its row
+                           * count is meaningful; otherwise the honest answer is
+                           * null ("we never asked") rather than 0 ("it has none").
+                           */
+                          biliCount: _biliCid > 0 ? _danmakuComments.length : null,
                           onSetEnabled: _setDanmakuEnabled,
                           onSetFontScale: _setDanmakuFontScale,
                           onSetOpacity: _setDanmakuOpacity,
@@ -14149,11 +14361,10 @@ class _PlayerPageState extends State<PlayerPage>
                           //   面板只把关键词 / 选中的一条递过来，网络与状态全在宿主。
                           onSearch: (kw) => unawaited(_searchDanmaku(kw)),
                           onPickMatch: _pickDanmakuMatch,
+                          onBatchBind: (rs) => unawaited(_batchBindDanmaku(rs)),
                           onHintAction: _runDanmakuHintAction,
                           // ★★★ 2026-10-14（Owner）：凭证节的保存 / 清除
                           //   面板只递值，写盘与状态更新全在宿主（同 onSearch 分工）。
-                          onSetCredentials: _setDanmakuCredentials,
-                          onClearCredentials: _clearDanmakuCredentials,
                           /*
                            * ★ 2026-10-09：屏蔽词 / 分类开关改了就重建播放页 ——
                            *   过滤发生在 danmaku_overlay 的排版那一层，
@@ -17914,6 +18125,8 @@ class _BottomBar extends StatelessWidget {
       showEpisodeNav: showEpisodeNav,
       hasNext: hasNext,
       onNext: onNext,
+      hasPrev: hasPrev,
+      onPrev: onPrev,
       more: PlayerMoreMenuData(groups: moreGroups),
       streams: streams,
       currentStream: currentStream,

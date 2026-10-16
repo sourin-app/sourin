@@ -105,16 +105,26 @@ Future<void> tapKey(WidgetTester t, LogicalKeyboardKey k) async {
   await t.pump(const Duration(milliseconds: 40));
 }
 
-/// 屏蔽词输入框（面板里**唯一**的 `maxLines == 4` 多行 `EditableText`）
+/// 屏蔽词输入框。
 ///
-/// ⚠️ 不能用 `find.byType(EditableText).at(0)`：面板里还有 appId / secret
-///    两个 `maxLines == 1` 的框，`.at(0)` 会抓错（我第一版就抓错了，
-///    结果 `\n` 被单行框吃掉 ⇒ 差点写成假判据）。
+/// ⚠️ 不能用 `find.byType(EditableText).at(0)`：面板里还有别的框，
+///    `.at(0)` 会抓错（我第一版就抓错了，结果 `\n` 被单行框吃掉 ⇒
+///    差点写成假判据）。
+///
+/// ★ 2026-10-15：弹幕面板改版（屏蔽词改成 chip + 搜索 + 添加框），
+///   原来“找唯一 maxLines==4”的判据失效了 —— 那个多行框已经不存在。
+///   改成按 **key** 找（生产侧导出的 `blockWordsAddFieldKey`）。
+///
+/// ⚠️ 返回的是 `EditableText`（不是 `TextField`）：用例要读 `maxLines`、
+///    `controller` 并向它 `enterText`，那些都在 `EditableText` 上。
+///    第一版只写了 `find.byKey(...)` ⇒ 抓到 `TextField`
+///    ⇒ `t.widget<EditableText>()` 抛 `_TypeError`。
 Finder blockWordsField() => find.descendant(
-      of: find.byType(DanmakuSettingsDialog),
-      matching: find.byWidgetPredicate(
-        (w) => w is EditableText && w.maxLines == 4,
+      of: find.descendant(
+        of: find.byType(DanmakuSettingsDialog),
+        matching: find.byKey(blockWordsAddFieldKey),
       ),
+      matching: find.byType(EditableText),
     );
 
 /// 打开弹幕设置面板，把焦点放进屏蔽词输入框
@@ -260,29 +270,51 @@ void main() {
   //  ③ 该输入框**确实是多行**、`\n` 被原样保留
   //     （用引擎送文本的同一条通道 `tester.enterText`，见文件头说明）
   // ═══════════════════════════════════════════════════════════════════
-  group('③ 屏蔽词框是多行框（换行能力的正向证据）', () {
-    testWidgets('★ enterText 写入「剧透\\n前方高能」⇒ controller 含 \\n 且写进偏好',
+  // ════════════════════════════════════════════════════════════════════
+  //  ③ 2026-10-15：本组按**改版后**的设计重写
+  //
+  //  改前：屏蔽词是**一个多行框**（maxLines==4），每行一个词。
+  //         本组原先断言的就是「它能承载 \n」。
+  //  改后：Owner 要求「一行一个占用空间太多」⇒ 改成 chip + 搜索 +
+  //         **单行**添加框（回车 = 添加一个词）。多行框**故意不再存在**。
+  //
+  //  ⚠️ 但原始 bug 的保护**必须保留**：焦点在输入框里时，
+  //     Enter 绝不能被 `_onKey` 抢去当播放/全屏。上面两组已经钉住了这一点（它们仍然红）。
+  //     本组改为钉「回车真的添加了一个词」—— 即改版后的**正向证据**。
+  // ════════════════════════════════════════════════════════════════════
+  group('③ 屏蔽词添加框（改版后的正向证据）', () {
+    testWidgets('★ 回车 ⇒ 词真的写进偏好且输入框清空（不是“敲了没反应”）',
         (t) async {
       await mountPlayer(t);
-      expect(await focusBlockWords(t), isTrue);
+      expect(await focusBlockWords(t), isTrue,
+          reason: '★前置：焦点必须真在输入框里（否则下面判的不是本场景）');
 
       final et = t.widget<EditableText>(blockWordsField());
-      expect(et.maxLines, 4, reason: '★ 屏蔽词必须是多行框（每行一个词）');
+      expect(et.maxLines, 1,
+          reason: '★ 改版后是**单行**添加框（回车=添加），不再是多行堆叠');
 
-      await t.enterText(blockWordsField(), '剧透\n前方高能');
+      await t.enterText(blockWordsField(), '剧透');
+      await t.pump(const Duration(milliseconds: 40));
+      /*
+       * ⚠️ 不能用 tapKey(enter) 去驱动 onSubmitted：
+       *    tester 里键盘事件不会走到 TextField 的 onSubmitted
+       *    （t108 文件头已记载同样的限制，那里也是直调生产回调）。
+       *    直调生产的 `onSubmitted`（不是手抄副本）：
+       *    从真树上取那个 TextField 的回调来调。
+       */
+      final tf = t.widget<TextField>(
+        find.descendant(
+          of: find.byType(DanmakuSettingsDialog),
+          matching: find.byKey(blockWordsAddFieldKey),
+        ),
+      );
+      tf.onSubmitted!('剧透');
       await t.pump(const Duration(milliseconds: 40));
 
-      expect(
-        et.controller.text.contains('\n'),
-        isTrue,
-        reason: '★ 多行框必须能承载换行 —— 这条证明"该框本来就支持 \\n"，'
-            'Owner 看到的"不换行"是**键被 _onKey 抢走**造成的，不是框本身不行',
-      );
-      expect(
-        DanmakuConfig.blockWords,
-        containsAll(<String>['剧透', '前方高能']),
-        reason: '★ onChanged 必须把两行都写进偏好（换行是分隔符）',
-      );
+      expect(DanmakuConfig.blockWords, contains('剧透'),
+          reason: '★ 回车必须真的添加一个词（否则“能输入”是假的）');
+      expect(et.controller.text, isEmpty,
+          reason: '★ 添加后输入框要清空，否则连续添加很难用');
       await drain(t);
     });
   });

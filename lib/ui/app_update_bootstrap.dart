@@ -28,6 +28,12 @@ abstract final class AppUpdateBootstrap {
     _done = true;
     final c = AppUpdateController.instance;
     c.loadPrefs();
+    // ★ 开发/探针构建**一次都不弹**（Owner 2026-10-15：「开发模式不应该弹这个」）。
+    //   -Dev 用的是空数据目录，里面没有 `appupdate.lastCheckAt` ⇒ 24 小时节流
+    //   形同不存在 ⇒ 每起一次开发版就查一次、弹一次；而本地 HEAD 永远比线上
+    //   最新版新 ⇒ 这个弹窗对开发者**恒为噪声**。理由详见
+    //   `AppUpdateController.isDevMode`（判据只写在那一个地方）。
+    if (AppUpdateController.isDevMode) return;
     if (!c.shouldAutoCheck) return;
 
     // 延后一点：不要和首屏的数据加载抢网络

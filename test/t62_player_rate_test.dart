@@ -223,24 +223,30 @@ PlayerSettingsSheet _sheet({
 
 /// 取某个 chip 的**边框颜色** —— 高亮的唯一判据
 ///
-/// _chip 的实现是 InkWell → Container(decoration: BoxDecoration(border: ...))。
-/// 这里在 chip 子树里找**唯一**那个带边框的 Container，避免顺序依赖。
+/// # 2026-10-15 改造（Owner：「…换成 ui 框架提供的…不手写组件」）
+///
+/// `_chip` 由**手写** `InkWell → Container(decoration: Border)` 换成了框架的
+/// `ChoiceChip`，所以这里不能再去找「带边框的 Container」——那是旧实现的形状。
+///
+/// ★ 判据**没有放松**，只是换了读法：
+/// ```text
+/// 改前：chip 子树里那个手写 BoxDecoration 的 border 颜色
+/// 改后：ChoiceChip 自己的 side 颜色（同一个语义，只是现在由框架持有）
+/// ```
+/// ⚠️ 仍然先断言「确实找到了 choiceChip」再读 side —— 找不到就红，
+///    否则后面那几条会变成**恒真**（假绿）。
 Color _chipBorderColor(WidgetTester t, String label) {
-  final ink = find.ancestor(of: find.text(label), matching: find.byType(InkWell));
-  expect(ink, findsOneWidget,
-      reason: '★ 找不到该 chip 的 InkWell ⇒ 后面的断言全是恒真（假绿）');
+  final chip = find.ancestor(
+    of: find.text(label),
+    matching: find.byType(ChoiceChip),
+  );
+  expect(chip, findsOneWidget,
+      reason: '★ 找不到该 chip 的 ChoiceChip ⇒ 后面的断言全是恒真（假绿）');
 
-  final found = <Color>[];
-  for (final e in find.descendant(of: ink, matching: find.byType(Container)).evaluate()) {
-    final w = e.widget as Container;
-    final d = w.decoration;
-    if (d is BoxDecoration && d.border is Border) {
-      found.add((d.border! as Border).top.color);
-    }
-  }
-  expect(found.length, 1,
-      reason: '★ chip 里应当恰好 1 个带边框的 Container（_chip 的实现）');
-  return found.single;
+  final side = t.widget<ChoiceChip>(chip).side;
+  expect(side, isNotNull,
+      reason: '★ chip 的 side 不能为空 —— 高亮判据就是读它');
+  return side!.color;
 }
 
 /// 点某个倍速档位 —— **先滚进视口，再核对中心点真在视口内，最后才 tap**

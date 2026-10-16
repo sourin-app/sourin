@@ -492,7 +492,13 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
     );
   }
 
-  /// 一行开关（照 `settings_kit.dart` 的 `SettingsGestureToggle`）
+  /// 一行开关
+  ///
+  /// ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）：
+  ///   改前这里的注释写着「照 `settings_kit.dart` 的 `SettingsGestureToggle`」
+  ///   —— 也就是它是**照抄**出来的第二份手写 Row。
+  ///   现在与 `SettingsGestureToggle` 一起换成框架的 `SwitchListTile`，
+  ///   两处不再各写一份。
   Widget _toggleRow(
     ColorScheme colors, {
     required String label,
@@ -500,33 +506,25 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
     required bool value,
     required ValueChanged<bool> onChanged,
   }) {
-    return Row(
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: FontSizes.sm,
-                  color: colors.onSurface,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                hint,
-                style: TextStyle(
-                  fontSize: FontSizes.cap,
-                  color: colors.onSurfaceVariant,
-                ),
-              ),
-            ],
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      value: value,
+      onChanged: _updating ? null : onChanged,
+      title: Text(
+        label,
+        style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
+      ),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Text(
+          hint,
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
           ),
         ),
-        const SizedBox(width: Sp.x3),
-        Switch(value: value, onChanged: _updating ? null : onChanged),
-      ],
+      ),
     );
   }
 

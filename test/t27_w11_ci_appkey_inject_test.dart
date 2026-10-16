@@ -39,6 +39,11 @@ import 'package:flutter_test/flutter_test.dart';
 const String kWorkflowPath = '.github/workflows/build.yml';
 const String kReadmePath = 'README.md';
 
+/// ★ 2026-10-15：配置与环境变量说明从 README 拆到了 `docs/CONFIG.md`。
+///   本组断言跟着文档走（判据不变，只是换了承载文件），
+///   并额外要求 README 仍指向它 —— 否则索引一改，这条门禁就悄悄失效了。
+const String kConfigDocPath = 'docs/CONFIG.md';
+
 /// 凭证 env 声明（三段必须逐字一致；挂在三条 build 步骤上）
 const String kAppIdEnvLine =
     r'DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}';
@@ -138,6 +143,7 @@ List<String> buildStepBlocks(List<String> allLines) {
 void main() {
   final workflow = readRepoFile(kWorkflowPath);
   final readme = readRepoFile(kReadmePath);
+  final configDoc = readRepoFile(kConfigDocPath);
   final allLines = workflow.split('\n');
 
   group('T27-11 · build.yml 注入通道', () {
@@ -238,15 +244,21 @@ void main() {
     });
   });
 
-  group('T27-11 · README 文档', () {
+  group('T27-11 · 文档（docs/CONFIG.md + README 索引）', () {
     test('④ 两个变量名入表且给出发版说明（全文不含真实凭证值）', () {
-      expect(occurrences(readme, 'DANDANPLAY_APP_ID'), greaterThanOrEqualTo(2),
+      expect(occurrences(configDoc, 'DANDANPLAY_APP_ID'), greaterThanOrEqualTo(2),
           reason: '至少出现在表格 + 发版说明两处');
-      expect(occurrences(readme, 'DANDANPLAY_APP_SECRET'), greaterThanOrEqualTo(2));
-      expect(readme.contains('Secrets'), isTrue,
+      expect(occurrences(configDoc, 'DANDANPLAY_APP_SECRET'),
+          greaterThanOrEqualTo(2));
+      expect(configDoc.contains('Secrets'), isTrue,
           reason: '发版说明应指向 GitHub Settings → Secrets and variables → Actions');
-      expect(occurrences(readme, '--dart-define=DANDANPLAY_APP_ID'), isNonZero,
-          reason: 'README 应给出构建注入的用法示例');
+      expect(occurrences(configDoc, '--dart-define=DANDANPLAY_APP_ID'), isNonZero,
+          reason: '应给出构建注入的用法示例');
+      expect(configDoc.contains('xgmriqmqcq'), isFalse,
+          reason: '不得写出真实 AppId —— 仓库里永远不落凭证值');
+      // ★ README 必须仍然指得到这份文档（文档搬家后索引不许悬空）
+      expect(readme.contains('docs/CONFIG.md'), isTrue,
+          reason: 'README 必须指向 docs/CONFIG.md，否则凭证说明对读者不可达');
       expect(readme.contains('xgmriqmqcq'), isFalse,
           reason: 'README 不得写出真实 AppId —— 仓库里永远不落凭证值');
     });

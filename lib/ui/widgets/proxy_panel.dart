@@ -656,27 +656,42 @@ class _ProxyPanelState extends State<ProxyPanel> {
     AppPalette colors,
     VoidCallback onTap,
   ) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(999),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-        decoration: BoxDecoration(
-          color: selected ? colors.primary : colors.secondary,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(
-            color: selected ? colors.primary : colors.border,
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: FontSizes.cap,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-            color: selected ? colors.primaryForeground : colors.foreground,
-          ),
+    /*
+     * ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）
+     *
+     * 改前是 `InkWell` + `Container(decoration:)` 手写药丸，与
+     * `settings_kit.dart` 那颗是同一个形状 ⇒ 一起换成框架的 `ChoiceChip`。
+     *
+     * 颜色 / 圆角 / 内边距**全部显式给死**，所以长相与改前一致；
+     * 换来选中语义（读屏念「已选中」）、涟漪、焦点环与禁用态。
+     *
+     * ⚠️ `showCheckmark: false`：默认的对勾会把药丸撑宽、文字右移，
+     *    且与「选中＝填色」语义重复。
+     * ⚠️ `visualDensity: compact` + `shrinkWrap`：ChoiceChip 默认最小
+     *    点击区高 48，会比改前（vertical 5）高出一截，把下面的内容顶下去。
+     */
+    return ChoiceChip(
+      label: Text(
+        label,
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+          color: selected ? colors.primaryForeground : colors.foreground,
         ),
       ),
+      selected: selected,
+      onSelected: (_) => onTap(),
+      showCheckmark: false,
+      backgroundColor: colors.secondary,
+      selectedColor: colors.primary,
+      side: BorderSide(color: selected ? colors.primary : colors.border),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(Radii.full),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 5),
+      labelPadding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
   }
 }

@@ -313,37 +313,46 @@ class SettingsGestureToggle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Row(
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: FontSizes.sm,
-                  color: colors.onSurface,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                hint,
-                style: TextStyle(
-                  fontSize: FontSizes.cap,
-                  color: colors.onSurfaceVariant,
-                ),
-              ),
-            ],
+    /*
+     * ★★ 2026-10-15（Owner：「…换成 ui 框架提供的…非必要情况，不手写组件」）
+     *
+     * 改前是手写 Row：Expanded(Column(标题 + 副标题)) + SizedBox + Switch
+     * —— 一个重造的 ListTile。
+     *
+     * 现在用框架的 SwitchListTile，title/subtitle 正好对应原来的标题/副标题。
+     * 换来的东西：
+     *   ① 整行可点（原来只有那枚开关本身能点，副标题那段是死区）
+     *   ② 涟漪 + 水波纹 + 焦点环
+     *   ③ 读屏把标题/副标题/开关读成一个控件，而不是三段散装文字
+     *
+     * ⚠️ 字号/颜色显式给死：ListTile 默认吃 titleMedium/bodyMedium，
+     *    比改前的 FontSizes.sm(14)/FontSizes.cap(12) 大一号。
+     * ⚠️ contentPadding: EdgeInsets.zero —— 调用方（设置页）自己已有内边距，
+     *    再叠一层默认的 16 会让所有开关行集体右缩进。
+     * ⚠️ dense: true —— 压回与改前一致的行高节奏。
+     */
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      value: value,
+      onChanged: onChanged,
+      title: Text(
+        label,
+        style: TextStyle(
+          fontSize: FontSizes.sm,
+          color: colors.onSurface,
+        ),
+      ),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Text(
+          hint,
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
           ),
         ),
-        const SizedBox(width: Sp.x3),
-        // 用 Switch 而不是自定义控件 —— 系统语义（无障碍朗读会用上）
-        Switch(
-          value: value,
-          onChanged: onChanged,
-        ),
-      ],
+      ),
     );
   }
 }
@@ -424,33 +433,48 @@ class SettingsGesturePill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(999),
-      child: Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x4,
-          vertical: Sp.x2,
-        ),
-        decoration: BoxDecoration(
-          color: selected ? colors.primary : colors.secondary,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(
-            color: selected ? colors.primary : colors.outlineVariant,
-            width: 1,
-          ),
-        ),
-        child: Text(
-          text,
-          style: TextStyle(
-            fontSize: FontSizes.cap,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-            color: selected
-                ? colors.onPrimary
-                : colors.onSurface,
-          ),
+    /*
+     * ★★ 2026-10-15（Owner：「…换成 ui 框架提供的…非必要情况，不手写组件」）
+     *
+     * 改前是 InkWell + Container(decoration:) 手写药丸（底色/圆角/描边/
+     * 文字色全自己画）。换成框架的 ChoiceChip：颜色/描边/圆角全部显式
+     * 给死，长相与改前一致；换来三样手写版没有的东西：
+     *   ① 选中语义（读屏念「已选中」，而不是一句光秃秃的文字）
+     *   ② 涟漪 + 焦点环 + 禁用态（Material 状态层）
+     *   ③ 命中区域与内边距按 Material 规范走
+     *
+     * ⚠️ showCheckmark: false —— 默认选中会在左边加对勾，把药丸撑宽、
+     *    文字右移，且与「选中＝填色」语义重复。
+     * ⚠️ 不取 ChipTheme 默认色：默认来自 secondaryContainer，与这里的
+     *    primary/secondary 是两套色，直接吃默认会整体变色。
+     * ⚠️ visualDensity: compact + shrinkWrap：ChoiceChip 默认最小点击区
+     *    高 48，会让这一行比改前高出一截、把下面内容顶下去。
+     */
+    return ChoiceChip(
+      label: Text(
+        text,
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+          color: selected ? colors.onPrimary : colors.onSurface,
         ),
       ),
+      selected: selected,
+      onSelected: (_) => onTap(),
+      showCheckmark: false,
+      backgroundColor: colors.secondary,
+      selectedColor: colors.primary,
+      side: BorderSide(
+        color: selected ? colors.primary : colors.outlineVariant,
+        width: 1,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(Radii.full),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x2),
+      labelPadding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
   }
 }

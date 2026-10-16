@@ -93,7 +93,7 @@ key.properties
 # ⚠️ 例外说明：Android 的 `android/app/src/main/jniLibs/<abi>/libsourin_core.so`
 #    是**交叉编译产物**（~27 MB × 3 ABI），可由 `rust/sourin_core` 重新编出来。
 #    开源库不该带二进制，所以这里**明确排除**（上面的 `*.so` 已覆盖）。
-#    首次克隆后想跑 Android，按 README「从源码构建」那一节编一次即可。
+#    首次克隆后想跑 Android，按 docs/BUILD.md 那一节编一次即可。
 
 # ── 探测与开发脚手架（本项目特有的） ────────────────────────────────────
 #
@@ -103,6 +103,8 @@ key.properties
 /.probe/
 /.probe_i12/
 /.probe_i56/
+/.local/
+/%SystemDrive%/
 /%TEMP%/
 /ANALYZE/
 /emulator-5556/
@@ -132,3 +134,10 @@ key.properties
 # flutter tooling scratch
 .flutter_tool_state
 /undefined/
+
+# Local danmaku service credentials (read by tools/run_client.ps1 at build time).
+# NEVER commit. Shape: { appId, appSecret } - see that script for details.
+# Listed explicitly rather than relying on *credential*: that glob does not match
+# a .json filename, and leaking this file means leaking a live API secret.
+tools/.dandanplay.local.json
+*.dandanplay.local.json

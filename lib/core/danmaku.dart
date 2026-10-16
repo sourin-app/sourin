@@ -264,12 +264,27 @@ class DanmakuMatch {
     this.animeTitle = '',
     this.episodeTitle = '',
     this.shift = 0,
+    this.cover = '',
   });
 
   final int episodeId;
   final String animeTitle;
   final String episodeTitle;
   final double shift;
+
+  /// Poster URL for the work (empty = none available).
+  ///
+  /// 2026-10-15 (Owner: "I remember it could show covers? see if you can").
+  ///
+  /// IMPORTANT: /api/v2/search/episodes does NOT return a cover at all --
+  /// verified against the live API: animes[] there only carries animeId,
+  /// animeTitle, type, typeDescription and episodes. The image lives on
+  /// /api/v2/bangumi/{animeId} as bangumi.imageUrl (that endpoint also
+  /// returns the episode list, so one request gets both).
+  ///
+  /// Empty string rather than null: matches how the rest of this class
+  /// treats missing text, and keeps `?.toString() ?? ''` call sites simple.
+  final String cover;
 
   static DanmakuMatch? fromJson(Map<String, dynamic> j) {
     final id = _asInt(j['episodeId']);
@@ -308,6 +323,85 @@ double _asDouble(Object? v) {
   if (v == null) return 0;
   if (v is num) return v.toDouble();
   return double.tryParse(v.toString()) ?? 0;
+}
+
+// -----------------------------------------------------------------------
+// 搜索关键词候选（2026-10-15：修「点了导入还是 0 条弹幕」）
+// -----------------------------------------------------------------------
+
+/// 从标题切出若干「可能搜得到」的关键词（纯函数 —— 便于单测钉住）
+///
+/// # 实测依据（真打官方 API，2026-10-15）
+/// ```text
+/// 标题 = 「无职转生Ⅲ ～到了异世界就拿出真本事～ 第1话 燃烧吧，狂犬」
+///   整串当关键词        ⇒ 0 个作品          ← 改前全程用的就是这一条
+///   砍掉「第N话…」        ⇒ 4 个作品，**不含正确的 18727**
+///   砍掉「～副标题～」      ⇒ 0 个作品
+///   只留第一个空格段        ⇒ 5 个作品，含 18727 ✓
+/// ```
+/// 而 18727 的第1话（187270001）本身有 **2709 条**弹幕
+/// ⇒ 弹幕一直都在，是「搜的词不对」把它挡在了门外。
+///
+/// # 为什么是「多候选」而不是「取一个最好的词」
+/// ```text
+/// 官方搜索是**模糊**的：把一个作品的**完整名字**喂进去，
+/// 反而**搜不到它自己**（上面第 1 行就是）。
+/// 所以不能只因为某个候选返回非空就信它，
+/// 要把几个候选的结果**合并**后再按相似度排序。
+/// ```
+///
+/// 返回值已去重、保序；调用方按顺序尝试（见 [ExternalDanmakuClient.searchEpisodesSmart]）。
+List<String> danmakuSearchKeywords(String rawTitle) {
+  final t = rawTitle.trim();
+  if (t.isEmpty) return const <String>[];
+  final out = <String>[];
+  void add(String s) {
+    final v = s.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (v.length >= 2 && !out.contains(v)) out.add(v);
+  }
+
+  add(t);
+  // 「～副标题～」/ 「~sub~」整段去掉
+  add(t.replaceAll(RegExp(r'[～~][^～~]*[～~]'), ' '));
+  // 「第N话/集/回/幕」及其后面的一切去掉
+  add(t.replaceAll(RegExp(r'第\s*\d+\s*[话集回幕].*$'), ''));
+  // 最粗但常常最有效：第一个空格段（「无职转生Ⅲ」就是这样出来的）
+  final segs = t.split(RegExp(r'\s+'));
+  if (segs.isNotEmpty) add(segs.first);
+  return out;
+}
+
+/// 从标题里抠出「第N话 …」这一段（拿来比**集**的相似度）；抠不到返回 ''
+String danmakuEpisodeHint(String rawTitle) {
+  final m = RegExp(r'第\s*\d+\s*[话集回幕].*$').firstMatch(rawTitle.trim());
+  if (m == null) return '';
+  return m.group(0)!.trim();
+}
+
+/// 按 code point 数公共前缀（按 UTF-16 会把中文算成半个）
+int _commonPrefixRunes(String a, String b) {
+  final ra = a.runes.toList();
+  final rb = b.runes.toList();
+  final n = ra.length < rb.length ? ra.length : rb.length;
+  var i = 0;
+  while (i < n && ra[i] == rb[i]) {
+    i++;
+  }
+  return i;
+}
+
+/// 候选作品名与「用户正在看的标题」有多像（越大越像）
+///
+/// 用“公共前缀最长”而不是一般的字符串相似度：剧集标题的差别
+/// 恰恰在**后面**（「无职转生Ⅲ」vs「无职转生Ⅱ」差在第 5 个字），
+/// 前缀能把它们分开；而「含子串」只能分出“是不是同一部”。
+int danmakuTitleScore(String candidate, String original) {
+  if (candidate.isEmpty) return 0;
+  var s = _commonPrefixRunes(candidate, original) * 10;
+  if (original.contains(candidate)) s += 40;
+  // 同前缀下短名字更可能是“基础作品”而不是“第二部分”
+  s -= candidate.runes.length;
+  return s;
 }
 
 // -----------------------------------------------------------------------
@@ -1686,6 +1780,25 @@ class ExternalDanmakuClient {
       for (final a in animes) {
         if (a is! Map<String, dynamic>) continue;
         final title = a['animeTitle']?.toString() ?? '';
+        final animeId = _asInt(a['animeId']);
+        /*
+         * 2026-10-15 (Owner asked for covers): this endpoint has no image,
+         * so fetch the poster from /api/v2/bangumi/{animeId}.
+         *
+         * Two things worth knowing:
+         *   · verified live -- animes[] here carries only animeId,
+         *     animeTitle, type, typeDescription, episodes. There is no
+         *     imageUrl anywhere in this response.
+         *   · that endpoint also returns the episode list, so this is ONE
+         *     extra request per work, not per episode.
+         *
+         * Failures are swallowed on purpose: a missing poster must never
+         * break search (it is decoration, the episode list is the point).
+         */
+        var cover = '';
+        if (animeId != null && animeId > 0) {
+          cover = await _fetchCover(animeId);
+        }
         final eps = a['episodes'];
         if (eps is! List) continue;
         for (final e in eps) {
@@ -1696,11 +1809,90 @@ class ExternalDanmakuClient {
             episodeId: id,
             animeTitle: title,
             episodeTitle: e['episodeTitle']?.toString() ?? '',
+            cover: cover,
           ));
         }
       }
     }
     return out;
+  }
+
+  /// 智能搜索：把标题切成多个关键词分别搜，合并去重后按相似度排序
+  ///
+  /// # 为什么不能只搜一次（实测，2026-10-15）
+  /// ```text
+  /// 官方搜索是模糊的：把「无职转生Ⅲ ～到了异世界就拿出真本事～ 第1话 燃烧吧，狂犬」
+  /// 整串嗂进去 ⇒ **0 个作品**，而作品 14758/15954/17236/18104/18727 全在库里、
+  /// 18727 的第1话有 2709 条弹幕 ⇒ 弹幕在，是搜的词不对。
+  /// ```
+  ///
+  /// # 合并后还要排序
+  /// ```text
+  /// 不同关键词会吐出不同的作品集（有些是**前传/副本/剪辑版**）。
+  /// 按与原标题的相似度排，并**将同作品的集聚在一起** ⇒
+  /// 用户看到的第一条就是最可能的那一部。
+  /// ```
+  ///
+  /// ⚠️ 单个关键词失败（网络/限流）**不中断**：只要任一个关键词有结果就返回；
+  ///    全部失败才把最后一个异常抛出去（否则会把一个偶发网络错误
+  ///    演成“搜不到这部番”，那是假因果）。
+  Future<List<DanmakuMatch>> searchEpisodesSmart(String title) async {
+    final kws = danmakuSearchKeywords(title);
+    if (kws.isEmpty) return const <DanmakuMatch>[];
+    final seen = <int, DanmakuMatch>{};
+    Object? lastErr;
+    var anyOk = false;
+    for (final kw in kws) {
+      try {
+        final got = await searchEpisodes(anime: kw);
+        anyOk = true;
+        for (final m in got) {
+          // 同一 episodeId 只留一次（不同关键词会重复命中）
+          seen.putIfAbsent(m.episodeId, () => m);
+        }
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!anyOk && lastErr != null) throw lastErr;
+
+    final list = seen.values.toList();
+    if (list.length <= 1) return list;
+    // 排序：先比作品名相似度；同题者按**集**号稳定排序
+    final epHint = danmakuEpisodeHint(title);
+    list.sort((a, b) {
+      final sa = danmakuTitleScore(a.animeTitle, title);
+      final sb = danmakuTitleScore(b.animeTitle, title);
+      if (sa != sb) return sb.compareTo(sa);
+      if (epHint.isNotEmpty) {
+        final ea = a.episodeTitle.contains(epHint) ? 1 : 0;
+        final eb = b.episodeTitle.contains(epHint) ? 1 : 0;
+        if (ea != eb) return eb.compareTo(ea);
+      }
+      return a.episodeId.compareTo(b.episodeId);
+    });
+    return list;
+  }
+  /// Poster URL for a work, or '' when unavailable.
+  ///
+  /// 2026-10-15: lives on /api/v2/bangumi/{animeId} as `bangumi.imageUrl`.
+  /// Deliberately never throws -- a missing cover must not break search.
+  Future<String> _fetchCover(int animeId) async {
+    final path = '/api/v2/bangumi/$animeId';
+    try {
+      final resp = await _transport.send(
+        method: 'GET',
+        uri: _uri(path, const <String, String>{}),
+        headers: _authHeaders(path),
+      );
+      final j = _decode(resp, '作品详情', _uri(path, const <String, String>{}));
+      final b = j['bangumi'];
+      if (b is! Map<String, dynamic>) return '';
+      return b['imageUrl']?.toString() ?? '';
+    } catch (_) {
+      // Decoration only -- swallow and move on.
+      return '';
+    }
   }
 
   /// 一条龙：文件名 -> 弹幕列表（匹配不到就自动走 search 退路）
@@ -1732,7 +1924,17 @@ class ExternalDanmakuClient {
     if (!allowSearchFallback) {
       throw DanmakuException('没有匹配到弹幕库（fileName=$fileName）');
     }
-    final found = await searchEpisodes(anime: anime, episode: episode);
+    /*
+     * 2026-10-15: go through the multi-keyword search.
+     *
+     * The old call passed the title straight through, and a full episode title
+     * returns ZERO works even though the show is in the library (measured --
+     * see danmakuSearchKeywords). Multi-keyword + merge is what actually finds
+     * it, so both the automatic path and the panel must use it.
+     */
+    final found = anime.isNotEmpty
+        ? await searchEpisodesSmart(anime)
+        : await searchEpisodes(anime: anime, episode: episode);
     if (found.isEmpty) {
       throw DanmakuException('没有匹配到弹幕库（fileName=$fileName）');
     }

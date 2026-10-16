@@ -202,9 +202,60 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
         '调命令层 —— 这不是产品文案，改名会让测试读不到夹具。'
         '（夹具缺席时该测试跳过，见文件内的 skip 分支。）'
   ),
+  /*
+   * ★★★ 2026-10-15（Owner 口径，逐字）
+   * ```text
+   * > bilibili这个弹幕允许使用,别的bilibili不允许
+   * ```
+   *
+   * # 为什么这条与上面那些**性质不同**
+   * ```text
+   * 名单的准入标准是「本软件**对接的具体视频网站**」（用户在那儿看视频/直播）。
+   * 而这里指的是**弹幕来源** —— 与 `弹弹play` 同类。
+   * Owner 2026-10-14 已经说过弹幕服务不算视频网站、不删；10-15 又明确了这一条。
+   * ```
+   *
+   * ⚠️ 仍然只豁免**含该标记的那一行**，且行内必须同时出现「弹幕」二字：
+   *    同一个文件里写别的站名（或把 bilibili 当视频网站用）**照样会被抓**。
+   *    这是「精确到行」而不是「整文件放行」。
+   */
+  (
+    'lib/ui/widgets/danmaku_settings_dialog.dart',
+    'site-ok: danmaku-source',
+    '★ 弹幕源标记：Owner 2026-10-15 明确「bilibili 这个**弹幕**允许使用」'
+        '（与弹弹play 同类，不是“对接的视频网站”）。'
+        '⚠️ 锚串必须是**唯一**的 `site-ok: danmaku-source`，不能是「弹幕」二字 ——'
+        '2026-10-16 实测：「弹幕」在该文件里到处都是，'
+        '写成「弹幕」等于**整文件放行**（注入一行 `douyu` + 「弹幕」照样绿），'
+        '而注释却声称「把站名当视频网站用照样会被抓」= 假绿。'
+  ),
+  /*
+   * 下面两条是**存量**命中（HEAD 里就有，不是本轮新增），
+   * 属于表里早已存在的「真实文件名 / 真实 MediaId」这一类：
+   * 改名会让插件认不出自己、或让测试读不到夹具 ⇒ 宁可逐行豁免。
+   */
+  (
+    'lib/ui/player_page.dart',
+    'bilibili.js',
+    '★ 真实**插件文件名**：这一行记录的是当时实测用的哪份插件（证据出处），'
+        '不是产品文案。同类条目已有先例（t525_qr_login）。'
+  ),
+  (
+    'rust/sourin_core/tests/zz_t1015_bili_audio_url.rs',
+    'bilibili',
+    '★ 同上（存量）：这个回归测试引用的是**插件文件名**（bilibili.js）与'
+        '**真实 MediaId**（`MediaId::new("bilibili", ...)`）——后者是插件自己写进来的标识，'
+        '改成别的字串就接不上插件。不是产品文案。'
+  ),
 ];
 
 /// 该行是否命中某条行级豁免
+/// 测试可见版本：给「豁免宽度」的自检用（见 ★★★ 行级豁免那条用例）。
+///
+/// ⚠️ 存在的意义就是让那条用例能**直接**问「这一行会不会被豁免」，
+///    而不必真的往产品文件里插脏数据（插脏数据会污染工作区）。
+bool isExemptLineForTest(String rel, String line) => _isExemptLine(rel, line);
+
 bool _isExemptLine(String rel, String line) {
   final p = rel.replaceAll('\\', '/');
   for (final e in _exemptLines) {
@@ -409,6 +460,40 @@ void main() {
       isFalse,
       reason: '★ 豁免绑到具体文件，不能跨文件生效',
     );
+  });
+
+  test('★★★ 行级豁免必须是**唯一锚串**，不许被常见词放大成整文件放行', () {
+    /*
+     * # 这条防的是什么（2026-10-16 实测）
+     *
+     * `danmaku_settings_dialog.dart` 的豁免标记原来是「弹幕」二字。
+     * 但该文件**本身就是弹幕面板**，几乎每行都含「弹幕」⇒
+     * 实际效果是**整文件放行**，而注释却声称「把站名当视频网站用照样会被抓」。
+     *
+     * ```text
+     * 实测：往该文件插一行 `// 去 douyu 看直播，弹幕也在那`
+     *   改前 → 门禁**照样绿**（假绿）
+     *   改后 → 门禁变红，并点名 douyu
+     * ```
+     *
+     * ⇒ 锚串收紧为 `site-ok: danmaku-source`，只给**确实该豁免的那几行**加。
+     */
+    const rel = 'lib/ui/widgets/danmaku_settings_dialog.dart';
+
+    // ① 带锚串的行：该豁免
+    expect(
+        isExemptLineForTest(rel, "const String _k = 'bilibili';  // site-ok: danmaku-source"),
+        isTrue,
+        reason: '★ 明确标了锚串的行应当被豁免');
+
+    // ② ★ 关键：只有「弹幕」二字、没有锚串 ⇒ **不许**豁免
+    expect(isExemptLineForTest(rel, '// 去 douyu 看直播，弹幕也在那'), isFalse,
+        reason: '★★ 只凭「弹幕」二字就豁免 = 整文件放行；这条必须为 false，'
+            '否则任何站名只要同行带「弹幕」就混进来');
+
+    // ③ 同一文件里，普通行含站名 ⇒ 不许豁免
+    expect(isExemptLineForTest(rel, "final url = 'https://bilibili.com/x';"), isFalse,
+        reason: '★ 没标锚串的行必须照抓');
   });
 
   test('★ 阴性对照：干净文本不该被误报', () {

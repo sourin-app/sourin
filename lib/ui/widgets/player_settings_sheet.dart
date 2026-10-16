@@ -897,35 +897,47 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
   ///   语义与视觉都与「不可用」一致。
   ///   （照 `_row` 的 `hint: current == null ? '读不到' : null` 同一套范式：
   ///    读不到就**明说 + 不可操作**，绝不假装选中。）
+  ///
+  /// ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）：
+  ///   改前是手写 `InkWell` + `Container(decoration:)`。换成框架的
+  ///   `ChoiceChip` —— 上面的契约原样保留，而且是**框架原生**表达的：
+  ///   `onSelected: onTap == null ? null : (_) => onTap!()`。
+  ///   ChoiceChip 拿到 null 会把整枚胶囊置成 disabled：涟漪不起、
+  ///   语义标成不可用，与改前手写 `InkWell.onTap = null` 逐条等价。
+  ///   （所以 t62 / t78 那两条「结构上点不动」的断言仍然成立，
+  ///     只是判据从 `InkWell.onTap == null` 换成 `ChoiceChip.onSelected == null`。）
+  ///
+  /// ⚠️ 颜色 / 圆角 / 内边距全部显式给死 ⇒ 长相与改前一致。
+  /// ⚠️ `showCheckmark: false`：默认选中时的对勾会把胶囊撑宽。
   Widget _chip({
     required String label,
     required bool active,
     required VoidCallback? onTap,
   }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: Radii.rFull,
-      child: Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x3,
-          vertical: Sp.x2,
-        ),
-        decoration: BoxDecoration(
-          color: active ? Colors.lightBlueAccent.withValues(alpha: 0.22)
-                        : Colors.white10,
-          borderRadius: Radii.rFull,
-          border: Border.all(
-            color: active ? Colors.lightBlueAccent : Colors.white24,
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: active ? Colors.lightBlueAccent : Colors.white,
-            fontSize: FontSizes.sm,
-          ),
+    return ChoiceChip(
+      label: Text(
+        label,
+        style: TextStyle(
+          color: active ? Colors.lightBlueAccent : Colors.white,
+          fontSize: FontSizes.sm,
         ),
       ),
+      selected: active,
+      onSelected: onTap == null ? null : (_) => onTap(),
+      showCheckmark: false,
+      backgroundColor: Colors.white10,
+      selectedColor: Colors.lightBlueAccent.withValues(alpha: 0.22),
+      side: BorderSide(
+        color: active ? Colors.lightBlueAccent : Colors.white24,
+      ),
+      shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
+      padding: const EdgeInsets.symmetric(
+        horizontal: Sp.x3,
+        vertical: Sp.x2,
+      ),
+      labelPadding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
   }
 

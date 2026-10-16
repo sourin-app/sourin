@@ -355,6 +355,41 @@ void main() {
           reason: '★ 只摘那一个键，其它偏好要留住（否则开发环境又空了）');
     });
 
+    test('★★ 播出来的库要是坏的 ⇒ 必须硬失败（不是悄悄给个坏库）', () {
+      if (!requirePs()) return;
+      /*
+       * # 这条防的是什么（CR #29 指出，属实）
+       *
+       * 脚本允许真实 App 在跑时播种，而 db/-wal/-shm 是**逐个文件**拷的。
+       * 源库在拷贝期间被写入/checkpoint ⇒ 三个文件来自不同状态 ⇒ 损坏的副本。
+       * 损坏不会报错，只会让开发环境出现「收藏/进度莫名消失」。
+       *
+       * ⚠️ 校验要靠 python 的 sqlite3；没有 python 时脚本会**明说跳过**，
+       *    那种情况本机没法断言 ⇒ 跳过（不假装通过）。
+       */
+      final hasPy = Process.runSync('python', <String>['-c', 'import sqlite3']).exitCode == 0;
+      if (!hasPy) {
+        markTestSkipped('本机没有 python ⇒ 无从验证 integrity_check 这条');
+        return;
+      }
+
+      // 造一个**有 SQLite 魔数、但内容坏掉**的源库
+      final bad = List<int>.filled(2048, 0);
+      const magic = 'SQLite format 3\u0000';
+      for (var i = 0; i < magic.length; i++) {
+        bad[i] = magic.codeUnitAt(i);
+      }
+      for (var i = 100; i < 700; i++) {
+        bad[i] = 0;
+      }
+      File(src.path + '/dsh-media.db').writeAsBytesSync(bad);
+
+      final r = runSeed(<String>[]);
+      expect(r.exitCode, 4,
+          reason: '★★ 坏库必须硬失败（exit 4）—— 悄悄给一个坏库，'
+              '开发环境会出现「收藏/进度莫名消失」且查不出原因');
+    });
+
     test('★ 护栏：-Target 指到源目录本身 ⇒ 硬失败，且源目录仍然没变', () {
       if (!requirePs()) return;
       final before = snapshot(src);

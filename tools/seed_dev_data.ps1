@@ -356,6 +356,58 @@ elseif (Test-Path -LiteralPath $dstPrefs) {
 
 
 
+# ── ★★ 播完的库要能过 PRAGMA integrity_check（CR #29）──
+#
+# # 为什么（属实）
+# ```text
+# 本脚本允许真实 App 在跑时播种，而 dsh-media.db / -wal / -shm 是**逐个文件**拷的。
+# 若源库在拷贝期间写入或 checkpoint，三个文件可能来自**不同状态** ——
+# SQLite 官方明确说这样拷运行中的库可能得到损坏的副本。
+# 损坏的副本不会报错，只会让开发环境出现「收藏/进度莫名消失」这类假象。
+# ```
+#
+# ⚠️ 这里**不**改用 VACUUM INTO / 在线备份 API：那需要 SQLite 客户端，
+#   而本脚本是开发者本机的一次性播种，不该为此引入新依赖。
+#   改为**拷完就验**：能验就验（python 在就用它的 sqlite3），
+#   验不过就硬失败（宁可重播一次，也不要一个悄悄坏掉的库）；
+#   验不了就**明说验不了**，不许假装通过。
+$dstDb = Join-Path $Target 'dsh-media.db'
+if (Test-Path -LiteralPath $dstDb) {
+    # 先看魔数：不是 SQLite 文件就没什么可校验的（测试夹具会写随机字节）。
+    # 真用户的 dsh-media.db 一定有这个魔数；有魔数才谈得上「拷坏了」。
+    # 用 FileStream 读前 16 字节 —— PS7 没有 -Encoding Byte，别用 Get-Content。
+    $head = ''
+    try {
+        $fs = [IO.File]::OpenRead($dstDb)
+        try {
+            $buf = New-Object byte[] 16
+            [void]$fs.Read($buf, 0, 16)
+            $head = [Text.Encoding]::ASCII.GetString($buf)
+        } finally { $fs.Dispose() }
+    } catch { $head = '' }
+    if (-not $head.StartsWith('SQLite format 3')) {
+        Write-Host '  [!] 目标 dsh-media.db 不是 SQLite 文件 => 跳过完整性校验（未验证，不是通过）' -ForegroundColor Yellow
+    } else {
+        $pyExe = $null
+        foreach ($cand in @('python', 'python3', 'py')) {
+            $cmd = Get-Command $cand -ErrorAction SilentlyContinue
+            if ($cmd) { $pyExe = $cmd.Source; break }
+        }
+        if (-not $pyExe) {
+            Write-Host '[seed] [!] 本机没有 python => 跳过完整性校验（未验证，不是通过）' -ForegroundColor Yellow
+        } else {
+            $check = 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); r=c.execute("PRAGMA integrity_check").fetchone()[0]; print(r); sys.exit(0 if r=="ok" else 1)'
+            $out = & $pyExe '-c' $check $dstDb 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[seed] X 播种后的 dsh-media.db 没通过 integrity_check：$out" -ForegroundColor Red
+                Write-Host '       多半是拷贝期间源库被写入/checkpoint => 关掉 App 重播一次。' -ForegroundColor Red
+                exit 4
+            }
+            Write-Host '  * dsh-media.db 通过 PRAGMA integrity_check' -ForegroundColor DarkGray
+        }
+    }
+}
+
 foreach ($w in $script:warn) { Write-Host "  [!] $w" -ForegroundColor Red }
 
 if ($script:copied -eq 0 -and $script:kept -gt 0) {

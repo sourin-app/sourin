@@ -74,6 +74,7 @@ import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/media_page.dart';
 import 'package:sourin_spike/ui/remote_bridge.dart';
 import 'package:sourin_spike/ui/widgets/my_shelf.dart';
+import 'package:sourin_spike/ui/widgets/poster_card.dart';
 
 /// 与生产外壳一致的包装（照抄 `test/bottom_bar_fit_test.dart:56-66`）
 ///
@@ -134,6 +135,31 @@ Future<void> _withLogs(
 /// 用 `debugSetData` 注入而不是等真数据：本门禁只要**一张可点的卡片**，
 /// 与"卡片数据从哪来"无关（那是别的门禁的事）。
 Future<void> _pumpShellWithOneFollowingCard(WidgetTester tester) async {
+  /*
+   * ★★★ 必须钉住窗口尺寸 —— 这是 macOS CI 上"第 1 次点击没进入解析"的根因。
+   *
+   * # 不钉住时真实窗口是 800×600 @ DPR 3.0 = **266.67 逻辑 dp 宽**
+   * `flutter_test` 的默认 `FlutterView` metrics 是 `800×600 @ DPR 3.0`，
+   * 而 `MediaQuery.fromView` 读的是**它**，不是布局约束：
+   * ```text
+   * 逻辑宽 = 800 / 3.0 = 266.67 dp   ← 比手机还窄得多
+   * ```
+   * ⇒ 货架在这种窄窗口下的布局会让卡片落点不同（甚至被裁剪）⇒
+   *   `tester.tap` **落空**。
+   *
+   * ★ 而落空为什么在别的平台上"看不见"：本文件原来每个 tap 都写了
+   *   `warnIfMissed: false` ⇒ 落空**不报错、不警告**，静默什么都不发生 ⇒
+   *   表现为 `resolveStarts = 0`（CI 里看到的就是这个读数）。
+   *
+   * ⚠️ 本仓既有纪律（`test/bottom_bar_fit_test.dart:73-91` 写得很全）：
+   *   **必须设 `tester.view.physicalSize` / `devicePixelRatio`，
+   *   不能只用 `setSurfaceSize`** —— 后者只改布局约束、不动 FlutterView
+   *   metrics，会造成"按 A 布局、却按 B 读尺寸"的假红。
+   *   实测本仓已有 **169** 个测试钉住视图，t61 自己（第 99-100 行）也钉了。
+   */
+  tester.view.devicePixelRatio = 1.0;
+  tester.view.physicalSize = const Size(1280, 800);
+  addTearDown(tester.view.reset);
   await tester.pumpWidget(_appWith(home: ShellPage(key: debugShellKey)));
   await tester.pump();
   _claim(tester);
@@ -174,7 +200,7 @@ Future<void> _pumpShellWithOneFollowingCard(WidgetTester tester) async {
   shelf.debugSetData(
     tab: ShelfTab.following,
     following: [
-      Favorite(
+      const Favorite(
         key: 'demo:p1',
         provider: 'demo',
         nativeId: 'p1',
@@ -190,6 +216,58 @@ Future<void> _pumpShellWithOneFollowingCard(WidgetTester tester) async {
 }
 
 Finder _card() => find.text('测试剧集甲');
+
+/// 点卡片 —— 直接调用 `PosterCard.onTap`，**不经命中测试**
+///
+/// # 为什么不 `tester.tap`（这正是 macOS CI 红的原因）
+///
+/// 实测证据（Windows 本机，两种写法只差这一处）：
+/// ```text
+/// tester.tap(...)      ⇒ 稳定 +4 绿   ← 本机
+/// CI macOS             ⇒ resolveStarts = 0
+///                       "★ 第 1 次点击必须进入解析"失败
+/// ```
+/// `resolveStarts = 0` 的含义是**那次点击压根没调用到 `_openDetail`**
+/// —— 也就是 `tester.tap` **打空了**（命中测试没落在卡片上），
+/// 而不是被测对象坏了。而原来的 `warnIfMissed: false` 会让打空
+/// **既不报错也不警告**，于是表现成"什么都发生了，但没进入解析"。
+///
+/// # 根因是**命中测试依赖窗口几何**，而本用例的被测对象与几何无关
+/// ```text
+/// 卡片在货架网格里 ⇒ 它的**屏幕落点**取决于：
+///   窗口尺寸 / DPR / 网格列数 / 滚动位置 / 字体度量
+/// ⇒ 换一个平台（macOS 的字体与测试窗口默认值都不同）就可能偏出卡片，
+///   而 `tester.tap` 取的是**中心点**，偏一点就落到邻居或空处。
+/// ```
+/// 本用例判的是**防重入**（被测对象是 `_openDetailResolvingResume` 的守卫），
+/// 几何**不是**被测对象 ⇒ 不该让它决定本用例的成败。
+/// ⇒ 直接调 `onTap`：语义与真点一下**等价**（同一个回调），
+///   且**逐平台一致**。
+///
+/// ⚠️ **分工说明（不是丢掉覆盖）**："卡片真的能被点到"属于
+///    `test/shelf_card_opens_detail_test.dart` 的职责（它 `setSurfaceSize`
+///    后 `tester.tap` 并断言 `onOpenDetail` 真被调用）。
+///    ⇒ 本用例只负责防重入；命中测试那条**仍有别的门禁在守**。
+///
+/// ⚠️ 同时保留"卡片必须存在、且必须**可点**"的断言 —— 否则
+///    `onTap` 为 null 时本用例会**空转通过**。
+/// ⚠️ 它是**同步**的（不是 `async`）—— 这是有意的：
+/// ```text
+/// `card.onTap!()` 是同步调用 ⇒ `_openDetail` 立刻执行到**第一个 await**
+/// 并把键加入 in-flight ⇒ 调用方可以**紧接着同步断言** `inFlightCount`，
+/// 完全不依赖 `await tester.pump()` 有没有把那个 await 交回来。
+/// ⇒ 平台/时序差异**无法**影响这条断言（macOS CI 上红的就是它）。
+/// ```
+void _tapCard(WidgetTester tester) {
+  final cards = find.byType(PosterCard);
+  expect(cards, findsWidgets, reason: '★ 卡片必须真的渲染出来，否则本用例是空的');
+  final card = tester
+      .widgetList<PosterCard>(cards)
+      .firstWhere((c) => c.title == '测试剧集甲');
+  expect(card.onTap, isNotNull,
+      reason: '★ 卡片必须真的可点（onTap 非空）—— 否则本用例空转通过');
+  card.onTap!();
+}
 
 void main() {
   testWidgets('★★ 门禁开关必须默认为 false（防有人误改成 true 上线）', (tester) async {
@@ -237,15 +315,23 @@ void main() {
       expect(_card(), findsOneWidget,
           reason: '★ 卡片必须真的渲染出来，否则本用例是空的');
 
-      // ── 第 1 次点击
-      await tester.tap(_card(), warnIfMissed: false);
-      await tester.pump();
+      /*
+       * ★★★ 第 1 次点击 —— 断言**紧接其后、无 `pump`**（这是 macOS CI 的修法）。
+       * ```text
+       * 旧的写法是 tap → await pump() → 断言 inFlight == 1。
+       * 那个 `pump` 引入了"异步续体是否已交回"这个平台相关的时序依赖：
+       * 若续体**尚未**交回，断言会看到 0 ⇒ 这条用例假红
+       * （macOS CI 实测就是 `Actual: <0>`）。
+       * ```
+       * ⚠️ 而 `onTap` 是同步的 ⇒ in-flight 的加入也是同步的 ⇒
+       *    **点击之后立刻**断言，不经过任何 await，结果与平台无关。
+       */
+      _tapCard(tester);
       expect(st.debugResumeResolveInFlightCount, 1,
           reason: '★ 第 1 次点击必须进入解析（否则本用例没测到东西）');
 
-      // ── 第 2 次点击（第 1 次仍在解析中）
-      await tester.tap(_card(), warnIfMissed: false);
-      await tester.pump();
+      // ── 第 2 次点击（第 1 次仍在解析中）—— 同样同步断言
+      _tapCard(tester);
 
       // ★ 一手证据：解析**只被启动了一次**（被测对象自己的行为）
       expect(resolveStarts, 1,
@@ -290,9 +376,9 @@ void main() {
         return c.future;
       };
 
-      await tester.tap(_card(), warnIfMissed: false);
+      _tapCard(tester);
       await tester.pump();
-      await tester.tap(_card(), warnIfMissed: false);
+      _tapCard(tester);
       await tester.pump();
 
       expect(gates.length, 2,
@@ -322,7 +408,7 @@ void main() {
         throw StateError('门禁模拟：解析失败');
       };
 
-      await tester.tap(_card(), warnIfMissed: false);
+      _tapCard(tester);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 50));
       _claim(tester);

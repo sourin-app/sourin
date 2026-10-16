@@ -208,13 +208,21 @@ foreach ($rel in $seedFiles) { Copy-One $rel }
 # 实测（本机复现）：Source=C:\...\T1015_~2、FullName=C:\...\t1015_shortname_probe\plugins\mine.js
 #   ⇒ 切出来的相对路径指向不存在的文件 ⇒ 日志「新拷 0 个」，插件没带过去。
 # ```
-# ⇒ 用 Uri 规范化后取相对段：短名/长名、大小写、分隔符差异都被吃掉。
+# ⇒ 两边都先 [IO.Path]::GetFullPath 规范化，再按长度切。
+#
+# ⚠️ 别用 [Uri]::MakeRelativeUri：它在 **macOS 上对无 scheme 的路径直接抛**
+#    "This operation is not supported"（2026-10-16 CI 的 macOS 7 条全红就是
+#    这么来的）。教训：「Windows 上能跑」不等于「跨平台能跑」。
 function Get-RelPath([string]$Full) {
     $base = [IO.Path]::GetFullPath($Source).TrimEnd([IO.Path]::DirectorySeparatorChar)
     $full = [IO.Path]::GetFullPath($Full)
-    $baseUri = [Uri]($base + [IO.Path]::DirectorySeparatorChar)
-    $fullUri = [Uri]$full
-    return [Uri]::UnescapeDataString($baseUri.MakeRelativeUri($fullUri).ToString())
+    # 规范化后 $full 必在 $base 这棵树里 ⇒ 前缀比对后再切
+    $prefix = $base + [IO.Path]::DirectorySeparatorChar
+    if ($full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        return $full.Substring($prefix.Length)
+    }
+    # 兜底：万一规范化后仍对不上（短名 / 符号链接），退回文件名 —— 至少不静默丢件
+    return [IO.Path]::GetFileName($full)
 }
 
 foreach ($pattern in $seedFileGlob) {

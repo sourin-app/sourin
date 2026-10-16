@@ -333,6 +333,28 @@ void main() {
       expect(snapshot(src), equals(before), reason: '拒绝执行后源目录必须原封不动');
     });
 
+    test('★★ 已有开发偏好里的 dsh.download.dir 必须被摘掉（否则下载写进真实目录）', () {
+      if (!requirePs()) return;
+      /*
+       * # 这条防的是什么（CR #29 指出，属实）
+       *
+       * 开发目录用过一次之后就有 ui-prefs.json 了，之后不带 -Force 会直接跳过过滤。
+       * 而 dsh.download.dir 决定「从哪读下载路径」，**不校验**路径是否真实 ⇒
+       * 它若指向用户真实视频目录，开发实例的下载就写进真实目录。
+       */
+      File(dst.path + '/ui-prefs.json').writeAsStringSync(
+          '{"dsh.theme":"DARK","dsh.download.dir":"C:\\\\Users\\\\someone\\\\Videos\\\\源影"}');
+
+      final r = runSeed(<String>[]);
+      expect(r.exitCode, 0, reason: r.stderr.toString());
+
+      final after = File(dst.path + '/ui-prefs.json').readAsStringSync();
+      expect(after.contains('dsh.download.dir'), isFalse,
+          reason: '★★ 这个键会决定下载落盘位置且不校验真实性 —— 必须摘掉');
+      expect(after.contains('DARK'), isTrue,
+          reason: '★ 只摘那一个键，其它偏好要留住（否则开发环境又空了）');
+    });
+
     test('★ 护栏：-Target 指到源目录本身 ⇒ 硬失败，且源目录仍然没变', () {
       if (!requirePs()) return;
       final before = snapshot(src);

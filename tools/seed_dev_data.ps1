@@ -311,6 +311,50 @@ if ((Test-Path -LiteralPath $srcPrefs) -and ($Force -or (-not (Test-Path -Litera
     }
 }
 
+# ── ★★ 已有开发偏好里若残留 dsh.download.dir ⇒ 必须**删掉**（安全，不是整洁）──
+#
+# # 为什么（CR #29 指出，属实）
+# ```text
+# 上面那条只在「目标还没有 ui-prefs.json」时才重建（或 -Force 时）。
+# 但开发目录**用过一次**之后就已经有了 —— 之后不带 -Force 就直接跳过。
+# 而 dsh.download.dir 决定「从哪读下载路径」，它**不校验**那个路径是否真实：
+# 若它指向用户的真实视频目录，开发实例的下载/缓存就写进真实目录。
+# 这违反 docs/AGENTS.md §3「绝不在 <用户目录>\Videos\源影 里建/改/删」。
+# ```
+# ⇒ 每次播种都扫一遍已有文件，把这个键摘掉；**摘不掉就非零退出**，
+#   由 run_client.ps1 挡住启动（宁可起不来，也不能拿用户真实目录当下载目标）。
+elseif (Test-Path -LiteralPath $dstPrefs) {
+    try {
+        $existing = Get-Content -LiteralPath $dstPrefs -Raw -Encoding UTF8 | ConvertFrom-Json
+        $hasDir = $null -ne $existing.PSObject.Properties["dsh.download.dir"]
+        if ($hasDir) {
+            $existing.PSObject.Properties.Remove("dsh.download.dir")
+            $json2 = $existing | ConvertTo-Json -Depth 8
+            [IO.File]::WriteAllText($dstPrefs, $json2, (New-Object Text.UTF8Encoding($false)))
+            Write-Host "  ★ 已从开发偏好里摘掉 dsh.download.dir（不校验真实路径，会写进真实目录）" -ForegroundColor DarkGray
+        }
+    } catch {
+        Write-Host "[seed] ✗ 清理 dsh.download.dir 失败：$($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "       不清掉它就可能把下载写进真实目录 ⇒ 拒绝继续。" -ForegroundColor Red
+        exit 3
+    }
+}
+
+# ── ★★ 已有开发偏好里若残留 dsh.download.dir ⇒ 必须**删掉**（安全，不是整洁）──
+#
+# # 为什么（CR #29 指出，属实）
+# ```text
+# 上面那条只在「目标还没有 ui-prefs.json」时才重建（或 -Force 时）。
+# 但开发目录**用过一次**之后就已经有了 —— 之后不带 -Force 就直接跳过。
+# 而 dsh.download.dir 决定「从哪读下载路径」，它**不校验**那个路径是否真实：
+# 若它指向用户的真实视频目录，开发实例的下载/缓存就写进真实目录。
+# 这违反 docs/AGENTS.md §3「绝不在 <用户目录>\Videos\源影 里建/改/删」。
+# ```
+# ⇒ 每次播种都扫一遍已有文件，把这个键摘掉；**摘不掉就非零退出**，
+#   由 run_client.ps1 挡住启动（宁可起不来，也不能拿用户真实目录当下载目标）。
+
+
+
 
 foreach ($w in $script:warn) { Write-Host "  [!] $w" -ForegroundColor Red }
 

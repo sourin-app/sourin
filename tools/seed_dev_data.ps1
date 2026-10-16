@@ -177,7 +177,7 @@ if ($dstFull -eq $srcFull) {
     Write-Host "       本脚本只往开发目录写，绝不碰真实数据目录。" -ForegroundColor Red
     exit 2
 }
-if ($dstFull.StartsWith($srcFull + $sep) -or $srcFull.StartsWith($dstFull + $sep)) {
+if ($dstFull.StartsWith($srcFull + $sep, [StringComparison]::OrdinalIgnoreCase) -or $srcFull.StartsWith($dstFull + $sep, [StringComparison]::OrdinalIgnoreCase)) {
     Write-Host "[seed] ✗ 拒绝执行：源与目标互相包含" -ForegroundColor Red
     Write-Host "       源   = $srcFull" -ForegroundColor Red
     Write-Host "       目标 = $dstFull" -ForegroundColor Red
@@ -203,8 +203,8 @@ function Resolve-RealPath([string]$p) {
 $srcReal = Resolve-RealPath $srcFull
 $dstReal = Resolve-RealPath $dstFull
 if ($dstReal -eq $srcReal -or
-    $dstReal.StartsWith($srcReal + $sep) -or
-    $srcReal.StartsWith($dstReal + $sep)) {
+    $dstReal.StartsWith($srcReal + $sep, [StringComparison]::OrdinalIgnoreCase) -or
+    $srcReal.StartsWith($dstReal + $sep, [StringComparison]::OrdinalIgnoreCase)) {
     Write-Host "[seed] ✗ 拒绝执行：目标**实际指向**源目录（junction / 符号链接）" -ForegroundColor Red
     Write-Host "       源   字符串 = $srcFull" -ForegroundColor Red
     Write-Host "       源   真实   = $srcReal" -ForegroundColor Red
@@ -220,7 +220,7 @@ if ($dstReal -eq $srcReal -or
 $dstPrefsLink = Join-Path $Target "ui-prefs.json"
 if (Test-Path -LiteralPath $dstPrefsLink) {
     $prefsReal = Resolve-RealPath $dstPrefsLink
-    if ($prefsReal.StartsWith($srcReal + $sep)) {
+    if ($prefsReal.StartsWith($srcReal + $sep, [StringComparison]::OrdinalIgnoreCase)) {
         Write-Host "[seed] ✗ 拒绝执行：目标里的 ui-prefs.json 指向源目录（$prefsReal）" -ForegroundColor Red
         exit 2
     }
@@ -385,7 +385,7 @@ if (Test-Path -LiteralPath $dstDb) {
             $head = [Text.Encoding]::ASCII.GetString($buf)
         } finally { $fs.Dispose() }
     } catch { $head = '' }
-    if (-not $head.StartsWith('SQLite format 3')) {
+    if (-not $head.StartsWith('SQLite format 3', [StringComparison]::OrdinalIgnoreCase)) {
         Write-Host '  [!] 目标 dsh-media.db 不是 SQLite 文件 => 跳过完整性校验（未验证，不是通过）' -ForegroundColor Yellow
     } else {
         $pyExe = $null

@@ -151,7 +151,33 @@ void main() {
     UiPrefs.debugResetForTest();
     root = _sandbox();
     for (final e in root.listSync()) {
-      e.deleteSync(recursive: true);
+      /*
+       * ★ 2026-10-17（CI Windows 全量测试红）：删不掉**不算失败**。
+       *
+       * 真实现场（CI 原样）：
+       * ```text
+       * PathAccessException: Deletion failed,
+       *   path = 'C:\Users\RUNNER~1\AppData\Local\Temp\cr_dl_c13\logs'
+       *   (OS Error: The process cannot access the file because it is being used by another process,
+       *    errno = 32)
+       * ```
+       * ⇒ `<dataDir>/logs/` 是 `AppLog` 写日志的地方（app_log.dart:189），
+       *   它的文件句柄还没释放，Windows 上就**不允许**删除被占用的目录。
+       *
+       * ⚠️ 只容忍「被占用」（errno 32 / PathAccessException），**不吞别的错误**：
+       *    若路径不存在、权限问题、或删到了别的东西，仍然要炸出来。
+       *
+       * 同类先例见 `test/zz_danmaku_ffi_keys_test.dart` 的 tearDownAll
+       * （那里注释是「Windows 上 SQLite 可能还被核心持有」）。
+       */
+      try {
+        e.deleteSync(recursive: true);
+      } on PathAccessException {
+        // 被其他进程/句柄占用 ⇒ 留给系统临时目录回收，不影响本用例判据
+      } on FileSystemException catch (err) {
+        // Windows 也可能报 FileSystemException(errno 32) 而非 PathAccessException
+        if (!err.toString().contains('errno = 32')) rethrow;
+      }
     }
     ClipDownloader.debugSetDataDir(root.path);
     CachePage.debugScanRootOverride = root.path;

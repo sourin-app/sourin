@@ -389,16 +389,39 @@ void main() {
         return;
       }
 
-      // 造一个**有 SQLite 魔数、但内容坏掉**的源库
-      final bad = List<int>.filled(2048, 0);
-      const magic = 'SQLite format 3\u0000';
-      for (var i = 0; i < magic.length; i++) {
-        bad[i] = magic.codeUnitAt(i);
+      /*
+       * 造一个**真的 SQLite 库、然后把它弄坏**。
+       *
+       * ⚠️ 不能只写「魔数 + 全零」：那种文件连打开都失败，测到的是
+       *    `file is not a database`（打不开），而不是 `integrity_check`
+       *    真的报出页损坏 —— 判据就弱了一层。
+       *
+       * 所以用 python 建一个正常库，再把中间一段页数据挖掉：
+       * 文件头仍然合法（能打开），但完整性校验必须报错。
+       */
+      // 夹具里那个 dsh-media.db 是随机字节，先删掉再建真的（否则 python 打不开它）
+      File(src.path + '/dsh-media.db').deleteSync();
+      final mk = Process.runSync(
+          'python',
+          <String>[
+            '-c',
+            'import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);'
+                'c.execute(\'CREATE TABLE t(a INTEGER)\');'
+                'c.execute(\'INSERT INTO t VALUES (1)\');c.commit();c.close()',
+            src.path + '/dsh-media.db',
+          ],
+          stdoutEncoding: utf8,
+          stderrEncoding: utf8);
+      if (mk.exitCode != 0) {
+        markTestSkipped('建不了真 SQLite 库 ⇒ 这条验不了 integrity_check: rc=' + mk.exitCode.toString());
+        return;
       }
-      for (var i = 100; i < 700; i++) {
-        bad[i] = 0;
+      final dbFile = File(src.path + '/dsh-media.db');
+      final bytes = dbFile.readAsBytesSync();
+      for (var i = 100; i < 700 && i < bytes.length; i++) {
+        bytes[i] = 0;
       }
-      File(src.path + '/dsh-media.db').writeAsBytesSync(bad);
+      dbFile.writeAsBytesSync(bytes);
 
       final r = runSeed(<String>[]);
       expect(r.exitCode, 4,

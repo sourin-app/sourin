@@ -136,6 +136,18 @@ void main() {
     expect(calls.length, greaterThan(callsBefore),
         reason: '★★ 点分类胶囊必须真的触发重新取页（_switchCategory）—— '
             '不触发就说明 chip 的 onSelected 没接上，而「页面标题变了」本身不是证据');
+
+    // ★ 光看取页次数还不够：若 onSelected 改成直接 _load(1)，次数也会涨，
+    //   但分类根本没切换。所以要同时读**渲染结果**里 chip 的选中态。
+    FilterChip chipOf(String label) => t
+        .widgetList<FilterChip>(find.byType(FilterChip))
+        .firstWhere((c) => c.label is Text && (c.label as Text).data == label);
+    final chip2 = chipOf('分类2');
+    expect(chip2.selected, isTrue,
+        reason: '★★ 点了分类2 ⇒ 它必须真的处于选中态（读 element 树，不是读测试自己写的值）');
+    final chip0 = chipOf('分类0');
+    expect(chip0.selected, isFalse, reason: '★ 单选：点了分类2，分类0 必须取消选中');
+
     print('BROWSE chip tap OK (loader 被再调用 ${calls.length - callsBefore} 次)');
 
     await saveViewShot(t, 'real_browse_categories');

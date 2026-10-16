@@ -92,6 +92,24 @@ void main() {
       expect(plan.items[1].episodeId, 88);
     });
 
+    test('★★ 按集号命中的集不许把无集号游标推走（否则后面的集会误报未匹配）', () {
+      /*
+       * 改前 `seq++` 是无条件的：按集号命中的集也会把游标推走 ⇒
+       * 本地 [第1集, 第2集] + 库 [第1话#11, 下#88] 实测 count=1 / unmatched=[1]；
+       * 正确结果是两集都绑上（#88 本来就该给第 2 集）。
+       */
+      final plan = buildBatchBindPlan(
+        localTitles: ['第1集', '第2集'],
+        matches: [_m(11, '第1话'), _m(88, '下')],
+      );
+      expect(plan.count, 2,
+          reason: '★★ 无集号那条只有 1 条，第 2 集必须拿到它 —— '
+              '游标被「按集号命中」的集白白推走就会误报未匹配');
+      expect(plan.unmatchedLocal, isEmpty);
+      expect(plan.items[0].episodeId, 11);
+      expect(plan.items[1].episodeId, 88);
+    });
+
     test('★★ 库这侧带集号却没配上时，退路不许拿别人的 id（会两集撞同一集）', () {
       /*
        * 本地集号已知、但库里没有对应集 ⇒ 必须记进 unmatchedLocal，

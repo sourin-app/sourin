@@ -242,11 +242,23 @@ BatchBindPlan buildBatchBindPlan({
      * 这正是本文件开头那条铁律要防的事（错配比不配更糟）。
      * ⇒ 退路只允许消耗**库里没集号**的那些条目（它们本来就没法按号配）；
      *   库这侧带集号却没配上时，老实记进 unmatchedLocal。
+     *
+     * # ★ 游标只在**真的取用**时推进（2026-10-16 二次实测踩到）
+     * ```text
+     * 原来 `seq++` 是无条件的。于是「按集号命中」的那些集也会把游标推走：
+     *
+     *   本地 [第1集, 第2集]   库 [第1话(#11), 下(#88, 无集号)]
+     *     → 第1集 按集号配 #11，但 seq 已经被推到 1
+     *     → 第2集 想用 unnumbered[1] ⇒ 越界 ⇒ 误报未匹配（其实 #88 就该给它）
+     *   实测 count=1 / unmatched=[1]，而正确结果是两集都绑上。
+     * ```
+     * ⇒ `seq++` 移进「真的取用 unnumbered[seq]」的分支里。
+     *   库这侧带集号却没配上时，老实记进 unmatchedLocal。
      */
     if (hit == null && seq < unnumbered.length) {
       hit = unnumbered[seq];
+      seq++; // * 只有**真的取用**了才推进 —— 见下面说明
     }
-    seq++;
     if (hit == null) {
       unmatched.add(i);
       continue;

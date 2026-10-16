@@ -5739,8 +5739,15 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ 一旦请求失败 ⇒ **清掉** pin 并**继续**走原链路（不能因为
        *    用户点的那条失效就什么都不取）。
        */
-      // ★ 整部绑定的 pin 在这里才生效 —— 提前 return 的路径不会污染它（见函数上方说明）
-      if (boundId > 0) _pinnedEpisodeId = boundId;
+      /*
+       * ★ 整部绑定的 pin 在这里才生效 —— 提前 return 的路径不会污染它（见函数上方说明）。
+       *
+       * ⚠️ 但**不许覆盖**已有的 pin：`_pickDanmakuMatch` 会把用户刚手选的那条写进
+       *    `_pinnedEpisodeId`。若这里无条件 `= boundId`，用户点了搜索结果里的第 5 集，
+       *    却会取回「整部绑定」里第 1 集的那条 —— 手选被静默吞掉。
+       * ⇒ 只在**没有**手选 pin 时才用整部绑定。
+       */
+      if (_pinnedEpisodeId == null && boundId > 0) _pinnedEpisodeId = boundId;
       final pinned = _pinnedEpisodeId;
       if (pinned != null) {
         _pinnedEpisodeId = null; // 一次性

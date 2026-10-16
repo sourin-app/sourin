@@ -1565,6 +1565,94 @@ class SourinApi {
     return jmap(r) ?? {};
   }
 
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  插件弹幕（task-T2，2026-10-16）
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// 取某一集的弹幕列表（插件提供）
+  ///
+  /// # ⚠️ 当前**还没有 UI 调用点**（这是有意的，不是漏接）
+  ///
+  /// 本仓规矩「新增公开 API 必须同时给出调用点，否则按死代码处理；
+  /// 例外要写明为什么现在不接」—— 这里就是那个例外，理由：
+  /// ```text
+  /// ① 取弹幕是主体价值，发送是增强；先交付主体（已交付）
+  /// ② 发送入口要落在弹幕面板上，而 lib/ui/widgets/danmaku_settings_dialog.dart
+  ///    正在被另一个并行任务改（统一弹窗外壳）
+  /// ③ 现在硬接 UI 会与那个改动互相踩 —— 等它收工再派入口
+  /// ```
+  /// ⇒ 本方法目前只被 `.probe/plugin-work/e2e_danmaku_chain_test.dart`
+  ///    端到端验证覆盖（真插件 → 真桥接 → 真解析器）。
+  ///
+  /// # ★ 返回值语义 —— 调用方**必须**区分这三件事
+  /// ```text
+  /// 非空 items        这一集有弹幕
+  /// 空 items          ★ 这一集**真的**没人发弹幕（合法结果，不是错误）
+  /// 抛异常(Unsupported) ★ 这个源**不支持**弹幕（另一件事）
+  /// ```
+  /// 混起来用户就无法判断「是源不支持还是真没弹幕」—— 这是明确的设计要求。
+  ///
+  /// # ⚠️ cid 由**宿主**补位（不要以为插件一定会给）
+  ///
+  /// 契约里 `cid` 是**可选**的（外部视频源弹幕 XML 没有这个概念）。
+  /// 而 `DanmakuComment.fromJson` 在 `cid == null` 时**整条丢弃且不报错** ——
+  /// 所以 Rust 桥接层会按下标 + 1 补位（`DanmakuBundle::fill_missing_cids`）。
+  /// ⇒ 到这里时每条都该有 cid；若仍缺，说明桥接层被绕过，那是个 bug。
+  static Future<PluginDanmakuBundle> providerDanmakuList(
+    String provider, {
+    String mediaId = '',
+    String episodeId = '',
+    String? title,
+    String? episodeTitle,
+    int? duration,
+  }) async {
+    final r = await SourinCore.callAsync('provider_danmaku_list', {
+      'provider': provider,
+      'req': {
+        'mediaId': mediaId,
+        'episodeId': episodeId,
+        if (title != null) 'title': title,
+        if (episodeTitle != null) 'episodeTitle': episodeTitle,
+        if (duration != null) 'duration': duration,
+      },
+    });
+    // `jmap` 非空（解不出会抛）—— 不要写 `?? const {}`，那是死代码
+    return PluginDanmakuBundle.fromJson(jmap(r));
+  }
+
+  /// 发送一条弹幕（插件提供）
+  ///
+  /// # ★★ 纪律：不支持的站点会**如实抛异常**，不会假装成功
+  ///
+  /// 返回 `true` 是「**上游确实收下了**」的承诺。
+  /// 未实现 / 上游拒绝 ⇒ 抛异常（`unsupported:` / `unauthorized:`）。
+  ///
+  /// ⚠️ 调用方**不要**做自动重试：发错撤不回，多数站点不支持删除。
+  ///    发送中要禁用按钮（防连点），失败要**原样透出上游理由**。
+  static Future<PluginDanmakuSendResult> providerDanmakuSend(
+    String provider, {
+    required String episodeId,
+    required String text,
+    double? time,
+    int? mode,
+    int? color,
+    int? progressMs,
+  }) async {
+    final r = await SourinCore.callAsync('provider_danmaku_send', {
+      'provider': provider,
+      'req': {
+        'episodeId': episodeId,
+        'text': text,
+        if (time != null) 'time': time,
+        if (mode != null) 'mode': mode,
+        if (color != null) 'color': color,
+        if (progressMs != null) 'progressMs': progressMs,
+      },
+    });
+    return PluginDanmakuSendResult.fromJson(jmap(r));
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   //  站点代理
   // ═══════════════════════════════════════════════════════════════════
@@ -3128,3 +3216,143 @@ class PluginVersionEntry {
         mtime: (j['mtime'] as num?)?.toInt() ?? 0,
       );
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  插件弹幕（task-T2，2026-10-16）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 这三个类对应 Rust 侧的 `WireComment` / `DanmakuBundle` / `DanmakuSendResult`。
+//
+// # ★ 为什么 wire 格式与 dandanplay 的 `{cid, p, m}` 逐字一致
+//
+// 因为宿主渲染层**已经有**解析器：`lib/core/danmaku.dart` 的
+// `DanmakuComment.parse({cid, p, m})`。插件输出直接喂它 ⇒
+// **零新增解析逻辑**，不存在「两套解析各写一半、结果不一致」的经典问题。
+//
+// 而且这个形状与**外部视频源弹幕 XML 天然同构**（颜色/模式语义一致），
+// 也与**某些动画站的弹幕后端**对齐（它们直接走 dandanplay 协议）——
+// 所以它是多方交集的**最小公倍数**，不是为某一个站点量身定的。
+
+/// 插件返回的一条弹幕（wire 形态）
+///
+/// `p` 的分段（宿主 `DanmakuComment.parse` 逐字实现）：
+/// ```text
+/// "出现时间秒,模式,颜色,用户ID"
+///   模式  1 = 滚动（右→左）   4 = 底部固定   5 = 顶部固定   其余 → 归滚动
+///   颜色  十进制 24 位 RGB（0xFFFFFF = 16777215）
+/// ```
+class PluginWireComment {
+  const PluginWireComment({this.cid, required this.p, required this.m});
+
+  /// 弹幕唯一编号
+  ///
+  /// ⚠️ 契约里**可空**（外部视频源弹幕 XML 没有这个概念）。
+  ///    Rust 桥接层已按下标 + 1 补位 —— 见 [PluginDanmakuBundle] 的说明。
+  final int? cid;
+
+  /// `"时间,模式,颜色,用户ID"`
+  final String p;
+
+  /// 弹幕正文
+  final String m;
+
+  factory PluginWireComment.fromJson(Map<String, dynamic> j) =>
+      PluginWireComment(
+        cid: (j['cid'] as num?)?.toInt(),
+        p: j['p'] as String? ?? '',
+        m: j['m'] as String? ?? '',
+      );
+
+  /// 转成 `DanmakuComment.fromJson` 能直接吃的 Map
+  ///
+  /// ★ 这里**必须**保证 `cid` 非空 —— 见 [PluginDanmakuBundle.fromJson] 的说明。
+  Map<String, dynamic> toWireJson() => {
+        if (cid != null) 'cid': cid,
+        'p': p,
+        'm': m,
+      };
+}
+
+/// 插件取弹幕的返回
+class PluginDanmakuBundle {
+  const PluginDanmakuBundle({
+    this.items = const [],
+    this.source = '',
+    this.truncated = false,
+  });
+
+  final List<PluginWireComment> items;
+
+  /// 这条弹幕从哪来（如 `"bili:777"`）—— 排错时的唯一线索
+  final String source;
+
+  /// ★ 上游是否被**截断**（本版本不做分页，只如实告知）
+  ///
+  /// 必须让用户能看出「这是前 N 条」而不是假装全量 ——
+  /// 与「如实说明这条弹幕怎么找到的」同一条纪律。
+  final bool truncated;
+
+  bool get isEmpty => items.isEmpty;
+
+  factory PluginDanmakuBundle.fromJson(Map<String, dynamic> j) {
+    final raw = j['items'];
+    final out = <PluginWireComment>[];
+    if (raw is List) {
+      for (final e in raw) {
+        /*
+         * 用 `jmapOrNull` 而不是 `jmap`：**单条格式坏掉不该毁掉整批**。
+         * 弹幕是「多一条少一条都能看」的数据，与登录态那种
+         * 「解不出就必须报错」的语义相反。
+         */
+        final m = jmapOrNull(e);
+        if (m != null) out.add(PluginWireComment.fromJson(m));
+      }
+    }
+    /*
+     * ★★★ 客户端兜底：缺 cid 就补「下标 + 1」
+     *
+     * 正常路径上 Rust 桥接层（`DanmakuBundle::fill_missing_cids`）已经补过，
+     * 这里**不是**重复劳动 —— 它是**防绕过**：
+     * ```text
+     * DanmakuComment.fromJson 在 cid == null 时 return null（整条丢弃，不报错）
+     * ⇒ 只要有一条漏网，用户就会看到「加载成功但少了几条」且无从排查
+     * ```
+     * 两处都补的成本是一次 `is None` 判断，收益是那条链路**不可能**静默丢弹幕。
+     */
+    for (var i = 0; i < out.length; i++) {
+      if (out[i].cid == null) {
+        out[i] = PluginWireComment(
+          cid: i + 1,
+          p: out[i].p,
+          m: out[i].m,
+        );
+      }
+    }
+    return PluginDanmakuBundle(
+      items: out,
+      source: j['source'] as String? ?? '',
+      truncated: j['truncated'] as bool? ?? false,
+    );
+  }
+}
+
+/// 插件发送弹幕的返回
+///
+/// ⚠️ [ok] 为 true 是「**上游确实收下了**」的承诺，不是「我们试过了」。
+///    未实现 / 上游拒绝时 Rust 侧**抛异常**（不会给 ok=false）——
+///    调用方据此如实告知用户，**绝不**自行把失败当成功。
+class PluginDanmakuSendResult {
+  const PluginDanmakuSendResult({this.ok = false, this.id = ''});
+
+  final bool ok;
+
+  /// 上游回传的弹幕 id（有则给，便于用户核对）
+  final String id;
+
+  factory PluginDanmakuSendResult.fromJson(Map<String, dynamic> j) =>
+      PluginDanmakuSendResult(
+        ok: j['ok'] as bool? ?? false,
+        id: j['id'] as String? ?? '',
+      );
+}
+

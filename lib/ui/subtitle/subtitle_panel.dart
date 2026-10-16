@@ -19,7 +19,7 @@ import '../../core/assrt/archive.dart';
 import '../../core/assrt/assrt_api.dart';
 import '../../core/assrt/subtitle_store.dart';
 import '../tokens.dart';
-import '../widgets/overlay_motion.dart';
+import '../widgets/app_dialog_shell.dart';
 
 /// 面板的纯状态（不依赖 BuildContext —— 可单测）
 class SubtitlePanelState {
@@ -324,94 +324,52 @@ class _SubtitlePanelState extends State<SubtitlePanel> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final wide = MediaQuery.sizeOf(context).width > Layout.narrowBreakpoint;
+    final videoTitle = widget.videoTitle.trim();
     /*
-     * ★ task-104：根节点形态由 `fill` 决定（理由见 `fill` 字段的文档）
-     *   fill = true （默认，= 改前行为）  Positioned.fill(...) → 只能直接挂在 Stack 下
-     *   fill = false（SheetExitMotion 包着） 直接返回内容 → 定位交给宿主
+     * ★ 2026-10-16：外壳改走全仓统一的 `AppDialogShell`（docs/AGENTS.md 第 3.5 节）。
+     *
+     * 改前本方法自己写了一整套 OverlayScrim + OverlayCardMotion +
+     * GestureDetector + Container(decoration) + 自写标题栏 —— 它是全仓
+     * **最后**一个自写弹窗外壳的（另外 6 个已陆续接入）。外壳已为本面板
+     * 扩展好 `motion` / `margin` / `maxHeight` / `footer` 四个参数。
+     *
+     * ⚠️ 本面板**不是**「标题 + 整块内容滚动」的标准形态：
+     *    `_searchRow` 与 `_footer` 必须**钉死**（搜索框要一直在，署名/状态行
+     *    固定在底部），只有中间的结果列表滚 ⇒ 所以 `scrollable: false`，
+     *    滚动区由 `_body` 自己套（它内部是 ListView(shrinkWrap: true)）。
+     *
+     * ★ 根节点形态由 `fill` 原样透传给外壳（理由见 `fill` 字段的文档）：
+     *   fill = true （默认，= 改前行为）  外壳自撑满宿主给的空间
+     *   fill = false（SheetExitMotion 包着） 定位交给宿主
      */
-    final body = GestureDetector(
-      onTap: widget.onClose,
-      // ★ task-99：遮罩**淡入**（原来是一帧硬切 —— Owner 说的「生硬」）
-      //   颜色/覆盖范围一字不改，动画结束后 Opacity 恒为 1.0。
-      child: OverlayScrim(
-        color: Colors.black.withValues(alpha: 0.72),
-        child: Center(
-          child: GestureDetector(
-            onTap: () {},
-            // ★ task-99：卡片**淡入 + 轻微上浮**（24px，Motion.base）
-            child: OverlayCardMotion(
-              child: Container(
-                width: wide ? 720 : double.infinity,
-                margin: wide
-                    ? EdgeInsets.zero
-                    : const EdgeInsets.symmetric(horizontal: Sp.x3),
-                constraints: BoxConstraints(
-                  maxHeight: MediaQuery.sizeOf(context).height * 0.86,
-                ),
-                decoration: BoxDecoration(
-                  color: colors.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(Radii.lg),
-                  border: Border.all(color: colors.outlineVariant),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: <Widget>[
-                    _header(colors),
-                    if (_cfg.showAttribution) _attribution(colors),
-                    _searchRow(colors),
-                    Flexible(child: _body(colors)),
-                    _footer(colors),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    // ★ 默认形态与改前**逐像素相同**（只多一个局部变量）
-    return widget.fill ? Positioned.fill(child: body) : body;
-  }
-
-  Widget _header(ColorScheme colors) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(Sp.x5, Sp.x5, Sp.x3, Sp.x3),
-      child: Row(
+    return AppDialogShell(
+      title: '字幕',
+      // ★ 补回改前 `_header` 左侧那枚图标（外壳 2026-10-16 新增 `icon` 参数）
+      icon: Icons.subtitles_outlined,
+      // 片名作副标题 —— 与改前 `_header` 里那一行**同一份数据**（trim 后）
+      subtitle: videoTitle.isEmpty ? null : videoTitle,
+      width: wide ? 720 : double.infinity,
+      margin: wide
+          ? EdgeInsets.zero
+          : const EdgeInsets.symmetric(horizontal: Sp.x3),
+      maxHeight: MediaQuery.sizeOf(context).height * 0.86,
+      // ★ 本面板改前就用 OverlayScrim + OverlayCardMotion（t99 门禁钉着）
+      motion: true,
+      // 滚动由 _body 自己管（搜索框/底部固定，只有结果列表滚）
+      scrollable: false,
+      fill: widget.fill,
+      onClose: widget.onClose,
+      // ★ 与改前 `_st.busy ? null : widget.onClose` **等价**：
+      //   忙碌时关闭钮禁用（外壳只收 VoidCallback?，故用 closeEnabled 表达）
+      closeEnabled: !_st.busy,
+      footer: _footer(colors),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          Icon(Icons.subtitles_outlined, color: colors.onSurface),
-          const SizedBox(width: Sp.x2),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  '字幕',
-                  style: TextStyle(
-                    color: colors.onSurface,
-                    fontSize: FontSizes.lg,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                if (widget.videoTitle.trim().isNotEmpty)
-                  Text(
-                    widget.videoTitle.trim(),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: colors.onSurfaceVariant,
-                      fontSize: FontSizes.sm,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          IconButton(
-            onPressed: _st.busy ? null : widget.onClose,
-            icon: const Icon(Icons.close),
-            tooltip: '关闭',
-            color: colors.onSurfaceVariant,
-          ),
+          if (_cfg.showAttribution) _attribution(colors),
+          _searchRow(colors),
+          Flexible(child: _body(colors)),
         ],
       ),
     );

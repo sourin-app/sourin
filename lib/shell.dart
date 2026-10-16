@@ -5333,7 +5333,117 @@ class _ShellPageState extends State<ShellPage>
   ///   否则这条判据没有区分力。
   void _openDetail(String provider, String id) {
     debugPrint('[NAV] 打开合并页: $provider:$id');
-    Navigator.of(context).push(_mediaRoute(provider, id));
+    /*
+     * ★★★ T9（2026-10-16）：本方法原来只 push 一次就完事 —— 现在先解析
+     *      "该从哪一集开始"，再 push（解析逻辑见 [_openDetailResolvingResume]）。
+     *
+     * ⚠️ 本方法是首页卡片 / 「我的」三合一 / 追更页 / 搜索 / 浏览页**共用的
+     *    唯一收口**（见它上面的注释），所以修在这里 = 五个入口一起对。
+     */
+    unawaited(_openDetailResolvingResume(provider, id));
+  }
+
+  /// ★★★ T9：解析"该从哪一集开始"—— 治「最近追更点进去播第 1 集」
+  ///
+  /// # 缺陷（Owner 原话，2026-10-16，第 13 条）
+  ///
+  /// > 最近追更记录，现实看到14集了，但是点进去却是从第一集开始播放。
+  ///
+  /// # 根因链（**真核心实测**，逐环都有日志，不是推测）
+  ///
+  /// ```text
+  /// ① 卡片不带集号（my_shelf.dart 的 following 分支只给 provider/nativeId）
+  /// ② 本收口只有 (provider, id) ⇒ _mediaRoute 不传 episodeId/episodeIndex/episodes
+  /// ③ PlayerPage._epIndex = widget.episodeIndex ?? 0 = 0
+  /// ④ _load() 的 req 为 null ⇒ 插件回退 eps[0]（第01集）
+  /// ⑤ updateEpisodes 只补列表、且只**向下**夹取 ⇒ _epIndex 恒为 0
+  /// ⇒ 播第01集；随后 _saveProgress 又按 _episodes[0] 把进度写成第01集
+  ///   ⇒ 记录被反复污染 ⇒ 下次进来还是第01集（自我复现的闭环）
+  /// ```
+  ///
+  /// # 判据：**用用户自己的按集进度行**，取"看过的最靠后那一集"
+  ///
+  /// ```text
+  /// 为什么不是"最近更新那一行"（max updated_at，即 get_progress 的语义）：
+  ///   本 bug 自己刚写下的第01集行 updated_at **更晚**
+  ///   （真库实测：第01集 1792147953105 > 第14集 1792147933188，差约 20 秒）
+  ///   ⇒ 按 updated_at 取到的正是**被污染那行** ⇒ 修完仍然播第01集。
+  /// 为什么不是 Favorite.lastEpisodeTitle：
+  ///   那是 Rust 巡检写进去的「**最新可用**集」（follow.rs 取 episodes.last()），
+  ///   不是"我看到哪一集" ⇒ 语义不同，不能当观看记录用。
+  /// ⇒ 取"集序最靠后"的进度行：看过第14集 ⇒ 必然已经走过第01集。
+  /// ```
+  ///
+  /// ⚠️ 代价与边界（有意取舍，不是疏漏）：
+  /// ```text
+  /// · 仅当本地确有**按集进度行**时才多一次 get_detail —— 因为要把集号换成
+  ///   下标，并且必须**连 episodes 一起**给 PlayerPage：
+  ///   只给 episodeIndex 而列表为空 ⇒ _prevEpisode（_episodes[_epIndex-1]）
+  ///   在空列表上越界 ⇒ 实测踩到 RangeError（player_page.dart:8595）。
+  /// · 没有按集进度的条目（搜索/浏览里第一次点开的）走**原路径，零额外开销**。
+  /// · 失败一律回退原路径（宁可慢一点/退回旧行为，也不能打不开）。
+  /// ```
+  Future<void> _openDetailResolvingResume(String provider, String id) async {
+    var pushed = false;
+    void pushDefault() {
+      if (pushed || !mounted) return;
+      pushed = true;
+      Navigator.of(context).push(_mediaRoute(provider, id));
+    }
+
+    try {
+      final rows = await SourinApi.listAllProgress();
+      final mine = rows
+          .where((p) =>
+              p.provider == provider &&
+              p.nativeId == id &&
+              (p.episodeId?.isNotEmpty ?? false))
+          .toList();
+      if (mine.isEmpty) {
+        pushDefault();
+        return;
+      }
+
+      final d = await SourinApi.getDetail(provider, id);
+      var eps = d.episodes;
+      if (eps.isEmpty) {
+        final code = d.sources.isNotEmpty ? d.sources.first.code : null;
+        if (code != null && code.isNotEmpty) {
+          eps = await SourinApi.getEpisodes(provider, id, code);
+        }
+      }
+
+      // 集序最靠后的那条进度行 = 该续播的集
+      var best = -1;
+      for (final p in mine) {
+        final i = eps.indexWhere((e) => e.id == p.episodeId);
+        if (i > best) best = i;
+      }
+
+      if (best <= 0 || best >= eps.length) {
+        debugPrint('[NAV] 无可续播集（best=$best）⇒ 按原路径打开');
+        pushDefault();
+        return;
+      }
+
+      final ep = eps[best];
+      debugPrint(
+        '[NAV] 续播定位：$provider:$id ⇒ 第 ${best + 1}/${eps.length} 集 (${ep.id})',
+      );
+      if (pushed || !mounted) return;
+      pushed = true;
+      Navigator.of(context).push(_mediaRoute(
+        provider,
+        id,
+        episodeId: ep.id,
+        episodeTitle: ep.title,
+        episodeIndex: best,
+        episodes: eps,
+      ));
+    } catch (e) {
+      debugPrint('[NAV] 续播定位失败（$e）⇒ 按原路径打开');
+      pushDefault();
+    }
   }
 
   /// 合并页路由
@@ -5352,7 +5462,21 @@ class _ShellPageState extends State<ShellPage>
   ///
   /// ⚠️ 这也顺带修掉了旧结构的一个隐患：`pushReplacement` 换源时
   ///    会把**正在播的播放器**一起销毁（新路由 = 新 `Player`）。
-  MaterialPageRoute<void> _mediaRoute(String provider, String id) {
+  /// ★★★ T9：新增 4 个可选参数 —— **只为"从哪一集开始"服务**。
+  ///
+  /// ⚠️ 全部可选且默认 null / 空：既有四个调用点**一个字都不用改**，
+  ///    行为逐字不变（只有 [_openDetailResolvingResume] 会传）。
+  ///
+  /// ⚠️ `episodeIndex` 与 `episodes` **必须同传**（见上面那段注释）：
+  ///    只给下标而列表为空 ⇒ `PlayerPage._prevEpisode` 越界 RangeError。
+  MaterialPageRoute<void> _mediaRoute(
+    String provider,
+    String id, {
+    String? episodeId,
+    String? episodeTitle,
+    int? episodeIndex,
+    List<Episode> episodes = const <Episode>[],
+  }) {
     return MaterialPageRoute<void>(
       builder: (ctx) => MediaPage(
         provider: provider,
@@ -5360,6 +5484,11 @@ class _ShellPageState extends State<ShellPage>
         // ⚠️ 标题此刻还不知道（要详情才有）——
         //    合并页会在详情加载完后用 `updateDisplayTitle` 补上。
         title: '',
+        // ★ T9：把"从哪一集开始"透传给播放器（三者同传，理由见上）。
+        episodeId: episodeId,
+        episodeTitle: episodeTitle,
+        episodeIndex: episodeIndex,
+        episodes: episodes,
         isTv: Device.isTv,
         /*
          * ★★ `isTouchOnly` 必须一起传（漏传已修）

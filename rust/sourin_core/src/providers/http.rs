@@ -122,6 +122,10 @@ struct RemoteCapabilities {
     timeshift: bool,
     #[serde(default)]
     danmaku: bool,
+    /// ★ 发送弹幕（task-T2）。camelCase rename 与上面每一项同理：
+    /// 不写 rename 会**静默丢掉**（落回 default=false）且不报错。
+    #[serde(default, rename = "danmakuSend")]
+    danmaku_send: bool,
     /*
      * 登录相关（2026-09-20）—— 与 `Capabilities` 的同名字段对应
      *
@@ -257,6 +261,7 @@ impl HttpProvider {
                 favorites: rm.capabilities.favorites,
                 timeshift: rm.capabilities.timeshift,
                 danmaku: rm.capabilities.danmaku,
+                danmaku_send: rm.capabilities.danmaku_send,
                 // 登录（「游客可用 + 支持登录」这一档，供 某视频站这类源用）
                 login_supported: rm.capabilities.login_supported,
                 login_hint: rm.capabilities.login_hint.clone(),

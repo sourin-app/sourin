@@ -217,8 +217,15 @@ void main() {
        */
       // ★ 同上：原来找的是带缩进的字面量，改成正则（只认"移除这一项
       //   确实仍被 `_isThirdParty` 把守"，不认空格数）。
-      final i = RegExp(r'if \(_isThirdParty\)\s*\n\s*PopupMenuItem\(')
-          .firstMatch(src);
+      /*
+       * ⚠️ 2026-10-16（Owner 第 8 条）：承载件再从 `PopupMenuItem` 变成
+       *   `AppMenuItem`（统一菜单件）。本条判据的**语义**始终是
+       *   「移除那一项仍被 `_isThirdParty` 把守」，不是「它叫什么类」。
+       *   ⇒ 正则同时接受两种承载件（与 provider_import_test:206 同一处理）。
+       */
+      final i = RegExp(
+          r'if \(_isThirdParty\)\s*\n\s*(?:const )?(?:PopupMenuItem|AppMenuItem)\('
+      ).firstMatch(src);
       expect(i != null, isTrue,
           reason: '★ 「移除」只在第三方源上显示（现在收在 ⋮ 菜单里）');
       final item = src.substring(i!.start, i.start + 400);

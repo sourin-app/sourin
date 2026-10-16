@@ -336,7 +336,20 @@ void main() {
           reason: '★ 读不到 mpv 的 video-zoom 时必须**明说**，不许假装 100%');
       for (final p in const <String>['75%', '100%', '125%', '150%', '200%']) {
         final txt = t.widget<Text>(find.text(p));
-        expect(txt.style?.color, Colors.white,
+        /*
+         * ★ 2026-10-16（task-14）：判据从「等于写死的 Colors.white」
+         *   改成「**不等于**高亮色 lightBlueAccent」。
+         *
+         * 原因：那一轮把 `_chip` 的未选中文字色从硬编码 `Colors.white`
+         *   改成走主题（`colorScheme.onSurface`）—— 浅色主题下白字在
+         *   浅色卡片上会隐形。再钉死色值就会在换主题时假红。
+         *
+         * ⚠️ 语义**没有放松**：这条要证明的是「这一档**没有被点亮**」，
+         *   而 `_chip` 的 active 分支正是 `lightBlueAccent`
+         *   （见 t62 的 `_chipBorderColor` 阴性对照，同一套判据）。
+         *   断言「不等于高亮色」比钉一个具体灰值**更贴原意**。
+         */
+        expect(txt.style?.color, isNot(Colors.lightBlueAccent),
             reason: '★ 读不到时「$p」不许被点亮 —— 点亮 = 假装知道当前缩放');
       }
     });

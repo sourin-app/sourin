@@ -1961,8 +1961,48 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
                   flex: fullscreen ? 1 : 3,
                   child: player,
                 ),
-                // 全屏时**没有**详情区 ⇒ Row 只剩一个 child
-                if (!fullscreen) SizedBox(width: detailW, child: detailPanel),
+                /*
+                 * ★★★ Owner 第 3 条：详情区**留在树上**（`Offstage`），不许摘掉
+                 *
+                 * # 用户原话（逐字）
+                 * ```text
+                 * > 播放器全屏之后，再缩小之后，右侧的详情区域会重载数据，请优化。
+                 * ```
+                 *
+                 * # 真因（改前是 `if (!fullscreen) SizedBox(...)`）
+                 * ```text
+                 * 条件子节点 = 全屏时那个 Element 被**卸载**（不是「在树上但不画」）
+                 * ⇒ `DetailPage` 的 State 被重建
+                 * ⇒ `initState`（detail_page.dart:1265）里的
+                 *     `addPostFrameCallback((_) => _init())` **再跑一次**
+                 * ⇒ `_init()` 再发一次 `SourinApi.getDetail(...)`（:1792）
+                 *     并再 `_loadEpisodes(...)`（:1848）—— 这就是「重载数据」
+                 * ⇒ 同时 `_epsCtrl`（detail_page.dart:980）随 State 一起销毁
+                 *     ⇒ 用户滚动到的位置也丢了。
+                 * ```
+                 *
+                 * # 为什么 `Offstage` 能修好（不是猜的，是实测的）
+                 * ```text
+                 * `RenderOffstage.performLayout`（proxy_box.dart:3918-3925）在 offstage 时
+                 * 走 `child?.layout(constraints)` —— **仍然布局**，只是不画、不参与命中测试、
+                 * 不占父级空间（`sizedByParent => offstage`，size = constraints.smallest）。
+                 * ⇒ Element **不被卸载** ⇒ State 复用 ⇒ `initState` 不再跑。
+                 * 实测（.probe/probe_tests/zz_detail_reload_rootcause_probe_test.dart）：
+                 *   条件子节点写法   ⇒ initState 累计 **2** 次（bug）
+                 *   Offstage 写法     ⇒ initState 累计 **1** 次（修复）
+                 * ```
+                 *
+                 * ⚠️ 必须保留「`player` 仍是第 0 个 child」这条硬约束（见上面那段）：
+                 *    `Offstage` 是**并列的第二个 child**，位置不变 ⇒
+                 *    `player` 的 Element 位置也没变 ⇒ 正在播的视频不会被重建。
+                 *
+                 * ⚠️ 全屏时 `Offstage` 不占空间（size = smallest ⇒ 宽 0）
+                 *    ⇒ `player` 的 `Expanded(flex: 1)` 独占整行 ⇒ 仍然铺满。
+                 */
+                Offstage(
+                  offstage: fullscreen,
+                  child: SizedBox(width: detailW, child: detailPanel),
+                ),
               ],
             )
           : Column(

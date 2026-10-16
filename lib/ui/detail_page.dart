@@ -57,6 +57,7 @@ import 'media_session.dart';
 import '../core/network_status.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
+import 'widgets/app_menu.dart';
 import 'widgets/cover_image.dart';
 import 'widgets/detail_raw_meta.dart';
 import 'widgets/provider_name.dart';
@@ -4632,18 +4633,30 @@ class _DownloadButton extends StatelessWidget {
     );
 
     final all = onDownloadAll;
-    final picked = await showMenu<String>(
+    /*
+     * ★★ 2026-10-17（Owner 第 8 条：「点击出来操作菜单的也好难看」）
+     *
+     * 菜单面从裸 `showMenu` 换成全仓统一的 [showAppMenu] ——
+     * 底色 / 描边 / 圆角 / 条目高（40）与插件区块头那枚 ⋮ 菜单**同源**
+     * （两者共用 `AppMenuSurface` 与 `kAppMenuConstraints`）。
+     *
+     * ⚠️ 只换**菜单面**，其余**逐字不变**：
+     *   · 触发器仍是那枚 `OutlinedButton.icon`（几何被 t27_w3 逐平台钉着）；
+     *   · `position` 仍由上面从按钮自己的 RenderBox 现算（等价 PopupMenuPosition.under）；
+     *   · 选项值 `'one'` / `'all'` 与文案、顺序、null 条件一字不改。
+     *
+     * ★ 为什么不把触发器换成 `AppMenuButton` 的 ⋮：那会**删掉**这枚
+     *   「下载」按钮 —— 它的几何与收藏/追更同档是既有设计契约（t27_w3 门禁）。
+     */
+    final picked = await showAppMenu<String>(
       context: context,
       position: position,
-      items: <PopupMenuEntry<String>>[
-        const PopupMenuItem<String>(
-          value: 'one',
-          child: Text('下载本集'),
-        ),
+      items: <AppMenuItem<String>>[
+        const AppMenuItem<String>(value: 'one', label: '下载本集'),
         if (all != null)
-          PopupMenuItem<String>(
+          AppMenuItem<String>(
             value: 'all',
-            child: Text('下载全部集（$episodeCount 集）'),
+            label: '下载全部集（$episodeCount 集）',
           ),
       ],
     );

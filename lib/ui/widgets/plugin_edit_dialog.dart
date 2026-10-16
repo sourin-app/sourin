@@ -74,8 +74,9 @@ library;
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/sourin_api.dart';
+import '../tokens.dart';
+import 'app_dialog_shell.dart';
 import 'overlay_motion.dart';
-import 'settings_kit.dart';
 
 /// 表单的两种安装方式
 enum PluginInputKind {
@@ -358,12 +359,67 @@ class _PluginEditDialogState extends State<PluginEditDialogBody> {
      * ③ `insetPadding` 给足四周留白（框架默认 40 横向，这里显式给 24/48 更好看也更稳）。
      * ```
      */
-    return SettingsDialog(
+    /*
+     * ★ 2026-10-16：外壳改走全仓统一的 `AppDialogShell`（docs/AGENTS.md 第 3.5 节），
+     *   与 `danmaku_settings_dialog.dart` / `provider_import_dialog.dart` 同一形态。
+     *
+     * 改前这里用的是 `SettingsDialog`（`settings_kit.dart` 里的 `AlertDialog`
+     * 外壳）—— 那是**第二套**外壳：宽度 560 由它自己的 `ConstrainedBox` 限制、
+     * 圆角/标题栏/按钮排布全走 Material 默认，与 `AppDialogShell`
+     * （560 定宽 + `Radii.rLg` + 自绘标题栏 + 分隔线操作区）不是同一套视觉。
+     * 全仓只允许一套外壳。
+     *
+     * ⚠️ 标题栏、`width`、`maxHeight` 一律**不传** —— 外壳的 `_Header` 与
+     *    默认 560 /「高度上限 = 视口 × 0.8」接管。上面那段手写的
+     *    `constraints` / `insetPadding` 讨论因此失效：那两个值现在由外壳
+     *    **一处**决定（这正是「不许各写各的」的落点）。
+     *
+     * ⚠️ 滚动区**交给外壳**（`scrollable` 默认 true）：`SettingsDialog` 那层
+     *    内容滚动已随它一起删掉，这里再套一层就是「滚动里再滚动」。
+     */
+    return AppDialogShell(
       title: _isEdit ? '编辑「${widget.existing!.name}」' : '添加插件',
       // ★ 2026-10-10：一句话说清这个对话框在干嘛（原来只有标题）
       subtitle: isLink
           ? '填一个插件链接，或直接粘贴 JS 源码 —— 会自动识别'
           : '粘贴 JS 源码（文件开头要有 @id 注释）',
+      /*
+       * ★ 右上角关闭 = 取消（与底部那枚「取消」按钮**同一个出口**）：
+       *   两条路都是 `Navigator.pop()` 且不带结果 ⇒ 调用方拿到 null（= 用户取消）。
+       *   ⚠️ 外壳的 `_Header` 只在 `onClose` 非空时才渲染关闭钮 —— 必须传。
+       */
+      onClose: () => Navigator.of(context).pop(),
+      /*
+       * ★★★ `fill: false` —— **本文件没有 `fill` 字段**，所以这里不是「透传」，
+       *    而是**必须显式写死 false**。
+       *
+       * # 为什么本弹窗只可能是 false（取证，不是猜的）
+       * ```text
+       * 本弹窗的唯一入口是 showAppDialog ⇒ showDialog（overlay_motion.dart:311），
+       * 它把内容包成：SafeArea → Padding → MediaQuery → Builder → 内容
+       * （见 AppDialogShell 的类文档「坑 2」那一节，有真实崩溃栈）。
+       * ```
+       * ⇒ 宿主链里**没有 Stack** ⇒ `fill: true` 那层「直接做 Stack 的直接孩子」
+       *   的语义在本弹窗**无处可落**。外壳现在自己提供 Stack，所以 true 也不会
+       *   再抛 `Incorrect use of ParentDataWidget`（那是外壳修好的，见它的文档），
+       *   但 `Stack(fit: expand)` 会**铺满整屏**（实测：外壳尺寸 = 1444 x 845，
+       *   即整个视口）—— 那正是 Owner 2026-10-09 截图「只有一层灰、看不见弹窗」
+       *   的形态（见本文件上面那段 `AlertDialog` 撑满视口的记录）。
+       * ⇒ 本弹窗取 false：外壳**只返回「遮罩 + 居中卡片」那一层**，
+       *   卡片自己 `SizedBox(width: 560)` 定宽居中 ⇒ 与 `SettingsDialog` 时代
+       *   的几何一致（实测卡片 560 宽、居中、视口 1440 下四周留白）。
+       *
+       * # 为什么不是「加一个 fill 字段透传」
+       * `fill` 开关的用途是让**常挂在宿主 Stack 下**的面板（danmaku / bili /
+       * subtitle）在 `SheetExitMotion` 里改走非定位形态。本弹窗走的是
+       * `showAppDialog` 路由（每次 new 一个路由，没有常挂宿主、也没有
+       * `SheetExitMotion`），**只存在一种形态** ⇒ 多一个恒为 false 的字段
+       * 只是假接口。
+       *
+       * ⚠️ 实测：`fill: true` 时卡片会被 `Stack(fit: expand)` 拉满视口
+       *    （探针读数 1444 x 845），肉眼即「整屏一块板」；false 时 560 居中。
+       */
+      fill: false,
       /*
        * ★★ 2026-10-09：这里**不需要** `constraints` / `insetPadding`（我撤掉了）。
        *
@@ -380,100 +436,127 @@ class _PluginEditDialogState extends State<PluginEditDialogBody> {
        *   我据此判「卡片撑满」⇒ 假红。真正该测的是**内容区**（见探针里的注释）。
        * ⇒ 教训：判据测错节点时，会同时产生**假红**和**假绿**两种误判。
        */
-      child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── 识别结果回显（Owner 说的「然后自动识别」）
-            Row(
-              children: [
-                Icon(
-                  isLink ? Icons.link : Icons.code,
-                  size: 16,
-                  color: colors.primary,
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  _loadingSource
-                      ? '正在读取源码…'
-                      : (isLink ? '将按：链接安装' : '将按：源码安装'),
-                  key: const ValueKey('plugin_edit_kind_label'),
-                  style: TextStyle(
-                    color: colors.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                if (typeLocked) ...[
-                  const SizedBox(width: 8),
-                  const Text(
-                    '（编辑链接型插件时类型不可改）',
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                ],
-              ],
-            ),
-            const SizedBox(height: 10),
-            // ── 唯一的输入框
-            TextField(
-              controller: _ctl,
-              onChanged: _onChanged,
-              enabled: !_loadingSource,
-              maxLines: isLink ? 1 : 14,
-              minLines: isLink ? 1 : 8,
-              autofocus: true,
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-              decoration: InputDecoration(
-                border: const OutlineInputBorder(),
-                labelText: isLink ? '插件链接' : '插件 JS 源码',
-                hintText: isLink
-                    ? 'https://…（粘贴插件安装链接）'
-                    : '粘贴插件的 JS 源码（需含 @id 头部注释）',
-                errorText: _loadError,
-              ),
-            ),
-            const SizedBox(height: 10),
-            // ── 手动切换（自动识别兜底；用户明确说「选择链接 或者 源码」）
-            Row(
-              children: [
-                Text(
-                  '类型：',
-                  style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
-                ),
-                const SizedBox(width: 4),
-                ChoiceChip(
-                  label: const Text('链接'),
-                  selected: isLink,
-                  onSelected: typeLocked ? null : (_) => _pick(PluginInputKind.link),
-                ),
-                const SizedBox(width: 8),
-                ChoiceChip(
-                  label: const Text('源码'),
-                  selected: !isLink,
-                  onSelected:
-                      typeLocked ? null : (_) => _pick(PluginInputKind.source),
-                ),
-              ],
-            ),
-          ],
+      actions: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: _loadingSource
+                ? null
+                : () {
+                    final t = _ctl.text.trim();
+                    if (t.isEmpty) return;
+                    Navigator.of(context).pop(
+                      PluginEditResult(kind: _kind, text: t),
+                    );
+                  },
+            child: Text(_isEdit ? '保存' : '安装'),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: _loadingSource
-              ? null
-              : () {
-                  final t = _ctl.text.trim();
-                  if (t.isEmpty) return;
-                  Navigator.of(context).pop(
-                    PluginEditResult(kind: _kind, text: t),
-                  );
-                },
-          child: Text(_isEdit ? '保存' : '安装'),
-        ),
-      ],
+      /*
+       * ★ 外壳的 `actions` 是**单个 Widget**（它自己套
+       *   `Row(mainAxisAlignment: end)` + 分隔线），不是列表 ——
+       *   所以这里用一枚 `Row` 装原来的两颗按钮。
+       *
+       * ⚠️ 内层 Row **必须** `mainAxisSize.min`：默认的 `.max` 会吃掉外壳那一行的
+       *    整宽，按钮就会靠左而不是靠右（外壳的对齐失效）。
+       * ⚠️ 按钮的顺序、文案、onPressed、禁用条件**一字未改**。
+       */
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── 识别结果回显（Owner 说的「然后自动识别」）
+          Row(
+            children: [
+              Icon(
+                isLink ? Icons.link : Icons.code,
+                size: FontSizes.base,
+                color: colors.primary,
+              ),
+              const SizedBox(width: Sp.x2),
+              Text(
+                _loadingSource
+                    ? '正在读取源码…'
+                    : (isLink ? '将按：链接安装' : '将按：源码安装'),
+                key: const ValueKey('plugin_edit_kind_label'),
+                style: TextStyle(
+                  color: colors.primary,
+                  fontWeight: FontWeights.semibold,
+                ),
+              ),
+              if (typeLocked) ...[
+                const SizedBox(width: Sp.x2),
+                /*
+                 * ★ 颜色改取主题角色（原先写死 `Colors.grey`）——
+                 *   本 app 支持明暗双主题，写死的灰在亮色主题下对比度不足。
+                 *   `onSurfaceVariant` 就是外壳副标题用的同一个角色（视觉层级一致）。
+                 */
+                Text(
+                  '（编辑链接型插件时类型不可改）',
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: Sp.x3),
+          // ── 唯一的输入框
+          TextField(
+            controller: _ctl,
+            onChanged: _onChanged,
+            enabled: !_loadingSource,
+            maxLines: isLink ? 1 : 14,
+            minLines: isLink ? 1 : 8,
+            autofocus: true,
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: FontSizes.cap,
+            ),
+            decoration: InputDecoration(
+              border: const OutlineInputBorder(),
+              labelText: isLink ? '插件链接' : '插件 JS 源码',
+              hintText: isLink
+                  ? 'https://…（粘贴插件安装链接）'
+                  : '粘贴插件的 JS 源码（需含 @id 头部注释）',
+              errorText: _loadError,
+            ),
+          ),
+          const SizedBox(height: Sp.x3),
+          // ── 手动切换（自动识别兜底；用户明确说「选择链接 或者 源码」）
+          Row(
+            children: [
+              Text(
+                '类型：',
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(width: Sp.x1),
+              ChoiceChip(
+                label: const Text('链接'),
+                selected: isLink,
+                onSelected:
+                    typeLocked ? null : (_) => _pick(PluginInputKind.link),
+              ),
+              const SizedBox(width: Sp.x2),
+              ChoiceChip(
+                label: const Text('源码'),
+                selected: !isLink,
+                onSelected:
+                    typeLocked ? null : (_) => _pick(PluginInputKind.source),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

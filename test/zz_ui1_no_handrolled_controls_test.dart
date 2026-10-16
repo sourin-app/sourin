@@ -110,6 +110,72 @@ void main() {
       );
     });
 
+    test('★ 开关行：不许「自写行 + 裸 Switch」（应换 SwitchListTile）', () {
+      /*
+       * ★ 2026-10-16 新增。为什么第一组规则抓不到它：
+       *
+       * 上面那条「手写 Row 里塞裸 Switch」的判据是**词法范围**的 ——
+       * 它在 `Row(` 的直接体里找 `Switch(`。但真实写法常常是：
+       * ```text
+       *   Widget _row(String label, Widget child, ...) {   // ← Row 在这里
+       *     return Padding(child: Row(children: [Text(label), Expanded(child: child)]));
+       *   }
+       *   ...
+       *   _row('间隔', Switch(value: v, onChanged: f));   // ← Switch 在这里（参数里）
+       * ```
+       * `Row` 与 `Switch` **不在同一段代码里** ⇒ 第一组规则完全看不见。
+       * 实测：player_settings_sheet.dart 就是这么写的，门禁当时是**绿的**。
+       *
+       * 本组改成**跨行扫调用点**：把 `Switch(` 出现在 `_row(...)` 实参里也认出来。
+       *
+       * ⚠️ 白名单是**待办**，不是豁免 —— 该处应改成 SwitchListTile
+       *   （整行可点 + 涟漪 + 读屏语义；长相用 contentPadding/dense 调回原样）。
+       *   清掉后必须把白名单一并删掉（下面的自检会抓空条款）。
+       */
+      /*
+       * ★ 2026-10-16：白名单**已清空**。
+       *
+       * 原条目 `lib/ui/widgets/player_settings_sheet.dart` 已修复：
+       * 那 19 个 `_row` 调用点里唯一塞了裸 `Switch` 的一处
+       * （`_switchRow`）改成了框架的 `SwitchListTile`；
+       * `_row` 保留给其余 18 处「标签 + 右侧控件」。
+       *
+       * ⚠️ 白名单是**待办**，不是豁免 —— 清完必须删条目，
+       *   下面的自检就是抓「空条款 = 假绿」的。
+       */
+      const pending = <String>{};
+      final bad = <String>[];
+      for (final f in _dartFiles()) {
+        final rel = f.path.replaceAll(r'\', '/');
+        if (pending.contains(rel)) continue;
+        final src = f.readAsStringSync();
+        final lines = src.split('\n');
+        for (var i = 0; i < lines.length; i++) {
+          // 调用点：本行是 `_row(` 且同行有裸 Switch(（排除 SwitchListTile）
+          if (!RegExp(r'\b_row\s*\(').hasMatch(lines[i])) continue;
+          for (var k = i; k < lines.length && k < i + 7; k++) {
+            if (!RegExp(r'\bSwitch\s*\(').hasMatch(lines[k])) continue;
+            if (lines[k].contains('SwitchListTile')) continue;
+            bad.add('$rel:${k + 1}');
+          }
+        }
+      }
+      expect(
+        bad,
+        isEmpty,
+        reason: '这些地方是「自写行 + 裸 Switch」，应改用框架的 SwitchListTile：${bad.join('  ')}',
+      );
+      // ★ 白名单自检：待办清完就必须删条目，不许留空条款
+      for (final w in pending) {
+        final f = File(w);
+        expect(f.existsSync(), isTrue, reason: '白名单里的 $w 不存在了 —— 请同步更新本文件');
+        expect(
+          f.readAsStringSync().contains('Switch('),
+          isTrue,
+          reason: '★ $w 已经没有裸 Switch 了 —— 该处已清理，请把白名单条目删掉（空条款 = 假绿）',
+        );
+      }
+    });
     test('★ 药丸（手写 InkWell + 全圆角容器）应改用 ChoiceChip/FilterChip', () {
       /*
        * 判据是「InkWell 直接包一个自己画底色/描边的全圆角容器」——

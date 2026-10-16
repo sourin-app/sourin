@@ -69,6 +69,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../core/app_log.dart';
 import '../../core/clip_download.dart';
 import '../tokens.dart';
+import 'app_dialog_section.dart';
 
 /// 一条可选轨道（字幕或音轨）
 ///
@@ -582,6 +583,47 @@ class PlayerSettingsSheet extends StatefulWidget {
 }
 
 class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
+  /// 本面板的**取色唯一入口** —— 全部走主题角色，不写死任何颜色。
+  ///
+  /// # ★★ task-14（2026-10-16）：为什么这个面板必须先改「底」再改「前景」
+  ///
+  /// 这个面板改前与 bili / danmaku 两个弹窗**不是同一类**：
+  /// ```text
+  /// bili_import_dialog      卡片底 = colorScheme.surface      （跟主题）
+  /// danmaku_settings_dialog 卡片底 = AppDialogShell ⇒ surface  （跟主题）
+  /// player_settings_sheet   卡片底 = Color(0xFF14161C)         （★ 写死）
+  /// ```
+  ///
+  /// 底写死 ⇒ 前景也必须写死（Lead 2026-10-16 定的通则：
+  /// 「底写死了 ⇒ 前景也得写死；只有底跟着主题走时，前景才该跟主题走」）。
+  /// 若**只**把前景改成主题色，浅色主题下会反向回归：
+  /// ```text
+  /// 对写死深底 #14161C 的 WCAG 对比度（实测）：
+  ///   现状（写死 white）                     18.08:1  ✓
+  ///   onSurface 深色 #FAFAFA                 17.33:1  ✓ 同档
+  ///   onSurface 浅色 #1E2028                  1.11:1  ✗✗ 隐形
+  ///   outlineVariant 深色 #222222             1.14:1  ✗  分隔线同病
+  /// ```
+  ///
+  /// ⇒ 顺序必须是：**① 先把底改成跟主题 ② 再把前景改成主题色**。
+  ///   第 ① 步是视觉变更（深色下 #14161C → #171717，差 3/255 几乎看不出；
+  ///   浅色下从「浅色整页里一块深黑卡片」变成浅色卡片 —— 那是修正），
+  ///   已由 Lead 单独授权。
+  ///
+  /// 映射（旧 → 新）：
+  /// ```text
+  /// 底       Color(0xFF14161C)@0.98 → colorScheme.surfaceContainerHighest
+  /// 描边     Colors.white24         → colorScheme.outlineVariant
+  /// 正文     Colors.white           → colorScheme.onSurface
+  /// 次要     Colors.white70/60/38   → colorScheme.onSurfaceVariant
+  /// 弱化线   Colors.white24         → colorScheme.outlineVariant
+  /// 未选中底 Colors.white10         → onSurface.withValues(alpha: 0.04)
+  /// ```
+  ///
+  /// ⚠️ **保留写死色的两处**（理由见各自调用点）：
+  /// `Colors.black.withValues(alpha: 0.72)`（遮罩，压在**视频画面**上 ⇒ 与主题解耦）、
+  /// `Colors.lightBlueAccent`（选中/已连接信号色，跨主题语义色，不是主题色）。
+  ColorScheme get _colors => Theme.of(context).colorScheme;
   /// 外挂字幕的加载状态（'' = 空闲）
   String _subLoading = '';
 
@@ -698,15 +740,48 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
               child: GestureDetector(
                 // 卡片内部的点击不能穿透到背景（否则点滑块也会关掉面板）
                 onTap: () {},
-                child: Container(
+                child: SizedBox(
                   width: 560,
-                  constraints: const BoxConstraints(maxHeight: 620),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF14161C).withValues(alpha: 0.98),
-                    borderRadius: Radii.rLg,
-                    border: Border.all(color: Colors.white24),
-                  ),
-                  child: Column(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 620),
+                    /*
+                     * ★★ task-14 第 ① 步：卡片底**跟主题走**（Lead 授权），
+                     *    并且由 `DecoratedBox` 改成 `Material`。
+                     *
+                     * # 为什么必须是 Material（不是 Container+BoxDecoration）
+                     * 改前的 `Container(decoration:)` 只画背景，**不是** Material 面。
+                     * 而框架的 `SwitchListTile`（第 ④ 步换上的）把涟漪画在
+                     * **最近的 Material 祖先**上 —— 盒子里没有 Material ⇒ 框架
+                     * 直接抛断言：
+                     * ```text
+                     * ListTile background color or ink splashes may be invisible.
+                     * The ListTile is wrapped in a DecoratedBox that has a
+                     * background color. …
+                     * ```
+                     * 断言是对的：涟漪**真的会看不见**（实测 t62 红 20 条）。
+                     * 这与 `bili_import_dialog.dart` 撞过的是**同一个坑**，
+                     * 那里的结论同样是「改用 Material」——本处照抄那个解法。
+                     * 尺寸改挂在外层 `SizedBox` / `ConstrainedBox` 上
+                     * （Material 不接 width/constraints 这两个参数）⇒ 几何与改前一致。
+                     *
+                     * # 底色的来源（为什么用 surfaceContainerHighest）
+                     * 改前是写死的 `Color(0xFF14161C)@0.98` —— 于是这个面板
+                     * 与 bili / danmaku 两个弹窗不是同一类：那两处的外壳
+                     * （AppDialogShell）用的是 `surfaceContainerHighest`。
+                     * 底写死还有个后果：**前景也必须写死**（Lead 的通则），
+                     * 否则浅色主题下 onSurface(#1E2028) 压在深底上只有
+                     * 1.11:1 —— 标题直接隐形（实测，见 _colors 的文档）。
+                     * 深色下 #171717 vs 旧 #14161C 只差 3/255，观感几乎不变。
+                     */
+                    child: Material(
+                      color: _colors.surfaceContainerHighest,
+                      type: MaterialType.card,
+                      clipBehavior: Clip.antiAlias,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: Radii.rLg,
+                        side: BorderSide(color: _colors.outlineVariant),
+                      ),
+                      child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       _header(),
@@ -723,9 +798,9 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               _subtitleSection(),
-                              _divider(),
+                              const AppDialogSection.divider(),
                               _audioSection(),
-                              _divider(),
+                              const AppDialogSection.divider(),
                               /*
                                * ★★★ task-21 P1-8 播放速度
                                *
@@ -738,9 +813,9 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                                */
                               _rateSection(),
                               if (!widget.isLive) ...[
-                                _divider(),
+                                const AppDialogSection.divider(),
                                 _playbackSection(),
-                                _divider(),
+                                const AppDialogSection.divider(),
                                 _clipSection(),
                               ],
                               /*
@@ -756,13 +831,15 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                                *      直接点「关闭」那条字幕轨 —— 新段落放末尾才不会
                                *      把它挤出折叠线。
                                */
-                              _divider(),
+                              const AppDialogSection.divider(),
                               _videoSection(),
                             ],
                           ),
                         ),
                       ),
                     ],
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -778,10 +855,10 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
       padding: const EdgeInsets.fromLTRB(Sp.x6, Sp.x4, Sp.x3, Sp.x2),
       child: Row(
         children: [
-          const Text(
+          Text(
             '播放设置',
             style: TextStyle(
-              color: Colors.white,
+              color: _colors.onSurface,
               fontSize: FontSizes.lg,
               fontWeight: FontWeight.w600,
             ),
@@ -789,7 +866,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           const Spacer(),
           IconButton(
             onPressed: widget.onClose,
-            icon: const Icon(Icons.close, color: Colors.white),
+            icon: Icon(Icons.close, color: _colors.onSurface),
             tooltip: '关闭',
           ),
         ],
@@ -797,41 +874,25 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
     );
   }
 
-  Widget _divider() => const Padding(
-        padding: EdgeInsets.symmetric(vertical: Sp.x4),
-        child: Divider(height: 1, color: Colors.white24),
-      );
-
-  /// 段落标题
-  Widget _sectionTitle(String text, {String? note}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: Sp.x3),
-      child: Row(
-        children: [
-          Text(
-            text,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: FontSizes.base,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          if (note != null) ...[
-            const SizedBox(width: Sp.x2),
-            Flexible(
-              child: Text(
-                note,
-                style: const TextStyle(
-                  color: Colors.white38,
-                  fontSize: FontSizes.cap,
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
+  /*
+   * ★ task-14（2026-10-16）：这里的 `_divider()` 与 `_sectionTitle()` 已删除。
+   *
+   * 两段实现与另外两个弹窗**逐字相同**，已抽成共享件：
+   * ```text
+   * _sectionTitle  player_settings_sheet.dart:806（改前）
+   *                bili_import_dialog.dart:345
+   *                danmaku_settings_dialog.dart:957
+   * _divider       player_settings_sheet.dart:800（改前）
+   *                bili_import_dialog.dart:340
+   * ```
+   * ⇒ 现在统一走 `lib/ui/widgets/app_dialog_section.dart`：
+   *   `AppDialogSection.title(...)` / `AppDialogSection.divider()`。
+   *
+   * ⚠️ 接共享件**不是**纯机械替换：共享件内部取的是 `onSurface` /
+   *   `onSurfaceVariant` / `outlineVariant`，所以在接过来之前**必须先**
+   *   让卡片底跟主题走（见本文件 build 里第 ① 步的长注释）—— 否则浅色
+   *   主题下这些色压在写死的深底上只有 1.11:1。
+   */
 
   /// 一行「标签 + 右侧控件」
   Widget _row(String label, Widget child, {String? hint}) {
@@ -844,8 +905,8 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
             width: 92,
             child: Text(
               label,
-              style: const TextStyle(
-                color: Colors.white70,
+              style: TextStyle(
+                color: _colors.onSurfaceVariant,
                 fontSize: FontSizes.sm,
               ),
             ),
@@ -856,8 +917,8 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
               padding: const EdgeInsets.only(left: Sp.x2),
               child: Text(
                 hint,
-                style: const TextStyle(
-                  color: Colors.white38,
+                style: TextStyle(
+                  color: _colors.onSurfaceVariant,
                   fontSize: FontSizes.cap,
                 ),
               ),
@@ -918,17 +979,21 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
       label: Text(
         label,
         style: TextStyle(
-          color: active ? Colors.lightBlueAccent : Colors.white,
+          // ★ 选中态**故意保留** Colors.lightBlueAccent：它是跨主题的
+          //   「已选中」信号色，不是主题色（同族见 _dot / _colorRow）。
+          //   未选中态则必须走主题 —— 改前 Colors.white 在浅色卡片上隐形。
+          color: active ? Colors.lightBlueAccent : _colors.onSurface,
           fontSize: FontSizes.sm,
         ),
       ),
       selected: active,
       onSelected: onTap == null ? null : (_) => onTap(),
       showCheckmark: false,
-      backgroundColor: Colors.white10,
+      // 未选中底：Colors.white10 → onSurface@4%（浅色下白 10% 在白卡上等于没有）
+      backgroundColor: _colors.onSurface.withValues(alpha: 0.04),
       selectedColor: Colors.lightBlueAccent.withValues(alpha: 0.22),
       side: BorderSide(
-        color: active ? Colors.lightBlueAccent : Colors.white24,
+        color: active ? Colors.lightBlueAccent : _colors.outlineVariant,
       ),
       shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
       padding: const EdgeInsets.symmetric(
@@ -967,9 +1032,10 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                     color: p.swatch,
                     shape: BoxShape.circle,
                     border: Border.all(
+                      // 选中保留 lightBlueAccent（信号色）；未选中走主题弱化色
                       color: p.matches(current)
                           ? Colors.lightBlueAccent
-                          : Colors.white38,
+                          : _colors.outlineVariant,
                       width: p.matches(current) ? 3 : 1,
                     ),
                   ),
@@ -997,14 +1063,14 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('字幕'),
+        const AppDialogSection.title('字幕'),
 
         _row(
           '字幕轨',
           widget.subtitleTracks.isEmpty
-              ? const Text(
+              ? Text(
                   '这条流没有字幕轨',
-                  style: TextStyle(color: Colors.white38, fontSize: FontSizes.sm),
+                  style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.sm),
                 )
               : _trackChips(
                   tracks: widget.subtitleTracks,
@@ -1033,8 +1099,8 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                   child: Text(
                     widget.externalSubtitleName!,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white70,
+                    style: TextStyle(
+                      color: _colors.onSurfaceVariant,
                       fontSize: FontSizes.cap,
                     ),
                   ),
@@ -1118,7 +1184,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
           child: Text(
             override.hint,
-            style: const TextStyle(color: Colors.white38, fontSize: FontSizes.cap),
+            style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
           ),
         ),
 
@@ -1145,8 +1211,8 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                 width: 36,
                 child: Text(
                   fontSize?.toString() ?? '—',
-                  style: const TextStyle(
-                    color: Colors.white70,
+                  style: TextStyle(
+                    color: _colors.onSurfaceVariant,
                     fontSize: FontSizes.cap,
                   ),
                 ),
@@ -1163,7 +1229,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
             value: kSubtitleFontChoices.contains(font) ? font : null,
             hint: Text(
               font ?? '读不到',
-              style: const TextStyle(color: Colors.white70, fontSize: FontSizes.sm),
+              style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.sm),
             ),
             dropdownColor: const Color(0xFF14161C),
             isExpanded: true,
@@ -1176,7 +1242,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                   value: f,
                   child: Text(
                     f,
-                    style: const TextStyle(color: Colors.white, fontSize: FontSizes.sm),
+                    style: TextStyle(color: _colors.onSurface, fontSize: FontSizes.sm),
                   ),
                 ),
             ],
@@ -1219,8 +1285,8 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                 width: 36,
                 child: Text(
                   borderSize?.toStringAsFixed(1) ?? '—',
-                  style: const TextStyle(
-                    color: Colors.white70,
+                  style: TextStyle(
+                    color: _colors.onSurfaceVariant,
                     fontSize: FontSizes.cap,
                   ),
                 ),
@@ -1252,8 +1318,8 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                 width: 36,
                 child: Text(
                   marginY?.toString() ?? '—',
-                  style: const TextStyle(
-                    color: Colors.white70,
+                  style: TextStyle(
+                    color: _colors.onSurfaceVariant,
                     fontSize: FontSizes.cap,
                   ),
                 ),
@@ -1273,13 +1339,13 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('音轨'),
+        const AppDialogSection.title('音轨'),
         _row(
           '音轨',
           widget.audioTracks.isEmpty
-              ? const Text(
+              ? Text(
                   '这条流没有音轨',
-                  style: TextStyle(color: Colors.white38, fontSize: FontSizes.sm),
+                  style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.sm),
                 )
               : _trackChips(
                   tracks: widget.audioTracks,
@@ -1320,7 +1386,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('播放速度', note: '原版 ArtPlayer 面板的第一项'),
+        const AppDialogSection.title('播放速度', note: '原版 ArtPlayer 面板的第一项'),
         _row(
           '倍速',
           Wrap(
@@ -1377,7 +1443,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('画面', note: '原版 yamby 的「解码模式」与「自定义视频缩放」'),
+        const AppDialogSection.title('画面', note: '原版 yamby 的「解码模式」与「自定义视频缩放」'),
         _row(
           '解码模式',
           Wrap(
@@ -1428,7 +1494,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('连播'),
+        const AppDialogSection.title('连播'),
 
         // 播放完（原版：`html: "播放完"` 的 selector）
         _row(
@@ -1450,7 +1516,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
           child: Text(
             widget.endAction.hint,
-            style: const TextStyle(color: Colors.white38, fontSize: FontSizes.cap),
+            style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
           ),
         ),
 
@@ -1483,7 +1549,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
           child: Text(
             widget.episodeStartAction.hint,
-            style: const TextStyle(color: Colors.white38, fontSize: FontSizes.cap),
+            style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
           ),
         ),
 
@@ -1549,7 +1615,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
          *   点下去却下了一整集（几十分钟的 mp4），这是纯误导。
          *   现在标题、行标签、按钮、成功行**四处**都写明「本集」。
          */
-        _sectionTitle(
+        AppDialogSection.title(
           '下载',
           note: '并发 ${ClipDownloader.concurrencyLabel(concurrency)}',
         ),
@@ -1572,8 +1638,8 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
               const SizedBox(width: Sp.x2),
               Text(
                 ClipDownloader.concurrencyLabel(concurrency),
-                style: const TextStyle(
-                  color: Colors.white70,
+                style: TextStyle(
+                  color: _colors.onSurfaceVariant,
                   fontSize: FontSizes.cap,
                 ),
               ),
@@ -1584,11 +1650,11 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
          * ★ 「0」在别处也必须是同一个意思 —— 文案由
          *   ClipDownloader.concurrencyLabel 统一给出，不在这里另写一份。
          */
-        const Padding(
-          padding: EdgeInsets.only(left: 92, bottom: Sp.x3),
+        Padding(
+          padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
           child: Text(
             '0 = 不限制。上限对所有下载同时生效：改小之后排队中的任务会立刻按新上限收敛，不用重开面板。',
-            style: TextStyle(color: Colors.white38, fontSize: FontSizes.cap),
+            style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
           ),
         ),
 
@@ -1631,11 +1697,11 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
          *   成功过   → 只说存到了缓存目录，路径由「打开缓存目录」给
          */
         if (widget.clipDownloading)
-          const Padding(
-            padding: EdgeInsets.only(left: 92, bottom: Sp.x3),
+          Padding(
+            padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
             child: Text(
               '下载中…（没有进度条：下载走独立连接，不占用播放器的缓冲）',
-              style: TextStyle(color: Colors.white38, fontSize: FontSizes.cap),
+              style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
             ),
           )
         else if (err != null)
@@ -1650,11 +1716,11 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
             ),
           )
         else if (widget.clipDownloaded)
-          const Padding(
-            padding: EdgeInsets.only(left: 92, bottom: Sp.x3),
+          Padding(
+            padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
             child: Text(
               '已下载本集到缓存目录（受缓存上限约束，超了自动删最旧的）',
-              style: TextStyle(color: Colors.white38, fontSize: FontSizes.cap),
+              style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
             ),
           ),
 
@@ -1688,8 +1754,8 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
             padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
             child: Text(
               _logTip,
-              style: const TextStyle(
-                color: Colors.white70,
+              style: TextStyle(
+                color: _colors.onSurfaceVariant,
                 fontSize: FontSizes.cap,
               ),
             ),
@@ -1763,19 +1829,50 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
       setState(() => _logTip = '复制失败：$e');
     }
   }
+  /// 统一开关行 —— 本面板的三个开关都走这里。
+  ///
+  /// ★ 2026-10-16（Lead 新加的门禁 `zz_ui1_no_handrolled_controls`）：
+  ///   改前这里是「自写 `_row` + **裸 `Switch`**」——
+  ///   门禁抓的正是这个形状（`Row` 在 `_row` 里、`Switch` 在实参里，
+  ///   词法上不在一段代码里，所以第一版门禁看不见它）。
+  ///
+  /// 换成框架的 `SwitchListTile`：**整行可点** + 涟漪 + 焦点环，
+  /// 并且把「标签 + 开关」读成**一个**控件（读屏语义）。
+  /// 长相用 `contentPadding` / `dense` / `visualDensity` 调回原样。
+  ///
+  /// ⚠️ `_row` **保留**给其余 18 个「标签 + 右侧控件」调用点 ——
+  ///   那些不是开关行，换 `SwitchListTile` 是错的。
+  ///
+  /// ⚠️ 与 danmaku 面板的 `_switchRow` 同款参数（contentPadding: zero +
+  ///   dense + compact）：两个面板的开关行必须长得一样。
   Widget _switchRow(
     String label,
     bool value,
     ValueChanged<bool> onChanged, {
     String? hint,
   }) {
-    return _row(
-      label,
-      Align(
-        alignment: Alignment.centerLeft,
-        child: Switch(value: value, onChanged: onChanged),
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      value: value,
+      onChanged: onChanged,
+      title: Text(
+        label,
+        style: TextStyle(
+          color: _colors.onSurfaceVariant,
+          fontSize: FontSizes.sm,
+        ),
       ),
-      hint: hint,
+      subtitle: hint == null
+          ? null
+          : Text(
+              hint,
+              style: TextStyle(
+                color: _colors.onSurfaceVariant,
+                fontSize: FontSizes.cap,
+              ),
+            ),
     );
   }
 }

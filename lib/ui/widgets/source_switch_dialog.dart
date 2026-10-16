@@ -38,9 +38,9 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
-import '../../core/ffi.dart';
 import '../../core/sourin_api.dart';
 import '../../core/title_match.dart';
+import 'app_dialog_shell.dart';
 import 'overlay_motion.dart';
 import '../tokens.dart';
 
@@ -116,9 +116,25 @@ Future<SwitchPick?> showSourceSwitchDialog(
   int episodeIndex = 0,
   int position = 0,
 }) {
+  /*
+   * ★ 2026-10-16（Owner 第 8 条「交互都很烂」）：`barrierDismissible` 由 false 改 true。
+   *
+   * 改前是**三条关闭路径互不一致**：
+   * ```text
+   *   X 按钮    → 关（onClose: () => Navigator.pop(context)）
+   *   Esc       → 关（外壳统一绑定，2026-10-16 新增）
+   *   点遮罩    → **不关**（barrierDismissible: false）
+   * ```
+   * ⇒ 用户点遮罩没反应，会以为弹窗卡住了（这正是「操作很烂」的来源）。
+   *
+   * ⚠️ 为什么敢改成 true：本弹窗**没有任何未提交的编辑态** ——
+   *   它是纯选择列表（点一项就返回 SwitchPick），
+   *   误触遮罩的代价只是"要重新打开一次"，没有数据丢失风险。
+   *   （对比 `plugin_edit_dialog` 那种有输入框的，才该挡住遮罩。）
+   */
   return showAppDialog<SwitchPick>(
     context: context,
-    barrierDismissible: false,
+    barrierDismissible: true,
     builder: (_) => _SourceSwitchDialog(
       title: title,
       currentProvider: currentProvider,
@@ -296,150 +312,135 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
      */
     final sorted = stableRankDesc(_candidates, (c) => c.score);
 
-    return Dialog(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 620, maxHeight: 640),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // ── 标题 ──
-            Padding(
-              padding: const EdgeInsets.fromLTRB(Sp.x5, Sp.x5, Sp.x3, Sp.x3),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '换源',
-                          style: TextStyle(
-                            fontSize: FontSizes.lg,
-                            fontWeight: FontWeights.semibold,
-                            color: colors.onSurface,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          '按标题搜索其他源；'
-                          '${widget.currentProviderName ?? widget.currentProvider}'
-                          ' 是当前源',
-                          style: TextStyle(
-                            fontSize: FontSizes.cap,
-                            color: colors.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
+    /*
+     * ★ 2026-10-16：外壳改走全仓统一的 `AppDialogShell`
+     *   （docs/AGENTS.md 第 3.5 节），与 `danmaku_settings_dialog` /
+     *   `provider_import_dialog` 同一形态。
+     *
+     * 改前这里自己写了一整套 `Dialog` + `ConstrainedBox`（maxWidth 620 /
+     * maxHeight 640 硬编码）+ 自绘标题栏 —— 与另外 6 个弹窗各写各的
+     * （实测宽度有三四种取值）。全仓只允许一套外壳。
+     *
+     * ⚠️ 标题 / 副标题 / 关闭钮由外壳的 `_Header` 接管，本文件**不再**自绘；
+     *    `width` 不显式传 ⇒ 外壳默认 560（本弹窗没有改宽的理由）。
+     * ⚠️ `scrollable: false` —— 结果区是 `Flexible(ListView)`，自己管滚动；
+     *    再套一层外壳的 `SingleChildScrollView` 会因为高度无界而崩
+     *    （弹幕设置面板是同一处理，见 `danmaku_settings_dialog.dart:629`）。
+     * ⚠️ `fill` 不显式传：本弹窗经 `showAppDialog` 直接挂载（没有
+     *    `SheetExitMotion` 包着）⇒ 用外壳默认 `true`，与改前那层 `Dialog`
+     *    的定位语义一致。
+     */
+    return AppDialogShell(
+      title: '换源',
+      subtitle: '按标题搜索其他源；'
+          '${widget.currentProviderName ?? widget.currentProvider}'
+          ' 是当前源',
+      onClose: () => Navigator.pop(context),
+      // 结果区自己滚（见上），不要外壳再套一层滚动
+      scrollable: false,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // ── 关键词（可改）──
+          // ★ 左缘 Sp.x6 与外壳 `_Header` 的标题对齐（改前 Sp.x5，比标题缩进 4px）
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: Sp.x6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _kw,
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (_) => _run(),
+                    decoration: const InputDecoration(
+                      hintText: '关键词（可修改后重搜）',
+                      isDense: true,
+                      border: OutlineInputBorder(),
                     ),
                   ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
+                ),
+                const SizedBox(width: Sp.x2),
+                FilledButton(
+                  onPressed: _searching ? null : _run,
+                  child: const Text('重搜'),
+                ),
+              ],
             ),
+          ),
 
-            // ── 关键词（可改）──
+          // ── 进度 ──
+          if (_searching)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: Sp.x5),
+              padding: const EdgeInsets.only(top: Sp.x3),
               child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _kw,
-                      textInputAction: TextInputAction.search,
-                      onSubmitted: (_) => _run(),
-                      decoration: const InputDecoration(
-                        hintText: '关键词（可修改后重搜）',
-                        isDense: true,
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    // T27-07：onSurface 随主题（dark #FAFAFA / light 近黑）。
+                    child: CircularProgressIndicator(color: colors.onSurface, strokeWidth: 2),
                   ),
                   const SizedBox(width: Sp.x2),
-                  FilledButton(
-                    onPressed: _searching ? null : _run,
-                    child: const Text('重搜'),
+                  Text(
+                    '搜索中…（已搜 $_settled'
+                    '${_totalProviders > 0 ? "/$_totalProviders" : ""} 个源）',
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: colors.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ),
             ),
 
-            // ── 进度 ──
-            if (_searching)
-              Padding(
-                padding: const EdgeInsets.only(top: Sp.x3),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    SizedBox(
-                      width: 14,
-                      height: 14,
-                      // T27-07：onSurface 随主题（dark #FAFAFA / light 近黑）。
-                      child: CircularProgressIndicator(color: colors.onSurface, strokeWidth: 2),
-                    ),
-                    const SizedBox(width: Sp.x2),
-                    Text(
-                      '搜索中…（已搜 $_settled'
-                      '${_totalProviders > 0 ? "/$_totalProviders" : ""} 个源）',
+          const SizedBox(height: Sp.x2),
+          const Divider(height: 1),
+
+          // ── 结果 ──
+          Flexible(
+            child: sorted.isEmpty && !_searching
+                ? Center(
+                    child: Text(
+                      '没有找到其他源',
                       style: TextStyle(
-                        fontSize: FontSizes.cap,
+                        fontSize: FontSizes.sm,
                         color: colors.onSurfaceVariant,
                       ),
                     ),
-                  ],
-                ),
-              ),
-
-            const SizedBox(height: Sp.x2),
-            const Divider(height: 1),
-
-            // ── 结果 ──
-            Expanded(
-              child: sorted.isEmpty && !_searching
-                  ? Center(
-                      child: Text(
-                        '没有找到其他源',
-                        style: TextStyle(
-                          fontSize: FontSizes.sm,
-                          color: colors.onSurfaceVariant,
+                  )
+                : ListView(
+                    clipBehavior: Clip.antiAlias,
+                    padding: const EdgeInsets.all(Sp.x3),
+                    children: [
+                      for (final c in sorted)
+                        _CandidateBlock(
+                          candidate: c,
+                          // ★ 传入原标题用于逐条算相似度 ——
+                          //   不用 `findAncestorStateOfType`（那是脆弱写法，
+                          //   依赖 widget 树形状，重构一下就崩）
+                          targetTitle: widget.title,
+                          isCurrent: c.provider == widget.currentProvider,
+                          onPick: _pick,
                         ),
-                      ),
-                    )
-                  : ListView(
-                      clipBehavior: Clip.antiAlias,
-                      padding: const EdgeInsets.all(Sp.x3),
-                      children: [
-                        for (final c in sorted)
-                          _CandidateBlock(
-                            candidate: c,
-                            // ★ 传入原标题用于逐条算相似度 ——
-                            //   不用 `findAncestorStateOfType`（那是脆弱写法，
-                            //   依赖 widget 树形状，重构一下就崩）
-                            targetTitle: widget.title,
-                            isCurrent: c.provider == widget.currentProvider,
-                            onPick: _pick,
-                          ),
-                        if (_misses.isNotEmpty) ...[
-                          const SizedBox(height: Sp.x3),
-                          Padding(
-                            padding: const EdgeInsets.all(Sp.x2),
-                            child: Text(
-                              '${_misses.length} 个源未能返回结果：'
-                              '${_misses.map((m) => m.provider).join("、")}',
-                              style: TextStyle(
-                                fontSize: FontSizes.cap,
-                                color: colors.onSurfaceVariant,
-                              ),
+                      if (_misses.isNotEmpty) ...[
+                        const SizedBox(height: Sp.x3),
+                        Padding(
+                          padding: const EdgeInsets.all(Sp.x2),
+                          child: Text(
+                            '${_misses.length} 个源未能返回结果：'
+                            '${_misses.map((m) => m.provider).join("、")}',
+                            style: TextStyle(
+                              fontSize: FontSizes.cap,
+                              color: colors.onSurfaceVariant,
                             ),
                           ),
-                        ],
+                        ),
                       ],
-                    ),
-            ),
-          ],
-        ),
+                    ],
+                  ),
+          ),
+        ],
       ),
     );
   }

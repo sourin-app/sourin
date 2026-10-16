@@ -66,6 +66,7 @@ import '../core/device.dart';
 //   ⚠️ 不单独 import `../core/models.dart` —— `sourin_api.dart` 已经
 //      re-export 了它（analyze 会报 unnecessary_import）
 import '../core/sourin_api.dart';
+import '../core/ui_prefs.dart';
 // ★ 为 `ShellScope` / `AppTab`（task-42 的双来源门控）——
 //   ⚠️ 这是**循环 import**（shell.dart 也 import 本文件）。
 //   Dart **允许**循环 import（编译期图，不是运行期初始化顺序问题），
@@ -103,6 +104,61 @@ Key sourceFilterChipKey(String? provider) =>
 /// ★ task-1013：分类筛选 chip 的稳定测试锚点（理由同上）
 Key groupFilterChipKey(String? group) =>
     ValueKey('live-group-filter-${group ?? "__all__"}');
+
+/// ★★★ Owner 第 12 条：分组筛选 chip 的稳定测试锚点（理由同上面两个）
+Key liveGroupFilterChipKey(String? group) =>
+    ValueKey('live-groupchip-${group ?? "__all__"}');
+
+/// ★★★ Owner 第 12 条：自定义分组筛选的**纯函数**核心
+///
+/// # 为什么抽成顶层纯函数（而不是写在 State 里）
+/// ```text
+/// ① 它是本功能的**唯一判据**，而判据必须能**单独**被喂输入验证 ——
+///    写在 State 里就只能靠 pump 整个页面去够它（慢且脆）。
+/// ② `LivePage` 的数据只由 FFI 填，`flutter test` 里恒为空
+///    （见 `t1013_live_filter_test.dart:10-26` 记的那道结构墙）
+///    ⇒ 纯函数是**唯一**能在测试里真跑这条判据的形态。
+/// ```
+///
+/// # 语义（Lead 明确要求的四条）
+/// ```text
+/// · group == null（「全部分组」）⇒ **原样返回**，行为与今天**逐字相同**
+///   （老用户无感：默认就是 null）。
+/// · 组里有源 ⇒ 只返回这些源，且**保持 groups 的原始顺序**
+///   （不按组内顺序重排 —— 源列表的顺序是页面的稳定契约）。
+/// · ★ 组不存在 / 组是空的 / 组里没有任何**当前可见**的源
+///   ⇒ **兜底返回全部**（绝不筛成空）。
+///   理由：把源列表筛空等于「页面坏了」，而用户此刻的意图只是
+///   「少看点源」——宁可多显示，也不能让他面对空白。
+/// · 组里**部分**源已失效（被停用/无视频）⇒ 只保留仍可见的那些，
+///   只要还剩至少一个就照常筛（不因为有失效项就整体放弃）。
+/// ```
+List<LiveGroup> applyLiveSourceGroup(
+  List<LiveGroup> groups,
+  Map<String, List<String>> allGroups,
+  String? group,
+) {
+  if (group == null) return groups; // 「全部分组」= 不筛（逐字同今天）
+  final members = allGroups[group];
+  if (members == null || members.isEmpty) return groups; // 组没了/空 ⇒ 兜底
+  final wanted = members.toSet();
+  final picked = groups
+      .where((g) => wanted.contains(g.provider))
+      .toList(growable: false);
+  // ★ 组里一个可见源都没有 ⇒ 兜底返回全部（见上面的理由）
+  if (picked.isEmpty) return groups;
+  return picked;
+}
+
+/// ★★★ Owner 第 12 条：一个源**是否属于**某组（编辑 UI 用）
+///
+/// ⚠️ 与 [applyLiveSourceGroup] 同一条纪律：组不存在 ⇒ false（不是抛/不是 true）。
+bool liveGroupContainsSource(
+  Map<String, List<String>> allGroups,
+  String group,
+  String provider,
+) =>
+    (allGroups[group] ?? const <String>[]).contains(provider);
 
 /// 直播页
 class LivePage extends StatefulWidget {
@@ -1680,6 +1736,15 @@ class LivePageState extends State<LivePage> {
 
     final list = LiveChannelList(
       providers: _visibleProviders,
+      /*
+       * ★★★ Owner 第 12 条：用户自建的直播源分组（只读传入）。
+       *
+       * ⚠️ 每次 build 都**重读** UiPrefs（它是内存读，零成本）——
+       *   用户在设置页改完分组、返回本页时，这里自然就是新值，
+       *   不需要任何通知/监听机制（少一条要维护的同步链）。
+       *   这正是 UiPrefs「同步 API」设计的用处（见该文件头）。
+       */
+      sourceGroups: UiPrefs.liveSourceGroups(),
       enabledProviders: {
         for (final g in _groups)
           if (_providerEnabled(g.provider)) g.provider,
@@ -2290,6 +2355,8 @@ class LiveChannelList extends StatefulWidget {
     required this.onPickChannel,
     this.onPickProvider,
     this.onPickGroup,
+    this.sourceGroups = const {},
+    this.onPickGroupFilter,
   });
 
   /// 有可播视频的源（②：整组不可用的源不出现）
@@ -2323,6 +2390,16 @@ class LiveChannelList extends StatefulWidget {
   /// ★ 测试用注入口（**生产路径永不传**）：分类筛选被点击时回调
   final ValueChanged<String?>? onPickGroup;
 
+  /// ★★★ Owner 第 12 条：用户自建的直播源分组（组名 → 源 id 列表）
+  ///
+  /// 空 Map = 用户还没建过组 ⇒ **不显示分组那一排**（老用户无感）。
+  /// ⚠️ 只读：本组件**绝不**写回（编辑入口在设置页，见 task-53 纪律：
+  ///    配置不该长在内容页）。
+  final Map<String, List<String>> sourceGroups;
+
+  /// ★ 测试用注入口（**生产路径永不传**）：分组筛选被点击时回调
+  final ValueChanged<String?>? onPickGroupFilter;
+
   @override
   State<LiveChannelList> createState() => LiveChannelListState();
 }
@@ -2333,6 +2410,12 @@ class LiveChannelListState extends State<LiveChannelList> {
 
   /// ★ 当前筛的分类（`null` = 全部分类）—— 同上
   String? _groupFilter;
+
+  /// ★★★ Owner 第 12 条：当前筛的**自定义分组**（`null` = 全部分组）—— 同上
+  ///
+  /// ⚠️ 与 `_sourceFilter` / `_groupFilter` 是**三个独立维度**，AND 组合：
+  ///   分组先收窄「有哪些源」⇒ 源筛选再在其中选一个 ⇒ 分类再收窄。
+  String? _sourceGroupFilter;
 
   @override
   void didUpdateWidget(covariant LiveChannelList oldWidget) {
@@ -2354,6 +2437,18 @@ class LiveChannelListState extends State<LiveChannelList> {
     }
     if (_groupFilter != null && !_groups.contains(_groupFilter)) {
       _groupFilter = null;
+    }
+    /*
+     * ★★★ Owner 第 12 条：分组被**删掉**（设置页删的）⇒ 清回「全部分组」。
+     *
+     * ⚠️ 只清 filter，**不碰源** —— 组里的源自动回落到「全部」显示，
+     *   这正是 Lead 要求的「删分组时里面的源回落到全部，不许消失」。
+     *   本组件从不持有「某个源属于哪个组」的状态 ⇒ 组没了就是没筛，
+     *   源列表照旧完整。
+     */
+    if (_sourceGroupFilter != null &&
+        !widget.sourceGroups.containsKey(_sourceGroupFilter)) {
+      _sourceGroupFilter = null;
     }
   }
 
@@ -2385,10 +2480,62 @@ class LiveChannelListState extends State<LiveChannelList> {
     return out;
   }
 
-  /// 只过了**源筛选**（+ 可用性）的频道
+  /// ★★★ Owner 第 12 条：分组收窄后**仍可见**的源 id 集合
+  ///
+  /// 判据全在顶层纯函数 [applyLiveSourceGroup] 里（含「绝不筛成空」的兜底），
+  /// 这里只做一次 `provider` 提取 —— 两处各写一遍判据必然漂移。
+  Set<String> get _groupVisibleProviders => {
+        for (final g in applyLiveSourceGroup(
+          widget.providers,
+          widget.sourceGroups,
+          _sourceGroupFilter,
+        ))
+          g.provider,
+      };
+
+  /// ★★★ Owner 第 12 条：**当前分组下仍要显示的源**（给源药丸排用）
+  ///
+  /// # 为什么源药丸排也要跟着分组收窄（这是用户要的核心体验）
+  /// ```text
+  /// 用户原话：
+  /// > 就可以不用看不想看的其他源了
+  /// ★ 关键词是**不用看** —— 如果分组只过滤频道列表、却把全部源名
+  ///   照旧列在药丸排里，用户**仍然在看**那些不想看的源名。
+  ///   ⇒ 分组必须同时收窄**这一排**，否则这条需求只做了一半。
+  /// ```
+  ///
+  /// ⚠️ 与 `_groupVisibleProviders` 的区别：那个是「哪些**频道**该留」
+  ///   （从 `widget.channels` 推），这个是「哪些**源药丸**该画」
+  ///   （从 `widget.providers` 推）。两者同源（都走 [applyLiveSourceGroup]），
+  ///   但集合不同：一个源可能在 `providers` 里却没有频道。
+  List<LiveGroup> get _visibleSources => applyLiveSourceGroup(
+        widget.providers,
+        widget.sourceGroups,
+        _sourceGroupFilter,
+      );
+
+  /// ★★★ 组里的源被**删掉**后，源筛选要跟着清（否则列表恒空）
+  ///
+  /// 判据与 `didUpdateWidget` 里那条同源，但那条只在 widget 变化时跑；
+  /// 这里在 **build 时**兜一道 —— 用户点分组时若源筛选已失效，立刻自愈。
+  void _healSourceFilter() {
+    if (_sourceFilter == null) return;
+    if (_visibleSources.any((g) => g.provider == _sourceFilter)) return;
+    _sourceFilter = null;
+  }
+  /// 只过了**分组 + 源筛选**（+ 可用性）的频道
+  ///
+  /// ⚠️ 分组在前：它是「有哪些源」这一层的收窄，
+  ///    源筛选是「这些源里看哪一个」—— 顺序反了会出现
+  ///    「筛了一个不在本组的源 ⇒ 空」这种自相矛盾的状态。
   List<LiveFlatEntry> get _sourceFiltered {
-    if (_sourceFilter == null) return widget.channels;
-    return widget.channels.where((e) => e.provider == _sourceFilter).toList();
+    final byGroup = _sourceGroupFilter == null
+        ? widget.channels
+        : widget.channels
+              .where((e) => _groupVisibleProviders.contains(e.provider))
+              .toList();
+    if (_sourceFilter == null) return byGroup;
+    return byGroup.where((e) => e.provider == _sourceFilter).toList();
   }
 
   /// 最终要显示的频道（源 ∩ 分类，AND）
@@ -2402,10 +2549,14 @@ class LiveChannelListState extends State<LiveChannelList> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    _healSourceFilter();
     final groups = _groups;
     final shown = _filtered;
     // ★ 有筛选生效吗（决定空态文案要说"没有频道"还是"这个筛选下没有频道"）
-    final filtering = _sourceFilter != null || _groupFilter != null;
+    final filtering =
+        _sourceFilter != null ||
+        _groupFilter != null ||
+        _sourceGroupFilter != null;
 
     return Container(
       decoration: BoxDecoration(
@@ -2417,7 +2568,75 @@ class LiveChannelListState extends State<LiveChannelList> {
         children: [
           /*
            * ════════════════════════════════════════════════════════════
-           * ★★★ task-1013【筛选】源 chip 排 —— 现在是**可点的筛选**
+           * ★★★ Owner 第 12 条【自定义分组】分组 chip 排
+           * ════════════════════════════════════════════════════════════
+           *
+           * # 用户原话（逐字）
+           * ```text
+           * > 然后支持一下自定义直播源拆分组
+           * > （就是自定义常用的然后切换分组 就可以不用看不想看的其他源了）
+           * ```
+           *
+           * # 它解决什么
+           * ```text
+           * 用户装了很多直播源，但**常看的就那几个**。
+           * 建一个「常看」组把常用的放进去 ⇒ 切到该组就**只显示这几个源**，
+           * 不用在一长串源名里翻。
+           * ```
+           *
+           * # ⚠️ 只在**建过组**时才显示这一排（老用户零感知）
+           * ```text
+           * sourceGroups 为空 ⇒ 这一排**根本不挂**
+           * （不是「挂了但只有一个全部分组」）——
+           * 没建过组的用户不该为这个功能多付一行高度。
+           * ```
+           *
+           * # 与「源筛选」是**两个正交维度**（不要合并）
+           * ```text
+           * 分组 = 「有哪些源」（先收窄集合）
+           * 源   = 「这些源里看哪一个」（再选一个）
+           * 分类 = 「按节目类型收窄」
+           * ⇒ 三者 AND 组合，顺序：分组 ⇒ 源 ⇒ 分类。
+           * ```
+           *
+           * ⚠️ 形态与下面两排**完全一致**（同款 _FilterChip + Wrap）——
+           *    三排看起来是一族，用户一眼知道「这排也是筛选」。
+           * ⚠️ 编辑入口**不在这里**：本页只做**筛选**（纯视图、无副作用）；
+           *    建组/改组在**设置页**（task-53 纪律：配置不该长在内容页）。
+           */
+          if (widget.sourceGroups.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: Sp.x3,
+                vertical: Sp.x2,
+              ),
+              child: Wrap(
+                spacing: Sp.x2,
+                runSpacing: Sp.x2,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _FilterChip(
+                    key: liveGroupFilterChipKey(null),
+                    label: '全部分组',
+                    active: _sourceGroupFilter == null,
+                    tooltip: '不按分组收窄，显示全部源'
+                        '（建组 / 改组请去 设置 → 直播分组）',
+                    onTap: () => _pickSourceGroup(null),
+                  ),
+                  for (final name in widget.sourceGroups.keys)
+                    _FilterChip(
+                      key: liveGroupFilterChipKey(name),
+                      label: name,
+                      tooltip: '只看这个分组里的源'
+                          '（建组 / 改组请去 设置 → 直播分组）',
+                      active: _sourceGroupFilter == name,
+                      onTap: () => _pickSourceGroup(name),
+                    ),
+                ],
+              ),
+            ),
+
+          /*
            * ════════════════════════════════════════════════════════════
            *
            * # 用户原话（本轮）
@@ -2458,16 +2677,53 @@ class LiveChannelListState extends State<LiveChannelList> {
            *    否则用户选了一个源后**没法回到全部**（点已选中的那个回到全部，
            *    但不够显式）。「全部源」把"回到全部"变成**可见**的操作。
            */
-          if (widget.providers.isNotEmpty)
-            SizedBox(
-              height: 40,
-              child: ListView(
-                clipBehavior: Clip.antiAlias,
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: Sp.x3,
-                  vertical: Sp.x2,
-                ),
+          /*
+           * ★★★ Owner 第 12 条：改 `Wrap`（**换行**），不许再用横向 `ListView`
+           *
+           * # 用户原话（逐字）
+           * ```text
+           * > 直播这里右边的分类布局也是不对的
+           * ```
+           * 截图里右侧源名被截成「XX 直…」、分类名被截成「科…」，都超出右边缘。
+           *
+           * # 真因（取证读数，不是猜的）
+           * ```text
+           * 本栏固定宽 300（`_buildWideBody` 的 `SizedBox(width: 300)`）。
+           * 改前这一排是 `SizedBox(height:40, child: ListView(scrollDirection: horizontal))`
+           * ⇒ 横向 ListView 的内容**溢出方向没有约束**：放不下就往右排出去，
+           *   由 `clipBehavior: Clip.antiAlias` **裁掉**（也不换行、也不出滚动条提示）。
+           * 实测（.probe/probe_tests/zz_t8_recon_probe_test.dart，300px 栏宽）：
+           *   越界 chip 数 = **9 / 9** —— 每一个 chip 的右边界都 > 300
+           *   chip#0 rect=Rect.fromLTRB(1153.0, 9.0, 1215.3, 33.0)   ← 列左边界=1153
+           *   chip#3 rect=Rect.fromLTRB(1394.1, 9.0, 1468.5, 33.0)   ← 右边界 1468 > 1453
+           * ⇒ 与 Owner 截图完全对上。
+           * ```
+           *
+           * # 为什么用 `Wrap` 而不是「横向滚动」或「省略号」
+           * ```text
+           * ① 横向滚动：用户根本**看不见**右边还有东西（无滚动条、无渐变提示）
+           *    ⇒ 等于「功能存在但发现不了」，与现在一样糟。
+           * ② 省略号截断：筛选 chip 的价值就是**把源名列全**让用户点，
+           *    把源名截成「XX 直…」等于没显示。
+           * ③ `Wrap`：放不下就**换行**，所有 chip 全部可见可点 ——
+           *    正是「分类布局不对」要的东西。
+           * ```
+           *
+           * ⚠️ 行高不再固定 40：换行后高度由行数决定 ⇒ 用 `Padding` 给内边距，
+           *    让 `Wrap` 自己决定高度（父级是 Column，天然自适应）。
+           * ⚠️ chip 之间的间距改由 `Wrap.spacing` 给，**删掉**原来那些
+           *    显式 `SizedBox(width: Sp.x2)` 分隔符（换行时它们会跑到行首/行尾）。
+           */
+          if (_visibleSources.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: Sp.x3,
+                vertical: Sp.x2,
+              ),
+              child: Wrap(
+                spacing: Sp.x2,
+                runSpacing: Sp.x2,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   // 「全部源」—— 显式的"回到不筛"
                   _FilterChip(
@@ -2476,8 +2732,7 @@ class LiveChannelListState extends State<LiveChannelList> {
                     active: _sourceFilter == null,
                     onTap: () => _pickSource(null),
                   ),
-                  for (final g in widget.providers) ...[
-                    const SizedBox(width: Sp.x2),
+                  for (final g in _visibleSources)
                     _FilterChip(
                       // ★ 测试锚点（见 [sourceFilterChipKey]：源名在行尾 tag 里也出现
                       //   ⇒ 光靠 `find.text` 会歧义）
@@ -2499,7 +2754,6 @@ class LiveChannelListState extends State<LiveChannelList> {
                       dimmed: !widget.enabledProviders.contains(g.provider),
                       onTap: () => _pickSource(g.provider),
                     ),
-                  ],
                 ],
               ),
             ),
@@ -2522,16 +2776,25 @@ class LiveChannelListState extends State<LiveChannelList> {
            *   （即至少有两个真实分类，选了才有区别）。
            * ```
            */
+          /*
+           * ★★★ Owner 第 12 条：同上一排 —— 改 `Wrap`，不许再用横向 `ListView`
+           *
+           * 截图里「科…」被右边缘切掉；真因与取证读数见**上面源那一排**的注释
+           *（同一个 300px 栏宽 + 同一个 `clipBehavior: Clip.antiAlias`）。
+           *
+           * ⚠️ 分类名往往比源名更长（「综合」「财经」「综艺」「科技」「体育」…），
+           *    换行收益比源那一排更大。
+           */
           if (groups.isNotEmpty)
-            SizedBox(
-              height: 40,
-              child: ListView(
-                clipBehavior: Clip.antiAlias,
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: Sp.x3,
-                  vertical: Sp.x2,
-                ),
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: Sp.x3,
+                vertical: Sp.x2,
+              ),
+              child: Wrap(
+                spacing: Sp.x2,
+                runSpacing: Sp.x2,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   _FilterChip(
                     key: groupFilterChipKey(null),
@@ -2539,8 +2802,7 @@ class LiveChannelListState extends State<LiveChannelList> {
                     active: _groupFilter == null,
                     onTap: () => _pickGroup(null),
                   ),
-                  for (final g in groups) ...[
-                    const SizedBox(width: Sp.x2),
+                  for (final g in groups)
                     _FilterChip(
                       key: groupFilterChipKey(g),
                       label: g,
@@ -2548,7 +2810,6 @@ class LiveChannelListState extends State<LiveChannelList> {
                       active: _groupFilter == g,
                       onTap: () => _pickGroup(g),
                     ),
-                  ],
                 ],
               ),
             ),
@@ -2614,6 +2875,30 @@ class LiveChannelListState extends State<LiveChannelList> {
   void _pickGroup(String? group) {
     setState(() => _groupFilter = group);
     widget.onPickGroup?.call(group);
+  }
+
+  /// ★★★ Owner 第 12 条：点某个**自定义分组** chip（`null` = 全部分组）
+  ///
+  /// ★ 与 `_pickSource` / `_pickGroup` 同一条纪律：**只改视图**，
+  ///   一个 `setState` 写一个内存字段 —— 不落盘、不调 API、不碰启停。
+  ///   （建组 / 改组在设置页；本页只负责「按组看」。）
+  ///
+  /// ⚠️ 切分组时**顺手清掉源筛选**：源筛选可能指着一个**不在新组里**的源，
+  ///   留着它会让列表恒空（用户会以为「这个组没内容」）。
+  ///   这与 `didUpdateWidget` 里「源没了就清筛选」是同一条自愈纪律。
+  void _pickSourceGroup(String? name) {
+    setState(() {
+      _sourceGroupFilter = name;
+      if (name != null && _sourceFilter != null) {
+        final visible = applyLiveSourceGroup(
+          widget.providers,
+          widget.sourceGroups,
+          name,
+        ).map((g) => g.provider);
+        if (!visible.contains(_sourceFilter)) _sourceFilter = null;
+      }
+    });
+    widget.onPickGroupFilter?.call(name);
   }
 }
 

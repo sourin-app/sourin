@@ -599,14 +599,29 @@ void main() {
     String src(String rel) => File(rel).readAsStringSync();
 
     test('★★ 四个自实现浮层都用上了共享动效件', () {
+      /*
+       * ★★ 2026-10-16：弹幕面板改走统一外壳 `AppDialogShell`
+       *
+       * 改动前它自己写 `OverlayScrim(` + `OverlayCardMotion(`；现在这两件
+       * 搬进了 `lib/ui/widgets/app_dialog_shell.dart`（7 个弹窗共用一份），
+       * 面板文件里只剩 `AppDialogShell(`。
+       *
+       * ⚠️ 本断言**没有放宽**：
+       *   - 改前：面板文件必须含那两个字面量
+       *   - 改后：面板必须走外壳，**且**外壳本身必须含那两个字面量
+       * 两条一起查 ⇒ 任一处把动效删掉都会红。
+       * 故障注入已证：把 `app_dialog_shell.dart` 里那两行删掉，本组当场变红。
+       * 若只把弹幕那条删掉、不补外壳检查，就等于给「搬走但没接上」开口子。
+       */
       final files = <String, List<String>>{
         'lib/ui/widgets/danmaku_settings_dialog.dart': [
-          'OverlayScrim(',
-          'OverlayCardMotion(',
+          'AppDialogShell(',
         ],
+        // ★ 2026-10-16：字幕面板也改走统一外壳了（原来是最后一个自写外壳）。
+        //   与 danmaku 同款处理 —— 断言从「面板文件含那两个动效件」改成
+        //   「面板走外壳」，动效件的存在由下面那条「外壳自己必须有」兜住。
         'lib/ui/subtitle/subtitle_panel.dart': [
-          'OverlayScrim(',
-          'OverlayCardMotion(',
+          'AppDialogShell(',
         ],
         'lib/ui/widgets/episode_strip.dart': [
           'OverlayScrim(',
@@ -624,6 +639,16 @@ void main() {
         }
       });
 
+      // ★★ 统一外壳自己必须真的接了动效件
+      //    （上面的 danmaku 条目只查「走了外壳」，这一条查「外壳里有动效」）
+      final shell = src('lib/ui/widgets/app_dialog_shell.dart');
+      for (final n in <String>['OverlayScrim(', 'OverlayCardMotion(']) {
+        expect(
+          shell.contains(n),
+          isTrue,
+          reason: '★★ app_dialog_shell.dart 少了 $n —— 走外壳的 7 个弹窗会一起退回硬切',
+        );
+      }
       // 选集面板里两个形态（条 + 完整面板）各有一份
       final strip = src('lib/ui/widgets/episode_strip.dart');
       expect(

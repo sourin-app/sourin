@@ -195,6 +195,7 @@ class Capabilities {
     this.favorites = false,
     this.timeshift = false,
     this.danmaku = false,
+    this.danmakuSend = false,
     this.loginSupported = false,
     this.loginHint,
     this.loginNeedsUsername = true,
@@ -234,6 +235,21 @@ class Capabilities {
 
   /// 支持弹幕
   final bool danmaku;
+
+  /// ★ 支持**发送**弹幕（task-T2，2026-10-16）
+  ///
+  /// # 为什么与 [danmaku] 分开
+  ///
+  /// Owner 原话的关键词是「**该站点支持的**弹幕发送功能」——
+  /// 现实里「能取弹幕」的站点远多于「能发弹幕」的站点
+  /// （取 = 公开读接口；发 = 要登录 + 签名 + 风控）。
+  ///
+  /// 合成一个位，界面就**无法如实告诉用户**「这个源只能看不能发」。
+  ///
+  /// ⚠️ 本字段**只决定发送入口出不出现**。
+  ///    「真正能不能发」的判据在宿主侧（插件有没有实现 `danmakuSend()`）——
+  ///    与 `canAutoLogin` 同一条纪律：猜错 UI 只是措辞不准，猜错能否调会真的失败。
+  final bool danmakuSend;
 
   /// **可以**登录，但不是必须 —— 游客态照样能用（如 某视频站）
   ///
@@ -305,6 +321,7 @@ class Capabilities {
         favorites: j['favorites'] as bool? ?? false,
         timeshift: j['timeshift'] as bool? ?? false,
         danmaku: j['danmaku'] as bool? ?? false,
+        danmakuSend: j['danmaku_send'] as bool? ?? false,
         loginSupported: j['login_supported'] as bool? ?? false,
         loginHint: j['login_hint'] as String?,
         /*

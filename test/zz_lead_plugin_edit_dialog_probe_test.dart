@@ -8,7 +8,12 @@
 //   本探针补上这个口子。
 //
 // 判据设计（★ 关键：区分「没渲染」与「渲染了但看不见」）：
-//   ① showAppDialog 之后，对话框**在树里**（AlertDialog 存在）
+//   ① showAppDialog 之后，对话框**在树里**（`AppDialogShell` 存在）
+//      ⚠️ 2026-10-16：承载件从 `AlertDialog` 换成统一外壳 `AppDialogShell`
+//         （Owner 第 8 条「弹窗 UI 重做」）。判据**语义不变**：
+//         「弹窗真的被渲染进树、且内容区不是 0 宽」—— 只是换了类名。
+//         历史上这个承载件已被换过两次（AlertDialog → SettingsDialog → AppDialogShell），
+//         每次探针都会失明 —— 这正是"判据钉在承载件上"的代价。
 //   ② 标题/动作按钮**真的被布局**且有非零尺寸
 //   ③ ★ 反面对照：不给 outer navigator 时应当**失败**（证明判据不是恒真）
 import 'dart:async';
@@ -16,6 +21,7 @@ import 'dart:async';
 // ★★★ 2026-10-09：必须用 material_ui（本仓的 Material 库），
 //   而不是 flutter/material —— 见下面「两个 Material 库」的注释。
 import 'package:material_ui/material_ui.dart';
+import 'package:sourin_spike/ui/widgets/app_dialog_shell.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:sourin_spike/core/models.dart';
@@ -50,8 +56,8 @@ void main() {
     await t.pump();
     await t.pump(const Duration(milliseconds: 400));
 
-    final dlg = find.byType(AlertDialog);
-    print('PROBE| ① AlertDialog 在树里 = ${dlg.evaluate().isNotEmpty}');
+    final dlg = find.byType(AppDialogShell);
+    print('PROBE| ① AppDialogShell 在树里 = ${dlg.evaluate().isNotEmpty}');
     if (dlg.evaluate().isNotEmpty) {
       final size = t.getSize(dlg);
       print('PROBE| ① 对话框尺寸 = ${size.width} x ${size.height}');
@@ -68,7 +74,7 @@ void main() {
        */
       /*
        * ★ 判据修正（我第一版测错了节点）：
-       *   `find.byType(AlertDialog)` 取的是**外层包装**（它本来就铺满），
+       *   `find.byType(AppDialogShell)` 取的是**外层包装**（它本来就铺满），
        *   所以恒等于视口、永远判红 —— 那是**判据自己的问题**，不是缺陷。
        *   真正决定「看得见看不见」的是**卡片内部内容**的渲染尺寸。
        *
@@ -83,7 +89,7 @@ void main() {
        *     「内容区不是 0 宽」—— 不再靠某个具体控件的位置。
        */
       final content = find.descendant(
-        of: find.byType(AlertDialog),
+        of: find.byType(AppDialogShell),
         matching: find.byType(Column),
       );
       expect(content, findsWidgets, reason: '★ 对话框正文应当存在（Column 子树）');
@@ -131,8 +137,8 @@ void main() {
     await t.pump();
     await t.pump(const Duration(milliseconds: 400));
 
-    final dlg = find.byType(AlertDialog);
-    print('PROBE| ② AlertDialog 在树里 = ${dlg.evaluate().isNotEmpty}');
+    final dlg = find.byType(AppDialogShell);
+    print('PROBE| ② AppDialogShell 在树里 = ${dlg.evaluate().isNotEmpty}');
     expect(dlg.evaluate().isNotEmpty, isTrue);
     final size = t.getSize(dlg);
     print('PROBE| ② 尺寸 = ${size.width} x ${size.height}');

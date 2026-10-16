@@ -613,6 +613,35 @@ pub struct Capabilities {
     /// 支持弹幕
     pub danmaku: bool,
 
+    /// ★ 支持**发送**弹幕（2026-10-16，task-T2）
+    ///
+    /// # 为什么与 `danmaku` 分成两位（Owner 原话是关键）
+    ///
+    /// > 让插件也支持一下提供弹幕的功能…然后如果是最好支持一下，
+    /// > **该站点支持的**弹幕发送功能就更好了
+    ///
+    /// 关键词是「该站点支持的」。现实里：
+    /// ```text
+    /// 能取弹幕的站点   远多于   能发弹幕的站点
+    /// （取 = 公开读接口；发 = 要登录 + csrf/wbi 签名 + 风控）
+    /// ```
+    /// 合成一个位，宿主就**无法如实告诉用户**「这个源只能看不能发」——
+    /// 而那正是 Owner 第 ② 条纪律（不支持就说不支持）要的东西。
+    ///
+    /// ⚠️ **默认必须是 `false`**：老插件不声明 = 行为与今天逐字相同
+    ///    （界面上不出现任何发送入口）。
+    ///
+    /// ⚠️ 本字段**只影响 UI**（发送入口出不出现）。
+    ///    「真正调不调」的判据始终是插件**实际有没有实现 `danmakuSend()`**
+    ///    （`has_method` 运行时探测）—— 与 `can_auto_login` 同一条纪律：
+    ///    ```text
+    ///    猜错 UI   → 只是措辞不准
+    ///    猜错能否调 → 会真的失败
+    ///    ```
+    ///    插件是**人工投放**的，声明不一定送得到用户手里（见 `can_auto_login` 的实测记录）。
+    #[serde(default)]
+    pub danmaku_send: bool,
+
     // ─────────── 登录（2026-09-20 新增，为 某视频站这类"游客也能用"的源）───────────
     /// **可以登录，但不是必须** —— 游客态照样能用
     ///
@@ -782,6 +811,185 @@ pub struct ConfigOption {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+}
+
+// ─────────────────────────── 插件弹幕（task-T2，2026-10-16）───────────────────────────
+//
+// # 这一组类型解决什么
+//
+// 弹幕的**能力位**（\`Capabilities.danmaku\`）早就存在、也早就在界面上显示
+// 「弹幕」标签，但**宿主侧没有任何地方拿它去调插件** —— 插件作者想实现
+// 也无从下手（没有方法名、没有入参形状、没有出参形状）。
+//
+// 本组类型把那个空位补上：入参、出参、以及 wire 单条弹幕。
+//
+// # ★ wire 格式为什么直接复用 dandanplay 的 \`{cid, p, m}\`（不是发明一套新 JSON）
+//
+// 宿主渲染层**已经有**解析器：\`lib/core/danmaku.dart\` 的
+// \`DanmakuComment.parse({cid, p, m})\`，其中 \`p\` 是
+// \`"出现时间秒,模式,颜色,用户ID"\`。
+// ⇒ 插件输出**直接喂现有解析器**，宿主**零新增解析逻辑** ——
+//   不存在「两套解析各写一半、结果不一致」这个经典问题。
+//
+// 而且这个格式与**外部视频源弹幕 XML 天然同构**（颜色/模式语义一致，
+// 见 \`lib/core/bili/bili_api.dart\` 的实测记录），也与**某些动画站的
+// 弹幕后端**对齐（它们直接走 dandanplay 协议）——
+// 所以它不是为某一个站点量身定的，而是多方交集的**最小公倍数**。
+
+/// 取弹幕的入参
+///
+/// # 为什么 \`media_id\` 与 \`episode_id\` **都给**（而不是只给后者）
+///
+/// \`\`\`text
+/// 外部视频源类：一条弹幕池对应一个 cid    ⇒ 只需要 episode_id
+/// 动画站类    ：弹幕挂在「番剧 + 集数」上  ⇒ 可能需要 media_id + episode_id 一起
+/// \`\`\`
+/// 只给一个会把第二类站点逼到「把两个值拼进 episode_id」的 hack 里 ——
+/// 而那种 hack 一旦流行就没法改了。
+///
+/// ⚠️ \`media_id\` / \`episode_id\` 必须是**剥掉 \`"{provider}:"\` 前缀**的裸值
+///    （桥接层负责剥，与 \`resolve()\` / \`detail()\` 同一条纪律）。
+///    不剥的后果实测过：插件拿 \`srca:51463\` 当数字 id 用 → 上游 400。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DanmakuRequest {
+    /// 源 id（宿主填，插件一般不用）
+    #[serde(default)]
+    pub provider: String,
+    /// 条目 id（★ 已剥前缀）
+    #[serde(default)]
+    pub media_id: String,
+    /// 剧集 id（★ 已剥前缀）
+    #[serde(default)]
+    pub episode_id: String,
+    /// 作品名 —— 给插件做「按标题搜索弹幕库」用
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// 剧集名（同上）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode_title: Option<String>,
+    /// 时长（秒）—— 有些弹幕库要它来裁时间轴
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<i64>,
+}
+
+/// 一条 wire 弹幕 —— 形状与 dandanplay 的 \`CommentData\` 一致
+///
+/// \`p\` 的分段（宿主 \`DanmakuComment.parse\` 逐字实现）：
+/// \`\`\`text
+/// "出现时间秒,模式,颜色,用户ID"
+///   模式  1 = 滚动（右→左）   4 = 底部固定   5 = 顶部固定   其余 → 归滚动
+///   颜色  十进制 24 位 RGB（0xFFFFFF = 16777215）
+/// \`\`\`
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WireComment {
+    /// ★ **可空** —— 见下方 \`cid\` 缺口的说明
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cid: Option<i64>,
+    /// \`"时间,模式,颜色,用户ID"\`
+    pub p: String,
+    /// 弹幕正文
+    pub m: String,
+}
+
+/// 取弹幕的返回
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DanmakuBundle {
+    pub items: Vec<WireComment>,
+    /// 这条弹幕从哪来（如 \`"bili:777"\` / \`"dandanplay:abc"\`）——
+    /// 给用户看「这条是怎么找到的」，排错时是唯一线索
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// ★ 上游被**截断**了吗
+    ///
+    /// 本版本**不做分页**（Owner 已拍板：沿用宿主截断）。
+    /// 但必须**如实告知** —— 否则用户会把「前 N 条」当成全量。
+    /// 与 \`DanmakuFetchResult\` 里「如实说明这条弹幕怎么找到的」同一条纪律。
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+impl DanmakuBundle {
+    /// ★★ 给缺 \`cid\` 的弹幕补位 —— **没有这一步，插件弹幕会静默全丢**
+    ///
+    /// # 为什么必须有（不是防御性编程，是实测出来的坑）
+    ///
+    /// 宿主 \`lib/core/danmaku.dart\` 的 \`DanmakuComment.fromJson\` 逐字是：
+    /// \`\`\`dart
+    /// final cid = _asInt(j['cid']);
+    /// if (cid == null) return null;   // ★ 整条丢弃
+    /// \`\`\`
+    ///
+    /// 实测（\`.probe/plugin-work/danmaku_wire_crosscheck_test.dart\`）：
+    /// 3 条只有 \`{p, m}\` 的 wire 喂进去 ⇒ **3 条全部被丢弃，一条不剩，
+    /// 且不抛任何异常**。表现是「弹幕加载成功但一条都没有」——
+    /// 用户与插件作者都**无从排查**。
+    ///
+    /// # 为什么 cid 在协议里是**可空**的
+    ///
+    /// 因为某视频站的弹幕 XML 里**根本没有** dandanplay 的 cid 概念
+    /// （它的 \`<d p="...">\` 只有 9 段位置信息）。硬要求 cid 会逼插件作者
+    /// **编一个假 id** —— 那比缺它更糟（假 id 会污染去重/去黑名单的逻辑）。
+    ///
+    /// # 补位规则：下标 + 1
+    ///
+    /// 已核对 \`lib/core/danmaku.dart\` 全文：cid 只在 \`parse\` / \`fromJson\` 里
+    /// 读写，**没有任何逻辑依赖它的取值**，只要求它存在且是 int
+    /// （渲染层把它当「唯一编号」）。所以「下标 + 1」是安全的：
+    /// 在**同一次返回内**唯一，且与真实 cid（正整数）不冲突。
+    ///
+    /// ⚠️ 只补 \`None\`，**不覆盖**插件给的真 cid。
+    pub fn fill_missing_cids(&mut self) -> usize {
+        let mut filled = 0;
+        for (i, c) in self.items.iter_mut().enumerate() {
+            if c.cid.is_none() {
+                // 下标 + 1 ⇒ 从 1 开始，与真实 cid 的取值习惯一致
+                c.cid = Some(i as i64 + 1);
+                filled += 1;
+            }
+        }
+        filled
+    }
+}
+
+/// 发送弹幕的入参
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DanmakuSendRequest {
+    #[serde(default)]
+    pub provider: String,
+    /// 剧集 id（★ 已剥前缀）
+    #[serde(default)]
+    pub episode_id: String,
+    /// 正文
+    pub text: String,
+    /// 出现时间（秒）。缺省 0 = 当前进度
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<f64>,
+    /// 1 滚动 / 4 底部 / 5 顶部（缺省 1）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<i64>,
+    /// 十进制 RGB（缺省 16777215 白）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<i64>,
+    /// 当前播放进度（毫秒）—— 给「按进度发」的站点
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_ms: Option<i64>,
+}
+
+/// 发送弹幕的返回
+///
+/// ⚠️ \`ok: true\` 是「**上游确实收下了**」的承诺，不是「我们试过了」。
+///    未实现 / 上游拒绝时**必须**让方法返回 \`Err\`（\`unsupported:\` 前缀），
+///    **绝不**能返回 \`ok: false\` 或 \`ok: true\` 假装成功：
+///    \`\`\`text
+///    假装成功的后果最坏：用户以为发出去了 → 刷新找不到 → 反复发 →
+///    在真站点上可能**已经触发风控封禁**。
+///    \`\`\`
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DanmakuSendResult {
+    pub ok: bool,
+    /// 上游回传的弹幕 id（有则给，便于用户核对）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 fn default_kind() -> String {

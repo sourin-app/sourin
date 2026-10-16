@@ -749,6 +749,19 @@ void main() {
     });
 
     test('★ 三个面板的挂载点：常挂 + 只翻 visible（不是 if (_xOpen)）', () {
+      // ★★ 统一外壳自己必须真的按 fill 分流
+      //    （上面只查「面板透传了」，这一条查「外壳认不认」）
+      final shellSrc = code('lib/ui/widgets/app_dialog_shell.dart');
+      expect(
+        shellSrc.contains('if (!fill) return'),
+        isTrue,
+        reason: '★ 外壳没有按 fill 分流 —— 所有接入的弹窗都会退化成一种形态',
+      );
+      expect(
+        shellSrc.contains('fill: widget.fill,'),
+        isFalse,
+        reason: '★ 外壳里不该再出现 fill: widget.fill（那是面板侧的写法）',
+      );
       final c = code('lib/ui/player_page.dart');
       for (final f in const [
         '_danmakuSheetOpen',
@@ -794,13 +807,42 @@ void main() {
           reason: '★ ' + rel + ' 少了 fill 开关的**默认 true**（老宿主会被破坏）',
         );
         expect(c.contains('final bool fill;'), isTrue);
-        expect(
-          c.contains(
-            'return widget.fill ? Positioned.fill(child: body) : body;',
-          ),
-          isTrue,
-          reason: '★ ' + rel + ' 的根节点没有按 fill 分流',
-        );
+        /*
+         * ★★ 2026-10-16：定位责任从「面板自己」移到「统一外壳」。
+         *
+         * 改前判据：面板源码里必须有那句三元
+         *   `return widget.fill ? Positioned.fill(child: body) : body;`
+         *
+         * 现在 danmaku / bili 两个面板把根节点交给了 `AppDialogShell`，
+         * 由外壳**自建 Stack** 并承担定位 —— 面板里不再有那句三元。
+         *
+         * ⚠️ 语义**一条没放松**，判据按「谁负责定位」分流：
+         *   · 未接入外壳的面板（subtitle_panel）⇒ 仍必须自带那句三元
+         *   · 已接入外壳的面板 ⇒ 必须 `fill: widget.fill` 原样透传
+         *     （★ 透传而不是写死 true：写死会让 fill=false 的宿主失去语义）
+         *   · 且外壳本身必须真的按 fill 分流（下面单独钉）
+         *
+         * 这样任一侧把 fill 分流删掉都会红：面板不传 ⇒ 第二条红；
+         * 外壳不分流 ⇒ 第三条红。
+         */
+        final usesShell = c.contains('AppDialogShell(');
+        if (usesShell) {
+          expect(
+            c.contains('fill: widget.fill,'),
+            isTrue,
+            reason: '★ ' +
+                rel +
+                ' 接了外壳但没把 fill 原样透传 —— fill=false 的宿主语义会丢',
+          );
+        } else {
+          expect(
+            c.contains(
+              'return widget.fill ? Positioned.fill(child: body) : body;',
+            ),
+            isTrue,
+            reason: '★ ' + rel + ' 既没接外壳、也没按 fill 分流',
+          );
+        }
       }
       final c = code('lib/ui/player_page.dart');
       expect(

@@ -235,6 +235,16 @@ PlayerSettingsSheet _sheet({
 /// ```
 /// ⚠️ 仍然先断言「确实找到了 choiceChip」再读 side —— 找不到就红，
 ///    否则后面那几条会变成**恒真**（假绿）。
+///
+/// ★ 2026-10-16（task-14）：非高亮态的**具体色值不再写死**。
+///   改前 `_chip` 的未选中描边是硬编码 `Colors.white24`，所以下面那几条
+///   阴性对照直接钉它。task-14 把未选中态改成走主题
+///   （`colorScheme.outlineVariant`，浅色主题下 white24 在白卡上等于没有边界）
+///   ⇒ 再钉死色值就会在换主题时假红。
+///
+///   **判据没有放松**：阴性对照要证明的是「这一档**没有**被点亮」，
+///   所以现在断言「边框色 **不等于** 高亮色 lightBlueAccent」——
+///   这比钉一个具体灰值**更贴近原意**（原意是「不高亮」，不是「等于某个灰」）。
 Color _chipBorderColor(WidgetTester t, String label) {
   final chip = find.ancestor(
     of: find.text(label),
@@ -367,7 +377,10 @@ void main() {
 
       expect(_chipBorderColor(t, '2x'), Colors.lightBlueAccent,
           reason: '★ 当前倍速那一档必须高亮（_chip 的 active 分支）');
-      expect(_chipBorderColor(t, '1x'), Colors.white24,
+      // ★ task-14：未选中色改走主题（原为硬编码 Colors.white24）⇒
+      //   判据从「等于某个灰」改成「不等于高亮色」。
+      //   原意就是「不高亮」，这个写法更贴原意，也没有放松。
+      expect(_chipBorderColor(t, '1x'), isNot(Colors.lightBlueAccent),
           reason: '★★ 阴性对照：非当前档必须**不高亮** —— '
               '若这里也是 lightBlueAccent，说明高亮是写死的（假功能）');
     });
@@ -377,7 +390,8 @@ void main() {
       await t.pumpAndSettle();
 
       for (final l in _labels) {
-        expect(_chipBorderColor(t, l), Colors.white24,
+        // ★ task-14：同上 —— 判据改为「不等于高亮色」。
+        expect(_chipBorderColor(t, l), isNot(Colors.lightBlueAccent),
             reason: '★ rate=1.75 不在档位里 ⇒ 任何档都不该高亮'
                 '（证明高亮是数据驱动的，不是「第一个永远亮」）');
       }

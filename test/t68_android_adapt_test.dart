@@ -235,12 +235,20 @@ PlayerSettingsSheet makeSheet() {
 }
 
 /// 面板卡片：`player_settings_sheet.dart` 里**唯一**那个 `maxHeight: 620`
-/// 的 `Container`。
+/// 的 `ConstrainedBox`。
 ///
 /// ★ 用「约束」而不是「宽 560」来找它：360dp 的窗口会把 560 夹成 360，
 ///   那时按宽度找会找不到（然后几何断言全变成恒真的假绿）。
+///
+/// ★ 2026-10-16（task-14）：判据从 `Container` 改成 `ConstrainedBox`。
+///   那一轮把卡片从 `Container(decoration:)` 换成 `Material`（框架的
+///   `SwitchListTile` 需要最近的 Material 祖先来画涟漪，否则抛
+///   「ink splashes may be invisible」），尺寸改挂在外层
+///   `SizedBox` + `ConstrainedBox` 上 —— `Material` 不接这两个参数。
+///   ⚠️ 语义**没有放松**：`maxHeight == 620` 这个约束仍然被钉着，
+///      只是它现在住在一个 `ConstrainedBox` 里。
 final Finder _card = find.byWidgetPredicate(
-  (w) => w is Container && w.constraints?.maxHeight == 620,
+  (w) => w is ConstrainedBox && w.constraints.maxHeight == 620,
   description: '设置面板卡片（constraints.maxHeight == 620）',
 );
 

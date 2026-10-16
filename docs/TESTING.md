@@ -13,7 +13,13 @@
 ```bash
 # ★ 规模取数：find test -name "*.dart" | wc -l / find rust/sourin_core -name "*.rs" | wc -l
 # Dart 侧（约 374 个文件 / 约 14 万行）
-flutter test
+#
+# ⚠️ 隔离数据目录：不隔离时 lib/shell.dart 的 _resolveDataDir() 会回落到
+#    **真实**数据目录（%APPDATA%\app.sourin.player），测试/探针可能改动真实数据。
+#    另外要清掉沙盒 ui-prefs.json 里的 dsh.download.dir —— 它只决定从哪读偏好，
+#    不校验里面的真实下载路径（见 docs/AGENTS.md §3）。
+test_data_dir="$(mktemp -d)"
+flutter test --dart-define=DATA_DIR_OVERRIDE="$test_data_dir"
 
 # Rust 侧（src 约 29 个 + tests 约 35 个文件 / 合计约 52 千行）
 cd rust/sourin_core && cargo test

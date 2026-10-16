@@ -91,6 +91,8 @@ cd sourin && flutter pub get
 cd rust/sourin_core && cargo build --release && cd ../..
 
 # 3. 把核心放进 Windows 构建目录（CMake 会在构建时再拷进 runner）
+#    ⚠️ 这行是 **PowerShell**。在 Git Bash 里逐行照抄会报 command not found，请改用：
+#       cp rust/sourin_core/target/release/sourin_core.dll windows/
 Copy-Item rust\sourin_core\target\release\sourin_core.dll windows\
 
 # 4. 编 Flutter —— ★ -t lib/shell.dart 不能漏（lib/main.dart 是早期 spike，不是产品入口）

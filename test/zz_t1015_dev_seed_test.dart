@@ -295,6 +295,44 @@ void main() {
           reason: '★★ 短名 Source 下插件也必须带进来 —— 这正是 CI 上静默拷 0 个的那个 bug');
     });
 
+    test('★★ 护栏二：-Target 是源目录的 junction ⇒ 必须硬失败（按真实指向判）', () {
+      if (!requirePs()) return;
+      /*
+       * # 这条防的是什么（CR #29 指出，属实）
+       *
+       * 原来只比**字符串**。但 `-Target` 可以是源目录的一个 junction：
+       * 字符串看起来毫无关系，写进去的却还是真实目录 ——
+       * 下面「关掉云同步自动」那步会真的改写用户真实的 sync-settings.json。
+       *
+       * ⚠️ 需要 mklink /J 权限；拿不到就跳过（不假装通过）。
+       */
+      final link = Directory.systemTemp.createTempSync('t1015_junc_');
+      link.deleteSync();
+      final mk = Process.runSync('cmd', <String>[
+        '/c', 'mklink', '/J', link.path, src.path,
+      ]); // cmd 输出是 OEM 代码页，不要按 utf8 解码（会 FormatException）
+      if (mk.exitCode != 0 || !link.existsSync()) {
+        markTestSkipped('本机建不了 junction（需要权限）⇒ 复现不了');
+        return;
+      }
+      addTearDown(() {
+        try {
+          link.deleteSync();
+        } catch (_) {}
+      });
+
+      final before = snapshot(src);
+      final r = Process.runSync(ps!, <String>[
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', kScript,
+        '-Source', src.path, '-Target', link.path, '-Force',
+      ], stdoutEncoding: utf8, stderrEncoding: utf8);
+
+      expect(r.exitCode, isNot(0),
+          reason: '★★ 目标指向源目录（junction）必须硬失败 —— '
+              '否则 -Force 会改写用户真实的 sync-settings.json');
+      expect(snapshot(src), equals(before), reason: '拒绝执行后源目录必须原封不动');
+    });
+
     test('★ 护栏：-Target 指到源目录本身 ⇒ 硬失败，且源目录仍然没变', () {
       if (!requirePs()) return;
       final before = snapshot(src);

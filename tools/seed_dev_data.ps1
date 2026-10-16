@@ -184,6 +184,48 @@ if ($dstFull.StartsWith($srcFull + $sep) -or $srcFull.StartsWith($dstFull + $sep
     exit 2
 }
 
+# ── ★★ 护栏二：按**真实指向**拒绝源目录别名（junction / 符号链接）──
+#
+# 上面只比了字符串。但 `-Target` 可以是源目录的一个 **junction**：
+# 字符串看起来毫无关系，实际写进去的还是真实目录。
+# ⇒ 比对「解析后的真实路径」（.NET 6+ 的 ResolveLinkTarget；PS 5.1 没有时退回字符串比较）。
+# 另外**目标里已存在的 ui-prefs.json 也可能是源文件的硬/软链**，所以文件级也要查。
+function Resolve-RealPath([string]$p) {
+    try {
+        $item = Get-Item -LiteralPath $p -Force -ErrorAction Stop
+        if ($item.PSObject.Methods.Name -contains "ResolveLinkTarget") {
+            $t = $item.ResolveLinkTarget($true)
+            if ($t) { return [IO.Path]::GetFullPath($t.FullName) }
+        }
+    } catch { }
+    return [IO.Path]::GetFullPath($p)
+}
+$srcReal = Resolve-RealPath $srcFull
+$dstReal = Resolve-RealPath $dstFull
+if ($dstReal -eq $srcReal -or
+    $dstReal.StartsWith($srcReal + $sep) -or
+    $srcReal.StartsWith($dstReal + $sep)) {
+    Write-Host "[seed] ✗ 拒绝执行：目标**实际指向**源目录（junction / 符号链接）" -ForegroundColor Red
+    Write-Host "       源   字符串 = $srcFull" -ForegroundColor Red
+    Write-Host "       源   真实   = $srcReal" -ForegroundColor Red
+    Write-Host "       目标 字符串 = $dstFull" -ForegroundColor Red
+    Write-Host "       目标 真实   = $dstReal" -ForegroundColor Red
+    exit 2
+}
+
+# ── ★★ 护栏三：目标里**已存在**的 ui-prefs.json 若是指向源文件的链接 ⇒ 拒绝 ──
+#
+# 目标目录本身安全也不够：`-Force` 下会 WriteAllText 覆盖它，
+# 而它可能是源文件的链接 ⇒ 等于改写用户真实偏好。
+$dstPrefsLink = Join-Path $Target "ui-prefs.json"
+if (Test-Path -LiteralPath $dstPrefsLink) {
+    $prefsReal = Resolve-RealPath $dstPrefsLink
+    if ($prefsReal.StartsWith($srcReal + $sep)) {
+        Write-Host "[seed] ✗ 拒绝执行：目标里的 ui-prefs.json 指向源目录（$prefsReal）" -ForegroundColor Red
+        exit 2
+    }
+}
+
 New-Item -ItemType Directory -Force -Path $Target | Out-Null
 
 function Copy-One([string]$Rel) {

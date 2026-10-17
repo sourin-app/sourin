@@ -85,9 +85,21 @@ globalThis.plugin = {
 |---|---|
 | `host.http.get(url, opts)` | GET，返回**响应体字符串** |
 | `host.http.post(url, body, opts)` | POST |
-| `host.http.raw(url, opts)` | 返回 `{status, body, headers}` —— **需要读响应头时用这个** |
-| `host.log(msg)` | 写进应用日志 |
-| `host.cache.*` | 插件私有缓存（落在 `plugins/.data/`） |
+| `host.http.raw(method, url, opts)` | 返回 `{status, body, headers}` —— **需要读响应头时用这个** |
+| `host.log.info/warn/error(msg)` | 写进应用日志 |
+| `host.store.get/set/remove(k[, v])` | 插件私有存储（落在 `plugins/.data/<id>.json`），值是**字符串** |
+| `host.config.get/getBool/getNumber/getString/all()` | 读用户在设置页填的值 |
+| `host.util.urlEncode/urlDecode/sleep` | 小工具 |
+| `host.base()` | ★ 多域名池：当前该用的域名。见下方「多域名池」一节 |
+| `host.extract.regex(text, pattern)` | ★ 按正则提取，返回 `string[]`。见下方「通用提取器」 |
+| `host.extract.json(text, path)` | ★ 按路径取 JSON 值，返回 **JSON 文本**或 `'null'` |
+| `host.playback.probe(url)` | ★ 探测地址：能不能放 / 什么流 / 有没有 DRM / 跳转过没。见下方「播放地址探测」 |
+
+> `opts` 支持 `headers`（对象）。同名头只保留**第一个**。
+
+> ⚠️ **2026-10-17 更正**：本表原写作 `host.cache.*` —— **宿主从来没有这个 API**
+> （`plugins/mod.rs` 里注入的是 `host.store`，全仓搜 `cache` 零注入点）。
+> 同时漏了 `config` / `util` / `base`。原表是凭印象写的，没有对照注入代码。
 
 > `opts` 支持 `headers`（对象）。同名头只保留**第一个**。
 
@@ -266,3 +278,492 @@ async danmakuList(req) {
 > **上游 XML 里颜色是第 4 段，wire 里是第 3 段**。直接透传上游的 `p` 串会得到
 > 一串**把字号当颜色**的弹幕（全部显示成奇怪的颜色），而且不报错。
 
+---
+
+### ★ 宿主解析能力：`needsHostResolve` / `siteId` / `streamFlags`（2026-10-17）
+
+有些站点的插件**拿不到**可播地址（要签名 / DRM / 需要浏览器环境），
+只能给出**播放页 URL**。这类插件可以声明「请宿主来解」。
+
+```js
+async play({ id, episodeId }) {
+  return [{
+    url: 'https://s1.example/watch/' + episodeId,  // ★ 播放页 URL，不是可播地址
+    label: '默认',
+    needsHostResolve: true,   // ★ 声明：url 是播放页，请宿主解析
+    siteId: 'S1',             // ★ 站点代号（**不是站名**，见下方警告）
+    streamFlags: { drm: false, hdr: false },  // 可选：你知道就填，不确定就不填
+  }];
+}
+```
+
+#### 三个字段的语义
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `needsHostResolve` | bool | `false` | `true` = `url` 是**播放页 URL**，宿主负责解出真实地址 |
+| `siteId` | string? | `null` | 站点**代号**（`S1` / `S2` / …），供宿主选择对应解析器 |
+| `streamFlags` | object | 全空 | 这条流**是什么**（不是「请求宿主做什么」），见下 |
+
+`streamFlags` 的子字段：
+
+| 子字段 | 类型 | 含义 |
+|---|---|---|
+| `drm` | bool | 受 DRM 保护。**宿主一定播不了**，会如实告诉用户 |
+| `hdr` | bool | HDR 内容。不影响可播性（宿主会降到 SDR） |
+| `codec` | string? | 编码名（`h264` / `hevc` / `av1`）。**不知道就留空，不要猜** |
+
+#### ⚠️⚠️ 三条硬纪律
+
+```text
+① 不声明 = 行为与以前**逐字相同**
+   三个字段全部有默认值，老插件不传任何东西，宿主行为一点不变。
+   实测：rust/sourin_core/tests/zz_t33_host_resolve_contract.rs 有 7 条测试钉住这一点。
+
+② needsHostResolve=true 时，url 必须是**播放页 URL**，不是可播地址
+   若你其实拿到了可播地址，就不要声明这个位 —— 声明了反而会让宿主白解一遍。
+
+③ 不许把「宿主还没解出来」说成 DRM
+   drm=true 意味着「受版权保护，永远播不了」，宿主会这样告诉用户。
+   而「解析失败」是另一回事。混用就是让宿主对用户说假话。
+```
+
+#### ⚠️ `siteId` 只能写代号，不能写站名
+
+本仓有机械门禁 `test/t98_no_site_names_test.dart`：
+**具体视频网站的名字不许出现在仓库任何可发布文本里**（含 `.js` / `.md`）。
+
+```text
+✓ siteId: 'S1'                    ← 代号（可以）
+✗ siteId: '<具体站名>'            ← 写真实站名，会被门禁判红
+```
+
+> ⚠️ 这里**故意不举例**——举例就要写出站名，而写出来本身就会让门禁变红
+> （`test/t98_no_site_names_test.dart` 扫 `.md`）。
+> 我写这段时就犯了一次：用真实站名当反面例子 ⇒ t98 立刻判红。
+> 规则的正确用法是「只写代号，代号的含义由插件自己定义」。
+
+真实映射关系由**插件自己持有**（插件不进仓库）。
+
+#### 宿主侧的当前状态（诚实说明）
+
+```text
+解析能力本身**尚未选型** —— 三条候选路线（自实现签名 / 无头浏览器 / 插件侧解）
+都还在评估，见 .probe/t33/REPORT_R2.md §3。
+
+⇒ 现在声明 needsHostResolve: true 的候选会被标为**不可播**，
+  用户看到「所有线路都不可播」而不是黑屏。
+⇒ **这是有意的诚实当前态**，不是缺陷：宿主不会假装能解却播不出来。
+```
+### ★ 宿主解析能力：`needsHostResolve` / `siteId` / `streamFlags`（2026-10-17）
+
+有些站点的插件**拿不到**可播地址（要签名 / DRM / 需要浏览器环境），
+只能给出**播放页 URL**。这类插件可以声明「请宿主来解」。
+
+```js
+async play({ id, episodeId }) {
+  return [{
+    url: 'https://s1.example/watch/' + episodeId,  // ★ 播放页 URL，不是可播地址
+    label: '默认',
+    needsHostResolve: true,   // ★ 声明：url 是播放页，请宿主解析
+    siteId: 'S1',             // ★ 站点代号（**不是站名**，见下方警告）
+    streamFlags: { drm: false, hdr: false },  // 可选：你知道就填，不确定就不填
+  }];
+}
+```
+
+#### 三个字段的语义
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `needsHostResolve` | bool | `false` | `true` = `url` 是**播放页 URL**，宿主负责解出真实地址 |
+| `siteId` | string? | `null` | 站点**代号**（`S1` / `S2` / …），供宿主选择对应解析器 |
+| `streamFlags` | object | 全空 | 这条流**是什么**（不是「请求宿主做什么」），见下 |
+
+`streamFlags` 的子字段：
+
+| 子字段 | 类型 | 含义 |
+|---|---|---|
+| `drm` | bool | 受 DRM 保护。**宿主一定播不了**，会如实告诉用户 |
+| `hdr` | bool | HDR 内容。不影响可播性（宿主会降到 SDR） |
+| `codec` | string? | 编码名（`h264` / `hevc` / `av1`）。**不知道就留空，不要猜** |
+
+#### ⚠️⚠️ 三条硬纪律
+
+```text
+① 不声明 = 行为与以前**逐字相同**
+   三个字段全部有默认值，老插件不传任何东西，宿主行为一点不变。
+   实测：rust/sourin_core/tests/zz_t33_host_resolve_contract.rs 有 7 条测试钉住这一点。
+
+② needsHostResolve=true 时，url 必须是**播放页 URL**，不是可播地址
+   若你其实拿到了可播地址，就不要声明这个位 —— 声明了反而会让宿主白解一遍。
+
+③ 不许把「宿主还没解出来」说成 DRM
+   drm=true 意味着「受版权保护，永远播不了」，宿主会这样告诉用户。
+   而「解析失败」是另一回事。混用就是让宿主对用户说假话。
+```
+
+#### ⚠️ `siteId` 只能写代号，不能写站名
+
+本仓有机械门禁 `test/t98_no_site_names_test.dart`：
+**具体视频网站的名字不许出现在仓库任何可发布文本里**（含 `.js` / `.md`）。
+
+```text
+✓ siteId: 'S1'          ← 代号
+✗ siteId: '<具体站名>'   ← 写真实站名，会被门禁判红
+```
+
+真实映射关系由**插件自己持有**（插件不进仓库）。
+
+#### 宿主侧的当前状态（诚实说明）
+
+```text
+解析能力本身**尚未选型** —— 三条候选路线（自实现签名 / 无头浏览器 / 插件侧解）
+都还在评估，见 .probe/t33/REPORT_R2.md §3。
+
+⇒ 现在声明 needsHostResolve: true 的候选会被标为**不可播**，
+  用户看到「所有线路都不可播」而不是黑屏。
+⇒ **这是有意的诚实当前态**，不是缺陷：宿主不会假装能解却播不出来。
+```
+
+---
+
+## ★ 多域名池：`hosts` + `host.base()`（2026-10-17 新增）
+
+> **Owner 口径（逐字）**
+> 「多 host 由插件提供，自动轮值由软件本身实现」
+
+⇒ 职责划分是**硬约束**：
+```text
+插件   负责「有哪些候选域名」      —— 数据
+宿主   负责「选哪个、什么时候换」  —— 算法
+```
+⇒ 宿主侧**一行站点代码都没有**：它不认识任何具体域名，
+  只处理「一批字符串 + 当前用哪个 + 失败计数」。
+
+### 插件怎么写
+
+```js
+globalThis.plugin = {
+  capabilities: { vod: true },
+
+  // ★ 候选域名（有序 = 你给的优先级）
+  hosts: [
+    'https://a.example.com',
+    'https://b.example.com',
+  ],
+
+  async list({ categoryId, page }) {
+    // ★ 用 host.base() 拿「当前该用哪个」——不要自己写死域名
+    const base = host.base()
+    return host.http.get(`${base}/api/list?cat=${categoryId}&page=${page}`)
+  },
+}
+```
+
+| 字段 / API | 类型 | 语义 |
+|---|---|---|
+| `hosts` | `string[]` 可选 | 候选域名，**含协议**，末尾不要带 `/` |
+| `host.base()` | `string` | 当前应使用的域名；**未声明 `hosts` 时返回 `''`** |
+
+```text
+hosts 省略 / 空数组 ⇒ 不用域名池，行为与今天完全一致（向后兼容）
+hosts 只有一项      ⇒ 合法但无用（失败无处可切），宿主会记日志提醒
+hosts 含重复项      ⇒ 宿主去重，保留首次出现的顺序
+```
+
+### 宿主怎么选（这是宿主的事，但你该知道行为）
+
+```text
+① 已锁定的 current（仍健康） ⇒ 继续用，不抖动
+② 健康域名里 failures 最少   ⇒ 同失败数时按你给的顺序
+③ 失败 3 次 ⇒ 进冷却，换下一个
+④ 冷却到期 ⇒ failures **减半**（不是清零）后重新入候选
+⑤ 全在冷却 ⇒ 选 failures 最少的（保证总有能用的）
+⑥ 任一请求成功 ⇒ 该域名 failures 归零并**锁定**
+```
+
+> ⚠️ 为什么冷却后「减半」而不是「清零」：
+> 清零会让刚恢复的坏域名**立刻被重选**、马上又失败，来回撞墙。
+> 减半保留「它历史上有问题」的记忆，让它排在健康域名之后。
+
+### ⚠️⚠️ 三条硬纪律
+
+**1. `hosts` 只是数据，不是逻辑**
+```text
+✗ hosts: [...] + if (failed) base = hosts[1]     ← 插件自己在轮值，职责越界
+✓ hosts: [...] + 一律用 host.base() 拼 URL
+```
+
+**2. ★ 声明了 `hosts` 却不经 `host.base()` ⇒ 整个机制失效**
+```text
+宿主不知道「这一次请求打的是哪个域名」⇒ 失败无法归因 ⇒ 池子形同虚设。
+请求必须用 base 拼出来的 URL，否则失败不会被记到正确的域名头上。
+```
+
+**3. 域名必须是真·同构镜像，不能是不同站点**
+```text
+宿主会在 a 失败后**无缝换到 b**，并假设两者 API 完全一致。
+若 a/b 其实是两个不同站点，切换后会给用户返回风马牛不相及的内容 ——
+而且不报错，更难查。
+```
+
+### ⚠️ 声明 `hosts` 时，请自己处理缓存与域名的绑定
+
+宿主**不会**替你清缓存。`host.store` 的 key 是你自己定的字符串，
+宿主只做 `map[key]` 存取，**不参与 key 的构造**。
+
+```js
+// ✗ 危险：换域名后拿到的仍是旧服务器的数据（且看起来完全正常）
+host.store.set('views', JSON.stringify(list))
+
+// ✓ 把域名并进 key
+host.store.set('views@' + host.base(), JSON.stringify(list))
+}
+```
+
+> 实测依据：仓库里的 `emby.js` 用固定 key `'views'` / `'token'`，
+> 不含 serverUrl。它目前不声明 `hosts` 所以还没出问题；
+> 一旦加上 `hosts`，换域名后会读到旧服务器的媒体库列表。
+
+### 宿主侧的当前状态（诚实说明）
+
+```text
+★ 已实现（rust/sourin_core/src/hostpool.rs + plugins/mod.rs 接线）：
+  · 选路算法、失败计数、冷却与减半恢复
+  · 失败计数与当前选择**落盘**（<dataDir>/host-pools.json，重启不忘）
+  · host.base() 注入
+  · 单测覆盖（含确定性、故障注入、真实网络切换）
+
+⚠️ 截至 2026-10-17 **尚未在真实第三方插件上验证过** ——
+   因为仓库内的插件（demo.js / emby.js）都还没有声明 hosts。
+   端到端只用内联的假插件源码验证过。
+   ⇒ 若你是在真实插件上第一个用这个能力的，请把问题反馈回来。
+```
+
+---
+
+## ★ 通用提取器：`host.extract`（2026-10-17 新增）
+
+> **为什么是「通用提取」而不是「内置站点解析器」**
+>
+> 宿主**不认识任何具体站点**，这是硬约束（见 `test/t98_no_site_names_test.dart`）。
+> 站点知识（页面结构、接口地址、签名算法）全部由**你的插件**持有。
+> 宿主只提供「按规则从文本里取值」这个执行能力 —— 对所有站通用。
+
+### 两个方法
+
+| 方法 | 返回 | 说明 |
+|---|---|---|
+| `host.extract.regex(text, pattern)` | `string[]` | 所有匹配的第 1 个捕获组；**无捕获组时取整个匹配** |
+| `host.extract.json(text, path)` | `string`（JSON 文本）或 `'null'` | 按路径取值 |
+
+### `regex` 的两个关键行为
+
+```js
+// ① 有捕获组 ⇒ 取第 1 组（绝大多数场景）
+host.extract.regex(html, 'data-vid="([^"]+)"'));
+// ⇒ ['abc123']
+
+// ② 无捕获组 ⇒ 取整个匹配
+host.extract.regex(html, 'vid=\\w+');
+// ⇒ ['vid=abc123', 'vid=def456']
+
+// ③ 没匹配到 ⇒ 空数组（不是错误）
+host.extract.regex(html, 'zzz');
+// ⇒ []
+
+// ④ ★ 正则语法错误 ⇒ 抛异常（不是返回空数组）
+host.extract.regex(html, '(unclosed');
+// ⇒ throw: 正则语法错误: ...
+```
+
+> ⚠️ 第 ③ 与第 ④ 的**区分很重要**：
+> 如果语法错误也返回空数组，你会以为「页面上没有这个字段」，
+> 从而去改选择器 —— 但真正的问题是你的正则写错了。
+
+### `json` 的路径语法
+
+```text
+a.b.c        对象嵌套
+a.b[0]       数组下标
+a[0].b[2].c  混用
+（空串）      整个文档
+```
+
+```js
+const body = await host.http.get('https://example.com/api/detail?id=1');
+
+const title = JSON.parse(host.extract.json(body, 'data.title'));
+const ep1   = JSON.parse(host.extract.json(body, 'data.episodes[0].url'));
+const ep2   = JSON.parse(host.extract.json(body, 'data.episodes[1].url'));
+
+// ⚠️ 返回的是 JSON **文本**，要自己 JSON.parse
+//    与 host.config.get 一致：跨 QuickJS 边界传字符串比传对象稳
+
+// 路径不存在 ⇒ 得到 'null'，可以这样兜：
+const year = JSON.parse(host.extract.json(body, 'data.year') ?? 'null') ?? 2024;
+```
+
+> ⚠️ 「路径不存在」返回 `'null'` 而**不抛异常**：
+> 解析页面时「某个字段没有」是常态（页面结构会变），
+> 每次都抛异常没法用。只有**路径语法错误**才抛。
+
+### 完整可运行示例
+
+```js
+/** @id myplugin @name 我的源 */
+globalThis.plugin = {
+  capabilities: { vod: true },
+
+  async resolve(id) {
+    // ① 抓页面
+    const html = await host.http.get(`https://example.com/v/${id}`);
+
+    // ② 从 HTML 里取视频 id
+    const ids = host.extract.regex(html, 'data-vid="([^"]+)"');
+    if (!ids.length) throw new Error('页面里没找到 data-vid');
+
+    // ③ 用 id 调接口
+    const body = await host.http.get(
+      `https://example.com/api/play?vid=${ids[0]}`,
+    );
+
+    // ④ 从 JSON 取播放地址
+    const url = JSON.parse(host.extract.json(body, 'data.playUrl'));
+    if (!url) throw new Error('接口没返回 playUrl');
+
+    // ⑤ 交给宿主
+    return [{ url, quality: '原画', kind: url.includes('.m3u8') ? 'hls' : 'mp4' }];
+  },
+};
+```
+
+> 这个示例的完整可运行版本（含本地 http server 与真实请求）见
+> `rust/sourin_core/tests/t41_extract_e2e.rs`（`cargo test --test t41_extract_e2e`）。
+
+### 宿主侧的当前状态（诚实说明）
+
+```text
+★ 已实现：host.extract.regex / host.extract.json
+  · 纯函数实现（不碰网络/磁盘），单测 11 条
+  · 契约测试 4 条（从 JS 侧真调用，走 QuickJS → Rust 全链路）
+  · 端到端 1 条（本地 http server 喂真实响应，插件真的解析出来）
+  · 故障注入验证过：把数组下标改错 ⇒ 单测 2 条红 + 端到端红
+
+⚠️ 未做（下一步）：
+  · host.playback.probe —— 探测地址能不能放
+  · DRM 嗅探 —— 读 #EXT-X-KEY / ContentProtection
+  · 错误分类 —— 把播放失败翻译成人类能懂的类别
+```
+
+---
+
+## ★ 播放地址探测：`host.playback.probe`（2026-10-17 新增）
+
+> **它回答什么**：这个地址能不能放、是什么流、有没有 DRM、跳转过没有。
+>
+> **为什么需要**：插件拿到的地址可能被防盗链拦截返回 HTML 错误页、
+> 可能是 DASH（本播放器未实现）、可能带 DRM（架构上不可能播）。
+> 不先探测就交给播放器 ⇒ 用户看到黑屏，而你查不出原因。
+
+### 调用
+
+```js
+const r = JSON.parse(await host.playback.probe(url))
+```
+
+### 返回字段
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `verdict` | string | 结论标签，见下表 |
+| `kind` | string | `Hls` / `Dash` / `Mp4` / `AudioOnly` / `WebEmbed`（仅 playable/dash 时有值） |
+| `contentType` | string | **原始** Content-Type 响应头（空串 = 响应没带） |
+| `statusCode` | number | HTTP 状态码（0 = 请求没发出去） |
+| `redirected` | bool | 是否发生过跳转 |
+| `finalUrl` | string | 跳转后的**最终**地址（未跳转时等于入参） |
+| `message` | string | 给用户看的一句话 |
+| `retryable` | bool | 是否值得重试 |
+
+### `verdict` 五种取值 —— **必须能区分**
+
+| verdict | 含义 | retryable | 用户该做什么 |
+|---|---|---|---|
+| `playable` | 可以尝试播放 | false | 直接播 |
+| `dash_unsupported` | DASH 格式，**本播放器未实现** | false | 换源 |
+| `drm` | 受 DRM 保护，**架构上不可能播** | false | 换源（换播放器也没用） |
+| `not_a_stream` | 地址能访问但**返回的不是媒体流** | false | 检查地址/防盗链 |
+| `unreachable` | 网络或 HTTP 失败 | **true** | 可以重试 |
+
+```text
+⚠️ 这五种必须互不混淆。
+混成一句「播放失败」⇒ 用户不知道该重试、该换源、还是该放弃。
+```
+
+### 完整可运行示例
+
+```js
+/** @id myplugin @name 我的源 */
+globalThis.plugin = {
+  capabilities: { vod: true },
+
+  async resolve(id) {
+    const url = await getPlayUrl(id);
+
+    const r = JSON.parse(await host.playback.probe(url));
+
+    if (r.verdict === 'playable') {
+      return [{ url, quality: '原画', kind: r.kind.toLowerCase() }];
+    }
+    if (r.verdict === 'unreachable' && r.retryable) {
+      // 网络抖动 ⇒ 可以换线路再试
+      throw new Error('地址暂时不可达，请稍后重试');
+    }
+    if (r.verdict === 'drm') {
+      // 如实告诉用户，不要假装能放
+      throw new Error(r.message);
+    }
+    // dash_unsupported / not_a_stream ⇒ 换源
+    throw new Error(r.message);
+  },
+};
+```
+
+### 它怎么判（宿主内部逻辑，你该知道）
+
+```text
+① HTTP 失败（0 或非 2xx/3xx）⇒ unreachable
+② 嗅探响应体里的 DRM 标记（**先于**格式判定）
+     HLS  #EXT-X-KEY:METHOD=SAMPLE-AES  ⇒ drm
+     DASH schemeIdUri = Widevine/PlayReady/ClearKey ⇒ drm
+③ 按 Content-Type 判格式（**不看 URL 后缀**）
+     认识 ⇒ playable 或 dash_unsupported
+     不认识（text/html、application/json…）⇒ not_a_stream
+④ Content-Type 缺失 ⇒ 才退回按 URL 猜
+```
+
+> ⚠️ **为什么 AES-128 不算 DRM**
+>
+> `#EXT-X-KEY:METHOD=AES-128` 是普通 HLS 加密，密钥就是一个普通 HTTP 地址，
+> libmpv 自己能解（本仓 streamproxy 就在改写这类 playlist）。
+> 把它当 DRM 会让一大批**本来能播**的内容被误判为不可播。
+> 只有 `SAMPLE-AES`（需要 FairPlay CDM）才算。
+
+> ⚠️ **为什么不看 URL 后缀**
+>
+> 实测踩过：某个源的 MP4 直链被伪装成 `.mp3` 后缀。
+> 按后缀判成 AudioOnly ⇒ 播不了；按「无扩展名当 HLS」⇒ 无限转圈。
+> 只有 Content-Type 可信。
+
+### 宿主侧的当前状态（诚实说明）
+
+```text
+★ 已实现：host.playback.probe
+  · 纯函数判定（可穷举测试）+ 真 HTTP 探测（读真响应头）
+  · 单测 + 契约测试 + 本地 TcpListener 端到端（不 mock、不依赖外网）
+  · 两个故障注入验证过（忽略响应头 ⇒ 红；Hls/Dash 互换 ⇒ 红）
+
+⚠️ DASH 只能**识别**，不能播放 —— streamproxy 没有 mpd 改写逻辑。
+   识别出来如实报 dash_unsupported，绝不映射成 Mp4 糊弄。
+```

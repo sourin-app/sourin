@@ -1394,6 +1394,38 @@ jobs:
           if grep -q "__VERSION__" "$NOTES"; then
             echo "::error::release-notes.md 里还有未替换的 __VERSION__"; exit 1
           fi
+          # ══════════════════════════════════════════════════════════════
+          # ★★★ 预发布版本必须标记 --prerelease（Owner 第 19 条，2026-10-17）
+          # ══════════════════════════════════════════════════════════════
+          #
+          # # 改前是什么样
+          # ```text
+          # 本文件里**没有任何** --prerelease 参数。
+          # v1.4.0-rc1 在 GitHub 上显示为 Pre-release，是**手工补的标记**
+          # ⇒ 每次发 rc 都得有人记得去点一下，漏了就变成「正式版」。
+          # ```
+          #
+          # # 后果（不是形式问题）
+          # ```text
+          # · 不标 Pre-release ⇒ 用户会把它当稳定版下载
+          # · 且 GitHub 的「Latest」语义会被 rc 抢走
+          #   （Latest 应指向 v1.3.0 那种真稳定版，不是 rc）
+          # ```
+          #
+          # # 规则
+          # ```text
+          # tag 里含 -rc / -beta / -alpha / -pre  ⇒ 预发布
+          # 其余（v1.4.0 这种纯语义版本）          ⇒ 正式版
+          # ```
+          PRERELEASE_FLAG=""
+          case "$TAG" in
+            *-rc*|*-beta*|*-alpha*|*-pre*) PRERELEASE_FLAG="--prerelease" ;;
+          esac
+          if [ -n "$PRERELEASE_FLAG" ]; then
+            echo "· tag $TAG 判定为**预发布**（含 -rc/-beta/-alpha/-pre）"
+          else
+            echo "· tag $TAG 判定为**正式版**"
+          fi
           echo "---- notes 前 12 行（已替换版本号）----"
           head -12 "$NOTES"
           # ★★ 幂等：Release 已存在 ⇒ **补传/覆盖**产物，而不是硬失败。
@@ -1424,7 +1456,8 @@ jobs:
             gh release edit "$TAG" \
               --repo "${{ github.repository }}" \
               --title "源影 $TAG" \
-              --notes-file "$NOTES"
+              --notes-file "$NOTES" \
+              $PRERELEASE_FLAG
             gh release upload "$TAG" \
               --repo "${{ github.repository }}" \
               --clobber \
@@ -1437,6 +1470,7 @@ jobs:
               --title "源影 $TAG" \
               --notes-file "$NOTES" \
               --target "${{ github.sha }}" \
+              $PRERELEASE_FLAG \
               ${{ steps.chk.outputs.files }} \
               rel/SHA256SUMS.txt
             echo "✓ Release 已创建"
@@ -1469,3 +1503,29 @@ jobs:
             exit 1
           fi
           echo "✓ 全部必备资产都在 Release 上且字节数非零"
+          # ══════════════════════════════════════════════════════════════
+          # ★★★ 核对预发布标记**真的生效了**（从服务端读回）
+          # ══════════════════════════════════════════════════════════════
+          #
+          # 为什么不能只信「我传了 --prerelease 参数」：
+          # ```text
+          # · gh 对未知参数会忽略而非报错（历史上踩过类似坑）
+          # · Release 已存在走 edit 分支时，参数写错位置也不会有提示
+          # ⇒ 唯一可信的判据是**服务端返回的 isPrerelease 字段**。
+          # ```
+          ACTUAL_PRE=$(gh release view "$TAG" --repo "${{ github.repository }}" \
+            --json isPrerelease --jq '.isPrerelease')
+          echo "服务端 isPrerelease = $ACTUAL_PRE"
+          if [ -n "$PRERELEASE_FLAG" ]; then
+            if [ "$ACTUAL_PRE" != "true" ]; then
+              echo "::error::tag $TAG 应为预发布，但服务端 isPrerelease=$ACTUAL_PRE —— 标记没生效"
+              exit 1
+            fi
+            echo "✓ 已正确标记为 Pre-release"
+          else
+            if [ "$ACTUAL_PRE" = "true" ]; then
+              echo "::error::tag $TAG 应为正式版，但服务端 isPrerelease=true —— 被误标成预发布"
+              exit 1
+            fi
+            echo "✓ 已正确标记为正式版"
+          fi

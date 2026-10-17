@@ -30,6 +30,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/ui/player_page.dart';
 import 'package:sourin_spike/ui/tokens.dart';
+import 'package:sourin_spike/design/icons/app_icons.dart';
 
 Widget _host(Widget child) => MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -227,4 +228,158 @@ void main() {
     expect(find.textContaining('发送失败'), findsOneWidget,
         reason: '★★ 兜底也不能静默 —— 否则用户以为发出去了');
   });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ④ ★★★ 2026-10-17（Owner 第 9 条 + Lead 定案）
+  //      不支持发送的源 ⇒ **置灰但可见**，且原因必须可读
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 这一组守的是"两次改判"之后的口径
+  // ```text
+  // 第一版（改前）：canSend=false ⇒ 整条不渲染
+  //   ✗ Owner 第 9 条：「并没有发送弹幕的入口,这个需要修复」
+  //     入口消失 ⇒ 用户连这个能力存在都不知道
+  //
+  // 第二版：入口常驻，但点了才报「这个源不支持发送弹幕」
+  //   ✗ Lead 否掉：每次点都撞一次墙，体验是负的
+  //
+  // 现在：入口常驻 + **置灰点不动** + **一行原因说清为什么**
+  //   ✓ 用户知道有这能力，也知道现在做不到，且不撞墙
+  // ```
+  group('④ 不支持发送 ⇒ 置灰但可见（不是消失、也不是点了报错）', () {
+    const reason = '这个源没有开放发送弹幕能力，换一个源再试';
+
+    testWidgets('★★★ 控件**存在**（不是整条消失）', (t) async {
+      await t.pumpWidget(_host(const DanmakuSendBar(
+        provider: 'demo',
+        episodeId: 'ep1',
+        onSend: _neverSend,
+        canSend: false,
+        disabledReason: reason,
+      )));
+      await t.pumpAndSettle();
+
+      expect(find.byType(DanmakuSendBar), findsOneWidget,
+          reason: '★★★ Owner 第 9 条要的就是"入口在" —— 整条消失等于没修');
+      expect(find.byType(TextField), findsOneWidget,
+          reason: '★ 输入区还在（看得出来这里有发送功能）');
+    });
+
+    testWidgets('★★★ 输入框与「发送」都点不动（不撞墙）', (t) async {
+      var called = 0;
+      await t.pumpWidget(_host(DanmakuSendBar(
+        provider: 'demo',
+        episodeId: 'ep1',
+        canSend: false,
+        disabledReason: reason,
+        /*
+         * ★★★ 必须先塞一行文字 —— 否则这条用例是**假绿**（故障注入抓出来的）：
+         * 输入框空着时 `_canSend` 本来就是 false（因为"没内容"），
+         * 把 canSend 从判据里拿掉也照样绿。
+         * 只有带内容时，绿才证明"拦住它的是 canSend"。
+         */
+        debugInitialText: '这行字不该被发出去',
+        onSend: (text, ms) async {
+          called++;
+          return null;
+        },
+      )));
+      await t.pumpAndSettle();
+
+      // 输入框 disabled ⇒ 打不进字
+      final tf = t.widget<TextField>(find.byType(TextField));
+      expect(tf.enabled, isFalse,
+          reason: '★★ 只禁按钮而让人白打一行字，是另一种浪费');
+      expect(tf.controller?.text, '这行字不该被发出去',
+          reason: '★ 前置条件：框里**确实有内容**（见 debugInitialText 的注释）');
+
+      /*
+       * ★★★ 直接断言按钮的 `onPressed == null`，**不靠"点了没反应"**。
+       *
+       * # 为什么（故障注入抓出来的）
+       * ```text
+       * 第一版只写 `tap(...)` 然后 `expect(called, 0)` —— 假绿：
+       * 把 `canSend` 从判据里拿掉（`_canSend` 只看"有没有输入文字"），
+       * 那条用例**照样绿**，因为它没输入文字 ⇒ `_canSend` 本来就 false。
+       * ⇒ 必须①先塞内容 ②直接问控件"你能不能点"。
+       * ```
+       */
+      final btn = t.widget<TextButton>(
+        find.widgetWithText(TextButton, '发送'),
+      );
+      expect(btn.onPressed, isNull,
+          reason: '★★★ 置灰态按钮的 onPressed 必须是 null —— '
+              '只灰不禁会让用户点了撞墙，而"撞了才报错"正是 Lead 否掉的那版');
+      await t.tap(find.text('发送'), warnIfMissed: false);
+      await t.pumpAndSettle();
+      expect(called, 0,
+          reason: '★★★ 置灰态点发送**绝不能**真的发出去，也不该报错 —— 就是点不动');
+    });
+
+    testWidgets('★★★ 原因文案**可读**（不能只灰着不说）', (t) async {
+      await t.pumpWidget(_host(const DanmakuSendBar(
+        provider: 'demo',
+        episodeId: 'ep1',
+        onSend: _neverSend,
+        canSend: false,
+        disabledReason: reason,
+      )));
+      await t.pumpAndSettle();
+
+      expect(find.textContaining('没有开放发送弹幕'), findsOneWidget,
+          reason: '★★★ Lead 要求：置灰状态下**必须能看到原因**。'
+              'findOneWidget 同时钉住"别重复两遍"（hint 用短句，长句只在这里）');
+      expect(find.textContaining('换一个源'), findsOneWidget,
+          reason: '★★ 文案要指出下一步 —— 只说"不支持"等于把问题丢回给用户');
+      expect(find.byIcon(AppIcons.info_outline), findsOneWidget,
+          reason: '★ 有个信息图标，不是凭空一行灰字');
+    });
+
+    testWidgets('★★ 支持发送时**正常可用**（这个改动没弄坏正常路径）', (t) async {
+      String? got;
+      await t.pumpWidget(_host(DanmakuSendBar(
+        provider: 'demo',
+        episodeId: 'ep1',
+        canSend: true,
+        onSend: (text, ms) async {
+          got = text;
+          return null;
+        },
+      )));
+      await t.pumpAndSettle();
+
+      final tf = t.widget<TextField>(find.byType(TextField));
+      expect(tf.enabled, isTrue, reason: '★★ 能发的时候输入框必须能用');
+
+      await t.enterText(find.byType(TextField), '正常发一条');
+      await t.pump();
+      await t.tap(find.text('发送'));
+      await t.pumpAndSettle();
+
+      expect(got, '正常发一条', reason: '★★ 正常路径一个字都没受影响');
+      expect(find.textContaining('没有开放发送弹幕'), findsNothing,
+          reason: '★ 能发的时候不该显示那句灰字（噪音）');
+    });
+
+    testWidgets('★★ 空 disabledReason 时也有兜底文案（不出现空行）', (t) async {
+      await t.pumpWidget(_host(const DanmakuSendBar(
+        provider: 'demo',
+        episodeId: 'ep1',
+        onSend: _neverSend,
+        canSend: false,
+        // 故意不给原因
+      )));
+      await t.pumpAndSettle();
+
+      expect(find.textContaining('不支持发送弹幕'), findsWidgets,
+          reason: '★ 宿主漏传原因也不能出现一行空白 —— 那比没提示更糟');
+    });
+  });
+}
+
+/// 一个"永远不该被调用"的发送动作（置灰态用例用）
+///
+/// ⚠️ 定义成顶层函数是为了能用在 `const` 构造里。
+Future<String?> _neverSend(String text, int? ms) async {
+  throw StateError('置灰态不该触发发送：$text@$ms');
 }

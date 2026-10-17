@@ -130,6 +130,7 @@ class DanmakuInfoData {
     this.error,
     this.loading = false,
     this.enabled = false,
+    this.aggregate = const <DanmakuAggregateFeed>[],
   });
 
   final DanmakuFeedKind source;
@@ -162,6 +163,21 @@ class DanmakuInfoData {
   /// 弹幕总开关是否开着 —— 关着时即使有数据也不会上屏，这一点必须说出来
   final bool enabled;
 
+  /// ★★★ 2026-10-17（Owner 第 9 条）：**聚合**时每一路来源的读数。
+  ///
+  /// # 为什么必须逐路列出来
+  /// ```text
+  /// Owner 原话：「有些网站本身也提供弹幕,我们要支持弹幕的聚合」
+  /// ⇒ 只显示一个总数是不够的：用户看到"1900 条"，
+  ///   但想知道**这 1900 条分别来自谁**（插件给了多少、dan-api 给了多少、
+  ///   哪一路失败了）。这正是「方便排查问题」的全部意义。
+  /// ```
+  ///
+  /// ⚠️ 空列表 = 没聚合（单源），面板退化成原来的样子。
+  /// ⚠️ 这里的元素**必须**包含失败的那几路 —— 悄悄少显示一路，
+  ///    用户会以为"聚合只来了一半，不知道为什么"。
+  final List<DanmakuAggregateFeed> aggregate;
+
   bool get hasError => error != null && error!.isNotEmpty;
 
   /// 面板是否该有内容（全空时宿主可以直接不画）
@@ -169,7 +185,38 @@ class DanmakuInfoData {
       source == DanmakuFeedKind.none &&
       count == null &&
       !hasError &&
-      !loading;
+      !loading &&
+      aggregate.isEmpty;
+}
+
+/// 面板要显示的一路聚合来源（与 core 的 `DanmakuFeedStat` 同形，
+/// 但**不直接引用 core** —— 理由见文件头「为什么单独抽一个 widget」）。
+@immutable
+class DanmakuAggregateFeed {
+  const DanmakuAggregateFeed({
+    required this.label,
+    required this.count,
+    this.detail = '',
+    this.error = '',
+    this.loaded = true,
+  });
+
+  /// 给用户看的来源名（例：`插件` / `dan-api` / `本机`）
+  final String label;
+
+  /// 这一路贡献的条数（**去重前**）
+  final int count;
+
+  /// 附加说明（来源名 / 端点 / 版本）
+  final String detail;
+
+  /// 失败原文（空 = 没失败）
+  final String error;
+
+  /// 这一路是否真的被尝试过（false = 没试，例如插件不支持弹幕）
+  final bool loaded;
+
+  bool get failed => error.isNotEmpty;
 }
 
 /// 播放页右侧那个可折叠的「弹幕信息」面板
@@ -301,6 +348,10 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
               ],
               const SizedBox(height: Sp.x2),
               _countRow(d),
+              if (d.aggregate.isNotEmpty) ...[
+                const SizedBox(height: Sp.x2),
+                _aggregateRows(d),
+              ],
               const SizedBox(height: Sp.x2),
               _matchRow(d),
               if (d.cid > 0) ...[
@@ -399,6 +450,88 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
       value: text,
       // 条数是有信息量的主数据，稍微重一点
       strong: c != null && c > 0,
+    );
+  }
+
+  /// 聚合的每一路来源（Owner 第 9 条）
+  ///
+  /// # 为什么用"标签列 + 每路一行"而不是一句话
+  /// ```text
+  /// 一行话（"2 路 · 插件 1200 + 导入 800 = 1900 条"）在窄面板里会折成三行，
+  /// 而且**失败的那一路**没法突出（它是排查时最该被看见的）。
+  /// ⇒ 每路一行，失败的用橙色 + 原文，能一眼扫到。
+  /// ```
+  ///
+  /// ⚠️ 条数是**这一路自己**的条数（去重前），与 `_countRow` 的合并条数
+  ///    不是同一个数 —— 两者同时显示才说明"合并掉了多少重复"。
+  Widget _aggregateRows(DanmakuInfoData d) {
+    final feeds = d.aggregate;
+    final sum = feeds.fold<int>(0, (a, f) => a + f.count);
+    final deduped = sum - (d.count ?? sum);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(
+              width: 52,
+              child: Text(
+                '来源',
+                style: TextStyle(fontSize: FontSizes.cap, color: _fgDim),
+              ),
+            ),
+            Expanded(
+              child: Text(
+                feeds.length > 1
+                    ? '${feeds.where((f) => f.loaded && !f.failed && f.count > 0).length} 路'
+                        '${deduped > 0 ? "（合并去重 $deduped 条）" : ""}'
+                    : '单源',
+                style: const TextStyle(fontSize: FontSizes.cap, color: _fgDim),
+              ),
+            ),
+          ],
+        ),
+        for (final f in feeds)
+          Padding(
+            padding: const EdgeInsets.only(top: Sp.x1),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox(width: 52),
+                Icon(
+                  f.failed
+                      ? AppIcons.error_outline
+                      : (f.loaded
+                          ? AppIcons.check_circle_outline
+                          : AppIcons.remove),
+                  size: 12,
+                  color: f.failed ? _warn : _fgDim,
+                ),
+                const SizedBox(width: Sp.x1),
+                Expanded(
+                  child: Text(
+                    f.failed
+                        // ★ 失败原文照透：用户要能照着这句话去查
+                        ? '${f.label}：失败 · ${f.error}'
+                        : (f.loaded
+                            ? '${f.label}：${f.count} 条'
+                            : '${f.label}：未提供'),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: f.failed ? _warn : _fg,
+                      fontFeatures: const <FontFeature>[
+                        FontFeature.tabularFigures(),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 

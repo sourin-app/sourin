@@ -66,7 +66,22 @@ Map<String, Object?> _danmuApiComment(int cid, String p, String m) =>
     <String, Object?>{'cid': cid, 'p': p, 'm': m, 't': 0};
 
 void main() {
-  setUp(() => UiPrefs.debugResetForTest());
+  /*
+   * ★★★ 2026-10-17（Owner 第 4 条）：内置公共实例上线后，
+   * 「没配 endpoint ⇒ 走官方」这条老断言**必然**变成「走内置实例」。
+   *
+   * 本文件测的是**官方/签名**那条边和**用户自填地址**那条边 ——
+   * 必须明确把内置实例关掉，否则测的是另一条路（假绿）。
+   * `const []` = 关掉内置；`tearDown` 恢复，免得污染同进程后面的用例。
+   */
+  setUp(() {
+    UiPrefs.debugResetForTest();
+    DanmakuConfig.debugSetPublicInstances(const <DanmakuPublicInstance>[]);
+  });
+  tearDown(() {
+    UiPrefs.debugResetForTest();
+    DanmakuConfig.debugSetPublicInstances(null);
+  });
 
   // ═══════════════════════════════════════════════════════════════════
   //  ① DanmakuEndpoint 解析

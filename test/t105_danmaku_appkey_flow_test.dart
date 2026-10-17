@@ -58,11 +58,19 @@ void main() {
   setUp(() {
     UiPrefs.debugResetForTest(<String, String>{});
     DanmakuConfig.debugSetBuiltin(); // 回到缺省（读 const = 无内置）
+    /*
+     * ★★★ 2026-10-17（Owner 第 4 条）：内置公共实例上线后，
+     * 「没配地址 ⇒ 走官方（要签名）」会被内置实例顶掉。
+     * 本文件测的是**签名三件套**那条边 ⇒ 必须把内置实例关掉，
+     * 否则测的是免凭证的内置路（假绿：签名头根本不会发）。
+     */
+    DanmakuConfig.debugSetPublicInstances(const <DanmakuPublicInstance>[]);
   });
 
   tearDown(() {
     DanmakuConfig.debugSetBuiltin();
     UiPrefs.debugResetForTest(<String, String>{});
+    DanmakuConfig.debugSetPublicInstances(null);
   });
 
   group('① 用户填了凭证 ⇒ 签名头真的带上了三件套（端到端）', () {

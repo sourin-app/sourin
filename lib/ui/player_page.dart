@@ -1927,6 +1927,11 @@ class _PlayerPageState extends State<PlayerPage>
   /// 附加说明（版本号 / 端点 / 文件名…）—— 排查时"是哪个后端"的唯一线索
   String? _infoDetail;
 
+  /// ★★★ 2026-10-17（Owner 第 9 条）：聚合时**每一路**来源的读数
+  ///
+  /// 空列表 = 没聚合（单源）；非空 = 面板要把每一路都列出来（含失败的那几路）。
+  List<DanmakuAggregateFeed> _infoAggregate = const <DanmakuAggregateFeed>[];
+
   /// 右侧「弹幕信息」面板是否展开
   bool _danmakuInfoOpen = false;
 
@@ -1952,6 +1957,8 @@ class _PlayerPageState extends State<PlayerPage>
     String? detail,
     bool clearTitle = false,
     bool clearDetail = false,
+    DanmakuAggregate? aggregate,
+    bool clearAggregate = false,
   }) {
     if (source != null) _infoSource = source;
     if (match != null) _infoMatch = match;
@@ -1959,7 +1966,37 @@ class _PlayerPageState extends State<PlayerPage>
     if (clearTitle) _infoTitle = null;
     if (detail != null) _infoDetail = detail;
     if (clearDetail) _infoDetail = null;
+    /*
+     * ★ 2026-10-17（Owner 第 9 条）：聚合读数。
+     *   单源时**清空**（不是留一份旧的）—— 留着上一次的多源读数会让用户
+     *   以为这一次也是聚合的，而那正是他要排查的事。
+     */
+    if (aggregate != null) {
+      _infoAggregate = <DanmakuAggregateFeed>[
+        for (final f in aggregate.feeds)
+          DanmakuAggregateFeed(
+            label: _aggregateFeedLabel(f),
+            count: f.count,
+            detail: f.detail,
+            error: f.error,
+            loaded: f.loaded,
+          ),
+      ];
+    }
+    if (clearAggregate) _infoAggregate = const <DanmakuAggregateFeed>[];
   }
+
+  /// 一路来源的显示名（core 的类别 ⇒ 用户看得懂的名字）
+  ///
+  /// ⚠️ 与 `DanmakuAggregate._kindLabel` **同一套词**（core 里那份给日志/状态行，
+  ///    这份给面板）。两处分开是因为 core 不该依赖 UI 文案 —— 但要一起改。
+  static String _aggregateFeedLabel(DanmakuFeedStat f) => switch (f.kind) {
+        DanmakuSourceChannel.plugin => '插件提供',
+        DanmakuSourceChannel.imported => '导入源',
+        DanmakuSourceChannel.local => '本机服务',
+        DanmakuSourceChannel.library => '本地弹幕库',
+        DanmakuSourceChannel.none => '未知来源',
+      };
 
   /// 取弹幕的并发令牌（换集时旧的响应必须被丢掉）
   int _danmakuFetchToken = 0;
@@ -1991,6 +2028,7 @@ class _PlayerPageState extends State<PlayerPage>
         error: _danmakuError == null ? null : _danmakuErrorText(_danmakuError!),
         loading: _danmakuLoading,
         enabled: _danmakuEnabled,
+        aggregate: _infoAggregate,
       );
 
   /// 把 [DanmakuException] 摊成一段**可复制去搜**的原文
@@ -6030,6 +6068,157 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ **没配凭证也照发**：本地短路会把 danmaku-service 的
   ///    `X-Error-Message` 这条唯一能说明"为什么失败"的信息永久埋掉
   ///    （见 core/danmaku.dart 文件头的错误透传策略）。
+  /// ★★★ 2026-10-17（Owner 第 9 条）：把**两路**弹幕合成一份
+  ///
+  /// Owner 原话（逐字）：
+  /// ```text
+  /// > 有些网站是支持发送弹幕的,你在软件实现了,但是并没有发送弹幕的入口,
+  /// > 这个需要修复。然后有些网站本身也提供弹幕,我们要支持弹幕的聚合
+  /// ```
+  ///
+  /// # 改前是**二选一**，不是聚合
+  /// ```text
+  /// `_loadDanmakuNamed` 里那串 if 是互斥的：
+  ///   绑了外部视频站 ⇒ `_loadBiliDanmaku(cid); return;`   ← 插件那条被 return 掉
+  ///   没绑          ⇒ 走 dan-api / 官方
+  /// ⇒ 「插件能给弹幕」+「dan-api 也能给弹幕」时**只有一条**被载入。
+  /// ```
+  ///
+  /// # 为什么把合并逻辑放在 core、接线只放这一处
+  /// ```text
+  /// 合并/去重/排序/分路统计 全是纯函数 ⇒ 在 `DanmakuAggregator`（core/danmaku.dart）
+  /// 里，可离线单测 + 可故障注入。宿主这里只做三件事：
+  ///   ① 拿到主源（导入源）
+  ///   ② 问一次插件（拿不到就算了，**不许**因此丢掉主源）
+  ///   ③ 交给聚合器，把读数记进面板
+  /// ```
+  ///
+  /// # 纪律：插件失败**绝不**影响主源
+  /// ```text
+  /// 插件抛异常 / 没声明能力 / 返回空 ⇒ 主源照常显示，
+  /// 但**那一路的失败要出现在面板里**（`DanmakuFeedInput.failed`）——
+  /// 悄悄吞掉一路，用户看到的就是「聚合只来了一半，不知道为什么」。
+  /// ```
+  ///
+  /// ⚠️ [token] 是 `_danmakuFetchToken`：换集时旧的响应必须被丢掉。
+  ///    插件那次调用是 `await`（可能几百毫秒），期间用户完全可能切集
+  ///    ⇒ 回来时先比 token，再比 mounted。
+  Future<DanmakuAggregate> _aggregateDanmaku({
+    required List<DanmakuComment> primary,
+    required DanmakuSourceChannel primaryKind,
+    required String primaryDetail,
+    required DanmakuInfoSource primarySource,
+    required int token,
+  }) async {
+    final inputs = <DanmakuFeedInput>[
+      DanmakuFeedInput(
+        kind: primaryKind,
+        comments: primary,
+        detail: primaryDetail,
+      ),
+    ];
+
+    /*
+     * 插件那一路。
+     *
+     * ⚠️ 判据是「**有真站点 id**」而不是「有 provider 字符串」——
+     *    本地会话的 provider 是 `'local'`，问它要弹幕只会得到 unsupported。
+     *    与 `_loadDanmakuSendCapability` 用的是同一个 helper（同一份判据）。
+     */
+    final pluginId = providerNameLookupId(
+      provider: _provider,
+      originProvider: widget.originProvider,
+    );
+    if (pluginId == null || pluginId.isEmpty) {
+      inputs.add(const DanmakuFeedInput.skipped(
+        kind: DanmakuSourceChannel.plugin,
+        detail: '本地会话，没有插件可问',
+      ));
+    } else {
+      try {
+        final bundle = await SourinApi.providerDanmakuList(
+          pluginId,
+          mediaId: _contentId,
+          episodeId: '$_epIndex',
+          title: _danmakuFileName,
+          duration: _duration.inSeconds > 0 ? _duration.inSeconds : null,
+        );
+        /*
+         * ★ token 变了 ⇒ 这次结果作废（用户已经切集）。
+         *   返回**只有主源**的聚合 —— 调用方紧接着还会再比一次 token，
+         *   所以这里返回什么都不会被画上去；返回主源是为了不抛。
+         */
+        if (!mounted || token != _danmakuFetchToken) {
+          return DanmakuAggregator.merge(<DanmakuFeedInput>[
+            DanmakuFeedInput(
+              kind: primaryKind,
+              comments: primary,
+              detail: primaryDetail,
+            ),
+          ]);
+        }
+        /*
+         * 契约里 `items` 是 `PluginWireComment`（p/m 两段串）⇒ 走
+         * `DanmakuComment.fromJson`（与 Rust 桥接层同一个解析器）。
+         * ⚠️ `fromJson` 在 cid 缺失时**整条丢弃**；桥接层已补位，
+         *    这里再兜一次（同 PluginDanmakuBundle 的纪律）。
+         */
+        final parsed = <DanmakuComment>[];
+        for (var i = 0; i < bundle.items.length; i++) {
+          final w = bundle.items[i];
+          final j = w.toWireJson();
+          j['cid'] ??= i + 1;
+          final c = DanmakuComment.fromJson(j);
+          if (c != null) parsed.add(c);
+        }
+        inputs.add(DanmakuFeedInput(
+          kind: DanmakuSourceChannel.plugin,
+          comments: parsed,
+          detail: bundle.source.isNotEmpty ? bundle.source : pluginId,
+        ));
+        debugPrint('[DMK] 插件 $pluginId 给了 ${parsed.length} 条弹幕'
+            '${bundle.truncated ? "（上游已截断）" : ""}');
+      } on SourinCoreException catch (e) {
+        /*
+         * ★ 不支持的源 ⇒ `loaded:false`（"没试"而不是"失败"）；
+         *   其它错误 ⇒ 真失败，原文照透。
+         *
+         * ⚠️ 两类必须分开：用户看到「插件提供：未提供」会去查插件配没配，
+         *    看到「插件提供：失败 · HTTP 500」会去查网络 —— 两件事。
+         */
+        final raw = e.message.trim();
+        final unsupported = raw.startsWith('unsupported:') ||
+            raw.contains('不支持') ||
+            raw.contains('未声明');
+        if (unsupported) {
+          inputs.add(DanmakuFeedInput.skipped(
+            kind: DanmakuSourceChannel.plugin,
+            detail: raw.isEmpty ? '这个源没有声明弹幕能力' : raw,
+          ));
+        } else {
+          inputs.add(DanmakuFeedInput.failed(
+            kind: DanmakuSourceChannel.plugin,
+            error: raw.isEmpty ? e.kind : raw,
+            detail: pluginId,
+          ));
+        }
+        debugPrint('[DMK] 插件 $pluginId 取弹幕失败: $e');
+      } catch (e) {
+        // 非 SourinCoreException（解析/类型）—— 同样如实记，不吞
+        inputs.add(DanmakuFeedInput.failed(
+          kind: DanmakuSourceChannel.plugin,
+          error: '$e',
+          detail: pluginId,
+        ));
+        debugPrint('[DMK] 插件 $pluginId 取弹幕异常: $e');
+      }
+    }
+
+    final agg = DanmakuAggregator.merge(inputs);
+    debugPrint('[DMK] 聚合：${agg.summary}');
+    return agg;
+  }
+
   Future<void> _loadDanmakuNamed(String fileName) async {
     /*
      * ★★★ OPS-10 ⑤（Owner 逐字：「导入externaldanmaku弹幕之后,并没有提示任何信息
@@ -6278,17 +6467,34 @@ class _PlayerPageState extends State<PlayerPage>
         try {
           final cs = await client.fetchComments(pinned);
           if (!mounted || token != _danmakuFetchToken) return;
+          /*
+           * ★★★ 2026-10-17（Owner 第 9 条）：**聚合**
+           *
+           * 用户点选的那一集拿到之后，再叠上插件那一份 —— 见
+           * [_aggregateDanmaku] 的说明（改前这两条路是**互斥**的）。
+           */
+          final agg = await _aggregateDanmaku(
+            primary: cs,
+            primaryKind: DanmakuSourceChannel.imported,
+            primaryDetail: '弹幕库 #$pinned',
+            primarySource: DanmakuInfoSource.library,
+            token: token,
+          );
+          if (!mounted || token != _danmakuFetchToken) return;
           setState(() {
-            _danmakuComments = cs;
+            _danmakuComments = agg.comments;
             _danmakuError = null;
             _danmakuLoading = false;
-            _danmakuStatus = '已载入「$fileName」（弹幕库 #$pinned · ${cs.length} 条）';
+            _danmakuStatus = '已载入「$fileName」（弹幕库 #$pinned · '
+                '${agg.comments.length} 条）';
             _setDanmakuInfo(
               source: DanmakuInfoSource.library,
               detail: fileName,
+              aggregate: agg,
             );
           });
-          debugPrint('[DMK] 按用户点选的 episodeId 直达：#$pinned ⇒ ${cs.length} 条');
+          debugPrint('[DMK] 按用户点选的 episodeId 直达：#$pinned ⇒ '
+              '${agg.comments.length} 条 · ${agg.summary}');
           return;
         } catch (e) {
           debugPrint('[DMK] 点选的那一条取失败（回落到匹配链路）: $e');
@@ -6302,8 +6508,28 @@ class _PlayerPageState extends State<PlayerPage>
         anime: fileName,
       );
       if (!mounted || token != _danmakuFetchToken) return;
+      /*
+       * ★★★ 2026-10-17（Owner 第 9 条）：**聚合**
+       *
+       * 导入源（dan-api / 本机 / 官方）这一份拿到之后，再叠上插件那一份。
+       * 改前这两条路是**互斥**的（见 [_aggregateDanmaku] 的长注释）。
+       */
+      final agg = await _aggregateDanmaku(
+        primary: res.comments,
+        primaryKind: DanmakuSourceChannel.imported,
+        primaryDetail: _danmakuUsingLocal
+            ? (_danmakuLocalStatus?.endpoint != null ? '自建服务' : '本机服务')
+            : 'dan-api',
+        primarySource: _danmakuUsingLocal
+            ? (_danmakuLocalStatus?.endpoint != null
+                ? DanmakuInfoSource.selfHosted
+                : DanmakuInfoSource.localDanmaku)
+            : DanmakuInfoSource.service,
+        token: token,
+      );
+      if (!mounted || token != _danmakuFetchToken) return;
       setState(() {
-        _danmakuComments = res.comments;
+        _danmakuComments = agg.comments;
         /*
          * ★ OPS-10 B：「在 UI 上如实反映实际用的是哪个源的弹幕」
          *
@@ -6313,8 +6539,22 @@ class _PlayerPageState extends State<PlayerPage>
          * 而 外部视频站那侧**不需要凭证**、danmaku-service 那侧**要**，这个区别
          * 恰恰是他排错时唯一要分清的事（见下面 DanmakuHint 的说明）。
          * ⇒ 在宿主这一层补前缀，不改 core 的文案（t70 逐字钉着它们）。
+         *
+         * ★ 2026-10-17（Owner 第 9 条）：聚合时**两路都要出现**在读数里
+         *   —— `agg.summary` 就是那个读数（`2 路 · 插件 1200 + 导入源 800 = …`）。
+         *   单源时它退化成 `导入源 800 条`，与改前那句同义。
+         *
+         * ⚠️ 下面这个赋值里的**前缀字面量全仓只能一份** —— `t27_w5` 的源码契约
+         *    钉着它（`zz_cr_dmk_b`：成功支只有一个 setState 形态，本地支必须
+         *    复用它，不许复制第二份）。
+         *    所以后面两处 `copyWith` 都读这个字段，不再重写一遍前缀
+         *    （注释里我也**不重复那个字面量** —— 那个契约是按纯文本匹配的）。
+         *
+         * ★ 聚合读数（Owner 第 9 条）用条件拼接附在后面：
+         *   单源时不加尾巴（与改前那句同义），多源时给出 `2 路 · 插件 N + 导入源 M = K 条`。
          */
-        _danmakuStatus = 'danmaku-service · ${res.summary}';
+        _danmakuStatus = 'danmaku-service · ${res.summary}'
+            '${agg.feeds.length > 1 ? ' · ${agg.summary}' : ''}';
         _danmakuError = null;
         _danmakuErrorAt = null;
         _danmakuEmptyExpired = false;
@@ -6334,11 +6574,16 @@ class _PlayerPageState extends State<PlayerPage>
           detail: _danmakuLocalStatus?.version == null
               ? null
               : 'v${_danmakuLocalStatus!.version}',
+          aggregate: agg,
         );
         _danmakuSettings = _danmakuSettings.copyWith(
           loading: false,
           clearError: true,
-          status: 'danmaku-service · ${res.summary}',
+          /*
+           * ★ 复用上面算好的 `_danmakuStatus`（不是重写一遍那个字面量）——
+           *   理由见它上方那条关于 `zz_cr_dmk_b` 的说明。
+           */
+          status: _danmakuStatus,
           sourceLine: _danmakuSourceLine,
         );
       });
@@ -14271,6 +14516,32 @@ class _PlayerPageState extends State<PlayerPage>
                         onLogin: _isAuthError
                             ? () => unawaited(_loginAndRetry())
                             : null,
+                        /*
+                     * ★★★ Owner 第 6 条：把失败**归类**，并只显示插件原文
+                     *
+                     * # 改前（Owner 给的两张截图）
+                     * ```text
+                     * 图 1  Failed to open http://127.0.0.1:57209/s/18df.../
+                     *       ↑ 内部代理地址直接抛给用户，判断不了是源还是软件
+                     * 图 2  SourinCoreException(other): 插件报错: 该内容需要大会员…
+                     *       ↑ 两个前缀都是宿主加的噪声
+                     * ```
+                     *
+                     * # 改后
+                     * ```text
+                     * 标题   按类别给一句人话（这个源没有返回可播放地址 / 内置代理没起来 / …）
+                     * 正文   PlaybackErrorText 净化后的原文（插件说了什么就显示什么）
+                     * 下一步 能照着做的一句话
+                     * ```
+                     *
+                     * ⚠️ 归类在 core（`PlaybackErrorText.classify`）里做，是**纯函数**、
+                     *    有独立门禁 —— 这里只负责显示，不再各自写一份 if。
+                     */
+                        failure: PlaybackErrorText.classify(
+                          _error,
+                          kindHint: _errorKind,
+                          hadCandidates: _streams.isNotEmpty,
+                        ),
                       ),
 
                     // ── 顶部栏 ──
@@ -14520,7 +14791,6 @@ class _PlayerPageState extends State<PlayerPage>
                         message: _playbackFailure!,
                         onRetry: () => unawaited(_load()),
                       ),
-
                     // ── 下一集倒计时 ──
                     if (_nextCountdown > 0)
                       _NextCountdown(
@@ -14959,11 +15229,42 @@ class _PlayerPageState extends State<PlayerPage>
                      *   不会在用户看片时一直杵着。
                      * ```
                      *
-                     * ⚠️ **不支持发送的源整条不出现**（不是置灰）——
-                     *    判据就是 capabilities.danmakuSend，见 _danmakuCanSend。
+                     * # ★★★ 2026-10-17 二次修复（Owner 第 9 条）
+                     * ```text
+                     * Owner 原话：「有些站点是支持发送弹幕的,你在软件实现了,
+                     *               但是并没有发送弹幕的入口,这个需要修复。」
+                     *
+                     * 改前的判据里有一项 `_danmakuCanSend`（= 源声明了
+                     * capabilities.danmaku_send）⇒ 源**没声明**这条能力时，
+                     * 整条发送栏**根本不渲染**，用户连"能不能发"都无从得知，
+                     * 更没法试。
+                     *
+                     * 但 Owner 说的场景恰恰是反的：源**支持**发、我们**也实现了**，
+                     * 入口却因为一个声明布尔而消失。
+                     * ```
+                     *
+                     * ⇒ 判据收敛为「**有真站点可发 + 不在直播 + 控件可见**」：
+                     * ```text
+                     * · _danmakuSendProvider != null  ← 必须（没有源就无处可发）
+                     * · !_isLive                      ← 必须（直播没有"这一集"）
+                     * · _chromeVisible                ← 必须（跟底栏一起淡出）
+                     * · _danmakuCanSend               ← ★ 不再决定"在不在"
+                     * ```
+                     *
+                     * # ★★★ 2026-10-17 三次修复（Lead 定案）：置灰但可见
+                     * ```text
+                     * 上一版是「常驻 + 点了报错」——Lead 否掉了，理由是对的：
+                     *   用户每次点都撞一次墙，体验是负的。
+                     * 现在的口径：
+                     *   入口**常驻可见**（Owner：入口别消失）
+                     *   源不支持发送 ⇒ 控件 **disabled**（点不动，不撞墙）
+                     *   并且**必须能看到原因**（只是灰着不说 = 另一种撒谎）
+                     * ```
+                     * ⇒ `_danmakuCanSend` 从"决定在不在"改成"决定能不能点"。
+                     *   这与 Owner 第 9 条不冲突：他要的是**入口在**，
+                     *   而按钮能不能点是另一件事。
                      */
-                    if (_danmakuCanSend &&
-                        _danmakuSendProvider != null &&
+                    if (_danmakuSendProvider != null &&
                         !_isLive &&
                         _chromeVisible)
                       Positioned(
@@ -14974,6 +15275,19 @@ class _PlayerPageState extends State<PlayerPage>
                           episodeId: _contentId,
                           positionMs: _danmakuSendPositionMs,
                           onSend: _sendDanmaku,
+                          /*
+                           * ★ 能不能发：源声明的能力（`capabilities.danmaku_send`）。
+                           * false ⇒ 整条发送栏置灰 + 显示下面那句原因。
+                           */
+                          canSend: _danmakuCanSend,
+                          /*
+                           * ★ 为什么是灰的 —— 必须说清楚。
+                           *
+                           * ⚠️ 文案刻意**指向用户能做的下一步**：
+                           *    "这个源没有开放发送弹幕" + 换源提示。
+                           *    只写"不支持"等于把问题丢回给用户。
+                           */
+                          disabledReason: '这个源没有开放发送弹幕能力，换一个源再试',
                         ),
                       ),
                     /*
@@ -15616,6 +15930,7 @@ class _ErrorOverlay extends StatelessWidget {
     required this.onRetry,
     required this.onBack,
     this.onLogin,
+    this.failure,
   });
 
   final String message;
@@ -15628,6 +15943,200 @@ class _ErrorOverlay extends StatelessWidget {
   /// 这个 Widget 是纯展示的，判据属于业务逻辑。
   /// 见 `_isAuthError` 的说明。
   final VoidCallback? onLogin;
+
+  /// ★★★ Owner 第 6 / 7 条：归类后的失败描述（含净化过的原文）
+  ///
+  /// # 为什么把判据放在 core 而不是这里
+  /// ```text
+  /// 归类要读「取流失败 / 502 / 大会员 / codec」这些**跨层的证据**，
+  /// 那是 core 的知识；本 Widget 只该决定「标题写哪句、按钮给哪颗」。
+  /// ⇒ 判据在 `PlaybackErrorText.classify`（纯函数、有独立门禁），
+  ///    这里只消费结果。这样同一个失败在**别的页面**也能复用同一套结论。
+  /// ```
+  ///
+  /// ⚠️ `null` = 调用方没归类（老路径 / 探针注入的裸串）⇒ 退回只显示 [message]，
+  ///    行为与改前**逐字一致**（不猜类别、不改文案）。
+  final PlaybackFailure? failure;
+
+  /// 标题：有归类时用类别的**一句话**，否则沿用「播放失败」
+  String get _headline => failure?.headline ?? '播放失败';
+
+  /// 正文：归类的 detail 已净化；没归类时用原始 message（但**仍要净化**）
+  ///
+  /// # 为什么没归类也要净化
+  /// ```text
+  /// 净化（剥前缀 + 抹内部地址）与归类是**两件事**：
+  /// 第 7 条要求「只显示插件原文」，那条要求对**所有**错误都成立，
+  /// 不该因为「这条归不到类」就把 SourinCoreException(other): 又露出来。
+  /// ```
+  String get _body => PlaybackErrorText.stripHostErrorNoise(
+    PlaybackErrorText.hideInternalUrls(failure?.detail ?? message),
+  );
+
+  @override
+  Widget build(BuildContext context) => ColoredBox(
+    color: Colors.black87,
+    child: Center(
+      child: Padding(
+        padding: const EdgeInsets.all(Sp.x8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(AppIcons.error_outline, size: 48, color: Colors.white70),
+            const SizedBox(height: Sp.x4),
+            Text(
+              _headline,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: FontSizes.base,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: Sp.x2),
+            Text(
+              _body,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: FontSizes.sm,
+              ),
+            ),
+            /*
+             * ★ 下一步（Owner 第 6 条「要优化报错信息」）
+             *
+             * 只在**有话说**时才画这一行：`nextStep` 为空串（unknown 类）
+             * 时多一行空白只会让错误页更乱。
+             */
+            if ((failure?.nextStep ?? '').isNotEmpty) ...[
+              const SizedBox(height: Sp.x3),
+              Text(
+                failure!.nextStep,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white60,
+                  fontSize: FontSizes.cap,
+                ),
+              ),
+            ],
+            const SizedBox(height: Sp.x6),
+            /*
+                 * ★ 「登录」按钮（2026-09-24 用户要求）
+                 *
+                 * 放在「重试」**左边**、用 FilledButton 与「重试」同级：
+                 * 用户的处境是「登录失效了，重试多少次都一样」，
+                 * 所以登录才是那个真正能解决问题的动作，不该被藏起来。
+                 *
+                 * ⚠️ 只在 `onLogin != null` 时渲染 —— 无条件显示会让
+                 *    「该内容没有可播放的地址」这类用户也看到一个登录按钮。
+                 */
+            if (onLogin != null) ...[
+              FilledButton.icon(
+                onPressed: onLogin,
+                icon: const Icon(AppIcons.login, size: 18),
+                label: const Text('登录'),
+              ),
+              const SizedBox(height: Sp.x3),
+            ],
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                OutlinedButton(onPressed: onBack, child: const Text('返回')),
+                const SizedBox(width: Sp.x3),
+                /*
+                 * ★ 重试按钮按类别决定给不给（Owner 第 6 条）
+                 *
+                 * 源站权限问题（大会员 / 地区）重试一万次都一样 ——
+                 * 给一颗点了必然失败的按钮，等于把用户困在原地打转。
+                 * 这不是「少给一个功能」，是**诚实**：没有出路就别画假出口。
+                 *
+                 * ⚠️ 没归类（failure == null）时**照旧给**重试 ——
+                 *    老路径的行为一个字都不改。
+                 */
+                if (failure?.canRetry ?? true)
+                  FilledButton(onPressed: onRetry, child: const Text('重试')),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// 交付取证用：把**产线上的那个错误卡片**暴露成可构造的公开 Widget
+///
+/// # 为什么需要它
+/// ```text
+/// `_ErrorOverlay` 是私有类，测试文件构造不了它。
+/// 而截图取证必须截**产线那个 widget** —— 复制一份"长得像"的
+/// 就违反了本仓「仪器必须是被测对象」的纪律（踩过两次：日志计数、
+/// 探针自己循环取流）。
+/// ⇒ 这里只做一件事：把同一个 build 结果转发出去，**零逻辑**。
+/// ```
+///
+/// # ⚠️ 生产路径不使用它
+/// 生产走 `_ErrorOverlay(...)` 直接构造。这个包装只给
+/// `test/zz_r65_error_shots_test.dart` 用。
+///
+/// # [rawOnly]
+/// ```text
+/// 非 null ⇒ 模拟**改前**行为：不归类、不净化，把原文直接贴上屏。
+/// 用来拍"改前"对照图（Owner 看到的那两个画面）。
+/// ```
+@visibleForTesting
+class PlayerErrorCardForProbe extends StatelessWidget {
+  const PlayerErrorCardForProbe({
+    super.key,
+    this.failure,
+    this.rawOnly,
+    required this.onRetry,
+    required this.onBack,
+    this.onLogin,
+  });
+
+  /// 归类后的失败（与生产完全同一个类型）
+  final PlaybackFailure? failure;
+
+  /// 改前对照：把这条原文**原样**上屏（不归类、不净化）
+  final String? rawOnly;
+
+  final VoidCallback onRetry;
+  final VoidCallback onBack;
+  final VoidCallback? onLogin;
+
+  @override
+  Widget build(BuildContext context) {
+    final raw = rawOnly;
+    if (raw != null) {
+      /*
+       * 改前对照：走 `_ErrorOverlay` 但**不传 failure** ——
+       * 那正是改前的调用形态（只有 message，没有归类）。
+       * ⚠️ 但 `_ErrorOverlay` 现在**自己也会净化**（第 7 条要求对所有
+       *    错误都成立），所以这里用 message 直接渲染，绕过净化，
+       *    才能真实复现"改前用户看到的样子"。
+       */
+      return _BeforeErrorCard(message: raw, onBack: onBack);
+    }
+    return _ErrorOverlay(
+      message: failure?.detail ?? '',
+      failure: failure,
+      onRetry: onRetry,
+      onBack: onBack,
+      onLogin: onLogin,
+    );
+  }
+}
+
+/// 改前对照卡片（**只用于截图取证**，生产路径永不使用）
+///
+/// 逐字复刻改动前的 `_ErrorOverlay`：标题硬编码「播放失败」，
+/// 正文原样 `message`，两颗按钮（返回 + 重试），**不分类、不净化**。
+class _BeforeErrorCard extends StatelessWidget {
+  const _BeforeErrorCard({required this.message, required this.onBack});
+
+  final String message;
+  final VoidCallback onBack;
 
   @override
   Widget build(BuildContext context) => ColoredBox(
@@ -15658,30 +16167,12 @@ class _ErrorOverlay extends StatelessWidget {
               ),
             ),
             const SizedBox(height: Sp.x6),
-            /*
-                 * ★ 「登录」按钮（2026-09-24 用户要求）
-                 *
-                 * 放在「重试」**左边**、用 FilledButton 与「重试」同级：
-                 * 用户的处境是「登录失效了，重试多少次都一样」，
-                 * 所以登录才是那个真正能解决问题的动作，不该被藏起来。
-                 *
-                 * ⚠️ 只在 `onLogin != null` 时渲染 —— 无条件显示会让
-                 *    「该内容没有可播放的地址」这类用户也看到一个登录按钮。
-                 */
-            if (onLogin != null) ...[
-              FilledButton.icon(
-                onPressed: onLogin,
-                icon: const Icon(AppIcons.login, size: 18),
-                label: const Text('登录'),
-              ),
-              const SizedBox(height: Sp.x3),
-            ],
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 OutlinedButton(onPressed: onBack, child: const Text('返回')),
                 const SizedBox(width: Sp.x3),
-                FilledButton(onPressed: onRetry, child: const Text('重试')),
+                FilledButton(onPressed: () {}, child: const Text('重试')),
               ],
             ),
           ],
@@ -15690,10 +16181,6 @@ class _ErrorOverlay extends StatelessWidget {
     ),
   );
 }
-
-/// 直播"只有音频线路能播"的**非阻断**提示
-///
-/// # 它解决的是用户原话「tvsrc看得到但是点开黑屏」
 ///
 /// 央视直播的视频轨被 DRM 加密 —— 这不是我们的 bug，是内容方的保护。
 /// 独立实测（ffmpeg，与 mpv 不同解码器）：
@@ -15909,10 +16396,32 @@ class _VideoOutputDeadBanner extends StatelessWidget {
 /// ★ 文案**照抄 mpv 原文**（不做翻译/改写）：这条错误的诊断价值全在
 ///   那个地址和 mpv 的原句上（"Failed to open <url>" 能一眼看出是本地代理
 ///   还是上游 CDN），改写反而会把线索弄丢。中文只在前面加一句人话。
+///
+/// ★★★ 2026-10-18（Owner 第 6 条）：上面那段"照抄 mpv 原文"的取舍**已经改了**
+///
+/// # 为什么原做法被否掉
+/// ```text
+/// 那条 mpv 原句是「Failed to open http://127.0.0.1:57209/s/18df…/」
+/// 而 127.0.0.1:<随机端口> 是**内置代理**，随进程退出就失效。
+/// Owner 第 6 条原话：看到这句「不知道是源的问题还是软件本身的问题」
+/// ⇒ 把内部地址原样贴给用户，等于把**我们自己的实现细节**当成诊断线索
+///   交出去，而它对用户毫无意义、事后也无法回连。
+/// ```
+///
+/// # 现在的做法
+/// ```text
+/// ① 内部代理地址 → 抹掉（PlaybackErrorText.hideInternalUrls）
+/// ② 剩下的**上游/插件原文**照抄 —— 那部分才是真线索，一个字都不改
+/// ③ 前面加一句归类好的中文（这个源没返回地址 / 内置代理没起来 / …）
+/// ```
+/// ⚠️ 完整的原始地址仍进 `AppLog`（`_bindPlayerStreams` 里那条 write），
+///    排查时从日志里拿 —— **文案与日志的取舍不同**，这一点没变。
 class _PlaybackFailureBanner extends StatelessWidget {
   const _PlaybackFailureBanner({required this.message, required this.onRetry});
 
-  /// mpv 的原始错误文案（照抄，不改写）
+  /// mpv / 插件的原始错误文案
+  ///
+  /// ⚠️ 显示前会过 `PlaybackErrorText`（抹内部地址）—— 见类注释。
   final String message;
 
   final VoidCallback onRetry;
@@ -15952,7 +16461,19 @@ class _PlaybackFailureBanner extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    message,
+                    /*
+                     * ★★★ Owner 第 6 条：内部代理地址不许上屏
+                     *
+                     * 原文形如「Failed to open http://127.0.0.1:63534/s/18dc…/」，
+                     * 那个端口是**内置代理**、随进程退出失效，用户拿它判断
+                     * 不了任何事（Owner 原话：不知道是源的问题还是软件问题）。
+                     * ⇒ 抹成「内置代理取不到这条流」，上游真址若在原文里则原样保留。
+                     *
+                     * ⚠️ 完整原文仍进 AppLog（见 `_bindPlayerStreams`），排查不受影响。
+                     */
+                    PlaybackErrorText.stripHostErrorNoise(
+                      PlaybackErrorText.hideInternalUrls(message),
+                    ),
                     // ★ 原文可能很长（带完整 URL）⇒ 最多两行 + 省略号，
                     //   免得把横幅撑成半屏
                     maxLines: 2,
@@ -18859,8 +19380,14 @@ const double _kBottomBarMiniWidth = 528;
 
 /// 播放页底部的弹幕发送栏
 ///
-/// ⚠️ **调用方负责显隐**：不支持发送的源**不要**构造本 widget，
-///    也不要传 `enabled: false` 来置灰 —— 那与本组件的产品前提相反。
+/// # 显隐由宿主决定，禁用由 [canSend] 决定
+/// ```text
+/// 入口在不在  ← 宿主（有真站点 + 不在直播 + 控件可见）
+/// 能不能发    ← canSend（源声明了 capabilities.danmaku_send）
+/// ```
+/// ⚠️ 2026-10-17（Owner 第 9 条 + Lead 定案）：**不要**因为源不支持就
+///    不构造本 widget —— 那样入口会凭空消失（Owner 要的正是"入口在"）。
+///    正确做法是传 `canSend: false` + `disabledReason`，它会自己置灰并说明原因。
 class DanmakuSendBar extends StatefulWidget {
   const DanmakuSendBar({
     super.key,
@@ -18868,6 +19395,9 @@ class DanmakuSendBar extends StatefulWidget {
     required this.episodeId,
     required this.onSend,
     this.positionMs,
+    this.canSend = true,
+    this.disabledReason = '',
+    this.debugInitialText = '',
   });
 
   /// 源 id（**必须是真站点 id**，不能是 `local` —— 见宿主侧 `_danmakuSendProvider`）
@@ -18883,6 +19413,45 @@ class DanmakuSendBar extends StatefulWidget {
   /// ⚠️ 返回 **可空**：直播没有「进度」这个概念，传 null 比传 0 更诚实
   ///    （0 是「从头开始」这个合法值，两者不能混）。
   final int? Function()? positionMs;
+
+  /// ★★★ 2026-10-17（Owner 第 9 条 + Lead 定案）：这个源**能不能**发弹幕
+  ///
+  /// # 三态语义（别把 `canSend` 与"在不在"混起来）
+  /// ```text
+  /// 入口在不在   ← 宿主决定（有真站点 + 不在直播 + 控件可见）
+  /// 能不能发     ← 本字段（源声明了 capabilities.danmaku_send）
+  /// ```
+  ///
+  /// fake = 整条发送栏**置灰**（输入框与按钮都点不动）+ 显示 [disabledReason]。
+  ///
+  /// ⚠️ 为什么不是"干脆不渲染"（改前的做法）：
+  ///    Owner 第 9 条：「有些站点是支持发送弹幕的,你在软件实现了,
+  ///    但是并没有发送弹幕的入口,这个需要修复。」
+  ///    入口消失 ⇒ 用户连"这个能力存在"都不知道，也无从判断是软件没做
+  ///    还是这个源不支持。
+  ///
+  /// ⚠️ 为什么也不是"常驻但点了报错"（上一版的做法，被 Lead 否掉）：
+  ///    每次点都撞一次墙，体验是负的。置灰 + 说原因才是"知道但做不到"。
+  final bool canSend;
+
+  /// 置灰时显示的原因（**必须可读且指出下一步**）
+  ///
+  /// ⚠️ 只灰着不说话 = 另一种撒谎：用户看到灰按钮但不知道为什么。
+  /// ⚠️ 文案由宿主编排（它才知道是"源没声明能力"还是"没登录"这类区别）。
+  final String disabledReason;
+
+  /// **只给测试用**：让输入框一开始就带着文字
+  ///
+  /// # 为什么必须有这个缝（故障注入逼出来的，不是洁癖）
+  /// ```text
+  /// 「置灰时按钮点不动」这条断言，若输入框是空的，`_canSend` 本来就是 false
+  /// （因为"没内容"）⇒ 把 canSend 从判据里拿掉，用例**照样绿** = 假绿。
+  /// ⇒ 必须先让输入框有内容，才能证明「拦住它的是 canSend，不是空输入」。
+  ///
+  /// ⚠️ 生产恒为空串（没有任何调用点传它）；
+  ///    输入框在 disabled 时打不进字，所以这个缝只能从构造参数注入。
+  /// ```
+  final String debugInitialText;
 
   /// 真正的发送动作（由宿主注入 —— 本组件不碰 FFI，便于单测）
   ///
@@ -18904,13 +19473,24 @@ class _DanmakuSendBarState extends State<DanmakuSendBar> {
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    // 只给测试用（见 debugInitialText 的注释；生产恒为空串）
+    if (widget.debugInitialText.isNotEmpty) {
+      _ctl.text = widget.debugInitialText;
+    }
+  }
+
+  @override
   void dispose() {
     _ctl.dispose();
     _focus.dispose();
     super.dispose();
   }
 
-  bool get _canSend => !_sending && _ctl.text.trim().isNotEmpty;
+  /// 能不能点：源支持发送 + 有内容 + 不在发送中
+  bool get _canSend =>
+      widget.canSend && !_sending && _ctl.text.trim().isNotEmpty;
 
   Future<void> _send() async {
     if (!_canSend) return;
@@ -18955,6 +19535,20 @@ class _DanmakuSendBarState extends State<DanmakuSendBar> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    /*
+     * ★★★ 2026-10-17（Lead 定案）：不支持发送的源 ⇒ **置灰但可见**。
+     *
+     * # 改前两版都不对
+     * ```text
+     * ① 整条不渲染 ⇒ 用户连"有这个能力"都不知道（Owner 第 9 条要的就是入口）
+     * ② 常驻 + 点了报错 ⇒ 每次点都撞墙，体验是负的
+     * ```
+     * # 现在
+     * ```text
+     * 入口在、能看见、但**点不动**；且下面那行**说清为什么**（不是只灰着不说）。
+     * ```
+     */
+    final enabled = widget.canSend;
     return Container(
       padding: const EdgeInsets.symmetric(
         horizontal: Sp.x3,
@@ -18973,10 +19567,11 @@ class _DanmakuSendBarState extends State<DanmakuSendBar> {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
+              Icon(
                 AppIcons.chat_bubble_outline,
                 size: 16,
-                color: Colors.white70,
+                // 灰态连图标一起暗下去（一眼就能看出整体不可用）
+                color: enabled ? Colors.white70 : Colors.white24,
               ),
               const SizedBox(width: Sp.x2),
               SizedBox(
@@ -18985,19 +19580,29 @@ class _DanmakuSendBarState extends State<DanmakuSendBar> {
                   controller: _ctl,
                   focusNode: _focus,
                   /*
+                   * ★ 源不支持 ⇒ 输入框也**禁用**。
+                   *   只禁"发送"按钮而放人打字，等于让人白打一行字。
+                   */
+                  enabled: enabled,
+                  /*
                    * ★ 输入变化要 setState：发送按钮的可用态依赖它。
                    *   不重建的话，用户打完字按钮还是「不可点」，
                    *   那是最容易被当成「功能坏了」的一种。
                    */
                   onChanged: (_) => setState(() {}),
                   onSubmitted: (_) => _send(),
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    color: enabled ? Colors.white : Colors.white38,
                     fontSize: FontSizes.sm,
                   ),
                   decoration: InputDecoration(
                     isDense: true,
-                    hintText: '发条弹幕…',
+                    /*
+                     * ⚠️ 置灰时 hint 用**短句**，完整原因在下面那一行 ——
+                     *    两处都写长句会在同一个浮层里重复两遍（视觉噪音），
+                     *    而"短句 + 下面一行解释"才读得顺。
+                     */
+                    hintText: enabled ? '发条弹幕…' : '这个源不支持发送弹幕',
                     hintStyle: const TextStyle(
                       color: Colors.white38,
                       fontSize: FontSizes.sm,
@@ -19055,6 +19660,46 @@ class _DanmakuSendBarState extends State<DanmakuSendBar> {
                 ),
             ],
           ),
+          /*
+           * ★★★ 2026-10-17（Lead 定案）：**灰着也要说清为什么**。
+           *
+           * # 为什么单独一行、而不是塞进 hintText
+           * ```text
+           * hintText 只在输入框为空时可见；用户一旦聚焦/输入就看不到了，
+           * 而"为什么不能发"恰恰是他最需要一直看到的那句话。
+           * 并且 hintText 是灰的（white38），在深色浮层上读起来费劲。
+           * ```
+           * ⚠️ 只在 disabled 时显示；能发的时候多一行纯属噪音。
+           */
+          if (!enabled) ...[
+            const SizedBox(height: 4),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  AppIcons.info_outline,
+                  size: 13,
+                  color: Colors.white54,
+                ),
+                const SizedBox(width: Sp.x1),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 300),
+                  child: Text(
+                    widget.disabledReason.isEmpty
+                        ? '这个源不支持发送弹幕'
+                        : widget.disabledReason,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      // ★ 用 white54 而不是红：这不是错误，是"能力限制"
+                      color: Colors.white54,
+                      fontSize: FontSizes.cap,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
           /*
            * ★★ 失败原因**必须显示出来**，且**原文透出**（不改写）。
            *

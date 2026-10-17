@@ -62,8 +62,21 @@ DanmakuHttpResponse _json(Object j) => DanmakuHttpResponse(
     );
 
 void main() {
-  setUp(() => UiPrefs.debugResetForTest());
-  tearDown(() => UiPrefs.debugResetForTest());
+  /*
+   * ★★★ 2026-10-17（Owner 第 4 条）：内置公共实例上线后，
+   * 「没配 dan-api ⇒ 仍然走本机 2080」这条老断言会被内置实例顶掉。
+   *
+   * 本文件测的是**用户自填 vs 本机 2080** 的优先序 —— 必须把内置关掉，
+   * 否则测的是另一条路（假绿）。
+   */
+  setUp(() {
+    UiPrefs.debugResetForTest();
+    DanmakuConfig.debugSetPublicInstances(const <DanmakuPublicInstance>[]);
+  });
+  tearDown(() {
+    UiPrefs.debugResetForTest();
+    DanmakuConfig.debugSetPublicInstances(null);
+  });
 
   // ═══════════════════════════════════════════════════════════════════
   //  ① 优先级：dan-api 必须压过本机弹弹play

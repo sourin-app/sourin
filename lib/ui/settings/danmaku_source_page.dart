@@ -172,10 +172,41 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    const builtins = kDanmakuPublicInstances;
+    final savedRaw = UiPrefs.danmakuEndpoint.trim();
+    final usingBuiltin = savedRaw.isEmpty && builtins.isNotEmpty;
     return SettingsSubPage(
       title: '弹幕源',
-      subtitle: '自建弹幕服务（dan-api）· 免凭证 · 连不上时自动回退',
+      subtitle: 'dan-api（内置公共实例 · 免凭证）· 连不上时自动回退',
       children: [
+        // ── ① 内置公共实例（Owner 第 4 条：不该让用户去填）──
+        if (builtins.isNotEmpty) ...[
+          SettingsBlock(
+            title: '内置实例',
+            trailing: Text(
+              '开箱可用',
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+            children: [
+              for (final p in builtins) ...[
+                _BuiltinTile(
+                  instance: p,
+                  selected: usingBuiltin && _isFirst(p),
+                  onTap: () => _pickBuiltin(p),
+                ),
+                const SizedBox(height: Sp.x2),
+              ],
+              _hint(
+                '公共服务器：会慢（冷启动几秒）、也可能临时不可用。'
+                '点一下即选中；想用别的就填下面那一栏，填了就压过内置。',
+              ),
+            ],
+          ),
+          const SizedBox(height: Sp.x5),
+        ],
         SettingsBlock(
           title: '连接',
           trailing: Text(
@@ -193,15 +224,16 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
               hasAddress: _url.text.trim().isNotEmpty,
             ),
             const SizedBox(height: Sp.x5),
-            _label('服务地址'),
+            _label(builtins.isEmpty ? '服务地址' : '你自己的地址（可选，填了就压过内置）'),
             const SizedBox(height: Sp.x2),
             TextField(
               controller: _url,
               keyboardType: TextInputType.url,
               style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
-              decoration: const InputDecoration(
-                hintText: 'http://127.0.0.1:9321',
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                hintText:
+                    builtins.isEmpty ? 'http://127.0.0.1:9321' : builtins.first.baseUrl,
+                border: const OutlineInputBorder(),
                 isDense: true,
               ),
               onChanged: (_) => _invalidate(),
@@ -264,7 +296,7 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
         ),
         const SizedBox(height: Sp.x5),
         SettingsBlock(
-          title: '没有自建服务？',
+          title: '没有可用实例？',
           children: [
             _hint('dan-api 是开源的自建弹幕服务（免凭证），可以自己跑一份。'),
             const SizedBox(height: Sp.x2),
@@ -273,11 +305,34 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
               '所以本客户端不用改任何协议就能用。',
             ),
             const SizedBox(height: Sp.x3),
-            _hint('没配也能用：程序会自动退回本机弹弹play，再退回官方接口。'),
+            _hint(
+              '什么都不配也能用：先用内置公共实例；'
+              '内置也不通时，才退回本机弹弹play / 官方接口。',
+            ),
           ],
         ),
       ],
     );
+  }
+
+  bool _isFirst(DanmakuPublicInstance p) =>
+      kDanmakuPublicInstances.isNotEmpty &&
+      kDanmakuPublicInstances.first.baseUrl == p.baseUrl;
+
+  /// 点一条内置实例 ⇒ 写进输入框 + 落盘
+  ///
+  /// ⚠️ 与 [_probe] 同一条竞态纪律：序号前进，作废在途结果。
+  void _pickBuiltin(DanmakuPublicInstance p) {
+    _seq++;
+    _runningSeq = null;
+    _url.text = p.baseUrl;
+    _token.text = p.token;
+    UiPrefs.setDanmakuEndpoint(p.baseUrl);
+    UiPrefs.setDanmakuToken(p.token);
+    setState(() {
+      _result = null;
+      _why = null;
+    });
   }
 
   Widget _label(String text) => Text(
@@ -296,6 +351,73 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
           color: Theme.of(context).colorScheme.onSurfaceVariant,
         ),
       );
+}
+
+/// 一条内置公共实例（点一下即选中）
+class _BuiltinTile extends StatelessWidget {
+  const _BuiltinTile({
+    required this.instance,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final DanmakuPublicInstance instance;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(Radii.sm),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x3),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(Radii.sm),
+          border: Border.all(
+            color: selected ? colors.primary : colors.outlineVariant,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              selected ? AppIcons.check_circle : AppIcons.radio_button_unchecked,
+              size: 18,
+              color: selected ? colors.primary : colors.onSurfaceVariant,
+            ),
+            const SizedBox(width: Sp.x3),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    instance.label,
+                    style: TextStyle(
+                      fontSize: FontSizes.sm,
+                      fontWeight:
+                          selected ? FontWeights.semibold : FontWeights.regular,
+                      color: colors.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: Sp.x1),
+                  Text(
+                    instance.baseUrl,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 /// 状态行：未配置 / 已保存 / 在线 / 离线 / 测试中

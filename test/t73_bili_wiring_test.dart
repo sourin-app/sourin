@@ -495,8 +495,12 @@ void main() {  // ════════════════════�
        * 2026-10-15 (second revision): the panel now has three tabs
        * (配置 / bilibili / 弹弹play), so the tab is named after the source itself
        * instead of the generic "来源".
+       *
+       * ★ 2026-10-17 (Owner 第 11 条): tabs are named after **capability**, not
+       * after one vendor (配置 / dan-api / 插件提供 / 官方兜底). The request +
+       * search sections live under 「插件提供」 now.
        */
-      await t.tap(find.text('bilibili'));
+      await t.tap(find.text('插件提供'));
       await t.pumpAndSettle();
       final btn = find.widgetWithText(TextButton, '外部弹幕…');
       expect(btn, findsOneWidget);
@@ -522,8 +526,8 @@ void main() {  // ════════════════════�
     testWidgets('③ 没传 onOpenBili ⇒ 按钮不画（旧宿主零破坏）', (t) async {
       await t.pumpWidget(_host(_danmakuDialog()));
       await t.pumpAndSettle();
-      // 同上：外部弹幕源相关的东西现在在 bilibili 页签下。
-      await t.tap(find.text('bilibili'));
+      // 同上：外部弹幕源相关的东西现在在「插件提供」页签下。
+      await t.tap(find.text('插件提供'));
       await t.pumpAndSettle();
       expect(find.text('外部弹幕…'), findsNothing,
           reason: '★ 面板可以被别的宿主复用而不带上 B 站 —— 那时不该有这枚按钮');

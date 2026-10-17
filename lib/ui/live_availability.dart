@@ -49,7 +49,7 @@
 //   目的是决定"要不要显示"。两者结论要一致，所以判据刻意写成同一套：
 //   都是「可播线路里有没有带视频的」。
 
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 
 import '../core/sourin_api.dart';
 

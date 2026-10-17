@@ -25,7 +25,7 @@
 //   这样「搬家」搬的是**布局职责**，不是**重写控件**。
 // ```
 
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 
 import '../../shell.dart' show AppTab;
 import 'shell_layout.dart';

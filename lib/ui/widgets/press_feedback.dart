@@ -58,7 +58,7 @@
 //   红度证明 `m5_absorb`（把 child 包进 `AbsorbPointer`）**能让它变红** ✓
 //   ⇒ 断言不是空的（已实测，见 `.probe/t44_redness.py`）。
 
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 
 import '../tokens.dart';
 import 'motion_prefs.dart';

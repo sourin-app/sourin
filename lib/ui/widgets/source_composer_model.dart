@@ -45,7 +45,7 @@
 ///    "拉取样例响应"由调用方注入（[onProbe]），便于测试与替换。
 library;
 
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 import '../../design/icons/app_icons.dart';
 
 

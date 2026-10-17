@@ -30,7 +30,7 @@
 //   用户导入别人的配色主题时，不该被改掉布局。
 // ```
 
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 
 import '../../shell.dart' show AppTab;
 

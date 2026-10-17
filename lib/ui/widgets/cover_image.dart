@@ -1,4 +1,4 @@
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 
 /// 网络图片解码宽度的**上限**（物理像素）。
 ///

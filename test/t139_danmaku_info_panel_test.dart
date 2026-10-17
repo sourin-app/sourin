@@ -39,8 +39,8 @@ Widget _host(Widget child) => MaterialApp(
 
 /// 一个"典型"的快照：bili 直连 + 自动匹配 + 有数据
 const _loaded = DanmakuInfoData(
-  source: DanmakuSourceKind.bili,
-  match: DanmakuMatchKind.autoSearch,
+  source: DanmakuFeedKind.bili,
+  match: DanmakuPairKind.autoSearch,
   count: 1200,
   title: '鬼灭之刃 柱训练篇',
   cid: 1602741036,
@@ -49,8 +49,8 @@ const _loaded = DanmakuInfoData(
 
 /// 走 season 兜底的那种（面板要能一眼看出"这是备用链路"）
 const _fallback = DanmakuInfoData(
-  source: DanmakuSourceKind.bili,
-  match: DanmakuMatchKind.autoSeason,
+  source: DanmakuFeedKind.bili,
+  match: DanmakuPairKind.autoSeason,
   count: 7200,
   title: '鬼灭之刃 柱训练篇',
   cid: 1602741036,
@@ -109,8 +109,8 @@ void main() {
       await t.pumpWidget(_host(
         const DanmakuInfoPanel(
           data: DanmakuInfoData(
-            source: DanmakuSourceKind.service,
-            match: DanmakuMatchKind.none,
+            source: DanmakuFeedKind.service,
+            match: DanmakuPairKind.none,
             error: '弹幕服务没收到凭证（HTTP 403） · Missing Authentication Headers',
             enabled: true,
           ),
@@ -131,8 +131,8 @@ void main() {
       await t.pumpWidget(_host(
         const DanmakuInfoPanel(
           data: DanmakuInfoData(
-            source: DanmakuSourceKind.service,
-            match: DanmakuMatchKind.none,
+            source: DanmakuFeedKind.service,
+            match: DanmakuPairKind.none,
             // count 省略 = null = 未查询
           ),
           initiallyExpanded: true,
@@ -147,7 +147,7 @@ void main() {
       await t.pumpWidget(_host(
         const DanmakuInfoPanel(
           data: DanmakuInfoData(
-            source: DanmakuSourceKind.bili,
+            source: DanmakuFeedKind.bili,
             count: 10,
             // enabled 默认 false
           ),
@@ -167,8 +167,8 @@ void main() {
       const MapEntry<String, DanmakuInfoData>(
         'error',
         DanmakuInfoData(
-          source: DanmakuSourceKind.service,
-          match: DanmakuMatchKind.none,
+          source: DanmakuFeedKind.service,
+          match: DanmakuPairKind.none,
           error: '弹幕服务没收到凭证（HTTP 403） · Missing Authentication Headers',
           enabled: true,
         ),

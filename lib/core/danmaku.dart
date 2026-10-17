@@ -93,7 +93,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 
 import 'ui_prefs.dart';
 
@@ -964,6 +964,56 @@ class DanmakuConfig {
     token: UiPrefs.danmakuToken,
   );
 
+  /// 内置公共实例（可被测试清空，见 [debugSetPublicInstances]）
+  static List<DanmakuPublicInstance> _publicInstances = kDanmakuPublicInstances;
+
+  /// 测试注入口：传 null = 恢复内置表；传 `const []` = 关掉内置实例。
+  ///
+  /// # 为什么需要这个开关
+  /// ```text
+  /// 内置实例一上线，「没配地址 ⇒ 走官方」这条老断言就**必然**变成
+  /// 「没配地址 ⇒ 走内置实例」。签名/官方那条边的用例要测的是官方本身，
+  /// 它们必须能**明确**关掉内置，否则测的是另一条路（假绿）。
+  /// 与 [debugSetBuiltin]（内置凭证）同一条纪律。
+  /// ```
+  @visibleForTesting
+  static void debugSetPublicInstances(List<DanmakuPublicInstance>? v) {
+    _publicInstances = v ?? kDanmakuPublicInstances;
+  }
+
+  /// 当前生效的内置公共实例（第一个 = 默认选中的那个；表空 ⇒ null）
+  static DanmakuPublicInstance? get defaultPublicInstance =>
+      _publicInstances.isEmpty ? null : _publicInstances.first;
+
+  /// 内置公共实例对应的端点（表空 ⇒ null）
+  static DanmakuEndpoint? get publicInstanceEndpoint {
+    final p = defaultPublicInstance;
+    if (p == null) return null;
+    return DanmakuEndpoint.tryParse(p.baseUrl, token: p.token);
+  }
+
+  /// **生效的** dan-api 端点 —— 用户填的优先，否则内置公共实例。
+  ///
+  /// # 与 [danmakuEndpoint] 的区别（这个区别是 Owner 第 4 条的全部要点）
+  /// ```text
+  /// danmakuEndpoint   = 用户**填了**什么（空 = 没填）
+  /// effectiveEndpoint = dan-api 这条路**指向**哪里（空 = 连内置也没有）
+  /// ```
+  /// Owner 原话：「我之前说的dan-api 是让你接入现成的服务,不是让我去填的,
+  /// 或者可以内置上几个」⇒ 没填**不等于**没有，而是用内置的。
+  ///
+  /// ⚠️ 内置只是**默认值**，不是写死：用户在设置里填了地址就压过它
+  ///    （覆盖链与凭证那套同形：用户 > 内置）。
+  /// ⚠️ 它**不**代表「本次请求一定打这里」—— 本机 2080 在线时仍然优先本机
+  ///    （内置实例是**兜底**，不是抢占）。真实优先序见
+  ///    [ExternalDanmakuClient._endpoint] 的文档。
+  static DanmakuEndpoint? get effectiveEndpoint =>
+      danmakuEndpoint ?? publicInstanceEndpoint;
+
+  /// 这次生效的是不是内置实例（状态行/面板要如实说「内置」还是「你自己填的」）
+  static bool get usingPublicInstance =>
+      danmakuEndpoint == null && publicInstanceEndpoint != null;
+
   /// 是否"有资格"发请求。
   ///
   /// 注意：这**不代表**凭证一定有效 —— 有效性只有服务端说了算，
@@ -1454,7 +1504,18 @@ class DanmakuHint {
        */
       return DanmakuHint(
         title: '弹幕服务没收到凭证',
-        text: '弹弹play有两个数据源，在弹幕设置里选一个：'
+        /*
+         * ★★★ 用户可见文案里不许出现具体服务名（Owner 第 11 条，2026-10-18）
+         *
+         * Owner 原话：
+         * > 弹弹play 我说了要让可用的dan-api去替换的,这里的弹幕面板怎么还是弹弹play?
+         *
+         * 改前这段文案写的是「弹弹play有两个数据源…」——
+         * 面板页签已经改名成 dan-api / 插件提供 / 官方兜底 了，
+         * 但这条**提示文案**没跟上，用户点进来还是看到旧名字。
+         * ⇒ 改成「弹幕服务」，与页签口径一致。
+         */
+        text: '弹幕服务有两个数据源，在弹幕设置里选一个：'
             '「本机外部弹幕」（本机跑着外部弹幕 就用它，免签名、不用申请任何凭证）'
             '或「官方 API」（它要一对 AppId / AppSecret —— '
             '构建期若已注入则**直接用**；没注入的构建，'
@@ -1542,6 +1603,94 @@ DanmakuTransport? _debugTransportOverride;
 void debugSetDanmakuTransportForTest(DanmakuTransport? t) {
   _debugTransportOverride = t;
 }
+
+// -----------------------------------------------------------------------
+//  内置 dan-api 公共实例（Owner 第 4 条）
+// -----------------------------------------------------------------------
+//
+// Owner 原话（逐字，2026-10-17）：
+// ```text
+// > 我之前说的dan-api 是让你接入现成的服务,不是让我去填的,或者可以内置上几个
+// ```
+//
+// # 它解决什么
+// ```text
+// 改前「dan-api」这条路**只有输入框**：地址栏是空的，用户必须先自己
+// 部署一份 danmu_api（Node / Docker / Vercel…）才有地址可填。
+// ⇒ 对「我就想现在有弹幕」的用户，这条路等于不存在。
+//
+// 现在：预置几个**已实测可用**的公共实例，默认选中第一个；
+//   用户也可以填自己的（覆盖内置）。空着不是失败态，是「用内置的」。
+// ```
+//
+// # ★ 每一条都必须是**实测跑过**的地址（不是占位符）
+// ```text
+// 实测脚本：`.probe/danmaku_b_builtin_probe.py`
+// 判据（两条都要过）：
+//   ① GET /<token>/api/v2/search/anime?keyword=火影  → 200 且 animes 非空
+//   ② GET /<token>/api/v2/comment/10002?format=json  → 200 且 comments 非空
+// 只过 ① 不过 ② 的实例（能搜不能取）**不算可用**，已剔除。
+// ```
+//
+// # ⚠️ 为什么这些地址不能写进「支持某站」的语境
+// ```text
+// 它们是**弹幕协议服务**（与 `弹弹play` 同类），不是本软件对接的视频网站
+// ⇒ 不受 t98 站名门禁约束（该门禁的口径是「对接的具体视频网站」）。
+// ⚠️ 但**主机名里不许出现任何视频站名** —— 那是另一回事，会被 t98 抓。
+// ```
+//
+// # ⚠️ 公共实例的**现实**：会挂、会慢、会被封
+// ```text
+// 实测 2026-10-17 深夜（本机）：
+//   · 3 个候选里只有 1 个两条判据全过；另两个「能搜不能取」
+//   · 单次 search 3.7~6.5 s（serverless 冷启动），comment 取 2102 条约 12 s
+// ⇒ 所以：
+//   ① 内置**不是**「一定好用」的承诺，UI 必须给「测试连接」让用户自己验
+//   ② 选中内置实例 ⇒ 仍走**用户可覆盖**的同一对偏好键（dsh.danmaku.endpoint
+//      / .token），不是另开一套 —— 否则「改了没生效」又是一处接线坑
+//   ③ 一个都不通时如实回退（本机 2080 → 官方），不假装成功
+// ```
+class DanmakuPublicInstance {
+  const DanmakuPublicInstance({
+    required this.baseUrl,
+    required this.token,
+    required this.label,
+  });
+
+  /// 基址（不含 token 前缀），如 `https://xxx.vercel.app`
+  final String baseUrl;
+
+  /// 路径前缀 token。danmu_api 的默认 token 是 `87654321`，
+  /// 这类公共部署**保留默认值** ⇒ 必须带上（不带就是 401，实测过）。
+  final String token;
+
+  /// 给用户看的短名（**中性词**：不带任何站名）
+  final String label;
+
+  /// 拼成 [DanmakuEndpoint] 能直接吃的完整地址
+  String get endpointUrl => baseUrl;
+
+  @override
+  String toString() => '$label（$baseUrl）';
+}
+
+/// 预置的公共 dan-api 实例表（**按实测可用性排序，第一个默认选中**）
+///
+/// ⚠️ 加新条目之前必须先用 `.probe/danmaku_b_builtin_probe.py` 跑一遍，
+///    并把读数写进提交信息 —— 没实测过的地址**不许**进这张表。
+const List<DanmakuPublicInstance> kDanmakuPublicInstances =
+    <DanmakuPublicInstance>[
+  DanmakuPublicInstance(
+    baseUrl: 'https://danmu-api-delta.vercel.app',
+    token: '87654321',
+    label: '公共实例 A',
+  ),
+  DanmakuPublicInstance(
+    baseUrl: 'https://danmu-api-kappa.vercel.app',
+    token: '87654321',
+    label: '公共实例 B',
+  ),
+];
 
 /// 用户配置的弹幕后端（自建服务，如 danmu_api）
 ///
@@ -1719,7 +1868,7 @@ class ExternalDanmakuClient {
     final explicit = _endpointExplicit;
     if (explicit != null) return explicit;
     /*
-     * ★★ ② 用户配了 dan-api ⇒ 用它，**即使**宿主说要走本机 2080
+     * ★★ ② 配了 dan-api ⇒ 用它，**即使**宿主说要走本机 2080
      *
      * 见上方「② 为什么必须排在 ③ 前面」。判据是「配了」而不是
      * 「探通了」—— 探通与否由宿主那次 probe 决定，而它探的可能是 2080。
@@ -1728,12 +1877,48 @@ class ExternalDanmakuClient {
      */
     final configured = DanmakuConfig.danmakuEndpoint;
     if (configured != null) return configured;
+
+    /*
+     * ③ 本机弹弹play（宿主探通了才会把 `_unsignedLocal` 置真）
+     *
+     * ⚠️ 顺序很要紧：**内置公共实例排在它后面**。
+     * ```text
+     * 本机 2080 是本机进程：零网络、毫秒级、不过公网。
+     * 内置实例是公网 serverless：冷启动 3~6 s。
+     * ⇒ 本机活着就必须让本机赢 —— 内置是**兜底**，不是抢占。
+     * ```
+     * 改前这里是 `if (_unsignedLocal) return null;` 然后无条件 `return null;`
+     * （官方）。现在把「内置」插在两者之间。
+     */
     if (_unsignedLocal) return null;
-    return null; // 官方
+
+    /*
+     * ★★★ ④ 内置公共实例（Owner 第 4 条）
+     *
+     * ```text
+     * 走到这里说明：用户没填地址、本机 2080 也没起来。
+     * 改前 ⇒ 直接掉到官方（要 AppId/AppSecret 签名，本仓没凭证 ⇒ 必然失败）。
+     * 现在 ⇒ 用内置的公共实例，**开箱就有弹幕**。
+     * ```
+     * Owner 原话：「不是让我去填的,或者可以内置上几个」——
+     * 没填**不等于**没有。
+     *
+     * ⚠️ 内置只是默认值：用户一填就压过它（同凭证那条覆盖链）。
+     * ⚠️ 官方/签名那条边的用例靠 `debugSetPublicInstances(const [])`
+     *    把内置关掉，否则它们测的是内置实例（假绿）。
+     */
+    return DanmakuConfig.publicInstanceEndpoint;
   }
 
-  /// 本次是否走「免签名」路径（自建后端 或 本机弹弹play）
+  /// 本次是否走「免签名」路径（自建后端 / 本机弹弹play / 内置公共实例）
   bool get _signatureFree => _endpoint != null || _unsignedLocal;
+
+  /// 本次生效的是**内置**公共实例（不是用户填的）—— 面板要如实区分
+  bool get usingBuiltinPublicInstance =>
+      _endpointExplicit == null &&
+      DanmakuConfig.danmakuEndpoint == null &&
+      !_unsignedLocal &&
+      DanmakuConfig.publicInstanceEndpoint != null;
 
   bool get isConfigured => _appId.isNotEmpty && _appSecret.isNotEmpty;
 
@@ -2323,7 +2508,17 @@ class DanmakuSourceSelector {
       endpoint: endpoint,
     );
     if (!status.online) return DanmakuSourceKind.official;
-    return endpoint != null
+    /*
+     * ★ 2026-10-17（Owner 第 4 条）：内置公共实例算 `custom`（用户可覆盖的
+     * 那一路），**不算** `local`（本机进程）。
+     * ```text
+     * 用户要做的事完全不同：
+     *   local  → 去启动本机桌面版
+     *   custom → 地址在设置里，可以直接改（内置只是默认值）
+     * ```
+     */
+    if (endpoint != null) return DanmakuSourceKind.custom;
+    return status.isPublicInstance
         ? DanmakuSourceKind.custom
         : DanmakuSourceKind.local;
   }
@@ -2349,6 +2544,27 @@ class DanmakuLocalService {
   /// 用户会看到「未运行」而实际能取到弹幕（假阴性）。
   /// ⇒ 探测按序试两个端点，任一命中即算在线。
   static const String configPath = '/api/config';
+
+  /// ★★★ 2026-10-17（Owner 第 4 条）：**内置公共实例两个都没有**。
+  ///
+  /// # 实测（`.probe/danmaku_b_builtin_probe.py`）
+  /// ```text
+  /// https://<实例>/<token>/api/v2/system/version  → 404
+  /// https://<实例>/<token>/api/config             → 404
+  /// https://<实例>/<token>/api/v2/search/anime?keyword=a → 200 {"animes":[...]}  ~3-5 s
+  /// https://<实例>/<token>/                               → 200 {"message":"Welcome …","version":"1.1.6"}
+  /// ```
+  /// ⇒ 只认前两个端点的话，**内置实例永远显示「未运行」**，
+  ///   而它明明能取到 2000+ 条弹幕（假阴性，和 configPath 那次同一个病）。
+  ///
+  /// # 为什么用 search 而不是根路径
+  /// ```text
+  /// 根路径 `/` 也可能被**别的**服务占用（随便一个静态站也回 200 文本）。
+  /// search 返回的是这个协议**特有**的结构（`animes` 数组），
+  /// 误判概率低得多 —— 与 _probeOne 里「非 JSON 不算」同一条纪律。
+  /// 代价：慢一点（3~5 s），所以它排在最后，且只有在前两个都没命中时才试。
+  /// ```
+  static const String searchProbePath = '/api/v2/search/anime';
 
   static const String notRunningLine = '检测到本机外部弹幕 未运行';
 
@@ -2389,9 +2605,32 @@ class DanmakuLocalService {
       );
       if (st1 != null) return st1;
 
-      return const DanmakuLocalStatus(online: false);
+      /*
+       * ③ 再退一步：★ 内置公共实例两个都没有（实测 404 / 404）。
+       *    见 [searchProbePath] 的推导。只有带了 endpoint（= 有具体后端
+       *    可打）才试 —— 本机 2080 那条路不加这一步（它本来就有前两个）。
+       */
+      if (endpoint != null) {
+        final st2 = await _probeOne(
+          t,
+          endpoint.resolve(searchProbePath, const {'keyword': 'a'}),
+          timeout,
+          endpoint: endpoint,
+        );
+        if (st2 != null) return st2;
+      }
+
+      return DanmakuLocalStatus(
+        online: false,
+        endpoint: endpoint,
+        isPublicInstance: _isPublicEndpoint(endpoint),
+      );
     } catch (_) {
-      return const DanmakuLocalStatus(online: false);
+      return DanmakuLocalStatus(
+        online: false,
+        endpoint: endpoint,
+        isPublicInstance: _isPublicEndpoint(endpoint),
+      );
     } finally {
       if (shouldClose) t.close();
     }
@@ -2425,17 +2664,32 @@ class DanmakuLocalService {
         version: v?.toString(),
         /*
          * 记住命中的是哪个端点（诊断用）。
-         * ⚠️ 只留**最后一段**（version / config），不留整条 path ——
+         * ⚠️ 只留**最后一段**（version / config / anime），不留整条 path ——
          *    self-hosted 后端的 path 带 token 前缀（/<token>/api/config），
          *    整条存下来就是一个**潜伏的泄漏面**（今天没人显示它，
          *    明天加一行调试输出就泄了）。同 _safeUri 的纪律。
          */
         viaPath: uri.pathSegments.isEmpty ? '' : uri.pathSegments.last,
         endpoint: endpoint,
+        isPublicInstance: _isPublicEndpoint(endpoint),
       );
     } catch (_) {
       return null;
     }
+  }
+
+  /// 这个端点是不是内置公共实例里的某一个（决定状态行怎么说）
+  ///
+  /// ⚠️ 按 **baseUrl 归一化后**比较，不比 token —— token 是默认值，
+  ///    用户可能改过它却仍在同一个实例上（那是「还是内置的」）。
+  static bool _isPublicEndpoint(DanmakuEndpoint? ep) {
+    if (ep == null) return false;
+    final want = ep.baseUrl.toLowerCase().replaceAll(RegExp(r'/+$'), '');
+    for (final p in kDanmakuPublicInstances) {
+      final have = p.baseUrl.toLowerCase().replaceAll(RegExp(r'/+$'), '');
+      if (have == want) return true;
+    }
+    return false;
   }
 
   /// 「数据源」状态行文案：本机显示「检测到本机外部弹幕 未运行」，
@@ -2454,6 +2708,7 @@ class DanmakuLocalStatus {
     this.version,
     this.viaPath,
     this.endpoint,
+    this.isPublicInstance = false,
   });
 
   final bool online;
@@ -2465,19 +2720,29 @@ class DanmakuLocalStatus {
   /// 探的是哪个自建后端（null = 本机弹弹play）
   final DanmakuEndpoint? endpoint;
 
+  /// ★ 探的是**内置公共实例**（不是用户自己填的、也不是本机）
+  ///
+  /// 文案要分开说：内置实例挂了用户**不用去改配置**（等我们换/换下一个），
+  /// 而自建服务挂了用户必须去改地址 —— 两件事。
+  final bool isPublicInstance;
+
   /// 弹幕设置面板「数据源」一行的文案。
   String get line {
     final ep = endpoint;
     if (!online) {
-      return ep == null
-          ? DanmakuLocalService.notRunningLine
-          : '自建弹幕服务（${ep.display}）未运行';
+      if (ep == null) return DanmakuLocalService.notRunningLine;
+      if (isPublicInstance) return '内置公共实例（${ep.display}）暂时连不上';
+      return '自建弹幕服务（${ep.display}）未运行';
     }
     final v = (version == null || version!.isEmpty) ? '' : ' · v$version';
     // ★ 2026-10-16：自建后端与本机弹弹play **必须分开说** ——
     //   两者都能让 online 为 true，但用户要做的事完全不同
     //   （前者去配置里改地址，后者去启动桌面版弹弹play）。
-    if (ep != null) return '自建弹幕服务（${ep.display}）已就绪$v';
+    // ★ 2026-10-17：内置公共实例是**第三种** —— 用户没配任何东西就能用。
+    if (ep != null) {
+      if (isPublicInstance) return '内置公共实例（${ep.display}）已就绪$v';
+      return '自建弹幕服务（${ep.display}）已就绪$v';
+    }
     return '本机外部弹幕（${DanmakuLocalService.hostPort}）已就绪$v';
   }
 }
@@ -2826,5 +3091,319 @@ class _Occ {
   String toString() => '_Occ(${enterAt.toStringAsFixed(2)}~'
       '${exitAt.toStringAsFixed(2)}s, w=${width.toStringAsFixed(1)}, '
       '${fixed ? "固定" : "滚动"})';
+}
+
+// -----------------------------------------------------------------------
+//  弹幕聚合（Owner 第 9 条）
+// -----------------------------------------------------------------------
+//
+// Owner 原话（逐字，2026-10-17）：
+// ```text
+// > 有些网站本身也提供弹幕,我们要支持弹幕的聚合
+// ```
+//
+// # 改前是**单选**，不是聚合
+// ```text
+// `_loadDanmakuNamed` 里那串 if 是**互斥**的：
+//   绑了外部视频站 ⇒ `_loadBiliDanmaku(cid); return;`   ← 插件那条被 return 掉
+//   没绑          ⇒ 走 dan-api / 官方
+// ⇒ 用户「插件也能给弹幕」+「dan-api 也能给弹幕」时，**只有一条**被载入。
+//   这不是聚合，是"二选一"。Owner 说的正是这个。
+// ```
+//
+// # 聚合要解决的三件事（不是简单 concat）
+// ```text
+// ① 时间轴对齐 —— 两路的 `time` 都是"从这一集开头算的秒"，直接合并即可
+//    （shift 已在各自的解析层叠加过，见 DanmakuComment 的注释）
+// ② 重复 —— 同一句弹幕在同一个时间点出现两次会**明显**看得出来（重影）
+//    ⇒ 按 (time 四舍五入到 0.1s, text) 去重；**保留先到的那个源**
+// ③ 排序 —— 轨道分配器要求「已按时间排好序」（DanmakuTrackAllocator.layout
+//    的入参契约）⇒ 合并后必须重排，否则后半段的弹幕会挤在开头
+// ```
+//
+// # 为什么做成**纯函数**（而不是挂在客户端上）
+// ```text
+// ① 可离线单测 + 可故障注入（把"只返回第一源"写回去必须变红）
+// ② 不碰网络 ⇒ 不需要假 transport，测试跑得快、没有 flake
+// ③ 宿主只加**一个调用点**（`_loadDanmakuNamed` 里），接线面最小
+// ```
+
+/// 聚合里的**一路**来源：谁 + 给了多少条 + 有没有出错
+///
+/// ⚠️ `count` 是**这一路自己**的条数（去重**前**）—— 信息面板要显示
+///    「插件 1200 条 + dan-api 800 条 = 合并 1900 条（去掉 100 条重复）」，
+///    这个等式必须成立，否则用户会以为丢数据了。
+@immutable
+class DanmakuFeedStat {
+  const DanmakuFeedStat({
+    required this.kind,
+    required this.count,
+    this.detail = '',
+    this.error = '',
+    this.loaded = true,
+  });
+
+  /// 这一路是哪一类（与右侧信息面板的枚举同源，见 DanmakuSourceChannel）
+  final DanmakuSourceChannel kind;
+
+  /// 这一路贡献了多少条（**去重前**）
+  final int count;
+
+  /// 附加说明（版本号 / 端点 / 文件名…）
+  final String detail;
+
+  /// 这一路**失败**时的原文（空 = 没失败）
+  ///
+  /// ⚠️ 失败的一路**必须**出现在 [DanmakuAggregate.feeds] 里且 `count == 0`
+  ///    —— 悄悄吞掉一路失败，用户看到的就是「聚合只来了一半，不知道为什么」。
+  final String error;
+
+  /// 这一路是否真的被尝试过（false = 没试，例如插件不支持弹幕）
+  final bool loaded;
+
+  bool get failed => error.isNotEmpty;
+
+  @override
+  String toString() =>
+      'DanmakuFeedStat($kind, $count${failed ? ", 失败: $error" : ""})';
+}
+
+/// 弹幕来源的种类 —— **定义在这里**（core 层），UI 层做展示映射。
+///
+/// # 为什么枚举在 core、标签在 UI
+/// ```text
+/// 聚合器要按"哪一路"分组统计 ⇒ 它需要一个稳定的**类别**标识；
+/// 而「显示成什么中文」是展示问题（还要考虑以后换文案/多语言）。
+/// ⇒ 本文件只给类别，`danmaku_info_panel.dart` 给 label/icon。
+/// ```
+enum DanmakuSourceChannel {
+  /// 插件提供（`provider_danmaku_list`，走 Rust 桥接）
+  plugin,
+
+  /// 导入源（外部视频站直连 / dan-api / 官方）—— 具体的由 `detail` 说明
+  imported,
+
+  /// 本机外部弹幕（127.0.0.1:2080）
+  local,
+
+  /// 本地弹幕库文件
+  library,
+
+  /// 没试过 / 未知
+  none,
+}
+
+/// 聚合的结果：合并后的弹幕 + **每一路**的条数
+@immutable
+class DanmakuAggregate {
+  const DanmakuAggregate({
+    this.comments = const <DanmakuComment>[],
+    this.feeds = const <DanmakuFeedStat>[],
+  });
+
+  /// 合并、去重、按时间排好序的弹幕 —— 直接喂给渲染层
+  final List<DanmakuComment> comments;
+
+  /// 每一路来源的读数（含失败的那几路）
+  final List<DanmakuFeedStat> feeds;
+
+  bool get isEmpty => comments.isEmpty;
+
+  /// 各路条数之和（**去重前**）
+  int get sumOfFeeds {
+    var n = 0;
+    for (final f in feeds) {
+      n += f.count;
+    }
+    return n;
+  }
+
+  /// 去重掉了多少条（`sumOfFeeds - comments.length`）
+  int get deduped {
+    final d = sumOfFeeds - comments.length;
+    return d < 0 ? 0 : d;
+  }
+
+  /// 有几路**真的**供上了数据（失败/没试的不算）
+  int get liveFeedCount {
+    var n = 0;
+    for (final f in feeds) {
+      if (f.loaded && !f.failed && f.count > 0) n++;
+    }
+    return n;
+  }
+
+  /// 一行如实读数：`2 路 · 插件 1200 + 导入 800 = 1900 条（去重 100）`
+  ///
+  /// ⚠️ 只在**多于一路**时才是"聚合"口径；单路时退化成普通摘要，
+  ///    免得用户以为自己开了什么奇怪的东西。
+  String get summary {
+    if (feeds.isEmpty) return '${comments.length} 条弹幕';
+    if (feeds.length == 1) {
+      final f = feeds.first;
+      return '${_kindLabel(f.kind)} ${f.count} 条';
+    }
+    final parts = <String>[
+      for (final f in feeds)
+        if (f.loaded && !f.failed) '${_kindLabel(f.kind)} ${f.count}',
+    ];
+    final head = '$liveFeedCount 路 · ${parts.join(' + ')}';
+    final tail = deduped > 0
+        ? ' = ${comments.length} 条（去掉 $deduped 条重复）'
+        : ' = ${comments.length} 条';
+    return '$head$tail';
+  }
+
+  static String _kindLabel(DanmakuSourceChannel k) => switch (k) {
+        DanmakuSourceChannel.plugin => '插件',
+        DanmakuSourceChannel.imported => '导入源',
+        DanmakuSourceChannel.local => '本机',
+        DanmakuSourceChannel.library => '本地库',
+        DanmakuSourceChannel.none => '未知',
+      };
+
+  @override
+  String toString() => 'DanmakuAggregate(${comments.length} 条, $feeds)';
+}
+
+/// 弹幕聚合器 —— 把**多路**弹幕合并成一份可渲染的列表
+///
+/// 见本文件「弹幕聚合」那一节的推导。全部是纯函数，无 IO、无 widget。
+class DanmakuAggregator {
+  const DanmakuAggregator._();
+
+  /// 合并多路弹幕
+  ///
+  /// [sources] 顺序 = **优先级**（先到的先占坑，去重时保留先到的那条）。
+  /// 空列表 / 全是空列表 ⇒ 返回空聚合（不抛）。
+  ///
+  /// # 去重判据（为什么是 `(time 取到 0.1s, text)` 而不是别的）
+  /// ```text
+  /// · 只按 text 去重 ⇒ 同一句"哈哈"在不同时间点会被误杀（那是**不同**弹幕）
+  /// · 只按 (time, text) 精确比 ⇒ 两路的浮点解析可能差 0.01s（`0.1` vs `0.10001`）
+  ///   而人眼在 0.1s 内完全看不出区别 ⇒ 按 0.1s 归并
+  /// · 颜色/模式**不参与**判据：同一句话同一个时间点，颜色不同也是同一条
+  ///   （真实场景是同一批弹幕被两个源各抓了一遍，颜色必然一致）
+  /// ```
+  ///
+  /// # 排序
+  /// 按 [DanmakuComment.time] 升序。**稳定**（Dart 的 `sort` 不保证稳定，
+  /// 所以同 time 的用"先到的源"作次序 —— 这靠给每条记一个来源序号实现）。
+  ///
+  /// # ★★★ 为什么每条**源自己内部**也去重一次（真实数据逼出来的修正）
+  /// ```text
+  /// 第一版只做"跨源去重" ⇒ 用真数据（ep11954，9415 条）一跑就露馅：
+  ///   同一路自己给了 9415 条，输出只有 9342 条 —— **少了 73 条**。
+  ///
+  /// 原因：真实弹幕里**同一个时间点同一句话被很多人刷**是常态
+  /// （"哈哈"、"前方高能"、应援词）。那是**不同的弹幕**，
+  /// 只是内容撞了 —— 跨源去重的判据把它们当成了重复。
+  ///
+  /// ⇒ 判据改成两段：
+  ///   ① 源**内部**：一律保留（那是别人的真实发言，重复也要留着）
+  ///   ② **跨源**：按 (0.1s, 正文) 去重（同一批数据被两个源各抓一遍）
+  /// ```
+  /// ⚠️ 这样一来 `sumOfFeeds - comments.length` 就**只**反映跨源重复，
+  ///    与面板上"合并去重 N 条"的语义一致（那个 N 只该统计跨源）。
+  static DanmakuAggregate merge(
+    List<DanmakuFeedInput> sources,
+  ) {
+    final feeds = <DanmakuFeedStat>[];
+    /*
+     * `seenBy` 记「这个 (时间,正文) 是**哪一路**先给的」。
+     *
+     * ⚠️ 不能只用 `Set<String>`：那样同一路内部的第二次出现的同句也会被吃掉
+     *    （见上方"源内部一律保留"）。
+     */
+    final seenBy = <String, int>{};
+    // 排序键带上「来源序号」⇒ 同 time 时先到的源排前面（稳定）
+    final keyed = <({double time, int order, DanmakuComment c})>[];
+    var order = 0;
+
+    for (var si = 0; si < sources.length; si++) {
+      final src = sources[si];
+      final list = src.comments;
+      feeds.add(DanmakuFeedStat(
+        kind: src.kind,
+        count: list.length,
+        detail: src.detail,
+        error: src.error,
+        loaded: src.loaded,
+      ));
+      /*
+       * 这一路**自己**见过的键。用于区分两件事：
+       *   · 这一路内部又出现一次 ⇒ 保留（真实发言）
+       *   · **另一路**已经给过 ⇒ 丢掉（同一批数据被抓了两遍）
+       *
+       * ⚠️ 改前这里写的是 `Set<String> seen` 全局共享 ⇒ 第一路内部的同句
+       *    也被吃掉（真数据 9415 条掉到 9342 条，少了 73 条真实弹幕）。
+       *    见 merge 的文档「为什么每条源自己内部也去重一次」。
+       */
+      for (final c in list) {
+        final k = _dedupKey(c);
+        final owner = seenBy[k];
+        if (owner != null && owner != si) {
+          // ★ 别的源已经给过这一条 ⇒ 跨源重复，丢掉后来的
+          continue;
+        }
+        seenBy.putIfAbsent(k, () => si);
+        keyed.add((time: c.time, order: order++, c: c));
+      }
+    }
+
+    keyed.sort((a, b) {
+      final d = a.time.compareTo(b.time);
+      if (d != 0) return d;
+      return a.order.compareTo(b.order);
+    });
+
+    return DanmakuAggregate(
+      comments: <DanmakuComment>[for (final k in keyed) k.c],
+      feeds: feeds,
+    );
+  }
+
+  /// 去重键：`时间（0.1s 精度）| 正文`
+  ///
+  /// 时间取整用 `round()`（不是 floor）—— `0.05` 与 `0.14` 都归到 0.1，
+  /// 而 `0.14` 与 `0.16` 归到 0.1 / 0.2 两个桶，与直觉一致。
+  static String _dedupKey(DanmakuComment c) {
+    final t = (c.time * 10).round();
+    return '$t|${c.text}';
+  }
+}
+
+/// [DanmakuAggregator.merge] 的一路输入
+@immutable
+class DanmakuFeedInput {
+  const DanmakuFeedInput({
+    required this.kind,
+    this.comments = const <DanmakuComment>[],
+    this.detail = '',
+    this.error = '',
+    this.loaded = true,
+  });
+
+  /// 没试过这一路（例如插件不支持弹幕）—— 用这个构造，别伪造一个空列表
+  const DanmakuFeedInput.skipped({
+    required this.kind,
+    this.detail = '',
+  })  : comments = const <DanmakuComment>[],
+        error = '',
+        loaded = false;
+
+  /// 这一路失败了 —— 错误原文照透（面板要显示"为什么只来了一半"）
+  const DanmakuFeedInput.failed({
+    required this.kind,
+    required this.error,
+    this.detail = '',
+  })  : comments = const <DanmakuComment>[],
+        loaded = true;
+
+  final DanmakuSourceChannel kind;
+  final List<DanmakuComment> comments;
+  final String detail;
+  final String error;
+  final bool loaded;
 }
 

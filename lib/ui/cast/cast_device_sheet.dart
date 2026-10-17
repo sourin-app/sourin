@@ -23,6 +23,7 @@ import '../widgets/app_loading.dart';
 import '../widgets/overlay_motion.dart';
 import '../../design/widgets/app_icon_button.dart' show AppSurface;
 import '../../design/widgets/app_ink_well.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 打开设备选择弹窗；用户选了返回那台设备，取消返回 null
 Future<CastDevice?> showCastDeviceSheet(
@@ -146,7 +147,7 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
     padding: const EdgeInsets.fromLTRB(Sp.x5, Sp.x4, Sp.x3, Sp.x2),
     child: Row(
       children: [
-        Icon(Icons.cast, size: 20, color: colors.primary),
+        Icon(AppIcons.cast, size: 20, color: colors.primary),
         const SizedBox(width: Sp.x3),
         Expanded(
           child: Column(
@@ -179,7 +180,7 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
         ),
         IconButton(
           onPressed: _scanning ? null : _run,
-          icon: const Icon(Icons.refresh, size: 20),
+          icon: const Icon(AppIcons.refresh, size: 20),
           tooltip: '重新搜索',
           visualDensity: VisualDensity.compact,
           color: colors.onSurfaceVariant,
@@ -192,17 +193,17 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
     if (_scanning) return _scanningView(colors);
     final err = _error;
     if (err != null)
-      return _message(colors, Icons.error_outline, err, retry: true);
+      return _message(colors, AppIcons.error_outline, err, retry: true);
     final s = _scan;
     if (s == null)
-      return _message(colors, Icons.error_outline, '没有拿到搜索结果', retry: true);
+      return _message(colors, AppIcons.error_outline, '没有拿到搜索结果', retry: true);
 
     if (s.devices.isEmpty && s.unsupported.isEmpty) {
       // ★ 区分"没发出去"与"发出去没人回"
       if (!s.scan.anySent) {
         return _message(
           colors,
-          Icons.wifi_off,
+          AppIcons.wifi_off,
           '没能发出搜索请求（可能是 Wi-Fi 没开或权限被限制）。'
           '${s.scan.errors.isEmpty ? '' : s.scan.errors.first}',
           retry: true,
@@ -210,7 +211,7 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
       }
       return _message(
         colors,
-        Icons.search_off,
+        AppIcons.search_off,
         '没有找到投屏设备。\n'
         '请确认：电视和手机在同一个 Wi-Fi；电视上已打开「投屏 / 无线显示 / DLNA」；'
         '电视没有处于休眠。',
@@ -291,7 +292,7 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
           const SizedBox(height: Sp.x4),
           TextButton.icon(
             onPressed: _run,
-            icon: const Icon(Icons.refresh, size: 18),
+            icon: const Icon(AppIcons.refresh, size: 18),
             label: const Text('再搜一次'),
           ),
         ],
@@ -316,7 +317,7 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
           ),
           child: Row(
             children: [
-              Icon(Icons.tv, size: 22, color: colors.primary),
+              Icon(AppIcons.tv, size: 22, color: colors.primary),
               const SizedBox(width: Sp.x3),
               Expanded(
                 child: Column(
@@ -372,7 +373,7 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
       ),
       child: Row(
         children: [
-          Icon(Icons.tv_off, size: 20, color: colors.onSurfaceVariant),
+          Icon(AppIcons.tv_off, size: 20, color: colors.onSurfaceVariant),
           const SizedBox(width: Sp.x3),
           Expanded(
             child: Column(

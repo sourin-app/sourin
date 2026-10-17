@@ -88,6 +88,7 @@ import 'widgets/cover_image.dart';
 //   （那两个文件本身**保留** —— 别的页面可能还在用；只删本页的引用）
 import 'widgets/app_dialog_shell.dart';
 import 'widgets/live_embedded_player.dart';
+import '../design/icons/app_icons.dart';
 
 /// ★ task-1013：源筛选 chip 的稳定测试锚点
 ///
@@ -1729,7 +1730,7 @@ class LivePageState extends State<LivePage> {
 
     if (_currentChannels.isEmpty) {
       return const _EmptyState(
-        icon: Icons.live_tv_outlined,
+        icon: AppIcons.live_tv_outlined,
         title: '没有可用的直播源',
         desc: '在设置中启用一个支持直播的内容源',
       );
@@ -2921,7 +2922,7 @@ class _FilterBar extends StatelessWidget {
                 width: 28,
                 height: 28,
                 child: Icon(
-                  hasGroups ? Icons.tune : Icons.add,
+                  hasGroups ? AppIcons.tune : AppIcons.add,
                   size: 16,
                   color: colors.onSurfaceVariant,
                 ),
@@ -3066,7 +3067,7 @@ class _BarDropdown extends StatelessWidget {
                 SizedBox(
                   width: 16,
                   child: o.value == value
-                      ? Icon(Icons.check, size: 13, color: colors.primary)
+                      ? Icon(AppIcons.check, size: 13, color: colors.primary)
                       : null,
                 ),
                 const SizedBox(width: 4),
@@ -3098,7 +3099,7 @@ class _BarDropdown extends StatelessWidget {
                   ),
                 ),
               ),
-              Icon(Icons.arrow_drop_down, size: 15, color: colors.onSurfaceVariant),
+              Icon(AppIcons.arrow_drop_down, size: 15, color: colors.onSurfaceVariant),
             ],
           ),
         ),
@@ -3811,7 +3812,7 @@ class _PageHead extends StatelessWidget {
               child: ActionChip(
                   onPressed: onShowAll,
                   avatar: Icon(
-                    Icons.list_alt,
+                    AppIcons.list_alt,
                     size: 16,
                     color: colors.onSurfaceVariant,
                   ),

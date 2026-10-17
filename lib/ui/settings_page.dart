@@ -227,6 +227,7 @@ import 'widgets/settings_sub_page.dart';
  */
 import 'widgets/tvbox_source_panel.dart';
 import '../ui/app_theme.dart';
+import '../design/icons/app_icons.dart';
 
 /// 本文件里的旧名字 → `settings_kit.dart` 里的公开类
 ///
@@ -2279,7 +2280,7 @@ class SettingsPageState extends State<SettingsPage> {
              *    用户不点进去也要能看出「我配没配」。
              */
             SettingsEntryRow(
-              icon: Icons.subtitles_outlined,
+              icon: AppIcons.subtitles_outlined,
               title: '弹幕源',
               subtitle: _danmakuEndpointSubtitle(),
               onTap: _openDanmakuSourcePage,
@@ -2320,7 +2321,7 @@ class SettingsPageState extends State<SettingsPage> {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.tips_and_updates_outlined,
+                    Icon(AppIcons.tips_and_updates_outlined,
                         size: 16, color: colors.primary),
                     const SizedBox(width: Sp.x2),
                     Expanded(
@@ -2352,7 +2353,7 @@ class SettingsPageState extends State<SettingsPage> {
               ),
             ],
             SettingsEntryRow(
-              icon: Icons.extension_outlined,
+              icon: AppIcons.extension_outlined,
               title: 'JS 插件',
               subtitle: '${_providers.length} 个内容源 · 安装 / 编辑 / 更新 / 排序 / 代理',
               onTap: _openPluginsPage,
@@ -2403,13 +2404,13 @@ class SettingsPageState extends State<SettingsPage> {
              *    否则用户建完组不知道要回**直播页右侧**切分组。
              */
             SettingsEntryRow(
-              icon: Icons.playlist_add_check_circle_outlined,
+              icon: AppIcons.playlist_add_check_circle_outlined,
               title: '直播分组',
               subtitle: '把常用的直播源分组 · 直播页右侧可一键只看某一组',
               onTap: () => _openSubPage(const LiveGroupsPage()),
             ),
             SettingsEntryRow(
-              icon: Icons.album_outlined,
+              icon: AppIcons.album_outlined,
               title: 'Emby',
               subtitle: '媒体服务器 · 安装插件 / 服务器地址 / 连接自检',
               onTap: () => _openSubPage(const EmbySettingsPage()),
@@ -2464,7 +2465,7 @@ class SettingsPageState extends State<SettingsPage> {
             // ── 二级页入口（2026-09-25 任务 ㉙ 方案 A）──
             SettingsGroupLabel(text: '播放与观看'),
             SettingsEntryRow(
-              icon: Icons.content_cut_outlined,
+              icon: AppIcons.content_cut_outlined,
               title: '片头片尾',
               subtitle: _skipMarkers.isEmpty
                   ? '还没有设置过 · 在播放器底栏可以设置'
@@ -2473,7 +2474,7 @@ class SettingsPageState extends State<SettingsPage> {
             ),
             if (Device.isDesktop)
               SettingsEntryRow(
-                icon: Icons.keyboard_outlined,
+                icon: AppIcons.keyboard_outlined,
                 title: 'PC 播放手势',
                 subtitle: '方向键单击/长按 · 鼠标左右半屏',
                 onTap: () => _openSubPage(const PcGesturesSettingsPage()),
@@ -2482,7 +2483,7 @@ class SettingsPageState extends State<SettingsPage> {
             //   标题「播放与下载」是**刻意**与播放器里那个「播放设置」面板
             //   区分的 —— 面板管字幕/音轨/倍速，这一页管下载与缓存。
             SettingsEntryRow(
-              icon: Icons.download_outlined,
+              icon: AppIcons.download_outlined,
               title: '播放与下载',
               /*
                * ★ 2026-10-09：副标题跟着 log-dev 的改名走
@@ -2511,7 +2512,7 @@ class SettingsPageState extends State<SettingsPage> {
             //   `lib/ui/settings/touch_gestures_page.dart:72-92`），
             //   比把入口整个藏掉更容易让用户明白为什么没有档位可选。
             SettingsEntryRow(
-              icon: Icons.touch_app_outlined,
+              icon: AppIcons.touch_app_outlined,
               title: '触摸手势',
               subtitle: '双击左右侧 · 长按左右侧（触摸端生效）',
               onTap: () => _openSubPage(const TouchGesturesSettingsPage()),
@@ -2686,19 +2687,19 @@ class SettingsPageState extends State<SettingsPage> {
 
             SettingsGroupLabel(text: '数据与外观'),
             SettingsEntryRow(
-              icon: Icons.cloud_sync_outlined,
+              icon: AppIcons.cloud_sync_outlined,
               title: '备份与恢复',
               subtitle: '导出 / 导入本机数据（合并，不覆盖）',
               onTap: () => _openSubPage(const BackupSettingsPage()),
             ),
             SettingsEntryRow(
-              icon: Icons.palette_outlined,
+              icon: AppIcons.palette_outlined,
               title: '主题',
               subtitle: '当前：${AppTheme.mode.label} · 跟随系统 / 浅色 / 深色',
               onTap: () => _openSubPage(const ThemeSettingsPage()),
             ),
             SettingsEntryRow(
-              icon: Icons.info_outline,
+              icon: AppIcons.info_outline,
               title: '关于',
               subtitle: _coreVersionLabel,
               onTap: () => _openSubPage(const AboutSettingsPage()),
@@ -3282,7 +3283,7 @@ class SettingsPageState extends State<SettingsPage> {
             children: [
               FilledButton.icon(
                 onPressed: _installPlugin,
-                icon: const Icon(Icons.download, size: 16),
+                icon: const Icon(AppIcons.download, size: 16),
                 label: const Text('从网址安装'),
               ),
               /*
@@ -3328,31 +3329,31 @@ class SettingsPageState extends State<SettingsPage> {
                 items: <AppMenuItem<String>>[
                   AppMenuItem<String>(
                     value: 'order',
-                    child: _menuRow(Icons.reorder, '调整顺序'),
+                    child: _menuRow(AppIcons.reorder, '调整顺序'),
                   ),
                   AppMenuItem<String>(
                     value: 'health',
                     enabled: !_sweeping,
                     child: _menuRow(
-                      Icons.monitor_heart_outlined,
+                      AppIcons.monitor_heart_outlined,
                       _sweeping ? '处理中…' : '健康检测',
                     ),
                   ),
                   AppMenuItem<String>(
                     value: 'import',
-                    child: _menuRow(Icons.add, '导入源'),
+                    child: _menuRow(AppIcons.add, '导入源'),
                   ),
                   AppMenuItem<String>(
                     value: 'reload',
                     enabled: !_pluginBusy,
                     child: _menuRow(
-                      Icons.refresh,
+                      AppIcons.refresh,
                       _pluginBusy ? '处理中…' : '重新加载',
                     ),
                   ),
                   AppMenuItem<String>(
                     value: 'source',
-                    child: _menuRow(Icons.code, '粘贴源码安装'),
+                    child: _menuRow(AppIcons.code, '粘贴源码安装'),
                   ),
                 ],
               ),
@@ -4997,7 +4998,7 @@ class _ProviderCard extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               // 图标已在本文件用过（`:5377`）—— 不引入新图标
-              Icon(Icons.link, size: 14, color: colors.primary),
+              Icon(AppIcons.link, size: 14, color: colors.primary),
               const SizedBox(width: 3),
               Flexible(child: text),
             ],
@@ -5118,14 +5119,14 @@ class _ProviderCard extends StatelessWidget {
          */
         IconButton(
           onPressed: canMoveUp ? onMoveUp : null,
-          icon: const Icon(Icons.keyboard_arrow_up, size: 18),
+          icon: const Icon(AppIcons.keyboard_arrow_up, size: 18),
           tooltip: '上移一位',
           visualDensity: VisualDensity.compact,
           color: colors.onSurfaceVariant,
         ),
         IconButton(
           onPressed: canMoveDown ? onMoveDown : null,
-          icon: const Icon(Icons.keyboard_arrow_down, size: 18),
+          icon: const Icon(AppIcons.keyboard_arrow_down, size: 18),
           tooltip: '下移一位',
           visualDensity: VisualDensity.compact,
           color: colors.onSurfaceVariant,
@@ -5169,7 +5170,7 @@ class _ProviderCard extends StatelessWidget {
         if (onPluginUpdate != null)
           IconButton(
             onPressed: onPluginUpdate,
-            icon: const Icon(Icons.system_update_alt, size: 17),
+            icon: const Icon(AppIcons.system_update_alt, size: 17),
             tooltip: '插件更新',
             visualDensity: VisualDensity.compact,
             color: colors.onSurfaceVariant,
@@ -5177,7 +5178,7 @@ class _ProviderCard extends StatelessWidget {
         if (onConfig != null)
           IconButton(
             onPressed: onConfig,
-            icon: const Icon(Icons.settings_outlined, size: 17),
+            icon: const Icon(AppIcons.settings_outlined, size: 17),
             tooltip: '配置',
             visualDensity: VisualDensity.compact,
             color: colors.onSurfaceVariant,
@@ -5214,13 +5215,13 @@ class _ProviderCard extends StatelessWidget {
                 const AppMenuItem(
                   value: 'edit',
                   label: '编辑',
-                  icon: Icons.edit_outlined,
+                  icon: AppIcons.edit_outlined,
                 ),
               if (_isThirdParty)
                 const AppMenuItem(
                   value: 'remove',
                   label: '移除这个源',
-                  icon: Icons.delete_outline,
+                  icon: AppIcons.delete_outline,
                   danger: true,
                 ),
             ],
@@ -5296,11 +5297,11 @@ class _ProviderIcon extends StatelessWidget {
 
   /// 没有自带图标时按 kind 给一个（比原版"全都是同一个图标"更能区分）
   IconData get _fallbackIcon => switch (provider.kind) {
-    'js' => Icons.extension_outlined,
-    'declarative' => Icons.description_outlined,
-    'http' => Icons.cloud_outlined,
-    'tvbox' => Icons.hub_outlined,
-    _ => Icons.live_tv_outlined,
+    'js' => AppIcons.extension_outlined,
+    'declarative' => AppIcons.description_outlined,
+    'http' => AppIcons.cloud_outlined,
+    'tvbox' => AppIcons.hub_outlined,
+    _ => AppIcons.live_tv_outlined,
   };
 }
 
@@ -5349,7 +5350,7 @@ class _PluginTile extends StatelessWidget {
                       Tooltip(
                         message: entry.error ?? '加载失败',
                         child: Icon(
-                          Icons.error_outline,
+                          AppIcons.error_outline,
                           size: 14,
                           color: colors.error,
                         ),
@@ -5378,17 +5379,17 @@ class _PluginTile extends StatelessWidget {
            */
           IconButton(
             onPressed: onConfig,
-            icon: const Icon(Icons.settings_outlined, size: 18),
+            icon: const Icon(AppIcons.settings_outlined, size: 18),
             tooltip: '配置',
           ),
           IconButton(
             onPressed: onEdit,
-            icon: const Icon(Icons.edit_outlined, size: 18),
+            icon: const Icon(AppIcons.edit_outlined, size: 18),
             tooltip: '编辑',
           ),
           IconButton(
             onPressed: onRemove,
-            icon: const Icon(Icons.delete_outline, size: 18),
+            icon: const Icon(AppIcons.delete_outline, size: 18),
             tooltip: '删除',
           ),
         ],
@@ -5410,7 +5411,7 @@ class _FailedPlugin extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: Sp.x2),
       child: Row(
         children: [
-          Icon(Icons.warning_amber, size: 16, color: colors.error),
+          Icon(AppIcons.warning_amber, size: 16, color: colors.error),
           const SizedBox(width: Sp.x2),
           Expanded(
             child: Text(
@@ -5467,7 +5468,7 @@ class _RemotePanel extends StatelessWidget {
             ),
             child: Row(
               children: [
-                Icon(Icons.warning_amber, size: 14, color: colors.error),
+                Icon(AppIcons.warning_amber, size: 14, color: colors.error),
                 const SizedBox(width: Sp.x2),
                 Expanded(
                   child: Text(
@@ -5640,18 +5641,18 @@ class _RemotePanel extends StatelessWidget {
          *
          * # 原先两个错在哪
          * ```text
-         * · 「设固定码」用的 `Icons.pin_outlined` 是**图钉**（地图打点那种）
+         * · 「设固定码」用的 `AppIcons.pin_outlined` 是**图钉**（地图打点那种）
          *   —— 与「固定**码**」没有任何关系，字形本身也不对称，看着别扭。
-         * · 「关闭遥控」用的 `Icons.stop` 是**实心方块**，夹在一排
+         * · 「关闭遥控」用的 `AppIcons.stop` 是**实心方块**，夹在一排
          *   `OutlinedButton`（线性描边）里，粗细语言不一致 ⇒ 更显得
          *   "不好看"。Owner 点名的是前一个，这个顺带一起对齐。
          * ```
          *
          * # 为什么选这两个
          * ```text
-         * · `Icons.password` —— Material 自带的「密码」字形（钥匙 + 圆点），
+         * · `AppIcons.password` —— Material 自带的「密码」字形（钥匙 + 圆点），
          *   语义就是「一串要手输的码」，与「设固定码 / 改固定码」逐字对上。
-         * · `Icons.link_off` —— 断开的链环，标准「断开连接」字形，
+         * · `AppIcons.link_off` —— 断开的链环，标准「断开连接」字形，
          *   与「关闭遥控」逐字对上，且是**描边**风格，和 OutlinedButton 同族。
          * ```
          *
@@ -5666,12 +5667,12 @@ class _RemotePanel extends StatelessWidget {
           children: [
             OutlinedButton.icon(
               onPressed: busy ? null : onStop,
-              icon: const Icon(Icons.link_off, size: 16),
+              icon: const Icon(AppIcons.link_off, size: 16),
               label: const Text('关闭遥控'),
             ),
             OutlinedButton.icon(
               onPressed: onSetFixedPin,
-              icon: const Icon(Icons.password, size: 16),
+              icon: const Icon(AppIcons.password, size: 16),
               label: Text(status.fixedPin == null ? '设固定码' : '改固定码'),
             ),
           ],
@@ -5898,7 +5899,7 @@ class _RemoteBlockState extends State<_RemoteBlock> {
                 ),
                 const SizedBox(width: Sp.x2),
                 Icon(
-                  Icons.expand_more,
+                  AppIcons.expand_more,
                   size: 20,
                   color: colors.onSurfaceVariant,
                 ),
@@ -6082,12 +6083,12 @@ class _OrderDialogState extends State<_OrderDialog> {
                 children: [
                   IconButton(
                     onPressed: i > 0 ? () => _move(i, -1) : null,
-                    icon: const Icon(Icons.keyboard_arrow_up),
+                    icon: const Icon(AppIcons.keyboard_arrow_up),
                     tooltip: '上移',
                   ),
                   IconButton(
                     onPressed: i < _list.length - 1 ? () => _move(i, 1) : null,
-                    icon: const Icon(Icons.keyboard_arrow_down),
+                    icon: const Icon(AppIcons.keyboard_arrow_down),
                     tooltip: '下移',
                   ),
                 ],
@@ -6370,7 +6371,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
               message: widget.sourceUrl,
               child: Row(
                 children: [
-                  Icon(Icons.link, size: 14, color: colors.onSurfaceVariant),
+                  Icon(AppIcons.link, size: 14, color: colors.onSurfaceVariant),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
@@ -6393,7 +6394,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
               children: [
                 FilledButton.tonalIcon(
                   onPressed: _busy ? null : _check,
-                  icon: const Icon(Icons.refresh, size: 16),
+                  icon: const Icon(AppIcons.refresh, size: 16),
                   label: Text(_checking ? '检测中…' : '检测更新'),
                 ),
                 const SizedBox(width: Sp.x3),
@@ -6411,7 +6412,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
             if (c != null && c.hasUpdate) ...[
               FilledButton.icon(
                 onPressed: _busy ? null : _update,
-                icon: const Icon(Icons.download, size: 16),
+                icon: const Icon(AppIcons.download, size: 16),
                 label: Text(_updating ? '更新中…' : '更新到 v${c.remoteVersion}'),
               ),
               const SizedBox(height: Sp.x2),
@@ -6507,7 +6508,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
       return Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.error_outline, size: 14, color: colors.error),
+          Icon(AppIcons.error_outline, size: 14, color: colors.error),
           const SizedBox(width: 4),
           Expanded(
             child: Text(
@@ -6595,7 +6596,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
           padding: const EdgeInsets.symmetric(vertical: Sp.x2),
           child: Row(
             children: [
-              Icon(Icons.history, size: 15, color: colors.onSurfaceVariant),
+              Icon(AppIcons.history, size: 15, color: colors.onSurfaceVariant),
               const SizedBox(width: Sp.x2),
               Expanded(
                 child: Column(

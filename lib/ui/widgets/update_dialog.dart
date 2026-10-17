@@ -20,6 +20,7 @@ import '../tokens.dart';
 import 'app_toast.dart';
 import 'overlay_motion.dart';
 import 'release_notes.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 显示更新对话框。返回 true 表示用户点了「下载」
 Future<bool> showUpdateDialog(
@@ -147,7 +148,7 @@ class _Progress extends StatelessWidget {
     final danger = colors.error;
     if (d.error != null) {
       return Row(children: [
-        Icon(Icons.error_outline, size: 18, color: danger),
+        Icon(AppIcons.error_outline, size: 18, color: danger),
         const SizedBox(width: Sp.x2),
         Expanded(
           child: Text(d.error!,

@@ -34,6 +34,7 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 挂在 `MaterialApp.builder` 里的 toast 宿主
 ///
@@ -318,7 +319,7 @@ class _ToastCard extends StatelessWidget {
                       onPressed: onClose,
                       visualDensity: VisualDensity.compact,
                       icon: Icon(
-                        Icons.close,
+                        AppIcons.close,
                         size: 16,
                         color: cs.onSurfaceVariant.withValues(alpha: 0.7),
                       ),
@@ -335,10 +336,10 @@ class _ToastCard extends StatelessWidget {
 }
 
 /// 便捷动作样式（成功 / 失败）
-AppToastStyle okToastStyle() => AppToastStyle(icon: Icons.check_circle_outline);
+AppToastStyle okToastStyle() => AppToastStyle(icon: AppIcons.check_circle_outline);
 
 AppToastStyle errToastStyle() =>
-    AppToastStyle(icon: Icons.error_outline, accent: Colors.redAccent);
+    AppToastStyle(icon: AppIcons.error_outline, accent: Colors.redAccent);
 
 /// Esc 关掉最上面那条（TV 遥控器上比鼠标 hover 更靠谱）
 ///

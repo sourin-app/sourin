@@ -52,6 +52,7 @@ import 'tokens.dart';
 import 'widgets/cover_image.dart';
 import 'widgets/follow_update_notice.dart';
 import 'widgets/poster_card.dart';
+import '../design/icons/app_icons.dart';
 
 /// 追更页
 bool abDisableFollowRefresh = false;
@@ -1909,7 +1910,7 @@ class _ContinueList extends StatelessWidget {
   Widget build(BuildContext context) {
     if (list.isEmpty) {
       return const _EmptyBlock(
-        icon: Icons.history,
+        icon: AppIcons.history,
         title: '还没有观看记录',
         desc: '开始播放后，这里会出现可以继续观看的内容',
       );
@@ -2045,7 +2046,7 @@ class _ContinueCard extends StatelessWidget {
                    * ★ 与 `poster_card.dart` 的处理**逐字同款**（那边 task-63 已改）：
                    * ```text
                    * 标题非空 ⇒ 首字占位（原版 `title.slice(0,1)` 的移植）
-                   * 标题为空 ⇒ 中性图标 `Icons.movie_outlined`
+                   * 标题为空 ⇒ 中性图标 `AppIcons.movie_outlined`
                    * ```
                    *
                    * # 为什么"首字占位"在空标题下失效
@@ -2077,7 +2078,7 @@ class _ContinueCard extends StatelessWidget {
                     Center(
                       child: p.title.isEmpty
                           ? Icon(
-                              Icons.movie_outlined,
+                              AppIcons.movie_outlined,
                               size: FontSizes.display * 0.6,
                               color: colors.onSurfaceVariant
                                   .withValues(alpha: 0.5),
@@ -2178,7 +2179,7 @@ class _FavGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     if (list.isEmpty) {
       return _EmptyBlock(
-        icon: Icons.star_border,
+        icon: AppIcons.star_border,
         title: emptyTitle,
         desc: '在详情页点击收藏，即可在这里追踪更新',
       );

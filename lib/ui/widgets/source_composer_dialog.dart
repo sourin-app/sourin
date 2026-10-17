@@ -35,6 +35,7 @@ import '../tokens.dart';
 import 'app_dialog_section.dart';
 import 'app_dialog_shell.dart';
 import 'source_composer_model.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 每个字段的示例 JSONPath —— **按字段给不同例子**，
 /// 比全部填同一个 `$.data.vod_id` 更能说明「这一行该填什么」。
@@ -255,7 +256,7 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
     return AppDialogShell(
       title: '可视化编排',
       subtitle: '左边改，右边实时看；不用下一步',
-      icon: Icons.auto_fix_high_outlined,
+      icon: AppIcons.auto_fix_high_outlined,
       width: 860,
       fill: widget.fill,
       motion: true,
@@ -471,7 +472,7 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
                   vertical: Sp.x2,
                 ),
                 child: Icon(
-                  Icons.drag_indicator,
+                  AppIcons.drag_indicator,
                   size: 18,
                   color: colors.onSurfaceVariant,
                 ),

@@ -35,6 +35,7 @@ import '../../core/models.dart' show StreamCandidate;
 import '../tokens.dart';
 import 'player_more_menu.dart';
 import 'player_popover.dart';
+import '../../design/icons/app_icons.dart';
 
 /// popover 的 id 常量 —— 开关与按钮用**同一份**字符串
 class PlayerPopoverIds {
@@ -448,14 +449,14 @@ class PlayerBottomBar extends StatelessWidget {
     return [
       if (hasEpisodes && !isTouch)
         _BarAction(
-          icon: Icons.list,
+          icon: AppIcons.list,
           label: '选集',
           tooltip: '选集',
           onTap: onEpisodes,
         ),
       if (streams.length > 1)
         _BarAction(
-          icon: Icons.high_quality,
+          icon: AppIcons.high_quality,
           label: '清晰度',
           tooltip: '清晰度',
           popoverId: PlayerPopoverIds.quality,
@@ -471,7 +472,7 @@ class PlayerBottomBar extends StatelessWidget {
        */
       if (trackGroups.isNotEmpty)
         _BarAction(
-          icon: Icons.closed_caption,
+          icon: AppIcons.closed_caption,
           tooltip: '字幕与音轨',
           popoverId: PlayerPopoverIds.tracks,
           active: controller.isOpen(PlayerPopoverIds.tracks),
@@ -498,7 +499,7 @@ class PlayerBottomBar extends StatelessWidget {
          * on/off pair stays as legible as subtitles/subtitles_off was.
          */
         key: danmakuToggleKey,
-        icon: danmakuEnabled ? Icons.comment : Icons.comments_disabled,
+        icon: danmakuEnabled ? AppIcons.comment : AppIcons.comments_disabled,
         label: '弹幕',
         tooltip: danmakuBusy ? '弹幕加载中…' : (danmakuEnabled ? '关闭弹幕' : '开启弹幕'),
         active: danmakuEnabled,
@@ -522,13 +523,13 @@ class PlayerBottomBar extends StatelessWidget {
         key: danmakuSettingsKey,
         // 2026-10-15 (Owner): a gear, not the slider/tune glyph -- the gear is
         // what the streaming sites pair with the danmaku toggle.
-        icon: Icons.settings,
+        icon: AppIcons.settings,
         tooltip: '弹幕设置',
         popoverId: danmakuQuick == null ? null : PlayerPopoverIds.danmakuQuick,
         onTap: danmakuQuick == null ? onDanmakuSettings : null,
       ),
       _BarAction(
-        icon: Icons.more_horiz,
+        icon: AppIcons.more_horiz,
         label: '更多',
         tooltip: '更多',
         popoverId: PlayerPopoverIds.more,
@@ -550,20 +551,20 @@ class PlayerBottomBar extends StatelessWidget {
          * disabled rather than absent, which is what the original design said.
          */
         _BarAction(
-          icon: Icons.skip_previous,
+          icon: AppIcons.skip_previous,
           tooltip: '上一集',
           enabled: hasPrev,
           onTap: onPrev,
         ),
         _BarAction(
-          icon: Icons.skip_next,
+          icon: AppIcons.skip_next,
           tooltip: '下一集',
           enabled: hasNext,
           onTap: onNext,
         ),
       ],
       _BarAction(
-        icon: fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+        icon: fullscreen ? AppIcons.fullscreen_exit : AppIcons.fullscreen,
         tooltip: fullscreen ? '退出全屏' : '全屏',
         onTap: onToggleFullscreen,
       ),
@@ -1256,7 +1257,7 @@ class PlayerBottomBar extends StatelessWidget {
         // ── 常驻高频组（任何宽度都在第一行，永不折叠）──
         final primary = <Widget>[
           _BarIconButton(
-            icon: playing ? Icons.pause : Icons.play_arrow,
+            icon: playing ? AppIcons.pause : AppIcons.play_arrow,
             tooltip: '播放 / 暂停',
             onTap: onTogglePlay,
             big: true,
@@ -1271,7 +1272,7 @@ class PlayerBottomBar extends StatelessWidget {
           _PopoverButton(
             controller: controller,
             id: PlayerPopoverIds.rate,
-            icon: Icons.speed,
+            icon: AppIcons.speed,
             label: '${_trimRate(rate)}x',
             tooltip: '倍速',
           ),
@@ -1329,7 +1330,7 @@ class PlayerBottomBar extends StatelessWidget {
                 ...primary,
                 const Spacer(),
                 _BarIconButton(
-                  icon: fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                  icon: fullscreen ? AppIcons.fullscreen_exit : AppIcons.fullscreen,
                   tooltip: fullscreen ? '退出全屏' : '全屏',
                   onTap: onToggleFullscreen,
                 ),
@@ -1695,8 +1696,8 @@ class _VolumeControl extends StatelessWidget {
     children: [
       _BarIconButton(
         icon: muted || volume == 0
-            ? Icons.volume_off
-            : (volume < 50 ? Icons.volume_down : Icons.volume_up),
+            ? AppIcons.volume_off
+            : (volume < 50 ? AppIcons.volume_down : AppIcons.volume_up),
         tooltip: '静音',
         onTap: onToggleMute,
       ),
@@ -1759,7 +1760,7 @@ class PlayerZoomSliderCard extends StatelessWidget {
         IconButton(
           onPressed: onClose,
           visualDensity: VisualDensity.compact,
-          icon: const Icon(Icons.close, size: 16, color: Colors.white),
+          icon: const Icon(AppIcons.close, size: 16, color: Colors.white),
           tooltip: '关闭',
         ),
       ],

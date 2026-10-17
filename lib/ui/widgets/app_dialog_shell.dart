@@ -49,6 +49,7 @@ import '../app_scaffold.dart';
 import '../app_theme.dart';
 import '../tokens.dart';
 import 'overlay_motion.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 默认宽度。窄弹窗传 460，宽版面（片头片尾）传 820。
 class AppDialogShell extends StatelessWidget {
@@ -442,7 +443,7 @@ class _Header extends StatelessWidget {
   final VoidCallback? onClose;
   final EdgeInsets? padding;
 
-  /// 标题左侧的图标（`subtitle_panel` 改前有 `Icons.subtitles_outlined`）。
+  /// 标题左侧的图标（`subtitle_panel` 改前有 `AppIcons.subtitles_outlined`）。
   /// 传 null 时不占位。
   final IconData? icon;
 
@@ -518,7 +519,7 @@ class _Header extends StatelessWidget {
           if (onClose != null)
             IconButton(
               onPressed: closeEnabled ? onClose : null,
-              icon: Icon(Icons.close, color: titleColor),
+              icon: Icon(AppIcons.close, color: titleColor),
               tooltip: '关闭',
             ),
         ],

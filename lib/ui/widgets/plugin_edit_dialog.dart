@@ -77,6 +77,7 @@ import '../../core/sourin_api.dart';
 import '../tokens.dart';
 import 'app_dialog_shell.dart';
 import 'overlay_motion.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 表单的两种安装方式
 enum PluginInputKind {
@@ -474,7 +475,7 @@ class _PluginEditDialogState extends State<PluginEditDialogBody> {
           Row(
             children: [
               Icon(
-                isLink ? Icons.link : Icons.code,
+                isLink ? AppIcons.link : AppIcons.code,
                 size: FontSizes.base,
                 color: colors.primary,
               ),

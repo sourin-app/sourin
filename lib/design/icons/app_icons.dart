@@ -192,5 +192,7 @@ abstract final class AppIcons {
   static const IconData warning_amber_outlined = IconData(0xf4ae, fontFamily: 'MaterialIcons');
   static const IconData wifi_off = IconData(0xe6eb, fontFamily: 'MaterialIcons');
   static const IconData wifi_tethering = IconData(0xe6ed, fontFamily: 'MaterialIcons');
+  static const IconData chat_bubble_outline = IconData(0xe155, fontFamily: 'MaterialIcons');
+  static const IconData visibility_outlined = IconData(0xf4a1, fontFamily: 'MaterialIcons');
   static const IconData zoom_in_map = IconData(0xf05af, fontFamily: 'MaterialIcons');
 }

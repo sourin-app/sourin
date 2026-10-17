@@ -33,6 +33,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../design/widgets/app_ink_well.dart';
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 一条弹幕来源
 enum DanmakuFeedKind {
@@ -72,12 +73,12 @@ extension DanmakuFeedKindX on DanmakuFeedKind {
 
   /// 图标：让人**不看字**也能认出是哪一类
   IconData get icon => switch (this) {
-        DanmakuFeedKind.bili => Icons.cloud_download_outlined,
-        DanmakuFeedKind.service => Icons.dns_outlined,
-        DanmakuFeedKind.localDanmaku => Icons.computer_outlined,
-        DanmakuFeedKind.selfHosted => Icons.storage_outlined,
-        DanmakuFeedKind.library => Icons.folder_open_outlined,
-        DanmakuFeedKind.none => Icons.help_outline,
+        DanmakuFeedKind.bili => AppIcons.cloud_download_outlined,
+        DanmakuFeedKind.service => AppIcons.dns_outlined,
+        DanmakuFeedKind.localDanmaku => AppIcons.computer_outlined,
+        DanmakuFeedKind.selfHosted => AppIcons.storage_outlined,
+        DanmakuFeedKind.library => AppIcons.folder_open_outlined,
+        DanmakuFeedKind.none => AppIcons.help_outline,
       };
 }
 
@@ -243,7 +244,7 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                bad ? Icons.error_outline : d.source.icon,
+                bad ? AppIcons.error_outline : d.source.icon,
                 size: 15,
                 color: bad ? _danger : _fgDim,
               ),
@@ -257,7 +258,7 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
                 ),
               ),
               const SizedBox(width: Sp.x1),
-              const Icon(Icons.chevron_left, size: 15, color: _fgDim),
+              const Icon(AppIcons.chevron_left, size: 15, color: _fgDim),
             ],
           ),
         ),
@@ -317,7 +318,7 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
               if (!d.enabled && !d.hasError) ...[
                 const SizedBox(height: Sp.x3),
                 _hint(
-                  Icons.pause_circle_outline,
+                  AppIcons.pause_circle_outline,
                   '弹幕开关是关的 —— 有数据也不会上屏。',
                 ),
               ],
@@ -330,7 +331,7 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
 
   Widget _header() => Row(
         children: [
-          const Icon(Icons.subtitles_outlined, size: 16, color: _fg),
+          const Icon(AppIcons.subtitles_outlined, size: 16, color: _fg),
           const SizedBox(width: Sp.x2),
           const Padding(
             padding: EdgeInsets.only(top: 1),
@@ -346,7 +347,7 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
           ),
           const Spacer(),
           _IconHit(
-            icon: Icons.close,
+            icon: AppIcons.close,
             tooltip: '收起',
             // 宿主给了回调就交给宿主（整块隐藏），否则只收成窄条。
             onTap: widget.onRequestClose ??
@@ -517,7 +518,7 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
           children: [
             const Row(
               children: [
-                Icon(Icons.error_outline, size: 14, color: _danger),
+                Icon(AppIcons.error_outline, size: 14, color: _danger),
                 SizedBox(width: Sp.x2),
                 Text(
                   '失败原因',

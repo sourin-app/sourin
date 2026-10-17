@@ -39,6 +39,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 /// popover 的 id 常量 —— 开关与按钮用**同一份**字符串
 class PlayerPopoverIds {
@@ -374,7 +375,7 @@ class PopoverRow extends StatelessWidget {
                 width: 18,
                 child: checked
                     ? const Icon(
-                        Icons.check,
+                        AppIcons.check,
                         size: 15,
                         color: Color(0xFF32C7FF),
                       )

@@ -147,6 +147,7 @@ import 'widgets/skip_marker_dialog.dart';
 import 'widgets/source_switch_dialog.dart';
 import '../ui/app_scaffold.dart';
 import '../ui/app_theme.dart';
+import '../design/icons/app_icons.dart';
 
 /// 把播放页里的**浮层面板**包成深色皮肤（task-28 ①-B）
 ///
@@ -5600,7 +5601,7 @@ class _PlayerPageState extends State<PlayerPage>
     if (url.isEmpty) return null;
     return MoreMenuEntry(
       label: '投屏',
-      icon: Icons.cast,
+      icon: AppIcons.cast,
       onTap: _openCast,
       trailing: CastButton(
         url: url,
@@ -5630,12 +5631,12 @@ class _PlayerPageState extends State<PlayerPage>
       MoreMenuGroup('画面', [
         MoreMenuEntry(
           label: '截图',
-          icon: Icons.photo_camera,
+          icon: AppIcons.photo_camera,
           onTap: () => unawaited(_takeScreenshot()),
         ),
         MoreMenuEntry(
           label: '画面缩放',
-          icon: Icons.zoom_in_map,
+          icon: AppIcons.zoom_in_map,
           hint: '${_videoZoomPct.round()}%',
           onTap: () => setState(() => _zoomOpen = !_zoomOpen),
         ),
@@ -5643,8 +5644,8 @@ class _PlayerPageState extends State<PlayerPage>
           MoreMenuEntry(
             label: _pipActive ? '退出画中画' : '画中画',
             icon: _pipActive
-                ? Icons.picture_in_picture_alt
-                : Icons.picture_in_picture_alt_outlined,
+                ? AppIcons.picture_in_picture_alt
+                : AppIcons.picture_in_picture_alt_outlined,
             onTap: () => unawaited(_togglePip()),
           ),
         if (castEntry case final e?) e,
@@ -5652,13 +5653,13 @@ class _PlayerPageState extends State<PlayerPage>
       MoreMenuGroup('播放', [
         MoreMenuEntry(
           label: '播放设置',
-          icon: Icons.settings,
+          icon: AppIcons.settings,
           onTap: () => unawaited(_openSettings()),
         ),
         if (!_isLive)
           MoreMenuEntry(
             label: '字幕搜索',
-            icon: Icons.search,
+            icon: AppIcons.search,
             onTap: () => _openSubtitlePanel(),
           ),
         /*
@@ -5679,7 +5680,7 @@ class _PlayerPageState extends State<PlayerPage>
         if (!_isLocalSession)
           MoreMenuEntry(
             label: '换源',
-            icon: Icons.travel_explore,
+            icon: AppIcons.travel_explore,
             onTap: () => unawaited(_openSwitchSource()),
           ),
       ]),
@@ -5704,7 +5705,7 @@ class _PlayerPageState extends State<PlayerPage>
          */
         MoreMenuEntry(
           label: '弹幕设置',
-          icon: Icons.tune,
+          icon: AppIcons.tune,
           hint: _danmakuLoading ? '加载中…' : null,
           onTap: _openDanmakuSettings,
         ),
@@ -5713,13 +5714,13 @@ class _PlayerPageState extends State<PlayerPage>
         MoreMenuGroup('剧集', [
           MoreMenuEntry(
             label: '片头片尾',
-            icon: Icons.content_cut,
+            icon: AppIcons.content_cut,
             onTap: () => unawaited(_openSkipDialog()),
           ),
           if (_prevEpisode != null)
             MoreMenuEntry(
               label: '上一集',
-              icon: Icons.skip_previous,
+              icon: AppIcons.skip_previous,
               onTap: () => unawaited(_gotoPrevEpisode()),
             ),
           // ★ Owner 缺陷 6（2026-10-10，截图图 2/图 3 的底栏）：
@@ -5731,7 +5732,7 @@ class _PlayerPageState extends State<PlayerPage>
           if (_isLive && widget.onLiveChannels != null)
             MoreMenuEntry(
               label: '所有直播',
-              icon: Icons.live_tv,
+              icon: AppIcons.live_tv,
               onTap: _toggleLiveChannels,
             ),
         ]),
@@ -15637,7 +15638,7 @@ class _ErrorOverlay extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline, size: 48, color: Colors.white70),
+            const Icon(AppIcons.error_outline, size: 48, color: Colors.white70),
             const SizedBox(height: Sp.x4),
             const Text(
               '播放失败',
@@ -15670,7 +15671,7 @@ class _ErrorOverlay extends StatelessWidget {
             if (onLogin != null) ...[
               FilledButton.icon(
                 onPressed: onLogin,
-                icon: const Icon(Icons.login, size: 18),
+                icon: const Icon(AppIcons.login, size: 18),
                 label: const Text('登录'),
               ),
               const SizedBox(height: Sp.x3),
@@ -15766,7 +15767,7 @@ class _LiveAudioOnlyBanner extends StatelessWidget {
         ),
         child: Row(
           children: [
-            const Icon(Icons.info_outline, size: 18, color: Colors.white70),
+            const Icon(AppIcons.info_outline, size: 18, color: Colors.white70),
             const SizedBox(width: Sp.x2),
             Expanded(
               child: Text(
@@ -15850,7 +15851,7 @@ class _VideoOutputDeadBanner extends StatelessWidget {
         child: Row(
           children: [
             const Icon(
-              Icons.warning_amber_outlined,
+              AppIcons.warning_amber_outlined,
               size: 18,
               color: Colors.white70,
             ),
@@ -15934,7 +15935,7 @@ class _PlaybackFailureBanner extends StatelessWidget {
         ),
         child: Row(
           children: [
-            const Icon(Icons.error_outline, size: 18, color: Colors.white70),
+            const Icon(AppIcons.error_outline, size: 18, color: Colors.white70),
             const SizedBox(width: Sp.x2),
             Expanded(
               child: Column(
@@ -18003,7 +18004,7 @@ Future<File> debugUniqueShotFile(Directory dir, {DateTime? now}) =>
  * # ⚠️ 类名以 `_F` 开头是**故意的**
  *
  * `test/t68_android_adapt_test.dart` 与 `test/t80_cast_wiring_test.dart`
- * 用「切片 + 首个 `Icons.` 下标」约束底栏顺序。把它排在 `_TopBar`
+ * 用「切片 + 首个 `AppIcons.` 下标」约束底栏顺序。把它排在 `_TopBar`
  * （= `_T`）之后，任何「按文件顺序切 [起, 终)」的静态约束都不会把它
  * 切进底栏那一段。**不要**把本类挪到 `_BottomBar` 之前。
  */
@@ -18177,7 +18178,7 @@ class _TopBar extends StatelessWidget {
                     IconButton(
                       key: backArrowKey,
                       onPressed: onBack,
-                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                      icon: const Icon(AppIcons.arrow_back, color: Colors.white),
                       tooltip: '返回',
                     ),
                     const SizedBox(width: Sp.x2),
@@ -18295,7 +18296,7 @@ class _TopBar extends StatelessWidget {
                       IconButton(
                         onPressed: onHints,
                         icon: const Icon(
-                          Icons.keyboard_outlined,
+                          AppIcons.keyboard_outlined,
                           color: Colors.white,
                         ),
                         tooltip: '快捷键',
@@ -18451,7 +18452,7 @@ class _DanmakuInfoChip extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              bad ? Icons.error_outline : Icons.subtitles_outlined,
+              bad ? AppIcons.error_outline : AppIcons.subtitles_outlined,
               size: 13,
               color: bad ? const Color(0xFFFF6B6B) : Colors.white70,
             ),
@@ -18973,7 +18974,7 @@ class _DanmakuSendBarState extends State<DanmakuSendBar> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(
-                Icons.chat_bubble_outline,
+                AppIcons.chat_bubble_outline,
                 size: 16,
                 color: Colors.white70,
               ),
@@ -19917,7 +19918,7 @@ class _StreamSheet extends StatelessWidget {
                       const Spacer(),
                       IconButton(
                         onPressed: onClose,
-                        icon: const Icon(Icons.close, color: Colors.white),
+                        icon: const Icon(AppIcons.close, color: Colors.white),
                       ),
                     ],
                   ),
@@ -20109,7 +20110,7 @@ class _LiveChannelsSheet extends StatelessWidget {
                   padding: const EdgeInsets.all(Sp.x4),
                   child: Row(
                     children: [
-                      const Icon(Icons.live_tv, color: Colors.white, size: 20),
+                      const Icon(AppIcons.live_tv, color: Colors.white, size: 20),
                       const SizedBox(width: Sp.x2),
                       Expanded(
                         child: Text(
@@ -20123,7 +20124,7 @@ class _LiveChannelsSheet extends StatelessWidget {
                       ),
                       IconButton(
                         onPressed: onClose,
-                        icon: const Icon(Icons.close, color: Colors.white),
+                        icon: const Icon(AppIcons.close, color: Colors.white),
                         tooltip: '关闭',
                       ),
                     ],

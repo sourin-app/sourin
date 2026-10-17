@@ -30,6 +30,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/models.dart';
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 选集面板的形态（按端分流，判据只在本件内做一次）
 enum PlayerEpisodePanelStyle {
@@ -234,7 +235,7 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
         tooltip: _descending ? '正序' : '倒序',
         visualDensity: VisualDensity.compact,
         icon: Icon(
-          _descending ? Icons.arrow_downward : Icons.arrow_upward,
+          _descending ? AppIcons.arrow_downward : AppIcons.arrow_upward,
           size: 18,
           color: _descending ? const Color(0xFF32C7FF) : Colors.white,
         ),
@@ -243,7 +244,7 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
         onPressed: widget.onClose,
         tooltip: '关闭',
         visualDensity: VisualDensity.compact,
-        icon: const Icon(Icons.close, size: 18, color: Colors.white),
+        icon: const Icon(AppIcons.close, size: 18, color: Colors.white),
       ),
     ],
   );

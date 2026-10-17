@@ -82,6 +82,7 @@ import 'core/ui_prefs.dart';
 import 'shell.dart';
 import 'ui/app_theme.dart';
 import 'ui/browse_page.dart';
+import './design/icons/app_icons.dart';
 
 // ══════════════════════════════════════════════════════════════════════════
 // 常量
@@ -739,9 +740,9 @@ Future<void> _body(String dir) async {
   }
   final chevronEl = findWidget(
     backEl,
-    (w) => w is Icon && w.icon == Icons.chevron_left,
+    (w) => w is Icon && w.icon == AppIcons.chevron_left,
   );
-  ok('① 返回键里确实是 Icons.chevron_left', chevronEl != null);
+  ok('① 返回键里确实是 AppIcons.chevron_left', chevronEl != null);
 
   // ── ② 需求① 阴性：底部**没有**「加载更多」按钮 ───────────────────────
   say('');

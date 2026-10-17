@@ -125,6 +125,7 @@ import '../../core/sourin_api.dart';
 import '../tokens.dart';
 import 'overlay_motion.dart';
 import 'settings_kit.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 云盘同步面板（WebDAV）
 ///
@@ -467,28 +468,28 @@ class _SyncPanelState extends State<SyncPanel> {
           children: [
             FilledButton.tonalIcon(
               onPressed: _syncBusy ? null : _configureWebdav,
-              icon: const Icon(Icons.cloud_outlined, size: 16),
+              icon: const Icon(AppIcons.cloud_outlined, size: 16),
               label: Text(connected ? '重新配置' : '配置云盘'),
             ),
             if (connected) ...[
               OutlinedButton.icon(
                 onPressed: _syncBusy ? null : _testSync,
-                icon: const Icon(Icons.network_check, size: 16),
+                icon: const Icon(AppIcons.network_check, size: 16),
                 label: const Text('测试连接'),
               ),
               OutlinedButton.icon(
                 onPressed: _syncBusy ? null : _syncNow,
-                icon: const Icon(Icons.sync, size: 16),
+                icon: const Icon(AppIcons.sync, size: 16),
                 label: const Text('立即同步'),
               ),
               FilledButton.tonalIcon(
                 onPressed: _syncBusy ? null : _backupNow,
-                icon: const Icon(Icons.backup_outlined, size: 16),
+                icon: const Icon(AppIcons.backup_outlined, size: 16),
                 label: const Text('立即备份'),
               ),
               OutlinedButton.icon(
                 onPressed: _syncBusy ? null : _disconnectSync,
-                icon: const Icon(Icons.link_off, size: 16),
+                icon: const Icon(AppIcons.link_off, size: 16),
                 label: const Text('断开'),
               ),
             ],
@@ -721,7 +722,7 @@ class _SyncPanelState extends State<SyncPanel> {
           ),
           IconButton(
             onPressed: _syncBusy ? null : () => _deleteBackup(e),
-            icon: const Icon(Icons.delete_outline, size: 18),
+            icon: const Icon(AppIcons.delete_outline, size: 18),
             tooltip: '删除这一份',
           ),
         ],

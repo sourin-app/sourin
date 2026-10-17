@@ -30,6 +30,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  区块外壳
@@ -835,7 +836,7 @@ class SettingsEntryRow extends StatelessWidget {
                     ),
                     const SizedBox(width: Sp.x2),
                     Icon(
-                      Icons.chevron_right,
+                      AppIcons.chevron_right,
                       size: 20,
                       color: colors.onSurfaceVariant,
                     ),

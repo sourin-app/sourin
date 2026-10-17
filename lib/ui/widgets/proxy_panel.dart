@@ -90,6 +90,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
 import '../../ui/app_palette.dart';
+import '../../design/icons/app_icons.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  组件
@@ -373,7 +374,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
             child: Row(
               children: [
                 Icon(
-                  Icons.lan_outlined,
+                  AppIcons.lan_outlined,
                   size: 14,
                   color: cfg.isConfigured
                       ? colors.primary
@@ -401,7 +402,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
                 ),
                 const SizedBox(width: 4),
                 Icon(
-                  _open ? Icons.expand_less : Icons.expand_more,
+                  _open ? AppIcons.expand_less : AppIcons.expand_more,
                   size: 14,
                   color: colors.mutedForeground,
                 ),
@@ -474,7 +475,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
                 const SizedBox(width: Sp.x2),
                 IconButton(
                   onPressed: _savePassword,
-                  icon: const Icon(Icons.lock_outline, size: 18),
+                  icon: const Icon(AppIcons.lock_outline, size: 18),
                   tooltip: '保存密码到系统钥匙串',
                 ),
               ],
@@ -563,7 +564,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
                         // T27-07：AppPalette.foreground（dark #FAFAFA / light #0A0A0A）。
                         child: CircularProgressIndicator(color: colors.foreground, strokeWidth: 2),
                       )
-                    : const Icon(Icons.bolt_outlined, size: 15),
+                    : const Icon(AppIcons.bolt_outlined, size: 15),
                 label: Text(_testing ? '测试中…' : '测试连接'),
               ),
               const SizedBox(width: Sp.x2),
@@ -581,8 +582,8 @@ class _ProxyPanelState extends State<ProxyPanel> {
                 children: [
                   Icon(
                     _testResult!.ok
-                        ? Icons.check_circle_outline
-                        : Icons.error_outline,
+                        ? AppIcons.check_circle_outline
+                        : AppIcons.error_outline,
                     size: 14,
                     color: _testResult!.ok ? colors.primary : colors.error,
                   ),

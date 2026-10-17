@@ -34,6 +34,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/models.dart';
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 更新提示区块（对齐原版 `FollowView.vue:246-262` 的 `.updates`）
 class FollowUpdateNotice extends StatelessWidget {
@@ -59,7 +60,7 @@ class FollowUpdateNotice extends StatelessWidget {
           Row(
             children: [
               Icon(
-                Icons.notifications_active,
+                AppIcons.notifications_active,
                 size: 17,
                 color: colors.primary,
               ),

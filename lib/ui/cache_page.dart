@@ -104,6 +104,7 @@ import 'widgets/cover_image.dart';
 import 'widgets/motion_prefs.dart';
 import 'widgets/overlay_motion.dart' show showAppDialog;
 import 'widgets/poster_card.dart';
+import '../design/icons/app_icons.dart';
 
 /// 旁文件名（ _ 开头 ⇒ 扫盘时会跳过它，不会被当成一集）
 ///
@@ -1516,7 +1517,7 @@ class CachePageState extends State<CachePage> {
         if (_error != null && active.isEmpty) {
           return _empty(
             colors,
-            icon: Icons.error_outline_rounded,
+            icon: AppIcons.error_outline_rounded,
             title: '读不了下载目录',
             body: '$_error',
           );
@@ -1524,7 +1525,7 @@ class CachePageState extends State<CachePage> {
         if (_works.isEmpty && active.isEmpty) {
           return _empty(
             colors,
-            icon: Icons.download_done_rounded,
+            icon: AppIcons.download_done_rounded,
             title: '还没有下载过东西',
             body: '在详情页点「下载」把整集存到本地，这里就会列出来。',
           );
@@ -2109,7 +2110,7 @@ class _CacheWorkCardState extends State<_CacheWorkCard> {
                       child: SizedBox(
                         width: 28,
                         height: 28,
-                        child: Icon(Icons.more_horiz,
+                        child: Icon(AppIcons.more_horiz,
                             size: 18, color: colors.onSurface),
                       ),
                     ),

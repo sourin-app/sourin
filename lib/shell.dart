@@ -121,6 +121,7 @@ import 'ui/app_palette.dart';
 import 'ui/app_scaffold.dart';
 import 'ui/shell_layouts/bottom_bar_layout.dart';
 import 'ui/shell_layouts/shell_layout.dart';
+import './design/icons/app_icons.dart';
 
 /// ★ 是否桌面平台（Windows / macOS / Linux）
 ///
@@ -179,22 +180,22 @@ enum AppTab {
   final String path;
 
   static const _icons = {
-    AppTab.home: Icons.explore_outlined,
-    AppTab.live: Icons.live_tv_outlined,
-    AppTab.follow: Icons.star_border_rounded,
-    AppTab.search: Icons.search_rounded,
+    AppTab.home: AppIcons.explore_outlined,
+    AppTab.live: AppIcons.live_tv_outlined,
+    AppTab.follow: AppIcons.star_border_rounded,
+    AppTab.search: AppIcons.search_rounded,
     // ★「已缓存」用 download_done 语义（**不是** folder）——
     //   Owner 要的是"已经存下来的东西"，folder 会让人以为是下载目录入口。
-    AppTab.cached: Icons.download_done_outlined,
-    AppTab.settings: Icons.settings_outlined,
+    AppTab.cached: AppIcons.download_done_outlined,
+    AppTab.settings: AppIcons.settings_outlined,
   };
   static const _iconsActive = {
-    AppTab.home: Icons.explore,
-    AppTab.live: Icons.live_tv,
-    AppTab.follow: Icons.star_rounded,
-    AppTab.search: Icons.search_rounded,
-    AppTab.cached: Icons.download_done_rounded,
-    AppTab.settings: Icons.settings,
+    AppTab.home: AppIcons.explore,
+    AppTab.live: AppIcons.live_tv,
+    AppTab.follow: AppIcons.star_rounded,
+    AppTab.search: AppIcons.search_rounded,
+    AppTab.cached: AppIcons.download_done_rounded,
+    AppTab.settings: AppIcons.settings,
   };
 
   IconData icon({required bool active}) =>
@@ -6386,7 +6387,7 @@ class _CustomTitleBar extends StatelessWidget implements PreferredSizeWidget {
               colors: [Color(0xFF5B8DEF), Color(0xFF8B5CF6)],
             ),
           ),
-          child: const Icon(Icons.play_arrow_rounded,
+          child: const Icon(AppIcons.play_arrow_rounded,
               size: 13, color: Colors.white),
         ),
         const SizedBox(width: 9),
@@ -6430,7 +6431,7 @@ class _CustomTitleBar extends StatelessWidget implements PreferredSizeWidget {
         ),
 
         _WinButton(
-          icon: Icons.remove_rounded,
+          icon: AppIcons.remove_rounded,
           onTap: onMinimize,
           // 深色态 hover 用白色微亮，浅色态用主题 secondary
           hoverColor: dark ? Colors.white24 : fg.withValues(alpha: 0.12),
@@ -6438,15 +6439,15 @@ class _CustomTitleBar extends StatelessWidget implements PreferredSizeWidget {
         ),
         _WinButton(
           icon: maximized
-              ? Icons.filter_none_rounded
-              : Icons.crop_square_rounded,
+              ? AppIcons.filter_none_rounded
+              : AppIcons.crop_square_rounded,
           onTap: onToggleMaximize,
           hoverColor: dark ? Colors.white24 : fg.withValues(alpha: 0.12),
           iconColor: fg,
           small: true,
         ),
         _WinButton(
-          icon: Icons.close_rounded,
+          icon: AppIcons.close_rounded,
           onTap: onClose,
           // ★ 关闭按钮 hover 变红 —— Windows 的既有习惯
           hoverColor: const Color(0xFFE81123),
@@ -6631,7 +6632,7 @@ class _CoreErrorView extends StatelessWidget {
               // ── ① 一眼可见：出什么事了 ──
               Row(
                 children: [
-                  Icon(Icons.error_outline_rounded, size: 30, color: errorColor),
+                  Icon(AppIcons.error_outline_rounded, size: 30, color: errorColor),
                   const SizedBox(width: Sp.x3),
                   Expanded(
                     child: Text(
@@ -6712,7 +6713,7 @@ class _CoreErrorView extends StatelessWidget {
                       Padding(
                         padding: const EdgeInsets.only(top: 6, right: Sp.x3),
                         child: Icon(
-                          Icons.circle,
+                          AppIcons.circle,
                           size: 5,
                           color: colors.mutedForeground,
                         ),

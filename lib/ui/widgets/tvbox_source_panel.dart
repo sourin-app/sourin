@@ -48,6 +48,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../core/sourin_api.dart';
 import 'overlay_motion.dart';
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 把一条检测结果压成一行中文摘要（面板与弹窗共用）
 ///
@@ -342,7 +343,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
                 children: [
                   FilledButton.tonalIcon(
                     onPressed: (busy || !_hasLink) ? null : () => _checkNow(),
-                    icon: const Icon(Icons.refresh, size: 16),
+                    icon: const Icon(AppIcons.refresh, size: 16),
                     label: Text(_checking ? '检测中…' : '检测更新'),
                   ),
                   const SizedBox(width: Sp.x3),
@@ -460,7 +461,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(Icons.error_outline, size: 14, color: colors.error),
+        Icon(AppIcons.error_outline, size: 14, color: colors.error),
         const SizedBox(width: 4),
         Expanded(
           child: Text(
@@ -568,7 +569,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
       const SizedBox(height: Sp.x3),
       FilledButton.icon(
         onPressed: _updating ? null : _applyUpdate,
-        icon: const Icon(Icons.download_done, size: 16),
+        icon: const Icon(AppIcons.download_done, size: 16),
         label: Text(_updating ? '更新中…' : '应用更新'),
       ),
     ]);
@@ -710,7 +711,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
             child: Row(
               children: [
                 Icon(
-                  Icons.folder_outlined,
+                  AppIcons.folder_outlined,
                   size: 14,
                   color: colors.onSurfaceVariant,
                 ),

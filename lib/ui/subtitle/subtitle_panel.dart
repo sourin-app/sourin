@@ -20,6 +20,7 @@ import '../../core/assrt/assrt_api.dart';
 import '../../core/assrt/subtitle_store.dart';
 import '../tokens.dart';
 import '../widgets/app_dialog_shell.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 面板的纯状态（不依赖 BuildContext —— 可单测）
 class SubtitlePanelState {
@@ -345,7 +346,7 @@ class _SubtitlePanelState extends State<SubtitlePanel> {
     return AppDialogShell(
       title: '字幕',
       // ★ 补回改前 `_header` 左侧那枚图标（外壳 2026-10-16 新增 `icon` 参数）
-      icon: Icons.subtitles_outlined,
+      icon: AppIcons.subtitles_outlined,
       // 片名作副标题 —— 与改前 `_header` 里那一行**同一份数据**（trim 后）
       subtitle: videoTitle.isEmpty ? null : videoTitle,
       width: wide ? 720 : double.infinity,
@@ -380,7 +381,7 @@ class _SubtitlePanelState extends State<SubtitlePanel> {
       padding: const EdgeInsets.fromLTRB(Sp.x5, 0, Sp.x5, Sp.x3),
       child: Row(
         children: <Widget>[
-          Icon(Icons.info_outline, size: 14, color: colors.onSurfaceVariant),
+          Icon(AppIcons.info_outline, size: 14, color: colors.onSurfaceVariant),
           const SizedBox(width: Sp.x1),
           Expanded(
             child: Text(
@@ -477,7 +478,7 @@ class _SubtitlePanelState extends State<SubtitlePanel> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Icon(Icons.error_outline, size: 18, color: colors.error),
+          Icon(AppIcons.error_outline, size: 18, color: colors.error),
           const SizedBox(width: Sp.x2),
           Expanded(
             child: SelectableText(

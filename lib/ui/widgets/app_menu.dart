@@ -58,6 +58,7 @@ library;
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 菜单面的**统一几何** —— `AppMenuButton` 与 [showAppMenu] 共用这一份。
 ///
@@ -221,7 +222,7 @@ class AppMenuButton<T> extends StatelessWidget {
       tooltip: tooltip ?? '更多操作',
       padding: EdgeInsets.zero,
       icon: Icon(
-        icon ?? Icons.more_vert,
+        icon ?? AppIcons.more_vert,
         size: iconSize,
         color: colors.onSurfaceVariant,
       ),

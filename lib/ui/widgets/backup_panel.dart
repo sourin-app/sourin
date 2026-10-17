@@ -145,6 +145,7 @@ import '../../core/models.dart';
 import '../../core/sourin_api.dart';
 import '../settings/export_dir.dart';
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 备份导出 / 导入面板
 ///
@@ -623,7 +624,7 @@ class _BackupPanelState extends State<BackupPanel> {
         // ── 导出卡片 ──
         _card(
           colors: colors,
-          icon: Icons.file_download_outlined,
+          icon: AppIcons.file_download_outlined,
           title: '导出备份',
           subtitle: '打包成 .zip —— 解压开就能看到插件源码，能自己改完再打回去',
           action: FilledButton(
@@ -658,7 +659,7 @@ class _BackupPanelState extends State<BackupPanel> {
         // ── 导入卡片 ──
         _card(
           colors: colors,
-          icon: Icons.file_upload_outlined,
+          icon: AppIcons.file_upload_outlined,
           title: '导入备份',
           subtitle: '合并进来，不会覆盖本机已有的数据',
           action: OutlinedButton(
@@ -773,7 +774,7 @@ class _BackupPanelState extends State<BackupPanel> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(Icons.folder_open_outlined,
+        Icon(AppIcons.folder_open_outlined,
             size: 15, color: colors.onSurfaceVariant),
         const SizedBox(width: Sp.x2),
         Expanded(
@@ -1071,7 +1072,7 @@ class _BackupPanelState extends State<BackupPanel> {
   Widget _logBox(ColorScheme colors) {
     return _card(
       colors: colors,
-      icon: Icons.receipt_long_outlined,
+      icon: AppIcons.receipt_long_outlined,
       title: '执行日志',
       subtitle: '本次启动以来的备份操作 · 最多显示最近 $logCap 行',
       // 右上角用计数替掉按钮位（与另两张卡视觉一致，但不假装可点）

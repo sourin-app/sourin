@@ -56,6 +56,7 @@ import '../../core/download_queue.dart';
 import '../tokens.dart';
 import 'cover_image.dart';
 import 'overlay_motion.dart';
+import '../../design/icons/app_icons.dart';
 
 /// ★★★ task-12 缺陷 A：「磁盘上已经下好了」的一集（不属于内存队列）
 ///
@@ -301,7 +302,7 @@ class _Header extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(Sp.x3, Sp.x3, Sp.x2, Sp.x2),
       child: Row(
         children: [
-          const Icon(Icons.download, size: 18),
+          const Icon(AppIcons.download, size: 18),
           const SizedBox(width: Sp.x2),
           Expanded(
             child: Text(
@@ -314,13 +315,13 @@ class _Header extends StatelessWidget {
           if (onRemoveWork != null)
             IconButton(
               onPressed: onRemoveWork,
-              icon: const Icon(Icons.delete_sweep_outlined, size: 20),
+              icon: const Icon(AppIcons.delete_sweep_outlined, size: 20),
               tooltip: '删除整部剧的下载',
             ),
           if (onClose != null)
             IconButton(
               onPressed: onClose,
-              icon: const Icon(Icons.close, size: 20),
+              icon: const Icon(AppIcons.close, size: 20),
               tooltip: '返回详情',
             ),
         ],
@@ -384,7 +385,7 @@ class _DownloadedRow extends StatelessWidget {
                 layoutHeight: 44,
                 fit: BoxFit.cover,
                 errorBuilder: (_, __, ___) =>
-                    const Icon(Icons.movie_outlined, size: 24),
+                    const Icon(AppIcons.movie_outlined, size: 24),
               ),
             ),
           const SizedBox(width: Sp.x2),
@@ -406,7 +407,7 @@ class _DownloadedRow extends StatelessWidget {
           ),
           if (onPlay != null)
             IconButton(
-              icon: const Icon(Icons.play_arrow_rounded),
+              icon: const Icon(AppIcons.play_arrow_rounded),
               tooltip: '播放',
               onPressed: onPlay,
             ),
@@ -461,7 +462,7 @@ class _DownloadRow extends StatelessWidget {
                     fit: BoxFit.cover,
                     // ★ 封面加载失败绝不能让整行崩 —— 退回占位图标
                     errorBuilder: (_, __, ___) =>
-                        const Icon(Icons.movie_outlined, size: 24),
+                        const Icon(AppIcons.movie_outlined, size: 24),
                   ),
                 ),
               const SizedBox(width: Sp.x2),

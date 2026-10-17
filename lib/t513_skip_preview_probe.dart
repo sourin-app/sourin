@@ -71,6 +71,7 @@ import 'package:sourin_spike/ui/widgets/skip_marker_dialog.dart';
 import 'package:sourin_spike/ui/widgets/skip_timeline.dart';
 import 'ui/app_scaffold.dart';
 import 'ui/app_theme.dart';
+import './design/icons/app_icons.dart';
 
 /// 被预览的媒体（640x480 4:3、40 秒彩条式测试画面）
 ///
@@ -543,7 +544,7 @@ Future<bool> tapTextInRow(String text, double rowY, {String? label}) async {
 /// 点某一行的 `+` / `−`
 ///
 /// ★ 为什么不能只按 dy 挑（第一版就栽在这）：四行用的是**同一个
-///   const Icon(Icons.add) 实例**，按 widget 身份找会命中四个；而"同一行"
+///   const Icon(AppIcons.add) 实例**，按 widget 身份找会命中四个；而"同一行"
 ///   还包含「−」和「▶」，只按 dy 可能点错。可靠的判据是 **x 关系** ——
 ///   行结构是 [标签][读数][−][+][▶] ⇒
 ///     `+` = 中心落在读数右侧的那些 add 图标里**最靠左**的
@@ -561,7 +562,7 @@ Future<bool> tapStep(String label, {required bool plus, int times = 1}) async {
     final r = _root;
     if (r == null) return false;
     final valueC = rowValueCenter(label);
-    final icon = plus ? Icons.add : Icons.remove;
+    final icon = plus ? AppIcons.add : AppIcons.remove;
     Element? best;
     double? bestDx;
     for (final e in _findAll(r, (w) => w is Icon && w.icon == icon)) {
@@ -622,7 +623,7 @@ Future<bool> tapPreviewBtn(String label) async {
   // 宽布局是 TextButton.icon（Text('预览')）；窄布局是 IconButton(play_arrow)
   var e = pickInRow(findTextEls('预览'), rowY);
   e ??= pickInRow(
-    _findAll(r, (w) => w is Icon && w.icon == Icons.play_arrow),
+    _findAll(r, (w) => w is Icon && w.icon == AppIcons.play_arrow),
     rowY,
   );
   if (e == null) {

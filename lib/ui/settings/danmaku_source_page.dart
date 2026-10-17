@@ -46,6 +46,7 @@ import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
+import '../../design/icons/app_icons.dart';
 
 class DanmakuSourcePage extends StatefulWidget {
   const DanmakuSourcePage({super.key, this.probeOverride});
@@ -249,12 +250,12 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
                             strokeWidth: 2,
                           ),
                         )
-                      : const Icon(Icons.wifi_tethering, size: 18),
+                      : const Icon(AppIcons.wifi_tethering, size: 18),
                   label: Text(_running ? '测试中…' : '测试连接'),
                 ),
                 TextButton.icon(
                   onPressed: _running ? null : _clear,
-                  icon: const Icon(Icons.delete_outline, size: 18),
+                  icon: const Icon(AppIcons.delete_outline, size: 18),
                   label: const Text('清除'),
                 ),
               ],
@@ -330,15 +331,15 @@ class _StatusLine extends StatelessWidget {
     final String text;
 
     if (running) {
-      icon = Icons.hourglass_top;
+      icon = AppIcons.hourglass_top;
       color = colors.onSurfaceVariant;
       text = '正在测试…';
     } else if (why != null) {
-      icon = Icons.error_outline;
+      icon = AppIcons.error_outline;
       color = colors.error;
       text = why!;
     } else if (result != null) {
-      icon = result!.online ? Icons.check_circle : Icons.cloud_off;
+      icon = result!.online ? AppIcons.check_circle : AppIcons.cloud_off;
       color = result!.online ? colors.primary : colors.error;
       /*
        * ⚠️ 地址为空时，探测打的是**本机弹弹play（2080）**。
@@ -353,18 +354,18 @@ class _StatusLine extends StatelessWidget {
        * ⚠️ 这一支必须排在 saved.isNotEmpty 之前：用户可能存了值又手动清空
        *    输入框，那时该按「没填」处理。
        */
-      icon = Icons.info_outline;
+      icon = AppIcons.info_outline;
       color = colors.onSurfaceVariant;
       text = '未配置 —— 现在用的是本机弹弹play / 官方接口。'
           '填上 dan-api 地址后点「测试连接」。';
     } else if (saved.isNotEmpty) {
       // 存过但这次还没测 ⇒ 明说「已保存」，别让用户以为没生效
-      icon = Icons.bookmark_outline;
+      icon = AppIcons.bookmark_outline;
       color = colors.onSurfaceVariant;
       text = '已保存（未测试）：$saved';
     } else {
       // 填了地址但还没点测试（hasAddress=true 且什么都没测过）
-      icon = Icons.edit_outlined;
+      icon = AppIcons.edit_outlined;
       color = colors.onSurfaceVariant;
       text = '填好地址后点「测试连接」确认它能用。';
     }

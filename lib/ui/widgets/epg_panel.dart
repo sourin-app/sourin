@@ -55,6 +55,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/models.dart';
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 节目单面板 —— 「节目单」标题 + 骨架 / 空态 / 列表三态
 ///
@@ -113,7 +114,7 @@ class EpgPanel extends StatelessWidget {
             padding: const EdgeInsets.only(left: Sp.x2, bottom: Sp.x3),
             child: Row(
               children: [
-                Icon(Icons.schedule, size: 16, color: colors.onSurfaceVariant),
+                Icon(AppIcons.schedule, size: 16, color: colors.onSurfaceVariant),
                 const SizedBox(width: Sp.x2),
                 Text(
                   '节目单',
@@ -215,7 +216,7 @@ class _EpgEmpty extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.info_outline,
+              AppIcons.info_outline,
               size: 40,
               color: colors.onSurfaceVariant.withValues(alpha: 0.4),
             ),

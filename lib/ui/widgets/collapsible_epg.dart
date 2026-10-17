@@ -24,6 +24,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 class CollapsibleEpg extends StatefulWidget {
   const CollapsibleEpg({super.key, required this.child, this.autoExpand = true});
@@ -83,7 +84,7 @@ class CollapsibleEpgState extends State<CollapsibleEpg> {
             child: Row(
               children: [
                 Icon(
-                  _open ? Icons.expand_less : Icons.expand_more,
+                  _open ? AppIcons.expand_less : AppIcons.expand_more,
                   size: 18,
                   color: colors.onSurfaceVariant,
                 ),

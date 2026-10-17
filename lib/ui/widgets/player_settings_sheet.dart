@@ -70,6 +70,7 @@ import '../../core/app_log.dart';
 import '../../core/clip_download.dart';
 import '../tokens.dart';
 import 'app_dialog_section.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 一条可选轨道（字幕或音轨）
 ///
@@ -866,7 +867,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           const Spacer(),
           IconButton(
             onPressed: widget.onClose,
-            icon: Icon(Icons.close, color: _colors.onSurface),
+            icon: Icon(AppIcons.close, color: _colors.onSurface),
             tooltip: '关闭',
           ),
         ],
@@ -1086,7 +1087,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
             children: [
               OutlinedButton.icon(
                 onPressed: _subLoading.isEmpty ? _pickSubtitleFile : null,
-                icon: const Icon(Icons.subtitles_outlined, size: 18),
+                icon: const Icon(AppIcons.subtitles_outlined, size: 18),
                 label: Text(
                   _subLoading.isEmpty
                       ? '加载字幕文件…'
@@ -1107,7 +1108,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                 ),
                 IconButton(
                   onPressed: widget.onRemoveExternalSubtitle,
-                  icon: const Icon(Icons.delete_outline, size: 18),
+                  icon: const Icon(AppIcons.delete_outline, size: 18),
                   tooltip: '移除这条外挂字幕',
                 ),
               ],
@@ -1147,7 +1148,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
               alignment: Alignment.centerLeft,
               child: OutlinedButton.icon(
                 onPressed: widget.onOpenSubtitleSearch,
-                icon: const Icon(Icons.travel_explore, size: 18),
+                icon: const Icon(AppIcons.travel_explore, size: 18),
                 label: const Text('在线搜索字幕…'),
               ),
             ),

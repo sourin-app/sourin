@@ -13,6 +13,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'core/dlna/cast_manager.dart';
 import 'ui/cast/cast_button.dart';
+import './design/icons/app_icons.dart';
 
 void main() {
   runApp(const _ProbeApp());
@@ -158,7 +159,7 @@ class _CastProbePageState extends State<CastProbePage> {
             icon: _scanning
                 ? const SizedBox(
                     width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.search),
+                : const Icon(AppIcons.search),
           ),
         ],
       ),

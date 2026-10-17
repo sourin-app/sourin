@@ -46,14 +46,15 @@
 library;
 
 import 'package:material_ui/material_ui.dart';
+import '../../design/icons/app_icons.dart';
 
 
 /// 端点种类 —— 与 `DeclarativeSource.endpoints` 的四个键一一对应
 enum ComposerEndpoint {
-  categories('categories', '分类', Icons.category_outlined),
-  list('list', '列表', Icons.list_alt_outlined),
-  detail('detail', '详情', Icons.movie_outlined),
-  search('search', '搜索', Icons.search_outlined);
+  categories('categories', '分类', AppIcons.category_outlined),
+  list('list', '列表', AppIcons.list_alt_outlined),
+  detail('detail', '详情', AppIcons.movie_outlined),
+  search('search', '搜索', AppIcons.search_outlined);
 
   const ComposerEndpoint(this.key, this.label, this.icon);
 

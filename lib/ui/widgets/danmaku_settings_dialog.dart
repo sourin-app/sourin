@@ -69,6 +69,7 @@ import '../tokens.dart';
 import 'cover_image.dart';
 import 'app_dialog_shell.dart';
 import '../../design/widgets/app_icon_button.dart';
+import '../../design/icons/app_icons.dart';
 
 /// T27-01：弹幕面板文字统一灰阶 —— 全文件取色只走这里
 ///
@@ -852,7 +853,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// ══════════════════════════════════════════════════════════════
   /// ★★★ 为什么这里要多一个副标题（2026-10-09 · 缺陷 17 / Lead 裁决）
   /// ══════════════════════════════════════════════════════════════
-  /// 播放页底栏那枚 `Icons.tune` 按钮的 tooltip 改前是一长串：
+  /// 播放页底栏那枚 `AppIcons.tune` 按钮的 tooltip 改前是一长串：
   /// ```text
   /// '弹幕设置（AppId / 字号 / 透明度）'   <- player_page.dart 旧写法
   /// ```
@@ -1225,7 +1226,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                         strokeWidth: 2,
                       ),
                     )
-                  : const Icon(Icons.wifi_tethering, size: 18),
+                  : const Icon(AppIcons.wifi_tethering, size: 18),
               label: const Text('测试连接'),
             ),
             const SizedBox(width: Sp.x2),
@@ -1243,7 +1244,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.error_outline,
+              const Icon(AppIcons.error_outline,
                   size: 14, color: Colors.orangeAccent),
               const SizedBox(width: Sp.x2),
               Flexible(
@@ -1261,7 +1262,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         if (res == null && _probeCustomMessage == null && saved.isNotEmpty) ...[
           Row(
             children: [
-              const Icon(Icons.check_circle_outline,
+              const Icon(AppIcons.check_circle_outline,
                   size: 14, color: DanmakuTextColors.muted),
               const SizedBox(width: Sp.x2),
               Flexible(
@@ -1299,7 +1300,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Icon(
-          ok ? Icons.check_circle : Icons.error_outline,
+          ok ? AppIcons.check_circle : AppIcons.error_outline,
           size: 14,
           color: ok ? Colors.greenAccent : Colors.orangeAccent,
         ),
@@ -1833,11 +1834,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               ),
               decoration: InputDecoration(
                 hintText: '搜索屏蔽词（共 ${words.length} 个）',
-                prefixIcon: const Icon(Icons.search, size: 18),
+                prefixIcon: const Icon(AppIcons.search, size: 18),
                 suffixIcon: _blockSearch.text.isEmpty
                     ? null
                     : IconButton(
-                        icon: const Icon(Icons.close, size: 18),
+                        icon: const Icon(AppIcons.close, size: 18),
                         tooltip: '清除搜索',
                         onPressed: () => setState(_blockSearch.clear),
                       ),
@@ -1909,7 +1910,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                */
               labelStyle: const TextStyle(color: DanmakuTextColors.body),
               deleteIcon: const Icon(
-                Icons.close,
+                AppIcons.close,
                 size: 14,
                 color: DanmakuTextColors.secondary,
               ),
@@ -1986,7 +1987,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         const SizedBox(width: Sp.x1),
         IconButton(
           tooltip: '添加',
-          icon: const Icon(Icons.add, size: 20),
+          icon: const Icon(AppIcons.add, size: 20),
           onPressed: () {
             _addBlockWord(_blockWords.text);
             _blockWords.clear();
@@ -2084,7 +2085,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           children: [
             TextButton.icon(
               onPressed: s.loading ? null : widget.onReload,
-              icon: const Icon(Icons.refresh, color: DanmakuTextColors.body, size: 18),
+              icon: const Icon(AppIcons.refresh, color: DanmakuTextColors.body, size: 18),
               label: const Text(
                 '重新获取弹幕',
                 style: TextStyle(color: DanmakuTextColors.body),
@@ -2107,7 +2108,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               TextButton.icon(
                 onPressed: widget.onOpenBili,
                 icon: const Icon(
-                  Icons.play_circle_outline,
+                  AppIcons.play_circle_outline,
                   color: DanmakuTextColors.body,
                   size: 18,
                 ),
@@ -2188,7 +2189,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                           strokeWidth: 2,
                         ),
                       )
-                    : const Icon(Icons.search, size: 18),
+                    : const Icon(AppIcons.search, size: 18),
                 label: const Text('搜索'),
               ),
             ),
@@ -2271,7 +2272,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           TextButton.icon(
             onPressed: () => widget.onBatchBind!(s.searchResults),
             icon: const Icon(
-              Icons.playlist_add_check,
+              AppIcons.playlist_add_check,
               color: DanmakuTextColors.body,
               size: 18,
             ),
@@ -2334,7 +2335,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                         border: Border.all(color: DanmakuTextColors.border),
                       ),
                       child: const Icon(
-                        Icons.movie_outlined,
+                        AppIcons.movie_outlined,
                         size: 14,
                         color: DanmakuTextColors.muted,
                       ),
@@ -2355,7 +2356,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                                 Border.all(color: DanmakuTextColors.border),
                           ),
                           child: const Icon(
-                            Icons.movie_outlined,
+                            AppIcons.movie_outlined,
                             size: 14,
                             color: DanmakuTextColors.muted,
                           ),
@@ -2417,7 +2418,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       children: [
         Row(
           children: [
-            const Icon(Icons.info_outline, size: 18, color: DanmakuTextColors.muted),
+            const Icon(AppIcons.info_outline, size: 18, color: DanmakuTextColors.muted),
             const SizedBox(width: Sp.x2),
             Flexible(
               child: Text(
@@ -2450,7 +2451,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           const SizedBox(height: Sp.x3),
           FilledButton.icon(
             onPressed: () => widget.onHintAction!(a),
-            icon: const Icon(Icons.settings, size: 18),
+            icon: const Icon(AppIcons.settings, size: 18),
             label: Text(a.label),
           ),
         ],

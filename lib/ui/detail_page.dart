@@ -63,6 +63,7 @@ import 'widgets/cover_image.dart';
 import 'widgets/detail_raw_meta.dart';
 import 'widgets/provider_name.dart';
 import 'widgets/source_switch_dialog.dart';
+import '../design/icons/app_icons.dart';
 
 /// 播放请求（交给播放器页）
 ///
@@ -3048,7 +3049,7 @@ class _DetailPageState extends State<DetailPage> {
               alignment: Alignment.centerLeft,
               child: IconButton(
                 onPressed: () => Navigator.of(context).maybePop(),
-                icon: const Icon(Icons.chevron_left),
+                icon: const Icon(AppIcons.chevron_left),
                 tooltip: '返回',
               ),
             ),
@@ -4236,7 +4237,7 @@ class _Info extends StatelessWidget {
              */
             if (!localMode)
               _ToggleButton(
-                icon: isFav ? Icons.star : Icons.star_border,
+                icon: isFav ? AppIcons.star : AppIcons.star_border,
                 label: isFav ? '已收藏' : '收藏',
                 on: isFav,
                 onTap: onToggleFav,
@@ -4253,7 +4254,7 @@ class _Info extends StatelessWidget {
              */
             if (!localMode)
               _ToggleButton(
-                icon: following ? Icons.notifications : Icons.notifications_none,
+                icon: following ? AppIcons.notifications : AppIcons.notifications_none,
                 label: following ? '追更中' : '追更',
                 on: following,
                 onTap: onToggleFollow,
@@ -4318,7 +4319,7 @@ class _Info extends StatelessWidget {
                  *    否则又变成"第二处实现"（本仓反复踩过这个形态）。
                  */
                 icon: Icon(
-                  Icons.swap_horiz,
+                  AppIcons.swap_horiz,
                   size: 16,
                   color: _pillForeground(colors, on: false),
                 ),
@@ -4378,7 +4379,7 @@ class _Info extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  Icons.history,
+                  AppIcons.history,
                   size: 15,
                   color: colors.onSurfaceVariant,
                 ),
@@ -4682,7 +4683,7 @@ class _DownloadButton extends StatelessWidget {
         onPressed: () => unawaited(_openMenu(context)),
         // ★ 图标色与文字色取同一个构造（与 _ToggleButton 逐字同源）
         icon: Icon(
-          Icons.download_outlined,
+          AppIcons.download_outlined,
           size: 16,
           color: _pillForeground(colors, on: false),
         ),
@@ -4748,15 +4749,15 @@ class _LocalEpisodeRow extends StatelessWidget {
           if (checked != null) ...[
             Icon(
               checked!
-                  ? Icons.check_box_rounded
-                  : Icons.check_box_outline_blank_rounded,
+                  ? AppIcons.check_box_rounded
+                  : AppIcons.check_box_outline_blank_rounded,
               size: 18,
               color: checked! ? colors.primary : colors.onSurfaceVariant,
             ),
             const SizedBox(width: Sp.x2),
           ],
           Icon(
-            active ? Icons.play_circle_fill : Icons.movie_outlined,
+            active ? AppIcons.play_circle_fill : AppIcons.movie_outlined,
             size: 18,
             color: active ? colors.primary : colors.onSurfaceVariant,
           ),
@@ -4790,7 +4791,7 @@ class _LocalEpisodeRow extends StatelessWidget {
                     if (ref.watched) ...[
                       const SizedBox(width: Sp.x2),
                       // 已看标记：看过（不是当前在播）
-                      Icon(Icons.check_circle, size: 13, color: colors.primary),
+                      Icon(AppIcons.check_circle, size: 13, color: colors.primary),
                       const SizedBox(width: 3),
                       Text(
                         ref.watchRatio >= 0.995 ? '已看完' : '已看 ${(ref.watchRatio * 100).round()}%',
@@ -4894,7 +4895,7 @@ class _LocalRowDeleteButtonState extends State<_LocalRowDeleteButton> {
           iconSize: 16,
           onPressed: widget.onTap,
           icon: Icon(
-            Icons.delete_outline_rounded,
+            AppIcons.delete_outline_rounded,
             color: _hover ? colors.error : Colors.transparent,
           ),
         ),
@@ -5089,7 +5090,7 @@ class _ErrorView extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.error_outline, size: 48, color: colors.error),
+            Icon(AppIcons.error_outline, size: 48, color: colors.error),
             const SizedBox(height: Sp.x4),
             Text(
               '加载失败',

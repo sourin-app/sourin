@@ -180,6 +180,7 @@ import '../../core/app_log.dart';
 import '../../core/sourin_api.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  参数（可以调，但改了要重跑真机���数 —— 见文件头各段的实测依据）
@@ -1397,7 +1398,7 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
                */
               child: ActionChip(
                 onPressed: _pause,
-                avatar: Icon(Icons.pause, size: 14, color: colors.primary),
+                avatar: Icon(AppIcons.pause, size: 14, color: colors.primary),
                 label: Text(
                   '暂停',
                   style: TextStyle(fontSize: FontSizes.cap, color: colors.primary),
@@ -1564,7 +1565,7 @@ class _SpeedButton extends StatelessWidget {
                 ),
               )
             : Icon(
-                hasHistory ? Icons.speed : Icons.bolt,
+                hasHistory ? AppIcons.speed : AppIcons.bolt,
                 size: 15,
                 color: fg,
               ),
@@ -1805,7 +1806,7 @@ class _PluginSpeedTestAllButtonState extends State<PluginSpeedTestAllButton> {
               '${(widget.pluginIds.length / _allConcurrency).ceil() * 4} 秒）',
       child: OutlinedButton.icon(
         onPressed: empty ? null : _runAll,
-        icon: const Icon(Icons.speed, size: 16),
+        icon: const Icon(AppIcons.speed, size: 16),
         label: Text(widget.label),
       ),
     );
@@ -1849,7 +1850,7 @@ class PluginSpeedTestClearButton extends StatelessWidget {
                   );
                 }
               },
-        icon: const Icon(Icons.delete_sweep_outlined, size: 16),
+        icon: const Icon(AppIcons.delete_sweep_outlined, size: 16),
         label: const Text('清空测速记录'),
       ),
     );

@@ -28,6 +28,7 @@ import 'dart:io';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import './design/icons/app_icons.dart';
 
 void main() {
   // ⚠️ 必须在 runApp 之前初始化 media_kit 的原生层
@@ -364,7 +365,7 @@ class _SpikePageState extends State<SpikePage> {
                     }
                     _play('file:///$f', label: '本地 HEVC');
                   },
-                  icon: const Icon(Icons.folder_open, size: 18),
+                  icon: const Icon(AppIcons.folder_open, size: 18),
                   label: const Text('播本地 HEVC'),
                 ),
                 OutlinedButton(
@@ -435,7 +436,7 @@ class _SpikePageState extends State<SpikePage> {
                           IconButton(
                             onPressed: () => _player.playOrPause(),
                             icon: Icon(
-                                _playing ? Icons.pause : Icons.play_arrow),
+                                _playing ? AppIcons.pause : AppIcons.play_arrow),
                           ),
                           Expanded(
                             child: Slider(

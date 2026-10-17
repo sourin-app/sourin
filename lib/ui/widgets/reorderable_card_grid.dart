@@ -109,6 +109,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart' show Sp, FontSizes, FontWeights;
+import '../../design/icons/app_icons.dart';
 
 /// 卡片所在列的**最小宽度**（网格用它决定列数）
 ///
@@ -907,7 +908,7 @@ class _ReorderableCardGridState extends State<ReorderableCardGrid> {
     final grip = MouseRegion(
       cursor: SystemMouseCursors.grab,
       child:
-          Icon(Icons.drag_indicator, size: 20, color: colors.onSurfaceVariant),
+          Icon(AppIcons.drag_indicator, size: 20, color: colors.onSurfaceVariant),
     );
 
     return SizedBox(
@@ -981,7 +982,7 @@ class _ReorderableCardGridState extends State<ReorderableCardGrid> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.drag_indicator, size: 18, color: colors.primary),
+                  Icon(AppIcons.drag_indicator, size: 18, color: colors.primary),
                   const SizedBox(width: Sp.x2),
                   Flexible(
                     child: Text(

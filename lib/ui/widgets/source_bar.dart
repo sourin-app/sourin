@@ -24,6 +24,7 @@ import 'package:material_ui/material_ui.dart';
 import '../tokens.dart';
 import '../../core/sourin_api.dart';
 import '../../ui/app_palette.dart';
+import '../../design/icons/app_icons.dart';
 
 /// ★★★ 源条的**可见性判据** —— 照抄原版 `stores/app.ts` 的 `enabledProviders`
 ///
@@ -626,7 +627,7 @@ class _SourcePill extends StatelessWidget {
                 child: Tooltip(
                   message: brokenReason ?? '该源当前不可用',
                   child: Icon(
-                    Icons.error_outline,
+                    AppIcons.error_outline,
                     size: FontSizes.sm,
                     color: colors.error,
                   ),

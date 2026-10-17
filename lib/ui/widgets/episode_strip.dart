@@ -108,6 +108,7 @@ import '../tokens.dart';
 import 'motion_prefs.dart';
 import 'overlay_motion.dart';
 import '../../ui/app_palette.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 超过多少集才显示「展开」箭头（**只对手机/TV 生效**）
 ///
@@ -1005,7 +1006,7 @@ class _MoreButtonState extends State<_MoreButton> {
                 ),
                 const SizedBox(width: 4),
                 Icon(
-                  Icons.keyboard_arrow_down,
+                  AppIcons.keyboard_arrow_down,
                   size: 16,
                   color: colors.foreground,
                 ),
@@ -1655,7 +1656,7 @@ class _StripDrawer extends StatelessWidget {
               ),
               const Spacer(),
               _SheetIconButton(
-                icon: Icons.close,
+                icon: AppIcons.close,
                 tooltip: '关闭',
                 onTap: onClose,
               ),
@@ -2050,7 +2051,7 @@ class _EpisodeSheetState extends State<EpisodeSheet> {
               ),
               const Spacer(),
               _SheetIconButton(
-                icon: Icons.close,
+                icon: AppIcons.close,
                 tooltip: '关闭',
                 onTap: widget.onClose,
               ),
@@ -2333,12 +2334,12 @@ class _EpisodeSearchField extends StatelessWidget {
           fontSize: FontSizes.sm,
           color: colors.mutedForeground,
         ),
-        prefixIcon: Icon(Icons.search, size: 16, color: colors.mutedForeground),
+        prefixIcon: Icon(AppIcons.search, size: 16, color: colors.mutedForeground),
         prefixIconConstraints: const BoxConstraints(minWidth: 32),
         suffixIcon: controller.text.isEmpty
             ? null
             : IconButton(
-                icon: const Icon(Icons.clear, size: 15),
+                icon: const Icon(AppIcons.clear, size: 15),
                 tooltip: '清除',
                 onPressed: onClear,
                 padding: EdgeInsets.zero,

@@ -55,6 +55,7 @@ import 'tokens.dart';
 import 'widgets/fade_in_sliver.dart';
 import 'widgets/poster_card.dart';
 import 'widgets/settings_kit.dart';
+import '../design/icons/app_icons.dart';
 
 /// 一个命中源的结果组：(provider 标识, 源显示名, 该源返回的条目)
 ///
@@ -494,7 +495,7 @@ class SearchPageState extends State<SearchPage> {
                 child: Row(
                   children: [
                     Icon(
-                      Icons.search,
+                      AppIcons.search,
                       size: 18,
                       color: colors.onSurfaceVariant,
                     ),
@@ -544,7 +545,7 @@ class SearchPageState extends State<SearchPage> {
                     if (_controller.text.isNotEmpty)
                       IconButton(
                         onPressed: _clear,
-                        icon: const Icon(Icons.close, size: 16),
+                        icon: const Icon(AppIcons.close, size: 16),
                         tooltip: '清空',
                       ),
                     const SizedBox(width: Sp.x1),
@@ -568,7 +569,7 @@ class SearchPageState extends State<SearchPage> {
         if (_totalProviders == 0)
           const SliverToBoxAdapter(
             child: EmptyState(
-              icon: Icons.travel_explore_outlined,
+              icon: AppIcons.travel_explore_outlined,
               title: '当前没有支持搜索的内容源',
               hint: '某电视台官方无公开搜索接口。启用其它内容源后即可在这里一起搜索。',
             ),
@@ -953,7 +954,7 @@ class _SkippedList extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(Icons.error_outline, size: 14, color: colors.error),
+                Icon(AppIcons.error_outline, size: 14, color: colors.error),
                 const SizedBox(width: Sp.x2),
                 Text(
                   '${skipped.length} 个源未能返回结果',
@@ -1005,7 +1006,7 @@ class _NoResult extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => const EmptyState(
-        icon: Icons.search_off,
+        icon: AppIcons.search_off,
         title: '没有找到相关内容',
         hint: '换个关键词试试，或检查是否已启用对应内容源',
       );
@@ -1021,7 +1022,7 @@ class _IdleHint extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => const EmptyState(
-        icon: Icons.search,
+        icon: AppIcons.search,
         title: '搜索全部内容源',
         hint: '输入关键词后回车即可同时搜索',
       );

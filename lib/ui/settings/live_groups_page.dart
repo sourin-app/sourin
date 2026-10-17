@@ -16,6 +16,7 @@ import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 直播分组设置页
 ///
@@ -201,7 +202,7 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
             TextButton.icon(
               key: ValueKey('live-group-del-$name'),
               onPressed: () => _removeGroup(name),
-              icon: const Icon(Icons.delete_outline, size: 18),
+              icon: const Icon(AppIcons.delete_outline, size: 18),
               label: const Text('删除分组'),
             ),
           ],

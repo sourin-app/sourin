@@ -44,6 +44,7 @@ import '../widgets/app_toast.dart';
 import '../widgets/overlay_motion.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
+import '../../design/icons/app_icons.dart';
 
 class ThemeSettingsPage extends StatefulWidget {
   const ThemeSettingsPage({super.key});
@@ -671,14 +672,14 @@ class ThemeCard extends StatelessWidget {
                   if (selected)
                     Padding(
                       padding: const EdgeInsets.only(right: Sp.x1),
-                      child: Icon(Icons.check, size: 16, color: cs.primary),
+                      child: Icon(AppIcons.check, size: 16, color: cs.primary),
                     ),
                   if (onPreview != null)
                     ConstrainedBox(
                       constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                       child: InkWell(
                         onTap: onPreview,
-                        child: Icon(Icons.visibility_outlined,
+                        child: Icon(AppIcons.visibility_outlined,
                             size: 16,
                             color: selected
                                 ? cs.onSurfaceVariant.withValues(alpha: 0.55)
@@ -691,7 +692,7 @@ class ThemeCard extends StatelessWidget {
                       constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                       child: InkWell(
                         onTap: onDelete,
-                        child: Icon(Icons.close, size: 16, color: cs.onSurfaceVariant),
+                        child: Icon(AppIcons.close, size: 16, color: cs.onSurfaceVariant),
                       ),
                     ),
                 ],
@@ -1045,7 +1046,7 @@ class _Warning extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.info_outline, size: 16, color: cs.onErrorContainer),
+          Icon(AppIcons.info_outline, size: 16, color: cs.onErrorContainer),
           const SizedBox(width: Sp.x2),
           Expanded(
             child: Text(

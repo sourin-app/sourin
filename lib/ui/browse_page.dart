@@ -26,6 +26,7 @@ import '../core/sourin_api.dart';
 import 'tokens.dart';
 import 'widgets/fade_in_sliver.dart';
 import 'widgets/poster_card.dart';
+import '../design/icons/app_icons.dart';
 
 /// 浏览页（分类 / 榜单）
 class BrowsePage extends StatefulWidget {
@@ -583,7 +584,7 @@ class BrowsePageState extends State<BrowsePage> {
                 sliver: SliverFillRemaining(
                   hasScrollBody: false,
                   child: _EmptyBlock(
-                    icon: Icons.movie_outlined,
+                    icon: AppIcons.movie_outlined,
                     title: '这个分类暂无内容',
                   ),
                 ),
@@ -703,7 +704,7 @@ class BrowsePageState extends State<BrowsePage> {
         children: [
           IconButton(
             onPressed: () => Navigator.of(context).maybePop(),
-            icon: const Icon(Icons.chevron_left),
+            icon: const Icon(AppIcons.chevron_left),
             tooltip: '返回',
           ),
           const SizedBox(width: Sp.x2),

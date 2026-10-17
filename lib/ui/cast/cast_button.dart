@@ -29,6 +29,7 @@ import '../../core/dlna/cast_manager.dart';
 import '../tokens.dart';
 import '../widgets/overlay_motion.dart';
 import 'cast_device_sheet.dart';
+import '../../design/icons/app_icons.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  按钮
@@ -210,7 +211,7 @@ class _CastButtonState extends State<CastButton> {
             ),
           )
         : Icon(
-            active ? Icons.cast_connected : Icons.cast,
+            active ? AppIcons.cast_connected : AppIcons.cast,
             size: widget.iconSize,
           );
 
@@ -291,7 +292,7 @@ class _CastActiveSheetState extends State<_CastActiveSheet> {
             children: [
               Row(
                 children: [
-                  Icon(Icons.cast_connected, size: 20, color: colors.primary),
+                  Icon(AppIcons.cast_connected, size: 20, color: colors.primary),
                   const SizedBox(width: Sp.x3),
                   Expanded(
                     child: Column(
@@ -329,7 +330,7 @@ class _CastActiveSheetState extends State<_CastActiveSheet> {
                           Navigator.of(context)
                               .pop(playing ? 'pause' : 'resume'),
                       icon: Icon(
-                        playing ? Icons.pause : Icons.play_arrow,
+                        playing ? AppIcons.pause : AppIcons.play_arrow,
                         size: 18,
                       ),
                       label: Text(playing ? '暂停' : '继续'),
@@ -339,7 +340,7 @@ class _CastActiveSheetState extends State<_CastActiveSheet> {
                   Expanded(
                     child: OutlinedButton.icon(
                       onPressed: () => Navigator.of(context).pop('stop'),
-                      icon: const Icon(Icons.stop, size: 18),
+                      icon: const Icon(AppIcons.stop, size: 18),
                       label: const Text('停止投屏'),
                     ),
                   ),
@@ -413,7 +414,7 @@ class _CastStatusBarState extends State<CastStatusBar> {
         ),
         child: Row(
           children: [
-            Icon(Icons.cast_connected, size: 16, color: colors.primary),
+            Icon(AppIcons.cast_connected, size: 16, color: colors.primary),
             const SizedBox(width: Sp.x2),
             Expanded(
               child: Text(

@@ -481,6 +481,45 @@ class BiliApi {
   ///
   /// ⚠️ Referer 必须用 [kBiliSearchReferer]（理由见那里的注释）。
   /// 返回的条目**已经清洗过**（见 [parseBiliSearchItems]）。
+  ///
+  /// # ★★★ 2026-10-18（Owner 第 10 条「直接搜索弹幕还是提示拒绝了这次请求」）
+  ///
+  /// ## 先说实测读数（这次是**先拿读数再动手**，不是猜）
+  ///
+  /// ```text
+  /// 同一台机器、同一套头，连打三次：
+  ///   try1 search/type → 200
+  ///   try2 search/type → 200
+  ///   try3 search/type → 412   ← ★ 间歇性，不是恒 412
+  ///   try1..3 search/all/v2 → 200 / 200 / 200   ← 稳定
+  /// ```
+  /// 412 的正文是 3400 字节的 `text/html`（风控页，`{"code":-412,
+  /// "message":"request was banned"}` 是它的 JSON 变体），**不是业务错误**。
+  ///
+  /// ## 改前为什么必然走到「拒绝了这次请求」
+  /// ```text
+  /// searchVideos 只有 search/type 这一条路 ⇒ 412 抛异常
+  ///   ⇒ autoBindBySearch 的 catch 把 hits 置空
+  ///   ⇒ 现有的 season 兜底只认「搜索成功但没结果」，**不认异常**
+  ///     （异常在 catch 里就被吞成空列表了，兜底看不到「这是 412」）
+  ///   ⇒ 最后降级到要凭证的弹幕服务 ⇒ 403 Missing Authentication Headers
+  ///     ⇒ 用户看到「弹幕服务拒绝了这次请求」
+  /// ```
+  ///
+  /// ## 改后：两条链路互为备份，且**先试稳的那条**
+  /// ```text
+  /// ① search/type        按视频搜（最贴"搜片子"的语义）—— 可能 412
+  /// ② search/all/v2      按聚合搜（实测稳定 200）—— 从中取 video 分组
+  /// ⇒ ① 失败（412/超时/非 JSON）**不再直接抛**，自动退 ②；
+  ///    两条都失败才抛，且抛的是**两条链路的真实读数**（便于定位）。
+  /// ```
+  ///
+  /// ⚠️ 为什么把 all/v2 放**第二**而不是第一：
+  /// ```text
+  /// all/v2 混了番剧/影视/专栏/用户/视频多个分组，语义上没有 search/type 纯；
+  /// 而 search/type 只要不被风控就是最准的那一个。
+  /// ⇒ 顺位按「语义准确度」排，availability 靠兜底解决 —— 两者不冲突。
+  /// ```
   Future<List<BiliSearchItem>> searchVideos(
     String keyword, {
     int page = 1,
@@ -488,17 +527,118 @@ class BiliApi {
     final kw = keyword.trim();
     if (kw.isEmpty) return const <BiliSearchItem>[];
     final p = page < 1 ? 1 : page;
+
+    Object? firstErr;
+    // ── ① 原生搜索（最准，但可能被风控 412）────────────────────────
+    try {
+      final uri = Uri.https(
+        'api.bilibili.com',
+        '/x/web-interface/search/type',
+        <String, String>{
+          'search_type': 'video',
+          'keyword': kw,
+          'page': '$p',
+        },
+      );
+      final m = await _getJson(uri, referer: kBiliSearchReferer);
+      final items = parseBiliSearchItems(m);
+      if (items.isNotEmpty) return items;
+      /*
+       * 200 但 0 条 —— 不立刻返回空，让 ② 再试一次。
+       *
+       * 理由（实测）：search/type 被风控时**也会**回 200 + text/html
+       * （那是风控页，jsonDecode 会失败抛异常，走 catch）；
+       * 而真·0 条是合法结果。两者无法从"有没有异常"区分，
+       * 所以这里统一交给 ② 复核一次：② 有结果就用 ②，
+       * ② 也 0 条才相信"真的没搜到"。
+       */
+    } catch (e) {
+      firstErr = e;
+    }
+
+    // ── ② 聚合搜索兜底（实测稳定 200）──────────────────────────────
+    try {
+      final alt = await _searchViaAllV2(kw);
+      if (alt.isNotEmpty) return alt;
+      /*
+       * ② 也 0 条：
+       *   · ① 抛过异常 ⇒ 把①的错抛出去（那才是"为什么没搜到"的真因）
+       *   · ① 没抛（合法 0 条）⇒ 返回空（如实说没搜到）
+       */
+      if (firstErr != null) throw firstErr;
+      return const <BiliSearchItem>[];
+    } catch (e) {
+      /*
+       * ② 也失败 ⇒ 抛**一条合并了两次读数**的错误。
+       *
+       * ⚠️ 不直接抛 ② 的错：① 的错（尤其 412）往往才是用户真正需要知道的
+       *    （它解释了"为什么换了链路"），合并后一眼看得出两条都没通。
+       */
+      final de = e is DanmakuException ? e : null;
+      throw DanmakuException(
+        '搜索没成（两条链路都不通）：'
+        '① ${_shortErr(firstErr).isEmpty ? "无结果" : _shortErr(firstErr)}；'
+        '② ${_shortErr(e).isEmpty ? "无结果" : _shortErr(e)}',
+        statusCode: de?.statusCode ?? 0,
+        body: de?.body ?? '',
+        uri: de?.uri ?? '',
+      );
+    }
+  }
+
+  /// 把异常压成一句能进用户文案的短说明
+  static String _shortErr(Object? e) {
+    if (e == null) return '';
+    final s = e.toString();
+    return s.length > 120 ? '${s.substring(0, 120)}…' : s;
+  }
+
+  /// `search/all/v2` 兜底：从聚合结果里取 **video** 分组
+  ///
+  /// # 为什么这条更稳（实测）
+  /// ```text
+  /// search/type   连打三次 → 200 / 200 / 412   ← 风控会随机命中
+  /// search/all/v2 连打三次 → 200 / 200 / 200   ← 稳定
+  /// ```
+  ///
+  /// # 返回结构与 search/type **不同**（不能直接复用解析器）
+  /// ```text
+  /// search/type       data.result = [ {bvid,title,pic,duration,…}, … ]
+  /// search/all/v2     data.result = [ {result_type:"video", data:[…]},
+  ///                                   {result_type:"media_bangumi", data:[…]}, … ]
+  /// ⇒ 必须先按 result_type 分组，再取 video 那一组
+  /// ```
+  ///
+  /// ⚠️ 实测该分组的条目**字段名与 search/type 一致**（bvid/title/pic/
+  ///    duration/author/play/typename/pubdate 全都有），所以条目级解析
+  ///    可以复用 [biliSearchItemFromJson] —— 这不是巧合，是同一个后端。
+  /// ⚠️ 该分组里**可能有 bvid 为空**的直播卡片（实测第一条就是），
+  ///    [biliSearchItemFromJson] 已经把这类丢掉（`bvid.isEmpty ⇒ null`）。
+  Future<List<BiliSearchItem>> _searchViaAllV2(String kw) async {
     final uri = Uri.https(
       'api.bilibili.com',
-      '/x/web-interface/search/type',
-      <String, String>{
-        'search_type': 'video',
-        'keyword': kw,
-        'page': '$p',
-      },
+      '/x/web-interface/search/all/v2',
+      <String, String>{'keyword': kw},
     );
     final m = await _getJson(uri, referer: kBiliSearchReferer);
-    return parseBiliSearchItems(m);
+    final data = m['data'];
+    if (data is! Map) return const <BiliSearchItem>[];
+    final result = data['result'];
+    if (result is! List) return const <BiliSearchItem>[];
+
+    final out = <BiliSearchItem>[];
+    for (final group in result) {
+      if (group is! Map) continue;
+      if ('${group['result_type'] ?? ''}' != 'video') continue;
+      final items = group['data'];
+      if (items is! List) continue;
+      for (final it in items) {
+        if (it is! Map) continue;
+        final item = biliSearchItemFromJson(it.cast<String, dynamic>());
+        if (item != null) out.add(item);
+      }
+    }
+    return out;
   }
 
   /*

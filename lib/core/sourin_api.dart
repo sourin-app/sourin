@@ -3424,3 +3424,346 @@ class PluginDanmakuSendResult {
       );
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  播放失败的**用户可见文案** —— 净化 + 归因（Owner 第 6 / 7 条）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 这个模块解决的两件事
+//
+// ```text
+// 第 7 条  「就不要加上溯影自己的信息了，就只显示插件的报错信息就足够了」
+//          ⇒ 剥掉宿主加的包装前缀，只留插件原文
+//
+// 第 6 条  「要优化报错信息，现在不知道是源的问题还是软件本身的问题」
+//          ⇒ 把失败归到三类，并给出能照着做的下一步
+// ```
+//
+// # 为什么必须单独一层（而不是在 player_page 里各写一句 if）
+//
+// ```text
+// ① 赋值点有 9 处（_load / _startPlayback / _reload / 换源 / 换台 / 本地…），
+//    每处各写一份判定 ⇒ 必然漂（本仓已有「两处同构必须一起改」的教训）
+// ② 它是**纯函数**，可以脱离 UI 直接单测 —— 而 UI 层的判据只能靠渲染树间接验
+// ③ 归因结论与「怎么显示」分开：将来换 UI 只改渲染，不动判据
+// ```
+//
+// # ⚠️ 净化**只删宿主加的包装**，绝不删插件自己的话
+//
+// ```text
+// 删  SourinCoreException(other):    ← ffi.dart 的 toString 拼的
+// 删  插件报错:                       ← plugins/mod.rs 的 Other 分支包装
+// 留  该内容需要大会员…               ← ★ 插件原文，一个字都不动
+// ```
+// 判据见 [PlaybackErrorText.stripHostErrorNoise]：只削**开头**的已知前缀，
+// 中间出现的同名字样一律不碰（插件自己说的话里也可能有这些词）。
+
+/// 一次播放失败**归到哪一类**（决定给用户看什么、给什么按钮）
+///
+/// # 为什么要分类而不是一句话兜底
+///
+/// Owner 第 6 条的原话是「现在不知道是源的问题还是软件本身的问题」——
+/// 用户要的是**能判断该找谁**。几类失败的处置完全不同：
+/// ```text
+/// source     这个源没给可播地址   → 换源 / 换集（用户能自己解决）
+/// proxy      内置代理没起来       → 重试（软件侧，重试往往就好）
+/// decode     这个格式解不了       → 换线路（这条线路的编码本机解不了）
+/// permission 源站要会员/地区      → 换源（软件不绕过，也不该假装能修）
+/// network    源站限流/临时故障     → 等一会儿重试
+/// unknown    归不到上面任何一类   → 只显示原文，不猜
+/// ```
+enum PlaybackFailureKind {
+  /// 源解析失败：插件没返回可播地址 / 返回的地址本身不可用
+  source,
+
+  /// 内置代理没起来，或代理起来了但转发失败
+  proxy,
+
+  /// 取到了流，但本机解不了（编码/封装）
+  decode,
+
+  /// 源站明确要求会员 / 地区 / 版权
+  permission,
+
+  /// 源站限流 / 5xx / 超时
+  network,
+
+  /// 归不到任何一类
+  unknown,
+}
+
+/// 一次播放失败的**结构化描述**（UI 只读这个，不再自己解析字符串）
+class PlaybackFailure {
+  const PlaybackFailure({
+    required this.kind,
+    required this.detail,
+    this.canRetry = true,
+    this.canSwitchSource = true,
+  });
+
+  final PlaybackFailureKind kind;
+
+  /// 给用户看的**正文**（已净化：不含宿主前缀、不含内部代理地址）
+  final String detail;
+
+  /// 重试有没有意义（源站权限问题重试一万次都一样）
+  final bool canRetry;
+
+  /// 换源有没有意义（解码问题换源常常有用，代理问题重试更直接）
+  final bool canSwitchSource;
+
+  /// 一行「这是什么」（**用户可见文案**）
+  ///
+  /// ⚠️ 不许出现：宿主类名、内部代理地址、开发过程用语。
+  String get headline => switch (kind) {
+    PlaybackFailureKind.source => '这个源没有返回可播放地址',
+    PlaybackFailureKind.proxy => '内置代理没起来',
+    PlaybackFailureKind.decode => '这个格式解不了',
+    PlaybackFailureKind.permission => '这个内容需要源站会员，或不在当前地区',
+    PlaybackFailureKind.network => '源站暂时连不上',
+    PlaybackFailureKind.unknown => '播放失败',
+  };
+
+  /// 给用户的**下一步**（空串 = 没什么可说的，别硬凑）
+  String get nextStep => switch (kind) {
+    PlaybackFailureKind.source => '换一个源，或者换一集再试。',
+    PlaybackFailureKind.proxy => '点「重试」。如果一直这样，重启客户端。',
+    PlaybackFailureKind.decode => '换一条线路试试（右上角的线路列表）。',
+    PlaybackFailureKind.permission => '换一个源。这不是客户端能绕过的东西。',
+    PlaybackFailureKind.network => '等一会儿再点「重试」。',
+    PlaybackFailureKind.unknown => '',
+  };
+
+  @override
+  String toString() => 'PlaybackFailure(${kind.name}: $detail)';
+}
+
+/// 播放失败文案的净化与归因（**纯函数**，无副作用、可单测）
+class PlaybackErrorText {
+  const PlaybackErrorText._();
+
+  /// 宿主在错误消息外面套的已知前缀 —— **只削开头**，只削这些
+  ///
+  /// ```text
+  /// SourinCoreException(other):       ← lib/core/ffi.dart 的 toString()
+  /// SourinCoreException(network):     ← 同上（kind 不同）
+  /// 插件报错:                          ← rust/sourin_core/src/plugins/mod.rs 的 Other 包装
+  /// Exception:                        ← Dart 自带的裸包装
+  /// ```
+  ///
+  /// ⚠️ 顺序有讲究：先削 `SourinCoreException(...)` 再削 `插件报错:`，
+  ///    因为真实消息是「类名 + 插件报错: + 原文」这个嵌套顺序。
+  static final List<RegExp> _hostPrefixes = <RegExp>[
+    // SourinCoreException(kind):    —— 只认宿主自己的类名，别的 Exception 不动
+    RegExp(r'^SourinCoreException\s*\([^)]*\)\s*[:：]\s*'),
+    // 插件报错:                     —— plugins/mod.rs 的 Other 分支包装
+    RegExp(r'^插件报错\s*[:：]\s*'),
+    // 裸 Exception:                —— Dart 默认包装（仅当后面还有内容时）
+    RegExp(r'^Exception\s*[:：]\s*(?=\S)'),
+  ];
+
+  /// 剥掉**宿主加的**包装前缀，只留插件原文（Owner 第 7 条）
+  ///
+  /// # 判据
+  /// ```text
+  /// ① 只削**开头**：中间出现的同名字样一律不碰
+  ///    （插件自己说的话里也可能有「插件报错:」）
+  /// ② 反复削到不动为止：包装可能叠了两三层
+  ///    （实测真实消息 = 「SourinCoreException(other): 插件报错: 该内容需要大会员…」）
+  /// ③ 削完为空 ⇒ 退回原文（宁可显示一句带前缀的话，也不要显示空白）
+  /// ```
+  ///
+  /// ⚠️ 不做任何「翻译」/「改写」：留下的就是插件说的那句话。
+  ///    这是 Owner 的原话要求 —— 「只显示插件的报错信息就足够了」。
+  static String stripHostErrorNoise(String raw) {
+    var s = raw.trim();
+    if (s.isEmpty) return s;
+    // 最多削 5 轮（防御无限循环；正常只有 2 层）
+    for (var i = 0; i < 5; i++) {
+      final before = s;
+      for (final re in _hostPrefixes) {
+        s = s.replaceFirst(re, '').trim();
+      }
+      if (s == before) break;
+    }
+    return s.isEmpty ? raw.trim() : s;
+  }
+
+  /// 内部代理地址的**特征** —— 这类地址绝不能出现在用户可见文案里
+  ///
+  /// # 为什么是「环回地址 + /s/ 路径」
+  /// ```text
+  /// 用户看到的原文是：
+  ///   Failed to open http://127.0.0.1:57209/s/18df.../
+  /// 其中 127.0.0.1:<随机端口> 是**内置代理**，随进程退出就失效。
+  /// 把它显示给用户有三个问题：
+  ///   ① 用户看不懂，也无法据此判断是源的问题还是软件的问题（第 6 条原话）
+  ///   ② 那个端口事后无法回连，写进截图只会误导排查
+  ///   ③ 它暴露了内部实现（与本仓 CWE-532 同一条纪律）
+  /// ```
+  ///
+  /// ⚠️ 只用于**文案**：日志与 AppLog 照旧记完整地址（那是排查用的）。
+  static final RegExp _loopbackProxyUrl = RegExp(
+    r'https?://(?:127\.0\.0\.1|localhost|\[::1\]):\d+/s/\S*',
+    caseSensitive: false,
+  );
+
+  /// 把内部代理地址从**用户可见文案**里抹掉
+  ///
+  /// 替换成一句中性说明，而不是留空 —— 留空会让句子读起来像被截断了。
+  static String hideInternalUrls(String raw) {
+    if (raw.isEmpty) return raw;
+    var s = raw.replaceAll(_loopbackProxyUrl, '（内置代理地址）');
+    // 抹掉之后会剩下「Failed to open （内置代理地址）」这种英文尾巴，
+    // 整句替换成中文（**只认这一种已知形态**，别的英文原样留着）
+    s = s.replaceAll(
+      RegExp(r'Failed to open\s*（内置代理地址）\.?', caseSensitive: false),
+      '内置代理取不到这条流',
+    );
+    return s.trim();
+  }
+
+  /// 归因：把一条失败**归到几类之一**（第 6 条）
+  ///
+  /// # 判据全部来自**实测读数**（不是猜）
+  ///
+  /// ```text
+  /// 代理（B 类）—— 证据最硬，排最前
+  ///   · 「取流失败: error sending request for url (…)」
+  ///     实测：rust/sourin_core/src/streamproxy.rs 的 BAD_GATEWAY 正文
+  ///   · 「内置代理地址」（hideInternalUrls 的产物）
+  ///   · Connection refused / 连接被拒绝
+  ///
+  /// 源站权限（E 类，不绕过）
+  ///   · 原文含「大会员 / 会员 / VIP / 付费 / 地区 / 版权 / 无权」
+  ///   · 结构化 kind = unauthorized
+  ///
+  /// 源站限流（F 类）
+  ///   · 5xx / 超时 / 429 / 「稍后」/「限流」
+  ///
+  /// 解码（A 类）
+  ///   · mpv 的编解码错误原句（Could not open codec / Invalid data found /
+  ///     Failed to recognize file format / Unsupported / codec）
+  ///
+  /// 源解析（D 类）
+  ///   · 「没有可播放的地址」「无法路由」/ 候选列表为空
+  /// ```
+  ///
+  /// ⚠️ 判据顺序：**代理 → 权限 → 限流 → 解码 → 源**。
+  ///    代理排最前是因为那条 502 正文只有代理会产出；
+  ///    解码排在源前面，是因为「取到流但解不了」比「源没给地址」更具体。
+  static PlaybackFailure classify(
+    Object? error, {
+    String? kindHint,
+    bool hadCandidates = false,
+  }) {
+    final raw = error == null ? '' : error.toString();
+    final text = stripHostErrorNoise(hideInternalUrls(raw));
+    final lower = text.toLowerCase();
+
+    // ── ① 内置代理（B 类）────────────────────────────────────────
+    /*
+     * ★★★ 判据为什么只认「连不上代理」而不认「取流失败」
+     *
+     * 实测（`.probe/round65-c/samples_run4.log`）：
+     * ```text
+     * [streamproxy] IN token=18df5e319265 path=/s/…
+     * [streamproxy] UP send FAILED after 1072ms: error sending request for url (…)
+     * [streamproxy] OUT status=502 elapsed=1072ms
+     *          fetch → status=502 bytes=112 ct=text/plain
+     * ```
+     * 那条 502 的正文是 `取流失败: error sending request for url (…)`，
+     * 它是**代理活着、但上游连不上**（本例上游域名根本解析不出来）。
+     *
+     * ⇒ 把它归成「内置代理没起来」就是**第二次误归**：
+     *   代理明明是好的，坏的是那个源。这恰好重复了 Owner 抱怨的那件事
+     *   （「不知道是源的问题还是软件本身的问题」）。
+     * ⇒ 所以「取流失败」归 **source**，并明说「上游连不上」。
+     *
+     * 只有下面这些才是「代理这一层坏了」：
+     * ```text
+     * · 环回地址被拒（Connection refused）—— 代理进程没起/端口已死
+     * · hideInternalUrls 的产物「内置代理…」—— mpv 打不开代理地址
+     * ```
+     */
+    final proxyDown = lower.contains('内置代理') ||
+        lower.contains('connection refused') ||
+        lower.contains('连接被拒绝');
+    if (proxyDown) {
+      return PlaybackFailure(
+        kind: PlaybackFailureKind.proxy,
+        detail: text,
+        // 代理重启后重试通常就好；换源治不了代理
+        canSwitchSource: false,
+      );
+    }
+
+    /*
+     * 代理**活着**但上游连不上（实测 502 正文）—— 那是源的问题，不是软件的。
+     *
+     * ★ 单独一支，因为它与「源没给可播地址」的处置不同：
+     *   前者可以重试（上游可能只是抖了），后者换源才有用。
+     */
+    if (lower.contains('取流失败')) {
+      return PlaybackFailure(
+        kind: PlaybackFailureKind.source,
+        detail: text,
+      );
+    }
+
+    // ── ② 源站权限（E 类：只优化提示，不绕过）─────────────────────
+    const permWords = <String>[
+      '大会员', '会员', 'vip', '付费', '购买', '订阅',
+      '地区', '版权', '仅限', '无权', '没有权限', '权限不足',
+      '需要登录', '登录后', 'unauthorized',
+    ];
+    if (permWords.any(lower.contains) || kindHint == 'unauthorized') {
+      return PlaybackFailure(
+        kind: PlaybackFailureKind.permission,
+        detail: text,
+        // ★ 权限问题重试一万次都一样 —— 不给重试按钮是**诚实**
+        canRetry: false,
+      );
+    }
+
+    // ── ③ 源站限流 / 临时故障（F 类）─────────────────────────────
+    const netWords = <String>[
+      'timeout', '超时', 'timed out', '429', '502', '503', '504',
+      'too many requests', '稍后', '限流', 'temporarily',
+    ];
+    if (netWords.any(lower.contains) || kindHint == 'network') {
+      return PlaybackFailure(
+        kind: PlaybackFailureKind.network,
+        detail: text,
+      );
+    }
+
+    // ── ④ 解码（A 类）────────────────────────────────────────────
+    // 这几条是 libmpv 的原句，实测形态见本方法的文档
+    const decodeWords = <String>[
+      'could not open codec', 'unsupported', 'invalid data found',
+      'failed to recognize file format', 'no video', '解码',
+      'codec', '不支持的格式',
+    ];
+    if (decodeWords.any(lower.contains)) {
+      return PlaybackFailure(
+        kind: PlaybackFailureKind.decode,
+        detail: text,
+      );
+    }
+
+    // ── ⑤ 源解析（D 类）──────────────────────────────────────────
+    const srcWords = <String>[
+      '没有可播放的地址', '不可播', '无法路由', 'not found',
+      'no playable', '找不到', '解析',
+    ];
+    if (srcWords.any(lower.contains) || !hadCandidates) {
+      return PlaybackFailure(
+        kind: PlaybackFailureKind.source,
+        detail: text,
+      );
+    }
+
+    return PlaybackFailure(kind: PlaybackFailureKind.unknown, detail: text);
+  }
+}
+

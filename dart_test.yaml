@@ -108,3 +108,26 @@ tags:
   # 已经发生了，所以默认跳过，让 agent 显式指定输出目录。
   needs-shot-dir:
     skip: "默认跳过：截图自查工具，需要 SOURIN_SHOT_DIR 指定输出目录。手动跑见该测试文件头"
+
+  # ★ 依赖**真实外网**才能跑的探针
+  #
+  # 这些文件真发 HTTP 请求打外部站点（取真实搜索结果 / 真实弹幕），
+  # 断言的是「这条链路现在通不通」，**不是**产品逻辑。
+  #
+  # # 为什么必须默认跳过（2026-10-18 CI 实测）
+  # CI runner 出网受限。macOS job 实测 3795 通过 / 3 失败，
+  # 3 条全在这类探针上，失败形态是
+  # ```text
+  # Expected: not null
+  #   Actual: <null>
+  # season 兜底必须给出绑定
+  # ```
+  # 即「请求打不通 ⇒ 拿不到绑定」，与被测代码对错无关。
+  # 留在默认跑里 ⇒ CI 永远红，而红的原因不是代码坏了。
+  #
+  # # 用法
+  # ```powershell
+  # flutter test test/zz_t64_e2e_probe_test.dart --run-skipped --tags needs-network --concurrency=1
+  # ```
+  needs-network:
+    skip: "默认跳过：需要真实外网（CI runner 出网受限，请求打不通会红）。手动跑：flutter test <文件> --run-skipped --tags needs-network --concurrency=1"

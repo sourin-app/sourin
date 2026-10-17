@@ -1,3 +1,23 @@
+@Tags(['needs-network'])
+/*
+ * ⚠️ 2026-10-18（round-65）：补 `needs-network` 标签。
+ *
+ * 本文件是**真网络探针** —— 真发 HTTP 打外部站点，断言的是
+ * 「这条链路现在通不通」，不是产品逻辑。
+ *
+ * CI runner 出网受限 ⇒ 请求打不通 ⇒ 断言报
+ * ```text
+ * Expected: not null
+ *   Actual: <null>
+ * ```
+ * 与被测代码对错无关。实测 macOS job：3795 通过 / 3 失败，
+ * 3 条全是这一类。
+ *
+ * 手动跑：
+ * ```powershell
+ * flutter test <本文件> --run-skipped --tags needs-network --concurrency=1
+ * ```
+ */
 // 2026-10-17（task-32 ①）真实网络：**未绑定**作品走 Season 兜底能否拿到 cid
 //
 // ★ 与 zz_t64_bili_season_fallback_test.dart 的分工：

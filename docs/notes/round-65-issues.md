@@ -410,3 +410,151 @@ seek 次数从「每次移动」降到「每次拖动 1 次」。
 `docs/AGENTS.md` §3.5 已规定「所有弹窗必须走 AppDialogShell」，
 但 Owner 仍觉得难看。这说明**规范存在但样式本身不够好**，需要重新设计外壳视觉，
 不是「没走规范」。本轮未做，理由同 P2-3（设计类）。
+
+---
+
+## 批次 D（live-ux）：直播页分组/搜索/冷启动
+
+### ✅ 已修（有判据 + 故障注入）
+
+**P0-A：分组模型错误（Owner：「选择直播源，而不是直播源下的具体房间，这是错误的」）**
+
+改前 `live_source_groups` 存的是**源 id 列表** ⇒ 一个分组只能表达「这个源的全部频道」，
+而本机一个源有 20~48 个台。新增 `live_channel_groups`（v2，存 `{p,c}` 对），
+判据抽成顶层纯函数 `liveGroupAllowsChannel`（v2 优先、v1 兜底、空组不筛空）。
+两套键**共存**，老分组不静默失效，回退成本 = 删 v2 键。
+
+⚠️ 为什么必须 (provider, channelId) 成对：`LiveChannel.id` 只在源内唯一，
+实测本机两个源都有 id 形如 `1`/`2` 的频道 ⇒ 只存 channelId 会命中别的源。
+
+**P0-B：首次打开显示 0 个（真因不是"没有源"，是异常被吞）**
+
+`loadAll()` 的 `catch` 只 `debugPrint` ⇒ 核心未就绪时 `getLiveChannels()` 抛异常
+⇒ `_groups` 空 + `_loading=false` ⇒ 画成「没有可用的直播源」，把用户引向
+"去设置里启用源"（那条路对他的处境是错的）。
+
+修法：`LiveLoadPhase{loading,failed,empty,ready}` 三态分开，
+failed 给「重试」而不是配置建议；`failed` 优先于 `ready`（陈旧数据要明说）。
+
+**P0-C：第二次仍然慢（真的重复全量拉取）**
+
+`LivePage` 是保活页，但 shell 每次切到本页都调 `loadAll(keepSelection: true)`
+⇒ 又一次全量 `get_live_channels`（rust 侧逐个插件跑 JS）。
+修法：① `DiskCache` 磁盘快照先上屏（首帧就有列表）② `_inFlight` 重入保护
+③ 空结果不覆盖快照、快照里的台不自动起播（可能已下线）。
+
+**P0-D：无频道搜索、无分组入口**
+
+搜索框放页头（跨两栏），判据 `liveChannelMatchesQuery`（大小写不敏感、
+同时匹配频道名与源名、**有意不做拼音**）。搜索是四维 AND 的**最后**一道。
+分组管理入口已在直播页工具栏（Owner 第 12 条第 ② 半）。
+
+**P1-A：分组编辑 UI 从「选源」改成「选频道」**
+
+按源分块（源名做不可点的小标题），块内每个频道一颗 FilterChip（带对勾）。
+"全选某个源"作为快捷方式保留。组内搜索（100+ 台时必需）。
+管理器宽度 560 → 820（逐频道勾选需要横向空间）。
+
+⚠️ **保存按钮必须放外壳的 `actions:`**，不能放内容 Column 末尾 ——
+内容区是 `SingleChildScrollView`，组一大按钮就被推出滚动区（实测 y=633/1057
+超出 600 视口，tap 打空；真实用户则是**滚不到保存**）。
+
+**P1-B：设置页也支持逐频道勾选**
+
+数据源是**磁盘快照**（`DiskCache` 读文件，**零 FFI**）——
+老注释说"本页不能读本机源列表（要走 FFI，核心不可用时整页打不开）"，
+那条约束仍成立，但结论不必是"只能手输"：直播页已经把快照落盘了。
+无快照（第一次装 / 还没进过直播页 / flutter test）⇒ 回落手输源 id。
+
+### ⚠️ 未验（本批最大缺口，必须如实说）
+
+```text
+· **没有真机截图**。所有界面结论来自 widget 测试的渲染树，不是像素。
+  ⇒ 逐频道勾选在 820px 里的**视觉密度**、100+ 胶囊时的滚动体验，均未实测。
+· **没有冷启动计时读数**（Owner 问的"等了好久"到底几秒）。
+  结构上不再等全量，但**不许**声称"快了 X%"。
+· 磁盘快照的**命中**未在真实数据目录上验过（测试里走的是 DiskCache
+  未初始化分支 ⇒ 恒返回 null）。真机是否真命中、命中后是否真的一帧就有，无证据。
+· 设置页两条编辑路径（逐频道 / 手输）之间切换时数据是否始终一致，未测。
+```
+
+### 事故记录：我误 stash 了队友的改动（已恢复）
+
+核实"全仓 16 条红是否与本次有关"时，我跑了 `git stash` ——
+它把**并行批次 B 正在改的 danmaku 文件**一起收走了。已逐文件恢复：
+
+```text
+· lib/core/danmaku.dart 的 worktree 版本（3361 行）比 stash 版本（2830 行）**新**
+  ⇒ 队友在我 stash 期间又改过 ⇒ 我**没有**覆盖它（只从 stash 取了另外 4 个文件）
+· 另外 4 个（danmaku_settings_dialog / 三个 danmaku 测试）已按 stash 恢复
+```
+
+**教训**：这个仓库是**多 agent 共享工作树**，`git stash` / `git checkout --` 这类
+"全树操作"**永远**会波及别人。以后核实基线只能用 `git worktree add` 建独立树，
+或 `git stash push -- <我的文件>` 显式列路径。
+
+---
+
+### ✅ P2-5：第 6 条（错误归类）实现完整，但**全仓零测试**
+
+**发现**：`lib/core/sourin_api.dart` 的 `PlaybackErrorText` 三件事全做了：
+```text
+stripHostErrorNoise   剥 SourinCoreException(...) / 插件报错: / Exception:
+hideInternalUrls      藏 127.0.0.1:<随机端口> 内部代理地址
+classify              六类归因 + canRetry / canSwitchSource
+```
+但 `grep -rln "PlaybackErrorText" test/` **零命中**。
+⇒ 有人重构掉它，界面立刻退回「Failed to open 127.0.0.1:xxxxx」，没人会知道。
+
+**决策**：补 19 条门禁。故障注入（让 `hideInternalUrls` 直接返回原文）⇒ 2 条变红。
+
+**我自己写错了两次断言，被实测纠正**（值得记）：
+```text
+① 我断言「会员限制 ⇒ canSwitchSource=false」，实测 true。
+   实现是对的：换源可能有用（另一个源可能不限制），但重试没用
+   ⇒ 改钉 canRetry=false。
+② 我把「取流失败」当 proxy，实测归 source。
+   实现注释里有实测日志：代理活着、上游域名解析失败、502 是上游的。
+   归给代理就重复了 Owner 抱怨的那个误判 ⇒ 改钉 source。
+```
+两条都写进测试注释，避免后人重犯。
+
+---
+
+### 🟡 P2-6：构建被**孤儿进程**锁住（跨 teammate 阻塞，已解）
+
+**发现**：`playback-fix` 报告 `flutter build windows --release` 失败，
+`MaterialIcons-Regular.otf` 无法拷贝（Invalid argument / Permission denied）。
+它列了两个候选 PID，说「不是我的，按纪律不动别人的进程」。
+
+**我核实的过程**（没有盲杀）：
+```text
+PID 27976  22:42:38  build/.../Release/sourin_spike.exe
+  → 父进程 7964 **已不存在** ⇒ 孤儿进程，已跑 2 小时
+  → 确认后 kill，输出 KILLED
+
+PID 964    00:48:31  .probe/t65d-run/sourin_spike.exe
+  → 我查的时候**已经不存在**（自己退的）
+
+PID 30180  00:52:04  .probe/t65d-run/sourin_spike.exe
+  → live-ux 刚起的探针，不在 build 目录里，**不影响构建** ⇒ 没动
+```
+
+**决策**：只杀确认的孤儿。核实方法写在这里，供后用：
+「先看父进程是否还在 —— 父进程已退出的 GUI 进程就是孤儿，杀了是清理不是破坏。」
+
+---
+
+### 🟡 P2-7：第 10 条（搜索弹幕被拒）根因是**源站随机风控**，不是代码一直写错
+
+**发现**（playback-fix 实测，我认可）：
+```text
+search/type    连打三次：200 / 200 / 412   ← 风控随机命中
+search/all/v2  连打三次：200 / 200 / 200   ← 稳定
+```
+
+**判断**：Owner 说「反反复复搞了多少遍了」——真相是那条路径本身不稳定，
+不完全是代码一直写错。已加兜底接口，真网络复测每次回 17~20 条。
+
+**这条要在最终汇报里明说**：不是「终于修对了」，而是「找到了不稳定的那条路
+并绕开它」。两者的区别对 Owner 有意义。

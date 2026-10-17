@@ -243,8 +243,15 @@ void main() {
        */
       final entry = _page.substring(
           _page.indexOf('MoreMenuEntry? get castEntry'), iPageEnd);
-      expect(entry.contains('icon: Icons.cast'), isTrue,
-          reason: '★ 菜单项需要一个图标；用 Icons.cast 是对的');
+      /*
+       * ⚠️ 2026-10-18（round-65 E2）：`Icons.cast` → `AppIcons.cast`。
+       *    E2 把全仓 163 处 `Icons.*` 换成自建 `AppIcons.*`（摘 material_ui 依赖）。
+       *    ★ 修这条时还发现 AppIcons 漏抄了 `matchTextDirection`，
+       *      导致 `AppIcons.x == Icons.x` 为 false —— 已一并修好
+       *      （见 lib/design/icons/app_icons.dart 与 90b0c8f 的提交说明）。
+       */
+      expect(entry.contains('icon: AppIcons.cast'), isTrue,
+          reason: '★ 菜单项需要一个图标；用 AppIcons.cast 是对的');
       // 弹幕设置同样只在菜单里
       expect(_page.contains("label: '弹幕设置'"), isTrue,
           reason: '★ 弹幕设置应当也在「更多」浮层里（与投屏同组）');

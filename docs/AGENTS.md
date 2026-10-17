@@ -217,6 +217,19 @@ flutter analyze lib            # 0 error；不要新增 warning
 - 与代码矛盾或过期属**实质性不合规** ⇒ 停下来先修文档，再动代码。
 - 地图见 [README.md](README.md)（本目录）；决策记 [DECISIONS.md](DECISIONS.md)；
   发版排障记 [RUNBOOK.md](RUNBOOK.md)。
+- **决策分两层，别记错地方**：
+
+  | 记什么 | 写哪 |
+  |---|---|
+  | 路线级选型（技术栈 / 流程 / 门禁哲学），带「何时该翻案」 | [DECISIONS.md](DECISIONS.md) |
+  | 单次改动的实现取舍（为什么这么做、放弃了哪条路） | `.agents/notes/{proposed,implemented,rejected}/<class>/yyyy-mm-dd-主题.md` |
+
+  **必须写笔记**：改了行为 / 架构 / 跨文件契约 / 流程与工具链 / 测试策略 /
+  落盘、网络、配置格式。**免写**：格式化、错别字、改名、不改行为的样式与依赖补丁、
+  常规 CRUD。判不准时从严。
+  `class` 是封闭集 6 个：`feature` / `bug-fix` / `simplification` / `architecture` /
+  `process` / `testing`（`refactor` 不单列）。笔记树**进仓库**，与代码同批提交。
+  校验：`npx tsx <skill>/scripts/verify-agent-note-{tree,format}.ts`。
 
 ---
 

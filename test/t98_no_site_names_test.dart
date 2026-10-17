@@ -299,12 +299,28 @@ const List<String> _skipDirs = <String>[
    * 表现为"莫名其妙多出一堆站名违规"，而真因是扫描范围错了。
    *
    * ⇒ 加到 `.gitignore` 只是第二道保险；**第一道必须是这个白名单**。
+   *
+   * ★★ 2026-10-17 收窄：原来是整目录跳过 `.agents`，现在**只跳过 `.agents/worktrees/`**。
+   *    原因：决策笔记树 `.agents/notes/` 已进仓库（见 .agents/notes/implemented/process/
+   *    2026-10-17-agent-notes-in-repo.md），它是**会被发布的文本**。
+   *    整目录跳过的效果是"笔记里写站名永远扫不到" —— 那是覆盖漏洞，不是豁免。
+   *    ⚠️ 跳过项因此必须按**路径**而不是按**名字**表达，见 _skipRelDirs。
    */
-  '.agents',
   '.claude',
   '.local',
   '.probe_i12',
   '.probe_i56',
+];
+
+/// 跳过的目录（按**仓库相对路径前缀**匹配，`/` 结尾 = 整棵子树）。
+///
+/// ★ 与 [_skipDirs] 的区别：那些按目录**名**匹配，跨层级生效；
+///   这里按**位置**匹配，只挡住指定的那一棵子树。
+///   笔记树放行后，`.agents` 下就同时存在"该扫的"（notes/）与"不该扫的"（worktrees/），
+///   按名字已经表达不了这个区别。
+const List<String> _skipRelDirs = <String>[
+  // worktree 里的基线副本是同一份源码的第二份，扫进来就是重复命中（见上）。
+  '.agents/worktrees/',
 ];
 
 /// 扫描 [text]，返回命中的 (词, 说明)
@@ -352,18 +368,25 @@ bool _isExempt(String rel) {
 /// 收集仓库里要扫的文件（相对路径）
 List<String> collectFiles(Directory root) {
   final out = <String>[];
+  String relOf(String path) => path
+      .replaceAll(root.path, '')
+      .replaceAll(RegExp(r'^[\\/]+'), '')
+      .replaceAll('\\', '/');
+
   void walk(Directory d) {
     for (final e in d.listSync(followLinks: false)) {
       final name = e.uri.pathSegments.where((s) => s.isNotEmpty).last;
       if (e is Directory) {
         if (_skipDirs.contains(name)) continue;
+        // ★ 按**相对路径**跳过的子树（见 _skipRelDirs 的注释）。
+        //   匹配口径统一成 `rel + '/'`，这样 `.agents/worktrees/` 既能挡住
+        //   目录本身，也不会误伤 `.agents/worktrees-backup/` 这类兄弟目录。
+        final relDir = '${relOf(e.path)}/';
+        if (_skipRelDirs.any((p) => relDir.startsWith(p))) continue;
         walk(e);
       } else if (e is File) {
         if (!_scanned.any(name.endsWith)) continue;
-        final rel = e.path
-            .replaceAll(root.path, '')
-            .replaceAll(RegExp(r'^[\\/]+'), '');
-        out.add(rel);
+        out.add(relOf(e.path));
       }
     }
   }
@@ -540,5 +563,34 @@ void main() {
     );
     // 阳性对照：确认"换行本身"不是唯一原因 —— 同一段不换行也要命中
     expect(scanForBanned('这是 B站 的内容').isNotEmpty, isTrue);
+  });
+
+  test('★★★ 笔记树在扫描范围内，worktree 副本仍在范围外', () {
+    /*
+     * # 这条防的是什么（2026-10-17）
+     *
+     * 决策笔记树 `.agents/notes/` 进了仓库 ⇒ 它是**会被发布的文本**。
+     * 原来的扫描器整目录跳过 `.agents`，效果是"笔记里写站名永远扫不到"。
+     * 收窄为「只跳过 `.agents/worktrees/`」之后，必须证明两件事同时成立：
+     *   ① `.agents/notes/` 下的文件**真的被收集到**（否则收窄没生效）；
+     *   ② `.agents/worktrees/` 下的文件**仍然不被收集**（否则 worktree 污染复现）。
+     *
+     * ★ 反面：把 `_skipRelDirs` 删空 ⇒ ② 红；把 `.agents` 加回 `_skipDirs` ⇒ ① 红。
+     *   两个方向都能变红，所以这条不是恒真。
+     */
+    final root = Directory.current;
+    final files = collectFiles(root).map((p) => p.replaceAll('\\', '/')).toList();
+
+    // ① 笔记树必须在范围内
+    final notes = files.where((p) => p.startsWith('.agents/notes/')).toList();
+    expect(notes, isNotEmpty,
+        reason: '★★★ 一条笔记都没被收集 ⇒ `.agents` 又被整目录跳过了，'
+            '笔记里的站名将永远扫不到（覆盖漏洞）');
+
+    // ② worktree 副本必须仍在范围外
+    final wt = files.where((p) => p.startsWith('.agents/worktrees/')).toList();
+    expect(wt, isEmpty,
+        reason: '★★ worktree 里的基线副本被扫进来了 ⇒ 同一份源码两份命中，'
+            '表现为"莫名其妙多出一堆站名违规"');
   });
 }

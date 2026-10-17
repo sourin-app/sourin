@@ -233,6 +233,85 @@ class UiPrefs {
   }
 
   // ══════════════════════════════════════════════════════════════════
+  //  ★★★ 直播分组 v2：按**频道**而不是按源
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // # 为什么必须换模型（Owner 原话）
+  // ```text
+  // > 我要的是自建分组可以选择直播源下的具体的直播的房间，而不是选择直播源
+  // > 这是错误的
+  // ```
+  // v1（[liveSourceGroupsKey]）的成员是**源 id**，一个分组只能表达
+  // 「这个源的全部频道」—— 而直播源动辄 20~48 个台，用户想挑的是其中几个。
+  //
+  // # 为什么是**新增一个键**而不是原地改格式
+  // ```text
+  // ① 用户机器上已经有 v1 数据（真实 ui-prefs.json 里就有）。
+  //    原地改格式 ⇒ 老数据解析失败 ⇒ 用户分组**静默消失**。
+  // ② 两个键可以**共存**：读的时候 v2 优先、v1 兜底（见
+  //    `lib/ui/live_page.dart` 的 `resolveLiveGroupMembers`）。
+  //    ⇒ 老分组照旧能用，用户在新界面里改一次就自然升级成 v2。
+  // ③ 回退成本 = 删掉 v2 的键，v1 原样还在（不破坏性）。
+  // ```
+
+  /// 存储键：按**频道**分组的直播分组
+  ///
+  /// 值形如 `{"常看": [{"p":"<源 id>","c":"<频道 id>"}, …]}`
+  /// ⚠️ 用占位符而不是真实台名做例子 —— 仓库有站名/台名门禁（t98），
+  ///    注释里的举例也算命中。
+  static const liveChannelGroupsKey = 'live_channel_groups';
+
+  /// 读全部「按频道」分组：分组名 → 频道引用列表
+  ///
+  /// # 契约（与 [liveSourceGroups] 同一套纪律）
+  /// ```text
+  /// · 没存过 / 整份是垃圾 ⇒ **空 Map**（不是 null）
+  /// · 逐键宽松：某个组坏了只丢那个组，不让整份作废
+  /// · 逐项宽松：某个频道引用坏了只丢那项（手改坏一个字符不会清空分组）
+  /// · 顺序保留（组的顺序 / 组内频道的顺序都有意义）
+  /// ```
+  static Map<String, List<LiveChannelRef>> liveChannelGroups() {
+    final raw = _data[liveChannelGroupsKey];
+    if (raw == null || raw.isEmpty) return <String, List<LiveChannelRef>>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return <String, List<LiveChannelRef>>{};
+      final out = <String, List<LiveChannelRef>>{};
+      decoded.forEach((k, v) {
+        if (k is! String || k.isEmpty) return;
+        if (v is! List) return;
+        final members = <LiveChannelRef>[];
+        for (final e in v) {
+          final ref = LiveChannelRef.tryParse(e);
+          if (ref != null) members.add(ref);
+        }
+        out[k] = members;
+      });
+      return out;
+    } catch (e) {
+      debugLog('直播频道分组解析失败（按空处理，不炸）: $e');
+      return <String, List<LiveChannelRef>>{};
+    }
+  }
+
+  /// 写全部「按频道」分组（整体覆盖）
+  ///
+  /// ⚠️ 传空 Map = **清除键**（同 [setLiveSourceGroups]：不留垃圾键）。
+  static void setLiveChannelGroups(Map<String, List<LiveChannelRef>> groups) {
+    if (groups.isEmpty) {
+      remove(liveChannelGroupsKey);
+      return;
+    }
+    set(
+      liveChannelGroupsKey,
+      jsonEncode({
+        for (final e in groups.entries)
+          e.key: [for (final r in e.value) r.toJson()],
+      }),
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════
   //  自建弹幕服务地址（T3 · dan-api 调研落地）
   // ══════════════════════════════════════════════════════════════════
 
@@ -304,6 +383,66 @@ class UiPrefs {
       set(danmakuTokenKey, token.trim());
     }
   }
+}
+
+/// 指向一个**具体直播频道**的引用（源 id + 频道 id）
+///
+/// # 为什么需要 `provider` 这一维
+/// ```text
+/// `LiveChannel.id` 只在**同一个源内**唯一：
+///   实测本机两个直播源都有 id 形如 `1` / `2` 的频道
+/// ⇒ 只存频道 id ⇒ 分组会命中**别的源**的同名频道（用户没选过的台）。
+/// ⇒ 必须 (provider, channelId) 成对存。
+/// ```
+///
+/// # 为什么不直接存 `LiveChannel` 对象
+/// ```text
+/// `LiveChannel` 还有 name / logo / group / now_playing —— 那些是**源给的
+/// 实时数据**，会变（改名、换台标）。存进偏好里会立刻过期，
+/// 而且用户换了源之后那份快照就成了假信息。
+/// ⇒ 偏好只存**身份**（两个 id），名字等展示信息一律现取。
+/// ```
+///
+/// ⚠️ 这个类**不依赖 Flutter**（本文件整体如此）⇒ 可直接单测。
+class LiveChannelRef {
+  const LiveChannelRef(this.provider, this.channelId);
+
+  /// 源 id（`LiveGroup.provider`）
+  final String provider;
+
+  /// 频道 id（`LiveChannel.id`，**只在 [provider] 内唯一**）
+  final String channelId;
+
+  /// 序列化形态：`{"p": "...", "c": "..."}`
+  ///
+  /// ★ 用短键（p / c）而不是 provider / channelId：这个键会在用户的
+  ///   ui-prefs.json 里出现很多次（一个组几十个频道），短键省一半体积。
+  Map<String, String> toJson() => {'p': provider, 'c': channelId};
+
+  /// 宽松解析：认不出来 ⇒ null（调用方**跳过这一项**，不让整份作废）
+  static LiveChannelRef? tryParse(Object? raw) {
+    if (raw is! Map) return null;
+    final p = raw['p'];
+    final c = raw['c'];
+    if (p is! String || p.isEmpty) return null;
+    if (c is! String || c.isEmpty) return null;
+    return LiveChannelRef(p, c);
+  }
+
+  /// 稳定字符串（用于去重 / 做 Widget key）
+  String get key => '$provider\u0000$channelId';
+
+  @override
+  bool operator ==(Object other) =>
+      other is LiveChannelRef &&
+      other.provider == provider &&
+      other.channelId == channelId;
+
+  @override
+  int get hashCode => Object.hash(provider, channelId);
+
+  @override
+  String toString() => '$provider/$channelId';
 }
 
 /// 轻量日志（这个文件不依赖 Flutter，所以用 print）

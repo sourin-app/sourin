@@ -62,6 +62,8 @@ import 'package:flutter/services.dart'
 import 'package:material_ui/material_ui.dart';
 
 import '../core/device.dart';
+// ★★★ 第 65 轮批次 D：冷启动磁盘快照（第二次打开秒开，见 `_hydrateFromCache`）
+import '../core/disk_cache.dart';
 // ★【C】需要 `Episode`（把频道映射成"选集项"装进 EpisodePanel）
 //   ⚠️ 不单独 import `../core/models.dart` —— `sourin_api.dart` 已经
 //      re-export 了它（analyze 会报 unnecessary_import）
@@ -162,6 +164,163 @@ bool liveGroupContainsSource(
 ) =>
     (allGroups[group] ?? const <String>[]).contains(provider);
 
+// ═══════════════════════════════════════════════════════════════════════
+//  ★★★ 第 65 轮批次 D：分组成员 = **频道**（不再是源）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # Owner 原话（这是本批的核心）
+// ```text
+// > 我要的是自建分组可以选择直播源下的具体的直播的房间，而不是选择直播源
+// > 这是错误的
+// ```
+//
+// # 为什么判据必须是**顶层纯函数**
+// ```text
+// 与 `applyLiveSourceGroup` 同一个理由（见它的注释）：`LivePage._groups`
+// 只由 FFI 填，`flutter test` 里恒为空 ⇒ 整页层面喂不进数据。
+// ⇒ 唯一能在测试里真跑判据的形态，就是把判据抽成纯函数。
+// ```
+
+/// 一个分组当前解析出的**频道成员**（v2 数据）
+///
+/// 返回 `null` = 这个组**没有** v2 数据 ⇒ 调用方该回落到 v1（按源）语义。
+///
+/// ★ 为什么用 `null` 而不是空列表表达"没有 v2 数据"：
+/// ```text
+/// 「用户把这个组清空了」（空列表，语义是**空组**）
+/// 与「这个组还是老格式」（null，语义是**还没升级**）
+/// 是**两件事**。合并成同一个值 ⇒ 用户清空的分组会突然变成"看全部源"，
+/// 看起来像分组功能坏了。
+/// ```
+List<LiveChannelRef>? liveChannelGroupMembers(
+  Map<String, List<LiveChannelRef>> groups,
+  String group,
+) =>
+    groups[group];
+
+/// ★★★ 分组筛选的**唯一判据**：一个频道该不该出现在当前分组里
+///
+/// # 语义（四条，逐条对应 Owner 的要求）
+/// ```text
+/// ① group == null（「全部分组」）⇒ **全部放行**（逐字等于不做分组筛选）
+/// ② 该组有 v2 数据（用户逐频道选过）
+///      ⇒ 只放行**被勾选的**频道（按 provider + channelId 两个 id 匹配）
+/// ③ 该组**没有** v2 数据、但有 v1 数据（老格式，按源分组）
+///      ⇒ 回落到「这个源的全部频道」（老分组照旧能用，不静默失效）
+/// ④ 该组两个都没有 / 是空组
+///      ⇒ **全部放行**（绝不筛成空 —— 与 [applyLiveSourceGroup] 同一条兜底）
+/// ```
+///
+/// ★ 为什么 ④ 是"全部放行"而不是"空"：
+/// ```text
+/// 把列表筛空 = 用户看到「直播页坏了」。他此刻的意图只是"少看点台"，
+/// 宁可多显示也不能给他一片空白。这条与 v1 的兜底**同源**，
+/// 且已经被 `t134` 钉住过（"组里的源全都不可见了 ⇒ 返回全部"）。
+/// ```
+bool liveGroupAllowsChannel(
+  Map<String, List<LiveChannelRef>> channelGroups,
+  Map<String, List<String>> sourceGroups,
+  String? group,
+  String provider,
+  String channelId,
+) {
+  if (group == null) return true;
+
+  final v2 = channelGroups[group];
+  if (v2 != null && v2.isNotEmpty) {
+    for (final r in v2) {
+      if (r.provider == provider && r.channelId == channelId) return true;
+    }
+    return false;
+  }
+
+  // ② 没 v2（或 v2 是空组）⇒ 回落到 v1「按源」
+  final v1 = sourceGroups[group];
+  if (v1 != null && v1.isNotEmpty) {
+    return v1.contains(provider);
+  }
+
+  // ③ 两个都没有 / 空组 ⇒ 全部放行（绝不筛成空）
+  return true;
+}
+
+/// ★★★ 频道搜索：跨源按**频道名**匹配（Owner 新增要求）
+///
+/// # Owner 原话
+/// ```text
+/// > 直播源会返回具体的可播放的频道啊,然后可以选这些频道,直播也支持一下搜索好吧
+/// ```
+/// ⇒ 要的是**频道搜索**，不是现有的"源切换条里的搜索"（那是在源名里找）。
+///
+/// # 判据
+/// ```text
+/// · 空查询 ⇒ 全部放行（不筛）
+/// · 大小写不敏感（同一个台名写成全大写/全小写都要命中）
+/// · 同时匹配**频道名**与**源名** —— 用户可能记得"某个源的那个台"
+///   （实测频道名里有「IPTV 直播 频道 01」这种，源名本身就是有效线索）
+/// · 不做拼音/模糊：仓库里没有拼音表，硬加会引入一堆假命中
+/// ```
+bool liveChannelMatchesQuery(String query, String channelName, String tag) {
+  final q = query.trim().toLowerCase();
+  if (q.isEmpty) return true;
+  return channelName.toLowerCase().contains(q) ||
+      tag.toLowerCase().contains(q);
+}
+
+/// ★★★ 冷启动"还没准备好"与"真的没有源"必须分开（Owner 第 5 条前半）
+///
+/// # Owner 原话
+/// ```text
+/// > 我第一次打开直播这个压面 显示0个,我打开第二次 又等了好久才显示出来
+/// ```
+///
+/// # 根因（读代码定位，不是猜）
+/// ```text
+/// `LivePageState` 的 `_loading` 初值是 **true**，但 `loadAll()` 里：
+///     try   { final groups = await SourinApi.getLiveChannels(); … }
+///     catch { debugPrint(…); }          ← ★ 异常被吞
+///     finally { setState(() => _loading = false); }
+/// ⇒ 核心还没起来 / 插件还没注册完时，`getLiveChannels()` **抛异常**
+///   ⇒ 走 catch ⇒ `_groups` 仍是 [] ⇒ `_loading` 变 false
+///   ⇒ build 走到 `_currentChannels.isEmpty` 分支 ⇒ **「没有可用的直播源」**
+/// ⇒ 用户看到的"0 个"其实是**一次被吞掉的启动期失败**，不是"真的没有源"。
+/// ```
+///
+/// 这个纯函数把三种状态分开，UI 据此给三种完全不同的界面：
+/// ```text
+/// · loading  ⇒ 骨架屏（正在拉，什么都别说）
+/// · failed   ⇒ 错误态 + 重试按钮（并说明是启动期还是取数失败）
+/// · empty    ⇒ 真·空态（"去设置里启用一个支持直播的源"）
+/// ```
+/// ★ 若三者合并（都画成空态），用户就永远分不清"该等"还是"该配"。
+enum LiveLoadPhase {
+  /// 还在拉（首帧起）
+  loading,
+
+  /// 拉过了，但**失败了**（核心未就绪 / 源报错 / 超时）
+  failed,
+
+  /// 拉成功，但一个频道都没有
+  empty,
+
+  /// 有频道
+  ready,
+}
+
+/// 由**原始状态**推导当前该显示哪一态（纯函数 ⇒ 可单测）
+///
+/// ★ 判据全部是"外部可观测的事实"，不含时间戳/随机数（否则恒真/恒假）。
+LiveLoadPhase liveLoadPhaseOf({
+  required bool loading,
+  required bool failed,
+  required int channelCount,
+}) {
+  if (loading) return LiveLoadPhase.loading;
+  if (failed) return LiveLoadPhase.failed;
+  if (channelCount <= 0) return LiveLoadPhase.empty;
+  return LiveLoadPhase.ready;
+}
+
 /// 直播页
 class LivePage extends StatefulWidget {
   const LivePage({
@@ -231,6 +390,101 @@ class LivePageState extends State<LivePage> {
   List<LiveGroup> _groups = [];
   bool _loading = true;
   String _activeProvider = '';
+
+  /// ★★★ 第 65 轮批次 D：最近一次取数**失败**的原因（null = 没失败过）
+  ///
+  /// # 为什么必须单独记（Owner 第 5 条前半的真因）
+  /// ```text
+  /// 改前：`loadAll` 的 catch 只 `debugPrint` ⇒ 界面上与"真的没有源"
+  ///       完全一样（都是「没有可用的直播源」）。
+  /// ⇒ 用户看到的"首次打开 0 个"里，有相当一部分是**启动期核心未就绪**
+  ///   导致的失败，而他被引导去"设置里启用源"—— 那条路是错的。
+  /// ⇒ 现在：失败进这里 ⇒ UI 给「重试」而不是「去配置」。
+  /// ```
+  String? _loadError;
+
+  /// ★★★ 第 65 轮批次 D：冷启动**磁盘快照**（第二次打开秒开）
+  ///
+  /// # Owner 原话
+  /// ```text
+  /// > 我打开第二次 又等了好久才显示出来直播源和页面
+  /// ```
+  ///
+  /// # 为什么第二次仍然慢
+  /// ```text
+  /// `LivePage` 是**保活页**（shell 的 5 页保活）⇒ 同一次运行里切回来
+  /// 走的是 `loadAll(keepSelection: true)`，**又是一次全量
+  /// `get_live_channels`** —— 那要**逐个插件执行 JS**（本机 4 个直播源，
+  /// 每个 live_channels() 都是一次脚本求值）。
+  /// ⇒ 而"关掉重开"连内存都没有 ⇒ 只能等那一轮。
+  /// ```
+  ///
+  /// # 修法（与首页 `homeListCache` 同一套既有机制，不新造）
+  /// ```text
+  /// ① 启动/首帧：先读 `<dataDir>/live-channels-cache.json`（DiskCache）⇒
+  ///    **立刻有内容**（首帧就有列表，不等插件）
+  /// ② 后台照常 `getLiveChannels()` 拉真数据 ⇒ 回来后**替换**并落盘
+  /// ③ 落盘失败/文件坏 ⇒ 当作没缓存（DiskCache 自己全程 try/catch）
+  /// ```
+  ///
+  /// ⚠️ 缓存是**纯优化**：任何异常都不能让本页起不来（见 DiskCache 文件头）。
+  static const String _cacheName = 'live-channels-cache.json';
+
+  /// ★★★ 第 65 轮批次 D：搜索命中数（给页头"命中 N / 共 M"用）
+  ///
+  /// # 为什么在这里现算，而不是从 `LiveChannelList` 拿
+  /// ```text
+  /// 列表的 `_filtered` 还叠了**分组/源/分类**三个维度 —— 那是"列表当前显示
+  /// 多少个"，而页头要的是"**搜索词**命中多少个"（用户判断词好不好用）。
+  /// ⇒ 两者语义不同，不能复用同一个数：
+  ///    · 页头：`liveChannelMatchesQuery` 单独判（跨全部可见频道）
+  ///    · 列表：四个维度 AND
+  /// ⚠️ 但两处**必须共用同一个纯函数**（[liveChannelMatchesQuery]），
+  ///    否则"页头说命中 5 个、列表里只有 2 个"—— 用户会以为搜索坏了。
+  /// ```
+  int _searchHitCount() {
+    if (_searchQuery.trim().isEmpty) return _flatChannels.length;
+    var n = 0;
+    for (final e in _flatChannels) {
+      if (liveChannelMatchesQuery(_searchQuery, e.channel.name, e.tag)) n++;
+    }
+    return n;
+  }
+
+  /// 是否已经**从磁盘拿到**过一份可用快照（决定首帧要不要等）
+  bool _cacheHit = false;
+
+  /// 磁盘快照的写入时刻（UI 用它显示"内容可能不是最新的"）
+  DateTime? _cacheAt;
+
+  /// 快照年龄的人类可读文案（"3 分钟前" / "刚刚"）
+  String _cacheAgeText() {
+    final at = _cacheAt;
+    if (at == null) return '';
+    final d = DateTime.now().difference(at);
+    if (d.inMinutes < 1) return '刚刚';
+    if (d.inMinutes < 60) return '${d.inMinutes} 分钟前';
+    if (d.inHours < 24) return '${d.inHours} 小时前';
+    return '${d.inDays} 天前';
+  }
+
+  /// ★★★ 第 65 轮批次 D：**频道搜索**关键词（跨源按频道名搜）
+  ///
+  /// # Owner 原话
+  /// ```text
+  /// > 直播源会返回具体的可播放的频道啊,然后可以选这些频道,
+  /// > 直播也支持一下搜索好吧
+  /// ```
+  /// ⇒ 这是**频道**搜索，与"源切换条里的搜索"不是一件事
+  ///   （那个在源名里找，用户在 100 多个台里找不到"那个台"）。
+  ///
+  /// ★ 放在 `LivePageState` 而不是 `LiveChannelListState`：
+  ///   搜索框在**页头**（跨左右两栏），而列表只是右栏 ——
+  ///   状态必须落在它们共同的祖先上（见 `LiveChannelList.searchQuery` 的注释）。
+  String _searchQuery = '';
+
+  /// 搜索框控制器（清空按钮 / 键盘 Esc 都要能改它）
+  final TextEditingController _searchCtrl = TextEditingController();
 
   LiveChannel? _selected;
   // ★ 2026-09-26【A】用户要求"删除掉节目单" ⇒ `_epg` / `_epgLoading`
@@ -391,7 +645,26 @@ class LivePageState extends State<LivePage> {
      * ```
      */
     FocusManager.instance.addEarlyKeyEventHandler(_onEarlyKey);
-    WidgetsBinding.instance.addPostFrameCallback((_) => loadAll());
+    /*
+     * ★★★ 第 65 轮批次 D：先读磁盘快照，**再**安排全量拉取
+     *
+     * # 为什么不能写成两句并列的 `unawaited(...)`
+     * ```text
+     * 两句并列 ⇒ 谁先跑完谁算数 ⇒ 真数据可能先回来、快照后回来
+     * ⇒ 快照把**更新的真数据**覆盖掉（用户看到列表回退）。
+     * ⇒ 必须**串行**：先快照（毫秒级），再拉真数据（几百毫秒~几秒）。
+     * ```
+     *
+     * ⚠️ 用 `then` 而不是 `await` —— `initState` 不能 async
+     *    （Flutter 会在 State 还没挂好时就跑 await 之后的续体）。
+     */
+    unawaited(
+      _hydrateFromCache().then((_) {
+        if (!mounted) return;
+        // ★ 快照只负责"先有东西看"；真数据照旧要拉（它是唯一真相）
+        WidgetsBinding.instance.addPostFrameCallback((_) => loadAll());
+      }),
+    );
   }
 
   /// 把 [_onHardwareKey] 的 `bool` 契约适配成 `KeyEventResult`
@@ -784,7 +1057,23 @@ class LivePageState extends State<LivePage> {
         setState(() => _allChannelsOpen = false);
         return true;
       }
-      return false; // 面板没开 ⇒ 不消费（留给 shell 的正常返回逻辑）
+      /*
+       * ★★★ 第 65 轮批次 D：搜索框有字时，Esc **先清空搜索**
+       *
+       * # 为什么（顺序与面板那条同理）
+       * ```text
+       * 用户打了字、想退出搜索 —— 直觉就是按 Esc。
+       * 若 Esc 直接放行给 shell（可能触发返回/退出），
+       * 他的字还在、人却走了 ⇒ 下次进来还以为搜索坏了。
+       * ⇒ 先清搜索（一次 Esc 一个语义层级）。
+       * ```
+       */
+      if (_searchQuery.isNotEmpty) {
+        _searchCtrl.clear();
+        setState(() => _searchQuery = '');
+        return true;
+      }
+      return false; // 面板没开、搜索为空 ⇒ 不消费（留给 shell 的正常返回逻辑）
     }
 
     /*
@@ -906,6 +1195,8 @@ class LivePageState extends State<LivePage> {
      */
     FocusManager.instance.removeEarlyKeyEventHandler(_onEarlyKey);
     _pageFocus.dispose();
+    // ★ 第 65 轮批次 D：搜索框控制器（与 `_pageFocus` 同一条纪律 —— 自己建的自己销毁）
+    _searchCtrl.dispose();
     super.dispose();
   }
 
@@ -925,6 +1216,17 @@ class LivePageState extends State<LivePage> {
   /// 拉取直播频道列表
   ///
   /// [keepSelection] = true 时**保留用户当前选中的频道**（返回本页时用）。
+  ///
+  /// # ★★★ 第 65 轮批次 D 改了什么（三处，各有独立判据）
+  /// ```text
+  /// ① **磁盘快照先上屏**：首帧前 `_hydrateFromCache()` 就把列表铺出来
+  ///    ⇒ Owner 的"第一次打开显示 0 个"不再等插件脚本跑完
+  /// ② **失败不再被吞**：`catch` 里写 `_loadError` ⇒ UI 给「重试」
+  ///    而不是骗用户去设置里配置
+  /// ③ **重入保护**：`_inFlight` —— 切 tab 会重复调本函数（shell 的
+  ///    `_switchTo`），两次全量拉取会**互相覆盖**（后到的赢），
+  ///    表现是"切来切去列表闪"。现在同一时刻只跑一支。
+  /// ```
   Future<void> loadAll({bool keepSelection = false}) async {
     /*
      * ★ 主动把焦点拿过来（task-42）
@@ -939,16 +1241,41 @@ class LivePageState extends State<LivePage> {
         _pageFocus.requestFocus();
       }
     });
+
+    /*
+     * ★★★ ③ 重入保护
+     *
+     * # 为什么必须（不是"防御性编程"，是实测会撞上）
+     * ```text
+     * shell 的 `_switchTo(AppTab.live)` 每次切到本页都调
+     * `loadAll(keepSelection: true)`；而本页是**保活页**（切走不销毁）。
+     * 用户快速切「直播 → 首页 → 直播」时两次请求会**同时在飞**：
+     *   · 两次 `get_live_channels` 都是全量（逐个插件跑 JS）
+     *   · 后到的 `setState` 覆盖先到的 ⇒ 列表闪一下
+     *   · 更要命：两次 `_select()` 会**抢同一个播放器**（取流两次）
+     * ⇒ 加一支在飞标记：还在飞就**不重复拉**（保留选中，直接返回）。
+     * ```
+     * ⚠️ 只挡**全量重拉**；`_probeAll` 有自己的 TTL 缓存，不在这里管。
+     */
+    if (_inFlight) {
+      debugPrint('[LIVE] 已有一次加载在飞 ⇒ 跳过本次（keepSelection=$keepSelection）');
+      return;
+    }
+    _inFlight = true;
     final prevId = keepSelection ? _selected?.id : null;
     try {
       final groups = await SourinApi.getLiveChannels();
       if (!mounted) return;
       setState(() {
         _groups = groups;
+        // ★ 成功 ⇒ 清掉上一次的失败态（否则错误界面会一直挂着）
+        _loadError = null;
         if (groups.isNotEmpty) {
           _activeProvider = groups.first.provider;
         }
       });
+      // ★ ② 落盘快照 —— 下次冷启动直接有内容（不 await，不阻塞首帧）
+      unawaited(_persistCache(groups));
 
       /*
        * ★★ 先探测可用性，**再**选频道
@@ -985,9 +1312,132 @@ class LivePageState extends State<LivePage> {
         }
       }
     } catch (e) {
+      /*
+       * ★★★ ② 失败**不再静默**（这是 Owner "首次打开显示 0 个"的一半真因）
+       *
+       * 改前只有 `debugPrint` ⇒ 界面上与"真的没有源"一模一样。
+       * 现在把原因交给 UI：`LiveLoadPhase.failed` 会显示「重试」，
+       * 而不是骗用户去设置里配置（那条路对他的处境是错的）。
+       */
       debugPrint('[LIVE] 加载直播频道失败: $e');
+      if (mounted) {
+        setState(() {
+          _loadError = _describeLoadError(e);
+        });
+      }
     } finally {
+      _inFlight = false;
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /// 把异常翻译成**用户能行动**的一句话（不暴露内部标识符）
+  ///
+  /// # 为什么分两类
+  /// ```text
+  /// · 核心没起来（dll 未加载 / 核心尚未启动）⇒ 重试**可能有用**
+  ///   （启动期那一两秒正是本页第一次被挂载的时刻）
+  /// · 其余（源报错 / 超时）⇒ 重试也可能有用，但要说"稍后再试"
+  /// 两类都给「重试」，因为**用户能做的动作是同一个**；
+  /// 区别只在文案，避免把"核心没起来"说成"你没有源"。
+  /// ```
+  String _describeLoadError(Object e) {
+    final s = e.toString();
+    final coreNotReady = s.contains('核心尚未启动') ||
+        s.contains('sourin_core') ||
+        s.contains('Failed to load dynamic library');
+    if (coreNotReady) {
+      return '直播数据还没准备好（刚启动时会有这一下）。稍等一下点重试即可。';
+    }
+    return '这次没能取到直播频道。点重试再拉一次。';
+  }
+
+  /// 是否有一支加载正在飞（重入保护，见 [loadAll]）
+  bool _inFlight = false;
+
+  /// ★★★ 从磁盘快照预热（冷启动"首帧就有内容"）
+  ///
+  /// # 为什么必须在 `initState` 的**第一帧之前**跑完
+  /// ```text
+  /// 与首页 `homeListCache.preload()` 同一个理由（shell.dart:640 那段注释）：
+  /// 首帧就已经在 build 列表了，缓存若晚到 ⇒ 首帧还是骨架 ⇒ 等于没做。
+  /// ⇒ 这里在 `initState` 里 `await`（一次本地文件读，几十 KB，毫秒级）。
+  /// ```
+  ///
+  /// ⚠️ **失败一律降级成"没有缓存"**：读不到就照常走冷加载路径。
+  ///    缓存是纯优化，任何异常都不能让本页起不来（DiskCache 全程 try/catch，
+  ///    这里再加一层兜住"数据形状变了"的情形）。
+  Future<void> _hydrateFromCache() async {
+    try {
+      final entry = await DiskCache.read(_cacheName);
+      if (entry == null || !mounted) return;
+      final data = entry.data;
+      if (data is! List) return;
+      final groups = <LiveGroup>[];
+      for (final raw in data) {
+        if (raw is! Map) continue;
+        try {
+          final g = LiveGroup.fromJson(Map<String, dynamic>.from(raw));
+          // ★ 空频道的源不进来 —— 与 rust 侧 `live_all()` 的过滤一致
+          if (g.channels.isEmpty) continue;
+          groups.add(g);
+        } catch (_) {
+          // 单组坏了只丢那组（与 ui_prefs 的逐键宽松同一条纪律）
+        }
+      }
+      if (groups.isEmpty) return;
+      setState(() {
+        _groups = groups;
+        _cacheHit = true;
+        _cacheAt = entry.at;
+        _loading = false; // ★ 有内容 ⇒ 立刻退出骨架态
+        if (groups.isNotEmpty) _activeProvider = groups.first.provider;
+      });
+      debugPrint('[LIVE] 磁盘快照命中：${groups.length} 个源'
+          '（存于 ${entry.at}，${entry.ageFrom(DateTime.now()).inMinutes} 分钟前）');
+      /*
+       * ★ 缓存里的第一个台**不自动起播**（有意）
+       *
+       * ```text
+       * 缓存是**可能过期**的快照：那个台可能已经下线/换线。
+       * 若冷启动立刻拿它去取流 ⇒ 用户看到"一进来就报错/黑屏"，
+       * 比"列表先出来、后台拉真数据后再起播"糟得多。
+       * ⇒ 列表先用缓存铺满（视觉上不再空），起播交给
+       *   `loadAll()` 拿到的**真数据**（下面那次 `_select`）。
+       * ```
+       */
+    } catch (e) {
+      debugPrint('[LIVE] 磁盘快照读取失败（当作无缓存）: $e');
+    }
+  }
+
+  /// 把这次拉到的频道写进磁盘快照（下次冷启动用）
+  ///
+  /// ★ 写的是**后端原始形态**（与 rust `get_live_channels` 的 JSON 同构），
+  ///   这样读回来直接喂 `LiveGroup.fromJson` —— 不需要维护第二套映射
+  ///   （理由与 `core/disk_cache.dart` 文件头「存原始 JSON」完全一致）。
+  Future<void> _persistCache(List<LiveGroup> groups) async {
+    if (groups.isEmpty) return; // ★ 空结果**不覆盖**已有快照（否则一次抖动就把缓存清空）
+    try {
+      await DiskCache.write(_cacheName, [
+        for (final g in groups)
+          {
+            'provider': g.provider,
+            'providerName': g.providerName,
+            'channels': [
+              for (final c in g.channels)
+                {
+                  'id': c.id,
+                  'name': c.name,
+                  if (c.logo != null) 'logo': c.logo,
+                  if (c.group != null) 'group': c.group,
+                  if (c.nowPlaying != null) 'now_playing': c.nowPlaying,
+                },
+            ],
+          },
+      ]);
+    } catch (e) {
+      debugPrint('[LIVE] 磁盘快照写入失败（不影响功能）: $e');
     }
   }
 
@@ -1662,7 +2112,34 @@ class LivePageState extends State<LivePage> {
   Widget build(BuildContext context) {
     final isNarrow = MediaQuery.of(context).size.width < 900;
 
-    if (_loading) {
+    /*
+     * ★★★ 第 65 轮批次 D：**三态分开**（Owner 第 5 条前半的真修法）
+     *
+     * # 改前
+     * ```text
+     * if (_loading) → 骨架
+     * if (_currentChannels.isEmpty) → 「没有可用的直播源」
+     * ```
+     * ⇒ 冷启动时核心未就绪 ⇒ `getLiveChannels()` 抛异常 ⇒ 被 catch 吞掉
+     *   ⇒ `_groups` 为空 + `_loading=false` ⇒ **画成"没有源"**
+     *   ⇒ Owner 看到的"第一次打开显示 0 个"。
+     *
+     * # 现在
+     * ```text
+     * loading ⇒ 骨架（还没拉完，别下结论）
+     * failed  ⇒ 错误态 + 「重试」（**不是**让他去设置里配置）
+     * empty   ⇒ 真·空态（"去设置里启用一个支持直播的源"）
+     * ```
+     * ★ 判据由纯函数 [liveLoadPhaseOf] 给出 ⇒ 三种状态**可单测**，
+     *   不靠"读源码字符串"证明（铁律：不许假绿）。
+     */
+    final phase = liveLoadPhaseOf(
+      loading: _loading,
+      failed: _loadError != null,
+      channelCount: _currentChannels.length,
+    );
+
+    if (phase == LiveLoadPhase.loading) {
       /*
        * ★ 加载骨架 —— 原版是**两栏骨架**（`LiveView.vue:162-165`）
        *
@@ -1728,7 +2205,31 @@ class LivePageState extends State<LivePage> {
       );
     }
 
-    if (_currentChannels.isEmpty) {
+    /*
+     * ★★★ 失败态（**不是**空态）
+     *
+     * # 为什么必须有这一支（Owner 第 5 条前半）
+     * ```text
+     * 改前：核心未就绪 ⇒ 异常被吞 ⇒ 画「没有可用的直播源」
+     *   ⇒ 用户被引导去"设置里启用源"，而他的源明明是启用的
+     *   ⇒ 他会以为插件坏了 / 数据丢了
+     * ```
+     * ⇒ 现在：说清"这次没取到"，并给**一个能点的动作**（重试）。
+     */
+    if (phase == LiveLoadPhase.failed) {
+      return _LiveLoadError(
+        message: _loadError!,
+        onRetry: () {
+          setState(() {
+            _loadError = null;
+            _loading = true;
+          });
+          unawaited(loadAll());
+        },
+      );
+    }
+
+    if (phase == LiveLoadPhase.empty) {
       return const _EmptyState(
         icon: AppIcons.live_tv_outlined,
         title: '没有可用的直播源',
@@ -1739,14 +2240,18 @@ class LivePageState extends State<LivePage> {
     final list = LiveChannelList(
       providers: _visibleProviders,
       /*
-       * ★★★ Owner 第 12 条：用户自建的直播源分组（只读传入）。
+       * ★★★ Owner 第 12 条：用户自建的直播分组（只读传入）。
        *
        * ⚠️ 每次 build 都**重读** UiPrefs（它是内存读，零成本）——
        *   用户在设置页改完分组、返回本页时，这里自然就是新值，
        *   不需要任何通知/监听机制（少一条要维护的同步链）。
        *   这正是 UiPrefs「同步 API」设计的用处（见该文件头）。
+       *
+       * ★★★ 第 65 轮批次 D：**两套都传** —— v2（按频道）是主数据，
+       *   v1（按源）只作老数据兜底。只传一套会让另一半用户的分组失效。
        */
       sourceGroups: UiPrefs.liveSourceGroups(),
+      channelGroups: UiPrefs.liveChannelGroups(),
       enabledProviders: {
         for (final g in _groups)
           if (_providerEnabled(g.provider)) g.provider,
@@ -1774,6 +2279,9 @@ class LivePageState extends State<LivePage> {
        *     ⇒ 单一写入点（设置页），单一真相（核心的 json）—— 更干净。
        */
       onPickChannel: _select,
+      // ★★★ 第 65 轮批次 D：频道搜索（受控，宿主是 `_searchQuery`）
+      searchQuery: _searchQuery,
+      onSearchChanged: (v) => setState(() => _searchQuery = v),
     );
 
     /*
@@ -2067,12 +2575,66 @@ class LivePageState extends State<LivePage> {
                   : () => setState(() => _allChannelsOpen = true),
             ),
 
+            /*
+             * ★★★ 第 65 轮批次 D：**频道搜索**（Owner 新增要求）
+             *
+             * # 为什么放在页头而不是右栏工具条里
+             * ```text
+             * ① 右栏只有 300px，工具条已经有三格下拉 + 管理按钮 ——
+             *    再塞一个输入框会把每格压到 60px 以下（频道名/组名全成省略号）。
+             * ② 搜索是**跨源**的（在全部 100+ 个台里找），语义上是"整个页面
+             *    的查询"而不是"右栏那一格的筛选"。
+             * ③ 页头是**横跨两栏**的，输入框能有正常宽度。
+             * ```
+             *
+             * # 与既有"源切换条里的搜索"的区别（别混淆）
+             * ```text
+             * 那个是在**源名**里找源；这个是按**频道名**（以及源名）找台。
+             * 判据在 [liveChannelMatchesQuery]。
+             * ```
+             */
+            const SizedBox(height: Sp.x3),
+            _LiveSearchField(
+              controller: _searchCtrl,
+              query: _searchQuery,
+              // 命中数：由列表内部口径给出会重复算一遍 ⇒ 这里用同一判据现算
+              hitCount: _searchHitCount(),
+              total: _flatChannels.length,
+              onChanged: (v) => setState(() => _searchQuery = v),
+            ),
+
             // ── 探测进度（列表会陆续出现，必须让用户知道为什么）──
             if (_probed == false && _probeTotal > 0)
               Padding(
                 padding: const EdgeInsets.only(top: Sp.x2),
                 child: Text(
                   '正在检查频道可用性 $_probeDone/$_probeTotal …',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            /*
+             * ★★★ 第 65 轮批次 D：**"这是缓存，正在刷新"** 的诚实提示
+             *
+             * # 为什么必须显示（而不是默默用缓存）
+             * ```text
+             * 缓存优先上屏解决了"等很久"，但引入了**新的**认知风险：
+             * 用户可能以为列表是最新的，而某个台其实刚下线/刚上线。
+             * ⇒ 明确告诉他"这是 X 分钟前的快照，正在刷新" ——
+             *   他既不会干等，也不会被骗。
+             * ★ 刷新完成后 `_probed` 变 true ⇒ 这条提示自然消失
+             *   （见 `_probeAll` 收尾那个 setState）。
+             * ```
+             */
+            if (_cacheHit && _cacheAt != null && !_probed)
+              Padding(
+                padding: const EdgeInsets.only(top: Sp.x1),
+                child: Text(
+                  '正在刷新…（列表是 ${_cacheAgeText()}的快照）',
+                  key: const ValueKey('live-cache-hint'),
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: FontSizes.cap,
@@ -2358,7 +2920,11 @@ class LiveChannelList extends StatefulWidget {
     this.onPickProvider,
     this.onPickGroup,
     this.sourceGroups = const {},
+    this.channelGroups = const {},
     this.onPickGroupFilter,
+    this.searchQuery = '',
+    this.onSearchChanged,
+    this.header,
   });
 
   /// 有可播视频的源（②：整组不可用的源不出现）
@@ -2392,15 +2958,51 @@ class LiveChannelList extends StatefulWidget {
   /// ★ 测试用注入口（**生产路径永不传**）：分类筛选被点击时回调
   final ValueChanged<String?>? onPickGroup;
 
-  /// ★★★ Owner 第 12 条：用户自建的直播源分组（组名 → 源 id 列表）
+  /// ★★★ Owner 第 12 条：用户自建的直播**源**分组（组名 → 源 id 列表）
   ///
-  /// 空 Map = 用户还没建过组 ⇒ **不显示分组那一排**（老用户无感）。
-  /// ⚠️ 只读：本组件**绝不**写回（编辑入口在设置页，见 task-53 纪律：
-  ///    配置不该长在内容页）。
+  /// ⚠️ 这是 **v1 老格式**，第 65 轮起降级为**兜底**语义：
+  ///   某个组在 [channelGroups] 里没有数据时才按它筛（见
+  ///   [liveGroupAllowsChannel] 的四条语义）。保留它是为了让用户
+  ///   机器上已有的老分组**不静默失效**。
   final Map<String, List<String>> sourceGroups;
+
+  /// ★★★ 第 65 轮批次 D：用户自建的直播**频道**分组（组名 → 频道引用）
+  ///
+  /// # Owner 原话
+  /// ```text
+  /// > 我要的是自建分组可以选择直播源下的具体的直播的房间，而不是选择直播源
+  /// > 这是错误的
+  /// ```
+  /// ⇒ 这才是分组的**主**数据；[sourceGroups] 只作老数据兜底。
+  final Map<String, List<LiveChannelRef>> channelGroups;
 
   /// ★ 测试用注入口（**生产路径永不传**）：分组筛选被点击时回调
   final ValueChanged<String?>? onPickGroupFilter;
+
+  /// ★★★ 第 65 轮批次 D：频道搜索关键词（受控，由宿主持有）
+  ///
+  /// # 为什么**受控**（`LivePageState` 持有、本组件只读）
+  /// ```text
+  /// 搜索框要放在**页头**（在列表之上、跨两栏），而列表只是右栏 ——
+  /// 若把状态放在本组件内，页头的输入框与它就不是同一棵树上的兄弟，
+  /// 得靠回调把字再传回来 ⇒ 一圈回声、还容易不同步。
+  /// ⇒ 宿主持有、往下传（单向数据流，一条链）。
+  /// ```
+  final String searchQuery;
+
+  /// 搜索框内容变化（宿主写回自己的 state；测试可只验证回调）
+  final ValueChanged<String>? onSearchChanged;
+
+  /// ★★★ 第 65 轮批次 D：列表**上方**的自定义区域（页头统计 / 搜索框）
+  ///
+  /// # 为什么要这个口子
+  /// ```text
+  /// 搜索框与"命中 N 个"的统计属于**本列表的语义**（它们在描述这个列表），
+  /// 但布局上必须在**页头**（跨左右两栏，不能挤在 300px 的右栏里）。
+  /// ⇒ 让 `LivePage` 把这块 widget 构造好传进来，本组件负责把它
+  ///   与列表放在**同一个 Column** 里 ⇒ 视觉上是一体，状态仍在宿主。
+  /// ```
+  final Widget? header;
 
   @override
   State<LiveChannelList> createState() => LiveChannelListState();
@@ -2447,9 +3049,14 @@ class LiveChannelListState extends State<LiveChannelList> {
      *   这正是 Lead 要求的「删分组时里面的源回落到全部，不许消失」。
      *   本组件从不持有「某个源属于哪个组」的状态 ⇒ 组没了就是没筛，
      *   源列表照旧完整。
+     *
+     * ★ 第 65 轮批次 D：**两套分组都要判** —— 组可能只存在于 v2
+     *   （用户在直播页按频道建的新组），只看 v1 会把它当"已删除"
+     *   ⇒ 刚建的组立刻掉回「全部分组」（看起来像没保存）。
      */
     if (_sourceGroupFilter != null &&
-        !widget.sourceGroups.containsKey(_sourceGroupFilter)) {
+        !widget.sourceGroups.containsKey(_sourceGroupFilter) &&
+        !widget.channelGroups.containsKey(_sourceGroupFilter)) {
       _sourceGroupFilter = null;
     }
   }
@@ -2486,14 +3093,27 @@ class LiveChannelListState extends State<LiveChannelList> {
   ///
   /// 判据全在顶层纯函数 [applyLiveSourceGroup] 里（含「绝不筛成空」的兜底），
   /// 这里只做一次 `provider` 提取 —— 两处各写一遍判据必然漂移。
-  Set<String> get _groupVisibleProviders => {
-        for (final g in applyLiveSourceGroup(
-          widget.providers,
-          widget.sourceGroups,
-          _sourceGroupFilter,
-        ))
-          g.provider,
-      };
+  ///
+  /// # ★ 第 65 轮批次 D：改成**两套分组一起判**
+  /// ```text
+  /// v2（channelGroups，按频道）优先；某组没有 v2 数据才回落到 v1（按源）。
+  /// 判据在 [liveGroupAllowsChannel] 里，这里只做「哪些源还有频道可显示」。
+  /// ```
+  Set<String> get _groupVisibleProviders {
+    final out = <String>{};
+    for (final e in widget.channels) {
+      if (liveGroupAllowsChannel(
+        widget.channelGroups,
+        widget.sourceGroups,
+        _sourceGroupFilter,
+        e.provider,
+        e.channel.id,
+      )) {
+        out.add(e.provider);
+      }
+    }
+    return out;
+  }
 
   /// ★★★ Owner 第 12 条：**当前分组下仍要显示的源**（给源药丸排用）
   ///
@@ -2508,13 +3128,19 @@ class LiveChannelListState extends State<LiveChannelList> {
   ///
   /// ⚠️ 与 `_groupVisibleProviders` 的区别：那个是「哪些**频道**该留」
   ///   （从 `widget.channels` 推），这个是「哪些**源药丸**该画」
-  ///   （从 `widget.providers` 推）。两者同源（都走 [applyLiveSourceGroup]），
+  ///   （从 `widget.providers` 推）。两者同源（都走同一套判据），
   ///   但集合不同：一个源可能在 `providers` 里却没有频道。
-  List<LiveGroup> get _visibleSources => applyLiveSourceGroup(
-        widget.providers,
-        widget.sourceGroups,
-        _sourceGroupFilter,
-      );
+  ///
+  /// ★ 第 65 轮批次 D：分组为空（全部分组）时**原样返回** —— 与改前逐字相同，
+  ///   老用户零感知（这是 `t134` 里那条 `identical(r, all)` 断言的契约）。
+  List<LiveGroup> get _visibleSources {
+    if (_sourceGroupFilter == null) return widget.providers;
+    final keep = _groupVisibleProviders;
+    final picked =
+        widget.providers.where((g) => keep.contains(g.provider)).toList();
+    // ★ 兜底：一个都不剩 ⇒ 返回全部（绝不筛成空，与 v1 同一条纪律）
+    return picked.isEmpty ? widget.providers : picked;
+  }
 
   /// ★★★ 组里的源被**删掉**后，源筛选要跟着清（否则列表恒空）
   ///
@@ -2534,18 +3160,42 @@ class LiveChannelListState extends State<LiveChannelList> {
     final byGroup = _sourceGroupFilter == null
         ? widget.channels
         : widget.channels
-              .where((e) => _groupVisibleProviders.contains(e.provider))
+              .where((e) => liveGroupAllowsChannel(
+                    widget.channelGroups,
+                    widget.sourceGroups,
+                    _sourceGroupFilter,
+                    e.provider,
+                    e.channel.id,
+                  ))
               .toList();
     if (_sourceFilter == null) return byGroup;
     return byGroup.where((e) => e.provider == _sourceFilter).toList();
   }
 
-  /// 最终要显示的频道（源 ∩ 分类，AND）
+  /// 最终要显示的频道（分组 ∩ 源 ∩ 分类 ∩ 搜索，四个维度 AND）
   List<LiveFlatEntry> get _filtered {
-    if (_groupFilter == null) return _sourceFiltered;
-    return _sourceFiltered
-        .where((e) => e.channel.group == _groupFilter)
-        .toList();
+    var out = _sourceFiltered;
+    if (_groupFilter != null) {
+      out = out.where((e) => e.channel.group == _groupFilter).toList();
+    }
+    /*
+     * ★★★ 第 65 轮批次 D：**频道搜索**（Owner 新增要求）
+     *
+     * ⚠️ 放在**最后**一道：搜索是"在这几个筛选之后**再**找"，
+     *    放前面会让"源/分类筛选"把用户搜到的台又筛掉
+     *    （他刚打的字被别的维度否决 ⇒ 看起来像搜索坏了）。
+     *    判据在 [liveChannelMatchesQuery]（纯函数，可单测）。
+     */
+    if (widget.searchQuery.trim().isNotEmpty) {
+      out = out
+          .where((e) => liveChannelMatchesQuery(
+                widget.searchQuery,
+                e.channel.name,
+                e.tag,
+              ))
+          .toList();
+    }
+    return out;
   }
 
   /// ★★★ Owner 第 12 条第 ② 半：直播页内管理分组
@@ -2567,7 +3217,17 @@ class LiveChannelListState extends State<LiveChannelList> {
       context: context,
       builder: (_) => _SourceGroupManagerDialog(
         groups: widget.sourceGroups,
+        channelGroups: widget.channelGroups,
         providers: widget.providers,
+        /*
+         * ★ 把**当前可见频道**传进去 —— 编辑界面要能逐频道勾选，
+         *   就必须拿到频道清单（含它属于哪个源）。
+         * ⚠️ 传 `widget.channels`（全部可见）而不是 `_filtered`：
+         *   用户可能在"只看某分类"的状态下开管理器，
+         *   若只给筛后的子集 ⇒ 他看不到也选不了别的台（且保存会**丢掉**
+         *   那些没显示出来的已选项 —— 那是数据损坏，不是筛选）。
+         */
+        channels: widget.channels,
       ),
     );
     if (changed == true && mounted) setState(() {});
@@ -2644,11 +3304,19 @@ class LiveChannelListState extends State<LiveChannelList> {
            */
           _FilterBar(
             // ── 分组维度（value 用组名本身 —— 组名的语义就是它自己）──
-            groupVisible: widget.sourceGroups.isNotEmpty,
+            //
+            // ★★★ 第 65 轮批次 D：两套分组的**组名取并集**
+            //   ```text
+            //   v2（按频道）是主数据，v1（按源）是用户机器上的老数据。
+            //   只列其中一套 ⇒ 另一套的组在界面上"消失"了（数据还在，
+            //   用户却选不到 —— 比丢了更难理解）。
+            //   ⇒ 并集 + **保持各自顺序**（v1 先、v2 后：老组不跳位置）。
+            //   ```
+            groupVisible: _allGroupNames.isNotEmpty,
             groupValue: _sourceGroupFilter ?? '',
             groupOptions: [
               const _BarOption('', '全部分组'),
-              for (final n in widget.sourceGroups.keys) _BarOption(n, n),
+              for (final n in _allGroupNames) _BarOption(n, n),
             ],
             onPickGroup: (v) => _pickSourceGroup(v.isEmpty ? null : v),
             // ── 源维度（value = provider id，label = providerName）──
@@ -2679,7 +3347,7 @@ class LiveChannelListState extends State<LiveChannelList> {
             onPickCategory: (v) => _pickGroup(v.isEmpty ? null : v),
             // ★ Owner 第 12 条第 ② 半：建组入口提到直播页内
             onManageGroups: _openGroupManager,
-            hasGroups: widget.sourceGroups.isNotEmpty,
+            hasGroups: _allGroupNames.isNotEmpty,
             // 当前选中项的**显示名**（下拉按钮上显示这个）
             groupDisplay: _sourceGroupFilter ?? '全部分组',
             sourceDisplay: _sourceFilter == null
@@ -2693,8 +3361,6 @@ class LiveChannelListState extends State<LiveChannelList> {
           ),
 
           // ── 频道（★ task-42：平铺；task-1013：按当前筛选过滤）──
-
-          // ── 频道（★ task-42：**平铺**；task-1013：按当前筛选过滤）──
           Expanded(
             child: ListView(
               clipBehavior: Clip.antiAlias,
@@ -2721,11 +3387,19 @@ class LiveChannelListState extends State<LiveChannelList> {
                       //    · 有筛选生效 ⇒ 说清"是这个筛选下没有"，**并告诉怎么退出**
                       //      （否则用户以为整个功能坏了 / 以为源没了）
                       //    · 没筛选（源本身没频道）⇒ 原来那句（视频线受保护）
-                      filtering
-                          ? '这个筛选下没有频道。\n'
-                              '换一个源或分类，或点「全部源」「全部分类」看全部。'
-                          : '这些直播源的频道都没有可播放的画面'
-                              '（视频线路受内容方保护）。',
+                      //
+                      // ★★★ 第 65 轮批次 D：搜索是**第三种**空态。
+                      //   它比筛选更"急"—— 用户刚打的字，必须告诉他
+                      //   "是这个词没搜到"而不是"这个筛选下没有频道"
+                      //   （后者会让他以为要去改筛选，其实改筛选也没用）。
+                      widget.searchQuery.trim().isNotEmpty
+                          ? '没有频道名匹配「${widget.searchQuery.trim()}」。\n'
+                              '换个关键词试试，或清空搜索框看全部频道。'
+                          : filtering
+                              ? '这个筛选下没有频道。\n'
+                                  '换一个源或分类，或点「全部源」「全部分类」看全部。'
+                              : '这些直播源的频道都没有可播放的画面'
+                                  '（视频线路受内容方保护）。',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: FontSizes.cap,
@@ -2739,6 +3413,24 @@ class LiveChannelListState extends State<LiveChannelList> {
         ],
       ),
     );
+  }
+
+  /// ★★★ 第 65 轮批次 D：**两套分组的组名并集**（保持各自顺序）
+  ///
+  /// ```text
+  /// 先 v1（老数据，位置不动 —— 用户不会因为升级而找不到熟悉的组）
+  /// 再 v2（新数据，按用户建组顺序追加）
+  /// ```
+  List<String> get _allGroupNames {
+    final out = <String>[];
+    final seen = <String>{};
+    for (final n in widget.sourceGroups.keys) {
+      if (seen.add(n)) out.add(n);
+    }
+    for (final n in widget.channelGroups.keys) {
+      if (seen.add(n)) out.add(n);
+    }
+    return out;
   }
 
   /// 点某个源 chip（`null` = 全部源）
@@ -2770,11 +3462,28 @@ class LiveChannelListState extends State<LiveChannelList> {
     setState(() {
       _sourceGroupFilter = name;
       if (name != null && _sourceFilter != null) {
-        final visible = applyLiveSourceGroup(
-          widget.providers,
-          widget.sourceGroups,
-          name,
-        ).map((g) => g.provider);
+        /*
+         * ★ 第 65 轮批次 D：判据换成 `liveGroupAllowsChannel`
+         *
+         * 改前用 `applyLiveSourceGroup`（只认按源分组）——
+         * 用户建的是**按频道**的组时，那个函数会把组当成"不存在的组"
+         * ⇒ 返回全部源 ⇒ 这里的"源筛选还合不合法"判断**恒为合法**
+         * ⇒ 切到一个只有 iptv 频道的组、而源筛选停在别的源上时，
+         *   列表恒空（正是这条自愈要防的事）。
+         */
+        final visible = {
+          for (final g in widget.providers)
+            if (widget.channels.any((e) =>
+                e.provider == g.provider &&
+                liveGroupAllowsChannel(
+                  widget.channelGroups,
+                  widget.sourceGroups,
+                  name,
+                  e.provider,
+                  e.channel.id,
+                )))
+              g.provider,
+        };
         if (!visible.contains(_sourceFilter)) _sourceFilter = null;
       }
     });
@@ -3110,31 +3819,59 @@ class _BarDropdown extends StatelessWidget {
 }
 
 
-/// ★★★ task-34（Owner 第 12 条第 ② 半）：**直播页内**的分组管理器
+/// ★★★ 第 65 轮批次 D：**直播页内**的分组管理器 —— 逐**频道**勾选
 ///
-/// 能力：建组 / 改名 / 删组 / 把源归组（勾选）。
-///
-/// # 为什么是对话框而不是一个二级页
+/// # Owner 原话（这是本次重写的唯一理由）
 /// ```text
-/// Owner 要的是「配置的地方没有」这个**缺口**被补上，且入口在直播页内。
-/// 对话框：点完就回到列表，**不离开上下文**（用户正在看频道）。
-/// 二级页要 push 一条路由，返回时列表状态还得保住 —— 不值得。
+/// > 我要的是自建分组可以选择直播源下的具体的直播的房间，而不是选择直播源
+/// > 这是错误的
+/// ```
+/// 改前的本对话框只有一排**源名**胶囊（`_MemberChip(providerName)`）——
+/// 点一下 = 把整个源的所有频道放进组。Owner 说这就是错的。
+///
+/// # 现在的形态（两层）
+/// ```text
+/// 组卡片
+///   ├─ 组名 + 改名 / 删除
+///   ├─ 「已选 N 个频道」摘要（让用户一眼知道这个组有多大）
+///   └─ 按**源**分块（源名做小标题，仍是可辨识的层级）
+///        └─ 每个频道一颗胶囊（FilterChip，带对勾）⇒ 逐频道勾选
+/// ```
+///
+/// # 为什么保留"按源分块"
+/// ```text
+/// 本机实测一个源 20~48 个频道、四个源加起来 100+ 个胶囊。
+/// 全平铺 ⇒ 用户要在 100 颗里找"那个台"，等于没有结构。
+/// ⇒ 源做**分块标题**（不是可点对象），频道在块内可点 ——
+///   这正是 Owner 说的"直播源**下**的具体房间"的字面形态。
 /// ```
 ///
 /// # 数据纪律（与 UiPrefs 的契约一致）
 /// ```text
 /// · 打开时**深拷贝**一份进本地 `_draft` —— 取消就丢弃，不污染已存配置
-/// · 只有按「保存」才写 UiPrefs（单一写入点，与设置页同一个 key）
-/// · 删组**不需要搬运源**：分组只是筛选器，删掉 ⇒ 源自动回到「全部源」
+/// · 只有按「保存」才写 UiPrefs（单一写入点）
+/// · 保存同时写 **v2（频道）** 与 **v1（源）**：
+///     v1 由 v2 推导（这个组里出现过哪些源）——
+///     这样"老版本打开同一个文件"仍能看到合理的分组（向前兼容的另一半）
 /// ```
 class _SourceGroupManagerDialog extends StatefulWidget {
   const _SourceGroupManagerDialog({
     required this.groups,
+    required this.channelGroups,
     required this.providers,
+    required this.channels,
   });
 
+  /// v1（按源，老格式）—— 只用于：① 组名并集 ② 没有 v2 数据的组回填
   final Map<String, List<String>> groups;
+
+  /// v2（按频道）—— 主数据
+  final Map<String, List<LiveChannelRef>> channelGroups;
+
   final List<LiveGroup> providers;
+
+  /// 全部可见频道（带源 tag）—— 逐频道勾选的候选集
+  final List<LiveFlatEntry> channels;
 
   @override
   State<_SourceGroupManagerDialog> createState() =>
@@ -3143,26 +3880,77 @@ class _SourceGroupManagerDialog extends StatefulWidget {
 
 class _SourceGroupManagerDialogState
     extends State<_SourceGroupManagerDialog> {
-  /// 本地草稿（深拷贝）—— 取消即丢弃
-  late Map<String, List<String>> _draft;
+  /// 本地草稿：组名 → **频道引用**列表（取消即丢弃）
+  late Map<String, List<LiveChannelRef>> _draft;
+
+  /// 老格式（按源）的原始数据 —— 保存时用它写回 v1
+  late Map<String, List<String>> _sourceDraft;
+
   final TextEditingController _nameCtrl = TextEditingController();
   String? _error;
+
   /// 正在改名的组（null = 没有在改名）
   String? _renaming;
   final TextEditingController _renameCtrl = TextEditingController();
 
+  /// 每个组卡片内的**频道搜索词**（组名 → 关键词）
+  ///
+  /// # 为什么组内也要搜索
+  /// ```text
+  /// 本机 4 个源 100+ 个频道 ⇒ 在对话框里滚 100 颗胶囊找「某频道 07」
+  /// 是**不可用**的（而且对话框最大高度只有 620）。
+  /// ```
+  final Map<String, TextEditingController> _filterCtrl = {};
+
   @override
   void initState() {
     super.initState();
-    _draft = {
+    _draft = {};
+    _sourceDraft = {
       for (final e in widget.groups.entries) e.key: List<String>.from(e.value),
     };
+    /*
+     * ★★★ 组名并集 + 老数据回填（两条都必须，否则用户会以为分组丢了）
+     *
+     * ```text
+     * ① 组名并集：只在 v1 里的组（老数据）也要出现在编辑界面，
+     *    否则用户看到"组没了"（其实数据还在，只是本界面不显示）。
+     * ② 老数据回填：一个组只有 v1（按源）时，把该源的**全部频道**
+     *    铺成"已选"—— 这正是老格式的语义（整个源都在组里）。
+     *    ★ 不回填的话，用户打开管理器按保存 ⇒ v1 里那些源一个频道
+     *      都不在 v2 里 ⇒ **保存即清空他的分组**（数据损坏）。
+     * ```
+     */
+    final names = <String>[];
+    for (final n in widget.groups.keys) {
+      if (!names.contains(n)) names.add(n);
+    }
+    for (final n in widget.channelGroups.keys) {
+      if (!names.contains(n)) names.add(n);
+    }
+    for (final n in names) {
+      final v2 = widget.channelGroups[n];
+      if (v2 != null && v2.isNotEmpty) {
+        _draft[n] = List<LiveChannelRef>.from(v2);
+        continue;
+      }
+      // ★ 老格式 ⇒ 回填该源的全部频道
+      final srcs = widget.groups[n] ?? const <String>[];
+      _draft[n] = [
+        for (final e in widget.channels)
+          if (srcs.contains(e.provider))
+            LiveChannelRef(e.provider, e.channel.id),
+      ];
+    }
   }
 
   @override
   void dispose() {
     _nameCtrl.dispose();
     _renameCtrl.dispose();
+    for (final c in _filterCtrl.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -3173,7 +3961,7 @@ class _SourceGroupManagerDialogState
       return setState(() => _error = '已有分组「$n」');
     }
     setState(() {
-      _draft[n] = <String>[];
+      _draft[n] = <LiveChannelRef>[];
       _nameCtrl.clear();
       _error = null;
     });
@@ -3181,6 +3969,8 @@ class _SourceGroupManagerDialogState
 
   void _remove(String n) => setState(() {
         _draft.remove(n);
+        _sourceDraft.remove(n);
+        _filterCtrl.remove(n)?.dispose();
         if (_renaming == n) _renaming = null;
       });
 
@@ -3193,8 +3983,8 @@ class _SourceGroupManagerDialogState
       return setState(() => _error = '已有分组「$n」');
     }
     setState(() {
-      // 保序：用 LinkedHashMap 语义（Dart Map 默认保插入顺序）重建
-      final rebuilt = <String, List<String>>{};
+      // 保序：Dart Map 默认保插入顺序
+      final rebuilt = <String, List<LiveChannelRef>>{};
       for (final e in _draft.entries) {
         rebuilt[e.key == oldName ? n : e.key] = e.value;
       }
@@ -3204,15 +3994,84 @@ class _SourceGroupManagerDialogState
     });
   }
 
-  void _toggleMember(String group, String provider) {
+  /// 勾选 / 取消一个**频道**
+  void _toggleChannel(String group, LiveChannelRef ref) {
     setState(() {
-      final list = _draft[group] ?? <String>[];
-      if (list.contains(provider)) {
-        _draft[group] = list.where((x) => x != provider).toList();
+      final list = _draft[group] ?? <LiveChannelRef>[];
+      if (list.contains(ref)) {
+        _draft[group] = list.where((x) => x != ref).toList();
       } else {
-        _draft[group] = [...list, provider];
+        _draft[group] = [...list, ref];
       }
     });
+  }
+
+  /// 一键勾选 / 取消**整个源**（快捷方式，不是唯一入口）
+  ///
+  /// # 为什么还留这个
+  /// ```text
+  /// 用户想"这个源我全都要"时，100 颗胶囊逐个点不现实。
+  /// ★ 但它**不是** Owner 否定的那个形态 —— 否定的形态是
+  ///   「分组**只能**选源、选不到房间」；这里是房间列表**之上**
+  ///   的一个批量操作，细粒度入口仍然存在且是主路径。
+  /// ```
+  void _toggleProviderAll(String group, String provider) {
+    final all = [
+      for (final e in widget.channels)
+        if (e.provider == provider) LiveChannelRef(e.provider, e.channel.id),
+    ];
+    if (all.isEmpty) return;
+    setState(() {
+      final list = _draft[group] ?? <LiveChannelRef>[];
+      final every = all.every(list.contains);
+      if (every) {
+        final drop = all.toSet();
+        _draft[group] = list.where((x) => !drop.contains(x)).toList();
+      } else {
+        final have = list.toSet();
+        _draft[group] = [
+          ...list,
+          for (final r in all)
+            if (!have.contains(r)) r,
+        ];
+      }
+    });
+  }
+
+  /// 保存：写 v2（频道）+ 由 v2 推导的 v1（源）
+  void _save() {
+    /*
+     * ★ v1 由 v2 推导（不是保留原样）
+     *
+     * ```text
+     * v1 的语义是"这个组包含这些源" —— 一个源只要有**至少一个**频道被选中，
+     * 它在 v1 里就该出现。这样：
+     *   · 老版本客户端打开同一个文件 ⇒ 看到合理的分组（向前兼容）
+     *   · 用户在 v2 里取消某个源的最后一个频道 ⇒ 那个源自动从 v1 消失
+     *     （否则 v1 会残留一个"幽灵源"，将来回落时又把它的全部频道放进来）
+     * ```
+     *
+     * ★★★ 但**空组必须也写进去**（`v1[name] = []`，不是跳过）
+     * ```text
+     * 「这个组存在，只是还没选频道」与「这个组不存在」是两件事。
+     * 跳过空组 ⇒ 用户刚建好还没勾选的分组，在 v1 里查不到
+     *   ⇒ 设置页的"现有分组"会少一个 / 老版本看不到它
+     *   ⇒ 看起来像"建组没生效"。
+     * ⇒ 空组写空列表；而 `applyLiveSourceGroup` 对空列表的语义本来就是
+     *   "不筛（显示全部）" ⇒ 行为正确。
+     * ```
+     */
+    final v1 = <String, List<String>>{};
+    for (final e in _draft.entries) {
+      final srcs = <String>[];
+      for (final r in e.value) {
+        if (!srcs.contains(r.provider)) srcs.add(r.provider);
+      }
+      v1[e.key] = srcs;
+    }
+    UiPrefs.setLiveChannelGroups(_draft);
+    UiPrefs.setLiveSourceGroups(v1);
+    Navigator.of(context).pop(true);
   }
 
   @override
@@ -3220,14 +4079,51 @@ class _SourceGroupManagerDialogState
     final colors = Theme.of(context).colorScheme;
     return AppDialogShell(
       title: '管理直播分组',
-      width: 560,
+      // ★ 宽版面：逐频道勾选 + 组内搜索需要横向空间（规范要求显式传并注释）
+      width: 820,
+      /*
+       * ★★★ 保存/取消放在外壳的 `actions:` 里，**不是**内容 Column 的末尾
+       *
+       * # 为什么（这是实测抓到的真 bug，不是洁癖）
+       * ```text
+       * 第一版把两个按钮写在 `child:` 的 Column 末尾。
+       * 而 `AppDialogShell` 的内容区是 `SingleChildScrollView` ——
+       * 一旦组里有几十颗频道胶囊，按钮就被**推到滚动区之外**。
+       * 实测（t134 三条红）：按钮中心落在 y=633 / y=1057，
+       * 而测试视口是 800×600 ⇒ tap 打空 ⇒ "保存"根本没被点到。
+       * ★ 真实用户遇到的是同一件事：组大了就**滚不到保存按钮**
+       *   （外壳把内容裁在 620px 里，按钮在裁切线以下）。
+       * ```
+       * ⇒ `actions:` 由外壳画在**滚动区之外**的固定底栏（自带分隔线、靠右），
+       *   无论内容多长都够得着。这正是外壳提供 `actions` 的用途。
+       */
+      actions: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          TextButton(
+            key: const ValueKey('live-mgr-cancel'),
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          const SizedBox(width: Sp.x2),
+          FilledButton(
+            key: const ValueKey('live-mgr-save'),
+            onPressed: _save,
+            child: const Text('保存'),
+          ),
+        ],
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '把常用的直播源分到一组，直播页工具栏可以一键只看某一组。'
-            '分组只是筛选器 —— 删掉某个组，里面的源会回到「全部源」，不会消失。',
+            // ⚠️ 这是**给用户看的**文案 —— 不许出现 Markdown 记号。
+            //   截图实测：写成 `**频道**` 会**原样显示两个星号**
+            //   （Flutter 的 `Text` 不解析 Markdown）。
+            //   强调用「」，不用星号。
+            '把常看的「频道」挑进一组，直播页工具栏就能一键只看这一组。'
+            '分组只是筛选器 —— 删掉某个组，里面的频道会回到全部频道，不会消失。',
             style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
           ),
           const SizedBox(height: Sp.x4),
@@ -3264,45 +4160,28 @@ class _SourceGroupManagerDialogState
               '还没有分组。上面输入一个名字点「新建」即可。',
               style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
             ),
-          Flexible(
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (final name in _draft.keys.toList())
-                    _groupTile(name, colors),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: Sp.x4),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              TextButton(
-                key: const ValueKey('live-mgr-cancel'),
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('取消'),
-              ),
-              const SizedBox(width: Sp.x2),
-              FilledButton(
-                key: const ValueKey('live-mgr-save'),
-                onPressed: () {
-                  UiPrefs.setLiveSourceGroups(_draft);
-                  Navigator.of(context).pop(true);
-                },
-                child: const Text('保存'),
-              ),
-            ],
-          ),
+          /*
+           * ⚠️ 这里**不再**套 `Flexible` + 内层 `SingleChildScrollView`
+           *
+           * 外壳的内容区本身已经是滚动容器（`scrollable: true` 默认）。
+           * 再套一层 ⇒ 内层拿到的是**无界高度**（滚动区里是 unbounded），
+           * `Flexible` 在 unbounded 约束下无法解析 ⇒ 布局异常/整块塌陷。
+           * ⇒ 直接铺开，让外壳那一层去滚。
+           */
+          for (final name in _draft.keys.toList()) _groupTile(name, colors),
         ],
       ),
     );
   }
 
   Widget _groupTile(String name, ColorScheme colors) {
-    final members = _draft[name] ?? const <String>[];
+    final members = _draft[name] ?? const <LiveChannelRef>[];
     final renaming = _renaming == name;
+    final filterCtrl = _filterCtrl.putIfAbsent(
+      name,
+      TextEditingController.new,
+    );
+    final q = filterCtrl.text.trim().toLowerCase();
     return Container(
       margin: const EdgeInsets.only(bottom: Sp.x3),
       padding: const EdgeInsets.all(Sp.x3),
@@ -3345,6 +4224,14 @@ class _SourceGroupManagerDialogState
                     ),
                   ),
                 ),
+                Text(
+                  '已选 ${members.length} 个频道',
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: Sp.x2),
                 TextButton(
                   key: ValueKey('live-mgr-rename-$name'),
                   onPressed: () {
@@ -3366,24 +4253,119 @@ class _SourceGroupManagerDialogState
           const SizedBox(height: Sp.x2),
           if (widget.providers.isEmpty)
             Text(
-              '（本机还没探测到直播源，暂时无法归组）',
+              '（本机还没探测到直播源，暂时无法选频道）',
               style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+            )
+          else ...[
+            // ── 组内频道搜索（100+ 颗胶囊时是必需品）──
+            TextField(
+              key: ValueKey('live-mgr-filter-$name'),
+              controller: filterCtrl,
+              decoration: const InputDecoration(
+                hintText: '在这个组里搜频道名（如「体育」）',
+                isDense: true,
+                prefixIcon: Icon(AppIcons.search, size: 18),
+              ),
+              onChanged: (_) => setState(() {}),
             ),
+            const SizedBox(height: Sp.x3),
+            /*
+             * ★ 按源分块 —— 每个源一块，块头是**源名 + 批量勾选**，
+             *   块内是逐频道的 FilterChip（这才是 Owner 要的入口）。
+             */
+            for (final g in widget.providers)
+              if (_channelsOfProvider(g.provider, q).isNotEmpty ||
+                  _channelsOfProvider(g.provider, '').isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: Sp.x3),
+                  child: _providerBlock(name, g, members, colors, q),
+                ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 某个源下**满足搜索词**的频道（`q` 为空 ⇒ 全部）
+  List<LiveFlatEntry> _channelsOfProvider(String provider, String q) {
+    return [
+      for (final e in widget.channels)
+        if (e.provider == provider)
+          if (q.isEmpty ||
+              e.channel.name.toLowerCase().contains(q) ||
+              (e.channel.group ?? '').toLowerCase().contains(q))
+            e,
+    ];
+  }
+
+  Widget _providerBlock(
+    String groupName,
+    LiveGroup g,
+    List<LiveChannelRef> members,
+    ColorScheme colors,
+    String q,
+  ) {
+    final shown = _channelsOfProvider(g.provider, q);
+    final all = _channelsOfProvider(g.provider, '');
+    final selectedCount = all
+        .where((e) => members.contains(LiveChannelRef(e.provider, e.channel.id)))
+        .length;
+    final allSelected = all.isNotEmpty && selectedCount == all.length;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              g.providerName,
+              style: TextStyle(
+                fontSize: FontSizes.sm,
+                fontWeight: FontWeight.w600,
+                color: colors.onSurface,
+              ),
+            ),
+            const SizedBox(width: Sp.x2),
+            Text(
+              '$selectedCount/${all.length}',
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+            const Spacer(),
+            TextButton(
+              key: ValueKey('live-mgr-all-$groupName-${g.provider}'),
+              onPressed: () => _toggleProviderAll(groupName, g.provider),
+              child: Text(allSelected ? '全不选' : '全选'),
+            ),
+          ],
+        ),
+        if (shown.isEmpty)
+          Text(
+            '（这个源里没有匹配「$q」的频道）',
+            style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          )
+        else
           Wrap(
             spacing: Sp.x2,
             runSpacing: Sp.x2,
             children: [
-              for (final g in widget.providers)
+              for (final e in shown)
                 _MemberChip(
-                  key: ValueKey('live-mgr-member-$name-${g.provider}'),
-                  label: g.providerName,
-                  selected: members.contains(g.provider),
-                  onTap: () => _toggleMember(name, g.provider),
+                  key: ValueKey(
+                    'live-mgr-ch-$groupName-${e.provider}-${e.channel.id}',
+                  ),
+                  label: e.channel.name,
+                  selected:
+                      members.contains(LiveChannelRef(e.provider, e.channel.id)),
+                  onTap: () => _toggleChannel(
+                    groupName,
+                    LiveChannelRef(e.provider, e.channel.id),
+                  ),
                 ),
             ],
           ),
-        ],
-      ),
+      ],
     );
   }
 }
@@ -3856,6 +4838,195 @@ class _PanelSkeleton extends StatelessWidget {
       decoration: BoxDecoration(
         color: colors.onSurface.withValues(alpha: 0.05),
         borderRadius: Radii.rLg,
+      ),
+    );
+  }
+}
+
+/// ★★★ 第 65 轮批次 D：**频道搜索框**（页头，跨源按频道名搜）
+///
+/// # 为什么不用 `SearchBar` / `GlassSearchBar`
+/// ```text
+/// ① 本页还没引入 liquid_glass（批次 E 才整体替换），而 `SearchBar`
+///    在 material_ui 里是一个带 elevation 的 Surface —— 与本页
+///    "描边 + 淡底"的既有控件风格（`_FilterBar` / `_LineChip`）不一致。
+/// ② 这里要的只是"一个带清空按钮的输入框"，`TextField` 已经够；
+///    额外能力（历史/建议）没有数据源可支撑，加了是空壳。
+/// ⇒ 用 `TextField` + 显式 `InputDecoration`，与 `live_groups_page` 同款。
+/// ```
+///
+/// # 命中计数为什么要显示
+/// ```text
+/// Owner 的痛点是"打开显示 0 个"。搜索框如果**搜不到也一声不响**，
+/// 就复现了同一种困惑（"是不是又坏了？"）。
+/// ⇒ 输入后立刻显示「命中 N / 共 M」，0 命中时文案变红/提示换词。
+/// ```
+class _LiveSearchField extends StatelessWidget {
+  const _LiveSearchField({
+    required this.controller,
+    required this.query,
+    required this.hitCount,
+    required this.total,
+    required this.onChanged,
+  });
+
+  final TextEditingController controller;
+  final String query;
+  final int hitCount;
+  final int total;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final searching = query.trim().isNotEmpty;
+    return Row(
+      children: [
+        Expanded(
+          child: SizedBox(
+            // 单行高度写死 —— 与 `_FilterBar` 的 36 同量级，避免挤压主体
+            height: 40,
+            child: TextField(
+              key: const ValueKey('live-search-field'),
+              controller: controller,
+              onChanged: onChanged,
+              textInputAction: TextInputAction.search,
+              style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
+              decoration: InputDecoration(
+                isDense: true,
+                filled: true,
+                fillColor: colors.surfaceContainerHighest.withValues(alpha: 0.5),
+                hintText: '搜频道名（跨全部直播源）',
+                hintStyle: TextStyle(
+                  fontSize: FontSizes.sm,
+                  color: colors.onSurfaceVariant,
+                ),
+                prefixIcon: Icon(
+                  AppIcons.search,
+                  size: 18,
+                  color: colors.onSurfaceVariant,
+                ),
+                prefixIconConstraints: const BoxConstraints(
+                  minWidth: 36,
+                  minHeight: 36,
+                ),
+                suffixIcon: searching
+                    ? IconButton(
+                        key: const ValueKey('live-search-clear'),
+                        tooltip: '清空搜索',
+                        iconSize: 16,
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () {
+                          controller.clear();
+                          onChanged('');
+                        },
+                        icon: Icon(
+                          AppIcons.close,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      )
+                    : null,
+                suffixIconConstraints: const BoxConstraints(
+                  minWidth: 36,
+                  minHeight: 36,
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: Sp.x3,
+                  vertical: Sp.x2,
+                ),
+                border: OutlineInputBorder(
+                  borderRadius: Radii.rSm,
+                  borderSide: BorderSide(color: colors.outlineVariant),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: Radii.rSm,
+                  borderSide: BorderSide(color: colors.outlineVariant),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: Radii.rSm,
+                  borderSide: BorderSide(color: colors.primary),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: Sp.x3),
+        /*
+         * ★ 命中读数：没搜时显示总数（"共 N 个频道"），
+         *   搜了显示命中数（0 时用错误色，让"没搜到"一眼可辨）。
+         */
+        Text(
+          searching ? '命中 $hitCount / 共 $total' : '共 $total 个频道',
+          key: const ValueKey('live-search-hits'),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: searching && hitCount == 0
+                ? colors.error
+                : colors.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// ★★★ 第 65 轮批次 D：**取数失败态**（不是空态）
+///
+/// # 为什么必须有（Owner 第 5 条前半的真因）
+/// ```text
+/// 改前：核心未就绪 ⇒ `getLiveChannels()` 抛异常 ⇒ catch 只 debugPrint
+///       ⇒ `_groups` 为空 ⇒ 画「没有可用的直播源」
+/// ⇒ 用户看到"第一次打开显示 0 个"，被引导去"设置里启用源"——
+///   而他的源明明是启用的 ⇒ 他会以为插件坏了 / 数据丢了。
+/// ```
+/// ⇒ 本组件给的是**一个能点的动作**（重试），而不是一条错方向的建议。
+class _LiveLoadError extends StatelessWidget {
+  const _LiveLoadError({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(Sp.x8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              AppIcons.cloud_off,
+              size: 56,
+              color: colors.onSurfaceVariant.withValues(alpha: 0.4),
+            ),
+            const SizedBox(height: Sp.x4),
+            Text(
+              '直播频道没取到',
+              style: TextStyle(
+                fontSize: FontSizes.base,
+                fontWeight: FontWeight.w600,
+                color: colors.onSurface,
+              ),
+            ),
+            const SizedBox(height: Sp.x2),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: FontSizes.sm,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: Sp.x5),
+            FilledButton.icon(
+              key: const ValueKey('live-retry'),
+              onPressed: onRetry,
+              icon: const Icon(AppIcons.refresh, size: 18),
+              label: const Text('重试'),
+            ),
+          ],
+        ),
       ),
     );
   }

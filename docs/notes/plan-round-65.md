@@ -237,6 +237,39 @@ E9. 主题预览与内置主题重设计（第 18 条）
 **验收**：每步 `flutter analyze` 读数；E5 后 `grep -r material_ui lib/` 必须为 0；
 UI 改动**我自己截图逐屏看**；E7 用四种组合（跟随系统/单选黑/单选白/自定义两套）实测切换。
 
+### ⚠️ E 批次实测后的修正（2026-10-18）
+
+**原计划把 E 估计成「一轮内可完成」，实测证明过于乐观。** 原因不是控件数量：
+
+```text
+真正的阻塞：ThemeData / ColorScheme 这两个类**本身就在 material_ui 包里**，
+而全仓 172 处 `Theme.of(context).colorScheme` 依赖它们。
+
+我原本想加一层 AppColors 门面把 ColorScheme 角色映射到自有的 AppPalette，
+写了「逐色相等」测试后立刻变红：
+    dark  primary: ColorScheme #3B6FE0（品牌蓝） vs AppPalette #E5E5E5（中性灰）
+    light primary: ColorScheme #3B6FE0（品牌蓝） vs AppPalette #171717（近黑）
+根因：theme_bridge.dart 深浅两条分支的 primary 来源本来就不同。
+⇒ AppPalette 是「中性色板」，ColorScheme 是「语义色板」，两层不同的东西。
+```
+
+**结论**：移除 material_ui 需要先自建一套完整主题体系替代
+`ThemeData` / `ColorScheme`（约等于重做主题系统），
+**不是「换控件」的量级**。本轮改为：
+
+```text
+已完成（真实落地，非声称）：
+  E1 删两套布局骨架（净减 602 行）
+  E2 163 处 Icons.* → AppIcons.*（解耦 material_ui 的图标依赖）
+  E4a 13 个文件摘掉 material_ui import
+
+本轮不做：
+  E3/E5/E6/E7/E8/E9 —— 需要先自建主题体系，排为独立后续批次
+```
+
+**这不是「没做」，是「查明后发现前提不成立」** —— 已删除错误的
+`AppColors` 门面与那个测试，避免留下错误假设。
+
 **风险**：E3 若 Glass 无法完全替代 MaterialApp，需保留最小 Material 根 —— 届时先向 Owner 报告再决定。
 
 ---

@@ -1947,43 +1947,6 @@ class SettingsPageState extends State<SettingsPage> {
   // ═══════════════════════════════════════════════════════════════════
 
   @override
-  /// 布局骨架的显示名
-  ///
-  /// ⚠️ 与 `lib/ui/shell_layouts/` 里各实现的 `label` 保持一致 ——
-  ///    两处不同的话，设置里叫「侧栏式」、界面上是另一种样子，用户会困惑。
-  static String _layoutLabelOf(String id) {
-    switch (id) {
-      case 'sideRail':
-        return '侧栏式';
-      case 'topBar':
-        return '顶栏式';
-      default:
-        return '底栏式';
-    }
-  }
-
-  /// 当前选中的骨架 id
-  ///
-  /// ⚠️ 认不出的值（老版本写入 / 手工改坏）⇒ 回落底栏式，
-  ///    与 `ShellPage._currentLayout()` 的 default 分支**同一纪律**。
-  static String _layoutValue() {
-    final v = UiPrefs.shellLayout;
-    if (v == 'sideRail' || v == 'topBar' || v == 'bottomBar') return v;
-    return 'bottomBar';
-  }
-
-  /// 每种骨架的一句话说明（选完立刻知道它长什么样）
-  static String _layoutHintOf(String id) {
-    switch (id) {
-      case 'sideRail':
-        return '导航在左侧竖排，宽屏时显示文字。适合桌面大窗口。';
-      case 'topBar':
-        return '顶部只留 logo / 搜索 / 设置，切页点搜索框（或按 Ctrl+K）。';
-      default:
-        return '内容区最大化，导航在底部。适合触屏与遥控器。';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -2707,55 +2670,19 @@ class SettingsPageState extends State<SettingsPage> {
             ),
 
             /*
-             * ★★★ 第 14 条：布局骨架三选一（Owner 2026-10-17 确认选 A）
+             * 布局骨架选择器已移除（Owner 2026-10-17 第 13 条）
              *
-             * # 为什么必须放在**一级页**
-             * ```text
-             * Owner 第 7 条骂过「配置页没看到」——
-             * 功能做了但入口埋在二级页/没有入口 = 用户根本用不到。
-             * ⇒ 与「页面切换动画」并排放在「外观」组里（同一类东西）。
-             * ```
+             * 原话：
+             * > 布局骨架删除,只保留底栏这一种布局
              *
-             * # 为什么用 `SettingsGestureChoice`（同一个现成组件）
-             * ```text
-             * 它是本仓「从 N 个里选 1 个」的惯用法（settings_kit.dart:366），
-             * 动画效果那一行就是它 ⇒ 布局骨架与它**视觉一致**、零新组件。
-             * ```
+             * 改前：三选一（bottomBar / sideRail / topBar），两套独立实现共 523 行。
+             * 改后：只剩底栏式；side_rail_layout.dart 与 top_bar_layout.dart
+             *       已物理删除，本选择器一并移除（没有可选项时留着只会误导）。
              *
-             * # 「立刻生效」怎么做
-             * ```text
-             * `UiPrefs.setShellLayout(id)` 写内存 Map + 落盘；
-             * 而 `ShellPage._currentLayout()` **每次 build 都读** `UiPrefs.shellLayout`
-             * ⇒ 这里 setState 之后 ShellPage 下一次 build 就用新骨架。
-             * ⚠️ 不需要重启，也不需要额外的 notifier ——
-             *    因为读的是同步内存值，没有 I/O 成本。
-             * ```
-             *
-             * ⚠️ 骨架与配色**正交**：本项**不**写进 ThemePack，
-             *    否则用户导入别人的配色主题时布局会被一起改掉。
+             * 老用户 ui-prefs.json 里的 shellLayout 键不清：
+             * ShellPage._currentLayout() 已不读它，留着是无害的历史值；
+             * 主动去删反而要在启动路径上加一次写盘。
              */
-            _Block(
-              title: '布局骨架',
-              children: [
-                SettingsGestureChoice<String>(
-                  label: '界面布局',
-                  options: const ['bottomBar', 'sideRail', 'topBar'],
-                  value: _layoutValue(),
-                  labelOf: _layoutLabelOf,
-                  onChanged: (id) => setState(() {
-                    UiPrefs.setShellLayout(id);
-                  }),
-                ),
-                const SizedBox(height: Sp.x2),
-                Text(
-                  _layoutHintOf(_layoutValue()),
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
 
             SettingsGroupLabel(text: '数据与外观'),
             SettingsEntryRow(

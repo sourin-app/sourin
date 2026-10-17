@@ -121,8 +121,6 @@ import 'ui/app_palette.dart';
 import 'ui/app_scaffold.dart';
 import 'ui/shell_layouts/bottom_bar_layout.dart';
 import 'ui/shell_layouts/shell_layout.dart';
-import 'ui/shell_layouts/side_rail_layout.dart';
-import 'ui/shell_layouts/top_bar_layout.dart';
 
 /// ★ 是否桌面平台（Windows / macOS / Linux）
 ///
@@ -5007,30 +5005,26 @@ class _ShellPageState extends State<ShellPage>
 
   /// 当前选中的布局骨架（Owner 第 14 条）
   ///
-  /// # 三套骨架（判据是「同一页面上控件位置不同」）
+  /// # 骨架：只保留底栏式（Owner 2026-10-17 第 13 条）
   /// ```text
-  ///   bottomBar  底栏式   内容在上，底部胶囊导航（现状，默认）
-  ///   sideRail   侧栏式   左侧竖栏，导航常驻可见
-  ///   topBar     顶栏式   顶栏 logo/搜索/齿轮 + 命令面板切页
+  /// > 布局骨架删除,只保留底栏这一种布局
   /// ```
   ///
-  /// ⚠️ 每次 build 都读 `UiPrefs.shellLayout`（不是缓存在字段里）——
-  ///    用户在设置里一改，下一次 build 立刻生效，不需要重启。
-  ///    读的是同步内存 Map（`_data`），没有 I/O 成本。
+  /// 改前有三套（bottomBar / sideRail / topBar），另两套是独立实现：
+  /// ```text
+  ///   sideRail   214 行  左侧竖栏，导航常驻
+  ///   topBar     309 行  顶栏 + 命令面板 + Ctrl+K + 齿轮
+  /// ```
+  /// 两者已随本改动**物理删除**（不是留着不选）。保留 `ShellLayout` 抽象
+  /// 与 `BottomBarShellLayout` 的原因：`build(body:)` 那层把「保活的内容区」
+  /// 与「导航摆哪」分开，`_BottomBar` 仍由本文件注入（见该文件头）。
   ///
-  /// ⚠️ 未知 id ⇒ 回落底栏式。一个认不出的字符串不能让界面空白。
+  /// ⚠️ 老用户 `ui-prefs.json` 里可能还存着 `sideRail` / `topBar` ——
+  ///    一律回落底栏式。一个认不出的字符串不能让界面空白。
   ShellLayout _currentLayout(AppPalette colors) {
-    switch (UiPrefs.shellLayout) {
-      case 'sideRail':
-        return const SideRailShellLayout();
-      case 'topBar':
-        return const TopBarShellLayout();
-      default:
-        // ★ 底栏式需要注入导航件（见 BottomBarShellLayout 文件头）
-        return BottomBarShellLayout(
-          nav: BottomBarMarker(child: _bottomBar(colors)),
-        );
-    }
+    return BottomBarShellLayout(
+      nav: BottomBarMarker(child: _bottomBar(colors)),
+    );
   }
 
   /// ★★★ 底栏只订阅「它真正依赖的两个值」（Owner「很多地方我感觉都卡卡的」）

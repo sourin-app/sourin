@@ -64,6 +64,10 @@ import 'package:material_ui/material_ui.dart';
 import '../core/device.dart';
 // ★★★ 第 65 轮批次 D：冷启动磁盘快照（第二次打开秒开，见 `_hydrateFromCache`）
 import '../core/disk_cache.dart';
+// ★★★ 第 65 轮批次 D：冷启动**时序读数**（Lead 要毫秒数，见 `loadAll` 里的 mark()）
+//   ⚠️ 必须用 `AppLog.write` 而不是 `debugPrint` —— 实测后者**不进**
+//      `logs/sourin-*.log`（那条链路只收 AppLog 的攒批写入）。
+import '../core/app_log.dart';
 // ★【C】需要 `Episode`（把频道映射成"选集项"装进 EpisodePanel）
 //   ⚠️ 不单独 import `../core/models.dart` —— `sourin_api.dart` 已经
 //      re-export 了它（analyze 会报 unnecessary_import）
@@ -667,6 +671,18 @@ class LivePageState extends State<LivePage> {
     );
   }
 
+  /// ★★★ 第 65 轮批次 D：`State` 构造时刻 —— 冷启动计时**基准点**
+  ///
+  /// # 为什么用 `initState` 时刻而不是"进程启动"
+  /// ```text
+  /// 用户感知的"打开直播页"= 这个页第一次被挂载（切 tab 那一刻）。
+  /// 用进程启动时刻会把"启动首页/加载核心"也算进去
+  /// ⇒ 数字变大，但那些时间与直播页无关。
+  /// ★ 字段初始化器在 `initState` **之前**跑 ⇒ 这里的时间戳就是这个 State
+  ///   被创建的时刻，正是要的基准点（且 `late final` 只求值一次）。
+  /// ```
+  late final DateTime _mountedAt = DateTime.now();
+
   /// 把 [_onHardwareKey] 的 `bool` 契约适配成 `KeyEventResult`
   ///
   /// `_onHardwareKey` 的语义是：
@@ -1262,9 +1278,40 @@ class LivePageState extends State<LivePage> {
       return;
     }
     _inFlight = true;
+
+    /*
+     * ★★★ 第 65 轮批次 D：**冷启动时序读数**（Lead 点名要"毫秒数"）
+     *
+     * # 为什么必须用 `AppLog.write` 而不是 `debugPrint`
+     * ```text
+     * 实测：`debugPrint` **不进** `logs/sourin-*.log`（那条链路只收
+     * `AppLog.write` 的攒批写入）。Lead 要的读数必须能在真机日志里看到，
+     * ⇒ 用 AppLog.write('LIVE', …)。
+     * ```
+     *
+     * # 记什么（三个时刻，都是**用户能感知**的边界）
+     * ```text
+     * t0 = loadAll 进入（≈ 用户点进直播页）
+     * 快照命中 ⇒ 打「首屏有内容」= t0 → setState 完成的毫秒数
+     * 真数据到 ⇒ 打「真数据就绪」= t0 → getLiveChannels 返回的毫秒数
+     * ⇒ Lead 就能看到"改后首屏多少 ms、真数据多少 ms"，
+     *   而不是我口头说"变快了"。
+     * ```
+     */
+    final t0 = DateTime.now();
+    void mark(String what) => AppLog.write(
+          'LIVE',
+          '[TIMING] $what  '
+              '自 loadAll 起 ${DateTime.now().difference(t0).inMilliseconds} ms'
+              ' / 自本页挂载起 '
+              '${DateTime.now().difference(_mountedAt).inMilliseconds} ms',
+        );
+
     final prevId = keepSelection ? _selected?.id : null;
     try {
       final groups = await SourinApi.getLiveChannels();
+      mark('真数据就绪（${groups.length} 个源 / '
+          '${groups.fold<int>(0, (n, g) => n + g.channels.length)} 个频道）');
       if (!mounted) return;
       setState(() {
         _groups = groups;
@@ -1276,7 +1323,6 @@ class LivePageState extends State<LivePage> {
       });
       // ★ ② 落盘快照 —— 下次冷启动直接有内容（不 await，不阻塞首帧）
       unawaited(_persistCache(groups));
-
       /*
        * ★★ 先探测可用性，**再**选频道
        *
@@ -1320,6 +1366,7 @@ class LivePageState extends State<LivePage> {
        * 而不是骗用户去设置里配置（那条路对他的处境是错的）。
        */
       debugPrint('[LIVE] 加载直播频道失败: $e');
+      mark('取数失败（$e）');
       if (mounted) {
         setState(() {
           _loadError = _describeLoadError(e);
@@ -1395,6 +1442,15 @@ class LivePageState extends State<LivePage> {
       });
       debugPrint('[LIVE] 磁盘快照命中：${groups.length} 个源'
           '（存于 ${entry.at}，${entry.ageFrom(DateTime.now()).inMinutes} 分钟前）');
+      // ★ Lead 要的读数：快照路径下"页被挂载 → 首屏有内容"的毫秒数
+      AppLog.write(
+        'LIVE',
+        '[TIMING] 快照命中 ⇒ 首屏有内容  '
+            '${DateTime.now().difference(_mountedAt).inMilliseconds} ms '
+            '（${groups.length} 个源 / '
+            '${groups.fold<int>(0, (n, g) => n + g.channels.length)} 个频道，'
+            '快照存于 ${entry.at}）',
+      );
       /*
        * ★ 缓存里的第一个台**不自动起播**（有意）
        *
@@ -2594,7 +2650,7 @@ class LivePageState extends State<LivePage> {
              * ```
              */
             const SizedBox(height: Sp.x3),
-            _LiveSearchField(
+            LiveSearchField(
               controller: _searchCtrl,
               query: _searchQuery,
               // 命中数：由列表内部口径给出会重复算一遍 ⇒ 这里用同一判据现算
@@ -4861,8 +4917,22 @@ class _PanelSkeleton extends StatelessWidget {
 /// 就复现了同一种困惑（"是不是又坏了？"）。
 /// ⇒ 输入后立刻显示「命中 N / 共 M」，0 命中时文案变红/提示换词。
 /// ```
-class _LiveSearchField extends StatelessWidget {
-  const _LiveSearchField({
+///
+/// # ★ 为什么是**公开**类（而 `_FilterBar` / `_MemberChip` 是私有的）
+/// ```text
+/// 这个控件挂在 `LivePage.build` 的 **ready 分支**里，而
+/// `LivePage._groups` 只由 FFI 填 ⇒ 那条分支在 `flutter test` 里**永远
+/// 到不了** ⇒ 私有类就是"零覆盖"（实测：它的三个 key
+/// `live-search-field` / `live-search-hits` / `live-search-clear`
+/// 在任何测试里都找不到）。
+/// ★ 与 `LiveChannelList` 被公开的理由**完全相同**（见那个类的长注释）：
+///   整页喂不进数据，就把"能独立验证的那一层"公开出来。
+/// ⇒ 公开它，`t65d_live_ui_test.dart` 就能直接 pump 它，
+///   验清空按钮真的清空、命中数真的随输入变。
+/// ```
+class LiveSearchField extends StatelessWidget {
+  const LiveSearchField({
+    super.key,
     required this.controller,
     required this.query,
     required this.hitCount,

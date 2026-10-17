@@ -782,3 +782,98 @@ t98       三轮站名违规（含我自己的）            全部修复，无�
 已逐文件恢复；实测 `danmaku.dart` 的 worktree 版本比 stash 版本还新
 （说明期间又改过），**没有覆盖队友的成果**。
 教训：共享工作树里不许用 `git stash` 全树操作，要用 `git stash push -- <路径>`。
+
+---
+
+### 🟡 P1-1：全量测试有 17 个文件会 `did not complete` —— **既有问题，非本轮引入**
+
+**我先说结论**：这 17 个文件在**本轮起点 `fac0881` 上同样崩**，
+我用逐文件对照验证过（见下面读数）。本轮改动**零回归**。
+
+**现象**：`flutter test test/` 全量跑，最后一定有若干文件报
+「整文件用例一起 `did not complete`」，而且**每次崩的文件不一样**：
+```text
+第 1 次  zz_cr_panel_notch_test
+第 2 次  zz_media_r1_local_open_probe_test
+第 3 次  t72_jank_test
+第 4 次  zz_cr_panel_double_enter_test
+第 5 次  t61_panel_radius_test
+```
+崩溃点随机漂移 = 资源型/原生崩溃的特征，不是逻辑失败。
+
+**根因（仓库自己早就记录过）**：`dart_test.yaml` 顶部有完整证据链 ——
+`MediaKit.ensureInitialized()` 加载 `libmpv-2.dll` 时 **flutter_tester.exe
+进程 native 崩溃**（访问违例 c0000005），Windows 事件日志有 APPCRASH 记录，
+flutter_tools 在 Windows 上主动丢弃崩溃信息 ⇒ 上层只看到 `did not complete`。
+
+**为什么 `native-media` 标签没能全部挡住**：有几个文件**明确注明不能打这个标签**
+（打了就会被默认 skip，而它们的价值恰恰在于真跑）：
+```text
+t72_jank_test                      「不能改成 @Tags(['native-media'])」
+zz_cr_panel_notch_test             同上
+zz_media_r1_local_open_probe_test  压根没打任何标签（2026-10-11 就有，本轮之前）
+```
+这是仓库层面的设计矛盾（要真跑 vs 会崩），**不是本轮该解决的**。
+
+**我的验证方法（可复现）**
+```text
+把 test/*.dart 按文件名切成两批（120 + 120）
+逐文件单独跑，记录「没有 All tests passed」的文件
+同一操作在 fac0881（本轮起点）上再跑一遍，取差集
+```
+结果：
+```text
+HEAD   ：17 个文件崩
+fac0881：18 个文件崩（多一个 t72_jank）
+HEAD 独有（真问题）：**空**
+基线独有          ：t72_jank_test
+```
+⇒ **本轮没有任何一个文件从「通过」变成「崩溃」。**
+
+**分批跑的另一个读数**（证明不是"全绿假象"）
+```text
+第 1 批 120 文件：1260 通过、0 失败
+我新增的测试单独跑：94 通过、0 失败
+```
+
+**为什么不修**：这需要改 `dart_test.yaml` 的标签策略或给 flutter_tester 换隔离方式，
+影响全仓 444 个测试文件，属独立工程。本轮记下来，不在发版前动。
+
+---
+
+### ✅ P0-2：本轮自查发现并修掉的 **4 类回归**（全部我自己引入）
+
+这部分要写清楚，因为它们的形态都很有教育意义：
+
+**① AppIcons 漏抄 `matchTextDirection`（最隐蔽）**
+```text
+现象：find.byIcon(Icons.chevron_left) 报 Found 0 widgets，
+      而代码明明渲染了 AppIcons.chevron_left，codePoint 也是 0xe15e
+实测：AppIcons.chevron_left == Icons.chevron_left  ⇒  false
+逐字段：codePoint ✔ fontFamily ✔ fontPackage ✔
+        matchTextDirection  false vs true        ✘ ← 就是这里
+影响：material_ui 里带该字段的 303 个图标，本仓用到 9 个，全部漏抄
+      （arrow_back / backspace_outlined / chevron_left / chevron_right /
+        help_outline / list / list_alt / list_alt_outlined / open_in_new）
+危险：byIcon 找不到时不报错，只是 findsNothing ⇒ 门禁红但方向难猜
+      （我先后误判成 live_page 行尾、测试隔离，最后才查到）
+```
+
+**② E2 改了图标名，但源码级字符串断言没跟上（3 处）**
+`provider_layout` / `t27_w14` A2 A3 / `t80_cast` / `zz_cr_loading_style`
+—— 这些不是 `find.byIcon` 查找，而是 `src.contains('icon: Icons.xxx')` 纯文本断言。
+
+**③ 测试隔离：内置实例污染（2 处）**
+`t27_w10` / `task13_danmaku` 漏了 `debugSetPublicInstances(const [])`
+⇒ 单独跑绿、混跑红（典型的顺序依赖）。
+
+**④ 我自己的代码踩了三条既有门禁**
+- `live_page.dart` 被我的编辑把 CRLF 改成 LF（t74 要求保持 CRLF）
+- `data_manage_page` 用了裸 `CircularProgressIndicator`（t64 要求走 AppLoading）
+- 注释里重复了被逐字钉住的字面量 ⇒ 纯文本计数从 1 变 2（t27_w5 要求只能一份）
+
+**⑤ 一个必须坦白的判断失误**
+我一度宣称「这 4 条是既有的，因为在干净 HEAD 上同样红」。
+那个判断是错的：我当时说的「干净 HEAD」是本分支最新提交，不是**本轮起点**。
+改用 `fac0881` 建 worktree 复测才发现是本轮引入。
+**教训：判断「是不是本轮引入」必须以本轮起点提交为基线，不能用 HEAD。**

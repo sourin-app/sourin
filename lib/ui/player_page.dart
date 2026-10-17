@@ -6556,14 +6556,16 @@ class _PlayerPageState extends State<PlayerPage>
         /*
          * ⚠️ 2026-10-18（round-65 批次 B）：这句必须**保持单行**。
          *
-         * `zz_cr_dmk_b_source_prefix_test` 用**逐字字符串**钉住
-         * `_danmakuStatus = 'danmaku-service · ${res.summary}';` ——
-         * 我把聚合尾巴接上来时写成了跨行拼接，逐字针就找不到了
-         * （实测：针偏移 -1，报「针在锚点之后找不到」）。
+         * `zz_cr_dmk_b_source_prefix_test` 用**逐字字符串针**钉住下面这一行
+         * （针里含 `danmaku-service · ` 前缀与 `${res.summary}`），
+         * 而 `t27_w5` 又要求「带前缀的成功赋值形态全源码只能有一份」。
          *
-         * ⇒ 尾巴单独一行拼接，**前缀那半句逐字留在同一行**。
-         *   语义没变（多源时仍追加 ` · 2 路 · 插件 N + 导入源 M = K 条`），
-         *   只是不让换行割断那句被门禁钉住的字面量。
+         * ⇒ 两个约束合成的规矩：
+         *   ① 前缀句必须逐字、单行、只出现一次（在下面那行代码里）
+         *   ② 聚合尾巴另起一行追加，**不许**把前缀句劈成跨行拼接
+         *      （劈开后逐字针偏移 -1，实测报「针在锚点之后找不到」）
+         *   ③ **注释里也不许重复那个字面量** —— 那两条契约都是按纯文本
+         *      匹配源码的，注释里写一遍就等于凭空多出一份（实测 t27_w5 红）
          */
         _danmakuStatus = 'danmaku-service · ${res.summary}';
         if (agg.feeds.length > 1) {

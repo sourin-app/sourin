@@ -558,3 +558,227 @@ search/all/v2  连打三次：200 / 200 / 200   ← 稳定
 
 **这条要在最终汇报里明说**：不是「终于修对了」，而是「找到了不稳定的那条路
 并绕开它」。两者的区别对 Owner 有意义。
+
+---
+
+## 批次 B（弹幕体系）发现的问题
+
+> 记录人：danmaku。写域：`lib/core/danmaku.dart` /
+> `lib/ui/widgets/danmaku_settings_dialog.dart` /
+> `lib/ui/widgets/danmaku_info_panel.dart` /
+> `lib/ui/settings/danmaku_source_page.dart` + `lib/ui/player_page.dart` 的**两处**。
+
+### 🟢 P3-1：内置公共实例**只有 2 个能用**（诚实上限，非缺陷）
+
+Owner 第 4 条要「内置上几个」。实测（`.probe/danmaku_b_builtin_probe.py`）：
+
+```text
+候选                           search        comment      结论
+danmu-api-delta.vercel.app     200 (1 条)    200 (2102 条)  OK
+danmu-api-kappa.vercel.app     200 (1 条)    200 (2049 条)  OK
+danmu-api-psi.vercel.app       200 (1 条)    超时/0        FAIL（能搜不能取）
+```
+
+**判据**：两条都要过 —— ① `/api/v2/search/anime?keyword=火影` → 200 且 animes 非空；
+② `/api/v2/comment/<id>?format=json` → 200 且 comments 非空。
+
+**决策**：只内置那 2 个。psi 那种「能搜不能取」的**刻意不放进表** ——
+内置一个半残地址比少内置一个更糟（用户开箱失败会以为软件坏了）。
+⇒ 交付时说「2 个」而不是假装「好几个」。
+
+**⚠️ 这条要在最终汇报里明说**：2 个是实测上限，不是偷懒。
+
+---
+
+### 🟡 P2-8：内置实例**会掉数据**（实测到了，用户要知道）
+
+写测试时 `ep10002` 还能取到 2102 条；20 分钟后同一个 id 变 **404**。
+（search 仍 200，说明实例本身活着，只是那一集的弹幕源被上游撤了。）
+
+⇒ 结论写进代码注释与 UI 文案：**公共实例是公共服务器，会慢、会临时不可用**，
+所以：
+1. UI 必须给「测试连接」让用户自己验（已做）；
+2. 文案不能承诺"一定好用"（已做：`会慢（冷启动几秒）、也可能临时不可用`）；
+3. 探测要认**第三种端点**（见 P2-9）。
+
+---
+
+### 🔴 P1-1：探测内置实例时**假阴性**（已修）
+
+**现象**：`DanmakuLocalService.probe` 只认 `/api/v2/system/version` 与 `/api/config`
+两个端点，而内置实例**两个都是 404** ⇒ 明明能取到 2000+ 条弹幕，
+面板却写「未运行」。
+
+**这是真缺陷，且与 2026-10-16 修过的 `configPath` 那次是同一个病**
+（"服务活着却被判成不可用"）。
+
+**修法**：加第三个探测端点 `/api/v2/search/anime?keyword=a`（返回这个协议**特有**的
+`animes` 结构，误判率低），且只在**带 endpoint** 时试（本机 2080 那条路不加，
+否则「未运行」提示会慢 3~5 s）。
+**判据**：`t65b_danmaku_builtin_endpoint_test.dart` 的「④」组；
+故障注入（把这一步删掉）⇒ 该组红 2 条，已实测。
+
+---
+
+### 🔴 P1-2：聚合去重**吃掉真实弹幕**（已修，真数据抓出来的）
+
+**现象**：第一版聚合器只做「跨源去重」（`(时间 0.1s, 正文)` 全局 `Set`）。
+用**真实数据**一跑：
+
+```text
+同一路给了 9415 条  ⇒  输出只有 9342 条   （少了 73 条）
+```
+
+**根因**：真实弹幕里「同一个时间点同一句话被很多人刷」是**常态**
+（"哈哈" / "前方高能" / 应援词）。那是**不同人的不同弹幕**，只是内容撞了 ——
+全局去重把它们当成重复吃掉了。
+
+**修法**：判据分两段 ——
+① 源**内部**一律保留（别人的真实发言，重复也要留）；
+② 只在**跨源**时按 `(0.1s, 正文)` 去重（同一批数据被两个源各抓一遍）。
+实现上把全局 `Set` 换成 `Map<String,int>`（记「哪一路先给的」），
+只有 `owner != 当前路` 才丢。
+
+**修后真读数**（`.probe/danmaku_b_live_aggregate.py`）：
+```text
+场景 A 两路给同一集：9415 + 9415 = 18830  ⇒  合并 9415 条，去掉 9415 条跨源重复
+场景 B 两路各给一集：9415 + 9440 = 18855  ⇒  合并 18854 条，去掉 1 条，时间有序 ✔
+```
+**判据**：`t65b_danmaku_aggregate_test.dart` 的「③ 同一路内部…必须保留」与
+「跨源去重仍然生效」；故障注入（退回全局 `Set`）⇒ 这两条**同时红**，已实测。
+
+⚠️ **这条必须在汇报里点名**：它不是设计洁癖，是**用真数据跑出来的丢数据缺陷**。
+
+---
+
+### 🟡 P2-9：既有测试因「内置实例上线」而必然变红（已按新行为改断言）
+
+内置实例一上线，「没配地址 ⇒ 走官方 / 走本机 2080」这条老断言**必然**变成
+「走内置实例」。涉及 4 个文件：
+
+| 文件 | 改前钉什么 | 改后钉什么 | 为什么 |
+|---|---|---|---|
+| `test/t3_danmu_api_endpoint_test.dart` | 没配 endpoint ⇒ 官方域名 + 签名头 | 同左，但 `setUp` 里 `debugSetPublicInstances(const [])` | 本文件测的是**官方/签名**那条边；内置不关掉就是在测另一条路（假绿） |
+| `test/t27_w5_danmaku_source_test.dart` | 没配 ⇒ 本机 2080 | 同左，同上关内置 | 同上（测本机那条边） |
+| `test/task35_danmaku_priority_test.dart` | 没配 dan-api ⇒ 仍走 2080 | 同左，同上关内置 | 同上（测优先序） |
+| `test/t105_danmaku_appkey_flow_test.dart` | 填了凭证 ⇒ 签名三件套 | 同左，同上关内置 | 内置是**免凭证**的，不关就永远测不到签名头 |
+
+⚠️ **新增的测试注入口**：`DanmakuConfig.debugSetPublicInstances(List?)`
+（传 `null` 恢复内置表，传 `const []` 关掉）。**生产代码路径一行都没变**，
+只是给了测试一个能明确"关掉内置"的开关 —— 与既有的 `debugSetBuiltin`（内置凭证）
+同一条纪律。
+
+**另**：`t3b_selfhosted_panel_test.dart` / `t27_w12_panel_builtin_prefill_test.dart` /
+`t73_bili_wiring_test.dart` / `zz_t3_selfhosted_shots_test.dart` 因为**页签改名**
+（`弹弹play` → `官方兜底`、外部视频源 → `插件提供`、自建服务区块 → `dan-api`）
+改了 tap 目标与文案断言。判据语义**一条都没放宽**（详情见各文件内的注释）。
+
+> ⚠️ 本文件里**不写任何具体视频站名**（t98 门禁对 `.md` 同样生效）。
+> 提到"外部视频源的弹幕能力"时一律用中性词，不点名。
+
+---
+
+### 🟡 P2-10：`t73_bili_wiring_test.dart` 的 2600 字符窗口是**脆弱设计**（未修，仅记录）
+
+该测试用 `_page.substring(i0, i0 + 2600)` 截窗口，再断言窗口内有**恰好 2 条**
+`status: '外部视频站 · ${r.summary}',`。实测：
+
+```text
+HEAD 的 player_page.dart：stripComments 后该串在窗口内 offset 1520，count = 2  ✔
+我改后的版本：            同上，offset 1520，count = 2                              ✔
+```
+
+**但**：在批量跑（多文件同进程）时该用例**偶发红一次**，单跑与复跑都绿。
+判断是 `flutter_tester` 已知的原生崩溃假红（见 `docs/TESTING.md` 顶部），
+**不是**我的改动引起的（我用 `git stash` 把 player_page 退到 HEAD 复跑过，
+纯净版同样会走进这个窗口）。
+
+**建议（留给人决定）**：把 2600 这个魔数换成「从这个函数开头到下一个函数开头」
+的切片（`indexOf('Future<void> _biliApplyComments(', i0)`）。本次不动 ——
+那是别人批次的测试文件，且它现在是绿的。
+
+---
+
+### ✅ 批次 B 已完成的判据读数
+
+```bash
+flutter analyze lib                      # 0 error
+flutter test test/t65b_danmaku_aggregate_test.dart \
+             test/t65b_danmaku_builtin_endpoint_test.dart \
+             test/task41_danmaku_send_gate_test.dart \
+             test/t3b_selfhosted_panel_test.dart \
+             test/t139_danmaku_info_panel_test.dart \
+             test/t27_w5_danmaku_source_test.dart --concurrency=1
+  ⇒ All tests passed!  (84 例)
+```
+
+截图（`.probe/shots/`，我逐张看过）：
+`t65b_panel_general_dark` / `t65b_panel_danapi_dark` / `t65b_panel_danapi_light` /
+`t65b_panel_plugin_dark` / `t65b_panel_official_dark` /
+`t65b_info_two_feeds` / `t65b_info_one_failed`。
+
+**看图台抓到并修掉的文案缺陷（2 处）**：
+1. 状态条 chip 没数据时渲染成「插件提供 **— 条**」—— 中文里那个"条"吊在破折号后面
+   读不通 ⇒ 改成有数才带量词。
+2. 「官方兜底」页签里的凭证区块标题仍写着 `凭证 · 弹弹play` ⇒ 改成
+   `凭证 · 官方兜底 · 要签名`。**这正是 Owner 第 11 条抱怨的那类残留**
+   （页签改了名，区块标题没跟上）。
+
+
+---
+
+## 2026-10-18 01:00 —— 中途进度（Owner 早上看这里）
+
+### 批次完成情况
+
+| 批次 | 状态 | 一句话 |
+|---|---|---|
+| A 插件私有仓 | ✅ 完成 | 私库 `sourin-plugins` 已推送，32 js + 3 bak，隐私扫描 0 命中 |
+| B 弹幕体系 | ✅ 完成 | 内置 2 实例、入口置灰可见、聚合真数据 18854 条 |
+| C 错误信息+播放 | 🔄 收尾中 | 6/7/8/10 四条都已落地，等构建自测 |
+| D 直播重构 | ✅ 完成 | 三态+快照+频道分组+搜索，故障注入 7 项全红 |
+| E UI 替换 | ⚠️ 部分 | 13/16/17 完成；12/18 未做；15 查明前提不成立 |
+| F 数据管理 | ✅ F1 完成 | 数据管理页已上线，7 类分类 + 安全边界门禁 |
+| G 交付发版 | ⏳ 待办 | `--prerelease` 缺口已修并故障注入验证 |
+
+### 我自己亲手做并验证的
+
+```text
+第 13 条  删两套布局骨架（净减 602 行）        analyze 无新增，t32 16/16
+第 16 条  补主题深浅色门禁（机制本已存在）      5/5，故障注入红 4 条
+第 17 条  进度条逐帧 seek → 松手才 seek        4/4 + 4/4，故障注入红 1 条
+第 7 条   错误文案剥离宿主前缀                  Rust 119/119 + Dart 7/7，双注入红
+第 6 条   补错误归类门禁（实现本已存在）        19/19，故障注入红 2 条
+第 14 条  数据管理页（新功能）                 6/6，故障注入红 2 条
+E2        163 处 Icons → AppIcons              59 文件，analyze 与基线逐条一致
+G4        发版 --prerelease 缺口               10 组用例，故障注入红 3 条
+t98       三轮站名违规（含我自己的）            全部修复，无白名单
+```
+
+### 三个「实现早就有了，但没人验证」的发现
+
+```text
+① 第 16 条 主题深浅色：themeFor 的 siblingOf 逻辑完整存在，零门禁
+② 第 6 条  错误归类：PlaybackErrorText 完整存在，全仓零测试
+③ E2 的 AppIcons：159 个图标常量早就写好，零个文件使用
+```
+⇒ 这三处都是「写了没接线 / 有实现无门禁」。我补的都是门禁，不是重写实现。
+**这个模式值得 Owner 知道**：上一轮做的东西有不少是「做了一半」。
+
+### 一个必须坦白的判断失误
+
+我在计划里把「移除 material_ui」估成「131 个文件、一轮可做完」。
+实测证明**前提就不成立**：`ThemeData` / `ColorScheme` 本身就住在 material_ui 包里，
+全仓 172 处 `Theme.of(context).colorScheme` 依赖它。
+我写的 `AppColors` 门面被自己的逐色测试当场打红（`AppPalette` 是中性色板、
+`ColorScheme` 是语义色板，两层不同的东西），已删除该门面和测试。
+
+⇒ 第 15 条本轮**不做**，排为独立后续批次。这不是「没做」，是「查明后发现前提不成立」。
+
+### 队友误操作（已处理，无损失）
+
+`live-ux` 在核实「全仓 16 条红是否与我有关」时跑了 `git stash`，
+把批次 B 正在改的 danmaku 文件一起收走了。
+已逐文件恢复；实测 `danmaku.dart` 的 worktree 版本比 stash 版本还新
+（说明期间又改过），**没有覆盖队友的成果**。
+教训：共享工作树里不许用 `git stash` 全树操作，要用 `git stash push -- <路径>`。

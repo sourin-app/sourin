@@ -233,3 +233,65 @@ arm64 白屏那条结论是 18/18 实测归纳出来的，靠的是「最外层�
 `flutter analyze` 与 HEAD 基线逐条一致（396 issues，无新增），视觉零变化。
 
 **这条值得记住**：建了基础设施 ≠ 用上了。判据是「有没有调用点」。
+
+---
+
+### 🔴 P1-3：E3 的真实成本比计划估计的大，我改变了执行顺序
+
+**发现**：继续深挖 `shell.dart:1930` 那处 `MaterialApp` 后，发现
+`materialTheme`（`ThemeData`，Material 的类型）不只喂给 `MaterialApp.theme`，
+还在 `builder` 里通过 `AppThemeHost(data: materialTheme)` 向下提供
+（`shell.dart:2096`）。
+
+**判断**：
+```text
+「移除 material_ui」不是「把 MaterialApp 换成 WidgetsApp」这一个动作。
+它是一条链：
+  MaterialApp.theme          → 删除（没有消费者）
+  AppThemeHost(materialTheme)→ 这一层喂的是 Material ThemeData，
+                               而当前所有页面/控件都在读 Theme.of(context)
+                               （实测 Theme 出现 237 次）
+  ⇒ 必须先把那 237 处读取迁到 Glass 主题体系，才能删掉 AppThemeHost，
+    才能删掉 materialTheme，才能删掉 material_ui 依赖。
+```
+
+**决策（按最优解，调整执行顺序）**：
+
+原计划 E3（换根）→ E4（控件）。实际依赖关系相反：
+```text
+E3' 先做「控件与主题读取迁移」（原 E4 的前半）
+    因为 Theme.of(context) 237 处是 materialTheme 的消费者，
+    不先迁走，换根时这层没法删
+E4' 再做「换根」（原 E3）
+    此时 materialTheme 已无消费者，WidgetsApp 的 color 参数随便给
+E5  删依赖、跑 analyze
+```
+
+**为什么不硬按原顺序**：硬按 E3→E4 的话，换根后 `AppThemeHost` 还得留着喂
+Material 主题给尚未迁移的 237 处 `Theme.of` —— 那就变成「换了根但什么都没删」，
+自欺欺人。
+
+**风险未变**：arm64 白屏的 18/18 结论依赖「最外层裁剪」规则，换根会改变
+从根到内容的 widget 路径。**我没有 arm64 真机**，这部分只能标注未验证。
+
+---
+
+### 🟡 P1-4：这一批的工作量超出「一轮做完」的合理范围
+
+**发现**：E3'（迁移 237 处 `Theme.of` + 149 处 TextButton + 150 处 InkWell +
+83 处 TextField + 79 处 Scaffold 等）是一次**全仓 UI 重写**，
+不是一次批次内的小任务。
+
+**判断**：如果硬塞进本轮和其余 6 个批次一起交付，质量会崩 ——
+本仓已有教训：「攒批 ⇒ 评审者一次看几千行、二分定位不了」。
+
+**决策**：
+```text
+① 本轮**不追求**「一次性把 material_ui 删掉」。
+② 先交付 A/B/C/D/F/G（都是功能与修复，用户直接受益），
+   把 E（UI 重写）作为**独立的后续批次**，按页面分批替换、每批可验证。
+③ 这条要在最终汇报里**明说**：第 15 条本轮未完成，不是忘了，是刻意排后。
+```
+
+**若 Owner 不同意**：我可以硬做，但需要接受「一轮内改 130+ 文件、
+无法逐屏验证」的代价 —— 那与本轮「自己亲眼所见」的验收要求直接冲突。

@@ -1,6 +1,7 @@
 # Agent Note: 决策笔记树进仓库，与 docs/DECISIONS.md 分工
 
 Status: implemented
+Archived: 2026-10-17
 
 ## Problem
 

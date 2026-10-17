@@ -12,7 +12,9 @@ README 长到 1116 行后，改一处细节要在大文件里定位，评审 dif
 
 把 README 的架构 / 构建 / 配置 / 平台 / 数据目录 / 主题 / 插件 / 测试 / FAQ /
 项目结构共 10 节拆到 `docs/`，根 README 收敛为定位 + 快速开始 + 文档索引。
-新增 `docs/AGENTS.md`（开发入口）、`docs/DECISIONS.md`、`docs/RUNBOOK.md`。
+新增 `docs/AGENTS.md`（开发入口）、`docs/RUNBOOK.md`。决策记录当时落在
+`docs/DECISIONS.md`，现已迁到 [Agent Note 树](2026-10-17-notes-tree-is-single-decision-record.md)，
+本决定本身不受影响。
 
 ## Alternatives considered
 

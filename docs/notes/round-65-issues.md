@@ -295,3 +295,51 @@ Material 主题给尚未迁移的 237 处 `Theme.of` —— 那就变成「换�
 
 **若 Owner 不同意**：我可以硬做，但需要接受「一轮内改 130+ 文件、
 无法逐屏验证」的代价 —— 那与本轮「自己亲眼所见」的验收要求直接冲突。
+
+---
+
+### 🔴 P1-5：`AppPalette` 与 `ColorScheme` 的角色语义**不同**，不能直接映射
+
+**发现**（被自己的测试抓到，不是推测）：
+
+我写了 `AppColors` 门面，假设 `AppPalette` 的字段能一一对应
+`ColorScheme` 的 10 个角色。写了逐色相等测试后**立刻变红**：
+
+```text
+dark  primary:  ColorScheme = #3B6FE0（品牌蓝）  AppPalette = #E5E5E5（中性灰）
+light primary:  ColorScheme = #3B6FE0（品牌蓝）  AppPalette = #171717（近黑）
+```
+
+根因（读 `theme_bridge.dart` 得到）：
+```text
+浅色分支：primary: LightTokens.brand   ← #3B6FE0，品牌色
+深色分支：primary: c.primary           ← AppPalette 的 primary
+⇒ **两条分支的 primary 来源本来就不同**，这是既有实现，不是 bug。
+```
+
+**判断**：`AppPalette` 是「中性色板」（黑白灰），`ColorScheme` 是
+「语义色板」（含品牌色）。它们是**两层不同的东西**，把后者硬映射到前者
+会改变观感 —— 而「观感零变化」是本批次的前提。
+
+**决策（改变方案）**：
+```text
+① 删除 AppColors 门面与那个测试 —— 假设不成立，留着是隐患。
+② 移除 material_ui 的路径改为：**不替换 ColorScheme，而是让
+   buildMaterialTheme() 继续存在但不再依赖 material_ui 的 ThemeData**。
+   具体做法留到 E 批次真正执行时定（需要先确认 ThemeData 能否
+   在不 import material_ui 的情况下构造 —— 它就在 material_ui 里，
+   所以答案是**不能**）。
+③ ⇒ 结论：**第 15 条（移除 material_ui）在本轮不可完成**，
+   因为它需要先自建一套完整主题体系替代 ThemeData/ColorScheme，
+   那是比「换控件」大得多的工程。
+```
+
+**这是本轮最重要的一个否定结果**。我原本在计划里写「131 个文件、
+可在一轮内做完」，实测证明那个估计**过于乐观**：真正的阻塞不是
+控件数量，而是 `ThemeData` / `ColorScheme` 本身就在 material_ui 包里，
+而全仓 172 处依赖它。
+
+**若 Owner 要求必须做完**：可行路径是自建 `SourinTheme` 数据类
+（含 ColorScheme 那 10 个角色的等价物）+ 自建 `Theme.of` 等价物，
+然后把 172 处调用点迁过去。工作量约等于重做一次主题系统，
+且需要逐屏验证观感 —— 不适合塞进本轮。

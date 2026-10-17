@@ -78,6 +78,11 @@ void main() {
     )));
     await tester.pumpAndSettle();
 
+    // ⚠️ 2026-10-18（round-65 批次 B）：页面顶部新增了「内置实例」区块，
+    //    按钮被推到 800x600 测试视口之外 ⇒ 先滚进可视区再 tap。
+    //    真机上页面是 ListView，用户滚一下就到，行为没变。
+    await tester.ensureVisible(find.text('测试连接'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('测试连接'));
     await tester.pumpAndSettle();
 
@@ -96,6 +101,11 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField).first, 'http://127.0.0.1:9321');
+    await tester.pumpAndSettle();
+    // ⚠️ 2026-10-18（round-65 批次 B）：页面顶部新增了「内置实例」区块，
+    //    按钮被推到 800x600 测试视口之外 ⇒ 先滚进可视区再 tap。
+    //    真机上页面是 ListView，用户滚一下就到，行为没变。
+    await tester.ensureVisible(find.text('测试连接'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('测试连接'));
     await tester.pumpAndSettle();
@@ -119,6 +129,11 @@ void main() {
 
     await tester.enterText(find.byType(TextField).first, 'http://127.0.0.1:9321');
     await tester.pumpAndSettle();
+    // ⚠️ 2026-10-18（round-65 批次 B）：页面顶部新增了「内置实例」区块，
+    //    按钮被推到 800x600 测试视口之外 ⇒ 先滚进可视区再 tap。
+    //    真机上页面是 ListView，用户滚一下就到，行为没变。
+    await tester.ensureVisible(find.text('测试连接'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('测试连接'));
     await tester.pumpAndSettle();
 
@@ -134,6 +149,11 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField).first, 'http://127.0.0.1:9999');
+    await tester.pumpAndSettle();
+    // ⚠️ 2026-10-18（round-65 批次 B）：页面顶部新增了「内置实例」区块，
+    //    按钮被推到 800x600 测试视口之外 ⇒ 先滚进可视区再 tap。
+    //    真机上页面是 ListView，用户滚一下就到，行为没变。
+    await tester.ensureVisible(find.text('测试连接'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('测试连接'));
     await tester.pumpAndSettle();
@@ -155,6 +175,11 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField).first, 'http://10.0.0.1:9321');
+    await tester.pumpAndSettle();
+    // ⚠️ 2026-10-18（round-65 批次 B）：页面顶部新增了「内置实例」区块，
+    //    按钮被推到 800x600 测试视口之外 ⇒ 先滚进可视区再 tap。
+    //    真机上页面是 ListView，用户滚一下就到，行为没变。
+    await tester.ensureVisible(find.text('测试连接'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('测试连接'));
     await tester.pump();

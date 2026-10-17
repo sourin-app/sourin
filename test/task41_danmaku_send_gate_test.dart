@@ -1,0 +1,230 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  task-41：弹幕发送入口（Owner 第 2 条后半句）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 守的是「显隐判据」+「失败必须说清」
+// ```text
+// ① capabilities.danmakuSend = false / 未声明 ⇒ 入口**不出现**
+// ② capabilities.danmakuSend = true            ⇒ 入口**出现**
+// ③ 插件没实现 danmakuSend() ⇒ 必须给**可读的错误**，不许静默
+// ```
+//
+// # ★★★ 为什么断言用 find.text / find.byIcon，不用 find.byType(按钮类)
+// ```text
+// 本项目踩过这个坑：换成 AppTextButton 之后，
+//   expect(find.byType(TextButton), findsNothing)  会**静默通过**
+// —— 按钮明明在，只是换了个类。
+// ⇒ 断言**用户能看见的东西**（文字 / 图标），与实现类解耦。
+// ```
+//
+// # ★ 显隐判据的测试为什么测「宿主算出来的布尔」而不是直接搭 PlayerPage
+// ```text
+// PlayerPage 的构造需要 media_kit（libmpv-2.dll），在 flutter_tester 里
+// 会**偶发 native 崩溃**（见 test/live_referer_onwire_test.dart 顶部那段证据）。
+// ⇒ 本文件把「判据」抽成可单独调用的形态来测，宿主接线由源码契约断言守。
+// ```
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
+
+import 'package:sourin_spike/core/models.dart';
+import 'package:sourin_spike/ui/player_page.dart';
+import 'package:sourin_spike/ui/tokens.dart';
+
+Widget _host(Widget child) => MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark(useMaterial3: true),
+      home: Scaffold(
+        backgroundColor: const Color(0xFF101014),
+        body: Center(child: child),
+      ),
+    );
+
+/// 造一份带指定 danmakuSend 的源清单，走**真实**的 Capabilities 解析
+List<ProviderManifest> _providers({required bool? danmakuSend}) {
+  return [
+    ProviderManifest.fromJson({
+      'id': 'demo',
+      'name': '演示源',
+      'capabilities': {
+        'danmaku': true,
+        // ★ null 表示「未声明」—— 必须与「声明为 false」走同一条路
+        if (danmakuSend != null) 'danmaku_send': danmakuSend,
+      },
+    }),
+  ];
+}
+
+/// ★★★ 判据**必须调宿主那份实现**，不许在这里重写一遍
+///
+/// # 为什么（这条是踩坑之后改的）
+/// ```text
+/// 第一版测试自己重写了一遍同样的逻辑：
+///   bool canSendFor(...) => hit?.capabilities.danmakuSend ?? false;
+///
+/// 然后做故障注入（把宿主的判据写死成 true）——
+/// **一条测试都没变红**。
+/// 因为测试测的是自己那份副本，与宿主改没改**完全无关**。
+/// ⇒ 那是同义反复，不是验证。
+///
+/// 现在直接调 danmakuSendAllowed（宿主用的**同一个**函数）：
+/// 宿主改错 ⇒ 这里跟着错 ⇒ 测试红。这才叫验证。
+/// ```
+bool canSendFor(List<ProviderManifest> list, String id) =>
+    danmakuSendAllowed(list, id);
+
+void main() {
+  // ═══════════════════════════════════════════════════════════════════
+  //  ① 判据：false / 未声明 ⇒ 不出现
+  // ═══════════════════════════════════════════════════════════════════
+
+  test('★★★ danmakuSend=false ⇒ 判据为 false（入口不出现）', () {
+    final list = _providers(danmakuSend: false);
+    expect(canSendFor(list, 'demo'), isFalse,
+        reason: '★★ 声明为 false 就是不能发');
+  });
+
+  test('★★★ danmakuSend 未声明 ⇒ 判据为 false（入口不出现）', () {
+    final list = _providers(danmakuSend: null);
+    expect(canSendFor(list, 'demo'), isFalse,
+        reason: '★★ 未声明必须当成不能发 —— 不能因为「没说不行」就当行');
+  });
+
+  test('★★★ danmakuSend=true ⇒ 判据为 true（入口出现）', () {
+    final list = _providers(danmakuSend: true);
+    expect(canSendFor(list, 'demo'), isTrue,
+        reason: '★★ 声明为 true 才显示入口');
+  });
+
+  test('★★ 源不存在 ⇒ 判据为 false（不崩）', () {
+    final list = _providers(danmakuSend: true);
+    expect(canSendFor(list, 'nope'), isFalse,
+        reason: '★ 查不到源要当作不能发，不是抛异常');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ② 发送栏本体：用户能看见的东西
+  // ═══════════════════════════════════════════════════════════════════
+
+  testWidgets('★★★ 发送栏出现时，用户能看到输入框和「发送」', (t) async {
+    await t.pumpWidget(_host(DanmakuSendBar(
+      provider: 'demo',
+      episodeId: 'ep1',
+      onSend: (text, ms) async => null,
+    )));
+    await t.pumpAndSettle();
+
+    // ★ 跨实现断言：找文字 / 图标，不找具体按钮类
+    expect(find.text('发送'), findsOneWidget,
+        reason: '★★ 发送按钮必须能被用户看见');
+    expect(find.byIcon(Icons.chat_bubble_outline), findsOneWidget,
+        reason: '★ 入口图标在');
+    expect(find.byType(TextField), findsOneWidget,
+        reason: '★ 必须有输入框');
+    expect(find.text('发条弹幕…'), findsOneWidget,
+        reason: '★ 空态有提示文案');
+  });
+
+  testWidgets('★★ 空输入时按钮不可点（防误发空弹幕）', (t) async {
+    var called = 0;
+    await t.pumpWidget(_host(DanmakuSendBar(
+      provider: 'demo',
+      episodeId: 'ep1',
+      onSend: (text, ms) async {
+        called++;
+        return null;
+      },
+    )));
+    await t.pumpAndSettle();
+
+    await t.tap(find.text('发送'));
+    await t.pumpAndSettle();
+    expect(called, 0,
+        reason: '★★ 没输入内容就点发送，不该真的发出去');
+  });
+
+  testWidgets('★★★ 输入后点发送 ⇒ 真的把文本交出去', (t) async {
+    String? got;
+    int? gotMs;
+    await t.pumpWidget(_host(DanmakuSendBar(
+      provider: 'demo',
+      episodeId: 'ep1',
+      positionMs: () => 12345,
+      onSend: (text, ms) async {
+        got = text;
+        gotMs = ms;
+        return null;
+      },
+    )));
+    await t.pumpAndSettle();
+
+    await t.enterText(find.byType(TextField), '  测试弹幕  ');
+    await t.pump();
+    await t.tap(find.text('发送'));
+    await t.pumpAndSettle();
+
+    expect(got, '测试弹幕',
+        reason: '★★ 交给宿主的必须是**去空白**后的正文');
+    expect(gotMs, 12345,
+        reason: '★★ 必须把当前进度一起交出去（按进度发的站点要用）');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ③ 失败必须说清（不许静默）
+  // ═══════════════════════════════════════════════════════════════════
+
+  testWidgets('★★★ 发送失败 ⇒ 错误原因显示出来，且输入框内容**保留**', (t) async {
+    await t.pumpWidget(_host(DanmakuSendBar(
+      provider: 'demo',
+      episodeId: 'ep1',
+      onSend: (text, ms) async => '这个源不支持发送弹幕',
+    )));
+    await t.pumpAndSettle();
+
+    await t.enterText(find.byType(TextField), '发不出去的弹幕');
+    await t.pump();
+    await t.tap(find.text('发送'));
+    await t.pumpAndSettle();
+
+    expect(find.text('这个源不支持发送弹幕'), findsOneWidget,
+        reason: '★★★ 失败原因必须显示 —— 静默失败是这条功能最坏的形态');
+    final tf = t.widget<TextField>(find.byType(TextField));
+    expect(tf.controller?.text, '发不出去的弹幕',
+        reason: '★★ 失败后不许清空 —— 用户辛苦打的字不能没了');
+  });
+
+  testWidgets('★★ 成功后清空输入框', (t) async {
+    await t.pumpWidget(_host(DanmakuSendBar(
+      provider: 'demo',
+      episodeId: 'ep1',
+      onSend: (text, ms) async => null,
+    )));
+    await t.pumpAndSettle();
+
+    await t.enterText(find.byType(TextField), '会成功的弹幕');
+    await t.pump();
+    await t.tap(find.text('发送'));
+    await t.pumpAndSettle();
+
+    final tf = t.widget<TextField>(find.byType(TextField));
+    expect(tf.controller?.text, '',
+        reason: '★ 成功后清空，方便接着发下一条');
+  });
+
+  testWidgets('★★ onSend 抛异常时也不静默（兜底）', (t) async {
+    await t.pumpWidget(_host(DanmakuSendBar(
+      provider: 'demo',
+      episodeId: 'ep1',
+      onSend: (text, ms) async => throw StateError('boom'),
+    )));
+    await t.pumpAndSettle();
+
+    await t.enterText(find.byType(TextField), 'x');
+    await t.pump();
+    await t.tap(find.text('发送'));
+    await t.pumpAndSettle();
+
+    expect(find.textContaining('发送失败'), findsOneWidget,
+        reason: '★★ 兜底也不能静默 —— 否则用户以为发出去了');
+  });
+}

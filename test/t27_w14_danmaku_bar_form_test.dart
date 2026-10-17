@@ -302,7 +302,9 @@ void main() {
      *   字幕图标是那个“圆角方框+几道横线”的闭幕形状。
      *   钉住的**语义**没变：图标随开关态切换（开/关 各一枚）。
      */
-    expect(slice.contains('icon: danmakuEnabled ? Icons.comment'), isTrue,
+    // ⚠️ 2026-10-18（round-65 E2）：`Icons.comment` → `AppIcons.comment`。
+    //    同上，只是换了图标常量表的名字，codePoint 与字体族逐字相同。
+    expect(slice.contains('icon: danmakuEnabled ? AppIcons.comment'), isTrue,
         reason: '★ 开关图标随开关态切换（开=comment / 关=comments_disabled）');
   });
 
@@ -315,7 +317,10 @@ void main() {
     expect(slice.contains('PlayerPopoverIds.danmakuQuick'), isTrue,
         reason: '★ 入口 id = danmakuQuick');
     // ★ 2026-10-15（Owner：「弹旁边加一个设置的齿轮」）—— tune（滑杆图标）→ settings（齿轮）
-    expect(slice.contains('icon: Icons.settings,'), isTrue,
+    // ⚠️ 2026-10-18（round-65 E2）：`Icons.settings` → `AppIcons.settings`。
+    //    E2 把全仓 163 处 `Icons.*` 换成自建 AppIcons（摘 material_ui 依赖），
+    //    codePoint 与字体族逐字相同 ⇒ 观感零变化，只是字面名变了。
+    expect(slice.contains('icon: AppIcons.settings,'), isTrue,
         reason: '★ 设置图标 = 齿轮（与弹幕开关配成一对）');
   });
 

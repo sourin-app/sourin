@@ -45,12 +45,33 @@ String stripComments(String src) {
 }
 
 void main() {
+  /*
+   * ⚠️ 2026-10-18（round-65 批次 B）：必须在这里关掉**内置公共实例**。
+   *
+   * # 为什么
+   * 批次 B 给 danmaku 加了 `kDanmakuPublicInstances`（内置的 dan-api 公共实例），
+   * 上线后「没配 endpoint」的含义从「走官方/本机」变成了「先走内置实例」。
+   *
+   * 而本文件测的是**凭证签名**（X-AppId / X-Signature）：它需要一个
+   * 「只有官方这一条路」的环境，否则请求会被内置实例接管，
+   * 签名头根本不产生 ⇒ `X-AppId` 读到 null（实测：
+   *   Expected: 'builtin-id'  Actual: <null>）。
+   *
+   * # 为什么单独跑不红、混跑才红
+   * 其它 danmaku 测试（t105 / t27_w5 / t3_danmu_api / task35）都在 setUp 里
+   * 调了 `debugSetPublicInstances(const [])`，跑完后 **没有** 恢复成 null；
+   * 本文件本来没有这一行 ⇒ 一旦谁在同一个 isolate 里先跑过别的文件，
+   * 全局静态状态就带着「内置已关/已开」的残留进来。
+   * ⇒ 补上这一行，让本文件**不依赖执行顺序**。
+   */
   setUp(() {
     UiPrefs.debugResetForTest(<String, String>{});
     DanmakuConfig.debugSetBuiltin(); // 回到缺省（清掉上一条注入）
+    DanmakuConfig.debugSetPublicInstances(const <DanmakuPublicInstance>[]);
   });
   tearDown(() {
     DanmakuConfig.debugSetBuiltin();
+    DanmakuConfig.debugSetPublicInstances(null);
     UiPrefs.debugResetForTest(<String, String>{});
   });
 

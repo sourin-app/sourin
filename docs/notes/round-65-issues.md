@@ -66,11 +66,15 @@ GitHub 仓库  https://github.com/iuuuuuuuu/sourin-plugins   ← 新建的私库
 **发现**：`plan-round-65.md` 批次 A 写「含 4 个 `.bak-*`」，实测
 `%APPDATA%\app.sourin.player\plugins\` 下只有 **3 个**：
 ```text
-bilibili.js.bak-coverfix-20261001-182800
-bilibili.js.bak-dedup-20261012-074706
-bilibili.js.bak-prev
+<源名>.js.bak-coverfix-20261001-182800
+<源名>.js.bak-dedup-20261012-074706
+<源名>.js.bak-prev
 ```
 （`find . -name '*.bak*'` 递归查过，无第 4 个。）
+
+> ⚠️ 这里**不写具体源名**：本文件在仓库内，会被 `t98` 站名门禁扫描。
+> 具体文件名见私有仓 `iuuuuuuuu/sourin-plugins` 的实际文件清单。
+> 上一版我把三个真实文件名照抄进来，`t98` 立刻变红 —— 已改回中性占位。
 
 **判断**：不是漏拷 —— 源目录本来就只有 3 个。计划里的「4」是估计值写实了。
 

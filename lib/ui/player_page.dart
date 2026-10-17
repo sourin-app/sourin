@@ -6553,8 +6553,22 @@ class _PlayerPageState extends State<PlayerPage>
          * ★ 聚合读数（Owner 第 9 条）用条件拼接附在后面：
          *   单源时不加尾巴（与改前那句同义），多源时给出 `2 路 · 插件 N + 导入源 M = K 条`。
          */
-        _danmakuStatus = 'danmaku-service · ${res.summary}'
-            '${agg.feeds.length > 1 ? ' · ${agg.summary}' : ''}';
+        /*
+         * ⚠️ 2026-10-18（round-65 批次 B）：这句必须**保持单行**。
+         *
+         * `zz_cr_dmk_b_source_prefix_test` 用**逐字字符串**钉住
+         * `_danmakuStatus = 'danmaku-service · ${res.summary}';` ——
+         * 我把聚合尾巴接上来时写成了跨行拼接，逐字针就找不到了
+         * （实测：针偏移 -1，报「针在锚点之后找不到」）。
+         *
+         * ⇒ 尾巴单独一行拼接，**前缀那半句逐字留在同一行**。
+         *   语义没变（多源时仍追加 ` · 2 路 · 插件 N + 导入源 M = K 条`），
+         *   只是不让换行割断那句被门禁钉住的字面量。
+         */
+        _danmakuStatus = 'danmaku-service · ${res.summary}';
+        if (agg.feeds.length > 1) {
+          _danmakuStatus = '${_danmakuStatus} · ${agg.summary}';
+        }
         _danmakuError = null;
         _danmakuErrorAt = null;
         _danmakuEmptyExpired = false;

@@ -130,6 +130,11 @@ const subPages = <String>[
   //   （反向扫描）当场报红。同上面 2026-10-04 那条：是**清单过期**，
   //   不是产品缺陷 —— 页面已经拿到了 sticky 返回，只是清单没跟上。
   'lib/ui/settings/danmaku_source_page.dart',
+  // ★ 2026-10-18（round-65 第14条）：数据管理页（新的二级页）。
+  //   它用了 `SettingsSubPage` 外壳却不在清单里 ⇒ 本文件第 3 条守卫
+  //   （反向扫描）当场报红。同上面那两条：是**清单过期**，不是产品缺陷 ——
+  //   页面已经拿到了 sticky 返回，只是清单没跟上。
+  'lib/ui/settings/data_manage_page.dart',
 ];
 
 void main() {

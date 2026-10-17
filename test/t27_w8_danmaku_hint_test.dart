@@ -340,7 +340,8 @@ void main() {
 
     test('core：DanmakuHint 区里不许再出现硬编码端口', () {
       final src = stripComments(File('lib/core/danmaku.dart').readAsStringSync());
-      final idx = src.indexOf('class DanmakuHint {');
+      // ★ 2026-10-17：不写死大括号（改 'class DanmakuHint{ ' 或加 implements 都会红）
+      final idx = src.indexOf('class DanmakuHint');
       expect(idx, isNonNegative);
       final region = src.substring(idx, src.indexOf('static DanmakuHint htmlPage'));
       expect(region.contains("'127.0.0.1:2080'"), isFalse,

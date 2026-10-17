@@ -135,14 +135,32 @@ LiveFlatEntry _entry(LiveChannel c, String provider, String tag) =>
 /// ★ 所以生产代码给 chip 挂了稳定 `Key`（`sourceFilterChipKey`）——
 ///   本 helper 按 key 精确点 chip 本身，不"碰巧点到第一个同名文本"。
 /// ```
+/// ★★★ task-34：点**源筛选**（工具栏下拉，不再是药丸）
+///
+/// # 为什么改成「先开下拉、再点选项」
+/// ```text
+/// task-34 把三排 Wrap 药丸换成了顶部单行下拉（Owner：布局非常不合理）。
+/// ⇒ 交互从「一次点击」变成「两次点击」，**语义没变**（仍是单值筛选）：
+///   ① 点 `live-bar-source` 那格 → 菜单展开
+///   ② 点 `live-bar-opt-<label>` → 选中该项
+/// ```
+///
+/// ⚠️ 仍用**稳定 Key** 而不是 `find.text`：源名在频道行尾 tag 里也出现，
+///   菜单项与 tag 会同名 ⇒ `find.text` 必然歧义。
 Future<void> tapSource(WidgetTester t, String? provider) async {
-  await t.tap(find.byKey(sourceFilterChipKey(provider)));
+  await t.tap(find.byKey(const ValueKey('live-bar-source')));
+  await t.pumpAndSettle();
+  // 菜单项的 Key 挂在**值**上（provider id），不是显示名 ——
+  // 空串 = 「全部源」那一项（见 _BarOption 的注释）
+  await t.tap(find.byKey(ValueKey('live-bar-opt-' + (provider ?? ''))));
   await t.pumpAndSettle();
 }
 
-/// 点分类筛选 chip（按稳定 key —— 同理，分类名也可能与别处重名）
+/// 点**分类筛选**（工具栏下拉）—— 同上
 Future<void> tapGroup(WidgetTester t, String? group) async {
-  await t.tap(find.byKey(groupFilterChipKey(group)));
+  await t.tap(find.byKey(const ValueKey('live-bar-category')));
+  await t.pumpAndSettle();
+  await t.tap(find.byKey(ValueKey('live-bar-opt-' + (group ?? ''))));
   await t.pumpAndSettle();
 }
 
@@ -234,10 +252,17 @@ void main() {
     testWidgets('★ 分类列表从**当前频道**动态收集（不硬编码）', (t) async {
       await t.pumpWidget(build());
       await t.pumpAndSettle();
+      /*
+       * ★ task-34：分类现在在**下拉菜单里**（不是常驻药丸排）⇒
+       *   标签只有点开下拉后才在树上。所以本用例改成「点开再断言」。
+       * ⚠️ 仍能测出「硬编码分类名」：硬编码 ⇒ 菜单里会出现夹具里没有的分类。
+       */
+      await t.tap(find.byKey(const ValueKey('live-bar-category')));
+      await t.pumpAndSettle();
       // 夹具里出现的分类（去重）：新闻 / 影视 / 体育
-      expect(find.text('新闻'), findsOneWidget, reason: '分类 chip 动态出现');
-      expect(find.text('影视'), findsOneWidget);
-      expect(find.text('体育'), findsOneWidget);
+      expect(find.text('新闻'), findsWidgets, reason: '分类选项动态出现');
+      expect(find.text('影视'), findsWidgets);
+      expect(find.text('体育'), findsWidgets);
       // 夹具里**没有**的分类不许凭空出现（用一个绝不会被硬编码的假分类名）
       expect(find.text('不存在的分类'), findsNothing,
           reason: '★ 分类只从频道数据收集 ⇒ 没出现过的分类名不该凭空出现');
@@ -290,16 +315,27 @@ void main() {
     testWidgets('★ 分类条是**全局词汇表**（不随源塌缩）—— 两个维度正交', (t) async {
       await t.pumpWidget(build());
       await t.pumpAndSettle();
+      /*
+       * ★ task-34：分类选项下拉后才在树上 ⇒ 每轮都要先展开再断言。
+       *   每轮展开完用 `pumpAndSettle`，再展开会自然重建菜单。
+       */
       // 全部源下：新闻 / 影视 / 体育
-      expect(find.text('体育'), findsOneWidget);
+      await t.tap(find.byKey(const ValueKey('live-bar-category')));
+      await t.pumpAndSettle();
+      expect(find.text('体育'), findsWidgets);
+      // 收起
+      await t.tap(find.byKey(const ValueKey('live-bar-category')));
+      await t.pumpAndSettle();
 
       await tapSource(t, 'jia');
-      // ★ 甲源自己没有「体育」分类，但分类条**仍列出它** ——
+      // ★ 甲源自己没有「体育」分类，但分类选项**仍列出它** ——
       //   否则"源 ∩ 分类"永远选不出空集，AND 无意义。
-      expect(find.text('体育'), findsOneWidget,
+      await t.tap(find.byKey(const ValueKey('live-bar-category')));
+      await t.pumpAndSettle();
+      expect(find.text('体育'), findsWidgets,
           reason: '★ 分类从**全部可见频道**收集（全局词汇表）⇒ 不随源塌缩');
-      expect(find.text('新闻'), findsOneWidget);
-      expect(find.text('影视'), findsOneWidget);
+      expect(find.text('新闻'), findsWidgets);
+      expect(find.text('影视'), findsWidgets);
     });
   });
 
@@ -501,8 +537,13 @@ void main() {
        */
       final start = code.indexOf('class LiveChannelList');
       expect(start, greaterThan(0), reason: '前置：类必须存在');
-      // ★ 取到 `_FilterChip` 之前（即覆盖 LiveChannelList + LiveChannelListState）
-      final end = code.indexOf('class _FilterChip');
+      /*
+       * ★ task-34：范围终点从 `_FilterChip` 改成 `_FilterBar`
+       *   —— task-34 把三排药丸换成了工具栏下拉，`_FilterChip` 已删除。
+       *   ⚠️ 终点必须仍是**紧接着** LiveChannelListState 之后的那个类，
+       *     否则范围会漏掉 State 里的 `_pickSource`（那正是注入点）。
+       */
+      final end = code.indexOf('class _FilterBar');
       expect(end, greaterThan(start), reason: '前置：范围终点必须存在');
       final body = code.substring(start, end);
       // ★ 阳性对照：这段范围里**确实**有筛选实现（否则"没匹配到"可能只是剥空了）

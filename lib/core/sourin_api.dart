@@ -45,6 +45,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'ffi.dart';
 import 'json_utils.dart';
 import 'models.dart';
+import 'stream_prepare.dart';
 
 /*
  * ★ 把模型一起 export（2026-09-22）
@@ -498,7 +499,23 @@ class SourinApi {
       'id': id,
       if (req != null) 'req': req.toJson(),
     });
-    return jlist<StreamCandidate>(r, StreamCandidate.fromJson);
+    /*
+     * ★★ task-33：出口处过一遍预处理
+     *
+     * # 为什么挂在这里（而不是 player_page）
+     * ```text
+     * ① resolveStream 是点播获取候选的**唯一出口**，
+     *    挂这里就能保证「不管谁调、都会过一遍」；
+     *    挂在 UI 层则要每个调用点各自记得调。
+     * ② 保持分层：「解析编排」不是 UI 职责。
+     * ③ player_page.dart 当前有另一位同事在改（弹幕面板）。
+     * ```
+     *
+     * ⚠⚠ 这一步**不改任何现有行为**：
+     *    老插件不传 needs_host_resolve ⇒ 列表原样返回（prepare 内部直接 return list）。
+     */
+    final raw = jlist<StreamCandidate>(r, StreamCandidate.fromJson).toList();
+    return StreamPreparer.prepare(raw);
   }
 
   /// 挑第一个**能播**的候选
@@ -716,10 +733,21 @@ class SourinApi {
     // ★ N1：只有代次未变才写回 —— 变了说明这次取址已被期间的失效作废，
     //   写回就等于把旧地址又塞回缓存（失效白做）。丢弃 ≠ 错：
     //   调用方本次照样拿到 list，只是它不进缓存。
-    if (list.isNotEmpty && _liveStreamGenOf(key) == gen) {
-      _liveStreamCache[key] = (DateTime.now(), list);
+    /*
+     * ★★ task-33：直播出口同样过一遍预处理
+     *
+     * 点播与直播是**两条独立代码路径**（player_page 里按 _isLive 分叉），
+     * 只挂一条会留下「另一边静默黑屏」的口子 ——
+     * 本仓历史上正是这么漏的（见 live_audio_only_notice_test 里那条“两条通道都要有”）。
+     *
+     * ⚠⚠ 必须在**写缓存之前**预处理：否则缓存里存的是「没解的播放页 URL」，
+     * 30s 内再次切台会直接拿到它并当成可播地址。
+     */
+    final prepared = await StreamPreparer.prepare(list);
+    if (prepared.isNotEmpty && _liveStreamGenOf(key) == gen) {
+      _liveStreamCache[key] = (DateTime.now(), prepared);
     }
-    return list;
+    return prepared;
   }
 
   /// 电子节目单（EPG）

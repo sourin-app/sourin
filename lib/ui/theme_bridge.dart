@@ -61,8 +61,17 @@ import 'theme/theme_pack.dart';
 //      相对 import 在后（中间空一行）。
 import 'widgets/page_transition_route.dart';
 
-/// 组件统一的圆角（= 原 forui `style.borderRadius.md`）
-const _defaultRadius = 10.0;
+/// 组件统一的圆角
+///
+/// ★ task-31：`10 → 14`。理由（客观）：
+///   · 本仓 `Radii` 阶梯是 `8/12/16/22/28/34/999`，**没有 10** —— 10 是体系外的野值。
+///   · 10 落在 `xs(8)` 与 `sm(12)` 之间，导致「默认控件」比最小档还小、
+///     却又比不上任何一档，视觉上「方不够方、圆不够圆」。
+///   · 取 **14** 仍不在阶梯上 —— 但它让「默认控件 14 / 卡片 16 / 胶囊 999」
+///     形成 14→16→999 的单调梯度，且与 `Radii.sm(12)`/`md(16)` 的中点是 14。
+///   · ★ 无任何测试钉这个值（`grep _defaultRadius test/` = 0、`Radius.circular(10)` = 0）。
+///   · ⚠️ 圆角不改变元素位置与尺寸 ⇒ 符合「布局逐处一致」的锁 2。
+const _defaultRadius = 14.0;
 const _radius = BorderRadius.all(Radius.circular(_defaultRadius));
 
 RoundedSuperellipseBorder _shape({BorderSide side = BorderSide.none}) =>
@@ -649,13 +658,29 @@ class LightTokens {
   /// ```
   static const textSecondary = Color(0xFF60626B);
 
-  /// `--divider: rgb(16 18 26 / 0.07)` → 约 `#DFE1E8`
-  static const divider = Color(0xFFDFE1E8);
+  /// `--divider`
+  ///
+  /// ★ task-31：原 `#DFE1E8` 对页面底只有 **1.06:1** —— 分隔线形同虚设。
+  ///   取 `#D5DAE5`，与 [glassStroke] 同色相、略深一档（分隔线本就该比描边明显）。
+  ///   ⚠️ 无测试钉值（`grep DFE1E8 test/` = 0）。
+  static const divider = Color(0xFFD5DAE5);
 
-  /// `--glass-stroke: rgb(16 18 26 / 0.045)`
-  static const glassStroke = Color(0xFFE4E6EC);
+  /// `--glass-stroke`
+  ///
+  /// ★ task-31：原 `#E4E6EC` 在页面底 `#EEF0F6` 上只有 **1.03:1** —— 描边等于没画。
+  ///   （这正是 `theme_bridge.dart:428-429` 那条注释描述过的同一类缺陷：
+  ///    「thumb 像悬空的一个点」）。取 `#D3D9E4`（1.16:1），
+  ///    刚好「看得见轮廓但不像分割线」。
+  ///   ⚠️ 这个常量同时被 `outline` 与 `border` 两个角色用 —— 改一处两处都受益，
+  ///      且**没有任何测试**钉它的值（`grep E4E6EC test/` = 0 命中）。
+  static const glassStroke = Color(0xFFD3D9E4);
 
-  /// `--brand-1: #3b6fe0`（浅色下比深色**略深**，保证白底对比度）
+  /// `--brand-1` 浅色档
+  ///
+  /// ★ task-31：原值 `#3b6fe0`。**不改它** —— 有 6 条测试钉着这个值
+  ///   （`task32_source_highlight_test.dart:54/59`、`provider_import_test.dart:1155/1158`、
+  ///   `zz_cr_switch_style_test.dart:156`、`zz_cr_settings_8_navstate_test.dart:429`）。
+  ///   改它会让「源条选中环」那组断言变红，且那是**行为契约**不是皮肤。
   static const brand = Color(0xFF3B6FE0);
 
   /// `--brand-2: #8b4de8`
@@ -696,9 +721,12 @@ ThemeData _buildLight([AppPalette? override]) {
     background: LightTokens.bgBase,
     foreground: LightTokens.textPrimary,
     mutedForeground: LightTokens.textSecondary,
-    secondary: const Color(0xFFE8EAF0),
+    // ★ task-31：凹槽/轨道的「可见层级」—— 原来 #E8EAF0 在 #EEF0F6 上只有 1.06:1
+    //   几乎不可见。取同色相更深一档 #DDE2EB（对页面底 1.14:1、对数亮度差 0.075），
+    //   既让凹槽「陷下去」看得出来，又不至于变成一块灰斑。
+    secondary: const Color(0xFFDDE2EB),
     secondaryForeground: LightTokens.textPrimary,
-    muted: const Color(0xFFE8EAF0),
+    muted: const Color(0xFFDDE2EB),
     card: LightTokens.bgElevated,
     // ⚠️ 描边要**反过来**（原版要点 ⑤）：深色用白描边提亮边缘，
     //    浅色必须用深色描边才有轮廓。
@@ -714,34 +742,117 @@ ThemeData _buildLight([AppPalette? override]) {
     surfaceContainerLowest: LightTokens.bgElevated,
     surfaceContainerLow: LightTokens.bgElevated,
     surfaceContainer: LightTokens.bgElevated,
-    surfaceContainerHigh: const Color(0xFFF7F8FB),
-    surfaceContainerHighest: LightTokens.surface2,
+    // ★ task-31：抬升层。浅色体系里「越高越白」，原 #F7F8FB 对页面底只有 1.02:1
+    //   ⇒ 浮起的三层完全塌平。抬到纯白 #FFFFFF（1.16:1），让「浮起」真的成立。
+    //   这与 card(#FFFFFF) 同值是有意的：抬升层就是「一张白卡」的语言。
+    surfaceContainerHigh: const Color(0xFFFFFFFF),
+    // ★ task-31：Highest 必须比 High **更深**才有层级语义（Material 的容器阶是
+    //   「越低越浅、越高越深」在 M3 的反向约定见 _buildLight 顶部注释）。
+    //   原来它 = surface2(#F5F7FA) 比 High(#F7F8FB) **只深 2 级**，肉眼无感。
+    //
+    // ⚠️ 2026-10-17（dlg-source 实测）：这一行是**硬编码蓝灰**，不跟主题包走。
+    //   选了樱粉·浅(#F2C7CF) 之后它仍是 #E4E8F0（冷蓝灰），
+    //   与粉底并置会有轻微「灰斑」感。
+    //   但它是「容器最高阶」= 凹陷/轨道类底色，只占很小面积，
+    //   且**刻意保持中性**才不跟主题强调色打架 ⇒ 暂不改成跟随主题。
+    //   若将来要跟主题，应改成 c.secondary 一类，并重算所有用它的对比度。
+    surfaceContainerHighest: const Color(0xFFE4E8F0),
 
-    onSurfaceVariant: LightTokens.textSecondary,
+    onSurfaceVariant: c.mutedForeground,
 
-    outline: LightTokens.glassStroke,
-    outlineVariant: LightTokens.divider,
+    // ★ task-42：两档描边都回到 `c.border` 单真源（原 glassStroke/divider 是写死值）
+    outline: c.border,
+    outlineVariant: c.border,
 
-    primary: LightTokens.brand,
-    onPrimary: Colors.white,
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ task-42（2026-10-17）：primary/error 这里原来写死 LightTokens,
+     *      把主题包的值覆盖掉 —— 与下面 secondary 那个坑是**同一类**。
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 实测（改前）
+     * ```text
+     * pack                  palette.primary   cs.primary   一致?
+     * daylight              2B54B8            3B6FE0        否
+     * oled.light            171717            3B6FE0        否
+     * midnightBlue.light    1E4C8A            3B6FE0        否
+     * sakura.light          E38AA6(粉)        3B6FE0        否  ← 粉被换成蓝
+     * forest.light          2E7D4F(绿)        3B6FE0        否  ← 绿被换成蓝
+     * neoBrutal.light       000000(黑)        3B6FE0        否  ← 黑被换成蓝
+     * minimal               3D5A4C            3B6FE0        否
+     * ⇒ 7 套里 6 套失效；只有 glass 恰好也等于 3B6FE0 才没暴露。
+     * ```
+     *
+     * # 为什么当时只修了 secondary
+     * ```text
+     * 下面那段注释记录了 secondary 的同类修复（"又写了一遍字面量 #E8EAF0"），
+     * 但当时**没有把同类的其它字段全扫一遍** ⇒ primary / onPrimary /
+     * onSurfaceVariant / outline / outlineVariant / error / onSecondary /
+     * inverseSurface 全部漏网。
+     * ⇒ 教训：修「一处覆盖」时要扫**同一个 copyWith 里的所有字段**，
+     *   而不是只修被投诉的那一个。
+     * ```
+     *
+     * # 现在：全部改为引用 `c`（AppPalette 的单真源）
+     * ```text
+     * 字段              改前              改后                    对比度复核
+     * primary           LightTokens.brand c.primary               见下
+     * onPrimary         Colors.white      c.primaryForeground     —
+     * onSurfaceVariant  textSecondary     c.mutedForeground       >=4.69 全部过
+     * outline           glassStroke       c.border                1.19~18.9 过
+     * outlineVariant    divider           c.border                （同源）
+     * error             LightTokens.error c.error                 >=3.57 全部过 3:1
+     * onSecondary       textPrimary       c.secondaryForeground   —
+     * inverseSurface    textPrimary       c.foreground            —
+     * ```
+     *
+     * ★ primary/onPrimary 对比度（换成主题色后逐一复算，全部 >= 4.5）
+     * ```text
+     * daylight     2B54B8 + FFFFFF = 6.86
+     * oled.light   171717 + FAFAFA = 17.18
+     * midnightBlue 1E4C8A + FFFFFF = 8.55
+     * sakura       E38AA6 + 231419 = 7.13   ← 浅粉配深字，不是白字
+     * forest       2E7D4F + FFFFFF = 5.05
+     * glass        3B6FE0 + FFFFFF = 4.63
+     * neoBrutal    000000 + FFFFFF = 21.00
+     * minimal      3D5A4C + F7F9F7 = 7.18
+     * ```
+     * ⚠️ sakura 的 onPrimary 是**深色** #231419（不是白字）—— 因为浅粉底上
+     *    白字只有 2:1。这正说明「onPrimary 必须跟着主题包走」，
+     *    写死 Colors.white 会让樱粉按钮上的字几乎看不见。
+     *
+     * # error 的复核（判据是 >=3:1，见 theme_invariants_test）
+     * ```text
+     * 换成主题包 error 后：midnightBlue/glass/neoBrutal/sakura 在 3.57~4.29，
+     * 高于 3:1 判据 ⇒ 合法。
+     * ⚠️ 但它们低于 4.5（正文标准）。error 是「提示色不是正文」，
+     *    且原判据就定在 3:1，故不改 error 色值本身。
+     * ```
+     */
+    primary: c.primary,
+    onPrimary: c.primaryForeground,
     primaryContainer: const Color(0xFFDCE6FB),
     onPrimaryContainer: const Color(0xFF10305E),
 
-    error: LightTokens.error,
+    error: c.error,
     onError: Colors.white,
     errorContainer: LightTokens.errorContainer,
     onErrorContainer: const Color(0xFF5F1410),
 
-    secondary: const Color(0xFFE8EAF0),
-    onSecondary: LightTokens.textPrimary,
+    // ★ task-31：这里原来**又**写了一遍字面量 `#E8EAF0`，把上面
+    //   `AppPalette.light.copyWith(secondary: ...)` 的值**覆盖掉**了 ——
+    //   实测：改了 palette 的 secondary，live `colorScheme.secondary` 仍是 #E8EAF0。
+    //   ⇒ 改为引用 `c.secondary`，让「凹槽色」只有一个真源。
+    secondary: c.secondary,
+    onSecondary: c.secondaryForeground,
     // ★ `secondaryContainer` / `onSecondaryContainer` 必须与 `secondary`
     //   同源，否则 `FilledButton.tonal` 看起来"没跟着主题走"。
-    secondaryContainer: const Color(0xFFE8EAF0),
+    secondaryContainer: c.secondary,
     onSecondaryContainer: LightTokens.textPrimary,
     tertiary: LightTokens.brand2,
     onTertiary: Colors.white,
     surfaceTint: Colors.transparent,
-    inverseSurface: LightTokens.textPrimary,
+    inverseSurface: c.foreground,
     onInverseSurface: LightTokens.bgBase,
   );
 

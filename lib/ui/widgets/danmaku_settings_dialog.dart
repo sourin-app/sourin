@@ -68,6 +68,7 @@ import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import 'cover_image.dart';
 import 'app_dialog_shell.dart';
+import '../../design/widgets/app_icon_button.dart';
 
 /// T27-01：弹幕面板文字统一灰阶 —— 全文件取色只走这里
 ///
@@ -1052,6 +1053,25 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
      */
     return Padding(
       padding: const EdgeInsets.all(Sp.x4),
+      /*
+       * ⚠️ 2026-10-17：**这里不能换 AppSurface**（我换过一次，被测试打回）
+       *
+       * # 缺陷现场
+       * ```text
+       * 换成 AppSurface 后测试抛：
+       *   "ListTile background color or ink splashes may be invisible.
+       *    The ListTile is wrapped in a DecoratedBox that has a background color."
+       *
+       * 原因：AppSurface 内部是 DecoratedBox(带底色)，
+       *       而 ListTile 的底色与水波纹画在**最近的 Material 祖先**上。
+       *       中间隔一层带底色的 DecoratedBox ⇒ 效果被盖住 ⇒ 用户点上去看不到反馈。
+       * ```
+       *
+       * ★ 这暴露了「Material 分类」的根本盲点：
+       *   Material 不只是"提供底色"，它同时是 **ListTile 家族的绘制祖先**。
+       *   ⇒ 判断能否删，必须看**子树里有没有 ListTile/CheckboxListTile/SwitchListTile**，
+       *     而不是看它自己有没有 color。
+       */
       child: Material(
         color: bg,
         type: MaterialType.card,

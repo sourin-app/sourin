@@ -134,6 +134,7 @@ import 'subtitle/subtitle_panel.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
 import 'widgets/bili_import_dialog.dart';
+import 'widgets/danmaku_info_panel.dart';
 import 'widgets/danmaku_overlay.dart';
 import 'widgets/danmaku_settings_dialog.dart';
 import 'widgets/episode_strip.dart';
@@ -1781,6 +1782,31 @@ class _PlayerPageState extends State<PlayerPage>
   /// 「数据源」状态行文案（弹幕设置面板用；最近一次探测的结果）
   String _danmakuSourceLine = '';
 
+  // ══════════════════════════════════════════════════════════════════
+  //  ★★★ 弹幕**发送**入口（Owner 第 2 条后半句）
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // # 为什么显隐要单独存一个字段，而不是在 build 里现查
+  // ```text
+  // build 里现查要 `await SourinApi.listProviders()` —— build 不能 await；
+  // 若改成 FutureBuilder，控制条每次淡入淡出都会重跑一次查询。
+  // ⇒ 与 `_danmakuSourceLine` 同一手法：**在写入处一并写**，build 只读字段。
+  // ```
+  //
+  // ⚠️ 默认 **false**（不显示）。这是**安全方向**：
+  //    漏判的代价是「该显示没显示」（用户少一个入口），
+  //    反方向的代价是「不该显示却显示了」——用户打完字点发送才被告知
+  //    「这个源不支持」，那是更坏的体验。
+  bool _danmakuCanSend = false;
+
+  /// 发弹幕要用的**真站点 id**
+  ///
+  /// ⚠️ 不能直接用 `_provider`：本地会话时它是 `'local'`（续播命名空间），
+  ///    而 `provider_danmaku_send` 要的是真站点 id —— 传 `local` 会得到
+  ///    「找不到 Provider: local」，用户会以为发送功能坏了。
+  ///    判据复用 [providerNameLookupId]（与顶栏站名**同一个**函数）。
+  String? _danmakuSendProvider;
+
   // ── ★★★ 2026-10-14（Owner）：手动搜索番剧的状态 ────────────────────
   //
   // Owner 原话：> 弹幕我没有看到[弹幕服务]的搜索功能和绑定
@@ -1874,11 +1900,113 @@ class _PlayerPageState extends State<PlayerPage>
   /// 上一次取弹幕的结果摘要（给面板与角标显示）
   String _danmakuStatus = '';
 
+  /*
+   * ★★ 2026-10-17（task-32 ② / Owner：「在播放页面右侧显示加载了哪些弹幕,
+   *    方便排查问题」）—— 右侧「弹幕信息」面板要的四件事，各用一个显式字段记。
+   *
+   * # 为什么不从 `_danmakuStatus` 反解
+   * ```text
+   * `_danmakuStatus` 是**给人看的文案**，里面有"外部视频站 · "这种前缀；
+   * 想从中反解出"来源是哪一个、匹配方式是哪种"就得写正则去猜文案。
+   * 一旦有人改文案（这是常事），面板就会静默显示错的来源 —— 排查工具
+   * 自己说谎比没有工具更糟。
+   * ⇒ 在每个**写 `_danmakuStatus` 的同一处**一并写这几个字段（同源、同帧）。
+   * ```
+   */
+
+  /// 这一集最终**是谁**供上了弹幕
+  DanmakuInfoSource _infoSource = DanmakuInfoSource.none;
+
+  /// 这一集是怎么和那个源**对上**的
+  DanmakuInfoMatch _infoMatch = DanmakuInfoMatch.none;
+
+  /// 绑到的作品标题（外部视频站才有；null = 不知道/没绑）
+  String? _infoTitle;
+
+  /// 附加说明（版本号 / 端点 / 文件名…）—— 排查时"是哪个后端"的唯一线索
+  String? _infoDetail;
+
+  /// 右侧「弹幕信息」面板是否展开
+  bool _danmakuInfoOpen = false;
+
+  /// 要不要在顶栏挂那枚「弹幕」入口
+  ///
+  /// 判据：**这一集真的和弹幕发生过关系** —— 有数据、正在取、或者失败了。
+  /// 三者都没有 ⇒ 不挂。不挂比挂一个空面板诚实：用户点开看到"未取到"
+  /// 只会更困惑（他根本没开弹幕）。
+  bool get _danmakuInfoVisible =>
+      _danmakuComments.isNotEmpty ||
+      _danmakuLoading ||
+      _danmakuError != null ||
+      _infoSource != DanmakuInfoSource.none;
+
+  /// 记下"这一集的弹幕是谁供的、怎么对上的"
+  ///
+  /// ⚠️ 必须与写 `_danmakuStatus` 的**同一处**调用 —— 两个字段分开写就会
+  ///   出现"面板说 A、状态栏说 B"（那个 bug 修起来非常贵）。
+  void _setDanmakuInfo({
+    DanmakuInfoSource? source,
+    DanmakuInfoMatch? match,
+    String? title,
+    String? detail,
+    bool clearTitle = false,
+    bool clearDetail = false,
+  }) {
+    if (source != null) _infoSource = source;
+    if (match != null) _infoMatch = match;
+    if (title != null) _infoTitle = title;
+    if (clearTitle) _infoTitle = null;
+    if (detail != null) _infoDetail = detail;
+    if (clearDetail) _infoDetail = null;
+  }
+
   /// 取弹幕的并发令牌（换集时旧的响应必须被丢掉）
   int _danmakuFetchToken = 0;
 
   /// 面板的状态快照（面板是纯 UI，所有读写都经过宿主）
   DanmakuSettingsState _danmakuSettings = DanmakuSettingsState.fromPrefs();
+
+  /// 右侧「弹幕信息」面板要显示的那一份快照
+  ///
+  /// ★ 由几个字段**现算**（不另存一份副本）——副本迟早会和真源不同步，
+  ///   而这个面板存在的唯一意义就是"如实反映当前状态"。
+  DanmakuInfoData get _danmakuInfo => DanmakuInfoData(
+        source: _infoSource,
+        match: _infoMatch,
+        /*
+         * ⚠️ `null` = 没问过（未知），0 = 问过且确实 0 条。两者不能合并：
+         *    把"未知"画成 0 会让排查的人去追一个根本不存在的空数据。
+         *    判据用 `_infoSource` 而不是 `comments.isEmpty` —— 后者把
+         *    "取回来了但确实是 0 条"也当成未知（那正是要排查的第二种情况）。
+         */
+        count: _infoSource == DanmakuInfoSource.none
+            ? null
+            : _danmakuComments.length,
+        title: _infoTitle,
+        cid: _biliCid,
+        detail: _infoDetail,
+        // ★ 失败原因要**原文**（服务端的 X-Error-Message 等照样透出，
+        //   不改写）—— 这个面板就是用来排查的，转述会丢掉关键信息。
+        error: _danmakuError == null ? null : _danmakuErrorText(_danmakuError!),
+        loading: _danmakuLoading,
+        enabled: _danmakuEnabled,
+      );
+
+  /// 把 [DanmakuException] 摊成一段**可复制去搜**的原文
+  ///
+  /// 取舍：面板宽度只有 300，所以优先给「一句中文 + 状态码 + 服务端原文」，
+  /// 而不是把 body（最多 2000 字）整段倒进来 —— 那会把面板撑成一面墙。
+  /// body 仍然留在 `_danmakuError` 里（弹幕设置面板显示），这里只取最能定位的那几个。
+  String _danmakuErrorText(DanmakuException e) {
+    final b = StringBuffer(e.message);
+    if (e.statusCode > 0) b.write('（HTTP ${e.statusCode}）');
+    final x = e.xErrorMessage.trim();
+    if (x.isNotEmpty) b.write(' · $x');
+    final em = e.errorMessage.trim();
+    if (em.isNotEmpty && em != x) b.write(' · $em');
+    if (e.uri.isNotEmpty) b.write('\n${e.uri}');
+    return b.toString();
+  }
 
   /// Readout channel for the danmaku panel status line.
   ///
@@ -2759,6 +2887,8 @@ class _PlayerPageState extends State<PlayerPage>
      * 拿不到就不渲染那个 pill（不是渲染空的）。
      */
     unawaited(_loadProviderName());
+    // ★ 与站名**同一批**刷新：换源后发送入口的能力必须跟着换
+    unawaited(_loadDanmakuSendCapability());
 
     /*
      * ══════════════════════════════════════════════════════════════════
@@ -2928,6 +3058,191 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   ///    改前是 `providerDisplayName(_provider)` 一把梭 ⇒ 本地会话把
   ///    `'local'` 原样挂到顶栏（Owner 看到的「而不是local」）。
+  /// 查「当前源能不能发弹幕」+ 记下真站点 id（Owner 第 2 条后半句）
+  ///
+  /// # 为什么与 [_loadProviderName] 分开、而不是顺手塞进去
+  /// ```text
+  /// 两件事的**失败语义**不同：
+  ///   · 查名字失败 ⇒ 退回 id 显示（无害）；
+  ///   · 查能力失败 ⇒ 必须当作「不能发」。
+  /// 合在一起会让「名字查到了但能力没查到」这种半成功状态无从表达。
+  /// ```
+  ///
+  /// ⚠️ 调用点与 [_loadProviderName] **完全一致**（换源/换集/首帧），
+  ///    否则会出现「顶栏已经显示新站名，发送入口却还是旧源的能力」。
+  Future<void> _loadDanmakuSendCapability() async {
+    final id = providerNameLookupId(
+      provider: _provider,
+      originProvider: widget.originProvider,
+    );
+    // 没有真站点（本地会话且认不回来）⇒ 一定不能发
+    if (id == null || id.isEmpty) {
+      if (!mounted) return;
+      if (_danmakuCanSend || _danmakuSendProvider != null) {
+        setState(() {
+          _danmakuCanSend = false;
+          _danmakuSendProvider = null;
+        });
+      }
+      return;
+    }
+    var canSend = false;
+    try {
+      final list = await SourinApi.listProviders();
+      /*
+       * ★★★ 判据走**顶层函数** danmakuSendAllowed —— 与单测读同一份实现。
+       *   不在这里内联写一遍：那样测试只能重写一份同样的逻辑，
+       *   改错了也照样全绿（本文件第一版就是这么翻车的，见该函数注释）。
+       */
+      /*
+       * ★ 判据就是契约里那一个布尔，**不做任何推断**。
+       *
+       * 尤其**不要**「插件没声明 danmakuSend 但声明了 danmaku ⇒ 也许能发」
+       * 这类推测：契约里 danmakuSend 是**独立**声明，
+       * 收弹幕与发弹幕本来就是两种能力（很多源只能收不能发）。
+       */
+      canSend = danmakuSendAllowed(list, id);
+      debugPrint('[PLAYER] 源 $id 可发送弹幕 = $canSend');
+    } catch (e) {
+      /*
+       * 查不到 ⇒ **当作不能发**（安全方向，见字段注释），但要留痕：
+       * 排查「为什么这个源没有发送入口」时需要这条日志。
+       */
+      debugPrint('[PLAYER] 取源能力失败（按不可发送处理）: $e');
+      canSend = false;
+    }
+    if (!mounted) return;
+    /*
+     * ★ 代次保护：换源是异步的，两次查询可能乱序返回。
+     *   判据与 _loadProviderName 相同 —— 「发起时的 id 是否仍是当前 id」。
+     */
+    if (id !=
+        providerNameLookupId(
+          provider: _provider,
+          originProvider: widget.originProvider,
+        )) {
+      return;
+    }
+    if (_danmakuCanSend == canSend && _danmakuSendProvider == id) return;
+    setState(() {
+      _danmakuCanSend = canSend;
+      _danmakuSendProvider = id;
+    });
+  }
+
+  /// 真正把一条弹幕发出去（供 [DanmakuSendBar] 注入）
+  ///
+  /// 返回 null = 成功；返回字符串 = **给用户看的失败原因**。
+  ///
+  /// # ★★★ 为什么把异常翻成字符串，而不是让它往上抛
+  /// ```text
+  /// 契约里的失败是**分类**的（unsupported / unauthorized / network / parse），
+  /// 每一类对应的下一步动作完全不同：
+  ///   unsupported  → 这个源就是不能发，别再试了
+  ///   unauthorized → 去登录
+  ///   network      → 检查网络
+  /// 若统一抛出去、上面再 catch 成「发送失败」，这些可执行信息就全丢了。
+  /// ⇒ 在这里**就地分类翻译**，把上游原话一并带上（不改写原因）。
+  /// ```
+  ///
+  /// # ★★ 绝不假装成功
+  /// ```text
+  /// Rust 侧 `provider_danmaku_send` 的纪律是「只有上游确实收下才 Ok(true)」，
+  /// 未实现 ⇒ Err(unsupported)。
+  /// 本方法**原样相信**那个结果：
+  ///   · 抛异常        ⇒ 失败（不管异常文本长什么样）
+  ///   · 返回 ok=false ⇒ 也算失败
+  /// 唯一算成功的只有 ok=true。
+  /// ```
+  Future<String?> _sendDanmaku(String text, int? positionMs) async {
+    final provider = _danmakuSendProvider;
+    if (provider == null || provider.isEmpty) {
+      return '找不到要发往的源，请重新进入这一集再试';
+    }
+    try {
+      final r = await SourinApi.providerDanmakuSend(
+        provider,
+        episodeId: _contentId,
+        text: text,
+        progressMs: positionMs,
+      );
+      if (!r.ok) {
+        /*
+         * ★ ok=false 也是一种失败。Rust 契约里正常路径不会走到这里
+         *   （未实现是 Err 不是 ok:false），但**不能因此假设它不会发生** ——
+         *   一旦真出现，当成成功就是最坏的那种误导。
+         */
+        return '上游没有确认收到这条弹幕，请稍后重试';
+      }
+      _flash('弹幕已发送');
+      return null;
+    } on SourinCoreException catch (e) {
+      /*
+       * ★ 按 kind 分类翻译。kind 由 Rust 侧按错误前缀填好
+       *   （见 core/ffi.dart 里 SourinCoreException.kind 的注释）。
+       */
+      final raw = e.message.trim();
+      /*
+       * ★★★ 判 kind 时**同时看消息前缀**，不只信 e.kind
+       *
+       * # 为什么（实测出来的，不是防御性编程的洁癖）
+       * ```text
+       * Rust 侧 provider_danmaku_send 走 with_state_async，错误在那一层被
+       * classify_error(&e)（ffi.rs:2188）**按关键字重新分类**：
+       *   · 它拿到的是一句**扁平化的 message**，ProviderError.kind 已经丢了；
+       *   · 于是 unsupported: 这种标准前缀**不被认**，
+       *     除非正文里恰好出现「不支持 / 未配置」这些中文词。
+       * 实测：
+       *   抛 'unsupported: 这个源只声明了能力，没真的实现发送'
+       *     ⇒ kind = other          ← 明明是标准前缀
+       *   抛 'unsupported: 不支持发送'
+       *     ⇒ kind = unsupported    ← 只因为正文里有个「不支持」
+       * ```
+       * ⇒ 若只信 e.kind，用户会看到含糊的「发送失败」而不是
+       *   「这个源不支持发送」，恰好糟蹋掉 Owner 第 2 条要的那句提示。
+       * 所以这里**以消息前缀为准**，kind 作为补充。
+       *
+       * ⚠️ Rust 那个分类缺陷已单独报给 Lead，不在本文件修（越界）。
+       *    这里做的是「不依赖上游不可靠字段」的本地防御 ——
+       *    上游修好之后这段仍然正确，不会反过来变成 bug。
+       */
+      final byPrefix = raw.startsWith('unsupported:')
+          ? 'unsupported'
+          : raw.startsWith('unauthorized:')
+              ? 'unauthorized'
+              : raw.startsWith('network:')
+                  ? 'network'
+                  : null;
+      final kind = byPrefix ?? e.kind;
+      switch (kind) {
+        case 'unsupported':
+          /*
+           * ★★ 这一条是 Owner 第 2 条的核心：
+           *   插件**声明**了 danmakuSend 但**没实现** danmakuSend() 时，
+           *   入口会出现（声明为真），点发送才失败。
+           *   ⇒ 必须说清是「这个源不支持发送」，而不是含糊的「发送失败」。
+           */
+          return raw.isEmpty
+              ? '这个源不支持发送弹幕'
+              : '这个源不支持发送弹幕（$raw）';
+        case 'unauthorized':
+          return raw.isEmpty ? '需要先登录才能发弹幕' : '需要先登录才能发弹幕（$raw）';
+        case 'network':
+          return raw.isEmpty ? '网络异常，弹幕没发出去' : '网络异常，弹幕没发出去（$raw）';
+        default:
+          // 其余情况**原样透出**上游理由，不自己编一个更好听的
+          return raw.isEmpty ? '发送失败' : '发送失败：$raw';
+      }
+    } catch (e) {
+      return '发送失败：$e';
+    }
+  }
+
+  /// 当前进度（毫秒）—— 发给「按进度发」的站点
+  int? _danmakuSendPositionMs() {
+    if (_isLive) return null; // 直播没有「进度」这个概念
+    return _positionNotifier.value.inMilliseconds;
+  }
   Future<void> _loadProviderName() async {
     /*
      * 判据在**发起时**算一次，并且与代次保护用**同一个**值 ——
@@ -5967,6 +6282,10 @@ class _PlayerPageState extends State<PlayerPage>
             _danmakuError = null;
             _danmakuLoading = false;
             _danmakuStatus = '已载入「$fileName」（弹幕库 #$pinned · ${cs.length} 条）';
+            _setDanmakuInfo(
+              source: DanmakuInfoSource.library,
+              detail: fileName,
+            );
           });
           debugPrint('[DMK] 按用户点选的 episodeId 直达：#$pinned ⇒ ${cs.length} 条');
           return;
@@ -5999,6 +6318,22 @@ class _PlayerPageState extends State<PlayerPage>
         _danmakuErrorAt = null;
         _danmakuEmptyExpired = false;
         _danmakuLoading = false;
+        /*
+         * ★ 如实登记来源（面板读它，不再从 `_danmakuStatus` 反解文案）。
+         *
+         * 本机弹弹play 与自建后端**必须分开**：两者都让 `online` 为 true，
+         * 但用户要做的事完全不同（启动桌面版 vs 去配置里改地址）。
+         */
+        _setDanmakuInfo(
+          source: _danmakuUsingLocal
+              ? (_danmakuLocalStatus?.endpoint != null
+                  ? DanmakuInfoSource.selfHosted
+                  : DanmakuInfoSource.localDanmaku)
+              : DanmakuInfoSource.service,
+          detail: _danmakuLocalStatus?.version == null
+              ? null
+              : 'v${_danmakuLocalStatus!.version}',
+        );
         _danmakuSettings = _danmakuSettings.copyWith(
           loading: false,
           clearError: true,
@@ -6508,6 +6843,8 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   void _pickDanmakuMatch(DanmakuMatch m) {
+    // ★ 用户亲手选的 ⇒ 匹配方式就是"手动绑定"（面板第三格要如实说）
+    _setDanmakuInfo(match: DanmakuInfoMatch.manual);
     /*
      * ★ 先把「用户的选择」记成这一集的弹幕身份（`_biliCid` —— 见它的字段
      *   注释：外部视频站那条路也写这个字段，两者语义同构）
@@ -7143,6 +7480,24 @@ class _PlayerPageState extends State<PlayerPage>
       if (!mounted) return true;
       // 自动匹配成功 ⇒ 让面板与卡片也能看到这次绑定（不静默改状态）
       debugPrint('[BILI] 自动匹配成功：${outcome.reason} cid=$cid');
+      /*
+       * ★★ 登记"怎么对上的" —— 这是本面板存在意义的第三格。
+       *
+       * 判据是 `outcome.reason` 里那句**由 core 写明**的文案：
+       * season 兜底那条自己就带「season 链路」字样（见 bili_bind.dart 的
+       * `_autoBindViaSeason`）。用它而不是猜分数 —— 分数 0.5 是 season
+       * 兜底**硬编码**的，和"匹配得多准"无关。
+       *
+       * ⚠️ 若将来 core 改了那句文案，这里会退化成 `autoSearch`。
+       *    方向是**安全**的（错误显示成"自动匹配"而不是误报"兜底"），
+       *    但仍应同步改 —— 已在 app_menu 那轮踩过同类坑。
+       */
+      _setDanmakuInfo(
+        match: outcome.reason.contains('season')
+            ? DanmakuInfoMatch.autoSeason
+            : DanmakuInfoMatch.autoSearch,
+        title: outcome.binding.title,
+      );
       await _loadBiliDanmaku(cid);
       return true;
     } catch (e) {
@@ -7198,6 +7553,11 @@ class _PlayerPageState extends State<PlayerPage>
          */
         _danmakuErrorAt = DateTime.now();
         _danmakuLoading = false;
+        // ★ 失败也要如实登记来源（面板要显示"谁失败了"+ 原文原因）
+        _setDanmakuInfo(
+          source: DanmakuInfoSource.bili,
+
+        );
         _danmakuSettings = _danmakuSettings.copyWith(
           loading: false,
           error: e,
@@ -7255,6 +7615,11 @@ class _PlayerPageState extends State<PlayerPage>
       // ★ OPS-10 B：UI 如实反映来源（见 _loadDanmakuNamed 里那段说明）
       _danmakuStatus = '外部视频站 · ${r.summary}';
       _danmakuError = null;
+      // ★ 与上面那行**同一帧**登记来源（面板不猜文案）
+      _setDanmakuInfo(
+        source: DanmakuInfoSource.bili,
+
+      );
       /*
        * ★★★ OPS-10 ⑤（Owner 逐字：「导入externaldanmaku弹幕之后,并没有提示任何信息
        *     和反馈,返回播放页继续,也没有出现弹幕」）
@@ -9009,6 +9374,8 @@ class _PlayerPageState extends State<PlayerPage>
      * ```
      */
     unawaited(_loadProviderName());
+    // ★ 与站名**同一批**刷新：换源后发送入口的能力必须跟着换
+    unawaited(_loadDanmakuSendCapability());
 
     /*
      * ══════════════════════════════════════════════════════════════════
@@ -10179,6 +10546,8 @@ class _PlayerPageState extends State<PlayerPage>
      * ```
      */
     unawaited(_loadProviderName());
+    // ★ 与站名**同一批**刷新：换源后发送入口的能力必须跟着换
+    unawaited(_loadDanmakuSendCapability());
 
     try {
       final list = await SourinApi.getLiveStream(pick.provider, next.id);
@@ -10313,6 +10682,8 @@ class _PlayerPageState extends State<PlayerPage>
        *    那个代次判据比的是 `_provider`，顺序反了会把这次当成过期丢弃。
        */
       unawaited(_loadProviderName());
+    // ★ 与站名**同一批**刷新：换源后发送入口的能力必须跟着换
+    unawaited(_loadDanmakuSendCapability());
 
       await _startPlayback(first);
     } catch (e) {
@@ -13944,6 +14315,15 @@ class _PlayerPageState extends State<PlayerPage>
                           : widget.episodeTitle,
                       isLive: _isLive,
                       providerName: _providerName,
+                      /*
+                       * 弹幕信息：只在**弹幕这一层有话说**时挂出来。
+                       * 没有绑定、没在取、也没失败 ⇒ 不给入口，免得用户点开
+                       * 看到一张"什么都没"的卡片。
+                       */
+                      dmInfo: _danmakuInfoVisible ? _danmakuInfo : null,
+                      dmInfoOpen: _danmakuInfoOpen,
+                      onToggleDmInfo: () =>
+                          setState(() => _danmakuInfoOpen = !_danmakuInfoOpen),
                       onBack: () => unawaited(_exitPlayer()),
                       onHints: hints.isEmpty ? null : _toggleHints,
                       /*
@@ -14565,6 +14945,36 @@ class _PlayerPageState extends State<PlayerPage>
                       ),
                     ),
 
+                    /*
+                     * ★★★ 2026-10-17（Owner 第 2 条后半句）：弹幕发送入口
+                     *
+                     * # 为什么挂在这里（底栏正上方、右下角）
+                     * ```text
+                     * · 底栏已有「选集 / 换源 / 设置」一排按钮，再塞输入框会把
+                     *   那排在窄窗口下挤成两行；
+                     * · 右下角是**画面上本来就空**的位置（与 popover 同一块），
+                     *   不压标题也不压进度条；
+                     * · 与底栏一起淡出（同一个 _chromeVisible 门控），
+                     *   不会在用户看片时一直杵着。
+                     * ```
+                     *
+                     * ⚠️ **不支持发送的源整条不出现**（不是置灰）——
+                     *    判据就是 capabilities.danmakuSend，见 _danmakuCanSend。
+                     */
+                    if (_danmakuCanSend &&
+                        _danmakuSendProvider != null &&
+                        !_isLive &&
+                        _chromeVisible)
+                      Positioned(
+                        right: Sp.x3,
+                        bottom: _kPlayerBottomBarHeight + Sp.x2,
+                        child: DanmakuSendBar(
+                          provider: _danmakuSendProvider!,
+                          episodeId: _contentId,
+                          positionMs: _danmakuSendPositionMs,
+                          onSend: _sendDanmaku,
+                        ),
+                      ),
                     /*
                      * ★ popover 层 —— 与 `_BottomBar` **兄弟**，挂在整屏这个
                      *   Stack 里。理由见 `buildPopoverLayer` 的长注释。
@@ -17609,6 +18019,9 @@ class _TopBar extends StatelessWidget {
     this.visible = true,
     this.fade,
     this.backArrowKey,
+    this.dmInfo,
+    this.onToggleDmInfo,
+    this.dmInfoOpen = false,
   });
 
   final String title;
@@ -17664,6 +18077,15 @@ class _TopBar extends StatelessWidget {
 
   /// 顶栏那枚箭头 / 悬浮键箭头的定位锚点（探针用，不参与布局）
   final Key? backArrowKey;
+
+  /// 弹幕信息快照；null = 不画那枚入口（例如还没起播）
+  final DanmakuInfoData? dmInfo;
+
+  /// 右侧面板是否展开（真源在宿主 `_danmakuInfoOpen`）
+  final bool dmInfoOpen;
+
+  /// 点那枚入口 ⇒ 开关右侧的弹幕信息面板
+  final VoidCallback? onToggleDmInfo;
 
   /// 指针是否还在播放页内（task-16）—— 透传给 [_FloatingBackButton]
   ///
@@ -17878,12 +18300,61 @@ class _TopBar extends StatelessWidget {
                         ),
                         tooltip: '快捷键',
                       ),
+                    /*
+                     * ★ 弹幕信息入口：从顶栏右侧打开右边那块面板。
+                     *
+                     * 为什么放这儿：Owner 要的是「在播放页面右侧显示」，
+                     * 而顶栏右侧是画面上**唯一**既常驻、又不压内容的角落。
+                     * 样式与旁边的站名 / 直播徽章同一套 pill 语言。
+                     */
+                    if (dmInfo != null && onToggleDmInfo != null) ...[
+                      const SizedBox(width: Sp.x2),
+                      _DanmakuInfoChip(
+                        data: dmInfo!,
+                        onTap: onToggleDmInfo!,
+                      ),
+                    ],
                   ],
                 ),
               ),
             ),
           ),
         ),
+        /*
+         * ★★ 右侧「弹幕信息」面板（task-32 ② / Owner：
+         *    「在播放页面右侧显示加载了哪些弹幕,方便排查问题」）
+         *
+         * # 为什么挂在 `_TopBar` 的 Stack 里
+         * ```text
+         * ① 它必须**随控制条一起淡出** —— 常驻会一直压着画面右缘；
+         *    而 `visible` 与 `fade` 都已经在本件里，挂这儿天然同步。
+         * ② 顶栏本身就在画面最上层，面板作为它的兄弟子项 ⇒ 不会被
+         *    弹幕层/描边层盖住（那两层在页面的另一个 Stack 里）。
+         * ```
+         *
+         * ⚠️ 必须 `IgnorePointer(ignoring: !visible)`：与上面那条渐变条同理，
+         *    `Opacity(0)` 的子树**仍然参与命中测试** ⇒ 不挡的话用户会点到
+         *    一块看不见的面板。
+         */
+        if (dmInfo != null && onToggleDmInfo != null && dmInfoOpen)
+          Positioned(
+            top: 56,
+            right: Sp.x3,
+            child: IgnorePointer(
+              ignoring: !visible,
+              child: AnimatedBuilder(
+                animation: fade ?? kAlwaysCompleteAnimation,
+                builder: (context, child) => Opacity(
+                  opacity: (fade?.value ?? 1.0).clamp(0.0, 1.0),
+                  child: child,
+                ),
+                child: _DanmakuInfoPanelHost(
+                  data: dmInfo!,
+                  onClose: onToggleDmInfo!,
+                ),
+              ),
+            ),
+          ),
         /*
          * ★ 常驻悬浮返回键：只在桌面端且没有错误/浮层时出现，
          *   **不受 `_controlsVisible` 门控** —— 它就是为了解决
@@ -17904,6 +18375,97 @@ class _TopBar extends StatelessWidget {
          * ```
          */
       ],
+    );
+  }
+}
+
+/// 右侧弹幕信息面板的**宿主壳** —— 只做两件事：
+/// ① 记住"展开/收起"（面板自己的 State 会随淡出重建，状态不能放它里面）；
+/// ② 把关闭回调接上。
+///
+/// ⚠️ 为什么状态放这里而不是 `DanmakuInfoPanel` 内部：
+///   `_TopBar` 是 `StatelessWidget`，但它下面那层 `AnimatedBuilder`
+///   每次 `fade` 变化都会重建 builder 的 child —— 那个 child 是**同一个实例**
+///   （传的是参数），所以 `DanmakuInfoPanel` 的 Element 不会被销毁。
+///   不过一旦宿主把 `dmInfo` 传成 null（例如控制条隐藏时不再传），整个子树
+///   就会被移除 ⇒ 展开状态丢失。把这个状态提到宿主这一层最省心。
+class _DanmakuInfoPanelHost extends StatefulWidget {
+  const _DanmakuInfoPanelHost({required this.data, required this.onClose});
+
+  final DanmakuInfoData data;
+  final VoidCallback onClose;
+
+  @override
+  State<_DanmakuInfoPanelHost> createState() => _DanmakuInfoPanelHostState();
+}
+
+class _DanmakuInfoPanelHostState extends State<_DanmakuInfoPanelHost> {
+  @override
+  Widget build(BuildContext context) {
+    return DanmakuInfoPanel(
+      data: widget.data,
+      // 窄窗口（手机竖屏）时收窄，避免挡掉太多画面
+      maxWidth: MediaQuery.sizeOf(context).width < 640 ? 240 : 300,
+      onRequestClose: widget.onClose,
+    );
+  }
+}
+
+/// 顶栏右侧那枚「弹幕 N」pill —— 点它展开/收起右侧面板
+///
+/// 样式与旁边的站名 / 直播徽章**同一套 pill 语言**（半透明黑底 + 全圆角 + cap 字号），
+/// 这样它不会像一个"外来的"按钮。
+class _DanmakuInfoChip extends StatelessWidget {
+  const _DanmakuInfoChip({required this.data, required this.onTap});
+
+  final DanmakuInfoData data;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final bad = data.hasError;
+    final n = data.count;
+    final text = bad ? '弹幕 !' : (n == null ? '弹幕' : '弹幕 $n');
+    /*
+     * ★ 用框架的 `ActionChip`，不手写「InkWell + 全圆角容器」——
+     *   本仓 UI-1 门禁（`zz_ui1_no_handrolled_controls_test`）会直接判红：
+     *   手写药丸应当换成 ChoiceChip / FilterChip / ActionChip。
+     *
+     * 换来的不只是过门禁：整块可点、涟漪、焦点环、读屏语义都有了。
+     * 长相用 `backgroundColor` / `side` / `labelStyle` / `visualDensity` 调回去。
+     */
+    return Tooltip(
+      message: '弹幕信息（来源 / 条数 / 匹配方式 / 失败原因）',
+      child: ActionChip(
+        onPressed: onTap,
+        // 与旁边站名/直播徽章同款：半透明黑底、无描边
+        backgroundColor: Colors.black.withValues(alpha: 0.55),
+        side: BorderSide.none,
+        // 顶栏很窄（Sp.x10 高），把 chip 的默认内边距压下来才不撐高
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        labelPadding: const EdgeInsets.symmetric(horizontal: 0),
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
+        shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
+        label: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              bad ? Icons.error_outline : Icons.subtitles_outlined,
+              size: 13,
+              color: bad ? const Color(0xFFFF6B6B) : Colors.white70,
+            ),
+            const SizedBox(width: Sp.x1),
+            Text(
+              text,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: FontSizes.cap,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -18262,6 +18824,290 @@ const double _kBottomBarMiniWidth = 528;
 /// ```
 /// ⚠️ 配合 `_PopoverAnchorDelegate` 里竖向留白改成 0（见那里），
 ///    两者合起来才让面板**底边正贴在底栏上沿**。
+
+// ═══════════════════════════════════════════════════════════════════════
+//  弹幕发送栏（Owner 第 2 条后半句：发送入口由插件决定能否发送）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # Owner 原话
+// ```text
+// 播放页右侧显示弹幕来源（+ 发送入口由插件决定能否发送）
+// ```
+//
+// # ★★★ 为什么「不出现」而不是「置灰」
+// ```text
+// 置灰会让人以为「这里本来有，只是现在不能用」——
+// 那是在暗示用户「你再努力一下就能用」。
+// 而事实是这个源**根本没有这个能力**，再怎么努力也没有。
+//
+// ⇒ 不支持 ⇒ 整条不出现（调用方根本不构造本 widget）。
+//   这与仓库里既有的产品原则是同一条：
+//   「没有的能力不假装有」（见 player_page 里触摸端不画快捷键按钮那段）。
+// ```
+//
+// # ★ 显隐判据为什么读 `capabilities.danmakuSend`，而不是探测插件
+// ```text
+// 契约（docs/PLUGINS.md:136）写得很清楚：
+//   danmakuSend 只决定**界面上发送入口出不出现**；
+//   「真正能不能发」看插件**有没有实现 danmakuSend()**。
+// 两者**可能不一致**（声明了能力但没实现）——
+// 所以不能靠「试着发一次」来决定要不要显示入口
+// （那会在用户还没输入时就打一次上游，且失败形态是静默的）。
+// ⇒ 显隐只读声明；真发失败时**如实报错**（见 _send）。
+// ```
+
+/// 播放页底部的弹幕发送栏
+///
+/// ⚠️ **调用方负责显隐**：不支持发送的源**不要**构造本 widget，
+///    也不要传 `enabled: false` 来置灰 —— 那与本组件的产品前提相反。
+class DanmakuSendBar extends StatefulWidget {
+  const DanmakuSendBar({
+    super.key,
+    required this.provider,
+    required this.episodeId,
+    required this.onSend,
+    this.positionMs,
+  });
+
+  /// 源 id（**必须是真站点 id**，不能是 `local` —— 见宿主侧 `_danmakuSendProvider`）
+  final String provider;
+
+  /// 剧集 id（**已剥前缀**，与 rust 契约 `DanmakuSendRequest.episode_id` 一致）
+  final String episodeId;
+
+  /// 当前播放进度（毫秒）—— 给「按进度发」的站点用
+  ///
+  /// ⚠️ 取的是**点击发送那一刻**的读数，不是 build 时的快照：
+  ///    用户输入可能要几秒，拿旧进度发会飘到错误的时间点。
+  /// ⚠️ 返回 **可空**：直播没有「进度」这个概念，传 null 比传 0 更诚实
+  ///    （0 是「从头开始」这个合法值，两者不能混）。
+  final int? Function()? positionMs;
+
+  /// 真正的发送动作（由宿主注入 —— 本组件不碰 FFI，便于单测）
+  ///
+  /// 返回 null 表示成功；返回字符串表示**给用户看的失败原因**。
+  final Future<String?> Function(String text, int? positionMs) onSend;
+
+  @override
+  State<DanmakuSendBar> createState() => _DanmakuSendBarState();
+}
+
+class _DanmakuSendBarState extends State<DanmakuSendBar> {
+  final TextEditingController _ctl = TextEditingController();
+  final FocusNode _focus = FocusNode();
+
+  /// 发送中 —— 用来**禁用按钮防连点**（见 `_send` 的注释）
+  bool _sending = false;
+
+  /// 上一次失败的原因（成功或重新输入时清掉）
+  String? _error;
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  bool get _canSend => !_sending && _ctl.text.trim().isNotEmpty;
+
+  Future<void> _send() async {
+    if (!_canSend) return;
+    final text = _ctl.text.trim();
+    /*
+     * ★ 取**此刻**的进度（不是 build 时的快照）—— 见 widget.positionMs 的注释。
+     */
+    final ms = widget.positionMs?.call();
+    setState(() {
+      _sending = true;
+      _error = null;
+    });
+    try {
+      final err = await widget.onSend(text, ms);
+      if (!mounted) return;
+      setState(() {
+        _sending = false;
+        if (err == null) {
+          /*
+           * 成功才清空输入框 —— 失败时**必须留着**，
+           * 否则用户辛苦打的一行字没了，还得重打一遍。
+           */
+          _ctl.clear();
+        } else {
+          _error = err;
+        }
+      });
+    } catch (e) {
+      /*
+       * ⚠️ 兜底：onSend 自己应当吞掉异常并返回字符串，
+       *    但万一漏了，这里也**绝不静默** —— 静默失败是这条功能最坏的形态
+       *    （用户以为发出去了，实际没有）。
+       */
+      if (!mounted) return;
+      setState(() {
+        _sending = false;
+        _error = '发送失败：$e';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: Sp.x3,
+        vertical: Sp.x2,
+      ),
+      decoration: BoxDecoration(
+        // 与顶栏站名/直播徽章同款：黑 0.55 让它压得住任何画面
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: Radii.rFull,
+        border: Border.all(color: colors.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.chat_bubble_outline,
+                size: 16,
+                color: Colors.white70,
+              ),
+              const SizedBox(width: Sp.x2),
+              SizedBox(
+                width: 220,
+                child: TextField(
+                  controller: _ctl,
+                  focusNode: _focus,
+                  /*
+                   * ★ 输入变化要 setState：发送按钮的可用态依赖它。
+                   *   不重建的话，用户打完字按钮还是「不可点」，
+                   *   那是最容易被当成「功能坏了」的一种。
+                   */
+                  onChanged: (_) => setState(() {}),
+                  onSubmitted: (_) => _send(),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: FontSizes.sm,
+                  ),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: '发条弹幕…',
+                    hintStyle: const TextStyle(
+                      color: Colors.white38,
+                      fontSize: FontSizes.sm,
+                    ),
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 6),
+                  ),
+                ),
+              ),
+              const SizedBox(width: Sp.x2),
+              /*
+               * ★ 发送中画进度圈而不是文字：文字按钮在发送中会变成
+               *   「不可点的灰按钮」，用户看不出到底有没有在发。
+               */
+              if (_sending)
+                /*
+                 * ★ 2026-10-17 改用 AppLoading（原 CircularProgressIndicator）
+                 *
+                 * 原因：本仓已把 CircularProgressIndicator 迁走，
+                 *  zz_t64_migrated_widget_gate_test 会红 ——
+                 *  实测报 player_page.dart:19018 → 应改用 AppLoading。
+                 *
+                 * ⚠️ 显式传 size: 16 保持原布局（这是发送栏内的小圈，
+                 *    不是 Owner 第 3 条说的那个主 loading 圈）。
+                 *
+                 * ⚠️ ground 必须显式给：发送栏压在半透明深色浮层上，
+                 *    不是 ColoredBox 写的底色 ⇒ 祖先链判据取不到，
+                 *    会回落 theme.brightness ⇒ 浅色主题下变灰圈压深底。
+                 */
+                const AppLoading(
+                  size: 16,
+                  ground: Colors.black,
+                )
+              else
+                TextButton(
+                  onPressed: _canSend ? _send : null,
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    // ★ 不可点时也要能看清是「按钮」而不是一块空白
+                    disabledForegroundColor: Colors.white38,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: Sp.x3,
+                      vertical: 4,
+                    ),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text(
+                    '发送',
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      fontWeight: FontWeights.semibold,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          /*
+           * ★★ 失败原因**必须显示出来**，且**原文透出**（不改写）。
+           *
+           * 契约里的失败形态（unsupported / unauthorized / network / parse）
+           * 各自对应完全不同的下一步动作：
+           *   unsupported  → 这个源就是不能发，别试了
+           *   unauthorized → 去登录
+           *   network      → 检查网络
+           * 把它们统一成「发送失败」等于把可执行信息扔掉。
+           */
+          if (_error != null) ...[
+            const SizedBox(height: 4),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 320),
+              child: Text(
+                _error!,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.liveDot,
+                  fontSize: FontSizes.cap,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 当前源**能不能发弹幕** —— 唯一的判据函数（Owner 第 2 条后半句）
+///
+/// # ★★★ 为什么抽成顶层函数，而不是留在 State 里当私有 getter
+/// ```text
+/// 判据必须**可被单测直接调用**。
+/// 留成私有 getter 的话，测试只能「重新实现一遍同样的逻辑」再断言 ——
+/// 那是**同义反复**：把实现改错，测试跟着改错，照样全绿。
+/// 实测过这个坑：第一版测试自己重写了判据，故障注入（把判据写死成 true）
+/// **没有一条测试变红**。
+/// ⇒ 抽出来，让宿主和测试**读同一份实现**。
+/// ```
+///
+/// # 判据（契约原文 docs/PLUGINS.md:136）
+/// ```text
+/// danmakuSend 只决定**界面上发送入口出不出现**。
+/// 未声明 ⇒ false（不能因为「没说不行」就当行）。
+/// 源不存在 ⇒ false（查不到不等于能发）。
+/// ```
+@visibleForTesting
+bool danmakuSendAllowed(Iterable<ProviderManifest> providers, String id) {
+  final hit = providers.where((p) => p.id == id).firstOrNull;
+  return hit?.capabilities.danmakuSend ?? false;
+}
 const double _kPlayerBottomBarHeight = 106;
 
 class _BottomBar extends StatelessWidget {

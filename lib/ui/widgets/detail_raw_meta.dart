@@ -40,6 +40,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/models.dart';
+import '../../design/widgets/app_ink_well.dart';
 import '../tokens.dart';
 import 'motion_prefs.dart';
 
@@ -167,11 +168,19 @@ class _SourceButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: Radii.rMd,
+    /*
+     * ★ 去 Material（Owner 第 4/8/9 条，2026-10-17）
+     *
+     * 原来这里是 Material(color: Colors.transparent) + InkWell ——
+     * 那层 Material 只为给水波提供绘制面，本身完全透明、无形状、无阴影。
+     * 换成 AppInkWell 后高亮自绘 ⇒ 整层删除，行为不变。
+     *
+     * ⚠️ 分类脚本把它归成"B 类（真当卡片用）"，因为它看到 color: ——
+     *    但那是 Colors.transparent。脚本判据不精确，此处按人工判断处理。
+     */
+    return AppInkWell(
+      onTap: onTap,
+      borderRadius: Radii.rMd,
         /*
          * ★ task-50 候选 C3：选中态用**隐式动画**过渡（原来是硬切）
          *
@@ -258,7 +267,6 @@ class _SourceButton extends StatelessWidget {
             ],
           ),
         ),
-      ),
     );
   }
 }

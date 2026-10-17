@@ -262,6 +262,34 @@ class UiPrefs {
     }
   }
 
+  /// 存储键：布局骨架（Owner 第 14 条）
+  ///
+  /// # ★ 为什么放这里，**不**放进 ThemePack
+  /// ```text
+  /// 布局骨架 与 配色主题 是**正交**的两个维度：
+  ///   配色 9 套（theme_pack.dart 管）    骨架 3 套（本键管）
+  /// ⇒ 27 种组合。
+  ///
+  /// ⚠️ 若把骨架塞进 ThemePack，用户导入别人的配色主题时
+  ///    **布局也会被一起改掉** —— 那不是他要的。
+  ///    主题文件只该带「颜色」，不该带「控件摆在哪」。
+  /// ```
+  static const shellLayoutKey = 'shell.layout';
+
+  /// 当前布局骨架 id（默认 `bottomBar` = 底栏式）
+  ///
+  /// ⚠️ 未知 id（老版本写入 / 手工改坏）⇒ 回落默认值，
+  ///    不能让界面因为一个认不出的字符串就空白。
+  static String get shellLayout => _data[shellLayoutKey] ?? 'bottomBar';
+
+  /// 记住布局骨架（传空串 = 清除键，回到默认）
+  static void setShellLayout(String layoutId) {
+    if (layoutId.trim().isEmpty) {
+      remove(shellLayoutKey);
+    } else {
+      set(shellLayoutKey, layoutId.trim());
+    }
+  }
   /// 存储键：自建弹幕服务的可选 token（放在路径前缀上，见 DanmakuEndpoint）
   static const danmakuTokenKey = 'dsh.danmaku.endpoint.token';
 

@@ -102,6 +102,8 @@ import 'package:flutter/services.dart';
 
 import '../../core/device.dart';
 import '../../core/models.dart';
+import '../../design/widgets/app_icon_button.dart';
+import '../../design/widgets/app_ink_well.dart';
 import '../tokens.dart';
 import 'motion_prefs.dart';
 import 'overlay_motion.dart';
@@ -862,7 +864,8 @@ class _EpisodeChipState extends State<_EpisodeChip> {
     final colors = AppPalette.of(context);
     final radius = widget.pill ? Radii.rFull : Radii.rSm;
 
-    final chip = Material(
+    // ★ 去 Material（真 B 类：active 切换底色 + 圆角 + 裁剪）
+    final chip = AppSurface(
       color: widget.active
           ? colors.primary
           : colors.secondary.withValues(alpha: 0.55),
@@ -973,15 +976,19 @@ class _MoreButtonState extends State<_MoreButton> {
   Widget build(BuildContext context) {
     final colors = AppPalette.of(context);
 
-    final body = Material(
+    // ★ 去 Material（Owner 第 4/8/9 条，2026-10-17）—— 真 B 类：
+    //   Material 提供了 secondary@55% 底色 + 胶囊圆角 + 裁剪，
+    //   InkWell 只负责焦点/点击 ⇒ AppSurface 接管底色，AppInkWell 接管交互。
+    final body = AppSurface(
       color: colors.secondary.withValues(alpha: 0.55),
       borderRadius: Radii.rFull,
       clipBehavior: Clip.antiAlias,
-      child: InkWell(
+      child: AppInkWell(
         onFocusChange: (f) {
           if (mounted && f != _focused) setState(() => _focused = f);
         },
         onTap: widget.onTap,
+        borderRadius: Radii.rFull,
         child: SizedBox(
           height: _kChipH,
           child: Padding(
@@ -2379,17 +2386,19 @@ class _ChunkPillState extends State<_ChunkPill> {
   Widget build(BuildContext context) {
     final colors = AppPalette.of(context);
 
-    final body = Material(
+    // ★ 去 Material（同上一处，真 B 类：底色随 active 切换）
+    final body = AppSurface(
       color: widget.active
           ? colors.primary
           : colors.secondary.withValues(alpha: 0.55),
       borderRadius: Radii.rFull,
       clipBehavior: Clip.antiAlias,
-      child: InkWell(
+      child: AppInkWell(
         onFocusChange: (f) {
           if (mounted && f != _focused) setState(() => _focused = f);
         },
         onTap: widget.onTap,
+        borderRadius: Radii.rFull,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 5),
           child: Text(
@@ -2443,19 +2452,23 @@ class _SheetIconButtonState extends State<_SheetIconButton> {
   Widget build(BuildContext context) {
     final colors = AppPalette.of(context);
 
-    final body = Material(
-      color: Colors.transparent,
+    /*
+     * ★ 去 Material（真 A 类：完全透明，只为 InkWell 提供绘制面）
+     *
+     * ⚠️ 我第一次改错了：把 Material 换成 AppInkWell，但**保留了里面的 InkWell**，
+     *    变成 AppInkWell(child: InkWell(...)) —— 两层手势、两层焦点，
+     *    而且外层没接 onTap ⇒ 点上去没反应。
+     *    ⇒ 正确做法是 **InkWell 整个换成 AppInkWell**，不是在外面再包一层。
+     */
+    final body = AppInkWell(
       borderRadius: Radii.rSm,
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onFocusChange: (f) {
-          if (mounted && f != _focused) setState(() => _focused = f);
-        },
-        onTap: widget.onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(6),
-          child: Icon(widget.icon, size: 18, color: colors.mutedForeground),
-        ),
+      onFocusChange: (f) {
+        if (mounted && f != _focused) setState(() => _focused = f);
+      },
+      onTap: widget.onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child: Icon(widget.icon, size: 18, color: colors.mutedForeground),
       ),
     );
 

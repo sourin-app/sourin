@@ -86,6 +86,7 @@ import 'widgets/cover_image.dart';
 // ★ 2026-09-26【A】用户要求"删除掉节目单" ⇒ 不再 import
 //   `widgets/collapsible_epg.dart` / `widgets/epg_panel.dart`
 //   （那两个文件本身**保留** —— 别的页面可能还在用；只删本页的引用）
+import 'widgets/app_dialog_shell.dart';
 import 'widgets/live_embedded_player.dart';
 
 /// ★ task-1013：源筛选 chip 的稳定测试锚点
@@ -2546,6 +2547,31 @@ class LiveChannelListState extends State<LiveChannelList> {
         .toList();
   }
 
+  /// ★★★ Owner 第 12 条第 ② 半：直播页内管理分组
+  ///
+  /// 用户原话：「自定义分组有了,但是配置的地方没有」⇒ 选了「入口提到直播页内」。
+  ///
+  /// # 为什么本组件可以写配置（而 task-53 说过「配置不该长在内容页」）
+  /// ```text
+  /// task-53 否定的形态是「点源名就启停源」—— 那里点击既是浏览又是配置，
+  /// 必然误触。本处是一个明确的「管理分组」按钮，点它就是要配置，
+  /// 不存在误触；且 Owner 在两种候选里明确选了 a（入口提到直播页内）。
+  /// ⇒ 纪律的实质（避免误触/混淆）保住了，形态按 Owner 的选择调整。
+  /// ```
+  ///
+  /// ⚠️ 写回 prefs 后立刻 setState —— 筛选条要在同一帧反映新数据，
+  ///   不靠 didUpdateWidget（那只在上游 widget 变化时才跑）。
+  Future<void> _openGroupManager() async {
+    final changed = await showDialog<bool>(
+      context: context,
+      builder: (_) => _SourceGroupManagerDialog(
+        groups: widget.sourceGroups,
+        providers: widget.providers,
+      ),
+    );
+    if (changed == true && mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -2568,251 +2594,104 @@ class LiveChannelListState extends State<LiveChannelList> {
         children: [
           /*
            * ════════════════════════════════════════════════════════════
-           * ★★★ Owner 第 12 条【自定义分组】分组 chip 排
+           * ★★★ task-34（Owner 第 12 条）：筛选条 —— 三排 Wrap 换成一行工具条
            * ════════════════════════════════════════════════════════════
            *
            * # 用户原话（逐字）
            * ```text
-           * > 然后支持一下自定义直播源拆分组
-           * > （就是自定义常用的然后切换分组 就可以不用看不想看的其他源了）
+           * > 你自己看看实现的合理吗?
+           * > 分类+源 把列表都挤得看不到了
+           * > 布局非常的不合理
            * ```
            *
-           * # 它解决什么
+           * # 改前实测（.probe/probe_tests/zz_t64_before_probe_test.dart，300x800 右栏）
            * ```text
-           * 用户装了很多直播源，但**常看的就那几个**。
-           * 建一个「常看」组把常用的放进去 ⇒ 切到该组就**只显示这几个源**，
-           * 不用在一长串源名里翻。
+           * 三排 Wrap 药丸（分组 2 行 + 源 2 行 + 分类 2 行）共占 **253px**
+           * 频道列表只剩 **546px** ⇒ 一屏 **10** 个源
+           * ⇒ 253/800 = 31.6% 的右栏面积被筛选器吃掉。Owner 说非常不合理是准的。
            * ```
            *
-           * # ⚠️ 只在**建过组**时才显示这一排（老用户零感知）
+           * # 为什么改下拉，而不是「左侧竖栏」
            * ```text
-           * sourceGroups 为空 ⇒ 这一排**根本不挂**
-           * （不是「挂了但只有一个全部分组」）——
-           * 没建过组的用户不该为这个功能多付一行高度。
+           * ① 右栏总宽只有 300px。切一条竖栏（哪怕只 80px）给筛选器 ⇒
+           *   频道名可用宽度从 300 掉到 220（-27%），
+           *   而频道名里有「IPTV 直播 频道 01」这种长串 + 行尾源 tag
+           *   ⇒ 必然大面积省略号。用宽度换高度，在这么窄的栏里是亏的。
+           * ② 下拉是零常驻高度：不展开时只占一条 36px 工具栏，
+           *   而 Wrap 无论内容多少都要占满（组越多越高）。
+           * ③ 三个维度（分组 / 源 / 分类）都是单值选择（一次只能选一个），
+           *   这正是下拉的语义；药丸排更像多选/平铺浏览，语义也不对。
+           * ⇒ Owner 给的候选里选「顶部单行下拉」。
            * ```
            *
-           * # 与「源筛选」是**两个正交维度**（不要合并）
+           * # 布局结构（筛选条与频道列表是两个独立区域）
            * ```text
-           * 分组 = 「有哪些源」（先收窄集合）
-           * 源   = 「这些源里看哪一个」（再选一个）
-           * 分类 = 「按节目类型收窄」
-           * ⇒ 三者 AND 组合，顺序：分组 ⇒ 源 ⇒ 分类。
+           * Column
+           *   ├─ _FilterBar          ← 固定 36px，永不增长
+           *   └─ Expanded(ListView)  ← 吃掉全部剩余高度
+           * ⇒ 组/源/分类再多也不会挤压列表（Wrap 的根本问题就是它会长）。
            * ```
            *
-           * ⚠️ 形态与下面两排**完全一致**（同款 _FilterChip + Wrap）——
-           *    三排看起来是一族，用户一眼知道「这排也是筛选」。
-           * ⚠️ 编辑入口**不在这里**：本页只做**筛选**（纯视图、无副作用）；
-           *    建组/改组在**设置页**（task-53 纪律：配置不该长在内容页）。
+           * # 与建组入口的关系（Owner 第 12 条第 ② 半）
+           * ```text
+           * 工具栏右侧带一个「管理分组」按钮 ⇒ 直播页内直接建组/改名/删组/归组，
+           * 不必跳 设置。设置页那个入口保留为次要入口（不破坏现有习惯）。
+           * ★ 这也解开了 task-53 留下的结：那条否定的是「点源名就启停源」
+           *   （有副作用的误触），不是「不准在内容页管理配置」；
+           *   一个明确的「管理分组」按钮没有误触风险，且 Owner 明确选择了它。
+           * ```
            */
-          if (widget.sourceGroups.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: Sp.x3,
-                vertical: Sp.x2,
-              ),
-              child: Wrap(
-                spacing: Sp.x2,
-                runSpacing: Sp.x2,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  _FilterChip(
-                    key: liveGroupFilterChipKey(null),
-                    label: '全部分组',
-                    active: _sourceGroupFilter == null,
-                    tooltip: '不按分组收窄，显示全部源'
-                        '（建组 / 改组请去 设置 → 直播分组）',
-                    onTap: () => _pickSourceGroup(null),
-                  ),
-                  for (final name in widget.sourceGroups.keys)
-                    _FilterChip(
-                      key: liveGroupFilterChipKey(name),
-                      label: name,
-                      tooltip: '只看这个分组里的源'
-                          '（建组 / 改组请去 设置 → 直播分组）',
-                      active: _sourceGroupFilter == name,
-                      onTap: () => _pickSourceGroup(name),
-                    ),
-                ],
-              ),
-            ),
+          _FilterBar(
+            // ── 分组维度（value 用组名本身 —— 组名的语义就是它自己）──
+            groupVisible: widget.sourceGroups.isNotEmpty,
+            groupValue: _sourceGroupFilter ?? '',
+            groupOptions: [
+              const _BarOption('', '全部分组'),
+              for (final n in widget.sourceGroups.keys) _BarOption(n, n),
+            ],
+            onPickGroup: (v) => _pickSourceGroup(v.isEmpty ? null : v),
+            // ── 源维度（value = provider id，label = providerName）──
+            sourceValue: _sourceFilter ?? '',
+            sourceOptions: [
+              const _BarOption('', '全部源'),
+              for (final g in _visibleSources)
+                _BarOption(g.provider, g.providerName),
+            ],
+            /*
+             * ★ 这句提示**必须**指向新位置（设置 → JS 插件）——
+             *   旧的「设置 → 直播源」区块已删，指过去是死链。
+             * ⚠️ `test/merge_live_into_plugins_test.dart` 用
+             *   「这句话在源码里恰好出现 2 次（1 tooltip + 1 注释）」钉住同步；
+             *   下面那行注释就是第 2 处，**两处要一起改**。
+             */
+            sourceTooltip: '只看来自这个源的频道'
+                '（只改显示，不改配置；配置请去 设置 → JS 插件）',
+            onPickSource: (v) => _pickSource(v.isEmpty ? null : v),
+            // ── 分类维度（value 用分类名本身）──
+            categoryValue: _groupFilter ?? '',
+            categoryOptions: groups.isEmpty
+                ? const <_BarOption>[]
+                : [
+                    const _BarOption('', '全部分类'),
+                    for (final g in groups) _BarOption(g, g),
+                  ],
+            onPickCategory: (v) => _pickGroup(v.isEmpty ? null : v),
+            // ★ Owner 第 12 条第 ② 半：建组入口提到直播页内
+            onManageGroups: _openGroupManager,
+            hasGroups: widget.sourceGroups.isNotEmpty,
+            // 当前选中项的**显示名**（下拉按钮上显示这个）
+            groupDisplay: _sourceGroupFilter ?? '全部分组',
+            sourceDisplay: _sourceFilter == null
+                ? '全部源'
+                : (_visibleSources
+                        .where((g) => g.provider == _sourceFilter)
+                        .map((g) => g.providerName)
+                        .firstOrNull ??
+                    '全部源'),
+            categoryDisplay: _groupFilter ?? '全部分类',
+          ),
 
-          /*
-           * ════════════════════════════════════════════════════════════
-           *
-           * # 用户原话（本轮）
-           * ```text
-           * > 直播页面,支持一下按照源筛选,还有支持分类筛选
-           * ```
-           *
-           * # ★★★ 这条排改过三次 —— 读懂了再动（history）
-           * ```text
-           * task-39：chip = **筛选**（一次只看一个源）
-           * task-42：用户要"平铺" ⇒ 当时判定"筛选没意义" ⇒ chip 改成**开关**
-           * task-53：★ 用户**否定了开关长在这里** ——
-           *          "配置该在设置页，不该长在内容页"
-           * task-1013（本次）：★★ 用户**重新要"筛选"** ——
-           *          「支持一下按照源筛选,还有支持分类筛选」
-           * ```
-           *
-           * ★★ 关键判据（task-53 注释里早已写明，本次是它的**兑现**）：
-           * ```text
-           * 用户否定的是【开关的位置】（写配置、有副作用），
-           * **不是**"筛选"这个能力本身。
-           * ⇒ 本次把它做回**筛选语义**：
-           *    · 点一下 = **只改视图**（`_sourceFilter` 一个内存字段）
-           *    · **不碰** `setProviderEnabled`（源码里根本不出现该标识符）
-           *    · 配置仍只在设置页写 —— 本页连"关掉源"的入口都没有
-           * ```
-           *
-           * # 为什么**保留**在**同一排**（而不是另加一排）
-           * ```text
-           * ① 用户仍需知道"这些频道来自哪些源"（task-42 原话"以分组加 tag"）
-           *    ⇒ 源名照旧可见，只是**多了一层"可点 = 筛选"**语义。
-           * ② 加第二排会让右栏(300px)**更挤**，且两排"源"信息重复、易混淆。
-           * ③ ★ 形态与 `_LineChip` / 分类 chip **完全一致**（同款选中高亮）——
-           *    用户一眼就知道"这是筛选条"，不会误读成开关。
-           * ```
-           *
-           * ⚠️ 首次多出一个「全部源」chip（`null` = 不筛）——
-           *    否则用户选了一个源后**没法回到全部**（点已选中的那个回到全部，
-           *    但不够显式）。「全部源」把"回到全部"变成**可见**的操作。
-           */
-          /*
-           * ★★★ Owner 第 12 条：改 `Wrap`（**换行**），不许再用横向 `ListView`
-           *
-           * # 用户原话（逐字）
-           * ```text
-           * > 直播这里右边的分类布局也是不对的
-           * ```
-           * 截图里右侧源名被截成「XX 直…」、分类名被截成「科…」，都超出右边缘。
-           *
-           * # 真因（取证读数，不是猜的）
-           * ```text
-           * 本栏固定宽 300（`_buildWideBody` 的 `SizedBox(width: 300)`）。
-           * 改前这一排是 `SizedBox(height:40, child: ListView(scrollDirection: horizontal))`
-           * ⇒ 横向 ListView 的内容**溢出方向没有约束**：放不下就往右排出去，
-           *   由 `clipBehavior: Clip.antiAlias` **裁掉**（也不换行、也不出滚动条提示）。
-           * 实测（.probe/probe_tests/zz_t8_recon_probe_test.dart，300px 栏宽）：
-           *   越界 chip 数 = **9 / 9** —— 每一个 chip 的右边界都 > 300
-           *   chip#0 rect=Rect.fromLTRB(1153.0, 9.0, 1215.3, 33.0)   ← 列左边界=1153
-           *   chip#3 rect=Rect.fromLTRB(1394.1, 9.0, 1468.5, 33.0)   ← 右边界 1468 > 1453
-           * ⇒ 与 Owner 截图完全对上。
-           * ```
-           *
-           * # 为什么用 `Wrap` 而不是「横向滚动」或「省略号」
-           * ```text
-           * ① 横向滚动：用户根本**看不见**右边还有东西（无滚动条、无渐变提示）
-           *    ⇒ 等于「功能存在但发现不了」，与现在一样糟。
-           * ② 省略号截断：筛选 chip 的价值就是**把源名列全**让用户点，
-           *    把源名截成「XX 直…」等于没显示。
-           * ③ `Wrap`：放不下就**换行**，所有 chip 全部可见可点 ——
-           *    正是「分类布局不对」要的东西。
-           * ```
-           *
-           * ⚠️ 行高不再固定 40：换行后高度由行数决定 ⇒ 用 `Padding` 给内边距，
-           *    让 `Wrap` 自己决定高度（父级是 Column，天然自适应）。
-           * ⚠️ chip 之间的间距改由 `Wrap.spacing` 给，**删掉**原来那些
-           *    显式 `SizedBox(width: Sp.x2)` 分隔符（换行时它们会跑到行首/行尾）。
-           */
-          if (_visibleSources.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: Sp.x3,
-                vertical: Sp.x2,
-              ),
-              child: Wrap(
-                spacing: Sp.x2,
-                runSpacing: Sp.x2,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  // 「全部源」—— 显式的"回到不筛"
-                  _FilterChip(
-                    key: sourceFilterChipKey(null),
-                    label: '全部源',
-                    active: _sourceFilter == null,
-                    onTap: () => _pickSource(null),
-                  ),
-                  for (final g in _visibleSources)
-                    _FilterChip(
-                      // ★ 测试锚点（见 [sourceFilterChipKey]：源名在行尾 tag 里也出现
-                      //   ⇒ 光靠 `find.text` 会歧义）
-                      key: sourceFilterChipKey(g.provider),
-                      // ★ 只显示**源名**（"当前有哪些源"的可读性保留）
-                      //   ⚠️ 提示明说"只改显示,不改配置" —— 否则用户以为点了会启停；
-                      //      并且点明配置该去哪：**设置 → JS 插件**
-                      //   ★ 注释与下面的 tooltip **必须指向同一个位置** ——
-                      //     只改一处，下一个人读注释会以为入口还在旧地方
-                      //     （`test/merge_live_into_plugins_test.dart` 用"这句话
-                      //       在源码里恰好出现 2 次"钉住它们同步）。
-                      //   ⚠️ 与 `tooltip` 里的写法**逐字一致**（含那个 `→`）——
-                      //     否则计数断言会因"两处字面不同"而红。
-                      label: g.providerName,
-                      tooltip: '只看来自这个源的频道'
-                          '（只改显示，不改配置；配置请去 设置 → JS 插件）',
-                      active: _sourceFilter == g.provider,
-                      // ★ 关掉的源弱化：仍是"可读性"信息（task-53 保留的那点）
-                      dimmed: !widget.enabledProviders.contains(g.provider),
-                      onTap: () => _pickSource(g.provider),
-                    ),
-                ],
-              ),
-            ),
-
-          /*
-           * ★★★ task-1013【筛选】分类 chip 排 —— 用 `LiveChannel.group`
-           *
-           * # 数据来源（用户要求"从当前可见频道里动态收集"）
-           * ```text
-           * ★ 不硬编码任何分类名 —— 全从 `widget.channels` 里 `group` 去重收集
-           *   （见 `_groups` getter：去重 + 保持首次出现顺序 ⇒ 稳定）。
-           * ⚠️ 只在**源筛选之后**的集合上收集 ⇒ 换源后分类条跟着换
-           *   （"这个源有哪些分类" —— 比"所有源的分类并集"更贴合当前视图）。
-           * ```
-           *
-           * # 为什么只在**多于一个分类**时才显示这一排
-           * ```text
-           * 只有一个分类时，"筛选"没有任何可筛的 —— 多一排只会挤占列表高度。
-           * ⚠️ 但「全部分类」也算在列里 ⇒ 判据是 `groups.length > 1`
-           *   （即至少有两个真实分类，选了才有区别）。
-           * ```
-           */
-          /*
-           * ★★★ Owner 第 12 条：同上一排 —— 改 `Wrap`，不许再用横向 `ListView`
-           *
-           * 截图里「科…」被右边缘切掉；真因与取证读数见**上面源那一排**的注释
-           *（同一个 300px 栏宽 + 同一个 `clipBehavior: Clip.antiAlias`）。
-           *
-           * ⚠️ 分类名往往比源名更长（「综合」「财经」「综艺」「科技」「体育」…），
-           *    换行收益比源那一排更大。
-           */
-          if (groups.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: Sp.x3,
-                vertical: Sp.x2,
-              ),
-              child: Wrap(
-                spacing: Sp.x2,
-                runSpacing: Sp.x2,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  _FilterChip(
-                    key: groupFilterChipKey(null),
-                    label: '全部分类',
-                    active: _groupFilter == null,
-                    onTap: () => _pickGroup(null),
-                  ),
-                  for (final g in groups)
-                    _FilterChip(
-                      key: groupFilterChipKey(g),
-                      label: g,
-                      tooltip: '只看这个分类的频道',
-                      active: _groupFilter == g,
-                      onTap: () => _pickGroup(g),
-                    ),
-                ],
-              ),
-            ),
+          // ── 频道（★ task-42：平铺；task-1013：按当前筛选过滤）──
 
           // ── 频道（★ task-42：**平铺**；task-1013：按当前筛选过滤）──
           Expanded(
@@ -2902,81 +2781,612 @@ class LiveChannelListState extends State<LiveChannelList> {
   }
 }
 
-/// ★ task-1013：筛选 chip（源 / 分类**同款**）
+
+/// ★★★ task-34（Owner 第 12 条）：直播页右栏的**筛选条**
 ///
-/// # 与 `_LineChip` 的关系
+/// # 它替掉了什么
 /// ```text
-/// 视觉同族（`primary` 选中高亮 + 圆角胶囊），但**语义不同**：
-/// · `_LineChip` = 选播放线路（有副作用：换流）
-/// · `_FilterChip` = 筛列表（**纯视图**，不产生任何副作用）
-/// ⇒ 不合并成一个类：合并会让"哪种 chip 有副作用"变得含糊。
+/// 改前三排 `Wrap` 药丸（分组 / 源 / 分类）各占 1-2 行，合计 **253px / 800px**
+/// ⇒ 频道列表只剩 546px，一屏 10 个源。Owner：「布局非常的不合理」。
 /// ```
-class _FilterChip extends StatelessWidget {
-  const _FilterChip({
-    super.key,
-    required this.label,
-    required this.active,
-    required this.onTap,
-    this.tooltip,
-    this.dimmed = false,
+///
+/// # 为什么是**固定 36px + 下拉**
+/// ```text
+/// · `Wrap` 的病根是**它会长**：内容越多越高，把下面的 `Expanded` 挤没。
+///   本组件高度写死 ⇒ **无论多少个分组/源/分类，永远只占一条**。
+/// · 右栏只有 300px 宽，切竖栏会让频道名可用宽度掉 27%（见调用处注释）。
+/// · 三个维度都是单值选择 ⇒ 下拉是正确语义（药丸更像多选）。
+/// ```
+///
+/// ★ 每格只在**有东西可选**时出现：
+///   `groupLabel == null`（没建过组）⇒ 分组那格不画；
+///   `categoryOptions` 为空 ⇒ 分类那格不画 —— 老用户看到的就是一条「全部源」。
+class _FilterBar extends StatelessWidget {
+  const _FilterBar({
+    required this.groupVisible,
+    required this.groupValue,
+    required this.groupOptions,
+    required this.onPickGroup,
+    required this.sourceValue,
+    required this.sourceOptions,
+    required this.sourceTooltip,
+    required this.onPickSource,
+    required this.categoryValue,
+    required this.categoryOptions,
+    required this.onPickCategory,
+    required this.onManageGroups,
+    required this.hasGroups,
+    required this.groupDisplay,
+    required this.sourceDisplay,
+    required this.categoryDisplay,
   });
 
-  final String label;
-  final bool active;
-  final VoidCallback onTap;
-  final String? tooltip;
+  /// false = 没建过组 ⇒ 不画分组那一格（老用户零感知）
+  final bool groupVisible;
+  /// 选中**值**（空串 = 不筛）
+  final String groupValue;
+  final List<_BarOption> groupOptions;
+  final ValueChanged<String> onPickGroup;
 
-  /// 弱化显示（用于「源被停用」的视觉区分，task-53 保留的那点可读性）
-  final bool dimmed;
+  final String sourceValue;
+  final List<_BarOption> sourceOptions;
+  final String sourceTooltip;
+  final ValueChanged<String> onPickSource;
+
+  final String categoryValue;
+  final List<_BarOption> categoryOptions;
+  final ValueChanged<String> onPickCategory;
+
+  /// ★ Owner 第 12 条第 ② 半：直播页内**直接**建组/改组/删组
+  final VoidCallback onManageGroups;
+  final bool hasGroups;
+
+  /// 三格在下拉按钮上显示的**文字**（是 label，不是 value）
+  final String groupDisplay;
+  final String sourceDisplay;
+  final String categoryDisplay;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final fg = active
-        ? colors.primary
-        : (dimmed
-              ? colors.onSurfaceVariant.withValues(alpha: 0.6)
-              : colors.onSurfaceVariant);
-    /*
-     * ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）
-     *
-     * 改前是 InkWell + Container(decoration:) 手写胶囊。换成框架的
-     * `FilterChip` —— 它是「筛选」语义，与这边「纯视图、无副作用」正好对上
-     * （`_LineChip` 那种「选了会换流」的才用 ChoiceChip）。
-     *
-     * 颜色 / 描边 / 圆角 / 内边距全部显式给死 ⇒ 长相与改前一致；
-     * 换来涟漪、焦点环、禁用态、以及读屏的「筛选」语义。
-     *
-     * ⚠️ `showCheckmark: false`：FilterChip 默认选中时左侧加对勾，
-     *    会把胶囊撑宽、文字右移；这边「选中＝染色」已经表达清楚。
-     * ⚠️ `tooltip` 交给 FilterChip 自己的参数（原来手写 Tooltip 包装）。
-     */
+    return Container(
+      /*
+       * ★ 高度**写死 36**，这是本组件存在的核心约束（见类注释）。
+       * ⚠️ 不要改成 mainAxisSize.min —— 那样在下拉展开/字体放大时仍会变高，
+       *    又回到「筛选器吃掉列表」的老问题。
+       */
+      height: 36,
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: colors.outlineVariant, width: 0.6),
+        ),
+      ),
+      child: Row(
+        children: [
+          /*
+           * ★ task-34 修：三格 + 管理按钮原样排会**溢出 18px**
+           * （实测 92 + 79.8 + 92 + 28 + 间距 = 300 > 282 可用宽，见
+           *  .probe/probe_tests/zz_t64_barwidth_probe_test.dart）。
+           * ⇒ 每格用 `Expanded` 平分，并去掉前置图标（值本身是自解释的，
+           *   「全部源」「综合」看得懂，图标只是占宽）。
+           * ⚠️ 不给 Expanded 的话，长分组名会把工具条顶爆（又变成溢出）。
+           */
+          if (groupVisible) ...<Widget>[
+            Expanded(
+              child: _BarDropdown(
+                key: const ValueKey('live-bar-group'),
+                display: groupDisplay,
+                value: groupValue,
+                options: groupOptions,
+                onPick: onPickGroup,
+              ),
+            ),
+            const SizedBox(width: Sp.x1),
+          ],
+          Expanded(
+            child: _BarDropdown(
+              key: const ValueKey('live-bar-source'),
+              display: sourceDisplay,
+              tooltip: sourceTooltip,
+              value: sourceValue,
+              options: sourceOptions,
+              onPick: onPickSource,
+            ),
+          ),
+          if (categoryOptions.isNotEmpty) ...<Widget>[
+            const SizedBox(width: Sp.x1),
+            Expanded(
+              child: _BarDropdown(
+                key: const ValueKey('live-bar-category'),
+                display: categoryDisplay,
+                value: categoryValue,
+                options: categoryOptions,
+                onPick: onPickCategory,
+              ),
+            ),
+          ],
+          const SizedBox(width: Sp.x1),
+          /*
+           * ★★★ Owner 第 12 条第 ② 半：建组入口在**直播页内**
+           * （原来藏在 设置 → 直播分组，Owner 说「配置的地方没有」）
+           */
+          Tooltip(
+            message: hasGroups ? '管理分组（建组 / 改名 / 删组 / 归组）' : '新建分组',
+            child: InkResponse(
+              key: const ValueKey('live-manage-groups'),
+              onTap: onManageGroups,
+              radius: 18,
+              child: SizedBox(
+                width: 28,
+                height: 28,
+                child: Icon(
+                  hasGroups ? Icons.tune : Icons.add,
+                  size: 16,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 工具条一格里的一个选项
+///
+/// ★ 为什么要 value/label 分开（task-34 的教训）
+/// ```text
+/// 源维度里，「用户看到的」是 providerName（甲源），
+/// 而「筛选用的」是 provider id（jia）—— 两者**不是同一个字符串**。
+/// 第一版我直接拿 label 当下拉菜单项的 Key ⇒ 测试按 id 找选项找不到。
+/// ⇒ 值走 Value，显示走 Label，Key 挂在 Value 上（稳定、与显示名解耦）。
+/// ```
+class _BarOption {
+  const _BarOption(this.value, this.label);
+  final String value;
+  final String label;
+}
+
+/// 分组管理器里的「这个源属不属于本组」勾选胶囊
+///
+/// # ★★★ 为什么要单独写一个（第一版直接用 FilterChip 是**坏的**）
+/// ```text
+/// 第一版：`FilterChip(selected: ..., showCheckmark: false)`
+/// 截图（.probe/shots/t64_after_group_manager.png 初版）里
+/// **每一颗胶囊长得一模一样** —— 因为 `showCheckmark: false` 把
+/// FilterChip 唯一的选中标识去掉了，只剩极淡的底色差，在深色主题下看不出来。
+/// ⇒ 用户根本分不清「哪些源已经在组里」—— 这个配置界面等于不可用。
+/// ```
+///
+/// # 改法：选中态给**三重**区分（任一在深色/浅色下都够）
+/// ```text
+/// ① 对勾图标（最直白）
+/// ② 主色描边
+/// ③ 主色淡底
+/// ```
+/// 分组管理器里的「这个源属不属于本组」勾选胶囊
+///
+/// # ★★★ 三次迭代，读懂了再动
+/// ```text
+/// ① 第一版：`FilterChip(selected: ..., showCheckmark: false)`
+///    截图里**每一颗胶囊长得一模一样** —— `showCheckmark: false` 把
+///    FilterChip 唯一的选中标识去掉了，只剩极淡底色，深色主题下看不出来。
+///    ⇒ 用户分不清哪些源已在组里，配置界面等于不可用。
+/// ② 第二版：干脆手写 `InkWell + Container + Radii.rFull` 自己画对勾。
+///    对勾是出来了，但**撞了 UI-1 门禁**
+///    （`zz_ui1_no_handrolled_controls_test.dart`：InkWell + BoxDecoration
+///     + 全圆角 = 手写药丸，框架里有 FilterChip 就不许自己造）。
+/// ③ 本版：**回到 FilterChip，但把 showCheckmark 打开**。
+///    门禁要的正是这个；而 ① 的问题从来不是「用了框架」，
+///    是「把框架的选中标识关掉了」。
+/// ```
+///
+/// ★ 结论：①的修法方向错了 —— 我把「不该关对勾」错读成「不该用框架」。
+///   正确做法是保留框架控件、只调它的参数。
+class _MemberChip extends StatelessWidget {
+  const _MemberChip({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return FilterChip(
       label: Text(
         label,
-        style: TextStyle(fontSize: FontSizes.cap, color: fg),
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: selected ? colors.primary : colors.onSurfaceVariant,
+        ),
       ),
-      selected: active,
+      selected: selected,
       onSelected: (_) => onTap(),
-      showCheckmark: false,
-      tooltip: tooltip,
+      // ★ 这一行就是 ① 与 ③ 的唯一差别 —— 别关它
+      showCheckmark: true,
+      checkmarkColor: colors.primary,
       backgroundColor: Colors.transparent,
-      selectedColor: colors.primary.withValues(alpha: 0.16),
+      selectedColor: colors.primary.withValues(alpha: 0.18),
       side: BorderSide(
-        color: active ? colors.primary : colors.outlineVariant,
+        color: selected ? colors.primary : colors.outlineVariant,
       ),
       shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
-      padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       labelPadding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
   }
 }
-
-/// 线路选择小胶囊（高清 / 标清 / 备用…）
+/// 工具条里的一格下拉（当前值 + ▾）
 ///
-/// ★ 只在**多于一条可播线路**时出现（见 `lineSwitcher` 的构造处）
+/// ⚠️ 用 `MenuAnchor` 而不是 `PopupMenuButton`：前者能**贴在本格下方**弹出，
+///   后者会以点按处为中心、且宽度不可控（在 300px 栏里会跑出边界）。
+class _BarDropdown extends StatelessWidget {
+  const _BarDropdown({
+    super.key,
+    required this.display,
+    this.tooltip,
+    required this.value,
+    required this.options,
+    required this.onPick,
+  });
+
+  /// 按钮上显示的文字（= 选中项的 label）
+  final String display;
+  /// 悬停提示（**用户可见** —— 写给用户看的那一句就放这里）
+  final String? tooltip;
+  /// 当前**选中值**（不是显示名 —— 见 [_BarOption] 的说明）
+  final String value;
+  final List<_BarOption> options;
+  final ValueChanged<String> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return MenuAnchor(
+      menuChildren: [
+        for (final o in options)
+          MenuItemButton(
+            key: ValueKey('live-bar-opt-${o.value}'),
+            onPressed: () => onPick(o.value),
+            style: MenuItemButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+            ),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 16,
+                  child: o.value == value
+                      ? Icon(Icons.check, size: 13, color: colors.primary)
+                      : null,
+                ),
+                const SizedBox(width: 4),
+                Text(o.label, style: const TextStyle(fontSize: FontSizes.cap)),
+              ],
+            ),
+          ),
+      ],
+      builder: (ctx, controller, _) => Tooltip(
+        message: tooltip ?? '',
+        child: InkWell(
+        onTap: () => controller.isOpen ? controller.close() : controller.open(),
+        borderRadius: Radii.rSm,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // ★ 窄栏：当前值最多 88px，超出用省略号（否则会把工具条顶爆）
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 88),
+                child: Text(
+                  display,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: colors.onSurface,
+                  ),
+                ),
+              ),
+              Icon(Icons.arrow_drop_down, size: 15, color: colors.onSurfaceVariant),
+            ],
+          ),
+        ),
+        ),
+      ),
+    );
+  }
+}
+
+
+/// ★★★ task-34（Owner 第 12 条第 ② 半）：**直播页内**的分组管理器
+///
+/// 能力：建组 / 改名 / 删组 / 把源归组（勾选）。
+///
+/// # 为什么是对话框而不是一个二级页
+/// ```text
+/// Owner 要的是「配置的地方没有」这个**缺口**被补上，且入口在直播页内。
+/// 对话框：点完就回到列表，**不离开上下文**（用户正在看频道）。
+/// 二级页要 push 一条路由，返回时列表状态还得保住 —— 不值得。
+/// ```
+///
+/// # 数据纪律（与 UiPrefs 的契约一致）
+/// ```text
+/// · 打开时**深拷贝**一份进本地 `_draft` —— 取消就丢弃，不污染已存配置
+/// · 只有按「保存」才写 UiPrefs（单一写入点，与设置页同一个 key）
+/// · 删组**不需要搬运源**：分组只是筛选器，删掉 ⇒ 源自动回到「全部源」
+/// ```
+class _SourceGroupManagerDialog extends StatefulWidget {
+  const _SourceGroupManagerDialog({
+    required this.groups,
+    required this.providers,
+  });
+
+  final Map<String, List<String>> groups;
+  final List<LiveGroup> providers;
+
+  @override
+  State<_SourceGroupManagerDialog> createState() =>
+      _SourceGroupManagerDialogState();
+}
+
+class _SourceGroupManagerDialogState
+    extends State<_SourceGroupManagerDialog> {
+  /// 本地草稿（深拷贝）—— 取消即丢弃
+  late Map<String, List<String>> _draft;
+  final TextEditingController _nameCtrl = TextEditingController();
+  String? _error;
+  /// 正在改名的组（null = 没有在改名）
+  String? _renaming;
+  final TextEditingController _renameCtrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _draft = {
+      for (final e in widget.groups.entries) e.key: List<String>.from(e.value),
+    };
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _renameCtrl.dispose();
+    super.dispose();
+  }
+
+  void _add() {
+    final n = _nameCtrl.text.trim();
+    if (n.isEmpty) return setState(() => _error = '分组名不能为空');
+    if (_draft.containsKey(n)) {
+      return setState(() => _error = '已有分组「$n」');
+    }
+    setState(() {
+      _draft[n] = <String>[];
+      _nameCtrl.clear();
+      _error = null;
+    });
+  }
+
+  void _remove(String n) => setState(() {
+        _draft.remove(n);
+        if (_renaming == n) _renaming = null;
+      });
+
+  void _commitRename(String oldName) {
+    final n = _renameCtrl.text.trim();
+    if (n.isEmpty || n == oldName) {
+      return setState(() => _renaming = null);
+    }
+    if (_draft.containsKey(n)) {
+      return setState(() => _error = '已有分组「$n」');
+    }
+    setState(() {
+      // 保序：用 LinkedHashMap 语义（Dart Map 默认保插入顺序）重建
+      final rebuilt = <String, List<String>>{};
+      for (final e in _draft.entries) {
+        rebuilt[e.key == oldName ? n : e.key] = e.value;
+      }
+      _draft = rebuilt;
+      _renaming = null;
+      _error = null;
+    });
+  }
+
+  void _toggleMember(String group, String provider) {
+    setState(() {
+      final list = _draft[group] ?? <String>[];
+      if (list.contains(provider)) {
+        _draft[group] = list.where((x) => x != provider).toList();
+      } else {
+        _draft[group] = [...list, provider];
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return AppDialogShell(
+      title: '管理直播分组',
+      width: 560,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '把常用的直播源分到一组，直播页工具栏可以一键只看某一组。'
+            '分组只是筛选器 —— 删掉某个组，里面的源会回到「全部源」，不会消失。',
+            style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+          ),
+          const SizedBox(height: Sp.x4),
+          // ── 新建 ──
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const ValueKey('live-mgr-name'),
+                  controller: _nameCtrl,
+                  decoration: const InputDecoration(
+                    labelText: '新分组名（如「常看」）',
+                    isDense: true,
+                  ),
+                  onSubmitted: (_) => _add(),
+                ),
+              ),
+              const SizedBox(width: Sp.x3),
+              FilledButton(
+                key: const ValueKey('live-mgr-add'),
+                onPressed: _add,
+                child: const Text('新建'),
+              ),
+            ],
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: Sp.x2),
+            Text(_error!, style: TextStyle(fontSize: FontSizes.cap, color: colors.error)),
+          ],
+          const SizedBox(height: Sp.x4),
+          // ── 现有分组 ──
+          if (_draft.isEmpty)
+            Text(
+              '还没有分组。上面输入一个名字点「新建」即可。',
+              style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+            ),
+          Flexible(
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final name in _draft.keys.toList())
+                    _groupTile(name, colors),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: Sp.x4),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                key: const ValueKey('live-mgr-cancel'),
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('取消'),
+              ),
+              const SizedBox(width: Sp.x2),
+              FilledButton(
+                key: const ValueKey('live-mgr-save'),
+                onPressed: () {
+                  UiPrefs.setLiveSourceGroups(_draft);
+                  Navigator.of(context).pop(true);
+                },
+                child: const Text('保存'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _groupTile(String name, ColorScheme colors) {
+    final members = _draft[name] ?? const <String>[];
+    final renaming = _renaming == name;
+    return Container(
+      margin: const EdgeInsets.only(bottom: Sp.x3),
+      padding: const EdgeInsets.all(Sp.x3),
+      decoration: BoxDecoration(
+        border: Border.all(color: colors.outlineVariant),
+        borderRadius: Radii.rMd,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (renaming)
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: ValueKey('live-mgr-renamefield-$name'),
+                    controller: _renameCtrl,
+                    autofocus: true,
+                    decoration: const InputDecoration(isDense: true),
+                    onSubmitted: (_) => _commitRename(name),
+                  ),
+                ),
+                TextButton(
+                  key: ValueKey('live-mgr-renameok-$name'),
+                  onPressed: () => _commitRename(name),
+                  child: const Text('确定'),
+                ),
+              ],
+            )
+          else
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    name,
+                    style: TextStyle(
+                      fontSize: FontSizes.lg,
+                      color: colors.onSurface,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  key: ValueKey('live-mgr-rename-$name'),
+                  onPressed: () {
+                    setState(() {
+                      _renaming = name;
+                      _renameCtrl.text = name;
+                      _error = null;
+                    });
+                  },
+                  child: const Text('改名'),
+                ),
+                TextButton(
+                  key: ValueKey('live-mgr-del-$name'),
+                  onPressed: () => _remove(name),
+                  child: const Text('删除'),
+                ),
+              ],
+            ),
+          const SizedBox(height: Sp.x2),
+          if (widget.providers.isEmpty)
+            Text(
+              '（本机还没探测到直播源，暂时无法归组）',
+              style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+            ),
+          Wrap(
+            spacing: Sp.x2,
+            runSpacing: Sp.x2,
+            children: [
+              for (final g in widget.providers)
+                _MemberChip(
+                  key: ValueKey('live-mgr-member-$name-${g.provider}'),
+                  label: g.providerName,
+                  selected: members.contains(g.provider),
+                  onTap: () => _toggleMember(name, g.provider),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _LineChip extends StatelessWidget {
   const _LineChip({
     required this.label,
@@ -3162,9 +3572,32 @@ class _ChannelTileState extends State<_ChannelTile> {
       focusNode: _node,
       borderRadius: Radii.rSm,
       child: Container(
+        /*
+         * ★★★ task-34（Owner 第 12 条）：「分类+源把列表都挤得看不到了」
+         *
+         * # 这条改的是**行密度**，不只是把头部压扁
+         * ```text
+         * Owner 的要求是「一屏看到的源 ≥ 现在一倍」。
+         * 实测（.probe/probe_tests/zz_t64_measure_probe_test.dart，1280x800）：
+         *   行距 pitch = **52px**，其中内容只有 **30px**，间距占了 **22px**（42%）
+         *   把头部从 253 压到 0 ⇒ 800/52 = 最多 **14 行** ⇒ 只涨 40%，
+         *   **永远到不了 2 倍**。
+         * ⇒ 光改组头部到不了目标，**必须同时收紧行距** —— 这是第二个杠杆。
+         * ```
+         *
+         * # 改法（34 logo + 16 垂直内边距 + 2 边距 = 52 ⇒ 目标 40）
+         * ```text
+         * logo 34 → 26（仍够认出图标；文字回退仍显示前 4 字）
+         * 垂直内边距 Sp.x2(8) → Sp.x1(4)
+         * 底部 margin 2 → 2（保留：行与行之间的缝隙，也是点击热区的间隔）
+         * ```
+         *
+         * ⚠️ 为什么不把 padding 砍到 0：那会让行贴在一起，
+         *   选中高亮块之间没有缝隙 ⇒ 视觉上糊成一片，比挤更难用。
+         */
         padding: const EdgeInsets.symmetric(
           horizontal: Sp.x2,
-          vertical: Sp.x2,
+          vertical: Sp.x1,
         ),
         margin: const EdgeInsets.only(bottom: 2),
         decoration: BoxDecoration(
@@ -3174,17 +3607,18 @@ class _ChannelTileState extends State<_ChannelTile> {
         child: Row(
           children: [
             // ── logo（无图时显示前 4 个字）──
+            // ★ task-34：34 → 26（见上面行密度的注释）
             SizedBox(
-              width: 34,
-              height: 34,
+              width: 26,
+              height: 26,
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: BorderRadius.circular(5),
                 child: channel.logo != null && channel.logo!.isNotEmpty
                     ? coverImage(
                         context,
                         url: channel.logo!,
-                        // 上面的 `SizedBox` 就是 34×34，硬编码且无 LayoutBuilder
-                        layoutWidth: 34,
+                        // 上面的 SizedBox 就是 26x26，硬编码且无 LayoutBuilder
+                        layoutWidth: 26,
                         fit: BoxFit.contain,
                         errorBuilder: (_, __, ___) => _logoText(colors),
                       )
@@ -3257,15 +3691,34 @@ class _ChannelTileState extends State<_ChannelTile> {
     // 原版：`ch.name.slice(0, 4)`
     // ⚠️ 用 `widget.channel`（本类是 StatefulWidget，字段在 widget 上）
     final n = widget.channel.name;
-    final t = n.length > 4 ? n.substring(0, 4) : n;
+    /*
+     * ★ task-34：logo 从 34 缩到 26 后，**4 个字在 26px 里必然折行**
+     *
+     * 实测（.probe/shots/t64_after_layout.png 第一版截图）：
+     *   原本取前 4 字（如「IPTV」是 4 个拉丁字母 / 某平台名也是 4 个汉字），
+     *   在 26px 宽的格子里横排放不下 ⇒ 折成两行、上半个字还被裁掉，
+     *   看起来像**渲染坏了**（截图能明显看到字被切成上下两半）。
+     *
+     * ⇒ 两条一起改（缺一条都还是坏的）：
+     *   ① 字数 4 → **2**（26px 里 2 个汉字 = 24px，刚好放得下）
+     *   ② 加 `maxLines: 1` + `overflow: ellipsis` 作为**硬保险** ——
+     *      万一下个主题把字号调大，也只会省略而不会折行/裁字。
+     * ⚠️ 这是**视觉兜底**，真正的图标来自 `channel.logo`（有图时走图）。
+     */
+    final t = n.length > 2 ? n.substring(0, 2) : n;
     return ColoredBox(
       color: colors.surfaceContainerHighest,
       child: Center(
         child: Text(
           t,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           textAlign: TextAlign.center,
           style: TextStyle(
-            fontSize: FontSizes.cap,
+            // 26px 格子里 2 个 11px 汉字 = 22px，放得下；用 11 而不是 cap(12)
+            // 是为了留 2px 呼吸余地（12+12=24 贴着边，视觉上偏挤）
+            fontSize: 11,
+            height: 1.0,
             color: colors.onSurfaceVariant,
           ),
         ),

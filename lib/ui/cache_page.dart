@@ -79,6 +79,8 @@
 // ```
 library;
 
+import '../design/widgets/app_icon_button.dart';
+import '../design/widgets/app_ink_well.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -2094,11 +2096,15 @@ class _CacheWorkCardState extends State<_CacheWorkCard> {
                   opacity: _hover ? 1 : 0,
                   duration: MotionPrefs.duration(context, Motion.fast),
                   curve: MotionPrefs.curve(context, Motion.easeOut),
-                  child: Material(
+                  // ★ 去 Material（Owner 第 4/8/9 条，2026-10-17）
+                  //   Material 提供 black@45% 的圆形底 + 裁剪（真 B 类，有底色职责）。
+                  //   ⇒ AppSurface 承担底色与圆角，AppInkWell 自绘高亮。
+                  //   ⚠️ 原来是 CircleBorder，AppSurface 只吃半径 —— 用边长一半换算。
+                  child: AppSurface(
                     color: Colors.black.withValues(alpha: 0.45),
-                    shape: const CircleBorder(),
+                    borderRadius: BorderRadius.circular(14),
                     clipBehavior: Clip.antiAlias,
-                    child: InkWell(
+                    child: AppInkWell(
                       onTap: () => unawaited(_openMenu(_moreButtonCenter())),
                       child: SizedBox(
                         width: 28,

@@ -125,6 +125,11 @@ const subPages = <String>[
   'lib/ui/settings/touch_gestures_page.dart',
   'lib/ui/settings/emby_page.dart',
   'lib/ui/settings/live_groups_page.dart',
+  // ★ 2026-10-17（task-35 / Owner 第 7 条）：弹幕源配置页。
+  //   它用了 `SettingsSubPage` 外壳却不在清单里 ⇒ 本文件第 3 条守卫
+  //   （反向扫描）当场报红。同上面 2026-10-04 那条：是**清单过期**，
+  //   不是产品缺陷 —— 页面已经拿到了 sticky 返回，只是清单没跟上。
+  'lib/ui/settings/danmaku_source_page.dart',
 ];
 
 void main() {

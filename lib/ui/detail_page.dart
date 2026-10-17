@@ -55,6 +55,7 @@ import 'cache_page.dart'
     show CachedDelete, CachedWork, humanBytes, kLocalProvider;
 import 'media_session.dart';
 import '../core/network_status.dart';
+import '../design/widgets/app_ink_well.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
 import 'widgets/app_menu.dart';
@@ -4838,13 +4839,19 @@ class _LocalEpisodeRow extends StatelessWidget {
      * ```
      * ⇒ 自己铺一层**透明** Material（只让墨水效果有地方画，不引入底色）。
      */
-    return Material(
-      type: MaterialType.transparency,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: Radii.rSm,
-        child: row,
-      ),
+    /*
+     * ★ 去 Material（Owner 第 4/8/9 条）：删掉透明 Material 外壳
+     *
+     * 原来这层 Material **只**为了让 InkWell 的水波有地方画 ——
+     * 它没有底色、没有形状、没有阴影，纯属 Material 的机制包袱。
+     *
+     * 换成 AppInkWell 后高亮是**自绘**的（画在自己身上），
+     * 不再需要祖先 Material ⇒ 整层删除，行为不变。
+     */
+    return AppInkWell(
+      onTap: onTap,
+      borderRadius: Radii.rSm,
+      child: row,
     );
   }
 }

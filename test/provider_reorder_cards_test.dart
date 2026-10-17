@@ -90,7 +90,8 @@ void main() {
      * 下一个顶层 class。用 class 边界比"下一个 _Block("稳 ——
      * 方法体内本来就有 `_Block(`，用它当终点会切在**开头**。
      */
-    final end = src.indexOf('class _ProviderCard extends StatelessWidget', start);
+    // ★ 2026-10-17：只匹配类名，不写死基类（Stateless ⇄ Stateful 会变）
+    final end = src.indexOf('class _ProviderCard', start);
     expect(end > start, isTrue,
         reason: '应能找到 `_pluginsBlock` 之后的下一个顶层 class（切片终点）');
     return src.substring(start, end);

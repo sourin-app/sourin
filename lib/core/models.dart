@@ -799,6 +799,74 @@ class SectionSource {
 /// 某视频站 1080P 必须走 DASH，而 DASH **必然音视频分离**。
 /// 音轨也要走同一个代理（同样的 headers），
 /// 否则表现是「画面正常但完全没声音，且不报错」。
+
+/// 流级属性——描述「这条流**是什么**」
+///
+/// # 为什么不是「插件请求宿主做什么」
+///
+/// 曾经拟过一个 `needsHostDecode` 能力位，**已砍掉**：
+/// ```text
+/// 解码是宿主**永远**的责任，不是插件能选的能力。
+/// 插一个这样的位会产生误导：
+///   「插件没声明 ⇒ 宿主不解码？」
+/// 而真实语义是「这条流需要 X 能力」。
+/// ```
+///
+/// 所以这里只放**客观事实**，宿主自己决定怎么办。
+///
+/// ⚠⚠ 默认全 false、全 null —— 老插件不传时行为逐字不变。
+class StreamFlags {
+  const StreamFlags({
+    this.drm = false,
+    this.hdr = false,
+    this.codec,
+  });
+
+  /// ★ 这条流受 DRM 保护
+  ///
+  /// # 已实测的硬约束（task-33，2026-10-17）
+  /// ```text
+  /// libmpv-2.dll 里 widevine / playready / clearkey 的字符串计数均为 **0**
+  /// （grep -aic 实测，见 .probe/t33/REPORT.md §4.3）
+  /// ⇒ 本宿主**架构上不可能**播 DRM 内容。
+  /// ⇒ 这不是「缺解码器」，补解码器解决不了 —— 需要 CDM 授权。
+  /// ```
+  ///
+  /// 所以这个位的唯一用途是：**让 UI 如实告诉用户为什么看不了**，
+  /// 而不是去实现解密。
+  final bool drm;
+
+  /// HDR（HDR10 / HLG / Dolby Vision 等）
+  ///
+  /// 宿主**未**实现 HDR 渲染链（无 tone mapping），
+  /// 但这不阻止播放（libmpv 会降到 SDR）—— 所以不影响 isPlayable。
+  final bool hdr;
+
+  /// 编码名（如 `h264` / `hevc` / `av1`），插件若知道就填
+  ///
+  /// 用途：宿主可据此提前判断「这条需不需要特殊路径」，
+  /// 将来也能用来在 UI 上标清晰度之外的信息。
+  /// ⚠⚠ 不要拿它做「能不能播」的判据 —— 那个判据是 libmpv 自己嗅探的，
+  /// 宿主提前拦截只会造成「本来能播却被拦」。
+  final String? codec;
+
+  bool get isEmpty => !drm && !hdr && codec == null;
+
+  factory StreamFlags.fromJson(Map<String, dynamic> j) => StreamFlags(
+        drm: j['drm'] as bool? ?? false,
+        hdr: j['hdr'] as bool? ?? false,
+        codec: j['codec'] as String?,
+      );
+
+  @override
+  String toString() => isEmpty
+      ? 'StreamFlags()'
+      : 'StreamFlags(drm: $drm, hdr: $hdr, codec: $codec)';
+}
+
+/// 流候选项（一条线路）
+///
+/// ⚠⚠ 下面这段关于 `audioUrl` 的说明是从原文保留的，别删。
 class StreamCandidate {
   const StreamCandidate({
     required this.url,
@@ -810,6 +878,9 @@ class StreamCandidate {
     this.drmProtected = false,
     this.audioUrl,
     this.format,
+    this.needsHostResolve = false,
+    this.siteId,
+    this.streamFlags = const StreamFlags(),
   });
 
   /// 播放地址。
@@ -880,14 +951,95 @@ class StreamCandidate {
 
   final String? format;
 
+  // ─────── 广告层解析契约（task-33，2026-10-17）───────
+
+  /// ★★ [url] 是**播放页 URL**，需要宿主先解出真实地址
+  ///
+  /// # 为什么需要它
+  ///
+  /// 现有契约假设插件给的就是可播地址（[url] 直接交给 mpv）。
+  /// 但一类站点的插件**拿不到**可播地址（签名 / DRM / 需要浏览器环境），
+  /// 只能给出播放页 URL，由宿主内置的解析能力去解。
+  ///
+  /// # ⚠⚠ 设了它就**必须**有消费者
+  ///
+  /// 本仓铁律：声明了不生效等于骗人。
+  /// 所以这个位碰在 [SourinApi.resolveStream] 上：
+  /// ```text
+  /// 提交前必须能指出「谁读它」——否则这个字段就是死代码（与 theme_pack 的
+  /// buttonPadding 同一类缺陷）。
+  /// ```
+  final bool needsHostResolve;
+
+  /// 站点标识（**代号**，不是站名）
+  ///
+  /// ⚠⚠ 本仓有机械门禁 `test/t98_no_site_names_test.dart`：
+  /// 具体视频网站的名字**不许出现在仓库任何可发布文本里**
+  /// （含 .dart / .rs / .md）。所以这个字段只能装代号（S1/S2/…），
+  /// 真实映射关系由插件自己持有（插件不进仓库）。
+  final String? siteId;
+
+  /// 流级属性——描述「这条流**是什么**」，不是「插件**请求宿主做什么**」
+  ///
+  /// 这个区分是刻意的：解码是宿主**永远**的责任，
+  /// 不是插件能选的能力位（曾拟过 `needsHostDecode`，已砍掉）。
+  final StreamFlags streamFlags;
+
   /// 是否可以直接交给播放器
   ///
   /// DRM 流不能播；其余都可以（代理已经在核心侧处理好了）。
-  bool get isPlayable => !drmProtected && url.isNotEmpty;
+  ///
+  /// # ★ 为什么 2026-10-17 加了 `!needsHostResolve`
+  ///
+  /// 不加的话，「还没解析的播放页 URL」会被当成可播地址交给 mpv
+  /// ⇒ **静默黑屏**（用户看不到任何提示）。
+  ///
+  /// ⚠⚠ 注意区分两种「不能播」，不许混用：
+  /// ```text
+  /// drmProtected=true    ⇒ 受版权保护，本客户端永远解不了（UI 如实说）
+  /// needsHostResolve=true ⇒ 宿主还没把它解出来（**不是 DRM**，不许冒充）
+  /// ```
+  /// 把后者标成前者就是说谎 —— 与本仓「不支持就说不支持」同一条纪律。
+  bool get isPlayable =>
+      !drmProtected && !needsHostResolve && url.isNotEmpty;
 
   /// 显示的线路名（回退到清晰度，再回退到 kind）
   String get displayName =>
       label ?? quality ?? (kind.isEmpty ? '默认' : kind.toUpperCase());
+
+  /// 复制并改几个字段（供预处理层把播放页 URL 换成真实地址）
+  ///
+  /// ⚠⚠ 这里**不替你清理** `needsHostResolve`：
+  /// 解完之后由调用方显式传 `false`，
+  /// 而不是让 copyWith 偷偷改掉 —— 否则「解析失败」时会连失败原因都丢了。
+  StreamCandidate copyWith({
+    String? url,
+    String? kind,
+    String? quality,
+    String? label,
+    List<(String, String)>? headers,
+    bool? notWebReady,
+    bool? drmProtected,
+    String? audioUrl,
+    String? format,
+    bool? needsHostResolve,
+    String? siteId,
+    StreamFlags? streamFlags,
+  }) =>
+      StreamCandidate(
+        url: url ?? this.url,
+        kind: kind ?? this.kind,
+        quality: quality ?? this.quality,
+        label: label ?? this.label,
+        headers: headers ?? this.headers,
+        notWebReady: notWebReady ?? this.notWebReady,
+        drmProtected: drmProtected ?? this.drmProtected,
+        audioUrl: audioUrl ?? this.audioUrl,
+        format: format ?? this.format,
+        needsHostResolve: needsHostResolve ?? this.needsHostResolve,
+        siteId: siteId ?? this.siteId,
+        streamFlags: streamFlags ?? this.streamFlags,
+      );
 
   factory StreamCandidate.fromJson(Map<String, dynamic> j) => StreamCandidate(
         url: j['url'] as String? ?? '',
@@ -905,6 +1057,13 @@ class StreamCandidate {
         drmProtected: j['drm_protected'] as bool? ?? false,
         audioUrl: j['audio_url'] as String?,
         format: j['format'] as String?,
+        needsHostResolve: j['needs_host_resolve'] as bool? ?? false,
+        siteId: j['site_id'] as String?,
+        streamFlags: StreamFlags.fromJson(
+          j['stream_flags'] is Map
+              ? (j['stream_flags'] as Map).cast<String, dynamic>()
+              : const <String, dynamic>{},
+        ),
       );
 }
 

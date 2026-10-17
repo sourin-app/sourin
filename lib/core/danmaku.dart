@@ -1686,20 +1686,50 @@ class ExternalDanmakuClient {
   /// 正确性不该依赖调用方记得重置。
   /// ```
   ///
-  /// # 优先序（尊重宿主的选路结果）
+  /// # 优先序（★ Owner 第 7 条改：dan-api 优先于本机弹弹play）
   /// ```text
   /// ① 显式传入的 endpoint      → 用它（测试注入 / 调用方明确指定）
-  /// ② unsignedLocal = true     → 返回 null，走本机 2080
-  ///                              （宿主**已经**探测并决定用本机了，别抢它的决定）
-  /// ③ 否则                     → 动态读用户偏好（UiPrefs）
+  /// ② 用户**配了** dan-api      → 用它（即使宿主说要走本机）
+  /// ③ unsignedLocal = true     → 返回 null，走本机 2080
+  /// ④ 否则                     → 官方
   /// ```
+  ///
+  /// # ★★★ ② 为什么必须排在 ③ 前面（真缺陷，Owner 亲口报的）
+  /// ```text
+  /// Owner 原话：
+  /// > 配置页没看到,既然弹弹play不行,就换成dan-api
+  ///
+  /// 改前是 ③ 在前：
+  ///   宿主探到本机弹弹play 在线 ⇒ unsignedLocal = true
+  ///   ⇒ 本 getter 走到 `if (_unsignedLocal) return null`
+  ///   ⇒ **用户配的 dan-api 地址被完全忽略**
+  /// 于是「本机弹弹play 一在线，dan-api 就永远轮不到」——
+  /// 用户明明填了地址、点测试也通了，取弹幕却还在打 2080。
+  /// ```
+  ///
+  /// ⚠️ 为什么这不是「无视宿主的选路」：宿主那次选路（player_page）
+  ///    只看得到「本机 2080 在不在线」，**看不到**用户有没有配 dan-api ——
+  ///    它没有做这个判断所需的信息。配置的归属在用户，
+  ///    而「用户显式配了地址」是比「本机恰好有个服务」更强的意图。
+  /// ⚠️ 用户点过「改用官方 API」时**不受影响**：那条路走的是
+  ///    `_danmakuForceOfficial`（宿主侧的显式开关），不经过本 getter 的 ②。
   ///
   /// null ⇒ 完全退回内置的官方/本机路径，行为与没有这个功能时逐字一致。
   DanmakuEndpoint? get _endpoint {
     final explicit = _endpointExplicit;
     if (explicit != null) return explicit;
+    /*
+     * ★★ ② 用户配了 dan-api ⇒ 用它，**即使**宿主说要走本机 2080
+     *
+     * 见上方「② 为什么必须排在 ③ 前面」。判据是「配了」而不是
+     * 「探通了」—— 探通与否由宿主那次 probe 决定，而它探的可能是 2080。
+     * 这里只负责「用户的意思优先」；真的连不上会由请求自己失败，
+     * 并且宿主有一条「改用官方」的回头路。
+     */
+    final configured = DanmakuConfig.danmakuEndpoint;
+    if (configured != null) return configured;
     if (_unsignedLocal) return null;
-    return DanmakuConfig.danmakuEndpoint;
+    return null; // 官方
   }
 
   /// 本次是否走「免签名」路径（自建后端 或 本机弹弹play）

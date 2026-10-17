@@ -99,6 +99,19 @@ void main() {
           final body = src.substring(m.end, end);
           if (!RegExp(r'\bSwitch\s*\(').hasMatch(body)) continue;
           if (body.contains('SwitchListTile')) continue;
+          /*
+           * ★★★ 2026-10-17：跳过**设计预览面板的样张**
+           *
+           * theme_page.dart 的预览里有：
+           *   Row(children: [Switch(value: true, onChanged: (_) {}), ...])
+           * 和旁边的 FilledButton/OutlinedButton/TextButton 一样，
+           * 全是空回调、只读展示（注释：「开关两态」「只读展示，不抢焦点」）。
+           *
+           * ⇒ 样张要展示的就是 Switch 本身，改成 SwitchListTile 会展示错东西。
+           * 判据：空回调视为样张。不用文件白名单 ——
+           *   同一个文件里既有样张也有真控件，文件级豁免会连真控件一起放过。
+           */
+          if (RegExp(r'onChanged:\s*\(_\)\s*\{\}').hasMatch(body)) continue;
           final line = src.substring(0, m.start).split('\n').length;
           bad.add('$rel:$line');
         }
@@ -153,6 +166,20 @@ void main() {
         for (var i = 0; i < lines.length; i++) {
           // 调用点：本行是 `_row(` 且同行有裸 Switch(（排除 SwitchListTile）
           if (!RegExp(r'\b_row\s*\(').hasMatch(lines[i])) continue;
+          /*
+           * ★★★ 2026-10-17：跳过**设计预览面板**
+           *
+           * theme_page.dart 的预览面板里有 `Switch(value: true, onChanged: (_) {})`
+           * —— 那是**组件样张**，和旁边的 FilledButton/OutlinedButton 一样，
+           * 全部空回调、只读展示，注释也写着「开关两态」「只读展示，不抢焦点」。
+           *
+           * ⇒ 样张的目的就是"展示这个控件长什么样"，
+           *   改成 SwitchListTile 反而会展示错东西（样张要展示的是 Switch 本身）。
+           *
+           * 判据：空回调 onChanged: (_) {} 或 onPressed: () {} 视为样张。
+           * 不用文件级白名单，因为同一个文件里既有样张也有真控件。
+           */
+          if (RegExp(r'onChanged:\s*\(_\)\s*\{\}').hasMatch(lines[i])) continue;
           for (var k = i; k < lines.length && k < i + 7; k++) {
             if (!RegExp(r'\bSwitch\s*\(').hasMatch(lines[k])) continue;
             if (lines[k].contains('SwitchListTile')) continue;
@@ -193,7 +220,20 @@ void main() {
         final rel = f.path.replaceAll(r'\', '/');
         if (_pillWhitelist.contains(rel)) continue;
         final src = f.readAsStringSync();
-        for (final m in RegExp(r'InkWell\s*\(').allMatches(src)) {
+        /*
+         * ★★★ 2026-10-17 修假阳性：`InkWell\s*\(` 会匹配到 `AppInkWell(`
+         *
+         * 正则没有词边界，`AppInkWell(` 里含子串 `InkWell(`，于是
+         * 已迁到 AppInkWell 的代码（**正是迁移的目标**）被当成
+         * 「手写药丸」报出来 —— 与本门禁的意图完全相反。
+         *
+         * 实测：lib/ui/shell_layouts/top_bar_layout.dart:150 报错，
+         * 而那里写的是 `return AppInkWell(`（去 Material 后的正确形态）。
+         *
+         * ⇒ 加 `(?<![A-Za-z_])` 负向后顾：前面不能紧跟标识符字符，
+         *   这样只认裸的 `InkWell(`，放过 `AppInkWell(` / `XxxInkWell(`。
+         */
+        for (final m in RegExp(r'(?<![A-Za-z_])InkWell\s*\(').allMatches(src)) {
           final end = _closeOf(src, m.end - 1);
           final body = src.substring(m.end, end);
           if (!body.contains('BoxDecoration')) continue;

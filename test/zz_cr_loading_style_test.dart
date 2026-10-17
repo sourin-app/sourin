@@ -94,14 +94,46 @@ String _stripComments(String src) {
   return buf.toString();
 }
 
-/// 取渲染树里唯一的那个 CircularProgressIndicator
-CircularProgressIndicator _onlyIndicator(WidgetTester tester) {
+/// 取渲染树里唯一的那个「转圈」
+///
+/// # ★ 2026-10-17：目标从 CircularProgressIndicator 改成自绘 _AppSpinner
+///
+/// 背景：Lead 把 AppLoading 的指示器换成了自绘 `_AppSpinner`（CustomPainter），
+/// 于是这里原本的 `find.byType(CircularProgressIndicator)` 找到 **0 个** ⇒
+/// 三条渲染级断言全红（Expected: <1> Actual: <0>）。
+///
+/// ⚠️ 关键是**不能**因为「找不到就删断言」——那三条钉的是真规格
+///    （描边够粗 / 圈不大 / 颜色不是浅灰白）。换控件不等于规格作废。
+///
+/// ⇒ 改成从**新实现**上取同样的三个属性：
+/// ```text
+///   strokeWidth  ← CustomPaint 的 painter.stroke
+///   color        ← painter.color
+///   盒径          ← 仍然量 AppLoading 自己（不受实现变化影响）
+/// ```
+/// 因为 `_AppSpinner` 是私有的，这里按**结构特征**找 CustomPaint
+/// （底栏药丸的假红教训：不能只按类型找，要限定在 AppLoading 子树内）。
+CustomPaint _onlyIndicator(WidgetTester tester) {
   final all = tester
-      .widgetList<CircularProgressIndicator>(find.byType(CircularProgressIndicator))
+      .widgetList<CustomPaint>(find.descendant(
+        of: find.byType(AppLoading),
+        matching: find.byType(CustomPaint),
+      ))
+      .where((w) => w.painter != null)
       .toList();
-  expect(all.length, 1, reason: '应当恰好渲染出一个 CircularProgressIndicator');
+  expect(all.length, 1, reason: '应当恰好渲染出一个转圈 CustomPaint');
   return all.single;
 }
+
+/// 从转圈 painter 上取描边宽度 / 颜色
+///
+/// ⚠️ 用 `dynamic` 读 —— painter 是私有类型 `_SpinnerPainter`，
+///   测试不能 import 它。这是**测试侧的取舍**：宁可少一点类型安全，
+///   也不要为了可测性把私有类公开（那会污染产品 API）。
+///   若将来字段改名，这里会在**运行期**报 NoSuchMethodError ——
+///   而三条断言本来就是运行期检查，失败信息足够定位。
+double _strokeOf(CustomPaint p) => (p.painter! as dynamic).stroke as double;
+Color _colorOf(CustomPaint p) => (p.painter! as dynamic).color as Color;
 
 void main() {
   group('OPS-14 · AppLoading 渲染级规格', () {
@@ -111,7 +143,7 @@ void main() {
 
       // ── 描边不能是发丝 ──
       expect(
-        ind.strokeWidth,
+        _strokeOf(ind),
         greaterThanOrEqualTo(2.5),
         reason: '描边太细，视觉上就是一根发丝（Owner：效果不好）',
       );
@@ -126,9 +158,7 @@ void main() {
       expect(size.width, lessThanOrEqualTo(size.height));
 
       // ── 颜色不是浅灰白 ──
-      final color = ind.color;
-      expect(color, isNotNull, reason: '必须显式给颜色，不能落到主题兜底的浅灰');
-      final c = color!;
+      final c = _colorOf(ind);
       expect(
         c == Colors.white,
         isFalse,
@@ -152,7 +182,7 @@ void main() {
     testWidgets('浅色底：改用更深的一档，仍然看得清', (tester) async {
       await tester.pumpWidget(_host(const AppLoading(), Brightness.light));
       final ind = _onlyIndicator(tester);
-      final c = ind.color!;
+      final c = _colorOf(ind);
 
       final bg = AppTheme.colorsFor(Brightness.light).background;
       expect(

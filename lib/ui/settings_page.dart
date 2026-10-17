@@ -43,6 +43,7 @@
 // > 比「现在开着没有」更该先被看到。
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:material_ui/material_ui.dart';
@@ -52,12 +53,15 @@ import '../core/device.dart';
 import '../core/player_gestures.dart';
 import '../core/sourin_api.dart';
 import '../core/ui_prefs.dart';
+import '../design/widgets/app_ink_well.dart';
 import 'app_theme.dart';
 import 'remote_bridge.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
 import 'widgets/app_menu.dart';
 import 'widgets/qr_view.dart';
+import 'widgets/source_composer_dialog.dart';
+import 'widgets/source_composer_model.dart';
 /*
  * ═══════════════════════════════════════════════════════════════════════
  * ★★★ 四个面板的接线（2026-09-24 集成任务 M）
@@ -164,6 +168,7 @@ import 'widgets/provider_import_dialog.dart';
  */
 import 'settings/about_page.dart';
 import 'settings/backup_page.dart';
+import 'settings/danmaku_source_page.dart';
 import 'settings/live_groups_page.dart';
 import 'settings/pc_gestures_page.dart';
 import 'settings/playback_page.dart';
@@ -701,6 +706,52 @@ class SettingsPageState extends State<SettingsPage> {
     _openSubPage(_PluginsPage(host: this));
   }
 
+  /// 打开「弹幕源」二级页（Owner 第 7 条）
+  ///
+  /// 与另外几个二级页**同一范式**（`_openSubPage` + `SettingsSubPage`）。
+  void _openDanmakuSourcePage() {
+    _openSubPage(const DanmakuSourcePage());
+  }
+
+  /// 一级页「弹幕源」那条入口的服务副标题
+  ///
+  /// # 为什么要把状态放在**一级页**
+  /// ```text
+  /// Owner 的原话是「配置页没看到」—— 他要的是**看得见**：
+  /// 不点进去就知道自己配没配、配的是哪个地址。
+  /// ⇒ 副标题必须随偏好实时变化，不能写成固定的功能介绍。
+  /// ```
+  ///
+  /// ⚠️ 本函数只读偏好（纯同步、零网络）—— 一级页每帧都会调它，
+  ///    绝不能在这里发探测请求（那会让设置页一打开就打网络）。
+  String _danmakuEndpointSubtitle() {
+    final ep = UiPrefs.danmakuEndpoint;
+    if (ep.isEmpty) {
+      return '未配置 · 现用本机弹弹play / 官方接口 · 点此填 dan-api 地址';
+    }
+    return '已配置：$ep · 免凭证 · 点此修改或测试连接';
+  }
+
+  /// 是否该显示「首次使用 / 还没配」的 dan-api 引导（Owner 第 7 条 ③）
+  ///
+  /// # 判据
+  /// ```text
+  /// 未配置 dan-api  ⇒ 显示引导
+  /// 已配置          ⇒ 不显示（用户已经知道了，再提示就是噪声）
+  /// ```
+  ///
+  /// # ⚠️ 为什么**不**把「本机弹弹play 是否在线」也纳进判据
+  /// ```text
+  /// 在线与否只能靠**发请求探测**才知道（DanmakuLocalService.probe）。
+  /// 而本函数在一级页的 build 里被调用 —— build 里发网络请求是明确的错误：
+  ///   ① 每次 setState 都会重发一次
+  ///   ② 设置页一打开就有网络活动（用户没要求）
+  ///   ③ 探不到时还会拖慢首帧
+  /// 而「未配置」是**同步可读**的偏好值，作为判据既保守又不撒谎：
+  /// 没配 dan-api 的人，本来就该知道有这条路。
+  /// ```
+  bool _danmakuShouldGuide() => UiPrefs.danmakuEndpoint.isEmpty;
+
   // ═══════════════════════════════════════════════════════════════════
   //  内容源
   // ═══════════════════════════════════════════════════════════════════
@@ -1049,6 +1100,32 @@ class SettingsPageState extends State<SettingsPage> {
       return;
     }
 
+    /*
+     * ★★★ 2026-10-17（Owner 第 9 条）：声明式源直接进**可视化编排**
+     *
+     * # Owner 原话
+     * > 点击编辑还是老样子的配置,没有可见的可视化编排,这里肯定也要用到modal,一起给换了
+     *
+     * # 改前为什么「还是老样子」
+     * ```text
+     * 这条路径落到 ProviderImportDialog.showEdit ⇒ 一个**裸 JSON 文本框**。
+     * 编排器本身是有的（provider_import_dialog.dart:644 那个「可视化编排」按钮），
+     * 但：
+     *   ① 要用户先点进导入弹窗、再点按钮才到（编辑入口自己到不了）；
+     *   ② 那里调 SourceComposerDialog 时**没传 initial** ⇒ 编排器是**空白**的，
+     *      编辑一个已有源等于从零重填；
+     *   ③ 编完只写回 JSON 文本框，用户还得再点一次「保存」。
+     * ```
+     * ⇒ 三件事一起解决：从编辑入口**直达**编排器、带初值、提交即生效。
+     *
+     * ⚠️ JS 插件**不受影响**（上面那个 if 已经 return 了）——
+     *    它的「配置」就是源码本身，必须走源码编辑器。
+     */
+    if (p.kind == 'declarative') {
+      await _editDeclarativeViaComposer(p);
+      return;
+    }
+
     ProviderImportSeed? seed;
     try {
       /*
@@ -1086,6 +1163,91 @@ class SettingsPageState extends State<SettingsPage> {
     await _afterImport(r);
   }
 
+
+  /// 声明式源 ⇒ **可视化编排**（Owner 第 9 条）
+  ///
+  /// # 与 [_editProvider] 里其它分支的分工
+  /// ```text
+  /// js           ⇒ 源码编辑器（配置就是源码）
+  /// declarative  ⇒ **本方法**：可视化编排，提交即生效
+  /// http         ⇒ ProviderImportDialog（要填 baseUrl + headers）
+  /// ```
+  ///
+  /// # 为什么提交后**直接**落盘，而不是像导入弹窗那样写回文本框
+  /// ```text
+  /// 用户点的是**编辑**，不是「打开一个草稿箱」。
+  /// 编辑完还要回去再点一次「保存」，是这次被 Owner 点名的那层别扭；
+  /// 一屏化之后它会更明显（没有「下一步」的仪式感兜着）。
+  /// ⇒ 编排器的「保存」就是最终动作，直接 import_declarative_provider。
+  /// ```
+  Future<void> _editDeclarativeViaComposer(ProviderManifest p) async {
+    ProviderImportSeed? seed;
+    try {
+      seed = await SourinApi.getProviderImportSeed(p.id);
+    } catch (e) {
+      _flash('读取配置失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    if (seed == null || seed.json == null || seed.json!.trim().isEmpty) {
+      _flash('该源没有可编辑的配置');
+      return;
+    }
+
+    ComposerDraft initial;
+    try {
+      final raw = jsonDecode(seed.json!);
+      initial = composerDraftFromJson(
+        raw is Map ? raw.map((k, v) => MapEntry(k.toString(), v)) : const {},
+      );
+    } catch (e) {
+      /*
+       * 解析不了 ⇒ 退回源码/JSON 编辑器那条老路，而不是把用户挡在门外。
+       * ⚠️ 这里**不能**静默 return：用户会以为「点了编辑没反应」。
+       */
+      _flash('这份配置无法可视化解析，已改用文本编辑：$e');
+      await _openDeclarativeTextFallback(p);
+      return;
+    }
+
+    final out = await showAppDialog<Map<String, Object?>>(
+      context: context,
+      builder: (_) => SourceComposerDialog(
+        initial: initial,
+        submitLabel: '保存',
+        onSubmit: (j) => Navigator.of(context).pop(j),
+      ),
+    );
+    if (out == null || !mounted) return;
+
+    try {
+      const enc = JsonEncoder.withIndent('  ');
+      final res = await SourinApi.importDeclarativeProvider(enc.convert(out));
+      await loadAll();
+      widget.onProvidersChanged?.call();
+      _flash('已保存「${res.name}」v${res.version}');
+    } catch (e) {
+      _flash('保存失败：$e');
+    }
+  }
+
+  /// 可视化解析失败时的退路：仍走原来的导入弹窗（裸 JSON 文本框）
+  Future<void> _openDeclarativeTextFallback(ProviderManifest p) async {
+    ProviderImportSeed? seed;
+    try {
+      seed = await SourinApi.getProviderImportSeed(p.id);
+    } catch (_) {
+      return;
+    }
+    if (seed == null || !mounted) return;
+    final r = await ProviderImportDialog.showEdit(
+      context,
+      seed: seed,
+      name: p.name,
+    );
+    if (!mounted) return;
+    await _afterImport(r);
+  }
   /// 弹窗返回后的统一收尾（刷新 + 提示）
   ///
   /// # 为什么抽出来
@@ -1785,6 +1947,44 @@ class SettingsPageState extends State<SettingsPage> {
   // ═══════════════════════════════════════════════════════════════════
 
   @override
+  /// 布局骨架的显示名
+  ///
+  /// ⚠️ 与 `lib/ui/shell_layouts/` 里各实现的 `label` 保持一致 ——
+  ///    两处不同的话，设置里叫「侧栏式」、界面上是另一种样子，用户会困惑。
+  static String _layoutLabelOf(String id) {
+    switch (id) {
+      case 'sideRail':
+        return '侧栏式';
+      case 'topBar':
+        return '顶栏式';
+      default:
+        return '底栏式';
+    }
+  }
+
+  /// 当前选中的骨架 id
+  ///
+  /// ⚠️ 认不出的值（老版本写入 / 手工改坏）⇒ 回落底栏式，
+  ///    与 `ShellPage._currentLayout()` 的 default 分支**同一纪律**。
+  static String _layoutValue() {
+    final v = UiPrefs.shellLayout;
+    if (v == 'sideRail' || v == 'topBar' || v == 'bottomBar') return v;
+    return 'bottomBar';
+  }
+
+  /// 每种骨架的一句话说明（选完立刻知道它长什么样）
+  static String _layoutHintOf(String id) {
+    switch (id) {
+      case 'sideRail':
+        return '导航在左侧竖排，宽屏时显示文字。适合桌面大窗口。';
+      case 'topBar':
+        return '顶部只留 logo / 搜索 / 设置，切页点搜索框（或按 Ctrl+K）。';
+      default:
+        return '内容区最大化，导航在底部。适合触屏与遥控器。';
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
 
@@ -2087,6 +2287,107 @@ class SettingsPageState extends State<SettingsPage> {
              *   且**不能**插进 `SettingsBlock` 内部（它自带 padding）。
              */
             const SettingsGroupLabel(text: '内容源与插件'),
+            /*
+             * ══════════════════════════════════════════════════════════════
+             * ★★★ Owner 第 7 条：弹幕源入口（dan-api）
+             * ══════════════════════════════════════════════════════════════
+             *
+             * Owner 原话：
+             * > 配置页没看到,既然弹弹play不行,就换成dan-api
+             *
+             * # 这是一次「发现性」缺陷，不是功能缺失
+             * ```text
+             * 能力早就全实现了（DanmakuEndpoint / 两个偏好键 / 地址框 /
+             * 测试按钮，全在 widgets/danmaku_settings_dialog.dart 里），
+             * 但那是个**播放页**的二级弹窗 —— 用户在设置页翻到底
+             * 也看不到一个「弹幕」字样，于是以为「没这个功能」。
+             * ```
+             * ★ 与本文件 :151-160 记的那条教训同型：
+             *   「代码写完了」与「功能可用了」之间差一次**接线**。
+             *
+             * # 为什么在「内容源与插件」组里
+             * ```text
+             * 弹幕源就是**内容源的一种**（它提供弹幕，和 JS 插件提供片源
+             * 是同一层的事）。放在「JS 插件 / 直播分组 / Emby」这一组，
+             * 用户找内容源类配置时自然扫到。
+             * ```
+             *
+             * ⚠️ 副标题**必须**带当前状态 —— 这是本条的验收核心：
+             *    用户不点进去也要能看出「我配没配」。
+             */
+            SettingsEntryRow(
+              icon: Icons.subtitles_outlined,
+              title: '弹幕源',
+              subtitle: _danmakuEndpointSubtitle(),
+              onTap: _openDanmakuSourcePage,
+            ),
+
+            /*
+             * ★★★ Owner 第 7 条 ③：**首次使用引导**
+             *
+             * # 引导什么
+             * ```text
+             * 未配 dan-api 且 本机弹弹play 也不可用
+             *   ⇒ 用户现在取弹幕只能走**官方**，而官方要 AppId/AppSecret
+             *   ⇒ 大多数用户没有凭证 ⇒ 弹幕永远是 403
+             *   ⇒ 这就是 Owner 说的「弹弹play不行」的真实处境
+             * ```
+             * 这时**主动**告诉他：还有 dan-api 这条路（免凭证）。
+             *
+             * # 为什么判据要放在**设置页**而不是播放页
+             * ```text
+             * 播放页的提示是**事后**的（弹幕取失败了才说）；
+             * 而这条是**事前**的：用户还没开始看，先在配置页告诉他怎么配好。
+             * 播放页那套（DanmakuHint）继续负责失败后的补救，两者不冲突。
+             * ```
+             *
+             * ⚠️ **零网络**：本块只读偏好，不发起探测。
+             *    设置页一打开就打网络是不可接受的（慢、且用户没要求）。
+             *    「本机弹弹play 在不在线」由用户点「测试连接」时才知道；
+             *    所以这里用**未配置**作为唯一判据 —— 保守但不撒谎。
+             */
+            if (_danmakuShouldGuide()) ...[
+              const SizedBox(height: Sp.x1),
+              Container(
+                padding: const EdgeInsets.all(Sp.x3),
+                decoration: BoxDecoration(
+                  color: colors.primaryContainer.withValues(alpha: 0.35),
+                  borderRadius: Radii.rSm,
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.tips_and_updates_outlined,
+                        size: 16, color: colors.primary),
+                    const SizedBox(width: Sp.x2),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '弹幕还没配好？可以试试 dan-api',
+                            style: TextStyle(
+                              fontSize: FontSizes.cap,
+                              fontWeight: FontWeights.semibold,
+                              color: colors.onSurface,
+                            ),
+                          ),
+                          const SizedBox(height: Sp.x1),
+                          Text(
+                            '它是开源的自建弹幕服务，不需要官方凭证，'
+                            '本机跑起来后把地址填进上面这一项就能用。',
+                            style: TextStyle(
+                              fontSize: FontSizes.cap,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             SettingsEntryRow(
               icon: Icons.extension_outlined,
               title: 'JS 插件',
@@ -2397,6 +2698,57 @@ class SettingsPageState extends State<SettingsPage> {
                   // ★ 动态显示"当前这种效果是什么样" ——
                   //   用户不用试就知道选了什么
                   PageTransitionStyleStore.current.value.hint,
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+
+            /*
+             * ★★★ 第 14 条：布局骨架三选一（Owner 2026-10-17 确认选 A）
+             *
+             * # 为什么必须放在**一级页**
+             * ```text
+             * Owner 第 7 条骂过「配置页没看到」——
+             * 功能做了但入口埋在二级页/没有入口 = 用户根本用不到。
+             * ⇒ 与「页面切换动画」并排放在「外观」组里（同一类东西）。
+             * ```
+             *
+             * # 为什么用 `SettingsGestureChoice`（同一个现成组件）
+             * ```text
+             * 它是本仓「从 N 个里选 1 个」的惯用法（settings_kit.dart:366），
+             * 动画效果那一行就是它 ⇒ 布局骨架与它**视觉一致**、零新组件。
+             * ```
+             *
+             * # 「立刻生效」怎么做
+             * ```text
+             * `UiPrefs.setShellLayout(id)` 写内存 Map + 落盘；
+             * 而 `ShellPage._currentLayout()` **每次 build 都读** `UiPrefs.shellLayout`
+             * ⇒ 这里 setState 之后 ShellPage 下一次 build 就用新骨架。
+             * ⚠️ 不需要重启，也不需要额外的 notifier ——
+             *    因为读的是同步内存值，没有 I/O 成本。
+             * ```
+             *
+             * ⚠️ 骨架与配色**正交**：本项**不**写进 ThemePack，
+             *    否则用户导入别人的配色主题时布局会被一起改掉。
+             */
+            _Block(
+              title: '布局骨架',
+              children: [
+                SettingsGestureChoice<String>(
+                  label: '界面布局',
+                  options: const ['bottomBar', 'sideRail', 'topBar'],
+                  value: _layoutValue(),
+                  labelOf: _layoutLabelOf,
+                  onChanged: (id) => setState(() {
+                    UiPrefs.setShellLayout(id);
+                  }),
+                ),
+                const SizedBox(height: Sp.x2),
+                Text(
+                  _layoutHintOf(_layoutValue()),
                   style: TextStyle(
                     fontSize: FontSizes.cap,
                     color: colors.onSurfaceVariant,
@@ -5566,12 +5918,22 @@ class _RemoteBlockState extends State<_RemoteBlock> {
     final colors = Theme.of(context).colorScheme;
 
     if (!_shouldOpen) {
-      return Material(
-        type: MaterialType.transparency,
-        child: InkWell(
-          borderRadius: Radii.rLg,
-          onTap: () => _setOpen(true),
-          child: Container(
+      /*
+       * ★ 去 Material（A 类迁移）：删掉透明 Material 外壳
+       *
+       * 原来这层 `Material(type: transparency)` **只**为了给 InkWell 的
+       * 水波提供绘制面 —— 它不画底色、没有形状、没有阴影。
+       * 换成 AppInkWell 后高亮是自绘的（画在自己身上），
+       * 不再需要祖先 Material ⇒ 整层删除，行为不变。
+       *
+       * ⚠️ 本块内**没有** ListTile 家族控件（实测 grep：0 处），
+       *    否则删掉 Material 会触发
+       *    「No Material widget found」断言。
+       */
+      return AppInkWell(
+        borderRadius: Radii.rLg,
+        onTap: () => _setOpen(true),
+        child: Container(
             padding: const EdgeInsets.symmetric(
               horizontal: Sp.x4,
               vertical: Sp.x3,
@@ -5616,7 +5978,6 @@ class _RemoteBlockState extends State<_RemoteBlock> {
               ],
             ),
           ),
-        ),
       );
     }
 

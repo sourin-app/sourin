@@ -79,7 +79,22 @@ abstract final class Sp {
 abstract final class Radii {
   static const double xs = 8;
   static const double sm = 12;
-  static const double md = 16;
+  /// ★ task-31：`16 → 18`。
+  ///
+  /// 客观依据（真实窗口像素实测，`.probe/shots/baseline_now.png`）：
+  /// ```text
+  /// 海报卡 bbox x=24..199 y=126..  左边缘在 y=140 才收到 x=24，
+  /// 而 y=126 时首像素 x=35 ⇒ 实测圆角 ≈ 11~14px，与声明值 16 基本吻合。
+  /// ```
+  /// 为什么改成 18：
+  ///   · 本卡是 148×222 的**海报**（长宽比 2:3，纵向高瘦）。
+  ///     高瘦矩形的圆角在 16 时视觉上偏「方」，与画面里的胶囊元素
+  ///     （切换条 999 / 底栏 999 / 源条药丸 999）语言断层太大；
+  ///   · 18 让它落在 `md(18)` 与 `lg(22)` 之间靠下，仍是「卡片」不是「药丸」，
+  ///     但边缘更柔、与整页的圆润语言连上；
+  ///   · ★ 圆角**不改变元素位置与尺寸**（bbox 不变），符合「布局逐处一致」。
+  ///   · 影响面 49 处调用（海报卡 / 设置卡 / 弹窗内块），全部是「面」不是「条」。
+  static const double md = 18;
   static const double lg = 22;
   static const double xl = 28;
   static const double xxl = 34;

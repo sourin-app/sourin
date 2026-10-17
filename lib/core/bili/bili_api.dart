@@ -501,6 +501,94 @@ class BiliApi {
     return parseBiliSearchItems(m);
   }
 
+  /*
+   * ★★★ 2026-10-17（Owner 第 6 条：外部站弹幕搜索失败 / Missing Authentication Headers）
+   *
+   * # 为什么必须要有这条备用链路
+   * ```text
+   * 实测（Lead 2026-10-17，严格对照实验）：
+   *   x/web-interface/search/type   → 412（无 Referer / www 与 search 两种 Referer 全 412）
+   *   x/web-interface/search/all/v2 → 200，但 media_bangumi 恒 0 条
+   *   pgc/view/web/season           → 200 ✓ 免登录，直接给整季 episodes[] 且每集带 cid
+   *   x/web-interface/view          → 200 ✓
+   * ```
+   *
+   * `search/type` 是**风控重灾区**（412 是北邮风控页，不是业务错误），
+   * 而 [autoBindBySearch] 把它当唯一搜索入口，412 ⇒ catch ⇒ 返回 null
+   * ⇒ 降级到 danmaku-service ⇒ 无凭证 ⇒ 403 Missing Authentication Headers。
+   *
+   * ⇒ 这条链路完全不碰 search/type：用 `pgc/view/web/season` 按 season_id 取整季，
+   *   或 `search/all/v2` 拿 media_bangumi 的 season_id 再展开。
+   *
+   * # 为什么用 season 而不是 search/type 搜视频
+   * ```text
+   * 弹幕要的是 cid（按集），而 season 接口**天生就按集给 cid**；
+   * search/type 搜出来的是视频条目，还要再 view 一次才能拿 cid —— 多一次请求且更容易被风控。
+   * ```
+   */
+
+  /// 按 **season_id** 取整季信息（免登录、风控友好）。
+  ///
+  /// 返回 `null` = 该 season 不存在或接口不可用（调用方应继续降级）。
+  Future<BiliSeason?> seasonInfo(int seasonId) async {
+    if (seasonId <= 0) return null;
+    final uri = Uri.https(
+      'api.bilibili.com',
+      '/pgc/view/web/season',
+      <String, String>{'season_id': '$seasonId'},
+    );
+    try {
+      final m = await _getJson(uri, referer: kBiliReferer);
+      if (m['code'] != 0) return null;
+      final r = m['result'];
+      if (r is! Map) return null;
+      return parseBiliSeason(r);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 用 `search/all/v2` 按关键词找番剧的 season_id（**不碰 search/type**）。
+  ///
+  /// ⚠️ 实测 `media_bangumi` 常返回 0 条（该聚合接口的已知行为），
+  ///    所以这里**同时**从 `media_ft`（影视）里找，两条都空就返回空列表。
+  Future<List<int>> searchSeasonIds(String keyword) async {
+    final kw = keyword.trim();
+    if (kw.isEmpty) return const <int>[];
+    final uri = Uri.https(
+      'api.bilibili.com',
+      '/x/web-interface/search/all/v2',
+      <String, String>{'keyword': kw},
+    );
+    try {
+      final m = await _getJson(uri, referer: kBiliSearchReferer);
+      if (m['code'] != 0) return const <int>[];
+      final data = m['data'];
+      if (data is! Map) return const <int>[];
+      final result = data['result'];
+      if (result is! List) return const <int>[];
+
+      final ids = <int>[];
+      for (final group in result) {
+        if (group is! Map) continue;
+        final type = '${group['result_type'] ?? ''}';
+        // media_bangumi = 番剧；media_ft = 影视（含国创/纪录片等）
+        if (type != 'media_bangumi' && type != 'media_ft') continue;
+        final items = group['data'];
+        if (items is! List) continue;
+        for (final it in items) {
+          if (it is! Map) continue;
+          final raw = it['season_id'];
+          final sid = raw is int ? raw : int.tryParse('${raw ?? ''}') ?? 0;
+          if (sid > 0 && !ids.contains(sid)) ids.add(sid);
+        }
+      }
+      return ids;
+    } catch (_) {
+      return const <int>[];
+    }
+  }
+
   // ── 短链解析 ───────────────────────────────────────────────────────
 
   /// 把 b23.tv 短链跟到最终地址，再从中抠出 BV 号。
@@ -688,6 +776,75 @@ class BiliFetchResult {
 /// duration 线上是 "m:ss" / "mm:ss" 字符串（个位数秒会写成 "1:2"）⇒ 原样保留，
 ///          不要解析成秒再格式化（会变成 "01:02"，与 某视频站自己显示的不一致）
 /// ```
+/// 番剧/影视的**整季**信息（来自 `pgc/view/web/season`）。
+///
+/// # 为什么需要这个类型（2026-10-17，Owner 第 6 条）
+/// ```text
+/// 弹幕按 **cid** 取，而 cid 是「每一集」的属性。
+/// season 接口天生按集返回 episodes[]，每集自带 cid
+/// ⇒ 一次请求就能拿到整季的 cid，不需要逐集 view。
+///
+/// 对比：search/type 搜出来的是**视频**条目（一集一个 BV 号），
+///       要拿 cid 还得每集再 view 一次，且 search/type 现在恒 412。
+/// ```
+class BiliSeason {
+  const BiliSeason({
+    required this.seasonId,
+    required this.title,
+    required this.episodes,
+    this.cover = '',
+    this.typeName = '',
+  });
+
+  /// season_id（本结构的键）
+  final int seasonId;
+
+  /// 番剧/影视标题
+  final String title;
+
+  /// 封面（已补 `https:`）；空串 = 无
+  final String cover;
+
+  /// 分类名（番剧/国创/纪录片…）
+  final String typeName;
+
+  /// 整季的分集，**按线上顺序**
+  final List<BiliSeasonEpisode> episodes;
+
+  /// 按**集序号**取 cid（1-based）。
+  ///
+  /// 越界或该集无 cid ⇒ 0（调用方据此判定"这一集没有弹幕"）。
+  int cidForEpisode(int oneBasedIndex) {
+    if (oneBasedIndex < 1 || oneBasedIndex > episodes.length) return 0;
+    return episodes[oneBasedIndex - 1].cid;
+  }
+}
+
+/// 番剧的一集。
+class BiliSeasonEpisode {
+  const BiliSeasonEpisode({
+    required this.cid,
+    required this.title,
+    this.bvid = '',
+    this.aid = 0,
+    this.index = 0,
+  });
+
+  /// 弹幕就是按这个 id 取
+  final int cid;
+
+  /// 分集标题（如「第1话」）
+  final String title;
+
+  /// 有些番剧的集带 bvid（正片可直接播）
+  final String bvid;
+
+  final int aid;
+
+  /// 线上给的集号（1-based）；0 = 未给
+  final int index;
+}
+
 class BiliSearchItem {
   const BiliSearchItem({
     required this.bvid,
@@ -752,6 +909,58 @@ class BiliSearchItem {
 ///       "弹幕服务返回的是一张网页"，不是本函数的责任；
 /// ② data 缺失 / result 不是 List（例如 code!=0 的降级响应）⇒ 返回空列表。
 /// ```
+/// 解析 `pgc/view/web/season` 的 `result` 对象。
+///
+/// ⚠️ 该接口的 `episodes[]` 里 cid 是必需的；**没有 cid 的集直接跳过**
+///    （番剧 PV/花絮常无 cid），不塞进结果以免集号错位。
+BiliSeason? parseBiliSeason(Map<dynamic, dynamic> r) {
+  final rawSid = r['season_id'];
+  final sid = rawSid is int ? rawSid : int.tryParse('${rawSid ?? ''}') ?? 0;
+
+  final title = _stringOf(r['title']) ?? _stringOf(r['season_title']) ?? '';
+
+  var cover = _stringOf(r['cover']) ?? '';
+  if (cover.startsWith('//')) cover = 'https:$cover';
+  if (cover.startsWith('http://')) cover = cover.replaceFirst('http://', 'https://');
+
+  final eps = <BiliSeasonEpisode>[];
+  final rawEps = r['episodes'];
+  if (rawEps is List) {
+    for (final e in rawEps) {
+      if (e is! Map) continue;
+      final rawCid = e['cid'];
+      final cid = rawCid is int ? rawCid : int.tryParse('${rawCid ?? ''}') ?? 0;
+      if (cid <= 0) continue; // 无 cid 的条目跳过（PV/花絮）
+      final rawAid = e['aid'];
+      final rawIdx = e['ep'] ?? e['index'];
+      eps.add(BiliSeasonEpisode(
+        cid: cid,
+        title: _stringOf(e['title']) ?? _stringOf(e['long_title']) ?? '',
+        bvid: _stringOf(e['bvid']) ?? '',
+        aid: rawAid is int ? rawAid : int.tryParse('${rawAid ?? ''}') ?? 0,
+        index: rawIdx is int ? rawIdx : int.tryParse('${rawIdx ?? ''}') ?? 0,
+      ));
+    }
+  }
+
+  if (eps.isEmpty) return null; // 没有可用的集 ⇒ 视为不可用
+
+  return BiliSeason(
+    seasonId: sid,
+    title: title,
+    cover: cover,
+    typeName: _stringOf(r['type_name']) ?? '',
+    episodes: eps,
+  );
+}
+
+/// 容错取字符串：线上有时给 null / 数字。
+String? _stringOf(Object? v) {
+  if (v == null) return null;
+  if (v is String) return v;
+  return '$v';
+}
+
 List<BiliSearchItem> parseBiliSearchItems(Object? body) {
   final Object? decoded = body is String ? _tryJson(body) : body;
   if (decoded is! Map) return const <BiliSearchItem>[];

@@ -56,6 +56,8 @@ import '../../core/models.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import 'app_loading.dart';
+import '../../design/widgets/app_icon_button.dart' show AppSurface;
+import '../../design/widgets/app_ink_well.dart';
 
 /// 直播内嵌播放器
 ///
@@ -2231,12 +2233,13 @@ class _RoundBtn extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Tooltip(
         message: tooltip,
-        child: Material(
+        // ★ 去 Material（真 B 类：black@42% 圆形底 + 水波）
+        //   ⚠️ 原来用 CircleBorder，AppSurface 只吃半径 ⇒ 用边长一半换算成圆。
+        child: AppSurface(
           color: Colors.black.withValues(alpha: 0.42),
-          shape: const CircleBorder(),
-          child: InkWell(
+          borderRadius: BorderRadius.circular(999),
+          child: AppInkWell(
             onTap: onTap,
-            customBorder: const CircleBorder(),
             child: Padding(
               padding: const EdgeInsets.all(6),
               child: Icon(icon, color: Colors.white, size: 20),

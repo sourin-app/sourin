@@ -21,6 +21,8 @@ import '../../core/dlna/dlna_http.dart';
 import '../tokens.dart';
 import '../widgets/app_loading.dart';
 import '../widgets/overlay_motion.dart';
+import '../../design/widgets/app_icon_button.dart' show AppSurface;
+import '../../design/widgets/app_ink_well.dart';
 
 /// 打开设备选择弹窗；用户选了返回那台设备，取消返回 null
 Future<CastDevice?> showCastDeviceSheet(
@@ -299,10 +301,12 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
 
   Widget _deviceTile(ColorScheme colors, CastDevice d) => Padding(
     padding: const EdgeInsets.only(bottom: Sp.x2),
-    child: Material(
+    // ★ 去 Material（Owner 第 4/8/9 条）—— 真 B 类：
+    //   Material 提供 surfaceContainerHighest@50% 底色 + 圆角。换成 AppSurface。
+    child: AppSurface(
       color: colors.surfaceContainerHighest.withValues(alpha: 0.5),
       borderRadius: Radii.rMd,
-      child: InkWell(
+      child: AppInkWell(
         borderRadius: Radii.rMd,
         onTap: () => Navigator.of(context).pop(d),
         child: Padding(

@@ -1851,7 +1851,30 @@ fn map_js_error(msg: &str) -> ProviderError {
     } else if lower.contains("network") || lower.contains("timeout") {
         ProviderError::network(msg.to_string())
     } else {
-        ProviderError::new(ErrorKind::Other, format!("插件报错: {msg}"))
+        /*
+         * ★★★ 不再加 `插件报错: ` 前缀（Owner 第 7 条，2026-10-17）
+         *
+         * # Owner 原话
+         * ```text
+         * > 像图2 那种报错的信息,就不要加上溯影自己的信息了,
+         * > 就只显示插件的报错信息就足够了
+         * ```
+         *
+         * # 改前用户看到
+         * ```text
+         * SourinCoreException(other): 插件报错: 该内容需要大会员
+         * ```
+         * 前缀「插件报错:」是**宿主自己加的**，对用户无信息量 ——
+         * 用户只想知道「为什么不能播」，不需要知道「这是插件报的」。
+         *
+         * # 改后
+         * ```text
+         * 该内容需要大会员
+         * ```
+         * ⚠️ 消息**原样透出**。这也与本文件上方 `parse:` 那一支的纪律一致
+         *    （那里早就写着「消息原样透出、不加任何包装」）。
+         */
+        ProviderError::new(ErrorKind::Other, msg.to_string())
     }
 }
 
@@ -4964,7 +4987,61 @@ globalThis.plugin = {
         );
     }
 
-    /// ★★★ 顺序门禁：**消息正文里的 404 不许抢走 `parse:` 的判定**
+    /// ★★★ Other 分支也必须原样透出，不许加「插件报错:」前缀（Owner 第 7 条）
+    ///
+    /// # Owner 原话
+    /// ```text
+    /// > 像图2 那种报错的信息,就不要加上溯影自己的信息了,
+    /// > 就只显示插件的报错信息就足够了
+    /// ```
+    ///
+    /// # 改前用户看到
+    /// ```text
+    /// SourinCoreException(other): 插件报错: 该内容需要大会员
+    /// ```
+    /// 「插件报错:」是宿主加的包装，对用户零信息量。
+    ///
+    /// # 为什么单独立一条（上面已有 parse: 那一条）
+    /// ```text
+    /// 上面那条只覆盖 `parse:` 前缀分支；
+    /// 而**绝大多数**插件错误走的是最后的 else（Other 分支）——
+    /// 正是这一支在加前缀。不测这一支等于没测。
+    /// ```
+    #[test]
+    fn other_kind_does_not_wrap_message_with_host_prefix() {
+        // 典型：源站会员限制（图 2 的实际文案）
+        let msg = "该内容需要大会员";
+        let e = map_js_error(msg);
+
+        assert_eq!(e.kind, ErrorKind::Other, "无前缀关键词 ⇒ Other 分支");
+        assert_eq!(
+            e.message, msg,
+            "★ 消息必须原样透出，实际: {}",
+            e.message
+        );
+        assert!(
+            !e.message.contains("插件报错"),
+            "★★★ 绝不能带「插件报错:」前缀（Owner 第 7 条），实际: {}",
+            e.message
+        );
+    }
+
+    /// ★★ 反面：带前缀时**必须能被本测试抓到**（证明上一条不是恒真）
+    ///
+    /// 这条不调用生产代码，而是**复现改前的形态**并断言它违反判据 ——
+    /// 若有人把 `format!("插件报错: {msg}")` 加回去，上一条会红；
+    /// 本条的用处是证明「那种形态确实违反判据」，避免有人以为判据写错了。
+    #[test]
+    fn wrapped_form_would_violate_the_rule() {
+        let msg = "该内容需要大会员";
+        let old_form = format!("插件报错: {msg}"); // ← 改前的形态
+        assert!(
+            old_form.contains("插件报错"),
+            "改前形态确实带前缀 ⇒ 说明上一条断言能抓到回归"
+        );
+        // 且它不等于原文 —— 证明两者是可区分的，不是同一个串
+        assert_ne!(old_form, msg);
+    }
     ///
     /// # 这是实测出来的真 bug（不是我推测的）
     ///
@@ -5020,13 +5097,37 @@ globalThis.plugin = {
         assert_eq!(map_js_error("HTTP 401 Unauthorized").kind, ErrorKind::Unauthorized);
         assert_eq!(map_js_error("HTTP 404").kind, ErrorKind::NotFound);
         assert_eq!(map_js_error("request timeout").kind, ErrorKind::Network);
-        // 什么都没命中 ⇒ Other，且**保留**包装（那正是 Other 该有的样子）
+        // 什么都没命中 ⇒ Other
         let o = map_js_error("something odd");
         assert_eq!(o.kind, ErrorKind::Other);
+        /*
+         * ★★★ 这条断言的方向**被 Owner 第 7 条反转了**（2026-10-18）
+         *
+         * # 改前钉的是
+         * ```text
+         * o.message.contains("插件报错")  ← 要求**保留**包装
+         * 理由：「Other 分支保留包装（与 parse: 分支的区别就在这里）」
+         * ```
+         *
+         * # Owner 原话
+         * ```text
+         * > 像图2 那种报错的信息,就不要加上溯影自己的信息了,
+         * > 就只显示插件的报错信息就足够了
+         * ```
+         * ⇒ 「与 parse: 分支的区别」这个设计意图**本身被否了**：
+         *   两个分支现在**都要**原样透出，区别只剩 kind。
+         *
+         * ⚠️ 这不是「为了让测试变绿而放宽断言」—— 是行为**有意改变**，
+         *    断言改成钉**新行为**，且新断言在旧行为下会红（已用故障注入验证：
+         *    把 format!("插件报错: {msg}") 加回去 ⇒ 本条与
+         *    other_kind_does_not_wrap_message_with_host_prefix 同时红）。
+         */
         assert!(
-            o.message.contains("插件报错"),
-            "Other 分支保留包装（与 parse: 分支的区别就在这里）"
+            !o.message.contains("插件报错"),
+            "★★★ Other 分支也必须原样透出（Owner 第 7 条），实际: {}",
+            o.message
         );
+        assert_eq!(o.message, "something odd", "原文必须完整保留");
     }
 
     /// ★ 前缀判定的健壮性：反引号 / 首尾空白 / 大小写都要认

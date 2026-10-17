@@ -153,3 +153,8 @@ tools/.dandanplay.local.json
 #   下游 clone 看得到、CI 校验得到。只放行 notes 一个子树，
 #   .agents/worktrees/ 等其余子目录仍按上面的理由忽略。
 !.agents/notes/
+#
+# 笔记的校验脚本（tree / format / archived / archive）也进仓库：
+# CI 要跑它们，且校验口径必须与笔记同版本 —— 只放技能目录的话，
+# 下游 clone 与 CI 都拿不到，门禁就成了本地才能复现的东西。
+!.agents/notes-scripts/

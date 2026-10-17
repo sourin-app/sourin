@@ -111,6 +111,54 @@ jobs:
         with:
           workspaces: rust/sourin_core
 
+      # ── ①.5 决策笔记门禁 ───────────────────────────────────────────
+      # ★ 只挂在 Windows job：三个平台跑的是同一棵笔记树，
+      #   重复跑三次不会多验证任何东西，只会让 macOS / Android 的
+      #   反馈时间变长（它们本来就要十几分钟）。
+      #
+      # ★★ 为什么要 `actions/setup-node` 而不是指望 runner 自带 node：
+      #   runner 镜像里确实有 node（给 Actions 自己用），但那是**实现细节**，
+      #   版本随镜像变。门禁依赖 tsx 跑 .ts，必须自己钉一个版本，
+      #   否则某天镜像换 node 版本，门禁会以「跑不起来」的形式假绿/假红。
+      - name: 装 Node（跑笔记校验脚本）
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 决策笔记门禁（tree + format + archived）
+        # ★★ 必须显式 `shell: bash`，**不能靠 Windows runner 的默认 shell**。
+        #
+        #   GitHub Actions 在 windows-latest 上的默认 shell 是 **pwsh**，
+        #   而 pwsh 对原生命令的处置是：`$ErrorActionPreference='Stop'` 只管
+        #   cmdlet 抛错，**不管外部程序的退出码**；runner 只在脚本**末尾**
+        #   补一次 `exit $LASTEXITCODE`。
+        #
+        #   实测（2026-10-17，故意把 Status 改错）：
+        #   ```text
+        #   tree    → ok
+        #   format  → 报 line 3 must match implemented status grammar
+        #   archived→ ok
+        #   ⇒ 整步退出码 **0**，门禁假绿。
+        #   ```
+        #   ⇒ 用 bash（runner 以 `bash -eo pipefail` 执行），第一条红即整步红。
+        #
+        # ★ 三线串跑，任一红即 job 红 —— 不做 `|| true` 之类的兜底。
+        #
+        # ★ `--yes` 是因为 CI 里没有交互式确认；tsx 只用于跑脚本，
+        #   不进 package.json —— 本仓是 Flutter + Rust 双栈，
+        #   为一个校验脚本引入 node_modules 与锁文件不划算。
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes tsx .agents/notes-scripts/verify-agent-note-tree.ts
+          npx --yes tsx .agents/notes-scripts/verify-agent-note-format.ts
+          npx --yes tsx .agents/notes-scripts/verify-archived-agent-notes.ts
+        env:
+          # ★ 归档封印的 append-only 校验要一个**变更前**的基线：
+          #   用 HEAD 等于没查（当前提交里的 manifest 自己跟自己比）。
+          #   PR 用 base.sha，push 用 event.before。
+          AGENT_NOTE_ARCHIVE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+
       # ── ① Rust 核心 ────────────────────────────────────────────────
       - name: 编 Rust 核心
         working-directory: rust/sourin_core

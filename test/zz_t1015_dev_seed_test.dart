@@ -331,6 +331,7 @@ void main() {
         '-Source', src.path, '-Target', link.path, '-Force',
       ], stdoutEncoding: utf8, stderrEncoding: utf8);
 
+
       expect(r.exitCode, isNot(0),
           reason: '★★ 目标指向源目录（junction）必须硬失败 —— '
               '否则 -Force 会改写用户真实的 sync-settings.json');
@@ -427,6 +428,67 @@ void main() {
       expect(r.exitCode, 4,
           reason: '★★ 坏库必须硬失败（exit 4）—— 悄悄给一个坏库，'
               '开发环境会出现「收藏/进度莫名消失」且查不出原因');
+    });
+
+    /*
+     * ★★★ 2026-10-17 新增：**在 PowerShell 5.1 上**也必须拒绝 junction
+     *
+     * # 为什么必须单独一条
+     * 上面那条 junction 测试用的是 `ps`，而 `resolvePowerShell()` 会**优先找 pwsh**
+     * （PowerShell 7）。于是 CI 走的是 `ResolveLinkTarget`（.NET 6+ API），
+     * 一切正常 —— 但真实用户机器上只有 Windows 自带的 **PowerShell 5.1**，
+     * 它**没有** ResolveLinkTarget。
+     *
+     * 实测：
+     *   PS7.6.6  => $item.PSObject.Methods.Name -contains 'ResolveLinkTarget' = True
+     *   PS5.1.19041 => **False**
+     *
+     * 后果：5.1 上函数静默退回 GetFullPath（不解析 junction）⇒ 护栏失效 ⇒
+     * 后面「关掉云同步自动」那步会真的改写用户真实的 sync-settings.json。
+     *
+     * ⇒ 我用真实的 PS 5.1 复现过：修复前 exit=0（静默放行），修复后 exit=2。
+     * 这条测试就是把那个复现固化下来，防止有人再把它删掉。
+     */
+    test('★★ 护栏二（PS 5.1 专测）：没有 ResolveLinkTarget 的 PowerShell 也必须拒绝 junction', () {
+      if (!Platform.isWindows) {
+        markTestSkipped('junction 是 Windows 概念');
+        return;
+      }
+      // 只认 Windows 自带的 powershell.exe（5.1）。找不到就跳过，不假装通过。
+      const String ps51 = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+      if (!File(ps51).existsSync()) {
+        markTestSkipped('本机没有 Windows 自带的 PowerShell 5.1');
+        return;
+      }
+      final link = Directory.systemTemp.createTempSync('t1015_junc51_');
+      link.deleteSync();
+      final mk = Process.runSync('cmd', <String>[
+        '/c', 'mklink', '/J', link.path, src.path,
+      ]);
+      if (mk.exitCode != 0 || !link.existsSync()) {
+        markTestSkipped('本机建不了 junction');
+        return;
+      }
+      addTearDown(() {
+        try {
+          link.deleteSync();
+        } catch (_) {}
+      });
+
+      final r = Process.runSync(ps51, <String>[
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', kScript,
+        '-Source', src.path, '-Target', link.path, '-Force',
+      ], stdoutEncoding: utf8, stderrEncoding: utf8);
+
+      expect(r.exitCode, isNot(0),
+          reason: '★★ PowerShell 5.1 上也必须拒绝 junction —— '
+              '5.1 没有 ResolveLinkTarget，若只靠它，护栏会静默失效，'
+              '于是 -Force 会改写用户真实的 sync-settings.json。'
+              '（实测：git 仓库里 PS7 能过、PS5.1 会静默放行）' +
+              'exit=' + r.exitCode.toString() +
+              ' out=' + r.stdout.toString());
+      expect(r.stdout.toString().contains('拒绝执行'), isTrue,
+          reason: '失败要给人话，不能静默退出');
     });
 
     test('★ 护栏：-Target 指到源目录本身 ⇒ 硬失败，且源目录仍然没变', () {

@@ -255,10 +255,20 @@ class _DataManagePageState extends State<DataManagePage> {
       title: '数据管理',
       subtitle: '查看各类数据占用，按类清理',
       scrollBody: _loading
-          ? const Center(child: Padding(
-              padding: EdgeInsets.all(Sp.x8),
-              child: CircularProgressIndicator(),
-            ))
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(Sp.x8),
+                /*
+                 * ⚠️ 必须显式给 color（t27_w7 门禁）：
+                 * 不写 color 时会落到 `progressIndicatorTheme` 的兜底层，
+                 * 而那层的色在主题切换/深浅档下不一定跟着走 ——
+                 * 本仓已有 6 个文件因为漏写这个而修过一轮。
+                 */
+                child: CircularProgressIndicator(
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+            )
           : _error != null
               ? _ErrorView(message: _error!, onRetry: _scan)
               : ListView(

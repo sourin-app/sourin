@@ -37,12 +37,12 @@ abstract final class AppIcons {
 
   static const IconData add = IconData(0xe047, fontFamily: 'MaterialIcons');
   static const IconData album_outlined = IconData(0xee67, fontFamily: 'MaterialIcons');
-  static const IconData arrow_back = IconData(0xe092, fontFamily: 'MaterialIcons');
+  static const IconData arrow_back = IconData(0xe092, fontFamily: 'MaterialIcons', matchTextDirection: true);
   static const IconData arrow_downward = IconData(0xe097, fontFamily: 'MaterialIcons');
   static const IconData arrow_drop_down = IconData(0xe098, fontFamily: 'MaterialIcons');
   static const IconData arrow_upward = IconData(0xe0a0, fontFamily: 'MaterialIcons');
   static const IconData auto_fix_high_outlined = IconData(0xeeab, fontFamily: 'MaterialIcons');
-  static const IconData backspace_outlined = IconData(0xeeb5, fontFamily: 'MaterialIcons');
+  static const IconData backspace_outlined = IconData(0xeeb5, fontFamily: 'MaterialIcons', matchTextDirection: true);
   static const IconData backup_outlined = IconData(0xeeb6, fontFamily: 'MaterialIcons');
   static const IconData bolt = IconData(0xe0ee, fontFamily: 'MaterialIcons');
   static const IconData bolt_outlined = IconData(0xeedd, fontFamily: 'MaterialIcons');
@@ -56,8 +56,8 @@ abstract final class AppIcons {
   static const IconData check_box_rounded = IconData(0xf633, fontFamily: 'MaterialIcons');
   static const IconData check_circle = IconData(0xe159, fontFamily: 'MaterialIcons');
   static const IconData check_circle_outline = IconData(0xe15a, fontFamily: 'MaterialIcons');
-  static const IconData chevron_left = IconData(0xe15e, fontFamily: 'MaterialIcons');
-  static const IconData chevron_right = IconData(0xe15f, fontFamily: 'MaterialIcons');
+  static const IconData chevron_left = IconData(0xe15e, fontFamily: 'MaterialIcons', matchTextDirection: true);
+  static const IconData chevron_right = IconData(0xe15f, fontFamily: 'MaterialIcons', matchTextDirection: true);
   static const IconData circle = IconData(0xe163, fontFamily: 'MaterialIcons');
   static const IconData clear = IconData(0xe168, fontFamily: 'MaterialIcons');
   static const IconData close = IconData(0xe16a, fontFamily: 'MaterialIcons');
@@ -102,7 +102,7 @@ abstract final class AppIcons {
   static const IconData folder_outlined = IconData(0xf091, fontFamily: 'MaterialIcons');
   static const IconData fullscreen = IconData(0xe2cb, fontFamily: 'MaterialIcons');
   static const IconData fullscreen_exit = IconData(0xe2cc, fontFamily: 'MaterialIcons');
-  static const IconData help_outline = IconData(0xe30b, fontFamily: 'MaterialIcons');
+  static const IconData help_outline = IconData(0xe30b, fontFamily: 'MaterialIcons', matchTextDirection: true);
   static const IconData high_quality = IconData(0xe30f, fontFamily: 'MaterialIcons');
   static const IconData history = IconData(0xe314, fontFamily: 'MaterialIcons');
   static const IconData hourglass_top = IconData(0xe327, fontFamily: 'MaterialIcons');
@@ -115,9 +115,9 @@ abstract final class AppIcons {
   static const IconData lan_outlined = IconData(0xf062c, fontFamily: 'MaterialIcons');
   static const IconData link = IconData(0xe380, fontFamily: 'MaterialIcons');
   static const IconData link_off = IconData(0xe381, fontFamily: 'MaterialIcons');
-  static const IconData list = IconData(0xe384, fontFamily: 'MaterialIcons');
-  static const IconData list_alt = IconData(0xe385, fontFamily: 'MaterialIcons');
-  static const IconData list_alt_outlined = IconData(0xf16c, fontFamily: 'MaterialIcons');
+  static const IconData list = IconData(0xe384, fontFamily: 'MaterialIcons', matchTextDirection: true);
+  static const IconData list_alt = IconData(0xe385, fontFamily: 'MaterialIcons', matchTextDirection: true);
+  static const IconData list_alt_outlined = IconData(0xf16c, fontFamily: 'MaterialIcons', matchTextDirection: true);
   static const IconData live_tv = IconData(0xe387, fontFamily: 'MaterialIcons');
   static const IconData live_tv_outlined = IconData(0xf16f, fontFamily: 'MaterialIcons');
   static const IconData lock_outline = IconData(0xe3b1, fontFamily: 'MaterialIcons');
@@ -130,7 +130,7 @@ abstract final class AppIcons {
   static const IconData notifications = IconData(0xe44f, fontFamily: 'MaterialIcons');
   static const IconData notifications_active = IconData(0xe450, fontFamily: 'MaterialIcons');
   static const IconData notifications_none = IconData(0xe451, fontFamily: 'MaterialIcons');
-  static const IconData open_in_new = IconData(0xe45c, fontFamily: 'MaterialIcons');
+  static const IconData open_in_new = IconData(0xe45c, fontFamily: 'MaterialIcons', matchTextDirection: true);
   static const IconData palette_outlined = IconData(0xf24f, fontFamily: 'MaterialIcons');
   static const IconData password = IconData(0xe47a, fontFamily: 'MaterialIcons');
   static const IconData pause = IconData(0xe47c, fontFamily: 'MaterialIcons');

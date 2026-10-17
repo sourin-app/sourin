@@ -37,6 +37,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/clip_download.dart' show ClipDownloader;
 import '../tokens.dart';
+import '../widgets/app_loading.dart';
 import '../widgets/overlay_motion.dart';
 import '../widgets/settings_sub_page.dart';
 import '../../design/icons/app_icons.dart';
@@ -255,18 +256,19 @@ class _DataManagePageState extends State<DataManagePage> {
       title: '数据管理',
       subtitle: '查看各类数据占用，按类清理',
       scrollBody: _loading
-          ? Center(
+          ? const Center(
               child: Padding(
-                padding: const EdgeInsets.all(Sp.x8),
+                padding: EdgeInsets.all(Sp.x8),
                 /*
-                 * ⚠️ 必须显式给 color（t27_w7 门禁）：
-                 * 不写 color 时会落到 `progressIndicatorTheme` 的兜底层，
-                 * 而那层的色在主题切换/深浅档下不一定跟着走 ——
-                 * 本仓已有 6 个文件因为漏写这个而修过一轮。
+                 * ⚠️ 这里必须用 `AppLoading`，不能直接 new 一个
+                 * `CircularProgressIndicator`：
+                 *  ① `zz_t64_migrated_widget_gate` 把裸 CPI 列为**已迁走**的控件，
+                 *     产品代码里再构造它就红（应统一走自绘的 _AppSpinner）。
+                 *  ② `t27_w7_spinner_color` 要求 CPI 显式带 color，
+                 *     否则会落到 `progressIndicatorTheme` 兜底层、深浅档下不跟主题。
+                 * ⇒ AppLoading 一个就同时满足两条（它内部已带色、已统一）。
                  */
-                child: CircularProgressIndicator(
-                  color: Theme.of(context).colorScheme.primary,
-                ),
+                child: AppLoading(),
               ),
             )
           : _error != null

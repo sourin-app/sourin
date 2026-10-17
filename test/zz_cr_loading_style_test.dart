@@ -306,7 +306,12 @@ void main() {
       ],
       <String>[
         'lib/ui/widgets/plugin_speedtest.dart',
-        'hasHistory ? Icons.speed : Icons.bolt',
+        // ⚠️ 2026-10-18（round-65 E2）：锚点跟着源码更新 ——
+        //    `Icons.speed` / `Icons.bolt` → `AppIcons.speed` / `AppIcons.bolt`
+        //    （E2 把全仓 163 处 Icons.* 换成自建 AppIcons 以摘掉 material_ui；
+        //     codePoint 与字体族逐字相同 ⇒ 观感零变化，只是字面名变了）。
+        //    豁免的**语义不变**：这里仍是"整块忙碌态自带转圈"的合法点。
+        'hasHistory ? AppIcons.speed : AppIcons.bolt',
       ],
       <String>[
         'lib/ui/widgets/plugin_speedtest.dart',

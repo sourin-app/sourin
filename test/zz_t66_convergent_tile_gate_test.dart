@@ -614,25 +614,46 @@ void main() {
        *   · 报 GONE 一批 + 新增一批，且形态相同 ⇒ 只是漂移，更新行号
        *   · 只新增不 GONE，且形态是 ColoredBox->AppSurface（无 Material）⇒ 真问题
        */
-      'lib/ui/player_page.dart:19879':
+      /*
+       * ⚠️ 2026-10-18（round-65）：一批行号整体下移，全部按「位置变了」更新。
+       *
+       * # 判定依据（严格按本文件上方「留给后来人」那条规则）
+       * ```text
+       * 报 GONE 一批 + 新增一批，且**形态完全一致** ⇒ 只是漂移，更新行号
+       * 只新增不 GONE，且形态是 ColoredBox->AppSurface（无 Material）⇒ 真问题
+       * ```
+       * 实测：9 条 GONE、8 条 NEW，形态逐条对应（ColoredBox->Material 仍是那个
+       * Material，_switchRow->SwitchListTile 仍是那条路径）⇒ 是漂移。
+       *
+       * # 为什么会漂
+       * · E1 删掉侧栏/顶栏两套布局骨架（`top_bar_layout.dart` 整个文件没了）
+       * · E2 给 60 个文件加了 `import '../design/icons/app_icons.dart';`
+       *   ⇒ 每个文件 +1 行，其后所有行号 +1
+       * · 批次 B/C 在 `player_page.dart` 里新增了约 714 行
+       *
+       * # 顺带删掉一条
+       * `lib/ui/shell_layouts/top_bar_layout.dart:215` 必须**移除** ——
+       * 那个文件在 E1 里已删除。留着它就是一条永远 GONE 的死条目，
+       * 而门禁有「白名单每条都必须仍然命中（防空条款假绿）」的反向检查，
+       * 留着会让那条检查红。
+       */
+      'lib/ui/player_page.dart:20541':
           'ColoredBox(black@0.92) -> Material(transparency)，ListTile 在 Material 之下 ⇒ 合法。',
-      'lib/ui/player_page.dart:19901':
+      'lib/ui/player_page.dart:20563':
           '同上，另一层 wrapper（播放页元信息面板）。',
-      'lib/ui/player_page.dart:20082':
+      'lib/ui/player_page.dart:20744':
           'ColoredBox(black@0.92) -> Material(transparency)，同形态第二处（maxWidth 360）。',
-      'lib/ui/player_page.dart:20104':
+      'lib/ui/player_page.dart:20766':
           '同上，另一层 wrapper。',
-      'lib/ui/settings/emby_page.dart:985':
+      'lib/ui/settings/emby_page.dart:986':
           'SwitchListTile（转码开关）。该处代码注释自己写着「必须自己包一层'
               '透明 Material，否则 flutter 断言」。',
-      'lib/ui/settings/emby_page.dart:1284':
+      'lib/ui/settings/emby_page.dart:1285':
           'ListTile（dense，服务端行）。',
-      'lib/ui/shell_layouts/top_bar_layout.dart:215':
-          '命令面板 Material，内部直接列全部 6 个 tab 的 ListTile。',
-      'lib/ui/widgets/player_settings_sheet.dart:711':
+      'lib/ui/widgets/player_settings_sheet.dart:712':
           '卡片 Material；经 _switchRow -> SwitchListTile（六条 section 同路径，'
               '收敛追踪报了 10 次，去重后算一处）。',
-      'lib/ui/widgets/player_settings_sheet.dart:776':
+      'lib/ui/widgets/player_settings_sheet.dart:777':
           '同上，外层另一处 Material。',
     };
 

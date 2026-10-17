@@ -168,6 +168,7 @@ import 'widgets/provider_import_dialog.dart';
  */
 import 'settings/about_page.dart';
 import 'settings/backup_page.dart';
+import 'settings/data_manage_page.dart';
 import 'settings/danmaku_source_page.dart';
 import 'settings/live_groups_page.dart';
 import 'settings/pc_gestures_page.dart';
@@ -2691,6 +2692,20 @@ class SettingsPageState extends State<SettingsPage> {
               title: '备份与恢复',
               subtitle: '导出 / 导入本机数据（合并，不覆盖）',
               onTap: () => _openSubPage(const BackupSettingsPage()),
+            ),
+            /*
+             * ★ Owner 第 14 条（2026-10-17）：
+             * > 设置也加一个数据管理,可以对缓存的数据等等数据进行整理删除,
+             * > 可以看到那些数据占了空间进行删除或者优化整理,可以精 细化处理
+             *
+             * 与「备份与恢复」并排：同属「数据」类，但职责不同 ——
+             * 那个管**导出/导入**（搬迁），这个管**占用与清理**（瘦身）。
+             */
+            SettingsEntryRow(
+              icon: AppIcons.storage_outlined,
+              title: '数据管理',
+              subtitle: '查看日志 / 备份 / 缓存占用，按类清理',
+              onTap: () => _openSubPage(const DataManagePage()),
             ),
             SettingsEntryRow(
               icon: AppIcons.palette_outlined,

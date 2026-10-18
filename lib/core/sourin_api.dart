@@ -3645,7 +3645,27 @@ class PlaybackFailure {
   /// ⚠️ 不许出现：宿主类名、内部代理地址、开发过程用语。
   String get headline => switch (kind) {
     PlaybackFailureKind.source => '这个源没有返回可播放地址',
-    PlaybackFailureKind.proxy => '内置代理没起来',
+    /*
+     * ★★★ 2026-10-18（第 66 轮 R2，Owner 真机反馈）
+     *
+     * 原文案是「内置代理没起来」。**它在多数情况下是假话**：
+     * ```text
+     * Owner 实测日志（sourin-2026-10-18.log）：
+     *   19:03:01  起播 OK   端口 57106
+     *   19:03:06  起播失败  Failed to open http://127.0.0.1:57106/…
+     *   19:03:48  起播 OK   端口 57106   ← 同一个端口，代理一直活着
+     *   19:07:25  起播 OK   端口 57106
+     * ⇒ 代理没"没起来"，是**那一条流**打不开。
+     * ```
+     * Owner 的原话是「内置代理没起来，这个要修复啊，很严重的 bug」——
+     * 他看到这句话，合理地以为代理进程挂了。**措辞制造了一个不存在的故障。**
+     *
+     * ⇒ 改成如实描述「这一条流取不到」。它同时覆盖两种真实情况：
+     *    · 代理真没起来（那就整页都播不了，用户能自己看出来）
+     *    · 代理活着但这条流失败（这才是绝大多数）
+     * ⚠️ 这里**不能**写具体端口 —— 那是内部地址，随进程退出就失效。
+     */
+    PlaybackFailureKind.proxy => '这一条流取不到',
     PlaybackFailureKind.decode => '这个格式解不了',
     PlaybackFailureKind.permission => '这个内容需要源站会员，或不在当前地区',
     PlaybackFailureKind.network => '源站暂时连不上',
@@ -3655,7 +3675,12 @@ class PlaybackFailure {
   /// 给用户的**下一步**（空串 = 没什么可说的，别硬凑）
   String get nextStep => switch (kind) {
     PlaybackFailureKind.source => '换一个源，或者换一集再试。',
-    PlaybackFailureKind.proxy => '点「重试」。如果一直这样，重启客户端。',
+    /*
+     * ★ 2026-10-18（R2 同批）：原文是「点『重试』。如果一直这样，重启客户端。」
+     * 代理活着时重启客户端**没有用**（见 headline 那段实测日志），
+     * 让用户去做一件无效的事，比不给建议更糟。
+     */
+    PlaybackFailureKind.proxy => '点「重试」，或者换一条线路。',
     PlaybackFailureKind.decode => '换一条线路试试（右上角的线路列表）。',
     PlaybackFailureKind.permission => '换一个源。这不是客户端能绕过的东西。',
     PlaybackFailureKind.network => '等一会儿再点「重试」。',
@@ -3851,7 +3876,37 @@ class PlaybackErrorText {
     bool hadCandidates = false,
   }) {
     final raw = error == null ? '' : error.toString();
-    final text = stripHostErrorNoise(hideInternalUrls(raw));
+    /*
+     * ★★★ 2026-10-18（第 66 轮 R2，Owner 真机报「内置代理没起来」）：这里原来是
+     *
+     *     final text = stripHostErrorNoise(hideInternalUrls(raw));
+     *
+     * `hideInternalUrls` 是**给用户看的展示函数**（把 `127.0.0.1:57106` 抹成
+     * 「内置代理取不到这条流」），但它被拿来**生成归因输入** ⇒ 自我强化的误判环：
+     *
+     * ```text
+     * 真实错误：Failed to open http://127.0.0.1:57106/s/18df9acc…/.
+     *   ① hideInternalUrls 改写成「内置代理取不到这条流」
+     *   ② 下面 ① 段的 proxyDown 判据含 lower.contains('内置代理')
+     *   ③ ⇒ 恒命中 ⇒ kind = proxy ⇒ UI 显示「内置代理没起来」
+     * ```
+     * **Owner 实测反证**：同一端口 57106 在 43 秒后（19:03:48）、4 分钟后、
+     * 6 分钟后**都成功起播**。代理一直是活的，是他点的那一条流取不到。
+     *
+     * ⇒ 归因必须读**原始文本**。展示改写只在渲染时做（`player_page.dart:17110`
+     *   那里仍然调用 hideInternalUrls，那是对的）。
+     *
+     * ★ 这条属于本轮反复出现的同一类错误：**判据作用在了被改写过的对象上**。
+     */
+    final text = stripHostErrorNoise(raw);
+    /*
+     * ★ `detail` 是**给用户看的正文** ⇒ 必须用净化版（抹掉 127.0.0.1:PORT 这类
+     *   内部地址，见 Owner 第 6 条诉求 + `zz_r65_error_text_test` ③）。
+     *   而 `lower` 是**归因输入** ⇒ 必须用原文，否则又会落进
+     *   「hideInternalUrls 的产物『内置代理…』让 proxyDown 恒真」那个误判环。
+     * ⇒ 两个用途，两份文本，不许混用。
+     */
+    final display = hideInternalUrls(text);
     final lower = text.toLowerCase();
 
     /*
@@ -3887,7 +3942,7 @@ class PlaybackErrorText {
       if (httpCode == 401 || httpCode == 403) {
         return PlaybackFailure(
           kind: PlaybackFailureKind.permission,
-          detail: text,
+          detail: display,
           // ★ 权限问题重试一万次都一样
           canRetry: false,
         );
@@ -3896,14 +3951,14 @@ class PlaybackErrorText {
       if (httpCode == 429 || (httpCode >= 500 && httpCode <= 599)) {
         return PlaybackFailure(
           kind: PlaybackFailureKind.network,
-          detail: text,
+          detail: display,
         );
       }
       // 404 / 410 ⇒ 地址没了，归源解析失败
       if (httpCode == 404 || httpCode == 410) {
         return PlaybackFailure(
           kind: PlaybackFailureKind.source,
-          detail: text,
+          detail: display,
         );
       }
     }
@@ -3930,16 +3985,29 @@ class PlaybackErrorText {
      * 只有下面这些才是「代理这一层坏了」：
      * ```text
      * · 环回地址被拒（Connection refused）—— 代理进程没起/端口已死
-     * · hideInternalUrls 的产物「内置代理…」—— mpv 打不开代理地址
+     * · mpv 打不开**本机环回地址**（`Failed to open http://127.0.0.1:PORT/…`）
      * ```
+     *
+     * ⚠️ 2026-10-18（第 66 轮 R2）：原来这条判据写的是
+     *    `lower.contains('内置代理')` —— 那是 `hideInternalUrls()` 的**产物**。
+     *    而上面 `text` 现在已是原文，**这四个字永远不会出现** ⇒ 死判据。
+     *    必须改成认**环回地址本身**（`127.0.0.1` / `localhost`）。
+     *
+     *    Owner 实测（19:03:06 失败、19:03:48 同端口成功）证明：
+     *    归成 proxy 本身没错，错的是**「没起来」这个措辞** ——
+     *    代理是起来的，只是那一条流打不开。措辞见 `_headline`。
      */
-    final proxyDown = lower.contains('内置代理') ||
-        lower.contains('connection refused') ||
-        lower.contains('连接被拒绝');
+    final loopbackFailed = lower.contains('127.0.0.1') ||
+        lower.contains('localhost') ||
+        lower.contains('[::1]');
+    final proxyDown = lower.contains('connection refused') ||
+        lower.contains('连接被拒绝') ||
+        // mpv 明确说「打不开」+ 目标是环回地址 ⇒ 是代理这一层
+        (lower.contains('failed to open') && loopbackFailed);
     if (proxyDown) {
       return PlaybackFailure(
         kind: PlaybackFailureKind.proxy,
-        detail: text,
+        detail: display,
         // 代理重启后重试通常就好；换源治不了代理
         canSwitchSource: false,
       );
@@ -3954,7 +4022,7 @@ class PlaybackErrorText {
     if (lower.contains('取流失败')) {
       return PlaybackFailure(
         kind: PlaybackFailureKind.source,
-        detail: text,
+        detail: display,
       );
     }
 
@@ -3967,7 +4035,7 @@ class PlaybackErrorText {
     if (permWords.any(lower.contains) || kindHint == 'unauthorized') {
       return PlaybackFailure(
         kind: PlaybackFailureKind.permission,
-        detail: text,
+        detail: display,
         // ★ 权限问题重试一万次都一样 —— 不给重试按钮是**诚实**
         canRetry: false,
       );
@@ -3993,7 +4061,7 @@ class PlaybackErrorText {
     if (netWords.any(lower.contains) || kindHint == 'network') {
       return PlaybackFailure(
         kind: PlaybackFailureKind.network,
-        detail: text,
+        detail: display,
       );
     }
 
@@ -4007,7 +4075,7 @@ class PlaybackErrorText {
     if (decodeWords.any(lower.contains)) {
       return PlaybackFailure(
         kind: PlaybackFailureKind.decode,
-        detail: text,
+        detail: display,
       );
     }
 
@@ -4019,7 +4087,7 @@ class PlaybackErrorText {
     if (srcWords.any(lower.contains) || !hadCandidates) {
       return PlaybackFailure(
         kind: PlaybackFailureKind.source,
-        detail: text,
+        detail: display,
       );
     }
 

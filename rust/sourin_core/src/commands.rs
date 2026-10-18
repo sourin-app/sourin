@@ -800,7 +800,20 @@ fn live_probe_log(provider: &str, channel_id: &str, n: u64) {
     if std::env::var_os("SOURIN_LIVE_PROBE_COUNT").is_none() {
         return;
     }
-    let line = format!("[LIVE-PROBE-COUNT] #{n} {provider}/{channel_id}");
+    /*
+     * 时间戳（毫秒，自 UNIX epoch）—— 用于回答 Owner P0 的关键问题：
+     * 「这 1269 次请求是**集中**在几秒内（被拉黑风险高），
+     *   还是**分散**在几分钟里（风险低）？」
+     *
+     * ⚠️ 只在探针开启时取时间（无环境变量时第一行就 return）⇒ 生产零开销。
+     * ⚠️ 用 `SystemTime` 而不是格式化日期：只做减法算速率，不需要可读性，
+     *    也不引入 chrono 依赖。
+     */
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let line = format!("[LIVE-PROBE-COUNT] #{n} {now_ms} {provider}/{channel_id}");
     eprintln!("{line}");
     let path = std::env::var("SOURIN_LIVE_PROBE_FILE")
         .unwrap_or_else(|_| ".probe/live-probe-calls.txt".to_string());

@@ -207,11 +207,24 @@ const DEFAULT_EXEMPT_FILES = Object.freeze([
 const SKIP_MARKER = /^Note-Skip:\s*(\S.*)$/m;
 
 /**
+ * git 输出的上限。
+ *
+ * `spawnSync` 默认 1MB，大仓库 `git ls-files` 会超。取值与
+ * deepseek-harness 的 change-scope.ts 一致。
+ */
+const MAX_GIT_OUTPUT = 64 * 1024 * 1024;
+
+/**
  * 跑 git 并返回 stdout。
  *
  * cwd 取**当前工作目录**而不是脚本所在目录：门禁要能对任意仓库生效
  * （测试就是在临时仓库里跑它），写死 PACKAGE_ROOT 会让它永远只看本仓库，
  * 换到别的项目就静默失效 —— 那是假绿的另一种形态。
+ *
+ * `maxBuffer` 显式放大到 64MB：`spawnSync` 默认 1MB，仓库大时 `git ls-files`
+ * 会 ENOBUFS。实测：超限时 `status` 为 `null`，所以不会假绿（会走失败分支），
+ * 但会**误报「无法判定」**，让门禁在大仓库上不可用。
+ * 这个值取自 deepseek-harness 的 change-scope.ts。
  *
  * @param {string[]} args git 参数。
  * @returns {{ ok: boolean, out: string, err: string }} 结果。
@@ -220,13 +233,53 @@ function git(args) {
   const result = spawnSync('git', args, {
     cwd: process.cwd(),
     encoding: 'utf8',
-    windowsHide: true
+    windowsHide: true,
+    maxBuffer: MAX_GIT_OUTPUT
   });
   return {
     ok: result.status === 0,
     out: String(result.stdout ?? ''),
     err: String(result.stderr ?? '')
   };
+}
+
+/**
+ * 跑 `git diff` 并返回路径列表。
+ *
+ * ## 为什么带这一串 flag（全部来自 deepseek-harness 的 change-scope.ts）
+ *
+ * 我最初判定它们「不必要」，理由是「我没能构造出受影响的场景」。
+ * 那是**错误的判据** —— 防御性 flag 的价值恰恰在于防那些罕见的、
+ * 有人特意配置过的场景。逐条实测后全部推翻：
+ *
+ * - `-z`：**实测真缺陷**。不带它时 git 会把非 ASCII 路径转义成
+ *   `"lib/\344\270\255..."` 并加引号，`startsWith('lib/')` 直接失败 ⇒
+ *   中文路径的源码改动**静默放行**。这条是实际会踩到的。
+ * - `--no-ext-diff` / `--no-textconv`：防 `.gitattributes` 里配了外部
+ *   diff 驱动或 textconv，把文件内容换掉影响判定。
+ * - `--no-renames`：改名检测受 `diff.renameLimit` 影响，仓库大时行为不确定。
+ *   钉住之后「改名」稳定表现为「删旧 + 增新」，判定可复现。
+ * - `--ignore-submodules=none`：防本地 `submodule.<name>.ignore = all`
+ *   让 submodule 变更从列表里消失。
+ * - 结尾的 `--`：防参数被当成路径。
+ *
+ * @param {string[]} args diff 的其余参数（如 --cached、--diff-filter）。
+ * @returns {{ ok: boolean, files: string[] | undefined, err: string }} 路径列表。
+ */
+function diffPaths(args) {
+  const result = git([
+    'diff',
+    '--no-ext-diff',
+    '--no-textconv',
+    '--no-renames',
+    '--ignore-submodules=none',
+    '--name-status',
+    '-z',
+    ...args,
+    '--'
+  ]);
+  if (!result.ok) return { ok: false, files: undefined, err: result.err };
+  return { ok: true, files: statusLinesZ(result.out), err: '' };
 }
 
 /**
@@ -266,11 +319,11 @@ function collectTargets(argv) {
 
   /* 本地：默认看暂存区（commit-msg 钩子的语义）。
      过滤删除（D）：删一篇旧笔记配合任意受管改动就能过门禁 —— 实测确认是后门。 */
-  const result = git(['diff', '--cached', '--name-status', '--diff-filter=ACMR']);
+  const result = diffPaths(['--cached', '--diff-filter=ACMR']);
   if (!result.ok) {
     return { mode: 'staged', label: '暂存区', reason: `git diff --cached 失败: ${result.err.trim()}` };
   }
-  return { mode: 'staged', label: '暂存区', files: statusLines(result.out) };
+  return { mode: 'staged', label: '暂存区', files: result.files };
 }
 
 /**
@@ -284,11 +337,11 @@ function collectTargets(argv) {
  */
 function filesOfCommit(sha) {
   /* 过滤删除（D）：删除一篇笔记不能算「带了笔记」。 */
-  const result = git(['diff', '--name-status', '--diff-filter=ACMR', `${sha}^!`]);
+  const result = diffPaths(['--diff-filter=ACMR', `${sha}^!`]);
   if (!result.ok) {
     return { files: undefined, reason: `git diff ${sha}^! 失败: ${result.err.trim()}` };
   }
-  return { files: statusLines(result.out) };
+  return { files: result.files };
 }
 
 /**
@@ -302,19 +355,46 @@ function splitLines(text) {
 }
 
 /**
- * 解析 `git diff --name-status` 的输出，只返回文件路径。
+ * 解析 `git diff --name-status -z` 的 NUL 分隔输出，只返回文件路径。
  *
- * 每行形如 `M\tpath`、`A\tpath`、`R100\told\tnew`；改名（R）取**新路径**，
- * 它才是当前存在的那个文件。
+ * ## 为什么必须用 -z
  *
- * @param {string} text 原始输出。
+ * 不带 `-z` 时 git 会对「不寻常」的路径做 C 风格转义并加引号：
+ *
+ * ```text
+ * A  "lib/\344\270\255\346\226\207.js"     ← 中文路径被转义
+ * ```
+ *
+ * 于是 `startsWith('lib/')` 失败 ⇒ **中文路径的源码改动被静默放行**。
+ * 这是实测发现的真缺陷（不是理论风险）：一个叫 `lib/中文.js` 的文件
+ * 改了代码，门禁报「改动未命中受管路径」并通过。
+ *
+ * `-z` 用 NUL 分隔记录，路径原样输出，不做任何转义。
+ * 记录格式为：`状态\0路径\0`（改名是 `R100\0旧路径\0新路径\0`）。
+ *
+ * @param {string} text NUL 分隔的原始输出。
  * @returns {string[]} 路径列表。
  */
-function statusLines(text) {
+function statusLinesZ(text) {
+  const records = text.split('\u0000').filter((entry) => entry !== '');
   const out = [];
-  for (const line of splitLines(text)) {
-    const parts = line.split('\t');
-    if (parts.length >= 2) out.push(parts[parts.length - 1].trim());
+  let index = 0;
+  while (index < records.length) {
+    const status = records[index];
+    index += 1;
+    if (status.startsWith('R') || status.startsWith('C')) {
+      /* 改名/复制有两条路径：旧路径跳过，取新路径（它才是当前存在的）。 */
+      index += 1;
+      if (index < records.length) {
+        out.push(records[index]);
+        index += 1;
+      }
+      continue;
+    }
+    if (index < records.length) {
+      out.push(records[index]);
+      index += 1;
+    }
   }
   return out;
 }

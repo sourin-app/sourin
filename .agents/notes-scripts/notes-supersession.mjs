@@ -42,7 +42,16 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 /**
+ * git 输出的上限。`spawnSync` 默认 1MB，大仓库会超。
+ * 取值与 notes-coverage.mjs / deepseek-harness 的 change-scope.ts 一致。
+ */
+const MAX_GIT_OUTPUT = 64 * 1024 * 1024;
+
+/**
  * 跑 git 并返回 stdout。
+ *
+ * `maxBuffer` 显式放大：超限时 `status` 为 `null`（会走失败分支，不会假绿），
+ * 但会误报「无法判定」，让门禁在大仓库上不可用。
  *
  * @param {string[]} args git 参数。
  * @returns {{ ok: boolean, out: string, err: string }} 结果。
@@ -51,7 +60,8 @@ function git(args) {
   const result = spawnSync('git', args, {
     cwd: process.cwd(),
     encoding: 'utf8',
-    windowsHide: true
+    windowsHide: true,
+    maxBuffer: MAX_GIT_OUTPUT
   });
   return {
     ok: result.status === 0,
@@ -71,21 +81,39 @@ function splitLines(text) {
 }
 
 /**
- * 从 `git diff --name-status` 输出解析出「新增」的文件路径。
+ * 从 `git diff --name-status -z` 的 NUL 分隔输出解析出「新增」的文件路径。
  *
  * 只关心 A（新增）：修改既有笔记不需要再做 supersession 检查 ——
  * 它本来就有归属。
  *
- * @param {string} text 原始输出。
+ * ## 为什么必须用 -z
+ *
+ * 不带 `-z` 时 git 会把非 ASCII 路径转义成 `"lib/\344\270\255..."` 并加引号，
+ * 于是 `endsWith('.md')` 之类的判断会失败 ⇒ 中文文件名的笔记**静默逃检**。
+ * 这是实测发现的真缺陷（在 notes-coverage 里同源），不是理论风险。
+ *
+ * `-z` 的记录格式：`状态\0路径\0`（改名是 `R100\0旧\0新\0`）。
+ *
+ * @param {string} text NUL 分隔的原始输出。
  * @returns {string[]} 新增文件路径。
  */
-function addedPaths(text) {
+function addedPathsZ(text) {
+  const records = text.split('\u0000').filter((entry) => entry !== '');
   const out = [];
-  for (const line of splitLines(text)) {
-    const parts = line.split('\t');
-    if (parts.length < 2) continue;
-    const status = parts[0].trim();
-    if (status.startsWith('A')) out.push(parts[parts.length - 1].trim());
+  let index = 0;
+  while (index < records.length) {
+    const status = records[index];
+    index += 1;
+    if (status.startsWith('R') || status.startsWith('C')) {
+      /* 改名/复制：旧路径跳过，取新路径。改名不算「新增笔记」——
+         它本来就有归属，不该触发 supersession 检查。 */
+      index += 2;
+      continue;
+    }
+    if (index < records.length) {
+      if (status.startsWith('A')) out.push(records[index]);
+      index += 1;
+    }
   }
   return out;
 }
@@ -195,26 +223,51 @@ if (configError !== undefined) {
   process.exit(2);
 }
 
+/**
+ * 跑 `git diff` 并返回新增文件路径。
+ *
+ * 与 notes-coverage.mjs 用同一套防御性 flag —— 理由见那里的注释。
+ * 最关键的是 `-z`：不带它时中文路径会被转义，导致笔记静默逃检。
+ *
+ * @param {string[]} args diff 的其余参数。
+ * @returns {{ ok: boolean, files: string[] | undefined, err: string }} 路径列表。
+ */
+function diffAdded(args) {
+  const result = git([
+    'diff',
+    '--no-ext-diff',
+    '--no-textconv',
+    '--no-renames',
+    '--ignore-submodules=none',
+    '--name-status',
+    '-z',
+    ...args,
+    '--'
+  ]);
+  if (!result.ok) return { ok: false, files: undefined, err: result.err };
+  return { ok: true, files: addedPathsZ(result.out), err: '' };
+}
+
 let added;
 let label;
 if (typeof range === 'string' && range !== '') {
   const spec = range.includes('..') ? range : `${range}..HEAD`;
-  const result = git(['diff', '--name-status', '--diff-filter=A', spec]);
+  const result = diffAdded(['--diff-filter=A', spec]);
   if (!result.ok) {
     console.error('✖ 无法读取提交区间，本次检查无效。退出码 2。');
     console.error(`  ${result.err.trim()}`);
     process.exit(2);
   }
-  added = addedPaths(result.out);
+  added = result.files;
   label = spec;
 } else {
-  const result = git(['diff', '--cached', '--name-status', '--diff-filter=A']);
+  const result = diffAdded(['--cached', '--diff-filter=A']);
   if (!result.ok) {
     console.error('✖ 无法读取暂存区，本次检查无效。退出码 2。');
     console.error(`  ${result.err.trim()}`);
     process.exit(2);
   }
-  added = addedPaths(result.out);
+  added = result.files;
   label = '暂存区';
 }
 

@@ -612,3 +612,139 @@ N1 的判据改为：
 依赖：无（不依赖 material_ui 移除）
 ⇒ 可以**立即开工**，与 M 批次并行（但都动 player_page.dart ⇒ 必须串行）
 ```
+
+---
+
+# 第 66 轮再补充（三）：播放页鼠标移动卡顿（Owner 指定「必须死磕」）
+
+**Owner 原话**：
+> 还有播放页那个鼠标动一下 出现控件,也很卡顿,这个是必须死磕解决的问题
+
+**优先级**：Owner 指定死磕 ⇒ 与 N10（拖动转圈）同为**最高优先级**，可立即开工。
+
+---
+
+## 一、🔴 先说最重要的发现：现有门禁测不出这个卡顿
+
+我跑了仓库里已有的 `test/t72_jank_test.dart`，读数：
+```text
+PA|60 次鼠标移动 => PlayerPage 重建 0 次 / 元素重建 0 次（改前：page=60 / all=9960）
+PB|180 次 tick   => 位置 setState 3 次, 整页重建 0 次
+PC|抽屉关着：10 次整页重建 => onLiveChannels 被调 0 次
+00:01 +5: All tests passed!
+```
+
+**「0 次重建 + All tests passed」与 Owner 实际感受到的卡顿同时成立。**
+原因（已核实）：
+```text
+该测试只**数 setState 次数**，全文件 grep 不到任何
+FrameTiming / buildDuration / SchedulerBinding.addTimingsCallback
+⇒ 它证明的是「没有多余的整页重建」，**不证明「不卡」**。
+```
+
+⇒ **本轮必须补「帧耗时」门禁**，否则改完还是只能靠嘴说。
+这是本条的第一要务，比修代码更优先 —— 没有仪器就不知道有没有修好。
+
+---
+
+## 二、已核实的代码现状
+
+```text
+① 指针入口在整页最外层
+   player_page.dart:13970  Listener(onPointerSignal:)
+   player_page.dart:13972  MouseRegion(cursor:..., onHover: (_) => _showControls())
+   ⇒ Windows 鼠标每秒可达数百次事件
+
+② _showControls()（:12041）每次 hover 都会走三件事
+   · if (!_controlsVisible && !_anySheetOpen) setState(...)   ← 已有值守卫（task-72 修过）
+   · _applyControlsMotion()      （:1192）
+   · _armHideTimer()
+   · _noteCursorActivity()       （:1009）
+   三条都**不触发整页重建**（已逐一核实）⇒ 所以 PA 读数确实是 0
+
+③ 但每次 hover 仍有的开销
+   · _applyControlsMotion() 里读 MotionPrefs.duration(context, ...)
+     —— 读 InheritedWidget（无障碍「减少动态效果」）
+   · _noteCursorActivity() 在**全屏**且指针在内时：
+     _resetCursorIdle() + Timer.cancel + 新建 Timer
+     ★ 而 _resetCursorIdle() 在 _cursorIdleStale 为真时**会 setState 整页**
+   · _armHideTimer() 每次 cancel + 新建 Timer
+
+④ 光标隐藏路径的整页重建
+   player_page.dart:1056  _resetCursorIdle() { setState(() => _cursorIdleStale = false); }
+   注释自己写着：「本页整棵子树本来就在这个 State 的 setState 里重建」
+   ⇒ 光标一翻就重建**整页 884 行 build**（:209 起的 build）
+
+⑤ 动画没有局部化
+   _controlsFade 是 Animation<double>（:1176），
+   但**没有用 AnimatedBuilder 包住**它消费的子树
+   ⇒ 若动画帧靠 setState 驱动，就是每帧整页重建
+   ⚠️ 这一条**尚未证实**，是本轮要测的第一个对象
+```
+
+---
+
+## 三、修复方向（都要实测，不许先写死）
+
+```text
+F1. 【先做】补帧耗时门禁（没有它后面全是猜）
+    · 用 SchedulerBinding.instance.addTimingsCallback 采 FrameTiming
+    · 指标：hover 期间 buildDuration / rasterDuration 的 P50 / P99 / 最大值
+    · 对照：① 静止不动 ② 每秒 60 次 hover
+    · ★ 必须能变红：人为在 hover 路径加一次 setState ⇒ P99 必须显著恶化
+    · 同时补「真机」读数（widget 测试测不出 GPU/合成层开销）
+
+F2. 把光标态从整页 setState 里摘出来
+    · _cursorIdleStale 改成 ValueNotifier<bool>
+    · 只用 ValueListenableBuilder 包住**那个 MouseRegion 的 cursor**
+    · 判据：光标隐藏/恢复时，整页 build 次数必须为 0
+
+F3. 把控制条淡入淡出局部化
+    · 用 AnimatedBuilder 只包住需要改 opacity 的那几层
+    · 判据：动画期间整页 build 次数为 0（元素重建只发生在被包的子树）
+
+F4. hover 路径去掉每帧的 InheritedWidget 读
+    · MotionPrefs.duration(context) 提到 didChangeDependencies 缓存
+    · 判据：hover 期间不再有 context 依赖查询
+
+F5. Timer 抖动
+    · _armHideTimer / _noteCursorActivity 每次 hover 都 cancel+新建
+    · 改成「记录最后活动时间戳 + 单个周期 Timer 检查」⇒ 避免 Timer 频繁分配
+    · 判据：60 次 hover 只产生 1 个 Timer（不是 120 次 cancel/create）
+
+F6. 若真机仍卡 ⇒ 查合成层
+    · 视频纹理 + 半透明浮层的混合开销
+    · 可能要给浮层加 RepaintBoundary / 减少 opacity 层数
+    · ★ 这条只能真机验证，widget 测试测不出
+```
+
+---
+
+## 四、验收（Owner 要求「必须死磕」，所以标准要硬）
+
+```text
+① 帧耗时门禁落地，且**故障注入能红**（人为加 setState ⇒ P99 恶化）
+② 60 次/秒 hover 下：整页 build = 0，元素重建 = 0
+③ 光标隐藏/恢复：整页 build = 0
+④ 控制条淡入淡出：整页 build = 0
+⑤ ★ 真机读数：hover 期间 P99 帧耗时 < 16.7ms（60fps 预算内）
+   —— 达不到就继续查，不许改口径
+⑥ 附改前/改后同一操作的读数对比
+⑦ 副作用检查：控制条仍要能正常显隐、光标仍要能正常隐藏、不能变硬切
+```
+
+⚠️ **红线**：不许用「减少动画」「去掉淡入淡出」来换帧率 ——
+    那是把功能砍掉冒充优化。用户明确要过动画（「要有动画」）。
+
+---
+
+## 五、与其它批次的关系
+
+```text
+N10（拖动转圈）与 N11（本卡顿）都要改 player_page.dart（2 万行）
+⇒ **必须串行**，且两者可以合并成一批做（同一文件，避免来回切）
+
+M 批次（移除 material_ui）也改 player_page.dart
+⇒ 顺序建议：先做 N10+N11（纯性能，不动 UI 结构）
+              再做 M（结构大改，届时性能门禁已存在，可防回归）
+```

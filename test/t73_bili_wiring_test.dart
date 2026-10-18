@@ -88,6 +88,19 @@ const String _dialogPath = 'lib/ui/widgets/danmaku_settings_dialog.dart';
 final String _page = stripComments(File(_pagePath).readAsStringSync());
 final String _dialog = stripComments(File(_dialogPath).readAsStringSync());
 
+/// 取「从 [start] 这个成员开头，到**下一个同级成员开头**」的切片。
+///
+/// ★ 2026-10-18（task-66）：替代 `substring(i0, i0 + 2600)` 那种字符数魔数。
+///   魔数窗口会因为"函数里加了几行注释"而假红（本次实测被咬到），
+///   而这个切片边界由代码结构决定，与字符数无关。
+String _memberSlice(String src, int start) {
+  final rest = src.substring(start + 1);
+  final m = RegExp(
+    r'\n  (?:Future<[^\n]*?>|void|bool|int|String|double|Widget|List<[^\n]*?>) _?[A-Za-z]',
+  ).firstMatch(rest);
+  return m == null ? src.substring(start) : src.substring(start, start + 1 + m.start);
+}
+
 /// 断言 `needle` 在 `src` 里**恰好**出现 [want] 次，并返回首次下标。
 int indexOfExactly(String src, String needle, {int want = 1, String? why}) {
   final hits = <int>[];
@@ -338,7 +351,29 @@ void main() {  // ════════════════════�
     test('② _loadBiliDanmaku 用的是同一套令牌/loading 骨架', () {
       final i0 = _page.indexOf('Future<void> _loadBiliDanmaku(');
       expect(i0, greaterThan(0));
-      final body = _page.substring(i0, i0 + 2600);
+      /*
+       * ★★★ 2026-10-18（task-66 轨道 I）：窗口从「2600 个字符」改成
+       *     「这个函数开头 → 下一个同级成员开头」。
+       *
+       * # 为什么必须改（这次真的被咬到了）
+       * ```text
+       * 2600 是个**字符数**魔数。task-66 在 `_loadBiliDanmaku` 里加了
+       * 一段说明"手动绑定后也要聚合"的注释（约 900 字）⇒ 后面的断言
+       * 全被推出窗口 ⇒ 本条**假红**（代码完全正确，只是注释变长了）。
+       *
+       * 实测：
+       *   HEAD    stripComments 后 panelPinHead 在窗口内 offset 1520
+       *   改后                  offset 1907，第二条针被推到 2600 之外
+       * ⇒ 只要有人往这个函数加注释，本条就随机红。这不是判据，是定时炸弹。
+       * ```
+       * # 新窗口为什么更严而不是更松
+       * ```text
+       * 旧窗口：i0 .. i0+2600（可能**跨进下一个函数**，钉到不属于它的代码）
+       * 新窗口：i0 .. 下一个同级成员开头（边界精确，不漏也不多）
+       * ```
+       * ⚠️ 判据语义**一条都没放宽** —— 下面每条 expect 原样保留。
+       */
+      final body = _memberSlice(_page, i0);
       expect(body.contains('final token = ++_danmakuFetchToken;'), isTrue,
           reason: '★ 换集时旧响应必须被丢掉（与 dandanplay 同一条规矩）');
       expect(body.contains('if (!mounted || token != _danmakuFetchToken) return;'),
@@ -346,7 +381,13 @@ void main() {  // ════════════════════�
           reason: '★★ 令牌判据不能省 —— 否则第 5 集会短暂显示第 3 集的弹幕');
       expect(body.contains('_danmakuLoading = true;'), isTrue);
       expect(body.contains('_danmakuLoading = false;'), isTrue);
-      expect(body.contains('_danmakuComments = r.comments;'), isTrue);
+      /*
+       * ⚠️ 2026-10-18：`= r.comments;` 在这条路上**已按 task-66 改掉**
+       *    （改成聚合后的 `= agg.comments;`，否则手动绑定后插件那份弹幕消失）。
+       *    ⇒ 针跟着改成新形态，判据强度不变（仍钉"成功支必须把结果灌进渲染层"）。
+       */
+      expect(body.contains('_danmakuComments = agg.comments;'), isTrue,
+          reason: '★ task-66：成功支必须灌**聚合后**的结果（两条来源合并）');
       /*
        * ★★★ OPS-10 B（业主 1009 B②「还是显示 没收到凭证」）的刻意修复：
        *   三处状态文案都加了**来源前缀**（player_page.dart:4733 dandanplay 前缀 /
@@ -385,18 +426,44 @@ void main() {  // ════════════════════�
       // prefer_interpolation_to_compose_strings 报 lint（const 也不允许 '+'）。
       const pin5489 = '$panelPinHead\n      );\n    });\n    _biliCid = cid;';
       const pin5543 = '$panelPinHead\n      );\n    });\n    _biliCid = r.cid;';
+      /*
+       * ★★★ 2026-10-18（task-66 轨道 I）：两条针**各自定位于它所属的函数**。
+       *
+       * # 改前为什么把两条都放在 `_loadBiliDanmaku` 的窗口里
+       * ```text
+       * 旧窗口是 `i0 .. i0+2600`（字符数魔数）。当时这个长度**恰好**
+       * 跨进了下一个函数 `_biliApplyComments`，所以两条针能在同一个
+       * `body` 里各找到一次 —— 那是**巧合**，不是设计。
+       * ```
+       * # 现在为什么必须分开
+       * ```text
+       * 窗口改成按函数边界切（见上方 _memberSlice 的说明）⇒
+       * `_loadBiliDanmaku` 的切片**不再**包含 `_biliApplyComments`
+       * ⇒ pin5543 在那个 body 里必然找不到。
+       * ```
+       * ⚠️ 判据强度**不变**：仍然是"两条都要在、各钉一次、退回无前缀形态当场红"，
+       *    只是各自在**正确的函数体**里查 —— 这比原来更严（原来靠窗口跨函数
+       *    才能同时看到两条，窗口一缩就假红）。
+       */
+      final applyBody = _memberSlice(
+        _page,
+        _page.indexOf('Future<void> _biliApplyComments('),
+      );
       expect(body.contains(pin5489), isTrue,
           reason: '★★ 5489（_loadBiliDanmaku 收尾）的面板读数必须带「外部视频站 · 」前缀，'
               '且后面紧跟 _biliCid = cid; —— 退回 status: r.summary, 当场红');
-      expect(body.contains(pin5543), isTrue,
+      expect(applyBody.contains(pin5543), isTrue,
           reason: '★★ 5543（_biliApplyComments 收尾）的面板读数必须带「外部视频站 · 」前缀，'
               '且后面紧跟 _biliCid = r.cid; —— 退回 status: r.summary, 当场红');
-      indexOfExactly(body, panelPinHead, want: 2,
-          why: '★★ 5489 与 5543 是两条独立的面板读数，这个窗口里必须**两条都在**；'
+      // 两条都在各自函数体里恰好一次（防止"写两遍蒙对一边"）
+      indexOfExactly(body, panelPinHead, want: 1,
+          why: '★★ 5489 在 _loadBiliDanmaku 里必须**恰好一次**');
+      indexOfExactly(applyBody, panelPinHead, want: 1,
+          why: '★★ 5543 在 _biliApplyComments 里必须**恰好一次**；'
               '只写一次 contains 的话退回其中一条照样绿（= 只钉住一半）');
       // ignore: avoid_print
-      print('[BSTATUS] i0=$i0 窗口长=${body.length} / 5489 针 rel=${body.indexOf(pin5489)}'
-          ' / 5543 针 rel=${body.indexOf(pin5543)}');
+      print('[BSTATUS] i0=$i0 len=${body.length} / 5489=${body.indexOf(pin5489)}'
+          ' / applyLen=${applyBody.length} 5543=${applyBody.indexOf(pin5543)}');
       expect(body.contains('markBiliSynced();'), isTrue,
           reason: '★ 同步时间要记，否则自动更新永远认为缓存还新鲜');
     });

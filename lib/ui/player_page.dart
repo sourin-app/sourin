@@ -7771,7 +7771,7 @@ class _PlayerPageState extends State<PlayerPage>
           trace: _biliApi?.trace ?? const <BiliHttpTrace>[],
         );
       });
-      _biliApplyComments(r);
+      await _biliApplyComments(r);
     } on ArgumentError catch (e) {
       // ★ 解析失败 ⇒ 一个请求都没发（`bindFromInput` 第一行就抛）
       _biliFail('没认出 BV 号 / av 号 / 链接：${e.message}');
@@ -7934,8 +7934,43 @@ class _PlayerPageState extends State<PlayerPage>
       _flash('弹幕失败：${r.error}');
       return;
     }
+    /*
+     * ★★★ 2026-10-18（task-66 轨道 I / Owner 第 11 条）：**手动绑定之后也要聚合**
+     *
+     * # 改前这里是什么
+     * ```text
+     * 直接 `_danmakuComments = r.comments;` —— 只有外部源那一份。
+     * 而 `aedc29c` 取消了起播自动绑定 ⇒ 用户绑外部源**一定**是手动的，
+     * 也就是说这条路上「插件自带 + 导入源合并」**每一次**都失效。
+     * ```
+     * # 用户看到的现象
+     * ```text
+     * 手动绑了外部源（比如为了追某部番的弹幕），
+     * 结果插件自己给的那份弹幕**整批消失** —— 画面上只剩外部源那份。
+     * 而 Owner 要的是两路并起来。
+     * ```
+     * # 为什么先 await 再 setState
+     * ```text
+     * 聚合要问插件要弹幕（真异步）。改前这里是**同步** setState，
+     * 所以必须把聚合提到 setState 之前 —— 在 setState 里 await 会让
+     * `setState() called during build` 那类问题冒出来（本文件踩过多次）。
+     * ```
+     * # 令牌为什么再验一次
+     * ```text
+     * await 期间用户可能已经切集（`_danmakuFetchToken` 变了）⇒
+     * 这次结果作废。不查的话会把上一集的聚合结果画到新一集上。
+     * ```
+     */
+    final agg = await _aggregateDanmaku(
+      primary: r.comments,
+      primaryKind: DanmakuSourceChannel.imported,
+      primaryDetail: '外部视频站',
+      primarySource: DanmakuInfoSource.bili,
+      token: token,
+    );
+    if (!mounted || token != _danmakuFetchToken) return;
     setState(() {
-      _danmakuComments = r.comments;
+      _danmakuComments = agg.comments;
       // ★ OPS-10 B：UI 如实反映来源（见 _loadDanmakuNamed 里那段说明）
       _danmakuStatus = '外部视频站 · ${r.summary}';
       _danmakuError = null;
@@ -7954,6 +7989,15 @@ class _PlayerPageState extends State<PlayerPage>
        *   而不是先让他去点一次开关。
        */
       _danmakuEnabled = true;
+      /*
+       * ★ task-66：与 `agg.comments` **同一帧**把分路读数交给面板。
+       *   只合并不报来源 ⇒ 用户看到「1900 条」却不知道哪来的
+       *   （Lead 特别提醒过这一条，`_aggregateRows` 就是画它的）。
+       */
+      _setDanmakuInfo(
+        source: DanmakuInfoSource.bili,
+        aggregate: agg,
+      );
       _danmakuSettings = _danmakuSettings.copyWith(
         enabled: true,
         loading: false,
@@ -7970,21 +8014,52 @@ class _PlayerPageState extends State<PlayerPage>
   /// ★ 与 `_loadBiliDanmaku` 的区别：这里**不动 loading / 错误角标** ——
   ///   面板里的「立即更新」是用户主动点的一次刷新，失败了在**面板里**说，
   ///   不该把画面上的弹幕清掉（那会让用户以为弹幕坏了）。
-  void _biliApplyComments(BiliUpdateResult r) {
+  ///
+  /// ★★★ 2026-10-18（task-66 轨道 I / Owner 第 11 条）：**这条也要聚合**
+  /// ```text
+  /// 改前：`_danmakuComments = r.comments;` ⇒ 只灌外部源那一份。
+  ///
+  /// 这条路径有三个入口，用户每一次都会踩到：
+  ///   · `_biliImport`      导入并绑定（首次）
+  ///   · `_biliAutoRefresh` 切集时的自动刷新
+  ///   · `_biliUpdateNow`   面板里的「立即更新」
+  /// 任何一个走过之后，插件那份弹幕都会从画面上消失。
+  /// ```
+  /// ⚠️ 改成 `Future<void>` 的理由：聚合要 `await` 插件的弹幕。
+  ///    三个调用方（`_biliImport` / `_biliAutoRefresh` / `_biliUpdateNow`）
+  ///    **本来就是 async** ⇒ 这里加 await 不会传染出新的 async。
+  Future<void> _biliApplyComments(BiliUpdateResult r) async {
     if (!r.ok) {
       _flash('弹幕失败：${r.error}');
       return;
     }
     if (!mounted) return;
+    /*
+     * 令牌：**认领一次新的取弹幕**（与 `_loadBiliDanmaku` 同一套）。
+     *
+     * ⚠️ 这里必须 `++`，不能只读旧值：
+     *    只读的话，另一条聚合（比如 `_loadBiliDanmaku` 正在问插件）会
+     *    与本条**共用**同一个令牌 ⇒ 两条都通过校验 ⇒ 后落地的那个覆盖前一个，
+     *    画面上的弹幕会随机变成"哪条先回来算哪条"。
+     */
+    final token = ++_danmakuFetchToken;
+    final agg = await _aggregateDanmaku(
+      primary: r.comments,
+      primaryKind: DanmakuSourceChannel.imported,
+      primaryDetail: '外部视频站',
+      primarySource: DanmakuInfoSource.bili,
+      token: token,
+    );
+    if (!mounted || token != _danmakuFetchToken) return;
     setState(() {
-      _danmakuComments = r.comments;
+      _danmakuComments = agg.comments;
       // ★ OPS-10 B：UI 如实反映来源（见 _loadDanmakuNamed 里那段说明）
       _danmakuStatus = '外部视频站 · ${r.summary}';
       _danmakuError = null;
       // ★ 与上面那行**同一帧**登记来源（面板不猜文案）
       _setDanmakuInfo(
         source: DanmakuInfoSource.bili,
-
+        aggregate: agg,
       );
       /*
        * ★★★ OPS-10 ⑤（Owner 逐字：「导入externaldanmaku弹幕之后,并没有提示任何信息
@@ -8042,7 +8117,7 @@ class _PlayerPageState extends State<PlayerPage>
       debugPrint('[BILI] 自动刷新失败（保留旧弹幕）: ${r.error}');
       return;
     }
-    _biliApplyComments(r);
+    await _biliApplyComments(r);
     if (_biliSheetOpen) {
       setState(() {
         _biliState = _biliState.copyWith(
@@ -8105,7 +8180,7 @@ class _PlayerPageState extends State<PlayerPage>
       );
     });
     if (token != _biliPanelToken) return;
-    _biliApplyComments(r);
+    await _biliApplyComments(r);
   }
 
   /// 面板里点了「解除绑定」

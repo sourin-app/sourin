@@ -511,13 +511,31 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
                 const SizedBox(width: Sp.x1),
                 Expanded(
                   child: Text(
+                    /*
+                     * ★ 2026-10-18（task-66 看图台抓到的排版缺陷）
+                     *
+                     * # 改前
+                     * ```text
+                     * '${f.label}：失败 · ${f.error}' 配 maxLines:3
+                     * ⇒ 错误原文一长（"这个源没有提供弹幕数据"就够长了）
+                     *   就折成两行半、**压到下一行「匹配」上**，
+                     *   两段文字叠在一起，谁都读不出来。
+                     *   实测截图见 .probe/shots_t66/（改前那张已覆盖）。
+                     * ```
+                     * # 改后
+                     * ```text
+                     * 失败那一路只在这行说"谁失败了"（单行）；
+                     * 上游原文**独占下一行**（见下面第二个 for）。
+                     * ⇒ 原文再长也只往下长，不横向挤压别的字段。
+                     * ```
+                     * ⚠️ 原文仍然**照透**，只是给了它自己的行 —— 不是截断它。
+                     */
                     f.failed
-                        // ★ 失败原文照透：用户要能照着这句话去查
-                        ? '${f.label}：失败 · ${f.error}'
+                        ? '${f.label}：失败'
                         : (f.loaded
                             ? '${f.label}：${f.count} 条'
                             : '${f.label}：未提供'),
-                    maxLines: 3,
+                    maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: FontSizes.cap,
@@ -531,6 +549,29 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
               ],
             ),
           ),
+        // 失败那一路的上游原文：**独占一行**（理由见上面那段）
+        for (final f in feeds)
+          if (f.failed && f.error.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 与上面那个 count/label 文本的左边对齐：
+                  // 52（label 栏）+ 12（图标）+ Sp.x1（图标后间距）
+                  const SizedBox(width: 52 + 12 + Sp.x1),
+                  Expanded(
+                    child: Text(
+                      f.error,
+                      style: const TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: _warn,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
       ],
     );
   }

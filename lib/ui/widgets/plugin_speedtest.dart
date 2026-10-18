@@ -181,6 +181,7 @@ import '../../core/sourin_api.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import '../../design/icons/app_icons.dart';
+import 'app_toast.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  参数（可以调，但改了要重跑真机���数 —— 见文件头各段的实测依据）
@@ -1928,18 +1929,13 @@ class PluginSpeedTestClearButton extends StatelessWidget {
             : () {
                 final n = PluginSpeedTest.clearAll(pluginIds);
                 onCleared?.call();
-                final messenger = ScaffoldMessenger.maybeOf(context);
-                if (messenger != null) {
-                  messenger.showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        n == 0
-                            ? '没有测速记录可以清空'
-                            : '已清空 $n 个源的测速记录',
-                      ),
-                    ),
-                  );
-                }
+                // ★ 2026-10-18（轨道 E 第 5 步）：SnackBar → showAppToast
+                //   理由见 lib/ui/cache_page.dart 的 _say 注释
+                //   （`?.` 不保证能显示，skip_marker_dialog 有真实事故记录）
+                showAppToast(
+                  context,
+                  n == 0 ? '没有测速记录可以清空' : '已清空 $n 个源的测速记录',
+                );
               },
         icon: const Icon(AppIcons.delete_sweep_outlined, size: 16),
         label: const Text('清空测速记录'),

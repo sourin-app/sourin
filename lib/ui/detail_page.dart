@@ -3307,7 +3307,7 @@ class _DetailPageState extends State<DetailPage> {
   Future<void> _deleteLocalPaths(List<LocalEpisodeRef> refs) async {
     final dir = _localWorkDir();
     if (dir == null) {
-      _sayLocal('找不到这部作品的文件夹，已取消删除');
+      _flash('找不到这部作品的文件夹，已取消删除');
       return;
     }
     var deleted = 0;
@@ -3333,7 +3333,7 @@ class _DetailPageState extends State<DetailPage> {
      */
     widget.onLocalEpisodesChanged?.call();
     AppLog.write('LOCAL', '本地删除：${refs.length} 集，实际删掉 $deleted 个文件');
-    _sayLocal(deleted > 0
+    _flash(deleted > 0
         ? '已删除 $deleted 个文件'
         : '没有删除任何文件（文件可能已经不在了）');
   }
@@ -3346,14 +3346,6 @@ class _DetailPageState extends State<DetailPage> {
     if (widget.localEpisodes.isEmpty) return null;
     final p = Directory(widget.localEpisodes.first.absolutePath).parent.path;
     return p.isEmpty ? null : p;
-  }
-
-  /// 一句话反馈（与 cache_page._say 同款）
-  void _sayLocal(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 3)),
-    );
   }
 
   /// ★★★ task-12 ⑤ + task-17 ③：本地模式的「已下载」那一段

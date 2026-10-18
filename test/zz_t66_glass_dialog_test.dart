@@ -449,12 +449,24 @@ void main() {
           reason: '★★★ 三处必须仍由 showAppDialog 弹出（实测 $n 处）');
     });
 
-    test('★ 混合态记录：Scaffold / SnackBar 仍是 Material（有意，非遗漏）', () {
+    test('★ 混合态记录：Scaffold 仍是 Material（有意，非遗漏）', () {
+      /*
+       * ★ 2026-10-18 更新（第 5 步已完成）：SnackBar 已归零。
+       *   原断言「SnackBar 仍是 Material（第 5 步才换）」是当时的如实记录，
+       *   第 5 步做完后事实变了 ⇒ 判据跟着改。
+       *
+       * 当前混合态（Lead 裁决：分步做，不合并）：
+       *   AlertDialog → 已换（AppGlassDialog）      ← 第 4 步
+       *   SnackBar    → 已换（showAppToast）        ← 第 5 步
+       *   Scaffold ×2 → 仍是 Material              ← 第 6 步（**须先报 Lead**）
+       */
       final code = detailSource();
       expect(code.contains('Scaffold('), isTrue,
           reason: '★ 记录：Scaffold 仍是 Material（第 6 步才换，**须先报 Lead**）');
-      expect(code.contains('SnackBar('), isTrue,
-          reason: '★ 记录：SnackBar 仍是 Material（第 5 步才换）');
+      expect(code.contains('SnackBar('), isFalse,
+          reason: '★ 记录：SnackBar 已全部换成 showAppToast（第 5 步）');
+      expect(code.contains('showAppToast('), isTrue,
+          reason: '★ 记录：toast 已统一到 showAppToast');
       expect(code.contains('AppGlassDialog('), isTrue,
           reason: '★ 记录：确认框已是玻璃自建');
     });

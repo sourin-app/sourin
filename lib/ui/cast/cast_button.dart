@@ -30,6 +30,7 @@ import '../tokens.dart';
 import '../widgets/overlay_motion.dart';
 import 'cast_device_sheet.dart';
 import '../../design/icons/app_icons.dart';
+import '../widgets/app_toast.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  按钮
@@ -176,21 +177,42 @@ class _CastButtonState extends State<CastButton> {
 
   void _toast(String msg) {
     if (!mounted) return;
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    if (messenger == null) {
-      // 没有 Scaffold 的场合（全屏播放页）也不能静默 —— 落到日志
-      widget.onLog?.call('[投屏] $msg');
-      return;
-    }
-    messenger
-      ..clearSnackBars()
-      ..showSnackBar(
-        SnackBar(
-          content: Text(msg),
-          duration: const Duration(seconds: 4),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+    /*
+     * ★ 2026-10-18（轨道 E 第 5 步）：SnackBar → showAppToast。
+     *
+     * # 与改前的三处差异，都**不是**功能退化
+     * ```text
+     * 旧  messenger == null ⇒ 落到 onLog（因为"没有 Scaffold 的场合也不能静默"）
+     * 新  showAppToast 找不到宿主时静默 no-op
+     *     ⇒ **日志兜底保留**（见下），因为它承载的是排障信息，不是给用户看的
+     *
+     * 旧  clearSnackBars() —— 清空队列只留最新
+     * 新  AppToaster 最多堆叠 4 条、各自计时
+     *     ⇒ 投屏状态切换是低频人工操作（6 个调用点全是点按），
+     *       不会像批量失败那样刷屏；而"能同时看到上一条"反而是改进
+     *       （用户能看到「已投到 客厅电视」之后紧接「暂停失败」的因果链）
+     *
+     * 旧  behavior: floating —— 悬浮在底部之上
+     * 新  toast 是右上/浮层卡片（跟随主题），本来就是悬浮形态
+     *
+     * 旧  duration: 4s
+     * 新  默认 2600ms
+     *     ★ Lead 裁决：时长**不逐处传**，让"时长"重新变成单点定义
+     *       （否则 5 处各传不同值，又变成"五份样式"）
+     * ```
+     *
+     * # 为什么换（可靠性，不是审美）
+     * ```text
+     * `ScaffoldMessenger.maybeOf(context)?.showSnackBar(...)` 的 `?.` 形同虚设：
+     * maybeOf 只保证 messenger 存在，不保证能显示
+     * （showSnackBar 内部断言 `_scaffolds.isNotEmpty`，而 MaterialApp 自带 messenger）。
+     * ★ skip_marker_dialog.dart:1347-1400 记录了 2026-10-02 的真实事故：
+     *   一个 toast 抛异常把调用方的赋值吞掉 ⇒ 滑块卡死。
+     * ```
+     */
+    // 排障日志**保留** —— 它与用户可见提示是两件事
+    widget.onLog?.call('[投屏] $msg');
+    showAppToast(context, msg);
   }
 
   @override

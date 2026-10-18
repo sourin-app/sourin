@@ -153,6 +153,7 @@ import 'app_loading.dart';
 import 'skip_timeline.dart';
 import '../../ui/app_palette.dart';
 import '../../design/icons/app_icons.dart';
+import 'app_toast.dart';
 
 /*
  * ═══════════════════════════════════════════════════════════════════════
@@ -1433,13 +1434,33 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   ///    两层保护：即使将来 `_toast` 又抛，值也已经写进去了
   /// ```
   void _toast(String msg) {
+    /*
+     * ★ 2026-10-18（轨道 E 第 5 步）：SnackBar → showAppToast。
+     *
+     * # 这里的 try/catch 是 2026-10-02 那次事故的**补丁**
+     * ```text
+     * showSnackBar 在"全树无 Scaffold"时会抛断言
+     *   （'_scaffolds.isNotEmpty' / "no descendant Scaffolds to present to"），
+     * 而 `ScaffoldMessenger.maybeOf` 只保证 messenger 存在、不保证能显示
+     * ⇒ 当年的 `?.` 形同虚设，异常把 `_applyEdge` 里的赋值吞掉
+     * ⇒ 「只要「+」被夹到边界，值就卡住不动」（t463）。
+     *
+     * 当时的修法是**外面包 try/catch** + 把赋值挪到提示之前（两层保护）。
+     * ```
+     * # 现在换掉根因
+     * ```text
+     * `showAppToast` 内部本来就是 `AppToaster.maybeOf(context)?.show(...)`
+     *   ⇒ 找不到宿主**静默 no-op，不抛异常**
+     * ⇒ 不需要 try/catch 了。但**保留**它：
+     *   ① 这个文件的守护测试（t463/t465）依赖"绝不抛"这个性质
+     *   ② 万一将来 toast 层又引入会抛的路径，这里仍是最后一道防线
+     *   ⇒ 提示是**尽力而为**的东西，任何情况下都不该让调用方崩。
+     * ```
+     */
     try {
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-      );
+      showAppToast(context, msg);
     } catch (e) {
       // ★ 提示失败**绝不能**影响功能 —— 降级成一行日志
-      //   测试宿主（全树无 Scaffold）会走到这里，生产不会
       debugPrint('[SKIPDLG] 提示失败（已忽略）：$e / 原文：$msg');
     }
   }

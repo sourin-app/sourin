@@ -359,7 +359,7 @@ void main() {
       final raw = File('lib/ui/detail_page.dart').readAsStringSync();
       expect(raw.contains("import 'package:material_ui/material_ui.dart';"),
           isTrue,
-          reason: '★ 如实记录：还要 AlertDialog / Scaffold / SnackBar 等（M3 才删）');
+          reason: '★ 如实记录：还要 Scaffold 等（M3 才删）');
     });
 
     test('★ 混合态说明：对话框仍是 Material，按钮已是自建（有意，非缺陷）', () {
@@ -379,15 +379,22 @@ void main() {
        * 现在的混合态：
        *   AlertDialog  → 已换（AppGlassDialog）      ← 第 4 步
        *   Scaffold ×2  → 仍是 Material               ← 第 6 步（须先报 Lead）
-       *   SnackBar ×1  → 仍是 Material               ← 第 5 步
+       *   SnackBar ×1  → 已换（showAppToast）        ← 第 5 步完成
        */
       final code = detailSource();
       expect(RegExp(r'(?<!App)AlertDialog\(').hasMatch(code), isFalse,
           reason: '★ 记录：AlertDialog 已全部换成 AppGlassDialog（第 4 步）');
       expect(code.contains('AppGlassDialog('), isTrue,
           reason: '★ 记录：确认框已是玻璃自建');
-      expect(code.contains('SnackBar('), isTrue,
-          reason: '★ 记录：SnackBar 仍是 Material（第 5 步才换，有意保留）');
+      /*
+       * ★ 2026-10-18 更新（第 5 步已完成）：SnackBar 已归零。
+       *   原断言「SnackBar 仍是 Material（第 5 步才换）」是当时的如实记录，
+       *   第 5 步做完后事实变了 ⇒ 判据跟着改，而不是让事实迁就判据。
+       */
+      expect(code.contains('SnackBar('), isFalse,
+          reason: '★ 记录：SnackBar 已全部换成 showAppToast（第 5 步）');
+      expect(code.contains('showAppToast('), isTrue,
+          reason: '★ 记录：toast 已统一到 showAppToast');
     });
   });
 }

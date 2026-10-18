@@ -100,6 +100,7 @@ import 'tokens.dart';
 // ★ 已缓存页卡片要能画**盘上的**封面（Owner 第 1009 批）——
 //   解码尺寸沿用全站同一对函数，免得两页的解码算法漂移。
 import 'widgets/app_loading.dart';
+import 'widgets/app_toast.dart';
 import 'widgets/cover_image.dart';
 import 'widgets/motion_prefs.dart';
 import 'widgets/overlay_motion.dart' show showAppDialog;
@@ -1862,12 +1863,30 @@ class CachePageState extends State<CachePage> {
     _say(res.deleted ? '已删除 ${w.displayTitle}：$n 个文件 / $b' : '没有删除任何文件');
   }
 
-  /// 一句话反馈（底部 SnackBar —— 与页面自带 Scaffold 配对）
+  /// 一句话反馈
+  ///
+  /// ★ 2026-10-18（轨道 E 第 5 步）：SnackBar → `showAppToast`。
+  ///
+  /// # 为什么换（不是审美，是可靠性）
+  /// ```text
+  /// `ScaffoldMessenger.maybeOf(context)?.showSnackBar(...)` 看着安全（有 `?.`），
+  /// 但 `maybeOf` 只保证 **messenger 存在**，不保证它**能显示**：
+  ///   showSnackBar 内部断言 '_scaffolds.isNotEmpty'
+  ///   "no descendant Scaffolds to present to"
+  ///
+  /// 而 MaterialApp 自带一个 messenger ⇒ `maybeOf` 一直非 null
+  /// ⇒ `?.` 形同虚设，该抛还是抛。
+  ///
+  /// ★ 这不是理论风险 —— skip_marker_dialog.dart:1347-1400 记录了 2026-10-02
+  ///   的真实事故：`_toast` 在赋值**之前**抛异常 ⇒ 把 switch 的赋值吞掉
+  ///   ⇒ 「只要「+」被夹到边界，值就卡住不动」
+  ///   （Owner 看到的是"那四个三角根本不能拖动"）
+  /// ```
+  /// `AppToaster.maybeOf` 找不到宿主时**静默忽略、不抛异常**
+  /// ⇒ toast 是锦上添花，绝不会把调用方搞崩。
   void _say(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 3)),
-    );
+    showAppToast(context, msg);
   }
 
   Widget _empty(

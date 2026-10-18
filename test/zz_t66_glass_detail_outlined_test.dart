@@ -398,7 +398,7 @@ void main() {
        * 当前混合态（Lead 裁决：分步做，不合并）：
        *   OutlinedButton → 已换（AppOutlinedButton）   ← 第 3 步
        *   AlertDialog    → 已换（AppGlassDialog）      ← 第 4 步
-       *   SnackBar       → 仍是 Material              ← 第 5 步
+       *   SnackBar       → 已换（showAppToast）       ← 第 5 步完成
        *   Scaffold ×2    → 仍是 Material              ← 第 6 步（须先报 Lead）
        */
       final code = detailSource();

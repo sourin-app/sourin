@@ -27,13 +27,14 @@ import 'package:flutter/widgets.dart';
 
 import '../../ui/app_palette.dart';
 import '../../ui/app_typeface.dart';
+import '../../ui/theme/app_colors.dart';
 import '../../ui/theme/theme_pack.dart';
 import '../../ui/tokens.dart';
 
 /// 自建设计系统的主题数据 —— 取代 Material 的 `Theme` + `ThemeData` + `ColorScheme`。
 @immutable
 class AppThemeData {
-  const AppThemeData({
+  AppThemeData({
     required this.palette,
     required this.typeface,
     this.pack,
@@ -57,6 +58,43 @@ class AppThemeData {
   Brightness get brightness => palette.brightness;
 
   bool get isDark => brightness == Brightness.dark;
+
+  // ── 组件面向的语义色（10 个角色，取代 ColorScheme）────────────────
+  //
+  // ★★★ 2026-10-18（轨道 E · M1）：`AppSemanticColors` 是**从 palette 现算**的
+  //
+  // ```text
+  // palette  = 主题作者能写的原料（background / card / border / primary …）
+  // colors   = 组件真正需要的角色（surfaceContainer / outline / outlineVariant …）
+  // ```
+  // 这层派生放在这里，而不是放进 `AppSemanticColors` 里 import AppPalette ——
+  // 因为 `app_palette.dart` 自己 import 了 material_ui（它是 ThemeExtension），
+  // 而 `app_colors.dart` 必须保持「零 Material」，那是整个摘除工程的地基。
+  //
+  // ⚠️ 用 `late final` 缓存：一次 `AppThemeData` 只算一次。
+  //    `AppThemeData` 是 @immutable 且值相等的，同一个 data 实例被
+  //    多处 `AppTheme.of(context)` 拿到时，不该每次都重跑一遍 `Color.lerp`。
+  //
+  // ★ 为什么要去掉构造函数上的 `const`（2026-10-18）
+  // ```text
+  // Dart 明确禁止「有 late final 字段的类保留生成式 const 构造」
+  // （late_final_field_with_const_constructor）—— 因为 const 对象必须在
+  // 编译期完全定型，而 late 字段是运行期才算的。
+  // ⇒ 构造改成非 const。**代价为零**：全仓 `AppThemeData(` 的调用点
+  //   只有 app_theme.dart 的文档示例与本文件，没有 const 调用
+  //   （`grep -n "const AppThemeData(" lib test` 在改动前就是 0 命中）。
+  // ```
+  late final AppSemanticColors colors = AppSemanticColors.derive(
+    brightness: brightness,
+    background: palette.background,
+    card: palette.card,
+    border: palette.border,
+    foreground: palette.foreground,
+    mutedForeground: palette.mutedForeground,
+    primary: palette.primary,
+    primaryForeground: palette.primaryForeground,
+    error: palette.error,
+  );
 
   // ── 皮肤参数（从 ThemePack 读，缺省回落令牌）──────────────────────
 

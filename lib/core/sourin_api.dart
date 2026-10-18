@@ -3927,3 +3927,122 @@ class PlaybackErrorText {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  N12 · 登录轮询失败**按真因分类**（Owner：「提示网络异常 这也是bug」）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 缺陷（改前）
+//
+// `lib/ui/widgets/provider_login_panel.dart` 的二维码轮询里是：
+// ```dart
+// } catch (_) {
+//   _qrPolling = false;
+//   if (mounted) setState(() => _qrMsg = '网络异常，重试中…');
+//   return;
+// }
+// ```
+// **catch-all 吞掉一切**，然后一律告诉用户「网络异常」。
+//
+// # 为什么这是缺陷（不是措辞问题）
+//
+// ```text
+// 实测（轨道 H · 第 4 步）：
+//   核心层 qr_login_start  ✓ 440ms 真申请成功
+//   qr_login_poll 假 key   ✓ 42ms  status=Expired（正常返回，不抛）
+//   qr_login_poll 真 key   ✓ 41ms  status=Pending（正常返回，不抛）
+//   连打 3 次              ✓ 59/86/85ms 全 Pending，一次没抛
+// ⇒ 网络其实一直是好的。那句「网络异常」是**猜的**。
+// ```
+// 用户看到「网络异常」会去查网线、换 Wi-Fi、重启路由 —— 全是白费。
+// 这正是 Owner 第 6 条抱怨的同一个毛病：
+// **「不知道是源的问题还是软件本身的问题」**。
+//
+// # 改法：**先分类，再说人话**
+//
+// ```text
+// network   SocketException / TimeoutException / 'network:' 前缀 / 超时
+//           ⇒ 「网络异常，重试中…」  ← 这时原文案是**对的**，保留
+// notReady  核心未就绪 / dll 没绑上 / UnsupportedError
+//           ⇒ 「核心未就绪，正在重试…」 ← 与网络无关，别让用户查网线
+// other     其余
+//           ⇒ 「轮询失败：<原文>」     ← 透传，但保留真因
+// ```
+//
+// ⚠️ 分类是**纯函数**，不碰 UI、不碰网络 ⇒ 可以脱离界面直接单测。
+class QrPollErrorText {
+  const QrPollErrorText._();
+
+  /// 网络类错误的关键词（命中即认为是真的网络问题）
+  ///
+  /// ⚠️ 用 `kind` 而不是只靠字符串：`SourinCoreException.kind` 是**结构化**的
+  ///    （`network` 由核心侧判定），比从文案里猜可靠。
+  static bool _isNetwork(Object? e) {
+    final s = (e ?? '').toString().toLowerCase();
+    // 结构化 kind 优先
+    if (e is SourinCoreException && e.kind == 'network') return true;
+    const words = <String>[
+      'socketexception',
+      'timeoutexception',
+      'handshakeexception',
+      'network:',
+      'network is unreachable',
+      'connection refused',
+      'connection reset',
+      'connection closed',
+      'connection terminated',
+      'failed host lookup',
+      '超时',
+      '网络',
+      '连不上',
+      '连接被',
+    ];
+    return words.any(s.contains);
+  }
+
+  /// 「核心还没准备好」类错误
+  ///
+  /// ```text
+  /// 实测形态（lib/core/ffi.dart）：
+  ///   UnsupportedError('不支持的平台: …')
+  ///   DynamicLibrary.open 失败（dll 不在）
+  ///   核心尚未启动 / 核心不可用
+  /// ```
+  /// 这些**与网络毫无关系**，告诉用户「网络异常」是纯粹的误导。
+  static bool _isNotReady(Object? e) {
+    final s = (e ?? '').toString().toLowerCase();
+    if (e is UnsupportedError) return true;
+    const words = <String>[
+      '核心尚未启动',
+      '核心不可用',
+      '核心未就绪',
+      'core not',
+      'dynamiclibrary',
+      'failed to load dynamic library',
+      'sourin_core.dll',
+      'libsourin_core',
+      'not bound',
+      '未绑定',
+    ];
+    return words.any(s.contains);
+  }
+
+  /// 给用户看的文案（**必须与真因一致**）
+  ///
+  /// 返回值刻意保持「可读的一句话」：UI 直接 `setState(() => _qrMsg = ...)`。
+  static String of(Object? e) {
+    if (_isNetwork(e)) {
+      // ★ 原文案在这里是**正确的** —— 网络真的坏了，就该这么说
+      return '网络异常，重试中…';
+    }
+    if (_isNotReady(e)) {
+      // ★ 与网络无关：别让用户去查网线
+      return '核心未就绪，正在重试…';
+    }
+    // 其余：透传真因（先剥掉宿主包装前缀，与第 7 条同一纪律）
+    final raw = PlaybackErrorText.stripHostErrorNoise(
+      PlaybackErrorText.hideInternalUrls((e ?? '').toString()),
+    );
+    return raw.isEmpty ? '轮询失败，重试中…' : '轮询失败：$raw';
+  }
+}
+

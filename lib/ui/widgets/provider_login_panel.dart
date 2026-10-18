@@ -809,9 +809,47 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
     Map<String, dynamic> res;
     try {
       res = await SourinApi.providerQrLoginPoll(widget.providerId, key);
-    } catch (_) {
+    } catch (e) {
+      /*
+       * ★★★ N12（Owner：「提示网络异常 这也是bug」）
+       *
+       * # 改前
+       * ```dart
+       * } catch (_) {                       // ← 吞掉一切
+       *   _qrPolling = false;
+       *   if (mounted) setState(() => _qrMsg = '网络异常，重试中…');
+       *   return;
+       * }
+       * ```
+       * 不管真因是什么，一律告诉用户「网络异常」。
+       *
+       * # 为什么那是缺陷（实测读数，不是措辞问题）
+       * ```text
+       * 轨道 H 第 4 步实测（隔离数据目录、真网络）：
+       *   qr_login_start   ✓ 440ms 真申请成功
+       *   qr_login_poll    ✓ 42ms  status=Expired（正常返回，不抛）
+       *   连打 3 次         ✓ 59/86/85ms 全 Pending，一次没抛
+       * ⇒ 网络一直是好的。那句「网络异常」是**猜的**。
+       * ```
+       * 用户看到「网络异常」会去查网线、换 Wi-Fi、重启路由 —— 全是白费。
+       * 这正是 Owner 第 6 条抱怨的同一个毛病：
+       * **「不知道是源的问题还是软件本身的问题」**。
+       *
+       * # 改后
+       * ```text
+       * QrPollErrorText.of(e) 按**真因**分类：
+       *   真的网络问题   ⇒ 「网络异常，重试中…」（原文案此时是对的，保留）
+       *   核心未就绪     ⇒ 「核心未就绪，正在重试…」（与网络无关）
+       *   其他           ⇒ 「轮询失败：<原文>」（透传真因）
+       * ```
+       * ⚠️ `e` 不再被丢弃 —— 丢掉它就没法分类，也没法在日志里留痕。
+       *
+       * ⚠️⚠️ 这里**只改文案，不改控制流**：仍然是「失败一次就等下一次 timer」。
+       *    轮询**不会**因为一次失败而永久停 —— 那条不变量由
+       *    `test/zz_t66_login_poll_text_test.dart` 的续期用例钉住。
+       */
       _qrPolling = false;
-      if (mounted) setState(() => _qrMsg = '网络异常，重试中…');
+      if (mounted) setState(() => _qrMsg = QrPollErrorText.of(e));
       return;
     }
     _qrPolling = false;

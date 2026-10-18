@@ -293,7 +293,20 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
       }
       _sourceGroups = rebuiltSrc;
 
-      // 控制器跟着搬（老键的必须 dispose，否则泄漏）
+      /*
+       * 控制器跟着搬 —— ★ 这里**不能** dispose，只换键。
+       *
+       * ⚠️ 2026-10-18（第 66 轮自审）：原注释写的是
+       *    「控制器跟着搬（老键的必须 dispose，否则泄漏）」
+       *    —— **那句话是错的**，且会误导下一个人真的加上 `dispose()`:
+       * ```text
+       * 控制器被 `_filterCtrl[n] = f` 放回去了，还是活的。
+       * 对它调 dispose() ⇒ 改名之后该行的输入框立刻 `used after disposed`。
+       * ```
+       * 真正要 dispose 的是**删除分组**那条路径（见 `:243` 的
+       * `remove(name)?.dispose()`）—— 那里是**真的丢弃**，没人再接。
+       * ⇒ 两条路径的判据不同：「换键」vs「丢弃」，不要混。
+       */
       final f = _filterCtrl.remove(oldName);
       if (f != null) {
         _filterCtrl[n] = f;

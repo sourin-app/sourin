@@ -6,7 +6,7 @@ Status: implemented
 > [2026-10-18-gate-reads-worktree-not-blob.md](./2026-10-18-gate-reads-worktree-not-blob.md)
 > 同源 —— 都是「门禁读错了对象」。区别是那篇读错了**版本**（工作区 vs blob），
 > 本篇读错了**编码**（转义后 vs 原始路径）。总原则见
-> [2026-10-12-gates-must-be-able-to-fail.md](../process/2026-10-12-gates-must-be-able-to-fail.md)。
+> [2026-10-12-gates-must-be-able-to-fail.md](../testing/2026-10-12-gates-must-be-able-to-fail.md)。
 
 ## Problem
 

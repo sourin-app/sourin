@@ -17,8 +17,13 @@ for (const note of notes) {
   let match: RegExpExecArray | null;
 
   while ((match = LINK_REGEX.exec(content)) !== null) {
-    const rawTarget = match[2]?.trim();
+    let rawTarget = match[2]?.trim();
     if (!rawTarget) continue;
+
+    // Support CommonMark angle bracket destinations: [text](<path>)
+    if (rawTarget.startsWith("<") && rawTarget.endsWith(">")) {
+      rawTarget = rawTarget.slice(1, -1).trim();
+    }
 
     // Ignore web links, intra-page anchors and ellipsis placeholders
     if (rawTarget.startsWith("http://") || rawTarget.startsWith("https://") || rawTarget.startsWith("#") || rawTarget.startsWith("mailto:") || rawTarget.includes("…")) {

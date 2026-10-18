@@ -3,7 +3,7 @@
 Status: implemented
 
 > 同域：本篇是「假绿」的一个实例。总原则见
-> [2026-10-12-gates-must-be-able-to-fail.md](../process/2026-10-12-gates-must-be-able-to-fail.md)；
+> [2026-10-12-gates-must-be-able-to-fail.md](../testing/2026-10-12-gates-must-be-able-to-fail.md)；
 > 另外两种形态见
 > [2026-10-18-gate-reads-worktree-not-blob.md](./2026-10-18-gate-reads-worktree-not-blob.md)（测错了对象）
 > 与 [2026-10-18-gate-locked-api-name-not-invariant.md](./2026-10-18-gate-locked-api-name-not-invariant.md)（锁了实现细节）。

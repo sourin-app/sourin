@@ -3,7 +3,7 @@
 Status: implemented
 
 > 同域：本篇是「假绿」的一个实例 —— 测了工作区而不是 blob。总原则见
-> [2026-10-12-gates-must-be-able-to-fail.md](../process/2026-10-12-gates-must-be-able-to-fail.md)；
+> [2026-10-12-gates-must-be-able-to-fail.md](../testing/2026-10-12-gates-must-be-able-to-fail.md)；
 > 相关实例见
 > [2026-10-18-fake-green-cache-label-reads-source.md](./2026-10-18-fake-green-cache-label-reads-source.md)
 > 与 [2026-10-14-red-baseline-needs-clean-worktree.md](./2026-10-14-red-baseline-needs-clean-worktree.md)。

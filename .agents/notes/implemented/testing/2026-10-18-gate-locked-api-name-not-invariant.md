@@ -3,7 +3,7 @@
 Status: implemented
 
 > 同域：本篇是「假红」而非假绿 —— 产品对、门禁错。总原则见
-> [2026-10-12-gates-must-be-able-to-fail.md](../process/2026-10-12-gates-must-be-able-to-fail.md)；
+> [2026-10-12-gates-must-be-able-to-fail.md](../testing/2026-10-12-gates-must-be-able-to-fail.md)；
 > 同批修的另两个实例见
 > [2026-10-18-gate-reads-worktree-not-blob.md](./2026-10-18-gate-reads-worktree-not-blob.md)
 > 与 [2026-10-18-skipped-test-hides-certain-red.md](./2026-10-18-skipped-test-hides-certain-red.md)。

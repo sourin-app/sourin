@@ -3,7 +3,7 @@
 Status: implemented
 
 > 同域：本篇讲「被 skip 藏住的确定会红」。总原则见
-> [2026-10-12-gates-must-be-able-to-fail.md](../process/2026-10-12-gates-must-be-able-to-fail.md)；
+> [2026-10-12-gates-must-be-able-to-fail.md](../testing/2026-10-12-gates-must-be-able-to-fail.md)；
 > 相关实例见
 > [2026-10-18-gate-locked-api-name-not-invariant.md](./2026-10-18-gate-locked-api-name-not-invariant.md)
 > 与 [2026-10-18-gate-reads-worktree-not-blob.md](./2026-10-18-gate-reads-worktree-not-blob.md)。

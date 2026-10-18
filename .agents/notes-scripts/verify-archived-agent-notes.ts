@@ -26,7 +26,9 @@ function scan(dir: string) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) scan(full);
     else if (entry.isFile() && entry.name.endsWith(".md") && !entry.name.endsWith(".zh.md")) {
-      files.push(relative(archivedDir, full).split("\\").join("/"));
+      const rel = relative(archivedDir, full).split("\\").join("/");
+      if (rel === "AGENTS.md" || rel === "manifest.json") continue;
+      files.push(rel);
     }
   }
 }

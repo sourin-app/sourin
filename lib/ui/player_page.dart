@@ -958,6 +958,65 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ 必须 dispose（见 `dispose()`）。
   final ValueNotifier<bool> _controlsLive = ValueNotifier<bool>(true);
 
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════
+   *  ★★★ N10：seek 让路窗口的定时器
+   * ═══════════════════════════════════════════════════════════════════
+   *
+   * # 它干什么
+   * ```text
+   * 用户拖动进度条 ⇒ 通知 Rust 侧「接下来 2 秒预取让路给前台读取」
+   *              ⇒ 起一个 2 秒定时器，到点调 endYieldForSeek() 恢复
+   * ```
+   *
+   * # 为什么需要它（真机实测，2026-10-18）
+   * ```text
+   * 预取 ON   seek 后：t+500ms/1000ms 都读不到 demuxer-cache-time，
+   *                    播放位置**卡死不动**，t+1500ms 才恢复
+   * 预取 OFF 同一位置：t+500ms 立刻有缓存
+   * ⇒ 4 路并行预取与当前播放点抢上行 ⇒ 用户看到"缓冲条满了还在转圈"
+   * ```
+   *
+   * # 三条边界（每一条都是 bug 源，`streamproxy.rs` 侧已处理）
+   * ```text
+   * ① 连续拖动 ⇒ Rust 侧重置截止时刻并返回 first=false
+   *    ⇒ 这里**不重复起定时器**（否则会有多个定时器抢着 end）
+   * ② 页面销毁 ⇒ 必须 cancel + 补一次 end（否则预取永久关闭）
+   * ③ 原本关闭 ⇒ Rust 侧保存/恢复原值，这里不无条件 set(false)
+   * ```
+   */
+  Timer? _prefetchYieldTimer;
+
+  /// seek 之后让预取让路给前台读取（见上方 `_prefetchYieldTimer` 的说明）
+  ///
+  /// fire-and-forget：seek 是热路径，不能 await（await 会让拖动变卡）。
+  void _beginPrefetchYield() {
+    unawaited(() async {
+      try {
+        final first = await SourinApi.beginYieldForSeek();
+        /*
+         * ★ 只有首次进入才起定时器。
+         *
+         * 连续拖动时 Rust 侧已经把截止时刻重置成 now+2000ms，
+         * 我们只需保证「窗口结束时有人调 end」——已经有一个定时器在等，够了。
+         * 若这里无条件再起一个，会出现 N 个定时器先后调 end，
+         * 最后一个在窗口还没结束时就把预取恢复了 ⇒ 让路失效。
+         */
+        if (!first) return;
+        _prefetchYieldTimer?.cancel();
+        _prefetchYieldTimer = Timer(
+          const Duration(milliseconds: SourinApi.yieldWindowMs),
+          () {
+            _prefetchYieldTimer = null;
+            unawaited(SourinApi.endYieldForSeek());
+          },
+        );
+      } catch (_) {
+        // 让路是优化，失败不影响播放 —— 静默降级到"预取照常"
+      }
+    }());
+  }
   /// 把 `_controlsVisible` 推给 [_controlsLive]（值没变不通知）
   void _pushControlsLive() {
     if (_controlsLive.value == _controlsVisible) return;
@@ -1417,6 +1476,13 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// 与 `_seekByCalls` 配对：理想结果是单击后 `togglePlay +1 且 seekBy +0`。
   int _togglePlayCalls = 0;
+
+  /// 用户最后一次表达的意图：true = 他要暂停
+  ///
+  /// ★ 与 `_playing` 的区别：`_playing` 是**回报的现状**，
+  ///   本字段是**用户的意图**。两者在"我们自己暂停"时会分歧。
+  ///   详见 `_togglePlay()` 里的长注释。
+  bool _userWantsPause = false;
 
   /// 累计调用 `_toggleFullscreen` 的次数（★ task-42 只读探针）
   ///
@@ -11158,8 +11224,30 @@ class _PlayerPageState extends State<PlayerPage>
     );
     if (_playing) {
       _player.pause();
+      /*
+       * ★★★ 2026-10-18（N-PAUSE）：记下**用户的意图**，不是"当前在不在播"
+       *
+       * # 为什么要单独记，不能用 `_playing`
+       * ```text
+       * `_playing` 是**回报的现状**（mpv 适时同步），会因我们自己的暂停而变化：
+       *   · 进全屏 ⇒ 直播页会 pause 内嵌播放器（不是本页）
+       *   · 选集抽屉 ⇒ 本页自己 pause（`_pausedForEpisodeSheet`）
+       *   · 全屏里切台 ⇒ 内嵌播放器被主动停
+       * ⇒ 用 `_playing` 当判据会把"我们暂停的"当成"用户要暂停的"
+       *   ⇒ 回到直播页后该自动接手的场景变成**黑屏**。
+       * ```
+       *
+       * ★ 本字段**只在本处**（用户手势的唯一入口）改写，
+       *   不因选集抽屉 / 切集 / 全屏切台而变。
+       *
+       * 用处：`_exitPlayer()` 把它随 `pop()` 带回直播页，
+       * 直播页据此置 `_userPaused` ⇒ 切回来不自动续播。
+       * Owner 原话：「进直播详情页,点击暂停,出来还在播放,状态没统一」
+       */
+      _userWantsPause = true;
     } else {
       _player.play();
+      _userWantsPause = false;
     }
     /*
      * ★★★ Owner 第 2 条：用户自己点过播放/暂停 ⇒ 关抽屉时**保持**他的选择。
@@ -13873,7 +13961,25 @@ class _PlayerPageState extends State<PlayerPage>
      */
     _scheduleTitleBarDarkReset();
     // ③ 真正返回
-    if (mounted) Navigator.of(context).maybePop();
+    /*
+     * ★★★ 2026-10-18（N-PAUSE）：带回“用户是不是要暂停”
+     *
+     * # 为什么从 `maybePop()` 改成 `pop(值)`
+     * ```text
+     * 直播页需要知道用户在本页里按过暂停没有，
+     * 否则它无法判断"切回来要不要自动续播"。
+     * 而 `maybePop()` **不能带返回值** ⇒ 只能用 `pop(result)`。
+     * ```
+     *
+     * # ⚠️ 语义差异已核实（不是想当然）
+     * ```text
+     * `maybePop()` 会先问 PopScope/WillPopScope 同不同意；
+     * `pop(x)`      直接弹，**绕过**那个检查。
+     * ★ 本页 `grep -c "PopScope|WillPopScope"` = **0** ⇒ 跳过检查无副作用。
+     *   若将来加了 PopScope，这里必须改回先询问再 pop。
+     * ```
+     */
+    if (mounted) Navigator.of(context).pop<bool>(_userWantsPause);
   }
 
   /// 把「标题栏退出深色态」推到**返回帧画完之后**（详见 `_exitPlayer` 里的长注释）。
@@ -13977,6 +14083,19 @@ class _PlayerPageState extends State<PlayerPage>
     _cursorLive.dispose();
     // ★ N11：控制条显隐 notifier 同理
     _controlsLive.dispose();
+    /*
+     * ★ N10：让路定时器必须取消，**并且补一次 end**
+     *
+     * ```text
+     * 只 cancel 不 end：若销毁时正好在窗口内，预取会**永久处于让路状态**
+     *   ⇒ 远端 seek 从此一直慢（实测 162ms → 190ms），而且没人会发现。
+     * ⇒ 所以 cancel 之后必须 fire-and-forget 调一次 endYieldForSeek()。
+     *   Rust 侧 end 是幂等的（store(0) + 恢复原值），多调一次无害。
+     * ```
+     */
+    _prefetchYieldTimer?.cancel();
+    _prefetchYieldTimer = null;
+    unawaited(SourinApi.endYieldForSeek());
     // 缺陷 13：轮询定时器必须跟着本页停掉
     _bufferPoller?.stop();
     _bufferPoller?.clear();
@@ -14102,6 +14221,7 @@ class _PlayerPageState extends State<PlayerPage>
      *    的陈旧读数，会让实测得出错误结论。
      */
     if (identical(_livePlayerState, this)) _livePlayerState = null;
+
 
     /*
      * ★ 注销遥控的播放能力（与 initState 的 setPlayer 配对）
@@ -15231,7 +15351,10 @@ class _PlayerPageState extends State<PlayerPage>
                         fullscreen: _fullscreen,
                         onTogglePlay: _togglePlay,
                         onSeek: (d) {
-                          if (!_isLive) _player.seek(d);
+                          if (!_isLive) {
+                            _player.seek(d);
+                            _beginPrefetchYield();
+                          }
                         },
                         onVolume: (v) {
                           // ★ 用户拖底栏音量滑杆 —— 白名单（见 `_lastUserVolumeAction`）

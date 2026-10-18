@@ -5273,8 +5273,33 @@ class _ShellPageState extends State<ShellPage>
            * ```
            */
           onWatchLive: (provider, channelId, name) {
-            return Navigator.of(context).push(
-              MaterialPageRoute(
+            /*
+             * ★★★ 2026-10-18（N-PAUSE）：`push<bool>` 把"用户是不是要暂停"带回直播页
+             *
+             * # Owner 原话（逐字）
+             * ```text
+             * > 进直播详情页,点击暂停,出来还在播放,状态没统一,切换页面之后
+             * > 直播应该暂停播放,而不是继续播放
+             * ```
+             *
+             * # 为什么要用 pop 的返回值（而不是新增回调）
+             * ```text
+             * live_page 已经 `await cb(...)` 了这个 Future，
+             * 而 `Navigator.push<T>()` 的返回值就是 pop 时带的 T。
+             * ⇒ 只需把 T 定为 bool，**就能把状态传回去，零新增状态容器**。
+             * ★ 比「加一个 ValueNotifier 穿过三层」少得多，也不担心漏传。
+             * ```
+             *
+             * # 降级行为
+             * ```text
+             * PlayerPage 从**别的入口**进入时（非 onWatchLive），
+             * 那个 push 是 push<void> ⇒ 我们 pop 的布尔会被 **静默丢弃**（不报错）
+             * ⇒ live_page 拿到 null ⇒ 按"未知 ⇒ 不改变 _userPaused"处理（它那边已实现）
+             * ★ 不把 null 当 false：否则"未知"会意外变成"继播"。
+             * ```
+             */
+            return Navigator.of(context).push<bool>(
+              MaterialPageRoute<bool>(
                 builder: (_) => PlayerPage(
                   provider: provider,
                   id: channelId,

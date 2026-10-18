@@ -1785,24 +1785,35 @@ class LivePageState extends State<LivePage> {
 
   /// 把探测结论镜像进 `_health`（让"探测到的"也能落盘与显示）
   ///
-  /// ★ 只在**没有更强证据**时镜像：`broken` 来自真实播放失败（更硬），
-  ///   不该被"探测说没有可播地址"覆盖成同样值而丢掉 detail。
+  /// # ★★★ P0 修复：第一版漏了三种情况（真实进程实测 706 次请求）
+  ///
+  /// ```text
+  /// 第一版只写了一行：
+  ///     if (a == unavailable && healthOf == unknown) record(broken)
+  ///
+  /// ⇒ 探测 1136 个频道，绝大多数是 playable
+  /// ⇒ 只把 unavailable 的写进 _health，playable/audioOnly 一条都不写
+  /// ⇒ _health.snapshot() 空 ⇒ 落盘 {"data":{}}
+  /// ⇒ 下次启动读到 0 条 ⇒ 不 seed ⇒ **全量重探 706 次**
+  /// ```
+  ///
+  /// ⚠️ 这一切发生时：文件生成了、大小看着正常、路径正确、
+  ///   我用 fake fetcher 写的门禁**全绿**（它直接调 probe()/seed()，
+  ///   从不经过这个函数）⇒ **只看"文件存在"或"门禁绿"都会误判**。
+  ///
+  /// ⇒ 现在改成调用纯函数 [mirrorAvailabilityIntoHealth]（四分支全覆盖），
+  ///   门禁可以直接喂 playable/audioOnly/unavailable 三种值，
+  ///   断言产出 3 条记录 —— 走的正是**产品代码的同一条路**。
   void _mirrorProbeIntoHealth() {
-    for (final g in _groups) {
-      for (final c in g.channels) {
-        final a = _probe.cached(g.provider, c.id);
-        if (a == null) continue;
-        if (a == LiveAvailability.unavailable &&
-            _health.healthOf(g.provider, c.id) == LivePlaybackHealth.unknown) {
-          _health.record(
-            provider: g.provider,
-            channelId: c.id,
-            health: LivePlaybackHealth.broken,
-            detail: '取址探测：没有可播线路',
-          );
-        }
-      }
-    }
+    mirrorAvailabilityIntoHealth(
+      store: _health,
+      items: [
+        for (final g in _groups)
+          for (final c in g.channels)
+            if (_probe.cached(g.provider, c.id) case final a?)
+              (g.provider, c.id, a),
+      ],
+    );
   }
 
   /// ★★★ P0：读盘 ⇒ 有有效缓存就**不探测**；没有则延迟探测
@@ -2543,10 +2554,59 @@ class LivePageState extends State<LivePage> {
     //
     // ⚠️ provider 用 `_providerOf(s)` 反查 —— 不能直接用 `_activeProvider`：
     //    频道可能属于**别的**源（用户在播放页期间切了源）。
-    await cb(_providerOf(s), s.id, s.name);
+    // ★ 返回值 = 用户在全屏里最后表达的意图（见 shell.dart 的 onWatchLive 文档）
+    final pausedInFullscreen = await cb(_providerOf(s), s.id, s.name);
 
     // ③ 回来后（可能已 dispose / 已切走 tab / 用户手动暂停过）
     if (!mounted) return;
+
+    /*
+     * 2026-10-18（N-PAUSE）Owner 原话（逐字）：
+     * ```text
+     * > 进直播详情页,点击暂停,出来还在播放,状态没统一,切换页面之后
+     * > 直播应该暂停播放,而不是继续播放
+     * ```
+     *
+     * # 改前的缺陷
+     * ```text
+     * `_userPaused` 只由**内嵌播放器**上报（onUserPause），
+     * 而那个回调被可见性门控挡住
+     * ⇒ 用户在**播放页**里按的暂停永远写不进来
+     * ⇒ `if (_userPaused) return;` 恒不成立 ⇒ `await st.resume()` ⇒ 出来还在播。
+     * ```
+     *
+     * # 有**两条**自动续播路径都会踩这个坑
+     * ```text
+     * ① `_watchLive` 收尾的 `await st.resume();`
+     * ② `_onVisibilityChanged` 里的 `unawaited(st.resume())`
+     * ⇒ 只删其中一条没用，另一条会绕过
+     * ⇒ 所以修**状态源**，不修出口。
+     * ```
+     *
+     * # 必须是 `!= null` 而不是 `== true`
+     * ```text
+     * null  = 未知                  ⇒ 不改变现有状态
+     * false = 用户明确表达"要播放" ⇒ **必须把 true 改回 false**
+     * 写成 `== true 才置位` 会**状态泄漏**：
+     *   上一次全屏里暂停过（_userPaused=true），
+     *   这一次没暂停就退出（回 false），
+     *   若不把 true 改回 false ⇒ 下次该续播却被拦住。
+     * ```
+     *
+     * # 位置硬约束
+     * ```text
+     * 本段必须排在 `final pending = _pendingFullscreenChannel;` **之前**，
+     * 且 `if (_userPaused) return;` 排在 pending 之后（当前已是）。
+     * 否则"全屏里切台 + 恰好暂停过" ⇒ 回来黑屏。
+     * 门禁：test/zz_t66_live_pause_intent_test.dart 第三条。
+     * ```
+     */
+    if (pausedInFullscreen != null) {
+      _userPaused = pausedInFullscreen;
+      debugPrint(pausedInFullscreen
+          ? '[LIVE] 全屏里用户暂停过 ⇒ _userPaused=true，返回后不自动续播'
+          : '[LIVE] 全屏里用户恢复播放过 ⇒ _userPaused=false，返回后照旧续播');
+    }
 
     /*
      * ══════════════════════════════════════════════════════════════════

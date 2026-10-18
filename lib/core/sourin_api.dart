@@ -343,7 +343,7 @@ class SourinApi {
   /// 读当前并行预取开关（取证用）
   static Future<bool> prefetchDisabled() async {
     final r = await SourinCore.callAsync('prefetch_disabled');
-    return jmap(r)?['disabled'] == true;
+    return jmap(r)['disabled'] == true;
   }
 
   /*
@@ -384,7 +384,7 @@ class SourinApi {
   /// 连续 seek 时返回 `false`（Rust 侧已重置截止时刻），**不要**再起第二个定时器。
   static Future<bool> beginYieldForSeek() async {
     final r = await SourinCore.callAsync('begin_yield_for_seek');
-    return jmap(r)?['first'] == true;
+    return jmap(r)['first'] == true;
   }
 
   /// 结束让路窗口：**恢复**进入前的开关状态（不是无条件打开预取）
@@ -397,7 +397,7 @@ class SourinApi {
   /// 当前是否处于让路窗口内（门禁/取证用）
   static Future<bool> inYieldWindow() async {
     final r = await SourinCore.callAsync('in_yield_window');
-    return jmap(r)?['inWindow'] == true;
+    return jmap(r)['inWindow'] == true;
   }
 
   /// 导入声明式源（JSON 配置）

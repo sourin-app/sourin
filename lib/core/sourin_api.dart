@@ -3680,6 +3680,71 @@ class PlaybackErrorText {
   /// ⚠️ 判据顺序：**代理 → 权限 → 限流 → 解码 → 源**。
   ///    代理排最前是因为那条 502 正文只有代理会产出；
   ///    解码排在源前面，是因为「取到流但解不了」比「源没给地址」更具体。
+  /// 从一段错误文本里抠出**明确的** HTTP 状态码（没有就返回 null）
+  ///
+  /// # 为什么要这么小心（不能简单 `contains('403')`）
+  /// ```text
+  /// 反例（都会造成误判）：
+  ///   「第 403 集不存在」      ← 集数
+  ///   「视频时长 403 秒」      ← 时长
+  ///   「403号房间」            ← 房间号
+  ///   「/videos/202503/20/...」← 路径里的数字
+  /// ```
+  /// ⇒ 只认**带协议上下文**的形态：
+  /// ```text
+  /// http 403 / http/1.1 403 / 403 forbidden / status=403 / status: 403
+  /// 以及**整段文本恰好就是**一个三位状态码（如 "403"）
+  /// ```
+  /// ⚠️ 只认 100..599 区间 —— 避免把年份、id 之类当成状态码。
+  static int? _extractHttpStatus(String lower) {
+    /*
+     * ★ 先做**排除**：文本里含 URL 时不认「裸三位数」与 `http<数字>` 形态
+     *
+     * # 实测踩到的误判（本文件的门禁抓到的，不是猜的）
+     * ```text
+     * 输入: https://cdn.example.com/videos/202503/20/x.m3u8
+     * 改前: 正则 `http[/\s]*[0-9.]*\s*(\d{3})` 从 "…/202503/…" 里
+     *       抠出 "503" ⇒ 归成 network（源站限流）—— 完全错误的归因
+     * ```
+     * URL 里的数字是**路径/时间戳**，与状态码无关。
+     * ⇒ 含 `://` 的文本一律不认裸数字，只认显式的 `status=NNN` 或 `NNN Forbidden`。
+     */
+    final looksLikeUrl = lower.contains('://');
+
+    // ① 带协议/状态上下文
+    for (final re in <RegExp>[
+      // `http 403` / `http/1.1 403` / `http status 403`
+      //
+      // ⚠️ 必须要求 http 后面**紧跟**可选版本号再是状态码，
+      //    且**不许**跨越 `/` 之外的路径字符 —— 否则会从 URL 里抠数字。
+      RegExp(r'\bhttp(?:/[0-9.]*)?\s+(?:status\s*[:=]?\s*)?(\d{3})\b'),
+      RegExp(r'\bstatus\s*[:=]\s*(\d{3})\b'),
+      RegExp(r'\b(\d{3})\s+(?:forbidden|unauthorized|too\s+many|'
+          r'internal\s+server|bad\s+gateway|service\s+unavailable|'
+          r'gateway\s+time-?out|not\s+found)\b'),
+    ]) {
+      final m = re.firstMatch(lower);
+      if (m != null) {
+        final n = int.tryParse(m.group(1) ?? '');
+        if (n != null && n >= 100 && n <= 599) return n;
+      }
+    }
+    // ② 整段文本恰好就是一个状态码（插件/代理有时只回这三个字符）
+    //
+    // ⚠️ 含 URL 时**不认**这一条：URL 里恰好只有三位数字的情形不该被当状态码。
+    if (!looksLikeUrl) {
+      final whole = lower.trim();
+      if (RegExp(r'^\d{3}$').hasMatch(whole)) {
+        final n = int.tryParse(whole);
+        if (n != null && n >= 100 && n <= 599) return n;
+      }
+    }
+    return null;
+  }
+
+  /// 归因：把一条失败**归到几类之一**（第 6 条）
+  ///
+  /// 判据顺序见本方法内注释（HTTP 状态码 → 代理 → 权限 → 限流 → 解码 → 源）。
   static PlaybackFailure classify(
     Object? error, {
     String? kindHint,
@@ -3688,6 +3753,60 @@ class PlaybackErrorText {
     final raw = error == null ? '' : error.toString();
     final text = stripHostErrorNoise(hideInternalUrls(raw));
     final lower = text.toLowerCase();
+
+    /*
+     * ── ⓪ 先按 **HTTP 状态码** 归因（轨道 H · 2026-10-18 新增）─────────
+     *
+     * # 为什么必须排在所有关键词之前
+     *
+     * ```text
+     * 实测（`.probe/round65-c/samples_run6.log`，32 个源 35 条样本）：
+     *   代理把上游的 403 原样转出来，正文是一张 **HTML 错误页**：
+     *     <h1>403 Forbidden</h1>
+     *     <p>The region has been denied.</p>
+     *   而改前的判据只认中文关键词（「大会员」「地区」「版权」…），
+     *   **完全没有 403/401 这两个数字**。
+     *   ⇒ 这条真实的「源站地区限制」落到 unknown，
+     *     用户看到的是那张 HTML 错误页原文 —— 既看不懂也不知道该找谁。
+     * ```
+     *
+     * # 判据顺序：数字比词可靠
+     * ```text
+     * 「403」是**协议层事实**；「地区」是我们从人话里猜的。
+     * 协议事实优先 —— 这跟本仓 `classify_error` 的
+     * 「先认标准前缀，再退中文关键词」是同一条纪律。
+     * ```
+     *
+     * ⚠️ 只在**明确的 HTTP 状态**上下文里认这三个数（`http 403` / `403 forbidden`
+     *    / `status=403` / 单独出现的 403 作为独立词），
+     *    避免把「403 集」「403 号」这类**内容里的数字**当成状态码。
+     */
+    final httpCode = _extractHttpStatus(lower);
+    if (httpCode != null) {
+      // 401 / 403 ⇒ 源站权限（E 类：只优化提示，不绕过）
+      if (httpCode == 401 || httpCode == 403) {
+        return PlaybackFailure(
+          kind: PlaybackFailureKind.permission,
+          detail: text,
+          // ★ 权限问题重试一万次都一样
+          canRetry: false,
+        );
+      }
+      // 429 / 5xx ⇒ 源站限流或临时故障（F 类）
+      if (httpCode == 429 || (httpCode >= 500 && httpCode <= 599)) {
+        return PlaybackFailure(
+          kind: PlaybackFailureKind.network,
+          detail: text,
+        );
+      }
+      // 404 / 410 ⇒ 地址没了，归源解析失败
+      if (httpCode == 404 || httpCode == 410) {
+        return PlaybackFailure(
+          kind: PlaybackFailureKind.source,
+          detail: text,
+        );
+      }
+    }
 
     // ── ① 内置代理（B 类）────────────────────────────────────────
     /*
@@ -3755,8 +3874,20 @@ class PlaybackErrorText {
     }
 
     // ── ③ 源站限流 / 临时故障（F 类）─────────────────────────────
+    /*
+     * ★★★ 裸数字（429/502/503/504）**不能**用 `contains` 判
+     *
+     * 实测误判（本文件门禁抓到的）：
+     * ```text
+     * https://cdn.example.com/videos/202503/20/x.m3u8  ⇒ contains('502') 命中 "202503"
+     * https://cdn.example.com/a/503/x.m3u8             ⇒ contains('503') 命中 "/503/"
+     * 两条都被归成「源站限流」—— 而它们只是**路径里恰好有那几个数字**。
+     * ```
+     * ⇒ 数字一律走 [`_extractHttpStatus`]（带协议上下文才算），
+     *    `netWords` 只留**文字**关键词。
+     */
     const netWords = <String>[
-      'timeout', '超时', 'timed out', '429', '502', '503', '504',
+      'timeout', '超时', 'timed out',
       'too many requests', '稍后', '限流', 'temporarily',
     ];
     if (netWords.any(lower.contains) || kindHint == 'network') {

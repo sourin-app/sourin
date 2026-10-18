@@ -200,11 +200,50 @@ flutter analyze lib            # 0 error；不要新增 warning
 · 明确列出「没做的」及原因 —— 不许把没做的混进「已完成」
 ```
 
-**验证纪律**：编译过 / 单测绿 / SHA256 都**不算**实测。
-「完整跑实测」= 本轮 diff 影响到的功能**逐条真跑**（实机 / 真请求 / 真数据）。
+**验证纪律**：编译过 / 单测绿 / SHA256 都**不算**实测。「完整跑实测」= 本轮 diff 影响到的功能**逐条真跑**（实机 / 真请求 / 真数据）。
 改动攒完后**统一跑一次**（一次构建 + 部署 + 实机验证），不要每改一处验一次。
 工作树里存在在途未提交改动时，「在某个提交上跑测试」实际测的是**工作树** ——
 要证明「修复前应当红」的红基线，必须用 `git worktree add` 检出纯净副本再跑。
+
+### ★★★ 收尾必做：真机隔离启动一次
+
+```text
+★ 判据：全量 flutter test 全绿 **不足以**说明产品能用。
+
+2026-10-18 实测（第 66 轮）：
+  全量 flutter test ⇒ **4131 通过**
+  但产品 Release 启动后**第一次弹窗就崩**：
+    Null check operator used on a null value
+    #0 MaterialLocalizations.of (material_ui/src/material_localizations.dart:718)
+    #1 new DialogRoute        (material_ui/src/dialog.dart:1906)
+    #5 showAppDialog          (ui/widgets/overlay_motion.dart:324)
+  ⇒ 4131 个用例**没有一个**抓到它，因为它只在真机触发。
+```
+
+做法（收尾时跑一次，约 3 分钟）：
+
+```bash
+flutter build windows --release -t lib/shell.dart   # ★ 别漏 -t
+# 隔离数据目录启动（不用真实数据目录）
+export APPDATA="<临时目录>/appdata" USERPROFILE="<临时目录>/userprofile"
+export SOURIN_NO_REMOTE_AUTOSTART=1
+build/windows/x64/runner/Release/sourin_spike.exe &
+```
+
+必须确认三件事：
+
+```text
+① 日志里**零** `Unhandled Exception`（不是"看起来没崩"，是 grep 计数 = 0）
+② 窗口完整渲染（截图留档，界面改动要亲眼看过）
+③ 触发一次弹窗（更新窗 / 设置页任一对话框）—— 这是最容易漏的路径
+```
+
+⚠️ 清理：exe 会 fork 子进程，`taskkill //PID $!` 杀不掉父 PID。
+用「启动前后 PID 差集」精确清理，或 `Get-Process sourin_spike | Stop-Process`。
+
+**报告纪律**：回归报告必须写明覆盖范围，例如
+「本报告只覆盖 `flutter test` + `cargo test`，**不含真机启动验证**」——
+**先报「我验了什么」，再说「结论是什么」。**
 
 ---
 

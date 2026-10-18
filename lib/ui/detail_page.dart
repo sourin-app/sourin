@@ -57,6 +57,7 @@ import 'media_session.dart';
 import '../core/network_status.dart';
 import '../design/widgets/app_icon_button.dart';
 import '../design/widgets/app_ink_well.dart';
+import '../design/widgets/app_outlined_button.dart';
 import '../design/widgets/app_text_button.dart';
 import '../design/widgets/app_tooltip_slider.dart';
 import 'tokens.dart';
@@ -4293,6 +4294,13 @@ class _Info extends StatelessWidget {
              */
             if (!localMode)
               _ToggleButton(
+                /*
+                 * ★ 轨道 E M2 第 3 步：给四枚按钮各自一个**语义位置 Key**。
+                 * 门禁（t27_w3）从此按 Key 定位，不再靠 `find.byType(OutlinedButton)`
+                 * —— 判据守的是「四枚同源同档」这个产品契约，不是"它们内部
+                 * 是不是 Material 的 ButtonStyleButton"这个实现细节。
+                 */
+                key: const ValueKey('detail-action-favorite'),
                 icon: isFav ? AppIcons.star : AppIcons.star_border,
                 label: isFav ? '已收藏' : '收藏',
                 on: isFav,
@@ -4310,6 +4318,7 @@ class _Info extends StatelessWidget {
              */
             if (!localMode)
               _ToggleButton(
+                key: const ValueKey('detail-action-follow'),
                 icon: following ? AppIcons.notifications : AppIcons.notifications_none,
                 label: following ? '追更中' : '追更',
                 on: following,
@@ -4339,7 +4348,10 @@ class _Info extends StatelessWidget {
              *    别把它并进上面那个 `if (showActions)`（那样三枚会一起消失）。
              */
             if (!hasLocalFile) ...[
-              OutlinedButton.icon(
+              AppOutlinedButton.icon(
+                key: const ValueKey('detail-action-switch-source'),
+                // ★ 轨道 E M2 第 3 步：OutlinedButton.icon → AppOutlinedButton.icon
+                //   （几何由组件内复刻 Material 密度策略保证，实测两平台逐值相同）
                 onPressed: onSwitchSource,
                 /*
                  * ══════════════════════════════════════════════════════════
@@ -4380,10 +4392,8 @@ class _Info extends StatelessWidget {
                   color: _pillForeground(colors, on: false),
                 ),
                 label: const Text('换源'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: _pillForeground(colors, on: false),
-                  side: _pillBorderStyle(colors, on: false),
-                ),
+                foregroundColor: _pillForeground(colors, on: false),
+                borderColor: _pillBorderStyle(colors, on: false).color,
               ),
             ],
 
@@ -4410,6 +4420,7 @@ class _Info extends StatelessWidget {
              *    已经区分开：那边是「到缓存」，这边是「下载」。
              */
             _DownloadButton(
+              key: const ValueKey('detail-action-download'),
               episodeCount: episodeCount,
               onDownloadCurrent: onDownloadCurrent,
               onDownloadAll: onDownloadAll,
@@ -4584,6 +4595,7 @@ Color _pillForeground(ColorScheme colors, {required bool on}) =>
 /// 可切换的按钮（收藏 / 追更）
 class _ToggleButton extends StatelessWidget {
   const _ToggleButton({
+    super.key,
     required this.icon,
     required this.label,
     required this.on,
@@ -4598,17 +4610,22 @@ class _ToggleButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return OutlinedButton.icon(
+    /*
+     * ★ 2026-10-18（轨道 E · 玻璃化 M2 第 3 步）：OutlinedButton.icon → AppOutlinedButton.icon
+     *
+     * 几何由 `AppOutlinedButton` 内部复刻 Material 的密度策略保证
+     * （实测两平台逐值相同：windows 72×32 / android 72×48）。
+     * 颜色仍由本文件的 `_pillForeground` / `_pillBorderStyle` 提供 ⇒ 同源。
+     */
+    return AppOutlinedButton.icon(
       onPressed: onTap,
       // ★ T27-03：icon 色与文字色取同一个构造 —— 主题的 iconColor 链走
-      //   foreground 派生色，与 styleFrom 的 foregroundColor 不同源，必须显式。
+      //   foreground 派生色，与 foregroundColor 不同源，必须显式。
       icon: Icon(icon, size: 16, color: _pillForeground(colors, on: on)),
       label: Text(label),
-      style: OutlinedButton.styleFrom(
-        foregroundColor: _pillForeground(colors, on: on),
-        backgroundColor: on ? colors.primary.withValues(alpha: 0.16) : null,
-        side: _pillBorderStyle(colors, on: on),
-      ),
+      foregroundColor: _pillForeground(colors, on: on),
+      backgroundColor: on ? colors.primary.withValues(alpha: 0.16) : null,
+      borderColor: _pillBorderStyle(colors, on: on).color,
     );
   }
 }
@@ -4628,6 +4645,7 @@ class _ToggleButton extends StatelessWidget {
 ///    见本文件 T27-03 段头「手画壳整段删除」那一段。这里只剩行为。
 class _DownloadButton extends StatelessWidget {
   const _DownloadButton({
+    super.key,
     required this.episodeCount,
     required this.onDownloadCurrent,
     required this.onDownloadAll,
@@ -4731,11 +4749,24 @@ class _DownloadButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    // ⚠️ 悬停提示靠外层 Tooltip（`OutlinedButton` 本身没有 tooltip 参数）。
-    //    Tooltip 未弹出时外层只有 MouseRegion（RenderProxyBox）⇒ 不改变按钮几何。
-    return Tooltip(
+    /*
+     * ★ 2026-10-18（轨道 E · 玻璃化 M2 第 3 步）：
+     *   `Tooltip` + `OutlinedButton.icon` → `AppTooltip` + `AppOutlinedButton.icon`
+     *
+     * # 两处都必须换
+     * ```text
+     * ① Tooltip 属于 Material 层 ⇒ 留着就摘不掉 material_ui；
+     *    本仓已有自建 `AppTooltip`（lib/design/widgets/app_tooltip_slider.dart），
+     *    悬停气泡/WaitDuration(500ms) 语义对齐，换成它**功能不丢**。
+     * ② OutlinedButton ⇒ AppOutlinedButton（几何由组件内复刻密度策略保证）。
+     * ```
+     *
+     * ⚠️ 悬停提示必须留着：这枚按钮是「下载」，用户靠它的文字辨认，
+     *    但 MouseRegion/AppTooltip 未弹出时只有 RenderProxyBox ⇒ 不改变几何。
+     */
+    return AppTooltip(
       message: '下载',
-      child: OutlinedButton.icon(
+      child: AppOutlinedButton.icon(
         onPressed: () => unawaited(_openMenu(context)),
         // ★ 图标色与文字色取同一个构造（与 _ToggleButton 逐字同源）
         icon: Icon(
@@ -4743,14 +4774,12 @@ class _DownloadButton extends StatelessWidget {
           size: 16,
           color: _pillForeground(colors, on: false),
         ),
-        // ⚠️ label **不给** style：让它继承按钮主题那份 btnText
-        //    （字号 sm=14 / 行高 1 / 字重 w500）—— 这正是「同源」；
+        // ⚠️ 字号/字重由 AppOutlinedButton 内部统一给
+        //    （sm=14 / 行高 1 / 字重 w500）—— 这正是「同源」；
         //    手抄任何一项都会重演 Owner 1011 反馈③（字重差一档）。
         label: const Text('下载'),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: _pillForeground(colors, on: false),
-          side: _pillBorderStyle(colors, on: false),
-        ),
+        foregroundColor: _pillForeground(colors, on: false),
+        borderColor: _pillBorderStyle(colors, on: false).color,
       ),
     );
   }
@@ -5232,7 +5261,9 @@ class _ErrorView extends StatelessWidget {
             const SizedBox(height: Sp.x6),
             // ★ task-58：`onBack == null`（合并页）⇒ 不画（返回由 MediaPage 负责）
             if (onBack != null)
-              OutlinedButton(onPressed: onBack, child: const Text('返回')),
+              // ★ 轨道 E M2 第 3 步：OutlinedButton → AppOutlinedButton
+              //   （这一枚**不在**操作行四枚里，是错误页的独立按钮）
+              AppOutlinedButton(onPressed: onBack, child: const Text('返回')),
           ],
         ),
       ),

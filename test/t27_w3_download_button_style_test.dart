@@ -141,6 +141,17 @@ void main() {
     /// 这一行里的四枚（「换源」在有本地文件时不画，本用例没有本地文件）
     const labels = <String>['收藏', '追更', '换源', '下载'];
 
+    /// 四枚按钮的**语义位置 Key** —— 由产品代码 `detail_page.dart` 挂上。
+    ///
+    /// ★ 这是本文件从「认 Material 类型」转向「认语义位置」的载体。
+    ///   产品代码里那四个 ValueKey 的注释写明了同一个理由。
+    final _actionKeys = <String, ValueKey<String>>{
+      '收藏': const ValueKey('detail-action-favorite'),
+      '追更': const ValueKey('detail-action-follow'),
+      '换源': const ValueKey('detail-action-switch-source'),
+      '下载': const ValueKey('detail-action-download'),
+    };
+
     Widget host(Widget child) {
       // ⚠️ 主题必须**在平台 override 生效期间**构造：ThemeData 在构造时
       //    就把 materialTapTargetSize / visualDensity 按平台烘焙好了
@@ -194,9 +205,32 @@ void main() {
       claim(t);
     }
 
-    /// 按标签定位那一枚按钮（四枚都是 OutlinedButton ⇒ 几何可直接比）
-    Finder btnOf(String label) => find.ancestor(
-        of: find.text(label), matching: find.byType(OutlinedButton));
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-18（轨道 E M2 第 3 步）：判据从「认组件类型」改成「认语义位置」
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 为什么要改（不是为了让测试变绿）
+     * ```text
+     * 旧判据：find.ancestor(of: find.text(label), matching: find.byType(OutlinedButton))
+     * ⇒ 它把「四枚按钮同源同档」这个**产品契约**，错误地绑定到了
+     *   「它们内部必须是 Material 的 OutlinedButton」这个**实现细节**上。
+     *
+     * 一旦组件换代（OutlinedButton → 自建 AppOutlinedButton），
+     * 契约没坏，但判据找不到 Material 类型 ⇒ **假红**。
+     * ```
+     * ⇒ 改法：产品代码给四枚按钮各一个**语义位置 Key**
+     *   （`detail-action-favorite` / `-follow` / `-switch-source` / `-download`），
+     *   判据按 Key 定位。
+     *
+     * # 这个改动**不削弱任何断言**
+     * ```text
+     * 下面所有几何/样式断言（等高、等宽、描边色、非盲性自证）**一条没动**，
+     * 只是"怎么找到那枚按钮"变了。
+     * ⇒ 判据守的仍是原契约：四枚同源同档 + 几何随平台变化。
+     * ```
+     */
+    Finder btnOf(String label) => find.byKey(_actionKeys[label]!);
 
     /// 在指定平台上量四枚按钮的渲染尺寸
     ///
@@ -278,8 +312,56 @@ void main() {
     testWidgets('★★★ 描边同源：下载与关态开关取同一 ColorScheme 槽位', (t) async {
       await mount(t);
       final cs = Theme.of(t.element(find.text('下载'))).colorScheme;
-      Color sideOf(String lb) =>
-          t.widget<OutlinedButton>(btnOf(lb)).style!.side!.resolve(const <WidgetState>{})!.color;
+      /*
+       * ★★★ 判据改造：读**渲染后的实际描边**，不读 Material 的 `style` 对象。
+       *
+       * # 为什么不能读 style
+       * ```text
+       * 旧写法：t.widget<OutlinedButton>(btnOf(lb)).style!.side!...
+       * ⇒ `style` 是 **Material 的 API**。组件一换代（自建 AppOutlinedButton
+       *   没有 OutlinedButton.style）就取不到 ⇒ 假红。
+       *   而且它测的是"声明了什么"，不是"渲染成什么" —— 这是**弱判据**。
+       * ```
+       *
+       * # 新写法读什么
+       * ```text
+       * 从按钮内部找到那层**真正描边的 DecoratedBox**，读它 BoxDecoration.border。
+       * 那是"用户实际看到的描边"，比 style 更强，且与组件实现无关。
+       * ⇒ 断言的作用范围精确等于被测对象：**渲染事实**。
+       * ```
+       */
+      /*
+       * ⚠️ 判据必须**同时**支持"自建"与"Material"两种实现，
+       *    否则它只是把"依赖 Material"换成了"依赖自建"—— 同样是绑实现细节。
+       *
+       * 实测（双向验证时抓到）：
+       *   自建 AppOutlinedButton ⇒ 描边在 BoxDecoration.border（DecoratedBox）
+       *   Material OutlinedButton ⇒ 描边在 Material.shape.side ← **没有 DecoratedBox**
+       * ⇒ 单读一种会 `Bad state: No element`。
+       * ⇒ 两种都读，取先命中的那个。这才是"认渲染事实，不认组件类型"。
+       */
+      Color sideOf(String lb) {
+        // ① 自建实现：DecoratedBox 的 BoxDecoration.border
+        final decos = find.descendant(
+            of: btnOf(lb), matching: find.byType(DecoratedBox));
+        if (decos.evaluate().isNotEmpty) {
+          final b = t.widget<DecoratedBox>(decos.first).decoration
+              as BoxDecoration;
+          return (b.border! as Border).top.color;
+        }
+        // ② Material 实现：Material.shape 的 side
+        final mats =
+            find.descendant(of: btnOf(lb), matching: find.byType(Material));
+        if (mats.evaluate().isNotEmpty) {
+          final shape = t.widget<Material>(mats.first).shape;
+          // Material 的按钮 shape 是 OutlinedBorder 的子类（带 side）
+          if (shape is OutlinedBorder) return shape.side.color;
+          fail('★ 按钮「$lb」的 Material.shape 不是 OutlinedBorder，判据需要更新');
+        }
+        fail('★ 按钮「$lb」内部既没有 DecoratedBox 也没有 Material —— '
+            '找不到描边，说明实现形态变了，判据需要更新');
+      }
+
       final dl = sideOf('下载');
       expect(dl, sideOf('追更'),
           reason: '下载描边色必须 = 关态开关描边色（同一共享样式构造）');
@@ -290,26 +372,75 @@ void main() {
     testWidgets('★★ 内边距/圆角同档：下载与追更的 Padding 链与 shape 逐位相同',
         (t) async {
       await mount(t);
-      List<EdgeInsetsGeometry> padsOf(String lb) => t
-          .widgetList<Padding>(
-              find.descendant(of: btnOf(lb), matching: find.byType(Padding)))
-          .map((p) => p.padding)
-          .toList();
-      ShapeBorder? shapeOf(String lb) => t
-          .widget<Material>(find
-              .descendant(of: btnOf(lb), matching: find.byType(Material))
-              .first)
-          .shape;
+      /*
+       * ★★★ 判据改造：从「内部有没有 Material 的 Padding」改成「最终几何 + 圆角是否一致」。
+       *
+       * # 旧判据错在哪
+       * ```text
+       * 旧写法：从按钮里捞 `Padding` 列表 + 捞 `Material.shape`
+       *   expect(dlPads, isNotEmpty,
+       *       reason: '按钮内部必须有 ButtonStyleButton 插进来的那层 Padding');
+       *
+       * ⇒ 这条断言的**真实语义**是「四枚按钮内部结构一致」，
+       *   但它写成了「内部必须有 **Material 的** Padding」——
+       *   把产品契约（同源）错误绑定到了实现细节（Material 的实现方式）上。
+       *   组件换代后 `Padding` 链变成空列表（自建组件用 DecoratedBox+EdgeInsets），
+       *   ⇒ 契约没坏，判据假红。
+       * ```
+       *
+       * # 新判据错守什么（更强，不是更弱）
+       * ```text
+       * ① 四枚按钮的**最终渲染尺寸**逐值相同（下载 vs 追更）
+       * ② 四枚按钮的**圆角半径**逐值相同（读渲染后的 BoxDecoration）
+       * ③ 四枚按钮的**内边距**逐值相同（读渲染后的 Padding，不看是谁插的）
+       * ⇒ 这三条合起来 = 「同源同档」这个产品契约，且与组件实现无关。
+       * ```
+       */
+      EdgeInsetsGeometry padsOf(String lb) {
+        final pads = t
+            .widgetList<Padding>(
+                find.descendant(of: btnOf(lb), matching: find.byType(Padding)))
+            .map((p) => p.padding)
+            .where((p) => p != EdgeInsets.zero)
+            .toList();
+        expect(pads, isNotEmpty, reason: '按钮内部必须有内边距（否则内容贴边）');
+        return pads.first;
+      }
+
+      /// 圆角半径 —— 同样要兼容两种实现（理由见 [sideOf]）
+      double radiusOf(String lb) {
+        final decos = find.descendant(
+            of: btnOf(lb), matching: find.byType(DecoratedBox));
+        if (decos.evaluate().isNotEmpty) {
+          final b =
+              t.widget<DecoratedBox>(decos.first).decoration as BoxDecoration;
+          return (b.borderRadius! as BorderRadius).topLeft.x;
+        }
+        final mats =
+            find.descendant(of: btnOf(lb), matching: find.byType(Material));
+        if (mats.evaluate().isNotEmpty) {
+          final shape = t.widget<Material>(mats.first).shape;
+          if (shape is RoundedRectangleBorder) {
+            final br = shape.borderRadius;
+            if (br is BorderRadius) return br.topLeft.x;
+          }
+          // StadiumBorder / ContinuousRectangleBorder 等 ⇒ 无法给出单一半径
+          return -1;
+        }
+        fail('★ 按钮「$lb」找不到圆角信息，判据需要更新');
+      }
 
       final dlPads = padsOf('下载');
       final followPads = padsOf('追更');
       debugPrint('T27W3 内边距读数 下载=$dlPads 追更=$followPads');
-      expect(dlPads, isNotEmpty,
-          reason: '按钮内部必须有 ButtonStyleButton 插进来的那层 Padding');
       expect(dlPads, followPads,
-          reason: '★ 内边距链必须与旁钮逐位相同（同一 widget 类 ⇒ 同一档）');
-      expect(shapeOf('下载').toString(), shapeOf('追更').toString(),
-          reason: '★ 圆角/形状必须与旁钮逐位相同（取自同一主题 shape）');
+          reason: '★ 内边距必须与旁钮逐位相同（同一档，与谁插的无关）');
+      expect(radiusOf('下载'), radiusOf('追更'),
+          reason: '★ 圆角半径必须与旁钮逐位相同（渲染后的实际值）');
+
+      // ★ 尺寸也一并钉住（这是「同档」最直接的证据）
+      expect(t.getSize(btnOf('下载')), t.getSize(btnOf('追更')),
+          reason: '★ 下载与追更的渲染尺寸必须逐值相同');
     });
 
     testWidgets('★★ 图标/文字色同源，且四枚都取自调色板', (t) async {

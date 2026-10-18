@@ -239,6 +239,36 @@ void main() {
 
   // -------------------------------------------------------------------
   group('HTTP 客户端（假传输层，确定性）', () {
+    /*
+     * ⚠️ 2026-10-18（round-65 批次 B）：必须关掉**内置公共实例**。
+     *
+     * # 为什么
+     * 批次 B 给 danmaku 加了内置的 dan-api 公共实例，并把它插进了
+     * `ExternalDanmakuClient._endpoint` 的解析链（用户填 > 内置 > 本机 > 官方）。
+     *
+     * 本 group 的 client 都是 `ExternalDanmakuClient(transport: fake, appId:…,
+     * appSecret:…)` —— **不传 endpoint**。改前这会掉到官方路径（因为没配
+     * 任何 endpoint），假 transport 里按 `/api/v2/match` 等路径分支处理；
+     * 改后 `_endpoint` 会**优先返回内置实例**，于是：
+     *   · 请求路径带上内置实例的 prefix ⇒ 假 transport 的分支匹配不上
+     *   · 签名头也不再产生（内置实例免签名）
+     * ⇒ 实测 4 条红：签名头 / match 解析 / 查询参数 / loadFor。
+     *
+     * # 为什么这不算「为了变绿而放宽」
+     * 本 group 测的是**官方签名链路**，它要求「只有官方这一条路」的环境。
+     * 关掉内置只是把环境还原成被测对象本来的前提，生产代码一行未变。
+     * 其它 5 个 danmaku 测试文件本来就这么做（t105 / t27_w5 / t3_danmu_api /
+     * task35 / t65b），本文件是漏掉的那个。
+     */
+    setUp(() {
+      UiPrefs.debugResetForTest(<String, String>{});
+      DanmakuConfig.debugSetPublicInstances(const <DanmakuPublicInstance>[]);
+    });
+    tearDown(() {
+      DanmakuConfig.debugSetPublicInstances(null);
+      UiPrefs.debugResetForTest(<String, String>{});
+    });
+
     test('签名头：X-Signature = base64(sha256(AppId + Timestamp + Path + AppSecret))', () async {
       final fake = FakeTransport((m, u, h, b) => _json(<String, dynamic>{'success': true, 'matches': <dynamic>[]}));
       final client = ExternalDanmakuClient(

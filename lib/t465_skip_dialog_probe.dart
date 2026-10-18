@@ -98,6 +98,7 @@ import 'package:sourin_spike/ui/widgets/skip_marker_dialog.dart';
 import 'package:sourin_spike/ui/widgets/skip_timeline.dart';
 import 'ui/app_scaffold.dart';
 import 'ui/app_theme.dart';
+import './design/icons/app_icons.dart';
 
 /// 被预览的媒体（默认 640x480 **4:3** —— 故意不是 16:9）
 ///
@@ -491,7 +492,7 @@ Future<bool> tapText(String text) async {
 /// 点某一行的 `+` / `−`
 ///
 /// ★ 不能用 `find.byWidget(e.widget)` 之类按 widget 身份找 ——
-///   四行用的是**同一个 `const Icon(Icons.add)` 实例**，会匹配到四个。
+///   四行用的是**同一个 `const Icon(AppIcons.add)` 实例**，会匹配到四个。
 ///   ⇒ 用"标签的 dy"把同一行的按钮挑出来。
 Future<bool> tapStep(String label, {required bool plus, int times = 1}) async {
   for (var i = 0; i < times; i++) {
@@ -500,7 +501,7 @@ Future<bool> tapStep(String label, {required bool plus, int times = 1}) async {
       say('!! 找不到行「$label」');
       return false;
     }
-    final icon = plus ? Icons.add : Icons.remove;
+    final icon = plus ? AppIcons.add : AppIcons.remove;
     final r = _root;
     if (r == null) return false;
     Offset? hit;

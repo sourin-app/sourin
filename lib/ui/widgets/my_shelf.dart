@@ -65,6 +65,7 @@ import '../../core/sourin_api.dart';
 import '../tokens.dart';
 import 'poster_card.dart';
 import 'press_feedback.dart';
+import '../../design/icons/app_icons.dart';
 
 /// tab 类型
 enum ShelfTab { following, favorites, history }
@@ -1396,7 +1397,7 @@ class MyShelfState extends State<MyShelf> {
         ? TextButton.icon(
             onPressed: _clearHistory,
             icon: Icon(
-              _clearingConfirm ? Icons.warning_amber : Icons.delete_outline,
+              _clearingConfirm ? AppIcons.warning_amber : AppIcons.delete_outline,
               size: 15,
               color: _clearingConfirm ? colors.error : null,
             ),
@@ -1435,7 +1436,7 @@ class MyShelfState extends State<MyShelf> {
      * v2 (task-26)  常驻胶囊：1px 描边 + 72% 白底 + 14 号字 + 16px 箭头
      *               ⇒ 与分段控件**抢戏**（同屏两个圆角容器）
      *               ⇒ 被投诉「还是不合理」
-     * v3 (本次)     纯箭头 Icons.chevron_right 20dp，44dp 触控目标
+     * v3 (本次)     纯箭头 AppIcons.chevron_right 20dp，44dp 触控目标
      * ```
      *
      * # 为什么是**一个**按钮（而不是三块各一个）
@@ -1507,7 +1508,7 @@ class MyShelfState extends State<MyShelf> {
                *
                * # 现在的形态：**纯箭头 + 44dp 触控目标**
                *
-               *   Icons.chevron_right，20dp
+               *   AppIcons.chevron_right，20dp
                *   constraints: BoxConstraints.tightFor(width: 44, height: 44)
                *   ⇒ 满足项目规范（DEVELOPMENT.md 坑 35：触控目标 ≥34px）
                *   ⇒ 视觉宽度从 ~110dp 收到 44dp，比标题「我的」的 39.6dp
@@ -1530,7 +1531,7 @@ class MyShelfState extends State<MyShelf> {
                *（跟随当前 tab 跳转）。
                */
               tooltip: '查看更多',
-              icon: Icon(Icons.chevron_right, size: 20, color: seeAllFg),
+              icon: Icon(AppIcons.chevron_right, size: 20, color: seeAllFg),
               iconSize: 20,
               constraints: const BoxConstraints.tightFor(
                 width: 44,

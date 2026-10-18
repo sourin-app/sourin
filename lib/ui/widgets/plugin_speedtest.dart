@@ -180,6 +180,7 @@ import '../../core/app_log.dart';
 import '../../core/sourin_api.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  参数（可以调，但改了要重跑真机���数 —— 见文件头各段的实测依据）
@@ -1388,25 +1389,29 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
             Tooltip(
               message: '暂停（在下一个分片边界停下，最坏等 1 秒；'
                   '已读到的部分照样计入读数）',
-              child: Material(
-                color: Colors.transparent,
-                child: ActionChip(
-                  onPressed: _pause,
-                  avatar: Icon(Icons.pause, size: 14, color: colors.primary),
-                  label: Text(
-                    '暂停',
-                    style: TextStyle(fontSize: FontSizes.cap, color: colors.primary),
-                  ),
-                  side: BorderSide(color: colors.outlineVariant),
-                  shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: Sp.x2,
-                    vertical: Sp.x1 + 2,
-                  ),
-                  labelPadding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              /*
+               * ★ 去 Material：原来只为了给 ActionChip 一个绘制面
+               *
+               * ActionChip **不是** ListTile 家族 —— 不要求 Material 祖先。
+               * 实测：去掉后 t98_speedtest_pause_concurrency_test +11 全绿，
+               *      「ink splashes may be invisible」断言出现 0 次。
+               */
+              child: ActionChip(
+                onPressed: _pause,
+                avatar: Icon(AppIcons.pause, size: 14, color: colors.primary),
+                label: Text(
+                  '暂停',
+                  style: TextStyle(fontSize: FontSizes.cap, color: colors.primary),
                 ),
+                side: BorderSide(color: colors.outlineVariant),
+                shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: Sp.x2,
+                  vertical: Sp.x1 + 2,
+                ),
+                labelPadding: EdgeInsets.zero,
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
             ),
           ],
@@ -1544,38 +1549,39 @@ class _SpeedButton extends StatelessWidget {
       message: !enabled
           ? '这个源已停用 —— 启用后才能测速'
           : '随机挑一部影片，真下一段算下载速率',
-      child: Material(
-        color: Colors.transparent,
-        child: ActionChip(
-          onPressed: on ? onPressed : null,
-          avatar: busy
-              ? SizedBox(
-                  width: 13,
-                  height: 13,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: colors.primary,
-                  ),
-                )
-              : Icon(
-                  hasHistory ? Icons.speed : Icons.bolt,
-                  size: 15,
-                  color: fg,
+      /*
+       * ★ 去 Material：与上面「暂停」那一处同理（ActionChip 不要求 Material 祖先），
+       *   实测同上：0 条 ink-splashes 断言，+11 全绿。
+       */
+      child: ActionChip(
+        onPressed: on ? onPressed : null,
+        avatar: busy
+            ? SizedBox(
+                width: 13,
+                height: 13,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: colors.primary,
                 ),
-          label: Text(
-            busy ? '测速中' : '测速',
-            style: TextStyle(fontSize: FontSizes.cap, color: fg),
-          ),
-          side: BorderSide(color: colors.outlineVariant),
-          shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
-          padding: const EdgeInsets.symmetric(
-            horizontal: Sp.x3,
-            vertical: Sp.x1 + 2,
-          ),
-          labelPadding: EdgeInsets.zero,
-          visualDensity: VisualDensity.compact,
-          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              )
+            : Icon(
+                hasHistory ? AppIcons.speed : AppIcons.bolt,
+                size: 15,
+                color: fg,
+              ),
+        label: Text(
+          busy ? '测速中' : '测速',
+          style: TextStyle(fontSize: FontSizes.cap, color: fg),
         ),
+        side: BorderSide(color: colors.outlineVariant),
+        shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
+        padding: const EdgeInsets.symmetric(
+          horizontal: Sp.x3,
+          vertical: Sp.x1 + 2,
+        ),
+        labelPadding: EdgeInsets.zero,
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       ),
     );
   }
@@ -1800,7 +1806,7 @@ class _PluginSpeedTestAllButtonState extends State<PluginSpeedTestAllButton> {
               '${(widget.pluginIds.length / _allConcurrency).ceil() * 4} 秒）',
       child: OutlinedButton.icon(
         onPressed: empty ? null : _runAll,
-        icon: const Icon(Icons.speed, size: 16),
+        icon: const Icon(AppIcons.speed, size: 16),
         label: Text(widget.label),
       ),
     );
@@ -1844,7 +1850,7 @@ class PluginSpeedTestClearButton extends StatelessWidget {
                   );
                 }
               },
-        icon: const Icon(Icons.delete_sweep_outlined, size: 16),
+        icon: const Icon(AppIcons.delete_sweep_outlined, size: 16),
         label: const Text('清空测速记录'),
       ),
     );

@@ -39,6 +39,9 @@ pub mod providers;
 // ── 存储 ──
 pub mod store;
 
+// ── 域名池（插件给候选、宿主选路）──
+pub mod hostpool;
+
 // ── 网络 ──
 pub mod proxy;
 pub mod streamproxy;

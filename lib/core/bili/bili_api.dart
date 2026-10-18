@@ -481,6 +481,45 @@ class BiliApi {
   ///
   /// ⚠️ Referer 必须用 [kBiliSearchReferer]（理由见那里的注释）。
   /// 返回的条目**已经清洗过**（见 [parseBiliSearchItems]）。
+  ///
+  /// # ★★★ 2026-10-18（Owner 第 10 条「直接搜索弹幕还是提示拒绝了这次请求」）
+  ///
+  /// ## 先说实测读数（这次是**先拿读数再动手**，不是猜）
+  ///
+  /// ```text
+  /// 同一台机器、同一套头，连打三次：
+  ///   try1 search/type → 200
+  ///   try2 search/type → 200
+  ///   try3 search/type → 412   ← ★ 间歇性，不是恒 412
+  ///   try1..3 search/all/v2 → 200 / 200 / 200   ← 稳定
+  /// ```
+  /// 412 的正文是 3400 字节的 `text/html`（风控页，`{"code":-412,
+  /// "message":"request was banned"}` 是它的 JSON 变体），**不是业务错误**。
+  ///
+  /// ## 改前为什么必然走到「拒绝了这次请求」
+  /// ```text
+  /// searchVideos 只有 search/type 这一条路 ⇒ 412 抛异常
+  ///   ⇒ autoBindBySearch 的 catch 把 hits 置空
+  ///   ⇒ 现有的 season 兜底只认「搜索成功但没结果」，**不认异常**
+  ///     （异常在 catch 里就被吞成空列表了，兜底看不到「这是 412」）
+  ///   ⇒ 最后降级到要凭证的弹幕服务 ⇒ 403 Missing Authentication Headers
+  ///     ⇒ 用户看到「弹幕服务拒绝了这次请求」
+  /// ```
+  ///
+  /// ## 改后：两条链路互为备份，且**先试稳的那条**
+  /// ```text
+  /// ① search/type        按视频搜（最贴"搜片子"的语义）—— 可能 412
+  /// ② search/all/v2      按聚合搜（实测稳定 200）—— 从中取 video 分组
+  /// ⇒ ① 失败（412/超时/非 JSON）**不再直接抛**，自动退 ②；
+  ///    两条都失败才抛，且抛的是**两条链路的真实读数**（便于定位）。
+  /// ```
+  ///
+  /// ⚠️ 为什么把 all/v2 放**第二**而不是第一：
+  /// ```text
+  /// all/v2 混了番剧/影视/专栏/用户/视频多个分组，语义上没有 search/type 纯；
+  /// 而 search/type 只要不被风控就是最准的那一个。
+  /// ⇒ 顺位按「语义准确度」排，availability 靠兜底解决 —— 两者不冲突。
+  /// ```
   Future<List<BiliSearchItem>> searchVideos(
     String keyword, {
     int page = 1,
@@ -488,17 +527,206 @@ class BiliApi {
     final kw = keyword.trim();
     if (kw.isEmpty) return const <BiliSearchItem>[];
     final p = page < 1 ? 1 : page;
+
+    Object? firstErr;
+    // ── ① 原生搜索（最准，但可能被风控 412）────────────────────────
+    try {
+      final uri = Uri.https(
+        'api.bilibili.com',
+        '/x/web-interface/search/type',
+        <String, String>{
+          'search_type': 'video',
+          'keyword': kw,
+          'page': '$p',
+        },
+      );
+      final m = await _getJson(uri, referer: kBiliSearchReferer);
+      final items = parseBiliSearchItems(m);
+      if (items.isNotEmpty) return items;
+      /*
+       * 200 但 0 条 —— 不立刻返回空，让 ② 再试一次。
+       *
+       * 理由（实测）：search/type 被风控时**也会**回 200 + text/html
+       * （那是风控页，jsonDecode 会失败抛异常，走 catch）；
+       * 而真·0 条是合法结果。两者无法从"有没有异常"区分，
+       * 所以这里统一交给 ② 复核一次：② 有结果就用 ②，
+       * ② 也 0 条才相信"真的没搜到"。
+       */
+    } catch (e) {
+      firstErr = e;
+    }
+
+    // ── ② 聚合搜索兜底（实测稳定 200）──────────────────────────────
+    try {
+      final alt = await _searchViaAllV2(kw);
+      if (alt.isNotEmpty) return alt;
+      /*
+       * ② 也 0 条：
+       *   · ① 抛过异常 ⇒ 把①的错抛出去（那才是"为什么没搜到"的真因）
+       *   · ① 没抛（合法 0 条）⇒ 返回空（如实说没搜到）
+       */
+      if (firstErr != null) throw firstErr;
+      return const <BiliSearchItem>[];
+    } catch (e) {
+      /*
+       * ② 也失败 ⇒ 抛**一条合并了两次读数**的错误。
+       *
+       * ⚠️ 不直接抛 ② 的错：① 的错（尤其 412）往往才是用户真正需要知道的
+       *    （它解释了"为什么换了链路"），合并后一眼看得出两条都没通。
+       */
+      final de = e is DanmakuException ? e : null;
+      throw DanmakuException(
+        '搜索没成（两条链路都不通）：'
+        '① ${_shortErr(firstErr).isEmpty ? "无结果" : _shortErr(firstErr)}；'
+        '② ${_shortErr(e).isEmpty ? "无结果" : _shortErr(e)}',
+        statusCode: de?.statusCode ?? 0,
+        body: de?.body ?? '',
+        uri: de?.uri ?? '',
+      );
+    }
+  }
+
+  /// 把异常压成一句能进用户文案的短说明
+  static String _shortErr(Object? e) {
+    if (e == null) return '';
+    final s = e.toString();
+    return s.length > 120 ? '${s.substring(0, 120)}…' : s;
+  }
+
+  /// `search/all/v2` 兜底：从聚合结果里取 **video** 分组
+  ///
+  /// # 为什么这条更稳（实测）
+  /// ```text
+  /// search/type   连打三次 → 200 / 200 / 412   ← 风控会随机命中
+  /// search/all/v2 连打三次 → 200 / 200 / 200   ← 稳定
+  /// ```
+  ///
+  /// # 返回结构与 search/type **不同**（不能直接复用解析器）
+  /// ```text
+  /// search/type       data.result = [ {bvid,title,pic,duration,…}, … ]
+  /// search/all/v2     data.result = [ {result_type:"video", data:[…]},
+  ///                                   {result_type:"media_bangumi", data:[…]}, … ]
+  /// ⇒ 必须先按 result_type 分组，再取 video 那一组
+  /// ```
+  ///
+  /// ⚠️ 实测该分组的条目**字段名与 search/type 一致**（bvid/title/pic/
+  ///    duration/author/play/typename/pubdate 全都有），所以条目级解析
+  ///    可以复用 [biliSearchItemFromJson] —— 这不是巧合，是同一个后端。
+  /// ⚠️ 该分组里**可能有 bvid 为空**的直播卡片（实测第一条就是），
+  ///    [biliSearchItemFromJson] 已经把这类丢掉（`bvid.isEmpty ⇒ null`）。
+  Future<List<BiliSearchItem>> _searchViaAllV2(String kw) async {
     final uri = Uri.https(
       'api.bilibili.com',
-      '/x/web-interface/search/type',
-      <String, String>{
-        'search_type': 'video',
-        'keyword': kw,
-        'page': '$p',
-      },
+      '/x/web-interface/search/all/v2',
+      <String, String>{'keyword': kw},
     );
     final m = await _getJson(uri, referer: kBiliSearchReferer);
-    return parseBiliSearchItems(m);
+    final data = m['data'];
+    if (data is! Map) return const <BiliSearchItem>[];
+    final result = data['result'];
+    if (result is! List) return const <BiliSearchItem>[];
+
+    final out = <BiliSearchItem>[];
+    for (final group in result) {
+      if (group is! Map) continue;
+      if ('${group['result_type'] ?? ''}' != 'video') continue;
+      final items = group['data'];
+      if (items is! List) continue;
+      for (final it in items) {
+        if (it is! Map) continue;
+        final item = biliSearchItemFromJson(it.cast<String, dynamic>());
+        if (item != null) out.add(item);
+      }
+    }
+    return out;
+  }
+
+  /*
+   * ★★★ 2026-10-17（Owner 第 6 条：外部站弹幕搜索失败 / Missing Authentication Headers）
+   *
+   * # 为什么必须要有这条备用链路
+   * ```text
+   * 实测（Lead 2026-10-17，严格对照实验）：
+   *   x/web-interface/search/type   → 412（无 Referer / www 与 search 两种 Referer 全 412）
+   *   x/web-interface/search/all/v2 → 200，但 media_bangumi 恒 0 条
+   *   pgc/view/web/season           → 200 ✓ 免登录，直接给整季 episodes[] 且每集带 cid
+   *   x/web-interface/view          → 200 ✓
+   * ```
+   *
+   * `search/type` 是**风控重灾区**（412 是北邮风控页，不是业务错误），
+   * 而 [autoBindBySearch] 把它当唯一搜索入口，412 ⇒ catch ⇒ 返回 null
+   * ⇒ 降级到 danmaku-service ⇒ 无凭证 ⇒ 403 Missing Authentication Headers。
+   *
+   * ⇒ 这条链路完全不碰 search/type：用 `pgc/view/web/season` 按 season_id 取整季，
+   *   或 `search/all/v2` 拿 media_bangumi 的 season_id 再展开。
+   *
+   * # 为什么用 season 而不是 search/type 搜视频
+   * ```text
+   * 弹幕要的是 cid（按集），而 season 接口**天生就按集给 cid**；
+   * search/type 搜出来的是视频条目，还要再 view 一次才能拿 cid —— 多一次请求且更容易被风控。
+   * ```
+   */
+
+  /// 按 **season_id** 取整季信息（免登录、风控友好）。
+  ///
+  /// 返回 `null` = 该 season 不存在或接口不可用（调用方应继续降级）。
+  Future<BiliSeason?> seasonInfo(int seasonId) async {
+    if (seasonId <= 0) return null;
+    final uri = Uri.https(
+      'api.bilibili.com',
+      '/pgc/view/web/season',
+      <String, String>{'season_id': '$seasonId'},
+    );
+    try {
+      final m = await _getJson(uri, referer: kBiliReferer);
+      if (m['code'] != 0) return null;
+      final r = m['result'];
+      if (r is! Map) return null;
+      return parseBiliSeason(r);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 用 `search/all/v2` 按关键词找番剧的 season_id（**不碰 search/type**）。
+  ///
+  /// ⚠️ 实测 `media_bangumi` 常返回 0 条（该聚合接口的已知行为），
+  ///    所以这里**同时**从 `media_ft`（影视）里找，两条都空就返回空列表。
+  Future<List<int>> searchSeasonIds(String keyword) async {
+    final kw = keyword.trim();
+    if (kw.isEmpty) return const <int>[];
+    final uri = Uri.https(
+      'api.bilibili.com',
+      '/x/web-interface/search/all/v2',
+      <String, String>{'keyword': kw},
+    );
+    try {
+      final m = await _getJson(uri, referer: kBiliSearchReferer);
+      if (m['code'] != 0) return const <int>[];
+      final data = m['data'];
+      if (data is! Map) return const <int>[];
+      final result = data['result'];
+      if (result is! List) return const <int>[];
+
+      final ids = <int>[];
+      for (final group in result) {
+        if (group is! Map) continue;
+        final type = '${group['result_type'] ?? ''}';
+        // media_bangumi = 番剧；media_ft = 影视（含国创/纪录片等）
+        if (type != 'media_bangumi' && type != 'media_ft') continue;
+        final items = group['data'];
+        if (items is! List) continue;
+        for (final it in items) {
+          if (it is! Map) continue;
+          final raw = it['season_id'];
+          final sid = raw is int ? raw : int.tryParse('${raw ?? ''}') ?? 0;
+          if (sid > 0 && !ids.contains(sid)) ids.add(sid);
+        }
+      }
+      return ids;
+    } catch (_) {
+      return const <int>[];
+    }
   }
 
   // ── 短链解析 ───────────────────────────────────────────────────────
@@ -688,6 +916,75 @@ class BiliFetchResult {
 /// duration 线上是 "m:ss" / "mm:ss" 字符串（个位数秒会写成 "1:2"）⇒ 原样保留，
 ///          不要解析成秒再格式化（会变成 "01:02"，与 某视频站自己显示的不一致）
 /// ```
+/// 番剧/影视的**整季**信息（来自 `pgc/view/web/season`）。
+///
+/// # 为什么需要这个类型（2026-10-17，Owner 第 6 条）
+/// ```text
+/// 弹幕按 **cid** 取，而 cid 是「每一集」的属性。
+/// season 接口天生按集返回 episodes[]，每集自带 cid
+/// ⇒ 一次请求就能拿到整季的 cid，不需要逐集 view。
+///
+/// 对比：search/type 搜出来的是**视频**条目（一集一个 BV 号），
+///       要拿 cid 还得每集再 view 一次，且 search/type 现在恒 412。
+/// ```
+class BiliSeason {
+  const BiliSeason({
+    required this.seasonId,
+    required this.title,
+    required this.episodes,
+    this.cover = '',
+    this.typeName = '',
+  });
+
+  /// season_id（本结构的键）
+  final int seasonId;
+
+  /// 番剧/影视标题
+  final String title;
+
+  /// 封面（已补 `https:`）；空串 = 无
+  final String cover;
+
+  /// 分类名（番剧/国创/纪录片…）
+  final String typeName;
+
+  /// 整季的分集，**按线上顺序**
+  final List<BiliSeasonEpisode> episodes;
+
+  /// 按**集序号**取 cid（1-based）。
+  ///
+  /// 越界或该集无 cid ⇒ 0（调用方据此判定"这一集没有弹幕"）。
+  int cidForEpisode(int oneBasedIndex) {
+    if (oneBasedIndex < 1 || oneBasedIndex > episodes.length) return 0;
+    return episodes[oneBasedIndex - 1].cid;
+  }
+}
+
+/// 番剧的一集。
+class BiliSeasonEpisode {
+  const BiliSeasonEpisode({
+    required this.cid,
+    required this.title,
+    this.bvid = '',
+    this.aid = 0,
+    this.index = 0,
+  });
+
+  /// 弹幕就是按这个 id 取
+  final int cid;
+
+  /// 分集标题（如「第1话」）
+  final String title;
+
+  /// 有些番剧的集带 bvid（正片可直接播）
+  final String bvid;
+
+  final int aid;
+
+  /// 线上给的集号（1-based）；0 = 未给
+  final int index;
+}
+
 class BiliSearchItem {
   const BiliSearchItem({
     required this.bvid,
@@ -752,6 +1049,58 @@ class BiliSearchItem {
 ///       "弹幕服务返回的是一张网页"，不是本函数的责任；
 /// ② data 缺失 / result 不是 List（例如 code!=0 的降级响应）⇒ 返回空列表。
 /// ```
+/// 解析 `pgc/view/web/season` 的 `result` 对象。
+///
+/// ⚠️ 该接口的 `episodes[]` 里 cid 是必需的；**没有 cid 的集直接跳过**
+///    （番剧 PV/花絮常无 cid），不塞进结果以免集号错位。
+BiliSeason? parseBiliSeason(Map<dynamic, dynamic> r) {
+  final rawSid = r['season_id'];
+  final sid = rawSid is int ? rawSid : int.tryParse('${rawSid ?? ''}') ?? 0;
+
+  final title = _stringOf(r['title']) ?? _stringOf(r['season_title']) ?? '';
+
+  var cover = _stringOf(r['cover']) ?? '';
+  if (cover.startsWith('//')) cover = 'https:$cover';
+  if (cover.startsWith('http://')) cover = cover.replaceFirst('http://', 'https://');
+
+  final eps = <BiliSeasonEpisode>[];
+  final rawEps = r['episodes'];
+  if (rawEps is List) {
+    for (final e in rawEps) {
+      if (e is! Map) continue;
+      final rawCid = e['cid'];
+      final cid = rawCid is int ? rawCid : int.tryParse('${rawCid ?? ''}') ?? 0;
+      if (cid <= 0) continue; // 无 cid 的条目跳过（PV/花絮）
+      final rawAid = e['aid'];
+      final rawIdx = e['ep'] ?? e['index'];
+      eps.add(BiliSeasonEpisode(
+        cid: cid,
+        title: _stringOf(e['title']) ?? _stringOf(e['long_title']) ?? '',
+        bvid: _stringOf(e['bvid']) ?? '',
+        aid: rawAid is int ? rawAid : int.tryParse('${rawAid ?? ''}') ?? 0,
+        index: rawIdx is int ? rawIdx : int.tryParse('${rawIdx ?? ''}') ?? 0,
+      ));
+    }
+  }
+
+  if (eps.isEmpty) return null; // 没有可用的集 ⇒ 视为不可用
+
+  return BiliSeason(
+    seasonId: sid,
+    title: title,
+    cover: cover,
+    typeName: _stringOf(r['type_name']) ?? '',
+    episodes: eps,
+  );
+}
+
+/// 容错取字符串：线上有时给 null / 数字。
+String? _stringOf(Object? v) {
+  if (v == null) return null;
+  if (v is String) return v;
+  return '$v';
+}
+
 List<BiliSearchItem> parseBiliSearchItems(Object? body) {
   final Object? decoded = body is String ? _tryJson(body) : body;
   if (decoded is! Map) return const <BiliSearchItem>[];

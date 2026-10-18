@@ -54,7 +54,7 @@
 //   ⇒ 视觉上就是"交叉溶解"，而且**两侧的 sliver 类型都不变** ✓
 // ```
 
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 
 import '../tokens.dart';
 import 'motion_prefs.dart';

@@ -72,7 +72,7 @@
 // 的 `_SyncPanelState` 里 ⇒ 本页仍然只是"摆两行"，
 // **零状态传递、零回调** —— 这也是为什么下面 `build` 还能整个是 `const`。
 
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 
 import '../widgets/backup_panel.dart';
 import '../widgets/settings_kit.dart';

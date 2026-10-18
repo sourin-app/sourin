@@ -30,6 +30,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:sourin_spike/design/widgets/app_text_button.dart';
 import 'package:sourin_spike/ui/cast/cast_button.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
@@ -242,8 +243,15 @@ void main() {
        */
       final entry = _page.substring(
           _page.indexOf('MoreMenuEntry? get castEntry'), iPageEnd);
-      expect(entry.contains('icon: Icons.cast'), isTrue,
-          reason: '★ 菜单项需要一个图标；用 Icons.cast 是对的');
+      /*
+       * ⚠️ 2026-10-18（round-65 E2）：`Icons.cast` → `AppIcons.cast`。
+       *    E2 把全仓 163 处 `Icons.*` 换成自建 `AppIcons.*`（摘 material_ui 依赖）。
+       *    ★ 修这条时还发现 AppIcons 漏抄了 `matchTextDirection`，
+       *      导致 `AppIcons.x == Icons.x` 为 false —— 已一并修好
+       *      （见 lib/design/icons/app_icons.dart 与 90b0c8f 的提交说明）。
+       */
+      expect(entry.contains('icon: AppIcons.cast'), isTrue,
+          reason: '★ 菜单项需要一个图标；用 AppIcons.cast 是对的');
       // 弹幕设置同样只在菜单里
       expect(_page.contains("label: '弹幕设置'"), isTrue,
           reason: '★ 弹幕设置应当也在「更多」浮层里（与投屏同组）');
@@ -419,8 +427,43 @@ void main() {
     testWidgets('B③ 默认 showLabel=false ⇒ 渲染的是**裸 IconButton**（无 TextButton / 无 Text）',
         (t) async {
       await t.pumpWidget(_host(const CastButton(url: 'https://example.invalid/a.m3u8')));
+      /*
+       * ★ 2026-10-17 加固（dlg-plugin 审计发现：这条在换组件后会假绿）
+       *
+       * # 假绿原理
+       * ```text
+       * 规格本意：「这里不许出现**带标签的按钮**」
+       * 原断言：find.byType(TextButton) == 0
+       *
+       * 把 TextButton 换成 AppTextButton 后：
+       *   TextButton 数量确实 = 0 ⇒ 断言通过
+       *   但 AppTextButton 出现了 1 个 ⇒ **规格被违反，测试却是绿的**
+       * ```
+       * ⇒ 断言从「验证设计」退化成「验证类型名」。
+       *
+       * ⇒ 加固：旧类型和新类型**都不许出现**。
+       */
       expect(find.byType(TextButton), findsNothing,
           reason: '★ 底栏 headGear 里不许有 TextButton（t68 E⑥）；带标签的那支是给别处用的');
+      /*
+       * ★★ 跨实现判据（dlg-plugin 建议，2026-10-17 采纳）
+       *
+       * # 为什么不用「再加一条 AppTextButton」
+       * ```text
+       * 那样每换一代组件就要再加一条 —— 是追着跑的。
+       * 而且第三代组件出现时，你未必想得起来加。
+       * ```
+       *
+       * # 为什么用 Text 能跨实现
+       * ```text
+       * 任何"文字按钮"（TextButton / AppTextButton / 未来第三代）
+       * 内部**一定**有 Text。所以断言"这里不许有任何 Text"
+       * 就能守住"不许有带标签的按钮"这条规格 —— 无论实现怎么换。
+       * ```
+       * ⇒ 下面那条 find.byType(Text) 已经覆盖了这个规格，
+       *   这里不再单独断言 AppTextButton（避免追着加类型）。
+       */
+      // （跨实现判据见下一条 find.byType(Text)）
       expect(find.byType(Text), findsNothing,
           reason: '★ 裸 IconButton 不该带任何文本 —— 带标签会让底栏宽度账失真');
       expect(find.byIcon(Icons.cast), findsOneWidget);

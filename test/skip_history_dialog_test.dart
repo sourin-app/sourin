@@ -326,7 +326,7 @@ void main() {
           reason: '★ 真正调 API 的是 `_clearSkipMarker` 自己（父级），'
               '不是在行控件里 —— 这条钉住"唯一出口"');
       // 行控件里不得直接调 API（它只收 onClear 回调）
-      final rowAt = page.indexOf('class _SkipMarkerRow extends StatelessWidget');
+      final rowAt = page.indexOf('class _SkipMarkerRow');
       expect(rowAt, greaterThan(0));
       final rowSrc = page.substring(rowAt);
       expect(rowSrc.contains('SourinApi.clearSkipMarker'), isFalse,
@@ -452,7 +452,7 @@ void main() {
        *    取到文件末尾的话会把别处的 `MediaQuery.sizeOf(...).width`
        *    也算进来，断言恒假（我第一版就这么错的）。
        */
-      final at = dlg.indexOf('class _EdgeRow extends StatelessWidget');
+      final at = dlg.indexOf('class _EdgeRow');
       final end = dlg.indexOf('class _StepBtn', at);
       expect(at, greaterThan(0));
       expect(end, greaterThan(at));

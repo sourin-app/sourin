@@ -385,6 +385,61 @@ mod stream_kind_tests {
     }
 }
 
+/// 流级属性——描述「这条流**是什么**」
+///
+/// # 为什么不是「插件请求宿主做什么」
+///
+/// 曾拟过一个 `needs_host_decode` 能力位，**已砍掉**：
+/// ```text
+/// 解码是宿主**永远**的责任，不是插件能选的能力。
+/// 插一个这样的位会产生误导：
+///   「插件没声明 ⇒ 宿主不解码？」
+/// 而真实语义是「这条流需要 X 能力」。
+/// ```
+///
+/// 所以这里只放**客观事实**，宿主自己决定怎么办。
+///
+/// ⚠⚠ 默认全 false / 全 None —— 老插件不传时行为逐字不变。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StreamFlags {
+    /// ★ 这条流受 DRM 保护
+    ///
+    /// # 已实测的硬约束（task-33，2026-10-17）
+    /// ```text
+    /// libmpv-2.dll 里 widevine / playready / clearkey 字符串计数均为 **0**
+    /// （grep -aic 实测，见 .probe/t33/REPORT.md §4.3）
+    /// ⇒ 本宿主**架构上不可能**播 DRM 内容。
+    /// ⇒ 这不是「缺解码器」，补解码器解决不了 —— 需要 CDM 授权。
+    /// ```
+    ///
+    /// 所以这个位的唯一用途是：**让 UI 如实告诉用户为什么看不了**，
+    /// 而不是去实现解密。
+    pub drm: bool,
+
+    /// HDR（HDR10 / HLG / Dolby Vision 等）
+    ///
+    /// 宿主**未**实现 HDR 渲染链（无 tone mapping），
+    /// 但这不阻止播放（libmpv 会降到 SDR）—— 所以不影响可播性判据。
+    pub hdr: bool,
+
+    /// 编码名（如 `h264` / `hevc` / `av1`），插件若知道就填
+    ///
+    /// ⚠⚠ **不许拿它做「能不能播」的判据** ——
+    /// 那个判据是 libmpv 自己嗅探的，宿主提前拦截只会造成「本来能播却被拦」。
+    ///
+    /// ⚠⚠ 没有实测样本时**一律留 None**，不许猜。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+}
+
+impl StreamFlags {
+    /// 是否一个位都没设（用于序列化时省略）
+    pub fn is_empty(&self) -> bool {
+        !self.drm && !self.hdr && self.codec.is_none()
+    }
+}
+
 /// 播放候选流
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamCandidate {
@@ -494,6 +549,58 @@ pub struct StreamCandidate {
     /// None = 该源没有 tag（本地测试流、自有平台流等）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<std::collections::BTreeMap<String, String>>,
+
+    // ─────── 宿主解析契约（task-33，2026-10-17）───────
+
+    /// ★★ [url] 是**播放页 URL**，需要宿主先解出真实地址
+    ///
+    /// # 为什么需要它
+    ///
+    /// 现有契约假设插件给的就是**可播地址**（[url] 直接交给 mpv）。
+    /// 但有一类站点的插件**拿不到**可播地址（需要签名 / DRM / 浏览器环境），
+    /// 只能给出播放页 URL，由宿主内置的解析能力去解。
+    ///
+    /// # Owner 原话（逐字）
+    /// ```text
+    /// > 我们不是要做解析站,要做的只是内置上这个这个播放 解码支持
+    /// > 内置解析能力,解码层也要
+    /// ```
+    /// ⇒ **不走第三方解析站**；能力长在我们自己身上。
+    ///
+    /// # ⚠⚠ 两个不同的「不能播」，不许冒充
+    /// ```text
+    /// drm_protected = true     ⇒ 受版权保护，本客户端**永远**解不了（如实告知用户）
+    /// needs_host_resolve = true ⇒ 宿主**还没把它解出来**（不是 DRM）
+    /// ```
+    /// 把后者标成前者就是对用户说谎 —— 与本仓「不支持就说不支持」同一条纪律。
+    ///
+    /// # 谁消费它（声明了不生效 = 骗人）
+    /// ```text
+    /// Rust  → 序列化原样透传
+    /// Dart  → StreamPreparer.prepare()（lib/core/stream_prepare.dart）
+    ///         挂在 SourinApi.resolveStream / getLiveStream 两个出口
+    ///         并被 StreamCandidate.isPlayable 当作不可播判据之一
+    /// ```
+    ///
+    /// ⚠⚠ 默认 false：老插件不传 ⇒ 行为与今天**逐字相同**。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_host_resolve: bool,
+
+    /// 站点标识（**代号**，不是站名）
+    ///
+    /// ⚠⚠ 本仓有机械门禁 `test/t98_no_site_names_test.dart`：
+    /// 具体视频网站的名字**不许出现在仓库任何可发布文本里**
+    /// （含 .dart / .rs / .md）。所以这个字段只能装代号（S1/S2/…），
+    /// 真实映射关系由插件自己持有（插件不进仓库）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<String>,
+
+    /// 流级属性——描述「这条流**是什么**」，不是「插件**请求宿主做什么**」
+    ///
+    /// 这个区分是刻意的：解码是宿主永远的责任，不是插件能选的能力位。
+    /// 曾拟过 `needs_host_decode`，**已砍掉**（会产生「插件没声明 ⇒ 宿主不解码？」的误导）。
+    #[serde(default, skip_serializing_if = "StreamFlags::is_empty")]
+    pub stream_flags: StreamFlags,
 }
 
 impl StreamCandidate {
@@ -504,7 +611,12 @@ impl StreamCandidate {
     /// 用构造器把「大多数情况」收口，新增字段时只改这里。
     ///
     /// `not_web_ready` 与 `drm_protected` 默认 `false`；
-    /// 前者目前无消费方（保留字段），后者由某电视台直播显式设置。
+    /// 前者由 `playback.rs` 传给 `streamproxy::maybe_proxy`（**有消费方**，
+    /// 且 URL 与独立音轨两条路径都传了），后者由某电视台直播显式设置。
+    ///
+    /// ⚠️ 2026-10-17 更正：此处原写「前者目前无消费方（保留字段）」—— **不准确**。
+    ///   实测 `grep not_web_ready` 在 `playback.rs:173` 与 `:185` 两处传给
+    ///   `maybe_proxy`。注释误导会让人误删字段，故改正。
     pub fn new(url: impl Into<String>, kind: StreamKind) -> Self {
         Self {
             url: url.into(),
@@ -516,6 +628,9 @@ impl StreamCandidate {
             drm_protected: false,
             audio_url: None,
             tags: None,
+            needs_host_resolve: false,
+            site_id: None,
+            stream_flags: StreamFlags::default(),
         }
     }
 

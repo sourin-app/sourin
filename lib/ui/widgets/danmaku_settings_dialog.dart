@@ -68,6 +68,8 @@ import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import 'cover_image.dart';
 import 'app_dialog_shell.dart';
+import '../../design/widgets/app_icon_button.dart';
+import '../../design/icons/app_icons.dart';
 
 /// T27-01：弹幕面板文字统一灰阶 —— 全文件取色只走这里
 ///
@@ -353,52 +355,62 @@ const Key blockWordsAddFieldKey = Key('danmaku-blockwords-add-field');
 
 /// 外部弹幕源的显示名。
 ///
-/// Owner 2026-10-15：「bilibili 这个**弹幕**允许使用，别的不允许」。  // site-ok: danmaku-source
-/// 弹幕服务与「本软件对接的视频网站」性质不同（同 `弹弹play`），
-/// 所以这一个名字可以直接写出来 —— 用户一眼就知道当前挂的是哪个弹幕源。
+/// ⚠️ 2026-10-17（Owner 第 11 条）：本文件**不再**用某个站名当页签名/标签。
+/// 页签改成按**能力**命名（dan-api / 插件提供 / 官方兜底），
+/// 所以这个常量保留只为兼容旧引用 —— 当前**没有任何地方**在用它。
+/// 真要显示"这个源是哪一家"时，从数据里取（`DanmakuFeedStat.detail`），
+/// 不要在这里写死第二个名字。
 ///
-/// ⚠️ 只有这一个名字被豁免（见 test/t98_no_site_names_test.dart 的行级豁免）；
-///    同文件里再写别的站名**照样会被抓**。
+/// 历史：Owner 2026-10-15 曾明确允许在**弹幕源**语境下具名
+/// （「bilibili 这个弹幕允许使用，别的不允许」），  // site-ok: danmaku-source
+/// 那条豁免仍然有效（`test/t98_no_site_names_test.dart` 的行级锚点），
+/// 只是本文件现在不需要它了。
+// ignore: unused_element
 const String _kBiliSourceLabel = 'bilibili'; // 弹幕源（Owner 明确允许具名）  // site-ok: danmaku-source
 
-/// 弹幕面板的**三个**页签（2026-10-15 第二版，Owner）。
+/// 弹幕面板的**三个**页签（2026-10-17 第三版，Owner 第 11 条）
 ///
-/// # Owner 原话（第二版，逐字）
+/// # Owner 原话（第三版，逐字）
 /// ```text
-/// > 我的意思,弹幕的配置就不要在这里了左边的挪到那个悬浮小窗里面去,快捷的操作
-/// > 然后这个tabs,一个是bilibili的弹幕配置,一个是弹弹play的弹幕配置,  // site-ok: danmaku-source
-/// > 如果必须要有的话,那就拆分成三个tab,第一个是配置,二三分别是bilib和弹弹,
-/// > 好像确实少不了,那就拆分成三个tab吧,然后上面显示状态,
-/// > 只有tab的内容区域上下滚动,其他区域不滚动
+/// > 弹弹play 我说了要让可用的dan-api去替换的,这里的弹幕面板怎么还是弹弹play?
+/// ```
+///
+/// # 为什么这一版把页签从「按源命名」改成「按能力命名」
+/// ```text
+/// 第二版是：配置 / bilibili / 弹弹play          // site-ok: danmaku-source
+/// 问题：页签名 = **某一家服务的名字**。
+///   · 换掉一家服务 ⇒ 页签名就得跟着改（现在正是这个局面）
+///   · 用户看到「弹弹play」会以为"本软件只支持这一家"
+///   · 而实际能力是三类**互不相干**的东西：
+///       ① 通用配置（跨源）
+///       ② 插件自己给的弹幕（插件声明 capabilities.danmaku_* 就行）
+///       ③ 官方/内置服务给的弹幕（dan-api / 官方兜底）
+/// ⇒ 按**能力**命名，以后换几家服务都不用动页签。
 /// ```
 ///
 /// # 三个页签各自负责什么
 /// ```text
-/// ① 配置   —— 跨来源的东西：开关、屏蔽词、正则
-/// ② bilibili —— **这个弹幕源自己**的：请求 / 搜索 / 绑定  // site-ok: danmaku-source
-/// ③ 弹弹play  —— 同上，另一个源：数据源探测 / 凭证
+/// ① 配置     —— 跨来源的东西：开关、显示参数、屏蔽词、正则
+/// ② dan-api  —— **首选**：内置公共实例 / 你自己填的地址（免凭证）
+/// ③ 插件提供 —— 插件声明的弹幕能力：请求 / 搜索 / 绑定
+/// ④ 官方兜底 —— 官方开放平台：凭证 + 数据源探测
 /// ```
+/// ⚠️ 实际是**四个**页签：通用配置 + 三条来源。第二版把"配置"和两个源
+///    混在一起叫"三个"，那是历史包袱；现在来源分成三条，页签自然变成四个。
 ///
-/// # 为什么把“显示设置”从面板拿走（而不是留一份）
-/// ```text
-/// 字号 / 不透明度 / 速度 / 显示区域 / 类型过滤（滚动·顶部·底部·彩色）
-/// —— 这些在悬浮小窗里**已经是全套**（四根可拖滑杆 + 四枚类型开关）。
-///
-/// 留一份在面板里，就是**同一个 bool 的第二道门** —— Owner 已经因同一理由
-/// 叫我删过一次（「更多」里那个重复的弹幕开关）。
-/// ```
-///
-/// ⚠️ 上面把 Owner 原话里的弹幕源名保留了 `bilibili`（Owner 2026-10-15 明确  // site-ok: danmaku-source
-///    「弹幕这个允许使用」）；其余地方仍用中性词。
+/// ⚠️ 页签**顺序即优先级**：dan-api 在插件前面，因为它是「开箱就有」的那条。
 enum DanmakuPanelTab {
-  /// 配置：跨来源的通用项（开关 / 屏蔽词 / 正则）
+  /// 配置：跨来源的通用项（开关 / 显示 / 屏蔽词 / 正则）
   general,
 
-  /// bilibili：外部弹幕源自己的配置  // site-ok: danmaku-source
-  bili,
+  /// dan-api：**首选**来源（内置公共实例 / 用户自填地址）
+  danApi,
 
-  /// 弹弹play：本机数据源探测 + 官方凭证
-  dandan,
+  /// 插件提供：插件自己声明的弹幕能力
+  plugin,
+
+  /// 官方兜底：官方开放平台（要 AppId / AppSecret 签名）
+  official,
 }
 
 class DanmakuSettingsDialog extends StatefulWidget {
@@ -731,26 +743,36 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           _group(_displaySection()),
           _gap(),
           _group(_filterSection()),
-        ] else if (_tab == DanmakuPanelTab.bili) ...[
+        ] else if (_tab == DanmakuPanelTab.plugin) ...[
+          /*
+           * 插件提供：**插件自己声明**的弹幕能力。
+           * 请求 / 搜索 / 绑定三节都属于"这个插件能给我什么弹幕"。
+           */
           _group(_requestSection()),
           if (_showSearchSection) ...[
             _gap(),
             _group(_searchSection()),
           ],
+        ] else if (_tab == DanmakuPanelTab.danApi) ...[
+          /*
+           * ★★★ dan-api（**首选**，Owner 第 4 / 11 条）
+           *
+           * 这一页是「开箱就能有弹幕」的那条路：
+           *   · 内置公共实例（不用填任何东西，默认就选好了）
+           *   · 用户自己的地址（压过内置）
+           * ⇒ 所以它排在插件前面 —— 用户什么都不配就该能用。
+           */
+          _group(_selfHostedSection()),
         ] else ...[
+          /*
+           * 官方兜底：要 AppId / AppSecret 签名的那条。
+           * 它是**最后一条**路（内置实例、插件、本机都不可用时才该走到）。
+           */
           _group(_sourceSection()),
           if (_showCredentialsSection) ...[
             _gap(),
             _group(_credentialsSection()),
           ],
-          /*
-           * ★★★ 2026-10-17（Owner 第 6 条「搜索弹幕提示失败」）：
-           * 自建弹幕服务入口落在这个页签 —— 它与「凭证」是**同一个问题的两条路**：
-           * 官方边要凭证（这构建没有）、自建边免凭证。
-           * 放在一处，用户才看得见"此路不通、但那条通"。
-           */
-          _gap(),
-          _group(_selfHostedSection()),
         ],
         _gap(),
         /*
@@ -851,7 +873,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// ══════════════════════════════════════════════════════════════
   /// ★★★ 为什么这里要多一个副标题（2026-10-09 · 缺陷 17 / Lead 裁决）
   /// ══════════════════════════════════════════════════════════════
-  /// 播放页底栏那枚 `Icons.tune` 按钮的 tooltip 改前是一长串：
+  /// 播放页底栏那枚 `AppIcons.tune` 按钮的 tooltip 改前是一长串：
   /// ```text
   /// '弹幕设置（AppId / 字号 / 透明度）'   <- player_page.dart 旧写法
   /// ```
@@ -880,6 +902,20 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     final s = widget.state;
     // 哪个源在生效：看状态行里有没有外部视频站的字样。
     final biliLive = _biliCount != null;
+    /*
+     * ★★★ 2026-10-17（Owner 第 11 条）
+     *
+     * 改前这里两枚 chip 写死叫 `弹弹play` / `bilibili`：  // site-ok: danmaku-source
+     * ```text
+     * Owner 原话：「弹弹play 我说了要让可用的dan-api去替换的,
+     *               这里的弹幕面板怎么还是弹弹play?」
+     * ```
+     * ⇒ chip 的名字改成**来源类别**（与页签同一套词），
+     *   具体是哪一家由**下面的读数**说明，不由 chip 名承担。
+     *
+     * ⚠️ 条数照旧如实：`—` 表示"这个源没在供数据"，
+     *    0 表示"供了但是 0 条" —— 两者对用户意义完全不同（见上一条注释）。
+     */
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(
@@ -894,13 +930,13 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       child: Row(
         children: [
           _sourceChip(
-            label: '弹弹play',
+            label: 'dan-api',
             count: biliLive ? null : s.count,
             live: !biliLive,
           ),
           const SizedBox(width: Sp.x2),
           _sourceChip(
-            label: _kBiliSourceLabel,
+            label: '插件提供',
             count: _biliCount,
             live: biliLive,
           ),
@@ -926,7 +962,14 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     required int? count,
     required bool live,
   }) {
-    final n = count == null ? '—' : '$count';
+    /*
+     * ★ 2026-10-17（看图台抓到的文案缺陷）
+     *
+     * 改前：`'$label $n 条'` ⇒ 没数据时渲染成「插件提供 — 条」，
+     * 中文里那个"条"吊在破折号后面**读不通**（像漏了个数字）。
+     * ⇒ 有数才带量词，没数就只说「插件提供 —」。
+     */
+    final text = count == null ? '$label —' : '$label $count 条';
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -941,7 +984,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         ),
         const SizedBox(width: Sp.x1),
         Text(
-          '$label $n 条',
+          text,
           style: TextStyle(
             color: live ? DanmakuTextColors.body : DanmakuTextColors.muted,
             fontSize: FontSizes.cap,
@@ -952,14 +995,21 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     );
   }
 
-  /// 三个页签。用 `SegmentedButton` 而不是自写一套：
+  /// 四个页签。用 `SegmentedButton` 而不是自写一套：
   /// 它自带选中态语义、键盘导航与无障碍读屏支持，
   /// 而且与本仓其他地方的选择控件同一套。
   ///
-  /// ⚠️ 三个弹幕相关标签都很短（配置 / bilibili / 弹弹play），  // site-ok: danmaku-source
-  ///    但卡片宽 560、内容区还要扣掉左右 padding，
-  ///    所以**不给图标** —— 三个图标会把文字挤成省略号，
-  ///    而省略号比没图标难认得多。
+  /// ★★★ 2026-10-17（Owner 第 11 条）：页签从「按源命名」改成「按能力命名」
+  /// ```text
+  /// 改前：配置 / bilibili / 弹弹play            // site-ok: danmaku-source
+  /// 改后：配置 / dan-api / 插件提供 / 官方兜底
+  /// ```
+  /// Owner 原话：「弹弹play 我说了要让可用的dan-api去替换的,
+  ///              这里的弹幕面板怎么还是弹弹play?」
+  ///
+  /// ⚠️ 四个标签都是 2~4 个字，卡片宽 560、内容区扣掉左右 padding 后
+  ///    仍放得下 —— **不给图标**（四个图标会把文字挤成省略号，
+  ///    而省略号比没图标难认得多）。
   Widget _tabBar() {
     return SizedBox(
       width: double.infinity,
@@ -970,12 +1020,16 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             label: Text('配置'),
           ),
           ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.bili,
-            label: Text(_kBiliSourceLabel),
+            value: DanmakuPanelTab.danApi,
+            label: Text('dan-api'),
           ),
           ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.dandan,
-            label: Text('弹弹play'),
+            value: DanmakuPanelTab.plugin,
+            label: Text('插件提供'),
+          ),
+          ButtonSegment<DanmakuPanelTab>(
+            value: DanmakuPanelTab.official,
+            label: Text('官方兜底'),
           ),
         ],
         selected: <DanmakuPanelTab>{_tab},
@@ -1052,6 +1106,25 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
      */
     return Padding(
       padding: const EdgeInsets.all(Sp.x4),
+      /*
+       * ⚠️ 2026-10-17：**这里不能换 AppSurface**（我换过一次，被测试打回）
+       *
+       * # 缺陷现场
+       * ```text
+       * 换成 AppSurface 后测试抛：
+       *   "ListTile background color or ink splashes may be invisible.
+       *    The ListTile is wrapped in a DecoratedBox that has a background color."
+       *
+       * 原因：AppSurface 内部是 DecoratedBox(带底色)，
+       *       而 ListTile 的底色与水波纹画在**最近的 Material 祖先**上。
+       *       中间隔一层带底色的 DecoratedBox ⇒ 效果被盖住 ⇒ 用户点上去看不到反馈。
+       * ```
+       *
+       * ★ 这暴露了「Material 分类」的根本盲点：
+       *   Material 不只是"提供底色"，它同时是 **ListTile 家族的绘制祖先**。
+       *   ⇒ 判断能否删，必须看**子树里有没有 ListTile/CheckboxListTile/SwitchListTile**，
+       *     而不是看它自己有没有 color。
+       */
       child: Material(
         color: bg,
         type: MaterialType.card,
@@ -1125,11 +1198,56 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   Widget _selfHostedSection() {
     final saved = UiPrefs.danmakuEndpoint;
     final res = _probeResult;
+    /*
+     * ★★★ 2026-10-17（Owner 第 4 / 11 条）：内置公共实例。
+     *
+     * # 改前这一节只有两个空输入框
+     * ```text
+     * Owner 原话：「我之前说的dan-api 是让你接入现成的服务,不是让我去填的,
+     *               或者可以内置上几个」
+     * ```
+     * ⇒ 现在先把内置实例**列出来**（默认选中第一个），再给"自己填"的入口。
+     *   用户什么都不填 = 用内置的，这条才是"接入现成的服务"。
+     *
+     * ⚠️ 内置只是**默认值**：一旦填了地址，内置那几行就变成"点一下就切回去"的
+     *    备选，而不是抢走用户的输入。
+     */
+    const builtins = kDanmakuPublicInstances;
+    final usingBuiltin = saved.trim().isEmpty && builtins.isNotEmpty;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('自建弹幕服务', note: '免凭证 · 可选'),
-        // ── 地址 ──
+        _sectionTitle('dan-api 服务', note: '免凭证 · 首选'),
+        // ── ① 内置公共实例（点一下就用，不用填）──
+        if (builtins.isNotEmpty) ...[
+          const Text(
+            '内置实例（开箱可用，点一下选中）',
+            style: TextStyle(
+              color: DanmakuTextColors.secondary,
+              fontSize: FontSizes.cap,
+            ),
+          ),
+          const SizedBox(height: Sp.x2),
+          for (final p in builtins) ...[
+            _builtinRow(p, selected: usingBuiltin && _isDefaultBuiltin(p)),
+            const SizedBox(height: Sp.x1),
+          ],
+          const SizedBox(height: Sp.x2),
+          _hint(
+            '内置实例是公共服务器：会慢（冷启动几秒）、也可能临时不可用。'
+            '下面可以填你自己的地址，填了就压过内置。',
+          ),
+          const SizedBox(height: Sp.x4),
+        ],
+        // ── ② 自己填（压过内置）──
+        Text(
+          builtins.isEmpty ? '服务地址' : '你自己的地址（可选，填了就压过内置）',
+          style: const TextStyle(
+            color: DanmakuTextColors.secondary,
+            fontSize: FontSizes.cap,
+          ),
+        ),
+        const SizedBox(height: Sp.x2),
         TextField(
           controller: _endpointUrl,
           style: const TextStyle(
@@ -1137,10 +1255,12 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             fontSize: FontSizes.sm,
           ),
           keyboardType: TextInputType.url,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             labelText: '服务地址',
-            hintText: 'http://127.0.0.1:9321',
-            border: OutlineInputBorder(),
+            hintText: builtins.isEmpty
+                ? 'http://127.0.0.1:9321'
+                : builtins.first.baseUrl,
+            border: const OutlineInputBorder(),
             isDense: true,
           ),
           // 地址一改，上一次的测试结果就**作废** —— 否则会显示一个
@@ -1205,7 +1325,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                         strokeWidth: 2,
                       ),
                     )
-                  : const Icon(Icons.wifi_tethering, size: 18),
+                  : const Icon(AppIcons.wifi_tethering, size: 18),
               label: const Text('测试连接'),
             ),
             const SizedBox(width: Sp.x2),
@@ -1223,7 +1343,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.error_outline,
+              const Icon(AppIcons.error_outline,
                   size: 14, color: Colors.orangeAccent),
               const SizedBox(width: Sp.x2),
               Flexible(
@@ -1241,7 +1361,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         if (res == null && _probeCustomMessage == null && saved.isNotEmpty) ...[
           Row(
             children: [
-              const Icon(Icons.check_circle_outline,
+              const Icon(AppIcons.check_circle_outline,
                   size: 14, color: DanmakuTextColors.muted),
               const SizedBox(width: Sp.x2),
               Flexible(
@@ -1256,10 +1376,92 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             ],
           ),
         ],
-        if (saved.isEmpty)
-          _hint('没填就按内置路径走：本机 弹弹play（127.0.0.1:2080，免凭证）→ 官方（要凭证）。'),
+        if (usingBuiltin && builtins.isNotEmpty)
+          _hint('当前生效：内置实例 ${builtins.first.label}（不用填任何东西）。'),
       ],
     );
+  }
+
+  /// 这一条内置实例是不是「当前默认选中的那个」
+  bool _isDefaultBuiltin(DanmakuPublicInstance p) =>
+      kDanmakuPublicInstances.isNotEmpty &&
+      kDanmakuPublicInstances.first.baseUrl == p.baseUrl;
+
+  /// 一条内置实例（点一下 = 选中它）
+  ///
+  /// ⚠️ 选中 = 把地址**写进输入框**并落盘（不是另开一套偏好）。
+  ///    理由：用户之后还能在同一个框里改它 —— 否则「内置」和「自填」
+  ///    会变成两条互不相通的路径（改了没生效，又是一处接线坑）。
+  Widget _builtinRow(DanmakuPublicInstance p, {required bool selected}) {
+    return InkWell(
+      onTap: () => _selectBuiltin(p),
+      borderRadius: Radii.rSm,
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: Sp.x3,
+          vertical: Sp.x2,
+        ),
+        decoration: BoxDecoration(
+          borderRadius: Radii.rSm,
+          border: Border.all(
+            color: selected
+                ? const Color(0xFF4FD1C5)
+                : DanmakuTextColors.border,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              selected ? AppIcons.check_circle : AppIcons.radio_button_unchecked,
+              size: 14,
+              color: selected
+                  ? const Color(0xFF4FD1C5)
+                  : DanmakuTextColors.muted,
+            ),
+            const SizedBox(width: Sp.x2),
+            Text(
+              p.label,
+              style: TextStyle(
+                color: selected
+                    ? DanmakuTextColors.body
+                    : DanmakuTextColors.secondary,
+                fontSize: FontSizes.sm,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+            const SizedBox(width: Sp.x2),
+            Expanded(
+              child: Text(
+                p.baseUrl,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: DanmakuTextColors.muted,
+                  fontSize: FontSizes.cap,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 点一条内置实例 ⇒ 写进输入框 + 落盘
+  ///
+  /// ⚠️ 与 [_runProbe] 同一条竞态纪律：序号前进，作废在途结果
+  ///    （用户已经明确选了另一个地址，那个在途请求与他无关了）。
+  void _selectBuiltin(DanmakuPublicInstance p) {
+    _probeSeq++;
+    _probeRunningSeq = null;
+    _endpointUrl.text = p.baseUrl;
+    _endpointToken.text = p.token;
+    UiPrefs.setDanmakuEndpoint(p.baseUrl);
+    UiPrefs.setDanmakuToken(p.token);
+    setState(() {
+      _probeResult = null;
+      _probeCustomMessage = null;
+    });
+    widget.onChanged?.call();
   }
 
   /// 地址的**打码**展示（状态行用）。
@@ -1279,7 +1481,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Icon(
-          ok ? Icons.check_circle : Icons.error_outline,
+          ok ? AppIcons.check_circle : AppIcons.error_outline,
           size: 14,
           color: ok ? Colors.greenAccent : Colors.orangeAccent,
         ),
@@ -1590,7 +1792,19 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('凭证', note: '弹弹play'),
+        /*
+         * ★ 2026-10-17（Owner 第 11 条）：note 从 `弹弹play` 改成 `官方兜底 · 要签名`
+         *
+         * # 为什么不写服务名
+         * ```text
+         * Owner：「弹弹play 我说了要让可用的dan-api去替换的,
+         *         这里的弹幕面板怎么还是弹弹play?」
+         * 这一节是**官方开放平台**那条边（要 AppId/AppSecret 签名），
+         * 页签已经叫「官方兜底」⇒ 这里再写一遍服务名只会让用户以为
+         * "这个面板仍然只支持那一家"。
+         * ```
+         */
+        _sectionTitle('凭证', note: '官方兜底 · 要签名'),
         // ── 状态行（如实）──
         Row(
           children: [
@@ -1813,11 +2027,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               ),
               decoration: InputDecoration(
                 hintText: '搜索屏蔽词（共 ${words.length} 个）',
-                prefixIcon: const Icon(Icons.search, size: 18),
+                prefixIcon: const Icon(AppIcons.search, size: 18),
                 suffixIcon: _blockSearch.text.isEmpty
                     ? null
                     : IconButton(
-                        icon: const Icon(Icons.close, size: 18),
+                        icon: const Icon(AppIcons.close, size: 18),
                         tooltip: '清除搜索',
                         onPressed: () => setState(_blockSearch.clear),
                       ),
@@ -1889,7 +2103,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                */
               labelStyle: const TextStyle(color: DanmakuTextColors.body),
               deleteIcon: const Icon(
-                Icons.close,
+                AppIcons.close,
                 size: 14,
                 color: DanmakuTextColors.secondary,
               ),
@@ -1966,7 +2180,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         const SizedBox(width: Sp.x1),
         IconButton(
           tooltip: '添加',
-          icon: const Icon(Icons.add, size: 20),
+          icon: const Icon(AppIcons.add, size: 20),
           onPressed: () {
             _addBlockWord(_blockWords.text);
             _blockWords.clear();
@@ -2064,7 +2278,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           children: [
             TextButton.icon(
               onPressed: s.loading ? null : widget.onReload,
-              icon: const Icon(Icons.refresh, color: DanmakuTextColors.body, size: 18),
+              icon: const Icon(AppIcons.refresh, color: DanmakuTextColors.body, size: 18),
               label: const Text(
                 '重新获取弹幕',
                 style: TextStyle(color: DanmakuTextColors.body),
@@ -2087,7 +2301,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               TextButton.icon(
                 onPressed: widget.onOpenBili,
                 icon: const Icon(
-                  Icons.play_circle_outline,
+                  AppIcons.play_circle_outline,
                   color: DanmakuTextColors.body,
                   size: 18,
                 ),
@@ -2168,7 +2382,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                           strokeWidth: 2,
                         ),
                       )
-                    : const Icon(Icons.search, size: 18),
+                    : const Icon(AppIcons.search, size: 18),
                 label: const Text('搜索'),
               ),
             ),
@@ -2251,7 +2465,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           TextButton.icon(
             onPressed: () => widget.onBatchBind!(s.searchResults),
             icon: const Icon(
-              Icons.playlist_add_check,
+              AppIcons.playlist_add_check,
               color: DanmakuTextColors.body,
               size: 18,
             ),
@@ -2314,7 +2528,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                         border: Border.all(color: DanmakuTextColors.border),
                       ),
                       child: const Icon(
-                        Icons.movie_outlined,
+                        AppIcons.movie_outlined,
                         size: 14,
                         color: DanmakuTextColors.muted,
                       ),
@@ -2335,7 +2549,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                                 Border.all(color: DanmakuTextColors.border),
                           ),
                           child: const Icon(
-                            Icons.movie_outlined,
+                            AppIcons.movie_outlined,
                             size: 14,
                             color: DanmakuTextColors.muted,
                           ),
@@ -2397,7 +2611,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       children: [
         Row(
           children: [
-            const Icon(Icons.info_outline, size: 18, color: DanmakuTextColors.muted),
+            const Icon(AppIcons.info_outline, size: 18, color: DanmakuTextColors.muted),
             const SizedBox(width: Sp.x2),
             Flexible(
               child: Text(
@@ -2430,7 +2644,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           const SizedBox(height: Sp.x3),
           FilledButton.icon(
             onPressed: () => widget.onHintAction!(a),
-            icon: const Icon(Icons.settings, size: 18),
+            icon: const Icon(AppIcons.settings, size: 18),
             label: Text(a.label),
           ),
         ],

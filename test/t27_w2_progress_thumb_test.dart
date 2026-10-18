@@ -261,9 +261,23 @@ void main() {
 
     // Stack children 里的 thumb：圆形、不透明白、中心走**内缩端点**区间
     expect(RegExp(r'child: const DecoratedBox\(').hasMatch(src), isTrue);
-    expect(src, contains('key: thumbKey,'));
+    /*
+     * ⚠️ 2026-10-18（round-65 第 17 条）：这两行断言的字面形式变了。
+     *
+     * 改前：PlayerProgressSlider 是 StatelessWidget ⇒ 静态常量直接裸用
+     *        `key: thumbKey,` / `color: thumbColor,`
+     * 改后：为了「拖动中只预览、松手才 seek」，它必须是 StatefulWidget
+     *        （要持有 _dragMs 状态）⇒ 在 State 里访问静态常量必须带类名
+     *        `PlayerProgressSlider.thumbKey` / `PlayerProgressSlider.thumbColor`
+     *        （Dart 不允许通过实例访问静态成员）。
+     *
+     * ★ 判据强度**没有降低**：仍然钉住「thumb 有 key、是圆形、颜色是这个常量」，
+     *   只是把「裸名」换成「带类名的全名」—— 因为代码结构确实变了。
+     *   若有人把 thumb 删掉或改成非圆形，这两条照样会红。
+     */
+    expect(src, contains('key: PlayerProgressSlider.thumbKey,'));
     expect(src, contains('shape: BoxShape.circle,'));
-    expect(src, contains('color: thumbColor,'));
+    expect(src, contains('color: PlayerProgressSlider.thumbColor,'));
     /*
      * ★★★ Owner 1011 反馈②（这条判据的方向**被本轮改动反转了**，别照着旧注释回退）
      * ```text
@@ -275,7 +289,10 @@ void main() {
      * ⚠️ 断言「存在内缩区间」而不是钉死一整行字面量 —— 后者会让任何
      *    等价重写都假红（本仓反复踩过这个形态）。
      */
-    expect(RegExp(r'final trackW = \(w - thumbDiameter\)').hasMatch(src), isTrue,
+    expect(
+        RegExp(r'final trackW = \(w - PlayerProgressSlider\.thumbDiameter\)')
+            .hasMatch(src),
+        isTrue,
         reason: '必须存在内缩后的行进区间 trackW = w - thumbDiameter');
     expect(RegExp(r'double centerX\(double ratio\) => r \+ ratio \* trackW;')
             .hasMatch(src),

@@ -38,6 +38,7 @@ import '../tokens.dart';
 import 'cover_image.dart';
 import 'motion_prefs.dart';
 import 'press_feedback.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 海报卡片
 ///
@@ -381,7 +382,7 @@ class _PosterCardState extends State<PosterCard> {
                            * ```text
                            * 这是**视频**应用的海报位 ⇒ 胶片/影片图标是"这里本来
                            * 该有一张影视封面"的最直接表达，且**不暗示任何具体内容**。
-                           * ⚠️ 不用 `Icons.broken_image`（那是"加载失败"的语义，
+                           * ⚠️ 不用 `AppIcons.broken_image`（那是"加载失败"的语义，
                            *    而空标题与"图挂了"是两件事 —— 见下面 `_failed` 分支，
                            *    那种情况仍走首字占位）。
                            * ```
@@ -403,7 +404,7 @@ class _PosterCardState extends State<PosterCard> {
                             Center(
                               child: widget.title.isEmpty
                                   ? Icon(
-                                      Icons.movie_outlined,
+                                      AppIcons.movie_outlined,
                                       size: FontSizes.display * 0.6,
                                       color: colors.onSurfaceVariant
                                           .withValues(alpha: 0.5),

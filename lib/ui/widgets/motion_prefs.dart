@@ -36,7 +36,7 @@
 // ⇒ 我在报告里把"让既有动画也走 reduce"列为**建议**，不擅自做。
 // ```
 
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
 
 import 'page_transition.dart';
 

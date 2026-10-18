@@ -22,7 +22,7 @@
 |---|---|
 | [AGENTS.md](AGENTS.md) | 开发入口：环境与命令、全仓硬约束、工作流、文档纪律 |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | **仓库的规矩**：PR 流程、评审纪律、假绿禁令、合并权限、自主推进 |
-| [DECISIONS.md](DECISIONS.md) | 决策记录：为什么这么选、排除了什么、**何时该翻案** |
+| [../.agents/notes/](../.agents/notes/) | 决策记录：为什么这么选、放弃了什么、什么条件下该翻案（按 class 分目录，不设索引） |
 
 ### 构建与运行
 

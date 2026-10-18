@@ -56,6 +56,9 @@ import '../../core/models.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import 'app_loading.dart';
+import '../../design/widgets/app_icon_button.dart' show AppSurface;
+import '../../design/widgets/app_ink_well.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 直播内嵌播放器
 ///
@@ -1606,7 +1609,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
    * # 三条现象 ↔ 三个根因（都在本文件）
    * ```text
    * ① 「默认显示的是静音」
-   *      `_EmbedBar` 的图标是**写死的常量** `Icons.volume_off_outlined`
+   *      `_EmbedBar` 的图标是**写死的常量** `AppIcons.volume_off_outlined`
    *      ⇒ 无论实际音量多少，永远画成"已静音"。UI 在说谎。
    * ② 「再次点击图标也没变化」
    *      本类的订阅里**没有 volume**（只订了 playing / buffering / error）
@@ -1907,7 +1910,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
                 children: [
                   if (widget.onToggleFullscreen != null)
                     _RoundBtn(
-                      icon: Icons.fullscreen,
+                      icon: AppIcons.fullscreen,
                       tooltip: '全屏播放',
                       onTap: widget.onToggleFullscreen!,
                     ),
@@ -2021,7 +2024,7 @@ class _EmbedError extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline, color: Colors.white70, size: 32),
+              const Icon(AppIcons.error_outline, color: Colors.white70, size: 32),
               const SizedBox(height: Sp.x3),
               Text(
                 message,
@@ -2057,7 +2060,7 @@ class _AudioOnlyBadge extends StatelessWidget {
           child: const Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.volume_up_outlined, color: Colors.white70, size: 30),
+              Icon(AppIcons.volume_up_outlined, color: Colors.white70, size: 30),
               SizedBox(height: Sp.x2),
               Text(
                 '仅音频',
@@ -2111,7 +2114,7 @@ class _EmbedVideoOutputDead extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  Icons.warning_amber_outlined,
+                  AppIcons.warning_amber_outlined,
                   color: Colors.white70,
                   size: 30,
                 ),
@@ -2154,7 +2157,7 @@ class _EmbedBar extends StatelessWidget {
 
   /// ★ 2026-10-09：是否静音（驱动图标）。
   ///
-  /// 改前这里没有这个字段，图标是**写死的常量** `Icons.volume_off_outlined`
+  /// 改前这里没有这个字段，图标是**写死的常量** `AppIcons.volume_off_outlined`
   /// ⇒ 永远画成"已静音"，与真实音量无关（Owner 缺陷 ①）。
   final bool muted;
 
@@ -2181,7 +2184,7 @@ class _EmbedBar extends StatelessWidget {
         child: Row(
           children: [
             _RoundBtn(
-              icon: playing ? Icons.pause : Icons.play_arrow,
+              icon: playing ? AppIcons.pause : AppIcons.play_arrow,
               tooltip: playing ? '暂停' : '播放',
               onTap: () => unawaited(onTogglePlay()),
             ),
@@ -2208,7 +2211,7 @@ class _EmbedBar extends StatelessWidget {
              * ```
              */
             _RoundBtn(
-              icon: muted ? Icons.volume_off_outlined : Icons.volume_up_outlined,
+              icon: muted ? AppIcons.volume_off_outlined : AppIcons.volume_up_outlined,
               tooltip: muted ? '取消静音' : '静音',
               onTap: () => unawaited(onMute()),
             ),
@@ -2231,12 +2234,13 @@ class _RoundBtn extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Tooltip(
         message: tooltip,
-        child: Material(
+        // ★ 去 Material（真 B 类：black@42% 圆形底 + 水波）
+        //   ⚠️ 原来用 CircleBorder，AppSurface 只吃半径 ⇒ 用边长一半换算成圆。
+        child: AppSurface(
           color: Colors.black.withValues(alpha: 0.42),
-          shape: const CircleBorder(),
-          child: InkWell(
+          borderRadius: BorderRadius.circular(999),
+          child: AppInkWell(
             onTap: onTap,
-            customBorder: const CircleBorder(),
             child: Padding(
               padding: const EdgeInsets.all(6),
               child: Icon(icon, color: Colors.white, size: 20),

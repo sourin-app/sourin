@@ -88,6 +88,7 @@ import '../tokens.dart';
 import '../widgets/overlay_motion.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
+import '../../design/icons/app_icons.dart';
 
 class SkipMarkersSettingsPage extends StatefulWidget {
   const SkipMarkersSettingsPage({super.key, this.initialMarkersForTest});
@@ -438,7 +439,7 @@ class _SkipMarkersSettingsPageState extends State<SkipMarkersSettingsPage> {
                 color: colors.onSurfaceVariant,
               ),
               prefixIcon: Icon(
-                Icons.search,
+                AppIcons.search,
                 size: 18,
                 color: colors.onSurfaceVariant,
               ),
@@ -446,7 +447,7 @@ class _SkipMarkersSettingsPageState extends State<SkipMarkersSettingsPage> {
               suffixIcon: _queryCtrl.text.isEmpty
                   ? null
                   : IconButton(
-                      icon: const Icon(Icons.clear, size: 16),
+                      icon: const Icon(AppIcons.clear, size: 16),
                       tooltip: '清除',
                       onPressed: () {
                         _queryCtrl.clear();

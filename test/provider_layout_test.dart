@@ -269,7 +269,17 @@ void main() {
        *   「菜单里有这一项，且它调的仍是 `_openOrderDialog`」。
        *   —— 行为不变（用户仍然点得到排序面板），只是位置换了。
        */
-      expect(src.contains("_menuRow(Icons.reorder, '调整顺序')"), isTrue,
+      /*
+       * ⚠️ 2026-10-18（round-65 E2）：断言里的图标名从 `Icons.reorder`
+       *    改成了 `AppIcons.reorder` —— E2 把全仓 163 处 `Icons.*`
+       *    换成了自建的 `AppIcons.*`（为了摘掉 material_ui 依赖）。
+       *    图标 codePoint 与字体族逐字相同（AppIcons 就是从 material_ui
+       *    抄出来的常量表），所以**观感零变化**，只是字面名变了。
+       *
+       * ★ 判据强度未降低：仍钉住「菜单里有这一项，且它调的仍是
+       *   `_openOrderDialog`」—— 换图标表不影响这两条语义。
+       */
+      expect(src.contains("_menuRow(AppIcons.reorder, '调整顺序')"), isTrue,
           reason: '排序面板入口必须保留（现在在 ⋮ 菜单里）');
       expect(src.contains('_openOrderDialog'), isTrue,
           reason: '_openOrderDialog 还在用');

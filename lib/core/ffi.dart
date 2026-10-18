@@ -188,6 +188,43 @@ class SourinCoreException implements Exception {
   /// ```
   final String kind;
 
+  /// ★★★ 给**用户看**的文案（Owner 第 7 条，2026-10-17）
+  ///
+  /// # Owner 原话
+  /// ```text
+  /// > 像图2 那种报错的信息,就不要加上溯影自己的信息了,
+  /// > 就只显示插件的报错信息就足够了
+  /// ```
+  ///
+  /// # 改前用户看到什么
+  /// ```text
+  /// SourinCoreException(other): 插件报错: 该内容需要大会员
+  /// └──────────┬─────────────┘ └──┬──┘ └──────┬──────┘
+  ///      ①宿主类名        ②宿主分类   ③插件原文
+  /// ```
+  /// ①② 都是**宿主自己加的**，对用户毫无意义：
+  /// · 用户不知道 `SourinCoreException` 是什么，也不知道 `other` 指什么
+  /// · 它们还挤占了本就不宽的弹窗一行，把真正的原因挤到第二行
+  ///
+  /// # 改后
+  /// ```text
+  /// 该内容需要大会员
+  /// ```
+  /// ⇒ 只留插件原文。`kind` 仍然保留在字段里给**代码**分支用
+  ///   （如 `unauthorized` 时引导登录），只是不再拼进展示文案。
+  ///
+  /// ⚠️ `toString()` 保持原样（带类名）—— 那是给**日志/栈**用的，
+  ///    排障时需要知道异常类型。展示走 [displayMessage]。
+  String get displayMessage {
+    // 插件原文里若还带着宿主包装的前缀，一并剥掉（老版本核心会加）
+    var m = message;
+    const hostPrefix = '插件报错: ';
+    while (m.startsWith(hostPrefix)) {
+      m = m.substring(hostPrefix.length);
+    }
+    return m;
+  }
+
   @override
   String toString() => 'SourinCoreException($kind): $message';
 }

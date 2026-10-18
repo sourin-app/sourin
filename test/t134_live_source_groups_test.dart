@@ -198,92 +198,98 @@ void _widgetTests() {
         onPickGroupFilter: onPick,
       );
 
-  testWidgets('★★ 没建过组 ⇒ 分组那一排根本不挂（老用户零感知）', (t) async {
+  /// ★★★ task-34：通过**工具栏下拉**选分组（不再是药丸）
+  Future<void> pickGroup(WidgetTester t, String? group) async {
+    await t.tap(find.byKey(const ValueKey('live-bar-group')));
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(ValueKey('live-bar-opt-' + (group ?? ''))));
+    await t.pumpAndSettle();
+  }
+
+  testWidgets('★★ 没建过组 ⇒ 分组那一格根本不出现（老用户零感知）', (t) async {
     await t.pumpWidget(host(makeList(groups: const {})));
     await t.pump();
-    expect(find.byKey(liveGroupFilterChipKey(null)), findsNothing,
-        reason: '★ 没建组就不该多占一行高度');
-    // 阴性对照：源那一排照旧在（证明不是整页没渲染）
-    expect(find.byKey(sourceFilterChipKey(null)), findsOneWidget);
+    expect(find.byKey(const ValueKey('live-bar-group')), findsNothing,
+        reason: '★ 没建组就不该多占一格位置');
+    // 阴性对照：源那一格照旧在（证明不是整条工具栏没渲染）
+    expect(find.byKey(const ValueKey('live-bar-source')), findsOneWidget);
   });
 
-  testWidgets('★★ 建过组 ⇒ 分组药丸真的出现（含「全部分组」）', (t) async {
+  testWidgets('★★ 建过组 ⇒ 分组下拉真的出现，且列出所有组', (t) async {
     await t.pumpWidget(host(makeList(groups: const {
       '常看': ['iptv'],
       '游戏': ['douyu', 'huya'],
     })));
     await t.pump();
-    expect(find.byKey(liveGroupFilterChipKey(null)), findsOneWidget);
-    expect(find.byKey(liveGroupFilterChipKey('常看')), findsOneWidget);
-    expect(find.byKey(liveGroupFilterChipKey('游戏')), findsOneWidget);
+    expect(find.byKey(const ValueKey('live-bar-group')), findsOneWidget);
+    await t.tap(find.byKey(const ValueKey('live-bar-group')));
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('live-bar-opt-')), findsOneWidget,
+        reason: '「全部分组」选项');
+    expect(find.byKey(const ValueKey('live-bar-opt-常看')), findsOneWidget);
+    expect(find.byKey(const ValueKey('live-bar-opt-游戏')), findsOneWidget);
   });
 
-  testWidgets('★★★ 点分组 ⇒ 列表真的只剩该组的源（端到端）', (t) async {
+  testWidgets('★★★ 选分组 ⇒ 列表真的只剩该组的源（端到端）', (t) async {
     await t.pumpWidget(host(makeList(groups: const {'常看': ['iptv']})));
     await t.pump();
-    // 点之前：三个源的频道都在
     expect(find.text('CCTV1 综合频道'), findsOneWidget);
     expect(find.text('某主播甲房间'), findsOneWidget);
 
-    await t.tap(find.byKey(liveGroupFilterChipKey('常看')));
-    await t.pump();
-    // 点之后：只剩 iptv 的频道
+    await pickGroup(t, '常看');
     expect(find.text('CCTV1 综合频道'), findsOneWidget);
     expect(find.text('某主播甲房间'), findsNothing,
         reason: '★★★ 用户要的核心行为：切到组就看不到不想看的源');
     expect(find.text('某主播乙房间'), findsNothing);
   });
 
-  testWidgets('★★★ 切到分组 ⇒ 源药丸排也只剩该组的源（「不用看不想看的其他源」）',
+  testWidgets('★★★ 选分组 ⇒ 源下拉里也只剩该组的源（不用看不想看的其他源）',
       (t) async {
     await t.pumpWidget(host(makeList(groups: const {'常看': ['iptv']})));
     await t.pump();
-    // 点之前：三个源的药丸都在
-    expect(find.byKey(sourceFilterChipKey('iptv')), findsOneWidget);
-    expect(find.byKey(sourceFilterChipKey('douyu')), findsOneWidget);
-    expect(find.byKey(sourceFilterChipKey('huya')), findsOneWidget);
+    await t.tap(find.byKey(const ValueKey('live-bar-source')));
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('live-bar-opt-iptv')), findsOneWidget);
+    expect(find.byKey(const ValueKey('live-bar-opt-douyu')), findsOneWidget);
+    await t.tap(find.byKey(const ValueKey('live-bar-source')));
+    await t.pumpAndSettle();
 
-    await t.tap(find.byKey(liveGroupFilterChipKey('常看')));
-    await t.pump();
-    // 点之后：只剩 iptv 的**药丸**
-    expect(find.byKey(sourceFilterChipKey('iptv')), findsOneWidget);
-    expect(find.byKey(sourceFilterChipKey('douyu')), findsNothing,
+    await pickGroup(t, '常看');
+    await t.tap(find.byKey(const ValueKey('live-bar-source')));
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('live-bar-opt-iptv')), findsOneWidget);
+    expect(find.byKey(const ValueKey('live-bar-opt-douyu')), findsNothing,
         reason: '★★★ 用户要的是「不用看不想看的其他源」——'
             '源名照旧列着就等于还在看它');
-    expect(find.byKey(sourceFilterChipKey('huya')), findsNothing);
-    // 阴性对照：「全部源」仍在（否则用户回不到不筛）
-    expect(find.byKey(sourceFilterChipKey(null)), findsOneWidget);
   });
 
-  testWidgets('★★★ 组内源被删光 ⇒ 源药丸排兜底回全部（不塌成空排）', (t) async {
+  testWidgets('★★★ 组内源被删光 ⇒ 源下拉兜底回全部（不塌成空）', (t) async {
     await t.pumpWidget(host(makeList(groups: const {'空组': ['gone']})));
     await t.pump();
-    await t.tap(find.byKey(liveGroupFilterChipKey('空组')));
-    await t.pump();
-    expect(find.byKey(sourceFilterChipKey('iptv')), findsOneWidget,
-        reason: '★★★ 组里没有可见源 ⇒ 兜底显示全部，不许把这一排也筛空');
-    expect(find.byKey(sourceFilterChipKey('douyu')), findsOneWidget);
+    await pickGroup(t, '空组');
+    await t.tap(find.byKey(const ValueKey('live-bar-source')));
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('live-bar-opt-iptv')), findsOneWidget,
+        reason: '★★★ 组里没有可见源 ⇒ 兜底显示全部，不许筛空');
+    expect(find.byKey(const ValueKey('live-bar-opt-douyu')), findsOneWidget);
   });
 
-  testWidgets('★★ 点分组会回调出去（接线没断）', (t) async {
+  testWidgets('★★ 选分组会回调出去（接线没断）', (t) async {
     final calls = <String?>[];
     await t.pumpWidget(host(makeList(
       groups: const {'常看': ['iptv']},
       onPick: calls.add,
     )));
     await t.pump();
-    await t.tap(find.byKey(liveGroupFilterChipKey('常看')));
-    await t.pump();
-    await t.tap(find.byKey(liveGroupFilterChipKey(null)));
-    await t.pump();
+    await pickGroup(t, '常看');
+    await pickGroup(t, null);
     expect(calls, ['常看', null]);
   });
 
   testWidgets('★★★ 删掉正在筛的组 ⇒ 源回落全部，不消失（Lead 要求）', (t) async {
     await t.pumpWidget(host(makeList(groups: const {'常看': ['iptv']})));
     await t.pump();
-    await t.tap(find.byKey(liveGroupFilterChipKey('常看')));
-    await t.pump();
+    await pickGroup(t, '常看');
     expect(find.text('某主播甲房间'), findsNothing); // 确实筛掉了
 
     // 设置页把「常看」删了 ⇒ 组件收到空 groups
@@ -293,6 +299,75 @@ void _widgetTests() {
         reason: '★★★ 源不许因为组被删而消失');
     expect(find.text('某主播甲房间'), findsOneWidget,
         reason: '★★★ 这正是 Lead 要的「删分组时里面的源回落到全部」');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ★★★ task-34 第 ② 半：**直播页内**建组 / 改名 / 删组（Owner 选的 a）
+  // ═══════════════════════════════════════════════════════════════════
+
+  testWidgets('★★★ 直播页内能打开分组管理器（入口不再只在设置里）', (t) async {
+    await t.pumpWidget(host(makeList(groups: const {})));
+    await t.pump();
+    expect(find.byKey(const ValueKey('live-manage-groups')), findsOneWidget,
+        reason: '★★★ Owner：「自定义分组有了,但是配置的地方没有」⇒ 入口必须在直播页');
+    await t.tap(find.byKey(const ValueKey('live-manage-groups')));
+    await t.pumpAndSettle();
+    expect(find.text('管理直播分组'), findsOneWidget);
+  });
+
+  testWidgets('★★★ 管理器内建组 + 保存 ⇒ 真的落进 UiPrefs', (t) async {
+    UiPrefs.debugResetForTest();
+    await t.pumpWidget(host(makeList(groups: const {})));
+    await t.pump();
+    await t.tap(find.byKey(const ValueKey('live-manage-groups')));
+    await t.pumpAndSettle();
+
+    await t.enterText(find.byKey(const ValueKey('live-mgr-name')), '常看');
+    await t.tap(find.byKey(const ValueKey('live-mgr-add')));
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('live-mgr-del-常看')), findsOneWidget);
+
+    await t.tap(find.byKey(const ValueKey('live-mgr-save')));
+    await t.pumpAndSettle();
+    await t.pump(const Duration(milliseconds: 400)); // 落盘防抖
+    expect(UiPrefs.liveSourceGroups().containsKey('常看'), isTrue,
+        reason: '★★★ 直播页内建的组必须真的存下来');
+  });
+
+  testWidgets('★★★ 管理器内删组 + 保存 ⇒ 真的删掉（源回落全部）', (t) async {
+    UiPrefs.debugResetForTest();
+    UiPrefs.setLiveSourceGroups({'常看': ['iptv']});
+    await t.pumpWidget(host(makeList(groups: const {'常看': ['iptv']})));
+    await t.pump();
+    await t.tap(find.byKey(const ValueKey('live-manage-groups')));
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(const ValueKey('live-mgr-del-常看')));
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(const ValueKey('live-mgr-save')));
+    await t.pumpAndSettle();
+    await t.pump(const Duration(milliseconds: 400));
+    expect(UiPrefs.liveSourceGroups(), isEmpty,
+        reason: '★★★ 删组必须真的落盘');
+    // ★ 删掉筛选器 ⇒ 全部源照旧（Lead 要求：不许消失）
+    final all = [g('iptv'), g('douyu')];
+    expect(applyLiveSourceGroup(all, UiPrefs.liveSourceGroups(), null).length, 2);
+  });
+
+  testWidgets('★★ 管理器取消 ⇒ 不写 prefs（草稿不污染已存配置）', (t) async {
+    UiPrefs.debugResetForTest();
+    UiPrefs.setLiveSourceGroups({'原样': ['iptv']});
+    await t.pumpWidget(host(makeList(groups: const {'原样': ['iptv']})));
+    await t.pump();
+    await t.tap(find.byKey(const ValueKey('live-manage-groups')));
+    await t.pumpAndSettle();
+    await t.enterText(find.byKey(const ValueKey('live-mgr-name')), '临时');
+    await t.tap(find.byKey(const ValueKey('live-mgr-add')));
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(const ValueKey('live-mgr-cancel')));
+    await t.pumpAndSettle();
+    await t.pump(const Duration(milliseconds: 400));
+    expect(UiPrefs.liveSourceGroups().keys.toList(), ['原样'],
+        reason: '★ 取消 ⇒ 草稿丢弃');
   });
 }
 

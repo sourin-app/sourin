@@ -317,6 +317,15 @@ pub struct JsPluginProvider {
     /// 由加载方（`load_plugins_hydrated`）注入 —— 模块本身不知道
     /// 应用数据目录在哪，这是有意的（便于测试时用临时目录）。
     data_dir: Option<std::path::PathBuf>,
+    /// ★ 域名池（插件给候选、宿主选路）
+    ///
+    /// `RefCell` 是因为 `call_js` 收 `&self`（它被 `MediaProvider` 的
+    /// 一堆 `&self` 方法调用），而选路要改状态。单线程内使用，无跨线程争用。
+    ///
+    /// 没有声明 `hosts` 的插件这里恒为 `None` ⇒ 行为与加这个字段前**完全一致**。
+    pool: Arc<std::sync::Mutex<Option<crate::hostpool::HostPool>>>,
+    /// Where pool state is persisted (same dir as persist.rs).
+    pool_dir: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for JsPluginProvider {
@@ -445,6 +454,8 @@ impl JsPluginProvider {
             source: source.to_string(),
             proxy: None,
             data_dir: None,
+            pool: Arc::new(std::sync::Mutex::new(None)),
+            pool_dir: None,
         })
     }
 
@@ -452,6 +463,63 @@ impl JsPluginProvider {
     pub fn with_data_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.data_dir = Some(dir);
         self
+    }
+
+    /// task-37: inject pool persistence dir.
+    pub fn with_pool_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.pool_dir = Some(dir);
+        self
+    }
+
+    /// task-37: apply persisted pool state onto this plugin.
+    ///
+    /// The pool is rebuilt from plugin declarations during hydrate, but
+    /// "which host is broken" is memory across restarts. Without restoring it,
+    /// persisting would be pointless.
+    ///
+    /// Only restores hosts that still exist (sync_hosts prunes), so removing a
+    /// host from the plugin does not leave stale state accumulating.
+    pub fn apply_saved_pool(&mut self, saved: Option<&crate::hostpool::HostPool>) {
+        let Some(saved) = saved else { return };
+        let mut guard = self.pool.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(live) = guard.as_mut() else { return };
+        let hosts = live.hosts.clone();
+        live.sync_hosts(hosts);
+        for (h, st) in &saved.states {
+            if live.hosts.iter().any(|x| x == h) {
+                live.states.insert(h.clone(), st.clone());
+            }
+        }
+        if let Some(cur) = &saved.current {
+            if live.hosts.iter().any(|x| x == cur) {
+                live.current = Some(cur.clone());
+            }
+        }
+    }
+
+    /// task-37: write current pool state to disk (throttled to 1 per 5s).
+    ///
+    /// record_outcome runs after EVERY host.http request; a detail page can
+    /// fire dozens. Unthrottled that is dozens of disk writes.
+    fn maybe_save_pool(&self) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST: AtomicU64 = AtomicU64::new(0);
+        let Some(dir) = &self.pool_dir else { return };
+        let now = now_unix().max(0) as u64;
+        let prev = LAST.load(Ordering::Relaxed);
+        if now.saturating_sub(prev) < 5 {
+            return;
+        }
+        LAST.store(now, Ordering::Relaxed);
+        self.save_pool_now(dir);
+    }
+
+    /// task-37: write immediately, no throttling (for shutdown/tests).
+    pub fn save_pool_now(&self, dir: &std::path::Path) {
+        // Single write path: route through save_hook so tests that cover
+        // save_hook also cover this. Two paths previously diverged and a
+        // fault-injected bug slipped past the test.
+        save_hook(&Some(dir.to_path_buf()), &self.manifest.id, &self.pool, true);
     }
 
     /// 把插件声明的 `config` 装进 manifest
@@ -561,7 +629,8 @@ impl JsPluginProvider {
             .call_js(
                 "({ capabilities: plugin.capabilities ?? {}, \
                    config: plugin.config ?? [], \
-                   coverHeaders: plugin.coverHeaders ?? null })",
+                   coverHeaders: plugin.coverHeaders ?? null, \
+                   hosts: plugin.hosts ?? null })",
             )
             .await
         {
@@ -597,6 +666,36 @@ impl JsPluginProvider {
                 Ok(_) => {}
                 Err(e) => log::warn!(
                     "插件 {} 的 coverHeaders 格式不对（应为 [[名, 值], ...]）：{e}",
+                    self.manifest.id
+                ),
+            }
+        }
+
+        // ── ★ 域名池（task-37）──
+        //
+        // 插件声明 hosts: ['https://a.example.com', ...]。
+        // 只有数组形式才认；不声明 / 空数组 ⇒ 不建池，
+        // 行为与加这个能力前完全一致。
+        if let Some(h) = v.get("hosts") {
+            match serde_json::from_value::<Vec<String>>(h.clone()) {
+                Ok(list) if !list.is_empty() => {
+                    let pool = crate::hostpool::HostPool::from_hosts(list);
+                    if pool.hosts.len() == 1 {
+                        log::info!(
+                            "插件 {}：hosts 只有一项，无处可切（仍会记失败）",
+                            self.manifest.id
+                        );
+                    }
+                    log::info!(
+                        "插件 {}：声明了 {} 个域名候选",
+                        self.manifest.id,
+                        pool.hosts.len()
+                    );
+                    *self.pool.lock().unwrap_or_else(|e| e.into_inner()) = Some(pool);
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!(
+                    "插件 {}：hosts 格式不对（应为字符串数组）：{e}",
                     self.manifest.id
                 ),
             }
@@ -918,12 +1017,56 @@ impl JsPluginProvider {
             .data_dir
             .clone()
             .unwrap_or_else(|| std::path::PathBuf::from(".plugin-data"));
+
+        /*
+         * ★ `host.base()` —— 当前该用的域名（2026-10-17，task-37）
+         *
+         * # 为什么要有它
+         *
+         * 插件声明 `hosts: [...]` 之后，**必须**通过这个函数拿域名拼 URL。
+         * 否则宿主不知道「这一次请求打的是哪个域名」，
+         * 也就无法在失败时把账记到正确的域名头上 —— 池子形同虚设。
+         *
+         * # 没声明 hosts 时
+         *
+         * 返回空串。插件不该依赖它非空：老插件照旧写死自己的域名，
+         * 行为与加这个能力前**完全一致**。
+         */
+        let base_now: String = {
+            let mut guard = self.pool.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_mut() {
+                Some(p) => {
+                    let now = now_unix().max(0) as u64;
+                    p.revive_cooled(now);
+                    p.pick(now).unwrap_or_default()
+                }
+                None => String::new(),
+            }
+        };
+
+        let pool_ref = self.pool.clone();
+        let save_dir = std::sync::Arc::new(self.pool_dir.clone());
+        let pid = self.manifest.id.clone();
+        let base_for_http = base_now.clone();
         ctx.with(move |ctx| {
             let g = ctx.globals();
+
+            /*
+             * ⚠️ 不要在这里 `g.set("host", ...)` 注入任何东西。
+             *
+             * 下面的 shim 会 `globalThis.host = { ... }` **整体覆盖**，
+             * 先设的一律丢失。我就是这么丢过 base() 的（实测：
+             * 插件调 host.base() 报 "not a function"）。
+             * 新增 host 方法请加到**下面那个字面量**里。
+             */
 
             // host.http
             let http = Object::new(ctx.clone())?;
             let px = proxy.clone();
+            let pool_get = pool_ref.clone();
+            let save_dir_get = save_dir.clone();
+            let pid_get = pid.clone();
+            let base_get = base_for_http.clone();
             http.set(
                 "get",
                 Function::new(
@@ -933,11 +1076,25 @@ impl JsPluginProvider {
                         // ★ 必须在 async 块**之前**把 Object 转成 owned 的 HashMap ——
                         //   `Object<'js>` 借用上下文，跨 await 会报 lifetime 错误
                         let h = headers.map(|o| object_to_headers(&o)).unwrap_or_default();
-                        async move { do_http(&px, "GET", &url, &h, None).await }
+                        let pool = pool_get.clone();
+                        let used = base_get.clone();
+                        let save_dir = save_dir_get.clone();
+                        let pid = pid_get.clone();
+                        async move {
+                            let out = do_http(&px, &pid, "GET", &url, &h, None).await;
+                            if record_outcome(&pool, &used, &out) {
+                                save_hook(save_dir.as_ref(), &pid, &pool, false);
+                            }
+                            out
+                        }
                     }),
                 )?,
             )?;
             let px2 = proxy.clone();
+            let pool_post = pool_ref.clone();
+            let save_dir_post = save_dir.clone();
+            let pid_post = pid.clone();
+            let base_post = base_for_http.clone();
             http.set(
                 "post",
                 Function::new(
@@ -945,7 +1102,17 @@ impl JsPluginProvider {
                     Async(move |url: String, body: Option<String>, headers: Option<Object>| {
                         let px = px2.clone();
                         let h = headers.map(|o| object_to_headers(&o)).unwrap_or_default();
-                        async move { do_http(&px, "POST", &url, &h, body).await }
+                        let pool = pool_post.clone();
+                        let used = base_post.clone();
+                        let save_dir = save_dir_post.clone();
+                        let pid = pid_post.clone();
+                        async move {
+                            let out = do_http(&px, &pid, "POST", &url, &h, body).await;
+                            if record_outcome(&pool, &used, &out) {
+                                save_hook(save_dir.as_ref(), &pid, &pool, false);
+                            }
+                            out
+                        }
                     }),
                 )?,
             )?;
@@ -973,15 +1140,17 @@ impl JsPluginProvider {
              *    改返回值会**全部坏掉**。
              */
             let px3 = proxy.clone();
+            let pid_raw = pid.clone();
             http.set(
                 "raw",
                 Function::new(
                     ctx.clone(),
                     Async(move |method: String, url: String, headers: Option<Object>| {
                         let px = px3.clone();
+                        let pid = pid_raw.clone();
                         let h = headers.map(|o| object_to_headers(&o)).unwrap_or_default();
                         async move {
-                            let r = do_http_full(&px, &method, &url, &h, None).await;
+                            let r = do_http_full(&px, &pid, &method, &url, &h, None).await;
                             /*
                              * 手搓 JSON —— 与其它出口一致（都用 serde_json::json!），
                              * 避免手写转义出错。
@@ -1044,6 +1213,86 @@ impl JsPluginProvider {
                 })?,
             )?;
             g.set("host_store", store)?;
+
+            /*
+             * ★ host.extract —— 通用提取器（task-41）
+             *
+             * # 为什么宿主只提供「执行」而不是「站点解析器」
+             * 见文件上方 extract_regex / extract_json_path 的说明。
+             * 一句话：站点知识留在插件，宿主不认识任何具体站点。
+             *
+             * # 两个方法都是纯函数，不碰网络/磁盘
+             *   extract.regex(text, pattern)     -> string[]（语法错则抛）
+             *   extract.json(text, path)         -> JSON 文本 或 'null'
+             *
+             * ⚠️ json 返回**字符串**而不是对象，与 host.config.get 一致：
+             *    QuickJS 跨边界传对象不如传字符串稳，插件自己 JSON.parse。
+             */
+            let extract_obj = Object::new(ctx.clone())?;
+            extract_obj.set(
+                "regex",
+                Function::new(ctx.clone(), move |text: String, pattern: String| -> std::result::Result<
+                    Vec<String>,
+                    rquickjs::Error,
+                > {
+                    // 语法错误要变成 JS 异常，不能静默返回空数组
+                    extract_regex(&text, &pattern).map_err(|e| {
+                        rquickjs::Error::new_from_js_message("string", "ExtractError", &e)
+                    })
+                })?,
+            )?;
+            extract_obj.set(
+                "json",
+                Function::new(ctx.clone(), move |text: String, path: String| -> String {
+                    let doc = match serde_json::from_str::<serde_json::Value>(&text) {
+                        Ok(v) => v,
+                        Err(e) => return format!("__EXTRACT_ERR__JSON 解析失败: {e}"),
+                    };
+                    match extract_json_path(&doc, &path) {
+                        Ok(Some(v)) => serde_json::to_string(&v).unwrap_or_else(|_| "null".into()),
+                        Ok(None) => "null".into(),
+                        Err(e) => format!("__EXTRACT_ERR__{e}"),
+                    }
+                })?,
+            )?;
+            g.set("host_extract", extract_obj)?;
+
+            /*
+             * ★ host.playback.probe —— 探测播放地址（task-41 第 2 步）
+             *
+             * 返回 **JSON 文本**（与 host.config.get 一致：跨 QuickJS 边界
+             * 传字符串比传对象稳），插件自己 JSON.parse：
+             *
+             *   const r = JSON.parse(await host.playback.probe(url))
+             *   // r = { verdict, kind, contentType, message, retryable }
+             *
+             * # verdict 的四种取值（**互不混淆**）
+             *   playable        —— 可以尝试播放
+             *   dash_unsupported—— DASH 格式，本播放器**未实现**（不是内容坏了）
+             *   drm             —— 受 DRM 保护，**架构上不可能播**
+             *   unreachable     —— 网络/HTTP 失败，**可以重试**
+             */
+            let playback = Object::new(ctx.clone())?;
+            {
+                let proxy_probe = proxy.clone();
+                let pid_probe = pid.clone();
+                playback.set(
+                    "probe",
+                    Function::new(
+                        ctx.clone(),
+                        Async(move |url: String| {
+                            let px = proxy_probe.clone();
+                            let pid = pid_probe.clone();
+                            async move {
+                                // ProbeReport 自己负责序列化（含 statusCode / redirected / finalUrl）
+                                probe_url(&px, &pid, &url).await.to_json()
+                            }
+                        }),
+                    )?,
+                )?;
+            }
+            g.set("host_playback", playback)?;
+
 
             /*
              * ★ host.config —— 插件读取**用户在界面上配置的值**
@@ -1177,9 +1426,21 @@ impl JsPluginProvider {
              * 于是插件的 `Referer` 从来没发出去过（某电视台接口要它）。
              * 这种 bug 不报错、只是偶尔拿到错误页，极难查。
              */
+            // task-37: expose the picked host as a global the shim can close over
+            let _ = g.set("host_base_value", base_for_http.clone());
+
             ctx.eval::<(), _>(
                 r#"
                 globalThis.host = {
+                  /*
+                   * task-37: which host to use for multi-domain pools.
+                   *
+                   * Defined here (not on the pre-shim host_obj) because this
+                   * literal OVERWRITES globalThis.host wholesale -- anything set
+                   * earlier is lost. That was a real bug: base() was injected at
+                   * 1060 but wiped here, so plugins got "not a function".
+                   */
+                  base: () => host_base_value,
                   http: {
                     get: (url, options) => host_http.get(url, (options && options.headers) || null),
                     post: (url, body, options) => host_http.post(
@@ -1207,6 +1468,24 @@ impl JsPluginProvider {
                     ),
                   },
                   log: host_log,
+                  /*
+                   * task-41: 通用提取器（不含任何站点知识）
+                   *
+                   *   host.extract.regex(text, pattern)  -> string[]
+                   *   host.extract.json(text, path)      -> JSON 文本或 'null'
+                   */
+                  extract: host_extract,
+
+                  /*
+                   * task-41 第 2 步：探测播放地址
+                   *
+                   *   const r = JSON.parse(await host.playback.probe(url))
+                   *   // r = { verdict, kind, contentType, message, retryable }
+                   *
+                   * verdict 四种取值互不混淆：
+                   *   playable / dash_unsupported / drm / unreachable
+                   */
+                  playback: host_playback,
                   store: host_store,
                   /*
                    * ★ 用户配置（插件声明 → 宿主渲染界面 → 用户填 → 这里读）
@@ -1572,7 +1851,30 @@ fn map_js_error(msg: &str) -> ProviderError {
     } else if lower.contains("network") || lower.contains("timeout") {
         ProviderError::network(msg.to_string())
     } else {
-        ProviderError::new(ErrorKind::Other, format!("插件报错: {msg}"))
+        /*
+         * ★★★ 不再加 `插件报错: ` 前缀（Owner 第 7 条，2026-10-17）
+         *
+         * # Owner 原话
+         * ```text
+         * > 像图2 那种报错的信息,就不要加上溯影自己的信息了,
+         * > 就只显示插件的报错信息就足够了
+         * ```
+         *
+         * # 改前用户看到
+         * ```text
+         * SourinCoreException(other): 插件报错: 该内容需要大会员
+         * ```
+         * 前缀「插件报错:」是**宿主自己加的**，对用户无信息量 ——
+         * 用户只想知道「为什么不能播」，不需要知道「这是插件报的」。
+         *
+         * # 改后
+         * ```text
+         * 该内容需要大会员
+         * ```
+         * ⚠️ 消息**原样透出**。这也与本文件上方 `parse:` 那一支的纪律一致
+         *    （那里早就写着「消息原样透出、不加任何包装」）。
+         */
+        ProviderError::new(ErrorKind::Other, msg.to_string())
     }
 }
 
@@ -1584,13 +1886,36 @@ fn map_js_error(msg: &str) -> ProviderError {
 /// 所以错误信息走返回值这条通道，由插件的 `getJson` 判断前缀再抛。
 async fn do_http(
     proxy: &Option<Arc<crate::proxy::ProxyStore>>,
+    provider: &str,
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
     body: Option<String>,
 ) -> String {
+    /*
+     * ★★★ 2026-10-17（Owner 实测报障）：`client_for` 的 provider 参数
+     * 原来硬编码成字面量 `"plugin"`，导致**用户给某个源配的代理永远读不到**。
+     *
+     * # 为什么这是真缺陷（不是理论问题）
+     * ```text
+     * UI 侧：proxy_panel.dart 用 widget.providerId（真实插件 id）存配置
+     *        → SourinApi.setProxyConfig(id, cfg) → Rust 按 id 存进 ProxyStore
+     * 插件侧：client_for("plugin") 查的是 "plugin" 这个 key
+     *        → 查不到 ⇒ 返回 ProxyConfig::default() ⇒ mode=Direct ⇒ 强制直连
+     * ⇒ 用户配了代理 = 白配；用户配了直连 = 恰好蒙对
+     * ```
+     *
+     * 实测依据（Owner 原话「某动画站（代号 S0）是不能挂梯子，必须直接访问，不然就是会 403」）：
+     *   同一 URL，直连 200 / 走代理 403。
+     *   而本机开着 HTTP_PROXY=127.0.0.1:7890，
+     *   若某源被误配成跟随系统，用户看到的就是 403 —— 但 UI 上他明明配过直连。
+     *
+     * ⇒ 必须把真实 provider id 传进来，让「按源配置」真的生效。
+     */
     let client = match proxy {
-        Some(px) => px.client_for("plugin", None).unwrap_or_else(|_| default_client()),
+        Some(px) => px
+            .client_for(provider, None)
+            .unwrap_or_else(|_| default_client()),
         None => default_client(),
     };
 
@@ -1643,6 +1968,84 @@ async fn do_http(
     }
 }
 
+/// 把一次 HTTP 结果记到域名池里（task-37）
+///
+/// # 为什么在 `do_http` 外面记
+///
+/// `do_http` 是个纯函数（拿不到池），而「这一次打的是哪个域名」
+/// 只有调用方知道（它刚才从 `host.base()` 拿的）。
+///
+/// # 失败判据
+///
+/// 只认 `do_http` 自己的失败语言：以 `__ERR__` 开头。
+/// 不按内容猜（比如「没有 JSON」就当失败）—— 那会把
+/// 正常的空列表误判成网络故障，反而把好域名记坏。
+///
+/// # 没用池时完全不动
+///
+/// `used` 为空（插件没声明 `hosts`）或池为 `None` ⇒ 直接返回。
+/// task-37: persist pool state after a change.
+///
+/// Throttled to once per 5s (see `maybe_save_pool`). Errors are logged, never
+/// propagated: a failed disk write must not break a plugin HTTP call.
+fn save_hook(
+    dir: &Option<std::path::PathBuf>,
+    plugin_id: &str,
+    pool: &Arc<std::sync::Mutex<Option<crate::hostpool::HostPool>>>,
+    force: bool,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let Some(dir) = dir else { return };
+    let now = now_unix().max(0) as u64;
+    let prev = LAST.load(Ordering::Relaxed);
+    if !force && now.saturating_sub(prev) < 5 {
+        return;
+    }
+    LAST.store(now, Ordering::Relaxed);
+
+    // Read-modify-write: other plugins own their own entries.
+    let mut all = crate::hostpool::load(dir);
+    let guard = pool.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(p) = guard.as_ref() else { return };
+    all.pools.insert(plugin_id.to_string(), p.clone());
+    drop(guard);
+
+    if let Err(e) = crate::hostpool::save(dir, &all) {
+        log::warn!("host pool save failed: {e}");
+    }
+}
+
+fn record_outcome(
+    pool: &Arc<std::sync::Mutex<Option<crate::hostpool::HostPool>>>,
+    used: &str,
+    body: &str,
+) -> bool {
+    if used.is_empty() {
+        return false;
+    }
+    let mut guard = pool.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(p) = guard.as_mut() else {
+        return false;
+    };
+    if !p.hosts.iter().any(|h| h == used) {
+        return false;
+    }
+    if body.starts_with("__ERR__") {
+        let now = now_unix().max(0) as u64;
+        let cooled = p.record_failure(used, now);
+        if cooled {
+            log::warn!(
+                "域名池：{used} 连续失败 {} 次，进入冷却",
+                crate::hostpool::COOLDOWN_AFTER_FAILURES
+            );
+        }
+    } else {
+        p.record_success(used);
+    }
+    true
+}
+
 /// HTTP 响应（**含响应头**）—— 给 `host.http.raw` 用
 ///
 /// # 为什么需要它（2026-09-20，为扫码登录加）
@@ -1669,13 +2072,16 @@ pub struct HttpFull {
 /// 与 [`do_http`] 相同，但**保留响应头**
 pub async fn do_http_full(
     proxy: &Option<Arc<crate::proxy::ProxyStore>>,
+    provider: &str,
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
     body: Option<String>,
 ) -> HttpFull {
     let client = match proxy {
-        Some(px) => px.client_for("plugin", None).unwrap_or_else(|_| default_client()),
+        Some(px) => px
+            .client_for(provider, None)
+            .unwrap_or_else(|_| default_client()),
         None => default_client(),
     };
 
@@ -1765,6 +2171,522 @@ fn store_load(dir: &std::path::Path, plugin_id: &str) -> serde_json::Map<String,
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default()
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  ★ 通用提取器（2026-10-17，task-41）
+// ═══════════════════════════════════════════════════════════════════
+//
+// # 为什么是「通用提取」而不是「内置站点解析器」
+//
+// 原设想是宿主内置若干具体站点的解析器。但这与仓库三条硬约束冲突：
+//
+//  ① test/t98_no_site_names_test.dart —— 仓库任何可发布文本不许出现具体站名
+//     （扫描 .dart / .rs / .js / .md / .yaml / .json / .toml / .sh）
+//  ② Owner 口径：具体视频网站由**用户本地插件**提供，不进仓库
+//  ③ task-37 的分工：插件给数据，宿主给算法，宿主不认识任何具体域名
+//
+// ⇒ 在 src/ 里写某个站点的接口地址，会**直接让 t98 门禁变红**。
+//   也就是说：自己的门禁会挡住自己的实现 —— 这是设计正确的信号，不是障碍。
+//
+// # 所以这里只提供**不含任何站点知识**的通用能力
+//
+//   站点知识（正则、JSON 路径、签名算法、接口地址）全部留在插件里；
+//   宿主只提供「按规则从文本里取值」这个**执行**能力。
+//
+// ⚠️ 这两个都是**纯函数**：不碰网络、不碰磁盘、不碰全局状态。
+//    纯函数的边界最好测，见文件底部的单测。
+
+/// 按正则从文本里提取匹配（task-41）
+///
+/// # 返回
+///
+///  Ok(vec)  —— 所有匹配的第 1 个捕获组（无捕获组时取整个匹配）
+///  Err(msg) —— 正则本身语法错误
+///
+/// # 为什么「无捕获组取整个匹配」
+///
+/// 插件写 `regex(html, '<title>(.*?)</title>')` 时自然期望拿到标题；
+/// 而写 `regex(html, 'vid=\\w+')` 时没有捕获组，
+/// 这时「取整个匹配」才符合直觉。两种情况都覆盖，插件不用记两套规则。
+///
+/// # 为什么错误要返回 Err 而不是空数组
+///
+///   正则写错 ⇒ 静默返回 [] ⇒ 插件以为「页面上没有」⇒ 报「解析失败」⇒
+///   用户和开发者都不知道其实是**正则语法错了**。
+///   ⇒ 必须把「语法错误」和「没匹配到」分开。
+fn extract_regex(text: &str, pattern: &str) -> std::result::Result<Vec<String>, String> {
+    let re = regex::Regex::new(pattern).map_err(|e| format!("正则语法错误: {e}"))?;
+
+    // 有捕获组 ⇒ 取第 1 组；没有 ⇒ 取整个匹配
+    let use_group = re.captures_len() > 1;
+
+    let mut out = Vec::new();
+    for caps in re.captures_iter(text) {
+        let got = if use_group {
+            caps.get(1).map(|m| m.as_str())
+        } else {
+            caps.get(0).map(|m| m.as_str())
+        };
+        if let Some(s) = got {
+            out.push(s.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// 按路径从 JSON 取值（task-41）
+///
+/// # 路径语法（刻意做得极简）
+///
+///  a.b.c        对象嵌套
+///  a.b[0]       数组下标
+///  a[0].b[2].c  混用
+///  (空)         空路径 ⇒ 返回整个文档
+///
+/// # 为什么不用 json pointer（RFC 6901）
+///
+/// json pointer 的写法是 "/a/b/0"，对**写插件的普通用户**不直观；
+/// 而且它把「键名里含斜杠」搞得很麻烦（要转义成 ~1）。
+/// 这里用点号+方括号，与 JS 里 `obj.a.b[0]` 的读法一致，插件作者不用学新语法。
+///
+/// # 返回
+///
+///  Ok(Some(json)) —— 取到了
+///  Ok(None)       —— 路径不存在（**不是错误**，是「没有」）
+///  Err(msg)       —— 路径语法错误
+///
+/// ⚠️ 「路径不存在」返回 None 而不是 Err：
+///    解析页面时「某个字段没有」是**常态**（页面结构会变），
+///    插件需要能用 `?? 默认值` 处理，不该每次都抛异常。
+fn extract_json_path(
+    doc: &serde_json::Value,
+    path: &str,
+) -> std::result::Result<Option<serde_json::Value>, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Ok(Some(doc.clone()));
+    }
+
+    let mut cur = doc.clone();
+
+    // 把 a.b[0].c 切成 ["a", "b", "[0]", "c"]
+    let mut tokens: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    for ch in path.chars() {
+        match ch {
+            '.' => {
+                if !buf.is_empty() {
+                    tokens.push(std::mem::take(&mut buf));
+                }
+            }
+            '[' => {
+                if !buf.is_empty() {
+                    tokens.push(std::mem::take(&mut buf));
+                }
+                buf.push('[');
+            }
+            ']' => {
+                buf.push(']');
+                tokens.push(std::mem::take(&mut buf));
+            }
+            _ => buf.push(ch),
+        }
+    }
+    if !buf.is_empty() {
+        tokens.push(buf);
+    }
+
+    for tok in tokens {
+        if tok.starts_with('[') && tok.ends_with(']') {
+            let inner = &tok[1..tok.len() - 1];
+            let idx: usize = inner
+                .parse()
+                .map_err(|_| format!("数组下标不是数字: [{inner}]"))?;
+            match cur {
+                serde_json::Value::Array(ref arr) => match arr.get(idx) {
+                    Some(v) => cur = v.clone(),
+                    None => return Ok(None),
+                },
+                _ => return Ok(None),
+            }
+        } else {
+            match cur {
+                serde_json::Value::Object(ref map) => match map.get(&tok) {
+                    Some(v) => cur = v.clone(),
+                    None => return Ok(None),
+                },
+                _ => return Ok(None),
+            }
+        }
+    }
+
+    Ok(Some(cur))
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  ★ 播放地址探测（2026-10-17，task-41 第 2 步）
+// ═══════════════════════════════════════════════════════════════════
+//
+// # 这一层要回答什么
+//
+//   ① 这个地址**能不能放**（HTTP 可达？状态码？）
+//   ② 它是**什么流**（HLS / DASH / MP4 / 纯音频 / 根本不是流）
+//   ③ 有没有 **DRM 保护**（命中就如实报，不假装能放）
+//   ④ 跳转过没有（302 链路的最终地址）
+//
+// # 为什么必须看响应头而不是猜后缀
+//
+// 本项目踩过真实坑（见 model.rs 的 StreamKind 注释）：
+//   某个源的 MP4 直链被伪装成 .mp3 后缀，
+//   按后缀判成 AudioOnly ⇒ 播不了；按「无扩展名当 HLS」⇒ 无限转圈。
+//   ⇒ **URL 后缀根本不可靠**，只有 Content-Type 可信。
+//
+// # 关于 DASH
+//
+//   StreamKind::Dash 只是「认得出」，**不是「能播」**。
+//   streamproxy 里没有 mpd 改写逻辑。
+//   ⇒ 识别为 DASH 时必须如实报「未实现」，不能：
+//     · 报「播放失败」（用户以为是网络问题，反复重试）
+//     · 映射成 Mp4（放不出来还查不出原因）
+
+/// 探测结论 —— 给插件/UI 用的**结构化**结果
+///
+/// 与「返回一个错误字符串」的区别：
+/// 插件要能按类别做不同处理（换线路 / 提示用户 / 标记不可播），
+/// 所以必须结构化，不能只有一句人话。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeVerdict {
+    /// 可以尝试播放
+    Playable {
+        kind: crate::model::StreamKind,
+        content_type: String,
+    },
+    /// ★ 识别为 DASH —— 宿主**尚未实现**播放（不是内容坏了）
+    DashUnsupported { content_type: String },
+    /// ★ 内容受 DRM 保护 —— **架构上不可能播**，不是暂不支持
+    DrmProtected { reason: String },
+    /// ★ 响应不是媒体流（例如拿到一个 HTML 页面）
+    ///
+    /// 与 `Unreachable` 的区别：地址**能访问**，只是内容不是流。
+    /// 常见于「防盗链拦截返回错误页」「登录页跳转」「API 返回 JSON 错误」。
+    NotAStream { content_type: String },
+    /// HTTP 层失败（连不上 / 4xx / 5xx）
+    Unreachable { detail: String },
+}
+
+impl ProbeVerdict {
+    /// 给用户看的一句话（UI 直接用）
+    ///
+    /// ⚠️ 这几句话必须**互不混淆**：
+    ///   DRM     ⇒ 换了播放器也放不了
+    ///   DASH    ⇒ 本播放器还没做，以后可能做
+    ///   不是流  ⇒ 地址错了 / 被拦截了，不是播放器的问题
+    ///   不可达  ⇒ 网络/链接问题，可以重试
+    /// 混成一句「播放失败」，用户无法判断该不该重试。
+    pub fn user_message(&self) -> String {
+        match self {
+            ProbeVerdict::Playable { .. } => "可以播放".to_string(),
+            ProbeVerdict::DashUnsupported { .. } => {
+                "该内容为 DASH 格式，本播放器暂不支持".to_string()
+            }
+            ProbeVerdict::DrmProtected { .. } => {
+                "该内容受 DRM 保护，本播放器无法播放".to_string()
+            }
+            ProbeVerdict::NotAStream { content_type } => {
+                format!("该地址返回的不是视频流（Content-Type: {content_type}）")
+            }
+            ProbeVerdict::Unreachable { detail } => format!("无法访问该地址: {detail}"),
+        }
+    }
+
+    /// 是否值得让用户重试（区分「暂时性」与「永久性」）
+    pub fn retryable(&self) -> bool {
+        match self {
+            ProbeVerdict::Playable { .. } => false,
+            ProbeVerdict::DashUnsupported { .. } => false, // 未实现，重试无用
+            ProbeVerdict::DrmProtected { .. } => false,    // 架构限制，重试无用
+            ProbeVerdict::NotAStream { .. } => false,      // 内容不对，重试无用
+            ProbeVerdict::Unreachable { .. } => true,      // 网络问题，可重试
+        }
+    }
+
+    /// 稳定的机器可读标签（给插件做判断用，**不要用 Debug 格式**）
+    ///
+    /// # 为什么要单独一个方法
+    ///
+    /// 第一版用 `format!("{kind:?}")` 把 Debug 输出当标签传给 JS，
+    /// 那是**脆的**：改个枚举名/加个变体，插件里的字符串比较就静默失效。
+    /// ⇒ 对外契约必须是显式的、稳定的字面量。
+    pub fn verdict_tag(&self) -> &'static str {
+        match self {
+            ProbeVerdict::Playable { .. } => "playable",
+            ProbeVerdict::DashUnsupported { .. } => "dash_unsupported",
+            ProbeVerdict::DrmProtected { .. } => "drm",
+            ProbeVerdict::NotAStream { .. } => "not_a_stream",
+            ProbeVerdict::Unreachable { .. } => "unreachable",
+        }
+    }
+}
+
+/// 探测的完整结果（含 HTTP 元信息）
+///
+/// 与 `ProbeVerdict` 分开：verdict 是**结论**，这里是**证据**。
+/// 插件调试时需要看到 statusCode / 最终 URL，否则「为什么判成这样」无从查起。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeReport {
+    pub verdict: ProbeVerdict,
+    /// HTTP 状态码（0 = 请求没发出去）
+    pub status_code: u16,
+    /// 原始 Content-Type（空串 = 响应没带）
+    pub content_type: String,
+    /// 是否发生过跳转（302 / 301 等）
+    pub redirected: bool,
+    /// 跳转后的最终地址（未跳转时等于入参）
+    pub final_url: String,
+}
+
+impl ProbeReport {
+    /// 序列化成给 JS 的 JSON 文本
+    pub fn to_json(&self) -> String {
+        let kind = match &self.verdict {
+            ProbeVerdict::Playable { kind, .. } => format!("{kind:?}"),
+            ProbeVerdict::DashUnsupported { .. } => "Dash".to_string(),
+            _ => String::new(),
+        };
+        serde_json::json!({
+            "verdict": self.verdict.verdict_tag(),
+            "kind": kind,
+            "contentType": self.content_type,
+            "statusCode": self.status_code,
+            "redirected": self.redirected,
+            "finalUrl": self.final_url,
+            "message": self.verdict.user_message(),
+            "retryable": self.verdict.retryable(),
+        })
+        .to_string()
+    }
+}
+
+/// 从 HTTP 响应头 + 响应体前缀判断这条流是什么、能不能放（**纯函数**）
+///
+/// # 参数
+///
+///  · status       —— HTTP 状态码（0 表示请求根本没发出去）
+///  · content_type —— 响应头里的 Content-Type（可能为空串）
+///  · head         —— 响应体的**前缀**（用于嗅探 m3u8/mpd 里的 DRM 标记）
+///  · url          —— 原始地址（仅在响应头缺失时作兜底推断）
+///
+/// # 为什么是纯函数
+///
+/// 判定逻辑是本层**唯一有分支复杂度**的地方，
+/// 做成纯函数 ⇒ 可用构造数据穷举所有组合，不需要起网络。
+/// 真正发 HTTP 的部分在 `probe_url` 里，只负责搬运字节。
+fn classify_stream(status: u16, content_type: &str, head: &str, url: &str) -> ProbeVerdict {
+    use crate::model::StreamKind;
+
+    // ① HTTP 层失败优先报（连不上就无所谓格式）
+    if status == 0 {
+        return ProbeVerdict::Unreachable {
+            detail: "请求未能发出".to_string(),
+        };
+    }
+    if !(200..400).contains(&status) {
+        return ProbeVerdict::Unreachable {
+            detail: format!("HTTP {status}"),
+        };
+    }
+
+    // ② ★ DRM 嗅探要**先于**格式判定
+    //
+    // 理由：一条 HLS 若带 SAMPLE-AES 加密，它的 Content-Type 仍是
+    // application/vnd.apple.mpegurl —— 格式是 HLS，但它**放不了**。
+    // 若先判格式并返回 Playable，用户会看到「可以播放」然后黑屏。
+    if let Some(reason) = detect_drm(head) {
+        return ProbeVerdict::DrmProtected { reason };
+    }
+
+    // ③ 格式判定：响应头优先，URL 兜底
+    //
+    // ⚠️ 关键：`text/html` 必须判「不是流」，不能退回按 URL 猜。
+    //   因为「URL 是 .mp4 但返回一个 HTML 错误页」是**真实且常见**的情况
+    //   （防盗链拦截 / 登录页跳转 / 404 页面）。
+    //   若这时还按 URL 猜成 Mp4，插件会以为拿到了能播的地址，
+    //   然后播放器黑屏 —— 而那是最难查的一类问题。
+    let ct = content_type.trim();
+    if !ct.is_empty() {
+        match StreamKind::from_content_type(ct) {
+            Some(StreamKind::Dash) => {
+                return ProbeVerdict::DashUnsupported {
+                    content_type: ct.to_string(),
+                };
+            }
+            Some(k) => {
+                return ProbeVerdict::Playable {
+                    kind: k,
+                    content_type: ct.to_string(),
+                };
+            }
+            None => {
+                // 响应头存在但**不认识**（text/html / application/json / …）
+                // ⇒ 明确是「不是流」，不猜。
+                return ProbeVerdict::NotAStream {
+                    content_type: ct.to_string(),
+                };
+            }
+        }
+    }
+
+    // ④ 响应头缺失 ⇒ 退回按 URL 猜（最小假设，见 StreamKind::from_url）
+    let kind = StreamKind::from_url(url);
+    if kind == StreamKind::Dash {
+        return ProbeVerdict::DashUnsupported {
+            content_type: String::new(),
+        };
+    }
+
+    ProbeVerdict::Playable {
+        kind,
+        content_type: String::new(),
+    }
+}
+
+/// 从清单文本里嗅探 DRM 标记，命中则返回人类可读的原因
+///
+/// # 为什么读清单文本而不是只看响应头
+///
+/// DRM 信息**不在响应头里** —— 它藏在清单内部：
+///
+/// ```text
+/// HLS:  #EXT-X-KEY:METHOD=SAMPLE-AES,URI="skd://..."
+///       #EXT-X-SESSION-KEY:METHOD=SAMPLE-AES
+/// DASH: <ContentProtection schemeIdUri="urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed">
+///       ↑ 这个 UUID 是 Widevine 的固定 scheme id
+/// ```
+///
+/// 所以必须把清单开头读回来做字符串匹配。
+///
+/// # 为什么 AES-128 **不算** DRM
+///
+/// AES-128 是普通 HLS 加密，密钥就是一个普通 HTTP 地址
+/// （URI="key.bin"），**libmpv 自己能解** —— 本仓 streamproxy 就在改
+/// 写这类 playlist（见 streamproxy.rs 的 #EXT-X-KEY 处理）。
+/// 把它当 DRM 会让一大批**本来能播**的内容被误判为不可播。
+///
+/// ⇒ 只认 SAMPLE-AES（需要 CDM）与 Widevine/PlayReady/ClearKey 的 scheme id。
+fn detect_drm(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+
+    // ── HLS ──────────────────────────────────────────────
+    //
+    // SAMPLE-AES / SAMPLE-AES-CTR 是 Apple 的 DRM 形态，需要 FairPlay CDM。
+    // ⚠️ 必须排除 AES-128 —— 那个能解。
+    if lower.contains("method=sample-aes") {
+        return Some("HLS 使用 SAMPLE-AES 加密（需要 FairPlay CDM）".to_string());
+    }
+
+    // ── DASH ─────────────────────────────────────────────
+    //
+    // 这几个 schemeIdUri 是业界固定的 DRM 系统标识：
+    //   edef8ba9-79d6-4ace-a3c8-27dcd51d21ed  ⇒ Widevine
+    //   9a04f079-9840-4286-ab92-e65be0885f95  ⇒ PlayReady
+    //   e2719d58-a985-b3c9-781a-b030af78d30e  ⇒ ClearKey
+    if lower.contains("edef8ba9-79d6-4ace-a3c8-27dcd51d21ed") {
+        return Some("DASH 使用 Widevine 加密".to_string());
+    }
+    if lower.contains("9a04f079-9840-4286-ab92-e65be0885f95") {
+        return Some("DASH 使用 PlayReady 加密".to_string());
+    }
+    if lower.contains("e2719d58-a985-b3c9-781a-b030af78d30e") {
+        return Some("DASH 使用 ClearKey 加密".to_string());
+    }
+
+    None
+}
+
+/// 只读响应体前缀的字节上限
+///
+/// m3u8/mpd 的 DRM 标记都在开头几十行内；
+/// 视频直链可能上百 MB，**绝不能全读**。
+const PROBE_HEAD_BYTES: usize = 16 * 1024;
+
+/// 探测一个播放地址（**带网络**的那一层）
+///
+/// # 为什么用 GET + 只读前缀，而不是 HEAD
+///
+///   ① 很多 CDN/源不支持 HEAD（返回 405），会误判为「不可达」
+///   ② DRM 标记藏在**响应体里的清单文本**中，HEAD 拿不到
+/// ⇒ 必须 GET 且读回一段 body 才能嗅探 DRM。
+///
+/// # 关于跳转
+///
+/// reqwest 默认跟随跳转，`resp.url()` 就是**最终**地址。
+/// 这里把 `final_url != url` 记为跳转过 —— 插件可据此判断
+/// 「是不是被重定向到了登录页」（那种情况通常拿到 text/html）。
+pub async fn probe_url(
+    proxy: &Option<Arc<crate::proxy::ProxyStore>>,
+    provider: &str,
+    url: &str,
+) -> ProbeReport {
+    let client = match proxy {
+        Some(px) => px
+            .client_for(provider, None)
+            .unwrap_or_else(|_| default_client()),
+        None => default_client(),
+    };
+
+    let resp = match client.get(url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return ProbeReport {
+                verdict: ProbeVerdict::Unreachable {
+                    detail: format!("请求失败: {e}"),
+                },
+                status_code: 0,
+                content_type: String::new(),
+                redirected: false,
+                final_url: url.to_string(),
+            };
+        }
+    };
+
+    let status_code = resp.status().as_u16();
+    let final_url = resp.url().to_string();
+    let redirected = final_url != url;
+
+    // ⚠️ 必须在读 body 之前取头 —— 与 do_http_full 里的注释同理
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    // 只读前缀：仅当看起来是清单时才读（清单小且含 DRM 标记）。
+    // 视频直链不读 —— 可能是 GB 级，而 DRM 标记不会出现在直链里。
+    let head = {
+        let lower = content_type.to_lowercase();
+        let is_manifest = lower.contains("mpegurl") || lower.contains("dash");
+        if is_manifest {
+            match resp.bytes().await {
+                Ok(b) => {
+                    let n = b.len().min(PROBE_HEAD_BYTES);
+                    String::from_utf8_lossy(&b[..n]).to_string()
+                }
+                Err(_) => String::new(),
+            }
+        } else {
+            String::new()
+        }
+    };
+
+    ProbeReport {
+        verdict: classify_stream(status_code, &content_type, &head, url),
+        status_code,
+        content_type,
+        redirected,
+        final_url,
+    }
 }
 
 fn store_read(dir: &std::path::Path, plugin_id: &str, key: &str) -> Option<String> {
@@ -2699,6 +3621,8 @@ pub async fn load_plugins_hydrated(
 ) -> (Vec<JsPluginProvider>, Vec<(String, String)>) {
     let (plugins, bad) = load_plugins(dir);
     let mut out = Vec::with_capacity(plugins.len());
+    // task-37: pool state lives next to third-party-providers.json
+    let saved_pools = crate::hostpool::load(dir);
     // 插件私有数据放 `plugins/.data/`
     let data_dir = dir.join(".data");
 
@@ -2708,6 +3632,10 @@ pub async fn load_plugins_hydrated(
         }
         p = p.with_data_dir(data_dir.clone());
         p.hydrate_capabilities().await;
+        // task-37: restore failure counts / current selection from disk.
+        // hydrate rebuilt the pool from declarations; this re-attaches memory.
+        p = p.with_pool_dir(dir.to_path_buf());
+        p.apply_saved_pool(saved_pools.pools.get(&p.manifest().id));
         out.push(p);
     }
 
@@ -2819,6 +3747,13 @@ pub async fn fetch_plugin_source(
     proxy: Option<&Arc<crate::proxy::ProxyStore>>,
     url: &str,
 ) -> std::result::Result<(String, String), String> {
+    /*
+     * ⚠️ 这里**故意**保留字面量 key（与 do_http / do_http_full / probe_url 不同）。
+     *
+     * 理由：本函数是「安装插件时下载它的源码」—— 此刻**插件还不存在**，
+     * 没有任何 provider id 可用。用户能给的是「下载插件用哪个代理」这种
+     * 全局设置，所以用固定 key 是语义正确的，不是漏改。
+     */
     let client = match proxy {
         Some(px) => px
             .client_for("plugin", None)
@@ -3423,6 +4358,468 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+
+    /// ★ host.base() 必须真的可用（task-37）
+    ///
+    /// # 这条钉的是一个真 bug
+    ///
+    /// 主机先 `g.set("host", host_obj)` 注入了 base()，
+    /// 但紧接着的 shim 又 `globalThis.host = { http, log, store, ... }`
+    /// **整体重写**了 host —— base() 被冲掉。
+    /// 插件调 `host.base()` 会拿到 undefined，拼出 `undefined/api/list`。
+
+    // ═══════════════════════════════════════════════════════════════
+    //  通用提取器（task-41）
+    // ═══════════════════════════════════════════════════════════════
+
+
+    // ═══════════════════════════════════════════════════════════════
+    //  播放地址探测（task-41 第 2 步）
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn classify_hls_from_content_type() {
+        let v = classify_stream(200, "application/vnd.apple.mpegurl", "", "https://x.com/a");
+        match v {
+            ProbeVerdict::Playable { kind, .. } => {
+                assert_eq!(kind, crate::model::StreamKind::Hls);
+            }
+            other => panic!("应是 Hls，实际: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_mp4_from_content_type() {
+        let v = classify_stream(200, "video/mp4", "", "https://x.com/a");
+        assert!(matches!(
+            v,
+            ProbeVerdict::Playable {
+                kind: crate::model::StreamKind::Mp4,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn classify_audio_from_content_type() {
+        let v = classify_stream(200, "audio/mpeg", "", "https://x.com/a");
+        assert!(matches!(
+            v,
+            ProbeVerdict::Playable {
+                kind: crate::model::StreamKind::AudioOnly,
+                ..
+            }
+        ));
+    }
+
+    /// ★ DASH 必须如实报「未实现」，不能报 Playable 也不能报 Unreachable
+    #[test]
+    fn dash_is_reported_as_unsupported_not_playable() {
+        let v = classify_stream(200, "application/dash+xml", "", "https://x.com/a.mpd");
+        assert!(
+            matches!(v, ProbeVerdict::DashUnsupported { .. }),
+            "DASH 应报 DashUnsupported（不是 Playable），实际: {v:?}"
+        );
+        assert!(!v.retryable(), "DASH 是未实现，重试无用");
+        assert!(
+            v.user_message().contains("DASH"),
+            "文案要说明是 DASH 格式，实际: {}",
+            v.user_message()
+        );
+    }
+
+    /// ★ 伪装后缀：.mp3 后缀但 video/mp4 ⇒ 必须按 Mp4（不能信后缀）
+    #[test]
+    fn disguised_extension_defers_to_content_type() {
+        let v = classify_stream(200, "video/mp4", "", "https://x.com/abc.mp3");
+        assert!(matches!(
+            v,
+            ProbeVerdict::Playable {
+                kind: crate::model::StreamKind::Mp4,
+                ..
+            }
+        ));
+    }
+
+    /// 响应头缺失 ⇒ 退回按 URL 判断
+    #[test]
+    fn empty_content_type_falls_back_to_url() {
+        let v = classify_stream(200, "", "", "https://x.com/a.m3u8?t=1");
+        assert!(matches!(
+            v,
+            ProbeVerdict::Playable {
+                kind: crate::model::StreamKind::Hls,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn http_error_is_unreachable_and_retryable() {
+        let v = classify_stream(404, "video/mp4", "", "https://x.com/a");
+        assert!(matches!(v, ProbeVerdict::Unreachable { .. }));
+        assert!(v.retryable(), "HTTP 失败应可重试");
+    }
+
+    #[test]
+    fn status_zero_is_unreachable() {
+        let v = classify_stream(0, "", "", "https://x.com/a");
+        assert!(matches!(v, ProbeVerdict::Unreachable { .. }));
+    }
+
+    /// ★★ 关键：SAMPLE-AES 的 HLS 格式正确但放不了 ⇒ 必须报 DRM
+    #[test]
+    fn hls_with_sample_aes_is_drm_not_playable() {
+        let manifest = "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://key\"\n";
+        let v = classify_stream(200, "application/vnd.apple.mpegurl", manifest, "https://x.com/a.m3u8");
+        assert!(
+            matches!(v, ProbeVerdict::DrmProtected { .. }),
+            "SAMPLE-AES 应报 DrmProtected，实际: {v:?}"
+        );
+        assert!(!v.retryable(), "DRM 是架构限制，重试无用");
+    }
+
+    /// ★★ 反例：AES-128 是普通加密，libmpv 能解 ⇒ **不算 DRM**
+    ///
+    /// 若把它当 DRM，一大批本来能播的内容会被误判为不可播。
+    #[test]
+    fn hls_with_aes128_is_playable_not_drm() {
+        let manifest = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n";
+        let v = classify_stream(200, "application/vnd.apple.mpegurl", manifest, "https://x.com/a.m3u8");
+        assert!(
+            matches!(v, ProbeVerdict::Playable { .. }),
+            "AES-128 能解，不该判 DRM，实际: {v:?}"
+        );
+    }
+
+    #[test]
+    fn dash_widevine_is_drm() {
+        let mpd = r#"<ContentProtection schemeIdUri="urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"/>"#;
+        let v = classify_stream(200, "application/dash+xml", mpd, "https://x.com/a.mpd");
+        assert!(
+            matches!(v, ProbeVerdict::DrmProtected { .. }),
+            "Widevine 应报 DrmProtected（优先于 DashUnsupported），实际: {v:?}"
+        );
+    }
+
+    #[test]
+    fn dash_playready_is_drm() {
+        let mpd = r#"<ContentProtection schemeIdUri="urn:uuid:9a04f079-9840-4286-ab92-e65be0885f95"/>"#;
+        let v = classify_stream(200, "application/dash+xml", mpd, "https://x.com/a.mpd");
+        assert!(matches!(v, ProbeVerdict::DrmProtected { .. }));
+    }
+
+    /// DRM 文案不能与 DASH 文案混淆
+    #[test]
+    fn drm_and_dash_messages_are_distinct() {
+        let drm = ProbeVerdict::DrmProtected {
+            reason: "x".into(),
+        };
+        let dash = ProbeVerdict::DashUnsupported {
+            content_type: "x".into(),
+        };
+        assert_ne!(drm.user_message(), dash.user_message());
+        assert!(!drm.retryable(), "DRM 重试无用");
+        assert!(!dash.retryable(), "DASH 重试无用");
+    }
+
+
+    /// ★★ text/html 必须判「不是流」，不能退回按 URL 猜
+    ///
+    /// 真实场景：防盗链拦截返回错误页 / 跳转到登录页。
+    /// 若这时按 URL 猜成 Mp4，插件以为拿到能播地址，播放器黑屏 —— 最难查的一类。
+    #[test]
+    fn html_response_is_not_a_stream_even_if_url_looks_like_mp4() {
+        let v = classify_stream(200, "text/html; charset=utf-8", "", "https://x.com/a.mp4");
+        assert!(
+            matches!(v, ProbeVerdict::NotAStream { .. }),
+            "text/html 应报 NotAStream（不是按 URL 猜成 Mp4），实际: {v:?}"
+        );
+        assert!(!v.retryable(), "内容不对，重试无用");
+    }
+
+    #[test]
+    fn json_response_is_not_a_stream() {
+        let v = classify_stream(200, "application/json", "", "https://x.com/a.m3u8");
+        assert!(matches!(v, ProbeVerdict::NotAStream { .. }), "实际: {v:?}");
+    }
+
+    /// 五种 verdict 的标签必须互不相同（插件靠它做分支）
+    #[test]
+    fn verdict_tags_are_distinct() {
+        let all = [
+            ProbeVerdict::Playable {
+                kind: crate::model::StreamKind::Mp4,
+                content_type: String::new(),
+            },
+            ProbeVerdict::DashUnsupported {
+                content_type: String::new(),
+            },
+            ProbeVerdict::DrmProtected {
+                reason: String::new(),
+            },
+            ProbeVerdict::NotAStream {
+                content_type: String::new(),
+            },
+            ProbeVerdict::Unreachable {
+                detail: String::new(),
+            },
+        ];
+        let mut tags: Vec<&str> = all.iter().map(|v| v.verdict_tag()).collect();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(tags.len(), 5, "五个标签必须互不相同，实际: {tags:?}");
+    }
+
+    /// 五种 verdict 的文案必须互不相同（用户要能区分该不该重试）
+    #[test]
+    fn verdict_messages_are_distinct() {
+        let msgs = [
+            ProbeVerdict::Playable {
+                kind: crate::model::StreamKind::Mp4,
+                content_type: String::new(),
+            }
+            .user_message(),
+            ProbeVerdict::DashUnsupported {
+                content_type: String::new(),
+            }
+            .user_message(),
+            ProbeVerdict::DrmProtected {
+                reason: String::new(),
+            }
+            .user_message(),
+            ProbeVerdict::NotAStream {
+                content_type: "text/html".into(),
+            }
+            .user_message(),
+            ProbeVerdict::Unreachable {
+                detail: "timeout".into(),
+            }
+            .user_message(),
+        ];
+        let mut s: Vec<String> = msgs.to_vec();
+        s.sort();
+        s.dedup();
+        assert_eq!(s.len(), 5, "五条文案必须互不相同，实际: {msgs:?}");
+    }
+
+    /// ★ host.playback.probe 契约：从 JS 侧真调用
+    #[tokio::test]
+    async fn host_playback_probe_is_callable_from_plugin() {
+        // 指向必然不可达的地址（.invalid 是 RFC 2606 保留 TLD）
+        let src = r#"
+/** @id probedemo @name probe test */
+globalThis.plugin = {
+  capabilities: { vod: true },
+  probe: () => host.playback.probe("http://bad.invalid/x.m3u8"),
+};
+"#;
+        let mut p = JsPluginProvider::from_source(src).unwrap();
+        p.hydrate_capabilities().await;
+
+        let got = p.call_js("plugin.probe()").await.unwrap();
+        assert!(
+            got.contains("unreachable"),
+            "不可达地址应返回 verdict=unreachable，实际: {got}"
+        );
+        // 结构化字段必须在
+        assert!(got.contains("statusCode"), "应带 statusCode，实际: {got}");
+        assert!(got.contains("finalUrl"), "应带 finalUrl，实际: {got}");
+        assert!(got.contains("retryable"), "应带 retryable，实际: {got}");
+    }
+
+    #[test]
+    fn extract_regex_returns_first_capture_group() {
+        let got = extract_regex("<title>Hello</title>", r"<title>(.*?)</title>").unwrap();
+        assert_eq!(got, vec!["Hello"]);
+    }
+
+    #[test]
+    fn extract_regex_without_group_returns_whole_match() {
+        // 没有捕获组 ⇒ 取整个匹配（否则插件拿不到东西）
+        let got = extract_regex("a vid=abc b vid=def", r"vid=\w+").unwrap();
+        assert_eq!(got, vec!["vid=abc", "vid=def"]);
+    }
+
+    #[test]
+    fn extract_regex_returns_all_matches() {
+        let got = extract_regex("x1 x2 x3", r"x(\d)").unwrap();
+        assert_eq!(got, vec!["1", "2", "3"]);
+    }
+
+    #[test]
+    fn extract_regex_no_match_is_empty_not_error() {
+        let got = extract_regex("hello", r"(zzz)").unwrap();
+        assert!(got.is_empty(), "没匹配到应返回空数组，不是错误");
+    }
+
+    #[test]
+    fn extract_regex_bad_pattern_is_error_not_empty() {
+        // ★ 关键区分：语法错误必须报错，不能静默返回空
+        let err = extract_regex("hello", r"(unclosed").unwrap_err();
+        assert!(
+            err.contains("正则语法错误"),
+            "语法错误必须报错（否则插件以为是页面上没有）: {err}"
+        );
+    }
+
+    #[test]
+    fn extract_json_path_object_nesting() {
+        let doc: serde_json::Value = serde_json::json!({"a": {"b": {"c": 42}}});
+        let got = extract_json_path(&doc, "a.b.c").unwrap().unwrap();
+        assert_eq!(got, serde_json::json!(42));
+    }
+
+    #[test]
+    fn extract_json_path_array_index() {
+        let doc: serde_json::Value = serde_json::json!({"list": [{"id": "x"}, {"id": "y"}]});
+        let got = extract_json_path(&doc, "list[1].id").unwrap().unwrap();
+        assert_eq!(got, serde_json::json!("y"));
+    }
+
+    #[test]
+    fn extract_json_path_missing_returns_none_not_error() {
+        let doc: serde_json::Value = serde_json::json!({"a": {"b": 1}});
+        assert!(extract_json_path(&doc, "a.zzz").unwrap().is_none());
+        assert!(extract_json_path(&doc, "nope.deep").unwrap().is_none());
+        // 类型不对也用 None（不是错误）
+        assert!(extract_json_path(&doc, "a.b[0]").unwrap().is_none());
+    }
+
+    #[test]
+    fn extract_json_path_empty_returns_whole_doc() {
+        let doc: serde_json::Value = serde_json::json!({"a": 1});
+        let got = extract_json_path(&doc, "").unwrap().unwrap();
+        assert_eq!(got, doc);
+    }
+
+    #[test]
+    fn extract_json_path_bad_index_is_error() {
+        let doc: serde_json::Value = serde_json::json!({"a": [1]});
+        let err = extract_json_path(&doc, "a[zz]").unwrap_err();
+        assert!(err.contains("数组下标不是数字"), "got: {err}");
+    }
+
+    #[test]
+    fn extract_json_path_out_of_range_returns_none() {
+        let doc: serde_json::Value = serde_json::json!({"a": [1, 2]});
+        assert!(extract_json_path(&doc, "a[9]").unwrap().is_none());
+    }
+
+
+    /// ★ host.extract 契约：从 JS 侧**真调用**（task-41）
+    ///
+    /// # 为什么必须是真调用而不是单测
+    /// 后端单测已经覆盖了 `extract_regex` / `extract_json_path` 这两个纯函数。
+    /// 但那只证明「算法对」，**不证明「插件真的能调到」**。
+    /// 而「接线了但没通电」是本项目反复踩的坑（save_hook 空写、base() 被 shim 覆盖）。
+    /// ⇒ 这条测试走完整链路：插件 JS → QuickJS → Rust 函数 → 返回值。
+    #[tokio::test]
+    async fn host_extract_regex_is_callable_from_plugin() {
+        let src = r#"
+/** @id extdemo @name extract test */
+globalThis.plugin = {
+  capabilities: { vod: true },
+  probe: () => host.extract.regex('<title>Hello</title>', '<title>(.*?)</title>'),
+};
+"#;
+        let mut p = JsPluginProvider::from_source(src).unwrap();
+        p.hydrate_capabilities().await;
+
+        // call_js 会把返回值当 JSON 序列化，字符串会多一层引号
+        let got = p.call_js("JSON.stringify(plugin.probe())").await.unwrap();
+        assert!(
+            got.contains("Hello"),
+            "host.extract.regex must reach Rust, got: {got}"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_extract_json_is_callable_from_plugin() {
+        let src = r#"
+/** @id extdemo2 @name extract json */
+globalThis.plugin = {
+  capabilities: { vod: true },
+  probe: () => host.extract.json('{"a":{"b":[1,2,3]}}', 'a.b[1]'),
+};
+"#;
+        let mut p = JsPluginProvider::from_source(src).unwrap();
+        p.hydrate_capabilities().await;
+
+        // call_js 把返回的字符串当 JSON 序列化 ⇒ 会多一层引号，先剥掉
+        let got = p.call_js("plugin.probe()").await.unwrap();
+        let got = got.trim().trim_matches('"');
+        assert_eq!(got, "2", "host.extract.json must reach Rust");
+    }
+
+    #[tokio::test]
+    async fn host_extract_json_missing_path_returns_null_text() {
+        let src = r#"
+/** @id extdemo3 @name extract json missing */
+globalThis.plugin = {
+  capabilities: { vod: true },
+  probe: () => host.extract.json('{"a":1}', 'a.zzz'),
+};
+"#;
+        let mut p = JsPluginProvider::from_source(src).unwrap();
+        p.hydrate_capabilities().await;
+
+        let got = p.call_js("plugin.probe()").await.unwrap();
+        let got = got.trim().trim_matches('"');
+        assert_eq!(
+            got, "null",
+            "缺失路径应返回 'null' 文本，好让插件用 ?? 兜住"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_extract_regex_bad_pattern_throws_to_js() {
+        // ★ 关键：语法错误必须让 JS 侧收到异常，不能静默返回空
+        let src = r#"
+/** @id extdemo4 @name extract bad */
+globalThis.plugin = {
+  capabilities: { vod: true },
+  probe: () => {
+    try {
+      host.extract.regex('x', '(unclosed');
+      return 'NO_THROW';
+    } catch (e) {
+      return 'THREW';
+    }
+  },
+};
+"#;
+        let mut p = JsPluginProvider::from_source(src).unwrap();
+        p.hydrate_capabilities().await;
+
+        let got = p.call_js("plugin.probe()").await.unwrap();
+        assert_eq!(
+            got.trim_matches('"'),
+            "THREW",
+            "正则语法错误必须抛到 JS（静默返回空会让插件误判为'页面没有'）"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_base_is_callable_from_plugin() {
+        let src = r#"
+/** @id basedemo @name base test */
+globalThis.plugin = {
+  capabilities: { vod: true },
+  hosts: ['https://a.example.com', 'https://b.example.com'],
+  probe: () => host.base(),
+};
+"#;
+        let mut p = JsPluginProvider::from_source(src).unwrap();
+        p.hydrate_capabilities().await;
+
+        let got = p.call_js("plugin.probe()").await.unwrap();
+        let got = got.trim_matches('"');
+        assert_eq!(
+            got, "https://a.example.com",
+            "host.base() must return the picked host; empty/undefined means the shim overwrote it"
+        );
+    }
     /// 历史档：归档 → 列出（新→旧）→ 超过上限自动清理
     #[test]
     fn versions_archive_list_and_prune() {
@@ -3590,7 +4987,61 @@ mod tests {
         );
     }
 
-    /// ★★★ 顺序门禁：**消息正文里的 404 不许抢走 `parse:` 的判定**
+    /// ★★★ Other 分支也必须原样透出，不许加「插件报错:」前缀（Owner 第 7 条）
+    ///
+    /// # Owner 原话
+    /// ```text
+    /// > 像图2 那种报错的信息,就不要加上溯影自己的信息了,
+    /// > 就只显示插件的报错信息就足够了
+    /// ```
+    ///
+    /// # 改前用户看到
+    /// ```text
+    /// SourinCoreException(other): 插件报错: 该内容需要大会员
+    /// ```
+    /// 「插件报错:」是宿主加的包装，对用户零信息量。
+    ///
+    /// # 为什么单独立一条（上面已有 parse: 那一条）
+    /// ```text
+    /// 上面那条只覆盖 `parse:` 前缀分支；
+    /// 而**绝大多数**插件错误走的是最后的 else（Other 分支）——
+    /// 正是这一支在加前缀。不测这一支等于没测。
+    /// ```
+    #[test]
+    fn other_kind_does_not_wrap_message_with_host_prefix() {
+        // 典型：源站会员限制（图 2 的实际文案）
+        let msg = "该内容需要大会员";
+        let e = map_js_error(msg);
+
+        assert_eq!(e.kind, ErrorKind::Other, "无前缀关键词 ⇒ Other 分支");
+        assert_eq!(
+            e.message, msg,
+            "★ 消息必须原样透出，实际: {}",
+            e.message
+        );
+        assert!(
+            !e.message.contains("插件报错"),
+            "★★★ 绝不能带「插件报错:」前缀（Owner 第 7 条），实际: {}",
+            e.message
+        );
+    }
+
+    /// ★★ 反面：带前缀时**必须能被本测试抓到**（证明上一条不是恒真）
+    ///
+    /// 这条不调用生产代码，而是**复现改前的形态**并断言它违反判据 ——
+    /// 若有人把 `format!("插件报错: {msg}")` 加回去，上一条会红；
+    /// 本条的用处是证明「那种形态确实违反判据」，避免有人以为判据写错了。
+    #[test]
+    fn wrapped_form_would_violate_the_rule() {
+        let msg = "该内容需要大会员";
+        let old_form = format!("插件报错: {msg}"); // ← 改前的形态
+        assert!(
+            old_form.contains("插件报错"),
+            "改前形态确实带前缀 ⇒ 说明上一条断言能抓到回归"
+        );
+        // 且它不等于原文 —— 证明两者是可区分的，不是同一个串
+        assert_ne!(old_form, msg);
+    }
     ///
     /// # 这是实测出来的真 bug（不是我推测的）
     ///
@@ -3646,13 +5097,37 @@ mod tests {
         assert_eq!(map_js_error("HTTP 401 Unauthorized").kind, ErrorKind::Unauthorized);
         assert_eq!(map_js_error("HTTP 404").kind, ErrorKind::NotFound);
         assert_eq!(map_js_error("request timeout").kind, ErrorKind::Network);
-        // 什么都没命中 ⇒ Other，且**保留**包装（那正是 Other 该有的样子）
+        // 什么都没命中 ⇒ Other
         let o = map_js_error("something odd");
         assert_eq!(o.kind, ErrorKind::Other);
+        /*
+         * ★★★ 这条断言的方向**被 Owner 第 7 条反转了**（2026-10-18）
+         *
+         * # 改前钉的是
+         * ```text
+         * o.message.contains("插件报错")  ← 要求**保留**包装
+         * 理由：「Other 分支保留包装（与 parse: 分支的区别就在这里）」
+         * ```
+         *
+         * # Owner 原话
+         * ```text
+         * > 像图2 那种报错的信息,就不要加上溯影自己的信息了,
+         * > 就只显示插件的报错信息就足够了
+         * ```
+         * ⇒ 「与 parse: 分支的区别」这个设计意图**本身被否了**：
+         *   两个分支现在**都要**原样透出，区别只剩 kind。
+         *
+         * ⚠️ 这不是「为了让测试变绿而放宽断言」—— 是行为**有意改变**，
+         *    断言改成钉**新行为**，且新断言在旧行为下会红（已用故障注入验证：
+         *    把 format!("插件报错: {msg}") 加回去 ⇒ 本条与
+         *    other_kind_does_not_wrap_message_with_host_prefix 同时红）。
+         */
         assert!(
-            o.message.contains("插件报错"),
-            "Other 分支保留包装（与 parse: 分支的区别就在这里）"
+            !o.message.contains("插件报错"),
+            "★★★ Other 分支也必须原样透出（Owner 第 7 条），实际: {}",
+            o.message
         );
+        assert_eq!(o.message, "something odd", "原文必须完整保留");
     }
 
     /// ★ 前缀判定的健壮性：反引号 / 首尾空白 / 大小写都要认
@@ -3859,6 +5334,7 @@ globalThis.plugin = {
         // httpbin 的回显接口会返回我们发过去的头
         let out = do_http(
             &None,
+            "test",
             "POST",
             "https://httpbin.org/post",
             &HashMap::new(),
@@ -4226,6 +5702,99 @@ globalThis.plugin = {
         assert_eq!(p.manifest().id, "demo");
         assert!(!p.manifest().name.is_empty());
     }
+    // ─────────── task-37：域名池───────────
+
+    /// ★ 插件声明的 hosts 真的能落到池里（全链路）
+    ///
+    /// # 这条在防什么
+    ///
+    /// 「hydrate 了但忘了存」是本仓反复出现的缺陷类（声明了但没人消费）。
+    /// 不测这条，「hosts 能读到」就只是一个假设。
+    #[tokio::test]
+    async fn hydrates_hosts_into_pool() {
+        let src = r#"
+/// @id pooldemo @name 域名池测试
+globalThis.plugin = {
+  capabilities: { vod: true },
+  hosts: [
+    'https://a.example.com',
+    'https://b.example.com',
+    'https://a.example.com',
+  ],
+};
+"#;
+        let mut p = JsPluginProvider::from_source(src).unwrap();
+        // 沉默默认：没声明前不建池
+        assert!(p.pool.lock().unwrap().is_none(), "未 hydrate 前不该有池");
+
+        p.hydrate_capabilities().await;
+
+        let g = p.pool.lock().unwrap();
+        let pool = g.as_ref().expect("声明了 hosts 就必须建池");
+        assert_eq!(
+            pool.hosts,
+            vec!["https://a.example.com", "https://b.example.com"],
+            "重复项应被去重，顺序保持插件声明的优先级"
+        );
+    }
+
+    /// 没声明 hosts 的插件 ⇒ 池为 None（行为与加能力前一致）
+    #[tokio::test]
+    async fn no_hosts_means_no_pool() {
+        let src = r#"
+/// @id nopooldemo @name 无池
+globalThis.plugin = { capabilities: { vod: true } };
+"#;
+        let mut p = JsPluginProvider::from_source(src).unwrap();
+        p.hydrate_capabilities().await;
+        assert!(
+            p.pool.lock().unwrap().is_none(),
+            "没声明 hosts 就不建池 —— 老插件行为不变"
+        );
+    }
+
+    /// task-37: save_pool_now must actually write the pool into the file.
+    ///
+    /// This guards a real bug I hit: save_hook first loaded the file and wrote
+    /// it straight back without inserting the in-memory pool -> the file stayed
+    /// empty and "persistence" silently did nothing.
+    #[tokio::test]
+    async fn save_pool_now_writes_state_to_disk() {
+        let dir = std::env::temp_dir().join(format!("pool-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let src = r#"
+/** @id savedemo @name save test */
+globalThis.plugin = {
+  capabilities: { vod: true },
+  hosts: ['https://a.example.com', 'https://b.example.com'],
+};
+"#;
+        let mut p = JsPluginProvider::from_source(src).unwrap();
+        p.hydrate_capabilities().await;
+        p = p.with_pool_dir(dir.clone());
+
+        // record a failure so there is something meaningful to persist
+        {
+            let mut g = p.pool.lock().unwrap();
+            let pool = g.as_mut().unwrap();
+            pool.record_failure("https://b.example.com", 0);
+        }
+        p.save_pool_now(&dir);
+
+        let all = crate::hostpool::load(&dir);
+        let saved = all.pools.get("savedemo").expect("savedemo must be persisted");
+        assert_eq!(saved.hosts.len(), 2);
+        assert_eq!(
+            saved.states["https://b.example.com"].failures,
+            1,
+            "failure count must reach disk, not just memory"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     //  直播插件取流/缓存辅助函数的门禁（**自建最简夹具，不依赖仓库里的具体网站插件**）
     // ═══════════════════════════════════════════════════════════════════

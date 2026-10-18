@@ -43,6 +43,7 @@
 // > 比「现在开着没有」更该先被看到。
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:material_ui/material_ui.dart';
@@ -52,12 +53,15 @@ import '../core/device.dart';
 import '../core/player_gestures.dart';
 import '../core/sourin_api.dart';
 import '../core/ui_prefs.dart';
+import '../design/widgets/app_ink_well.dart';
 import 'app_theme.dart';
 import 'remote_bridge.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
 import 'widgets/app_menu.dart';
 import 'widgets/qr_view.dart';
+import 'widgets/source_composer_dialog.dart';
+import 'widgets/source_composer_model.dart';
 /*
  * ═══════════════════════════════════════════════════════════════════════
  * ★★★ 四个面板的接线（2026-09-24 集成任务 M）
@@ -164,6 +168,8 @@ import 'widgets/provider_import_dialog.dart';
  */
 import 'settings/about_page.dart';
 import 'settings/backup_page.dart';
+import 'settings/data_manage_page.dart';
+import 'settings/danmaku_source_page.dart';
 import 'settings/live_groups_page.dart';
 import 'settings/pc_gestures_page.dart';
 import 'settings/playback_page.dart';
@@ -222,6 +228,7 @@ import 'widgets/settings_sub_page.dart';
  */
 import 'widgets/tvbox_source_panel.dart';
 import '../ui/app_theme.dart';
+import '../design/icons/app_icons.dart';
 
 /// 本文件里的旧名字 → `settings_kit.dart` 里的公开类
 ///
@@ -701,6 +708,52 @@ class SettingsPageState extends State<SettingsPage> {
     _openSubPage(_PluginsPage(host: this));
   }
 
+  /// 打开「弹幕源」二级页（Owner 第 7 条）
+  ///
+  /// 与另外几个二级页**同一范式**（`_openSubPage` + `SettingsSubPage`）。
+  void _openDanmakuSourcePage() {
+    _openSubPage(const DanmakuSourcePage());
+  }
+
+  /// 一级页「弹幕源」那条入口的服务副标题
+  ///
+  /// # 为什么要把状态放在**一级页**
+  /// ```text
+  /// Owner 的原话是「配置页没看到」—— 他要的是**看得见**：
+  /// 不点进去就知道自己配没配、配的是哪个地址。
+  /// ⇒ 副标题必须随偏好实时变化，不能写成固定的功能介绍。
+  /// ```
+  ///
+  /// ⚠️ 本函数只读偏好（纯同步、零网络）—— 一级页每帧都会调它，
+  ///    绝不能在这里发探测请求（那会让设置页一打开就打网络）。
+  String _danmakuEndpointSubtitle() {
+    final ep = UiPrefs.danmakuEndpoint;
+    if (ep.isEmpty) {
+      return '未配置 · 现用本机弹弹play / 官方接口 · 点此填 dan-api 地址';
+    }
+    return '已配置：$ep · 免凭证 · 点此修改或测试连接';
+  }
+
+  /// 是否该显示「首次使用 / 还没配」的 dan-api 引导（Owner 第 7 条 ③）
+  ///
+  /// # 判据
+  /// ```text
+  /// 未配置 dan-api  ⇒ 显示引导
+  /// 已配置          ⇒ 不显示（用户已经知道了，再提示就是噪声）
+  /// ```
+  ///
+  /// # ⚠️ 为什么**不**把「本机弹弹play 是否在线」也纳进判据
+  /// ```text
+  /// 在线与否只能靠**发请求探测**才知道（DanmakuLocalService.probe）。
+  /// 而本函数在一级页的 build 里被调用 —— build 里发网络请求是明确的错误：
+  ///   ① 每次 setState 都会重发一次
+  ///   ② 设置页一打开就有网络活动（用户没要求）
+  ///   ③ 探不到时还会拖慢首帧
+  /// 而「未配置」是**同步可读**的偏好值，作为判据既保守又不撒谎：
+  /// 没配 dan-api 的人，本来就该知道有这条路。
+  /// ```
+  bool _danmakuShouldGuide() => UiPrefs.danmakuEndpoint.isEmpty;
+
   // ═══════════════════════════════════════════════════════════════════
   //  内容源
   // ═══════════════════════════════════════════════════════════════════
@@ -1049,6 +1102,32 @@ class SettingsPageState extends State<SettingsPage> {
       return;
     }
 
+    /*
+     * ★★★ 2026-10-17（Owner 第 9 条）：声明式源直接进**可视化编排**
+     *
+     * # Owner 原话
+     * > 点击编辑还是老样子的配置,没有可见的可视化编排,这里肯定也要用到modal,一起给换了
+     *
+     * # 改前为什么「还是老样子」
+     * ```text
+     * 这条路径落到 ProviderImportDialog.showEdit ⇒ 一个**裸 JSON 文本框**。
+     * 编排器本身是有的（provider_import_dialog.dart:644 那个「可视化编排」按钮），
+     * 但：
+     *   ① 要用户先点进导入弹窗、再点按钮才到（编辑入口自己到不了）；
+     *   ② 那里调 SourceComposerDialog 时**没传 initial** ⇒ 编排器是**空白**的，
+     *      编辑一个已有源等于从零重填；
+     *   ③ 编完只写回 JSON 文本框，用户还得再点一次「保存」。
+     * ```
+     * ⇒ 三件事一起解决：从编辑入口**直达**编排器、带初值、提交即生效。
+     *
+     * ⚠️ JS 插件**不受影响**（上面那个 if 已经 return 了）——
+     *    它的「配置」就是源码本身，必须走源码编辑器。
+     */
+    if (p.kind == 'declarative') {
+      await _editDeclarativeViaComposer(p);
+      return;
+    }
+
     ProviderImportSeed? seed;
     try {
       /*
@@ -1086,6 +1165,91 @@ class SettingsPageState extends State<SettingsPage> {
     await _afterImport(r);
   }
 
+
+  /// 声明式源 ⇒ **可视化编排**（Owner 第 9 条）
+  ///
+  /// # 与 [_editProvider] 里其它分支的分工
+  /// ```text
+  /// js           ⇒ 源码编辑器（配置就是源码）
+  /// declarative  ⇒ **本方法**：可视化编排，提交即生效
+  /// http         ⇒ ProviderImportDialog（要填 baseUrl + headers）
+  /// ```
+  ///
+  /// # 为什么提交后**直接**落盘，而不是像导入弹窗那样写回文本框
+  /// ```text
+  /// 用户点的是**编辑**，不是「打开一个草稿箱」。
+  /// 编辑完还要回去再点一次「保存」，是这次被 Owner 点名的那层别扭；
+  /// 一屏化之后它会更明显（没有「下一步」的仪式感兜着）。
+  /// ⇒ 编排器的「保存」就是最终动作，直接 import_declarative_provider。
+  /// ```
+  Future<void> _editDeclarativeViaComposer(ProviderManifest p) async {
+    ProviderImportSeed? seed;
+    try {
+      seed = await SourinApi.getProviderImportSeed(p.id);
+    } catch (e) {
+      _flash('读取配置失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    if (seed == null || seed.json == null || seed.json!.trim().isEmpty) {
+      _flash('该源没有可编辑的配置');
+      return;
+    }
+
+    ComposerDraft initial;
+    try {
+      final raw = jsonDecode(seed.json!);
+      initial = composerDraftFromJson(
+        raw is Map ? raw.map((k, v) => MapEntry(k.toString(), v)) : const {},
+      );
+    } catch (e) {
+      /*
+       * 解析不了 ⇒ 退回源码/JSON 编辑器那条老路，而不是把用户挡在门外。
+       * ⚠️ 这里**不能**静默 return：用户会以为「点了编辑没反应」。
+       */
+      _flash('这份配置无法可视化解析，已改用文本编辑：$e');
+      await _openDeclarativeTextFallback(p);
+      return;
+    }
+
+    final out = await showAppDialog<Map<String, Object?>>(
+      context: context,
+      builder: (_) => SourceComposerDialog(
+        initial: initial,
+        submitLabel: '保存',
+        onSubmit: (j) => Navigator.of(context).pop(j),
+      ),
+    );
+    if (out == null || !mounted) return;
+
+    try {
+      const enc = JsonEncoder.withIndent('  ');
+      final res = await SourinApi.importDeclarativeProvider(enc.convert(out));
+      await loadAll();
+      widget.onProvidersChanged?.call();
+      _flash('已保存「${res.name}」v${res.version}');
+    } catch (e) {
+      _flash('保存失败：$e');
+    }
+  }
+
+  /// 可视化解析失败时的退路：仍走原来的导入弹窗（裸 JSON 文本框）
+  Future<void> _openDeclarativeTextFallback(ProviderManifest p) async {
+    ProviderImportSeed? seed;
+    try {
+      seed = await SourinApi.getProviderImportSeed(p.id);
+    } catch (_) {
+      return;
+    }
+    if (seed == null || !mounted) return;
+    final r = await ProviderImportDialog.showEdit(
+      context,
+      seed: seed,
+      name: p.name,
+    );
+    if (!mounted) return;
+    await _afterImport(r);
+  }
   /// 弹窗返回后的统一收尾（刷新 + 提示）
   ///
   /// # 为什么抽出来
@@ -1785,6 +1949,7 @@ class SettingsPageState extends State<SettingsPage> {
   // ═══════════════════════════════════════════════════════════════════
 
   @override
+  @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
 
@@ -2087,8 +2252,109 @@ class SettingsPageState extends State<SettingsPage> {
              *   且**不能**插进 `SettingsBlock` 内部（它自带 padding）。
              */
             const SettingsGroupLabel(text: '内容源与插件'),
+            /*
+             * ══════════════════════════════════════════════════════════════
+             * ★★★ Owner 第 7 条：弹幕源入口（dan-api）
+             * ══════════════════════════════════════════════════════════════
+             *
+             * Owner 原话：
+             * > 配置页没看到,既然弹弹play不行,就换成dan-api
+             *
+             * # 这是一次「发现性」缺陷，不是功能缺失
+             * ```text
+             * 能力早就全实现了（DanmakuEndpoint / 两个偏好键 / 地址框 /
+             * 测试按钮，全在 widgets/danmaku_settings_dialog.dart 里），
+             * 但那是个**播放页**的二级弹窗 —— 用户在设置页翻到底
+             * 也看不到一个「弹幕」字样，于是以为「没这个功能」。
+             * ```
+             * ★ 与本文件 :151-160 记的那条教训同型：
+             *   「代码写完了」与「功能可用了」之间差一次**接线**。
+             *
+             * # 为什么在「内容源与插件」组里
+             * ```text
+             * 弹幕源就是**内容源的一种**（它提供弹幕，和 JS 插件提供片源
+             * 是同一层的事）。放在「JS 插件 / 直播分组 / Emby」这一组，
+             * 用户找内容源类配置时自然扫到。
+             * ```
+             *
+             * ⚠️ 副标题**必须**带当前状态 —— 这是本条的验收核心：
+             *    用户不点进去也要能看出「我配没配」。
+             */
             SettingsEntryRow(
-              icon: Icons.extension_outlined,
+              icon: AppIcons.subtitles_outlined,
+              title: '弹幕源',
+              subtitle: _danmakuEndpointSubtitle(),
+              onTap: _openDanmakuSourcePage,
+            ),
+
+            /*
+             * ★★★ Owner 第 7 条 ③：**首次使用引导**
+             *
+             * # 引导什么
+             * ```text
+             * 未配 dan-api 且 本机弹弹play 也不可用
+             *   ⇒ 用户现在取弹幕只能走**官方**，而官方要 AppId/AppSecret
+             *   ⇒ 大多数用户没有凭证 ⇒ 弹幕永远是 403
+             *   ⇒ 这就是 Owner 说的「弹弹play不行」的真实处境
+             * ```
+             * 这时**主动**告诉他：还有 dan-api 这条路（免凭证）。
+             *
+             * # 为什么判据要放在**设置页**而不是播放页
+             * ```text
+             * 播放页的提示是**事后**的（弹幕取失败了才说）；
+             * 而这条是**事前**的：用户还没开始看，先在配置页告诉他怎么配好。
+             * 播放页那套（DanmakuHint）继续负责失败后的补救，两者不冲突。
+             * ```
+             *
+             * ⚠️ **零网络**：本块只读偏好，不发起探测。
+             *    设置页一打开就打网络是不可接受的（慢、且用户没要求）。
+             *    「本机弹弹play 在不在线」由用户点「测试连接」时才知道；
+             *    所以这里用**未配置**作为唯一判据 —— 保守但不撒谎。
+             */
+            if (_danmakuShouldGuide()) ...[
+              const SizedBox(height: Sp.x1),
+              Container(
+                padding: const EdgeInsets.all(Sp.x3),
+                decoration: BoxDecoration(
+                  color: colors.primaryContainer.withValues(alpha: 0.35),
+                  borderRadius: Radii.rSm,
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(AppIcons.tips_and_updates_outlined,
+                        size: 16, color: colors.primary),
+                    const SizedBox(width: Sp.x2),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '弹幕还没配好？可以试试 dan-api',
+                            style: TextStyle(
+                              fontSize: FontSizes.cap,
+                              fontWeight: FontWeights.semibold,
+                              color: colors.onSurface,
+                            ),
+                          ),
+                          const SizedBox(height: Sp.x1),
+                          Text(
+                            '它是开源的自建弹幕服务，不需要官方凭证，'
+                            '本机跑起来后把地址填进上面这一项就能用。',
+                            style: TextStyle(
+                              fontSize: FontSizes.cap,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            SettingsEntryRow(
+              icon: AppIcons.extension_outlined,
               title: 'JS 插件',
               subtitle: '${_providers.length} 个内容源 · 安装 / 编辑 / 更新 / 排序 / 代理',
               onTap: _openPluginsPage,
@@ -2139,13 +2405,13 @@ class SettingsPageState extends State<SettingsPage> {
              *    否则用户建完组不知道要回**直播页右侧**切分组。
              */
             SettingsEntryRow(
-              icon: Icons.playlist_add_check_circle_outlined,
+              icon: AppIcons.playlist_add_check_circle_outlined,
               title: '直播分组',
               subtitle: '把常用的直播源分组 · 直播页右侧可一键只看某一组',
               onTap: () => _openSubPage(const LiveGroupsPage()),
             ),
             SettingsEntryRow(
-              icon: Icons.album_outlined,
+              icon: AppIcons.album_outlined,
               title: 'Emby',
               subtitle: '媒体服务器 · 安装插件 / 服务器地址 / 连接自检',
               onTap: () => _openSubPage(const EmbySettingsPage()),
@@ -2200,7 +2466,7 @@ class SettingsPageState extends State<SettingsPage> {
             // ── 二级页入口（2026-09-25 任务 ㉙ 方案 A）──
             SettingsGroupLabel(text: '播放与观看'),
             SettingsEntryRow(
-              icon: Icons.content_cut_outlined,
+              icon: AppIcons.content_cut_outlined,
               title: '片头片尾',
               subtitle: _skipMarkers.isEmpty
                   ? '还没有设置过 · 在播放器底栏可以设置'
@@ -2209,7 +2475,7 @@ class SettingsPageState extends State<SettingsPage> {
             ),
             if (Device.isDesktop)
               SettingsEntryRow(
-                icon: Icons.keyboard_outlined,
+                icon: AppIcons.keyboard_outlined,
                 title: 'PC 播放手势',
                 subtitle: '方向键单击/长按 · 鼠标左右半屏',
                 onTap: () => _openSubPage(const PcGesturesSettingsPage()),
@@ -2218,7 +2484,7 @@ class SettingsPageState extends State<SettingsPage> {
             //   标题「播放与下载」是**刻意**与播放器里那个「播放设置」面板
             //   区分的 —— 面板管字幕/音轨/倍速，这一页管下载与缓存。
             SettingsEntryRow(
-              icon: Icons.download_outlined,
+              icon: AppIcons.download_outlined,
               title: '播放与下载',
               /*
                * ★ 2026-10-09：副标题跟着 log-dev 的改名走
@@ -2247,7 +2513,7 @@ class SettingsPageState extends State<SettingsPage> {
             //   `lib/ui/settings/touch_gestures_page.dart:72-92`），
             //   比把入口整个藏掉更容易让用户明白为什么没有档位可选。
             SettingsEntryRow(
-              icon: Icons.touch_app_outlined,
+              icon: AppIcons.touch_app_outlined,
               title: '触摸手势',
               subtitle: '双击左右侧 · 长按左右侧（触摸端生效）',
               onTap: () => _openSubPage(const TouchGesturesSettingsPage()),
@@ -2405,21 +2671,50 @@ class SettingsPageState extends State<SettingsPage> {
               ],
             ),
 
+            /*
+             * 布局骨架选择器已移除（Owner 2026-10-17 第 13 条）
+             *
+             * 原话：
+             * > 布局骨架删除,只保留底栏这一种布局
+             *
+             * 改前：三选一（bottomBar / sideRail / topBar），两套独立实现共 523 行。
+             * 改后：只剩底栏式；side_rail_layout.dart 与 top_bar_layout.dart
+             *       已物理删除，本选择器一并移除（没有可选项时留着只会误导）。
+             *
+             * 老用户 ui-prefs.json 里的 shellLayout 键不清：
+             * ShellPage._currentLayout() 已不读它，留着是无害的历史值；
+             * 主动去删反而要在启动路径上加一次写盘。
+             */
+
             SettingsGroupLabel(text: '数据与外观'),
             SettingsEntryRow(
-              icon: Icons.cloud_sync_outlined,
+              icon: AppIcons.cloud_sync_outlined,
               title: '备份与恢复',
               subtitle: '导出 / 导入本机数据（合并，不覆盖）',
               onTap: () => _openSubPage(const BackupSettingsPage()),
             ),
+            /*
+             * ★ Owner 第 14 条（2026-10-17）：
+             * > 设置也加一个数据管理,可以对缓存的数据等等数据进行整理删除,
+             * > 可以看到那些数据占了空间进行删除或者优化整理,可以精 细化处理
+             *
+             * 与「备份与恢复」并排：同属「数据」类，但职责不同 ——
+             * 那个管**导出/导入**（搬迁），这个管**占用与清理**（瘦身）。
+             */
             SettingsEntryRow(
-              icon: Icons.palette_outlined,
+              icon: AppIcons.storage_outlined,
+              title: '数据管理',
+              subtitle: '查看日志 / 备份 / 缓存占用，按类清理',
+              onTap: () => _openSubPage(const DataManagePage()),
+            ),
+            SettingsEntryRow(
+              icon: AppIcons.palette_outlined,
               title: '主题',
               subtitle: '当前：${AppTheme.mode.label} · 跟随系统 / 浅色 / 深色',
               onTap: () => _openSubPage(const ThemeSettingsPage()),
             ),
             SettingsEntryRow(
-              icon: Icons.info_outline,
+              icon: AppIcons.info_outline,
               title: '关于',
               subtitle: _coreVersionLabel,
               onTap: () => _openSubPage(const AboutSettingsPage()),
@@ -3003,7 +3298,7 @@ class SettingsPageState extends State<SettingsPage> {
             children: [
               FilledButton.icon(
                 onPressed: _installPlugin,
-                icon: const Icon(Icons.download, size: 16),
+                icon: const Icon(AppIcons.download, size: 16),
                 label: const Text('从网址安装'),
               ),
               /*
@@ -3049,31 +3344,31 @@ class SettingsPageState extends State<SettingsPage> {
                 items: <AppMenuItem<String>>[
                   AppMenuItem<String>(
                     value: 'order',
-                    child: _menuRow(Icons.reorder, '调整顺序'),
+                    child: _menuRow(AppIcons.reorder, '调整顺序'),
                   ),
                   AppMenuItem<String>(
                     value: 'health',
                     enabled: !_sweeping,
                     child: _menuRow(
-                      Icons.monitor_heart_outlined,
+                      AppIcons.monitor_heart_outlined,
                       _sweeping ? '处理中…' : '健康检测',
                     ),
                   ),
                   AppMenuItem<String>(
                     value: 'import',
-                    child: _menuRow(Icons.add, '导入源'),
+                    child: _menuRow(AppIcons.add, '导入源'),
                   ),
                   AppMenuItem<String>(
                     value: 'reload',
                     enabled: !_pluginBusy,
                     child: _menuRow(
-                      Icons.refresh,
+                      AppIcons.refresh,
                       _pluginBusy ? '处理中…' : '重新加载',
                     ),
                   ),
                   AppMenuItem<String>(
                     value: 'source',
-                    child: _menuRow(Icons.code, '粘贴源码安装'),
+                    child: _menuRow(AppIcons.code, '粘贴源码安装'),
                   ),
                 ],
               ),
@@ -4718,7 +5013,7 @@ class _ProviderCard extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               // 图标已在本文件用过（`:5377`）—— 不引入新图标
-              Icon(Icons.link, size: 14, color: colors.primary),
+              Icon(AppIcons.link, size: 14, color: colors.primary),
               const SizedBox(width: 3),
               Flexible(child: text),
             ],
@@ -4839,14 +5134,14 @@ class _ProviderCard extends StatelessWidget {
          */
         IconButton(
           onPressed: canMoveUp ? onMoveUp : null,
-          icon: const Icon(Icons.keyboard_arrow_up, size: 18),
+          icon: const Icon(AppIcons.keyboard_arrow_up, size: 18),
           tooltip: '上移一位',
           visualDensity: VisualDensity.compact,
           color: colors.onSurfaceVariant,
         ),
         IconButton(
           onPressed: canMoveDown ? onMoveDown : null,
-          icon: const Icon(Icons.keyboard_arrow_down, size: 18),
+          icon: const Icon(AppIcons.keyboard_arrow_down, size: 18),
           tooltip: '下移一位',
           visualDensity: VisualDensity.compact,
           color: colors.onSurfaceVariant,
@@ -4890,7 +5185,7 @@ class _ProviderCard extends StatelessWidget {
         if (onPluginUpdate != null)
           IconButton(
             onPressed: onPluginUpdate,
-            icon: const Icon(Icons.system_update_alt, size: 17),
+            icon: const Icon(AppIcons.system_update_alt, size: 17),
             tooltip: '插件更新',
             visualDensity: VisualDensity.compact,
             color: colors.onSurfaceVariant,
@@ -4898,7 +5193,7 @@ class _ProviderCard extends StatelessWidget {
         if (onConfig != null)
           IconButton(
             onPressed: onConfig,
-            icon: const Icon(Icons.settings_outlined, size: 17),
+            icon: const Icon(AppIcons.settings_outlined, size: 17),
             tooltip: '配置',
             visualDensity: VisualDensity.compact,
             color: colors.onSurfaceVariant,
@@ -4935,13 +5230,13 @@ class _ProviderCard extends StatelessWidget {
                 const AppMenuItem(
                   value: 'edit',
                   label: '编辑',
-                  icon: Icons.edit_outlined,
+                  icon: AppIcons.edit_outlined,
                 ),
               if (_isThirdParty)
                 const AppMenuItem(
                   value: 'remove',
                   label: '移除这个源',
-                  icon: Icons.delete_outline,
+                  icon: AppIcons.delete_outline,
                   danger: true,
                 ),
             ],
@@ -5017,11 +5312,11 @@ class _ProviderIcon extends StatelessWidget {
 
   /// 没有自带图标时按 kind 给一个（比原版"全都是同一个图标"更能区分）
   IconData get _fallbackIcon => switch (provider.kind) {
-    'js' => Icons.extension_outlined,
-    'declarative' => Icons.description_outlined,
-    'http' => Icons.cloud_outlined,
-    'tvbox' => Icons.hub_outlined,
-    _ => Icons.live_tv_outlined,
+    'js' => AppIcons.extension_outlined,
+    'declarative' => AppIcons.description_outlined,
+    'http' => AppIcons.cloud_outlined,
+    'tvbox' => AppIcons.hub_outlined,
+    _ => AppIcons.live_tv_outlined,
   };
 }
 
@@ -5070,7 +5365,7 @@ class _PluginTile extends StatelessWidget {
                       Tooltip(
                         message: entry.error ?? '加载失败',
                         child: Icon(
-                          Icons.error_outline,
+                          AppIcons.error_outline,
                           size: 14,
                           color: colors.error,
                         ),
@@ -5099,17 +5394,17 @@ class _PluginTile extends StatelessWidget {
            */
           IconButton(
             onPressed: onConfig,
-            icon: const Icon(Icons.settings_outlined, size: 18),
+            icon: const Icon(AppIcons.settings_outlined, size: 18),
             tooltip: '配置',
           ),
           IconButton(
             onPressed: onEdit,
-            icon: const Icon(Icons.edit_outlined, size: 18),
+            icon: const Icon(AppIcons.edit_outlined, size: 18),
             tooltip: '编辑',
           ),
           IconButton(
             onPressed: onRemove,
-            icon: const Icon(Icons.delete_outline, size: 18),
+            icon: const Icon(AppIcons.delete_outline, size: 18),
             tooltip: '删除',
           ),
         ],
@@ -5131,7 +5426,7 @@ class _FailedPlugin extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: Sp.x2),
       child: Row(
         children: [
-          Icon(Icons.warning_amber, size: 16, color: colors.error),
+          Icon(AppIcons.warning_amber, size: 16, color: colors.error),
           const SizedBox(width: Sp.x2),
           Expanded(
             child: Text(
@@ -5188,7 +5483,7 @@ class _RemotePanel extends StatelessWidget {
             ),
             child: Row(
               children: [
-                Icon(Icons.warning_amber, size: 14, color: colors.error),
+                Icon(AppIcons.warning_amber, size: 14, color: colors.error),
                 const SizedBox(width: Sp.x2),
                 Expanded(
                   child: Text(
@@ -5361,18 +5656,18 @@ class _RemotePanel extends StatelessWidget {
          *
          * # 原先两个错在哪
          * ```text
-         * · 「设固定码」用的 `Icons.pin_outlined` 是**图钉**（地图打点那种）
+         * · 「设固定码」用的 `AppIcons.pin_outlined` 是**图钉**（地图打点那种）
          *   —— 与「固定**码**」没有任何关系，字形本身也不对称，看着别扭。
-         * · 「关闭遥控」用的 `Icons.stop` 是**实心方块**，夹在一排
+         * · 「关闭遥控」用的 `AppIcons.stop` 是**实心方块**，夹在一排
          *   `OutlinedButton`（线性描边）里，粗细语言不一致 ⇒ 更显得
          *   "不好看"。Owner 点名的是前一个，这个顺带一起对齐。
          * ```
          *
          * # 为什么选这两个
          * ```text
-         * · `Icons.password` —— Material 自带的「密码」字形（钥匙 + 圆点），
+         * · `AppIcons.password` —— Material 自带的「密码」字形（钥匙 + 圆点），
          *   语义就是「一串要手输的码」，与「设固定码 / 改固定码」逐字对上。
-         * · `Icons.link_off` —— 断开的链环，标准「断开连接」字形，
+         * · `AppIcons.link_off` —— 断开的链环，标准「断开连接」字形，
          *   与「关闭遥控」逐字对上，且是**描边**风格，和 OutlinedButton 同族。
          * ```
          *
@@ -5387,12 +5682,12 @@ class _RemotePanel extends StatelessWidget {
           children: [
             OutlinedButton.icon(
               onPressed: busy ? null : onStop,
-              icon: const Icon(Icons.link_off, size: 16),
+              icon: const Icon(AppIcons.link_off, size: 16),
               label: const Text('关闭遥控'),
             ),
             OutlinedButton.icon(
               onPressed: onSetFixedPin,
-              icon: const Icon(Icons.password, size: 16),
+              icon: const Icon(AppIcons.password, size: 16),
               label: Text(status.fixedPin == null ? '设固定码' : '改固定码'),
             ),
           ],
@@ -5566,12 +5861,22 @@ class _RemoteBlockState extends State<_RemoteBlock> {
     final colors = Theme.of(context).colorScheme;
 
     if (!_shouldOpen) {
-      return Material(
-        type: MaterialType.transparency,
-        child: InkWell(
-          borderRadius: Radii.rLg,
-          onTap: () => _setOpen(true),
-          child: Container(
+      /*
+       * ★ 去 Material（A 类迁移）：删掉透明 Material 外壳
+       *
+       * 原来这层 `Material(type: transparency)` **只**为了给 InkWell 的
+       * 水波提供绘制面 —— 它不画底色、没有形状、没有阴影。
+       * 换成 AppInkWell 后高亮是自绘的（画在自己身上），
+       * 不再需要祖先 Material ⇒ 整层删除，行为不变。
+       *
+       * ⚠️ 本块内**没有** ListTile 家族控件（实测 grep：0 处），
+       *    否则删掉 Material 会触发
+       *    「No Material widget found」断言。
+       */
+      return AppInkWell(
+        borderRadius: Radii.rLg,
+        onTap: () => _setOpen(true),
+        child: Container(
             padding: const EdgeInsets.symmetric(
               horizontal: Sp.x4,
               vertical: Sp.x3,
@@ -5609,14 +5914,13 @@ class _RemoteBlockState extends State<_RemoteBlock> {
                 ),
                 const SizedBox(width: Sp.x2),
                 Icon(
-                  Icons.expand_more,
+                  AppIcons.expand_more,
                   size: 20,
                   color: colors.onSurfaceVariant,
                 ),
               ],
             ),
           ),
-        ),
       );
     }
 
@@ -5794,12 +6098,12 @@ class _OrderDialogState extends State<_OrderDialog> {
                 children: [
                   IconButton(
                     onPressed: i > 0 ? () => _move(i, -1) : null,
-                    icon: const Icon(Icons.keyboard_arrow_up),
+                    icon: const Icon(AppIcons.keyboard_arrow_up),
                     tooltip: '上移',
                   ),
                   IconButton(
                     onPressed: i < _list.length - 1 ? () => _move(i, 1) : null,
-                    icon: const Icon(Icons.keyboard_arrow_down),
+                    icon: const Icon(AppIcons.keyboard_arrow_down),
                     tooltip: '下移',
                   ),
                 ],
@@ -6082,7 +6386,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
               message: widget.sourceUrl,
               child: Row(
                 children: [
-                  Icon(Icons.link, size: 14, color: colors.onSurfaceVariant),
+                  Icon(AppIcons.link, size: 14, color: colors.onSurfaceVariant),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
@@ -6105,7 +6409,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
               children: [
                 FilledButton.tonalIcon(
                   onPressed: _busy ? null : _check,
-                  icon: const Icon(Icons.refresh, size: 16),
+                  icon: const Icon(AppIcons.refresh, size: 16),
                   label: Text(_checking ? '检测中…' : '检测更新'),
                 ),
                 const SizedBox(width: Sp.x3),
@@ -6123,7 +6427,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
             if (c != null && c.hasUpdate) ...[
               FilledButton.icon(
                 onPressed: _busy ? null : _update,
-                icon: const Icon(Icons.download, size: 16),
+                icon: const Icon(AppIcons.download, size: 16),
                 label: Text(_updating ? '更新中…' : '更新到 v${c.remoteVersion}'),
               ),
               const SizedBox(height: Sp.x2),
@@ -6219,7 +6523,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
       return Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.error_outline, size: 14, color: colors.error),
+          Icon(AppIcons.error_outline, size: 14, color: colors.error),
           const SizedBox(width: 4),
           Expanded(
             child: Text(
@@ -6307,7 +6611,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
           padding: const EdgeInsets.symmetric(vertical: Sp.x2),
           child: Row(
             children: [
-              Icon(Icons.history, size: 15, color: colors.onSurfaceVariant),
+              Icon(AppIcons.history, size: 15, color: colors.onSurfaceVariant),
               const SizedBox(width: Sp.x2),
               Expanded(
                 child: Column(

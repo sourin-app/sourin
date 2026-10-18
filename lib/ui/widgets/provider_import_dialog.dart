@@ -43,6 +43,7 @@ import 'app_dialog_shell.dart';
 import 'source_composer_dialog.dart';
 import 'overlay_motion.dart';
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 接入方式
 enum ImportMode {
@@ -540,7 +541,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
             ),
             TextButton.icon(
               onPressed: _busy ? null : _openComposer,
-              icon: const Icon(Icons.auto_fix_high_outlined, size: 16),
+              icon: const Icon(AppIcons.auto_fix_high_outlined, size: 16),
               label: const Text('可视化编排'),
             ),
           ],
@@ -933,7 +934,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Icon(
-                      Icons.subdirectory_arrow_right,
+                      AppIcons.subdirectory_arrow_right,
                       size: 16,
                       color: colors.primary,
                     ),

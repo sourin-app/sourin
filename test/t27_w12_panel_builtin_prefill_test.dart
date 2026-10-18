@@ -152,7 +152,11 @@ void main() {
        * about missing credentials and point at the sign-free fallbacks) has not
        * changed, only where it is rendered.
        */
-      await t.tap(find.text('弹弹play'));
+      /*
+       * ★ 2026-10-17（Owner 第 11 条）：页签改成按能力命名
+       *   「弹弹play」不再是页签名 ⇒ 凭证那节现在在「官方兜底」里。
+       */
+      await t.tap(find.text('官方兜底'));
       await t.pumpAndSettle();
       // ★ 2026-10-14（Owner「凭证流程根本没走通」）改口径：
       //   面板现在**有**凭证输入框了 ⇒ 缺凭证要**如实**说（官方边会失败），

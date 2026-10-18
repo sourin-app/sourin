@@ -126,6 +126,7 @@ import '../tokens.dart';
 import '../widgets/overlay_motion.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
+import '../../design/icons/app_icons.dart';
 
 /// Emby 内容源设置页（独立路由，见文件头「未接线」说明）
 class EmbySettingsPage extends StatefulWidget {
@@ -1014,8 +1015,8 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
                 children: [
                   Icon(
                     _selfCheckOk
-                        ? Icons.check_circle_outline
-                        : Icons.error_outline,
+                        ? AppIcons.check_circle_outline
+                        : AppIcons.error_outline,
                     size: 18,
                     color: _selfCheckOk ? colors.primary : colors.error,
                   ),
@@ -1289,8 +1290,8 @@ class _InstanceTile extends StatelessWidget {
           selected: selected,
           leading: Icon(
             selected
-                ? Icons.radio_button_checked
-                : Icons.radio_button_unchecked,
+                ? AppIcons.radio_button_checked
+                : AppIcons.radio_button_unchecked,
             size: 20,
             color: selected ? colors.primary : colors.onSurfaceVariant,
           ),
@@ -1311,7 +1312,7 @@ class _InstanceTile extends StatelessWidget {
           ),
           trailing: IconButton(
             tooltip: '删除这个源',
-            icon: const Icon(Icons.delete_outline, size: 20),
+            icon: const Icon(AppIcons.delete_outline, size: 20),
             onPressed: busy ? null : onDelete,
           ),
           onTap: busy ? null : onSelect,

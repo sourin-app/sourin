@@ -705,9 +705,40 @@ Future<BiliBindOutcome?> autoBindBySearch({
   try {
     hits = await api.searchVideos(kw);
   } catch (_) {
-    return null;
+    hits = const <BiliSearchItem>[];
   }
-  if (hits.isEmpty) return null;
+
+  /*
+   * ★★★ 2026-10-17（Owner 第 6 条）—— search/type 被风控时的**备用链路**
+   *
+   * # 为什么需要（实测，不是推测）
+   * ```text
+   * x/web-interface/search/type  → 412（三种 Referer 组合全 412，是风控页不是业务错误）
+   * x/web-interface/search/all/v2 → 200（但 media_bangumi 可能 0 条）
+   * pgc/view/web/season           → 200 ✓ 免登录，整季 episodes[] 每集带 cid
+   * ```
+   *
+   * 改前：hits 为空 ⇒ 直接 return null ⇒ 降级 danmaku-service ⇒ 无凭证 ⇒
+   *       403 Missing Authentication Headers（用户看到的那句）。
+   * 改后：hits 为空时**再试 season 链路**，成功则直接给出 cid，完全绕过 danmaku-service。
+   *
+   * # 为什么 season 链路更可靠
+   * ```text
+   * ① 不碰 search/type（那是风控重灾区）
+   * ② 一次请求就拿到整季的 cid，而 search 还要逐集 view
+   * ③ season 是 PGC（番剧/影视）专用接口，正是"追番"场景的主力
+   * ```
+   */
+  if (hits.isEmpty) {
+    // 出口 ③：搜索返回空（原逻辑只有这一处兜底）
+    return _autoBindViaSeason(
+      api: api,
+      keyword: kw,
+      provider: provider,
+      id: id,
+      episodeCount: episodeTitles.length,
+    );
+  }
 
   /*
    * ★ 按相似度挑最像的一条。
@@ -759,7 +790,33 @@ Future<BiliBindOutcome?> autoBindBySearch({
       best = h;
     }
   }
-  if (best == null || bestScore < minScore) return null;
+  /*
+   * ★★★ 2026-10-17（dlg-bili 实测发现）—— 下面**两个 return null 出口**也必须兜底
+   *
+   * # 我第一版只兜了 `hits.isEmpty` 一处，漏了这里
+   * ```text
+   * dlg-bili 真网络实测：
+   *   localTitle = '鬼灭之刃 柱训练篇 第二季 特别编集版'
+   *   search hits = 20，bestCoverage = 0.5333（> 阈值 0.34）⇒ 选中了一条
+   *   ⇒ 但 bindFromInput 去取视频详情/P 列表时失败 ⇒ catch ⇒ return null
+   *   ⇒ season 兜底**完全没被咨询** ⇒ 照样降级 danmaku-service ⇒ 403
+   * ```
+   *
+   * ⇒ 兜底判据必须是「**最终没拿到可用绑定**」，而不是「搜索返回空」。
+   *   本函数所有失败出口统一走 [_trySeasonFallback]。
+   */
+  Future<BiliBindOutcome?> trySeason() => _autoBindViaSeason(
+        api: api,
+        keyword: kw,
+        provider: provider,
+        id: id,
+        episodeCount: episodeTitles.length,
+      );
+
+  if (best == null || bestScore < minScore) {
+    // 出口 ①：搜到了但没有一条够像
+    return trySeason();
+  }
 
   try {
     return await bindFromInput(
@@ -773,7 +830,8 @@ Future<BiliBindOutcome?> autoBindBySearch({
       manual: false,
     );
   } catch (_) {
-    return null;
+    // 出口 ②：选中了，但取详情/P 列表失败（dlg-bili 实测就死在这里）
+    return trySeason();
   }
 }
 
@@ -789,4 +847,83 @@ BiliEpisodeBinding? resolveEpisodeBinding({
     if (e.episodeIndex == episodeIndex) return e;
   }
   return b.episodes.length == 1 ? b.episodes.first : null;
+}
+
+
+/*
+ * ══════════════════════════════════════════════════════════════════════
+ *  season 备用链路（2026-10-17，Owner 第 6 条）
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * # 它解决什么
+ * ```text
+ * search/type 被风控（412）⇒ 原逻辑直接放弃 ⇒ 降级到要凭证的 danmaku-service
+ * ⇒ 用户看到 "Missing Authentication Headers"（Owner 报的那句）。
+ * 这条链路用 pgc/view/web/season 拿整季 cid，**完全绕开 search/type**。
+ * ```
+ *
+ * # 为什么不复用上面的相似度打分
+ * ```text
+ * season 搜出来的是【番剧】不是【视频】；一个关键词通常只对应一部番剧，
+ * 且 search/all/v2 的 media_bangumi 段本身已按相关度排序。
+ * 这里取前几条 season，再用【集数是否合理】做二次校验。
+ * ```
+ */
+Future<BiliBindOutcome?> _autoBindViaSeason({
+  required BiliApi api,
+  required String keyword,
+  required String provider,
+  required String id,
+  required int episodeCount,
+}) async {
+  final seasonIds = await api.searchSeasonIds(keyword);
+  if (seasonIds.isEmpty) return null;
+
+  for (final sid in seasonIds.take(3)) {
+    final season = await api.seasonInfo(sid);
+    if (season == null || season.episodes.isEmpty) continue;
+
+    /*
+     * ★ 集数校验：本地集数不该**显著多于**番剧集数（那通常是同名不同季，
+     *   绑上去时间轴全错）。番剧含 SP/OVA 时会比本地多，那是正常的。
+     */
+    final n = season.episodes.length;
+    if (episodeCount > 0 && episodeCount > n + 2) continue;
+
+    /*
+     * ⚠️ 坐标系：BiliEpisodeBinding.episodeIndex 是 **0 基**，
+     *    与 PlayRequestData.episodeIndex 同系（见该字段注释）。
+     *    season.episodes 是线上顺序 ⇒ 第 i 条对应 episodeIndex = i。
+     */
+    final eps = <BiliEpisodeBinding>[];
+    for (var i = 0; i < season.episodes.length; i++) {
+      final e = season.episodes[i];
+      if (e.cid <= 0) continue;
+      eps.add(BiliEpisodeBinding(
+        episodeIndex: i,
+        page: i + 1,
+        cid: e.cid,
+        part: e.title,
+      ));
+    }
+    if (eps.isEmpty) continue;
+
+    final binding = BiliBinding(
+      bvid: season.episodes.first.bvid,
+      title: season.title,
+      aid: season.episodes.first.aid,
+      episodes: eps,
+      manual: false,
+      updatedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    saveBinding(provider, id, binding);
+
+    return BiliBindOutcome(
+      binding: binding,
+      score: 0.5,
+      reason: '按番剧季匹配（search/type 不可用时走 season 链路）',
+      created: true,
+    );
+  }
+  return null;
 }

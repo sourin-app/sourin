@@ -61,6 +61,7 @@ import 'widgets/poster_card.dart';
 import 'widgets/press_feedback.dart';
 import 'widgets/my_shelf.dart';
 import 'widgets/source_bar.dart';
+import '../design/icons/app_icons.dart';
 
 /// 首页直播条只展示这几个常用频道，完整列表在「直播」页
 ///
@@ -1974,7 +1975,7 @@ class HomePageState extends State<HomePage> {
       current: _currentSource,
     );
     return _EmptyState(
-      icon: noSourceAtAll ? Icons.movie_outlined : Icons.inbox_outlined,
+      icon: noSourceAtAll ? AppIcons.movie_outlined : AppIcons.inbox_outlined,
       title: title,
       desc: desc,
     );
@@ -2859,7 +2860,7 @@ class _MoreButton extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(label, style: const TextStyle(fontSize: FontSizes.sm)),
-          const Icon(Icons.chevron_right, size: 15),
+          const Icon(AppIcons.chevron_right, size: 15),
         ],
       ),
     );
@@ -2887,7 +2888,7 @@ class _ErrorBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.error_outline, size: 17, color: colors.error),
+          Icon(AppIcons.error_outline, size: 17, color: colors.error),
           const SizedBox(width: Sp.x3),
           Expanded(
             child: Text(

@@ -356,7 +356,8 @@ void main() {
        */
       final kit = File('lib/ui/widgets/settings_kit.dart').readAsStringSync();
       final pillStart =
-          kit.indexOf('class SettingsGesturePill extends StatelessWidget');
+          // ★ 2026-10-17：只匹配类名，不写死基类
+          kit.indexOf('class SettingsGesturePill');
       expect(pillStart > 0, isTrue,
           reason: '应该还能找到 pill 类（搬来后叫 `SettingsGesturePill`）');
       final pillBody = kit.substring(pillStart, pillStart + 1200);

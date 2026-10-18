@@ -148,14 +148,34 @@ void main() {
               '那就是"液态"手感）');
 
       // 从底栏源码里把时长抠出来，确保两边**字面一致**
-      final m = RegExp(r'duration: const Duration\(milliseconds: (\d+)\)')
-          .allMatches(shell);
-      final barDurations = m.map((x) => x.group(1)).toSet();
+      /*
+       * ★ 2026-10-17 更新：底栏药丸现在有**两条路径**
+       *
+       * ```dart
+       * duration: _pillIsDragging
+       *     ? Duration.zero                          // 拖动中：零延迟跟随
+       *     : const Duration(milliseconds: 420),     // 点击切换：弹性吸附
+       * ```
+       * ⇒ 原来的正则 `duration: const Duration(milliseconds: (\d+))`
+       *   匹配不到三元表达式里的那一段（它前面不是 `duration:` 而是 `:`）。
+       *
+       * 判据仍然是「点击切换的时长必须是 420ms」—— 这是与底栏一致的那一档。
+       * 拖动中的 Duration.zero 是另一条路径，不参与本比较。
+       */
       expect(
-        barDurations.contains('420'),
+        shell.contains('Duration(milliseconds: 420)'),
         isTrue,
         reason: '底栏的药丸时长应该是 420ms（取不到说明底栏改了，'
             '这里要跟着改）',
+      );
+      // 拖动路径必须存在且为零延迟 —— 否则"按住拖动跟随"会变成"追尾"
+      expect(
+        shell.contains('_pillIsDragging') &&
+            RegExp(r'_pillIsDragging[\s\S]{0,80}Duration\.zero')
+                .hasMatch(shell),
+        isTrue,
+        reason: '拖动路径必须用 Duration.zero（零延迟跟随），'
+            '若改成 420ms 会变成"追尾"',
       );
       expect(
         src.contains('Motion.slow'),

@@ -215,8 +215,39 @@ flutter analyze lib            # 0 error；不要新增 warning
 - 每条带**日期 + 适用版本或 commit 范围**；**过期即删**，与代码同 PR 更新。
 - **只对本机 / 本人成立的细节不进仓库**（进项目记忆空间）。判据：换台机器 clone 下来还成立吗？
 - 与代码矛盾或过期属**实质性不合规** ⇒ 停下来先修文档，再动代码。
-- 地图见 [README.md](README.md)（本目录）；决策记 [DECISIONS.md](DECISIONS.md)；
-  发版排障记 [RUNBOOK.md](RUNBOOK.md)。
+- 地图见 [README.md](README.md)（本目录）；发版排障记 [RUNBOOK.md](RUNBOOK.md)。
+- **决策全在 Agent Note 树，只有这一处出口**：
+
+  ```text
+  .agents/notes/{proposed,implemented,rejected,archived}/{class}/yyyy-mm-dd-主题.md
+  ```
+
+  `class` 是封闭集 6 个：`feature` / `bug-fix` / `simplification` / `architecture` /
+  `process` / `testing`（`refactor` 不单列）。骨架固定：
+  `## Problem` → `## Decision` → `## Alternatives considered` → `## Consequences`
+  （「何时该翻案」写在 Consequences 里）。
+
+  **必须写**：改了行为 / 架构 / 跨文件契约 / 流程与工具链 / 测试策略 /
+  落盘、网络、配置格式。**免写**：格式化、错别字、改名、不改行为的样式与依赖补丁、
+  常规 CRUD。判不准时从严。
+
+  **不建索引**（`INDEX.md` 会被校验脚本直接拒绝）—— 手写索引不会随笔记增删更新，
+  失效时是静默的。找笔记按意图直切目录，或全文检索：
+
+  ```bash
+  ls .agents/notes/implemented/architecture/
+  rg --hidden --glob '!.agents/notes/archived/**' "关键词" .agents/notes/
+  ```
+
+  笔记树**进仓库**，与代码同批提交。CI 会在 Windows job 上跑
+  `.agents/notes-scripts/` 里的三条校验（tree / format / archived），红即不许合。
+  本地跑同样三条：
+
+  ```bash
+  npx --yes tsx .agents/notes-scripts/verify-agent-note-tree.ts
+  npx --yes tsx .agents/notes-scripts/verify-agent-note-format.ts
+  npx --yes tsx .agents/notes-scripts/verify-archived-agent-notes.ts
+  ```
 
 ---
 

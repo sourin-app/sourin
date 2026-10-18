@@ -118,6 +118,7 @@ import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/player_page.dart';
 import 'ui/app_scaffold.dart';
 import 'ui/app_theme.dart';
+import './design/icons/app_icons.dart';
 
 // ======================================================================
 //  常量 / 全局
@@ -540,7 +541,7 @@ Future<void> body(String dataDir) async {
                   .absolute.path);
 
   final btn0 = _findFirst(
-      root, (w) => w is Icon && w.icon == Icons.photo_camera);
+      root, (w) => w is Icon && w.icon == AppIcons.photo_camera);
   note('底栏截图按钮当前在树上: ' + (btn0 != null).toString() +
       '（_error != null 时整条底栏不画 ⇒ 这是观测，不是判据）');
   flush('mounted');
@@ -573,7 +574,7 @@ Future<void> body(String dataDir) async {
   say('── ② 入口一：底栏相机按钮（若底栏在树上）──');
   // ────────────────────────────────────────────────────────────────
   final btn = _findFirst(
-      root, (w) => w is Icon && w.icon == Icons.photo_camera);
+      root, (w) => w is Icon && w.icon == AppIcons.photo_camera);
   final tipBtn = _findFirst(
       root, (w) => w is Tooltip && w.message == '截图');
   if (btn == null || tipBtn == null) {

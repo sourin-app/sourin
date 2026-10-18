@@ -152,6 +152,7 @@ import '../tokens.dart';
 import 'app_loading.dart';
 import 'skip_timeline.dart';
 import '../../ui/app_palette.dart';
+import '../../design/icons/app_icons.dart';
 
 /*
  * ═══════════════════════════════════════════════════════════════════════
@@ -2346,7 +2347,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
           height: kHeaderBtn,
           child: IconButton(
             onPressed: () => Navigator.of(context).pop(),
-            icon: const Icon(Icons.close, size: 20),
+            icon: const Icon(AppIcons.close, size: 20),
             tooltip: '关闭',
             padding: EdgeInsets.zero,
             visualDensity: VisualDensity.compact,
@@ -2757,7 +2758,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
             child: OutlinedButton.icon(
               onPressed: ok ? () => _toggleRange(which, lo, hi) : null,
               icon: Icon(
-                playing ? Icons.pause : Icons.play_arrow_rounded,
+                playing ? AppIcons.pause : AppIcons.play_arrow_rounded,
                 size: 17,
                 color: ok ? accent : null,
               ),
@@ -3413,7 +3414,7 @@ class _EdgeRow extends StatelessWidget {
                 ),
             // ── 微调 ──
             _StepBtn(
-              icon: Icons.remove,
+              icon: AppIcons.remove,
               colors: colors,
               size: stepSize,
               // 未设置时先落一个合理默认（0 或末尾）
@@ -3424,7 +3425,7 @@ class _EdgeRow extends StatelessWidget {
               enabled: bound == null || (v ?? 0) > bound!.$1,
             ),
             _StepBtn(
-              icon: Icons.add,
+              icon: AppIcons.add,
               colors: colors,
               size: stepSize,
               onTap: () {
@@ -3450,7 +3451,7 @@ class _EdgeRow extends StatelessWidget {
                    *   ⚠️ 没传 onTapValue 时仍是 null ⇒ 旧行为不变。
                    */
                   onPressed: v == null ? onTapValue : () => onPreview(v),
-                  icon: const Icon(Icons.play_arrow, size: 18),
+                  icon: const Icon(AppIcons.play_arrow, size: 18),
                   tooltip: previewTip ?? '预览这一点',
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
@@ -3474,7 +3475,7 @@ class _EdgeRow extends StatelessWidget {
                 child: TextButton.icon(
                   // ★ task-13 ⑥：同紧凑形态 —— 未设置时改走 onTapValue
                   onPressed: v == null ? onTapValue : () => onPreview(v),
-                  icon: const Icon(Icons.play_arrow, size: 18),
+                  icon: const Icon(AppIcons.play_arrow, size: 18),
                   label: const Text('预览'),
                   style: TextButton.styleFrom(
                     // 同样收紧 —— 默认 48 高会撑起整行
@@ -3496,7 +3497,7 @@ class _EdgeRow extends StatelessWidget {
                 height: stepSize,
                 child: IconButton(
                   onPressed: () => onChanged(null),
-                  icon: const Icon(Icons.backspace_outlined, size: 18),
+                  icon: const Icon(AppIcons.backspace_outlined, size: 18),
                   tooltip: '清除这一点',
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
@@ -3579,7 +3580,7 @@ class _StepBtn extends StatelessWidget {
             padding: EdgeInsets.zero,
           ),
           tooltip: enabled
-              ? (icon == Icons.add ? '加 1 秒' : '减 1 秒')
+              ? (icon == AppIcons.add ? '加 1 秒' : '减 1 秒')
               : '已到边界（开始不能超过结束）',
         ),
       );

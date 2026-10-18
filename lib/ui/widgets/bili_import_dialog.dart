@@ -44,6 +44,7 @@ import '../tokens.dart';
 import 'cover_image.dart';
 import 'app_dialog_section.dart';
 import 'app_dialog_shell.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 导入面板要展示的全部状态。
 ///
@@ -478,7 +479,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
               onPressed: s.loading
                   ? null
                   : () => _searchSubmit(_searchInput.text),
-              icon: const Icon(Icons.search, size: 18),
+              icon: const Icon(AppIcons.search, size: 18),
               label: const Text('搜索'),
             ),
           ],
@@ -582,7 +583,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
     color: Colors.black.withValues(alpha: 0.5),
     child: const Center(
       child: Icon(
-        Icons.movie_outlined,
+        AppIcons.movie_outlined,
         size: 18,
         color: Colors.white24,
       ),
@@ -822,7 +823,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
       children: [
         FilledButton.icon(
           onPressed: s.loading ? null : () => _submit(_input.text),
-          icon: const Icon(Icons.download, size: 18),
+          icon: const Icon(AppIcons.download, size: 18),
           label: const Text('导入并绑定'),
         ),
         const SizedBox(width: Sp.x3),
@@ -833,7 +834,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           // ★ Colors.white → onSurface。这里**必须**显式给色：
           //   TextButton.icon 的 iconColor 不读 foregroundColor（见
           //   theme_bridge.dart 同款注释），不给就落到主题兜底色。
-          icon: Icon(Icons.refresh, color: _colors.onSurface, size: 18),
+          icon: Icon(AppIcons.refresh, color: _colors.onSurface, size: 18),
           label: const Text('立即更新'),
         ),
         const Spacer(),

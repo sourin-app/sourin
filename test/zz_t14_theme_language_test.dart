@@ -31,11 +31,37 @@ import 'package:sourin_spike/ui/theme/theme_pack.dart';
 import 'package:sourin_spike/ui/theme_bridge.dart' show buildAppTheme;
 
 /// 三个「设计语言」主题的 id
+/*
+ * ★★★ 2026-10-17 补全：原来只列了**深色**三套，漏了对应的浅色版。
+ *
+ * # 后果（真实发生）
+ * `builtin.glass.light` 被当成"既有主题"，于是两条对照断言都错：
+ *   · ③ 期望 `ThemeLanguage.apply(td,p)` 与 `td` 是同一实例 => 实际不是
+ *     （它带了 radius 22，真的要重建）
+ *   · ④ 期望圆角 = 默认 14 => 实际 22
+ *
+ * 但 `glass.light` 在 theme_pack.dart:1183 明确传了
+ *   `radius: 22, borderWidth: 1, dividerThickness: 1, buttonPadding: …`
+ * ⇒ 它是**设计语言主题**，本来就该被 `ThemeLanguage.apply` 重建。
+ *   错的是这份清单，不是实现。
+ *
+ * # 教训
+ * 「设计语言主题」这个集合必须与 theme_pack.dart 里**真正传了那四个维度**
+ * 的包逐一对齐。只列深色、漏浅色，就会让浅色版被误判成"回归"。
+ * 判据：凡 `familyId` 相同且传了 radius 的，深浅两套都算。
+ */
 const List<String> _ids = <String>[
   'builtin.glass',
   'builtin.neoBrutal',
   'builtin.minimal',
 ];
+
+/// 设计语言主题的 family 集合（用于「既有主题不该被动过」的排除判据）
+///
+/// 为什么不直接用 _ids：_ids 是「三套代表作」，被 ① 钉住数量 3。
+/// 但 ③/④ 要排除的是**完整成员集**——glass.light 这种同 family 的浅色版也算。
+/// 两者用途不同，不能共用一份清单。
+const Set<String> _dlFamilies = <String>{'glass', 'neoBrutal', 'minimal'};
 
 ThemePack _pack(String id) =>
     ThemePackStore.builtins.firstWhere((p) => p.id == id);
@@ -213,7 +239,9 @@ void main() {
 
     test('既有 6 套主题的 ThemeData 与"没接线"时逐值相同', () {
       for (final p in ThemePackStore.builtins) {
-        if (_ids.contains(p.id)) continue;
+        // ★ 2026-10-17：改用 family 判据 —— glass.light 与 glass 同 family，
+        //   它同样传了 radius/borderWidth，本来就会被 ThemeLanguage 重建。
+        if (p.familyId != null && _dlFamilies.contains(p.familyId)) continue;
         final base = AppTheme.themeForPack(p.brightness, p);
         expect(identical(ThemeLanguage.apply(base, p), base), isTrue,
             reason: '★ 既有主题「${p.name}」被这次改动影响了 —— '
@@ -267,9 +295,37 @@ void main() {
      *
      * ⚠️ 四者都**只调产品入口** `AppTheme.themeForPack`，绝不自己 apply。
      */
+    /*
+     * ★★★ 2026-10-17 扩大遍历范围：_ids（3 套深色）=> 所有**真正声明了该维度**的包
+     *
+     * # 原来的漏洞（我注入时抓到的）
+     * ④-a~④-d 每条都只跑 `_ids` 那三套深色包，浅色版全不在检查范围内。
+     * 于是「`glass.light` 的 radius 被写错」这件事**没有任何判据能发现**。
+     *
+     * 实测：把 `glass.light` 的 `radius: 22` 改成 `999`
+     *       => 全量测试 exit=0，一条都没红。
+     *       而它确实会渲染出一个圆角 999 的按钮。
+     *
+     * # 为什么不能只扩 `_ids`
+     * `_ids` 同时被 ①「三套之间必须真的不同」用来钉数量 3，
+     * 扩大它会连带破坏那条判据（我试过，立刻红了 3 条）。
+     * ⇒ 两份用途不同的清单必须分开：
+     *      `_ids`        = 数量钉死的样本集
+     *      `_wired`      = **所有声明了该维度的包**（自动算出，不手写）
+     *
+     * # 为什么用「自动算出」而不是再手写一份
+     * 手写清单一定会落后于 theme_pack.dart 的新增项（本轮就是漏了浅色版）。
+     * 判据改成「谁声明了，谁就必须被检查」，
+     * 新增一套主题不用改测试，它会自动进入检查范围。
+     */
+    final _wired = ThemePackStore.builtins
+        .where((p) => p.radius != null || p.borderWidth != null ||
+            p.dividerThickness != null || p.buttonPadding != null)
+        .toList();
+
     test('④-a radius：按钮圆角必须等于主题包的 radius', () {
-      for (final id in _ids) {
-        final pack = _pack(id);
+      for (final pack in _wired) {
+        if (pack.radius == null) continue;
         final td = AppTheme.themeForPack(pack.brightness, pack);
         expect(_btnRadius(td), BorderRadius.all(Radius.circular(pack.radius!)),
             reason: '★ radius 这一维没接线：主题包「${pack.name}」的 '
@@ -278,8 +334,8 @@ void main() {
     });
 
     test('④-b borderWidth：卡片描边粗细必须等于主题包的 borderWidth', () {
-      for (final id in _ids) {
-        final pack = _pack(id);
+      for (final pack in _wired) {
+        if (pack.borderWidth == null) continue;
         final td = AppTheme.themeForPack(pack.brightness, pack);
         expect((td.cardTheme.shape as OutlinedBorder).side.width,
             pack.borderWidth,
@@ -289,8 +345,8 @@ void main() {
     });
 
     test('④-c dividerThickness：分隔线粗细必须等于主题包的 dividerThickness', () {
-      for (final id in _ids) {
-        final pack = _pack(id);
+      for (final pack in _wired) {
+        if (pack.dividerThickness == null) continue;
         final td = AppTheme.themeForPack(pack.brightness, pack);
         expect(td.dividerTheme.thickness, pack.dividerThickness,
             reason: '★ dividerThickness 这一维没接线：主题包「${pack.name}」的 '
@@ -299,8 +355,8 @@ void main() {
     });
 
     test('④-d buttonPadding：按钮内边距必须等于主题包的 buttonPadding', () {
-      for (final id in _ids) {
-        final pack = _pack(id);
+      for (final pack in _wired) {
+        if (pack.buttonPadding == null) continue;
         final td = AppTheme.themeForPack(pack.brightness, pack);
         expect(td.filledButtonTheme.style?.padding?.resolve(<WidgetState>{}),
             pack.buttonPadding,
@@ -315,9 +371,35 @@ void main() {
        * 少了这一条，一个「对所有主题都无脑重建」的实现也能让上面变绿。
        */
       for (final p in ThemePackStore.builtins) {
-        if (_ids.contains(p.id)) continue;
+        // ★ 2026-10-17：改用 family 判据 —— glass.light 与 glass 同 family，
+        //   它同样传了 radius/borderWidth，本来就会被 ThemeLanguage 重建。
+        if (p.familyId != null && _dlFamilies.contains(p.familyId)) continue;
         final td = AppTheme.themeForPack(p.brightness, p);
-        expect(_btnRadius(td), const BorderRadius.all(Radius.circular(10)),
+        /*
+         * ★★★ 2026-10-17 修正基线：10 → 14
+         *
+         * # 为什么改
+         * `theme_bridge.dart:74` 的 `_defaultRadius` 已由 task-31 从 10 改成 14，
+         * 理由写在那边：本仓 `Radii` 阶梯是 8/12/16/22/28/34/999，**没有 10**，
+         * 10 是体系外的野值；14 是 sm(12) 与 md(16) 的中点，
+         * 让「默认控件 14 / 卡片 16 / 胶囊 999」形成单调梯度。
+         *
+         * # ⚠️ 那次改动的注释里有一句**事实错误**
+         * 原文写「★ 无任何测试钉这个值（grep _defaultRadius test/ = 0、
+         *          Radius.circular(10) = 0）」。
+         *
+         * 实测：`grep -rn "circular(10)" test/` => **3 处命中，2 个文件**
+         *       （本文件 :320 与 _theme_packs_shot_test.dart :47 / :98）。
+         * 只查了 `_defaultRadius` 就下结论，漏了字面量写法。
+         * ⇒ 这就是本仓反复出现的「判据只查了一种形态」。
+         *
+         * # 这里为什么仍然断言字面量 14
+         * 不从 `_defaultRadius` 导入它 —— 那样这条断言就成了同义反复
+         * （改源码则断言跟着改，永远绿）。
+         * 这里要守的是「**既有主题不该被设计语言接线动过**」，
+         * 所以必须钉一个**外部可见的期望值**，源码改了就得有人来改测试。
+         */
+        expect(_btnRadius(td), const BorderRadius.all(Radius.circular(14)),
             reason: '★ 既有主题「${p.name}」的圆角被改了');
         expect(td.dividerTheme.thickness, 1,
             reason: '★ 既有主题「${p.name}」的分隔线粗细被改了');

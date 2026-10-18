@@ -45,6 +45,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
 import '../tokens.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 设置页二级页的共用外壳
 ///
@@ -426,7 +427,7 @@ class SettingsSubPage extends StatelessWidget {
           if (onBack != null && onBack!(context)) return;
           Navigator.of(context).maybePop();
         },
-        icon: const Icon(Icons.arrow_back, size: 18),
+        icon: const Icon(AppIcons.arrow_back, size: 18),
         label: const Text('返回设置'),
       );
 

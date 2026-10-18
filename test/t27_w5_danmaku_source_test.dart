@@ -52,6 +52,20 @@ class _RecTransport implements DanmakuTransport {
 }
 
 void main() {
+  /*
+   * ★★★ 2026-10-17（Owner 第 4 条）：内置公共实例上线后，
+   * 「没配地址 ⇒ 走官方 / 走本机 2080」这两条老断言会被内置实例顶掉。
+   *
+   * 本文件测的是**官方签名**与**本机 2080** 两条边 —— 必须把内置关掉，
+   * 否则测的是另一条路（假绿）。
+   */
+  setUp(() {
+    DanmakuConfig.debugSetPublicInstances(const <DanmakuPublicInstance>[]);
+  });
+  tearDown(() {
+    DanmakuConfig.debugSetPublicInstances(null);
+  });
+
   group('ExternalDanmakuClient 本地模式（unsignedLocal）', () {
     test('本地模式：请求落在 127.0.0.1:2080，且不带任何签名头', () async {
       final t = _RecTransport((method, uri, headers, body) async {

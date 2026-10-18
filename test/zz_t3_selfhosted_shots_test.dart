@@ -64,10 +64,10 @@ Future<void> _pump(
     ),
   ));
   await t.pumpAndSettle();
-  // 切到「弹弹play」页签 —— 自建服务区块在那里
+  // 切到「dan-api」页签 —— 服务区块在那里（2026-10-17 Owner 第 11 条改名）
   await t.tap(find.descendant(
     of: find.byType(SegmentedButton<DanmakuPanelTab>),
-    matching: find.text('弹弹play'),
+    matching: find.text('dan-api'),
   ));
   await t.pumpAndSettle();
 }

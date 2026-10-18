@@ -247,9 +247,46 @@ void main() {
       final i0 = _page.indexOf(_kAnchor);
       expect(i0, greaterThan(0), reason: '★★ 找不到锚点 $_kAnchor');
       final body = _page.substring(i0, i0 + _kWindow);
-      expect(body.contains(_kPinStatus), isTrue,
-          reason: '★★ 只改角标不改面板 ⇒ 打开弹幕设置看到的读数还是没源名。'
-              '两处都在同一个 setState 里，必须一起带前缀（实测两处都在本窗口内）');
+      /*
+       * ★★★ 2026-10-18（round-65 批次 B）：判据从「逐字字面量」升级为「值来源」。
+       *
+       * # 改前
+       * ```dart
+       * status: 'danmaku-service · ${res.summary}',   // 字面重写一遍前缀
+       * ```
+       * 本针就钉这串字面量。
+       *
+       * # 改后（批次 B 做弹幕聚合，两处都要追加聚合尾巴）
+       * ```dart
+       * _danmakuStatus = 'danmaku-service · ${res.summary}';   // ← 前缀仍逐字（① 针在钉）
+       * ...
+       * status: _danmakuStatus,                                 // ← 面板复用同一个值
+       * ```
+       * 字面量不再出现第二遍 —— 但这**不是退化，而是更强**：
+       * 两处共用同一个值，就不可能「只改角标漏了面板」。
+       *
+       * # 为什么不能简单删掉这条
+       * 业主 1009 B② 的真要求是「打开弹幕设置要能看出弹幕来自哪个源」。
+       * 删掉这条等于放弃这个要求。
+       * ⇒ 判据改成：面板 status 那一行**必须**引用 `_danmakuStatus`
+       *   （那个值已由 ① ② 两条钉住带前缀）。
+       *   若有人把它改回写死字符串、或换成别的字段，这条立刻红。
+       */
+      final usesSharedValue = body.contains('status: _danmakuStatus,') ||
+          body.contains('status: _danmakuStatus');
+      final usesLiteral = body.contains(_kPinStatus);
+      expect(usesSharedValue || usesLiteral, isTrue,
+          reason: '★★ 面板 status 必须带来源前缀 —— 要么逐字 $_kPinStatus，'
+              '要么复用已带前缀的 _danmakuStatus（两者都没有 ⇒ '
+              '打开弹幕设置看不到弹幕来自哪个源，业主 1009 B② 的要求被破坏）');
+      /*
+       * ★ 反向加一条：不许写成「status: 空 / status: res.summary / 别的字段」。
+       *   这两种写法都能让上面的 contains 通过（只要同时还有旧字面量残留），
+       *   所以要单独钉住「面板那行不许退化成无前缀形态」。
+       */
+      expect(body.contains(r"status: '${res.summary}'"),
+          isFalse,
+          reason: '★★ 不许把面板 status 写成裸 res.summary（丢前缀）');
     });
 
     test('④ 反向：本窗口里不许出现 B 站前缀（防「前缀被抄错源」）', () {

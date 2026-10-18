@@ -60,7 +60,7 @@ Widget _host({
     );
 
 /// 装面板并切到「弹弹play」页签（自建服务区块在那里）。
-Future<void> _pumpOnDandanTab(
+Future<void> _pumpOnDanApiTab(
   WidgetTester t, {
   DanmakuSettingsState? state,
   Future<DanmakuLocalStatus> Function(DanmakuEndpoint?)? probe,
@@ -77,7 +77,7 @@ Future<void> _pumpOnDandanTab(
   await t.pump();
   final tab = find.descendant(
     of: find.byType(SegmentedButton<DanmakuPanelTab>),
-    matching: find.text('弹弹play'),
+    matching: find.text('dan-api'),
   );
   await t.tap(tab);
   await t.pumpAndSettle();
@@ -118,7 +118,7 @@ void main() {
       final gate = Completer<DanmakuLocalStatus>();
       // 记下探针**实际收到**的参数，证明它拿到的是发起时那个地址
       DanmakuEndpoint? seen;
-      await _pumpOnDandanTab(t, probe: (e) {
+      await _pumpOnDanApiTab(t, probe: (e) {
         seen = e;
         return gate.future;
       });
@@ -157,7 +157,7 @@ void main() {
     testWidgets('★★ A→B→A：字符串相同也必须丢弃（序号判据的理由）', (t) async {
       final gate = Completer<DanmakuLocalStatus>();
       var calls = 0;
-      await _pumpOnDandanTab(t, probe: (e) {
+      await _pumpOnDanApiTab(t, probe: (e) {
         calls++;
         return gate.future;
       });
@@ -196,7 +196,7 @@ void main() {
     testWidgets('★★ 在途时点「清除」⇒ 过期结果不许把偏好写回来', (t) async {
       final gate = Completer<DanmakuLocalStatus>();
       UiPrefs.setDanmakuEndpoint('http://10.0.0.1:1111');
-      await _pumpOnDandanTab(t, probe: (e) => gate.future);
+      await _pumpOnDanApiTab(t, probe: (e) => gate.future);
 
       await t.tap(find.text('测试连接'));
       await t.pump();
@@ -219,7 +219,7 @@ void main() {
 
     testWidgets('★ 在途时改 token ⇒ 同样作废（token 也参与探测）', (t) async {
       final gate = Completer<DanmakuLocalStatus>();
-      await _pumpOnDandanTab(t, probe: (e) => gate.future);
+      await _pumpOnDanApiTab(t, probe: (e) => gate.future);
 
       await t.enterText(_urlField, 'http://10.0.0.1:1111');
       await t.pump();
@@ -244,7 +244,7 @@ void main() {
     testWidgets('★★ 阳性对照：不改输入 ⇒ 结果**必须**照常生效（守卫不许过度触发）',
         (t) async {
       final gate = Completer<DanmakuLocalStatus>();
-      await _pumpOnDandanTab(t, probe: (e) => gate.future);
+      await _pumpOnDanApiTab(t, probe: (e) => gate.future);
 
       await t.enterText(_urlField, 'http://10.0.0.1:1111');
       await t.pump();
@@ -265,7 +265,7 @@ void main() {
 
     testWidgets('★ 过期结果里的**失败**也不许显示（错误同样属于旧地址）', (t) async {
       final gate = Completer<DanmakuLocalStatus>();
-      await _pumpOnDandanTab(t, probe: (e) => gate.future);
+      await _pumpOnDanApiTab(t, probe: (e) => gate.future);
 
       await t.enterText(_urlField, 'http://10.0.0.1:1111');
       await t.pump();
@@ -282,28 +282,40 @@ void main() {
   });
 
   group('① 区块渲染', () {
-    testWidgets('★ 弹弹play 页签上有自建服务区块（地址/token/测试/清除）', (t) async {
-      await _pumpOnDandanTab(t);
-      expect(find.text('自建弹幕服务'), findsOneWidget);
+    testWidgets('★★ dan-api 页签上有服务区块（内置实例/地址/token/测试/清除）', (t) async {
+      await _pumpOnDanApiTab(t);
+      /*
+       * ★ 2026-10-17（Owner 第 4/11 条）：
+       *   改前标题是「自建弹幕服务」、且只有两个空输入框（让用户自己去填）。
+       *   Owner：「不是让我去填的,或者可以内置上几个」
+       *   ⇒ 标题改成「dan-api 服务」，并在输入框**上面**先列内置实例。
+       */
+      expect(find.text('dan-api 服务'), findsOneWidget);
+      expect(find.textContaining('内置实例'), findsWidgets,
+          reason: '★★ Owner 第 4 条：必须先给出内置实例，而不是让用户去填');
       expect(_urlField, findsOneWidget);
       expect(_tokenField, findsOneWidget);
       expect(find.text('测试连接'), findsOneWidget);
       expect(find.text('清除'), findsOneWidget);
     });
 
-    testWidgets('★ 没配过 ⇒ 明确说留空就走内置路径', (t) async {
-      await _pumpOnDandanTab(t);
+    testWidgets('★★ 没配过 ⇒ 明确说现在用的是内置实例', (t) async {
+      await _pumpOnDanApiTab(t);
+      /*
+       * ★ 2026-10-17（Owner 第 4 条）：改前留空 = 走本机 2080 / 官方；
+       *   现在留空 = 用**内置公共实例**（这才是"接入现成的服务"）。
+       */
       expect(
-        find.textContaining('没填就按内置路径走'),
+        find.textContaining('当前生效：内置实例'),
         findsOneWidget,
-        reason: '★ 用户必须知道留空不是坏状态 —— 那是默认路',
+        reason: '★ 用户必须知道留空不是坏状态 —— 那是默认路（内置实例）',
       );
     });
 
     testWidgets('★ 配过 ⇒ 输入框预填已存的地址（用户看得见当前值）', (t) async {
       UiPrefs.setDanmakuEndpoint('http://10.0.0.9:9321');
       UiPrefs.setDanmakuToken('tok123');
-      await _pumpOnDandanTab(t);
+      await _pumpOnDanApiTab(t);
       expect(t.widget<TextField>(_urlField).controller!.text,
           'http://10.0.0.9:9321');
       expect(t.widget<TextField>(_tokenField).controller!.text, 'tok123');
@@ -312,7 +324,7 @@ void main() {
 
   group('② 测试连接：四种结果都如实', () {
     testWidgets('★ 探通 ⇒ 显示已就绪 · vX 并落盘', (t) async {
-      await _pumpOnDandanTab(t, probe: (e) async => const DanmakuLocalStatus(
+      await _pumpOnDanApiTab(t, probe: (e) async => const DanmakuLocalStatus(
             online: true,
             version: '1.21.5',
             endpoint: DanmakuEndpoint(baseUrl: 'http://127.0.0.1:9321'),
@@ -328,7 +340,7 @@ void main() {
     });
 
     testWidgets('★★ 探不通 ⇒ 如实说未运行，且绝不落盘（不许假装配好）', (t) async {
-      await _pumpOnDandanTab(t, probe: (e) async => const DanmakuLocalStatus(
+      await _pumpOnDanApiTab(t, probe: (e) async => const DanmakuLocalStatus(
             online: false,
             endpoint: DanmakuEndpoint(baseUrl: 'http://127.0.0.1:9321'),
           ));
@@ -342,7 +354,7 @@ void main() {
     });
 
     testWidgets('★★ 地址非法 ⇒ 说地址格式不对，不说后台未运行', (t) async {
-      await _pumpOnDandanTab(t, probe: (e) async => const DanmakuLocalStatus(
+      await _pumpOnDanApiTab(t, probe: (e) async => const DanmakuLocalStatus(
             online: true,
             version: '9.9',
           ));
@@ -368,7 +380,7 @@ void main() {
     });
 
     testWidgets('★ 探针自己异常 ⇒ 如实说测试失败（不伪装成服务没起来）', (t) async {
-      await _pumpOnDandanTab(t, probe: (e) async => throw StateError('boom'));
+      await _pumpOnDanApiTab(t, probe: (e) async => throw StateError('boom'));
       await t.enterText(_urlField, 'http://127.0.0.1:9321');
       await t.pump();
       await t.tap(find.text('测试连接'));
@@ -377,7 +389,7 @@ void main() {
     });
 
     testWidgets('★ 改了地址 ⇒ 上一次的测试结果作废', (t) async {
-      await _pumpOnDandanTab(t, probe: (e) async => const DanmakuLocalStatus(
+      await _pumpOnDanApiTab(t, probe: (e) async => const DanmakuLocalStatus(
             online: true,
             version: '1.21.5',
           ));
@@ -404,7 +416,7 @@ void main() {
       UiPrefs.setDanmakuEndpoint('http://127.0.0.1:9321');
       UiPrefs.setDanmakuToken(secret);
       // ⚠️ **不**点测试连接 —— 这一态才走 _maskedEndpoint（打码 helper）
-      await _pumpOnDandanTab(t);
+      await _pumpOnDanApiTab(t);
       expect(find.textContaining('当前生效'), findsOneWidget,
           reason: '阳性对照：这一行必须真的渲染出来，否则下面扫的是空气');
       for (final s in allTexts(t)) {
@@ -424,7 +436,7 @@ void main() {
       const secret = 'SUPERSECRETTOKEN';
       UiPrefs.setDanmakuEndpoint('http://127.0.0.1:9321');
       UiPrefs.setDanmakuToken(secret);
-      await _pumpOnDandanTab(t, probe: (e) async => const DanmakuLocalStatus(
+      await _pumpOnDanApiTab(t, probe: (e) async => const DanmakuLocalStatus(
             online: true,
             version: '1.0',
             endpoint: DanmakuEndpoint(
@@ -445,18 +457,18 @@ void main() {
     testWidgets('★ 点清除 ⇒ 两个偏好键都真的变空', (t) async {
       UiPrefs.setDanmakuEndpoint('http://10.0.0.9:9321');
       UiPrefs.setDanmakuToken('t');
-      await _pumpOnDandanTab(t);
+      await _pumpOnDanApiTab(t);
       await t.tap(find.text('清除'));
       await t.pumpAndSettle();
       expect(UiPrefs.danmakuEndpoint, '');
       expect(UiPrefs.danmakuToken, '');
       expect(UiPrefs.get(UiPrefs.danmakuEndpointKey), isNull,
           reason: '★ 清除要真的删键（不留垃圾键）');
-      expect(find.textContaining('没填就按内置路径走'), findsOneWidget);
+      expect(find.textContaining('当前生效：内置实例'), findsOneWidget);
     });
 
     testWidgets('★ 没存过 ⇒ 清除按钮禁用（画一个点了没反应的按钮更糟）', (t) async {
-      await _pumpOnDandanTab(t);
+      await _pumpOnDanApiTab(t);
       final btn = t.widget<TextButton>(
         find.ancestor(of: find.text('清除'), matching: find.byType(TextButton)),
       );
@@ -466,21 +478,29 @@ void main() {
 
   group('⑤ 不破坏既有结构', () {
     testWidgets('★ 面板仍然有外壳标题（没自己套 Scaffold）', (t) async {
-      await _pumpOnDandanTab(t);
+      await _pumpOnDanApiTab(t);
       expect(find.text('弹幕设置'), findsOneWidget);
       expect(find.text('显示 / 过滤 / 请求'), findsOneWidget);
     });
 
-    testWidgets('★ 三个页签都在（自建服务没挤掉任何一页）', (t) async {
-      await _pumpOnDandanTab(t);
-      expect(find.text('配置'), findsOneWidget);
-      expect(
-        find.descendant(
-          of: find.byType(SegmentedButton<DanmakuPanelTab>),
-          matching: find.text('弹弹play'),
-        ),
-        findsOneWidget,
-      );
+    testWidgets('★★ 四个页签都在（三条来源 + 通用配置，谁都没挤掉谁）', (t) async {
+      await _pumpOnDanApiTab(t);
+      /*
+       * ★ 2026-10-17（Owner 第 11 条）：页签从「按源命名」改成「按能力命名」。
+       *   改前：配置 / bilibili / 弹弹play          // site-ok: danmaku-source
+       *   改后：配置 / dan-api / 插件提供 / 官方兜底
+       * ⇒ 四个都在，且**没有任何一个是某一家服务的名字**。
+       */
+      for (final label in <String>['配置', 'dan-api', '插件提供', '官方兜底']) {
+        expect(
+          find.descendant(
+            of: find.byType(SegmentedButton<DanmakuPanelTab>),
+            matching: find.text(label),
+          ),
+          findsOneWidget,
+          reason: '★ 页签「$label」不见了',
+        );
+      }
     });
   });
 }

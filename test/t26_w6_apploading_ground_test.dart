@@ -27,6 +27,28 @@
 //   那就是 Flutter 自己的 `Color.alphaBlend` 公式，算出来与截屏读数**逐位一致**，
 //   且不需要任何外部基线文件。所以本文件把「读数」直接算出来当断言。
 
+// ══════════════════════════════════════════════════════════════════════════
+//  ★ 2026-10-17 更新：浅底档的色值改了（Owner 第 3 条：loading 圈看不清）
+// ══════════════════════════════════════════════════════════════════════════
+//
+// # 改了什么
+// ```text
+// 改前：浅底档取 _kLightGround（≈#60626B）⇒ 5.77:1
+// 改后：浅底档取 _ReadableOn.light（#454750）⇒ 8.79:1（+52%）
+// ```
+//
+// # 本文件的断言该怎么改（重要）
+// ```text
+// 这些断言测的是「**取哪一档**」（浅底档 / 深底档 / 显式 ground 优先），
+// 不是「那一档的具体色值」。
+//
+// ⇒ 所以不能简单删掉断言，也不能改成"任意色"（那会让它恒真）。
+//   正确做法：断言它等于**浅底档的那个常量**，并把常量与产品代码对齐。
+// ```
+//
+// ⚠️ 常量是**复制**过来的，不是 import ——因为产品里它藏在 _ReadableOn
+//    （私有类）里。若哪天产品改色，本文件的断言会红，那时同步改这里。
+
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -35,6 +57,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart' show AppThemeHost;
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/widgets/app_loading.dart';
+
+const _kLightGround = Color(0xFF454750);
 
 /// 生产里「深底档」前景色（= AppPalette.dark.foreground）
 const Color kOnDark = Color(0xFFFAFAFA);
@@ -51,9 +75,30 @@ Widget _host(Widget child, Brightness b) => Directionality(
       ),
     );
 
-CircularProgressIndicator _ring(WidgetTester tester) => tester
-    .widget<CircularProgressIndicator>(
-        find.byType(CircularProgressIndicator));
+/// 取转圈当前的**颜色**（CR #11 判的就是这个值）
+///
+/// # ★ 2026-10-17：目标从 CircularProgressIndicator 改成自绘 _AppSpinner
+///
+/// Lead 把指示器换成 CustomPainter 后，`find.byType(CircularProgressIndicator)`
+/// 找到 0 个 ⇒ 本文件 6 条断言全抛 `Bad state: No element`。
+///
+/// ⚠️ **CR #11 的判定逻辑一个字没动** —— `_declaresGround` /
+///    `_groundFromAncestors` / 三档取色全在原处。
+///    失败的只是「从哪个控件上把颜色读出来」这一步。
+///    所以这里只换取值路径，断言与期望值**逐字保留**。
+///
+/// 为什么用 dynamic：painter 是私有 `_SpinnerPainter`，测试无法 import。
+Color _ringColor(WidgetTester tester) {
+  final paints = tester
+      .widgetList<CustomPaint>(find.descendant(
+        of: find.byType(AppLoading),
+        matching: find.byType(CustomPaint),
+      ))
+      .where((w) => w.painter != null)
+      .toList();
+  expect(paints.length, 1, reason: '应当恰好渲染出一个转圈');
+  return (paints.single.painter! as dynamic).color as Color;
+}
 
 /// ★ 像素读数：把前景色（可能半透明）压到 [bg] 上合成出的那个像素
 ///
@@ -86,7 +131,7 @@ void main() {
         Brightness.light,
       ));
 
-      final c = _ring(tester).color!;
+      final c = _ringColor(tester);
       expect(c, kOnDark, reason: '浅色主题下压在黑遮罩上的转圈必须是深底档 #FAFAFA');
 
       // ★ 读数：修复前 (112,114,122)（= #70727A 原样），修复后 (250,250,250)
@@ -107,7 +152,7 @@ void main() {
         ),
         Brightness.dark,
       ));
-      expect(_pixel(_ring(tester).color!, kMaskOverBlack), (250, 250, 250));
+      expect(_pixel(_ringColor(tester), kMaskOverBlack), (250, 250, 250));
     });
 
     testWidgets('反方向：深色主题 + 白卡 ⇒ 取浅底档，不是无脑 #FAFAFA', (tester) async {
@@ -119,7 +164,7 @@ void main() {
         ),
         Brightness.dark,
       ));
-      expect(_ring(tester).color, theme.colorScheme.onSurfaceVariant);
+      expect(_ringColor(tester), _kLightGround);
     });
 
     testWidgets('优先级：显式 ground 压过祖先 ColoredBox', (tester) async {
@@ -131,7 +176,7 @@ void main() {
         ),
         Brightness.light,
       ));
-      expect(_ring(tester).color, theme.colorScheme.onSurfaceVariant,
+      expect(_ringColor(tester), _kLightGround,
           reason: '调用方显式声明了浅底，就不该再按祖先那块黑遮罩判');
     });
 
@@ -147,7 +192,7 @@ void main() {
         ),
         Brightness.light,
       ));
-      expect(_ring(tester).color, light.colorScheme.onSurfaceVariant,
+      expect(_ringColor(tester), _kLightGround,
           reason: '透明祖先不是底 ⇒ 必须回落主题明暗（浅色主题 ⇒ 深色一档）');
 
       // 显式传 transparent 同样不算声明
@@ -155,16 +200,16 @@ void main() {
         const AppLoading(ground: Colors.transparent),
         Brightness.light,
       ));
-      expect(_ring(tester).color, light.colorScheme.onSurfaceVariant);
+      expect(_ringColor(tester), _kLightGround);
     });
 
     testWidgets('没有底色声明时回落主题明暗（OPS-14 原行为不变）', (tester) async {
       final light = AppTheme.themeFor(Brightness.light);
       await tester.pumpWidget(_host(const AppLoading(), Brightness.light));
-      expect(_ring(tester).color, light.colorScheme.onSurfaceVariant);
+      expect(_ringColor(tester), _kLightGround);
 
       await tester.pumpWidget(_host(const AppLoading(), Brightness.dark));
-      expect(_ring(tester).color!.computeLuminance(), greaterThan(0.5),
+      expect(_ringColor(tester).computeLuminance(), greaterThan(0.5),
           reason: '深色主题 + 无底色声明 ⇒ 仍是深底档');
     });
   });

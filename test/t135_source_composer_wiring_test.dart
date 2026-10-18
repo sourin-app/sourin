@@ -52,7 +52,23 @@ void main() {
      */
     expect(find.byType(SourceComposerDialog), findsOneWidget,
         reason: '★ 点击后编排器必须真的弹出来（不是"按钮文字还在"）');
-    expect(find.text('这个源叫什么'), findsOneWidget,
-        reason: '★ 三步向导第 1 步的标题必须在（证明真的进到第 1 步）');
+    /*
+     * ★★★ 2026-10-17（task-40 / Owner 第 9 条）：断言**新行为**。
+     *
+     * 改前这里断言 find.text('这个源叫什么') —— 那是**三步向导第 1 步**的标题。
+     * 编排器改成一屏分区卡片后，那句文案不存在了（第 1 块现在叫「① 站点」）。
+     *
+     * ⚠️ 这不是「为了让测试变绿而放宽」：判据换成**更强**的三条 ——
+     *    ① 编排器真的渲染出来（byType）
+     *    ② 三块**同时**在（一屏化，不需要下一步）
+     *    ③ 没有「下一步」按钮（向导已删除）
+     * 这三条在**旧实现下都会红**（旧实现里 ② 的 ②③ 两块不在同一屏、③ 有按钮）。
+     */
+    expect(find.textContaining('① 站点'), findsOneWidget,
+        reason: '★ 站点区块必须在一屏内可见');
+    expect(find.textContaining('③ 字段映射'), findsOneWidget,
+        reason: '★★ 字段映射也必须**同时**可见 —— 这就是「一屏化」的判据');
+    expect(find.text('下一步'), findsNothing,
+        reason: '★★ 不许再有「下一步」—— Owner 要的就是不用点它');
     });
 }

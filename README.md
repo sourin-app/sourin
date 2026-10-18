@@ -125,7 +125,7 @@ flutter build windows --release -t lib/shell.dart
 | [docs/THEMES.md](docs/THEMES.md) | 主题包（JSON 配色） |
 | [docs/PLUGINS.md](docs/PLUGINS.md) | 插件开发（QuickJS 沙箱） |
 | [docs/TESTING.md](docs/TESTING.md) | 跑测试与门禁纪律 |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | 决策记录：为何这么选、何时该翻案 |
+| [.agents/notes/](.agents/notes/) | 决策记录：为何这么选、放弃了什么、何时该翻案 |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | 发版 / 运维 / 排障的非显然步骤 |
 | [docs/FAQ.md](docs/FAQ.md) | 常见问题 |
 | [docs/PROJECT-STRUCTURE.md](docs/PROJECT-STRUCTURE.md) | 目录结构与规模快照 |

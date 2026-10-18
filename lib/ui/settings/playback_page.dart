@@ -154,6 +154,7 @@ import '../widgets/settings_sub_page.dart';
 // ★ ④「回读 mpv 设置」按钮直接调 player_page 的探针钩子 —— 那是**生产**
 //   播放页里的 `_readMpvCacheSettings()`，不是这里另写一份。
 import '../player_page.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 日志文件类型（Windows 的保存框靠它过滤；其它平台忽略）
 const List<XTypeGroup> _logGroups = <XTypeGroup>[
@@ -708,7 +709,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
           children: [
             OutlinedButton.icon(
               onPressed: _pickDownloadDir,
-              icon: const Icon(Icons.folder_open, size: 18),
+              icon: const Icon(AppIcons.folder_open, size: 18),
               label: const Text('改目录'),
             ),
             const SizedBox(width: Sp.x2),
@@ -719,7 +720,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
             const Spacer(),
             TextButton.icon(
               onPressed: _dlDir.isEmpty ? null : () => DownloadDir.open(_dlDir),
-              icon: const Icon(Icons.open_in_new, size: 16),
+              icon: const Icon(AppIcons.open_in_new, size: 16),
               label: const Text('打开'),
             ),
           ],
@@ -1006,17 +1007,17 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
           children: [
             FilledButton.icon(
               onPressed: _logBusy ? null : _exportLog,
-              icon: const Icon(Icons.save_alt, size: 18),
+              icon: const Icon(AppIcons.save_alt, size: 18),
               label: const Text('导出为日志文件'),
             ),
             OutlinedButton.icon(
               onPressed: _logBusy ? null : _copyLog,
-              icon: const Icon(Icons.copy_all, size: 18),
+              icon: const Icon(AppIcons.copy_all, size: 18),
               label: const Text('复制到剪贴板'),
             ),
             OutlinedButton.icon(
               onPressed: _envBusy ? null : _copyEnvInfo,
-              icon: const Icon(Icons.info_outline, size: 18),
+              icon: const Icon(AppIcons.info_outline, size: 18),
               label: const Text('复制环境信息'),
             ),
           ],

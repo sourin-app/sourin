@@ -146,4 +146,15 @@ tools/.dandanplay.local.json
 # ⚠️ 2026-10-17：本目录一度没被忽略 —— 建在仓库内的 git worktree
 #   会让 t98 的全仓扫描把**基线副本**也扫进来（同一份源码两份命中），
 #   表现为"莫名其妙多出一堆站名违规"。必须忽略。
-.agents/
+.agents/*
+#
+# ★ 例外：决策笔记树**要进仓库**（见 .agents/notes/implemented/process/2026-10-17-agent-notes-in-repo.md）。
+#   笔记的价值在于与代码同批落盘 —— 改了行为的那次提交里就带着 why，
+#   下游 clone 看得到、CI 校验得到。只放行 notes 一个子树，
+#   .agents/worktrees/ 等其余子目录仍按上面的理由忽略。
+!.agents/notes/
+#
+# 笔记的校验脚本（tree / format / archived / archive）也进仓库：
+# CI 要跑它们，且校验口径必须与笔记同版本 —— 只放技能目录的话，
+# 下游 clone 与 CI 都拿不到，门禁就成了本地才能复现的东西。
+!.agents/notes-scripts/

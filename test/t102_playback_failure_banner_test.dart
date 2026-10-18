@@ -110,8 +110,22 @@ void main() {
         reason: '★★ 起播阶段**不该**走非阻断横幅（用户什么都没看到，必须解释）：$st');
     expect(st.contains('error=$kMpvMessage'), isTrue,
         reason: '★★★ 起播阶段的错误必须进 `_error`（全屏 _ErrorOverlay）：$st');
-    expect(find.text(kMpvMessage), findsWidgets,
-        reason: '★ 全屏错误层要把 mpv 原文显示出来');
+    /*
+     * ★★★ 2026-10-18（Owner 第 6 条）—— 断言**故意**从「原文上屏」翻到「地址不上屏」
+     *
+     * 改前这里断言的是 `find.text(kMpvMessage)`（那条带 127.0.0.1:63534 的原句）。
+     * 而 Owner 第 6 条的诉求正是「不要让我看到内部地址，我要知道是源还是软件」。
+     * ⇒ 新行为：内部代理地址**必须被抹掉**，同时错误**仍然要显示**（不能变空白）。
+     *
+     * ⚠️ 这不是"为了让测试变绿而放宽断言"：新断言在**旧行为**下会红
+     *    （旧行为把原文贴上屏 ⇒ `findsNothing` 那条红）。
+     */
+    expect(find.text(kMpvMessage), findsNothing,
+        reason: '★★ 内部代理地址不许上屏（Owner 第 6 条）');
+    expect(find.textContaining('127.0.0.1'), findsNothing,
+        reason: '★★ 连子串都不许有 —— 端口会变，匹配整句不够');
+    expect(find.textContaining('内置代理'), findsWidgets,
+        reason: '★ 抹掉之后要有替代说明（不能留空、也不能不显示错误）');
     await drain(t);
   });
 
@@ -134,8 +148,16 @@ void main() {
     expect(find.text('播放中断了（画面还在，可以重试）'), findsOneWidget,
         reason: '★★★ 非阻断横幅必须在树上（底部一条，画面继续）');
     expect(find.text('重试'), findsWidgets, reason: '★ 这条是**可恢复**的，必须给重试');
-    expect(find.text(kMpvMessage), findsWidgets,
-        reason: '★ mpv 原文照抄显示（诊断价值全在那句话上）');
+    /*
+     * ★★★ 2026-10-18（Owner 第 6 条）—— 同 ② 组，断言方向翻了。
+     * 横幅正文必须显示**错误**，但那条内部代理地址必须被抹掉。
+     */
+    expect(find.text(kMpvMessage), findsNothing,
+        reason: '★ 内部代理地址不许上屏（Owner 第 6 条）');
+    expect(find.textContaining('127.0.0.1'), findsNothing,
+        reason: '★ 连子串都不许有');
+    expect(find.textContaining('内置代理'), findsWidgets,
+        reason: '★ 要有替代说明，且横幅**仍然**在报错（不能变成空横幅）');
     await drain(t);
   });
 

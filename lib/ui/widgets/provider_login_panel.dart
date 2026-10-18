@@ -112,6 +112,7 @@ import 'overlay_motion.dart';
 import 'app_loading.dart';
 import 'qr_view.dart';
 import '../../ui/app_palette.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 会话状态（对应 Rust `SessionState`，`snake_case`）
 enum SessionState {
@@ -1062,7 +1063,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
         Row(
           children: [
             Icon(
-              loggedIn ? Icons.person_outline : Icons.person_off_outlined,
+              loggedIn ? AppIcons.person_outline : AppIcons.person_off_outlined,
               size: 14,
               color: d.tone == Tone.err
                   ? colors.error
@@ -1176,7 +1177,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Icon(
-                      Icons.info_outline,
+                      AppIcons.info_outline,
                       size: 13,
                       color: colors.mutedForeground,
                     ),

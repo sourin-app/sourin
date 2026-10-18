@@ -1,42 +1,158 @@
-//  二级页：直播分组 —— Owner 第 12 条
+//  二级页：直播分组 —— Owner 第 12 条 + 第 65 轮批次 D 重做
 //
 // # 用户原话（逐字）
 // > 然后支持一下自定义直播源拆分组
 // > （就是自定义常用的然后切换分组 就可以不用看不想看的其他源了）
 //
-// # 为什么编辑入口在设置页而不是直播页（task-53 纪律）
-//   task-53 用户否定的正是「配置长在内容页」。
-//   ⇒ 直播页只保留筛选（纯视图）；建组 / 改组 / 删组收在本页。
+// # ★★★ 第 65 轮 Owner 推翻了"按源分组"这个模型（逐字）
+// > 我要的是自建分组可以选择直播源下的具体的直播的房间，而不是选择直播源
+// > 这是错误的
 //
-// # 数据落点：UiPrefs.liveSourceGroupsKey（lib/core/ui_prefs.dart）
+// ⇒ 本页从"手输源 id"改成"**逐频道勾选**"。数据落点也从
+//   `UiPrefs.liveSourceGroupsKey`（按源）迁到
+//   `UiPrefs.liveChannelGroupsKey`（按频道）。
+//
+// # ★ 本页怎么拿到"本机有哪些频道"（这是本页最关键的一处设计）
+//
+// 老注释写的是：
+// > 本页不读「本机有哪些直播源」—— 那要走 FFI，在无核心库的环境里必失败。
+// > ⇒ 分组编辑用手输源 id 的方式，这样本页在任何环境下都能渲染与操作。
+//
+// ★ 那条约束**依然成立**（FFI 在 `flutter test` / 核心未就绪时必失败），
+//   但结论不必是"只能手输" —— 因为**直播页已经有一份磁盘快照**：
+// ```text
+//   lib/ui/live_page.dart  →  DiskCache  'live-channels-cache.json'
+//                                    ↑ 后端原始 JSON（provider/providerName/channels）
+//   本页读它 ─────────────────────────┘ 纯 dart:io 读文件，**零 FFI**
+// ```
+// ⇒ 有快照 ⇒ 逐频道勾选（主路径）
+// ⇒ 没快照（第一次装、还没进过直播页）⇒ 回落到手输源 id（老路径，永远可用）
+//
+// ★ 为什么不用"直接调 `SourinApi.getLiveChannels()`"：
+//   那正是老注释说的那道墙 —— 核心没起来时它抛异常，整页就渲染不出来。
+//   而读缓存文件失败只会返回 null（DiskCache 全程 try/catch）⇒ 页面照常。
 
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/disk_cache.dart';
+import '../../core/models.dart';
 import '../../core/ui_prefs.dart';
+import '../live_page.dart' show LiveFlatEntry, liveChannelMatchesQuery;
 import '../tokens.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
+import '../../design/icons/app_icons.dart';
 
 /// 直播分组设置页
 ///
-/// 本页不读「本机有哪些直播源」—— 那要走 FFI，在无核心库的环境里必失败。
-/// ⇒ 分组编辑用手输源 id 的方式，这样本页在任何环境下都能渲染与操作。
+/// # 数据纪律（与直播页内的管理器**同一套**）
+/// ```text
+/// · 打开时读 prefs 进本地状态，改动立刻落盘（本页没有"取消"语义，
+///   因为它是设置页的一个区块 —— 用户的心理模型是"改了就是改了"）
+/// · 写 v2（按频道）+ 由 v2 推导的 v1（按源）—— 向前兼容
+/// · 删组**不需要搬运频道**：分组只是筛选器，删掉 ⇒ 频道自动回到全部
+/// ```
 class LiveGroupsPage extends StatefulWidget {
   const LiveGroupsPage({super.key});
 
   @override
   State<LiveGroupsPage> createState() => _LiveGroupsPageState();
 }
+
 class _LiveGroupsPageState extends State<LiveGroupsPage> {
-  late Map<String, List<String>> _groups;
+  /// 组名 → 频道引用（v2 主数据）
+  late Map<String, List<LiveChannelRef>> _groups;
+
+  /// 组名 → 源 id（v1 老数据，用于组名并集与回填）
+  late Map<String, List<String>> _sourceGroups;
+
+  /// 从磁盘快照读到的频道（null = 没有快照 ⇒ 回落到手输源 id）
+  List<LiveFlatEntry>? _channels;
+
+  /// 快照年龄（UI 上诚实标注"可能不是最新的"）
+  DateTime? _cacheAt;
+
   final TextEditingController _nameCtrl = TextEditingController();
   final Map<String, TextEditingController> _srcCtrl = {};
+  final Map<String, TextEditingController> _filterCtrl = {};
   String? _toast;
 
   @override
   void initState() {
     super.initState();
-    _groups = UiPrefs.liveSourceGroups();
+    _groups = UiPrefs.liveChannelGroups();
+    _sourceGroups = UiPrefs.liveSourceGroups();
+    // ★ 首帧前把老格式回填进 v2 草稿（否则用户一保存就把老分组清空了）
+    _backfillFromV1();
+    unawaited(_loadChannels());
+  }
+
+  /// 从磁盘快照读频道清单（**零 FFI**，见文件头）
+  Future<void> _loadChannels() async {
+    try {
+      final entry = await DiskCache.read('live-channels-cache.json');
+      if (entry == null || !mounted) return;
+      final data = entry.data;
+      if (data is! List) return;
+      final out = <LiveFlatEntry>[];
+      for (final raw in data) {
+        if (raw is! Map) continue;
+        try {
+          final g = LiveGroup.fromJson(Map<String, dynamic>.from(raw));
+          for (final c in g.channels) {
+            out.add((channel: c, tag: g.providerName, provider: g.provider));
+          }
+        } catch (_) {
+          // 单组坏了只丢那组（与 UiPrefs 的逐键宽松同一条纪律）
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _channels = out.isEmpty ? null : out;
+        _cacheAt = entry.at;
+      });
+      // ★ 拿到真频道清单后**再回填一次** —— 第一次回填时还没有频道清单，
+      //   老格式（按源）的组会回填成空；现在能按源展开成具体频道了。
+      if (out.isNotEmpty) _backfillFromV1();
+    } catch (e) {
+      debugLog('直播分组页读频道快照失败（回落到手输源 id）: $e');
+    }
+  }
+
+  /// 把 v1（按源）里**只存在于老格式**的组展开成具体频道
+  ///
+  /// # 为什么必须做（否则保存即损坏用户数据）
+  /// ```text
+  /// 用户的老组是"这个组包含 iptv 这个源"（= iptv 的全部频道）。
+  /// 若本页不把它展开成具体频道，用户点一下保存 ⇒ v2 里那个组是空的
+  /// ⇒ 他下次进直播页选这个组 ⇒ 按 v2 判 ⇒ **一个台都不显示**。
+  /// ```
+  /// ★ 只回填**还没有 v2 数据**的组：已有 v2 的组以 v2 为准（不覆盖用户的编辑）。
+  ///
+  /// ★★ 两段式（缺了第二段就是"老分组凭空消失"）
+  /// ```text
+  /// ① 频道清单**还没到**（`_channels == null`）⇒ 先把**组名**建出来，
+  ///    成员留空。否则用户在等快照的那一瞬间看到"现有分组（0）"
+  ///    —— 他的老分组像是被删了。
+  /// ② 清单到了 ⇒ 再按源展开成具体频道（`_loadChannels` 会再调一次）。
+  /// ```
+  void _backfillFromV1() {
+    final chans = _channels;
+    for (final e in _sourceGroups.entries) {
+      final existing = _groups[e.key];
+      if (existing != null && existing.isNotEmpty) continue;
+      if (chans == null) {
+        // ① 只建组名（成员待清单到达后再展开）
+        _groups.putIfAbsent(e.key, () => <LiveChannelRef>[]);
+        continue;
+      }
+      // ② 展开成具体频道
+      _groups[e.key] = [
+        for (final c in chans)
+          if (e.value.contains(c.provider))
+            LiveChannelRef(c.provider, c.channel.id),
+      ];
+    }
   }
 
   @override
@@ -45,12 +161,41 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
     for (final c in _srcCtrl.values) {
       c.dispose();
     }
+    for (final c in _filterCtrl.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
-  /// 落盘（本页是唯一写入口 —— 单一写入点，少一处漂移）
+  /// 落盘（本页是设置侧唯一写入口 —— 单一写入点，少一处漂移）
+  ///
+  /// # v1（按源）怎么算 —— 三条分支，缺一条就会丢用户数据
+  /// ```text
+  /// ① v2 里有频道         ⇒ 由 v2 反推源集合（真源：用户逐个勾过的）
+  /// ② v2 空、但老 v1 有源 ⇒ **保留老 v1 原样**
+  ///    ★ 这一条是「加源 / 删源」那条老路径的生命线：
+  ///      没有频道清单时，用户只能手输源 id，那份数据**只在 v1 里**。
+  ///      若这里用"v2 反推"覆盖它 ⇒ v2 空 ⇒ v1 也被清空 ⇒
+  ///      **用户刚加的源当场消失**（实测抓到的真 bug）。
+  /// ③ 都没有（新建的空组）    ⇒ 写空列表（组存在，只是还没内容）
+  /// ```
   void _save() {
-    UiPrefs.setLiveSourceGroups(_groups);
+    UiPrefs.setLiveChannelGroups(_groups);
+    final v1 = <String, List<String>>{};
+    for (final e in _groups.entries) {
+      final srcs = <String>[];
+      for (final r in e.value) {
+        if (!srcs.contains(r.provider)) srcs.add(r.provider);
+      }
+      if (srcs.isNotEmpty) {
+        v1[e.key] = srcs;
+      } else {
+        // ② / ③：v2 空 ⇒ 老 v1 说了算（可能是手输的源，也可能是空组）
+        v1[e.key] = List<String>.from(_sourceGroups[e.key] ?? const []);
+      }
+    }
+    UiPrefs.setLiveSourceGroups(v1);
+    _sourceGroups = v1;
     setState(() {});
   }
 
@@ -66,24 +211,65 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
       _flash('已经有叫「$name」的分组了');
       return;
     }
-    _groups[name] = <String>[];
+    _groups[name] = <LiveChannelRef>[];
     _nameCtrl.clear();
     _save();
-    _flash('已新建分组「$name」（还没放源，切到它会显示全部源）');
+    _flash('已新建分组「$name」（还没选频道，切到它会显示全部频道）');
   }
 
-  /// Lead 明确要求：删分组时里面的源回落到「全部」，不许消失
+  /// 删分组 —— 里面的频道回落到「全部」，不消失
   ///
-  /// 本实现天然满足：源列表从来不依赖分组而存在 —— 分组只是筛选器，
-  /// 删掉筛选器 ⇒ 全部源照旧显示。所以这里只需删键，不需要搬运任何源。
+  /// 本实现天然满足：频道列表从来不依赖分组而存在 —— 分组只是筛选器。
   void _removeGroup(String name) {
     setState(() {
       _groups.remove(name);
+      _sourceGroups.remove(name);
       _srcCtrl.remove(name)?.dispose();
+      _filterCtrl.remove(name)?.dispose();
     });
     _save();
-    _flash('已删除分组「$name」；里面的源已回到「全部源」');
+    _flash('已删除分组「$name」；里面的频道已回到全部频道');
   }
+
+  /// 勾选 / 取消一个频道
+  void _toggleChannel(String group, LiveChannelRef ref) {
+    setState(() {
+      final list = _groups[group] ?? <LiveChannelRef>[];
+      if (list.contains(ref)) {
+        _groups[group] = list.where((x) => x != ref).toList();
+      } else {
+        _groups[group] = [...list, ref];
+      }
+    });
+    _save();
+  }
+
+  /// 一键全选 / 全不选某个源（快捷方式）
+  void _toggleProviderAll(String group, String provider) {
+    final chans = _channels ?? const <LiveFlatEntry>[];
+    final all = [
+      for (final c in chans)
+        if (c.provider == provider) LiveChannelRef(c.provider, c.channel.id),
+    ];
+    if (all.isEmpty) return;
+    setState(() {
+      final list = _groups[group] ?? <LiveChannelRef>[];
+      if (all.every(list.contains)) {
+        final drop = all.toSet();
+        _groups[group] = list.where((x) => !drop.contains(x)).toList();
+      } else {
+        final have = list.toSet();
+        _groups[group] = [
+          ...list,
+          for (final r in all)
+            if (!have.contains(r)) r,
+        ];
+      }
+    });
+    _save();
+  }
+
+  // ── 老路径：手输源 id（没有磁盘快照时唯一可用的编辑方式）──
 
   void _addSource(String group) {
     final ctrl = _srcCtrl[group];
@@ -92,20 +278,20 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
       _flash('源 id 不能为空');
       return;
     }
-    final list = _groups[group] ?? <String>[];
+    final list = _sourceGroups[group] ?? <String>[];
     if (list.contains(id)) {
       _flash('「$group」里已经有 $id 了');
       return;
     }
-    setState(() => _groups[group] = [...list, id]);
+    setState(() => _sourceGroups[group] = [...list, id]);
     ctrl?.clear();
     _save();
   }
 
   void _removeSource(String group, String id) {
     setState(() {
-      final list = [...?_groups[group]]..remove(id);
-      _groups[group] = list;
+      final list = [...?_sourceGroups[group]]..remove(id);
+      _sourceGroups[group] = list;
     });
     _save();
   }
@@ -113,16 +299,20 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final chans = _channels;
     return SettingsSubPage(
       title: '直播分组',
-      subtitle: '把常用的直播源分成组，直播页可一键只看某一组',
+      subtitle: '把常看的直播频道分成组，直播页可一键只看某一组',
       children: [
         SettingsBlock(
           title: '新建分组',
           children: [
             Text(
-              '分好组之后，直播页右侧会出现一排分组按钮；'
-              '点某一个就只显示该组里的源，不用在一长串源名里翻。',
+              chans == null
+                  ? '分好组之后，直播页工具栏可以一键只看某一组。'
+                      '（还没读到频道清单 —— 先去直播页看一眼，本页就能逐频道勾选了）'
+                  : '分好组之后，直播页工具栏可以一键只看某一组。'
+                      '下面是本机直播源返回的全部频道，勾选你要的即可。',
               style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
             ),
             const SizedBox(height: Sp.x4),
@@ -150,28 +340,39 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
           children: [
             if (_groups.isEmpty)
               Text(
-                '还没有分组。上面新建一个，再把常用的源 id 放进去。',
+                '还没有分组。上面新建一个，再勾选要放进来的频道。',
                 style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
               )
             else
               for (final name in _groups.keys.toList()) ...[
-              _groupRow(name, colors),
-              const SizedBox(height: Sp.x4),
+                _groupRow(name, colors, chans),
+                const SizedBox(height: Sp.x4),
+              ],
+          ],
+        ),
+        if (chans == null) ...[
+          const SizedBox(height: Sp.x5),
+          SettingsBlock(
+            title: '关于「源 id」',
+            children: [
+              Text(
+                '源 id 就是设置 → JS 插件里那张卡片标识的源（如 iptv）。'
+                '这里手输而不用勾选，是因为还没读到频道清单'
+                '（读它要核心接口，核心不可用时会让整页打不开）。'
+                '先去直播页看一眼，回来这里就会变成逐频道勾选。',
+                style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+              ),
             ],
-          ],
-        ),
-        const SizedBox(height: Sp.x5),
-        SettingsBlock(
-          title: '关于「源 id」',
-          children: [
-            Text(
-              '源 id 就是设置 → JS 插件里那张卡片标识的源（如 iptv）。'
-              '这里手输而不用勾选，是因为读取本机源列表要走核心接口，'
-              '在核心不可用的环境下会让整页打不开 —— 手输让本页永远可用。',
-              style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
-            ),
-          ],
-        ),
+          ),
+        ],
+        if (_cacheAt != null) ...[
+          const SizedBox(height: Sp.x3),
+          Text(
+            '频道清单来自 ${_ageText(_cacheAt!)}的快照；'
+            '在直播页刷新一次会更新它。',
+            style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          ),
+        ],
         if (_toast != null) ...[
           const SizedBox(height: Sp.x4),
           Text(_toast!, style: TextStyle(fontSize: FontSizes.sm, color: colors.primary)),
@@ -180,9 +381,20 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
     );
   }
 
-  Widget _groupRow(String name, ColorScheme colors) {
-    final members = _groups[name] ?? const <String>[];
-    final ctrl = _srcCtrl.putIfAbsent(name, TextEditingController.new);
+  static String _ageText(DateTime at) {
+    final d = DateTime.now().difference(at);
+    if (d.inMinutes < 1) return '刚刚';
+    if (d.inMinutes < 60) return '${d.inMinutes} 分钟前';
+    if (d.inHours < 24) return '${d.inHours} 小时前';
+    return '${d.inDays} 天前';
+  }
+
+  Widget _groupRow(
+    String name,
+    ColorScheme colors,
+    List<LiveFlatEntry>? chans,
+  ) {
+    final members = _groups[name] ?? const <LiveChannelRef>[];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -198,15 +410,170 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
                 ),
               ),
             ),
+            if (chans != null)
+              Text(
+                '已选 ${members.length} 个频道',
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+            const SizedBox(width: Sp.x2),
             TextButton.icon(
               key: ValueKey('live-group-del-$name'),
               onPressed: () => _removeGroup(name),
-              icon: const Icon(Icons.delete_outline, size: 18),
+              icon: const Icon(AppIcons.delete_outline, size: 18),
               label: const Text('删除分组'),
             ),
           ],
         ),
+        if (chans == null)
+          _legacySourceEditor(name, colors)
+        else
+          _channelPicker(name, members, colors, chans),
+      ],
+    );
+  }
+
+  /// 主路径：逐频道勾选（有磁盘快照时）
+  Widget _channelPicker(
+    String name,
+    List<LiveChannelRef> members,
+    ColorScheme colors,
+    List<LiveFlatEntry> chans,
+  ) {
+    final ctrl = _filterCtrl.putIfAbsent(name, TextEditingController.new);
+    final q = ctrl.text.trim();
+    // 按源分块（一个源 20~48 个台，平铺等于没有结构）
+    final providers = <String, String>{}; // provider -> providerName
+    for (final c in chans) {
+      providers.putIfAbsent(c.provider, () => c.tag);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
         if (members.isEmpty)
+          Text(
+            '（空组 —— 切到它会显示全部频道，不会筛成空）',
+            style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          ),
+        TextField(
+          key: ValueKey('live-group-filter-$name'),
+          controller: ctrl,
+          decoration: const InputDecoration(
+            hintText: '搜频道名（如「体育」）',
+            isDense: true,
+            prefixIcon: Icon(AppIcons.search, size: 18),
+          ),
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: Sp.x3),
+        for (final e in providers.entries)
+          if (_visibleOf(chans, e.key, q).isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: Sp.x3),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        e.value,
+                        style: TextStyle(
+                          fontSize: FontSizes.sm,
+                          fontWeight: FontWeight.w600,
+                          color: colors.onSurface,
+                        ),
+                      ),
+                      const SizedBox(width: Sp.x2),
+                      Text(
+                        '${_countSelected(chans, e.key, members)}'
+                        '/${_visibleOf(chans, e.key, '').length}',
+                        style: TextStyle(
+                          fontSize: FontSizes.cap,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                      const Spacer(),
+                      TextButton(
+                        key: ValueKey('live-group-all-$name-${e.key}'),
+                        onPressed: () => _toggleProviderAll(name, e.key),
+                        child: const Text('全选 / 全不选'),
+                      ),
+                    ],
+                  ),
+                  Wrap(
+                    spacing: Sp.x2,
+                    runSpacing: Sp.x2,
+                    children: [
+                      for (final c in _visibleOf(chans, e.key, q))
+                        _ChannelChip(
+                          key: ValueKey(
+                            'live-group-ch-$name-${c.provider}-${c.channel.id}',
+                          ),
+                          label: c.channel.name,
+                          selected: members
+                              .contains(LiveChannelRef(c.provider, c.channel.id)),
+                          onTap: () => _toggleChannel(
+                            name,
+                            LiveChannelRef(c.provider, c.channel.id),
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+      ],
+    );
+  }
+
+  static List<LiveFlatEntry> _visibleOf(
+    List<LiveFlatEntry> chans,
+    String provider,
+    String q,
+  ) =>
+      [
+        for (final c in chans)
+          if (c.provider == provider)
+            if (liveChannelMatchesQuery(q, c.channel.name, c.tag)) c,
+      ];
+
+  static int _countSelected(
+    List<LiveFlatEntry> chans,
+    String provider,
+    List<LiveChannelRef> members,
+  ) =>
+      chans
+          .where((c) =>
+              c.provider == provider &&
+              members.contains(LiveChannelRef(c.provider, c.channel.id)))
+          .length;
+
+  /// 老路径：手输源 id（没有磁盘快照时唯一可用）
+  ///
+  /// ⚠️ 保留它有三个理由，缺一不可：
+  /// ```text
+  /// ① 第一次装 / 还没进过直播页 ⇒ 没有快照 ⇒ 没有它就没法编辑
+  /// ② `flutter test` 里 DiskCache 没 init ⇒ 同样没有快照
+  ///    ⇒ 既有回归测试（t134 的 `live-group-addsrc-*` 那几条）靠它
+  /// ③ 快照可能过期（用户刚装了新源）⇒ 手输是兜底
+  /// ```
+  ///
+  /// ★★★ 这里显示的是 **v1（源 id）**，不是从 v2 反推
+  /// ```text
+  /// 这条路径下**根本没有频道清单** ⇒ v2 必然为空
+  /// ⇒ 若从 v2 反推"这个组有哪些源"，结果**恒为空**
+  ///   ⇒ 用户刚加的源不显示、也删不掉（实测抓到的真 bug）。
+  /// ⇒ 直接读 v1，它才是这条路径的唯一真相。
+  /// ```
+  Widget _legacySourceEditor(String name, ColorScheme colors) {
+    final ctrl = _srcCtrl.putIfAbsent(name, TextEditingController.new);
+    final srcs = _sourceGroups[name] ?? const <String>[];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (srcs.isEmpty)
           Text(
             '（空组 —— 切到它会显示全部源，不会筛成空）',
             style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
@@ -215,7 +582,7 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
           spacing: Sp.x2,
           runSpacing: Sp.x2,
           children: [
-            for (final id in members)
+            for (final id in srcs)
               Chip(
                 key: ValueKey('live-group-src-$name-$id'),
                 label: Text(id),
@@ -248,4 +615,61 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
       ],
     );
   }
+}
+
+/// 逐频道勾选胶囊
+///
+/// ★ 与直播页内管理器的 `_MemberChip` **同一条教训**：
+///   `showCheckmark: false` 会让每颗胶囊长得一模一样（深色主题下分不清
+///   哪些已选）⇒ 必须留对勾 + 主色描边 + 主色淡底三重区分。
+class _ChannelChip extends StatelessWidget {
+  const _ChannelChip({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return FilterChip(
+      label: Text(
+        label,
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: selected ? colors.primary : colors.onSurfaceVariant,
+        ),
+      ),
+      selected: selected,
+      onSelected: (_) => onTap(),
+      showCheckmark: true,
+      checkmarkColor: colors.primary,
+      backgroundColor: Colors.transparent,
+      selectedColor: colors.primary.withValues(alpha: 0.18),
+      side: BorderSide(
+        color: selected ? colors.primary : colors.outlineVariant,
+      ),
+      shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      labelPadding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
+  }
+}
+
+/// 轻量日志（本文件不直接依赖 AppLog 的落盘链路）
+void debugLog(String msg) {
+  // ignore: avoid_print
+  print('[LIVE-GROUPS] $msg');
+}
+
+/// `unawaited` 的本地别名 —— 本文件只用一个 Future，不值得为它 import dart:async
+void unawaited(Future<void> f) {
+  f.catchError((Object _) {});
 }

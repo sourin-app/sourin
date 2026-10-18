@@ -185,7 +185,57 @@ class AppTheme {
       );
 
   /// 该明暗下的完整 Material 主题（按用户当前的选择）
-  static ThemeData themeFor(Brightness b) => themeForPack(b, selectedPack);
+  ///
+  /// ★★★ 2026-10-17 修（dlg-source 实测发现的真 bug）
+  ///
+  /// # 缺陷现场
+  /// ```text
+  /// 改前：themeFor(b) => themeForPack(b, selectedPack)
+  ///       而 themeForPack 无条件用 pack?.brightness ?? b
+  ///
+  /// ⇒ 用户选「樱粉」+ 模式「跟随系统」：
+  ///     系统切浅色 ⇒ 仍然返回樱粉**深色**
+  ///     系统切深色 ⇒ 同样返回樱粉**深色**
+  ///     ⇒ 两档完全一样，浅色版永远用不到
+  ///
+  /// 实测：
+  ///   selected=builtin.sakura, mode=system
+  ///   system=light => dark  ★
+  ///   system=dark  => dark
+  ///   SAME? = true
+  /// ```
+  ///
+  /// # 为什么这是 11-A 的致命伤
+  /// ```text
+  /// 11-A 补的 8 个浅色版（midnight/oled/midnightBlue/sakura/forest/
+  /// glass/neoBrutal/minimal 各一个），在「跟随系统」这条路径上
+  /// **一次都不会被用到** ⇒ 全是死代码。
+  ///
+  /// 而 ThemePackStore.siblingOf() / isDual() 早就写好了，只是没人调用。
+  /// ```
+  ///
+  /// # 修法
+  /// ```text
+  /// 先按用户传进来的明暗 b，去同家族里找**兄弟版本**：
+  ///   樱粉(深) + 系统浅色 ⇒ 樱粉·浅
+  ///   樱粉·浅 + 系统深色 ⇒ 樱粉(深)
+  ///
+  /// 找不到兄弟版本（单档家族，如某些导入的主题）⇒ 用原包
+  ///   （宁可明暗不跟随，也不要静默换成无关主题）
+  /// ```
+  static ThemeData themeFor(Brightness b) {
+    final sel = selectedPack;
+    if (sel == null) return themeForPack(b, null);
+
+    // 用户显式选了「浅色」/「深色」时，b 就是那个模式算出来的值；
+    // 选了「跟随系统」时，b 来自系统。两种情况都用 b 去挑兄弟版本。
+    final sib = ThemePackStore.siblingOf(ThemePackStore.builtins, sel);
+    if (sib != null && sib.brightness == b) {
+      return themeForPack(b, sib);
+    }
+    // 兄弟版本不对（单档家族）⇒ 用原包，保持它自己的明暗
+    return themeForPack(b, sel);
+  }
 
   /// 指定一个主题包来建主题（`themeFor` 的可注入版本）
   ///

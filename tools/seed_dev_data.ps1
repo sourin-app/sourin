@@ -153,6 +153,7 @@ $seedPrefPrefixes = @(
 )
 
 $script:copied = 0
+$script:dbCopied = $false
 $script:kept = 0
 $script:warn = New-Object System.Collections.Generic.List[string]
 
@@ -191,6 +192,7 @@ if ($dstFull.StartsWith($srcFull + $sep, [StringComparison]::OrdinalIgnoreCase) 
 # ⇒ 比对「解析后的真实路径」（.NET 6+ 的 ResolveLinkTarget；PS 5.1 没有时退回字符串比较）。
 # 另外**目标里已存在的 ui-prefs.json 也可能是源文件的硬/软链**，所以文件级也要查。
 function Resolve-RealPath([string]$p) {
+    # -- 路径 A：.NET 6+ / PowerShell 7 的 ResolveLinkTarget（最可靠）--
     try {
         $item = Get-Item -LiteralPath $p -Force -ErrorAction Stop
         if ($item.PSObject.Methods.Name -contains "ResolveLinkTarget") {
@@ -198,6 +200,56 @@ function Resolve-RealPath([string]$p) {
             if ($t) { return [IO.Path]::GetFullPath($t.FullName) }
         }
     } catch { }
+
+    # -- 路径 B：PowerShell 5.1 兜底（Windows 自带的那一个）--
+    #
+    # ★★★ 2026-10-17 修：这条分支原先不存在，护栏二在 PS 5.1 上静默失效。
+    #
+    # 缺陷（实测，不是推断）：ResolveLinkTarget 是 .NET 6+ 的 API。
+    #   Windows 自带的 powershell.exe 是 5.1.19041.6456，
+    #   实测 $item.PSObject.Methods.Name -contains "ResolveLinkTarget" = False
+    #   => 上面那条 if 直接跳过 => 落到 GetFullPath，
+    #      而 GetFullPath 不解析 junction（只把相对路径变绝对）。
+    #   于是 dstReal 仍等于 junction 自己的路径，与 srcReal 不等
+    #   => 护栏静默放行 => 后面会真的改写用户真实的 sync-settings.json。
+    #
+    # 为什么能活到现在：测试的 resolvePowerShell() 优先找 pwsh（PS7），
+    #   所以 CI 走路径 A 一切正常；真实用户机器上只有 PS 5.1。
+    #   典型的「测试环境能力比生产强 => 缺陷测不出来」。
+    try {
+        $item = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+        if ($item) {
+            $lt = $null
+            try { $lt = $item.LinkType } catch { }
+            if ($lt -eq "Junction" -or $lt -eq "SymbolicLink") {
+                $tgt = $null
+                try { $tgt = $item.Target } catch { }
+                if ($tgt) {
+                    if ($tgt -is [array]) { $tgt = $tgt[0] }
+                    $resolved = $tgt
+                    if (-not [IO.Path]::IsPathRooted($resolved)) {
+                        $resolved = Join-Path (Split-Path -Parent $item.FullName) $resolved
+                    }
+                    return [IO.Path]::GetFullPath($resolved)
+                }
+            }
+        }
+    } catch { }
+
+    # -- 路径 C：fsutil（更老的系统也能用）--
+    try {
+        $out = & fsutil reparsepoint query "$p" 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $joined = ($out | Out-String)
+            $m = [regex]::Match($joined, "Substitute Name:\s*([^\r\n]+)")
+            if ($m.Success) {
+                $raw = $m.Groups[1].Value.Trim()
+                $raw = $raw -replace "^\\\\\?\\", ""
+                if ($raw) { return [IO.Path]::GetFullPath($raw) }
+            }
+        }
+    } catch { }
+
     return [IO.Path]::GetFullPath($p)
 }
 $srcReal = Resolve-RealPath $srcFull
@@ -240,6 +292,11 @@ function Copy-One([string]$Rel) {
     try {
         Copy-Item -LiteralPath $src -Destination $dst -Force
         $script:copied++
+        # ★ 2026-10-17：记录「这次真的拷了 dsh-media.db」
+        # 供后面完整性校验判断「是否发生了真拷贝」——
+        # 判据不能是「目标现在有没有这个文件」（不带 -Force 时本来就有，
+        # 会导致校验被静默跳过，见那段注释）。
+        if ($Rel -eq "dsh-media.db") { $script:dbCopied = $true }
     } catch {
         $script:warn.Add("$Rel —— $($_.Exception.Message)")
     }
@@ -372,7 +429,30 @@ elseif (Test-Path -LiteralPath $dstPrefs) {
 #   验不过就硬失败（宁可重播一次，也不要一个悄悄坏掉的库）；
 #   验不了就**明说验不了**，不许假装通过。
 $dstDb = Join-Path $Target 'dsh-media.db'
-if (Test-Path -LiteralPath $dstDb) {
+#
+# ★★★ 2026-10-17 修：判据从「**目标**里有没有库」改成「**目标里有没有、或这次要不要拷**」
+#
+# # 缺陷（实测）
+# 原来只写 `if (Test-Path -LiteralPath $dstDb)`。但不带 -Force 且目标目录已存在时，
+# Copy-One 会走 `kept++` **跳过拷贝**（见上面的 Copy-One），
+# 于是 $dstDb 不存在 => 整段完整性校验被**静默跳过** => 脚本 exit 0。
+#
+# 实测复现：目标目录预先建好、源库是坏库、不带 -Force
+#   => EXIT=0，一字输出都没有，「坏库必须 exit 4」这条护栏完全失效。
+#
+# 而测试 zz_t1015 的坏库用例正好就是 runSeed(<String>[])（不带 -Force），
+# 所以它一直报 Expected 4 / Actual 1。
+#
+# # 修法：把校验对象改成「**将要成为目标库**的那个文件」
+#   - 这次真的拷了（-Force 或目标没有）=> 校验目标库（原行为）
+#   - 这次没拷（目标已有库、且本次无操作）=> 不需要校验，也确实没引入坏库
+#   - 这次没拷但**目标本来就没有库**（源也没库）=> 无可校验，正常
+# 关键：不拷的时候不存在「新引入坏库」的风险，跳过是正确的；
+#       但如果是一次**真拷贝**却没校验，那才是缺陷。
+#
+# 所以判据要问的是「这次是否发生了拷贝」，而不是「目标现在有没有文件」。
+# 用一个显式标志记录：Copy-One 拷成功过 dsh-media.db 就置位。
+if ($script:dbCopied -and (Test-Path -LiteralPath $dstDb)) {
     # 先看魔数：不是 SQLite 文件就没什么可校验的（测试夹具会写随机字节）。
     # 真用户的 dsh-media.db 一定有这个魔数；有魔数才谈得上「拷坏了」。
     # 用 FileStream 读前 16 字节 —— PS7 没有 -Encoding Byte，别用 Get-Content。
@@ -397,8 +477,42 @@ if (Test-Path -LiteralPath $dstDb) {
             Write-Host '[seed] [!] 本机没有 python => 跳过完整性校验（未验证，不是通过）' -ForegroundColor Yellow
         } else {
             $check = 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); r=c.execute("PRAGMA integrity_check").fetchone()[0]; print(r); sys.exit(0 if r=="ok" else 1)'
-            $out = & $pyExe '-c' $check $dstDb 2>&1
-            if ($LASTEXITCODE -ne 0) {
+            #
+            # ★★★ 2026-10-17 修：PS 5.1 下不能用 `2>&1` 抓 python 的 stderr
+            #
+            # # 缺陷（实测，非推断）
+            # 旧写法：$out = & $pyExe '-c' $check $dstDb 2>&1
+            #
+            # 在 PowerShell 5.1（Windows 自带那个）下，外部程序写 stderr 会被当成
+            # NativeCommandError 异常抛出（$ErrorActionPreference='Stop' 时更明显），
+            # 脚本在这一行就被中断 ⇒ 根本走不到下面的 exit 4。
+            #
+            # 实测读数（zz_t1015 坏库用例）：
+            #   ps=powershell（就是 5.1）、exit=1、stderr 里是：
+            #   "python.exe :   File <string>, line 1 ... NativeCommandError"
+            # —— 就是上面说的那个异常，它把真正的 exit code 吃掉了。
+            #
+            # # 为什么 CI 一直是绿的
+            # 测试的 resolvePowerShell() 优先找 pwsh（PS7），PS7 对异常流的处理不同，
+            # 不会因为 stderr 而抛异常 ⇒ 经常性地“测不出来”。
+            # 又是一个「测试环境能力比生产强」。
+            #
+            # # 修法：判据只看**进程退出码**，不靠 stderr 是否被转成异常
+            #   用 Start-Process -Wait -PassThru 拿 ExitCode，它在 5.1 和 7 上行为一致。
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $pyExe
+            $psi.Arguments = '-c' + [char]32 + '"' + $check.Replace('"', '\"') + '"' + [char]32 + '"' + $dstDb + '"'
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $pyOut = $proc.StandardOutput.ReadToEnd()
+            $pyErr = $proc.StandardError.ReadToEnd()
+            $proc.WaitForExit()
+            $pyRc = $proc.ExitCode
+            $out = ($pyOut + $pyErr).Trim()
+            if ($pyRc -ne 0) {
                 Write-Host "[seed] X 播种后的 dsh-media.db 没通过 integrity_check：$out" -ForegroundColor Red
                 Write-Host '       多半是拷贝期间源库被写入/checkpoint => 关掉 App 重播一次。' -ForegroundColor Red
                 exit 4

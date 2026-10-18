@@ -119,6 +119,9 @@ import 'ui/remote_bridge.dart';
 import 't458_drag_selftest.dart';
 import 'ui/app_palette.dart';
 import 'ui/app_scaffold.dart';
+import 'ui/shell_layouts/bottom_bar_layout.dart';
+import 'ui/shell_layouts/shell_layout.dart';
+import './design/icons/app_icons.dart';
 
 /// ★ 是否桌面平台（Windows / macOS / Linux）
 ///
@@ -177,22 +180,22 @@ enum AppTab {
   final String path;
 
   static const _icons = {
-    AppTab.home: Icons.explore_outlined,
-    AppTab.live: Icons.live_tv_outlined,
-    AppTab.follow: Icons.star_border_rounded,
-    AppTab.search: Icons.search_rounded,
+    AppTab.home: AppIcons.explore_outlined,
+    AppTab.live: AppIcons.live_tv_outlined,
+    AppTab.follow: AppIcons.star_border_rounded,
+    AppTab.search: AppIcons.search_rounded,
     // ★「已缓存」用 download_done 语义（**不是** folder）——
     //   Owner 要的是"已经存下来的东西"，folder 会让人以为是下载目录入口。
-    AppTab.cached: Icons.download_done_outlined,
-    AppTab.settings: Icons.settings_outlined,
+    AppTab.cached: AppIcons.download_done_outlined,
+    AppTab.settings: AppIcons.settings_outlined,
   };
   static const _iconsActive = {
-    AppTab.home: Icons.explore,
-    AppTab.live: Icons.live_tv,
-    AppTab.follow: Icons.star_rounded,
-    AppTab.search: Icons.search_rounded,
-    AppTab.cached: Icons.download_done_rounded,
-    AppTab.settings: Icons.settings,
+    AppTab.home: AppIcons.explore,
+    AppTab.live: AppIcons.live_tv,
+    AppTab.follow: AppIcons.star_rounded,
+    AppTab.search: AppIcons.search_rounded,
+    AppTab.cached: AppIcons.download_done_rounded,
+    AppTab.settings: AppIcons.settings,
   };
 
   IconData icon({required bool active}) =>
@@ -1802,6 +1805,127 @@ class _SourinAppState extends State<SourinApp>
     return LiquidGlassWidgets.wrap(
       brightnessResolver: (ctx) => AppTheme.resolve(
         systemBrightness: MediaQuery.platformBrightnessOf(ctx),
+      ),
+      /*
+       * ══════════════════════════════════════════════════════════════
+       * ★★★ task-31：让玻璃「看得见」（Owner：UI 丑 / 三层浮起物隐形）
+       * ══════════════════════════════════════════════════════════════
+       *
+       * # 实测病灶（真实窗口 PrintWindow 采样，不是猜）
+       * ```text
+       * 顶部切换条 trough   (250,250,251)  vs 页面底 CR = 1.096
+       * 源条 trough         (232,235,243)  vs 页面底 CR = 1.047
+       * 悬浮底栏 trough     (238,240,246)  vs 页面底 CR = 1.000  ← 完全隐形
+       * ```
+       *
+       * # 根因：包自带的 light 预设 glassColor 只有 12% alpha
+       * ```text
+       * 默认 GlassThemeVariant.light:
+       *   glassColor: Color.fromRGBO(210,220,240, 0.12)
+       * 叠在 #EEF0F6 上 ⇒ (232,235,243)，正是上面量到的 1.047。
+       * ```
+       * 也就是说：**不是我们配错，是包给的默认值在浅色下本来就近乎透明**。
+       * 深色背景上 12% 白还能看出来，浅色背景上就彻底糊掉了。
+       *
+       * # 为什么改这里（而不是逐处改 GlassContainer）
+       * ```text
+       * ① 三个 GlassContainer 分散在 shell.dart / my_shelf.dart / source_bar.dart，
+       *    逐处改要动三份代码、三处易漏；
+       * ② `wrap(theme:)` 是**全局玻璃主题**，一处生效三块都跟；
+       * ③ 与 `brightnessResolver` 同层 —— 它已经按 AppTheme 解析明暗，
+       *    这里跟着它取同一套色，不会出现「明暗不一致」的老坑。
+       * ```
+       *
+       * # 只调三个参数（数值是两次实测迭代后的终值）
+       * ```text
+       * glassColor alpha 0.12 → 0.62（浅色），色相同时压深一档
+       *    这是 CR 的直接来源。第一版取 0.55 ⇒ 实测顶部药丸只到 1.119、
+       *    源条 1.149，**都没过 1.15 线**；提到 0.62 后才达标。
+       * ambientStrength 0.15 → 0.70
+       *    环境光强度，浅色背景上让玻璃有「体积」而不是一层薄雾
+       * lightIntensity 0.85 → 1.05
+       *    边缘高光，给容器一条能看见的「边」
+       * ```
+       *
+       * # 实测终值（真实窗口 PrintWindow，vs page_bg #EEF0F6）
+       * ```text
+       * 区域        BEFORE   AFTER
+       * 顶部切换条  1.034    1.197  ✓
+       * 源条        1.047    1.244  ✓
+       * 悬浮底栏    1.175    1.384  ✓
+       * ```
+       * ⚠️ 底栏 BEFORE 是 1.175 而非 1.000 —— **我最初那次量的采样区
+       *    (400,745)-(460,752) 根本不在底栏上**（底栏实际从 y≈774 才开始）。
+       *    那是我的测量错误；已按实测边界重测，现在两个数都是真的。
+       *
+       * ══════════════════════════════════════════════════════════════
+       * ⚠️ 2026-10-17（dlg-source，Lead 问「胶囊不跟主题色，是预期还是漏改」）
+       * ══════════════════════════════════════════════════════════════
+       *
+       * **是预期的，不是漏改。** 但代价必须说清楚：
+       *
+       * 这里的 glassColor 是**固定色**（浅色 RGBO(196,208,236,0.62)），
+       * 完全不读主题包 ⇒ 换了任何浅色主题，标题栏/源条/底栏永远是这个冷蓝紫。
+       *
+       * 实测证据（真机截图像素采样，同一组区域）：
+       * ```text
+       *   樱粉·浅   页面底 #F2C7CF   三处玻璃 #D4C9DD
+       *   液态玻璃·浅 页面底 #E2DBF6   三处玻璃 #CCD1ED
+       * ```
+       * 三处玻璃内部的**主色一致**，差异只来自背后底色透上来 ——
+       * 即「半透明玻璃」的应有行为，不是没生效。
+       *
+       * # 为什么保持固定色（而不是跟着主题走）
+       * ```text
+       * ① 玻璃的语义是「折射背后内容」，底色已经通过 backdrop 透进来了；
+       *    若再把 glassColor 也染成主题色，等于染两遍 ⇒ 玻璃质感消失，
+       *    退化成「一块带圆角的色块」。
+       * ② 三处 GlassContainer 分散在 shell / my_shelf / source_bar，
+       *    统一固定色才保证「玻璃就是同一个玻璃」，不随主题漂移。
+       * ```
+       *
+       * # 已知观感代价（承认，不掩盖）
+       * ```text
+       * 樱粉·浅(#F2C7CF) 这种暖粉底 + 冷蓝玻璃(#D4C9DD)，
+       * 视觉上是「灰紫胶囊压在粉底上」，略不协调。
+       * ⇒ 这是粉底过于饱和后的**副作用**，不是 bug。
+       *   若 Owner 觉得刺眼，正确解法是**降浅色主题的饱和度**，
+       *   而不是给玻璃染色（那会破坏上面的 ①②）。
+       * ```
+       * ⚠️ 深色预设同样处理（白 8% → 32%）：深色下虽然本来就比浅色可见，
+       *    但既然后果一致，两档一起调才不会「切主题时一侧消失」。
+       * ⚠️ 只动 settings，**不动** quality / borderRadius / glowColors ——
+       *    那几项会改渲染路径或形状，属于「结构」不属「值」。
+       */
+      theme: const GlassThemeData(
+        light: GlassThemeVariant(
+          settings: GlassThemeSettings(
+            thickness: 12.0,
+            blur: 5.0,
+            // 原 12% ⇒ 55%。这是三层浮起物从「隐形」到「可见」的主参数。
+            glassColor: Color.fromRGBO(196, 208, 236, 0.62),
+            lightAngle: 2.356,
+            lightIntensity: 1.05,
+            ambientStrength: 0.70,
+            refractiveIndex: 1.2,
+            saturation: 1.2,
+            chromaticAberration: 0.02,
+          ),
+        ),
+        dark: GlassThemeVariant(
+          settings: GlassThemeSettings(
+            thickness: 10.0,
+            blur: 4.0,
+            // 原 8% ⇒ 32%。深色底本身对比够，不需要提到 55%。
+            glassColor: Color.fromRGBO(255, 255, 255, 0.32),
+            lightAngle: 2.356,
+            lightIntensity: 0.9,
+            ambientStrength: 0.35,
+            refractiveIndex: 1.2,
+            saturation: 1.2,
+            chromaticAberration: 0.01,
+          ),
+        ),
       ),
       child: MaterialApp(
       title: '源影',
@@ -4347,6 +4471,24 @@ class _ShellPageState extends State<ShellPage>
          * 因为挂在这里时，push 上来的详情页/播放页在 ShellPage 外面，
          * **一进详情页就拖不动窗口**（用户实际反馈的问题）。
          */
+        /*
+         * ★★ 2026-10-17 判定：**这一层 Material 不能删**（去 Material 任务里复核过）
+         *
+         * # 为什么
+         * ```text
+         * 它是 Shell 的**根绘制面**，包着 _currentLayout(...).build(...)，
+         * 也就是三个骨架 + _buildBody() 的所有页面。
+         *
+         * 实测：
+         *   shell.dart 自身        InkWell=0  ListTile=0   ← 看起来"没人用"
+         *   但侧栏/顶栏已迁成 AppInkWell（不依赖祖先）
+         *   **正文区页面**：live_page / cache_page / settings_page 都**没有**自带 Scaffold
+         *   ⇒ 它们内部的 InkWell / 框架组件仍指望着这一层当绘制面
+         * ```
+         *
+         * ⇒ 删掉它，这些页面的水波纹会静默消失（release 下不报错，debug 下断言）。
+         *   保留 = 安全；删除 = 需要逐个页面补绘制面，属另一件事。
+         */
         child: Material(
         type: MaterialType.transparency,
         /*
@@ -4409,8 +4551,46 @@ class _ShellPageState extends State<ShellPage>
            *    不在这里 —— 它要同时给**标题栏**和**所有路由**做底。
            *    这里只管内容区本身（切 tab 动画等）。
            */
-          Positioned.fill(
-            child: ClipRect(
+          /*
+           * ★★★ 第 14 条：内容区与导航的**摆放**交给布局骨架
+           *
+           * 原来这里是写死的 `Stack`：
+           * ```text
+           *   Stack
+           *     ├ Positioned.fill(child: ClipRect(... 保活内容区 ...))
+           *     └ Positioned(bottom:..., child: BottomBarMarker(...))
+           * ```
+           * 现在拆成两件事：
+           *   · `_buildBody()`   ⇒ **内容区**（保活逻辑全在里面，一个字没改）
+           *   · `layout.build()` ⇒ 决定「body 放哪、导航放哪」
+           *
+           * ⚠️ 保活的全部不变量（_stackOrder / Offstage / TickerMode /
+           *    _KeepAliveTransition / GlobalKey 唯一性）都**原样留在**
+           *    `_buildBody()` 里 —— 骨架只拿到「已经算好的 body」，不许重建。
+           */
+          _currentLayout(colors).build(
+            context: context,
+            current: _tab,
+            onSelect: _switchTo,
+            body: _buildBody(),
+            tabs: AppTab.values,
+          ),
+
+        ],
+      ),
+      ),   // ← Material(type: transparency) 的收尾（见上方的长注释）
+    ),     // ← AppScaffold 的收尾
+    );     // ← ShellScope 的收尾
+  }
+
+  /// ★★★ 第 14 条：**内容区**（保活逻辑全在这里，与改动前逐字一致）
+  ///
+  /// # 这一段是从 build() 里**原样抽出来**的，不是重写
+  ///
+  /// ⚠️ 判据 5（骨架 1 逐像素一致）就是靠这条保证的：
+  ///    搬家搬的是**外面那一层**，里面零改动。
+  Widget _buildBody() {
+    return ClipRect(
               /*
                * ══════════════════════════════════════════════════════════
                * ★★★ 2026-10-01：这一处**单独改没用** —— 实测读数在下面，
@@ -4821,86 +5001,31 @@ class _ShellPageState extends State<ShellPage>
                       ],
                     ), // Stack（保活）
               ), // SafeArea（F6 顶部安全区）
-            ), // ClipRect
-          ), // Positioned.fill
+    ); // ClipRect
+  }
 
-          // ── 底栏（自绘，不用 NavigationBar）──
-          /*
-           * ★ 用 Positioned 让底栏**浮在内容之上**（见上面 Stack 的说明）
-           *
-           * 不用 `Align(bottomCenter)` —— 那会把它放进 Stack 的
-           * 非定位子节点列表，尺寸约束行为不同；`Positioned` 语义更明确。
-           *
-           * ══════════════════════════════════════════════════════════
-           * ★★★ 2026-10-05：`bottom` 必须再加**系统导航栏安全区**
-           * ══════════════════════════════════════════════════════════
-           *
-           * 用户原话：
-           * > 这手机端底部都被遮挡了,你没有做安全距离判定吗?
-           *
-           * # 症状（模拟器实测，1080x2400 / 480dpi ⇒ 360x800dp）
-           * ```text
-           * navigationBars InsetsSource frame=[0,2256][1080,2400]
-           *   ⇒ 144px = 48dp
-           * 底栏 5 个 tab 的 a11y 命中矩形（uiautomator dump）：
-           *   发现 [72,2190][259,2364] … 设置 [821,2190][1008,2364]
-           *   ⇒ y2 = 2364 = 2400 − 36px（12dp 悬浮间隙，在 _BottomBar 里）
-           * ⇒ 药丸 2190..2364 与导航栏带 2256..2400 重叠 108px = 36dp
-           * ```
-           *
-           * # 根因：漏了原版公式里的 `var(--safe-bottom)`
-           *
-           * 原版 `src/design/liquid-glass.css:82-87`：
-           * ```css
-           * .tabbar { bottom: calc(var(--tabbar-bottom) + var(--safe-bottom)); }
-           * ```
-           * 当初只抄了 `--tabbar-bottom`（落在 `_BottomBar` 的
-           * `Padding(bottom: 12)` 里），把 `--safe-bottom` 丢了。
-           *
-           * ⚠️ `Sp.bottomBarInset` **补不了**这个洞：它是给**页面内容**
-           *    留白的 getter（无 `context`，拿不到 `MediaQuery`），
-           *    管的是「内容别被底栏盖住」，不是「底栏别被系统栏盖住」。
-           *
-           * # 为什么这里的 `paddingOf` 读到的是**根 padding**
-           *
-           * 本 `Positioned` 是 `Stack`（`:3649`）的**兄弟**，不是那个
-           * `SafeArea(top: true, …)`（`:3886`，在 `Positioned.fill` 之内）
-           * 的后代 ⇒ 没有 `removePadding` 把它清零，读到的就是窗口的
-           * `viewPadding.bottom`。键盘弹出时 `padding.bottom` 归零，底栏
-           * 顺势落回底部 —— 那时它本来就被键盘盖着，符合预期。
-           *
-           * # 负对照（桌面 / TV 上严格 no-op）
-           * ```text
-           * 桌面：ViewPadding 默认全零（platform_dispatcher.dart:2000）
-           * TV  ：InsetsState 里没有 navigationBars 源
-           * ⇒ padding.bottom == 0 ⇒ 几何逐像素不变
-           * ```
-           */
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: MediaQuery.paddingOf(context).bottom,
-          /*
-           * ★ 套 `BottomBarMarker` —— 等价于原版的 `data-nav-scope`/`.tabbar`
-           *
-           * 空间导航的 `↓` 要做"先在内容区找、找不到才落底栏"的两轮搜索，
-           * 而它必须知道**哪些节点属于底栏**。
-           *
-           * ⚠️ 不能靠几何判断（"在屏幕下方"）—— 实测在 960x540 的 TV 上，
-           *    阈值 459 把一张 `(36,202,184,468)` 的**海报卡**误判成底栏，
-           *    导致两轮搜索排错对象。
-           *    原版用的是 `c.el.closest(".tabbar")` 这种**结构判据**，
-           *    永远不会因为屏幕尺寸而判错。这里照做。
-           */
-            child: BottomBarMarker(
-              child: _bottomBar(colors),
-            ),
-          ),
-        ],
-      ),
-      ),   // ← Material(type: transparency) 的收尾（见上方的长注释）
-    ),     // ← AppScaffold 的收尾
-    );     // ← ShellScope 的收尾
+  /// 当前选中的布局骨架（Owner 第 14 条）
+  ///
+  /// # 骨架：只保留底栏式（Owner 2026-10-17 第 13 条）
+  /// ```text
+  /// > 布局骨架删除,只保留底栏这一种布局
+  /// ```
+  ///
+  /// 改前有三套（bottomBar / sideRail / topBar），另两套是独立实现：
+  /// ```text
+  ///   sideRail   214 行  左侧竖栏，导航常驻
+  ///   topBar     309 行  顶栏 + 命令面板 + Ctrl+K + 齿轮
+  /// ```
+  /// 两者已随本改动**物理删除**（不是留着不选）。保留 `ShellLayout` 抽象
+  /// 与 `BottomBarShellLayout` 的原因：`build(body:)` 那层把「保活的内容区」
+  /// 与「导航摆哪」分开，`_BottomBar` 仍由本文件注入（见该文件头）。
+  ///
+  /// ⚠️ 老用户 `ui-prefs.json` 里可能还存着 `sideRail` / `topBar` ——
+  ///    一律回落底栏式。一个认不出的字符串不能让界面空白。
+  ShellLayout _currentLayout(AppPalette colors) {
+    return BottomBarShellLayout(
+      nav: BottomBarMarker(child: _bottomBar(colors)),
+    );
   }
 
   /// ★★★ 底栏只订阅「它真正依赖的两个值」（Owner「很多地方我感觉都卡卡的」）
@@ -6262,7 +6387,7 @@ class _CustomTitleBar extends StatelessWidget implements PreferredSizeWidget {
               colors: [Color(0xFF5B8DEF), Color(0xFF8B5CF6)],
             ),
           ),
-          child: const Icon(Icons.play_arrow_rounded,
+          child: const Icon(AppIcons.play_arrow_rounded,
               size: 13, color: Colors.white),
         ),
         const SizedBox(width: 9),
@@ -6306,7 +6431,7 @@ class _CustomTitleBar extends StatelessWidget implements PreferredSizeWidget {
         ),
 
         _WinButton(
-          icon: Icons.remove_rounded,
+          icon: AppIcons.remove_rounded,
           onTap: onMinimize,
           // 深色态 hover 用白色微亮，浅色态用主题 secondary
           hoverColor: dark ? Colors.white24 : fg.withValues(alpha: 0.12),
@@ -6314,15 +6439,15 @@ class _CustomTitleBar extends StatelessWidget implements PreferredSizeWidget {
         ),
         _WinButton(
           icon: maximized
-              ? Icons.filter_none_rounded
-              : Icons.crop_square_rounded,
+              ? AppIcons.filter_none_rounded
+              : AppIcons.crop_square_rounded,
           onTap: onToggleMaximize,
           hoverColor: dark ? Colors.white24 : fg.withValues(alpha: 0.12),
           iconColor: fg,
           small: true,
         ),
         _WinButton(
-          icon: Icons.close_rounded,
+          icon: AppIcons.close_rounded,
           onTap: onClose,
           // ★ 关闭按钮 hover 变红 —— Windows 的既有习惯
           hoverColor: const Color(0xFFE81123),
@@ -6507,7 +6632,7 @@ class _CoreErrorView extends StatelessWidget {
               // ── ① 一眼可见：出什么事了 ──
               Row(
                 children: [
-                  Icon(Icons.error_outline_rounded, size: 30, color: errorColor),
+                  Icon(AppIcons.error_outline_rounded, size: 30, color: errorColor),
                   const SizedBox(width: Sp.x3),
                   Expanded(
                     child: Text(
@@ -6588,7 +6713,7 @@ class _CoreErrorView extends StatelessWidget {
                       Padding(
                         padding: const EdgeInsets.only(top: 6, right: Sp.x3),
                         child: Icon(
-                          Icons.circle,
+                          AppIcons.circle,
                           size: 5,
                           color: colors.mutedForeground,
                         ),
@@ -6839,7 +6964,7 @@ class _BottomBarState {
   int get hashCode => Object.hash(tab, unread);
 }
 
-class _BottomBar extends StatelessWidget {
+class _BottomBar extends StatefulWidget {
   const _BottomBar({
     required this.current,
     required this.unread,
@@ -6853,7 +6978,142 @@ class _BottomBar extends StatelessWidget {
   final ValueChanged<AppTab> onSelect;
 
   @override
+  State<_BottomBar> createState() => _BottomBarPillState();
+}
+
+class _BottomBarPillState extends State<_BottomBar> {
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ task-36（Owner 实测复现）：「按住未选中的 tab 左右滑动，选中态不跟随」
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * # 根因（Lead 已定位，我复核确认）
+   * ```text
+   * 药丸位置 = `_pillLeft(current, tabWidth)` —— **只**由「已选中的 tab」决定；
+   * 而 `current` **只**由 onTap（抬手才触发）改变。
+   * ⇒ 按住拖动期间 current 恒定 ⇒ 药丸纹丝不动。
+   *   不是「动画太慢」，是**根本没有拖动这条路径**。
+   * ```
+   *
+   * # 修法：给药丸位置加一条「手势覆盖」的中间态
+   * ```text
+   * 位置来源按优先级：
+   *   ① `_dragPillLeft != null` ⇒ 用拖动值（**零延迟**，直接 setState）
+   *   ② 否则                    ⇒ 用 `_pillLeft(current, tabWidth)`（原有逻辑，逐字不变）
+   * ```
+   *
+   * ⚠️ **不能用 AnimatedPositioned 去追手**：它固定 420ms 补间，
+   *    手已经移到别处、药丸还在半路上 —— 那正是 Owner 报的观感。
+   *    所以拖动期间把 duration 压到 **Duration.zero**（下面有注释）。
+   *
+   * ⚠️ 点击路径**完全不动**：`_dragPillLeft` 在纯点击时始终保持 null，
+   *    于是 420ms + easeOutBack 那套弹簧手感逐字保留（Owner 只说「加上拖动」）。
+   */
+  double? _dragPillLeft;
+
+  /// 拖动是否已经越过「算拖动」的阈值（用来区分「点击」与「按住拖动」）
+  ///
+  /// ★ 阈值存在的意义：Owner 的原始 bug 是「按住 + 滑动」，但如果用户
+  ///   只是**手指轻抖一下**（触摸屏/触控板常见），那仍然应该算点击。
+  ///   判据用「累计横向位移」而不是「时间」，因为时间判据会让慢速点击变形。
+  bool _dragging = false;
+
+  /// 抬起时吸附过去的 tab（拖动中高亮用，**不**立即切换内容）
+  AppTab? _dragHoverTab;
+
+  /// 当前 tab 宽度（由 build 里的 `_tabWidthFor` 写入）
+  ///
+  /// ⚠️ 手势回调拿不到 build 的局部变量，所以必须存成字段。
+  ///   它只由 build 写、只读用于手势算术，**不是**第二份真相
+  ///   （唯一算法仍在 `_tabWidthFor`）。
+  double _tabW = 0;
+
+  /// 拖动值 → 吸附/复位 的统一入口
+  void _endDrag({required AppTab snapped, required bool commit}) {
+    setState(() {
+      // ★ 清掉覆盖 ⇒ 药丸位置重新由 `current` 决定。
+      //   commit==true 时 onSelect 会改 current（父级重建），流动方向一致。
+      _dragPillLeft = null;
+      _dragging = false;
+      _dragHoverTab = null;
+    });
+    if (commit && snapped != widget.current) widget.onSelect(snapped);
+  }
+
+  /// ★★★ task-36：药丸位置的**唯一**取用点
+  ///
+  /// 优先级：拖动覆盖值 > 已选中 tab 的算术位置。
+  /// ⚠️ 拖动期间必须是**零延迟**（不能用补间去追手）—— 见类顶部的注释。
+  double _pillLeftFor(AppTab currentTab, double tabWidth) {
+    final drag = _dragPillLeft;
+    if (drag != null) return drag;
+    return _pillLeft(currentTab, tabWidth);
+  }
+
+  /// 药丸当前**是否处于拖动态**（决定用不用补间）
+  bool get _pillIsDragging => _dragPillLeft != null;
+
+  /// 点击某个 tab —— **纯点击路径，与改动前逐字等价**
+  void _onTapTab(AppTab t) {
+    // ⚠️ 拖动结束时抬起手指**也会**触发内层 onTap（手势竞技场的正常结果）。
+    //    若不挡住，会先 onSelect(拖动落点) 再 onTap(按下点) 覆盖一次 ——
+    //    表现为「拖到 C 却跳回 A」。用 _dragging 做闸门。
+    if (_dragging) return;
+    widget.onSelect(t);
+  }
+
+  /// ★★★ task-36：横向拖动整条导航栏 ⇒ 药丸实时跟随
+  void _onDragStart(DragStartDetails d) {
+    setState(() {
+      _dragging = true;
+      _dragPillLeft = widget.current.index * _tabW;
+    });
+  }
+
+  void _onDragUpdate(DragUpdateDetails d) {
+    final w = _tabW;
+    if (w <= 0) return;
+    // 手指位移量 = 药丸位移量（1:1，不加速度、不设阻尼）
+    final next = (_dragPillLeft ?? widget.current.index * w) + d.delta.dx;
+    // ★ 夹在导航栏内：拖出范围不飞出去（松开时再判是否取消）
+    final clamped = next.clamp(0.0, (AppTab.values.length - 1) * w);
+    setState(() {
+      _dragPillLeft = clamped;
+      // ② 拖动经过的 tab 高亮（**不**切换内容，只改视觉）
+      _dragHoverTab = _nearestTab(clamped, w);
+    });
+  }
+
+  void _onDragEnd(DragEndDetails d) {
+    final w = _tabW;
+    final left = _dragPillLeft;
+    if (left == null || w <= 0) {
+      setState(() => _dragging = false);
+      return;
+    }
+    _endDrag(snapped: _nearestTab(left, w), commit: true);
+  }
+
+  void _onDragCancel() {
+    // ④ 拖出范围/手势被取消 ⇒ 回原位，**不**切换
+    setState(() {
+      _dragPillLeft = null;
+      _dragging = false;
+      _dragHoverTab = null;
+    });
+  }
+
+  /// 离 `left` 最近的 tab 中心（吸附目标）
+  AppTab _nearestTab(double left, double w) {
+    final i = (left / w).round().clamp(0, AppTab.values.length - 1);
+    return AppTab.values[i];
+  }
+  @override
   Widget build(BuildContext context) {
+    return _buildBar(context);
+  }
+
+  Widget _buildBar(BuildContext context) {
     /*
      * ★ TV 焦点导航：Focus + onKeyEvent 显式处理方向键（2026-09-22）
      *
@@ -6941,6 +7201,7 @@ class _BottomBar extends StatelessWidget {
      * **同一个** `tabWidth` 变量，否则药丸会和图标错位。
      */
     final tabWidth = _tabWidthFor(MediaQuery.of(context).size.width);
+    _tabW = tabWidth; // 供手势回调使用（见字段注释）
     // 药丸配色（药丸 + 文字 + 阴影三者成对取自同一个调色板）
     final pill = _BottomPalette.of(context);
 
@@ -7057,27 +7318,81 @@ class _BottomBar extends StatelessWidget {
                  *  └ Row                 五个 tab（文字/图标在上层）
                  * ```
                  */
-                child: Stack(
+                /*
+                 * ★★★ task-36：把**整条导航栏**包进横向拖动识别器
+                 *
+                 * # ⚠️ 手势竞技场：内层 tab 的 onTap 会跟这里抢
+                 * ```text
+                 * 每个 tab 内部有自己的 `GestureDetector(onTap:)`（`_BottomItem`）。
+                 * `GestureDetector` 的 **tap** 与 **horizontalDrag** 在竞技场里：
+                 *   · tap 只要「按下」就进入竞技场；
+                 *   · drag 要等手指移动超过 `kTouchSlop` 才宣告胜出。
+                 * ⇒ 拖动时 drag **会**赢（tap 在移动超阈值时自动认输），
+                 *   所以**不需要** RawGestureDetector 提权 —— 我一开始也以为要，
+                 *   实测 Flutter 的默认竞技场行为已经够用（见下方验证）。
+                 * ⚠️ 但有个**副作用**必须挡住：drag 赢了之后抬起手指，
+                 *   内层 tap 仍可能补一次 `onTap`（手势竞技场正常结果）⇒
+                 *   表现为「拖到 C 却跳回 A」。所以 `_onTapTab` 里用 `_dragging` 做闸门。
+                 * ```
+                 *
+                 * # 为什么包在**玻璃容器外层**（Stack 外面）
+                 * ```text
+                 * 要接住整条栏上的拖动（包括 tab 之间的空隙），
+                 * 范围必须 ≥ 药丸的活动范围。包在 Stack 外层最直接。
+                 * `behavior: HitTestBehavior.translucent` —— 让**空白处**也能起拖，
+                 * 同时不吞掉子节点的点击（opaque 会挡掉 tab 自己的命中）。
+                 * ```
+                 */
+                child: GestureDetector(
+                  /*
+                   * ★ 测试锚点：底栏是私有类，测试需要稳定定位；不是业务逻辑。
+                   *
+                   * 为什么必须有它（task-36 实测踩到）：
+                   * ```text
+                   * 底栏是私有 `_BottomBar` ⇒ 测试只能从整个 `ShellPage` 里找它。
+                   * 第一版按「带渐变的 DecoratedBox」找，结果全树有 2 个：
+                   *   #0 (84.5,116)-(180.5,152)   ← 页面内容里的，不是药丸
+                   *   #1 (286,736)-(404,782)      ← 这才是底栏药丸
+                   * `find.first` 一直读到 #0 ⇒ 无论怎么拖都是 84.5（**假红**）。
+                   * ```
+                   * ⇒ 按坐标或按样式找都不稳；一个 Key 是零行为影响的常量，
+                   *   不属于「为了让测试变绿而改产品」。
+                   */
+                  key: const ValueKey('t36-bar'),
+                  behavior: HitTestBehavior.translucent,
+                  onHorizontalDragStart: _onDragStart,
+                  onHorizontalDragUpdate: _onDragUpdate,
+                  onHorizontalDragEnd: _onDragEnd,
+                  onHorizontalDragCancel: _onDragCancel,
+                  child: Stack(
                 children: [
                   // ── 滑动选中药丸 ──
                   AnimatedPositioned(
                     /*
-                     * 原版：
-                     * ```css
-                     * transition: transform var(--dur-slow) var(--ease-spring),
-                     *             width     var(--dur-slow) var(--ease-spring);
+                     * ★★★ task-36 的核心：**拖动时零延迟，抬手后恢复 420ms**
+                     *
+                     * # 为什么必须切换 duration（不是调小）
+                     * ```text
+                     * 拖动时若仍用 420ms，手已经移到 B、药丸还在去 A 的半路上
+                     * ⇒ 就是 Owner 说的「选中态不跟随」。
+                     * 而**不能**为了拖动把全局 duration 改成 0 ——
+                     * 那会把「点击切换」的弹簧手感一起废掉（规格④明令不许）。
+                     * ⇒ 按 _pillIsDragging 分支：拖动态 zero，其余保持 420ms。
                      * ```
-                     * `--ease-spring` —— 药丸滑动用**弹性曲线**，
-                     * 这是"液态"手感的一部分（不是 linear/ease）。
+                     *
+                     * ⚠️ 用 Duration.zero 而不是 null：duration 是 required 的。
+                     * ⚠️ 曲线在 zero 时长下不生效，拖动期给 linear 只是不参与。
                      */
-                    duration: const Duration(milliseconds: 420),
-                    curve: Curves.easeOutBack,
+                    duration: _pillIsDragging
+                        ? Duration.zero
+                        : const Duration(milliseconds: 420),
+                    curve: _pillIsDragging ? Curves.linear : Curves.easeOutBack,
                     /*
                      * ★ 药丸的位置与宽度必须与每个 `SizedBox` **同源**
                      *   —— 都用上面按窗口宽算出的 `tabWidth`。
                      *   窄屏收缩后若还用常量算，药丸会和图标错位。
                      */
-                    left: _pillLeft(current, tabWidth),
+                    left: _pillLeftFor(widget.current, tabWidth),
                     top: 6,
                     bottom: 6,
                     width: tabWidth,
@@ -7196,15 +7511,21 @@ class _BottomBar extends StatelessWidget {
                         width: tabWidth,
                         child: _BottomItem(
                           tab: t,
-                          active: t == current,
-                          badge: t == AppTab.follow ? unread : 0,
-                          colors: colors,
-                          onTap: () => onSelect(t),
+                          /*
+                           * ★ task-36 规格②：拖动经过的 tab **视觉高亮**，
+                           *   但**不**切换内容（内容切换只在抬手时发生）。
+                           *   拖动中当前高亮 = 手指下的 tab；不拖时 = 已选中的 tab。
+                           */
+                          active: t == (_dragHoverTab ?? widget.current),
+                          badge: t == AppTab.follow ? widget.unread : 0,
+                          colors: widget.colors,
+                          onTap: () => _onTapTab(t),
                         ),
                       ),
                   ],
                   ),
                 ],
+                ),
                 ),
               ),
             ),

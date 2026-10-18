@@ -35,6 +35,7 @@ import '../../core/models.dart' show StreamCandidate;
 import '../tokens.dart';
 import 'player_more_menu.dart';
 import 'player_popover.dart';
+import '../../design/icons/app_icons.dart';
 
 /// popover 的 id 常量 —— 开关与按钮用**同一份**字符串
 class PlayerPopoverIds {
@@ -448,14 +449,14 @@ class PlayerBottomBar extends StatelessWidget {
     return [
       if (hasEpisodes && !isTouch)
         _BarAction(
-          icon: Icons.list,
+          icon: AppIcons.list,
           label: '选集',
           tooltip: '选集',
           onTap: onEpisodes,
         ),
       if (streams.length > 1)
         _BarAction(
-          icon: Icons.high_quality,
+          icon: AppIcons.high_quality,
           label: '清晰度',
           tooltip: '清晰度',
           popoverId: PlayerPopoverIds.quality,
@@ -471,7 +472,7 @@ class PlayerBottomBar extends StatelessWidget {
        */
       if (trackGroups.isNotEmpty)
         _BarAction(
-          icon: Icons.closed_caption,
+          icon: AppIcons.closed_caption,
           tooltip: '字幕与音轨',
           popoverId: PlayerPopoverIds.tracks,
           active: controller.isOpen(PlayerPopoverIds.tracks),
@@ -498,7 +499,7 @@ class PlayerBottomBar extends StatelessWidget {
          * on/off pair stays as legible as subtitles/subtitles_off was.
          */
         key: danmakuToggleKey,
-        icon: danmakuEnabled ? Icons.comment : Icons.comments_disabled,
+        icon: danmakuEnabled ? AppIcons.comment : AppIcons.comments_disabled,
         label: '弹幕',
         tooltip: danmakuBusy ? '弹幕加载中…' : (danmakuEnabled ? '关闭弹幕' : '开启弹幕'),
         active: danmakuEnabled,
@@ -522,13 +523,13 @@ class PlayerBottomBar extends StatelessWidget {
         key: danmakuSettingsKey,
         // 2026-10-15 (Owner): a gear, not the slider/tune glyph -- the gear is
         // what the streaming sites pair with the danmaku toggle.
-        icon: Icons.settings,
+        icon: AppIcons.settings,
         tooltip: '弹幕设置',
         popoverId: danmakuQuick == null ? null : PlayerPopoverIds.danmakuQuick,
         onTap: danmakuQuick == null ? onDanmakuSettings : null,
       ),
       _BarAction(
-        icon: Icons.more_horiz,
+        icon: AppIcons.more_horiz,
         label: '更多',
         tooltip: '更多',
         popoverId: PlayerPopoverIds.more,
@@ -550,20 +551,20 @@ class PlayerBottomBar extends StatelessWidget {
          * disabled rather than absent, which is what the original design said.
          */
         _BarAction(
-          icon: Icons.skip_previous,
+          icon: AppIcons.skip_previous,
           tooltip: '上一集',
           enabled: hasPrev,
           onTap: onPrev,
         ),
         _BarAction(
-          icon: Icons.skip_next,
+          icon: AppIcons.skip_next,
           tooltip: '下一集',
           enabled: hasNext,
           onTap: onNext,
         ),
       ],
       _BarAction(
-        icon: fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+        icon: fullscreen ? AppIcons.fullscreen_exit : AppIcons.fullscreen,
         tooltip: fullscreen ? '退出全屏' : '全屏',
         onTap: onToggleFullscreen,
       ),
@@ -1256,7 +1257,7 @@ class PlayerBottomBar extends StatelessWidget {
         // ── 常驻高频组（任何宽度都在第一行，永不折叠）──
         final primary = <Widget>[
           _BarIconButton(
-            icon: playing ? Icons.pause : Icons.play_arrow,
+            icon: playing ? AppIcons.pause : AppIcons.play_arrow,
             tooltip: '播放 / 暂停',
             onTap: onTogglePlay,
             big: true,
@@ -1271,7 +1272,7 @@ class PlayerBottomBar extends StatelessWidget {
           _PopoverButton(
             controller: controller,
             id: PlayerPopoverIds.rate,
-            icon: Icons.speed,
+            icon: AppIcons.speed,
             label: '${_trimRate(rate)}x',
             tooltip: '倍速',
           ),
@@ -1329,7 +1330,7 @@ class PlayerBottomBar extends StatelessWidget {
                 ...primary,
                 const Spacer(),
                 _BarIconButton(
-                  icon: fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                  icon: fullscreen ? AppIcons.fullscreen_exit : AppIcons.fullscreen,
                   tooltip: fullscreen ? '退出全屏' : '全屏',
                   onTap: onToggleFullscreen,
                 ),
@@ -1695,8 +1696,8 @@ class _VolumeControl extends StatelessWidget {
     children: [
       _BarIconButton(
         icon: muted || volume == 0
-            ? Icons.volume_off
-            : (volume < 50 ? Icons.volume_down : Icons.volume_up),
+            ? AppIcons.volume_off
+            : (volume < 50 ? AppIcons.volume_down : AppIcons.volume_up),
         tooltip: '静音',
         onTap: onToggleMute,
       ),
@@ -1759,7 +1760,7 @@ class PlayerZoomSliderCard extends StatelessWidget {
         IconButton(
           onPressed: onClose,
           visualDensity: VisualDensity.compact,
-          icon: const Icon(Icons.close, size: 16, color: Colors.white),
+          icon: const Icon(AppIcons.close, size: 16, color: Colors.white),
           tooltip: '关闭',
         ),
       ],
@@ -1787,7 +1788,7 @@ class PlayerBufferedRange {
 /// `pos/total` 比例、同一条 `ValueListenableBuilder<Duration>` 重建路径
 /// （`_progressRow`），position 一变 thumb 同步走到新位置；seek 时
 /// 播放器把真实位置写回 notifier，视觉上即「拖到哪、点停在哪」。
-class PlayerProgressSlider extends StatelessWidget {
+class PlayerProgressSlider extends StatefulWidget {
   /// thumb 直径：轨道高 2px，圆点上下各溢出 5px（Stack 高 18 够放）
   static const double thumbDiameter = 12;
 
@@ -1799,6 +1800,7 @@ class PlayerProgressSlider extends StatelessWidget {
   static const Key thumbKey = ValueKey<String>('t27-progress-thumb');
 
   const PlayerProgressSlider({
+    super.key,
     required this.position,
     required this.duration,
     required this.onSeek,
@@ -1813,10 +1815,41 @@ class PlayerProgressSlider extends StatelessWidget {
   final Key? barKey;
 
   @override
+  State<PlayerProgressSlider> createState() => _PlayerProgressSliderState();
+}
+
+class _PlayerProgressSliderState extends State<PlayerProgressSlider> {
+  /// 拖动中的**预览位置**（null = 没在拖，显示真实 position）
+  ///
+  /// # ★★★ 为什么必须有这一层（Owner 第 17 条：进度条拖动很卡顿）
+  /// ```text
+  /// 改前：onHorizontalDragUpdate: (d) => onSeek(at(d.localPosition.dx))
+  /// ⇒ 拖动时**每一个 pointer move 事件**都直接 onSeek：
+  ///     · 一次拖动 60fps × 2 秒 = 120 次 seek 请求
+  ///     · 每次 seek 都要走 mpv `seek` 命令 + 重新解包/解码
+  ///     · 而 onSeek 还会 setState 整条底栏（含缓冲条重算）
+  ///   ⇒ 用户看到的「卡顿」本质是**自己把播放器打爆了**。
+  /// ```
+  ///
+  /// # 改法（滑杆的标准做法）
+  /// ```text
+  /// 拖动中：只更新这个 _dragMs，画面上的圆点/进度跟着走（纯本地，零 I/O）
+  /// 松手时：onSeek 一次，真正跳转
+  /// ⇒ seek 次数从「每次移动」降到「每次拖动 1 次」
+  /// ```
+  ///
+  /// ⚠️ 松手后要清空 `_dragMs`，否则真实 position 追上来之前
+  ///    圆点会「冻在松手位置」（播放器还没跳过去，看起来像卡住）。
+  ///    清空时机放在 `onHorizontalDragEnd` + `onHorizontalDragCancel`。
+  int? _dragMs;
+
+  @override
   Widget build(BuildContext context) {
-    final totalMs = duration.inMilliseconds;
+    final totalMs = widget.duration.inMilliseconds;
     final total = totalMs <= 0 ? 1.0 : totalMs.toDouble();
-    final pos = position.inMilliseconds.toDouble().clamp(0.0, total);
+    // 拖动中优先显示预览值，否则显示真实播放位置
+    final shownMs = (_dragMs ?? widget.position.inMilliseconds).toDouble();
+    final pos = shownMs.clamp(0.0, total);
     return LayoutBuilder(
       builder: (context, c) {
         final w = c.maxWidth <= 0 ? 1.0 : c.maxWidth;
@@ -1832,7 +1865,7 @@ class PlayerProgressSlider extends StatelessWidget {
          *
          * # 根因：thumb 中心跑到了 Stack 边界上/外，而 Stack **默认裁剪**
          * ```text
-         * 旧写法：left = (pos/total)*w - thumbDiameter/2
+         * 旧写法：left = (pos/total)*w - PlayerProgressSlider.thumbDiameter/2
          *   pos = 0  ⇒ left = -6   ⇒ 圆的左半边在 Stack 左边界外
          *   pos = 满 ⇒ left = w-6  ⇒ 圆的右半边在 Stack 右边界外
          * 而 Stack 的 clipBehavior 默认 = Clip.hardEdge
@@ -1849,8 +1882,8 @@ class PlayerProgressSlider extends StatelessWidget {
          *   否则「看得见的圆点位置」与「点下去跳到的位置」会差一个半径
          *   （拖动时圆点会比手指偏 6px —— 那正是这类改动最常见的次生缺陷）。
          */
-        const double r = thumbDiameter / 2;
-        final trackW = (w - thumbDiameter) <= 0 ? 1.0 : w - thumbDiameter;
+        const double r = PlayerProgressSlider.thumbDiameter / 2;
+        final trackW = (w - PlayerProgressSlider.thumbDiameter) <= 0 ? 1.0 : w - PlayerProgressSlider.thumbDiameter;
         /// 比例 → **圆点中心**的 x（内缩区间内）
         double centerX(double ratio) => r + ratio * trackW;
         /// **圆点中心**的 x → 比例（与 centerX 严格互逆）
@@ -1859,8 +1892,24 @@ class PlayerProgressSlider extends StatelessWidget {
             Duration(milliseconds: (ratioAt(dx).clamp(0.0, 1.0) * total).round());
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTapDown: (d) => onSeek(at(d.localPosition.dx)),
-          onHorizontalDragUpdate: (d) => onSeek(at(d.localPosition.dx)),
+          // 单击：直接跳（一次 seek，本来就只触发一次）
+          onTapDown: (d) => widget.onSeek(at(d.localPosition.dx)),
+          // 拖动中：只更新预览，**不** seek（Owner 第 17 条）
+          onHorizontalDragStart: (d) {
+            setState(() => _dragMs = at(d.localPosition.dx).inMilliseconds);
+          },
+          onHorizontalDragUpdate: (d) {
+            setState(() => _dragMs = at(d.localPosition.dx).inMilliseconds);
+          },
+          // 松手：一次 seek，然后清空预览让圆点跟随真实位置
+          onHorizontalDragEnd: (_) {
+            final ms = _dragMs;
+            if (ms != null) widget.onSeek(Duration(milliseconds: ms));
+            setState(() => _dragMs = null);
+          },
+          onHorizontalDragCancel: () {
+            setState(() => _dragMs = null);
+          },
           child: SizedBox(
             height: 18,
             child: Stack(
@@ -1879,18 +1928,18 @@ class PlayerProgressSlider extends StatelessWidget {
                 ),
                 // 缓冲条：起点 → 终点，用像素而不是 FractionallySizedBox
                 // （后者在 start > 0 时算出的偏移会随宽度漂）
-                if (buffered != null)
+                if (widget.buffered != null)
                   Positioned(
                     left: centerX(
-                      buffered!.start.inMilliseconds.toDouble().clamp(
+                      widget.buffered!.start.inMilliseconds.toDouble().clamp(
                             0.0,
                             total,
                           ) /
                           total,
                     ),
                     width:
-                        ((buffered!.end.inMilliseconds.toDouble() -
-                                    buffered!.start.inMilliseconds.toDouble())
+                        ((widget.buffered!.end.inMilliseconds.toDouble() -
+                                    widget.buffered!.start.inMilliseconds.toDouble())
                                 .clamp(0.0, total) /
                             total) *
                         trackW,
@@ -1910,7 +1959,7 @@ class PlayerProgressSlider extends StatelessWidget {
                   top: 8,
                   bottom: 8,
                   child: Container(
-                    key: barKey,
+                    key: widget.barKey,
                     decoration: BoxDecoration(
                       color: const Color(0xFF32C7FF),
                       borderRadius: Radii.rSm,
@@ -1920,9 +1969,9 @@ class PlayerProgressSlider extends StatelessWidget {
                 // ★ T27-02 补画定位点：中心 = centerX(pos/total)（内缩区间内，
                 // 两端都留了一个半径 ⇒ 不再被 Stack 裁掉）。
                 Positioned(
-                  key: thumbKey,
+                  key: PlayerProgressSlider.thumbKey,
                   left: centerX(pos / total) - r,
-                  top: (18 - thumbDiameter) / 2,
+                  top: (18 - PlayerProgressSlider.thumbDiameter) / 2,
                   child: GestureDetector(
                     // ★ 纯视觉件：裸 DecoratedBox（RenderProxyBox、
                     //   hitTestSelf=false）不会进命中路径，门禁就没法在
@@ -1933,12 +1982,12 @@ class PlayerProgressSlider extends StatelessWidget {
                     behavior: HitTestBehavior.translucent,
                     child: const DecoratedBox(
                       decoration: BoxDecoration(
-                        color: thumbColor,
+                        color: PlayerProgressSlider.thumbColor,
                         shape: BoxShape.circle,
                       ),
                       child: SizedBox(
-                        width: thumbDiameter,
-                        height: thumbDiameter,
+                        width: PlayerProgressSlider.thumbDiameter,
+                        height: PlayerProgressSlider.thumbDiameter,
                       ),
                     ),
                   ),

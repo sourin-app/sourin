@@ -30,6 +30,7 @@ library;
 //   产品代码混用 ⇒ 退化成浅色主题；测试混用 ⇒ **找不到控件**（更难察觉）。
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/design/widgets/app_text_button.dart';
 import 'package:sourin_spike/core/download_queue.dart';
 import 'package:sourin_spike/ui/widgets/download_panel.dart';
 
@@ -80,7 +81,24 @@ void main() {
     expect(find.byType(DownloadPanel), findsOneWidget);
     // 面板在树上，但它 renderObject 的尺寸应为 0（SizedBox.shrink）
     expect(find.text('下载 · 0 集'), findsNothing);
+    /*
+     * ★ 2026-10-17 加固（dlg-plugin 建议的**跨实现**判据）
+     *
+     * 原断言只查 TextButton ⇒ 换成 AppTextButton 后会假绿。
+     * 但不该"再加一条 AppTextButton"（每换一代就要加一条）。
+     *
+     * ⇒ 用 Text：任何文字按钮内部都有 Text，跨实现有效。
+     *   空列表时连一个按钮都不该有 ⇒ 自然也不该有任何按钮文字。
+     */
     expect(find.byType(TextButton), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(DownloadPanel),
+        matching: find.byType(Text),
+      ),
+      findsNothing,
+      reason: '★ 空列表整块不画 ⇒ 连任何文字都不该有（跨实现判据）',
+    );
     debugPrint('MEASURE 面板空列表 TextButton 数=' +
         '${find.byType(TextButton).evaluate().length}');
   });

@@ -219,7 +219,7 @@ void main() {
     final src = _stripComments(
       File('lib/ui/detail_page.dart').readAsStringSync(),
     );
-    final at = src.indexOf('class _ErrorView extends StatelessWidget {');
+    final at = src.indexOf('class _ErrorView');
     expect(at, greaterThan(-1), reason: '_ErrorView 不见了 —— 锚点失效');
     errView = src.substring(at).replaceAll(RegExp(r'\s+'), ' ');
   });

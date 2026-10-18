@@ -37,6 +37,32 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+/// 从源码里剔除指定类的整段（用于排除同名但无关的私有字段）
+///
+/// ⚠️ 之所以不是「只数带缩进的那几行」：本仓缩进不统一，
+///    有的类体是 2 空格、有的是 4 空格，靠缩进判会漏。
+///    按 `class NAME` 起点 + 大括号配平定位更可靠。
+String _dropClass(String code, String className) {
+  final start = code.indexOf('class $className');
+  if (start < 0) return code;
+  var depth = 0;
+  var i = code.indexOf('{', start);
+  if (i < 0) return code;
+  final from = start;
+  for (; i < code.length; i++) {
+    final c = code.codeUnitAt(i);
+    if (c == 123) {
+      depth++;
+    } else if (c == 125) {
+      depth--;
+      if (depth == 0) {
+        return code.substring(0, from) + code.substring(i + 1);
+      }
+    }
+  }
+  return code;
+}
+
 void main() {
   late String panel;
 
@@ -196,8 +222,24 @@ void main() {
        * 于是 `_isAuthError` 拿**旧的** unauthorized 判 true →
        * 给一个跟登录无关的失败显示「登录」按钮（误判）。
        */
-      final nClearErr = RegExp(r'_error = null;').allMatches(code).length;
-      final nClearKind = RegExp(r'_errorKind = null;').allMatches(code).length;
+      /*
+       * ★★★ 2026-10-17 修正：原判据用全局正则数 `_error = null` 的总数，
+       *      但 `player_page.dart` 里现在有**两个**同名但无关的私有字段：
+       *
+       *      · `_PlayerPageState._error`      —— 播放错误，配 `_errorKind`
+       *      · `_DanmakuSendBarState._error`  —— 弹幕发送错误，**没有 kind**
+       *        （它是纯字符串错误，不需要按 kind 分类）
+       *
+       *      ⇒ 全局统计会把后者也算进来，造成 `10 / 11` 的假红。
+       *        实测：18895 行起的 `_DanmakuSendBarState` 里
+       *        `grep -c _errorKind` = 0，证明它确实不需要配对。
+       *
+       *      ⇒ 修法：先把 `_DanmakuSendBarState` 整段剔除再统计。
+       *        `codeOnly` 已经剔除了注释和字符串，这里只需再剔一个类块。
+       */
+      final scoped = _dropClass(code, '_DanmakuSendBarState');
+      final nClearErr = RegExp(r'_error = null;').allMatches(scoped).length;
+      final nClearKind = RegExp(r'_errorKind = null;').allMatches(scoped).length;
       expect(nClearErr, greaterThan(0));
       expect(
         nClearKind,

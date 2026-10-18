@@ -111,9 +111,35 @@ Color _over(Color bg, double alpha) => Color.fromARGB(
 ///    只切 `_BottomBar` 会让"文字色"那类断言在空处匹配（假绿/假红）。
 ///    实测踩过：`_BottomBar` 切片里 `colors.foreground` 一次都不出现。
 String _bottomBarSource(String shellSrc) {
-  final start = shellSrc.indexOf('class _BottomBar extends StatelessWidget');
-  if (start < 0) return '';
-  return shellSrc.substring(start);
+  /*
+   * ★ 2026-10-17 修正：不能写死基类
+   *
+   * # 为什么会红
+   * ```text
+   * 原来写死：indexOf('class _BottomBar extends StatelessWidget')
+   * 但 task-39（三套布局骨架）把 _BottomBar 改成了 StatefulWidget，
+   * 因为要支持"按住拖动跟随"（需要 _dragPillLeft / _dragging 状态）。
+   *
+   * ⇒ 切片取不到 ⇒ 返回 '' ⇒ 所有断言在空串上匹配 ⇒ 本文件会**假绿**。
+   *   好在它有"切片前提"那条守卫，主动变红并提示，没有静默假绿。
+   * ```
+   *
+   * # 修法：只匹配类名，不匹配基类
+   * ```text
+   * 类名才是稳定契约，基类是实现细节（Stateless ⇄ Stateful 会变）。
+   * ⇒ 用 'class _BottomBar ' 或 'class _BottomBar extends' 都命中，
+   *   且不会误命中 _BottomBarState / _BottomBarPillState / _BottomItem。
+   * ```
+   *
+   * ⚠️ 注意必须带**边界**：'class _BottomBar' 作为前缀会匹配到
+   *    'class _BottomBarState'（它是另一个类）。所以匹配时要求
+   *    紧跟空白或 'extends'，不能紧跟字母。
+   */
+  final re = RegExp(r'^class _BottomBar\s+(?:extends|with|implements|\{)',
+      multiLine: true);
+  final m = re.firstMatch(shellSrc);
+  if (m == null) return '';
+  return shellSrc.substring(m.start);
 }
 
 /// 剥掉注释行（静态断言里做文本匹配**必须先剥注释**）

@@ -158,3 +158,9 @@ tools/.dandanplay.local.json
 # CI 要跑它们，且校验口径必须与笔记同版本 —— 只放技能目录的话，
 # 下游 clone 与 CI 都拿不到，门禁就成了本地才能复现的东西。
 !.agents/notes-scripts/
+
+# ── PowerShell 在仓库根跑命令时留下的缓存 ──
+# 2026-10-18 实测（第 66 轮）：在仓库根跑 `pwsh`/`powershell` 时，
+# $HOME 被解析成相对路径 ⇒ 生成 Microsoft/Windows/PowerShell/ModuleAnalysisCache。
+# 与产品无关，纯工具副产物。
+Microsoft/

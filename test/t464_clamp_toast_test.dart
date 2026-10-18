@@ -45,6 +45,8 @@ import 'package:sourin_spike/ui/widgets/skip_marker_dialog.dart';
 import 'package:sourin_spike/ui/widgets/skip_timeline.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/ui/widgets/app_toast.dart';
+import 'package:sourin_spike/core/sourin_api.dart';
 
 /// 认领一次 pump 期间积压的环境异常（无核心库的 FFI 异常等）
 ///
@@ -56,15 +58,36 @@ void _claim(WidgetTester tester) {
   while (tester.takeException() != null) {}
 }
 
-/// 生产同构的壳：`FTheme` 挂 `MaterialApp.builder`（照 `shell.dart:1379`）
+/// 生产同构的壳：`FTheme` + `ToastHost` 都挂 `MaterialApp.builder`
 ///
-/// ⚠️ `home:` 里**必须**有一个 `Scaffold` —— 那是"生产里提示能显示"的来源
+/// # ★★★ 2026-10-18：为什么必须挂 `ToastHost`
+/// ```text
+/// 产品本轮（d756d04）把 `skip_marker_dialog.dart` 的 `_toast` 从
+/// `ScaffoldMessenger.showSnackBar` 换成了 `showAppToast`。
+///
+/// 而 `showAppToast` 的实现是（lib/ui/widgets/app_toast.dart:77）：
+///     AppToaster.maybeOf(context)?.show(...)
+/// ⇒ **找不到宿主就静默 no-op**（有意设计：toast 不该把调用方搞崩）。
+///
+/// ⇒ 本文件原来的壳只挂了 `AppThemeHost`、**没有 `ToastHost`**，
+///   于是 `showAppToast` 永远静默返回，而测试还在 `find.byType(SnackBar)`
+///   ⇒ 三条用例全红，且**红的理由不是产品坏了，是仪器没接上**。
+/// ```
+///
+/// ⚠️ `home:` 里仍然**必须**有一个 `Scaffold` —— 弹窗本身要它
 ///    （`PlayerPage.build` 返回 `Scaffold(...)`，见 `player_page.dart:6613`）。
 Widget _host({required Widget Function(BuildContext) body}) {
   final theme = AppTheme.themeFor(Brightness.light);
   return MaterialApp(
     theme: theme,
-    builder: (_, c) => AppThemeHost(data: theme, child: c ?? const SizedBox()),
+    /*
+     * ★ `ToastHost` 必须包在 `builder` 里（`shell.dart:2542` 同位置），
+     *   这样 `showAppToast(context)` 沿 context 向上找得到 `_AppToasterState`。
+     */
+    builder: (_, c) => AppThemeHost(
+      data: theme,
+      child: ToastHost(child: c ?? const SizedBox()),
+    ),
     home: Scaffold(body: Builder(builder: body)),
   );
 }
@@ -77,6 +100,26 @@ Future<void> _openDialog(WidgetTester tester) async {
   tester.view.physicalSize = const Size(1280, 800);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
+
+  /*
+   * ★★★ 必须注入这一行，否则**弹窗永远停在 loading**，一个字都不渲染。
+   *
+   * ```text
+   * 弹窗 `_loading = true` 时内容整体不渲染
+   *   （skip_marker_dialog.dart:1969 的 `child: _loading ? ... : ...`）。
+   * `_loading` 只由 `_loadExisting()` 的完成来翻 —— 它 await
+   *   `SourinApi.getSkipMarker(...)`，而本环境**没有 sourin_core.dll**
+   *   ⇒ 那个 future 永远不完成 ⇒ 永远 loading。
+   * ⇒ 表现是「重置 / 片头开始」这些文字**一个都找不到**，
+   *   看起来像"弹窗没打开"，其实弹窗开着、只是内容区是个转圈。
+   *
+   * `debugSkipMarkerFetcher` 是产品留的正式注入点
+   *   （lib/core/sourin_api.dart:1189，注释写明"门禁/探针注入"）。
+   * ⇒ 用它让 `_loadExisting()` 立刻完成，弹窗才会渲染真实内容。
+   * ```
+   */
+  SourinApi.debugSkipMarkerFetcher = (_, __) async => null;
+  addTearDown(() => SourinApi.debugSkipMarkerFetcher = null);
 
   await tester.pumpWidget(_host(
     body: (ctx) => ElevatedButton(
@@ -125,49 +168,114 @@ Future<void> _tapPlusIn(WidgetTester tester, String label, int times) async {
   }
 }
 
-/// 让 SnackBar 的入场动画跑完，并取回它的文字
-List<String> _snackTexts(WidgetTester tester) {
-  final snack = find.byType(SnackBar);
-  if (snack.evaluate().isEmpty) return const [];
-  return find
-      .descendant(of: snack.first, matching: find.byType(Text))
-      .evaluate()
-      .map((e) => (e.widget as Text).data ?? '')
-      .toList();
+/// 取回当前 toast 里的文字
+///
+/// # ★★★ 2026-10-18：从 `find.byType(SnackBar)` 改成读 `_ToastCard`
+/// ```text
+/// 产品本轮把 `_toast` 换成了 `showAppToast`（见 `_host` 的说明），
+/// 于是 `SnackBar` 这个 widget **在树上永远不会再出现**。
+///
+/// ⚠️ 第一步改错过一次（如实记下来）：
+///   我按「祖先里有 AppToaster」认 toast —— **错的**。
+///   因为 `AppToaster` 是**整个 app 的外壳**（`AppToaster(child: ...)`，
+///   见 app_toast.dart:202 的 `Stack(children: [widget.child, ...])`），
+///   所以**弹窗里的每一个 Text 都算"在 toast 层"**
+///   ⇒ 读出来的是 ['open', '片头 00:04-00:05', '预览不可用：...']，
+///     把弹窗正文全当成了提示。
+///   ★ 这就是 §A-2「范围太大」：判据的测量值里混进了无关的东西。
+///
+/// ⇒ 正确的认法是 `_ToastCard` —— 它是**每条 toast 自己的卡片**
+///   （app_toast.dart:216 的 `for (final e in _entries) _ToastCard(...)`）。
+/// ```
+List<String> _toastTexts(WidgetTester tester) {
+  final out = <String>[];
+  for (final el in find.byType(Text).evaluate()) {
+    var inToast = false;
+    el.visitAncestorElements((a) {
+      // ★ 只认 _ToastCard：它是"一条 toast"的边界
+      if (a.widget.runtimeType.toString() == '_ToastCard') {
+        inToast = true;
+        return false;
+      }
+      return true;
+    });
+    if (inToast) {
+      final t = el.widget as Text;
+      if (t.data != null) out.add(t.data!);
+    }
+  }
+  return out;
 }
 
 void main() {
   group('t464 夹边界的提示必须真的送到用户眼前', () {
-    testWidgets('★★★ 阳性对照：宿主里 SnackBar 通道是通的（用「重置」的无条件提示）',
+    testWidgets('★★★ 阳性对照：宿主里提示通道是通的（直接调 showAppToast）',
         (tester) async {
       /*
        * ⚠️ 这条是**仪器自检**，不是被测对象。
+       *   没有它，「撞边界后必须有提示」那条可能因为**宿主根本弹不出提示**
+       *   而失败 —— 那是宿主的问题，不是产品的。
        *
-       * 没有它的话，下面那条"撞边界后应该有 SnackBar"可能因为
-       * **宿主根本弹不出提示**而失败 —— 那是宿主的问题，不是产品的，
-       * 而我会误判成"产品不提示"（我第一次就误判了，见文件头坑①）。
-       * 「重置」里的 `_toast('已重置')` 是**无条件**的 ⇒ 拿它当阳性对照。
+       * # ★★★ 2026-10-18 为什么不再用「重置」当阳性对照
+       * ```text
+       * 旧写法：点「重置」⇒ 等 `_toast('已重置')` ⇒ 断言 SnackBar 出现。
+       *
+       * 两个独立的不成立：
+       *   ① `SnackBar` 通道已不存在（产品换成了 showAppToast）
+       *   ② 「重置」走 `await SourinApi.clearSkipMarker(...)` ——
+       *      本环境**没有 sourin_core.dll** ⇒ 那个 future **永不完成**
+       *      ⇒ `_toast` 那行**永远执行不到**
+       *      （`clearSkipMarker` 没有 `debug*Fetcher` 注入点，无法绕过）
+       *
+       * ⇒ 拿「重置」当阳性对照，测的其实是"FFI 通不通"，不是"提示通道通不通"。
+       *   本环境 FFI 必然不通 ⇒ 这条**永远红**，与被测对象无关。
+       * ```
+       *
+       * # 现在的做法
+       * ```text
+       * 直接调 `showAppToast(context, ...)` —— 它才是"提示通道"本身。
+       * ★ 用 `home:` 里的 Builder context（与产品 `_toast` 同一个查找方式：
+       *   沿 context 向上找 `AppToaster`）。
+       * ```
        */
-      await _openDialog(tester);
-      expect(find.byType(SkipTimeline), findsOneWidget,
-          reason: '★ 弹窗没打开 ⇒ 后面全是恒真（假绿）');
+      await tester.pumpWidget(_host(
+        body: (ctx) => Builder(
+          builder: (inner) => ElevatedButton(
+            onPressed: () => showAppToast(inner, '宿主自检提示'),
+            child: const Text('fire'),
+          ),
+        ),
+      ));
+      await tester.pump();
 
-      await tester.tap(find.text('重置'), warnIfMissed: false);
+      expect(find.text('宿主自检提示'), findsNothing, reason: '前提：还没点');
+      await tester.tap(find.text('fire'));
       for (var i = 0; i < 6; i++) {
         await tester.pump(const Duration(milliseconds: 100));
         _claim(tester);
       }
 
-      expect(find.byType(SnackBar), findsWidgets,
-          reason: '★★★ 连无条件的「已重置」都弹不出来 ⇒ 本宿主测不了提示可见性。'
-              '★ 检查 import 是不是 `material_ui`（不是 `flutter/material`）—— '
-              '两个库各有自己的 ScaffoldMessenger，混用会静默拿不到');
+      expect(find.text('宿主自检提示'), findsOneWidget,
+          reason: '★★★ 宿主里连 showAppToast 都出不来 ⇒ 本宿主测不了提示可见性。'
+              '★ 检查 `_host` 里有没有挂 `ToastHost`：'
+              '`showAppToast` 找不到宿主会**静默 no-op**（app_toast.dart:77）');
     });
 
-    testWidgets('★★★ 撞下界：SnackBar 出现、方向说「不能小于」、文案不是 Closure',
+    testWidgets('★★★ 撞下界：提示出现、方向说「不能小于」、文案不是 Closure',
         (tester) async {
       await _openDialog(tester);
-      expect(find.byType(SkipTimeline), findsOneWidget,
+      /*
+       * ★★★ 2026-10-18 修正判据（用 `SkipMarkerDialog`，**不是** `SkipTimeline`）
+       * ```text
+       * 旧写法 `find.byType(SkipTimeline)` **恒为 0** —— 与弹窗开没开无关：
+       *   弹窗 `_loading = true` 时内容整体不渲染（skip_marker_dialog.dart:1969
+       *   的 `child: _loading ? ... : ...`）。
+       *   而本环境没有 `sourin_core.dll` ⇒ 读跳过点永远失败 ⇒ 永远 loading。
+       * ⇒ 那个判据**永远红**，看起来像"弹窗没打开"，实际是"内容没渲染"。
+       * ★ 这正是 §B-4：判据测的不是它声称要测的东西。
+       * ```
+       */
+      expect(find.byType(SkipMarkerDialog), findsOneWidget,
           reason: '★ 弹窗没打开 ⇒ 后面全是恒真（假绿）');
 
       // ── 造一次**必然被夹**的操作 ──
@@ -189,7 +297,7 @@ void main() {
         _claim(tester);
       }
 
-      final texts = _snackTexts(tester);
+      final texts = _toastTexts(tester);
       expect(texts, isNotEmpty,
           reason: '★★★ 撞边界后必须弹出提示 —— Owner 的要求是「**不能静默**」。'
               '找不到 ⇒ 提示没送到用户眼前');
@@ -252,7 +360,18 @@ void main() {
        * ```
        */
       await _openDialog(tester);
-      expect(find.byType(SkipTimeline), findsOneWidget,
+      /*
+       * ★★★ 2026-10-18 修正判据（用 `SkipMarkerDialog`，**不是** `SkipTimeline`）
+       * ```text
+       * 旧写法 `find.byType(SkipTimeline)` **恒为 0** —— 与弹窗开没开无关：
+       *   弹窗 `_loading = true` 时内容整体不渲染（skip_marker_dialog.dart:1969
+       *   的 `child: _loading ? ... : ...`）。
+       *   而本环境没有 `sourin_core.dll` ⇒ 读跳过点永远失败 ⇒ 永远 loading。
+       * ⇒ 那个判据**永远红**，看起来像"弹窗没打开"，实际是"内容没渲染"。
+       * ★ 这正是 §B-4：判据测的不是它声称要测的东西。
+       * ```
+       */
+      expect(find.byType(SkipMarkerDialog), findsOneWidget,
           reason: '★ 弹窗没打开 ⇒ 后面全是恒真（假绿）');
 
       // 片头结束 = 5 ⇒ 片头开始的上界 = 5 - 1 = 4
@@ -291,7 +410,7 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100));
         _claim(tester);
       }
-      expect(_snackTexts(tester), isEmpty,
+      expect(_toastTexts(tester), isEmpty,
           reason: '★ 按钮灰掉 = 没改动 ⇒ 不该弹提示（弹了就是噪音）');
     });
   });

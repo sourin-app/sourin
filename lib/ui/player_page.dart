@@ -1846,6 +1846,14 @@ class _PlayerPageState extends State<PlayerPage>
   /// 全屏状态
   bool _fullscreen = false;
 
+  /// 退出请求是否已在处理中（`_exitPlayer` 的防重入守卫）
+  ///
+  /// 为什么需要：`_exitPlayer` 中段 `await _toggleFullscreen(awaitOs: false)`
+  /// 要 16.6ms 才返回，这段窗口里再进来一次就会**再 pop 一次**，
+  /// 把详情页也弹掉。可达路径是「**按住** Esc / 返回键」（系统 ~30ms 重复派发）。
+  /// 详见 `_exitPlayer` 开头那段注释。
+  bool _exiting = false;
+
   /// ★ 画中画状态
   ///
   /// 原版是 `hk.add("KeyP", () => { if (art) art.pip = !art.pip; })` ——
@@ -5824,6 +5832,25 @@ class _PlayerPageState extends State<PlayerPage>
         url: url,
         headers: _current?.httpHeaders ?? const <String, String>{},
         title: _castTitle,
+        /*
+         * ★★★ 2026-10-18（第 66 轮自审发现）：这里原来**没传 onLog**。
+         *
+         * # 后果（两个兜底同时失效）
+         * ```text
+         * cast_button.dart 的提示路径是「先打日志、再弹 toast」：
+         *   widget.onLog?.call('[投屏] $msg');
+         *   showAppToast(context, msg);
+         *
+         * 而全仓 CastButton 只有两处实例化：
+         *   · lib/probe_cast.dart     （探针，不传 onLog）
+         *   · 就是这里                 （生产唯一用点，原来也没传）
+         * ⇒ 生产环境 onLog 恒为 null ⇒ `onLog?.call` **永远不执行**
+         * ```
+         * 那条注释写着「排障日志**保留** —— 它与用户可见提示是两件事」，
+         * 但"代码在"≠"它跑过"：投屏失败时如果 showAppToast 也找不到宿主
+         * （它现在是静默 no-op），用户和日志**两条线索都没有**。
+         */
+        onLog: (line) => AppLog.write('投屏', line),
         iconSize: 16,
       ),
     );
@@ -13910,6 +13937,30 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   Future<void> _exitPlayer() async {
+    /*
+     * ★★★ 防重入（2026-10-18 第 66 轮自审补）
+     *
+     * # 为什么需要
+     * ```text
+     * 本方法中段有 `await _toggleFullscreen(awaitOs: false)`（下面 ① 那条），
+     * 全屏路径实测要 16.6ms 才返回。这段窗口里 `_fullscreen` 首帧仍为 true，
+     * 且**末尾那个 `if (mounted)` 拦不住它**（那时页面还活着）。
+     *
+     * ⇒ 第二次进入本方法会**再 pop 一次** ⇒ 把详情页也弹掉。
+     * ```
+     * # 可达性（perf-player 复核时修正过一次判断）
+     * ```text
+     * 「人反应不过来」不成立 —— **按键重复**能填满这个窗口：
+     * 按住 Esc / 返回键时系统以 ~30ms 间隔重复派发，
+     * 而 30ms > 16.6ms 的 await 窗口 ⇒ 第二次照样进来。
+     * ⇒ 场景是「**按住不放**」，不是「快速连点」。
+     * ```
+     * ★ 守卫放在最前面：只要有过一次退出请求，后续一律忽略。
+     *   故意**不**在 finally 里复位 —— 退出是终止性操作，
+     *   本页随即被 pop 掉；若之后还能再进来，说明这页没真的退出。
+     */
+    if (_exiting) return;
+    _exiting = true;
     /*
      * ★★★ task-8 ①（Owner 2026-10-09 第三批）：返回卡顿
      *

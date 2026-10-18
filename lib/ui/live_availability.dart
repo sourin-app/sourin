@@ -49,8 +49,11 @@
 //   目的是决定"要不要显示"。两者结论要一致，所以判据刻意写成同一套：
 //   都是「可播线路里有没有带视频的」。
 
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 
+import '../core/disk_cache.dart';
 import '../core/sourin_api.dart';
 
 /// 一个频道的可用性
@@ -224,6 +227,38 @@ class LivePlaybackHealthEntry {
       'LivePlaybackHealthEntry(${health.name}, $at, ${detail ?? '-'})';
 }
 
+/// 可用性缓存的**唯一**键格式：`provider \u0000 channelId`
+///
+/// # ★★★ 为什么必须是单点定义（这是一个被门禁抓出来的真 bug）
+///
+/// ```text
+/// 我写持久化时，`LiveHealthCache` 用 `'$provider|$channelId'`（管道符），
+/// 而 `LivePlaybackHealthStore._key()` 用的是 `'$provider\u0000$channelId'`（NUL）。
+/// ⇒ 落盘时按管道符写，读回时 store 按 NUL 查 ⇒ **一条都对不上**。
+///
+/// 症状会极其难查：
+///   缓存文件确实生成了、内容看起来也对，
+///   但重启后**一个徽标都没有**，且日志里没有任何报错
+///   （因为两边各自都"工作正常"，只是永远不命中）。
+/// ```
+///
+/// ⇒ 定死在这里，两边都调它。**不许任何地方再手写拼接**。
+///
+/// ⚠️ 用 `\u0000` 而不是 `|`：provider / channelId 由核心层保证非空，
+///   但不保证不含 `|`（频道 id 里出现竖线并非不可能）；
+///   NUL 是 JSON 与文件路径都不会出现的字符 ⇒ 拼接后可唯一还原。
+String liveHealthCacheKey(String provider, String channelId) =>
+    '$provider\u0000$channelId';
+
+/// 把键还原成 (provider, channelId)
+///
+/// ★ 与 [liveHealthCacheKey] 严格互逆；格式不对返回 null（**不猜**）。
+(String, String)? liveHealthCacheKeyParts(String key) {
+  final i = key.indexOf('\u0000');
+  if (i <= 0 || i >= key.length - 1) return null;
+  return (key.substring(0, i), key.substring(i + 1));
+}
+
 /// 播放结果状态机 + 缓存（N15 ③④⑤）
 ///
 /// # 判据（Lead 已批）
@@ -260,7 +295,8 @@ class LivePlaybackHealthStore {
 
   final Map<String, LivePlaybackHealthEntry> _entries = {};
 
-  String _key(String provider, String channelId) => '$provider\u0000$channelId';
+  String _key(String provider, String channelId) =>
+      liveHealthCacheKey(provider, channelId);
 
   /// 读状态（**不做过期判断** —— 过期与否由 [needsRetry] 决定）
   ///
@@ -354,6 +390,27 @@ class LivePlaybackHealthStore {
   /// 清空（测试用）
   void debugReset() => _entries.clear();
 
+  /// 全部条目（序列化用）
+  ///
+  /// ★ 返回的是 `provider|channelId → entry` 的**新** Map，
+  ///   调用方改它不会影响本 store。
+  Map<String, LivePlaybackHealthEntry> snapshot() => Map.of(_entries);
+
+  /// 从磁盘内容**批量灌入**（启动读盘用）
+  ///
+  /// # 与 [record] 的区别（不能复用 [record]）
+  /// ```text
+  /// `record()` 会做优先级保护 + 把 `at` 设成**现在**。
+  /// 但读盘时我们要**原样恢复**：时间必须是磁盘上那个（否则
+  /// "已过期"的信息就丢了，等于把旧状态洗成新的）。
+  /// ⇒ 单独开一个灌入口，语义是"我还原现场"，不是"我观测到了"。
+  /// ```
+  void restore(Map<String, LivePlaybackHealthEntry> entries) {
+    _entries
+      ..clear()
+      ..addAll(entries);
+  }
+
   /// 从「有没有错误串 + 有没有出过画面 + 等了多久」推导状态
   ///
   /// ★ 这是整个判据的**唯一实现**，UI 与测试都走它 ——
@@ -440,6 +497,29 @@ class LiveAvailabilityProbe {
     return _result[k];
   }
 
+  /// ★★★ P0：从磁盘缓存**灌入**一条已知结果（不发起任何请求）
+  ///
+  /// # 为什么需要它（这是"跳过全量探测"能生效的关键）
+  /// ```text
+  /// `probe()` 的跳过判据是 `cached(...) != null`。
+  /// 只把磁盘状态放进 `_health` 而不放进这里 ⇒
+  /// `probe()` 仍会把所有频道算进 todo ⇒ 全量探测照旧发生。
+  /// ⇒ 必须让 `_probe` 也"看起来已经探过"。
+  /// ```
+  ///
+  /// ⚠️ 时间用**磁盘上的观测时刻**，不是 now —— 否则过期信息就丢了
+  ///    （灌进来会变成"刚刚探过"，TTL 白给）。
+  void seed(
+    String provider,
+    String channelId,
+    LiveAvailability value,
+    DateTime at,
+  ) {
+    final k = _key(provider, channelId);
+    _result[k] = value;
+    _at[k] = at;
+  }
+
   /// 探测一批频道；返回**新探到**的数量
   ///
   /// ★ 已经有有效缓存的会跳过（除非 [force]）。
@@ -493,4 +573,258 @@ class LiveAvailabilityProbe {
   /// 统计（给 UI 显示"已隐藏 N 个"）
   int countOf(Iterable<(String, String)> keys, LiveAvailability a) =>
       keys.where((k) => _result[_key(k.$1, k.$2)] == a).length;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  可用性持久化（P0：Owner 说「迟早要被拉黑」）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 用户原话：
+// > 直播页现在每次都刷新全量的检测,这是错误的 一定要有缓存啊,
+// > 不然这样子迟早要被拉黑
+//
+// # ★ 为什么"进程内存里的 TTL"救不了这件事（这是根因）
+//
+// ```text
+// · `LiveAvailabilityProbe._result`  →  LivePage State 里的 Map
+// · `SourinApi._liveStreamCache`     →  SourinApi 的静态 Map
+// ★ 两者都是**进程内存** ⇒ 进程一退就全没了
+// ⇒ 每次启动客户端 = 从零开始全量探测 1248 个频道
+// ⇒ 这正是"每次启动都全量打网络"的真正病因。
+//
+// ⚠️ 而且**把 TTL 从 30 秒改成 10 分钟并不能解决它** ——
+//    内存里的东西，TTL 多长进程一退都一样。
+//    （那条改动还会带回"点重试没用"的老 bug，见 sourin_api 的 invalidateLiveStream）
+// ```
+//
+// # ★ 为什么用 DiskCache 而不是自己写文件、也不是 UiPrefs
+//
+// ```text
+// UiPrefs  是"用户偏好"：用户可改、可清、"恢复默认设置"会清空它
+//          ⇒ 可用性是**运行时观测数据**，混进去会被误清
+// DiskCache 已经处理了：数据目录未就绪 / 文件不存在 / 读失败 /
+//          JSON 损坏 / 信封版本不符 —— **全部降级为 null，不抛**
+//          ⇒ 正好满足"损坏的 JSON 不能让页面崩"
+// ```
+//
+// # 磁盘形态
+//
+// ```json
+// {
+//   "v": 1,
+//   "at": <DiskCache 自己的外层时间戳>,
+//   "data": {
+//     "<provider>|<channelId>": { "h": "broken", "t": 1750000000000, "d": "原文" }
+//   }
+// }
+// ```
+// ★ `h` 存**枚举名**而不是 bool —— 四态机里 `idle` 与 `broken` 意义完全不同，
+//   压成 bool 会把"可能没开播"和"源坏了"混成一个。
+// ★ 每条带**自己的** `t`（观测时刻），不共用外层 `at`：
+//   不同频道是不同时刻观测的，共用会让"刚才探的"和"一小时前的"混为一谈。
+// ★ `unknown` **不落盘**（没观测过就没有记录，与 `record()` 契约一致）。
+
+/// 持久化文件名（放 <dataDir> 下）
+const String kLiveHealthCacheName = 'live-availability.json';
+
+/// 磁盘信封版本（格式改了要 +1，旧版本会被 DiskCache 判为不可用）
+const int kLiveHealthCacheVersion = 1;
+
+/// 一条可用性状态的**有效窗口**
+///
+/// 与 [LiveAvailabilityProbe.ttl] 的 10 分钟**刻意一致**：
+/// 两套缓存用同一个节律，用户看到的"多久前的检查"语义不会打架。
+const Duration kLiveHealthTtl = Duration(minutes: 10);
+
+/// 可用性持久化读写（静态类，与 `DiskCache` / `UiPrefs` 同款用法）
+///
+/// # 为什么单独一个类而不是塞进 store
+/// ```text
+/// store 是**纯逻辑**（可单测、无 I/O）。
+/// 一旦让它依赖 DiskCache，门禁就必须准备数据目录才能跑 —— 
+/// 那会把"判据对不对"和"文件写没写成"耦在一起。
+/// ⇒ 读/写各一次，纯函数式进出，store 永远不知道磁盘存在。
+/// ```
+class LiveHealthCache {
+  const LiveHealthCache._();
+
+  /// 序列化成可落盘的 JSON
+  static Map<String, dynamic> encode(
+    Map<String, LivePlaybackHealthEntry> entries,
+  ) {
+    final data = <String, dynamic>{};
+    for (final e in entries.entries) {
+      final v = e.value;
+      // ★ unknown 不落盘 —— 它等价于"没有记录"
+      if (v.health == LivePlaybackHealth.unknown) continue;
+      data[e.key] = {
+        'h': v.health.name,
+        't': v.at.millisecondsSinceEpoch,
+        if (v.detail != null && v.detail!.isNotEmpty) 'd': v.detail,
+      };
+    }
+    return {
+      'v': kLiveHealthCacheVersion,
+      'data': data,
+    };
+  }
+
+  /// 从落盘 JSON 还原（**任何异常都降级为空，绝不抛**）
+  ///
+  /// # 为什么会坏（必须容忍的三种真实情况）
+  /// ```text
+  /// ① 写到一半断电 ⇒ 文件是半截 JSON
+  /// ② 手改/别的版本写过 ⇒ 字段缺失或类型不对
+  /// ③ 枚举名变了（将来重命名 idle）⇒ `values.byName` 抛
+  /// ⇒ 全部当"没有缓存"处理。宁可多探一轮，也不能让直播页打不开。
+  /// ```
+  static Map<String, LivePlaybackHealthEntry> decode(Object? raw) {
+    final out = <String, LivePlaybackHealthEntry>{};
+    try {
+      if (raw is! Map) return out;
+      if (raw['v'] != kLiveHealthCacheVersion) return out;
+      final data = raw['data'];
+      if (data is! Map) return out;
+      for (final e in data.entries) {
+        final key = e.key;
+        final v = e.value;
+        if (key is! String || v is! Map) continue;
+        final hs = v['h'];
+        final ts = v['t'];
+        if (hs is! String || ts is! int) continue;
+        LivePlaybackHealth? h;
+        for (final cand in LivePlaybackHealth.values) {
+          if (cand.name == hs) {
+            h = cand;
+            break;
+          }
+        }
+        // ★ 认不出的枚举名 ⇒ 跳过这一条（不是整份丢掉：
+        //   其余条目仍然有用，不该被一条坏数据连坐）
+        if (h == null || h == LivePlaybackHealth.unknown) continue;
+        out[key] = LivePlaybackHealthEntry(
+          health: h,
+          at: DateTime.fromMillisecondsSinceEpoch(ts),
+          detail: v['d'] is String ? v['d'] as String : null,
+        );
+      }
+    } catch (e) {
+      debugPrint('[LIVE] 可用性缓存解析失败（当作无缓存）: $e');
+      return <String, LivePlaybackHealthEntry>{};
+    }
+    return out;
+  }
+
+  /// 读盘（数据目录未就绪 / 没有文件 / 损坏 ⇒ 空 Map）
+  static Future<Map<String, LivePlaybackHealthEntry>> load() async {
+    try {
+      final entry = await DiskCache.read(kLiveHealthCacheName);
+      if (entry == null) return <String, LivePlaybackHealthEntry>{};
+      // ★ DiskCache 已经拆掉了 {v, at, data} 外层信封
+      //   ⇒ entry.data 就是我们的 data Map，直接解析
+      return decode({'v': kLiveHealthCacheVersion, 'data': entry.data});
+    } catch (e) {
+      debugPrint('[LIVE] 读取可用性缓存失败（当作无缓存）: $e');
+      return <String, LivePlaybackHealthEntry>{};
+    }
+  }
+
+  /// 落盘（失败只记日志，不影响功能）
+  static Future<void> save(
+    Map<String, LivePlaybackHealthEntry> entries,
+  ) async {
+    try {
+      // ★ 只喂 data：DiskCache 自己会包 {v, at, data}
+      await DiskCache.write(kLiveHealthCacheName, encode(entries)['data']);
+    } catch (e) {
+      debugPrint('[LIVE] 写入可用性缓存失败（不影响功能）: $e');
+    }
+  }
+
+  /// 过滤出**仍然有效**（未超过 [kLiveHealthTtl]）的条目
+  ///
+  /// # ★ 为什么"过期"不等于"丢掉"
+  /// ```text
+  /// 用户要求：过期后**保留条目、标记待刷新**，不要清空。
+  /// 理由：灰/红点突然消失比"状态旧了"更让用户困惑
+  ///      （"我刚看到一个红点，怎么没了？它好了还是我记错了？"）。
+  /// ⇒ 本函数只**分类**，不删。是否重试由 needsRetry 决定，
+  ///   是否显示旧徽标由 UI 决定（旧的要弱化显示）。
+  /// ```
+  static Map<String, LivePlaybackHealthEntry> freshOnly(
+    Map<String, LivePlaybackHealthEntry> entries, {
+    DateTime? now,
+    Duration ttl = kLiveHealthTtl,
+  }) {
+    final t = now ?? DateTime.now();
+    final out = <String, LivePlaybackHealthEntry>{};
+    for (final e in entries.entries) {
+      if (t.difference(e.value.at) < ttl) out[e.key] = e.value;
+    }
+    return out;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  延迟探测调度器（P0 ③：错开启动瞬间的请求高峰）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 为什么单独抽一个类，而不是在 `LivePage` 里裸写 `Timer`
+//
+// ```text
+// 裸写 Timer 的唯一验证方式是"静态文本断言"（源文件里有没有那一行）。
+// ★ 但静态断言抓不到"定时器真的生效" —— 它只证明"代码写着"，
+//   不证明"到点真的会调"、"取消真的会停"。
+// ⇒ 那正是 Lead 指出的假绿风险。
+//
+// 抽成类之后，可以用 `fake_async` 直接**推进时间**来验证行为：
+//   · 30 秒不到 ⇒ **一次都不许调**
+//   · 到 30 秒   ⇒ 恰好调一次
+//   · 取消之后   ⇒ 永不调用（即使时间推得再远）
+// ```
+//
+// ⚠️ 这个类**不碰 Flutter**（只用 dart:async），所以能纯单测。
+
+/// 「稍后开始探测」的调度器
+///
+/// 语义只有三条：
+/// ```text
+/// schedule()  安排一次延迟触发（重复调用只保留最后一次）
+/// cancel()    取消（未触发则永不触发）
+/// isPending   是否还在等待
+/// ```
+class DelayedProbeScheduler {
+  DelayedProbeScheduler({
+    required this.delay,
+    required this.onFire,
+  });
+
+  /// 等多久才触发
+  final Duration delay;
+
+  /// 到点要做的事
+  final void Function() onFire;
+
+  Timer? _timer;
+
+  /// 是否还在等待（UI 用它决定要不要显示"稍后开始"）
+  bool get isPending => _timer != null && _timer!.isActive;
+
+  /// 安排一次
+  ///
+  /// ★ 重复调用**只保留最后一次**：否则页面重建会叠加出多个定时器，
+  ///   到点一次触发 N 遍探测 —— 比不延迟更糟。
+  void schedule() {
+    _timer?.cancel();
+    _timer = Timer(delay, () {
+      _timer = null;
+      onFire();
+    });
+  }
+
+  /// 取消（页面销毁 / 已有缓存时调用）
+  void cancel() {
+    _timer?.cancel();
+    _timer = null;
+  }
 }

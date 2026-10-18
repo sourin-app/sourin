@@ -55,6 +55,7 @@ import 'cache_page.dart'
     show CachedDelete, CachedWork, humanBytes, kLocalProvider;
 import 'media_session.dart';
 import '../core/network_status.dart';
+import '../design/widgets/app_glass_dialog.dart';
 import '../design/widgets/app_icon_button.dart';
 import '../design/widgets/app_ink_well.dart';
 import '../design/widgets/app_outlined_button.dart';
@@ -2265,22 +2266,22 @@ class _DetailPageState extends State<DetailPage> {
     }
     final ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('下载全部集'),
+      builder: (ctx) => AppGlassDialog(
+        // ★ 轨道 E M2 第 4 步：AlertDialog → AppGlassDialog（玻璃确认框）
+        //   弹出仍走 showAppDialog（保住 task-104 的 animationStyle 与
+        //   3.47 的 DialogRoute 语义 —— 见 app_glass_dialog.dart 文件头）
+        title: '下载全部集',
         content: Text(
           '将下载全部 $n 集到「视频 / 源影 / ${_detail?.title ?? ''}」，'
           '一次只下一集（把带宽留给播放），可以随时取消。',
         ),
-        actions: [
-          AppTextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          AppTextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text('下载 $n 集'),
-          ),
-        ],
+        actions: AppGlassDialogActions(
+          onCancel: () => Navigator.of(ctx).pop(false),
+          onConfirm: () => Navigator.of(ctx).pop(true),
+          confirmLabel: '下载 $n 集',
+          // 下载不是破坏性操作 ⇒ 不用错误色
+          confirmIsDestructive: false,
+        ),
       ),
     );
     if (ok != true || !mounted) return;
@@ -3235,22 +3236,18 @@ class _DetailPageState extends State<DetailPage> {
   Future<void> _confirmDeleteLocalEpisode(LocalEpisodeRef ref) async {
     final ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除这一集？'),
+      builder: (ctx) => AppGlassDialog(
+        // ★ 轨道 E M2 第 4 步：AlertDialog → AppGlassDialog（删除是破坏性 ⇒ 错误色）
+        title: '删除这一集？',
         content: Text(
           '${ref.episodeTitle}\n'
           '文件会从磁盘上真正删除，此操作不可恢复。',
         ),
-        actions: <Widget>[
-          AppTextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          AppTextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
+        actions: AppGlassDialogActions(
+          onCancel: () => Navigator.of(ctx).pop(false),
+          onConfirm: () => Navigator.of(ctx).pop(true),
+          confirmLabel: '删除',
+        ),
       ),
     );
     if (ok != true || !mounted) return;
@@ -3283,22 +3280,18 @@ class _DetailPageState extends State<DetailPage> {
 
     final ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除选中的集？'),
+      builder: (ctx) => AppGlassDialog(
+        // ★ 轨道 E M2 第 4 步：AlertDialog → AppGlassDialog（批量删除，破坏性）
+        title: '删除选中的集？',
         content: Text(
           '将删除 ${picked.length} 集 / 共 ${humanBytes(bytes)}。\n'
           '文件会从磁盘上真正删除，此操作不可恢复。',
         ),
-        actions: <Widget>[
-          AppTextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          AppTextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
+        actions: AppGlassDialogActions(
+          onCancel: () => Navigator.of(ctx).pop(false),
+          onConfirm: () => Navigator.of(ctx).pop(true),
+          confirmLabel: '删除',
+        ),
       ),
     );
     if (ok != true || !mounted) return;

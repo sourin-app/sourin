@@ -129,8 +129,23 @@ void main() {
     test('★ 正向对照：AppTextButton 真的在源码里（防空文件假绿）', () {
       final code = detailSource();
       // 若有人把上面的"被取代物"清空，上一条会假绿
-      expect(RegExp(r'AppTextButton\(').allMatches(code).length, 10,
-          reason: '★ 应该正好有 10 处 AppTextButton（替换了原来的 10 个 TextButton）');
+      /*
+       * ★ 2026-10-18（第 4 步后更新）：从 10 处降到 **4 处**。
+       *
+       * 原因：对话框里的 6 个按钮搬进了 `AppGlassDialogActions`
+       *   （lib/design/widgets/app_glass_dialog.dart），由那个组件内部画
+       *   `AppTextButton`；`detail_page` 里只剩：
+       *     · 「管理」                :3391
+       *     · 选择栏「全选/全不选」   :3474
+       *     · 选择栏「删除」          :3487
+       *     · 选择栏「取消」          :3494
+       * ⇒ 这不是"少换了"，是**搬到了更合适的位置**。
+       *   判据同时要求「对话框用的确实是 AppGlassDialogActions」
+       *   （见下方 ④ 组的断言）。
+       */
+      expect(RegExp(r'AppTextButton\(').allMatches(code).length, 4,
+          reason: '★ detail_page 里应剩 4 处 AppTextButton'
+              '（对话框那 6 个已搬进 AppGlassDialogActions）');
       expect(code.contains('import \'../design/widgets/app_text_button.dart\''),
           isTrue,
           reason: '★ 必须真的 import 了自建按钮');

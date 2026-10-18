@@ -390,14 +390,26 @@ void main() {
     });
 
     test('★ 混合态记录：AlertDialog / Scaffold / SnackBar 仍是 Material', () {
+      /*
+       * ★ 2026-10-18 更新（第 4 步已完成）：
+       *   原先断言「AlertDialog 仍是 Material（第 4 步才换）」——
+       *   那是第 3 步时的如实记录。第 4 步做完后该事实变了，判据跟着改。
+       *
+       * 当前混合态（Lead 裁决：分步做，不合并）：
+       *   OutlinedButton → 已换（AppOutlinedButton）   ← 第 3 步
+       *   AlertDialog    → 已换（AppGlassDialog）      ← 第 4 步
+       *   SnackBar       → 仍是 Material              ← 第 5 步
+       *   Scaffold ×2    → 仍是 Material              ← 第 6 步（须先报 Lead）
+       */
       final code = detailSource();
-      // Lead 裁决：不合并第 1/2/3 步与第 4/5/6 步，混合态是**有意的**
-      expect(code.contains('AlertDialog('), isTrue,
-          reason: '★ 记录：AlertDialog 仍是 Material（第 4 步才换）');
+      expect(RegExp(r'(?<!App)AlertDialog\(').hasMatch(code), isFalse,
+          reason: '★ 记录：AlertDialog 已全部换成 AppGlassDialog');
       expect(code.contains('Scaffold('), isTrue,
-          reason: '★ 记录：Scaffold 仍是 Material（第 6 步才换，需先报 Lead）');
+          reason: '★ 记录：Scaffold 仍是 Material（第 6 步才换，**须先报 Lead**）');
       expect(code.contains('AppOutlinedButton('), isTrue,
-          reason: '★ 记录：按钮已是自建');
+          reason: '★ 记录：描边按钮已是自建');
+      expect(code.contains('AppGlassDialog('), isTrue,
+          reason: '★ 记录：确认框已是玻璃自建');
     });
 
     test('★★ AppOutlinedButton 的几何必须**不依赖** Material 组件', () {

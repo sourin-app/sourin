@@ -369,11 +369,25 @@ void main() {
        * 因为自建按钮不带材质，它只是"一个按钮"，不携带 Material 的视觉特征。
        * ⇒ 这是**有意的中间状态**，本测试把它记录下来，避免后人以为是没做完。
        */
+      /*
+       * ★ 2026-10-18 更新（第 4 步已完成）：AlertDialog 已**不再是** Material。
+       *
+       * 本条原先断言「AlertDialog 仍是 Material（第 4 步才换）」——
+       * 那是第 2 步时的**如实记录**。第 4 步做完后该事实变了，
+       * ⇒ 判据必须跟着事实改，而不是让事实迁就判据。
+       *
+       * 现在的混合态：
+       *   AlertDialog  → 已换（AppGlassDialog）      ← 第 4 步
+       *   Scaffold ×2  → 仍是 Material               ← 第 6 步（须先报 Lead）
+       *   SnackBar ×1  → 仍是 Material               ← 第 5 步
+       */
       final code = detailSource();
-      expect(code.contains('AlertDialog('), isTrue,
-          reason: '★ 记录：AlertDialog 仍是 Material（第 4 步才换）');
-      expect(code.contains('AppTextButton('), isTrue,
-          reason: '★ 记录：对话框里的按钮已是自建（第 1 步已换）');
+      expect(RegExp(r'(?<!App)AlertDialog\(').hasMatch(code), isFalse,
+          reason: '★ 记录：AlertDialog 已全部换成 AppGlassDialog（第 4 步）');
+      expect(code.contains('AppGlassDialog('), isTrue,
+          reason: '★ 记录：确认框已是玻璃自建');
+      expect(code.contains('SnackBar('), isTrue,
+          reason: '★ 记录：SnackBar 仍是 Material（第 5 步才换，有意保留）');
     });
   });
 }

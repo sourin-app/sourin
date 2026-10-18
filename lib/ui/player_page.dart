@@ -4957,6 +4957,8 @@ class _PlayerPageState extends State<PlayerPage>
     _rewatchTimer?.cancel();
     setState(() => _rewatchPrompt = null);
     unawaited(_player.seek(pos));
+    // ★ N10：用户主动「继续观看」⇒ 跳到中间位置，预取会让路（见 _beginPrefetchYield）
+    _beginPrefetchYield();
     _flash('已跳到上次观看位置');
     debugPrint('[PLAYER] 浮层「继续观看」⇒ seek 到 ${pos.inSeconds}s');
   }
@@ -5402,6 +5404,8 @@ class _PlayerPageState extends State<PlayerPage>
 
     try {
       await _player.seek(t);
+      // ★ N10：续播恢复到上次位置 ⇒ 同属"跳到中间位置"，预取会让路
+      _beginPrefetchYield();
       debugPrint(
         '[PLAYER] ★ 续播已生效: ${t.inSeconds}s '
         '（等时长 ${(waited * 250)}ms, duration=${dur.inSeconds}s）',
@@ -9082,6 +9086,10 @@ class _PlayerPageState extends State<PlayerPage>
         _skipSeekCalls++; // ★ 只读探针（fix/skip-auto-seek）：真的发出了 seek
         _lastSkipSeek = Duration(seconds: end);
         _player.seek(Duration(seconds: end));
+        // ★ N10：跳到片头结束（可能几分钟后）⇒ 预取会让路
+        //   ⚠️ 不影响上面 `_skipSeekCalls++` 那个只读探针：它数的是"发出了几次 seek"，
+        //      让路只改预取优先级，不改 seek 次数。
+        _beginPrefetchYield();
         _flash('已跳过片头');
         return;
       }
@@ -9166,6 +9174,8 @@ class _PlayerPageState extends State<PlayerPage>
     switch (_endAction) {
       case PlayEndAction.singleLoop:
         // 单集循环：回到 0 接着播（原版 flashTip("单集循环")）
+        // seek-yield: skip —— 目标是起点(0)，mpv 起播本就从此处读，预取不会抢；
+        //   且紧接着 play()，挂上反而会每次循环都打断预取、影响循环连续性
         unawaited(_player.seek(Duration.zero));
         unawaited(_player.play());
         _flash('单集循环');
@@ -10530,6 +10540,8 @@ class _PlayerPageState extends State<PlayerPage>
         final target = Duration(seconds: pos < 0 ? 0 : pos);
         final clamped = target > _duration ? _duration : target;
         await _player.seek(clamped);
+        // ★ N10：遥控器/手机发起跳转 ⇒ 用户在等电视出画面，预取必须让路
+        _beginPrefetchYield();
         _flash('跳到 ${clamped.inSeconds}s');
         _showControls();
         return;
@@ -10621,6 +10633,8 @@ class _PlayerPageState extends State<PlayerPage>
         if (pos == null || _isLive) return;
         final t = Duration(seconds: pos < 0 ? 0 : pos);
         await _player.seek(t > _duration ? _duration : t);
+        // ★ N10：手机微调、电视出画面 —— 最需要立即出画面的场景之一
+        _beginPrefetchYield();
         _flash('预览 ${t.inSeconds}s');
         return;
 
@@ -11873,6 +11887,8 @@ class _PlayerPageState extends State<PlayerPage>
         ? Duration.zero
         : (target > _duration ? _duration : target);
     _player.seek(clamped);
+    // ★ N10：快进/快退（键盘 ←/→、按钮）—— Owner 最常用的操作之一
+    _beginPrefetchYield();
     _flash(seconds > 0 ? '快进 ${seconds}s' : '快退 ${-seconds}s');
     _showControls();
   }
@@ -11882,6 +11898,8 @@ class _PlayerPageState extends State<PlayerPage>
     if (_duration <= Duration.zero) return;
     final target = _duration * (pct / 100.0);
     _player.seek(target);
+    // ★ N10：点进度条跳到 N% ⇒ 用户主动跳转，预取让路
+    _beginPrefetchYield();
     _flash('跳到 $pct%');
     _showControls();
   }

@@ -346,6 +346,60 @@ class SourinApi {
     return jmap(r)?['disabled'] == true;
   }
 
+  /*
+   * ═══════════════════════════════════════════════════════════════════
+   *  ★★★ N10：seek 让路窗口
+   * ═══════════════════════════════════════════════════════════════════
+   *
+   * # 背景（真机实测，2026-10-18，详见 streamproxy.rs 的 `yield_until_ms`）
+   * ```text
+   * 预取 ON   seek 到某位置后（逐 500ms 采样）：
+   *   t+500ms    demuxer-cache-time 读不到
+   *   t+1000ms   播放位置**卡死不动**
+   *   t+1500ms   才恢复
+   * 预取 OFF  同一位置：t+500ms 立刻有缓存
+   *
+   * ⇒ 4 路并行预取在 seek 后与"当前播放点"抢同一条上行，
+   *   当前点排在后面 ⇒ mpv 手里没有可播数据 ⇒ 转圈亮起，
+   *   而底栏缓冲条画的是预取拉回来的**别处**数据 ⇒ 用户看到"条满了还在转"。
+   * ```
+   *
+   * # 为什么只在 seek 后短暂让路，不一刀切关掉
+   * ```text
+   * 实测远端 seek(85%)：预取 ON 162ms vs OFF 190ms
+   * ⇒ 预取在远处是**有益的**，关掉是用一个 bug 换另一个 bug
+   * ```
+   */
+
+  /// 让路窗口长度（与 Rust 侧 `StreamProxy::YIELD_WINDOW_MS` 保持一致）
+  ///
+  /// 2 秒 —— 实测 seek 后恢复 500ms~1500ms，留 33% 余量。
+  /// ⚠️ 两侧必须同步修改；`zz_t66_prefetch_yield_test.dart` 有源码字面量校验。
+  static const int yieldWindowMs = 2000;
+
+  /// 进入让路窗口：接下来 [yieldWindowMs] 内预取让路给前台读取
+  ///
+  /// 返回 `true` 表示**本次是首次进入**窗口
+  /// ⇒ 调用方据此决定要不要起恢复定时器。
+  /// 连续 seek 时返回 `false`（Rust 侧已重置截止时刻），**不要**再起第二个定时器。
+  static Future<bool> beginYieldForSeek() async {
+    final r = await SourinCore.callAsync('begin_yield_for_seek');
+    return jmap(r)?['first'] == true;
+  }
+
+  /// 结束让路窗口：**恢复**进入前的开关状态（不是无条件打开预取）
+  ///
+  /// ⚠️ 页面销毁时必须调用，否则预取会一直处于让路状态。
+  static Future<void> endYieldForSeek() async {
+    await SourinCore.callAsync('end_yield_for_seek');
+  }
+
+  /// 当前是否处于让路窗口内（门禁/取证用）
+  static Future<bool> inYieldWindow() async {
+    final r = await SourinCore.callAsync('in_yield_window');
+    return jmap(r)?['inWindow'] == true;
+  }
+
   /// 导入声明式源（JSON 配置）
   static Future<ProviderManifest> importDeclarativeProvider(String json) async {
     final r = await SourinCore.callAsync(

@@ -290,6 +290,56 @@ pub struct StreamProxy {
      *   生产行为不变（默认 `false` = 预取开，与改前一致）。
      */
     prefetch_disabled: std::sync::atomic::AtomicBool,
+
+    /*
+     * ═══════════════════════════════════════════════════════════════════
+     * ★★★ N10：**让路窗口** —— seek 之后暂时让前台读取独占带宽
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * # 为什么需要它（真机实测，2026-10-18）
+     *
+     * ```text
+     * 预取 ON   seek 到 10% 位置后（逐 500ms 采样）：
+     *   t+500ms    demuxer-cache-time = 读不到   span=0.00s
+     *   t+1000ms   同上，而且播放位置**卡死不动**
+     *   t+1500ms   才开始恢复
+     *
+     * 预取 OFF  同一位置：
+     *   t+500ms    立刻有缓存 span=21.57s
+     * ```
+     *
+     * ⇒ 4 路并行预取在 seek 后与"当前播放点"抢同一条上行，
+     *   当前点排在后面 ⇒ mpv 手里没有可播数据 ⇒ 中央转圈亮起，
+     *   而底栏缓冲条画的是预取拉回来的**别处**数据 ⇒ 用户看到"条满了还在转"。
+     *
+     * # 为什么是"窗口"而不是"关掉预取"
+     *
+     * ```text
+     * 实测远端 seek(85%)：预取 ON 162ms vs OFF 190ms
+     * ⇒ 预取在远处是**有益的**，一刀切关掉是用一个 bug 换另一个 bug
+     * ⇒ 只在 seek 之后的 N 秒内让路，之后自动恢复
+     * ```
+     *
+     * # N 为什么是 2 秒
+     * ```text
+     * 实测恢复时间 500ms ~ 1500ms ⇒ 2 秒留 33% 余量
+     * 更大只会让远端受损更久，没有额外收益。
+     * ```
+     */
+    yield_until_ms: std::sync::atomic::AtomicU64,
+
+    /*
+     * ★ 进入让路窗口时，**保存**当时的 `prefetch_disabled` 原值
+     *
+     * # 为什么必须保存（这是本类开关最容易出 bug 的地方）
+     * ```text
+     * 用户可能本来就配了 `SOURIN_PREFETCH_DISABLE=1`（预取本来就是关的）
+     * ⇒ 我们的"恢复"若无条件写 `false`，会**把用户配的关闭状态打开**
+     * ⇒ 必须"恢复到进入窗口之前的状态"，而不是"无条件设为开"
+     * ```
+     * `u8`：0 = 之前是开（false），1 = 之前是关（true）
+     */
+    yield_saved_disabled: std::sync::atomic::AtomicU8,
 }
 
 /// 代理到上游的请求超时
@@ -364,6 +414,9 @@ impl StreamProxy {
             prefetch_disabled: std::sync::atomic::AtomicBool::new(
                 std::env::var("SOURIN_PREFETCH_DISABLE").is_ok(),
             ),
+            // 0 = 不在让路窗口内（时刻 0 早于任何真实时刻）
+            yield_until_ms: std::sync::atomic::AtomicU64::new(0),
+            yield_saved_disabled: std::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -379,7 +432,89 @@ impl StreamProxy {
         self.prefetch_is_disabled()
     }
 
+    /*
+     * ═══════════════════════════════════════════════════════════════════
+     * ★★★ N10 让路窗口：seek 之后让前台读取独占带宽 N 秒
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * 设计与实测依据见字段 `yield_until_ms` 上的长注释。
+     * 这里只强调三条**边界**（每条都可能是 bug 源）：
+     *
+     * ```text
+     * ① 连续 seek 必须**重置**截止时刻，不能叠加
+     *    ⇒ 用 `store(now + N)` 而不是 `fetch_add(N)`
+     * ② 进入窗口时**保存**用户原本的开关状态；退出时"恢复"而不是"设为开"
+     *    ⇒ 否则会把 `SOURIN_PREFETCH_DISABLE=1` 的用户配置打开
+     * ③ 重复进入窗口不得覆盖已保存的原值
+     *    ⇒ 用 `compare_exchange` 只在"第一次进入"时保存
+     * ```
+     */
+
+    /// 让路窗口长度：seek 之后多久内暂停预取
+    ///
+    /// 2 秒 —— 实测 seek 后恢复时间 500ms~1500ms，留 33% 余量。
+    /// 调大会让远端 seek 受损更久（实测远端预取有益：162ms vs 190ms），
+    /// 调小可能盖不住慢网下的恢复时间。
+    pub const YIELD_WINDOW_MS: u64 = 2000;
+
+    /// 进入让路窗口：接下来 `YIELD_WINDOW_MS` 内预取让路给前台
+    ///
+    /// 返回 `true` 表示**本次调用真的首次进入**（调用方据此决定要不要起恢复定时器）。
+    pub fn begin_yield_for_seek(&self) -> bool {
+        let now = Self::now_ms();
+        /*
+         * 先记原值（只在"当前不在窗口内"时记）。
+         *
+         * `yield_until_ms == 0` 表示不在窗口内 ⇒ 此时保存原值是安全的。
+         * 用 `compare_exchange` 防止并发下两次进入互相覆盖。
+         */
+        let prev = self.yield_until_ms.load(std::sync::atomic::Ordering::SeqCst);
+        let was_idle = prev == 0 || now >= prev;
+        if was_idle {
+            let orig = self.prefetch_disabled.load(std::sync::atomic::Ordering::SeqCst);
+            self.yield_saved_disabled.store(
+                u8::from(orig),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        }
+        // ① 重置而非叠加
+        self.yield_until_ms
+            .store(now + Self::YIELD_WINDOW_MS, std::sync::atomic::Ordering::SeqCst);
+        was_idle
+    }
+
+    /// 结束让路窗口：**恢复**进入前的开关状态（不是无条件打开）
+    pub fn end_yield_for_seek(&self) {
+        self.yield_until_ms
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        // ② 恢复而不是无条件 false
+        let orig = self
+            .yield_saved_disabled
+            .load(std::sync::atomic::Ordering::SeqCst);
+        self.prefetch_disabled
+            .store(orig == 1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 当前是否处于让路窗口内（供探针/测试读取）
+    pub fn in_yield_window(&self) -> bool {
+        let until = self.yield_until_ms.load(std::sync::atomic::Ordering::SeqCst);
+        until != 0 && Self::now_ms() < until
+    }
+
+    /// 单调毫秒时钟（只用于比较先后，不要求墙钟正确）
+    fn now_ms() -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
     fn prefetch_is_disabled(&self) -> bool {
+        // ★ 让路窗口内一律视为"禁用预取"
+        if self.in_yield_window() {
+            return true;
+        }
         self.prefetch_disabled
             .load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -2463,6 +2598,85 @@ pub async fn maybe_proxy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ═══════════════════════════════════════════════════════════════
+    //  ★★★ N10：seek 让路窗口
+    // ═══════════════════════════════════════════════════════════════
+
+    /// 造一个默认状态的代理（预取开）
+    fn mk_proxy() -> Arc<StreamProxy> {
+        Arc::new(StreamProxy::new())
+    }
+
+    /// ① 进入窗口后预取被判为禁用；结束后恢复
+    #[test]
+    fn yield_window_disables_then_restores_prefetch() {
+        let p = mk_proxy();
+        assert!(!p.prefetch_is_disabled(), "初始应为预取开");
+
+        let first = p.begin_yield_for_seek();
+        assert!(first, "首次进入窗口应返回 true");
+        assert!(p.in_yield_window(), "应处于窗口内");
+        assert!(p.prefetch_is_disabled(), "窗口内必须禁用预取");
+
+        p.end_yield_for_seek();
+        assert!(!p.in_yield_window(), "结束后不应在窗口内");
+        assert!(!p.prefetch_is_disabled(), "结束后应恢复为预取开");
+    }
+
+    /// ② 连续 seek 只重置截止时刻、不叠加；且第二次返回 first=false
+    #[test]
+    fn repeated_seek_resets_window_not_stacks() {
+        let p = mk_proxy();
+        assert!(p.begin_yield_for_seek(), "第 1 次是首次");
+        // 立刻再来一次（模拟连续拖动）
+        assert!(!p.begin_yield_for_seek(), "第 2 次不是首次 ⇒ 调用方不该再起定时器");
+        assert!(p.prefetch_is_disabled(), "仍在窗口内");
+
+        // 截止时刻应 ≈ now + YIELD_WINDOW_MS，而不是 now + 2*YIELD_WINDOW_MS
+        let until = p.yield_until_ms.load(std::sync::atomic::Ordering::SeqCst);
+        let now = StreamProxy::now_ms();
+        let remain = until.saturating_sub(now);
+        assert!(
+            remain <= StreamProxy::YIELD_WINDOW_MS + 50,
+            "窗口不应叠加：剩余 {remain}ms 超过单窗 {}ms",
+            StreamProxy::YIELD_WINDOW_MS
+        );
+    }
+
+    /// ③ ★ 原本关闭时，恢复不得把它打开（状态保存）
+    ///
+    /// 这是本类开关最容易出 bug 的地方：用户配了 `SOURIN_PREFETCH_DISABLE=1`，
+    /// 我们的"恢复"若无条件写 false，会**打开用户配的关闭状态**。
+    #[test]
+    fn restore_keeps_user_disabled_state() {
+        let p = mk_proxy();
+        // 模拟用户本来就关了预取
+        p.set_prefetch_disabled(true);
+        assert!(p.prefetch_is_disabled());
+
+        p.begin_yield_for_seek();
+        assert!(p.prefetch_is_disabled(), "窗口内仍禁用");
+
+        p.end_yield_for_seek();
+        assert!(
+            p.prefetch_is_disabled(),
+            "★ 恢复必须保住用户原本的『关』，不能无条件打开"
+        );
+    }
+
+    /// ④ 窗口不会永久生效（时间过期后自动恢复判断）
+    #[test]
+    fn yield_window_expires_by_time() {
+        let p = mk_proxy();
+        p.begin_yield_for_seek();
+        assert!(p.in_yield_window());
+        // 手动把截止时刻拨到过去
+        p.yield_until_ms
+            .store(StreamProxy::now_ms().saturating_sub(1), std::sync::atomic::Ordering::SeqCst);
+        assert!(!p.in_yield_window(), "过期后不应在窗口内");
+        assert!(!p.prefetch_is_disabled(), "过期后预取应自动恢复");
+    }
 
     // ═══════════════════════════════════════════════════════════════
     //  task-26 并行分段预取

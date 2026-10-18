@@ -7320,6 +7320,88 @@ globalThis.plugin = { id: 'old', capabilities: { vod: true, search: true } };
         assert_eq!(out, SAMPLE, "★ 往返不一致 ⇒ 解码路径有问题");
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // ★★★ 2026-10-18（代理审查 + 注入实测发现）：client 配置必须被盯住
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // # 为什么前面两个测试不够（已实测）
+    // ```text
+    // raw_deflate_roundtrip                 ⇒ 测的是 flate2 的编解码往返
+    // zlib_decoder_cannot_read_raw_deflate  ⇒ 测的是 ZlibDecoder 的行为
+    //
+    // ★ 两者都**不经过 reqwest、不测 no_gzip/no_deflate/no_brotli 配置**
+    // ⇒ 实测：删掉 `        .no_deflate()` 后，
+    //   这两个测试**仍然全绿**（2 passed; 0 failed）
+    // ⇒ 而那正是 9ca4076 那次修复失效的根因。
+    // ```
+    //
+    // # 这个测试怎么做到"会红"
+    // ```text
+    // 起一个本地 HTTP 服务器，返回真的 raw-deflate 字节
+    // + `Content-Encoding: deflate`，然后调**生产代码里的 do_http()**。
+    //
+    // 这走的是完整真实链路：
+    //   reqwest 自动解压 → 失败 → 我们的回退 → raw_client 重发 → 解压
+    //   ⇒ 任何一环断了都会失败
+    //
+    // 如果删掉 `.no_deflate()`：raw_client 也会自动解压
+    //   ⇒ 它拿到的就是"已解压后的文本被当成压缩流"⇒ 解码失败 ⇒ 本测试红。
+    // ```
+    //
+    // ★ 本地服务器 = 不联网、不依赖外部站点、可离线跑。
+    #[tokio::test]
+    async fn do_http_decodes_raw_deflate_end_to_end() {
+        use std::io::{Read as _, Write as _};
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        const BODY: &str = "<i><d p=\"1,5,25,16711680\">端到端测试 raw-deflate</d></i>";
+
+        // ① 压成 raw-deflate
+        let mut enc =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(BODY.as_bytes()).expect("压缩失败");
+        let raw_bytes = enc.finish().expect("收尾失败");
+        assert_ne!(
+            raw_bytes[0], 0x78,
+            "★ 带 zlib 头 ⇒ 这个测试失去意义"
+        );
+
+        // ② 起本地服务器（只服务一次）
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind 失败");
+        let addr = listener.local_addr().expect("addr 失败");
+        let body_for_srv = raw_bytes.clone();
+        let srv = tokio::spawn(async move {
+          // ★ 两次请求：第一次 reqwest 自动解压失败，第二次是回退
+          for _ in 0..2 {
+            let (mut sock, _) = listener.accept().await.expect("accept 失败");
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Encoding: deflate\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body_for_srv.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(&body_for_srv).await;
+            let _ = sock.flush().await;
+          }
+        });
+
+        // ③ 调**生产代码**
+        let url = format!("http://{}/x.xml", addr);
+        let headers = HashMap::new();
+        let out = do_http(&None, "test-provider", "GET", &url, &headers, None).await;
+        let _ = srv.await;
+
+        // ④ 断言
+        assert!(
+            !out.starts_with("__ERR__"),
+            "★ 回退失败，返回错误: {out}"
+        );
+        assert_eq!(out, BODY, "★ 解出来的内容不对 (len={})", out.len());
+    }
+
     /// ★ 反向对照：`ZlibDecoder` 解 raw-deflate **必须失败**
     ///
     /// ```text

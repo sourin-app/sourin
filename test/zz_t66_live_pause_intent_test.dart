@@ -159,14 +159,139 @@ void main() {
        * 全屏里切过台 ⇒ 回来要 `_select(新台)` 并起播。
        * 那条路必须在 `if (_userPaused) return;` **之前**，
        * 否则"用户切台 + 恰好暂停过"⇒ 回来黑屏。
+       *
+       * ══════════════════════════════════════════════════════════════
+       * ★★★ 2026-10-18 这条断言被代理审查用故障注入抓出，**修了三轮**
+       * ══════════════════════════════════════════════════════════════
+       *
+       * ```text
+       * 【第 1 版（原版，纸糊）】
+       *   src.indexOf('if (_userPaused)', pendingAt)
+       *   ⇒ 起始位置把搜索范围限制在 pending 之后
+       *   ⇒ 守卫被挪到 pending 之前时**永远搜不到** ⇒ 恒真 ⇒ 门禁废掉
+       *
+       * 【第 2 版（我改的，假红）】
+       *   全局 indexOf('if (_userPaused)')
+       *   ⇒ 命中的是 `_onVisibilityChanged`（:928）那处守卫，不在 _watchLive 内
+       *
+       * 【第 3 版（我改的，仍是假红）】
+       *   圈定 _watchLive 方法体后再 indexOf
+       *   ⇒ ★ 命中的还是**注释**！
+       *     实测 offset 1110/1786/1849 全是 JSDoc 里引用的字符串
+       *     真正的代码在 offset 2853（pending）与 3539（守卫）
+       * ```
+       *
+       * ⇒ 最终做法：**逐行扫描、剔除注释行**，在真实代码行上定位。
+       *   这是 danmaku 清单 §A-3「注释命中」的典型，也是本文件第 2 次踩到。
        */
-      final pendingAt = src.indexOf('final pending = _pendingFullscreenChannel;');
-      final userPausedAt = src.indexOf('if (_userPaused)', pendingAt);
-      expect(pendingAt, greaterThan(0),
-          reason: '找不到 _pendingFullscreenChannel 那段，判据失效');
-      expect(userPausedAt, greaterThan(pendingAt),
-          reason: '★★ `if (_userPaused)` 必须排在 pending 之后 —— '
-              '否则切台回来会黑屏');
+      final lines = src.split('\n');
+      var inBlock = false;
+      int? pendingLine;
+      final guardLines = <int>[];
+      for (var i = 0; i < lines.length; i++) {
+        final raw = lines[i];
+        final t = raw.trim();
+        if (inBlock) {
+          if (t.contains('*/')) inBlock = false;
+          continue;
+        }
+        if (t.startsWith('/*')) {
+          if (!t.contains('*/')) inBlock = true;
+          continue;
+        }
+        if (t.startsWith('//') || t.startsWith('*')) continue;
+
+        // ★ 只认「真正的语句行」：不能有反引号（注释里引用代码都带反引号）
+        final code = raw.split('//').first;
+        if (code.contains('`')) continue;
+
+        if (pendingLine == null &&
+            code.contains('final pending = _pendingFullscreenChannel;')) {
+          pendingLine = i;
+        }
+        if (code.contains('if (_userPaused)')) {
+          guardLines.add(i); // ★ 记录**所有**代码行里的守卫
+        }
+      }
+
+      expect(pendingLine, isNotNull,
+          reason: '★ 找不到 `final pending = _pendingFullscreenChannel;` 的**代码行**'
+              '（若只找到注释里的引用，说明它被删了或改名了）');
+      expect(guardLines, isNotEmpty,
+          reason: '★ 找不到任何 `if (_userPaused) return;` 的**代码行**守卫');
+
+      /*
+       * ★ 关键：全仓有**两处**真实守卫（`_onVisibilityChanged` 与 `_watchLive`）。
+       *   ⇒ 必须断言「存在**一个**守卫落在 pending 之后的同一段流程里」，
+       *     而不是拿"第一个守卫"去比（那会命中文件的另一处，产生假红）。
+       *
+       * 实测踩到：
+       *   guardLine=927（_onVisibilityChanged），pendingLine=2652（_watchLive）
+       *   ⇒ 927 < 2652 ⇒ 假红。这正是我第 4 次改这条断言的原因。
+       */
+      final guardAfterPending =
+          guardLines.where((g) => g > pendingLine! && g < pendingLine + 40);
+      expect(guardAfterPending, isNotEmpty,
+          reason: '★★ 在 `_watchLive` 的 pending 之后（40 行窗口内）必须有 '
+              '`if (_userPaused)` 守卫 —— 否则"切台 + 恰好暂停过"⇒ 回来黑屏。\n'
+              '  实测守卫行=$guardLines，pending 行=$pendingLine');
+    });
+
+    /*
+     * ★★★ 2026-10-18（代理审查发现整条链路**没有测试**）：
+     *
+     * ```text
+     * `_userWantsPause` 是整条链路的**数据源头**：
+     *   player_page.dart  _togglePlay 写它（暂停置 true / 播放置 false）
+     *   player_page.dart  _exitPlayer  pop<bool>(_userWantsPause) 发它
+     *   live_page.dart    消费它 → _userPaused
+     *
+     * ★ 而在这之前，本文件里 `_userWantsPause` 出现 **0 次**。
+     * 实测：删掉 `_togglePlay` 里那两行赋值 ⇒ 9/9 **全绿**
+     *   ⇒ 链路永远送 false ⇒ Owner 的 bug 原样回来。
+     * ```
+     */
+    test('★★ `_userWantsPause` 的数据源头必须双向赋值（true 与 false）', () {
+      final player = File('lib/ui/player_page.dart').readAsStringSync();
+
+      expect(player.contains('bool _userWantsPause'), isTrue,
+          reason: '★ 字段必须存在 —— 它是整条链路的数据源头');
+
+      /*
+       * 必须是"暂停时置 true、播放时置 false"两向都有。
+       * 只置 true ⇒ 状态泄漏（上一次暂停泄漏到下一次）；
+       * 只置 false ⇒ 永远送不出 true（用户暂停被忽略）。
+       */
+      expect(RegExp(r'_userWantsPause\s*=\s*true').hasMatch(player), isTrue,
+          reason: '★★ 必须有 `_userWantsPause = true`（用户按暂停）—— '
+              '删掉它则暂停意图永远送不出去，Owner 的 bug 原样回来');
+      expect(RegExp(r'_userWantsPause\s*=\s*false').hasMatch(player), isTrue,
+          reason: '★★ 必须有 `_userWantsPause = false`（用户按播放）—— '
+              '只置 true 会状态泄漏');
+
+      /*
+       * ★ 赋值必须在 `_togglePlay` 里 —— 那是**用户手势的唯一入口**。
+       * 放到别处（比如监听 _playing 变化）会把"我们自己暂停的"也算成用户意图，
+       * 导致全屏里切台后 pop(true) ⇒ 回来黑屏。
+       */
+      final toggleAt = player.indexOf('void _togglePlay(');
+      expect(toggleAt, greaterThan(0), reason: '找不到 _togglePlay');
+      final toggleBody =
+          player.substring(toggleAt, (toggleAt + 3000).clamp(0, player.length));
+      expect(toggleBody.contains('_userWantsPause'), isTrue,
+          reason: '★★ 赋值必须在 `_togglePlay` 里（用户手势唯一入口）');
+    });
+
+    test('★★ `_exitPlayer` 必须把 _userWantsPause 作为 pop 的返回值', () {
+      final player = File('lib/ui/player_page.dart').readAsStringSync();
+
+      /*
+       * 如果 pop 不带值（或带别的值），整条链路断在出口：
+       * 用户在详情页按的暂停传不回去。
+       */
+      expect(player.contains('pop<bool>(_userWantsPause)'), isTrue,
+          reason: '★★ 必须 `pop<bool>(_userWantsPause)` —— '
+              '不带值则用户意图丢失，整条链路断在出口');
     });
   });
 }

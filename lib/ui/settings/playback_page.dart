@@ -164,6 +164,41 @@ const List<XTypeGroup> _logGroups = <XTypeGroup>[
   XTypeGroup(label: '全部文件'),
 ];
 
+/// 「播放器临时缓存」那一行显示的文案
+///
+/// # ★★★ 为什么抽成顶层纯函数（2026-10-18 第 66 轮自审发现）
+///
+/// 原来这段是**内联三元表达式**，而守它的门禁（`zz_t66_mpv_cache_ui_test.dart`）
+/// 全部读源码字符串：
+/// ```text
+/// expect(src.contains('_mpvBytes > 0'), isTrue)
+/// expect(src.contains("'0 B'"), isFalse)
+/// expect(src.contains('humanBytes(_mpvBytes)'), isTrue)
+/// ```
+/// **实测（我真的注入了）**：把三元表达式的两个分支**写反** ⇒
+/// ```text
+/// 0 字节时显示「0 B · 仅不可 seek 的流会落盘」
+/// >0   时显示「不占磁盘（网络流在内存里缓存）」
+/// ```
+/// 用户看到的信息**完全相反**（正是该文件开头描述的那个坑），
+/// 而上面那些 `contains` **一条都没红**，`+5 All tests passed`。
+///
+/// ⇒ 抽成纯函数后，门禁可以直接断言**返回值**，分支写反必红：
+/// ```text
+/// expect(mpvCacheLabel(0), contains('不占磁盘'));
+/// expect(mpvCacheLabel(2048), contains('2.0 KB'));
+/// ```
+///
+/// ★ 这是「判据要读真实结果，不能读喂进去的那个值」的直接后果 ——
+///   源码里有 `_mpvBytes > 0` 这几个字符，**不等于**分支方向是对的。
+String mpvCacheLabel(int bytes) {
+  if (bytes <= 0) {
+    // 真的没落盘：说清"为什么是 0"，别让用户以为缓存坏了、更别让他去清 0 个文件
+    return '不占磁盘（网络流在内存里缓存）';
+  }
+  return '${ClipDownloader.humanBytes(bytes)} · 仅不可 seek 的流会落盘';
+}
+
 class PlaybackSettingsPage extends StatefulWidget {
   const PlaybackSettingsPage({super.key});
 
@@ -841,9 +876,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
          */
         SettingsInfoRow(
           label: '播放器临时缓存',
-          value: _mpvBytes > 0
-              ? '${ClipDownloader.humanBytes(_mpvBytes)} · 仅不可 seek 的流会落盘'
-              : '不占磁盘（网络流在内存里缓存）',
+          value: mpvCacheLabel(_mpvBytes),
         ),
         SettingsInfoRow(
           label: '截图',

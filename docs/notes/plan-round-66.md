@@ -106,6 +106,71 @@ AppIcons 161 个常量           第 65 轮已建好并全量接线，**保留**
 
 ## 5. 批次 M：移除 material_ui（主体）
 
+### ⚠️ M0：先把「移除 material_ui」这句话的定义钉死（2026-10-18 实测补充）
+
+**这一步不做，M 批次会在错误的目标上空转。** 实测事实：
+
+```text
+$ ls ~/AppData/Local/Pub/Cache/hosted/pub.dev/material_ui-1.4.0/lib/
+material_ui.dart  src/  shaders/  fix_data/
+
+$ head -20 .../material_ui.dart
+library material_ui;
+export 'package:flutter/widgets.dart';
+export 'src/material.dart'
+export 'src/material_button.dart'
+...
+
+$ grep -c "^export" .../material_ui.dart
+185
+```
+
+**⇒ `material_ui` 就是 Flutter 官方 Material 库本身**（Flutter 3.47 把它从 SDK
+拆成独立包），它导出 185 个库：`Scaffold` / `AppBar` / `TextField` / `Card` /
+`InkWell` / `Theme` / `ColorScheme` / `MaterialApp` …**全部**。
+
+#### 所以「移除 material_ui」有三种完全不同的含义，代价差一个数量级
+
+| 解读 | 内容 | 规模 | 是否可行 |
+|---|---|---|---|
+| **A. 删掉 pubspec 那一行，改用 `package:flutter/material.dart`** | 只换 import 路径 | 126 个 import 行 | ✅ 机械可行，但**不解决"丑"** |
+| **B. 不再用 Material 组件，换成自建/玻璃控件** | `Scaffold`/`AppBar`/`TextField`/`Card`/`InkWell`/`SnackBar`… 全换 | 128/195 个 lib 文件 | ⚠️ 本轮只能做一部分 |
+| **C. 不用 Material 的**视觉**（主题体系），但组件仍用** | 换 `ThemeData`/`ColorScheme` → 自建语义色 + 玻璃装饰 | 主题层 + 控件皮肤 | ✅ 这是治"丑"的真实路径 |
+
+#### Owner 的实际诉求是哪种
+
+Owner 原话：
+> 我其实就是把那个 移除 material_ui组件是一件事,因为那个太丑了,所以替换掉应该就能好很多
+
+「因为那个太丑了」是**理由**，不是「import 路径难看」。
+⇒ **Owner 要的是 C（视觉不再像 Material 默认皮肤），A 是实现手段之一，B 是过度。**
+
+#### 本轮的执行定义（可验证）
+
+```text
+✔ 必做（C 为主）：
+  · 主题出口 AppColors + AppThemeScope（M1）
+  · MaterialApp / Scaffold / AppBar 的外壳替换，让"Material 默认皮肤"消失（M2）
+  · 高频可见控件换玻璃/自建皮肤：卡片、按钮、输入框、对话框、Toast（M3）
+  · 布局优化（L 批次，§6）
+
+✘ 不做（明确排除）：
+  · 追求 `grep -r material_ui lib/` = 0
+    因为那要求连 Scaffold/TextField 都自建 ⇒ 工作量数倍，且质量大概率不如官方
+  · 把 M4.2「必须 0」当作验收条件 ⇒ **本轮取消这一条**
+
+△ 做一个"程度"门禁替代它：
+  · 断：高频可见控件（列表卡/按钮/输入框/对话框）不再直接用 Material 默认皮肤
+  · 断：`Theme.of(context).colorScheme` 在 UI 层 = 0（走 AppTheme）
+  · 不断：底层 Scaffold/TextField 的存在（那是工具，不是皮肤）
+```
+
+**如果 Owner 要的是 A（只换 import）或真的到 B（全自建）**：告诉我，我按那个改。
+但我不会在没确认的情况下按 B 硬做 —— 那是把「丑」换成「更丑且更慢」的高风险路线。
+
+---
+
+
 ### M1：主题出口替换（最关键，必须第一）
 
 ```text

@@ -34,6 +34,12 @@ use std::sync::Arc;
 
 pub mod webdav;
 
+/// 凭据平面 —— 登录态随云同步（加密 + 缓存 key 黑名单）
+///
+/// ★ 单独一个模块而不是塞进本文件：加密与黑名单是一组自洽的逻辑，
+///   有自己的单元测试；混进 1000 多行的 `mod.rs` 会让它更难单独审查。
+pub mod credentials;
+
 /*
  * ★ 把 WebdavConfig 以 `pub use` 引入（2026-09-22）
  *
@@ -389,6 +395,14 @@ pub struct SyncEngine {
     db: Arc<Db>,
     /// 本机标识（写进 manifest，便于诊断）
     device_id: String,
+    /// 应用数据目录 —— 凭据平面要从 `<data_dir>/plugins/.data/` 读插件私有存储
+    ///
+    /// ★ 为什么是 `Option`（而不是构造时必需）：
+    ///   5 个构造点里只有 2 个（`commands_backup` / `state`）手上有 `data_dir`，
+    ///   其余（含 3 处测试）没有。做成必需参数会牵动全部 5 处 + 3 个测试，
+    ///   而**没有 data_dir 时凭据平面本来就该跳过**（它读不到插件存储）。
+    ///   ⇒ 用 builder 补挂，缺省 `None` = 没有凭据平面。
+    data_dir: Option<std::path::PathBuf>,
 }
 
 impl SyncEngine {
@@ -398,6 +412,7 @@ impl SyncEngine {
             backend: Arc::new(backend),
             db,
             device_id,
+            data_dir: None,
         })
     }
 
@@ -406,7 +421,20 @@ impl SyncEngine {
             backend,
             db,
             device_id,
+            data_dir: None,
         }
+    }
+
+    /// 挂上应用数据目录 —— 凭据平面需要它才能读 `plugins/.data/`
+    ///
+    /// ★ 用 builder 而不是改构造签名：见 `data_dir` 字段上的说明。
+    ///
+    /// ⚠️ **不挂 = 凭据平面永远不同步**。调用方（`commands_backup` / `state`）
+    ///    必须调它，否则用户会发现"同步完成"但登录态没过去 ——
+    ///    这正是提案 UI 那条要防的假绿。
+    pub fn with_data_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.data_dir = Some(dir);
+        self
     }
 
     pub fn backend_name(&self) -> &str {
@@ -995,11 +1023,169 @@ impl SyncEngine {
         Ok((winner.providers, summary))
     }
 
+    /// 凭据平面 —— 把 `plugins/.data/` 里的登录态加密后同步
+    ///
+    /// # 三个关键设计（都对应 Lead 提的问题）
+    ///
+    /// ```text
+    /// ① passphrase = None ⇒ **不静默跳过**，返回一条 note="凭据未同步" 的摘要
+    ///    理由：提案 UI 那条硬要求 —— 显示"同步完成"但凭据没走就是假绿。
+    ///    调用方拿到这条 note 就该显示"凭据未同步"，而不是把整次同步报成功。
+    ///
+    /// ② 剔除缓存后为空的插件 ⇒ 整文件跳过上传
+    ///    这一条是黑名单方案的自动收益：
+    ///    26 个插件不用 host.store，4 个只存缓存 ⇒ 它们零上传，
+    ///    不需要额外维护"哪些插件有凭据"的名单。
+    ///
+    /// ③ 本方法**不返回 Err 给 sync_all**（失败隔离）
+    ///    凭据失败不该让收藏/进度也同步不了 —— 见 `sync_all` 里的处理。
+    /// ```
+    ///
+    /// # 远端路径
+    /// `data/credentials.enc` —— 单个加密文件，**不做多设备分文件**
+    ///
+    /// 理由：凭据是「后写覆盖」语义（提案第 5 条），合并没有意义。
+    /// 分文件会让"哪台设备的最新"变成一个要额外解决的问题。
+    pub async fn sync_credentials(
+        &self,
+        passphrase: Option<&str>,
+    ) -> Result<SyncSummary, String> {
+        use crate::sync::credentials as cred;
+
+        /*
+         * ① 没有口令 ⇒ 明确报"未同步"，**不是**静默成功
+         */
+        let Some(pass) = passphrase.filter(|p| !p.is_empty()) else {
+            return Ok(SyncSummary {
+                plane: "credentials".into(),
+                pulled: 0,
+                pushed: 0,
+                conflicts: 0,
+                note: Some("凭据未同步：尚未设置口令".into()),
+            });
+        };
+
+        /*
+         * 没挂 data_dir ⇒ 读不到插件存储。
+         * 这也是"未同步"，但要说明原因不同（不是没设口令，是引擎没配好）。
+         */
+        let Some(data_dir) = self.data_dir.as_ref() else {
+            return Ok(SyncSummary {
+                plane: "credentials".into(),
+                pulled: 0,
+                pushed: 0,
+                conflicts: 0,
+                note: Some("凭据未同步：同步引擎未挂载数据目录".into()),
+            });
+        };
+
+        // ② 收集各插件的 .data，剔除缓存 key
+        let data_path = crate::state::plugins_dir(data_dir).join(".data");
+        let mut bundle = serde_json::Map::new();
+        let mut providers_with_creds = 0usize;
+        let mut providers_skipped = 0usize;
+
+        if data_path.is_dir() {
+            let entries = std::fs::read_dir(&data_path)
+                .map_err(|e| format!("读取插件数据目录失败: {e}"))?;
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                    continue;
+                }
+                let Some(provider) = p.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                // 读失败不该让整次同步失败 —— 跳过这个插件，继续
+                let Ok(text) = std::fs::read_to_string(&p) else {
+                    continue;
+                };
+                let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&text) else {
+                    continue;
+                };
+                // ★ 剔除缓存 key；返回 None 表示"只剩缓存" ⇒ 整个插件跳过
+                match cred::strip_cache_keys(provider, map) {
+                    Some(kept) => {
+                        providers_with_creds += 1;
+                        bundle.insert(provider.to_string(), serde_json::Value::Object(kept));
+                    }
+                    None => providers_skipped += 1,
+                }
+            }
+        }
+
+        /*
+         * ③ 一个凭据都没有 ⇒ 不上传空文件
+         *
+         * ★ 这是"空文件跳过"的实现点。注意它**也**覆盖了"用户刚装好还没登录"的场景。
+         */
+        if bundle.is_empty() {
+            return Ok(SyncSummary {
+                plane: "credentials".into(),
+                pulled: 0,
+                pushed: 0,
+                conflicts: 0,
+                note: Some("凭据未同步：没有任何已保存的登录态".into()),
+            });
+        }
+
+        /*
+         * ④ 序列化 + 加密
+         *
+         * ★ 超过 `MAX_PLAINTEXT` 时 `encrypt` 会返回 `TooLarge` ——
+         *   这里**不吞掉**，如实返回错误（见 Lead 要求的"必须报错，不许静默"）。
+         */
+        let plain = serde_json::to_vec(&serde_json::Value::Object(bundle))
+            .map_err(|e| format!("凭据序列化失败: {e}"))?;
+        let blob = cred::encrypt(pass, &plain).map_err(|e| format!("凭据加密失败: {e}"))?;
+
+        // ⑤ 上传（覆盖写 —— 后写覆盖，符合提案第 5 条）
+        let path = "data/credentials.enc";
+        self.backend.put(path, &blob, None).await?;
+
+        Ok(SyncSummary {
+            plane: "credentials".into(),
+            pulled: 0,
+            pushed: providers_with_creds,
+            conflicts: 0,
+            note: Some(format!(
+                "已加密上传 {} 个源的登录态（{} 个源的缓存已排除）",
+                providers_with_creds, providers_skipped
+            )),
+        })
+    }
+
     /// 一次完整同步（独立平面两个文件 + 内容源配置 + manifest）
     pub async fn sync_all(&self) -> Result<Vec<SyncSummary>, String> {
         let mut out = Vec::new();
         out.push(self.sync_favorites().await?);
         out.push(self.sync_progress().await?);
+
+        /*
+         * ★★★ 凭据平面：**失败隔离**
+         *
+         * ```text
+         * 凭据失败（加密错 / 上传错 / 口令错）**不该**让收藏和进度也同步不了。
+         * 理由：用户最在意的是收藏和进度；凭据坏了可以重新登，
+         *       但一次同步把三者全部失败，用户会觉得"同步彻底坏了"。
+         * ⇒ 这里把 Err **转成**一条带 note 的摘要，而不是 `?` 冒泡。
+         * ```
+         *
+         * ⚠️ 注意：本方法当前**没有 passphrase 参数** ——
+         *    所以走 `None` 分支，返回"凭据未同步：尚未设置口令"。
+         *    接口令是下一步（UI 那步）的事，`sync_all_cred` 已备好接口。
+         */
+        out.push(
+            self.sync_credentials(None)
+                .await
+                .unwrap_or_else(|e| SyncSummary {
+                    plane: "credentials".into(),
+                    pulled: 0,
+                    pushed: 0,
+                    conflicts: 0,
+                    note: Some(format!("凭据同步失败（不影响其它平面）: {e}")),
+                }),
+        );
 
         let mut m = self.read_manifest().await.unwrap_or_default();
         m.schema_version = SCHEMA_VERSION;
@@ -1966,6 +2152,245 @@ mod tests {
         assert_eq!(back.auto_interval_minutes, 45);
         assert_eq!(back.last_backup_signature, "sig-1");
         assert_eq!(back.base_url, s4.base_url);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ══════════════════ 凭据平面的接线验证 ══════════════════
+    //
+    // ★ 这一组测的是「**接线**」，不是加密算法（算法在 credentials.rs 里测过）。
+    //   核心判据：`sync_all` 里那条 `out.push(sync_credentials(...))` **真的存在**。
+    //   做法：删掉它 ⇒ 下面 `sync_all_includes_credentials_plane` 必须红。
+
+    /// 造一个临时 data_dir，在 `plugins/.data/` 下写指定文件
+    fn temp_data_dir(files: &[(&str, &str)]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sourin-cred-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let data = dir.join("plugins").join(".data");
+        std::fs::create_dir_all(&data).expect("建临时目录");
+        for (name, body) in files {
+            std::fs::write(data.join(name), body).expect("写临时文件");
+        }
+        dir
+    }
+
+    fn new_db() -> Arc<Db> {
+        Arc::new(Db::in_memory().expect("内存库"))
+    }
+
+    /* ── ① passphrase=None ⇒ 不进凭据平面，且**明确标记未同步** ── */
+
+    #[tokio::test]
+    async fn none_passphrase_reports_not_synced() {
+        let backend = Arc::new(FakeBackend::new());
+        let dir = temp_data_dir(&[("bilibili.json", r#"{"bili_cookie":"SESSDATA=abc"}"#)]);
+        let engine = SyncEngine::new(backend.clone(), new_db(), "dev-a".into())
+            .with_data_dir(dir.clone());
+
+        let s = engine.sync_credentials(None).await.expect("不该报错");
+
+        assert_eq!(s.plane, "credentials");
+        assert_eq!(s.pushed, 0, "没口令时不该上传任何东西");
+        // ★★ 关键：必须**明确说未同步**，不是静默成功
+        let note = s.note.unwrap_or_default();
+        assert!(
+            note.contains("未同步"),
+            "没口令时必须明确标记未同步，实际 note: {note}"
+        );
+        // 且远端确实没有文件
+        assert!(
+            backend.body_of("data/credentials.enc").is_empty(),
+            "没口令时不该在远端留下文件"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /* ── ② passphrase=Some ⇒ 加密上传，且不含黑名单 key ── */
+
+    #[tokio::test]
+    async fn some_passphrase_uploads_encrypted_without_cache_keys() {
+        let backend = Arc::new(FakeBackend::new());
+        /*
+         * 造两个插件：
+         *   bilibili.json  —— 只有凭据 ⇒ 应上传
+         *   douyu-live.json —— 只有缓存 ⇒ 应整文件跳过
+         *   mixed.json     —— 凭据 + 缓存混存 ⇒ 只上传凭据部分
+         */
+        let dir = temp_data_dir(&[
+            ("bilibili.json", r#"{"bili_cookie":"SESSDATA=abc"}"#),
+            ("douyu-live.json", r#"{"list_v1":"{\"at\":1,\"list\":[]}"}"#),
+            (
+                "huya-live.json",
+                r#"{"list_v1":"cached","bili_cookie":"SHOULD_STAY"}"#,
+            ),
+        ]);
+        let engine = SyncEngine::new(backend.clone(), new_db(), "dev-a".into())
+            .with_data_dir(dir.clone());
+
+        let s = engine
+            .sync_credentials(Some("pass-123"))
+            .await
+            .expect("应成功");
+
+        assert_eq!(s.plane, "credentials");
+        assert_eq!(s.pushed, 2, "bilibili + huya 两个有凭据，douyu 只有缓存");
+
+        // 远端文件存在
+        let blob_text = backend.body_of("data/credentials.enc");
+        assert!(!blob_text.is_empty(), "必须真的上传了");
+
+        /*
+         * ★★ 关键断言：密文里**不许出现明文凭据**。
+         *    这里读的是**远端字节**，不是我们手里那个 plaintext ——
+         *    这才是"真的加密了"的证据。
+         */
+        let raw = {
+            let files = backend.files.lock().unwrap();
+            files
+                .get("data/credentials.enc")
+                .map(|(b, _)| b.clone())
+                .expect("远端应有文件")
+        };
+        let as_text = String::from_utf8_lossy(&raw);
+        assert!(
+            !as_text.contains("SESSDATA"),
+            "明文凭据不许出现在远端密文里"
+        );
+        assert!(
+            !as_text.contains("SHOULD_STAY"),
+            "明文凭据不许出现在远端密文里"
+        );
+
+        // 用同口令能解开，且内容正确
+        let plain = crate::sync::credentials::decrypt("pass-123", &raw).expect("应能解开");
+        let v: serde_json::Value = serde_json::from_slice(&plain).expect("应是 JSON");
+        assert_eq!(v["bilibili"]["bili_cookie"], "SESSDATA=abc");
+        assert_eq!(v["huya-live"]["bili_cookie"], "SHOULD_STAY");
+        // 缓存 key 必须已被剔除
+        assert!(
+            v["huya-live"].get("list_v1").is_none(),
+            "缓存 key 必须被剔除，实际: {}",
+            v["huya-live"]
+        );
+        // 只有缓存的插件整个不出现
+        assert!(
+            v.get("douyu-live").is_none(),
+            "只有缓存的插件应整文件跳过"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /* ── ③ 无凭据 ⇒ 不上传空文件 ── */
+
+    #[tokio::test]
+    async fn no_credentials_uploads_nothing() {
+        let backend = Arc::new(FakeBackend::new());
+        // 只有缓存文件
+        let dir = temp_data_dir(&[
+            ("douyu-live.json", r#"{"list_v1":"x"}"#),
+            ("iptv.json", r#"{"cache_v3":"y"}"#),
+        ]);
+        let engine = SyncEngine::new(backend.clone(), new_db(), "dev-a".into())
+            .with_data_dir(dir.clone());
+
+        let s = engine.sync_credentials(Some("p")).await.expect("应成功");
+
+        assert_eq!(s.pushed, 0);
+        assert!(
+            backend.body_of("data/credentials.enc").is_empty(),
+            "没有凭据时不该上传空文件"
+        );
+        assert!(s.note.unwrap_or_default().contains("没有任何"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /* ── ④ 凭据失败不拖垮其它平面 ── */
+
+    #[tokio::test]
+    async fn credentials_failure_does_not_break_other_planes() {
+        /*
+         * 造一个必然失败的凭据场景：**不挂 data_dir**。
+         * 此时 sync_credentials 返回"未同步"（不是 Err），
+         * 但我们要验的是 sync_all 里**收藏/进度仍然成功**。
+         */
+        let backend = Arc::new(FakeBackend::new());
+        let db = new_db();
+        {
+            let conn_db = db.clone();
+            // 塞一条收藏，确保 favorites 平面有内容可推
+            let _ = conn_db.upsert_favorite(&fav("k1", 100, false));
+        }
+        let engine = SyncEngine::new(backend.clone(), db, "dev-a".into());
+
+        let out = engine.sync_all().await.expect("sync_all 不该因凭据失败而整体失败");
+
+        let planes: Vec<&str> = out.iter().map(|s| s.plane.as_str()).collect();
+        assert!(planes.contains(&"favorites"), "收藏平面必须在");
+        assert!(planes.contains(&"progress"), "进度平面必须在");
+        assert!(planes.contains(&"credentials"), "凭据平面必须在（那怕只是未同步）");
+
+        let _ = backend;
+    }
+
+    /* ── ⑤ ★ 接线判据：sync_all 的输出里必须真有 credentials 这一项 ── */
+
+    #[tokio::test]
+    async fn sync_all_includes_credentials_plane() {
+        /*
+         * ★★★ 本用例是「删掉 out.push(sync_credentials) ⇒ 必须红」的那条。
+         *
+         * 它**只**断言一件事：sync_all 的返回里有 plane == "credentials"。
+         * ⇒ 任何让接线消失的改动（注释掉 push、早退、条件分支写错）都会让它红。
+         */
+        let backend = Arc::new(FakeBackend::new());
+        let engine = SyncEngine::new(backend, new_db(), "dev-a".into());
+
+        let out = engine.sync_all().await.expect("应成功");
+        let cred = out.iter().find(|s| s.plane == "credentials");
+        assert!(
+            cred.is_some(),
+            "sync_all 必须包含 credentials 平面 —— 没有它说明「写了但没接线」。\
+             实际平面: {:?}",
+            out.iter().map(|s| s.plane.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    /* ── ⑥ 超过 MAX_PLAINTEXT ⇒ 报错，不许静默 ── */
+
+    #[tokio::test]
+    async fn oversized_credentials_errors_loudly() {
+        let backend = Arc::new(FakeBackend::new());
+        // 造一个超过 8 MiB 的凭据值
+        let big = "x".repeat(9 * 1024 * 1024);
+        let body = format!(r#"{{"bili_cookie":"{big}"}}"#);
+        let dir = temp_data_dir(&[("bilibili.json", &body)]);
+        let engine = SyncEngine::new(backend.clone(), new_db(), "dev-a".into())
+            .with_data_dir(dir.clone());
+
+        let r = engine.sync_credentials(Some("p")).await;
+
+        // ★ 必须 Err，不许 Ok（静默跳过会让人以为同步成功）
+        assert!(
+            r.is_err(),
+            "超过 MAX_PLAINTEXT 必须报错；实际: {:?}",
+            r.map(|s| s.note)
+        );
+        let msg = r.unwrap_err();
+        assert!(
+            msg.contains("过大") || msg.contains("加密失败"),
+            "错误信息应能看出原因，实际: {msg}"
+        );
+        // 失败时不该留下文件
+        assert!(backend.body_of("data/credentials.enc").is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

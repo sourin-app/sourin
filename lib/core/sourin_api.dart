@@ -1272,6 +1272,25 @@ class SourinApi {
   /// ② 片头整体在片尾之前：intro_end <= outro_start
   /// ```
   /// 违反会返回错误（`SourinCoreException`）。
+  /// 写跳过点 —— ⚠️ 与 [debugSkipMarkerFetcher] 同一纪律：
+  /// **生产路径永不为非 null**（默认 null ⇒ 生产路径逐字不变）。
+  ///
+  /// ★ 为什么要它：门禁要能构造「保存超时 / 保存失败」这两种情形。
+  ///   否则只能等真实核心层不可用 —— 那既不可控也不可复跑。
+  @visibleForTesting
+  static Future<void> Function({
+    String? title,
+    int? introStart,
+    int? introEnd,
+    int? outroStart,
+    int? outroEnd,
+    bool? autoSkip,
+  })? debugSkipMarkerWriter;
+
+  /// 清空跳过点 —— 同上，生产路径永不为非 null
+  @visibleForTesting
+  static Future<void> Function()? debugSkipMarkerClearer;
+
   static Future<void> setSkipMarker(
     String provider,
     String id, {
@@ -1281,24 +1300,43 @@ class SourinApi {
     int? outroStart,
     int? outroEnd,
     bool? autoSkip,
-  }) =>
-      SourinCore.callAsync('set_skip_marker', {
-        'provider': provider,
-        'id': id,
-        if (title != null) 'title': title,
-        if (introStart != null) 'intro_start': introStart,
-        if (introEnd != null) 'intro_end': introEnd,
-        if (outroStart != null) 'outro_start': outroStart,
-        if (outroEnd != null) 'outro_end': outroEnd,
-        if (autoSkip != null) 'auto_skip': autoSkip,
-      });
+  }) {
+    final fake = debugSkipMarkerWriter;
+    if (fake != null) {
+      // 门禁注入：fake 顶替核心层传输。生产路径永为 null。
+      return fake(
+        title: title,
+        introStart: introStart,
+        introEnd: introEnd,
+        outroStart: outroStart,
+        outroEnd: outroEnd,
+        autoSkip: autoSkip,
+      );
+    }
+    return SourinCore.callAsync('set_skip_marker', {
+      'provider': provider,
+      'id': id,
+      if (title != null) 'title': title,
+      if (introStart != null) 'intro_start': introStart,
+      if (introEnd != null) 'intro_end': introEnd,
+      if (outroStart != null) 'outro_start': outroStart,
+      if (outroEnd != null) 'outro_end': outroEnd,
+      if (autoSkip != null) 'auto_skip': autoSkip,
+    });
+  }
 
   /// 清除跳过点
-  static Future<void> clearSkipMarker(String provider, String id) =>
-      SourinCore.callAsync('clear_skip_marker', {
-        'provider': provider,
-        'id': id,
-      });
+  static Future<void> clearSkipMarker(String provider, String id) {
+    final fake = debugSkipMarkerClearer;
+    if (fake != null) {
+      // 门禁注入：fake 顶替核心层传输。生产路径永为 null。
+      return fake();
+    }
+    return SourinCore.callAsync('clear_skip_marker', {
+      'provider': provider,
+      'id': id,
+    });
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   //  插件管理

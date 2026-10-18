@@ -126,6 +126,14 @@ key.properties
 *cookie*.json
 *credential*
 *.session
+#
+# ★ 例外（2026-10-19，CS-1 登录态同步）：`*credential*` 是为了防**真实凭据落盘**，
+#   但它同时误伤了**实现源码**的文件名 —— `sync/credentials.rs` 是加密与黑名单逻辑，
+#   里面一个字节的凭据都没有，却不进库 ⇒ 编译不过、CI 拿不到。
+#   ⇒ 只放行这一个**精确路径**。
+#   ⚠️ 不要写成 `!*credential*.rs`：那会让任何名字含 credential 的文件一起进库
+#      （含本地探针、临时导出物），把这条安全规则的边界拆掉。
+!rust/sourin_core/src/sync/credentials.rs
 
 
 # 无头 UI 截图的落盘目录（测试产物，不入库；由 SOURIN_SHOT_DIR 指定）

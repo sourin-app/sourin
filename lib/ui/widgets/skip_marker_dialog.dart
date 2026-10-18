@@ -661,6 +661,18 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   bool _loading = true;
   bool _saving = false;
 
+  /// 正在重置（清空四个点）—— 与 [_saving] 分开
+  ///
+  /// ⚠️ 不复用 `_saving`：两者对应的按钮不同（重置 / 确认设置），
+  ///    混用会让"重置中"也把保存按钮禁掉，或反之。
+  bool _resetting = false;
+
+  /// 写操作（保存 / 重置）失败的原因 —— 显示在底栏，让用户知道没成功
+  ///
+  /// ★ 与读路径的 `_loadError` 分开：那个管"数据读不出来"，
+  ///   这个管"写不进去"。两者可能同时发生，分开存才不会互相覆盖。
+  String? _saveError;
+
   /*
    * ══════════════════════════════════════════════════════════════════
    * ★★★ 读取跳过点的三态（2026-10-18 · 第 66 轮）
@@ -1395,6 +1407,20 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   }
 
   /// 保存
+  ///
+  /// # ★ 超时 + 失败态（2026-10-18）
+  ///
+  /// ```text
+  /// 改前：await SourinApi.setSkipMarker(...) 没有超时
+  ///   ⇒ 核心层卡住 ⇒ Future 永不完成 ⇒ `_saving` 永不复位
+  ///   ⇒ `_canSave` 永为 false（它第一行就是 `if (_saving) return false;`）
+  ///   ⇒ 保存按钮**永久禁用**、文案永久「保存中…」
+  ///   ⇒ 用户点不动、也没法重试，只能关窗重开
+  /// 改后：10 秒超时 ⇒ 显式失败 + 复位 _saving ⇒ 可以再试
+  /// ```
+  ///
+  /// ⚠️ 与读路径共用 [_kLoadTimeout]（同一个核心层、同一个理由：
+  ///    兜底不挂死，不是 SLA 守护）。
   Future<void> _save() async {
     /*
      * ★ 前端也要校验区间合法性（2026-09-24）
@@ -1406,7 +1432,10 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
      * 但让用户点了"确认"才看到报错很糟 —— 这里先在 UI 层拦一道，
      * 把不合法的组合直接禁用按钮（见 `_canSave`）。
      */
-    setState(() => _saving = true);
+    setState(() {
+      _saving = true;
+      _saveError = null;
+    });
     try {
       await SourinApi.setSkipMarker(
         widget.provider,
@@ -1417,7 +1446,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
         outroStart: _outroStart,
         outroEnd: _outroEnd,
         autoSkip: _autoSkip,
-      );
+      ).timeout(_kLoadTimeout);
       if (!mounted) return;
       Navigator.of(context).pop(SkipMarkerResult(
         introStart: _introStart,
@@ -1426,33 +1455,125 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
         outroEnd: _outroEnd,
         autoSkip: _autoSkip,
       ));
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() {
+        _saving = false; // ★ 必须复位，否则按钮永久禁用
+        _saveError = '核心层 ${_kLoadTimeout.inSeconds} 秒无响应';
+      });
+      _toast('保存失败：超时');
     } catch (e) {
       if (!mounted) return;
-      setState(() => _saving = false);
+      setState(() {
+        _saving = false;
+        _saveError = '$e';
+      });
       _toast('保存失败：$e');
     }
   }
 
   /// 重置（清空四个点）
+  ///
+  /// # ★★★ 破坏性操作：失败**必须**如实说，且要重读服务器真实状态
+  ///
+  /// ```text
+  /// 改前：
+  ///   try { await clearSkipMarker(...) } catch (e) { debugPrint(...) }   // 只记日志
+  ///   setState(四值全清)        ← ★ 失败也清
+  ///   _toast('已重置')          ← ★ 失败也报"已重置"
+  ///
+  /// ⇒ 用户以为清掉了，实际根本没删
+  /// ⇒ 下次打开发现跳过点还在 ⇒ 判定"这软件有 bug"
+  /// ```
+  ///
+  /// **「重置」是删数据的操作。静默失败不只是体验问题 ——
+  ///   用户以为删了、实际没删，是隐私风险**（比如他想清掉某个看过记录）。
+  ///
+  /// # 为什么失败后要**重读**而不是"保留本地值"
+  ///
+  /// ```text
+  /// 失败时的本地值本身也**未必可信**：
+  ///   · 可能上游刚被别处改过
+  ///   · 可能是上一次读取超时留下的陈旧值
+  /// ⇒ 唯一可靠的做法：**问服务器现在到底是什么**
+  /// ★ 判据：失败后 UI 显示的必须是**服务器的真实状态**，不是本地猜的。
+  /// ```
   Future<void> _reset() async {
-    try {
-      await SourinApi.clearSkipMarker(widget.provider, widget.id);
-    } catch (e) {
-      debugPrint('[SKIPDLG] 清除失败: $e');
-    }
-    if (!mounted) return;
     setState(() {
-      _introStart = null;
-      _introEnd = null;
-      _outroStart = null;
-      _outroEnd = null;
+      _resetting = true;
+      _saveError = null;
     });
-    _toast('已重置');
+    try {
+      await SourinApi.clearSkipMarker(widget.provider, widget.id)
+          .timeout(_kLoadTimeout);
+      if (!mounted) return;
+      setState(() {
+        _introStart = null;
+        _introEnd = null;
+        _outroStart = null;
+        _outroEnd = null;
+        _resetting = false;
+      });
+      _toast('已重置');
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() {
+        _resetting = false;
+        _saveError = '重置失败：核心层 ${_kLoadTimeout.inSeconds} 秒无响应';
+      });
+      _toast('重置失败：超时');
+      /*
+       * ★★ 必须重读，让 UI 显示服务器的真实状态。
+       *    不清空本地值、也不保留它们 —— 而是**以服务器为准**。
+       */
+      _loadState = _LoadState.loading;
+      await _loadExisting();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _resetting = false;
+        _saveError = '重置失败：$e';
+      });
+      debugPrint('[SKIPDLG] 清除失败: $e');
+      _toast('重置失败：$e');
+      // ★ 同上：以服务器真实状态为准
+      _loadState = _LoadState.loading;
+      await _loadExisting();
+    }
   }
 
-  /// 能不能保存（区间合法性 —— 原版后端会抛错，这里提前拦）
-  bool get _canSave {
-    if (_saving) return false;
+  /// 输入本身合法吗（只看区间，**不含**「是否正在忙」）
+  ///
+  /// # ★ 2026-10-18 从 `_canSave` 拆出来的理由
+  ///
+  /// ```text
+  /// 改前 `_canSave` 混了两件事：
+  ///   ① 输入是否合法（区间检查）
+  ///   ② 当前是否在忙（_saving）
+  ///
+  /// 而底栏那行提示写的是 `if (!_canSave) 显示「区间不合法：…」`
+  ///   ⇒ 它假设 `_canSave == false` 一定是"输入有错"
+  ///   ⇒ 于是 `_saving == true` 时（此时 `_canSave` 必为 false）
+  ///      保存过程中会闪一句「区间不合法：需要 起点 < 终点…」
+  ///   ⇒ 而此刻区间**明明是合法的**（用户刚因为合法才点的保存）
+  ///   ⇒ 假报错。
+  /// ```
+  ///
+  /// **⇒ 判据必须拆开：**
+  /// ```text
+  /// _inputValid —— 回答"用户填得对不对"（纯输入校验）
+  /// _canSave    —— 回答"现在能不能按这个按钮"（输入合法 且 不忙）
+  ///
+  /// 提示文案用 `_inputValid`（它要说的是"输入有错"）
+  /// 按钮 onPressed 用 `_canSave`（它要说的是"能不能点"）
+  /// ```
+  ///
+  /// ★ 为什么不用 `if (!_canSave && !_saving)` 这种补丁式修法：
+  ///   那样每加一种"忙"的状态（`_resetting` 已经出现了）都要在这行
+  ///   多补一个 `&&` 条件，而漏补一次就会重新出现假报错。
+  ///   拆成两个判据后，**语义就分开了**：`_busy` 再怎么增长，
+  ///   提示文案只看 `_inputValid`，永远不受影响。
+  bool get _inputValid {
     // 片头：起点 < 终点
     if (_introStart != null && _introEnd != null && _introStart! >= _introEnd!) {
       return false;
@@ -1467,6 +1588,17 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
     }
     return true;
   }
+
+  /// 当前是否在忙（保存或重置进行中）——
+  ///
+  /// 单独提出来是为了让「忙」的**种类增加时**只改这一处。
+  bool get _busy => _saving || _resetting;
+
+  /// 能不能保存（区间合法性 —— 原版后端会抛错，这里提前拦）
+  ///
+  /// ★ 语义 = [_inputValid] 且不在忙。**不要**用它判断"输入有错"，
+  ///   那个用 [_inputValid]（见它的说明：混用会产生假报错）。
+  bool get _canSave => _inputValid && !_busy;
 
   /// 弹一条 2 秒的提示（"被夹到边界了"）
   ///
@@ -3062,7 +3194,22 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
-        if (!_canSave)
+        /*
+         * ★ 2026-10-18 修：这里以前写 `if (!_canSave)`，而 `_canSave`
+         *   含「是否在忙」⇒ 保存过程中会闪现「区间不合法」的假报错。
+         *   现在用 `_inputValid`（纯输入校验）—— 语义与文案对上了。
+         *   详见 `_inputValid` 的说明。
+         */
+        if (_saveError != null)
+          Padding(
+            padding: const EdgeInsets.only(right: Sp.x3),
+            child: Text(
+              // 写失败必须如实说 —— 绝不静默（尤其是重置：它删数据）
+              _saveError!,
+              style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+            ),
+          )
+        else if (!_inputValid)
           Padding(
             padding: const EdgeInsets.only(right: Sp.x3),
             child: Text(
@@ -3071,7 +3218,11 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
               style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
             ),
           ),
-        TextButton(onPressed: _reset, child: const Text('重置')),
+        TextButton(
+          // ★ 重置是破坏性操作：忙的时候不许并发操作
+          onPressed: _busy ? null : _reset,
+          child: Text(_resetting ? '重置中…' : '重置'),
+        ),
         const SizedBox(width: Sp.x2),
         FilledButton(
           onPressed: _canSave ? _save : null,

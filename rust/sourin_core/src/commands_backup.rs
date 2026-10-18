@@ -852,7 +852,13 @@ pub async fn configure_webdav(
     let saved_user = cfg.username.clone();
     let saved_dir = cfg.remote_dir.clone();
     let engine =
-        crate::sync::SyncEngine::new_webdav(cfg, state.db.clone(), state.device_id.clone())?;
+        crate::sync::SyncEngine::new_webdav(cfg, state.db.clone(), state.device_id.clone())?
+            /*
+             * ★ 必须挂 data_dir —— 凭据平面从 `<data_dir>/plugins/.data/` 读登录态。
+             *   不挂的话 `sync_credentials` 只会返回"引擎未挂载数据目录"，
+             *   用户看到"同步完成"但登录态永远不过去（假绿）。
+             */
+            .with_data_dir(state.data_dir.clone());
 
     // ★ 先建目录，再自检（顺序不能反 —— 见函数文档）
     engine.prepare().await?;

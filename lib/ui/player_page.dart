@@ -11407,6 +11407,64 @@ class _PlayerPageState extends State<PlayerPage>
       // ★ task-31 ⑤ 在线搜索字幕面板（同款全屏浮层）
       _subtitlePanelOpen;
 
+  /*
+   * ★★★ 2026-10-18（R3-④）：面板关闭后，播放/暂停守卫要**多保持一小会**
+   *
+   * # 为什么需要这个"衰减"
+   *
+   * ```text
+   * 用户报的缺陷：「在这个弹窗内部双击会透传」。
+   * 真实序列（实测 .probe/probe_b_risk_test.dart）：
+   *   第 1 击 ⇒ 命中遮罩 ⇒ onClose ⇒ _danmakuSheetOpen = false
+   *   第 2 击（40ms 后）⇒ 面板已不在 ⇒ 落到播放区 ⇒ _togglePlay ⇒ **视频暂停**
+   *
+   * ⚠️ 我第一次的修法 `onTap: _anySheetOpen ? null : _togglePlay` **不生效**：
+   *    第 1 击已经把 `_anySheetOpen` 变成 false 了，
+   *    第 2 击到达时守卫**已经撤掉** ⇒ 照样暂停。
+   *    门禁当场抓到（断言③ Expected 0 / Actual 1），不是推理出来的。
+   * ```
+   *
+   * # 这个字段做什么
+   *
+   * ```text
+   * 面板关掉时置 true，350ms 后自动置回 false。
+   * 播放区的 onTap 判据用的是 `_anySheetOpen || _sheetGuardHold`
+   * ⇒ 关窗后那 ~350ms 内，第 2 击落下来是**空操作**；
+   *   350ms 之后恢复正常（用户再点画面仍能播放/暂停）。
+   * ```
+   *
+   * # ★ 为什么不是"延迟关窗"
+   *
+   * ```text
+   * 延迟**关窗**会让每次点遮罩都多等 300ms（高频主路径受损，
+   * 那是我上一版方案，被否掉了）。
+   * ★ 这里延迟的是**撤销守卫**，不是关窗 ——
+   *   面板照旧**立即**消失，用户完全感觉不到（实测：单击后单次 pump 就关了）。
+   *   只有"守卫还多站一会儿"这一件事被推迟，而它没有任何可见效果。
+   * ```
+   *
+   * ⚠️ 为什么不做得更"聪明"（比如只在检测到双击时保持）：
+   *    第 2 击到达时面板已经没了，**没有任何地方能观察到"这是双击的第 2 击"**。
+   *    ⇒ 只能用一个时间窗兜住。
+   */
+  bool _sheetGuardHold = false;
+  Timer? _sheetGuardTimer;
+
+  /// 面板关闭后调用：让播放/暂停守卫多站 350ms，挡住"双击透传"的第 2 击。
+  ///
+  /// 350ms 的取值：Flutter 的 `kDoubleTapTimeout = 300ms`
+  /// （`package:flutter/src/gestures/constants.dart:35`），留 50ms 余量。
+  void _holdSheetGuard() {
+    _sheetGuardTimer?.cancel();
+    if (!_sheetGuardHold) {
+      setState(() => _sheetGuardHold = true);
+    }
+    _sheetGuardTimer = Timer(const Duration(milliseconds: 350), () {
+      if (!mounted) return;
+      setState(() => _sheetGuardHold = false);
+    });
+  }
+
   /// ★★★ 错误态下顶栏那枚返回箭头**必须仍然可用**（Owner 2026-10-09 新增）
   ///
   /// ══════════════════════════════════════════════════════════════════
@@ -14204,6 +14262,16 @@ class _PlayerPageState extends State<PlayerPage>
     // ★ 2026-10-09：弹幕失败角标的到点隐藏定时器 —— 不 cancel 会泄漏（且回调打到已卸载 State）
     _danmakuBadgeTimer?.cancel();
     /*
+     * ★ 2026-10-18（R3-④）：遮罩关闭后的「播放/暂停守卫保持」定时器。
+     *
+     * 它由 `_holdSheetGuard()` 装、350ms 后自己撤。
+     * 虽然回调里有 `if (!mounted) return` 兜住（不会崩），
+     * 但**不 cancel 会让 Timer 在本页销毁后继续持有 State 引用**最多 350ms
+     * ⇒ 严格说应当 cancel，与上面几个定时器口径一致。
+     */
+    _sheetGuardTimer?.cancel();
+    _sheetGuardTimer = null;
+    /*
      * ★ 退出前**立刻**落盘
      *
      * 原版注释：
@@ -14495,7 +14563,58 @@ class _PlayerPageState extends State<PlayerPage>
              *    （见下面的条件挂载），竞技场里没有双击竞争者，
              *    `onTap` 立即触发。
              */
-              onTap: _togglePlay,
+              /*
+             * ★★★ 2026-10-18（R3-④）：面板开着 / 刚关掉时**必须**禁掉播放暂停
+             *
+             * # 修的缺陷（用户：「在这个弹窗内部双击会透传」）
+             *
+             * ```text
+             * 模态面板是「遮罩 + 卡片」两层。在**遮罩区双击**的真实序列：
+             *   第 1 击 ⇒ 命中遮罩 ⇒ onClose ⇒ 面板子树被移除
+             *   第 2 击 ⇒ 面板已不在 ⇒ 落到播放区 ⇒ 本行
+             *          ⇒ _togglePlay() ⇒ **正在播的视频被暂停**
+             * ```
+             * 实测（`.probe/probe_b_risk_test.dart`）：
+             * `[B] ★遮罩双击 ⇒ tap=1 doubleTap=0 longPress=0` ← 普通 onTap 落地
+             *
+             * # ★★ 为什么判据里多了一个 `_sheetGuardHold`
+             *
+             * ```text
+             * 只写 `_anySheetOpen ? null : ...` **不管用** —— 实测被抓：
+             *   第 1 击关窗那一刻 `_anySheetOpen` 就变 false 了，
+             *   第 2 击到达时守卫**已经撤掉** ⇒ 照样暂停。
+             *   （门禁断言③ 首次跑：Expected 0 / Actual 1）
+             *
+             * ⇒ `_sheetGuardHold` 让守卫在关窗后**多站 350ms**
+             *   （一个 kDoubleTapTimeout + 余量），挡住第 2 击。
+             *   它由 `_holdSheetGuard()` 维护，见该方法的文档。
+             * ```
+             *
+             * ⚠️ 这不是"延迟关窗" —— 面板照旧**立即**消失，
+             *    用户感觉不到；推迟的只有"守卫何时撤"，无可见效果。
+             *
+             * # 为什么是这里加守卫，而不是去改弹窗外壳
+             *
+             * ```text
+             * 外壳侧两条路都实测不成立（.probe/t66_r3_listener_attempt.md）：
+             *   ① 遮罩注册 onDoubleTap ⇒ 遮罩**单击关窗**要等 300ms（高频路径受损）
+             *   ② Listener 判双击 ⇒ 关窗那一刻组件就被 setState 移除，屏障活不过它
+             * ⇒ 换个方向：接受透传，但让**落点无害**。
+             * ```
+             *
+             * # 这是补一处**既有不一致**
+             *
+             * ```text
+             * `_anySheetOpen` 已被用在三处守卫（:1062 / :1115 / :11467），
+             * 唯独播放/暂停这一条没防。现在补齐。
+             * ```
+             *
+             * ⚠️ 已核实：本 onTap **不承担**控制条显隐 ——
+             *    控制条由 `_showControls()` 驱动（起播 / 悬停 / 定时器，
+             *    见 :5355 与 `_armHideTimer`），与本行无关。
+             *    所以置 null 不影响任何其它交互。
+             */
+              onTap: (_anySheetOpen || _sheetGuardHold) ? null : _togglePlay,
               /*
              * ══════════════════════════════════════════════════════════
              * ★★★ 双击左右侧快进快退 —— **PC 上不做**（2026-09-24 用户要求）
@@ -16043,6 +16162,14 @@ class _PlayerPageState extends State<PlayerPage>
                             setState(() => _danmakuSheetOpen = false);
                             // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
                             _restoreBarsAfterSheet();
+                            /*
+                             * ★★ 2026-10-18（R3-④）：让播放/暂停守卫多站 350ms。
+                             *
+                             * 遮罩双击时第 2 击会在本面板关掉后落到播放区
+                             * ⇒ 不加这行就会暂停视频（用户报的缺陷）。
+                             * 详见 `_holdSheetGuard()` 的文档。
+                             */
+                            _holdSheetGuard();
                           },
                         ),
                       ),
@@ -16076,6 +16203,8 @@ class _PlayerPageState extends State<PlayerPage>
                             setState(() => _biliSheetOpen = false);
                             // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
                             _restoreBarsAfterSheet();
+                            // ★ 2026-10-18（R3-④）：同弹幕面板，见 _holdSheetGuard。
+                            _holdSheetGuard();
                           },
                         ),
                       ),

@@ -1018,3 +1018,71 @@ T6 隐藏→hover 循环 8 轮          ⇒ pageBuild=8 all=1504 p50=7639us [红
    验证 widget 门禁的结论在真机上成立
 ④ 交付里明确标注「Stopwatch 测不到 GPU raster」这个局限
 ```
+
+---
+
+# 第 66 轮再补充（七）：健康检测**必然超时**的真缺陷（Lead 复核确认）
+
+## 一、这是一个真实缺陷，不是「测试挡路」
+
+轨道 C 报称 `test/provider_import_test.dart` 的 2 条断言把 `healthSweep()`
+钉成唯一正确实现，与 Owner 第 13 条（要显示进度）互斥。
+我逐层复核了它给的证据链，**全部成立**，而且比它说的更确凿。
+
+### 根因链（我逐条核过代码）
+
+```text
+① 健康探活有三层实现，只有两层是真的
+   rust/sourin_core/src/provider.rs:571
+     trait 默认实现  async fn health_check(&self) -> bool { true }   ← **恒真**
+   rust/sourin_core/src/providers/declarative.rs:688   有真实现（探 categories / list）
+   rust/sourin_core/src/providers/http.rs:485          有真实现（重拉 /manifest）
+   ⇒ **JS 插件全部落到 trait 默认 ⇒ 恒返回 true**
+
+② 批量巡检是**串行**的，且最坏耗时远超 FFI 兜底
+   rust/sourin_core/src/registry.rs:499  health_sweep()
+     for p in targets {
+       tokio::time::timeout(Duration::from_secs(15), p.health_check())
+     }                        ↑ 逐个子串行，不是并发
+   最坏耗时 = 源数 × 15s；本机 32 源 ⇒ **480s**
+   而 lib/core/ffi.dart:685 的兜底超时是 **120s**
+   ⇒ 必然抛「命令 health_sweep 超时（120 秒）」⇒ **结果全丢**
+
+③ 这正是 Owner 看到的「现在都显示测速 健康失败」
+```
+
+### 轨道 C 的真机读数（与上述根因吻合）
+
+```text
+调 health_sweep：总耗时 5ms，返回 32 条，全部 true
+  ⇒ 因为 JS 插件没实现 health_check，全走默认 Ok(true)
+  ⇒ 「全部正常」是**恒真假话**，用户点这个按钮等于什么都没测
+
+真实探活（get_categories）：26 可用 / 5 失败，3931ms，最慢 1992ms
+```
+
+⇒ **「批量入口又假又必然超时」**，不是测试问题，是功能本身坏了。
+Owner 的要求（逐项 + 显示进度）恰好**同时修掉**这两个毛病。
+
+## 二、处置决定
+
+```text
+① 授权轨道 C 改 test/provider_import_test.dart 的那 2 条断言，
+   但**断言用意不许变**（仍是「不许假接线」+「判据不许写反」），只换载体。
+② 改完必须故障注入：把 _probeProviderHealth( 改回 healthSweep() ⇒ 新断言必须红。
+③ 反向断言必须在**剥注释后**的文本上判 ——
+   否则将来有人写一句 // 不要用 SourinApi.healthSweep() 就会假红。
+```
+
+## 三、记录一条流程教训
+
+我在分派时没要求「改到一半也要保持可编译」，结果轨道 A 把
+`player_page.dart` 的语法错误中间态留在共享工作树里，
+污染了另外三条轨道的测试信号（任何 import 它的测试都 `No tests ran`）。
+
+```text
+教训：多轨道共享工作树时，「独占文件」只解决**写冲突**，
+     不解决**编译依赖冲突**。
+     ⇒ 规矩要补一条：独占文件可以长改，但**每个逻辑单元结束必须能编译**。
+     判据：dart analyze <那个文件> = 0 error。
+```

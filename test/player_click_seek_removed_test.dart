@@ -110,12 +110,33 @@ void main() {
 
     test('★★ 单击必须**仍然**能播放/暂停（别把孩子跟洗澡水一起倒掉）', () {
       final noComments = _stripComments(page);
+      /*
+       * ★★ 2026-10-19（R3-④）：断言从「字面量包含」改成「意图判据」
+       *
+       * ```text
+       * 旧断言：noComments.contains('onTap: _togglePlay')
+       * 缺陷  ：R3-④ 把这一行改成了
+       *         onTap: (_anySheetOpen || _sheetGuardHold) ? null : _togglePlay
+       *         ⇒ 字面量没了 ⇒ 断言红
+       * 但**意图仍然为真**：单击画面依旧能播放/暂停（只是面板开着/刚关掉时
+       * 那一小段窗口里被守卫拦住，那正是 R3-④ 要的）。
+       *
+       * ⇒ 判据改为：那行 onTap **必须以 `_togglePlay` 结尾**
+       *   —— 既允许守卫前缀，又要求落点确实是播放/暂停。
+       *   守卫前缀本身由 zz_t66_dialog_no_passthrough_test.dart 守。
+       * ```
+       *
+       * ⚠️ 不许退回 `contains('_togglePlay')`：那会把
+       *    `onTap: null` / `onTap: () {}` 之类也判绿（弱断言）。
+       */
       expect(
-        noComments.contains('onTap: _togglePlay'),
+        RegExp(r'onTap:\s*[^,\n]*_togglePlay\s*,').hasMatch(noComments),
         isTrue,
         reason: '★ 用户说的是「不要**单击快进快退**」，**没有**说去掉'
             '「单击画面播放/暂停」—— 那是所有播放器（含原版）的通行习惯。'
-            '删掉它会让单击彻底没反应，比原来更糟。',
+            '删掉它会让单击彻底没反应，比原来更糟。\n'
+            '  允许守卫前缀（如 `(_anySheetOpen || _sheetGuardHold) ? null : `），'
+            '  但落点必须仍是 _togglePlay。',
       );
       expect(
         noComments.contains('void _togglePlay()'),

@@ -2282,3 +2282,71 @@ live-ux 上轮用 ClipRRect 反证「控件不可能跑到窗口外」。
   ② Stack 里被别的层盖住一半
   ③ _RoundBtn 的 padding all(6) + iconSize 在窄容器里被压
 ```
+
+---
+
+## R3-③⑦ / 弹幕搜索 HandshakeException —— 根因已查明（2026-10-18 19:3x）
+
+### ★ 先更正我自己半小时前的一个错误结论
+
+```text
+我在 §R3-⑦ 里写过「两个内置 dan-api 服务都好好的，实测 HTTP 200」。
+★ **那个结论作废。** 它是 DNS 状态在几分钟内变化导致的（首次 PowerShell 请求
+  恰好走通，之后再测全部失败）。我把一次偶然成功当成了稳定事实。
+```
+
+### 实测链（每一次都留了命令和输出）
+
+```text
+① Dart HttpClient 直连（产品用的就是它，IoDanmakuTransport :668）
+   FAIL danmu-api-delta  HandshakeException: Connection terminated during handshake
+   FAIL danmu-api-kappa  HandshakeException: Connection terminated during handshake
+   ⇒ **产品里那个错误 100% 复现**
+
+② 对比实验：直连 vs 走代理
+   OK   直连(DIRECT)      status=200 len=1182
+   FAIL 走代理 7890       HandshakeException
+   ⇒ 反直觉：直连成功、走代理失败（第一次实验时）
+
+③ 清掉 HTTPS_PROXY/HTTP_PROXY 环境变量后重跑
+   FAIL 直连(DIRECT)     SocketException
+   FAIL 走代理 7890      HandshakeException
+   ⇒ 连直连也挂了 ⇒ 说明问题在 DNS，不在出口路径
+
+④ DNS 解析（决定性证据）
+   nslookup danmu-api-delta.vercel.app          ⇒ 157.240.2.36    ← Facebook 网段
+   nslookup danmu-api-delta.vercel.app 8.8.8.8  ⇒ 199.16.156.39   ← Twitter 网段
+   nslookup vercel.app                          ⇒ 199.16.158.12   ← 同样是假 IP
+   nslookup vercel.com                          ⇒ 64.239.109.193  ← 正常
+   ⇒ **`*.vercel.app` 在这个网络里被完整屏蔽/DNS 污染**，
+     连 8.8.8.8 返回的都是假地址。
+
+⑤ PowerShell Invoke-WebRequest 复测（推翻我自己的旧结论）
+   FAIL: The SSL connection could not be established
+   curl.exe: HTTP 000
+   ⇒ 早先那次「HTTP 200」是偶发，不可复现。
+```
+
+### 结论（分三层，别混）
+
+```text
+【网络层，不是产品 bug】
+  *.vercel.app 在当前网络被 DNS 污染 ⇒ 任何直连都握不上手。
+  ⇒ Owner 说「这两个内置服务根本用不了」是**对的**，我之前的反驳是错的。
+
+【产品层，真缺陷 #1】
+  IoDanmakuTransport（danmaku.dart:668）**没有任何错误分类**：
+    · 不区分「DNS 污染 / TLS 握手失败 / 超时 / 404」
+    · 直接把 `HandshakeException: Connection terminated during handshake`
+      这串英文原样显示给用户（Owner 截图里那行橙字）
+  ⇒ 用户看到英文异常名，既不知道是谁的问题，也不知道该怎么办。
+
+【产品层，真缺陷 #2（更根本）】
+  「内置公共实例」依赖一个**在国内网络不可达**的域名。
+  ⇒ 这个"内置"设计在当前网络环境下等于**没有内置**。
+  可选处置：
+    a) 换可达的托管（自己的域名 / 国内可访问的服务）
+    b) 保留但**在 UI 上明说**「需要能访问 vercel.app」
+    c) 删掉内置实例，改为引导用户填自建地址
+  ★ 这需要 Owner 决策（涉及对外服务），我不擅自改。
+```

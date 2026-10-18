@@ -384,8 +384,25 @@ class LivePage extends StatefulWidget {
   ///     它在 pop 时完成，是可靠的（lead 裁决 (a)）。
   /// ⇒ 所以这个回调必须把 push 的 Future 交出来。
   /// ```
-  final Future<void> Function(String provider, String channelId, String name)?
-      onWatchLive;
+  ///
+  /// # ★ 返回值：`bool?` = 「全屏里用户最后表达的意图」（2026-10-18 修 Owner 12:55）
+  ///
+  /// ```text
+  /// true  = 用户在全屏里按了暂停   ⇒ 回来**不许**自动续播
+  /// false = 用户在全屏里按了播放   ⇒ 回来照旧续播
+  /// null  = 没有这个信号（其他入口 / 降级 / 旧调用方）⇒ **不改变**现有状态
+  /// ```
+  /// ⚠️ 为什么 `null` 不能当 `false`：
+  /// ```text
+  /// null  = "我不知道他按了什么"
+  /// false = "他明确表达了要播放"
+  /// 混为一谈会让"未知"意外变成"续播" —— 正是本次要修的 bug 的同类错误。
+  /// ```
+  final Future<bool?> Function(
+    String provider,
+    String channelId,
+    String name,
+  )? onWatchLive;
 
   /// 回看某条节目 → 进播放器
   final void Function(
@@ -592,7 +609,51 @@ class LivePageState extends State<LivePage> {
   /// 是否已探测过至少一轮（"还有多少没探完"的提示用）
   bool _probed = false;
 
-  /// ★ 探测进度（已探 / 总数）—— 显示在"探测中"提示里，让用户知道
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ P0：可用性持久化（Owner：「迟早要被拉黑」）
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * 用户原话：
+   * > 直播页现在每次都刷新全量的检测,这是错误的 一定要有缓存啊,
+   * > 不然这样子迟早要被拉黑
+   *
+   * # 病因（不是 TTL 太短）
+   * ```text
+   * `LiveAvailabilityProbe._result` 和 `SourinApi._liveStreamCache`
+   * 都是**进程内存** ⇒ 进程一退就没了 ⇒ 每次启动从零全量探测。
+   * ⚠️ 把 TTL 从 30 秒改成 10 分钟**解决不了**（内存里 TTL 多长都要重来），
+   *    还会带回"点重试没用"的老 bug。
+   * ```
+   *
+   * # 对策
+   * ```text
+   * ① 结果落盘（LiveHealthCache）⇒ 启动读盘，有有效缓存就**完全不探测**
+   * ② 无缓存时才探，且**延迟 30 秒**（错开启动瞬间的请求高峰）
+   * ```
+   */
+
+  /// 可用性检查是**稍后**才开始（无缓存/全过期时的延迟探测）
+  ///
+  /// ★ 这个标志存在的唯一目的：那 30 秒里 UI 必须能说清"还没开始检查"，
+  ///   否则用户看到一个徽标都没有，会以为功能坏了。
+  bool _probeScheduled = false;
+
+  /// 延迟探测的定时器（与 [_healthTimer] 分开：一个管"要不要开始探"，
+  /// 一个管"定期重试已知有问题的"）
+  Timer? _probeDelayTimer;
+
+  /// 无缓存时，等多久才开始第一轮探测
+  ///
+  /// # 为什么是 30 秒
+  /// ```text
+  /// Owner 抱怨的是"每次启动都全量" ⇒ 即使这次真的需要探，
+  /// 也应该**错开启动瞬间**：先让用户看到界面、先手动点几个台，
+  /// 那几十个台的真实播放结果会先把最要紧的状态填上。
+  /// ```
+  static const Duration _probeDelay = Duration(seconds: 30);
+
+  /// 探测进度（已探 / 总数）—— 显示在"探测中"提示里，让用户知道
   ///   列表为什么还在变（48 个频道大约 0.2~1 秒）
   int _probeDone = 0;
   int _probeTotal = 0;
@@ -3700,15 +3761,45 @@ class LiveChannelListState extends State<LiveChannelList> {
             onManageGroups: _openGroupManager,
             hasGroups: _allGroupNames.isNotEmpty,
             // 当前选中项的**显示名**（下拉按钮上显示这个）
-            groupDisplay: _sourceGroupFilter ?? '全部分组',
+            /*
+             * ★★★ P1-L1（B 部分）：fallback 文案缩短 —— 给长名字腾空间
+             *
+             * # 改前 → 改后（每格省 24~36px）
+             * ```text
+             * 「全部分组」(4字/48px) → 「分组」(2字/24px)   省 24px
+             * 「全部源」  (3字/36px) → 「源」  (1字/12px)   省 24px
+             * 「全部分类」(4字/48px) → 「分类」(2字/24px)   省 24px
+             * ```
+             *
+             * # 为什么只在这些是**未选中**状态时（`?? ` 的 fallback）缩短
+             * ```text
+             * 选中具体值之后显示的是**那个名字**（如「科教·生活·科学」），
+             * 长度不受本次改动影响。缩短的只是"没选"时的占位文案。
+             * ```
+             *
+             * # ⚠️ 语义不能丢：靠 Tooltip 补全
+             * ```text
+             * 「分组」/「源」/「分类」单独看是名词，可能被误读成"当前值"。
+             * ⇒ `_BarDropdown` 的 Tooltip 已改成"显示当前完整值"，
+             *    用户在悬停时能看到「分组」+ 当前选中的组名。
+             * ⚠️ 只留一个字的风险：「源」可能被理解成"源的数量"等
+             *    ⇒ 这是 Lead 明确接受的权衡（截图里那个位置本来就只有 80px）。
+             * ```
+             *
+             * ★ 已核对：`test/` 下**没有**任何 `find.text('全部分组')` 之类的
+             *   精确文案断言（都是按 `ValueKey('live-bar-opt-…')` 匹配）⇒ 安全。
+             */
+            groupDisplay: _sourceGroupFilter ?? '分组',
+            // ★ P1-L1（B）：fallback 缩短，理由见上面 groupDisplay 那段长注释
             sourceDisplay: _sourceFilter == null
-                ? '全部源'
+                ? '源'
                 : (_visibleSources
                         .where((g) => g.provider == _sourceFilter)
                         .map((g) => g.providerName)
                         .firstOrNull ??
-                    '全部源'),
-            categoryDisplay: _groupFilter ?? '全部分类',
+                    '源'),
+            // ★ P1-L1（B）：同上
+            categoryDisplay: _groupFilter ?? '分类',
           ),
 
           /*
@@ -4253,7 +4344,23 @@ class _BarDropdown extends StatelessWidget {
           ),
       ],
       builder: (ctx, controller, _) => Tooltip(
-        message: tooltip ?? '',
+        /*
+         * ★★★ P1-L1 修复（Owner：「直播页面,右侧搜索框显示很奇怪」/「菜」）：
+         *   Tooltip 必须显示**当前选中的完整名字**，不能是固定文案。
+         *
+         * # 为什么（这是"截断后用户看不全"的唯一补偿）
+         * ```text
+         * 300px 右栏里每格只有 ~80.7px，8 字分类名需要 96px ⇒ 必然截断。
+         * 本轮**不做**布局重构（方案 C 需要改信息架构，Lead 明确本轮不做），
+         * ⇒ 截断保留，但必须让用户能**悬停看到全名**。
+         *
+         * ⚠️ 第一版这里是 `message: tooltip ?? ''` ——
+         *    `tooltip` 只有「源」那一格传了值（"只看来自这个源的频道…"），
+         *    分组/分类两格的 `tooltip` 是 **null** ⇒ 悬停**什么都不显示**。
+         * ⇒ 改成：有 tooltip 用 tooltip，没有就显示**当前值** `display`。
+         * ```
+         */
+        message: (tooltip != null && tooltip!.isNotEmpty) ? tooltip! : display,
         child: InkWell(
         onTap: () => controller.isOpen ? controller.close() : controller.open(),
         borderRadius: Radii.rSm,
@@ -4262,9 +4369,37 @@ class _BarDropdown extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // ★ 窄栏：当前值最多 88px，超出用省略号（否则会把工具条顶爆）
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 88),
+              /*
+               * ★★★ P1-L1 修复核心：`ConstrainedBox(maxWidth: 88)` → `Flexible`
+               *
+               * # 改前为什么坏（真机复现，`.probe/shots/t66/t66_zoom_third_cell.png`）
+               * ```text
+               * 结构是：ConstrainedBox(maxWidth: 88) > Text(ellipsis)，然后**硬跟**一个 Icon。
+               * Row 的默认行为是：**非 flexible 子项先按自己的意愿要空间**。
+               * ⇒ Icon(15px) 是固定的、**不可压缩**的；
+               *    Text 拿到 88px 上限后仍然可能超（8 字需要 96px）
+               * ⇒ Row 总宽 = 88 + 15 = 103px，但 Expanded 只给 80.7px
+               * ⇒ **溢出 22.3px** ⇒ Icon 被推出格子的右边界
+               *    ⇒ 箭头压到相邻格，与「管理」图标重叠
+               *    ⇒ 视觉上像一个「菜」字（Owner 报的那个）
+               * ```
+               *
+               * # 改法：`Flexible` 让文字**先让步**，箭头永不压缩
+               * ```text
+               * `Flexible` 的 fit 默认是 loose ⇒ Text 只拿"剩余可用宽"，
+               * 拿了多少就 ellipsis 多少 ⇒ Row 永远不会超。
+               * 箭头保持 15px 固定 ⇒ **永远可见、永远不出格**。
+               * ```
+               *
+               * # ⚠️ 80px 上限不再需要
+               * ```text
+               * 原来那个 `maxWidth: 88` 是"防止把工具条顶爆"的土办法 ——
+               * 但它在窄格子里**比可用宽还大**（80.7 < 88）⇒ 完全没起作用，
+               * 只是让溢出发生在 Row 而不是 Text。
+               * `Flexible` 天然以上一级约束为上限 ⇒ 删掉它。
+               * ```
+               */
+              Flexible(
                 child: Text(
                   display,
                   maxLines: 1,
@@ -4275,6 +4410,10 @@ class _BarDropdown extends StatelessWidget {
                   ),
                 ),
               ),
+              /*
+               * ★ 箭头**不可压缩**：它是"这里能点开"的唯一视觉提示，
+               *   被挤掉用户就不知道那格能下拉（Owner 截图里正是缺了它）。
+               */
               Icon(AppIcons.arrow_drop_down, size: 15, color: colors.onSurfaceVariant),
             ],
           ),

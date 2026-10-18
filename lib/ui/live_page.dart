@@ -559,6 +559,36 @@ class LivePageState extends State<LivePage> {
   /// ```
   final _probe = LiveAvailabilityProbe();
 
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ N15：播放结果驱动的可用性状态（用户 12:58 第④条）
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * 用户原话：
+   * > 然后还有这个直播频道的可用性应该缓存,而不是每次都实时刷新,
+   * > 然后定时刷新+打开如果不能播放,动态标记 定时再刷新掉状态
+   * > + 有些直播不是一直播放的,这个也要注意
+   *
+   * # ★ 为什么**不能**用上面那个 `_probe` 来回答"能不能播"
+   * ```text
+   * `_probe` 的判据是 `StreamCandidate.isPlayable`：
+   *     !drmProtected && !needsHostResolve && url.isNotEmpty
+   * ★ 纯元数据，**不发任何网络请求**（models.dart:1003）
+   * ⇒ 它只能回答"这个源有没有给出可播地址"，
+   *   **不能**回答"这个地址现在能不能出画面"。
+   * ⇒ 三态（可播 / 未检测到画面 / 不可用）**只能**由播放结果驱动。
+   * ```
+   * ⇒ 两个 store 并存，各管一件事，不互相替代。
+   */
+  final _health = LivePlaybackHealthStore();
+
+  /// 后台定时刷新"不可用/未检测到画面"的频道（N15 ②）
+  ///
+  /// ⚠️ **必须 cancel**（见 [dispose]）—— 否则页面销毁后还在跑：
+  ///    真机上会持续耗电，且回调里 `setState` 会抛
+  ///    "setState() called after dispose()"。
+  Timer? _healthTimer;
+
   /// 是否已探测过至少一轮（"还有多少没探完"的提示用）
   bool _probed = false;
 
@@ -1232,6 +1262,20 @@ class LivePageState extends State<LivePage> {
   void dispose() {
     // ★ 2026-09-26【A】`_clock?.cancel()` 已移除（定时器本身删了）
     /*
+     * ★ N15：定时刷新器**必须**在这里 cancel。
+     *
+     * 不 cancel 的后果（真机，不只是理论）：
+     * ```text
+     * ① 页面销毁后定时器仍在跑 ⇒ 持续唤醒 CPU（耗电）
+     * ② 回调里 `if (!mounted) return` 能挡住 setState，但
+     *    定时器本身**永远不会停** ⇒ 泄漏一直累积到进程退出
+     * ③ 本页是保活页（task-41），"暂时切走"不会 dispose，
+     *    所以这条 cancel 只在**真正销毁**时生效 —— 正是我们要的语义
+     * ```
+     */
+    _healthTimer?.cancel();
+    _healthTimer = null;
+    /*
      * ★ 必须移除可见性监听（task-41 保活后生命周期变长，泄漏后果更明显）
      *
      * ⚠️ 内嵌播放器**不在这里 dispose** —— 它是 widget，
@@ -1368,6 +1412,14 @@ class LivePageState extends State<LivePage> {
        * ⇒ 探测完再选，选到的第一个就是**能播的**。
        */
       unawaited(_probeAll());
+      /*
+       * ★ N15 ②：启动后台定时刷新。
+       *
+       * 放在**真数据就绪之后**（不是 initState）：否则第一轮 tick 会在
+       * 还没有频道列表时跑，`pendingRetries()` 必然为空，白跑一次。
+       * `_startHealthTimer` 内部会先 cancel 旧定时器 ⇒ 重复调用安全。
+       */
+      _startHealthTimer();
 
       if (groups.isNotEmpty) {
         /*
@@ -1620,6 +1672,93 @@ class LivePageState extends State<LivePage> {
       if (g.channels.any((x) => x.id == c.id)) return g.provider;
     }
     return _activeProvider;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  //  N15：播放结果回写 + 定时刷新
+  // ══════════════════════════════════════════════════════════════════════
+
+  /// 启动后台定时刷新（N15 ②）
+  ///
+  /// # 为什么是 10 分钟
+  /// ```text
+  /// 与 `LiveAvailabilityProbe.ttl` 的 10 分钟**刻意保持一致**：
+  /// 两套缓存用同一个节律，用户看到的"刷新过"语义不会打架。
+  /// ```
+  ///
+  /// # 为什么只重试 idle/broken
+  /// ```text
+  /// 全量重探 1248 个频道 = 一轮网络风暴 + 界面一直显示"正在检查 x/1248"。
+  /// ★ 而 `playable` 没必要重试（它已经能播），`unknown` 本来就没试过。
+  /// ⇒ 只重试**已知有问题**的那些 —— 通常只有个位数。
+  /// ```
+  void _startHealthTimer() {
+    _healthTimer?.cancel();
+    _healthTimer = Timer.periodic(_health.retryAfter, (_) {
+      if (!mounted) return;
+      _retryUnhealthy();
+    });
+  }
+
+  /// 定时刷新：重试 idle/broken 的频道，成功后**清掉标记**（N15 ④）
+  ///
+  /// 用户原话：「定时再刷新掉状态」
+  ///
+  /// ★ 这里的「刷新掉」= 清成 unknown（不显示徽标），
+  ///   而**不是**直接标成 playable —— 因为"这次重试没报错"
+  ///   不等于"确认能播"（可能只是又超时了一次的另一种表现）。
+  Future<void> _retryUnhealthy() async {
+    final pending = _health.pendingRetries();
+    if (pending.isEmpty) return;
+    debugPrint('[LIVE] 定时刷新：重试 ${pending.length} 个已知有问题的频道');
+
+    var changed = 0;
+    for (final (provider, channelId) in pending) {
+      if (!mounted) return;
+      /*
+       * ★ 用取址成功与否当"它恢复了"的**弱判据**，不透支到"能出画面"。
+       *
+       * 为什么不直接真播一遍：后台起播会抢走用户正在看的那个台的
+       * 解码资源（真机上表现为卡一下），代价远大于收益。
+       * ⇒ 这里是**试探性**的：拿得到流地址就当"看起来恢复了"，
+       *   清掉标记让用户重新看到它；真正的"能不能播"仍由
+       *   用户下次点开时的播放结果决定（那条路才是硬判据）。
+       */
+      try {
+        final list = await SourinApi.getLiveStream(provider, channelId);
+        final ok = list.any((s) => s.isPlayable);
+        if (ok) {
+          _health.clear(provider, channelId);
+          changed++;
+        } else {
+          // 仍然没有可播地址 ⇒ 保持原状态，只把时间推进（下次再试）
+          _health.record(
+            provider: provider,
+            channelId: channelId,
+            health: LivePlaybackHealth.broken,
+            detail: '定时刷新：仍未取到可播地址',
+          );
+        }
+      } catch (e) {
+        /*
+         * ★ 取址失败 ⇒ **不动状态**。
+         *
+         * 这与 `LiveAvailabilityProbe` 的铁律同源：
+         * 网络抖动不能当成"这个台坏了"，否则用户的列表会随网络状况
+         * **随机变少**。保持原状态 + 等下一个周期重试才对。
+         */
+        debugPrint('[LIVE] 定时刷新取址失败 $provider/$channelId: $e');
+      }
+    }
+    if (!mounted) return;
+    if (changed > 0) {
+      debugPrint('[LIVE] 定时刷新完成：$changed 个频道状态已清除');
+      /*
+       * ★ 只在这里 setState **一次**（不是每个频道一次）。
+       *   与 `_probeAll` 的节流同一条教训（本文件 1590 行那段长注释）。
+       */
+      setState(() {});
+    }
   }
 
   /// 当前 provider 下的频道
@@ -2372,6 +2511,14 @@ class LivePageState extends State<LivePage> {
        *     ⇒ 单一写入点（设置页），单一真相（核心的 json）—— 更干净。
        */
       onPickChannel: _select,
+      /*
+       * ★★★ N15：把**播放结果状态**接进列表（用户要求"动态标记"）
+       *
+       * 传的是**只读查询函数**，不是 store 本身（理由见 `LiveChannelList.healthOf`）。
+       * ★ 用 `_providerOf` 反查 provider —— `LiveChannel` 自己不带 provider，
+       *   而状态是按 (provider, channelId) 存的。
+       */
+      healthOf: (c) => _health.healthOf(_providerOf(c), c.id),
       // ★★★ 第 65 轮批次 D：频道搜索（受控，宿主是 `_searchQuery`）
       searchQuery: _searchQuery,
       onSearchChanged: (v) => setState(() => _searchQuery = v),
@@ -2427,7 +2574,44 @@ class LivePageState extends State<LivePage> {
                   : _selected!.group),
       audioOnly: _selected != null && !_streamLoading && _isAudioOnly(_selected!),
       onToggleFullscreen: _selected == null ? null : _watchLive,
-      onError: (msg) => debugPrint('[LIVE] 内嵌播放器报错: $msg'),
+      /*
+       * ★★★ N15 ③：**动态标记**（用户原话「打开如果不能播放,动态标记」）
+       *
+       * # 这是整个可用性体系里**唯一**能拿到真实失败的地方
+       * ```text
+       * `_probe`（LiveAvailabilityProbe）判的是 `isPlayable`，
+       * 纯元数据、不发网络请求 ⇒ 永远不知道"现在能不能播"。
+       * ★ 真实失败信号只在这里出现 ⇒ 所以回写必须挂在这个回调上。
+       * ```
+       *
+       * # 为什么记 `broken` 而不是"再探一次"
+       * ```text
+       * 实测：能走到这个回调的失败（404 / 连不上 / 分片坏）
+       * 都带错误串；而"空播放列表(没开播)"**一条错误都不发**
+       * ⇒ 到这里就一定是"收到了错误串" ⇒ 判 broken 是准确的。
+       * （"没开播"那条路靠 `bootTimeout` 判 idle，不经过这里。）
+       * ```
+       *
+       * ⚠️ 必须用 `_selected` 的**当前** id：用户在等起播时可能已经切台，
+       *    这时错误属于**上一个**台，不能记到新的这个头上。
+       */
+      onError: (msg) {
+        debugPrint('[LIVE] 内嵌播放器报错: $msg');
+        final sel = _selected;
+        if (sel == null) return;
+        final provider = _providerOf(sel);
+        _health.record(
+          provider: provider,
+          channelId: sel.id,
+          health: LivePlaybackHealth.broken,
+          detail: msg,
+        );
+        /*
+         * ★ 只 setState **一次**（这一次是必要的：徽标要立刻变红）。
+         *   不是每频道一次 —— 用户点开一个台才触发一次，量极小。
+         */
+        if (mounted) setState(() {});
+      },
       /*
        * ★★ 用户要求【B】：双击进全屏
        *   判据与播放页同源（`PlayerGestures.doubleTapEnabledFor`）：
@@ -3045,6 +3229,7 @@ class LiveChannelList extends StatefulWidget {
     this.searchQuery = '',
     this.onSearchChanged,
     this.header,
+    this.healthOf,
   });
 
   /// 有可播视频的源（②：整组不可用的源不出现）
@@ -3112,6 +3297,16 @@ class LiveChannelList extends StatefulWidget {
 
   /// 搜索框内容变化（宿主写回自己的 state；测试可只验证回调）
   final ValueChanged<String>? onSearchChanged;
+
+  /// ★★ N15：查某个频道的**播放结果状态**（`null` = 未注入 ⇒ 全 unknown）
+  ///
+  /// # 为什么做成只读回调，而不是直接传 store
+  /// ```text
+  /// 本组件是**纯视图**（它连 provider 都不许改，见 onPickProvider 的注释）。
+  /// 传一个可变 store 进来，它迟早会忍不住去读写 ⇒ 状态所有权就散了。
+  /// ⇒ 只给一个**只读查询函数**：组件问、宿主答，组件永远不写。
+  /// ```
+  final LivePlaybackHealth Function(LiveChannel)? healthOf;
 
   /// ★★★ 第 65 轮批次 D：列表**上方**的自定义区域（当前 = 搜索框 + 命中统计）
   ///
@@ -3566,6 +3761,9 @@ class LiveChannelListState extends State<LiveChannelList> {
                     // ★ tag = 它来自哪个源（用户说"以分组加 tag 作为标记"）
                     tag: entry.tag,
                     active: entry.channel.id == widget.selectedId,
+                    // ★ N15：播放结果状态（null 回调 ⇒ unknown ⇒ 不显示徽标）
+                    health: widget.healthOf?.call(entry.channel) ??
+                        LivePlaybackHealth.unknown,
                     onTap: () => widget.onPickChannel(entry.channel),
                   ),
                 /*
@@ -4692,11 +4890,22 @@ class _ChannelTile extends StatefulWidget {
     required this.active,
     required this.onTap,
     this.tag,
+    this.health = LivePlaybackHealth.unknown,
   });
 
   final LiveChannel channel;
   final bool active;
   final VoidCallback onTap;
+
+  /// ★ N15：这个频道最近一次**播放结果**（不是探测结果，见 `_health` 注释）
+  ///
+  /// ```text
+  /// unknown   ⇒ 不显示任何徽标（没试过就别吓用户）
+  /// playable  ⇒ 不显示徽标（正常的东西不需要标记）
+  /// idle      ⇒ 灰点 + 「未检测到画面（可能未开播）」
+  /// broken    ⇒ 红点 + 「不可用」
+  /// ```
+  final LivePlaybackHealth health;
 
   /// ★★ task-42：来源 tag（用户要求"以分组加 tag 作为标记"）
   ///
@@ -4933,14 +5142,99 @@ class _ChannelTileState extends State<_ChannelTile> {
                 ),
               ),
             ],
+            /*
+             * ★★★ N15：播放结果徽标（用户原话「打开如果不能播放,动态标记」）
+             *
+             * # 三种状态各自的呈现（**必须**不同）
+             * ```text
+             * idle   ⇒ ● 灰点 + 「未检测到画面（可能未开播）」
+             * broken ⇒ ● 红点 + 「不可用」
+             * playable / unknown ⇒ 不画任何东西
+             * ```
+             *
+             * # 为什么 idle 和 broken 不能共用一个样子
+             * ```text
+             * 「不可用」      ⇒ 这个源坏了，别试了
+             * 「未检测到画面」⇒ 可能它现在没播，过会儿再看看
+             * ★ 混成一个「不可用」，用户会**放弃一个其实只是暂时没播的源**。
+             *   （这也是为什么本行文案不写死"未开播"—— 见 liveHealthLabel）
+             * ```
+             *
+             * # 为什么 playable 不画
+             * ```text
+             * 绝大多数频道都正常。给它们全加上"可用"绿点，
+             * 列表会变成一片绿 —— 信息量归零，还压窄了频道名。
+             * ★ 只标记**异常**，正常保持安静。
+             * ```
+             */
+            if (_healthLabel.isNotEmpty) ...[
+              const SizedBox(width: Sp.x2),
+              Tooltip(
+                message: _healthLabel,
+                child: Container(
+                  key: ValueKey('live-health-${widget.channel.id}'),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _healthColor(colors).withValues(alpha: 0.12),
+                    borderRadius: Radii.rSm,
+                    border: Border.all(
+                      color: _healthColor(colors).withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 6,
+                        height: 6,
+                        decoration: BoxDecoration(
+                          color: _healthColor(colors),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _healthLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: FontSizes.cap,
+                          color: _healthColor(colors),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
     );
   }
 
+  /// N15：徽标文案（空 = 不显示徽标）
+  ///
+  /// ★ 委托给 `liveHealthLabel` 而不是在这里重写一份 ——
+  ///   文案是判据的一部分（"不知道就说不知道"），必须**单点定义**，
+  ///   否则 UI 与门禁断言会各说一套。
+  String get _healthLabel => liveHealthLabel(widget.health);
+
+  /// N15：徽标颜色 —— idle 用中性灰，broken 用错误红
+  ///
+  /// ★ 只用 `ColorScheme` 里的语义色，不硬编码色值：
+  ///   主题（含 M 批次玻璃化）换了以后这两种状态仍然可辨。
+  Color _healthColor(ColorScheme colors) => switch (widget.health) {
+        LivePlaybackHealth.broken => colors.error,
+        // idle 是"不确定"，不是"错" —— 用中性色才不会吓到用户
+        LivePlaybackHealth.idle => colors.onSurfaceVariant,
+        _ => colors.onSurfaceVariant,
+      };
+
   Widget _logoText(ColorScheme colors) {
-    // 原版：`ch.name.slice(0, 4)`
     // ⚠️ 用 `widget.channel`（本类是 StatefulWidget，字段在 widget 上）
     final n = widget.channel.name;
     /*

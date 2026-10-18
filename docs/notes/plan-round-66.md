@@ -35,22 +35,42 @@
 | N13 | 单例（真机六条判据全过） | `312bb04` | failures=0 |
 | N12-b | 续期不变量门禁（抓到自己的假绿） | `da34f1c` | 19 条全绿 |
 
-### 进行中 🔄
+### 进行中 🔄 / 待办（2026-10-18 19:00 核）
+
+> **状态标记**：✅ 完成并验证 ｜ 🟡 已实现待真机 ｜ ⚠️ 卡住/需 Owner 输入 ｜ ⏳ 未开始
 
 | 编号 | 内容 | 谁 | 当前状态 |
 |---|---|---|---|
-| **D1** | 弹幕面板 4 tab → 3 tab 语义重构 | danmaku | **已完成**（`DanmakuPanelTab` = display / sources / advanced，见 `danmaku_settings_dialog.dart:410-419`） |
-| **N15** | 插件弹幕发送能力（Owner：插件也归你） | dan-api | 取证中（私库 `sourin-plugins`） |
-| N14 | 缓存不要一次性拉完 | live-groups | **取证完成，方案待批** |
-| N10 | 拖动转圈（自造场景） | perf-player | **已完成**（`beginYieldForSeek` 已接进 `player_page.dart`，sourin_api 5 处） |
-| M2-3 | 直播页筛选条玻璃化（C 方案） | live-ux | 已定方案，实施中 |
-| M2-4 | 详情页玻璃化（第 3 步 OutlinedButton） | settings-ux | **已完成主体**（`detail_page.dart` 11 处 `AppOutlinedButton`） |
-| **P1-L3** | 直播暂停状态不统一（Owner 12:55 截图） | lead | ✅ **已修复且门禁有判别力**（见下方 §P1-L3 结案） |
-| **P1-L2** | 播放控件一半在视窗外（Owner 12:55 截图） | live-ux | ⚠️ **静态定位否定了三条候选根因，需 Owner 截图才能继续** |
-| **P1-L1** | 筛选条三下拉显示异常（Owner 12:55 截图） | lead | ✅ **已修复**（占位文案已缩短，见下方 §P1-L1 结案） |
-| N14 | 缓存窗口 cache-secs=600（字节上限未动） | live-groups | **已完成 07db0c3** |
-| M4 | MaterialApp → WidgetsApp | lead | **已完成 8157a03** |
-| N5 | dan-api 异步（盘点结论：已满足） | danmaku | **已完成**（`sourin_api.dart` 124 处 `callAsync`） |
+| **DM-1** | 「弹幕」按钮一圈毛边（Owner 18:2x） | ⏳ 待派 | ⏳ 未开始 |
+| **DM-2** | 弹幕设置弹窗文字看不清（Owner 18:2x） | ⏳ 待派 | 🟡 已排除对比度（5.86~14.5:1 全达标），真凶疑为玻璃背景，需真机 |
+| **DM-3** | 弹幕源状态点不开（Owner 18:2x） | ⏳ 待派 | 🟡 已定位 `SwitchListTile`（`:1202`），同文件 `:1141` 记录过 Material 祖先陷阱 |
+| **DM-4** | 弹幕获取失败 `HandshakeException`（Owner 18:2x） | ⏳ 待派 | ⏳ 未开始（TLS 握手层，非产品文案问题） |
+| **LG-1** | 扫码登录提示 not function 但实际成功（Owner 18:2x） | ⏳ 待派 | ⏳ 未开始 |
+| **N15** | 插件弹幕发送能力 | dan-api | ⚠️ 取证中（私库 `sourin-plugins`），Owner 出门期间无法确认私库状态 |
+| N14 | 缓存不要一次性拉完 | live-groups | ⚠️ **取证完成，方案待 Owner 批** |
+| M2-3 | 直播页筛选条玻璃化（C 方案） | live-ux | 🟡 已定方案，实施中 |
+| **P1-L2** | 播放控件一半在视窗外（Owner 12:55 截图） | live-ux | ⚠️ **静态定位否定三条候选根因，需 Owner 原始截图** |
+| 全量测试 | 63 条红 | lead | ⚠️ 已核实 1 条为「断言没跟上玻璃化改名」并修复；**剩余 62 条未分类** |
+
+### 已完成（本节收敛，详细结案见各 §）
+
+| 编号 | 内容 | 状态 |
+|---|---|---|
+| D1 | 弹幕面板 4 tab → 3 tab | ✅ `DanmakuPanelTab` = display/sources/advanced（`:410-419`） |
+| N10 | 拖动转圈（自造场景） | ✅ `beginYieldForSeek` 已接进 `player_page.dart` |
+| N5 | dan-api 异步 | ✅ `sourin_api.dart` 124 处 `callAsync` |
+| M4 | MaterialApp → WidgetsApp | ✅ `8157a03` |
+| M2-4 | 详情页玻璃化（OutlinedButton） | ✅ 主体完成（`detail_page.dart` 11 处 `AppOutlinedButton`） |
+| N14 | 缓存窗口 cache-secs=600 | ✅ `07db0c3` |
+| **P1-L1** | 筛选条三下拉显示异常 | ✅ 占位文案已缩短（见下方 §P1-L1 结案） |
+| **P1-L3** | 直播暂停状态不统一 | ✅ 已修复 + **门禁经故障注入证明有判别力**（见下方 §P1-L3 结案） |
+| 假绿修复 | 播放器缓存文案门禁读源码 | ✅ `9289cae`（注入分支写反 ⇒ `+2 -3` 变红） |
+| 接线断开 | 投屏日志从未生效 + `_exitPlayer` 防重入 | ✅ `9af86fc` |
+| 空感知冗余 | 3 处 `jmap(r)?[` | ✅ `921c21d` |
+| 注释纠错 | live_groups 分组改名不能 dispose | ✅ `e2fb8b4` |
+| 三处 P3 注释 | sourin_api / shell / light_tokens | ✅ `b6065d7` |
+| 测试断言 | `plugin_update_ui_test` ④ 改认 `AppIconButton` | 🟡 已修 + 注入证明有判别力，**未提交** |
+
 
 ### §P1-L3 结案（2026-10-18 18:10，Lead 亲自验）
 
@@ -1741,4 +1761,288 @@ Owner 举的例子「某个动画站」= 某个动画站 ⇒ **正好是唯一�
    理由：站点客观有数据 + 读接口免登录 + cid 已有（:1215 处理多 P）
    约束：capabilities 只加 danmaku，**不加** danmakuSend
 ② 矩阵写进私库 README（不放 .probe/ —— 那是 gitignore 的临时目录）
+```
+
+---
+
+# 第 66 轮再补充（八）：Owner 2026-10-18 18:2x 的 4 条弹幕反馈
+
+> **Owner 原话**：「这个弹幕还是不行……弹幕信息的弹窗设计的不错，就是那个 **弹幕** 的按钮，一圈毛边」
+> **并严厉批评**：「为什么每一次让你执行任务，你的注意力都会严重跑偏？」
+
+## ★ 先认账：跑偏是真的，而且有具体形态
+
+```text
+Owner 给的是 4 条**弹幕体验**问题。而我在此之前做了什么：
+  · 在跑全量测试基线对比（一个和弹幕无关的 skip_pair_grouping）
+  · 在给 commit_scope_guard.ps1 补文档
+  · 在核实 P1-L1/L2/L3 的结案状态
+  · 在写 AGENTS.md 的截图纪律
+⇒ 全是"看起来该做的收尾工作"，但**没有一件是 Owner 当下面临的问题**。
+
+★ 跑偏的机制不是"我偷懒"，而是：**我把自己的收尾清单当成了任务清单。**
+  Owner 的输入（4 条弹幕问题）优先级**高于**我手上任何在途事项。
+```
+
+**⇒ 本轮起纪律**：Owner 新反馈进来 ⇒ **立刻停手上一切**，先把反馈落进计划并逐条定位。
+收尾工作（自审、门禁、PR）只在 Owner 没有新反馈时做。
+
+---
+
+## 反馈清单（本节的唯一真源，做完一条改一条状态）
+
+| # | Owner 原话 | 落点 | 状态 |
+|---|---|---|---|
+| **DM-1** | 「那个 **弹幕** 的按钮，一圈毛边」 | 播放页底栏/右侧的「弹幕」按钮 | ⏳ 待定位 |
+| **DM-2** | 「弹幕设置的弹窗文字都看不清楚」 | `danmaku_settings_dialog.dart` 对比度 | ⏳ 待定位 |
+| **DM-3** | 「弹幕设置弹窗的那几个弹幕源，哪些状态我点都点不开」 | `danmaku_settings_dialog.dart` sources tab | ⏳ 待定位 |
+| **DM-4** | 「弹幕还是不行」（附「弹幕信息」弹窗截图：`HandshakeException: Connection terminated during handshake`） | 弹幕获取链路 / 错误提示 | ⏳ 待定位 |
+
+### 另两条（非弹幕，但 Owner 同批提出）
+
+| # | Owner 原话 | 落点 | 状态 |
+|---|---|---|---|
+| **LG-1** | 「bilibili 扫码登录提示 not function，但实际成功了，返回重进 js 插件页面就显示出我的信息」 | 登录面板的**成功判定**与回读时机 | ⏳ 待定位 |
+| **OK-1** | 「『弹幕信息』的弹窗设计的不错」 | —— **这是正面反馈，别改它** | ✅ 保持 |
+
+---
+
+## DM-1 定位（「弹幕」按钮一圈毛边）
+
+**已知**：`player_page.dart:5931` 有 `MoreMenuGroup('弹幕', [...])`。
+但 Owner 说的是**按钮**（不是菜单组），需要找到那个可见的「弹幕」按钮。
+
+```text
+待查：
+① 那个按钮的类是什么（AppIconButton？GlassChip？自绘？）
+② "毛边" 的可能来源：
+   · 玻璃边缘的高光/描边在深色背景上出现 1px 亮边（aliasing）
+   · ClipRRect 的 antiAlias 与背景色不一致
+   · 圆形按钮的 border 与 fill 之间有缝隙
+③ ★ 必须亲眼看到才判 —— 不能靠读代码猜"毛边"是什么
+```
+
+## DM-2 定位（弹窗文字看不清楚）
+
+**待查**：
+```text
+① 哪个主题下看不清（深色 / 浅色）？Owner 截图是深色
+② 用 theme_regression_test.dart 的 WCAG 对比度断言能不能抓到？
+   ⇒ 如果抓不到，说明那条门禁**没覆盖这个弹窗**
+③ 具体是哪几处文字：标题？说明文字？选项标签？
+```
+
+## DM-3 定位（弹幕源状态点不开）
+
+**最强假设**：`sources` tab 用 `SwitchListTile`（`:1202`）。
+```dart
+return SwitchListTile(...)   // :1202
+```
+而同一文件 `:1141-1174` 的长注释记录过一个**已知陷阱**：
+
+```text
+「ListTile 的底色与水波纹画在**最近的 Material 祖先**上。
+  The ListTile is wrapped in a DecoratedBox that has a background color.
+  Because ListTile paints its background and ink splashes on the nearest Material...」
+⇒ 框架当场抛断言。
+```
+
+**⇒ 待验证的具体假设**：
+```text
+① sources tab 的 SwitchListTile 外面有没有 Material 祖先？
+② 如果没有 ⇒ 点击能触发 onChanged 吗？还是整块不可交互？
+③ 有没有可能"点不开"其实是**点下去没反馈**（无 splash），
+   而不是真的没响应？
+④ 每行的点击区域是否只覆盖了 Switch 本身（而不是整行）？
+```
+
+## DM-4 定位（弹幕还是不行）
+
+**Owner 截图的错误**：`HandshakeException: Connection terminated during handshake`
+```text
+这是 transport 层 TLS 握手失败 —— 不是"没有弹幕"，是**请求根本没建立**。
+可能原因（逐条排除）：
+  ① 该源的弹幕接口域名被墙 / 需要代理，而当前网络没走代理
+  ② TLS 版本 / 证书链问题
+  ③ 代理配置只对视频流生效，弹幕请求走了直连
+★ 「弹幕信息」弹窗把错误如实显示出来 —— 这一点 Owner 是认可的（OK-1），
+  不要为了"好看"把错误藏起来。
+```
+
+## LG-1 定位（扫码登录提示 not function 但实际成功）
+
+```text
+Owner 原话：「提示 not function 但是实际成功了，我返回重进 js 插件页面就显示出我的信息了」
+⇒ 说明**登录真的成功了**，但**成功判定/回显时机**错了。
+待查：
+  ① 「not function」这句文案出在哪（grep）
+  ② 登录结果是从哪里读的 —— 是"调用返回"还是"回读用户信息"？
+  ③ 回读时机：登录完成后有没有主动刷新？还是必须等用户重新进页面？
+  ④ ★ 这条的判据：登录成功后**不重进页面**也应该看到自己的信息
+```
+
+---
+
+# 第 66 轮再补充（九）：跑偏复盘 + 当前真实状态的整理
+
+> Owner 2026-10-18 18:2x：「为什么每一次让你执行任务，你的注意力都会严重跑偏？」
+> 并要求：「你先整理整理现在的情况，重新更新计划，然后打开 app」
+
+## 一、跑偏的机制（不是态度问题，是判据问题）
+
+```text
+Owner 给 4 条弹幕体验问题。
+我却在这之前做了：全量测试基线对比、commit_scope_guard.ps1 补文档、
+P1 结案状态核实、AGENTS.md 截图纪律。
+
+★ 事后看，这些"每一件都正确"，但**没有一件是 Owner 当下面临的问题**。
+★ 根因：我把**自己的收尾清单**当成了任务清单。
+  Owner 的新输入优先级高于我手上任何在途事项 —— 这条没有写进任何地方，
+  所以每次都要 Owner 亲自来纠。
+```
+
+**⇒ 本轮起的硬纪律（写在这里，不写进 AGENTS.md，因为它是协作纪律不是工程纪律）**：
+
+```text
+① Owner 新反馈进来 ⇒ 立刻停手上一切，先落计划 + 逐条定位
+② 收尾工作（自审 / 门禁 / PR 准备）只在 Owner 没有新反馈时做
+③ 每完成一条反馈就改计划里的状态，让 Owner 看得见
+④ 不许在 Owner 等着看结果时去跑长任务（全量测试 > 5 分钟的一律让路）
+```
+
+## 二、当前真实状态（2026-10-18 18:25 核）
+
+### 已提交
+
+```text
+分支 docs/round-66-owner-summary，HEAD c91a57e
+本轮提交数：见 git log --oneline 4fda18c^..HEAD | wc -l
+产品代码状态：干净（git status --porcelain lib/ 为空）
+未提交的：.metadata / rust/sourin_core/Cargo.lock（工具生成，一直没提交）
+          test/plugin_update_ui_test.dart（我刚修的断言，待提交）
+```
+
+### 已修复并在 HEAD 里
+
+```text
+✅ MaterialLocalizations 真机崩溃（8f38a89）
+✅ P1-L1 筛选条占位文案缩短
+✅ P1-L3 直播暂停状态回传（8e8be90，且门禁经故障注入证明有判别力）
+✅ 播放器缓存文案门禁假绿（9289cae，分支写反已能变红）
+✅ 投屏日志从未生效 + _exitPlayer 防重入（9af86fc）
+✅ 3 处 jmap 空感知写法（921c21d）
+✅ live_groups 会误导人的注释（e2fb8b4）
+```
+
+### 未完成 / 卡住
+
+```text
+⏳ DM-1 弹幕按钮毛边           ← 需亲眼看到
+⏳ DM-2 弹幕设置弹窗文字看不清  ← 已排除对比度（5.86~14.5:1 全达标），
+                                真凶疑为玻璃背景，需真机确认
+⏳ DM-3 弹幕源状态点不开       ← sources tab 用 SwitchListTile，
+                                同文件 :1141 记录过 Material 祖先陷阱
+⏳ DM-4 弹幕还是不行           ← HandshakeException，TLS 握手失败
+⏳ LG-1 扫码登录 not function 但实际成功
+⚠️ P1-L2 播放控件一半在视窗外  ← 静态定位否定了三条候选，需 Owner 截图
+⚠️ 全量测试有 63 条红          ← 未分类（本轮改动的 / 既有的）
+```
+
+### 全量测试那 63 条红：已确认的性质
+
+```text
+已单独核实 1 条（plugin_update_ui_test ④）：
+  产品把 IconButton 换成 AppIconButton（玻璃化），断言还认旧类名
+  ⇒ **行为有意改变、断言没跟上**，不是产品缺陷
+  ⇒ 已改断言 + 故障注入证明有判别力（注入 TextButton ⇒ 立即红）
+
+已核实 1 条（skip_pair_grouping ②③）：
+  测试要 find.text('片头开始')，而该文案在产品里只在**注释**中出现
+  ⇒ 需要确认基线是否也红（worktree 装依赖时网络失败，未完成）
+  ⚠️ 待办：用主仓库 .dart_tool 复用，或改用 git stash 方式验基线
+
+剩余 61 条：未分类
+```
+
+---
+
+# 第 66 轮再补充（十）：当前卡点清单（Owner 出门期间我不动的东西）
+
+> Owner 2026-10-18 19:00：「我现在先整理一下计划吧，然后我要出门一趟，稍后再跟你说其他的问题」
+> ⇒ **Owner 不在场时我不做需要他决策的事**，只做能自证的。
+
+## 一、必须等 Owner 的（⚠️ 我不碰）
+
+| # | 事项 | 为什么必须等 |
+|---|---|---|
+| A | **P1-L2 播放控件一半在视窗外** | 静态定位已否定三条候选根因（负 left / 负 margin / bandFor 全零命中），且有 `ClipRRect` 反证。**没有 Owner 原始截图无法确认是哪个页面**（内嵌播放器 vs 全屏播放页），盲改风险高——这是 Owner 最在意的播放区 |
+| B | **N15 插件弹幕发送能力** | 需要私库 `sourin-plugins` 的实际状态，我无法验证 |
+| C | **N14 缓存方案** | 取证完成，方案本身需要 Owner 批准 |
+| D | **TM-1 弹幕获取失败 `HandshakeException`** | 可能是网络/代理策略问题，需 Owner 确认他的网络环境是否走代理 |
+| E | **DM-1 毛边 / DM-2 文字看不清** | 「毛边」「看不清」是**主观视觉判断**，必须 Owner 亲眼确认标准 |
+
+## 二、可以自己做的（⏳ Owner 回来前我会推进）
+
+| # | 事项 | 判据 |
+|---|---|---|
+| F | 全量测试剩余 62 条红的分类 | 逐条判定「本轮引入」还是「基线既有」；用 `git show 4fda18c:<file>` 取基线对比 |
+| G | **DM-3 弹幕源点不开** | 纯静态可查：`SwitchListTile` 的 Material 祖先链，`hittest` 覆盖范围 |
+| H | **LG-1 扫码登录 not function** | 纯静态可查：grep 文案来源 + 登录成功回读链路 |
+| I | 验证 `plugin_update_ui_test` 的修复并提交（已注入证明有判别力） | 已做，只差提交 |
+
+## 三、本轮最终配置（Owner 2026-10-18 19:00 定）
+
+```text
+模型     : deepseek-v4.1-flash（本机网关 127.0.0.1:7864）
+上下文   : 1,000,000   ← 网关 /v1/models 自报 context_length=1000000
+最大输出 : 128,000     ← Owner 最终选 128k（不是 256k）
+思考档位 : high（网关 default_effort=high，且 supported_efforts 只有 [low,high,max]）
+```
+
+### 实测依据（我在这台机器上真跑的，不是查文档）
+
+```text
+$ GET /v1/models  ⇒ deepseek-v4.1-flash
+  context_length     = 1000000
+  max_output_tokens  = 128000
+  supported_efforts  = ["low","high","max"]
+  default_effort     = "high"
+```
+
+**关于 128k vs 256k 的更正（我犯过一次错，记录在这里）**
+```text
+★ 我上一轮说「256k 会被网关截到 128k」——**那是推测，已实测证伪**。
+  实测：max_tokens = 128000 / 128001 / 150000 / 256000 / 320000
+        ⇒ 网关**一律静默接受，不报错也不提示截断**。
+★ 所以 128 与 256 的**实际差别很小**，Owner 选 128k 的理由（输出上限占比更小，
+  不容易诱导一次写长文）成立。这不是"256 不能用"，是"128 更合适"。
+```
+
+**关于思考档位（实测，有价值的发现）**
+```text
+$ reasoning_effort 逐档实测（同一 prompt，看 usage.reasoning_tokens）
+  off      ⇒ **HTTP 400 报错**（网关不支持）
+  minimal  ⇒ 32   （网关不支持，被忽略走默认）
+  low      ⇒ 38   ✅ 支持
+  medium   ⇒ 21   （网关不支持，**静默降级成 high 的行为**）
+  high     ⇒ 21   ✅ 支持（默认档）
+  xhigh    ⇒ 21   （网关不支持，**静默降级**）
+  max      ⇒ 49   ✅ 支持
+⇒ 只有 low / high / max 三档真生效。配置里留 medium / xhigh 是**假的选项**，
+  用户选了以为变了，其实没变。⇒ 已建议 Owner 把配置收敛成三档。
+```
+
+⚠️ **未验证**：极长输出的真实截断行为。测不到边界（需要一个能稳定产出 20 万 token
+的提示，代价 40+ 分钟），**这一条我不声称已验证**。
+
+---
+
+# 第 66 轮再补充（十一）：Owner 出门期间的工作纪律
+
+```text
+① 不做需要 Owner 决策的事（见 §十 的第一类）
+② 不动产品视觉（毛边 / 对比度 这类主观判断，必须他亲眼定）
+③ 只做「能自证」的：静态代码核查、测试分类、门禁判别力验证
+④ 每完成一项就更新本文件的状态列
+⑤ Owner 回来时，第一句话要能直接回答「你走了之后我做了什么」
 ```

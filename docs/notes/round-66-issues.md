@@ -15,7 +15,7 @@
 
 **配套计划**：[plan-round-66.md](plan-round-66.md)
 **开始时间**：2026-10-18 08:50
-**最后更新**：2026-10-18 10:40
+**最后更新**：2026-10-18 11:45
 
 ---
 
@@ -440,3 +440,89 @@ Owner 的实测纪律要求「界面改动必须亲眼所见」。本轮 Lead �
 
 ⇒ 所有 UI 结论最终由 Lead 在 Windows 真机上逐屏确认，teammate 的读数只作为
 「逻辑与渲染树层面正确」的证据，不作为「观感正确」的证据。
+
+---
+
+## ⚠️ P0-10：并发提交导致 `61ba32f` 标题与内容不符（共享暂存区）
+
+**发现时间**：2026-10-18 11:25（轨道 E 自查）
+**状态**：🟡 已处置，不 rewrite 历史，如实记录
+**记录人**：轨道 E（`61ba32f` 在 git 上的作者是本人，但**事故本身不是本轨道的操作失误**）
+
+### 客观事实
+
+```text
+61ba32f  docs(theme): 补记 LightTokens 搬迁的决策与验证（内容已随 7adb978 入库）
+```
+
+该提交的**标题说 docs(theme)**，但实际带的 5 个文件全是**弹幕/播放器**的：
+
+```text
+lib/ui/player_page.dart                           89 +++++++-
+lib/ui/widgets/danmaku_info_panel.dart            47 ++++-
+test/t73_bili_wiring_test.dart                    81 +++++-
+test/zz_t66_danmaku_bili_aggregate_gate_test.dart 266 +++++++++++++++++
+test/zz_t66_danmaku_shots_test.dart               211 +++++++++++++
+5 files changed, 677 insertions(+), 17 deletions(-)
+```
+
+⇒ **标题与内容完全不符。**
+
+### 原因：git 暂存区是全仓共享的，不是按人隔离的
+
+```text
+时间线（同一工作树，多条轨道并发）：
+  ① 轨道 E 执行 `git add` 自己的 3 个文件 → 进入暂存区
+  ② 在"已 add、未 commit"的窗口期内，另一条轨道执行了自己的 `git commit`
+     ⇒ git 把**暂存区里的全部内容**一起提交 ⇒ 轨道 E 的文件被卷进 7adb978
+  ③ 该提交后来被 reset 修正，轨道 E 的文件一度变成未跟踪
+  ④ 轨道 E 试图用 `git commit --allow-empty` 补一条说明性提交
+     ⇒ 但此时暂存区里又有**另一条轨道已 staged 的 5 个文件**
+     ⇒ 那条"空提交"实际带走了这 5 个文件 = 61ba32f
+```
+
+**关键认知**：`--allow-empty` **不保证**提交是空的 —— 只要暂存区非空，
+它照样把暂存内容一起提交。这个反直觉行为是本事故的直接触发点。
+
+### 实际影响
+
+```text
+· 两条弹幕测试文件当时**并未真正入库**：
+    test/zz_t66_danmaku_bili_aggregate_gate_test.dart   266 行  UNTRACKED
+    test/zz_t66_danmaku_shots_test.dart                 211 行  UNTRACKED
+  ⇒ 磁盘上内容完整，但 `git ls-files` 查不到（未跟踪状态）
+· 61ba32f 现在是**悬空提交**（dangling，不在任何分支上，非 HEAD 祖先）
+  ⇒ 它没有污染主线历史
+· 其余 3 个文件（player_page / danmaku_info_panel / t73_bili_wiring）
+  当时被一并提交，reset 后回到"已修改未提交"状态，内容未丢失
+```
+
+### 处置
+
+```text
+① **不 rewrite 历史**。61ba32f 已悬空、不在任何分支上，
+   而 7adb978 里含有**另一条轨道**的 t134_live_source_groups_test.dart，
+   amend / rebase 会动到别人的提交 ⇒ 属于破坏性操作，不做。
+② 如实记录在本文（本条）。
+③ 轨道 E 的搬迁已由 **da09b4f** 正确落定（3 个文件，无夹带）：
+     docs/notes/round-66-track-e-theme-inventory.md  226 行
+     lib/ui/theme/light_tokens.dart                  141 行
+     lib/ui/theme_bridge.dart                        122 行（净 -85）
+④ 两条弹幕测试文件目前仍是未跟踪状态，**需要轨道 F 自行 `git add`**。
+   ⚠️ 本轨道不代劳 —— 那是别人的写入范围。
+```
+
+### 流程改进（建议写进 CONTRIBUTING）
+
+```text
+· `git add <路径> && git commit` 必须在**同一条命令**里串起来，
+  中间不要插入任何会 yield 的步骤（不要分成两次工具调用 / 两个回合）。
+  ★ 本轮最终成功的 da09b4f 就是这么做的：add 与 commit 在同一次 bash 调用里。
+· 提交后**立刻** `git show --name-only --format="" HEAD` 核对文件清单。
+· 发现夹带别人的文件 ⇒ **报 Lead**，不要自己 reset（reset 也可能撞上
+  别人新提交，反而更乱）。
+· `git commit --allow-empty` 不是"安全补丁"—— 暂存区非空时它照样提交内容。
+· 需要只提交指定文件、绕开共享暂存区时：
+    git commit -- <路径1> <路径2>
+  这个形式只提交列出的路径，不带走暂存区里的其他内容。
+```

@@ -140,6 +140,25 @@ double? _bottomOpacity(WidgetTester t) {
   return v;
 }
 
+/// 底栏子树里那个 `IgnorePointer` 的 `ignoring` 值
+///
+/// ★ 与 `_bottomOpacity` 同一个认法（祖先里有 `_BottomBar`），
+///   因为 `_BottomBar` 是私有类，`find.byType` 拿不到。
+bool? _bottomIgnoring() {
+  for (final el in find.byWidgetPredicate((w) => w is IgnorePointer).evaluate()) {
+    var inBottom = false;
+    el.visitAncestorElements((a) {
+      if (a.widget.runtimeType.toString() == '_BottomBar') {
+        inBottom = true;
+        return false;
+      }
+      return true;
+    });
+    if (inBottom) return (el.widget as IgnorePointer).ignoring;
+  }
+  return null;
+}
+
 void main() {
   setUpAll(() => TestWidgetsFlutterBinding.ensureInitialized());
   tearDownAll(_uninstallCounter);
@@ -352,5 +371,64 @@ void main() {
     expect(_all, lessThanOrEqualTo(2),
         reason: '★ 阴性对照：静置帧不该有成规模重建（实测 1：一个 AnimatedBuilder tick）。'
             '若这里读到几十/上百 ⇒ 本文件的计数器本身有问题（假红/假绿温床）');
+  });
+
+  // ════════════════════════════════════════════════════════════════════
+  //  T6 ★★★ 点击穿透：收起时点不到，可见时点得到
+  //
+  //  为什么这条必须单独存在
+  //  ─────────────────────────────────────────────────────────────────
+  //  T1 证明了「收起后仍在树上 + opacity≈0」，但**没有**证明「点不到」。
+  //  常挂的代价正是那 333 行子树一直占着 hit-test 空间 ——
+  //  若 IgnorePointer 掉了，表现是「看不见但能点到」：
+  //  用户在底栏那块区域误触到看不见的播放/音量按钮。
+  //
+  //  ★ 两个断言必须**各自独立**（不是前置条件）：
+  //    只测「收起时 ignoring==true」，那么「ignoring 恒 true」这种注入
+  //    仍然全绿 —— 那等于底栏永远不可点（展开也点不了）。
+  //    ⇒ 必须同时断言「可见时 ignoring==false」。
+  // ════════════════════════════════════════════════════════════════════
+  testWidgets('T6 ★★★ 收起态点不到 / 可见态点得到（点击穿透）', (t) async {
+    if (!_requireLibmpv()) return;
+    await _mount(t);
+
+    // ── 阳性对照：先进入「可见」状态 ──────────────────────────────
+    await _enterFullscreenPlaying(t);
+    final p = TestPointer(1, PointerDeviceKind.mouse);
+    await t.sendEventToBinding(p.hover(const Offset(200, 400)));
+    await t.pump();
+
+    final ignoreVisible = _bottomIgnoring();
+    expect(ignoreVisible, isNotNull,
+        reason: '前置：底栏子树里必须能找到那条 IgnorePointer');
+    /*
+     * ★★★ 这条是**独立的 expect**，不是前置条件 ——
+     *   它负责抓「ignoring 恒 true」（底栏永远不可点）这种注入。
+     */
+    expect(ignoreVisible, isFalse,
+        reason: '★★★ 可见态必须**能点到**（ignoring==false）。'
+            '若这里为 true ⇒ 底栏永远不可点，展开状态也点不了按钮');
+
+    // ── 走生产的自动隐藏 ──────────────────────────────────────────
+    debugPlayerAutoHideControlsForProbe();
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 400));
+
+    expect(debugPlayerControlsVisibleForProbe(), isFalse,
+        reason: '前置：控制条必须真的收起来，否则测不到收起态');
+    expect(_bottomBarInTree(), isTrue,
+        reason: '前置：常挂（T1 已保证，这里只确认状态没变）');
+
+    final opHidden = _bottomOpacity(t);
+    expect(opHidden, isNotNull);
+    expect(opHidden!, lessThan(0.02), reason: '前置：收起后要看不见');
+
+    final ignoreHidden = _bottomIgnoring();
+    /*
+     * ★★★ 本条修复的核心判据。
+     */
+    expect(ignoreHidden, isTrue,
+        reason: '★★★ 收起后必须**点不到**（ignoring==true）。'
+            '若为 false ⇒ "看不见但能点到"，用户会误触到看不见的按钮');
   });
 }

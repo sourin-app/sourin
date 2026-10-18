@@ -115,6 +115,81 @@ class SearchPage extends StatefulWidget {
 }
 
 class SearchPageState extends State<SearchPage> {
+  /*
+   * ══════════════════════════════════════════════════════════════════════
+   * ★★★ 第 66 轮轨道 F / L2：搜索页的内容区上限 + 搜索框上限
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * # Owner 的原话（本轮投诉）
+   * > 所有内容都在左边，右边全空
+   * > 输入框太丑，什么都没有
+   *
+   * # 取证（`.probe/probe_tests/zz_t66_l1*.dart`，真渲染树实测）
+   * ```text
+   * 视口 800  ⇒ 搜索框 w=620   右空 117
+   * 视口 1920 ⇒ 搜索框 w=1740  右空 117   ← 一条 1740px 的长条
+   * 视口 2560 ⇒ 搜索框 w=2380  右空 117   ← 一条 2380px 的长条
+   * ```
+   * ⇒ 输入框**跟着窗口无限拉伸**，文字全挤在左端 ⇒ 正是"丑"的主因。
+   *
+   * # 为什么这个常量写在**本页**，而不是复用 `tokens.dart:684`
+   * ```text
+   * tokens.dart 那个 `Layout.contentMaxWidth = 1440` 自己的文档明写：
+   *   「生产代码已不再引用本常量…不要在当代代码里引用它」
+   * （它保留只是为留下原版数值。2026-10-04 Owner 要求"两侧占满"后废弃）
+   * ⇒ 引用它会与该文档冲突；而**改**它更不行（会动 20+ 调用点，
+   *   且等于撤销 Owner 那次决定）。
+   * ⇒ 在本页新建一个页面内常量：**值同 1440，语义是本页自己的**。
+   * ```
+   *
+   * # 为什么是 1440（这个数**不是**我拍的）
+   * ```text
+   * 它来自原版 CSS 的 `--content-max-w: 1440px`（见 tokens.dart:679 的出处说明），
+   * 是这套设计语言原本就有的"内容带"宽度。我沿用它，不再另造数字。
+   * ```
+   */
+  static const double _kContentMaxWidth = 1440;
+
+  /*
+   * ══════════════════════════════════════════════════════════════════════
+   * ★★★ 为什么**没有**"搜索框独立宽度上限"（第一版有 720，已删）
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * # 第一版做法（已废弃）
+   * ```text
+   * 给搜索框单独设 cap = 720，用 Align(center) 居中。
+   * 想法是"单行输入框宽到 720 就够了，再宽是空槽"。
+   * ```
+   *
+   * # 实测把它否掉了（`.probe/probe_tests/zz_t66_l2_after_test.dart`）
+   * ```text
+   * 量"搜索框左缘 − 页头标题左缘"（错位量）：
+   *   视口 800  : cap=720 ⇒ 16px  |  cap=960 ⇒ 0    |  满宽 ⇒ 0
+   *   视口 1400 : cap=720 ⇒ 316px |  cap=960 ⇒ 196  |  满宽 ⇒ 0
+   *   视口 1920 : cap=720 ⇒ 336px |  cap=960 ⇒ 216  |  满宽 ⇒ 0
+   *   视口 2560 : cap=720 ⇒ 336px |  cap=960 ⇒ 216  |  满宽 ⇒ 0
+   * ```
+   * 截图 `.probe/shots/t66/` 第一版产物：页头「搜索」在 x=584，
+   * 搜索框在 x=920 —— **错位 336px**，框浮在中间、标题在左边，看着像坏了。
+   *
+   * # 根因（这条是通用的，不只是本页）
+   * ```text
+   * 页头标题 / 搜索框 / 结果栅格**共用同一条内容带内边距**
+   * （:580-581 / :615 / :1011-1012 / :1064 全调 Layout.contentPaddingOf
+   *   或 contentInsetOf）⇒ 它们天然左对齐。
+   * 而"框自己居中"意味着框的左缘 = 内容带左缘 + (内容带宽 − cap)/2
+   * ⇒ 只要 cap < 内容带宽，就**必然**与左对齐的页头错位。
+   * ⇒ 这不是"720 太小"，是"自己居中"与"左基线对齐"二者不可兼得。
+   * ```
+   *
+   * # 结论
+   * ```text
+   * 搜索框吃满内容带（不设独立 cap）⇒ 与页头、与结果栅格三者一条基线。
+   * "框会不会太宽"由 `_kContentMaxWidth = 1440` 统一约束，
+   * 不需要、也不应该再给单行输入框设第二个上限。
+   * ```
+   */
+
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
 
@@ -177,12 +252,58 @@ class SearchPageState extends State<SearchPage> {
   void initState() {
     super.initState();
     _loadProviderCount();
+    /*
+     * ★★★ 第 66 轮轨道 F / L2-c：让搜索框**看得出自己被聚焦**
+     *
+     * # 改之前的真缺陷（取证：`.probe/t66_l1g_inputs.txt`）
+     * ```text
+     * search_page.dart 原来把 InputDecoration 的**每一级**边框都压成 none：
+     *   border / enabledBorder / focusedBorder / errorBorder /
+     *   focusedErrorBorder / disabledBorder = InputBorder.none
+     * （原因见那段注释：全局主题给各级都设了 OutlineInputBorder，
+     *   不压掉就会在外层 Container 的描边里面**再多画一条**主色描边）
+     * ⇒ 副作用：**聚焦时零视觉变化**。用户点进搜索框，界面上什么都没发生。
+     * ```
+     * Owner 说「输入框太丑，什么都没有」—— 无焦点反馈是其中一项。
+     *
+     * # 改法：边框由**外层 Container** 画（这是它原本的职责，见 :520）
+     * ```text
+     * 外层 Container 的 border 颜色改为：
+     *   聚焦 ? colors.primary : colors.outlineVariant
+     * ⇒ 焦点态回到"一条主色描边"，且**仍然只有一条**（InputDecoration
+     *   那几级继续是 none）—— 不会重蹈"奇怪的边界线"。
+     * ```
+     *
+     * # 为什么用 `addListener` + `setState`，而不是 `Focus` widget / ValueListenable
+     * ```text
+     * ① 本页**已经**有 `_focusNode`（:119，给 TextField 用的）——
+     *    复用它是零新增状态。另建一个会变成两份焦点来源，必然不同步。
+     * ② `Focus` widget 会**再插一层**焦点节点，与 TextField 自带的那个
+     *    形成父子焦点，`hasFocus` 语义变复杂（要从 `FocusScope` 取）。
+     * ③ `setState` 的代价可忽略：焦点一进一出，一共两次重建。
+     * ⇒ 用最直接的：listener 里 setState，build 里读 `_focusNode.hasFocus`。
+     * ```
+     * ⚠️ 只在本页局部做 —— 没引任何全局 FocusNode 管理。
+     */
+    _focusNode.addListener(_onFocusChanged);
+  }
+
+  /// 焦点变化 ⇒ 重画搜索框描边（见 [initState] 的说明）
+  void _onFocusChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   @override
   void dispose() {
     // 离开页面时取消 —— 别让搜索在后台白跑
     _cancelCurrent();
+    /*
+     * ★ 与 initState 的 addListener 成对（自己加的自己摘）
+     * ⚠️ 必须在 `_focusNode.dispose()` **之前**摘 —— dispose 之后
+     *    再 removeListener 会断言（listener 表已经释放了）。
+     */
+    _focusNode.removeListener(_onFocusChanged);
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -439,9 +560,38 @@ class SearchPageState extends State<SearchPage> {
      */
     return Padding(
       padding: Layout.sideInsetOf(context),
-      child: CustomScrollView(
-        clipBehavior: Clip.antiAlias,
-        slivers: [
+      child: Align(
+        /*
+         * ★★★ 第 66 轮轨道 F / L2-a：结果区内容带**上限 1440 + 居中**
+         *
+         * # 为什么加在 `CustomScrollView` **外面**（而不是每个 sliver 里）
+         * ```text
+         * 结果区由**三类 sliver** 拼成（页头 / 搜索框 / 结果组），
+         * 它们各自有自己的左右 padding（`Layout.contentInsetOf`）。
+         * 若在每个 sliver 内部各加一次上限，三点会**各自居中但互相错位**
+         * （页头 1440、结果组 1440，但两者用的约束来源不同就漂）。
+         * ⇒ 在滚动视图**外层**收一次，三处自动同宽同位置。
+         * ```
+         *
+         * # 为什么这里 `Align` 不会是空操作（重要）
+         * ```text
+         * tokens.dart:765 记着"套在滚动体外面的 Center 是空操作"——
+         * 那是 **Center 直接包 CustomScrollView** 的情形：
+         *   Center 给 loose 约束 ⇒ 视口仍取 constraints.biggest ⇒ 整窗宽。
+         * ★ 我这里用的是 `Align` + **`ConstrainedBox` 先收紧 maxWidth**：
+         *   收紧后 constraint.biggest == 1440 ⇒ 视口**真的**变 1440。
+         * ⇒ 关键不是"Align 还是 Padding"，而是"maxWidth 有没有真的变小"。
+         * ```
+         *
+         * ⚠️ 视口 ≤ 1440 时上限不生效 ⇒ 行为与改前**逐字节相同**
+         *    （Owner 的窄窗体验不会被这条改动碰到）。
+         */
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: _kContentMaxWidth),
+          child: CustomScrollView(
+            clipBehavior: Clip.antiAlias,
+            slivers: [
         // ── 页头 ──（随内容滚走）
         SliverToBoxAdapter(
           child: Padding(
@@ -484,13 +634,58 @@ class SearchPageState extends State<SearchPage> {
             background: colors.surface,
             child: Padding(
               padding: Layout.contentInsetOf(context),
+              /*
+               * ★★★ 第 66 轮轨道 F / L2-b：搜索框**不再跟着窗口无限拉伸**
+               *
+               * # 改前（实测，`.probe/t66_l1g_inputs.txt`）
+               * ```text
+               * 800  ⇒ w=620     1920 ⇒ w=1740     2560 ⇒ w=2380
+               * ```
+               * 一条 2380×48 的长条，hint 挤在左端，右边 2000px 全是同质空槽。
+               *
+               * # 改法：**跟着内容带走**（不另设小上限）
+               * ```text
+               * 外层已经用 `_kContentMaxWidth = 1440` 把内容带收窄并居中
+               * （见 build 里那个 Align + ConstrainedBox）⇒ 本框直接吃满内容带，
+               * 自然就跟着一起居中，**不需要**再设一个 720 的独立上限。
+               * ```
+               *
+               * # ★★★ 为什么放弃"720 上限 + 框自己居中"（第一版就是这么写的）
+               * ```text
+               * 实测截图 `.probe/shots/t66/t66_after_2560.png`：
+               *   页头「搜索」标题在 x=584，搜索框却在 x=920 —— **错位 336px**
+               * 因为它居中的参照是"内容带"（584..1976），而页头文字是
+               * **左对齐**在同一内容带上 ⇒ 框浮在中间、标题在左边，看着像坏了。
+               * ⇒ 一个输入框不该比它自己的标题更"居中"。
+               *
+               * 另外：720 在 1400 视口（t75 测试用的那档）也会生效，
+               * 会把 left 从 24 挤到 340 ⇒ 与"内容带左缘对齐"这个不变量冲突。
+               * ```
+               * ⇒ 现在：**搜索框与页头、结果栅格共用同一条左基线**，
+               *   三者一起被内容带的上限带着居中。这才是"对齐"，不是"各自居中"。
+               */
               child: Container(
                 key: _searchBoxKey,
                 padding: const EdgeInsets.symmetric(horizontal: Sp.x3),
                 decoration: BoxDecoration(
                   color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
                   borderRadius: Radii.rLg,
-                  border: Border.all(color: colors.outlineVariant),
+                  /*
+                   * ★ L2-c：聚焦时描边转主色（改前恒为 outlineVariant）
+                   *
+                   * 改前用户点进搜索框**界面毫无变化**（InputDecoration
+                   * 各级都被压成 none，见下面 TextField 的那段长注释）。
+                   * ⇒ 焦点态由**这一层**负责 —— 它本来就是画描边的那一层。
+                   *
+                   * ⚠️ 只改**颜色**，不加粗：加粗会让框宽高变化 1px，
+                   *    而 `_searchBarHeight = 50` 是写死的紧约束
+                   *    ⇒ 加粗必然 `RenderFlex overflowed`（见那个常量的说明）。
+                   */
+                  border: Border.all(
+                    color: _focusNode.hasFocus
+                        ? colors.primary
+                        : colors.outlineVariant,
+                  ),
                 ),
                 child: Row(
                   children: [
@@ -539,7 +734,7 @@ class SearchPageState extends State<SearchPage> {
                           focusedErrorBorder: InputBorder.none,
                           disabledBorder: InputBorder.none,
                         ),
-                        style: const TextStyle(fontSize: FontSizes.base),
+                      style: const TextStyle(fontSize: FontSizes.base),
                       ),
                     ),
                     if (_controller.text.isNotEmpty)
@@ -647,7 +842,9 @@ class SearchPageState extends State<SearchPage> {
         //    不是编译期常量 ⇒ `const SliverToBoxAdapter(...)` 会报
         //    `invalid_constant`。同款写法见 `settings_sub_page.dart:275`。
         SliverToBoxAdapter(child: SizedBox(height: Sp.bottomBarInset)),
-      ],
+          ],
+        ),
+        ),
       ),
     );
   }
@@ -783,18 +980,52 @@ class _ResultGroup extends StatelessWidget {
      * ⚠️ 入参是**内容带宽度**（`bandFor(窗口宽)`，★ 2026-10-04 起恒等于窗口宽）
      *    —— 减左右内边距那一步在 `Layout` 里只做一次（task-74⑤ 那个双重相减的坑）。
      */
-    final band = Layout.bandFor(MediaQuery.sizeOf(context).width);
-    final cols = Layout.columnsForBand(band);
+    /*
+     * ★★★ 第 66 轮轨道 F / L2-a：列数必须按**本组真实可用宽度**算
+     *
+     * # 改之前
+     * ```text
+     * band = Layout.bandFor(MediaQuery.sizeOf(context).width)   ← 窗口宽
+     * ```
+     * 2026-10-04 起 `bandFor` 恒等于窗口宽 ⇒ 那时它是对的（内容也铺满窗口）。
+     *
+     * # 为什么现在必须换
+     * ```text
+     * 本轮给搜索页加了 `_kContentMaxWidth = 1440` 的内容区上限。
+     * 若仍按**窗口宽**（2560）算列数：
+     *   cols = 12（2560 算出来是 12）
+     *   而实际可用只有 1440 − 48 = 1392
+     *   ⇒ 每张卡 = (1392 − 16×11) / 12 = **101.33px**
+     *   ⇒ ★ 低于 `Layout.minCellWide = 152` 的下限，海报被压扁
+     * ⇒ 这正是本仓反复踩的"两个数不同源"的坑（task-74⑤ 的双重相减同类）。
+     * ```
+     * # 修法：改用 `LayoutBuilder` 的真实约束（本组实际拿到的宽度）
+     * ```text
+     * 不受上限影响时（窗口 ≤ 1440）：约束宽 == 窗口宽 ⇒ 与旧行为**逐值相同**
+     *   例：视口 800 ⇒ 约束 800 ⇒ cols 4（改前也是 4）
+     * 受上限影响时（窗口 > 1440）：约束宽 == 1440 ⇒ cols 8、cell 160
+     *   ⇒ 卡片回到正常尺寸，而不是被压成 101px
+     * ```
+     * ⚠️ `LayoutBuilder` 的 `maxWidth` 是**本组拿到的宽度**（已扣过内容区上限，
+     *   但**还没**扣 `contentPadding`）⇒ 与 `columnsForBand` 的入参语义一致
+     *   （它内部自己减内边距，只减一次）。
+     */
+    return LayoutBuilder(
+      builder: (ctx, constraints) {
+        final band = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.sizeOf(ctx).width;
+        final cols = Layout.columnsForBand(band);
 
-    return Padding(
-      // ★ 组间距用 Sp.x8；底部让位由 CustomScrollView 末尾那个
-      //   SliverToBoxAdapter 统一给（见 build 的最后一条 sliver）。
-      //   原来每一组都带 Sp.bottomBarInset(90) ⇒ 组间凭空多出 90px 空白，
-      //   结果一多就变成"结果之间裂开"，与"不闪不跳"的要求正好相反。
-      padding: const EdgeInsets.only(bottom: Sp.x8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+        return Padding(
+          // ★ 组间距用 Sp.x8；底部让位由 CustomScrollView 末尾那个
+          //   SliverToBoxAdapter 统一给（见 build 的最后一条 sliver）。
+          //   原来每一组都带 Sp.bottomBarInset(90) ⇒ 组间凭空多出 90px 空白，
+          //   结果一多就变成"结果之间裂开"，与"不闪不跳"的要求正好相反。
+          padding: const EdgeInsets.only(bottom: Sp.x8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
           Padding(
             padding: EdgeInsets.only(
               bottom: Sp.x2,
@@ -878,7 +1109,9 @@ class _ResultGroup extends StatelessWidget {
             ),
           ),
         ],
-      ),
+          ),
+        );
+      },
     );
   }
 }

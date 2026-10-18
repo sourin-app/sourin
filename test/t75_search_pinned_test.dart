@@ -77,6 +77,14 @@ const double kPadTop = 20;
 /// 断言里不写死它，而是**当场量**（见 `restTop`），避免以后改页头就假失败。
 const double kHeaderH = 78;
 
+/// 内容内边距 = `AppMetrics.contentPadding` = `Sp.x6` = 24
+///
+/// ★ 这里写字面量而不是 import `AppMetrics`：本文件已有 `kBarH` / `kPadTop`
+///   / `kHeaderH` 同款写法（都是实测字面量），保持风格一致。
+///   若 `Sp.x6` 改了，`test/t493_layout_probe_test.dart` 会先红，
+///   那条测试是 Layout 体系的权威判据。
+const double kContentPad = 24;
+
 Widget host(Widget child, Size size) {
   final theme = AppTheme.themeFor(Brightness.light);
   return MaterialApp(
@@ -207,8 +215,50 @@ void main() {
               '否则滚动到吸顶那一刻会因紧约束变化而跳一下/溢出');
       expect(r.top, kHeaderH + kPadTop,
           reason: '静止态 top = 页头高 + 顶距 = $kHeaderH + $kPadTop（实测）');
-      expect(r.left, 24.0, reason: '左右边距 = AppMetrics.contentPadding（Sp.x6）');
-      expect(r.right, kViewport.width - 24.0);
+      /*
+       * ══════════════════════════════════════════════════════════════════
+       * ★★★ 第 66 轮轨道 F：这两条断言从「锁死 left=24」改为「锁居中不变量」
+       * ══════════════════════════════════════════════════════════════════
+       *
+       * # 为什么要改（改动缘由，不是放宽求绿）
+       * ```text
+       * 原文（task-74 当时）：
+       *   expect(r.left, 24.0);                       ← 锁死"两侧占满"
+       *   expect(r.right, kViewport.width - 24.0);
+       * 那是**当时的产品行为**：Owner 2026-10-04 说「放大之后两侧留白过多，
+       * 改为两侧占满吧」⇒ tokens.sideInsetForWindow 恒 0 ⇒ left 恒 24。
+       *
+       * 本轮（第 66 轮）Owner 的抱怨**正好相反**：
+       * > 所有内容都在左边，右边全空
+       * ⇒ 产品有意从「两侧占满」改回「内容带居中」（上限 1440）。
+       * ⇒ left 不再是 24，旧断言**必然**红 —— 这不是测试写错了，
+       *   是它忠实锁住了一个**已被产品改掉的**行为。
+       * ```
+       *
+       * # 为什么不写成 `expect(r.left, (kViewport.width - r.width) / 2)`
+       * ```text
+       * 那仍然是"重算一遍同样的算术"：
+       * 谁把内容带上限从 1440 改成 1200，断言跟着变，**照样绿** ——
+       * 它没有守住"居中"这个语义。
+       * ⇒ 判**不变量**：左右留白必须相等。任何宽度策略下都成立。
+       * ```
+       *
+       * # 这两条守什么 / 不守什么
+       * ```text
+       * ✅ 守：水平居中（左右留白相等，容差 0.5px 抗亚像素）
+       * ✅ 守：不贴边（左右至少一个内容内边距）
+       * ❌ 不守：具体宽度是多少（那是产品决策，不该由测试锁定）
+       *    "内容带宽 ≤ 上限"由 test/zz_t66_layout_home_test.dart 守（另一条判据）
+       * ```
+       */
+      expect((r.left - (kViewport.width - r.right)).abs(), lessThan(0.5),
+          reason: '★ 搜索框必须水平居中 —— 左右留白相等。'
+              'left=${r.left} right=${r.right} 视口=${kViewport.width}');
+      expect(r.left, greaterThanOrEqualTo(kContentPad - 0.5),
+          reason: '★ 不许贴边 —— 左留白至少一个内容内边距');
+      expect(kViewport.width - r.right,
+          greaterThanOrEqualTo(kContentPad - 0.5),
+          reason: '★ 不许贴边 —— 右留白至少一个内容内边距');
     });
 
     testWidgets('B2 扫描 13 个偏移：top == max(0, restTop - offset)，高度恒为 50', (t) async {

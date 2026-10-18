@@ -133,10 +133,32 @@ class DanmakuInfoData {
     this.loading = false,
     this.enabled = false,
     this.aggregate = const <DanmakuAggregateFeed>[],
+    this.truncated = false,
   });
 
   final DanmakuFeedKind source;
   final DanmakuPairKind match;
+
+  /// 本次合并结果里，**有任何一个来源**只拿到了上游的部分内容
+  ///
+  /// ★★★ 2026-10-18（Owner 的"半截接线"修复）
+  ///
+  /// # 它为什么存在
+  /// ```text
+  /// `DanmakuBundle.truncated` 从插件一路传到了 `player_page.dart:6263`，
+  /// 但那一行**只打 debugPrint** ⇒ 用户在界面上看不到。
+  /// 某个动画站插件（6 分钟分段，只拉第 1 段）确实会返回 true，
+  /// 于是用户会把「只有开头有弹幕」误解成「这个视频没弹幕」。
+  /// ```
+  ///
+  /// # 为什么是面板层的"汇总"而不是每路一个
+  /// ```text
+  /// `DanmakuAggregateFeed.truncated` 已经能表达"哪一路不足"，
+  /// 但**目前没人给它传 true**（链路在 core 的 DanmakuFeedStat 断掉）。
+  /// ⇒ 这里先承载"整体是否有截断"，让 UI 立刻可用；
+  ///   接线后可以升级成精确到来源的文案。
+  /// ```
+  final bool truncated;
 
   /// 已载入条数。
   ///
@@ -201,6 +223,7 @@ class DanmakuAggregateFeed {
     this.detail = '',
     this.error = '',
     this.loaded = true,
+    this.truncated = false,
   });
 
   /// 给用户看的来源名（例：`插件` / `dan-api` / `本机`）
@@ -217,6 +240,39 @@ class DanmakuAggregateFeed {
 
   /// 这一路是否真的被尝试过（false = 没试，例如插件不支持弹幕）
   final bool loaded;
+
+  /// ★★★ 2026-10-18（Lead 批准）：这一路上游是否**只返回了部分**
+  ///
+  /// # 语义继承自 `DanmakuBundle.truncated`（Rust `model.rs:1023` 逐字）
+  /// ```text
+  /// 「上游被截断了吗」—— 是**上游告诉我们的事实**，不是我们的推测。
+  /// ```
+  ///
+  /// # ⚠️ 目前**没有任何地方传 true** —— 已预留、尚未接线
+  /// ```text
+  /// 完整数据流（实测；插件在独立仓 D:\WishProject\sourin-plugins-user）：
+  ///
+  ///   某个动画站插件.js  const truncated = raw.length > 0  ⇒ 真的会给 true
+  ///   同一插件           query: { segment_index: 1 }      ⇒ 只拉第 1 段（理由诚实）
+  ///   另一个视频站插件   truncated: false                 ⇒ 一次给全量，也正确
+  ///        ↓  Rust  plugins/mod.rs:3640 反序列化
+  ///        ↓  Dart  sourin_api.dart:3402 解析
+  ///        ↓  player_page.dart:6263     **只进 debugPrint**
+  ///        ↓  core  DanmakuFeedStat{kind,count,detail,error,loaded}
+  ///           ★ **没有 truncated** ⇒ 信号在这里断掉
+  ///        ↓  本类（这个字段就是为了将来接上它而预留的）
+  /// ```
+  /// ⇒ 现在能显示的只有**整体层面**的截断（见 `DanmakuInfoData.truncated`），
+  ///   说不出是哪个源不足。
+  ///
+  /// # 接线时要同时做的事
+  /// ```text
+  /// ① 在 player_page 的 `DanmakuAggregateFeed(...)` 构造点把这个事实传下来
+  /// ② 把 `_truncatedLine` 的文案从「整体」升级到「精确到来源」
+  /// ③ 更新门禁 `zz_t66b_info_truncated_test` 里那条
+  ///    「当前无人传 true」的断言（它那时会红，是**故意的**）
+  /// ```
+  final bool truncated;
 
   bool get failed => error.isNotEmpty;
 }
@@ -350,6 +406,16 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
               ],
               const SizedBox(height: Sp.x2),
               _countRow(d),
+              /*
+               * ★★★ 2026-10-18：上游只给了部分 ⇒ 必须让用户看见
+               *
+               * 位置刻意放在**条数之后**：用户先看到"载入了 N 条"，
+               * 紧接着就是"这不完整" —— 两句话连着读才不会被误解成全量。
+               */
+              if (d.truncated) ...[
+                const SizedBox(height: Sp.x2),
+                _truncatedLine(d),
+              ],
               if (d.aggregate.isNotEmpty) ...[
                 const SizedBox(height: Sp.x2),
                 _aggregateRows(d),
@@ -408,6 +474,64 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
           ),
         ],
       );
+
+  /// 「上游只返回了部分」这一行
+  ///
+  /// # 文案为什么是这两句（Lead 2026-10-18 逐字定的）
+  /// ```text
+  /// 「弹幕未完整加载 —— 上游只返回了部分内容」
+  ///
+  /// ① 不用「已截断」：
+  ///    「截断」是我们内部的机械说法，用户读到会以为是"软件砍掉了"，
+  ///    实际是**上游**没给全。责任方必须说清（否则用户会来找我们的 bug）。
+  ///
+  /// ② 不加「可能」：
+  ///    我第一版写的是「上游**可能**只返回了一部分」，Lead 改掉了 ——
+  ///    `truncated == true` 是**上游明确告诉我们的事实**，不是我们的推测。
+  ///    加「可能」会把一个已知事实削弱成猜测，
+  ///    与「不知道就说不知道、知道就直说」同一条纪律。
+  ///
+  /// ③ 回答的是用户真正关心的那个问题：
+  ///    不是"为什么少"（他不会因此改变行为），而是
+  ///    **「我现在看到的是全部吗」** ⇒ 文案第一句就否掉这个疑问。
+  /// ```
+  ///
+  /// ⚠️ 目前说不出**是哪个源**不足（链路断在 core 的 `DanmakuFeedStat`，
+  ///    见 `DanmakuAggregateFeed.truncated` 的文档）。
+  ///    接线后这里应升级为「某个动画站：仅返回前 6 分钟弹幕（上游分段）」。
+  Widget _truncatedLine(DanmakuInfoData d) {
+    /*
+     * ★ 如果将来某一路自己带了 truncated，就说出是哪一路 ——
+     *   这是"接口已预留"的兑现路径：不用改本方法的调用点，只改实现。
+     * 现在 feeds 里 truncated 全为 false ⇒ 走中性文案。
+     */
+    final named = d.aggregate.where((f) => f.truncated).toList(growable: false);
+    final text = named.isEmpty
+        ? '弹幕未完整加载 —— 上游只返回了部分内容'
+        : '弹幕未完整加载 —— ${named.map((f) => f.label).join("、")}'
+            '只返回了部分内容';
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(
+          width: 52,
+          child: Text(
+            '完整性',
+            style: TextStyle(fontSize: FontSizes.cap, color: _fgDim),
+          ),
+        ),
+        const Icon(AppIcons.info_outline, size: 12, color: _warn),
+        const SizedBox(width: Sp.x1),
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(fontSize: FontSizes.cap, color: _warn),
+          ),
+        ),
+      ],
+    );
+  }
 
   Widget _loadingRow() => const Row(
         children: [

@@ -249,6 +249,25 @@ void main() {
     print('[SHOT] t66_info_single');
   });
 
+  testWidgets('信息面板 · 上游只给了部分（truncated）', (t) async {
+    await _pumpPanel(
+      t,
+      DanmakuInfoData(
+        source: DanmakuFeedKind.bili,
+        match: DanmakuPairKind.autoSearch,
+        count: 340,
+        title: '某部长视频 第 1 集',
+        enabled: true,
+        truncated: true,
+        aggregate: const <DanmakuAggregateFeed>[
+          DanmakuAggregateFeed(label: '某个插件', count: 340, detail: '某个插件'),
+        ],
+      ),
+    );
+    await saveViewShot(t, 't66_info_truncated');
+    print('[SHOT] t66_info_truncated');
+  });
+
   // ── 设置面板三个页签（2026-10-18 第四版：显示 / 弹幕来源 / 高级）──
   testWidgets('面板 · 显示页签（默认落点）', (t) async {
     await _pumpSettings(t, '显示');

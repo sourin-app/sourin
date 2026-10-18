@@ -1,0 +1,12 @@
+#!/bin/sh
+# 由手工建立（本仓无 install-hooks 脚本）。改动时请同步 .agents/notes-scripts/。
+#
+# 两道检查，任一失败即拦下：
+#   1. 覆盖门禁 —— 该写笔记的改动必须同批带笔记
+#   2. supersession 检查 —— 新增笔记必须声明与既有笔记的关系
+#      （规则借鉴 deepseek-ai/deepseek-harness）
+#
+# 紧急情况可 `git commit --no-verify` 跳过 —— 但 CI 会再查一次。
+set -e
+node .agents/notes-scripts/notes-coverage.mjs --message-file "$1"
+node .agents/notes-scripts/notes-supersession.mjs

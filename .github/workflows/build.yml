@@ -159,6 +159,63 @@ jobs:
           #   PR 用 base.sha，push 用 event.before。
           AGENT_NOTE_ARCHIVE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
 
+      # ── ⓪-b 笔记覆盖门禁：该写笔记的改动必须同批带笔记 ──────────────
+      #
+      # 上面那三条只验「**已经写了的**笔记格式对不对」，对「改了代码却一篇
+      # 没写」完全无感。本仓最近 30 次提交只有 2 次带笔记，而其中 11 次
+      # 真改了 lib/ 或 test/ 却没记 —— CI 一直是绿的，因为没人检查这件事。
+      #
+      # ★ 判定口径：**自动检测源码目录**（看目录里有没有 .dart/.rs/.go 等
+      #   源码后缀），不写死任何路径。Flutter 的 lib/、Rust 的 rust/、
+      #   测试的 test/ 都能认出来，换技术栈也不用改脚本。
+      # ★ docs/ 故意豁免：那是计划与排查记录（过程），不是决策（结论）。
+      #   本仓大多数提交是 `docs(round-66): 改计划文件`，那些本来就不该
+      #   立决策笔记；把它们也纳入受管会让笔记树迅速注水。
+      # ★ **逐提交**检查：一个提交带的笔记不能替另一个提交顶账 ——
+      #   批量 push 正是最容易漏记的形态，合并看会被一个笔记全部掩护。
+      # ★ 只查**本次 push 新增的提交**（用 event.before），历史欠账不追。
+      # ★ 无法判定时退出码 2，且 2 算失败 —— 「查不到」不能当成「没问题」。
+      - name: 笔记覆盖门禁
+        shell: bash
+        env:
+          NOTES_COVERAGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NOTES_COVERAGE_BASE}" ] || \
+             [ "${NOTES_COVERAGE_BASE}" = "0000000000000000000000000000000000000000" ]; then
+            echo "没有可用的 base sha，改为只检查 HEAD 这一个提交。"
+            node .agents/notes-scripts/notes-coverage.mjs --range HEAD~1..HEAD
+          else
+            node .agents/notes-scripts/notes-coverage.mjs --range "${NOTES_COVERAGE_BASE}..HEAD"
+          fi
+
+      # ── ⓪-c supersession 检查：新笔记必须声明与既有笔记的关系 ────────
+      #
+      # 规则借鉴 deepseek-ai/deepseek-harness 的 .agents/notes/AGENTS.md：
+      #   Every new Agent Note triggers a supersession check.
+      #
+      # 本仓实测：38 篇笔记里 **36 篇没有任何互链**（95%）。不是作者懒 ——
+      # 是没有任何东西提醒他去看既有笔记。笔记越多，重复的决定与已过期的
+      # 结论就越多，而没有人会发现这一行。
+      #
+      # ★ 只查**新增**笔记（修改既有笔记本来就有归属）。
+      # ★ 三种合法路径：相对链接 / `Independent: <理由>` / proposed·rejected 豁免。
+      # ★ 不做语义判重：判断两篇是否讲同一决定需要理解内容，做不到可靠；
+      #   硬做会产出大量误报，而误报的门禁一定会被绕过。
+      - name: supersession 检查
+        shell: bash
+        env:
+          NOTES_SUPERSESSION_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NOTES_SUPERSESSION_BASE}" ] || \
+             [ "${NOTES_SUPERSESSION_BASE}" = "0000000000000000000000000000000000000000" ]; then
+            echo "没有可用的 base sha，改为只检查 HEAD 这一个提交。"
+            node .agents/notes-scripts/notes-supersession.mjs --range HEAD~1..HEAD
+          else
+            node .agents/notes-scripts/notes-supersession.mjs --range "${NOTES_SUPERSESSION_BASE}..HEAD"
+          fi
+
       # ── ① Rust 核心 ────────────────────────────────────────────────
       - name: 编 Rust 核心
         working-directory: rust/sourin_core

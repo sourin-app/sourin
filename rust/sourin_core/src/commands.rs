@@ -761,11 +761,79 @@ pub async fn get_live_channels(
 }
 
 /// 取某频道的播放地址（可能多个候选）
+///
+/// ══════════════════════════════════════════════════════════════════════
+/// VERIFICATION TOOL -- NOT PART OF THE PRODUCT BEHAVIOUR
+/// 见 `tools/live_probe_count.ps1`。环境变量 `SOURIN_LIVE_PROBE_COUNT`
+/// 门控，生产**永不开启**（不设则只做一次 `var_os` 查表，零日志零 IO）。
+/// ══════════════════════════════════════════════════════════════════════
+///
+/// # 探针：`SOURIN_LIVE_PROBE_COUNT=1` ⇒ 记录每次**真实网络探测**（2026-10-18）
+///
+/// # 为什么需要它（Owner：直播页每次都刷新全量的检测，迟早要被拉黑）
+/// ```text
+/// 持久化（live-availability.json + LiveAvailabilityProbe::seed）的单测
+/// 用 fake fetcher 计数 —— 那是**单测层面**的证据。
+/// 真实启动路径上到底跳没跳过，必须在**真实进程**里数。
+/// 本仓已发生多次「单测绿但真实路径没生效」。
+///
+/// ⇒ 这个探针是**唯一**能回答"启动时真发了几个请求"的位置：
+///   直播页的每一次探测都必须经过 `get_live_stream`，
+///   没有任何旁路（它不直接碰 HTTP）。
+///
+/// ★ 它实际抓到的缺陷（2026-10-18）：
+///   `live-availability.json` 被写成 `{"data":{}}`（空），
+///   ⇒ 下次启动读不到任何条目 ⇒ 全量重探 1136 次。
+///   单测全绿，只有这个计数器能看见。
+/// ```
+///
+/// ⚠️ 生产恒不开（无该环境变量 ⇒ 只做一次 `var_os` 查表，零日志零开销）。
+/// # 为什么同时写文件（不止 stderr）
+/// ```text
+/// Windows 上被重定向到**管道**的 stdout/stderr 是**块缓冲**（4KB）。
+/// 应用启动后若输出不多，缓冲区一直不 flush ⇒ force-kill 时全丢
+/// （实测：只抓到 5 行启动期日志）。
+/// ⇒ 探针自己追加写文件，`flush` 同步落盘，不依赖任何缓冲。
+/// 文件路径可用 `SOURIN_LIVE_PROBE_FILE` 覆盖。
+/// ```
+fn live_probe_log(provider: &str, channel_id: &str, n: u64) {
+    if std::env::var_os("SOURIN_LIVE_PROBE_COUNT").is_none() {
+        return;
+    }
+    let line = format!("[LIVE-PROBE-COUNT] #{n} {provider}/{channel_id}");
+    eprintln!("{line}");
+    let path = std::env::var("SOURIN_LIVE_PROBE_FILE")
+        .unwrap_or_else(|_| ".probe/live-probe-calls.txt".to_string());
+    if let Some(dir) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{line}");
+        let _ = f.flush();
+    }
+}
+
 pub async fn get_live_stream(
     state: &AppState,
     provider: &str,
     channel_id: &str,
 ) -> Result<Vec<crate::model::StreamCandidate>, String> {
+    /*
+     * 计数器：进程内自增。
+     *
+     * ⚠️ 用 `AtomicU64` 而不是 `Mutex<u64>`：
+     *   探测是**并发**的（`probe()` 里有并发池），锁会让计数本身
+     *   成为串行点，改变被测行为（观察者效应）。
+     */
+    static PROBE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = PROBE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    live_probe_log(provider, channel_id, n);
+
     let p = state
         .registry
         .get(provider)

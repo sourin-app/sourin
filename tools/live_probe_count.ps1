@@ -12,8 +12,9 @@
 # SOURIN_LIVE_PROBE_COUNT is set. That function is the ONLY path the live
 # page uses to probe a channel, so the line count is the request count.
 #
-# stderr is used because Windows pipe stdout is block-buffered and gets
-# lost when the process is force-killed.
+# The core appends each call to a FILE (SOURIN_LIVE_PROBE_FILE) rather than
+# writing to stderr: on Windows a redirected stdout/stderr pipe is block
+# buffered and the whole buffer is lost when the process is force-killed.
 #
 # Scenarios:
 #   1) no cache at all          -> expect N > 0  (first run must probe)

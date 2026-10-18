@@ -1764,6 +1764,41 @@ class LivePageState extends State<LivePage> {
         setState(() => _probeDone = seen);
       },
     );
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ P0 修复②：**落盘不能受 `mounted` 约束**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 真实进程实测（产品入口 `-t lib/shell.dart`，逐 tab 轮切）
+     * ```text
+     * 876 次 get_live_stream 调用（全量探完）
+     * 但 live-availability.json **MISSING**
+     * 日志里没有"可用性探测完成"这一行
+     * ```
+     *
+     * # 根因
+     * ```text
+     * `_probe` 是 State 字段。`await _probe.probe(...)` 期间用户切走 tab
+     *   ⇒ State.dispose ⇒ mounted == false
+     *   ⇒ 原来这里的 `if (!mounted) return;` 直接返回
+     *   ⇒ _mirrorProbeIntoHealth() / _persistHealth() **永远到不了**
+     *   ⇒ 876 次网络请求的结论**一条都没留下**
+     *
+     * ★ 比"写空数据"更糟：连空文件都不写 ⇒ 现象是文件 MISSING，
+     *   而网络已经全部打完 —— 纯粹白打一轮，正是 Owner 最担心的事。
+     * ```
+     *
+     * # 为什么这样改才对
+     * ```text
+     * 落盘 = 把**已经花掉的网络成本**变成资产，与"页面还在不在"无关。
+     * setState 才需要 mounted 守卫（UI 已销毁就不能重建）。
+     * ⇒ 把镜像与落盘移到 mounted 判断**之前**。
+     * ```
+     */
+    _mirrorProbeIntoHealth();
+    _persistHealth();
+
+    // ↓ 以下才是"刷新 UI"，必须 mounted
     if (!mounted) return;
     setState(() {
       // ★ 收尾：保证进度条走到 100%（否则会停在最后一个未跨 step 的值）
@@ -1771,16 +1806,6 @@ class LivePageState extends State<LivePage> {
       _probed = true;
     });
     if (n > 0) debugPrint('[LIVE] 可用性探测完成：新探 $n / 共 $total');
-    /*
-     * ★ P0：探测结果必须落盘 —— 这是下次启动"不再全量探测"的依据。
-     *
-     * ⚠️ `_probe` 的结果还要**翻译成 `_health`** 一起存：
-     *   只存 `_probe` 的话，徽标那套（播放结果）没有历史，
-     *   下次启动仍是一片空白。这里把探测结论也写进健康状态
-     *   （探测说 "unavailable" ⇒ 健康记 broken）。
-     */
-    _mirrorProbeIntoHealth();
-    _persistHealth();
   }
 
   /// 把探测结论镜像进 `_health`（让"探测到的"也能落盘与显示）

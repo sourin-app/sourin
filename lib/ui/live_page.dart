@@ -60,6 +60,10 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/services.dart'
     show KeyDownEvent, KeyEvent, LogicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
+// ★★★ 第 66 轮 M 批次：玻璃组件（Owner：「彻底不用 Material 组件，全部自建/玻璃」）
+//   ⚠️ 实际版本 **1.11.0**（pubspec 写 ^1.7.2，锁到 1.11.0）——
+//      `GlassChip` 在 1.11.0 没有 `shape` 参数，`GlassIconButton` 用 `onPressed`。
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../core/device.dart';
 // ★★★ 第 65 轮批次 D：冷启动磁盘快照（第二次打开秒开，见 `_hydrateFromCache`）
@@ -3512,6 +3516,44 @@ class LiveChannelListState extends State<LiveChannelList> {
             categoryDisplay: _groupFilter ?? '全部分类',
           ),
 
+          /*
+           * ══════════════════════════════════════════════════════════════
+           * ★★★ 第 66 轮 M 批次：筛选条与列表之间的**呼吸间距**
+           * ══════════════════════════════════════════════════════════════
+           *
+           * # 为什么必须有（不是"加点留白好看"）
+           * ```text
+           * 筛选条玻璃化后，它的下边缘高光**直接撞上**第一行列表。
+           * 实测像素（`.probe/shots/t66/t66_live_rows_C_filterbar.png`）：
+           *   y=44 筛选条下边缘  (31,34,63)   ← 已在变暗
+           *   y=50 两者之间      (29,34,63)   ← 直接就是背景色，**零间距**
+           *   y=58 第一行内容区  (40,44,72)
+           * ⇒ 视觉上分不清"列表从哪开始"，像筛选条吞掉了第一行的一部分。
+           * ```
+           *
+           * # 原理（与吸顶条那条同源）
+           * ```text
+           * 玻璃需要**边界**才能显出它是"浮在上面的一层"。
+           * 紧贴内容 ⇒ 玻璃看起来像背景的一部分，失去层次感。
+           * ★ 这就是"吸顶条必须不透明，否则内容从它下面滚过会糊在一起"
+           *   的同一个道理 —— 玻璃与相邻内容之间必须有分隔。
+           * ```
+           *
+           * # 为什么用 `Sp.x3`（12）而不是 10
+           * ```text
+           * 本仓间距一律走 `Sp` 令牌（Sp.x1=4 / x2=8 / x3=12 …），
+           * 硬编码 10 会在不同密度/TV 档下与其它间距不一致。
+           * 令牌里没有 10 ⇒ 取 12（比 10 更宽松，玻璃边界更清楚）。
+           * ```
+           */
+          /*
+           * ★ `ValueKey` 不是装饰：门禁按这个 key 精确断言"间距存在且高度对"。
+           *   只判"第一行顶边 − 玻璃底边 ≥ 8"**抓不住删除** ——
+           *   实测 gap=31，其中 `ListView` 自己的 `padding` 就贡献了 19
+           *   ⇒ 必须直接量这个 `SizedBox`，否则删掉它测试仍然绿。
+           */
+          const SizedBox(key: ValueKey('live-filterbar-gap'), height: Sp.x3),
+
           // ── 频道（★ task-42：平铺；task-1013：按当前筛选过滤）──
           Expanded(
             child: ListView(
@@ -3720,21 +3762,78 @@ class _FilterBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Container(
+
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 第 66 轮 M 批次：筛选条外壳玻璃化
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 为什么玻璃化**这一层**（而不是列表行、不是搜索框）
+     * ```text
+     * 我实测了三种方案的**像素变化率**（`.probe/shots/t66/`）：
+     *   A 全部行玻璃    46.8%  ⇒ 每行成了独立圆角条，行间出现缝隙，
+     *                            1178 个台的扫视变慢（眼睛要跳过缝隙）
+     *   B 只选中行玻璃   0.8%  ⇒ 几乎看不见，等于没做
+     *   C 筛选条外壳    20.0%  ⇒ 看得见，且列表零改动（扫视不受影响）
+     * ⇒ 选 C。
+     * ```
+     *
+     * # 纯色底下的可见度（这一步很关键，不能拿渐变底糊弄）
+     * ```text
+     * 真实直播页是**纯色底**（无渐变）。实测（`.probe/t66_glass_solid.png`）：
+     *   背景 (21,22,28) / 玻璃卡片内部 (49,52,60) ⇒ **亮 +28，肉眼明显**
+     *   玻璃区域像素变化率 = **38.2%**（远高于"无效"的 5% 门槛）
+     * ⇒ 纯色底下玻璃表现为"更亮的磨砂浮层 + 边缘高光"（少了"透出内容"
+     *   那一层，但仍是玻璃的观感）⇒ 本页玻璃化**有效**。
+     * ```
+     *
+     * # ⚠️ 为什么**不**玻璃化列表行（反向说明，防止将来有人改）
+     * ```text
+     * `_ChannelTile` 未选中时 `color: null`（**没有背景**）。
+     * 给它加玻璃 ⇒ 20 行都会有半透明底 ⇒ 列表从"一个整体"变成"一叠卡片"。
+     * 直播页的核心是**快速扫视大量频道**，行背景越淡越好扫。
+     * ⇒ 行背景保持原样。门禁里有一条**反向断言**钉住这一点。
+     * ```
+     *
+     * # ⚠️ 为什么**不**玻璃化吸顶条（`_StickySearchBar`）
+     * ```text
+     * 它本来就该"不透明" —— 否则内容从它下面滚过会糊在一起。
+     * ★ 这是**视觉正确性**问题，不是性能问题。
+     * ```
+     */
+    return GlassCard(
       /*
-       * ★ 高度**写死 36**，这是本组件存在的核心约束（见类注释）。
+       * ★ 高度**写死 36**（原有约束，见类注释）—— 玻璃化不许改它。
        * ⚠️ 不要改成 mainAxisSize.min —— 那样在下拉展开/字体放大时仍会变高，
        *    又回到「筛选器吃掉列表」的老问题。
+       *
+       * ⚠️ `GlassCard` 自带 `padding: EdgeInsets.all(16)`，必须显式清零，
+       *    否则 36 的高度会被撑成 68（16×2 + 36）。
        */
+      padding: EdgeInsets.zero,
+      margin: EdgeInsets.zero,
       height: 36,
-      padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
-      decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: colors.outlineVariant, width: 0.6),
+      /*
+       * 默认档 `standard`：包文档明确写它是给 scrollable list 用的
+       * （"5-10x faster than BackdropFilter" / "Works correctly during scrolling"）。
+       * premium 档是静态头图用的高开销档，这里不用。
+       */
+      quality: GlassQuality.standard,
+      shape: const LiquidRoundedRectangle(borderRadius: 8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
+        /*
+         * ★ 原来的下边框保留：它是"筛选条与列表之间的分隔线"。
+         *   玻璃化后这条线仍然有用（玻璃本身有边缘高光，但那条高光
+         *   是**贴边**的，不足以替代一条明确的分隔）。
+         */
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: colors.outlineVariant, width: 0.6),
+          ),
         ),
-      ),
-      child: Row(
-        children: [
+        child: Row(
+          children: [
           /*
            * ★ task-34 修：三格 + 管理按钮原样排会**溢出 18px**
            * （实测 92 + 79.8 + 92 + 28 + 间距 = 300 > 282 可用宽，见
@@ -3799,7 +3898,8 @@ class _FilterBar extends StatelessWidget {
               ),
             ),
           ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -3856,6 +3956,14 @@ class _BarOption {
 ///
 /// ★ 结论：①的修法方向错了 —— 我把「不该关对勾」错读成「不该用框架」。
 ///   正确做法是保留框架控件、只调它的参数。
+// TODO(清理): 本组件当前**不被渲染**（所在对话框走 `_ChannelChip` 分支）。
+//   实测依据：点开分组管理器后 `find.byType(FilterChip).evaluate().length == 0`
+//   （`.probe/probe_tests/zz_t66_live_inventory_test.dart`，读数
+//    `.probe/t66_live_inventory.txt` 的「C 管理器对话框」段）。
+//   ★ 它不是"死参数"（源码里被构造 2 次），机械扫描扫不出来 ——
+//     是"构造了但所在的对话框分支不渲染它"。
+//   保留是因为可能还有别的分支在用；删除需单独一轮确认。
+//   见 `docs/notes/round-66-issues.md`「待清理」。
 class _MemberChip extends StatelessWidget {
   const _MemberChip({
     super.key,

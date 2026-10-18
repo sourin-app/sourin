@@ -29,6 +29,8 @@
 // 不读取主题的 surface 槽位 —— 那是给"页面底"用的，不是给"画面浮层"用的。
 library;
 
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
+    show GlassContainer, LiquidRoundedRectangle;
 import 'package:material_ui/material_ui.dart';
 
 import '../../design/widgets/app_ink_well.dart';
@@ -732,6 +734,12 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
 //    （雪景）、红的（爆炸）、彩的（动画）。Material 的 surface 角色是给
 //    "页面底"设计的，放在画面上会糊掉。所以这里是一套**固定的暗浮层色**，
 //    与 player_popover / 播放器底栏同源（它们也不读 surface）。
+/// ★ 2026-10-18（任务 B-3）：**不再使用** —— 玻璃化后遮光由
+/// `GlassContainer` + 一层 40% 的淡染色承担（见 `_Surface`）。
+///
+/// 保留这个常量是为了记录**原来那个 90% 的值**：
+/// 将来若要回退玻璃、回到"实色浮层"，直接用它就是改前的观感。
+// ignore: unused_element
 const Color _scrim = Color(0xE6101216);
 const Color _fg = Color(0xFFF2F4F8);
 const Color _fgDim = Color(0xFF9BA2AE);
@@ -739,7 +747,20 @@ const Color _accent = Color(0xFF7FB2FF);
 const Color _warn = Color(0xFFFFB454);
 const Color _danger = Color(0xFFFF6B6B);
 
-/// 面板的"外壳"：深色浮层 + 1px 描边 + 圆角 + 极轻阴影
+/// 面板的"外壳"：玻璃材质 + 1px 描边 + 圆角 + 极轻阴影
+///
+/// ★★ 2026-10-18（任务 B-3，Owner 要玻璃材质）
+/// ```text
+/// 改前：`color: _scrim` = Color(0xE6101216)，即 **90% 不透明**的深色。
+///   那个不透明度下"玻璃"和"实色"在视觉上几乎无法区分 ——
+///   透不出底下的画面，材质就没有意义。
+///
+/// 改后：外面套 `GlassContainer`（模糊 + 半透明 + 描边），
+///   `_scrim` 降为**很淡**的一层染色（不再承担遮光职责）。
+/// ```
+/// ⚠️ 为什么仍保留一层淡色：本面板浮在**视频画面**上，
+///    画面可能是雪景（亮）也可能是夜景（暗）。纯玻璃在亮画面上
+///    会让白字失去对比度 ⇒ 用一层淡染色兜底（`t27_w1` 的对比度口径）。
 class _Surface extends StatelessWidget {
   const _Surface({required this.child, this.onTap});
 
@@ -750,7 +771,12 @@ class _Surface extends StatelessWidget {
   Widget build(BuildContext context) {
     final box = DecoratedBox(
       decoration: BoxDecoration(
-        color: _scrim,
+        /*
+         * ★ 2026-10-18：0xE6（90%）→ 0x66（40%）。
+         *   模糊与半透明由外层 GlassContainer 提供，
+         *   这一层只做"保底压暗"，不再独自遮光。
+         */
+        color: const Color(0x66101216),
         borderRadius: BorderRadius.circular(Radii.sm),
         border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
         boxShadow: <BoxShadow>[
@@ -773,7 +799,17 @@ class _Surface extends StatelessWidget {
         ),
       ),
     );
-    return box;
+    /*
+     * ★★ 2026-10-18（任务 B-3）：玻璃材质。
+     *
+     * 放在**最外层**，里面仍是原来的 DecoratedBox + ClipRRect + AppInkWell
+     * ⇒ 布局与交互一字未改，只是多了一层材质。
+     */
+    return GlassContainer(
+      shape: LiquidRoundedRectangle(borderRadius: Radii.sm),
+      padding: EdgeInsets.zero,
+      child: box,
+    );
   }
 }
 

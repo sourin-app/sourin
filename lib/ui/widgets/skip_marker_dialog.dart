@@ -447,6 +447,29 @@ class SkipMarkerDialog extends StatefulWidget {
   State<SkipMarkerDialog> createState() => _SkipMarkerDialogState();
 }
 
+/// 读取跳过点的三种状态
+///
+/// # 为什么必须是三态（而不是 `bool _loading`）
+///
+/// ```text
+/// 两态时「读取失败」被塞进"读完了"那一档，四个值保持 null
+///   ⇒ 与「用户从没设过」在 UI 上**完全一样**（都画「片头未设」）
+///   ⇒ 用户以为自己设的片头片尾丢了，可能**重设一遍覆盖真实配置**
+/// ```
+///
+/// ★ 判据：**故障不许伪装成正常状态。**
+/// 这与本文件既有的 `_previewError`（「预览不可用：…（不影响设置）」）同一思路。
+enum _LoadState {
+  /// 还在读 —— 只显示转圈，**不渲染**那四行
+  loading,
+
+  /// 读成功 —— 四行照常渲染；此时 null 才真的表示"未设置"
+  ok,
+
+  /// 读失败或超时 —— 显示错误 + 重试，**绝不**渲染"未设置"
+  failed,
+}
+
 /// 保存结果（`null` 的点 = 该区间被清空）
 class SkipMarkerResult {
   const SkipMarkerResult({
@@ -638,6 +661,64 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   bool _loading = true;
   bool _saving = false;
 
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ 读取跳过点的三态（2026-10-18 · 第 66 轮）
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * # 为什么不能继续用 `bool _loading`
+   *
+   * ```text
+   * `_loading` 只有两个状态：还在读 / 读完了。
+   * 而「读取**失败**」被塞进了"读完了"那一档 —— 走 `catch` 后
+   * `_loading = false`，四个值保持 null。
+   *
+   * ⇒ 于是「核心层卡住/报错」在 UI 上和「用户从没设过跳过点」
+   *   **长得一模一样**，都渲染成「片头未设 / 片尾未设」。
+   *
+   * ★ 这不是理论问题：用户明明设过片头片尾，核心层超时后看到
+   *   「片头未设」，会以为**配置丢了**，很可能重新设一遍
+   *   ⇒ 把真实配置**覆盖掉**。
+   *   ⇒ 一次误读，引发一次真写入。
+   * ```
+   *
+   * # 三态各自的确切含义
+   *
+   * ```text
+   * loading  —— 还在读，显示转圈。**不许**渲染那四行。
+   * ok       —— 读成功。四行照常渲染，null 值**此时才**表示"未设置"。
+   * failed   —— 读失败/超时。显示错误 + 重试。**绝不**渲染"未设置"。
+   * ```
+   *
+   * # 与既有的 `_previewError` 是同一个思路
+   *
+   * 预览那条已经是「失败就如实说：预览不可用：…（不影响设置）」。
+   * 读取这条以前没有，现在补齐 —— 两处的判据是同一句：
+   * **故障不许伪装成正常状态。**
+   */
+  _LoadState _loadState = _LoadState.loading;
+
+  /// 读失败的原因（只在 [_loadState] == failed 时有意义，给用户看）
+  String? _loadError;
+
+  /// 读跳过点的超时时长
+  ///
+  /// # 为什么是 10 秒（而不是 2~3 秒）
+  ///
+  /// ```text
+  /// 这条路径的目的是 **兜底不挂死**，不是 SLA 守护。
+  ///
+  /// · 正常耗时：Dart → FFI 线程池 → Rust → 读一条记录，毫秒级
+  ///   ⇒ 真到 10 秒说明已经异常了（而不是"有点慢"）。
+  /// · 为什么不用 2~3 秒：那会拿一个**从未实测过 p99** 的操作去卡阈值，
+  ///   可能把"慢但正常"的用户打成"读取失败"，反而制造新问题。
+  /// · 为什么不用 5 秒：那是从探针里的原生调用类推的，没有依据。
+  /// · 10 秒在本仓有 8 处使用（如 `delivery_test.dart`），是有先例的数。
+  ///
+  /// ⚠️ 将来若真做了 p99 实测，应按 p99 × 10 调整并改这里。
+  /// ```
+  static const Duration _kLoadTimeout = Duration(seconds: 10);
+
   double get _total => _mediaDuration > 0
       ? _mediaDuration
       : widget.duration.inSeconds.toDouble().clamp(1, double.infinity);
@@ -671,9 +752,26 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   }
 
   /// 读已存的跳过点（有就回填，用户改起来方便）
+  ///
+  /// # ★ 三态 + 超时（2026-10-18）
+  ///
+  /// ```text
+  /// 成功        ⇒ _loadState = ok     ⇒ 四行照常渲染
+  /// 抛异常      ⇒ _loadState = failed ⇒ 显示「读取跳过点失败：…」+ 重试
+  /// 10 秒不返回 ⇒ _loadState = failed ⇒ 同上（超时文案另有措辞）
+  /// ```
+  ///
+  /// ⚠️ 失败时**四个值保持 null**，但 UI 走 failed 分支而**不是**未设置分支 ——
+  ///    这是本函数的关键：null 此时**不代表**"用户没设过"，
+  ///    只代表"我们没读到"。判据见 [_LoadState] 的说明。
+  ///
+  /// ★ 为什么必须有超时：核心里 `get_skip_marker` 走 FFI 线程池，
+  ///   若核心层卡住（死锁 / 池满 / 数据库文件锁），这个 Future **永不完成**
+  ///   ⇒ 以前的表现是"永久转圈，没有报错、没有出路"。
   Future<void> _loadExisting() async {
     try {
-      final m = await SourinApi.getSkipMarker(widget.provider, widget.id);
+      final m = await SourinApi.getSkipMarker(widget.provider, widget.id)
+          .timeout(_kLoadTimeout);
       if (!mounted) return;
       setState(() {
         _introStart = m?.introStart;
@@ -683,6 +781,8 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
         // 原版默认 true —— 设了跳过点就是希望自动跳
         _autoSkip = m?.autoSkip ?? true;
         _loading = false;
+        _loadState = _LoadState.ok;
+        _loadError = null;
       });
       /*
        * ★ task-52：时长可能**比这里先到**（`_maybeInitialLocate` 里有
@@ -690,13 +790,40 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
        *   否则那条路径下首帧定位被静默跳过，预览又是全黑。
        */
       _maybeInitialLocate();
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadState = _LoadState.failed;
+        _loadError = '核心层 ${_kLoadTimeout.inSeconds} 秒无响应';
+      });
+      debugPrint('[SKIPDLG] 读跳过点超时（${_kLoadTimeout.inSeconds}s）');
+      // 读失败也要出画面 —— 否则用户看到的是"打不开的黑框"
+      _maybeInitialLocate();
     } catch (e) {
       if (!mounted) return;
-      setState(() => _loading = false);
+      setState(() {
+        _loading = false;
+        _loadState = _LoadState.failed;
+        _loadError = '$e';
+      });
       debugPrint('[SKIPDLG] 读跳过点失败: $e');
       // 读失败也要出画面 —— 否则用户看到的是"打不开的黑框"
       _maybeInitialLocate();
     }
+  }
+
+  /// 重试读取（失败态那个「重试」按钮）
+  ///
+  /// ⚠️ 必须**真的**重新调用 [_loadExisting] —— 只把状态改回 loading
+  ///    而不重新发请求的话，用户会看到转圈然后再次失败（或永远转圈），
+  ///    等于按钮没有作用。
+  void _retryLoad() {
+    setState(() {
+      _loadState = _LoadState.loading;
+      _loadError = null;
+    });
+    unawaited(_loadExisting());
   }
 
   /// 起一个**独立的**预览播放器（Owner 明确要求的形态）
@@ -1966,12 +2093,24 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
       ),
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: boxW, maxHeight: boxH),
-        child: _loading
-            ? const SizedBox(
-                height: 200,
-                child: Center(child: AppLoading()),
-              )
-            : Padding(
+        child: switch (_loadState) {
+          /*
+           * ★ 三态分支（2026-10-18）
+           *
+           * loading ⇒ 只转圈（与改前一致）
+           * ok      ⇒ 正常渲染四行（与改前一致）
+           * failed  ⇒ **错误 + 重试**，绝不渲染"片头未设"
+           *
+           * ⚠️ 改前这里是 `_loading ? 转圈 : 正常` ——
+           *    读取失败也走"正常"那条，于是画成「片头未设」，
+           *    与"用户真的没设过"无法区分。见 `_LoadState` 的说明。
+           */
+          _LoadState.loading => const SizedBox(
+              height: 200,
+              child: Center(child: AppLoading()),
+            ),
+          _LoadState.failed => _loadFailedPanel(colors),
+          _LoadState.ok => Padding(
                 padding: const EdgeInsets.all(Sp.x5),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -2252,6 +2391,54 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
                   ],
                 ),
               ),
+        },
+      ),
+    );
+  }
+
+  /// 读取失败态：明确说"读不到"，并给重试出路
+  ///
+  /// # 为什么文案要主动排除"未设置"这个误解
+  ///
+  /// ```text
+  /// 用户设过片头片尾，核心层超时后如果画成「片头未设」，
+  /// 他会以为配置丢了 ⇒ 很可能重设一遍 ⇒ **覆盖真实配置**。
+  /// ⇒ 所以这里必须直说"不是「没设置过」"。
+  /// ```
+  ///
+  /// ★ 风格与同文件既有的「预览不可用：…（不影响设置）」保持一致：
+  ///   如实说故障 + 告诉用户能做什么。
+  Widget _loadFailedPanel(AppPalette colors) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(Sp.x5),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(AppIcons.warning_amber, size: 32, color: colors.error),
+            const SizedBox(height: Sp.x3),
+            Text(
+              '读取跳过点失败：${_loadError ?? '未知原因'}',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: FontSizes.base, color: colors.error),
+            ),
+            const SizedBox(height: Sp.x2),
+            Text(
+              // ★ 这句是关键：主动排除"未设置"的误解
+              '（不是「没设置过」—— 请重试，或关闭后重新打开）',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.mutedForeground,
+              ),
+            ),
+            const SizedBox(height: Sp.x4),
+            TextButton(
+              onPressed: _retryLoad,
+              child: const Text('重试'),
+            ),
+          ],
+        ),
       ),
     );
   }

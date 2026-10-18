@@ -15328,15 +15328,67 @@ class _PlayerPageState extends State<PlayerPage>
                     ListenableBuilder(
                       listenable: _controlsAnim,
                       builder: (context, child) {
-                        // 底栏在以下时刻可见：
-                        //  · 真源为真（该显示），或
-                        //  · 真源为假但**不是**被占据（= C 翻 false 触发的隐藏），
-                        //    且淡出还在进行（value>0）⇒ 留着播完这一帧动画。
-                        final keepForFade =
-                            !_bottomOccupied && _controlsAnim.value > 0;
-                        if (!_chromeVisible && !keepForFade) {
+                        /*
+                         * ══════════════════════════════════════════════════
+                         * ★★★ N11（2026-10-18）：只在**占据态**才卸下底栏
+                         * ══════════════════════════════════════════════════
+                         *
+                         * # 缺陷（实测，`.probe/t66_n11_bottombar.txt`）
+                         * ```text
+                         * 改前：
+                         *   final keepForFade = !_bottomOccupied && _controlsAnim.value > 0;
+                         *   if (!_chromeVisible && !keepForFade) return const SizedBox.shrink();
+                         *
+                         * `child` = 整个 `_BottomBar`（**333 行 / 128 个后代元素**）。
+                         * 控制条一收起这条就返回 `shrink` ⇒ 整棵子树被 **deactivate**；
+                         * 鼠标一动叫回来 ⇒ **重新 activate**。
+                         * 实测「叫回」那一次重建 **398** 个元素 / **85ms**：
+                         *   IconTheme×22, DefaultSelectionStyle×22, GestureDetector×17,
+                         *   RawGestureDetector×17, Focus×13, Actions×12, InkWell×11,
+                         *   _MaterialInterior×11, _ShapeBorderPaint×11 …
+                         * 8 轮循环 all = 8/398/8/398/… 合计 **1624**
+                         * （门禁自带的改前基线 188 ⇒ 涨 8.6 倍）
+                         * ⇒ Owner 报的 N11「播放页鼠标动一下很卡」。
+                         * ```
+                         *
+                         * # ⚠️ 归因更正（防止将来又去改顶栏）
+                         * ```text
+                         * 我最初判断（Lead 按代码结构核实过）是 `_TopBar` 重建面太大。
+                         * **实测推翻**：`_TopBar` 内重建 = **1**，`_TopBar` 外 = **397**
+                         * （`.probe/t66_n11_topbar_attrib.txt`）。
+                         * ⇒ `_TopBar` 当初的改法（常挂 + Opacity）**是对的**；
+                         *   缺的是底栏这半边没同步改。**不要再动顶栏。**
+                         * ```
+                         *
+                         * # 为什么可以放心常挂：淡出**底栏自己已经做好了**
+                         * ```text
+                         * `player/player_bottom_bar.dart:748-754`
+                         *   AnimatedBuilder(fade) → IgnorePointer(ignoring: o==0) → Opacity
+                         * 而 `fade` 传的就是 `_bottomFade`（与顶栏**同一个** `_controlsFade`
+                         * 实例，由宿主 `_controlsAnim` 驱动）
+                         * ⇒ 淡入淡出、以及"看不见时点不到"，都已由它保证。
+                         * ⇒ 这一层只该负责**结构**问题：占据态要不要留在树上。
+                         * ```
+                         *
+                         * # ★ 占据态必须仍然整条卸下（不许一刀切常挂）
+                         * ```text
+                         * `_bottomOccupied`（错误层/选集/换源/设置/弹幕/字幕/
+                         * 直播频道/音频提示/画面死亡）时那块**归占据者**：
+                         *   ① 留在树里会叠字（底栏按钮画在错误提示上）
+                         *   ② 会抢点击（用户点到看不见的按钮）
+                         * ⇒ 这一支**原样保留**。
+                         * ★ 门禁 `zz_t66_n11_bottombar_test.dart` T2 守着它
+                         *   （且用故障注入证明它真的会红）。
+                         * ```
+                         */
+                        if (_bottomOccupied) {
                           return const SizedBox.shrink();
                         }
+                        /*
+                         * 非占据态：**恒挂**。
+                         * 控制条显隐只改变 `fade` ⇒ 只翻 opacity，不装卸子树
+                         * ⇒ 那 398 个元素的重建归零。
+                         */
                         return child!;
                       },
                       child:

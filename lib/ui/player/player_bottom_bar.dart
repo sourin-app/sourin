@@ -28,6 +28,8 @@
 //  全部写死白/深灰，不读 `Theme.of(context).colorScheme`。
 
 import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
+    show GlassContainer, LiquidRoundedRectangle;
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/danmaku.dart' show DanmakuConfig;
@@ -36,6 +38,75 @@ import '../tokens.dart';
 import 'player_more_menu.dart';
 import 'player_popover.dart';
 import '../../design/icons/app_icons.dart';
+
+/// 玻璃材质的输入框外框 —— **包住原生 `TextField`**，不替换它
+///
+/// # 为什么不用包里的 `GlassTextField`（Lead 裁决，2026-10-18）
+/// ```text
+/// `GlassTextField` 内部用的是 `CupertinoTextField`
+/// （glass_text_field.dart:642 `child: CupertinoTextField(...)`），
+/// 而 `test/task41_danmaku_send_gate_test.dart` 有 **9 处**
+/// `find.byType(TextField)` 断言守着 Owner 第 1 条
+/// 「不支持就不显示」这个**产品契约**。
+///
+/// 换成 GlassTextField ⇒ 那 9 处全红。
+/// 而**改断言**等于把"输入框存在"的判据从"真的是 TextField"
+/// 改成"某个玻璃组件" ⇒ 门禁失去鉴别力：
+/// 将来玻璃组件内部若根本没渲染输入框，断言仍然绿（只找得到那个壳）。
+/// ★ 这正是本轮反复出现的假绿形态。
+/// ```
+/// # 所以：玻璃容器 + 原生 TextField
+/// ```text
+/// · 视觉：玻璃材质（Owner 要的）
+/// · 判据：仍然是真 TextField（task41 的 9 条继续有效）
+/// · 功能：输入法 / 选择 / 粘贴 / 快捷键全部原生行为，零风险
+/// ```
+/// ⚠️ `GlassContainer` 是**纯材质表面**，不替换子组件
+///    （其文档明确说它是 foundational surface）。
+class GlassFieldShell extends StatelessWidget {
+  const GlassFieldShell({
+    super.key,
+    required this.child,
+    this.focused = false,
+    this.radius = 18,
+  });
+
+  final Widget child;
+
+  /// 聚焦态：外框提亮（与搜索页同一套语言）
+  final bool focused;
+
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassContainer(
+      shape: LiquidRoundedRectangle(borderRadius: radius),
+      /*
+       * ⚠️ `useOwnLayer: false`（默认）：
+       *   底栏是**常驻**的一行，开 own layer 会多一张图层，
+       *   在低端机上是纯开销。材质效果不依赖它。
+       */
+      padding: EdgeInsets.zero,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(radius),
+          /*
+           * 聚焦态边框：outlineVariant → primary。
+           * 这是本仓既有的焦点语言（搜索页同款），不新造一套。
+           */
+          border: Border.all(
+            color: focused
+                ? Theme.of(context).colorScheme.primary
+                : Colors.white.withValues(alpha: 0.18),
+            width: focused ? 1.4 : 1,
+          ),
+        ),
+        child: child,
+      ),
+    );
+  }
+}
 
 /// popover 的 id 常量 —— 开关与按钮用**同一份**字符串
 class PlayerPopoverIds {
@@ -2197,6 +2268,10 @@ class DanmakuSendInline extends StatefulWidget {
 class _DanmakuSendInlineState extends State<DanmakuSendInline> {
   final TextEditingController _ctl = TextEditingController();
 
+  /// 焦点态 —— 只用于让玻璃外框提亮（Lead 要求「焦点态要能看见」）
+  final FocusNode _focus = FocusNode();
+  bool _focused = false;
+
   /// 发送中 —— 用来禁用按钮防连点
   bool _sending = false;
 
@@ -2209,10 +2284,18 @@ class _DanmakuSendInlineState extends State<DanmakuSendInline> {
     if (widget.debugInitialText.isNotEmpty) {
       _ctl.text = widget.debugInitialText;
     }
+    _focus.addListener(_onFocusChange);
+  }
+
+  void _onFocusChange() {
+    if (_focus.hasFocus == _focused) return;
+    setState(() => _focused = _focus.hasFocus);
   }
 
   @override
   void dispose() {
+    _focus.removeListener(_onFocusChange);
+    _focus.dispose();
     _ctl.dispose();
     super.dispose();
   }
@@ -2272,33 +2355,51 @@ class _DanmakuSendInlineState extends State<DanmakuSendInline> {
             /*
              * ★ 输入框用 Expanded 撑满 —— 底栏是全宽的一行，
              *   与浮层版固定 220px 不同：内嵌时就该跟着底栏宽度走。
+             *
+             * ★★ 2026-10-18（任务 B 玻璃化，Lead 裁决）：
+             *   外面包一层 `GlassFieldShell`（纯玻璃材质），
+             *   **里面仍然是原生 `TextField`** —— 不换成 `GlassTextField`。
+             *   理由见 `GlassFieldShell` 的类文档（task41 的 9 处断言守着它）。
              */
             Expanded(
-              child: TextField(
-                controller: _ctl,
-                enabled: !_sending,
-                onChanged: (_) => setState(() {}),
-                onSubmitted: (_) => _send(),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: FontSizes.cap,
-                ),
-                decoration: InputDecoration(
-                  isDense: true,
-                  hintText: '发个弹幕…',
-                  hintStyle: const TextStyle(
-                    color: Colors.white38,
+              child: GlassFieldShell(
+                focused: _focused,
+                child: TextField(
+                  controller: _ctl,
+                  enabled: !_sending,
+                  onChanged: (_) => setState(() {}),
+                  onSubmitted: (_) => _send(),
+                  /*
+                   * 焦点态要能看见（Lead 要求）。
+                   * 用 FocusNode 而不是 `Focus` 包一层：TextField 自己的
+                   * 焦点回调最准（点进去 / Tab 进来 / 程序 focus 都覆盖）。
+                   */
+                  focusNode: _focus,
+                  style: const TextStyle(
+                    color: Colors.white,
                     fontSize: FontSizes.cap,
                   ),
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: Sp.x3,
-                    vertical: Sp.x2,
-                  ),
-                  filled: true,
-                  fillColor: Colors.white.withValues(alpha: 0.10),
-                  border: OutlineInputBorder(
-                    borderRadius: Radii.rFull,
-                    borderSide: BorderSide.none,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: '发个弹幕…',
+                    hintStyle: const TextStyle(
+                      color: Colors.white38,
+                      fontSize: FontSizes.cap,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: Sp.x3,
+                      vertical: Sp.x2,
+                    ),
+                    /*
+                     * 边框交给外面的 `GlassFieldShell` 画 ⇒ 这里**去掉**
+                     * 原本那层 `filled + OutlineInputBorder`，否则
+                     * 玻璃材质上会再叠一层半透明填充（看着发灰）。
+                     */
+                    filled: false,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
                   ),
                 ),
               ),

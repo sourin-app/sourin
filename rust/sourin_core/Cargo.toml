@@ -77,6 +77,10 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 tower-http = { version = "0.6", default-features = false, features = ["cors"] }
 rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# ★ 2026-10-18（E2E 验证发现）：raw-deflate 回退需要手动解压。
+#   已在依赖树里（reqwest 的 deflate 特性间接引入 flate2 1.1.10），
+#   这里只是提成直接依赖，**不新增编译单元**。
+flate2 = "1"
 log = "0.4"
 
 # ── 下面这些是实测编译时补出来的（第一轮 177 个 error 全是缺 crate）──

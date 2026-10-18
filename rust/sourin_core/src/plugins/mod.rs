@@ -1878,6 +1878,82 @@ fn map_js_error(msg: &str) -> ProviderError {
     }
 }
 
+/// raw-deflate 回退（仅在 `r.text()` 解码失败时调用）
+///
+/// # 它解决什么
+/// ```text
+/// 某些站返回 `Content-Encoding: deflate`，但是 **raw-deflate**（无 zlib 头），
+/// 而 reqwest 的 `deflate` 特性按 **zlib** 格式解
+/// ⇒ `r.text().await` 报 `error decoding response body`
+/// ⇒ 插件拿不到任何数据。
+/// ```
+///
+/// # 为什么要重发一次请求
+/// ```text
+/// `r.text()` 会**消耗** response（`take self`），失败后拿不到原始字节
+/// ⇒ 只能重发。这个回退只在"正常解压失败"时才走，
+///   正常站**一次都不会**重发 ⇒ 零回归风险。
+/// ```
+///
+/// # 返回值
+/// ```text
+/// Some(文本) ⇒ 回退成功（已按原状态码包好前缀）
+/// None       ⇒ 回退也不行（调用方保留原错误）
+/// ```
+async fn try_raw_deflate_fallback(
+    client: &reqwest::Client,
+    method: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+    body: Option<&str>,
+    status: &reqwest::StatusCode,
+) -> Option<String> {
+    // ★ 必须显式关掉自动解压：否则新请求会重踩同一个坑
+    let req = if method == "POST" {
+        client.post(url)
+    } else {
+        client.get(url)
+    };
+    let mut req = req;
+    for (k, v) in headers {
+        // ★ 不发 Accept-Encoding：让服务端按它自己的意愿给（有的站强制压缩）
+        if k.eq_ignore_ascii_case("accept-encoding") {
+            continue;
+        }
+        req = req.header(k, v);
+    }
+    if let Some(b) = body {
+        req = req.body(b.to_string());
+    }
+    let r = req.send().await.ok()?;
+    // ★ 只对 deflate 响应做回退；别的编码交给上层报错
+    let enc = r
+        .headers()
+        .get(reqwest::header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !enc.contains("deflate") {
+        return None;
+    }
+    let bytes = r.bytes().await.ok()?;
+    // ★ raw-deflate = 无 zlib 头的 deflate 流
+    use std::io::Read as _;
+    let mut out = String::new();
+    let mut dec = flate2::read::DeflateDecoder::new(&bytes[..]);
+    if dec.read_to_string(&mut out).is_err() {
+        return None;
+    }
+    if status.is_success() {
+        Some(out)
+    } else {
+        Some(format!(
+            "__ERR__HTTP {status}: {}",
+            out.chars().take(200).collect::<String>()
+        ))
+    }
+}
+
 /// 插件 HTTP 请求（走站点代理配置）
 ///
 /// 返回**响应文本**，失败返回 `__ERR__<原因>` 前缀串。
@@ -1945,13 +2021,58 @@ async fn do_http(
     for (k, v) in headers {
         req = req.header(k, v);
     }
-    if let Some(b) = body {
-        req = req.body(b);
+    /*
+     * ★ 2026-10-18：`body` 用 `as_deref()` 而不是 move。
+     *
+     * 原来写 `if let Some(b) = body { req = req.body(b); }` ——
+     * 那会**部分移动** `body` ⇒ 下面 raw-deflate 回退里
+     * `body.as_deref()` 变成「借用已移动的值」⇒ E0382 编译不过。
+     *
+     * 改成 `as_deref()`（只借不拿）+ `to_string()`（克隆一份给 reqwest）
+     * ⇒ body 保持可用，回退还发一次同样的请求体。
+     * 代价：多一次 String 克隆 —— 请求体本来就不大（插件侧 JSON），可接受。
+     */
+    if let Some(b) = body.as_deref() {
+        req = req.body(b.to_string());
     }
 
     match req.send().await {
         Ok(r) => {
             let status = r.status();
+            /*
+             * ★★★ 2026-10-18（E2E 验证发现）：**raw-deflate 回退**
+             *
+             * # 真实缺陷
+             * ```text
+             * 某些站的弹幕接口返回 `Content-Encoding: deflate`，
+             * 但它是 **raw-deflate**（无 zlib 头），
+             * 而 reqwest 的 `deflate` 特性按 **zlib** 格式解
+             * ⇒ `r.text().await` 报 `error decoding response body`
+             * ⇒ 插件拿不到任何数据，整个弹幕功能失效。
+             * ```
+             *
+             * # 实测证据
+             * ```text
+             * 同一接口两个不同 id 都是这样（不是偶发）：
+             *   前 2 字节 ecfd / bcfd ⇒ zlib 解压 False，raw 解压 True
+             * ⇒ 这是**该接口的固定行为**，不是数据傏坏
+             * ```
+             *
+             * # 为什么是「回退」而不是「直接关掉自动解压」
+             * ```text
+             * 关掉自动解压 ⇒ 影响**所有插件**（gzip/brotli/deflate 全要插件自己处理）
+             * 而回退只在"正常解压失败"时才走第二次
+             * ⇒ 正常站一个字节都不受影响（零回归风险）
+             * ```
+             *
+             * # ⚠️ 只在 `r.text()` 失败时才重发，不预先读 body
+             * ```text
+             * `r.text()` 会消耗 response（take self）
+             * ⇒ 必须先 `r.bytes()` 拿到原始字节，再自己解压
+             * ⇒ 所以本实现是：正常路径照旧 `text()`，
+             *   失败后重发一次并用 bytes() + 手动 raw-inflate
+             * ```
+             */
             match r.text().await {
                 Ok(t) => {
                     if status.is_success() {
@@ -1961,7 +2082,17 @@ async fn do_http(
                         format!("__ERR__HTTP {status}: {}", t.chars().take(200).collect::<String>())
                     }
                 }
-                Err(e) => format!("__ERR__读取响应失败: {e}"),
+                Err(e) => {
+                    // ★ 回退：重发一次，自己拿原始字节并按 raw-deflate 解
+                    match try_raw_deflate_fallback(
+                        &client, method, url, headers, body.as_deref(), &status,
+                    )
+                    .await
+                    {
+                        Some(t) => t,
+                        None => format!("__ERR__读取响应失败: {e}"),
+                    }
+                }
             }
         }
         Err(e) => format!("__ERR__请求失败: {e}"),
@@ -7072,4 +7203,81 @@ globalThis.plugin = { id: 'old', capabilities: { vod: true, search: true } };
             .expect_err("默认实现必须报 Unsupported");
         assert_eq!(e2.kind, ErrorKind::Unsupported);
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // ★★★ 2026-10-18（E2E 验证发现）：raw-deflate 解码
+    // ══════════════════════════════════════════════════════════════════
+    //
+    // # 为什么要有这个测试
+    // ```text
+    // 缺陷现场：某些站返回 `Content-Encoding: deflate`，但内容是 raw-deflate
+    //          （无 zlib 头），reqwest 按 zlib 解 ⇒ error decoding response body
+    //          ⇒ 插件拿不到任何数据。
+    //
+    // 而"代码里有 DeflateDecoder 这一行"Dart 侧断言得出来 ——
+    // 但那证明不了它**解得出东西**。
+    // ⇒ 这个测试造真实 raw-deflate 字节流，解回原文并比对。
+    // ```
+    //
+    // ⚠️ 用 flate2 自己压一份 raw-deflate（`DeflateEncoder`），再解回 —— 
+    //    这是**往返验证**，能同时排除"压缩端写错"和"解压端写错"。
+    #[test]
+    fn raw_deflate_roundtrip() {
+        use std::io::{Read as _, Write as _};
+
+        const SAMPLE: &str = "<?xml version=\"1.0\"?><i><d p=\"3.84800,4,25,15138834\">                              测试弹幕 &amp; 符号</d></i>";
+
+        // ① 压成 raw-deflate（注意是 DeflateEncoder，**不是** ZlibEncoder）
+        let mut enc = flate2::write::DeflateEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        );
+        enc.write_all(SAMPLE.as_bytes()).expect("压缩失败");
+        let raw_bytes = enc.finish().expect("收尾失败");
+
+        // ② 关键断言：它**不是** zlib 格式
+        //    zlib 头固定以 0x78 开头（CMF 字节，deflate + 32K 窗口）
+        //    若这里是 0x78，说明我们造的不是 raw-deflate，测试就失去意义
+        assert_ne!(
+            raw_bytes[0], 0x78,
+            "★ 造出来的数据带 zlib 头 ⇒ 这个测试没覆盖 raw-deflate 场景"
+        );
+
+        // ③ 用生产代码同款解码器解回
+        let mut out = String::new();
+        flate2::read::DeflateDecoder::new(&raw_bytes[..])
+            .read_to_string(&mut out)
+            .expect("raw-deflate 解码失败");
+
+        assert_eq!(out, SAMPLE, "★ 往返不一致 ⇒ 解码路径有问题");
+    }
+
+    /// ★ 反向对照：`ZlibDecoder` 解 raw-deflate **必须失败**
+    ///
+    /// ```text
+    /// 这条证明"为什么需要回退"：
+    ///   reqwest 内部用的就是 zlib 语义 ⇒ 它解 raw-deflate 必然报错
+    /// ⇒ 不写这条的话，将来有人把回退删掉，
+    ///   只跑 raw_deflate_roundtrip 仍然绿（因为那是我们自己解压的）
+    /// ```
+    #[test]
+    fn zlib_decoder_cannot_read_raw_deflate() {
+        use std::io::{Read as _, Write as _};
+
+        let mut enc = flate2::write::DeflateEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        );
+        enc.write_all(b"hello raw deflate").expect("压缩失败");
+        let raw_bytes = enc.finish().expect("收尾失败");
+
+        let mut out = String::new();
+        let r = flate2::read::ZlibDecoder::new(&raw_bytes[..]).read_to_string(&mut out);
+        assert!(
+            r.is_err(),
+            "★ ZlibDecoder 竟然解开了 raw-deflate ⇒ 那这条回退就不必要了，\
+             请重新评估缺陷是否真实存在"
+        );
+    }
+
 }

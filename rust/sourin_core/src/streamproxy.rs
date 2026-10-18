@@ -2287,6 +2287,49 @@ async fn forward_request(
         &ctype,
     ) {
         /*
+         * ★★ 探针：`SOURIN_YIELD_PROBE=1` ⇒ 记录每次"预取真的被执行"（2026-10-18）
+         *
+         * # 这个位置为什么能证明"让路生效"
+         * ```text
+         * `plan_prefetch` 的第一个实参就是 `prefetch_is_disabled()`
+         * ⇒ 返回 Some(plan) 表示预取**真的发生了**
+         * ⇒ 让路窗口内它必须返回 None
+         * ⇒ 所以「seek 后一段时间内窗口里没有任何 prefetch-start」就是行为证据
+         *    （perf-player 的门禁只能证明"调用过 set_prefetch_disabled"，
+         *      证明不了"预取真的让开了"）
+         * ```
+         * ⚠️ 写文件而不是 stderr：Windows 重定向到管道时 stderr 是块缓冲，
+         *    force-kill 会把缓冲区全丢掉。这里每行 `flush`，不依赖缓冲。
+         * ⚠️ 生产恒不开（无该环境变量 ⇒ 一次 env 查表 + 无任何 IO）。
+         */
+        if std::env::var_os("SOURIN_YIELD_PROBE").is_some() {
+            let in_win = proxy.in_yield_window();
+            let line = format!(
+                "[YIELD-PROBE] {} prefetch-start inWindow={} start={} len={}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0),
+                in_win,
+                plan.start,
+                plan.len()
+            );
+            let path = std::env::var("SOURIN_YIELD_PROBE_FILE")
+                .unwrap_or_else(|_| ".probe/yield-probe.txt".to_string());
+            if let Some(dir) = std::path::Path::new(&path).parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                use std::io::Write;
+                let _ = writeln!(f, "{line}");
+                let _ = f.flush();
+            }
+        }
+        /*
          * ══════════════════════════════════════════════════════════════
          * ★★★ task-57：先发**首段**（64KB），不等整窗
          * ══════════════════════════════════════════════════════════════

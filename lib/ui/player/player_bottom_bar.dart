@@ -193,6 +193,58 @@ class DanmakuQuickValues {
 /// ⚠️ 本项目**没有**的能力（某视频站图 1 里有、这里如实不画假开关）：
 ///   「彩色 / 高级」类型过滤、「弹幕随屏幕缩放」「防挡字幕」「智能防挡弹幕」
 ///   「同步屏蔽列表」——`DanmakuConfig` / `DanmakuComment` 里都没有对应字段。
+/// ★★★ 2026-10-18（第 66 轮 Owner 第 1 条）：底栏内嵌弹幕发送栏的数据
+///
+/// # Owner 原话
+/// ```text
+/// > 弹幕那个发送不要搞一个悬浮,就跟其他网站一样的设计,下面操作栏加一个
+/// > 输入框,然后是发送弹幕的,随弹幕能力开关显示 也随此网站是否支持弹幕
+/// > 能力显示.不支持就不显示
+/// ```
+///
+/// # 为什么数据与动作分开传
+/// ```text
+/// · 数据（provider / positionMs）→ 本组件只读，用于展示与拼请求
+/// · 动作（onSend）             → 本组件不碰 FFI，便于单测注入
+/// 与 DanmakuQuickPanelData 同一条纪律。
+/// ```
+class DanmakuSendData {
+  const DanmakuSendData({
+    required this.provider,
+    required this.episodeId,
+    required this.onSend,
+    this.positionMs,
+    this.debugInitialText = '',
+  });
+
+  /// 源 id（**必须是真站点 id**，不能是 `local`）
+  final String provider;
+
+  /// 剧集 id（**已剥前缀**，与 rust 契约 `DanmakuSendRequest.episode_id` 一致）
+  final String episodeId;
+
+  /// 当前播放进度（毫秒）—— 给「按进度发」的站点用
+  ///
+  /// ⚠️ 取的是**点击发送那一刻**的读数，不是 build 时的快照：
+  ///    用户输入可能要几秒，拿旧进度发会飘到错误的时间点。
+  /// ⚠️ 返回 **可空**：直播没有「进度」这个概念，传 null 比传 0 更诚实
+  ///    （0 是「从头开始」这个合法值，两者不能混）。
+  final int? Function()? positionMs;
+
+  /// 真正的发送动作（由宿主注入 —— 本组件不碰 FFI，便于单测）
+  ///
+  /// 返回 null 表示成功；返回字符串表示**给用户看的失败原因**。
+  final Future<String?> Function(String text, int? positionMs) onSend;
+
+  /// **只给测试用**：让输入框一开始就带着文字
+  ///
+  /// 为什么需要这个缝：若不预置文字，「发送按钮在空输入时不可点」这条断言
+  /// 与「输入框真的能收到字」会纠缠不清 —— 分不出是哪个原因导致的不可点。
+  ///
+  /// ⚠️ 生产恒为空串（没有任何调用点传它）。
+  final String debugInitialText;
+}
+
 class DanmakuQuickPanelData {
   const DanmakuQuickPanelData({
     required this.fontScale,
@@ -309,6 +361,16 @@ class PlayerBottomBar extends StatelessWidget {
     this.onDanmakuToggle = _noop,
     this.onDanmakuSettings = _noop,
     this.danmakuQuick,
+    /*
+     * ★★★ 2026-10-18（第 66 轮 Owner 第 1 条）：底栏内嵌的弹幕发送栏
+     *
+     * null ⇒ 整条不渲染。宿主已经把「弹幕总开关为开」AND
+     * 「源声明 danmaku_send」算完了 —— 本组件不再重复判断，
+     * 避免同一语义在两处各写一遍（那种写法迟早会漂移）。
+     *
+     * 带默认值 ⇒ 纯新增参数，不把任何既有构造点打红。
+     */
+    this.danmakuSend,
     this.zoomOpen = false,
     this.videoZoom = 100,
     this.onVideoZoom,
@@ -381,6 +443,21 @@ class PlayerBottomBar extends StatelessWidget {
   /// 传非 null ⇒ 齿轮变成 popover 入口（`PlayerPopoverIds.danmakuQuick`），
   /// 弹出的面板里最后一行「高级设置」仍回到 [onDanmakuSettings]。
   final DanmakuQuickPanelData? danmakuQuick;
+
+  /// ★★★ 2026-10-18（第 66 轮 Owner 第 1 条）：底栏内嵌的弹幕发送栏
+  ///
+  /// `null` ⇒ **整条不渲染**。
+  ///
+  /// # 判据由宿主算好，这里只消费
+  /// ```text
+  /// 宿主（player_page）判 AND：
+  ///   ① 弹幕总开关为开
+  ///   ② 当前源 danmaku_send == true
+  /// 任一不满足 ⇒ 宿主传 null ⇒ 本组件不画。
+  /// ```
+  /// 为什么不在这里读配置自己判：同一语义两处各写一遍必然漂移，
+  /// 而「显示/不显示」这种判据漂移一次就是用户看到矛盾的界面。
+  final DanmakuSendData? danmakuSend;
 
   final bool zoomOpen;
   final double videoZoom;
@@ -1203,6 +1280,41 @@ class PlayerBottomBar extends StatelessWidget {
               onClose: () => onZoomToggle?.call(),
             ),
           if (!isLive) _progressRow(),
+          /*
+           * ★★★ 2026-10-18（第 66 轮 Owner 第 1 条）：弹幕发送栏**内嵌进底栏**
+           *
+           * # Owner 原话
+           * ```text
+           * > 弹幕那个发送不要搞一个悬浮,就跟其他网站一样的设计,下面操作栏加一个
+           * > 输入框,然后是发送弹幕的,随弹幕能力开关显示 也随此网站是否支持弹幕
+           * > 能力显示.不支持就不显示
+           * ```
+           *
+           * # 改前
+           * 它是播放页 Stack 里一个 `Positioned(right, bottom)` 的**浮层**，
+           * 浮在视频右下角、底栏之上。Owner 说不要悬浮，要像其他网站那样
+           * 长在操作栏里。
+           *
+           * # 位置为什么在「进度行」与「按钮行」之间
+           * ```text
+           * · 放按钮行下面 ⇒ 被底部安全区压住，手机上探不到；
+           * · 放进度行上面 ⇒ 离操作区太远，视觉上不像"操作栏的一部分"；
+           * · 夹在两者之间 ⇒ 上接进度、下接按钮，正是"操作栏里多一行输入框"
+           *   的形态，与主流站点一致。
+           * ```
+           *
+           * # 显示判据（**两个条件任一不满足就整条不渲染**）
+           * ```text
+           * ① 弹幕总开关为开
+           * ② 当前源声明 danmaku_send == true（插件真的实现了发送）
+           * ```
+           * ⚠️ 这与第 65 轮的口径**相反**（当时是「置灰但可见 + 显示原因」）。
+           *    Owner 2026-10-18 明确改为「不支持就不显示」，且确认
+           *    「弹幕总开关关闭时也不显示」。旧口径作废。
+           *    判据由宿主算好后用 `danmakuSend == null` 表达：
+           *    **null ⇒ 整条不渲染**（宿主已经做完 AND 判断）。
+           */
+          if (danmakuSend != null) _danmakuSendRow(danmakuSend!),
           _buttonsRow(context),
         ],
       ),
@@ -1247,6 +1359,29 @@ class PlayerBottomBar extends StatelessWidget {
       ),
     );
   }
+
+  /// ★★★ 2026-10-18（第 66 轮 Owner 第 1 条）：底栏内嵌的弹幕发送栏
+  ///
+  /// # 为什么在这里而不是播放页 Stack 里
+  /// 改前它是 `Positioned(right, bottom)` 的浮层，浮在视频右下角。
+  /// Owner 要求「跟其他网站一样，下面操作栏加一个输入框」。
+  ///
+  /// # 与已删除的浮层版（原 `DanmakuSendBar`，见 player_page 同批改动）的关系
+  /// ```text
+  /// 那个浮层版**本轮删除**（口径也变了：不支持就不显示，不再需要
+  /// canSend/disabledReason 那套"置灰+说原因"）。
+  /// 本方法接管它的全部职责，但形态是底栏里的一行。
+  /// ```
+  Widget _danmakuSendRow(DanmakuSendData data) => Padding(
+    padding: const EdgeInsets.only(bottom: Sp.x2),
+    child: DanmakuSendInline(
+      provider: data.provider,
+      episodeId: data.episodeId,
+      positionMs: data.positionMs,
+      onSend: data.onSend,
+      debugInitialText: data.debugInitialText,
+    ),
+  );
 
   Widget _buttonsRow(BuildContext context) {
     return LayoutBuilder(
@@ -1997,6 +2132,200 @@ class _PlayerProgressSliderState extends State<PlayerProgressSlider> {
           ),
         );
       },
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  弹幕发送栏（内嵌底栏）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # Owner 原话（2026-10-18 第 66 轮第 1 条）
+// ```text
+// > 弹幕那个发送不要搞一个悬浮,就跟其他网站一样的设计,下面操作栏加一个
+// > 输入框,然后是发送弹幕的,随弹幕能力开关显示 也随此网站是否支持弹幕
+// > 能力显示.不支持就不显示
+// ```
+//
+// # ★★★ 与第 65 轮口径的关系（这次是改回去）
+// ```text
+// player_page.dart 里那个浮层版的**文件头注释**原本就写着：
+//   「不支持 ⇒ 整条不出现（调用方根本不构造本 widget）」
+//   「没有的能力不假装有」
+// 第 65 轮改成了「置灰但可见 + 说原因」，本轮 Owner 明确要求改回「不显示」。
+//
+// ⇒ 本组件的设计**回到了最初那条更朴素的原则**：
+//   不支持 ⇒ 调用方传 null ⇒ 整条不渲染。
+//   不再有 canSend / disabledReason 两个字段（它们随之删除）。
+// ```
+//
+// ⚠️ 为什么「不显示」比「置灰」更对（Owner 的原话给了判据）
+// ```text
+// 置灰会暗示「这里本来有，只是现在不能用」—— 那是在让用户以为
+// 「再努力一下就能用」。而事实是这个源根本没有这个能力，努力也没用。
+// 更要紧的是：Owner 要的是**别让一条用不上的输入框常驻挡住画面**。
+// ```
+class DanmakuSendInline extends StatefulWidget {
+  const DanmakuSendInline({
+    super.key,
+    required this.provider,
+    required this.episodeId,
+    required this.onSend,
+    this.positionMs,
+    this.debugInitialText = '',
+  });
+
+  /// 源 id（**必须是真站点 id**，不能是 `local`）
+  final String provider;
+
+  /// 剧集 id（**已剥前缀**，与 rust 契约一致）
+  final String episodeId;
+
+  /// 当前播放进度（毫秒）—— 取**点击那一刻**的读数，不是 build 快照
+  final int? Function()? positionMs;
+
+  /// 真正的发送动作；返回 null 表示成功，返回字符串表示给用户看的失败原因
+  final Future<String?> Function(String text, int? positionMs) onSend;
+
+  /// **只给测试用**：让输入框一开始就带着文字（生产恒为空串）
+  final String debugInitialText;
+
+  @override
+  State<DanmakuSendInline> createState() => _DanmakuSendInlineState();
+}
+
+class _DanmakuSendInlineState extends State<DanmakuSendInline> {
+  final TextEditingController _ctl = TextEditingController();
+
+  /// 发送中 —— 用来禁用按钮防连点
+  bool _sending = false;
+
+  /// 上一次失败的原因（成功或重新输入时清掉）
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.debugInitialText.isNotEmpty) {
+      _ctl.text = widget.debugInitialText;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  bool get _canSend => !_sending && _ctl.text.trim().isNotEmpty;
+
+  Future<void> _send() async {
+    final text = _ctl.text.trim();
+    if (text.isEmpty || _sending) return;
+
+    /*
+     * ★ 取**此刻**的进度（不是 build 时的快照）——
+     *   用户输入可能要几秒，拿旧进度发会飘到错误的时间点。
+     */
+    final ms = widget.positionMs?.call();
+    setState(() {
+      _sending = true;
+      _error = null;
+    });
+    try {
+      final err = await widget.onSend(text, ms);
+      if (!mounted) return;
+      setState(() {
+        _sending = false;
+        if (err == null) {
+          // 成功才清空 —— 失败时**必须留着**，否则用户打的字没了
+          _ctl.clear();
+        } else {
+          _error = err;
+        }
+      });
+    } catch (e) {
+      /*
+       * ⚠️ 兜底：onSend 应当自己吞掉异常并返回字符串，
+       *    但万一漏了，这里也**绝不静默** —— 静默失败是这条功能最坏的形态
+       *    （用户以为发出去了，实际没有）。
+       */
+      if (!mounted) return;
+      setState(() {
+        _sending = false;
+        _error = '发送失败：$e';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(AppIcons.chat_bubble_outline, size: 16, color: Colors.white70),
+            const SizedBox(width: Sp.x2),
+            /*
+             * ★ 输入框用 Expanded 撑满 —— 底栏是全宽的一行，
+             *   与浮层版固定 220px 不同：内嵌时就该跟着底栏宽度走。
+             */
+            Expanded(
+              child: TextField(
+                controller: _ctl,
+                enabled: !_sending,
+                onChanged: (_) => setState(() {}),
+                onSubmitted: (_) => _send(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: FontSizes.cap,
+                ),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: '发个弹幕…',
+                  hintStyle: const TextStyle(
+                    color: Colors.white38,
+                    fontSize: FontSizes.cap,
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: Sp.x3,
+                    vertical: Sp.x2,
+                  ),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.10),
+                  border: OutlineInputBorder(
+                    borderRadius: Radii.rFull,
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: Sp.x2),
+            TextButton(
+              onPressed: _canSend ? _send : null,
+              child: Text(
+                _sending ? '发送中…' : '发送',
+                style: TextStyle(
+                  color: _canSend ? colors.primary : Colors.white38,
+                  fontSize: FontSizes.cap,
+                ),
+              ),
+            ),
+          ],
+        ),
+        // 失败原因 —— 只在真的失败时占一行，成功/未发时不占高度
+        if (_error != null)
+          Padding(
+            padding: const EdgeInsets.only(left: Sp.x6, top: Sp.x1),
+            child: Text(
+              _error!,
+              style: TextStyle(color: colors.error, fontSize: FontSizes.cap),
+            ),
+          ),
+      ],
     );
   }
 }

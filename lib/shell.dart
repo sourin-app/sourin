@@ -2109,7 +2109,47 @@ class _SourinAppState extends State<SourinApp>
        * ⇒ 保留包，但**不用任何 Material 组件**。
        * ```
        */
+      /*
+       * ★★★ 2026-10-18（M4 真机验证抓到）：**必须**包含
+       *   `DefaultMaterialLocalizations.delegate`，否则弹窗一开就崩。
+       *
+       * # 真实故障（真机隔离启动，`showUpdateDialog` 首次触发）
+       * ```text
+       * Unhandled Exception: Null check operator used on a null value
+       * #0  MaterialLocalizations.of (material_ui/src/material_localizations.dart:718)
+       * #1  new DialogRoute        (material_ui/src/dialog.dart:1906)
+       * #4  showDialog             (material_ui/src/dialog.dart:1699)
+       * #5  showAppDialog          (ui/widgets/overlay_motion.dart:324)
+       * #6  showUpdateDialog       (ui/widgets/update_dialog.dart:32)
+       * #7  AppUpdateBootstrap.run (ui/app_update_bootstrap.dart:52)
+       * ```
+       *
+       * # 根因：**写了理由，但没接线**
+       * ```text
+       * 上面那段注释写着「保留 material_ui 包，因为 Tooltip / DialogRoute
+       * 会读 MaterialLocalizations 的**接口**」—— 理由是对的。
+       * 但 delegates 里只放了 Widgets / Cupertino 两个，
+       * **没有把 Material 的那个放进去** ⇒ 运行时 `of()` 拿到 null ⇒ 崩。
+       * ⇒ 「保留包」≠「提供 delegate」：包在 pubspec 里，
+       *   delegate 没在树上，两者是两件事。
+       * ```
+       *
+       * # 为什么用 `DefaultMaterialLocalizations` 而不是 `GlobalMaterialLocalizations`
+       * ```text
+       * · Global* 来自 flutter_localizations，其类型是 flutter 侧的
+       *   MaterialLocalizations；本仓已无 `package:flutter/material.dart`，
+       *   混用会有类型冲突风险
+       * · Default* 来自 material_ui 本身，与 DialogRoute 同源 ⇒ 类型必然一致
+       * · 代价：只有英文文案。但本仓弹窗文案全部是**自己写的**
+       *   （AppDialogShell / AppGlassDialog），Material 的默认文案基本用不到；
+       *   真正被读的是 `dialogLabel` / `modalBarrierDismissLabel` 这类无障碍标签。
+       * ```
+       *
+       * ★ 判据：删掉这一行后 `test/zz_t66_material_localizations_test.dart`
+       *   必须变红（该门禁断言 delegates 里含 Material 的 delegate）。
+       */
       localizationsDelegates: const [
+        _AnyLocaleMaterialDelegate(),
         GlobalWidgetsLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
       ],
@@ -8530,4 +8570,63 @@ Size _probeWindowSize() {
   if (w < 200 || h < 200) return const Size(1280, 800);
   debugPrint('[T98] 窗口尺寸被 SOURIN_WINDOW_SIZE 覆盖为 ${w}x$h（填充率实验）');
   return Size(w.toDouble(), h.toDouble());
+}
+
+/*
+ * ★★★ 2026-10-18（M4 真机验证）：`material_ui` 的 delegate 只认 `en`，
+ *   中文环境下**根本不会加载** ⇒ 必须自己包一层。
+ *
+ * # 真实故障链（我踩了两次才查清）
+ * ```text
+ * 第一次：delegates 里压根没有 Material 的 ⇒ 启动后第一次弹更新窗就崩
+ *         Null check operator used on a null value
+ *         #0 MaterialLocalizations.of (material_ui/src/material_localizations.dart:718)
+ *
+ * 第二次：加了 `DefaultMaterialLocalizations.delegate` 仍然崩。
+ *         查源码（material_ui-1.6.0:726）：
+ *           bool isSupported(Locale locale) => locale.languageCode == 'en';
+ *         而本仓 supportedLocales 首选 `zh_CN`
+ *         ⇒ Localizations 解析时**跳过**这个 delegate
+ *         ⇒ `Localizations.of<MaterialLocalizations>()` 仍是 null
+ * ```
+ *
+ * # 为什么不用 `GlobalMaterialLocalizations`
+ * ```text
+ * 它来自 flutter_localizations，实现的是 **flutter 侧**的 `MaterialLocalizations`
+ * （`package:flutter/material.dart` 里的那个类型），
+ * 与 `material_ui` 的 `MaterialLocalizations` 是**两个不同的类型**。
+ * 本仓已禁用 `package:flutter/material.dart` ⇒ 混用会类型冲突，
+ * 且 `Localizations.of<material_ui 的 MaterialLocalizations>` 依然拿不到。
+ * ```
+ *
+ * # 本类的做法
+ * ```text
+ * 无条件 `isSupported => true`，load 时**忽略传入的 locale**，
+ * 一律返回 `DefaultMaterialLocalizations()`（英文）。
+ *
+ * 代价：Material 内置文案是英文。但本仓所有弹窗文案都是**自己写的**
+ *       （AppDialogShell / AppGlassDialog），真正被读的只有
+ *       `dialogLabel` / `modalBarrierDismissLabel` 这类**无障碍标签**，
+ *       它们不出现在视觉上。
+ * ⇒ 这个代价可以接受；换来的是「弹窗不再崩」。
+ * ```
+ */
+class _AnyLocaleMaterialDelegate
+    extends LocalizationsDelegate<MaterialLocalizations> {
+  const _AnyLocaleMaterialDelegate();
+
+  /// ★ 无条件 true —— 这是本类的全部意义。
+  /// 若改成 `locale.languageCode == 'en'`，中文环境下又会退化成 null。
+  @override
+  bool isSupported(Locale locale) => true;
+
+  @override
+  Future<MaterialLocalizations> load(Locale locale) =>
+      DefaultMaterialLocalizations.load(const Locale('en', 'US'));
+
+  @override
+  bool shouldReload(_AnyLocaleMaterialDelegate old) => false;
+
+  @override
+  String toString() => '_AnyLocaleMaterialDelegate()';
 }

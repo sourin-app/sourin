@@ -742,12 +742,72 @@ void main() {
         isTrue,
         reason: '★★ 浮层打开时不许抢返回（与 `_canUseFloatingBack` 同一条纪律）',
       );
+      /*
+       * ★★★ 2026-10-18（N11 ddb0794 之后修判据）：
+       *
+       * ```text
+       * 原断言：expect(src.contains('if (!_chromeVisible && !keepForFade) {'), isTrue)
+       * **已过时** —— N11 把 `keepForFade` 按设计删掉了
+       * （职责被 `_bottomOccupied` + ListenableBuilder 吸收）。
+       * 实测 grep -c ⇒ 0，唯一出现处是注释。
+       *
+       * ⚠️ 本文件整个被 skip（dart_test.yaml 的 native-media 标签），
+       * 所以这处过时**默认暴露不出来**：
+       *   单独跑 ⇒ `+0 ~1: All tests skipped.`（有大字提示）
+       *   全量跑 ⇒ grep "All tests skipped" = **0**，只体现为 `~N` 计数器 +1
+       * ⇒ 比"红"更隐蔽：红会被人看见，skip 不会。
+       *
+       * 实证（`--run-skipped --plain-name "⑧"`）：
+       *   Expected: true  Actual: <false>
+       *   t118_control_bars_link_test.dart 745:7
+       * ⇒ **确定过时 + 确定会红**，不是"可能过时"。
+       * ```
+       *
+       * ⇒ 照 `t27_w13_chrome_ssot_test.dart:216-228` 的正确范本改成两条：
+       *   ① 反向断言：不许用 `_chromeVisible` 决定卸下底栏（否则第二个真源）
+       *   ② 实质断言：只在占据态才卸下
+       * 守的是**安全属性**，实现再换写法也不红。
+       *
+       * ★ 验证方式（默认命令跑不到）：
+       *   flutter test test/t118_control_bars_link_test.dart \
+       *     --run-skipped --plain-name "⑧" --concurrency=1
+       */
+      /*
+       * ⚠️ 必须**先剥注释**再断言 —— 否则会命中 player_page.dart:15391 的
+       * 那行注释（它记录了「改前是什么」，是历史记录，**不该删**）。
+       *
+       * ★ 我第一次写这条时忘了剥注释，结果反向断言命中注释里的
+       *   `if (!_chromeVisible && !keepForFade) return shrink` ⇒ 假红。
+       *   这本轮已有同族教训（"命中注释"是 AGENTS.md §8 记的坑之一），
+       *   我自己又踩了一次。
+       */
+      String stripComments(String s) {
+        final buf = StringBuffer();
+        for (final line in s.split('\n')) {
+          final t = line.trimLeft();
+          if (t.startsWith('*') ||
+              t.startsWith('//') ||
+              t.startsWith('/*') ||
+              t.startsWith('*/')) {
+            continue;
+          }
+          buf.writeln(line);
+        }
+        return buf.toString();
+      }
+
+      final codeOnly = stripComments(src);
+
       expect(
-        src.contains('if (!_chromeVisible && !keepForFade) {'),
-        isTrue,
-        reason: '★ 底栏的显隐必须读唯一真源 `_chromeVisible`（T27-13）——'
-            '两条读的必须是同一个真源；`keepForFade` 是"淡出窗口内留在树上"那半支',
+        RegExp(r'if\s*\(\s*!\s*_chromeVisible').hasMatch(codeOnly),
+        isFalse,
+        reason: '★★ 不许用 `_chromeVisible` 决定要不要**卸下**底栏。'
+            '底栏显隐的真源是 `_bottomFade`，`_chromeVisible` 若又当装卸判据 '
+            '⇒ 就是第二个真源 ⇒ 分裂复发。',
       );
+      expect(codeOnly.contains('if (_bottomOccupied) {'), isTrue,
+          reason: '★★ 底栏**只在占据态**才卸下。'
+              '占据态那块归占据者 —— 留在树里会叠字 + 抢点击。');
     });
 
     test('⑨ 隐藏路径真的驱动动画（_autoHideNow 里必须调 _applyControlsMotion）', () {

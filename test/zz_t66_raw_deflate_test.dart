@@ -128,8 +128,39 @@ void main() {
     test('④ 回退必须保留 HTTP 状态前缀（否则插件读不到 401/404）', () {
       // 在 try_raw_deflate_fallback 函数体内找 __ERR__HTTP
       final fnIdx = code.indexOf('async fn try_raw_deflate_fallback');
-      expect(fnIdx, greaterThan(0));
-      final fnBody = code.substring(fnIdx, (fnIdx + 3000).clamp(0, code.length));
+      expect(fnIdx, greaterThan(0),
+          reason: '找不到 `try_raw_deflate_fallback`，判据失效');
+
+      /*
+       * ★★★ 2026-10-18（dan-api 全量回归抓到，A 类唯一一条）：
+       *
+       * ```text
+       * 原版用的是 `fnIdx + 3000` 这个**硬编码字符窗口**。
+       * 4f77965 重写回退函数时加了三格式说明等大段注释，
+       * 把 `__ERR__HTTP` 从窗口内推到了 **3290**（实测精确值）。
+       * ⇒ 产品代码是对的（mod.rs:2019 确实有该前缀），
+       *   红的是这条测试的**魔数过时**。
+       *
+       * ★ 这本身就是清单 §B-3「正则跨边界：切片的字符数魔数」的实例 ——
+       *   只不过这次是在真实测试里被抓到。
+       * ```
+       *
+       * ⇒ 根治办法：**不用字符窗口，用函数真实边界**
+       *   （从 fnIdx 到下一个顶层 `async fn` / `pub async fn` / `fn `）。
+       *   魔数会漂，边界不会。
+       */
+      final afterFn = code.substring(fnIdx + 10);
+      final nextFnMatch = RegExp(r'\n\s*(?:pub\s+)?(?:async\s+)?fn\s+\w+')
+          .firstMatch(afterFn);
+      final fnEnd =
+          nextFnMatch == null ? code.length : fnIdx + 10 + nextFnMatch.start;
+      final fnBody = code.substring(fnIdx, fnEnd);
+
+      // 兜底：如果边界切得太短（说明正则没匹配到预期形态），至少别静默放过
+      expect(fnBody.length, greaterThan(500),
+          reason: '★ 函数体只切到 ${fnBody.length} 字符 —— 边界判断可能失效，'
+              '这会让本条断言变成恒假/恒真');
+
       expect(fnBody.contains('__ERR__HTTP'), isTrue,
           reason: '★ 回退路径也必须带 `__ERR__HTTP {status}:` 前缀 —— '
               '插件的 getJson 靠这个前缀判断 401/404 并抛对应错误。'

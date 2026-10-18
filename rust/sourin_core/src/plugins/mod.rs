@@ -1908,11 +1908,43 @@ async fn try_raw_deflate_fallback(
     body: Option<&str>,
     status: &reqwest::StatusCode,
 ) -> Option<String> {
-    // ★ 必须显式关掉自动解压：否则新请求会重踩同一个坑
+    /*
+     * ★★★ 2026-10-18（修复不生效，二次实测发现）：**必须另建一个关掉自动解压的 client**
+     *
+     * # 上一版为什么没生效（注释写了，代码没做）
+     * ```text
+     * 上一版写的是：
+     *   // ★ 必须显式关掉自动解压：否则新请求会重踩同一个坑
+     *   let req = if method == "POST" { client.post(url) } else { client.get(url) };
+     * ⇒ 注释说要关，但**代码用的还是那个会自动解压的 client**
+     * ⇒ `r.bytes()` 照样报 `error decoding response body`
+     * ⇒ 回退形同虚设，与不加回退完全一样。
+     * ```
+     *
+     * # 实测证据（对比两种 client）
+     * ```text
+     * AUTO  = default_client()                    ⇒ r.bytes() **FAILED**
+     * NOENC = 显式 no_gzip().no_deflate().no_brotli() ⇒ len=104459，raw-deflate 解出 316851 字节
+     * ```
+     *
+     * # 为什么三个都要关
+     * ```text
+     * reqwest 的自动解压是 **client 级** 配置，
+     * 与"发不发 Accept-Encoding 头"无关（上一版误以为跳过那个头就行）。
+     * 只关 deflate 可能仍被 gzip/br 干扰 ⇒ 实测三个全关才拿到原始字节。
+     * ```
+     */
+    let raw_client = reqwest::Client::builder()
+        .no_gzip()
+        .no_deflate()
+        .no_brotli()
+        .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .build()
+        .ok()?;
     let req = if method == "POST" {
-        client.post(url)
+        raw_client.post(url)
     } else {
-        client.get(url)
+        raw_client.get(url)
     };
     let mut req = req;
     for (k, v) in headers {
@@ -1937,11 +1969,47 @@ async fn try_raw_deflate_fallback(
         return None;
     }
     let bytes = r.bytes().await.ok()?;
-    // ★ raw-deflate = 无 zlib 头的 deflate 流
+    /*
+     * ★★★ 依次尝试三种格式（2026-10-18 二次修复）
+     *
+     * # 为什么不是只试 raw-deflate
+     * ```text
+     * 本站实测：声明 `Content-Encoding: deflate`，内容确实是 raw-deflate。
+     * 但「声明 deflate、内容却是 zlib 或 gzip」在 HTTP 世界里**真实存在**
+     * （某些反代的压缩配置与响应头不同步）。
+     *
+     * 只试 raw-deflate 的话，那种站会**静默失败**：
+     *   解不开 ⇒ return None ⇒ 保留原错误 ⇒ 用户看不到数据，日志也只是原错误。
+     * ⇒ 成本极低（三次尝试都在内存里），收益是把"名不副实"也覆盖掉。
+     * ```
+     *
+     * # 顺序有讲究
+     * ```text
+     * raw-deflate 在前：本站实测就是它（最常见的情况优先，少走一次尝试）
+     * zlib        其次：deflate 的标准封装（带 2 字节头）
+     * gzip        最后：名不副实的兜底
+     * ```
+     *
+     * ★ 三种都失败 ⇒ 返回 None，**保留调用方的原始错误**（不编造新错误）。
+     */
     use std::io::Read as _;
     let mut out = String::new();
-    let mut dec = flate2::read::DeflateDecoder::new(&bytes[..]);
-    if dec.read_to_string(&mut out).is_err() {
+    let ok = flate2::read::DeflateDecoder::new(&bytes[..])
+        .read_to_string(&mut out)
+        .is_ok()
+        || {
+            out.clear();
+            flate2::read::ZlibDecoder::new(&bytes[..])
+                .read_to_string(&mut out)
+                .is_ok()
+        }
+        || {
+            out.clear();
+            flate2::read::GzDecoder::new(&bytes[..])
+                .read_to_string(&mut out)
+                .is_ok()
+        };
+    if !ok {
         return None;
     }
     if status.is_success() {
@@ -7281,3 +7349,4 @@ globalThis.plugin = { id: 'old', capabilities: { vod: true, search: true } };
     }
 
 }
+

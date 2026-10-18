@@ -3806,3 +3806,65 @@ cache_page.dart:2084  MouseRegion(onEnter/onExit 驱动 _hover)
   · 如果只是高亮了一下 ⇒ B 完全可接受
 ★ 等这个读数回来再做最终确认。
 ```
+
+---
+
+# §二十一 R3-④ 裁决翻转：B 的后果比我估的重一档
+
+## 我错了，`settings-ux` 的探针纠正了我
+
+```text
+我上一轮写：「双击透传 ⇒ 下层被点一下 ⇒ 这是**烦恼**，不是**损失**」
+
+★ 实际读数（它做的探针）：
+  遮罩双击 ⇒ tap=1  doubleTap=0  longPress=0  pan=0  open=false
+  ⇒ 第 2 击触发的是**普通 onTap**
+
+  那一下 onTap 在播放页是：
+    player_page.dart:14498  onTap: _togglePlay,
+    player_page.dart:11288  void _togglePlay() { ... _player.pause(); }
+  ⇒ **正在播放的视频被暂停**
+
+⇒ 用户看片、调完弹幕设置、手抖双击关窗 ⇒ 片子停了。
+   这不是"烦恼"，是**打断用户正在做的事**。
+```
+
+## ★ 而且这不是"忘了防"，是"防了三处漏了一处"
+
+```text
+_anySheetOpen 已被用在三处守卫：
+  :1062   _fullscreen && _cursorIdleStale && !_anySheetOpen && _playing
+  :1115   if (_anySheetOpen || !_playing || _popover.openId != null) return;
+  :11467  Device.isDesktop && _error != null && !_anySheetOpen && _controlsVisible
+
+★ 唯独 :14498 的 onTap 没防 ⇒ **真实的不一致**
+```
+
+## 新裁决：接受 B + 播放页加 1 行守卫
+
+```dart
+// player_page.dart:14498
+onTap: _anySheetOpen ? null : _togglePlay,
+```
+
+```text
+理由：
+· B 的透传仍在（不改外壳、不给所有用户加 300ms）
+· 但落点从「暂停视频」变成「什么也不发生」
+· 代价为零：面板开着时，点播放区本来就不该播放/暂停
+· 只在播放页，不影响 5 个弹窗
+```
+
+## 方法论教训（我自己的）
+
+```text
+★ 我说「这是烦恼不是损失」时，**没有真去查那一下 onTap 落到了什么上**。
+  我凭"下层只是个列表页"的印象就下了判断。
+
+⇒ 判据：评估"后果有多严重"之前，必须先找出**具体的落点代码**。
+  "下层被点一下"这句话本身不含信息 —— 关键是被点的那一下**干了什么**。
+
+★ 这也解释了为什么 settings-ux 的探针比我的直觉可靠：
+  它测出 tap / doubleTap / longPress / pan 四个计数器的值，
+  而我只有一个"应该不严重"的印象。
+```

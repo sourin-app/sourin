@@ -39,18 +39,123 @@
 
 | 编号 | 内容 | 谁 | 当前状态 |
 |---|---|---|---|
-| **D1** | 弹幕面板 4 tab → 3 tab 语义重构 | danmaku | 三页签已改完，正在修受影响的既有测试 |
+| **D1** | 弹幕面板 4 tab → 3 tab 语义重构 | danmaku | **已完成**（`DanmakuPanelTab` = display / sources / advanced，见 `danmaku_settings_dialog.dart:410-419`） |
 | **N15** | 插件弹幕发送能力（Owner：插件也归你） | dan-api | 取证中（私库 `sourin-plugins`） |
 | N14 | 缓存不要一次性拉完 | live-groups | **取证完成，方案待批** |
-| N10 | 拖动转圈（自造场景） | perf-player | 取证中（找走代理的源） |
+| N10 | 拖动转圈（自造场景） | perf-player | **已完成**（`beginYieldForSeek` 已接进 `player_page.dart`，sourin_api 5 处） |
 | M2-3 | 直播页筛选条玻璃化（C 方案） | live-ux | 已定方案，实施中 |
-| M2-4 | 详情页玻璃化（第 3 步 OutlinedButton） | settings-ux | 进行中 |
-| **P1-L3** | 直播暂停状态不统一（Owner 12:55 截图） | 待派 | 取证中 |
-| **P1-L2** | 播放控件一半在视窗外（Owner 12:55 截图） | 待派 | 取证中 |
-| **P1-L1** | 筛选条三下拉显示异常（Owner 12:55 截图） | 待派 | 取证中 |
+| M2-4 | 详情页玻璃化（第 3 步 OutlinedButton） | settings-ux | **已完成主体**（`detail_page.dart` 11 处 `AppOutlinedButton`） |
+| **P1-L3** | 直播暂停状态不统一（Owner 12:55 截图） | lead | ✅ **已修复且门禁有判别力**（见下方 §P1-L3 结案） |
+| **P1-L2** | 播放控件一半在视窗外（Owner 12:55 截图） | live-ux | ⚠️ **静态定位否定了三条候选根因，需 Owner 截图才能继续** |
+| **P1-L1** | 筛选条三下拉显示异常（Owner 12:55 截图） | lead | ✅ **已修复**（占位文案已缩短，见下方 §P1-L1 结案） |
 | N14 | 缓存窗口 cache-secs=600（字节上限未动） | live-groups | **已完成 07db0c3** |
 | M4 | MaterialApp → WidgetsApp | lead | **已完成 8157a03** |
-| N5 | dan-api 异步（盘点结论：已满足） | danmaku | 等 D1 完成后出报告 |
+| N5 | dan-api 异步（盘点结论：已满足） | danmaku | **已完成**（`sourin_api.dart` 124 处 `callAsync`） |
+
+### §P1-L3 结案（2026-10-18 18:10，Lead 亲自验）
+
+**结论：已修复，且门禁能真的变红。**
+
+```text
+修复提交：8e8be90（git merge-base --is-ancestor 8e8be90 HEAD ⇒ 是 HEAD 祖先）
+真根因不是计划里列的 ①②③，而是第四个：**跨路由的状态回传缺失**
+  · _userPaused 只由内嵌播放器上报（onUserPause）
+  · 用户在全屏 PlayerPage 里按的暂停传不回来
+  · ⇒ 两条续播出口（_watchLive 收尾 + _onVisibilityChanged）都放行
+修法：修状态源（pop<bool> 把三态带回来），不修出口
+关键行：live_page.dart:2630 `_userPaused = pausedInFullscreen;`
+```
+
+**故障注入（Lead 实测，不是读注释）**：
+```text
+删掉 :2630 那行 ⇒ dart analyze 0 error（有效注入）
+flutter test test/zz_t66_live_pause_intent_test.dart ⇒ **+16 -1**
+  红的正是：「② _watchLive 里必须接管返回值并赋给 _userPaused」
+还原 ⇒ **+17 All tests passed**，git status 干净
+⇒ 这条门禁**有判别力**，不是假绿。
+```
+
+⚠️ **仍需 Owner 确认一件事**：如果他手上那个包的构建早于 `8e8be90`，缺陷在他那儿是真的 ⇒ 更新包即可。
+
+### §P1-L1 结案（2026-10-18 18:12，Lead 亲自核）
+
+**结论：已修复。**
+
+```text
+位置：lib/ui/live_page.dart:4114-4124（_FilterBar 的三个 display 入参）
+改法：占位文案缩短
+  '全部分组' → '分组'
+  '全部源'   → '源'
+  '全部分类' → '分类'
+★ 选中具体值后显示的仍是那个名字（如「科教·生活·科学」），
+  缩短的**只是"没选"时的占位**。
+★ 语义靠 Tooltip 补全（显示当前完整值）。
+```
+
+**源码里已标注 `★ P1-L1（B）`，且注释记录了这个权衡**：
+```text
+「『源』可能被理解成"源的数量" ⇒ 这是 Lead 明确接受的权衡」
+★ 并已核对：test/ 下没有 find.text('全部分组') 之类的精确文案断言
+  （都按 ValueKey('live-bar-opt-…') 匹配）⇒ 改文案安全。
+```
+
+⚠️ **未做**：没有 Owner 的原始截图，所以**无法核对「菜」那个字是什么**。
+计划里 :1453 明确写着「必须亲眼确认，不能猜」。⇒ 保持未确认。
+
+### §P1-L2 状态：**卡住了，需要 Owner 提供截图**
+
+**live-ux 静态定位的结论：三条候选根因全部被否定。**
+
+```text
+定位：lib/ui/widgets/live_embedded_player.dart（**不是** live_page.dart，
+      计划里 :1459 写的「Positioned.fill 在 live_page.dart:2776」行号已漂移）
+  :1956  Positioned  left:0 right:0 bottom:0
+  :2170  _EmbedBar padding  horizontal: Sp.x3 = 12  ← 正值
+  :2245  _RoundBtn padding  all(6)                 ← 正值
+
+三条候选全部不成立：
+  ① left 是负数       ⇒ 负值扫描零命中
+  ② 固定负 margin     ⇒ 两个内边距都是正值
+  ③ 与 bandFor 有关   ⇒ 这两个按钮完全不用 sideInsetForWindow / bandFor
+
+★ 更强的一条反证：
+  外层 :1845 有 ClipRRect(borderRadius: Radii.rLg) ——
+  裁剪会先拦住溢出，控件**不可能**跑到窗口左边缘之外。
+  且 zz_t66_live_embed_bounds_test.dart 有一条判据正是
+  「所有 Icon 的 global x ≥ 0」，12/12 全绿。
+```
+
+**⇒ 需要 Owner 提供原始截图才能继续。判据**：
+```text
+那对圆钮的圆心在窗口坐标里的 x 是多少？
+  x < 0        ⇒ 窗口被拖出了屏幕（不是布局问题）
+  0 < x < 20   ⇒ 布局问题，继续查
+需要知道的另一件事：是**内嵌播放器**（直播页右栏）还是**全屏播放页**？
+  这是两个完全不同的文件。
+```
+
+⚠️ 另：Owner 的原始截图**全仓找不到**（`find . -iname "*owner*"` 只有一张无关的）。
+⇒ 在拿到它之前，盲改坐标有风险（这是 Owner 最在意的播放区）。
+
+### §测试事故：截图截到了 Owner 的桌面（已处置）
+
+```text
+live-ux 用 CopyFromScreen 截图时，截到了 1600×900 的**桌面区域**，
+里面有 Owner 正在连接的屏幕共享工具窗口。
+
+处置：它当场删图 + 恢复窗口状态 + 结束进程；
+Lead 复核后**再全仓扫了一遍**：
+  · .probe/ 下 522 张 PNG ⇒ 全部删除（含 23 张搜狗输入法用户数据）
+  · .probe 170M → 97M
+  · 确认 .probe 被 .gitignore:103 忽略，git ls-files .probe 为空 ⇒ **一张都没进仓库**
+  · 复核全仓剩余 62 张 PNG ⇒ 全是 ic_launcher / app_icon 等项目资源
+```
+
+★ **纪律**：`CopyFromScreen` 在这台**活跃交互式桌面**上不安全 ——
+它抓的是屏幕像素，会把 Owner 正在做的事拍进去。
+⇒ 真机截图必须用 `SOURIN_SHOT=1`（RenderRepaintBoundary，从 Flutter 侧渲染），
+   或 `PrintWindow`（对 Flutter 返回 1×1，不可用）。
+⇒ 绝不用 `CopyFromScreen` 截产品窗口。
 
 ### 待办 ⏳
 

@@ -56,6 +56,7 @@ import 'cache_page.dart'
 import 'media_session.dart';
 import '../core/network_status.dart';
 import '../design/widgets/app_ink_well.dart';
+import '../design/widgets/app_text_button.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
 // ★ 2026-10-18（Owner 第 12 条）：toast 统一走这里（`showAppToast`）
@@ -2268,11 +2269,11 @@ class _DetailPageState extends State<DetailPage> {
           '一次只下一集（把带宽留给播放），可以随时取消。',
         ),
         actions: [
-          TextButton(
+          AppTextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
             child: const Text('取消'),
           ),
-          TextButton(
+          AppTextButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             child: Text('下载 $n 集'),
           ),
@@ -3205,11 +3206,11 @@ class _DetailPageState extends State<DetailPage> {
           '文件会从磁盘上真正删除，此操作不可恢复。',
         ),
         actions: <Widget>[
-          TextButton(
+          AppTextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
             child: const Text('取消'),
           ),
-          TextButton(
+          AppTextButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             child: const Text('删除'),
           ),
@@ -3253,11 +3254,11 @@ class _DetailPageState extends State<DetailPage> {
           '文件会从磁盘上真正删除，此操作不可恢复。',
         ),
         actions: <Widget>[
-          TextButton(
+          AppTextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
             child: const Text('取消'),
           ),
-          TextButton(
+          AppTextButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             child: const Text('删除'),
           ),
@@ -3358,7 +3359,7 @@ class _DetailPageState extends State<DetailPage> {
             const _BlockTitle(text: '已下载'),
             const Spacer(),
             if (eps.isNotEmpty)
-              TextButton(
+              AppTextButton(
                 onPressed: () => setState(() {
                   _localSelectMode = true;
                   _localChecked.clear();
@@ -3441,7 +3442,7 @@ class _DetailPageState extends State<DetailPage> {
             ),
           ),
           const Spacer(),
-          TextButton(
+          AppTextButton(
             onPressed: () => setState(() {
               // ★ 全选/全不选：已经全选了就变成"全不选"（一个按钮两个方向）
               if (_localChecked.length == eps.length) {
@@ -3454,14 +3455,14 @@ class _DetailPageState extends State<DetailPage> {
             }),
             child: Text(_localChecked.length == eps.length ? '全不选' : '全选'),
           ),
-          TextButton(
+          AppTextButton(
             // ★ 一集都没勾 ⇒ 禁用（不给"点了没反应"的按钮）
             onPressed: n == 0
                 ? null
                 : () => unawaited(_confirmDeleteLocalSelected()),
             child: const Text('删除'),
           ),
-          TextButton(
+          AppTextButton(
             onPressed: () => setState(() {
               _localSelectMode = false;
               _localChecked.clear();

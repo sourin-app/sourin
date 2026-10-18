@@ -2483,6 +2483,7 @@ class _FollowSkeleton extends StatelessWidget {
 ///
 /// ⚠️ 等 `shell.dart` 接上 `AppThemeScope` 之后，本函数应退化为
 ///    `AppTheme.of(context).colors` 一行 —— 那时删掉兜底分支即可。
+// TODO(M4): AppThemeScope 接上后本函数退化为 AppTheme.of(context).colors
 AppSemanticColors _followColors(BuildContext context) {
   final scope = AppThemeScope.maybeOf(context);
   if (scope != null) return scope.colors;

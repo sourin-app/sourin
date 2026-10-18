@@ -2577,6 +2577,44 @@ class DanmakuLocalService {
   ///
   /// [endpoint] 非空时探**用户自建后端**（按 [DanmakuEndpoint.resolve] 拼路径）；
   /// 为空时探本机弹弹play（行为与改前逐字一致，只是多试一个端点）。
+  ///
+  /// ══════════════════════════════════════════════════════════════════════
+  /// ★★★ 2026-10-18（Owner 第 9 条）：**整次探测的总耗时 = [timeout]**，
+  /// 不是「每个端点各 [timeout]」
+  /// ══════════════════════════════════════════════════════════════════════
+  ///
+  /// # 改前是什么
+  /// ```text
+  /// 下面按序试 1~3 个端点，**每个**都拿完整的 [timeout]。
+  /// ⇒ 最坏 2 个端点（本机 2080 那条路）= 2×timeout = 4 s
+  ///   最坏 3 个端点（带 endpoint 那条路）= 3×timeout = 6 s
+  /// ```
+  ///
+  /// # 为什么这是个真问题（Owner 原话是关键）
+  /// ```text
+  /// > dan-api 依旧异步,全都不能阻塞应用的启动,都应该在后台异步处理
+  ///
+  /// 启动路径本身**不调**它（见 test/zz_t66_danmaku_startup_gate_test.dart
+  /// 的三条判据），但**凡是等它的地方**都会被这个 3 倍放大拖住：
+  ///   · 弹幕面板/设置页的「测试连接」按钮（用户点了要等 6 s 转圈）
+  ///   · 播放页起播时的状态行（`_ensureDanmakuLocalStatus`）
+  /// 用户体感就是「弹幕这块很慢」，与「不许阻塞」是同一类问题。
+  /// ```
+  ///
+  /// # 改法：**共享一个截止时间**
+  /// ```text
+  /// 进函数时算一次 deadline = now + timeout
+  /// 每次 _probeOne 只拿 remaining = deadline - now
+  /// remaining <= 0 ⇒ 不再试，直接判离线
+  /// ```
+  /// ⇒ 语义仍是「按序试、任一命中即在线」，但**整次探测有上界**。
+  ///
+  /// ⚠️ 这会改变一个**边界行为**：多个端点都慢时，后面的端点可能**来不及试**。
+  ///    方向是安全的 —— 那种情况下服务本来也已经在超时边缘，
+  ///    再等下去只会让用户多等，而不会让判定更准。
+  /// ⚠️ 默认 [timeout] 保持 2 s 不变（与改前逐字一致）：
+  ///    本机 2080 是毫秒级，2 s 足够；内置公网实例本来就要靠
+  ///    `_probeOne` 的 404 快速失败，不吃这个预算。
   static Future<DanmakuLocalStatus> probe({
     DanmakuTransport? transport,
     Duration timeout = const Duration(seconds: 2),
@@ -2584,12 +2622,23 @@ class DanmakuLocalService {
   }) async {
     final t = transport ?? IoDanmakuTransport(timeout: timeout);
     final shouldClose = transport == null;
+    /*
+     * ★ 整次探测的唯一截止时间（见上方长注释）。
+     * 用 Stopwatch 而不是 DateTime：后者会被系统时钟调整影响，
+     * 而墙钟往回跳一次就会让 remaining 变成负数并**跳过所有端点**。
+     */
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final left = timeout - clock.elapsed;
+      return left.isNegative ? Duration.zero : left;
+    }
+
     try {
       // ① 首选：弹弹play 桌面版的原生端点（本机 2080 与本机自建实例同款拼法）
       final st0 = await _probeOne(
         t,
         endpoint?.resolve(versionPath) ?? Uri.http(hostPort, versionPath),
-        timeout,
+        remaining(),
         endpoint: endpoint,
       );
       if (st0 != null) return st0;
@@ -2600,7 +2649,7 @@ class DanmakuLocalService {
       final st1 = await _probeOne(
         t,
         endpoint?.resolve(configPath) ?? Uri.http(hostPort, configPath),
-        timeout,
+        remaining(),
         endpoint: endpoint,
       );
       if (st1 != null) return st1;
@@ -2609,12 +2658,16 @@ class DanmakuLocalService {
        * ③ 再退一步：★ 内置公共实例两个都没有（实测 404 / 404）。
        *    见 [searchProbePath] 的推导。只有带了 endpoint（= 有具体后端
        *    可打）才试 —— 本机 2080 那条路不加这一步（它本来就有前两个）。
+       *
+       * ⚠️ 预算已经用完时**不再发起**这一步：它是最慢的那个
+       *    （公网 serverless，实测 3~5 s），顶着 0 预算去打只会
+       *    立刻超时，还多留一个在途连接。
        */
-      if (endpoint != null) {
+      if (endpoint != null && remaining() > Duration.zero) {
         final st2 = await _probeOne(
           t,
           endpoint.resolve(searchProbePath, const {'keyword': 'a'}),
-          timeout,
+          remaining(),
           endpoint: endpoint,
         );
         if (st2 != null) return st2;
@@ -2640,12 +2693,25 @@ class DanmakuLocalService {
   ///
   /// ⚠️ 这里**故意吞掉异常**并返回 null 而不是直接判离线：
   ///    404 会让部分服务直接抛，那是「这个端点没有」而不是「服务没起来」。
+  ///
+  /// ★ 2026-10-18（Owner 第 9 条）：[timeout] 现在是**整次探测剩下的预算**
+  ///   （由 [probe] 算好传进来），不再是「每个端点各拿一份」。
+  ///   `== Duration.zero` 表示预算已耗尽 ⇒ **一个字节都不发**，
+  ///   直接返回 null（见 [probe] 里 remaining() 的说明）。
   static Future<DanmakuLocalStatus?> _probeOne(
     DanmakuTransport t,
     Uri uri,
     Duration timeout, {
     DanmakuEndpoint? endpoint,
   }) async {
+    /*
+     * ★ 预算是 0 ⇒ 不发请求。
+     * 为什么必须显式挡：(await x).timeout(Duration.zero) 会**立刻**抛
+     * TimeoutException，看起来"等效"，但它已经在事件循环上排了一次
+     * 真实的 send() —— 对一个要连公网的 transport 来说，那可能真的
+     * 把 socket 建起来（iOS/Android 上是真流量）。这里直接短路。
+     */
+    if (timeout <= Duration.zero) return null;
     try {
       final r = await t
           .send(

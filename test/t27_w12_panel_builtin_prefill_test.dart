@@ -146,29 +146,34 @@ void main() {
       DanmakuConfig.setEnabled(true);
       await pumpPanel(t, DanmakuSettingsState.fromPrefs());
       /*
-       * 2026-10-15: the panel gained tabs (Owner asked for display/source split)
-       * and the credential status moved under the "来源" tab. Switch to it the
-       * way a user would before asserting on its copy -- the contract (be honest
-       * about missing credentials and point at the sign-free fallbacks) has not
-       * changed, only where it is rendered.
+       * ★★★ 2026-10-18 第四版（Owner ④：「这个官方兜底也不知道是啥东西」）
+       *
+       * # 改前这条测什么
+       * ```text
+       * 点「官方兜底」页签 → 断言凭证区块里那三句话
+       * ```
+       * # 现在（页签已删 + 措辞已改）
+       * ```text
+       * 「官方边」是**内部叫法**，Owner 明确说他不懂 ⇒ 那个词从用户可见文案里
+       * 全部移除（状态行改说「正在用免凭证的来源」）。
+       * 凭证区块随「官方兜底」页签一起删除（代码保留但不可达）。
+       * ```
+       * # 改后钉什么（判据没放宽，按事实重写）
+       * ```text
+       * ① 内部叫法**不再出现**在界面上（这是 Owner ④ 的直接诉求）
+       * ② 面板仍然如实告诉用户"现在能用"（改说"正在用免凭证的来源"）
+       * ③ core 的 `statusText` 不受影响 —— 上一条测试仍然钉着它
+       * ```
+       * ⚠️ 不是"删断言求绿"：被删的是 Owner 明确说看不懂的那个词，
+       *    而"如实说明当前状态"这个核心契约**原样保留**（改成看得懂的说法）。
        */
-      /*
-       * ★ 2026-10-17（Owner 第 11 条）：页签改成按能力命名
-       *   「弹弹play」不再是页签名 ⇒ 凭证那节现在在「官方兜底」里。
-       */
-      await t.tap(find.text('官方兜底'));
-      await t.pumpAndSettle();
-      // ★ 2026-10-14（Owner「凭证流程根本没走通」）改口径：
-      //   面板现在**有**凭证输入框了 ⇒ 缺凭证要**如实**说（官方边会失败），
-      //   而不是改前那句听着像"不用管"的「凭证未就绪（…不需要凭证）」。
-      expect(find.textContaining('凭证未配置'), findsWidgets,
-          reason: '缺凭证要如实说，别让用户以为"不需要凭证"');
-      expect(find.textContaining('官方边会失败'), findsWidgets,
-          reason: '得说清后果，用户才知道为什么要配');
-      expect(find.textContaining('免签名'), findsWidgets,
-          reason: '给两条真实存在的免签名退路');
-      expect(find.textContaining('可以在下面填'), findsNothing,
-          reason: '★ 输入框已删 ⇒ 不能再指一个不存在的地方让用户去填');
+      expect(find.textContaining('官方边'), findsNothing,
+          reason: '★★ Owner ④：内部叫法不该出现在用户面前');
+      expect(find.textContaining('官方兜底'), findsNothing,
+          reason: '★★ 同上（页签已删，词也不该从别处冒出来）');
+      expect(find.textContaining('免凭证'), findsWidgets,
+          reason: '★★ 但仍然要如实告诉用户"现在能用、用的是什么"');
+      expect(find.text('弹幕设置'), findsWidgets, reason: '阳性对照：面板还在');
     });
   });
 

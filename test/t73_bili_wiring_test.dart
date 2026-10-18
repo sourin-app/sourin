@@ -563,17 +563,20 @@ void main() {  // ════════════════════�
        * (配置 / bilibili / 弹弹play), so the tab is named after the source itself
        * instead of the generic "来源".
        *
-       * ★ 2026-10-17 (Owner 第 11 条): tabs are named after **capability**, not
-       * after one vendor (配置 / dan-api / 插件提供 / 官方兜底). The request +
-       * search sections live under 「插件提供」 now.
+       * ★ 2026-10-18 第四版（Owner 亲自截图第 ① 条）：
+       *   「bilibili的弹幕设置怎么没了」
+       *   ⇒ 第三版把它藏成「插件提供」里一枚叫「外部弹幕…」的按钮 ——
+       *      **减少点击层数 ≠ 提高可发现性**，藏在别的名字下等于没有。
+       *   ⇒ 现在它在「弹幕来源」页签里是**平级的一行**，名字就叫出来，
+       *      右侧动作按钮从「外部弹幕…」改成「打开…」。
        */
-      await t.tap(find.text('插件提供'));
+      await t.tap(find.text('弹幕来源'));
       await t.pumpAndSettle();
-      final btn = find.widgetWithText(TextButton, '外部弹幕…');
+      final btn = find.widgetWithText(TextButton, '打开…');
       expect(btn, findsOneWidget);
       /*
-       * ⚠️ 按钮在面板最末尾 —— 800×600 的测试面里它在 y=956（屏幕外），
-       *    `t.tap` 会打印 “would not hit test on the specified widget” 然后
+       * ⚠️ 按钮在面板末尾 —— 800×600 的测试面里它在屏幕外，
+       *    `t.tap` 会打印 "would not hit test on the specified widget" 然后
        *    静默不触发。必须先滚进视口（`player_capability_test.dart:1114`
        *    就是这么滚 chip 的）。
        */
@@ -590,23 +593,46 @@ void main() {  // ════════════════════�
       expect(opened, 1);
     });
 
-    testWidgets('③ 没传 onOpenBili ⇒ 按钮不画（旧宿主零破坏）', (t) async {
+    testWidgets('③ 没传 onOpenBili ⇒ 那一行的动作按钮不画（旧宿主零破坏）', (t) async {
       await t.pumpWidget(_host(_danmakuDialog()));
       await t.pumpAndSettle();
-      // 同上：外部弹幕源相关的东西现在在「插件提供」页签下。
-      await t.tap(find.text('插件提供'));
+      // 同上：来源行现在在「弹幕来源」页签下。
+      await t.tap(find.text('弹幕来源'));
       await t.pumpAndSettle();
-      expect(find.text('外部弹幕…'), findsNothing,
-          reason: '★ 面板可以被别的宿主复用而不带上 B 站 —— 那时不该有这枚按钮');
-      expect(find.text('重新获取弹幕'), findsOneWidget, reason: '阳性对照');
+      expect(find.text('打开…'), findsNothing,
+          reason: '★ 面板可以被别的宿主复用而不带上那个源 —— 那时不该有这枚按钮');
+      /*
+       * ★ 但那一行**仍然在**（只是没有动作按钮）——
+       *   它如实说"未绑定"，用户才知道这条路存在、需要宿主支持。
+       *   这与改前"整枚按钮不画"不同：现在**可见性**与**可操作性**分开了。
+       */
+      expect(find.text('本片源自带'), findsOneWidget,
+          reason: '阳性对照：来源行本身仍在');
     });
 
-    test('④ 面板文件里那枚按钮是可选的（onOpenBili 声明为可空）', () {
+    test('④ 面板里那个入口是可选的（onOpenBili 声明为可空）', () {
       expect(_dialog.contains('this.onOpenBili,'), isTrue,
           reason: '★ 不能设成 required —— 那会让既有的两处调用点编译不过');
       expect(_dialog.contains('final VoidCallback? onOpenBili;'), isTrue);
-      expect(_dialog.contains('if (widget.onOpenBili != null)'), isTrue,
-          reason: '★ 为 null 时整枚不画');
+      /*
+       * ★ 2026-10-18 第四版（Owner 第 1 条）：
+       *   入口从「请求」节里那枚 `TextButton.icon('外部弹幕…')`
+       *   搬到了「弹幕来源」页签的**平级一行**（`_sourceRow` 的 trailing）。
+       *   ⇒ 判据跟着换形态，但语义不变：**为 null 时那个动作不画**。
+       */
+      expect(
+        _dialog.contains(
+          'trailing: widget.onOpenBili == null\n              ? null\n              : _rowAction(\'打开…\', widget.onOpenBili!),',
+        ),
+        isTrue,
+        reason: '★ 为 null 时那一行的动作按钮不画（旧宿主零破坏）',
+      );
+      /*
+       * 反向：上一版那枚重复的按钮**必须已经删掉** ——
+       * 两个入口指向同一个回调会让用户问"有什么区别"（看图台抓到的）。
+       */
+      expect(_dialog.contains("'外部弹幕…'"), isFalse,
+          reason: '★★ 重复入口已删（来源行里的「打开…」是唯一入口）');
     });
   });
 

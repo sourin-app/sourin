@@ -77,7 +77,12 @@ Future<void> _pumpOnDanApiTab(
   await t.pump();
   final tab = find.descendant(
     of: find.byType(SegmentedButton<DanmakuPanelTab>),
-    matching: find.text('dan-api'),
+    /*
+     * ★ 2026-10-18 第四版（Owner 亲自截图四条反馈）：
+     *   页签改成 `显示 / 弹幕来源 / 高级`；
+     *   自建地址 + Token + 测试连接那一节现在在「高级」页签。
+     */
+    matching: find.text('高级'),
   );
   await t.tap(tab);
   await t.pumpAndSettle();
@@ -483,15 +488,21 @@ void main() {
       expect(find.text('显示 / 过滤 / 请求'), findsOneWidget);
     });
 
-    testWidgets('★★ 四个页签都在（三条来源 + 通用配置，谁都没挤掉谁）', (t) async {
+    testWidgets('★★ 三个页签都在（显示 / 弹幕来源 / 高级）', (t) async {
       await _pumpOnDanApiTab(t);
       /*
-       * ★ 2026-10-17（Owner 第 11 条）：页签从「按源命名」改成「按能力命名」。
-       *   改前：配置 / bilibili / 弹弹play          // site-ok: danmaku-source
-       *   改后：配置 / dan-api / 插件提供 / 官方兜底
-       * ⇒ 四个都在，且**没有任何一个是某一家服务的名字**。
+       * ★ 2026-10-18 第四版（Owner 亲自截图四条反馈）。
+       *
+       * 改前（第三版）：配置 / dan-api / 插件提供 / 官方兜底
+       *   被 Owner 否掉的三点：
+       *     · 「bilibili的弹幕设置怎么没了」⇒ 它被藏成 plugin tab 里一枚按钮
+       *     · 「dan-api只有测试」        ⇒ 那个 tab 里真的只有测试连接
+       *     · 「官方兜底也不知道是啥」    ⇒ 内部概念泄漏，且本构建必然失败
+       *
+       * 改后：显示 / 弹幕来源 / 高级
+       *   ⇒ 三个都在，且**没有一个是某一家服务的名字**。
        */
-      for (final label in <String>['配置', 'dan-api', '插件提供', '官方兜底']) {
+      for (final label in <String>['显示', '弹幕来源', '高级']) {
         expect(
           find.descendant(
             of: find.byType(SegmentedButton<DanmakuPanelTab>),

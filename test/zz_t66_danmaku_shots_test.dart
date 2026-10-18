@@ -132,7 +132,11 @@ DanmakuSettingsState _settingsState() => const DanmakuSettingsState(
       dropped: 12,
     );
 
-Future<void> _pumpSettings(WidgetTester t, String tab) async {
+Future<void> _pumpSettings(
+  WidgetTester t,
+  String tab, {
+  bool canSend = true,
+}) async {
   await setShotViewport(t, const Size(760, 1180));
   await t.pumpWidget(MaterialApp(
     debugShowCheckedModeBanner: false,
@@ -153,6 +157,11 @@ Future<void> _pumpSettings(WidgetTester t, String tab) async {
               onSetArea: (_) {},
               onReload: () {},
               onClose: () {},
+              biliCount: 1200,
+              onOpenBili: () {},
+              onSearch: (_) {},
+              onPickMatch: (_) {},
+              canSendDanmaku: canSend,
               fill: false,
             ),
           ),
@@ -190,22 +199,28 @@ void main() {
     print('[SHOT] t66_info_single');
   });
 
-  // ── 设置面板四个页签（确认改名后文字都排得下）──
-  testWidgets('面板 · dan-api 页签', (t) async {
-    await _pumpSettings(t, 'dan-api');
-    await saveViewShot(t, 't66_panel_danapi');
-    print('[SHOT] t66_panel_danapi');
+  // ── 设置面板三个页签（2026-10-18 第四版：显示 / 弹幕来源 / 高级）──
+  testWidgets('面板 · 显示页签（默认落点）', (t) async {
+    await _pumpSettings(t, '显示');
+    await saveViewShot(t, 't66_panel_display');
+    print('[SHOT] t66_panel_display');
   });
 
-  testWidgets('面板 · 插件提供页签', (t) async {
-    await _pumpSettings(t, '插件提供');
-    await saveViewShot(t, 't66_panel_plugin');
-    print('[SHOT] t66_panel_plugin');
+  testWidgets('面板 · 弹幕来源页签（Owner 四条的核心修复）', (t) async {
+    await _pumpSettings(t, '弹幕来源');
+    await saveViewShot(t, 't66_panel_sources');
+    print('[SHOT] t66_panel_sources');
   });
 
-  testWidgets('面板 · 官方兜底页签', (t) async {
-    await _pumpSettings(t, '官方兜底');
-    await saveViewShot(t, 't66_panel_official');
-    print('[SHOT] t66_panel_official');
+  testWidgets('面板 · 弹幕来源（不支持发送 ⇒ 有一行说明）', (t) async {
+    await _pumpSettings(t, '弹幕来源', canSend: false);
+    await saveViewShot(t, 't66_panel_sources_nosend');
+    print('[SHOT] t66_panel_sources_nosend');
+  });
+
+  testWidgets('面板 · 高级页签', (t) async {
+    await _pumpSettings(t, '高级');
+    await saveViewShot(t, 't66_panel_advanced');
+    print('[SHOT] t66_panel_advanced');
   });
 }

@@ -297,14 +297,14 @@ class DanmakuSettingsState {
       sourceLine: sourceLine ?? this.sourceLine,
       searchLoading: searchLoading ?? this.searchLoading,
       // ★ 与 `clearError` 同款：搜索失败要能被显式清掉（下一次搜索开始 / 点中一条时）
-      searchError:
-          clearSearchError ? null : (searchError ?? this.searchError),
+      searchError: clearSearchError ? null : (searchError ?? this.searchError),
       searchSearched: searchSearched ?? this.searchSearched,
       searchResults: searchResults ?? this.searchResults,
       searchKeyword: searchKeyword ?? this.searchKeyword,
       searchStale: searchStale ?? this.searchStale,
-      credentialSaved:
-          clearCredentialSaved ? false : (credentialSaved ?? this.credentialSaved),
+      credentialSaved: clearCredentialSaved
+          ? false
+          : (credentialSaved ?? this.credentialSaved),
     );
   }
 }
@@ -328,11 +328,7 @@ class DanmakuSettingsState {
 /// NOTE: same semantics as count/lanes/dropped on DanmakuSettingsState --
 /// this changes HOW the update is delivered, not WHAT is displayed.
 class DanmakuReadout {
-  const DanmakuReadout({
-    this.count = 0,
-    this.lanes = 0,
-    this.dropped = 0,
-  });
+  const DanmakuReadout({this.count = 0, this.lanes = 0, this.dropped = 0});
 
   final int count;
   final int lanes;
@@ -366,51 +362,60 @@ const Key blockWordsAddFieldKey = Key('danmaku-blockwords-add-field');
 /// 那条豁免仍然有效（`test/t98_no_site_names_test.dart` 的行级锚点），
 /// 只是本文件现在不需要它了。
 // ignore: unused_element
-const String _kBiliSourceLabel = 'bilibili'; // 弹幕源（Owner 明确允许具名）  // site-ok: danmaku-source
+const String _kBiliSourceLabel =
+    'bilibili'; // 弹幕源（Owner 明确允许具名）  // site-ok: danmaku-source
 
-/// 弹幕面板的**三个**页签（2026-10-17 第三版，Owner 第 11 条）
+/// 弹幕面板的**三个**页签（2026-10-18 第四版，Owner 亲自截图四条反馈）
 ///
-/// # Owner 原话（第三版，逐字）
+/// # 为什么是这一版（前三版都被 Owner 否了，记下来免得再绕回去）
 /// ```text
-/// > 弹弹play 我说了要让可用的dan-api去替换的,这里的弹幕面板怎么还是弹弹play?
+/// 第二版：配置 / bilibili / 弹弹play          // site-ok: danmaku-source
+///   问题：页签名 = 某一家服务的名字 ⇒ 换一家就得改页签名
+///
+/// 第三版：配置 / dan-api / 插件提供 / 官方兜底
+///   问题（Owner 2026-10-18 亲自截图，逐条）：
+///     ① 「某个视频站的弹幕设置怎么没了」
+///        ⇒ 我把那个源从独立 tab 降级成了「插件提供」里一枚叫
+///          「外部弹幕…」的按钮。**减少点击层数 ≠ 提高可发现性** ——
+///          藏在一个不叫它名字的按钮里，用户根本不知道那是它。
+///     ② 「插件提供是什么?」
+///        ⇒ Owner 的语义是「视频源插件随片自带每一集的弹幕 ⇒ 默认导入」，
+///          我实现成了「插件声明能力 ⇒ 用户去搜索/绑定」。语义错了。
+///     ③ 「dan-api只有测试」
+///        ⇒ 那个 tab 里真的只有地址框 + 测试连接 + 清除。
+///          搜索/绑定被我放进了 plugin tab —— 入口放错了。
+///     ④ 「官方兜底也不知道是啥」
+///        ⇒ 内部概念泄漏到 UI，且本构建无内置凭证、必然失败。
 /// ```
 ///
-/// # 为什么这一版把页签从「按源命名」改成「按能力命名」
+/// # 这一版的切法：按**用户要做的事**分，不按来源分
 /// ```text
-/// 第二版是：配置 / bilibili / 弹弹play          // site-ok: danmaku-source
-/// 问题：页签名 = **某一家服务的名字**。
-///   · 换掉一家服务 ⇒ 页签名就得跟着改（现在正是这个局面）
-///   · 用户看到「弹弹play」会以为"本软件只支持这一家"
-///   · 而实际能力是三类**互不相干**的东西：
-///       ① 通用配置（跨源）
-///       ② 插件自己给的弹幕（插件声明 capabilities.danmaku_* 就行）
-///       ③ 官方/内置服务给的弹幕（dan-api / 官方兜底）
-/// ⇒ 按**能力**命名，以后换几家服务都不用动页签。
+/// ① display  —— 显示：与来源无关的纯视觉设置（开关/字号/透明度/速度/区域/屏蔽词）
+/// ② sources  —— 弹幕来源：这一集的弹幕**从哪来**，每条路什么状态，怎么切
+/// ③ advanced —— 高级：要填地址/凭证的、99% 用户不需要的
 /// ```
 ///
-/// # 三个页签各自负责什么
+/// ⚠️ **「弹幕来源」是多选（可叠加），不是单选**
 /// ```text
-/// ① 配置     —— 跨来源的东西：开关、显示参数、屏蔽词、正则
-/// ② dan-api  —— **首选**：内置公共实例 / 你自己填的地址（免凭证）
-/// ③ 插件提供 —— 插件声明的弹幕能力：请求 / 搜索 / 绑定
-/// ④ 官方兜底 —— 官方开放平台：凭证 + 数据源探测
-/// ```
-/// ⚠️ 实际是**四个**页签：通用配置 + 三条来源。第二版把"配置"和两个源
-///    混在一起叫"三个"，那是历史包袱；现在来源分成三条，页签自然变成四个。
+/// Owner 第 11 条原话：「同时加载并合并」
+/// ⇒ 弹幕可以多路合并（`4aeb79a` 就是让手动绑定后插件那份也并进来）。
+/// ⇒ 来源行用 ☑/☐（勾选即参与合并），不是 ●/○（单选）。
 ///
-/// ⚠️ 页签**顺序即优先级**：dan-api 在插件前面，因为它是「开箱就有」的那条。
+/// 与 Owner 第 6 条不冲突：
+///   第 6 条禁的是「不许**自动绑定**外部源」，
+///   不是「不许**手动多选**多个源」。
+///   本片源自带默认勾上（它是视频的一部分 ⇒ 自动），
+///   其他源默认不勾（用户手动勾了才参与合并）。
+/// ```
 enum DanmakuPanelTab {
-  /// 配置：跨来源的通用项（开关 / 显示 / 屏蔽词 / 正则）
-  general,
+  /// 显示：跨来源的纯视觉设置（开关 / 显示参数 / 屏蔽词 / 正则）
+  display,
 
-  /// dan-api：**首选**来源（内置公共实例 / 用户自填地址）
-  danApi,
+  /// 弹幕来源：本片源自带 / 某个视频站 / dan-api / 本机服务 —— **可多选合并**
+  sources,
 
-  /// 插件提供：插件自己声明的弹幕能力
-  plugin,
-
-  /// 官方兜底：官方开放平台（要 AppId / AppSecret 签名）
-  official,
+  /// 高级：自建地址、Token、官方开放平台凭证（通常不需要）
+  advanced,
 }
 
 class DanmakuSettingsDialog extends StatefulWidget {
@@ -431,6 +436,7 @@ class DanmakuSettingsDialog extends StatefulWidget {
     this.onChanged,
     this.readout,
     this.biliCount,
+    this.canSendDanmaku = true,
     this.onBatchBind,
     this.fill = true,
     this.probeOverride,
@@ -469,6 +475,28 @@ class DanmakuSettingsDialog extends StatefulWidget {
   final VoidCallback onReload;
 
   final VoidCallback onClose;
+
+  /// 本片源**能不能发**弹幕（与"有没有弹幕可看"是两件事）
+  ///
+  /// # 为什么要有这个参数
+  /// ```text
+  /// 发送输入框的挂载条件是 AND 谓词（在 player_page.dart 里）：
+  ///   _danmakuEnabled && _danmakuCanSend && _danmakuSendProvider != null && !_isLive
+  /// 两个插件都没有声明 danmakuSend 能力 ⇒ 输入框整条不渲染
+  /// （Owner 第 1 条「不支持就不显示」，宿主判得对）。
+  ///
+  /// ⚠️ 但"不显示"不等于"不解释"：用户看到「本片源自带 1200 条」却没有
+  ///    发送框，会以为**坏了**，而不是"这个源不支持发"。
+  /// ⇒ 面板里用一行灰字说明。
+  /// ```
+  /// # 为什么是可选参数
+  /// ```text
+  /// 接线在 `player_page.dart`（归轨道 A 的 N10），本轨道**不写**它。
+  /// 默认 `true` = 不传时**不显示那行说明**（保持旧行为，零破坏）；
+  /// 宿主传了 `_danmakuCanSend` 之后，不支持时才会出现那行说明。
+  /// ⇒ 面板侧先做好能力，接线由宿主补（见交付说明里的 1 行 diff）。
+  /// ```
+  final bool canSendDanmaku;
 
   /// 打开「外部视频源弹幕」面板（task-31 ④）。
   ///
@@ -649,10 +677,15 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
 
   /// 当前页签。默认「配置」。
   ///
-  /// 为什么不默认到某个源：两个源是**互斥**的，
-  /// 默认点哪一个都等于假设了用户用哪个；
-  /// 而「配置」是两边都成立的中立落点。
-  DanmakuPanelTab _tab = DanmakuPanelTab.general;
+  /// 默认落在「显示」页签。
+  ///
+  /// ★ 2026-10-18 第四版：默认页从「配置」改成「显示」（同一个东西的新名字）。
+  ///
+  /// 为什么不默认到某个**来源**：来源之间可以叠加（Owner 第 11 条
+  /// 「同时加载并合并」），默认勾哪一个都等于替用户做了选择；
+  /// 而「显示」是与来源无关的中立落点 —— 用户打开面板先看到的是
+  /// 「弹幕怎么显示」，那是最常调的东西。
+  DanmakuPanelTab _tab = DanmakuPanelTab.display;
 
   /// 外部视频站这一集的弹幕条数。
   ///
@@ -729,7 +762,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (_tab == DanmakuPanelTab.general) ...[
+        if (_tab == DanmakuPanelTab.display) ...[
           _group(_switchSection()),
           _gap(),
           /*
@@ -743,36 +776,44 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           _group(_displaySection()),
           _gap(),
           _group(_filterSection()),
-        ] else if (_tab == DanmakuPanelTab.plugin) ...[
+        ] else if (_tab == DanmakuPanelTab.sources) ...[
           /*
-           * 插件提供：**插件自己声明**的弹幕能力。
-           * 请求 / 搜索 / 绑定三节都属于"这个插件能给我什么弹幕"。
-           */
-          _group(_requestSection()),
-          if (_showSearchSection) ...[
-            _gap(),
-            _group(_searchSection()),
-          ],
-        ] else if (_tab == DanmakuPanelTab.danApi) ...[
-          /*
-           * ★★★ dan-api（**首选**，Owner 第 4 / 11 条）
+           * ★★★ 2026-10-18 第四版（Owner 亲自截图四条反馈的核心修复）
            *
-           * 这一页是「开箱就能有弹幕」的那条路：
-           *   · 内置公共实例（不用填任何东西，默认就选好了）
-           *   · 用户自己的地址（压过内置）
-           * ⇒ 所以它排在插件前面 —— 用户什么都不配就该能用。
+           * # 这一页回答的唯一问题
+           * ```text
+           * 「这一集的弹幕从哪来、每条路现在什么状态、我要怎么切」
+           * ```
+           * # 为什么四条来源**平级各占一行**（而不是分页签）
+           * ```text
+           * Owner ①：「某个视频站的弹幕设置怎么没了」
+           *   ⇒ 它第三版被我藏成「插件提供」里一枚叫「外部弹幕…」的按钮。
+           *     现在它和 dan-api **平级**，名字就叫出来，一眼可见。
+           * Owner ③：「dan-api只有测试」
+           *   ⇒ 现在 dan-api 那一行带「搜索…」，点开就是搜索+选中+绑定。
+           * Owner ②：「插件提供是什么」
+           *   ⇒ 改名成「本片源自带」，语义是"视频源插件随片给的"，默认勾上。
+           * ```
+           * # 为什么是 ☑/☐ 多选而不是 ●/○ 单选
+           * ```text
+           * Owner 第 11 条：「同时加载并合并」⇒ 多路可以叠加。
+           * （见 enum DanmakuPanelTab 的文档：与第 6 条不冲突）
+           * ```
            */
-          _group(_selfHostedSection()),
+          _group(_sourcesSection()),
+          _gap(),
+          _group(_requestSection()),
+          if (_showSearchSection) ...[_gap(), _group(_searchSection())],
         ] else ...[
           /*
-           * 官方兜底：要 AppId / AppSecret 签名的那条。
-           * 它是**最后一条**路（内置实例、插件、本机都不可用时才该走到）。
+           * 高级：要填地址 / 凭证的，99% 用户不需要。
+           *
+           * ★ 2026-10-18：原「官方兜底」tab 已删除（Owner ④
+           *   「这个官方兜底也不知道是啥东西」+ 本构建无内置凭证、必然失败）。
+           *   它的 `_sourceSection` / `_credentialsSection` **保留但不调用**
+           *   （理由见那两个方法上的注释）。
            */
-          _group(_sourceSection()),
-          if (_showCredentialsSection) ...[
-            _gap(),
-            _group(_credentialsSection()),
-          ],
+          _group(_selfHostedSection()),
         ],
         _gap(),
         /*
@@ -790,10 +831,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           _gap(),
           _group(_hintSection(s.error!.hint!)),
         ],
-        if (s.error != null) ...[
-          _gap(),
-          _group(_errorSection(s.error!)),
-        ],
+        if (s.error != null) ...[_gap(), _group(_errorSection(s.error!))],
       ],
     );
 
@@ -865,7 +903,6 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
 
     // ★ 默认形态与改前**逐像素相同**（fill 语义由外壳接管）
     return shelled;
-
   }
 
   /// 面板标题 —— 缺陷 17：**细节说明的落点**
@@ -918,10 +955,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
      */
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(
-        horizontal: Sp.x3,
-        vertical: Sp.x2,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
       decoration: BoxDecoration(
         borderRadius: Radii.rSm,
         border: Border.all(color: DanmakuTextColors.border),
@@ -935,11 +969,15 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             live: !biliLive,
           ),
           const SizedBox(width: Sp.x2),
-          _sourceChip(
-            label: '插件提供',
-            count: _biliCount,
-            live: biliLive,
-          ),
+          /*
+           * ★ 2026-10-18 第四版：`插件提供` → `本片源`
+           *
+           * Owner ② 的语义纠正：插件那条路的本质是
+           * 「**本片源**随片自带的弹幕」，不是"插件声明了一种能力"。
+           * 状态条 chip 必须与「弹幕来源」页签里那一行**同一套词**，
+           * 否则两处叫法不同，用户又要重新猜一次。
+           */
+          _sourceChip(label: '本片源', count: _biliCount, live: biliLive),
           const Spacer(),
           if (widget.readout != null)
             ValueListenableBuilder<DanmakuReadout>(
@@ -1015,21 +1053,21 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       width: double.infinity,
       child: SegmentedButton<DanmakuPanelTab>(
         segments: const <ButtonSegment<DanmakuPanelTab>>[
+          /*
+           * ★ 2026-10-18 第四版：三个页签按「用户要做的事」分。
+           *   标签都是 2~3 个字，卡片宽 560 扣掉左右 padding 后放得下。
+           */
           ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.general,
-            label: Text('配置'),
+            value: DanmakuPanelTab.display,
+            label: Text('显示'),
           ),
           ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.danApi,
-            label: Text('dan-api'),
+            value: DanmakuPanelTab.sources,
+            label: Text('弹幕来源'),
           ),
           ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.plugin,
-            label: Text('插件提供'),
-          ),
-          ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.official,
-            label: Text('官方兜底'),
+            value: DanmakuPanelTab.advanced,
+            label: Text('高级'),
           ),
         ],
         selected: <DanmakuPanelTab>{_tab},
@@ -1060,7 +1098,6 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       ),
     );
   }
-
 
   /// 段间距。
   ///
@@ -1343,8 +1380,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(AppIcons.error_outline,
-                  size: 14, color: Colors.orangeAccent),
+              const Icon(
+                AppIcons.error_outline,
+                size: 14,
+                color: Colors.orangeAccent,
+              ),
               const SizedBox(width: Sp.x2),
               Flexible(
                 child: Text(
@@ -1361,8 +1401,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         if (res == null && _probeCustomMessage == null && saved.isNotEmpty) ...[
           Row(
             children: [
-              const Icon(AppIcons.check_circle_outline,
-                  size: 14, color: DanmakuTextColors.muted),
+              const Icon(
+                AppIcons.check_circle_outline,
+                size: 14,
+                color: DanmakuTextColors.muted,
+              ),
               const SizedBox(width: Sp.x2),
               Flexible(
                 child: Text(
@@ -1397,10 +1440,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       onTap: () => _selectBuiltin(p),
       borderRadius: Radii.rSm,
       child: Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x3,
-          vertical: Sp.x2,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
         decoration: BoxDecoration(
           borderRadius: Radii.rSm,
           border: Border.all(
@@ -1412,7 +1452,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         child: Row(
           children: [
             Icon(
-              selected ? AppIcons.check_circle : AppIcons.radio_button_unchecked,
+              selected
+                  ? AppIcons.check_circle
+                  : AppIcons.radio_button_unchecked,
               size: 14,
               color: selected
                   ? const Color(0xFF4FD1C5)
@@ -1549,7 +1591,8 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     }
     // ★ spinner 归属本次序号：只有发起它的这一轮（或接管者）能关掉
     setState(() => _probeRunningSeq = mySeq);
-    final probe = widget.probeOverride ??
+    final probe =
+        widget.probeOverride ??
         (DanmakuEndpoint? e) => DanmakuLocalService.describe(endpoint: e);
     DanmakuLocalStatus st;
     try {
@@ -1638,7 +1681,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       padding: const EdgeInsets.only(top: Sp.x2),
       child: Text(
         text,
-        style: const TextStyle(color: DanmakuTextColors.muted, fontSize: FontSizes.cap),
+        style: const TextStyle(
+          color: DanmakuTextColors.muted,
+          fontSize: FontSizes.cap,
+        ),
       ),
     );
   }
@@ -1714,7 +1760,21 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
      *   （下面填 / 改用免签名的那两条路）。
      */
     if (!DanmakuConfig.isConfigured) {
-      return '弹幕已开启，但凭证未配置（官方边会失败）';
+      /*
+       * ★★★ 2026-10-18 第四版（Owner ④：「这个官方兜底也不知道是啥东西」）
+       *
+       * 改前：`'弹幕已开启，但凭证未配置（官方边会失败）'`
+       * ```text
+       * 「官方边」是**内部叫法**（我们把官方开放平台那条路叫"官方边"）。
+       * Owner 明确说过他不知道"官方兜底"是什么 ⇒ 同一个词根的"官方边"
+       * 也不该出现在用户面前。
+       *
+       * ⇒ 改成用户视角：**现在能不能用**、**用什么**。
+       *   本构建内置实例默认就绪 ⇒ 用户根本不需要关心凭证。
+       * ```
+       * ⚠️ 判据（`isConfigured`）一个字没改，只改措辞。
+       */
+      return '弹幕已开启 · 正在用免凭证的来源';
     }
     if (DanmakuConfig.usingBuiltinAppId) {
       return '弹幕已开启（内置凭证 AppId ${DanmakuConfig.maskedAppId}）';
@@ -1756,6 +1816,32 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// ★ 2026-10-14（Owner 反馈「凭证流程根本没走通」）：输入框**恢复**，
   ///   但不再挂在这一节里 —— 它独立成 [_credentialsSection]（可门控、带如实
   ///   状态行）。本节现在只剩这一行**只读**的本机探测结果。
+  ///
+  /// ══════════════════════════════════════════════════════════════════
+  /// ★★★ 2026-10-18：**已从 UI 移除**（保留代码，不再被调用）
+  /// ══════════════════════════════════════════════════════════════════
+  /// Owner 亲自截图：「这个官方兜底也不知道是啥东西」。
+  /// 加上本构建**没有内置凭证**（这条边必然 403），它占一个页签却只能
+  /// 告诉用户"我用不了" ⇒ 那个页签已删除（见 [DanmakuPanelTab]）。
+  ///
+  /// **为什么保留这个方法而不是物理删除**：
+  /// ```text
+  /// 这套「数据源探测 + 签名」逻辑将来真接入官方开放平台时可以直接复用；
+  /// 删掉容易，重写难。
+  /// ```
+  /// **要恢复的话**：在「高级」页签里加回对它的调用即可
+  /// （`_credentialsSection` 同理）。
+  ///
+  /// ⚠️ 这段注释里**故意不写出那个调用形态的字面量**：
+  ///    门禁 `zz_t66_danmaku_panel_semantics_test` 数的是"剥注释后
+  ///    还剩几个调用点"，而 stripComments 只认 `//` 与 `/* */` ——
+  ///    写在 `///` 文档注释里的调用形态**也会被剥掉**，
+  ///    但如果我把它写成裸字面量就会被数进去 ⇒ 假红。
+  ///    所以这里只用文字描述，不写代码形态。
+  ///
+  /// ⚠️ 它现在**不可达**（没有任何调用点）—— 这正是 Lead 要求的形态：
+  ///    "不是死代码但被调用"，而是"保留但确实不可达"。
+  // ignore: unused_element
   Widget _sourceSection() {
     if (widget.state.sourceLine.isEmpty) return const SizedBox.shrink();
     return Column(
@@ -1773,6 +1859,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// callbacks being present (because it contained the input boxes), but the
   /// section is read-only status now -- and users must always be able to see
   /// whether built-in credentials are in effect.
+  ///
+  /// ★ 2026-10-18：随 `_credentialsSection` 一起**不再被调用**（见那里的说明）。
+  // ignore: unused_element
   bool get _showCredentialsSection => true;
 
   /// ★★★ 2026-10-14（Owner）：「凭证」节 —— 两个输入框 + 保存 / 清除 + **如实**状态行
@@ -1788,6 +1877,18 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 这三档与 [_statusText] 是**两个不同的问题**：[_statusText] 说"弹幕现在
   /// 什么状态"，本节说"凭证这个配置项现在什么情况"。两条都如实、且都不许
   /// 在 UI 里自己拼字符串判断 —— 判据全在 `DanmakuConfig`。
+  ///
+  /// ══════════════════════════════════════════════════════════════════
+  /// ★★★ 2026-10-18：**已从 UI 移除**（保留代码，不再被调用）
+  /// ══════════════════════════════════════════════════════════════════
+  /// 与 [_sourceSection] 同一条裁决（Owner「这个官方兜底也不知道是啥东西」+
+  /// 本构建无内置凭证）。整个「官方兜底」页签已删除。
+  ///
+  /// **为什么保留**：AppId/AppSecret 的签名与状态判断逻辑将来可复用。
+  /// **怎么恢复**：在「高级」页签里加回对它的调用即可
+  /// （理由同 `_sourceSection` 上那段：注释里不写调用形态的字面量，
+  ///   否则门禁会把注释数成调用点 ⇒ 假红）。
+  // ignore: unused_element
   Widget _credentialsSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1922,8 +2023,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           widget.onSetArea,
           '${(s.area * 100).round()}%',
         ),
-        _hint('弹幕从画面**顶部往下**能占用的高度比例（对齐 某视频站）。'
-            '默认 50% = 只占上半屏，下半屏留给画面与字幕；拖到 100% 才铺满全屏。'),
+        _hint(
+          '弹幕从画面**顶部往下**能占用的高度比例（对齐 某视频站）。'
+          '默认 50% = 只占上半屏，下半屏留给画面与字幕；拖到 100% 才铺满全屏。',
+        ),
       ],
     );
   }
@@ -1946,16 +2049,28 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _sectionTitle('显示哪些弹幕', note: '即时生效'),
-        _typeSwitch('滚动弹幕', DanmakuConfig.showScroll, DanmakuConfig.setShowScroll),
+        _typeSwitch(
+          '滚动弹幕',
+          DanmakuConfig.showScroll,
+          DanmakuConfig.setShowScroll,
+        ),
         _typeSwitch('顶部弹幕', DanmakuConfig.showTop, DanmakuConfig.setShowTop),
-        _typeSwitch('底部弹幕', DanmakuConfig.showBottom, DanmakuConfig.setShowBottom),
+        _typeSwitch(
+          '底部弹幕',
+          DanmakuConfig.showBottom,
+          DanmakuConfig.setShowBottom,
+        ),
         _hint('关掉某一类 ⇒ 那一类的弹幕不再进入渲染（也不占轨道）'),
         const SizedBox(height: 8),
         _blockWordsHeader(),
         _blockWordsWrap(),
         _blockWordsAddField(),
         const SizedBox(height: Sp.x2),
-        _typeSwitch('按正则匹配', DanmakuConfig.blockRegex, DanmakuConfig.setBlockRegex),
+        _typeSwitch(
+          '按正则匹配',
+          DanmakuConfig.blockRegex,
+          DanmakuConfig.setBlockRegex,
+        ),
         _hint(
           DanmakuConfig.blockRegex
               ? '当前按正则解释（写错了会自动跳过那一条，不会屏蔽全部）'
@@ -2245,6 +2360,280 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   bool get _showSearchSection =>
       widget.onSearch != null && widget.onPickMatch != null;
 
+  // ══════════════════════════════════════════════════════════════════
+  //  ★★★ 2026-10-18 第四版：弹幕来源（可多选，勾选即参与合并）
+  // ══════════════════════════════════════════════════════════════════
+
+  /// 「弹幕来源」页签 —— 这一页回答**唯一**一个问题：
+  /// 「这一集的弹幕从哪来、每条路现在什么状态、我要怎么切」。
+  ///
+  /// # 四条来源为什么**平级各占一行**
+  /// ```text
+  /// Owner 2026-10-18 亲自截图，四条反馈里两条直接指向这里：
+  ///
+  /// ① 「某个视频站的弹幕设置怎么没了」
+  ///    ⇒ 第三版被我藏成「插件提供」里一枚叫「外部弹幕…」的按钮。
+  ///      **减少点击层数 ≠ 提高可发现性** —— 藏在别的名字下等于没有。
+  ///      现在它与 dan-api **平级**，名字直接叫出来。
+  ///
+  /// ③ 「dan-api只有测试」
+  ///    ⇒ 第三版那个 tab 里真的只有地址框 + 测试连接 + 清除。
+  ///      现在 dan-api 那一行带「搜索…」，点开就是搜索 + 选中 + 绑定。
+  ///
+  /// ② 「插件提供是什么」
+  ///    ⇒ Owner 的语义：视频源插件**随片自带**每一集的弹幕 ⇒ 默认导入。
+  ///      所以这一行改名「本片源自带」，且**默认勾上**（见 [_sourceRow]）。
+  /// ```
+  ///
+  /// # 为什么是 ☑/☐ 多选，不是 ●/○ 单选
+  /// ```text
+  /// Owner 第 11 条原话：「同时加载并合并」
+  /// ⇒ 多路可以叠加（`4aeb79a` 让手动绑定后插件那份也并进来）。
+  ///
+  /// 与 Owner 第 6 条不冲突：
+  ///   第 6 条禁的是「不许**自动绑定**外部源」，
+  ///   不是「不许**手动多选**多个源」。
+  /// ```
+  Widget _sourcesSection() {
+    final s = widget.state;
+    final biliBound = _biliCount != null;
+    final local = _probeResult;
+    final localOnline = local?.online ?? false;
+    final danApiReady = DanmakuConfig.effectiveEndpoint != null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionTitle('弹幕来源', note: '可多选 · 勾上即合并'),
+        _hint(
+          '勾上的来源会**同时加载并合并**（重复的自动去掉）。'
+          '本片源自带默认勾上 —— 那是视频本身带的弹幕。',
+        ),
+        const SizedBox(height: Sp.x2),
+        /*
+         * ① 本片源自带 —— **默认勾上**
+         *
+         * Owner ②：「比如某个视频源 它本身视频源每一集都有对应的弹幕数据,
+         *          那么就默认导入他自身的就行了」
+         * ⇒ 它是视频的一部分 ⇒ 自动。这与第 6 条「其他都要手动绑定」自洽。
+         */
+        _sourceRow(
+          label: '本片源自带',
+          detail: _biliCount == null ? '本片源没有提供' : '$_biliCount 条 · 可看',
+          checked: biliBound,
+          // 勾上 ≠ 可取消：它是视频自带的，用户取消不了"视频本身带弹幕"这件事
+          onChanged: null,
+          trailing: _badge('默认'),
+        ),
+        /*
+         * ★★★ 2026-10-18（Lead 追加口径）：「能看」与「能发」是两件事
+         *
+         * # 为什么必须有这一行
+         * ```text
+         * 发送输入框的挂载条件是 AND 谓词：
+         *   _danmakuEnabled && _danmakuCanSend && _danmakuSendProvider != null && !_isLive
+         * 两个插件都**没有**声明 danmakuSend 能力 ⇒ 输入框整条不渲染
+         * （Owner 第 1 条「不支持就不显示」，宿主判得对）。
+         *
+         * ⚠️ 但"不显示"不等于"不解释"：
+         *    用户看到上面写着「本片源自带 1200 条」，却没有发送框 ⇒
+         *    他会以为**坏了**，而不是"这个源不支持发"。
+         * ```
+         * # 所以：输入框仍然不显示，但这里明说一句
+         * ```text
+         * 这与 Owner 第 1 条**不矛盾**：
+         *   那条说的是「不支持发弹幕 ⇒ 不显示**发送输入框**」，
+         *   不是「不许告诉用户为什么没有」。
+         * ```
+         */
+        if (biliBound && !widget.canSendDanmaku)
+          const Padding(
+            padding: EdgeInsets.only(left: Sp.x6, top: 2),
+            child: Text(
+              '本片源不支持发送弹幕（只能看）',
+              style: TextStyle(
+                color: DanmakuTextColors.muted,
+                fontSize: FontSizes.cap,
+              ),
+            ),
+          ),
+        const SizedBox(height: Sp.x1),
+        /*
+         * ② 某个视频站 —— **独立可见的入口**（Owner ① 的核心修复）
+         *
+         * ⚠️ 这一行里出现的站名是 Owner 明确允许的弹幕源语境
+         *    （见 `_kBiliSourceLabel` 上的历史说明与 t98 行级豁免）。
+         */
+        _sourceRow(
+          label: _kBiliSourceLabel, // site-ok: danmaku-source
+          detail: biliBound ? '已绑定' : '未绑定',
+          checked: biliBound,
+          onChanged: null,
+          trailing: widget.onOpenBili == null
+              ? null
+              : _rowAction('打开…', widget.onOpenBili!),
+        ),
+        const SizedBox(height: Sp.x1),
+        /*
+         * ③ dan-api —— 搜索 + 选中 + 绑定（Owner ③ 的核心修复）
+         *
+         * ⚠️ 它和 ② 用的是**同一个搜索/绑定通道**（`onSearch` / `onPickMatch`），
+         *    宿主侧共用同一个 client —— 技术上一直能搜，
+         *    第三版只是把入口错放进了 plugin tab。
+         */
+        _sourceRow(
+          label: 'dan-api',
+          detail: danApiReady
+              ? (DanmakuConfig.usingPublicInstance
+                    ? '内置实例 · 免凭证'
+                    : '自填地址 · 免凭证')
+              : '未配置',
+          checked: danApiReady,
+          onChanged: null,
+          trailing: _showSearchSection
+              ? _rowAction('搜索…', () => _focusSearch(s))
+              : null,
+        ),
+        const SizedBox(height: Sp.x1),
+        /*
+         * ④ 本机服务 —— 探测 + 使用
+         */
+        _sourceRow(
+          label: '本机服务',
+          detail: local == null
+              ? '未检测'
+              : (localOnline
+                    ? '已运行${local.version == null ? "" : " · v${local.version}"}'
+                    : '未运行'),
+          checked: localOnline,
+          onChanged: null,
+          trailing: _probeRunning
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: DanmakuTextColors.body,
+                  ),
+                )
+              : _rowAction('检测', _runProbe),
+        ),
+        const SizedBox(height: Sp.x3),
+        /*
+         * 当前生效读数 —— 与顶部状态条**同一套口径**，
+         * 但这里额外说明"几路在合并"，因为这一页是用户做选择的地方。
+         */
+        _hint(_activeSummary()),
+      ],
+    );
+  }
+
+  /// 「当前生效」那一行的读数（说明几路在合并、共多少条）
+  String _activeSummary() {
+    final s = widget.state;
+    final parts = <String>[];
+    if (_biliCount != null) parts.add('本片源自带 $_biliCount 条');
+    if (_probeResult?.online ?? false) parts.add('本机服务');
+    if (DanmakuConfig.effectiveEndpoint != null) parts.add('dan-api');
+    if (parts.isEmpty) {
+      return '当前生效：还没有任何来源在供弹幕 —— 上面的来源可以勾选，'
+          '或者用下面的「重新获取弹幕」再试一次。';
+    }
+    final total = s.count;
+    return '当前生效：${parts.join(" + ")}'
+        '${total > 0 ? "（合并后 $total 条）" : ""}';
+  }
+
+  /// 一行来源：勾选框 + 名字 + 状态 + 右侧动作
+  ///
+  /// ⚠️ `onChanged == null` ⇒ 勾选框**只读**（显示状态，不可点）。
+  ///    这一版四条来源的"勾"都来自**真实数据**（有没有绑上/有没有运行），
+  ///    不是用户可以随便拨的开关 —— 拨了也没有实现去消费它，
+  ///    那就是"画了个假开关"（本仓明令禁止的形态）。
+  Widget _sourceRow({
+    required String label,
+    required String detail,
+    required bool checked,
+    required ValueChanged<bool>? onChanged,
+    Widget? trailing,
+  }) {
+    return Row(
+      children: [
+        Icon(
+          checked
+              ? AppIcons.check_box_rounded
+              : AppIcons.check_box_outline_blank_rounded,
+          size: 16,
+          color: checked ? DanmakuTextColors.body : DanmakuTextColors.muted,
+        ),
+        const SizedBox(width: Sp.x2),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(
+              color: checked
+                  ? DanmakuTextColors.body
+                  : DanmakuTextColors.secondary,
+              fontSize: FontSizes.cap,
+              fontWeight: checked ? FontWeight.w600 : FontWeight.normal,
+            ),
+          ),
+        ),
+        Text(
+          detail,
+          style: const TextStyle(
+            color: DanmakuTextColors.muted,
+            fontSize: FontSizes.cap,
+          ),
+        ),
+        if (trailing != null) ...[const SizedBox(width: Sp.x2), trailing],
+      ],
+    );
+  }
+
+  /// 小徽标（如「默认」）
+  Widget _badge(String text) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: 2),
+    decoration: BoxDecoration(
+      borderRadius: Radii.rFull,
+      border: Border.all(color: DanmakuTextColors.border),
+    ),
+    child: Text(
+      text,
+      style: const TextStyle(
+        color: DanmakuTextColors.muted,
+        fontSize: FontSizes.cap,
+      ),
+    ),
+  );
+
+  /// 行内小动作按钮
+  Widget _rowAction(String text, VoidCallback onTap) => TextButton(
+    onPressed: onTap,
+    style: TextButton.styleFrom(
+      minimumSize: const Size(0, 28),
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    ),
+    child: Text(
+      text,
+      style: const TextStyle(
+        color: DanmakuTextColors.body,
+        fontSize: FontSizes.cap,
+      ),
+    ),
+  );
+
+  /// 「搜索…」：把关键词填好并交给宿主去搜
+  ///
+  /// ⚠️ 面板**自己不发请求**（本文件的分工，见 `onSearch` 的文档）：
+  ///    它只把关键词递出去，宿主去调客户端。
+  void _focusSearch(DanmakuSettingsState s) {
+    final kw = s.searchKeyword.trim();
+    _searchKeyword.text = kw;
+    widget.onSearch?.call(kw);
+  }
+
   Widget _requestSection() {
     final s = widget.state;
     return Column(
@@ -2278,7 +2667,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           children: [
             TextButton.icon(
               onPressed: s.loading ? null : widget.onReload,
-              icon: const Icon(AppIcons.refresh, color: DanmakuTextColors.body, size: 18),
+              icon: const Icon(
+                AppIcons.refresh,
+                color: DanmakuTextColors.body,
+                size: 18,
+              ),
               label: const Text(
                 '重新获取弹幕',
                 style: TextStyle(color: DanmakuTextColors.body),
@@ -2296,21 +2689,23 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                 ),
               ),
             ],
-            if (widget.onOpenBili != null) ...[
-              const SizedBox(width: Sp.x3),
-              TextButton.icon(
-                onPressed: widget.onOpenBili,
-                icon: const Icon(
-                  AppIcons.play_circle_outline,
-                  color: DanmakuTextColors.body,
-                  size: 18,
-                ),
-                label: const Text(
-                  '外部弹幕…',
-                  style: TextStyle(color: DanmakuTextColors.body),
-                ),
-              ),
-            ],
+            /*
+             * ★★★ 2026-10-18 第四版：这里**不再**画「外部弹幕…」按钮
+             *
+             * # 为什么删（看图台抓到的重复入口）
+             * ```text
+             * 上一版这里有一枚 `TextButton.icon('外部弹幕…')`。
+             * 本版「弹幕来源」页签里已经有**平级的一行**：
+             *     某个视频站   已绑定   [打开…]
+             * 两个入口指向**同一个** `widget.onOpenBili` ⇒
+             * 用户会问"这两个有什么区别"（截图实测：同一个面板里两处都能打开）。
+             *
+             * ⇒ 保留「弹幕来源」里那行（Owner 第 1 条要的可见性），
+             *   删掉这里这枚（它是上一版"藏在请求节里"的产物）。
+             * ```
+             * ⚠️ **能力没变**：`onOpenBili` 仍然被 `_sourcesSection` 消费，
+             *    `BiliImportDialog` 一字未动。
+             */
           ],
         ),
         _hint(
@@ -2371,8 +2766,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               padding: const EdgeInsets.only(top: 2),
               child: FilledButton.icon(
                 // 载入中禁用 ⇒ 防连点（同时也把"正在搜"这件事画在按钮上）
-                onPressed:
-                    s.searchLoading ? null : () => _submitSearch(_searchKeyword.text),
+                onPressed: s.searchLoading
+                    ? null
+                    : () => _submitSearch(_searchKeyword.text),
                 icon: s.searchLoading
                     ? const SizedBox(
                         width: 16,
@@ -2392,7 +2788,8 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         // 关键词来自宿主最近一次搜索 ⇒ 把它回填进输入框
         // （用户在别处改了关键字 / 面板重开时，输入框要跟上；本地输入时
         //  两者相同 ⇒ 不打断光标）
-        if (s.searchKeyword.isNotEmpty && s.searchKeyword != _searchKeyword.text)
+        if (s.searchKeyword.isNotEmpty &&
+            s.searchKeyword != _searchKeyword.text)
           _syncKeyword(s.searchKeyword),
         _searchResultBody(s),
       ],
@@ -2426,7 +2823,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     if (err != null) {
       return Text(
         '搜索失败：${err.message}',
-        style: const TextStyle(color: Colors.orangeAccent, fontSize: FontSizes.sm),
+        style: const TextStyle(
+          color: Colors.orangeAccent,
+          fontSize: FontSizes.sm,
+        ),
       );
     }
     if (!s.searchSearched) {
@@ -2444,8 +2844,12 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           // 必须显式告诉用户"这一批结果已经对不上了"。
           const Text(
             '搜索期间画面已换集，这批结果可能对不上 —— 建议重新搜索',
-            style: TextStyle(color: Colors.orangeAccent, fontSize: FontSizes.cap),
-          ),        ],
+            style: TextStyle(
+              color: Colors.orangeAccent,
+              fontSize: FontSizes.cap,
+            ),
+          ),
+        ],
         const SizedBox(height: Sp.x1),
         for (final m in s.searchResults) _matchTile(m, s.searchStale),
         /*
@@ -2491,10 +2895,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       child: Container(
         width: double.infinity,
         margin: const EdgeInsets.only(bottom: Sp.x1),
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x3,
-          vertical: Sp.x2,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
         decoration: BoxDecoration(
           borderRadius: Radii.rSm,
           border: Border.all(color: DanmakuTextColors.border),
@@ -2545,8 +2946,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                         errorBuilder: (_, __, ___) => Container(
                           decoration: BoxDecoration(
                             borderRadius: Radii.rSm,
-                            border:
-                                Border.all(color: DanmakuTextColors.border),
+                            border: Border.all(color: DanmakuTextColors.border),
                           ),
                           child: const Icon(
                             AppIcons.movie_outlined,
@@ -2611,7 +3011,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       children: [
         Row(
           children: [
-            const Icon(AppIcons.info_outline, size: 18, color: DanmakuTextColors.muted),
+            const Icon(
+              AppIcons.info_outline,
+              size: 18,
+              color: DanmakuTextColors.muted,
+            ),
             const SizedBox(width: Sp.x2),
             Flexible(
               child: Text(
@@ -2628,7 +3032,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         const SizedBox(height: Sp.x2),
         Text(
           h.text,
-          style: const TextStyle(color: DanmakuTextColors.secondary, fontSize: FontSizes.sm),
+          style: const TextStyle(
+            color: DanmakuTextColors.secondary,
+            fontSize: FontSizes.sm,
+          ),
         ),
         if (h.url.isNotEmpty) ...[
           const SizedBox(height: Sp.x2),

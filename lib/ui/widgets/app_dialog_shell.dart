@@ -43,6 +43,8 @@
 library;
 
 import 'package:flutter/services.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
+    show GlassContainer, LiquidRoundedRectangle;
 import 'package:material_ui/material_ui.dart';
 
 import '../app_scaffold.dart';
@@ -72,7 +74,28 @@ class AppDialogShell extends StatelessWidget {
     this.icon,
     this.closeEnabled = true,
     this.forceDarkCard = false,
+    this.glass = false,
   });
+
+  /// 卡片是否走**玻璃材质**（2026-10-18，任务 B）
+  ///
+  /// # 为什么是可选、且默认 `false`
+  /// ```text
+  /// 这个外壳被**全仓 7 个弹窗**共用。玻璃化只针对弹幕面板，
+  /// 默认 false ⇒ 其余 6 个弹窗**逐像素不变**（零回归）。
+  /// 想玻璃化哪个就显式传 true。
+  /// ```
+  /// # 玻璃化做了什么
+  /// ```text
+  /// 卡片外面套一层 `GlassContainer`（半透明 + 模糊 + 描边），
+  /// 同时把内层 `Material` 的底色置透明、描边置 none
+  /// ⇒ 材质只由一层承担，不会叠出两层底。
+  ///
+  /// ⚠️ 内层 `Material` **必须保留**：框架的 SwitchListTile / ChoiceChip
+  ///    把涟漪画在最近的 Material 上，去掉会抛
+  ///    "ink splashes may be invisible"。
+  /// ```
+  final bool glass;
 
   /// 卡片高度上限的**绝对值**（与改前 7 个弹窗的 620 对齐）。
   ///
@@ -236,22 +259,33 @@ class AppDialogShell extends StatelessWidget {
           //   #14161C 几乎同档 ⇒ 统一到它观感变化最小，且明暗两套都有定义。
           //   原用 `surface`@0.98（深色 #0A0A0A）—— 卡片与页面底几乎同色，
           //   "浮起来"的感觉没了。
-          color: forceDarkCard
-              // 深色档：与 DanmakuTextColors.panelBg 同源（业主 fig1 实测值）
-              ? const Color(0xFF14161B).withValues(alpha: 0.98)
-              : Theme.of(context).colorScheme.surfaceContainerHighest,
+          color: glass
+              /*
+               * ★★ 2026-10-18（任务 B）：玻璃档下 Material **自身透明**，
+               *    材质由外面那层 `GlassContainer` 画（见下方 `_glassWrap`）。
+               *    仍然保留 Material 作为涟漪宿主 —— 去掉它会抛
+               *    "ink splashes may be invisible"（SwitchListTile/ChoiceChip 依赖）。
+               */
+              ? Colors.transparent
+              : forceDarkCard
+                  // 深色档：与 DanmakuTextColors.panelBg 同源（业主 fig1 实测值）
+                  ? const Color(0xFF14161B).withValues(alpha: 0.98)
+                  : Theme.of(context).colorScheme.surfaceContainerHighest,
           shape: RoundedRectangleBorder(
             borderRadius: Radii.rLg,
             // ★ 2026-10-16 修：原来用 `dividerColor` —— 它是**亮灰**
             //   （深色 #938F99 / 浅色 #79747E），画在卡片边上很显眼。
             //   实测 `outlineVariant` 才是这套主题的「弱化描边」
             //   （深色 #222222 / 浅色 #DFE1E8），与各面板改前用的同一个角色。
-            side: BorderSide(
-              color: forceDarkCard
-                  // 深色档：与 DanmakuTextColors.border 同源
-                  ? const Color(0xFF4A4E56)
-                  : Theme.of(context).colorScheme.outlineVariant,
-            ),
+            side: glass
+                // 玻璃档：描边由 GlassContainer 画，Material 这层不再画
+                ? BorderSide.none
+                : BorderSide(
+                    color: forceDarkCard
+                        // 深色档：与 DanmakuTextColors.border 同源
+                        ? const Color(0xFF4A4E56)
+                        : Theme.of(context).colorScheme.outlineVariant,
+                  ),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -283,6 +317,26 @@ class AppDialogShell extends StatelessWidget {
         ),
       ),
     );
+    /*
+     * ★★ 2026-10-18（任务 B）：玻璃档 —— 在卡片**外面**套一层材质。
+     *
+     * # 为什么包在外面而不是改里面的 Material
+     * ```text
+     * Material 必须继续存在（涟漪宿主），且必须是**内层**；
+     * 玻璃只是"外观"，把它套在最外层最直观，也不动内部结构。
+     *
+     * 玻璃档时 Material 的 color 已置透明、side 已置 none（见上），
+     * ⇒ 材质完全由这层 GlassContainer 承担，不会叠出两层底。
+     * ```
+     * ⚠️ `glass == false` 时**原样返回** ⇒ 其余 6 个弹窗逐像素不变。
+     */
+    final shelled = glass
+        ? GlassContainer(
+            shape: LiquidRoundedRectangle(borderRadius: 20),
+            padding: EdgeInsets.zero,
+            child: card,
+          )
+        : card;
     final overlay = GestureDetector(
       /*
        * 点背景关闭（与播放页其它面板一致）
@@ -310,7 +364,7 @@ class AppDialogShell extends StatelessWidget {
             child: GestureDetector(
               // 卡片内部的点击不能穿透到背景（否则点滑块也会关掉面板）
               onTap: () {},
-              child: motion ? OverlayCardMotion(child: card) : card,
+              child: motion ? OverlayCardMotion(child: shelled) : shelled,
             ),
           ),
         ),

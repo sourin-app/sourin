@@ -882,6 +882,18 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       // 不能靠"把灰阶改主题色"解决：41 处灰阶与 t27_w1 门禁是一起设计的。
       // ⇒ 让它保持原本的深色（业主 fig1 实测底色就是 #14161B）。
       forceDarkCard: true,
+      /*
+       * ★★ 2026-10-18（任务 B-2）：玻璃材质。
+       *
+       * 只影响本面板 —— 外壳的 `glass` 默认 false，
+       * 其余 6 个弹窗逐像素不变。
+       *
+       * ⚠️ 与 `forceDarkCard: true` 并存：
+       *    forceDarkCard 管**文字取色**（本面板 41 处 DanmakuTextColors 是
+       *    为深底设计的固定灰阶，t27_w1 钉着对比度），
+       *    glass 只管**卡片材质**。两件事互不干扰。
+       */
+      glass: true,
       // 本面板自管滚动（三块钉死不滚）⇒ 不套外壳的 SingleChildScrollView
       scrollable: false,
       /*

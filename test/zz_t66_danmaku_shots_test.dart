@@ -103,14 +103,28 @@ Future<void> _pumpPanel(WidgetTester t, DanmakuInfoData d) async {
     debugShowCheckedModeBanner: false,
     theme: AppTheme.themeFor(Brightness.dark),
     home: Scaffold(
-      backgroundColor: const Color(0xFF0A0B0D),
-      body: RepaintBoundary(
-        key: const ValueKey<String>('page'),
-        child: Align(
-          alignment: Alignment.topRight,
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: DanmakuInfoPanel(data: d, initiallyExpanded: true),
+      body: DecoratedBox(
+        // ★★ 2026-10-18（任务 B-2）：背景必须有内容，玻璃才看得出效果。
+        //    纯色底上玻璃材质与实色卡片几乎无法区分（实测过）。
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: <Color>[
+              Color(0xFF2A3F6B),
+              Color(0xFF7A4A2E),
+              Color(0xFF101318),
+            ],
+          ),
+        ),
+        child: RepaintBoundary(
+          key: const ValueKey<String>('page'),
+          child: Align(
+            alignment: Alignment.topRight,
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: DanmakuInfoPanel(data: d, initiallyExpanded: true),
+            ),
           ),
         ),
       ),
@@ -142,27 +156,41 @@ Future<void> _pumpSettings(
     debugShowCheckedModeBanner: false,
     theme: AppTheme.themeFor(Brightness.dark),
     home: Scaffold(
-      backgroundColor: const Color(0xFF0A0B0D),
-      body: RepaintBoundary(
-        key: const ValueKey<String>('page'),
-        child: Center(
-          child: SizedBox(
-            width: 620,
-            child: DanmakuSettingsDialog(
-              state: _settingsState(),
-              onSetEnabled: (_) {},
-              onSetFontScale: (_) {},
-              onSetOpacity: (_) {},
-              onSetSpeed: (_) {},
-              onSetArea: (_) {},
-              onReload: () {},
-              onClose: () {},
-              biliCount: 1200,
-              onOpenBili: () {},
-              onSearch: (_) {},
-              onPickMatch: (_) {},
-              canSendDanmaku: canSend,
-              fill: false,
+      body: DecoratedBox(
+        // ★★ 2026-10-18（任务 B-2）：背景必须有内容，玻璃才看得出效果。
+        //    纯色底上玻璃材质与实色卡片几乎无法区分（实测过）。
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: <Color>[
+              Color(0xFF2A3F6B),
+              Color(0xFF7A4A2E),
+              Color(0xFF101318),
+            ],
+          ),
+        ),
+        child: RepaintBoundary(
+          key: const ValueKey<String>('page'),
+          child: Center(
+            child: SizedBox(
+              width: 620,
+              child: DanmakuSettingsDialog(
+                state: _settingsState(),
+                onSetEnabled: (_) {},
+                onSetFontScale: (_) {},
+                onSetOpacity: (_) {},
+                onSetSpeed: (_) {},
+                onSetArea: (_) {},
+                onReload: () {},
+                onClose: () {},
+                biliCount: 1200,
+                onOpenBili: () {},
+                onSearch: (_) {},
+                onPickMatch: (_) {},
+                canSendDanmaku: canSend,
+                fill: false,
+              ),
             ),
           ),
         ),

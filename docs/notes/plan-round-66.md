@@ -3699,3 +3699,110 @@ cycani.js:201  credentials 存的是**明文 {username, password}**，不是 tok
 `plugin-repo` 在做**最小可行版**（只 Rust 侧：新增 credentials 平面 +
 ring 加密 + 黑名单 + 校验），不做 UI、不做导出导入。
 第一步先验证 ring 能否编进 cdylib —— 编不进则方案要改。
+
+---
+
+# §二十 R1/R8/R3-④ 三项裁决（Lead，2026-10-18 23:2x）
+
+## R1 弹幕 chip 毛边 —— 走方案 A（已验 UI-1 不拦）
+
+### `perf-player` 的根因分析（我核过框架源码，成立）
+
+```text
+ActionChip 内部：
+  chip.dart:1440  Material(shape: resolvedShape,        ← 第 1 次画形状
+                           clipBehavior: widget.clipBehavior)  ← 默认 Clip.none
+  chip.dart:1449    Ink(decoration: ShapeDecoration(
+                          shape: resolvedShape,          ← 第 2 次又画
+                          color: ...))
+⇒ 同一圆角矩形画两遍 + 不裁剪 ⇒ 两层各自抗锯齿 ⇒ 边缘叠加
+⇒ 纯黑底上表现为「一圈比内部略亮的边」
+
+排除了三个我猜的方向：
+  ✅ elevation 阴影 —— chip.dart:1386 解析链 null??null??0.0，不画阴影
+  ✅ visualDensity —— 只影响布局尺寸，不改 shape
+  ⚠️ 半透明叠动态背景 —— 是**加重因素**，不是根因
+```
+
+### 我额外核实的一条（团队没提）
+
+```text
+整排只有 1 个 Material：
+  站名徽章 :19405  Container + BoxDecoration   ← 自绘
+  直播徽章 :19426  Container + BoxDecoration   ← 自绘
+  弹幕 chip :19600 ActionChip                  ← **唯一 Material**
+
+★ 而且站名徽章的 color: black@0.55 + borderRadius: Radii.rFull 与 chip **完全同值**
+⇒ 这构成天然对照实验：视觉规格相同、渲染载体不同
+⇒ **只修这一枚是对的**（不需要整排替换）
+```
+
+### 裁决：加 `clipBehavior: Clip.antiAlias`
+
+```text
+我已跑 UI-1 门禁验证不拦：
+  +1 开关行 / +2 药丸 / +3 白名单条目必须存在（空条款=假绿）/ +4 all passed
+★ 特别提醒：第③条说明这门禁自己就在防假绿
+```
+
+## R8 已缓存删除徽标 —— **真缺陷，不是对比度**
+
+### `perf-player` 查实的根因（我核过代码，成立）
+
+```text
+cache_page.dart:2118  opacity: _hover ? 1 : 0
+cache_page.dart:2084  MouseRegion(onEnter/onExit 驱动 _hover)
+
+⇒ _hover 只由鼠标驱使：
+   桌面 hover ⇒ 出现（设计意图）
+   ★ 触屏 / 遥控(TV) / 键盘 ⇒ MouseRegion 不触发 ⇒ **opacity 恒为 0**
+   ⇒ 那枚按钮**永远不可见**，而它背后挂着「删除整部」
+```
+
+对比度其实是**合格**的（深色 18.86:1 / 浅色 5.89:1），Owner 说的「看不清」= **根本没显示**。
+
+### 裁决：用 `MediaQuery.hoverable`，不用 `Device.isDesktop`
+
+```text
+理由：hoverable 是 Flutter 原生**能力判据**；
+      Device.isDesktop 是**平台推断**（桌面接触摸屏、平板接鼠标都存在）
+★ 用能力判据，不用平台判据 —— 判据要作用在真正决定行为的属性上。
+```
+
+## R3-④ 弹窗双击透传 —— 裁决走 B（接受透传），撤销 A
+
+### `settings-ux` 证明了 C 不成立（这个证明很有价值）
+
+```text
+「遮罩单击立即关」与「双击不穿透」**时序上不可兼得**：
+  第 1 击就关窗 ⇒"是否双击"的信息在那一刻还不存在 ⇒ 第 2 击必然落到下层
+它试了 5 版（C1~C5），包括「关窗后保留 350ms 屏障」也失败：
+  调用方收到 onClose 后**同步** setState ⇒ 外壳整个被移出树
+  ⇒ 屏障活不过弹窗本身
+```
+
+### 我的裁决：B（接受透传）
+
+```text
+理由一：交换比例不对等
+  A 的代价 = **所有用户、每次**点遮罩关窗都多等 300ms（最高频交互之一）
+  A 的收益 = **边缘场景**（遮罩区双击），后果是"下层被点一下"，
+            不是数据丢失、不是崩溃
+
+理由二：与 Material 对照的论证不成立
+  Material 的 ModalBarrier **默认 dismissible: false**（点击不关窗）
+  而我们的遮罩**点击就关** ⇒ 前提不同，"一致"这个论据站不住
+
+理由三：双击透传的真实风险被高估
+  用户视角是"我关了窗，怎么下面的东西也被点了？" —— **烦恼，不是损失**
+  而 300ms 是**每次都觉得卡**
+```
+
+### 但我在裁决前加了一道保险
+
+```text
+已让 settings-ux 先验证：双击透传时**下层实际触发了什么**？
+  · 如果触发的是"打开详情页 / 开始播放 / 删除"这类有副作用的操作 ⇒ 结论翻转
+  · 如果只是高亮了一下 ⇒ B 完全可接受
+★ 等这个读数回来再做最终确认。
+```

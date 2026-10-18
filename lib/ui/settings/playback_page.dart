@@ -822,6 +822,16 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
           label: '截图',
           value: '${ClipDownloader.humanBytes(_shotsBytes)} · shots',
         ),
+        /*
+         * ★ 预读窗口必须显式告诉用户，否则「上限 256MB」会被理解成
+         *   「最多占 256MB 磁盘」——而真正限制「往后拉多少」的是时间窗。
+         *   用户点名要求「只缓存播放 + 一个时间段」，这一行就是那条规则的读数。
+         */
+        const SettingsInfoRow(
+          label: '预读窗口',
+          value: '最多 ${ClipDownloader.kMpvCacheSecs ~/ 60} 分钟'
+              '（到点即停，不会把整部片子一次拉完）',
+        ),
         SettingsInfoRow(
           label: '合计',
           value: '${ClipDownloader.humanBytes(_totalBytes)}'

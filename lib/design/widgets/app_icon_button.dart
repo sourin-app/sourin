@@ -51,7 +51,12 @@ class AppIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = AppTheme.of(context);
+    /*
+     * TODO(M4): AppThemeScope 接上后，把 resolvedOf 改回 AppTheme.of。
+     * 理由见 lib/design/theme/app_theme.dart 的 resolvedOf 注释
+     * （AppThemeScope 在 lib/ 里零实例化，AppTheme.of 会断言崩溃）。
+     */
+    final t = AppTheme.resolvedOf(context);
     final enabled = onPressed != null;
     final size = iconSize ?? 24;
 

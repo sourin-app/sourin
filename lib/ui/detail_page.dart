@@ -55,8 +55,10 @@ import 'cache_page.dart'
     show CachedDelete, CachedWork, humanBytes, kLocalProvider;
 import 'media_session.dart';
 import '../core/network_status.dart';
+import '../design/widgets/app_icon_button.dart';
 import '../design/widgets/app_ink_well.dart';
 import '../design/widgets/app_text_button.dart';
+import '../design/widgets/app_tooltip_slider.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
 // ★ 2026-10-18（Owner 第 12 条）：toast 统一走这里（`showAppToast`）
@@ -3068,10 +3070,43 @@ class _DetailPageState extends State<DetailPage> {
             padding: const EdgeInsets.fromLTRB(Sp.x2, Sp.x4, Sp.x2, 0),
             child: Align(
               alignment: Alignment.centerLeft,
-              child: IconButton(
-                onPressed: () => Navigator.of(context).maybePop(),
-                icon: const Icon(AppIcons.chevron_left),
-                tooltip: '返回',
+              /*
+               * ★ 2026-10-18（轨道 E · 玻璃化 M2 第 2 步）：IconButton → AppIconButton
+               *
+               * # 为什么用 AppIconButton 而不是 GlassIconButton
+               * ```text
+               * ① GlassIconButton **没有 tooltip 参数**，而这里原本有 `tooltip: '返回'`
+               *    —— 换过去会丢鼠标悬停提示（桌面端主要输入方式是鼠标）。
+               * ② AppIconButton 的参数与 `IconButton(onPressed:, icon:, tooltip:)`
+               *    **逐个对齐**，是"同一个东西的自建版"，替换是机械的。
+               * ③ 它依赖链零 Material（AppIconButton → AppInkWell → PressFeedback）。
+               * ```
+               *
+               * ⚠️ 一处**已知的功能收窄**（组件自身注释已如实标注）：
+               *    `AppIconButton` 目前把 tooltip 文本挂成 `Semantics.label`，
+               *    **悬停气泡**还没接（Material 的 Tooltip 属于 Material 层）。
+               *    ⇒ 读屏器仍能念出「返回」，但鼠标悬停不出气泡。
+               *    这是"暂时收窄"，不是"做完了"。
+               */
+              child: SizedBox(
+                /*
+                 * ★★★ 为什么必须显式 48×48（实测，不是猜的）
+                 *
+                 * 实测原 Material `IconButton(tooltip:)` 的真实尺寸 = **48×48**
+                 * （.probe/probe_e_origsize_test.dart）。
+                 * 而 `AppIconButton` 默认 iconSize=24 ⇒ 热区 24+8*2 = **40×40**。
+                 * ⇒ 直接替换会让返回按钮的触控目标**缩水 8dp**。
+                 *   项目规范要求触控目标 ≥34dp（坑 35），40 虽然过线，
+                 *   但**缩小**本身就是回归 —— 且 48 是 iOS/Material 的通用最小热区。
+                 * ⇒ 显式锁 48，与替换前逐值一致。
+                 */
+                width: 48,
+                height: 48,
+                child: AppIconButton(
+                  onPressed: () => Navigator.of(context).maybePop(),
+                  icon: const Icon(AppIcons.chevron_left),
+                  tooltip: '返回',
+                ),
               ),
             ),
           ),
@@ -4907,17 +4942,55 @@ class _LocalRowDeleteButtonState extends State<_LocalRowDeleteButton> {
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
-      child: Tooltip(
+      /*
+       * ★ 2026-10-18（轨道 E · 玻璃化 M2 第 2 步）：Tooltip + IconButton → AppTooltip + AppIconButton
+       *
+       * # 与上面那个返回按钮的**关键差异**
+       * ```text
+       * 返回按钮：tooltip 是 IconButton 的**参数** ⇒ 换 AppIconButton 即可。
+       * 这里：Tooltip 包在**外层**，且它承担的是"悬停才显形的图标"里
+       *       唯一的文字说明 ⇒ 不能靠 AppIconButton 的 Semantics.label 代替
+       *       （那只有读屏器能看到，鼠标用户仍然看不到提示）。
+       *
+       * ⇒ 外层改用本仓的 `AppTooltip`（lib/design/widgets/app_tooltip_slider.dart），
+       *   它的 message / waitDuration(500ms，与 Material 一致) 语义对齐，
+       *   **悬停气泡不丢**。这样两个按钮的 tooltip 能力都保住了。
+       * ```
+       *
+       * ⚠️ 尺寸：原来是 `BoxConstraints.tightFor(width: 28, height: 28)` + iconSize 16
+       *    （"与 cache_page 的 28×28 同款：够点，但不抢版面"）。
+       *    `AppIconButton` 的尺寸由 `iconSize` 推出来（size + pad*2），
+       *    传 iconSize: 16 ⇒ pad = 4（size<=20 时）⇒ 实际 24×24。
+       *    **24 < 28** ⇒ 比原来小。这里显式补回 28，避免触控目标缩水。
+       */
+      child: AppTooltip(
         message: '删除这一集',
-        child: IconButton(
-          // ★ 与 cache_page 的 28×28 同款：够点，但不抢版面
-          constraints: const BoxConstraints.tightFor(width: 28, height: 28),
-          padding: EdgeInsets.zero,
-          iconSize: 16,
-          onPressed: widget.onTap,
-          icon: Icon(
-            AppIcons.delete_outline_rounded,
-            color: _hover ? colors.error : Colors.transparent,
+        child: SizedBox(
+          /*
+           * ★★★ 为什么是 48 而不是注释里写的 28（实测推翻了注释）
+           *
+           * 原代码写的是 `constraints: BoxConstraints.tightFor(width: 28, height: 28)`
+           * 且注释说「与 cache_page 的 28×28 同款：够点，但不抢版面」。
+           * 但实测（.probe/probe_e_origsize_test.dart）：
+           *   Material `IconButton(constraints: tightFor(28,28), padding: zero, iconSize: 16)`
+           *   的真实尺寸 = **48×48** —— `constraints` 被 Material 的
+           *   最小触控约束**覆盖**了，28 从来没生效过。
+           *
+           * ⇒ 那个 28 是**注释里的意图**，不是运行时事实。
+           *   替换后若真按 28 做，触控目标会比原来**小 20dp**。
+           * ⇒ 按**实测值** 48 对齐，与替换前逐值一致。
+           *
+           * ⚠️ 视觉上图标仍是 16px、行高不变；变的只是可点击范围（更大 = 更好点）。
+           */
+          width: 48,
+          height: 48,
+          child: AppIconButton(
+            onPressed: widget.onTap,
+            iconSize: 16,
+            icon: Icon(
+              AppIcons.delete_outline_rounded,
+              color: _hover ? colors.error : Colors.transparent,
+            ),
           ),
         ),
       ),

@@ -54,6 +54,17 @@ import 'package:flutter/scheduler.dart' show SchedulerBinding, FrameTiming;
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'dart:ui' as ui;
 import 'package:material_ui/material_ui.dart';
+/*
+ * ★★ 2026-10-18（M4）：本地化委托从 material_ui 改用 flutter_localizations
+ *
+ * 从 MaterialApp 改成 WidgetsApp 后，不能再用 GlobalMaterialLocalizations.delegates
+ * （那个属于 material_ui）。改用这两个：
+ *   GlobalWidgetsLocalizations   —— 文本方向，WidgetsApp 自己需要
+ *   GlobalCupertinoLocalizations —— 满足依赖 Cupertino 本地化的第三方组件
+ * ★ 两者都在 flutter_localizations 里，**不依赖 material_ui**。
+ */
+import 'package:flutter_localizations/flutter_localizations.dart'
+    show GlobalWidgetsLocalizations, GlobalCupertinoLocalizations;
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
@@ -1431,7 +1442,7 @@ class _KeepAliveTransitionState extends State<_KeepAliveTransition>
  * ⚠️ **真机是否受影响 = 未验证**（本机无法跑真 arm64：
  *    emulator 37.1.11.0 硬拒 arm64 系统镜像，见 `.probe\t438_root_cause.txt` §6）。
  */
-class _SourinScrollBehavior extends MaterialScrollBehavior {
+class _SourinScrollBehavior extends ScrollBehavior {
   const _SourinScrollBehavior();
 
   @override
@@ -1927,7 +1938,13 @@ class _SourinAppState extends State<SourinApp>
           ),
         ),
       ),
-      child: MaterialApp(
+      child: WidgetsApp(
+      /*
+       * ★ WidgetsApp 的 `color` 是**必需参数**（app.dart:351 `required this.color`）。
+       *   MaterialApp 把它用作系统 UI 底色（如 Android 任务切换器卡片底）。
+       *   取与内容区同源的底色 —— 与下面 `WindowFrame.backdrop` 同一条取法。
+       */
+      color: AppTheme.floorColor(brightness),
       title: '源影',
       debugShowCheckedModeBanner: false,
       /*
@@ -2019,8 +2036,48 @@ class _SourinAppState extends State<SourinApp>
        *    t435 段10 证明 `Overlay.wrap(hardEdge)` 也触发同类现象。
        *    所以这里只是消掉产品里那一处，不是通用解。
        */
-      scrollBehavior: const _SourinScrollBehavior(),
-      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      /*
+       * ★★★ 2026-10-18（M4）：`scrollBehavior` 从**参数**改成**包裹**
+       *
+       * # 为什么要改写法
+       * ```text
+       * MaterialApp 有 `scrollBehavior` 参数（material/app.dart:264），
+       * 它内部用 `ScrollConfiguration(behavior: ...)` 包一层（:1161）。
+       * 而 **WidgetsApp 没有这个参数**（grep 零命中）
+       * ⇒ 只能自己包。
+       * ```
+       *
+       * # ⚠️ 包在**哪一层**很关键
+       * ```text
+       * 必须包在 WidgetsApp **外面**（与 MaterialApp 的做法一致）。
+       * 若包在 `builder` 里，只能管到 builder 之下的子树，
+       * 而 Navigator 自己的过渡动画（如 Cupertino 的 page transition）
+       * 会读不到它 ⇒ arm64 修复可能失效。
+       * ```
+       */
+      /*
+       * ★★ 2026-10-18（M4）：从 MaterialApp 改成 WidgetsApp后，
+       *   本来的 `GlobalMaterialLocalizations.delegates` 不再适用。
+       *
+       * # 为什么换成这两个
+       * ```text
+       * GlobalWidgetsLocalizations  —— 文本方向（LTR/RTL），WidgetsApp 自己需要
+       * GlobalCupertinoLocalizations —— 满足依赖 Cupertino 本地化的第三方组件
+       * ★ 两者都在 flutter_localizations 里，**不依赖 material_ui**
+       * ```
+       *
+       * # ⚠️ 但 material_ui 仍在 pubspec 里（Owner 2026-10-18 拍板：选 A）
+       * ```text
+       * 目标是「界面不是 Material 风格」，不是「pubspec 字面上不能有 material_ui」。
+       * liquid_glass_widgets 的部分组件（Tooltip 等）会读 MaterialLocalizations
+       * 的**接口**；自建一套最小实现需 40+ 字段且漏一个就运行时 assert 失败。
+       * ⇒ 保留包，但**不用任何 Material 组件**。
+       * ```
+       */
+      localizationsDelegates: const [
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       supportedLocales: [Locale("zh", "CN"), Locale("en", "US")],
       /*
        * ★ 两层 theme 都要给（2026-09-22 实测踩到）
@@ -2041,7 +2098,16 @@ class _SourinAppState extends State<SourinApp>
        *    所以走 `buildMaterialTheme()`（见 ui/theme_bridge.dart）
        *    把角色补全。这是必须的第二步，不是可选优化。
        */
-      theme: materialTheme,
+      /*
+       * ★★ 2026-10-18（M4）：**删掉了 `theme: materialTheme`**
+       *
+       * WidgetsApp 没有 `theme` 参数（它不知道什么叫 Material 主题）。
+       * 下面的 `AppThemeHost(data: materialTheme)` 仍然在，
+       * 所以主题源一字未变 —— 只是**没有 Material 组件来消费它**了。
+       *
+       * ⚠️ 若将来要把 `materialTheme` 彻底删掉，
+       *   得先把 `theme_bridge.dart` 里那 31 个 Material 子主题全部接管。
+       */
       /*
        * ══════════════════════════════════════════════════════════════════
        * ★★★ 自绘标题栏必须挂在 **builder 里**（Navigator 之外）

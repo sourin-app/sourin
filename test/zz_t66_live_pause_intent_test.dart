@@ -254,8 +254,18 @@ void main() {
     test('★★ `_userWantsPause` 的数据源头必须双向赋值（true 与 false）', () {
       final player = File('lib/ui/player_page.dart').readAsStringSync();
 
-      expect(player.contains('bool _userWantsPause'), isTrue,
-          reason: '★ 字段必须存在 —— 它是整条链路的数据源头');
+      /*
+       * ⚠️⚠️ 这里原来写的是 `player.contains('bool _userWantsPause')`。
+       * 那是**假绿**：`bool? _userWantsPause` 里也含有子串 `bool _userWantsPause`
+       * ⇒ 无论写 `bool` 还是 `bool?` 它都通过 ⇒ 断言对被测对象**没有鉴别力**。
+       * ★ 与本仓反复出现的「断言没真正作用在被测对象上」是同一类。
+       * ⇒ 改用正则，显式区分有没有 `?`。
+       */
+      expect(
+        RegExp(r'bool\??\s+_userWantsPause').hasMatch(player),
+        isTrue,
+        reason: '★ 字段必须存在 —— 它是整条链路的数据源头',
+      );
 
       /*
        * 必须是"暂停时置 true、播放时置 false"两向都有。
@@ -282,6 +292,58 @@ void main() {
           reason: '★★ 赋值必须在 `_togglePlay` 里（用户手势唯一入口）');
     });
 
+    // ────────────────────────────────────────────────────────────────
+    //  Lead 2026-10-18 要求的三条（场景 C 的护栏）
+    // ────────────────────────────────────────────────────────────────
+
+    test('★★★ (a) 源头必须是可空且**无初始值** `bool? _userWantsPause;`', () {
+      final player = File('lib/ui/player_page.dart').readAsStringSync();
+      expect(
+        RegExp(r'bool\?\s+_userWantsPause\s*;').hasMatch(player),
+        isTrue,
+        reason: '★★★ 必须是 `bool? _userWantsPause;`（可空、无初始值）。\\n'
+            '无初始值 ⇒ 默认 null ⇒ 表示「用户没碰过播放键」',
+      );
+    });
+
+    test('★★★ (b) 不许给初始值（给了就不是三态）', () {
+      final player = File('lib/ui/player_page.dart').readAsStringSync();
+      /*
+       * 反例：
+       *   bool? _userWantsPause = false;   ← 又变成两态
+       *   bool? _userWantsPause = null;    ← 合法但多余，允许
+       */
+      final badInit =
+          RegExp(r'bool\?\s+_userWantsPause\s*=\s*false').hasMatch(player);
+      expect(
+        badInit,
+        isFalse,
+        reason: '★★★ 找到 `bool? _userWantsPause = false;` —— '
+            '给了初始值就丢掉了「没表态」这个状态，场景 C 复活',
+      );
+    });
+
+    test('★★★ (c) 不许在出口把 null 压成 false', () {
+      final player = File('lib/ui/player_page.dart').readAsStringSync();
+      /*
+       * 反例：
+       *   pop<bool>(_userWantsPause ?? false)      ← null 被压成 false
+       *   pop<bool>(_userWantsPause == true)       ← 同上
+       *   pop<bool>(_userWantsPause!)
+       */
+      for (final bad in <String>[
+        '_userWantsPause ?? false',
+        '_userWantsPause == true',
+        '_userWantsPause!',
+      ]) {
+        expect(
+          player.contains(bad),
+          isFalse,
+          reason: '★★★ 出现 `$bad` ⇒ 把「没表态」压成「要播放」⇒ 场景 C 复活',
+        );
+      }
+    });
+
     test('★★ `_exitPlayer` 必须把 _userWantsPause 作为 pop 的返回值', () {
       final player = File('lib/ui/player_page.dart').readAsStringSync();
 
@@ -294,4 +356,103 @@ void main() {
               '不带值则用户意图丢失，整条链路断在出口');
     });
   });
+
+  group('★★★ ③ 场景 C：三态不能压成两态（Lead 2026-10-18 派）', () {
+    late String playerSrc;
+
+    setUpAll(() {
+      final f = File('lib/ui/player_page.dart');
+      expect(f.existsSync(), isTrue,
+          reason: '读不到 player_page.dart（cwd=${Directory.current.path}）');
+      playerSrc = f.readAsStringSync();
+    });
+
+    /*
+     * ★ 这条是**缺陷检测器**：现在应该是**红**的。
+     *   红 = 场景 C 的缺陷存在。修好后它变绿。
+     *
+     * 判据：`_userWantsPause` 的类型必须是 `bool?`（三态），不是 `bool`。
+     */
+    test('★★★ `_userWantsPause` 必须是 bool? 而不是 bool（否则场景 C 必然发生）', () {
+      // 必须存在三态声明
+      expect(
+        playerSrc.contains('bool? _userWantsPause'),
+        isTrue,
+        reason: '★★★ 场景 C：`_userWantsPause` 若声明成 `bool`，'
+            '初始的 false 会同时表示「要播放」和「没表态」；'
+            '⇒ 用户「进详情页什么都不做就退出」会被 pop(false)；'
+            '⇒ 直播页把用户按过的暂停强制解除 ⇒ 自动续播。'
+            '★ 修法：`bool? _userWantsPause;`（无初始值 = null = 没表态）',
+      );
+      // 不许留两态声明
+      final hasTwoState = RegExp(r'bool\s+_userWantsPause\s*=\s*false').hasMatch(playerSrc);
+      expect(
+        hasTwoState,
+        isFalse,
+        reason: '★★★ 找到了 `bool _userWantsPause = false;` —— '
+            '这正是场景 C 的缺陷根源',
+      );
+    });
+
+    test('★★★ `_exitPlayer` 必须原样把三态带出去（不许压成 bool）', () {
+      /*
+       * 反例（都错）：
+       *   pop<bool>(_userWantsPause ?? false)    ← 把「没表态」当成「要播放」
+       *   pop<bool>(_userWantsPause == true)     ← 同上
+       * 正解：
+       *   pop<bool?>(_userWantsPause)
+       */
+      final badNull = RegExp(r'pop<bool>\s*\(\s*_userWantsPause\s*\?\?').hasMatch(playerSrc);
+      expect(
+        badNull,
+        isFalse,
+        reason: '★★★ `pop<bool>(x ?? false)` 把「没表态」压成「要播放」⇒ 场景 C 复活',
+      );
+      expect(
+        playerSrc.contains('_userWantsPause ?? false'),
+        isFalse,
+        reason: '★★★ 任何 `?? false` 都会丢掉「没表态」这个状态',
+      );
+    });
+
+    test('★★★ live_page 侧的三态判据必须保留（它已兼容，防被改回 != null 之外）', () {
+      final live = File('lib/ui/live_page.dart').readAsStringSync();
+      expect(
+        live.contains('if (pausedInFullscreen != null)'),
+        isTrue,
+        reason: '★ live_page 侧必须是 `!= null` 才赋值 —— 这是三态的下游',
+      );
+    });
+  });
 }
+
+// ══════════════════════════════════════════════════════════════════════
+//  ★★★ 场景 C（2026-10-18，Lead 派）：**三态**不能压成两态
+// ══════════════════════════════════════════════════════════════════════
+//
+// # 缺陷（静态可证，不需要运行时）
+// ```text
+// player_page.dart:1485   bool _userWantsPause = false;   ← 初始值 false
+// 它只在 _togglePlay 的两个分支被改（:11261 / :11264）
+// _exitPlayer 无条件 pop<bool>(_userWantsPause)
+//
+// ⇒ 用户「打开详情页什么都不做就退出」必然 pop(false)
+// ⇒ live_page: if (false != null) ⇒ _userPaused = false
+// ⇒ 把用户**在直播页里按过的暂停**强制解除 ⇒ 自动续播
+// ```
+//
+// # 正确的语义是**三态**
+// ```text
+// null  = 用户没碰过播放键（「我没表态」）
+// true  = 用户明确要暂停
+// false = 用户明确要播放
+//
+// ★ 用 `bool` 时，初始的 false 同时表示「要播放」和「没表态」
+//   ⇒ 这两种情况**必须**分开，否则场景 C 必然发生
+// ```
+//
+// # live_page 侧**不用改**
+// ```text
+// 它已经写的是 `if (pausedInFullscreen != null) _userPaused = pausedInFullscreen;`
+// ⇒ null 时不动，true/false 时才动 —— 三态天然兼容
+// ```

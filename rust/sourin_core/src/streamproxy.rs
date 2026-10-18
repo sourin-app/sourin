@@ -432,6 +432,23 @@ impl StreamProxy {
         self.prefetch_is_disabled()
     }
 
+    /// 流表当前条数 —— **只读探针**，供"注册表是否会无限增长"的测量用
+    ///
+    /// # 为什么要这个访问器（而不是让测试直接读 `table`）
+    /// ```text
+    /// `table` 是私有字段，测试拿不到。
+    /// 而这条测量要回答的是一个**可证伪的问题**：
+    ///   「切 N 次源之后，表里到底是 N 条还是被淘汰到某个上限？」
+    /// ⇒ 若将来有人删掉 `register_at` 里的 FIFO 淘汰逻辑，
+    ///    `tests/zz_n10_switch_source_measure.rs` 的断言会立刻变红。
+    /// ```
+    ///
+    /// ⚠️ 生产代码**不调用**它 —— 与 `prefetch_is_disabled_for_probe` 同一纪律。
+    pub fn stream_table_len_for_probe(&self) -> usize {
+        let t = self.table.lock().unwrap_or_else(|e| e.into_inner());
+        t.len()
+    }
+
     /*
      * ═══════════════════════════════════════════════════════════════════
      * ★★★ N10 让路窗口：seek 之后让前台读取独占带宽 N 秒

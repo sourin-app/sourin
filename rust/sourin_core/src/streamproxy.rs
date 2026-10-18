@@ -374,6 +374,11 @@ impl StreamProxy {
     }
 
     /// 读本实例的预取开关
+    /// 只读探针：供 FFI 命令  回读当前开关状态
+    pub fn prefetch_is_disabled_for_probe(&self) -> bool {
+        self.prefetch_is_disabled()
+    }
+
     fn prefetch_is_disabled(&self) -> bool {
         self.prefetch_disabled
             .load(std::sync::atomic::Ordering::SeqCst)

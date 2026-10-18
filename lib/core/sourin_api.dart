@@ -317,6 +317,35 @@ class SourinApi {
     return m.map((k, v) => MapEntry(k, v == true));
   }
 
+  /// ★★★ 2026-10-18（第 66 轮 N10 取证）：运行期开关并行预取
+  ///
+  /// # 为什么需要它
+  /// ```text
+  /// 环境变量 `SOURIN_PREFETCH_DISABLE` 只在 StreamProxy::new() 里读一次
+  /// ⇒ 进程内改环境变量无效，必须重启进程
+  /// 而 streamproxy.rs 的注释自己写明：CDN 吞吐每分钟在变，
+  ///   跨进程对照里两个变量同时在变 ⇒ 量不出真实差值
+  /// ⇒ 只有**同进程内交替 ON/OFF** 才能做单变量 A/B
+  /// ```
+  ///
+  /// # 安全性
+  /// 只改一个 AtomicBool；下一次请求生效（plan_prefetch 每次请求都读）
+  /// ⇒ 不影响已在飞的请求，不碰任何连接/缓存状态。
+  ///
+  /// ⚠️ 生产代码**不调用**它 —— 现在只有取证探针用。
+  ///    将来若要做用户可选的"省流模式"，这里就是入口。
+  static Future<void> setPrefetchDisabled(bool disabled) async {
+    await SourinCore.callAsync('set_prefetch_disabled', {
+          'disabled': disabled,
+        });
+  }
+
+  /// 读当前并行预取开关（取证用）
+  static Future<bool> prefetchDisabled() async {
+    final r = await SourinCore.callAsync('prefetch_disabled');
+    return jmap(r)?['disabled'] == true;
+  }
+
   /// 导入声明式源（JSON 配置）
   static Future<ProviderManifest> importDeclarativeProvider(String json) async {
     final r = await SourinCore.callAsync(

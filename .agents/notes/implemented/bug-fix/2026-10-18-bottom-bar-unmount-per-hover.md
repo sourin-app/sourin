@@ -2,6 +2,10 @@
 
 Status: implemented
 
+> 同域：[2026-10-18-player-mouse-jank-localize-rebuilds.md](../simplification/2026-10-18-player-mouse-jank-localize-rebuilds.md)
+> 那篇是**前一步**（`e6458e5`：把整页 setState 改成局部 notifier，重建 1624→20）；
+> 本篇是它之后仍存在的问题（子树装卸）。读本篇前先读那篇。
+
 ## Problem
 
 播放页「鼠标一动就卡」（Owner N11）。此前的修复（`e6458e5`）已经让控制条显隐

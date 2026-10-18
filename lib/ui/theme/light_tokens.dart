@@ -95,6 +95,27 @@ class LightTokens {
   /// ★ task-31：原 `#DFE1E8` 对页面底只有 **1.06:1** —— 分隔线形同虚设。
   ///   取 `#D5DAE5`，与 [glassStroke] 同色相、略深一档（分隔线本就该比描边明显）。
   ///   ⚠️ 无测试钉值（`grep DFE1E8 test/` = 0）。
+  ///
+  /// # ⚠️ 当前**无生产调用点**（2026-10-18 第 7 波审查登记）
+  ///
+  /// ```text
+  /// `grep -rn "LightTokens.divider" lib/` ⇒ 仅 1 处，且在**注释**里
+  ///   （lib/ui/widgets/app_dialog_section.dart:49 的说明文字）
+  ///
+  /// 唯一真实引用在探针：
+  ///   .probe/probe_e_lighttokens_identical_test.dart:49
+  ///     'divider': LightTokens.divider,   ← 迁移前后"值一致"的比对样本
+  /// ```
+  ///
+  /// **为什么保留**（不是忘了删）：
+  /// ```text
+  /// ① 它是 `theme_bridge.dart` 原有常量的**原样迁移**
+  ///    （改前就在那儿，同样零调用）⇒ 本轮没有新增死代码，只是搬了位置
+  /// ② 那个 .probe 测试需要它当**比对样本**才能验证"迁移没改值"
+  ///    ⇒ 删了会让迁移一致性测试失去依据
+  /// ③ 它记录了 task-31 的对比度修复（1.06:1 → 1.16:1），是设计决策的一部分
+  /// ```
+  /// ⚠️ 若将来 `.probe/probe_e_*` 被删除，本常量可一并评估是否移除。
   static const divider = Color(0xFFD5DAE5);
 
   /// `--glass-stroke`
@@ -137,5 +158,23 @@ class LightTokens {
   static const errorContainer = Color(0xFFFCE8E6);
 
   /// 次级容器（`--surface-2` 合成值）
+  ///
+  /// # ⚠️ 当前**无生产调用点**（2026-10-18 第 7 波审查登记）
+  ///
+  /// ```text
+  /// `grep -rn "LightTokens.surface2" lib/` ⇒ **0 处真实调用**
+  ///
+  /// 唯一真实引用在探针：
+  ///   .probe/probe_e_lighttokens_identical_test.dart:55
+  ///     'surface2': LightTokens.surface2,   ← 迁移前后"值一致"的比对样本
+  /// ```
+  ///
+  /// **为什么保留**（与 [divider] 同一组理由）：
+  /// ```text
+  /// ① 从 `theme_bridge.dart` **原样迁移**（改前即零调用，本轮未新增死代码）
+  /// ② 迁移一致性测试拿它当比对样本
+  /// ③ 它是原版 CSS `--surface-2` 的落地值，属设计 token 全集的一部分
+  /// ```
+  /// ⚠️ 若将来 `.probe/probe_e_*` 被删除，本常量可一并评估是否移除。
   static const surface2 = Color(0xFFF5F7FA);
 }

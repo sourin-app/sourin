@@ -8617,6 +8617,46 @@ class _AnyLocaleMaterialDelegate
 
   /// ★ 无条件 true —— 这是本类的全部意义。
   /// 若改成 `locale.languageCode == 'en'`，中文环境下又会退化成 null。
+  ///
+  /// # ⚠️⚠️ 恒真带来的**语言不一致**（2026-10-18 第 7 波审查新增）
+  ///
+  /// ```text
+  /// `isSupported` 恒真 ⇒ Flutter 的 locale 协商对**任何**语言都"成功"
+  ///   ⇒ `MaterialLocalizations` 一律拿到 `load()` 返回的**英文**
+  ///   （load 忽略入参，硬编码 Locale('en','US')）
+  /// 而 `GlobalWidgetsLocalizations.delegate` 会走**该语言自己的**版本
+  ///   ⇒ 两者语言**可能不一致**
+  /// ```
+  ///
+  /// # 当前**不可见**（已核实全仓的消费面，不是想当然）
+  ///
+  /// ```text
+  /// 本仓能到达的 MaterialLocalizations 成员只有**无障碍语义标签**：
+  ///   · showDialog  → modalBarrierDismissLabel（读屏用，不画到屏幕）
+  ///   · ExpansionTile → collapsedHint / expandedHint（同上）
+  ///
+  /// 以下组件**用量全是 0**（`grep` 实测）：
+  ///   TimePicker / DatePicker / CalendarDatePicker / AboutDialog /
+  ///   showLicensePage / BackButton / Stepper / PaginatedDataTable / SearchAnchor
+  ///   ⚠️ `Tooltip` 那 24 处**不读** MaterialLocalizations
+  ///      （`material/tooltip.dart` 里 `Localizations` 零命中）
+  ///   ⚠️ `Drawer` 那 26 处是**自绘**的 `PlayerEpisodePanelStyle.rightDrawer`，
+  ///      不是 Material 的 `Drawer`
+  /// ⇒ 所以"Material 内置文案是英文"目前**没有用户可见后果**。
+  /// ```
+  ///
+  /// # ★ 未来陷阱（引入新组件前必读）
+  ///
+  /// ```text
+  /// 一旦引入任何**带可见文案**的 Material 组件
+  ///   （典型：TimePicker / DatePicker / AboutDialog / 带"OK/CANCEL"的默认对话框）
+  /// ⇒ 会出现「**界面中文 + 该组件英文**」的混排
+  ///
+  /// 届时的修法（二选一）：
+  ///   ① 接真正的 zh 本地化：`GlobalMaterialLocalizations.delegate`
+  ///      + `flutter_localizations` 依赖（但本仓未引入该依赖）
+  ///   ② 该组件自行提供中文文案（像 AppDialogShell / AppGlassDialog 那样）
+  /// ```
   @override
   bool isSupported(Locale locale) => true;
 

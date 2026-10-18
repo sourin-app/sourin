@@ -332,15 +332,56 @@ class SourinApi {
   /// 只改一个 AtomicBool；下一次请求生效（plan_prefetch 每次请求都读）
   /// ⇒ 不影响已在飞的请求，不碰任何连接/缓存状态。
   ///
-  /// ⚠️ 生产代码**不调用**它 —— 现在只有取证探针用。
-  ///    将来若要做用户可选的"省流模式"，这里就是入口。
+  /// # ⚠️⚠️ 仅实验用：生产代码**不调用**这三个方法
+  ///
+  /// ```text
+  /// 真实调用点（全部在 .probe/n10_real/，gitignore，不随包发布）：
+  ///   .probe/n10_real/accept_ab.dart:247,346   setPrefetchDisabled
+  ///   .probe/n10_real/real_ab.dart:227,306     setPrefetchDisabled
+  ///   .probe/n10_real/real_ab.dart:228,309     prefetchDisabled
+  ///   .probe/n10_real/accept_ab.dart:349       inYieldWindow
+  ///   .probe/probe_tests/t66_n10_*_probe.dart  prefetchDisabled
+  /// ```
+  ///
+  /// **生产路径走的是另一对**：
+  /// ```text
+  /// `beginYieldForSeek()` / `endYieldForSeek()`
+  ///   ⇒ 由 `player_page.dart::_beginPrefetchYield()` 在 seek 后调用
+  ///   ⇒ 它们是**已接线**的生产 API，与这里的三个"强制开关"不是一回事：
+  ///      · begin/end ：seek 后**自动**让路 2 秒，产品行为
+  ///      · set/get   ：**人工**强制 ON/OFF，只为 A/B 对照
+  /// ```
+  ///
+  /// # ★ 为什么保留（而不是删掉）
+  /// ```text
+  /// ① N10（拖动转圈）的**根因验证**依赖它们：
+  ///    「同进程内交替 ON/OFF 量出真实差值」这个实验，
+  ///    必须能人为控制开关 ⇒ 删掉以后重验要重写整套探针。
+  /// ② 它们是**只读探针 + 一个开关**，不参与任何产品决策 ——
+  ///    `prefetchDisabled()` / `inYieldWindow()` 纯查询，
+  ///    `setPrefetchDisabled()` 只在探针里被调用。
+  /// ③ 将来若做用户可选的"省流模式"，这里就是现成的入口
+  ///    （但**现在没有**任何 UI 接它）。
+  /// ```
+  ///
+  /// # ★ 仓库硬约束的例外声明
+  /// ```text
+  /// 本仓要求「新增公开 API 必须同时给出调用点」。
+  /// ⇒ 这三个是**例外**：调用点在 `.probe/`（不进版本库发布范围）。
+  /// ⇒ 例外理由就是上面「为什么保留」三条，写在这里以备审计。
+  /// ⚠️ 若将来 `.probe/` 被整体删除，这三个方法应一并删除。
+  /// ```
   static Future<void> setPrefetchDisabled(bool disabled) async {
     await SourinCore.callAsync('set_prefetch_disabled', {
           'disabled': disabled,
         });
   }
 
-  /// 读当前并行预取开关（取证用）
+  /// 读当前并行预取开关 —— ⚠️ **仅实验用**（详见上方 [setPrefetchDisabled] 的例外声明）
+  ///
+  /// 调用点：`.probe/n10_real/real_ab.dart:228,309`、
+  ///         `.probe/probe_tests/t66_n10_cold_seek_probe.dart:175` 等。
+  /// 生产代码**不调用**。
   static Future<bool> prefetchDisabled() async {
     final r = await SourinCore.callAsync('prefetch_disabled');
     return jmap(r)['disabled'] == true;
@@ -394,7 +435,12 @@ class SourinApi {
     await SourinCore.callAsync('end_yield_for_seek');
   }
 
-  /// 当前是否处于让路窗口内（门禁/取证用）
+  /// 当前是否处于让路窗口内 —— ⚠️ **仅实验/门禁用**
+  ///
+  /// 调用点：`.probe/n10_real/accept_ab.dart:349`（A/B 跑完复位时打印）。
+  /// 生产代码**不调用**（生产侧不需要"问"，它只在 seek 时主动 begin/end）。
+  ///
+  /// ★ 保留理由见 [setPrefetchDisabled] 的例外声明 —— 同一组三个方法。
   static Future<bool> inYieldWindow() async {
     final r = await SourinCore.callAsync('in_yield_window');
     return jmap(r)['inWindow'] == true;

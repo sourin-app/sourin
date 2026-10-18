@@ -53,7 +53,10 @@ import '../core/device.dart';
 import '../core/player_gestures.dart';
 import '../core/sourin_api.dart';
 import '../core/ui_prefs.dart';
+import '../design/widgets/app_glass_dialog.dart';
+import '../design/widgets/app_icon_button.dart';
 import '../design/widgets/app_ink_well.dart';
+import '../design/widgets/app_text_button.dart';
 import 'app_theme.dart';
 import 'remote_bridge.dart';
 import 'tokens.dart';
@@ -2219,20 +2222,28 @@ class SettingsPageState extends State<SettingsPage> {
   }) async {
     final r = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
+      builder: (ctx) => AppGlassDialog(
+        // ★ 2026-10-18（轨道 E）：AlertDialog → AppGlassDialog
+        //   纯文本确认框，与 detail_page 那 3 处同一形态。
+        //   弹出仍走 showAppDialog（保住 task-104 的 animationStyle）。
+        title: title,
         content: Text(message),
-        actions: [
-          if (cancelLabel != null)
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: Text(cancelLabel),
+        actions: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (cancelLabel != null)
+              AppTextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(cancelLabel),
+              ),
+            const SizedBox(width: Sp.x1),
+            AppTextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              foregroundColor: Theme.of(ctx).colorScheme.primary,
+              child: Text(okLabel),
             ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text(okLabel),
-          ),
-        ],
+          ],
+        ),
       ),
     );
     return r ?? false;
@@ -2248,6 +2259,33 @@ class SettingsPageState extends State<SettingsPage> {
     final r = await showAppDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
+        /*
+         * ⚠️ 2026-10-18（轨道 E）：这一处**刻意保留** Material 的 AlertDialog。
+         *
+         * # 为什么不能换（实测，不是推测）
+         * ```text
+         * AppGlassDialog 里放 TextField ⇒ 抛：
+         *   "No Material widget found.
+         *    TextField widgets require a Material widget ancestor
+         *    within the closest LookupBoundary."
+         *
+         * 实测脚本：.probe/probe_tf_test.dart
+         *   Material 祖先数 = 0
+         * ```
+         * 根因：`AppGlassDialog` 只画 `GlassContainer`（玻璃），不带 `Material`；
+         *       而 `TextField` 要 `Material` 画光标 / 选择手柄 / 墨水。
+         *
+         * # 影响面（这是我第一版漏掉的）
+         * ```text
+         * _promptText 有 2 个**生产**调用点：
+         *   :1642 安装 JS 插件（输入插件地址）
+         *   :2146 固定配对码（输入 4~8 位数字）
+         * ⇒ 换掉就会让用户点这两处直接崩。
+         * ```
+         * ⇒ **能力边界**：纯展示类对话框可以玻璃化，**含输入框的不行**。
+         *   要换的话得先给 AppGlassDialog 内部补一层透明 Material
+         *   （只作墨水宿主，不引入底色），那是另一件事，需单独立项。
+         */
         title: Text(title),
         content: TextField(
           controller: ctl,
@@ -2256,7 +2294,7 @@ class SettingsPageState extends State<SettingsPage> {
           decoration: InputDecoration(hintText: hint),
         ),
         actions: [
-          TextButton(
+          AppTextButton(
             onPressed: () => Navigator.pop(ctx),
             child: const Text('取消'),
           ),
@@ -3804,7 +3842,7 @@ class SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 const SizedBox(width: Sp.x2),
-                TextButton(
+                AppTextButton(
                   onPressed: () => _healthToken?.cancel(),
                   child: const Text('停止'),
                 ),
@@ -5566,20 +5604,18 @@ class _ProviderCard extends StatelessWidget {
          * `onPressed: null` 是 Flutter 里"置灰"的标准做法
          *（`IconButton` 会自动用 disabled 颜色）。
          */
-        IconButton(
-          onPressed: canMoveUp ? onMoveUp : null,
-          icon: const Icon(AppIcons.keyboard_arrow_up, size: 18),
-          tooltip: '上移一位',
-          visualDensity: VisualDensity.compact,
-          color: colors.onSurfaceVariant,
-        ),
-        IconButton(
-          onPressed: canMoveDown ? onMoveDown : null,
-          icon: const Icon(AppIcons.keyboard_arrow_down, size: 18),
-          tooltip: '下移一位',
-          visualDensity: VisualDensity.compact,
-          color: colors.onSurfaceVariant,
-        ),
+        AppIconButton(
+            onPressed: canMoveUp ? onMoveUp : null,
+            icon: Icon(AppIcons.keyboard_arrow_up),
+            iconSize: 18,
+            tooltip: '上移一位',
+          ),
+        AppIconButton(
+            onPressed: canMoveDown ? onMoveDown : null,
+            icon: Icon(AppIcons.keyboard_arrow_down),
+            iconSize: 18,
+            tooltip: '下移一位',
+          ),
         // 与右侧操作之间留一点间距，避免两组按钮糊成一片
         const SizedBox(width: Sp.x2),
         /*
@@ -5617,20 +5653,18 @@ class _ProviderCard extends StatelessWidget {
          * 没有安装链接的插件（手动放入的）根本不显示这个按钮。
          */
         if (onPluginUpdate != null)
-          IconButton(
+          AppIconButton(
             onPressed: onPluginUpdate,
-            icon: const Icon(AppIcons.system_update_alt, size: 17),
+            icon: Icon(AppIcons.system_update_alt),
+            iconSize: 17,
             tooltip: '插件更新',
-            visualDensity: VisualDensity.compact,
-            color: colors.onSurfaceVariant,
           ),
         if (onConfig != null)
-          IconButton(
+          AppIconButton(
             onPressed: onConfig,
-            icon: const Icon(AppIcons.settings_outlined, size: 17),
+            icon: Icon(AppIcons.settings_outlined),
+            iconSize: 17,
             tooltip: '配置',
-            visualDensity: VisualDensity.compact,
-            color: colors.onSurfaceVariant,
           ),
         /*
          * ★ 「编辑」（任务 R）
@@ -5826,19 +5860,22 @@ class _PluginTile extends StatelessWidget {
            *    所以按钮**总是显示**，点进去再调 `pluginConfigGet`
            *    拿真实声明 —— 没有可配置项时给明确提示。
            */
-          IconButton(
+          AppIconButton(
             onPressed: onConfig,
-            icon: const Icon(AppIcons.settings_outlined, size: 18),
+            icon: Icon(AppIcons.settings_outlined),
+            iconSize: 18,
             tooltip: '配置',
           ),
-          IconButton(
+          AppIconButton(
             onPressed: onEdit,
-            icon: const Icon(AppIcons.edit_outlined, size: 18),
+            icon: Icon(AppIcons.edit_outlined),
+            iconSize: 18,
             tooltip: '编辑',
           ),
-          IconButton(
+          AppIconButton(
             onPressed: onRemove,
-            icon: const Icon(AppIcons.delete_outline, size: 18),
+            icon: Icon(AppIcons.delete_outline),
+            iconSize: 18,
             tooltip: '删除',
           ),
         ],
@@ -5998,7 +6035,7 @@ class _RemotePanel extends StatelessWidget {
                         color: colors.primary,
                       ),
                     ),
-                    TextButton(
+                    AppTextButton(
                       onPressed: () => onCopy(status.url),
                       child: const Text('复制'),
                     ),
@@ -6020,7 +6057,7 @@ class _RemotePanel extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: Sp.x3),
-                    TextButton(
+                    AppTextButton(
                       onPressed: onRefreshPin,
                       child: const Text('换一个'),
                     ),
@@ -6360,7 +6397,7 @@ class _RemoteBlockState extends State<_RemoteBlock> {
 
     return SettingsBlock(
       title: '局域网遥控',
-      trailing: TextButton(
+      trailing: AppTextButton(
         onPressed: widget.busy ? null : () => _setOpen(false),
         child: const Text('收起'),
       ),
@@ -6617,14 +6654,16 @@ class _OrderDialogState extends State<_OrderDialog> {
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  IconButton(
+                  AppIconButton(
                     onPressed: i > 0 ? () => _move(i, -1) : null,
-                    icon: const Icon(AppIcons.keyboard_arrow_up),
+                    icon: Icon(AppIcons.keyboard_arrow_up),
                     tooltip: '上移',
                   ),
-                  IconButton(
-                    onPressed: i < _list.length - 1 ? () => _move(i, 1) : null,
-                    icon: const Icon(AppIcons.keyboard_arrow_down),
+                  AppIconButton(
+                    onPressed: i < _list.length - 1
+                        ? () => _move(i, 1)
+                        : null,
+                    icon: Icon(AppIcons.keyboard_arrow_down),
                     tooltip: '下移',
                   ),
                 ],
@@ -6634,7 +6673,7 @@ class _OrderDialogState extends State<_OrderDialog> {
         ),
       ),
       actions: [
-        TextButton(
+        AppTextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('取消'),
         ),
@@ -6999,7 +7038,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
         ),
       ),
       actions: [
-        TextButton(
+        AppTextButton(
           onPressed: () => Navigator.pop(context, _changed),
           child: const Text('关闭'),
         ),
@@ -7154,7 +7193,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
                 ),
               ),
               const SizedBox(width: Sp.x2),
-              TextButton(
+              AppTextButton(
                 onPressed: _busy ? null : () => _rollback(v.version),
                 child: Text(
                   _rollingBack ? '回滚中…' : '回滚到此版',
@@ -7263,7 +7302,7 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
         ),
       ),
       actions: [
-        TextButton(
+        AppTextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('取消'),
         ),

@@ -3266,3 +3266,171 @@ Owner 明确：「我还没让你动手改代码」
 | R5 在 1444×845 下**不复现** | 播放窗口 1074×600 正好 16:9，控件完整 |
 | `settings-ux` 的 R3-④ 诊断**正确** | 我核了 `app_dialog_shell.dart:358` 的 `onTap: onClose` |
 | 全量测试 | `+4193 ~76 -63` |
+
+## R5 几何真相：live-ux 的复刻与真实差了 57px（我的真机数据为准）
+
+### 两边的读数
+
+| 项 | `live-ux` 复刻 | 我的真机（900×600 截图） | 差 |
+|---|---|---|---|
+| 播放窗口宽 | 580 | **397**（x 172..569） | -183 |
+| 播放窗口高 | 326 | **269**（y 154..423） | **-57** |
+| 结论 | 不溢出（余 8px） | **溢出**（图标跨到 y=464） | — |
+
+### 决定性证据（像素级）
+
+```text
+播放窗口底边      y = 423   （纯灰 (174,175,179) 的最后一个 y）
+白色图标像素范围  y = 400..464   → **跨过了 423**
+chip（次元城动画）顶边  y = 431
+⇒ 图标有 33px 落在窗口外，其中与 chip 重叠 33px
+```
+
+放大 6 倍图（`.probe/r5_now.png`）能直接看到：
+**「次元城动画」这个 chip 上透出了 ▶ 和 🔇 的白色轮廓。**
+
+### 为什么复刻测不出来
+
+```text
+它复刻时假设「Expanded 宽 = 900 − 320 = 580」，
+但真实页面里播放窗口只有 397 宽 —— 少掉的 183px 是**左侧那张海报缩略图**
+（x 40..170 区域，实测非灰底色）。
+
+⇒ 复刻漏了一个占位元素 ⇒ 窗口比真实宽、比真实高 ⇒ 自然不溢出。
+★ 教训：**复刻结构不等于真实页面**。要证明"不溢出"，必须在真实页面测。
+```
+
+### 现在可以确定的事
+
+```text
+R5 是真实缺陷：900×600 下 _EmbedBar 溢出播放窗口 33px，压在线路 chip 上。
+修法 A（lineSwitcher 移出 Column）仍然正确 —— 但**它不是我亲眼看到这个现象的成因**。
+★ 真正成因要查：为什么窗口只有 269 高（= 16:9 应得 397*0.5625=223，
+  实际 269 ≠ 223 ⇒ 窗口**不是**按 16:9 算的）。
+```
+
+⚠️ **我尚未查清「窗口为什么是 397×269 而不是 16:9」**。
+这个数字比例是 1.476，不是 1.778 ⇒ 说明 `AspectRatio` 被别的约束压了。
+⇒ 下一步要查是谁给了这个约束（很可能是那张海报所在的 Row/Expanded）。
+
+## R6 取证结论（`live-groups`）—— 两个「以为有其实没有」
+
+### Q1 清晰度：**数据层没有这个概念**
+
+```text
+字段在，但直播链路从来不填：
+  models.dart:874,908        StreamCandidate.quality   ← 字段存在
+  plugins/mod.rs:3569        serde_json::from_str(&json)  ← 宿主零补全
+  六个直播插件返回全是 { url, kind, label }，quality 命中 **0**
+
+★ 更重要的连带发现（纠正我的理解）：
+  「进了详情页有清晰度」**也不成立**。
+  player_page.dart:5762 注释自己写明：_streams 既是线路也是清晰度
+  player_page.dart:5774 hint: s.quality  ← 直播下**恒为 null**
+  models.dart:1007 displayName => label ?? quality ?? kind
+    ⇒ label 有值 ⇒ quality 那条回退**永远走不到**
+  ⇒ 全屏页那个「清晰度」按钮**现在就是空的**，
+    只是选项文案来自 label 看起来像清晰度。
+  ⇒ **「线路 ≠ 清晰度」**，Owner 感知到的"详情页有清晰度"是线路表的假象。
+
+· get_live_stream 签名 (state, provider, channel_id) —— **没有 quality 形参**
+  ⇒ 要加就得动 Rust/Dart/插件三层契约
+```
+
+### Q2 弹幕：列表页没有代码，全屏页有代码没数据源
+
+```text
+列表页（live_page + live_embedded_player）：grep danmaku ⇒ **空**
+全屏页（player_page）：917 处弹幕代码，DanmakuOverlay 附近 _isLive 守卫 0 处
+  player_page.dart:5367  unawaited(_loadDanmaku())  ← 起播后无条件调用
+  player_page.dart:6261  _danmakuFileName 取 _liveTitle
+    ⇒ 直播下按**频道名**去番剧弹幕库匹配 ⇒ 基本不可能命中 ⇒ **静默为空**
+7 个直播插件 danmaku 命中 = **0** ⇒ **没有源**
+
+⇒ 「进详情就有弹幕」对 Owner 也不成立，只是原因不同：
+   列表页 = 没代码 / 全屏页 = 有代码没数据源
+```
+
+### Q3 布局不是主要风险（有测算）
+
+```text
+_RoundBtn = 32×32（Icon 20 + padding 6）
+_EmbedBar 现在 2 个 = 96px；加弹幕+清晰度 4 个 = 176px
+900 宽播放器可用宽 532px ⇒ 4 个只占 33%
+```
+
+### Q4 建议（我采纳）
+
+```text
+★ 别搬控件，先做数据层。
+主要风险不是布局，是**做出两个永远为空的控件**
+（全屏页的清晰度按钮**已经是**空的了 —— 这是现成的反例）
+
+顺序：
+① 插件契约：liveStream 加可选 quality + capabilities.liveQuality
+   宿主 get_live_stream 加形参（跨三层）
+② 弹幕：先答「直播弹幕从哪来」。7 个插件 0 命中
+   ⇒ 若都没有源，按 AGENTS.md §6「物理上做不到」应停下问 Owner
+③ 最后才是 UI，且**按能力显示**（无能力就不画，不留空位不画灰按钮）
+
+位置：加到 lineSwitcher 那行（live_page.dart:3110 的 Wrap，在播放器外），
+     天生自动换行；**不要塞进 _EmbedBar**
+```
+
+### ★ R6 对 R5 的影响
+
+`live-groups` 说「lineSwitcher 是 Column 的兄弟节点、在播放器外部，结构上不可能重叠」。
+
+**这与我在真机看到的重叠冲突。**
+⇒ 说明 `lineSwitcher` 实际的位置可能不是它以为的那样，
+或者我看到的重叠来自另一种层叠关系（z-order 而非布局）。
+⇒ 已让 `live-ux` 用真实页面重做探针，必须复现 397×269 才算测到。
+
+
+### 第三轮派工（2026-10-18 23:1x）—— 3 个已完成，续派 3 项
+
+| 队友 | 上一轮结果 | 本轮新任务 |
+|---|---|---|
+| `danmaku` | ✅ 弹幕代理 a+b（9/9 + 3 组注入，判据④我亲自验过两种环境） | 判据②真请求验证（它自报的最大缺口） |
+| `dan-api` | ✅ N15 契约+实现（43 条行为验证 + 2 次注入 + 自抓门禁盲区） | 应用侧接线验证 + 数据目录那份是否生效 |
+| `settings-ux` | ✅ R3-④ 修法（4/4 门禁我亲自跑过） | 故障注入 + R4 弹窗清单取证 |
+| `plugin-repo` | ✅ PGC 移植（24 断言 + 注入 + 双向隔离） | 待派 |
+| `live-ux` | 🔄 R5 真机 vs 复刻争议中 | 用真实页面重做探针 |
+| `live-groups` | ✅ R6 取证 | R6 可执行方案 + A/B/C 判断 |
+| `playback-fix` | 🔄 63 条分类中 | — |
+| `perf-player` | 🔄 R1/R8 取证中 | — |
+
+#### 本轮已实现但未提交的代码（等 Lead 审）
+
+```text
+M lib/core/danmaku.dart                       danmaku: findProxy + 接线
+M lib/core/ui_prefs.dart                      三态存储
+M lib/ui/settings/danmaku_source_page.dart    三态 UI
+M lib/ui/widgets/app_dialog_shell.dart        settings-ux: onDoubleTap
+?? test/zz_t66_danmaku_proxy_test.dart         9 条
+?? test/zz_t66_dialog_no_passthrough_test.dart 4 条
+?? test/zz_t66_r5_player_no_overlap_test.dart  live-ux 的结构门禁（红着，指风险）
+
+私库 D:\WishProject\sourin-plugins（未提交）：
+M src/types.ts                  DanmakuSendRequest/Result（与 Rust 对齐）
+M plugins/bilibili.ts           danmakuSend ~200 行 + readCookieValue
+A tools/check-danmaku-send-parity.mjs
+A tools/_selftest_danmaku_parity.mjs
+A tools/_test_danmaku_send_behavior.mjs
+```
+
+#### ★ 本轮最有价值的三个发现（都是队友自己抓的）
+
+```text
+① danmaku：本机 HTTPS_PROXY 确实存在（http://127.0.0.1:7890/）
+   ⇒ 改前没设 findProxy ⇒ 弹幕请求**一直在偷偷走 7890**
+   ⇒ 这解释了 Owner 看到的「时好时坏」全部现象
+
+② dan-api：我的 TS 契约三处全错（message / ok:false / position+color）
+   且它自己找到第四处：host.http.raw 不支持 body
+   ⇒ 已写进 AGENTS.md §8
+
+③ live-groups：「进了详情页有清晰度」是假象
+   hint: s.quality 直播下恒为 null，label 有值 ⇒ quality 回退永远走不到
+   ⇒ 那个按钮现在就是空的
+```

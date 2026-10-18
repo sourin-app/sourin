@@ -48,12 +48,15 @@ import 'package:material_ui/material_ui.dart';
 import '../core/models.dart';
 import '../core/progress_backfill.dart';
 import '../core/sourin_api.dart';
+import '../design/icons/app_icons.dart';
+import '../design/theme/app_theme.dart';
+import '../ui/app_palette.dart';
+import '../ui/theme/app_colors.dart';
 import 'tokens.dart';
 import 'widgets/app_toast.dart';
 import 'widgets/cover_image.dart';
 import 'widgets/follow_update_notice.dart';
 import 'widgets/poster_card.dart';
-import '../design/icons/app_icons.dart';
 
 /// 追更页
 bool abDisableFollowRefresh = false;
@@ -1110,7 +1113,7 @@ class FollowPageState extends State<FollowPage>
   }
 
   Widget _buildBody(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
+    final colors = _followColors(context);
 
     return Stack(
       children: [
@@ -1386,8 +1389,14 @@ class _FollowTabs extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isLight =
-        Theme.of(context).colorScheme.brightness == Brightness.light;
+    /*
+     * ★ 2026-10-18（轨道 E · 玻璃化 M2）：`Theme.of(context).colorScheme.brightness`
+     *   → `_followColors(context).isDark`
+     *
+     * `_FollowPalette.of(bool isLight)` 只吃一个布尔值、**本身完全不依赖 Material**，
+     * 所以这里只需要一个可靠的明暗判据，不需要整份 ColorScheme。
+     */
+    final isLight = !_followColors(context).isDark;
     final cols = _FollowPalette.of(isLight);
 
     /*
@@ -1593,9 +1602,36 @@ class _FollowTabChip extends StatelessWidget {
      */
     final textColor = active ? cols.activeText : cols.idleText;
 
-    return InkWell(
+    return _GlassTapSurface(
       onTap: onTap,
       borderRadius: Radii.rFull,
+      /*
+       * ★ 2026-10-18（轨道 E · 玻璃化 M2）：`InkWell` → `_GlassTapSurface`
+       *
+       * # 为什么不是直接换成 `GlassButton.custom`
+       * ```text
+       * 这里的"药丸底 + 文字 + 角标"是**自己画的**（`_FollowPalette` 的
+       * 渐变 + 投影 + 角标 Container），不是玻璃材质。
+       * 若换成 GlassButton.custom，它会自带一层玻璃底 ⇒ 与外面的
+       * `_FollowTabs` 那块玻璃叠成两层 ⇒ 观感变成"玻璃里的玻璃里的玻璃"。
+       * 而 `_FollowTabs` 的注释（本文件 :1360）明确记着这个教训：
+       *   > 我第一版给每个 tab 各套一块 GlassContainer ——
+       *   > 于是屏幕上出现三个独立的小玻璃胶囊。
+       *   > ★ 教训："看起来不像"时先怀疑结构，不要先调参数。
+       * ⇒ 这里**只换点击层**，视觉层（药丸）原样不动。
+       * ```
+       *
+       * # 换了什么、没换什么
+       * ```text
+       * 换掉：InkWell（Material 的水波纹载体）
+       *       ⇒ 水波纹在本项目已被 `NoSplash.splashFactory` 全局关掉
+       *          （theme_bridge.dart 里 `splashFactory: NoSplash.splashFactory`），
+       *          所以**视觉上本来就无水波纹**，删它不丢观感。
+       * 保留：点击 / 焦点 / 语义 / 键盘激活（由 _GlassTapSurface 提供，
+       *       它内部走 GlassButton.custom，自带 GlassFocusRegion）
+       * 保留：34dp 触控契约（padding 在下面，未动）
+       * ```
+       */
       child: Padding(
         /*
          * ★★ 纵向内边距必须 ≥ Sp.x3(12)，**不是** Sp.x2(8)
@@ -1991,12 +2027,24 @@ class _ContinueCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
+    final colors = _followColors(context);
     final p = progress;
 
-    return InkWell(
+    return _GlassTapSurface(
       onTap: onTap,
       borderRadius: Radii.rMd,
+      semanticLabel: progressDisplayTitle(p),
+      /*
+       * ★ 2026-10-18（轨道 E · 玻璃化 M2）：`InkWell` → `_GlassTapSurface`
+       *
+       * 这一处与 tab chip 不同：它**不需要**玻璃底（卡片本身是封面图 +
+       * 两行文字，背景透明），所以只换"点击 + 焦点 + 语义"这一层。
+       *
+       * ⚠️ 取色从 `Theme.of(context).colorScheme` 改为
+       *    `AppTheme.of(context).colors` —— 这是本轨道 M1 建好的语义色层。
+       *    两者角色名逐个对齐（onSurface / onSurfaceVariant），
+       *    所以**下面 4 处 `colors.xxx` 一个字都不用改**。
+       */
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -2082,7 +2130,7 @@ class _ContinueCard extends StatelessWidget {
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    child: LinearProgressIndicator(
+                    child: _GlassProgressLine(
                       value: p.percent / 100.0,
                       minHeight: 3,
                       backgroundColor: Colors.black38,
@@ -2314,7 +2362,7 @@ class _EmptyBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
+    final colors = _followColors(context);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: Sp.x16),
       child: Column(
@@ -2353,7 +2401,7 @@ class _FollowSkeleton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
+    final colors = _followColors(context);
 
     return Padding(
       // ★ 与 `_ContinueList` / `_FavGrid` 逐字同一套内边距（640px 断点）
@@ -2406,6 +2454,179 @@ class _FollowSkeleton extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  玻璃化 M2 的两个替代件（取代 Material 的 InkWell / LinearProgressIndicator）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 取语义色 —— **优先走 AppThemeScope，未接线时按 Theme.brightness 兜底**
+///
+/// # ★★★ 为什么需要兜底（2026-10-18 实测，不是防御性编程）
+///
+/// ```text
+/// `AppTheme.of(context)` 在 `lib/design/theme/app_theme.dart:58` 是
+/// **刻意不兜底**的 —— 查不到 AppThemeScope 就 `assert` 失败。设计意图正确：
+///   > 静默回落会把"忘了包 AppThemeScope"变成"看起来能跑但全是错色"
+///
+/// 但实测：`AppThemeScope` 在 `lib/` 里**零实例化**（grep 只命中定义处），
+/// 根仍是 `MaterialApp`（shell.dart:1930）。⇒ 直接换成 `AppTheme.of`
+/// 会让**整个追更页在真机上断言崩溃**，而不是"颜色不对"。
+/// ```
+///
+/// ⇒ 过渡期用本函数：有 scope 就用它（M1 的语义色层），
+///   没有就按 `Theme.brightness` 从 `AppPalette` 现造一份。
+///   **两者给出的是同一组角色名**，所以调用点 `colors.onSurface` 不用改。
+///
+/// ⚠️ 等 `shell.dart` 接上 `AppThemeScope` 之后，本函数应退化为
+///    `AppTheme.of(context).colors` 一行 —— 那时删掉兜底分支即可。
+AppSemanticColors _followColors(BuildContext context) {
+  final scope = AppThemeScope.maybeOf(context);
+  if (scope != null) return scope.colors;
+
+  /*
+   * 兜底：与 AppThemeData 内部完全相同的派生路径（AppColors.derive），
+   * 只是原料从 AppPalette 的静态实例来。
+   * ★ 不复用 AppThemeData 是为了避免在这里 new 一个 typeface（它要查平台）。
+   */
+  final isLight = Theme.of(context).brightness == Brightness.light;
+  final pal = isLight ? AppPalette.light : AppPalette.dark;
+  return AppSemanticColors.derive(
+    brightness: isLight ? Brightness.light : Brightness.dark,
+    background: pal.background,
+    card: pal.card,
+    border: pal.border,
+    foreground: pal.foreground,
+    mutedForeground: pal.mutedForeground,
+    primary: pal.primary,
+    primaryForeground: pal.primaryForeground,
+    error: pal.error,
+  );
+}
+
+/// 玻璃化的**点击面** —— 取代 `InkWell`
+///
+/// # 为什么不用裸 `GestureDetector`
+/// ```text
+/// 铁律 8 要求：焦点态 / 无障碍语义 / 键盘 Tab 序都要保留。
+/// 裸 GestureDetector 这三样**一个都没有**。
+/// ⇒ 内部走 `GlassButton.custom`，它自带 `GlassFocusRegion`：
+///     焦点环、Enter/Space 激活、Semantics(button, label, onTap) 全有。
+/// ```
+/// # 为什么不是 `GlassContainer`
+/// ```text
+/// GlassContainer **没有 onTap** —— 它只是材质，不是交互件。
+/// ```
+/// # 视觉上会多出一层玻璃吗
+/// ```text
+/// 不会。`GlassButton.custom` 的玻璃底由 `style` 控制，这里传
+/// `GlassButtonStyle.plain`（无填充、无描边、无投影），
+/// 只保留交互与焦点环 ⇒ 调用方自己的视觉（药丸渐变 / 封面图）原样露出。
+/// ```
+class _GlassTapSurface extends StatelessWidget {
+  const _GlassTapSurface({
+    required this.child,
+    required this.onTap,
+    this.borderRadius,
+    this.semanticLabel,
+  });
+
+  final Widget child;
+  final VoidCallback onTap;
+  final BorderRadius? borderRadius;
+
+  /// 读屏器念出来的文字。不传时由子树的 Text 自行提供。
+  final String? semanticLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassButton.custom(
+      onTap: onTap,
+      /*
+       * ★ label 必须给：`GlassButton` 只在 `label.isNotEmpty` 时才把
+       *   semanticLabel 传给 GlassFocusRegion（见包内 glass_button.dart:998）。
+       *   不传 ⇒ 读屏器只念出子树的文字、且没有 button 角色。
+       */
+      label: semanticLabel ?? '',
+      // 纯交互层，不要玻璃材质（视觉由调用方自己画）
+      style: GlassButtonStyle.transparent,
+      /*
+       * ⚠️ 关掉"液态拉伸"与"锚点形变"
+       *
+       * # 为什么必须关（实测，不是审美）
+       * ```text
+       * 默认 stretch=0.5 + anchorStretch=true ⇒ 按压/拖动期间起一个
+       * 基于 ticker 的持续形变动画。在本页（tab 药丸 + 拖拽）里它与
+       * 药丸的 AnimatedPositioned 叠加，导致 `pumpAndSettle` **永不收敛**：
+       *   t36_pill_drag_follow_test 两条用例报 "pumpAndSettle timed out"。
+       *   而断言本身是过的（拖动前=286 拖动中=326）——
+       *   ★ 也就是说：功能没坏，是"永远在动"把测试卡死了。
+       * 同一现象在真机上的表现是"松手后仍在轻微回弹"，属于无谓耗电。
+       * ```
+       * ⇒ 本页只需要"点击 + 焦点 + 语义"，不需要形变。
+       */
+      stretch: 0,
+      anchorStretch: false,
+      width: null,
+      height: null,
+      shape: LiquidRoundedSuperellipse(
+        borderRadius: borderRadius?.topLeft.x ?? Radii.md,
+      ),
+      child: child,
+    );
+  }
+}
+
+/// 玻璃化的**进度条** —— 取代 `LinearProgressIndicator`
+///
+/// # 为什么不直接删进度条
+/// ```text
+/// 它是「继续观看」卡片上唯一的"看到哪了"信息。删掉 = 丢功能（违反铁律 8）。
+/// ```
+/// # 为什么自绘而不是用 GlassProgressIndicator
+/// ```text
+/// 位置是 `Positioned(bottom: 0)` 贴在封面**底部**，高度只有 3dp。
+/// Glass 的进度条带材质层，在 3dp 高度上既看不出玻璃效果，
+/// 又会因为叠加层让封面边缘发灰。⇒ 这里要的是"一条细色带"，
+/// 用纯 `FractionallySizedBox` 自绘，零 Material、零额外图层。
+/// ```
+class _GlassProgressLine extends StatelessWidget {
+  const _GlassProgressLine({
+    required this.value,
+    required this.minHeight,
+    this.backgroundColor,
+  });
+
+  /// 0..1；`null` 表示不确定进度（本页不用，但保留语义以免将来误传）
+  final double value;
+  final double minHeight;
+  final Color? backgroundColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = _followColors(context);
+    return SizedBox(
+      height: minHeight,
+      child: Stack(
+        children: [
+          // 底槽
+          Positioned.fill(
+            child: ColoredBox(
+              color: backgroundColor ?? Colors.black38,
+            ),
+          ),
+          // 已看部分
+          Positioned.fill(
+            child: FractionallySizedBox(
+              alignment: Alignment.centerLeft,
+              widthFactor: value.clamp(0.0, 1.0),
+              child: ColoredBox(color: colors.primary),
+            ),
+          ),
+        ],
       ),
     );
   }

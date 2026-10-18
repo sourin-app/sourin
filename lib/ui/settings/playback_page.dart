@@ -814,9 +814,36 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
           value: '${ClipDownloader.humanBytes(_cacheBytes)}'
               '（$_cacheFiles 个文件）· clip-cache',
         ),
+        /*
+         * ★★★ 2026-10-18（N14 取证结论）：这一行原本**永远显示 0 B**
+         *
+         * # 实测事实
+         * ```text
+         * <dataDir>/mpv-cache 目录**始终是空的**（探针 0 字节；
+         * 用户真实目录 %APPDATA%\app.sourin.player\mpv-cache 也是空的）
+         * 原因：mpv 对**可 seek 的 HTTP Range 源不落盘**，只在内存里。
+         * ```
+         *
+         * ⇒ 旧文案「播放器缓存 0 B · mpv-cache」会让用户以为：
+         * ```text
+         * ① 「我的缓存没生效」→ 去点「清空播放器缓存」，清了 0 个文件
+         * ② 「为什么别人的播放器缓存占几个 G，我的是 0」→ 怀疑软件坏了
+         * ```
+         * 都是**假问题**，但用户无法知道。
+         *
+         * # 为什么保留这个目录而不删掉
+         * ```text
+         * `cache-dir` 仍在传给 mpv（clip_download.dart 的 mpvCacheProperties）。
+         * 它对**不可 seek 的流**（直播 / 某些 HLS）仍会落盘，
+         * 只是当前这些源没走到那条路。
+         * ⇒ 不能因为"现在是 0"就把机制删了。
+         * ```
+         */
         SettingsInfoRow(
-          label: '播放器缓存',
-          value: '${ClipDownloader.humanBytes(_mpvBytes)} · mpv-cache',
+          label: '播放器临时缓存',
+          value: _mpvBytes > 0
+              ? '${ClipDownloader.humanBytes(_mpvBytes)} · 仅不可 seek 的流会落盘'
+              : '不占磁盘（网络流在内存里缓存）',
         ),
         SettingsInfoRow(
           label: '截图',

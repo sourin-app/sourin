@@ -949,3 +949,72 @@ M 批次（移除 material_ui）也改 player_page.dart
 这是 Owner 明确要求的（「所有的弹幕...都应该手动绑定,而不是自动」），
 但体验上是**退步**，必须在交付说明里写清，不许当成纯优化汇报。
 ```
+
+---
+
+# 第 66 轮再补充（六）：N11 的两条实测修正（perf-player 汇报，Lead 已独立复核）
+
+## 修正一：brief 里指定的 FrameTiming 仪器在 widget 测试里是**假仪器**
+
+我在计划里写「用 `SchedulerBinding.addTimingsCallback` 采 FrameTiming」——
+**这条写错了，已作废。**
+
+实测（perf-player 做，我复核了 Flutter 源码）：
+```text
+实验（同一台机）            FrameTiming buildDuration    Stopwatch 围 pump()
+轻树 30 帧                  7us（frames=1）              121us
+重树 30 帧 setState         3us（frames=1）              9903us p99=26657us  ← 差 80 倍
+真实 PlayerPage 60 hover    3us                          p50 45us / p99 188us
+```
+
+根因（我核了源码，确认）：
+`flutter_test` 的 `AutomatedTestWidgetsFlutterBinding`
+在 fake-async 里**直接调** `handleBeginFrame(null)` / `handleDrawFrame()`
+（`packages/flutter_test/lib/src/binding.dart:2356-2358`）
+⇒ **不经过引擎 frame pipeline** ⇒ 帧耗时数据不来自被测代码的 CPU 工作。
+重树读数反而比轻树小 ⇒ 与负荷**无相关性**。
+
+**改用**：`Stopwatch` 围 `tester.pump()` —— pump 的同步段包含建帧 + 构建 +
+布局 + 绘制，即该帧在 UI 线程上的全部 Dart 侧工作。判别力已证（80 倍）。
+**已知局限**：测不到 GPU raster ⇒ 必须另补真机探针，且交付里要标注「没做的那部分」。
+
+## 修正二：N11 的真实根因比我写的更靠前 —— t72 有**结构性盲区**
+
+```text
+t72_jank_test.dart    grep 不到任何 fullscreen 相关代码
+player_page.dart:1012 _noteCursorActivity() 第一行就是
+                      if (!_fullscreen) return;
+```
+
+⇒ **t72 只在窗口模式下 hover，光标那条路径在它里面从不执行；**
+   而真机全屏下它每帧都跑。
+
+**这就是「t72 绿着 + All tests passed」与「用户觉得卡」并存的结构性原因**
+—— 不是 t72 写错了，是它**只覆盖了一半场景**。
+
+## 改前红基线（perf-player 建立，我独立复现，读数一致）
+
+```text
+T1 控制条隐藏后 1 次 hover 叫回  ⇒ pageBuild=1 all=188  帧 8958us   [红]
+T2 隐藏光标 / 恢复光标           ⇒ pageBuild=1 all=190 / 188      [红]
+T3 光标已隐藏 60× hover          ⇒ pageBuild=1 all=247 p99=880us   [红]
+T4 光标已显示 60× hover          ⇒ pageBuild=0 all=0  p99=220us    [绿·阴性对照]
+T5 控制条淡出动画                ⇒ opacity 采样到中间帧 0.86/0.78/0.68/0.52/0.32/0.07
+                                    pageBuild=0                     [绿·Owner 红线守卫]
+T6 隐藏→hover 循环 8 轮          ⇒ pageBuild=8 all=1504 p50=7639us [红]
+结果：+3 -4
+```
+
+**3 绿 4 红 ⇒ 阴性对照有效**（证明不是「怎么都红」的假门禁），
+且 T5 守着 Owner 的红线：**动画没被砍**（采样到 opacity 中间帧）。
+
+## 对交付的新增要求
+
+```text
+① N11 修完必须保持 T5 绿（动画仍在动，不是硬切）
+② 绿了之后必须**再做一次故障注入**（改回整页 setState ⇒ 门禁要再红），
+   证明修完的门禁仍有判别力
+③ 必须补一条真机探针，给出「真机全屏 hover 期间 P99 帧耗时」，
+   验证 widget 门禁的结论在真机上成立
+④ 交付里明确标注「Stopwatch 测不到 GPU raster」这个局限
+```

@@ -828,3 +828,85 @@ class DelayedProbeScheduler {
     _timer = null;
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  探测结论 → 健康状态的镜像（P0 修复：写进去的是空数据）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 这个函数存在的唯一原因：我第一版漏了三种情况
+//
+// ```text
+// 第一版只写了一行：
+//     if (a == LiveAvailability.unavailable && healthOf == unknown) record(broken)
+//
+// ⇒ 探测 1136 个频道，绝大多数是 **playable**
+// ⇒ 只把 unavailable 的写进 _health，playable/audioOnly 一条都不写
+// ⇒ _health.snapshot() 空 ⇒ 落盘 {"data":{}}
+// ⇒ 下次启动读到 0 条 ⇒ 不 seed ⇒ **全量重探 706 次**
+//
+// ⚠️ 而这一切发生时：
+//    · 文件生成了 ✅    · 大小看着正常 ✅    · 路径正确 ✅
+//    · 我用 fake fetcher 写的门禁全绿 ✅（它直接调 probe()/seed()，
+//      从不经过这个镜像函数）
+// ⇒ **只看"文件存在"或"门禁绿"都会误判为已修复。**
+// ```
+//
+// # 为什么抽成纯函数（而不是留在 Page 里）
+// ```text
+// 留在 `_LivePageState` 里 ⇒ 门禁只能靠 widget 测试或"读源码文本"，
+// 前者重、后者假（静态断言抓不到逻辑）。
+// 抽成纯函数后，门禁可以**直接喂 3 种可用性、断言产出 3 条记录** ——
+// 走的正是产品代码的同一条路。
+// ```
+
+/// 探测结论（[LiveAvailability]）→ 健康状态（[LivePlaybackHealth]）的映射
+///
+/// ★ `audioOnly` 也映射成 `playable`：能出声音就算"这个源是可用的"。
+///   "仅音频"是另一层信息（`LiveAvailability` 自己保留），
+///   不该在这里被压成 `broken`（那会让广播台被误标成"不可用"）。
+LivePlaybackHealth healthFromAvailability(LiveAvailability a) => switch (a) {
+      LiveAvailability.playable => LivePlaybackHealth.playable,
+      LiveAvailability.audioOnly => LivePlaybackHealth.playable,
+      LiveAvailability.unavailable => LivePlaybackHealth.broken,
+      LiveAvailability.unknown => LivePlaybackHealth.unknown,
+    };
+
+/// 把一批探测结论镜像进健康状态（**四个分支全覆盖**）
+///
+/// # 优先级保护（沿用 [LivePlaybackHealthStore.record] 的三条规则）
+/// ```text
+/// ★ 只在 `healthOf == unknown`（还没有任何真实播放证据）时才写。
+///   理由：`broken` 来自**真实播放失败**，比"探测说没有可播地址"更硬；
+///   真实证据不该被推断结论覆盖。
+/// ★ `unknown` 不写（`record()` 内部也会早退，这里显式跳过更清楚）。
+/// ```
+///
+/// 返回实际写入的条数（门禁与日志用）。
+int mirrorAvailabilityIntoHealth({
+  required LivePlaybackHealthStore store,
+  required Iterable<(String provider, String channelId, LiveAvailability a)> items,
+}) {
+  var n = 0;
+  for (final (provider, channelId, a) in items) {
+    // ★ unknown 没有信息，不制造记录
+    if (a == LiveAvailability.unknown) continue;
+    // ★ 已有真实播放证据（playable/broken/idle）⇒ 不覆盖
+    if (store.healthOf(provider, channelId) != LivePlaybackHealth.unknown) {
+      continue;
+    }
+    final h = healthFromAvailability(a);
+    if (h == LivePlaybackHealth.unknown) continue;
+    store.record(
+      provider: provider,
+      channelId: channelId,
+      health: h,
+      detail: switch (a) {
+        LiveAvailability.audioOnly => '取址探测：仅音频线路',
+        LiveAvailability.unavailable => '取址探测：没有可播线路',
+        _ => null,
+      },
+    );
+    n++;
+  }
+  return n;
+}

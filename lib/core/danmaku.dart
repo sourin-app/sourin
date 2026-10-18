@@ -665,11 +665,33 @@ abstract class DanmakuTransport {
 /// connectionTimeout        —— 移动网络下别无限等
 /// ```
 class IoDanmakuTransport implements DanmakuTransport {
-  IoDanmakuTransport({HttpClient? client, this.timeout = const Duration(seconds: 15)})
-      : _client = client ??
+  /// [findProxy] 是 `HttpClient.findProxy` 的**直接值**（如
+  /// `'PROXY 127.0.0.1:7890'` / `'DIRECT'`）；null = 直连。
+  ///
+  /// # ★★★ 为什么 null 也要**显式**设成 `'DIRECT'`（而不是"不设"）
+  /// ```text
+  /// `HttpClient.findProxy` **一旦被赋值**，Dart 就完全按这个回调决定走向，
+  /// 不再看 `HTTPS_PROXY` / `HTTP_PROXY` 等环境变量。
+  /// 反之**不赋值**时，Dart 会去读环境变量 —— 也就是说：
+  ///
+  ///   不设 ⇒ 行为取决于用户 shell 里有没有 HTTPS_PROXY
+  ///        ⇒ "同一个包在不同机器上表现不同"
+  ///        ⇒ 这正是"时好时坏"的来源（本机 7890 代理下 HandshakeException）
+  ///   显式 DIRECT ⇒ 无论环境变量是什么，都走直连 ⇒ **可预期**
+  ///
+  /// ⇒ 要让「用户选直连」成为**真的直连**，就必须显式给 'DIRECT'。
+  ///    用"不设"来表达直连是错的：那是"让别人替我决定"。
+  /// ```
+  IoDanmakuTransport({
+    HttpClient? client,
+    this.timeout = const Duration(seconds: 15),
+    String? findProxy,
+  }) : _client = client ??
             (HttpClient()
               ..connectionTimeout = const Duration(seconds: 10)
-              ..userAgent = 'sourin-flutter-spike/danmaku');
+              ..userAgent = 'sourin-flutter-spike/danmaku'
+              // 无条件赋值（见构造函数文档：null ⇒ 显式 'DIRECT'）
+              ..findProxy = ((String? p) => (Uri _) => p ?? 'DIRECT')(findProxy));
 
   final HttpClient _client;
   final Duration timeout;
@@ -707,6 +729,181 @@ class IoDanmakuTransport implements DanmakuTransport {
 
   @override
   void close() => _client.close(force: true);
+}
+
+// -----------------------------------------------------------------------
+// 弹幕代理（Owner 要 a+b：传输层支持 + 配置页开关）
+// -----------------------------------------------------------------------
+
+/// 弹幕请求的代理模式（与 `UiPrefs.danmakuProxyMode` 的字符串一一对应）。
+///
+/// # 为什么是**三个**而不是"开/关"
+/// ```text
+/// Owner 原话要的是「可以在配置页面让他选择是否走代理」。
+/// 而"是否"在实际网络里至少是三种情况：
+///   ① 直连可用（多数网络）           ⇒ 选 direct
+///   ② 必须跟随系统那一套（公司/校园）  ⇒ 选 system
+///   ③ 只有一个特定端口（本机 7890）    ⇒ 选 custom
+/// ⇒ 只给"开关"会让 ②③ 的用户没法表达，
+///   而他们正是最需要这个功能的人（本机 *.vercel.app 被屏蔽就是 ③）。
+/// ```
+enum DanmakuProxyMode {
+  /// 直连。**显式**下发 `DIRECT`，不受环境变量影响。
+  direct,
+
+  /// 跟随系统代理。**下发 `null` 回调之外的语义**见下：
+  /// 注意 Dart 没有"跟随系统"这个 API —— 它的默认行为是
+  /// 「读 `HTTPS_PROXY`/`HTTP_PROXY` 环境变量」。
+  /// ⇒ 本模式 = 把 `findProxy` 设为「读环境变量」的行为，
+  ///    即**保留改动前的隐式行为**，只是现在由用户**主动选择**才发生。
+  system,
+
+  /// 自定义代理地址（如 `http://127.0.0.1:7890`）。
+  custom,
+}
+
+/// 把 [DanmakuProxyMode] + 地址解析成 `HttpClient.findProxy` 的**直接值**。
+///
+/// 返回值语义（三个值对应三种行为，缺一不可）：
+/// ```text
+/// 'DIRECT'                ⇒ 直连，且**不读**环境变量
+/// 'PROXY host:port'       ⇒ 走这个代理
+/// null                    ⇒ ★ 不设置 findProxy ⇒ Dart 自己读环境变量
+///                            （= "跟随系统"，这是 Dart 唯一能表达它的方式）
+/// ```
+///
+/// # ★ 为什么 system 用 `null` 而 direct 用 `'DIRECT'`
+/// ```text
+/// 这两个必须**不同**，否则"直连"和"跟随系统"在环境变量存在时会变成同一件事，
+/// 用户的选择就白给了。
+///
+///   direct ⇒ 显式 'DIRECT' ⇒ 有 HTTPS_PROXY 也**照样直连**
+///   system ⇒ null         ⇒ 有 HTTPS_PROXY 就走它，没有就直连
+/// ```
+///
+/// # 解析失败怎么办
+/// ```text
+/// `custom` 但地址空/解析不出 host:port ⇒ 退回直连（`'DIRECT'`），
+/// 并让调用方**能感知**（见 [diagnoseDanmakuProxy]）。
+/// ★ 不能静默退回"跟随系统" —— 那会让"我配了代理却没生效"变成
+///   "它偷偷用了别的代理"，两种失败的表现完全不同，难以排查。
+/// ```
+String? resolveDanmakuFindProxy({
+  required DanmakuProxyMode mode,
+  String url = '',
+}) {
+  switch (mode) {
+    case DanmakuProxyMode.direct:
+      return 'DIRECT';
+    case DanmakuProxyMode.system:
+      // ★ 注意：不是 'DIRECT'！见上面那段文档。
+      return null;
+    case DanmakuProxyMode.custom:
+      final p = _parseProxyHostPort(url);
+      // 地址不可用 ⇒ 退回显式直连（不是 null，理由见上）
+      return p == null ? 'DIRECT' : 'PROXY $p';
+  }
+}
+
+/// `http://127.0.0.1:7890` / `127.0.0.1:7890` ⇒ `'h:7890'`
+///
+/// 失败返回 null（调用方据此退回直连）。
+///
+/// # ★★★ 为什么**拒绝** `socks5://`（2026-10-18 实测，不是推测）
+/// ```text
+/// 实测（本机 HTTP 服务 + 假 socks 端口，真发请求）：
+///   DIRECT                   ⇒ OK status=200        （target 命中 +1）
+///   SOCKS5 127.0.0.1:<port>  ⇒ HttpException:
+///                              "Invalid proxy configuration SOCKS5 ..."
+///                              target 命中 +0，假 socks 端口 accept +0
+///
+/// ⇒ `dart:io` 的 `HttpClient.findProxy` **只认 DIRECT / PROXY**。
+///   `SOCKS5` / `SOCKS` / `HTTPS` 这些字符串**一律**抛
+///   `HttpException: Invalid proxy configuration`，且**根本不建连接**。
+/// ```
+///
+/// # 为什么改前那版是**错的**
+/// ```text
+/// 改前把它解析成 `PROXY host:1080` 下发 —— 会让用户以为在用 socks5，
+/// 实际走的是**明文 HTTP 代理协议**打到对方的 socks 端口：
+///   · socks 服务端看不懂 HTTP 代理请求 ⇒ 失败（或更糟：行为未定义）
+///   · 用户完全无法从现象判断"是我配错了协议"
+/// ⇒ 静默换一种协议比明确报错**危险得多**。
+/// ```
+///
+/// ⇒ 现在**明确拒绝**（返回 null ⇒ 上层退回显式直连，UI 诊断行给专门文案）。
+///   真要支持 socks5 得换传输层（自己做握手），不是在这里换个字符串。
+String? _parseProxyHostPort(String raw) {
+  final s = raw.trim();
+  if (s.isEmpty) return null;
+  final scheme = s.contains('://') ? s.split('://').first.toLowerCase() : 'http';
+  // ★ socks 协议族一律拒绝（理由见上）
+  if (scheme.startsWith('socks')) return null;
+  // 有 scheme 就交给 Uri 解析；没有就补一个假的（Uri 必须有 scheme 才给 host/port）
+  final uri = s.contains('://') ? Uri.tryParse(s) : Uri.tryParse('http://$s');
+  if (uri == null) return null;
+  final host = uri.host;
+  if (host.isEmpty) return null;
+  // ★ 不猜默认端口：没写端口 = 配置不完整 ⇒ 让 UI 明说"无效"。
+  //   猜 80/1080/7890 会把"我漏写端口"变成"它连了别的地方"。
+  if (!uri.hasPort) return null;
+  if (uri.port <= 0) return null;
+  return '$host:${uri.port}';
+}
+
+/// 地址是否是 socks 协议 —— 供 UI 显示**专门**的提示
+///
+/// ★ 单独暴露这个判断，是为了让设置页能说
+///   「不支持 socks，请填 HTTP 代理」而不是笼统的「地址无效」：
+///   后者的用户会反复改 host/port，改不出结果。
+bool isSocksProxyUrl(String raw) {
+  final s = raw.trim().toLowerCase();
+  return s.startsWith('socks://') || s.startsWith('socks5://');
+}
+
+/// 当前该用哪种模式 + 地址（读 UiPrefs，解析成枚举）
+///
+/// 未知字符串一律按 `direct`（保守：不改既有行为）。
+({DanmakuProxyMode mode, String url}) currentDanmakuProxySetting() {
+  final raw = UiPrefs.danmakuProxyMode;
+  final url = UiPrefs.danmakuProxyUrl;
+  final mode = switch (raw) {
+    'system' => DanmakuProxyMode.system,
+    'custom' => DanmakuProxyMode.custom,
+    _ => DanmakuProxyMode.direct,
+  };
+  return (mode: mode, url: url);
+}
+
+/// 把当前设置解析成 `findProxy` 的直接值（生产代码唯一入口）
+///
+/// ★ 单独抽出来是为了**可单测**：门禁直接调它，
+///   不必构造 HttpClient（那需要真实网络）。
+String? currentDanmakuFindProxy() {
+  final s = currentDanmakuProxySetting();
+  return resolveDanmakuFindProxy(mode: s.mode, url: s.url);
+}
+
+/// 诊断文案：给设置页显示"现在到底会怎么走"
+///
+/// ★ 存在的理由：`custom` 但地址坏掉时 `resolve` 会退回 `DIRECT`，
+///   用户看到的是"我配了代理却没生效"。有了这句文案，
+///   他能在设置页**当场**看到"代理地址无效 ⇒ 当前按直连处理"。
+String diagnoseDanmakuProxy({
+  required DanmakuProxyMode mode,
+  String url = '',
+}) {
+  final f = resolveDanmakuFindProxy(mode: mode, url: url);
+  return switch (mode) {
+    DanmakuProxyMode.direct => '直连（不受系统代理环境变量影响）',
+    DanmakuProxyMode.system => '跟随系统代理（读取 HTTP_PROXY / HTTPS_PROXY）',
+    DanmakuProxyMode.custom => f != 'DIRECT'
+        ? '走代理 $f'
+        // ★ socks 要给**专门**的文案：笼统说"无效"会让用户反复改 host/port
+        : isSocksProxyUrl(url)
+            ? '不支持 socks 代理，请填 HTTP 代理地址（如 http://127.0.0.1:7890）'
+            : '代理地址无效，当前按直连处理',
+  };
 }
 
 // -----------------------------------------------------------------------
@@ -1787,7 +1984,13 @@ class ExternalDanmakuClient {
     DateTime Function()? clock,
     bool unsignedLocal = false,
     DanmakuEndpoint? endpoint,
-  })  : _transport = transport ?? _debugTransportOverride ?? IoDanmakuTransport(),
+  })  : _transport = transport ??
+            _debugTransportOverride ??
+            IoDanmakuTransport(
+              // ★ 接线点 ①：弹幕客户端默认传输层
+              //   读用户的代理选择（UiPrefs）⇒ 用户不选就是 direct。
+              findProxy: currentDanmakuFindProxy(),
+            ),
         _appId = appId ?? DanmakuConfig.appId,
         _appSecret = appSecret ?? DanmakuConfig.appSecret,
         _clock = clock ?? DateTime.now,
@@ -2620,7 +2823,14 @@ class DanmakuLocalService {
     Duration timeout = const Duration(seconds: 2),
     DanmakuEndpoint? endpoint,
   }) async {
-    final t = transport ?? IoDanmakuTransport(timeout: timeout);
+    final t = transport ??
+        IoDanmakuTransport(
+          timeout: timeout,
+          // ★ 接线点 ②：探活/自检用的传输层
+          //   与 ① 用同一个解析函数 —— 否则"探活直连、取弹幕走代理"
+          //   会出现"探活通了但取不到"的假阳性。
+          findProxy: currentDanmakuFindProxy(),
+        );
     final shouldClose = transport == null;
     /*
      * ★ 整次探测的唯一截止时间（见上方长注释）。

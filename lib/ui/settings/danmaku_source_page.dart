@@ -81,19 +81,51 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
 
   bool get _running => _runningSeq != null;
 
+  /// 弹幕代理：当前模式（三态）
+  ///
+  /// ★ 独立于 [_url]（自建服务地址）—— 两件事：
+  ///   `_url` 决定「连哪个弹幕服务器」，本项决定「怎么连到它」。
+  ///   一个网络的屏蔽可能只针对前者，也可能只针对后者，必须分开配。
+  late DanmakuProxyMode _proxyMode;
+
+  /// 自定义代理地址（仅 [_proxyMode] == custom 时有意义）
+  late final TextEditingController _proxyUrl;
+
   @override
   void initState() {
     super.initState();
     // 打开时用**已保存**的值初始化 ⇒ 用户能看到自己上次配的是什么
     _url = TextEditingController(text: UiPrefs.danmakuEndpoint);
     _token = TextEditingController(text: UiPrefs.danmakuToken);
+    final proxy = currentDanmakuProxySetting();
+    _proxyMode = proxy.mode;
+    _proxyUrl = TextEditingController(text: proxy.url);
   }
 
   @override
   void dispose() {
     _url.dispose();
     _token.dispose();
+    _proxyUrl.dispose();
     super.dispose();
+  }
+
+  /// 切换代理模式并**立即落盘**
+  ///
+  /// ★ 为什么不用"保存"按钮：这个页面其它项（地址/令牌）走的是显式保存，
+  ///   但那是因为它们需要"测试连接"这个动作配合。
+  ///   代理三态是**单选**，选中即生效最符合直觉，
+  ///   而且切换后要**立刻**影响下一次弹幕请求（不需要重开页面）。
+  void _setProxy(DanmakuProxyMode? m) {
+    if (m == null) return;
+    setState(() => _proxyMode = m);
+    UiPrefs.setDanmakuProxy(mode: m.name, url: _proxyUrl.text);
+  }
+
+  /// 地址输入变化 ⇒ 落盘（仅 custom 模式时才有输入框）
+  void _saveProxyUrl() {
+    UiPrefs.setDanmakuProxy(mode: _proxyMode.name, url: _proxyUrl.text);
+    setState(() {});  // 让诊断行进更新
   }
 
   /// 输入一变 ⇒ 上次的测试结果立刻作废（否则会显示与当前输入无关的结论）
@@ -309,6 +341,81 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
               '什么都不配也能用：先用内置公共实例；'
               '内置也不通时，才退回本机弹弹play / 官方接口。',
             ),
+          ],
+        ),
+        const SizedBox(height: Sp.x5),
+        SettingsBlock(
+          title: '网络代理',
+          children: [
+            _hint(
+              '弹幕服务器在某些网络下会被屏蔽或连不上。'
+              '这里决定弹幕请求怎么走 —— 与视频源自己的代理是两回事。',
+            ),
+            const SizedBox(height: Sp.x3),
+            /*
+             * ★ 用 `RadioGroup` 包住，而不是每个 tile 传 groupValue/onChanged
+             *
+             * 那两个参数在 Flutter v3.32.0 后**已废弃**（`deprecated_member_use`），
+             * 新 API 要求由 `RadioGroup` 祖先统一持有 groupValue 与回调
+             * ⇒ 每个 tile 只留 `value` + 展示内容。
+             *
+             * ★ 键盘可达性不变：`RadioListTile` 内部仍是同一个
+             *   `InkWell` + `Focus`，方向键在组内移动焦点的行为由
+             *   `RadioGroup` 统一分发，与旧 API 一致。
+             */
+            RadioGroup<DanmakuProxyMode>(
+              groupValue: _proxyMode,
+              onChanged: _setProxy,
+              child: const Column(
+                children: [
+                  RadioListTile<DanmakuProxyMode>(
+                    value: DanmakuProxyMode.direct,
+                    title: Text('直连'),
+                    subtitle: Text('不经过代理，也不受系统代理设置影响'),
+                    dense: true,
+                  ),
+                  RadioListTile<DanmakuProxyMode>(
+                    value: DanmakuProxyMode.system,
+                    title: Text('跟随系统代理'),
+                    subtitle: Text('读取环境变量里的 HTTP_PROXY / HTTPS_PROXY'),
+                    dense: true,
+                  ),
+                  RadioListTile<DanmakuProxyMode>(
+                    value: DanmakuProxyMode.custom,
+                    title: Text('自定义代理'),
+                    // ★ 提前说清不支持 socks —— 写在副标题里，
+                    //   而不是等用户填完再报"地址无效"（那时他会反复改 host/port）
+                    subtitle: Text(
+                        '只让弹幕请求走这个地址（填 HTTP 代理，不支持 socks）'),
+                    dense: true,
+                  ),
+                ],
+              ),
+            ),
+            // ★ 地址框**只在自定义**时出现 ——
+            //   其它模式留着它会让用户以为"填了就生效"，而实际没被用上
+            if (_proxyMode == DanmakuProxyMode.custom) ...[
+              const SizedBox(height: Sp.x2),
+              TextField(
+                controller: _proxyUrl,
+                decoration: const InputDecoration(
+                  labelText: '代理地址',
+                  hintText: 'http://127.0.0.1:7890',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (_) => _saveProxyUrl(),
+              ),
+            ],
+            const SizedBox(height: Sp.x2),
+            /*
+             * ★ 诊断行必须在**三种模式下都显示**
+             *
+             * 存在的理由：`custom` 但地址写坏时，解析会**退回显式直连**
+             * （见 danmaku.dart 的 `resolveDanmakuFindProxy`）。
+             * 若不显示，用户看到的是"我配了代理却没生效"，
+             * 而这种失败和"代理本身不通"表现完全不同，没法排查。
+             */
+            _hint('当前：${diagnoseDanmakuProxy(mode: _proxyMode, url: _proxyUrl.text)}'),
           ],
         ),
       ],

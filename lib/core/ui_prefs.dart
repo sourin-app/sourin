@@ -341,6 +341,55 @@ class UiPrefs {
     }
   }
 
+  // ══════════════════════════════════════════════════════════════════
+  //  弹幕代理（Owner 要 a+b：让用户在配置页选是否走代理）
+  // ══════════════════════════════════════════════════════════════════
+
+  /// 弹幕请求的代理模式：`direct` / `system` / `custom`
+  ///
+  /// # ★ 为什么不复用 `ProxyConfig`（按源存的那套）
+  /// ```text
+  /// `ProxyConfig` 的维度是 **provider**（`list_proxy_configs()` /
+  /// `set_proxy_config(provider, config)`）—— 因为视频请求天然属于某个源。
+  ///
+  /// 而**弹幕请求不属于任何源**：一部番的弹幕可以来自内置公共实例，
+  /// 与用户当前用哪个源看片**无关**。
+  /// ⇒ 硬塞进 provider 维度会导致：
+  ///     「同一部番换个源看，弹幕代理跟着变」—— 用户完全无法预期。
+  /// ⇒ 所以单独两个全局键。
+  /// ```
+  static const danmakuProxyModeKey = 'dsh.danmaku.proxy.mode';
+  static const danmakuProxyUrlKey = 'dsh.danmaku.proxy.url';
+
+  /// 当前模式（未设置 ⇒ `direct`，即**默认不改变既有行为**）
+  ///
+  /// ⚠️ 默认必须是 direct：改前弹幕链路没有任何代理支持，
+  ///    用户的既有使用方式不能被这次改动悄悄改掉。
+  static String get danmakuProxyMode =>
+      _data[danmakuProxyModeKey] ?? 'direct';
+
+  /// 自定义代理地址（仅 mode == 'custom' 时有意义；空串 = 没填）
+  static String get danmakuProxyUrl => _data[danmakuProxyUrlKey] ?? '';
+
+  /// 设定代理模式
+  ///
+  /// ⚠️ 传 `direct` = **清除模式键**（与 [setDanmakuEndpoint] 同一纪律：
+  ///    不留垃圾键，且"默认值不落盘"便于日后改默认值）。
+  ///    地址键只在 custom 时保留，其它模式一律清 —— 否则切回 direct 后
+  ///    那个地址会一直躺在文件里，下次误切 custom 时**静默生效**。
+  static void setDanmakuProxy({required String mode, String url = ''}) {
+    if (mode == 'direct' || mode.isEmpty) {
+      remove(danmakuProxyModeKey);
+    } else {
+      set(danmakuProxyModeKey, mode);
+    }
+    if (mode == 'custom' && url.trim().isNotEmpty) {
+      set(danmakuProxyUrlKey, url.trim());
+    } else {
+      remove(danmakuProxyUrlKey);
+    }
+  }
+
   /// 存储键：布局骨架（Owner 第 14 条）
   ///
   /// # ★ 为什么放这里，**不**放进 ThemePack

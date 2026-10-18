@@ -3587,3 +3587,115 @@ A tools/_test_danmaku_send_behavior.mjs
 ⇒ 需要在 _buildWideBody 与 _EmbedBar 里临时插 debugPrint 打三个 rect，
    真机跑一次定死。★ 这需要改代码，等你批。
 ```
+
+## R6 结论核实（Lead 亲自查插件源码）
+
+### 已证实
+
+```text
+✅ cctv.js:341  drmProtected: true
+   :316 注释原文「实测 video 轨 61~80 个解码错误。如实标 drmProtected: true」
+   ⇒ 「cctv 3 条流只有 1 条可播」**属实**
+
+✅ douyu-live.js:366-368
+   :366  // multirates 里有清晰度档位；rate:-1 拿到的通常是原画
+   :367  const rates = data.multirates || []
+   :368  const cur = rates.find((m) => Number(m.rate) === Number(data.rate))
+   ⇒ 「手握 multirates 多档」**属实**
+```
+
+### 需修正 `live-groups` 的表述
+
+```text
+它说：「douyu 手握 multirates 多档却只 find 出一档返回」
+更准确：:368 用 find 取**当前档**（cur），不是"只 find 出一档"
+        ⇒ 事实正确（确实只返回一条），但措辞容易读成"代码写错了"
+        ⇒ 实际是**设计如此**：插件按宿主传的 quality 返回对应一档
+```
+
+★ 这意味着：**douyu 其实已经支持多档的选择逻辑**，只是宿主从来不传 quality
+⇒ 若将来做清晰度，douyu 是最可能先跑通的那个源（比 cctv 的 DRM 死路强）
+
+### 所以我给 R6 决策的补充建议
+
+```text
+原判断「清晰度是伪需求」需要修正为：
+  · cctv    ⇒ 真死路（DRM）
+  · douyu   ⇒ **技术上可行**，插件已具备按档返回的能力
+  · huya    ⇒ 多 CDN 同档位
+  · iptv/tvbox ⇒ 单路
+
+⇒ 决策选项应增加一个：
+  ④ 只对 douyu 做清晰度（最小范围验证），成功后再推广
+     ⚠️ 但要接受"每换一档多一次请求"，与本轮 P0「怕被拉黑」有张力
+```
+
+---
+
+# §十九 CS-1 登录态同步 —— 可行性已查实（`plugin-repo`），提案要改三处
+
+## 一、ring 已在依赖树里（零新增下载）
+
+```text
+ring 0.17.14 ← rustls 0.23.45 ← hyper-rustls ← reqwest ← sourin_core
+⇒ 只需把 ring 从**间接**提成**直接**依赖（Cargo.toml 加一行 ring = "0.17"）
+⇒ **不增加任何新下载、新编译**
+
+PBKDF2 vs Argon2：采纳用 ring + PBKDF2（600k 次，约 200-400ms）
+  · 低频解密，用户无感
+  · 坚持 Argon2 要加 4 个传递依赖，不值得
+```
+
+## 二、★ 凭据清单是完整的（不是抽样）
+
+```text
+32 个插件里只有 **6 个**用 host.store，26 个完全不用。
+完整性论证：插件侧唯一的持久化 API 就是 host.store.{get,set,remove}
+           QuickJS 里没有 localStorage、没有文件写入
+⇒ 清单没有遗漏路径。**这个论证比清单本身更重要。**
+
+9 个 key：
+  凭据 3 个：bili_cookie / session / credentials
+  显示 1 个：bili_uname
+  缓存 5 个：list_v1 ×2 / cache_v3 / albums / rooms_v1
+
+排除 5 个缓存后，需要同步的只剩 **2 个文件、4 个 key、共 938 字节**。
+```
+
+## 三、★★ 黑名单而非白名单（本轮最有价值的设计判断）
+
+```text
+白名单「只传认识的凭据 key」
+  ⇒ 新插件/新 key **默认漏掉**
+  ⇒ 用户以为同步了但登录态没过去 ← 正是提案 UI 那条要防的假绿
+
+黑名单「只排除确认是缓存的」
+  ⇒ 未知的**默认传** ⇒ 最多多传，不会漏
+
+★ 在凭据场景，**漏和多之间必须选多**。
+
+附带的自动收益：剔除缓存后文件为空的（如 douyu-live.json 只有缓存），
+                整文件跳过不上传 ⇒ 26 个无凭据插件自然不产生上传。
+```
+
+## 四、提案要改的三处（我承认写错了）
+
+| # | 提案原文 | 实际 |
+|---|---|---|
+| 1 | 「钥匙串里的那条记录 + plugins/.data/ 下的登录态」 | **钥匙串里没有站点登录态**。证据：`commands_backup.rs:149` 注释、`keyring::` 全仓只有两处（代理密码/WebDAV 密码）、插件在 QuickJS 里只拿 `host.store`，结构性拿不到钥匙串 |
+| 2 | 没说「自举悖论」 | 同步 WebDAV 密码到 WebDAV = 自举悖论 ⇒ 凭据平面**不含** WebDAV/代理密码 |
+| 3 | 没提黑名单/白名单 | 见上，必须用黑名单 |
+
+## 五、★ 一个必须提示用户的特例
+
+```text
+cycani.js:201  credentials 存的是**明文 {username, password}**，不是 token
+⇒ 这比"同步登录态"严重一个量级 —— 密码是永久的，token 会过期
+⇒ 必须单独提示：「这会把你的账号密码（而不只是登录状态）同步到云盘」
+```
+
+## 六、正在做
+
+`plugin-repo` 在做**最小可行版**（只 Rust 侧：新增 credentials 平面 +
+ring 加密 + 黑名单 + 校验），不做 UI、不做导出导入。
+第一步先验证 ring 能否编进 cdylib —— 编不进则方案要改。

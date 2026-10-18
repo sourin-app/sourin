@@ -39,6 +39,30 @@
 #   # 3. only if it says OK, commit
 # ```
 #
+# # WARNING: how to read the exit code correctly
+#
+# ```text
+# This tool's whole value is its exit code (0 = ok, 1 = stop). Reading that
+# code wrong makes you think the tool is broken when it is not.
+#
+# WRONG:
+#   powershell -File tools/commit_scope_guard.ps1 ... | tail -3 ; echo "EXIT=$?"
+#   ^ the pipe makes $? report **tail's** status, not this tool's. You will
+#     always see 0.
+#
+# RIGHT:
+#   powershell -File tools/commit_scope_guard.ps1 ... ; echo "EXIT=$?"
+#   ^ no pipe between the tool and $?
+#
+# If you must keep the output, redirect instead of piping:
+#   powershell -File tools/commit_scope_guard.ps1 ... > out.txt 2>&1 ; echo "EXIT=$?"
+#
+# This actually happened: lead piped through `tail` and got EXIT=0, then
+# briefly concluded the tool was broken. The measurement had been replaced
+# by an intermediate stage -- the same class of error as testing a proxy
+# instead of the thing behind it.
+# ```
+#
 # ASCII only: PowerShell reads .ps1 with the system ANSI code page (936),
 # so any non-ASCII byte here would break tokenization.
 
@@ -172,7 +196,15 @@ if ($Report) {
 }
 if ($script:failed) {
   Write-Host "  [STOP] scope does NOT match your expectation -- use: git add -p <file>" -ForegroundColor Red
+  Write-Host ""
+  Write-Host "  exit code = 1"
+  # NOTE: use a single-quoted string so PowerShell does NOT interpolate $?
+  # (a double-quoted "..echo \$?.." still expands it and prints garbage).
+  Write-Host '  NOTE: check it WITHOUT a pipe -- "cmd | tail ; echo $?" reports'
+  Write-Host '        tail''s status, not this tool''s, and will always show 0.'
   exit 1
 }
 Write-Host "  [PASS] scope looks consistent with your expectation"
+Write-Host ""
+Write-Host "  exit code = 0"
 exit 0

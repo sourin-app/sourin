@@ -3,11 +3,20 @@ using System.Text;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
+// =====================================================================
+//  VERIFICATION TOOL -- NOT PART OF THE PRODUCT BUILD
+// =====================================================================
+//
+// This file is compiled at *test* time by tools/n13_single_instance_test.ps1
+// via Add-Type. It is NOT referenced by any CMakeLists.txt / vcxproj and does
+// not ship in the app. It exists so the single-instance behaviour can be
+// re-verified later without rewriting the P/Invoke plumbing.
+//
 // Diagnostic helper: list every top-level window belonging to a process.
 //
-// Written in C# (not a PowerShell scriptblock) because the PS callback
-// marshalling of StringBuilder truncated the class/title strings to one
-// character, which made the readings useless.
+// Why C# and not a PowerShell scriptblock: PS callback marshalling of
+// StringBuilder truncated the class/title strings to a single character,
+// which produced unusable readings ("class=F title='s'").
 public class WinLister {
     delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
 

@@ -526,3 +526,140 @@ test/zz_t66_danmaku_shots_test.dart               211 +++++++++++++
     git commit -- <路径1> <路径2>
   这个形式只提交列出的路径，不带走暂存区里的其他内容。
 ```
+
+---
+
+### ⚠️ P2-3：三个「工具链把中文读错」的坑（`main.cpp` / `.ps1` / 探针）
+
+```text
+轨道：C（playback-fix）    日期：2026-10-18
+触发场景：本轮做 N13 单例（新增 windows/runner/main.cpp 逻辑）时连续踩到三个
+```
+
+#### ① `windows/runner/main.cpp` 必须**纯 ASCII**
+
+```text
+现象：写了中文注释后编译炸，报 20+ 条语法错误
+      main.cpp(1,1): error C2220: 以下警告被视为错误
+      main.cpp(1,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符
+      main.cpp(50,5): error C2059: 语法错误:"字符串"
+      main.cpp(68,1): error C2143: 语法错误: 缺少";"
+原因：MSVC 按**代码页 936**（GBK）读源文件，UTF-8 中文被当成非法字节；
+      而 Flutter 模板的 vcxproj 把 warning 当 error（C2220）⇒ 直接失败
+判据：`python -c "d=open('windows/runner/main.cpp','rb').read(); print(sum(1 for b in d if b>127))"`
+      ⇒ 必须是 `0`
+```
+
+#### ② `tools/*.ps1` 也必须**纯 ASCII**
+
+```text
+现象：PowerShell 解析失败
+      Unexpected token '}' in expression or statement.
+      The string is missing the terminator: ".
+原因：PowerShell 按**系统 ANSI 代码页**读 .ps1（不是 UTF-8）⇒ 中文变乱码，
+      乱码里恰好有引号/括号 ⇒ 语法结构被破坏
+修法：脚本里的说明一律英文；要写中文就存成 UTF-8 **BOM**（本项目未采用）
+```
+
+#### ③ 探针坑：`MainWindowHandle` 对 Flutter 窗口在启动早期**恒为 0**
+
+```text
+现象：脚本读出「第 1 个进程 21 秒都没出窗口」⇒ 误判为「我的 Mutex 改动把启动搞坏了」
+真相：窗口 **3 秒**就出来了，只是 Process.MainWindowHandle 还是 0
+判据：改用 EnumWindows 按 **类名 + 标题** 找（tools/WinLister.cs）
+      class = FLUTTER_RUNNER_WIN32_WINDOW
+```
+
+**★ 一般教训（比上面三条都重要）**
+
+```text
+「用错的探针会造出假故障，比不测更危险」。
+
+本次是**回退到 HEAD 重新构建做对照**才定位的：
+  改前 main.cpp → 3 秒可见
+  改后 main.cpp → 21 秒"不可见"
+如果只重跑一遍、不去做对照，永远分不清是探针错还是代码错。
+
+⇒ 规矩：探针给出反直觉读数时，**先用已知良好的基线做对照**，
+   再决定「是代码坏了还是探针坏了」。
+```
+
+#### ④ 窗口标题是 **Dart 侧** `MaterialApp(title:)` 覆盖的
+
+```text
+main.cpp 里 window.Create(L"sourin_spike", ...) 只是**初始**标题；
+Dart 的 MaterialApp(title: '源影') 会把它改掉。
+⇒ 任何按标题找窗口的 C++ 代码，必须用**最终**标题（源影），
+  否则永远匹配不上（表现为「点了图标没反应」）。
+本仓实现：windows/runner/main.cpp 的 kWindowTitle = L"\u6e90\u5f71"
+         （用 unicode 转义，同时满足「纯 ASCII」这条）
+```
+
+---
+
+### ✅ P2-4：`catch (_)` 把「任何错误」说成「网络异常」
+
+```text
+轨道：C（playback-fix）    日期：2026-10-18    状态：已修（312bb04）
+Owner 原话：「我刚刚测试某个视频站的插件无法登陆，提示网络异常 这也是bug」
+```
+
+**改前**
+
+```dart
+// lib/ui/widgets/provider_login_panel.dart
+} catch (_) {                      // catch-all，吞掉一切
+  _qrPolling = false;
+  if (mounted) setState(() => _qrMsg = '网络异常，重试中…');
+  return;
+}
+```
+
+**实测证明那句「网络异常」是猜的**（隔离数据目录 + 真网络）
+
+```text
+qr_login_start   ✓ 440ms 真申请成功
+qr_login_poll    ✓ 42ms  status=Expired（正常返回，不抛）
+连打 3 次         ✓ 59/86/85ms 全 Pending，一次没抛
+⇒ 网络一直是好的。
+```
+
+**影响**：用户看到「网络异常」会去查网线、换 Wi-Fi、重启路由 —— 全是白费。
+这正是 Owner 第 6 条抱怨的同一个毛病：**「不知道是源的问题还是软件本身的问题」**。
+
+**改后**：`QrPollErrorText.of(e)` 三分类（`lib/core/sourin_api.dart`）
+
+```text
+network   SocketException / TimeoutException / kind=='network' / 'network:' 前缀
+    ⇒ 「网络异常，重试中…」      ← 原文案此时是**对的**，保留
+notReady  核心尚未启动 / dll 加载失败 / UnsupportedError / 未绑定
+    ⇒ 「核心未就绪，正在重试…」  ← 与网络无关，别让用户查网线
+other     其余
+    ⇒ 「轮询失败：<原文>」        ← 透传真因
+只改文案，**不改控制流**（失败一次仍等下一次 timer）
+```
+
+**门禁**（`test/zz_t66_login_poll_text_test.dart` 13 条 + `zz_t66_login_poll_continue_test.dart` 6 条）
+
+```text
+核心是**反例组**：注入「核心尚未启动」⇒ 必须**不显示**「网络异常」。
+只断言"网络异常时显示网络异常"会假绿 —— 改前的 catch-all 也满足。
+撤销验证：of() 开头直接 return '网络异常，重试中…' ⇒ 6 条变红（其中 4 条是反例组）。
+```
+
+**★ 这轮抓到的第二个「假绿」（值得所有人看）**
+
+```text
+续期门禁第一版用 `indexOf('return;', catchAt)` 取 catch 块。
+注入「catch 里加 _stopQrPolling()」后 —— **门禁仍然全绿**。
+
+原因：catch 块**上方**的注释里有字面量 `return`：
+      ⚠️ 这里**只改文案，不改控制流**：仍然是「失败一次就等下一次 timer」
+⇒ indexOf 命中注释里那个 ⇒ catchBody 只包含注释，注入的代码落在区间外。
+
+修法：先用正则剥掉 `/* */` 与 `//` 再取块。
+修完注入 ⇒ 立刻变红。
+```
+
+**一般教训**：**扫描源码的门禁，必须先剥注释**，否则注释里的一句话就能让判据失效。
+

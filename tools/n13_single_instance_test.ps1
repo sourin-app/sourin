@@ -2,6 +2,11 @@
 #  N13 real-machine verification: only one instance may exist
 # =====================================================================
 #
+# VERIFICATION TOOL -- NOT PART OF THE PRODUCT BUILD.
+# Nothing imports or invokes this script during a normal build or run; it is
+# committed so the single-instance behaviour can be re-verified later.
+# Usage: powershell -ExecutionPolicy Bypass -File tools/n13_single_instance_test.ps1
+#
 # # Criteria (all real process readings, never "should work")
 # ```text
 # 1) start #1        -> process count = 1, has a window

@@ -369,6 +369,85 @@ void _widgetTests() {
     expect(UiPrefs.liveSourceGroups().keys.toList(), ['原样'],
         reason: '★ 取消 ⇒ 草稿丢弃');
   });
+
+  /*
+   * ═════════════════════════════════════════════════════════════════
+   *  ★★★ 2026-10-18（Owner 逐字）：搜索框要进**列表区域**
+   *
+   * > 直播的搜索框不要放在最上面,放在右侧的列表区域
+   *
+   * 改前它画在 `LivePage` 的**页头**（横跨左右两栏，在最上面）。
+   * 现在由 `LiveChannelList.header` 承载 ⇒ 落在列表正上方。
+   *
+   * ⚠️ 这条门禁必须能抓住"参数声明了但没渲染"那种假绿：
+   *   `header` 这个字段**曾经**就是死参数（声明了、传了、从来不画）。
+   *   ⇒ 断言**真的在树上**，而不是断言"字段被赋值了"。
+   * ═════════════════════════════════════════════════════════════════
+   */
+  group('⑦ 搜索框落在列表区域（header 槽位真的接线）', () {
+    Future<void> tallViewport(WidgetTester t) async {
+      t.view.physicalSize = const Size(900, 1600);
+      t.view.devicePixelRatio = 1.0;
+      addTearDown(t.view.reset);
+    }
+
+    Widget withHeader({Widget? header}) => MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 300,
+              height: 600,
+              child: LiveChannelList(
+                providers: const [
+                  LiveGroup(provider: 'iptv', providerName: 'IPTV'),
+                ],
+                enabledProviders: const {'iptv'},
+                channels: chans,
+                selectedId: null,
+                onPickChannel: (_) {},
+                sourceGroups: const {},
+                header: header,
+              ),
+            ),
+          ),
+        );
+
+    testWidgets('★★★ header 传进来 ⇒ 真的画在树上（不是死参数）', (t) async {
+      await tallViewport(t);
+      await t.pumpWidget(withHeader(
+        header: const Text('搜索区占位', key: ValueKey('probe-header')),
+      ));
+      await t.pump();
+      expect(find.byKey(const ValueKey('probe-header')), findsOneWidget,
+          reason: '★★★ 这个槽位曾经声明了却从不渲染 —— 必须钉住"真的在树上"');
+    });
+
+    testWidgets('★★ header 在筛选条**之上**（搜索属于列表标题区）', (t) async {
+      await tallViewport(t);
+      await t.pumpWidget(withHeader(
+        header: const SizedBox(
+          key: ValueKey('probe-header'),
+          height: 40,
+          width: 300,
+        ),
+      ));
+      await t.pump();
+
+      final headerY = t.getTopLeft(find.byKey(const ValueKey('probe-header'))).dy;
+      // 筛选条是列表内部固定 36px 那一条；用"源下拉"定位它
+      final barY = t.getTopLeft(find.byKey(const ValueKey('live-bar-source'))).dy;
+      expect(headerY, lessThan(barY),
+          reason: '★★ 搜索框要在列表标题区（筛选条之上），'
+              '否则"先找再筛"的阅读顺序反了');
+    });
+
+    testWidgets('★★ 不传 header ⇒ 照常渲染（老调用方零感知）', (t) async {
+      await tallViewport(t);
+      await t.pumpWidget(withHeader());
+      await t.pump();
+      expect(find.byKey(const ValueKey('live-bar-source')), findsOneWidget,
+          reason: '★ header 是可选的 —— 没传时不许崩、不许空一块');
+    });
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -471,5 +550,118 @@ void _settingsPageTests() {
     expect(UiPrefs.liveSourceGroups()['常看'], isEmpty,
         reason: '★ 删源后组还在，只是空了');
     await t.pump(const Duration(milliseconds: 400));
+  });
+
+  /*
+   * ═════════════════════════════════════════════════════════════════
+   *  ★★★ 2026-10-18（Owner 逐字）：**已有的分组要能编辑**
+   *
+   * > 并且不能对已有的编辑
+   *
+   * 改前本页对已有分组**只有「删除分组」一个动作** —— 名字打错了没法改，
+   * 想加台也没有入口（4xx 行那段只有 `live-group-del-*`）。
+   * ⇒ 补「改名」+「已选频道集中管理」，下面几条把它们钉住。
+   * ═════════════════════════════════════════════════════════════════
+   */
+  group('⑥ 已有分组可编辑：改名', () {    testWidgets('★★★ 改名 ⇒ 真的落盘，且组内频道**一个都不丢**', (t) async {
+      await tallViewport(t);
+      UiPrefs.debugResetForTest();
+      /*
+       * ⚠️ 必须**同时**种 v1 和 v2。
+       *
+       * 只种 v1 时这条测试会**假绿**：`_save()` 里 v1 有一条
+       * "v2 空 ⇒ 老 v1 说了算"的兜底（见该函数注释 ②），
+       * 于是即使改名把 v2 成员清空了，v1 仍会从 `_sourceGroups` 原样回填
+       * ⇒ 断言 v1 永远成立，测不出"v2 成员被改名丢掉"这个真 bug。
+       * ★ 实测过：注入"改名清空 v2"故障后，只断言 v1 的版本**照样全绿**。
+       */
+      UiPrefs.setLiveSourceGroups({'常看': ['iptv']});
+      UiPrefs.setLiveChannelGroups({
+        '常看': [const LiveChannelRef('iptv', 'cctv1')],
+      });
+      await t.pumpWidget(host(const LiveGroupsPage()));
+      await t.pump();
+
+      // 改名前：入口存在，且名字是旧名
+      expect(find.byKey(const ValueKey('live-group-rename-常看-btn')), findsOneWidget,
+          reason: '★★★ Owner 说的"不能对已有的编辑" = 这个入口根本不存在');
+
+      await t.tap(find.byKey(const ValueKey('live-group-rename-常看-btn')));
+      await t.pumpAndSettle();
+
+      await t.enterText(
+        find.byKey(const ValueKey('live-group-rename-常看')),
+        '每天看',
+      );
+      await t.tap(find.byKey(const ValueKey('live-group-rename-ok-常看')));
+      await t.pump();
+
+      final after = UiPrefs.liveSourceGroups();
+      expect(after.keys.toList(), ['每天看'],
+          reason: '★★★ 改名后是新键，且**顺序不变**（老组不跳位置）');
+      expect(after.containsKey('常看'), isFalse, reason: '★ 旧名必须真的消失');
+      expect(after['每天看'], ['iptv'],
+          reason: '★★★ 改名**绝不能**丢组内成员 —— 数据丢失比不能改名严重得多');
+
+      // ★★★ 关键那条：**v2 成员**也必须跟着搬到新名下（v1 有兜底会掩盖它）
+      final v2 = UiPrefs.liveChannelGroups();
+      expect(v2.keys.toList(), ['每天看'],
+          reason: '★★★ v2 的键也要改名，否则直播页按频道筛会找不到这个组');
+      expect(
+        v2['每天看']!.map((r) => r.key).toList(),
+        ['iptv\u0000cctv1'],
+        reason: '★★★ 组内**具体频道**一个都不能丢（这条才是真正防数据丢失的）',
+      );
+
+      await t.pump(const Duration(milliseconds: 400));
+    });
+
+    testWidgets('★★ 改成已存在的名字 ⇒ 拒绝，且两份数据都完好', (t) async {
+      await tallViewport(t);
+      UiPrefs.debugResetForTest();
+      UiPrefs.setLiveSourceGroups({'常看': ['iptv'], '别的': ['douyu']});
+      await t.pumpWidget(host(const LiveGroupsPage()));
+      await t.pump();
+
+      await t.tap(find.byKey(const ValueKey('live-group-rename-常看-btn')));
+      await t.pumpAndSettle();
+      await t.enterText(
+        find.byKey(const ValueKey('live-group-rename-常看')),
+        '别的',
+      );
+      await t.tap(find.byKey(const ValueKey('live-group-rename-ok-常看')));
+      await t.pump();
+
+      final after = UiPrefs.liveSourceGroups();
+      expect(after.keys.toSet(), {'常看', '别的'},
+          reason: '★★ 撞名必须整体拒绝 —— 若合并，用户会**悄悄丢掉**一个组');
+      expect(after['别的'], ['douyu'], reason: '★ 被撞的那个组不许被覆盖');
+      expect(after['常看'], ['iptv'], reason: '★ 改名的那个组也要原样留着');
+
+      await t.pump(const Duration(milliseconds: 400));
+    });
+
+    testWidgets('★ 改名可以取消（不写脏数据）', (t) async {
+      await tallViewport(t);
+      UiPrefs.debugResetForTest();
+      UiPrefs.setLiveSourceGroups({'常看': ['iptv']});
+      await t.pumpWidget(host(const LiveGroupsPage()));
+      await t.pump();
+
+      await t.tap(find.byKey(const ValueKey('live-group-rename-常看-btn')));
+      await t.pumpAndSettle();
+      await t.enterText(
+        find.byKey(const ValueKey('live-group-rename-常看')),
+        '打了一半不想改',
+      );
+      await t.tap(find.byKey(const ValueKey('live-group-rename-cancel-常看')));
+      await t.pump();
+
+      expect(UiPrefs.liveSourceGroups().keys.toList(), ['常看'],
+          reason: '★ 取消 = 什么都没发生');
+      expect(UiPrefs.liveSourceGroups()['常看'], ['iptv']);
+
+      await t.pump(const Duration(milliseconds: 400));
+    });
   });
 }

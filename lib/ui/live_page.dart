@@ -211,16 +211,36 @@ List<LiveChannelRef>? liveChannelGroupMembers(
 ///      ⇒ 只放行**被勾选的**频道（按 provider + channelId 两个 id 匹配）
 /// ③ 该组**没有** v2 数据、但有 v1 数据（老格式，按源分组）
 ///      ⇒ 回落到「这个源的全部频道」（老分组照旧能用，不静默失效）
-/// ④ 该组两个都没有 / 是空组
+/// ④ 该组两个都没有（组名都不存在）
 ///      ⇒ **全部放行**（绝不筛成空 —— 与 [applyLiveSourceGroup] 同一条兜底）
 /// ```
 ///
-/// ★ 为什么 ④ 是"全部放行"而不是"空"：
+/// ══════════════════════════════════════════════════════════════════
+/// ★★★ 2026-10-18 修正：**「空组」不再等于「全部放行」**
+/// ══════════════════════════════════════════════════════════════════
+///
+/// # 改前的错在哪（Owner 逐字反馈 + 真机磁盘证据）
 /// ```text
-/// 把列表筛空 = 用户看到「直播页坏了」。他此刻的意图只是"少看点台"，
-/// 宁可多显示也不能给他一片空白。这条与 v1 的兜底**同源**，
-/// 且已经被 `t134` 钉住过（"组里的源全都不可见了 ⇒ 返回全部"）。
+/// > 我切换到我自建的 常用分组，下面的列表没变化，
+/// > 我明明只添加了一个 却还是展示全部
 /// ```
+/// 真机 `ui-prefs.json` 实测：`live_source_groups = {"常看":[]}`，
+/// 而 `live_channel_groups` **整份不存在**（老版本只写 v1）。
+/// ⇒ 落到改前的 ④：`v2` 没有、`v1` 是空列表 ⇒ `return true`（全部放行）
+/// ⇒ 用户切到「常看」看到的仍是 1178 个台 —— 与他"我只加了一个"完全矛盾。
+///
+/// # 为什么"空组 ⇒ 全部放行"这条兜底本身是错的
+/// ```text
+/// 它把**两件不同的事**混成了一件：
+///   (a) 这个组**不存在**（用户没建过 / 刚删掉）⇒ 放行全部是对的
+///   (b) 这个组**存在但没有成员**（刚建好、还没勾；或成员全被删光）
+///       ⇒ 用户明确表达的是"这一组是空的"，放行全部直接违背他的选择
+/// ★ 老注释担心的"筛成空 = 用户以为坏了"是**真问题**，但解法不是
+///   "偷偷放行全部"（那会让他以为分组功能没生效 —— 正是这次的投诉），
+///   而是**空态说清楚**（见 `LiveChannelList` 里那条分组空态文案）。
+/// ```
+/// ⇒ 现在 (a) 与 (b) 分开判：**组名存在即视为"用户要的这一组"**，
+///   成员为空就如实返回 false，由 UI 给出"这一组还没有频道"的空态。
 bool liveGroupAllowsChannel(
   Map<String, List<LiveChannelRef>> channelGroups,
   Map<String, List<String>> sourceGroups,
@@ -244,7 +264,19 @@ bool liveGroupAllowsChannel(
     return v1.contains(provider);
   }
 
-  // ③ 两个都没有 / 空组 ⇒ 全部放行（绝不筛成空）
+  /*
+   * ③ 组**存在但没有任何成员** ⇒ 如实不放行。
+   *
+   * ⚠️ 判据是"组名在任一表里出现过"，**不是**"列表非空"：
+   *    `v2` 里 `'常看': []` 与 `v1` 里 `'常看': []` 都表示
+   *    "用户建了这个组、但（还）没往里放东西" ⇒ 必须筛成空 + 空态文案。
+   * ⚠️ 只有**两张表都查不到这个名字**（组不存在）才走 ④ 放行全部。
+   */
+  if (channelGroups.containsKey(group) || sourceGroups.containsKey(group)) {
+    return false;
+  }
+
+  // ④ 组名都不存在（没建过 / 刚被删掉）⇒ 全部放行（绝不筛成空）
   return true;
 }
 
@@ -483,8 +515,9 @@ class LivePageState extends State<LivePage> {
   ///   （那个在源名里找，用户在 100 多个台里找不到"那个台"）。
   ///
   /// ★ 放在 `LivePageState` 而不是 `LiveChannelListState`：
-  ///   搜索框在**页头**（跨左右两栏），而列表只是右栏 ——
-  ///   状态必须落在它们共同的祖先上（见 `LiveChannelList.searchQuery` 的注释）。
+  ///   搜索框画在列表正上方（列表的 `header:` 槽位），但**重置入口**
+  ///   （切页 / 换源时清空）在宿主 ⇒ 状态落在宿主，单向往下传
+  ///   （见 `LiveChannelList.searchQuery` 的注释）。
   String _searchQuery = '';
 
   /// 搜索框控制器（清空按钮 / 键盘 Esc 都要能改它）
@@ -2338,6 +2371,20 @@ class LivePageState extends State<LivePage> {
       // ★★★ 第 65 轮批次 D：频道搜索（受控，宿主是 `_searchQuery`）
       searchQuery: _searchQuery,
       onSearchChanged: (v) => setState(() => _searchQuery = v),
+      /*
+       * ★★★ 2026-10-18（Owner 逐字）：搜索框进**列表区域**
+       *
+       * ```text
+       * > 直播的搜索框不要放在最上面,放在右侧的列表区域
+       * ```
+       * 搜索框与命中统计描述的是**这个列表**，跟着列表走才对；
+       * 放进右栏后它天然是列表的一部分（窄屏时也在列表正上方）。
+       *
+       * ⚠️ 宽度问题：右栏固定 300px。改前页头那份是满宽（约 1200px），
+       *   直接搬进来会挤成一条缝 ⇒ 见 `LiveSearchField` 的 `compact` 分支
+       *   （藏起"共 N 个频道"，只留命中读数；清空按钮保留）。
+       */
+      header: _buildListHeader(),
     );
 
     /*
@@ -2632,32 +2679,18 @@ class LivePageState extends State<LivePage> {
             ),
 
             /*
-             * ★★★ 第 65 轮批次 D：**频道搜索**（Owner 新增要求）
+             * ★★★ 2026-10-18：频道搜索框**已从页头移到右栏列表上方**
              *
-             * # 为什么放在页头而不是右栏工具条里
+             * # Owner 逐字
              * ```text
-             * ① 右栏只有 300px，工具条已经有三格下拉 + 管理按钮 ——
-             *    再塞一个输入框会把每格压到 60px 以下（频道名/组名全成省略号）。
-             * ② 搜索是**跨源**的（在全部 100+ 个台里找），语义上是"整个页面
-             *    的查询"而不是"右栏那一格的筛选"。
-             * ③ 页头是**横跨两栏**的，输入框能有正常宽度。
+             * > 直播的搜索框不要放在最上面,放在右侧的列表区域
              * ```
+             * ⇒ 它现在由 `LiveChannelList` 的 `header:` 槽位承载
+             *   （见 `_buildListHeader()` 与 `LiveChannelList.header`）。
              *
-             * # 与既有"源切换条里的搜索"的区别（别混淆）
-             * ```text
-             * 那个是在**源名**里找源；这个是按**频道名**（以及源名）找台。
-             * 判据在 [liveChannelMatchesQuery]。
-             * ```
+             * ⚠️ 页头这里**只留**探测进度 / 缓存提示这类"整页状态"，
+             *   搜索框与命中统计属于**列表**语义 ⇒ 跟着列表走。
              */
-            const SizedBox(height: Sp.x3),
-            LiveSearchField(
-              controller: _searchCtrl,
-              query: _searchQuery,
-              // 命中数：由列表内部口径给出会重复算一遍 ⇒ 这里用同一判据现算
-              hitCount: _searchHitCount(),
-              total: _flatChannels.length,
-              onChanged: (v) => setState(() => _searchQuery = v),
-            ),
 
             // ── 探测进度（列表会陆续出现，必须让用户知道为什么）──
             if (_probed == false && _probeTotal > 0)
@@ -2787,6 +2820,33 @@ class LivePageState extends State<LivePage> {
           // 列表在下，吃掉剩余高度 —— 自身可滚
           Expanded(child: list),
         ],
+      ),
+    );
+  }
+
+  /// ★★★ 2026-10-18：列表上方的搜索区（Owner 要求搬进右栏）
+  ///
+  /// # 为什么是 `compact: true`
+  /// ```text
+  /// 右栏固定 300px（`_buildWideBody` 里的 `SizedBox(width: 300)`）。
+  /// 改前这个搜索框在页头，横跨两栏 ⇒ 可用宽约 1200px，
+  /// 放"搜频道名（跨全部直播源）"这种长提示 + "共 1178 个频道"毫无压力。
+  /// 搬进 300px 后同一份内容会被挤成一条缝 ⇒ 必须按宽度收一次：
+  ///   · 藏掉"共 N 个频道"（没搜索时它只是冗余统计，筛选条里已有信息）
+  ///   · 搜索时**保留**"命中 N"（这是用户判断关键词好不好用的唯一读数）
+  ///   · 提示语缩短成「搜频道」
+  /// ```
+  Widget _buildListHeader() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: Sp.x2),
+      child: LiveSearchField(
+        controller: _searchCtrl,
+        query: _searchQuery,
+        // 命中数：由列表内部口径给出会重复算一遍 ⇒ 这里用同一判据现算
+        hitCount: _searchHitCount(),
+        total: _flatChannels.length,
+        compact: true,
+        onChanged: (v) => setState(() => _searchQuery = v),
       ),
     );
   }
@@ -3039,25 +3099,29 @@ class LiveChannelList extends StatefulWidget {
   ///
   /// # 为什么**受控**（`LivePageState` 持有、本组件只读）
   /// ```text
-  /// 搜索框要放在**页头**（在列表之上、跨两栏），而列表只是右栏 ——
-  /// 若把状态放在本组件内，页头的输入框与它就不是同一棵树上的兄弟，
-  /// 得靠回调把字再传回来 ⇒ 一圈回声、还容易不同步。
-  /// ⇒ 宿主持有、往下传（单向数据流，一条链）。
+  /// 状态要落在**搜索框与列表的共同祖先**上：搜索框现在画在列表正上方
+  /// （本组件的 `header:` 槽位），但清空/重置的入口还在 `LivePageState`
+  /// （切页、换源时要清搜索词）。
+  /// ⇒ 宿主持有、往下传（单向数据流，一条链），避免两边各存一份而漂移。
   /// ```
   final String searchQuery;
 
   /// 搜索框内容变化（宿主写回自己的 state；测试可只验证回调）
   final ValueChanged<String>? onSearchChanged;
 
-  /// ★★★ 第 65 轮批次 D：列表**上方**的自定义区域（页头统计 / 搜索框）
+  /// ★★★ 第 65 轮批次 D：列表**上方**的自定义区域（当前 = 搜索框 + 命中统计）
   ///
   /// # 为什么要这个口子
   /// ```text
   /// 搜索框与"命中 N 个"的统计属于**本列表的语义**（它们在描述这个列表），
-  /// 但布局上必须在**页头**（跨左右两栏，不能挤在 300px 的右栏里）。
-  /// ⇒ 让 `LivePage` 把这块 widget 构造好传进来，本组件负责把它
-  ///   与列表放在**同一个 Column** 里 ⇒ 视觉上是一体，状态仍在宿主。
+  /// 位置又必须在列表正上方 ⇒ 让 `LivePage` 把这块 widget 构造好传进来，
+  /// 本组件负责把它与列表放在**同一个 Column** 里 ⇒ 视觉上是一体，
+  /// 状态仍在宿主。
   /// ```
+  ///
+  /// ⚠️ 2026-10-18 更正：这个字段**曾被声明但从未渲染**（死参数）——
+  ///   Owner 说「搜索框不要放在最上面，放在右侧的列表区域」之后才接上，
+  ///   见 build 里 `if (widget.header != null) widget.header!` 那一段。
   final Widget? header;
 
   @override
@@ -3301,6 +3365,22 @@ class LiveChannelListState extends State<LiveChannelList> {
         _groupFilter != null ||
         _sourceGroupFilter != null;
 
+    /*
+     * ★★★ 2026-10-18：当前分组**存在但没有任何成员**吗？
+     *
+     * ```text
+     * 改前这种组走"全部放行"兜底 ⇒ 用户切过去看到的还是全部频道，
+     * 于是他说「我明明只添加了一个 却还是展示全部」。
+     * 现在如实筛空，但**必须**给他一条能看懂的文案 ——
+     * 否则"列表一片空白"和"直播页坏了"长得一模一样。
+     * ```
+     * ⚠️ 判据只看"组名存在 + 两套数据都没成员"，不看筛选后的结果，
+     *   这样即使同时开了源/分类筛选，文案也指向真正的原因（分组是空的）。
+     */
+    final groupIsEmpty = _sourceGroupFilter != null &&
+        (widget.channelGroups[_sourceGroupFilter]?.isEmpty ?? true) &&
+        (widget.sourceGroups[_sourceGroupFilter]?.isEmpty ?? true);
+
     return Container(
       decoration: BoxDecoration(
         color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
@@ -3358,6 +3438,22 @@ class LiveChannelListState extends State<LiveChannelList> {
            *   一个明确的「管理分组」按钮没有误触风险，且 Owner 明确选择了它。
            * ```
            */
+          /*
+           * ★★★ 2026-10-18（Owner 逐字）：列表上方的自定义区域
+           *
+           * ```text
+           * > 直播的搜索框不要放在最上面,放在右侧的列表区域
+           * ```
+           * `header` 这个槽位本来就有（`LivePage` 早就构造了搜索框传进来），
+           * 但**从来没被渲染** —— 属于"声明了却没接线"的死参数。
+           * 现在接上：搜索框因此落在**右栏列表的正上方**。
+           *
+           * ⚠️ 放在 `_FilterBar` **之上**：搜索是"在整个列表里找"，
+           *   视觉上属于列表的标题区；筛选条是"把列表切成几段"，
+           *   放它下面更贴近"先找、再筛"的阅读顺序。
+           */
+          if (widget.header != null) widget.header!,
+
           _FilterBar(
             // ── 分组维度（value 用组名本身 —— 组名的语义就是它自己）──
             //
@@ -3451,11 +3547,20 @@ class LiveChannelListState extends State<LiveChannelList> {
                       widget.searchQuery.trim().isNotEmpty
                           ? '没有频道名匹配「${widget.searchQuery.trim()}」。\n'
                               '换个关键词试试，或清空搜索框看全部频道。'
-                          : filtering
-                              ? '这个筛选下没有频道。\n'
-                                  '换一个源或分类，或点「全部源」「全部分类」看全部。'
-                              : '这些直播源的频道都没有可播放的画面'
-                                  '（视频线路受内容方保护）。',
+                          : groupIsEmpty
+                              /*
+                               * ★★★ 2026-10-18：分组存在但没成员 —— 说清
+                               *   "是你这个组还是空的"，并直接给出**怎么加**。
+                               *   改前这种情况会被兜底成"显示全部"，用户根本
+                               *   不知道自己的分组是空的（Owner 的投诉正是这个）。
+                               */
+                              ? '「$_sourceGroupFilter」这个分组里还没有频道。\n'
+                                  '点筛选条右侧的管理按钮，把常看的频道挑进来。'
+                              : filtering
+                                  ? '这个筛选下没有频道。\n'
+                                      '换一个源或分类，或点「全部源」「全部分类」看全部。'
+                                  : '这些直播源的频道都没有可播放的画面'
+                                      '（视频线路受内容方保护）。',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: FontSizes.cap,
@@ -4938,6 +5043,7 @@ class LiveSearchField extends StatelessWidget {
     required this.hitCount,
     required this.total,
     required this.onChanged,
+    this.compact = false,
   });
 
   final TextEditingController controller;
@@ -4945,6 +5051,16 @@ class LiveSearchField extends StatelessWidget {
   final int hitCount;
   final int total;
   final ValueChanged<String> onChanged;
+
+  /// ★★★ 2026-10-18：窄栏模式（右栏 300px 里用）
+  ///
+  /// ```text
+  /// · true  ⇒ 提示语缩短成「搜频道」；**没搜索时**不显示统计
+  ///            （300px 里"共 1178 个频道"会把输入框挤没）；
+  ///            一旦搜索就显示「命中 N」—— 那是判断关键词好用的唯一读数
+  /// · false ⇒ 原来的满宽形态（页头/宽版面用），逐字不变
+  /// ```
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -4955,7 +5071,7 @@ class LiveSearchField extends StatelessWidget {
         Expanded(
           child: SizedBox(
             // 单行高度写死 —— 与 `_FilterBar` 的 36 同量级，避免挤压主体
-            height: 40,
+            height: compact ? 36 : 40,
             child: TextField(
               key: const ValueKey('live-search-field'),
               controller: controller,
@@ -4966,7 +5082,8 @@ class LiveSearchField extends StatelessWidget {
                 isDense: true,
                 filled: true,
                 fillColor: colors.surfaceContainerHighest.withValues(alpha: 0.5),
-                hintText: '搜频道名（跨全部直播源）',
+                // ★ 窄栏里长提示语会被截断成省略号 ⇒ 缩短（语义不变）
+                hintText: compact ? '搜频道' : '搜频道名（跨全部直播源）',
                 hintStyle: TextStyle(
                   fontSize: FontSizes.sm,
                   color: colors.onSurfaceVariant,
@@ -5020,21 +5137,26 @@ class LiveSearchField extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(width: Sp.x3),
         /*
          * ★ 命中读数：没搜时显示总数（"共 N 个频道"），
          *   搜了显示命中数（0 时用错误色，让"没搜到"一眼可辨）。
+         *
+         * ⚠️ compact（右栏 300px）下**没搜索时整块不画** ——
+         *   否则它和输入框抢宽度，输入框只剩几十像素。
          */
-        Text(
-          searching ? '命中 $hitCount / 共 $total' : '共 $total 个频道',
-          key: const ValueKey('live-search-hits'),
-          style: TextStyle(
-            fontSize: FontSizes.cap,
-            color: searching && hitCount == 0
-                ? colors.error
-                : colors.onSurfaceVariant,
+        if (!compact || searching) ...[
+          const SizedBox(width: Sp.x3),
+          Text(
+            searching ? '命中 $hitCount / 共 $total' : '共 $total 个频道',
+            key: const ValueKey('live-search-hits'),
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: searching && hitCount == 0
+                  ? colors.error
+                  : colors.onSurfaceVariant,
+            ),
           ),
-        ),
+        ],
       ],
     );
   }

@@ -36,6 +36,15 @@
 #   # 2. run this with your expectation
 #   powershell -File tools/commit_scope_guard.ps1 -ExpectFile "path/to/f.dart" -ExpectAdded 19
 #
+#   # MULTIPLE files: comma-separated, NOT repeated flags
+#   powershell -File tools/commit_scope_guard.ps1 -ExpectFile "a.dart","b.dart"
+#
+#   #   WRONG: -ExpectFile "a.dart" -ExpectFile "b.dart"
+#   #   PowerShell rejects it: "parameter 'ExpectFile' is specified more than once"
+#   #   => only the FIRST one takes effect, the rest are silently unchecked.
+#   #   (Observed 2026-10-18. -ExpectFile is [string[]], and array params are
+#   #    bound as a whole, never merged across repeated flags.)
+#
 #   # 3. only if it says OK, commit
 # ```
 #

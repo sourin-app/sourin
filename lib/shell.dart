@@ -1940,6 +1940,41 @@ class _SourinAppState extends State<SourinApp>
       ),
       child: WidgetsApp(
       /*
+       * ★★★ 2026-10-18（M4）：`pageRouteBuilder` **必须给**，否则白屏
+       *
+       * # 真实故障（本轮实测，第一版 M4 就是这么白的）
+       * ```text
+       * 窗口出来了，标题栏也在，但**内容区全空白**。
+       * 日志：Null check operator used on a null value
+       *       #0 _WidgetsAppState._onGenerateRoute (widgets/app.dart:1562)
+       * ```
+       * 原因：`WidgetsApp._onGenerateRoute` 在 `home != null` 时走
+       * `widget.pageRouteBuilder!<dynamic>(...)` —— 它是**可空字段**，
+       * 不传就是 null，而那里用 `!` 强解包 ⇒ 抛异常。
+       *
+       * ★ MaterialApp 之所以不白，是因为它**替你填了**这个字段
+       *   （material/app.dart:1114 用 `MaterialPageRoute`）。
+       *   WidgetsApp 没有默认值 ⇒ 必须自己给。
+       *
+       * # 为什么用 `PageRouteBuilder` 而不是自建 Route
+       * ```text
+       * PageRouteBuilder 在 **flutter/widgets/pages.dart**，不依赖 material_ui。
+       * 它就是 MaterialPageRoute / CupertinoPageRoute 的通用基础，
+       * 只需给 pageBuilder + transitionsBuilder。
+       * ★ 这里用零动画（duration=0），与改前 MaterialPageRoute 的观感
+       *   并不一致 —— 但改前实际上也看不到转场动画
+       *   （页面切换是 ShellPage 内部的 IndexedStack），所以无差异。
+       * ```
+       */
+      pageRouteBuilder: <T>(RouteSettings settings, WidgetBuilder builder) {
+        return PageRouteBuilder<T>(
+          settings: settings,
+          pageBuilder: (context, animation, secondaryAnimation) => builder(context),
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+        );
+      },
+      /*
        * ★ WidgetsApp 的 `color` 是**必需参数**（app.dart:351 `required this.color`）。
        *   MaterialApp 把它用作系统 UI 底色（如 Android 任务切换器卡片底）。
        *   取与内容区同源的底色 —— 与下面 `WindowFrame.backdrop` 同一条取法。

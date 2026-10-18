@@ -663,3 +663,64 @@ other     其余
 
 **一般教训**：**扫描源码的门禁，必须先剥注释**，否则注释里的一句话就能让判据失效。
 
+
+## P0-10 · M4 换 WidgetsApp 后**内容区全白**（我自己引入，已修）
+
+**症状**：窗口出来、标题栏在、托盘在、日志无崩溃，但**内容区一片空白**（截图 `.probe/m4_shot.png`）。
+
+**根因**（日志直接给出）：
+```text
+Null check operator used on a null value
+#0  _WidgetsAppState._onGenerateRoute (package:flutter/src/widgets/app.dart:1562)
+```
+
+`WidgetsApp._onGenerateRoute` 在 `home != null` 时走：
+```dart
+final Route<dynamic> route = widget.pageRouteBuilder!<dynamic>(settings, pageContentBuilder);
+//                          ^^^^^^^^^^^^^^^^^^^^ 可空字段，用 ! 强解包
+```
+
+`pageRouteBuilder` 是**可空字段**，不传就是 null ⇒ `!` 抛异常 ⇒ 路由生成失败 ⇒ 内容区空白。
+
+**为什么 MaterialApp 不白**：它替你填了这个字段（`material/app.dart:1114` 用 `MaterialPageRoute`）。
+WidgetsApp **没有默认值**。
+
+**修法**：显式给 `pageRouteBuilder`，用 `PageRouteBuilder`（在 `flutter/widgets/pages.dart`，不依赖 material_ui）：
+```dart
+pageRouteBuilder: <T>(RouteSettings settings, WidgetBuilder builder) {
+  return PageRouteBuilder<T>(
+    settings: settings,
+    pageBuilder: (context, animation, secondaryAnimation) => builder(context),
+    transitionDuration: Duration.zero,
+    reverseTransitionDuration: Duration.zero,
+  );
+},
+```
+
+**教训（这条最重要）**：
+```text
+`dart analyze` = 0 error、4 条门禁全绿、构建成功 —— 但**运行起来是白屏**。
+
+静态检查抓不到：pageRouteBuilder 是可空字段，不传完全合法。
+门禁也抓不到：它们只测 ScrollBehavior 的存在与行为，不测"路由能否生成"。
+
+⇒ **从 MaterialApp 换成 WidgetsApp 这类"基类替换"，必须跑一次真机截图验证**，
+  不能只靠 analyze + 单测 + 构建成功。
+  这与 P2-3 的「用错的探针会造出假故障」是同一条纪律的镜像：
+  **"检查全绿"也可能造出假通过。**
+```
+
+**当前状态**：已修，真机截图 `.probe/m4b_shot.png` 确认内容区正常渲染
+（详情页、选集、封面全部显示）。
+
+---
+
+## P0-11 · 已提交的 `3ef5a6d` 是**白屏版本**
+
+`3ef5a6d`（MaterialApp → WidgetsApp）提交时只验证了 analyze + 门禁 + 构建，
+**没有跑真机截图**，所以那个 commit 的实际运行状态是白屏。
+
+修复在后续 commit 里。**不重写历史**（本仓已多次因改写历史出问题），
+改为在本文档记录事实，并在修复 commit 的 message 里引用本条。
+
+**教训**：UI 外壳类改动，提交前必须真机截图。

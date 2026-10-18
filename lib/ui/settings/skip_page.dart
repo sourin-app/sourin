@@ -85,6 +85,8 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
+// ★ 2026-10-18（Owner 第 12 条）：toast 统一走这里（`showAppToast`）
+import '../widgets/app_toast.dart';
 import '../widgets/overlay_motion.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
@@ -158,14 +160,31 @@ class _SkipMarkersSettingsPageState extends State<SkipMarkersSettingsPage> {
   /// 清除中的标记（防止连点重复发请求）
   bool _busy = false;
 
-  /// 页内提示（替代设置页的 `_flash`）
+  /// 页内提示 —— ★ 2026-10-18（Owner 第 12 条）：改走**统一 toast**
   ///
-  /// ⚠️ 二级页没有设置页那套全局 Toast 层，所以就地显示一行。
-  ///    用 `Timer` 而不是 `Future.delayed` —— 后者在 widget 销毁后
-  ///    仍会跑（本项目已有教训：设置页 `_flash` 的 3 秒延迟
-  ///    会让 widget 测试报 "A Timer is still pending"）。
-  String? _toast;
-  Timer? _toastTimer;
+  /// Owner 原话：「统一toast提示样式,不要自己写,要用自带的」。
+  ///
+  /// # 改前（本页自写的那一套，已删除）
+  /// ```text
+  /// String? _toast; Timer? _toastTimer;
+  /// _flash: setState(_toast = msg) + Timer(3s) 清屏
+  /// build:  `_toastWidget(colors)` 在页面里插一行彩色文本
+  /// ```
+  /// 当时的注释写着「二级页没有设置页那套全局 Toast 层，所以就地显示一行」。
+  /// **那个前提已经不成立**：`ToastHost` 现在挂在 `lib/shell.dart` 的
+  /// `MaterialApp.builder` 里（Navigator **之外**）⇒ 任何 push 出来的
+  /// 二级页都天然能弹（`test/toast_host_mounted_test.dart` 有守卫）。
+  ///
+  /// # 顺带解决一个真实缺陷
+  /// ```text
+  /// 自写版用 `Timer(3s)` —— 页面 pop 之后定时器仍要跑到 3 秒才结束。
+  /// 统一版由 AppToaster 自己的 100ms 时钟驱动，宿主常驻，
+  /// 页面 pop 不影响它 ⇒ 没有"退出后还挂着一个 Timer"的问题。
+  /// ```
+  void _flash(String msg) {
+    if (!mounted) return;
+    showAppToast(context, msg);
+  }
 
   @override
   void initState() {
@@ -184,7 +203,6 @@ class _SkipMarkersSettingsPageState extends State<SkipMarkersSettingsPage> {
 
   @override
   void dispose() {
-    _toastTimer?.cancel();
     _queryCtrl.dispose();
     super.dispose();
   }
@@ -198,15 +216,6 @@ class _SkipMarkersSettingsPageState extends State<SkipMarkersSettingsPage> {
       debugPrint('[SKIPPAGE] 片头片尾列表读取失败: $e');
       if (mounted) _flash('加载失败：$e');
     }
-  }
-
-  void _flash(String msg) {
-    if (!mounted) return;
-    _toastTimer?.cancel();
-    setState(() => _toast = msg);
-    _toastTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _toast = null);
-    });
   }
 
   /// 清除某个作品的片头片尾
@@ -308,18 +317,9 @@ class _SkipMarkersSettingsPageState extends State<SkipMarkersSettingsPage> {
     return r ?? false;
   }
 
-  /// 页内提示（顺手抽出来 —— 两种结构都要用）
-  Widget? _toastWidget(ColorScheme colors) {
-    if (_toast == null) return null;
-    // ★ 内容带（t509）：带已由 `SettingsSubPage.build` 提供 ⇒ 这里归零。
-    return Padding(
-      padding: EdgeInsets.zero,
-      child: Text(
-        _toast!,
-        style: TextStyle(fontSize: FontSizes.sm, color: colors.primary),
-      ),
-    );
-  }
+  // ★ 2026-10-18（Owner 第 12 条）：`_toastWidget` 已删除 ——
+  //   本页不再自己画提示行，统一由 shell 层的 `ToastHost` 承担
+  //   （见 `_flash` 的说明）。
 
   /// 「片头片尾」区块 —— **只剩计数**（管理入口已删，见上面的 task-52 说明）
   ///
@@ -534,10 +534,7 @@ class _SkipMarkersSettingsPageState extends State<SkipMarkersSettingsPage> {
       clipBehavior: Clip.antiAlias,
       padding: EdgeInsets.only(bottom: Sp.bottomBarInset + Sp.x4),
       children: [
-        if (_toastWidget(colors) != null) ...[
-          _toastWidget(colors)!,
-          const SizedBox(height: Sp.x3),
-        ],
+        // ★ 2026-10-18（Owner 第 12 条）：提示行已删除，统一走 `showAppToast`。
 
         // ── ★ 平铺的结果行（用户要的"可以平铺了"）──
         if (rows.isEmpty)
@@ -601,10 +598,7 @@ class _SkipMarkersSettingsPageState extends State<SkipMarkersSettingsPage> {
       onBack: _onBackIntercept,
       children: [
         if (!hasData) ...[
-          if (_toastWidget(colors) != null) ...[
-            _toastWidget(colors)!,
-            const SizedBox(height: Sp.x3),
-          ],
+          // ★ 2026-10-18（Owner 第 12 条）：提示行已删除，统一走 `showAppToast`。
           _block(colors),
         ],
       ],

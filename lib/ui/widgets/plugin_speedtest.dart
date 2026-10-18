@@ -1609,6 +1609,7 @@ class PluginSpeedTestAllButton extends StatefulWidget {
     required this.pluginIds,
     this.label = '全部测速',
     this.onChanged,
+    this.onFinished,
   });
 
   /// 要测的插件 id（调用方负责过滤掉停用的源）
@@ -1618,6 +1619,27 @@ class PluginSpeedTestAllButton extends StatefulWidget {
 
   /// 每完成一个就回调（宿主可以借此刷新别处的展示）
   final VoidCallback? onChanged;
+
+  /// ★★★ 2026-10-18（Owner 第 13 条）：**整批跑完**时回调一次
+  ///
+  /// Owner 原话：「测速完发送一条toast」。
+  ///
+  /// # 与 [onChanged] 的区别（两者不能合并）
+  /// ```text
+  /// onChanged    每完成一个就调 —— 宿主用来刷新别处（高频）
+  /// onFinished   整批结束时调一次 —— 宿主用来弹 toast（低频）
+  /// ```
+  ///
+  /// # 什么时候**不**调（三种情况，都必须排除）
+  /// ```text
+  /// ① 用户中途离开页面（`_disposed`）⇒ 没有"完成"可言
+  /// ② 被 `cancelAll()` 停掉（退出软件）⇒ 同上
+  /// ③ `total == 0`（没有可测的源）⇒ 按钮本来就是禁用的
+  /// ```
+  /// 传的是**真实读数** `(成功数, 总数)`，不是"已完成" ——
+  /// 一次全量测速里必然有一部分源失败（上游 502 / 分类为空，
+  /// 本机实测就有），只说"完成"会让用户以为全都测到了。
+  final void Function(int ok, int total)? onFinished;
 
   @override
   State<PluginSpeedTestAllButton> createState() =>
@@ -1632,12 +1654,54 @@ class _PluginSpeedTestAllButtonState extends State<PluginSpeedTestAllButton> {
   int _ok = 0;
   String _current = '';
 
+  /// 本批次共享的取消令牌（`null` = 没在跑）
+  ///
+  /// ★★★ 2026-10-18（Owner 第 13 条）：「退出这个页面也要测试」
+  ///
+  /// # 改前是一个**真的**泄漏（实测抓到，不是理论问题）
+  /// ```text
+  /// 改前的 dispose() 只做 `_disposed = true`，**不 cancel 令牌**。
+  /// 而 worker 循环里的判据是
+  ///     if (_disposed || token.isCancelled) return;
+  /// —— 它只在**下一轮派活前**检查！
+  ///
+  /// ⇒ 退出页面那一刻，已经在飞的 3 路测速**会继续跑完**，
+  ///   各自带着 `PluginSpeedTestRunner.run` 里那个 `.timeout(_timeout)`
+  ///   = **20 秒的定时器**。实测（flutter_test 的计时器检查）：
+  ///      「A Timer is still pending even after the widget tree was disposed.」
+  ///      Pending timers:
+  ///        Timer (duration: 0:00:20, periodic: false) ... × 3
+  ///        created by _PluginSpeedTestAllButtonState._runAll.worker
+  ///                               (plugin_speedtest.dart:1741)
+  /// ⇒ 用户从设置页返回首页后，后台还在偷偷下载 3 条流、最长 20 秒。
+  ///   在手机上这是**白耗流量与电量**；在退出软件时还会与
+  ///   `app_tray.dart:467` 的「先 cancelAll 再刷盘」抢时序。
+  /// ```
+  /// # 改后
+  /// ```text
+  /// dispose() 里 `_token?.cancel()` ⇒ 三路 worker 在**下一个分片边界**
+  /// 就收手（`_measure` 的循环里查 token.isCancelled），
+  /// 那个 20s 定时器随 `run()` 的 future 一起结束。
+  /// ```
+  /// ⚠️ 为什么还保留 `_disposed`：它守的是**setState**（令牌守的是**派活**，
+  ///    两件事）。取消之后 `run()` 仍会返回一个"失败"结果，
+  ///    那条路径会走到 `if (_disposed || token.isCancelled) return;`
+  ///    ⇒ 既不写盘也不 setState。两个标志位职责不同，都要留。
+  SpeedTestCancelToken? _token;
+
   @override
   void dispose() {
     /*
      * ⚠️ 用标志位守住 dispose 之后的 setState，而不是靠"用户不会中途离开"——
      *    二级页是可以被返回键弹掉的，而一次全部测速要跑一分钟。
+     *
+     * ★ 2026-10-18：**先 cancel 再置 _disposed** ——
+     *   顺序有讲究：cancel 让在途的 `run()` 尽快返回（它在分片边界查令牌），
+     *   而 `_disposed` 是它返回之后"不许 setState / 不许写盘"的守卫。
+     *    反过来的话，在 cancel 生效前有一个瞬间 `_disposed` 已经 true
+     *    但 token 还没停 —— 逻辑上仍安全，只是读起来更绕。
      */
+    _token?.cancel();
     _disposed = true;
     super.dispose();
   }
@@ -1706,6 +1770,13 @@ class _PluginSpeedTestAllButtonState extends State<PluginSpeedTestAllButton> {
        *   每个 worker 在**下一轮派活前**看到就退出，且**不再 append**。
        */
       final token = SpeedTestCancelToken.registered();
+      /*
+       * ★ 2026-10-18（Owner 第 13 条）：把令牌存到字段上，dispose 才停得到它。
+       *
+       * 改前它是**局部变量** ⇒ `dispose()` 里根本拿不到 ⇒ 退出页面停不掉
+       * （实测有 3 个 20s 定时器在树销毁后仍 pending，见 `_token` 的文档）。
+       */
+      _token = token;
       try {
         Future<void> worker() async {
           while (true) {
@@ -1744,6 +1815,14 @@ class _PluginSpeedTestAllButtonState extends State<PluginSpeedTestAllButton> {
       } finally {
         // 必须注销，否则全局表会攒死令牌
         token.unregister();
+        /*
+         * ★ 2026-10-18：本批次结束后把字段置空 ——
+         *   否则 `_token` 会一直指着一个已注销的令牌，下次 dispose
+         *   调 `cancel()` 作用在一个"已完成"的任务上（无害，但会误导
+         *   后来人以为"还有活没停"）。与 settings_page 的 `_healthToken`
+         *   同一个写法。
+         */
+        if (identical(_token, token)) _token = null;
       }
 
       AppLog.write(
@@ -1751,6 +1830,18 @@ class _PluginSpeedTestAllButtonState extends State<PluginSpeedTestAllButton> {
         '全部测速完成：$_done/$_total，其中 $_ok 个测到速率'
             '（并发 $_allConcurrency 路）',
       );
+
+      /*
+       * ★ 2026-10-18（Owner 第 13 条）：整批跑完发一条 toast。
+       *
+       * 三个排除条件见 [PluginSpeedTestAllButton.onFinished] 的文档：
+       * 离开页面 / 被取消 / 没有可测的源 —— 都不该报"完成"。
+       * 判据用 `_done`（**真的测了这么多**）而不是 `_total`：
+       * 被取消时 `_done < _total`，那时报"完成 N/M"才是诚实的。
+       */
+      if (!_disposed && !token.isCancelled && _total > 0 && _done == _total) {
+        widget.onFinished?.call(_ok, _total);
+      }
     } finally {
       if (!_disposed) {
         setState(() {

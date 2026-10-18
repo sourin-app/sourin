@@ -49,6 +49,7 @@ import '../core/models.dart';
 import '../core/progress_backfill.dart';
 import '../core/sourin_api.dart';
 import 'tokens.dart';
+import 'widgets/app_toast.dart';
 import 'widgets/cover_image.dart';
 import 'widgets/follow_update_notice.dart';
 import 'widgets/poster_card.dart';
@@ -222,7 +223,8 @@ class FollowPageState extends State<FollowPage>
   List<UpdateInfo> _updates = [];
 
   bool _loading = true;
-  String? _toast;
+  // ★ 2026-10-18（Owner 第 12 条）：`String? _toast` 字段已删除 ——
+  //   `_flash` 改走 `showAppToast`，本页不再自己持有提示状态。
 
   /// 是否**已经加载成功过一次**（决定要不要显示整页骨架）
   ///
@@ -1080,12 +1082,18 @@ class FollowPageState extends State<FollowPage>
     return '剩 $m 分钟';
   }
 
+  /// 弹一条操作反馈 —— ★ 2026-10-18（Owner 第 12 条）：改走**统一 toast**
+  ///
+  /// Owner 原话：「统一toast提示样式,不要自己写,要用自带的」。
+  ///
+  /// 改前是本页自写的一套（`setState(_toast)` + 4 秒 `Future.delayed` +
+  /// build() 里一个 `Positioned` + 黑底 85% 胶囊）。
+  /// 现在统一到 `lib/ui/widgets/app_toast.dart` 的 `showAppToast`：
+  /// 宿主挂在 `MaterialApp.builder`（Navigator 之外）⇒ 追更页作为
+  /// 一个 tab 页也天然能弹，且与设置页/详情页**同一套样式**。
   void _flash(String msg) {
     if (!mounted) return;
-    setState(() => _toast = msg);
-    Future.delayed(const Duration(seconds: 4), () {
-      if (mounted && _toast == msg) setState(() => _toast = null);
-    });
+    showAppToast(context, msg);
   }
 
   List<Favorite> get _currentList =>
@@ -1317,33 +1325,8 @@ class FollowPageState extends State<FollowPage>
               ),
           ],
         ),
-
-        // ── Toast ──
-        if (_toast != null)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: Sp.x10,
-            child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: Sp.x5,
-                  vertical: Sp.x3,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.85),
-                  borderRadius: Radii.rFull,
-                ),
-                child: Text(
-                  _toast!,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: FontSizes.sm,
-                  ),
-                ),
-              ),
-            ),
-          ),
+        // ★ 2026-10-18（Owner 第 12 条）：本页不再画 toast ——
+        //   统一由 shell 层的 `ToastHost` 承担（见 `_flash` 的说明）。
       ],
     );
   }

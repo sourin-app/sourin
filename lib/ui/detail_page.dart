@@ -58,6 +58,8 @@ import '../core/network_status.dart';
 import '../design/widgets/app_ink_well.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
+// ★ 2026-10-18（Owner 第 12 条）：toast 统一走这里（`showAppToast`）
+import 'widgets/app_toast.dart';
 import 'widgets/app_menu.dart';
 import 'widgets/cover_image.dart';
 import 'widgets/detail_raw_meta.dart';
@@ -1142,7 +1144,8 @@ class _DetailPageState extends State<DetailPage> {
   bool _isFav = false;
   bool _following = false;
   Progress? _resume;
-  String? _toast;
+  // ★ 2026-10-18（Owner 第 12 条）：`String? _toast` 字段已删除 ——
+  //   `_flash` 改走 `showAppToast`，本页不再自己持有提示状态。
 
   /// 用户**手动点过**的选集（优先级高于自动推导）
   ///
@@ -2116,12 +2119,36 @@ class _DetailPageState extends State<DetailPage> {
     }
   }
 
+  /// 弹一条操作反馈 —— ★ 2026-10-18（Owner 第 12 条）：改走**统一 toast**
+  ///
+  /// Owner 原话：
+  /// ```text
+  /// > 统一toast提示样式,不要自己写,要用自带的
+  /// ```
+  ///
+  /// # 改前（本页自写的那一套，已删除）
+  /// ```text
+  /// setState(() => _toast = msg);
+  /// Future.delayed(2400ms, () { if (mounted && _toast == msg) setState(() => _toast = null); });
+  /// 外加 build() 里一个 Positioned + `_Toast`（黑底 82% 胶囊）
+  /// ```
+  /// 四个页面各抄了一份（detail / follow / settings / skip），
+  /// 样式四份、只能同时显示一条、关不掉。
+  ///
+  /// # 改后
+  /// ```text
+  /// showAppToast(context, msg)
+  ///   · 宿主 `ToastHost` 挂在 `lib/shell.dart` 的 `MaterialApp.builder`
+  ///     （Navigator **之外**）⇒ 详情页无论是独立路由还是 embedded
+  ///     都能弹（`test/toast_host_mounted_test.dart` 有守卫）
+  ///   · 多条堆叠、各自计时、可手动关闭、Esc 可关
+  /// ```
+  /// ⚠️ `if (!mounted) return` **保留**：`_flash` 在 await 之后被调用，
+  ///    那时页面可能已经 pop（`showAppToast` 本身找不到宿主会静默 no-op，
+  ///    但显式 return 更清楚，也省一次祖先查找）。
   void _flash(String msg) {
     if (!mounted) return;
-    setState(() => _toast = msg);
-    Future.delayed(const Duration(milliseconds: 2400), () {
-      if (mounted && _toast == msg) setState(() => _toast = null);
-    });
+    showAppToast(context, msg);
   }
 
   /// 按 id 找一集（找不到返回 null）
@@ -2461,15 +2488,8 @@ class _DetailPageState extends State<DetailPage> {
             onBack: widget.embedded ? null : () => Navigator.pop(context),
           )
         else if (_detail != null) _buildBody(context, _detail!),
-
-        // ── Toast ──
-        if (_toast != null)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: Sp.x10,
-            child: Center(child: _Toast(text: _toast!)),
-          ),
+        // ★ 2026-10-18（Owner 第 12 条）：本页不再画 toast ——
+        //   统一由 shell 层的 `ToastHost` 承担（见 `_flash` 的说明）。
       ],
     );
 
@@ -5043,32 +5063,11 @@ class _EpsSkeleton extends StatelessWidget {
   }
 }
 
-class _Toast extends StatelessWidget {
-  const _Toast({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: Sp.x5,
-        vertical: Sp.x3,
-      ),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.82),
-        borderRadius: Radii.rFull,
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          fontSize: FontSizes.sm,
-          color: Colors.white,
-        ),
-      ),
-    );
-  }
-}
+// ★ 2026-10-18（Owner 第 12 条）：本页私有的 `_Toast`（黑底 82% 胶囊）已删除。
+//   toast 统一走 `lib/ui/widgets/app_toast.dart` 的 `showAppToast`
+//   ——「不要自己写,要用自带的」。同批删除的还有 follow / playback /
+//   skip / data_manage 四处；player_page 与 live_groups_page 由各自的
+//   轨道处理（见本轮交付说明）。
 
 class _ErrorView extends StatelessWidget {
   const _ErrorView({required this.message, required this.onBack});

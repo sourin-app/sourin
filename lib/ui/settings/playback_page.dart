@@ -149,6 +149,8 @@ import '../../core/download_queue.dart';
 import '../../core/sourin_api.dart';
 import 'export_dir.dart';
 import '../tokens.dart';
+// ★ 2026-10-18（Owner 第 12 条）：toast 统一走这里（`showAppToast`）
+import '../widgets/app_toast.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
 // ★ ④「回读 mpv 设置」按钮直接调 player_page 的探针钩子 —— 那是**生产**
@@ -204,7 +206,8 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
   bool _mpvReadBusy = false;
 
   bool _logBusy = false;
-  String? _toast;
+  // ★ 2026-10-18（Owner 第 12 条）：`String? _toast` 字段已删除 ——
+  //   `_flash` 改走 `showAppToast`，本页不再自己持有提示状态。
   String _lastExportPath = '';
   int _lastExportBytes = 0;
 
@@ -264,12 +267,18 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
     }
   }
 
+  /// 弹一条操作反馈 —— ★ 2026-10-18（Owner 第 12 条）：改走**统一 toast**
+  ///
+  /// Owner 原话：「统一toast提示样式,不要自己写,要用自带的」。
+  ///
+  /// 改前是本页自写的一套（`setState(_toast)` + 3 秒 `Future.delayed`，
+  /// 外加 build() 里一个 `_toast != null` 的文本行）。
+  /// 现在统一到 `lib/ui/widgets/app_toast.dart` 的 `showAppToast`：
+  /// 宿主挂在 `MaterialApp.builder`（Navigator 之外）⇒ 本页是 push 上来的
+  /// 二级路由也天然能弹，且与设置页/详情页**同一套样式**。
   void _flash(String msg) {
     if (!mounted) return;
-    setState(() => _toast = msg);
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted && _toast == msg) setState(() => _toast = null);
-    });
+    showAppToast(context, msg);
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -546,13 +555,8 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
         _cacheBlock(colors),
         const SizedBox(height: Sp.x5),
         _logBlock(colors),
-        if (_toast != null) ...[
-          const SizedBox(height: Sp.x4),
-          Text(
-            _toast!,
-            style: TextStyle(fontSize: FontSizes.sm, color: colors.primary),
-          ),
-        ],
+        // ★ 2026-10-18（Owner 第 12 条）：本页不再画提示行 ——
+        //   统一由 shell 层的 `ToastHost` 承担（见 `_flash` 的说明）。
       ],
     );
   }

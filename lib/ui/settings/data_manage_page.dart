@@ -38,6 +38,8 @@ import 'package:material_ui/material_ui.dart';
 import '../../core/clip_download.dart' show ClipDownloader;
 import '../tokens.dart';
 import '../widgets/app_loading.dart';
+// ★ 2026-10-18（Owner 第 12 条）：toast 统一走这里（`showAppToast`）
+import '../widgets/app_toast.dart';
 import '../widgets/overlay_motion.dart';
 import '../widgets/settings_sub_page.dart';
 import '../../design/icons/app_icons.dart';
@@ -230,12 +232,22 @@ class _DataManagePageState extends State<DataManagePage> {
     }
   }
 
-  String? _toast;
+  /// 弹一条操作反馈 —— ★ 2026-10-18（Owner 第 12 条）：改走**统一 toast**
+  ///
+  /// Owner 原话：「统一toast提示样式,不要自己写,要用自带的」。
+  ///
+  /// 改前是本页自写的一套（`setState(_toast)` + 3 秒 `Future.delayed`，
+  /// 外加 build() 里一个 `_toast != null` 的文本行）。
+  /// 现在统一到 `lib/ui/widgets/app_toast.dart` 的 `showAppToast`：
+  /// 宿主挂在 `MaterialApp.builder`（Navigator 之外）⇒ 本页是 push 上来的
+  /// 二级路由也天然能弹，且与设置页/详情页**同一套样式**。
+  ///
+  /// ⚠️ `if (!mounted) return` 是**新增**的（改前没有）：清理动作是
+  ///    await 之后才 flash，那时页面可能已经 pop —— 显式 return 比让
+  ///    `showAppToast` 去静默 no-op 更清楚。
   void _flash(String msg) {
-    setState(() => _toast = msg);
-    Future<void>.delayed(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _toast = null);
-    });
+    if (!mounted) return;
+    showAppToast(context, msg);
   }
 
   static String _fmt(int bytes) {
@@ -281,12 +293,8 @@ class _DataManagePageState extends State<DataManagePage> {
                     ..._buildGroups(colors),
                     const SizedBox(height: Sp.x4),
                     _TipCard(),
-                    if (_toast != null) ...[
-                      const SizedBox(height: Sp.x3),
-                      Text(_toast!,
-                          style: TextStyle(
-                              fontSize: FontSizes.cap, color: colors.primary)),
-                    ],
+                    // ★ 2026-10-18（Owner 第 12 条）：提示行已删除，
+                    //   统一由 shell 层的 `ToastHost` 承担（见 `_flash`）。
                   ],
                 ),
     );

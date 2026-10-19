@@ -3883,17 +3883,83 @@ class PlaybackErrorText {
   /// ```
   ///
   /// ⚠️ 只用于**文案**：日志与 AppLog 照旧记完整地址（那是排查用的）。
+  ///
+  /// ★★ 2026-10-19（Lead 修，`r3-dns` 复核时查出）：原正则只认 `/s/<id>` **一种形态**
+  /// ```text
+  //  原：RegExp(r'https?://(?:127\.0\.0\.1|localhost|\[::1\]):\d+/s/\S*')
+  //  实测（Lead 亲自跑，四条输入对照）：
+  //    ok    '…http://127.0.0.1:57106/s/18df9acc/.'  ⇒ '内置代理取不到这条流'
+  //    LEAK  'LEAK http://127.0.0.1:1/'              ⇒ 原样输出
+  //    LEAK  'boom http://127.0.0.1:9999/api/v2/…' ⇒ 原样输出
+  //    LEAK  '取流失败 http://localhost:2080/movie/x.mp4' ⇒ 原样输出
+  //  ⇒ 换端口/换路径就直接漏，与本函数自己写的三条理由（用户看不懂 /
+  //    端口失效会误导排查 / 暴露内部实现）**直接冲突**。
+  //  ⇒ 修法：**不锚定任何路径**，环回 host + 端口后面一律吃掉。
+  // ```
+  ///
+  /// ⚠️ 为什么不能贪吃过头：`\S*` 会把**紧跟其后的标点与后续文字**一起吞掉
+  ///   （例如「取流失败(地址)后重试」里的 `)` 与「后重试」）。
+  ///   而环回 URL 在句中几乎总是被空白、行尾或标点包围，所以**只吃 URL 自身的字符集**。
+  ///
+  /// ★★ 2026-10-19（Lead 第三次修）：字符类**只放 URL 真正可能出现的 ASCII 字符**
+  /// ```text
+  /// 放： A-Za-z0-9 - . _ ~ % : / ? # [ ] @ & = + ;
+  /// 不放： ) ] } > ' " ` , ! * (   ← 这些是**句子结构**，不是 URL
+  ///       其它一切（含全部 CJK）也**不在集合内** ⇒ 天然终止匹配
+  /// ```
+  /// ⇒ 好处有两层，不必再单独维护一份「中文标点」清单：
+  ///   ① `)` 后面的正文**根本进不来**（不是进来了再剪掉）
+  ///   ② query `?a=1&b=2` **保得住**（`? & =` 都在集合里）
+  ///      —— 第一版把 ASCII 标点排掉是为了救 `)`，结果把 query 也吃掉了；
+  ///      这里改为**精确列出 URL 字符**，两个问题一起消失。
   static final RegExp _loopbackProxyUrl = RegExp(
-    r'https?://(?:127\.0\.0\.1|localhost|\[::1\]):\d+/s/\S*',
+    r'https?://(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:[/?#][A-Za-z0-9\-._~%:/?#\[\]@&=+;,]*)?',
     caseSensitive: false,
   );
 
   /// 把内部代理地址从**用户可见文案**里抹掉
   ///
   /// 替换成一句中性说明，而不是留空 —— 留空会让句子读起来像被截断了。
+  ///
+  /// ★★ 2026-10-19（Lead 第二次修，`r4-dialog` 复核时查出的真缺陷）：
+  /// 第一版只把 **CJK 标点**排除在字符类外，**ASCII 标点仍在射程内** ⇒
+  /// ```text
+  /// IN : '取流失败(http://127.0.0.1:8080/s/x)后重试'
+  /// OUT: '取流失败(（内置代理地址）'      ← ')' 连同「后重试」三个字全没了
+  /// IN : 'see http://127.0.0.1:8080/s/x, retry'
+  /// OUT: 'see （内置代理地址） retry'    ← ', ' 被吃
+  /// ```
+  /// ★ 这正是本函数注释里说的那种「缺字句」，只是发生在 ASCII 上。
+  ///
+  /// # 为什么是「字符类 + 事后剪尾」两条一起上，而不是只改字符类
+  /// ```text
+  /// 只把 ASCII 标点排进字符类 ⇒ 修复上面两条，但 URL 的 query 会被吃掉：
+  ///   '…/api?a=1&b=2' 里 '&'、'=' 一旦排掉 → 只剩 '?a'，信息错得**更隐蔽**。
+  /// 而 `)` 这条**事后剪尾救不回来** —— 它已经被字符类吃进 match 里了。
+  /// ⇒ 两条必须同时上：字符类负责「别多吞」，剪尾负责「别把尾随标点带走」。
+  /// ```
   static String hideInternalUrls(String raw) {
     if (raw.isEmpty) return raw;
-    var s = raw.replaceAll(_loopbackProxyUrl, '（内置代理地址）');
+
+    // ① 正则逐字匹配，但每个 match 命中后**剪掉尾随标点**
+    const tailPunct = '.,;:!?)]}>\'"`';
+    final buf = StringBuffer();
+    var last = 0;
+    for (final m in _loopbackProxyUrl.allMatches(raw)) {
+      var hit = m[0]!;
+      var cut = 0;
+      while (hit.length - cut > 1 && tailPunct.contains(hit[hit.length - 1 - cut])) {
+        cut++;
+      }
+      buf
+        ..write(raw.substring(last, m.start))
+        ..write('（内置代理地址）')
+        ..write(hit.substring(hit.length - cut));
+      last = m.end;
+    }
+    buf.write(raw.substring(last));
+    var s = buf.toString();
+
     // 抹掉之后会剩下「Failed to open （内置代理地址）」这种英文尾巴，
     // 整句替换成中文（**只认这一种已知形态**，别的英文原样留着）
     s = s.replaceAll(

@@ -14413,7 +14413,24 @@ class _PlayerPageState extends State<PlayerPage>
      */
     _prefetchYieldTimer?.cancel();
     _prefetchYieldTimer = null;
-    unawaited(SourinApi.endYieldForSeek());
+    // ★★ 2026-10-19（Lead 修，批末自审发现的**真行为回归**）：
+    //   `dispose()` 里 `unawaited` 一个**会抛**的调用，而这里没有任何兜底。
+    //
+    // ```text
+    // 现象：核心未启动时（SourinCoreException）异常从 dispose 逃逸成测试失败，
+    //       咬红 zz_cr_panel_double_enter 与 zz_cr_panel_notch A③。
+    // 根因：`unawaited` 只是"不 await"，**不等于**"异常被吃掉" ——
+    //       Future 里的 throw 仍会变成未捕获异常。
+    // 为什么是回归：同文件 `_beginPrefetchYield`（:996 / :5540）**有** try/catch，
+    //       只有 dispose 这处没有 ⇒ 本轮 N10 引入的不对称。
+    // ```
+    //
+    // ⚠️ 为什么这里**必须**吞掉：dispose 是在页面销毁时跑的，
+    //   此时抛异常对用户毫无意义（页面都没了），只会污染日志与测试。
+    unawaited(SourinApi.endYieldForSeek().catchError((Object e) {
+      // 失败只记日志，不外抛 —— dispose 阶段没有任何补救动作可做
+      AppLog.write('PLAYER', 'dispose: 结束取流让出失败（已忽略）：$e');
+    }));
     // 缺陷 13：轮询定时器必须跟着本页停掉
     _bufferPoller?.stop();
     _bufferPoller?.clear();

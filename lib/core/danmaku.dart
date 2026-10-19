@@ -556,6 +556,7 @@ class DanmakuException implements Exception {
     this.errorMessage = '',
     this.body = '',
     this.uri = '',
+    this.resolvedAddress = '',
     this.hint,
   });
 
@@ -579,6 +580,22 @@ class DanmakuException implements Exception {
 
   /// 出错的请求地址（不含签名，可以安全展示）
   final String uri;
+
+  /// 这次失败时**本机解析到、并去连的那个地址**（空串 = 没拿到）
+  ///
+  /// ★★★ 2026-10-19（R3-③/⑦ 收尾）：只来自 `SocketException.address`。
+  ///
+  /// # 它为什么存在（不是为了"多打印一行"）
+  /// ```text
+  /// 「DNS 被劫持」与「服务没起来」在**连接层是同一个现象**（都连不上），
+  /// 区别只在"连的那个地址对不对"。而那个地址**本来就在异常里**，
+  /// 改前被 `catch (e)` 丢掉了 ⇒ UI 只能给出同一句话。
+  /// ⇒ 把它带出来，UI 才能把两件事分开说（见 DanmakuProbeReport）。
+  ///
+  /// ⚠️ 隐私：它是一个 IP，不是 URL，**不含 token**，与 [uri] 同级可展示。
+  /// ⚠️ 语义边界：只有"连不上"那一支有值；超时（TimeoutException）
+  ///    分支拿不到地址 ⇒ 空串。**空串必须被当成"没有证据"，不能当成"正常"。**
+  final String resolvedAddress;
 
   /// 「为什么失败 + 怎么办」的中文动作，null = 没有比 [message] 更具体的话可说
   ///
@@ -1668,7 +1685,7 @@ class DanmakuHint {
           title: '本机外部弹幕 拒绝了这次请求',
           text: '这次弹幕是从本机外部弹幕（${DanmakuLocalService.hostPort}）取的，'
               '而它回了 401/403（原文：${xe.isEmpty ? "未提供原因" : xe}）。'
-              '本机外部弹幕 的本地接口**免签名**、正常不需要凭证 ⇒ '
+              '本机外部弹幕 的本地接口「免签名」、正常不需要凭证 ⇒ '
               '这个报错多半说明 2080 端口上回应的不是外部弹幕，'
               '或者它的接口版本对不上。'
               '点下面的「改用官方 API」换一条路重取一次'
@@ -1715,8 +1732,8 @@ class DanmakuHint {
         text: '弹幕服务有两个数据源，在弹幕设置里选一个：'
             '「本机外部弹幕」（本机跑着外部弹幕 就用它，免签名、不用申请任何凭证）'
             '或「官方 API」（它要一对 AppId / AppSecret —— '
-            '构建期若已注入则**直接用**；没注入的构建，'
-            '在弹幕设置的「凭证」一节**填进去**即可，'
+            '构建期若已注入则「直接用」；没注入的构建，'
+            '在弹幕设置的「凭证」一节「填进去」即可，'
             '或去 doc.dandanplay.com/open 申请一对）。'
             '选好之后点「重新获取弹幕」。'
             '另外：外部站视频可以改用「外部视频源弹幕」直接绑定，不需要这对凭证。',
@@ -1735,9 +1752,9 @@ class DanmakuHint {
     return DanmakuHint(
       title: '凭证没通过',
       text: '弹幕服务说这次请求的凭证不对（$xe）。'
-          '本次请求用的是客户端**内置**的官方凭证；'
+          '本次请求用的是客户端「内置」的官方凭证；'
           '★ 若要换成你自己的，去弹幕设置的「凭证」一节填一对 AppId / AppSecret'
-          '（构建期没注入内置凭证时，那一节就是**唯一**的补救入口）。'
+          '（构建期没注入内置凭证时，那一节就是「唯一」的补救入口）。'
           '也可以改用「本机外部弹幕」（免签名）或「外部视频源弹幕」，'
           '再点「重新获取弹幕」。',
       action: const DanmakuHintAction(label: '去弹幕设置', openDanmakuSettings: true),
@@ -2206,6 +2223,36 @@ class ExternalDanmakuClient {
     return u.replace(pathSegments: <String>['***', ...segs.skip(1)]).toString();
   }
 
+  /// 从一次 [SocketException] 里取出**它连的那个地址**（空串 = 取不到）
+  ///
+  /// ⚠️ 取不到就**如实返回空串**，不猜、不回填 —— 上层据此知道
+  ///    「这次没有地址证据」，不会拿空串去跑伪造段判据。
+  ///
+  /// ⚠️ `SocketException.address` 的类型是 `InternetAddress`，
+  ///    不同平台可能是 IPv4 或 IPv6 ⇒ 取它的 `address` 字段（裸串），
+  ///    上层的判据对两种都成立（IPv6 花样段就是靠这个进来的）。
+  static String _addressOf(SocketException e) {
+    final a = e.address;
+    if (a == null) return '';
+    // ★★ 2026-10-19（Lead 修自审 P1-3）：用 `a.address`（裸 IP），
+    //   **不要**用 `a.toString()` ——
+    //
+    // ```dart
+    // InternetAddress.tryParse('74.86.17.48')!.toString()
+    //   ⇒ "InternetAddress('74.86.17.48', IPv4)"   ← Dart 的调试表示！
+    // InternetAddress.tryParse('74.86.17.48')!.address
+    //   ⇒ "74.86.17.48"                             ← 裸 IP
+    // ```
+    //
+    // ⇒ 这串会进 `DanmakuProbeReport.detail`，而 detail 在面板里是
+    //   **用户可见**的（monospace 那段）⇒ 用户会看到 `InternetAddress(...)`
+    //   这种开发者写法。同文件 `_diagnose` 用的就是 `a.address`，那才是对的。
+    //
+    // ⚠️ IPv6 同样正确：`a.address` 对 IPv6 返回不带方括号的裸地址，
+    //   与 `looksForged` 的字面判据口径一致。
+    return a.address;
+  }
+
   /// 发一次请求，并把**网络层异常**翻译成带打码地址的 [DanmakuException]。
   ///
   /// # 为什么必须有这一层（CWE-532 的**第二个口子**）
@@ -2256,10 +2303,35 @@ class ExternalDanmakuClient {
         // statusCode 0 = 还没拿到响应（同 DanmakuException 的既有约定）
         uri: _safeUri(uri),
       );
-    } on SocketException {
+    } on SocketException catch (e) {
+      /*
+       * ★★★ 2026-10-19（R3-③/⑦ 收尾）：**把解析到的地址带出去**。
+       *
+       * # 为什么（这是本轮唯一新增的信号，来源是实测）
+       * ```text
+       * 改前：catch (e) 丢掉异常本体，UI 只拿到一句
+       *       「连不上弹幕服务（地址不通或服务没起来）」。
+       *       ⇒ 本机 DNS 被劫持到伪造段时，UI **无法**把
+       *         "被劫持" 与 "服务没起来" 分开 —— 它只看到"连不上"。
+       *
+       * `SocketException.address` 是**已经解析出来、并且连不上的那个 IP**
+       * （本机实测：连 74.86.17.48 超时 ⇒ address 就是它）。
+       * ⇒ 它就是那条"本机拿到的地址"，正是判据需要的输入。
+       *
+       * # 为什么这样就够，不需要在 UI 上再联网探测
+       * ```text
+       * 判据 `DanmakuProbeReport.looksForged` 是**纯函数**（查已知伪造段表）。
+       * 喂它这个 address 即可 ⇒ 失败路径上**零新增网络请求**。
+       * ⚠️ 这**不是**新增依赖：`address` 本来就在异常里，语义与本文件
+       *    既有的 `uri` 字段一致（都只做展示，都不打码 token）。
+       * ⚠️ 但它**只覆盖"连不上"那一支**（抛到了 SocketException）。
+       *    超时（TimeoutException）分支拿不到地址 ⇒ 那一支仍由
+       *    `_diagnose` 的 DoH 对照兜底（见 DanmakuProbeReport.dohLookup）。
+       */
       throw DanmakuException(
         '连不上弹幕服务（地址不通或服务没起来）。请检查地址 / 服务是否在运行。',
         uri: _safeUri(uri),
+        resolvedAddress: _addressOf(e),
       );
     } on HttpException {
       /*

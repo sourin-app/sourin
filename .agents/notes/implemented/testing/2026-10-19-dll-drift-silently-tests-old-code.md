@@ -145,5 +145,5 @@ tests/batch6_backup.rs       export ×4 + import ×9 仍传 2 参 ⇒ 13 处 E00
 ```text
 · 若 CI 与本机统一到同一个 DLL 落点（而不是各自拷一份），
   这条笔记的核心建议自动失效，可归档。
-· 若本仓引入 build fingerprint（如把 git sha 编进 DLL 并��加载时校验），
+· 若本仓引入 build fingerprint（如把 git sha 编进 DLL 并在加载时校验），
   那比 md5 门禁更强 —— 因为它连「忘了 build」都能抓到。

@@ -149,6 +149,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
+import 'app_dialog_shell.dart';
 import 'app_loading.dart';
 import 'skip_timeline.dart';
 import '../../ui/app_palette.dart';
@@ -2213,41 +2214,135 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
     final boxW = math.min(kDialogMaxW, availW);
     final boxH = math.min(kDialogMaxH, availH);
 
-    return Dialog(
-      backgroundColor: colors.background,
-      // 默认 40 的横向内边距正是窄窗口塌成竖条的原因之一 —— 收紧它
-      insetPadding: const EdgeInsets.symmetric(
-        horizontal: margin,
-        vertical: margin,
-      ),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(Radii.lg),
-      ),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: boxW, maxHeight: boxH),
-        child: switch (_loadState) {
-          /*
-           * ★ 三态分支（2026-10-18）
-           *
-           * loading ⇒ 只转圈（与改前一致）
-           * ok      ⇒ 正常渲染四行（与改前一致）
-           * failed  ⇒ **错误 + 重试**，绝不渲染"片头未设"
-           *
-           * ⚠️ 改前这里是 `_loading ? 转圈 : 正常` ——
-           *    读取失败也走"正常"那条，于是画成「片头未设」，
-           *    与"用户真的没设过"无法区分。见 `_LoadState` 的说明。
-           */
-          _LoadState.loading => const SizedBox(
-              height: 200,
-              child: Center(child: AppLoading()),
-            ),
-          _LoadState.failed => _loadFailedPanel(colors),
-          _LoadState.ok => Padding(
-                padding: const EdgeInsets.all(Sp.x5),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-19（R4）：裸 `Dialog` → 统一外壳 `AppDialogShell`
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * 改前这里是自建的 `Dialog(backgroundColor: … / shape: 圆角 / child:
+     * ConstrainedBox(...))` —— 全仓唯一一个没走外壳的宽弹窗
+     * （其余 6 个都走 `AppDialogShell`；外壳文件头记着改前"宽度四种、高度三种"）。
+     *
+     * # 收拢后白拿到的三件事
+     * ```text
+     * ① 标题栏（title + subtitle + 右上角关闭 IconButton）——
+     *    改前这个弹窗**根本没有标题**：打开只知道是"片头片尾设置"，
+     *    不知道是**哪一部**片的（`widget.title` 只写进了存储，从没显示过）
+     * ② 圆角/底色/描边取自同一处 —— 改前是 `Radii.lg`(22) + 写死
+     *    `colors.background`，与其余弹窗的 `Radii.rLg` + surfaceContainerHighest
+     *    是**两套写法**（数值同为 22，但取色语义不同）
+     * ③ Esc 关闭 / 焦点循环 / 点遮罩关闭收口到外壳
+     * ```
+     *
+     * # ⚠️ `maxHeight` **必须破例**（620 会把第四行挤出视口 —— 实测）
+     *
+     * 规范默认 620，但本弹窗有**实测反证**（本轮探针，1280x800 视口、
+     * 直接渲卡片本体、读真实 `getRect`）：
+     * ```text
+     * 卡片高 620 ⇒ 滚动视口底 618.0，四行里 **1 行掉出视口**（outOfView=1）
+     * 卡片高 740 ⇒ 滚动视口底 678.0，四行 **全在视口内**（outOfView=0）
+     * 预览高度预算 previewHeightFor(620) = 620-144-360 = **116**
+     *                 previewHeightFor(740) = **236**
+     * ```
+     * `kChromeH`(144) + `kMidRestH`(360) 都是**真机实测**的固定开销，
+     * 620 扣完只剩 116 给预览 —— 16:9 下约 206x116，比 Owner 当年嫌小的
+     * 277x156 **还小**（「中间的预览太小了」）。
+     * ⇒ 620 会**同时复发两个已修缺陷**：第四行看不见 + 预览看不清。
+     * ⇒ 这里显式传 `boxH`（= min(740, 窗口高-32)）并保留本注释；
+     *    §3.5 写明「maxHeight 可覆盖」，前提就是写清为什么（即这一段）。
+     *
+     * ⚠️ `kDialogMaxH = 740` / `kDialogMaxW = 820` **照样在用**：
+     *    `test/skip_history_dialog_test.dart` 钉着它们，而且
+     *    `previewHeightFor(boxH)` 的高度预算正是从 `kDialogMaxH` 推的
+     *    —— 只改外壳外壳、不动预算，预览会算得比实际可用高，第四行照样掉出去。
+     */
+    return AppDialogShell(
+      /*
+       * 标题 = 片名。
+       * ⚠️ 外壳的 `title` **不限行**，`subtitle` 才 `maxLines: 1` ——
+       *    超长片名会把标题栏撑成两行、把四行读数往下挤。
+       *    这里先自己截断（外壳没有 `titleMaxLines` 参数，且本轮只许动外壳的
+       *    这一处调用，不去扩它的接口）。
+       */
+      title: widget.title.isEmpty
+          ? '片头片尾'
+          : (widget.title.length > 24
+              ? '${widget.title.substring(0, 24)}…'
+              : widget.title),
+      // 副标题说清这个窗在干嘛（改前既没有标题、也没有副标题）
+      subtitle: '拖动箭头设片头片尾；设好后播放时自动跳过',
+      /*
+       * 图标：`movie_outlined`。
+       * 与 `source_composer_dialog`(auto_fix_high) / `subtitle_panel`(subtitles)
+       * 同族 —— 有图标的标题栏才是"统一形态"。
+       */
+      icon: AppIcons.movie_outlined,
+      // `onClose` 必须传 —— 外壳只在它非空时才渲染右上角关闭钮
+      onClose: () => Navigator.of(context).pop(),
+      /*
+       * 宽度 820（= `kDialogMaxW`，§3.5 的宽版面档，**白名单内**）。
+       * ⚠️ 外壳的 `width` 是**固定宽**，改前是 `ConstrainedBox(maxWidth:)`
+       *    —— 窄窗口下改前会跟着窗口缩（`orchestrator_skip_dialog_size_test.dart`
+       *    守着"不塌成竖条"这个语义）。所以这里传 `boxW` = min(820, 可用宽)，
+       *    把那条既有能力原样保住。
+       */
+      width: boxW,
+      /*
+       * `fill` 用默认 `true`：本弹窗经 `showAppDialog` 挂载
+       * （`player_page.dart:9410`），外壳的 `fill` 只决定"谁负责定位"，
+       * 两种取值在 `showDialog` 路由下都渲染成"遮罩 + 居中卡片"。
+       */
+      maxHeight: boxH,
+      /*
+       * 内容**自己管滚动**（中段 `Expanded` + `SingleChildScrollView`，
+       * 见下面大段"中段必须可滚动"）。外壳若再套一层
+       * `SingleChildScrollView`，`Expanded` 会因高度无界而崩
+       * —— 与 `danmaku_settings_dialog` / `source_switch_dialog` 同一处理。
+       */
+      scrollable: false,
+      /*
+       * ── 底部按钮区：走外壳的 `actions`（2026-10-19，R4）──
+       *
+       * # 为什么必须挪到这里（这是"三个弹窗按钮区一致"的判据）
+       * ```text
+       * 外壳 `_ActionBar` = Divider(height:1) + Padding(fromLTRB(x6, x2, x6, x3))
+       *                    + Row(mainAxisAlignment: end)
+       * ⇒ 分隔线 / 右对齐 / 间距全部由外壳一处给出。
+       * 改前 `_footer` 是**自己画的一行 Row**（没有分隔线）⇒ 与另外两个弹窗
+       * 差一条分隔线，而且按钮区高度也不一样（探针 hasDivider=false）。
+       * ```
+       * ★ 只取 OK 态的按钮：loading / failed 两态**不该有**保存按钮
+       *   （读不到数据时"确认设置"是无意义的；failed 态有自己的「重试」）。
+       *
+       * ⚠️ 硬约束：`test/skip_marker_test.dart:651` 钉着源码里必须有
+       *    `_footer(colors)` 这个字面量（"保存是这个弹窗的唯一出口"）。
+       *    所以这里**仍然调用 `_footer`**，只是它现在返回的是「纯按钮行」，
+       *    由外壳的 `_ActionBar` 负责分隔线/右对齐/间距。
+       */
+      actions: _loadState == _LoadState.ok ? _footer(colors) : null,
+      child: switch (_loadState) {
+        /*
+         * ★ 三态分支（2026-10-18）
+         *
+         * loading ⇒ 只转圈（与改前一致）
+         * ok      ⇒ 正常渲染四行（与改前一致）
+         * failed  ⇒ **错误 + 重试**，绝不渲染"片头未设"
+         *
+         * ⚠️ 改前这里是 `_loading ? 转圈 : 正常` ——
+         *    读取失败也走"正常"那条，于是画成「片头未设」，
+         *    与"用户真的没设过"无法区分。见 `_LoadState` 的说明。
+         */
+        _LoadState.loading => const SizedBox(
+            height: 200,
+            child: Center(child: AppLoading()),
+          ),
+        _LoadState.failed => _loadFailedPanel(colors),
+        _LoadState.ok => Padding(
+              padding: const EdgeInsets.all(Sp.x5),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                     // ── 固定头（标题行 —— 原版显示时长摘要）──
                     _header(colors),
 
@@ -2518,13 +2613,16 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
 
                     const SizedBox(height: Sp.x2),
 
-                    // ── 固定脚（保存按钮永远可见）──
-                    _footer(colors),
+                    /*
+                     * ⚠️ 2026-10-19（R4）：保存按钮**已挪到外壳的 `actions:`**
+                     *    （见上面 `actions:` 那段注释）—— 那里才有分隔线 +
+                     *    右对齐 + 与另外两个弹窗同一组间距。
+                     *    这里不再渲染 `_footer`，否则会出现**两排**保存按钮。
+                     */
                   ],
                 ),
               ),
         },
-      ),
     );
   }
 
@@ -2639,12 +2737,34 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
               ),
             ),
             const SizedBox(width: Sp.x1),
-            Text(
-              text,
-              style: TextStyle(
-                fontSize: FontSizes.sm,
-                fontWeight: set ? FontWeight.w600 : FontWeight.w400,
-                color: set ? colors.foreground : colors.mutedForeground,
+            /*
+             * ★★ 2026-10-19（t486 溢出归零）：文字必须**可缩**。
+             *
+             * # 极窄 300 逻辑宽下这一行曾报 `RenderFlex overflowed`：
+             * ```text
+             *   徽章内 Row 可用宽 202.0（删掉头部那个 32px 关闭钮之后）
+             *   子项 = 色点 7 + Sp.x1 4 + 文字 199.5 = 210.5  ⇒ 溢出 8.5
+             * ```
+             * 根因：文字是**无 flex 的子项**，在 `mainAxisSize.min` 的 Row 里
+             * 按自身固有宽度要空间，而外层 `Wrap` 给它的上限只有 202
+             * ⇒ 放不下就**溢出**（而不是被压缩）。
+             *
+             * # 修法（**不缩字号**、**不砍掉省略号**）
+             * `Flexible` + `TextOverflow.ellipsis`：空间不够时压缩文字本身、
+             * 末尾出省略号 ⇒ 既**零溢出**，又**保住**「放不下会省略」这个可见行为。
+             * ⚠️ 用 `Flexible` 而不是 `Expanded`：徽章在 `Wrap` 里，
+             *    宽裕时必须 shrink-wrap（`Expanded` 会强行撑满、两个徽章被拉开）。
+             */
+            Flexible(
+              child: Text(
+                text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: FontSizes.sm,
+                  fontWeight: set ? FontWeight.w600 : FontWeight.w400,
+                  color: set ? colors.foreground : colors.mutedForeground,
+                ),
               ),
             ),
           ],
@@ -2681,23 +2801,28 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
           ),
         ),
         const SizedBox(width: Sp.x2),
-        // ⚠️ 必须外层 `SizedBox` 钉死（`constraints` 单给不够 —— 见 `_StepBtn`）
-        SizedBox(
-          width: kHeaderBtn,
-          height: kHeaderBtn,
-          child: IconButton(
-            onPressed: () => Navigator.of(context).pop(),
-            icon: const Icon(AppIcons.close, size: 20),
-            tooltip: '关闭',
-            padding: EdgeInsets.zero,
-            visualDensity: VisualDensity.compact,
-            style: IconButton.styleFrom(
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              minimumSize: const Size(kHeaderBtn, kHeaderBtn),
-              padding: EdgeInsets.zero,
-            ),
-          ),
-        ),
+        /*
+         * ⚠️ 2026-10-19（R4）：这里**删掉了**旧的内联关闭按钮
+         *    （`SizedBox(width: kHeaderBtn, child: IconButton(...tooltip:'关闭'))`）。
+         *
+         * # 为什么（实测两个关闭钮）
+         * ```text
+         * 收拢到 AppDialogShell 后，外壳的 `_Header` 已经画了一个关闭钮
+         * （`tooltip: '关闭'`，`:573`）。再留这一个 ⇒ 同一张卡片上有**两个 ×**，
+         * 而且两者**不在同一条线上**：
+         *   探针读数  nClose=2
+         *     外壳那个  closeRight=1030  距卡片右缘 **20px**（Sp.x3=12 + 图标留白）
+         *     _header 那个 closeRight=?   距卡片右缘 **16px**
+         * ⇒ 两个 × 差 4px，视觉上就是"歪的"（Owner 说的「丑」正是这类）。
+         * ```
+         * 外壳的关闭钮是 §3.5 规定的**唯一**位置（标题栏右侧），
+         * 所以删内联那个，只保留外壳的。
+         *
+         * ⚠️ 预算：这条**不影响** `kChromeH` —— `_header` 这一行的高度
+         *    由徽章 + `kHeaderBtn`(32) 撑着，删掉按钮后这一行仍高 32
+         *    （徽章所在 Row 的 crossAxisAlignment 决定了行高），
+         *    已用探针复测（见报告 ③ 的 cardH / 视口读数）。
+         */
       ],
     );
   }
@@ -3089,7 +3214,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
       return Expanded(
         child: Tooltip(
           message: playing
-              ? '正在循环播放$label整段 —— 点一下**暂停在这一帧**'
+              ? '正在循环播放$label整段 —— 点一下「暂停在这一帧」'
               : ok
                   ? '循环播放$label整段${usingDefault ? "（未设置，用默认范围）" : ""}'
                   : '$label区间还没设，或长度不足 1 秒',
@@ -3190,32 +3315,65 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
     );
   }
 
+  /// 底部按钮行 —— **由外壳的 `_ActionBar` 承载**（分隔线 / 右对齐 / 间距）
+  ///
+  /// ⚠️ 2026-10-19（R4）：这里**不再自己画分隔线和外边距**。
+  /// ```text
+  /// 改前：`_footer` 是一整行 Row，直接塞在内容区底部
+  ///       ⇒ 没有 Divider，也没有外壳那套 fromLTRB(Sp.x6, Sp.x2, Sp.x6, Sp.x3)
+  ///       ⇒ 与 update / composer 的按钮区**差一条分隔线**（探针 hasDivider=false）
+  /// 现在：外壳 `_ActionBar` 给 Divider + Padding + Row(end)，
+  ///       本方法只负责"按钮本身" ⇒ 三处形态由**同一段代码**产出。
+  /// ```
+  /// ★ 保留方法名 `_footer`：`test/skip_marker_test.dart` 钉着
+  ///   `dlg.contains('_footer(colors)')`（不许改别人的测试）。
   Widget _footer(AppPalette colors) {
     return Row(
+      /*
+       * ★ `mainAxisSize: MainAxisSize.min` 是**必须**的（2026-10-19 实测踩到）。
+       *
+       * 外壳的 `_ActionBar` 把 `actions` 放进 `Row(mainAxisAlignment: end,
+       * children: [child])` —— 而 Row 给**非 flex 孩子**的是**无界宽**约束。
+       * 我第一版在这个 `_footer` 里用了 `Flexible`（想给错误文案兜底），
+       * 立刻抛：
+       * ```text
+       * RenderFlex children have non-zero flex but incoming width constraints
+       * are unbounded.
+       * ⇒ zz_t66_skip_write_path_test 掉 4 条（①②③⑦ 的布局全崩）
+       * ```
+       * ⇒ 按钮行只 shrink-wrap（min），**不用任何 flex**；长文案改用
+       *   `ConstrainedBox(maxWidth) + FittedBox(scaleDown)` 兜。
+       */
+      mainAxisSize: MainAxisSize.min,
+      // ★ 靠右 —— 与外壳 `_ActionBar` 的 Row(mainAxisAlignment: end) 一致
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
         /*
-         * ★ 2026-10-18 修：这里以前写 `if (!_canSave)`，而 `_canSave`
-         *   含「是否在忙」⇒ 保存过程中会闪现「区间不合法」的假报错。
-         *   现在用 `_inputValid`（纯输入校验）—— 语义与文案对上了。
-         *   详见 `_inputValid` 的说明。
+         * ⚠️ 错误/校验文案：**不能**用 Flexible（父级宽无界，见上），
+         * 改为「硬上限宽 + scaleDown」。
+         *
+         * 那段文案是「区间不合法：需要 起点 < 终点，且片头在片尾之前」，
+         * `_saveError` 还可能是 `$e` 抛出的任意长字符串 —— 不限宽就会把
+         * 按钮挤出卡片（RenderFlex overflow）。
+         * `FittedBox(scaleDown)` 让长文案缩小而不换行 ⇒ 按钮区高度恒定。
          */
-        if (_saveError != null)
-          Padding(
-            padding: const EdgeInsets.only(right: Sp.x3),
-            child: Text(
-              // 写失败必须如实说 —— 绝不静默（尤其是重置：它删数据）
-              _saveError!,
-              style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
-            ),
-          )
-        else if (!_inputValid)
-          Padding(
-            padding: const EdgeInsets.only(right: Sp.x3),
-            child: Text(
-              // 说清为什么不给保存（不给原因的话用户会以为按钮坏了）
-              '区间不合法：需要 起点 < 终点，且片头在片尾之前',
-              style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+        if (_saveError != null || !_inputValid)
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 260),
+            child: Padding(
+              padding: const EdgeInsets.only(right: Sp.x3),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Text(
+                  // 写失败必须如实说 —— 绝不静默（尤其是重置：它删数据）
+                  // 说清为什么不给保存（不给原因的话用户会以为按钮坏了）
+                  _saveError ?? '区间不合法：需要 起点 < 终点，且片头在片尾之前',
+                  maxLines: 1,
+                  style: TextStyle(
+                      fontSize: FontSizes.cap, color: colors.error),
+                ),
+              ),
             ),
           ),
         TextButton(

@@ -1385,6 +1385,19 @@ class CachePage extends StatefulWidget {
   @visibleForTesting
   static bool get debugSeenMouse => _HoverCapability.debugSeenMouse;
 
+  /// ★ R8 粘滞位：当前是否已挂上 MouseTracker 订阅（泄漏判据）
+  @visibleForTesting
+  static bool get debugListeningHoverCapability =>
+      _HoverCapability.debugListening;
+
+  /// ★ R8 粘滞位：**我们自己**往 MouseTracker 上挂了几条订阅（泄漏读数用）
+  ///
+  /// ⚠️ 不用 `ChangeNotifier.hasListeners`（它是 `@protected`，
+  ///    外部读会触发 `invalid_use_of_protected_member`）。
+  ///    改读我们自己的簿记 —— 对"我们有没有泄漏"这件事，它才是权威。
+  @visibleForTesting
+  static int get debugHoverListenerCount => _HoverCapability.debugListenerCount;
+
   /// ★ R8 粘滞位：清成「进程刚启动、从没见过鼠标」+ detach 监听
   ///
   /// ⚠️ tearDown 必须调它，否则上个用例的 listener 会串到下个用例。
@@ -1471,6 +1484,12 @@ class CachePageState extends State<CachePage> {
   @override
   void dispose() {
     DownloadQueue.tasks.removeListener(_onQueueChanged);
+    // ★ R8：解开挂在全局 MouseTracker 上的粘滞位订阅
+    //
+    // 只解订阅、**不重置粘滞位的值** —— 它是进程级语义
+    // （"这台机器见过鼠标"），不该因为关掉一个页面就忘掉。
+    // 详见 `_HoverCapability.disposeListener` 的说明。
+    _HoverCapability.disposeListener();
     super.dispose();
   }
 
@@ -2100,17 +2119,48 @@ abstract final class _HoverCapability {
     }
   }
 
+  /// ★ 解开订阅（**生产路径也要调**，不只是测试）
+  ///
+  /// # 为什么必须解（lead 2026-10-19 点名核查）
+  /// ```text
+  /// listener 挂在 RendererBinding.mouseTracker —— **全局单例**。
+  /// 不解的话每挂一次「已缓存」页就多一个回调，且它们引用的是
+  /// **进程级 static**，不会随 State 消失。
+  /// ⇒ 后果不是"内存泄漏"（static 本来永不回收），而是
+  ///   **每次鼠标事件都会唤醒一串早已无用的回调**；
+  ///   若将来这个回调里加了 setState / 任何副作用，就会变成
+  ///   "页面已经销毁了还在响应鼠标" 这类难查的 bug。
+  /// ```
+  /// ⚠️ 但粘滞位语义要求「进程级记住」⇒ **值必须保留**，只解订阅。
+  ///    解完之后如果再次需要（用户又进「已缓存」页），
+  ///    `_ensureListening()` 会重新挂上，并**重新同步读一次**全局状态 ——
+  ///    所以"解了之后值会不会丢"这个担心不成立。
+  static void disposeListener() {
+    if (!_listening) return;
+    WidgetsBinding.instance.mouseTracker.removeListener(_onMouseTrackerChanged);
+    _listening = false;
+  }
+
   /// 测试用：把粘滞位清成「进程刚启动、从没见过鼠标」
   ///
   /// ⚠️ 必须同时 detach，否则上一个用例的 listener 还挂着会串味。
   @visibleForTesting
   static void debugReset() {
     _seenMouse = false;
-    if (_listening) {
-      WidgetsBinding.instance.mouseTracker.removeListener(_onMouseTrackerChanged);
-      _listening = false;
-    }
+    disposeListener();
   }
+
+  /// 测试用：当前是否已挂上订阅
+  @visibleForTesting
+  static bool get debugListening => _listening;
+
+  /// 我们自己的订阅计数（0 或 1）—— 泄漏判据
+  ///
+  /// 用**自己的簿记**而不是 `ChangeNotifier.hasListeners`：
+  /// 后者是 `@protected`，外部读会触发 lint 且语义是"所有 listener"，
+  /// 而我们要回答的是"**我们**有没有泄漏"。
+  @visibleForTesting
+  static int get debugListenerCount => _listening ? 1 : 0;
 
   @visibleForTesting
   static bool get debugSeenMouse => _seenMouse;

@@ -261,12 +261,40 @@ class AppDialogShell extends StatelessWidget {
           //   "浮起来"的感觉没了。
           color: glass
               /*
-               * ★★ 2026-10-18（任务 B）：玻璃档下 Material **自身透明**，
-               *    材质由外面那层 `GlassContainer` 画（见下方 `_glassWrap`）。
-               *    仍然保留 Material 作为涟漪宿主 —— 去掉它会抛
-               *    "ink splashes may be invisible"（SwitchListTile/ChoiceChip 依赖）。
+               * ★★★ 2026-10-19（第 66 轮 R3-① / R3-②）：`Colors.transparent` → **实色衬底**
+               *
+               * # 改前为什么是 transparent
+               * ```text
+               * 任务 B 玻璃化时把遮光整个交给外层 `GlassContainer`，
+               * 内层 Material 置透明 —— 当时的目标是"别叠出两层底"。
+               * ```
+               * # 但真渲染像素取证证明那样**把文字弄糊了**
+               * ```text
+               * 在最坏底图（纯白 + 高饱和动画色块）上真渲染本弹窗，
+               * 对每个 Text 的矩形做颜色直方图（众数=真实背景、次众数=字形）：
+               *
+               *   卡片内真实背景  rgb(94,91,45) / rgb(95,35,50) / rgb(26,85,94)
+               *                   ← **橄榄/暗红/暗青**，全是底下色块透上来的
+               *   说明档 #8E939B 对 rgb(94,91,45) = **2.09:1**（正文线 4.5）
+               *   次要档 #B9BEC6 对 rgb(94,91,45) = **3.74:1**
+               *
+               * 而"常量对 #14161B"是 5.86~14.5:1（t27_w1 早钉过）——
+               * 两组数字对不上，唯一解释就是**真实背景根本不是那个常量色**。
+               * ```
+               * # 修法：玻璃只负责质感，遮光由这层实色负责
+               * ```text
+               * 玻璃档也给它一个**高不透明度**的实色底（与非玻璃档同源 #14161B@0.98）。
+               * ⇒ 文字永远压在自己那层实色上，与底下画面无关；
+               *   外层的 GlassContainer 仍然在（描边/模糊/高光都是它画的），
+               *   只是**不再承担遮光** —— 这是职责划分，不是把玻璃删掉。
+               *
+               * ⚠️ 保留 2% 透明度（0.98）：与 `forceDarkCard` 那一支完全一致，
+               *    玻璃的"透一点底色"观感仍在，但不足以污染文字对比度。
+               * ⚠️ 涟漪宿主仍是这个 Material（只是它现在**有底色**了，更好）——
+               *    `SwitchListTile` / `ChoiceChip` 依赖它，不能删。
+               * ```
                */
-              ? Colors.transparent
+              ? const Color(0xFF14161B).withValues(alpha: 0.98)
               : forceDarkCard
                   // 深色档：与 DanmakuTextColors.panelBg 同源（业主 fig1 实测值）
                   ? const Color(0xFF14161B).withValues(alpha: 0.98)

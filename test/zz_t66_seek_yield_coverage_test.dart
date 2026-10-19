@@ -273,7 +273,15 @@ void main() {
       reason: '必须用 first 判据避免连续 seek 叠定时器',
     );
     final endCalls = RegExp(
-      r'unawaited\(\s*SourinApi\.endYieldForSeek\(\)\s*\)',
+      // ★ 2026-10-19（Lead 修，批末全量跑抓出）：原正则要求
+      //   `unawaited(...endYieldForSeek()\s*)` —— 即 `()` 之后**立刻**闭括号。
+      //   本轮给 dispose 那处加了 `.catchError(...)`（修「异常从 dispose 逃逸」
+      //   那个真回归）⇒ 正则失配 ⇒ 只数到定时器那 1 处 ⇒ 这条变红。
+      //
+      // ⇒ 放宽尾部，允许链式调用（`.catchError` / `.then` / …）。
+      //   `unawaited(` 与 `SourinApi.` 两个锚点保留 ⇒ 注释里的假调用骗不过
+      //   （这条门禁第二版就是恒绿，被"注释里提一句"骗过，教训在先）。
+      r'unawaited\(\s*SourinApi\.endYieldForSeek\(\)[^;]*?\)',
     ).allMatches(pageCode).length;
     expect(
       endCalls >= 2,

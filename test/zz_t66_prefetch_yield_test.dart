@@ -154,9 +154,20 @@ void main() {
      * dispose 上方的注释里就写着「…调一次 endYieldForSeek()…」
      * ⇒ `body.contains('endYieldForSeek()')` 命中的是**注释**，不是代码。
      * ⇒ 改成匹配调用表达式 `unawaited(SourinApi.endYieldForSeek());`
+     *
+     * ★★ 2026-10-19（Lead 修，批末全量跑抓出）：上一版要求
+     *   `unawaited\( … \)\s*\)` —— 即 `()` 之后**立刻**闭括号。
+     *   而本轮给 dispose 加了 `.catchError((Object e) {…})`
+     *   （修「异常从 dispose 逃逸」那个真回归）⇒ 正则失配 ⇒ 这条变红。
+     *
+     * ⇒ 放宽成「`unawaited(` 之后、`)` 包裹着一次 `endYieldForSeek()` 调用」，
+     *   即允许尾部挂 `.catchError(...)` / `.then(...)` 等链式调用。
+     *   ★ 注意：这**不是**把判据放松成 `contains`——
+     *     `unawaited(` 与 `SourinApi.` 两个锚点都保留，
+     *     所以「只在注释里提一句」骗不过它（第二版恒绿的教训正是这条）。
      */
     final endCallRe = RegExp(
-      r'unawaited\(\s*SourinApi\.endYieldForSeek\(\)\s*\)',
+      r'unawaited\(\s*SourinApi\.endYieldForSeek\(\)[^;]*?\)',
     );
     expect(
       endCallRe.hasMatch(body),

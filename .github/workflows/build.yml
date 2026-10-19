@@ -276,7 +276,7 @@ jobs:
       # ⇒ 依赖 libmpv 的文件在 CI 上走 markTestSkipped ⇒ exit 0 ⇒ **CI 绿**
       #
       # # 为什么这不是「无害的 skip」
-      # 46 个文件带 `native-media` 标签、默认 skip，裸 flutter test 本来就不选它们。
+      # 55 个文件带 `native-media` 标签、默认 skip，裸 flutter test 本来就不选它们。
       # ★ 但有 **2 个文件不带标签** ⇒ 会进默认套件：
       #     test/zz_t66_player_jank_test.dart       8 条
       #     test/zz_t66_n11_bottombar_test.dart    7 条
@@ -286,7 +286,7 @@ jobs:
       # # 为什么不用环境变量 SOURIN_REQUIRE_LIBMPV=1
       # ```text
       # ★ 它覆盖不到 —— 实测（复核逐个核过）：
-      #   全仓有 **46 个**文件既真调 MediaKit.ensureInitialized 又带 native-media 标签
+      #   全仓有 **43 个**文件既真调 MediaKit.ensureInitialized 又带 native-media 标签
       #   另有 **7 个**真调 MediaKit 但**不带**标签（会进默认套件）：
       #     t27_w1_online_first / zz_cr_local_row_trash_hover / zz_cr_local_select_ui /
       #     zz_media_r1_local_open_probe / zz_t12_defect_a_probe /
@@ -370,7 +370,7 @@ jobs:
       # ⇒ 全量测试跑的时候 libmpv **不存在**
       # ⇒ 依赖 libmpv 的文件走 markTestSkipped ⇒ exit 0 ⇒ **job 绿**
       #
-      # 46 个文件带 `native-media` 标签、默认 skip，裸 flutter test 本来就不选。
+      # 55 个文件带 `native-media` 标签、默认 skip，裸 flutter test 本来就不选。
       # ★ 但有 **2 个不带标签** ⇒ 会进默认套件：
       #     test/zz_t66_player_jank_test.dart     8 条
       #     test/zz_t66_n11_bottombar_test.dart  7 条
@@ -902,16 +902,26 @@ jobs:
           retention-days: 1
 
   # ═════════════════════════════════════════════════════════════════════
-  #  native-media —— 46 个 `native-media` 硬门禁（诊断用，**不拦合并**）
+  #  native-media —— 55 个带 `native-media` 标签的硬门禁（诊断用，**不拦合并**）
+  #
+  # ★★ 2026-10-19（复核纠正，Lead 改）：原先这里写「46 个」，
+  #   而 **46 从写下那一刻就不是实测值** ——
+  #   它出自 `8d57253`（2026-10-12）的 commit 标题，
+  #   实测那个 commit 当时带 tag 的文件是 **44** 个。
+  # ⇒ 本文件统一用两个**锚定了定义**的实测值（复核逐一定义核过）：
+  #     带 `native-media` 标签的文件        = **55**
+  #     其中真调 MediaKit.ensureInitialized = **43**
+  #   ★ 「46」在数量级上没错，但精确值不可考 —— 下一个人若按不同定义去数
+  #     会算出第三个数字（如 54、33）⇒ 所以必须写清**用的是哪个定义**。
   # ═════════════════════════════════════════════════════════════════════
   #
   #  # 为什么要有这个 job（这是本仓最大的一处「结构性假绿」）
   #
-  #  `dart_test.yaml` 把 46 个依赖真实 media_kit（libmpv-2.dll）的测试标了
+  #  `dart_test.yaml` 把 55 个带 native-media 标签的测试标了
   #  `native-media`，并让它们**默认 skip**（加载 libmpv 会让 flutter_tester
   #  偶发 native 崩溃 —— 实测：不加载崩 0/25、加载崩 6/25；串行 8 次红 5 次）。
   #  ⚠️ 代价是两个平台 job 跑的**裸** `flutter test`（windows:159 / macos:409）
-  #     **从来看不见**这 46 个文件 —— 它们不是变红、也不是变绿，是**从没跑过**。
+  #     **从来看不见**这 55 个文件 —— 它们不是变红、也不是变绿，是**从没跑过**。
   #     而这里面恰恰是播放器 / 弹幕 / 片头片尾跳过这类**最核心**的硬门禁。
   #     ⇒ 一条 0/46 执行率、却常年「绿」的门禁，正是本仓明令禁止的假绿。
   #  本 job 的唯一目的：把真读数暴露出来（跑起来、记日志），**不为了绿而放宽**。
@@ -942,7 +952,7 @@ jobs:
   #  下载并解包 mpv-dev 7z，落点正是 `build/windows/x64/libmpv/`）。
   #  ★ 先决条件：`flutter pub get` **必须发生在 `flutter test` 之前**（下面的步骤
   #    就是按这个顺序排的）。少了它，libmpv-2.dll 不在那个路径上 ⇒
-  #    37/46 个文件的 `File('build/windows/x64/libmpv/libmpv-2.dll').existsSync()`
+  #    37/55 个文件的 `File('build/windows/x64/libmpv/libmpv-2.dll').existsSync()`
   #    守卫判假 ⇒ **不初始化、静默跳过**，于是这批「硬门禁」在 CI 上**仍然一条
   #    都没执行**，只是从「被标签 skip」变成了「被守卫 skip」—— 换了个姿势的假绿。
   #    （对照：macOS 侧 libmpv 是 dylib，路径与加载方式都不同，风险更大。）
@@ -1061,7 +1071,7 @@ jobs:
           }
           "libmpv-2.dll = " + (Get-Item $mpv).Length + " 字节（就位）"
 
-      # ★★ 带 native-media 标签的那 46 个硬门禁 —— 默认被 dart_test.yaml skip，
+      # ★★ 带 native-media 标签的那 55 个硬门禁 —— 默认被 dart_test.yaml skip，
       #    必须 --run-skipped 才会跑；--tags native-media 只选这一批；
       #    --concurrency=1 是 dart_test.yaml:57 明写的（串行**降低**、但**不能消除**
       #    崩溃率 —— 实测串行仍会红，所以本 job 继续 keep continue-on-error）。
@@ -1087,13 +1097,13 @@ jobs:
           "| 步骤 | 结果 |" >> $env:GITHUB_STEP_SUMMARY
           "|---|---|" >> $env:GITHUB_STEP_SUMMARY
           "| libmpv 核验 | $fixtureOutcome |" >> $env:GITHUB_STEP_SUMMARY
-          "| 46 个 native-media 硬门禁 | $testOutcome |" >> $env:GITHUB_STEP_SUMMARY
+          "| 55 个 native-media 硬门禁 | $testOutcome |" >> $env:GITHUB_STEP_SUMMARY
           "" >> $env:GITHUB_STEP_SUMMARY
           if (-not $mpvOk) {
             "⚠️ libmpv-2.dll **不在** \`$mpv\` ⇒ 依赖真播放器的用例会走守卫静默跳过。" >> $env:GITHUB_STEP_SUMMARY
-            "本 job 的读数**不代表**那 46 个门禁真的执行过 —— 请先修供给链。" >> $env:GITHUB_STEP_SUMMARY
+            "本 job 的读数**不代表**那 55 个门禁真的执行过 —— 请先修供给链。" >> $env:GITHUB_STEP_SUMMARY
           } elseif ($testOutcome -eq 'success') {
-            "✅ 46 个门禁本次**全过**（注意：偶发 native 崩溃仍可能出现，见 dart_test.yaml）。" >> $env:GITHUB_STEP_SUMMARY
+            "✅ 55 个门禁本次**全过**（注意：偶发 native 崩溃仍可能出现，见 dart_test.yaml）。" >> $env:GITHUB_STEP_SUMMARY
           } else {
             "❌ native-media 测试**未全过**（outcome=$testOutcome）。" >> $env:GITHUB_STEP_SUMMARY
             "★ 这是**真读数**，不是放宽 —— 请展开上面的日志看是断言失败还是 libmpv 偶发崩溃。" >> $env:GITHUB_STEP_SUMMARY

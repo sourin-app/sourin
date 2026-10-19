@@ -59,16 +59,23 @@ String _balancedBody(String src, String signature) {
 ### 连带三条断言（配对截断改变了判据的性质，必须跟着改）
 
 ```dart
-// ① 自检：配对取到的函数体比原窗口还短 ⇒ 截取逻辑坏了
-expect(disposeBody.length, greaterThan(2600));
+// ① 自检：**配对成功的直接证据**（不是 length）
+expect(disposeBody, isNotEmpty, ...);
+expect(disposeBody.startsWith('{'), isTrue, ...);
+expect(disposeBody.endsWith('}'), isTrue, ...);    // ★ 这条才真的挡得住截断
+expect(disposeBody.length, greaterThan(2600), ...); // 只抓「恰好改回 2600」
 
 // ② ★「恰好 1 处」，而不只是「至少 1 处」
 expect(RegExp(r'_sheetGuardTimer[?!]?\.cancel\(').allMatches(disposeBody).length, 1);
 
-// ③ 三条关键释放调用
-for (final call in const ['_player.dispose()', '_danmakuClient?.close()', 'super.dispose()'])
-  expect(disposeBody.contains(call), isTrue);
+// ③ 三条关键释放调用 —— ★★ 必须**剥注释后**判，且**带分号**
+for (final call in const ['_player.dispose();', '_danmakuClient?.close();', 'super.dispose();'])
+  expect(_codeOnly(disposeBody).contains(call), isTrue);
 ```
+
+★ **① 的教训**：`length > 2600` 只是**间接代理**，只对恰好 2600 这个魔数敏感
+（复核实测：2700 的截断窗口、半个函数 3406 字符，**都能通过它**）
+⇒ 必须断 `endsWith('}')` —— 那才是「配对成功」的直接证据。
 
 ★ **② 是最关键的一条**：修好之前 `hasMatch(disposeBody)` 在 dispose 里
 出现 1 处或 2 处都通过；现在「只该有一处」本身成为一个**被断言的事实**。
@@ -80,7 +87,36 @@ for (final call in const ['_player.dispose()', '_danmakuClient?.close()', 'super
 ★ 再加一处         ⇒ <2>  红 ✅   ← 这正是「判据变宽」的风险
 ```
 
-★ **③ 用 `String.contains` 而不是正则**：`?` 在正则里是量词，
+★★ **③ 的教训（本篇最有价值的一条）：我第一版写的是假绿**
+
+```text
+第一版：expect(disposeBody.contains('_player.dispose()'), isTrue)
+★ 实测：`_player.dispose()` 在 dispose 里出现 **3 次**，
+      但只有 **1 次是真实代码**，另 2 次在**注释里**
+      （那段注释解释为什么要放在 `_biliApi?.close()` 之后）
+⇒ 删掉真实那一行后 contains 仍为 true ⇒ 测试**仍全绿**（复核端到端实测）
+⇒ ★ 我自己写的注释，恰好满足了我自己写的判据。
+```
+
+⇒ 这与本仓 AGENTS §8 记的「命中注释」是同一个病，
+**也与那条被删掉的全局 `hasMatch` 恒真是同一个病** ——
+我以为换个扫描范围就治好了，实际只是把它从「全局」挪到了「函数体」。
+
+**修复（两处都要，缺一仍会假绿）**
+
+```dart
+// ① 剥掉整行注释
+String _codeOnly(String body) => body
+    .split('\n').where((l) {
+      final t = l.trimLeft();
+      return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+    }).join('\n');
+
+// ② ★ 被扫的调用**带上分号**：`_player.dispose();`
+//    注释里那两处是 `_player.dispose()`（不带分号）⇒ 多一层保险
+```
+
+★ 用 `String.contains` 而不是正则这一点仍然成立：`?` 在正则里是量词，
   `_danmakuClient?.close()` 得写成 `\?` —— 容易错，而这些调用
   不含可变空白，用 `contains` 更稳。
 

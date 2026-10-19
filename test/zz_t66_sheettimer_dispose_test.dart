@@ -78,6 +78,28 @@ class _TimerHolderState extends State<_TimerHolder> {
       m.ColoredBox(color: _held ? const m.Color(0xFF202020) : const m.Color(0xFF101418));
 }
 
+/// 剥掉注释行（源码扫描判据的**前置** —— 不做这一步会假绿）
+///
+/// ★★ 2026-10-19（Lead 加）：我先写的三条 `contains` 断言**是假绿的** ——
+///   `_player.dispose()` 在 dispose 里出现 **3 次**，但只有 **1 次是真实代码**，
+///   另外 2 次在**注释里**（那段注释解释为什么要放在 `_biliApi?.close()` 之后）。
+///   ⇒ 删掉真实那一行后 `contains` 仍为 true ⇒ 测试**仍全绿**（复核实测）。
+/// ★ 这与本仓 AGENTS §8 记的「命中注释」是同一个病，
+///   也与那条被删掉的全局 `hasMatch` 恒真是同一个病。
+///
+/// ⇒ 判据：**凡是用 `contains` / `hasMatch` 扫源码，先剥注释。**
+///   只剥整行注释（`//` / `*` / `/*` 开头）；行尾注释未处理，
+///   但那要求被扫的调用**恰好落在行尾**，而这三条都在独立行上。
+String _codeOnly(String body) => body
+    .split('\n')
+    .where((l) {
+      final t = l.trimLeft();
+      return !t.startsWith('//') &&
+          !t.startsWith('*') &&
+          !t.startsWith('/*');
+    })
+    .join('\n');
+
 /// 按**大括号配对**取方法体（2026-10-19 加，取代固定长度窗口）
 ///
 /// ★ 为什么不用「`substring(i, i + N)`」这种固定窗口：
@@ -220,12 +242,24 @@ void main() {
        * ⇒ 改成按**大括号配对**取整个函数体，不再依赖窗口长度。
        */
       final disposeBody = _balancedBody(src, 'void dispose() {');
+      // ★★★ 配对成功的**直接证据**（`length > 2600` 只是间接代理）：
+      //   复核实测：若有人把窗口改成 2700 或取「半个函数」（3406 字符），
+      //   `length > 2600` **都会静默通过** ⇒ 只断长度挡不住这类截断。
+      expect(disposeBody, isNotEmpty, reason: '没取到 dispose 函数体 ⇒ 后面全是空断言');
+      expect(disposeBody.startsWith('{'), isTrue,
+          reason: '★ 必须从 { 开始 —— 否则说明 indexOf/signature 定位错了');
+      expect(disposeBody.endsWith('}'), isTrue,
+          reason: '★★ 必须以 } 结尾 —— 这是「大括号配对成功」的直接证据。'
+              'length > 2600 只是间接代理：2700 的截断窗口、'
+              '半个函数（3406 字符）都能通过它。');
       expect(
         disposeBody.length,
         greaterThan(2600),
-        reason: '★ 按大括号配对取到的 dispose 函数体只有 ${disposeBody.length} 字符，'
+        reason: '★ 配对取到的 dispose 函数体只有 ${disposeBody.length} 字符，'
             '比原来的固定窗口还短 ⇒ 截取逻辑坏了',
       );
+      // ★ 剥掉注释行再判「真实代码」—— 见 _codeOnly 的注释。
+      final disposeCode = _codeOnly(disposeBody);
       /*
        * ★ 2026-10-19（批末复核）：正则去掉尾部的 `;`，并把 `?.` 放宽成 `[?!]?.`
        *
@@ -306,17 +340,19 @@ void main() {
        * ```
        */
       for (final call in const <String>[
-        '_player.dispose()',
-        '_danmakuClient?.close()',
-        'super.dispose()',
+        '_player.dispose();',
+        '_danmakuClient?.close();',
+        'super.dispose();',
       ]) {
         expect(
-          disposeBody.contains(call),
+          disposeCode.contains(call),
           isTrue,
           reason: '★★★ dispose 里必须有 `$call` —— '
               '不释放会在换页后继续占资源（播放器 / 网络连接），用户可感知。\n'
               '★ 注意 t73 那条只拿它当**位置基准**，把它移出 dispose 仍会绿。\n'
-              '★ 用 String.contains 而不是正则：`?` 在正则里是量词，容易写错。',
+              '★★ 判的是**剥注释后**的代码（`_codeOnly`），且**带分号** ——\n'
+              '   否则注释里那两处 `_player.dispose()` 的说明会满足它\n'
+              '   （复核实测：未剥注释时删掉真实那行，测试仍全绿）。',
         );
       }
     });

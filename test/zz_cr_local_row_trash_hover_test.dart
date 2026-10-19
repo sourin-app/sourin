@@ -100,6 +100,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/download_queue.dart';
 import 'package:sourin_spike/core/network_status.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
+// ★ 2026-10-19（漂移修正）：定位器要判 `w.child is AppTooltip`
+import 'package:sourin_spike/design/widgets/app_tooltip_slider.dart';
 import 'package:sourin_spike/ui/cache_page.dart';
 import 'package:sourin_spike/ui/detail_page.dart';
 import 'package:sourin_spike/ui/theme_bridge.dart';
@@ -227,14 +229,31 @@ Future<void> _hoverRow(WidgetTester t, int i, {String tag = ''}) async {
   //    ⚠️ 这里**不能**拿"颜色已变"当前提 —— 那会与结论同义反复（阳性对照 B
   //      把它改成恒假时，前提会先红，就分不清"前提不成立"与"产品缺陷"）。
   //      ⇒ 前提改用**结构性事实**：该行的 MouseRegion 两个回调都在。
-  // ★ 定位"**这一个** MouseRegion"：生产代码里它的 child 就是那个 Tooltip
-  //   （detail_page.dart:4677-4682 `MouseRegion(… child: Tooltip(…))`）。
-  //   ⚠️ 不能只写 find.byType(MouseRegion)：IconButton 内部还有自己的
-  //      MouseRegion ⇒ 祖先链上不止一个（实测 `Bad state: Too many elements`）。
+  // ★ 定位"**这一个** MouseRegion"：生产代码里它的 child 就是那个 tooltip 容器。
+  //
+  // ★ 2026-10-19（漂移修正）：`w.child is Tooltip` → `w.child is AppTooltip`
+  //
+  // # 断言本意（未变）
+  //   「垃圾桶按钮的 MouseRegion 必须真的接上 onEnter/onExit/click 手型」
+  //   —— 这是 ②③④ 三条读数的**前提**（前提不成立就分不清
+  //   "前提坏了"与"产品缺陷"，见上面那段注释）。
+  //
+  // # 为什么类型必须换（产品改动是**有意**的，属玻璃化 M2 第 2 步）
+  // ```text
+  // 2026-10-18：detail_page.dart:4980
+  //   `Tooltip` → `AppTooltip`（本仓自建，lib/design/widgets/app_tooltip_slider.dart）
+  //   同一批还换了 OutlinedButton → AppOutlinedButton
+  // ⇒ MouseRegion 本身**原样保留**（detail_page.dart:4955），
+  //   只是它的 child 从 Material 的 Tooltip 换成了 AppTooltip
+  // ⇒ 旧谓词 `w.child is Tooltip` 恒假 ⇒ find.ancestor 抛
+  //   `Bad state: No element`（不是"产品没接回调"）
+  // ```
+  // ⚠️ 仍然不能用 `find.byType(MouseRegion)`：IconButton 内部还有自己的
+  //    MouseRegion ⇒ 祖先链上不止一个（实测 `Bad state: Too many elements`）。
   final region = t.widget<MouseRegion>(find.ancestor(
     of: find.byIcon(Icons.delete_outline_rounded).at(i),
     matching: find.byWidgetPredicate(
-        (w) => w is MouseRegion && w.child is Tooltip),
+        (w) => w is MouseRegion && w.child is AppTooltip),
   ));
   expect(region.onEnter, isNotNull,
       reason: '★★ $tag 前提不成立：垃圾桶的 MouseRegion 没有 onEnter'

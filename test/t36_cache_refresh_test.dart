@@ -613,7 +613,36 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       final hs = <double>[];
-      for (final e in find.byType(InkWell).evaluate()) {
+      /*
+       * ★ 2026-10-19（漂移修正）：定位器从 `InkWell` 换成 `GestureDetector`
+       *
+       * # 断言本意（未变）
+       *   追更页那三个 tab 的**触控目标高度 ≥34px**（DEVELOPMENT.md 坑 35），
+       *   且必须与首页「我的」逐字同构 —— 只改一处会变成"一个页面对、
+       *   一个页面不对"。
+       *
+       * # 为什么定位器必须改（产品改动是**有意**的，不是退化）
+       * ```text
+       * 2026-10-18 轨道 E · 玻璃化 M2：follow_page.dart:1605/2033
+       *   `InkWell` → `_GlassTapSurface`（内部走 GlassButton.custom）
+       * ⇒ 追更页的 InkWell 数量从 3 变成 **0**
+       * ⇒ 旧定位器量到 0 个 ⇒ `hs.length` = 0 ⇒ 报「量到 0 个 ⇒ 假绿」
+       * ```
+       * 而首页「我的」的 `_ShelfTabChip` **仍是 InkWell**（my_shelf.dart:2383），
+       * 所以上面那条「我的」用例没红 —— 两条用例的定位器**本来就是分开的**。
+       *
+       * # 新定位器为什么是 GestureDetector
+       * ```text
+       * 实测（.probe/rv6/probe_t36b.dart）：
+       *   追更页 InkWell = 0
+       *   GestureDetector = 3，尺寸全是 96.0x41.0
+       *   （GlassButton 内部就是 GestureDetector，见
+       *     liquid_glass_widgets-1.13.0/.../glass_button.dart:1035/1049）
+       * ⇒ 仍用「宽 96」作为 tab 的辨识特征，量的是同一个 render box 高度，
+       *   断言值 34px 未动。
+       * ```
+       */
+      for (final e in find.byType(GestureDetector).evaluate()) {
         final box = e.renderObject as RenderBox?;
         if (box == null) continue;
         if ((box.size.width - 96).abs() < 0.5) hs.add(box.size.height);

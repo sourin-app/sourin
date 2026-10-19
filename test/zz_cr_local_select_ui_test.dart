@@ -47,6 +47,8 @@ import 'package:media_kit/media_kit.dart';
 import 'package:sourin_spike/core/download_queue.dart';
 import 'package:sourin_spike/core/network_status.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
+// ★ 2026-10-19（漂移修正）：① 的定位器要判 `find.byType(AppTextButton)`
+import 'package:sourin_spike/design/widgets/app_text_button.dart';
 import 'package:sourin_spike/ui/cache_page.dart';
 import 'package:sourin_spike/ui/detail_page.dart';
 import 'package:sourin_spike/ui/theme_bridge.dart';
@@ -207,19 +209,45 @@ void main() {
           reason: '夹具前置：本地选集区块的标题应当是「已下载」');
 
       // ── ① 被测断言：管理入口存在，且是**可点的**按钮 ──
-      // 只断言「有这段文字」不够：文案还在但 TextButton 被换成 Text
-      // （= 点不动了）同样应当红 ⇒ 必须钉住它是 TextButton 的后代。
+      // 只断言「有这段文字」不够：文案还在但按钮被换成 Text
+      // （= 点不动了）同样应当红 ⇒ 必须钉住它是**按钮组件**的后代。
+      //
+      // ★ 2026-10-19（漂移修正）：`TextButton` → `AppTextButton`
+      //
+      // # 断言本意（未变）
+      //   「『管理』必须落在一个**可点的按钮组件**里」—— 不是静态 Text。
+      //
+      // # 为什么类型必须换（产品改动是**有意**的，属玻璃化迁移）
+      // ```text
+      // detail_page.dart:3384 现在是 `AppTextButton(onPressed: …, child: Text('管理'))`
+      //   （本仓自建，与 Material 的 TextButton 同契约：onPressed + child）
+      // ⇒ 旧断言 `find.byType(TextButton)` 找不到祖先 ⇒ findsOneWidget 失败
+      //   但**不是**「入口变死了」—— AppTextButton 照样可点、照样有 onPressed
+      // ```
+      // ⚠️ 这条断言的关键是「可点」，所以顺带断言 onPressed 非空 ——
+      //    只换类型名而不校验可点性，会把"换成 AppTextButton(onPressed: null)"
+      //    这种真退化放过去。
       expect(
         find.text('管理'),
         findsOneWidget,
-        reason: '★ ① 普通态必须出现「管理」入口（lib/ui/detail_page.dart:3329-3342）。'
+        reason: '★ ① 普通态必须出现「管理」入口（lib/ui/detail_page.dart:3384）。'
             '它没了 ⇒ 业主**根本进不去**批量删除 ⇒ 整条删除链路在 UI 面上断开。',
       );
+      final mgrBtn = find.ancestor(
+        of: find.text('管理'),
+        matching: find.byType(AppTextButton),
+      );
       expect(
-        find.ancestor(of: find.text('管理'), matching: find.byType(TextButton)),
+        mgrBtn,
         findsOneWidget,
-        reason: '★ ①「管理」必须是 TextButton 里的（能点）。'
+        reason: '★ ①「管理」必须是 AppTextButton 里的（能点）。'
             '若只剩一段静态文字 ⇒ 入口是死的。',
+      );
+      expect(
+        t.widget<AppTextButton>(mgrBtn).onPressed,
+        isNotNull,
+        reason: '★ ①「管理」按钮的 onPressed 不能是 null —— '
+            '换了组件类型但回调丢了，同样是「入口是死的」。',
       );
 
       // ── 普通态的对照读数（不是被测断言，是让「选择态」的差异可解释）──

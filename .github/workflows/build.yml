@@ -287,13 +287,15 @@ jobs:
       # ```text
       # ★ 它覆盖不到 —— 实测（复核逐个核过）：
       #   全仓有 **43 个**文件既真调 MediaKit.ensureInitialized 又带 native-media 标签
-      #   另有 **7 个**真调 MediaKit 但**不带**标签（会进默认套件）：
-      #     t27_w1_online_first / zz_cr_local_row_trash_hover / zz_cr_local_select_ui /
-      #     zz_media_r1_local_open_probe / zz_t12_defect_a_probe /
-      #     zz_t66_n11_bottombar / zz_t66_player_jank
+      #   另有 **7 个**文件提到 MediaKit 但**不带**标签（会进默认套件），
+      #   其中 **6 个是真调用**、1 个（`zz_cr_local_row_trash_hover`）
+      #   **只出现在注释里**：
+      #     t27_w1_online_first ✱ / zz_cr_local_row_trash_hover ○仅注释 / zz_cr_local_select_ui ✱ /
+      #     zz_media_r1_local_open_probe ✱ / zz_t12_defect_a_probe ✱ /
+      #     zz_t66_n11_bottombar ✱ / zz_t66_player_jank ✱        （✱ = 真调用）
       #   而写了 `SOURIN_REQUIRE_LIBMPV` 的只有 **9 个文件**，
       #   且这 9 个**全部带 native-media 标签**（默认就不进套件）⇒
-      #   ★★ 对**会进默认套件**的那 7 个文件，只有 player_jank 有开关。
+      #   ★★ 对**会进默认套件**的那 6 个真调用文件，只有 player_jank 有开关。
       # ★ 而且**单独设它会让主 job 每次必红**（libmpv 在全量测试时注定不在）
       #   ⇒ 团队很快会去关掉它 ⇒ 更糟。
       # ⇒ 改用**可执行断言**：直接读输出里的缺件字样，不依赖任何文件有没有写开关。

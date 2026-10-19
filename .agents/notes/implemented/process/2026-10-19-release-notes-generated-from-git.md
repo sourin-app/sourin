@@ -212,6 +212,45 @@ printf '%s\n' "$CHANGELOG_SECTION" | grep -qE '^\s*-\s+\S'
    注入验证：order 去掉「调整」⇒ AssertionError；还原 ⇒ 通过
 ```
 
+### ★★★ `PREV` 取错：重跑旧 tag 会红（复核抓出，Lead 修）
+
+我第一版为了避开 `describe || true` 吞错误，改成：
+
+```bash
+ALL_TAGS=$(git tag --sort=-v:refname | grep -v "^${TAG}$" || true)
+PREV=$(echo "$ALL_TAGS" | head -1)
+```
+
+★ 这取的是「**最新的**其它 tag」，不是「本 tag 的历史前驱」。
+
+实测（本地 4 个 tag）：
+
+```text
+TAG=v1.0.0 ⇒ PREV=v1.3.0   区间 [v1.3.0..v1.0.0] 反向
+TAG=v1.2.0 ⇒ PREV=v1.3.0   区间 [v1.3.0..v1.2.0] 反向
+TAG=v1.3.0 ⇒ PREV=v1.2.0   ← 只有最大 tag 才碰巧对
+⇒ 重跑任何旧 tag 都会让生成器 exit 1
+```
+
+★ **最讽刺的地方**：`build.yml:1560` 那段注释明写
+  「修好 CI 之后必须重跑同一个 tag 才能补齐」——
+  而我的写法**恰好把那条补救路径堵死**。
+
+同样会坏的是 rc：`sort -V` 把 `v1.4.0-rc1` 排在 `v1.4.0` **之前**
+⇒ rc 会把自己选成前驱 ⇒ rc 发布必红。
+
+修法（回到 `git describe`，但**保留**它与「真首个」的区分）：
+
+```bash
+PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+```
+
+实测四个 tag 全部正确，且 `v1.4.0-rc1` **不会选自己**。
+
+★ **教训**：我为了修 A（失败被误判）而引入 B（取错前驱）。
+  ⇒ 改判据前先问「原来的写法到底错在哪一行」，
+  而不是「怎么绕开它看起来错的地方」。
+
 **代价 / 已知上限（如实记）**
 
 ```text

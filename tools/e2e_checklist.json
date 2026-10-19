@@ -72,32 +72,37 @@
           "type": "source",
           "file": "lib/core/sourin_api.dart",
           "pattern": "final text = stripHostErrorNoise\\(raw\\);",
-          "expect": "regex-present"
+          "expect": "regex-present",
+          "ignoreComments": true
         },
         {
           "type": "source",
           "file": "lib/core/sourin_api.dart",
           "pattern": "final display = hideInternalUrls\\(text\\);",
-          "expect": "regex-present"
+          "expect": "regex-present",
+          "ignoreComments": true
         },
         {
           "type": "source",
           "file": "lib/core/sourin_api.dart",
           "pattern": "final lower = text\\.toLowerCase\\(\\);",
-          "expect": "regex-present"
+          "expect": "regex-present",
+          "ignoreComments": true
         },
         {
           "type": "source",
           "file": "lib/core/sourin_api.dart",
           "pattern": "final lower = display\\.toLowerCase\\(\\);",
-          "expect": "regex-absent"
+          "expect": "regex-absent",
+          "ignoreComments": true
         },
         {
           "type": "source",
           "file": "lib/core/sourin_api.dart",
           "pattern": "lower\\.contains\\('内置代理'\\)",
           "expect": "regex-absent",
-          "why": "that literal can never appear in the raw text -- it was a dead predicate"
+          "why": "that literal can never appear in the raw text -- it was a dead predicate",
+          "ignoreComments": true
         }
       ]
     },
@@ -167,13 +172,15 @@
           "type": "source",
           "file": "lib/core/danmaku.dart",
           "pattern": "case DanmakuProxyMode\\.direct:\\s*\\n\\s*return 'DIRECT';",
-          "expect": "regex-present"
+          "expect": "regex-present",
+          "ignoreComments": true
         },
         {
           "type": "source",
           "file": "lib/core/danmaku.dart",
           "pattern": "case DanmakuProxyMode\\.system:",
-          "expect": "regex-present"
+          "expect": "regex-present",
+          "ignoreComments": true
         }
       ]
     },
@@ -192,7 +199,8 @@
           "type": "source",
           "file": "lib/core/danmaku.dart",
           "pattern": "scheme\\.startsWith\\('socks'\\)",
-          "expect": "regex-present"
+          "expect": "regex-present",
+          "ignoreComments": true
         }
       ]
     },
@@ -347,14 +355,16 @@
           "type": "source",
           "file": "lib/core/sourin_api.dart",
           "pattern": "credentialsIncluded",
-          "expect": "present"
+          "expect": "present",
+          "ignoreComments": true
         },
         {
           "type": "source",
           "file": "lib/ui/widgets/backup_panel.dart",
           "pattern": "未包含",
           "expect": "present",
-          "why": "the panel MUST say so; silence makes the user think everything was backed up"
+          "why": "the panel MUST say so; silence makes the user think everything was backed up",
+          "ignoreComments": true
         }
       ]
     },
@@ -373,13 +383,15 @@
           "type": "source",
           "file": "lib/ui/widgets/sync_panel.dart",
           "pattern": "口令",
-          "expect": "present"
+          "expect": "present",
+          "ignoreComments": true
         },
         {
           "type": "source",
           "file": "lib/ui/widgets/sync_panel.dart",
           "pattern": "凭据未同步",
-          "expect": "present"
+          "expect": "present",
+          "ignoreComments": true
         }
       ],
       "manual_note": "The two 'not synced' states (no passphrase vs no credentials) must stay textually distinct; assert the reason, not just the verdict."

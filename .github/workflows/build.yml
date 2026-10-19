@@ -1487,18 +1487,34 @@ jobs:
           # ② 于是 tag 在本地时会输出「本版无用户可见变更」并**照常发布**
           #    ⇒ Owner 报的缺陷原样复现，只是文案换了一句。
           # ```
-          # ⇒ 修法：用 `git tag` 显式列出本 tag 之前的最近一个 tag；
-          #   列不出来时**区分两种情况**：真的是首个（无任何更早 tag）vs 拿不到历史。
-          ALL_TAGS=$(git tag --sort=-v:refname 2>/dev/null | grep -v "^${TAG}$" || true)
-          PREV=$(echo "$ALL_TAGS" | head -1)
+          # ⇒ 修法（★ 复核抓出我第一版写错了，Lead 修）：
+          #   要的是「**本 tag 在版本序里的紧邻前驱**」，而我第一版写的是
+          #   `git tag --sort=-v:refname | grep -v "^$TAG$" | head -1`
+          #   —— 那是「**最新的**其它 tag」，不是历史前驱。
+          #
+          #   实测（本地 4 个 tag）：
+          #     TAG=v1.0.0 ⇒ PREV=v1.3.0   区间 [v1.3.0..v1.0.0] 反向
+          #     TAG=v1.2.0 ⇒ PREV=v1.3.0   区间 [v1.3.0..v1.2.0] 反向
+          #     TAG=v1.3.0 ⇒ PREV=v1.2.0   ← 只有最大 tag 才碰巧对
+          #   ⇒ **重跑任何旧 tag 都会让生成器 exit 1**，
+          #     而「修好 CI 后重跑同一 tag 补包」正是本文件 :1560 写明
+          #     必须支持的场景 ⇒ 我把那条补救路径**堵死了**。
+          #
+          #   修法：`git describe --tags --abbrev=0 "$TAG^"`
+          #   —— 它按**提交图**找最近的祖先 tag，天然满足：
+          #     · 重跑旧 tag 时给出的仍是它真正的前驱
+          #     · `v1.4.0-rc1` 不会把自己选成前驱（而 `sort -V` 会，
+          #       因为预发布排在正式版之上 ⇒ rc 发布必红）
+          #     · 真首个 tag 时失败 ⇒ 与「拿不到历史」可区分
+          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
           if [ -z "$PREV" ]; then
             # 没有任何更早的 tag ⇒ 真的是首个 release（允许留空）
             echo "::warning::历史里没有更早的 tag ⇒ 按首个 release 处理，更新说明留空"
-            python tools/gen_release_notes.py --from "$TAG" --to "$TAG" \
+            python3 tools/gen_release_notes.py --from "$TAG" --to "$TAG" \
               --allow-empty --out /tmp/notes-src.md
           else
             echo "本版更新：归纳 $PREV..$TAG"
-            python tools/gen_release_notes.py --from "$PREV" --to "$TAG" \
+            python3 tools/gen_release_notes.py --from "$PREV" --to "$TAG" \
               --out /tmp/notes-src.md
           fi
           sed "s/__VERSION__/$VER/g" /tmp/notes-src.md > "$NOTES"

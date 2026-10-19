@@ -1,10 +1,44 @@
-# Agent Note: R1「毛边」的裁决被读数推翻两次，最后发现对象选错了
+# Agent Note: R1「毛边」的裁决被读数推翻三次
 
 Status: implemented
 
 > 同域：[../architecture/2026-10-17-material-keep-or-replace-verdicts.md](../architecture/2026-10-17-material-keep-or-replace-verdicts.md)
 > 那篇有「6 类组件已换掉；1 处按证据保留」的先例；本篇是**同一种克制**在 R1 上的第二次应用。
 > 相邻：[2026-10-19-sheet-guard-covered-two-of-ten.md](./2026-10-19-sheet-guard-covered-two-of-ten.md)（同类：读数推翻假设）。
+
+### ★★★ 第三次推翻（2026-10-19）：我误判「底栏弹幕按钮无圆角」
+
+```text
+我说的：底栏那枚「弹幕」按钮是 TextButton，widget 上的 styleFrom(...)
+        没有 shape ⇒ 几何上不可能有圆角抗锯齿 ⇒ 「一圈毛边」不可能属于它。
+```
+
+**错在：只读了 widget 上的 `styleFrom(...)`，没读主题注入的生效值。**
+
+```text
+lib/ui/theme_bridge.dart:84    const _defaultRadius = 14.0;
+lib/ui/theme_bridge.dart:87    _shape() => RoundedSuperellipseBorder(borderRadius: _radius)
+lib/ui/theme_bridge.dart:179   shape = WidgetStateProperty.all(_shape());
+lib/ui/theme_bridge.dart:260   textButtonTheme: TextButtonThemeData(shape: shape)
+⇒ 那枚按钮**实际有 14px 超椭圆圆角**，来自全局 textButtonTheme。
+```
+
+★ 队友的真渲染实测：`TextButton.style.shape.resolved = null`
+  但**生效值**是 `RoundedSuperellipseBorder(circular(14.0))`。
+
+⇒ **判据：「读源码」≠「读生效值」。**
+  组件上的局部样式可能被 `Theme` 覆盖 —— 判断「某控件长什么样」
+  必须读**解析后的样式**（`style.resolve({})` 或真渲染 `getRect`），
+  而不是读它自己那几行 `styleFrom`。
+
+★ 本篇的第三次推翻与前两次**性质不同**：
+
+```text
+前两次：我的假设被**读数**推翻（机制成立 ≠ 结论成立）
+这一次：★ 我**读源码的方式本身错了** ⇒ 我差点用一条错误的排除结论
+       把 Owner 报的缺陷缩到一个更小的范围里，
+       从而让 Owner 的问题「看起来已经解释清楚了」。
+```
 
 ## Problem
 

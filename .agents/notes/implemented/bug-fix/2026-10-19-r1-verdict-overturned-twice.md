@@ -1,12 +1,43 @@
-# Agent Note: R1「毛边」的裁决被读数推翻三次
+# Agent Note: R1「毛边」的裁决被读数推翻三次，最后定案为「不是缺陷」
 
 Status: implemented
 
 > 同域：[../architecture/2026-10-17-material-keep-or-replace-verdicts.md](../architecture/2026-10-17-material-keep-or-replace-verdicts.md)
-> 那篇有「6 类组件已换掉；1 处按证据保留」的先例；本篇是**同一种克制**在 R1 上的第二次应用。
+> 那篇有「6 类组件已换掉；1 处按证据保留」的先例；本篇是**同一种克制**在 R1 上的第三次应用。
 > 相邻：[2026-10-19-sheet-guard-covered-two-of-ten.md](./2026-10-19-sheet-guard-covered-two-of-ten.md)（同类：读数推翻假设）。
 
-### ★★★ 第三次推翻（2026-10-19）：我误判「底栏弹幕按钮无圆角」
+### ★★★★ 第四次（定案）：它**不是缺陷**，是白色文字的抗锯齿半像素
+
+Owner 原话（`docs/notes/plan-round-66.md:2183` 逐字）：
+
+> 「这个弹幕还是不行……弹幕信息的弹窗设计的不错，就是那个 **弹幕** 的按钮，一圈毛边」
+
+⇒ 指的是**底栏那枚「弹幕」按钮**，不是弹幕 chip。（这一点我在前几轮反复搞错。）
+
+**真树读数**（复用 `test/t27_w14_danmaku_bar_form_test.dart:175` 的 `_bar()`，
+它**真挂 `PlayerBottomBar`**，按 `danmakuToggleKey` 定位）：
+
+```text
+① 按钮内 2640 px 里 2380 px（90.2%）跨帧方差 > 20
+   ⇒ 它**根本没有背景层** —— 与代码一致（player_bottom_bar.dart:1864-1869
+     的 TextButton.styleFrom 只有 visualDensity + padding）
+   ⇒ 「半透明背景层漏边」这个假设**不成立**
+② 字缘像素 184 个，其中 **100% 比 2px 外更亮**，亮度 p50=p95=max=**255（纯白）**
+   ⇒ 那圈「边」就是白字的抗锯齿半像素
+③ 字缘亮度 **5 帧恒为 255（方差 0）** ⇒ 不随视频变
+   ⇒ 是「静态抗锯齿」而非「动态透光」
+```
+
+**⇒ 结论：文字渲染的固有现象，消除抗锯齿会让文字变锯齿。**
+
+**候选 A（弹幕 chip）同时被排除**：
+
+```text
+innerStd = 0.00（完全不透明）/ edgeStd = 1.65（≈不透明对照件 1.88）/ Δpeak = 0.00
+⇒ 两条独立判据一致说它没问题
+```
+
+### 第三次推翻（2026-10-19）：我误判「底栏弹幕按钮无圆角」
 
 ```text
 我说的：底栏那枚「弹幕」按钮是 TextButton，widget 上的 styleFrom(...)

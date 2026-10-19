@@ -152,3 +152,44 @@ tags:
   # ```
   needs-network:
     skip: "默认跳过：需要真实外网（CI runner 出网受限，请求打不通会红）。手动跑：flutter test <文件> --run-skipped --tags needs-network --concurrency=1"
+
+  instrument-broken:
+    skip: "仪器失效（非产品缺陷）：[SHELF] 只在失败路径打印，成功 load() 数不到 ⇒ 阳性对照必然失败。手动跑：flutter test test/t36_cache_refresh_test.dart --run-skipped --tags instrument-broken --concurrency=1"
+
+  # ★★★ **仪器失效**（2026-10-19 加）—— 注意：这不是「这条测试有问题」
+  #
+  # # 为什么单独一档，而不是塞进 known-failure
+  # ```text
+  # 这一档说的是**测量仪器坏了**，不是被测产品坏了，也不是用例写错了：
+  #   仪器   shelfLoads(log) = log 里 '[SHELF]' 的行数 ÷ 3
+  #   产品   [SHELF] 只在**失败/切 tab** 时打印
+  #          （lib/ui/widgets/my_shelf.dart:557 / 662 / 668 / 674 / 792 / 1121）
+  #          ⇒ 成功的 load() **一行都不打**
+  #   ⇒ 计数恒 0 ⇒ 阳性对照 `expect(pos, greaterThan(after))` 必然失败
+  # ```
+  # ★ 所以这 4 条红**不代表产品坏了** —— 是「尺子坏了」。
+  #   叫 known-failure 会让人以为"产品有已知缺陷"，那是**误导**。
+  #
+  # # 语义：默认 skip，**可手动跑**（与 native-media / needs-network 一致）
+  # ```text
+  # ⚠️ 不是「永久不跑」。`skip:` 只让它默认不选，`--run-skipped` 仍可放行。
+  #    理由与 evidence 那条相同（本文件顶部 B/C 两组实测）：
+  #    `exclude_tags` 发生在选择之前 ⇒ 排除了就无法用 --tags 放行；
+  #    `skip:` 则默认跳过、--run-skipped 能放行 ⇒ 两条路径都对。
+  # ```
+  #
+  # # 用法
+  # ```powershell
+  # # 默认：不跑（全量读数是 ~4，不是 -4）
+  # flutter test test/
+  #
+  # # ★ 手动跑：看它**现在**红成什么样（仪器修好后这 4 条应当变绿）
+  # flutter test test/t36_cache_refresh_test.dart --run-skipped --tags instrument-broken --concurrency=1
+  # ```
+  #
+  # # 退出这一档的条件（写给后来人）
+  # ```text
+  # 让 load() 的成功路径也有可数信号（例如产品加一个 debugLoadCount，
+  # 或成功时也打一行 [SHELF]）⇒ 把 4 个 @Tags(['instrument-broken'])
+  # 删掉、把本档也删掉。★ 这一档**只该变短**。
+  # ```

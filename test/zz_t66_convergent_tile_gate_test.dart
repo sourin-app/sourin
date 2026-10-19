@@ -637,13 +637,56 @@ void main() {
        * 而门禁有「白名单每条都必须仍然命中（防空条款假绿）」的反向检查，
        * 留着会让那条检查红。
        */
-      'lib/ui/player_page.dart:20541':
+      /*
+       * ★★★ 2026-10-19：行号整体 +741 重新锚定（**纯漂移**，不是新增违规）
+       *
+       * # 判定依据（严格按本文件上方「留给后来人」那条规则）
+       * ```text
+       * 实测报错：
+       *   GONE 20541 / 20563 / 20744 / 20766   （已不存在）
+       *   NEW  21282 / 21304 / 21485 / 21507   （同一段代码的新位置）
+       *
+       * 四条差值**完全一致**：
+       *   20541 → 21282   +741
+       *   20563 → 21304   +741
+       *   20744 → 21485   +741
+       *   20766 → 21507   +741
+       * ⇒ 同一段代码整体下移 741 行，不是新长出来的东西。
+       * ```
+       *
+       * # 形态复核（不是只看行号）
+       * ```text
+       * $ sed -n '21282p;21304p;21485p;21507p' lib/ui/player_page.dart
+       *         child: ColoredBox(
+       *           child: Material(
+       *         child: ColoredBox(
+       *           child: Material(
+       * ⇒ 与白名单描述「ColoredBox(black@0.92) -> Material(transparency)」
+       *   逐字一致 ⇒ 豁免的**语义不变**。
+       * ```
+       *
+       * # ⚠️ 为什么这**不是**「ListTile 该迁走却漏了」
+       * ```text
+       * 本仓的 material_ui 迁移门禁是 zz_t64_migrated_widget_gate_test.dart，
+       * 它的 `_migrated` 表里**只有** CircularProgressIndicator 一个控件：
+       *   const _migrated = <String, String>{
+       *     'CircularProgressIndicator': 'AppLoading（自绘 _AppSpinner）',
+       *   };
+       * ⇒ ListTile **不在**迁移名单里。
+       * 而本文件（zz_t66）守的是**另一件事**：
+       *   「ListTile 必须有 Material 祖先，否则 Flutter 会抛
+       *    『ink splashes may be invisible』断言」
+       *   —— 不是「不许用 ListTile」。
+       * ⇒ 这 2 处 ListTile 用透明 Material 包住，正是**满足**本门禁的要求。
+       * ```
+       */
+      'lib/ui/player_page.dart:21282':
           'ColoredBox(black@0.92) -> Material(transparency)，ListTile 在 Material 之下 ⇒ 合法。',
-      'lib/ui/player_page.dart:20563':
+      'lib/ui/player_page.dart:21304':
           '同上，另一层 wrapper（播放页元信息面板）。',
-      'lib/ui/player_page.dart:20744':
+      'lib/ui/player_page.dart:21485':
           'ColoredBox(black@0.92) -> Material(transparency)，同形态第二处（maxWidth 360）。',
-      'lib/ui/player_page.dart:20766':
+      'lib/ui/player_page.dart:21507':
           '同上，另一层 wrapper。',
       'lib/ui/settings/emby_page.dart:986':
           'SwitchListTile（转码开关）。该处代码注释自己写着「必须自己包一层'

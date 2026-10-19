@@ -102,9 +102,17 @@
 //   —— 那条路径的值变化本身就是局部重建，多加的 setState 被覆盖 ⇒ 读数不变。
 //   ⇒ 「读数不变」不等于「阈值失效」，只等于「这个注入点在该窗口不产生额外计数」。
 //
-// ⚠️ ★★ 在 `git worktree` 里跑本文件，必须先补齐两样，否则读数是假的：
-//     sourin_core.dll（缺它 ⇒ 核心加载失败 ⇒ _playing 路径不同 ⇒ 531 变 193）
-//     .dart_tool（必须**复制**，不能软链 —— 软链会让 rootUri 指回主树）
+// ⚠️ ★★ 在 `git worktree` 里跑本文件，**必须先补齐两样**，否则读数是假的：
+//     · `sourin_core.dll` —— ★ 不只是「读数会变」，而是**整个文件会全绿**：
+//         实测 A/B 各 2 次：补齐 ⇒ T2 all=531（红）/ 缺件 ⇒ T2 all=**193**（全绿）。
+//         而 193 正是上面那段注释里写的「改前」数之一。
+//         机制（复核实测，**比我原先写的更广**）：
+//         核心加载失败 ⇒ `listProviders` / 取源能力 / 阴性对照**全部退化**
+//         （P0 阴性对照 all 从 1 变成 0 ⇒ 什么都没发生）
+//         ⇒ 是**整条异步链路不执行**，不是 `_playing` 单点不同。
+//         ⇒ ★ 这个环境是**假绿环境**，绝不能当对照基线。
+//     · `.dart_tool` —— 必须**复制**，不能软链
+//         （软链的 rootUri 会指回主树 ⇒ 跑的是主树的 lib）
 // ```
 // ```
 //
@@ -233,6 +241,46 @@ bool _requireLibmpv() {
   return false;
 }
 
+/// ★★★ 2026-10-19（Lead 加，源自复核实测）：**Rust 核心是否真的加载成功**
+///
+/// ```text
+/// 背景：这个文件原本只检查 libmpv，不检查 `sourin_core.dll`。
+/// 而复核 A/B 实测（各 2 次稳定）：
+///   有 sourin_core.dll ⇒ T2 all=**531**（红）
+///   缺 sourin_core.dll ⇒ T2 all=**193**（★ **+7 全绿**）
+///
+/// 机制不是「某个数变了」，而是**整条异步链路不执行**：
+///   listProviders / 取源能力 / 阴性对照 全部退化，
+///   连 P0 的阴性对照都从 all=1 变成 all=0（什么都没发生）。
+///
+/// ⇒ ★ 而 193 正是本文件注释里那个「改前」数之一 ——
+///   即：**一个「缺核心」的假绿环境，它的读数被当成了性能基线。**
+/// ⇒ 所以缺核心时必须**明确跳过**，绝不能让它跑出一个漂亮的全绿。
+/// ```
+bool _requireSourinCore() {
+  // ★ 必须列**全部**已知落点 —— `DynamicLibrary.open('sourin_core.dll')`
+  //   走系统 DLL 搜索路径，而 AGENTS §8 要求 CI 把它拷到 `windows/`：
+  //     ./sourin_core.dll                    仓库根（本机手动放置）
+  //     ./windows/sourin_core.dll            CI 的规范落点
+  //     ./build/windows/x64/runner/Release/  构建产物
+  //   —— 第一版漏了 `windows/`，结果我移走仓库根那个之后防护**没触发**
+  //      （实测仍 +7 全绿）⇒ 「验证缺件类守卫要先数清它有几个落点」
+  //      这个坑，我今天已经踩过两次（libmpv 也是两个候选）。
+  const candidates = <String>[
+    'sourin_core.dll',
+    'windows/sourin_core.dll',
+    'build/windows/x64/runner/Release/sourin_core.dll',
+  ];
+  for (final rel in candidates) {
+    if (File(rel).existsSync()) return true;
+  }
+  markTestSkipped('sourin_core.dll 缺失 ⇒ 本文件的读数不成立。'
+      '★ 实测：缺核心时 T2 读到 193 且**整个文件全绿**，'
+      '而 193 正是被作废的那个「改前」数 ⇒ 不能让它当基线。'
+      '查过的落点：$candidates');
+  return false;
+}
+
 // ══════════════════════════════════════════════════════════════════════
 //  挂载
 // ══════════════════════════════════════════════════════════════════════
@@ -302,6 +350,8 @@ void main() {
   // ════════════════════════════════════════════════════════════════════
   testWidgets('P0 仪器自检：静置 0 重建；确定会 setState 的钩子 >=1', (t) async {
     if (!_requireLibmpv()) return;
+    // ★ Rust 核心缺失时读数不成立（实测缺核心 ⇒ T2 读 193 且全绿）
+    if (!_requireSourinCore()) return;
     await _mount(t);
 
     _installRebuildCounter();
@@ -349,6 +399,8 @@ void main() {
   testWidgets('T1 控制条隐藏后 1 次 hover 叫回 ⇒ 整页 build=0，单帧 < 16.7ms',
       (t) async {
     if (!_requireLibmpv()) return;
+    // ★ Rust 核心缺失时读数不成立（实测缺核心 ⇒ T2 读 193 且全绿）
+    if (!_requireSourinCore()) return;
     await _mount(t);
     final p = TestPointer(1, PointerDeviceKind.mouse);
     await _enterFullscreenPlaying(t);
@@ -418,6 +470,8 @@ void main() {
   // ════════════════════════════════════════════════════════════════════
   testWidgets('T2 光标隐藏 + 恢复 ⇒ 各自整页 build=0，且光标真的隐/现', (t) async {
     if (!_requireLibmpv()) return;
+    // ★ Rust 核心缺失时读数不成立（实测缺核心 ⇒ T2 读 193 且全绿）
+    if (!_requireSourinCore()) return;
     await _mount(t);
     final p = TestPointer(1, PointerDeviceKind.mouse);
     await _enterFullscreenPlaying(t);
@@ -535,6 +589,8 @@ void main() {
   // ════════════════════════════════════════════════════════════════════
   testWidgets('T3 光标已隐藏时 60 次 hover ⇒ 整页 build=0，p99 在预算内', (t) async {
     if (!_requireLibmpv()) return;
+    // ★ Rust 核心缺失时读数不成立（实测缺核心 ⇒ T2 读 193 且全绿）
+    if (!_requireSourinCore()) return;
     await _mount(t);
     final p = TestPointer(1, PointerDeviceKind.mouse);
     await _enterHiddenCursor(t, p);
@@ -577,6 +633,8 @@ void main() {
 
   testWidgets('T4 光标已显示时 60 次 hover ⇒ 整页 build=0（回归守卫）', (t) async {
     if (!_requireLibmpv()) return;
+    // ★ Rust 核心缺失时读数不成立（实测缺核心 ⇒ T2 读 193 且全绿）
+    if (!_requireSourinCore()) return;
     await _mount(t);
     final p = TestPointer(1, PointerDeviceKind.mouse);
     await _enterFullscreenPlaying(t);
@@ -602,6 +660,8 @@ void main() {
   // ════════════════════════════════════════════════════════════════════
   testWidgets('T5 控制条淡出动画：仍在动 + 整页 build=0', (t) async {
     if (!_requireLibmpv()) return;
+    // ★ Rust 核心缺失时读数不成立（实测缺核心 ⇒ T2 读 193 且全绿）
+    if (!_requireSourinCore()) return;
     await _mount(t);
     await _enterFullscreenPlaying(t);
 
@@ -645,6 +705,8 @@ void main() {
   // ════════════════════════════════════════════════════════════════════
   testWidgets('T6 隐藏→hover 循环 8 轮 ⇒ 每轮整页 build=0', (t) async {
     if (!_requireLibmpv()) return;
+    // ★ Rust 核心缺失时读数不成立（实测缺核心 ⇒ T2 读 193 且全绿）
+    if (!_requireSourinCore()) return;
     await _mount(t);
     final p = TestPointer(1, PointerDeviceKind.mouse);
     await _enterFullscreenPlaying(t);

@@ -260,6 +260,60 @@ jobs:
       - name: 全量测试
         run: flutter test --reporter expanded
 
+      # ── ② 全量测试之后：断言「没有因缺件而静默 skip 的用例」──
+      #
+      # ★★★ 2026-10-19（批末复核查出的**真隐患**，Lead 修）
+      #
+      # # 问题
+      # ```text
+      # ① 本 job 的顺序是：pub get(:240) → **flutter test(:261)** → flutter build(:280)
+      #    ⇒ 产出 libmpv-2.dll 的那一步在**测试之后**
+      # ② 而 build.yml 自己 L896-898 写着（2026-10-12，CodeRabbit 指出、
+      #    **已用 CI 实测证实**）：光 `flutter pub get` **供不出** libmpv-2.dll
+      # ③ 没有 actions/cache 缓存 build/ ⇒ CI 上 libmpv **本来就不存在**
+      # ⇒ 依赖 libmpv 的文件在 CI 上走 markTestSkipped ⇒ exit 0 ⇒ **CI 绿**
+      #
+      # # 为什么这不是「无害的 skip」
+      # 46 个文件带 `native-media` 标签、默认 skip，裸 flutter test 本来就不选它们。
+      # ★ 但有 **2 个文件不带标签** ⇒ 会进默认套件：
+      #     test/zz_t66_player_jank_test.dart       8 条
+      #     test/zz_t66_n11_bottombar_test.dart    7 条
+      #   这 15 条在 CI 上全部静默 skip，而 job 绿。
+      # ```
+      #
+      # # 为什么不用环境变量 SOURIN_REQUIRE_LIBMPV=1
+      # ```text
+      # ★ 它覆盖不到：实测 16 个依赖 libmpv 的文件里只有 **9 个**写了那个开关，
+      #   另 7 个（含上面那个 n11_bottombar）设了也照样静默 skip。
+      # ★ 而且**单独设它会让主 job 每次必红**（libmpv 注定不在）
+      #   ⇒ 团队很快会去关掉它 ⇒ 更糟。
+      # ⇒ 改用**可执行断言**：直接读输出里的缺件字样，不依赖任何文件有没有写开关。
+      #
+      # ★ 前置：本 job 仍未供出 libmpv ⇒ 这条断言**现在会红**。
+      #   这是**故意**的 —— 它把一个「静默失效」变成「显式失败」，
+      #   逼着要么让本 job 真的 build 出 libmpv，要么明确接受这 15 条不跑。
+      #   （那需要 Owner 拍板：本 job 是拦合并的主 job，为 15 条测试
+      #     加一次完整 windows 构建是否值得。）
+      - name: 断言：默认套件里没有因缺件而静默 skip 的用例
+        shell: bash
+        run: |
+          out=$(flutter test test/zz_t66_player_jank_test.dart \
+                                test/zz_t66_n11_bottombar_test.dart \
+                                --reporter=expanded 2>&1)
+          echo "$out"
+          # ★ 判据必须**精确**：这两个文件在 libmpv 就位时会正常打印
+          #   `[LIBMPV] 夹具 = <路径>`（见 zz_t66_player_jank_test.dart:216），
+          #   那是**成功**的证据；而 `:221` 打印的
+          #   `[LIBMPV] 夹具缺失 ⇒ …` 才是缺件。
+          # ⇒ 只匹配「夹具缺失」，否则会把正常输出误判成失败
+          #   （我第一版写成 grep '夹具缺失\|libmpv'，实测在本机 libmpv 就位时
+          #     仍然 FIRED ⇒ 误报。已实测改正。）
+          if echo "$out" | grep -q '夹具缺失'; then
+            echo "::error::libmpv 缺失 ⇒ 这 15 条门禁是**静默 skip**，不是通过。"
+            echo "::error::修法见本步骤上方的注释（先让本 job build 出 libmpv）。"
+            exit 1
+          fi
+
       # ── ③ 打包 ─────────────────────────────────────────────────────
       - name: 构建 Windows 发布版
         # ★ 凭证 env 只挂在这一步（最小权限，理由见上面 job 里的说明）。

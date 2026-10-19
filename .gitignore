@@ -103,6 +103,10 @@ key.properties
 /.probe/
 /.probe_i12/
 /.probe_i56/
+# DSH（承载本会话的 agent runtime）自己写的进度目录。
+# 与 `.probe/` 同类：一次性产物、不进库；但它由 harness 生成而非本仓库，
+# 所以要在本仓库显式忽略，否则每次跑完工作树都脏。
+/.dsh-progress/
 /.local/
 /%SystemDrive%/
 /%TEMP%/

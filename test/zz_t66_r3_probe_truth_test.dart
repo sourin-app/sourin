@@ -435,7 +435,10 @@ void main() {
       // 证据要同时给出本机值与真值（这是用户能自查的部分）
       expect(hij.detail, contains('74.86.17.48'));
       expect(hij.detail, contains('216.198.79.3'));
-      expect(hij.detail, contains('不一致'));
+      // ★ 2026-10-19（任务 B）：把"两者不一致"说得更直白
+      //   （改前是"两者不一致"，用户仍要自己想"所以呢"）
+      expect(hij.detail, contains('不是一个东西'),
+          reason: '★ 要有把两个地址"对上"的一句话');
       // ★ 必须说清"不是服务坏了"（服务在代理下是活的）
       expect(hij.remedy, contains('不是这个服务坏了'));
 
@@ -452,8 +455,153 @@ void main() {
       );
       expect(hij.failure, DanmakuProbeFailure.dnsHijacked);
       expect(hij.detail, contains('108.160.173.207'));
-      expect(hij.detail, contains('已知伪造段'),
+      expect(hij.detail, contains('已知的伪造段'),
           reason: '★ 没有真值对照时，要说清凭什么判的');
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ⑦ ★★★ 任务 A：伪造段表**可维护**（数据驱动 + 每条带依据）
+  // ═══════════════════════════════════════════════════════════════════
+  group('⑦ 伪造段表：可维护 + 每条有依据 + 反证', () {
+    test('★★★ 每一条都必须带**非空依据**（空依据 = 假绿）', () {
+      expect(DanmakuProbeReport.kForgedAddressRanges, isNotEmpty);
+      for (final r in DanmakuProbeReport.kForgedAddressRanges) {
+        /*
+         * # 为什么这条重要
+         * ```text
+         * 一张"看起来是个表"但没有依据的清单，下一个人无法判断：
+         *   · 这条还能不能删
+         *   · 它是实测来的，还是谁随手加的
+         * ⇒ 强制非空，且必须提到**可复跑的取证方式**（PTR / DoH / 花样段）。
+         * ```
+         */
+        expect(r.evidence.trim(), isNotEmpty,
+            reason: '★★★ 伪造段 "${r.prefix}" 没有依据 —— 不许凭"看着不像"就列进来');
+        expect(r.prefix.trim(), isNotEmpty);
+        final e = r.evidence;
+        final hasEvidence = e.contains('PTR') ||
+            e.contains('DoH') ||
+            e.contains('花样') ||
+            e.contains('Facebook') ||
+            e.contains('Twitter') ||
+            e.contains('Dropbox') ||
+            e.contains('SoftLayer');
+        expect(hasEvidence, isTrue,
+            reason: '★★ 依据必须是**可复跑的取证**（PTR / DoH / 花样段），'
+                '而 "${r.prefix}" 的依据里看不出来：$e');
+      }
+    });
+
+    test('★★★ 表里不许有重复前缀（重复 = 维护时容易改一处漏一处）', () {
+      final seen = <String>{};
+      for (final r in DanmakuProbeReport.kForgedAddressRanges) {
+        expect(seen.add(r.prefix), isTrue,
+            reason: '★★★ 前缀 "${r.prefix}" 重复了');
+      }
+    });
+
+    test('★★★ 反证：7 个 DoH 真值地址**一个都不许**被判成伪造', () {
+      /*
+       * 这条防的是"判据写成恒真"（例如 `return true`），
+       * 也防"前缀取得太宽的段"误伤真实地址。
+       */
+      for (final real in <String>[
+        '216.198.79.3', // delta 真值
+        '64.29.17.3', // delta 真值
+        '216.198.79.67', // kappa 真值（第一次采样）
+        '64.29.17.67',
+        '216.198.79.195', // kappa 真值（第二次采样，地址也变了）
+        '64.29.17.195',
+        '64.239.123.129', // vercel.com（能通的对照）
+      ]) {
+        expect(DanmakuProbeReport.isKnownForgedAddress(real), isFalse,
+            reason: '★★★ 真值 $real 被判成伪造 ⇒ 判据太宽，会误伤正常用户');
+      }
+    });
+
+    test('★★★ 轮换走掉的旧伪造地址仍在表里（回归保护）', () {
+      /*
+       * 本轮实测：同一个域名两次采样拿到**不同**的伪造地址。
+       * 这些"历史样本"必须留在表里 —— 否则换回旧地址时就抓不到了。
+       */
+      for (final forged in <String>[
+        '74.86.17.48', // 第一次采样
+        '199.59.150.39', // 第二次采样
+        '104.244.43.182', // kappa 第二次采样
+        '199.96.58.15', // vercel.app apex 采样
+        '2a03:2880:f117:83:face:b00c:0:25de', // 每次都有的 IPv6 花样
+      ]) {
+        expect(DanmakuProbeReport.isKnownForgedAddress(forged), isTrue,
+            reason: '★★ 实测收到的伪造地址 $forged 必须能命中');
+      }
+    });
+
+    test('★★ 阳性对照：表里每条前缀喂给自己都要命中（防写错前缀）', () {
+      for (final r in DanmakuProbeReport.kForgedAddressRanges) {
+        // 前缀补一个尾数，模拟真实地址
+        final sample = '${r.prefix}1';
+        expect(DanmakuProbeReport.isKnownForgedAddress(sample), isTrue,
+            reason: '★★ 前缀 "${r.prefix}" 自己构造的样本 $sample 都没命中 —— '
+                '这条前缀写错了');
+      }
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ⑧ ★★★ 任务 B：detail 要让用户**自己看懂**（两个地址都摆出来）
+  // ═══════════════════════════════════════════════════════════════════
+  group('⑧ 用户自查：detail 里本机地址与真值都要出现', () {
+    test('★★★ 有 DoH 时：本机地址 + DoH 地址 + "不是一个东西"的结论', () {
+      final r = DanmakuProbeReport.forHijackedDns(
+        url: 'https://danmu-api-delta.vercel.app',
+        localAddresses: <String>['74.86.17.48'],
+        dohAddresses: <String>['216.198.79.3', '64.29.17.3'],
+      );
+      /*
+       * 用户不需要懂 DNS：看到两个不同的地址就明白了。
+       * ⇒ 断言**两者同时出现**，且有一句把这层意思说破。
+       */
+      expect(r.detail, contains('74.86.17.48'),
+          reason: '★★★ 本机地址必须显示（这是他机器上的事实）');
+      expect(r.detail, contains('216.198.79.3'),
+          reason: '★★★ 权威真值也必须显示（对比才成立）');
+      expect(r.detail, contains('不是一个东西'),
+          reason: '★★ 要有把两个地址"对上"的一句话，不能只是并列两串数字');
+      expect(r.detail, contains('本机解析到'));
+      expect(r.detail, contains('权威 DNS'));
+    });
+
+    test('★★★ 没有 DoH 时：**不编真值**，明说无法核对', () {
+      final r = DanmakuProbeReport.forHijackedDns(
+        url: 'https://x',
+        localAddresses: <String>['108.160.173.207'],
+      );
+      expect(r.detail, contains('108.160.173.207'));
+      expect(r.detail.contains('无法核对') || r.detail.contains('没能核对'), isTrue,
+          reason: '★★★ 拿不到真值就必须明说，不许沉默（沉默会让人以为已核对过）');
+      /*
+       * ★ 关键反证：**不许**出现任何看起来像"真值"的地址。
+       *   这里用一个不可能出现的占位（真值都是 216.198.x / 64.29.x）。
+       */
+      expect(r.detail.contains('216.198.'), isFalse,
+          reason: '★★★ 没有做 DoH 就不许凭空出现真值地址 —— 那是编的');
+      expect(r.detail.contains('64.29.'), isFalse);
+    });
+
+    test('★★ 两种情形的 detail 都能独立读懂（不依赖 UI 其它部分）', () {
+      final withDoh = DanmakuProbeReport.forHijackedDns(
+        url: 'https://x',
+        localAddresses: <String>['74.86.17.48'],
+        dohAddresses: <String>['216.198.79.3'],
+      );
+      final noDoh = DanmakuProbeReport.forHijackedDns(
+        url: 'https://x',
+        localAddresses: <String>['74.86.17.48'],
+      );
+      // 两者的 detail 必须**不同**（否则"没有真值"这个事实被吞掉了）
+      expect(withDoh.detail, isNot(noDoh.detail),
+          reason: '★★ 有没有真值对照，说的话必须不一样');
     });
   });
 

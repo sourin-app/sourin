@@ -5,7 +5,7 @@ Status: implemented
 > 同域：[../process/2026-10-12-danmaku-credentials-build-time-secrets.md](../process/2026-10-12-danmaku-credentials-build-time-secrets.md)
 > 相邻：[../../implemented/feature/2026-10-17-player-danmaku-send-entry.md](../feature/2026-10-17-player-danmaku-send-entry.md)
 > （那篇建了发送入口；本篇讲**能力位本身可能是谎话**）。
-> 方法论对照：[2026-10-19-sheet-guard-covered-two-of-ten.md](./2026-10-19-sheet-guard-covered-two-of-ten.md)（同样由「数满足点」发现）。
+> 方法论对照：[../bug-fix/2026-10-19-sheet-guard-covered-two-of-ten.md](../bug-fix/2026-10-19-sheet-guard-covered-two-of-ten.md)（同样由「数满足点」发现）。
 
 ## Problem
 

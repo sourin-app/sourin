@@ -277,46 +277,116 @@ class DanmakuProbeReport {
     this.remedy = '',
   });
 
-  /// ★★★ 2026-10-19（R3-③/⑦ 归因修正）：**这个地址是不是已知的伪造段**
+  /// ★★★ 2026-10-19（R3-③/⑦ 归因修正 / 任务 A）：**伪造地址段表（数据驱动）**
   ///
-  /// # 为什么这是一个**纯函数**（不联网、可单测、可故障注入）
+  /// # 为什么做成表，而不是在函数里写一堆 `if`
   /// ```text
-  /// 劫持判定需要一个**稳定可测**的判据。把"地址像不像伪造"抽成纯函数，
-  /// 就能在门禁里直接喂字符串断言，不需要真去连网。
+  /// 第一版是纯函数里 5 个硬编码比较。问题有两个：
+  ///   ① 将来出现新伪造段**抓不到**，而且没人知道该加什么（没有格式可依）
+  ///   ② 每条**没有依据** ⇒ 下一个人无法判断"这条还能不能删"
+  /// ⇒ 改成显式表，每条强制带 `evidence`（PTR / DoH 对照）。
   /// ```
   ///
-  /// # 判据来自本机实测（2026-10-19，见 [DanmakuProbeFailure.dnsHijacked]）
+  /// # ⚠️ 本轮实测发现：伪造地址会**轮换**（这是设计这张表时必须知道的）
   /// ```text
-  /// ① IPv6 含 `face:b00c` —— Facebook 的固定花样段
-  ///    实测：danmu-api-delta / kappa / vercel.app apex 三个域名**都**返回它
-  /// ② 已知被污染的 IPv4 段：
-  ///    74.86.17.0/24     SoftLayer 静态段（PTR: *.sl-reverse.com）
-  ///    108.160.173.0/24  Dropbox（PTR: v.dropbox.com）
-  ///    199.96.58.0/24    （无 PTR）
-  ///    157.240.0.0/16    Facebook
-  ///    199.16.0.0/16     Twitter（历史污染段）
+  /// 同一台机器、同一个域名，两次采样拿到**不同**的伪造地址：
+  ///   第一次  danmu-api-delta → 74.86.17.48      + face:b00c
+  ///   第二次  danmu-api-delta → 199.59.150.39    + face:b00c
+  ///           danmu-api-kappa → 104.244.43.182
+  /// 而 DoH 真值两次都是 216.198.79.x / 64.29.17.x。
+  ///
+  /// ⇒ **任何"完整枚举"都注定失败**。这张表的定位必须是：
+  ///   「已知样本」—— 命中就能定案（强证据），**没命中不代表没问题**。
+  ///   所以判定还有第二条腿：DoH 真值对照（见 `_diagnose`）。
+  /// ```
+  ///
+  /// # 每条必须有依据（门禁会检查 `evidence` 非空）
+  /// ```text
+  /// 依据只有三类，都是**可复跑**的：
+  ///   ① PTR 反查（`socket.gethostbyaddr`）证明了**归属**
+  ///   ② DoH 对照（cloudflare-dns.com）证明了**与本机答案不一致**
+  ///   ③ 花样段（face:b00c 这种一眼认得的固定串）
+  /// ✗ 不许"看着不像 Vercel"就列进来 —— 那是猜测，不是证据。
+  /// ```
+  static const List<({String prefix, String evidence})> kForgedAddressRanges =
+      <({String prefix, String evidence})>[
+    /*
+     * ① IPv6 花样段 —— 本轮**三个** *.vercel.app 域名都返回它
+     *    这是最强的单条证据：一个 Vercel 域名不该解析到 Facebook 的段。
+     */
+    (
+      prefix: '2a03:2880:',
+      evidence: 'Facebook IPv6 段（含 face:b00c 花样）；实测 danmu-api-delta / '
+          'danmu-api-kappa / vercel.app apex **三个都**返回 '
+          '2a03:2880:…:face:b00c（DoH 真值为 216.198.79.x / 64.29.17.x）',
+    ),
+    (
+      prefix: 'face:b00c',
+      evidence: 'Facebook 的固定花样段（出现在上述三个域名的本机解析结果里）',
+    ),
+    /*
+     * ② 有 PTR 归属证据的 IPv4 段（最硬的一类：PTR 直接说了它属于谁）
+     */
+    (
+      prefix: '74.86.17.',
+      evidence: 'SoftLayer/IBM 静态段 —— PTR 实测：'
+          '74.86.17.48 → 30.11.564a.ip4.static.sl-reverse.com',
+    ),
+    (
+      prefix: '108.160.173.',
+      evidence: 'Dropbox —— PTR 实测：108.160.173.207 → www.v.dropbox.com',
+    ),
+    (
+      prefix: '199.59.150.',
+      evidence: 'Twitter（twttr.com）—— PTR 实测：'
+          '199.59.150.39 → r-199-59-150-39.twttr.com；'
+          '同族 199.59.148.1 → r-199-59-148-1.twttr.com',
+    ),
+    (
+      prefix: '199.59.148.',
+      evidence: 'Twitter（twttr.com）—— PTR 实测：'
+          '199.59.148.1 → r-199-59-148-1.twttr.com',
+    ),
+    (
+      prefix: '199.96.58.',
+      evidence: 'Twitter（twttr.com）—— PTR 实测：'
+          '199.96.58.1 → ge-2-0-3.pao1.cr2.twttr.com；'
+          '本机对 danmu-api-* 返回过该段的 199.96.58.15（DoH 真值不含它）',
+    ),
+    (
+      prefix: '157.240.',
+      evidence: 'Facebook —— 对照 DoH：graph.facebook.com 解析到 157.240.13.14',
+    ),
+    /*
+     * ③ 只有 DoH 对照、没有 PTR 的段
+     *
+     * ⚠️ 这类**依据最弱**：没有归属证据，只是"与本机对不上"。
+     *    保留是因为实测确实收到过它（104.244.43.182）；
+     *    但如果将来有人质疑，删掉这一条**不会削弱**定案能力
+     *    （DoH 那条腿仍然兜得住）。
+     */
+    (
+      prefix: '104.244.43.',
+      evidence: '本轮实测本机返回过该段（104.244.43.182，无 PTR），'
+          'DoH 真值为 216.198.79.195 / 64.29.17.195 —— 仅"与真值不符"，归属未证实',
+    ),
+  ];
+
+  /// 这个地址是否落在**已知伪造段**里
+  ///
+  /// ⚠️ 语义边界（很重要）：
+  /// ```text
+  /// 命中   ⇒ 强证据，可以直接定案（dnsHijacked）
+  /// 未命中 ⇒ **不代表正常**：伪造地址会轮换（见 kForgedAddressRanges 的说明），
+  ///          必须由 DoH 真值对照那条腿兜住。
   /// ```
   /// ⚠️ 这张表是**证据表**，不是"黑名单防御"：它只用于**解释失败原因**，
   ///    不参与"允不允许连"（那会让误判变成功能不可用）。
-  /// ⚠️ 反过来，落在表里**不等于**一定被劫持（万一 Vercel 真换到那去了）——
-  ///    所以最终判定还要叠加"TCP 超时 + DoH 真值不同"（见 [looksForged] 的调用方）。
   static bool isKnownForgedAddress(String address) {
     final a = address.trim().toLowerCase();
     if (a.isEmpty) return false;
-    // ① IPv6 花样段
-    if (a.contains('face:b00c') || a.contains('faceb00c')) return true;
-    // ② IPv4 段
-    final parts = a.split('.');
-    if (parts.length == 4) {
-      final o = parts.map(int.tryParse).toList(growable: false);
-      if (o.every((x) => x != null && x >= 0 && x <= 255)) {
-        final (a0, a1, a2) = (o[0]!, o[1]!, o[2]!);
-        if (a0 == 74 && a1 == 86 && a2 == 17) return true; // SoftLayer
-        if (a0 == 108 && a1 == 160 && a2 == 173) return true; // Dropbox
-        if (a0 == 199 && a1 == 96 && a2 == 58) return true; // 无 PTR
-        if (a0 == 157 && a1 == 240) return true; // Facebook
-        if (a0 == 199 && a1 == 16) return true; // Twitter 历史段
-      }
+    for (final r in kForgedAddressRanges) {
+      if (a.contains(r.prefix)) return true;
     }
     return false;
   }
@@ -420,9 +490,35 @@ class DanmakuProbeReport {
   }) {
     final local = localAddresses.join(' / ');
     final doh = dohAddresses.join(' / ');
+    /*
+     * ★★★ 2026-10-19（任务 B）：detail 要让用户**自己看懂发生了什么**。
+     *
+     * # 改前
+     * ```text
+     * 「本机解析到 X；加密 DNS（DoH）真值是 Y —— 两者不一致」
+     * 这句对工程师够了，但对普通用户还是"两串地址"。
+     * ```
+     * # 改后：把**两个地址都摆在眼前**，并明说它们代表什么
+     * ```text
+     * 用户看到 "74.86.17.48 vs 216.198.79.3" 就已经明白了：
+     * 同一个域名，我这台机器拿到的和真值不是一个东西。
+     * ⇒ 不需要懂 DNS，也不需要跑任何命令。
+     * ```
+     * # 没有 DoH 时**不编真值**
+     * ```text
+     * DoH 自己也可能被拦。拿不到就明说"无法核对真值"，
+     * 只给出"本机答案落在已知伪造段"这个能自查的事实。
+     * ★ 绝不写一个猜的"真值"。
+     * ```
+     */
     final evidence = doh.isEmpty
-        ? '本机解析到 $local（落在已知伪造段）'
-        : '本机解析到 $local；加密 DNS（DoH）真值是 $doh —— 两者不一致';
+        ? '本机解析到：$local\n'
+            '这个地址落在**已知的伪造段**里（同一网段被实测判定为他人服务器）。\n'
+            '⚠️ 本次没能核对权威 DNS 真值（加密查询也可能被拦），'
+            '所以不给出"真值"——但上面这个地址本身已经能说明问题。'
+        : '本机解析到：$local\n'
+            '权威 DNS（加密查询）真值：$doh\n'
+            '⇒ 同一个域名，你这台机器拿到的和真实地址**不是一个东西**。';
     return DanmakuProbeReport(
       failure: DanmakuProbeFailure.dnsHijacked,
       url: url,

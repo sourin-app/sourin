@@ -1953,6 +1953,19 @@ class _PlayerPageState extends State<PlayerPage>
   /// 当前挂载的弹幕（已按时间排序，已叠加 shift）
   List<DanmakuComment> _danmakuComments = const <DanmakuComment>[];
 
+  /// ★★★ 2026-10-19（第 66 轮 R3-⑤）：**逐路弹幕原料**（弹幕设置面板要它）
+  ///
+  /// # 为什么必须有这份快照
+  /// ```text
+  /// 面板要实现「用户勾了哪几路就合并哪几路」，原料必须是**逐路**的。
+  /// 而宿主在 merge 之后只剩 `agg.comments`（已去重合并）⇒
+  /// 不在这里留一份，面板就只能"勾一下显示合并了"——那是假功能。
+  /// ```
+  /// 在 [_aggregateDanmaku] 里写（那里是唯一还按来源分开的地方）。
+  /// ⚠️ 只读：面板拿它算预览，**不写回**播放状态。
+  Map<DanmakuFeedChannel, List<DanmakuComment>> _danmakuFeedSamples =
+      const <DanmakuFeedChannel, List<DanmakuComment>>{};
+
   /// HTTP 客户端（懒建；凭证改了必须重建 —— appId/appSecret 是构造快照）
   ExternalDanmakuClient? _danmakuClient;
 
@@ -2208,7 +2221,80 @@ class _PlayerPageState extends State<PlayerPage>
         loading: _danmakuLoading,
         enabled: _danmakuEnabled,
         aggregate: _infoAggregate,
+        /*
+         * ★★★ 2026-10-19（第 66 轮 R3-⑥ / Owner 第 ⑤ 条）：
+         *   面板要的「**具体哪个源** / **上次更新时间**」这两根线在这里接上。
+         *
+         * # 为什么由宿主给，而不是面板自己推
+         * ```text
+         * 面板是纯 UI（见 danmaku_info_panel.dart 文件头）。它不知道
+         * 这一次请求打的到底是内置实例 A 还是 B、也不知道弹幕库的
+         * fetchedAt —— 那两个事实只有宿主（这里）有。
+         * 面板那边的"从聚合推 / 说未记录"是**降级路径**；
+         * 有真值时必须用真值。
+         * ```
+         */
+        sourceName: _danmakuInfoSourceName,
+        updatedAt: _danmakuInfoUpdatedAt,
       );
+
+  /// 面板要显示的「**具体哪个源**」（null = 宿主也不知道 ⇒ 面板走自己的降级路径）
+  ///
+  /// # 为什么不能只靠 `_infoSource`（那是**类别**）
+  /// ```text
+  /// 类别说「dan-api」⇒ 内置实例 A？B？还是用户自己填的那个地址？
+  /// 类别说「外部视频站直连」⇒ 是哪个 cid 对应的那个作品？
+  /// Owner 原话要的是「**具体哪个源**」—— 类别回答不了这个问题。
+  /// ```
+  /// ⚠️ 全都拿不到时返回 null：**不编**。面板会退成聚合里的那一路名，
+  ///    再退成类别名 —— 那是它的设计内降级，不是我这里的空话。
+  String? get _danmakuInfoSourceName {
+    switch (_infoSource) {
+      case DanmakuInfoSource.bili:
+        // 外部站直连：cid 是最能定位那一集的数字
+        return _biliCid > 0 ? '外部视频站直连 · cid $_biliCid' : '外部视频站直连';
+      case DanmakuInfoSource.service:
+        final ep = DanmakuConfig.effectiveEndpoint;
+        if (ep == null) return 'dan-api';
+        // ★ 内置 vs 自填必须分开说（用户要做的事完全不同）
+        return DanmakuConfig.usingPublicInstance
+            ? '内置公共实例 · ${ep.display}'
+            : '自填 dan-api · ${ep.display}';
+      case DanmakuInfoSource.localDanmaku:
+        return '本机弹弹play · ${DanmakuLocalService.hostPort}';
+      case DanmakuInfoSource.selfHosted:
+        final ep = DanmakuConfig.effectiveEndpoint;
+        return ep == null ? '自建弹幕服务' : '自建弹幕服务 · ${ep.display}';
+      case DanmakuInfoSource.library:
+        // `_infoDetail` 就是文件名 / 弹幕库 #id（面板本来也画它）
+        final d = _infoDetail;
+        return d == null || d.isEmpty ? '本地弹幕库' : '本地弹幕库 · $d';
+      case DanmakuInfoSource.none:
+        return null;
+    }
+  }
+
+  /// 面板要显示的「**上次更新时间**」（null = 宿主没有这个事实 ⇒ 面板说「未记录」）
+  ///
+  /// # 两个真源，精度不同
+  /// ```text
+  /// ① 外部视频站那条边：`BiliDanmakuStore.fetchedAt(cid)` —— **精确到这一集**
+  /// ② 其它边：`biliLastSyncAt()` —— 只是"上次全量刷新"的**粗**读数
+  /// ```
+  /// ⚠️ ② 与 ① 语义不同，但它是宿主手上唯一的时间事实 —— 用它比编一个更诚实。
+  /// ⚠️ 两者都拿不到时返回 **null**：面板显示「未记录」。
+  ///    **不许**用 `DateTime.now()` 冒充（那是把未知画成已知）。
+  DateTime? get _danmakuInfoUpdatedAt {
+    // ① 精确：这一集的弹幕缓存时间
+    if (_biliCid > 0) {
+      final at = BiliDanmakuStore.fetchedAt(_biliCid);
+      if (at != null) return at;
+    }
+    // ② 粗：上次全量刷新（0 = 从没刷过 ⇒ 没有这个事实）
+    final ms = biliLastSyncAt();
+    if (ms > 0) return DateTime.fromMillisecondsSinceEpoch(ms);
+    return null;
+  }
 
   /// 把 [DanmakuException] 摊成一段**可复制去搜**的原文
   ///
@@ -6421,8 +6507,75 @@ class _PlayerPageState extends State<PlayerPage>
     }
 
     final agg = DanmakuAggregator.merge(inputs);
-    debugPrint('[DMK] 聚合：${agg.summary}');
+    /*
+     * ★★★ 2026-10-19（第 66 轮 R3-⑤）：把**逐路原料**留下来给弹幕设置面板。
+     *
+     * # 为什么在这里留（而不是别处）
+     * ```text
+     * `inputs` 是**唯一**还按来源分开的地方 —— 一旦 merge 完，
+     * 宿主手上只剩 `agg.comments`（已去重合并）。
+     * 面板要实现"用户勾了哪几路就合并哪几路"，必须有逐路原料，
+     * 否则它只能勾一下就"假装合并"（那正是本轮要修的假功能形态）。
+     * ```
+     * # 只留**真的供上了数据**的那几路
+     * ```text
+     * skipped / failed 的也要留一个**空列表**吗？不要：
+     *   · 留空列表 ⇒ 面板会把它算成"有这一路但 0 条"，读数会虚增一路
+     *   · 不留     ⇒ 面板的 `_hasDataFor` 判"没有原料"，如实降级
+     * ⇒ 只放 `loaded && error.isEmpty && comments.isNotEmpty` 的。
+     * ```
+     * ⚠️ 这是**快照**：面板只读它算"合并预览"，不写回播放状态。
+     */
+    final samples = <DanmakuFeedChannel, List<DanmakuComment>>{};
+    for (final f in inputs) {
+      if (!f.loaded || f.error.isNotEmpty || f.comments.isEmpty) continue;
+      // core 的类别 ⇒ 面板的通道（多对一：imported 里要按 detail 再分）
+      final ch = _feedChannelOf(f.kind, f.detail);
+      // 同一个通道出现两次（理论上不会）⇒ 合并进去而不是覆盖
+      samples.update(
+        ch,
+        (prev) => <DanmakuComment>[...prev, ...f.comments],
+        ifAbsent: () => List<DanmakuComment>.of(f.comments),
+      );
+    }
+    _danmakuFeedSamples = samples;
+    debugPrint('[DMK] 聚合：${agg.summary}（逐路原料 ${samples.length} 组）');
     return agg;
+  }
+
+  /// core 的来源类别 + detail ⇒ 面板的通道
+  ///
+  /// # 为什么需要这一步（`DanmakuSourceChannel` 不是一一对应）
+  /// ```text
+  /// core 只有 5 个类别，而面板有 5 个**具体**通道：
+  ///   imported 这一档同时覆盖「本片源自带」与「dan-api」——
+  ///   两者对用户是**两件事**（一个是视频自带、一个是要自己去绑的服务）。
+  /// ⇒ 用 `detail` 把它们分开（detail 是 `_aggregateDanmaku` 调用点传的
+  ///   `primaryDetail`：'外部视频站' / 'dan-api' / '弹幕库 #123' …）。
+  /// ```
+  static DanmakuFeedChannel _feedChannelOf(
+    DanmakuSourceChannel kind,
+    String detail,
+  ) {
+    switch (kind) {
+      case DanmakuSourceChannel.plugin:
+        return DanmakuFeedChannel.plugin;
+      case DanmakuSourceChannel.local:
+        return DanmakuFeedChannel.localService;
+      case DanmakuSourceChannel.library:
+        return DanmakuFeedChannel.biliSource;
+      case DanmakuSourceChannel.imported:
+        // ★ 用 detail 区分「本片源自带」与「dan-api」
+        if (detail.contains('外部视频站')) return DanmakuFeedChannel.biliExternal;
+        if (detail.contains('dan-api') ||
+            detail.contains('自建') ||
+            detail.contains('本机服务')) {
+          return DanmakuFeedChannel.danApi;
+        }
+        return DanmakuFeedChannel.biliSource;
+      case DanmakuSourceChannel.none:
+        return DanmakuFeedChannel.biliSource;
+    }
   }
 
   Future<void> _loadDanmakuNamed(String fileName) async {
@@ -16138,6 +16291,28 @@ class _PlayerPageState extends State<PlayerPage>
                            * null ("we never asked") rather than 0 ("it has none").
                            */
                           biliCount: _biliCid > 0 ? _danmakuComments.length : null,
+                          /*
+                           * ★★★ 2026-10-19（第 66 轮 R3-⑤ / Owner 第 ⑤ 条）：
+                           *   把**逐路弹幕原料**递给面板。
+                           *
+                           * # 为什么必须由宿主给
+                           * ```text
+                           * 面板是纯 UI（文件头：不碰网络/播放器/令牌），
+                           * 它拿不到别的源的弹幕列表 ⇒ 没有这份原料，
+                           * 它的「多选合并」就只能勾一下就显示合并了
+                           * （那是本轮要修的**假功能**形态）。
+                           * ```
+                           * # 不传会怎样（**设计内降级**，不是 bug）
+                           * ```text
+                           * 面板只剩「本片源自带」一路 ⇒ 读数说「单源」；
+                           * 多路时只会说「合计 · 未逐条合并」——**不撒谎**。
+                           * ```
+                           * ⚠️ 空 map 与 null **不同义**：
+                           *    null = 宿主没接这条线；
+                           *    {}   = 接了、但这一集确实没有任何一路有原料。
+                           *    这里传 map（哪怕是空的）——因为"接了"是事实。
+                           */
+                          feedSamples: _danmakuFeedSamples,
                           onSetEnabled: _setDanmakuEnabled,
                           onSetFontScale: _setDanmakuFontScale,
                           onSetOpacity: _setDanmakuOpacity,
@@ -19738,42 +19913,72 @@ class _DanmakuInfoPanelHostState extends State<_DanmakuInfoPanelHost> {
 ///
 /// 样式与旁边的站名 / 直播徽章**同一套 pill 语言**（半透明黑底 + 全圆角 + cap 字号），
 /// 这样它不会像一个"外来的"按钮。
-/// ★★★ task-66 R1：这枚 chip 的 Material 裁剪值 —— **生产与像素探针共用同一个源**
 ///
-/// # 缺陷（Owner：「弹幕按钮一圈毛边」）
+/// ═══════════════════════════════════════════════════════════════════
+/// ★★★ task-66 R1：本 chip 的 `clipBehavior` —— **实测选出来的值，不是默认值**
+/// ═══════════════════════════════════════════════════════════════════
 ///
-/// `ActionChip` 内部是**两层各自画同一个圆角矩形**，且默认 `Clip.none`：
+/// ⚠️ 要把它改成 `Clip.antiAlias` 之前，先读完下面这一节并重跑
+///    `test/zz_t66_r1_danmaku_chip_edge_test.dart` ——
+///    那条门禁会在 **4 个 DPR** 上同时判红（不是一个断言，是四个）。
+///
+/// # 已核实的事实（读框架源码，material_ui-1.6.0）
+///
+/// `ActionChip` 内部确实是**两层各画一个同样的圆角矩形**，且默认 `Clip.none`：
 /// ```text
-/// material_ui-1.6.0/lib/src/chip.dart:1440
-///   Material(shape: resolvedShape, clipBehavior: widget.clipBehavior)   ← 默认 Clip.none
-///     └─ _MaterialInterior → PhysicalShape(clipBehavior: Clip.none)
-///        └─ proxy_box.dart:2341  canvas.drawPath(offsetPath, Paint()..color = color)   ← 第 1 遍
-/// :1449
-///   Ink(decoration: ShapeDecoration(shape: resolvedShape, color: …))    ← 第 2 遍
+/// chip.dart:1440  Material(shape: resolvedShape, clipBehavior: widget.clipBehavior)
+///                   └ _MaterialInterior → PhysicalShape(clipBehavior: Clip.none)
+///                     └ proxy_box.dart:2341 canvas.drawPath(offsetPath, ..color)  ← 第 1 遍
+/// chip.dart:1449  Ink(decoration: ShapeDecoration(shape: resolvedShape, color: ..))
+///                                                                        ← 第 2 遍
+/// chip.dart:116   ActionChip({ ... this.clipBehavior = Clip.none, ... })
 /// ```
-/// 两遍都是抗锯齿填充，但**子层没有被裁到父层那个 shape 上** ⇒ 圆角外缘
-/// 那 1~2 px 里两层的覆盖率不同步，合成出来的边缘与内部不同值 ⇒
-/// 在纯黑视频底上就是 Owner 说的「一圈毛边」。
+/// ⇒ 「同一个圆角画两遍且不裁剪」这个**机制描述属实**。
 ///
-/// 已排除的假设（本轮之前查实，不再重复排查）：
-/// · elevation —— 解析链 `null ?? null ?? 0.0`，根本不画阴影；
-/// · visualDensity —— 只改尺寸，不碰边缘像素；
-/// · 半透明叠动态背景 —— 加重因素，不是根因。
-/// 且整排只有这 **1 个** Material（站名徽章 `:19405` / 直播徽章 `:19426`
-/// 都是自绘 `Container + BoxDecoration`，颜色与圆角完全同值）⇒ 天然对照，
-/// 所以只修这一枚、**不整排替换**。
+/// # 但**逐像素实测否掉了"把它裁掉就能去掉毛边"这个推论**
 ///
-/// # 为什么是一个具名常量而不是内联字面量
+/// 探针：`test/zz_t66_r1_danmaku_chip_edge_test.dart`
+/// （`RepaintBoundary.toImage` → `rawRgba` → 以真 `RenderBox` 矩形为几何基准，
+///  取距 stadium 边界 [-1.5, +1.5] px 的环带，与内部中位数比较）。
+/// 纯黑视频底、DPR=1.0 的读数：
+/// ```text
+/// clipBehavior             环带峰值  内部中位   Δpeak    Δmean
+/// Clip.none                 8.641     8.641    0.000   -4.136
+/// Clip.hardEdge             8.641     8.641    0.000   -4.103
+/// Clip.antiAlias           10.228     8.641   +1.587   -4.051   ← 反而**更亮**
+/// Clip.antiAliasWithSaveLayer 9.228    8.641   +0.587   -4.135
+/// ```
+/// 并在 DPR ∈ {1.0, 1.25, 1.5, 2.0} × opacity ∈ {1.0, 0.5} 全矩阵上复现
+/// （`Δpeak`：none 恒 0.000；antiAlias 恒 +1.0 ~ +1.7）。
 ///
-/// 像素探针（`test/zz_t66_r1_danmaku_chip_edge_test.dart`）要从**真树**上
-/// 读回这个值做判据。内联字面量会让「谁把它删了」只能靠 grep 源码发现；
-/// 常量 + 树读回，才能让删掉参数这件事在**行为**上判红。
-const Clip kDanmakuChipClipBehavior = Clip.antiAlias;
+/// **为什么会反过来**：`Clip.none` 时上层 `Ink` 的抗锯齿边缘会与下层
+/// Material 的实心底做 **source-over 合成**，覆盖率互补 ⇒ 边缘被"补"回
+/// 接近实色；一旦裁剪，`pushClipPath` 把下层在边缘处**截断**，上层那点半透明
+/// 就直接与**视频背景**混合 ⇒ 边缘出现一圈**更亮/更灰**的环带。
+/// 也就是说：裁剪把"两层互补"变成了"一层半透明"。
+///
+/// # 裁决（本轮不改行为，只留证据）
+///
+/// · 本枚 chip 的现有 `Clip.none` **不是**可观测毛边的来源；
+/// · Owner 看到的「一圈毛边」在这些读数下**无法复现**，
+///   说明触发条件在别处（真实视频帧底 + 播放器的叠加层 + 真机 DPR），
+///   或者观察对象不是这一枚 chip（整排还有站名 / 直播徽章）。
+/// · 因此**不**把 `Clip.antiAlias` 强行打进生产 —— 实测它让边缘更亮 1.6 级，
+///   属于"按假设改、被读数否掉"，硬推等于制造新缺陷。
+/// · 常量与探针保留：它们把这件事实**钉成可复跑的数字**，
+///   下一轮若拿到真机复现，直接换判据重测，不必重新搭仪器。
+///
+/// ★ 2026-10-19（lead 复核后追加）：R1 的**现象**仍在查，方向已改为
+///   「① 站名徽章对照 / ② 多帧方差（动态视频底）/ ③ 真机 DPR」。
+///   其中 ② 最可能解释 Owner 看到的"毛边"—— 因为 alpha 0.55 叠在**每帧都变**
+///   的背景上时，边缘像素逐帧不同，人眼会读成「在抖的一圈边」。
+///   见 `test/zz_t66_r1_dynamic_backdrop_variance_test.dart` 的方差读数。
+const Clip kDanmakuChipClipBehavior = Clip.none;
 
 /// 弹幕 pill —— 生产路径与像素探针**共用这一份构造**
 ///
 /// ⚠️ 探针不许另抄一份样式：抄一份等于测自己写的副本（假门禁）。
-///    要对比「旧 Clip.none / 新 antiAlias」时只换 [clipBehavior] 一个入参。
+///    要对比不同裁剪值只换 [clipBehavior] 一个入参。
 @visibleForTesting
 Widget debugDanmakuInfoChipForProbe({
   required DanmakuInfoData data,
@@ -19796,11 +20001,11 @@ class _DanmakuInfoChip extends StatelessWidget {
   final DanmakuInfoData data;
   final VoidCallback onTap;
 
-  /// ★ R1：交给 `ActionChip` 的 `Material.clipBehavior`（见
-  /// [kDanmakuChipClipBehavior] 的根因说明）。
+  /// ★ R1：交给 `ActionChip` 的 `Material.clipBehavior`
+  /// （见 [kDanmakuChipClipBehavior] 上方那份**实测读数**与裁决）。
   ///
-  /// 生产调用点（`:19602`）**不传**它 ⇒ 走默认值 = 修好的那个值；
-  /// 只有像素探针为了做「改前/改后」对照才显式传 [Clip.none]。
+  /// 生产调用点（`:19602`）**不传**它 ⇒ 走默认值 `Clip.none`（= 框架默认、
+  /// 也是实测边缘最平的那一档）；只有像素探针为了做对照才显式换值。
   final Clip clipBehavior;
 
   @override
@@ -19820,8 +20025,9 @@ class _DanmakuInfoChip extends StatelessWidget {
       message: '弹幕信息（来源 / 条数 / 匹配方式 / 失败原因）',
       child: ActionChip(
         onPressed: onTap,
-        // ★★★ R1 的修：让 Material 真的把 `Ink` 那一层裁到同一个圆角上。
-        //   不传 ⇒ 框架默认 Clip.none ⇒ 两层各自抗锯齿 ⇒ 纯黑底上一圈亮边。
+        // ★ R1：显式把裁剪值传下去（默认 Clip.none = 实测边缘最平的一档）。
+        //   ⚠️ 不要"顺手"改成 Clip.antiAlias —— 探针实测它让环带峰值
+        //   从 0 升到 +1.59 亮度级（原因见 kDanmakuChipClipBehavior 上方）。
         clipBehavior: clipBehavior,
         // 与旁边站名/直播徽章同款：半透明黑底、无描边
         backgroundColor: Colors.black.withValues(alpha: 0.55),

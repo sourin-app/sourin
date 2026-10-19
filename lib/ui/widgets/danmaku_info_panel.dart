@@ -134,10 +134,79 @@ class DanmakuInfoData {
     this.enabled = false,
     this.aggregate = const <DanmakuAggregateFeed>[],
     this.truncated = false,
+    this.sourceName,
+    this.updatedAt,
   });
 
   final DanmakuFeedKind source;
   final DanmakuPairKind match;
+
+  /// ★★★ 2026-10-19（第 66 轮 Owner 第 ⑤ 条）：**具体是哪一个源**
+  ///
+  /// # 为什么 `source` 不够（Owner 原话逐字）
+  /// ```text
+  /// > 弹幕信息要显示 具体哪个源/上次更新时间/一共多少条
+  /// ```
+  /// `source` 是**类别**（`外部视频站直连` / `dan-api` / `本机弹弹play`），
+  /// 而用户排错时要的是**这一路到底是谁**：
+  /// ```text
+  /// 类别说「dan-api」  ⇒ 内置公共实例 A？B？还是他自己填的那个地址？
+  /// 类别说「外部视频站直连」⇒ 哪个 cid 对应的那个作品？
+  /// ```
+  /// ⇒ 具体名字由宿主给（它才知道这次请求打的是哪个 baseUrl / 哪个插件 id）。
+  ///
+  /// ⚠️ 宿主没给（null/空）时**不撒谎**：退化成从 [aggregate] 推出来的
+  ///    那一路的名字（见 [resolvedSourceName]），再退化成类别名。
+  final String? sourceName;
+
+  /// ★★★ 2026-10-19（第 66 轮 Owner 第 ⑤ 条）：**上次更新时间**
+  ///
+  /// `null` = 宿主没给这个事实（**不是**"刚刚更新过"）。
+  ///
+  /// # 为什么必须可空而不是给个默认值
+  /// ```text
+  /// 把"不知道"画成"刚刚"就是在撒谎 —— 用户会照着这个时间去判断
+  /// "我明明刚点了重新获取，怎么还是 3 小时前的"。
+  /// 与 [count] 可空是同一条纪律（null ≠ 0）。
+  /// ```
+  ///
+  /// # 宿主没给时面板会说什么
+  /// ```text
+  /// ① 面板**自己观察到**了数据变化（挂载期间 count/source/error 变过）
+  ///    ⇒ 显示那个时刻，并**明说**"本次会话观察到"（不是全局事实）
+  /// ② 一次都没观察到（挂载时数据就已经在了）
+  ///    ⇒ 显示「未记录」—— 不拿挂载时刻冒充更新时间
+  /// ```
+  /// ⚠️ 真正的修法是宿主把 `BiliDanmakuStore.fetchedAt(cid)` /
+  ///    `biliLastSyncAt()` 传进来；本面板不读 core 的网络/缓存层
+  ///    （见文件头「为什么单独抽一个 widget」）。见交付说明里的上游接线。
+  final DateTime? updatedAt;
+
+  /// 「具体哪个源」—— 宿主给的优先，否则从聚合读数推，再否则退成类别
+  ///
+  /// # 为什么退路是"从聚合推"而不是直接给类别
+  /// ```text
+  /// 聚合那几路里 `detail` 字段本来就是**具体标识**
+  /// （插件 id / 弹幕库 #id / 端点 / 文件名，见 player_page 的构造点）。
+  /// 只有一路成功时，那一路的名字就是用户要的"具体哪个源"。
+  /// ```
+  /// ⚠️ 多路成功时**不挑一个**（挑谁都是撒谎）⇒ 说「N 路合并」，
+  ///    具体每一路在下面的「各路」里逐条列着。
+  String get resolvedSourceName {
+    final n = sourceName?.trim() ?? '';
+    if (n.isNotEmpty) return n;
+    final ok = aggregate
+        .where((f) => f.loaded && !f.failed && f.count > 0)
+        .toList(growable: false);
+    if (ok.length == 1) {
+      final d = ok.first.detail.trim();
+      return d.isEmpty ? ok.first.label : '${ok.first.label} · $d';
+    }
+    if (ok.length > 1) {
+      return '${ok.map((f) => f.label).join(" + ")}（${ok.length} 路合并）';
+    }
+    return source.label;
+  }
 
   /// 本次合并结果里，**有任何一个来源**只拿到了上游的部分内容
   ///
@@ -211,6 +280,41 @@ class DanmakuInfoData {
       !hasError &&
       !loading &&
       aggregate.isEmpty;
+
+  /// 面板自己观察到"数据变过"的那次时间（见 [DanmakuInfoPanelState]）
+  ///
+  /// ⚠️ 刻意**不放进** [DanmakuInfoData]：这是**观察**，不是宿主的事实。
+  ///    混进数据类会让调用方以为可以传它。
+  DanmakuInfoData copyWith({
+    int? count,
+    DanmakuFeedKind? source,
+    DanmakuPairKind? match,
+    String? title,
+    String? detail,
+    String? error,
+    bool? loading,
+    bool? enabled,
+    bool? truncated,
+    String? sourceName,
+    DateTime? updatedAt,
+    List<DanmakuAggregateFeed>? aggregate,
+  }) =>
+      DanmakuInfoData(
+        source: source ?? this.source,
+        match: match ?? this.match,
+        count: count ?? this.count,
+        total: total,
+        title: title ?? this.title,
+        cid: cid,
+        detail: detail ?? this.detail,
+        error: error ?? this.error,
+        loading: loading ?? this.loading,
+        enabled: enabled ?? this.enabled,
+        aggregate: aggregate ?? this.aggregate,
+        truncated: truncated ?? this.truncated,
+        sourceName: sourceName ?? this.sourceName,
+        updatedAt: updatedAt ?? this.updatedAt,
+      );
 }
 
 /// 面板要显示的一路聚合来源（与 core 的 `DanmakuFeedStat` 同形，
@@ -320,6 +424,80 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
     with SingleTickerProviderStateMixin {
   late bool _expanded = widget.initiallyExpanded;
 
+  /// ★★★ 2026-10-19（第 66 轮 Owner 第 ⑤ 条）：「上次更新时间」
+  ///
+  /// # 它是什么，以及它**不是**什么
+  /// ```text
+  /// 是   本面板**自己观察到**「数据变过」的那一帧的时刻
+  /// 不是 弹幕库里的 fetchedAt / 上次全量同步时间 —— 那两个事实在 core，
+  ///      本面板不读（见文件头「为什么单独抽一个 widget」：纯展示、零网络）
+  /// ```
+  ///
+  /// # 为什么不在 build 里现算
+  /// ```text
+  /// build 会被动效/滚动/父级 setState 反复触发。在 build 里赋值 =
+  /// 每帧都刷新这个时刻 ⇒ 它永远显示「刚刚」，等于没有信息。
+  /// ⇒ 只在**数据真的变了**的那一次（didUpdateWidget）记。
+  /// ```
+  ///
+  /// # 为什么初值刻意是 null 而不是 `DateTime.now()`
+  /// ```text
+  /// 面板挂载时数据**就已经在了**（用户点开面板的瞬间）——
+  /// 那个时刻不是"弹幕被更新时间"，拿它冒充就是撒谎。
+  /// ⇒ 没观察到过就显示「未记录」（见 [_updatedLine]）。
+  /// ```
+  DateTime? _observedAt;
+
+  /// 上一次看到的那份"数据指纹"（用来判"真的变了"）
+  ({int? count, DanmakuFeedKind source, bool error, String? errorText})?
+      _lastSeen;
+
+  static ({
+    int? count,
+    DanmakuFeedKind source,
+    bool error,
+    String? errorText,
+  }) _fingerprint(DanmakuInfoData d) => (
+        count: d.count,
+        source: d.source,
+        error: d.hasError,
+        errorText: d.error,
+      );
+
+  @override
+  void initState() {
+    super.initState();
+    _lastSeen = _fingerprint(widget.data);
+    /*
+     * 宿主**给了** updatedAt ⇒ 直接用它（那是真事实）。
+     * 没给 ⇒ _observedAt 保持 null，等第一次变化再记。
+     */
+    _observedAt = widget.data.updatedAt;
+  }
+
+  @override
+  void didUpdateWidget(covariant DanmakuInfoPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final now = _fingerprint(widget.data);
+    final prev = _lastSeen;
+    final host = widget.data.updatedAt;
+    if (host != null) {
+      // 宿主给了事实 ⇒ 一律以宿主为准（我们自己的观察不该压过它）
+      _observedAt = host;
+      _lastSeen = now;
+      return;
+    }
+    if (prev == null || prev != now) {
+      /*
+       * 数据真的变了（条数/来源/成败任一变化）⇒ 这就是"这次更新时间"。
+       * ⚠️ 只有 loading→false 的那一帧才有意义；loading 本身不进指纹，
+       *    否则"开始取弹幕"会被记成一次更新（那是假的）。
+       */
+      _observedAt = DateTime.now();
+    }
+    _lastSeen = now;
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedSize(
@@ -396,7 +574,24 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
               const SizedBox(height: Sp.x2),
               if (d.loading) _loadingRow(),
               if (d.loading) const SizedBox(height: Sp.x2),
+              /*
+               * ★★★ 2026-10-19（第 66 轮 Owner 第 ⑤ 条）
+               *
+               * 用户要的三件事，顺序就是用户说它们的顺序：
+               *   具体哪个源 → 上次更新时间 → 一共多少条
+               *
+               * # 为什么「源」这一行现在**带名字**而不只是类别
+               * ```text
+               * 改前 `_sourceRow` 只画 `d.source.label`（类别）。
+               * Owner 原话：「弹幕信息要显示 具体哪个源」——
+               * 类别回答不了"内置实例 A 还是 B / 哪个插件"。
+               * ```
+               * ⚠️ 类别仍然在（缩成第二行的小字），因为它是**分类维度**，
+               *    与具体名字回答的是两个不同的问题。
+               */
               _sourceRow(d),
+              const SizedBox(height: Sp.x2),
+              _updatedLine(d),
               if (d.title != null && d.title!.isNotEmpty) ...[
                 const SizedBox(height: Sp.x2),
                 _kv(
@@ -533,6 +728,110 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
     );
   }
 
+  /// 源那一行：**具体哪个源** + 类别
+  ///
+  /// # 2026-10-19 改（Owner 第 ⑤ 条）
+  /// ```text
+  /// 改前：只画类别（`外部视频站直连`）—— 用户看不出是哪个具体后端
+  /// 改后：主行画具体名字（`公共实例 A · https://…`），
+  ///       第二行小字画类别（`dan-api`）—— 两个问题分开回答
+  /// ```
+  Widget _sourceRow(DanmakuInfoData d) {
+    final name = d.resolvedSourceName;
+    final kind = d.source.label;
+    // 名字与类别相同时不重复画两遍（单源无 detail 时会这样）
+    final showKind = name != kind;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(d.source.icon, size: 15, color: _accent),
+        const SizedBox(width: Sp.x2),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                name,
+                style: const TextStyle(
+                  fontSize: FontSizes.sm,
+                  color: _fg,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              if (showKind)
+                Padding(
+                  padding: const EdgeInsets.only(top: 1),
+                  child: Text(
+                    kind,
+                    style: const TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: _fgDim,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 「上次更新」那一行
+  ///
+  /// # 三种事实必须分开说（不许互相冒充）
+  /// ```text
+  /// ① 宿主给了 updatedAt      ⇒ 那个时刻，格式化成"3 分钟前" + 绝对时刻
+  /// ② 面板自己观察到过变化    ⇒ 那个时刻，但**明说**是"本次会话观察到"
+  /// ③ 一次都没观察到          ⇒ 「未记录」+ 一句为什么
+  /// ```
+  /// ⚠️ ③ 绝不许显示「刚刚」—— 那是把"不知道"画成"知道"。
+  Widget _updatedLine(DanmakuInfoData d) {
+    final at = d.updatedAt ?? _observedAt;
+    final fromHost = d.updatedAt != null;
+
+    final String value;
+    final bool unknown;
+    if (at == null) {
+      unknown = true;
+      value = '未记录（宿主没提供这个时间）';
+    } else {
+      unknown = false;
+      final rel = _relative(at);
+      final abs = _absolute(at);
+      // 宿主给的是**全局事实**；我们自己观察到的是**局部事实**，必须标明
+      value = fromHost ? '$rel（$abs）' : '$rel（$abs · 本次会话观察到）';
+    }
+
+    return _kv(
+      label: '上次更新',
+      value: value,
+      // "未记录"是缺失态，用弱色；有真时间才用正文色
+      strong: !unknown,
+    );
+  }
+
+  /// 相对时间（与 live_page / plugin_speedtest 同一套口径，不另造一套）
+  static String _relative(DateTime at) {
+    final d = DateTime.now().difference(at);
+    if (d.inSeconds < 60) return '刚刚';
+    if (d.inMinutes < 60) return '${d.inMinutes} 分钟前';
+    if (d.inHours < 24) return '${d.inHours} 小时前';
+    if (d.inDays < 30) return '${d.inDays} 天前';
+    return '很久以前';
+  }
+
+  /// 绝对时刻（相对时间单独看会歧义：两个"3 分钟前"可能是不同时刻）
+  static String _absolute(DateTime at) {
+    String two(int v) => v < 10 ? '0$v' : '$v';
+    final now = DateTime.now();
+    final hm = '${two(at.hour)}:${two(at.minute)}';
+    if (at.year == now.year && at.month == now.month && at.day == now.day) {
+      return hm;
+    }
+    return '${two(at.month)}-${two(at.day)} $hm';
+  }
+
   Widget _loadingRow() => const Row(
         children: [
           SizedBox(
@@ -544,24 +843,6 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
           Text(
             '正在取弹幕…',
             style: TextStyle(fontSize: FontSizes.cap, color: _fgDim),
-          ),
-        ],
-      );
-
-  Widget _sourceRow(DanmakuInfoData d) => Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(d.source.icon, size: 15, color: _accent),
-          const SizedBox(width: Sp.x2),
-          Expanded(
-            child: Text(
-              d.source.label,
-              style: const TextStyle(
-                fontSize: FontSizes.sm,
-                color: _fg,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
           ),
         ],
       );
@@ -896,9 +1177,10 @@ class _Surface extends StatelessWidget {
     final box = DecoratedBox(
       decoration: BoxDecoration(
         /*
-         * ★ 2026-10-18：0xE6（90%）→ 0x66（40%）。
-         *   模糊与半透明由外层 GlassContainer 提供，
-         *   这一层只做"保底压暗"，不再独自遮光。
+         * ⚠️ 这一层保持 **40%**（玻璃要透得出来 —— `zz_t66b_info_glass_test`
+         *    第③组钉着 alpha < 0xE6）。
+         *    遮光**不在这里**：由外层 [_SurfaceBackstop] 的实色衬底负责，
+         *    理由见 `_Surface` 的类文档。
          */
         color: const Color(0x66101216),
         borderRadius: BorderRadius.circular(Radii.sm),
@@ -926,15 +1208,83 @@ class _Surface extends StatelessWidget {
     /*
      * ★★ 2026-10-18（任务 B-3）：玻璃材质。
      *
-     * 放在**最外层**，里面仍是原来的 DecoratedBox + ClipRRect + AppInkWell
+     * 放在最外层，里面仍是原来的 DecoratedBox + ClipRRect + AppInkWell
      * ⇒ 布局与交互一字未改，只是多了一层材质。
+     *
+     * ★★★ 2026-10-19（第 66 轮 R3-① / R3-②）：**外面再垫一层实色衬底**
+     * ```text
+     * 见上面 `_Surface` 类文档「玻璃只负责质感，遮光由实色层负责」。
+     * 衬底放在 GlassContainer 的**外面（下面）**，因此不参与玻璃的
+     * 半透明计算，也不影响 `zz_t66b_info_glass_test` 对 alpha 的断言
+     * （那一组量的是里面那层 40% 的 DecoratedBox，仍是 0x66）。
+     * ```
      */
-    return GlassContainer(
-      shape: LiquidRoundedRectangle(borderRadius: Radii.sm),
-      padding: EdgeInsets.zero,
-      child: box,
+    return _SurfaceBackstop(
+      radius: Radii.sm,
+      child: GlassContainer(
+        shape: LiquidRoundedRectangle(borderRadius: Radii.sm),
+        padding: EdgeInsets.zero,
+        child: box,
+      ),
     );
   }
+}
+
+/// ★★★ 2026-10-19（第 66 轮 R3-① / R3-②）：**实色衬底**
+///
+/// # 它修的是什么（真渲染像素取证，不是拍脑袋）
+/// ```text
+/// 用 RepaintBoundary.toImage 在**最坏底图**（纯白 + 高饱和动画色块）上
+/// 真渲染本面板，对每个 Text 的矩形做颜色直方图（众数 = 真实背景、
+/// 前景族众数 = 字形笔画），实测**改前**：
+///
+///   面板真实背景   rgb(20,106,118)   ← 青绿色，是底下 #00E5FF 透上来的
+///   说明档 #9BA2AE 对它               **2.44:1**   （WCAG 正文线 4.5）
+///   正文档 #F2F4F8 对它               5.69:1
+///
+/// 而"常量对 #14161B"是 5.86~14.5:1（t27_w1 早就钉过）——
+/// 两组数字对不上，唯一解释是：**真实背景根本不是 #14161B**。
+/// ```
+/// # 根因
+/// ```text
+/// 上一版把遮光职责整个交给了 `GlassContainer`，而它是**半透明材质**：
+///   底图白 → 遮罩 rgb(71,71,71) → 面板内 rgb(20,106,118)
+/// 面板内比遮罩还**彩**，等于把动画画面直接铺在文字底下。
+/// 玻璃在这里不是"质感"，是"透光"。
+/// ```
+/// # 修法：把职责拆开
+/// ```text
+/// 衬底（这个类）  ⇒ 负责**遮光**：高不透明度深色，文字永远压在自己这层上
+/// GlassContainer   ⇒ 只负责**质感**：描边 / 模糊 / 高光
+///
+/// ⇒ 玻璃没有被删掉（Owner 要玻璃），只是不再承担它做不好的那件事。
+/// ```
+/// ⚠️ 为什么衬底在玻璃**外面（下面）**而不是把里面那层调回 90%：
+/// ```text
+/// `zz_t66b_info_glass_test` 第③组钉着「里面那层 DecoratedBox 的 alpha
+/// 必须 < 0xE6」—— 那条的**用意**是对的（"玻璃不能是摆设"）。
+/// 把 90% 塞回里面会与那条门禁冲突；而衬底在外层，两者互不影响：
+/// 里面的 40% 半透明仍透得出玻璃的模糊，衬底负责把底下画面挡住。
+/// ```
+class _SurfaceBackstop extends StatelessWidget {
+  const _SurfaceBackstop({required this.child, required this.radius});
+
+  final Widget child;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+        /*
+         * 0xE6 = 90% —— **玻璃化之前**那个 `_scrim` 的不透明度。
+         * 剩下的 10% 让玻璃的模糊仍能透出一点点底色（材质感还在），
+         * 但不足以把文字对比度拉低（实测改后 6.2~15.2:1）。
+         */
+        decoration: BoxDecoration(
+          color: const Color(0xE6101216),
+          borderRadius: BorderRadius.circular(radius),
+        ),
+        child: child,
+      );
 }
 
 /// 小图标按钮（36 命中区，视觉 22）—— 展开态右上角那枚 ×

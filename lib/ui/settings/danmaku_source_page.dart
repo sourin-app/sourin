@@ -41,11 +41,18 @@
 
 import 'package:material_ui/material_ui.dart';
 
+import 'dart:async';
+import 'dart:io' show SocketException, Socket, InternetAddress;
+
 import '../../core/danmaku.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
+// ★ 2026-10-19（R3-③/⑦）：与播放页弹幕面板**共用**同一份失败分类，
+//   避免两处各写一套文案然后漂移。
+import '../widgets/danmaku_settings_dialog.dart'
+    show DanmakuProbeReport, DanmakuProbeFailure, DanmakuProbeFailureX;
 import '../../design/icons/app_icons.dart';
 
 class DanmakuSourcePage extends StatefulWidget {
@@ -67,6 +74,12 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
 
   /// 走不到 [DanmakuLocalStatus] 的那种失败（地址格式不对 / 探针自身异常）
   String? _why;
+
+  /// ★★★ 2026-10-19（R3-③ / R3-⑦）：**为什么连不上**的结构化结论
+  ///
+  /// 与 [_why]（连探都没探：地址格式不对）和 [_result]（core 的在线判据）
+  /// 三者各回答一个问题。`null` = 还没诊断过（不是"没问题"）。
+  DanmakuProbeReport? _report;
 
   /// 在途请求的序号。null = 没有在途请求。
   ///
@@ -135,6 +148,7 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
     setState(() {
       _result = null;
       _why = null;
+      _report = null; // ★ 2026-10-19：诊断结论同样属于旧输入
     });
   }
 
@@ -164,10 +178,22 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
     } catch (e) {
       // 过期 ⇒ 一个字都不改（失败结论同样属于旧输入）
       if (!mounted || mySeq != _seq) return;
+      /*
+       * ★★★ 2026-10-19（R3-③ / R3-⑦）：**分类**，不是一句「测试失败：…」
+       *
+       * 与播放页弹幕面板用**同一份**判据（`DanmakuProbeReport` 就在
+       * `danmaku_settings_dialog.dart` 里，全仓一份）——
+       * 两处各写一套文案，迟早会漂移成"设置页说被墙、面板说服务坏了"。
+       */
+      final report = DanmakuProbeReport.fromError(
+        e,
+        url: ep?.display ?? (rawUrl.isEmpty ? '本机弹弹play' : rawUrl),
+      );
       setState(() {
         _runningSeq = null;
         _result = null;
-        _why = '测试失败：$e';
+        _why = null;
+        _report = report;
       });
       return;
     }
@@ -177,6 +203,17 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
     setState(() {
       _runningSeq = null;
       _result = st;
+      _report = st.online
+          ? const DanmakuProbeReport(
+              failure: DanmakuProbeFailure.none,
+              url: '',
+            )
+          : DanmakuProbeReport(
+              failure: DanmakuProbeFailure.connectionTimeout,
+              url: ep?.display ?? rawUrl,
+              detail: '正在分层诊断（DNS / TCP）…',
+              remedy: '连不上 —— 正在确认是本机网络还是服务端的问题…',
+            );
     });
 
     // 测通了才落盘 —— 用户点「测试连接」的语义就是「这个地址可用」。
@@ -185,6 +222,158 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
       UiPrefs.setDanmakuEndpoint(rawUrl);
       UiPrefs.setDanmakuToken(rawToken);
     }
+
+    /*
+     * ★ 判了 offline 之后**真的去问一次"为什么"**（DNS / TCP 分层）。
+     *   core 的 `_probeOne` 刻意吞异常（对"服务起没起"是对的），
+     *   但那样就答不了"为什么连不上"—— 这一层把证据捡回来。
+     *
+     * ★★★ 2026-10-19（真缺陷，被 `task35_danmaku_source_page_test` 抓出）：
+     *   **注入了探针就不许打真网络**。
+     *
+     * # 改前我第一次写的是无条件 `_diagnose(...)`
+     * ```text
+     * `probeOverride` 是测试注入口（语义是"零联网"）。但 `_diagnose` 内部
+     * 直接 `InternetAddress.lookup` + `Socket.connect` ⇒ **真的联网**。
+     * 后果：既有门禁里两个用例报
+     *   "A Timer is still pending even after the widget tree was disposed"
+     *   （`Socket.connect(timeout: 6s)` 的定时器活过了测试体）。
+     * ```
+     * # 判据
+     * ```text
+     * 宿主注入了探针 ⇒ 这一轮**不许有任何真实网络副作用**。
+     *   此时诊断也交给注入方：它想给原因就直接抛带 errno 的异常
+     *   （走 `_probe` 的 catch 分支，那条路**已经**会分类）。
+     * ```
+     */
+    if (!st.online && widget.probeOverride == null) {
+      unawaited(_diagnose(ep, mySeq, rawUrl));
+    }
+  }
+
+  /// 判了 offline ⇒ DNS → TCP 分层定位（与播放页面板同一套判据）
+  ///
+  /// ⚠️ 全程带 [mySeq] 守卫：输入改过就作废（同 [_probe] 的纪律）。
+  Future<void> _diagnose(
+    DanmakuEndpoint? ep,
+    int mySeq,
+    String rawUrl,
+  ) async {
+    final url = ep?.display ?? (rawUrl.isEmpty ? '本机弹弹play' : rawUrl);
+    DanmakuProbeReport report;
+    try {
+      if (ep == null) {
+        // 本机 2080 那条路：解析不会有问题，直接问端口
+        try {
+          final s = await Socket.connect(
+            '127.0.0.1',
+            2080,
+            timeout: const Duration(seconds: 3),
+          );
+          s.destroy();
+          report = DanmakuProbeReport(
+            failure: DanmakuProbeFailure.serverError,
+            url: url,
+            detail: '127.0.0.1:2080 可以连上，但探测端点没有给出可用响应',
+            remedy: '本机端口是通的，但那个程序没按弹幕服务协议回应 —— '
+                '确认 2080 上跑的是弹弹play 桌面端。',
+          );
+        } on TimeoutException {
+          report = DanmakuProbeReport(
+            failure: DanmakuProbeFailure.connectionTimeout,
+            url: url,
+            detail: 'TCP 127.0.0.1:2080 连接超时',
+            remedy: DanmakuProbeReport.remedyFor(
+              DanmakuProbeFailure.connectionTimeout,
+            ),
+          );
+        } on SocketException catch (e) {
+          report = DanmakuProbeReport.fromError(e, url: url);
+        }
+      } else {
+        final addrs = await InternetAddress.lookup(ep.host)
+            .timeout(const Duration(seconds: 4));
+        if (addrs.isEmpty) {
+          report = DanmakuProbeReport(
+            failure: DanmakuProbeFailure.dnsFailed,
+            url: url,
+            detail: 'DNS 没返回任何地址',
+            remedy:
+                DanmakuProbeReport.remedyFor(DanmakuProbeFailure.dnsFailed),
+          );
+        } else {
+          /*
+           * ★★★ 2026-10-19（R3-③/⑦ 归因修正）：**先核地址对不对，再谈 TCP**。
+           * 与播放页面板用**同一份**判据（`DanmakuProbeReport.looksForged`）——
+           * 两处各写一套就会漂移成"设置页说被墙、面板说被劫持"。
+           */
+          final local = addrs.map((a) => a.address).toList(growable: false);
+          if (DanmakuProbeReport.looksForged(local)) {
+            final doh = await DanmakuProbeReport.dohLookup(ep.host);
+            report = DanmakuProbeReport.forHijackedDns(
+              url: url,
+              localAddresses: local,
+              dohAddresses: doh,
+            );
+          } else {
+            final port =
+                ep.hasPort ? ep.port : (ep.scheme == 'https' ? 443 : 80);
+            try {
+              final s = await Socket.connect(ep.host, port,
+                  timeout: const Duration(seconds: 6));
+              s.destroy();
+              report = DanmakuProbeReport(
+                failure: DanmakuProbeFailure.serverError,
+                url: url,
+                detail: 'TCP $port 可以连上，但探测端点没有给出可用响应',
+                remedy: '网络是通的（TCP 连得上）⇒ 这次的问题在**服务端**：'
+                    '它可能正在冷启动、或者这个实例的接口变了。'
+                    '等几秒重试，或换一个实例。',
+              );
+            } on TimeoutException {
+              /*
+               * 伪造段表没命中，但 DoH 真值完全不同 ⇒ 同样是劫持
+               * （表不可能穷举，`looksForged` 是**强证据**不是充要条件）。
+               */
+              final doh = await DanmakuProbeReport.dohLookup(ep.host);
+              final differs = doh.isNotEmpty &&
+                  doh.toSet().intersection(local.toSet()).isEmpty;
+              report = differs
+                  ? DanmakuProbeReport.forHijackedDns(
+                      url: url,
+                      localAddresses: local,
+                      dohAddresses: doh,
+                      detail: 'TCP $port 连接超时',
+                    )
+                  : DanmakuProbeReport(
+                      failure: DanmakuProbeFailure.connectionTimeout,
+                      url: url,
+                      detail: 'DNS 解析到 ${local.join(", ")}，'
+                          '但 TCP $port 连接超时',
+                      remedy: DanmakuProbeReport.remedyFor(
+                        DanmakuProbeFailure.connectionTimeout,
+                      ),
+                    );
+            } on SocketException catch (e) {
+              report = DanmakuProbeReport.fromError(e, url: url);
+            }
+          }
+        }
+      }
+    } on TimeoutException {
+      report = DanmakuProbeReport(
+        failure: DanmakuProbeFailure.dnsFailed,
+        url: url,
+        detail: 'DNS 查询超时（4 秒）',
+        remedy: DanmakuProbeReport.remedyFor(DanmakuProbeFailure.dnsFailed),
+      );
+    } on SocketException catch (e) {
+      report = DanmakuProbeReport.fromError(e, url: url);
+    } catch (e) {
+      report = DanmakuProbeReport.fromError(e, url: url);
+    }
+    if (!mounted || mySeq != _seq) return;
+    setState(() => _report = report);
   }
 
   /// 清除 ⇒ 回到内置路径（本机弹弹play → 官方）
@@ -198,6 +387,7 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
       _token.text = '';
       _result = null;
       _why = null;
+      _report = null;
     });
   }
 
@@ -255,6 +445,17 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
               running: _running,
               hasAddress: _url.text.trim().isNotEmpty,
             ),
+            /*
+             * ★★★ 2026-10-19（R3-③ / R3-⑦）：**为什么连不上**的定向说明
+             *
+             * 改前只有上面那行状态 —— 对不在线它只说「暂时连不上」，
+             * 把 DNS 失败 / 被墙 / 服务报错混成一件，用户改配置或干等
+             * **两个方向都可能是错的**。
+             */
+            if (_report != null) ...[
+              const SizedBox(height: Sp.x3),
+              _ActiveProbeReport(report: _report!),
+            ],
             const SizedBox(height: Sp.x5),
             _label(builtins.isEmpty ? '服务地址' : '你自己的地址（可选，填了就压过内置）'),
             const SizedBox(height: Sp.x2),
@@ -439,6 +640,7 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
     setState(() {
       _result = null;
       _why = null;
+      _report = null;
     });
   }
 
@@ -458,6 +660,94 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
           color: Theme.of(context).colorScheme.onSurfaceVariant,
         ),
       );
+}
+
+/// ★★★ 2026-10-19（R3-③ / R3-⑦）：**为什么连不上** —— 分类 + 下一步 + 原文
+///
+/// # 三段各解决一个问题
+/// ```text
+/// ① 标题（`连不上（连接超时）` / `域名解析失败` / `服务返回错误`）
+///    ⇒ 第一眼知道"该怪谁"：本机网络 还是 服务端
+/// ② remedy ⇒ 知道该怪谁之后**做什么**（按 failure 分叉，不是套话）
+/// ③ detail ⇒ errno / 解析到的 IP / 异常原文，**不翻译掉**（求助时要用）
+/// ```
+/// ⚠️ 「服务正常但没有弹幕」用中性色 —— 那是正常结果，不是失败。
+class _ActiveProbeReport extends StatelessWidget {
+  const _ActiveProbeReport({required this.report});
+
+  final DanmakuProbeReport report;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final empty = report.failure.isJustEmpty;
+    final ok = report.isOk;
+    final color = ok || empty
+        ? colors.onSurfaceVariant
+        : (report.failure.isLocalNetworkProblem
+            ? colors.error
+            : colors.error);
+    final icon = ok || empty
+        ? AppIcons.info_outline
+        : (report.failure.isLocalNetworkProblem
+            ? AppIcons.wifi_off
+            : AppIcons.error_outline);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(Sp.x3),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(Radii.sm),
+        color: color.withValues(alpha: 0.08),
+        border: Border.all(color: color.withValues(alpha: 0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 16, color: color),
+              const SizedBox(width: Sp.x2),
+              Expanded(
+                child: Text(
+                  report.url.isEmpty
+                      ? report.failure.title
+                      : '${report.failure.title} · ${report.url}',
+                  style: TextStyle(
+                    fontSize: FontSizes.sm,
+                    color: color,
+                    fontWeight: FontWeights.semibold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (report.remedy.isNotEmpty) ...[
+            const SizedBox(height: Sp.x2),
+            Text(
+              report.remedy,
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+                height: 1.4,
+              ),
+            ),
+          ],
+          if (report.detail.isNotEmpty) ...[
+            const SizedBox(height: Sp.x2),
+            Text(
+              report.detail,
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }
 
 /// 一条内置公共实例（点一下即选中）

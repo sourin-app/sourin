@@ -78,6 +78,32 @@ class _TimerHolderState extends State<_TimerHolder> {
       m.ColoredBox(color: _held ? const m.Color(0xFF202020) : const m.Color(0xFF101418));
 }
 
+/// 按**大括号配对**取方法体（2026-10-19 加，取代固定长度窗口）
+///
+/// ★ 为什么不用「`substring(i, i + N)`」这种固定窗口：
+///   实测 `PlayerPageState.dispose()` 的真实函数体是 **6813 字符**，
+///   而原来那个窗口只有 **2600** ⇒ 只覆盖 38%，且**窗口外有 18 个
+///   关键资源释放调用**（`_player.dispose()` / `_danmakuClient?.close()` 等）。
+///   固定窗口的正确性依赖「目标代码恰好在窗口前段」，那是**侥幸**，
+///   前面多一行注释就可能失效。
+///
+/// ⇒ 按大括号配对取**整个**函数体，与函数体长度无关。
+String _balancedBody(String src, String signature) {
+  final i = src.indexOf(signature);
+  if (i < 0) return '';
+  final open = src.indexOf('{', i);
+  if (open < 0) return '';
+  var depth = 0;
+  for (var k = open; k < src.length; k++) {
+    if (src[k] == '{') depth++;
+    if (src[k] == '}') {
+      depth--;
+      if (depth == 0) return src.substring(open, k + 1);
+    }
+  }
+  return src.substring(open);
+}
+
 void main() {
   group('R3-④ _sheetGuardTimer 的 dispose 契约', () {
     testWidgets('★★★ ① dispose 后 Timer 不许再触发', (t) async {
@@ -178,7 +204,28 @@ void main() {
       // 而且必须在 dispose 方法体内（不是只在 _holdSheetGuard 里）
       final disposeIdx = src.indexOf('void dispose() {');
       expect(disposeIdx, greaterThan(0), reason: '前提：dispose 存在');
-      final disposeBody = src.substring(disposeIdx, disposeIdx + 2600);
+      /*
+       * ★★ 2026-10-19（批末复核发现，Lead 改）：原来用**固定 2600 字符窗口**，
+       *   而 dispose 的真实函数体是 **6813 字符** ⇒ 窗口只覆盖 **38%**。
+       *
+       * ```text
+       * 实测：`_sheetGuardTimer?.cancel()` 在函数体内的偏移是 1871（27.5%）
+       *   ⇒ 落进窗口，**这条断言目前侥幸正确**
+       *   ⇒ 但它前面每多一行注释就可能滑出窗口
+       *
+       * ★ 而窗口外有 **18 个**清理调用，包含
+       *   `_player.dispose()` / `_danmakuClient?.close()` / `_pageFocusNode.dispose()`
+       *   这些**关键资源释放** ⇒ 截断确实丢了内容。
+       *
+       * ⇒ 改成按**大括号配对**取整个函数体，不再依赖窗口长度。
+       */
+      final disposeBody = _balancedBody(src, 'void dispose() {');
+      expect(
+        disposeBody.length,
+        greaterThan(2600),
+        reason: '★ 按大括号配对取到的 dispose 函数体只有 ${disposeBody.length} 字符，'
+            '比原来的固定窗口还短 ⇒ 截取逻辑坏了',
+      );
       /*
        * ★ 2026-10-19（批末复核）：正则去掉尾部的 `;`，并把 `?.` 放宽成 `[?!]?.`
        *
@@ -205,6 +252,73 @@ void main() {
             '因为源码里同一句在 _holdSheetGuard() 里也有一处，'
             '全局扫会恒真。',
       );
+      /*
+       * ★★ 2026-10-19（复核建议 + 实测，Lead 加）：断言「**恰好 1 处**」，
+       *   而不只是「至少 1 处」。
+       *
+       * ```text
+       * 为什么要这条：改成按大括号配对取**完整**函数体之后，
+       *   判据变宽了 —— 若 dispose 里将来出现**第二处**同样的 cancel
+       *   （比如抽成 helper 又被调两次），`hasMatch` 仍为 true ⇒ 恒绿。
+       *
+       * 三种形态实测（复核在 worktree 副本里跑的）：
+       *   原样              ⇒ <1>  绿
+       *   删掉 dispose 那处   ⇒ <0>  红 ✅
+       *   ★ 在 dispose 里再加一处 ⇒ <2>  红 ✅ ← 这正是「变宽」的风险
+       * ```
+       *
+       * ★ 而「只该有一处」本身就是一个**应当被断言的事实**：
+       *   0 处 ⇒ 定时器不释放；2+ 处 ⇒ 清理逻辑被重复调用或抽成了 helper。
+       */
+      expect(
+        RegExp(r'_sheetGuardTimer[?!]?\.cancel\(').allMatches(disposeBody).length,
+        1,
+        reason: '★★★ dispose 里必须有**且只有 1 处** _sheetGuardTimer?.cancel()。\n'
+            '0 处 ⇒ 定时器不释放（350ms 后旧守卫会提前撤掉）。\n'
+            '2+ 处 ⇒ 清理逻辑被重复调用或抽成了 helper。\n'
+            '★ 这条是为了防「改成完整函数体后判据变宽」—— '
+            '只断 hasMatch 的话，多出来的那处永远抓不到。',
+      );
+
+      /*
+       * ★★ 2026-10-19（复核建议，Lead 加）：dispose 里的**关键**释放调用。
+       *
+       * ```text
+       * 为什么只挑这 3 条（实测 dispose 函数体里共 24 个清理调用）：
+       *   _player.dispose()        ⇒ 换页后还在放声音 / 占解码器
+       *   _danmakuClient?.close()  ⇒ 旧弹幕连接不断，服务端看到重复会话
+       *   super.dispose()          ⇒ 不调会抛
+       *                             "ChangeNotifier was used after being disposed"
+       *                             且 framework 在 debug 下断言失败
+       *
+       * ★ 其余 21 条**刻意不断言**（复核的判断，我采纳）：
+       *   · `_xxxTimer?.cancel()` 一类（12 条）—— 删掉只是定时器多活几百 ms，
+       *     由各自的功能测试覆盖（如本文件 ①② 就在测这个），
+       *     重复断言违反「同一纪律只能有一个实现」。
+       *   · `_xxx.dispose()` 的 ValueNotifier 一类（8 条）—— 删掉会被
+       *     flutter_test 的泄漏检测直接抓到（`_cursorLive.dispose()` 的注释
+       *     写着「否则 flutter_test 判泄漏」）⇒ **框架已经在守了**。
+       *
+       * ★★ 缺口（复核实测）：`t73_bili_wiring_test.dart:552` 提到了
+       *   `_player.dispose()`，但只是把它当**位置基准**（比较与
+       *   `_biliApi?.close()` 的先后），**不是当「必须存在」** ⇒
+       *   实测删掉它会侥幸变红，但**把它移出 dispose 仍然绿**。
+       * ```
+       */
+      for (final call in const <String>[
+        '_player.dispose()',
+        '_danmakuClient?.close()',
+        'super.dispose()',
+      ]) {
+        expect(
+          disposeBody.contains(call),
+          isTrue,
+          reason: '★★★ dispose 里必须有 `$call` —— '
+              '不释放会在换页后继续占资源（播放器 / 网络连接），用户可感知。\n'
+              '★ 注意 t73 那条只拿它当**位置基准**，把它移出 dispose 仍会绿。\n'
+              '★ 用 String.contains 而不是正则：`?` 在正则里是量词，容易写错。',
+        );
+      }
     });
   });
 }

@@ -86,6 +86,26 @@
 // T1 隐藏→hover     pageBuild=0 all=4     （改前注释里的 188）
 // T4 已显示 60×     pageBuild=0 all=60    types=1（只有 AnimatedBuilder）
 // ```
+//
+// ★★ 想验证这些阈值**还有判别力**，用下面这个注入（已实跑，门禁确实红）：
+// ```text
+// 把 `_resetCursorIdle()` 里的
+//     _cursorIdleStale = false;
+// 退回成
+//     setState(() => _cursorIdleStale = false);
+// ⇒ 实测 T2 恢复段 all 5 → 527、pageBuild 0 → 1 ⇒ 红
+// ★ 另一个更能说明「阈值 5 有意义」的注入：在 `_showControls` 里
+//   多推一次 `_controlsLive.notifyListeners()`
+//   ⇒ all 4 → 73、pageBuild 仍 0（整页没重建）⇒ 阈值 5 照样抓住。
+//
+// ⚠️ ★★ 反例（我踩过）：给 `_pushCursorLive` 加 `setState` **测不出东西**
+//   —— 那条路径的值变化本身就是局部重建，多加的 setState 被覆盖 ⇒ 读数不变。
+//   ⇒ 「读数不变」不等于「阈值失效」，只等于「这个注入点在该窗口不产生额外计数」。
+//
+// ⚠️ ★★ 在 `git worktree` 里跑本文件，必须先补齐两样，否则读数是假的：
+//     sourin_core.dll（缺它 ⇒ 核心加载失败 ⇒ _playing 路径不同 ⇒ 531 变 193）
+//     .dart_tool（必须**复制**，不能软链 —— 软链会让 rootUri 指回主树）
+// ```
 // ```
 //
 // ★ 上面 F/G 两行就是 Owner 说的「鼠标一动、控件出现时很卡」的**字面路径**

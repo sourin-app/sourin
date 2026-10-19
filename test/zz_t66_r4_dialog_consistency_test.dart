@@ -37,6 +37,8 @@ import 'package:sourin_spike/core/app_update/release.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
 import 'package:sourin_spike/ui/widgets/app_dialog_shell.dart';
+import 'package:sourin_spike/design/widgets/app_glass_dialog.dart';
+import 'package:sourin_spike/design/widgets/app_text_button.dart';
 import 'package:sourin_spike/ui/widgets/skip_marker_dialog.dart';
 import 'package:sourin_spike/ui/widgets/source_composer_dialog.dart';
 import 'package:sourin_spike/ui/widgets/update_dialog.dart';
@@ -58,9 +60,8 @@ const _allowedMaxHeights = <int>{620};
 ///
 /// # 为什么这里**必须有**两个条目（不是洁癖）
 /// ```text
-/// 扫描范围是「文件名含 dialog 的 .dart」，其中两个**不是弹窗**：
-///   app_dialog_shell.dart    ← 它**就是外壳本身**，不能要求它再走自己
-///   app_dialog_section.dart  ← 分区标题/容器组件，不是弹窗
+/// app_dialog_shell.dart    ← 它**就是外壳本身**，不能要求它再走自己
+/// app_dialog_section.dart  ← 分区标题/容器组件，不是弹窗
 /// 把它们列进来是语义正确；同时也让下面的 ②「白名单非空」**真的有内容**
 /// —— 一个恒空的集合没法被断言"非空"。
 /// ```
@@ -72,18 +73,268 @@ const _bareShellWhitelist = <String, String>{
   'app_dialog_section.dart': '分区标题/容器组件，不是弹窗，没有卡片外壳',
 };
 
-/// lib/ui/widgets 下所有 `*dialog*.dart`
+/// ★★★ 逐**处**豁免表（2026-10-19 第二阶段）
+///
+/// # 为什么从「按文件」升级成「按处」
+/// ```text
+/// 改前：`_dialogFiles()` 只扫 `lib/ui/widgets/` 下**文件名含 "dialog"** 的文件。
+/// 实测：那 13 个文件（settings_page / sync_panel / backup_panel …）的
+///   basename 里一个 "dialog" 都没有 ⇒ **绕过外壳的弹窗对它完全不可见**。
+/// ⇒ 门禁全绿，而全仓有一批 `AlertDialog(` / 裸 `Dialog(` 在它视野之外。
+/// ★★ 2026-10-19 复核校正：此处原文写的是「22 处」，那是**剥注释之前**、
+///   且按旧口径数出来的。复核复刻本门禁口径（剥注释 + 逐行至多计 1 + 5 个 pattern）
+///   实跑 ⇒ **16 处**；注册表 16 条 ⇔ 门禁 16 处 ⇒ 当前自洽。
+///   ⇒ 「22」已作废，**别拿它对账**（下面 `_siteExemptions` 那句也要按 16 读）。
+/// ⇒ 按文件豁免救不了这种情况：一个文件里可能既有该换的、也有该留的。
+/// ```
+///
+/// # 键的格式：`相对路径#特征字符串`（2026-10-19 从「路径:行号」改来）
+///
+/// ★★ **为什么必须改掉行号**（Lead 已批准的设计变更）
+/// ```text
+/// 上一版键是「路径:行号」，结果出现一个**自相矛盾**的死结：
+///   ① ④-b 要求「豁免必须在原地有注释」
+///   ② 而"写注释"本身会把 `AlertDialog(` 往下推 5~9 行
+///      ⇒ 我登记的行号**当场过期** ⇒ ④-b 立刻报红
+///   ③ 我把邻域窗口从 ±12/14 放宽到 ±40 只是治标 —— 下一个人照样会撞
+/// ⇒ 根因是**用不稳定的标识（行号）去锚定一个会变的位置**。
+///
+/// ⇒ 改成「路径 + 一段特征字符串」：只要那段文字还在，登记就有效；
+///   注释增删只改行号、不改特征串 ⇒ 永不过期。
+/// ```
+///
+/// # 特征串怎么选（必须能唯一定位那一处）
+/// ```text
+/// ✓ 用该处**独有的字面量**：函数名、标题文案、构造参数名
+/// ✗ 不用 'AlertDialog('（同一文件里可能有多处）
+/// ```
+const _siteExemptions = <String, String>{
+  'lib/ui/settings_page.dart#这一处**刻意保留** Material':
+      '轨道 E 实测结论：这一处**刻意保留** Material 的 AlertDialog。'
+          '实测依据（源码同处有完整记录）：AppGlassDialog 里放 TextField 会抛'
+          '"TextField widgets require a Material widget ancestor"。'
+          '它不是「单行提示卡」—— 是一个带输入框的表单区，换过去会崩。'
+          '源码同处有完整实测记录。',
+  // ═══ R4 第二步 · 第一批「简单确认框」收拢后，逐处登记剩下不合形态的 ═══
+  'lib/t104_overlay_exit_probe.dart#真机探针，验证统一入口本身':
+      '真机探针，**故意验证统一入口本身**：它已经在走 showAppDialog（:300），'
+          '这里的 AlertDialog 只是 builder 里的内容。换成 AppGlassDialog 会让'
+          '探针测不到它真正要测的那条路径。',
+  'lib/ui/settings/theme_page.dart#contentPadding: EdgeInsets.zero':
+      'content 是整个主题预览面板 ThemePreviewBody（重内容），且用了 '
+          'contentPadding: EdgeInsets.zero + 自定义 backgroundColor: p.palette.card。'
+          'AppGlassDialog 的内边距写死 fromLTRB(24,22,24,16) 且**没有 backgroundColor '
+          '参数** ⇒ 换过去会把预览塞进 24px 边距、玻璃底盖掉调色板底色（会变丑）。'
+          '★ 待办①：组件补 padding/backgroundColor 两个可选参数后才可收拢。',
+  'lib/ui/settings/theme_page.dart#粘贴主题包 JSON':
+      '★★ 2026-10-19 复核：**也是两条机制叠加**，此前只写了 textAlign（分类不完整）。'
+          '机制④：content 外面包了 `SizedBox(width:460)`（实测两处都是 460）。'
+          '机制②：content 是**表单**，实测含 **2 个 `TextField`** '
+          '（maxLines:10/minLines:6 的 JSON 粘贴框）⇒ 换过去**同样会抛** '
+          '"require a Material widget ancestor"。'
+          '★ **先解②、再解④**。'
+          '机制④口径：装 460 需传 `maxWidth: 508`（content 宽 = maxWidth − 48）。'
+          '另有一条独立问题：`DefaultTextStyle` 写死 `textAlign:center`，'
+          '多行输入框居中会很难用 ⇒ 属「组件待办 textAlign 可控」，与上面两条并列。',
+  'lib/ui/widgets/sync_panel.dart#配置云盘（WebDAV）':
+      '★★ 2026-10-19 复核：这是**两条机制叠加**，此前只写了机制④（分类不完整）。'
+          '机制④：content 是 `SizedBox(width:420)` + 自带 '
+          '`SingleChildScrollView(clipBehavior)` + 预设 pill 的 Wrap + 表单字段。'
+          '机制②：content **含 4 个 `TextField`** ⇒ 换过去**同样会抛** '
+          '"require a Material widget ancestor"。'
+          '★ **先解②、再解④**（顺序不能反：②不解决，弹窗根本打不开，'
+          '传再宽的 maxWidth 也没用）。'
+          '机制④可绕的实测口径：`AppGlassDialog` 卡片左右 padding 各 24 ⇒ '
+          'content 实测宽 = maxWidth − 48 ⇒ 装 420 需传 `maxWidth: 468`（非 420）。',
+  // ── R4 第二步 · 第二批：逐处登记（机制 + 具体数字，Lead 裁决 ①②）──
+  // 机制① 固定尺寸 + 自带滚动区（AppGlassDialog 上限 maxWidth 380 / maxHeight 420）
+  'lib/ui/settings_page.dart#调整内容源顺序':
+      '机制④：content 是 SizedBox(width:420, height:400) + ListView.builder。'
+          'AppGlassDialog 默认 maxWidth 380 ⇒ 装不下；**但 maxWidth 可传** ⇒ '
+          '装 420 需传 `maxWidth: 468`（实测口径：content 宽 = maxWidth − 48）。'
+          '★ 2026-10-19 **更正一条旧说法**：此前写的「没有拖拽手柄这类交互位，'
+          '换过去会丢功能」是**错的** —— 该弹窗**根本没有拖拽**（'
+          '`ReorderableListView` / `onReorder` / `Draggable` 全 0 命中），'
+          '排序靠每行 `AppIconButton`「上移/下移」调 `_move(i, dir)`（`settings_page.dart:6611`）。'
+          '★ 实测：在 `AppGlassDialog` 内点第 2 行「上移」，顺序**真的变了**'
+          '（[甲,乙,丙] → [乙,甲,丙]，与 AlertDialog 对照组一致）⇒ '
+          '**换壳不丢功能**，这一处**可以收拢**，只需传 maxWidth。',
+  'lib/ui/settings_page.dart#插件更新 · ':
+      '机制①：content 是 SizedBox(width:480, height:460) + Column，'
+          '源码注释写明「有界高度（照 _SkipHistoryDialog）：内容再多也只占 460px」。'
+          'AppGlassDialog 上限 maxWidth 380 / maxHeight 420 ⇒ 480×460 装不下。',
+  'lib/ui/settings_page.dart#配置「':
+      '机制①：content 是 SizedBox(width:420) + SingleChildScrollView'
+          '(clipBehavior) + 动态字段循环（for (final f in widget.config.fields)）。'
+          'AppGlassDialog 上限 maxWidth 380 ⇒ 420 宽装不下。',
+  'lib/ui/widgets/tvbox_source_panel.dart#订阅更新 · ':
+      '★★ 2026-10-19 复核：这是**两条机制叠加**，此前只写了机制④（分类不完整）。'
+          '机制④：content 是 `SizedBox(width:560, height:480)` + 自带滚动，'
+          '源码注释写明「有界高度（照 _PluginUpdateDialog）：内容再多也只占 480px」。'
+          '机制②：content **含 `TextField`** ⇒ 换过去**同样会抛** '
+          '"require a Material widget ancestor"。'
+          '★ **必须先解②**（不解决则弹窗打不开，宽度无关）。'
+          '⚠️ 机制④的可绕代价：装 560 需传 `maxWidth: 608`'
+          '（实测口径：content 宽 = maxWidth − 48）⇒ **608 不在 §3.5 白名单 '
+          '{460,560,820} 内** ⇒ 真要换，得先决定「破白名单」还是「缩内容」。',
+  // 机制② 表单 / 输入框（AppGlassDialog 缺 Material 祖先 ⇒ TextField 抛异常）
+  'lib/ui/widgets/backup_panel.dart#设置导出用口令':
+      '机制②：content 含 **TextField**（设置导出用口令），包在 SizedBox(width:380) '
+          '的 Column 里。实测：AppGlassDialog 里放 TextField 会抛 '
+          '"TextField widgets require a Material widget ancestor" ⇒ 换过去直接崩。',
+  'lib/ui/widgets/backup_panel.dart#这个备份包含登录态':
+      '机制②：content 含 **TextField**（输入导出时设的口令），包在 SizedBox(width:380) '
+          '的 Column 里。同上：换过去会抛 "require a Material widget ancestor"。',
+  'lib/ui/widgets/provider_login_panel.dart#maxWidth: 460':
+      '★ 2026-10-19 复核**改判**（此前写的是「机制②」，实测**不成立**）。'
+          '**不属于机制②**：按括号块逐字量过，`Dialog(` 的 1706 字符块内 '
+          '`TextField` / `TextFormField` / `EditableText` / `InputDecoration` '
+          '各 **0** 个，控件只有 Align/Column/ConstrainedBox/'
+          'SingleChildScrollView/SizedBox/Text/TextButton —— '
+          '正文是**确认问句**（"…源需要登录才能使用，是否已登录？"），'
+          '**没有任何输入框** ⇒ 换过去**不会**抛 Material 祖先异常。'
+          '★ 归类：属**裸 `Dialog(`（自建外壳）**那一类 ⇒ 归「R4 收尾换壳」。'
+          '真实障碍：标题是**自绘** `Text("登录 ' r'$providerName' '")`，'
+          '而 `AppGlassDialog.title` 只收 `String`，没有可对位的参数 ⇒ '
+          '**属调用点改动**（把自绘标题改成 title 参数），**不需改组件**。',
+  // 机制③ 内联 TextStyle 定颜色 ⇒ 被外壳 DefaultTextStyle 覆盖
+  'lib/ui/widgets/download_panel.dart#删除整部剧的下载？':
+      '机制③：content 是结构化 Column（含条件子项 if (p.episodeCount > 0) 与 '
+          'p.fileNames.take(5) 列表），其中「此操作不可恢复。」用**内联** '
+          "TextStyle(color: Colors.red) 定警示色。AppGlassDialog 的内容区被 "
+          'DefaultTextStyle 统一覆盖字色/字重 ⇒ 那个红色会被冲掉，'
+          '警示语义丢失。'
+          '★ **这一条提醒的不只是这一处**：任何「用内联 TextStyle 定颜色」的弹窗内容，'
+          '换外壳后颜色都会被覆盖 ⇒ 这是**收拢前要先查**的一个通用检查项。',
+  'lib/ui/widgets/sync_panel.dart#width: 380,':
+      '★★ 2026-10-19 复核：这是**两条机制叠加**，此前只写了 textAlign（分类不完整）。'
+          '机制④：content 包在 `SizedBox(width:380)` 的 Column 里。'
+          '机制②：content **含 3 个 `TextField`**（口令表单）⇒ 换过去**同样会抛** '
+          '"require a Material widget ancestor"。'
+          '★ **先解②、再解④**。'
+          '⚠️ 另有一条独立问题（不在本次三条机制内，单列）：'
+          '`AppGlassDialog` 内容区 `DefaultTextStyle` 写死 `textAlign: center`，'
+          '会让两个输入框居中（注册表此前提过，本条保留提醒）。'
+          '机制④口径：装 380 需传 `maxWidth: 428`（content 宽 = maxWidth − 48）。',
+};
+
+/// 把「剥注释后的行号」还原成**原文**那一处的上下文，供特征串匹配
+///
+/// ★ 为什么需要它：`_bypassLines` 跑在**剥掉注释**的文本上（否则注释里记的
+///   改前写法会被当成违规），而豁免的特征串写在**注释里** ⇒
+///   必须在**原文**里找特征串，两者靠"同一行号"对齐。
+String _rawLineAt(String file, int strippedLine) {
+  final raw = File(file).readAsStringSync().split('\n');
+  final code = _stripComments(File(file).readAsStringSync()).split('\n');
+  final idx = strippedLine - 1;
+  if (idx < 0 || idx >= code.length) return '';
+  // ★ 剥注释不改变**行数**（每个换行都保留），所以下标可直接对齐。
+  //   这一点是刻意的：`_stripComments` 遇到注释里的换行会补 '\n'。
+  return idx < raw.length ? raw[idx] : '';
+}
+
+/// 该处是否被豁免（按「路径 + 特征串」匹配）—— ★ **双向可达**
+///
+/// # 为什么必须是「双向」而不是「从 AlertDialog 往下找」（2026-10-19 实测缺陷）
+/// ```text
+/// 第一版：`_isExempt(那行, anchor)` 只在「那行往后 6 行」里找特征串。
+/// 实测两种排布都会漏：
+///   ① 特征串在 AlertDialog 的**下方很远**：
+///      theme_page —— AlertDialog 在 :199，而唯一字面量
+///      `contentPadding: EdgeInsets.zero` 在 :214（**差 15 行**）⇒ 漏判
+///   ② 特征串在**另一条** AlertDialog 附近：
+///      sync_panel —— `width: 380,` 在 :1433，挨着的是 :1426 那条；
+///      而 :1187 那条若登记了同一特征串也会被误判 ⇒ 关联关系必须双向验
+///
+/// ⇒ 现在两条都查：
+///   · 从 AlertDialog 行往上/往下找特征串
+///   · **并且**从特征串行往上找，确认它确实归属这条 AlertDialog
+///     （往上必须能碰到该 `AlertDialog`，否则说明特征串属于另一条）
+/// ```
+///
+/// # 「归属」的判据：特征串行往上最近的一个 `AlertDialog(` 就是它所属的那条
+bool _isExempt(String file, int strippedLine, String anchorText) {
+  final i = anchorText.indexOf('#');
+  if (i < 0) return false;
+  final path = anchorText.substring(0, i);
+  final feat = anchorText.substring(i + 1);
+  if (path != file) return false;
+
+  final src = File(path).readAsStringSync().split('\n');
+  final n = src.length;
+
+  bool isBypassLine(int k) =>
+      RegExp(r'(?<![A-Za-z0-9_.])(AlertDialog|Dialog|showDialog)\(')
+          .hasMatch(src[k - 1]);
+
+  bool featAt(int k) => src[k - 1].contains(feat);
+
+  // 方向一：从这条 AlertDialog 往上/往下找特征串（窗口放宽到 ±20，
+  //         真正的「关联」由下面的方向二兜底）
+  for (var k = strippedLine - 20;
+      k <= strippedLine + 20 && k >= 1 && k <= n;
+      k++) {
+    if (!featAt(k)) continue;
+    // 方向二：确认这条特征串**归属于**本条 AlertDialog ——
+    //         从特征串往上，最近的那个 AlertDialog 必须就是 strippedLine
+    var owner = -1;
+    for (var j = k; j >= 1; j--) {
+      if (isBypassLine(j)) {
+        owner = j;
+        break;
+      }
+    }
+    if (owner == strippedLine) return true;
+  }
+  return false;
+}
+
+/// 全仓 `lib/` 下所有含弹窗构造调用的 `.dart`（剥注释后）
+///
+/// ★ 2026-10-19：从「文件名含 dialog」改成「**全仓 lib/**」。
+///   理由见 [_siteExemptions] 的注释 —— 旧范围漏掉了 13 个文件。
+/// ★ 那 13 个文件里的弹窗，复核复刻本门禁口径实跑共 **16 处**（不是旧注释里的 22）。
 List<String> _dialogFiles() {
-  final dir = Directory('lib/ui/widgets');
-  final files = dir
-      .listSync()
-      .whereType<File>()
-      .where((f) => f.path.endsWith('.dart'))
-      .map((f) => f.path.replaceAll('\\', '/'))
-      .where((p) => p.split('/').last.contains('dialog'))
-      .toList()
-    ..sort();
-  return files;
+  final out = <String>[];
+  void walk(Directory d) {
+    for (final e in d.listSync()) {
+      if (e is Directory) {
+        if (e.path.endsWith('.dart_tool') || e.path.endsWith('build')) continue;
+        walk(e);
+      } else if (e is File && e.path.endsWith('.dart')) {
+        out.add(e.path.replaceAll('\\', '/'));
+      }
+    }
+  }
+
+  walk(Directory('lib'));
+  out.sort();
+  return out;
+}
+
+/// 在 `file` 里找出所有「绕过外壳的弹窗构造」的行号
+///
+/// ★ 剥注释后才数（否则注释里记的改前写法会被当成违规）。
+/// ⚠️ 负向前瞻排除 `showDialog` 之外的同族：`AppDialogShell(` / `showAppDialog(`。
+List<int> _bypassLines(String code, String file) {
+  final pats = <RegExp>[
+    RegExp(r'(?<![A-Za-z0-9_.])AlertDialog\('),
+    RegExp(r'(?<![A-Za-z0-9_.])CupertinoAlertDialog\('),
+    RegExp(r'(?<![A-Za-z0-9_.])Dialog\('),
+    RegExp(r'(?<![A-Za-z0-9_.])showDialog\('),
+    RegExp(r'(?<![A-Za-z0-9_.])showCupertinoDialog\('),
+  ];
+  final out = <int>[];
+  final lines = code.split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    for (final p in pats) {
+      if (p.hasMatch(lines[i])) {
+        out.add(i + 1);
+        break;
+      }
+    }
+  }
+  return out;
 }
 
 /// 剥掉注释，只留**可执行代码**
@@ -298,42 +549,303 @@ void main() {
     });
 
     // ═══════════════════════════════════════════════════════════════
+    //  ④-c/d ★ 收拢后的**尺寸**与三键不溢出（Lead 第二步要求新增）
+    // ═══════════════════════════════════════════════════════════════
+    testWidgets('④-c ★★ 收拢后的卡片尺寸读数（钉住「换了之后长什么样」）',
+        (t) async {
+      /*
+       * ★ Lead 要求的**新增**判据，理由：
+       * ```text
+       * 现有门禁只管「有没有绕过外壳」，**不管「换了之后长什么样」**。
+       * 而 `AppGlassDialog.maxWidth` 默认 380（组件级决定，已裁决不改）
+       * ⇒ 换过去后卡片宽度从 Material 的 ~318.8 变成 380；
+       *   将来若有人改 `maxWidth`，**没有任何门禁会发现**。
+       * ```
+       * ★ 判据形态是「换了外壳之后卡片宽度是多少」，
+       *   **不是**「宽度没变」—— 380 本来就是新行为。
+       * ★ 实测基准 2026-10-19（getRect 读卡片本体那层）：
+       *   skip_page._confirm / cache_page 删除整部 / app_tray 三键
+       *   ⇒ 三者都是 **332.0 × 143.0**，exception=null。
+       */
+      const view = Size(1280, 800);
+      t.view.physicalSize = view;
+      t.view.devicePixelRatio = 1.0;
+      addTearDown(t.view.reset);
+
+      const title = '收拢基准';
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: AppGlassDialog(
+                title: title,
+                content: const Text('用于读取卡片实际尺寸的正文。'),
+                actions: AppGlassDialogActions(
+                  confirmLabel: '确定',
+                  confirmIsDestructive: false,
+                  onCancel: () {},
+                  onConfirm: () {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await t.pumpAndSettle();
+
+      final f = find.text(title);
+      expect(f, findsOneWidget, reason: '★ 没渲染出标题 ⇒ 后面全是空谈');
+      RenderObject? ro = f.first.evaluate().first.renderObject;
+      Rect? card;
+      while (ro != null && ro.parent != null) {
+        ro = ro.parent;
+        if (ro is! RenderBox || !ro.hasSize) continue;
+        final r = ro.localToGlobal(const Offset(0.0, 0.0)) & ro.size;
+        if (r.width <= 0 || r.height <= 0) continue;
+        if (r.width >= view.width - 1 && r.height >= view.height - 1) continue;
+        card ??= r;
+      }
+      expect(card, isNotNull, reason: '★ 没量到卡片矩形');
+      final w = card?.width ?? -1;
+      final h = card?.height ?? -1;
+      expect(w, inInclusiveRange(320, 380),
+          reason: '★★ 收拢后卡片宽度 = $w，不在 [320, 380]。'
+              '实测基准 2026-10-19 = 332.0。上界 380 = '
+              '`AppGlassDialog.maxWidth` 默认值 —— 它被改动时本条会红。');
+      expect(h, inInclusiveRange(100, 260),
+          reason: '★★ 收拢后卡片高度 = $h，不在 [100, 260]。'
+              '实测基准 2026-10-19 = 143.0。');
+    });
+
+    testWidgets('④-d ★★ 三键确认框（app_tray 形态）不许换行或溢出', (t) async {
+      // ★ Lead 指令：app_tray 三键（tray/quit/null）语义与「取消+确认」不同
+      //   ⇒ 用 actions: Row([...3 个 AppTextButton])；但 tray 弹窗窄，
+      //   必须证明**不换行、不溢出**。
+      const view = Size(1280, 800);
+      t.view.physicalSize = view;
+      t.view.devicePixelRatio = 1.0;
+      addTearDown(t.view.reset);
+
+      const title = '要关闭还是彻底退出？';
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: AppGlassDialog(
+                title: title,
+                content: const Text('最小化到托盘 / 彻底退出 / 取消'),
+                actions: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    AppTextButton(
+                        onPressed: () {}, child: const Text('最小化到托盘')),
+                    const SizedBox(width: 4),
+                    AppTextButton(
+                        onPressed: () {}, child: const Text('彻底退出')),
+                    const SizedBox(width: 4),
+                    AppTextButton(onPressed: () {}, child: const Text('取消')),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await t.pumpAndSettle();
+
+      expect(find.text('最小化到托盘'), findsOneWidget);
+      expect(find.text('彻底退出'), findsOneWidget);
+      expect(find.text('取消'), findsOneWidget);
+      expect(t.takeException(), isNull,
+          reason: '★★ 三键确认框抛了异常 ⇒ 在窄宽度下换行/溢出了。'
+              '若确实需要更宽，给 `AppGlassDialog(maxWidth: …)` 传值并更新本判据。');
+    });
+
+    // ═══════════════════════════════════════════════════════════════
+    //  ④ ★ 豁免表的防空转：每条理由都必须有信息量
+    // ═══════════════════════════════════════════════════════════════
+    test('④ ★ 逐处豁免的理由不许是「占位话」（防空转假绿）', () {
+      // ★★ 本条是**第二道**防空转：第一道（②）是「表不许空」，
+      //    这道是「表里的每条**不许没内容**」——
+      //    一张全填「暂时不处理」的表同样等于没登记。
+      const vacuous = [
+        '暂时不处理',
+        '以后再说',
+        '先放着',
+        'TODO',
+        '待定',
+        '暂不处理',
+        '保持现状',
+      ];
+      for (final e in _siteExemptions.entries) {
+        final reason = e.value.trim();
+        expect(reason.length, greaterThan(24),
+            reason: '★ 豁免「${e.key}」的理由只有 ${reason.length} 字 —— '
+                '太短，多半等于没写。'
+                '要具体到「为什么它**不需要** AppDialogShell」。');
+        for (final v in vacuous) {
+          expect(reason.contains(v), isFalse,
+              reason: '★★ 豁免「${e.key}」的理由是占位话「$v」—— '
+                  '这种理由等于没登记（本轮明确不许）。');
+        }
+      }
+    });
+
+    test('④-b ★ 豁免的键（路径#特征串）必须指向**真实存在**的那一处', () {
+      for (final key in _siteExemptions.keys) {
+        // ★ 2026-10-19：键结构从「路径:行号」改成「路径#特征串」。
+        //   理由见 [_siteExemptions] 的文档 —— 行号会因"在原地写注释"而漂，
+        //   造成「④-b 要求有注释」与「我被禁止改那个文件」互斥的死结。
+        final i = key.indexOf('#');
+        expect(i > 0, isTrue,
+            reason: '★ 豁免键「$key」格式不对（应为 路径#特征串）');
+        final path = key.substring(0, i);
+        final feat = key.substring(i + 1);
+        expect(feat.trim().isNotEmpty, isTrue,
+            reason: '★ 豁免键「$key」的特征串是空的');
+
+        expect(File(path).existsSync(), isTrue,
+            reason: '★★ 豁免键「$key」指向的文件**不存在** —— '
+                '这种条目什么都没豁免，只是让表看起来非空');
+
+        // 特征串必须**真的出现在该文件里**（否则是凭空登记）
+        final src = File(path).readAsStringSync();
+        expect(src.contains(feat), isTrue,
+            reason: '★★ 豁免「$key」的特征串「$feat」在 $path 里**找不到**。\n'
+                '⇒ 这条登记指向一个不存在的位置（多半是那处被改名/删除了）。\n'
+                '请把特征串更新成该处现在真实存在的字面量。');
+
+        // ★★★ 特征串必须**唯一**（Lead 第三条指令，2026-10-19）
+        //
+        // # 为什么这条必须有（我这一轮真踩到了）
+        // ```text
+        // 我给 theme_page 那处选的 `ThemePreviewBody` 在文件里出现 **3 次**
+        //   （:215 用它 / :904 class 声明 / :905 构造器）
+        // ⇒「它存在」成立，但「它唯一定位这一处」**不成立**
+        //   ⇒ 将来别处也用它，② 会把**别的地方**误判成豁免 —— 新的假绿。
+        // 同轮 `sync_panel` 的 `同步口令` 也出现 **3 次**（:605 / :1365 / :1431）。
+        // ⇒ 与其"记住要验证唯一"，不如**让门禁强制**：出现 ≠ 1 次直接红。
+        // ```
+        var occurrences = 0;
+        for (final line in src.split('\n')) {
+          if (line.contains(feat)) occurrences++;
+        }
+        expect(occurrences, 1,
+            reason: '★★ 豁免「$key」的特征串「$feat」在 $path 里出现 '
+                '**$occurrences 次**，必须**恰好 1 次**。\n'
+                '非唯一 ⇒ 它定位不到「这一处」，将来别处出现同名字面量时会被误判豁免。\n'
+                '请换成该处**邻近且唯一**的字面量'
+                '（例如紧跟 R4-EXCEPTION 注释的那行参数）。');
+
+        // ★ 该特征串附近必须有豁免注释（证明"有人在那儿写下了理由"）
+        final lines = src.split('\n');
+        var foundAt = -1;
+        for (var k = 0; k < lines.length; k++) {
+          if (lines[k].contains(feat)) {
+            foundAt = k;
+            break;
+          }
+        }
+        expect(foundAt, isNot(equals(-1)),
+            reason: '★ 内部矛盾：上一条说特征串存在，这里说找不到');
+        final lo = (foundAt - 14).clamp(0, lines.length);
+        final hi = (foundAt + 14).clamp(0, lines.length);
+        final near = lines.sublist(lo, hi).join('\n');
+        expect(near.contains('R4-EXCEPTION') ||
+            near.contains('刻意保留') ||
+            near.contains('为什么不换') ||
+            near.contains('不能换'),
+            isTrue,
+            reason: '★★ 豁免「$key」的特征串附近**找不到**豁免注释。\n'
+                '⇒ 这条登记是"凭空登记"，门禁就等于在放行一个不存在的问题。\n'
+                '请在该处附近补一行 `// R4-EXCEPTION: <理由>`。');
+      }
+    });
+
+    // ═══════════════════════════════════════════════════════════════
     //  ① 不许裸 AlertDialog / Dialog + 尺寸必须落在白名单
     // ═══════════════════════════════════════════════════════════════
-    test('①-a 不许裸 `AlertDialog(`（Material 原生外壳）', () {
+    test('①-b ★ 全仓逐处：绕过外壳的弹窗必须逐处登记豁免', () {
       final bad = <String>[];
+      var scanned = 0;
       for (final f in files) {
         final name = f.split('/').last;
         if (_bareShellWhitelist.containsKey(name)) continue;
         final code = _stripComments(File(f).readAsStringSync());
-        if (RegExp(r'(?<![A-Za-z0-9_.])AlertDialog\(').hasMatch(code)) {
-          bad.add(name);
+        for (final ln in _bypassLines(code, f)) {
+          scanned++;
+          final key = '$f:${_rawLineAt(f, ln).trim()}';
+          var hit = false;
+          for (final anchor in _siteExemptions.keys) {
+            if (_isExempt(f, ln, anchor)) {
+              hit = true;
+              break;
+            }
+          }
+          if (hit) continue;
+          bad.add(key);
         }
       }
       expect(bad, isEmpty,
-          reason: '★★ 这些文件还在用 Material 的 `AlertDialog`（原生外壳）：$bad\n'
-              '它没有我们的标题栏形态（无副标题 / 无右上关闭钮 / 按钮条不靠右），'
-              '也没有统一圆角与底色 ⇒ 正是 Owner 说的「样式不统一」。\n'
-              '改法：换成 `AppDialogShell`（参考 update_dialog.dart）。');
+          reason: '★★ 这几处**绕过**了 `AppDialogShell`，且没有在\n'
+              '    `_siteExemptions` 里逐处登记理由：\n'
+              '${bad.map((e) => '      · $e').join('\n')}\n'
+              '规矩（AGENTS §3.5）：弹窗必须走 `AppDialogShell`。\n'
+              '确实需要保留的，**在该处附近**写一行：\n'
+              '    // R4-EXCEPTION: <为什么它不需要外壳，要具体>\n'
+              '并把 `路径:行号` 登记进本文件的 `_siteExemptions`。\n'
+              '⚠️ 不接受「暂时不处理」这种没有信息量的理由（见测试 ④）。\n'
+              '本次扫描了 $scanned 处构造调用。');
     });
 
-    test('①-b 不许裸 `Dialog(`（自建外壳）', () {
+    test('①-b2 ★ 裸 `showDialog(` 必须为零（AGENTS §4：统一走 showAppDialog）',
+        () {
       final bad = <String>[];
       for (final f in files) {
         final name = f.split('/').last;
         if (_bareShellWhitelist.containsKey(name)) continue;
         final code = _stripComments(File(f).readAsStringSync());
-        /*
-         * 判据只认**代码里**的 `Dialog(`：
-         *   · 前面不能是标识符字符或 `.`（排除 `showDialog(` / `foo.Dialog(`）
-         *   · 排除 `AlertDialog(`（上一条管）、`AppDialogShell(` 等
-         * ⚠️ 已经剥过注释 ⇒ 注释里记录"改前写法"不会误报。
-         */
-        final re = RegExp(r'(?<![A-Za-z0-9_.])Dialog\(');
-        if (re.hasMatch(code)) bad.add(name);
+        for (final ln in code.split('\n').asMap().entries) {
+          if (RegExp(r'(?<![A-Za-z0-9_.])showDialog\(').hasMatch(ln.value) ||
+              RegExp(r'(?<![A-Za-z0-9_.])showCupertinoDialog\(')
+                  .hasMatch(ln.value)) {
+            bad.add('${f}:${ln.key + 1}');
+          }
+        }
       }
       expect(bad, isEmpty,
-          reason: '★★ 这些文件自建了 `Dialog(` 外壳：$bad\n'
+          reason: '★★ 这些地方直接调了裸 `showDialog(`：$bad\n'
+              '弹窗入场动效由 `showAppDialog`（overlay_motion.dart）统一提供，'
+              '裸调用会绕过它 ⇒ 动效不一致。\n'
+              '改法：`showDialog` → `showAppDialog`。');
+    });
+
+    test('①-b3 ★ 裸 `Dialog(`（自建外壳）也必须逐处登记', () {
+      final bad = <String>[];
+      for (final f in files) {
+        final name = f.split('/').last;
+        if (_bareShellWhitelist.containsKey(name)) continue;
+        final code = _stripComments(File(f).readAsStringSync());
+        for (final ln in code.split('\n').asMap().entries) {
+          // 判据只认**代码里**的 `Dialog(`：前面不能是标识符字符或 `.`
+          //（排除 `showDialog(` / `AppDialogShell(` / `foo.Dialog(`）
+          if (!RegExp(r'(?<![A-Za-z0-9_.])Dialog\(').hasMatch(ln.value)) {
+            continue;
+          }
+          final key = '${f}:${ln.key + 1}';
+          var hit = false;
+          for (final anchor in _siteExemptions.keys) {
+            if (_isExempt(f, ln.key + 1, anchor)) {
+              hit = true;
+              break;
+            }
+          }
+          if (hit) continue;
+          bad.add(key);
+        }
+      }
+      expect(bad, isEmpty,
+          reason: '★★ 这些地方自建了 `Dialog(` 外壳：$bad\n'
               '自建外壳是"宽度四种、高度三种"的来源（见 app_dialog_shell.dart 文件头）。\n'
               '改法：换成 `AppDialogShell`，尺寸用它的 width / maxHeight 参数。');
     });

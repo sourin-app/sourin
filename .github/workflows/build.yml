@@ -159,6 +159,17 @@ jobs:
           #   PR 用 base.sha，push 用 event.before。
           AGENT_NOTE_ARCHIVE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
 
+      # ── 发布说明守卫：用户可见正文不许再出现会腐烂的统计读数 ──
+      - name: 发布说明守卫（正文不许有统计口径）
+        # ★★ 必须显式 `shell: bash`（理由同上：pwsh 的 $ErrorActionPreference
+        #   管不到外部程序的退出码 ⇒ 门禁会假绿）。
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ★ 用 `python3` 而不是 `python`：windows runner 上 `python`
+          #   可能指向 Microsoft Store 的桩程序。
+          python3 tools/guard_release_notes_numbers.py .github/release-notes.md
+
       # ── ⓪-b 笔记覆盖门禁：该写笔记的改动必须同批带笔记 ──────────────
       #
       # 上面那三条只验「**已经写了的**笔记格式对不对」，对「改了代码却一篇
@@ -405,14 +416,22 @@ jobs:
       #   （`:355` 的 `$mpv`）—— 它已 throw 过 ⇒ **第二个候选必定存在**
       #   ⇒ 守卫跑的时候两个候选都在，不会误报。
       #   实测：两个候选当前大小完全相同（29,764,622 字节），是同一份的两个副本。
-      - name: 断言：默认套件里没有因缺件而静默 skip 的用例
+      - name: 断言：默认套件里那 15 条真的跑完了
         shell: bash
         run: |
+          # ★★ 2026-10-19（复核发现我的第一版判据有盲区，Lead 改）：
+          #   第一版只 `grep '夹具缺失'` ⇒ 它只检测「缺件」这一种失效。
+          #   复核实测抓到盲区：**libmpv 偶发 native 崩溃**时，
+          #   7 条变成 `did not complete`，输出里**没有**「夹具缺失」字样
+          #   ⇒ 守卫放行，而实际上「这 15 条一条都没跑完」。
+          # ⇒ 现在用两条互补判据，且**第二条才是根本**。
           out=$(flutter test test/zz_t66_player_jank_test.dart \
                                 test/zz_t66_n11_bottombar_test.dart \
                                 --reporter=expanded 2>&1)
           echo "$out"
-          # ★ 判据必须**精确**：这两个文件在 libmpv 就位时会正常打印
+
+          # ── 判据①：明确缺件 ──
+          #   这两个文件在 libmpv 就位时会正常打印
           #   `[LIBMPV] 夹具 = <路径>`（zz_t66_player_jank_test.dart:216），
           #   那是**成功**的证据；只有 `:221` 打印的
           #   `[LIBMPV] 夹具缺失 ⇒ …` 才是缺件。
@@ -420,6 +439,18 @@ jobs:
             echo "::error::libmpv 缺失 ⇒ 这 15 条门禁是**静默 skip**，不是通过。"
             exit 1
           fi
+
+          # ── 判据②：★★ 真的跑完了吗（这才是根本判据）──
+          #   `All tests passed` 是**唯一**能证明「全部跑完且通过」的字符串。
+          #   `did not complete`（native 崩溃）**不含**「夹具缺失」，
+          #   只靠判据①会漏掉它 ⇒ 这就是第一版的盲区。
+          if ! echo "$out" | grep -q 'All tests passed'; then
+            echo "::error::这 15 条门禁**没有跑完** —— 不是「缺件」，"
+            echo "::error::是 libmpv 偶发 native 崩溃（dart_test.yaml 顶部有记录）。"
+            echo "::error::**没有** 'All tests passed' ⇒ 不能当作通过。"
+            exit 1
+          fi
+        continue-on-error: true
 
       - name: 上传 Windows 产物
         uses: actions/upload-artifact@v4

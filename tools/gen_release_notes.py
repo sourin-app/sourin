@@ -366,6 +366,20 @@ def _starts_like_orphan(s: str) -> bool:
 
 
 def build_changelog(titles: list[str]) -> str:
+    # ★★ 2026-10-19（Lead 修）：自检必须在**函数入口**，不能放在
+    #   `if not buckets: return ""` **之后** ——
+    #   否则 buckets 为空时它永远不执行，我实测注入坏 order 后
+    #   自检「没触发」，差点以为它恒真。
+    #   判据：**守卫代码在任何 early return 之前**。
+    _order = ["新增", "改进", "修复", "调整"]
+    _labels = {label for _, label in USER_FACING}
+    _missing = _labels - set(_order)
+    if _missing:
+        raise AssertionError(
+            "★ USER_FACING 里的分类 %s 不在 order 里 ⇒ 那一桶会被静默丢弃。"
+            "（order=%s）" % (sorted(_missing), _order)
+        )
+
     buckets: dict[str, list[str]] = {}
     for t in titles:
         got = classify(t)
@@ -380,8 +394,25 @@ def build_changelog(titles: list[str]) -> str:
     if not buckets:
         return ""
 
-    # 固定顺序：新增 → 改进 → 修复
-    order = ["新增", "改进", "修复"]
+    # 固定顺序：新增 → 改进 → 修复 → 调整
+    #
+    # ★★★ 2026-10-19（Lead 修，复核发现）：**每个桶名都必须在这里出现**。
+    #   改前 `order` 只有三项，而 `USER_FACING` 里有「调整」（由「回退」归入）⇒
+    #   一条「回退：…」提交被 `classify` 正确分类进 `调整` 桶，
+    #   却因为**没有桶名能命中**而被这一层悄悄丢弃。
+    #
+    # ```text
+    # 实测：build_changelog(['回退：切 tab 的离场页快照…']) => '\n'
+    #   ⇒ 返回一个换行符，而换行符是 truthy
+    #   ⇒ 连 `if not changelog` 的兜底都不触发
+    #   ⇒ 端到端产物是**一个只有标题、一个字都没有的空节**
+    # ```
+    #
+    # ★ 这是「静默丢弃」换了个位置：上一版在 `classify` 丢，这一版在
+    #   `build_changelog` 丢。**分类对了不等于输出里有。**
+    #
+    # ⇒ 上面函数入口已放自检；这里只需用它算出来的顺序渲染。
+    order = _order
     lines: list[str] = []
     for label in order:
         items = buckets.get(label)

@@ -1521,12 +1521,21 @@ jobs:
           # ⇒ 而「### 本版无用户可见变更」能通过上面全部守卫**照常发布**
           #   —— 那正是 Owner 抱怨的形态换了个说法。
           # ```
-          # ⇒ 加这条：**说明里必须至少有一条 bullet**。
-          #   首个 release 除外（它本来就该留空，用 CHANGELOG_ALLOW_EMPTY 标记）。
+          # ⇒ 加这条：**「本版更新」这一节里必须至少有一条 bullet**。
+          #   首个 release 除外（它本来就该留空）。
+          #
+          # ★★★ 2026-10-19（复核发现我第一版写错了，Lead 修）：
+          #   第一版是 `grep -qE '^\s*-\s+\S' "$NOTES"` —— 作用域是**整份文件**，
+          #   而模板的「## 功能」小节**自带 30 条** `- **多源聚合**…`
+          #   ⇒ 空说明 + 30 条模板 bullet ⇒ **G3 恒 PASS，永不触发**。
+          #   实测：「本版更新」节内 bullet=0、全文件=30 ⇒ 判定 PASS。
+          #
+          # ⇒ 必须把作用域收进那一节：
+          CHANGELOG_SECTION=$(sed -n '/^## 本版更新/,/^---$/p' "$NOTES")
           if [ -z "$PREV" ]; then
             echo "::notice::首个 release ⇒ 跳过「必须有内容」这条守卫"
-          elif ! grep -qE '^\s*-\s+\S' "$NOTES"; then
-            echo "::error::更新说明里**一条变更都没有** —— 这正是 Owner 报的缺陷。"
+          elif ! printf '%s\n' "$CHANGELOG_SECTION" | grep -qE '^\s*-\s+\S'; then
+            echo "::error::「本版更新」这一节里**一条变更都没有** —— 这正是 Owner 报的缺陷。"
             echo "::error::检查：本区间的提交前缀是否都是「测试/文档/开发」这类内部改动？"
             echo "::error::修法：要么补一条面向用户的提交，要么显式调整前缀。"
             exit 1

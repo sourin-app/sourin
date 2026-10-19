@@ -1369,6 +1369,33 @@ class CachePage extends StatefulWidget {
   @visibleForTesting
   static String? debugScanRootOverride;
 
+  /// ★★★ task-66 R8：测试注入「这台设备能不能悬停」这一个**能力位**
+  ///
+  /// `null`（生产默认）= 走真信号 `MouseTracker.mouseIsConnected`，零行为差异；
+  /// 非 null 只是把那个能力位替换掉 —— **分支逻辑仍是生产那一份**
+  /// （`_CacheWorkCardState._moreVisible`），测试不重写判据。
+  ///
+  /// 为什么需要它：纯 widget 测试里没有真鼠标设备，`mouseIsConnected` 恒
+  /// false ⇒ 「能悬停 ⇒ 仍然 hover 才显形」这一支根本测不到。
+  /// ⚠️ 与 [debugScanRootOverride] 同一纪律：tearDown 必须置回 null。
+  @visibleForTesting
+  static bool? debugHoverableOverride;
+
+  /// ★ R8 粘滞位：读当前值（`true` = 本进程**见过**鼠标）
+  @visibleForTesting
+  static bool get debugSeenMouse => _HoverCapability.debugSeenMouse;
+
+  /// ★ R8 粘滞位：清成「进程刚启动、从没见过鼠标」+ detach 监听
+  ///
+  /// ⚠️ tearDown 必须调它，否则上个用例的 listener 会串到下个用例。
+  @visibleForTesting
+  static void debugResetHoverCapability() => _HoverCapability.debugReset();
+
+  /// ★ R8 粘滞位：直接置位（不想真造一个鼠标设备事件时）
+  @visibleForTesting
+  static void debugSetSeenMouse(bool v) =>
+      _HoverCapability.debugSetSeenMouse(v);
+
   @override
   State<CachePage> createState() => CachePageState();
 }
@@ -1962,12 +1989,166 @@ class _CacheWorkCard extends StatefulWidget {
   State<_CacheWorkCard> createState() => _CacheWorkCardState();
 }
 
+/// ★★★ task-66 R8：这台设备的指针**能不能悬停** —— 一枚「可见性」的能力判据
+///
+/// # 缺陷（Owner：「已缓存页删除徽标看不清」）
+///
+/// 「更多」（里面挂着**删除整部**）原来是 `opacity: _hover ? 1 : 0`，
+/// 而 `_hover` **只**由 `MouseRegion.onEnter/onExit` 驱动。于是：
+/// ```text
+/// 鼠标（PC）    → 能悬停 ⇒ 显形 ⇒ 能用
+/// 触屏（手机）  → 没有 hover 事件 ⇒ _hover 恒 false ⇒ 按钮 opacity 0 且 IgnorePointer
+///  遥控（TV）   → 同上            ⇒ 同上
+///  键盘          → 同上            ⇒ 同上
+/// ```
+/// ⇒ 对这三类用户，那枚按钮**从来没有出现过**。
+///   所以 Owner 说的「看不清」不是对比度问题（实测深色 18.86:1 / 浅色 5.89:1，
+///   都远超 AA），而是**根本没显示**。按钮背后挂着「删除整部」——
+///   等于这三类用户没有任何删除入口。
+///
+/// # 为什么用「能力判据」而不是 `Device.isDesktop`
+///
+/// `Device.isDesktop` 是**平台推断**（看 `platform=windows/linux/macos`）：
+/// ```text
+/// Windows 平板（有触摸屏、没有鼠标）→ isDesktop=true  ⇒ 判成能悬停 ⇒ 又看不见
+/// Android 接鼠标的平板            → isDesktop=false ⇒ 判成不能悬停 ⇒ 常显（无害）
+/// ```
+/// 平台 ≠ 输入能力。而本缺陷的**根因字面上就是**「有没有 hover 事件」，
+/// 所以判据必须是**同一件事**：这台设备有没有能悬停的指针。
+///
+/// # Flutter 怎么回答「有没有能悬停的指针」
+///
+/// ⚠️ Flutter **没有** Web 那种 `@media (hover: hover)`（`MediaQueryData`
+///    上不存在 `hoverable` 字段 —— 已逐行核对 `media_query.dart`，
+///    `grep -rn "hoverable" packages/flutter/lib/src/` 命中数为 0）。
+///    最接近的**唯一**真实信号是 `MouseTracker.mouseIsConnected`
+///    （`mouse_tracker.dart:285`：`bool get mouseIsConnected => _mouseStates.isNotEmpty`）。
+/// ```text
+/// 桌面 + 有鼠标    → 一旦移动过鼠标就是 true
+/// 桌面 + 从没动过   → false（首帧的未知态，见下面的粘滞位）
+/// 手机 / TV        → 永远 false（没有鼠标设备）
+/// Windows 平板     → 接鼠标时 true、拔掉后 false
+/// ```
+///
+/// # ★★★ 粘滞位：为什么不能每帧直接读 `mouseIsConnected`
+///
+/// 直接读会**制造新的视觉抖动**（这正是本次要修的同类问题）：
+/// ```text
+/// 桌面用户第一次打开「已缓存」页、此前从未动过鼠标
+///   ⇒ mouseIsConnected == false ⇒ 按钮**常显**
+///   ⇒ 鼠标一动 ⇒ 变回"hover 才显" ⇒ 按钮**闪一下就不见了**
+///   （而且他可能正想点它）
+/// ```
+/// `mouseIsConnected` 还会**反复翻转**：鼠标移出窗口产生 `PointerRemovedEvent`
+/// ⇒ `_mouseStates` 清空 ⇒ false ⇒ 按钮又常显；再移回来 ⇒ 又隐藏。
+/// 那就不再是"抖动一次"，而是**一直抖**。
+///
+/// ⇒ 判据改成**单调粘滞**：一旦观察到过鼠标，就**永远**认为"能悬停"。
+/// ```text
+/// 从未见过鼠标        ⇒ 按"可能是触屏"处理 ⇒ 常显（宁可多显示）
+/// 见过一次鼠标        ⇒ 永久走 hover 逻辑（拔掉鼠标也不回退）
+/// ```
+/// ★ 代价是"纯键盘的桌面用户"会看到常显 —— 但那**正是我们想要的**：
+///   他确实没有 hover 能力，与触屏同类。
+///
+/// ⚠️ 粘滞位必须读**全局** `MouseTracker`（`RendererBinding` 的单例），
+///    不是 CachePage 自己的状态 —— 用户很可能在**别的页面**先动过鼠标。
+///    `mouseIsConnected` 本身就是全局且跨页面保留的，所以在「已缓存」页
+///    首次 mount 时读它，已经包含了"在首页动过鼠标"这件事。
+@visibleForTesting
+bool cacheCardHoverable(BuildContext context, {bool? hwHover}) {
+  if (hwHover != null) return hwHover;
+  return _HoverCapability.hoverable;
+}
+
+/// 进程级「见过鼠标没有」的粘滞位（见 [cacheCardHoverable] 的说明）
+///
+/// # 为什么是一个带订阅的单例，而不是每次 `build` 现读
+/// ```text
+/// 现读：只在"页面重建"时才更新 ⟹ 鼠标动过之后若没有重建，
+///       粘滞位就一直停在旧值；而任何一次无关重建都可能突然让它翻转。
+/// 订阅：MouseTracker 是 ChangeNotifier（mouse_tracker.dart:153-159 明确写了
+///       "Notifies when mouseIsConnected changes"）⟹ 真正"一旦得知就定住"。
+/// ```
+/// ⚠️ 只有 `true` 会被记住；`false` **永远不会**把已置位的粘滞位打回去。
+/// ⚠️ listener 挂在 `RendererBinding.mouseTracker`（全局单例）上，
+///    生命周期与进程一致 —— 这是刻意的：粘滞位本来就该是进程级的。
+abstract final class _HoverCapability {
+  static bool _seenMouse = false;
+  static bool _listening = false;
+
+  /// 首次使用时：先**同步读一次**全局状态（包含别的页面上的鼠标活动），
+  /// 再挂上监听以捕捉之后的变化。
+  static bool get hoverable {
+    _ensureListening();
+    return _seenMouse;
+  }
+
+  static void _ensureListening() {
+    if (_listening) return;
+    _listening = true;
+    final tracker = WidgetsBinding.instance.mouseTracker;
+    // ★ 同步读初值：用户可能在「已缓存」页之前就在别的页面动过鼠标
+    if (tracker.mouseIsConnected) _seenMouse = true;
+    tracker.addListener(_onMouseTrackerChanged);
+  }
+
+  static void _onMouseTrackerChanged() {
+    // ★ 单调：只升不降。拔掉鼠标 / 鼠标移出窗口都不回退。
+    if (WidgetsBinding.instance.mouseTracker.mouseIsConnected) {
+      _seenMouse = true;
+    }
+  }
+
+  /// 测试用：把粘滞位清成「进程刚启动、从没见过鼠标」
+  ///
+  /// ⚠️ 必须同时 detach，否则上一个用例的 listener 还挂着会串味。
+  @visibleForTesting
+  static void debugReset() {
+    _seenMouse = false;
+    if (_listening) {
+      WidgetsBinding.instance.mouseTracker.removeListener(_onMouseTrackerChanged);
+      _listening = false;
+    }
+  }
+
+  @visibleForTesting
+  static bool get debugSeenMouse => _seenMouse;
+
+  /// 测试用：直接置位（不想真的造一个鼠标设备事件时）
+  @visibleForTesting
+  static void debugSetSeenMouse(bool v) {
+    _ensureListening();
+    if (v) _seenMouse = true;
+  }
+}
+
+
+
 class _CacheWorkCardState extends State<_CacheWorkCard> {
   bool _hover = false;
+
+  /// 这台设备的指针能不能悬停（见 [cacheCardHoverable]）
+  ///
+  /// ⚠️ 在 `build` 里现算而不是 `initState` 存一份：`mouseIsConnected`
+  ///    会随插拔鼠标变化（`MouseTracker` 是 `ChangeNotifier`），
+  ///    存一份就等于"页面打开那一刻没有鼠标 ⇒ 永远走常显分支"。
+  bool _hoverable = true;
+
+  /// 「更多」当前该不该显形
+  ///
+  /// ```text
+  /// 能悬停   ⇒ 沿用原来的「hover 才显形」（Owner 要的"按需浮现"）
+  /// 不能悬停 ⇒ **常显**（触屏 / 遥控 / 键盘用户唯一的删除入口）
+  /// ```
+  bool get _moreVisible => !_hoverable || _hover;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    // ★ R8：每帧按**真实能力**重算（插拔鼠标会变，见 _hoverable 的说明）
+    _hoverable = cacheCardHoverable(context,
+        hwHover: CachePage.debugHoverableOverride);
     /*
      * ★★★ CR-09：宽度从**父约束**拿（= SliverGrid 给这一格的约束），
      *     不再读 `MediaQuery` —— 见文件上半部分 `_posterCellWidth` 的说明。
@@ -2101,19 +2282,25 @@ class _CacheWorkCardState extends State<_CacheWorkCard> {
           children: <Widget>[
             // ★ card = poster（没本地封面时）或 poster + 盘上封面那层
             card,
-            // ── 「更多」：默认透明，悬停显形（危险操作按需浮现）──
+            // ── 「更多」：能悬停 ⇒ 默认透明、悬停显形；不能悬停 ⇒ 常显 ──
             Positioned(
               top: Sp.x2,
               right: Sp.x2,
               child: IgnorePointer(
-                ignoring: !_hover,
+                // ★ R8：不能悬停的用户**必须能点到**它 ——
+                //   这枚按钮背后挂着「删除整部」，忽略指针等于没有删除入口。
+                ignoring: !_moreVisible,
                 child: AnimatedOpacity(
                   // ★ 给这枚按钮一个**稳定 key**（测试按它定位）
                   //   —— 几何位置会随布局变，按坐标定位的测试会断起来无故红。
                   key: ValueKey<String>('cache-card-more:${widget.work.dirName}'),
                   // ★ 用 AnimatedOpacity（FadeTransition，零 Transform）
                   //   —— 与 PosterCard 内部那层悬停辉光同一手法，不引入新结构
-                  opacity: _hover ? 1 : 0,
+                  //
+                  // ★★★ R8：原来是 `_hover ? 1 : 0`。触屏/遥控/键盘用户
+                  //   拿不到 hover 事件 ⇒ 恒 0 ⇒ 按钮从未出现（详见
+                  //   [cacheCardHoverable] 的注释）。改成能力判据。
+                  opacity: _moreVisible ? 1 : 0,
                   duration: MotionPrefs.duration(context, Motion.fast),
                   curve: MotionPrefs.curve(context, Motion.easeOut),
                   // ★ 去 Material（Owner 第 4/8/9 条，2026-10-17）

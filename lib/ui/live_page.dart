@@ -3010,6 +3010,42 @@ class LivePageState extends State<LivePage> {
         _userPaused = paused;
         debugPrint('[LIVE] 用户${paused ? "暂停" : "恢复"}了直播');
       },
+      /*
+       * ★★★ 第 66 轮 R6：把「本台可切换的清晰度档」喂给内嵌播放器
+       *
+       * # 数据从哪来（不许凭空造一个平行来源）
+       * ```text
+       * 唯一真实来源 = 本页**已经取到**的 `_streams`（`getLiveStream` 的返回）。
+       * ★ 直播链路的 `quality` 字段实测**恒为 null**（计划 R6 取证），
+       *   所以下面用 `displayName`（= label ?? quality ?? kind）作标签、
+       *   `url` 作选中值 —— 与既有 `_LineChip` 完全同一套取值口径，
+       *   不会出现「线路列表一种说法、清晰度下拉另一种说法」。
+       * ```
+       *
+       * # ★ 这里为什么几乎总是「不下拉」
+       * ```text
+       * 裁决②：只有 1 档可用时**不渲染下拉**（不做「只有一项的下拉」）。
+       * 直播目前常见的形态就是 1 条可播线（或 1 条 + 若干 DRM 线）⇒ 不画。
+       * ★ 这是**有意的**：给用户一个点开只有一项的下拉，比没有更糟。
+       * ```
+       *
+       * ⚠️ 只列**可播**的（`isPlayable`）：受保护的线路点了必然黑屏，
+       *   列上去等于给用户一个必然失败的按钮。
+       */
+      qualityOptions: [
+        for (final s in _streams)
+          if (s.isPlayable)
+            LiveQualityOption(
+              value: s.url,
+              label: s.displayName,
+            ),
+      ],
+      onQualityChanged: (o) {
+        final picked = _streams.where((s) => s.url == o.value).firstOrNull;
+        if (picked == null || picked.url == _stream?.url) return;
+        debugPrint('[LIVE] 切清晰度：${picked.displayName}');
+        setState(() => _stream = picked);
+      },
     );
 
     /*

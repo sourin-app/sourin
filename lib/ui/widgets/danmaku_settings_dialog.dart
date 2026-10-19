@@ -221,6 +221,29 @@ enum DanmakuProbeFailure {
 
   /// 连上了、服务也回了，但**没有内容**（0 条弹幕）
   emptyResponse,
+
+  /// ★★★ 2026-10-19（X4）：**探测本身出错**，不是网络失败
+  ///
+  /// # 为什么必须有这一档（文案说谎的真实案例）
+  /// ```text
+  /// 改前：所有认不出来的异常都落进 `connectionTimeout`，于是
+  ///   StateError('boom')（探针自己抛的，**根本没碰过网络**）
+  ///     ⇒ 用户看到「连不上（超时）⇒ 地址解析出来了但连不过去…」
+  ///   那句话陈述了**三件从未发生**的事实：
+  ///     · 没超时      · 地址没解析出来过（更没解析"出来但连不过去"）
+  ///     · 更不是「被墙 / 代理 / 路由不通」
+  /// ```
+  ///
+  /// # 与既有分档同源的判据（同一条铁律，两处用）
+  /// ```text
+  /// `fromDanmakuException` 之所以敢判 `dnsHijacked`，
+  ///   是因为它手里**有 `resolvedAddress` 这个物证**；
+  /// 兜底这条**没有任何网络物证** ⇒ 同理不该判任何网络档。
+  /// ⇒ 「有物证才敢下结论」—— 说不出来就如实说"说不出来"。
+  /// ```
+  ///
+  /// ⚠️ 这一档**不是**"服务坏了"：它连"服务"都没碰到。
+  probeFailed,
 }
 
 extension DanmakuProbeFailureX on DanmakuProbeFailure {
@@ -235,9 +258,18 @@ extension DanmakuProbeFailureX on DanmakuProbeFailure {
       this == DanmakuProbeFailure.connectionRefused ||
       this == DanmakuProbeFailure.tlsFailed;
 
-  /// 服务端的问题（与"本机网络"完全两件事）
+  /// ★ 服务端的问题（与"本机网络"完全两件事）
   bool get isServiceProblem =>
       this == DanmakuProbeFailure.serverError;
+
+  /// ★★ 探测本身出错 —— **既不是本机网络、也不是服务**
+  ///
+  /// ⚠️ 为什么必须单列、且**不能**并进上面任何一档：
+  ///   兜底分支**没有任何网络物证**（没解析过、没建过连接）⇒
+  ///   把它算成「本机网络问题」会让用户去改代理 / 换网络（错的操作），
+  ///   算成「服务问题」会让用户去重启服务（同样错）。
+  bool get isProbeItselfFailed =>
+      this == DanmakuProbeFailure.probeFailed;
 
   /// 正常但没数据（**不是失败**）
   bool get isJustEmpty => this == DanmakuProbeFailure.emptyResponse;
@@ -259,6 +291,12 @@ extension DanmakuProbeFailureX on DanmakuProbeFailure {
         DanmakuProbeFailure.tlsFailed => '连不上（TLS 握手失败）',
         DanmakuProbeFailure.serverError => '服务返回错误',
         DanmakuProbeFailure.emptyResponse => '服务正常，但没有弹幕',
+        /*
+         * ★ 必须**不含**任何网络断言：
+         *   改前这里落到 connectionTimeout，于是说「地址解析出来了但连不过去」
+         *   —— 而兜底分支压根没解析过、也没建过连接。
+         */
+        DanmakuProbeFailure.probeFailed => '检测过程本身出错了',
       };
 }
 
@@ -317,7 +355,7 @@ class DanmakuProbeReport {
     (
       prefix: '2a03:2880:',
       evidence: 'Facebook IPv6 段（含 face:b00c 花样）；实测 danmu-api-delta / '
-          'danmu-api-kappa / vercel.app apex **三个都**返回 '
+          'danmu-api-kappa / vercel.app apex 「三个都」返回 '
           '2a03:2880:…:face:b00c（DoH 真值为 216.198.79.x / 64.29.17.x）',
     ),
     (
@@ -422,7 +460,7 @@ class DanmakuProbeReport {
         failure: DanmakuProbeFailure.connectionTimeout,
         url: url,
         detail: '等待 ${error.duration?.inSeconds ?? 0} 秒没有回应',
-        remedy: '这通常不是"服务坏了"，而是这台机器到那个地址**连不通**'
+        remedy: '这通常不是"服务坏了"，而是这台机器到那个地址「连不通」'
             '（被墙 / 需要代理 / 路由不通）。'
             '可以先在弹幕设置里把代理切成「系统」或「自定义」，再点一次「测试连接」。',
       );
@@ -439,8 +477,22 @@ class DanmakuProbeReport {
       } else if (code == 10060 || code == 110 || code == 60) {
         f = DanmakuProbeFailure.connectionTimeout;
       } else {
-        // 认不出来的 SocketException：**不猜**，归成超时那一档但如实带错误码
-        f = DanmakuProbeFailure.connectionTimeout;
+        /*
+         * ★ 2026-10-19（X4）：**原来这里归 connectionTimeout**，注释还写着
+         *   「认不出来的 SocketException：不猜，归成超时那一档但如实带错误码」。
+         * # 为什么那是**说谎**（不是"稳妥"）
+         * ```text
+         * 「归成超时」= 告诉用户「地址解析出来了但连不过去」。
+         * 但一个**认不出 errno** 的 SocketException 只说明「连接过程里出了
+         * 某种我们没归类的错」—— 它可能压根没走到解析那一步。
+         * ⇒ 说「超时」= 替他断言了一个我们**没有证据**的因果。
+         * ```
+         * ⇒ 改判 [probeFailed]：如实说"这一步出了个归类不出来的错"，
+         *    同时保留 `detail` 里的 errno（那是唯一有价值的线索）。
+         * ★ 代价：这一档不再自动进「本机网络」那一支
+         *    ⇒ 用户不会被指向"换网络/改代理"这种无效操作。
+         */
+        f = DanmakuProbeFailure.probeFailed;
       }
       return DanmakuProbeReport(
         failure: f,
@@ -461,11 +513,22 @@ class DanmakuProbeReport {
             '换直连/换代理各试一次就能分清是哪一边。',
       );
     }
+    /*
+     * ★★★ 2026-10-19（X4）：**兜底分支 = 探测自己出错**
+     * ```text
+     * 改前：无条件 `failure: connectionTimeout` ⇒ 任何认不出来的异常
+     *   （StateError / ArgumentError / FormatException / 甚至探针自己写的
+     *   断言失败）都被报成「连不上（超时）」⇒ 文案说「地址解析出来了但
+     *   连不过去」—— 而这里**一次网络请求都没发**。
+     * ```
+     * ⇒ 改为 `probeFailed`：**不碰网络措辞**，并把原文放进 `detail`
+     *    （那是用户/我们唯一能用的线索）。
+     */
     return DanmakuProbeReport(
-      failure: DanmakuProbeFailure.connectionTimeout,
+      failure: DanmakuProbeFailure.probeFailed,
       url: url,
       detail: s,
-      remedy: remedyFor(DanmakuProbeFailure.connectionTimeout),
+      remedy: remedyFor(DanmakuProbeFailure.probeFailed),
     );
   }
 
@@ -513,18 +576,18 @@ class DanmakuProbeReport {
      */
     final evidence = doh.isEmpty
         ? '本机解析到：$local\n'
-            '这个地址落在**已知的伪造段**里（同一网段被实测判定为他人服务器）。\n'
+            '这个地址落在「已知的伪造段」里（同一网段被实测判定为他人服务器）。\n'
             '⚠️ 本次没能核对权威 DNS 真值（加密查询也可能被拦），'
             '所以不给出"真值"——但上面这个地址本身已经能说明问题。'
         : '本机解析到：$local\n'
             '权威 DNS（加密查询）真值：$doh\n'
-            '⇒ 同一个域名，你这台机器拿到的和真实地址**不是一个东西**。';
+            '⇒ 同一个域名，你这台机器拿到的和真实地址「不是一个东西」。';
     return DanmakuProbeReport(
       failure: DanmakuProbeFailure.dnsHijacked,
       url: url,
       detail: detail.isEmpty ? evidence : '$evidence\n$detail',
-      remedy: '本机 DNS 把这个域名解析到了**错误地址**，所以连不上 —— '
-          '**不是这个服务坏了**（它在代理下是活的）。'
+      remedy: '本机 DNS 把这个域名解析到了「错误地址」，所以连不上 —— '
+          '「不是这个服务坏了」（它在代理下是活的）。'
           '改弹幕地址没用；要做的是：把系统 DNS 换成可信的（支持 DoH 更好），'
           '或者在弹幕设置里开启代理，让域名解析/连接都走代理。',
     );
@@ -553,8 +616,8 @@ class DanmakuProbeReport {
         detail: detail,
         remedy: statusCode == 401 || statusCode == 403
             ? '服务活着，但它拒绝了这次请求（凭证/token 问题）——'
-                '这是**配置**问题，不是网络问题。'
-            : '服务活着，但它自己报错了 —— 这是**服务端**的问题，'
+                '这是「配置」问题，不是网络问题。'
+            : '服务活着，但它自己报错了 —— 这是「服务端」的问题，'
                 '等一会儿或换一个实例再试。',
       );
 
@@ -576,34 +639,46 @@ class DanmakuProbeReport {
   static String remedyFor(DanmakuProbeFailure f) => switch (f) {
         DanmakuProbeFailure.dnsFailed =>
           '域名解析不出来 ⇒ 是本机 DNS / 网络的问题，'
-              '**不是这个服务坏了**。改配置不会有用；'
+              '「不是这个服务坏了」。改配置不会有用；'
               '换个网络或修好 DNS 再试。',
         /*
          * ★ 与上一档**操作完全不同**：这里 DNS 是"通"的，但答案是**假的**。
          *   ⇒ 要换的是 DNS 解析（DoH）/ 开代理，而不是"换个网络碰运气"。
          */
         DanmakuProbeFailure.dnsHijacked =>
-          '本机 DNS 把这个域名解析到了**错误地址**（不是服务坏了）。'
-              '所以改弹幕地址没用 —— 要换的是**域名解析**：'
+          '本机 DNS 把这个域名解析到了「错误地址」（不是服务坏了）。'
+              '所以改弹幕地址没用 —— 要换的是「域名解析」：'
               '把系统 DNS 换成可信的（支持 DoH 更好），'
               '或者在弹幕设置里开启代理。',
         DanmakuProbeFailure.connectionTimeout =>
           '连不上（超时）⇒ 地址解析出来了但连不过去，'
-              '通常是**被墙 / 需要代理 / 路由不通**，'
-              '**也可能**是本机 DNS 返回了假地址（那种情况会单独报「域名被解析到错误地址」）。'
+              '通常是「被墙 / 需要代理 / 路由不通」，'
+              '「也可能」是本机 DNS 返回了假地址（那种情况会单独报「域名被解析到错误地址」）。'
               '这不是"服务没运行"，也不是"地址填错了"。'
               '在弹幕设置里试「代理」，或换一个能连通的实例。',
         DanmakuProbeFailure.connectionRefused =>
-          '连接被拒绝 ⇒ 这个地址上**没有服务在听**。'
+          '连接被拒绝 ⇒ 这个地址上「没有服务在听」。'
               '自建地址的话去启动服务 / 检查端口；'
               '内置实例出现这个通常是我们换了部署 —— 换下一个实例。',
         DanmakuProbeFailure.tlsFailed =>
           'TLS 握手失败 ⇒ 证书 / 中间人代理的问题。'
               '先把代理切成「直连」再试一次，能分清是不是代理造成的。',
         DanmakuProbeFailure.serverError =>
-          '服务回了错误状态 ⇒ 这是**服务端**的问题（我们这边没做错什么）。',
+          '服务回了错误状态 ⇒ 这是「服务端」的问题（我们这边没做错什么）。',
         DanmakuProbeFailure.emptyResponse =>
-          '服务是通的，只是这次没有内容 —— **不是失败**。',
+          '服务是通的，只是这次没有内容 —— 「不是失败」。',
+        /*
+         * ★★★ 2026-10-19（X4）：这一段的每个字都必须能被证伪。
+         * ```text
+         * 兜底分支手里**没有任何网络物证**（没解析过、没建过连接），
+         * 所以**一个字都不能提网络**：不提超时、不提解析、不提被墙/代理。
+         * 否则用户会去改代理 / 换网络 —— 而真正出错的是检测这一步自己。
+         * ```
+         */
+        DanmakuProbeFailure.probeFailed =>
+          '检测这一步自己出错了，还没走到「能不能连上」那一步。'
+              '所以「不能」据此判断服务或网络好坏。'
+              '请把下面这句原文反馈给我们（它能帮我们定位）：',
         DanmakuProbeFailure.none => '',
       };
 
@@ -669,6 +744,63 @@ class DanmakuProbeReport {
 
   bool get isFailure => failure.isFailure;
   bool get isOk => failure == DanmakuProbeFailure.none;
+
+  // ==========================================================================
+  //  ★★★ 2026-10-19（R3-③/⑦ 收尾）：从**一次真实失败**造报告，供取数/搜索共用
+  // ==========================================================================
+  //
+  /// 把一次已经失败的请求，翻译成"该说哪句话"。
+  ///
+  /// # 为什么需要它（这是本轮真正的缺口）
+  /// ```text
+  /// 改前 `_diagnose` 只在「测试连接」按钮那条路上跑。
+  /// 而 Owner 报的 R3-③「弹幕来源搜不了」走的是**另一条路**：
+  ///   搜索 → core 抛 DanmakuException → 面板 _searchResultBody
+  ///     直接把 `err.message` 画出来（原文："连不上弹幕服务（地址不通或服务没起来）"）
+  /// ⇒ 那条路上**根本没有 dnsHijacked 这一档** ⇒ UI 把劫持说成了"服务没起来"，
+  ///   用户会去查服务，方向就错了（这正是 Lead 裁决要修的那件事）。
+  /// ```
+  ///
+  /// # 为什么**不联网**（判据纪律的第一条）
+  /// ```text
+  /// 输入里已经有 [DanmakuException.resolvedAddress]
+  /// —— 那就是「本机拿到并去连的那个地址」。
+  /// 判据 `looksForged` 是纯函数查表 ⇒ **零网络请求**。
+  ///
+  /// ⇒ 探测依赖（DoH）只留在 `_diagnose` 那种"只知道域名、不知道地址"的场合，
+  ///    且那条路本来就只在用户手动点「测试连接」时走。
+  ///    产品热路径（取弹幕 / 搜索）**一次 DoH 都不发**。
+  /// ```
+  ///
+  /// # ★ 铁律：**没有地址证据 ⇒ 绝不判 hijacked**
+  /// ```text
+  /// 「没拿到地址」是常态（超时分支、服务端返回错误、非网络失败）。
+  /// 若把空串也丢进判据、或让别的分支兜底，就变成
+  /// "所有失败都被说成 DNS 劫持" —— 比说错更坏：
+  /// 它会把用户从"查服务"推向"改 DNS"，而后者根本没坏。
+  /// ⇒ 本函数只在 [evidence] 非空且命中伪造段时才给 dnsHijacked。
+  /// ```
+  static DanmakuProbeReport fromDanmakuException(
+    DanmakuException e, {
+    String url = '',
+  }) {
+    final addr = e.resolvedAddress;
+    if (addr.isNotEmpty && looksForged(<String>[addr])) {
+      // ★ 已知伪造段命中 ⇒ 直接定案，不再回落到"连不上"。
+      return DanmakuProbeReport.forHijackedDns(
+        url: url.isEmpty ? e.uri : url,
+        localAddresses: <String>[addr],
+      );
+    }
+    // 兜底：**不**判劫持。如实按已有字段归到别的那一档。
+    if (e.statusCode != 0) {
+      return DanmakuProbeReport.httpError(
+        url: url.isEmpty ? e.uri : url,
+        statusCode: e.statusCode,
+      );
+    }
+    return DanmakuProbeReport.fromError(e, url: url.isEmpty ? e.uri : url);
+  }
 }
 
 /// 对话框要展示的全部状态
@@ -2488,7 +2620,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               failure: DanmakuProbeFailure.serverError,
               url: ep.display,
               detail: 'TCP $port 可以连上，但探测端点没有给出可用响应',
-              remedy: '网络是通的（TCP 连得上）⇒ 这次的问题在**服务端**：'
+              remedy: '网络是通的（TCP 连得上）⇒ 这次的问题在「服务端」：'
                   '它可能正在冷启动、或者这个实例的接口变了。'
                   '等几秒重试，或换一个实例。',
             );
@@ -2873,7 +3005,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         if (!DanmakuConfig.isConfigured) ...[
           _hint(
             '本构建没有内置凭证，官方边会失败（服务端会回「没收到凭证」）。'
-            '改用本机外部弹幕 / 外部视频源弹幕 —— 那两条路**免签名**、不需要凭证。',
+            '改用本机外部弹幕 / 外部视频源弹幕 —— 那两条路「免签名」、不需要凭证。',
           ),
         ],
         if (DanmakuConfig.isConfigured)
@@ -2936,7 +3068,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           '${(s.area * 100).round()}%',
         ),
         _hint(
-          '弹幕从画面**顶部往下**能占用的高度比例（对齐 某视频站）。'
+          '弹幕从画面「顶部往下」能占用的高度比例（对齐 某视频站）。'
           '默认 50% = 只占上半屏，下半屏留给画面与字幕；拖到 100% 才铺满全屏。',
         ),
       ],
@@ -3458,7 +3590,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       children: [
         _sectionTitle('弹幕来源', note: '可多选 · 勾上即合并'),
         _hint(
-          '勾上的来源会**同时加载并合并**（重复的自动去掉）。'
+          '勾上的来源会「同时加载并合并」（重复的自动去掉）。'
           '本片源自带默认勾上 —— 那是视频本身带的弹幕。',
         ),
         const SizedBox(height: Sp.x2),
@@ -3642,7 +3774,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
      */
     final sum = chans.fold<int>(0, (a, c) => a + _countOf(c));
     return '当前生效：${chans.length} 路（$names）合计 $sum 条 —— '
-        '其中有的路只有条数、没有逐条内容，所以**未逐条合并/去重**';
+        '其中有的路只有条数、没有逐条内容，所以「未逐条合并/去重」';
   }
 
   /// 一行来源：勾选框 + 名字 + 状态 + 右侧动作
@@ -3944,12 +4076,51 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     }
     final err = s.searchError;
     if (err != null) {
-      return Text(
-        '搜索失败：${err.message}',
-        style: const TextStyle(
-          color: Colors.orangeAccent,
-          fontSize: FontSizes.sm,
-        ),
+      /*
+       * ★★★ 2026-10-19（R3-③/⑦ 收尾）：搜索失败**也走分类**。
+       *
+       * # 改前（Owner 看到的那句）
+       * ```text
+       * Text('搜索失败：${err.message}')
+       *   ⇒ 本机 DNS 被劫持时画出来的是
+       *     「搜索失败：连不上弹幕服务（地址不通或服务没起来）。请检查地址 / 服务是否在运行。」
+       *     —— 把"被劫持"说成"服务没起来"，用户会去查服务。方向错的。
+       * ```
+       *
+       * # 改后
+       * ```text
+       * 分类命中伪造段 ⇒ 换成 [DanmakuProbeFailureX.title] 那档文案
+       *   （"域名被解析到了错误地址"）+ 该档的下一步（换 DNS / 开代理），
+       *   并且**仍然**把 core 的原文 `err.message` 原样留着 ——
+       *   不翻译掉服务端的真实说法，只在上面补一条"这一步该做什么"。
+       *
+       * ★ 没命中时行为与改前**逐字同形**（`err.message` 照旧），
+       *   ⇒ 本次改动**不会**影响任何没被劫持的场景。
+       */
+      final report = DanmakuProbeReport.fromDanmakuException(err);
+      final hijacked = report.failure == DanmakuProbeFailure.dnsHijacked;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '搜索失败：${err.message}',
+            style: const TextStyle(
+              color: Colors.orangeAccent,
+              fontSize: FontSizes.sm,
+            ),
+          ),
+          if (hijacked) ...[
+            const SizedBox(height: Sp.x2),
+            Text(
+              report.failure.title,
+              style: const TextStyle(
+                color: Colors.orangeAccent,
+                fontSize: FontSizes.sm,
+              ),
+            ),
+            _hint(report.remedy),
+          ],
+        ],
       );
     }
     if (!s.searchSearched) {

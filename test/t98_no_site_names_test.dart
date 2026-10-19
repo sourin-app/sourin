@@ -247,6 +247,56 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
         '**真实 MediaId**（`MediaId::new("bilibili", ...)`）——后者是插件自己写进来的标识，'
         '改成别的字串就接不上插件。不是产品文案。'
   ),
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ 2026-10-19（CS-1 凭据平面）：**缓存 key 黑名单里的真实插件 id**
+   *
+   * # 为什么这 4 条必须逐字保留（不是"懒得改"）
+   *
+   * ```text
+   * `CACHE_KEYS` 是同步时**剔除缓存**的黑名单，判据是
+   *   `plugins/.data/<provider>.json` 里的 `key`
+   * ⇒ 必须逐字匹配用户机器上的真实 id。改成中性词（`fake-a`）
+   *   ⇒ 黑名单永不命中 ⇒ 246KB 的频道缓存被加密上传到用户的 WebDAV
+   *   ⇒ 而**没有任何编译错误、没有测试会红** —— 静默功能失效。
+   * ```
+   *
+   * # 锚串为什么用整条元组而不是 `is_cache_key(` / `CACHE_KEYS`
+   *
+   * ```text
+   * 本文件已有判据（下方「行级豁免必须是唯一锚串」那条用例）：
+   * 宽锚串会把**整片代码**放行。
+   * `is_cache_key(` 在该文件的单元测试里出现 10 次，
+   * `CACHE_KEYS` 出现 6 次 ⇒ 任一个都会让测试模块里新加的站名一起混过去。
+   * ⇒ 用 `("<id>", "<key>")` 这条**唯一**的元组字面量。
+   * ★ 代价：CACHE_KEYS 增删条目时这里要跟着改（漏了会红，不会静默失效）。
+   * ```
+   *
+   * ⚠️ 只豁免 `credentials.rs` 里 `CACHE_KEYS` 的这 4 行。
+   *    同文件的**单元测试**里出现的真实 id 已于同日改为「从 CACHE_KEYS 派生」，
+   *    不再硬编码站名 —— 那是升级（覆盖全部条目且随增删自动跟随），不是妥协。
+   */
+  (
+    'rust/sourin_core/src/sync/credentials.rs',
+    '("douyu-live", "list_v1")',
+    '运行期必需的真实插件 id：黑名单必须逐字匹配 plugins/.data/<id>.json，'
+        '中性化 ⇒ 缓存被传上云且无任何报错（静默失效）。'
+  ),
+  (
+    'rust/sourin_core/src/sync/credentials.rs',
+    '("huya-live", "list_v1")',
+    '同上：该缓存真机 246KB，是 .data 里最大的一个。'
+  ),
+  (
+    'rust/sourin_core/src/sync/credentials.rs',
+    '("iqiyi", "albums")',
+    '同上：专辑/搜索缓存（读侧解析失败返回 {} ⇒ 丢了无所谓，正因如此才要剔）。'
+  ),
+  (
+    'rust/sourin_core/src/sync/credentials.rs',
+    '("bilibili-live", "rooms_v1")',
+    '同上：宿主内置 legacy 桩写的频道缓存。'
+  ),
 ];
 
 /// 该行是否命中某条行级豁免

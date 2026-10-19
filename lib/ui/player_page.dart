@@ -7366,6 +7366,9 @@ class _PlayerPageState extends State<PlayerPage>
     if (mounted) {
       setState(() => _danmakuSheetOpen = false);
       _restoreBarsAfterSheet();
+      // ★★ 2026-10-19（R3-④ 补漏）：**选中即关**这条路同样要守卫 ——
+      //    用户在面板里双击选中一条弹幕库，第 2 击会落到播放区。
+      _holdSheetGuard();
     }
     _flash('正在载入「${m.label}」的弹幕…');
     unawaited(_loadDanmakuNamed(m.label.isNotEmpty ? m.label : '弹幕库#${m.episodeId}'));
@@ -11033,6 +11036,8 @@ class _PlayerPageState extends State<PlayerPage>
     setState(() => _liveChannelsOpen = false);
     // ★ Owner 2026-10-11 第 2 条：点选频道关掉了「所有直播」面板 ⇒ 顶/底栏一起回来。
     _restoreBarsAfterSheet();
+    // ★★ 2026-10-19（R3-④ 补漏）：**点选频道即关**这条路也要守卫。
+    _holdSheetGuard();
     final pick = cb(channel);
     if (pick == null) {
       debugPrint('[PLAYER] 直播点选：直播页不认这个频道 ${channel.name}');
@@ -16231,6 +16236,9 @@ class _PlayerPageState extends State<PlayerPage>
                             setState(() => _subtitlePanelOpen = false);
                             // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
                             _restoreBarsAfterSheet();
+                            // ★★ 2026-10-19（R3-④ 补漏）：字幕面板也是
+                            //    `Positioned.fill` 的全屏 scrim。见 `_holdSheetGuard()`。
+                            _holdSheetGuard();
                           },
                           // ★ task-31 ⑤：唯一的 SubtitlePanel 挂载点
                           videoTitle: widget.title,
@@ -16417,6 +16425,10 @@ class _PlayerPageState extends State<PlayerPage>
                               setState(() => _liveChannelsOpen = false);
                               // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
                               _restoreBarsAfterSheet();
+                              // ★★ 2026-10-19（R3-④ 补漏）：同线路面板 —— 这也是
+                              //    一个 `Positioned.fill` 的全屏 scrim，遮罩双击的
+                              //    第 2 击会落到播放区。见 `_holdSheetGuard()`。
+                              _holdSheetGuard();
                             },
                             child: _LiveChannelsSheet(
                               // ★ task-72【④】抽屉**关着**时不要现取列表
@@ -16444,6 +16456,9 @@ class _PlayerPageState extends State<PlayerPage>
                                 setState(() => _liveChannelsOpen = false);
                                 // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
                                 _restoreBarsAfterSheet();
+                                // ★★ 2026-10-19（R3-④ 补漏）：面板内关闭按钮这条路，
+                                //    与上面 `_SheetScrim` 的 onClose 一起装（两条路都能关窗）。
+                                _holdSheetGuard();
                               },
                             ),
                           ),
@@ -16554,6 +16569,11 @@ class _PlayerPageState extends State<PlayerPage>
                               setState(() => _streamSheetOpen = false);
                               // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
                               _restoreBarsAfterSheet();
+                              // ★★ 2026-10-19（R3-④ 补漏）：**点遮罩关窗**这条路
+                              //    才是双击透传的入口 —— `_StreamSheet` 自己那个
+                              //    onClose 是点面板内的关闭按钮，那条路没有第 2 击。
+                              //    两处都要装，因为两条路都能关窗。
+                              _holdSheetGuard();
                             },
                             child: _StreamSheet(
                               streams: _streams,
@@ -16562,12 +16582,25 @@ class _PlayerPageState extends State<PlayerPage>
                                 setState(() => _streamSheetOpen = false);
                                 // ★ Owner 2026-10-11 第 2 条：选完线路关面板 ⇒ 顶/底栏一起回来。
                                 _restoreBarsAfterSheet();
+                                // ★★ 2026-10-19（R3-④ 补漏）：**选中线路即关**这条路
+                                //    同样会有第 2 击落到播放区（用户点线路时常常连点）。
+                                _holdSheetGuard();
                                 _startPlayback(s);
                               },
                               onClose: () {
                                 setState(() => _streamSheetOpen = false);
                                 // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
                                 _restoreBarsAfterSheet();
+                                /*
+                                 * ★★ 2026-10-19（R3-④ 补漏）：与弹幕面板同一个理由。
+                                 *
+                                 * 本面板同样是 `Positioned.fill` 的全屏 scrim，
+                                 * 遮罩区双击时第 2 击会落到播放区 ⇒ 暂停视频。
+                                 * R3-④ 第一版只在「弹幕设置」+「外部弹幕」两处加了守卫，
+                                 * **漏了这里** —— 而线路面板是操作最频繁的那一个
+                                 * （换线路/看清晰度时几乎每次都要点遮罩关窗）。
+                                 */
+                                _holdSheetGuard();
                               },
                             ),
                           ),
@@ -19705,11 +19738,70 @@ class _DanmakuInfoPanelHostState extends State<_DanmakuInfoPanelHost> {
 ///
 /// 样式与旁边的站名 / 直播徽章**同一套 pill 语言**（半透明黑底 + 全圆角 + cap 字号），
 /// 这样它不会像一个"外来的"按钮。
+/// ★★★ task-66 R1：这枚 chip 的 Material 裁剪值 —— **生产与像素探针共用同一个源**
+///
+/// # 缺陷（Owner：「弹幕按钮一圈毛边」）
+///
+/// `ActionChip` 内部是**两层各自画同一个圆角矩形**，且默认 `Clip.none`：
+/// ```text
+/// material_ui-1.6.0/lib/src/chip.dart:1440
+///   Material(shape: resolvedShape, clipBehavior: widget.clipBehavior)   ← 默认 Clip.none
+///     └─ _MaterialInterior → PhysicalShape(clipBehavior: Clip.none)
+///        └─ proxy_box.dart:2341  canvas.drawPath(offsetPath, Paint()..color = color)   ← 第 1 遍
+/// :1449
+///   Ink(decoration: ShapeDecoration(shape: resolvedShape, color: …))    ← 第 2 遍
+/// ```
+/// 两遍都是抗锯齿填充，但**子层没有被裁到父层那个 shape 上** ⇒ 圆角外缘
+/// 那 1~2 px 里两层的覆盖率不同步，合成出来的边缘与内部不同值 ⇒
+/// 在纯黑视频底上就是 Owner 说的「一圈毛边」。
+///
+/// 已排除的假设（本轮之前查实，不再重复排查）：
+/// · elevation —— 解析链 `null ?? null ?? 0.0`，根本不画阴影；
+/// · visualDensity —— 只改尺寸，不碰边缘像素；
+/// · 半透明叠动态背景 —— 加重因素，不是根因。
+/// 且整排只有这 **1 个** Material（站名徽章 `:19405` / 直播徽章 `:19426`
+/// 都是自绘 `Container + BoxDecoration`，颜色与圆角完全同值）⇒ 天然对照，
+/// 所以只修这一枚、**不整排替换**。
+///
+/// # 为什么是一个具名常量而不是内联字面量
+///
+/// 像素探针（`test/zz_t66_r1_danmaku_chip_edge_test.dart`）要从**真树**上
+/// 读回这个值做判据。内联字面量会让「谁把它删了」只能靠 grep 源码发现；
+/// 常量 + 树读回，才能让删掉参数这件事在**行为**上判红。
+const Clip kDanmakuChipClipBehavior = Clip.antiAlias;
+
+/// 弹幕 pill —— 生产路径与像素探针**共用这一份构造**
+///
+/// ⚠️ 探针不许另抄一份样式：抄一份等于测自己写的副本（假门禁）。
+///    要对比「旧 Clip.none / 新 antiAlias」时只换 [clipBehavior] 一个入参。
+@visibleForTesting
+Widget debugDanmakuInfoChipForProbe({
+  required DanmakuInfoData data,
+  VoidCallback? onTap,
+  Clip clipBehavior = kDanmakuChipClipBehavior,
+}) =>
+    _DanmakuInfoChip(
+      data: data,
+      onTap: onTap ?? () {},
+      clipBehavior: clipBehavior,
+    );
+
 class _DanmakuInfoChip extends StatelessWidget {
-  const _DanmakuInfoChip({required this.data, required this.onTap});
+  const _DanmakuInfoChip({
+    required this.data,
+    required this.onTap,
+    this.clipBehavior = kDanmakuChipClipBehavior,
+  });
 
   final DanmakuInfoData data;
   final VoidCallback onTap;
+
+  /// ★ R1：交给 `ActionChip` 的 `Material.clipBehavior`（见
+  /// [kDanmakuChipClipBehavior] 的根因说明）。
+  ///
+  /// 生产调用点（`:19602`）**不传**它 ⇒ 走默认值 = 修好的那个值；
+  /// 只有像素探针为了做「改前/改后」对照才显式传 [Clip.none]。
+  final Clip clipBehavior;
 
   @override
   Widget build(BuildContext context) {
@@ -19728,6 +19820,9 @@ class _DanmakuInfoChip extends StatelessWidget {
       message: '弹幕信息（来源 / 条数 / 匹配方式 / 失败原因）',
       child: ActionChip(
         onPressed: onTap,
+        // ★★★ R1 的修：让 Material 真的把 `Ink` 那一层裁到同一个圆角上。
+        //   不传 ⇒ 框架默认 Clip.none ⇒ 两层各自抗锯齿 ⇒ 纯黑底上一圈亮边。
+        clipBehavior: clipBehavior,
         // 与旁边站名/直播徽章同款：半透明黑底、无描边
         backgroundColor: Colors.black.withValues(alpha: 0.55),
         side: BorderSide.none,

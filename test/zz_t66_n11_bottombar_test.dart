@@ -75,6 +75,34 @@ bool _requireLibmpv() {
   return false;
 }
 
+/// ★★★ 2026-10-19（Lead 加，与 `zz_t66_player_jank_test` 同款）：核心可用性
+///
+/// ```text
+/// 这个文件原本只检查 libmpv，不检查 `sourin_core.dll`。
+/// 而实测（队友 `code-selfreview`）：
+///   完整环境 ⇒ T4 8 轮 all=20、p50=1.0ms；T5 类型数组 = [AnimatedBuilder]
+///   缺  核心 ⇒ T4 8 轮 all=**8**、p50=0.7ms；T5 类型数组 = **[]**
+///
+/// ★ 危险处：`expect(totalAll, lessThan(200))` 在两种环境下**都通过**
+///   ⇒ 缺核心时这条**性能断言变成假绿**（读数变小，而不是变大）。
+/// ⇒ 所以缺核心时必须明确跳过，不能让它跑出一个漂亮的数字。
+/// ```
+bool _requireSourinCore() {
+  const candidates = <String>[
+    'sourin_core.dll',
+    'windows/sourin_core.dll',
+    'build/windows/x64/runner/Release/sourin_core.dll',
+  ];
+  for (final rel in candidates) {
+    if (File(rel).existsSync()) return true;
+  }
+  markTestSkipped('sourin_core.dll 缺失 ⇒ 本文件的读数不成立。'
+      '★ 实测：缺核心时 T4 的 all 从 20 变成 8，'
+      '而阈值是 lessThan(200) ⇒ **仍然通过**（假绿）。'
+      '查过的落点：$candidates');
+  return false;
+}
+
 List<Episode> _eps(int n) => [
       for (var i = 1; i <= n; i++)
         Episode(id: 'ep$i', title: '第$i集', url: 'https://x.invalid/$i.m3u8'),
@@ -168,6 +196,8 @@ void main() {
   // ════════════════════════════════════════════════════════════════════
   testWidgets('T1 控制条收起后 _BottomBar 仍常挂在树上（不装卸）', (t) async {
     if (!_requireLibmpv()) return;
+    // ★ 核心缺失时读数失真（缺核心 ⇒ T4 all 20→8，而阈值 lessThan(200) 仍过）
+    if (!_requireSourinCore()) return;
     await _mount(t);
     final p = TestPointer(1, PointerDeviceKind.mouse);
     await _enterFullscreenPlaying(t);
@@ -206,6 +236,8 @@ void main() {
   // ════════════════════════════════════════════════════════════════════
   testWidgets('T2 占据态（错误层）⇒ _BottomBar 必须不在树上', (t) async {
     if (!_requireLibmpv()) return;
+    // ★ 核心缺失时读数失真（缺核心 ⇒ T4 all 20→8，而阈值 lessThan(200) 仍过）
+    if (!_requireSourinCore()) return;
     await _mount(t);
     await _enterFullscreenPlaying(t);
 
@@ -240,6 +272,8 @@ void main() {
   // ════════════════════════════════════════════════════════════════════
   testWidgets('T3 底栏淡出必须有过 0<x<1 的中间帧（不许硬切）', (t) async {
     if (!_requireLibmpv()) return;
+    // ★ 核心缺失时读数失真（缺核心 ⇒ T4 all 20→8，而阈值 lessThan(200) 仍过）
+    if (!_requireSourinCore()) return;
     await _mount(t);
     final p = TestPointer(1, PointerDeviceKind.mouse);
     await _enterFullscreenPlaying(t);
@@ -278,6 +312,8 @@ void main() {
   // ════════════════════════════════════════════════════════════════════
   testWidgets('T4 8 轮 隐藏→叫回 ⇒ 重建面远低于改前 1624', (t) async {
     if (!_requireLibmpv()) return;
+    // ★ 核心缺失时读数失真（缺核心 ⇒ T4 all 20→8，而阈值 lessThan(200) 仍过）
+    if (!_requireSourinCore()) return;
     await _mount(t);
     final p = TestPointer(1, PointerDeviceKind.mouse);
     await _enterFullscreenPlaying(t);
@@ -337,6 +373,8 @@ void main() {
   // ════════════════════════════════════════════════════════════════════
   testWidgets('T5 阴性对照：静置帧重建 = 0', (t) async {
     if (!_requireLibmpv()) return;
+    // ★ 核心缺失时读数失真（缺核心 ⇒ T4 all 20→8，而阈值 lessThan(200) 仍过）
+    if (!_requireSourinCore()) return;
     await _mount(t);
     await _enterFullscreenPlaying(t);
 
@@ -390,6 +428,8 @@ void main() {
   // ════════════════════════════════════════════════════════════════════
   testWidgets('T6 ★★★ 收起态点不到 / 可见态点得到（点击穿透）', (t) async {
     if (!_requireLibmpv()) return;
+    // ★ 核心缺失时读数失真（缺核心 ⇒ T4 all 20→8，而阈值 lessThan(200) 仍过）
+    if (!_requireSourinCore()) return;
     await _mount(t);
 
     // ── 阳性对照：先进入「可见」状态 ──────────────────────────────

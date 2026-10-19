@@ -294,25 +294,8 @@ jobs:
       #   逼着要么让本 job 真的 build 出 libmpv，要么明确接受这 15 条不跑。
       #   （那需要 Owner 拍板：本 job 是拦合并的主 job，为 15 条测试
       #     加一次完整 windows 构建是否值得。）
-      - name: 断言：默认套件里没有因缺件而静默 skip 的用例
-        shell: bash
-        run: |
-          out=$(flutter test test/zz_t66_player_jank_test.dart \
-                                test/zz_t66_n11_bottombar_test.dart \
-                                --reporter=expanded 2>&1)
-          echo "$out"
-          # ★ 判据必须**精确**：这两个文件在 libmpv 就位时会正常打印
-          #   `[LIBMPV] 夹具 = <路径>`（见 zz_t66_player_jank_test.dart:216），
-          #   那是**成功**的证据；而 `:221` 打印的
-          #   `[LIBMPV] 夹具缺失 ⇒ …` 才是缺件。
-          # ⇒ 只匹配「夹具缺失」，否则会把正常输出误判成失败
-          #   （我第一版写成 grep '夹具缺失\|libmpv'，实测在本机 libmpv 就位时
-          #     仍然 FIRED ⇒ 误报。已实测改正。）
-          if echo "$out" | grep -q '夹具缺失'; then
-            echo "::error::libmpv 缺失 ⇒ 这 15 条门禁是**静默 skip**，不是通过。"
-            echo "::error::修法见本步骤上方的注释（先让本 job build 出 libmpv）。"
-            exit 1
-          fi
+      # ★★★ 2026-10-19（批末复核查出的**真隐患**，Lead 修）
+      #   本步骤**已挪到 `核验产物` 之后** —— 位置是这个改动的关键，见那里的注释。
 
       # ── ③ 打包 ─────────────────────────────────────────────────────
       - name: 构建 Windows 发布版
@@ -366,6 +349,56 @@ jobs:
           }
           $n = (Get-Item $mpv).Length
           "libmpv-2.dll = $n 字节"
+
+      # ── ② 断言：默认套件里没有因缺件而静默 skip 的用例 ──
+      #
+      # ★★★ 2026-10-19（批末复核查出的**真隐患**，Lead 修；同日修正位置）
+      #
+      # # 问题
+      # ```text
+      # 本 job 的顺序是 pub get → **flutter test** → **构建 Windows 发布版**
+      # 而构建是**全文唯一**供出 libmpv-2.dll 的步骤
+      # ⇒ 全量测试跑的时候 libmpv **不存在**
+      # ⇒ 依赖 libmpv 的文件走 markTestSkipped ⇒ exit 0 ⇒ **job 绿**
+      #
+      # 46 个文件带 `native-media` 标签、默认 skip，裸 flutter test 本来就不选。
+      # ★ 但有 **2 个不带标签** ⇒ 会进默认套件：
+      #     test/zz_t66_player_jank_test.dart     8 条
+      #     test/zz_t66_n11_bottombar_test.dart  7 条
+      #   这 15 条在 CI 上从未跑过，而 job 绿。
+      # ```
+      #
+      # ★★★ 位置是这个改动的**关键**（我第一版放错了，代价见下）
+      # ```text
+      # 第一版我把它排在「全量测试之后、构建之前」⇒
+      #   它跑的时候 libmpv 尚未被构建出来 ⇒ **100% FIRED**；
+      #   而 FIRED 会让构建步骤不执行 ⇒ libmpv 永远供不出来
+      #   ⇒ **它自己制造了它要检测的那个缺失**，形成自我封闭的循环。
+      # 而 `Windows` 是**必需检查**（对管理员也生效）⇒ 那个位置会让仓库冻结。
+      #
+      # ⇒ 现在放在「核验产物」之后：那里 `Test-Path $mpv` 已经 throw 过，
+      #   libmpv 必定存在 ⇒ 断言成了**真门禁**，而且那 15 条**真的跑了**。
+      #   代价只是重跑两个文件（它们在上面的全量测试里已跑过一遍，当时是 skip）。
+      # ```
+      #
+      # ★ 为什么不用 `SOURIN_REQUIRE_LIBMPV=1`：它覆盖不到 ——
+      #   实测 16 个依赖 libmpv 的文件里只有 9 个写了那个开关；
+      #   且单独设它会让 job 每次必红 ⇒ 团队很快会去关掉它。
+      - name: 断言：默认套件里没有因缺件而静默 skip 的用例
+        shell: bash
+        run: |
+          out=$(flutter test test/zz_t66_player_jank_test.dart \
+                                test/zz_t66_n11_bottombar_test.dart \
+                                --reporter=expanded 2>&1)
+          echo "$out"
+          # ★ 判据必须**精确**：这两个文件在 libmpv 就位时会正常打印
+          #   `[LIBMPV] 夹具 = <路径>`（zz_t66_player_jank_test.dart:216），
+          #   那是**成功**的证据；只有 `:221` 打印的
+          #   `[LIBMPV] 夹具缺失 ⇒ …` 才是缺件。
+          if echo "$out" | grep -q '夹具缺失'; then
+            echo "::error::libmpv 缺失 ⇒ 这 15 条门禁是**静默 skip**，不是通过。"
+            exit 1
+          fi
 
       - name: 上传 Windows 产物
         uses: actions/upload-artifact@v4

@@ -35,6 +35,18 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+// ★ 唯一实现（铁律 170）：判据必须落在**代码**上，不是原始文本上
+import '_support/strip_comments.dart';
+
+/// 取 [code] 里第一处含 [needle] 的那几行（用于失败信息，便于定位）
+String _snippetAround(String code, String needle) {
+  final i = code.indexOf(needle);
+  if (i < 0) return '（剥注释后没有 `**`）';
+  final start = i - 40 < 0 ? 0 : i - 40;
+  final end = i + 120 > code.length ? code.length : i + 120;
+  return code.substring(start, end).replaceAll('\n', ' ⏎ ');
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -119,11 +131,25 @@ void main() {
       //   并额外断言 dan_asterisk_gate **确实调用**它（防止"实现了但没接线"）。
       // ```
       final impl = File('test/_support/markdown_bold.dart').readAsStringSync();
-      expect(impl.contains(r'\*\*[^*]*[^*][^*]*\*\*'), isTrue,
-          reason: '★★ 唯一的判别式实现里必须有**精确**的那条正则 —— '
+      // ★★ 2026-10-19（复核抓出，Lead 修）：**剥掉注释再判**。
+      //
+      // ```text
+      // 改前：impl.contains(精确正则) —— 读的是**原始文本**
+      //   ⇒ 只要文件里**任何地方**（包括注释）留着那条字面量就绿
+      //   ⇒ 实测：把 3 处**代码**降级成 `\*\*.*?\*\*`、
+      //     保留第 60 行注释里的原样 ⇒ 本条**仍然绿**，而判别力已坏
+      //     （`****`、`${id.substring(0,4)}****` 都被误判成粗体）
+      // ```
+      //
+      // ⇒ 判据必须落在**代码**上。这是本仓第三次「锚点匹配到注释」
+      //   （前两次：`MaterialApp(`、`child: _loading`）。
+      final implCode = stripComments(impl);
+      expect(implCode.contains(r'\*\*[^*]*[^*][^*]*\*\*'), isTrue,
+          reason: '★★ 唯一实现的**代码**里必须有那条精确正则 —— '
               '它是「掩码不会被误伤」的权威。\n'
-              '⚠️ 不能只判「文件里有 `**` 正则」：实测把精确正则降级成\n'
-              '   通配的 `\\*\\*.*?\\*\\*`（会误伤掩码）时，本条**仍然绿**。');
+              '⚠️ 判的是剥注释后的代码：若连注释一起判，'
+              '把代码降级成通配正则而留着注释里的原样也会绿。\n'
+              '实测那条代码片段：\n${_snippetAround(implCode, r'\*\*')}');
       expect(impl.contains('INJECT'), isFalse,
           reason: '★ 注入残留检查：上一次注入实验的标记不许留在实现里');
       expect(src.contains('markdown_bold'), isTrue,

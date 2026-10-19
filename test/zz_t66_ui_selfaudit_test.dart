@@ -341,13 +341,23 @@ void main() {
       // ⚠️ 这条**只登记不断言**：改动权在写代码的人手里。
       //    但它保证「这类片段**能被看见**」—— 上面的 `playback_page.dart`
       //    「三个」缓存目录 就是这么被发现的。
+      //
+      // ★★ 2026-10-19（复核抓出，Lead 修）：改前是 `expect(risky, isNotNull)`
+      //   —— **`List` 永远非 null**，所以它恒真，是纯装饰。
+      // ⇒ 改成一条**真的会红**的自检：扫描必须真的跑到那些文件。
+      //   （原意是"防空转"，但防空转要用 `isEmpty`，不是 `isNotNull`。）
       // ignore: avoid_print
       print('[SELF-AUDIT] 「」里含数字/量词的片段共 ${risky.length} 处：');
       for (final r in risky) {
         // ignore: avoid_print
         print(r);
       }
-      expect(risky, isNotNull);
+      expect(risky, isA<List<String>>(),
+          reason: '★★ 扫描结果必须是 List<String>（否则中途类型变了）');
+      expect(_touchedFiles, isNotEmpty,
+          reason: '★★ 文件清单是空的 ⇒ 下面那个循环一次都没跑，'
+              '「共 N 处」全是空转。'
+              '（原判据 `expect(risky, isNotNull)` 恒真，掩盖了这一点）');
     });
   });
 
@@ -398,6 +408,22 @@ void main() {
 
       // ignore: avoid_print
       print('[SELF-AUDIT] 关闭钮数 $found');
+
+      // ★★ 2026-10-19（复核抓出，Lead 修）：update 分支挂的是一个
+      //   **TextButton 占位**，不是真实弹窗 ——
+      //   实测那条路径上 `AppDialogShell` = false、`tooltip('关闭')` = 0，
+      //   而 `found['update占位']` 被打印却**从未被 expect**。
+      // ⇒ 它要么明确断言「占位路径本来就没有关闭钮」，
+      //    要么就别把它算进「三个弹窗」这个统计里。选前者，
+      //    并把理由写清楚，免得下一个人以为 update 弹窗被测过了。
+      expect(found['update占位'], 0,
+          reason: '★★ update 分支挂的是 TextButton **占位**（不是 update 弹窗），\n'
+              '所以它上面**本来就不该**有外壳的关闭钮。\n'
+              '★ 这条断言的价值：若将来有人给占位也套上外壳却忘了计数，\n'
+              '  这里会红。\n'
+              '⚠️ 别把它读成「update 弹窗的关闭钮已验证」——'
+              '真实 update 弹窗由 t3b_selfhosted_panel_test 覆盖。');
+
       expect(found['composer'], 1,
           reason: '★★ composer 的右上角关闭钮**数量不对**'
               '（应为 1；>1 说明收拢到外壳后又出现了第二个 ×）');
@@ -413,12 +439,30 @@ void main() {
           reason: '★ 弹窗没挂出来 ⇒ 这条什么都证明不了');
 
       // 外壳把 Esc 绑在 CallbackShortcuts 上 ⇒ 送一个 Esc 键
+      //
+      // ★★★ 2026-10-19（复核抓出这是**恒绿**，Lead 修）：
+      // ```text
+      // 改前：只断 `takeException() isNull`
+      //   ⇒ **没有 Esc 绑定时它也绿**（外壳 :210 是
+      //      `if (onClose == null) return shell;` ⇒ onClose 为 null 时
+      //      根本不挂 CallbackShortcuts，而同一条断言照样通过）
+      //   而且 `handled` 算出来后只被 `print`，**从未被 expect**。
+      // ```
+      // ⇒ 补一条**可证伪**的判据：树上确实挂着 CallbackShortcuts
+      //   （它才是 Esc 绑定的载体）。没有它，「Esc 能关」无从谈起。
+      final shortcuts = find.byType(CallbackShortcuts);
+      expect(shortcuts, findsWidgets,
+          reason: '★★ 树上没有 CallbackShortcuts ⇒ Esc 根本没绑定。\n'
+              '★ 若将来外壳改用别的 Esc 机制（Shortcuts/Actions），'
+              '请一并改这条判据。');
+
       var handled = false;
       await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pumpAndSettle();
       handled = find.byType(AppDialogShell).evaluate().isEmpty;
       // ignore: avoid_print
-      print('[SELF-AUDIT] 送 Esc 后弹窗还在吗 = ${!handled}');
+      print('[SELF-AUDIT] 送 Esc 后弹窗还在吗 = ${!handled} '
+          'shortcuts 还在吗 = ${shortcuts.evaluate().isNotEmpty}');
       // ⚠️ composer 的 onClose 是 maybePop ⇒ 直挂时没有路由可 pop，
       //    所以这里只断言「Esc 被**接住**且没抛异常」，不断言它一定消失。
       expect(t.takeException(), isNull,

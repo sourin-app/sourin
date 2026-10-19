@@ -266,7 +266,9 @@ jobs:
       #
       # # 问题
       # ```text
-      # ① 本 job 的顺序是：pub get(:240) → **flutter test(:261)** → flutter build(:280)
+      # ① 本 job 的顺序是：pub get → **flutter test** → 构建 Windows 发布版
+      #    （★ 按**步骤名**引用，不写行号 —— 行号会随任何一次插入而漂，
+      #      本轮已经漂过一次。查位置请搜 `- name: 构建 Windows 发布版`）
       #    ⇒ 产出 libmpv-2.dll 的那一步在**测试之后**
       # ② 而 build.yml 自己 L896-898 写着（2026-10-12，CodeRabbit 指出、
       #    **已用 CI 实测证实**）：光 `flutter pub get` **供不出** libmpv-2.dll
@@ -283,9 +285,16 @@ jobs:
       #
       # # 为什么不用环境变量 SOURIN_REQUIRE_LIBMPV=1
       # ```text
-      # ★ 它覆盖不到：实测 16 个依赖 libmpv 的文件里只有 **9 个**写了那个开关，
-      #   另 7 个（含上面那个 n11_bottombar）设了也照样静默 skip。
-      # ★ 而且**单独设它会让主 job 每次必红**（libmpv 注定不在）
+      # ★ 它覆盖不到 —— 实测（复核逐个核过）：
+      #   全仓有 **46 个**文件既真调 MediaKit.ensureInitialized 又带 native-media 标签
+      #   另有 **7 个**真调 MediaKit 但**不带**标签（会进默认套件）：
+      #     t27_w1_online_first / zz_cr_local_row_trash_hover / zz_cr_local_select_ui /
+      #     zz_media_r1_local_open_probe / zz_t12_defect_a_probe /
+      #     zz_t66_n11_bottombar / zz_t66_player_jank
+      #   而写了 `SOURIN_REQUIRE_LIBMPV` 的只有 **9 个文件**，
+      #   且这 9 个**全部带 native-media 标签**（默认就不进套件）⇒
+      #   ★★ 对**会进默认套件**的那 7 个文件，只有 player_jank 有开关。
+      # ★ 而且**单独设它会让主 job 每次必红**（libmpv 在全量测试时注定不在）
       #   ⇒ 团队很快会去关掉它 ⇒ 更糟。
       # ⇒ 改用**可执行断言**：直接读输出里的缺件字样，不依赖任何文件有没有写开关。
       #
@@ -382,7 +391,8 @@ jobs:
       # ```
       #
       # ★ 为什么不用 `SOURIN_REQUIRE_LIBMPV=1`：它覆盖不到 ——
-      #   实测 16 个依赖 libmpv 的文件里只有 9 个写了那个开关；
+      #   实测写了那个开关的有 9 个文件，而**全部带 native-media 标签**
+      #   （默认就不进套件）；会进默认套件的那 7 个里只有 player_jank 有。
       #   且单独设它会让 job 每次必红 ⇒ 团队很快会去关掉它。
       - name: 断言：默认套件里没有因缺件而静默 skip 的用例
         shell: bash

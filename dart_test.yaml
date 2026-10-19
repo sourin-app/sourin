@@ -84,6 +84,27 @@
 # ⚠️ 崩溃**仍然存在** —— 本配置只是不让它污染默认测试。
 #    根因在第三方 libmpv-2.dll，我们改不了它的源码。
 tags:
+  # ★★ **故意让自己红**的证据用例（2026-10-19 加）
+  #
+  # `zz_t66_skip_loadstate_evidence_test.dart` 故意留下一个 pending 的
+  # FakeTimer（10 秒的 `_kLoadTimeout`，而测试预算只有 3 秒），
+  # 让 test 框架在收尾时打出那段证据文字 ⇒ **它必然红**。
+  #
+  # ★ 为什么用 `skip:` 而不是 `exclude_tags:`：
+  #   `exclude_tags` 发生在**选择之前** ⇒ 排除了就**无法**用 `--tags` 放行
+  #   （本文件顶部 B/C 两组实测都返回 `No tests match` exit=79）。
+  #   `skip:` 则默认跳过、`--run-skipped` 能放行 ⇒ 两条路径都对。
+  #
+  # # 用法
+  # ```powershell
+  # # 默认：不跑（读数干净）
+  # flutter test test/
+  #
+  # # ★ 显式复现那份证据（看到 pending timer 的输出）
+  # flutter test test/ --run-skipped --tags evidence --concurrency=1
+  # ```
+  evidence:
+    skip: "默认跳过：这条用例**故意**留下 pending 的 FakeTimer 来打出证据，也就是**故意让它红**。复现：flutter test test/ --run-skipped --tags evidence --concurrency=1"
   # ★ 依赖真实 media_kit（libmpv 原生库）的测试
   #
   # 这些文件调用 `MediaKit.ensureInitialized()`，会在 flutter_tester 里

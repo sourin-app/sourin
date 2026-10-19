@@ -435,12 +435,30 @@ void main() {
     final hideAll = _all;
     // ignore: avoid_print
     print('T2 隐藏光标 ⇒ pageBuild=$hidePage all=$hideAll '
-        '（改前：page=1 all=190）');
+        '（★ 原先这里印的是「改前 all=190」，已作废：'
+        '在 e6458e5 / aedc29c 上实跑都是 531，'
+        '且 stash/reflog/171 个悬空 commit 全查过 ⇒ 无来源）');
 
     expect(debugPlayerCursorIdleHiddenForProbe(), isTrue,
         reason: '副作用检查：光标必须**真的藏起来**（不许靠"不藏"换性能）');
     /*
-     * ★ 2026-10-18（N11 修复后）：`hidePage` 仍会是 1，`hideAll` 仍是 ~193。
+     * ★★★ 2026-10-19（批末复核，Lead 改）：原文写「`hideAll` 仍是 ~193」，
+     *   **这个数字也作废**，而且它和上面那个「190」在**同一份基线表里并存**
+     *   —— 说明这两个数都来自「某个中间态」，谁也不是可复现的对照。
+     *
+     * ```text
+     *   复核实跑：e6458e5（测试诞生）⇒ 531
+     *            aedc29c（父 commit）  ⇒ 531
+     *   三重兜底：stash 空 / reflog 694 条 / 171 个悬空 commit
+     *            （含该测试的 39 个**全部**已含 _cursorLive）
+     *
+     * ★ 附一条值得记的巧合：复核发现「worktree 里缺 sourin_core.dll」
+     *   时读数是 **193** —— 与这里写的 ~193 只差 0。
+     *   ⇒ 很可能这两个数都是**同一个坏环境**（核心加载失败 ⇒
+     *     `_playing` 路径不同 ⇒ widget 树规模不同）下的读数，
+     *     被当成了「改前对照」。
+     *   ⇒ 详见文件头「在 worktree 里跑本文件必须先补 DLL」。
+     * ```
      *
      * # 为什么这条隐藏路径**故意**保留整页 setState
      * ```text

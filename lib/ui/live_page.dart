@@ -3516,7 +3516,44 @@ class LivePageState extends State<LivePage> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      AspectRatio(aspectRatio: 16 / 9, child: player),
+                      /*
+                       * ★★★ 2026-10-19【R5】`Flexible` 不是装饰 —— 它是「窗口契合」
+                       *     的唯一硬保证（缺了它，chip 会把视频挤出可播高度）
+                       *
+                       * # 缺陷（Owner 原话）
+                       * ```text
+                       * > 你看那个静音按钮，都有一半没显示出来，这个窗口都没契合
+                       * ```
+                       * 但★ R5 这一轮我**推翻了"控件被 chip 压住"这个假设**，
+                       * 真正的重叠对象是**首页的源切换条**（见 `_buildWideBody`
+                       * 上方那段 R5 长注释，附像素读数与反证）。
+                       * 本处修的是**同一个窗口里另一件真事**：
+                       * 播放窗口在 900×600 下**没契合**（视频区被 chip 挤到比可用高还大）。
+                       *
+                       * # 机理（用 `.probe` 里一次性探针扫出来的，不是推理）
+                       * ```text
+                       * Column(mainAxisSize: min) 在**有界**高里不是"想要多少给多少"：
+                       * 子项之和 > 可用高时，它会**溢出**（RenderFlex overflow）
+                       * ⇒ 溢出部分被外层 `ClipRRect` 裁掉 ⇒ 底部的线路 chip 消失一半。
+                       * 实测（clip=532×356，n=可播线路数）：
+                       *   n=2 ⇒ 视频 299.3 / chip 317.6..345.6   ✅ 装得下
+                       *   n=4 ⇒ 视频 299.3 / chip 307.3..371.3   ✗ 溢出 15.3px
+                       *   n=8 ⇒ 视频 299.3 / chip 307.3..407.3   ✗ 溢出 51.3px
+                       * 1280×800 / 1444×845 同 n 装得下 ⇒ 正是「大窗不复现」的定量解释。
+                       * ```
+                       *
+                       * # 修法：让**视频**让出 chip 需要的高度（`Flexible`）
+                       * ```text
+                       * 视频按 16:9 **等比缩**（实测 r=1.778 恒定，画面不变形）
+                       * chip 永远完整可见（实测 n≤20 时「chip 越界」= 0.0px）
+                       * ```
+                       * ⚠️ **代价（如实记录）**：线路极多时（实测 n=40）视频会被压到 0 高。
+                       *    根因是 `lineSwitcher` 自己没有滚动区，属 R6 范围；
+                       *    本轮只保证 chip 不被裁。
+                       */
+                      Flexible(
+                        child: AspectRatio(aspectRatio: 16 / 9, child: player),
+                      ),
                       lineSwitcher,
                     ],
                   ),

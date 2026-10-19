@@ -946,15 +946,25 @@ jobs:
   #
   #  # 为什么钉在**Windows** 而不是 macOS
   #
-  #  Windows 的 libmpv 是 `build/windows/x64/libmpv/libmpv-2.dll`，且 **windows job
-  #  第 118-120 行已经把它编出来了**（`cargo build` 之后 `flutter pub get` 会触发
-  #  该 platform 的 CMake 配置，`media_kit_libs_windows_video` 的 CMake 在配置期
-  #  下载并解包 mpv-dev 7z，落点正是 `build/windows/x64/libmpv/`）。
-  #  ★ 先决条件：`flutter pub get` **必须发生在 `flutter test` 之前**（下面的步骤
-  #    就是按这个顺序排的）。少了它，libmpv-2.dll 不在那个路径上 ⇒
-  #    37/55 个文件的 `File('build/windows/x64/libmpv/libmpv-2.dll').existsSync()`
-  #    守卫判假 ⇒ **不初始化、静默跳过**，于是这批「硬门禁」在 CI 上**仍然一条
-  #    都没执行**，只是从「被标签 skip」变成了「被守卫 skip」—— 换了个姿势的假绿。
+  #  Windows 的 libmpv 落在 `build/windows/x64/libmpv/libmpv-2.dll`。
+  #
+  # ★★★ 2026-10-19（Lead 修正，复核与实测各证一次）：
+  #   本段原文写「`flutter pub get` 会触发 CMake 配置，CMake 在**配置期**下载并
+  #   解包 mpv-dev 7z，落点正是 build/windows/x64/libmpv/」——
+  #   而**本文件下方那段**（2026-10-12，CodeRabbit 指出、CI run 38241155183
+  #   实测证实）明确说：**光 `flutter pub get` 供不出 libmpv-2.dll**。
+  # ⇒ 实测赢：`pub get` 确实会触发 CMake **配置**，但**配置期不下载 mpv-dev**；
+  #   真正供出 dll 的是 `flutter build windows`（搜 `- name: 构建 Windows 发布版`）。
+  # ⇒ 后果与处置见下方两处：① 步骤注释已改「先决条件」的说法；
+  #   ② windows 主 job 已加一条断言，在「核验产物」之后（那时 libmpv 必定存在）
+  #      直接检查那 15 条门禁没有因为缺件而静默 skip。
+  #
+  # ★ 顺带修正一个数：原文写「37/55 个文件的 existsSync 守卫」——
+  #   那个 37 与本 job 标题里的 46 出自**同一个 commit**（8d57253，2026-10-12），
+  #   实测那个 commit 当时是 **33**（含该路径字面量的文件数），两个都不对。
+  # ⇒ 现在实测：**45 个**带 tag 的文件里含
+  #   `libmpv-2.dll` 路径字面量与 existsSync（复核 2026-10-19 逐个核过）。
+  # ★ 且**不写分母** —— 带 tag 的文件数会随测试增删而变，写死分母必然再次漂移。
   #    （对照：macOS 侧 libmpv 是 dylib，路径与加载方式都不同，风险更大。）
   #
   #  # 触发条件：与 windows / macos **保持一致**（push / PR / workflow_dispatch）

@@ -148,8 +148,26 @@ void main() {
        * ⇒ 这里钉住 cur 的绘制是**无条件**的。
        */
       final body = _paintBody(src);
+      /*
+       * ★ 2026-10-19（批末复核）：正则去掉尾部的 `;`
+       *
+       * ```text
+       * 改前： r'\n\s*cur\.paint\(canvas, curRect\.topLeft\);'
+       *   尾部锚了分号 ⇒ 下列**语义等价**的写法都会让它红（假红）：
+       *     多一个空格   `cur.paint(...) ;`
+       *     拆成两行     `cur.paint(...)\n    ;`
+       *     挂链式调用   `cur.paint(...).x(...)`
+       *   实测：3 种里 3 种都会假红。
+       *
+       * 改后： r'\n\s*cur\.paint\(canvas, curRect\.topLeft\)'
+       *   ★ 判别力没丢：把这一行**整行删掉**或**包进 if** 仍然红。
+       *     而且这里本来就**只该锚到调用本身** ——
+       *     下一句断言（:158 那条 `isFalse`）才是负责「不许被 if 包住」的，
+       *     两者分工：本条管「画了没有」，下条管「是不是无条件画」。
+       * ```
+       */
       expect(
-        RegExp(r'\n\s*cur\.paint\(canvas, curRect\.topLeft\);').hasMatch(body),
+        RegExp(r'\n\s*cur\.paint\(canvas, curRect\.topLeft\)').hasMatch(body),
         isTrue,
         reason: '★ 当前时间必须无条件画出来',
       );

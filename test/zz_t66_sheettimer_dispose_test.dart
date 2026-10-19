@@ -148,18 +148,63 @@ void main() {
        *   ⇒ 这条源码级断言补住那处缺口。
        */
       final src = File('lib/ui/player_page.dart').readAsStringSync();
-      expect(
-        RegExp(r'_sheetGuardTimer\?\.cancel\(\);').hasMatch(src),
-        isTrue,
-        reason: '★★★ dispose 里必须有 `_sheetGuardTimer?.cancel();`',
-      );
+      /*
+       * ★★★ 2026-10-19（批末复核）：**这里原来有一条恒真断言，已删除。**
+       *
+       * ```text
+       * 删掉的是：
+       *   expect(RegExp(r'_sheetGuardTimer\?\.cancel\(\);').hasMatch(src), isTrue,
+       *          reason: '★★★ dispose 里必须有 `_sheetGuardTimer?.cancel();`');
+       *
+       * # 为什么它是恒真的（实测，不是推断）
+       * `_sheetGuardTimer?.cancel();` 在产品源码里有 **2 处**：
+       *   player_page.dart:11616  在 `_holdSheetGuard()` 里（重装前清旧的）
+       *   player_page.dart:14447  在 `dispose()` 里（本用例真正要守的）
+       * ⇒ 那条断言扫的是**整个文件**（hasMatch(src)）
+       * ⇒ 只要 `_holdSheetGuard()` 里那处还在，dispose 那处删掉它**仍然绿**。
+       *
+       * 实测证据：把 dispose 里那处替换成 `// DELETED` 之后
+       *   全局 hasMatch      = **true**   ← 断言仍然通过
+       *   源码里还剩         = 1 处      ← 就是 _holdSheetGuard 里那处
+       *   而下面 L160 的局部窗口判据 = false ← 能抓到
+       * ```
+       *
+       * ★ 判据：**一条恒真的断言比没有断言更糟** —— 它提供虚假的安全感。
+       * ⇒ 删掉它，只保留下面的**局部窗口**判据（那才是唯一真正守住 dispose 的）。
+       *
+       * ⚠️ 不要把它"改成局部窗口"了事 —— 那样会与下面 L160 那条**重复**
+       *   （两条一模一样的判断，违反「同一纪律只能有一个实现」）。
+       */
       // 而且必须在 dispose 方法体内（不是只在 _holdSheetGuard 里）
       final disposeIdx = src.indexOf('void dispose() {');
       expect(disposeIdx, greaterThan(0), reason: '前提：dispose 存在');
       final disposeBody = src.substring(disposeIdx, disposeIdx + 2600);
-      expect(disposeBody.contains('_sheetGuardTimer?.cancel();'), isTrue,
-          reason: '★★★ 那句 cancel 必须在 **dispose** 里 —— '
-              '只在 _holdSheetGuard 里 cancel 是不够的（那只是重装前清旧的）');
+      /*
+       * ★ 2026-10-19（批末复核）：正则去掉尾部的 `;`，并把 `?.` 放宽成 `[?!]?.`
+       *
+       * ```text
+       * 改前： r'_sheetGuardTimer\?\.cancel\(\);'
+       *   尾部锚了分号 ⇒ 下列**语义等价**的写法都会让它红（假红）：
+       *     多一个空格   `...cancel() ;`
+       *     拆成两行     `...cancel()\n    ;`
+       *     改 ?. 为 !.  `_sheetGuardTimer!.cancel();`
+       *     挂链式调用   `...cancel().catchError(...)`
+       *   实测：5 种真实重构形态里有 4 种会假红。
+       *
+       * 改后： r'_sheetGuardTimer[?!]?\.cancel\('
+       *   上面 4 种假红全部消除，而**判别力一点没丢**：
+       *     删掉整行调用 ⇒ 仍然 false ⇒ 仍然红 ✅（实测）
+       * ```
+       */
+      expect(
+        RegExp(r'_sheetGuardTimer[?!]?\.cancel\(').hasMatch(disposeBody),
+        isTrue,
+        reason: '★★★ 那句 cancel 必须在 **dispose** 里 —— '
+            '只在 _holdSheetGuard 里 cancel 是不够的（那只是重装前清旧的）。\n'
+            '★ 判据扫的是**局部窗口**（dispose 方法体），不是整个文件 —— '
+            '因为源码里同一句在 _holdSheetGuard() 里也有一处，'
+            '全局扫会恒真。',
+      );
     });
   });
 }

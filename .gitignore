@@ -133,7 +133,20 @@ key.properties
 #   ⇒ 只放行这一个**精确路径**。
 #   ⚠️ 不要写成 `!*credential*.rs`：那会让任何名字含 credential 的文件一起进库
 #      （含本地探针、临时导出物），把这条安全规则的边界拆掉。
+#
+# ★★ 已知这条 glob 会误伤**两类**东西（都已在下面按精确路径放行）：
+#    ① 实现源码（`sync/credentials.rs`）
+#    ② 门禁测试（`test/zz_t66_cs1_credentials_gate_test.dart`）
+#    ⇒ 将来再有名字含 credential 的合法文件，**加精确路径，不要放宽 glob**。
+#    判据：`git check-ignore -v <路径>` 能告诉你是哪条规则命中的；
+#          提交前对每个新文件跑一次，否则会**静默丢文件**（不进 status 也不报错）。
 !rust/sourin_core/src/sync/credentials.rs
+#
+# ★ 例外（2026-10-19，CS-1）：CS-1 的**门禁测试**文件名里也有 credential。
+#   它是断言源码（"口令未设时状态行必须写凭据未同步"那些），不含任何凭据。
+#   ⚠️ 同样只放行**精确路径** —— 不放宽成 `!test/zz_t66_cs1_*.dart`
+#      （那会把将来的临时诊断文件一起放进来）。
+!test/zz_t66_cs1_credentials_gate_test.dart
 
 
 # 无头 UI 截图的落盘目录（测试产物，不入库；由 SOURIN_SHOT_DIR 指定）

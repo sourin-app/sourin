@@ -1972,8 +1972,24 @@ class SourinApi {
   }
 
   /// 导出备份到指定路径
-  static Future<BackupExportResult> backupExport(String path) async {
-    final r = await SourinCore.callAsync('backup_export', {'path': path});
+  ///
+  /// # ★ 登录态（CS-1）
+  ///
+  /// 传了 [passphrase] ⇒ 用**与云同步完全同一套**加密把登录态打进包里
+  /// （`credentials::encrypt`，不是第二套格式）。
+  /// 不传 ⇒ 包里**不含登录态**，且返回值里 `credentialsIncluded == false`
+  /// + 一句 `credentialsNote` —— **界面必须显示它**，
+  /// 不许让用户以为"备份了全部数据"。
+  ///
+  /// ⚠️ 口令**不进包**（包是用户会分发的东西）：导入时要重新输入。
+  static Future<BackupExportResult> backupExport(
+    String path, {
+    String? passphrase,
+  }) async {
+    final r = await SourinCore.callAsync('backup_export', {
+      'path': path,
+      if (passphrase != null && passphrase.isNotEmpty) 'passphrase': passphrase,
+    });
     return BackupExportResult.fromJson(jmap(r) ?? {});
   }
 
@@ -1997,8 +2013,22 @@ class SourinApi {
   /// ```
   /// **不能简化成"导入即覆盖"** —— 那会把用户本机较新的进度打回旧值
   ///（备份可能是三天前的，而用户这两天又看了几集）。
-  static Future<ImportSummary> backupImport(String path) async {
-    final r = await SourinCore.callAsync('backup_import', {'path': path});
+  ///
+  /// # ★ 登录态（CS-1）
+  ///
+  /// 包里含登录态时**必须**给对 [passphrase]，否则后端返回
+  /// 「口令不正确（或这个备份包已被改动），登录态没有导入」。
+  ///
+  /// ★★ 后端**不会**静默跳过凭据只导入其它平面 ——
+  ///    那会让用户以为"恢复成功"，而每个源其实都要重新登。
+  static Future<ImportSummary> backupImport(
+    String path, {
+    String? passphrase,
+  }) async {
+    final r = await SourinCore.callAsync('backup_import', {
+      'path': path,
+      if (passphrase != null && passphrase.isNotEmpty) 'passphrase': passphrase,
+    });
     return ImportSummary.fromJson(jmap(r) ?? {});
   }
 
@@ -2098,16 +2128,22 @@ class SourinApi {
   @visibleForTesting
   static Future<List<SyncBackupEntry>> Function()? debugSyncBackupListFetcher;
 
+  /// 凭据同步状态的注入点（同上面三个的理由 —— 只读接口才给注入）
+  @visibleForTesting
+  static Future<CredentialsStatus> Function()? debugCredentialsStatusFetcher;
+
   /// 装/卸这三个注入点（`null` = 恢复真实实现）
   @visibleForTesting
   static void installSyncDebugFetchers({
     Future<SyncStatus> Function()? status,
     Future<SyncSettings> Function()? settings,
     Future<List<SyncBackupEntry>> Function()? backups,
+    Future<CredentialsStatus> Function()? credentials,
   }) {
     debugSyncStatusFetcher = status;
     debugSyncSettingsFetcher = settings;
     debugSyncBackupListFetcher = backups;
+    debugCredentialsStatusFetcher = credentials;
   }
 
   /// 同步状态（设置页据此显示「已连接 / 未配置」）
@@ -2125,9 +2161,62 @@ class SourinApi {
   }
 
   /// 立即同步 —— 返回每一步的汇总
+  ///
+  /// ★ 返回里**一定有一条 `plane == "credentials"`**（CS-1）。
+  ///   没有口令时它的 `note` 是「凭据未同步：…」——
+  ///   [SyncSummary.note] 必须显示出来，不许只报"同步完成"。
   static Future<List<SyncSummary>> syncNow() async {
     final r = await SourinCore.callAsync('sync_now');
     return jlist<SyncSummary>(r, SyncSummary.fromJson).toList();
+  }
+
+  // ── ★ 凭据同步（CS-1，2026-10-19）────────────────────────────────
+  //
+  // 登录态随云同步：口令存**系统钥匙串**（不落盘、不进导出包），
+  // 凭据用 PBKDF2(600k) + AES-256-GCM 加密后传 `data/credentials.enc`。
+  //
+  // ⚠️ 下面三个接口**都不需要已连接** —— 纯本地读 / 只写钥匙串与设置文件。
+
+  /// 读凭据同步状态
+  ///
+  /// ★★ **永不失败**（纯本地读），且返回里带一个**派生**字段
+  ///    `willSync = enabled && passphraseSet`。
+  ///    界面**只看 `willSync`** 就不可能假绿 ——
+  ///    自己拼 `enabled && passphraseSet` 必然有人漏一个条件。
+  static Future<CredentialsStatus> credentialsStatus() async {
+    final f = debugCredentialsStatusFetcher;
+    if (f != null) return f();
+    final r = await SourinCore.callAsync('credentials_status');
+    return CredentialsStatus.fromJson(jmap(r) ?? {});
+  }
+
+  /// 设 / 改 / 清凭据同步口令（空串 = 清除）
+  ///
+  /// 返回改完之后的完整状态（同 [credentialsStatus]），可直接刷 UI。
+  static Future<CredentialsStatus> setCredentialsPassphrase(
+    String passphrase,
+  ) async {
+    final r = await SourinCore.callAsync('set_credentials_passphrase', {
+      'passphrase': passphrase,
+    });
+    return CredentialsStatus.fromJson(jmap(r) ?? {});
+  }
+
+  /// 开关凭据同步
+  ///
+  /// ⚠️ 允许「开着但没口令」—— 但状态里 `willSync` 会是 `false`，
+  ///    界面必须显示「凭据未同步」，**不许**显示「同步完成」。
+  static Future<CredentialsStatus> setCredentialsEnabled(bool enabled) async {
+    final r = await SourinCore.callAsync('set_credentials_enabled', {
+      'enabled': enabled,
+    });
+    return CredentialsStatus.fromJson(jmap(r) ?? {});
+  }
+
+  /// 只同步凭据这一个平面（不等整轮同步）
+  static Future<SyncSummary> syncCredentialsNow() async {
+    final r = await SourinCore.callAsync('sync_credentials_now');
+    return SyncSummary.fromJson(jmap(r) ?? {});
   }
 
   // ── 云盘设置 + 整体备份（2026-09-29 新增，契约 §1/§2/§5）────────────

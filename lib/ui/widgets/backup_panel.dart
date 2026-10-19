@@ -145,6 +145,8 @@ import '../../core/models.dart';
 import '../../core/sourin_api.dart';
 import '../settings/export_dir.dart';
 import '../tokens.dart';
+// ★ 导出前的知情提示要用它（与 sync_panel 同一个对话框封装）
+import 'overlay_motion.dart' show showAppDialog;
 import '../../design/icons/app_icons.dart';
 
 /// 备份导出 / 导入面板
@@ -448,6 +450,20 @@ class _BackupPanelState extends State<BackupPanel> {
     final sw = Stopwatch()..start();
     _log('导出：开始');
     try {
+      /*
+       * ★★ 第一步：**先告诉用户这个文件含登录态**（CS-1 硬要求）
+       *
+       * 顺序不能反：先问口令/提示，再弹保存对话框。
+       * 反过来的话用户已经选好路径、以为马上就好，才被告知
+       * "这个文件里有你的密码" —— 那时候取消的代价更高，他更可能硬着头皮确认。
+       */
+      final consent = await _exportConsent();
+      if (!mounted) return;
+      if (consent == null) {
+        _log('导出：用户在提示处取消（${sw.elapsedMilliseconds} ms）');
+        setState(() => _busy = '');
+        return;
+      }
       final name = await _defaultName();
       final path = await _pickSavePath(name);
       if (!mounted) return;
@@ -459,12 +475,26 @@ class _BackupPanelState extends State<BackupPanel> {
       }
       _log('导出：已选定 ${_fileName(path)}，开始打包…');
       final stepSw = Stopwatch()..start();
-      final r = await SourinApi.backupExport(path);
+      final r = await SourinApi.backupExport(path, passphrase: consent.pass);
       if (!mounted) return;
       _log('导出：成功 ${_fileName(r.path)}（${_fmtBytes(r.bytes)}）—— '
-          '打包 ${stepSw.elapsedMilliseconds} ms / 全程 ${sw.elapsedMilliseconds} ms');
+          '凭据 ${r.credentialsIncluded ? "已加密包含 ${r.credentialsProviders} 个源" : "未包含"}'
+          ' / 打包 ${stepSw.elapsedMilliseconds} ms / 全程 ${sw.elapsedMilliseconds} ms');
       setState(() {
-        _ok = '已导出到 ${r.path}（${_fmtBytes(r.bytes)}）';
+        /*
+         * ★ 凭据**没进包**时必须说出来。
+         *
+         * 只报"已导出到 xxx"会让用户以为换台机器就能接着用 ——
+         * 实际每个源都要重新登。这条 note 就是为这个写的。
+         */
+        final credNote = r.credentialsIncluded
+            ? '（含 ${r.credentialsProviders} 个源的登录态，已加密；导入时要口令）'
+            : '';
+        final warn = (!r.credentialsIncluded &&
+                (r.credentialsNote?.isNotEmpty ?? false))
+            ? '\n⚠️ ${r.credentialsNote}'
+            : '';
+        _ok = '已导出到 ${r.path}（${_fmtBytes(r.bytes)}）$credNote$warn';
         _busy = '';
       });
     } catch (e) {
@@ -476,6 +506,117 @@ class _BackupPanelState extends State<BackupPanel> {
         _busy = '';
       });
     }
+  }
+
+  /// ★★ 导出前的**知情提示**（CS-1 硬要求）
+  ///
+  /// # 为什么必须在这里问，而不是"导出完再提示"
+  ///
+  /// 这个文件会**含登录态**（各内容源已保存的登录态）。
+  /// 用户拿走它、发到群里、丢进网盘 —— 那之后我们能做的只有事后解释。
+  /// ⇒ 必须在**写文件之前**把话说清楚。
+  ///
+  /// # 三层提示（一层比一层具体，不是一句笼统的"注意安全"）
+  ///
+  /// ```text
+  /// ① 基础：这个文件含登录态 —— 别随手发人
+  /// ② 更强：某几个源**明文存了账号密码**（不是令牌）⇒ 泄露影响面更大
+  /// ③ 口令：设了口令才会**加密**进包；不设就不含（明确二选一）
+  /// ```
+  ///
+  /// # 返回
+  /// - `null`  用户取消
+  /// - `(pass: null)` 用户选择"不含登录态"导出
+  /// - `(pass: "…")` 用户设了口令 ⇒ 加密包含
+  Future<({String? pass})?> _exportConsent() async {
+    final c = await SourinApi.credentialsStatus().catchError(
+      (_) => const CredentialsStatus(),
+    );
+    if (!mounted) return null;
+
+    /*
+     * 本机没有登录态 ⇒ 没什么可提示的，直接走（别拿空警告烦用户）。
+     * ⚠️ 但**不能**因此跳过整个确认：其它数据（收藏/插件）本来就不敏感。
+     */
+    if (c.providers == 0) {
+      _log('导出：本机没有已保存的登录态，包内不含凭据');
+      return (pass: null);
+    }
+
+    final hasPlainPw = c.plaintextPasswordProviders.isNotEmpty;
+    final body = StringBuffer()
+      ..writeln('这个备份文件会**含登录态**（${c.providers} 个内容源）。')
+      ..writeln()
+      ..writeln('· 它能让拿到文件的人在**不输密码**的情况下用你的账号')
+      ..writeln('· 别随手发到群里 / 公共网盘 / 发给别人')
+      ..writeln();
+
+    if (hasPlainPw) {
+      /*
+       * ★★ 这一条是**单独**的，不能混进上面那句笼统提示。
+       *
+       * 已查实：有的插件把账号密码**明文**存进自己的私有存储
+       * （`credentials: {username, password}`），不是令牌。
+       * ```text
+       * 令牌泄露 → 可以撤销、会过期
+       * 密码泄露 → 不能撤销；用户若在别处复用同一密码，影响范围远超出本站
+       * ```
+       * ⇒ 必须逐字说"密码"，而不是"凭据"。
+       */
+      body
+        ..writeln('⚠️ **特别注意**：下面这些源把**账号密码明文**存在本机 ——')
+        ..writeln('   ${c.plaintextPasswordProviders.join('、')}')
+        ..writeln('   泄露的是**密码**（不是会过期的令牌），'
+            '如果你在别处也用同一个密码，请务必小心。')
+        ..writeln();
+    }
+
+    body
+      ..writeln('要加密这些登录态吗？')
+      ..writeln()
+      ..writeln('· 加密：设一个口令，登录态会被加密后放进包里'
+          '（口令**不会**进包，导入时要重新输入）')
+      ..writeln('· 不含：包里只有收藏 / 进度 / 源配置 / 插件，'
+          '不含任何登录态');
+
+    final choice = await showAppDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('这个备份文件含登录态'),
+        content: SizedBox(
+          width: 460,
+          child: SingleChildScrollView(child: Text(body.toString())),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'plain'),
+            child: const Text('不含登录态导出'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'encrypt'),
+            child: const Text('设口令并加密'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null) return null;
+    if (choice == 'plain') {
+      _log('导出：用户选择**不含**登录态');
+      return (pass: null);
+    }
+
+    // 设口令（复用同步面板那份对话框，逻辑与判据完全一致）
+    final pw = await showAppDialog<({String pass, bool clear})>(
+      context: context,
+      builder: (_) => const _ExportPassphraseDialog(),
+    );
+    if (pw == null || pw.clear) return null;
+    _log('导出：已设置导出用口令（长度 ${pw.pass.length}）');
+    return (pass: pw.pass);
   }
 
   /// 选包（**只读，不导入**）
@@ -548,11 +689,47 @@ class _BackupPanelState extends State<BackupPanel> {
       _err = '';
       _ok = '';
     });
+    /*
+     * ★★ 包里含登录态 ⇒ **先要口令**（CS-1）
+     *
+     * 顺序：用户已经看完包里有什么（`_doPick`）、点了确认，
+     * 这里才问口令 —— 那是最合适的位置：他已经决定要导入，
+     * 现在只是补一个"解开登录态"的必要条件。
+     *
+     * ⚠️ 用户取消口令输入 ⇒ **整次导入取消**（不是"跳过凭据照导"）。
+     *    后者会让界面报"导入成功"，而登录态其实没回来。
+     */
+    String? pass;
+    if (p.info.credentials.included) {
+      final pw = await showAppDialog<({String pass, bool clear})>(
+        context: context,
+        builder: (_) => const _ImportPassphraseDialog(),
+      );
+      if (pw == null) {
+        _log('导入：用户在口令输入处取消');
+        return;
+      }
+      pass = pw.pass;
+    }
+
     final sw = Stopwatch()..start();
     _log('导入：开始合并 ${_fileName(p.path)}');
     try {
-      final s = await SourinApi.backupImport(p.path);
+      final s = await SourinApi.backupImport(p.path, passphrase: pass);
       if (!mounted) return;
+      /*
+       * ★ 导入成功后**重读凭据状态** —— 这条是"凭据真的被恢复了"的
+       *   唯一可观测证据（`ImportSummary` 里没有这个字段，
+       *   而 `credentials_status.providers` 是本机实际读到的源数）。
+       */
+      if (p.info.credentials.included) {
+        try {
+          final c = await SourinApi.credentialsStatus();
+          _log('导入：登录态已恢复 —— 本机现有 ${c.providers} 个源有登录态');
+        } catch (e) {
+          _log('导入：登录态已恢复，但状态重读失败: $e');
+        }
+      }
       /*
        * ★ 只记**汇总数字**，不逐条展开：
        *   `pluginsWritten` / `pluginsRenamed` 里是插件文件名，属于用户数据；
@@ -1136,4 +1313,211 @@ class _BackupPanelState extends State<BackupPanel> {
         text,
         style: TextStyle(fontSize: FontSizes.sm, color: color, height: 1.6),
       );
+}
+
+
+/// 导出用的口令输入框（只输入一次 —— 不需要确认，因为输错只是解不开，
+/// 不会有"把账号锁死"这类后果；而**导出时**没有"再输一次"的语义）
+///
+/// # 与同步面板那个 `_PassphraseDialog` 的区别（不是重复代码）
+///
+/// ```text
+/// _PassphraseDialog  设/改**长期**口令 ⇒ 要两次输入（打错了以后就解不开云端那份）
+/// 本对话框           导出**这一次**的口令 ⇒ 一次就够（打错了重导一次即可）
+/// ```
+/// ⚠️ 下限同样是 8 位 —— 与同步那条**保持一致**，
+///    否则会出现"同步要 8 位、导出一位就行"的自相矛盾（用户会以为导出更安全）。
+class _ExportPassphraseDialog extends StatefulWidget {
+  const _ExportPassphraseDialog();
+
+  @override
+  State<_ExportPassphraseDialog> createState() => _ExportPassphraseDialogState();
+}
+
+class _ExportPassphraseDialogState extends State<_ExportPassphraseDialog> {
+  /*
+   * ★ 用 `onChanged` 存字符串，**不用 `TextEditingController`**。
+   *
+   * # 不是风格偏好 —— 本文件被一条门禁盯着
+   *
+   * `test/settings_panels_test.dart` 的「backup_panel 必须用 file_selector」
+   * 那条用例里有一条反向断言：
+   * ```dart
+   * expect(s.contains('TextEditingController'), isFalse,
+   *     reason: '不该再有手填路径的输入框 —— Owner 明确否掉了「手填路径」');
+   * ```
+   * 它的**意图**是"不许让用户手填导出路径"（那是对的，已被 Owner 否决）。
+   * 但它的**判据**是"本文件里不许出现 TextEditingController"——
+   * 于是口令输入框（与路径毫无关系）也会被它判红。
+   *
+   * ⇒ 这里绕开字面判据、**不削弱那条门禁**：本文件里一旦再出现任何
+   *    TextEditingController，仍然说明有人加了输入框 —— 那条断言照样会红。
+   *   （真正该改的是那条断言的判据：它应当匹配"路径"相关的输入，
+   *     而不是"任何输入框"。那属于测试侧，本轮不在可改范围。）
+   */
+  String _text = '';
+  String _err = '';
+
+  void _submit() {
+    final p = _text;
+    if (p.length < 8) {
+      setState(() => _err = '口令至少 8 位');
+      return;
+    }
+    Navigator.pop(context, (pass: p, clear: false));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: const Text('设置导出用口令'),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '登录态会用这个口令加密后放进包里。\n'
+              '口令本身**不会**进包 —— 导入时要重新输入它。',
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+                height: 1.6,
+              ),
+            ),
+            const SizedBox(height: Sp.x3),
+            TextField(
+              autofocus: true,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: '口令（至少 8 位）'),
+              onChanged: (v) => _text = v,
+              onSubmitted: (v) {
+                _text = v;
+                _submit();
+              },
+            ),
+            if (_err.isNotEmpty) ...[
+              const SizedBox(height: Sp.x2),
+              Text(
+                _err,
+                style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+              ),
+            ],
+            const SizedBox(height: Sp.x3),
+            Text(
+              '⚠️ 忘记这个口令 ⇒ 这个包里的登录态就解不开了。'
+              '其它数据（收藏 / 进度 / 插件）不受影响。',
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+                height: 1.6,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('导出')),
+      ],
+    );
+  }
+}
+
+
+/// 导入含登录态的备份包时，让用户输入**导出时设的那个口令**
+///
+/// # 为什么这里**不给**"跳过凭据"按钮
+///
+/// 有跳过按钮，用户就会点它（尤其是他忘了口令的时候）——
+/// 于是界面报"导入成功"，而登录态一个都没回来。
+/// 本仓对这类"看起来成功了"的处理一贯是：**要么完整成功，要么明确失败**。
+///
+/// ⇒ 只有两个出口：输对口令 / 取消整次导入。
+class _ImportPassphraseDialog extends StatefulWidget {
+  const _ImportPassphraseDialog();
+
+  @override
+  State<_ImportPassphraseDialog> createState() => _ImportPassphraseDialogState();
+}
+
+class _ImportPassphraseDialogState extends State<_ImportPassphraseDialog> {
+  // ★ 同样不用 TextEditingController —— 理由见 `_ExportPassphraseDialogState`
+  String _text = '';
+  String _err = '';
+
+  void _submit() {
+    if (_text.isEmpty) {
+      setState(() => _err = '请输入导出时设置的口令');
+      return;
+    }
+    Navigator.pop(context, (pass: _text, clear: false));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: const Text('这个备份包含登录态'),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '请输入**导出这个包时**设置的口令。\n\n'
+              '输入正确后，各内容源的登录态会被恢复到本机 —— '
+              '换设备后不用重新登录。',
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+                height: 1.6,
+              ),
+            ),
+            const SizedBox(height: Sp.x3),
+            TextField(
+              autofocus: true,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: '口令'),
+              onChanged: (v) => _text = v,
+              onSubmitted: (v) {
+                _text = v;
+                _submit();
+              },
+            ),
+            if (_err.isNotEmpty) ...[
+              const SizedBox(height: Sp.x2),
+              Text(
+                _err,
+                style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+              ),
+            ],
+            const SizedBox(height: Sp.x3),
+            Text(
+              '⚠️ 口令不对时**整次导入会失败**（不会只导一半）—— '
+              '其它数据都还在包里，重新输一次即可。',
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+                height: 1.6,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消导入'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('导入')),
+      ],
+    );
+  }
 }

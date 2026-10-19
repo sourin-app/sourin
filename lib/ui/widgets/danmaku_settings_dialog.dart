@@ -72,7 +72,7 @@ import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import 'cover_image.dart';
 import 'app_dialog_shell.dart';
-import '../../design/widgets/app_icon_button.dart';
+import 'app_inline_spinner.dart';
 import '../../design/icons/app_icons.dart';
 
 /// T27-01：弹幕面板文字统一灰阶 —— 全文件取色只走这里
@@ -2129,13 +2129,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             FilledButton.icon(
               onPressed: _probeRunning ? null : _runProbe,
               icon: _probeRunning
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                        color: DanmakuTextColors.body,
-                        strokeWidth: 2,
-                      ),
+                  ? const AppInlineSpinner(
+                      size: 16,
+                      color: DanmakuTextColors.body,
                     )
                   : const Icon(AppIcons.wifi_tethering, size: 18),
               label: const Text('测试连接'),
@@ -3703,13 +3699,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           checked: _enabledFeeds.contains(DanmakuFeedChannel.localService),
           onChanged: (v) => _toggleFeed(DanmakuFeedChannel.localService, v),
           trailing: _probeRunning
-              ? const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: DanmakuTextColors.body,
-                  ),
+              ? const AppInlineSpinner(
+                  size: 14,
+                  color: DanmakuTextColors.body,
                 )
               : _rowAction('检测', _runProbe),
         ),
@@ -3934,14 +3926,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             ),
             if (s.loading) ...[
               const SizedBox(width: Sp.x3),
-              const SizedBox(
-                width: 16,
-                height: 16,
-                // T27-07：显式给色 —— body #E6E6E6 对面板底 #14161B ≥4.5:1（t27_w1 钉过）。
-                child: CircularProgressIndicator(
-                  color: DanmakuTextColors.body,
-                  strokeWidth: 2,
-                ),
+              // T27-07：显式给色 —— body #E6E6E6 对面板底 #14161B ≥4.5:1（t27_w1 钉过）。
+              const AppInlineSpinner(
+                size: 16,
+                color: DanmakuTextColors.body,
               ),
             ],
             /*
@@ -4025,13 +4013,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                     ? null
                     : () => _submitSearch(_searchKeyword.text),
                 icon: s.searchLoading
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                          color: DanmakuTextColors.body,
-                          strokeWidth: 2,
-                        ),
+                    ? const AppInlineSpinner(
+                        size: 16,
+                        color: DanmakuTextColors.body,
                       )
                     : const Icon(AppIcons.search, size: 18),
                 label: const Text('搜索'),

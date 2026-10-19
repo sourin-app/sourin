@@ -61,6 +61,7 @@ import 'app_theme.dart';
 import 'remote_bridge.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
+import 'widgets/app_inline_spinner.dart';
 import 'widgets/app_menu.dart';
 import 'widgets/qr_view.dart';
 import 'widgets/source_composer_dialog.dart';
@@ -3817,13 +3818,9 @@ class SettingsPageState extends State<SettingsPage> {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: colors.primary,
-                  ),
+                AppInlineSpinner(
+                  size: 14,
+                  color: colors.primary,
                 ),
                 const SizedBox(width: Sp.x2),
                 Text(

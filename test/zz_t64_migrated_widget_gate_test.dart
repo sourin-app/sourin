@@ -56,7 +56,10 @@ const _pending = <String, int>{
   'lib/ui/subtitle/subtitle_panel.dart': 1,
   'lib/ui/widgets/bili_import_dialog.dart': 1,
   'lib/ui/widgets/danmaku_info_panel.dart': 1,
-  'lib/ui/widgets/danmaku_settings_dialog.dart': 3,
+  // ★ 2026-10-19：`danmaku_settings_dialog.dart` 那 4 处已迁到 AppInlineSpinner
+  //   （行内小圈不能用 AppLoading —— 它的描边写死 4.0、不随 size 缩放，
+  //     14px 时描边占直径 28.6%，实测比原来粗 33%）。
+  //   ⇒ 按本表自己的规则「迁完就删」，这一行删掉了。
   'lib/ui/widgets/plugin_speedtest.dart': 2,
   'lib/ui/widgets/provider_import_dialog.dart': 1,
   'lib/ui/widgets/proxy_panel.dart': 1,

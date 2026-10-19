@@ -544,10 +544,29 @@ class _BackupPanelState extends State<BackupPanel> {
     }
 
     final hasPlainPw = c.plaintextPasswordProviders.isNotEmpty;
+    /*
+     * ★★ 强调一律用中文引号「」，**不许写 Markdown 的 `**粗体**`**。
+     *
+     * 这段正文最后由 `Text(body.toString())` 渲染（见下面 showAppDialog）——
+     * Flutter 的 `Text` **不解析 markdown**，星号会**原样显示**在屏幕上。
+     *
+     * ★ 这是真机截图抓到的真缺陷（2026-10-19，第 66 轮 CS-1 收尾）：
+     *   截图上逐字是「这个备份文件会**含登录态**（2 个内容源）。」
+     *   ⇒ 本仓**几乎没有** markdown 渲染器 —— 但**有一个**例外：
+     *     `lib/ui/widgets/release_notes.dart`（发行说明用的那个）。
+     *     ★ 我原先写的是「全仓没有」⇒ 被复核推翻：
+     *       我用 grep 找 "markdown" 这个**单词**，而那个文件里它只在**注释**里
+     *       ⇒ grep 命中注释，我据此断定"没有"。
+     *     ★★ 教训：「没有 X」比「有 X」**更需要证据** ——
+     *       证明「没有」要把所有可能的实现都排除掉；证明「有」只要一个实例。
+     *     所以凡是要显示给用户的 `**` 都是露馅。
+     * ★ 仓库先例：`lib/shell.dart:6955` 的注释写着
+     *   「要强调就用中文引号「」，视觉上同样醒目且不会露馅」。
+     */
     final body = StringBuffer()
-      ..writeln('这个备份文件会**含登录态**（${c.providers} 个内容源）。')
+      ..writeln('这个备份文件会「含登录态」（${c.providers} 个内容源）。')
       ..writeln()
-      ..writeln('· 它能让拿到文件的人在**不输密码**的情况下用你的账号')
+      ..writeln('· 它能让拿到文件的人在「不输密码」的情况下用你的账号')
       ..writeln('· 别随手发到群里 / 公共网盘 / 发给别人')
       ..writeln();
 
@@ -564,9 +583,9 @@ class _BackupPanelState extends State<BackupPanel> {
        * ⇒ 必须逐字说"密码"，而不是"凭据"。
        */
       body
-        ..writeln('⚠️ **特别注意**：下面这些源把**账号密码明文**存在本机 ——')
+        ..writeln('⚠️ 「特别注意」：下面这些源把「账号密码明文」存在本机 ——')
         ..writeln('   ${c.plaintextPasswordProviders.join('、')}')
-        ..writeln('   泄露的是**密码**（不是会过期的令牌），'
+        ..writeln('   泄露的是「密码」（不是会过期的令牌），'
             '如果你在别处也用同一个密码，请务必小心。')
         ..writeln();
     }
@@ -575,7 +594,7 @@ class _BackupPanelState extends State<BackupPanel> {
       ..writeln('要加密这些登录态吗？')
       ..writeln()
       ..writeln('· 加密：设一个口令，登录态会被加密后放进包里'
-          '（口令**不会**进包，导入时要重新输入）')
+          '（口令「不会」进包，导入时要重新输入）')
       ..writeln('· 不含：包里只有收藏 / 进度 / 源配置 / 插件，'
           '不含任何登录态');
 
@@ -605,7 +624,7 @@ class _BackupPanelState extends State<BackupPanel> {
     );
     if (choice == null) return null;
     if (choice == 'plain') {
-      _log('导出：用户选择**不含**登录态');
+      _log('导出：用户选择「不含」登录态');
       return (pass: null);
     }
 
@@ -744,7 +763,7 @@ class _BackupPanelState extends State<BackupPanel> {
           ' 内容源 +${s.providersImported}'
           ' 插件写 ${s.pluginsWritten.length}/改名 ${s.pluginsRenamed.length}');
       if (s.skipped.isNotEmpty) {
-        _log('导入：有 ${s.skipped.length} 项被跳过 —— 这些数据**没有**进来');
+        _log('导入：有 ${s.skipped.length} 项被跳过 —— 这些数据「没有」进来');
       }
       setState(() {
         _summary = s;
@@ -813,8 +832,8 @@ class _BackupPanelState extends State<BackupPanel> {
             _dialogHint(
               colors: colors,
               text: _defaultNameText.isEmpty
-                  ? '点「导出」→ 弹出**系统保存对话框**，自己选存到哪'
-                  : '点「导出」→ 弹出**系统保存对话框**'
+                  ? '点「导出」→ 弹出「系统保存对话框」，自己选存到哪'
+                  : '点「导出」→ 弹出「系统保存对话框」'
                       '（默认文件名 $_defaultNameText）',
             ),
             const SizedBox(height: Sp.x3),
@@ -846,7 +865,7 @@ class _BackupPanelState extends State<BackupPanel> {
           children: [
             _dialogHint(
               colors: colors,
-              text: '点「选择文件」→ 弹出**系统打开对话框**，'
+              text: '点「选择文件」→ 弹出「系统打开对话框」，'
                   '选中备份包（.zip）后先看内容，再决定导不导',
             ),
 
@@ -1380,7 +1399,7 @@ class _ExportPassphraseDialogState extends State<_ExportPassphraseDialog> {
           children: [
             Text(
               '登录态会用这个口令加密后放进包里。\n'
-              '口令本身**不会**进包 —— 导入时要重新输入它。',
+              '口令本身「不会」进包 —— 导入时要重新输入它。',
               style: TextStyle(
                 fontSize: FontSizes.cap,
                 color: colors.onSurfaceVariant,
@@ -1471,7 +1490,7 @@ class _ImportPassphraseDialogState extends State<_ImportPassphraseDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '请输入**导出这个包时**设置的口令。\n\n'
+              '请输入「导出这个包时」设置的口令。\n\n'
               '输入正确后，各内容源的登录态会被恢复到本机 —— '
               '换设备后不用重新登录。',
               style: TextStyle(
@@ -1500,7 +1519,7 @@ class _ImportPassphraseDialogState extends State<_ImportPassphraseDialog> {
             ],
             const SizedBox(height: Sp.x3),
             Text(
-              '⚠️ 口令不对时**整次导入会失败**（不会只导一半）—— '
+              '⚠️ 口令不对时「整次导入会失败」（不会只导一半）—— '
               '其它数据都还在包里，重新输一次即可。',
               style: TextStyle(
                 fontSize: FontSizes.cap,

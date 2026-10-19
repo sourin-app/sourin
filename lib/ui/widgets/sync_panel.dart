@@ -561,7 +561,7 @@ class _SyncPanelState extends State<SyncPanel> {
           // ★ 明文存了账号密码的源 —— 单独提示（比 Cookie 严重一档）
           _note(
             colors,
-            '⚠️ 这些源把**账号密码明文**存在本机：'
+            '⚠️ 这些源把「账号密码明文」存在本机：'
             '${c.plaintextPasswordProviders.join('、')}。'
             '它们会被一起加密同步 —— 如果你不希望密码离开这台设备，'
             '请先在这些源里登出，再关闭上面的开关。',
@@ -602,8 +602,8 @@ class _SyncPanelState extends State<SyncPanel> {
     final ok = await _confirm(
       title: '清除凭据同步口令',
       message: '清除后：\n\n'
-          '· 登录态**不再**同步（云端已有的那份不会被删）\n'
-          '· 已导出的含凭据的备份包**仍然需要**那个口令才能导入\n\n'
+          '· 登录态「不再」同步（云端已有的那份不会被删）\n'
+          '· 已导出的含凭据的备份包「仍然需要」那个口令才能导入\n\n'
           '忘记口令时也只能清除后重新设一个（旧包就解不开了）。',
       okLabel: '清除',
     );
@@ -1423,8 +1423,8 @@ class _PassphraseDialogState extends State<_PassphraseDialog> {
           children: [
             Text(
               widget.hasExisting
-                  ? '改口令只会影响**以后**的同步与导出；'
-                      '云端已有的那份、以及之前导出的备份包仍需要**旧口令**才能解开。'
+                  ? '改口令只会影响「以后」的同步与导出；'
+                      '云端已有的那份、以及之前导出的备份包仍需要「旧口令」才能解开。'
                   : '这个口令用来加密登录态（各内容源已保存的登录态）。'
                       '它只存在系统钥匙串里，不会上传、也不会写进备份包。',
               style: TextStyle(

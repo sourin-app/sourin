@@ -484,7 +484,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
-                  '密码已存在系统钥匙串 —— 它**不进配置对象，也就不进备份**',
+                  '密码已存在系统钥匙串 —— 它「不进配置对象，也就不进备份」',
                   style: TextStyle(
                       fontSize: FontSizes.cap, color: colors.mutedForeground),
                 ),

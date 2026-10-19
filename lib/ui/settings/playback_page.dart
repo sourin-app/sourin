@@ -606,7 +606,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
       ),
       children: [
         Text(
-          '限制**同时进行**的片段下载任务数。排队中的任务不占带宽，'
+          '限制「同时进行」的片段下载任务数。排队中的任务不占带宽，'
           '前面的下载完成一个，后面的才开始一个。',
           style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
         ),
@@ -667,7 +667,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
            */
           '片段缓存入口：播放页 → 播放设置（齿轮）→ 「下载本集到缓存」。'
           '那里用的就是上面这个上限。\n\n'
-          '★ 整片下载（详情页头部的「下载」按钮）**不占**这个上限 —— '
+          '★ 整片下载（详情页头部的「下载」按钮）「不占」这个上限 —— '
           '它落在「视频 / 源影 / <剧名>/」下，是用户自己的文件，'
           '不会被自动淘汰。',
           style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
@@ -687,7 +687,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
       children: [
         Text(
           '「下载」按钮（详情页头部 / 每一集）落在哪个目录、同时下几集。'
-          '与上面「片段下载并发」是**两笔账**：片段进缓存会被自动淘汰，'
+          '与上面「片段下载并发」是「两笔账」：片段进缓存会被自动淘汰，'
           '整片是你自己的文件，永远不会被自动删。',
           style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
         ),
@@ -811,8 +811,8 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
       ),
       children: [
         Text(
-          '应用数据目录里有**三个**缓存目录，用途不同、能不能删也不同。'
-          '下面每个数字都是**真实读盘**得到的，不是估算。',
+          '应用数据目录里有「三个」缓存目录，用途不同、能不能删也不同。'
+          '下面每个数字都是「真实读盘」得到的，不是估算。',
           style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
         ),
         const SizedBox(height: Sp.x4),
@@ -931,10 +931,10 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
            * ★ 「清理」到底清了什么，必须逐字说清（Owner 第 6 条「可以进行
            *   管理」）。三档的删除代价差别很大，混成一句「已清理」就是在骗人。
            */
-          '「按上限清理」只腾出**超限的那部分**，顺序是：'
+          '「按上限清理」只腾出「超限的那部分」，顺序是：'
           '① 播放器缓存（删了只是重缓冲）→ ② 片段缓存（删了要重新下）'
-          '→ ③ 截图（**不可再生**，只在①②都不够时才动）。'
-          '「清空片段缓存」只清 clip-cache，**不碰**截图与播放器缓存。',
+          '→ ③ 截图（「不可再生」，只在①②都不够时才动）。'
+          '「清空片段缓存」只清 clip-cache，「不碰」截图与播放器缓存。',
           style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
         ),
         if (_mpvReadback.isNotEmpty) ...[

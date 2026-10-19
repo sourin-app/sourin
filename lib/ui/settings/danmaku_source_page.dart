@@ -326,7 +326,7 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
                 failure: DanmakuProbeFailure.serverError,
                 url: url,
                 detail: 'TCP $port 可以连上，但探测端点没有给出可用响应',
-                remedy: '网络是通的（TCP 连得上）⇒ 这次的问题在**服务端**：'
+                remedy: '网络是通的（TCP 连得上）⇒ 这次的问题在「服务端」：'
                     '它可能正在冷启动、或者这个实例的接口变了。'
                     '等几秒重试，或换一个实例。',
               );

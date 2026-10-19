@@ -1,0 +1,471 @@
+{
+  "_README": [
+    "Machine-readable form of docs/notes/round-66-e2e-verify.md.",
+    "Read by tools/e2e_checklist.ps1.",
+    "",
+    "WHY THIS FILE IS JSON AND NOT MARKDOWN:",
+    "  The markdown checklist is for humans. A runner that parses markdown is a",
+    "  parser waiting to silently skip a line -- and a silently skipped check is",
+    "  indistinguishable from a passing one. Structured input means 'unknown key'",
+    "  can be a hard error instead of a heading the regex missed.",
+    "",
+    "EVERY ITEM MUST DECLARE mode:",
+    "  auto   -- has at least one machine check; runs unattended.",
+    "  manual -- no machine check exists yet. The runner PRINTS 'MANUAL: ...' and",
+    "            still counts as a pass (per the brief), but the reason must be",
+    "            concrete. 'hard to test' is not a reason; 'no entry point exists'",
+    "            is.",
+    "  A check that silently does nothing is forbidden. If you cannot automate it,",
+    "  say manual and say why.",
+    "",
+    "CHECK TYPES (all must pass for an auto item):",
+    "  screenshot -- verify_shots-style content check on a PNG",
+    "  log        -- regex count over the client stdout / rust stderr",
+    "  file       -- filesystem assertion (exists / absent / json key / size)",
+    "  tests      -- `flutter test <files>` must report +N -0",
+    "  source     -- literal or regex presence/absence in a source file",
+    "",
+    "SEVERITY: 'blocking' contributes to the exit code; 'info' only prints.",
+    ""
+  ],
+  "version": 1,
+  "round": 66,
+  "updated": "2026-10-19",
+  "items": [
+    {
+      "id": "R2-1",
+      "title": "R2 failure headline no longer claims the built-in proxy is down",
+      "change": "f47d2ed",
+      "files": [
+        "lib/core/sourin_api.dart"
+      ],
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "classify() on the real log line, exercised via flutter test",
+      "checks": [
+        {
+          "type": "tests",
+          "files": [
+            "test/zz_r65_error_text_test.dart",
+            "test/zz_t65_playback_error_text_test.dart"
+          ],
+          "expect": {
+            "passed": 42,
+            "failed": 0
+          }
+        }
+      ],
+      "manual_note": "Real-device reproduction needs a playing stream; not reachable in an isolated data dir."
+    },
+    {
+      "id": "R2-2",
+      "title": "R2 attribution reads raw text, not the display-rewritten text",
+      "change": "f47d2ed",
+      "files": [
+        "lib/core/sourin_api.dart"
+      ],
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "source assertion on the three text variables + call-site count",
+      "checks": [
+        {
+          "type": "source",
+          "file": "lib/core/sourin_api.dart",
+          "pattern": "final text = stripHostErrorNoise\\(raw\\);",
+          "expect": "regex-present"
+        },
+        {
+          "type": "source",
+          "file": "lib/core/sourin_api.dart",
+          "pattern": "final display = hideInternalUrls\\(text\\);",
+          "expect": "regex-present"
+        },
+        {
+          "type": "source",
+          "file": "lib/core/sourin_api.dart",
+          "pattern": "final lower = text\\.toLowerCase\\(\\);",
+          "expect": "regex-present"
+        },
+        {
+          "type": "source",
+          "file": "lib/core/sourin_api.dart",
+          "pattern": "final lower = display\\.toLowerCase\\(\\);",
+          "expect": "regex-absent"
+        },
+        {
+          "type": "source",
+          "file": "lib/core/sourin_api.dart",
+          "pattern": "lower\\.contains\\('内置代理'\\)",
+          "expect": "regex-absent",
+          "why": "that literal can never appear in the raw text -- it was a dead predicate"
+        }
+      ]
+    },
+    {
+      "id": "DM-1",
+      "title": "Danmaku proxy three-state: four committed gate files still green",
+      "change": "6222428",
+      "files": [
+        "lib/core/danmaku.dart",
+        "lib/ui/settings/danmaku_source_page.dart"
+      ],
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "flutter test the four committed files",
+      "checks": [
+        {
+          "type": "tests",
+          "files": [
+            "test/zz_t66_danmaku_proxy_test.dart",
+            "test/zz_t66_danmaku_proxy_req_test.dart",
+            "test/zz_t66_danmaku_proxy_a11y_test.dart",
+            "test/zz_t66_danmaku_proxy_https_test.dart"
+          ],
+          "expect": {
+            "passed": 18,
+            "failed": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "DM-2",
+      "title": "Danmaku proxy UI: the three options are in the REAL product page",
+      "change": "6222428",
+      "files": [
+        "lib/ui/settings/danmaku_source_page.dart"
+      ],
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "flutter test the page-render gate added by verify-e2e",
+      "checks": [
+        {
+          "type": "tests",
+          "files": [
+            "test/zz_t66_verify_danmaku_proxy_shots_test.dart"
+          ],
+          "expect": {
+            "passed": 4,
+            "failed": 0
+          }
+        }
+      ],
+      "manual_note": "Renders the real DanmakuSourcePage via flutter_test; produces .probe/e2e/danmaku-proxy-*.png."
+    },
+    {
+      "id": "DM-3",
+      "title": "Danmaku proxy: direct must be explicit DIRECT (never null)",
+      "change": "6222428",
+      "files": [
+        "lib/core/danmaku.dart"
+      ],
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "source assertion -- null would make Dart read HTTPS_PROXY",
+      "checks": [
+        {
+          "type": "source",
+          "file": "lib/core/danmaku.dart",
+          "pattern": "case DanmakuProxyMode\\.direct:\\s*\\n\\s*return 'DIRECT';",
+          "expect": "regex-present"
+        },
+        {
+          "type": "source",
+          "file": "lib/core/danmaku.dart",
+          "pattern": "case DanmakuProxyMode\\.system:",
+          "expect": "regex-present"
+        }
+      ]
+    },
+    {
+      "id": "DM-4",
+      "title": "Danmaku proxy: socks5 addresses are explicitly refused",
+      "change": "6222428",
+      "files": [
+        "lib/core/danmaku.dart"
+      ],
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "source assertion on the scheme guard",
+      "checks": [
+        {
+          "type": "source",
+          "file": "lib/core/danmaku.dart",
+          "pattern": "scheme\\.startsWith\\('socks'\\)",
+          "expect": "regex-present"
+        }
+      ]
+    },
+    {
+      "id": "SHOT-1",
+      "title": "Tab screenshots exist, are non-empty, right size, distinct, not a modal",
+      "change": "infrastructure",
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "pwsh tools/e2e_shots.ps1 -Tabs home,live,follow,search,cached,settings -NoBuild",
+      "checks": [
+        {
+          "type": "screenshot",
+          "dir": ".probe/e2e-t66",
+          "tabs": [
+            "home",
+            "live",
+            "follow",
+            "search",
+            "cached",
+            "settings"
+          ],
+          "expectWidth": 1280,
+          "expectHeight": 800,
+          "expectNoModal": true
+        }
+      ],
+      "manual_note": "Requires the Release bundle to exist. Run e2e_shots.ps1 first to (re)generate the images."
+    },
+    {
+      "id": "SHOT-2",
+      "title": "Screenshot verifier itself has discriminative power",
+      "change": "infrastructure",
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "verify_shots.ps1 on a dir whose settings.png IS the modal",
+      "checks": [
+        {
+          "type": "screenshot",
+          "dir": ".probe/e2e-modal6",
+          "expectNoModal": true,
+          "expectResult": "fail",
+          "why": "This is a negative control: the runner must reproduce exit 1 here."
+        }
+      ],
+      "manual_note": "Fixture .probe/e2e-modal6 is built from the real incident image; see docs/notes/round-66-e2e-verify.md."
+    },
+    {
+      "id": "R5-1",
+      "title": "R5 live: play controls must not overlap the line chips",
+      "change": "r5-live (in flight)",
+      "files": [
+        "lib/ui/live_page.dart",
+        "lib/ui/widgets/live_embedded_player.dart"
+      ],
+      "mode": "manual",
+      "severity": "blocking",
+      "manual_note": "Needs a live stream playing. Judgement is Rect intersection (area must be 0) taken from the running app, which needs either a reachable live page or a running probe. Not automatable from the tab-screenshot pipeline because the player page is not a bottom-bar tab."
+    },
+    {
+      "id": "R5-2",
+      "title": "R5 player controls are not clipped by the window",
+      "change": "r5-live (in flight)",
+      "files": [
+        "lib/ui/live_page.dart"
+      ],
+      "mode": "manual",
+      "severity": "blocking",
+      "manual_note": "Same blocker as R5-1: requires the player page. Task C of this round measured the mute icon visible ratio separately; see docs/notes/round-66-e2e-verify.md."
+    },
+    {
+      "id": "R6-1",
+      "title": "R6 live quality/line classification",
+      "change": "r5-live (in flight)",
+      "files": [
+        "lib/ui/live_page.dart"
+      ],
+      "mode": "manual",
+      "severity": "blocking",
+      "manual_note": "Requires a live stream whose upstream exposes several qualities. No fixture exists; an isolated data dir has zero providers."
+    },
+    {
+      "id": "R1-1",
+      "title": "R1 danmaku chip has no fringe/halo at its edge",
+      "change": "r1r8-ui (in flight)",
+      "files": [
+        "lib/ui/player_page.dart"
+      ],
+      "mode": "manual",
+      "severity": "blocking",
+      "manual_note": "Needs the player page with the danmaku panel open. The tab pipeline cannot reach it. Pixel criterion is documented (ring of alpha 1..254 around the chip)."
+    },
+    {
+      "id": "R8-1",
+      "title": "R8 cache page: whole-drama delete affordance is visible",
+      "change": "r1r8-ui (in flight)",
+      "files": [
+        "lib/ui/cache_page.dart"
+      ],
+      "mode": "manual",
+      "severity": "blocking",
+      "manual_note": "Needs at least one downloaded item. An isolated data dir has none, so the delete affordance does not render. Criterion: hit-rect >= 24x24 fully inside the cover, contrast >= 3:1."
+    },
+    {
+      "id": "R3-1",
+      "title": "R3 danmaku settings dialog: sub-items visible and searchable",
+      "change": "r3-dialog (in flight)",
+      "files": [
+        "lib/ui/widgets/danmaku_settings_dialog.dart"
+      ],
+      "mode": "manual",
+      "severity": "blocking",
+      "manual_note": "Dialog only opens from the player page. NOTE for whoever automates it later: this page uses a lazily-built CustomScrollView -- call tester.scrollUntilVisible / ensureVisible BEFORE asserting 'not found'."
+    },
+    {
+      "id": "R3-2",
+      "title": "R3-4 dialog must not pass click events through to the player",
+      "change": "r3-dialog (in flight)",
+      "files": [
+        "lib/ui/widgets/danmaku_settings_dialog.dart"
+      ],
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "flutter test the commited no-passthrough gate",
+      "checks": [
+        {
+          "type": "tests",
+          "files": [
+            "test/zz_t66_dialog_no_passthrough_test.dart"
+          ],
+          "expect": {
+            "failed": 0
+          }
+        }
+      ],
+      "manual_note": "Real-device click-through still needs a human; the widget gate proves the guard is wired."
+    },
+    {
+      "id": "CS1-1",
+      "title": "CS-1 backup export reports whether credentials were included",
+      "change": "10924c3 (cs1-sync)",
+      "files": [
+        "lib/ui/widgets/backup_panel.dart",
+        "lib/ui/widgets/sync_panel.dart",
+        "lib/core/sourin_api.dart"
+      ],
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "source assertion: the 'not included' note must exist",
+      "checks": [
+        {
+          "type": "source",
+          "file": "lib/core/sourin_api.dart",
+          "pattern": "credentialsIncluded",
+          "expect": "present"
+        },
+        {
+          "type": "source",
+          "file": "lib/ui/widgets/backup_panel.dart",
+          "pattern": "未包含",
+          "expect": "present",
+          "why": "the panel MUST say so; silence makes the user think everything was backed up"
+        }
+      ]
+    },
+    {
+      "id": "CS1-2",
+      "title": "CS-1 sync panel: switch on without a passphrase must say 'not synced'",
+      "change": "10924c3 (cs1-sync)",
+      "files": [
+        "lib/ui/widgets/sync_panel.dart"
+      ],
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "source assertion on the two distinguishable status strings",
+      "checks": [
+        {
+          "type": "source",
+          "file": "lib/ui/widgets/sync_panel.dart",
+          "pattern": "口令",
+          "expect": "present"
+        },
+        {
+          "type": "source",
+          "file": "lib/ui/widgets/sync_panel.dart",
+          "pattern": "凭据未同步",
+          "expect": "present"
+        }
+      ],
+      "manual_note": "The two 'not synced' states (no passphrase vs no credentials) must stay textually distinct; assert the reason, not just the verdict."
+    },
+    {
+      "id": "SKIP-1",
+      "title": "Skip-marker write failures are visible (not silently swallowed)",
+      "change": "2460801 + skip write path",
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "flutter test the write-path gate",
+      "checks": [
+        {
+          "type": "tests",
+          "files": [
+            "test/zz_t66_skip_write_path_test.dart"
+          ],
+          "expect": {
+            "failed": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "SKIP-2",
+      "title": "Skip-marker read timeout cannot spin forever",
+      "change": "2460801",
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "flutter test the dispose/timeout gate",
+      "checks": [
+        {
+          "type": "tests",
+          "files": [
+            "test/zz_t66_sheettimer_dispose_test.dart"
+          ],
+          "expect": {
+            "failed": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "LOG-1",
+      "title": "The client logs no Unhandled Exception during an isolated start",
+      "change": "infrastructure",
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "the run produced by SHOT-1",
+      "checks": [
+        {
+          "type": "log",
+          "file": ".probe/e2e-t66/client-stdout.log",
+          "pattern": "Unhandled Exception",
+          "expect": {
+            "count": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "LOG-2",
+      "title": "The update dialog did not appear during the isolated run",
+      "change": "infrastructure",
+      "mode": "auto",
+      "severity": "blocking",
+      "trigger": "the run produced by SHOT-1",
+      "checks": [
+        {
+          "type": "log",
+          "file": ".probe/e2e-t66/client-stdout.log",
+          "pattern": "发现新版本",
+          "expect": {
+            "count": 0
+          }
+        }
+      ],
+      "manual_note": "This is the cheap half of the false-green guard; the pixel side is SHOT-1/SHOT-2."
+    },
+    {
+      "id": "DATA-1",
+      "title": "The isolated run never wrote the real data directory",
+      "change": "infrastructure",
+      "mode": "manual",
+      "severity": "blocking",
+      "manual_note": "e2e_shots.ps1 compares the isolated dir against %APPDATA%\\app.sourin.player and refuses to run if they overlap, and it prints the real path as 'NOT touched'. Proving the real dir was not MODIFIED would need a pre/post hash of the whole tree; not implemented, so this stays manual. Do not silently mark it verified."
+    }
+  ]
+}

@@ -394,6 +394,15 @@ jobs:
       #   实测写了那个开关的有 9 个文件，而**全部带 native-media 标签**
       #   （默认就不进套件）；会进默认套件的那 7 个里只有 player_jank 有。
       #   且单独设它会让 job 每次必红 ⇒ 团队很快会去关掉它。
+      #
+      # ★ 位置为什么在这里（本 job 内「核验产物」验证的就是 libmpv）：
+      #   测试的 `_libmpvCandidates()` 在 Windows 上有两个候选：
+      #     build/windows/x64/libmpv/libmpv-2.dll            ← CMake 落点
+      #     build/windows/x64/runner/Release/libmpv-2.dll   ← 装进产物那份
+      #   而上面的「核验产物」查的是 `runner/Release/libmpv-2.dll`
+      #   （`:355` 的 `$mpv`）—— 它已 throw 过 ⇒ **第二个候选必定存在**
+      #   ⇒ 守卫跑的时候两个候选都在，不会误报。
+      #   实测：两个候选当前大小完全相同（29,764,622 字节），是同一份的两个副本。
       - name: 断言：默认套件里没有因缺件而静默 skip 的用例
         shell: bash
         run: |

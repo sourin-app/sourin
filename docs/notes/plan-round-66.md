@@ -34,8 +34,8 @@
 | **R3-⑥** | 弹幕信息显示源/时间/条数 | 现在只有 `'$label $count 条'` | 🟡 待改 |
 | **R3-⑦** | 两个内置 dan-api 用不了 | 同上 ③ | 🟡 同上 |
 | **R4** | 弹窗样式不统一「丑爆了」 | 与 R3-①② 同源 | 🟡 与 R3 一起做 |
-| **R5** | 直播静音按钮切一半 | **仍有疑点未解**：真机 chip 文字是「次元城动画」（像源名不像线路名），而 `live-ux` 两次读数 `lineSwitcher W=0` ⇒ **重叠对象可能不是 lineSwitcher** | 🟡 正在重新取证（`r5-live`） |
-| **R6** | 直播页缺弹幕/清晰度控件 | 已查实：①`danmaku_list` 只 strip `media_id/episode_id`，**没有 channel_id 通道** ⇒ 直播根本取不到弹幕，而现在入口**保留且恒空且静默**（比没有更糟）②清晰度：douyu 有能力没入口（宿主只传 1 个参数），cctv 三档里两档 DRM | 🟡 裁决：隐藏假入口 + 不做「只有一项的下拉」 |
+| **R5** | 直播静音按钮切一半 | **仍有疑点未解**：真机 chip 文字是「某站点B动画」（像源名不像线路名），而 `live-ux` 两次读数 `lineSwitcher W=0` ⇒ **重叠对象可能不是 lineSwitcher** | 🟡 正在重新取证（`r5-live`） |
+| **R6** | 直播页缺弹幕/清晰度控件 | 已查实：①`danmaku_list` 只 strip `media_id/episode_id`，**没有 channel_id 通道** ⇒ 直播根本取不到弹幕，而现在入口**保留且恒空且静默**（比没有更糟）②清晰度：某站点C 有能力没入口（宿主只传 1 个参数），某站点G 三档里两档 DRM | 🟡 裁决：隐藏假入口 + 不做「只有一项的下拉」 |
 | **R7** | material 化做完了吗 | 剩 3 项（首页 3 控件 / 彻底去 MaterialApp / 删 theme_bridge） | ✅ 已答 |
 | **R8** | 已缓存删除徽标看不清 | **真缺陷不是对比度**：`opacity: _hover ? 1 : 0`，`MouseRegion` 只由鼠标驱动 ⇒ 触屏/遥控/键盘用户**永远看不见**，而它背后挂着「删除整部」 | 🟡 已裁决用 `MediaQuery.hoverable`，待实施+验证 |
 
@@ -1891,7 +1891,7 @@ Owner 给的是 4 条**弹幕体验**问题。而我在此之前做了什么：
 
 | # | Owner 原话 | 落点 | 状态 |
 |---|---|---|---|
-| **LG-1** | 「bilibili 扫码登录提示 not function，但实际成功了，返回重进 js 插件页面就显示出我的信息」 | 登录面板的**成功判定**与回读时机 | ⏳ 待定位 |
+| **LG-1** | 「某站点A 扫码登录提示 not function，但实际成功了，返回重进 js 插件页面就显示出我的信息」 | 登录面板的**成功判定**与回读时机 | ⏳ 待定位 |
 | **OK-1** | 「『弹幕信息』的弹窗设计的不错」 | —— **这是正面反馈，别改它** | ✅ 保持 |
 
 ---
@@ -2446,7 +2446,7 @@ live-ux 上轮用 ClipRRect 反证「控件不可能跑到窗口外」。
 
 ### Owner 的澄清（定性，不是需求变更）
 
-> 「插件弹幕能力指的是，bilibili 次元城 爱奇艺 腾讯 等等这种都支持发送弹幕的能力，
+> 「插件弹幕能力指的是，某站点A 某站点B 某站点E 腾讯 等等这种都支持发送弹幕的能力，
 >   所以这种要做在插件里面去，懂了吗」
 
 ⇒ **能力在插件侧，应用侧只做「调用 + 开关 + 结果回显」。**
@@ -2520,7 +2520,7 @@ N15-B  播放页「弹幕发送」被禁用时，给出**可操作的下一步**
 ## 一、N15 定性（Owner 的澄清，必须照此理解）
 
 ```text
-「插件弹幕能力」= bilibili / 次元城 / 爱奇艺 / 腾讯 这类站点**发送弹幕**的能力。
+「插件弹幕能力」= 某站点A / 某站点B / 某站点E / 腾讯 这类站点**发送弹幕**的能力。
 ★ 这些能力必须做在**插件**里（登录态、cookie、token、发送接口都在插件侧）。
 ★ 应用侧只做三件事：调用、开关判定、结果回显。应用不内置任何站的发送逻辑。
 ```
@@ -2821,7 +2821,7 @@ N14 = ✅ 已完成（07db0c3），有实测读数、有代价记录、有取舍
 结构：
   src/types.ts        插件契约类型定义
   src/host.d.ts       宿主 API 类型
-  plugins/bilibili.ts 1174 行，目前**唯一**的插件源码
+  plugins/某站点A.ts 1174 行，目前**唯一**的插件源码
   build.mjs           构建脚本（TS → dist）
   dist/plugins/       构建产物
 ```
@@ -2834,7 +2834,7 @@ $ grep -n "danmaku" src/types.ts
 $ grep -n "danmaku" src/host.d.ts
   （无输出 —— 宿主侧完全没有暴露发送能力）
 
-$ grep -nE "^  async [a-zA-Z]+\(|capabilities" plugins/bilibili.ts
+$ grep -nE "^  async [a-zA-Z]+\(|capabilities" plugins/某站点A.ts
   756:  capabilities: { vod: true, search: true, live: false, ... }
   813:  async home()      833: categories()   866: list()
   878:  rank()           889: search()       922: detail()
@@ -2861,10 +2861,10 @@ $ grep -nE "^  async [a-zA-Z]+\(|capabilities" plugins/bilibili.ts
 ④ host.d.ts 里同步暴露宿主侧对应类型（供插件 import）
 ```
 
-### 4.2 插件实现（`plugins/bilibili.ts`）
+### 4.2 插件实现（`plugins/某站点A.ts`）
 
 ```text
-需要：登录态（Cookie / access_key）+ B 站弹幕发送接口
+需要：登录态（Cookie / access_key）+ 该站点弹幕发送接口
   · 未登录 ⇒ 返回 { ok: false, message: '需要先登录' }（**不是抛异常**）
   · 应用侧已有 `danmakuSendAllowed()` 只看 capabilities.danmakuSend，
     所以**必须先声明 capabilities.danmakuSend = true** 才会渲染发送框
@@ -2874,7 +2874,7 @@ $ grep -nE "^  async [a-zA-Z]+\(|capabilities" plugins/bilibili.ts
     ⇒ UI 必须能表达「能发但需要登录」，这与应用侧 N15-A 文案是同一件事
 ```
 
-### 4.3 其它站点（次元城 / 爱奇艺 / 腾讯 等）—— Owner 已给处置方式
+### 4.3 其它站点（某站点B / 某站点E / 腾讯 等）—— Owner 已给处置方式
 
 **Owner 原话**（2026-10-18 19:4x）：
 > 「插件是最开始我让另一个会话窗口做的，如果没有，
@@ -2885,8 +2885,8 @@ $ grep -nE "^  async [a-zA-Z]+\(|capabilities" plugins/bilibili.ts
 
 | 位置 | 内容 | 数量 |
 |---|---|---|
-| 私库 `D:\WishProject\sourin-plugins\plugins\` | `bilibili.ts` | **1** 个源码 |
-| 私库 `dist/plugins/` | `bilibili.js` | **1** 个产物 |
+| 私库 `D:\WishProject\sourin-plugins\plugins\` | `某站点A.ts` | **1** 个源码 |
+| 私库 `dist/plugins/` | `某站点A.js` | **1** 个产物 |
 | 数据目录 `%APPDATA%\app.sourin.player\plugins\` | `154.js` `360.js` `api-2.js` … | **32** 个 .js |
 
 ⇒ 那 32 个**没有源码**，是从别处（早期会话）直接产出 .js 放进数据目录的。
@@ -2902,7 +2902,7 @@ $ grep -nE "^  async [a-zA-Z]+\(|capabilities" plugins/bilibili.ts
 ⚠️ 待定但不猜的两点：
 ```text
 · 这 32 个 .js 是**产物**还是**源码**？
-  （bilibili 那条路径是 .ts 源码 → build.mjs → dist/plugins/bilibili.js）
+  （某站点A 那条路径是 .ts 源码 → build.mjs → dist/plugins/某站点A.js）
   若它们是产物，直接进 plugins/ 会与 TS 构建链冲突
   ⇒ 需要先看 1~2 个文件的头部（有无 sourceMappingURL / 编译痕迹）再定位置
 · 是否要反向做 TS 化（.js → .ts）—— 工作量大，先不做，只保证「私库最新」
@@ -2942,7 +2942,7 @@ N15（插件发送能力）
 |---|---|---|---|
 | **R5** 直播控件被裁一半 | `live-ux` + **Lead 真机复现** | **只读** | ✅ **根因已定位**（900×600 下 ▶/🔇 压在 lineSwitcher 上），等 Owner 批修法 |
 | **R3-④** 弹窗双击透传 | `settings-ux` | **只读**，不改文件 | 🔄 进行中 |
-| **插件库同步** 31 个 .js 挪进私库 | `plugin-repo` | `D:\WishProject\sourin-plugins` | ✅ **完成 `7d92dab`**（31 个已推远端；bilibili 两版均留、未互相覆盖） |
+| **插件库同步** 31 个 .js 挪进私库 | `plugin-repo` | `D:\WishProject\sourin-plugins` | ✅ **完成 `7d92dab`**（31 个已推远端；某站点A 两版均留、未互相覆盖） |
 
 ★ 前两项**只读**是刻意的：定位清楚后由我决定改法，避免多人同时改 UI 文件。
 
@@ -3130,7 +3130,7 @@ SOURIN_TABS=1 SOURIN_SHOT=1 SOURIN_FRAME_LOG=1 SOURIN_WINDOW_SIZE=1444x845
 
 ### 亲眼所见
 
-900×600 窗口下，直播页左侧播放窗口的 **`▶` 和 `🔇` 两个图标压在「次元城动画」线路 chip 之上**，
+900×600 窗口下，直播页左侧播放窗口的 **`▶` 和 `🔇` 两个图标压在「某站点B动画」线路 chip 之上**，
 半透明叠加，看起来就是「被遮挡」。（放大 3 倍截图确认，不是目测）
 
 ### 像素实测
@@ -3241,12 +3241,12 @@ Owner 明确：「我还没让你动手改代码」
 |---|---|---|---|---|
 | 1 | `live-ux` | **R5 修法实施**（lineSwitcher 移出 Column）+ 重叠门禁 | `lib/ui/live_page.dart`（只 _buildWideBody）+ 新测试 | 🔄 |
 | 2 | `settings-ux` | **R3-④ 修法实施**（`onDoubleTap: () {}`）+ 透传门禁 | `app_dialog_shell.dart` + 新测试 | 🔄 |
-| 3 | `dan-api` | **N15 插件弹幕发送**（契约层 + bilibili 实现） | 私库 `src/` + `plugins/` | 🔄 |
+| 3 | `dan-api` | **N15 插件弹幕发送**（契约层 + 某站点A 实现） | 私库 `src/` + `plugins/` | 🔄 |
 | 4 | `danmaku` | **弹幕代理 a+b**（findProxy + 配置页三态） | `danmaku.dart` / `ui_prefs.dart` / `danmaku_source_page.dart` | 🔄 |
 | 5 | `playback-fix` | **63 条失败分类**（A本轮/B基线/C断言过时/D偶发） | 只读 + worktree | 🔄 |
 | 6 | `live-groups` | **R6 直播控件缺口取证**（清晰度在数据模型里存在吗） | 只读 | 🔄 |
 | 7 | `perf-player` | **R1 毛边 + R8 删除徽标**（视觉缺陷取证） | 只读 + 探针 | 🔄 |
-| 8 | `plugin-repo` | **bilibili PGC 反哺 + 一致性门禁** | 私库 `plugins/bilibili.ts` + 新 tools/ | 🔄 |
+| 8 | `plugin-repo` | **某站点A PGC 反哺 + 一致性门禁** | 私库 `plugins/某站点A.ts` + 新 tools/ | 🔄 |
 
 ★ 写入范围已划清，无重叠。
 ★ 任务 1 与 6 都涉及 `live_page.dart`，但 6 是**只读**，不冲突。
@@ -3257,13 +3257,13 @@ Owner 明确：「我还没让你动手改代码」
 |---|---|
 | **CS-1** 登录态同步/导出导入 | 提案已写（note 树），等批 |
 | **R5 修法 A vs B** | 我选 A（lineSwitcher 移出比例计算），已让 live-ux 按 A 做 |
-| **bilibili 谁是主版本** | PGC 能力已在反哺，最终需 Owner 确认哪份为准 |
+| **某站点A 谁是主版本** | PGC 能力已在反哺，最终需 Owner 确认哪份为准 |
 
 ### 本轮我（Lead）验证过的（亲眼所见）
 
 | 事项 | 证据 |
 |---|---|
-| R5 **真机复现** | 900×600 截图，▶/🔇 压在「次元城动画」chip 上（`.probe/r5_evidence/`） |
+| R5 **真机复现** | 900×600 截图，▶/🔇 压在「某站点B动画」chip 上（`.probe/r5_evidence/`） |
 | R5 在 1444×845 下**不复现** | 播放窗口 1074×600 正好 16:9，控件完整 |
 | `settings-ux` 的 R3-④ 诊断**正确** | 我核了 `app_dialog_shell.dart:358` 的 `onTap: onClose` |
 | 全量测试 | `+4193 ~76 -63` |
@@ -3283,12 +3283,12 @@ Owner 明确：「我还没让你动手改代码」
 ```text
 播放窗口底边      y = 423   （纯灰 (174,175,179) 的最后一个 y）
 白色图标像素范围  y = 400..464   → **跨过了 423**
-chip（次元城动画）顶边  y = 431
+chip（某站点B动画）顶边  y = 431
 ⇒ 图标有 33px 落在窗口外，其中与 chip 重叠 33px
 ```
 
 放大 6 倍图（`.probe/r5_now.png`）能直接看到：
-**「次元城动画」这个 chip 上透出了 ▶ 和 🔇 的白色轮廓。**
+**「某站点B动画」这个 chip 上透出了 ▶ 和 🔇 的白色轮廓。**
 
 ### 为什么复刻测不出来
 
@@ -3414,7 +3414,7 @@ M lib/ui/widgets/app_dialog_shell.dart        settings-ux: onDoubleTap
 
 私库 D:\WishProject\sourin-plugins（未提交）：
 M src/types.ts                  DanmakuSendRequest/Result（与 Rust 对齐）
-M plugins/bilibili.ts           danmakuSend ~200 行 + readCookieValue
+M plugins/某站点A.ts           danmakuSend ~200 行 + readCookieValue
 A tools/check-danmaku-send-parity.mjs
 A tools/_selftest_danmaku_parity.mjs
 A tools/_test_danmaku_send_behavior.mjs
@@ -3513,7 +3513,7 @@ A tools/_test_danmaku_send_behavior.mjs
 ① rust/plugins/mod.rs:3690   danmaku_list 只 strip media_id / episode_id
                              —— 番剧剧集模型，**没有 channel_id 通道**
 ② rust/model.rs:729          `pub danmaku: bool` 单一能力位，没有 live_danmaku
-③ 32 个插件只有 iqiyi.js 含 danmaku 字样，
+③ 32 个插件只有 某站点E.js 含 danmaku 字样，
    而它 :612 写着「★ 不声明 danmaku：本插件没有弹幕数据源，声明了也是假的」
 ④ 7 个直播插件逐个：live=1 但 danmaku_cap=0、danmakuList=0
 ```
@@ -3534,11 +3534,11 @@ A tools/_test_danmaku_send_behavior.mjs
 
 ```text
 不是"没有数据"，是"有数据但只有一个能播"：
-  cctv     3 条流（高清/标清/仅音频），前两条 **drmProtected: true**
+  某站点G     3 条流（高清/标清/仅音频），前两条 **drmProtected: true**
            实测 61~80 个解码错误 ⇒ isPlayable 过滤后只剩"仅音频"
            ⇒ lineSwitcher 不显示 —— **这是正确的**，另两档点了就是黑屏
-  douyu    手握 multirates 多档，但代码只 find 一档返回
-  huya     多 CDN 但同一档位
+  某站点C    手握 multirates 多档，但代码只 find 一档返回
+  某站点D     多 CDN 但同一档位
   iptv/tvbox 单路源
 ```
 
@@ -3547,7 +3547,7 @@ A tools/_test_danmaku_send_behavior.mjs
 **三个选项**：
 ```text
 ① ★ 我推荐：放弃"多档清晰度"
-② 只保留现有"线路切换"（已存在，对 huya 多 CDN 有效，零开发）
+② 只保留现有"线路切换"（已存在，对 某站点D 多 CDN 有效，零开发）
 ③ 若坚持 ⇒ 请指定**哪个源**，并接受请求量上升（与本轮 P0「怕被拉黑」冲突）
 ```
 
@@ -3556,14 +3556,14 @@ A tools/_test_danmaku_send_behavior.mjs
 `dan-api` 自己查出来的（这个发现很关键）：
 
 ```text
-数据目录里运行的是 bilibili.js（65047 字节）
-  其 sha256 与私库 _legacy/bilibili-20261012.js **完全相同**
+数据目录里运行的是 某站点A.js（65047 字节）
+  其 sha256 与私库 _legacy/某站点A-20261012.js **完全相同**
 ⇒ 就是 legacy 那份
 其中 danmakuSend 能力位 = 0、方法 = 0、danmaku 位 = 0
 ⇒ 用户看不到任何变化：capabilities.danmaku_send 仍为 false，发送行不渲染
 ```
 
-**所以需要你定**：私库里新的 `bilibili.ts`（已实现 danmakuSend）
+**所以需要你定**：私库里新的 `某站点A.ts`（已实现 danmakuSend）
 **要不要覆盖数据目录那份**？
 
 ```text
@@ -3594,11 +3594,11 @@ A tools/_test_danmaku_send_behavior.mjs
 ### 已证实
 
 ```text
-✅ cctv.js:341  drmProtected: true
+✅ 某站点G.js:341  drmProtected: true
    :316 注释原文「实测 video 轨 61~80 个解码错误。如实标 drmProtected: true」
-   ⇒ 「cctv 3 条流只有 1 条可播」**属实**
+   ⇒ 「某站点G 3 条流只有 1 条可播」**属实**
 
-✅ douyu-live.js:366-368
+✅ 某站点C-live.js:366-368
    :366  // multirates 里有清晰度档位；rate:-1 拿到的通常是原画
    :367  const rates = data.multirates || []
    :368  const cur = rates.find((m) => Number(m.rate) === Number(data.rate))
@@ -3608,26 +3608,26 @@ A tools/_test_danmaku_send_behavior.mjs
 ### 需修正 `live-groups` 的表述
 
 ```text
-它说：「douyu 手握 multirates 多档却只 find 出一档返回」
+它说：「某站点C 手握 multirates 多档却只 find 出一档返回」
 更准确：:368 用 find 取**当前档**（cur），不是"只 find 出一档"
         ⇒ 事实正确（确实只返回一条），但措辞容易读成"代码写错了"
         ⇒ 实际是**设计如此**：插件按宿主传的 quality 返回对应一档
 ```
 
-★ 这意味着：**douyu 其实已经支持多档的选择逻辑**，只是宿主从来不传 quality
-⇒ 若将来做清晰度，douyu 是最可能先跑通的那个源（比 cctv 的 DRM 死路强）
+★ 这意味着：**某站点C 其实已经支持多档的选择逻辑**，只是宿主从来不传 quality
+⇒ 若将来做清晰度，某站点C 是最可能先跑通的那个源（比 某站点G 的 DRM 死路强）
 
 ### 所以我给 R6 决策的补充建议
 
 ```text
 原判断「清晰度是伪需求」需要修正为：
-  · cctv    ⇒ 真死路（DRM）
-  · douyu   ⇒ **技术上可行**，插件已具备按档返回的能力
-  · huya    ⇒ 多 CDN 同档位
+  · 某站点G    ⇒ 真死路（DRM）
+  · 某站点C   ⇒ **技术上可行**，插件已具备按档返回的能力
+  · 某站点D    ⇒ 多 CDN 同档位
   · iptv/tvbox ⇒ 单路
 
 ⇒ 决策选项应增加一个：
-  ④ 只对 douyu 做清晰度（最小范围验证），成功后再推广
+  ④ 只对 某站点C 做清晰度（最小范围验证），成功后再推广
      ⚠️ 但要接受"每换一档多一次请求"，与本轮 P0「怕被拉黑」有张力
 ```
 
@@ -3675,7 +3675,7 @@ PBKDF2 vs Argon2：采纳用 ring + PBKDF2（600k 次，约 200-400ms）
 
 ★ 在凭据场景，**漏和多之间必须选多**。
 
-附带的自动收益：剔除缓存后文件为空的（如 douyu-live.json 只有缓存），
+附带的自动收益：剔除缓存后文件为空的（如 某站点C-live.json 只有缓存），
                 整文件跳过不上传 ⇒ 26 个无凭据插件自然不产生上传。
 ```
 
@@ -3690,7 +3690,7 @@ PBKDF2 vs Argon2：采纳用 ring + PBKDF2（600k 次，约 200-400ms）
 ## 五、★ 一个必须提示用户的特例
 
 ```text
-cycani.js:201  credentials 存的是**明文 {username, password}**，不是 token
+某站点F.js:201  credentials 存的是**明文 {username, password}**，不是 token
 ⇒ 这比"同步登录态"严重一个量级 —— 密码是永久的，token 会过期
 ⇒ 必须单独提示：「这会把你的账号密码（而不只是登录状态）同步到云盘」
 ```
@@ -3922,8 +3922,8 @@ multirates 返回 4 档：
 实测：
   rust/sourin_core/src/plugins/mod.rs:3565
       format!("plugin.liveStream({})", ...)      ← **只传 1 个参数**
-  douyu-live.js:320   async liveStream(channelId)
-  douyu-live.js:330   '&rate=-1&...'             ← rate=-1 **写死**
+  某站点C-live.js:320   async liveStream(channelId)
+  某站点C-live.js:330   '&rate=-1&...'             ← rate=-1 **写死**
 
 ⇒ 准确表述：**有能力、没入口**
 ```
@@ -3980,14 +3980,14 @@ multirates 返回 4 档：
 ## 二、两个真缺口（我亲自核实）
 
 ```bash
-$ grep -c "qrcode/generate\|qrcode/poll" 数据目录/bilibili.js      ⇒ **5**
-$ grep -c "qrcode/generate\|qrcode/poll" 私库/dist/plugins/bilibili.js ⇒ **0**
+$ grep -c "qrcode/generate\|qrcode/poll" 数据目录/某站点A.js      ⇒ **5**
+$ grep -c "qrcode/generate\|qrcode/poll" 私库/dist/plugins/某站点A.js ⇒ **0**
 ⇒ 缺口① 扫码登录整条链路不存在
 
-$ grep -o "search_type=[a-z_]*" 数据目录/bilibili.js
+$ grep -o "search_type=[a-z_]*" 数据目录/某站点A.js
     search_type=          ← 动态拼接
     search_type=video     ← 默认值
-$ grep -o "search_type[=:]['\"]\?[a-z_]*" 私库/dist/plugins/bilibili.js
+$ grep -o "search_type[=:]['\"]\?[a-z_]*" 私库/dist/plugins/某站点A.js
     search_type=video     ← **只有这一个，硬编码**
 ⇒ 缺口② 搜不到番剧/影视（legacy 用 one(type) 调 3 次：video/media_bangumi/media_ft）
 ```
@@ -4052,7 +4052,7 @@ tools/check-plugin-parity.mjs（另一轨道新增）
 那张裁片（560×360）内容是：
   左侧海报「无职转生 第三季」
   中间「正在加载直播画面...」+ 转圈
-  底部 chip 行「次元城动画 / 哔哩哔哩 / 影视建安 / …」
+  底部 chip 行「某站点B动画 / 某站点A(全称) / 影视建安 / …」
   ★ 没有播放画面
 ⇒ 仍是加载态，不是有画面的状态。
 ```
@@ -4125,7 +4125,7 @@ _EmbedBar 按理应在窗口内底部（约 y 382..430）
 ```
 
 **放大 4 倍图（`.probe/r5_confirmed.png`）能直接看到：
-「次元城动画」chip 的下半部分透出 ▶ 和 🔇 的白色轮廓。**
+「某站点B动画」chip 的下半部分透出 ▶ 和 🔇 的白色轮廓。**
 
 ## 四、这与 `live-ux` 的代码推导矛盾 —— 矛盾点在哪
 
@@ -4211,7 +4211,7 @@ _EmbedBar 按理应在窗口内底部（约 y 382..430）
   _EmbedBar        L=37.1  T=433.6  B=481.6   W=532 H=48      ← 贴视频底 ✅
 
 我的可信读数（同一张 900×600 截图）：
-  chip 行（次元城动画）y 约 430..474
+  chip 行（某站点B动画）y 约 430..474
   白色图标（▶🔇）在 chip 区域内透出
 
 ★ 关键对照：

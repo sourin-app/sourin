@@ -37,6 +37,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/ui/widgets/skip_marker_dialog.dart';
 import 'package:sourin_spike/ui/widgets/skip_timeline.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
@@ -52,6 +53,23 @@ Widget _host(Widget child) {
 }
 
 void main() {
+  /*
+   * ★★★ 第 66 轮：注入 `debugSkipMarkerFetcher`（真 FFI 异常落在**真实时间**轴上）
+   * ```text
+   * 不注入时 `SkipMarkerDialog._loadExisting()` 调真 FFI：
+   *   core 未启动 ⇒ 异常在真实时间上投递
+   *   而 `_kLoadTimeout` = 10s（skip_marker_dialog.dart:733）被建成 **FakeTimer**，
+   *   本测试预算只有 12×250ms = 3s ⇒ 永远到不了超时
+   *   ⇒ `_LoadState` 卡在 loading ⇒ 时间轴/四行根本不挂载
+   *     （实测：timeline=0 失败文案=0 转圈=0）
+   * ⇒ 注入 `(_, __) async => null` = **"没设过跳过点"**，那是正常结果，
+   *   不是错误路径 ⇒ `_LoadState` 直接 ok，且**不需要** runAsync / libmpv。
+   * ⚠️ 必须 tearDown 置回 null —— 它是**进程级 static**，不复位会串到别的用例
+   *   （本会话 R8 的 listener 跨用例串味，同一条纪律）。
+   */
+  setUp(() => SourinApi.debugSkipMarkerFetcher = (_, __) async => null);
+  tearDown(() => SourinApi.debugSkipMarkerFetcher = null);
+
   group('t450 拟人化拖拽', () {
     testWidgets('★★★ 拖箭头 → 松手：预览必须跟到那一秒', (WidgetTester tester) async {
       tester.view.physicalSize = const Size(1280, 800);

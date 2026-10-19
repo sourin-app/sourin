@@ -31,6 +31,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/ui/widgets/skip_marker_dialog.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
@@ -173,6 +174,19 @@ List<String> _probeLabels(WidgetTester tester) {
 const _phone = Size(1080 / 2.625, 2400 / 2.625);
 
 void main() {
+  /*
+   * ★★★ 第 66 轮：注入 `debugSkipMarkerFetcher`
+   * ```text
+   * 不注入时 `SkipMarkerDialog._loadExisting()` 调真 FFI：异常落在**真实时间**轴上，
+   * 而 `_kLoadTimeout`=10s（skip_marker_dialog.dart:733）被建成 **FakeTimer**，
+   * 本文件预算不足 10s ⇒ `_LoadState` 卡在 loading ⇒ 时间轴/四行不挂载。
+   * ⇒ 注入 `(_, __) async => null` = "没设过跳过点"（**正常结果**）⇒ 直接 ok，
+   *   不需要 runAsync，也不需要 libmpv/FFI（故不打 native-media 标签）。
+   * ⚠️ tearDown 必须置回 null —— 它是**进程级 static**，不复位会串到别的用例。
+   */
+  setUp(() => SourinApi.debugSkipMarkerFetcher = (_, __) async => null);
+  tearDown(() => SourinApi.debugSkipMarkerFetcher = null);
+
   group('t486 四行标签在手机宽度下不得被省略', () {
     testWidgets('★ 手机宽度（1080x2400 @2.625）设满四个值后，标签全部完整',
         (WidgetTester tester) async {
@@ -311,47 +325,59 @@ void main() {
       );
 
       /*
-       * ★★ 已知缺陷（不是本文件引入的，也不是本次修复引入的）：
+       * ★★★ 2026-10-19：极窄组的溢出**已归零**，判据随之升级。
        *
-       * 极窄 300 逻辑宽下，**顶部徽章**那一行的 `Row`
-       * （`skip_marker_dialog.dart:2203`，外层是
-       * `Row[ Expanded(Wrap(badge, badge)), Sp.x2, SizedBox(32, IconButton) ]`）
-       * 会报 `A RenderFlex overflowed by 37 pixels on the right.`
+       * # 改前是什么样（留作历史，别再照抄）
+       * ```text
+       * 极窄 300 逻辑宽下，徽章那一行会报 RenderFlex overflowed。
+       * 判据写死「溢出条数 > 0 且恰好是 `overflowed by 41 pixels`」——
+       *   即把已知缺陷**钉成指纹**：只允许这一处、这一个数值。
+       * 读数沿革：37（更早一次修复后的陈旧值）→ 41（真值）→ 8.5。
+       * ```
        *
-       * 这里**刻意把它钉住**而不是忽略：
-       *   · 溢出**只允许**出现在极窄组（手机 411 / 桌面 1280 组已各自断言 0 溢出）
-       *   · 且只允许是**这一处**（`:2203` 的徽章 Row）、**这一个数值**
-       * ⇒ 将来谁在别处引入溢出，这里会红；谁真把徽章修好了，
-       *   这里也会红，提醒把它改成"零溢出"。
+       * # 根因不是「头部徽章 Row」（那是这条注释原来的说法，属**误标**）
+       * ```text
+       * 用 debugDumpRenderTree 读 OVERFLOWING 节点的 creator 链，真值是：
+       *   Row ← Padding ← DecoratedBox ← Container ← Wrap ← Expanded ← Row
+       * ⇒ 溢出的是**每个 badge 内部那一行**
+       *   （skip_marker_dialog.dart 里 badge() 的 child: Row），不是头部那行。
+       * 该行：色点 7 + Sp.x1 4 + 文字 199.5 = 210.5，可用宽只有 202.0 ⇒ 溢出 8.5。
+       *   （HEAD 当时可用宽 170.0 ⇒ 溢出 41；我删掉头部那个 32px 关闭钮后
+       *     徽章多出 32 ⇒ 溢出从 41 缩到 8.5。**变小不等于修好**。）
+       * ```
        *
-       * ⚠️ 判据必须用**正文**（`overflowed by 37 pixels` + `:2203`），
-       *    不能用 `takeException()` 的返回值 —— 多条异常时它只给
-       *    「Multiple exceptions (2) were detected…」，正文全丢。
+       * # 修法（实现侧，skip_marker_dialog.dart 的 badge()）
+       * 文字外包 `Flexible` + `TextOverflow.ellipsis` ⇒ 放不下就压缩并出省略号。
+       * ⚠️ **不是**缩字号、**不是**砍掉省略号 —— 那样会把本文件要守的
+       *    「标签放不下时怎么处理」这个可见行为一起弄没（见下面 ②）。
+       *
+       * # 所以本组现在断言「零溢出」，而不是某个数值
+       * ★ 判据本意一直是「**不许有溢出**」，数值只是缺陷期的指纹。
+       *   缺陷修好后继续钉指纹 = 把尺子的刻度改短，将来谁再撑宽徽章它就不响了。
        */
       final ovf = _overflows(caught);
+      // ① 极窄组：溢出条数必须 == 0（**不是**删掉这条断言 —— 删了就没人守极窄组）
       expect(
         ovf,
-        isNotEmpty,
-        reason: '★ 极窄组的阳性对照（标签 CLIPPED）已成立；'
-            '若这里连一条溢出都没有，说明异常通道没接上，'
-            '本文件对"手机/桌面零溢出"的两条断言也就没有证明力。',
+        isEmpty,
+        reason: '★★ 极窄 300 逻辑宽下**不许有任何溢出**。\n'
+            '徽章文字已改成 `Flexible` + `TextOverflow.ellipsis`，'
+            '放不下时应当省略而不是溢出。\n'
+            '实测捕获到 ${ovf.length} 条：$ovf\n'
+            '★ 若溢出的是**徽章内部那一行**'
+            '（creator 链 = `Row ← Padding ← DecoratedBox ← Container ← Wrap`），'
+            '多半是有人把 badge() 里的 `Flexible` 又删了 ⇒ 立刻查。\n'
+            '若是**别的**行 ⇒ 那是新引入的布局回归。',
       );
-      for (final e in ovf) {
-        expect(
-          // ★ 2026-10-10：这里原来写死 37。实测（git stash 回到改动前复跑）
-          //   真实读数一直是 **41** ⇒ 那条 37 是更早一次修复后没跟上的陈旧值，
-          //   本轮一并校准。判据本意是「极窄组**只允许**徽章 Row 溢出」，
-          //   数值只是它的指纹。
-          e.contains('overflowed by 41 pixels'),
-          isTrue,
-          reason: '★★ 极窄组已知只有「徽章 Row 溢出 41px」这一条。'
-              '出现了别的溢出 ⇒ 是**新**的布局回归，必须查。实测：$e',
-        );
-      }
+      // ③ 与「手机/桌面零溢出」**分开**断言并各自写明理由：
+      //    三种宽度的失效模式不同（手机=竖屏窄、桌面=宽而全、极窄=徽章挤压），
+      //    合成一条就看不出是哪一种坏了。
       expect(
         caught.where((e) => !e.contains('overflowed')).toList(),
         isEmpty,
-        reason: '★ 非溢出类异常不该出现在本组。',
+        reason: '★ 极窄组：非溢出类异常（抛异常/断言失败等）也不该出现。'
+            '注意这条与上面那条**分开**：上面只管布局溢出，'
+            '这条管「别的坏事」，两者失效原因不同。实测：$caught',
       );
     });
   });

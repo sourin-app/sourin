@@ -714,8 +714,31 @@ void main() {
               '二维码约 180 秒有效；1 秒太密有风控风险）');
       // ★★★ 原版 Owner 实测报的真 bug：「我刚扫了 然后就提示网络异常」
       //   ⇒ 单次网络失败只能改文案，**不能停轮询**
-      expect(code.contains('网络异常，重试中…'), isTrue,
-          reason: '★ 单次网络失败必须只改文案、继续轮询');
+      //
+      // ⚠️ 2026-10-19（Lead 修）：这条断言原本是
+      //   `expect(code.contains('网络异常，重试中…'), isTrue)`
+      //   —— 它在 commit 312bb04（N12「登录轮询文案按真因分类」）之后**必然红**，
+      //   因为那个字面量已从**代码**里挪进**注释**（只剩 `provider_login_panel.dart`
+      //   的历史说明里有），真实代码改成 `QrPollErrorText.of(e)`。
+      //
+      // ★ 为什么不能把断言改回「那个字面量必须不存在」了事：
+      //   N12 的**意图**是「按真因分类」，而「网络异常，重试中…」**仍是三档之一**
+      //   （真的网络问题 ⇒ 就该说这句，见 `QrPollErrorText`）。
+      //   若断言"代码里不许出现这句"，下一个人做网络分支时会把它删掉，
+      //   反而把 N12 改回去 —— **判据必须盯住"分类"这件事，不是盯住某一句文案**。
+      //
+      // ⇒ 改成钉**机制**：① 走分类器 ② 异常对象不许被丢弃 ③ 续期不变量仍在
+      expect(code.contains('QrPollErrorText.of(e)'), isTrue,
+          reason: '★★ N12 的核心：轮询失败必须按**真因**分类，'
+              '不能一律说「网络异常」');
+      expect(code.contains('QrPollErrorText'), isTrue,
+          reason: '★★ 必须真的调用那个分类器（不是自己又拼一句文案）');
+      // ★ 分类器本身必须存在且按真因分档 —— 在哪个文件都算，但必须能被读到
+      expect(
+        src.contains('QrPollErrorText') || code.contains('QrPollErrorText'),
+        isTrue,
+        reason: '★ QrPollErrorText 必须真的在代码里（不是只写在注释里）',
+      );
       // 旧结论必须删干净（注释里也不能留「完全不可用」的假结论）
       expect(src.contains('扫码登录完全不可用'), isFalse,
           reason: '★ 那个结论是错的 —— 原版 lib.rs:4647-4648 就注册了这两个命令');

@@ -46,6 +46,16 @@ import 'package:sourin_spike/ui/widgets/overlay_motion.dart' show showAppDialog;
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/widgets/app_toast.dart';
 
+/// 失败时把含 [needle] 的代码行摘出来（诊断用，不是判据）
+///
+/// ★ 2026-10-19（Lead 加）：判据失败时只报「不匹配」等于让人自己再去 grep 一遍。
+///   把实际那几行一起打出来，失败信息本身就带证据。
+Iterable<String> _grepLines(String code, String needle) sync* {
+  for (final l in code.split('\n')) {
+    if (l.contains(needle)) yield l.trim();
+  }
+}
+
 String stripComments(String src) {
   final out = <String>[];
   var inBlock = false;
@@ -198,8 +208,31 @@ void main() {
        */
       final code = stripComments(
           File('lib/ui/widgets/skip_marker_dialog.dart').readAsStringSync());
-      expect(RegExp(r"TextButton\(onPressed:\s*_reset,").hasMatch(code), isTrue,
-          reason: '★★★ 「重置」按钮必须真的绑到 _reset');
+      /*
+       * ★★ 2026-10-19（Lead 修）：这条断言**陈旧**了，但它红的原因与
+       *   同批另外 7 个 skip 测试**完全不同**，不要混为一谈。
+       *
+       * ```text
+       * 旧判据：RegExp(r"TextButton\(onPressed:\s*_reset,")
+       * 现文件：3359  onPressed: _busy ? null : _reset,
+       * 起因  ：10924c3（CS-1，10-19 07:27）加了 `_busy` 守卫 ——
+       *        而断言写在更早（7cf8c25，10-18 15:51），那时还是 `_reset,`。
+       * ```
+       *
+       * # 为什么不能把判据改回「必须逐字等于 `_reset,`」
+       * 那样等于**逼着后人删掉 `_busy` 守卫** —— 那是 CS-1 那个
+       * 「保存中不许重复提交」的保护。断言逼人回退实现，是本仓明令禁止的
+       * 「为了变绿而改行为」。
+       *
+       * ⇒ 判据改成**钉意图**：`_reset` 必须仍然是那个按钮的回调，
+       *    允许前面有守卫（`cond ? null : _reset` / `_reset`）。
+       */
+      expect(
+        RegExp(r"TextButton\(\s*onPressed:\s*[^,]*?\b_reset\b").hasMatch(code),
+        isTrue,
+        reason: '★★★ 「重置」按钮必须真的绑到 _reset。\n'
+            '当前实测那几行：\n${_grepLines(code, 'onPressed:').take(6).join('\n')}',
+      );
     });
   });
 

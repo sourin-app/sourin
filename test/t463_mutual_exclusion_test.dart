@@ -39,6 +39,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/ui/widgets/skip_marker_dialog.dart';
 import 'package:sourin_spike/ui/widgets/skip_timeline.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
@@ -134,6 +135,19 @@ Future<void> _dragEdgeTo(
 }
 
 void main() {
+  /*
+   * ★★★ 第 66 轮：注入 `debugSkipMarkerFetcher`
+   * ```text
+   * 不注入时 `SkipMarkerDialog._loadExisting()` 调真 FFI：异常落在**真实时间**轴上，
+   * 而 `_kLoadTimeout`=10s（skip_marker_dialog.dart:733）被建成 **FakeTimer**，
+   * 本文件预算不足 10s ⇒ `_LoadState` 卡在 loading ⇒ 时间轴/四行不挂载。
+   * ⇒ 注入 `(_, __) async => null` = "没设过跳过点"（**正常结果**）⇒ 直接 ok，
+   *   不需要 runAsync，也不需要 libmpv/FFI（故不打 native-media 标签）。
+   * ⚠️ tearDown 必须置回 null —— 它是**进程级 static**，不复位会串到别的用例。
+   */
+  setUp(() => SourinApi.debugSkipMarkerFetcher = (_, __) async => null);
+  tearDown(() => SourinApi.debugSkipMarkerFetcher = null);
+
   group('t463 四条互斥：箭头不许互相穿过', () {
     testWidgets('★★★ 四个箭头各自往越界方向拖 ⇒ 约束必须始终成立',
         (WidgetTester tester) async {

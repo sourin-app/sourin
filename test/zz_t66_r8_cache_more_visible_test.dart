@@ -340,6 +340,70 @@ void main() {
             '且**不再**随鼠标事件翻转');
     expect(igWarm, isTrue, reason: '★★ 隐藏时必须忽略指针');
   });
+
+  // ══════════════════════════════════════════════════════════════════
+  //  case ⑤：订阅生命周期 —— 挂上 / 解开 / 再挂，计数不增长
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // # 为什么要有这条（lead 2026-10-19 点名核查）
+  // ```text
+  // `_HoverCapability` 订阅的是 RendererBinding.mouseTracker —— **全局单例**。
+  // 不解订阅的话：每挂一次「已缓存」页就多一个回调，而它们引用的是
+  // **进程级 static**（永不回收）⇒ 每次鼠标事件都唤醒一串无用回调。
+  // 目前回调里没有 setState，所以"暂时无害"；一旦将来加了副作用，
+  // 就会变成"页面已销毁还在响应鼠标"这类难查的 bug。
+  // ```
+  //
+  // ⚠️ 判据用**我们自己的簿记**（debugListenerCount = 0/1），
+  //    不用 `ChangeNotifier.hasListeners`（那是 @protected，且语义是
+  //    "所有 listener"，答不了"我们有没有泄漏"）。
+  testWidgets('★★★ case ⑤ 订阅生命周期：dispose 后计数回落，反复挂载不增长',
+      (t) async {
+    makeWork('泄露检查的剧');
+
+    CachePage.debugResetHoverCapability();
+    CachePage.debugHoverableOverride = null;
+    expect(CachePage.debugHoverListenerCount, 0,
+        reason: '前置：复位后不该有订阅');
+
+    // ── ① 第一次挂载 ⇒ 订阅 1 条 ──
+    await _pumpWithRealSignal(t);
+    final afterFirst = CachePage.debugHoverListenerCount;
+    debugPrint('[R8] case⑤ 首次挂载后 listener=$afterFirst '
+        'seenMouse=${CachePage.debugSeenMouse}');
+    expect(afterFirst, 1, reason: '★ 页面在树上时必须已订阅');
+
+    // ── ② 卸载页面 ⇒ 订阅必须解开 ──
+    await t.pumpWidget(_appWith(home: const mui.SizedBox.shrink()));
+    await t.pump(const Duration(milliseconds: 100));
+    _claim(t);
+    final afterUnmount = CachePage.debugHoverListenerCount;
+    debugPrint('[R8] case⑤ 卸载后 listener=$afterUnmount');
+    expect(afterUnmount, 0,
+        reason: '★★★ CachePage.dispose 必须 removeListener '
+            '—— 否则每次进出页面都多一条全局订阅');
+
+    // ── ③ 反复挂载/卸载 3 轮 ⇒ 计数仍是 0/1，不增长 ──
+    for (var i = 0; i < 3; i++) {
+      await _pumpWithRealSignal(t);
+      expect(CachePage.debugHoverListenerCount, 1,
+          reason: '★ 第 ${i + 1} 轮挂载后应恰好 1 条（不是累加）');
+      await t.pumpWidget(_appWith(home: const mui.SizedBox.shrink()));
+      await t.pump(const Duration(milliseconds: 100));
+      _claim(t);
+      expect(CachePage.debugHoverListenerCount, 0,
+          reason: '★ 第 ${i + 1} 轮卸载后应恰好 0 条');
+    }
+    debugPrint('[R8] case⑤ 三轮反复挂载/卸载后 listener='
+        '${CachePage.debugHoverListenerCount}（不增长）');
+
+    // ── ④ 解订阅**不丢值**：粘滞位是进程级语义 ──
+    CachePage.debugSetSeenMouse(true);
+    await _pumpWithRealSignal(t);
+    expect(CachePage.debugSeenMouse, isTrue, reason: '★ 粘滞位不该被重置');
+    debugPrint('[R8] case⑤ 解订阅后再挂载：seenMouse='
+        '${CachePage.debugSeenMouse}（值保留）');
+  });
 }
 
 /// 走**真信号**路径挂页（不注入 debugHoverableOverride）

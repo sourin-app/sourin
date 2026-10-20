@@ -5100,3 +5100,137 @@ cd03211  fix(round-66/R4) 弹窗正文对比度 2.06→4.74（补实色垫层 c.
 f02fa8c  test(round-66) CS-1 五步驱动探针 + 运行脚本（r6b-live，1299 行 + run_t107.ps1 195 行）
 ```
 ★ 教训（写进纪律）：交付物**必须当场进库**。verify-34 的 4 个门禁文件在工作区躺了两轮才被追提交 —— 期间任何人 `git clean`/`reset` 都会让它凭空消失，而「读数已经报过了」会让人误以为它在库里。
+
+---
+
+## 十一、收口实测（2026-10-21 02:1x，Lead 亲跑，逐项读数）
+
+### 11.1 本轮落地的提交（e8e54fd 之后 33 笔）
+
+按主题分四块：
+
+```text
+修复（3 笔）：
+  d504b57  release notes 改成列表（★ 后被真机证明"改模板≠改已发布副本"）
+  ea4b9d2/57ef931  真机验证判据补第四条：内容要人眼读
+  9414250  弹窗外壳宽度按视口夹取（窄窗口卡片不再贴满屏幕）
+  c5f8e6a  D-2 期望值改用 Sp.x4（假阳性修复）
+  bed722c  _kMinDialogWidth 语义修正（纯注释）
+
+测试夹具（7 笔）：
+  314acac t75 9 条红 → fake clock 吞真实 IO
+  25ddcae t74 两批红（设置页/追更页）同因
+  30db56a t80a 骨架淡入两条红
+  6cf57bd t36（等不到静止）/ t526（同因）7 条红清零
+  4b26cc8   runAsync 夹具范式固化成模板
+  7a28653   仪器活性对照写进模板
+
+新门禁（6 笔，全部做过"能红"验证）：
+  6823729  R8 像素门禁（3 档 opacity，0.1 档是新增覆盖）
+  488ff79  release notes 语法门禁（白名单从渲染器推导）★ 落地当天抓到真缺陷
+  ec96f43  注释 file:line 引用（只查越界，报错率 0.07%）
+  ec25c2f  弹幕发送安全性（含"闸门已解"证据探测器）
+  239c62e  CS-1 中文字宽恒为 12.000
+  1afc553  CS-1 字宽"防腐"断言（结论有效期检查）
+
+文档/台账（17 笔）：
+  AGENTS.md §8 拆出 PITFALLS.md（原文件 65,535 B 触发加载截断）
+  PITFALLS.md 从 39 条长到 50 条（A 判据 11 / B 取证 13 / C 环境 26）
+```
+
+### 11.2 门禁批跑读数（Lead 亲手跑，非转述）
+
+```text
+CS-1 八个门禁（含 cjk/credentials/dpr/manifest/shots/no_leak/user_text/gitignore）
+  ⇒ +69 All tests passed
+
+本轮修过的测试（t36/t526/t74×2/t75/t80a/player_episode_nav）
+  ⇒ +51 ~1 All tests passed
+     （那 1 个 skip 是既有 native-media 标签，非本轮引入）
+
+R4/R8/弹幕/注释引用门禁
+  ⇒ +54 All tests passed
+
+五个新门禁一起跑
+  ⇒ +30 All tests passed
+
+flutter analyze lib
+  ⇒ 423 issues，**0 errors**（423 全是既有 info/warning）
+
+笔记三条门禁
+  format ⇒ ok: 115 note(s) verified
+  tree   ⇒ ok: 115 note(s) tree and relative links verified
+  archived ⇒ ok: 1 archived note(s) verified, 1 seal(s) in manifest
+```
+
+### 11.3 真机验证——这一节有两个必须写明的结论
+
+**通过的（两人独立确认）**：
+```text
+构建  app.so = 11,600,776 B（产品入口，非 spike）
+启动  1280×800 与 900×600 各一次，均 FIRST_FRAME_RENDERED
+判据① Unhandled Exception：4 份日志 + 独立重跑一次，全部 = 0
+判据② 窗口尺寸 SOURIN_WINDOW_SIZE 实测生效（900×600 是真实窗口，非仅改记录值）
+判据③-A 弹窗几何：900×600 下卡片 left=220 / right=679 / width=460
+        220+460+220=900 精确自洽；Lead 用 PIL 逐像素复核一致
+        代码侧确认 update_dialog 传 460（非 820）
+隔离  真实 ui-prefs.json mtime 未变（2026-10-19 22:05:29）
+```
+
+**不通过的（这一条决定本轮不能报"可交付"）**：
+```text
+★ release notes 的修复在真机上**零效果**。
+
+真机弹窗里仍是 Markdown 表格原样漏出（Lead 亲眼看的
+final-narrow-900x600.png）：| 平台 | 文件 | 说明 | / |---|---|---| / 六行数据。
+
+根因（r5-live 复核补全了"无本地兜底"这一层）：
+  release.notes 唯一来源 = GitHub Releases API 的 body
+  （app_update_controller.dart:369 → release.dart:122 → update_dialog.dart:175）
+  全仓无本地兜底；.github/release-notes.md 只被 CI 的 --notes-file 读取
+  ⇒ 改本地模板对已发版用户零影响
+  ⇒ 且离线/API 失败时 rel == null ⇒ **连弹窗都不出现**（不是"显示空"）
+```
+
+**未验证（不许混进"已完成"）**：
+```text
+· R8 缓存徽标真机 —— 到不了 cached 页（更新弹窗从启动起盖住所有页面，
+  tab 探针 43 张图 7 张 sha256 相同、全是同一个弹窗）
+  ⇒ 已有 3 个门禁（含像素门禁 +19）但**无真机确认**
+· 播放页 / 所有二级页 —— 无深链（SOURIN_TABS 只切底栏 6 tab；
+  RemoteBridge 6 条命令无导航；DRAG_SELFTEST 只做拖拽自检）
+· 真实内容源 —— 隔离目录只有 demo.js
+· 缺陷 2 的末尾 padding —— 低优先级未做
+```
+
+### 11.4 需要 Owner 决定的三件事
+
+```text
+① v1.3.0 是否对外发布？
+   查不到（本机 curl 访问 GitHub 返回 403）。
+   本地有 tag、计划文档称「线上 v1.3.0 body 实测 2974 字符」。
+   ⇒ 若对外 ⇒ 已安装用户长期看到含表格的坏内容，需决定是否手动改 Release body。
+   ⇒ 建议按"对外"处理（猜错的代价不对称）。
+
+② 「弹幕按钮一圈毛边」指的是不是那枚站标徽章？
+   证据：穷举全部会随背景摆动的源，只有两个（顶栏渐变 62.18 / 站标徽章 49.95）；
+        用形状区分后，只有站标徽章有"一圈"闭合轮廓。
+   但「排除法不等于指认」—— 需 Owner 确认。
+   材料在 .agents/notes/proposed/bug-fix/2026-10-20-danmaku-chip-edge-is-adjacent-badge.md
+   三张图在 .probe/r1-observable/。
+
+③ 更新检查无任何日志，未弹窗时无法归因（本轮新发现的缺口，已记待办）
+```
+
+### 11.5 本轮最值得记的一条（PITFALLS 已收录）
+
+```text
+★ 「我改的文件」与「产品读的东西」是两个对象。
+
+release notes 那条：本地 grep 表格行 = 0、门禁 +3 全绿、提交已完成 ——
+而真机里用户看到的仍是坏的。
+
+这与 AGENTS §6 那条「4131 通过 ≠ 不崩」是同一个族：
+**所有测试绿、所有门禁绿、修复已提交 —— 而真实效果是零。**
+唯一能发现它的动作是：启动产品，打开那个界面，用眼睛读一遍内容。
+```

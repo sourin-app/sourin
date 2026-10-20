@@ -286,3 +286,65 @@ t74_follow_title_backfill
 
 ★ 注入② 的意义：它只删了**一行 `Future.delayed`**，`runAsync` 还在。
 说明起作用的是「**让出真实时间给真实 IO**」，不是「进了 runAsync 这个语法块」。
+
+---
+
+## 模板：`runAsync` 夹具（可直接复制）
+
+> 适用：页面在 `initState` / `addPostFrameCallback` 里 `await` 任何**真实 IO**
+> （FFI / 文件系统 / 网络），而你要断言它的**渲染结果**。
+> 已知适用点：`browse_page` / `settings_page` / `follow_page`。
+
+```dart
+/// 挂载一个「initState 里 await 真实 IO」的页面，并等到 [ready] 成立。
+///
+/// ★ 为什么不能只 `pump()`：
+///   `tester.pump()` 只推进 **fake clock**，驱动不了真实 Future。
+///   页面会**静默**停在第一个 `await` 上（外层有 try/catch 时连报错都没有），
+///   现象是「一直 loading」或「0 条」—— 与「产品没加载」完全同形。
+///
+/// ★ 为什么 `pumpWidget` 本身要放进去：
+///   Future 在 `pumpWidget` 期间被创建。先 `pumpWidget` 再 `runAsync`，
+///   Future 已在 fake clock 环境里 ⇒ 之后进 `runAsync` 也救不回来。
+Future<T> mountAndSettle<T extends StatefulWidget>(
+  WidgetTester t,
+  Widget page, {
+  required bool Function() ready,
+  int maxRounds = 60,
+  Duration step = const Duration(milliseconds: 20),
+}) async {
+  late T state;
+
+  await t.runAsync(() async {
+    await t.pumpWidget(host(page));       // ← 必须在 runAsync 内部
+    for (var i = 0; i < maxRounds; i++) {
+      // ★ 这一行是「让出真实时间」——**它才是驱动真实 IO 的东西**。
+      //   删掉它、只留 t.pump()，即使仍在 runAsync 里也一样驱动不了
+      //   （实测：只删这一行 ⇒ 三条断言照样红）。
+      await Future<void>.delayed(step);
+      await t.pump();
+      if (ready()) break;
+    }
+    state = t.state<T>(find.byType(T));
+  });
+
+  await t.pump();
+  return state;
+}
+```
+
+三条使用纪律：
+
+```text
+① ready() 读**渲染结果**，不要读你喂进去的值。
+   ✗ ready: () => st.debugContinueList.isNotEmpty   ← 两档都是 2，区分不开
+   ✓ ready: () => find.text('真标题').evaluate().isNotEmpty
+
+② 轮询要有上限，且**到上限仍未成立时必须让断言红**，不要静默返回。
+   上限只防死循环，不是「等不到就算了」。
+
+③ 用例语义若是「第 1 页还没回来」（竞态 / 换分类），
+   给它一个 awaitFirstPage: false 之类的开关：只驱动若干次真实 IO、
+   不等目标出现 —— 在那里等它等于等一个永不完成的 Future。
+```
+

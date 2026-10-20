@@ -6014,32 +6014,40 @@ class _PlayerPageState extends State<PlayerPage>
             onTap: () => unawaited(_openSwitchSource()),
           ),
       ]),
-      MoreMenuGroup('弹幕', [
-        /*
-         * 2026-10-15 (Owner): "the danmaku switch in More can go too -- it is
-         * duplicate functionality, it can already be changed outside."
-         *
-         * Correct: the bottom bar has had a dedicated on/off button since the
-         * 1011 rework, so this menu row was a second door to the same bool.
-         * Two entry points for one toggle also meant two places to keep in
-         * sync -- and the menu copy would go stale while the bar's did not.
-         *
-         * NOTE: the '弹幕设置' row below STAYS. It is not a duplicate: the
-         * bar's gear opens the lightweight quick popover, while this row opens
-         * the full settings panel directly (and it is the only route in when
-         * the bar is hidden).
-         *
-         * ⚠️ Keep the group itself (even though it now holds one row):
-         *    t68_android_adapt_test and zz_cr_local_session_player_test both
-         *    assert on `MoreMenuGroup('弹幕'` by name.
-         */
-        MoreMenuEntry(
-          label: '弹幕设置',
-          icon: AppIcons.tune,
-          hint: _danmakuLoading ? '加载中…' : null,
-          onTap: _openDanmakuSettings,
-        ),
-      ]),
+      /*
+       * ★ 第 66 轮 R6-b：直播态整组不渲染 —— 这一组里只剩「弹幕设置」一行，
+       *   而那一行是**唯一**能在直播里把开关翻成"开"的第二扇门（开关那枚
+       *   在底栏已不渲染）。空组只会画一个孤零零的标题（`PlayerMoreMenu`
+       *   对空 `entries` 不做特判），所以门控必须落在**整组**上。
+       *   同一文件里 `剧集` 那组就是这么写的：`if (!_isLive)`。
+       */
+      if (!_isLive)
+        MoreMenuGroup('弹幕', [
+          /*
+           * 2026-10-15 (Owner): "the danmaku switch in More can go too -- it is
+           * duplicate functionality, it can already be changed outside."
+           *
+           * Correct: the bottom bar has had a dedicated on/off button since the
+           * 1011 rework, so this menu row was a second door to the same bool.
+           * Two entry points for one toggle also meant two places to keep in
+           * sync -- and the menu copy would go stale while the bar's did not.
+           *
+           * NOTE: the '弹幕设置' row below STAYS. It is not a duplicate: the
+           * bar's gear opens the lightweight quick popover, while this row opens
+           * the full settings panel directly (and it is the only route in when
+           * the bar is hidden).
+           *
+           * ⚠️ Keep the group itself (even though it now holds one row):
+           *    t68_android_adapt_test and zz_cr_local_session_player_test both
+           *    assert on `MoreMenuGroup('弹幕'` by name.
+           */
+          MoreMenuEntry(
+            label: '弹幕设置',
+            icon: AppIcons.tune,
+            hint: _danmakuLoading ? '加载中…' : null,
+            onTap: _openDanmakuSettings,
+          ),
+        ]),
       if (!_isLive)
         MoreMenuGroup('剧集', [
           MoreMenuEntry(
@@ -6620,6 +6628,11 @@ class _PlayerPageState extends State<PlayerPage>
      *    外部站绑定是用户另一次明确选择，且它自己就是精确的；
      *    而模糊搜索是“没人选过才轮到它”。
      */
+    // ★ 第 66 轮 R6-b：直播态在**叶子**这里就断掉 —— 本函数是唯一发弹幕
+    //   请求的地方（`_loadDanmaku()` 只是它的薄包装），所以起播、开关、
+    //   设置面板、手动搜索四条路一起被关掉，直播间不会有任何
+    //   `/api/v2/match` 出网。见 `_toggleDanmaku` 的同一条守卫。
+    if (_isLive) return;
     final dmBind = loadDanmakuBind(widget.provider, widget.id);
     final boundId = dmBind?.episodes[_epIndex] ?? 0;
     if (boundId > 0) {
@@ -7127,6 +7140,18 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 底栏「弹幕」按钮：开 / 关
   Future<void> _toggleDanmaku() async {
+    /*
+     * ★★★ 第 66 轮 R6-b：**直播态一个弹幕请求都不发**
+     *
+     * 这条守卫必须在**方法第一行**，不能只靠"控件不渲染"：
+     * 深链、探针、以后别处复用都会绕过控件那一层，而一旦走进来就是
+     * 「一条 `/api/v2/match`（频道名被当成番剧名）+ 开关自己翻成开」。
+     *
+     * 判据是**发出去的请求数 = 0**，不是"点了不崩"：
+     * `test/zz_t66_r6b_live_toggle_test.dart` 用计数 transport 数
+     * `calls.isEmpty`。非直播路径**逐字节未变**（条件为假 ⇒ 直接落回原文）。
+     */
+    if (_isLive) return;
     final next = !_danmakuEnabled;
     DanmakuConfig.setEnabled(next);
     if (!next) _danmakuFetchToken++; // 丢弃在途响应
@@ -16081,26 +16106,26 @@ class _PlayerPageState extends State<PlayerPage>
                      * 入口却因为一个声明布尔而消失。
                      * ```
                      *
-                     * ⇒ 判据收敛为「**有真站点可发 + 不在直播 + 控件可见**」：
+                     * # ⚠️ 下面这一版（第 65 轮）**已作废**
                      * ```text
-                     * · _danmakuSendProvider != null  ← 必须（没有源就无处可发）
-                     * · !_isLive                      ← 必须（直播没有"这一集"）
-                     * · _chromeVisible                ← 必须（跟底栏一起淡出）
-                     * · _danmakuCanSend               ← ★ 不再决定"在不在"
+                     * 它曾把判据收敛成「有真站点可发 + 不在直播 + 控件可见」，
+                     * 并把 `_danmakuCanSend` 降级成"决定**能不能点**"。
+                     * ⇒ **不要照它改**：那是第 3 代「常驻 + disabled + 必须看得见
+                     *    原因」的写法，已被 Owner 第 1 条推回第 4 代。
                      * ```
                      *
-                     * # ★★★ 2026-10-17 三次修复（Lead 定案）：置灰但可见
+                     * ★★★ 现在的口径（第 66 轮，正文见下面紧接着的第二段）
                      * ```text
-                     * 上一版是「常驻 + 点了报错」——Lead 否掉了，理由是对的：
-                     *   用户每次点都撞一次墙，体验是负的。
-                     * 现在的口径：
-                     *   入口**常驻可见**（Owner：入口别消失）
-                     *   源不支持发送 ⇒ 控件 **disabled**（点不动，不撞墙）
-                     *   并且**必须能看到原因**（只是灰着不说 = 另一种撒谎）
-                     * ```
-                     * ⇒ `_danmakuCanSend` 从"决定在不在"改成"决定能不能点"。
-                     *   这与 Owner 第 9 条不冲突：他要的是**入口在**，
-                     *   而按钮能不能点是另一件事。
+                     * ① `_danmakuEnabled`            ← 弹幕总开关为开
+                     * ② `_danmakuCanSend`            ← 源声明 danmaku_send
+                     * ③ `_danmakuSendProvider != null` ← 有真站点 id 可发
+                     * ④ `!_isLive`                    ← 直播没有"这一集"
+                     * 四项**任一不满足 ⇒ 整条不渲染**（`canSend` / `disabledReason`
+                     * 两个字段随第 4 代删除）。
+                     * ⇒ `_danmakuCanSend` 重新是"决定**在不在**"的一个条件，
+                     *    而不是"决定能不能点"。
+                     * ⚠️ `test/task41_danmaku_send_gate_test.dart` 的 group ④
+                     *    钉的就是这一版；照"置灰但可见"改会让它红。
                      */
                     /*
                      * ★★★ 2026-10-18（第 66 轮 Owner 第 1 条）：弹幕发送栏**已移出本 Stack**

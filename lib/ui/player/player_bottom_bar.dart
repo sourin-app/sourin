@@ -625,57 +625,75 @@ class PlayerBottomBar extends StatelessWidget {
           popoverId: PlayerPopoverIds.tracks,
           active: controller.isOpen(PlayerPopoverIds.tracks),
         ),
-      _BarAction(
-        // ★★★ Owner 1011 反馈第 1 条（弹幕做成 某视频站那种形态）：
-        //   「一个开关,一个设置」⇒ 开关这枚**直接开关弹幕**（onTap 而不是
-        //   popoverId）—— 点一下就是开/关，不再弹那个「关闭弹幕 / 弹幕设置」
-        //   两层小菜单。设置那枚（下面紧接着的全新一枚）才是「弹出来面板
-        //   直接操作」。
-        //
-        /*
-         * 2026-10-15 (Owner): "the danmaku settings icon does not match; look
-         * for something like the one streaming sites use -- a poster/bubble
-         * style icon, and put a gear next to it."
-         *
-         * Why subtitles/subtitles_off was wrong: those are the CLOSED-CAPTION
-         * glyphs (a rounded rectangle with lines). Danmaku are flying
-         * comments, so the comment-bubble family reads correctly -- and it is
-         * what the streaming sites this app aggregates actually use.
-         *
-         * The toggle uses `comment` (bubble = "there is commentary") and
-         * `comments_disabled` (bubble with a slash = "commentary off") so the
-         * on/off pair stays as legible as subtitles/subtitles_off was.
-         */
-        key: danmakuToggleKey,
-        icon: danmakuEnabled ? AppIcons.comment : AppIcons.comments_disabled,
-        label: '弹幕',
-        tooltip: danmakuBusy ? '弹幕加载中…' : (danmakuEnabled ? '关闭弹幕' : '开启弹幕'),
-        active: danmakuEnabled,
-        onTap: onDanmakuToggle,
-      ),
-      _BarAction(
-        // ★★★ Owner 1011 反馈第 1 条（弹幕做成 某视频站那种形态）：
-        //   设置这枚点开的是一个**轻量悬浮窗**（某视频站图 1 那种贴按钮的小卡片：
-        //   按类型过滤 + 四个可直接拖的滑杆 + 最后一行「高级设置」）。
-        //
-        //   ⚠️ 与「开关」那枚的区别（别照抄）：
-        //     开关那枚是**纯动作**（onTap，直连开关，不弹任何东西）；
-        //     设置这枚是 **popover 入口**（popoverId，点击/悬停弹小窗）。
-        //   ⚠️ 这里**不能**同时给 onTap：`_PopoverButton` 里一旦 onTap 非空
-        //      （player_bottom_bar.dart 的 `onPressed: onTap ?? toggle`），
-        //      点击就走 onTap、面板永远打不开 —— 于是「高级设置」那行就没了意义
-        //      （齿轮本该先弹小窗）。
-        //
-        //   宿主没给 `danmakuQuick`（老调用点 / 测试夹具）⇒ 退回旧行为：
-        //   直连 `onDanmakuSettings`（一次点开全屏大卡片），保兼容。
-        key: danmakuSettingsKey,
-        // 2026-10-15 (Owner): a gear, not the slider/tune glyph -- the gear is
-        // what the streaming sites pair with the danmaku toggle.
-        icon: AppIcons.settings,
-        tooltip: '弹幕设置',
-        popoverId: danmakuQuick == null ? null : PlayerPopoverIds.danmakuQuick,
-        onTap: danmakuQuick == null ? onDanmakuSettings : null,
-      ),
+      /*
+       * ★★★ 第 66 轮 R6-b：**直播态整块不渲染**下面这两枚（开关 + 设置）
+       *
+       * # 为什么不是「画出来但 disabled」
+       * ```text
+       * 直播没有弹幕数据源（`danmaku_list` 只 strip media_id / episode_id）
+       * ⇒ 这两枚在直播里没有一条能成的路：实测点一下会发出一条
+       * `/api/v2/match`（频道名被当成番剧名）换回 HTTP 400，而开关自己
+       * 照旧翻成「开」—— 用户看到的是「开着、零弹幕、一枚 `!`」。
+       *
+       * 「能力此刻不可用」才用 `enabled` 灰着（上一集/下一集在首集就是这样，
+       * 见本文件 `if (showEpisodeNav)` 那对）；直播是**根本没有**这条路，
+       * 灰着只会把「没有」画成「坏了」。⇒ 与 `showEpisodeNav`（直播没有
+       * 上一集/下一集 ⇒ 整块不出现）**同一条口径**：不渲染。
+       * ```
+       */
+      if (!isLive) ...[
+        _BarAction(
+          // ★★★ Owner 1011 反馈第 1 条（弹幕做成 某视频站那种形态）：
+          //   「一个开关,一个设置」⇒ 开关这枚**直接开关弹幕**（onTap 而不是
+          //   popoverId）—— 点一下就是开/关，不再弹那个「关闭弹幕 / 弹幕设置」
+          //   两层小菜单。设置那枚（下面紧接着的全新一枚）才是「弹出来面板
+          //   直接操作」。
+          //
+          /*
+           * 2026-10-15 (Owner): "the danmaku settings icon does not match; look
+           * for something like the one streaming sites use -- a poster/bubble
+           * style icon, and put a gear next to it."
+           *
+           * Why subtitles/subtitles_off was wrong: those are the CLOSED-CAPTION
+           * glyphs (a rounded rectangle with lines). Danmaku are flying
+           * comments, so the comment-bubble family reads correctly -- and it is
+           * what the streaming sites this app aggregates actually use.
+           *
+           * The toggle uses `comment` (bubble = "there is commentary") and
+           * `comments_disabled` (bubble with a slash = "commentary off") so the
+           * on/off pair stays as legible as subtitles/subtitles_off was.
+           */
+          key: danmakuToggleKey,
+          icon: danmakuEnabled ? AppIcons.comment : AppIcons.comments_disabled,
+          label: '弹幕',
+          tooltip: danmakuBusy ? '弹幕加载中…' : (danmakuEnabled ? '关闭弹幕' : '开启弹幕'),
+          active: danmakuEnabled,
+          onTap: onDanmakuToggle,
+        ),
+        _BarAction(
+          // ★★★ Owner 1011 反馈第 1 条（弹幕做成 某视频站那种形态）：
+          //   设置这枚点开的是一个**轻量悬浮窗**（某视频站图 1 那种贴按钮的小卡片：
+          //   按类型过滤 + 四个可直接拖的滑杆 + 最后一行「高级设置」）。
+          //
+          //   ⚠️ 与「开关」那枚的区别（别照抄）：
+          //     开关那枚是**纯动作**（onTap，直连开关，不弹任何东西）；
+          //     设置这枚是 **popover 入口**（popoverId，点击/悬停弹小窗）。
+          //   ⚠️ 这里**不能**同时给 onTap：`_PopoverButton` 里一旦 onTap 非空
+          //      （player_bottom_bar.dart 的 `onPressed: onTap ?? toggle`），
+          //      点击就走 onTap、面板永远打不开 —— 于是「高级设置」那行就没了意义
+          //      （齿轮本该先弹小窗）。
+          //
+          //   宿主没给 `danmakuQuick`（老调用点 / 测试夹具）⇒ 退回旧行为：
+          //   直连 `onDanmakuSettings`（一次点开全屏大卡片），保兼容。
+          key: danmakuSettingsKey,
+          // 2026-10-15 (Owner): a gear, not the slider/tune glyph -- the gear is
+          // what the streaming sites pair with the danmaku toggle.
+          icon: AppIcons.settings,
+          tooltip: '弹幕设置',
+          popoverId: danmakuQuick == null ? null : PlayerPopoverIds.danmakuQuick,
+          onTap: danmakuQuick == null ? onDanmakuSettings : null,
+        ),
+      ],
       _BarAction(
         icon: AppIcons.more_horiz,
         label: '更多',

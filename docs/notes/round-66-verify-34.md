@@ -729,3 +729,92 @@ smoke C  -OutDir docs/notes/evidence/round-66-cs1（空目录）
 - `lib/ui/theme/app_colors.dart:219` → `onSurfaceVariant: mutedForeground`；
 - `AppPalette.mutedForeground` 在内置浅色 = `LightTokens.textSecondary` = **`#FF60626B`**（`lib/ui/theme/light_tokens.dart:91`）；Material 侧同一来源见 `lib/ui/theme_bridge.dart:602 / :713`；
 - **但**：选了主题包时 `AppColors` 取包自己的 `mutedForeground`（`lib/ui/theme/app_theme.dart:165 if (p != null) return p.palette;`）⇒ 真机量到的 `#737373` **不是**内置浅色这个 token 的原值，要么是主题包/暗色主题，要么是玻璃垫层 + 抗锯齿合成后的读数。判对比度请用 `c.onSurfaceVariant` 与**实际垫层底色**去算，别拿 `#60626B` 直接对 `#737373`。
+
+---
+
+# 第八轮 R1–R8 台账（独立复核，2026-10-20 18:40）
+
+> 口径：**只认盘上的东西**。文件在不在、门禁跑不跑、读数有没有对应日志、真机图落没落进版本库。
+> 不抄计划文件的说法 —— 计划文件里 8 条行的「处置/证据」我逐条用命令重核了一遍，凡与盘上不符的都在「判决」里点出来。
+> 边界：本轮**只读**产品代码（未改一字节），临时日志在 `/d/tmp/verify34/`（收尾删）。
+
+## 0. 复核方法（全部命令可复抄）
+
+```bash
+# ① 门禁全集：盘上一共 20 个 test/zz_t66_r*_*.dart（另加 1 个 zz_t66_glass_dialog_test.dart）
+ls test/ | grep -E '^zz_t66_r[0-9]'          # → 20 个
+# ② 逐个真跑（并行会给「did not complete」假红，见 docs/TESTING.md）
+flutter test test/<each>.dart --concurrency=1
+# ③ 引用的 commit 是否真存在
+for c in f47d2ed 22aab09 3b92d2e cc157ac 8809e1a c642515 1becda1 55df113 f0cf7e0 626cfdb eee6a5e; do git cat-file -t $c; done   # → 全 commit
+# ④ 代码级取证
+grep -n "_toggleDanmaku" lib/ui/player_page.dart; sed -n '7142,7160p' lib/ui/player_page.dart
+grep -rn "mouseIsConnected" lib/ui/cache_page.dart
+# ⑤ 真机图落在哪、是否可追溯
+find . -name '*.png' | grep -Ei 'r4|t66|round66|cs1'
+git check-ignore -v .probe/round66_r4_device/fix1_01_tray_close.png   # → .gitignore:103:/.probe/
+git status --short docs/notes/round-66-r4-device.md                   # → ??（未跟踪）
+```
+
+**门禁实跑总读数**（20 个 R 门禁 + 玻璃族，`All tests passed` 逐条）：
+
+| 文件 | 实测 | 文件 | 实测 |
+|---|---|---|---|
+| `zz_t66_r1_danmaku_chip_edge_test` | **+6** | `zz_t66_r3_wiring_test` | **+13** |
+| `zz_t66_r1_dynamic_backdrop_variance_test` | **+3** | `zz_t66_r3_probe_truth_test` | **+32** |
+| `zz_t66_r1_three_way_compare_test` | **+1** | `zz_t66_r3_forged_cost_test` | **+7** |
+| `zz_t66_r2_attribution_review_test` | **+15** | `zz_t66_r3_pixel_contrast_test` | **+7** |
+| `zz_t66_r3_dns_hijack_test` | **+14**（计划写 +13） | `zz_t66_r4_dialog_consistency_test` | **+13** |
+| `zz_t66_r3_sheet_guard_coverage_test` | **+8** | `zz_t66_glass_dialog_test` | **+33**（55df113 时 +28） |
+| `zz_t66_r3_multi_source_test` | **+11** | `zz_t66_r5_live_mute_default_test` | **+1** |
+| `zz_t66_r3_info_triple_test` | **+10** | `zz_t66_r5_player_no_overlap_test` | **+8** |
+| `zz_t66_r6_live_controls_test` | **+10** | `zz_t66_r8_cache_more_visible_test` | **+5** |
+| `zz_t66_r6b_live_toggle_test` | **+6 ~2**（2 条 native-media 默认跳过） | `zz_t66_r8_sticky_bit_review_test` | **+10** |
+| `zz_t66_r7_material_audit_test` | **+17** | | |
+
+合计**实测通过 178 条**（不含默认跳过的 2 条），**0 红**。门禁文件数与计划的引用对得上 ⇒ 「文件不存在」这一类不是问题；问题全在**证据的可追溯性**与**几条数字口径**。
+
+## 1. 逐条台账
+
+| # | Owner 原话要点 | 我们的处置（盘上核对） | 可复核证据 | 判决 |
+|---|---|---|---|---|
+| **R1** | 「就是那个**弹幕**的按钮，一圈毛边」（`:2183`） | 定案**非缺陷**＝白字抗锯齿半像素，不改产品代码；代码事实：`PlayerBottomBar` 那枚 `TextButton.styleFrom` **无背景层** | `test/t27_w14_danmaku_bar_form_test.dart:175` 真挂 `PlayerBottomBar`（存在）；`zz_t66_r1_*` 三门禁 **+6/+3/+1** 全绿 | **部分成立** — 定案可复核到代码+门禁，但支撑它的**逐像素读数（2380px/90.2%、字缘 255）盘上没有任何日志**，只在计划文档里 ⇒ 按口径这部分**不可复核**。另：`zz_t66_r1_danmaku_chip_edge_test` 守的是 **chip**，Owner 指的是**底栏按钮**，两者不是同一对象 |
+| **R2** | 「内置代理没起来，这个要修复啊，很严重的 bug」 | 真值＝**文案撒谎**（代理活着，是那一条流打不开）⇒ 改归因与文案，`f47d2ed`（3 files / +115 −21） | `git cat-file -t f47d2ed`＝commit；`git show` 里 `- PlaybackFailureKind.proxy => '内置代理没起来'` 逐字可见；门禁 **+15** | **成立可交** |
+| **R3-①/②** | 「弹窗整体看不清」「控件/文字看不清」 | 玻璃透光 ⇒ 加实色垫层；对照度 2.44:1 → 6.49:1 | `zz_t66_r3_pixel_contrast_test` **+7** 绿 | **部分成立** — 门禁绿，但 **2.44/6.49/5.27 三个数字盘上只有计划文档 + `.probe/*.log`（gitignored）** ⇒ 数字不可复核；且对比度这条与 **R4 玻璃垫层（正在改，`app_glass_dialog.dart` 脏=`M`）交织**，谁负责收口需明确 |
+| **R3-③/⑦** | 「弹幕来源搜不了」「两个内置 dan-api 用不了」 | DNS 被劫持（返回 `2a03:2880:…:face:b00c`），新增 `resolvedAddress` + 分级文案；`cc157ac`/`8809e1a` | `zz_t66_r3_dns_hijack_test` **+14**（计划写 **+13**，少 1）；`zz_t66_r3_forged_cost_test` **+7**；`zz_t66_r3_probe_truth_test` **+32** | **成立可交**（数字纠偏：+13 → **+14**） |
+| **R3-④** | 「弹窗内双击透传」 | 裁决「接受透传 + 播放区 350ms 守卫」，`c642515` 把 10 处关闭点补到全覆盖 | 守卫代码在盘：`lib/ui/player_page.dart:11613-11615`（350ms 置回）；`zz_t66_r3_sheet_guard_coverage_test` **+8** | **成立可交** |
+| **R3-⑤/⑥** | 「源要能绑定多个」「弹幕信息显示源/时间/条数」 | 4/4 调用点 `onChanged: null` ⇒ 改真集合 + `sourceName`/`updatedAt` 三级退路 | `zz_t66_r3_multi_source_test` **+11**；`zz_t66_r3_info_triple_test` **+10**；`zz_t66_r3_wiring_test` **+13** | **成立可交** |
+| **R4** | 「弹窗样式不统一，丑爆了」 | 三弹窗→`AppDialogShell`（`a8d6ce9`）；`AppGlassDialog` 收拢+逐处豁免（`f0cf7e0`）；P1 满屏修复+默认 460×620（`55df113`） | `zz_t66_r4_dialog_consistency_test` **+13**；`zz_t66_glass_dialog_test` **+33**；三个 commit 都在；真机图 **63 张** 在 `.probe/round66_r4_device/` | **部分成立，修复中** — 单测侧全绿；**真机像素证据不可追溯**：`.probe/` 被 `.gitignore:103` 覆盖（`git check-ignore` 实测命中），`docs/notes/round-66-r4-device.md` 仍是 `??` 未提交 ⇒ 换机/换人看不到一张图；对比度缺陷确在途（`lib/design/widgets/app_glass_dialog.dart`、`lib/ui/widgets/app_dialog_shell.dart` 均 `M`） |
+| **R5** | (1009)「再次点击静音图标也没变化，但是却没有声音了」「必须拖音量条才恢复」；(1018)「静音按钮都有一半没显示出来」 | 1009 行为修 `22aab09`；1018 视觉修 `3b92d2e`（`Flexible` 让出 chip 高度） | `zz_t66_r5_player_no_overlap_test` **+8**（含阴性对照：修复前形状被裁 15.3px）；`zz_t66_r5_live_mute_default_test` **+1** | **部分成立** — 1018 可复核；**1009 的行为修复仍无门禁**：唯一的行为门禁只测「默认静音」，该文件头自承 `toggleMute()`（`live_embedded_player.dart:1699`）不在覆盖内，`t61_volume_pref_test.dart:184` 找的是 `void _toggleMute()`（`player_page.dart`）⇒ 随时可静默回归 |
+| **R6** | 「直播页缺弹幕/清晰度控件」 | 裁决落地＝不画控件 + 一句可解释说明；清晰度 ≥2 档才画 | `zz_t66_r6_live_controls_test` **+10**（含阴性对照） | **成立可交**（⚠️ 仍不许被读成「直播清晰度已支持」：数据源 `quality` 恒 null） |
+| **R6-b** | 全屏播放页那枚**会撒谎**的弹幕开关（R6 残留） | ★ **计划文件该行已过期**：不是「只取证、零改动」——守卫已落 `lib/ui/player_page.dart:7154 if (_isLive) return;`（方法第一行） | `test/zz_t66_r6b_live_toggle_test.dart`（23.5KB，2026-10-20 15:36）实跑 **+6 ~2** | **成立可交（但计划行需更新）** — 且注意 **2 条默认跳过**（`native-media` + 一条 `markTestSkipped('libmpv 夹具缺失…')`）⇒ 「请求数 = 0」这条核心判据**默认不跑**，要 `--run-skipped --tags native-media` 才验证 |
+| **R7** | 「material 化做完了吗」 | ①首页 Material 控件「剩 3」其实 2 个且都在；②彻底去 MaterialApp 已完成；③`theme_bridge` 真实依赖 2+14，不建议现在做 | `zz_t66_r7_material_audit_test` **+17**；`ActionChip(` 在 `lib/ui/home_page.dart:2804`、`_MoreButton` 调用点 `:2485/:2490` 均在盘；产品入口 `lib/shell.dart:305 main()` | **部分成立** — ①② 可复核；③ **读数不可复核**：我按「`lib/` 剔探针、不剥注释」数得 `colorScheme` **216** / `AppColors.` **12**，与计划里的 **185 / 9** 不同口径，计划没写计数规则 ⇒ 复现不出来。另：计划括注「`MaterialApp(` 39 处全在探针/main.dart.spike-backup」**漏了 `lib/main.dart:45`**（它是 HEVC spike 入口，但文件名不含 `.spike-backup`）⇒ 表述不准（结论「产品代码 0 处」仍成立） |
+| **R8** | 「已缓存删除徽标看不清」 | 真缺陷＝`_hover ? 1 : 0` 只由鼠标驱动 ⇒ 换 `MouseTracker.mouseIsConnected`；`1becda1` | `lib/ui/cache_page.dart:2042-2051` 真信号与理由注释在盘；`zz_t66_r8_cache_more_visible_test` **+5**；`zz_t66_r8_sticky_bit_review_test` **+10** | **成立可交**（「`MediaQuery.hoverable` 在 3.47 不存在」那次错判只留在文档里，代码侧已用对信号） |
+
+## 2. 判决汇总
+
+| 判决 | 条目 |
+|---|---|
+| **成立可交** | R2、R3-③/⑦、R3-④、R3-⑤/⑥、R6、R6-b（已修，计划行过期）、R8 |
+| **部分成立** | R1（定案可复核，像素读数不可）、R3-①/②（门禁绿，对比度数字不可）、R4（单测绿，**真机图不可追溯**，对比度在途）、R5（1018 可，1009 行为无门禁）、R7（①② 可，③ 读数不可复现 + 括注不准） |
+| **不成立** | 无 |
+| **证据不可复核** | R1 逐像素读数、R3-①/② 对比度数字、R4 的 63 张真机图（`.probe/` scratch + 笔记未提交）、CS-1 的「56 ✓ / 7 张」（至今 0 张） |
+
+**一句话**：R1–R8 没有一条是「不成立」；7 组可交、5 组部分成立，**所有「不可复核」都指向同一根因** —— 读数写在 scratch（`.probe/`，gitignored）或文档里，而不是能进版本库的证据文件。这正是第七轮 `-OutDir` + manifest 门禁要治的病；**R4 的 63 张图应当用同一套工具封存到 `docs/notes/evidence/round-66-r4/`**，否则下一轮还得重打。
+
+## 3. 与计划文件的三处数字/事实纠偏（只报不改）
+
+1. `zz_t66_r3_dns_hijack_test` 计划写 **+13**，实测 **+14**。
+2. R6-b 行「只取证，零改动」已过期 —— 守卫 `if (_isLive) return;` 已落在 `player_page.dart:7154`，并有 23.5KB 门禁。
+3. R7-③ 的 **185 / 9** 无口径说明，按「lib 剔探针」我数到 **216 / 12**；R7-② 括注漏了 `lib/main.dart:45`。
+
+## 4. 顺带（CS-1 证据线的现状）
+
+`test/zz_t66_cs1_evidence_manifest_test.dart`（我第七轮落的门禁）现在是**故意红** `+3 -5`，红得可执行：
+
+```text
+★★★ 证据缺失：docs/notes/evidence/round-66-cs1/manifest.json 不存在。
+    CS-1 的「56 ✓ / 7 张截图」必须能复核 ⇒ 请先出图再封存，不要手写 manifest
+```
+
+`docs/notes/evidence/round-66-cs1/` 目录在、`README.md` 在、**0 张 PNG、无 manifest.json** ⇒ CS-1 的 56 ✓ 依然**不可复核**（这条不会因为门禁存在而变成绿）。

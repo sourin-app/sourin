@@ -2,10 +2,298 @@
 
 **日期**：2026-10-18
 **状态**：**执行中**
-**最后更新**：**2026-10-19 07:25**（Lead 重写仪表盘：R1–R8 已全部定位，进入实施+验证阶段）
+**最后更新**：**2026-10-20 深夜**（Lead 一手重核：R4 **已全绿**、异常文案收口已提交 `2916858`）
 
-> ⚠️ 本文件已 4200+ 行、26 个并列章节。**只看下面这一节就够判断进度**；
+> ⚠️ 本文件已 4600+ 行、26 个并列章节。**只看 §0.0 就够判断进度**；
 > 需要细节再往下翻到对应章节（每节标题带编号，如「§二十 R1/R8/R3-④ 裁决」）。
+
+---
+
+## 0.0 2026-10-20 深夜续工：一手读数（**本节覆盖 15:20 那版**）
+
+### 0.0a Lead 自己跑出来的现场（不看汇报，只看读数）
+
+```text
+$ git log --oneline -3
+  2916858 fix(round-66): 异常原文不许进用户可见字段 + 门禁两张表打架 + CS-1 驱动两处真缺陷
+  fc666cd docs(notes): 同步上游笔记规范 —— 补「已有笔记怎么维护」+ 工具链 + CI
+  3da397e docs(round-66): Owner 交付文档更新到当前真值
+
+$ git status --short
+   M docs/notes/plan-round-66.md      ← 本文件
+   M lib/t107_cs1_flow_probe.dart     ← 未提交资产（探针），不进仓库
+
+门禁三件一起跑 ⇒ **+27 All tests passed**
+  zz_t66_user_error_text_gate_test.dart    +8
+    USERERROR|scope=lib/ui/**|userVisible=82|logOnly=133|files=97|filesWithDebt=18
+  zz_t66_convergent_tile_gate_test.dart    +5
+  zz_t66_r4_dialog_consistency_test.dart   +14
+
+dart analyze lib ⇒ 0 error
+```
+
+### 0.0b 口径修正（15:20 那版有两条已过期，别照抄）
+
+| 15:20 那版写的 | 现在的事实 |
+|---|---|
+| 「R4 第二步门禁**仍是红的**（+11 -2）」 | **已全绿 `+14`**。当时红的是中间状态（队友正在改那个文件） |
+| 「11 个改动文件（R4 第二步在工作区）」 | R4 已提交（`a8d6ce9`）；工作区那批是**异常文案收口**，已提交 `2916858` |
+
+★ 教训：**「看到红」和「它坏了」是两件事** —— 先 `git status --porcelain <file>`，
+可能是别人尚未提交的中间状态（AGENTS.md §8 有这条）。
+
+### 0.0c 本轮（`2916858`）交付了什么
+
+```text
+① 异常文案收口：新增 lib/core/ffi.dart::userErrorText()，6 个文件 21 处
+   存量 82 处 / 18 文件记成**预算**（不涨也不许悄悄降）
+② 修掉门禁自身两处缺陷：
+   · 两张表对同一维度提互斥要求（player_page: _expectedCalls=1 vs _debt=14 ⇒ 0==14 必红）
+   · 阳性对照 C 假绿（测试内部「同一个源比同一个源」）⇒ 抽出 scan() 共用
+③ 17 处 Material 误报修好（探针实测：tile 需要 Material，Row/Icon/Text 不需要）
+④ CS-1 驱动 tools/run_t107.ps1 两处真缺陷：
+   · BOM 丢失 ⇒ PS 5.1 下整个脚本语法错误
+   · 安全闸判未解析字符串 ⇒ 路径穿越可绕过（**存量缺陷**）
+⑤ 探针夹具对齐产品契约（补 .zip）⇒ CS-1 五步真跑 OK=20 BAD=3 → **OK=45 BAD=0**
+```
+
+### 0.0d 在跑的（等回报）
+
+| 队友 | 任务 | 判据 |
+|---|---|---|
+| `verify-e2e` | **批末真机验证**（AGENTS.md §6，全批还没做过） | 构建 + 隔离启动 + 零 `Unhandled Exception` + 截图 + 触发一次弹窗 |
+| `n15-plugin` | N15 下游：`capabilities.danmaku=false` 时应用侧做什么 | 真跑两档对照 + capability 双向对照表 |
+| `redtriage` | 全量测试红分类（纯净 worktree 基线） | A/B/C/D 四类清单，**B 类非空 = 本轮引入红** |
+| `r1r8-ui` | `_debtWins` 管辖规则写成数据的自检 | 注入「假交集键不登记」必须红 |
+
+### 0.0e 明确还没做的（不许混进「已完成」）
+
+```text
+· 批末统一真机实测（verify-e2e 在做，未回报）
+· 全量测试红分类（redtriage 在做，未回报）
+· `credentialsNote` 里 Markdown 星号「**」界面原样显示 —— 真缺陷，未修（不在本轮边界）
+· 存量本机绝对路径（lib/t17_*_probe.dart、rust/.../zz_t38_*.rs 等）
+  已在远端历史里，属独立议题，未处理
+```
+
+---
+
+## 0.0-旧 2026-10-20 15:20 续工：一手读数与派单（**已过期，保留供追溯**）
+
+### 0.0a Lead 自己跑出来的现场（不看汇报，只看读数）
+```text
+$ git status --short           ⇒ 11 个改动文件（R4 第二步的收拢改动在工作区）
+$ git log --oneline -1 -- lib/ui/widgets/update_dialog.dart ⇒ a8d6ce9（第一步已提交）
+$ flutter test test/zz_t66_r4_dialog_consistency_test.dart --concurrency=1
+  ⇒ +11 -2   ✗ ①-b（backup_panel / download_panel 绕过外壳且未登记豁免）
+              ✗ ④-b（豁免键必须指向真实存在的那一处）
+$ /d/WishProject/sourin-plugins: git status 干净；plugins/<主插件>.ts `danmakuSend: false`
+  + 紧邻 `// blocked: 上游 dm/post 要求 WebGL 指纹…`；`async danmakuSend(req)` 实现存在；
+  docs/danmaku-send-boundary.md（214 行）与 tools/check-danmaku-send-parity.mjs 均在
+```
+⇒ 据此修正口径（别照抄旧汇报）：
+- **R4 第一步（三弹窗 → `AppDialogShell`）是真落地的**（`a8d6ce9`）；
+- **R4 第二步（`AppGlassDialog` 收拢 + 逐处豁免）是半成品**：改动在工作区，门禁红 2 条；
+- **块② N15 的「契约+实现+门禁+边界文档」四件都在**，卡的是**能力位声明 false**（上游 WebGL 闸，结构性不可绕）；
+- 本文件此前多处「已修/已落」是**队友汇报口径**；本轮起一律要求**贴命令 + 读数**，没有读数的不算。
+
+### 0.0b 派单（文件归属已划清；同一文件同一时刻只有一个执行者）
+| 队友 | 负责 | 独占文件 | 交付判据 |
+|---|---|---|---|
+| `r4-finish` | R4 第二步收尾 | 11 个改动文件 + `test/zz_t66_r4_dialog_consistency_test.dart`（**不含**本 plan 文件、**不含** t105） | 门禁 `+N -0`、`analyze` 0 error、回归归因、提交 |
+| `n15-boundary` | 块② 审计与决策包 | 新建 `docs/notes/round-66-n15.md` | 应用侧真相 + 私库四态自洽 + 门禁故障注入 + 翻案条件逐条裁决 |
+| `verify-34` | 块③④ 独立打假 | 新建 `docs/notes/round-66-verify-34.md`（**在独立 worktree 跑**，不碰主树） | 「③/④ 判决一行 + 证据」；假绿要指名 |
+| `r4-device` | R4 真机像素验收 | 新建 `lib/t105_r4_dialogs_probe.dart` + `.probe/round66_r4_device/**` + `docs/notes/round-66-r4-device.md` | 真机逐张看图（玻璃/圆角/裁切/假绿形态）+ 渲染异常收集器 0；取证手段按 AGENTS §8（**禁 CopyFromScreen**，优先 `SOURIN_TABS=1 SOURIN_SHOT=1`） |
+| `r6b-live` | R6 残留（R6-b）：全屏直播页那枚**会撒谎**的弹幕开关 | `lib/ui/player_page.dart` + `lib/ui/player/player_bottom_bar.dart` + 新建 `test/zz_t66_r6b_*.dart` + 新建 `docs/notes/round-66-r6b.md` | 直播态按 R6 先例（不画控件 + 可解释说明）；`_toggleDanmaku` 加 `_isLive` 守卫且「请求数 = 0」；点播路径零变化；新断言自己做故障注入 |
+
+> ⚠️ 一处别误判：`git status` 里 `rust/sourin_core/src/commands_backup.rs` 显示 `M`，但
+> `git hash-object` 与 index blob **完全相同**（`59eff97…`）⇒ 只是 mtime 被工具碰过、stat 过期，
+> **没有内容改动**。别据此报「有人动了 Rust」。
+
+> ★ 纪律：teammate 每轮结束 Lead 立刻 `list_agents` 并续派；Lead 不接手实现类活，只做核对与派工。
+
+### 0.0c 进展流水（Lead 亲手复核过的读数，倒序追加）
+
+```text
+16:3x  verify-34 第五轮：在干净 worktree `/d/tmp/r66-v5 @55df113` 复核 P1（**主树脏，不能跑**）
+      基线：`zz_t66_r4_dialog_consistency +13` / `zz_t66_glass_dialog +28` ⇒ 与自报一致
+      ⑧ 一手 rect：`GLASS4 ⑧ rect=Rect.fromLTRB(410,329.5,870,470.5) w=460 h=141`；三键 center.dy 全 450.5（真同排）
+      注入 a（460/620→380/420）：`w=380` ⇒ `⑧ 宽度∈{460,560,820} 且==460` 红，`+27 -1`；还原 sha256[:16]=e9ee836a33e50d83
+      注入 b（拆 Align）：`w=1248 h=768` **又铺满整窗** ⇒ 两条红，`+26 -2`；还原后 status 0 行
+      ⇒ 两条注入均与自报一致 ⇒ **P1 判决：真绿**
+
+16:3x  n15-boundary 落盘 `test/zz_t66_danmaku_send_predicate_test.dart`（最小可跑版，5046 B）
+      已有：demo.js 夹具改写 + 防呆 StateError + 沙盒隔离 + `DanmakuSendInline` 计数 + 阳性对照 1 格
+      ★ 缺：8 格真值表 / 故障注入 / 「canSend 与 provider 是否恒同真同假」（若不可达要明写不可达，不许假造）
+      ⇒ 已派补全；要求整个活在 HEAD worktree 做（主树 player_page.dart 正被 r6b-live 改）
+      ⚠️ 若去掉 `!_isLive` 后格 5 仍绿 ⇒ 是测试没走到分支，**不是产品问题**，回来改测试
+
+16:3x  r4-finish 圆角断言已落盘（`test/zz_t66_glass_dialog_test.dart` 44066 B）
+      两条：`AppGlassDialog` = `LiquidRoundedSuperellipse` 且 `borderRadius == Radii.lg`；
+           `AppDialogShell(glass:true)` = `LiquidRoundedRectangle` 且 `borderRadius == Radii.lg`
+      判据写「等于 Radii.lg」不写「等于 22」（已在注释里声明，正确）
+      我核了 token：`lib/ui/tokens.dart:98 lg = 22`、`:107 rLg = all(circular(22))` ⇒ 引用正确
+      ⚠️ 但仍**未提交**；且对外口径（豁免 15 / 收拢 11）还没改
+
+16:3x  ★ R4 真机像素：**9 条 "文字进出边缘环" 全是探针假红**（Lead 亲手逐像素定位）
+      读数：`fix1_probe.log` 9/10 用例同一条红 `ringInk=408`（整齐得像巧合 ⇒ 去查）
+      一手证据（`fix1_01_tray_close.png`，卡片 rect=(410,288,460,265) ⇒ 底边行 y=552）：
+        y=551 → (160,169,187) 卡片底色
+        y=552 → (117,119,125) **卡片 1px 底边框，在 rect 内**
+        y=553 → (104,105,108) 卡片外阴影
+        ring 统计：408 个像素 **全部 edge 深度 0 / 全部在 B 边 / 全为 (117,119,125)**；且 460−26×2 = 408
+      ⇒ 根因：采样矩形含卡片自身描边 ⇒「边框=墨迹」。上一版 `fix0` 报「余量 B=1」是**同一根因**（换了判据没换根因）
+      左右上三边为何没报：左 rel0=(163,169,183) 是高光、上 rel0=(166,174,191) 是高光，只有底边把边框圈进来
+      ⇒ 已派 r4-device：内缩 1px / 跳描边行，并**双向自证**（去掉内缩红 9 条、加上绿 9 条）
+
+16:3x  ★ R4 圆角闭环证据（真机像素，非单测）：`fix0 → fix1` 的 `cornerInset`
+      `16,13,10,10,8,7,6,6…` ⇒ **`18,14,12,10,10,9,8,7…`**，实测半径 **16px → 18px**
+      ⇒ 这正是 `AppGlassDialog.borderRadius: 20 → Radii.lg(=22)` 在真机上的体现 = 「改代码→像素真的变了」的闭环
+      ⚠️ 该 build（16:30:53 app.so）编入的是 r4-finish **未提交**的工作区版本 ⇒ 口径写「未提交版本 sha256 …」，不写"已提交"
+      ⚠️ `AppDialogShell` 玻璃档（内层 20→Radii.lg）**零像素证据**，已派补一个用例
+
+16:5x  N15 第二轮提交 `f61736d`（弹幕发送说明搬到发现点 + 三态成对断言 + 边界决策笔记）
+      遗留：`player_page.dart` 那个四条件 AND 谓词（`_danmakuEnabled && _danmakuCanSend && _danmakuSendProvider != null && !_isLive`）
+      **全树无测试读该文件** ⇒ 已两次派 n15-boundary 补真值表，仍未产出（连续崩）
+
+16:4x  R4 圆角对齐**改动在工作区、未提交**（r4-finish 崩在提交前，Lead 亲读 diff 确认方向正确）：
+      `app_glass_dialog.dart`：`LiquidRoundedSuperellipse(borderRadius: Radii.lg)`（原硬编码 20）+ 引 `Radii, Sp`
+      `app_dialog_shell.dart`：`LiquidRoundedRectangle(borderRadius: Radii.lg)`（原硬编码 20）
+      ★ 关键判读（写进代码注释）：**两套外壳的决策层不同** ——
+        AppGlassDialog：`GlassContainer` 是最外层，玻璃轮廓即观感 ⇒ 它决定圆角；
+        AppDialogShell：玻璃档外层 `LiquidRoundedRectangle` 决定观感（内层 Material 已 color 透明 + side:none +
+        默认 `Clip.none` 不裁切）⇒ 玻璃档真实圆角一直是 20，§3.5 名不副实
+      ⇒ 缺：`zz_t66_glass_dialog_test.dart` **没有加"读 widget 属性 == Radii.lg"的断言**（已派补）
+      ⇒ 另：口径仍未改（对外 9/7 应为 **豁免 15 处 / 收拢 11 处**）
+
+16:4x  ★ **CS-1 证据缺口（Lead 亲查）**：`find . -name "t66-cs1*"` = **0**；`.probe/` 只剩 3 张 danmaku-proxy 图
+      ⇒ `docs/notes/round-66-e2e-verify.md:206` 记的「7 张截图 / 56 ✓」**证据文件不在盘上，不可复核**
+      ⇒ 已派 verify-34 定性（谁删的 / 落非 ignore 路径方案 / 重跑前置），**不重跑真机**（build 归 r4-device）
+      ⚠️ 口径必须写「自报，证据文件不在盘上」，不能写「已验收」
+
+16:2x  ★ R4 P1 **已修并提交** `55df113`（4 files / +304 −66）
+      根因判读（一手）：`DialogRoute` 挂 `Positioned.fill` 给的是**紧约束**，`ConstrainedBox` 走 `enforce(父约束)`
+        ⇒ `maxWidth` 被父约束顶掉；`AlertDialog` 自己 build 里有 `Align`，我们这层外壳漏了 ⇒「不是宽度调小了，是约束层漏了一层」
+      修法：`Padding(Sp.x4) → Align(center) → ConstrainedBox`；默认 `maxWidth 380→460`、`maxHeight 420→620`（都引 §3.5 原文）
+      一手 rect（走真 showAppDialog）：修前 1280×800 ⇒ `(0,0,1280,800)` 占屏 100%；A 后 `w=380 h=141` 留白 450；A+B 后 **`w=460 h=141` 留白 410**
+      判据：R4 门禁 `+13 -0`；玻璃族 `zz_t66_glass_dialog +28`（新增 ⑧ 三组 = 非满屏+居中 / 宽度∈白名单且==460 / 三键同排不溢出不换行不裁切）
+      注入：默认改回 380/420 ⇒ `+27 -1`；删 Align ⇒ `+26 -2`（⑧ 读到 1248×768）
+      回归：18 个受影响串行 + 8 个引用 AppGlassDialog 的测试文件 + 同族两门禁 ⇒ **零新红**；analyze 0 error
+      10 处调用点逐个说影响（全部吃默认 460/620，无一处显式传 maxWidth/maxHeight）
+      ★ 遗留两条口径偏差，Lead 裁定：
+        ① 圆角：外壳硬编码 `20`，而 §3.5 写 `Radii.rLg`（`tokens.dart:98` = **22**）⇒ **改代码引 token `Radii.lg`**
+           （另：`app_dialog_shell.dart:303` 用 rLg(22) 但 `:363` 又硬编码 20 —— 同壳两值，两壳都要对齐）
+        ② 内容区 padding `fromLTRB(24,22,24,16)` vs 规范 `fromLTRB(Sp.x6,0,Sp.x6,Sp.x2)` ⇒ **保持不动 + 注释说明**：
+           规范那套预设"外壳自带独立标题栏"，而 AppGlassDialog 标题在内容区里、按钮行自带内边距 ⇒ 顶 22/底 16 是补偿
+           ⇒ 笔记里登记为"已裁定偏差"；**不改 docs/AGENTS.md**（不为迁就实现改规范）
+        ★ §3.5 首句「所有弹窗必须走 AppDialogShell」与 AppGlassDialog 的存在本身冲突 ⇒ 记为"规范未覆盖的一档"，
+          是否合并留待决策（对外口径要讲这句，否则 Owner 会问"到底几套外壳"）
+
+17:1x  verify-34 第四轮（③的"未验证"补洞）：新增 `test/zz_t66_image_downscale_test.dart`
+      现树 `+5`；拆掉 `.clamp(1, kCoverDecodeMaxPx)` ⇒ `+2 -3`（①②④ 红、③⑤ 仍绿）= 有判别力；还原 sha256 回基线
+      一手读数：`dpr=3.0 kCoverDecodeMaxPx=4096`、`222×1440 → 34×223`、**`800×6000 → 546×4096`**（最大边长真被夹）；裸解码 800×6000 作仪器自检
+      ⇒ 结论：`t74_cover_image_test` 只钉 `coverDecodeWidth` 逐值与 `ResizeImage` 契约，**没人证明过真解码位图真的变小** —— 现已补上
+      ★ 口径对账（重要，直接改对外数字）：豁免登记表 **15 条** = 绕过外壳构造点 **15 处**（1:1）；`AppDialogShell(` 构造点 **11 处**
+        ⇒ **9 与 7 都是错的**（`eee6a5e`=14、`f0cf7e0`=15；「收 7」按文档括注是 7 个**文件**，不可与"处"互换）
+        ⇒ 对外统一：**收拢 11 处 / 豁免 15 处 / 仍绕过外壳 15 处**，且必须标"按处"
+      ★ 另抓到一处口径矛盾：`backup_panel#这个备份包含登录态` 登记机制 ②（TextField 缺 Material），提交说明写 ⑤ ⇒ 已要求 r4-finish 对齐
+
+16:3x  块② N15 第二轮落地（n15-boundary）—— 并**更正了我一条错读数**
+      ★ 我原以为「只翻发送位 ⇒ 发送门禁绿、能力门禁红」；实测 4 态是**反的**：
+        基线(false+blocked齐) ⇒ 发送 EXIT0 / 能力 EXIT0
+        只翻 danmakuSend（源码+产物同步）⇒ **发送 EXIT1**（2 条：声明 danmakuSend 就必须也声明 danmaku）
+        只翻 danmakuSend（只改源码不 build）⇒ 发送 EXIT1 + **能力 EXIT1**（产物与源码不同态）
+        只翻 danmaku 位（无 danmakuList()）⇒ 能力 EXIT1（danmaku=true 但方法不存在）
+        ⇒ **跨位一致性规则先报错**；「改回 true 后门禁自动回合法态」这句是**错的**，两个门禁都各自报错
+      私库 `sourin-plugins` 提交 `b7b7c60`（2 files / +232 −3）：
+        ① `docs/danmaku-send-boundary.md` §七「改回只需 2 处」→ **5 处**（danmakuSend:false→true、删 blocked:、
+            danmaku:false→true、实现 danmakuList()+删 reserved:、node build.mjs）+ 4 条门禁读数表 + 宿主/应用侧零改动清单
+        ② `tools/check-capability-parity.mjs` **补产物侧**（472→626 行）：产物存在性 + 与源码逐位同态 +
+            产物自身跑同一套「声明↔方法」判定 ⇒ 三条注入（只改 dist / 只改源码 / 都改对）分别 EXIT1/EXIT1/EXIT0
+        ★ 收尾读数：发送门禁 EXIT0（4 条）/ 能力门禁 EXIT0（19 条，基线 13 → 19）；src/dist sha256 均回基线；`git status` 空
+        ★ 新增「从未实测的单变量」：`dm_img_str/dm_cover_img_str` = 显卡/渲染器型号（同机固定值，非 nonce），
+          「伪造一组常量发一次会怎样」**未测**，需 Owner 授权（写成未测项，不写成待办）
+      主仓（只动 1 产品文件 + 1 测试）：`danmaku_settings_dialog.dart` +15 −2 —— 去掉 `biliBound &&` 前置，
+        文案「本片源不支持发送弹幕（只能看）」→「弹幕可以看、调样式、合并多路来源；发送只在支持发送的片源里提供」；
+        门禁 `zz_t66_danmaku_panel_semantics_test` ⑤组 2→3 条成对断言（能发/不能发已绑定/不能发未绑定），
+        注入两条各命中对的断言（删分支 ⇒ a/b 红；条件改回 ⇒ **只有 b 红**）⇒ `+15` 绿、`t98 +8` 绿
+      ⇒ 遗留：`player_page.dart:16043` 的 AND 谓词**没有任何测试读该文件** ⇒ 已派 n15-boundary 补四条件真值表+阳性对照
+
+17:0x  verify-34 第三轮：复核 `f0cf7e0` ⇒ **判决真绿**
+      干净 worktree（无 sourin_core.dll）→ `+13 All tests passed`（门禁不依赖 dll）
+      注入 A（cache_page 回退裸 AlertDialog）⇒ **①-b 红**：`· lib/ui/cache_page.dart:builder: (ctx) => AlertDialog(`，扫描 16 处
+      注入 B（删 download_panel:235 的 `// R4-EXCEPTION:`）⇒ **④-b 红**：特征串附近找不到豁免注释
+      ⚠️ 坑：`--plain-name "④ ★"` 只命中「占位话」那条，删标记时它**仍是绿** ⇒ 日后注入必须精确 `④-b ★`
+      机制实测（真 showDialog 路由）：AlertDialog Material=1 / ListTile 正常 / 上移=1 / textAlign=**start**；
+        AppGlassDialog Material=**0** / 抛 `No Material widget found.` / 上移=**0** / textAlign=**center**
+      ⇒ ①「改判」成立（是弹窗根本打不开，不是能不能点）；⑤ 理由成立；② 尺寸算术成立
+      ★★ **它报的四个问题（全接）**：
+        ① 豁免表实际 **15 条**（14 单引号键 + 1 双引号），对外称「9 处」⇒ **口径不一致，需对账**（已派活②）
+        ② 门禁只校验「键指得到真实位置 + 理由不是占位话」，**不校验机制真伪** ⇒ 机制写反不会红（已派活③转渲染判据）
+        ③ **活③前提不成立**：`zz_t12_cache_page_probe_test` 只是锚点迁移，全树 `grep -E "1440|222|scale|instantiateImageCodec|decodeImage"` 无命中
+           ⇒ 图片下行缩放**无判据 = 未验证**（不是已证伪）—— 已派活①补判据
+        ④ `AppGlassDialog` 无 Material 宿主 ⇒ 「补透明 Material 宿主」方向对，但补完必须有判据（r4-finish 那批豁免②依赖它）
+
+16:5x  ★★ **真机像素抓出 P1：`AppGlassDialog` 在真机上铺满整窗（不是 380 卡片）** ——
+      r4-device 读数：8 个玻璃框 `GlassContainer` rect 全 = `(0,40) 1280×760`（占屏 99.9%×94.9%）；
+      同一 harness 里真实点击触发的 Material `AlertDialog` 对照 = `508×246`、四边余量 24/25
+      ⇒ 判据能红能绿，不是假绿。`RESULT FAIL cases=9 ok=55 bad=16 errors=0`（渲染异常 0）
+      ★ Lead 独立复核（PIL 数像素）：`01_tray_close.png` 在 y=400 横跨 1280 宽**零个亮度台阶**
+        ⇒ 卡片左右边界真的不存在（玻璃板撑满），与 r4-device 的结构读数一致
+      根因：`app_glass_dialog.dart:104` 只有 `ConstrainedBox(maxWidth:380,maxHeight:420)`，
+      **外层无 Align/Center**（:165 那个 Align 只包 actions）⇒ `showDialog` 的 builder 吃全窗紧约束，
+      `BoxConstraints.enforce` 把 380 夹回 1280。`AlertDialog` 靠自己的 `Dialog→Align(center)` 才缩成卡片。
+      ★ 这是「flutter_test 全绿、真机才露」的教科书案例 —— 我们**没有任何一条测试断言过这个卡片的宽度/居中**
+      ⇒ 已派 r4-finish 两步走（A：加 Align(center)+视口安全边距止血；B：默认值收敛到 §3.5）
+
+16:4x  **口径裁定（Lead 查 `docs/AGENTS.md` §3.5 原文后定）**：
+      规范 = `宽度 默认 560；窄弹窗 460、宽版面 820`、`最大高度 绝对值 620`、`圆角 Radii.rLg`
+      ⇒ `AppGlassDialog` 的 `maxWidth:380 / maxHeight:420` **两处都与规范打架** —— 同一应用两套外壳两套默认宽高，
+        这正是 Owner「弹窗样式不统一、丑爆了」的一类根因
+      ⇒ 裁决：**收敛代码对齐文档**（380→460 窄弹窗档、420→620 规范绝对值），
+        并加断言「宽度 == 460 且水平居中」，注入改回 380 必须红；全仓 `AppGlassDialog` 调用点逐个说影响
+
+16:2x  R4 第二步**已提交** `f0cf7e0`（16 files / +354 -108）—— r4-finish 自报读数：
+      `zz_t66_r4_dialog_consistency_test` **+13 -0**（修前 Lead 亲测 +11 -2）、analyze 0 error
+      两条红归因：①-b 两处代码有 `R4-EXCEPTION` 注释但漏登记；④-b 两条登记键在代码里**已不存在**（指着空气）
+      逐处账：**收 7**（app_tray/cache_page/data_manage/emby/skip/sync/download）/ **豁免 9**
+      ★ 改判一处（推翻了它自己上一版结论）：`settings_page`「调整内容源顺序」原判「可收拢」是**测错了对象**
+        —— 旧探针 `MaterialApp(home: Scaffold(...))` 白送 Material 祖先；真实 `showAppDialog` 路由下
+        `ListTile` 抛 `No Material widget found`、「上移」按钮数 = 0 ⇒ 弹窗**根本打不开**，属机制②
+      ★ 连带修红：`zz_t12_cache_page_probe_test` +14 -1（本批收拢导致树上不再有 `AlertDialog`）⇒ 改锚
+        `AppGlassDialog`+`AppTextButton`，自带 skip 3 条的 `zz_settings_geometry` 与本次无关
+      ⇒ **Lead 未采信，已派 verify-34 独立复核 f0cf7e0（活①~⑤，含"纯净环境复跑"）**
+
+16:1x  verify-34 第二轮判决（③④ 相关门禁）：**三活全达成**
+      md_gate **+5**（①真渲染改造：`pumpWidget` 进 `t.runAsync()` 等「数据目录共占用」上树，
+      注入 `data_manage_page.dart:342` ⇒ ①整棵树自己红 +1 -1）/ markdown_audit **+2**（审计→真门禁，
+      产品路径"用户可见 `**`"必须 = 0，日志/不确定只报告不入红；注入 `proxy_panel.dart:437` ⇒ +1 -1，
+      报错带 `文件:行号 + 原文`）/ danmaku_proxy_a11y **+4**（+1 条守住"三态覆盖者仍存在且真挂产品页"）
+      ★ **顺带挖出并修掉一条"永远红"**：`md_gate` 代理面板①断言渲染文案含「代理」，而折叠态标题是
+        `ProxyConfig.summary`（`lib/core/models.dart:2440` ⇒ `'直连'`）——主树之所以绿是**靠本机存过代理配置**
+        走展开态；干净 worktree（`/d/tmp/r66-verify2`，HEAD f273107、无 dll/无缓存）**必红**。
+        已改为 `find.byType(ProxyPanel)` + `texts.isNotEmpty`
+      ⇒ 结论：**"代码相同 ≠ 环境相同"这次是反向案例 —— 假绿靠本机数据撑着**；流程上加一条"纯净 worktree 复跑"
+
+15:4x  站名门禁（Lead 就地修）：本文件里 5 处站名已中性化
+      （plugins/<主插件>.ts、<站点域>/x/v2/dm/post、SOURIN_PROBE_PLUGIN=<主插件>.js）
+      flutter test test/t98_no_site_names_test.dart --concurrency=1 ⇒ +8 All tests passed
+      ★ 这条红在**我编辑之前就存在**（§0.1 的 ② 行早就写了站名）—— 不是我新引入，但由我修掉
+
+15:3x  R4 门禁（r4-finish 读数）：+12 -1
+      ✗ ①-b 剩 2 条，全在 untracked 的 `lib/t105_r4_dialogs_probe.dart:395/:426`
+        —— 探针**自己 new 了一个 AlertDialog 复制品**再截图 ⇒ 不是产品真实路径 ⇒ 判为假证据，已要求改驱动真实调用点
+      ✅ ④-b 已绿（豁免键唯一 + 原地有 `// R4-EXCEPTION`）；为此补了 4 处原地注释
+         （settings_page ×2、tvbox_source_panel ×1、provider_login_panel ×1）
+
+15:2x  块② 审计落地 `docs/notes/round-66-n15.md`（私库 git 干净、src/dist sha256 回基线）
+      ★ 应用侧是**干净地不渲染**（不是 R6 那种假入口）：player_page:3408 判据 → :16043 谓词 → danmakuSend:null → bar:1388 不渲染
+      ★ 真实路径更正：`lib/ui/player_bottom_bar.dart` **不存在**，是 `lib/ui/player/player_bottom_bar.dart`
+      ★ 两个覆盖缺口：`danmaku_settings_dialog:3634` 那句解释 test/ 零命中；`player_page:16043` 的 AND 谓词无任何测试扫
+      ★ 私库「改回 true 只需 2 处」是**错的**：实测 5 处 + 需实现 `danmakuList()`（只翻发送位 ⇒ 发送门禁绿、能力门禁红）
+      ★ 还原坑：`dist/` 在 .gitignore ⇒ `git status` 干净**证明不了**产物已还原，必须比对 sha256
+      ⇒ 裁决：走 A（保持 false + 把解释搬到发现点 + 补断言）；**D（用 Owner 登录态真发一条）不做**，属对外写操作，需 Owner 授权
+```
 
 ---
 
@@ -20,9 +308,9 @@
 | 块 | 内容 | 当前状态 |
 |---|---|---|
 | **①** | Owner 8 条反馈 R1–R8 | 🟡 **7 条已落**（R2/R3-④/R3-⑤/R3-⑥/R3-①②/R8 已提交）；**R4 已结**（3 弹窗收拢到 `AppDialogShell`，`_kMaxHeight` `620*0.8` 是**真回归**已改回 620，渲染门禁 `+8`，注入 460→860 ⇒ `+6 -2` 双层抓到，35 个受影响测试**零回归**）；R5 已定案；**R6 已落**（裁决①实测前提被推翻：**入口从来不存在**，落成「不画控件 + 一句可解释说明」；裁决②≥2 可选档才画下拉）+ **R6-b 只取证**（全屏页那枚是**假入口**：不是「静默」，是一次性 toast 后停在「开着、零弹幕、一枚看不懂的 `!`」，wire 级证据 = 频道名被发去番剧匹配接口 `/api/v2/match`，`_toggleDanmaku()` 无 `_isLive` 守卫）；**R7 取证完成**（「剩 3 项」这句话本身是错的：首页只有 **2** 个 Material 控件且都在、**彻底去 MaterialApp 已完成**（产品根 `WidgetsApp`，真实调用 0 处）、`theme_bridge` 真实依赖只剩 2+14 处**不建议现在做**；并**证伪**我给的假设——AGENTS §4 的 `colorScheme` 规矩**没过期**，185:9）；R1 未修成（见 0.2），**唯一嫌疑是站名徽章** |
-| **②** | N15 插件弹幕发送（应用侧 + 私库契约与实现） | 🔴 **能力不可用 = 本目标未完成**（2026-10-19 从零复现核实）。实现真实存在（私库 `bilibili.ts:1954 async danmakuSend(req)`），但**能力位声明 `false`**（`:1301`）⇒ 真核心实测 `danmaku_send = false` ⇒ 应用侧 `player_bottom_bar.dart:1388` 的 `if (danmakuSend != null)` **整条发送入口不渲染** ⇒ 用户发不出、也看不到入口。<br>★ **闸门是上游硬限制，绕不过**（`bilibili.ts:1258-1295` 原文）：上游 `dm/post` 的四个 `dm_img_*` 字段来自 `window.__biliUserFp__`，而插件跑在 **QuickJS** 里没有 window/WebGL/canvas ⇒ **结构上算不出来**；且闸门在**参数校验之前**（csrf 错得 -111、对 csrf 得 -400 ⇒ 请求确实到了业务层）⇒ 补常量 flag 只是「编一个假指纹」，大概率同样触发风控。<br>★ **翻案条件（2026-10-19 逐条核实，结论比原表述硬）**：<br>　❌ **① 宿主暴露 WebGL/canvas ⇒ 永久不可行，建议划掉**（留着会误导 Owner）：`Cargo.toml` 全表 `grep webgl|opengl|wgpu|graphics` **零命中**；插件引擎是 **QuickJS（rquickjs 0.14）**——纯 JS 解释器，**没有 WebGL 这个概念面**；唯一图形能力（libmpv）在 Flutter 侧，与插件沙箱**不同进程**。<br>　⚠️ 另：加桩技术上只要 1~2 行（全局注册点全仓只有一处 `plugins/mod.rs:1052`），但 `dm_img_str` 解码是 `"WebGL 1.0 (OpenGL ES 2.0 Chromium)"`、`dm_cover_img_str` 是**显卡型号** ⇒ 注入桩只会产出**假指纹**，而上游拿它做设备一致性判断 ⇒ **假指纹比现在的 -400 更糟**。<br>　🟡 **② 上游放宽闸门** —— 现实，但**不受我们控制**（不要写成「等一等就会好」）。<br>　🔴 **③ 等价路径** —— **至今无候选，且结构上就难成立**：播放器 bundle 那张「需要指纹的域名表」是**按接口路径**列的，`api.bilibili.com/x/v2/dm/post` **就在表内**（私库 `danmaku-send-boundary.md:77`）⇒ 同域换端点大概率仍在表内 ⇒「换个接口绕过去」不成立。<br>⇒ ★★★ **没有一条是「我们努力就能达成」⇒ 对外按「短期无解」表述**。权威依据：私库 `docs/danmaku-send-boundary.md`（214 行，含 12 组排除法表与四段生命周期表）。改回 true 只需动私库（删 `blocked:` 注释 + 改 true + 重同步），**宿主一行不用改**。<br>★ **两处口径更正**：① 「真机 6 passed」实为 **9 条**，且**必须带 `SOURIN_PROBE_PLUGIN=bilibili.js`** —— 不设时 **7 条全跳过、0.00s 绿**（最典型的假绿形态）。② 私库那三个提交（`12b0580`/`4eeadb6`/`ffc6f8e`）**全是工具链/护栏**（.bak 限量去重 / 产物新鲜度门禁 / rollback 工具）；真正做「契约+四态门禁」的是 `b47b753`/`47ff4c3`/`16bf8ae`。★ 而 `b47b753` 同时改了两个位：`danmaku`（**收**，因声明了 danmakuList 但方法不存在）与 `danmakuSend`（**发**，因 WebGL 闸）—— 原表述把它们压成了一句 |
-| **③** | 弹幕代理 a+b | ✅ **已提交 `6222428`**；实测 **18 条**（不是 13，我抄错）；两处注入真红 |
-| **④** | CS-1 登录态同步与导出导入 | ✅ **验收收尾完成**：Rust 491 全绿 + Flutter 侧已接线（`credentialsStatus` 等 4 命令）；判据 #10/#11 **逐条真跑** —— 真机 **56 ✓ / 0 ✗**（7 张截图，含「含 2 个源的登录态，已加密」与导入口令框）、门禁新增 **+34**（`zz_t66_cs1_export_import_e2e_test.dart` +23 / `zz_t66_cs1_ui_flow_test.dart` +4 / `zz_t66_cs1_no_markdown_leak_test.dart` +7）；**三处故障注入全部证明有判别力**（其中「base64 假加密」第一版判据全绿 ⇒ 已加强为「解开 `_v1` 看是不是明文 + 两次密文必须不同」）。★ **修掉一个真缺陷**（Lead 看截图发现）：用户可见文案里的 markdown `**` 被**原样显示**（Flutter 的 `Text` 不解析 markdown，本仓全仓无 markdown 渲染器）⇒ 8 处 12 个字面量改成中文引号「」（跟仓库先例 `shell.dart:6955`），新增「整棵树不含 `**` + 防空转自检」门禁。★ 期间发现并处置：仓库根 `sourin_core.dll` 陈旧（Oct 18 12:15，落后 CS-1 接线 Oct 19 08:46）⇒ 按 AGENTS §8 强制重拷才跑通 |
+| **②** | N15 插件弹幕发送（应用侧 + 私库契约与实现） | 🔴 **能力不可用 = 本目标未完成**（2026-10-19 从零复现核实）。实现真实存在（私库 私库 `plugins/<主插件>.ts:1954 async danmakuSend(req)`），但**能力位声明 `false`**（`:1301`）⇒ 真核心实测 `danmaku_send = false` ⇒ 应用侧 `player_bottom_bar.dart:1388` 的 `if (danmakuSend != null)` **整条发送入口不渲染** ⇒ 用户发不出、也看不到入口。<br>★ **闸门是上游硬限制，绕不过**（`plugins/<主插件>.ts:1258-1295` 原文）：上游 `dm/post` 的四个 `dm_img_*` 字段来自 `window.__biliUserFp__`，而插件跑在 **QuickJS** 里没有 window/WebGL/canvas ⇒ **结构上算不出来**；且闸门在**参数校验之前**（csrf 错得 -111、对 csrf 得 -400 ⇒ 请求确实到了业务层）⇒ 补常量 flag 只是「编一个假指纹」，大概率同样触发风控。<br>★ **翻案条件（2026-10-19 逐条核实，结论比原表述硬）**：<br>　❌ **① 宿主暴露 WebGL/canvas ⇒ 永久不可行，建议划掉**（留着会误导 Owner）：`Cargo.toml` 全表 `grep webgl|opengl|wgpu|graphics` **零命中**；插件引擎是 **QuickJS（rquickjs 0.14）**——纯 JS 解释器，**没有 WebGL 这个概念面**；唯一图形能力（libmpv）在 Flutter 侧，与插件沙箱**不同进程**。<br>　⚠️ 另：加桩技术上只要 1~2 行（全局注册点全仓只有一处 `plugins/mod.rs:1052`），但 `dm_img_str` 解码是 `"WebGL 1.0 (OpenGL ES 2.0 Chromium)"`、`dm_cover_img_str` 是**显卡型号** ⇒ 注入桩只会产出**假指纹**，而上游拿它做设备一致性判断 ⇒ **假指纹比现在的 -400 更糟**。<br>　🟡 **② 上游放宽闸门** —— 现实，但**不受我们控制**（不要写成「等一等就会好」）。<br>　🔴 **③ 等价路径** —— **至今无候选，且结构上就难成立**：播放器 bundle 那张「需要指纹的域名表」是**按接口路径**列的，`<站点域>/x/v2/dm/post` **就在表内**（私库 `danmaku-send-boundary.md:77`）⇒ 同域换端点大概率仍在表内 ⇒「换个接口绕过去」不成立。<br>⇒ ★★★ **没有一条是「我们努力就能达成」⇒ 对外按「短期无解」表述**。权威依据：私库 `docs/danmaku-send-boundary.md`（214 行，含 12 组排除法表与四段生命周期表）。改回 true 只需动私库（删 `blocked:` 注释 + 改 true + 重同步），**宿主一行不用改**。<br>★ **两处口径更正**：① 「真机 6 passed」实为 **9 条**，且**必须带 `SOURIN_PROBE_PLUGIN=<主插件>.js`** —— 不设时 **7 条全跳过、0.00s 绿**（最典型的假绿形态）。② 私库那三个提交（`12b0580`/`4eeadb6`/`ffc6f8e`）**全是工具链/护栏**（.bak 限量去重 / 产物新鲜度门禁 / rollback 工具）；真正做「契约+四态门禁」的是 `b47b753`/`47ff4c3`/`16bf8ae`。★ 而 `b47b753` 同时改了两个位：`danmaku`（**收**，因声明了 danmakuList 但方法不存在）与 `danmakuSend`（**发**，因 WebGL 闸）—— 原表述把它们压成了一句 |
+| **③** | 弹幕代理 a+b | ✅ **已提交 `6222428`**；实测 **18 条**（不是 13，我抄错）；两处注入真红。★ **2026-10-20 独立复核（`verify-34`，HEAD 纯净 worktree）**：口径更正 —— **18 = 四个 proxy 文件**（`danmaku_proxy_test +10` / `_req +2` / `_https +3` / `_a11y +3`）；`zz_t66_verify_danmaku_proxy_shots_test.dart +4` **另计**，计入则代理侧共 **22**。5 个文件 **0 skip / 0 mock / 0 HttpOverrides**，`_req`/`_https` 真起 socket（`targetHits 0→1`）。两处独立注入真红：`danmaku.dart:808` system→`'DIRECT'` ⇒ `+8 -2`；`danmaku_source_page.dart:598` 地址框三态全显示 ⇒ `+3 -1`；两次 sha256 逐位回基线、analyze 0 error ⇒ **判决：与宣称一致**。⚠️ 已知弱项：`_a11y_test.dart:18` 的 `_Probe` 是同构副本（不覆盖产品页），但 `verify_..._shots_test.dart:164` 起挂的是真 `DanmakuSourcePage()` |
+| **④** | CS-1 登录态同步与导出导入 | 🟡 **代码与门禁成立，但真机截图证据已不在盘上（不可复核）**。★ **2026-10-20 独立复核（`verify-34`）逐条更正**：<br>① **Rust 491 成立**：`cargo test --lib` ⇒ 491 passed / 0 failed / 9 ignored（全仓 649 passed / 0 failed / 65 ignored / 55 target）。<br>② **门禁不是 +34 而是 +35**：`zz_t66_cs1_export_import_e2e_test.dart` 是 **+24**（不是 +23；`git show HEAD:<file> | grep -c 'test('` = 24，排除「文件后来长了一条」）+ `ui_flow +4` + `no_markdown_leak +7`；Dart 六文件 **76 全绿 / 0 红 / 0 skip**，且 `export_import_e2e_test.dart:296` 有 `expect(SourinCore.isLoaded, isTrue)` 仪器自检 ⇒ 真打在 Rust FFI 上，dll sha `93c9923e…` mtime Oct19 21:08 不陈旧。<br>③ **假加密注入独立复现**：`credentials.rs:534` encrypt→base64(明文) ⇒ **+20 -4**，红在「`_v1` 解开后不是明文」「错口令文案逐字含「口令不正确」」等 4 条；还原后 +24 全绿、dll/源 sha256 均回基线。`两次密文必须不同`（`:588`）判据确实存在。<br>④ ⚠️ **markdown「整棵树」判据有覆盖缺口**（已指名）：`data_manage_page.dart:342` 注入 `**` ⇒ `md_gate_test +4 -1` 红的是**静态兜底**，而「①整棵树」那条**没红**（`DataManagePage()` 在空数据目录下懒构建、没渲染那一行）。<br>⑤ ❌ **真机 56 ✓ / 7 张截图：不可复核** —— `docs/notes/round-66-e2e-verify.md:206` 记的是 `.probe\t66-cs1-*.png`，实测 `find . -name "t66-cs1*"` = 0、`.probe/` 只剩 3 张 danmaku-proxy 图；`verify_shots.ps1 -InDir .probe/e2e` 只读复跑能校验③那 3 张（PASS 3）。⇒ **口径改为「自报，证据文件不在盘上」**，本轮改为在最终批量真机验收里重出图并落非 ignore 路径。<br>★ 历史记录（不改，但注意其截图依据已失效）：Lead 看截图发现用户可见文案里 markdown `**` 原样显示 ⇒ 8 处 12 个字面量改成中文引号「」（先例 `shell.dart:6955`）；本次复核确认「产品路径用户可见 `**` = 0」，但 `zz_t66_markdown_audit_test.dart` **故意永不 fail（只出清单）⇒ 审计工具不能替门禁作证** |
 
 ### 0.1a Owner 第 5 条反馈：更新说明全是默认的（2026-10-19，已修）
 
@@ -123,7 +411,7 @@ cc157ac  R3 七个子项 + DNS 劫持归因修正（★ R1 的 chip 段被我一
 | **R3-⑤** | 源要能绑定多个 | ★ **比原假设更严重**：不是「`SwitchListTile` 单选语义」，而是 **4/4 调用点 `onChanged: null`**（只读图标），且「当前生效」那行拼的量**与勾选无因果关系** | ✅ 已改为真实集合 + `DanmakuAggregator.merge` 消费；无原料时如实说「未逐条合并」 |
 | **R3-⑥** | 弹幕信息显示源/时间/条数 | 原本**没有**源名字段、**没有**更新时间 | ✅ 已加 `sourceName`/`updatedAt` + 三级退路 + 三种事实区分（宿主给 / 会话观察 / 未记录） |
 | **R3-⑦** | 两个内置 dan-api 用不了 | 同 ③ | ✅ 同 ③（同一处改动同时覆盖两条：两个内置实例都是 `*.vercel.app`，走的就是被劫持的解析）。⚠️ 未做：修网络本身（不在本轮范围，且属环境问题）；⚠️ 未做：伪造段表只能兜「已知样本」，**未命中 ≠ 正常** —— 轮换走的新伪造段只有「测试连接」那条路的 DoH 对照能识破，取数/搜索路仍会落到 `connectionTimeout`（文案已如实说"也可能被墙/代理"） |
-| **R4** | 弹窗样式不统一「丑爆了」 | 实测 3 个弹窗**绕过**统一外壳：`update_dialog` 用 `AlertDialog` + width 460 写在 content 里 / `skip_marker_dialog` 自写 `Dialog` + 740 高（规范 620）/ `source_composer_dialog` width 860（规范无此档） | 🟢 **三弹窗已收拢到 `AppDialogShell`**（未提交）。门禁 `test/zz_t66_r4_dialog_consistency_test.dart` **+8 -0**（静态 6 条 + **渲染 2 条**）。★ **渲染实测**（`tester.getRect`，非读源码）：update 460.0×235.0 / composer 820.0×620.0 / skip 820.0×740.0，**三者圆角均 22.0、底色均 `ff36343a`**，宽度全落在 §3.5 白名单 {460,560,820}；只有 skip 传 `maxHeight`(740，有实测反证：620 会把第四行挤出视口、预览只剩 116px)，另两个吃默认。★ **顺带裁决并回退了一处回归**：工作树里 `_kMaxHeight` 曾被改成 `620 * 0.8`，实测 **`+99 -2`（t70 两条 tap 红）**，已改回 **620** ⇒ **`+101 All tests passed!`**；故障注入 480 ⇒ 同样 `+99 -2`（判据有判别力），三点 sha256 `S1=S3=a4d7a017… / S2=01a2d4dd…` 证明字节真变、还原无残留。★ 门禁双向注入：`update_dialog` 460→860 ⇒ `+6 -2`（静态 ①-c 与渲染 ④ **双层同时抓到**）。回归：35 个受影响测试逐个单跑，**26 绿 / 9 红，9 红全部在 HEAD 复现同读数**（基线既有，非本轮引入）；`flutter analyze` 四文件 **4 issues 全 info / 0 error**，HEAD 同为 4 info。⚠️ **未做**：真机隔离启动验收（未跑 `tools/run_client.ps1` / 未触发真实弹窗）—— 换掉 `AlertDialog` 后 `MaterialLocalizations` 只在真机暴露，本轮**只有单测证据**，Owner 侧需实机开一次更新窗确认 |
+| **R4** | 弹窗样式不统一「丑爆了」 | 实测 3 个弹窗**绕过**统一外壳：`update_dialog` 用 `AlertDialog` + width 460 写在 content 里 / `skip_marker_dialog` 自写 `Dialog` + 740 高（规范 620）/ `source_composer_dialog` width 860（规范无此档） | 🟢 **三弹窗已收拢到 `AppDialogShell`**（未提交）。门禁 `test/zz_t66_r4_dialog_consistency_test.dart` **+8 -0**（静态 6 条 + **渲染 2 条**）。★ **渲染实测**（`tester.getRect`，非读源码）：update 460.0×235.0 / composer 820.0×620.0 / skip 820.0×740.0，**三者圆角均 22.0、底色均 `ff36343a`**，宽度全落在 §3.5 白名单 {460,560,820}；只有 skip 传 `maxHeight`(740，有实测反证：620 会把第四行挤出视口、预览只剩 116px)，另两个吃默认。★ **顺带裁决并回退了一处回归**：工作树里 `_kMaxHeight` 曾被改成 `620 * 0.8`，实测 **`+99 -2`（t70 两条 tap 红）**，已改回 **620** ⇒ **`+101 All tests passed!`**；故障注入 480 ⇒ 同样 `+99 -2`（判据有判别力），三点 sha256 `S1=S3=a4d7a017… / S2=01a2d4dd…` 证明字节真变、还原无残留。★ 门禁双向注入：`update_dialog` 460→860 ⇒ `+6 -2`（静态 ①-c 与渲染 ④ **双层同时抓到**）。回归：35 个受影响测试逐个单跑，**26 绿 / 9 红，9 红全部在 HEAD 复现同读数**（基线既有，非本轮引入）；`flutter analyze` 四文件 **4 issues 全 info / 0 error**，HEAD 同为 4 info。⚠️ **未做**：真机隔离启动验收（未跑 `tools/run_client.ps1` / 未触发真实弹窗）—— 换掉 `AlertDialog` 后 `MaterialLocalizations` 只在真机暴露，本轮**只有单测证据**，Owner 侧需实机开一次更新窗确认 |<br>★ **第二步（`AppGlassDialog` 收拢）留下的 4 条组件能力缺口**——每条都**不能靠改调用点绕过**，且每条都带「因此不能收拢的站点」当验收清单：<br>① **缺 `padding` / `backgroundColor`** ⇒ `theme_page.dart:199`（`contentPadding.zero` + `p.palette.card` 自定义底色）<br>② **缺 Material 祖先** ⇒ 放 `TextField` 抛 `"TextField widgets require a Material widget ancestor"` ⇒ `settings_page.dart:2262` / `backup_panel.dart:1392,1484` / `provider_login_panel.dart:1376`（**四处同一个根因**）<br>③ **内联 `TextStyle` 定颜色会被 `DefaultTextStyle` 覆盖** ⇒ `download_panel.dart:233`（`Colors.red` 警示色会被冲掉）★ 通用检查项：收拢前先扫一遍内容里有没有内联定色<br>④ **缺 `width`/`height` 可控** ⇒ 装不下 420~560 宽的自带滚动区 ⇒ `settings_page.dart:6624,6905,7263` / `tvbox_source_panel.dart:265`<br>⚠️ 判读：这几条是「**豁免理由**」，不是「以后再说」——`zz_t66_r4_dialog_consistency_test.dart` 的 ①-b 会把它们逐处钉住
 | **R5** | 直播静音按钮 | ★★★ **2026-10-19 全仓排查：这个编号装了 **3 件不同的事** （外加 1 条疑似），而进度表只有一行 ⇒ **Owner 报的是 9 件事，表里只有 8 行**。<br>**R5（1009）· 行为**：「再次点击 静音图标也没变化,但是却没有声音了」（`live_embedded_player.dart:547-548`）+「必须拖音量条才恢复」（`player_page.dart:4228-4229`，缺陷 11）⇒ 已修（`22aab09`），★ **但无行为门禁**：`t61_volume_pref_test.dart:184` 找的是 `void _toggleMute()`，那在 **`player_page.dart:12313`**；而 live 页的实现是 `Future<void> toggleMute()`（`live_embedded_player.dart:1699`）—— **文件、签名、可见性全不同 ⇒ t61 根本没覆盖它**，可随时回归。<br>**R5（1018）· 视觉**：「你看那个静音按钮，都有一半没显示出来，这个窗口都没契合」（`:2584`）⇒ ✅ 已修（`3b92d2e`，`Flexible` 让视频让出 chip 高度），门禁 `zz_t66_r5_player_no_overlap_test.dart`（+8，含阴性对照：修复前形状下被裁 15.3px）。真渲染复核：900×600 下静音按钮右边界 x=84 vs 最近 chip 左边界 x=184 ⇒ **差 100.1px，不相交**。<br>**R5（P1-L2，12:55 截图）· 疑似同一件**：只有截图描述「只有右半边可见，左半边被窗口左边缘切掉」（`:1999-2000`），★ **无逐字原话 ⇒ 标不确定**，不合并。<br>⇒ 改法：**编号带日期**（R5（1009）/ R5（1018）），不拆 a/b —— 字母顺序只是巧合（此处恰好 a 早于 b，一旦补更早的就崩），且与仓里既有的 `R3-①~⑦` 风格不统一 |
 | **R6** | 直播页缺弹幕/清晰度控件 | 取证（**渲染实测**，非读源码）：改前 `live_page.dart` / `live_embedded_player.dart` 里 danmaku + 清晰度**控件代码 = 0 处**，内嵌播放器实测只渲染 **2 枚控件**（播放/静音），`danmaku hits: 0 / quality hits: 0` ⇒ ★ 所以裁决①**不是**「隐藏一个已存在的假入口」，而是**本来就不能画弹幕开关**；但按「不许静默」，在播放器下沿给一句「这个来源暂无弹幕」。裁决②：清晰度下拉**≥2 个可选档（排除 DRM）才渲染**，单档/空档/全 DRM 一律不画 | ✅ 已落 `live_embedded_player.dart` + `live_page.dart`。门禁 `test/zz_t66_r6_live_controls_test.dart` **+10**（含阴性对照）。★ 故障注入①`>=2`→`>=1` ⇒ **+8 -2**；注入②去掉说明句 ⇒ **+9 -1**；两次均先 `dart analyze` 0 error + `sha256sum`/`git diff --stat` 证明字节真变，事后还原回 `9feed562a…`。回归：35 个 import 直播两文件的测试逐个单跑，**新增/受影响全绿**；2 红为**基线既有**（已 stash 到 HEAD 复现同读数，非本轮引入）。★ 数据源仍为既有 `_streams`（`quality` 实测恒 null ⇒ 直播常态就是不画下拉，正合裁决）；**未**跨三层契约做真清晰度（超本轮范围）⇒ ⚠️ **不许被当成「直播清晰度已支持」** |
 | **R6-b** | 全屏播放页的直播弹幕开关（**R6 残留，本轮只取证未改**） | ★★ Lead 原先写的「恒空且**静默**」是**错的**，`r6-live` 实测纠正（Lead 已用源码独立复核）：<br>渲染真 `PlayerPage(liveChannelId:)` + 真点 `danmakuToggleKey`，读真实渲染文本：<br>`点前 […, 弹幕, 更多]` → `点后+1s […, 弹幕 !, …, 弹幕失败：弹幕服务返回 HTTP 400]` → `点后+13s […, 弹幕 !, …]`（toast 已消失）<br>⇒ 准确表述：**不是「静默」** —— 有一次性 toast + 一枚 `弹幕 !` 徽标；但最终停在**「开着、零弹幕、一枚看不懂的 `!`」**，且 `!` 徽标**没有可点的自解释入口**（tooltip 只说明要点开面板才知道）⇒ **仍然更糟于不画**：让用户以为功能坏了，实际是结构上没这条通道，用户会反复点反复失败<br>★ **结构性根因是 wire 级证据**（`debugSetDanmakuTransportForTest` 抓到的**唯一一条**请求）：<br>`POST …/api/v2/match {"fileName":"<频道名>","fileHash":"","fileSize":0,…,"matchMode":"fileNameOnly"}`<br>⇒ 直播把**频道名**发给**番剧按文件名匹配**接口，**全程没有任何 channel/直播弹幕接口**（与 Lead 早先核到的「`danmaku_list` 只 strip `media_id/episode_id`」吻合；`danmaku.dart:2433` 只有 `/api/v2/match`）<br>⚠️ **别归错因**：`danmaku.dart:544-545` 文档写「没配凭证 ⇒ **403** + `X-Error-Message`」，实测是 **400** ⇒ **不是缺凭证**，是**服务端不认这个番剧名**<br>★ 待立项（本轮**不并行做**）：`player_page.dart` 的 `_toggleDanmaku()`（`:7129`）**无任何 `_isLive` 守卫**（Lead 已 grep 确认），`_danmakuFileName`(`:6346`) 直播分支要说明为何对直播无意义；`player_bottom_bar.dart` 直播态不渲染那两枚。⚠️ 这两个文件 R1/R5/material 批次都在动 ⇒ **必须错开排期** | 🟡 **只取证，零改动**（`git status` 对 `player_page.dart` 为空）。立项单已备好（含文件清单 + libmpv 夹具的坑） |
@@ -4598,3 +4886,164 @@ Column 需求高 = 视频 299.3 + lineSwitcher(含 top padding Sp.x2=8) + chip 2
 ⇒ 需要：一个**有多条可播线路**的频道，让 live-ux 补测 lineSwitcher 的 rect。
 ⇒ 在拿到之前，**不改代码**。
 ```
+
+---
+
+# §0.0d 续工流水（2026-10-20 17:0x，接 §0.0c）
+
+## 一、现场真值（Lead 亲验 `git log` / `git status` / `git diff` / PIL）
+
+```text
+HEAD = 65e1694 fix(round-66/R6-b):直播态整块不画弹幕控件 + 守卫落到请求叶子（请求数=0）
+链：65e1694 ← f61736d(N15 应用侧) ← 55df113(R4 P1 修复 460/620 + Align) ← f0cf7e0(R4 第二步) ← f273107
+未提交（Lead 逐条看过 diff）：
+  M .agents/notes/implemented/feature/2026-10-19-dialog-shell-unification-and-hover-sticky-bit.md
+  M docs/notes/plan-round-66.md                      ← 本文件（Lead 独占）
+  M lib/design/widgets/app_glass_dialog.dart         ← 圆角 Radii.lg + padding 裁定注释（r4-finish）
+  M lib/ui/widgets/app_dialog_shell.dart             ← 玻璃档 LiquidRoundedRectangle(Radii.lg)
+  M rust/sourin_core/src/commands_backup.rs           ← **stat 过期，内容零改动**（hash-object == index blob）
+  M test/zz_t66_{danmaku_proxy_a11y,glass_dialog,markdown_audit,md_gate,r4_dialog_consistency}_test.dart
+  ?? docs/notes/round-66-verify-34.md (651 行)  ?? lib/t105_r4_dialogs_probe.dart
+  ?? test/zz_t66_danmaku_send_predicate_test.dart (131 行，自述「最小可跑版·只验阳性对照」= 未完成)
+  ?? test/zz_t66_image_downscale_test.dart
+证据缺口仍在：docs/notes/evidence/ 不存在；全盘 t66-cs1* = 0。
+```
+
+## 二、★ 新发现（Lead 亲手量像素）：`AppGlassDialog` 正文对比度只有 **2.01:1**
+
+真机图 `.probe/round66_r4_device/fix1_01_tray_close.png`（1280×800，`RepaintBoundary.toImage(1.0)`，`_settle()` = 3×endOfFrame+450ms ⇒ 不是动画中间帧）逐像素读数：
+
+```text
+卡底色（该行背景众数）  #A1A9BC
+标题「要关闭还是彻底退出？」 #0A0A0A  ⇒ 8.41:1  ✔
+正文（最小化到托盘…）      #737373  ⇒ 2.01:1  ✘
+正文（彻底退出：结束程序…） #737373  ⇒ 2.01:1  ✘
+按钮行（三键）            #171717  ⇒ 7.59:1  ✔
+```
+
+**根因（定位到行）**：R3-①「弹窗整体看不清」的修法是「玻璃只管质感，**遮光交给实色垫层**」，修后 6.49:1 / 5.27:1 —— 但那个垫层**只落在** `lib/ui/widgets/app_dialog_shell.dart:301`（`colorScheme.surfaceContainerHighest`，见 `:251` 注释「统一：卡片底色用 surfaceContainerHighest」）。
+`lib/design/widgets/app_glass_dialog.dart` **从来没有垫层**：`GlassContainer` 直接压在页面上，卡底色 = 页面色的模糊结果（#A1A9BC），正文 `c.onSurfaceVariant` 压上去只剩 2.01:1。
+
+**⇒ R4 第二步把 7 个弹窗搬到 `AppGlassDialog`，等于把 R3-① 的缺陷搬回来了。** 所以这条**在 R4 范围内**，不是"新需求"。
+
+**Lead 裁决**：在 `GlassContainer` 内部加深一层跟随主题的实色垫层（`surfaceContainerHighest`，与 `app_dialog_shell.dart:301` 同源；**不用 `Material`**，避免顺带改变机制②的豁免前提），形状跟 `Radii.lg`。预期（Lead 算过）：浅色 `#FFFFFF` 配 body `#60626B` = 6.08:1、title 19.80:1；深色 `#171717` 配 body `#A1A1A1` = 6.94:1、title 17.18:1 ⇒ 全过 4.5:1。
+**判据**：读 widget 属性（垫层色 == `colorScheme.surfaceContainerHighest`）+ 用 WCAG 公式**算**对比度 ≥ 4.5:1（浅/深两套主题各算一遍），**不写死 6.08 这种数**。注入（删垫层 / 改成 transparent）必须红。
+
+⚠️ 局限（如实登记）：`#737373` 是**卡内最暗像素**，CJK 小字号笔画细，可能有"取到被半覆盖的抗锯齿像素"的成分 ⇒ 真实语义色也可能是 `#60626B`（那样是 2.58:1，**依然不合格**）。两条路都 < 4.5:1 ⇒ 缺陷判定不依赖这个分歧。
+
+## 三、口径订正（verify-34 第五轮插桩实测，Lead 采纳）
+
+```text
+AppDialogShell( 在 lib/（除 lib/design/）= 11 处构造点
+_siteExemptions 键数 = 15
+插桩实跑 SCANNED_TOTAL=15 / registry=15 / 15 行全 hit=Y ⇒ 漏网 0
+⇒ 门禁文件 :86 与 :324 自称的「16 处 / 16 条 ⇔ 16」是**错的**，应改 15↔15
+⇒ 对外口径：「收拢 11 处 / 豁免 15 处」，「收 7」是**文件数**，不可与"处"互换
+```
+
+## 四、本轮派工（5 人，文件归属一等公民）
+
+| teammate | 本轮任务 | 独占写入 |
+| --- | --- | --- |
+| `r4-finish` | ① `:86/:324` 的 16→15 口径；② **P0 垫层修复 + ⑪ 对比度判据 + 注入**；③ 提交 | `app_glass_dialog.dart`、`app_dialog_shell.dart`、`zz_t66_glass_dialog_test.dart`、`zz_t66_r4_dialog_consistency_test.dart`、那篇 feature 笔记 |
+| `n15-boundary` | 把 131 行半成品做成**真门禁**：四条件真值表 + 阳性对照 + 两条注入（不许 skip 逃生） | `test/zz_t66_danmaku_send_predicate_test.dart`、`docs/notes/round-66-n15.md` |
+| `verify-34` | `tools/e2e_shots.ps1` 加 `-OutDir/-Prefix/manifest` + ignore 硬校验；新建证据清单门禁（此刻故意见红） | `tools/e2e_shots.ps1`、新建 `test/zz_t66_cs1_evidence_manifest_test.dart`、`docs/notes/evidence/round-66-cs1/**`、自己的笔记 |
+| `r4-device` | 探针加 `CONTRAST|` 维度 + **量具自检（Bad 与 OK 都要出）**；跑 `pre2_`；等修复后跑 `fix2_` | `lib/t105_r4_dialogs_probe.dart`、`.probe/round66_r4_device/**`、`docs/notes/round-66-r4-device.md` |
+| `r6b-live` | CS-1 五步驱动探针 `lib/t107_cs1_flow_probe.dart`（供 r4-device 跑），不占窗口 | 新建 `lib/t107_cs1_flow_probe.dart`、`docs/notes/round-66-cs1-driver.md`、`tools/run_t107.ps1` |
+
+## 五、事故记录
+```text
+17:0x 5 个 teammate 同时被判 failed（无收尾消息），但成品多数留在盘上 ⇒ 一律「先看盘再续派」。
+此前同类事故已 3 次，共同点：都在长测试/构建后收尾阶段。
+对策：每轮任务缩到「一个可独立验证的产出」，并要求先提交再补注释。
+```
+
+## 六、决策笔记覆盖门禁：两笔欠账（Lead 登记，不掩盖）
+
+`node .agents/notes-scripts/notes-coverage.mjs --range <C>~1..<C>` 逐 **commit** 判定（`for (const commit of target.commits)`），所以「后续再补一篇笔记」**救不了**已存在的红提交。两笔欠账：
+
+```text
+6106c84  test(round-66/N15)      test/** 受管 ⇒ 缺笔记；作者用 `git -c core.hooksPath=` 绕过钩子（已如实交代）
+aeaa3ea  test(round-66) CS-1 证据  tools/** + test/** 受管 ⇒ 作者用 `Note-Skip:` 放行（理由：记录在 docs/notes/round-66-verify-34.md）
+```
+裁定：
+1. **绕过钩子 = 自己把门禁关掉，属假绿形态，禁止再犯**（本轮已明确写入两份派单）。
+2. 历史不改写（别人还在写工作区，rebase 风险高于收益）；补法是**新开正规 agent-note 单独提交**，让「为什么这样设计」有正式载体：
+   - n15 → `.agents/notes/implemented/testing/2026-10-20-danmaku-send-predicate-truth-table.md`
+   - verify-34 → `.agents/notes/implemented/process/2026-10-20-e2e-shots-evidence-outdir-and-manifest-gate.md`
+3. 批末清场时再决定是否 `rebase -i` 把两篇笔记折回原提交（使区间门禁转绿）；**折与不折都要在交付说明里写明**，不许让区间门禁红着却对外说全绿。
+
+另记：`test/zz_t66_cs1_evidence_manifest_test.dart` 当前在主树**故意红**（`+3 -5`，证据还没重出）——这是正确状态，不是缺陷；等 r4-device 批末出真机证据后才应变绿。
+
+## 七、新发现两条「假绿」（r6b-live 顺手记，Lead 核实并扩大）
+
+```text
+① Markdown 泄漏藏在 Rust 层
+   rust/sourin_core/src/commands_backup.rs:483
+   "未设置导出用的口令 ⇒ 这个包里**不含登录态**（其它数据都在）。…"
+   → backup_panel.dart:491 credentialsNote ⇒ warn ⇒ _ok（用户可见）
+   test/zz_t66_markdown_audit_test.dart 只扫 lib/**，报「用户可见 0」是**真读数、范围不够** ⇒ 假绿
+② displayMessage 是死 API（Owner 早前第 7 条「只显示插件原文」从未真正落地到 UI）
+   lib/core/ffi.dart:218 定义；grep -rn displayMessage lib/ 零调用（只有 zz_t65 测试在用）
+   UI 里 10 处 `_err = '$e'`：backup_panel:323/505/710/794、provider_login_panel:514、
+   proxy_panel:222、skip_marker_dialog:821/1038/1470、player_page:6217
+   ⇒ 用户看到 "SourinCoreException(other): 口令不正确（…）"
+   门禁测的是「accessor 对不对」，从没测「UI 有没有用它」⇒ 假绿第二种形态
+```
+处置：派 r6b-live（①②③ 见其派单）。②要把 Markdown 门禁扩到 Rust 并**排除 `#[cfg(test)]` 段**（`registry.rs:1544/1589/1638` 的 `**` 是测试文案），③要新增「用户可见错误串不许直接拼 `$e`」门禁 + 豁免表，两条都必须先注入证明能红。
+
+## 八、全量门禁批跑（n15 亲跑，Lead 认读数）与三个新事实
+
+```text
+范围：test/zz_t66_*_test.dart 96 个 + t98 + t95 + zz_t12 = 99 文件（逐文件 --concurrency=1）
+结论：97 绿 / 2 红；894 通过 / 6 失败 / 6 跳过（6 skip 全在 5 个 native-media 文件的既有默认跳过）
+① 红 zz_t66_convergent_tile_gate_test.dart  +3 -1
+   GONE player_page.dart:21282/21304/21485/21507 → NEW :21307/21329/21510/21532（同形态，65e1694 的 +67/−42 推走行号）
+   GONE→NEW emby_page.dart:984/1283 → 实际 986/1285（差 2 行，根因未查明）
+   处置：派 n15 逐条核对后更新白名单；emby 那对**查不清就不许改**（宁可红着，不许把没搞懂的红改绿）
+② 红 zz_t66_cs1_evidence_manifest_test.dart +3 -5
+   原因：docs/notes/evidence/round-66-cs1/manifest.json 未生成 ⇒ aeaa3ea 那条门禁的前置未满足
+   处置：**正确状态**，等 r4-device 批末真机出图后自然转绿；期间不许注释/跳过
+```
+
+### 对比度三段读数链（r4-device 真机量，Lead 与自己的 PIL 交叉验证过 Δ0.05）
+```text
+55df113（fix1_ 存档图）      card=#A4ABBC  body=#737373  2.06 BAD   无实色垫层
+17:16 脏树（垫层 v1 #E4E8F0） card=#E4E8F0  body=#737373  3.86 BAD   surfaceContainerHighest
+18:19 现树（垫层 v2 #FFFFFF） card=#FFFFFF  body=#737373  4.74 OK    surfaceContainerHigh
+```
+★ **余量只有 5%**：4.74 vs 阈值 4.5 ⇒ ⑪ 判据必须写 `>= 4.5` 且**必须加反向断言**（垫层换回 `Highest` ⇒ 3.86 必红）。圆角实测 `raw=18 calibrated=22 = Radii.lg diff=0.0`；几何 `w=460 / dx=0.0 / FILL 35.9% / 三键 sameY dy=0.0 inside=yes`；窄窗 800×600 ⇒ `460×265 留白 L170 T188 R170 B147`。
+
+### ★ 事故：本仓 index 是多人共享的
+n15 一次 `git add <自己的文件>` + 裸 `git commit`，把别人**已 staged** 的 5 个文件卷进提交（标题还是自己的）。它自己 `reset --soft HEAD~1` + `restore --staged` + `git commit -- <路径>` 修好，零丢失，历史仍线性。
+⇒ 本轮起全员规则：**①不要把东西 staged 着挂着；②提交一律 `git commit -- <显式路径>`；③提交前 `git diff --cached --name-only` 必须与你打算提交的清单逐字相同。**
+
+## 九、R1–R8 独立验收台账（verify-34 第八轮，`b668a31`）与三处勘误
+
+**方法**：盘上 20 个 `test/zz_t66_r*_*.dart` 逐个 `--concurrency=1` 真跑 ⇒ 合计 **178 通过 / 0 红**；11 个被引用的 commit 全部 `git cat-file -t` = commit。
+**判决**：成立可交 **7 组**（R2 / R3-③⑦ / R3-④ / R3-⑤⑥ / R6 / R6-b / R8）；部分成立 **5 组**（R1 / R3-①② / R4 / R5 / R7）；**不成立 0**。
+**唯一根因**（所有「证据不可复核」都指向它）：读数写在 `.probe/`（`.gitignore:103`）或只在文档里，**不在版本库**。R4 的 63 张真机图同病 ⇒ 已派 r4-device 用 `-OutDir/-ManifestOnly` 封存到 `docs/notes/evidence/round-66-r4/`（代表集约 15 张 ≤2MB）。
+
+### 勘误（以此为准，覆盖前文行）
+| # | 前文写法 | 实测/订正 |
+| --- | --- | --- |
+| R3-③⑦ | `zz_t66_r3_dns_hijack_test` **+13** | **+14** |
+| R6-b | 「只取证、零改动」 | **已过期**：守卫 `if (_isLive) return;` 已在 `lib/ui/player_page.dart:7154`，并有 23.5KB 门禁（`+6 ~2`，2 条 native-media 默认跳过 ⇒「请求数=0」默认不跑，要 `--run-skipped --tags native-media`） |
+| R7-③ | `colorScheme` 185 / `AppColors.` 9 | **口径未定义、复现不出**；verify-34 按「lib 剔探针、不剥注释」得 **216 / 12** ⇒ 交付说明一律用 216/12 并写明口径 |
+| R7-② | 「`MaterialApp(` 39 处全在探针/`main.dart.spike-backup`」 | **漏了 `lib/main.dart:45`**（HEVC spike 入口，文件名不含 `.spike-backup`）⇒ 表述不准，结论「产品代码 0 处」仍成立 |
+
+### 台账点出的两个真洞（已派活）
+1. **R5-1009 行为无门禁**：`live_embedded_player.dart:1699` 的 `toggleMute()` 不在任何门禁覆盖内，`t61_volume_pref_test.dart:184` 找的是另一个 `void _toggleMute()` ⇒ Owner 第 1009 条那条行为可静默回归。派 verify-34 新建行为门禁（含「取消静音必须由点击恢复、不依赖拖条」）。
+2. **R1 逐像素读数不可复核**（2380px/90.2%、字缘 255 只在计划里）+ `zz_t66_r1_danmaku_chip_edge_test` 守的是 **chip**、Owner 指的是**底栏按钮**，不是同一对象 ⇒ R1 定案「非缺陷」不改，但**证据链要如实标为只在文档**，不许对外说成已验证。
+
+## 十、进展流水（2026-10-20 18:5x，只记读数）
+
+```text
+cd03211  fix(round-66/R4) 弹窗正文对比度 2.06→4.74（补实色垫层 c.surfaceContainerHigh）+ ⑪ 门禁
+         glass_dialog +33 / r4_dialog_consistency +13 / analyze 0 error
+         注入三条：垫层回 surfaceContainerHighest ⇒ +0 -2（3.86<4.5）；删 DecoratedBox ⇒ 结构红；垫层 transparent ⇒ 红
+2f49ffa  test(round-66) 四个门禁进库（verify-34 两轮交付物此前一直未提交！）
+         md_gate +5 / markdown_audit +2 / danmaku_proxy_a11y +4 / image_downscale +5，全绿，带笔记
+f02fa8c  test(round-66) CS-1 五步驱动探针 + 运行脚本（r6b-live，1299 行 + run_t107.ps1 195 行）
+```
+★ 教训（写进纪律）：交付物**必须当场进库**。verify-34 的 4 个门禁文件在工作区躺了两轮才被追提交 —— 期间任何人 `git clean`/`reset` 都会让它凭空消失，而「读数已经报过了」会让人误以为它在库里。

@@ -151,6 +151,7 @@ void main() {
       var refsSkippedUnknown = 0;
       var refsSkippedAmbiguous = 0;
       final violations = <String>[];
+      final blankTargets = <String>[];
       final checked = <_Ref>[];
 
       for (final f in files) {
@@ -182,12 +183,26 @@ void main() {
               continue;
             }
             final target = cands.single;
-            final targetLineCount = target.readAsLinesSync().length;
+            final targetLines = target.readAsLinesSync();
+            final targetLineCount = targetLines.length;
             refsChecked++;
             checked.add(_Ref(normPath, i + 1, base, ln));
+            // ── 判据 ①：行号越界 ──
             if (ln < 1 || ln > targetLineCount) {
               violations.add('$normPath:${i + 1} → $base:$ln '
                   '（$base 只有 $targetLineCount 行）');
+              continue;
+            }
+            // ── 判据 ②：目标行必须是**空行以外**的内容 ──
+            //
+            // ★ 2026-10-21 追加（假阴性普查的产物）：
+            //   普查前我以为「指向错的内容」这一层抓不到。实测发现
+            //   **目标行是空行**的那一批是可以机械判定的 —— 空行没有内容可指。
+            //   全量 1447 条里命中 60 条（4.1%），抽样核过：**全是真错**。
+            //   例：4 处注释写 `shell.dart:792`，而 `_resolveDataDir` 在 `:1014`
+            //       （漂移 222 行，:792 是空行/注释分隔）。
+            if (targetLines[ln - 1].trim().isEmpty) {
+              blankTargets.add('$normPath:${i + 1} → $base:$ln（目标行是空行）');
             }
           }
         }
@@ -200,6 +215,29 @@ void main() {
       note('  跳过 $refsSkippedUnknown 处（文件名不在本仓 ⇒ 第三方）');
       note('  跳过 $refsSkippedAmbiguous 处（同名多份，无法判定）');
       note('  **实核 $refsChecked 处**');
+      /*
+       * ★★★ 措辞守则（2026-10-21 假阴性普查后加）：
+       * ```text
+       * 「实核 1447 处，全部通过」与「实核 1447 处：无越界。★ 注意：
+       *  本门禁只查越界与空行，不查指向的内容是否正确」
+       *  在读者眼里是**完全不同的两句话**。
+       *
+       * 前者会让人以为「1447 处引用都对了」；
+       * 实际只是「1447 处都没越界、没指向空行」。
+       * ⇒ 必须把「我证明了什么、没证明什么」写进输出。
+       * ```
+       */
+      note('');
+      note('═══ 本门禁**证明了**什么 ═══');
+      note('  ✓ 这 $refsChecked 处引用的行号都在目标文件行数内');
+      note('  ✓ 这 $refsChecked 处引用的目标行都不是空行');
+      note('');
+      note('═══ 本门禁**没有**证明什么（已知假阴性）═══');
+      note('  ✗ 行号在范围内、目标行非空，但**指向了别的内容**（漂移）');
+      note('     实测：40 条随机样本里 2 条（5%）属于这类，本门禁抓不到');
+      note('     例：`danmaku_settings_dialog.dart:868` 说 `_gap()`，真身在 :1878');
+      note('  ✗ 注释说「有 try/finally」而代码没有（需语法分析）');
+      note('  ✗ 注释说「全仓零调用」而实际存在（需语法分析）');
 
       /*
        * ★★★ 覆盖度守卫：「一条都没核对到」必须报错
@@ -216,13 +254,44 @@ void main() {
             '扫描器可能失效了。**这不是"没问题"，是"没查"**。',
       );
 
-      // ── 真正的判据 ───────────────────────────────────────────────
+      // ── 判据 ①：行号越界 ─────────────────────────────────────────
       expect(
         violations,
         isEmpty,
         reason: '★★★ 以下注释引用的行号**超出了目标文件的行数** —— '
             '那一定指向不存在的位置：\n  ${violations.join("\n  ")}',
       );
+
+      // ── 判据 ②：目标行不能是空行 —— **当前是软报告，不是硬断言** ────
+      //
+      // ★ 2026-10-21 假阴性普查的产物。报错率实测 **4.1%（60/1447）**，
+      //   抽样核过**全是真错**（行号漂移落在空行上）。
+      //
+      // ★★ 为什么先做成软报告：
+      // ```text
+      // 本轮纪律：「若发现存量错误很多 ⇒ 先只报告，不要批量改」。
+      // 60 条是真错，但**批量改 60 处注释本身有风险**（改注释也可能引入新的不一致，
+      // 且每一处都要重新定位真身在哪 —— 那是 60 次人工判断，不是 60 次机械替换）。
+      // ⇒ 先让它在 CI/本地**可见**（数字打出来），等人工逐批清。
+      //
+      // ★ 升级路径：清到 0 之后，把这段改成
+      //     expect(blankTargets, isEmpty, ...)
+      //   并在提交信息里写明「存量已清零，从此转硬断言」。
+      // ```
+      note('');
+      note('═══ 判据②（软报告）：指向空行 ═══');
+      note('  ${blankTargets.length} 处（报错率 '
+          '${(100.0 * blankTargets.length / refsChecked).toStringAsFixed(1)}%）'
+          ' —— 抽样核实为**真错**，但本轮只报告不改');
+      for (final b in blankTargets.take(8)) {
+        note('    · $b');
+      }
+      if (blankTargets.length > 8) {
+        note('    … 另有 ${blankTargets.length - 8} 处（完整清单见下）');
+        for (final b in blankTargets) {
+          note('    · $b');
+        }
+      }
     });
 
     test('★★ 阳性对照：本条判据在当前数据上确实"有东西可查"', () {

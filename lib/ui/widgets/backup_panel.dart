@@ -601,6 +601,20 @@ class _BackupPanelState extends State<BackupPanel> {
     final choice = await showAppDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
+        /*
+         * R4-EXCEPTION: 机制⑤ —— 正文是**多行左对齐清单**，外壳会把字居中。
+         *
+         * body 由 StringBuffer 逐行 writeln 拼成（约 20 行）：`·` 项目符号、
+         * 「特别注意」警示段、以及**靠行首两个空格**做续行缩进的源名列表。
+         * `AppGlassDialog` 的内容区 DefaultTextStyle 写死 `textAlign: center`
+         * ⇒ 换过去后：项目符号不再对齐、「  「源名」」这类续行缩进失去意义，
+         * 一段**靠左才成立**的警示清单会被逐行居中。属组件能力缺口。
+         *
+         * ⚠️ 如实交代另外两点**不是**拦路石（免得下一个人重复查）：
+         *   · 宽度：正文 SizedBox(width:460) ⇒ 传 maxWidth:508 即可容纳；
+         *   · 三个按钮：`actions` 是自由 Widget，可照 app_tray 那样自己拼 Row。
+         * ⇒ 补齐「内容区 textAlign 可控（至少能左对齐）」之后才可收拢。
+         */
         title: const Text('这个备份文件含登录态'),
         content: SizedBox(
           width: 460,
@@ -1389,6 +1403,7 @@ class _ExportPassphraseDialogState extends State<_ExportPassphraseDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    // R4-EXCEPTION: 机制② 含 TextField，AppGlassDialog 缺 Material 祖先会抛异常
     return AlertDialog(
       title: const Text('设置导出用口令'),
       content: SizedBox(
@@ -1481,6 +1496,7 @@ class _ImportPassphraseDialogState extends State<_ImportPassphraseDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    // R4-EXCEPTION: 机制② 含 TextField（输入导出口令），缺 Material 祖先会抛异常
     return AlertDialog(
       title: const Text('这个备份包含登录态'),
       content: SizedBox(

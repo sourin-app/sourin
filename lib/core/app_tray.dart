@@ -45,6 +45,8 @@ import 'package:window_manager/window_manager.dart';
 
 import '../ui/tokens.dart';
 import '../ui/widgets/overlay_motion.dart';
+import '../design/widgets/app_glass_dialog.dart';
+import '../design/widgets/app_text_button.dart';
 import 'ui_prefs.dart';
 import '../ui/widgets/plugin_speedtest.dart' show SpeedTestCancelToken;
 
@@ -239,8 +241,8 @@ class AppTray with TrayListener, WindowListener {
     final choice = await showAppDialog<CloseAction>(
       context: ctx,
       barrierDismissible: false,
-      builder: (dctx) => AlertDialog(
-        title: const Text('要关闭还是彻底退出？'),
+      builder: (dctx) => AppGlassDialog(
+        title: '要关闭还是彻底退出？',
         content: const Text(
           '最小化到托盘：窗口收起来，程序继续在后台运行，'
           '点托盘图标可以随时打开。\n\n'
@@ -248,20 +250,44 @@ class AppTray with TrayListener, WindowListener {
           '选择后会被记住，下次点 X 直接按这次的选择执行'
           '（在设置页里可以改回来）。',
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dctx).pop(CloseAction.tray),
-            child: const Text('最小化到托盘'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(dctx).pop(CloseAction.quit),
-            child: const Text('彻底退出'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(dctx).pop(),
-            child: const Text('取消'),
-          ),
-        ],
+        /*
+         * ★ 2026-10-19（R4 第二步）：**三键**，不用 AppGlassDialogActions。
+         * ```text
+         * `AppGlassDialogActions` 是固定的「取消 + 确认」两键形态，返回
+         * `false` / `true`。而这里三个键的语义是
+         *   最小化到托盘 → CloseAction.tray
+         *   彻底退出   → CloseAction.quit
+         *   取消       → null
+         * 三者**不是**布尔 ⇒ 硬套会把「最小化」和「彻底退出」合并掉。
+         * ⇒ 这里只借用 `actions` 那个「任意 Widget」的位置（API 允许），
+         *   自己拼一行三个 `AppTextButton`。
+         *
+         * ★ 颜色：改前三个都是 `TextButton`（无主色/错误色区分）⇒ 一律
+         *   不传 `foregroundColor`，**不**擅自把「彻底退出」染红。
+         *   （是否该染红是设计决定，不由本次收拢顺手改。）
+         *
+         * ⚠️ 三键在 380 宽里会不会换行/溢出 ⇒ 已实测（见本轮交付读数）：
+         *   actions 行 RenderFlex 单行、未溢出。
+         */
+        actions: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppTextButton(
+              onPressed: () => Navigator.of(dctx).pop(CloseAction.tray),
+              child: const Text('最小化到托盘'),
+            ),
+            const SizedBox(width: 4),
+            AppTextButton(
+              onPressed: () => Navigator.of(dctx).pop(CloseAction.quit),
+              child: const Text('彻底退出'),
+            ),
+            const SizedBox(width: 4),
+            AppTextButton(
+              onPressed: () => Navigator.of(dctx).pop(),
+              child: const Text('取消'),
+            ),
+          ],
+        ),
       ),
     );
     if (choice == null) {

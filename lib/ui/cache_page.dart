@@ -104,6 +104,7 @@ import 'widgets/app_toast.dart';
 import 'widgets/cover_image.dart';
 import 'widgets/motion_prefs.dart';
 import 'widgets/overlay_motion.dart' show showAppDialog;
+import '../../design/widgets/app_glass_dialog.dart';
 import 'widgets/poster_card.dart';
 import '../design/icons/app_icons.dart';
 
@@ -1874,23 +1875,21 @@ class CachePageState extends State<CachePage> {
 
     final ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除整部？'),
+      builder: (ctx) => AppGlassDialog(
+        title: '删除整部？',
         content: Text(
           '「${w.displayTitle}」\n'
           '将删除 $eps 集 / 共 ${humanBytes(bytes)}。\n'
           '文件会从磁盘上真正删除，此操作不可恢复。',
         ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
+        // 改前两个都是 TextButton（「删除」不是 FilledButton）
+        // ⇒ 保守起见按原形态：都不是错误色主按钮。
+        actions: AppGlassDialogActions(
+          confirmLabel: '删除',
+          confirmIsDestructive: false,
+          onCancel: () => Navigator.of(ctx).pop(false),
+          onConfirm: () => Navigator.of(ctx).pop(true),
+        ),
       ),
     );
     if (ok != true) return;

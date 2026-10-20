@@ -124,6 +124,8 @@ import 'package:material_ui/material_ui.dart';
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
 import 'overlay_motion.dart';
+import '../../design/widgets/app_glass_dialog.dart';
+import '../../design/widgets/app_text_button.dart';
 import 'settings_kit.dart';
 import '../../design/icons/app_icons.dart';
 
@@ -648,20 +650,24 @@ class _SyncPanelState extends State<SyncPanel> {
   }) async {
     final r = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
+      builder: (ctx) => AppGlassDialog(
+        title: title,
         content: Text(message),
-        actions: [
-          if (cancelLabel != null)
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: Text(cancelLabel),
-            ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text(okLabel),
-          ),
-        ],
+        // ★ `cancelLabel == null` 时**不画取消钮**（与改前 `if (cancelLabel != null)`
+        //   逐字等价）—— AppGlassDialogActions 固定两键，这一档自己拼。
+        // 改前确认键是 FilledButton（主色）⇒ 非错误色。
+        actions: cancelLabel == null
+            ? AppTextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(okLabel),
+              )
+            : AppGlassDialogActions(
+                cancelLabel: cancelLabel,
+                confirmLabel: okLabel,
+                confirmIsDestructive: false,
+                onCancel: () => Navigator.pop(ctx, false),
+                onConfirm: () => Navigator.pop(ctx, true),
+              ),
       ),
     );
     return r ?? false;
@@ -1179,6 +1185,10 @@ class _WebdavDialogState extends State<_WebdavDialog> {
     final colors = Theme.of(context).colorScheme;
     final p = _preset;
     return AlertDialog(
+      // R4-EXCEPTION: content 是 WebDAV 配置表单 —— SizedBox(width:420) +
+      // 自带 SingleChildScrollView(clipBehavior) + 预设 pill 的 Wrap + 表单字段。
+      // AppGlassDialog 的 maxWidth 默认 380 ⇒ 塞不下 420 宽的表单；
+      // 且它自带滚动区会与外壳的滚动区嵌套。
       title: const Text('配置云盘（WebDAV）'),
       content: SizedBox(
         width: 420,
@@ -1414,6 +1424,10 @@ class _PassphraseDialogState extends State<_PassphraseDialog> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     return AlertDialog(
+      // R4-EXCEPTION: content 是**口令表单**（两个 TextField + 错误文案 +
+      // 警示文案，包在 SizedBox(width:380) 的 Column 里）⇒ 不是确认框。
+      // AppGlassDialog 内容区 textAlign:center 会让两个输入框居中；
+      // 且 maxHeight 默认 420 可能压掉下面的「忘记口令」警示。
       title: Text(widget.hasExisting ? '修改凭据同步口令' : '设置凭据同步口令'),
       content: SizedBox(
         width: 380,

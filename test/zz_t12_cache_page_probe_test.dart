@@ -31,6 +31,8 @@ import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/cache_page.dart';
 import 'package:sourin_spike/ui/widgets/poster_card.dart';
+import 'package:sourin_spike/design/widgets/app_glass_dialog.dart';
+import 'package:sourin_spike/design/widgets/app_text_button.dart';
 
 /// ★ 探针沙盒根 —— 必须是绝对路径，且落在系统临时目录下
 Directory _sandboxRoot() {
@@ -438,15 +440,20 @@ void main() {
     // ⚠️ 必须锚在**对话框**里取「删除」按钮：
     //    `find.widgetWithText(TextButton, '删除')` 会同时命中卡片上的
     //    「删除整部」（Text 的匹配是**包含**语义）⇒ 取到的可能是卡片那个。
-    final dialog = find.byType(mui.AlertDialog);
+    // ★ 2026-10-20（R4 第二步）：这一处弹窗已收拢到统一外壳 `AppGlassDialog`，
+    //   树里**不再有** `AlertDialog`，确认键也从 `mui.TextButton` 换成了
+    //   外壳的 `AppTextButton`（内部是 `AppInkWell`，不是 `mui.TextButton`）。
+    //   锚点跟着换，但**判据强度不变**：仍然要求「弹窗在树上」且「弹窗里
+    //   恰好一个『删除』按钮」——换成外壳后少一个按钮或多一个都会被这里抓住。
+    final dialog = find.byType(AppGlassDialog);
     expect(dialog, findsOneWidget, reason: '★ 确认弹窗必须在树上');
     final confirmBtn = find.descendant(
       of: dialog,
-      matching: find.widgetWithText(mui.TextButton, '删除'),
+      matching: find.widgetWithText(AppTextButton, '删除'),
     );
-    // ★ 诊断：把弹窗里所有 TextButton 的位置与文案打出来，看清点的是哪个
-    for (final e in t.widgetList<mui.TextButton>(
-        find.descendant(of: dialog, matching: find.byType(mui.TextButton))).toList()) {
+    // ★ 诊断：把弹窗里所有按钮的位置与文案打出来，看清点的是哪个
+    for (final e in t.widgetList<AppTextButton>(
+        find.descendant(of: dialog, matching: find.byType(AppTextButton))).toList()) {
       debugPrint('DEL 弹窗按钮：onPressed=${e.onPressed != null} child=${e.child}');
     }
     debugPrint('DEL 弹窗「删除」按钮个数=${confirmBtn.evaluate().length} '

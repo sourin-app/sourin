@@ -59,6 +59,70 @@ skip 弹窗是**唯一**显式传 `maxHeight` 的（740），
 理由写进了注释：新外壳加了一条 70px 标题栏，
 `620` 会把预览压到 116px（≈206×116，比 Owner 当年嫌小的 277×156 更小）。
 
+### R4 第二步：全仓取号 —— **收 7 处、豁免 9 处**
+
+第一步只收了 3 个弹窗（`update_dialog` / `skip_marker` / `composer`），
+全仓其余站点仍在各写各的。第二步的判据换成
+`test/zz_t66_r4_dialog_consistency_test.dart`：
+**每一个绕过外壳的 `AlertDialog` 都必须带站内 `// R4-EXCEPTION:` 注释，
+并且在门禁的 `_siteExemptions` 里登记「路径#特征串」，两边对得上才算数。**
+
+判定要么收、要么登记，**不存在「先放着」**——
+①-b 是逐处的（不是计数），少登一处就红；④-b 又把「登了但代码里
+没有对应的豁免注释」也判红 ⇒ 防止「登记表越写越长、注释早已被删」。
+
+```text
+收拢 7 处（原先都是裸 AlertDialog）：
+  app_tray           退出确认（★三键：直接退出/托盘/取消）→ 自拼按钮行
+  cache_page         「删除」             → AppGlassDialogActions，不染红
+  data_manage_page   「清理」             → 同上
+  emby_page          「删除」             → 同上
+  skip_page          可自定义确认文案     → 两键走 Actions，否则自拼
+  sync_panel         可自定义确认文案     → 同 skip_page
+  download_panel     「删除这一集的下载？」→ 同上（本轮补）
+
+豁免 9 处，按**机制**归类（不是按「懒得改」）：
+  机制① 缺 width 控制      sync_panel:webdav(420)  tvbox(560×480)
+  机制② 缺 Material 祖先   settings_page:调整内容源顺序(ListTile)
+                          provider_login_panel(TextField)
+  机制③ 内联 TextStyle 定色被外壳覆盖   theme_page 的一处
+  机制④ 缺 padding+backgroundColor      theme_page:主题预览面板
+  机制⑤ 内容区 textAlign 强制居中       backup_panel(多行左对齐清单)
+                          sync_panel:passphrase(表单)
+  探针类                  t104_overlay_exit_probe(验证统一入口本身)
+```
+
+★ **`skip_page` / `sync_panel` 的 `cancelLabel == null` 形态是「只有确认键」**，
+不是「取消+确认」——照 `AppGlassDialogActions` 硬套会**凭空多出一个取消按钮**、
+把返回值语义从 `pop(null)` 变成「必须先点取消」。这类站点自己拼 `Row`，
+注释里写明「逐字等价原形态」。
+
+★ **`confirmIsDestructive` 一律照改前的按钮形态判，不按「它是不是删除」判**：
+这些站点的确认键改前**全是 `TextButton`**，所以一律 `false`。
+「删除/清理/彻底退出」被顺手染红是最容易犯的错——
+Owner 抱怨的是**样式不统一**，不是**不够红**。
+
+★★ **本轮改判了一处豁免理由（删掉一条错误结论）**：
+`settings_page` 的「调整内容源顺序」原登记为「装 420 只需传 `maxWidth: 468`，
+宽度到位就能收」。当时的依据是「点第 2 行『上移』，顺序真的变了」——
+**那条依据测错了对象**：那个探针把 `AppGlassDialog` 放在
+`MaterialApp(home: Scaffold(body: Center(...)))` 里跑，
+**Scaffold 提供了 Material 祖先**，所以 `ListTile` 的 InkWell 活着。
+走真实 `showAppDialog` 路由（无 Scaffold）时：
+
+```text
+No Material widget found.
+ListTile widgets require a Material widget ancestor within the closest LookupBoundary.
+找到「上移」数 = 0      ← trailing 里的 IconButton 根本没建出来
+```
+
+⇒ 它不是「能不能点」的问题，是**弹窗根本打不开**，
+与 `TextField` 那一类缺口同源（`AppGlassDialog` 是零 Material 的纯玻璃卡片）。
+**「换了外壳之后还能不能用」必须在真实路由里测**，
+在 `Scaffold` 里测等于给被测对象垫了个 Material 宿主 —— 这正是
+[判据纪律](../testing/2026-10-19-criteria-must-distinguish-cause-and-ciphertext.md)说的
+「测试环境比生产环境多给了一样东西」。
+
 ### R8：解绑挂在全局单例上的订阅
 
 ```dart
@@ -100,6 +164,24 @@ _HoverCapability.disposeListener();
 否决理由：`debugReset()` 只在测试调；
 生产路径每次进出页面都挂一条 ⇒ 这正是要修的东西。
 
+**D. R4 第二步：全部收拢，一处都不豁免。**
+最强理由：只要开了豁免口子，登记表就会变成垃圾桶，
+下次来的人先登记再说 —— 这正是不统一的老路。
+否决理由：那 9 处里有 6 处是**外壳能力缺口**，硬塞进去的后果不是「丑一点」：
+`ListTile`/`TextField` 直接抛 `No Material widget found`（**弹窗打不开**），
+或把多行清单/表单**逐行居中**、把内联定色覆盖掉。
+那不是「统一」，是**用一个错的样子统一**。
+正确顺序是**先补外壳能力**（透明 Material 宿主 / `textAlign` 可控 /
+`maxWidth` 放开），补完再收 —— 豁免条目里逐条写着「补齐 X 之后才可收拢」。
+
+**E. R4 第二步：只改代码，不建逐处门禁。**
+最强理由：这轮已经把 7 处改完了，静态检查是额外成本；
+第一步已有渲染门禁，够用。
+否决理由：第一步只收了 3 处，而**第一步之后全仓仍有 16 处**裸 `AlertDialog`——
+正是因为没有「逐处」判据，收完就又开始长。
+计数式判据（「≤N 处」）更糟：新增弹窗会把 N 顶上去而静默放宽，
+逐处取号才会逼出「要么收、要么说清为什么」。
+
 ## Consequences
 
 **R4**
@@ -115,6 +197,41 @@ _HoverCapability.disposeListener();
   ③ 故障注入 460→860 ⇒ +6 -2，**静态与渲染两层同时抓到**
 
 回归 35 个受影响测试：9 红**逐条在 HEAD 上复现同读数** ⇒ 零回归
+```
+
+**R4 第二步**
+
+```text
+门禁 `zz_t66_r4_dialog_consistency_test.dart`（13 条判据）：
+  修前 +11 -2 → 修后 +13 -0
+  两条红分别是：①-b（代码里有 R4-EXCEPTION 注释但没登记进 _siteExemptions）
+                ④-b（登记的键指向的那处**找不到**豁免注释）
+
+★ ④-b 的两条红**不是判据过严，是登记表本身在腐化** —— 它抓到的正是
+  「键写了、但那个特征串在文件里已经不存在」：两条键（`backup_panel.dart` 的
+  `设置导出用口令`、`provider_login_panel.dart` 的 `maxWidth: 460`）
+  在代码改动后已不再是原文子串 ⇒ 登记表看着很全，实际**指不到任何一处**。
+  修法是改键去贴合原文（`title: const Text('设置导出用口令')` /
+  `constraints: const BoxConstraints(maxWidth: 460)`），**不是放宽判据**。
+  这条判据的邻域窗口（±14 行）是 HEAD 上就有的，本轮**没动它**。
+
+★ 本轮对门禁的改动只有三件：补登 1 处新豁免（`backup_panel` 机制⑤）、
+  重写 1 条判错的豁免理由（`settings_page` 顺序弹窗，见上）、修 2 条已失效的键。
+
+故障注入证明它仍有判别力（两次都 sha256 前后一致地还原）：
+
+```text
+注入① 把 download_panel 改回裸 `AlertDialog(` ⇒ ①-b 红
+注入② 删掉 settings_page 的 R4-EXCEPTION 注释  ⇒ ④-b 红
+```
+
+analyze：`flutter analyze lib test/zz_t66_r4_dialog_consistency_test.dart`
+  → **0 error**；warning 与基线逐条相同（既有 7 条 unused/duplicate 全在 HEAD 上）。
+
+同族 R4 门禁全绿：glass_dialog +25 / no_passthrough +6 / material_localizations +4。
+替身回归：受影响的 12 个测试串行跑全绿（含 download_panel 的
+`zz_cr_local_row_trash_hover_test`、settings_page 顺序弹窗的
+`zz_cr_ui_19_subset_reorder_test`）。
 ```
 
 **R8**

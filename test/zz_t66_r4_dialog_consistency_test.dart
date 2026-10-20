@@ -147,18 +147,23 @@ const _siteExemptions = <String, String>{
           '机制④可绕的实测口径：`AppGlassDialog` 卡片左右 padding 各 24 ⇒ '
           'content 实测宽 = maxWidth − 48 ⇒ 装 420 需传 `maxWidth: 468`（非 420）。',
   // ── R4 第二步 · 第二批：逐处登记（机制 + 具体数字，Lead 裁决 ①②）──
-  // 机制① 固定尺寸 + 自带滚动区（AppGlassDialog 上限 maxWidth 380 / maxHeight 420）
+  // 机制② 缺 Material 祖先（外壳零 Material ⇒ ListTile / InkWell 一路也抛）
   'lib/ui/settings_page.dart#调整内容源顺序':
-      '机制④：content 是 SizedBox(width:420, height:400) + ListView.builder。'
-          'AppGlassDialog 默认 maxWidth 380 ⇒ 装不下；**但 maxWidth 可传** ⇒ '
-          '装 420 需传 `maxWidth: 468`（实测口径：content 宽 = maxWidth − 48）。'
-          '★ 2026-10-19 **更正一条旧说法**：此前写的「没有拖拽手柄这类交互位，'
-          '换过去会丢功能」是**错的** —— 该弹窗**根本没有拖拽**（'
-          '`ReorderableListView` / `onReorder` / `Draggable` 全 0 命中），'
-          '排序靠每行 `AppIconButton`「上移/下移」调 `_move(i, dir)`（`settings_page.dart:6611`）。'
-          '★ 实测：在 `AppGlassDialog` 内点第 2 行「上移」，顺序**真的变了**'
-          '（[甲,乙,丙] → [乙,甲,丙]，与 AlertDialog 对照组一致）⇒ '
-          '**换壳不丢功能**，这一处**可以收拢**，只需传 maxWidth。',
+      '★★ 2026-10-20 **改判：机制②（缺 Material 祖先），此前写「可以收拢」是错的**。'
+          'content 是 SizedBox(420x400) + ListView.builder，每行是 **`ListTile`** '
+          '（`ListTile` 内部是 `InkWell`，而 `InkWell` 要求 Material 祖先）。'
+          '`AppGlassDialog` 是零 Material 的纯玻璃卡片，不提供 Material 宿主 ⇒ '
+          '在**真的 showAppDialog 路由**里实测抛 '
+          '"No Material widget found. ListTile widgets require a Material '
+          'widget ancestor" ⇒ 弹窗根本打不开，「上移」按钮连建都没建出来'
+          '（实测找到「上移」= 0 个）。'
+          '★ 为什么上一版会判错（如实记录）：那次把 `AppGlassDialog` 放在 '
+          '`MaterialApp(home: Scaffold(body: Center(...)))` 里跑，Scaffold '
+          '**提供了 Material 祖先** ⇒ 「点第 2 行『上移』顺序真的变了」是仪器造成的，'
+          '不是外壳能用。重测脚本：`.probe/r4f_order_material_test.dart`。'
+          '⚠️ 宽度**不是**拦路石：装 420 传 `maxWidth: 468` 即可（content 宽 = maxWidth − 48）。'
+          '⇒ 给 `AppGlassDialog` 补「透明 Material 宿主」之后才可收拢。',
+  // 机制① 固定尺寸 + 自带滚动区（AppGlassDialog 上限 maxWidth 380 / maxHeight 420）
   'lib/ui/settings_page.dart#插件更新 · ':
       '机制①：content 是 SizedBox(width:480, height:460) + Column，'
           '源码注释写明「有界高度（照 _SkipHistoryDialog）：内容再多也只占 460px」。'
@@ -178,14 +183,14 @@ const _siteExemptions = <String, String>{
           '（实测口径：content 宽 = maxWidth − 48）⇒ **608 不在 §3.5 白名单 '
           '{460,560,820} 内** ⇒ 真要换，得先决定「破白名单」还是「缩内容」。',
   // 机制② 表单 / 输入框（AppGlassDialog 缺 Material 祖先 ⇒ TextField 抛异常）
-  'lib/ui/widgets/backup_panel.dart#设置导出用口令':
+  "lib/ui/widgets/backup_panel.dart#title: const Text('设置导出用口令')":
       '机制②：content 含 **TextField**（设置导出用口令），包在 SizedBox(width:380) '
           '的 Column 里。实测：AppGlassDialog 里放 TextField 会抛 '
           '"TextField widgets require a Material widget ancestor" ⇒ 换过去直接崩。',
   'lib/ui/widgets/backup_panel.dart#这个备份包含登录态':
       '机制②：content 含 **TextField**（输入导出时设的口令），包在 SizedBox(width:380) '
           '的 Column 里。同上：换过去会抛 "require a Material widget ancestor"。',
-  'lib/ui/widgets/provider_login_panel.dart#maxWidth: 460':
+  'lib/ui/widgets/provider_login_panel.dart#constraints: const BoxConstraints(maxWidth: 460)':
       '★ 2026-10-19 复核**改判**（此前写的是「机制②」，实测**不成立**）。'
           '**不属于机制②**：按括号块逐字量过，`Dialog(` 的 1706 字符块内 '
           '`TextField` / `TextFormField` / `EditableText` / `InputDecoration` '
@@ -216,6 +221,18 @@ const _siteExemptions = <String, String>{
           '`AppGlassDialog` 内容区 `DefaultTextStyle` 写死 `textAlign: center`，'
           '会让两个输入框居中（注册表此前提过，本条保留提醒）。'
           '机制④口径：装 380 需传 `maxWidth: 428`（content 宽 = maxWidth − 48）。',
+  // 机制⑤ 内容区 `DefaultTextStyle` 写死 `textAlign: center` ⇒ 多行左对齐正文被逐行居中
+  'lib/ui/widgets/backup_panel.dart#builder: (ctx) => AlertDialog':
+      '机制⑤：正文是**多行左对齐清单**，外壳会把每一行居中对齐。'
+          'body 由 StringBuffer 逐行 writeln 拼成（约 460 字）：`·` 项目符号行、'
+          '「特别注意」警示段、以及**靠行首两个空格**做续行缩进的源名列表。'
+          '`AppGlassDialog` 内容区的 DefaultTextStyle 写死 `textAlign: center` ⇒ '
+          '项目符号不再对齐、行首续行缩进失去意义，一段**靠左才成立**的警示清单'
+          '会被逐行居中。'
+          '⚠️ 如实交代另两点**不是**拦路石（免得下一个人重复查宽度/按钮）：'
+          '宽度：正文 `SizedBox(width:460)` ⇒ 传 `maxWidth: 508` 即可容纳；'
+          '三个按钮（继续 / 取消 / 不导入）：`actions` 是自由 Widget，可照 app_tray 自己拼 Row。'
+          '⇒ 补齐「内容区 textAlign 可控（至少能左对齐）」之后才可收拢。',
 };
 
 /// 把「剥注释后的行号」还原成**原文**那一处的上下文，供特征串匹配

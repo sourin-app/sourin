@@ -41,6 +41,7 @@ import '../widgets/app_loading.dart';
 // ★ 2026-10-18（Owner 第 12 条）：toast 统一走这里（`showAppToast`）
 import '../widgets/app_toast.dart';
 import '../widgets/overlay_motion.dart';
+import '../../design/widgets/app_glass_dialog.dart';
 import '../widgets/settings_sub_page.dart';
 import '../../design/icons/app_icons.dart';
 
@@ -191,22 +192,20 @@ class _DataManagePageState extends State<DataManagePage> {
 
     final ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('清理「${cat.label}」'),
+      builder: (ctx) => AppGlassDialog(
+        title: '清理「${cat.label}」',
         content: Text(
           '将删除 ${targets.length} 项，释放 ${_fmt(willFree)}。\n\n'
           '${cat.hint}\n\n此操作不可撤销。',
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('清理'),
-          ),
-        ],
+        // 改前确认键是 **FilledButton**（主色，非错误色）⇒ 不是删除类动作，
+        // 按原形态设 confirmIsDestructive: false。
+        actions: AppGlassDialogActions(
+          confirmLabel: '清理',
+          confirmIsDestructive: false,
+          onCancel: () => Navigator.pop(ctx, false),
+          onConfirm: () => Navigator.pop(ctx, true),
+        ),
       ),
     );
     if (ok != true) return;

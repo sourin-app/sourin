@@ -1373,6 +1373,9 @@ Future<bool> showProviderLoginDialog(
     context: context,
     builder: (ctx) {
       final colors = Theme.of(ctx).colorScheme;
+      // R4-EXCEPTION: 自建外壳（裸 Dialog）那一类 —— 标题是按 providerName
+      // 拼的 `Text(...)`，而 AppGlassDialog.title 只收 String，本处已用
+      // ConstrainedBox(maxWidth: 460) 自行定宽。见 _siteExemptions 同名键。
       return Dialog(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 460),

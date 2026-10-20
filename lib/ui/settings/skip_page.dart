@@ -91,6 +91,8 @@ import '../widgets/overlay_motion.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
 import '../../design/icons/app_icons.dart';
+import '../../design/widgets/app_glass_dialog.dart';
+import '../../design/widgets/app_text_button.dart';
 
 class SkipMarkersSettingsPage extends StatefulWidget {
   const SkipMarkersSettingsPage({super.key, this.initialMarkersForTest});
@@ -298,20 +300,25 @@ class _SkipMarkersSettingsPageState extends State<SkipMarkersSettingsPage> {
   }) async {
     final r = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
+      builder: (ctx) => AppGlassDialog(
+        title: title,
         content: Text(message),
-        actions: [
-          if (cancelLabel != null)
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: Text(cancelLabel),
-            ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text(okLabel),
-          ),
-        ],
+        // ★ `cancelLabel == null` 时**不画取消钮**（与改前 `if (cancelLabel != null)`
+        //   逐字等价）—— AppGlassDialogActions 是固定「取消+确认」两个，
+        //   所以这一档自己拼按钮行。
+        actions: cancelLabel == null
+            ? AppTextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(okLabel),
+              )
+            : AppGlassDialogActions(
+                cancelLabel: cancelLabel,
+                confirmLabel: okLabel,
+                // 改前是 FilledButton（主色）⇒ 不是删除类动作
+                confirmIsDestructive: false,
+                onCancel: () => Navigator.pop(ctx, false),
+                onConfirm: () => Navigator.pop(ctx, true),
+              ),
       ),
     );
     return r ?? false;

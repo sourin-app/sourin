@@ -6621,7 +6621,33 @@ class _OrderDialogState extends State<_OrderDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    /*
+     * R4-EXCEPTION: 机制② 缺 Material 祖先 —— content 里是 ListTile。
+     *
+     * ★ 2026-10-20 复核**改判**：此前这里登记的理由是「装 420 需传
+     *   maxWidth: 468 ⇒ 只需传宽度就可以收拢」，并用「点第 2 行『上移』
+     *   顺序真的变了」当依据。**那条依据是错的**：当时把 AppGlassDialog
+     *   放在 `MaterialApp(home: Scaffold(body: Center(...)))` 里跑，
+     *   Scaffold **提供了 Material 祖先**，所以 ListTile 的 InkWell 能用。
+     *
+     * 实测（`.probe/r4f_order_material_test.dart`，走真的 showAppDialog 路由）：
+     * ```text
+     * No Material widget found.
+     * ListTile widgets require a Material widget ancestor within the
+     * closest LookupBoundary.
+     * 找到「上移」数 = 0        ← trailing 里的按钮根本没建出来
+     * ```
+     * ⇒ 换外壳不是「能不能点」的问题，是**弹窗根本打不开**。
+     *   与同类的 TextField 缺口（本仓 `.probe/probe_tf_test.dart`）同源：
+     *   AppGlassDialog 是零 Material 的纯玻璃卡片，不提供 Material 宿主。
+     *
+     * ⚠️ 宽度**不是**拦路石：content 宽 420 ⇒ 传 maxWidth: 468 即可
+     *   （口径：content 宽 = maxWidth − 48）。
+     * ⇒ 给 AppGlassDialog 补上「透明 Material 宿主」之后才可收拢。
+     */
     return AlertDialog(
+      // R4-EXCEPTION: 机制② 缺 Material 祖先（ListTile 内部 InkWell 要求）
+      // 详见上方详注；补齐「透明 Material 宿主」后才可收拢。
       title: const Text('调整内容源顺序'),
       content: SizedBox(
         width: 420,
@@ -6902,6 +6928,8 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
     final colors = Theme.of(context).colorScheme;
     final c = _result;
 
+    // R4-EXCEPTION: 机制① 内容区固定 480×460（超外壳默认上限），详见
+    // zz_t66_r4_dialog_consistency_test.dart 的 _siteExemptions 同名键。
     return AlertDialog(
       title: Row(
         children: [
@@ -7260,6 +7288,8 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    // R4-EXCEPTION: 机制① 内容区固定 420 宽 + 动态字段循环（超外壳默认上限），
+    // 详见 zz_t66_r4_dialog_consistency_test.dart 的 _siteExemptions 同名键。
     return AlertDialog(
       title: Text('配置「${widget.name}」'),
       content: SizedBox(

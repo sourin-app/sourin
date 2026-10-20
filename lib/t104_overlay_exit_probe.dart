@@ -299,6 +299,7 @@ Future<void> body() async {
     unawaited(showAppDialog<void>(
       context: ctx,
       builder: (_) => const AlertDialog(
+        // R4-EXCEPTION: 真机探针，验证统一入口本身；AlertDialog 是 builder 内容
         title: Text('t104'),
         content: Text('统一入口'),
       ),

@@ -132,30 +132,6 @@ String _block(String s, int start) {
   return s.substring(start);
 }
 
-/// 只取**顶层**的 child 参数（跳过嵌套在别的组件里的 child:）
-///
-/// ⚠️ 第一版直接用 firstMatch，抓到的是嵌套里的 child:
-/// 实测 _LoadingOverlay 的 ColoredBox(child: Center(child: AppLoading)) 被误判，
-/// 因为取到的是 Center 的 child，然后又越过边界吃进后面的代码。
-String? _topLevelChild(String blk) {
-  var depth = 0;
-  for (var i = 0; i < blk.length - 5; i++) {
-    final c = blk[i];
-    if (c == '(' || c == '[' || c == '{') {
-      depth++;
-    } else if (c == ')' || c == ']' || c == '}') {
-      depth--;
-    } else if (depth == 1 && blk.startsWith('child', i)) {
-      final rest = blk.substring(i + 5, (i + 12).clamp(0, blk.length));
-      final m = RegExp(r'^\s*:').firstMatch(rest);
-      if (m != null) {
-        return blk.substring(i + 5 + m.end);
-      }
-    }
-  }
-  return null;
-}
-
 /// 这个 wrapper 是否真有"会盖住 ListTile"的背景色
 ///
 /// 对齐 Flutter 判据（list_tile.dart:_findIntermediateWidget）：

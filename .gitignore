@@ -209,3 +209,12 @@ tools/.dandanplay.local.json
 # $HOME 被解析成相对路径 ⇒ 生成 Microsoft/Windows/PowerShell/ModuleAnalysisCache。
 # 与产品无关，纯工具副产物。
 Microsoft/
+
+# ── `flutter test --reporter json` 的输出 ──
+# 2026-10-20 实测：做全量红分类时在仓库根落了 base.json / main.json
+# （各约 1MB，内容是逐条测试事件流）。它们**未被忽略** ⇒ 一旦 `git add` 就会
+# 把 2MB 测试日志提交进仓库，而 `git diff` 里看不出来（是新增文件，不是改动）。
+# ★ 判据：这类「工具输出」不该由人记得手动删 —— 让 .gitignore 挡住。
+#   模式取的是这两个具体名字（不是 `*.json`，那会误伤配置）。
+/base.json
+/main.json

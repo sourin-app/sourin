@@ -818,3 +818,68 @@ git status --short docs/notes/round-66-r4-device.md                   # → ??�
 ```
 
 `docs/notes/evidence/round-66-cs1/` 目录在、`README.md` 在、**0 张 PNG、无 manifest.json** ⇒ CS-1 的 56 ✓ 依然**不可复核**（这条不会因为门禁存在而变成绿）。
+
+---
+
+## 第九轮（2026-10-20 晚）：R5-1009「再点一次静音要恢复声音」—— 行为层不可判定，改落结构门禁
+
+### 判决（先行）
+
+**「再点一次应恢复」这条在 flutter_tester 里结构性不可判定** —— 三次独立实测
+（真播放器 + `await toggleMute()`、`runAsync` 版、裸 `Player` 真 libmpv）全部卡在
+`Player.setVolume()` 永不完成、`p.state.volume` 恒 `100.0`。
+⇒ 无法交出「行为真绿」；已交**结构门禁**（+10，注入 3 处真红）+ 真机判据，边界写进文件头。
+
+### 怎么验的（探针证据）
+
+```text
+① 挂真 LiveEmbeddedPlayer + `await s.toggleMute()`（fake-async）
+   ⇒ 两条 native-media 用例各撞 5 分钟超时，日志停在 `静音按钮被点击…`。
+② pumpWidget 放进 runAsync + 轮询改 runAsync
+   ⇒ `MissingPluginException(No implementation found for method
+      VideoOutputManager.Create on channel com.alexmercerind/media_kit_video)`
+      （`VideoController` 无平台实现 ⇒ zone 级 unhandled ⇒ takeException 接不住）
+③ 裸 `Player()`（`build/windows/x64/libmpv/libmpv-2.dll`）+ `t.runAsync` 里
+   `setVolume(37)` / `setVolume(0)`：
+      PROBE before volume=100.0
+      PROBE setVolume(37) done=false err=null state.volume=100.0
+      PROBE setVolume(0)  done=false state.volume=100.0        ⇒ 撞 90s 超时
+```
+
+仓内 `test/zz_t66_r5_live_mute_default_test.dart` 文件头记过同一结论（它因此只钉 `muted`）。
+
+### 落地的东西
+
+- `test/zz_t66_r5_mute_restore_structure_test.dart` —— **+10 全绿**，
+  钉 `toggleMute()` 五条结构约束：①瀑布顺序（快照→偏好→兜底）②不许 `setVolume(100)/0`
+  ③先下发后翻 `_muted` ④静音时先抓快照再压 0 ⑤快照用完即清（且清在下发前）。
+  防空转=1 份 GOOD + 6 份各违反一条的 BAD 夹具，逐条断言「BAD 必须被点名」。
+- 笔记 `.agents/notes/implemented/testing/2026-10-20-r5-mute-restore-unmeasurable-in-tester.md`。
+- 提交 `8150a9c`（两个文件）。
+
+### 注入读数（worktree `/d/tmp/r66-r5`，HEAD `83e86e1`）
+
+```text
+基线：+10 All tests passed!
+INJ1 `setVolume(restore.clamp(1, 100))` → `setVolume(100)`   ⇒ +7 -3
+     红「不得下发写死的常量音量」「violations 为空」「覆盖边界（clamp 不在）」
+INJ2 unmute 分支 setState 提到 setVolume 之前                 ⇒ -2
+     红「先下发、后翻 _muted」「violations 为空」
+INJ3 删掉偏好一级 `dsh.playprefs.lastVolume`                  ⇒ -2
+     红「三级瀑布顺序」「violations 为空」
+还原：sha256[:16]=b5e2d9373d754f00 回基线；`git status` 只剩 pub 生成的 registrant
+```
+
+### 真机判据（交设备侧，不属自动化）
+
+```text
+a) 静音 → 音量条拖到 37 → 再点静音图标 ⇒ 底栏音量条回到 37（不是 100、不是 0）
+b) 冷启动（默认静音）→ 第一次点图标 ⇒ 回到偏好 lastVolume（未设过则 100）
+c) 连点两次 ⇒ 净效果回到 a) 的值，且第二次不会把音量打成 0
+日志佐证：`静音按钮被点击：_muted=… volume=…` / `取消静音 ⇒ 音量还原到 N`
+```
+
+### 顺带修掉的自我纠错
+
+第一版写的 `test/zz_t66_r5_mute_toggle_behavior_test.dart`（B 层「真播放器音量属性」）
+**从未提交**、已删除 —— 它只会在 tester 里假红，留着会变成「永远红的门禁」。

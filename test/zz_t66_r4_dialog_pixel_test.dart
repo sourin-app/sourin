@@ -112,6 +112,25 @@ const _viewports = <String, Size>{
 
 const _dialogNames = <String>['update', 'skip', 'composer'];
 
+/// 外壳宽度夹取的**下限**，与 `AppDialogShell._kMinDialogWidth` 同值（260）。
+///
+/// ⚠️ 为什么不直接 import 外壳那个常量：
+/// ```text
+/// `_kMinDialogWidth` 是**私有**（`_` 前缀）⇒ 测试文件拿不到。
+/// 而这正是门禁想要的：门禁不该读被测对象的私有常量，
+/// 否则"把常量改成 0"时门禁会跟着改成 0 ⇒ 自己改自己，永远绿。
+/// ⇒ 本文件**独立声明**一份期望值。它与实现相同是**断言**，不是引用：
+///   实现被改成 200 时，这里仍是 260 ⇒ 门禁红（这是对的）。
+/// ```
+///
+/// ★ 与 `Sp.x4` 的区别（今天假阳性的根源）：
+/// ```text
+/// Sp.x4 是**公共 token** ⇒ 门禁必须引用它（token 变了规则也跟着变，这是设计内）。
+/// 260 是**实现里的私有魔数** ⇒ 门禁必须独立声明（改了就是违规，必须红）。
+/// ⇒ 「该引用」和「该独立」的分界线：**公共契约 vs 实现细节**。
+/// ```
+const double _r4MinDialogWidth = 260;
+
 class _Geo {
   String name = '';
   String vp = '';
@@ -717,8 +736,34 @@ void main() {
         final mR = vp.width - card.right;
         final minM = math.min(mL, mR);
 
-        // 期望：min(w, 视口宽 − 2*Sp.x4)，下限 260
-        final expectW = math.min(w, math.max(vp.width - 32, 260));
+        /*
+         * 期望：`min(w, 视口宽 − 2*Sp.x4)`，下限 `_r4MinDialogWidth`（260）。
+         *
+         * ★★★ 2026-10-21（假阳性修）：改前写的是 `vp.width - 32` ——
+         *     注释写 `2*Sp.x4`、代码写 `32`，**两者不一致**。
+         *
+         * # 为什么它是假阳性（不是门禁该拦的真缺陷）
+         * ```text
+         * 变异 Sp.x4: 16 → 17 时实测：
+         *   卡片宽 766（= 800 − 2×17，**完全正确**）
+         *   而门禁报「766 != 期望 768」 —— 期望值用的是写死的 32。
+         * ⇒ 规则本身没问题（它确实按 2×Sp.x4 夹了），是**期望值**算错了。
+         *
+         * 铁证：D-1（窄视口保留边距）在同一次变异下**仍然绿的**
+         *       ⇒ 布局是好的，只有这条"期望值"断言红了。
+         * ```
+         *
+         * # 修法：直接引用 token，并复刻外壳的下限常量
+         * ```text
+         * 外壳公式：min(width, max(视口宽 − 2*Sp.x4, 260))
+         * ⇒ 门禁必须跟着**同一个 token** 走，否则 token 一改它就假红。
+         *   改后更强：不再依赖"token 恰好是 16"这个巧合。
+         * ```
+         */
+        final expectW = math.min(
+          w,
+          math.max(vp.width - Sp.x4 * 2, _r4MinDialogWidth),
+        );
 
         if (minM < 0.5) {
           bad.add('width=$w @${vp.width.toInt()}x${vp.height.toInt()}: '

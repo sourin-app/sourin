@@ -50,6 +50,7 @@ import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
     show GlassContainer, LiquidRoundedSuperellipse;
 
 import '../../ui/theme/app_colors.dart';
+import '../../ui/tokens.dart' show Sp;
 import '../theme/app_theme.dart';
 import 'app_text_button.dart';
 
@@ -63,8 +64,8 @@ class AppGlassDialog extends StatelessWidget {
     required this.title,
     required this.content,
     required this.actions,
-    this.maxWidth = 380,
-    this.maxHeight = 420,
+    this.maxWidth = 460,
+    this.maxHeight = 620,
   });
 
   /// 标题（对应 `AlertDialog.title`）
@@ -76,20 +77,42 @@ class AppGlassDialog extends StatelessWidget {
   /// 底部按钮行（对应 `AlertDialog.actions`）
   final Widget actions;
 
-  /// 卡片最大宽度。默认 380 —— 比 Material 的 280 宽一点，
-  /// 因为这 3 个确认框的正文是**两行中文**，280 会折得很碎。
+  /// 卡片最大宽度。
+  ///
+  /// # 为什么是 460（改前是 380）
+  /// ```text
+  /// docs/AGENTS.md §3.5 弹窗外壳统一规范（原文）：
+  ///   宽度      默认 560；窄弹窗 460、宽版面 820 需显式传 width 并注释原因
+  ///   最大高度  绝对值 620，再按视口夹取（maxHeight 可覆盖）
+  /// ```
+  /// 改前这里是 380 / 420 —— **两处都不在规范里**（380 不在 {460,560,820}；
+  /// 420 也不是 620）。于是一个应用里出现了两套外壳、两套默认宽高：
+  /// `AppDialogShell` 吃 §3.5，`AppGlassDialog` 吃 380/420。
+  /// Owner 那句「弹窗样式不统一、丑爆了」的一类根因就在这里。
+  ///
+  /// §3.5 的规矩是「本节的数一律以外壳代码为准；改外壳的间距/高度必须同步改
+  /// 这里」—— 反过来说：**代码与文档不一致时改代码对齐文档**。
+  /// 本类装的是确认框（窄弹窗形态），故取 460 档，而不是默认的 560。
   final double maxWidth;
 
   /// 内容区最大高度。超出后**内部滚动**。
   ///
-  /// # 为什么要这个（Lead 第 4 步硬要求）
+  /// # 为什么是 620（改前是 420）
+  /// ```text
+  /// docs/AGENTS.md §3.5：最大高度 = 绝对值 620，再按视口夹取
+  /// ```
+  /// 420 是个拍出来的数：它比 §3.5 的 620 矮 200，导致「AlertDialog 装得下、
+  /// 玻璃弹窗反而先滚动」的观感差异 —— 同一个应用里两种弹窗两种容量。
+  /// 内容区本来就是 `Flexible` + `SingleChildScrollView`，抬到 620 只是
+  /// **少滚动**，不改变布局语义；视口更矮时仍由外层 Padding + 滚动兜住。
+  ///
+  /// # 为什么要可覆盖（历史理由，保留）
   /// ```text
   /// 实测：`AlertDialog` 与 `GlassDialog` 在长内容下**都会溢出**
   ///   （.probe/probe_e4_overflow_test.dart：两者 Scrollable 都是 0、
   ///    都有 `RenderFlex overflowed` 异常）。
   /// ⇒ 新建组件时**顺手做对**，不留"将来塞长内容就坏"的坑。
   /// ```
-  /// 现在这 3 个确认框正文都很短，但**没有任何机制保证以后也是**。
   final double maxHeight;
 
   @override
@@ -101,38 +124,61 @@ class AppGlassDialog extends StatelessWidget {
     final t = AppTheme.resolvedOf(context);
     final AppSemanticColors c = t.colors;
 
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: maxWidth, maxHeight: maxHeight),
-      child: GlassContainer(
+    return Padding(
+      /*
+       * ★ 视口安全边距（P1 修：卡片曾**铺满整窗**）
+       *
+       * 实测（.probe/r4g_fullwindow_probe_test.dart，走真 showAppDialog）：
+       * ```text
+       * surface 1280×800 ⇒ GlassContainer rect=(0,0,1280,800) 占屏 100%
+       * surface  800×600 ⇒ GlassContainer rect=(0,0, 800,600) 占屏 100%
+       * ```
+       * 原因：`showDialog` 的 DialogRoute 把 builder 结果挂在 Positioned.fill 上，
+       * 传进来的是**紧约束**（min==max==整窗）；而 `ConstrainedBox` 的
+       * maxWidth 是 `enforce(父约束)` —— 父是紧的，380 就被父约束顶掉了。
+       * Material 的 `AlertDialog` 之所以不出这事，是因为它自己 `build` 里
+       * 有一层 `Align`；我们这层外壳**漏了**。
+       */
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x4),
+      child: Align(
         /*
+         * ★ 这一层 `Align` 是本次修复的**本体**（不是装饰）：
+         *   它在紧约束下先占满可用区，再把**松约束**交给下面的
+         *   ConstrainedBox ⇒ maxWidth / maxHeight 这才真正生效。
+         */
+        alignment: Alignment.center,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: maxWidth, maxHeight: maxHeight),
+          child: GlassContainer(
+            /*
          * 圆角 20 —— 与本仓其它面板（AppDialogShell 的 LiquidRoundedRectangle(20)）
          * 保持同档，避免"弹窗圆角两套"。
          */
-        shape: const LiquidRoundedSuperellipse(borderRadius: 20),
-        padding: EdgeInsets.zero,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 22, 24, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                title,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: c.onSurface,
-                  fontFamily: t.typeface.fontFamily,
-                  fontFamilyFallback: t.typeface.fontFamilyFallback,
-                  fontSize: t.typeface.md,
-                  fontWeight: FontWeight.w600,
-                  height: 1.3,
-                  // ⚠️ 显式清零：DefaultTextStyle.merge 会继承 TextTheme 的
-                  //    letterSpacing（CJK 0.25）⇒ 标题会被拉宽（第 3 步踩过）
-                  letterSpacing: 0,
-                ),
-              ),
-              const SizedBox(height: 10),
-              /*
+            shape: const LiquidRoundedSuperellipse(borderRadius: 20),
+            padding: EdgeInsets.zero,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 22, 24, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    title,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: c.onSurface,
+                      fontFamily: t.typeface.fontFamily,
+                      fontFamilyFallback: t.typeface.fontFamilyFallback,
+                      fontSize: t.typeface.md,
+                      fontWeight: FontWeight.w600,
+                      height: 1.3,
+                      // ⚠️ 显式清零：DefaultTextStyle.merge 会继承 TextTheme 的
+                      //    letterSpacing（CJK 0.25）⇒ 标题会被拉宽（第 3 步踩过）
+                      letterSpacing: 0,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  /*
                * ★ 内容区滚动（Lead 硬要求）
                *
                * `Flexible` + `SingleChildScrollView`：
@@ -141,32 +187,31 @@ class AppGlassDialog extends StatelessWidget {
                * ⚠️ 不能只写 SingleChildScrollView 不写 Flexible ——
                *    Column(mainAxisSize.min) 下它仍会按内容全高撑开。
                */
-              Flexible(
-                child: SingleChildScrollView(
-                  child: DefaultTextStyle(
-                    style: TextStyle(
-                      color: c.onSurfaceVariant,
-                      fontFamily: t.typeface.fontFamily,
-                      fontFamilyFallback: t.typeface.fontFamilyFallback,
-                      fontSize: t.typeface.sm,
-                      height: 1.45,
-                      letterSpacing: 0,
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: DefaultTextStyle(
+                        style: TextStyle(
+                          color: c.onSurfaceVariant,
+                          fontFamily: t.typeface.fontFamily,
+                          fontFamilyFallback: t.typeface.fontFamilyFallback,
+                          fontSize: t.typeface.sm,
+                          height: 1.45,
+                          letterSpacing: 0,
+                        ),
+                        textAlign: TextAlign.center,
+                        child: content,
+                      ),
                     ),
-                    textAlign: TextAlign.center,
-                    child: content,
                   ),
-                ),
-              ),
-              const SizedBox(height: 18),
-              /*
+                  const SizedBox(height: 18),
+                  /*
                * 按钮行：右对齐，与 Material AlertDialog 的动作区一致。
                * 用第 1 步建好的 `AppTextButton`（自建、零 Material）。
                */
-              Align(
-                alignment: Alignment.centerRight,
-                child: actions,
+                  Align(alignment: Alignment.centerRight, child: actions),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -206,8 +251,9 @@ class AppGlassDialogActions extends StatelessWidget {
         const SizedBox(width: 4),
         AppTextButton(
           onPressed: onConfirm,
-          foregroundColor:
-              confirmIsDestructive ? t.colors.error : t.colors.primary,
+          foregroundColor: confirmIsDestructive
+              ? t.colors.error
+              : t.colors.primary,
           child: Text(confirmLabel),
         ),
       ],

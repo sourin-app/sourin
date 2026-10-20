@@ -574,16 +574,32 @@ void main() {
        * ★ Lead 要求的**新增**判据，理由：
        * ```text
        * 现有门禁只管「有没有绕过外壳」，**不管「换了之后长什么样」**。
-       * 而 `AppGlassDialog.maxWidth` 默认 380（组件级决定，已裁决不改）
-       * ⇒ 换过去后卡片宽度从 Material 的 ~318.8 变成 380；
+       * 而 `AppGlassDialog.maxWidth` 默认 460（§3.5 窄弹窗档，2026-10-20 由 380 收敛）
+       * ⇒ 换过去后卡片宽度从 Material 的 ~318.8 变成 460；
        *   将来若有人改 `maxWidth`，**没有任何门禁会发现**。
        * ```
        * ★ 判据形态是「换了外壳之后卡片宽度是多少」，
-       *   **不是**「宽度没变」—— 380 本来就是新行为。
-       * ★ 实测基准 2026-10-19（getRect 读卡片本体那层）：
+       *   **不是**「宽度没变」—— 460 本来就是新行为。
+       * ★ 实测基准（getRect 读卡片本体那层，2026-10-20 复测）：
        *   skip_page._confirm / cache_page 删除整部 / app_tray 三键
-       *   ⇒ 三者都是 **332.0 × 143.0**，exception=null。
+       *   ⇒ 卡片 `maxWidth` = 460，**量到 412**（= 460 − 左右各 24 的 padding）；
+       *   改前（maxWidth 380）量到的是 332。
+       * ★ 为什么钉 412 而不是「跟 maxWidth 联动算」：联动算的话，
+       *   有人把默认改回 380 也依然成立 ⇒ 判据失去判别力。
        */
+      // ── 默认值本身：必须先落在 §3.5 白名单里（不用 pump 就能读） ──
+      const probe = AppGlassDialog(
+        title: '默认值探针',
+        content: SizedBox(),
+        actions: SizedBox(),
+      );
+      expect(const [460.0, 560.0, 820.0], contains(probe.maxWidth),
+          reason: '★ docs/AGENTS.md §3.5：弹窗宽度只允许 460 / 560 / 820；'
+              '实测 ${probe.maxWidth}（改前是 380，不在白名单里）');
+      expect(probe.maxWidth, 460, reason: '★ 确认框 = §3.5「窄弹窗」档 460');
+      expect(probe.maxHeight, 620,
+          reason: '★ §3.5：最大高度 = 绝对值 620（改前 420 也是拍出来的数）');
+
       const view = Size(1280, 800);
       t.view.physicalSize = view;
       t.view.devicePixelRatio = 1.0;
@@ -625,13 +641,14 @@ void main() {
       expect(card, isNotNull, reason: '★ 没量到卡片矩形');
       final w = card?.width ?? -1;
       final h = card?.height ?? -1;
-      expect(w, inInclusiveRange(320, 380),
-          reason: '★★ 收拢后卡片宽度 = $w，不在 [320, 380]。'
-              '实测基准 2026-10-19 = 332.0。上界 380 = '
-              '`AppGlassDialog.maxWidth` 默认值 —— 它被改动时本条会红。');
+      expect(w, inInclusiveRange(404, 420),
+          reason: '★★ 收拢后卡片宽度 = $w，不在 [404, 420]。'
+              '§3.5 窄弹窗 460 − 左右 padding 48 ⇒ 期望 412；'
+              '改前（maxWidth 380）是 332。'
+              '⚠️ 别改成「跟 maxWidth 联动算」—— 那样把默认改回 380 也绿。');
       expect(h, inInclusiveRange(100, 260),
           reason: '★★ 收拢后卡片高度 = $h，不在 [100, 260]。'
-              '实测基准 2026-10-19 = 143.0。');
+              '改前实测基准 2026-10-19 = 143.0。');
     });
 
     testWidgets('④-d ★★ 三键确认框（app_tray 形态）不许换行或溢出', (t) async {

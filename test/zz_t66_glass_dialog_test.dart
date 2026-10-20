@@ -42,12 +42,17 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_localizations/flutter_localizations.dart'
     show GlobalCupertinoLocalizations, GlobalWidgetsLocalizations;
 import 'package:flutter_test/flutter_test.dart';
+// ⑧ 用来说「这是卡片本体」——量它的 rect 才知道有没有铺满整窗。
+// ignore: depend_on_referenced_packages
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
+    show GlassContainer;
 import 'package:material_ui/material_ui.dart'
     show AlertDialog, MaterialApp, Scaffold, TextButton;
 import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/core/network_status.dart';
 import 'package:sourin_spike/design/theme/app_theme.dart' as design;
 import 'package:sourin_spike/design/widgets/app_glass_dialog.dart';
+import 'package:sourin_spike/design/widgets/app_text_button.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/detail_page.dart';
 import 'package:sourin_spike/ui/widgets/overlay_motion.dart';
@@ -712,6 +717,122 @@ void main() {
       expect(ex, greaterThan(0),
           reason: '★ 如实记录：AlertDialog 长内容会溢出 —— '
               '这正是 AppGlassDialog 主动修掉的差异');
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  //  ⑧ 紧约束全窗（P1 修：卡片曾铺满整窗）
+  //
+  //  ★ 为什么这条判据必须存在：`showDialog` 的 DialogRoute 把 builder 结果
+  //    挂在 Positioned.fill 上，传进来的是**紧约束**（min==max==整窗）。
+  //    `ConstrainedBox(maxWidth: …)` 用的是 `enforce(父约束)` ⇒ 父是紧的，
+  //    maxWidth 直接被顶掉，卡片铺满 100% 屏幕（实测 rect=(0,0,1280,800)）。
+  //    Material 的 AlertDialog 自己 build 里有一层 Align，我们这层外壳漏了。
+  //  ★ 这条**不看具体数值**也成立：宽度不是满屏 + 居中 + 两侧留白 > 0。
+  // ══════════════════════════════════════════════════════════════════════
+  group('⑧ 紧约束全窗 ⇒ 必须是居中卡片，不是满屏', () {
+    testWidgets('★★★ 1280×800 视口：宽度非满屏 + 水平居中 + 两侧留白 > 0', (t) async {
+      await t.binding.setSurfaceSize(const Size(1280, 800));
+      addTearDown(() => t.binding.setSurfaceSize(null));
+      final k = GlobalKey<NavigatorState>();
+      await t.pumpWidget(_app(k));
+      await _openAndSettle(t, k);
+
+      final rect = t.getRect(find.byType(GlassContainer));
+      // ignore: avoid_print
+      print('[GLASS4] ⑧ rect=$rect w=${rect.width} h=${rect.height}');
+      expect(rect.width, lessThan(1280 * 0.9),
+          reason: '★ 卡片不许满屏：少一层 Align 时 maxWidth 会被紧约束顶掉');
+      expect(rect.height, lessThan(800 * 0.9), reason: '★ 高度同理，不许满屏');
+      expect(rect.left, greaterThan(0), reason: '★ 左侧必须留白');
+      expect(1280 - rect.right, greaterThan(0), reason: '★ 右侧必须留白');
+      expect((rect.left - (1280 - rect.right)).abs(), lessThanOrEqualTo(1),
+          reason: '★ 必须水平居中（两侧留白相等）');
+      expect(t.takeException(), isNull);
+    });
+
+    // ── 默认值必须落在 §3.5 白名单里（380/420 是拍出来的数） ──────────
+    testWidgets('★★★ 默认宽度 ∈ §3.5 白名单 {460,560,820}，且等于窄弹窗档 460',
+        (t) async {
+      await t.binding.setSurfaceSize(const Size(1280, 800));
+      addTearDown(() => t.binding.setSurfaceSize(null));
+      final k = GlobalKey<NavigatorState>();
+      await t.pumpWidget(_app(k));
+      await _openAndSettle(t, k);
+
+      final rect = t.getRect(find.byType(GlassContainer));
+      // ignore: avoid_print
+      print('[GLASS4] ⑧ 默认宽=${rect.width} 高=${rect.height}');
+      /*
+       * docs/AGENTS.md §3.5：宽度默认 560；窄弹窗 460、宽版面 820。
+       * 本类装确认框 ⇒ 460 档。★ 380 不在白名单里，这条就是为了钉死它。
+       */
+      expect(const [460.0, 560.0, 820.0], contains(rect.width),
+          reason: '★ §3.5：宽度只允许 460 / 560 / 820（380 是拍出来的数）');
+      expect(rect.width, 460, reason: '★ 确认框 = §3.5 的「窄弹窗」档 ⇒ 460');
+      expect(rect.height, lessThanOrEqualTo(620),
+          reason: '★ §3.5：最大高度绝对值 620');
+    });
+
+    // ── 三键同排在 460 宽下不许溢出 / 不裁切 ─────────────────────────
+    testWidgets('★★★ 三键同排（最小化到托盘 / 彻底退出 / 取消）在 460 宽下不溢出',
+        (t) async {
+      await t.binding.setSurfaceSize(const Size(1280, 800));
+      addTearDown(() => t.binding.setSurfaceSize(null));
+      final k = GlobalKey<NavigatorState>();
+      await t.pumpWidget(_app(k));
+      // 用 app_tray 真实那三个标签（最宽的一处三键）
+      unawaited(showAppDialog<int>(
+        context: k.currentContext!,
+        barrierDismissible: false,
+        builder: (ctx) => AppGlassDialog(
+          title: '要关闭还是彻底退出？',
+          content: const Text('最小化到托盘：窗口收起来，程序继续在后台运行。\n\n'
+              '彻底退出：结束程序，后台下载等任务会一起停止。'),
+          actions: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AppTextButton(
+                onPressed: () => Navigator.of(ctx).pop(0),
+                child: const Text('最小化到托盘'),
+              ),
+              const SizedBox(width: 4),
+              AppTextButton(
+                onPressed: () => Navigator.of(ctx).pop(1),
+                child: const Text('彻底退出'),
+              ),
+              const SizedBox(width: 4),
+              AppTextButton(
+                onPressed: () => Navigator.of(ctx).pop(-1),
+                child: const Text('取消'),
+              ),
+            ],
+          ),
+        ),
+      ));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 800));
+
+      final card = t.getRect(find.byType(GlassContainer));
+      final labels = ['最小化到托盘', '彻底退出', '取消'];
+      final rects = [for (final l in labels) t.getRect(find.text(l).last)];
+      // ignore: avoid_print
+      print('[GLASS4] ⑧ card=$card 三键=$rects');
+      // ① 不许有 RenderFlex overflow / 任何异常
+      expect(t.takeException(), isNull,
+          reason: '★ 三键同排在 460 宽下不许溢出');
+      // ② 三个键都必须真的在卡片内（没被裁掉）
+      for (var i = 0; i < 3; i++) {
+        expect(rects[i].left, greaterThanOrEqualTo(card.left),
+            reason: '★「${labels[i]}」被卡片左边缘裁切');
+        expect(rects[i].right, lessThanOrEqualTo(card.right),
+            reason: '★「${labels[i]}」被卡片右边缘裁切');
+      }
+      // ③ 三键必须仍在**同一行**（y 相同）—— 溢出/换行的另一种形态
+      expect(rects[0].center.dy, rects[1].center.dy,
+          reason: '★ 三键被挤成两行');
+      expect(rects[1].center.dy, rects[2].center.dy,
+          reason: '★ 三键被挤成两行');
     });
   });
 }

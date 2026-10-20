@@ -234,6 +234,60 @@ analyze：`flutter analyze lib test/zz_t66_r4_dialog_consistency_test.dart`
 `zz_cr_ui_19_subset_reorder_test`）。
 ```
 
+**R4 P1（2026-10-20）：卡片铺满整窗 + 默认宽高与 §3.5 打架**
+
+```text
+症状（真机 1280×800）：`AppGlassDialog` 卡片 rect=(0,0,1280,800) 铺满整屏；
+同屏 Material `AlertDialog` 却是 508×246。Owner 那句「弹窗样式不统一、
+丑爆了」与此同源：**一个应用里两套外壳、两套默认宽高**。
+
+根因：`showDialog` 的 DialogRoute 把 builder 结果挂在 Positioned.fill 上 ⇒
+传进来的是**紧约束**（min==max==整窗），而 `ConstrainedBox` 用的是
+`enforce(父约束)` ⇒ maxWidth 380 被父约束顶掉。Material 的 `AlertDialog`
+自己 build 里有一层 `Align`，我们这层外壳漏了。
+—— 不是「宽度调小了」，是**约束层漏了一层**。
+
+修法（A→B，顺序不能反）：
+  A 外壳内补 `Padding(Sp.x4) → Align(center) → ConstrainedBox`：
+    Align 在紧约束下先占满可用区，再把**松约束**交给 ConstrainedBox
+    ⇒ maxWidth/maxHeight 才真正生效；Padding 是视口安全边距。
+  B 默认值收敛到 §3.5（**改代码对齐文档**，不是改文档迁就代码）：
+    maxWidth 380 → 460（§3.5「窄弹窗」档；确认框不是宽版面）
+    maxHeight 420 → 620（§3.5 绝对值；内容区本就是 Flexible + ScrollView，
+      抬高上限只是少滚动，不改布局语义）
+
+读数（走真 showAppDialog；探针 .probe/r4g_fullwindow_probe_test.dart）：
+  修前 1280×800 ⇒ rect=(0,0,1280,800)，占屏 100%
+  A 后          ⇒ w=380 h=141，居中，两侧留白 450
+  A+B 后        ⇒ w=460 h=141，居中，两侧留白 410
+
+★ 判据不写死 380：A 阶段只断言「非满屏 + 居中 + 两侧留白 > 0」，
+  B 阶段才收紧成「宽 ∈ §3.5 白名单且 == 460」。
+  写死 380 会让 B 步必红，写死「跟 maxWidth 联动算」则把默认改回 380 也绿。
+
+门禁新增 / 改判：
+  glass_dialog +25 → +28：⑧ 三组（非满屏+居中+留白 / 默认值 ∈ {460,560,820}
+    且 == 460 / 三键同排在 460 下不溢出、不换行、不被卡片边缘裁切）
+  r4_dialog_consistency ④-c 基准 332 → 412（= 460 − 48 padding），
+    并新增一条**不 pump 就能读**的默认值断言（380 直接落在白名单外）。
+
+故障注入（两次都 sha256 前后一致地还原）：
+  ① 默认 460/620 改回 380/420 ⇒ glass_dialog +27 -1（白名单断言红）；
+     r4 ④-c 红（Expected: contains 380 / Actual: [460,560,820]）
+  ② 去掉 Align 那一层 ⇒ glass_dialog +26 -2，⑧ 读到 w=1248 h=768（占满可用区）
+
+回归：18 个受影响测试串行全绿（上轮 17 个 + t12 探针 +15）；
+  引用 `AppGlassDialog` 的 8 个测试文件全绿；
+  `zz_settings_geometry` 仍 +0 ~3（既有 skip，与本次无关）。
+调用点影响（10 处，均未显式传 maxWidth/maxHeight ⇒ 一律吃 460/620）：
+  全部是纯文本确认框（部分三键自拼）；宽度上限变大只会**少折行**，
+  不可能引入新的水平溢出（改大 max 不会让原本装得下的内容装不下）。
+
+analyze：0 error；lib 与两个门禁文件**零新增 warning**
+  （`zz_t66_glass_dialog_test.dart:53 unused_import` 在 HEAD 上就存在）。
+```
+
+
 **R8**
 
 ```text

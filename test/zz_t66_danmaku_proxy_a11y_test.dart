@@ -6,6 +6,22 @@
 // ② 三个选项都必须**能被焦点访问**（RadioListTile 内建 InkWell ⇒ 天然可聚焦）
 // ③ 方向键顺序 = 视觉顺序（keyboardDismissBehavior / FocusTraversal 无阻断）
 // ```
+//
+// # ★★★ 覆盖边界（2026-10-20，`verify-34` 复核时要求写明）
+// ```text
+// 本文件渲染的是 `_Probe` —— 与产品页**同构的最小副本**，不是 `DanmakuSourcePage`。
+// ⇒ 上面三条判据**不覆盖产品页**：
+//   · 产品页里那三个 RadioListTile 的实际高度
+//   · 产品页里的真实焦点顺序 / 真实回调接线
+//   · 产品页里地址框的出现条件
+//
+// 产品页的覆盖由 **test/zz_t66_verify_danmaku_proxy_shots_test.dart** 承担
+// （`pumpWidget` 真 `DanmakuSourcePage()`：读真实渲染文本 + 三张图 hash 互不相等
+//   + 地址框只在 custom 下出现）。
+// ⇒ 本文件末尾有一条机械自检守着这件事：那个文件一旦不再挂产品页，这里就红。
+// ```
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -133,5 +149,32 @@ void main() {
     print('[A11Y] 点选后回调收到=$got');
     expect(got, DanmakuProxyMode.system,
         reason: 'RadioGroup 的 onChanged 必须真的被调用，否则选择不落盘');
+  });
+
+  // ───────────────────────────────────────────────────────────────────
+  // ★★★ 覆盖边界自检（2026-10-20，`verify-34`）
+  //
+  // 本文件的 `_Probe` 是**同构副本** ⇒ 它证明的只是「这套控件写法可达」，
+  // **不证明产品页可达**。真实页的覆盖被外包给了另一个文件 ——
+  // 那条外包关系以前只写在注释里，谁删了那个文件都不会有人发现。
+  // 这条把它变成机械判据：那个文件不再 pump 产品页 ⇒ 这里立刻红。
+  // ───────────────────────────────────────────────────────────────────
+  test('★ 覆盖边界：产品页三态的覆盖者必须仍然存在且真的挂产品页', () {
+    final f = File('test/zz_t66_verify_danmaku_proxy_shots_test.dart');
+    expect(
+      f.existsSync(),
+      isTrue,
+      reason: '★★ 这个文件是本文件**不覆盖产品页**时的唯一补位者；'
+          '删掉它 ⇒ 「三态在产品页上可达/可见」就**没有任何门禁**了。\n'
+          '（本文件只测 `_Probe` 副本，见文件头的「覆盖边界」。）',
+    );
+    final src = f.readAsStringSync();
+    expect(
+      src.contains('DanmakuSourcePage('),
+      isTrue,
+      reason: '★★ 补位者必须**真的 pump 产品页**（`DanmakuSourcePage(`）。\n'
+          '若它被改成只挂副本，那么产品页的三态就只剩本文件这条副本判据 ⇒ '
+          '等于「用副本给自己作证」。',
+    );
   });
 }

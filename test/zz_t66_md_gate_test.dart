@@ -189,10 +189,48 @@ void main() {
       t.view.devicePixelRatio = 1.0;
       addTearDown(t.view.reset);
 
-      await t.pumpWidget(const MaterialApp(
-        home: Scaffold(body: DataManagePage()),
-      ));
-      await t.pump();
+      /*
+       * ★★★ 2026-10-20（`verify-34` 复核用故障注入抓到的**假绿**，此处修掉）
+       *
+       * ```text
+       * 原来只做 pumpWidget + 一次 pump()。
+       * 而 DataManagePage.initState → _scan() 里全是**真 IO**
+       * （ClipDownloader.dataDir() / dir.list() / e.length()），
+       * tester.pump() 只推 fake clock、**不驱动真 Future**（AGENTS §8）。
+       * ⇒ 页面永远停在 _loading == true，汇总卡那一行
+       *   `Text('数据目录共占用')`（data_manage_page.dart:342）**根本没渲染**。
+       * 实测：树上只有 3 条 Text（标题 / 副标题 / 空态）。
+       * ⇒ 「整棵树不含 **」对汇总卡是**不可见**的：往 :342 注入
+       *   `Text('**数据**目录共占用' 时这条断言**仍然绿**，只有静态兜底红。
+       * ```
+       * 修法（AGENTS §8 的坑，一字不差照做）：
+       *   · 给一条**真实**的临时数据目录（`debugSetDataDir`），并放一条合成条目，
+       *     让列表体与分类计数真的构建；
+       *   · `pumpWidget` **本身**放进 `t.runAsync()`，再用真实 delay 推进；
+       *     先 pump 再 runAsync **救不回来**（Future 已在 fake clock 里创建）。
+       */
+      final tmp = Directory.systemTemp.createTempSync('mdgate-dm-');
+      addTearDown(() {
+        ClipDownloader.debugSetDataDir(null); // ★ 收尾：绝不外溢到真实数据目录
+        try {
+          tmp.deleteSync(recursive: true);
+        } catch (_) {}
+      });
+      File('${tmp.path}${Platform.pathSeparator}合成-第01集.mp4')
+          .writeAsBytesSync(List<int>.filled(4096, 7));
+      ClipDownloader.debugSetDataDir(tmp.path);
+
+      await t.runAsync(() async {
+        await t.pumpWidget(const MaterialApp(
+          home: Scaffold(body: DataManagePage()),
+        ));
+        // 真 IO 要真实时间推进：每轮 delay 后 pump 一次，最多等 5s
+        for (var i = 0; i < 100; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          await t.pump();
+          if (find.text('数据目录共占用').evaluate().isNotEmpty) break;
+        }
+      });
 
       final texts = allTexts(t);
       // ignore: avoid_print
@@ -211,6 +249,21 @@ void main() {
         contains('数据管理'),
         reason: '★★ 防空转自检：树上找不到「数据管理」⇒ 挂的不是这一页\n'
             '（或文案已改）。只有条数门槛时，渲染成别的页面也会通过。\n'
+            '实际渲染：${texts}',
+      );
+      /*
+       * ★★★ 2026-10-20（`verify-34`）：这条是**注入点所在的那个 widget**
+       *
+       * 只断言「树里有 3 条 Text」是不够的 —— 汇总卡没渲染时它照样绿。
+       * 必须**点名**这一行：它就是 `data_manage_page.dart:342` 的注入点，
+       * 也是本门禁要守的那段文案。`_scan()` 没跑完 ⇒ 这条立刻红。
+       */
+      expect(
+        find.text('数据目录共占用').evaluate(),
+        isNotEmpty,
+        reason: '★★★ 防空转自检失败：汇总卡（`Text(\'数据目录共占用\')`）没渲染 ⇒ '
+            '`_scan()` 的真 IO 没跑完（`pumpWidget` 是否放进了 `t.runAsync()`？）\n'
+            '这一行正是注入点，它不在树上时「不含 **」是恒真的。\n'
             '实际渲染：${texts}',
       );
 
@@ -245,17 +298,21 @@ void main() {
       // ⚠️ 这里实测只有 **1 条** Text ⇒ `>= 1` 门槛**完全压线**
       //   （任何页面只要渲染出 1 条文字就过）。所以条数门槛在本页几乎无判别力，
       //   **真正起作用的是下面这半**：必须出现本页特有的字样。
-      expect(texts.length, greaterThanOrEqualTo(1),
-          reason: '★★ 防空转自检：代理面板只有 ${texts.length} 条 Text ⇒ '
-              '面板没渲染出来，下面的断言会恒真。');
+      // ★★ 2026-10-20（verify-34）改：原来这里断言
+      //   `texts.join().contains('代理')`，但**折叠态的标题是 `ProxyConfig.summary`**
+      //   （'直连' / '跟随系统' / 自定义地址，见 `models.dart` 的 summary getter），
+      //   **根本不含"代理"三个字** ⇒ 在没有已保存代理配置的机器 / 纯净 worktree 上
+      //   这条会**恒红**（实测：worktree 里 Actual = '直连'）。
+      //   永远红和永远绿一样是废门禁 —— 改成用**组件类型**证明面板真的挂上了，
+      //   与"展开与否 / 有没有已保存配置"无关。
       expect(
-        texts.join('\n'),
-        anyOf(contains('代理'), contains('代理服务')),
-        reason: '★★ 防空转自检：树上找不到本页特征字样 ⇒ 挂的不是这一页。\n'
-            '★ 本页只有 1 条 Text，条数门槛几乎没有判别力，'
-            '**这一条才是真正守住"渲染的是代理面板"的判据**。\n'
-            '实际渲染：${texts}',
+        find.byType(ProxyPanel),
+        findsOneWidget,
+        reason: '★★ 防空转自检：树上没有 ProxyPanel ⇒ 挂的不是这个面板，'
+            '下面的星号断言会恒真。',
       );
+      expect(texts, isNotEmpty,
+          reason: '★★ 防空转自检：面板一条文字都没渲染 ⇒ 下面的断言会恒真。');
 
       final bad = textsWithAsterisks(t);
       expect(

@@ -2520,6 +2520,33 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
        * ★ 2026-10-19：探针**不抛异常**、但判了 offline 时，core 只说
        *   「暂时连不上」—— 那还是把"为什么"藏起来了。
        *   先给一个占位结论（马上会被 [_diagnose] 的定向探测替换）。
+       *
+       * ★★★ 2026-10-20（R3 文案审查 · 问题 2）：**占位态的文案必须是中性的**。
+       *
+       * # 改前（错）
+       * ```text
+       * remedy: remedyFor(DanmakuProbeFailure.connectionTimeout)
+       *   ⇒ 此刻 `_diagnose` **还没跑**、`InternetAddress.lookup` **还没执行**，
+       *     而界面上却写着：
+       *       「连不上（超时）⇒ 地址解析出来了但连不过去，
+       *         通常是「被墙 / 需要代理 / 路由不通」…」
+       *   ⇒ 替用户断言了三件**当时尚未发生**的事：
+       *       · 地址解析出来了（没解析过）
+       *       · 连不过去（没连过）
+       *       · 通常是被墙 / 需要代理（没有任何依据）
+       * ```
+       * # 改后：照抄设置页 `danmaku_source_page.dart:215` 那版
+       * ```text
+       * '连不上 —— 正在确认是本机网络还是服务端的问题…'
+       *
+       * ① 它只说"连不上"（这是**已观测到**的事实：探针判了 offline）
+       * ② "正在确认"如实表达"还不知道"
+       * ③ 等 `_diagnose` 回来，会被真正的分档文案替换
+       *
+       * ★ 同仓**已经**有正确写法（设置页），本处只是对齐 ——
+       *   不是新设计，所以不需要论证，只需要一致。
+       * ★ 顺带：131 字 → 25 字，占位态更短，不会溢出。
+       * ```
        */
       _probeReport = st.online
           ? const DanmakuProbeReport(
@@ -2530,9 +2557,14 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               failure: DanmakuProbeFailure.connectionTimeout,
               url: ep?.display ?? raw,
               detail: '正在分层诊断（DNS / TCP）…',
-              remedy: DanmakuProbeReport.remedyFor(
-                DanmakuProbeFailure.connectionTimeout,
-              ),
+              /*
+               * ⚠️ **不要**在这里用 `remedyFor(connectionTimeout)` ——
+               *    那条 remedy 是"诊断完成态"的文案，它陈述的是
+               *    「地址解析出来了但连不过去」这种**需要证据**的结论。
+               *    占位态没有任何证据，只能用中性句。
+               *    门禁 `zz_t66_r3_placeholder_wording_test.dart` 钉着这一点。
+               */
+              remedy: '连不上 —— 正在确认是本机网络还是服务端的问题…',
             );
     });
     // 测通了 ⇒ 落盘（用户点的就是「这个地址可用」，不落盘等于白填）
@@ -4382,10 +4414,44 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           ),
         ),
         if (e.isAuthProblem)
+          /*
+           * ★★★ 2026-10-20（R3 文案审查 · 问题 1）：删掉「去凭证节填 AppId」那半句。
+           *
+           * # 为什么删（不是恢复凭证入口）
+           * ```text
+           * 改前这句话是：
+           *   「…或在上面的「凭证」节填一对 AppId / AppSecret 并保存，再点「重新获取弹幕」。」
+           *
+           * 而「凭证」那一节 `_credentialsSection` **已经是死代码**：
+           *   · 全文件只有定义(:2932)与注释提及，**零调用点**
+           *   · 注释自己写着 :1571「保留但不调用」
+           *   · 全仓 UI 层**没有任何地方**调 `setAppId` / `setAppSecret`
+           *     （`grep -rn "setAppId\|setAppSecret" lib/ui/` ⇒ 只命中一条注释）
+           *
+           * ⇒ 用户照着这句话去找「上面的凭证节」，**找不到**；
+           *   而且整个客户端**没有**任何地方能填 AppId。
+           *   这不是"指错了行动"，是**指向一个不存在的控件**。
+           * ```
+           * # 为什么不恢复凭证入口
+           * ```text
+           * 恢复 `_credentialsSection` 是**功能改动**（要把 setAppId/setAppSecret
+           * 接回 UI），而它当初被摘掉是有原因的（:1571 + :26 那段关于写入口的说明）。
+           * 现在恢复 = 重开一个已经被有意关掉的入口 ⇒ 那是产品决策，不是文案修复。
+           * ⇒ 只删掉指向它的那半句，保留**前两条可行路径**。
+           * ```
+           * # 删完句子仍然通顺
+           * ```text
+           * 「这是凭证问题。可行的几步（按代价从低到高）：
+           *    改用本机外部弹幕（免签名）或 外部视频源弹幕；
+           *    再点「重新获取弹幕」。」
+           * ↑ 两条路都真实存在：
+           *   · 本机弹弹play / 外部视频源 —— 免签名，不需要 AppId
+           *   · 「重新获取弹幕」按钮在「请求」节（:2694），可达
+           * ```
+           */
           _hint(
             '这是凭证问题。可行的几步（按代价从低到高）：'
             '改用本机外部弹幕（免签名）或 外部视频源弹幕；'
-            '或在上面的「凭证」节填一对 AppId / AppSecret 并保存，'
             '再点「重新获取弹幕」。',
           ),
       ],

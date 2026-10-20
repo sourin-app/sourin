@@ -61,6 +61,99 @@ tools/n13_single_instance_test.ps1 BOM=23203d ← 纯 ASCII ⇒ 不需要
 
 ★ 判据：**脚本里有中文才需要 BOM**，纯 ASCII 的加了反而多余。
 
+### 2026-10-20：这条判据**已经机械化**（不再靠人记）
+
+上面那条判据原来只活在文字里 —— 结果当天就翻车了：
+
+```text
+tools/run_round66_acceptance.ps1  在 HEAD 里 BOM=3c230a（**没有**），
+                                  而它有中文 ⇒ PS 5.1 下**本来跑不起来**。
+⇒ 判据写在笔记里 ≠ 判据被执行。这正是本仓反复记的「散文里的规矩等于没有规矩」。
+```
+
+⇒ 新增门禁 `test/zz_t66_ps1_bom_gate_test.dart`，三条判据：
+
+```text
+① 含非 ASCII 的 tools/*.ps1 ⇒ 前 3 字节必须 EF BB BF
+   作用域收窄到「含非 ASCII」：上面那 3 个纯 ASCII 脚本无 BOM 也 0 错误，
+   对它们要求 BOM 属于「为门禁而改文件」。
+   ★ 这条作用域收窄是**门禁自己抓到的误报** —— 第一版写的是「所有 .ps1」，
+     实测红 3 个（commit_scope_guard / live_probe_count /
+     n13_single_instance_test），全是纯 ASCII、无 BOM 也 0 错误。
+
+② 每个 tools/*.ps1 **按磁盘原样** PS 5.1 解析必须 0 错误
+   与 ① 正交：① 只证明"BOM 字节在"，证明不了"这份脚本现在真能跑"。
+   将来有人改坏语法，① 照样绿，② 会红。
+
+③ 故障注入：把 ① 守的脚本**切掉 BOM 造副本**，必须解析失败
+   这条是「判据的判据」—— 若切 BOM 也无害，① 就是假门禁。
+```
+
+**实测基线（2026-10-20，PS 5.1 / code page 936）**
+
+```text
+tools/e2e_shots.ps1
+  有 BOM（53380 字节）⇒ PARSE_ERRORS=0
+  切掉前 3 字节（53377）⇒ **PARSE_ERRORS=50**
+      L196 表达式或语句中包含意外的标记"}"
+      L229 表达式或语句中包含意外的标记"$("
+      L229 表达式中缺少右")"
+      L270 表达式或语句中包含意外的标记"manifest.json:"
+```
+
+⇒ 50 个错误不是"可移植性隐患"，是**当下就跑不起来**。
+
+### ★ 判据的作用对象：必须"先构造副本再测"
+
+这条是本篇最值得留给后人的坑（同一天踩了第 5 次）：
+
+```text
+❌ 直接解析磁盘上那个文件
+   ⇒ 测的是「那个文件此刻能不能解析」，**不是**「无 BOM 能不能解析」
+   ⇒ 而它此刻有 BOM ⇒ 永远 0 错误 ⇒ 门禁永远绿
+
+✅ 读字节 → 断言 BOM → **构造切掉 BOM 的临时副本** → 解析副本
+   副本还要两道自检：① 真的没有 BOM ② 长度正好少 3 字节
+```
+
+我第一版判据③写成了「切掉 BOM 后必须 0 错误」——**写反了**，永远红。
+正确写法是「切掉 BOM 后必须**报错**」。方向搞反的判据比没有判据更费时间。
+
+### 全量扫描读数（2026-10-20，tools/ 下 10 个 .ps1）
+
+```text
+commit_scope_guard.ps1        BOM=23203D  nonASCII=0      ERRORS=0
+e2e_checklist.ps1             BOM=EFBBBF  nonASCII=381    ERRORS=0
+e2e_shots.ps1                 BOM=EFBBBF  nonASCII=2778   ERRORS=0
+live_probe_count.ps1          BOM=23203D  nonASCII=0      ERRORS=0
+n13_single_instance_test.ps1  BOM=23203D  nonASCII=0      ERRORS=0
+run_client.ps1                BOM=EFBBBF  nonASCII=3808   ERRORS=0
+run_round66_acceptance.ps1    BOM=EFBBBF  nonASCII=21     ERRORS=0
+run_t107.ps1                  BOM=EFBBBF  nonASCII=6147   ERRORS=0
+seed_dev_data.ps1             BOM=EFBBBF  nonASCII=12791  ERRORS=0
+verify_shots.ps1              BOM=EFBBBF  nonASCII=30     ERRORS=0
+```
+
+⇒ 「BOM 存在」与「含非 ASCII」**完全对应**（7 有 3 无），无一例外。
+
+### 顺带查清的并发写入事故（2026-10-20 23:38–23:40）
+
+`tools/e2e_shots.ps1` 在 33 秒内被两种写法交替覆盖，BOM 反复丢失/恢复：
+
+```text
+23:38:14  size=53002  BOM=EFBBBF  md5=9fa8aafa…
+23:39:49  size=53377  BOM=3C230A  md5=591dbb68…   ← 丢 BOM
+23:40:22  size=53380  BOM=EFBBBF  md5=fc193e7e…   ← 回来
+```
+
+同批指纹：`e2e_shots.ps1` / `run_round66_acceptance.ps1` /
+`check-doc-capability-wiring.mjs` 三个文件 mtime 相差 < 1 秒
+（23:40:22.974 / .979 / 23:40:23.209）⇒ 那一次是**同一执行者**批处理写的。
+
+**具名执行者查不到**（无进程持有句柄、无风格痕迹、无 commit 归属）——
+如实记「查不到」，不猜。这条事故本身的价值是：**并发写同一文件不会报错，
+只会静默少掉改动**，所以本门禁要能独立于"谁写的"判定文件当前是否可用。
+
 ### 路径不写死
 
 `e2e_shots.ps1` 里原先写死了本机 Flutter 路径 ⇒ 改成 `$env:FLUTTER_BIN`。

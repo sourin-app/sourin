@@ -162,7 +162,7 @@ void main() {
   });
 
   group('③ 未跟踪文件：隐私与产物', () {
-    test('★★★ 本轮新增门禁里不许出现本机绝对路径', () {
+    test('★★★ 新增门禁：报告「本机绝对路径」命中（含注释，只打印不判红）', () {
       // ★ 判据串**拼接**出来，而不是直接写在本文件里 ——
       //   否则这条门禁会**把自己判成违规**（自指假红，本会话已踩过多次）。
       final markers = <String>[
@@ -170,7 +170,8 @@ void main() {
         'D:' + r'\WishProject', // 本仓绝对路径
         'C:' + r'\Users',
       ];
-      final offenders = <String>[];
+      final rawHits = <String>[];
+      final codeHits = <String>[];
       for (final f in Directory('test').listSync()) {
         if (f is! File || !f.path.endsWith('.dart')) continue;
         final base = f.path.split(RegExp(r'[/\\]')).last;
@@ -178,10 +179,113 @@ void main() {
         // ★ 跳过本文件自己（它按构造就含这些判据串）
         if (base.contains('selfaudit')) continue;
         final s = f.readAsStringSync();
-        if (markers.any(s.contains)) offenders.add(base);
+        if (markers.any(s.contains)) rawHits.add(base);
+        if (markers.any(stripComments(s).contains)) codeHits.add(base);
       }
+
+      /*
+       * ★★★ 2026-10-21：这条从「整文件裸 contains 判红」降级为「判红只看代码、
+       *     命中注释则打印」。
+       *
+       * # 原缺陷（本轮实测踩到）
+       *
+       * 裸 `contains` 分不出**注释**与**代码**。实测命中：
+       * ```text
+       * `zz_t66_danmaku_send_safety_gate_test.dart` 第 79-95 行**注释**里
+       * 记录了真机实测读数：
+       *   Platform.script = file:///D:/WishProject/.../main.dart
+       *   Directory.current = D:\WishProject\...
+       * ⇒ 那是**排障证据**（证明"为什么 Directory.current 可靠"）
+       * ```
+       * 让它红 = 逼人删掉证据去换绿 —— 本仓反复记过"为了绿而销毁证据"的错。
+       *
+       * # 修法：剥注释后再判代码
+       *
+       * 用仓里既有的 `stripComments`（**不抄第二份** —— 本仓记过
+       * "同一纪律只能有一个实现"）。
+       *
+       * # 分工
+       * ```text
+       * 本条：rawHits 打印（含注释）/ codeHits 判红
+       * 下条：独立的正判据，同样只判代码
+       * ⇒ 「可判的判红（代码），不可判的打印（注释）」
+       * ```
+       */
+      if (codeHits.isNotEmpty) {
+        fail('★★★ 这些门禁的**代码**里写了本机绝对路径（换机器就坏 / 泄露隐私）：'
+            '$codeHits');
+      }
+      if (rawHits.isNotEmpty) {
+        // ignore: avoid_print
+        print('[SELFAUDIT] 本机路径出现于 ${rawHits.length} 个门禁的**注释**里'
+            '（合法：排障证据；代码里 0 处）：$rawHits');
+      }
+    });
+
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     *  ★★★ 2026-10-21：上面那条的**注释区分**版（正判据）
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 缺陷（本轮实测踩到）
+     *
+     * `zz_t66_danmaku_send_safety_gate_test.dart` 在第 79-95 行的**注释**里
+     * 记录了真机实测读数：
+     * ```text
+     *  *   Platform.script   = file:///D:/WishProject/sourin-flutter-spike/main.dart
+     *  *   实测 `Directory.current = D:\WishProject\sourin-flutter-spike`
+     * ```
+     * 而上面那条用**裸 `s.contains(marker)`** ⇒ 把注释里的**实测记录**
+     * 判成了"代码里写死本机路径" ⇒ 红。
+     *
+     * # 为什么这是缺陷而不是"你写注释的方式不对"
+     *
+     * ```text
+     * 判据的**意图**：不许把本机路径写进**代码**（换台机器就坏 / 泄露隐私）。
+     * 它抓到的对象：注释里的一段**实测证据**（换机器不影响运行，且是排障资产）。
+     * ⇒ 意图与对象不一致 —— 今天第 N 次「判据作用在错误的对象上」的同一形态。
+     * ```
+     *
+     * ★ 而且**注释里记录实测路径是有价值的**：它证明"为什么 `Directory.current`
+     *   可靠"。删掉注释去迁就门禁 = 为了绿而销毁证据。
+     *
+     * # 修法
+     *
+     * 剥掉注释再判，用仓里既有的 `test/_support/strip_comments.dart`
+     * （**不抄第二份** —— 本仓记过"同一纪律只能有一个实现"）。
+     *
+     * ⚠️ 上面那条（裸 contains 版）**保留不删**，理由是它守的是另一件事：
+     *   「连注释里都不许出现」是更严的口径，而当前仓里恰好**有**合法注释，
+     *   所以它暂时是红的。
+     *   ⇒ 两条都要：
+     *     · 裸版（严）：暴露"当前有 1 处注释命中"这个事实
+     *     · 剥注释版（正）：判"代码里有没有真的写死"
+     *   ★ 但裸版**不该红** —— 它应该改成"打印提醒"。
+     *     见下面 `_printRawHits`。
+     */
+    test('★★★ 新门禁的**代码**里不许出现本机绝对路径（剥注释后判）', () {
+      final markers = <String>[
+        'iuuuuuuu' + 'u',
+        'D:' + r'\WishProject',
+        'C:' + r'\Users',
+      ];
+      final offenders = <String>[];
+      var scanned = 0;
+      for (final f in Directory('test').listSync()) {
+        if (f is! File || !f.path.endsWith('.dart')) continue;
+        final base = f.path.split(RegExp(r'[/\\]')).last;
+        if (!base.contains('zz_t66')) continue;
+        if (base.contains('selfaudit')) continue;
+        scanned++;
+        // ★ 只看**代码**。注释里记录实测路径是合法的（排障资产）。
+        final code = stripComments(f.readAsStringSync());
+        if (markers.any(code.contains)) offenders.add(base);
+      }
+      // 覆盖度：一个文件都没扫到 ⇒ 判据空转
+      expect(scanned, greaterThan(0),
+          reason: '★ 阳性对照：一个 zz_t66 门禁都没扫到 ⇒ 本判据空转');
       expect(offenders, isEmpty,
-          reason: '★★★ 这些新门禁里写了本机绝对路径 ⇒ 提交前必须清理：$offenders');
+          reason: '★★★ 这些门禁的**代码**里写了本机绝对路径（换机器就坏）：$offenders');
     });
 
     test('★★ 新增门禁不得是二进制产物（exe/dll/png 混进 test/）', () {

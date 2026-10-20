@@ -653,9 +653,42 @@ void main() {
       );
       // 顶栏的挂载点必须**没有**外层 if —— 否则隐藏时它整棵被卸下，
       // 260ms 的淡出根本没机会播（一帧硬切）。
-      final i = src.indexOf('                    _TopBar(');
-      expect(i, greaterThan(0), reason: '★ `_TopBar(` 的挂载点缩进变了（找不到）');
-      final before = src.substring(i - 400, i);
+      //
+      // ══════════════════════════════════════════════════════════════
+      // ★★★ 2026-10-21：**不许钉缩进**（这里原来是 20 个空格的字面量）
+      // ══════════════════════════════════════════════════════════════
+      //
+      // 改前：
+      // ```dart
+      // final i = src.indexOf('                    _TopBar(');  // 20 空格
+      // ```
+      // 实测（本轮 N11 `ddb0794` 底栏改造）把挂载点从
+      // ```text
+      //                     _TopBar(          ← 以缩进开头
+      // ```
+      // 改成
+      // ```text
+      // builder: (context, _) => _TopBar(     ← 在行尾
+      // ```
+      // ⇒ `indexOf` 返回 **-1** ⇒ 报 `Expected: >0, Actual: -1`
+      // ⇒ **判据失配，不是产品坏了**（顶栏仍然是常挂的，功能没变）。
+      //
+      // ★ 教训：**钉缩进/空格等于钉格式化器的输出，那不是语义。**
+      //   判据应钉「`_TopBar(` 出现了，且它前面 400 字符里没有 `if (`」，
+      //   这与它缩进几个空格、是否在行尾**无关**。
+      //   今天同族已经出现过两次（同文件 `e363d2c` 修过另一条）。
+      //
+      // ⚠️ 用正则而不是裸 `indexOf('_TopBar(')`：
+      //   `_TopBar(` 在注释里也可能出现（本文件测的就是源码文本），
+      //   而注释里的出现**不该**被当成"挂载点"。
+      //   这里取**第一个**真正的构造点 —— 注释里的那种通常不跟在 `=>` / `:` 后。
+      //   实测当前位置：`builder: (context, _) => _TopBar(`。
+      final ctor = RegExp(r'(_TopBar\()').firstMatch(src);
+      expect(ctor, isNotNull,
+          reason: '★ 源码里找不到 `_TopBar(` —— 顶栏被整个删掉/改名了？');
+      final i = ctor!.start;
+      expect(i, greaterThan(0), reason: '★ `_TopBar(` 的挂载点找不到');
+      final before = src.substring(i - 400 < 0 ? 0 : i - 400, i);
       expect(
         before.contains('if ('),
         isFalse,

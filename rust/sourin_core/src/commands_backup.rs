@@ -480,7 +480,7 @@ fn attach_credentials_to_payload(
             included: false,
             providers: 0,
             note: Some(
-                "未设置导出用的口令 ⇒ 这个包里**不含登录态**（其它数据都在）。                 要一起备份登录态，请在导出时设置口令。"
+                "未设置导出用的口令 ⇒ 这个包里「不含登录态」（其它数据都在）。                 要一起备份登录态，请在导出时设置口令。"
                     .into(),
             ),
         });

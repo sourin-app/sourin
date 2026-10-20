@@ -3626,12 +3626,25 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
          *   那条说的是「不支持发弹幕 ⇒ 不显示**发送输入框**」，
          *   不是「不许告诉用户为什么没有」。
          * ```
+         *
+         * ★★★ 2026-10-20（裁决 A：把解释搬到**发现点**）
+         * ```text
+         * 改前条件是 `biliBound && !canSendDanmaku`
+         *   ⇒ 没绑定这一路时**什么都不说**：用户看到「本片源没有提供」+ 没有发送框，
+         *     只剩一片空白，不知道是"这一路没内容"还是"这源根本发不了"。
+         * 改后条件是 `!canSendDanmaku`
+         *   ⇒ 「能不能发」与「有没有绑定某一路」是两件事，前者为假就该解释。
+         *
+         * 文案按 R6 先例：**给「能做什么」**，不写干瘪的否定；
+         * 且原因必须**指向片源**（不许写成网络/登录/设置/出错），
+         * 否则用户会去翻设置找不存在的问题（同 AGENTS §8「只到结论不到原因」的教训）。
+         * ```
          */
-        if (biliBound && !widget.canSendDanmaku)
+        if (!widget.canSendDanmaku)
           const Padding(
             padding: EdgeInsets.only(left: Sp.x6, top: 2),
             child: Text(
-              '本片源不支持发送弹幕（只能看）',
+              '弹幕可以看、调样式、合并多路来源；发送只在支持发送的片源里提供',
               style: TextStyle(
                 color: DanmakuTextColors.muted,
                 fontSize: FontSizes.cap,

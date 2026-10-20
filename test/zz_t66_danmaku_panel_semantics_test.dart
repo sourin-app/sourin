@@ -368,7 +368,22 @@ void main() {
   //  ⑤ 「能看」与「能发」是两件事（Lead 追加口径）
   // ═══════════════════════════════════════════════════════════════════
   group('⑤ 能看 / 能发 必须分开说', () {
-    testWidgets('★★★ 不支持发送时，面板里有**一行说明**（不是静默）',
+    /*
+     * ★★★ 2026-10-20（裁决 A）：判据从「有没有一行说明」
+     * 收紧到「这行说明**为什么**」，并覆盖**没绑定**那一档。
+     *
+     * ```text
+     * a. 不能发（已绑定）        ⇒ 这行**存在**，且给出「能做什么」
+     * b. 能发                  ⇒ 这行**不存在**（不制造噪声）
+     * c. 不能发 + 没绑定任何一路 ⇒ 同样**存在**（「不能发」≠「没绑定」）
+     * d. 这行**不许**把原因说成网络/登录/设置/出错 —— 那是另一种误导
+     * ```
+     * 光断言「存在」会漏掉 b（能发却说不能发）和 d（说了但说不清）；
+     * ⇒ 成对断言：该在的在、不该在的不在、说到的原因对得上。
+     */
+    const hint = '发送只在支持发送的片源里提供';
+
+    testWidgets('★★★ 不能发（已绑定）⇒ 有说明，且说明的是「片源不支持」',
         (t) async {
       await t.pumpWidget(_host(_panel(
         biliCount: 1200,
@@ -378,24 +393,36 @@ void main() {
       await t.pumpAndSettle();
       await _tapTab(t, '弹幕来源');
 
-      /*
-       * # 这条为什么重要
-       * ```text
-       * 两个插件都没声明 danmakuSend ⇒ 发送输入框整条不渲染
-       * （Owner 第 1 条「不支持就不显示」，宿主判得对）。
-       * 但用户看到「本片源自带 1200 条」却没有发送框 ⇒ 他会以为坏了。
-       * ⇒ 输入框仍然不显示，但这里要明说一句。
-       * ```
-       * ⚠️ 这与 Owner 第 1 条**不矛盾**：
-       *    那条禁的是"显示发送输入框"，不是"不许解释为什么没有"。
-       */
-      expect(find.textContaining('不支持发送弹幕'), findsOneWidget,
-          reason: '★★★ 必须解释，否则用户以为功能坏了');
-      expect(find.textContaining('只能看'), findsWidgets,
-          reason: '★ 说清"能看不能发"这个状态');
+      expect(find.textContaining(hint), findsOneWidget,
+          reason: '★★★ 不能发就必须解释，否则用户以为功能坏了');
+
+      final msg = t.widget<Text>(find.textContaining(hint)).data ?? '';
+      expect(msg, contains('可以看'),
+          reason: '★ 按 R6 先例给「能做什么」，不是干瘪的否定');
+      expect(msg, contains('片源'),
+          reason: '★★ 必须说清原因在**片源**');
+      for (final wrong in ['网络', '登录', '设置', '失败', '错误', '暂不']) {
+        expect(msg, isNot(contains(wrong)),
+            reason: '★★ 原因不许写成「$wrong」—— 用户会去翻设置找不存在的问题');
+      }
     });
 
-    testWidgets('★★ 支持发送时**不出现**那行说明（不制造噪声）', (t) async {
+    testWidgets('★★★ 不能发 + **没绑定**任何一路 ⇒ 同样要解释',
+        (t) async {
+      /*
+       * 改前条件是 `biliBound && !canSendDanmaku` ⇒ 这一档**静默**：
+       * 用户看到「本片源没有提供」+ 没有发送框，不知道是没内容还是发不了。
+       * 这一条就是钉那个洞的：删掉 `biliBound &&` 才绿。
+       */
+      await t.pumpWidget(_host(_panel(canSendDanmaku: false)));
+      await t.pumpAndSettle();
+      await _tapTab(t, '弹幕来源');
+
+      expect(find.textContaining(hint), findsOneWidget,
+          reason: '★★★ 「不能发」与「没绑定」是两件事，前者为假就该解释');
+    });
+
+    testWidgets('★★ 能发时**不出现**这行说明（不制造噪声）', (t) async {
       await t.pumpWidget(_host(_panel(
         biliCount: 1200,
         onOpenBili: () {},
@@ -404,14 +431,11 @@ void main() {
       await t.pumpAndSettle();
       await _tapTab(t, '弹幕来源');
 
-      expect(find.textContaining('不支持发送弹幕'), findsNothing,
+      expect(find.textContaining(hint), findsNothing,
           reason: '★★ 能发的时候说"不支持"就是错误信息');
     });
   });
 
-  // ═══════════════════════════════════════════════════════════════════
-  //  ⑥ 页面结构：三个页签，一个都不许挤掉
-  // ═══════════════════════════════════════════════════════════════════
   group('⑥ 三个页签', () {
     testWidgets('★★★ 恰好三个，且都不是某一家服务的名字', (t) async {
       await t.pumpWidget(_host(_panel(biliCount: 1200, onOpenBili: () {})));

@@ -83,7 +83,7 @@ class AppSemanticColors {
   ///
   /// ⚠️ 必须**成对**跟着主题包走。实测过的反例：某套浅色主题的主色是
   ///    浅粉，配白字只有 2:1 —— 写死白字就等于让那套主题的按钮字消失。
-  ///    （theme_bridge.dart:820 有这段读数。）
+  ///    （theme_bridge.dart:772 有这段读数。）
   final Color onPrimary;
 
   /// 页面底色（= `ColorScheme.surface`）

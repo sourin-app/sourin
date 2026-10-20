@@ -108,6 +108,19 @@ param(
     # Where the PNGs are COPIED to. The app always writes .probe\tabshot_*.png.
     [string]$OutDir = '.probe/e2e',
 
+    # Optional filename prefix for the copied PNGs. Default '' keeps the
+    # historical `<tab>.png` names, so every old call site sees zero change.
+    [string]$Prefix = '',
+
+    # Human-readable criterion recorded per file in manifest.json (evidence runs).
+    [string]$Criterion = '',
+
+    # Do NOT build and do NOT launch: just seal the PNGs already sitting in
+    # -OutDir into manifest.json and exit. Used when the images came from a
+    # different harness (e.g. real-device shots) and this script must not take
+    # the window.
+    [switch]$ManifestOnly,
+
     # Skip flutter build (use the existing Release bundle).
     [switch]$NoBuild,
 
@@ -163,6 +176,116 @@ $exe = Join-Path $rel 'sourin_spike.exe'
 $appso = Join-Path $rel 'data\app.so'
 $probeDir = Join-Path $root '.probe'
 $outDirAbs = if ([System.IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $root $OutDir }
+
+# ======================================================================
+#  Evidence mode: -OutDir outside .probe
+#
+#  ★ 2026-10-20（round-66）：CS-1 曾自报「真机 56 ✓ / 7 张截图」，但图落在
+#    `.probe/`（被 .gitignore 覆盖 + 每次运行清 stale），跑完就没了 ⇒ 谁也
+#    复核不了。修法：允许把图落到 **git 跟踪的路径**，并在旁边生成
+#    manifest.json 给门禁逐张核 sha256；同时**拒绝**写到被 ignore 的目录，
+#    否则等于又造一个 scratch（= 没修）。
+# ======================================================================
+$probeDirReg = [System.IO.Path]::GetFullPath($probeDir).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+$outFull = [System.IO.Path]::GetFullPath($outDirAbs)
+$outIsProbe = ($outFull.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar).StartsWith($probeDirReg, [System.StringComparison]::OrdinalIgnoreCase)
+
+# 早于 build/launch 的硬失败（此时没有任何我们启动的进程，不需要 Stop-OurProcesses）
+function Fail-Early([string]$msg) {
+    Write-Host ''
+    Write-Host "FAIL (before any build/launch): $msg" -ForegroundColor Red
+    Write-Host ''
+    exit 2
+}
+
+# -OutDir 若落在被 .gitignore 覆盖的路径上 ⇒ 拒绝，并打印**实际命中哪条规则**
+function Assert-OutDirTrackable([string]$dirAbs) {
+    # 注意：本机跑的是 Windows PowerShell 5.1（.NET Framework），**没有**
+    # [System.IO.Path]::GetRelativePath（.NET Core 2.1+ 才有）⇒ 手算相对路径。
+    $rootN = $root.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    $dirN = [System.IO.Path]::GetFullPath($dirAbs)
+    if (-not $dirN.StartsWith($rootN, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Warn "-OutDir 在仓库外（$dirN）：不会被 git 跟踪，复核者仍需手工拷贝"
+        return
+    }
+    $relDir = $dirN.Substring($rootN.Length) -replace '\\', '/'
+    $gi = & git -C $root check-ignore -v --no-index -- $relDir 2>$null
+    if ($LASTEXITCODE -eq 0 -and "$gi".Trim() -ne '') {
+        Fail-Early ("-OutDir 命中 .gitignore ⇒ 拒绝写入（写进去等于又造一个 scratch，复核者拿不到）：`n" +
+                "         dir  : $relDir`n" +
+                "         rule : $($gi.Trim())`n" +
+                "         改用被跟踪的路径，例如 docs/notes/evidence/<round>。")
+    }
+}
+
+# 只读 PNG IHDR 拿宽高（不用 System.Drawing，避免 GDI+ 依赖）
+function Get-PngIhdrSize([string]$path) {
+    try {
+        $b = [System.IO.File]::ReadAllBytes($path)
+        if ($b.Length -lt 24) { return $null }
+        if ($b[0] -ne 0x89 -or $b[1] -ne 0x50 -or $b[2] -ne 0x4E -or $b[3] -ne 0x47) { return $null }
+        $w = ([int]$b[16] -shl 24) -bor ([int]$b[17] -shl 16) -bor ([int]$b[18] -shl 8) -bor [int]$b[19]
+        $h = ([int]$b[20] -shl 24) -bor ([int]$b[21] -shl 16) -bor ([int]$b[22] -shl 8) -bor [int]$b[23]
+        return [pscustomobject]@{ Width = $w; Height = $h }
+    } catch { return $null }
+}
+
+# 写 manifest.json。入参必须是**本次运行产出的条目**（不是目录列表）：
+# 目录里遗留的旧图会因此变成「manifest 里没有这张」的红，而不是被悄悄吸收。
+function Write-ShotManifestJson([string]$dirAbs, $entries) {
+    $commit = "$(& git -C $root rev-parse HEAD 2>$null)".Trim()
+    if ($commit -eq '') { $commit = 'unknown' }
+    $files = @()
+    foreach ($e in $entries) {
+        $sz = Get-PngIhdrSize $e.Path
+        $w = 0; $h = 0
+        if ($null -ne $sz) { $w = $sz.Width; $h = $sz.Height }
+        $sha = (Get-FileHash -LiteralPath $e.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $files += [ordered]@{
+            name      = [System.IO.Path]::GetFileName($e.Path)
+            w         = $w
+            h         = $h
+            bytes     = [long]$e.Bytes
+            sha256    = $sha
+            criterion = [string]$e.Criterion
+        }
+    }
+    $obj = [ordered]@{
+        commit      = $commit
+        generatedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        files       = $files
+    }
+    $target = Join-Path $dirAbs 'manifest.json'
+    # ★ 必须写**无 BOM** 的 UTF-8：PS 5.1 的 `Set-Content -Encoding UTF8` 会带 BOM，
+    #   Dart 的 jsonDecode 见到行首 U+FEFF 直接抛 FormatException ⇒ 门禁会红得莫名其妙。
+    $json = ($obj | ConvertTo-Json -Depth 6)
+    [System.IO.File]::WriteAllText($target, $json, (New-Object System.Text.UTF8Encoding($false)))
+    return $target
+}
+
+if (-not $outIsProbe) { Assert-OutDirTrackable $outDirAbs }
+
+if ($ManifestOnly) {
+    Write-Host ''
+    Write-Host '=== [seal] -ManifestOnly：不 build、不 launch、不碰窗口 ===' -ForegroundColor Cyan
+    if (-not (Test-Path -LiteralPath $outDirAbs)) { Fail-Early "-OutDir '$outDirAbs' 不存在，没有可封存的图" }
+    $pngs = @(Get-ChildItem -LiteralPath $outDirAbs -Filter '*.png' -File | Sort-Object Name)
+    if ($pngs.Count -eq 0) {
+        Fail-Early ("-OutDir '$outDirAbs' 里没有 *.png。拒绝写空 manifest.json —— " +
+                "空清单会让门禁变成「0 张 == 0 条」的假绿。先出图，再回来封存。")
+    }
+    $entries = @($pngs | ForEach-Object { [pscustomobject]@{ Path = $_.FullName; Bytes = $_.Length; Criterion = $Criterion } })
+    $mp = Write-ShotManifestJson $outDirAbs $entries
+    Ok ("manifest.json: $mp  ({0} 张)" -f $pngs.Count)
+    foreach ($e in $entries) {
+        $sz = Get-PngIhdrSize $e.Path
+        $sha16 = (Get-FileHash -LiteralPath $e.Path -Algorithm SHA256).Hash.Substring(0, 16)
+        Info ("{0}  {1} x {2}  {3:N0} B  {4}" -f (Split-Path -Leaf $e.Path), $sz.Width, $sz.Height, $e.Bytes, $sha16)
+    }
+    Write-Host ''
+    Write-Host '  SEALED (no app was launched)' -ForegroundColor Green
+    exit 0
+}
 
 # Processes we started (filled in by the launch step).
 $script:StartedPids = @()
@@ -699,7 +822,7 @@ foreach ($t in $requested) {
 
     # settled candidate = highest phase, then highest k (latest frame in burst)
     $best = $candidates | Sort-Object Phase, K | Select-Object -Last 1
-    $dst = Join-Path $outDirAbs ("{0}.png" -f $t)
+    $dst = Join-Path $outDirAbs ("{0}{1}.png" -f $Prefix, $t)
     Copy-Item -LiteralPath $best.Path -Destination $dst -Force
     $dstLen = (Get-Item $dst).Length
     if ($dstLen -le 0) { $emptyFiles.Add("$t.png (0 bytes after copy)"); continue }
@@ -814,6 +937,24 @@ foreach ($r in $rows) {
 }
 Set-Content -LiteralPath $manifest -Value $lines -Encoding UTF8
 Ok "manifest: $manifest"
+
+# -- 证据模式：额外把本次产出的图 + sha256 写进 manifest.json，
+#    门禁 test/zz_t66_cs1_evidence_manifest_test.dart 逐张核对。
+#    ★ 这里**不删 stale**：证据目录里的旧图归人判断还算不算证据；
+#      它们会让门禁因「manifest 里没有这张」变红，而不是被悄悄吸收。
+if (-not $outIsProbe) {
+    $evEntries = @($rows | ForEach-Object {
+            [pscustomobject]@{ Path = $_.Path; Bytes = $_.Bytes; Criterion = $Criterion }
+        })
+    $evPath = Write-ShotManifestJson $outDirAbs $evEntries
+    Ok "evidence manifest: $evPath ($($evEntries.Count) 张)"
+    $mine = @($evEntries | ForEach-Object { [System.IO.Path]::GetFileName($_.Path) })
+    $extra = @(Get-ChildItem -LiteralPath $outDirAbs -Filter '*.png' -File | Where-Object { $mine -notcontains $_.Name })
+    if ($extra.Count -gt 0) {
+        Warn ("证据目录里有本次没产出的旧图（门禁会因此变红）：" + (($extra | ForEach-Object { $_.Name }) -join ', '))
+        Warn '    （证据模式不自动删 stale —— 旧图还算不算证据由人决定）'
+    }
+}
 
 # ======================================================================
 #  step 11 -- cleanup

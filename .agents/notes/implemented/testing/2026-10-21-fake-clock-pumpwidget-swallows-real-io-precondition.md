@@ -210,12 +210,9 @@ await t.runAsync(() async {
 ★ 注入 Q 的意义：它证明「注入 loader」与「放进 runAsync」是**两个独立必要条件**，
 少任何一个都红。这也解释了为什么只补 loader 不够。
 
-**何时该翻案**：同本篇正文末尾那条 —— 若将来 `flutter_test` 能驱动真实 Future，
-`runAsync` + 轮询可换成更干净的写法。
-届时 `t75` 与 `t80a` 两处要一起换（判据：两处都不再需要 `runAsync` 且注入仍能红）。
-
 **何时该翻案**：若将来 `flutter_test` 提供了「fake clock + 真实 IO 混合」
 的标准做法（例如 `tester.pumpAndSettle` 能驱动真实 Future），
 `runAsync` + 轮询这套可以换成更干净的写法。
 判据：升级 Flutter 后重跑本文件的注入①，若注入①仍能红且不需要 `runAsync`，
 就换掉。
+届时 **`t75` 与 `t80a` 两处要一起换**（判据：两处都不再需要 `runAsync` 且各自注入仍能红）。

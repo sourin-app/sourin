@@ -66,8 +66,16 @@ skip 弹窗是**唯一**显式传 `maxHeight` 的（740），
 > **收拢 11 处** = `lib/` 里 `AppGlassDialog(` 的构造点（除 `lib/design/` 自身与
 > `lib/t105_r4_dialogs_probe.dart` 探针）；**豁免 15 处** = 门禁 `_siteExemptions`
 > 的 15 条键，与代码里 15 处裸 `AlertDialog(` / `Dialog(` 构造点 **1:1**。
+> ★ **数与处不可互换**（2026-10-20 二次复核，逐个 `grep -rn "AppGlassDialog(" lib` 点的）
 > 同一文件里多个站点的（`detail_page` 3、`settings_page` 4、`backup_panel` 3、
 > `theme_page` 2、`sync_panel` 3）**一律按处算**。
+>
+> 两个口径别混：全仓**按处**是收拢 11 处（`grep -rn "AppGlassDialog(" lib` 去掉
+> `lib/design/` 自身与探针后的 11 个构造点），**按文件**是 9 个文件；
+> 豁免那侧同理 —— 15 条键落在 **8 个文件**里（`settings_page` 4、`backup_panel` 3、
+> `sync_panel` 2、`theme_page` 2，其余 4 个文件各 1）。所以「11 处 / 9 文件」「15 处 / 8 文件」
+> 都得标清楚，**不许拿「处」和「文件」对账**。（上一版本的「收 7 / 豁免 9」恰好
+> 是「7 个站点 / 7 个文件」的巧合，看着像文件数，其实仍是站点数。）
 
 第一步只收了 3 个弹窗（`update_dialog` / `skip_marker` / `composer`），
 全仓其余站点仍在各写各的。第二步的判据换成
@@ -421,3 +429,27 @@ c) 垫层色改 Theme.of(...).colorScheme.surfaceContainerHighest
 `AppPalette.light.mutedForeground = #737373` 对**默认**页面底 `#EEF0F6` 只有
 4.16:1（内置主题包都没用这个组合）。这是**既有 token 问题**，不在弹窗外壳范围里，
 登记在此供裁决；**不为了门禁绿去改别人的主题包色值**。
+
+**R4 圆角（2026-10-20）：两个壳都硬编码 20，§3.5 却写 `Radii.rLg`（=22）**
+
+```text
+lib/design/widgets/app_glass_dialog.dart   LiquidRoundedSuperellipse(borderRadius: 20)
+lib/ui/widgets/app_dialog_shell.dart:363   LiquidRoundedRectangle(borderRadius: 20)
+lib/ui/tokens.dart:98/107                  Radii.lg = 22 / Radii.rLg = all(circular(22))
+```
+`AppDialogShell` 更隐蔽：同一个壳里有两层圆角 —— 内层 Material 是
+`RoundedRectangleBorder(borderRadius: Radii.rLg)`（22），外层玻璃是 `20`。而玻璃档下
+内层 Material 的 `color` 已透明、`side` 已 `none`、`clipBehavior` 默认 `Clip.none`
+⇒ **真正被看见的一直是 20**，§3.5 的「圆角 Radii.rLg」在玻璃档上名不副实。
+
+修法：两处都改成引 token（`Radii.lg`），不写字面量 —— `§3.5` 的口径是
+「圆角一律 `Radii.*`，禁硬编码」，引 token 才能在下一次调 `Radii.lg` 时自动跟上。
+
+判据（第 ⑩ 组，**读 widget 属性、不看像素**）：`GlassContainer.shape.borderRadius`
+== `Radii.lg`，两个壳各一条；断言写 `Radii.lg` **不写 22**（写 22 就等于把 token
+重新硬编码进测试）。
+
+```text
+注入：两处同时改回字面量 `20` ⇒ +0 -2（Expected: <22.0> / Actual: <20.0>）
+      还原后 sha256 前后一致
+```

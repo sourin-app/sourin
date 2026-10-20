@@ -229,6 +229,41 @@ class SourinCoreException implements Exception {
   String toString() => 'SourinCoreException($kind): $message';
 }
 
+/// 把异常收口成**一句用户能看的文案**（界面唯一入口）
+///
+/// # 为什么需要它
+///
+/// `SourinCoreException.toString()` 是给**日志/栈**用的 —— 它带着宿主类名：
+///
+/// ```text
+/// SourinCoreException(other): 口令不正确（或这个备份包已被改动），登录态没有导入
+/// └──────────┬─────────────┘
+///      ①宿主类名（用户不知道这是什么）
+/// ```
+///
+/// 而界面一度到处写 `_err = '$e'`，把这整串原样塞进弹窗 ⇒ 用户先读到一串
+/// 自己看不懂的英文，真原因被挤到后面。[displayMessage] 早就剥掉了 ①，
+/// 但**没人调用它**（全仓零调用）——「accessor 对了」不等于「界面用上了」。
+///
+/// # 约定
+///
+/// · [SourinCoreException] ⇒ [SourinCoreException.displayMessage]（只剩插件原文）
+/// · 其它异常（文件系统、解析、平台通道…）⇒ 原始串**只进日志**，界面拿到
+///   一句 [fallback]。用户看不懂 `FileSystemException(..., errno = 2)`，
+///   而排障需要它留在日志里 —— 两边各取所需。
+///
+/// ⇒ 界面代码**不许**再写 `'$e'` / `'${e}'` / `e.toString()` 赋给用户可见字段。
+///    门禁见 `test/zz_t66_user_error_text_gate_test.dart`。
+String userErrorText(Object error, {String fallback = '操作没有完成，请稍后重试'}) {
+  if (error is SourinCoreException) {
+    final m = error.displayMessage.trim();
+    if (m.isNotEmpty) return m;
+  }
+  // 原始串只进日志：排障时要看类名与参数，用户不需要。
+  debugPrint('[user-error] ${error.runtimeType}: $error');
+  return fallback;
+}
+
 /// 核心的 Dart 门面
 class SourinCore {
   SourinCore._();

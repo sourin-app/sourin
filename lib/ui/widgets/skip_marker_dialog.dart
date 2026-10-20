@@ -153,6 +153,7 @@ import 'app_dialog_shell.dart';
 import 'app_loading.dart';
 import 'skip_timeline.dart';
 import '../../ui/app_palette.dart';
+import '../../core/ffi.dart';
 import '../../design/icons/app_icons.dart';
 import 'app_toast.dart';
 
@@ -818,7 +819,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
       setState(() {
         _loading = false;
         _loadState = _LoadState.failed;
-        _loadError = '$e';
+        _loadError = userErrorText(e, fallback: '读取跳过点失败，请稍后重试');
       });
       debugPrint('[SKIPDLG] 读跳过点失败: $e');
       // 读失败也要出画面 —— 否则用户看到的是"打不开的黑框"
@@ -1035,7 +1036,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
       debugPrint('[SKIPDLG] 独立预览播放器已启动（与主播放器无关）');
     } catch (e) {
       if (!mounted) return;
-      setState(() => _previewError = '$e');
+      setState(() => _previewError = userErrorText(e, fallback: '预览无法启动'));
       debugPrint('[SKIPDLG] 预览启动失败: $e');
     }
   }
@@ -1467,9 +1468,9 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
       if (!mounted) return;
       setState(() {
         _saving = false;
-        _saveError = '$e';
+        _saveError = userErrorText(e, fallback: '保存失败，请稍后重试');
       });
-      _toast('保存失败：$e');
+      _toast('保存失败：${userErrorText(e, fallback: '请稍后重试')}');
     }
   }
 
@@ -1533,10 +1534,10 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
       if (!mounted) return;
       setState(() {
         _resetting = false;
-        _saveError = '重置失败：$e';
+        _saveError = '重置失败：${userErrorText(e, fallback: '请稍后重试')}';
       });
       debugPrint('[SKIPDLG] 清除失败: $e');
-      _toast('重置失败：$e');
+      _toast('重置失败：${userErrorText(e, fallback: '请稍后重试')}');
       // ★ 同上：以服务器真实状态为准
       _loadState = _LoadState.loading;
       await _loadExisting();

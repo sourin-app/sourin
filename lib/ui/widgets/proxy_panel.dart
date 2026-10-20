@@ -88,6 +88,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/sourin_api.dart';
+import '../../core/ffi.dart';
 import '../tokens.dart';
 import '../../ui/app_palette.dart';
 import '../../design/icons/app_icons.dart';
@@ -219,7 +220,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _err = '$e';
+        _err = userErrorText(e, fallback: '读取代理设置失败，请稍后重试');
         _loading = false;
       });
     }
@@ -271,7 +272,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _err = '保存代理失败：$e');
+      setState(() => _err = '保存代理失败：${userErrorText(e, fallback: '请稍后重试')}');
     }
   }
 
@@ -291,7 +292,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _err = '保存密码失败：$e');
+      setState(() => _err = '保存密码失败：${userErrorText(e, fallback: '请稍后重试')}');
     }
   }
 
@@ -309,7 +310,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _err = '清除失败：$e');
+      setState(() => _err = '清除失败：${userErrorText(e, fallback: '请稍后重试')}');
     }
   }
 
@@ -331,7 +332,9 @@ class _ProxyPanelState extends State<ProxyPanel> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _testResult = ProxyTestResult(ok: false, message: '$e');
+        _testResult = ProxyTestResult(
+            ok: false,
+            message: userErrorText(e, fallback: '没有连上这个代理，请检查地址与端口'));
         _testing = false;
       });
     }

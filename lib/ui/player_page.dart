@@ -6214,7 +6214,7 @@ class _PlayerPageState extends State<PlayerPage>
     } catch (e) {
       AppLog.write('DL', '失败：$e');
       if (!mounted) return;
-      setState(() => _clipDownloadError = '$e');
+      setState(() => _clipDownloadError = userErrorText(e, fallback: '下载失败，请稍后重试'));
       _flash('下载失败');
     } finally {
       if (mounted) {

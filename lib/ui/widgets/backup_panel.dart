@@ -142,6 +142,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/app_log.dart';
 import '../../core/models.dart';
+import '../../core/ffi.dart';
 import '../../core/sourin_api.dart';
 import '../settings/export_dir.dart';
 import '../tokens.dart';
@@ -320,7 +321,7 @@ class _BackupPanelState extends State<BackupPanel> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _err = '$e';
+        _err = userErrorText(e, fallback: '读取备份信息失败，请稍后重试');
         _loading = false;
       });
     }
@@ -502,7 +503,7 @@ class _BackupPanelState extends State<BackupPanel> {
       _log('导出：失败（${sw.elapsedMilliseconds} ms）$e');
       if (!mounted) return;
       setState(() {
-        _err = '$e';
+        _err = userErrorText(e, fallback: '导出失败，请稍后重试');
         _busy = '';
       });
     }
@@ -707,7 +708,7 @@ class _BackupPanelState extends State<BackupPanel> {
       _log('导入：读取失败（${sw.elapsedMilliseconds} ms）$e');
       if (!mounted) return;
       setState(() {
-        _err = '$e';
+        _err = userErrorText(e, fallback: '读取这个备份文件失败，换一个文件再试');
         _busy = '';
       });
     }
@@ -791,7 +792,7 @@ class _BackupPanelState extends State<BackupPanel> {
       _log('导入：失败（${sw.elapsedMilliseconds} ms）$e');
       if (!mounted) return;
       setState(() {
-        _err = '$e';
+        _err = userErrorText(e, fallback: '导入失败，请稍后重试');
         _busy = '';
       });
     }

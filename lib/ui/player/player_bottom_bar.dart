@@ -34,6 +34,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/danmaku.dart' show DanmakuConfig;
 import '../../core/models.dart' show StreamCandidate;
+import '../../core/ffi.dart';
 import '../tokens.dart';
 import 'player_more_menu.dart';
 import 'player_popover.dart';
@@ -2354,7 +2355,7 @@ class _DanmakuSendInlineState extends State<DanmakuSendInline> {
       if (!mounted) return;
       setState(() {
         _sending = false;
-        _error = '发送失败：$e';
+        _error = '发送失败：${userErrorText(e, fallback: '请稍后重试')}';
       });
     }
   }

@@ -29,8 +29,15 @@
 # ① 数据目录必须解析到 .probe\round66_cs1\ 下，否则立刻退出 —— 探针会**写**
 #    （导出包、删/放一份假凭据文件），指到真实数据目录就是把用户的收藏/进度
 #    拿去陪跑。探针自己也有一道同样的闸（DATA_DIR_OVERRIDE 不含 round66_cs1 ⇒ exit(3)）。
-# ② 产物必须比源码新。2026-10-20 现场就踩过：build\ 里躺着 10-18 的 exe，
-#    跑起来一切"正常"，出的是两天前的像素 ⇒ 证据全废，且不会报错。
+# ② 产物必须是**这一份源码**编出来的 —— 判据看内容，不看 mtime：
+#      · `data\app.so` 的 sha256 与本脚本上次为这个入口构建时记下的一致（`-NoBuild` 时比）；
+#      · build 退出码为 0、`data\app.so` 与 `.exe` 都存在。
+#    为什么不用 mtime：runner `.exe` 只在 C++ 侧变化时重链，mtime 长期停在 2026-10-18，
+#    拿它跟探针源码比必然假红；`data\app.so` 又走内容寻址的增量编译，改注释后真编一次
+#    也是字节不变、mtime 不动（2026-10-20 实测：源码 18:54:13 比 app.so 18:19:22 新，
+#    而那次编译成功且耗时 26 s）。真事故仍是 2026-10-20 那次「build\ 里躺着 10-18 的
+#    exe」——它由 sha 比对挡住：别的入口（t105/t106/e2e）编过同一个 bundle 后 payload
+#    sha 会变，`-NoBuild` 直接拒绝跑，不会拿别人的二进制冒充 CS-1 证据。
 # ③ GUI 子系统的 exe **没有 stdout**。日志可能一个字都重定向不出来，
 #    所以判据只认探针自己写的三个文件：
 #      <数据目录>\cs1-report.txt  逐条 ✓/✗ + `---- 结果：OK=n BAD=m`
@@ -43,7 +50,8 @@
 #
 # ```text
 # 探针 `lib/t107_cs1_flow_probe.dart` 是**未提交**资产（untracked），
-# `-NoBuild` 时若找不到它或产物过期，本脚本直接退出 —— 不给"看起来跑过了"的机会。
+# `-NoBuild` 时若找不到它、或 `data\app.so` 的 sha 与上次 CS-1 构建记录不一致，
+# 本脚本直接退出 —— 不给"看起来跑过了"的机会。
 # ```
 
 [CmdletBinding()]
@@ -61,15 +69,49 @@ $exe      = Join-Path $root 'build\windows\x64\runner\Release\sourin_spike.exe'
 $probeRoot = Join-Path $root '.probe\round66_cs1'
 $dataDir  = Join-Path $probeRoot $Run
 $stamp    = Join-Path $probeRoot 'last_build_dir.txt'
+$appSo    = Join-Path $root 'build\windows\x64\runner\Release\data\app.so'
+$payloadStamp = Join-Path $probeRoot 'last_build_payload.txt'
+
+function Get-PayloadSha {
+    if (-not (Test-Path $appSo)) { return '' }
+    return (Get-FileHash -LiteralPath $appSo -Algorithm SHA256).Hash.ToLowerInvariant()
+}
 
 function Die([string]$msg) {
     Write-Host "ERROR: $msg" -ForegroundColor Red
     exit 2
 }
 
-# ── 硬闸 ①：路径必须是隔离目录 ─────────────────────────────────────────
+# ── 硬闸 ①：路径必须是隔离目录 ─────────────────────────
+#
+# ★★★ 判据必须用**解析后**的绝对路径，不能用拼出来的字符串。
+#
+# # 为什么（2026-10-20 实测的真漏洞，不是猜的）
+#
+# 原判据是 `$dataDir -notmatch 'round66_cs1'`，而 `$dataDir` 是
+# `Join-Path $probeRoot $Run` —— **未解析**。于是：
+# ```text
+# -Run '\\\\evil-dir'
+#   ⇒ $dataDir = D:\<repo>\.probe\round66_cs1\..\..\..\evil-dir
+#   ⇒ 字符串里**必然含** round66_cs1（它写在 probeRoot 里）
+#   ⇒ 闸① 永远放行
+# ```
+# 实测：穿越到 `...app.sourin.player` 时，只有**第二条**（关键词）挡住了它；
+# 任何**不含**该关键词的穿越路径会一路放行。
+#
+# ⇒ 用 `GetFullPath` 解析成绝对路径再判，并额外验一次它真的在 probeRoot 之下。
+$dataDirRaw   = $dataDir
+$probeRootAbs = [System.IO.Path]::GetFullPath($probeRoot)
+$dataDir      = [System.IO.Path]::GetFullPath($dataDirRaw)
+
 if ($dataDir -notmatch 'round66_cs1') {
     Die "数据目录不在 .probe\round66_cs1 下：$dataDir"
+}
+# ★ 必须**真的**在 probeRoot 之下（防解析后跳到兄弟/上级目录）
+if (-not $dataDir.StartsWith($probeRootAbs + [System.IO.Path]::DirectorySeparatorChar,
+                            [System.StringComparison]::OrdinalIgnoreCase)) {
+    Die ("数据目录解析后不在 .probe\round66_cs1 之下 —— 拒绝运行：`n" +
+         "  传入 : $dataDirRaw`n  解析 : $dataDir`n  应以 : $probeRootAbs\ 开头")
 }
 if ($dataDir -match 'app\.sourin\.player' -or $dataDir -match [regex]::Escape($env:APPDATA)) {
     Die "数据目录像是真实用户数据目录，拒绝运行：$dataDir"
@@ -106,28 +148,76 @@ if (-not $NoBuild) {
         Pop-Location
     }
     if ($buildExit -ne 0) { Die "flutter build 失败（exit=$buildExit）" }
+    # 记录"这份入口编出来的 payload 长什么样"，供 -NoBuild 判内容用。
+    $payloadSha = Get-PayloadSha
+    if ($payloadSha -eq '') { Die "构建成功但找不到 payload：$appSo" }
+    @(
+        ("sha256=$payloadSha"),
+        ("bytes=" + (Get-Item -LiteralPath $appSo).Length),
+        ("entry=lib/t107_cs1_flow_probe.dart"),
+        ("dataDir=$dataDir"),
+        ("builtAt=" + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+    ) | Set-Content -LiteralPath $payloadStamp -Encoding UTF8
+    Write-Host "   payload sha256=$($payloadSha.Substring(0,16))…  ($appSo)" -ForegroundColor Cyan
 } else {
     if (-not (Test-Path $stamp)) { Die "-NoBuild 需要先跑过一次带构建的运行（缺 $stamp）" }
     $dataDir = (Get-Content $stamp -Raw).Trim()
+    # ★ 与 -Run 同一条判据：解析后再验，防 stamp 被手工写成一个穿越路径
+    $dataDir = [System.IO.Path]::GetFullPath($dataDir)
     if ($dataDir -notmatch 'round66_cs1') { Die "记录的数据目录不合法：$dataDir" }
+    if (-not $dataDir.StartsWith($probeRootAbs + [System.IO.Path]::DirectorySeparatorChar,
+                                 [System.StringComparison]::OrdinalIgnoreCase)) {
+        Die "记录的数据目录解析后不在 .probe\round66_cs1 之下：$dataDir"
+    }
     if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Force -Path $dataDir | Out-Null }
     Write-Host "== 复用上次构建的数据目录：$dataDir" -ForegroundColor Yellow
 }
 
-# ── 硬闸 ②：产物必须存在且比源码新 ──────────────────────────────────────
-if (-not (Test-Path $exe)) { Die "找不到产物：$exe" }
-$exeTime   = (Get-Item $exe).LastWriteTime
-$srcTime   = (Get-Item $probeSrc).LastWriteTime
-if ($exeTime -lt $srcTime) {
-    Die ("产物比源码旧 ⇒ 跑出来的是旧代码，证据无效。`n" +
-         "  exe : $exeTime`n  源码: $srcTime`n  去掉 -NoBuild 重新编。")
+# ── 硬闸 ②：产物必须是这一份源码编的（判内容，不判 mtime）────────────────
+if (-not (Test-Path $exe))   { Die "找不到产物：$exe" }
+if (-not (Test-Path $appSo)) { Die "找不到 payload：$appSo（bundle 不完整）" }
+$payloadSha = Get-PayloadSha
+if ($NoBuild) {
+    if (-not (Test-Path $payloadStamp)) {
+        Die ("-NoBuild 需要先有一次带构建的运行（缺 $payloadStamp）——`n" +
+             "  没有上次构建的 payload sha，就无法证明现在 build\ 里躺的是 CS-1 的二进制。")
+    }
+    $recorded = ''
+    foreach ($ln in (Get-Content -LiteralPath $payloadStamp -Encoding UTF8)) {
+        if ($ln -match '^sha256=([0-9a-f]{64})$') { $recorded = $matches[1] }
+    }
+    if ($recorded -eq '') { Die "payload 记录文件里没有 sha256 行：$payloadStamp" }
+    if ($recorded -ne $payloadSha) {
+        Die ("build\ 里的 payload 不是 CS-1 入口编的（内容已变）：`n" +
+             "  记录 : $recorded`n  当前 : $payloadSha`n" +
+             "  别人（t105/t106/e2e/产品）编过同一个 bundle ⇒ 去掉 -NoBuild 重新编。")
+    }
+    Write-Host "   payload sha256=$($payloadSha.Substring(0,16))…  与上次 CS-1 构建一致 ✓" -ForegroundColor Green
+} else {
+    Write-Host "   payload sha256=$($payloadSha.Substring(0,16))…  （本次构建已写记录）" -ForegroundColor Cyan
+}
+$soTime  = (Get-Item -LiteralPath $appSo).LastWriteTime
+$srcTime = (Get-Item -LiteralPath $probeSrc).LastWriteTime
+if ($soTime -lt $srcTime) {
+    Write-Host ("WARN: app.so({0}) 比源码({1}) 旧 —— 增量编译可能只是 no-op；" -f $soTime, $srcTime) -ForegroundColor Yellow
+    Write-Host "      判据仍是 payload sha + build 退出码，改过内容请去掉 -NoBuild 重编。" -ForegroundColor Yellow
 }
 Write-Host "== 产物 $exe" -ForegroundColor Cyan
-Write-Host "   exe=$exeTime  源码=$srcTime  (exe 不旧于源码 ✓)"
+Write-Host "   app.so=$soTime  源码=$srcTime  (内容判据见上)"
 
 # ── 跑 ──────────────────────────────────────────────────────────────────
 $outLog = Join-Path $dataDir 'stdout.txt'
 $errLog = Join-Path $dataDir 'stderr.txt'
+# ★ 本机已知问题（2026-10-20，不是脚本逻辑错，也不计划修）：
+#   本机环境同时存在 `NO_PROXY` 与 `no_proxy`（Windows 环境变量**不区分大小写**）。
+#   PS 5.1 把 `env:` 驱动建成字典时撞键，直接抛：
+#     Item has already been added. Key in dictionary: 'NO_PROXY' Key being added: 'no_proxy'
+#   ⇒ `Start-Process`（它要快照环境块）在本机改用不了，连 `Get-ChildItem env:` 都会失败。
+#   ⇒ **不修**：这是本机环境特有的，换机器不会复现；
+#     而改成 `cmd /c` 会丢掉 PID 管理能力（那正是这里要用 Start-Process 的原因：
+#     超时后要能 Kill 它）。
+#   临时绕过（验证用，不锹判据）：在 build 目录下直接跑 exe，
+#     然后读同样三个报告文件。
 Write-Host "== 启动真窗口（$TimeoutSec s 超时；本脚本不夺焦点、不注入输入）==" -ForegroundColor Cyan
 $proc = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) `
     -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog

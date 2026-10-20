@@ -108,6 +108,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
+import '../../core/ffi.dart';
 import 'overlay_motion.dart';
 import 'app_loading.dart';
 import 'qr_view.dart';
@@ -511,7 +512,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _err = '$e';
+        _err = userErrorText(e, fallback: '读取登录方式失败，请稍后重试');
         _loading = false;
       });
     }
@@ -673,7 +674,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _err = '登录失败：$e';
+        _err = '登录失败：${userErrorText(e, fallback: '请稍后重试')}';
         _busy = false;
       });
     }
@@ -714,7 +715,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _err = '登出失败：$e';
+        _err = '登出失败：${userErrorText(e, fallback: '请稍后重试')}';
         _busy = false;
       });
     }

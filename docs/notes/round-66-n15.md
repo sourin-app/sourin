@@ -468,3 +468,159 @@ _danmakuCanSend 只在 _loadDanmakuSendCapability() 里赋值：
   要它拦就必须进 CI 的 native 阶段。
 · 夹具用的是 demo 插件的改写版，改的是能力位声明；插件解析/归一化走的是同一条生产路径。
 ```
+
+## 9. t66 全量门禁批跑（2026-10-20 17:52–18:21，只读，未改任何产品码）
+
+跑法（逐文件、一律 `--concurrency=1`、后台 + 日志轮询，避免撞 `bin/cache/lockfile`）：
+
+```bash
+export PATH="/c/Users/iuuuuuuuu/flutter/bin:$PATH"
+for f in $(ls test/zz_t66_*_test.dart; echo test/t98_no_site_names_test.dart;
+           echo test/t95_sync_panel_ui_test.dart; echo test/zz_t12_cache_page_probe_test.dart); do
+  timeout 600 flutter test "$f" --concurrency=1 > /d/tmp/n15b/$(basename "$f" .dart).log 2>&1
+done
+```
+
+范围：`test/zz_t66_*_test.dart` 96 个（glob 得出）+ `t98` / `t95` / `zz_t12` = **99 个文件**。
+⭐ 结论：**97 绿 / 2 红**，合计 `894` 通过、`6` 失败、`6` 跳过（跳过全是 native-media 的既有默认跳过，**不是新问题**）。
+
+### 9.1 两个红（都**不是**我的文件，我没有改它们）
+
+```text
+① test/zz_t66_convergent_tile_gate_test.dart        EXIT=1   +3 -1
+   ★★★ wrapper 的 child 依赖必须收敛追踪，不许静默当干净 [E]
+   Expected: empty / Actual: { … }
+   原始读数：白名单命中 2 处；GONE 6 条 + ★NEW 6 条，形态逐条相同：
+     GONE lib/ui/player_page.dart:21282 / 21304 / 21485 / 21507（ColoredBox→Material，ListTile 在 Material 之下）
+     NEW  lib/ui/player_page.dart:21307 / 21329 / 21510 / 21532（同形态）
+     NEW  lib/ui/settings/emby_page.dart:984 / 1283（实际在 986 / 1285，差 2 行）
+   归因（按该门禁自己写在文件里的判定规则）：
+     规则原文「报 GONE 一批 + 新增一批，且形态相同 ⇒ 只是漂移，更新行号」
+     ⇒ 本批正是 6 GONE + 6 NEW 同形态；且 65e1694（R6-b）对 player_page.dart 是 +67/−42
+     ⇒ 行号被推走。**但 emby_page.dart 那一对为什么漂 2 行我没查到根因**（该文件近期没有
+       我在 git log 里能对上的一次提交），所以只报读数、不下"纯漂移"的定论。
+
+② test/zz_t66_cs1_evidence_manifest_test.dart       EXIT=1   +3 -5
+   ★★★ 证据缺失：docs/notes/evidence/round-66-cs1/manifest.json 不存在。
+   连带 ①目录 PNG 数 == manifest 条目数 / ②sha256 / ③尺寸字节 / ④criterion 覆盖 四条全红（同因）。
+   目录实况：docs/notes/evidence/round-66-cs1/ 存在但没有 manifest.json。
+   这是 aeaa3ea（CS-1 证据 manifest 门禁）自己的"先出图再封存"前置未满足 ⇒ 需要出图的人补，
+   不是测试写错。重跑命令门禁自己给了：
+     pwsh -NoProfile -File tools/e2e_shots.ps1 -OutDir docs/notes/evidence/round-66-cs1 -ManifestOnly -Criterion "<这一张证明什么>"
+```
+
+### 9.2 逐文件读数（99 行，可直接复核）
+
+| 文件 | 通过 | 失败 | skip | EXIT | 耗时 | 备注 |
+|---|---|---|---|---|---|---|
+| `t95_sync_panel_ui_test.dart` | 18 | 0 | 0 | 0 | 22s |  |
+| `t98_no_site_names_test.dart` | 8 | 0 | 0 | 0 | 21s |  |
+| `zz_t12_cache_page_probe_test.dart` | 15 | 0 | 0 | 0 | 48s |  |
+| `zz_t66_app_colors_test.dart` | 15 | 0 | 0 | 0 | 15s |  |
+| `zz_t66_app_inline_spinner_test.dart` | 5 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_cache_window_test.dart` | 7 | 0 | 0 | 0 | 10s |  |
+| `zz_t66_convergent_tile_gate_test.dart` | 3 | 1 | 0 | 1 | 17s | ★红 |
+| `zz_t66_cs1_credentials_gate_test.dart` | 23 | 0 | 0 | 0 | 20s |  |
+| `zz_t66_cs1_evidence_manifest_test.dart` | 3 | 5 | 0 | 1 | 12s | ★红 |
+| `zz_t66_cs1_export_import_e2e_test.dart` | 24 | 0 | 0 | 0 | 12s |  |
+| `zz_t66_cs1_gitignore_guard_test.dart` | 10 | 0 | 0 | 0 | 14s |  |
+| `zz_t66_cs1_no_markdown_leak_test.dart` | 7 | 0 | 0 | 0 | 19s |  |
+| `zz_t66_cs1_render_point_uniqueness_test.dart` | 8 | 0 | 0 | 0 | 11s |  |
+| `zz_t66_cs1_ui_flow_test.dart` | 4 | 0 | 0 | 0 | 38s |  |
+| `zz_t66_dan_asterisk_gate_test.dart` | 10 | 0 | 0 | 0 | 14s |  |
+| `zz_t66_danmaku_bili_aggregate_gate_test.dart` | 7 | 0 | 0 | 0 | 12s |  |
+| `zz_t66_danmaku_glass_test.dart` | 9 | 0 | 0 | 0 | 14s |  |
+| `zz_t66_danmaku_panel_semantics_test.dart` | 15 | 0 | 0 | 0 | 17s |  |
+| `zz_t66_danmaku_proxy_a11y_test.dart` | 4 | 0 | 0 | 0 | 14s |  |
+| `zz_t66_danmaku_proxy_https_test.dart` | 3 | 0 | 0 | 0 | 16s |  |
+| `zz_t66_danmaku_proxy_req_test.dart` | 2 | 0 | 0 | 0 | 15s |  |
+| `zz_t66_danmaku_proxy_test.dart` | 10 | 0 | 0 | 0 | 11s |  |
+| `zz_t66_danmaku_send_predicate_test.dart` | 0 | 0 | 1 | 0 | 6s | 本轮新增（真树谓词） |
+| `zz_t66_danmaku_shots_test.dart` | 0 | 0 | 1 | 0 | 7s | 默认 skip（native-media） |
+| `zz_t66_danmaku_startup_gate_test.dart` | 6 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_data_manage_md_review_test.dart` | 9 | 0 | 0 | 0 | 11s |  |
+| `zz_t66_dialog_no_passthrough_test.dart` | 6 | 0 | 0 | 0 | 11s |  |
+| `zz_t66_e2e_shots_survivor_test.dart` | 6 | 0 | 0 | 0 | 11s |  |
+| `zz_t66_glass_detail_icon_test.dart` | 13 | 0 | 0 | 0 | 15s |  |
+| `zz_t66_glass_detail_outlined_test.dart` | 15 | 0 | 0 | 0 | 15s |  |
+| `zz_t66_glass_detail_test.dart` | 10 | 0 | 0 | 0 | 15s |  |
+| `zz_t66_glass_dialog_test.dart` | 33 | 0 | 0 | 0 | 19s |  |
+| `zz_t66_glass_follow_test.dart` | 13 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_glass_home_test.dart` | 5 | 0 | 0 | 0 | 12s |  |
+| `zz_t66_glass_live_test.dart` | 4 | 0 | 0 | 0 | 22s |  |
+| `zz_t66_glass_toast_test.dart` | 10 | 0 | 0 | 0 | 15s |  |
+| `zz_t66_image_downscale_test.dart` | 5 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_layout_home_test.dart` | 10 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_live_avail_states_test.dart` | 23 | 0 | 0 | 0 | 12s |  |
+| `zz_t66_live_availability_cache_test.dart` | 26 | 0 | 0 | 0 | 14s |  |
+| `zz_t66_live_cache_scenarios_test.dart` | 4 | 0 | 0 | 0 | 12s |  |
+| `zz_t66_live_embed_bounds_test.dart` | 13 | 0 | 0 | 0 | 19s |  |
+| `zz_t66_live_filterbar_test.dart` | 5 | 0 | 0 | 0 | 16s |  |
+| `zz_t66_live_mirror_test.dart` | 6 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_live_pause_intent_test.dart` | 17 | 0 | 0 | 0 | 14s |  |
+| `zz_t66_live_probe_delay_test.dart` | 6 | 0 | 0 | 0 | 11s |  |
+| `zz_t66_login_poll_continue_test.dart` | 6 | 0 | 0 | 0 | 9s |  |
+| `zz_t66_login_poll_text_test.dart` | 13 | 0 | 0 | 0 | 9s |  |
+| `zz_t66_loopback_regex_review_test.dart` | 27 | 0 | 0 | 0 | 9s |  |
+| `zz_t66_markdown_audit_test.dart` | 2 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_markdown_bold_support_test.dart` | 6 | 0 | 0 | 0 | 11s |  |
+| `zz_t66_material_localizations_test.dart` | 4 | 0 | 0 | 0 | 11s |  |
+| `zz_t66_md_gate_test.dart` | 5 | 0 | 0 | 0 | 17s |  |
+| `zz_t66_mpv_cache_ui_test.dart` | 5 | 0 | 0 | 0 | 19s |  |
+| `zz_t66_n11_bottombar_test.dart` | 6 | 0 | 0 | 0 | 25s |  |
+| `zz_t66_no_autobind_gate_test.dart` | 3 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_playback_classify_http_test.dart` | 12 | 0 | 0 | 0 | 11s |  |
+| `zz_t66_playback_page_asterisk_gate_test.dart` | 7 | 0 | 0 | 0 | 33s |  |
+| `zz_t66_player_jank_test.dart` | 7 | 0 | 0 | 0 | 28s |  |
+| `zz_t66_prefetch_yield_test.dart` | 7 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_probe_not_in_product_test.dart` | 3 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_r1_danmaku_chip_edge_test.dart` | 6 | 0 | 0 | 0 | 16s |  |
+| `zz_t66_r1_dynamic_backdrop_variance_test.dart` | 3 | 0 | 0 | 0 | 12s |  |
+| `zz_t66_r1_three_way_compare_test.dart` | 1 | 0 | 0 | 0 | 17s |  |
+| `zz_t66_r2_attribution_review_test.dart` | 15 | 0 | 0 | 0 | 14s |  |
+| `zz_t66_r3_dns_hijack_test.dart` | 14 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_r3_forged_cost_test.dart` | 7 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_r3_info_triple_test.dart` | 10 | 0 | 0 | 0 | 17s |  |
+| `zz_t66_r3_multi_source_test.dart` | 11 | 0 | 0 | 0 | 19s |  |
+| `zz_t66_r3_pixel_contrast_test.dart` | 7 | 0 | 0 | 0 | 15s |  |
+| `zz_t66_r3_probe_truth_test.dart` | 32 | 0 | 0 | 0 | 19s |  |
+| `zz_t66_r3_sheet_guard_coverage_test.dart` | 8 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_r3_wiring_test.dart` | 13 | 0 | 0 | 0 | 19s |  |
+| `zz_t66_r4_dialog_consistency_test.dart` | 13 | 0 | 0 | 0 | 25s |  |
+| `zz_t66_r5_live_mute_default_test.dart` | 1 | 0 | 0 | 0 | 14s |  |
+| `zz_t66_r5_player_no_overlap_test.dart` | 8 | 0 | 0 | 0 | 9s |  |
+| `zz_t66_r6_live_controls_test.dart` | 10 | 0 | 0 | 0 | 17s |  |
+| `zz_t66_r6b_live_toggle_test.dart` | 6 | 0 | 2 | 0 | 14s | 默认 skip（native-media） |
+| `zz_t66_r7_material_audit_test.dart` | 17 | 0 | 0 | 0 | 14s |  |
+| `zz_t66_r8_cache_more_visible_test.dart` | 5 | 0 | 0 | 0 | 33s |  |
+| `zz_t66_r8_sticky_bit_review_test.dart` | 10 | 0 | 0 | 0 | 10s |  |
+| `zz_t66_raw_deflate_test.dart` | 7 | 0 | 0 | 0 | 9s |  |
+| `zz_t66_scroll_behavior_gate_test.dart` | 4 | 0 | 0 | 0 | 9s |  |
+| `zz_t66_seek_yield_coverage_test.dart` | 4 | 0 | 0 | 0 | 10s |  |
+| `zz_t66_selfaudit_crossgate_test.dart` | 10 | 0 | 0 | 0 | 11s |  |
+| `zz_t66_selfhosted_red_review_test.dart` | 3 | 0 | 0 | 0 | 21s |  |
+| `zz_t66_settings_dematerial_test.dart` | 9 | 0 | 0 | 0 | 14s |  |
+| `zz_t66_sheettimer_dispose_test.dart` | 3 | 0 | 0 | 0 | 13s |  |
+| `zz_t66_skip_load_trstate_test.dart` | 5 | 0 | 0 | 0 | 20s |  |
+| `zz_t66_skip_loadstate_evidence_test.dart` | 0 | 0 | 1 | 0 | 7s | 默认 skip（native-media） |
+| `zz_t66_skip_loadstate_review_test.dart` | 5 | 0 | 0 | 0 | 17s |  |
+| `zz_t66_skip_write_path_test.dart` | 7 | 0 | 0 | 0 | 14s |  |
+| `zz_t66_step6_scaffold_kept_test.dart` | 6 | 0 | 0 | 0 | 11s |  |
+| `zz_t66_strip_comments_doctest_test.dart` | 13 | 0 | 0 | 0 | 8s |  |
+| `zz_t66_t486_zero_overflow_review_test.dart` | 9 | 0 | 0 | 0 | 9s |  |
+| `zz_t66_toast_call_sites_test.dart` | 15 | 0 | 0 | 0 | 22s |  |
+| `zz_t66_track_c_gates_test.dart` | 15 | 0 | 0 | 0 | 11s |  |
+| `zz_t66_ui_selfaudit_test.dart` | 10 | 0 | 1 | 0 | 26s | 默认 skip（native-media） |
+| `zz_t66_verify_danmaku_proxy_shots_test.dart` | 4 | 0 | 0 | 0 | 17s |  |
+| **合计 99 个文件** | **894** | **6** | **6** | — | — | 97 绿 / 2 红 |
+
+### 9.3 两个必须说明的口径
+
+```text
+· 「skip」列非 0 的 5 个文件是 native-media 的**既有默认跳过**（dart_test.yaml 的 skip:），
+  默认批次里它们本来就不跑 —— 分别是我本轮新增的谓词门禁、danmaku_shots、
+  r6b_live_toggle、skip_loadstate_evidence、ui_selfaudit。不当成新问题。
+· 本轮批跑期间有别的 agent 在同一仓库跑 flutter ⇒ 单文件耗时含等锁时间（最长 48s），
+  所以「耗时」列只作参考，不是性能读数。
+· 我**没有**改任何测试/产品码；两个红原样报给文件归属人。
+```

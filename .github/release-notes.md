@@ -145,10 +145,7 @@ macOS 侧的 `.dmg` 与 `.zip` 同理 —— 内容同源，只是分发形态�
 **绕过方法**（任选其一）：
 1. 右键点 `sourin_spike.app` → **打开** → 在弹窗里再点**打开**（只需一次，之后记住）
 2. 系统设置 → 隐私与安全性 → 拉到底 → 点「仍要打开」
-3. 命令行：
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/sourin_spike.app
-   ```
+3. 命令行：`xattr -dr com.apple.quarantine /Applications/sourin_spike.app`
 
 ### Android
 本包用 **Flutter 的 debug 签名**（不是发布密钥）。可以直接装，但：

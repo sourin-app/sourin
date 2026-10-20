@@ -5,6 +5,12 @@ Status: implemented
 - 日期：2026-10-21
 - 适用：`.github/release-notes.md`、`lib/ui/widgets/release_notes.dart`
 
+部分重叠：[../process/2026-10-19-release-notes-generated-from-git.md](../process/2026-10-19-release-notes-generated-from-git.md)
+讲的是**发版链路**（release body 从哪来、缺了怎么拦住）；本篇讲的是
+**渲染器的能力边界与内容不匹配**（`release_notes.dart` 只认窄语法，
+而内容里写了它不认识的表格）。两篇各管一段：那篇管「内容从哪来」，
+本篇管「内容进来之后显示成什么」。两篇都保留，不归档。
+
 ## Problem
 
 更新弹窗（`showUpdateDialog`）里的版本说明，用户看到的是**原始 Markdown 源码**：

@@ -69,7 +69,7 @@ bool hasHostFingerprintHook(String libDir)
 
 ### ★ 证据探测器必须区分注释（否则门禁可被一句话骗绿）
 
-私库源码 `bilibili.ts` 里**现在就有** `dm_img_str` 这个词 —— 但它在**注释里**
+私库插件源码（`<provider>.ts`）里**现在就有** `dm_img_str` 这个词 —— 但它在**注释里**
 （说明卡点）。若探测器不区分，谁在注释里写一句 `dm_img_str` 就能把门禁骗绿。
 
 判据：

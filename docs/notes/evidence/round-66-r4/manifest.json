@@ -1,0 +1,126 @@
+{
+    "commit":  "245b21465f62cc8390eccef22e090bc9201e8a2d",
+    "generatedAt":  "2026-10-20T11:09:39Z",
+    "files":  [
+                  {
+                      "name":  "fix2_01_tray_close.png",
+                      "w":  1280,
+                      "h":  800,
+                      "bytes":  47137,
+                      "sha256":  "1c2e02d50cdf5762340df08502476cf1b3d3ce41def205ecac13c54da932fdef",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_02_cache_delete.png",
+                      "w":  1280,
+                      "h":  800,
+                      "bytes":  39315,
+                      "sha256":  "c2b1d094ff127a49c095fdc42436735a45a79fa86d8f6f47166e790e2950ee24",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_03_data_manage_clear.png",
+                      "w":  1280,
+                      "h":  800,
+                      "bytes":  40511,
+                      "sha256":  "11ababe02e07e2e994a77a89009d11bf4ab291d7b74fe92b1cda3e9e91b8ed46",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_04_emby_delete_source.png",
+                      "w":  1280,
+                      "h":  800,
+                      "bytes":  43015,
+                      "sha256":  "b7858e51cddf27221a91c5792adda1999eae3ef2d8e3cbae62adfa985a856bd1",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_05_skip_confirm_2btn.png",
+                      "w":  1280,
+                      "h":  800,
+                      "bytes":  39759,
+                      "sha256":  "10fdb3530fa1a23d64d7d1e530b294ee93cee9c42bced20820f8f58c303f1fe1",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_06_skip_confirm_1btn.png",
+                      "w":  1280,
+                      "h":  800,
+                      "bytes":  41113,
+                      "sha256":  "ab9fbaf3c41cd0ddc236af4e7d754ec3b10596c5c996de2997432ad4df89bf0a",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_07_sync_confirm_2btn.png",
+                      "w":  1280,
+                      "h":  800,
+                      "bytes":  40727,
+                      "sha256":  "9f2a06f33d3b792aa7fe6e40e91970324b9e6b0c526306c64b92ddcb7ce8169d",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_08_sync_confirm_1btn.png",
+                      "w":  1280,
+                      "h":  800,
+                      "bytes":  39121,
+                      "sha256":  "f222fca325682bcdb673e2a0c665390d0acc155aa0a7c5986addf6a738f79fed",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_09_exempt_theme_paste_json.png",
+                      "w":  1280,
+                      "h":  800,
+                      "bytes":  48139,
+                      "sha256":  "5877bb5093174884c030f079764f4619bb3e7e0b54994e7f780819b356bf293c",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_10_narrow800x600_tray_close.png",
+                      "w":  800,
+                      "h":  600,
+                      "bytes":  42630,
+                      "sha256":  "44c5edc9e1062fd0033fe6d93ec49f2a6bb9ccfcbac310540b2d4dd6afeb852e",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_11_shell_glass_corner.png",
+                      "w":  1280,
+                      "h":  800,
+                      "bytes":  36727,
+                      "sha256":  "d1ab06e53887f0577795e7db40712047da4d8fa0dd348bbc231aecd00f44c17c",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_card_01_tray_close.png",
+                      "w":  944,
+                      "h":  554,
+                      "bytes":  20687,
+                      "sha256":  "0f2b4be13f05f2e2200c82657344bd89d620ce24d8b7a2255314763f8f33e8d9",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_card_09_exempt_theme_paste_json.png",
+                      "w":  1040,
+                      "h":  516,
+                      "bytes":  13804,
+                      "sha256":  "c3992203c0114901e08aff1ce21bbf9bcb34e9814079b1efcf2d50c87efc0d03",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_card_10_narrow800x600_tray_close.png",
+                      "w":  944,
+                      "h":  554,
+                      "bytes":  20562,
+                      "sha256":  "74cecb3642c854c4698e2079b2f31e837959ebec225bee479d056e6106b481dc",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  },
+                  {
+                      "name":  "fix2_card_11_shell_glass_corner.png",
+                      "w":  944,
+                      "h":  248,
+                      "bytes":  12810,
+                      "sha256":  "f2b9ad38c52d144e6fcc87547eea92b8582973b0b58403d7842458eae7db455f",
+                      "criterion":  "R4 dialog acceptance: real-device toImage capture of product AppGlassDialog cases, judged by T105 probe metrics (width 460 / centered / fill / radius / contrast / 0 render errors)"
+                  }
+              ]
+}

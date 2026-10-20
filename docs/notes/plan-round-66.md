@@ -57,23 +57,76 @@ dart analyze lib ⇒ 0 error
 ⑤ 探针夹具对齐产品契约（补 .zip）⇒ CS-1 五步真跑 OK=20 BAD=3 → **OK=45 BAD=0**
 ```
 
-### 0.0d 在跑的（等回报）
+### 0.0d 2026-10-21 凌晨续工：一手读数（**本节覆盖 0.0d/0.0e 旧版**）
+
+```text
+$ git rev-parse --short HEAD        ⇒ c026ac4
+$ git rev-parse --short origin/...  ⇒ c026ac4   ✅ 一致
+$ git status --porcelain | wc -l    ⇒ 0          ✅ 工作树干净
+```
+
+**目标四块的实测状态**（我亲手跑的，不是转述）：
+
+| 目标 | 门禁 | 读数 |
+|---|---|---|
+| ① R1–R8 | 21 个门禁文件 | **+222 ~2 全绿** |
+| ② N15 弹幕发送 | 私库三条 | 5 / 19 / 双向一致，全绿 |
+| ③ 弹幕代理 a+b | 有门禁文件 | 已落地 |
+| ④ CS-1 | 8 个门禁 | **7 绿 1 故意红** |
+
+### 0.0e 批末真机验证 —— **已做**（`c026ac4`）
+
+```text
+构建   flutter build windows --release -t lib/shell.dart ⇒ 90.8s
+       data/app.so = 11,600,776 B（>5MB ⇒ 产品入口，非 spike）
+启动   PID 38320，MainWindowHandle=9774302（窗口真渲染）
+判据①  Unhandled Exception 计数 = 0（stdout + stderr 都是 0）
+判据②  [SHELL] 核心已启动 / FIRST_FRAME_RENDERED / 窗口 1280×800
+判据③  ★ 更新弹窗真的弹出 —— 亲眼看了 .probe/tabshot_123.png：
+       「发现新版本 1.3.0」+ 副标题 + 图标 + 右上 × + 三个按钮靠右
+       ★ 2026-10-18 崩溃的那条路径（MaterialLocalizations.of → DialogRoute
+         → showAppDialog），本轮**未复现**
+清理   进程归零；真实数据目录 ui-prefs.json mtime 仍是 10-19 22:05（未触碰）
+```
+
+**明确未覆盖**：播放页、详情页、所有设置二级页、真实内容源（隔离目录只有 demo.js）。
+
+### 0.0f 本轮新修的两条（都在 `c026ac4` 之后）
+
+```text
+9dc6484 修一条躺在 native-media skip 里的恒红断言（player_episode_nav_boundary）
+        修前 +0 -1 ⇒ 修后 +6 全绿
+        两个真原因：①「下一集」是 tooltip 不是 Text ② IgnorePointer 吞点击
+        故障注入：删掉边界 return ⇒ +0 红，Expected:<0> Actual:<1>
+d8021ee 修正 e2e 清单第 59/60 行两条过期判据
+        第 59 行恒真（_EmbedBar 贴底永不越界）
+        第 60 行前提不存在（线路切换器是扁平 Wrap，无分组标题）
+```
+
+### 0.0g 当前在跑的（2026-10-21 凌晨派单）
 
 | 队友 | 任务 | 判据 |
 |---|---|---|
-| `verify-e2e` | **批末真机验证**（AGENTS.md §6，全批还没做过） | 构建 + 隔离启动 + 零 `Unhandled Exception` + 截图 + 触发一次弹窗 |
-| `n15-plugin` | N15 下游：`capabilities.danmaku=false` 时应用侧做什么 | 真跑两档对照 + capability 双向对照表 |
-| `redtriage` | 全量测试红分类（纯净 worktree 基线） | A/B/C/D 四类清单，**B 类非空 = 本轮引入红** |
-| `r1r8-ui` | `_debtWins` 管辖规则写成数据的自检 | 注入「假交集键不登记」必须红 |
+| `r5-live` | `t75_browse_autoload` 9 条红 | 「第 1 页为什么 0 条」的具体原因 + A/B/C/D 分类 |
+| `r3-dialog` | `t80a_skeleton_fade` 2 条红 | `FadeInSliver` 分支还在不在 + 「现在走哪条过渡路径」 |
+| `cs1-sync` | CS-1 证据出图 | 抄 `r4_dialog_pixel_test` 的 toImage 写法，出 2 张图 + manifest |
+| `redtriage` | native-media 抽检门禁 | 四条注入全红；把「定期抽检」从纪律变成机制 |
+| `verify-e2e` | 独立复核我的批末验证 | 自己看 tabshot_123.png + 判断我的覆盖范围够不够 |
+| `r1r8-ui` | R1 badge 三档观感对照图 | 把 `edgeStd=49.63` 翻译成「哪档看起来更稳」 |
+| `r4-dialogs` | 三弹窗跨尺寸稳定性 | 800×600 / 1024×640 / 1280×800 三档几何表 |
+| `n15-plugin` | N15 端到端真跑状态 | A/B/C 分类 + 「真跑需要什么」清单 |
 
-### 0.0e 明确还没做的（不许混进「已完成」）
+### 0.0h 明确还没做的（不许混进「已完成」）
 
 ```text
-· 批末统一真机实测（verify-e2e 在做，未回报）
-· 全量测试红分类（redtriage 在做，未回报）
-· `credentialsNote` 里 Markdown 星号「**」界面原样显示 —— 真缺陷，未修（不在本轮边界）
-· 存量本机绝对路径（lib/t17_*_probe.dart、rust/.../zz_t38_*.rs 等）
-  已在远端历史里，属独立议题，未处理
+· CS-1 证据门禁仍红 5 条 —— 是 aeaa3ea 建立的**故意红**，等真机出图
+  工具正确拒绝写空 manifest（防「0 张 == 0 条」假绿）
+  我试了 4 轮 widget 层出图探针，卡在 toImage API，已停手删除
+  根因：同步页在二级页，**无深链入参**，底栏探针到不了
+· R1 badge 改不改 —— 需 Owner 定（决策材料已写）
+· 全量红分类判别力有限 —— r5-live 诚实标注：基线与主仓同一棵树
+  B 类=0 在逻辑上不可能非空；要真有判别力需在主仓有未提交改动时再跑
+· 存量本机绝对路径（lib/t17_*_probe.dart 等）已在远端历史里，属独立议题
 ```
 
 ---

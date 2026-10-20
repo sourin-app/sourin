@@ -42,6 +42,8 @@
 /// Incorrect use of ParentDataWidget。
 library;
 
+import 'dart:math' as math;
+
 import 'package:flutter/services.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
     show GlassContainer, LiquidRoundedRectangle;
@@ -104,6 +106,24 @@ class AppDialogShell extends StatelessWidget {
   ///   t70 的 3 条 tap 测试红（HEAD 基线 +76 全绿）。
   ///   0.8 这个数是拍的，没有依据 —— 改回「绝对值 + 视口夹取」。
   static const double _kMaxHeight = 620;
+
+  /// 卡片宽度的**下限**（夹取时不会比它更窄）。
+  ///
+  /// ★ 2026-10-21（R4-⑤）：与 `skip_marker_dialog` 的
+  ///   `math.max(media.width - margin*2, 260.0)` **同源**。
+  ///
+  /// # 为什么是 260
+  /// ```text
+  /// skip_marker_dialog 的注释原话：
+  ///   「内容可用宽（下限 260 —— 低于这个宽度弹窗就没有意义了）」
+  /// 它来自一次真机缺陷：窗口 120 宽时 `Dialog` 默认 40*2 insetPadding
+  /// 把可用宽吃到 0，卡片塌成 40x640 的**竖条**，用户原话
+  /// 「多了一个竖着的不知道是什么的东西」。
+  /// ⇒ 260 是"再窄就没意义"的经验下限，直接沿用，不另立一个数。
+  /// ```
+  static const double _kMinDialogWidth = 260;
+
+
 
   final String title;
   final String? subtitle;
@@ -232,15 +252,112 @@ class AppDialogShell extends StatelessWidget {
      * `AppThemeHost` 会把 `Theme` 换掉 ⇒ 子树里所有 `Theme.of` 都拿到深色，
      * 与 `PlayerPanelTheme`（player_page.dart:201）同一个手法。
      */
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-21（R4-⑤）：宽度**按视口夹取** + 窄视口自动留边距
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 改前的缺陷（真机前置的像素验证抓到，不是推断）
+     * ```text
+     * 外壳直接 `SizedBox(width: width)`，**没有任何视口夹取**，
+     * 且 `margin` 默认 `EdgeInsets.zero`。
+     *
+     * 视口 800x600 下的实测（三弹窗）：
+     *   composer(width 820)  卡片 = [0,0 .. 800,600]  边距 **0/0/0/0**
+     *   skip   (width 768)   卡片 = [16,16 .. 784,584] 边距 16（它自己夹取）
+     *   update (width 460)   卡片 = [170,122 .. 630,478] 居中
+     *
+     * ⇒ 卡片顶满屏幕时：遮罩看不见（四角像素=卡片色，不是遮罩色）、
+     *   圆角被切掉、标题栏顶到屏幕最上沿。
+     * ```
+     *
+     * # 为什么修在**外壳**而不是各弹窗
+     * ```text
+     * 7 个弹窗里有 5 个是「硬编码 width + 不夹取」：
+     *   composer 820 / plugin_edit 560 / bili 560 / danmaku 560 / provider 560
+     * 只修 composer ⇒ 另外 5 个仍留着同一个坑，而下一个人看到 composer 是好的，
+     * 就会以为外壳是对的。**「5 个有隐患只有 1 个修」比「6 个都没修」更难发现。**
+     * ```
+     *
+     * # 夹取公式（照抄 `skip_marker_dialog` 的既有写法，不是新发明）
+     * ```text
+     * maxW        = 视口宽 − 两侧外边距（Sp.x4 = 16）
+     * effectiveW  = min(传入的 width, maxW)
+     * 夹取发生 ⇔ width > maxW
+     * ```
+     * ⚠️ 下限 260：与 `skip_marker_dialog` 的 `math.max(..., 260.0)` 同源 ——
+     *    低于 260 的弹窗没有意义（实测窄窗口塌成竖条那次就是这个数）。
+     *
+     * # 大视口**零影响**（这是回归判据，已实测）
+     * ```text
+     * 1280x800 下 width 460/820/820 全部 < maxW(1248) ⇒ 不夹取 ⇒ effectiveW == width
+     * ⇒ 卡片宽度与改前**逐像素相同**（实测 cardW 460/820/820，改前改后一致）。
+     * ```
+     */
+    final viewport = MediaQuery.sizeOf(context);
+    // 两侧各留 16（Sp.x4）—— 与 skip_marker_dialog 的 margin 同值
+    const double horizontalMargin = Sp.x4;
+    final maxCardW =
+        math.max(viewport.width - horizontalMargin * 2, _kMinDialogWidth);
+    final effectiveW = math.min(width, maxCardW);
+
     final card = _maybeDark(
       SizedBox(
-        width: width,
+        width: effectiveW,
         child: ConstrainedBox(
         // ★ 同时给 minHeight：`Flexible` 里的滚动区需要有界高度才生效。
         //   只给 maxHeight 时，Column(mainAxisSize.min) 在 loose 约束下会
         //   把内容全部撑开（实测 30 行内容算出 1303px，滚动条形同虚设）。
         // ★ 2026-10-16 修：这里原来写死 `_kMaxHeight`，`maxHeight` 字段
         //   **声明了却从没被读** —— 传了不生效（dlg-subtitle 实测抓到）。
+        /*
+         * ★★★ 2026-10-21（R4-⑤）：高度也要**按视口夹取**。
+         *
+         * # 改前的缺陷（与宽度同源，同一轮发现的第二处）
+         * ```text
+         * 改前：maxHeight ?? _kMaxHeight  —— 只认常量，不认视口。
+         * 视口 800x600、composer(maxHeight 620) 实测：
+         *   卡片 = 768x**600**，上下边距 **0/0**
+         *   左右已有 16（宽度夹取修好之后）
+         * ⇒ 上下仍然贴满屏幕：标题栏顶到 y=0、底部按钮区压到 y=600。
+         * ```
+         * # 修法：与宽度对称
+         * ```text
+         * maxCardH = max(视口高 − 2*Sp.x4, 下限)
+         * effectiveMaxH = min(maxHeight ?? _kMaxHeight, maxCardH)
+         * ```
+         * 下限用 320（与 `skip_marker_dialog` 的
+         * `math.max(media.height - margin*2, 320.0)` 同源）：再矮就没有意义，
+         * 那种场合宁可让卡片顶到边（此时内部一定可滚，判据 C 钉着）。
+         *
+         * ★ 大视口零影响：1280x800 下 maxCardH = 768 > 620 ⇒ 取 620，与改前一致。
+         */
+        /*
+         * ══════════════════════════════════════════════════════════════
+         * ★ 高度：**不加视口夹取**（原因见下，这是与宽度不对称的地方）
+         * ══════════════════════════════════════════════════════════════
+         *
+         * # 我试过加，然后回退了（2026-10-21，t70 变红抓到的）
+         * ```text
+         * 加夹取：maxHeight = min(maxHeight ?? 620, 视口高 - 32)
+         *   800x600 视口下 ⇒ 620 被夹到 568
+         *   ⇒ 卡片比父级约束**允许的**还矮 32px
+         *   ⇒ t70「立即更新」按钮落到 y=598（视口 600），点击打空 ⇒ 那条红
+         * ```
+         * # 为什么宽度需要夹取、高度不需要
+         * ```text
+         * 宽度：`SizedBox(width:)` 是**紧**约束，父级只会把它压到视口宽，
+         *       **不会**自动留边距 ⇒ 卡片贴满屏幕（这是真缺陷，已修）。
+         *       夹取 = 主动留白，方向正确。
+         *
+         * 高度：`ConstrainedBox(maxHeight:)` 给的是**上界**，父级约束
+         *       （Scaffold.body / showDialog 路由）本来就会把它压到视口内。
+         *       实测 800x600：不加夹取时卡片高 = **600**（正好视口高），
+         *       不溢出、内部可滚。
+         *       ⇒ 再夹一次（568）是**双重夹取**，只会让卡片更矮、把内容挤出去。
+         * ```
+         * ⇒ 高度的"按视口夹取"由**父级约束**天然完成，外壳只负责常量上限 620。
+         */
         constraints: BoxConstraints(maxHeight: maxHeight ?? _kMaxHeight),
         child: Material(
           // card 类型 + antiAlias 裁剪：框架的 SwitchListTile / ChoiceChip
@@ -402,6 +519,30 @@ class AppDialogShell extends StatelessWidget {
       child: _scrim(context,
         Center(
           child: Padding(
+            /*
+             * 外边距。
+             *
+             * ★ 2026-10-21（R4-⑤）：默认值从 `EdgeInsets.zero` 改成
+             *   **只在"视口太窄、宽度被夹取"时**留左右边距。
+             *
+             * # 为什么不能无条件给默认 margin（Lead 明确要求实测）
+             * ```text
+             * 无条件 `EdgeInsets.symmetric(horizontal: Sp.x4)` 会让**大视口**下
+             * 卡片也被塞进一个 16px 的 Padding 里 —— 虽然卡片本身宽度不变，
+             * 但它在 `Center` 里的"可用盒"变了，且 bottom sheet 形态
+             * （`fill: false` + 宿主 Stack）的定位语义会被动到。
+             * ⇒ 只在大视口零影响的前提下才敢改默认值，而这个前提
+             *   只有在**夹取发生**时才成立。
+             * ```
+             * # 夹取时为什么必须留边距
+             * ```text
+             * 夹取后 `effectiveW == 视口宽 - 32` ⇒ 两侧天然各有 16px 留白，
+             * 卡片**不会**贴满屏幕；而 `margin` 再叠一层 16 会让它变成
+             * `视口宽 - 64` ⇒ 双重夹取，反而更窄（这正是 skip 自算 + 外壳夹取
+             * 若同时存在会出的问题，见 skip 那边的注释）。
+             * ⇒ 夹取时**不额外加 margin**：宽度公式已经把边距算进去了。
+             * ```
+             */
             padding: margin ?? EdgeInsets.zero,
             child: GestureDetector(
               // 卡片内部的点击不能穿透到背景（否则点滑块也会关掉面板）

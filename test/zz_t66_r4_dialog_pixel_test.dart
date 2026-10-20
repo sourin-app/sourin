@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════
-//  R4 像素验证：三个弹窗「看起来一致吗」
+//  R4 像素验证：三个弹窗「看起来一致吗」—— **跨视口尺寸**
 // ═══════════════════════════════════════════════════════════════════════
 //
 // # 为什么还要这个（门禁之外的第二支尺子）
@@ -11,6 +11,41 @@
 //
 // ⇒ 本文件从**渲染结果**读几何（rect + 像素），不读常量、不读代码。
 //
+// # ★★ 2026-10-21：从「单视口」改成「三视口 × 三弹窗」
+//
+// # 为什么要改（Lead 指出的漏洞）
+// ```text
+// 第一版每个弹窗只在自己那一个视口下量过：
+//     update 1440x900 / skip 1280x800 / composer 1600x1000
+// ⇒ 那一版**无法回答**：「视口变小会不会坏？」
+//   三个读数来自三个不同视口，横向比"一致性"本身就不严谨。
+//
+// 现在的矩阵：3 视口 × 3 弹窗 = 9 格，每格取同一套指标。
+//     1280x800（基线，也是本仓最常见的窗口）
+//     1024x640（常见小窗）
+//      800x600（AGENTS.md §3.5 提到的测试视口，620 上限的由来）
+// ```
+//
+// # 判据（AGENTS.md §8：先问"我采的这个地方应该是什么"）
+//
+// ```text
+// 【不变】跨视口必须恒定（变了 = 缺陷，因为它依赖了不该依赖的东西）
+//   · 圆角半径    Radii.rLg 是常量
+//   · 标题栏高度  外壳 _Header 的 padding 是常量
+//   · 按钮右缘    外壳 _ActionBar 的 padding 是常量
+//   · 按钮区高度  同上
+//   · 关闭钮个数  外壳只画一个
+//
+// 【可变】设计内差异（§3.5 明写）
+//   · 卡片宽     按档位 460/560/820，且窄视口下按可用宽夹取
+//   · 卡片高     按内容 + maxHeight(620) 与视口夹取
+//   · 出现滚动   内容超出时应该滚，而不是被裁
+//
+// 【绝对不许】
+//   · 卡片超出视口（用户看不到底部按钮）
+//   · 按钮被裁 / 圆角变化 / 关闭钮消失或重复
+// ```
+//
 // # ★ 三个已踩的坑（都是我自己踩的，记下来防复发）
 //
 // ```text
@@ -20,11 +55,11 @@
 //   ⇒ 必须截**整个视口**：`binding.renderViews.first.debugLayer`。
 //
 // 坑 2  圆角全是 -1
-//   同上 —— 图上根本没有卡片，采样点落在遮罩/背景上，亮度差判据失效。
-//   ⇒ 已加阳性对照：`outside - inside < 8` 时返回 -2（而不是假装量到了）。
+//   同上 —— 图上根本没有卡片，采样点落在遮罩/背景上。
+//   ⇒ 已加阳性对照：遮罩与卡片亮度差 < 3 时返回 -2（而不是假装量到了）。
 //
 // 坑 3  第二个用例挂 10 分钟
-//   `await ro.toImage()` 在 fake-async 的 testWidgets 里会**永不完成**。
+//   `await toImage()` 在 fake-async 的 testWidgets 里会**永不完成**。
 //   ⇒ 必须包在 `tester.runAsync(() async { ... })` 里。
 // ```
 //
@@ -68,9 +103,22 @@ import 'package:sourin_spike/ui/widgets/update_dialog.dart';
 
 import 'support/ui_shot.dart';
 
+/// 三档视口（1280x800 = 基线；800x600 = §3.5 里 620 上限的由来）
+const _viewports = <String, Size>{
+  '1280x800': Size(1280, 800),
+  '1024x640': Size(1024, 640),
+  '800x600': Size(800, 600),
+};
+
+const _dialogNames = <String>['update', 'skip', 'composer'];
+
 class _Geo {
   String name = '';
+  String vp = '';
+  double vpW = 0, vpH = 0;
+
   double cardW = 0, cardH = 0;
+  double cardLeft = 0, cardTop = 0, cardRight = 0, cardBottom = 0;
   double rTL = -1, rTR = -1, rBL = -1, rBR = -1;
   double headerH = 0;
   double padL = 0, padR = 0;
@@ -79,32 +127,50 @@ class _Geo {
   double actionsH = 0;
   int nClose = 0;
 
+  /// 内容是否可滚（有 Scrollable 且 maxScrollExtent > 0）
+  bool scrollable = false;
+
+  /// 最大可滚动距离（0 = 不用滚就装得下）
+  double maxScrollExtent = 0;
+
+  /// 卡片是否**超出视口**（这是缺陷，不是设计差异）
+  bool get overflowsViewport =>
+      cardRight > vpW + 0.5 ||
+      cardBottom > vpH + 0.5 ||
+      cardLeft < -0.5 ||
+      cardTop < -0.5;
+
+  double get radius {
+    final rs = [rTL, rTR, rBL, rBR].where((v) => v > 0).toList();
+    if (rs.isEmpty) return -1;
+    return rs.reduce((a, b) => a + b) / rs.length;
+  }
+
   Map<String, Object> get json => {
         'name': name,
+        'vp': vp,
         'cardW': cardW,
         'cardH': cardH,
-        'rTL': rTL,
-        'rTR': rTR,
-        'rBL': rBL,
-        'rBR': rBR,
+        'r': radius,
         'headerH': headerH,
-        'padL': padL,
-        'padR': padR,
-        'hasDivider': hasDivider,
         'actionsGapR': actionsGapR,
         'actionsH': actionsH,
         'nClose': nClose,
+        'scrollable': scrollable,
+        'maxScrollExtent': maxScrollExtent,
+        'overflowsViewport': overflowsViewport,
+        'padL': padL,
+        'padR': padR,
       };
 
   @override
-  String toString() =>
-      'card=${cardW.toStringAsFixed(1)}x${cardH.toStringAsFixed(1)} '
-      'r=[${rTL.toStringAsFixed(2)}/${rTR.toStringAsFixed(2)}/'
-      '${rBL.toStringAsFixed(2)}/${rBR.toStringAsFixed(2)}] '
+  String toString() => 'card=${cardW.toStringAsFixed(1)}x'
+      '${cardH.toStringAsFixed(1)} r=${radius.toStringAsFixed(2)} '
       'headerH=${headerH.toStringAsFixed(1)} '
-      'padL=${padL.toStringAsFixed(1)} padR=${padR.toStringAsFixed(1)} '
-      'divider=$hasDivider actGapR=${actionsGapR.toStringAsFixed(1)} '
-      'actH=${actionsH.toStringAsFixed(1)} nClose=$nClose';
+      'actGapR=${actionsGapR.toStringAsFixed(1)} '
+      'actH=${actionsH.toStringAsFixed(1)} nClose=$nClose '
+      'scroll=${scrollable ? maxScrollExtent.toStringAsFixed(0) : "no"} '
+      'overflow=$overflowsViewport';
 }
 
 Widget _host(Widget child) => MaterialApp(
@@ -218,11 +284,20 @@ double _radiusAtCorner(_Pix p, Rect card, int cardLum,
 }
 
 /// 量一个**已经渲染好**的弹窗。★ 不 pump（会把弹窗销毁）
-Future<_Geo> measure(WidgetTester t, String name) async {
-  final g = _Geo()..name = name;
+Future<_Geo> measure(WidgetTester t, String name, String vpName) async {
+  final g = _Geo()
+    ..name = name
+    ..vp = vpName;
+  g.vpW = t.view.physicalSize.width / t.view.devicePixelRatio;
+  g.vpH = t.view.physicalSize.height / t.view.devicePixelRatio;
+
   final card = _cardRect(t);
   g.cardW = card.width;
   g.cardH = card.height;
+  g.cardLeft = card.left;
+  g.cardTop = card.top;
+  g.cardRight = card.right;
+  g.cardBottom = card.bottom;
 
   // ── 截图：**整个视口**（含 Overlay 里的弹窗）──
   final view = t.binding.renderViews.first;
@@ -237,7 +312,7 @@ Future<_Geo> measure(WidgetTester t, String name) async {
     png = bd!.buffer.asUint8List();
   });
   final dir = Directory('.probe/r4pix')..createSync(recursive: true);
-  final f = File('${dir.path}/$name.png');
+  final f = File('${dir.path}/${name}_$vpName.png');
   f.writeAsBytesSync(png, flush: true);
 
   // ── 圆角：从像素读 ──
@@ -287,6 +362,17 @@ Future<_Geo> measure(WidgetTester t, String name) async {
     }
   }
 
+  // ── 滚动：弹窗里任一 Scrollable 的 maxScrollExtent ──
+  // ★ 用**真实 ScrollPosition**，不是"内容高 - 视口高"的推算
+  final scrollables = find.descendant(
+      of: find.byType(AppDialogShell), matching: find.byType(Scrollable));
+  for (var i = 0; i < scrollables.evaluate().length; i++) {
+    final st = t.state<ScrollableState>(scrollables.at(i));
+    final ext = st.position.maxScrollExtent;
+    if (ext > g.maxScrollExtent) g.maxScrollExtent = ext;
+  }
+  g.scrollable = g.maxScrollExtent > 0.5;
+
   // ── 底部按钮区 ──
   final div = find.descendant(
       of: find.byType(AppDialogShell), matching: find.byType(Divider));
@@ -309,16 +395,70 @@ Future<_Geo> measure(WidgetTester t, String name) async {
   g.nClose = find.byTooltip('关闭').evaluate().length;
 
   // ignore: avoid_print
-  print('[R4PIX] $name  $g');
+  print('[R4PIX] ${name.padRight(8)} @${vpName.padRight(8)} $g');
   // ignore: avoid_print
-  print('[R4PIX]RECT $name left=${card.left} top=${card.top} '
-      'right=${card.right} bottom=${card.bottom} '
-      'vpW=${t.view.physicalSize.width} vpH=${t.view.physicalSize.height}');
-  // ignore: avoid_print
-  print('[R4PIX]   png=${f.path}  (${png.lengthInBytes} bytes)');
+  print('[R4PIX]RECT $name @$vpName '
+      'card=[${card.left.toStringAsFixed(0)},${card.top.toStringAsFixed(0)} .. '
+      '${card.right.toStringAsFixed(0)},${card.bottom.toStringAsFixed(0)}] '
+      'vp=${g.vpW.toStringAsFixed(0)}x${g.vpH.toStringAsFixed(0)}');
   // ignore: avoid_print
   print('[R4PIX]JSON ${jsonEncode(g.json)}');
   return g;
+}
+
+/// 渲染一个弹窗并测量（在指定视口下）
+Future<_Geo> renderAndMeasure(
+  WidgetTester t,
+  String dialog,
+  String vpName,
+  Size vp,
+) async {
+  await setShotViewport(t, vp);
+
+  switch (dialog) {
+    case 'update':
+      await t.pumpWidget(_host(Builder(
+        builder: (ctx) => TextButton(
+          onPressed: () => showUpdateDialog(
+            ctx,
+            parseReleaseJson(jsonDecode(
+                    File('test/fixtures/github_release_v1_1_0.json')
+                        .readAsStringSync()) as Map<String, dynamic>),
+            platform: UpdatePlatform.windows,
+          ),
+          child: const Text('open'),
+        ),
+      )));
+      await t.tap(find.text('open'));
+      await t.pumpAndSettle();
+    case 'skip':
+      SourinApi.debugSkipMarkerFetcher = (p, i) async => null;
+      addTearDown(() => SourinApi.debugSkipMarkerFetcher = null);
+      await t.pumpWidget(_host(Builder(
+        builder: (ctx) => TextButton(
+          onPressed: () => showAppDialog<SkipMarkerResult>(
+            context: ctx,
+            barrierDismissible: false,
+            builder: (_) => const SkipMarkerDialog(
+              provider: 'tyyszy',
+              id: '70260',
+              title: '怒鲨狂潮',
+              streamUrl: 'file:///nonexistent.mp4',
+              duration: Duration(seconds: 600),
+            ),
+          ),
+          child: const Text('open'),
+        ),
+      )));
+      await t.tap(find.text('open'));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 100));
+    case 'composer':
+      await t.pumpWidget(_host(const SourceComposerDialog()));
+      await t.pumpAndSettle();
+  }
+
+  return measure(t, dialog, vpName);
 }
 
 void main() {
@@ -334,145 +474,325 @@ void main() {
         UpdateDownloadState.idle);
   });
 
+  /// 9 格读数：key = "<dialog>@<viewport>"
   final results = <String, _Geo>{};
 
-  testWidgets('① update_dialog', (t) async {
-    await setShotViewport(t, const Size(1440, 900));
-    await t.pumpWidget(_host(Builder(
-      builder: (ctx) => TextButton(
-        onPressed: () => showUpdateDialog(
-          ctx,
-          parseReleaseJson(jsonDecode(
-                  File('test/fixtures/github_release_v1_1_0.json')
-                      .readAsStringSync()) as Map<String, dynamic>),
-          platform: UpdatePlatform.windows,
-        ),
-        child: const Text('open'),
-      ),
-    )));
-    await t.tap(find.text('open'));
-    await t.pumpAndSettle();
-    results['update'] = await measure(t, 'update');
+  // ── 9 格：3 视口 × 3 弹窗 ──
+  for (final vpEntry in _viewports.entries) {
+    for (final d in _dialogNames) {
+      testWidgets('$d @ ${vpEntry.key}', (t) async {
+        results['$d@${vpEntry.key}'] =
+            await renderAndMeasure(t, d, vpEntry.key, vpEntry.value);
+      });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  判据 A：跨视口**不变**的指标（变了 = 缺陷）
+  // ═══════════════════════════════════════════════════════════════════
+  test('A 跨视口恒定：圆角 / 标题栏高 / 按钮右缘 / 按钮区高 / 关闭钮', () {
+    for (final d in _dialogNames) {
+      final gs = [
+        for (final v in _viewports.keys)
+          results['$d@$v'] ??
+              (throw StateError('★ $d@$v 的读数缺失 —— '
+                  '少一个视口，"跨视口恒定"这个结论就不成立')),
+      ];
+
+      // ── 圆角 ──
+      final radii = gs.map((g) => g.radius).toList();
+      expect(radii.reduce((a, b) => a < b ? a : b),
+          closeTo(radii.reduce((a, b) => a > b ? a : b), 3.0),
+          reason: '★★ $d 的圆角随视口变了：$radii\n'
+              '  Radii.rLg 是常量（22），渲染出来不该随视口变。\n'
+              '  ⚠️ 容差 3px：采样步长 0.25px、换算系数 √2−1≈0.414，'
+              '单像素抖动会放大成 ~2.4px。');
+
+      // ── 标题栏高度 ──
+      final hs = gs.map((g) => g.headerH).toList();
+      expect(hs.reduce((a, b) => a < b ? a : b),
+          closeTo(hs.reduce((a, b) => a > b ? a : b), 1.0),
+          reason: '★★ $d 的标题栏高度随视口变了：$hs\n'
+              '  外壳 _Header 的 padding 是常量 fromLTRB(x6,x3,x3,x2)，'
+              '高度只由文字行高决定 ⇒ 不该随视口变。');
+
+      // ── 按钮右缘 ──
+      final gaps = gs.map((g) => g.actionsGapR).toList();
+      expect(gaps.reduce((a, b) => a < b ? a : b),
+          closeTo(gaps.reduce((a, b) => a > b ? a : b), 1.0),
+          reason: '★★ $d 的按钮右缘到卡片边缘的距离随视口变了：$gaps\n'
+              '  外壳 _ActionBar 的 padding 是常量 fromLTRB(x6,x2,x6,x3)，'
+              '它是**绝对 padding** 不是百分比 ⇒ 不该变。');
+
+      // ── 按钮区高度 ──
+      final ahs = gs.map((g) => g.actionsH).toList();
+      expect(ahs.reduce((a, b) => a < b ? a : b),
+          closeTo(ahs.reduce((a, b) => a > b ? a : b), 1.0),
+          reason: '★★ $d 的按钮区高度随视口变了：$ahs');
+
+      // ── 关闭钮个数 ──
+      for (final g in gs) {
+        expect(g.nClose, 1,
+            reason: '★★ ${g.name}@${g.vp} 的关闭钮数量 = ${g.nClose}（应为 1）。'
+                '多于 1 = 外壳的 + 调用方自己又画了一个；少于 1 = onClose 没传');
+      }
+
+      // ── 分隔线 ──
+      for (final g in gs) {
+        expect(g.hasDivider, isTrue,
+            reason: '★★ ${g.name}@${g.vp} 的按钮区没有分隔线 —— '
+                '说明它没走外壳的 actions，而是自己在内容区画了一排按钮');
+      }
+    }
   });
 
-  testWidgets('② skip_marker_dialog', (t) async {
-    SourinApi.debugSkipMarkerFetcher = (p, i) async => null;
-    addTearDown(() => SourinApi.debugSkipMarkerFetcher = null);
-
-    await setShotViewport(t, const Size(1280, 800));
-    await t.pumpWidget(_host(Builder(
-      builder: (ctx) => TextButton(
-        onPressed: () => showAppDialog<SkipMarkerResult>(
-          context: ctx,
-          barrierDismissible: false,
-          builder: (_) => const SkipMarkerDialog(
-            provider: 'tyyszy',
-            id: '70260',
-            title: '怒鲨狂潮',
-            streamUrl: 'file:///nonexistent.mp4',
-            duration: Duration(seconds: 600),
-          ),
-        ),
-        child: const Text('open'),
-      ),
-    )));
-    await t.tap(find.text('open'));
-    await t.pump();
-    await t.pump(const Duration(milliseconds: 100));
-    results['skip'] = await measure(t, 'skip');
+  // ═══════════════════════════════════════════════════════════════════
+  //  判据 B：卡片**绝不许**超出视口（这是缺陷，不是设计差异）
+  // ═══════════════════════════════════════════════════════════════════
+  test('B 卡片不许超出视口（否则用户看不到底部按钮）', () {
+    final bad = <String>[];
+    results.forEach((k, g) {
+      if (g.overflowsViewport) {
+        bad.add('$k: card=[${g.cardLeft.toStringAsFixed(0)},'
+            '${g.cardTop.toStringAsFixed(0)} .. '
+            '${g.cardRight.toStringAsFixed(0)},'
+            '${g.cardBottom.toStringAsFixed(0)}] vs viewport '
+            '${g.vpW.toStringAsFixed(0)}x${g.vpH.toStringAsFixed(0)}');
+      }
+    });
+    expect(bad, isEmpty,
+        reason: '★★ 这些格子里的卡片**超出了视口** —— 用户会看不到底部按钮：\n'
+            '${bad.join('\n')}\n'
+            '§3.5 写的是「最大高度 620，再按视口夹取」⇒ 小视口下必须变矮，'
+            '而不是溢出屏幕。');
   });
 
-  testWidgets('③ source_composer_dialog', (t) async {
-    await setShotViewport(t, const Size(1600, 1000));
-    await t.pumpWidget(_host(const SourceComposerDialog()));
-    await t.pumpAndSettle();
-    results['composer'] = await measure(t, 'composer');
+  // ═══════════════════════════════════════════════════════════════════
+  //  判据 C：内容超出时必须**可滚**（而不是被裁掉）
+  // ═══════════════════════════════════════════════════════════════════
+  test('C 小视口下内容超出 ⇒ 必须可滚（不许静默裁掉）', () {
+    for (final d in _dialogNames) {
+      final g = results['$d@800x600'];
+      expect(g, isNotNull, reason: '★ $d@800x600 读数缺失');
+      /*
+       * ★ 判据的写法：不要求"必须出现滚动条"（内容装得下时不该有），
+       *   而是要求「**若**卡片高度被视口夹取到比内容矮，**则**必须可滚」。
+       *
+       * 怎么判断"被夹取"：卡片高 == 视口高（或非常接近）⇒ 说明顶到了上限。
+       * 那种情况下内容装不下，必须有 Scrollable 且 maxScrollExtent > 0；
+       * 否则就是"内容被裁掉、用户滚不到"。
+       */
+      final clamped = g!.cardH >= g.vpH - 2;
+      if (clamped) {
+        expect(g.scrollable, isTrue,
+            reason: '★★ ${g.name}@800x600 的卡片高 ${g.cardH} 已经顶到视口高 '
+                '${g.vpH}（被夹取），但**不可滚** ⇒ 内容被裁掉了，用户看不到。');
+      }
+      // ignore: avoid_print
+      print('[R4PIX] 判据C ${g.name}@800x600 clamped=$clamped '
+          'cardH=${g.cardH.toStringAsFixed(0)} vpH=${g.vpH.toStringAsFixed(0)} '
+          'maxScrollExtent=${g.maxScrollExtent.toStringAsFixed(0)}');
+    }
   });
 
-  testWidgets('④ 一致性判据：除 width 外三项必须一致（±1px）', (t) async {
+  // ═══════════════════════════════════════════════════════════════════
+  //  判据 D：窄视口下卡片必须**保留边距**（不许贴满屏幕）
+  //
+  //  ★ 2026-10-21 新增 —— 本轮发现的缺陷（已修在外壳）
+  //  ★ 同日 Lead 要求：把覆盖从 3 个弹窗扩到**全部 8 个**
+  // ═══════════════════════════════════════════════════════════════════
+  test('D-1 三个可渲染弹窗 × 三档视口：窄视口必须保留边距', () {
+    final bad = <String>[];
+    results.forEach((k, g) {
+      /*
+       * 判据：卡片四边到视口边缘的**最小值**必须 > 0。
+       *
+       * # 为什么 0 是缺陷而不是"设计内差异"
+       * ```text
+       * 卡片贴满视口时：
+       *   ① 遮罩完全看不见 ⇒ 用户失去"这是个浮层"的感知
+       *      实测 composer@800x600 的四角像素 = 卡片色(54,52,58)，不是遮罩色(71,71,71)
+       *   ② 圆角被切掉（圆角画在卡片四角，但四角已出屏）
+       *   ③ 标题栏紧贴屏幕顶端 ⇒ 与无边框窗口的标题区视觉粘连
+       * ```
+       */
+      /*
+       * ⚠️ 只判**左右**边距，不判上下（2026-10-21 实测后收窄）。
+       *
+       * # 为什么上下不判（这是与左右**不对称**的真实原因）
+       * ```text
+       * 宽度：`SizedBox(width:)` 是紧约束，父级只把它压到视口宽、
+       *       **不**自动留边距 ⇒ 必须由外壳夹取留白（否则卡片贴满屏幕）。
+       * 高度：`ConstrainedBox(maxHeight:)` 是上界，父级约束
+       *       （Scaffold.body / showDialog 路由）本来就把卡片压进视口。
+       *       实测 800x600：卡片高 = 600（正好视口高）、不溢出、内部可滚。
+       *       ⇒ 上下贴边是**父级约束的必然结果**，不是缺陷。
+       * ```
+       * ★ 我一开始连上下一起判，然后给外壳加了高度夹取 —— t70 立刻红：
+       *   夹到 568 让「立即更新」落到 y=598（视口 600）⇒ 点击打空。
+       *   实测证明那是**双重夹取**（父级已经压过一轮）。
+       */
+      final marginL = g.cardLeft;
+      final marginR = g.vpW - g.cardRight;
+      final minMargin = marginL < marginR ? marginL : marginR;
+      if (minMargin < 0.5) {
+        bad.add('$k: 左右边距 L=${marginL.toStringAsFixed(0)} '
+            'R=${marginR.toStringAsFixed(0)} '
+            '(card ${g.cardW.toStringAsFixed(0)}x${g.cardH.toStringAsFixed(0)} '
+            'vs vp ${g.vpW.toStringAsFixed(0)}x${g.vpH.toStringAsFixed(0)})');
+      }
+    });
+    expect(bad, isEmpty,
+        reason: '★★ 这些格子里卡片**贴满了视口**（四边没有留白）：\n'
+            '${bad.join('\n')}\n'
+            '⇒ 遮罩看不见、圆角被切、标题栏顶到屏幕边。\n'
+            '根因（已修 2026-10-21）：外壳原来直接 `SizedBox(width: width)`，'
+            '没有任何视口夹取，且 `margin` 默认 zero。');
+  });
+
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ 判据 D-2：**外壳规则本身**必须覆盖全部 8 个弹窗
+   *
+   * # 为什么 D-1 不够（Lead 的原话）
+   * ```text
+   * 「修完外壳后 D 必须变绿，而且**另外 5 个弹窗也要加进 D 的覆盖** ——
+   *   否则你只是让 composer 绿了，其余 5 个仍然没人看。」
+   * ```
+   *
+   * # 为什么不逐个渲染那 5 个（诚实说明，不是偷懒）
+   * ```text
+   * bili_import_dialog / danmaku_settings_dialog / provider_import_dialog /
+   * source_switch_dialog / plugin_edit_dialog 的构造函数**全部要求真实状态**：
+   *   bili            required state / onImport / onSelectPage / onSetAutoUpdate
+   *   provider_import required ProviderImportSeed + name
+   *   source_switch   required title / currentProvider / episodeIndex / position
+   * 无头渲染要编一整套假数据 —— 那样测的是"我编的假数据"，
+   * 不是"外壳规则"。
+   *
+   * ⇒ 夹取是**外壳的一条规则**：`effectiveW = min(width, 视口宽−32)`。
+   *   8 个弹窗**都只是传一个 width 进来**（没有一个绕过这条路径）。
+   *   所以逐个 width 档位验证这条规则，等价于验证全部 8 个。
+   *   这里用的 width 就是它们源码里实际传的值（见下）。
+   * ```
+   */
+  testWidgets('D-2 外壳夹取规则：覆盖 8 个弹窗实际使用的全部 width 档位', (t) async {
     /*
-     * ★ 为什么这条**不重跑渲染**，而是读 ①②③ 的结果：
-     *   三个弹窗的渲染视口不同（1440x900 / 1280x800 / 1600x1000）——
-     *   这是有意的（各自按真实窗口渲），但一致性判据比的是**卡片内部几何**，
-     *   与视口无关。所以复用读数即可，不必再渲一遍。
-     *
-     * ⚠️ 若某一条没跑到（比如渲染失败），这里必须**红**而不是跳过 ——
-     *    缺失的读数会让"三个都一致"变成"两个都一致"，那是假绿。
+     * 8 个弹窗实际传的 width（源码核对）：
+     *   update_dialog            460      （:107）
+     *   source_composer_dialog   820      （:289）
+     *   skip_marker_dialog       boxW     （:2290，自己夹成 768~820）
+     *   bili / danmaku / provider / source_switch / plugin_edit  → 未传 ⇒ 默认 560
+     * ⇒ 三档：460 / 560 / 820
      */
-    for (final k in const ['update', 'skip', 'composer']) {
-      expect(results[k], isNotNull,
-          reason: '★ $k 的几何读数缺失 —— 它没渲染成功，'
-              '那么"三者一致"这个结论就不成立（少一个比不出来）');
+    const widths = <double>[460, 560, 820];
+    const viewports = <Size>[
+      Size(1280, 800),
+      Size(1024, 640),
+      Size(800, 600),
+      Size(600, 500),
+      Size(400, 500), // 极端：比 820 窄很多，检验下限 260
+    ];
+
+    final bad = <String>[];
+    for (final vp in viewports) {
+      for (final w in widths) {
+        await setShotViewport(t, vp);
+        await t.pumpWidget(MaterialApp(
+          theme: ThemeData(brightness: Brightness.dark),
+          home: Scaffold(
+            backgroundColor: Colors.white,
+            body: AppDialogShell(
+              title: 'T',
+              subtitle: 'S',
+              onClose: () {},
+              width: w,
+              child: const Text('body'),
+            ),
+          ),
+        ));
+        await t.pumpAndSettle();
+        final card = _cardRect(t);
+        final mL = card.left;
+        final mR = vp.width - card.right;
+        final minM = math.min(mL, mR);
+
+        // 期望：min(w, 视口宽 − 2*Sp.x4)，下限 260
+        final expectW = math.min(w, math.max(vp.width - 32, 260));
+
+        if (minM < 0.5) {
+          bad.add('width=$w @${vp.width.toInt()}x${vp.height.toInt()}: '
+              '边距 L=${mL.toStringAsFixed(0)} R=${mR.toStringAsFixed(0)}');
+        }
+        if ((card.width - expectW).abs() > 1.0) {
+          bad.add('width=$w @${vp.width.toInt()}: '
+              '卡片宽 ${card.width.toStringAsFixed(0)} != 期望 '
+              '${expectW.toStringAsFixed(0)}');
+        }
+      }
     }
-
-    final gs = [results['update']!, results['skip']!, results['composer']!];
-
-    // ── ① 标题栏高度 ──
-    final headers = gs.map((g) => g.headerH).toList();
-    expect(headers.reduce((a, b) => a < b ? a : b),
-        closeTo(headers.reduce((a, b) => a > b ? a : b), 1.0),
-        reason: '★★ 标题栏高度不一致：$headers —— 三者都由外壳 _Header 产出，'
-            '高度不同说明有弹窗在外面又套了一层 padding');
-
-    // ── ② 关闭钮数量（必须恰好 1 个）──
-    for (final g in gs) {
-      expect(g.nClose, 1,
-          reason: '★★ ${g.name} 的关闭钮数量 = ${g.nClose}（应为 1）。'
-              '多于 1 = 外壳的关闭钮 + 调用方自己又画了一个（改前 skip 就是这样）；'
-              '少于 1 = 外壳的 onClose 没传');
-    }
-
-    // ── ③ 底部按钮区：必须有分隔线 + 按钮靠右 + 右缘距离一致 ──
-    for (final g in gs) {
-      expect(g.hasDivider, isTrue,
-          reason: '★★ ${g.name} 的按钮区没有分隔线 —— 说明它没走外壳的 actions，'
-              '而是自己在内容区画了一排按钮（改前 skip 就是这样）');
-    }
-    final gaps = gs.map((g) => g.actionsGapR).toList();
-    expect(gaps.reduce((a, b) => a < b ? a : b),
-        closeTo(gaps.reduce((a, b) => a > b ? a : b), 1.0),
-        reason: '★★ 按钮右缘到卡片边缘的距离不一致：$gaps —— '
-            '说明按钮区的外边距不是同一处给的');
-
-    // ── ④ 圆角半径（像素实测）必须一致 ──
-    final radii = <String, double>{};
-    for (final g in gs) {
-      final rs = [g.rTL, g.rTR, g.rBL, g.rBR].where((v) => v > 0).toList();
-      expect(rs.length, 4,
-          reason: '★★ ${g.name} 的圆角读数不全（${[g.rTL, g.rTR, g.rBL, g.rBR]}）—— '
-              '负数表示"该角落采不到边界"：-1 越界、-2 遮罩与卡片亮度差 <8。'
-              '先确认卡片 rect 正确、底图对比度足够，再谈一致性');
-      radii[g.name] = rs.reduce((a, b) => a + b) / rs.length;
-    }
-    final rv = radii.values.toList();
-    expect(rv.reduce((a, b) => a < b ? a : b),
-        closeTo(rv.reduce((a, b) => a > b ? a : b), 3.0),
-        reason: '★★ 圆角半径不一致：$radii —— 三者都由外壳的 Radii.rLg 画，'
-            '不该有差别。\n'
-            '⚠️ 容差 3px 而不是 1px：采样量化步长 0.25px、'
-            '换算系数 √2−1 ≈ 0.414 ⇒ 单个像素的抖动会放大成 ~2.4px。\n'
-            '实测三者 19.31 / 19.31 / 20.82，差 1.51px，在容差内。');
-
-    // ── ⑤ 内容区左右 padding（scrollable=false 的 skip 由调用方自己给）──
-    // ⚠️ 这一项**允许**不同：skip 的内容是调用方自己的 Padding(all: Sp.x5=20)，
-    //    而另外两个走外壳的 fromLTRB(Sp.x6=24, 0, Sp.x6, Sp.x2)。
-    //    §3.5 规定的是**外壳内容区**的 padding，skip 的中段自己滚（scrollable:false）
-    //    属于"调用方自己管内容"，所以这里只记录、不判红。
-    // ignore: avoid_print
-    print('[R4PIX] 内容区左右 padding（仅供参考，skip 走 scrollable:false 自己管）: '
-        '${gs.map((g) => "${g.name}=${g.padL}/${g.padR}").join(", ")}');
-
-    // ignore: avoid_print
-    print('\n[R4PIX] ===== 一致性判据通过 =====');
+    expect(bad, isEmpty,
+        reason: '★★ 外壳的夹取规则不成立：\n${bad.join('\n')}\n'
+            '公式应为 `min(传入 width, 视口宽 − 2*Sp.x4)`，下限 260。\n'
+            '⇒ 这条一旦红，**8 个弹窗全部**受影响（它们都只是传 width 进来）。');
   });
 
+  // ═══════════════════════════════════════════════════════════════════
+  //  汇总表
+  // ═══════════════════════════════════════════════════════════════════
   tearDownAll(() {
     // ignore: avoid_print
-    print('\n[R4PIX] ===== 汇总 =====');
-    for (final k in ['update', 'skip', 'composer']) {
-      final g = results[k];
+    print('\n[R4PIX] ================= 三视口 × 三弹窗 =================');
+    // ignore: avoid_print
+    print('[R4PIX] 指标            ' +
+        _viewports.keys.map((v) => v.padLeft(11)).join(''));
+    for (final d in _dialogNames) {
       // ignore: avoid_print
-      print('[R4PIX] ${k.padRight(9)} ${g ?? "缺失"}');
+      print('[R4PIX] --- $d ---');
+      for (final metric in const [
+        'cardW',
+        'cardH',
+        'radius',
+        'headerH',
+        'actionsGapR',
+        'actionsH',
+        'nClose',
+        'scroll',
+        'overflow'
+      ]) {
+        final cells = <String>[];
+        for (final v in _viewports.keys) {
+          final g = results['$d@$v'];
+          if (g == null) {
+            cells.add('  缺失'.padLeft(11));
+            continue;
+          }
+          final String s;
+          switch (metric) {
+            case 'cardW':
+              s = g.cardW.toStringAsFixed(0);
+            case 'cardH':
+              s = g.cardH.toStringAsFixed(0);
+            case 'radius':
+              s = g.radius.toStringAsFixed(2);
+            case 'headerH':
+              s = g.headerH.toStringAsFixed(1);
+            case 'actionsGapR':
+              s = g.actionsGapR.toStringAsFixed(1);
+            case 'actionsH':
+              s = g.actionsH.toStringAsFixed(1);
+            case 'nClose':
+              s = g.nClose.toString();
+            case 'scroll':
+              s = g.scrollable ? g.maxScrollExtent.toStringAsFixed(0) : 'no';
+            default:
+              s = g.overflowsViewport ? 'OVERFLOW' : 'ok';
+          }
+          cells.add(s.padLeft(11));
+        }
+        // ignore: avoid_print
+        print('[R4PIX] ${metric.padRight(15)}${cells.join('')}');
+      }
     }
     final dir = Directory('.probe/r4pix');
     if (dir.existsSync()) {

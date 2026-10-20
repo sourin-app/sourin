@@ -2,7 +2,7 @@
 
 Status: implemented
 
-Independent: 与 [e2e 截图落到 git 跟踪路径 + 证据 manifest 门禁](../../process/2026-10-20-e2e-shots-evidence-outdir-and-manifest-gate.md)
+Independent: 与 [e2e 截图落到 git 跟踪路径 + 证据 manifest 门禁](../process/2026-10-20-e2e-shots-evidence-outdir-and-manifest-gate.md)
 同族（都讲「证据本身要能复核」），但那篇讲**图会消失**；本篇讲**判据本身会骗人**——
 同一批图，量错节点或量错采样区，能把满屏面板判成合格卡片，也能把合格卡片判成裁切。
 

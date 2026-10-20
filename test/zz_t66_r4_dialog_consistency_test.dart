@@ -83,8 +83,10 @@ const _bareShellWhitelist = <String, String>{
 /// ⇒ 门禁全绿，而全仓有一批 `AlertDialog(` / 裸 `Dialog(` 在它视野之外。
 /// ★★ 2026-10-19 复核校正：此处原文写的是「22 处」，那是**剥注释之前**、
 ///   且按旧口径数出来的。复核复刻本门禁口径（剥注释 + 逐行至多计 1 + 5 个 pattern）
-///   实跑 ⇒ **16 处**；注册表 16 条 ⇔ 门禁 16 处 ⇒ 当前自洽。
-///   ⇒ 「22」已作废，**别拿它对账**（下面 `_siteExemptions` 那句也要按 16 读）。
+///   实跑 ⇒ **15 处**；注册表 15 条 ⇔ 门禁 15 处 ⇒ 当前自洽
+///   （2026-10-20 独立复核插桩实测 `SCANNED_TOTAL=15 registry=15`，15 行全 `hit=Y`；
+///    配套口径：**收拢 11 处 / 豁免 15 处，漏网 0**）。
+///   ⇒ 「22」已作废，**别拿它对账**（下面 `_siteExemptions` 那句也要按 15 读）。
 /// ⇒ 按文件豁免救不了这种情况：一个文件里可能既有该换的、也有该留的。
 /// ```
 ///
@@ -163,15 +165,19 @@ const _siteExemptions = <String, String>{
           '不是外壳能用。重测脚本：`.probe/r4f_order_material_test.dart`。'
           '⚠️ 宽度**不是**拦路石：装 420 传 `maxWidth: 468` 即可（content 宽 = maxWidth − 48）。'
           '⇒ 给 `AppGlassDialog` 补「透明 Material 宿主」之后才可收拢。',
-  // 机制① 固定尺寸 + 自带滚动区（AppGlassDialog 上限 maxWidth 380 / maxHeight 420）
+  // 机制① 固定尺寸 + 自带滚动区
+  // ⚠️ 2026-10-20：外壳默认值已从 380/420 抬到 **460/620**（对齐 §3.5），
+  //    下列理由里的"装不下"要按新默认重新算，别再用旧的 380/420 对账。
   'lib/ui/settings_page.dart#插件更新 · ':
       '机制①：content 是 SizedBox(width:480, height:460) + Column，'
           '源码注释写明「有界高度（照 _SkipHistoryDialog）：内容再多也只占 460px」。'
-          'AppGlassDialog 上限 maxWidth 380 / maxHeight 420 ⇒ 480×460 装不下。',
+          '外壳默认 maxWidth 460 / maxHeight 620 ⇒ 装 480 宽需显式传 '
+          '`maxWidth: 528`（content 宽 = maxWidth − 48）⇒ 属调用点决策，本轮不动。',
   'lib/ui/settings_page.dart#配置「':
       '机制①：content 是 SizedBox(width:420) + SingleChildScrollView'
           '(clipBehavior) + 动态字段循环（for (final f in widget.config.fields)）。'
-          'AppGlassDialog 上限 maxWidth 380 ⇒ 420 宽装不下。',
+          '外壳默认 maxWidth 460 ⇒ 420 宽的内容只剩 460 − 48 = 412，差 8px；'
+          '装得下需显式传 `maxWidth: 468` ⇒ 属调用点决策，本轮不动。',
   'lib/ui/widgets/tvbox_source_panel.dart#订阅更新 · ':
       '★★ 2026-10-19 复核：这是**两条机制叠加**，此前只写了机制④（分类不完整）。'
           '机制④：content 是 `SizedBox(width:560, height:480)` + 自带滚动，'
@@ -189,7 +195,14 @@ const _siteExemptions = <String, String>{
           '"TextField widgets require a Material widget ancestor" ⇒ 换过去直接崩。',
   'lib/ui/widgets/backup_panel.dart#这个备份包含登录态':
       '机制②：content 含 **TextField**（输入导出时设的口令），包在 SizedBox(width:380) '
-          '的 Column 里。同上：换过去会抛 "require a Material widget ancestor"。',
+          '的 Column 里。同上：换过去会抛 "require a Material widget ancestor"。'
+          '★ **别与下面那条搞混**（verify-34 在这里误判过一次「机制写反」，'
+          '根因是两个标题只差一个字）：'
+          '本条 = `title: const Text(\'这个备份包含登录态\')`，'
+          '在 `_ImportPassphraseDialog`（有 TextField）⇒ **机制②**；'
+          '另一条 = `title: const Text(\'这个备份文件含登录态\')`，'
+          '是 `showAppDialog` 里那段 StringBuffer 清单（无输入框）⇒ **机制⑤**。'
+          '两条是**两个不同的弹窗**，不是同一处的两种说法。',
   'lib/ui/widgets/provider_login_panel.dart#constraints: const BoxConstraints(maxWidth: 460)':
       '★ 2026-10-19 复核**改判**（此前写的是「机制②」，实测**不成立**）。'
           '**不属于机制②**：按括号块逐字量过，`Dialog(` 的 1706 字符块内 '
@@ -310,7 +323,9 @@ bool _isExempt(String file, int strippedLine, String anchorText) {
 ///
 /// ★ 2026-10-19：从「文件名含 dialog」改成「**全仓 lib/**」。
 ///   理由见 [_siteExemptions] 的注释 —— 旧范围漏掉了 13 个文件。
-/// ★ 那 13 个文件里的弹窗，复核复刻本门禁口径实跑共 **16 处**（不是旧注释里的 22）。
+/// ★ 那 13 个文件里的弹窗，复核复刻本门禁口径实跑共 **15 处**（不是旧注释里的 22）。
+///   2026-10-20 独立复核插桩：`SCANNED_TOTAL=15 registry=15`，15 行全 `hit=Y`
+///   ⇒ 口径：**收拢 11 处 / 豁免 15 处，漏网 0**。
 List<String> _dialogFiles() {
   final out = <String>[];
   void walk(Directory d) {

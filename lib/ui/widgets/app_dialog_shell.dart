@@ -360,7 +360,21 @@ class AppDialogShell extends StatelessWidget {
      */
     final shelled = glass
         ? GlassContainer(
-            shape: LiquidRoundedRectangle(borderRadius: 20),
+            /*
+             * ★ 玻璃轮廓的圆角取 `Radii.lg`（22），改前是硬编码 `20`。
+             *
+             * 同一个壳里原本**两个值**：内层 Material 的
+             * `RoundedRectangleBorder(borderRadius: Radii.rLg)`（见 :303）是 22，
+             * 而这一层是 20。玻璃档下观感由**这一层**决定 —— 内层 Material 的
+             * color 已置透明、side 已置 none（它不画底也不描边），且
+             * `Material.clipBehavior` 默认 `Clip.none`（它不裁切）——
+             * ⇒ 真正被看见的圆角一直是 20，§3.5 的「圆角 Radii.rLg」
+             * 在玻璃档上**名不副实**。两处现已统一成 `Radii.lg`。
+             *
+             * ⚠️ 别把这里改回字面量：§3.5 写「圆角一律 Radii.*，禁硬编码」，
+             *    引 token 才能在下一次调 `Radii.lg` 时自动跟上。
+             */
+            shape: const LiquidRoundedRectangle(borderRadius: Radii.lg),
             padding: EdgeInsets.zero,
             child: card,
           )

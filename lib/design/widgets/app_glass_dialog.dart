@@ -50,7 +50,7 @@ import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
     show GlassContainer, LiquidRoundedSuperellipse;
 
 import '../../ui/theme/app_colors.dart';
-import '../../ui/tokens.dart' show Sp;
+import '../../ui/tokens.dart' show Radii, Sp;
 import '../theme/app_theme.dart';
 import 'app_text_button.dart';
 
@@ -151,34 +151,133 @@ class AppGlassDialog extends StatelessWidget {
           constraints: BoxConstraints(maxWidth: maxWidth, maxHeight: maxHeight),
           child: GlassContainer(
             /*
-         * 圆角 20 —— 与本仓其它面板（AppDialogShell 的 LiquidRoundedRectangle(20)）
-         * 保持同档，避免"弹窗圆角两套"。
-         */
-            shape: const LiquidRoundedSuperellipse(borderRadius: 20),
+             * ★ 圆角取 `Radii.lg`（22），**不再写字面量**（改前是硬编码 20）。
+             *
+             * # 为什么改
+             * ```text
+             * docs/AGENTS.md §3.5（原文）：圆角 Radii.rLg
+             * lib/ui/tokens.dart:98  Radii.lg  = 22
+             * lib/ui/tokens.dart:107 Radii.rLg = all(circular(22))
+             * ```
+             * 改前这里写的是 `20`，而 AppDialogShell 的内层 Material 用的是
+             * `Radii.rLg`（22）—— 同一个应用两种弹窗两种圆角，正是 §3.5 要消灭的
+             * 「各写各的」。§3.5 还写着「本节的数一律以外壳代码为准……间距一律
+             * Sp.x*、圆角一律 Radii.*，**禁硬编码**」⇒ 引 token，不写 22。
+             *
+             * ⚠️ 两套外壳的**决策层不同**（实测确认，别再猜）：
+             *   · 本组件：`GlassContainer` 是最外层，玻璃轮廓就是观感 ⇒ 它决定圆角；
+             *   · `AppDialogShell`：玻璃档外层 `LiquidRoundedRectangle` 决定观感
+             *     （内层 Material 已置透明 + side:none，不画边也不裁切：Material
+             *      默认 clipBehavior = Clip.none）；非玻璃档才轮到内层 `Radii.rLg`。
+             *   ⇒ 两边必须同时是 `Radii.lg`，否则玻璃档与非玻璃档圆角又分叉。
+             */
+            shape: const LiquidRoundedSuperellipse(borderRadius: Radii.lg),
             padding: EdgeInsets.zero,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 22, 24, 16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    title,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: c.onSurface,
-                      fontFamily: t.typeface.fontFamily,
-                      fontFamilyFallback: t.typeface.fontFamilyFallback,
-                      fontSize: t.typeface.md,
-                      fontWeight: FontWeight.w600,
-                      height: 1.3,
-                      // ⚠️ 显式清零：DefaultTextStyle.merge 会继承 TextTheme 的
-                      //    letterSpacing（CJK 0.25）⇒ 标题会被拉宽（第 3 步踩过）
-                      letterSpacing: 0,
+            child: DecoratedBox(
+              /*
+               * ★ 实色垫层（P0 修：正文对比度 2.01:1 —— 与 R3-① 同类缺陷）
+               *
+               * # 病因：玻璃只管质感，**遮光必须另有实色垫层**
+               * R3-① 「弹窗整体看不清」当时的修法就是这句口诀，但垫层只落在了
+               * `lib/ui/widgets/app_dialog_shell.dart:301`
+               * （`colorScheme.surfaceContainerHighest`；同文件 :251 注释
+               *  「统一：卡片底色用 surfaceContainerHighest」）。
+               * **本组件从来没有垫层** ⇒ 玻璃直接压在页面上，卡底 = 页面色的
+               * 模糊结果，正文 `onSurfaceVariant` 压上去就塌了。
+               *
+               * # 真机读数（Lead 用 PIL 从 .probe/round66_r4_device/fix1_01_tray_close.png
+               *   逐像素量；卡底 #A1A9BC = 玻璃压浅色页面后的模糊结果）
+               * ```text
+               * 标题「要关闭还是彻底退出？」      #0A0A0A on #A1A9BC = 8.41:1  ✔
+               * 正文（最小化到托盘…）            #737373 on #A1A9BC = 2.01:1  ✘
+               * 正文（彻底退出：结束程序…）       #737373 on #A1A9BC = 2.01:1  ✘
+               * 按钮行（最小化到托盘/彻底退出/取消）#171717 on #A1A9BC = 7.59:1  ✔
+               * ```
+               * ⇒ 标题与按钮靠 `onSurface` 侥幸过关，**正文 `onSurfaceVariant`
+               *   是全仓所有信息文本的颜色** —— 这不是一处弹窗的事。
+               * ⇒ R4 第二步把 7 个 `AlertDialog` 收拢到本组件，等于把 R3-① 的
+               *   缺陷又搬回来了；所以这条在 R4 范围内必须修。
+               *
+               * # 为什么是 `DecoratedBox` 而不是 `ColoredBox`
+               * 垫层必须**跟着卡片圆角**：`ColoredBox` 画的是直角矩形，会从
+               * `Radii.lg` 的圆角外侧露出来（玻璃那圈描边压不住）。`DecoratedBox`
+               * 一个 widget 同时给「色 + 圆角」。
+               *
+               * # 为什么不用 `Material` 做垫层
+               * `Material` 会**白送 Material 祖先**，正好把弹窗外壳「零 Material
+               * 宿主」这个前提改掉 —— 而机制② 的 8 处豁免（`ListTile` / `TextField`
+               * 缺 Material 祖先打不开）全靠这个前提成立。那是另一个决策
+               * （见笔记里「补齐透明 Material 宿主之后才可收拢」），本轮不碰。
+               *
+               * # 为什么取 `c.surfaceContainerHigh`（自家语义色，**不是** ColorScheme）
+               * ```text
+               * 本组件的标题/正文色来自 `AppTheme.resolvedOf(context).colors`
+               * （AppSemanticColors，见 build 开头），**不是** Material 的
+               * `Theme.of(context).colorScheme` —— 两套值不一定相同。
+               * 垫层必须与**文字色同源**，否则「算出来的对比度」与「真渲染的
+               * 对比度」对不上 ⇒ 又成一条算着绿、看着坏的假门禁。
+               * AppSemanticColors.surfaceContainerHigh 就是 `palette.card`
+               * （浅色 #FFFFFF / 深色 #171717），明暗两档都跟着主题包走。
+               * ```
+               * 预期对比度（按 WCAG 2.1 算，判据见
+               * test/zz_t66_glass_dialog_test.dart ⑪）：
+               *   浅色 body #737373 on #FFFFFF = 4.74:1 / title 19.80:1
+               *   深色 body #A1A1A1 on #171717 = 6.94:1 / title 17.18:1
+               * ⇒ 都过 AA 的 4.5:1。
+               *
+               * # ⚠️ 别照抄 `AppDialogShell` 玻璃档那个写死的 `#14161B@0.98`
+               * 那一档用在「视频上面的面板」，它自己把文字换成了浅色系
+               * （DanmakuTextColors 那一族）。本组件的调用点是**浅色页面上的确认框**，
+               * 正文 `c.onSurfaceVariant` 在浅色档是 `#737373` ——
+               * 压在近黑底上只剩 ~1.5:1，比不修更糟。
+               */
+              decoration: BoxDecoration(
+                color: c.surfaceContainerHigh,
+                borderRadius: Radii.rLg,
+              ),
+              child: Padding(
+                /*
+               * ★ 内容区内边距 `fromLTRB(24, 22, 24, 16)` —— **刻意不照抄**
+               *   §3.5 的 `fromLTRB(Sp.x6, 0, Sp.x6, Sp.x2)`（即 24/0/24/8）。
+               *
+               * # 为什么不照抄（已裁定为「登记的偏差」）
+               * ```text
+               * §3.5 那组数预设「外壳自带独立标题栏」：
+               *   标题在栏里（栏自己有 padding），内容区**顶 0** 是"接着栏往下排"。
+               * 而本组件的标题**就在内容区这条 Column 里**（第一行 Text），
+               * 按钮行也不在独立 footer 而是 Column 末尾的 Align ⇒ 没有栏替我们
+               * 撑开上下留白。硬套 0/8 的结果：标题贴着卡片上沿、按钮贴着下沿，
+               * 观感比改前更差 —— 那是把别人的结构参数套到不同结构上。
+               * ⇒ 顶 22 / 底 16 是**补偿"无独立标题栏"**，不是随手拍的数：
+               *   22 ≈ Radii.lg 的视觉呼吸（上沿更宽松），16 = Sp.x4 与按钮行自带的
+               *   点击热区一道凑够下沿。
+               * ```
+               * ⚠️ 这条偏差**不是**「实现懒得改文档」，是结构不同导致的参数不可移植。
+               * 已在 `.agents/notes/implemented/feature/
+               * 2026-10-19-dialog-shell-unification-and-hover-sticky-bit.md` 登记。
+               */
+                padding: const EdgeInsets.fromLTRB(24, 22, 24, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      title,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: c.onSurface,
+                        fontFamily: t.typeface.fontFamily,
+                        fontFamilyFallback: t.typeface.fontFamilyFallback,
+                        fontSize: t.typeface.md,
+                        fontWeight: FontWeight.w600,
+                        height: 1.3,
+                        // ⚠️ 显式清零：DefaultTextStyle.merge 会继承 TextTheme 的
+                        //    letterSpacing（CJK 0.25）⇒ 标题会被拉宽（第 3 步踩过）
+                        letterSpacing: 0,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 10),
-                  /*
+                    const SizedBox(height: 10),
+                    /*
                * ★ 内容区滚动（Lead 硬要求）
                *
                * `Flexible` + `SingleChildScrollView`：
@@ -187,29 +286,30 @@ class AppGlassDialog extends StatelessWidget {
                * ⚠️ 不能只写 SingleChildScrollView 不写 Flexible ——
                *    Column(mainAxisSize.min) 下它仍会按内容全高撑开。
                */
-                  Flexible(
-                    child: SingleChildScrollView(
-                      child: DefaultTextStyle(
-                        style: TextStyle(
-                          color: c.onSurfaceVariant,
-                          fontFamily: t.typeface.fontFamily,
-                          fontFamilyFallback: t.typeface.fontFamilyFallback,
-                          fontSize: t.typeface.sm,
-                          height: 1.45,
-                          letterSpacing: 0,
+                    Flexible(
+                      child: SingleChildScrollView(
+                        child: DefaultTextStyle(
+                          style: TextStyle(
+                            color: c.onSurfaceVariant,
+                            fontFamily: t.typeface.fontFamily,
+                            fontFamilyFallback: t.typeface.fontFamilyFallback,
+                            fontSize: t.typeface.sm,
+                            height: 1.45,
+                            letterSpacing: 0,
+                          ),
+                          textAlign: TextAlign.center,
+                          child: content,
                         ),
-                        textAlign: TextAlign.center,
-                        child: content,
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 18),
-                  /*
+                    const SizedBox(height: 18),
+                    /*
                * 按钮行：右对齐，与 Material AlertDialog 的动作区一致。
                * 用第 1 步建好的 `AppTextButton`（自建、零 Material）。
                */
-                  Align(alignment: Alignment.centerRight, child: actions),
-                ],
+                    Align(alignment: Alignment.centerRight, child: actions),
+                  ],
+                ),
               ),
             ),
           ),

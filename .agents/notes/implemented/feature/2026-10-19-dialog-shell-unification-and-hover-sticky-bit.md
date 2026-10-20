@@ -59,7 +59,15 @@ skip 弹窗是**唯一**显式传 `maxHeight` 的（740），
 理由写进了注释：新外壳加了一条 70px 标题栏，
 `620` 会把预览压到 116px（≈206×116，比 Owner 当年嫌小的 277×156 更小）。
 
-### R4 第二步：全仓取号 —— **收 7 处、豁免 9 处**
+### R4 第二步：全仓取号 —— **收拢 11 处 / 豁免 15 处（按处，不按文件）**
+
+> ★ **口径更正（2026-10-20，替我上一版的错报）**：本节此前写「收 7 处、豁免 9 处」，
+> 那是**只数了本批新动的**那几个站点。按处（不是按文件）复核后的真数字：
+> **收拢 11 处** = `lib/` 里 `AppGlassDialog(` 的构造点（除 `lib/design/` 自身与
+> `lib/t105_r4_dialogs_probe.dart` 探针）；**豁免 15 处** = 门禁 `_siteExemptions`
+> 的 15 条键，与代码里 15 处裸 `AlertDialog(` / `Dialog(` 构造点 **1:1**。
+> 同一文件里多个站点的（`detail_page` 3、`settings_page` 4、`backup_panel` 3、
+> `theme_page` 2、`sync_panel` 3）**一律按处算**。
 
 第一步只收了 3 个弹窗（`update_dialog` / `skip_marker` / `composer`），
 全仓其余站点仍在各写各的。第二步的判据换成
@@ -72,24 +80,49 @@ skip 弹窗是**唯一**显式传 `maxHeight` 的（740），
 没有对应的豁免注释」也判红 ⇒ 防止「登记表越写越长、注释早已被删」。
 
 ```text
-收拢 7 处（原先都是裸 AlertDialog）：
+收拢 11 处（原先都是裸 AlertDialog，现全部走 AppGlassDialog）：
   app_tray           退出确认（★三键：直接退出/托盘/取消）→ 自拼按钮行
   cache_page         「删除」             → AppGlassDialogActions，不染红
+  detail_page        「下载全部集」        → 同上
+  detail_page        「删除这一集」        → 同上
+  detail_page        「删除选中的集」      → 同上
+  settings_page      通用确认              → 同上
   data_manage_page   「清理」             → 同上
   emby_page          「删除」             → 同上
   skip_page          可自定义确认文案     → 两键走 Actions，否则自拼
   sync_panel         可自定义确认文案     → 同 skip_page
   download_panel     「删除这一集的下载？」→ 同上（本轮补）
 
-豁免 9 处，按**机制**归类（不是按「懒得改」）：
-  机制① 缺 width 控制      sync_panel:webdav(420)  tvbox(560×480)
-  机制② 缺 Material 祖先   settings_page:调整内容源顺序(ListTile)
-                          provider_login_panel(TextField)
-  机制③ 内联 TextStyle 定色被外壳覆盖   theme_page 的一处
-  机制④ 缺 padding+backgroundColor      theme_page:主题预览面板
-  机制⑤ 内容区 textAlign 强制居中       backup_panel(多行左对齐清单)
-                          sync_panel:passphrase(表单)
-  探针类                  t104_overlay_exit_probe(验证统一入口本身)
+豁免 15 处，按**机制**归类（不是按「懒得改」；☆ = 该处叠了两条机制，只数一次）：
+  机制② 缺 Material 祖先（8 处，逐条列全，不许只写"代表性的几个"）
+                         settings_page:调整内容源顺序(ListTile)
+                         settings_page:这一处刻意保留 Material(TextField)
+                         backup_panel:设置导出用口令(TextField)
+                         backup_panel:这个备份包含登录态(TextField)
+                         theme_page:粘贴主题包 JSON ☆(＋④ 宽 460)
+                         sync_panel:配置云盘(WebDAV) ☆(＋④ 宽 420)
+                         sync_panel:width: 380(passphrase 表单) ☆(＋④)
+                         tvbox_source_panel:订阅更新 ☆(＋④ 560×480)
+  机制① 缺 width 控制（2 处）
+                         settings_page:插件更新(480×460)
+                         settings_page:配置「」(420 + 动态字段循环)
+  机制③ 内联 TextStyle 定色被外壳覆盖（1 处）
+                         download_panel:删除整部剧的下载？(红字警示被冲掉)
+  机制④ 缺 padding/backgroundColor（1 处，只此一条）
+                         theme_page:主题预览面板(零内边距 + 自带卡片底色)
+  机制⑤ 内容区 textAlign 强制居中（1 处）
+                         backup_panel:多行左对齐清单(『这个备份文件含登录态』)
+  自建外壳（裸 Dialog( + 自绘标题）（1 处）
+                         provider_login_panel:登录确认（title 只收 String）
+  探针类（1 处）        t104_overlay_exit_probe(验证统一入口本身)
+
+★ **两条同名陷阱（verify-34 曾据此刻度判我"机制写反"，根因是两个标题只差一个字）**：
+```text
+title: const Text('这个备份包含登录态')  → _ImportPassphraseDialog，含 TextField ⇒ 机制②
+title: const Text('这个备份文件含登录态') → showAppDialog 里 StringBuffer 多行清单 ⇒ 机制⑤
+```
+两者是**两个不同的弹窗**，不是同一处的两种说法。登记表用各自完整原文做键
+（前者 `title: const Text('…')`、后者 `builder: (ctx) => AlertDialog`）来区分。
 ```
 
 ★ **`skip_page` / `sync_panel` 的 `cancelLabel == null` 形态是「只有确认键」**，
@@ -167,7 +200,8 @@ _HoverCapability.disposeListener();
 **D. R4 第二步：全部收拢，一处都不豁免。**
 最强理由：只要开了豁免口子，登记表就会变成垃圾桶，
 下次来的人先登记再说 —— 这正是不统一的老路。
-否决理由：那 9 处里有 6 处是**外壳能力缺口**，硬塞进去的后果不是「丑一点」：
+否决理由：那 15 处里有 14 处是**外壳能力缺口**（只有 1 处是真机探针），
+硬塞进去的后果不是「丑一点」：
 `ListTile`/`TextField` 直接抛 `No Material widget found`（**弹窗打不开**），
 或把多行清单/表单**逐行居中**、把内联定色覆盖掉。
 那不是「统一」，是**用一个错的样子统一**。
@@ -175,9 +209,10 @@ _HoverCapability.disposeListener();
 `maxWidth` 放开），补完再收 —— 豁免条目里逐条写着「补齐 X 之后才可收拢」。
 
 **E. R4 第二步：只改代码，不建逐处门禁。**
-最强理由：这轮已经把 7 处改完了，静态检查是额外成本；
+最强理由：这轮已经把 11 处改完了，静态检查是额外成本；
 第一步已有渲染门禁，够用。
-否决理由：第一步只收了 3 处，而**第一步之后全仓仍有 16 处**裸 `AlertDialog`——
+否决理由：第一步只收了 3 处，而**第一步之后全仓仍有 15 处**裸 `AlertDialog` /
+`Dialog(`（= 现登记表 15 条，1:1）——
 正是因为没有「逐处」判据，收完就又开始长。
 计数式判据（「≤N 处」）更糟：新增弹窗会把 N 顶上去而静默放宽，
 逐处取号才会逼出「要么收、要么说清为什么」。
@@ -215,8 +250,10 @@ _HoverCapability.disposeListener();
   `constraints: const BoxConstraints(maxWidth: 460)`），**不是放宽判据**。
   这条判据的邻域窗口（±14 行）是 HEAD 上就有的，本轮**没动它**。
 
-★ 本轮对门禁的改动只有三件：补登 1 处新豁免（`backup_panel` 机制⑤）、
-  重写 1 条判错的豁免理由（`settings_page` 顺序弹窗，见上）、修 2 条已失效的键。
+★ 本轮对门禁的改动只有四件：补登 1 处新豁免（`backup_panel` 机制⑤）、
+  重写 1 条判错的豁免理由（`settings_page` 顺序弹窗，见上）、修 2 条已失效的键、
+  把注释里过期的计数口径（16 处 / 22 处）改成**插桩实测的 15 处**（`SCANNED_TOTAL=15`、
+  `registry=15`、15 行全 `hit=Y`）。**判据本身没动**，只改注释口径。
 
 故障注入证明它仍有判别力（两次都 sha256 前后一致地还原）：
 
@@ -323,3 +360,64 @@ analyze：0 error；lib 与两个门禁文件**零新增 warning**
   应改为按可用宽截断（外壳需要加 `titleMaxLines` 参数），
   而不是调大那个 24 —— 现在调它也解决不了换行。
 ```
+
+**R4 P0（2026-10-20）：搬到玻璃外壳的确认框，正文对比度塌到 2.01:1**
+
+```text
+真机读数（Lead 用 PIL 从 .probe/round66_r4_device/fix1_01_tray_close.png 逐像素量；
+卡底 #A1A9BC = 玻璃压浅色页面后的模糊结果）：
+  标题「要关闭还是彻底退出？」  #0A0A0A on #A1A9BC = 8.41:1  ✔
+  正文（最小化到托盘…）        #737373 on #A1A9BC = 2.01:1  ✘
+  正文（彻底退出：结束程序…）   #737373 on #A1A9BC = 2.01:1  ✘
+  按钮行                      #171717 on #A1A9BC = 7.59:1  ✔
+```
+
+根因不是玻璃本身，是**少了垫层**：R3-① 「弹窗整体看不清」当时的裁决是
+「玻璃只管质感，**遮光交给实色垫层**」，但那个垫层只落在
+`lib/ui/widgets/app_dialog_shell.dart:301`；`AppGlassDialog` 从来没有 ⇒
+R4 第二步把 7 个 `AlertDialog` 搬进来，等于把 R3-① 的缺陷搬了回来。
+教训一句：**收拢一个组件之前，要先问它有没有把老问题的修法一起带过来。**
+
+修法：`GlassContainer` 内、`Padding` 之前插一层 `DecoratedBox`
+（色 `c.surfaceContainerHigh` + 圆角 `Radii.rLg`）。三个「不用什么」写进了代码注释：
+
+```text
+· 不用 ColoredBox —— 直角垫层会从 Radii.lg 圆角外侧露出来
+· 不用 Material    —— 会白送 Material 祖先，把机制② 那几处豁免的前提改掉
+· 不用 AppDialogShell 玻璃档写死的 #14161B@0.98 —— 那一档用在「视频上的面板」，
+  文字已是浅色系；本组件的调用点是浅色页面上的确认框，正文 #737373 压近黑底只剩 ~1.5:1
+```
+
+★ **颜色必须与文字同源**：垫层取 `c.surfaceContainerHigh`（`AppSemanticColors`，
+与 `c.onSurfaceVariant` 同一来源），**不是** `Theme.of(context).colorScheme`
+那一套 —— 两套值并不相同（浅色 `ColorScheme.surfaceContainerHighest = #E4E8F0`，
+`lib/ui/theme_bridge.dart:714` 注释自承「硬编码蓝灰，不跟主题包走」；用它算正文只有
+**3.86:1**，看着像加固、实际不够）。取同源的 `#FFFFFF` 才是 **4.74:1**。
+这条差点变成一条「算着绿、看着坏」的假门禁，是**故障注入 c** 才抓住的。
+
+判据（`test/zz_t66_glass_dialog_test.dart` 第 ⑪ 组，浅/深两档各一条）：
+
+```text
+① 结构：GlassContainer 的**直接子层**是 DecoratedBox（改前是 Padding）
+② 同源：color == 组件自己 resolve 的 colors.surfaceContainerHigh，
+        borderRadius == Radii.rLg
+③ 效果：用 WCAG 2.1 公式**现算** contrast(onSurfaceVariant / onSurface, 垫层) ≥ 4.5:1
+        （浅 4.74 / 19.80；深 6.94 / 17.18）—— 不写死这些数字，主题改色跟着重算
+```
+
+故障注入三连（每次红，每次 sha256 前后一致地还原）：
+
+```text
+a) 删掉整层 DecoratedBox      ⇒ ① 红（Expected DecoratedBox / Actual Padding）
+b) 垫层色改 Colors.transparent ⇒ ② 红（颜色对不上）        `+0 -2`
+c) 垫层色改 Theme.of(...).colorScheme.surfaceContainerHighest
+                              ⇒ ② 红                    `+0 -2`
+   ★ 最关键的那次：证明判据能抓住「像加固、实际不够」的改法
+```
+
+⑪-b 是**只打印不 assert** 的读数表：`ThemePackStore.builtins` 全部 16 套主题包
+`contrast(mutedForeground, card)` 实测**最低 5.86:1（卡面 `builtin.glass`）/
+4.69:1（页面底 `builtin.sakura.light`）**，全部 ≥ 4.5 —— 但
+`AppPalette.light.mutedForeground = #737373` 对**默认**页面底 `#EEF0F6` 只有
+4.16:1（内置主题包都没用这个组合）。这是**既有 token 问题**，不在弹窗外壳范围里，
+登记在此供裁决；**不为了门禁绿去改别人的主题包色值**。

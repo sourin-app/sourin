@@ -81,6 +81,8 @@ const List<String> cs1Files = <String>[
   'test/zz_t66_cs1_render_point_uniqueness_test.dart',
   'test/zz_t66_cs1_gitignore_guard_test.dart',
   'test/zz_t66_cs1_user_text_gate_test.dart',
+  'test/zz_t66_cs1_dpr_scale_gate_test.dart',
+  'test/zz_t66_cs1_evidence_shots_test.dart',
   // ── 决策笔记 ──
   '.agents/notes/proposed/feature/2026-10-19-login-state-sync-one-way.md',
 ];

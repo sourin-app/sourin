@@ -216,3 +216,73 @@ await t.runAsync(() async {
 判据：升级 Flutter 后重跑本文件的注入①，若注入①仍能红且不需要 `runAsync`，
 就换掉。
 届时 **`t75` 与 `t80a` 两处要一起换**（判据：两处都不再需要 `runAsync` 且各自注入仍能红）。
+
+### 第三个实例：`t74_perf_synth_test.dart` + `t74_follow_title_backfill_test.dart`（2026-10-21，连中三元）
+
+同一天在**另外两个文件**上又验到了同一个根因，且这两处的**表象与 `t75` 完全不同**：
+
+```text
+t74_perf_synth        红 1 条
+  ★ 设置页在合成侧没渲染出 ListView（读数 lv=0 cpi=0 ew=0）
+    ⇒ 报「页面没建出来」
+
+t74_follow_title_backfill   红 3 条
+  Expected: exactly one matching candidate
+    Actual: Found 0 widgets with text "（标题未知）"
+  ⇒ 报「找不到任何文本」，看起来像标题回填逻辑坏了
+```
+
+**两个表象都不是「一直 loading」，但机理是同一条。**
+
+| 文件 | initState / postFrame 里的真实 IO | 停住后的可观测形态 |
+|---|---|---|
+| `t74_perf_synth` | `settings_page.dart:467` → `loadAll()` → `Future.wait([listProviders, listPlugins, remoteStatus])` | `AppLoading=1`、`ListView=0` ⇒ **看起来像"页面没建出来"** |
+| `t74_follow_title_backfill` | `follow_page.dart:467` → `loadAll()` → `_load()` 的 `Future.wait([...])` | 列表不渲染 ⇒ `debugSetContinueList()` 注入的数据**进去了但没画出来**（`continueList=2` 而 `标题未知=0 真标题=0`） |
+
+**探针实测（同时刻两次对照，两个文件各一对）**：
+
+```text
+t74_perf_synth
+  裸 pump（pump100ms 后）       ⇒ ListView=0 AppLoading=1 ErrorWidget=0
+  runAsync + 轮询到 ListView>0  ⇒ ListView=1 AppLoading=0
+
+t74_follow_title_backfill
+  裸 pump + 注入后              ⇒ continueList=2 标题未知=0 真标题=0 ListView=1
+  runAsync + 注入后             ⇒ continueList=2 标题未知=1 真标题=1 ListView=1
+```
+
+★ **第二对读数尤其值得记**：`continueList` 两档都是 `2` ——
+**数据注入成功了**，只是没渲染出来。若只看 `debugContinueList`，
+两档读数完全相同 ⇒ 会得出「注入没问题，所以是回填逻辑坏了」的**错误结论**。
+必须看**渲染结果**（`find.text(...)`），而不是看**喂进去的值**。
+
+**一个副作用值得单独记**：`t74_follow` 的 `mount()` 里原本就有一条注释写着
+
+```text
+⚠️ 必须**等 `_load()` 落定再注入**
+```
+
+它**写对了、但做不到** —— 改前那两句 `await t.pump()` 等到的是
+「fake clock 空转 300ms」，不是「真实 IO 落定」。
+⇒ ★ 判据：**注释里写着「必须等 X 完成」时，要问「我拿什么等 X」**。
+   若答案是一个不驱动 X 的仪器，那条注释就是**假承诺**。
+
+**故障注入（两处各自独立，且都红在正确的断言上）**：
+
+```text
+注入①  t74_perf：把 runAsync 块换回裸 pumpWidget + 3 次 pump
+       dart analyze → No issues found!
+       ⇒ -1（红在「★ 设置页在合成侧没渲染出 ListView」那条）
+       读数：ListView=0 AppLoading=1 ⇒ 与改前逐字相同
+
+注入②  t74_follow：把 runAsync 里那句 Future.delayed(20ms) 删掉（只留 t.pump()）
+       dart analyze → No issues found!
+       ⇒ -3（红在原来那 3 条，且 Actual 逐字相同：Found 0 widgets with text …）
+
+还原   两个文件 sha256 均回到注入前，dart analyze 均 0 error
+       ⇒ t74_perf +7 全绿 / t74_follow +17 全绿
+       四文件一起跑（perf + follow + t75 + t80a）⇒ +43 全绿
+```
+
+★ 注入② 的意义：它只删了**一行 `Future.delayed`**，`runAsync` 还在。
+说明起作用的是「**让出真实时间给真实 IO**」，不是「进了 runAsync 这个语法块」。

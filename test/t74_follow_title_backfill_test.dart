@@ -383,21 +383,60 @@ void main() {
       await t.binding.setSurfaceSize(const Size(1280, 900));
       addTearDown(() => t.binding.setSurfaceSize(null));
 
-      await t.pumpWidget(host(FollowPage(
-        initialTab: 'continue',
-        backfillOverride: bf,
-      )));
       /*
-       * ⚠️ 必须**等 `_load()` 落定再注入**。
+       * ★★★ 2026-10-21：`pumpWidget` 必须放进 `runAsync`
        *
-       * `initState` 里 `addPostFrameCallback((_) => loadAll())` ⇒ `_load()`
-       * 成功时会 `setState(() => _continueList = results[2])` ——
-       * 若在它之前注入，注入的数据会被**覆盖掉**。
-       * （测试里三路 FFI 必然失败 ⇒ 走 catch ⇒ 不会覆盖；
-       *   但**不能依赖**这一点，否则将来 FFI 桩一改这条就变成假绿。）
+       * # 改前现象（本组 3 条红）
+       * ```text
+       * Expected: exactly one matching candidate
+       *   Actual: Found 0 widgets with text "（标题未知）"
+       * ⇒ 三条都报「找不到任何文本」，看起来像标题回填逻辑坏了。
+       * ```
+       *
+       * # 真实原因（与 t75 / t80a / t74_perf 同一条判据）
+       * ```text
+       * follow_page.dart:467  initState 里
+       *   addPostFrameCallback((_) => loadAll());
+       * loadAll() → _load() 里 Future.wait([...]) 全是真 FFI
+       * ⇒ 返回**真实** Future，而 tester.pump() 只推进 fake clock
+       * ⇒ `_loading` 停在 true ⇒ 列表压根不渲染
+       * ⇒ 下面 debugSetContinueList() 注入的数据「进去了但没画出来」
+       *   （探针实测：continueList=2 而 标题未知=0 真标题=0）
+       * ```
+       *
+       * 探针实测（同时刻两次对照）：
+       * ```text
+       * 裸 pump + 注入后      ⇒ continueList=2 标题未知=0 真标题=0 ListView=1
+       * runAsync + 注入后     ⇒ continueList=2 标题未知=1 真标题=1 ListView=1
+       * ```
+       *
+       * ⚠️ 下面那段注释「必须等 `_load()` 落定再注入」**仍然成立**，
+       *    而且现在才**真的**做到了 —— 改前 `await t.pump()` 根本等不到
+       *    真实 IO 落定，它等到的是"fake clock 空转 300ms"。
        */
+      await t.runAsync(() async {
+        await t.pumpWidget(host(FollowPage(
+          initialTab: 'continue',
+          backfillOverride: bf,
+        )));
+        /*
+         * ⚠️ 必须**等 `_load()` 落定再注入**。
+         *
+         * `initState` 里 `addPostFrameCallback((_) => loadAll())` ⇒ `_load()`
+         * 成功时会 `setState(() => _continueList = results[2])` ——
+         * 若在它之前注入，注入的数据会被**覆盖掉**。
+         * （测试里三路 FFI 必然失败 ⇒ 走 catch ⇒ 不会覆盖；
+         *   但**不能依赖**这一点，否则将来 FFI 桩一改这条就变成假绿。）
+         */
+        for (var i = 0; i < 60; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          await t.pump();
+          if (find.byType(FollowPage).evaluate().isEmpty) continue;
+          final s = t.state<FollowPageState>(find.byType(FollowPage));
+          if (s.debugContinueList.isNotEmpty) break;
+        }
+      });
       await t.pump();
-      await t.pump(const Duration(milliseconds: 300));
 
       final st = t.state<FollowPageState>(find.byType(FollowPage));
       st.debugSetContinueList(list);

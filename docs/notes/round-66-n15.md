@@ -349,7 +349,7 @@ test/zz_t66_danmaku_panel_semantics_test.dart  +43 -19
 全文件读数：`flutter test test/zz_t66_danmaku_panel_semantics_test.dart --concurrency=1` ⇒ **+15 All tests passed**；
 `test/t98_no_site_names_test.dart` ⇒ **+8 All tests passed**（新文案无站点名）。
 
-### 7.3 待 r6b-live 落定后补的门禁（本轮**没做**，因为文件不归我）
+### 7.3 待 r6b-live 落定后补的门禁（✅ 已在 §8 兑现，原文保留以存历史）
 
 ```text
 lib/ui/player_page.dart:16043 的发送框挂载谓词
@@ -368,4 +368,103 @@ lib/ui/player_page.dart:16043 的发送框挂载谓词
 只翻 danmakuSend（源码+产物同步）  ⇒ 发送门禁 EXIT1（跨位一致性：能发但没弹幕可看） / 能力门禁 EXIT0
 只翻 danmakuSend（只改源码不 build）⇒ 发送门禁 EXIT1（+ 产物不同态）          / 能力门禁 EXIT1（产物不同态）
 只翻 danmaku 位（无 danmakuList）   ⇒ 未跑                                     / 能力门禁 EXIT1
+```
+
+## 8. 第三轮（2026-10-20 16:30–17:38）：把那条 AND 谓词变成「可被弄红的门禁」
+
+新文件：`test/zz_t66_danmaku_send_predicate_test.dart`（新建，本轮之前没有）。
+跑法（**默认套件跳过** —— 需要真 `sourin_core.dll` + `libmpv-2.dll`，缺任一则整文件 skip，不是通过）：
+
+```bash
+flutter test test/zz_t66_danmaku_send_predicate_test.dart \
+  --run-skipped --tags native-media --concurrency=1
+```
+
+### 8.1 它到底测什么（不是白送祖先的围栏）
+
+```text
+现有 test/task41_danmaku_send_gate_test.dart 明确绕开 PlayerPage（注释写的是真核会 npative 崩），
+用的是 MaterialApp+Scaffold+PlayerBottomBar 的围栏 —— 那种围栏里
+player_page.dart:16043 的谓词**一个字节都没跑**，删掉 `&& _danmakuCanSend` 照样绿。
+
+本文件 pump 的是**真的 PlayerPage**，然后读它**建出来的** PlayerBottomBar 实例上的
+`danmakuSend` 值（公开字段，:531），并同时数树里 `DanmakuSendInline` 的个数 ——
+两个观测量必须同向（谓词给 null ⇒ 0 个；给数据 ⇒ 1 个）。
+```
+
+真值表（逐行 `--run-skipped` 实跑读数，`PRED|` 是测试自己打印的原始行）：
+
+| # | enabled 总开关 | canSend 源声明 | provider 认得 id | live 直播 | 期望入口 | 实测 |
+|---|---|---|---|---|---|---|
+| 1 | T | T | T | F | 1 | `entry=1 PASS`（**阳性对照**） |
+| 2 | F | T | T | F | 0 | `entry=0 PASS` |
+| 3 | T | **F** | T | F | 0 | `entry=0 PASS` |
+| 4 | T | F | **F** | F | 0 | `entry=0 PASS` |
+| 5 | T | T | T | **T** | 0 | `entry=0 PASS` |
+| 6 | F | F | F | T | 0 | `entry=0 PASS` |
+| 7 | T | F | F | F | 0 | `entry=0 PASS` |
+| 8 | F | T | T | T | 0 | `entry=0 PASS` |
+
+全文件读数：`+9: All tests passed!` / `EXIT=0`（9 = 8 行表 + 1 条源码契约）。
+`dart analyze test/zz_t66_danmaku_send_predicate_test.dart` ⇒ `No issues found!`
+
+### 8.2 三个「看起来该红其实是假红」的坑（全部实测踩过，读数在此）
+
+```text
+① 不 start 核心 ⇒ listProviders() 抛 ⇒ _danmakuCanSend 恒 false ⇒ 阳性对照假红。
+   解法：setUpAll 用**沙盒数据目录**起真核心，并往 <sandbox>/plugins/ 放两枚夹具插件。
+   夹具做法：复制仓库自带 rust/sourin_core/plugins/demo.js，改写 @id/id/capabilities，
+   改写没命中就 throw StateError（不许"测了个原样 demo"）。
+   自检读数：DIAG provider id=demo danmakuSend=true / id=demo2 danmakuSend=false
+
+② 只 tester.pump() 不行：initState 里那条 FFI 查询的回调在 fake_async 里**不会被派发**
+   ⇒ 查询永远挂着 ⇒ 恒 false。必须 tester.runAsync(400ms) 让真实事件循环跑一次。
+
+③ 让 _load() 真去解析流 ⇒ 沙盒没有真流 ⇒ _error != null ⇒ 底栏整个消失
+   （实测 bars=0，读到的 null 分不清"谓词为假"还是"页面没底栏"）。
+   解法：统一走 localPath（player_page.dart:3238 附近的生产短路，完全不调 _load()），
+   配一枚自己生成的最小 WAV（8kHz/8bit 单声道 0.2s 静音，1644 字节）。
+
+④ 还有一次红**与本门禁无关**：PlayerPage 一挂起就拉起 RemoteBridge 的轮询定时器，
+   不 stop 就报 "A Timer is still pending even after the widget tree was disposed"
+   （读数 +7 -1）。解法 setUp/tearDown 里 RemoteBridge.instance.stop()（t103/t108 同写法）。
+```
+
+### 8.3 故障注入：每条 AND 条件都必须有 ≥1 行变红
+
+注入脚本对 `lib/ui/player_page.dart` 做"断言 old 唯一命中 → 替换 → 跑 → 从备份还原 → 核 sha256 与 git status"，
+四次注入后 `FINAL_SHA=449570bd… 与 BASELINE_SHA 相同`、`FINAL_STATUS=[]`。
+
+| 注入 | 改法 | 读数 |
+|---|---|---|
+| A1 | 谓词去掉 `_danmakuEnabled &&` | EXIT=1，**#2 变红**（`entry=1 expected=0`），仅此 1 行 |
+| A2 | 去掉 `_danmakuCanSend &&` | EXIT=1，**#3 变红**，仅此 1 行 |
+| A3 | 去掉 `_danmakuSendProvider != null &&` | **第一次：EXIT=0、零行红**（见 8.4） |
+| A4 | `!_isLive` 换成 `true` | EXIT=1，**#5 变红**，仅此 1 行 |
+| A3′ | 补上源码契约后再注入 | EXIT=1，红在契约：`谓词丢了条件 _danmakuSendProvider != null` |
+
+### 8.4 A3 第一次是绿的 —— 这不是漏测，是那一格结构上不可达
+
+```text
+_danmakuCanSend 只在 _loadDanmakuSendCapability() 里赋值：
+  · id 为空时 canSend=false 且 provider=null **一起**置（:3383-3392）
+  · 之后 canSend 只由 danmakuSendAllowed(list, id) 决定（:3413）
+⇒「canSend 真 + provider 空」没有任何代码路径能产生 ⇒ 黑盒表**永远**钉不住第 ③ 条，
+  谁删了它都是绿的。它真正的职责是：万一哪天可达，`_danmakuSendProvider!` 当场空断言崩，
+  而不是渲染一个坏入口。
+⇒ 补了一条**源码契约**（与 task41 对 player_bottom_bar.dart 的做法同源）：剥注释后断言
+  四条子句都在、false 分支仍是 `: null`、DanmakuSendData 用的就是谓词那个字段。
+  补完后 A3′ 变红 ⇒ 缺口闭合。这是本轮唯一一处「先发现门禁有洞、再把它补上」的地方。
+```
+
+### 8.5 本门禁**不**覆盖什么（诚实边界）
+
+```text
+· 只管"入口在不在"（渲染）。**不管**点了之后发不发得出去 —— 那条在
+  test/task41_danmaku_send_onwire_test.dart（真发到本地服务器、断言正文/进度/集 id、
+  未实现 ⇒ ex.kind == 'unsupported' 绝不假装成功）。
+· 第 4 格 (canSend=T, provider=F) 不可达 ⇒ 表里没有这一行，也不该为凑满 16 格假造。
+· 默认 `flutter test` **跳过**本文件（@Tags + skip），所以它不会拦日常提交；
+  要它拦就必须进 CI 的 native 阶段。
+· 夹具用的是 demo 插件的改写版，改的是能力位声明；插件解析/归一化走的是同一条生产路径。
 ```

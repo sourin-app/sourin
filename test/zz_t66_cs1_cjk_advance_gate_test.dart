@@ -136,6 +136,84 @@ void main() {
   // ② 每字 12.000（把"相同"钉成"等于多少"）
   // ─────────────────────────────────────────────────────────────
 
+  // ─────────────────────────────────────────────────────────────
+  // ①-b ★★★ 防腐断言：结论有效期检查
+  // ─────────────────────────────────────────────────────────────
+  //
+  // # 这一条为什么单独存在（与上面 ①-b 的"每字 == 12.000"不同）
+  //
+  // 上面那条只报"数值变了"。但**数值变了的后果**是：
+  //
+  // ```text
+  // 本仓有三处文档建立在「flutter_tester 中文字宽恒为 12.000」这个前提上：
+  //   ① docs/notes/evidence/round-66-cs1/README.md 的「字体」节
+  //   ② docs/AGENTS.md 的「截图里的文字全是方块」那条
+  //   ③ PITFALLS.md 的 Ahem 条（Lead 维护）
+  //
+  // 它们都推出同一个结论：
+  //   「截图能证明文字**是什么**，不能证明文字**排出来多宽**」
+  //   ⇒ 所以"依赖字宽的推演不能拿 widget 层截图当真机结论"
+  // ```
+  //
+  // **前提变了，上面那条推论就该重审** —— 若 Flutter 某天真的修了中文字形，
+  // 那么截图连"字宽"也可信了，那条推论就从"正确"变成"过度保守"。
+  //
+  // ⇒ 本断言是**唯一**会告诉你"前提变了"的东西。
+  //   它不是防缺陷，是防**结论过期**。
+
+  test('★★★ 防腐：中文字宽恒为 12.000 这个前提仍然成立（结论有效期检查）', () {
+    /*
+     * ★ 若这条红了，**先别改代码** —— 先读下面这段 reason。
+     *
+     * 它大概率意味着「Flutter 修了 flutter_tester 的中文字形回退」，
+     * 而不是"这个仓库的代码坏了"。
+     */
+    final n = _cjkSample.characters.length;
+
+    // 用**两个不同的族**各量一次：前提是"与族无关"，所以要两处都成立
+    final byFamily = <String, double>{
+      'Microsoft YaHei UI': _widthOf('Microsoft YaHei UI') / n,
+      'Ahem': _widthOf('Ahem') / n,
+    };
+
+    for (final e in byFamily.entries) {
+      // ignore: avoid_print
+      print('[ANTI-ROT] family=${e.key}  perChar=${e.value.toStringAsFixed(6)}');
+    }
+
+    final bad = byFamily.entries
+        .where((e) => (e.value - kTesterCjkAdvance).abs() > 0.0001)
+        .toList();
+
+    final actual = byFamily.entries
+        .map((e) => '${e.key}=${e.value.toStringAsFixed(6)}')
+        .join(', ');
+
+    expect(
+      bad,
+      isEmpty,
+      reason: [
+        '★★★ flutter_tester 的中文字宽不再是等宽 12.000！',
+        '',
+        '实际读数: $actual',
+        '',
+        '★ 这不是代码缺陷，是**结论过期信号**。下列文档全部需要重新评估：',
+        '  ① docs/notes/evidence/round-66-cs1/README.md 的「字体」节',
+        '  ② docs/AGENTS.md 的「截图里的文字全是方块」那条',
+        '  ③ PITFALLS.md 的 Ahem 条',
+        '',
+        '它们共同推出的推论是：',
+        '  「截图能证明文字是什么，不能证明文字排出来多宽」',
+        '  ⇒ 「依赖字宽的推演不能拿 widget 层截图当真机结论」',
+        '',
+        '★ 若现在字宽真的可信了，那条推论就从"正确"变成"过度保守"，',
+        '  应改写（而不是删掉 —— 它历史上是对的，改成"曾经如此、现已修复"更有价值）。',
+        '★ 同时更新本文件的 kTesterCjkAdvance，并重跑',
+        '  test/zz_t66_cs1_dpr_scale_gate_test.dart（四档 DPR 读数可能也需重评）。',
+      ].join('\n'),
+    );
+  });
+
   test('★★ 每字宽度 == 12.000（不只是"彼此相同"）', () {
     /*
      * ① 只证明「所有族一样」。若某天全世界的字族都变成 10.0，

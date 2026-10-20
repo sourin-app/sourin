@@ -457,6 +457,21 @@ struct CredentialAttach {
     note: Option<String>,
 }
 
+/// 把加密后的凭据塞进备份载荷的 `settings.json`
+///
+/// # ★ 这里的 `note` 会**原样**进入界面的 `Text`
+///
+/// ```text
+/// Rust 拼好的字符串 ⇒ FFI ⇒ BackupExportResult.credentialsNote
+///   ⇒ backup_panel.dart 的 Text（全仓**没有** markdown 渲染器）
+/// ```
+/// ⇒ 所有对齐/强调符号都会被用户看到。已知两种形态：
+/// ```text
+/// ① `**强调**`  —— 2026-10-20 修掉，并有门禁 zz_t66_rust_markdown_gate
+/// ② 连续空格    —— 2026-10-20 修掉（本函数第二个 note），
+///                门禁在 zz_t66_cs1_user_text_gate_test.dart
+/// ```
+/// ⚠️ 不要用多个空格去"对齐"文案 —— 界面是自动换行的。
 fn attach_credentials_to_payload(
     state: &AppState,
     payload: &mut crate::backup::BackupPayload,
@@ -480,7 +495,7 @@ fn attach_credentials_to_payload(
             included: false,
             providers: 0,
             note: Some(
-                "未设置导出用的口令 ⇒ 这个包里「不含登录态」（其它数据都在）。                 要一起备份登录态，请在导出时设置口令。"
+                "未设置导出用的口令 ⇒ 这个包里「不含登录态」（其它数据都在）。要一起备份登录态，请在导出时设置口令。"
                     .into(),
             ),
         });

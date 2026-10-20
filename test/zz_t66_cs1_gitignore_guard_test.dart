@@ -80,6 +80,7 @@ const List<String> cs1Files = <String>[
   'test/zz_t66_cs1_credentials_gate_test.dart',
   'test/zz_t66_cs1_render_point_uniqueness_test.dart',
   'test/zz_t66_cs1_gitignore_guard_test.dart',
+  'test/zz_t66_cs1_user_text_gate_test.dart',
   // ── 决策笔记 ──
   '.agents/notes/proposed/feature/2026-10-19-login-state-sync-one-way.md',
 ];
@@ -332,9 +333,23 @@ void main() {
       if (t.startsWith('#!')) continue;
 
       final pattern = t.substring(1);
-      final path = pattern.endsWith('/')
-          ? pattern.substring(0, pattern.length - 1)
-          : pattern;
+      /*
+       * ★ 必须处理**前导 `/`**（锚定仓库根的写法）。
+       *
+       * # 第一版漏了它（实测被这条门禁自己抓到）
+       * ```text
+       * .gitignore:205  `!/.agents/assets/agent-notes-board.html`
+       * 我把它当成相对路径 `/.agents/assets/...` 去 File() 判存在
+       * ⇒ Windows 上解析成「当前盘符根」⇒ 不存在 ⇒ 报「死规则」
+       * 而那个文件**真实存在**（74323 字节）
+       * ```
+       * ⇒ 假红。前导 `/` 在 .gitignore 里表示"从仓库根算起"，
+       *   判存在时必须把它剥掉。
+       */
+      final noAnchor = pattern.startsWith('/') ? pattern.substring(1) : pattern;
+      final path = noAnchor.endsWith('/')
+          ? noAnchor.substring(0, noAnchor.length - 1)
+          : noAnchor;
       checked++;
       if (!File(path).existsSync() && !Directory(path).existsSync()) {
         dead.add('.gitignore:${i + 1}  `$t` → `$path` 不存在（死规则）');

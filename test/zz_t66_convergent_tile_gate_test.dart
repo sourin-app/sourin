@@ -638,6 +638,83 @@ void main() {
        * 留着会让那条检查红。
        */
       /*
+       * ★★★ 2026-10-20（round-66）：6 条行号重新锚定（纯漂移，逐条核过形态）
+       *
+       * # 实测报错（flutter test --concurrency=1，修前 +3 -1）
+       * ```text
+       *   GONE lib/ui/player_page.dart:21282 / 21304 / 21485 / 21507
+       *   GONE lib/ui/settings/emby_page.dart:986 / 1285
+       *   NEW  lib/ui/player_page.dart:21307 / 21329 / 21510 / 21532
+       *   NEW  lib/ui/settings/emby_page.dart:984 / 1283
+       * ⇒ 6 GONE + 6 NEW，数量相等且逐条对应；白名单命中 2 处（player_settings_sheet）不变。
+       * ```
+       *
+       * # 为什么会漂（两次提交，净行数恰好等于位移量）
+       * ```text
+       * · player_page.dart  +25：65e1694（R6-b 直播态整块不画弹幕控件）
+       *     git show --numstat 65e1694 -- lib/ui/player_page.dart ⇒ 67 42 ⇒ 净 +25
+       *     四个 hunk：@@ 6014 / 6620 / 7127 / 16081 —— 全部在 21282 之上
+       *     四条位移完全一致：+25 / +25 / +25 / +25
+       * · emby_page.dart  −2：f0cf7e0（R4 弹窗收拢第二步收尾）
+       *     git show --numstat f0cf7e0 -- lib/ui/settings/emby_page.dart ⇒ 10 12 ⇒ 净 −2
+       *     两个 hunk：@@ 124 / 639 —— 全部在 984 之上
+       *     两条位移完全一致：986→984、1285→1283
+       * ```
+       *
+       * # 形态复核（不是只看行号 —— 新旧位置逐字比）
+       * ```text
+       * 方法：git show <引入漂移的提交>~1:<file> 取旧 blob，与工作树新行做窗口 diff
+       *
+       * lib/ui/player_page.dart（3 行窗口 diff 均为空）
+       *   21282 → 21307   child: ColoredBox(
+       *   21304 → 21329   child: Material(
+       *   21485 → 21510   child: ColoredBox(
+       *   21507 → 21532   child: Material(
+       *   链：ColoredBox(black@0.92) → Material(type: transparency) → Column → …
+       *       → ListTile（21360 字面 / 21610 经 _tile 助手）
+       *       ListTile 仍在 Material 之下 ⇒ 豁免语义不变。
+       *
+       * lib/ui/settings/emby_page.dart（3 行窗口 diff 均为空）
+       *   986 → 984   Material(type: MaterialType.transparency,
+       *               child: SwitchListTile(优先转码))
+       *   1285 → 1283 child: Material(type: transparency,
+       *               child: ListTile(dense: true, 服务端行))
+       *   两处都正是注释自述「必须自己包一层透明 Material」的那一处。
+       * ```
+       *
+       * # 故障注入：这个门禁还能红吗（三注入，2026-10-20 实测）
+       * ```text
+       * 注入① 真违例（新位置）—— 在 emby_page.dart 末尾追加
+       *     ColoredBox(color: const Color(0xFF000000), child: ListTile(...))
+       *   ⇒ 红：NEW lib/ui/settings/emby_page.dart:1380  直接含 ListTile
+       *     00:07 +3 -1: Some tests failed.  EXIT=1
+       *   ⇒ 还原后 sha256 = 851f9fd67146679c9fd0a44549d87fb1ec9a27a0ea43cbf337c9d5fbbd47599b（等于基线）
+       *
+       * 注入② 把白名单那处 984 的 Material 换成带底色的 DecoratedBox
+       *     decoration: const BoxDecoration(color: Color(0xFF000000))
+       *   ⇒ 红：GONE lib/ui/settings/emby_page.dart:984  EXIT=1
+       *   但红的原因**不是**"检测到违例"，而是该层没被判成「有底色」：
+       *     _hasOpaqueBackground 对 DecoratedBox 走的正则要求 color 前是 `,{` 或空白，
+       *     而这里 color 前是 `(` ⇒ 命中直接消失 ⇒ 由「白名单腐化」那条反向检查兜住。
+       *
+       * 注入③ 把白名单那处 984 的 Material 换成**不透明** ColoredBox
+       *     ColoredBox(color: const Color(0xFF000000), child: SwitchListTile(...))
+       *   ⇒ **EXIT=0，+4 All tests passed，仍然 8 处 known**
+       *   ⇒ 这就是盲区：违例形态（有底色、无 Material ⇒ 运行期必抛
+       *      "ListTile background color or ink splashes may be invisible"）
+       *      出现在**已豁免的行号**上时，门禁看不见。
+       * ```
+       *
+       * # ⚠️ 为什么会有这个盲区（别把它想得比实际强）
+       * ```text
+       * 判据只按「文件:行号」认命中（known.containsKey(where)），
+       * **不校验命中路径里是否真的有 Material**。
+       * ⇒ 白名单条目里的理由只是文档，不是被机器验证的约束。
+       * 要堵住它得另加断言（例如豁免项必须同时声明「期望路径含 Material(」），
+       * 那是行为变更，不在 2026-10-20 这次"只重新锚定行号"的范围里。
+       * ```
+       */
+      /*
        * ★★★ 2026-10-19：行号整体 +741 重新锚定（**纯漂移**，不是新增违规）
        *
        * # 判定依据（严格按本文件上方「留给后来人」那条规则）
@@ -680,18 +757,18 @@ void main() {
        * ⇒ 这 2 处 ListTile 用透明 Material 包住，正是**满足**本门禁的要求。
        * ```
        */
-      'lib/ui/player_page.dart:21282':
+      'lib/ui/player_page.dart:21307':
           'ColoredBox(black@0.92) -> Material(transparency)，ListTile 在 Material 之下 ⇒ 合法。',
-      'lib/ui/player_page.dart:21304':
+      'lib/ui/player_page.dart:21329':
           '同上，另一层 wrapper（播放页元信息面板）。',
-      'lib/ui/player_page.dart:21485':
+      'lib/ui/player_page.dart:21510':
           'ColoredBox(black@0.92) -> Material(transparency)，同形态第二处（maxWidth 360）。',
-      'lib/ui/player_page.dart:21507':
+      'lib/ui/player_page.dart:21532':
           '同上，另一层 wrapper。',
-      'lib/ui/settings/emby_page.dart:986':
+      'lib/ui/settings/emby_page.dart:984':
           'SwitchListTile（转码开关）。该处代码注释自己写着「必须自己包一层'
               '透明 Material，否则 flutter 断言」。',
-      'lib/ui/settings/emby_page.dart:1285':
+      'lib/ui/settings/emby_page.dart:1283':
           'ListTile（dense，服务端行）。',
       'lib/ui/widgets/player_settings_sheet.dart:712':
           '卡片 Material；经 _switchRow -> SwitchListTile（六条 section 同路径，'

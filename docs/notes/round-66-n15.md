@@ -624,3 +624,123 @@ done
   所以「耗时」列只作参考，不是性能读数。
 · 我**没有**改任何测试/产品码；两个红原样报给文件归属人。
 ```
+
+---
+
+## §10 收敛式 ListTile 门禁那个红：修掉 + 三个故障注入读数（2026-10-20 19:20）
+
+### 10.1 修前什么红
+
+```text
+$ flutter test test/zz_t66_convergent_tile_gate_test.dart --concurrency=1
+[T66] 文件 155 / 方法符号 1315
+[T66] 命中 26 条 / 去重后 8 处
+[T66] 已知必须留 2 处（白名单命中）
+[T66] ★★★ 新增命中 6 处：
+  NEW lib/ui/player_page.dart:21307 / 21329 / 21510 / 21532
+  NEW lib/ui/settings/emby_page.dart:984 / 1283
+[T66] ★★★ 白名单里已消失 6 处（豁免可删）：
+  GONE lib/ui/player_page.dart:21282 / 21304 / 21485 / 21507
+  GONE lib/ui/settings/emby_page.dart:986 / 1285
+[T66] 未判定 3 处（**不是**干净，需人看）
+00:07 +3 -1: Some tests failed.   EXIT=1
+```
+
+6 GONE / 6 NEW，数量相等。但"数量相等"本身不是判据 —— 逐条核形态才有意义。
+
+### 10.2 漂移根因（两次提交，净行数恰好等于位移量）
+
+```text
+· lib/ui/player_page.dart 位移 +25
+    git log --oneline -3 -- lib/ui/player_page.dart
+      65e1694 fix(round-66/R6-b):直播态整块不画弹幕控件 + 守卫落到请求叶子
+      e083e0f fix(round-66): 批末自审揪出的四个真缺陷
+      cc157ac feat(round-66/R3): 弹幕面板七个子项的取证与修复
+    git show --numstat 65e1694 -- lib/ui/player_page.dart  ⇒ 67  42  （净 +25）
+    hunk 位置：@@ 6014 / 6620 / 7127 / 16081 —— 全部在 21282 之上
+    四条位移完全一致：21282→21307、21304→21329、21485→21510、21507→21532（都 +25）
+
+· lib/ui/settings/emby_page.dart 位移 −2
+    git log --oneline -3 -- lib/ui/settings/emby_page.dart
+      f0cf7e0 refactor(round-66/R4): 弹窗收拢第二步收尾 —— 能收的收、不能收的【逐处】登记
+      aed21d3 refactor(round-65 E2): Icons.* 全量改为 AppIcons.*
+      8dad959 修复：Owner 1009/1011 反馈批次 …
+    git show --numstat f0cf7e0 -- lib/ui/settings/emby_page.dart  ⇒ 10  12（净 −2）
+    hunk 位置：@@ 124 / 639 —— 全部在 984 之上
+    两条位移完全一致：986→984、1285→1283（都 −2）
+```
+
+**emby 那 2 行是谁推的，查清了**：`f0cf7e0`（同一批 R4 弹窗收拢），净删 2 行且两个 hunk 都在锚点之上 ⇒ 不是"某处悄悄少了两行代码"，是头部减重导致整体上移。
+
+### 10.3 形态复核（不是只看行号）
+
+方法：`git show <引入漂移的提交>~1:<file>` 取旧 blob，与工作树新行做窗口 diff（逐字比较，含缩进与注释）。
+
+| 旧锚点 | 新锚点 | 该行原文 | 3 行窗口 diff |
+|---|---|---|---|
+| player_page.dart:21282 | :21307 | `child: ColoredBox(` | 空（identical） |
+| player_page.dart:21304 | :21329 | `child: Material(` | 空 |
+| player_page.dart:21485 | :21510 | `child: ColoredBox(` | 空 |
+| player_page.dart:21507 | :21532 | `child: Material(` | 空 |
+| emby_page.dart:986 | :984 | `Material(` | 空 |
+| emby_page.dart:1285 | :1283 | `child: Material(` | 空 |
+
+链仍成立（逐条看代码，不是推理）：
+
+```text
+player_page 21307 ColoredBox(black@0.92)
+            21329   Material(type: transparency)
+            21331     Column → … → 21360 ListTile（字面）/ 21610 经 _tile 助手
+                     ⇒ ListTile 仍在 Material 之下
+emby 984    Material(type: transparency) → child: SwitchListTile('优先转码')
+emby 1283   child: Material(type: transparency) → child: ListTile(dense: true, 服务端行)
+            ⇒ 两处正是注释自述「必须自己包一层透明 Material」的那一处
+```
+
+⇒ 6 条全是**位置变了**，不是新增违规 ⇒ 按门禁自己的规则更新行号。
+
+### 10.4 三个故障注入（证明它还红得起来，且有一个真盲区）
+
+```text
+注入① 真违例（新位置）：在 emby_page.dart 末尾追加
+        ColoredBox(color: const Color(0xFF000000), child: ListTile(...))
+   ⇒ EXIT=1，`00:07 +3 -1: Some tests failed.`
+      NEW lib/ui/settings/emby_page.dart:1380  直接含 ListTile
+   ⇒ 还原后 sha256 = 851f9fd67146679c9fd0a44549d87fb1ec9a27a0ea43cbf337c9d5fbbd47599b（= 基线）
+
+注入② 把白名单那处 984 的 Material 换成**带底色的 DecoratedBox**
+   ⇒ EXIT=1，但红的是 `GONE lib/ui/settings/emby_page.dart:984`
+      原因不是"检测到违例"，而是 `_hasOpaqueBackground` 对 DecoratedBox 的正则
+      要求 color 前是 `,{` 或空白，这里 color 前是 `(` ⇒ 该层判不成"有底色"
+      ⇒ 命中消失 ⇒ 由「白名单腐化」那条反向检查兜住。
+
+注入③ 把白名单那处换成**不透明** ColoredBox（同一处、同一行号）
+        ColoredBox(color: const Color(0xFF000000), child: SwitchListTile(...))
+   ⇒ **EXIT=0，+4 All tests passed，仍然 8 处 known** ← 盲区
+```
+
+盲区准确表述：**判据只按「文件:行号」认命中（`known.containsKey(where)`），不校验该行命中路径里到底有没有 `Material`。** 所以白名单条目里的理由只是文档，不是被机器验证的约束；把一个已豁免的 `Material(transparency)` 换成不透明 `ColoredBox`（运行期必抛 "ink splashes may be invisible"）门禁看不见。
+
+修法（未做，属行为变更，超出"只重新锚定行号"的范围）：豁免项加一条 `expect(path, contains('Material'))` 之类的形态断言。要不要做，请 Owner 定。
+
+### 10.5 修后与还原读数
+
+```text
+$ flutter test test/zz_t66_convergent_tile_gate_test.dart --concurrency=1
+[T66] 已知必须留 8 处（白名单命中）
+[T66] 未判定 3 处（**不是**干净，需人看）      ← 与修前同数，未变
+00:06 +4: All tests passed!                    EXIT=0
+
+$ dart analyze test/zz_t66_convergent_tile_gate_test.dart
+0 error / 0 warning / 45 info（info 全是既有 prefer_interpolation_to_compose_strings 一类的风格条）
+
+$ sha256sum lib/ui/settings/emby_page.dart lib/ui/player_page.dart
+851f9fd67146679c9fd0a44549d87fb1ec9a27a0ea43cbf337c9d5fbbd47599b  emby_page.dart（= 注入前基线）
+449570bda7804adf971677d0d2d0855eef6587198a87e197d150f8bd19399813  player_page.dart（全程未动）
+```
+
+### 10.6 我不知道的（§10 范围）
+
+1. 3 处「未判定」是什么、要不要处理 —— 与修前同数，我没有逐个去看它们是真形参还是解析不到。
+2. 注入③暴露的盲区该不该堵、堵了会不会在别的文件上炸出新红 —— 没试（属行为变更）。
+3. 行号锚定天然会再漂：下次再红，仍要重复 10.3 这套逐条核对，成本不会因为这次修好而下降。

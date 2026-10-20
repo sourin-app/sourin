@@ -227,6 +227,55 @@ class BrowsePageState extends State<BrowsePage> {
     });
   }
 
+  /// 首次进入时的初始化：取分类 + 取第 1 页
+  ///
+  /// # ⚠️ 这里**没有** try/finally —— `_loading` 的复位由 [`_load`] 自己负责
+  ///
+  /// ```text
+  /// 代码实际是这样（自 b289bb6 首次开源起未变）：
+  ///
+  ///   if (!_isRankMode) {
+  ///     try { await SourinApi.getCategories(...) } catch (_) { … }   ← 只包住取分类
+  ///   }
+  ///   await _load(1);                                  ← **裸** await，无 try/finally
+  ///   if (mounted) setState(() => _loading = false);   ← 这一句只在 _load 正常返回时执行
+  /// ```
+  ///
+  /// ★ 所以「`_loading` 一定会被复位」**不是**靠这里的 finally，而是靠
+  ///   [`_load`] 内部那个 `try { … } catch { … } finally { _loading = false }`。
+  ///   正常路径上 `_load` 自己就会复位 `_loading`，本函数末尾那句是**冗余的兜底**。
+  ///
+  /// # 曾经有过一条注释声称这里有 finally —— 那是错的（2026-10-21 更正）
+  ///
+  /// ```text
+  /// `test/t80a_skeleton_fade_test.dart` 的文件头原文写的是：
+  ///   「await FFI(必抛) → **finally** setState」
+  /// 而本函数从来没有 try/finally。那条注释让读者以为有兜底，
+  /// 实际后果是：`getCategories` 的真实 Future 在 `flutter test` 里不返回
+  ///   ⇒ `_init()` 卡在第一个 await ⇒ `_load(1)` 一次都没被调用
+  ///   ⇒ `_loading` 恒 true ⇒ 页面永远停在骨架分支。
+  /// 那条注释已于同期改正（见该测试文件头「两处夹具前提」）。
+  /// ```
+  ///
+  /// # 已知的防御性缺口（**不是**当前缺陷，实测结论）
+  ///
+  /// ```text
+  /// 若将来有人在 `await _load(1)` **之前**插入一句可能抛的代码
+  /// （或 `_load` 在进入自己的 try 之前抛），那么：
+  ///   ① 异常从本函数逃逸 ⇒ 成为未捕获异步错误
+  ///   ② `_load` 的 finally 执行不到 ⇒ `_loading` **永久 true** ⇒ 页面永久骨架
+  ///
+  /// 2026-10-21 实证（注入 `throw` 到 `_load` 的 try 之前）：
+  ///   fade=0 / empty=0（永久骨架），异常逃逸，测试直接红。
+  ///
+  /// ★ 但**当前**代码里 `_load` 的 try 之前没有任何可能抛的语句
+  ///   （只有 `if (p == 1) setState(...)`、`final gen = _gen`、`var grew = false`），
+  ///   而 `mounted` 为 false 时 setState 也被 `if (mounted)` 挡住
+  ///   ⇒ 今天**跑不出**这个后果。所以判为「防御性缺失」，暂不修。
+  ///
+  /// ⇒ 若要加固，做法是在 `await _load(1)` 外面包 try/finally 并置 `_loading = false`。
+  ///    代价：多一层缩进 + 与 `_load` 内部的 finally 职责重叠，需先确认不会双写。
+  /// ```
   Future<void> _init() async {
     if (widget.provider.isEmpty) {
       // 原版：`router.replace("/")` —— 没有源就回首页

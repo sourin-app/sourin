@@ -894,7 +894,7 @@ Future<void> _body(String dir) async {
   ok('① 撒入假登录态后 providers ≥ 1（否则知情提示与口令步根本不会出现）',
       providers1 >= 1, 'providers=$providers1');
 
-  final exportPath = '$dir${Platform.pathSeparator}cs1_backup.sourin';
+  final exportPath = '$dir${Platform.pathSeparator}cs1_backup.sourin.zip';
   final saveStub = _SaveStub(exportPath);
   FileSelectorPlatform.instance = saveStub;
 

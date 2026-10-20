@@ -120,6 +120,11 @@ param(
     [double]$ModalRatioRel = 2.5,
     [double]$ModalRatioFloor = 1.25,
 
+    # Freshness: compare the lib/ fingerprint recorded in run-manifest.txt
+    # against the CURRENT lib/ tree. If they differ, the screenshots were made
+    # from different product code and must not be trusted as evidence.
+    [switch]$CheckFresh,
+
     # Machine-readable output.
     [switch]$Json
 )
@@ -286,6 +291,83 @@ foreach ($r in $usable) {
              ', batch min ' + ("{0:N3}" -f $batchMin) + ' x ' +
              ("{0:N2}" -f $ModalRatioRel) + '); trigger=' + $why
         $fail.Add($m)
+    }
+}
+
+# ----------------------------------------------------------------------
+#  criterion 4 (opt-in) : are these images still current?
+# ----------------------------------------------------------------------
+# WHY a content hash and NOT a timestamp
+# ----------------------------------------------------------------------
+# The obvious rule "every PNG must be newer than HEAD's commit time" is a
+# FALSE GREEN on CI. Measured on this machine:
+#     git clone + git checkout  =>  all 1133 files get mtime inside a 1.8 s
+#     window, and that window is LATER than the commit timestamp
+#   (files 23:26:07.771..23:26:09.574, commit 23:24:35)
+# So on any fresh checkout the PNGs would look "newer than the code" even if
+# they were generated from completely different code. A timestamp check
+# cannot distinguish "regenerated just now" from "checked out just now".
+#
+# The lib/ fingerprint recorded in the manifest CAN: it is stable across
+# checkouts and changes exactly when the product code changes.
+if ($CheckFresh) {
+    $manifestPath = Join-Path $dirAbs 'run-manifest.txt'
+    if (-not (Test-Path $manifestPath)) {
+        $fail.Add("freshness: no run-manifest.txt in $dirAbs -- cannot tell which code produced these images. Re-run tools/e2e_shots.ps1.")
+    } else {
+        $mf = Get-Content -LiteralPath $manifestPath -Raw
+        $m = [regex]::Match($mf, '(?m)^inputHash\s*=\s*([0-9a-f]{64})\s*$')
+        if (-not $m.Success) {
+            $fail.Add("freshness: run-manifest.txt has no inputHash line -- the manifest predates the fingerprint. Re-run tools/e2e_shots.ps1.")
+        } else {
+            $recorded = $m.Groups[1].Value
+            # Recompute with EXACTLY the algorithm documented in
+            # tools/e2e_shots.ps1 step 5 (same roots, same normalisation,
+            # same ordinal sort, same line format). If the two ever diverge
+            # this check silently reports STALE forever -- so keep them in sync.
+            $repoRoot = Split-Path -Parent $PSScriptRoot
+            $roots = @('lib', 'rust/sourin_core/src', 'windows', 'assets')
+            $singleFiles = @('pubspec.yaml', 'pubspec.lock')
+            $inputs2 = New-Object System.Collections.Generic.List[object]
+            foreach ($r in $roots) {
+                $abs = Join-Path $repoRoot $r
+                if (-not (Test-Path $abs)) { continue }
+                foreach ($f in @(Get-ChildItem -LiteralPath $abs -Recurse -File -ErrorAction SilentlyContinue)) {
+                    $inputs2.Add($f)
+                }
+            }
+            foreach ($f in $singleFiles) {
+                $abs = Join-Path $repoRoot $f
+                if (-not (Test-Path $abs)) { continue }
+                $inputs2.Add((Get-Item -LiteralPath $abs))
+            }
+            if ($inputs2.Count -eq 0) {
+                $fail.Add("freshness: recomputed zero input files -- cannot compare")
+            } else {
+                $entries2 = New-Object System.Collections.Generic.List[string]
+                foreach ($f in $inputs2) {
+                    $relPath = $f.FullName.Substring($repoRoot.Length).Replace('\', '/')
+                    if ($relPath.StartsWith('/')) { $relPath = $relPath.Substring(1) }
+                    $h = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                    $entries2.Add($relPath + ':' + $h)
+                }
+                $entries2.Sort([System.StringComparer]::Ordinal)
+                $sb2 = New-Object System.Text.StringBuilder
+                foreach ($e in $entries2) { [void]$sb2.Append($e).Append("`n") }
+                $sha2 = [System.Security.Cryptography.SHA256]::Create()
+                $current = -join ($sha2.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($sb2.ToString())) |
+                        ForEach-Object { $_.ToString('x2') })
+                $sha2.Dispose()
+                if ($current -ne $recorded) {
+                    $fail.Add(("freshness: screenshots were made from build inputs " + $recorded.Substring(0,16) +
+                            "... but the tree is now " + $current.Substring(0,16) +
+                            "... -- STALE. Re-run tools/e2e_shots.ps1."))
+                } else {
+                    Info ("freshness OK: build-input fingerprint matches the manifest (" + $recorded.Substring(0,16) +
+                          "...; " + $inputs2.Count + " files)")
+                }
+            }
+        }
     }
 }
 

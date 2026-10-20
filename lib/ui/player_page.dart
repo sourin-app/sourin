@@ -19960,9 +19960,9 @@ class _DanmakuInfoPanelHostState extends State<_DanmakuInfoPanelHost> {
 /// ★★★ task-66 R1：本 chip 的 `clipBehavior` —— **实测选出来的值，不是默认值**
 /// ═══════════════════════════════════════════════════════════════════
 ///
-/// ⚠️ 要把它改成 `Clip.antiAlias` 之前，先读完下面这一节并重跑
-///    `test/zz_t66_r1_danmaku_chip_edge_test.dart` ——
-///    那条门禁会在 **4 个 DPR** 上同时判红（不是一个断言，是四个）。
+/// ⚠️ 要把它改成 `Clip.antiAlias` 之前，先读完下面这一节 ——
+///    下面的表就是**实测结果**。改之前请按本节末尾「验证方法」自己复跑一遍；
+///    那套方法已固化成文字，**不依赖任何探针文件**（探针已删除，见文末说明）。
 ///
 /// # 已核实的事实（读框架源码，material_ui-1.6.0）
 ///
@@ -19979,9 +19979,9 @@ class _DanmakuInfoPanelHostState extends State<_DanmakuInfoPanelHost> {
 ///
 /// # 但**逐像素实测否掉了"把它裁掉就能去掉毛边"这个推论**
 ///
-/// 探针：`test/zz_t66_r1_danmaku_chip_edge_test.dart`
-/// （`RepaintBoundary.toImage` → `rawRgba` → 以真 `RenderBox` 矩形为几何基准，
-///  取距 stadium 边界 [-1.5, +1.5] px 的环带，与内部中位数比较）。
+/// 测法（已固化成文字，探针文件已删）：
+/// `RepaintBoundary.toImage` → `rawRgba` → 以真 `RenderBox` 矩形为几何基准，
+/// 取距 stadium 边界 [-1.5, +1.5] px 的环带，与内部中位数比较。
 /// 纯黑视频底、DPR=1.0 的读数：
 /// ```text
 /// clipBehavior             环带峰值  内部中位   Δpeak    Δmean
@@ -20014,7 +20014,7 @@ class _DanmakuInfoPanelHostState extends State<_DanmakuInfoPanelHost> {
 ///   「① 站名徽章对照 / ② 多帧方差（动态视频底）/ ③ 真机 DPR」。
 ///   其中 ② 最可能解释 Owner 看到的"毛边"—— 因为 alpha 0.55 叠在**每帧都变**
 ///   的背景上时，边缘像素逐帧不同，人眼会读成「在抖的一圈边」。
-///   见 `test/zz_t66_r1_dynamic_backdrop_variance_test.dart` 的方差读数。
+///   （该假设已在下面 2026-10-20 的结案里**被证实**：edgeStd 49.6 vs chip 0.018。）
 ///
 /// ═══════════════════════════════════════════════════════════════════
 /// ★★★ 2026-10-20 结案（第三次验证，**这次是终局结论**）
@@ -20077,6 +20077,29 @@ class _DanmakuInfoPanelHostState extends State<_DanmakuInfoPanelHost> {
 ///    抗锯齿像素 95% 是背景色，测 alpha 无意义（这一条踩过坑）。
 /// ⑤ **阴性对照**：验证"方差来自半透明"时，必须同时跑一个 alpha=1 的同款对象。
 ///    否则分不清"边缘在动"还是"背景在动"。
+/// ⑥ **放大图要能被别人复跑**：记录截图参数（缩放倍数 / 底色 / 区域）。
+///    「留下证据」和「留下可复跑的取证方法」是两回事 ——
+///    前者只能让人信你，后者能让人自己验。
+/// ```
+///
+/// ═══════════════════════════════════════════════════════════════════
+/// ★ 关于探针文件（2026-10-20 删除记录）
+/// ═══════════════════════════════════════════════════════════════════
+/// ```text
+/// 本轮用过 8 个探针（edge_measure / zoom_shot / isomorphic_compare /
+/// widget_tree_alpha / badge_variance / danmaku_chip_edge /
+/// dynamic_backdrop_variance / three_way_compare），**已全部删除**。
+///
+/// # 为什么删而不是留
+/// ① 它们证明的是"当前 chip 干净、badge 半透明"，**不是"行为应该是什么"**
+///    ⇒ 不是门禁，留着会让人误以为要维护它们
+/// ② 其中几个引用的读数已被裁定作废（例如 107.2 那个**凭印象写的**数）
+///    ⚠️ **留着过时的读数比留着代码更危险** ——
+///       下一个人会以为那是实测值
+/// ③ 方法已固化成上面的「验证方法」文字 ⇒ 不需要靠探针传承
+///
+/// # 将来若要重新取证
+/// 按上面 ①~⑥ 自己搭一次即可；本节的数值表就是**预期结果**（可用来校准仪器）。
 /// ```
 const Clip kDanmakuChipClipBehavior = Clip.none;
 

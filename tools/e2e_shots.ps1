@@ -516,7 +516,91 @@ if ($back -notmatch 'appupdate.autoCheck') {
 Ok "wrote $prefsPath  (appupdate.autoCheck=0, so no startup update dialog)"
 
 # ======================================================================
-#  step 5 -- launch with a PID difference (never kill by name)
+#  step 5 -- fingerprint every input that can change the product
+# ======================================================================
+Step 'fingerprint build inputs (so a later reader can tell if these shots are stale)'
+
+# WHAT MUST BE COVERED, AND WHY (each entry has a mechanism, not a guess):
+#
+#   lib/                  Dart source compiled into data/app.so (AOT snapshot).
+#                         `flutter build -t lib/shell.dart` reads it directly.
+#   rust/sourin_core/src/ Rust source compiled into sourin_core.dll. That DLL
+#                         is installed into the bundle by windows/CMakeLists.txt
+#                         (line ~123: SOURIN_CORE_DLL from
+#                         rust/sourin_core/target/release/). Change the .rs and
+#                         the shipped core changes.
+#   windows/              The runner (main.cpp / win32_window.cpp / CMakeLists).
+#                         It is compiled into sourin_spike.exe AND it decides
+#                         which files get installed into the bundle.
+#   assets/               Declared in pubspec.yaml (`assets: - assets/tray.ico`)
+#                         => copied into data/flutter_assets by the build.
+#   pubspec.yaml          Declares dependencies and assets.
+#   pubspec.lock          Pins the exact resolved dependency versions.
+#
+# DELIBERATELY EXCLUDED: test/, tools/, docs/, .agents/, .probe/.
+# None of them are read by `flutter build windows`, which is exactly what the
+# 2026-10-20 clean-tree experiment demonstrated: adding an uncommitted test/
+# file left app.so byte-identical.
+#
+# Why a CONTENT hash and not a timestamp: `git checkout` stamps every file with
+# the checkout time (measured: 1133 files inside 1.8 s, all LATER than the
+# commit timestamp), so "newer than HEAD" is always true on CI -- a false green.
+$fingerprintRoots = @(
+    'lib',
+    'rust/sourin_core/src',
+    'windows',
+    'assets'
+)
+$fingerprintFiles = @(
+    'pubspec.yaml',
+    'pubspec.lock'
+)
+
+$inputs = New-Object System.Collections.Generic.List[object]
+foreach ($r in $fingerprintRoots) {
+    $abs = Join-Path $root $r
+    if (-not (Test-Path $abs)) { Warn "fingerprint root missing: $r (skipped)"; continue }
+    foreach ($f in @(Get-ChildItem -LiteralPath $abs -Recurse -File -ErrorAction SilentlyContinue)) {
+        $inputs.Add($f)
+    }
+}
+foreach ($f in $fingerprintFiles) {
+    $abs = Join-Path $root $f
+    if (-not (Test-Path $abs)) { Warn "fingerprint file missing: $f (skipped)"; continue }
+    $inputs.Add((Get-Item -LiteralPath $abs))
+}
+if ($inputs.Count -eq 0) { Fail 'fingerprint collected zero files -- refusing to record an empty fingerprint' }
+
+# ALGORITHM (stated so a reimplementation cannot silently diverge):
+#   1. path  = path relative to the repo root
+#   2. SEPARATORS NORMALISED to '/' so a Windows and a Linux checkout of the
+#      same commit produce the same string (CI runs on Linux).
+#   3. entries sorted ORDINAL-ascending by that normalised path, so directory
+#      enumeration order cannot change the result.
+#   4. line = "<relpath>:<sha256-of-file-hex-lowercase>\n"
+#   5. fingerprint = sha256 of the UTF-8 bytes of the concatenation.
+# Both the NAME and the CONTENT participate: renaming a file changes the hash
+# even if its bytes are unchanged.
+$entries = New-Object System.Collections.Generic.List[string]
+foreach ($f in $inputs) {
+    $relPath = $f.FullName.Substring($root.Length).Replace('\', '/')
+    if ($relPath.StartsWith('/')) { $relPath = $relPath.Substring(1) }
+    $h = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    $entries.Add($relPath + ':' + $h)
+}
+$entries.Sort([System.StringComparer]::Ordinal)
+
+$sb = New-Object System.Text.StringBuilder
+foreach ($e in $entries) { [void]$sb.Append($e).Append("`n") }
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$script:InputHash = -join ($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($sb.ToString())) |
+        ForEach-Object { $_.ToString('x2') })
+$sha.Dispose()
+Ok ("build-input fingerprint = $($script:InputHash.Substring(0,16))...  ({0} files from {1} roots + {2} files)" -f `
+        $inputs.Count, $fingerprintRoots.Count, $fingerprintFiles.Count)
+
+# ======================================================================
+#  step 6 -- launch with a PID difference (never kill by name)
 # ======================================================================
 Step 'launch client (isolated env, PID difference recorded)'
 
@@ -564,10 +648,24 @@ $childEnv = @{
 #
 # Also: no cmd /c wrapper. Start-Process can redirect stdout/stderr straight
 # to files, and polling those files gives us FIRST_FRAME_RENDERED.
-$proc = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru `
-    -RedirectStandardOutput $script:StdoutPath `
-    -RedirectStandardError (Join-Path $outDirAbs 'client-stderr.log') `
-    -Environment $childEnv
+#
+# 2026-10-20: `-Environment` is a PowerShell 7 ONLY parameter. This machine has
+# no `pwsh` on PATH, so the script actually runs under Windows PowerShell 5.1,
+# where the call fails with
+#   "A parameter cannot be found that matches parameter name 'Environment'"
+# Setting the vars in-process instead hits
+#   "Item has already been added. Key in dictionary: 'NO_PROXY' ... 'no_proxy'"
+# (Windows env names are case-insensitive; the .NET dictionary is not).
+# => Use a tiny cmd wrapper: `set` lines + the exe, then start that.
+$bat = Join-Path $outDirAbs 'launch.cmd'
+$batLines = @('@echo off')
+foreach ($k in ($childEnv.Keys | Sort-Object)) {
+    $batLines += ('set "{0}={1}"' -f $k, $childEnv[$k])
+}
+$batLines += ('cd /d "{0}"' -f $root)
+$batLines += ('"{0}" 1>"{1}" 2>"{2}"' -f $exe, $script:StdoutPath, (Join-Path $outDirAbs 'client-stderr.log'))
+Set-Content -LiteralPath $bat -Value $batLines -Encoding ASCII
+$proc = Start-Process -FilePath $env:ComSpec -ArgumentList '/c', $bat -PassThru
 if (-not $proc) { Fail 'Start-Process returned no process' }
 
 # Give it a moment to spawn, then diff the PID set.
@@ -590,7 +688,7 @@ $script:PidListForManifest = @($newOnes)
 Ok ("started pid(s): " + ($newOnes -join ', ') + "   (these, and only these, will be killed)")
 
 # ======================================================================
-#  step 6 -- wait for readiness by polling (no fixed sleep)
+#  step 7 -- wait for readiness by polling (no fixed sleep)
 # ======================================================================
 Step 'wait for window + FIRST_FRAME_RENDERED (polling)'
 
@@ -694,7 +792,7 @@ $wr = New-Object E2eWin+RECT
 Ok ("ready in ${readySec}s  hwnd=0x{0:X}  window={1}x{2}" -f $hwnd.ToInt64(), ($wr.Right - $wr.Left), ($wr.Bottom - $wr.Top))
 
 # ======================================================================
-#  step 7 -- wait for the per-tab PNGs
+#  step 8 -- wait for the per-tab PNGs
 # ======================================================================
 Step 'wait for per-tab screenshots (polling for non-empty PNGs)'
 
@@ -758,7 +856,7 @@ Ok 'every requested tab has at least one non-empty PNG'
 Start-Sleep -Milliseconds $SettleMs
 
 # ======================================================================
-#  step 8 -- stop the client (exact PIDs only), then collect + verify
+#  step 9 -- stop the client (exact PIDs only), then collect + verify
 # ======================================================================
 Step 'stop the client (only the PIDs this run started)'
 Stop-OurProcesses
@@ -879,7 +977,7 @@ if ($dupWarn.Count -gt 0) {
 }
 
 # ======================================================================
-#  step 9 -- verify the CONTENT (not just that a file exists)
+#  step 10 -- verify the CONTENT (not just that a file exists)
 # ======================================================================
 Step 'verify screenshot content (not just "a file exists")'
 
@@ -903,7 +1001,13 @@ if (-not (Test-Path $verifier)) {
 }
 $verifyArgs = @('-NoProfile', '-File', $verifier, '-InDir', $outDirAbs,
     '-Tabs', ($requested -join ','))
-$verifyOut = & pwsh @verifyArgs 2>&1
+# Do NOT hardcode `pwsh`: it is not on PATH on this machine (PowerShell 7 is
+# not installed), and the whole repo's .ps1 files run under Windows PowerShell
+# 5.1. Calling `pwsh` here made step 11 fail with
+#   "The term 'pwsh' is not recognized as the name of a cmdlet..."
+# Use the PowerShell host that is actually running this script.
+$psHost = (Get-Process -Id $PID).Path
+$verifyOut = & $psHost @verifyArgs 2>&1
 $verifyRc = $LASTEXITCODE
 $verifyOut | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
 if ($verifyRc -ne 0) {
@@ -912,7 +1016,7 @@ if ($verifyRc -ne 0) {
 Ok 'screenshot content verified (no modal overlay, content distinct)'
 
 # ======================================================================
-#  step 10 -- run manifest (so a later reader can tell what was actually run)
+#  step 11 -- run manifest (so a later reader can tell what was actually run)
 # ======================================================================
 Step 'write run manifest'
 
@@ -931,6 +1035,18 @@ $lines += ("hwnd      = 0x{0:X}" -f $hwnd.ToInt64())
 $lines += "readySec  = $readySec"
 $lines += 'capture   = SOURIN_SHOT=1 RenderRepaintBoundary.toImage (no screen pixels)'
 $lines += ''
+# Content fingerprint of every build input these images came from.
+#
+# WHY a hash and not a timestamp:
+#   `git checkout` sets EVERY file's mtime to checkout time, so "PNG newer than
+#   HEAD" is always true on a fresh CI checkout (measured: all 1133 files land
+#   inside a 1.8 s window, later than the commit time). A timestamp check would
+#   therefore be a false green in exactly the place it matters.
+#   The content hash is stable across checkouts and changes iff the product
+#   changed -- that is the thing a stale screenshot must be measured against.
+# Covers lib/ + rust/sourin_core/src/ + windows/ + assets/ + pubspec.{yaml,lock};
+# see the "step 5" block for the mechanism behind each one.
+$lines += "inputHash = $($script:InputHash)"
 $lines += "tab`tsource`tbytes`tpng`tsha256`tpath"
 foreach ($r in $rows) {
     $lines += ("{0}`t{1}`t{2}`t{3}`t{4}`t{5}" -f $r.Tab, $r.Source, $r.Bytes, (Get-PngSize $r.Path), $r.Sha256.Substring(0, 16), $r.Path)
@@ -957,7 +1073,7 @@ if (-not $outIsProbe) {
 }
 
 # ======================================================================
-#  step 11 -- cleanup
+#  step 12 -- cleanup
 # ======================================================================
 Step 'cleanup'
 if ($KeepData) {

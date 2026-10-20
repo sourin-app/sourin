@@ -29,6 +29,8 @@ Status: implemented
 ③ 取弹幕的**优先级**：显式参数 → 用户配的 dan-api → 本机弹弹play(2080) → 官方。
 ```
 
+Independent: 弹幕源入口位置与优先级。与「发送入口」是弹幕功能的两个不同侧面，互不取代。
+
 ## Alternatives considered
 
 - **把两个 TextField 直接塞进一级页列表** —— 它最强的论据是少一次跳转。

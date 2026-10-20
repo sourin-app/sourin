@@ -16,6 +16,8 @@ README 长到 1116 行后，改一处细节要在大文件里定位，评审 dif
 `docs/DECISIONS.md`，现已迁到 [Agent Note 树](2026-10-17-notes-tree-is-single-decision-record.md)，
 本决定本身不受影响。
 
+Independent: README 瘦身、细节进 docs/。文档组织方式的一次调整。
+
 ## Alternatives considered
 
 - **另起一套新文档重写内容** —— 它最强的论据是可以顺便修正过时描述。

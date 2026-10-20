@@ -153,11 +153,64 @@ jobs:
           npx --yes tsx .agents/notes-scripts/verify-agent-note-tree.ts
           npx --yes tsx .agents/notes-scripts/verify-agent-note-format.ts
           npx --yes tsx .agents/notes-scripts/verify-archived-agent-notes.ts
+          # ★ 软报告，**故意不在此处跑**：`check-note-anchors.ts` 退出码恒 0，
+          #   放进这条 `set -e` 链里只会让日志变长、不会让 job 变红。
+          #   要体检时本地跑（见 docs/AGENTS.md §7.1 的「软报告」段）。
         env:
           # ★ 归档封印的 append-only 校验要一个**变更前**的基线：
           #   用 HEAD 等于没查（当前提交里的 manifest 自己跟自己比）。
           #   PR 用 base.sha，push 用 event.before。
           AGENT_NOTE_ARCHIVE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+
+      # ── ①.6 笔记脚本与模板完整性 ─────────────────────────────────
+      #
+      # 三个 verify 脚本的口径必须与笔记树同版本 —— 本地绿、CI 红（或反过来）
+      # 的根因几乎都是「脚本被单独手改了，其它副本没跟上」。
+      # ⇒ 这里只做一件事：**证明脚本自身能被解析**（tsx 能编译 + 依赖文件齐全）。
+      #   它不验证语义（那是上面三条的事），只挡「脚本坏了导致门禁假绿」。
+      #
+      # ★ 为什么值得单开一步：门禁脚本本身跑不起来时，
+      #   `npx tsx` 会以非零退出 —— 但如果有人把调用改成 `|| true`，
+      #   坏掉的脚本就永远不会被发现。这一步把「脚本可解析」变成独立信号。
+      - name: 笔记脚本可解析性（防脚本自身坏掉导致门禁假绿）
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ★ 判据必须是**会红**的：下面每条要么 test -f 失败、要么 tsx/node 非零退出。
+          #   不写 `|| true`，不写「构造一个函数但不加载模块」那种恒绿探针
+          #   （那证明不了脚本能被解析）。
+          #
+          # ① 七个 .ts 脚本 + 看板模板必须存在
+          for f in \
+            .agents/notes-scripts/agent-note-tree.ts \
+            .agents/notes-scripts/verify-agent-note-tree.ts \
+            .agents/notes-scripts/verify-agent-note-format.ts \
+            .agents/notes-scripts/verify-archived-agent-notes.ts \
+            .agents/notes-scripts/archive-agent-note.ts \
+            .agents/notes-scripts/build-board.ts \
+            .agents/notes-scripts/check-note-anchors.ts \
+            .agents/assets/agent-notes-board.html \
+          ; do
+            test -f "$f" || { echo "::error::缺少笔记脚本或模板 $f"; exit 1; }
+          done
+          # ② .ts 必须能**真的被 tsx 跑起来**。
+          #   判据实测过（2026-10-20）：往脚本末尾加一行语法错误 ⇒ tsx 退出 1；
+          #   还原 ⇒ 退出 0。所以「能跑通」= 能解析，且不需要为 CI 引入 @types/node。
+          #
+          #   ★ 只跑**无副作用**的那个（check-note-anchors 是软报告，退出码恒 0，
+          #     只读源码不写盘）。其余 .ts 的可解析性由**上面那步真实执行**覆盖：
+          #     tree / format / archived 三个脚本在 ①.5 已经真跑过，
+          #     能跑到 "ok: N note(s)" 就证明它们被解析并执行成功。
+          npx --yes tsx .agents/notes-scripts/check-note-anchors.ts >/dev/null
+          echo "ok: check-note-anchors.ts 可执行"
+          #   build-board 不在 CI 里跑（看板是本地工具，产物不进仓库），
+          #   它的可解析性靠下面 ③ 的「文件存在 + 模板存在」+ 本地实测覆盖。
+          #   这里**不写 `|| true`** —— 缺文件会由 ① 的 test -f 直接红。
+          # ③ 两个 .mjs 门禁：node --check 是真语法检查，非零即红。
+          for f in .agents/notes-scripts/notes-coverage.mjs .agents/notes-scripts/notes-supersession.mjs; do
+            node --check "$f"
+            echo "ok: $f 语法正确"
+          done
 
       # ── 发布说明守卫：用户可见正文不许再出现会腐烂的统计读数 ──
       - name: 发布说明守卫（正文不许有统计口径）

@@ -91,6 +91,8 @@ timeout / 网络 / 请求失败 / 连接  ⇒ network
   真要做第 2 步，应当等有人要动 `Result<_, String>` 这个约定时顺带做，
   而不是为它单独改上百处、零收益。
 
+Independent: 错误分类只认中文关键词。单点缺陷，与同期的代理/HTTP 类修复各自独立。
+
 ## Alternatives considered
 
 **只加中文关键词（比如给 unsupported 加上英文词 unsupported）**

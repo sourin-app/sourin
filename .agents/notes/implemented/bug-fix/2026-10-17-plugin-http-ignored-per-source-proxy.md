@@ -38,6 +38,8 @@ UI 侧存配置用的是 `widget.providerId`（真实插件 id），
 没有 provider id 可用。用固定 key 是语义正确的，不是漏改。
 函数内已加注释说明，新门禁也把它算作唯一例外。
 
+Independent: 插件 HTTP 读不到按源代理。单点接线缺陷。
+
 ## Alternatives considered
 
 **「让 ProxyStore 支持一个通配 key，查不到真实 id 就回落到通配」**

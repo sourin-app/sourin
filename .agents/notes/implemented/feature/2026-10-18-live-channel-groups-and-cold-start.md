@@ -155,6 +155,8 @@ shell 每次切到直播页都调 loadAll(keepSelection: true)，而本页是保
 "全选某个源"作为**快捷方式**保留（不是唯一入口，细粒度入口仍是主路径）。
 ```
 
+Independent: 直播分组改按频道 + 冷启动快照。直播域的一处独立重构。
+
 ## Alternatives considered
 
 **原地把 `liveSourceGroupsKey` 的值格式改成频道 id**

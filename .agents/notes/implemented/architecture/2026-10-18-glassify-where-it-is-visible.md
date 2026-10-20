@@ -49,6 +49,8 @@ Status: implemented
   直播页 C 筛选条外壳    20.0%  ⇒ 选中
 ```
 
+Independent: 玻璃化范围判定。与 material 替换清单同期但不同议题（视觉材质 vs 控件去留）。
+
 ## Alternatives considered
 
 ### A. 照字面「全部玻璃」

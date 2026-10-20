@@ -53,6 +53,8 @@ showAppToast(context, msg);
 所以 `?[` 的后半永远走不到。功能上两者等价，但它摆出「这里可能为 null，
 所以兜底」的姿态 ⇒ 下一个读者会据此写出错误的重构。改成 `jmap(r)['x']`。
 
+Independent: 三处互不相干的接线断开的合集；每处都已就地修好，没有统一的决策可挂靠。
+
 ## Alternatives considered
 
 - **只补日志、不改 `_exitPlayer`** —— 它最强的论据是「按住键不放」属于边缘操作，

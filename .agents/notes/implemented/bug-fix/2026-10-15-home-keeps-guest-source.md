@@ -26,6 +26,8 @@ home() 真需要登录 → Err(Unauthorized) → 错误隔离挡掉（不展示�
 home() 游客态能用  → Ok(sections)     → 正常展示
 ```
 
+Independent: 首页判据改用 home() 是否拿到内容。单点判据修正。
+
 ## Alternatives considered
 
 - **给 `login_required` 加一个「只挡播放」的新语义位** —— 它最强的论据是语义最精确：

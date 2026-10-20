@@ -45,6 +45,8 @@ M2/M3 阶段要去 Material 时它整体要被删。但它里面**埋着真色�
 
 搬迁后 `theme_bridge.dart` 里只剩胶水，M2 删它时不会误伤真色值。
 
+Independent: 把真色值搬出胶水文件。属于主题体系的一处结构整理，与材质/控件决定无关。
+
 ## Alternatives considered
 
 ### A. 不搬，等 M2 删 theme_bridge 时一起处理

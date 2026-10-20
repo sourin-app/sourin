@@ -59,6 +59,8 @@ if (cid == null) return null;        // ← 整条丢弃，不抛异常
 ⇒ 第 4 条被 fromJson 丢弃（印证宿主行为）
 ```
 
+Independent: 方法论：跨语言数据形状必须用对面解析器真跑。它约束的是验证手段，不取代任何具体实现决定。
+
 ## Alternatives considered
 
 ### A. 靠"读宿主代码 + 记忆契约"来保证形状正确

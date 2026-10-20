@@ -183,6 +183,26 @@ tools/.dandanplay.local.json
 # CI 要跑它们，且校验口径必须与笔记同版本 —— 只放技能目录的话，
 # 下游 clone 与 CI 都拿不到，门禁就成了本地才能复现的东西。
 !.agents/notes-scripts/
+#
+# ★ 例外（2026-10-20）：笔记看板的 HTML 模板也进仓库。
+#   `build-board.ts` 用 `resolve(__dirname, '../assets/agent-notes-board.html')`
+#   找它，缺了就报 `❌ Template not found` —— 而那是**运行时才报**，
+#   所以 CI 里加了一步 `test -f` 专门挡它。
+#
+# ⚠️ gitignore 的一条硬规则（本轮实测踩到）：
+#   `.agents/*` 把 **assets 目录本身**忽略了，而 git **不会**进入被忽略的目录，
+#   所以 `!.agents/assets/agent-notes-board.html` **单独写不生效**
+#   （`git check-ignore` 仍报 .gitignore:174）。
+#   ⇒ 必须先放行目录、再放行文件。
+#   ⚠️ 但「放行目录」会把该目录下**所有**文件一起放行 ——
+#      所以第二行必须显式写成**精确文件路径**，且要用 `/` 锚定目录边界。
+#      判据：往 .agents/assets/ 放一个 `_tmp_x.txt` ⇒ 必须仍被忽略（实测过）。
+!.agents/assets/
+!.agents/assets/agent-notes-board.html
+# 目录已放行，这里把该目录下「除模板外的一切」重新忽略回去。
+# 顺序很重要：gitignore 是**最后一条匹配生效**，所以这条要放在模板之后。
+/.agents/assets/*
+!/.agents/assets/agent-notes-board.html
 
 # ── PowerShell 在仓库根跑命令时留下的缓存 ──
 # 2026-10-18 实测（第 66 轮）：在仓库根跑 `pwsh`/`powershell` 时，

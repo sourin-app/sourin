@@ -20,6 +20,8 @@ merge PR / 关 PR        ⇒ 必须等 Owner 明确说「合并」
 **不论改动多小**（错别字、注释、CI 修复）都先停下等 Owner 说合并。
 不许因为「CI 绿了」就自己合。
 
+Independent: 合并权限收归 Owner。权限边界的一条独立规则。
+
 ## Alternatives considered
 
 - **CI 全绿就自己合** —— 它最强的论据是反馈回路最短，单人开发时不必等。

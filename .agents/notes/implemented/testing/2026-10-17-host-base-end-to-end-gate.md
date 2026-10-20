@@ -25,6 +25,8 @@ Status: implemented
 - 声明两个 `hosts` ⇒ `host.base()` 必须返回声明过的域名之一（非空）
 - 不声明 `hosts` ⇒ `host.base()` 必须是空串（向后兼容契约）
 
+Independent: host.base() 需要端到端门禁。单点覆盖缺口。
+
 ## Alternatives considered
 
 **「只测 HostPool 就够了，接线坏了编译会报错」**

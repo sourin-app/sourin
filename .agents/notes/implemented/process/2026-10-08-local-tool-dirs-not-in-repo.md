@@ -17,6 +17,8 @@ Status: implemented
 
 判定口径是「换台机器 clone 下来还成立吗」：不成立的就不进仓库。
 
+Independent: 小工具目录不进仓库。仓库卫生的一条独立规则。
+
 ## Alternatives considered
 
 - **把探针当作可发布的测试夹具** —— 它最强的论据是探针里常有真实数据，

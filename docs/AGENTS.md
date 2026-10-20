@@ -278,6 +278,49 @@ build/windows/x64/runner/Release/sourin_spike.exe &
   rg --hidden --glob '!.agents/notes/archived/**' "关键词" .agents/notes/
   ```
 
+### 7.1 笔记是「现行法律」，不是流水账
+
+> 2026-10-20 按上游 `agent-notes` 规范（`write-notes-like-deepseek`）补齐。
+> 上面几节只讲了「什么该写」，这一节讲**已有笔记怎么维护** —— 缺了它，
+> 笔记树会退化成一份按时间堆积的变更日志。
+
+**① 优先就地同步事实，非必要不新建。**
+既有笔记守护的模块演进了、但核心决策没被推翻 ⇒ **直接改那篇的事实**
+（路径、类名、默认参数、行号）。在文末追加 `### 2026-xx-xx 更新：…` 是**错的** ——
+任何人打开这篇笔记，看到的都该是 HEAD 的绝对事实，而不是一段历史。
+
+**② 时态永保现在时。** 写「系统用 SQLite 做持久化」，不写「系统不再用 JSONL，现在用 SQLite」。
+门禁只拒提案式标题，现在时靠这条纪律，不靠词法扫描。
+
+**③ 决定或理由翻转 ⇒ 新开一篇并互链，禁止改写 `## Decision` 成反面。**
+事实可以就地改，**决定不能**。否则 git 就成了旧理由的唯一副本，
+而读代码的人不会再去看 git log。
+
+**④ 写新笔记前当场审计，禁止推迟。** 按模块名/关键词搜
+`proposed` + `implemented` + `rejected`，每篇命中当场分类：
+无关 / 部分重叠（互链）/ 完全吸收（吸收后删或归档）/ 过时提案（reject 或删）。
+分类结果与新笔记**一起落盘**。
+
+**⑤ 新笔记必须声明与既有笔记的关系**（CI 门禁 `notes-supersession.mjs`）。
+三种合法路径，满足其一即可：
+
+```text
+· 正文里有指向既有笔记的相对链接      → 表示它接在某个决定之后
+· 正文写 `Independent: <理由>`        → 表示确实无关（给理由这个动作会逼你真去查一遍）
+· 它本身是 proposed / rejected        → 想法与否定阶段允许孤立
+```
+
+**⑥ 取代：部分重叠 vs 完全吸收。**
+
+```text
+部分重叠  两篇都留，双方加相对链接；只更新仍成立的事实。禁止归档。
+完全吸收  先把旧篇的独有内容（安全边界、否定性保证、失败场景、
+          重新引入条件、验证缺口）搬进新篇，再二选一：
+            · 删     —— 新篇已吸收全部独有内容，且入站链接改完
+            · 归档   —— 旧篇还有独立杠杆时用 archive-agent-note.ts
+          归档篇只插 `Archived:` 一行；**指针写在新笔记里，不写进归档篇**。
+```
+
   笔记树**进仓库**，与代码同批提交。CI 会在 Windows job 上跑
   `.agents/notes-scripts/` 里的三条校验（tree / format / archived），红即不许合。
   本地跑同样三条：
@@ -287,6 +330,24 @@ build/windows/x64/runner/Release/sourin_spike.exe &
   npx --yes tsx .agents/notes-scripts/verify-agent-note-format.ts
   npx --yes tsx .agents/notes-scripts/verify-archived-agent-notes.ts
   ```
+
+  另有两道 CI 门禁，本地也能跑（`--range` 给提交区间）：
+
+  ```bash
+  node .agents/notes-scripts/notes-coverage.mjs    --range HEAD~1..HEAD
+  node .agents/notes-scripts/notes-supersession.mjs --range HEAD~1..HEAD
+  ```
+
+  **软报告**（不进 CI，退出码恒 0；只在排查锚点/看进度时用）：
+
+  ```bash
+  npx --yes tsx .agents/notes-scripts/check-note-anchors.ts   # 源码里 // Note: 锚点体检
+  npx --yes tsx .agents/notes-scripts/build-board.ts --init .probe/board.html "源影决策看板"
+  ```
+
+  ★ 脚本与模板的权威副本在 `.agents/notes-scripts/`（含 `templates/`）。
+  更新方式是整体同步，不要手改单个脚本 —— 三个 verify 脚本的口径必须与笔记同版本，
+  否则本地绿、CI 红。
 
 ---
 

@@ -68,6 +68,8 @@ Owner 原话：
 
 ④ 弹窗外壳**保持** AppDialogShell（width 860）—— 它本来就满足，不必换。
 
+Independent: 源编排器改成一屏。UI 组织方式变更，不涉及数据契约。
+
 ## Alternatives considered
 
 **保持三步向导，只把步骤指示器做得更漂亮**

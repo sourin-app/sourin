@@ -1,0 +1,45 @@
+{
+  "commit": "e320c18",
+  "captured_by": "verify-e2e",
+  "captured_at": "2026-10-21",
+  "source": "product self-render (SOURIN_TABS=1 SOURIN_SHOT=1 -> RenderRepaintBoundary.toImage)",
+  "dpr": 1.0,
+  "files": [
+    {
+      "file": "01-update-dialog-900x600.png",
+      "bytes": 97594,
+      "width": 900,
+      "height": 600,
+      "sha256": "72adcd87c900875351e032868e056fb3e55c387143f2d425924b20fe4f781c59"
+    },
+    {
+      "file": "02-inline-code-six-boxes-7x.png",
+      "bytes": 5372,
+      "width": 1750,
+      "height": 217,
+      "sha256": "ac40ce22a76bdc3cdfe73e668595844728240066ab6c87999752e1c71b49cbb8"
+    },
+    {
+      "file": "03-inline-code-row-7x.png",
+      "bytes": 5931,
+      "width": 1540,
+      "height": 266,
+      "sha256": "9931ae2d7049d4b3087390c887ea24d1b1aae5ad7001a6b43a1bcfaefa315d87"
+    },
+    {
+      "file": "04-sync-panel-1280x800.png",
+      "bytes": 39959,
+      "width": 1280,
+      "height": 800,
+      "sha256": "78e73c2a48827a82d0835122dc0263c4140a12c202dd49b21bb3670c07b99408"
+    },
+    {
+      "file": "05-danmaku-proxy-direct-800x600.png",
+      "bytes": 40751,
+      "width": 800,
+      "height": 600,
+      "sha256": "f1ed21aca37304856a6a22753f95dacb85c88a78fb3d571d55635743b2eda76a"
+    }
+  ],
+  "total_bytes": 189607
+}

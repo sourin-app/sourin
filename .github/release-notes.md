@@ -42,24 +42,28 @@
 
 ## 下载
 
-| 平台 | 文件 | 说明 |
-|---|---|---|
-| **Windows 10/11 (x64)** | `Sourin-Setup-__VERSION__.exe` | **安装版**（推荐）：双击 → 下一步 → 开始菜单与桌面快捷方式、可在「应用和功能」里卸载。免管理员权限 |
-| **Windows 10/11 (x64)** | `sourin-windows-v__VERSION__.zip` | **免安装版**：解压到任意目录 → 双击 `sourin_spike.exe` |
-| **macOS 12+** | `sourin-macos-v__VERSION__.dmg` | **安装镜像**（推荐）：双击打开 → 把 `sourin_spike.app` 拖进 `Applications` → 完成。⚠️ 见下方【macOS 首次打开】 |
-| **macOS 12+** | `sourin-macos-v__VERSION__.zip` | 压缩包版（给脚本 / CI / 受限环境）。解压后手动把 `.app` 放进「应用程序」 |
-| **Android 手机 / 平板** | `sourin-android-arm64-v__VERSION__.apk` | 现代设备（近 5 年基本都是这个） |
-| **Android TV / 电视盒子** | `sourin-android-armv7-v__VERSION__.apk` | 较老的 32 位设备；TV 版**同一个 APK**，装上即出现在 TV 主界面 |
+**Windows 10/11 (x64)**
+
+- `Sourin-Setup-__VERSION__.exe` —— **安装版**（推荐）：双击 → 下一步 → 开始菜单与桌面快捷方式、可在「应用和功能」里卸载。免管理员权限
+- `sourin-windows-v__VERSION__.zip` —— **免安装版**：解压到任意目录 → 双击 `sourin_spike.exe`
+
+**macOS 12+**
+
+- `sourin-macos-v__VERSION__.dmg` —— **安装镜像**（推荐）：双击打开 → 把 `sourin_spike.app` 拖进 `Applications` → 完成。⚠️ 见下方【macOS 首次打开】
+- `sourin-macos-v__VERSION__.zip` —— 压缩包版（给脚本 / CI / 受限环境）。解压后手动把 `.app` 放进「应用程序」
+
+**Android**
+
+- `sourin-android-arm64-v__VERSION__.apk` —— 手机 / 平板，现代设备（近 5 年基本都是这个）
+- `sourin-android-armv7-v__VERSION__.apk` —— Android TV / 电视盒子，较老的 32 位设备；TV 版**同一个 APK**，装上即出现在 TV 主界面
 
 ### Windows 安装版与免安装版有什么区别
 
-| | 安装版（`Sourin-Setup-*.exe`） | 免安装版（`.zip`） |
-|---|---|---|
-| 安装方式 | 双击走安装向导 | 解压到任意目录即可 |
-| 快捷方式 | 自动建开始菜单 + 桌面 | 无（自己建） |
-| 卸载 | 「设置 → 应用 → 已安装的应用」里能卸载 | 直接删目录 |
-| 需要管理员权限 | **不需要**（装到 `%LOCALAPPDATA%\Programs\源影`） | 不需要 |
-| 数据目录 | 同一个 `%APPDATA%\app.sourin.player` | 同一个 |
+- **安装方式**：安装版双击走安装向导；免安装版解压到任意目录即可
+- **快捷方式**：安装版自动建开始菜单 + 桌面；免安装版无（自己建）
+- **卸载**：安装版在「设置 → 应用 → 已安装的应用」里能卸载；免安装版直接删目录
+- **需要管理员权限**：都不需要（安装版装到 `%LOCALAPPDATA%\Programs\源影`）
+- **数据目录**：两者都是同一个 `%APPDATA%\app.sourin.player`
 
 **两个版本的内容完全一样**（同一个 commit 构建，同一份 Release 目录打出来的）。
 macOS 侧的 `.dmg` 与 `.zip` 同理 —— 内容同源，只是分发形态不同。
@@ -117,11 +121,9 @@ macOS 侧的 `.dmg` 与 `.zip` 同理 —— 内容同源，只是分发形态�
 
 **它在哪里**（三条真实路径，任选）：
 
-| 位置 | 怎么拿到 |
-|---|---|
-| **数据目录**（推荐） | 装好或解压后**首次启动**程序，它会自动释放到 `<数据目录>\plugins\`。Windows 默认是 `%APPDATA%\app.sourin.player\plugins\demo.js` |
-| **仓库源码** | [`rust/sourin_core/plugins/demo.js`](https://github.com/iuuuuuuuu/sourin/blob/main/rust/sourin_core/plugins/demo.js) |
-| **本页 Source code** | 下载本 Release 页的 `Source code (zip)` / `Source code (tar.gz)`，里面同一路径下有同一份 |
+- **数据目录**（推荐）—— 装好或解压后**首次启动**程序，它会自动释放到 `<数据目录>\plugins\`。Windows 默认是 `%APPDATA%\app.sourin.player\plugins\demo.js`
+- **仓库源码** —— [`rust/sourin_core/plugins/demo.js`](https://github.com/iuuuuuuuu/sourin/blob/main/rust/sourin_core/plugins/demo.js)
+- **本页 Source code** —— 下载本 Release 页的 `Source code (zip)` / `Source code (tar.gz)`，里面同一路径下有同一份
 
 > 无需从安装包或 zip 里翻找 —— 示例插件是**编进核心库**的
 > （`rust/sourin_core/src/state.rs` 的 `include_str!("../plugins/demo.js")`），
@@ -161,22 +163,18 @@ SmartScreen 可能提示「Windows 已保护你的电脑」——点「更多信
 
 ## 系统要求
 
-| | 最低 |
-|---|---|
-| **Windows** | Windows 10 x64（依赖 D3D11；Win7/8 未测试） |
-| **macOS** | macOS 12 (Monterey) 及以上 |
-| **Android** | Android 7.0 (API 24) 及以上；TV 需支持 Leanback |
-| **磁盘** | 约 150 MB（Windows 解压后）；播放缓存另计 |
+- **Windows** —— Windows 10 x64（依赖 D3D11；Win7/8 未测试）
+- **macOS** —— macOS 12 (Monterey) 及以上
+- **Android** —— Android 7.0 (API 24) 及以上；TV 需支持 Leanback
+- **磁盘** —— 约 150 MB（Windows 解压后）；播放缓存另计
 
 ---
 
 ## 数据目录
 
-| 平台 | 路径 |
-|---|---|
-| Windows | `%APPDATA%\app.sourin.player` |
-| macOS | `~/Library/Containers/app.sourin.player/Data/app.sourin.player` |
-| Android | 应用私有目录 |
+- **Windows** —— `%APPDATA%\app.sourin.player`
+- **macOS** —— `~/Library/Containers/app.sourin.player/Data/app.sourin.player`
+- **Android** —— 应用私有目录
 
 > Windows 上**与原版 Tauri 客户端用同一个目录** —— 从原版迁过来的用户，
 > 收藏 / 历史 / 进度 / 插件全都还在。升级安装**不会**覆盖这个目录。

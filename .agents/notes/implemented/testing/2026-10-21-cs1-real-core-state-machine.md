@@ -73,13 +73,41 @@ lib/core/ffi.dart 用 `DynamicLibrary.open('sourin_core.dll')` —— 相对路�
 坑 1：口令存在**真实系统钥匙串**里，不属于数据目录
   service = dsh-media-client-credential-key，key = credentials
   ⇒ 跨用例泄漏。症状：before.passphraseSet 一上来就是 true。
-  ⇒ 解法：setUp/tearDown 都 `setCredentialsPassphrase('')`
   ★ 这意味着本文件**会读写开发者机器的真实钥匙串**。
-    它是清空而非写入，但仍属"有副作用"的测试 —— 已在文件头标明。
+
+★★★ 保护（Lead 裁决后加的，比"跳过"更精准）：
+  setUp 里**先读一次**钥匙串原有状态，再决定动不动：
+    · passphraseSet == false ⇒ 本来就没有 ⇒ touchedKeyring = true，我负责设/清
+    · passphraseSet == true  ⇒ **开发者自己设的 ⇒ 立即 skip，且绝不清空**
+  tearDown 只在 touchedKeyring 为 true 时才清。
+  ⇒ **结构上不可能误清别人的口令**（不是靠"记得别清"，是靠标志位隔离）。
+
+  判据：**"清空"必须只作用于"我自己设的那个口令"，不能作用于"本来就在的"。**
+  ★ 为什么不用 `@Tags` 默认 skip：那会让它变成"不被跑的检查"，
+    而不被跑的检查等于没有检查（本仓已记过这个形态）。
+    现在的做法是"CI/干净机器上真跑，开发者有真口令时如实跳过并说明原因"。
 
 坑 2：没 dll 时不能假装通过
   ⇒ `ensureCoreDll()` 找不到 dll 就返回 false，用例 `markTestSkipped`。
   ★ 但"skip"和"通过"必须区分：skip 的数不会混进 +N 的绿。
+```
+
+### 保护分支的实测验证
+
+```text
+① 干净钥匙串 ⇒ 真跑
+   [E2E-READY] 钥匙串原本无口令 ⇒ 本次会临时设一个，并在结束时清掉
+   ⇒ +2 All tests passed
+
+② 手动种入一个口令（模拟"开发者本来就有"）⇒ skip 且不清
+   [E2E-SKIP] 钥匙串里已有口令（不是本测试设的）⇒ 不清空、不覆盖，跳过本次验证
+   ⇒ +0 ~2 All tests skipped
+
+③ skip 之后**复核口令仍在**
+   [AFTER-SKIP] passphraseSet=true
+   ⇒ ★ 证明 skip 分支确实没有清掉别人的数据
+
+④ 恢复干净后重跑 ⇒ 回到 +2
 ```
 
 ## Testing

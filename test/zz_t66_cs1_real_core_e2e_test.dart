@@ -24,20 +24,28 @@
 // ⇒ 把 dll 放在**当前工作目录**（仓库根）就能打开。
 //   flutter test 的 cwd 是仓库根 ⇒ 只要 sourin_core.dll 在那里就行。
 //
-//   本文件用 `sourin_test_ensure_dll()` 自动把 build 产物拷到根目录（见下），
+//   本文件用 `ensureCoreDll()` 自动把 build 产物拷到根目录（见下），
 //   跑完不删（后续用例还要用；它已在 .gitignore 里）。
 // ```
 //
-// # ★ 两个必须知道的坑（都是实测踩的）
+// # ★★★ 三条必须知道的纪律（每条都对应一次真实事故或一次裁决）
 //
 // ```text
-// 坑 1：口令存在**真实系统钥匙串**里，不属于数据目录
+// 纪律 1：口令存在**真实系统钥匙串**里，不属于数据目录
 //   service = dsh-media-client-credential-key，key = credentials
 //   ⇒ 上一个用例设的口令会**泄漏**到下一个用例
 //   ⇒ 症状：`before.passphraseSet` 一上来就是 true，断言「初始应为未设」失败
-//   ⇒ 解法：每个用例先 `setCredentialsPassphrase('')` 清空，并 addTearDown 再清一次
 //
-// 坑 2：`willSync` 需要**两个条件同时满足**
+// 纪律 2 ★★★：**只清「我自己设的那个口令」，绝不碰「本来就在的」**
+//   本文件会读写开发者机器的真实钥匙串 ⇒ 那是别人的数据。
+//   ⇒ setUp 里**先读一次**：
+//       · passphraseSet == false ⇒ 本来就没有，我来负责后面设/清（touchedKeyring = true）
+//       · passphraseSet == true  ⇒ 开发者自己设的 ⇒ **立即跳过，且绝不清空**
+//   判据：**"清空"必须只作用于"我自己设的那个口令"，不能作用于"本来就在的"。**
+//   ★ 机械保证：`touchedKeyring` 只在"本来没有"那条路径上置 true，
+//     tearDown 只在这个标志为 true 时才清 ⇒ **结构上不可能误清别人的口令**。
+//
+// 纪律 3：`willSync` 需要**两个条件同时满足**
 //   enabled=true **且** passphraseSet=true
 //   ⇒ 只设口令、不开开关 ⇒ willSync=false ⇒ 状态行仍是「凭据未同步（未开启）」
 //   ⇒ 这就是"派生字段"的意义：光有口令不等于会同步
@@ -74,6 +82,16 @@ bool ensureCoreDll() {
 void main() {
   final hasCore = ensureCoreDll();
 
+  /// 非 null 时所有用例跳过（并打印原因）
+  String? skipReason;
+
+  /// 本用例是否**真的动过**钥匙串
+  ///
+  /// ★★★ 这是纪律 2 的机械保证：
+  ///   只有"本来就没有口令"那条路径才会把它置 true。
+  ///   「开发者本来就有口令」的路径上它恒为 false ⇒ tearDown **不可能**误清。
+  bool touchedKeyring = false;
+
   /// 起一个隔离的核心实例
   Future<Directory> startCore() async {
     final tmp = Directory.systemTemp.createTempSync('cs1-e2e-');
@@ -98,27 +116,60 @@ void main() {
   }
 
   setUp(() async {
-    if (!hasCore) return;
-    await clearPassphrase();
+    skipReason = null;
+    touchedKeyring = false;
+
+    if (!hasCore) {
+      skipReason = '缺少 sourin_core.dll（未找到构建产物）⇒ 未验证';
+      return;
+    }
+
+    await startCore();
+
+    /*
+     * ★★★ 纪律 2 的落点：**先读，再决定动不动**。
+     *
+     * 这是本文件唯一读钥匙串"原有状态"的地方。
+     * 若开发者本来就有口令 ⇒ 跳过，并且**不把 touchedKeyring 置 true**
+     * ⇒ tearDown 不会清它。
+     */
+    final st = await SourinApi.credentialsStatus();
+    if (st.passphraseSet) {
+      skipReason = '钥匙串里已有口令（不是本测试设的）⇒ 不清空、不覆盖，跳过本次验证';
+      // ignore: avoid_print
+      print('[E2E-SKIP] $skipReason');
+      return;
+    }
+
+    // 走到这里说明"本来就没有" ⇒ 我后面设的那个一律由我清
+    touchedKeyring = true;
+    // ignore: avoid_print
+    print('[E2E-READY] 钥匙串原本无口令 ⇒ 本次会临时设一个，并在结束时清掉');
   });
 
   tearDown(() async {
-    if (!hasCore) return;
+    // ★★★ 绝不清「本来就在的」：只在动过时才清
+    if (!touchedKeyring) return;
     await clearPassphrase();
   });
+
+  /// 用例开头的统一守卫
+  bool guard() {
+    if (skipReason != null) {
+      markTestSkipped(skipReason!);
+      return false;
+    }
+    return true;
+  }
 
   // ─────────────────────────────────────────────────────────────
   // ★★★ 核心：状态机四态
   // ─────────────────────────────────────────────────────────────
 
   test('★★★ 凭据同步的状态机：开关与口令两个条件缺一不可', () async {
-    if (!hasCore) {
-      markTestSkipped('缺少 sourin_core.dll（未找到构建产物）');
-      return;
-    }
-    await startCore();
+    if (!guard()) return;
 
-    // ① 起点：都没开
+    // ① 起点：都没开（setUp 已保证口令为空）
     final s0 = await SourinApi.credentialsStatus();
     expect(s0.enabled, isFalse);
     expect(s0.passphraseSet, isFalse);
@@ -177,11 +228,7 @@ void main() {
   // ─────────────────────────────────────────────────────────────
 
   test('★★★ 故障注入：少了任何一个条件，状态行都不许说"将同步"', () async {
-    if (!hasCore) {
-      markTestSkipped('缺少 sourin_core.dll');
-      return;
-    }
-    await startCore();
+    if (!guard()) return;
 
     /*
      * 这是判别力检查：

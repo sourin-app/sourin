@@ -842,6 +842,13 @@ if (target.mode === 'range') {
       console.log(`  ✔ ${commit.sha.slice(0, 7)} 已用 Note-Skip 放行 —— ${ownSkip.trim()}`);
       continue;
     }
+    /* 后补的笔记可以 `covers: <sha>` 认领它之前的提交 —— 区间内、且每次打印。 */
+    const claimer = coveredBy.get(commit.sha);
+    if (claimer !== undefined) {
+      console.log(`  ✔ ${commit.sha.slice(0, 7)} 已被后补笔记认领 —— ${claimer}`);
+      continue;
+    }
+
     failures.push({ sha: commit.sha, subject: commit.subject, managed: verdict.managed });
   }
 

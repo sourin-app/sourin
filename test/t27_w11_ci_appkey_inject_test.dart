@@ -75,6 +75,46 @@ final RegExp kLegacyInterpolatedAppSecretDefine =
 int occurrences(String haystack, String needle) =>
     haystack.split(needle).length - 1;
 
+/// 去掉**整行注释**之后的行。
+///
+/// ★ 2026-10-21（PR #32）：本仓 build.yml 的注释是「判据的唯一权威说明处」，
+///   里面会**原样引用**被守的文本 —— 例如把注入片段贴进 ```yaml 块里讲清楚
+///   「空串照样能编进二进制」。整文件计数会把注释一起数进分母：
+///   实测注释让 kAppIdEnvLine 从 5 变成 6、kAppIdDefineWin 从 1 变成 2，
+///   门禁于是红在「注释写得太详细」上 —— 而那正是它最该鼓励的东西。
+///   ⇒ 计数只在**可执行行**上做；注释不构成注入，也不构成违规。
+List<String> codeOnlyLines(List<String> allLines) =>
+    allLines.where((l) => !l.trimLeft().startsWith('#')).toList();
+
+/// 一个 job 级步骤块（以 6 空格缩进的 `- name:` 为界）。
+class StepBlock {
+  const StepBlock(this.header, this.text);
+
+  final String header;
+  final String text;
+
+  bool get hasCredentials => occurrences(text, kAppIdEnvLine) > 0;
+}
+
+List<StepBlock> stepBlocks(List<String> codeLines) {
+  final blocks = <StepBlock>[];
+  for (var i = 0; i < codeLines.length; i++) {
+    if (!codeLines[i].startsWith('      - name:')) continue;
+    var end = i + 1;
+    while (end < codeLines.length &&
+        !codeLines[end].startsWith('      - name:')) {
+      end++;
+    }
+    blocks.add(StepBlock(codeLines[i], codeLines.sublist(i, end).join('\n')));
+  }
+  return blocks;
+}
+
+/// 「凭据预检」步骤：它**必须**拿到凭证值才能判定空不空（判的是值，不是名字）。
+/// 把凭据挂在这一步上是**有意的**步骤级最小权限，不是漏配到 job 级。
+bool _isPreflightLine(String l) => l.contains('凭据预检');
+
+
 String readRepoFile(String path) {
   final f = File(path);
   if (!f.existsSync()) {
@@ -145,24 +185,42 @@ void main() {
   final readme = readRepoFile(kReadmePath);
   final configDoc = readRepoFile(kConfigDocPath);
   final allLines = workflow.split('\n');
+  final codeLines = codeOnlyLines(allLines);
+  final codeText = codeLines.join('\n');
 
   group('T27-11 · build.yml 注入通道', () {
-    test('① 凭证 env 取自 secrets，且恰好三条 flutter build 步骤各一份（步骤级最小权限）', () {
-      expect(occurrences(workflow, kAppIdEnvLine), 3,
-          reason: 'DANDANPLAY_APP_ID 的 env 声明应恰好在三条 build 步骤各一次');
-      expect(occurrences(workflow, kAppSecretEnvLine), 3,
-          reason: 'DANDANPLAY_APP_SECRET 的 env 声明应恰好在三条 build 步骤各一次');
+    test('① 凭证 env 只挂在三条发布构建 + 两条凭据预检上（步骤级最小权限）', () {
+      // ★ 2026-10-21（PR #32）：白名单从「三条 build」扩到「三条 build + 两条预检」。
+      //   预检（tools/check_required_secrets.sh）判的是**值空不空**，
+      //   而 Actions 不提供「列 secret 名」的能力 ⇒ 它只能拿到值。
+      //   扩白名单的同时，下面把「谁带着凭据」逐个点名，绝不放开成「随便几步都行」。
+      final blocks = stepBlocks(codeLines);
+      final publish = blocks
+          .where((b) => b.text.split('\n').any(_isReleaseBuildLine))
+          .toList();
+      final preflight =
+          blocks.where((b) => _isPreflightLine(b.header)).toList();
 
-      // 每个 build 步骤块内必须恰好含一次 AppId 与一次 AppSecret env 声明
-      // —— 证明它们就在**这一步**上，不是别处（job 级）声明后复用。
-      final blocks = buildStepBlocks(allLines);
-      expect(blocks.length, 3, reason: '改动面收敛：恰好三条 flutter build 步骤');
-      for (final block in blocks) {
-        expect(occurrences(block, kAppIdEnvLine), 1,
-            reason: '每个 build 步骤块内应恰含一次 AppId env 声明（步骤级）');
-        expect(occurrences(block, kAppSecretEnvLine), 1,
-            reason: '每个 build 步骤块内应恰含一次 AppSecret env 声明（步骤级）');
+      expect(publish.length, 3, reason: '改动面收敛：恰好三条**发布用** flutter build 步骤');
+      expect(preflight.length, 2,
+          reason: '凭据预检应恰好两步：windows 与 macos 各一份（同一份脚本）');
+
+      for (final block in [...publish, ...preflight]) {
+        expect(occurrences(block.text, kAppIdEnvLine), 1,
+            reason: '「${block.header.trim()}」块内应恰含一次 AppId env 声明（步骤级）');
+        expect(occurrences(block.text, kAppSecretEnvLine), 1,
+            reason: '「${block.header.trim()}」块内应恰含一次 AppSecret env 声明（步骤级）');
       }
+
+      // 反向：除这 5 步之外，任何步骤都**不许**带凭证 env（将来新增步骤不能顺手加）
+      final allowed = {...publish.map((b) => b.header), ...preflight.map((b) => b.header)};
+      for (final block in blocks.where((b) => b.hasCredentials)) {
+        expect(allowed.contains(block.header), isTrue,
+            reason: '「${block.header.trim()}」带着凭证 env，但它既不是发布构建也不是凭据预检 '
+                '⇒ 凭证注入面被扩散了（要么去掉，要么在白名单里显式说明理由）');
+      }
+      expect(blocks.where((b) => b.hasCredentials).length, 5,
+          reason: '带凭证的步骤应恰好 5 个（3 发布构建 + 2 预检）');
     });
 
     test('①b 凭证 env 不出现在 job 级（6 空格缩进即 job 级，违规）', () {
@@ -179,12 +237,13 @@ void main() {
     test('② 三条发布用 flutter build 各追加两个 dart-define，且用对应 shell 语法引用', () {
       // ★ 只取**发布用**那三条（--release）—— 诊断 job 那条 --debug 不注入凭证，
       //   不该被要求带 dart-define。理由见 buildStepBlocks 的说明。
-      final buildLines = allLines.where(_isReleaseBuildLine).toList();
+      // ★ 只在**可执行行**上取（注释里的示例不构成注入），见 codeOnlyLines。
+      final buildLines = codeLines.where(_isReleaseBuildLine).toList();
       expect(buildLines.length, 3, reason: '改动面收敛：恰好三条**发布用** flutter build 命令');
       for (final line in buildLines) {
-        final i = allLines.indexOf(line);
-        final end = allLines.indexWhere((l) => l.trim().isEmpty, i + 1);
-        final block = allLines.sublist(i + 1, end).join('\n');
+        final i = codeLines.indexOf(line);
+        final end = codeLines.indexWhere((l) => l.trim().isEmpty, i + 1);
+        final block = codeLines.sublist(i + 1, end).join('\n');
         final isWindows = line.contains('flutter build windows');
         final appIdDefine = isWindows ? kAppIdDefineWin : kAppIdDefineSh;
         final appSecretDefine =
@@ -196,16 +255,16 @@ void main() {
             reason: '「$line」的续行块缺对应 shell 语法的 AppSecret dart-define');
       }
       // 三段逐字一致：Windows 一份 + 两个非 Windows 平台各一份
-      expect(occurrences(workflow, kAppIdDefineWin), 1);
-      expect(occurrences(workflow, kAppSecretDefineWin), 1);
-      expect(occurrences(workflow, kAppIdDefineSh), 2,
+      expect(occurrences(codeText, kAppIdDefineWin), 1);
+      expect(occurrences(codeText, kAppSecretDefineWin), 1);
+      expect(occurrences(codeText, kAppIdDefineSh), 2,
           reason: 'macOS 与 Android 各一份 \$NAME 形态');
-      expect(occurrences(workflow, kAppSecretDefineSh), 2);
+      expect(occurrences(codeText, kAppSecretDefineSh), 2);
       // 旧写法（${{ env.NAME }} 文本插值）必须绝迹 —— Secret 含元字符会改解析
-      expect(kLegacyInterpolatedAppIdDefine.allMatches(workflow), isEmpty,
+      expect(kLegacyInterpolatedAppIdDefine.allMatches(codeText), isEmpty,
           reason: 'dart-define 不得回退成 \${{ env.NAME }} 文本插值：'
               'Secret 含双引号 / \$ / 反引号时会改变生成脚本的解析（CWE-94）');
-      expect(kLegacyInterpolatedAppSecretDefine.allMatches(workflow), isEmpty,
+      expect(kLegacyInterpolatedAppSecretDefine.allMatches(codeText), isEmpty,
           reason: 'dart-define 不得回退成 \${{ env.NAME }} 文本插值');
     });
 
@@ -217,7 +276,9 @@ void main() {
     });
 
     test('⑤ 阴性对照：凭证不许明文写死（只能取自 secrets 表达式）', () {
-      for (final m in kSecretValueMustBeExpression.allMatches(workflow)) {
+      // ★ 只在可执行行上扫：注释里那段 ```yaml 示例讲的是「空串照样能编进去」，
+      //   它不是注入点。放开注释不会放过任何真实明文（真明文只会出现在可执行行）。
+      for (final m in kSecretValueMustBeExpression.allMatches(codeText)) {
         expect(isSecretExpression(m.group(2)!), isTrue,
             reason: '「${m.group(1)}」的取值必须是 \${{ secrets.* }} 表达式，不许明文写死（防泄漏）');
       }

@@ -119,6 +119,55 @@ jobs:
         with:
           fetch-depth: 0
 
+      # ── ⓪-0 凭据预检：凭证为空 ⇒ **响亮地红**，不是静默降级 ──────────
+      #
+      # ★ 实测背景（2026-10-21）：仓库 secrets 总数 = 0
+      #   （`GET /repos/{o}/{r}/actions/secrets` → `total_count = 0`）
+      #   ⇒ DANDANPLAY_APP_ID / DANDANPLAY_APP_SECRET 都没配。
+      #
+      #   而下面「构建 Windows 发布版」那一步是这么注入的：
+      # ```yaml
+      #   env:
+      #     DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}     # ⇒ 空串
+      #   --dart-define=DANDANPLAY_APP_ID="$env:DANDANPLAY_APP_ID"
+      # ```
+      #   **空串照样能编进二进制** ⇒ `String.fromEnvironment` 得到空串 ⇒
+      #   App 回落到「用户自填凭证」，**不报错、不告警、构建成功、CI 全绿** ——
+      #   只有业主装上之后才发现这个包没有官方弹幕。
+      #   ⇒ 这正是本仓明令禁止的那一类：**缺件被当成正常**。
+      #
+      # ★ 判定放在 tools/check_required_secrets.sh 里（**本地与 CI 同一份**）：
+      #   判的是**值**，不是名字 —— Actions 不提供「列出 secret 名」的能力
+      #   （那要 PAT），`secrets` 上下文也不能出现在 `if:` 里。
+      #   ⇒ 只能把值当环境变量注进来判空。这是唯一不需要额外凭据的落地方式。
+      #
+      # ★ 豁免：仓库变量 ALLOW_EMPTY_CREDENTIALS=true ⇒ 只打 ::warning:: 放行
+      #   （**留痕**，不是静默）。⚠️ fork PR 拿不到 secrets ⇒ 本步会红；
+      #   要放行就设那个变量，**不要**在这里加 `|| true`（那是假绿）。
+      #
+      # ★ 位置：紧跟检出、在装 Flutter / Rust **之前** —— 缺凭据 3 秒内就知道，
+      #   不必等二三十分钟的构建白跑一遍再报。
+      - name: 凭据预检（空值 ⇒ 响亮失败，不静默降级）
+        # ★ 2026-10-21（Lead 复核后加）：**只对会产出用户可见安装包的构建**生效。
+        #   理由：本仓现在 secrets 总数 = 0，若此步无条件跑，则每一个 PR / push
+        #   的 Windows job 都会红 ⇒ 分支保护要求的 Windows 检查永远绿不了，
+        #   于是「必须配凭据才能发版」变成了「必须配凭据才能合任何代码」——
+        #   后者不是本步要防的风险（PR 产物没人装）。
+        #   真正要防的是「装到用户机器上的包内嵌空凭据」，而那种包只在
+        #   release_tag 非空时才会被打出来（见 :684 / :712 的 zip/NSIS 步）。
+        #   ⇒ 判据挂在「会不会发布」上，不挂在「会不会编译」上。
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        shell: bash
+        env:
+          # ★ 只在这一个步骤里注入，口径与下面真正打包那一步完全一致
+          DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
+          DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
+          # 仓库变量（不是 secret）：未设置时是空串 ⇒ 视为「未豁免」
+          ALLOW_EMPTY_CREDENTIALS: ${{ vars.ALLOW_EMPTY_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          bash tools/check_required_secrets.sh
+
       - name: 装 Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -261,6 +310,46 @@ jobs:
           #   它把 `python` 指到 3.12；而 `python3` 在 windows runner 上可能不存在
           #   （39526450290 就是这么红的）。
           python tools/guard_release_notes_numbers.py .github/release-notes.md
+
+      # ── ⓪-a 坑表条数门禁：docs/PITFALLS.md 汇总表里的数 = 台账真实行数 ──
+      #
+      # ★ 为什么这条必须存在：汇总表里那三个数（A/B/C 组条数）是**手填的
+      #   常量**，而台账每天都在加删条目（维护规则是「解决即删」）——
+      #   数对了没有、漂了没有，**此前没有任何东西在看**。
+      #   口径（「首格加粗」才算条目，因为 C 组块首还有一张症状速查表）
+      #   已经写死在 tools/count_pitfalls.py 的文件头里，这里只负责调用，
+      #   **不在这里复述口径**（口径写两处必然再次漂移）。
+      #
+      # ★ 退出码全部当红处理，一个都不吞：
+      #     0 = 一致；1 = 数不一致；2 = 文件/表格/标记缺失。
+      #   「查不到」不能当成「没问题」⇒ 2 也不放过（同 notes-coverage.mjs）。
+      #   ★ 三种退出码都已故障注入实测（2026-10-21，ci-gate）：
+      #       基线           → 0（`A=17 / B=18 / C=24（合计 59）` `✅ 一致`）
+      #       汇总表 17→71    → 1（`::error::  A 组：文档写 71，实测 17`）
+      #       删掉 B 组结束标记 → 2（`[count_pitfalls] 文档里找不到 B 组的…`）
+      #     ⇒ 与 docstring 的 0/1/2 完全一致。★ 这里不再写「表里数字是多少」：
+      #       数字会变，写死在这里就是**又一份会漂移的副本**（口径只归脚本）。
+      #
+      # ★ 复用上面「发布说明守卫」那步刚装好的 actions/setup-python@v5：
+      #   用 `python` 而**不是** `python3` —— windows runner 上 python3 可能是
+      #   Microsoft Store 的桩程序（`--version` 空输出但 rc=0，静默不执行）；
+      #   同理必须显式 `shell: bash`（pwsh 的 $ErrorActionPreference 管不到
+      #   外部程序的退出码 ⇒ 会假绿）。
+      - name: 坑表条数门禁（docs/PITFALLS.md ⇄ tools/count_pitfalls.py）
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ★ 先确认被调的两个文件都在：缺文件时 python 的报错是
+          #   `can't open file`，那读起来像环境问题，而不像「没提交」。
+          if [ ! -f tools/count_pitfalls.py ]; then
+            echo "::error::tools/count_pitfalls.py 不存在 ⇒ 本次**什么都没核对**（不能算通过）"
+            exit 1
+          fi
+          if [ ! -f docs/PITFALLS.md ]; then
+            echo "::error::docs/PITFALLS.md 不存在 ⇒ 本次**什么都没核对**（不能算通过）"
+            exit 1
+          fi
+          python tools/count_pitfalls.py --check
 
       # ── ⓪-b 笔记覆盖门禁：该写笔记的改动必须同批带笔记 ──────────────
       #
@@ -840,6 +929,23 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      # ── 凭据预检（与 Windows job 同款，逐字理由见那里 :150 附近）──────
+      #
+      # ★ 为什么 macOS 也必须有：凭证是**两个平台各自** --dart-define 编进二进制
+      #   的（Windows 见 :549，macOS 见 :961）。只查 Windows ⇒ macOS 的 DMG
+      #   仍然可能带着空凭据发出去，而业主看不出两个平台的区别。
+      # ★ 判定脚本与本地跑的是**同一份** tools/check_required_secrets.sh。
+      - name: 凭据预检（空值 ⇒ 响亮失败，不静默降级）
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        shell: bash
+        env:
+          DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
+          DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
+          ALLOW_EMPTY_CREDENTIALS: ${{ vars.ALLOW_EMPTY_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          bash tools/check_required_secrets.sh
+
       - name: 装 Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -1165,7 +1271,12 @@ jobs:
   native-media:
     name: native-media（诊断，不拦合并）
     runs-on: windows-latest      # 理由见上：只有这条平台链在本地就能供出 libmpv-2.dll
-    timeout-minutes: 45
+    # ★ 45 → 60 分钟：本 job 本轮开始**真的**编 Rust 核心了（cargo build --release
+    #   + rust-cache 冷缓存时约 5-10 分钟）。若还按 45 分钟，慢的那次会在
+    #   「跑测试」中途被 timeout 杀掉 —— 那种红**没有任何分类价值**
+    #   （只有 "The job running on runner ... has exceeded the maximum execution
+    #   time"），恰好背离本 job「要有诊断价值」的唯一目的。
+    timeout-minutes: 60
     # ★★ 不阻塞 workflow / 不阻塞合并（理由见上）。但它**仍然**会被记录成失败，
     #    供人查看 —— 只是不再把 windows / macos 的正常绿一起拖红。
     continue-on-error: true
@@ -1179,6 +1290,41 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+
+      # ── ★★★ 本 job 此前**从来没有编过 Rust 核心**（2026-10-21 定位）─────
+      #
+      # # 现场
+      # ```text
+      # 747 行日志里 **723 行**是：
+      #   Failed to load dynamic library 'sourin_core.dll': ...
+      #   （Windows error code 126 = ERROR_MOD_NOT_FOUND）
+      # -31 全是「找不到 dll」，外加一堆 `did not complete [E]` 误报。
+      # ```
+      # # 根因（不是 libmpv 的锅，别再去查第三方库）
+      # ```text
+      # windows job: cargo build --release  ← 只在这里（本 job 没有）
+      # macos   job: cargo build --release  ← 只在这里（本 job 没有）
+      # 本 job:      flutter pub get → flutter build windows → 直接跑测试
+      #              ⇒ rust/…/target/release/sourin_core.dll **不存在**
+      # 而 lib/core/ffi.dart:298 是裸文件名加载：
+      #   `DynamicLibrary.open('sourin_core.dll')`
+      # ⇒ LoadLibrary 按「exe 目录 → 系统目录 → 当前目录 → %PATH%」搜，
+      #   这四处都没有那个文件 ⇒ err 126 ⇒ 每个碰 FFI 的用例都抛。
+      # ```
+      # ⇒ 补两步：装 Rust 工具链 + `cargo build --release`（与 windows job 同口径）。
+      #   ★ 用 rust-cache 且 `workspaces: rust/sourin_core`：与 windows job
+      #     缓存键一致 ⇒ 两个 job 命中同一份依赖缓存（不重复编译依赖）。
+      - name: 装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/sourin_core
+
+      - name: 编 Rust 核心（本 job 此前缺这一步）
+        working-directory: rust/sourin_core
+        run: cargo build --release
 
       # ★★ 2026-10-19（Lead 修正一段**自相矛盾的注释**）：
       #    这一段原本写「装依赖**必须**在跑测试之前 —— 它触发 CMake 配置，
@@ -1259,6 +1405,71 @@ jobs:
           }
           "libmpv-2.dll = " + (Get-Item $mpv).Length + " 字节（就位）"
 
+      # ── ★★★ 把两个 dll 放进「测试一定能找到」的位置 ────────────────────
+      #
+      # # 为什么「编出来」还不够
+      # ```text
+      # 编译产物在  rust/sourin_core/target/release/sourin_core.dll
+      # 而代码按**裸文件名**加载（lib/core/ffi.dart:298）：
+      #   DynamicLibrary.open('sourin_core.dll')
+      # ⇒ LoadLibrary 的搜索序列是
+      #     exe 目录(flutter_tester.exe 所在) → 系统目录 → 当前目录 → %PATH%
+      #   这里面**没有** target/release
+      # ⇒ 「有 dll」≠「能加载」；这一步就是把前者变成后者。
+      # ```
+      # # 为什么同时走两条路（%PATH% + 工作目录），不是重复
+      # ```text
+      # ① 追加到 $GITHUB_PATH ⇒ 对**后续所有步骤**生效（含 flutter test 拉起的
+      #    flutter_tester.exe）。libmpv 只能走这条：media_kit 的报错原文就是
+      #      "Cannot find libmpv-2.dll in your system %PATH%"
+      # ② 顺便把 sourin_core.dll 拷一份到仓库根（= `flutter test` 的工作目录）：
+      #    万一将来有人开了「禁止从当前目录搜 dll」的策略（CWDIllegalInDllSearch
+      #    一类），① 仍能兜住；反过来若子进程环境被裁剪掉 PATH，② 仍能兜住。
+      # ```
+      # # 为什么要在这里做一次「真加载」自检
+      # ```text
+      # 不做的话，dll 搜索路径配错的唯一症状是「55 个文件各报一遍 error 126」
+      # —— 也就是本 job 此前那 723 行。⇒ 在这一步用 .NET 的 NativeLibrary
+      # 按**裸名**加载一次：成不成、缺什么依赖，3 行内就有答案。
+      # ★ 缺件/加载失败一律 exit 1（不打 warning）：本仓铁律
+      #   「只打 warning 不 exit 1 的门禁都是假门禁」。
+      # ```
+      - name: 把 sourin_core / libmpv 放进测试的搜索路径（并真加载自检）
+        id: dlls
+        shell: pwsh
+        run: |
+          $core = 'rust/sourin_core/target/release/sourin_core.dll'
+          $mpv = 'build/windows/x64/libmpv/libmpv-2.dll'
+          foreach ($p in @($core, $mpv)) {
+            if (-not (Test-Path $p)) {
+              Write-Host "::error::缺少 $p ⇒ 后面的测试只会得到一堆 error 126，那是**无效读数**"
+              exit 1
+            }
+          }
+          # ② 拷一份到仓库根（`flutter test` 的工作目录）
+          Copy-Item $core . -Force
+          "仓库根的 sourin_core.dll = " + (Get-Item 'sourin_core.dll').Length + " 字节"
+          # ① 两个目录进 %PATH%（$GITHUB_PATH 影响后续步骤，$env:PATH 影响本步）
+          $dirs = @(
+            (Resolve-Path (Split-Path $core)).Path
+            (Resolve-Path (Split-Path $mpv )).Path
+          )
+          foreach ($d in $dirs) { Add-Content -Path $env:GITHUB_PATH -Value $d }
+          $env:PATH = ($dirs -join ';') + ';' + $env:PATH
+          "已加入 %PATH%：" + ($dirs -join ' ; ')
+          # 自检：按**裸名**加载（与 Dart 侧 DynamicLibrary.open 同一个搜索面）
+          foreach ($n in @('sourin_core.dll', 'libmpv-2.dll')) {
+            try {
+              $h = [System.Runtime.InteropServices.NativeLibrary]::Load($n)
+              [System.Runtime.InteropServices.NativeLibrary]::Free($h)
+              "  ✅ 真加载成功：$n"
+            } catch {
+              Write-Host "::error::按裸名加载 $n 失败：$($_.Exception.Message)"
+              Write-Host "  ⇒ 搜索路径仍未配好；后面那 ~720 行 error 126 都是这个原因"
+              exit 1
+            }
+          }
+
       # ★★ 带 native-media 标签的那 55 个硬门禁 —— 默认被 dart_test.yaml skip，
       #    必须 --run-skipped 才会跑；--tags native-media 只选这一批；
       #    --concurrency=1 是 dart_test.yaml:57 明写的（串行**降低**、但**不能消除**
@@ -1267,39 +1478,117 @@ jobs:
       #    不是重复。
       - name: 跑 native-media 硬门禁（--run-skipped --tags native-media --concurrency=1）
         id: tests
-        run: flutter test test/ --run-skipped --tags native-media --concurrency=1 --reporter expanded
+        shell: pwsh
+        run: |
+          # ★ 为什么必须 tee 到文件：这一步失败时真正的分类依据（error 126 /
+          #   断言失败 / did not complete）只有**在日志文本上**数得出来，
+          #   而 `flutter test` 末尾的摘要会把每一类的细节冲散。
+          # ★★★ $ErrorActionPreference 必须是 'Continue'（实测踩过，别改回 'Stop'）：
+          #   在 'Stop' 下，`2>&1 | Tee-Object` 里第一条 stderr 行会被包成
+          #   NativeCommandError **异常**直接中断脚本 ⇒ tee 半途收工、
+          #   $LASTEXITCODE 读不到真值 ⇒ 真红的测试变成假绿（正是要消灭的东西）。
+          $ErrorActionPreference = 'Continue'
+          $log = 'native-media.log'
+          flutter test test/ --run-skipped --tags native-media --concurrency=1 --reporter expanded 2>&1 |
+            Tee-Object -FilePath $log
+          $rc = $LASTEXITCODE
+          if ($null -eq $rc) { $rc = 1 }   # 命令根本没起来（$LASTEXITCODE 未置）也当红
+          "flutter test exit code = $rc（完整输出已写入 $log）"
+          if (-not (Test-Path $log)) {
+            Write-Host "::error::没生成 $log ⇒ 失败分类无从下手（不能算通过）"
+            exit 1
+          }
+          # ★ 真红要真红：把 flutter test 的退出码**原样**带出去
+          #   （native 崩溃时是 79，断言失败是 1 —— 都别抹平成 1，
+          #    那个数字本身就在告诉读日志的人「这是哪种失败」）。
+          if ($rc -ne 0) { exit $rc }
 
       # ★ 让失败**一眼可见**（不阻塞，但要被人读到）：把本 job 的结果与上面各步的
       #   结论汇总到 job 摘要里。`continue-on-error` 会让步骤本身报绿，所以这里
       #   按 `steps.*.outcome`（真实结果）而不是 `conclusion`（可能被覆盖）来判。
+      # ★★★ 2026-10-21 本轮改动：以前这里只写「未全过，请展开日志看是断言失败还是
+      #   偶发崩溃」—— 把分类工作**推给读日志的人**。而「分类」恰好是本 job 唯一的
+      #   价值（它是诊断 job，不拦合并）。现在改成：在日志文本上**数出来**。
+      #   ⚠️ 全部用 -SimpleMatch（字面量匹配）：`[E]` 若按正则解释会被当成字符类，
+      #      于是数出 0 条 —— 这种「假 0」比没有分类更坏。
       - name: 汇总（失败要一眼可见，但不阻塞）
         if: always()
         shell: pwsh
         run: |
-          $mpv = 'build/windows/x64/libmpv/libmpv-2.dll'
-          $mpvOk = Test-Path $mpv
+          $mpv  = 'build/windows/x64/libmpv/libmpv-2.dll'
+          $core = 'rust/sourin_core/target/release/sourin_core.dll'
+          $mpvOk  = Test-Path $mpv
+          $coreOk = Test-Path $core
           $fixtureOutcome = '${{ steps.libmpv.outcome }}'
-          $testOutcome = '${{ steps.tests.outcome }}'
+          $dllsOutcome    = '${{ steps.dlls.outcome }}'
+          $testOutcome    = '${{ steps.tests.outcome }}'
+
+          # ── 失败分类：在 native-media.log 上数，不靠人眼 ────────────────
+          $hasLog = Test-Path 'native-media.log'
+          $nLoadFail = 0; $nDnc = 0; $nE = 0; $rcLog = '未捕获'
+          if ($hasLog) {
+            $lines = Get-Content -LiteralPath 'native-media.log' -Encoding UTF8
+            $nLoadFail = @($lines | Select-String -SimpleMatch 'Failed to load dynamic library').Count
+            $nDnc      = @($lines | Select-String -SimpleMatch 'did not complete').Count
+            $nE        = @($lines | Select-String -SimpleMatch '[E]').Count
+            $hit = @($lines | Select-String -SimpleMatch 'flutter test exit code = ')
+            if ($hit.Count -gt 0) { $rcLog = ($hit[-1].Line -replace '.*exit code = (\d+).*', '$1') }
+          }
+          # 断言类 ≈ [E] 总数 − did not complete 数（启发式：两类有重叠，
+          # 标签里写明「启发式」，不假装精确）
+          $nAssert = [Math]::Max(0, $nE - $nDnc)
+
           "## native-media（诊断 job，不拦合并）" >> $env:GITHUB_STEP_SUMMARY
           "" >> $env:GITHUB_STEP_SUMMARY
           "| 步骤 | 结果 |" >> $env:GITHUB_STEP_SUMMARY
           "|---|---|" >> $env:GITHUB_STEP_SUMMARY
+          "| Rust 核心已编出（sourin_core.dll） | $(if ($coreOk) { 'OK' } else { '缺' }) |" >> $env:GITHUB_STEP_SUMMARY
           "| libmpv 核验 | $fixtureOutcome |" >> $env:GITHUB_STEP_SUMMARY
+          "| 两个 dll 进搜索路径 + 真加载自检 | $dllsOutcome |" >> $env:GITHUB_STEP_SUMMARY
           "| 55 个 native-media 硬门禁 | $testOutcome |" >> $env:GITHUB_STEP_SUMMARY
           "" >> $env:GITHUB_STEP_SUMMARY
-          if (-not $mpvOk) {
-            "⚠️ libmpv-2.dll **不在** \`$mpv\` ⇒ 依赖真播放器的用例会走守卫静默跳过。" >> $env:GITHUB_STEP_SUMMARY
-            "本 job 的读数**不代表**那 55 个门禁真的执行过 —— 请先修供给链。" >> $env:GITHUB_STEP_SUMMARY
-          } elseif ($testOutcome -eq 'success') {
-            "✅ 55 个门禁本次**全过**（注意：偶发 native 崩溃仍可能出现，见 dart_test.yaml）。" >> $env:GITHUB_STEP_SUMMARY
+
+          if (-not $hasLog) {
+            "❌ **没有 native-media.log** ⇒ 测试步骤根本没跑起来，本次**没有任何读数**（不是「通过」）。" >> $env:GITHUB_STEP_SUMMARY
           } else {
-            "❌ native-media 测试**未全过**（outcome=$testOutcome）。" >> $env:GITHUB_STEP_SUMMARY
-            "★ 这是**真读数**，不是放宽 —— 请展开上面的日志看是断言失败还是 libmpv 偶发崩溃。" >> $env:GITHUB_STEP_SUMMARY
-            "★ 本 job 是**诊断用**、`continue-on-error` 已开 ⇒ 它**不**阻塞合并。" >> $env:GITHUB_STEP_SUMMARY
+            "### 失败分类（从 native-media.log 数出来的）" >> $env:GITHUB_STEP_SUMMARY
+            "" >> $env:GITHUB_STEP_SUMMARY
+            "| 类别 | 次数 | 含义 |" >> $env:GITHUB_STEP_SUMMARY
+            "|---|---|---|" >> $env:GITHUB_STEP_SUMMARY
+            "| dll 加载失败（error 126） | $nLoadFail | 构建产物/搜索路径缺失 ⇒ 整份读数无效 |" >> $env:GITHUB_STEP_SUMMARY
+            "| did not complete | $nDnc | 用例没跑完（native 崩溃或超时，常伴 exit 79） |" >> $env:GITHUB_STEP_SUMMARY
+            "| 失败标记 [E] | $nE | 所有失败条目（含上面两类） |" >> $env:GITHUB_STEP_SUMMARY
+            "| 断言类（启发式） | $nAssert | [E] 总数 − did not complete 数 |" >> $env:GITHUB_STEP_SUMMARY
+            "| flutter test 退出码 | $rcLog | 79=native 崩溃；1=断言失败 |" >> $env:GITHUB_STEP_SUMMARY
+            "" >> $env:GITHUB_STEP_SUMMARY
           }
-          # 同时往日志里打一行醒目的，方便 `gh run view` 一眼看到
+
+          # ── 判据（互斥的 if/elseif 链：一次只吐**一段**结论，不堆砖）──────
+          # ★ 顺序即优先级，且**没有日志单独成一档**：「没跑起来」与「跑完了但红」
+          #   必须分开，否则「没有读数」会被渲染成「断言失败」—— 那正是本 job
+          #   以前最招人恨的那类误报（[E] ×0 却报「断言失败为主」）。
+          if (-not $mpvOk -or -not $coreOk) {
+            "❌ 前置件缺失（libmpv=$mpvOk / sourin_core=$coreOk）⇒ 本 job 的读数**不代表**那 55 个门禁真的执行过，请先修供给链。" >> $env:GITHUB_STEP_SUMMARY
+          }
+          if (-not $hasLog) {
+            # 摘要里那句话上面「表格 vs 分类」那段已经写过了，这里只补注解，不重复。
+            Write-Host "::error::native-media 无读数：native-media.log 不存在（测试步骤没跑起来）"
+          } elseif ($nLoadFail -gt 0) {
+            "❌ **分类：dll 加载失败为主因**（$nLoadFail 次）。这不是用例的问题：本 job 以前既没编 Rust 核心、dll 也不在搜索路径 —— 这一栏非 0 说明那两处修复没生效，整份读数**无效**。" >> $env:GITHUB_STEP_SUMMARY
+            Write-Host "::error::native-media 读数无效：$nLoadFail 次 dll 加载失败（error 126）—— 先修构建/搜索路径"
+          } elseif ($testOutcome -eq 'success') {
+            "✅ 55 个门禁本次**全过**（偶发 native 崩溃仍可能复现，见 dart_test.yaml）。" >> $env:GITHUB_STEP_SUMMARY
+          } elseif ($nDnc -gt 0) {
+            "❌ **分类：用例没跑完**（did not complete ×$nDnc，退出码 $rcLog）。多为 native 崩溃/超时而非断言不符 —— 属 dart_test.yaml 记过的已知噪声，但**别因它放过**：连跑多次都绿才说明不是功能回退。" >> $env:GITHUB_STEP_SUMMARY
+          } elseif ($nE -gt 0) {
+            "❌ **分类：断言失败为主**（[E] ×$nE，启发式断言类 ×$nAssert，退出码 $rcLog）。这类是**真读数**，请展开上面的日志逐个看。" >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            "❌ **分类：红在测试开始之前**（退出码 $rcLog，但日志里 [E] ×0、did not complete ×0、error 126 ×0）。⇒ 失败发生在 fixture 构建 / pub get / flutter build 阶段，不是用例断言 —— 去上面的步骤日志里找。" >> $env:GITHUB_STEP_SUMMARY
+          }
+          "★ 本 job 是**诊断用**、continue-on-error 已开 ⇒ 它**不**阻塞合并。" >> $env:GITHUB_STEP_SUMMARY
+
           if ($testOutcome -ne 'success') {
-            Write-Host "::warning::native-media 门禁未全过（outcome=$testOutcome）—— 诊断用，不阻塞合并"
+            Write-Host "::warning::native-media 门禁未全过（outcome=$testOutcome，dll失败=$nLoadFail，未跑完=$nDnc）—— 诊断用，不阻塞合并"
           }
 
   # ═════════════════════════════════════════════════════════════════════

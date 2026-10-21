@@ -53,12 +53,40 @@ Windows CI 上也会红 —— 只是上一轮 Windows job 卡在更早的「发
 （`pwsh -Command Start-Sleep`）再用 `taskkill` 收尾。`_psExe()` 在非 Windows 上
 回落到字面量 `'powershell.exe'` ⇒ `ProcessException: No such file or directory`。
 
-**④ 三处站点全依赖 Windows 环境**
+**④ 三处站点在任何 CI 上都是空的（不只是非 Windows）**
 
 `test/zz_t66_danmaku_send_safety_gate_test.dart` 的组①要求「**至少查到一处**」
 `danmakuSend` 声明，而三处站点是：私库源码、私库产物、`APPDATA` 下的用户数据目录。
-前两处需要未公开的私库目录，第三处的 `APPDATA` **是 Windows 专有环境变量**
-⇒ 三处全空 ⇒ `Expected: non-empty / Actual: []`。
+前两处需要未公开的私库目录，第三处要**本机跑过产品**才会生成
+⇒ 任何 GitHub runner 上都是空的 ⇒ `Expected: non-empty / Actual: []`。
+
+> ⚠️ **本节最初写错了，2026-10-21 当天就被 CI 打回来，已订正。**
+> 第一版写的成因是「`APPDATA` 是 Windows 专有环境变量」，于是修法是
+> `skip: Platform.isWindows ? false : …`。macOS 因此变绿了，
+> 但下一次 run（`39543248739`，**Windows job**）撞在同一堵墙上：
+> ```text
+> zz_t66_danmaku_send_safety_gate_test.dart: ① 部署一致性 … [E]
+>   Expected: non-empty
+>     Actual: []
+>   ★ 一处都没查到 ⇒ 扫描器失效（不能把"没查"当成"没问题"）
+> ```
+> **平台对了，站点照样一个都没有。** `Platform.isWindows` 是错的谓词。
+> 真正的谓词是「有没有站点可查」，与平台无关。
+> 现在的守卫是 `skip: _existingSiteCount > 0 ? false : …`，
+> `_existingSiteCount` 由 `_collectSites()` 里 `exists` 为真的条数算出。
+>
+> 两个方向都实测过：
+> ```text
+> 开发机（私库已检出 + 产品跑过）：[GATE] 覆盖度：查了 3 / 3 处（全覆盖）
+>                                00:00 +6: All tests passed!
+> 强制 _existingSiteCount = 0    ：00:00 +4 ~2: All tests passed!
+>                                Skip: 本组三处站点都是环境自带的…⇒ 显式跳过
+>                                （②③ 照跑：逃生口扫描仍是 0 命中）
+> ```
+>
+> ★ 教训比这一条 bug 更值钱：**「哪个平台」和「东西在不在」是两个不同的条件**。
+> 用平台去近似「东西在不在」，就会在"平台对了但东西还是没有"的环境上假红
+> （或更糟：反过来假绿）。守卫要写**判据真正依赖的那个条件**。
 
 **⑤ 证据图的失败已自行消失**
 
@@ -84,12 +112,17 @@ return null;   // 找不到 ⇒ 调用方 markTestSkipped（**不**降低断言�
 原有的两处 `if (psExe == null) { markTestSkipped(...); return; }` **一字未改** ——
 它们本来就是对的，只是从来没被触发过（因为 `pwsh` 总能被解析到）。
 
-### ② 按平台显式跳过，且**只跳 Windows 专属的那几组**
+### ② 显式跳过，且**只跳环境不成立的那几组**
 
 ```text
 survivor  组③   skip: Platform.isWindows ? false : '本组要起真进程 + taskkill（Windows 专属）…'
-danmaku   组①   skip: Platform.isWindows ? false : '本组站点依赖 APPDATA / 私库目录（Windows 专属）…'
+danmaku   组①   skip: _existingSiteCount > 0 ? false : '本组三处站点都是环境自带的…⇒ 显式跳过…'
 ```
+
+★ 两组的谓词**不一样**，而这正是本节的重点：
+survivor 组③ 缺的是 `taskkill` 这个**可执行文件**，那是 Windows 自有物；
+danmaku 组① 缺的是**私库目录与用户数据**，那跟平台没关系（Windows CI 上同样没有）。
+**不要为了整齐把两个条件写成同一个 `Platform.isWindows`** —— 那正是 ④ 的踩坑经过。
 
 **不跳**的部分（macOS 上照跑，覆盖率不损失）：
 

@@ -211,6 +211,22 @@ List<BitSite> _collectSites() {
   return out;
 }
 
+/// 这个 checkout / 这台机器上**真的存在**的站点有几处。
+///
+/// ★★ 为什么按「站点存在」而不是按「平台是不是 Windows」来守 ① 组：
+///   ① 组的判据是「凡**存在**的 danmakuSend 声明值必须一致」+「至少一处」。
+///   而三处站点**全是环境自带的**：
+///     ① 私库源码 / ② 私库产物 —— 未公开的 `sourin-plugins` 仓库，CI 上不存在
+///     ③ 播放器的用户数据目录   —— 得先在本机跑过产品才有，CI 上也不存在
+///
+///   ⇒ 只有**开发机**（私库已检出 + 产品跑过）才凑得出站点。
+///     2026-10-21 之前这里按 `Platform.isWindows` 判，Windows CI 因此
+///     **没被跳过而是直接红**（run 39543248739）：
+///     `Expected: non-empty / Actual: []`
+///     —— 平台对了，站点照样一个都没有。平台不是这个判据的谓词。
+final int _existingSiteCount =
+    _collectSites().where((s) => s.exists).length;
+
 // ───────────────────────────────────────────────────────────────────────
 //  ② 的扫描器：能力位级别的逃生口
 // ───────────────────────────────────────────────────────────────────────
@@ -336,24 +352,31 @@ List<String> gateEvidence() {
 // ═══════════════════════════════════════════════════════════════════════
 
 void main() {
-  // ★★★ ① 只在 Windows 上跑 —— 它要求「**至少查到一处**」danmakuSend 声明，
-  //   而三处站点**全都依赖 Windows 环境**：
+  // ★★★ ① 只在「至少有一处站点存在」时跑 —— 它要求「**至少查到一处**」
+  //   danmakuSend 声明，而三处站点**全是环境自带的**：
   //     ① 私库源码  `<仓根同级>/sourin-plugins/plugins/bilibili.ts`（私库未公开）
-  //     ② 私库产物  `<仓根同级>/sourin-plugins/dist/plugins/bilibili.js`
-  //     ③ 用户数据  `Platform.environment['APPDATA']/...` ← **APPDATA 是 Windows 专有**
+  //     ② 私库产物  `<仓根同级>/sourin-plugins/dist/plugins/bilibili.js`（同上）
+  //     ③ 用户数据  `<APPDATA>/app.sourin.player/plugins/bilibili.js`
+  //                ← 得先在本机跑过产品才会有
   //
-  //   实测（CI run 39526450290，macOS job）：
-  //     Expected: non-empty / Actual: []   ⇒ 三处全查不到 ⇒ 本组红
+  //   实测（CI run 39526450290，macOS job）：三处全查不到 ⇒ 本组红。
+  //   实测（CI run 39543248739，**Windows** job）：平台对了、照样红 ——
+  //     `Expected: non-empty / Actual: []`
+  //   ⇒ 原来的 `Platform.isWindows` 守卫**谓词选错了**：
+  //     它防住了 macOS，却让 Windows CI 撞在同一堵墙上。
+  //     真正的条件是「有没有站点可查」，那与平台无关。
   //
   //   ⚠️ 为什么不去掉那条「至少一处」断言：
   //     它正是本门禁的**防空转判据**（reason 里写着
   //     「不能把"没查"当成"没问题"」）。去掉 = 门禁恒绿 = 假绿门禁。
+  //     所以只能**把整组显式跳过**并打印理由，不能放宽它。
   //   ⚠️ ②③ **不跳过**：②扫的是仓内 `lib/ui`（任何平台都有），
-  //     ③扫的是仓内能力位与闸门证据 ⇒ macOS 上照跑，覆盖率不损失。
+  //     ③扫的是仓内能力位与闸门证据 ⇒ 非开发机上照跑，覆盖率不损失。
   group('① 部署一致性：凡存在的 danmakuSend，值必须相同',
-      skip: Platform.isWindows
+      skip: _existingSiteCount > 0
           ? false
-          : '本组站点依赖 APPDATA / 私库目录（Windows 专属）⇒ 非 Windows 上显式跳过，'
+          : '本组三处站点都是环境自带的（私库未公开 + 播放器用户数据目录），'
+              '这个 checkout / 这台机器上一处都不存在 ⇒ 显式跳过，'
               '避免把"一处都没查到"伪装成"通过"', () {
     test('★ 各处声明值一致', () {
       final sites = _collectSites();

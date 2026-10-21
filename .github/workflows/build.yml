@@ -94,7 +94,30 @@ jobs:
 
     steps:
       - name: 检出代码
+        # ★★ 必须 `fetch-depth: 0`（完整历史）。checkout@v4 默认 `fetch-depth: 1`
+        #   —— 只有 1 个提交，`HEAD~1` 根本不存在。
+        #
+        #   本 job 有三处门禁要靠「提交区间」：
+        #     ① 决策笔记 archived 门禁  ← AGENT_NOTE_ARCHIVE_BASE_REF
+        #     ② 笔记覆盖门禁            ← NOTES_COVERAGE_BASE
+        #     ③ supersession 检查       ← NOTES_SUPERSESSION_BASE
+        #
+        #   而 `workflow_dispatch`（手动发版）事件里
+        #   `github.event.pull_request.base.sha` 与 `github.event.before`
+        #   **都不存在** ⇒ 那两个环境变量是空串 ⇒ 脚本回落到
+        #   `--range HEAD~1..HEAD`，而这一句**同样需要 2 个提交**。
+        #
+        #   实测（2026-10-21，run 39540643339，Windows job）：
+        #     fatal: ambiguous argument 'HEAD~1..HEAD': unknown revision
+        #     这不是「已合规」—— 退出码 2
+        #   ⇒ 手动发版走的正是这条路径，depth=1 时门禁必红。
+        #
+        #   ★ 那两处 step 的提示语写着「只检查 HEAD 这一个提交」，
+        #     但它实际执行的是 `HEAD~1..HEAD`（两个提交）。
+        #     这里按脚本的**真实行为**给足历史，不去改那句话的语义。
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 装 Flutter
         uses: subosito/flutter-action@v2

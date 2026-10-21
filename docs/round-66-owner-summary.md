@@ -11,6 +11,30 @@
 > **更新：2026-10-20 19:4x（原稿 2026-10-18）。** 这次只改**状态与依据**，不推翻原结论。
 > 规矩：每行都要能指到「提交 sha / 测试文件 / 证据目录」；指不到的写**不可复核**并说清为什么，
 > 不拿转述当读数。本轮没有重新测量的项，正文里会明写「本轮未复跑」。
+>
+> **更新：2026-10-21 —— 发版与 CI 状态（只增这一块，正文结论不变）。**
+> ```text
+> CI  run 39548783317（headSha 4b3b514）
+>     Windows   ✓  +4778 ~130 All tests passed
+>     macOS     ✓  4732 passed, 176 skipped, 0 failed   ← 此前 6 条红已清零
+>     Android   ✓
+>     发 Release ✓
+>     native-media ✗  ← 「诊断，不拦合并」，见下面的说明
+> Release  源影 v1.4.0-rc3（Pre-release）
+>     7 个资产全部 uploaded；tag v1.4.0-rc3 精确指向 4b3b514（= 构建的那个提交）
+>     说明正文 18796 B，`## 本版更新` 有真实分类条目；无 `__VERSION__` / `{{CHANGELOG}}` 残留
+> ```
+> **macOS 那 6 条红的结论**：根因不在 macOS，在**三条判据把「这台机器的事实」当成了
+> 「任何机器的事实」** —— ① 平台/站点专属条件写进通用判据 ② 本机工作区行尾是 LF 而
+> 全新 checkout 是 CRLF ③ 出图用例每跑一次就覆盖归档证据，本机重渲染字节恰好与封存一致。
+> 细节与故障注入读数见
+> [`.agents/notes/implemented/testing/2026-10-21-windows-only-gates-need-platform-guards.md`](../.agents/notes/implemented/testing/2026-10-21-windows-only-gates-need-platform-guards.md)
+> 与 [`2026-10-21-local-worktree-is-not-a-fresh-checkout.md`](../.agents/notes/implemented/testing/2026-10-21-local-worktree-is-not-a-fresh-checkout.md)。
+> **`native-media` 这一 job 仍是红的**（`+219 ~5 -31`，`Some tests failed.`，日志里 740 行
+> `libmpv-2.dll` / `sourin_core.dll` 缺失），是 `TESTING.md` 记着的 `did not complete` 假红
+> （libmpv 原生崩溃），不是用例断言失败；它设计上不拦合并，但红着就等于**没有诊断价值**。
+> ⚠️ 本次**没有**重新取到的读数：Release 产物 `Unhandled Exception = 0` 这一条 ——
+> Windows release 是 WINDOWS 子系统、无控制台，重定向拿到 0 字节日志，所以「零异常」本次未验。
 
 ## 一、你提的 8 个问题逐条回答
 

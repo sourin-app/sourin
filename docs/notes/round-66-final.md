@@ -1,7 +1,7 @@
 # 第 66 轮收尾
 
 > **本文定位：面向接手者的完整报告** —— 含全部读数、命令、行号与证据链。
-> 面向 Owner 的一页纸在 [`docs/round-66-owner-summary.md`](../../round-66-owner-summary.md)，
+> 面向 Owner 的一页纸在 [`docs/round-66-owner-summary.md`](../round-66-owner-summary.md)，
 > 那份只回答「现在什么能用、什么不能用」。
 > ★ **一个事实只有一个权威陈述处**：同一项在两份里出现时，
 > **状态判定以 owner-summary 为准**（它是对外口径）；本文保留技术细节与复现路径。
@@ -9,6 +9,15 @@
 
 > **行号核对时刻：2026-10-18 15:26**（本仓行号几小时内会漂；引用前请重新 `grep`）
 > 本文件所有数字都附命令；所有行号都在上述时刻重新核对过。
+
+> **2026-10-21 补（发版与 macOS 回归）**：对外状态口径见
+> [`docs/round-66-owner-summary.md`](../round-66-owner-summary.md) 顶部新增的
+> 「2026-10-21 —— 发版与 CI 状态」块（CI run `39548783317` 三平台 + 发 Release 全绿、
+> macOS 6 条红清零、`v1.4.0-rc3` 已发布）。本文不重复那份读数。
+> 三项 macOS 根因的技术细节各自落在：
+> [`windows-only-gates-need-platform-guards.md`](../../.agents/notes/implemented/testing/2026-10-21-windows-only-gates-need-platform-guards.md)、
+> [`local-worktree-is-not-a-fresh-checkout.md`](../../.agents/notes/implemented/testing/2026-10-21-local-worktree-is-not-a-fresh-checkout.md)，
+> 以及 `docs/PITFALLS.md` C 组新增的「填了 tag 就自动发版」一条。
 
 ---
 
@@ -355,7 +364,7 @@ grep -nE "未做|未验|待立项|⚠️|部分|不知道" docs/notes/round-66-f
 
 | 条 | Owner 原话（要点） | 我们做了什么 | 他下次会看到什么不一样 | 判定 |
 |---|---|---|---|---|
-| **R1** | 弹幕按钮「一圈毛边」 | 多帧像素采样 + 真树读数定案：那是**字形边缘的正常过渡**，不是缺陷。<br>**原有三条证据**（按 `danmakuToggleKey` 定位）：① 按钮内 2640 px 里 2380 px（90.2%）跨帧方差 > 20 ⇒ **无背景层**（`TextButton.styleFrom` 只有 visualDensity + padding）；② 字缘 184 px，100% 比 2 px 外更亮，亮度 p50=p95=max=255；③ 字缘 5 帧恒 255（方差 0）⇒ 静态，不随视频变。<br>**本轮补测底栏全部文字按钮**：`选集/清晰度/弹幕/更多` 四枚均无背景层，字缘 p50=255（白）/161（active 蓝），5 帧 `varFull` 全为 **0.00** ⇒ 静态、每枚都有。**未改产品代码** | **看起来不会变**（这是定案为非缺陷，不是没修）。若观感仍不可接受 ⇒ **整排一起加底**（设计决策，不是缺陷修复）；选项已留档 | **成立**（非缺陷 + 牌留手里）<br>⚠️ ① `选集` 仅在 `hasEpisodes && !isTouch` 时渲染；② active 态为蓝字 `#32C7FF`，两种状态 `varFull` 均 0.00。<br>★ 面向 Owner 的表述见 [owner-summary:34](../../round-66-owner-summary.md) |
+| **R1** | 弹幕按钮「一圈毛边」 | 多帧像素采样 + 真树读数定案：那是**字形边缘的正常过渡**，不是缺陷。<br>**原有三条证据**（按 `danmakuToggleKey` 定位）：① 按钮内 2640 px 里 2380 px（90.2%）跨帧方差 > 20 ⇒ **无背景层**（`TextButton.styleFrom` 只有 visualDensity + padding）；② 字缘 184 px，100% 比 2 px 外更亮，亮度 p50=p95=max=255；③ 字缘 5 帧恒 255（方差 0）⇒ 静态，不随视频变。<br>**本轮补测底栏全部文字按钮**：`选集/清晰度/弹幕/更多` 四枚均无背景层，字缘 p50=255（白）/161（active 蓝），5 帧 `varFull` 全为 **0.00** ⇒ 静态、每枚都有。**未改产品代码** | **看起来不会变**（这是定案为非缺陷，不是没修）。若观感仍不可接受 ⇒ **整排一起加底**（设计决策，不是缺陷修复）；选项已留档 | **成立**（非缺陷 + 牌留手里）<br>⚠️ ① `选集` 仅在 `hasEpisodes && !isTouch` 时渲染；② active 态为蓝字 `#32C7FF`，两种状态 `varFull` 均 0.00。<br>★ 面向 Owner 的表述见 [owner-summary:34](../round-66-owner-summary.md) |
 | **R2** | 内置代理没起来（P0） | 取证发现**代理是活的**，是**文案撒谎** ⇒ 已修 `f47d2ed`（改文案） | 代理失败时看到的那句话会说明真实原因，不再误导排查方向 | **修好** |
 | **R3** | 弹幕设置弹窗 7 项（看不清/搜不了/双击透传/多绑/信息展示/dan-api 不可用） | 拆 7 子项逐条做；R3-①② 是玻璃透光（已给底色）；③④⑤⑥ 各项有独立取证与修复 | 弹窗文字对比度达标、来源可搜、双击不再透传、可绑多个源、信息行显示源名/更新时间/条数 | **部分**（见 R3-⑦） |
 | **R3-⑦** | 两个内置 dan-api 服务根本用不了 | 定位为 `*.vercel.app` 被劫持；已加 DoH 对照 + 如实文案 | 「测试连接」路能识破伪造段；**取数/搜索路仍可能落到 connectionTimeout** | **部分**（详见 §四） |

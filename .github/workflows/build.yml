@@ -213,15 +213,31 @@ jobs:
           done
 
       # ── 发布说明守卫：用户可见正文不许再出现会腐烂的统计读数 ──
+      - name: 装 Python（跑发布说明守卫）
+        # ★★ 为什么必须自己装：这一步原先直接调 `python3`，
+        #   而 GitHub 的 windows-latest runner **不保证有 python3**。
+        #   实测（2026-10-21，run 39526450290）：这一步 exit 1，
+        #   但脚本本身在本地（真 python 3.14）跑是 rc=0
+        #   ⇒ 红的不是"命中了什么"，是**命令根本没跑起来**。
+        #
+        # ★ 同理：本机 `python3` 指向 Microsoft Store 的桩程序
+        #   （`--version` 输出为空但 rc=0，静默不执行）——
+        #   所以本地"跑过了"也证明不了 CI 能跑。
+        #   ⇒ 本地与 CI 在这个命令上是两个环境，不能互相代替。
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: 发布说明守卫（正文不许有统计口径）
         # ★★ 必须显式 `shell: bash`（理由同上：pwsh 的 $ErrorActionPreference
         #   管不到外部程序的退出码 ⇒ 门禁会假绿）。
         shell: bash
         run: |
           set -euo pipefail
-          # ★ 用 `python3` 而不是 `python`：windows runner 上 `python`
-          #   可能指向 Microsoft Store 的桩程序。
-          python3 tools/guard_release_notes_numbers.py .github/release-notes.md
+          # ★ 用 `python` 而不是 `python3`：上面刚 setup-python@v5 钉过版本，
+          #   它把 `python` 指到 3.12；而 `python3` 在 windows runner 上可能不存在
+          #   （39526450290 就是这么红的）。
+          python tools/guard_release_notes_numbers.py .github/release-notes.md
 
       # ── ⓪-b 笔记覆盖门禁：该写笔记的改动必须同批带笔记 ──────────────
       #

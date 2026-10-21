@@ -335,13 +335,116 @@ function collectTargets(argv) {
  * @param {string} sha 提交 sha。
  * @returns {{ files: string[] | undefined, reason?: string }} 文件列表。
  */
+const filesCache = new Map();
+
 function filesOfCommit(sha) {
+  /* 同一次运行里同一个提交会被问两次（认领扫描 + 逐提交判定），缓存住。 */
+  const cached = filesCache.get(sha);
+  if (cached !== undefined) return cached;
   /* 过滤删除（D）：删除一篇笔记不能算「带了笔记」。 */
   const result = diffPaths(['--diff-filter=ACMR', `${sha}^!`]);
-  if (!result.ok) {
-    return { files: undefined, reason: `git diff ${sha}^! 失败: ${result.err.trim()}` };
+  const verdict = result.ok
+    ? { files: result.files }
+    : { files: undefined, reason: `git diff ${sha}^! 失败: ${result.err.trim()}` };
+  filesCache.set(sha, verdict);
+  return verdict;
+}
+
+/**
+ * 找本门禁的出生提交：**最早一次新增本脚本**的那个提交。
+ *
+ * 为什么要知道自己的生日：这道门禁 2026-10-18 才接进 CI。它出生之前，
+ * main 上的历史从来没被要求过笔记 —— 拿它回头审判史前史，唯一结果是
+ * 永远红（实测：`--range bdf64357~40..bdf64357` 报 216 个提交缺笔记），
+ * 然后被人用 `--no-verify` 绕过，门禁就死了。
+ *
+ * ⚠️ 认不出重命名：本文件若改名，这里会算出更晚的出生点，从而放走一段
+ * 本该受管的历史。所以调用方必须把出生点 sha 与日期打印出来。
+ *
+ * @returns {{ sha: string | undefined, date?: string }} 出生提交。
+ */
+function gateBirthCommit() {
+  const listed = git([
+    'log', '--diff-filter=A', '--format=%H %cs', '--',
+    '.agents/notes-scripts/notes-coverage.mjs'
+  ]);
+  if (!listed.ok) return { sha: undefined };
+  const lines = splitLines(listed.out);
+  if (lines.length === 0) return { sha: undefined };
+  // `git log` 新的在前，最老的那条在最后。
+  const oldest = lines[lines.length - 1].split(' ');
+  return { sha: oldest[0], date: oldest[1] ?? '?' };
+}
+
+/**
+ * `sha` 是否「不晚于」`ancestor`。
+ *
+ * `git merge-base --is-ancestor A B` 在 A 是 B 的祖先**或两者相同**时
+ * 退出码为 0 —— 正好是这里要的语义。
+ *
+ * @param {string} sha 待判定的提交。
+ * @param {string} ancestor 参照提交。
+ * @returns {boolean} 不晚于则 true。
+ */
+function isAncestorOrSelf(sha, ancestor) {
+  if (sha === ancestor) return true;
+  return git(['merge-base', '--is-ancestor', sha, ancestor]).ok;
+}
+
+/**
+ * 从笔记正文里解析 `covers:` 声明。
+ *
+ * 一行一个声明，可写多个 sha，逗号或空白分隔；只接受 7~40 位十六进制，
+ * 其他写法一律忽略（宁可漏认领，也不要让一串自由文本变成万能后门）。
+ *
+ * @param {string} text 笔记全文。
+ * @returns {string[]} 被认领的 sha 前缀。
+ */
+function parseCovers(text) {
+  const out = [];
+  const pattern = /^covers:\s*(.+)$/gim;
+  let match = pattern.exec(text);
+  while (match !== null) {
+    for (const raw of match[1].split(/[,\s]+/)) {
+      const token = raw.trim().toLowerCase();
+      if (/^[0-9a-f]{7,40}$/.test(token)) out.push(token);
+    }
+    match = pattern.exec(text);
   }
-  return { files: result.files };
+  return out;
+}
+
+/**
+ * 收集「后补笔记认领了哪些历史提交」。
+ *
+ * `explainFailure` 里一直写着「补法：… 可另起一个「补笔记」提交」，但在
+ * 逐个提交判定之下那句承诺是**假的** —— 后补的笔记落在新提交里，认领不了
+ * 任何更早的提交。这里把承诺补成真的：笔记正文写 `covers: <sha>` 即可。
+ *
+ * 防滥用三条：① 只有**区间内**出现的笔记才算；② 认领的 sha 必须能在本区间
+ * 里找到（区间外的一律无效）；③ 每一次认领都打印出来。
+ *
+ * @param {{sha: string}[]} commits 区间内的提交（按时间正序）。
+ * @returns {Map<string, string>} 提交 sha → 认领它的笔记路径。
+ */
+function collectCoveredShas(commits) {
+  const inRange = commits.map((commit) => commit.sha);
+  const claims = new Map();
+  for (const commit of commits) {
+    const got = filesOfCommit(commit.sha);
+    if (got.files === undefined) continue;
+    for (const path of got.files) {
+      if (!path.startsWith(notePrefix) || !path.endsWith('.md')) continue;
+      const shown = git(['show', `${commit.sha}:${path}`]);
+      if (!shown.ok) continue;
+      for (const token of parseCovers(shown.out)) {
+        for (const sha of inRange) {
+          if (sha.startsWith(token) && !claims.has(sha)) claims.set(sha, path);
+        }
+      }
+    }
+  }
+  return claims;
 }
 
 /**
@@ -695,6 +798,31 @@ function explainFailure(scope, managed) {
 if (target.mode === 'range') {
   const failures = [];
   const strayFiles = [];
+
+  /* ── 自限出生点：门禁不管它出生之前的提交 ──────────────────────────
+     它出生（2026-10-18，e0ab611 接进 CI）之前的提交从来没被要求过笔记。
+     拿它回头审判史前史，结果只能是永远红 ⇒ 被人用 --no-verify 绕过 ⇒
+     门禁变成摆设。所以区间起点一旦早于出生点，就收窄到出生点之后，并且
+     **把收窄动作打印出来** —— 那不是「全区间通过」，是「前 n 个不归它管」。 */
+  const birth = gateBirthCommit();
+  if (birth.sha === undefined) {
+    console.error('⚠ 认不出本门禁的出生提交（读不到新增记录）⇒ 不收窄，按原区间全量检查。');
+  } else {
+    let preBirth = 0;
+    while (preBirth < target.commits.length
+      && isAncestorOrSelf(target.commits[preBirth].sha, birth.sha)) {
+      preBirth += 1;
+    }
+    if (preBirth > 0) {
+      console.error(`ℹ 区间起点早于门禁出生点（${birth.sha.slice(0, 7)} ${birth.date}）`
+        + ` ⇒ 前 ${preBirth} 个提交不归本门禁管，只检查其后的`
+        + ` ${target.commits.length - preBirth} 个。`);
+      target.commits = target.commits.slice(preBirth);
+    }
+  }
+
+  /* ── covers：后补的笔记认领它之前的提交 ─────────────────────────── */
+  const coveredBy = collectCoveredShas(target.commits);
 
   for (const commit of target.commits) {
     const got = filesOfCommit(commit.sha);

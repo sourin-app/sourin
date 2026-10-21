@@ -31,6 +31,50 @@ python3 tools/guard_release_notes_numbers.py .github/release-notes.md
 import re
 import sys
 
+# ══════════════════════════════════════════════════════════════════════
+#  ★★★ 必须先保证「打印中文不会崩」，否则本门禁会**在自己的成功路径上假红**
+# ══════════════════════════════════════════════════════════════════════
+#
+# # 实测（2026-10-21，CI run 39538011233 的 Windows job）
+#
+# ```text
+# Traceback (most recent call last):
+#   File "tools/guard_release_notes_numbers.py", line 105, in <module>
+#     sys.exit(main())
+#   File "tools/guard_release_notes_numbers.py", line 101, in main
+#     return scan(sys.argv[1])
+#   ...  L85: print(f"::notice::「{SECTION}」小节正文里没有…")
+# UnicodeEncodeError: 'charmap' codec can't encode characters …
+# ⇒ 退出码 1
+# ```
+#
+# ★ **它的语义完全反了**：扫描**通过了**（本该 exit 0），却因为要
+#   `print` 一条中文的成功通知而崩，退出码变成 1 ⇒ 调用方读成"命中违规"。
+#   ⇒ 这是一个**假红**门禁：绿的时候红，红的时候也红 —— 每次都红，
+#     于是没人能从中读出任何信息。
+#
+# # 为什么会这样
+#
+# GitHub 的 `windows-latest` runner 是 **en-US 区域**，Python 在输出被重定向
+# （非交互）时按 **locale 编码**（cp1252）而不是 UTF-8 ⇒ 任何非 ASCII 字符都崩。
+# 而本机上同一段代码报的是 `'gbk' codec can't encode character '\u21c4'` ——
+# **同一个 bug，两种码页**。本机那次我把它当成"只是显示问题"忽略了，判错了。
+#
+# # 修法
+#
+# 把 stdout/stderr 强制成 UTF-8，并给 `errors="replace"` 兜底：
+#   · UTF-8 ⇒ GitHub 的日志与 `::notice::` 注释本来就能正确显示中文
+#     （同仓其它步骤的中文输出在日志里一直是好的）
+#   · `errors="replace"` ⇒ 即使遇到既不支持 UTF-8 又不肯收降级字符的怪终端，
+#     也只会把那个字符打成 `?`，**绝不让门禁因打印而改变退出码**
+#
+# ★ 判据：**门禁的退出码只能由判据本身决定，不能由"它想说的话"决定。**
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 —— 老 Python / 被替换过的流：能跑就行
+        pass
+
 SECTION = "## 关于本版本"
 
 # 数字 + （可选量词）+ 统计词  |  统计词 + 数字

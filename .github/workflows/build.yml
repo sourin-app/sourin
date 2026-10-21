@@ -1814,15 +1814,38 @@ jobs:
           #     · `v1.4.0-rc1` 不会把自己选成前驱（而 `sort -V` 会，
           #       因为预发布排在正式版之上 ⇒ rc 发布必红）
           #     · 真首个 tag 时失败 ⇒ 与「拿不到历史」可区分
-          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          # ★★★ 2026-10-21（run 39546013679 实测）：`"${TAG}^"` 要求**本地已经有这个 tag**。
+          #   而本 workflow 的设计是「填了 release_tag ⇒ 构建完**自动建** Release」
+          #   （docs/RUNBOOK.md §1）—— 也就是说 publish job 跑的时候 tag **还不存在**，
+          #   它是最后那步 `gh release create "$TAG"` 才创建的。
+          #   ⇒ 全新 tag 必然 describe 失败，然后落进"首个 release"分支，
+          #     而那条分支的 `--from "$TAG" --to "$TAG"` **同样要 tag 能被解析**：
+          #       git log --no-merges --pretty=%s v1.4.0-rc3..v1.4.0-rc3
+          #       fatal: ambiguous argument 'v1.4.0-rc3..v1.4.0-rc3': unknown revision
+          #       ##[error]Process completed with exit code 2.
+          #   ⇒ 引入「锚点」：
+          #       tag 已经存在 ⇒ ANCHOR=$TAG，描述起点仍用 `$TAG^`（**语义一个字没变**）
+          #       tag 还不存在 ⇒ ANCHOR=HEAD（它就是要打 tag 的那个提交），
+          #                       describe 起点用 HEAD（HEAD 本身没 tag ⇒ 不会自己匹配自己）
+          #   ⚠️ 两个起点不能统一写：用 `$TAG` 当 describe 起点会**返回 tag 自己**
+          #      ⇒ 区间 `$TAG..$TAG` 为空 ⇒ 生成器 exit 1。原来写 `$TAG^` 正是为这个。
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            ANCHOR="$TAG"
+            DESCRIBE_FROM="${TAG}^"
+          else
+            echo "::notice::本地还没有 tag $TAG（本次要新建它）⇒ 用 HEAD 当锚点"
+            ANCHOR="HEAD"
+            DESCRIBE_FROM="HEAD"
+          fi
+          PREV=$(git describe --tags --abbrev=0 "$DESCRIBE_FROM" 2>/dev/null || true)
           if [ -z "$PREV" ]; then
             # 没有任何更早的 tag ⇒ 真的是首个 release（允许留空）
             echo "::warning::历史里没有更早的 tag ⇒ 按首个 release 处理，更新说明留空"
-            python3 tools/gen_release_notes.py --from "$TAG" --to "$TAG" \
+            python3 tools/gen_release_notes.py --from "$ANCHOR" --to "$ANCHOR" \
               --allow-empty --out /tmp/notes-src.md
           else
-            echo "本版更新：归纳 $PREV..$TAG"
-            python3 tools/gen_release_notes.py --from "$PREV" --to "$TAG" \
+            echo "本版更新：归纳 $PREV..$ANCHOR"
+            python3 tools/gen_release_notes.py --from "$PREV" --to "$ANCHOR" \
               --out /tmp/notes-src.md
           fi
           sed "s/__VERSION__/$VER/g" /tmp/notes-src.md > "$NOTES"

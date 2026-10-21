@@ -242,10 +242,51 @@ TAG=v1.3.0 ⇒ PREV=v1.2.0   ← 只有最大 tag 才碰巧对
 修法（回到 `git describe`，但**保留**它与「真首个」的区分）：
 
 ```bash
-PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+  ANCHOR="$TAG";  DESCRIBE_FROM="${TAG}^"
+else
+  ANCHOR="HEAD";  DESCRIBE_FROM="HEAD"      # ← 2026-10-21 补的：tag 还不存在
+fi
+PREV=$(git describe --tags --abbrev=0 "$DESCRIBE_FROM" 2>/dev/null || true)
 ```
 
 实测四个 tag 全部正确，且 `v1.4.0-rc1` **不会选自己**。
+
+**为什么 describe 起点不能像 `--to` 那样直接用 `$TAG`**：
+`git describe` 对一个**已经被打上 tag 的提交**会返回**它自己**
+⇒ 区间 `$TAG..$TAG` 为空 ⇒ 生成器 exit 1。原来写 `$TAG^`（父提交）正是为这个。
+
+### 2026-10-21 补：`$TAG` 在 publish job 跑的时候**还不存在**
+
+上面那段的 `"${TAG}^"` 有一个前提：**本地已经有这个 tag**。
+而本 flow 的设计恰好相反 —— `docs/RUNBOOK.md` §1 写的是
+「填了 `release_tag` ⇒ 构建完**自动建** Release 并上传」，
+tag 是最后那步 `gh release create "$TAG" --target "${{ github.sha }}"` **才创建**的。
+
+⇒ 全新 tag 必红，实测（run `39546013679`，三个平台全绿，只死在 publish job，9 秒）：
+
+```text
+##[warning]历史里没有更早的 tag ⇒ 按首个 release 处理，更新说明留空
+[gen_release_notes] 命令失败: git log --no-merges --pretty=%s v1.4.0-rc3..v1.4.0-rc3
+fatal: ambiguous argument 'v1.4.0-rc3..v1.4.0-rc3': unknown revision or path not in the working tree.
+##[error]Process completed with exit code 2.
+```
+
+注意它**先掉进了"首个 release"分支**：`"${TAG}^"` 解析不了 ⇒ describe 失败 ⇒
+`PREV` 为空。而那条分支的 `--from "$TAG" --to "$TAG" --allow-empty`
+**同样要求 `$TAG` 能被解析** ⇒ 连"留空"也走不通。
+「describe 失败」在这里同时覆盖了「真首个」与「tag 还没建」两种状态，
+和本篇前面批评过的「`|| true` 把失败吞成首个 release」是同一个病，只是换了个入口。
+
+⇒ 用 **ANCHOR** 把两者分开：
+tag 在 ⇒ `ANCHOR=$TAG`（重跑旧 tag 的语义**一个字没变**）；
+tag 不在 ⇒ `ANCHOR=HEAD`（= `github.sha` = 一会儿要被 `--target` 打上 tag 的那个提交）。
+`--from` / `--to` / describe 起点全部跟着 ANCHOR 走。
+
+⚠️ 这是个**好失败**（红得响、不产出错内容）：它不会发一个说明空白的 Release，
+只是发不出去。所以它的优先级低于「静默降级」类缺陷 ——
+但 RUNBOOK 承诺的「填了 tag 就自动发」必须真的能自动发，否则承诺是假的。
+
 
 ★ **教训**：我为了修 A（失败被误判）而引入 B（取错前驱）。
   ⇒ 改判据前先问「原来的写法到底错在哪一行」，

@@ -336,7 +336,25 @@ List<String> gateEvidence() {
 // ═══════════════════════════════════════════════════════════════════════
 
 void main() {
-  group('① 部署一致性：凡存在的 danmakuSend，值必须相同', () {
+  // ★★★ ① 只在 Windows 上跑 —— 它要求「**至少查到一处**」danmakuSend 声明，
+  //   而三处站点**全都依赖 Windows 环境**：
+  //     ① 私库源码  `<仓根同级>/sourin-plugins/plugins/bilibili.ts`（私库未公开）
+  //     ② 私库产物  `<仓根同级>/sourin-plugins/dist/plugins/bilibili.js`
+  //     ③ 用户数据  `Platform.environment['APPDATA']/...` ← **APPDATA 是 Windows 专有**
+  //
+  //   实测（CI run 39526450290，macOS job）：
+  //     Expected: non-empty / Actual: []   ⇒ 三处全查不到 ⇒ 本组红
+  //
+  //   ⚠️ 为什么不去掉那条「至少一处」断言：
+  //     它正是本门禁的**防空转判据**（reason 里写着
+  //     「不能把"没查"当成"没问题"」）。去掉 = 门禁恒绿 = 假绿门禁。
+  //   ⚠️ ②③ **不跳过**：②扫的是仓内 `lib/ui`（任何平台都有），
+  //     ③扫的是仓内能力位与闸门证据 ⇒ macOS 上照跑，覆盖率不损失。
+  group('① 部署一致性：凡存在的 danmakuSend，值必须相同',
+      skip: Platform.isWindows
+          ? false
+          : '本组站点依赖 APPDATA / 私库目录（Windows 专属）⇒ 非 Windows 上显式跳过，'
+              '避免把"一处都没查到"伪装成"通过"', () {
     test('★ 各处声明值一致', () {
       final sites = _collectSites();
       final checked = sites.where((s) => s.declared != null).toList();

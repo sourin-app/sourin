@@ -82,25 +82,49 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-/// PowerShell 可执行文件：**不写死**绝对路径（与 `zz_cr_nit_run_client_core_test.dart`
-/// 同一套解析策略 —— 那里已经踩过"写死 C:/Windows/..."的坑）。
+/// PowerShell 可执行文件：**只认 Windows PowerShell 5.1**（`Major == 5`）
 ///
-/// 依次试：① PATH 上的 `pwsh` ② PATH 上的 `powershell`
-///         ③ Windows 的绝对路径（只在 Windows 命中）
-/// 三个都没有 ⇒ 返回 null，调用方 `markTestSkipped`（**不**降低断言）。
+/// # ★★★ 为什么必须钉版本（2026-10-21 实测，CI run 39526450290）
+///
+/// ```text
+/// 本门禁守的是「PS 5.1 + 系统码页 936 下，无 BOM 的中文脚本会解析崩」。
+/// 但原实现是「PATH 上 `pwsh` 优先」—— 而 `pwsh` 是 **PowerShell 7**，
+/// 它默认按 **UTF-8** 解码源文件 ⇒ 切掉 BOM 也不报错。
+///
+/// 实测后果：
+///   · macOS runner 预装 PS7 ⇒ 判据③ 拿到 Actual 0（期望 >0）⇒ job 红
+///   · windows-latest **同样预装 PS7 且在 PATH 上** ⇒ 本判据在 Windows CI
+///     上也会红，只是上一轮 Windows job 卡在更早的「发布说明守卫」
+///     没跑到测试，所以一直没暴露
+///   · 本机**没装** PS7 ⇒ 解析到 `powershell`(5.1) ⇒ 一直是"因为对了才绿"
+///     ⇒ **本地绿证明不了 CI 能绿**
+/// ```
+///
+/// ⇒ 只接受 `Major == 5`；找不到就返回 null，由调用方 `markTestSkipped`
+///   （**不**降低断言 —— "没测"不许伪装成"通过"）。
 String? _resolvePowerShell() {
-  for (final exe in <String>['pwsh', 'powershell']) {
+  // ★ 顺序：`powershell`(5.1) 在前，`pwsh` 在后；但**版本号说了算，名字不算**。
+  for (final exe in <String>['powershell', 'pwsh']) {
     try {
       final r = Process.runSync(
           exe, <String>['-NoProfile', '-Command', r'$PSVersionTable.PSVersion.Major']);
-      if (r.exitCode == 0) return exe;
+      if (r.exitCode != 0) continue;
+      if ('${r.stdout}'.trim() == '5') return exe;
     } on ProcessException {
       // PATH 上没有这个可执行文件 —— 继续试下一个
     }
   }
   const String winAbs =
       'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-  if (File(winAbs).existsSync()) return winAbs;
+  if (File(winAbs).existsSync()) {
+    try {
+      final r = Process.runSync(winAbs,
+          <String>['-NoProfile', '-Command', r'$PSVersionTable.PSVersion.Major']);
+      if (r.exitCode == 0 && '${r.stdout}'.trim() == '5') return winAbs;
+    } on ProcessException {
+      // 不可执行 —— 当作没有
+    }
+  }
   return null;
 }
 

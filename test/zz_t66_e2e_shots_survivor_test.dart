@@ -187,7 +187,23 @@ void main() {
     });
   });
 
-  group('③ ★ 真跑一段收尾逻辑（用真实可控进程，不起客户端）', () {
+  // ★★★ ③ 必须在 Windows 上跑：它要起一个**真进程**（`pwsh ... Start-Sleep`）
+  //   再用 `taskkill` 收尾 —— 两者都是 Windows 专属。
+  //
+  //   实测（CI run 39526450290，macOS job）：
+  //     ProcessException: No such file or directory
+  //   原因：`_psExe()` 在非 Windows 上回落到字面量 `'powershell.exe'`，
+  //   而 macOS 没有这个可执行文件；`taskkill` 同理。
+  //
+  //   ⚠️ 为什么是「显式跳过」而不是「放宽判据」：
+  //     放宽（比如"找不到 pwsh 就把 survivor 当 0 也算过"）会让这条门禁
+  //     在任何平台恒绿地空转 —— 那正是「假绿门禁」。
+  //     ①② 是纯静态读 `tools/e2e_shots.ps1` 原文 ⇒ **不跳过**，macOS 上照跑。
+  group('③ ★ 真跑一段收尾逻辑（用真实可控进程，不起客户端）',
+      skip: Platform.isWindows
+          ? false
+          : '本组要起真进程 + taskkill（Windows 专属）⇒ 非 Windows 上显式跳过，'
+              '避免把"没法测"伪装成"通过"', () {
     late int shimPid;
 
     setUpAll(() async {

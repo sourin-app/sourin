@@ -118,6 +118,30 @@ class _FakeFileSelector extends fsi.FileSelectorPlatform {
   }
 }
 
+/// 把 build 产物里的 `sourin_core.dll` 放到**仓库根**，让 `DynamicLibrary.open` 能成功
+///
+/// ★ 不改产品代码：`ffi.dart` 本来就是按相对路径找 dll 的。
+/// ★ 各处都没有 ⇒ 返回 false ⇒ 调用方应 `skip` 而不是假装通过。
+/// 与 `zz_t66_cs1_export_import_e2e_test.dart` 里那份同逻辑（test/ 下文件各自独立编译，
+/// 不宜互相 import；两份都在文件头写明了为什么必须跳过）。
+bool ensureCoreDll() {
+  final target = File('sourin_core.dll');
+  if (target.existsSync()) return true;
+
+  const candidates = <String>[
+    'build/windows/x64/runner/Release/sourin_core.dll',
+    'rust/sourin_core/target/release/sourin_core.dll',
+    'rust/sourin_core/target/debug/sourin_core.dll',
+  ];
+  for (final c in candidates) {
+    final f = File(c);
+    if (!f.existsSync()) continue;
+    f.copySync(target.path);
+    return true;
+  }
+  return false;
+}
+
 void main() {
   setUpAll(loadRealFonts);
 
@@ -129,7 +153,24 @@ void main() {
   late String bundlePath; // 真核心导出的**含凭据**的包
   late String plainBundlePath; // 真核心导出的**不含凭据**的包
 
+  /// ★★★ 本文件要**真核心**（写接口不给注入点，见 sourin_api.dart:2115 的纪律）。
+  ///
+  /// 真核心需要 `sourin_core.dll`；本地有（build 产物），**CI 的 macOS / Android job 没有**。
+  /// ⇒ 没有就整组 skip，**不许让 setUpAll 抛异常爬上 CI**。
+  ///
+  /// 同一轮里 `zz_t66_cs1_export_import_e2e_test.dart` 已经在 macOS job
+  /// （run 39460373619）上栽过：`ArgumentError: Failed to load dynamic library
+  /// 'libsourin_core.dylib'` 把整个 job 判失败，而那只是"这台机器没有 dll"。
+  ///
+  /// ★ 判据：**「没有跑这个用例的条件」与「这个用例失败」是两件事。**
+  final hasCore = ensureCoreDll();
+
   setUpAll(() async {
+    if (!hasCore) {
+      print('[CS1-UI-SKIP] 缺 sourin_core.dll ⇒ 本机不起真核心，'
+          '本文件全部用例跳过（这不是失败：CI 的 macOS / Android job 没有 dll）');
+      return;
+    }
     // ★ 真核心：数据目录钉死在临时目录（不读 APPDATA，碰不到 Owner 的真实目录）
     final base = Directory.systemTemp.createTempSync('sourin-t66-cs1-ui-');
     tempDir = base;
@@ -229,7 +270,7 @@ void main() {
   // 判据 #10-②  设了口令后导出 ⇒ 界面出现「含 N 个源的登录态，已加密」
   // ─────────────────────────────────────────────────────────────────
 
-  group('#10-② ★ 界面上真的出现「含 N 个源的登录态，已加密」', () {
+  group('#10-② ★ 界面上真的出现「含 N 个源的登录态，已加密」', skip: !hasCore, () {
     testWidgets('★★ 设口令导出 ⇒ 成功行逐字含「含 2 个源的登录态，已加密」',
         (tester) async {
       final out = '${tempDir.path}${Platform.pathSeparator}ui-export.zip';
@@ -334,7 +375,7 @@ void main() {
   // 判据 #11-①  导入时必须重新输入口令
   // ─────────────────────────────────────────────────────────────────
 
-  group('#11-① ★ 导入时真的弹出**新的**口令输入框', () {
+  group('#11-① ★ 导入时真的弹出**新的**口令输入框', skip: !hasCore, () {
     testWidgets('★★★ 含登录态的包 ⇒ 点「确认导入」后弹口令框', (tester) async {
       // ★ 用**真核心导出的真包**（含凭据）⇒ `backup_inspect` 能真读出来
       fsi.FileSelectorPlatform.instance =

@@ -81,6 +81,44 @@ late _Core _core;
 /// ⚠️ 与 widget 测试的经典坑一样，**不能**先 `pumpWidget` 再 `runAsync`：
 /// 这里压根不用 `pumpWidget`，全部走 `test()`（无 fake clock），
 /// 所以 `await SourinCore.startAsync(...)` 就是真跑。
+/// 把 build 产物里的 `sourin_core.dll` 放到**仓库根**，让 `DynamicLibrary.open` 能成功
+///
+/// ★ 不改产品代码：`ffi.dart` 本来就是按相对路径找 dll 的。
+/// ★ 若各处都没有 dll，返回 false ⇒ 调用方应 `skip` 而不是假装通过。
+///
+/// 与 `zz_t66_cs1_real_core_e2e_test.dart` 里那份是**同一份逻辑**（见那里的注释）。
+/// 这里不复用它，是因为 test/ 下的文件各自独立编译、不宜互相 import；
+/// 逻辑短到可以承受两份，且两份都在文件头写明了为什么必须跳过。
+bool ensureCoreDll() {
+  final target = File('sourin_core.dll');
+  if (target.existsSync()) return true;
+
+  const candidates = <String>[
+    'build/windows/x64/runner/Release/sourin_core.dll',
+    'rust/sourin_core/target/release/sourin_core.dll',
+    'rust/sourin_core/target/debug/sourin_core.dll',
+  ];
+  for (final c in candidates) {
+    final f = File(c);
+    if (!f.existsSync()) continue;
+    f.copySync(target.path);
+    return true;
+  }
+  return false;
+}
+
+/// 本机能不能起真核心（`ensureCoreDll()` 决定）
+///
+/// ★ 文件级（不是 main() 内）—— 因为 `skipIfNoCore()` 要在每条 test 的
+///   body 里调，而它是顶层函数，拿不到 main() 的局部变量。
+final bool hasCore = ensureCoreDll();
+
+/// 没有真核心时，跳过原因（会打印给读日志的人）
+final String skipReason = hasCore
+    ? ''
+    : '缺 sourin_core.dll ⇒ 本机不起真核心，本文件全部用例跳过'
+        '（这不是失败：CI 的 macOS / Android job 没有 dll）';
+
 Future<void> _bootCore() async {
   final base = Directory.systemTemp.createTempSync('sourin-t66-cs1-');
   _core = _Core(
@@ -273,7 +311,24 @@ Future<String> _wholeBundleText(String zipPath) async {
 }
 
 void main() {
+  /// ★★★ 本文件要的是**真核心**（不注入写接口，见 `sourin_api.dart:2115` 的纪律）。
+  ///
+  /// 而真核心需要 `sourin_core.dll` —— 它在本地开发机上有（build 产物），
+  /// 在 **CI 的 macOS / Android job 上没有**。
+  ///
+  /// ⇒ 没有 dll 就必须 `skip`，**不许让 `setUpAll` 抛异常**。
+  /// 「全量测试」这一步红过一次（macOS job，39460373619），
+  /// 根因就是这里 `ArgumentError: Failed to load dynamic library
+  /// 'libsourin_core.dylib'` 直接爬上 `setUpAll`，
+  /// 把整个 job 判失败 —— 而那其实只是「这台机器不适合跑这个用例」。
+  ///
+  /// ★ 判据：**「没有跑这个用例的条件」与「这个用例失败」是两件事。**
+  ///   前者要 skip（并打印原因），后者才是红。
   setUpAll(() async {
+    if (!hasCore) {
+      print('[CS1-E2E-SKIP] $skipReason');
+      return;
+    }
     await _bootCore();
     // 合成两份额据：A = 令牌型、B = 明文密码型
     _seedCredential(kProviderA);
@@ -291,7 +346,7 @@ void main() {
   // 没有这一节，上面所有断言都可能是"在假引擎上空转"。
   // ─────────────────────────────────────────────────────────────────
 
-  group('⓪ 仪器自检：这一组断言打在真核心上', () {
+  group('⓪ 仪器自检：这一组断言打在真核心上', skip: !hasCore, () {
     test('★ 真核心已加载（不是抛异常兜底）', () {
       expect(SourinCore.isLoaded, isTrue,
           reason: '★ 仓库根目录的 sourin_core.dll 没能加载 ⇒ '
@@ -327,7 +382,7 @@ void main() {
   // 判据 #10-①  未设口令时导出 ⇒ credentialsIncluded == false
   // ─────────────────────────────────────────────────────────────────
 
-  group('#10-① 未设口令导出 ⇒ 必须如实说"没带登录态"', () {
+  group('#10-① 未设口令导出 ⇒ 必须如实说"没带登录态"', skip: !hasCore, () {
     test('★ backupExport(passphrase: null) 返回 credentialsIncluded == false',
         () async {
       final out = '${_core.workDir}${Platform.pathSeparator}no-pass.zip';
@@ -380,7 +435,7 @@ void main() {
   // 判据 #10-②  设了口令后导出 ⇒ credentialsIncluded == true
   // ─────────────────────────────────────────────────────────────────
 
-  group('#10-② 设口令导出 ⇒ 含 N 个源', () {
+  group('#10-② 设口令导出 ⇒ 含 N 个源', skip: !hasCore, () {
     late String out;
     late BackupExportResult r;
 
@@ -426,7 +481,7 @@ void main() {
   // 这一条是最贵的安全判据 —— 逐字节搜整个 zip 的每个条目。
   // ─────────────────────────────────────────────────────────────────
 
-  group('#10-③ ★★★ 包内不得出现明文口令 / 明文凭据', () {
+  group('#10-③ ★★★ 包内不得出现明文口令 / 明文凭据', skip: !hasCore, () {
     late String out;
     late String settingsText;
     late String wholeText;
@@ -606,7 +661,7 @@ void main() {
   // 判据 #11  导入时必须重新输入口令
   // ─────────────────────────────────────────────────────────────────
 
-  group('#11-① 导入含凭据的包 ⇒ 不给口令必须失败', () {
+  group('#11-① 导入含凭据的包 ⇒ 不给口令必须失败', skip: !hasCore, () {
     test('★★ backupImport 不传口令 ⇒ 报错，且**一个凭据都没写**', () async {
       final out = '${_core.workDir}${Platform.pathSeparator}with-pass.zip';
 
@@ -641,7 +696,7 @@ void main() {
     });
   });
 
-  group('#11-② 输错口令 ⇒ 明确报错且不写入任何凭据', () {
+  group('#11-② 输错口令 ⇒ 明确报错且不写入任何凭据', skip: !hasCore, () {
     late String out;
 
     setUp(() async {
@@ -711,7 +766,7 @@ void main() {
     });
   });
 
-  group('#11-③ 成功导入 ⇒ providers 数量与包内一致', () {
+  group('#11-③ 成功导入 ⇒ providers 数量与包内一致', skip: !hasCore, () {
     late String out;
 
     setUp(() async {
@@ -785,7 +840,7 @@ void main() {
   // `credentials_status` 的 `willSync` 必须是**派生量**。
   // ─────────────────────────────────────────────────────────────────
 
-  group('★ 开关开了但没设口令 ⇒ 绝不会显示成"已同步/已完成"', () {
+  group('★ 开关开了但没设口令 ⇒ 绝不会显示成"已同步/已完成"', skip: !hasCore, () {
     test('★★ 真核心：只开开关不改口令，willSync 必须仍是 false', () async {
       /*
        * ★★★ 为什么这条**不调** `setCredentialsPassphrase`

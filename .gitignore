@@ -152,6 +152,25 @@ key.properties
 #      （那会把将来的临时诊断文件一起放进来）。
 !test/zz_t66_cs1_credentials_gate_test.dart
 
+# ★ 例外（2026-10-21，发版时 CI 抓出来）：**决策笔记**的文件名里有 credentials
+#   同样被误伤 —— 它是讲"凭据平面怎么设计"的笔记，不是凭据本身。
+#
+#   ★★ 这次的暴露方式值得记：这两篇笔记**在本地一直存在、门禁一直绿**，
+#      但因为从未进过 git，CI 一 checkout 就找不到
+#      ⇒ `verify-agent-note-tree.ts` 报 link target does not exist，
+#        Windows job 的「决策笔记门禁」红，**整条发版流水线断在这里**。
+#
+#   ★ 也就是说：`*credential*` 挡掉的不只是"文件没进库"，
+#     它还会让**任何指向被挡文件的链接在 CI 上静默断链**，
+#     而本地永远验不出来（本地磁盘上有那个文件）。
+#     ⇒ 判据：**"本地能读到" ≠ "CI 能读到" ≠ "别人 clone 下来能读到"。**
+#       三者是三个不同的可访问性，门禁绿只证明第一个。
+#
+#   ⚠️ 同样只放行**精确路径**（两篇都点名），不放宽成 `!.agents/notes/**`。
+#     否则将来任何临时笔记、含真实凭据的草稿都会一起进库。
+!.agents/notes/implemented/process/2026-10-12-danmaku-credentials-build-time-secrets.md
+!.agents/notes/implemented/process/2026-10-15-dev-data-seed-readonly-no-credentials.md
+
 
 # 无头 UI 截图的落盘目录（测试产物，不入库；由 SOURIN_SHOT_DIR 指定）
 .shots-webdav/

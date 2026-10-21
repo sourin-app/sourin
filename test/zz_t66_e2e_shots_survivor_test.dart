@@ -36,7 +36,24 @@ const _scriptPath = 'tools/e2e_shots.ps1';
 String _script() {
   final f = File(_scriptPath);
   expect(f.existsSync(), isTrue, reason: '★ 前置：$_scriptPath 必须存在');
-  return f.readAsStringSync();
+
+  // ★★★ 必须先把行尾统一成 LF 再解析 —— 下面的 `indexOf('\n}\n')` 是**写死 LF 的**。
+  //
+  //   `.gitattributes` 里写着 `*.ps1 text eol=crlf` ⇒ **全新 checkout 出来的
+  //   工作副本是 CRLF**（本机那份一度是历史遗留的 LF：
+  //   `git ls-files --eol` 曾显示 `i/lf w/lf attr/text eol=crlf`）。
+  //
+  //   ⇒ 于是「本机绿、CI 红」：实测（CI run 39538011233，macOS）
+  //       Expected: a value greater than <13947>
+  //         Actual: <-1>
+  //     即 `indexOf('\n}\n', start)` 一行都没命中，然后报「函数体未正常闭合」。
+  //
+  //   ⚠️ 这不是 macOS 专有问题：Windows 的全新 checkout 同样是 CRLF。
+  //      本机之所以一直绿，只是那份文件还没被 git 重写过。
+  //      ⇒ 判据：**读文本文件的解析器不能假设行尾**，除非当场归一。
+  //      已用故障注入验证：把本行改回 `return f.readAsStringSync();`
+  //      （脚本置 CRLF）⇒ 逐字复现上面那三行 CI 报错 ⇒ 这行是承重的。
+  return f.readAsStringSync().replaceAll('\r\n', '\n');
 }
 
 /// 脚本里 `Stop-OurProcesses` 函数的原文（**已剔除注释行**）

@@ -268,7 +268,12 @@ void main() {
           bad.add('${e.name}: manifest=${e.w}x${e.h} 实际=${size.w}x${size.h}');
         }
         if (bytes != e.bytes) {
-          bad.add('${e.name}: manifest=$e.bytes B 实际=$bytes B');
+          // ★ 这里必须是 `${e.bytes}`（带花括号）。写 `$e.bytes` 时 Dart 只把
+          //   `$e` 当插值、`.bytes` 当字面量 ⇒ 报错信息会打成
+          //       manifest=Instance of '_Shot'.bytes B 实际=34464 B
+          //   实测出处：CI run 39538011233（macOS job）。
+          //   ★ 断言本身没有错，错的是**它想说的话**——而排错时人只有这句话可看。
+          bad.add('${e.name}: manifest=${e.bytes} B 实际=$bytes B');
         }
       }
       expect(bad, isEmpty, reason: '★★★ 尺寸/字节数与 manifest 不符：\n${bad.join('\n')}\n$kResealCmd');

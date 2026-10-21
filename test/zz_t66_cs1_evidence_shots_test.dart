@@ -68,6 +68,18 @@
 //    —— 同一张存两遍会被抓。实测删一张 ⇒ manifest -3。
 // ```
 // ★ 这条更正是「判据作用域写错」的又一例：**判据有效 ≠ 判据能拦你以为的那个东西**。
+//
+// ★★★ 2026-10-21 更新 —— 上面那条「拦不住」**已翻案**。
+//   把默认落盘位置从证据目录挪到 `build/`（见 [kOutDir]）之后，
+//   本文件不再覆盖归档里的那两张图 ⇒ manifest 判据比的才是真正封存的东西。
+//   故障注入验证（同一台机器、同一批命令）：
+//   ```text
+//   往 docs/notes/evidence/round-66-cs1/ 塞一张 71 B 的 1x1 PNG
+//   flutter test <本文件> <manifest 文件> --concurrency=1
+//     → 修前：+3 全绿（占位图被重新渲染覆盖掉了）
+//     → 修后：+9 -2（manifest ②③ 都红，红字能读出 84060 B vs 71 B）
+//   ```
+//   ⇒ 判据：**"生成证据"与"校验证据"必须是两条不互相污染的路径**。
 
 import 'dart:io';
 import 'dart:typed_data';
@@ -83,8 +95,46 @@ import 'package:sourin_spike/ui/widgets/sync_panel.dart';
 
 import 'support/ui_shot.dart';
 
-/// 出图目标目录（证据目录，git 跟踪）
-const String kOutDir = 'docs/notes/evidence/round-66-cs1';
+/// 证据图**归档**目录（git 跟踪，随仓发布）
+const String kEvidenceDir = 'docs/notes/evidence/round-66-cs1';
+
+/// 本文件默认的落盘目录：构建产物目录，**git 不跟踪**
+const String kScratchDir = 'build/evidence-shots/round-66-cs1';
+
+/// 本次真正把 PNG 写到哪里
+///
+/// ★★★ 默认写 [kScratchDir]（临时），**不写** [kEvidenceDir]（归档）。
+///
+/// 为什么必须分开：本文件每跑一次就会**重新渲染并覆盖**同名 PNG。
+/// 而 `zz_t66_cs1_evidence_manifest_test.dart` 的②③判据要拿归档目录里的图
+/// 去比对 manifest 里封存的 sha256 / 字节数 —— 一旦本文件先把它们覆盖掉，
+/// 那条判据比的就不是"封存的证据"而是"刚渲染出来的东西"了。
+///
+/// 实测（CI run 39538011233，macOS job）：
+/// ```text
+/// manifest=47a69435… 实际=ebf5d9d7…   （本机两张：84060 B / 87453 B）
+/// 实际=34464 B / 35224 B              （macOS 上重渲染出来的：小一半多）
+/// ```
+/// 本机之所以绿，是因为这台机器的引擎+字体渲染出来的字节**恰好**与封存的一致；
+/// 换个平台渲染出的字节就变 ⇒ manifest 判据红。
+///
+/// ⚠️ 更要紧的是：这层覆盖同时**废掉了 manifest 判据在非 Windows 上的保护力**。
+///    本文件第 50~69 行自己记着一条实测——「往证据目录塞占位图拦不住，
+///    因为本文件会重新渲染覆盖它」。把默认落盘位置挪开之后，那条实测**翻案**：
+///    manifest 判据从此比的一直是归档里真正封存的那两张图。
+///
+/// 需要**故意刷新归档证据**时，显式指路（不是靠默认行为）：
+/// ```text
+/// SOURIN_EVIDENCE_OUT=docs/notes/evidence/round-66-cs1 \
+///   flutter test test/zz_t66_cs1_evidence_shots_test.dart
+/// # 然后按 manifest 门禁红字给的命令重新封存 manifest
+/// ```
+/// ⇒ 判据：**"生成证据"和"校验证据"必须是两条不互相污染的路径**；
+///   一个测试顺手改写另一个测试的被测对象，那两条判据就都不算数了。
+String get kOutDir {
+  final override = Platform.environment['SOURIN_EVIDENCE_OUT']?.trim();
+  return (override == null || override.isEmpty) ? kScratchDir : override;
+}
 
 /// 出图结果
 typedef ShotResult = ({int bytes, int w, int h, int colors});

@@ -140,7 +140,7 @@ $ git log --oneline -1 -- lib/ui/widgets/update_dialog.dart ⇒ a8d6ce9（第一
 $ flutter test test/zz_t66_r4_dialog_consistency_test.dart --concurrency=1
   ⇒ +11 -2   ✗ ①-b（backup_panel / download_panel 绕过外壳且未登记豁免）
               ✗ ④-b（豁免键必须指向真实存在的那一处）
-$ /d/WishProject/sourin-plugins: git status 干净；plugins/<主插件>.ts `danmakuSend: false`
+$ <私库路径>: git status 干净；plugins/<主插件>.ts `danmakuSend: false`
   + 紧邻 `// blocked: 上游 dm/post 要求 WebGL 指纹…`；`async danmakuSend(req)` 实现存在；
   docs/danmaku-send-boundary.md（214 行）与 tools/check-danmaku-send-parity.mjs 均在
 ```

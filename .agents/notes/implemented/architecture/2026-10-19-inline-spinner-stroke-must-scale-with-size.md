@@ -144,7 +144,7 @@ analyze：0 error，unused_import 清零
 **★ 关于注入的一次过程失误（复核自己披露的）**
 
 ```text
-inj_gate2.py 里用了 MSYS 路径（/d/WishProject/...）做 shutil.copy，
+inj_gate2.py 里用了 MSYS 路径（<工作目录>/...）做 shutil.copy，
 Python 在 Windows 下不认 ⇒ FileNotFoundError ⇒ 脚本提前退出。
 ⇒ 那一次看到的变红其实是 settings_page 造成的，不是 danmaku 那一处。
 ⇒ 若不查，会把「settings_page 的注入」误报成「danmaku 的注入」——

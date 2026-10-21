@@ -417,7 +417,7 @@ flutter test test/zz_t66_danmaku_proxy_a11y_test.dart --concurrency=1 → +4 All
 ### 活① 读数（可手抄复跑）
 
 ```bash
-export PATH="/c/Users/iuuuuuuuu/flutter/bin:$PATH"
+export PATH="<flutter>/bin:$PATH"
 flutter test test/zz_t66_image_downscale_test.dart --concurrency=1
 ```
 

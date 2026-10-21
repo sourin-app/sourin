@@ -23,7 +23,7 @@
 ### 1.1 私库基线
 
 ```bash
-$ cd /d/WishProject/sourin-plugins && git status --porcelain
+$ cd <私库路径> && git status --porcelain
 （空 — 干净）
 $ sha256sum plugins/<主插件>.ts dist/plugins/<主插件>.js
 01b817612058e7f18f22122f22222fef97a8bfa61ba527927a9cb3fec2e08dab  plugins/<主插件>.ts
@@ -474,7 +474,7 @@ _danmakuCanSend 只在 _loadDanmakuSendCapability() 里赋值：
 跑法（逐文件、一律 `--concurrency=1`、后台 + 日志轮询，避免撞 `bin/cache/lockfile`）：
 
 ```bash
-export PATH="/c/Users/iuuuuuuuu/flutter/bin:$PATH"
+export PATH="<flutter>/bin:$PATH"
 for f in $(ls test/zz_t66_*_test.dart; echo test/t98_no_site_names_test.dart;
            echo test/t95_sync_panel_ui_test.dart; echo test/zz_t12_cache_page_probe_test.dart); do
   timeout 600 flutter test "$f" --concurrency=1 > /d/tmp/n15b/$(basename "$f" .dart).log 2>&1

@@ -213,7 +213,7 @@ done | sort -rn
 grep -rohE 'Icons\\.[A-Za-z0-9_]+' lib/ --include=*.dart | sort -u | wc -l
 # 147
 
-grep -rlE 'class Icons' /c/Users/iuuuuuuuu/flutter/packages/flutter/lib/ | wc -l
+grep -rlE 'class Icons' <flutter-sdk>/packages/flutter/lib/ | wc -l
 # 0                          ← flutter/widgets 里根本没有 Icons 类
 
 wc -l  <pub-cache>/material_ui-1.6.0/lib/src/icons.dart

@@ -222,17 +222,54 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx --yes tsx .agents/notes-scripts/verify-agent-note-tree.ts
-          npx --yes tsx .agents/notes-scripts/verify-agent-note-format.ts
-          npx --yes tsx .agents/notes-scripts/verify-archived-agent-notes.ts
+          # 三个 verify 脚本在**空集合**上都 exit 0（`ok: 0 note(s)`）。
+          # 笔记目录被改名、glob 写错、脚本只匹配到 0 个文件时，三道门禁会一起变绿。
+          # ⇒ 统一经过 notes-gate.mjs：它先数篇数，0 篇即失败；再依次跑三个脚本。
+          #   它自己探测 runner（本地 node 能跑 .ts 就用 node，否则回落 npx tsx）。
+          # ── 归档基线：必须在这里算出来，不能赌 event 字段的形状 ──────────
+          #
+          # ★ 原写法是把 `github.event.pull_request.base.sha || github.event.before`
+          #   直接塞进 env。**新分支首次 push 时 event.before 是 40 个 0**，
+          #   脚本拿它去 `rev-parse` 必然失败 —— 而旧版脚本对"基线查不到"
+          #   一律静默放行（`catch {}` + "manifest absent at baseline"），
+          #   于是这道 append-only 门禁在**恰恰最需要它的场景**上什么都没查。
+          #
+          # 2026-10-22 起脚本 fail-closed：宁可红，也不假装查过。
+          # 那么基线必须在这里算准：
+          #   ① PR → base.sha；
+          #   ② push → event.before（仅当它是真提交；全零/不存在都不算）；
+          #   ③ 兜底 → 默认分支的 merge-base（新分支、首推、浅克隆都靠这条）。
+          # 三条都拿不到 ⇒ 明确报错退出。**不回落 HEAD**：HEAD 自比自 =
+          #   当前 manifest 跟它自己比，一个字节都不会变红，等于没有门禁。
+          BASE=""
+          for cand in "${PR_BASE_SHA:-}" "${PUSH_BEFORE:-}"; do
+            case "$cand" in ''|*[!0-9a-f]*) continue ;; esac        # 空/非纯十六进制 → 跳过
+            [ -n "$(printf '%s' "$cand" | tr -d '0')" ] || continue  # 全零 → 不是提交
+            if git rev-parse --verify --quiet "${cand}^{commit}" >/dev/null 2>&1; then
+              BASE="$cand"
+              break
+            fi
+          done
+          if [ -z "$BASE" ]; then
+            git fetch --no-tags --prune origin \
+              "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" >/dev/null 2>&1 || true
+            BASE="$(git merge-base HEAD "refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null || true)"
+            if [ -n "$BASE" ]; then echo "基线来自 merge-base（默认分支 ${DEFAULT_BRANCH}）"; fi
+          fi
+          if [ -z "$BASE" ]; then
+            echo "::error::算不出归档基线（PR base / event.before / merge-base 均不可用）；不用 HEAD 自比自，直接失败"
+            exit 1
+          fi
+          echo "归档基线 = $BASE"
+          export AGENT_NOTE_ARCHIVE_BASE_REF="$BASE"
+          node .agents/notes-scripts/notes-gate.mjs
           # ★ 软报告，**故意不在此处跑**：`check-note-anchors.ts` 退出码恒 0，
           #   放进这条 `set -e` 链里只会让日志变长、不会让 job 变红。
           #   要体检时本地跑（见 docs/AGENTS.md §7.1 的「软报告」段）。
         env:
-          # ★ 归档封印的 append-only 校验要一个**变更前**的基线：
-          #   用 HEAD 等于没查（当前提交里的 manifest 自己跟自己比）。
-          #   PR 用 base.sha，push 用 event.before。
-          AGENT_NOTE_ARCHIVE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
       # ── ①.6 笔记脚本与模板完整性 ─────────────────────────────────
       #
@@ -252,7 +289,7 @@ jobs:
           #   不写 `|| true`，不写「构造一个函数但不加载模块」那种恒绿探针
           #   （那证明不了脚本能被解析）。
           #
-          # ① 七个 .ts 脚本 + 看板模板必须存在
+          # ① 七个 .ts 脚本 + 两个新 .mjs 外壳 + 看板模板必须存在
           for f in \
             .agents/notes-scripts/agent-note-tree.ts \
             .agents/notes-scripts/verify-agent-note-tree.ts \
@@ -261,6 +298,8 @@ jobs:
             .agents/notes-scripts/archive-agent-note.ts \
             .agents/notes-scripts/build-board.ts \
             .agents/notes-scripts/check-note-anchors.ts \
+            .agents/notes-scripts/notes-gate.mjs \
+            .agents/notes-scripts/notes-selftest.mjs \
             .agents/assets/agent-notes-board.html \
           ; do
             test -f "$f" || { echo "::error::缺少笔记脚本或模板 $f"; exit 1; }
@@ -278,11 +317,33 @@ jobs:
           #   build-board 不在 CI 里跑（看板是本地工具，产物不进仓库），
           #   它的可解析性靠下面 ③ 的「文件存在 + 模板存在」+ 本地实测覆盖。
           #   这里**不写 `|| true`** —— 缺文件会由 ① 的 test -f 直接红。
-          # ③ 两个 .mjs 门禁：node --check 是真语法检查，非零即红。
-          for f in .agents/notes-scripts/notes-coverage.mjs .agents/notes-scripts/notes-supersession.mjs; do
+          # ③ 四个 .mjs：node --check 是真语法检查，非零即红。
+          for f in \
+            .agents/notes-scripts/notes-coverage.mjs \
+            .agents/notes-scripts/notes-supersession.mjs \
+            .agents/notes-scripts/notes-gate.mjs \
+            .agents/notes-scripts/notes-selftest.mjs \
+          ; do
             node --check "$f"
             echo "ok: $f 语法正确"
           done
+
+      # ── ①.7 笔记门禁自测：证明它们**真的会红** ────────────────────
+      #
+      # ★ 为什么单开一步：2026-10-22 实测出两个「静默放行」缺陷 ——
+      #   supersession 的链接正则漏掉 `<b.md>` 与 `b.md "title"` 两种合法写法
+      #   （合规笔记被拒），归档门禁对「基线查不到」一律 catch 放行
+      #   （拼错 ref / 全零 sha / 不在 git 仓库里都 exit 0）。
+      #   两个缺陷都**没有任何测试会让它们变红**，所以只能靠这一步。
+      #
+      # 判据：`notes-selftest.mjs` 每个用例断言**具体退出码**，
+      #   正向（应 0）与反向（应非 0）成对；任何一条不符即红。
+      # 它自带夹具（临时 git 仓库），不碰真实笔记树，可在任何机器上跑。
+      - name: 笔记门禁自测（门禁必须真的会红）
+        shell: bash
+        run: |
+          set -euo pipefail
+          node .agents/notes-scripts/notes-selftest.mjs
 
       # ── 发布说明守卫：用户可见正文不许再出现会腐烂的统计读数 ──
       - name: 装 Python（跑发布说明守卫）

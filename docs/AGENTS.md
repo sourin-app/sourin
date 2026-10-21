@@ -323,13 +323,19 @@ build/windows/x64/runner/Release/sourin_spike.exe &
 
   笔记树**进仓库**，与代码同批提交。CI 会在 Windows job 上跑
   `.agents/notes-scripts/` 里的三条校验（tree / format / archived），红即不许合。
-  本地跑同样三条：
+  本地跑**一条**就够 —— `notes-gate.mjs` 依次跑那三条，并额外要求笔记树非空：
 
   ```bash
-  npx --yes tsx .agents/notes-scripts/verify-agent-note-tree.ts
-  npx --yes tsx .agents/notes-scripts/verify-agent-note-format.ts
-  npx --yes tsx .agents/notes-scripts/verify-archived-agent-notes.ts
+  node .agents/notes-scripts/notes-gate.mjs
   ```
+
+  > ★ 为什么不直接一条条跑那三个脚本：它们在**空集合**上都 `exit 0` 并打印
+  > `ok: 0 note(s)`。目录改名、glob 写错、只匹配到 0 个文件时，三道门禁会
+  > 一起变绿而什么都没查。`notes-gate.mjs` 只加「0 篇即失败」这一条，其余
+  > 判定完全交给原脚本（不复制规则，免得两边各说一套）。
+  >
+  > 它自己探测 runner：本地 Node 能原生跑 `.ts` 就用 `node`，否则回落 `npx --yes tsx`。
+  > 想强制指定：`NOTES_RUNNER=node` 或 `NOTES_RUNNER=tsx`。
 
   另有两道 CI 门禁，本地也能跑（`--range` 给提交区间）：
 
@@ -337,6 +343,16 @@ build/windows/x64/runner/Release/sourin_spike.exe &
   node .agents/notes-scripts/notes-coverage.mjs    --range HEAD~1..HEAD
   node .agents/notes-scripts/notes-supersession.mjs --range HEAD~1..HEAD
   ```
+
+  **门禁自测**（证明这些门禁真的会红，不是恒绿）：
+
+  ```bash
+  node .agents/notes-scripts/notes-selftest.mjs
+  ```
+
+  它在临时 git 仓库里造夹具，逐条断言**具体退出码**：三种合法链接写法必须被
+  `supersession` 认出、归档门禁对拼错的 ref / 全零 sha / 相对基线被改写的封印
+  必须红、`notes-gate` 对空树必须红。跑完会把夹具删掉，不碰真实笔记树。
 
   **软报告**（不进 CI，退出码恒 0；只在排查锚点/看进度时用）：
 

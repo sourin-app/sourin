@@ -89,24 +89,89 @@ const repoRoot = (() => {
   }
 })();
 if (repoRoot) {
-  const baseRef = process.env.AGENT_NOTE_ARCHIVE_BASE_REF || "HEAD";
-  const manifestRel = relative(repoRoot, manifestPath).split("\\").join("/");
-  let baselineRaw: string | null = null;
-  try {
-    baselineRaw = execFileSync("git", ["show", `${baseRef}:${manifestRel}`], { cwd: repoRoot, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
-  } catch {
-    // manifest absent at baseline — nothing to compare
-  }
-  if (baselineRaw !== null) {
+  /* 基线的三种「查不到」必须分开对待，不能一律当成「没有可比的东西」：
+     ① `AGENT_NOTE_ARCHIVE_BASE_REF` 指向一个**解析不出来的 ref**、
+     ② 全零 sha（CI 新分支 push 的 `github.event.before` 就是这个形状）、
+     ③ `git` 读失败（权限、损坏、超时）——
+     这三种都是**门禁没查**，不是**没有可查的**。以前它们全部静默通过，
+     于是这一步在 CI 上恒绿：实测 `AGENT_NOTE_ARCHIVE_BASE_REF=refs/heads/nope`
+     与 `AGENT_NOTE_ARCHIVE_BASE_REF=0000…0` 都打印
+     `ok: 1 archived note(s) verified, 1 seal(s) in manifest` 并 exit 0。
+
+     只有「基线提交里确实没有 archived/manifest.json」才是真正无可比 ——
+     那种情况用 `ls-tree` 判定（列出树条目），而不是靠 `git show` 抛错。 */
+  const explicitBase = process.env.AGENT_NOTE_ARCHIVE_BASE_REF;
+  const baseRefRaw = explicitBase === undefined || explicitBase.trim() === "" ? "HEAD" : explicitBase.trim();
+  const gitOut = (args: string[]): { ok: boolean; out: string; err: string } => {
     try {
-      const baseline = JSON.parse(baselineRaw) as Manifest;
-      for (const [key, seal] of Object.entries(baseline.files ?? {})) {
-        if (manifest.files[key] !== seal) {
-          fail(`${key} — seal added/changed/removed relative to ${baseRef}; archived seals are append-only`);
+      const out = execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+      return { ok: true, out, err: "" };
+    } catch (error) {
+      const e = error as { stdout?: string; stderr?: string; message?: string };
+      return { ok: false, out: e.stdout ?? "", err: (e.stderr ?? "").trim() || (e.message ?? "") };
+    }
+  };
+
+  const zerosRef = /^0+$/.test(baseRefRaw);
+  if (zerosRef) {
+    fail(
+      `AGENT_NOTE_ARCHIVE_BASE_REF 是全零 sha（CI 新分支 push 的 event.before 就是这个值）：` +
+        `这说明本次没有可比基线，append-only 校验没有执行 —— 请改用 merge-base 或 PR base，不要让它静默通过`
+    );
+  }
+
+  const resolved = gitOut(["rev-parse", "--verify", "--end-of-options", `${baseRefRaw}^{commit}`]);
+  const baseOid = resolved.out.trim();
+
+  if (zerosRef) {
+    /* 已在上面报过「全零 sha 没有可比基线」，不再叠加一条同因的解析失败。 */
+  } else if (!resolved.ok) {
+    /* HEAD 未出生（全新仓库、还没有第一个提交）是唯一可以放行的情形：
+       此时既没有历史也没有封印可比，而显式给出的 ref 解析不出来就是错。 */
+    const unborn = baseRefRaw === "HEAD" && gitOut(["rev-parse", "--verify", "--quiet", "HEAD"]).out.trim() === "";
+    if (unborn) {
+      warnings.push("仓库还没有第一个提交 — append-only 校验无可比基线（封印哈希仍已按磁盘核对）");
+    } else {
+      fail(`AGENT_NOTE_ARCHIVE_BASE_REF=${baseRefRaw} 无法解析为提交，append-only 校验没有执行：${resolved.err.trim()}`);
+    }
+  } else if (baseOid !== "") {
+    /* 清单在**提交里**的路径，必须与 git 的视角一致。
+       不能写 `relative(repoRoot, manifestPath)`：`repoRoot` 来自 git
+       （`C:/Users/iuuuuuuuu/...`），`manifestPath` 来自 Node 的路径解析
+       （Windows 8.3 短名 `C:\Users\IUUUUU~1\...`）。两个字符串指向同一个目录，
+       但 `relative()` 只比字面量，于是算出 `../../../../IUUUUU~1/...`，
+       `ls-tree` 直接报 "is outside repository" —— 门禁红在一个**与内容无关**的原因上。
+       2026-10-22 在真仓库里实测到这条（`git rev-parse --show-toplevel` 与
+       `process.cwd()` 在临时目录/短用户名下确实不同形）。
+
+       正确做法：git 只回答「仓库根到当前目录」这一段（`--show-prefix`），
+       剩下「当前目录到清单」这一段用 Node 自己的 cwd 算 —— 两边各自只比
+       自己体系的路径，不跨体系比较。 */
+    const prefixRes = gitOut(["rev-parse", "--show-prefix"]);
+    const prefix = prefixRes.ok ? prefixRes.out.trim() : "";
+    const fromCwd = relative(process.cwd(), manifestPath).split("\\").join("/");
+    const manifestRel = `${prefix}${fromCwd}`;
+    /* 用 ls-tree 判「基线里有没有这份清单」：它把「路径不存在」与「读失败」
+       分开表达，而 `git show` 对两者都抛错。 */
+    const listed = gitOut(["--literal-pathspecs", "ls-tree", "--full-tree", "-z", baseOid, "--", manifestRel]);
+    if (!listed.ok) {
+      fail(`读取基线 ${baseRefRaw} 的树失败，append-only 校验没有执行：${listed.err.trim()}`);
+    } else if (listed.out.trim() !== "") {
+      const shown = gitOut(["show", `${baseOid}:${manifestRel}`]);
+      if (!shown.ok) {
+        fail(`读取基线 ${baseRefRaw} 的 archived/manifest.json 失败：${shown.err.trim()}`);
+      } else {
+        try {
+          const baseline = JSON.parse(shown.out) as Manifest;
+          for (const [key, seal] of Object.entries(baseline.files ?? {})) {
+            if (manifest.files[key] !== seal) {
+              fail(`${key} — seal added/changed/removed relative to ${baseRefRaw}; archived seals are append-only`);
+            }
+          }
+        } catch {
+          fail(`archived/manifest.json at ${baseRefRaw} was not valid JSON`);
         }
       }
-    } catch {
-      fail(`archived/manifest.json at ${baseRef} was not valid JSON`);
     }
   }
 } else {

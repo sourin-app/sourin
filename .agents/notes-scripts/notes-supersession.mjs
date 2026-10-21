@@ -181,10 +181,18 @@ function declaresRelation(repoRoot, path) {
   }
 
   /* ① 相对链接：指向笔记树里的另一篇。
-     只认 `.md` 结尾的相对链接，避免把外部 URL 或图片算进来。 */
-  const links = [...text.matchAll(/\]\(([^)\s]+\.md)(?:#[^)]*)?\)/g)]
-    .map((m) => m[1])
-    .filter((href) => !/^[a-z]+:/i.test(href) && !href.startsWith('/'));
+     只认 `.md` 结尾的相对链接，避免把外部 URL 或图片算进来。
+
+     must：要覆盖 markdown 的三种合法写法，否则「写了链接却被判没有」：
+       [a](b.md)             普通
+       [a](<b.md>)           尖括号包裹（路径含空格时必须这样写）
+       [a](b.md "title")     带标题
+     实测确认过：只写第一种会漏掉后两种，于是一个合规的笔记被拒绝，
+     而提示让人去加链接 —— 他明明已经加了。 */
+  const linkPattern = /\]\(\s*(?:<([^>]+\.md)(?:#[^>]*)?>|([^)\s]+\.md)(?:#[^)\s]*)?)(?:\s+"[^"]*")?\s*\)/g;
+  const links = [...text.matchAll(linkPattern)]
+    .map((m) => (m[1] ?? m[2] ?? '').trim())
+    .filter((href) => href !== '' && !/^[a-z]+:/i.test(href) && !href.startsWith('/'));
   if (links.length > 0) {
     return { ok: true, reason: `有 ${links.length} 个相对链接` };
   }

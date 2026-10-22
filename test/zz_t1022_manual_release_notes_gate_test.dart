@@ -289,6 +289,71 @@ void main() {
     }
   });
 
+  test('渲染器不认识的 Markdown 会被拒（引用块 / 删除线 / 下划线粗体）', () {
+    if (py == null) {
+      markTestSkipped('本机没有 python ⇒ 无从验证守门会红');
+      return;
+    }
+    final tmpDir = Directory.systemTemp.createTempSync('sourin_manual_gate');
+    try {
+      // 这三种都不是「非法 Markdown」，而是渲染器的 `_inline()` / 行首分支
+      // 不认识 ⇒ 会原样漏给用户。判据按「渲染器认不认」写，不按 Markdown 规范写。
+      // 每份稿都保留一条正常条目，避免被「整份稿里一条条目都没有」那条兜住。
+      final cases = {
+        'quote.md': ('### 修复\n\n- 播放更顺畅。\n- 说明如下：\n\n> 旧版需要手动重连。\n', '引用块'),
+        'strike.md': ('### 修复\n\n- ~~旧的说明~~ 换成新的。\n', '删除线'),
+        'underscore.md': ('### 修复\n\n- __重要__ 提示。\n', '下划线粗体'),
+      };
+      for (final entry in cases.entries) {
+        final (body, needle) = entry.value;
+        final f = File('${tmpDir.path}/${entry.key}');
+        f.writeAsStringSync(body);
+        final r = runGenerator(py, f);
+        expect(r.exitCode, 1,
+            reason: '${entry.key} 竟然通过了 ⇒ 渲染器会把它原样显示给用户。\n'
+                '${r.stderr.toString()}');
+        expect(r.stderr.toString(), contains(needle),
+            reason: '${entry.key} 被拒了但没说清是哪种语法 ⇒ 报错读不懂等于没有报错。\n'
+                '${r.stderr.toString()}');
+      }
+    } finally {
+      try {
+        tmpDir.deleteSync(recursive: true);
+      } catch (_) {
+        // 临时目录删不掉不影响结论
+      }
+    }
+  });
+
+  test('渲染器认识的写法不许被误拒（`**粗**` / 反引号 / 链接 / 有序列表）', () {
+    if (py == null) {
+      markTestSkipped('本机没有 python ⇒ 无从验证守门不会误伤');
+      return;
+    }
+    final tmpDir = Directory.systemTemp.createTempSync('sourin_manual_gate');
+    try {
+      // 收紧判据的代价必须被钉住：这几种渲染器确实认识，拒了就是逼人改写稿子。
+      final f = File('${tmpDir.path}/ok.md');
+      f.writeAsStringSync('### 修复\n'
+          '\n'
+          '- **重要**：播放更顺畅。\n'
+          '- 设置里搜索 `自动播放` 即可。\n'
+          '- 详见 [帮助页](https://example.com/help)。\n'
+          '1. 打开设置。\n'
+          '2. 打开自动播放。\n');
+      final r = runGenerator(py, f);
+      expect(r.exitCode, 0,
+          reason: '渲染器认识的写法被拒了 ⇒ 判据按 Markdown 规范而不是按渲染器能力写。\n'
+              '${r.stderr.toString()}');
+    } finally {
+      try {
+        tmpDir.deleteSync(recursive: true);
+      } catch (_) {
+        // 临时目录删不掉不影响结论
+      }
+    }
+  });
+
   test('校验用的行号对得上原文件（报错不能指错行）', () {
     if (py == null) {
       markTestSkipped('本机没有 python ⇒ 无从验证守卫会红');

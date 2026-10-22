@@ -1009,7 +1009,15 @@ class _PlayerPageState extends State<PlayerPage>
           const Duration(milliseconds: SourinApi.yieldWindowMs),
           () {
             _prefetchYieldTimer = null;
-            unawaited(SourinApi.endYieldForSeek());
+            // ★ 与下面 cancel 路径（14455）同一个理由：核心没加载时
+            //   `SourinCore.callAsync()` 会在绑定原生库这步就失败，
+            //   而这里是 fire-and-forget ⇒ 不接住就变成**未捕获的异步异常**
+            //   （在 `flutter test` 里会直接算用例失败）。让路是优化，失败静默降级。
+            //   （PR #32 复核线程 4/9）
+            unawaited(SourinApi.endYieldForSeek().catchError((Object e) {
+              // 与 dispose 那处（:14460）同一写法：失败只记日志，不外抛
+              AppLog.write('PLAYER', '让路窗口结束: endYieldForSeek 失败（已忽略）：$e');
+            }));
           },
         );
       } catch (_) {

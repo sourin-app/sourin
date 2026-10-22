@@ -41,6 +41,24 @@ Future 里的 throw 仍会变成未捕获异常。核心未启动时
 改法：`.catchError` + 只写日志。理由：dispose 是在页面销毁时跑的，
 此刻抛异常对用户**毫无意义**（页面都没了），只会污染日志与测试。
 
+> ★★ **2026-10-22 更正（PR #32 复核线程 4/9）**：上面「只有 dispose 这处没有」这句
+> **判断错了**，只看了一层大括号。`_beginPrefetchYield` 的 try/catch 只包住
+> `await SourinApi.beginYieldForSeek()` 与「起定时器」两步；真正调 `end` 的是
+> **`Timer` 回调**（`lib/ui/player_page.dart:1017`），它跑在另一个异步上下文里，
+> 外层 try/catch **接不到**它抛出的异常。⇒ 「`unawaited` 不等于吞异常」这条纪律
+> 当时只落在一半挂点上。
+>
+> 漏点与 ① 同源、同样会咬红测试，只是要「核心未加载 + 拖动 seek → 2s 定时器到点」
+> 这个组合才复现。已同批修掉：定时器回调改成
+> `unawaited(SourinApi.endYieldForSeek().catchError((Object e) { AppLog.write('PLAYER', …); }))`，
+> 与 dispose（`:14463`）同一写法。
+>
+> 教训不是「再检查一遍」，而是：**判断"别处已经兜住了"要盯异常真正逃逸的那个上下文**，
+> 不能盯最近的 try 大括号 —— 闭包与定时器回调会把大括号的作用域整个改掉。
+> 这条现在**没有门禁守着**：`zz_t66_prefetch_yield_test.dart:170` 的正则
+> `unawaited\(\s*SourinApi\.endYieldForSeek\(\)[^;]*?\)` 对「有没有 catchError」是宽容的，
+> 删掉 catchError 它照样绿（见 [../testing/2026-10-19-when-a-gate-goes-red-after-your-fix.md](../testing/2026-10-19-when-a-gate-goes-red-after-your-fix.md)）。
+
 ### ② `_addressOf` 返回 `InternetAddress.toString()`
 
 实测 Dart 的行为（不是凭印象）：

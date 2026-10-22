@@ -1901,7 +1901,8 @@ fn map_js_error(msg: &str) -> ProviderError {
 /// None       ⇒ 回退也不行（调用方保留原错误）
 /// ```
 async fn try_raw_deflate_fallback(
-    client: &reqwest::Client,
+    proxy: &Option<Arc<crate::proxy::ProxyStore>>,
+    provider: &str,
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
@@ -1909,38 +1910,50 @@ async fn try_raw_deflate_fallback(
     status: &reqwest::StatusCode,
 ) -> Option<String> {
     /*
-     * ★★★ 2026-10-18（修复不生效，二次实测发现）：**必须另建一个关掉自动解压的 client**
+     * ★★★ 2026-10-21（CodeRabbit PR#32 ①）：不能再从零新建 client
      *
-     * # 上一版为什么没生效（注释写了，代码没做）
+     * # 旧实现漏了什么（用户可见后果）
      * ```text
-     * 上一版写的是：
-     *   // ★ 必须显式关掉自动解压：否则新请求会重踩同一个坑
-     *   let req = if method == "POST" { client.post(url) } else { client.get(url) };
-     * ⇒ 注释说要关，但**代码用的还是那个会自动解压的 client**
-     * ⇒ `r.bytes()` 照样报 `error decoding response body`
-     * ⇒ 回退形同虚设，与不加回退完全一样。
+     * 旧：let raw_client = reqwest::Client::builder().no_gzip()… .build()
+     *     ⇒ 这个 client **没有** 任何代理配置
+     *
+     *   1. 用户给这个源配了自定义代理（ProxyStore::client_for 配的）
+     *      ⇒ 回退请求走**直连**
+     *      ⇒ 轻则回退失败（那台站必须靠代理才通）
+     *      ⇒ 重则**暴露用户真实出口 IP** —— 站点看到的不是代理地址
+     *   2. 丢掉了 `user_agent`
+     *      ⇒ 按 UA 分流的站点把回退请求当爬虫
+     *   3. 丢掉了 `client_for` 的绕过列表（bypass）
      * ```
      *
-     * # 实测证据（对比两种 client）
+     * # 修法：同一个 `build_client`，只换「自动解压」这一个开关
      * ```text
-     * AUTO  = default_client()                    ⇒ r.bytes() **FAILED**
-     * NOENC = 显式 no_gzip().no_deflate().no_brotli() ⇒ len=104459，raw-deflate 解出 316851 字节
+     * `proxy.rs::client_for_ex(provider, None, AutoDecompress::Off)`
+     *   ⇒ 代理/认证/绕过列表/UA/timeout **全部一致**
+     *   ⇒ 唯一差别是三个 no_gzip/no_deflate/no_brotli
      * ```
      *
-     * # 为什么三个都要关
+     * # 为什么**不能**直接复用调用方传进来的 `client`
      * ```text
-     * reqwest 的自动解压是 **client 级** 配置，
-     * 与"发不发 Accept-Encoding 头"无关（上一版误以为跳过那个头就行）。
-     * 只关 deflate 可能仍被 gzip/br 干扰 ⇒ 实测三个全关才拿到原始字节。
+     * 那个 client 是自动解压的 ⇒ `r.bytes()` 重踩同一个解压坑
+     * ⇒ 回退形同虚设（这正是 2026-10-18 二次实测那段注释写的事）
+     * ```
+     *
+     * # 无代理时也不能裸建
+     * ```text
+     * `default_client()` 有统一的 timeout + UA；
+     * 旧代码里的裸 builder 连 UA 都没有。
+     * ⇒ 无代理路径改为「default_client 的配置 + 关自动解压」。
      * ```
      */
-    let raw_client = reqwest::Client::builder()
-        .no_gzip()
-        .no_deflate()
-        .no_brotli()
-        .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .build()
-        .ok()?;
+    let raw_client = match proxy {
+        Some(px) => px
+            .client_for_ex(provider, None, crate::proxy::AutoDecompress::Off)
+            // 代理配置坏了也不该把回退整个吞掉：退回"无代理但关解压"的客户端，
+            // 至少行为与修复前一致（旧代码本来就没代理），不会更差。
+            .unwrap_or_else(|_| raw_decompress_off_client()),
+        None => raw_decompress_off_client(),
+    };
     let req = if method == "POST" {
         raw_client.post(url)
     } else {
@@ -2020,6 +2033,105 @@ async fn try_raw_deflate_fallback(
             out.chars().take(200).collect::<String>()
         ))
     }
+}
+
+/// 仅供集成测试调用 `do_http` 的转发出口（`do_http` 本身是私有的）
+///
+/// # 为什么需要它
+/// ```text
+/// `do_http` 是模块私有 —— 这**是对的**（插件只能通过 `host.http` 走到它）。
+/// 但 CodeRabbit PR#32 ② 的判据必须是「服务端 accept 了几次」，
+/// 那需要一个**从外部**驱动一次真 HTTP 往返的入口。
+///
+/// 替代方案都更差：
+///   · 把 `do_http` 改成 `pub` ⇒ 扩大公开面，为测试改产品 API
+///   · 走完整插件链路（起 QuickJS + 装插件）⇒ 慢、且与 HTTP 层无关
+/// ⇒ 一个 `#[doc(hidden)]` 的薄转发，公开面最小。
+/// ```
+#[doc(hidden)]
+pub async fn do_http_for_test(
+    proxy: &Option<Arc<crate::proxy::ProxyStore>>,
+    provider: &str,
+    method: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+    body: Option<String>,
+) -> String {
+    do_http(proxy, provider, method, url, headers, body).await
+}
+
+/// `r.text()` 的失败**是不是真的解压/解码失败**（决定要不要回退重发）
+///
+/// # ★★★ 为什么不能用 `e.is_decode()` —— 实测推翻了 CodeRabbit 的建议
+///
+/// ```text
+/// CodeRabbit PR#32 ② 的修法：「只在 e.is_decode() 时进入回退」。
+/// 实测（2026-10-21，本机真 TcpListener 四种场景）：
+///
+///   场景                               is_decode  is_timeout
+///   ────────────────────────────────────────────────────────
+///   A 读 body 超时（头已到，body 没来）   **true**    true
+///   B 连接中途断开（Content-Length 不够） **true**    false
+///   C 完整 raw-deflate（真解压失败）      **true**    false
+///   D raw-deflate 被截断（解压中途失败）  **true**    false
+///
+/// ⇒ 四种**全部** is_decode = true
+/// ⇒ 照 CR 的原话改，A/B 照样回退重发 ⇒ **修不掉**。
+/// ```
+///
+/// # 那靠什么区分
+///
+/// ```text
+/// reqwest 把真实原因藏在 `source()` 链的第 2 层：
+///
+///   A  ... → "operation timed out"
+///   B  ... → "error reading a body from connection"
+///   C  ... → "deflate decompression error"     ← 只有这个该回退
+///   D  ... → "deflate decompression error"     ← 同上
+///
+/// ⇒ 判据：**source 链里出现解压失败的标志文本**才回退。
+/// ```
+///
+/// # 为什么不判「不是超时/不是连接错误」而是要「是解压错误」
+///
+/// ```text
+/// 白名单比黑名单安全：将来 reqwest 新增一类 body 错误（如 HTTP/3 流中断），
+/// 黑名单会漏掉它 ⇒ 又变成"未知错误也重发"。
+/// 白名单下未知错误一律不回退 ⇒ 最坏是少一次回退（退回原错误），
+/// 而不是多一次重发（用户可见事故）。
+/// ```
+fn is_real_decompress_failure(e: &reqwest::Error) -> bool {
+    /*
+     * ① 先排除超时：即使 source 链里恰好也有解压字样，
+     *    超时说明**请求已经到达服务端**，重发就是执行两次。
+     */
+    if e.is_timeout() {
+        return false;
+    }
+
+    /*
+     * ② 走 source 链，找解压失败的标志。
+     *
+     * flate2 / reqwest 的原文是 "deflate decompression error"
+     * （也可能带 gzip/brotli 字样）。这里只认「decompress」这个根。
+     */
+    use std::error::Error as _;
+    let mut src: Option<&(dyn std::error::Error + 'static)> = e.source();
+    while let Some(s) = src {
+        let msg = s.to_string();
+        let lower = msg.to_ascii_lowercase();
+        if lower.contains("decompress")
+            || lower.contains("deflate")
+            || lower.contains("gzip")
+            || lower.contains("brotli")
+            || lower.contains("zlib")
+        {
+            return true;
+        }
+        src = s.source();
+    }
+
+    false
 }
 
 /// 插件 HTTP 请求（走站点代理配置）
@@ -2151,9 +2263,27 @@ async fn do_http(
                     }
                 }
                 Err(e) => {
+                    /*
+                     * ★★★ 2026-10-21（CodeRabbit PR#32 ②）：**只在真解压失败时回退**
+                     *
+                     * ```text
+                     * 改前：Err(e) 分支不区分错误类型 ⇒ 一律重发
+                     * ⇒ 读 body 超时 / 连接断开也会重发
+                     * ⇒ 那个 POST **已经到达服务端**，重发就是执行两次
+                     *   （发弹幕 ⇒ 屏幕上出现两条）
+                     * ⇒ GET 还会多等一次 HTTP_TIMEOUT_SECS ⇒ 失败延迟最长 30s
+                     * ```
+                     *
+                     * 判据见 [`is_real_decompress_failure`] ——
+                     * **不能用 `e.is_decode()`**，实测四种失败全是 true。
+                     */
+                    if !is_real_decompress_failure(&e) {
+                        return format!("__ERR__读取响应失败: {e}");
+                    }
+
                     // ★ 回退：重发一次，自己拿原始字节并按 raw-deflate 解
                     match try_raw_deflate_fallback(
-                        &client, method, url, headers, body.as_deref(), &status,
+                        proxy, provider, method, url, headers, body.as_deref(), &status,
                     )
                     .await
                     {
@@ -3168,6 +3298,21 @@ fn default_client() -> reqwest::Client {
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/143.0.0.0")
         .build()
         .expect("build http client")
+}
+
+/// `default_client()` 的 raw 版：**同样的 timeout + UA，只关掉自动解压**
+///
+/// 供「没有 ProxyStore」的路径（例如离线测试 / 未挂代理的场景）在
+/// raw-deflate 回退时使用。旧代码在这里裸建 builder，连 UA 都没有。
+fn raw_decompress_off_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/143.0.0.0")
+        .no_gzip()
+        .no_deflate()
+        .no_brotli()
+        .build()
+        .expect("build raw http client")
 }
 
 // ─────────────────────────── MediaProvider 实现 ───────────────────────────

@@ -47,6 +47,14 @@ import 'dart:convert';
 
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:material_ui/material_ui.dart';
+// ★ 2026-10-22（PR #32 / CR 线程 5）：`ValueListenable` 必须**精确**导入。
+//   `material_ui` 只 `export 'package:flutter/widgets.dart';`，而 widgets.dart
+//   对 foundation 只 `show Brightness, UniqueKey` ⇒ `ValueNotifier` /
+//   `ValueListenableBuilder` 在（它们由 widgets 自己的 API 间接带出），
+//   但**抽象的 `ValueListenable` 不在**。缺这一行的编译错误是
+//   `Type 'ValueListenable' not found`（`dart analyze` 同样报 undefined_class）。
+//   写法照抄本仓既有做法：`lib/ui/live_page.dart:56`、`lib/shell.dart:49`。
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/services.dart';
 
 import '../core/device.dart';
@@ -371,6 +379,24 @@ class SettingsPageState extends State<SettingsPage> {
   int _healthDone = 0;
   int _healthTotal = 0;
   int _healthOk = 0;
+
+  /// ★★★ 2026-10-22（PR #32 / CodeRabbit 线程 5）：进度的**变更通知**
+  ///
+  /// # 为什么 `_dataRev` 顶不上（这条是真回归，不是重复）
+  /// ```text
+  /// `_dataRev` 的语义是「数据变了，重画列表」，只在 `loadAll()` 之后自增。
+  /// 而进度行（[HealthSweepProgressRow]）画在 `_pluginsBlock` 里，
+  /// 那块**只由 `_PluginsPage` 渲染** —— `_PluginsPage` 是 `Navigator.push`
+  /// 上来的另一条路由，不在本 State 的子树里（同 :315 那次的坑）。
+  /// ⇒ 宿主 `setState` 重建不到它 ⇒ 二级页上：
+  ///    · 进度行永远停在 `0/N`（一次都不重新求值）；
+  ///    · 「停止」/跑完之后它也不消失（`if (_sweeping)` 同样没人重新求值）。
+  /// ```
+  /// ⇒ 进度单独开一路通道：`_healthSweep()` 的三个进度变化点各 `++` 一次
+  ///   （开始 / 每完成一个 / 结束或取消），凡是画进度的 widget 自己订阅它。
+  ///
+  /// ⚠️ 只在 `mounted` 时 `++`（`ValueNotifier` 被 dispose 后再赋值会抛）。
+  final _healthRev = ValueNotifier<int>(0);
 
   /// 本次健康检测的取消令牌（`null` = 没有在跑）
   ///
@@ -1533,6 +1559,11 @@ class SettingsPageState extends State<SettingsPage> {
       _healthOk = 0;
       _healthTotal = targets.length;
     });
+    /*
+     * ★ 进度点 ①：开跑。宿主 `setState` 只重建宿主；二级页上的进度行靠这
+     *   一路通知才会从「不存在」变成「0/N」（PR #32 / CR 线程 5）。
+     */
+    _healthRev.value++;
 
     final bad = <String>[];
     try {
@@ -1561,6 +1592,8 @@ class SettingsPageState extends State<SettingsPage> {
           _healthDone++;
           if (ok) _healthOk++;
         });
+        /* ★ 进度点 ②：每完成一个 —— 「健康检测 3/26」就是靠这一路推进的 */
+        _healthRev.value++;
         if (!ok) bad.add(p.name.isEmpty ? p.id : p.name);
       }
 
@@ -1600,7 +1633,20 @@ class SettingsPageState extends State<SettingsPage> {
        */
       token.unregister();
       if (identical(_healthToken, token)) _healthToken = null;
-      if (mounted) setState(() => _sweeping = false);
+      if (mounted) {
+        setState(() => _sweeping = false);
+        /*
+         * ★ 进度点 ③：结束**或取消**都必须让进度行消失。
+         *
+         * 取消路径（下面 `if (token.isCancelled) { ...; return; }`）也是
+         * 穿 finally 出去的 ⇒ 这一处同时覆盖「跑完了」和「用户按了停止」
+         * 两种收尾。少这一处，二级页上那条进度行会一直停在 `N/N` 不消失
+         * （PR #32 / CR 线程 5 的另一半）。
+         *
+         * ⚠️ 必须在 `mounted` 里（dispose 之后 `ValueNotifier` 已被销毁）。
+         */
+        _healthRev.value++;
+      }
     }
   }
 
@@ -3122,6 +3168,13 @@ class SettingsPageState extends State<SettingsPage> {
     _healthToken?.cancel();
     _dataRev.dispose();
     _toastRev.dispose();
+    /*
+     * ★ 2026-10-22（PR #32 / CR 线程 5）：进度通知器同样是本 State 的资产，
+     *   谁建谁销毁 —— 留着的话宿主销毁后 `_healthSweep` 的 finally 里那句
+     *   `_healthRev.value++` 会往一个死 notifier 上写（`ValueNotifier` 在
+     *   dispose 之后赋值会抛 `FlutterError`）。
+     */
+    _healthRev.dispose();
     super.dispose();
   }
 
@@ -3756,11 +3809,24 @@ class SettingsPageState extends State<SettingsPage> {
                   AppMenuItem<String>(
                     value: 'health',
                     enabled: !_sweeping,
-                    child: _menuRow(
-                      AppIcons.monitor_heart_outlined,
-                      _sweeping
-                          ? '检测中 $_healthDone/$_healthTotal'
-                          : '健康检测',
+                    /*
+                     * ★ 2026-10-22（PR #32 / CR 线程 5）：文案里的 `N/总数`
+                     *   也是进度的一部分 ⇒ 同样订阅 `_healthRev`。
+                     *
+                     * 为什么这条不只是"顺手"：本次检测就是从二级页起的
+                     * （`onSelected` 的 `case 'health'` 在 `_pluginsBlock` 里），
+                     * 而 `_pluginsBlock` 只由 `_PluginsPage` 渲染 ⇒ 只靠宿主
+                     * `setState` 的话，中途再拉开这个菜单看到的还是「健康检测」，
+                     * 明明正在跑却不显示进度。
+                     */
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: _healthRev,
+                      builder: (context, _, __) => _menuRow(
+                        AppIcons.monitor_heart_outlined,
+                        _sweeping
+                            ? '检测中 $_healthDone/$_healthTotal'
+                            : '健康检测',
+                      ),
                     ),
                   ),
                   AppMenuItem<String>(
@@ -3812,40 +3878,38 @@ class SettingsPageState extends State<SettingsPage> {
            * 与测速那行同一个视觉规格（`FontSizes.cap` + 主色）。
            * 右侧「停止」让用户随时收手 —— 这也是「支持退出这个页面」的
            * **用户可见**那一半（另一半是离开页面时自动 cancel）。
+           *
+           * ★★★ 2026-10-22（PR #32 / CodeRabbit 线程 5）：这一行**自己订阅**
+           *   `_healthRev`，不再靠宿主 `setState` 顺带重建。
+           *
+           * ```text
+           * 改前：`if (_sweeping) ...[ 整行 ]` 直接写在这里。
+           * 这里由 `_pluginsBlock` 渲染，而 `_pluginsBlock` 只被 `_PluginsPage`
+           * 渲染 —— 那是 `Navigator.push` 的另一条路由，宿主 `setState` 重建
+           * 不到它 ⇒ 二级页上进度行永远 `0/N`、停下也不消失。
+           * ```
+           * ⚠️ 视觉与几何**逐字未变**（外面那个 `SizedBox(height: Sp.x3)`
+           *   留在原地，行内的 `top: Sp.x3` padding 由 widget 自己补），
+           *   所以 `zz_settings_geometry_test` 的读数不受影响。
            */
-          if (_sweeping) ...[
-            const SizedBox(height: Sp.x3),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                AppInlineSpinner(
-                  size: 14,
-                  color: colors.primary,
-                ),
-                const SizedBox(width: Sp.x2),
-                Text(
-                  '健康检测 $_healthDone/$_healthTotal',
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.onSurface,
-                  ),
-                ),
-                const SizedBox(width: Sp.x2),
-                Text(
-                  '可用 $_healthOk',
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(width: Sp.x2),
-                AppTextButton(
-                  onPressed: () => _healthToken?.cancel(),
-                  child: const Text('停止'),
-                ),
-              ],
+          HealthSweepProgressRow(
+            rev: _healthRev,
+            snapshot: () => (
+              sweeping: _sweeping,
+              done: _healthDone,
+              ok: _healthOk,
+              total: _healthTotal,
             ),
-          ],
+            /*
+             * ⚠️ 文案在这里拼、不在 widget 里拼，是**故意**的：
+             *   `zz_t66_track_c_gates_test` 逐字断言了这个字面量
+             *   （`健康检测 $done/$total` 那句必须真的存在于 UI 代码里），
+             *   搬到 widget 里就会让那条门禁变成假红。
+             */
+            label: () => '健康检测 $_healthDone/$_healthTotal',
+            okLabel: () => '可用 $_healthOk',
+            onStop: () => _healthToken?.cancel(),
+          ),
           /*
            * 插件目录提示（原版 `.plug__hint`）
            *
@@ -6522,6 +6586,116 @@ class _MiniChip extends StatelessWidget {
 /// 而且它**不写盘**（不像测速会 append 到 ui-prefs）⇒ 不会脏写。
 /// 真正需要保证的是「**不再继续派下一个源**」，本令牌就负责这件事。
 /// ```
+/// 健康检测进度的**取值快照**（`snapshot()` 每次重建都现读，不要缓存）。
+typedef HealthSweepProgress = ({bool sweeping, int done, int ok, int total});
+
+/// ★★★ 健康检测**进度行**（PR #32 / CodeRabbit 线程 5）
+///
+/// 视觉：`[小圈] 健康检测 3/26   可用 2   [停止]`，只在跑的时候出现。
+///
+/// # 为什么它自己订阅 [rev]，而不是靠宿主 `setState`
+/// ```text
+/// 这一行画在 `_pluginsBlock` 里，而那块**只由 `_PluginsPage` 渲染**。
+/// `_PluginsPage` 是 `Navigator.push` 上来的另一条路由，不在宿主 State
+/// 的子树里 ⇒ 宿主 `setState` 重建不到它（`_dataRev` 的注释
+/// `settings_page.dart` 里「二级页是另一条路由」那段已经踩过一次）。
+/// ⇒ 改前在二级页上的读数：进度行一直 `0/N`，跑完/停止后也不消失。
+/// ⇒ 修法：宿主在三个进度点 `_healthRev.value++`，这一行订阅它、自己重建。
+/// ```
+///
+/// # 为什么抽成**公开** widget（而不是留在 `_pluginsBlock` 里的 `if (...)`）
+/// ```text
+/// 这条链路的故障面就是「**订阅了没有**」。若它还是私有块里的裸 widget，
+/// 行为级门禁挂不上去，只能 grep 源码 —— 而 grep 源码恰恰是本仓反复
+/// 抓到的假绿来源（`_menuRow` / `_healthToken?.cancel()` 那两条教训）。
+/// 抽成公开 widget 后，`test/zz_t66_health_progress_gate_test.dart` 能在
+/// 「宿主 + 另一条路由」的真实路由拓扑下真挂界面、真读文本。
+/// ```
+///
+/// ⚠️ [label] / [okLabel] 由宿主拼（而不是这里拼），是为了保住
+///    `zz_t66_track_c_gates_test` 逐字断言的那句字面量；
+///    它们**只在 `sweeping == true` 时被调用**。
+class HealthSweepProgressRow extends StatelessWidget {
+  const HealthSweepProgressRow({
+    super.key,
+    required this.rev,
+    required this.snapshot,
+    required this.label,
+    required this.okLabel,
+    required this.onStop,
+  });
+
+  /// 进度**变更通知**：宿主在「开跑 / 每完成一个 / 结束或取消」三处自增
+  ///
+  /// 类型用抽象的 `ValueListenable<int>`（不是 `ValueNotifier<int>`）：
+  /// 这一行只需要「值 + 通知」两件事，不需要能写。宿主传进来的就是
+  /// `SettingsPageState._healthRev` 那个 `ValueNotifier<int>`。
+  final ValueListenable<int> rev;
+
+  /// 现读当前进度（每收到一次 [rev] 通知就调一次）
+  final HealthSweepProgress Function() snapshot;
+
+  /// 左文案，形如 `健康检测 3/26`
+  final String Function() label;
+
+  /// 可用数文案，形如 `可用 2`
+  final String Function() okLabel;
+
+  /// 右侧「停止」—— `_healthToken.cancel()`，循环在下一个源开始前退出
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return ValueListenableBuilder<int>(
+      valueListenable: rev,
+      builder: (context, _, __) {
+        final p = snapshot();
+        /*
+         * `sweeping == false` ⇒ 一个 `SizedBox.shrink()`：不占位、不加噪声。
+         * 原 `if (_sweeping)` 的门槛搬到这里 —— 语义完全相同，只是
+         * 「谁来重新求值」从宿主 `setState` 换成了这一路通知。
+         */
+        if (!p.sweeping) return const SizedBox.shrink();
+        return Padding(
+          // 与原来 `if (_sweeping) ... const SizedBox(height: Sp.x3)` 同一间距
+          padding: const EdgeInsets.only(top: Sp.x3),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AppInlineSpinner(
+                size: 14,
+                color: colors.primary,
+              ),
+              const SizedBox(width: Sp.x2),
+              Text(
+                label(),
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: colors.onSurface,
+                ),
+              ),
+              const SizedBox(width: Sp.x2),
+              Text(
+                okLabel(),
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(width: Sp.x2),
+              AppTextButton(
+                onPressed: onStop,
+                child: const Text('停止'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _HealthSweepToken {
   bool _cancelled = false;
 

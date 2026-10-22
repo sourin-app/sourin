@@ -311,6 +311,13 @@ class LivePlaybackHealthStore {
   LivePlaybackHealth healthOf(String provider, String channelId) =>
       _entries[_key(provider, channelId)]?.health ?? LivePlaybackHealth.unknown;
 
+  /// 当前时刻（**与 [record] 写 `at` 用的是同一个时钟**）
+  ///
+  /// ★ 外部要判断"这条还新不新鲜"时必须读这里，不能自己调 `DateTime.now()`：
+  ///   测试注入了 `now` 之后，若比较用真实时钟、写 `at` 用注入时钟，
+  ///   两者会差出一整个测试的时间跨度 —— 那种门禁看起来在跑，读数却无意义。
+  DateTime get now => _now();
+
   /// 这个频道**现在**该不该被后台重试
   ///
   /// 条件：状态可重试（idle/broken）**且**已过 [retryAfter]。
@@ -474,9 +481,21 @@ class LiveAvailabilityProbe {
     this.concurrency = 8,
     Future<List<StreamCandidate>> Function(String provider, String channelId)?
         fetch,
-  }) : _fetch = fetch ?? SourinApi.getLiveStream;
+    DateTime Function()? now,
+  })  : _fetch = fetch ?? SourinApi.getLiveStream,
+        _now = now ?? DateTime.now;
 
   final Duration ttl;
+
+  /// 时钟（默认 [DateTime.now]）
+  ///
+  /// ★ 与 [LivePlaybackHealthStore.now] 同款理由：`seed()` 灌进来的是
+  ///   **磁盘上的观测时刻**，`cached()` 却拿"现在"去比。
+  ///   若一边能被注入、另一边只能读真实时钟，两者的时间跨度对不上 ——
+  ///   门禁里就会看到"明明灌了新鲜数据，`probe()` 却仍全量重发"这种
+  ///   看起来像产品缺陷、其实是两个世界对不上的读数。
+  /// ★ 不注入时行为与之前逐字一致（默认就是 `DateTime.now`）。
+  final DateTime Function() _now;
 
   /// 并发上限 —— 别把核心/网络打爆（实测 8 路时中位仍 ~24ms）
   final int concurrency;
@@ -493,7 +512,7 @@ class LiveAvailabilityProbe {
     final k = _key(provider, channelId);
     final t = _at[k];
     if (t == null) return null;
-    if (DateTime.now().difference(t) > ttl) return null;
+    if (_now().difference(t) > ttl) return null;
     return _result[k];
   }
 
@@ -873,12 +892,41 @@ LivePlaybackHealth healthFromAvailability(LiveAvailability a) => switch (a) {
 
 /// 把一批探测结论镜像进健康状态（**四个分支全覆盖**）
 ///
-/// # 优先级保护（沿用 [LivePlaybackHealthStore.record] 的三条规则）
+/// # 优先级保护：按**新鲜度**，不是按"有没有记录"
 /// ```text
-/// ★ 只在 `healthOf == unknown`（还没有任何真实播放证据）时才写。
+/// ★ 已有条目**仍新鲜**（`now - at < kLiveHealthTtl`）⇒ 不覆盖。
 ///   理由：`broken` 来自**真实播放失败**，比"探测说没有可播地址"更硬；
 ///   真实证据不该被推断结论覆盖。
+/// ★ 已有条目**已过期** ⇒ 允许被这次探测结论刷新（**含 `at`**）。
 /// ★ `unknown` 不写（`record()` 内部也会早退，这里显式跳过更清楚）。
+/// ```
+///
+/// # ★★★ 为什么"过期也要保护"是个真 bug（PR #32 ①，2026-10-21 修）
+///
+/// ```text
+/// 原判据是 `healthOf(...) != unknown ⇒ continue`，即"只要有记录就不写"。
+/// 它把 P0 的目标（「10 分钟内有缓存就一个请求都不发」）**从内部打穿**：
+///
+///   首次探测后写入所有频道，at = T0，落盘
+///   ⇒ 11 分钟后重启：restore 回 at = T0 ⇒ freshOnly 为空 ⇒ 延迟分支
+///   ⇒ 30s 后全量重探
+///   ⇒ 探完回到这里：`healthOf != unknown` 对**所有**频道都成立
+///   ⇒ **一条都不写** ⇒ `_persistHealth()` 把仍是 T0 的旧快照写回磁盘
+///   ⇒ 下次启动重复 ⇒ **只有"首次探测后 10 分钟内重启"才命中缓存**
+///
+/// ★ 而 `at` 的语义是「**最后一次观测到该状态的时刻**」——
+///   两处消费方（`needsRetry` / `freshOnly`）要的都是这个语义。
+///   重新观测到同一状态却不更新 `at`，等于把它悄悄改成了
+///   "第一次观测到的时刻"，语义被写坏，而且是**无声的**：
+///   文件生成了、大小正常、路径正确，只是时间永远不前进。
+/// ```
+///
+/// # 为什么用 [LivePlaybackHealthStore.now] 而不是 `DateTime.now()`
+/// ```text
+/// `record()` 写 `at` 用的是 store 的注入时钟。
+/// 若这里用真实时钟比较、那里用注入时钟写，测试注入的时间跨度
+/// 会让"新鲜"判据和"写入的 at"来自两个不同的世界 ——
+/// 门禁看起来在跑，读数却没有意义。
 /// ```
 ///
 /// 返回实际写入的条数（门禁与日志用）。
@@ -887,11 +935,15 @@ int mirrorAvailabilityIntoHealth({
   required Iterable<(String provider, String channelId, LiveAvailability a)> items,
 }) {
   var n = 0;
+  // ★ 与 `record()` 写 `at` 同一个时钟（见上面第二段注释）
+  final now = store.now;
   for (final (provider, channelId, a) in items) {
     // ★ unknown 没有信息，不制造记录
     if (a == LiveAvailability.unknown) continue;
-    // ★ 已有真实播放证据（playable/broken/idle）⇒ 不覆盖
-    if (store.healthOf(provider, channelId) != LivePlaybackHealth.unknown) {
+    final prev = store.entryOf(provider, channelId);
+    // ★ 已有条目**仍新鲜** ⇒ 保护它不被推断结论覆盖（真实播放证据更硬）
+    //   已过期 ⇒ 落到下面，被这次探测结论刷新（含 at）
+    if (prev != null && now.difference(prev.at) < kLiveHealthTtl) {
       continue;
     }
     final h = healthFromAvailability(a);

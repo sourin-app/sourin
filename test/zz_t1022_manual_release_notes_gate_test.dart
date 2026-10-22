@@ -95,6 +95,25 @@ void main() {
             '「没查」不能渲染成「没问题」，所以这里必须红。');
   });
 
+  test('CI 上必须有 python（否则整组门禁静默跳过）', () {
+    // ★ 这条是给「假绿」设的。
+    //   下面每条用例都在 `py == null` 时 markTestSkipped —— 本机没有 python
+    //   是合理的（跳过会显示在汇总里），但 CI 上缺 python 就意味着
+    //   **整组门禁自动跳过**：构建照样绿，人工稿完全没人校验。
+    //   ⇒ CI 环境（GITHUB_ACTIONS / CI）下缺 python 必须判红。
+    final inCi = (Platform.environment['GITHUB_ACTIONS'] ?? '').isNotEmpty ||
+        (Platform.environment['CI'] ?? '').isNotEmpty;
+    if (!inCi) {
+      if (py == null) {
+        markTestSkipped('本机没有 python（仅本地可接受；CI 上会判红）');
+      }
+      return;
+    }
+    expect(py, isNotNull,
+        reason: 'CI 上没有 python ⇒ 人工稿门禁整组静默跳过 ⇒ 构建绿但没人校验稿子。'
+            'build.yml 的 setup-python@v5 是不是被删了？');
+  });
+
   test('每一份人工确认稿都能通过生成器的校验（退出码 0）', () {
     if (py == null) {
       markTestSkipped('本机没有 python ⇒ 无从调用生成器校验人工稿');
@@ -234,6 +253,38 @@ void main() {
     }
   });
 
+  test('空条目会被拒（只有符号没有内容）', () {
+    if (py == null) {
+      markTestSkipped('本机没有 python ⇒ 无从验证守卫会红');
+      return;
+    }
+    final tmpDir = Directory.systemTemp.createTempSync('sourin_manual_gate');
+    try {
+      // 关键：**同一份稿里还有一条真条目**。
+      // 只写空条目的稿会被「整份稿里一条条目都没有」那条拦住 ——
+      // 那条红不能证明本判据存在。这里必须让 `bullets` 非空，
+      // 才能证明「空条目不靠别的判据兜」。
+      final f = File('${tmpDir.path}/empty_bullet.md');
+      f.writeAsStringSync('### 修复\n'
+          '\n'
+          '- 播放更顺畅。\n'
+          '- \n');
+      final r = runGenerator(py, f);
+      expect(r.exitCode, 1,
+          reason: '混着真条目的空条目竟然通过了 ⇒ 用户会看到一条什么都没有的项目符号。\n'
+              '${r.stderr.toString()}');
+      expect(r.stderr.toString(), contains('空条目'),
+          reason: '拒掉了但没说清是什么问题 ⇒ 报错读不懂等于没有报错。\n'
+              '${r.stderr.toString()}');
+    } finally {
+      try {
+        tmpDir.deleteSync(recursive: true);
+      } catch (_) {
+        // 临时目录删不掉不影响结论
+      }
+    }
+  });
+
   test('校验用的行号对得上原文件（报错不能指错行）', () {
     if (py == null) {
       markTestSkipped('本机没有 python ⇒ 无从验证守卫会红');
@@ -260,6 +311,84 @@ void main() {
         // 临时目录删不掉不影响结论
       }
     }
+  });
+
+  test('只有一条分隔线的稿会被拒（`- - -` 不是条目）', () {
+    if (py == null) {
+      markTestSkipped('本机没有 python ⇒ 无从验证守卫会红');
+      return;
+    }
+    final tmpDir = Directory.systemTemp.createTempSync('sourin_manual_gate');
+    try {
+      // `- - -` 满足「- 开头且后面有非空白」⇒ 旧判据会把它当成一条真条目，
+      // 于是整份稿只有一条横线也能过「至少一条条目」。这里四种写法都钉住。
+      for (final sep in <String>['- - -', '---', '***', '___']) {
+        final f = File('${tmpDir.path}/sep.md');
+        f.writeAsStringSync('### 修复\n\n$sep\n');
+        final r = runGenerator(py, f);
+        expect(r.exitCode, 1,
+            reason: '只写「$sep」的稿竟然通过了 ⇒ '
+                '用户会收到一版只有一条横线的更新说明。\n'
+                '${r.stderr.toString()}');
+      }
+    } finally {
+      try {
+        tmpDir.deleteSync(recursive: true);
+      } catch (_) {
+        // 临时目录删不掉不影响结论
+      }
+    }
+  });
+
+  test('空小标题会被拒（`###` 会渲染成一节空白）', () {
+    if (py == null) {
+      markTestSkipped('本机没有 python ⇒ 无从验证守卫会红');
+      return;
+    }
+    final tmpDir = Directory.systemTemp.createTempSync('sourin_manual_gate');
+    try {
+      // 条目本身完全合法（不含任何开发用语），这样才能证明红的原因是小标题。
+      final f = File('${tmpDir.path}/empty_heading.md');
+      f.writeAsStringSync('###\n- 播放更顺畅。\n');
+      final r = runGenerator(py, f);
+      expect(r.exitCode, 1,
+          reason: '「###」空小标题竟然通过了 ⇒ 用户会看到一节什么都没有的空白。\n'
+              '${r.stderr.toString()}');
+      expect(r.stderr.toString(), contains('第 1 行'),
+          reason: '拒掉了但没指出是小标题那一行。\n${r.stderr.toString()}');
+    } finally {
+      try {
+        tmpDir.deleteSync(recursive: true);
+      } catch (_) {
+        // 临时目录删不掉不影响结论
+      }
+    }
+  });
+
+  test('非 UTF-8 控制台下 --help 不炸（argparse 的中文帮助也在 UTF-8 兜底之后）',
+      () {
+    if (py == null) {
+      markTestSkipped('本机没有 python ⇒ 无从验证编码兜底');
+      return;
+    }
+    // ★ 这条钉的是「_force_utf8_stdio() 必须在 parse_args() 之前」：
+    //   `--help` 的中文 help 文本是 argparse 自己打印的，
+    //   兜底放在 parse_args() 之后，cp1252 标准输出会直接 UnicodeEncodeError。
+    final r = Process.runSync(
+      py,
+      <String>['tools/gen_release_notes.py', '--help'],
+      workingDirectory: Directory.current.path,
+      stdoutEncoding: const Utf8Codec(),
+      stderrEncoding: const Utf8Codec(),
+      environment: <String, String>{'PYTHONIOENCODING': 'cp1252'},
+    );
+    expect(r.exitCode, 0,
+        reason: '--help 在 cp1252 下退出码 ${r.exitCode} ⇒ '
+            '中文帮助文本打印时炸了（UTF-8 兜底调用得太晚）。\n'
+            '${r.stdout.toString()}\n${r.stderr.toString()}');
+    expect(r.stdout.toString(), contains('人工确认稿'),
+        reason: '--help 里读不到中文说明 ⇒ 帮助文本没正常输出。\n'
+            '${r.stdout.toString()}');
   });
 
   test('CI 接上了人工稿通道（build.yml 里能查到 --manual 与目录约定）', () {

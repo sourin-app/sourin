@@ -58,25 +58,37 @@ v1.4.0-rc4 发版前实测：`python tools/gen_release_notes.py --from v1.4.0-rc
    `docs/release-notes/$TAG.md` 存在 ⇒ `--manual`；否则按原逻辑自动归纳。
    判定放在 `PREV` 计算之后，所以「首个 release 允许留空」那条分支的语义不变。
 4. **人工稿仍然被机械校验**（`validate_manual_notes()`，与自动路径共用同一套校验口径）：
-   - 至少一条 `- ` 条目（漏写 ⇒ 又变成「默认说明」，那正是 Owner 报过的形态）
-   - 不许表格 / 图片 / HTML 标签 / 围栏代码块 / `---` 分隔线
-     （客户端渲染器 `lib/ui/widgets/release_notes.dart` 不支持这些，会原样漏出）
-   - 不许 HTML 注释（渲染器**不剥**注释 ⇒ 注释会被原样显示给用户）
+   - 至少一条 `- ` 条目（漏写 ⇒ 又变成「默认说明」，那正是 Owner 报过的形态）；
+     **分隔线不算条目** —— `- - -` 满足「`- ` 开头且后面有非空白」，
+     不排除的话「整份稿只有一条横线」也能过（`_MD_SEP_RE` 管 `---` / `- - -` / `***` / `___`）
+   - 不许表格 / 图片 / HTML 标签 / 围栏代码块 / 分隔线
+     （客户端渲染器 `lib/ui/widgets/release_notes.dart` 不支持这些，会原样漏出；
+     分隔线还会截断「本版更新」那一节）
+   - 不许 HTML 注释（渲染器**不剥**注释 ⇒ 注释会被原样显示给用户）。
+     **注释整段拒绝，不做剥离** —— 剥离会让多行注释之后的行号整体前移，
+     报错指错行；且注释里藏的 `{{CHANGELOG}}` 会逃过占位符检查
    - 不许模板占位符残留（`{{…}}` / `__VERSION__`）
    - 不许开发用语（AGENTS §4 那批 + 本仓工程词表），
      唯一例外是产品界面上的正式叫法「健康检测」
    - 不许具体站名
    - 正文里的英文词只许是用户认识的那批（`_FINAL_KEEP_ASCII ∪ _MEDIA_FORMAT_TOKENS`）
-   - 分类小标题只许四个（新增 / 改进 / 修复 / 调整），**其它小标题直接拒**
+   - 分类小标题只许四个（新增 / 改进 / 修复 / 调整），**其它小标题直接拒**，
+     **空小标题也拒**（`###` 会渲染成一节空白）
      （文档承诺了这条规则 ⇒ 校验必须与文档一致，否则文档在骗人）
    - 每条错误**带行号**，且行号对**原文件**（不剥注释、不跳空行）——
      人工稿是人写的，报错指错行比报错本身更糟
-     （剥掉注释再校验会让多行注释之后的行号整体前移）
-5. **门禁**（`test/zz_t1022_manual_release_notes_gate_test.dart`）：
+5. **输出编码钉死在生成器入口**：`_force_utf8_stdio()` 在 `main()` 的
+   **第一行**调用（早于 `argparse.ArgumentParser()`），因为 `--help` 的中文
+   help 文本与 argparse 的 usage 报错都是 argparse 自己打印的。
+   Windows runner 的 stdout 不是 UTF-8 ⇒ 中文会变成 `\u7b2c 4 \u884c` 转义。
+6. **门禁**（`test/zz_t1022_manual_release_notes_gate_test.dart`）：
    目录存在、每份稿能过生成器校验、文件名是版本号、
-   **不合格的稿会被拒**（守卫不是恒绿）、CI 里确实接上了 `--manual`。
+   **不合格的稿会被拒**（守卫不是恒绿）、CI 里确实接上了 `--manual`、
+   cp1252 环境下 `--help` 不炸。
    门禁**不在 Dart 里复刻规则**，而是**调用生成器自己的校验函数**
    ⇒ 规则只写一份，不会出现「门禁抄了一份、两边各说一套」。
+   门禁调用子进程时**必须显式传 `stdoutEncoding/stderrEncoding: Utf8Codec()`** ——
+   `Process.runSync` 默认按系统编码解码，只修生成器不够。
 
 ## Alternatives considered
 
@@ -153,6 +165,12 @@ v1.4.0-rc4 发版前实测：`python tools/gen_release_notes.py --from v1.4.0-rc
   - 条目正文里的 `<i>提示</i>` 与 `![封面](…)` ⇒ 退出码 1，
     分别报「第 3 行有 HTML 标签」「第 4 行有图片」
 - 行号对齐：违规内容放在第 4 行 ⇒ 报错写「第 4 行」（不是前移后的第 3 行）
+- 故障注入（第二轮评审意见转成用例）：
+  - 整份稿只有 `- - -` ⇒ 退出码 1，同时报「整份稿里一条条目都没有」与「第 3 行是分隔线」
+    —— `- - -` 满足「`- ` 开头且后面有非空白」⇒ 旧判据会把它算成一条真条目
+  - `###` 空小标题 + 合法条目 ⇒ 退出码 1，报「第 1 行的小标题是空的」
+  - `PYTHONIOENCODING=cp1252 python tools/gen_release_notes.py --help` ⇒ 退出码 0
+    （中文 help 文本是 argparse 在 `parse_args()` 里打印的，UTF-8 兜底必须排在它之前）
 - **CI 首次真跑暴露的第四个问题（本地测不出来）**：
   Windows runner 上 python 的 stdout/stderr 不是 UTF-8，
   生成器的中文报错被写成 `\u7b2c 4 \u884c` 转义 ⇒ 报错人读不懂、
@@ -160,8 +178,10 @@ v1.4.0-rc4 发版前实测：`python tools/gen_release_notes.py --from v1.4.0-rc
   生成器入口 `_force_utf8_stdio()`（原本只有 `run_selftest()` 里有这段），
   门禁 `Process.runSync(..., stdoutEncoding: Utf8Codec(), stderrEncoding: Utf8Codec())`。
   复现：`PYTHONIOENCODING=cp1252 python tools/gen_release_notes.py --manual <坏稿>` ⇒ 中文正常。
-- `flutter test test/zz_t1022_manual_release_notes_gate_test.dart --concurrency=1` ⇒ `+9 All tests passed!`
+- `flutter test test/zz_t1022_manual_release_notes_gate_test.dart --concurrency=1` ⇒ `+14 All tests passed!`
   （含「不合格的稿会被拒」「未知小标题会被拒」「注释会被拒」
-  「正文里的图片/标签会被拒」「行号对得上原文件」—— 守卫不是恒绿）。
+  「正文里的图片/标签会被拒」「空条目会被拒」「行号对得上原文件」
+  「只有一条分隔线的稿会被拒」「空小标题会被拒」「cp1252 下 --help 不炸」
+  —— 守卫不是恒绿）。
 - `.github/workflows/build.yml` 经 `yaml.safe_load` 解析通过，jobs 仍为
   `windows / macos / native-media / android / publish`。

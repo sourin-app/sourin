@@ -1229,6 +1229,11 @@ _HTML_TAG_RE = re.compile(r"</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^>]*)?/?>")
 _HTML_TAG_HEAD_RE = re.compile(r"^\s*</?[a-zA-Z][a-zA-Z0-9]*(\s|>|/)")
 # Markdown 图片：![说明](地址)
 _MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]")
+# ★ 2026-10-22（评审意见）：Markdown 分隔线 —— `---` / `- - -` / `***` / `___` 都算。
+#   为什么单列：`- - -` 会被「条目」正则 `^\s*[-*]\s+\S` 认成一条真条目
+#   （`- ` 后面那个 `-` 是 `\S`），于是「整份稿只有一条分隔线」也能过
+#   「至少一条条目」检查 —— 用户会收到一版只有一条横线的更新说明。
+_MD_SEP_RE = re.compile(r"^\s*(?:[-*_]\s*){3,}$")
 
 
 def _html_comment_spans(lines: list[str]) -> list[tuple[int, int]]:
@@ -1283,10 +1288,12 @@ def validate_manual_notes(text: str) -> list[str]:
             "客户端渲染器不剥注释，它会被原样显示给用户"
         )
 
-    # ② 至少一条条目（注释里的条目不算数）
+    # ② 至少一条条目（注释里的条目不算数；分隔线也不算 —— 见 _MD_SEP_RE 的注释）
     bullets = [
         i for i, l in enumerate(lines, 1)
-        if i not in comment_lines and re.match(r"^\s*[-*]\s+\S", l)
+        if i not in comment_lines
+        and re.match(r"^\s*[-*]\s+\S", l)
+        and not _MD_SEP_RE.match(l)
     ]
     if not bullets:
         errs.append("整份稿里一条条目都没有（每条说明要写成「- 开头」的一行）")
@@ -1297,6 +1304,12 @@ def validate_manual_notes(text: str) -> list[str]:
         s = line.strip()
         if not s:
             continue
+        # ★ 2026-10-22：空条目（只有一个符号，后面没有内容）。
+        #   为什么不指望上面那条「至少一条条目」兜住：同一份稿里既有真条目
+        #   又有空条目时，`bullets` 非空 ⇒ 旧判据放过 ⇒ 用户会在更新说明里
+        #   看到一条什么都没有的项目符号。
+        if re.match(r"^[-*+]\s*$", s):
+            errs.append(f"第 {i} 行是空条目（只有符号、没有内容）—— 删掉它或补上说明")
         if re.search(r"^\s*\|", line):
             errs.append(f"第 {i} 行是表格行 —— 客户端渲染器不支持表格")
         if _MD_IMAGE_RE.search(line):
@@ -1305,7 +1318,9 @@ def validate_manual_notes(text: str) -> list[str]:
             errs.append(f"第 {i} 行有 HTML 标签 —— 客户端渲染器不支持")
         if s.startswith("```"):
             errs.append(f"第 {i} 行是围栏代码块 —— 客户端渲染器不支持")
-        if s == "---":
+        # ★ 2026-10-22（评审意见）：`s == "---"` 只挡住了一种写法，
+        #   `- - -` / `***` / `___` 同样会截断那一节，统一按 _MD_SEP_RE 判。
+        if _MD_SEP_RE.match(s):
             errs.append(f"第 {i} 行是分隔线 —— 它会截断更新说明那一节")
         if "{{" in line or "}}" in line:
             errs.append(f"第 {i} 行有模板占位符残留")
@@ -1316,7 +1331,11 @@ def validate_manual_notes(text: str) -> list[str]:
         #    文档承诺了这条规则，校验就必须与它一致）
         if s.startswith("#"):
             heading_text = s.lstrip("#").strip()
-            if heading_text and heading_text not in _MANUAL_HEADINGS:
+            # ★ 2026-10-22（评审意见）：`###` 这种空小标题原来被 `if heading_text and …`
+            #   放过 —— 它会渲染成一个空标题，用户看到一节什么都没有的空白。
+            if not heading_text:
+                errs.append(f"第 {i} 行的小标题是空的 —— 要么写分类名，要么删掉这一行")
+            elif heading_text not in _MANUAL_HEADINGS:
                 errs.append(
                     f"第 {i} 行的小标题「{heading_text}」不在允许的分类里"
                     f"（只许：{'、'.join(_MANUAL_HEADINGS)}）"
@@ -1356,6 +1375,12 @@ def _force_utf8_stdio() -> None:
 
 
 def main() -> int:
+    # ★ 2026-10-22：所有路径共用的 UTF-8 兜底（详见 _force_utf8_stdio 的注释）。
+    #   必须在**任何输出之前**调用，包括 argparse 自己的输出 ——
+    #   `--help` 的中文 help 文本、argparse 的 usage 报错都在 parse_args() 里就打印了，
+    #   放在它后面在 Windows runner（cp1252）上会直接 UnicodeEncodeError。
+    _force_utf8_stdio()
+
     ap = argparse.ArgumentParser()
     # ★ 2026-10-21：`--from` 不再是 argparse 的 required —— `--selftest` 不需要区间。
     #   普通路径缺 `--from` 仍然**退出码 2**（与 argparse 原来的行为一致），
@@ -1384,11 +1409,6 @@ def main() -> int:
         "但仍走同一套机械校验（条目/表格/开发用语/占位符）",
     )
     args = ap.parse_args()
-
-    # ★ 2026-10-22：所有路径共用的 UTF-8 兜底（详见 _force_utf8_stdio 的注释）。
-    #   必须在任何输出之前调用 —— 人工稿校验的报错是中文，
-    #   在 Windows runner 上不切编码就会变成 `\u7b2c 4 \u884c` 这种没人能读的东西。
-    _force_utf8_stdio()
 
     if args.selftest:
         return run_selftest()

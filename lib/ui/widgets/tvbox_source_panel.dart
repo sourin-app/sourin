@@ -262,6 +262,9 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
     final it = _check?.itemOf(widget.id);
     final busy = _savingLink || _checking || _updating;
 
+    // R4-EXCEPTION: 机制① + 机制② —— 内容区固定 560×480（超外壳默认上限），
+    // 且含 TextField（外壳缺 Material 祖先）。详见
+    // zz_t66_r4_dialog_consistency_test.dart 的 _siteExemptions 同名键。
     return AlertDialog(
       title: Row(
         children: [

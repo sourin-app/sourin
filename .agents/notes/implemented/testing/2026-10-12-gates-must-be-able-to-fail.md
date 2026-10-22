@@ -17,6 +17,46 @@ Status: implemented
 
 **不翻案。这是硬规矩。**
 
+### 2026-10-18 追加：`src.contains(...)` 是假绿的高发形态
+
+第 66 轮自审时实测到一条**完整的**假绿，形态与本篇开头那个「两个分量同一个源」
+同族，但更隐蔽 —— 它读的是**源码字符串**：
+
+```dart
+// test/zz_t66_mpv_cache_ui_test.dart（改前）
+expect(src.contains('_mpvBytes > 0'), isTrue);
+expect(src.contains("'0 B'"), isFalse);
+expect(src.contains('humanBytes(_mpvBytes)'), isTrue);
+```
+
+被守的实现是一段三元表达式（设置页「播放器临时缓存」那一行）。
+**注入**：把两个分支**写反** ⇒ 0 字节时显示「0 B · 仅不可 seek…」，
+有值时显示「不占磁盘」—— 用户看到的信息完全相反，正是该测试文件开头描述的坑。
+
+```text
+注入后：dart analyze = 0 error
+        flutter test = **+5 All tests passed**
+⇒ 缺陷完全逃逸。
+```
+
+**为什么必然逃逸**：源码里那几个字符还在，只是**方向反了**。
+`contains` 只能回答「有没有」，回答不了「对不对」。
+
+修法不是加断言，而是**换断言的测量对象** ——
+把文案抽成顶层纯函数 `String mpvCacheLabel(int bytes)`，断言它的返回值：
+
+```dart
+expect(mpvCacheLabel(0).contains('0 B'), isFalse);
+expect(mpvCacheLabel(4096).contains('不占磁盘'), isFalse);  // ← 反向断言，专抓分支写反
+```
+
+**撤销验证**：注入分支写反 ⇒ `+2 -3`，①②③ 三条全红；还原 ⇒ `+5` 绿。
+
+> 判据一句话：**门禁要读真实结果（函数返回值 / 渲染树 / 落盘数据），
+> 不能读喂进去的那个值，也不能读源码里"看起来像"的那个字面量。**
+
+Independent: 门禁必须能变红。这是测试策略的基石判据，与后续各篇「具体怎么让它红」是通则与实例的关系，不是取代。
+
 ## Alternatives considered
 
 - **只跑编译 / 只跑单测就宣称通过** —— 它最强的论据是这些信号廉价且自动。

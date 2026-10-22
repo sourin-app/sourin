@@ -34,6 +34,12 @@ use std::sync::Arc;
 
 pub mod webdav;
 
+/// 凭据平面 —— 登录态随云同步（加密 + 缓存 key 黑名单）
+///
+/// ★ 单独一个模块而不是塞进本文件：加密与黑名单是一组自洽的逻辑，
+///   有自己的单元测试；混进 1000 多行的 `mod.rs` 会让它更难单独审查。
+pub mod credentials;
+
 /*
  * ★ 把 WebdavConfig 以 `pub use` 引入（2026-09-22）
  *
@@ -84,6 +90,75 @@ pub mod webdav_credential {
 
     pub fn clear(key: &str) -> Result<(), String> {
         let e = entry(key)?;
+        let _ = e.delete_credential();
+        Ok(())
+    }
+}
+
+/// ★ 凭据同步的**口令**（加密密钥的来源）—— 系统钥匙串，**绝不落盘**
+///
+/// # 为什么口令不能进 `sync-settings.json`
+///
+/// ```text
+/// 那个文件是**明文 JSON**，注释里写着「用户可能同步到网盘/发给人看」。
+/// 把口令写进去 = 把"加密的凭据包"的钥匙和锁放在同一个信封里。
+/// 整件事就白做了（攻击者拿到设置文件 ⇒ 解开设文件旁边的 credentials.enc）。
+/// ```
+///
+/// # 为什么口令也**不进**导出包
+///
+/// 备份包是用户主动分发的东西（U 盘、聊天软件、网盘）。
+/// 口令在里面 = 加密等于没加密。⇒ 导入时必须**重新输入口令**。
+///
+/// # 为什么单独一个钥匙串服务名（而不是复用 `webdav_credential`）
+///
+/// ```text
+/// webdav 服务名下的 "webdav" 键 = 连网盘的密码
+/// 这里存的是**另一个东西**：加密登录态用的口令
+/// ⇒ 混用会让「改网盘密码」和「改加密口令」互相覆盖（静默、且很难查）
+/// ```
+pub mod credentials_passphrase {
+    /// keyring 服务名
+    ///
+    /// ⚠️ 与 `webdav_credential` / `proxy` 一样：**不要跟着应用改名一起改**，
+    ///    改了用户已保存的口令就读不到（表现为"明明设过，却提示未设"）。
+    const SERVICE: &str = "dsh-media-client-credential-key";
+
+    /// 本服务名下只有一个条目，键名固定
+    const KEY: &str = "credentials";
+
+    fn entry() -> Result<keyring::Entry, String> {
+        keyring::Entry::new(SERVICE, KEY).map_err(|e| format!("钥匙串不可用: {e}"))
+    }
+
+    /// 写入口令；空口令 = 删除（不是存空串）
+    pub fn set(passphrase: &str) -> Result<(), String> {
+        let e = entry()?;
+        if passphrase.is_empty() {
+            let _ = e.delete_credential();
+            return Ok(());
+        }
+        e.set_password(passphrase)
+            .map_err(|err| format!("写入钥匙串失败: {err}"))
+    }
+
+    /// 读口令；没设过返回 `None`
+    ///
+    /// ⚠️ 读失败也返回 `None`（而不是 `Err`）—— 与 `webdav_credential::get`
+    ///    同做法。理由：钥匙串在某些 Linux 桌面环境下根本没后端，
+    ///    这时「读不到」与「没设过」对调用方的**行动**是同一件事：
+    ///    要么让用户设一个，要么显示"凭据未同步"。
+    pub fn get() -> Option<String> {
+        entry().ok()?.get_password().ok().filter(|s| !s.is_empty())
+    }
+
+    /// 是否设过口令
+    pub fn is_set() -> bool {
+        get().is_some()
+    }
+
+    pub fn clear() -> Result<(), String> {
+        let e = entry()?;
         let _ = e.delete_credential();
         Ok(())
     }
@@ -164,6 +239,23 @@ pub struct SyncSettings {
     pub last_signature: String,
     /// 上次备份时的本地数据签名 —— 内部字段，**不出现**在返回里
     pub last_backup_signature: String,
+    /*
+     * ★ 凭据同步总开关（CS-1，2026-10-19）—— **偏好字段**
+     *
+     * # 为什么要有这个开关（而不是"设了口令就自动同步"）
+     *
+     * ```text
+     * 口令存在钥匙串里 ⇒ 用户设过一次就一直在
+     * ⇒ 没有开关的话，用户**永远**在同步登录态，而他可能根本不想要
+     *   （共用电脑、或只想同步收藏）
+     * ```
+     *
+     * ⚠️ **开关为 true 但没设口令 ⇒ 不得算同步成功**。
+     *    那是本仓反复出现的"假绿"同类：用户看到"同步完成"，
+     *    登录态其实一个字节都没走。见 `commands_backup::sync_now` 的判据。
+     */
+    #[serde(default)]
+    pub credentials_enabled: bool,
 }
 
 impl Default for SyncSettings {
@@ -181,6 +273,7 @@ impl Default for SyncSettings {
             last_sync_at: 0,
             last_signature: String::new(),
             last_backup_signature: String::new(),
+            credentials_enabled: false,
         }
     }
 }
@@ -191,7 +284,16 @@ impl SyncSettings {
     /// ⚠️ **刻意不含** `lastSignature` / `lastBackupSignature` ——
     ///    那是我们内部的判据（数据指纹），对 UI 无意义，
     ///    露出去反而容易被误当成"状态"去显示。
-    pub fn to_public_json(&self, connected: bool) -> serde_json::Value {
+    ///
+    /// # 参数 `passphrase_set`
+    ///
+    /// 口令本身**不在设置文件里**（明文 JSON，绝不能放），而在系统钥匙串。
+    /// 所以「有没有设过口令」这个**布尔**必须由调用方读钥匙串后传进来 ——
+    /// 本方法只负责拼 JSON，不碰钥匙串（保持纯函数、可单测）。
+    ///
+    /// ★ UI 硬要求：`credentialsEnabled == true` 但 `passphraseSet == false`
+    ///   时，状态行必须显示「凭据未同步」，**不许**显示「同步完成」。
+    pub fn to_public_json(&self, connected: bool, passphrase_set: bool) -> serde_json::Value {
         serde_json::json!({
             "connected": connected,
             "baseUrl": self.base_url.clone(),
@@ -204,6 +306,8 @@ impl SyncSettings {
             "autoBackupIntervalMinutes": self.auto_backup_interval_minutes,
             "lastBackupAt": self.last_backup_at,
             "lastSyncAt": self.last_sync_at,
+            "credentialsEnabled": self.credentials_enabled,
+            "credentialsPassphraseSet": passphrase_set,
         })
     }
 }
@@ -389,6 +493,14 @@ pub struct SyncEngine {
     db: Arc<Db>,
     /// 本机标识（写进 manifest，便于诊断）
     device_id: String,
+    /// 应用数据目录 —— 凭据平面要从 `<data_dir>/plugins/.data/` 读插件私有存储
+    ///
+    /// ★ 为什么是 `Option`（而不是构造时必需）：
+    ///   5 个构造点里只有 2 个（`commands_backup` / `state`）手上有 `data_dir`，
+    ///   其余（含 3 处测试）没有。做成必需参数会牵动全部 5 处 + 3 个测试，
+    ///   而**没有 data_dir 时凭据平面本来就该跳过**（它读不到插件存储）。
+    ///   ⇒ 用 builder 补挂，缺省 `None` = 没有凭据平面。
+    data_dir: Option<std::path::PathBuf>,
 }
 
 impl SyncEngine {
@@ -398,6 +510,7 @@ impl SyncEngine {
             backend: Arc::new(backend),
             db,
             device_id,
+            data_dir: None,
         })
     }
 
@@ -406,7 +519,20 @@ impl SyncEngine {
             backend,
             db,
             device_id,
+            data_dir: None,
         }
+    }
+
+    /// 挂上应用数据目录 —— 凭据平面需要它才能读 `plugins/.data/`
+    ///
+    /// ★ 用 builder 而不是改构造签名：见 `data_dir` 字段上的说明。
+    ///
+    /// ⚠️ **不挂 = 凭据平面永远不同步**。调用方（`commands_backup` / `state`）
+    ///    必须调它，否则用户会发现"同步完成"但登录态没过去 ——
+    ///    这正是提案 UI 那条要防的假绿。
+    pub fn with_data_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.data_dir = Some(dir);
+        self
     }
 
     pub fn backend_name(&self) -> &str {
@@ -995,11 +1121,167 @@ impl SyncEngine {
         Ok((winner.providers, summary))
     }
 
+    /// 凭据平面 —— 把 `plugins/.data/` 里的登录态加密后同步
+    ///
+    /// # 三个关键设计（都对应 Lead 提的问题）
+    ///
+    /// ```text
+    /// ① passphrase = None ⇒ **不静默跳过**，返回一条 note="凭据未同步" 的摘要
+    ///    理由：提案 UI 那条硬要求 —— 显示"同步完成"但凭据没走就是假绿。
+    ///    调用方拿到这条 note 就该显示"凭据未同步"，而不是把整次同步报成功。
+    ///
+    /// ② 剔除缓存后为空的插件 ⇒ 整文件跳过上传
+    ///    这一条是黑名单方案的自动收益：
+    ///    26 个插件不用 host.store，4 个只存缓存 ⇒ 它们零上传，
+    ///    不需要额外维护"哪些插件有凭据"的名单。
+    ///
+    /// ③ 本方法**不返回 Err 给 sync_all**（失败隔离）
+    ///    凭据失败不该让收藏/进度也同步不了 —— 见 `sync_all` 里的处理。
+    /// ```
+    ///
+    /// # 远端路径
+    /// `data/credentials.enc` —— 单个加密文件，**不做多设备分文件**
+    ///
+    /// 理由：凭据是「后写覆盖」语义（提案第 5 条），合并没有意义。
+    /// 分文件会让"哪台设备的最新"变成一个要额外解决的问题。
+    pub async fn sync_credentials(
+        &self,
+        passphrase: Option<&str>,
+    ) -> Result<SyncSummary, String> {
+        use crate::sync::credentials as cred;
+
+        /*
+         * ① 没有口令 ⇒ 明确报"未同步"，**不是**静默成功
+         */
+        let Some(pass) = passphrase.filter(|p| !p.is_empty()) else {
+            return Ok(SyncSummary {
+                plane: "credentials".into(),
+                pulled: 0,
+                pushed: 0,
+                conflicts: 0,
+                note: Some("凭据未同步：尚未设置口令".into()),
+            });
+        };
+
+        /*
+         * 没挂 data_dir ⇒ 读不到插件存储。
+         * 这也是"未同步"，但要说明原因不同（不是没设口令，是引擎没配好）。
+         */
+        let Some(data_dir) = self.data_dir.as_ref() else {
+            return Ok(SyncSummary {
+                plane: "credentials".into(),
+                pulled: 0,
+                pushed: 0,
+                conflicts: 0,
+                note: Some("凭据未同步：同步引擎未挂载数据目录".into()),
+            });
+        };
+
+        // ② 收集各插件的 .data，剔除缓存 key
+        //
+        // ★ 收集逻辑抽在 `credentials::collect` —— 备份导出走**同一个函数**，
+        //   两处各写一份必然漂开（一处加黑名单另一处忘了 ⇒ 缓存被塞进备份）。
+        let bundle = cred::collect(data_dir)?;
+        let providers_with_creds = bundle.kept;
+        let providers_skipped = bundle.skipped;
+
+        /*
+         * ③ 一个凭据都没有 ⇒ 不上传空文件
+         *
+         * ★ 这是"空文件跳过"的实现点。注意它**也**覆盖了"用户刚装好还没登录"的场景。
+         */
+        if bundle.is_empty() {
+            return Ok(SyncSummary {
+                plane: "credentials".into(),
+                pulled: 0,
+                pushed: 0,
+                conflicts: 0,
+                note: Some("凭据未同步：没有任何已保存的登录态".into()),
+            });
+        }
+
+        /*
+         * ④ 序列化 + 加密
+         *
+         * ★ 超过 `MAX_PLAINTEXT` 时 `encrypt` 会返回 `TooLarge` ——
+         *   这里**不吞掉**，如实返回错误（见 Lead 要求的"必须报错，不许静默"）。
+         */
+        let blob = cred::encrypt_bundle(pass, &bundle).map_err(|e| format!("凭据加密失败: {e}"))?;
+
+        // ⑤ 上传（覆盖写 —— 后写覆盖，符合提案第 5 条）
+        let path = "data/credentials.enc";
+        self.backend.put(path, &blob, None).await?;
+
+        Ok(SyncSummary {
+            plane: "credentials".into(),
+            pulled: 0,
+            pushed: providers_with_creds,
+            conflicts: 0,
+            note: Some(format!(
+                "已加密上传 {} 个源的登录态（{} 个源的缓存已排除）",
+                providers_with_creds, providers_skipped
+            )),
+        })
+    }
+
     /// 一次完整同步（独立平面两个文件 + 内容源配置 + manifest）
+    ///
+    /// ⚠️ 等价于 [`sync_all_with_passphrase`]`(None)` ——
+    ///    **不传口令**，凭据平面只会返回「凭据未同步：尚未设置口令」。
+    ///
+    /// ★ 为什么保留这个无参版本（而不是直接改签名）：
+    ///   它是既有契约，`tests/t76_webdav_e2e.rs` 等集成测试按无参调用。
+    ///   为了让凭据能真的同步去改签名，会把**六处**调用点（含集成测试）
+    ///   一起拖下水 —— 而那些测试根本不关心口令。
+    ///   ⇒ 加一个**带口令的新方法**，旧方法转调它。语义更清楚，改动面更小。
     pub async fn sync_all(&self) -> Result<Vec<SyncSummary>, String> {
+        self.sync_all_with_passphrase(None).await
+    }
+
+    /// 一次完整同步，**并带上凭据平面的口令**
+    ///
+    /// # 参数 `passphrase`
+    ///
+    /// `Some(p)` ⇒ 凭据平面真的加密上传；`None` ⇒ 返回一条
+    /// 「凭据未同步」的摘要（**不是**静默跳过）。
+    ///
+    /// ★ 为什么口令由参数传进来、而不是 `SyncEngine` 自己去读钥匙串：
+    ///   `SyncEngine` 是纯同步逻辑（单测直接构造它），
+    ///   让它碰钥匙串会让单测依赖本机钥匙串状态 —— 那是不可复现的测试。
+    ///   读钥匙串是**命令层**的事（`commands_backup::sync_now`）。
+    pub async fn sync_all_with_passphrase(
+        &self,
+        passphrase: Option<&str>,
+    ) -> Result<Vec<SyncSummary>, String> {
         let mut out = Vec::new();
         out.push(self.sync_favorites().await?);
         out.push(self.sync_progress().await?);
+
+        /*
+         * ★★★ 凭据平面：**失败隔离**
+         *
+         * ```text
+         * 凭据失败（加密错 / 上传错 / 口令错）**不该**让收藏和进度也同步不了。
+         * 理由：用户最在意的是收藏和进度；凭据坏了可以重新登，
+         *       但一次同步把三者全部失败，用户会觉得"同步彻底坏了"。
+         * ⇒ 这里把 Err **转成**一条带 note 的摘要，而不是 `?` 冒泡。
+         * ```
+         *
+         * ⚠️ 口令由**调用方**从钥匙串读出来传进来（见参数说明）。
+         *    `None` ⇒ 这里返回"凭据未同步：尚未设置口令"，
+         *    UI 据此必须显示"凭据未同步"，不许显示"同步完成"。
+         */
+        out.push(
+            self.sync_credentials(passphrase)
+                .await
+                .unwrap_or_else(|e| SyncSummary {
+                    plane: "credentials".into(),
+                    pulled: 0,
+                    pushed: 0,
+                    conflicts: 0,
+                    note: Some(format!("凭据同步失败（不影响其它平面）: {e}")),
+                }),
+        );
 
         let mut m = self.read_manifest().await.unwrap_or_default();
         m.schema_version = SCHEMA_VERSION;
@@ -1889,7 +2171,7 @@ mod tests {
         s.last_signature = "favorites:3:99|following:0:0|progress:1:5".into();
         s.last_backup_signature = "favorites:3:100|following:0:0|progress:1:5".into();
 
-        let v = s.to_public_json(true);
+        let v = s.to_public_json(true, false);
         let text = v.to_string();
         assert!(!text.contains("lastSignature"), "内部字段漏出: {text}");
         assert!(!text.contains("lastBackupSignature"), "内部字段漏出: {text}");
@@ -1908,6 +2190,8 @@ mod tests {
             "autoBackupIntervalMinutes",
             "lastBackupAt",
             "lastSyncAt",
+            "credentialsEnabled",
+            "credentialsPassphraseSet",
         ] {
             assert!(v.get(k).is_some(), "缺少字段 {k}: {text}");
         }
@@ -1966,6 +2250,260 @@ mod tests {
         assert_eq!(back.auto_interval_minutes, 45);
         assert_eq!(back.last_backup_signature, "sig-1");
         assert_eq!(back.base_url, s4.base_url);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ══════════════════ 凭据平面的接线验证 ══════════════════
+    //
+    // ★ 这一组测的是「**接线**」，不是加密算法（算法在 credentials.rs 里测过）。
+    //   核心判据：`sync_all` 里那条 `out.push(sync_credentials(...))` **真的存在**。
+    //   做法：删掉它 ⇒ 下面 `sync_all_includes_credentials_plane` 必须红。
+
+    /// 造一个临时 data_dir，在 `plugins/.data/` 下写指定文件
+    fn temp_data_dir(files: &[(&str, &str)]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sourin-cred-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let data = dir.join("plugins").join(".data");
+        std::fs::create_dir_all(&data).expect("建临时目录");
+        for (name, body) in files {
+            std::fs::write(data.join(name), body).expect("写临时文件");
+        }
+        dir
+    }
+
+    fn new_db() -> Arc<Db> {
+        Arc::new(Db::in_memory().expect("内存库"))
+    }
+
+    /* ── ① passphrase=None ⇒ 不进凭据平面，且**明确标记未同步** ── */
+
+    #[tokio::test]
+    async fn none_passphrase_reports_not_synced() {
+        let backend = Arc::new(FakeBackend::new());
+        let dir = temp_data_dir(&[("fake-provider-a.json", r#"{"session":"SESSDATA=abc"}"#)]);
+        let engine = SyncEngine::new(backend.clone(), new_db(), "dev-a".into())
+            .with_data_dir(dir.clone());
+
+        let s = engine.sync_credentials(None).await.expect("不该报错");
+
+        assert_eq!(s.plane, "credentials");
+        assert_eq!(s.pushed, 0, "没口令时不该上传任何东西");
+        // ★★ 关键：必须**明确说未同步**，不是静默成功
+        let note = s.note.unwrap_or_default();
+        assert!(
+            note.contains("未同步"),
+            "没口令时必须明确标记未同步，实际 note: {note}"
+        );
+        // 且远端确实没有文件
+        assert!(
+            backend.body_of("data/credentials.enc").is_empty(),
+            "没口令时不该在远端留下文件"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /* ── ② passphrase=Some ⇒ 加密上传，且不含黑名单 key ── */
+
+    #[tokio::test]
+    async fn some_passphrase_uploads_encrypted_without_cache_keys() {
+        let backend = Arc::new(FakeBackend::new());
+        /*
+         * 造三个插件（**全用中性 id**）：
+         *   fake-provider-a.json —— 只有凭据 ⇒ 应上传
+         *   <仅缓存插件>.json    —— 只有缓存 ⇒ 应整文件跳过
+         *   fake-provider-b.json —— 凭据 + 缓存混存 ⇒ 只上传凭据部分
+         *
+         * ★ 缓存那两条的 provider/key **从 `CACHE_KEYS` 派生**，不写死：
+         *   本测试要证明的是"缓存会被剔除"这个**机制**，不是"某个具体插件"。
+         *   写死会让测试与 CACHE_KEYS 脱节（名单改了测试不跟着改 = 另一种假绿）。
+         */
+        let (cache_p, cache_k) = crate::sync::credentials::CACHE_KEYS[0];
+        let (cache2_p, cache2_k) = crate::sync::credentials::CACHE_KEYS[1];
+        let only_cache_name = format!("{cache_p}.json");
+        let only_cache_body = format!(r#"{{"{cache_k}":"{{\\"at\\":1,\\"list\\":[]}}"}}"#);
+        /*
+         * ★ 混存那条**必须**用真缓存 provider 当文件名 —— 剔除判据是
+         *   `(provider, key)` 二元组，换个 provider 名它就不是缓存了。
+         *   ⚠️ 但**源码里不出现站名**：文件名与 key 都是运行时拼出来的。
+         */
+        let mixed_name = format!("{cache2_p}.json");
+        let mixed_body = format!(r#"{{"{cache2_k}":"cached","session":"SHOULD_STAY"}}"#);
+        let dir = temp_data_dir(&[
+            ("fake-provider-a.json", r#"{"session":"SESSDATA=abc"}"#),
+            (&only_cache_name, &only_cache_body),
+            (&mixed_name, &mixed_body),
+        ]);
+        let engine = SyncEngine::new(backend.clone(), new_db(), "dev-a".into())
+            .with_data_dir(dir.clone());
+
+        let s = engine
+            .sync_credentials(Some("pass-123"))
+            .await
+            .expect("应成功");
+
+        assert_eq!(s.plane, "credentials");
+        assert_eq!(s.pushed, 2, "a + b 两个有凭据，只有缓存的那个整文件跳过");
+
+        // 远端文件存在
+        let blob_text = backend.body_of("data/credentials.enc");
+        assert!(!blob_text.is_empty(), "必须真的上传了");
+
+        /*
+         * ★★ 关键断言：密文里**不许出现明文凭据**。
+         *    这里读的是**远端字节**，不是我们手里那个 plaintext ——
+         *    这才是"真的加密了"的证据。
+         */
+        let raw = {
+            let files = backend.files.lock().unwrap();
+            files
+                .get("data/credentials.enc")
+                .map(|(b, _)| b.clone())
+                .expect("远端应有文件")
+        };
+        let as_text = String::from_utf8_lossy(&raw);
+        assert!(
+            !as_text.contains("SESSDATA"),
+            "明文凭据不许出现在远端密文里"
+        );
+        assert!(
+            !as_text.contains("SHOULD_STAY"),
+            "明文凭据不许出现在远端密文里"
+        );
+
+        // 用同口令能解开，且内容正确
+        let plain = crate::sync::credentials::decrypt("pass-123", &raw).expect("应能解开");
+        let v: serde_json::Value = serde_json::from_slice(&plain).expect("应是 JSON");
+        assert_eq!(v["fake-provider-a"]["session"], "SESSDATA=abc");
+        assert_eq!(v[cache2_p]["session"], "SHOULD_STAY");
+        // 缓存 key 必须已被剔除
+        assert!(
+            v[cache2_p].get(cache2_k).is_none(),
+            "缓存 key `{cache2_k}` 必须被剔除，实际: {}",
+            v[cache2_p]
+        );
+        // 只有缓存的插件整个不出现
+        assert!(
+            v.get(cache_p).is_none(),
+            "只有缓存的插件应整文件跳过"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /* ── ③ 无凭据 ⇒ 不上传空文件 ── */
+
+    #[tokio::test]
+    async fn no_credentials_uploads_nothing() {
+        let backend = Arc::new(FakeBackend::new());
+        // 只有缓存文件（provider/key 从 CACHE_KEYS 派生，见上面 ② 的说明）
+        let (c0p, c0k) = crate::sync::credentials::CACHE_KEYS[0];
+        let (c1p, c1k) = crate::sync::credentials::CACHE_KEYS[1];
+        let f0 = format!("{c0p}.json");
+        let b0 = format!(r#"{{"{c0k}":"x"}}"#);
+        let f1 = format!("{c1p}.json");
+        let b1 = format!(r#"{{"{c1k}":"y"}}"#);
+        let dir = temp_data_dir(&[(&f0, &b0), (&f1, &b1)]);
+        let engine = SyncEngine::new(backend.clone(), new_db(), "dev-a".into())
+            .with_data_dir(dir.clone());
+
+        let s = engine.sync_credentials(Some("p")).await.expect("应成功");
+
+        assert_eq!(s.pushed, 0);
+        assert!(
+            backend.body_of("data/credentials.enc").is_empty(),
+            "没有凭据时不该上传空文件"
+        );
+        assert!(s.note.unwrap_or_default().contains("没有任何"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /* ── ④ 凭据失败不拖垮其它平面 ── */
+
+    #[tokio::test]
+    async fn credentials_failure_does_not_break_other_planes() {
+        /*
+         * 造一个必然失败的凭据场景：**不挂 data_dir**。
+         * 此时 sync_credentials 返回"未同步"（不是 Err），
+         * 但我们要验的是 sync_all 里**收藏/进度仍然成功**。
+         */
+        let backend = Arc::new(FakeBackend::new());
+        let db = new_db();
+        {
+            let conn_db = db.clone();
+            // 塞一条收藏，确保 favorites 平面有内容可推
+            let _ = conn_db.upsert_favorite(&fav("k1", 100, false));
+        }
+        let engine = SyncEngine::new(backend.clone(), db, "dev-a".into());
+
+        let out = engine.sync_all().await.expect("sync_all 不该因凭据失败而整体失败");
+
+        let planes: Vec<&str> = out.iter().map(|s| s.plane.as_str()).collect();
+        assert!(planes.contains(&"favorites"), "收藏平面必须在");
+        assert!(planes.contains(&"progress"), "进度平面必须在");
+        assert!(planes.contains(&"credentials"), "凭据平面必须在（那怕只是未同步）");
+
+        let _ = backend;
+    }
+
+    /* ── ⑤ ★ 接线判据：sync_all 的输出里必须真有 credentials 这一项 ── */
+
+    #[tokio::test]
+    async fn sync_all_includes_credentials_plane() {
+        /*
+         * ★★★ 本用例是「删掉 out.push(sync_credentials) ⇒ 必须红」的那条。
+         *
+         * 它**只**断言一件事：sync_all 的返回里有 plane == "credentials"。
+         * ⇒ 任何让接线消失的改动（注释掉 push、早退、条件分支写错）都会让它红。
+         */
+        let backend = Arc::new(FakeBackend::new());
+        let engine = SyncEngine::new(backend, new_db(), "dev-a".into());
+
+        let out = engine.sync_all().await.expect("应成功");
+        let cred = out.iter().find(|s| s.plane == "credentials");
+        assert!(
+            cred.is_some(),
+            "sync_all 必须包含 credentials 平面 —— 没有它说明「写了但没接线」。\
+             实际平面: {:?}",
+            out.iter().map(|s| s.plane.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    /* ── ⑥ 超过 MAX_PLAINTEXT ⇒ 报错，不许静默 ── */
+
+    #[tokio::test]
+    async fn oversized_credentials_errors_loudly() {
+        let backend = Arc::new(FakeBackend::new());
+        // 造一个超过 8 MiB 的凭据值
+        let big = "x".repeat(9 * 1024 * 1024);
+        let body = format!(r#"{{"session":"{big}"}}"#);
+        let dir = temp_data_dir(&[("fake-provider-a.json", &body)]);
+        let engine = SyncEngine::new(backend.clone(), new_db(), "dev-a".into())
+            .with_data_dir(dir.clone());
+
+        let r = engine.sync_credentials(Some("p")).await;
+
+        // ★ 必须 Err，不许 Ok（静默跳过会让人以为同步成功）
+        assert!(
+            r.is_err(),
+            "超过 MAX_PLAINTEXT 必须报错；实际: {:?}",
+            r.map(|s| s.note)
+        );
+        let msg = r.unwrap_err();
+        assert!(
+            msg.contains("过大") || msg.contains("加密失败"),
+            "错误信息应能看出原因，实际: {msg}"
+        );
+        // 失败时不该留下文件
+        assert!(backend.body_of("data/credentials.enc").is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

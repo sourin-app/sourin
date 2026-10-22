@@ -396,8 +396,30 @@ void main() {
      *   判据的**实质一字未变**：底栏门控仍必须排除这四个面板 flag，只是它们
      *   现在是 `_chromeVisible` 的成员。⇒ 断言对象跟着搬到唯一真源上。
      */
-    expect(src.contains('if (!_chromeVisible && !keepForFade) {'), isTrue,
-        reason: '★ 底栏显隐必须读唯一真源 `_chromeVisible`（T27-13 唯一真源）');
+    /*
+     * ★★★ 2026-10-18（N11 ddb0794 之后修判据）：
+     *
+     * ```text
+     * 原断言 expect(src.contains('if (!_chromeVisible && !keepForFade) {'), isTrue)
+     * **已过时** —— N11 把 `keepForFade` 按设计删掉了（职责被
+     * `_bottomOccupied` + ListenableBuilder 吸收）。
+     * 实测 grep -c ⇒ 0，唯一出现处是注释。
+     * ```
+     *
+     * ⇒ 照 `t27_w13_chrome_ssot_test.dart:216-228` 的正确范本改成两条：
+     *   ① 反向：不许用 `_chromeVisible` 决定卸下底栏（否则第二个真源）
+     *   ② 实质：只在占据态才卸下
+     */
+    expect(
+      RegExp(r'if\s*\(\s*!\s*_chromeVisible').hasMatch(src),
+      isFalse,
+      reason: '★★ 不许用 `_chromeVisible` 决定要不要**卸下**底栏。'
+          '底栏显隐的真源是 `_bottomFade`，`_chromeVisible` 若又当装卸判据 '
+          '⇒ 就是第二个真源 ⇒ 分裂复发。',
+    );
+    expect(src.contains('if (_bottomOccupied) {'), isTrue,
+        reason: '★★ 底栏**只在占据态**才卸下。'
+            '占据态那块归占据者 —— 留在树里会叠字 + 抢点击。');
     final ci = src.indexOf('bool get _chromeVisible =>');
     expect(ci, greaterThanOrEqualTo(0),
         reason: '找不到唯一真源 `_chromeVisible` ⇒ 文件结构变了');

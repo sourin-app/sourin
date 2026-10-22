@@ -50,6 +50,8 @@ UI 用 danmakuSend 控显隐       全仓 grep                  0
    统一成「发送失败」等于把可执行信息扔掉：
    不支持 ⇒ 别再试了；未授权 ⇒ 去登录；网络 ⇒ 检查网络。
 
+Independent: 弹幕发送入口的显隐判据。与「弹幕源入口」独立（取 vs 发）。
+
 ## Alternatives considered
 
 **把发送入口放进 DanmakuInfoPanel（右侧那块面板里）**

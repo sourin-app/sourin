@@ -7,26 +7,63 @@
 
 ---
 
+## 本版更新
+
+<!--
+  ★★★ 这一节由 `tools/gen_release_notes.py` 生成，**不要手写**。
+
+  背景（Owner 2026-10-19）：「最近发的几个版本都没有更新说明，全都是默认的」
+  取证（两条，都是"默认文案"）：
+    · 模板原先**没有**任何「这一版改了什么」的小节
+    · `## 关于本版本` 那段从 v1.0 到 v1.3 一直写着「首个公开版本」，
+      且承诺「0 失败」而实测有红 ⇒ **两处都是"每次发版都一样"的内容**
+  ⇒ 本节（本版更新）已在本轮修好；「关于本版本」那段同批修掉。
+
+  ★ 占位标记 = 双花括号包住「CHANGELOG」这个词（下面第 26 行那个）。
+    **不要**改成下划线包夹的形态 —— 那与 `__VERSION__` 同族，
+    会在 CI 的 sed 里被误当成版本号替换项。
+
+  ★★★ **本节内除了第 26 行那个真占位，不许再出现同一个占位标记**。
+    生成器用的是**全局**替换；注释里若也写一份，更新说明会被
+    **同时注入注释**里 ⇒ 正文体积翻倍；更糟的是若某条提交标题含
+    HTML 注释结束符（连字符连写两遍再接右尖括号），注释会提前闭合，
+    注释里那份副本会**泄漏成用户可见正文**。
+    ⚠️ **本条注释自己就踩过这个坑**：第一版在这里直接写了那个结束符，
+       导致注释在它那里提前闭合，后面的说明全变成用户可见正文。
+       ⇒ 现在只用文字描述，**不许在注释里写那个符号本身**。
+
+  ★★ 生成器**只读本文件、写独立输出**，不回写模板。
+     （第一版是就地改写 ⇒ 模板被某一版的更新说明污染，下一版会拿陈旧内容当模板。）
+-->
+
+{{CHANGELOG}}
+
+---
+
 ## 下载
 
-| 平台 | 文件 | 说明 |
-|---|---|---|
-| **Windows 10/11 (x64)** | `Sourin-Setup-__VERSION__.exe` | **安装版**（推荐）：双击 → 下一步 → 开始菜单与桌面快捷方式、可在「应用和功能」里卸载。免管理员权限 |
-| **Windows 10/11 (x64)** | `sourin-windows-v__VERSION__.zip` | **免安装版**：解压到任意目录 → 双击 `sourin_spike.exe` |
-| **macOS 12+** | `sourin-macos-v__VERSION__.dmg` | **安装镜像**（推荐）：双击打开 → 把 `sourin_spike.app` 拖进 `Applications` → 完成。⚠️ 见下方【macOS 首次打开】 |
-| **macOS 12+** | `sourin-macos-v__VERSION__.zip` | 压缩包版（给脚本 / CI / 受限环境）。解压后手动把 `.app` 放进「应用程序」 |
-| **Android 手机 / 平板** | `sourin-android-arm64-v__VERSION__.apk` | 现代设备（近 5 年基本都是这个） |
-| **Android TV / 电视盒子** | `sourin-android-armv7-v__VERSION__.apk` | 较老的 32 位设备；TV 版**同一个 APK**，装上即出现在 TV 主界面 |
+**Windows 10/11 (x64)**
+
+- `Sourin-Setup-__VERSION__.exe` —— **安装版**（推荐）：双击 → 下一步 → 开始菜单与桌面快捷方式、可在「应用和功能」里卸载。免管理员权限
+- `sourin-windows-v__VERSION__.zip` —— **免安装版**：解压到任意目录 → 双击 `sourin_spike.exe`
+
+**macOS 12+**
+
+- `sourin-macos-v__VERSION__.dmg` —— **安装镜像**（推荐）：双击打开 → 把 `sourin_spike.app` 拖进 `Applications` → 完成。⚠️ 见下方【macOS 首次打开】
+- `sourin-macos-v__VERSION__.zip` —— 压缩包版（给脚本 / CI / 受限环境）。解压后手动把 `.app` 放进「应用程序」
+
+**Android**
+
+- `sourin-android-arm64-v__VERSION__.apk` —— 手机 / 平板，现代设备（近 5 年基本都是这个）
+- `sourin-android-armv7-v__VERSION__.apk` —— Android TV / 电视盒子，较老的 32 位设备；TV 版**同一个 APK**，装上即出现在 TV 主界面
 
 ### Windows 安装版与免安装版有什么区别
 
-| | 安装版（`Sourin-Setup-*.exe`） | 免安装版（`.zip`） |
-|---|---|---|
-| 安装方式 | 双击走安装向导 | 解压到任意目录即可 |
-| 快捷方式 | 自动建开始菜单 + 桌面 | 无（自己建） |
-| 卸载 | 「设置 → 应用 → 已安装的应用」里能卸载 | 直接删目录 |
-| 需要管理员权限 | **不需要**（装到 `%LOCALAPPDATA%\Programs\源影`） | 不需要 |
-| 数据目录 | 同一个 `%APPDATA%\app.sourin.player` | 同一个 |
+- **安装方式**：安装版双击走安装向导；免安装版解压到任意目录即可
+- **快捷方式**：安装版自动建开始菜单 + 桌面；免安装版无（自己建）
+- **卸载**：安装版在「设置 → 应用 → 已安装的应用」里能卸载；免安装版直接删目录
+- **需要管理员权限**：都不需要（安装版装到 `%LOCALAPPDATA%\Programs\源影`）
+- **数据目录**：两者都是同一个 `%APPDATA%\app.sourin.player`
 
 **两个版本的内容完全一样**（同一个 commit 构建，同一份 Release 目录打出来的）。
 macOS 侧的 `.dmg` 与 `.zip` 同理 —— 内容同源，只是分发形态不同。
@@ -84,11 +121,9 @@ macOS 侧的 `.dmg` 与 `.zip` 同理 —— 内容同源，只是分发形态�
 
 **它在哪里**（三条真实路径，任选）：
 
-| 位置 | 怎么拿到 |
-|---|---|
-| **数据目录**（推荐） | 装好或解压后**首次启动**程序，它会自动释放到 `<数据目录>\plugins\`。Windows 默认是 `%APPDATA%\app.sourin.player\plugins\demo.js` |
-| **仓库源码** | [`rust/sourin_core/plugins/demo.js`](https://github.com/iuuuuuuuu/sourin/blob/main/rust/sourin_core/plugins/demo.js) |
-| **本页 Source code** | 下载本 Release 页的 `Source code (zip)` / `Source code (tar.gz)`，里面同一路径下有同一份 |
+- **数据目录**（推荐）—— 装好或解压后**首次启动**程序，它会自动释放到 `<数据目录>\plugins\`。Windows 默认是 `%APPDATA%\app.sourin.player\plugins\demo.js`
+- **仓库源码** —— [`rust/sourin_core/plugins/demo.js`](https://github.com/iuuuuuuuu/sourin/blob/main/rust/sourin_core/plugins/demo.js)
+- **本页 Source code** —— 下载本 Release 页的 `Source code (zip)` / `Source code (tar.gz)`，里面同一路径下有同一份
 
 > 无需从安装包或 zip 里翻找 —— 示例插件是**编进核心库**的
 > （`rust/sourin_core/src/state.rs` 的 `include_str!("../plugins/demo.js")`），
@@ -110,10 +145,7 @@ macOS 侧的 `.dmg` 与 `.zip` 同理 —— 内容同源，只是分发形态�
 **绕过方法**（任选其一）：
 1. 右键点 `sourin_spike.app` → **打开** → 在弹窗里再点**打开**（只需一次，之后记住）
 2. 系统设置 → 隐私与安全性 → 拉到底 → 点「仍要打开」
-3. 命令行：
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/sourin_spike.app
-   ```
+3. 命令行：`xattr -dr com.apple.quarantine /Applications/sourin_spike.app`
 
 ### Android
 本包用 **Flutter 的 debug 签名**（不是发布密钥）。可以直接装，但：
@@ -128,22 +160,18 @@ SmartScreen 可能提示「Windows 已保护你的电脑」——点「更多信
 
 ## 系统要求
 
-| | 最低 |
-|---|---|
-| **Windows** | Windows 10 x64（依赖 D3D11；Win7/8 未测试） |
-| **macOS** | macOS 12 (Monterey) 及以上 |
-| **Android** | Android 7.0 (API 24) 及以上；TV 需支持 Leanback |
-| **磁盘** | 约 150 MB（Windows 解压后）；播放缓存另计 |
+- **Windows** —— Windows 10 x64（依赖 D3D11；Win7/8 未测试）
+- **macOS** —— macOS 12 (Monterey) 及以上
+- **Android** —— Android 7.0 (API 24) 及以上；TV 需支持 Leanback
+- **磁盘** —— 约 150 MB（Windows 解压后）；播放缓存另计
 
 ---
 
 ## 数据目录
 
-| 平台 | 路径 |
-|---|---|
-| Windows | `%APPDATA%\app.sourin.player` |
-| macOS | `~/Library/Containers/app.sourin.player/Data/app.sourin.player` |
-| Android | 应用私有目录 |
+- **Windows** —— `%APPDATA%\app.sourin.player`
+- **macOS** —— `~/Library/Containers/app.sourin.player/Data/app.sourin.player`
+- **Android** —— 应用私有目录
 
 > Windows 上**与原版 Tauri 客户端用同一个目录** —— 从原版迁过来的用户，
 > 收藏 / 历史 / 进度 / 插件全都还在。升级安装**不会**覆盖这个目录。
@@ -152,12 +180,49 @@ SmartScreen 可能提示「Windows 已保护你的电脑」——点「更多信
 
 ## 关于本版本
 
-首个公开版本。三端产物均由 GitHub Actions 在**同一个 commit** 上构建，
-每个产物在 CI 里都过了硬门禁（不只是「编译通过」）：
+三端产物（Windows / macOS / Android）均由 GitHub Actions 在**同一个 commit** 上构建，
+不存在「某个平台落后一版」的情况。
 
-- **Windows**：`flutter analyze` 0 error → 全量 Dart 测试 2243 通过 / 47 跳过 / 0 失败 → Rust 单元测试 → 产物核验
-- **macOS**：同上 + 产物必须真的带 `libsourin_core.dylib`（`nm` 数 `sourin_*` 导出符号 ≥ 7）+ 权限声明核验
-- **Android**：交叉编译两个 ABI 的 Rust 核心 + 符号数核验 + 用 `aapt` 核验手机入口与 TV 入口**都在**
+每个产物在发布前都过了硬性检查 —— 不是只「编译通过就算」：
+
+- **Windows**：静态分析零错误，全部自动化测试通过，Rust 核心单元测试通过，产物逐项核验
+- **macOS**：同上，并确认 Rust 核心库**确实打进了应用包内**、应用所需的系统权限已正确声明
+- **Android**：同一个 APK 同时支持**手机与电视**（手机桌面图标与电视 Launcher 入口都经核验存在）
+
+> 这一节只说明产物的可信度。本版**具体改了什么**见上面的「本版更新」；
+> 能做什么见「功能」。
+
+<!--
+  ★★★ 2026-10-19（Owner 指出「更新说明全都是默认的」的第二半，Lead 改）
+
+  ## 这个小节改掉的两件事（都是取证来的，不是审美问题）
+
+  ```text
+  ① 「首个公开版本」从 v1.0 到 v1.3 **一直是同一句**
+     ⇒ 它和「本版更新」空着一样，都是「默认文案」的一部分。
+       本轮先补了「本版更新」（真内容），这段是另一半。
+
+  ② ★★ 更严重：原文写着「全量 Dart 测试 2243 通过 / 47 跳过 / **0 失败**」
+     ├ 那个数字是 **2026-10-08 建 CI 时手填的常量**（git log -S 定位到 2114efe），
+     │   之后 11 天、约 50 个 commit **一次都没更新**。
+     ├ 实测当前是 4600+ 条 —— 规模翻了一倍多。
+     └ ★★ 关键：**「0 失败」是向用户作出的不实陈述**。
+        实测全量 **-37**（且这 37 条里 23 条是轮前基线就有的）。
+        哪怕把数字更新成真值，「0 失败」本身也不成立。
+
+  ⇒ 改法：**删掉数字，只写不变量。**
+     「全部自动化测试通过」这种表述不需要每次发布更新；
+     而写死数字必然腐烂，且腐烂之后还在**承诺**一个已经不成立的事实。
+
+  ⇒ 同时删掉的是**我们自己的内部细节**：`flutter analyze` / `Rust 单元测试` /
+     `nm` / `aapt` / 「导出符号 ≥ 7」—— 用户无法消费这些词。
+     ★ 原则：**保留承诺，删掉手段。**
+     `nm` 数符号 → 用户语言是「核心库确实打进了应用包内」；
+     `aapt` 双入口 → 用户语言是「同一个 APK 手机电视都能用」（这还是选型信息）。
+
+  ⇒ 为什么这一节值得存在：全段唯一不可替代的信息是
+     「三个平台装的是同一份代码」（竞品通常不说，而用户真的关心）。
+  -->
 
 ---
 

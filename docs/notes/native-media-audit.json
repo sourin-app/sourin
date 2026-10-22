@@ -1,0 +1,338 @@
+{
+  "live_cctv_real_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+1 ~0 -0"
+  },
+  "live_referer_onwire_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+1 ~0 -0"
+  },
+  "pc_arrow_keys_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+17 ~0 -0"
+  },
+  "player_episode_nav_boundary_test.dart": {
+    "audited": false,
+    "lastAudited": "2026-10-21",
+    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
+    "result": null
+  },
+  "player_panel_dark_and_boundary_test.dart": {
+    "audited": false,
+    "lastAudited": "2026-10-21",
+    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
+    "result": null
+  },
+  "player_panel_wiring_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "有 1 条红（断言失败，需处置）",
+    "result": "+0 ~0 -1"
+  },
+  "player_ux_shot_test.dart": {
+    "audited": false,
+    "lastAudited": "2026-10-21",
+    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
+    "result": null
+  },
+  "t102_playback_failure_banner_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+5 ~0 -0"
+  },
+  "t103_danmaku_hint_ui_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+10 ~0 -0"
+  },
+  "t104_overlay_exit_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "有 2 条红（断言失败，需处置）",
+    "result": "+18 ~0 -2"
+  },
+  "t108_danmaku_manual_search_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "有 3 条红（断言失败，需处置）",
+    "result": "+2 ~0 -3"
+  },
+  "t118_control_bars_link_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "有 1 条红（断言失败，需处置）",
+    "result": "+15 ~0 -1"
+  },
+  "t26_w4_mirror_episode_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+2 ~0 -0"
+  },
+  "t27_w13_chrome_ssot_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+8 ~0 -0"
+  },
+  "t27_w13_defect4_bar_linkage_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+5 ~0 -0"
+  },
+  "t27_w14_danmaku_bar_form_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+9 ~0 -0"
+  },
+  "t27_w15_danmaku_quick_panel_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+4 ~0 -0"
+  },
+  "t27_w15_return_cache_norebuild_test.dart": {
+    "audited": false,
+    "lastAudited": "2026-10-21",
+    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
+    "result": null
+  },
+  "t27_w17_close_sheet_restores_bars_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+6 ~0 -0"
+  },
+  "t27_w18_danmaku_blockwords_enter_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+4 ~0 -0"
+  },
+  "t27_w20_skip_auto_seek_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+7 ~0 -0"
+  },
+  "t27_w21_return_jank_signature_test.dart": {
+    "audited": false,
+    "lastAudited": "2026-10-21",
+    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
+    "result": null
+  },
+  "t27_w22_danmaku_slider_jank_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+4 ~0 -0"
+  },
+  "t27_w9_bar_linkage_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "有 3 条红（断言失败，需处置）",
+    "result": "+13 ~0 -3"
+  },
+  "t458_hints_entry_ui_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+3 ~0 -0"
+  },
+  "t48_live_embedded_doubletap_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+5 ~0 -0"
+  },
+  "t58_media_page_layout_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+16 ~0 -0"
+  },
+  "t61_panel_radius_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+6 ~0 -0"
+  },
+  "t63_shot_ui_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+5 ~0 -0"
+  },
+  "t68_android_adapt_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+15 ~0 -0"
+  },
+  "t72_jank_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+5 ~0 -0"
+  },
+  "t72_stream_sheet_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+11 ~0 -0"
+  },
+  "t74_embed_visibility_gate_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+2 ~0 -0"
+  },
+  "t78_video_zoom_hwdec_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+21 ~0 -0"
+  },
+  "t79_assrt_wiring_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+13 ~0 -0"
+  },
+  "t92_bottom_bar_row_fit_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "有 5 条红（断言失败，需处置）",
+    "result": "+0 ~0 -5"
+  },
+  "t92_embed_first_frame_hint_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+9 ~0 -0"
+  },
+  "t98_settings_open_order_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+7 ~0 -0"
+  },
+  "zz_cr_backbtn_backarrow_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "有 1 条红（断言失败，需处置）",
+    "result": "+6 ~0 -1"
+  },
+  "zz_cr_dmk_c_import_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "有 1 条红（断言失败，需处置）",
+    "result": "+3 ~0 -1"
+  },
+  "zz_cr_dmk_d_badge_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+3 ~0 -0"
+  },
+  "zz_cr_jank_titlebar_flip_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+1 ~0 -0"
+  },
+  "zz_cr_panel_double_enter_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+1 ~0 -0"
+  },
+  "zz_cr_panel_notch_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+3 ~0 -0"
+  },
+  "zz_media_shots_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+7 ~0 -0"
+  },
+  "zz_ops13_mirror_write_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+7 ~0 -0"
+  },
+  "zz_ops13_resume_read_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+9 ~0 -0"
+  },
+  "zz_pr10_stale_skip_marker_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+5 ~0 -0"
+  },
+  "zz_r65_error_shots_test.dart": {
+    "audited": false,
+    "lastAudited": "2026-10-21",
+    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
+    "result": null
+  },
+  "zz_rewatch_prompt_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+14 ~0 -0"
+  },
+  "zz_t1015b_dash_audio_native_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+1 ~0 -0"
+  },
+  "zz_t12_local_play_probe_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+1 ~0 -0"
+  },
+  "zz_t3_flash_probe_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+1 ~0 -0"
+  },
+  "zz_t42_player_keys_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+15 ~0 -0"
+  },
+  "zz_t66_danmaku_send_predicate_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+9 ~0 -0"
+  },
+  "zz_t66_r1_three_way_compare_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-21",
+    "note": "全绿",
+    "result": "+1 ~0 -0"
+  }
+}

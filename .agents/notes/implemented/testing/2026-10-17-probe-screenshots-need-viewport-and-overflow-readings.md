@@ -50,6 +50,8 @@ Status: implemented
   整体图里坏 ⇏ 它本身坏。
 ```
 
+Independent: 探针截图要带视口与溢出读数。截图证据的一条独立要求。
+
 ## Alternatives considered
 
 - **只记「小心视口」这条口头提醒** —— 它最强的论据是零成本、不增加流程。

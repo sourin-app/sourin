@@ -77,6 +77,21 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
   final Map<String, TextEditingController> _filterCtrl = {};
   String? _toast;
 
+  /// ★★★ 2026-10-18（Owner 逐字）：正在改名的组（null = 没有在改名）
+  ///
+  /// ```text
+  /// > 并且不能对已有的编辑
+  /// ```
+  /// 改前本页对已有分组**只有「删除分组」一个动作** —— 名字打错了、
+  /// 想往里加台，都没有入口。现在补上「改名」。
+  ///
+  /// ★ 用"就地编辑"而不是弹窗：设置页是长列表，弹窗会遮住上下文，
+  ///   用户改完还得确认一次；就地编辑改完回车即生效，少一次往返。
+  String? _renaming;
+
+  /// 改名输入框控制器（进入改名时填入原名）
+  final TextEditingController _renameCtrl = TextEditingController();
+
   @override
   void initState() {
     super.initState();
@@ -158,6 +173,7 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
   @override
   void dispose() {
     _nameCtrl.dispose();
+    _renameCtrl.dispose();
     for (final c in _srcCtrl.values) {
       c.dispose();
     }
@@ -226,9 +242,83 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
       _sourceGroups.remove(name);
       _srcCtrl.remove(name)?.dispose();
       _filterCtrl.remove(name)?.dispose();
+      if (_renaming == name) _renaming = null;
     });
     _save();
     _flash('已删除分组「$name」；里面的频道已回到全部频道');
+  }
+
+  /// ★★★ 2026-10-18（Owner 逐字「不能对已有的编辑」）：开始改名
+  void _startRename(String name) {
+    setState(() {
+      _renaming = name;
+      _renameCtrl.text = name;
+      _renameCtrl.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: name.length,
+      );
+    });
+  }
+
+  /// 提交改名（空 / 未变 ⇒ 静默退出；撞名 ⇒ 明确提示且**不改**）
+  ///
+  /// # 为什么要搬 `_filterCtrl` / `_srcCtrl`
+  /// ```text
+  /// 这两张表都是**以组名为键**的控制器缓存。只改 `_groups` 的键而不搬它们：
+  ///   · 新名字那一行会 `putIfAbsent` 出一个新控制器 ⇒ 组内搜索词丢失（可接受）
+  ///   · 老名字那个控制器永远留在表里 ⇒ dispose 漏掉（泄漏）
+  /// ⇒ 一起搬，搬不动就删。
+  /// ```
+  void _commitRename(String oldName) {
+    final n = _renameCtrl.text.trim();
+    if (n.isEmpty || n == oldName) {
+      setState(() => _renaming = null);
+      return;
+    }
+    if (_groups.containsKey(n) || _sourceGroups.containsKey(n)) {
+      _flash('已经有叫「$n」的分组了，换个名字');
+      return;
+    }
+    setState(() {
+      // 保序：Dart Map 默认保持插入顺序 ⇒ 改名不会让这一行跳位置
+      final rebuilt = <String, List<LiveChannelRef>>{};
+      for (final e in _groups.entries) {
+        rebuilt[e.key == oldName ? n : e.key] = e.value;
+      }
+      _groups = rebuilt;
+
+      final rebuiltSrc = <String, List<String>>{};
+      for (final e in _sourceGroups.entries) {
+        rebuiltSrc[e.key == oldName ? n : e.key] = e.value;
+      }
+      _sourceGroups = rebuiltSrc;
+
+      /*
+       * 控制器跟着搬 —— ★ 这里**不能** dispose，只换键。
+       *
+       * ⚠️ 2026-10-18（第 66 轮自审）：原注释写的是
+       *    「控制器跟着搬（老键的必须 dispose，否则泄漏）」
+       *    —— **那句话是错的**，且会误导下一个人真的加上 `dispose()`:
+       * ```text
+       * 控制器被 `_filterCtrl[n] = f` 放回去了，还是活的。
+       * 对它调 dispose() ⇒ 改名之后该行的输入框立刻 `used after disposed`。
+       * ```
+       * 真正要 dispose 的是**删除分组**那条路径（见 `:243` 的
+       * `remove(name)?.dispose()`）—— 那里是**真的丢弃**，没人再接。
+       * ⇒ 两条路径的判据不同：「换键」vs「丢弃」，不要混。
+       */
+      final f = _filterCtrl.remove(oldName);
+      if (f != null) {
+        _filterCtrl[n] = f;
+      }
+      final s = _srcCtrl.remove(oldName);
+      if (s != null) {
+        _srcCtrl[n] = s;
+      }
+      _renaming = null;
+    });
+    _save();
+    _flash('已改名为「$n」');
   }
 
   /// 勾选 / 取消一个频道
@@ -395,21 +485,37 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
     List<LiveFlatEntry>? chans,
   ) {
     final members = _groups[name] ?? const <LiveChannelRef>[];
+    final renaming = _renaming == name;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
-            Expanded(
-              child: Text(
-                name,
-                style: TextStyle(
-                  fontSize: FontSizes.lg,
-                  color: colors.onSurface,
-                  fontWeight: FontWeight.w600,
+            // ★ 改名时就地换成输入框（见 `_renaming` 的说明）
+            if (renaming)
+              Expanded(
+                child: TextField(
+                  key: ValueKey('live-group-rename-$name'),
+                  controller: _renameCtrl,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    hintText: '新的分组名',
+                  ),
+                  onSubmitted: (_) => _commitRename(name),
+                ),
+              )
+            else
+              Expanded(
+                child: Text(
+                  name,
+                  style: TextStyle(
+                    fontSize: FontSizes.lg,
+                    color: colors.onSurface,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
-            ),
             if (chans != null)
               Text(
                 '已选 ${members.length} 个频道',
@@ -419,6 +525,24 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
                 ),
               ),
             const SizedBox(width: Sp.x2),
+            if (renaming) ...[
+              TextButton(
+                key: ValueKey('live-group-rename-ok-$name'),
+                onPressed: () => _commitRename(name),
+                child: const Text('保存名字'),
+              ),
+              TextButton(
+                key: ValueKey('live-group-rename-cancel-$name'),
+                onPressed: () => setState(() => _renaming = null),
+                child: const Text('取消'),
+              ),
+            ] else
+              TextButton.icon(
+                key: ValueKey('live-group-rename-$name-btn'),
+                onPressed: () => _startRename(name),
+                icon: const Icon(AppIcons.edit_outlined, size: 18),
+                label: const Text('改名'),
+              ),
             TextButton.icon(
               key: ValueKey('live-group-del-$name'),
               onPressed: () => _removeGroup(name),
@@ -452,9 +576,57 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        /*
+         * ★★★ 2026-10-18（Owner 逐字「不能对已有的编辑」）：**已选频道**独立成行
+         *
+         * # 为什么不能只靠下面的勾选胶囊
+         * ```text
+         * 一个源有 900+ 个台（真机快照：1178 个），已选的 3 个散落其中。
+         * 想删掉其中一个 ⇒ 用户得先想起它在哪个源、再滚过去找 ——
+         * 这在"编辑已有的分组"这个场景里等于不可用。
+         * ⇒ 把已选项**集中列在顶部**，点 × 直接移除。
+         * ```
+         * ★ 与下面的胶囊是**同一个数据源**（`_toggleChannel`）——
+         *   两处各写一套增删逻辑必然漂移。
+         */
+        if (members.isNotEmpty) ...[
+          Wrap(
+            spacing: Sp.x2,
+            runSpacing: Sp.x2,
+            children: [
+              for (final r in members)
+                InputChip(
+                  key: ValueKey('live-group-picked-$name-${r.provider}-${r.channelId}'),
+                  label: Text(
+                    _nameOf(chans, r),
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: colors.primary,
+                    ),
+                  ),
+                  onDeleted: () => _toggleChannel(name, r),
+                  deleteIcon: const Icon(AppIcons.close, size: 14),
+                  deleteButtonTooltipMessage: '从这个分组里移除',
+                  backgroundColor: colors.primary.withValues(alpha: 0.12),
+                  side: BorderSide(color: colors.primary.withValues(alpha: 0.5)),
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: Radii.rFull,
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
+                  labelPadding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+            ],
+          ),
+          const SizedBox(height: Sp.x3),
+        ],
         if (members.isEmpty)
           Text(
-            '（空组 —— 切到它会显示全部频道，不会筛成空）',
+            '（空组 —— 切到它会显示"这一组还没有频道"，不会把全部频道放进来）',
             style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
           ),
         TextField(
@@ -549,6 +721,19 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
               c.provider == provider &&
               members.contains(LiveChannelRef(c.provider, c.channel.id)))
           .length;
+
+  /// 已选频道的**显示名**（现取，不存进偏好 —— 见 `LiveChannelRef` 的注释）
+  ///
+  /// ⚠️ 快照里找不到（换了源 / 台改名 / 快照过期）⇒ 回落到 id 本身。
+  ///   绝不返回空串 —— 用户会看到一颗没有字的胶囊，无从判断那是什么。
+  static String _nameOf(List<LiveFlatEntry> chans, LiveChannelRef r) {
+    for (final c in chans) {
+      if (c.provider == r.provider && c.channel.id == r.channelId) {
+        return c.channel.name;
+      }
+    }
+    return r.channelId;
+  }
 
   /// 老路径：手输源 id（没有磁盘快照时唯一可用）
   ///

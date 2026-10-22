@@ -13,6 +13,8 @@ Status: implemented
 依赖真 libmpv 的测试标 `native-media`，在 `dart_test.yaml` 里用 `skip:` 默认跳过；
 需要时 `--run-skipped --tags native-media` 放行。
 
+Independent: native-media 用 tags skip 而非 exclude_tags。dart_test 配置的一条独立选择。
+
 ## Alternatives considered
 
 - **`exclude_tags:`** —— 它最强的论据是语义直白：「排除这些标签」。

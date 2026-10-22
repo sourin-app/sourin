@@ -77,7 +77,12 @@ Future<void> _pumpOnDanApiTab(
   await t.pump();
   final tab = find.descendant(
     of: find.byType(SegmentedButton<DanmakuPanelTab>),
-    matching: find.text('dan-api'),
+    /*
+     * ★ 2026-10-18 第四版（Owner 亲自截图四条反馈）：
+     *   页签改成 `显示 / 弹幕来源 / 高级`；
+     *   自建地址 + Token + 测试连接那一节现在在「高级」页签。
+     */
+    matching: find.text('高级'),
   );
   await t.tap(tab);
   await t.pumpAndSettle();
@@ -379,13 +384,53 @@ void main() {
       expect(UiPrefs.danmakuEndpoint, '', reason: '★ 非法地址不落盘');
     });
 
-    testWidgets('★ 探针自己异常 ⇒ 如实说测试失败（不伪装成服务没起来）', (t) async {
+    testWidgets('★ 探针自己异常 ⇒ 如实说「检测出错」，'
+        '不伪装成「连不上/超时」', (t) async {
+      /*
+       * ★★★ 2026-10-19（X4）：断言改成**新行为**，且**成对**。
+       *
+       * # 改前这条断言的是旧文案「测试失败」
+       * ```text
+       * expect(find.textContaining('测试失败'), findsOneWidget);
+       * ```
+       * 而 R3-③/⑦ 把 `_probeCustomMessage = '测试失败：$e'` 改成
+       * 分类（`DanmakuProbeReport`）⇒ **这条断言其实已经是红的**
+       * （实测 `+19 -1`，Found 0 widgets with text containing 测试失败）。
+       * ⚠️ 那次改动忘了同步本断言 —— 门禁红着没人管，等于失效。
+       *
+       * # 新行为（X4）：探针自己抛异常 ⇒ 报 [DanmakuProbeFailure.probeFailed]
+       * ```text
+       * 兜底分支**没有任何网络物证**（没解析过、没建过连接），
+       * 而 connectionTimeout 的文案写着「地址解析出来了但连不过去」
+       * ⇒ 那句话陈述了**从未发生**的事实。
+       * ```
+       *
+       * # 为什么断言要**成对**（只断"该在的"不够）
+       * 只断「检测过程本身出错了」在的话，将来有人把文案又改回含
+       * 「超时」的长句，这一条**仍会绿** ⇒ 必须同时断「不该在的」。
+       */
       await _pumpOnDanApiTab(t, probe: (e) async => throw StateError('boom'));
       await t.enterText(_urlField, 'http://127.0.0.1:9321');
       await t.pump();
       await t.tap(find.text('测试连接'));
       await t.pumpAndSettle();
-      expect(find.textContaining('测试失败'), findsOneWidget);
+
+      // ① 该在的：如实说"检测这一步自己出错"，并给出原文线索
+      expect(find.textContaining('检测'), findsWidgets,
+          reason: '★★ 探针自己抛异常时，界面没有任何「检测…」字样 ⇒ '
+              '这条门禁失去了它要守的「新行为」');
+      // ★ 原文必须带到界面上（那是唯一能定位的线索）
+      expect(find.textContaining('boom'), findsWidgets,
+          reason: '★★ 异常原文「boom」没显示 ⇒ 用户无法把问题反馈给我们');
+
+      // ② 不该在的：**成对**断言 —— 任何网络断言出现就是回归
+      //    （这两条在**旧行为**下会红：旧文案就是「连不上（超时）」那套）
+      for (final forbidden in const ['连不过去', '超时', '被墙']) {
+        expect(find.textContaining(forbidden), findsNothing,
+            reason: '★★ 界面出现了「$forbidden」—— 探针异常时**没有任何网络证据**'
+                '（没解析过、没建过连接），说这句就是**陈述了没发生的事实**。'
+                '兜底分支必须只说「检测这一步自己出错」。');
+      }
     });
 
     testWidgets('★ 改了地址 ⇒ 上一次的测试结果作废', (t) async {
@@ -483,15 +528,21 @@ void main() {
       expect(find.text('显示 / 过滤 / 请求'), findsOneWidget);
     });
 
-    testWidgets('★★ 四个页签都在（三条来源 + 通用配置，谁都没挤掉谁）', (t) async {
+    testWidgets('★★ 三个页签都在（显示 / 弹幕来源 / 高级）', (t) async {
       await _pumpOnDanApiTab(t);
       /*
-       * ★ 2026-10-17（Owner 第 11 条）：页签从「按源命名」改成「按能力命名」。
-       *   改前：配置 / bilibili / 弹弹play          // site-ok: danmaku-source
-       *   改后：配置 / dan-api / 插件提供 / 官方兜底
-       * ⇒ 四个都在，且**没有任何一个是某一家服务的名字**。
+       * ★ 2026-10-18 第四版（Owner 亲自截图四条反馈）。
+       *
+       * 改前（第三版）：配置 / dan-api / 插件提供 / 官方兜底
+       *   被 Owner 否掉的三点：
+       *     · 「bilibili的弹幕设置怎么没了」⇒ 它被藏成 plugin tab 里一枚按钮
+       *     · 「dan-api只有测试」        ⇒ 那个 tab 里真的只有测试连接
+       *     · 「官方兜底也不知道是啥」    ⇒ 内部概念泄漏，且本构建必然失败
+       *
+       * 改后：显示 / 弹幕来源 / 高级
+       *   ⇒ 三个都在，且**没有一个是某一家服务的名字**。
        */
-      for (final label in <String>['配置', 'dan-api', '插件提供', '官方兜底']) {
+      for (final label in <String>['显示', '弹幕来源', '高级']) {
         expect(
           find.descendant(
             of: find.byType(SegmentedButton<DanmakuPanelTab>),

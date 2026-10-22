@@ -107,36 +107,96 @@ final Finder kCatChip = find.byType(InkWell);
 ///   （含 post-frame 回调）跑完才返回 —— 挂载后再注入就已经晚了：
 ///   第 1 页早用真 FFI 取过（必抛，`flutter test` 里没有核心 DLL）
 ///   ⇒ `_items` 恒为空 ⇒ 所有断言都退化成对**空树**的断言。
+///
+/// # ★★★ 2026-10-21（第 66 轮 redtriage）：为什么必须把 `pumpWidget`
+/// #     **放进 `runAsync`** —— 这是本文件 9 条红的唯一根因
+///
+/// ```text
+/// 现象：9 条全红，且第一条前置断言就红 ——
+///       「第 1 页必须真的进来了（实测 0 条）」
+///
+/// 探针实测（`zz_t75_probe_why_zero.dart`，已删）：
+///   pumpWidget 之后 loaderInvoked=0   calls=[]
+///   pump1 之后    loaderInvoked=0   calls=[]
+///   pump2 之后    loaderInvoked=0   calls=[]
+///   pump100ms 后  loaderInvoked=0   calls=[]
+///   runAsync 后   loaderInvoked=1   calls=[1]   debugItemCount=20
+///                  ↑ 同一时刻打印出 `[BROWSE] 取分类失败（不影响列表）`
+/// ```
+/// ⇒ **`_init()` 卡在 `await SourinApi.getCategories(provider)` 上**：
+///   `browse_page.dart:241` 那一句走的是 `SourinCore.callAsync`（**真 FFI**），
+///   它返回的是**真实** `Future`，而 `tester.pump()` 只推进 **fake clock**，
+///   永远驱动不了真实 IO ⇒ `_init()` 停在那一行 ⇒ `_load(1)` **从未被调用**。
+///
+/// ⚠️ 这条 `getCategories` 外面包着 `try/catch`（「无分类不影响列表」），
+///   所以它**不会**让测试报错，只会**静默**让 `_init()` 永不继续 ——
+///   这正是「红得莫名其妙」的原因。
+///
+/// ★ 与 `docs/AGENTS.md` §8「pumpWidget 后页面一直停在 loading」同一个坑，
+///   而且那条已经写明：**不能先 pumpWidget 再 runAsync** ——
+///   Future 已在 fake clock 环境里创建，之后进 runAsync 也救不回来。
+///   必须把 `pumpWidget` **本身**放进去。
 Future<(BrowsePageState, List<int>)> mount(
   WidgetTester t, {
   required Future<models.Page<models.MediaItem>> Function(int page) loader,
   int? cats,
+  bool awaitFirstPage = true,
 }) async {
   t.view.physicalSize = kViewport;
   t.view.devicePixelRatio = 1.0;
   addTearDown(t.view.reset);
 
   final calls = <int>[];
-  await t.pumpWidget(
-    host(
-      BrowsePage(
-        provider: 'demo',
-        title: '电影',
-        pageLoaderForTest: (p) {
-          calls.add(p);
-          return loader(p);
-        },
-      ),
-    ),
-  );
+  late BrowsePageState st;
 
-  final st = t.state<BrowsePageState>(find.byType(BrowsePage));
-  if (cats != null) {
-    st.debugSetCategories([
-      for (var i = 0; i < cats; i++) models.Category(id: '$i', name: '分类$i'),
-    ]);
-  }
-  await t.pump();
+  await t.runAsync(() async {
+    await t.pumpWidget(
+      host(
+        BrowsePage(
+          provider: 'demo',
+          title: '电影',
+          pageLoaderForTest: (p) {
+            calls.add(p);
+            return loader(p);
+          },
+        ),
+      ),
+    );
+
+    st = t.state<BrowsePageState>(find.byType(BrowsePage));
+    if (cats != null) {
+      st.debugSetCategories([
+        for (var i = 0; i < cats; i++) models.Category(id: '$i', name: '分类$i'),
+      ]);
+    }
+
+    /*
+     * 轮询到第 1 页真的进来（而不是"pump 两次就该好了"）。
+     *
+     * ★ 为什么是轮询而不是固定次数：`getCategories` 的真实 Future
+     *   多久返回取决于 FFI 失败的快慢，**不能用固定帧数假设它已返回**。
+     *   这正是本仓「判据输出必须能区分『查了没问题』与『没查』」那条：
+     *   固定 pump 次数在快机器上碰巧能过、慢机器上就红 —— 那种绿不可信。
+     *
+     * ⚠️ `awaitFirstPage: false` 给**故意把第 1 页挂在 gate 上**的用例
+     *    （D1 竞态 / D2 换分类）用 —— 那些用例的语义就是"第 1 页还没回来"，
+     *    在这里等它等于等一个永不完成的 Future。但仍然要驱动一次真实 IO，
+     *    否则 `_init()` 连 `getCategories` 那一步都过不去。
+     */
+    if (awaitFirstPage) {
+      for (var i = 0; i < 50; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        await t.pump();
+        if (st.debugItemCount > 0) break;
+      }
+    } else {
+      for (var i = 0; i < 3; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        await t.pump();
+      }
+    }
+  });
+
   await t.pump();
   return (st, calls);
 }
@@ -315,15 +375,36 @@ void main() {
        *   混进上一个分类的片子，还会覆盖 `_page` / `_pageCount`。
        */
       final gate = <int, Completer<models.Page<models.MediaItem>>>{};
-      final (st, calls) = await mount(t, loader: (p) {
-        final c = Completer<models.Page<models.MediaItem>>();
-        gate[p] = c;
-        return c.future;
-      });
+      final (st, calls) = await mount(
+        t,
+        // ★ 第 1 页故意挂在 gate 上（本用例的语义就是"它还没回来"）
+        awaitFirstPage: false,
+        loader: (p) {
+          final c = Completer<models.Page<models.MediaItem>>();
+          gate[p] = c;
+          return c.future;
+        },
+      );
 
-      // 第 1 页先放行
-      gate[1]!.complete(pageOf(20, page: 1, pageCount: 5));
-      await t.pump();
+      /*
+       * 第 1 页先放行。
+       * ★ 必须放在 `runAsync` 里：`_init()` 要先 await 真实的
+       *   `getCategories` 才会走到 `_load(1)`，而 `gate[1]` 是
+       *   `_load(1)` 被调用时**才创建**的 ⇒ 在 runAsync 外 complete
+       *   会读到 null / 放行得太早。
+       */
+      await t.runAsync(() async {
+        for (var i = 0; i < 50 && !gate.containsKey(1); i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          await t.pump();
+        }
+        gate[1]!.complete(pageOf(20, page: 1, pageCount: 5));
+        for (var i = 0; i < 50; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          await t.pump();
+          if (st.debugItemCount > 0) break;
+        }
+      });
       await t.pump();
       expect(st.debugItemCount, 20, reason: '★ 前置：第 1 页已到');
 
@@ -443,14 +524,29 @@ void main() {
        *    偏移一旦 ≥ 32，页头就完全盖住分类栏（`t.tap` 会打到页头上）。
        */
       final gate = <int, Completer<models.Page<models.MediaItem>>>{};
-      final (st, calls) = await mount(t, loader: (p) {
-        final c = Completer<models.Page<models.MediaItem>>();
-        gate[p] = c;
-        return c.future;
-      });
+      final (st, calls) = await mount(
+        t,
+        // ★ 第 1 页故意挂在 gate 上（本用例的语义就是"它还没回来"）
+        awaitFirstPage: false,
+        loader: (p) {
+          final c = Completer<models.Page<models.MediaItem>>();
+          gate[p] = c;
+          return c.future;
+        },
+      );
 
-      gate[1]!.complete(pageOf(20, page: 1, pageCount: 5));
-      await t.pump();
+      await t.runAsync(() async {
+        for (var i = 0; i < 50 && !gate.containsKey(1); i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          await t.pump();
+        }
+        gate[1]!.complete(pageOf(20, page: 1, pageCount: 5));
+        for (var i = 0; i < 50; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          await t.pump();
+          if (st.debugItemCount > 0) break;
+        }
+      });
       await t.pump();
       expect(st.debugItemCount, 20, reason: '★ 前置：第 1 页已到');
 
@@ -762,12 +858,27 @@ void main() {
         ),
       ));
 
-      await t.tap(find.text('进浏览页'));
-      await t.pumpAndSettle();
+      /*
+       * ★ 必须整段放进 `runAsync`：与 `mount()` 同一个根因 ——
+       *   `_init()` 先 await 真实的 `getCategories`（真 FFI），
+       *   纯 `pump` 推进不了真实 IO ⇒ 第 1 页永远是 0 条。
+       */
+      await t.runAsync(() async {
+        await t.tap(find.text('进浏览页'));
+        await t.pumpAndSettle();
+        for (var i = 0; i < 50; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          await t.pump();
+          final f = find.byType(BrowsePage);
+          if (f.evaluate().isNotEmpty &&
+              t.state<BrowsePageState>(f).debugItemCount > 0) {
+            break;
+          }
+        }
+      });
       expect(find.byType(BrowsePage), findsOneWidget, reason: '★ 前置：已进浏览页');
 
       final st = t.state<BrowsePageState>(find.byType(BrowsePage));
-      await t.pump();
       await t.pump();
       expect(st.debugItemCount, 20, reason: '★ 前置：第 1 页真的进来了');
 

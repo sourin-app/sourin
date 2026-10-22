@@ -170,11 +170,28 @@ void main() {
       ]) {
         final f = PlaybackErrorText.classify(raw);
         expect(f.kind, PlaybackFailureKind.proxy, reason: '原句: $raw');
-        expect(f.headline, '内置代理没起来',
-            reason: '★ 文案要能让用户判断是**软件**问题: $raw');
-        expect(f.canRetry, isTrue, reason: '代理重启后重试通常就好');
+        /*
+         * ★★★ 2026-10-18（第 66 轮 R2）：文案从「内置代理没起来」改成「这一条流取不到」。
+         *
+         * **为什么改文案（行为有意变更，不是放宽断言）**：
+         * ```text
+         * Owner 真机日志（sourin-2026-10-18.log）：
+         *   19:03:01 起播 OK   端口 57106
+         *   19:03:06 起播失败  Failed to open http://127.0.0.1:57106/…
+         *   19:03:48 起播 OK   端口 57106   ← 同端口，代理一直活着
+         * ⇒ 「没起来」是假话，它让 Owner 以为代理进程挂了
+         *   （他的原话：「这个要修复啊，很严重的 bug」）。
+         * ```
+         * ⇒ 新文案必须**同时**满足两条，本断言就是守这两条：
+         *   ① 不含「没起来」这种断言代理已死的措辞
+         *   ② 仍能让用户知道是**软件侧/传输侧**的问题（不是源站权限）
+         */
+        expect(f.headline, isNot(contains('没起来')),
+            reason: '★ 不许断言代理已死 —— 代理多半是活的: $raw');
+        expect(f.headline, '这一条流取不到', reason: '原句: $raw');
+        expect(f.canRetry, isTrue, reason: '重试往往就好');
         expect(f.canSwitchSource, isFalse,
-            reason: '换源治不了代理 —— 给这颗按钮是误导');
+            reason: '换源治不了代理这一层 —— 给这颗按钮是误导');
       }
     });
 

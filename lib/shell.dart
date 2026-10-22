@@ -54,6 +54,17 @@ import 'package:flutter/scheduler.dart' show SchedulerBinding, FrameTiming;
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'dart:ui' as ui;
 import 'package:material_ui/material_ui.dart';
+/*
+ * ★★ 2026-10-18（M4）：本地化委托从 material_ui 改用 flutter_localizations
+ *
+ * 从 MaterialApp 改成 WidgetsApp 后，不能再用 GlobalMaterialLocalizations.delegates
+ * （那个属于 material_ui）。改用这两个：
+ *   GlobalWidgetsLocalizations   —— 文本方向，WidgetsApp 自己需要
+ *   GlobalCupertinoLocalizations —— 满足依赖 Cupertino 本地化的第三方组件
+ * ★ 两者都在 flutter_localizations 里，**不依赖 material_ui**。
+ */
+import 'package:flutter_localizations/flutter_localizations.dart'
+    show GlobalWidgetsLocalizations, GlobalCupertinoLocalizations;
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
@@ -1431,7 +1442,7 @@ class _KeepAliveTransitionState extends State<_KeepAliveTransition>
  * ⚠️ **真机是否受影响 = 未验证**（本机无法跑真 arm64：
  *    emulator 37.1.11.0 硬拒 arm64 系统镜像，见 `.probe\t438_root_cause.txt` §6）。
  */
-class _SourinScrollBehavior extends MaterialScrollBehavior {
+class _SourinScrollBehavior extends ScrollBehavior {
   const _SourinScrollBehavior();
 
   @override
@@ -1927,7 +1938,52 @@ class _SourinAppState extends State<SourinApp>
           ),
         ),
       ),
-      child: MaterialApp(
+      child: ScrollConfiguration(
+        behavior: const _SourinScrollBehavior(),
+        // ↓ 下面这块有 700 行：不整体缩进，否则本次 diff 会变成「全文件重排」，
+        //   而这里真正的语义只有一句「WidgetsApp 外面多包一层」。
+        child: WidgetsApp(
+      /*
+       * ★★★ 2026-10-18（M4）：`pageRouteBuilder` **必须给**，否则白屏
+       *
+       * # 真实故障（本轮实测，第一版 M4 就是这么白的）
+       * ```text
+       * 窗口出来了，标题栏也在，但**内容区全空白**。
+       * 日志：Null check operator used on a null value
+       *       #0 _WidgetsAppState._onGenerateRoute (widgets/app.dart:1562)
+       * ```
+       * 原因：`WidgetsApp._onGenerateRoute` 在 `home != null` 时走
+       * `widget.pageRouteBuilder!<dynamic>(...)` —— 它是**可空字段**，
+       * 不传就是 null，而那里用 `!` 强解包 ⇒ 抛异常。
+       *
+       * ★ MaterialApp 之所以不白，是因为它**替你填了**这个字段
+       *   （material/app.dart:1114 用 `MaterialPageRoute`）。
+       *   WidgetsApp 没有默认值 ⇒ 必须自己给。
+       *
+       * # 为什么用 `PageRouteBuilder` 而不是自建 Route
+       * ```text
+       * PageRouteBuilder 在 **flutter/widgets/pages.dart**，不依赖 material_ui。
+       * 它就是 MaterialPageRoute / CupertinoPageRoute 的通用基础，
+       * 只需给 pageBuilder + transitionsBuilder。
+       * ★ 这里用零动画（duration=0），与改前 MaterialPageRoute 的观感
+       *   并不一致 —— 但改前实际上也看不到转场动画
+       *   （页面切换是 ShellPage 内部的 IndexedStack），所以无差异。
+       * ```
+       */
+      pageRouteBuilder: <T>(RouteSettings settings, WidgetBuilder builder) {
+        return PageRouteBuilder<T>(
+          settings: settings,
+          pageBuilder: (context, animation, secondaryAnimation) => builder(context),
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+        );
+      },
+      /*
+       * ★ WidgetsApp 的 `color` 是**必需参数**（app.dart:351 `required this.color`）。
+       *   MaterialApp 把它用作系统 UI 底色（如 Android 任务切换器卡片底）。
+       *   取与内容区同源的底色 —— 与下面 `WindowFrame.backdrop` 同一条取法。
+       */
+      color: AppTheme.floorColor(brightness),
       title: '源影',
       debugShowCheckedModeBanner: false,
       /*
@@ -2019,8 +2075,117 @@ class _SourinAppState extends State<SourinApp>
        *    t435 段10 证明 `Overlay.wrap(hardEdge)` 也触发同类现象。
        *    所以这里只是消掉产品里那一处，不是通用解。
        */
-      scrollBehavior: const _SourinScrollBehavior(),
-      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      /*
+       * ★★★ 2026-10-18（M4）：`scrollBehavior` 从**参数**改成**包裹**
+       *
+       * # 为什么要改写法
+       * ```text
+       * MaterialApp 有 `scrollBehavior` 参数（material/app.dart:264），
+       * 它内部用 `ScrollConfiguration(behavior: ...)` 包一层（:1161）。
+       * 而 **WidgetsApp 没有这个参数**（grep 零命中）
+       * ⇒ 只能自己包。
+       * ```
+       *
+       * # ⚠️ 包在**哪一层**很关键
+       * ```text
+       * 必须包在 WidgetsApp **外面**（与 MaterialApp 的做法一致）。
+       * 若包在 `builder` 里，只能管到 builder 之下的子树，
+       * 而 Navigator 自己的过渡动画（如 Cupertino 的 page transition）
+       * 会读不到它 ⇒ arm64 修复可能失效。
+       * ```
+       */
+      /*
+       * ★★★ 2026-10-21（PR #32 复核线程 1/9）：这段注释**写对了但代码没跟上** ——
+       *   M4 那次把 MaterialApp 换成 WidgetsApp 时，`scrollBehavior` 参数被删掉，
+       *   `ScrollConfiguration` 却没有补上 ⇒ `_SourinScrollBehavior` 只剩一个
+       *   **没有任何实例化点**的类声明，`Clip.none` 从来没挂到任何滚动视图上
+       *   （arm64「内容区全空白」的修复从 2026-10-18 起其实是失效的）。
+       *   而 `zz_t66_scroll_behavior_gate_test` 当时 grep 的是 `'_SourinScrollBehavior()'`，
+       *   正好被构造函数声明满足 ⇒ 假绿。
+       *   ⇒ 现在真的包上（见下面 `child: ScrollConfiguration(`），
+       *     门禁也改成「剥掉注释后必须找得到这个绑定」。
+       */
+      /*
+       * ★★ 2026-10-18（M4）：从 MaterialApp 改成 WidgetsApp后，
+       *   本来的 `GlobalMaterialLocalizations.delegates` 不再适用。
+       *
+       * # 为什么换成这两个
+       * ```text
+       * GlobalWidgetsLocalizations  —— 文本方向（LTR/RTL），WidgetsApp 自己需要
+       * GlobalCupertinoLocalizations —— 满足依赖 Cupertino 本地化的第三方组件
+       * ★ 两者都在 flutter_localizations 里，**不依赖 material_ui**
+       * ```
+       *
+       * # ⚠️ 但 material_ui 仍在 pubspec 里（Owner 2026-10-18 拍板：选 A）
+       * ```text
+       * 目标是「界面不是 Material 风格」，不是「pubspec 字面上不能有 material_ui」。
+       * liquid_glass_widgets 的部分组件（Tooltip 等）会读 MaterialLocalizations
+       * 的**接口**；自建一套最小实现需 40+ 字段且漏一个就运行时 assert 失败。
+       * ⇒ 保留包，但**不用任何 Material 组件**。
+       * ```
+       */
+      /*
+       * ★★★ 2026-10-18（M4 真机验证抓到）：delegates 里**必须**有 Material 的
+       *   delegate，否则弹窗一开就崩。
+       *   （当时挂的是 `DefaultMaterialLocalizations` 的英文版；2026-10-22 换成
+       *   material_ui 1.6.0 的 `GlobalMaterialLocalizations`（真中文），
+       *   见下面「曾经用 DefaultMaterialLocalizations」一段与 decision note）
+       *
+       * # 真实故障（真机隔离启动，`showUpdateDialog` 首次触发）
+       * ```text
+       * Unhandled Exception: Null check operator used on a null value
+       * #0  MaterialLocalizations.of (material_ui/src/material_localizations.dart:718)
+       * #1  new DialogRoute        (material_ui/src/dialog.dart:1906)
+       * #4  showDialog             (material_ui/src/dialog.dart:1699)
+       * #5  showAppDialog          (ui/widgets/overlay_motion.dart:324)
+       * #6  showUpdateDialog       (ui/widgets/update_dialog.dart:32)
+       * #7  AppUpdateBootstrap.run (ui/app_update_bootstrap.dart:52)
+       * ```
+       *
+       * # 根因：**写了理由，但没接线**
+       * ```text
+       * 上面那段注释写着「保留 material_ui 包，因为 Tooltip / DialogRoute
+       * 会读 MaterialLocalizations 的**接口**」—— 理由是对的。
+       * 但 delegates 里只放了 Widgets / Cupertino 两个，
+       * **没有把 Material 的那个放进去** ⇒ 运行时 `of()` 拿到 null ⇒ 崩。
+       * ⇒ 「保留包」≠「提供 delegate」：包在 pubspec 里，
+       *   delegate 没在树上，两者是两件事。
+       * ```
+       *
+       * # 为什么用 `DefaultMaterialLocalizations` 而不是 `GlobalMaterialLocalizations`
+       * ```text
+       * ⚠️ 这段是 2026-10-18 的旧结论，**2026-10-22 已被推翻**，留作历史：
+       * · 旧理由：Global* 来自 flutter_localizations，类型是 flutter 侧的
+       *   MaterialLocalizations；本仓已无 `package:flutter/material.dart`，
+       *   混用会有类型冲突风险
+       * · 旧结论：Default* 来自 material_ui 本身，与 DialogRoute 同源 ⇒ 类型必然一致
+       * · 旧代价：只有英文文案。当时判断「本仓弹窗文案全部是自己写的，无所谓」
+       * ```
+       *
+       * # ★ 推翻它的证据（material_ui 1.6.0）
+       * ```text
+       * ① 上面那条类型理由**不成立**：material_ui 1.6.0 自带
+       *    global_material_localizations.dart:72
+       *      `abstract class GlobalMaterialLocalizations implements MaterialLocalizations`
+       *    —— 这个 GlobalMaterialLocalizations 是 **material_ui 自己**的，
+       *    实现的也是 material_ui 自己的 MaterialLocalizations ⇒ 与 DialogRoute 同源。
+       * ② 旧代价其实不是「无所谓」：Material 真正被读的是**无障碍标签**
+       *    （showDialog → modalBarrierDismissLabel），中文用户开读屏听到的是
+       *    英文 "Dismiss"。这不叫「看不见所以没影响」。
+       * ⇒ 2026-10-22 换成 material_ui 1.6.0 的 GlobalMaterialLocalizations
+       *   （zh 的 modalBarrierDismissLabel = '关闭'）。
+       *   决策全文与回头条件见 .agents/notes/implemented/architecture/
+       *   2026-10-22-material-localizations-use-material-ui-global.md
+       * ```
+       *
+       * ★ 判据：把 `kAppLocalizationsDelegates` 里 Material 那一项去掉后，
+       *   `test/zz_t66_material_localizations_test.dart` 必须变红
+       *   （门禁**真的挂**这组代理到树上，断言 zh_CN 下
+       *   `MaterialLocalizations.of` 非 null 且 modalBarrierDismissLabel 是中文）。
+       *   集合本体在文件末尾的 `kAppLocalizationsDelegates`（提成顶层常量是为了
+       *   门禁能 import 它去真挂，而不是 grep 类名 —— grep 到 ≠ 树上生效）。
+       */
+      localizationsDelegates: kAppLocalizationsDelegates,
       supportedLocales: [Locale("zh", "CN"), Locale("en", "US")],
       /*
        * ★ 两层 theme 都要给（2026-09-22 实测踩到）
@@ -2041,7 +2206,16 @@ class _SourinAppState extends State<SourinApp>
        *    所以走 `buildMaterialTheme()`（见 ui/theme_bridge.dart）
        *    把角色补全。这是必须的第二步，不是可选优化。
        */
-      theme: materialTheme,
+      /*
+       * ★★ 2026-10-18（M4）：**删掉了 `theme: materialTheme`**
+       *
+       * WidgetsApp 没有 `theme` 参数（它不知道什么叫 Material 主题）。
+       * 下面的 `AppThemeHost(data: materialTheme)` 仍然在，
+       * 所以主题源一字未变 —— 只是**没有 Material 组件来消费它**了。
+       *
+       * ⚠️ 若将来要把 `materialTheme` 彻底删掉，
+       *   得先把 `theme_bridge.dart` 里那 31 个 Material 子主题全部接管。
+       */
       /*
        * ══════════════════════════════════════════════════════════════════
        * ★★★ 自绘标题栏必须挂在 **builder 里**（Navigator 之外）
@@ -2514,6 +2688,7 @@ class _SourinAppState extends State<SourinApp>
         coreDataDir: widget.coreDataDir,
         liveChannelStep: _liveChannelStep,
         occlusion: _occlusion.occluders,
+      ),
       ),
       ),
     );
@@ -5172,8 +5347,33 @@ class _ShellPageState extends State<ShellPage>
            * ```
            */
           onWatchLive: (provider, channelId, name) {
-            return Navigator.of(context).push(
-              MaterialPageRoute(
+            /*
+             * ★★★ 2026-10-18（N-PAUSE）：`push<bool>` 把"用户是不是要暂停"带回直播页
+             *
+             * # Owner 原话（逐字）
+             * ```text
+             * > 进直播详情页,点击暂停,出来还在播放,状态没统一,切换页面之后
+             * > 直播应该暂停播放,而不是继续播放
+             * ```
+             *
+             * # 为什么要用 pop 的返回值（而不是新增回调）
+             * ```text
+             * live_page 已经 `await cb(...)` 了这个 Future，
+             * 而 `Navigator.push<T>()` 的返回值就是 pop 时带的 T。
+             * ⇒ 只需把 T 定为 bool，**就能把状态传回去，零新增状态容器**。
+             * ★ 比「加一个 ValueNotifier 穿过三层」少得多，也不担心漏传。
+             * ```
+             *
+             * # 降级行为
+             * ```text
+             * PlayerPage 从**别的入口**进入时（非 onWatchLive），
+             * 那个 push 是 push<void> ⇒ 我们 pop 的布尔会被 **静默丢弃**（不报错）
+             * ⇒ live_page 拿到 null ⇒ 按"未知 ⇒ 不改变 _userPaused"处理（它那边已实现）
+             * ★ 不把 null 当 false：否则"未知"会意外变成"继播"。
+             * ```
+             */
+            return Navigator.of(context).push<bool>(
+              MaterialPageRoute<bool>(
                 builder: (_) => PlayerPage(
                   provider: provider,
                   id: channelId,
@@ -8405,3 +8605,56 @@ Size _probeWindowSize() {
   debugPrint('[T98] 窗口尺寸被 SOURIN_WINDOW_SIZE 覆盖为 ${w}x$h（填充率实验）');
   return Size(w.toDouble(), h.toDouble());
 }
+
+/*
+ * ★★★ App 的本地化代理集合（2026-10-22，PR #32 CodeRabbit 线程 2）
+ *
+ * # 为什么提到**顶层常量**（而不是直接写在 WidgetsApp 参数里）
+ * ```text
+ * 门禁要能把这组代理**真的挂到树上**，断言行为：
+ *   zh_CN 下 `MaterialLocalizations.of(context)` 非 null
+ *   且 `modalBarrierDismissLabel` 是中文（'关闭'），不是英文 'Dismiss'
+ * 「grep 到某个类名」和「它在树上真的生效」是两件事 ——
+ * 上一版门禁就是 grep 类名：把 Material 代理换成英文 Default 版抓不住
+ * （那正是本轮要修的形状）。
+ * ⇒ 提成公开常量，test/zz_t66_material_localizations_test.dart 直接 import 来挂。
+ * ```
+ *
+ * # 三项的分工（⚠️ 不要整包换成 material_ui 的 `GlobalMaterialLocalizations.delegates`）
+ * ```text
+ * GlobalMaterialLocalizations   ← material_ui **1.6.0 自带**
+ *   global_material_localizations.dart:72
+ *     `abstract class GlobalMaterialLocalizations implements MaterialLocalizations`
+ *   ⇒ 实现的是 **material_ui 自己**的 MaterialLocalizations，
+ *     与 DialogRoute / showDialog 期望的类型**同源**（不存在 flutter/material 侧冲突）。
+ *   :650 `static const LocalizationsDelegate<MaterialLocalizations> delegate`
+ *   zh 文案是真的：MaterialLocalizationZh.modalBarrierDismissLabel = '关闭'
+ *     （generated_material_localizations.dart:45298）
+ *   isSupported = kMaterialSupportedLanguages.contains(languageCode)，含 'zh'
+ *     （同文件 :701；'zh' 在 :46601 附近）
+ *
+ * GlobalWidgetsLocalizations    ← flutter_localizations
+ *   WidgetsApp 自己要（文本方向 LTR/RTL）
+ *
+ * GlobalCupertinoLocalizations  ← flutter_localizations（**flutter 侧**类型）
+ *   本仓第三方组件读 flutter 侧 CupertinoLocalizations
+ *
+ * ⚠️ 为什么**不能**用 `GlobalMaterialLocalizations.delegates` 整包：
+ *   那个集合（global_material_localizations.dart:674）里的 Cupertino 代理
+ *   来自 **cupertino_ui** 包（同文件 :5 `import 'package:cupertino_ui/...'`），
+ *   其 CupertinoLocalizations 与 flutter 侧**不是同一个类型**
+ *   ⇒ 整包塞进来会把本仓需要的 flutter 侧 Cupertino 代理顶掉 / 变成多余代理。
+ *   类型是否真的不同：门禁里有一条可执行断言守着（见
+ *   test/zz_t66_material_localizations_test.dart 的「整包换掉会怎样」用例）。
+ * ```
+ *
+ * 决策记录（旧方案 `_AnyLocaleMaterialDelegate` 为什么作废、什么条件下要回头看）：
+ * `.agents/notes/implemented/architecture/2026-10-22-material-localizations-use-material-ui-global.md`
+ */
+const List<LocalizationsDelegate<dynamic>> kAppLocalizationsDelegates =
+    <LocalizationsDelegate<dynamic>>[
+  GlobalMaterialLocalizations.delegate,
+  GlobalWidgetsLocalizations.delegate,
+  GlobalCupertinoLocalizations.delegate,
+];
+

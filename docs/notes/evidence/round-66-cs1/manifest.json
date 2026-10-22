@@ -1,0 +1,22 @@
+{
+    "commit":  "c026ac4c248a44c3e21a61250be27c242d5b1609",
+    "generatedAt":  "2026-10-20T16:50:15Z",
+    "files":  [
+                  {
+                      "name":  "cs1-sync-disabled.png",
+                      "w":  1280,
+                      "h":  900,
+                      "bytes":  84060,
+                      "sha256":  "47a69435a5d4758126c566a50274664be982b495121b4afa89e818eadbc5c5ba",
+                      "criterion":  "CS-1 登录态同步页：widget 层渲染（RenderRepaintBoundary），非真机 exe 截图"
+                  },
+                  {
+                      "name":  "cs1-sync-enabled.png",
+                      "w":  1280,
+                      "h":  900,
+                      "bytes":  87453,
+                      "sha256":  "2b1b0000a7707fc9d523aec45122a1745e93b4a2713854390ffe842ceef4fa74",
+                      "criterion":  "CS-1 登录态同步页：widget 层渲染（RenderRepaintBoundary），非真机 exe 截图"
+                  }
+              ]
+}

@@ -60,6 +60,37 @@ import '../../design/widgets/app_icon_button.dart' show AppSurface;
 import '../../design/widgets/app_ink_well.dart';
 import '../../design/icons/app_icons.dart';
 
+/// ★★★ 第 66 轮 R6：一个可切换的清晰度档（值 + 用户可见标签）
+///
+/// # 为什么单独建这个类型（不直接复用 `StreamCandidate`）
+/// ```text
+/// 控件只需要「值 / 标签」两样，而且下拉的**可用性判定**
+/// （≥2 档才画、DRM 不算）必须在控件里能读到，
+/// ⇒ 把「这一档能不能选」这件事显式做成字段，而不是让控件去猜。
+/// ```
+class LiveQualityOption {
+  const LiveQualityOption({
+    required this.value,
+    required this.label,
+    this.drm = false,
+  });
+
+  /// 选中值（外层拿它去匹配/切换 `_stream`）
+  final String value;
+
+  /// 用户可见标签（如「高清」「标清」）
+  final String label;
+
+  /// ★ 该档是否受保护（受保护 = 点了必然黑屏 ⇒ **不算可用档**）
+  final bool drm;
+
+  /// 这一档**能不能**给用户选。
+  ///
+  /// ⚠️ 与 `StreamCandidate.isPlayable` 同一条纪律：不把「解不了 / 还没解出来」
+  ///   混成一种 —— 但控件层只关心「能不能选」，所以统一收在这里。
+  bool get selectable => !drm && value.isNotEmpty;
+}
+
 /// 直播内嵌播放器
 ///
 /// ★ 生命周期由外部持有（[LiveEmbeddedPlayerState]）——
@@ -77,6 +108,9 @@ class LiveEmbeddedPlayer extends StatefulWidget {
     this.onUserPause,
     this.isTouchOnly = false,
     this.visible,
+    this.qualityOptions = const <LiveQualityOption>[],
+    this.onQualityChanged,
+    this.showDanmakuNote = true,
   });
 
   /// 要播的流；null = 还没选频道 / 正在取流
@@ -139,6 +173,36 @@ class LiveEmbeddedPlayer extends StatefulWidget {
   /// ⇒ 必须由本类自己门控起播。
   /// ```
   final ValueListenable<bool>? visible;
+
+  /// ★★★ 第 66 轮 R6：本台**可切换的清晰度档**（按播放能力过滤后传入）。
+  ///
+  /// # ★ 为什么是「按能力传入」而不是「自己去探」
+  /// ```text
+  /// 裁决②（Lead）：**只有一档可用时不渲染下拉**（不做「只有一项的下拉」）。
+  /// 而"有几档可用"只有**取流结果**知道 —— 宿主层拿不到独立的清晰度列表。
+  /// ⇒ 所以由外层 `live_page.dart` 从它已经取到的 `_streams` 里筛出可播档传进来；
+  ///   本组件只负责「≥2 才画」（见 [_LiveQualityControl]）。
+  /// ```
+  ///
+  /// ⚠️ 空列表（默认）⇒ **永远不画下拉** —— 这是当前直播链路的真实常态
+  ///   （实测直播的 `quality` 恒为 null，见计划 R6 取证）。
+  final List<LiveQualityOption> qualityOptions;
+
+  /// 用户换清晰度 ⇒ 回调（外层去切 `_stream`）
+  final ValueChanged<LiveQualityOption>? onQualityChanged;
+
+  /// ★ 是否显示「直播弹幕不可用」的说明句（默认显示）。
+  ///
+  /// # ★ 为什么直播页默认要说这句话
+  /// ```text
+  /// 裁决①（Lead）：弹幕入口在直播页是**假入口**（恒空 + 静默失败）⇒ 隐藏它，
+  /// ★ 但**不能静默**：用户能看到直播页、却找不到弹幕控件时，
+  ///   页面必须给一句可解释的话说明「为什么这里没有弹幕」。
+  /// ```
+  ///
+  /// ⇒ 本组件**永远不提供弹幕开关**（没有 channel 弹幕数据源），
+  ///   只在控件区显示一行说明。留这个开关是为了让测试能显式关掉它做对照。
+  final bool showDanmakuNote;
 
   @override
   State<LiveEmbeddedPlayer> createState() => LiveEmbeddedPlayerState();
@@ -1799,6 +1863,31 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
 
     /*
      * ══════════════════════════════════════════════════════════════════
+     *  ★★★ 第 66 轮 R6：清晰度下拉的「能不能画」在**这里**一次算清
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * 裁决②（Lead）：**只有一档可用时不渲染下拉**（不做「只有一项的下拉」）。
+     * ```text
+     * 判据 = 「可选档数(selectable) ≥ 2」
+     *   · selectable = !drm（受保护点了必然黑屏 ⇒ 不算）
+     *   · 空列表 / 仅 1 档 / 全 DRM ⇒ **都不画下拉**
+     * ★ 这与直播链路现状一致：实测直播的 `quality` 恒为 null
+     *   ⇒ 正常情况下 selectable 长度 ≤1 ⇒ 永远不画（= 不做假控件）。
+     * ```
+     */
+    final selectableQuality = [
+      for (final o in widget.qualityOptions)
+        if (o.selectable) o,
+    ];
+    final currentQuality = selectableQuality.firstWhere(
+      (o) => o.value == widget.stream?.url,
+      orElse: () => selectableQuality.isEmpty
+          ? const LiveQualityOption(value: '', label: '')
+          : selectableQuality.first,
+    );
+
+    /*
+     * ══════════════════════════════════════════════════════════════════
      * ★★★ 用户要求【B】：直播页播放器支持**双击进入全屏**
      * ══════════════════════════════════════════════════════════════════
      *
@@ -1974,8 +2063,48 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
                 },
                 onMute: toggleMute,
                 accent: colors.primary,
+                // ★ R6：清晰度下拉（≥2 可选档才画，判据在上面一次算清）
+                qualityOptions: selectableQuality,
+                currentQuality: currentQuality,
+                onQualityChanged: widget.onQualityChanged,
               ),
             ),
+
+            /*
+             * ── ★★★ R6：直播弹幕「不可用」的说明句（裁决① 的另一半）──
+             *
+             * # 为什么要有这一行
+             * ```text
+             * 弹幕入口在直播页是**假入口**：保留着、恒空、且**静默**失败
+             * ⇒ 裁决是**隐藏它**（不提供任何弹幕开关）。
+             * ★ 但「隐藏」不许等于「静默」——
+             *   用户能看到直播页、却找不到弹幕控件时，
+             *   页面必须给一句**可解释**的话说明为什么这里没有弹幕。
+             * ```
+             *
+             * # 为什么挂在**播放器下沿**而不是页面上别处
+             * ```text
+             * 它解释的是「这个播放器上没有弹幕」，
+             * 放页头/列表里会让人以为是「整个应用都不支持弹幕」——那就说错了。
+             * ```
+             *
+             * ⚠️ 文案纪律：用户可见文字**不许**出现开发用语
+             *   （「修复」「缺陷」「task-xx」「探针」「Owner」…），
+             *   也不许出现任何具体站点名（见 `t98_no_site_names_test.dart`）。
+             */
+            /*
+             * ★ 显示条件用 `widget.stream != null`（**本台已选中**），
+             *   不是 `c != null`（解码器已就绪）：
+             *   后者要真的初始化解码器才有值（真 IO），而「这一台没有弹幕」
+             *   是**取流那一刻**就知道的事实，不该等解码器起来才说。
+             */
+            if (widget.showDanmakuNote && widget.stream != null)
+              const Positioned(
+                left: Sp.x3,
+                right: Sp.x3,
+                bottom: Sp.x8,
+                child: _DanmakuUnavailableNote(),
+              ),
           ],
         ),
         ),
@@ -2151,6 +2280,9 @@ class _EmbedBar extends StatelessWidget {
     required this.onTogglePlay,
     required this.onMute,
     required this.accent,
+    required this.qualityOptions,
+    required this.currentQuality,
+    required this.onQualityChanged,
   });
 
   final bool playing;
@@ -2164,6 +2296,18 @@ class _EmbedBar extends StatelessWidget {
   final Future<void> Function() onTogglePlay;
   final Future<void> Function() onMute;
   final Color accent;
+
+  /// ★ R6：**已筛过**的可选清晰度档（`selectableQuality`，见 build 里的判据）。
+  ///
+  /// ⚠️ 这里收的是**筛完**的列表，不是原始列表 ——
+  ///   「≥2 才画」这个判定**只允许有一个地方**算（build 顶部），
+  ///   否则将来两处各算一次、规则漂移，就又变成假控件。
+  final List<LiveQualityOption> qualityOptions;
+
+  /// 当前选中档（与 [qualityOptions] 同源，可为空占位）
+  final LiveQualityOption currentQuality;
+
+  final ValueChanged<LiveQualityOption>? onQualityChanged;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -2215,7 +2359,140 @@ class _EmbedBar extends StatelessWidget {
               tooltip: muted ? '取消静音' : '静音',
               onTap: () => unawaited(onMute()),
             ),
+
+            /*
+             * ★★★ R6：清晰度按钮 —— **≥2 可选档才画**
+             *
+             * # 为什么放在这里（和播放/静音并排）
+             * ```text
+             * 直播播放器的"最小控制集"就是这一排；
+             * 清晰度是**播放中要切**的东西 ⇒ 与播放/静音同排，
+             * 而不是塞进页面别处（那是 `live_page` 的线路 chip 的职责）。
+             * ```
+             *
+             * ★ 关键：`qualityOptions` 传进来时**已经筛过**（见 build 顶部），
+             *   所以这里只需要判 `length >= 2` ⇒ 不够就不画。
+             */
+            if (qualityOptions.length >= 2) ...[
+              const SizedBox(width: Sp.x2),
+              _LiveQualityButton(
+                options: qualityOptions,
+                current: currentQuality,
+                onPick: (o) => onQualityChanged?.call(o),
+              ),
+            ],
           ],
+        ),
+      );
+}
+
+/// ★★★ R6：直播「弹幕不可用」说明句（裁决① 的「不能静默」那一半）
+///
+/// # ★ 文案为什么这么写（三条纪律都在这里落地）
+/// ```text
+/// ① **不许**出现开发用语（修复 / 缺陷 / task-xx / 探针 / Owner …）
+///    ⇒ 只说「这个来源不支持弹幕」这一件用户能理解的事。
+/// ② **不许**出现任何具体视频网站名（`t98_no_site_names_test.dart` 守着）
+///    ⇒ 只说「这个来源」。
+/// ③ **不许**撒谎：本组件**不提供**弹幕开关（没有 channel 弹幕数据源），
+///    所以这句话说的是「这里没有弹幕可用」，而不是「弹幕坏了」——
+///    后者会指向一个并不存在的故障。
+/// ```
+class _DanmakuUnavailableNote extends StatelessWidget {
+  const _DanmakuUnavailableNote();
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+        // ★ 说明文字不该挡控件（点击穿透到播放/静音/清晰度）
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            Flexible(
+              child: Text(
+                '这个来源暂无弹幕',
+                textAlign: TextAlign.end,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.72),
+                  fontSize: FontSizes.cap,
+                  shadows: const [
+                    Shadow(blurRadius: 6, color: Colors.black54),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: Sp.x2),
+            Icon(
+              AppIcons.comments_disabled,
+              size: 14,
+              color: Colors.white.withValues(alpha: 0.72),
+            ),
+          ],
+        ),
+      );
+}
+
+/// ★★★ R6：清晰度下拉按钮（`MenuAnchor`，与 `live_page._BarDropdown` 同款）
+///
+/// ⚠️ 为什么**不**用 `PopupMenuButton`：同 `_BarDropdown` 的理由 ——
+///   它会以点按处为中心、宽度不可控，在内嵌播放器的小宽度里会跑出边界。
+class _LiveQualityButton extends StatelessWidget {
+  const _LiveQualityButton({
+    required this.options,
+    required this.current,
+    required this.onPick,
+  });
+
+  final List<LiveQualityOption> options;
+  final LiveQualityOption current;
+  final ValueChanged<LiveQualityOption> onPick;
+
+  @override
+  Widget build(BuildContext context) => MenuAnchor(
+        menuChildren: [
+          // ★★ 2026-10-19（Lead 修自审 P1-4）：key 里**加序号**。
+          //
+          // 改前只用 `o.value` ⇒ 上游一旦返回**两条相同 url** 的档位
+          // （`get_live_stream` 在 Rust 侧不去重，`_streams` 原样落），
+          // 就会抛 `Duplicate keys found`，**整个下拉打不开**。
+          //
+          // ⇒ 这里用 `indexed` 而不是循环变量，是为了让 key 与**列表位置**绑定
+          //   而不是与内容绑定；即使 url 重复也能区分。
+          for (final (i, o) in options.indexed)
+            MenuItemButton(
+              key: ValueKey('live-quality-opt-$i-${o.value}'),
+              onPressed: () => onPick(o),
+              style: MenuItemButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+              ),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 16,
+                    child: o.value == current.value
+                        ? const Icon(AppIcons.check, size: 13)
+                        : null,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(o.label, style: const TextStyle(fontSize: FontSizes.cap)),
+                ],
+              ),
+            ),
+        ],
+        builder: (ctx, controller, _) => Tooltip(
+          message: '清晰度',
+          child: AppInkWell(
+            onTap: () => controller.isOpen ? controller.close() : controller.open(),
+            child: AppSurface(
+              color: Colors.black.withValues(alpha: 0.42),
+              borderRadius: BorderRadius.circular(999),
+              child: const Padding(
+                padding: EdgeInsets.all(6),
+                child: Icon(AppIcons.high_quality, color: Colors.white, size: 20),
+              ),
+            ),
+          ),
         ),
       );
 }

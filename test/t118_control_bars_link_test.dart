@@ -653,9 +653,42 @@ void main() {
       );
       // 顶栏的挂载点必须**没有**外层 if —— 否则隐藏时它整棵被卸下，
       // 260ms 的淡出根本没机会播（一帧硬切）。
-      final i = src.indexOf('                    _TopBar(');
-      expect(i, greaterThan(0), reason: '★ `_TopBar(` 的挂载点缩进变了（找不到）');
-      final before = src.substring(i - 400, i);
+      //
+      // ══════════════════════════════════════════════════════════════
+      // ★★★ 2026-10-21：**不许钉缩进**（这里原来是 20 个空格的字面量）
+      // ══════════════════════════════════════════════════════════════
+      //
+      // 改前：
+      // ```dart
+      // final i = src.indexOf('                    _TopBar(');  // 20 空格
+      // ```
+      // 实测（本轮 N11 `ddb0794` 底栏改造）把挂载点从
+      // ```text
+      //                     _TopBar(          ← 以缩进开头
+      // ```
+      // 改成
+      // ```text
+      // builder: (context, _) => _TopBar(     ← 在行尾
+      // ```
+      // ⇒ `indexOf` 返回 **-1** ⇒ 报 `Expected: >0, Actual: -1`
+      // ⇒ **判据失配，不是产品坏了**（顶栏仍然是常挂的，功能没变）。
+      //
+      // ★ 教训：**钉缩进/空格等于钉格式化器的输出，那不是语义。**
+      //   判据应钉「`_TopBar(` 出现了，且它前面 400 字符里没有 `if (`」，
+      //   这与它缩进几个空格、是否在行尾**无关**。
+      //   今天同族已经出现过两次（同文件 `e363d2c` 修过另一条）。
+      //
+      // ⚠️ 用正则而不是裸 `indexOf('_TopBar(')`：
+      //   `_TopBar(` 在注释里也可能出现（本文件测的就是源码文本），
+      //   而注释里的出现**不该**被当成"挂载点"。
+      //   这里取**第一个**真正的构造点 —— 注释里的那种通常不跟在 `=>` / `:` 后。
+      //   实测当前位置：`builder: (context, _) => _TopBar(`。
+      final ctor = RegExp(r'(_TopBar\()').firstMatch(src);
+      expect(ctor, isNotNull,
+          reason: '★ 源码里找不到 `_TopBar(` —— 顶栏被整个删掉/改名了？');
+      final i = ctor!.start;
+      expect(i, greaterThan(0), reason: '★ `_TopBar(` 的挂载点找不到');
+      final before = src.substring(i - 400 < 0 ? 0 : i - 400, i);
       expect(
         before.contains('if ('),
         isFalse,
@@ -742,12 +775,72 @@ void main() {
         isTrue,
         reason: '★★ 浮层打开时不许抢返回（与 `_canUseFloatingBack` 同一条纪律）',
       );
+      /*
+       * ★★★ 2026-10-18（N11 ddb0794 之后修判据）：
+       *
+       * ```text
+       * 原断言：expect(src.contains('if (!_chromeVisible && !keepForFade) {'), isTrue)
+       * **已过时** —— N11 把 `keepForFade` 按设计删掉了
+       * （职责被 `_bottomOccupied` + ListenableBuilder 吸收）。
+       * 实测 grep -c ⇒ 0，唯一出现处是注释。
+       *
+       * ⚠️ 本文件整个被 skip（dart_test.yaml 的 native-media 标签），
+       * 所以这处过时**默认暴露不出来**：
+       *   单独跑 ⇒ `+0 ~1: All tests skipped.`（有大字提示）
+       *   全量跑 ⇒ grep "All tests skipped" = **0**，只体现为 `~N` 计数器 +1
+       * ⇒ 比"红"更隐蔽：红会被人看见，skip 不会。
+       *
+       * 实证（`--run-skipped --plain-name "⑧"`）：
+       *   Expected: true  Actual: <false>
+       *   t118_control_bars_link_test.dart 745:7
+       * ⇒ **确定过时 + 确定会红**，不是"可能过时"。
+       * ```
+       *
+       * ⇒ 照 `t27_w13_chrome_ssot_test.dart:216-228` 的正确范本改成两条：
+       *   ① 反向断言：不许用 `_chromeVisible` 决定卸下底栏（否则第二个真源）
+       *   ② 实质断言：只在占据态才卸下
+       * 守的是**安全属性**，实现再换写法也不红。
+       *
+       * ★ 验证方式（默认命令跑不到）：
+       *   flutter test test/t118_control_bars_link_test.dart \
+       *     --run-skipped --plain-name "⑧" --concurrency=1
+       */
+      /*
+       * ⚠️ 必须**先剥注释**再断言 —— 否则会命中 player_page.dart:15391 的
+       * 那行注释（它记录了「改前是什么」，是历史记录，**不该删**）。
+       *
+       * ★ 我第一次写这条时忘了剥注释，结果反向断言命中注释里的
+       *   `if (!_chromeVisible && !keepForFade) return shrink` ⇒ 假红。
+       *   这本轮已有同族教训（"命中注释"是 AGENTS.md §8 记的坑之一），
+       *   我自己又踩了一次。
+       */
+      String stripComments(String s) {
+        final buf = StringBuffer();
+        for (final line in s.split('\n')) {
+          final t = line.trimLeft();
+          if (t.startsWith('*') ||
+              t.startsWith('//') ||
+              t.startsWith('/*') ||
+              t.startsWith('*/')) {
+            continue;
+          }
+          buf.writeln(line);
+        }
+        return buf.toString();
+      }
+
+      final codeOnly = stripComments(src);
+
       expect(
-        src.contains('if (!_chromeVisible && !keepForFade) {'),
-        isTrue,
-        reason: '★ 底栏的显隐必须读唯一真源 `_chromeVisible`（T27-13）——'
-            '两条读的必须是同一个真源；`keepForFade` 是"淡出窗口内留在树上"那半支',
+        RegExp(r'if\s*\(\s*!\s*_chromeVisible').hasMatch(codeOnly),
+        isFalse,
+        reason: '★★ 不许用 `_chromeVisible` 决定要不要**卸下**底栏。'
+            '底栏显隐的真源是 `_bottomFade`，`_chromeVisible` 若又当装卸判据 '
+            '⇒ 就是第二个真源 ⇒ 分裂复发。',
       );
+      expect(codeOnly.contains('if (_bottomOccupied) {'), isTrue,
+          reason: '★★ 底栏**只在占据态**才卸下。'
+              '占据态那块归占据者 —— 留在树里会叠字 + 抢点击。');
     });
 
     test('⑨ 隐藏路径真的驱动动画（_autoHideNow 里必须调 _applyControlsMotion）', () {

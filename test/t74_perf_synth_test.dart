@@ -427,10 +427,51 @@ void main() {
   testWidgets('PB 设置页：滚动重建面 / 墙钟（核心不可用也须建出来）',
       (t) async {
     await sizeView(t, _size);
-    await t.pumpWidget(host(const SettingsPage(), _size));
+    /*
+     * ★★★ 2026-10-21：`pumpWidget` 必须放进 `runAsync`
+     *
+     * # 改前现象（本用例唯一那条红）
+     * ```text
+     * PB|设置页：ListView=0 CircularProgressIndicator=0 ErrorWidget=0
+     *            AppLoading=1 核心isLoaded=true
+     * ⇒ 页面上报「没建出来」，但真相是**停在加载态**。
+     * ```
+     *
+     * # 根因
+     * ```text
+     * settings_page.dart:467  initState 里
+     *   addPostFrameCallback((_) => loadAll());
+     * loadAll() 第一句 setState(_loading = true)，随后
+     *   await Future.wait([listProviders(), listPlugins(), remoteStatus()])
+     * 这三个都是真 FFI（SourinCore.callAsync）⇒ 返回**真实** Future
+     * 而 tester.pump() 只推进 fake clock ⇒ 驱动不了真实 IO
+     * ⇒ `_loading` 永远是 true ⇒ build() 走 `if (_loading)` 分支
+     *   ⇒ 渲染 `AppLoading` 而不是 ListView
+     * ```
+     *
+     * # 判据（与 t75 / t80a 同一条）
+     * ```text
+     * 先问「这个 Future 是在哪种 clock 里创建的」，
+     * 再问「页面是不是真没建」。
+     * ```
+     * 探针实测（同时刻两次对照）：
+     * ```text
+     * 裸 pump（pump100ms 后）      ⇒ ListView=0 AppLoading=1
+     * runAsync + 轮询到 ListView>0 ⇒ ListView=1 AppLoading=0
+     * ```
+     * ⚠️ 不能先 `pumpWidget` 再 `runAsync` —— Future 已在 fake clock
+     *    环境里创建，之后进 runAsync 也救不回来。必须把 `pumpWidget`
+     *    本身放进去。
+     */
+    await t.runAsync(() async {
+      await t.pumpWidget(host(const SettingsPage(), _size));
+      for (var i = 0; i < 60; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await t.pump();
+        if (find.byType(ListView).evaluate().isNotEmpty) break;
+      }
+    });
     await t.pump();
-    await t.pump();
-    await t.pump(const Duration(milliseconds: 100));
 
     final noise = _claimLogged(t);
     if (noise.isNotEmpty) {

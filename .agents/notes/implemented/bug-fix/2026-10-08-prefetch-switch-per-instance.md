@@ -13,6 +13,8 @@ Status: implemented
 
 该开关在**构造** `StreamProxy` 时读一次并存进实例字段。
 
+Independent: 预取开关的作用域修正（按实例而非进程）。单点缺陷，无上位决定。
+
 ## Alternatives considered
 
 - **让测试串行执行来规避干扰** —— 它最强的论据是零代码改动：不碰产品行为，

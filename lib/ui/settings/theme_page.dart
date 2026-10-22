@@ -197,6 +197,11 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
     await showAppDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
+        // R4-EXCEPTION: content 是整个主题预览面板（重内容），且用了
+        // contentPadding.zero + 自定义 backgroundColor: p.palette.card。
+        // AppGlassDialog 内边距写死 fromLTRB(24,22,24,16) 且没有 backgroundColor
+        // 参数 ⇒ 换过去会把预览塞进 24px 边距、玻璃底盖掉调色板底色（会变丑）。
+        // ★ 待办：组件补 padding/backgroundColor 两个可选参数后才可收拢。
         backgroundColor: p.palette.card,
         title: Text(
           '预览 · ${p.name}',
@@ -262,6 +267,10 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
     final src = await showAppDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
+        // R4-EXCEPTION: content 是**表单**（TextField，maxLines:10/minLines:6 的
+        // JSON 粘贴框，外面还包了 SizedBox(width:460)）⇒ 不是「纯文本确认框」。
+        // AppGlassDialog 内容区被 DefaultTextStyle 强制 textAlign:center，
+        // 多行输入框居中会很难用 ⇒ 属组件能力缺口。
         title: const Text('粘贴主题包 JSON'),
         content: SizedBox(
           width: 460,

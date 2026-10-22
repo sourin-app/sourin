@@ -13,6 +13,8 @@ Status: implemented
 数据源解析、插件沙箱、流代理、云同步、数据库都在 `rust/sourin_core`（cdylib），
 两侧用 **dart:ffi 直接调用**，不经过任何 IPC 层。Rust 侧只导出 7 个符号，命令走 JSON。
 
+Independent: 项目根架构：Rust 做业务、Flutter 只做 UI。它是一切笔记的前提，没有可挂靠的既有决定。
+
 ## Alternatives considered
 
 - **Dart 侧直写业务逻辑** —— 它最强的论据是生态统一：一处语言、一处调试，

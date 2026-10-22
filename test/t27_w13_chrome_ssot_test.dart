@@ -167,20 +167,64 @@ void main() {
     );
   });
 
-  test('A3 底栏显隐读同一真源（淡出窗口内留树）', () {
+  test('A3 底栏显隐读同一真源（且卸下与否**只由占据态**决定）', () {
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ N11（2026-10-18）：本用例从「钉实现细节」改成「钉契约」
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 改前（逐字钉住实现细节，已删）
+     * ```text
+     * expect(page.contains('if (!_chromeVisible && !keepForFade) {'), isTrue);
+     * expect(RegExp(r'keepForFade =[\s\S]{0,120}?_controlsAnim\.value\s*>\s*0')
+     *          .hasMatch(page), isTrue);
+     * ```
+     * ⇒ 它钉的是 `keepForFade` 这个**变量名**。
+     *
+     * # 为什么必须改（不是"为了让 N11 过"而放松）
+     * ```text
+     * 改前底栏是 `shrink ⇄ child` 装卸：
+     *   可见 或 淡出中 ⇒ 留在树上；否则 ⇒ shrink
+     * ⇒ 控制条一收起就**摘掉整棵 333 行子树**，鼠标一动又叫回来
+     * ⇒ 实测重建 398 个元素 / 85ms ⇒ Owner N11 的卡顿。
+     *
+     * N11 的修法让 `keepForFade` **不再需要**：
+     *   底栏恒挂，淡出由 `PlayerBottomBar` 内部的
+     *   `AnimatedBuilder(fade) → IgnorePointer → Opacity` 完成
+     *   （`player/player_bottom_bar.dart:748-754`），
+     *   而 `fade` 就是 `_bottomFade`（与顶栏**同一个** `_controlsFade`）。
+     * ⇒ 变量消失**恰恰是改进**，不是退步。
+     * ```
+     *
+     * # 现在守什么（契约，不绑实现）
+     * ```text
+     * ① ★ 不许用 `_chromeVisible` 决定"要不要卸下底栏"
+     *    —— 这正是原用例的**真实意图**（显隐只有一个真源，
+     *       不能让底栏自己再算一套门控来决定装卸）。
+     *    改前它靠"必须有 keepForFade"间接表达；现在直接反向断言。
+     * ② 占据态仍然卸下（`_bottomOccupied` ⇒ shrink）
+     *    —— 与 A5 互补：A5 守 `_bottomFade` 钉 dismissed，
+     *       本条守**结构上真的卸下**。
+     * ```
+     * ★ 这两条在**改前实现**下也会红（改前正是用 `_chromeVisible` 决定装卸）
+     *   ⇒ 门禁有鉴别力，不是"改成怎样都绿"的废门禁。
+     *   验证记录见交付说明（旧实现红 / 新实现绿 / 两次注入红）。
+     */
     expect(
-      page.contains('if (!_chromeVisible && !keepForFade) {'),
-      isTrue,
-      reason: '★★ 底栏显隐必须读唯一真源 `_chromeVisible`；'
-          '`keepForFade` 是「隐藏后留在树上把动画播完」那一半（见 C 组）',
+      RegExp(r'if\s*\(\s*!\s*_chromeVisible').hasMatch(page),
+      isFalse,
+      reason: '★★ 不许用 `_chromeVisible` 决定要不要**卸下**底栏。'
+          '底栏显隐的真源是 `_bottomFade`（与顶栏同一个 `_controlsFade` 实例），'
+          '`_chromeVisible` 若又在这里当装卸判据 ⇒ 就是第二个真源 ⇒ 分裂复发。'
+          '★ 改前正是 `if (!_chromeVisible && !keepForFade) return shrink;`',
     );
-    // `keepForFade` 必须由 `_controlsAnim` 驱动（而不是别的计时器/魔数）。
     expect(
-      RegExp(r'keepForFade =[\s\S]{0,120}?_controlsAnim\.value\s*>\s*0')
-          .hasMatch(page),
+      page.contains('if (_bottomOccupied) {'),
       isTrue,
-      reason: '★ 底栏留树窗口必须由 `_controlsAnim.value > 0` 决定单——'
-          '换别的判据就会出现「底栏留到动画结束之后」或「提前卸下」',
+      reason: '★★ 底栏**只在占据态**才卸下（`if (_bottomOccupied) { '
+          'return const SizedBox.shrink(); }`）。'
+          '占据态 = 错误层/选集/换源/设置/弹幕/字幕/直播频道/音频提示/画面死亡，'
+          '那块归占据者 —— 留在树里会叠字 + 抢点击。',
     );
   });
 

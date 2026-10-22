@@ -14,6 +14,8 @@ Status: implemented
 
 **不翻案。**
 
+Independent: 红基线要用纯净 worktree。与上一条同域但讲的是**取证条件**，不是同一决定。
+
 ## Alternatives considered
 
 - **`git stash` 后跑** —— 它最强的论据是就地完成、不必另建目录。

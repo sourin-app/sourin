@@ -556,6 +556,7 @@ class DanmakuException implements Exception {
     this.errorMessage = '',
     this.body = '',
     this.uri = '',
+    this.resolvedAddress = '',
     this.hint,
   });
 
@@ -579,6 +580,22 @@ class DanmakuException implements Exception {
 
   /// 出错的请求地址（不含签名，可以安全展示）
   final String uri;
+
+  /// 这次失败时**本机解析到、并去连的那个地址**（空串 = 没拿到）
+  ///
+  /// ★★★ 2026-10-19（R3-③/⑦ 收尾）：只来自 `SocketException.address`。
+  ///
+  /// # 它为什么存在（不是为了"多打印一行"）
+  /// ```text
+  /// 「DNS 被劫持」与「服务没起来」在**连接层是同一个现象**（都连不上），
+  /// 区别只在"连的那个地址对不对"。而那个地址**本来就在异常里**，
+  /// 改前被 `catch (e)` 丢掉了 ⇒ UI 只能给出同一句话。
+  /// ⇒ 把它带出来，UI 才能把两件事分开说（见 DanmakuProbeReport）。
+  ///
+  /// ⚠️ 隐私：它是一个 IP，不是 URL，**不含 token**，与 [uri] 同级可展示。
+  /// ⚠️ 语义边界：只有"连不上"那一支有值；超时（TimeoutException）
+  ///    分支拿不到地址 ⇒ 空串。**空串必须被当成"没有证据"，不能当成"正常"。**
+  final String resolvedAddress;
 
   /// 「为什么失败 + 怎么办」的中文动作，null = 没有比 [message] 更具体的话可说
   ///
@@ -665,11 +682,33 @@ abstract class DanmakuTransport {
 /// connectionTimeout        —— 移动网络下别无限等
 /// ```
 class IoDanmakuTransport implements DanmakuTransport {
-  IoDanmakuTransport({HttpClient? client, this.timeout = const Duration(seconds: 15)})
-      : _client = client ??
+  /// [findProxy] 是 `HttpClient.findProxy` 的**直接值**（如
+  /// `'PROXY 127.0.0.1:7890'` / `'DIRECT'`）；null = 直连。
+  ///
+  /// # ★★★ 为什么 null 也要**显式**设成 `'DIRECT'`（而不是"不设"）
+  /// ```text
+  /// `HttpClient.findProxy` **一旦被赋值**，Dart 就完全按这个回调决定走向，
+  /// 不再看 `HTTPS_PROXY` / `HTTP_PROXY` 等环境变量。
+  /// 反之**不赋值**时，Dart 会去读环境变量 —— 也就是说：
+  ///
+  ///   不设 ⇒ 行为取决于用户 shell 里有没有 HTTPS_PROXY
+  ///        ⇒ "同一个包在不同机器上表现不同"
+  ///        ⇒ 这正是"时好时坏"的来源（本机 7890 代理下 HandshakeException）
+  ///   显式 DIRECT ⇒ 无论环境变量是什么，都走直连 ⇒ **可预期**
+  ///
+  /// ⇒ 要让「用户选直连」成为**真的直连**，就必须显式给 'DIRECT'。
+  ///    用"不设"来表达直连是错的：那是"让别人替我决定"。
+  /// ```
+  IoDanmakuTransport({
+    HttpClient? client,
+    this.timeout = const Duration(seconds: 15),
+    String? findProxy,
+  }) : _client = client ??
             (HttpClient()
               ..connectionTimeout = const Duration(seconds: 10)
-              ..userAgent = 'sourin-flutter-spike/danmaku');
+              ..userAgent = 'sourin-flutter-spike/danmaku'
+              // 无条件赋值（见构造函数文档：null ⇒ 显式 'DIRECT'）
+              ..findProxy = ((String? p) => (Uri _) => p ?? 'DIRECT')(findProxy));
 
   final HttpClient _client;
   final Duration timeout;
@@ -707,6 +746,181 @@ class IoDanmakuTransport implements DanmakuTransport {
 
   @override
   void close() => _client.close(force: true);
+}
+
+// -----------------------------------------------------------------------
+// 弹幕代理（Owner 要 a+b：传输层支持 + 配置页开关）
+// -----------------------------------------------------------------------
+
+/// 弹幕请求的代理模式（与 `UiPrefs.danmakuProxyMode` 的字符串一一对应）。
+///
+/// # 为什么是**三个**而不是"开/关"
+/// ```text
+/// Owner 原话要的是「可以在配置页面让他选择是否走代理」。
+/// 而"是否"在实际网络里至少是三种情况：
+///   ① 直连可用（多数网络）           ⇒ 选 direct
+///   ② 必须跟随系统那一套（公司/校园）  ⇒ 选 system
+///   ③ 只有一个特定端口（本机 7890）    ⇒ 选 custom
+/// ⇒ 只给"开关"会让 ②③ 的用户没法表达，
+///   而他们正是最需要这个功能的人（本机 *.vercel.app 被屏蔽就是 ③）。
+/// ```
+enum DanmakuProxyMode {
+  /// 直连。**显式**下发 `DIRECT`，不受环境变量影响。
+  direct,
+
+  /// 跟随系统代理。**下发 `null` 回调之外的语义**见下：
+  /// 注意 Dart 没有"跟随系统"这个 API —— 它的默认行为是
+  /// 「读 `HTTPS_PROXY`/`HTTP_PROXY` 环境变量」。
+  /// ⇒ 本模式 = 把 `findProxy` 设为「读环境变量」的行为，
+  ///    即**保留改动前的隐式行为**，只是现在由用户**主动选择**才发生。
+  system,
+
+  /// 自定义代理地址（如 `http://127.0.0.1:7890`）。
+  custom,
+}
+
+/// 把 [DanmakuProxyMode] + 地址解析成 `HttpClient.findProxy` 的**直接值**。
+///
+/// 返回值语义（三个值对应三种行为，缺一不可）：
+/// ```text
+/// 'DIRECT'                ⇒ 直连，且**不读**环境变量
+/// 'PROXY host:port'       ⇒ 走这个代理
+/// null                    ⇒ ★ 不设置 findProxy ⇒ Dart 自己读环境变量
+///                            （= "跟随系统"，这是 Dart 唯一能表达它的方式）
+/// ```
+///
+/// # ★ 为什么 system 用 `null` 而 direct 用 `'DIRECT'`
+/// ```text
+/// 这两个必须**不同**，否则"直连"和"跟随系统"在环境变量存在时会变成同一件事，
+/// 用户的选择就白给了。
+///
+///   direct ⇒ 显式 'DIRECT' ⇒ 有 HTTPS_PROXY 也**照样直连**
+///   system ⇒ null         ⇒ 有 HTTPS_PROXY 就走它，没有就直连
+/// ```
+///
+/// # 解析失败怎么办
+/// ```text
+/// `custom` 但地址空/解析不出 host:port ⇒ 退回直连（`'DIRECT'`），
+/// 并让调用方**能感知**（见 [diagnoseDanmakuProxy]）。
+/// ★ 不能静默退回"跟随系统" —— 那会让"我配了代理却没生效"变成
+///   "它偷偷用了别的代理"，两种失败的表现完全不同，难以排查。
+/// ```
+String? resolveDanmakuFindProxy({
+  required DanmakuProxyMode mode,
+  String url = '',
+}) {
+  switch (mode) {
+    case DanmakuProxyMode.direct:
+      return 'DIRECT';
+    case DanmakuProxyMode.system:
+      // ★ 注意：不是 'DIRECT'！见上面那段文档。
+      return null;
+    case DanmakuProxyMode.custom:
+      final p = _parseProxyHostPort(url);
+      // 地址不可用 ⇒ 退回显式直连（不是 null，理由见上）
+      return p == null ? 'DIRECT' : 'PROXY $p';
+  }
+}
+
+/// `http://127.0.0.1:7890` / `127.0.0.1:7890` ⇒ `'h:7890'`
+///
+/// 失败返回 null（调用方据此退回直连）。
+///
+/// # ★★★ 为什么**拒绝** `socks5://`（2026-10-18 实测，不是推测）
+/// ```text
+/// 实测（本机 HTTP 服务 + 假 socks 端口，真发请求）：
+///   DIRECT                   ⇒ OK status=200        （target 命中 +1）
+///   SOCKS5 127.0.0.1:<port>  ⇒ HttpException:
+///                              "Invalid proxy configuration SOCKS5 ..."
+///                              target 命中 +0，假 socks 端口 accept +0
+///
+/// ⇒ `dart:io` 的 `HttpClient.findProxy` **只认 DIRECT / PROXY**。
+///   `SOCKS5` / `SOCKS` / `HTTPS` 这些字符串**一律**抛
+///   `HttpException: Invalid proxy configuration`，且**根本不建连接**。
+/// ```
+///
+/// # 为什么改前那版是**错的**
+/// ```text
+/// 改前把它解析成 `PROXY host:1080` 下发 —— 会让用户以为在用 socks5，
+/// 实际走的是**明文 HTTP 代理协议**打到对方的 socks 端口：
+///   · socks 服务端看不懂 HTTP 代理请求 ⇒ 失败（或更糟：行为未定义）
+///   · 用户完全无法从现象判断"是我配错了协议"
+/// ⇒ 静默换一种协议比明确报错**危险得多**。
+/// ```
+///
+/// ⇒ 现在**明确拒绝**（返回 null ⇒ 上层退回显式直连，UI 诊断行给专门文案）。
+///   真要支持 socks5 得换传输层（自己做握手），不是在这里换个字符串。
+String? _parseProxyHostPort(String raw) {
+  final s = raw.trim();
+  if (s.isEmpty) return null;
+  final scheme = s.contains('://') ? s.split('://').first.toLowerCase() : 'http';
+  // ★ socks 协议族一律拒绝（理由见上）
+  if (scheme.startsWith('socks')) return null;
+  // 有 scheme 就交给 Uri 解析；没有就补一个假的（Uri 必须有 scheme 才给 host/port）
+  final uri = s.contains('://') ? Uri.tryParse(s) : Uri.tryParse('http://$s');
+  if (uri == null) return null;
+  final host = uri.host;
+  if (host.isEmpty) return null;
+  // ★ 不猜默认端口：没写端口 = 配置不完整 ⇒ 让 UI 明说"无效"。
+  //   猜 80/1080/7890 会把"我漏写端口"变成"它连了别的地方"。
+  if (!uri.hasPort) return null;
+  if (uri.port <= 0) return null;
+  return '$host:${uri.port}';
+}
+
+/// 地址是否是 socks 协议 —— 供 UI 显示**专门**的提示
+///
+/// ★ 单独暴露这个判断，是为了让设置页能说
+///   「不支持 socks，请填 HTTP 代理」而不是笼统的「地址无效」：
+///   后者的用户会反复改 host/port，改不出结果。
+bool isSocksProxyUrl(String raw) {
+  final s = raw.trim().toLowerCase();
+  return s.startsWith('socks://') || s.startsWith('socks5://');
+}
+
+/// 当前该用哪种模式 + 地址（读 UiPrefs，解析成枚举）
+///
+/// 未知字符串一律按 `direct`（保守：不改既有行为）。
+({DanmakuProxyMode mode, String url}) currentDanmakuProxySetting() {
+  final raw = UiPrefs.danmakuProxyMode;
+  final url = UiPrefs.danmakuProxyUrl;
+  final mode = switch (raw) {
+    'system' => DanmakuProxyMode.system,
+    'custom' => DanmakuProxyMode.custom,
+    _ => DanmakuProxyMode.direct,
+  };
+  return (mode: mode, url: url);
+}
+
+/// 把当前设置解析成 `findProxy` 的直接值（生产代码唯一入口）
+///
+/// ★ 单独抽出来是为了**可单测**：门禁直接调它，
+///   不必构造 HttpClient（那需要真实网络）。
+String? currentDanmakuFindProxy() {
+  final s = currentDanmakuProxySetting();
+  return resolveDanmakuFindProxy(mode: s.mode, url: s.url);
+}
+
+/// 诊断文案：给设置页显示"现在到底会怎么走"
+///
+/// ★ 存在的理由：`custom` 但地址坏掉时 `resolve` 会退回 `DIRECT`，
+///   用户看到的是"我配了代理却没生效"。有了这句文案，
+///   他能在设置页**当场**看到"代理地址无效 ⇒ 当前按直连处理"。
+String diagnoseDanmakuProxy({
+  required DanmakuProxyMode mode,
+  String url = '',
+}) {
+  final f = resolveDanmakuFindProxy(mode: mode, url: url);
+  return switch (mode) {
+    DanmakuProxyMode.direct => '直连（不受系统代理环境变量影响）',
+    DanmakuProxyMode.system => '跟随系统代理（读取 HTTP_PROXY / HTTPS_PROXY）',
+    DanmakuProxyMode.custom => f != 'DIRECT'
+        ? '走代理 $f'
+        // ★ socks 要给**专门**的文案：笼统说"无效"会让用户反复改 host/port
+        : isSocksProxyUrl(url)
+            ? '不支持 socks 代理，请填 HTTP 代理地址（如 http://127.0.0.1:7890）'
+            : '代理地址无效，当前按直连处理',
+  };
 }
 
 // -----------------------------------------------------------------------
@@ -1471,7 +1685,7 @@ class DanmakuHint {
           title: '本机外部弹幕 拒绝了这次请求',
           text: '这次弹幕是从本机外部弹幕（${DanmakuLocalService.hostPort}）取的，'
               '而它回了 401/403（原文：${xe.isEmpty ? "未提供原因" : xe}）。'
-              '本机外部弹幕 的本地接口**免签名**、正常不需要凭证 ⇒ '
+              '本机外部弹幕 的本地接口「免签名」、正常不需要凭证 ⇒ '
               '这个报错多半说明 2080 端口上回应的不是外部弹幕，'
               '或者它的接口版本对不上。'
               '点下面的「改用官方 API」换一条路重取一次'
@@ -1518,8 +1732,8 @@ class DanmakuHint {
         text: '弹幕服务有两个数据源，在弹幕设置里选一个：'
             '「本机外部弹幕」（本机跑着外部弹幕 就用它，免签名、不用申请任何凭证）'
             '或「官方 API」（它要一对 AppId / AppSecret —— '
-            '构建期若已注入则**直接用**；没注入的构建，'
-            '在弹幕设置的「凭证」一节**填进去**即可，'
+            '构建期若已注入则「直接用」；没注入的构建，'
+            '在弹幕设置的「凭证」一节「填进去」即可，'
             '或去 doc.dandanplay.com/open 申请一对）。'
             '选好之后点「重新获取弹幕」。'
             '另外：外部站视频可以改用「外部视频源弹幕」直接绑定，不需要这对凭证。',
@@ -1538,9 +1752,9 @@ class DanmakuHint {
     return DanmakuHint(
       title: '凭证没通过',
       text: '弹幕服务说这次请求的凭证不对（$xe）。'
-          '本次请求用的是客户端**内置**的官方凭证；'
+          '本次请求用的是客户端「内置」的官方凭证；'
           '★ 若要换成你自己的，去弹幕设置的「凭证」一节填一对 AppId / AppSecret'
-          '（构建期没注入内置凭证时，那一节就是**唯一**的补救入口）。'
+          '（构建期没注入内置凭证时，那一节就是「唯一」的补救入口）。'
           '也可以改用「本机外部弹幕」（免签名）或「外部视频源弹幕」，'
           '再点「重新获取弹幕」。',
       action: const DanmakuHintAction(label: '去弹幕设置', openDanmakuSettings: true),
@@ -1787,7 +2001,13 @@ class ExternalDanmakuClient {
     DateTime Function()? clock,
     bool unsignedLocal = false,
     DanmakuEndpoint? endpoint,
-  })  : _transport = transport ?? _debugTransportOverride ?? IoDanmakuTransport(),
+  })  : _transport = transport ??
+            _debugTransportOverride ??
+            IoDanmakuTransport(
+              // ★ 接线点 ①：弹幕客户端默认传输层
+              //   读用户的代理选择（UiPrefs）⇒ 用户不选就是 direct。
+              findProxy: currentDanmakuFindProxy(),
+            ),
         _appId = appId ?? DanmakuConfig.appId,
         _appSecret = appSecret ?? DanmakuConfig.appSecret,
         _clock = clock ?? DateTime.now,
@@ -2003,6 +2223,36 @@ class ExternalDanmakuClient {
     return u.replace(pathSegments: <String>['***', ...segs.skip(1)]).toString();
   }
 
+  /// 从一次 [SocketException] 里取出**它连的那个地址**（空串 = 取不到）
+  ///
+  /// ⚠️ 取不到就**如实返回空串**，不猜、不回填 —— 上层据此知道
+  ///    「这次没有地址证据」，不会拿空串去跑伪造段判据。
+  ///
+  /// ⚠️ `SocketException.address` 的类型是 `InternetAddress`，
+  ///    不同平台可能是 IPv4 或 IPv6 ⇒ 取它的 `address` 字段（裸串），
+  ///    上层的判据对两种都成立（IPv6 花样段就是靠这个进来的）。
+  static String _addressOf(SocketException e) {
+    final a = e.address;
+    if (a == null) return '';
+    // ★★ 2026-10-19（Lead 修自审 P1-3）：用 `a.address`（裸 IP），
+    //   **不要**用 `a.toString()` ——
+    //
+    // ```dart
+    // InternetAddress.tryParse('74.86.17.48')!.toString()
+    //   ⇒ "InternetAddress('74.86.17.48', IPv4)"   ← Dart 的调试表示！
+    // InternetAddress.tryParse('74.86.17.48')!.address
+    //   ⇒ "74.86.17.48"                             ← 裸 IP
+    // ```
+    //
+    // ⇒ 这串会进 `DanmakuProbeReport.detail`，而 detail 在面板里是
+    //   **用户可见**的（monospace 那段）⇒ 用户会看到 `InternetAddress(...)`
+    //   这种开发者写法。同文件 `_diagnose` 用的就是 `a.address`，那才是对的。
+    //
+    // ⚠️ IPv6 同样正确：`a.address` 对 IPv6 返回不带方括号的裸地址，
+    //   与 `looksForged` 的字面判据口径一致。
+    return a.address;
+  }
+
   /// 发一次请求，并把**网络层异常**翻译成带打码地址的 [DanmakuException]。
   ///
   /// # 为什么必须有这一层（CWE-532 的**第二个口子**）
@@ -2053,10 +2303,35 @@ class ExternalDanmakuClient {
         // statusCode 0 = 还没拿到响应（同 DanmakuException 的既有约定）
         uri: _safeUri(uri),
       );
-    } on SocketException {
+    } on SocketException catch (e) {
+      /*
+       * ★★★ 2026-10-19（R3-③/⑦ 收尾）：**把解析到的地址带出去**。
+       *
+       * # 为什么（这是本轮唯一新增的信号，来源是实测）
+       * ```text
+       * 改前：catch (e) 丢掉异常本体，UI 只拿到一句
+       *       「连不上弹幕服务（地址不通或服务没起来）」。
+       *       ⇒ 本机 DNS 被劫持到伪造段时，UI **无法**把
+       *         "被劫持" 与 "服务没起来" 分开 —— 它只看到"连不上"。
+       *
+       * `SocketException.address` 是**已经解析出来、并且连不上的那个 IP**
+       * （本机实测：连 74.86.17.48 超时 ⇒ address 就是它）。
+       * ⇒ 它就是那条"本机拿到的地址"，正是判据需要的输入。
+       *
+       * # 为什么这样就够，不需要在 UI 上再联网探测
+       * ```text
+       * 判据 `DanmakuProbeReport.looksForged` 是**纯函数**（查已知伪造段表）。
+       * 喂它这个 address 即可 ⇒ 失败路径上**零新增网络请求**。
+       * ⚠️ 这**不是**新增依赖：`address` 本来就在异常里，语义与本文件
+       *    既有的 `uri` 字段一致（都只做展示，都不打码 token）。
+       * ⚠️ 但它**只覆盖"连不上"那一支**（抛到了 SocketException）。
+       *    超时（TimeoutException）分支拿不到地址 ⇒ 那一支仍由
+       *    `_diagnose` 的 DoH 对照兜底（见 DanmakuProbeReport.dohLookup）。
+       */
       throw DanmakuException(
         '连不上弹幕服务（地址不通或服务没起来）。请检查地址 / 服务是否在运行。',
         uri: _safeUri(uri),
+        resolvedAddress: _addressOf(e),
       );
     } on HttpException {
       /*
@@ -2577,19 +2852,75 @@ class DanmakuLocalService {
   ///
   /// [endpoint] 非空时探**用户自建后端**（按 [DanmakuEndpoint.resolve] 拼路径）；
   /// 为空时探本机弹弹play（行为与改前逐字一致，只是多试一个端点）。
+  ///
+  /// ══════════════════════════════════════════════════════════════════════
+  /// ★★★ 2026-10-18（Owner 第 9 条）：**整次探测的总耗时 = [timeout]**，
+  /// 不是「每个端点各 [timeout]」
+  /// ══════════════════════════════════════════════════════════════════════
+  ///
+  /// # 改前是什么
+  /// ```text
+  /// 下面按序试 1~3 个端点，**每个**都拿完整的 [timeout]。
+  /// ⇒ 最坏 2 个端点（本机 2080 那条路）= 2×timeout = 4 s
+  ///   最坏 3 个端点（带 endpoint 那条路）= 3×timeout = 6 s
+  /// ```
+  ///
+  /// # 为什么这是个真问题（Owner 原话是关键）
+  /// ```text
+  /// > dan-api 依旧异步,全都不能阻塞应用的启动,都应该在后台异步处理
+  ///
+  /// 启动路径本身**不调**它（见 test/zz_t66_danmaku_startup_gate_test.dart
+  /// 的三条判据），但**凡是等它的地方**都会被这个 3 倍放大拖住：
+  ///   · 弹幕面板/设置页的「测试连接」按钮（用户点了要等 6 s 转圈）
+  ///   · 播放页起播时的状态行（`_ensureDanmakuLocalStatus`）
+  /// 用户体感就是「弹幕这块很慢」，与「不许阻塞」是同一类问题。
+  /// ```
+  ///
+  /// # 改法：**共享一个截止时间**
+  /// ```text
+  /// 进函数时算一次 deadline = now + timeout
+  /// 每次 _probeOne 只拿 remaining = deadline - now
+  /// remaining <= 0 ⇒ 不再试，直接判离线
+  /// ```
+  /// ⇒ 语义仍是「按序试、任一命中即在线」，但**整次探测有上界**。
+  ///
+  /// ⚠️ 这会改变一个**边界行为**：多个端点都慢时，后面的端点可能**来不及试**。
+  ///    方向是安全的 —— 那种情况下服务本来也已经在超时边缘，
+  ///    再等下去只会让用户多等，而不会让判定更准。
+  /// ⚠️ 默认 [timeout] 保持 2 s 不变（与改前逐字一致）：
+  ///    本机 2080 是毫秒级，2 s 足够；内置公网实例本来就要靠
+  ///    `_probeOne` 的 404 快速失败，不吃这个预算。
   static Future<DanmakuLocalStatus> probe({
     DanmakuTransport? transport,
     Duration timeout = const Duration(seconds: 2),
     DanmakuEndpoint? endpoint,
   }) async {
-    final t = transport ?? IoDanmakuTransport(timeout: timeout);
+    final t = transport ??
+        IoDanmakuTransport(
+          timeout: timeout,
+          // ★ 接线点 ②：探活/自检用的传输层
+          //   与 ① 用同一个解析函数 —— 否则"探活直连、取弹幕走代理"
+          //   会出现"探活通了但取不到"的假阳性。
+          findProxy: currentDanmakuFindProxy(),
+        );
     final shouldClose = transport == null;
+    /*
+     * ★ 整次探测的唯一截止时间（见上方长注释）。
+     * 用 Stopwatch 而不是 DateTime：后者会被系统时钟调整影响，
+     * 而墙钟往回跳一次就会让 remaining 变成负数并**跳过所有端点**。
+     */
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final left = timeout - clock.elapsed;
+      return left.isNegative ? Duration.zero : left;
+    }
+
     try {
       // ① 首选：弹弹play 桌面版的原生端点（本机 2080 与本机自建实例同款拼法）
       final st0 = await _probeOne(
         t,
         endpoint?.resolve(versionPath) ?? Uri.http(hostPort, versionPath),
-        timeout,
+        remaining(),
         endpoint: endpoint,
       );
       if (st0 != null) return st0;
@@ -2600,7 +2931,7 @@ class DanmakuLocalService {
       final st1 = await _probeOne(
         t,
         endpoint?.resolve(configPath) ?? Uri.http(hostPort, configPath),
-        timeout,
+        remaining(),
         endpoint: endpoint,
       );
       if (st1 != null) return st1;
@@ -2609,12 +2940,16 @@ class DanmakuLocalService {
        * ③ 再退一步：★ 内置公共实例两个都没有（实测 404 / 404）。
        *    见 [searchProbePath] 的推导。只有带了 endpoint（= 有具体后端
        *    可打）才试 —— 本机 2080 那条路不加这一步（它本来就有前两个）。
+       *
+       * ⚠️ 预算已经用完时**不再发起**这一步：它是最慢的那个
+       *    （公网 serverless，实测 3~5 s），顶着 0 预算去打只会
+       *    立刻超时，还多留一个在途连接。
        */
-      if (endpoint != null) {
+      if (endpoint != null && remaining() > Duration.zero) {
         final st2 = await _probeOne(
           t,
           endpoint.resolve(searchProbePath, const {'keyword': 'a'}),
-          timeout,
+          remaining(),
           endpoint: endpoint,
         );
         if (st2 != null) return st2;
@@ -2640,12 +2975,25 @@ class DanmakuLocalService {
   ///
   /// ⚠️ 这里**故意吞掉异常**并返回 null 而不是直接判离线：
   ///    404 会让部分服务直接抛，那是「这个端点没有」而不是「服务没起来」。
+  ///
+  /// ★ 2026-10-18（Owner 第 9 条）：[timeout] 现在是**整次探测剩下的预算**
+  ///   （由 [probe] 算好传进来），不再是「每个端点各拿一份」。
+  ///   `== Duration.zero` 表示预算已耗尽 ⇒ **一个字节都不发**，
+  ///   直接返回 null（见 [probe] 里 remaining() 的说明）。
   static Future<DanmakuLocalStatus?> _probeOne(
     DanmakuTransport t,
     Uri uri,
     Duration timeout, {
     DanmakuEndpoint? endpoint,
   }) async {
+    /*
+     * ★ 预算是 0 ⇒ 不发请求。
+     * 为什么必须显式挡：(await x).timeout(Duration.zero) 会**立刻**抛
+     * TimeoutException，看起来"等效"，但它已经在事件循环上排了一次
+     * 真实的 send() —— 对一个要连公网的 transport 来说，那可能真的
+     * 把 socket 建起来（iOS/Android 上是真流量）。这里直接短路。
+     */
+    if (timeout <= Duration.zero) return null;
     try {
       final r = await t
           .send(

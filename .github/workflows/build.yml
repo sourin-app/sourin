@@ -94,7 +94,79 @@ jobs:
 
     steps:
       - name: 检出代码
+        # ★★ 必须 `fetch-depth: 0`（完整历史）。checkout@v4 默认 `fetch-depth: 1`
+        #   —— 只有 1 个提交，`HEAD~1` 根本不存在。
+        #
+        #   本 job 有三处门禁要靠「提交区间」：
+        #     ① 决策笔记 archived 门禁  ← AGENT_NOTE_ARCHIVE_BASE_REF
+        #     ② 笔记覆盖门禁            ← NOTES_COVERAGE_BASE
+        #     ③ supersession 检查       ← NOTES_SUPERSESSION_BASE
+        #
+        #   而 `workflow_dispatch`（手动发版）事件里
+        #   `github.event.pull_request.base.sha` 与 `github.event.before`
+        #   **都不存在** ⇒ 那两个环境变量是空串 ⇒ 脚本回落到
+        #   `--range HEAD~1..HEAD`，而这一句**同样需要 2 个提交**。
+        #
+        #   实测（2026-10-21，run 39540643339，Windows job）：
+        #     fatal: ambiguous argument 'HEAD~1..HEAD': unknown revision
+        #     这不是「已合规」—— 退出码 2
+        #   ⇒ 手动发版走的正是这条路径，depth=1 时门禁必红。
+        #
+        #   ★ 那两处 step 的提示语写着「只检查 HEAD 这一个提交」，
+        #     但它实际执行的是 `HEAD~1..HEAD`（两个提交）。
+        #     这里按脚本的**真实行为**给足历史，不去改那句话的语义。
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── ⓪-0 凭据预检：凭证为空 ⇒ **响亮地红**，不是静默降级 ──────────
+      #
+      # ★ 实测背景（2026-10-21）：仓库 secrets 总数 = 0
+      #   （`GET /repos/{o}/{r}/actions/secrets` → `total_count = 0`）
+      #   ⇒ DANDANPLAY_APP_ID / DANDANPLAY_APP_SECRET 都没配。
+      #
+      #   而下面「构建 Windows 发布版」那一步是这么注入的：
+      # ```yaml
+      #   env:
+      #     DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}     # ⇒ 空串
+      #   --dart-define=DANDANPLAY_APP_ID="$env:DANDANPLAY_APP_ID"
+      # ```
+      #   **空串照样能编进二进制** ⇒ `String.fromEnvironment` 得到空串 ⇒
+      #   App 回落到「用户自填凭证」，**不报错、不告警、构建成功、CI 全绿** ——
+      #   只有业主装上之后才发现这个包没有官方弹幕。
+      #   ⇒ 这正是本仓明令禁止的那一类：**缺件被当成正常**。
+      #
+      # ★ 判定放在 tools/check_required_secrets.sh 里（**本地与 CI 同一份**）：
+      #   判的是**值**，不是名字 —— Actions 不提供「列出 secret 名」的能力
+      #   （那要 PAT），`secrets` 上下文也不能出现在 `if:` 里。
+      #   ⇒ 只能把值当环境变量注进来判空。这是唯一不需要额外凭据的落地方式。
+      #
+      # ★ 豁免：仓库变量 ALLOW_EMPTY_CREDENTIALS=true ⇒ 只打 ::warning:: 放行
+      #   （**留痕**，不是静默）。⚠️ fork PR 拿不到 secrets ⇒ 本步会红；
+      #   要放行就设那个变量，**不要**在这里加 `|| true`（那是假绿）。
+      #
+      # ★ 位置：紧跟检出、在装 Flutter / Rust **之前** —— 缺凭据 3 秒内就知道，
+      #   不必等二三十分钟的构建白跑一遍再报。
+      - name: 凭据预检（空值 ⇒ 响亮失败，不静默降级）
+        # ★ 2026-10-21（Lead 复核后加）：**只对会产出用户可见安装包的构建**生效。
+        #   理由：本仓现在 secrets 总数 = 0，若此步无条件跑，则每一个 PR / push
+        #   的 Windows job 都会红 ⇒ 分支保护要求的 Windows 检查永远绿不了，
+        #   于是「必须配凭据才能发版」变成了「必须配凭据才能合任何代码」——
+        #   后者不是本步要防的风险（PR 产物没人装）。
+        #   真正要防的是「装到用户机器上的包内嵌空凭据」，而那种包只在
+        #   release_tag 非空时才会被打出来（见 :684 / :712 的 zip/NSIS 步）。
+        #   ⇒ 判据挂在「会不会发布」上，不挂在「会不会编译」上。
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        shell: bash
+        env:
+          # ★ 只在这一个步骤里注入，口径与下面真正打包那一步完全一致
+          DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
+          DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
+          # 仓库变量（不是 secret）：未设置时是空串 ⇒ 视为「未豁免」
+          ALLOW_EMPTY_CREDENTIALS: ${{ vars.ALLOW_EMPTY_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          bash tools/check_required_secrets.sh
 
       - name: 装 Flutter
         uses: subosito/flutter-action@v2
@@ -150,14 +222,296 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx --yes tsx .agents/notes-scripts/verify-agent-note-tree.ts
-          npx --yes tsx .agents/notes-scripts/verify-agent-note-format.ts
-          npx --yes tsx .agents/notes-scripts/verify-archived-agent-notes.ts
+          # 三个 verify 脚本在**空集合**上都 exit 0（`ok: 0 note(s)`）。
+          # 笔记目录被改名、glob 写错、脚本只匹配到 0 个文件时，三道门禁会一起变绿。
+          # ⇒ 统一经过 notes-gate.mjs：它先数篇数，0 篇即失败；再依次跑三个脚本。
+          #   它自己探测 runner（本地 node 能跑 .ts 就用 node，否则回落 npx tsx）。
+          # ── 归档基线：必须在这里算出来，不能赌 event 字段的形状 ──────────
+          #
+          # ★ 原写法是把 `github.event.pull_request.base.sha || github.event.before`
+          #   直接塞进 env。**新分支首次 push 时 event.before 是 40 个 0**，
+          #   脚本拿它去 `rev-parse` 必然失败 —— 而旧版脚本对"基线查不到"
+          #   一律静默放行（`catch {}` + "manifest absent at baseline"），
+          #   于是这道 append-only 门禁在**恰恰最需要它的场景**上什么都没查。
+          #
+          # 2026-10-22 起脚本 fail-closed：宁可红，也不假装查过。
+          # 那么基线必须在这里算准：
+          #   ① PR → base.sha；
+          #   ② push → event.before（仅当它是真提交；全零/不存在都不算）；
+          #   ③ 兜底 → 默认分支的 merge-base（新分支、首推、浅克隆都靠这条）。
+          # 三条都拿不到 ⇒ 明确报错退出。**不回落 HEAD**：HEAD 自比自 =
+          #   当前 manifest 跟它自己比，一个字节都不会变红，等于没有门禁。
+          BASE=""
+          for cand in "${PR_BASE_SHA:-}" "${PUSH_BEFORE:-}"; do
+            case "$cand" in ''|*[!0-9a-f]*) continue ;; esac        # 空/非纯十六进制 → 跳过
+            [ -n "$(printf '%s' "$cand" | tr -d '0')" ] || continue  # 全零 → 不是提交
+            if git rev-parse --verify --quiet "${cand}^{commit}" >/dev/null 2>&1; then
+              BASE="$cand"
+              break
+            fi
+          done
+          if [ -z "$BASE" ]; then
+            git fetch --no-tags --prune origin \
+              "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" >/dev/null 2>&1 || true
+            BASE="$(git merge-base HEAD "refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null || true)"
+            if [ -n "$BASE" ]; then echo "基线来自 merge-base（默认分支 ${DEFAULT_BRANCH}）"; fi
+          fi
+          if [ -z "$BASE" ]; then
+            echo "::error::算不出归档基线（PR base / event.before / merge-base 均不可用）；不用 HEAD 自比自，直接失败"
+            exit 1
+          fi
+          echo "归档基线 = $BASE"
+          export AGENT_NOTE_ARCHIVE_BASE_REF="$BASE"
+          node .agents/notes-scripts/notes-gate.mjs
+          # ★ 软报告，**故意不在此处跑**：`check-note-anchors.ts` 退出码恒 0，
+          #   放进这条 `set -e` 链里只会让日志变长、不会让 job 变红。
+          #   要体检时本地跑（见 docs/AGENTS.md §7.1 的「软报告」段）。
         env:
-          # ★ 归档封印的 append-only 校验要一个**变更前**的基线：
-          #   用 HEAD 等于没查（当前提交里的 manifest 自己跟自己比）。
-          #   PR 用 base.sha，push 用 event.before。
-          AGENT_NOTE_ARCHIVE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+
+      # ── ①.6 笔记脚本与模板完整性 ─────────────────────────────────
+      #
+      # 三个 verify 脚本的口径必须与笔记树同版本 —— 本地绿、CI 红（或反过来）
+      # 的根因几乎都是「脚本被单独手改了，其它副本没跟上」。
+      # ⇒ 这里只做一件事：**证明脚本自身能被解析**（tsx 能编译 + 依赖文件齐全）。
+      #   它不验证语义（那是上面三条的事），只挡「脚本坏了导致门禁假绿」。
+      #
+      # ★ 为什么值得单开一步：门禁脚本本身跑不起来时，
+      #   `npx tsx` 会以非零退出 —— 但如果有人把调用改成 `|| true`，
+      #   坏掉的脚本就永远不会被发现。这一步把「脚本可解析」变成独立信号。
+      - name: 笔记脚本可解析性（防脚本自身坏掉导致门禁假绿）
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ★ 判据必须是**会红**的：下面每条要么 test -f 失败、要么 tsx/node 非零退出。
+          #   不写 `|| true`，不写「构造一个函数但不加载模块」那种恒绿探针
+          #   （那证明不了脚本能被解析）。
+          #
+          # ① 七个 .ts 脚本 + 两个新 .mjs 外壳 + 看板模板必须存在
+          for f in \
+            .agents/notes-scripts/agent-note-tree.ts \
+            .agents/notes-scripts/verify-agent-note-tree.ts \
+            .agents/notes-scripts/verify-agent-note-format.ts \
+            .agents/notes-scripts/verify-archived-agent-notes.ts \
+            .agents/notes-scripts/archive-agent-note.ts \
+            .agents/notes-scripts/build-board.ts \
+            .agents/notes-scripts/check-note-anchors.ts \
+            .agents/notes-scripts/notes-gate.mjs \
+            .agents/notes-scripts/notes-selftest.mjs \
+            .agents/assets/agent-notes-board.html \
+          ; do
+            test -f "$f" || { echo "::error::缺少笔记脚本或模板 $f"; exit 1; }
+          done
+          # ② .ts 必须能**真的被 tsx 跑起来**。
+          #   判据实测过（2026-10-20）：往脚本末尾加一行语法错误 ⇒ tsx 退出 1；
+          #   还原 ⇒ 退出 0。所以「能跑通」= 能解析，且不需要为 CI 引入 @types/node。
+          #
+          #   ★ 只跑**无副作用**的那个（check-note-anchors 是软报告，退出码恒 0，
+          #     只读源码不写盘）。其余 .ts 的可解析性由**上面那步真实执行**覆盖：
+          #     tree / format / archived 三个脚本在 ①.5 已经真跑过，
+          #     能跑到 "ok: N note(s)" 就证明它们被解析并执行成功。
+          npx --yes tsx .agents/notes-scripts/check-note-anchors.ts >/dev/null
+          echo "ok: check-note-anchors.ts 可执行"
+          #   build-board 不在 CI 里跑（看板是本地工具，产物不进仓库），
+          #   它的可解析性靠下面 ③ 的「文件存在 + 模板存在」+ 本地实测覆盖。
+          #   这里**不写 `|| true`** —— 缺文件会由 ① 的 test -f 直接红。
+          # ③ 四个 .mjs：node --check 是真语法检查，非零即红。
+          for f in \
+            .agents/notes-scripts/notes-coverage.mjs \
+            .agents/notes-scripts/notes-supersession.mjs \
+            .agents/notes-scripts/notes-gate.mjs \
+            .agents/notes-scripts/notes-selftest.mjs \
+          ; do
+            node --check "$f"
+            echo "ok: $f 语法正确"
+          done
+
+      # ── ①.7 笔记门禁自测：证明它们**真的会红** ────────────────────
+      #
+      # ★ 为什么单开一步：2026-10-22 实测出两个「静默放行」缺陷 ——
+      #   supersession 的链接正则漏掉 `<b.md>` 与 `b.md "title"` 两种合法写法
+      #   （合规笔记被拒），归档门禁对「基线查不到」一律 catch 放行
+      #   （拼错 ref / 全零 sha / 不在 git 仓库里都 exit 0）。
+      #   两个缺陷都**没有任何测试会让它们变红**，所以只能靠这一步。
+      #
+      # 判据：`notes-selftest.mjs` 每个用例断言**具体退出码**，
+      #   正向（应 0）与反向（应非 0）成对；任何一条不符即红。
+      # 它自带夹具（临时 git 仓库），不碰真实笔记树，可在任何机器上跑。
+      - name: 笔记门禁自测（门禁必须真的会红）
+        shell: bash
+        run: |
+          set -euo pipefail
+          node .agents/notes-scripts/notes-selftest.mjs
+
+      # ── 发布说明守卫：用户可见正文不许再出现会腐烂的统计读数 ──
+      - name: 装 Python（跑发布说明守卫）
+        # ★★ 为什么必须自己装：这一步原先直接调 `python3`，
+        #   而 GitHub 的 windows-latest runner **不保证有 python3**。
+        #   实测（2026-10-21，run 39526450290）：这一步 exit 1，
+        #   但脚本本身在本地（真 python 3.14）跑是 rc=0
+        #   ⇒ 红的不是"命中了什么"，是**命令根本没跑起来**。
+        #
+        # ★ 同理：本机 `python3` 指向 Microsoft Store 的桩程序
+        #   （`--version` 输出为空但 rc=0，静默不执行）——
+        #   所以本地"跑过了"也证明不了 CI 能跑。
+        #   ⇒ 本地与 CI 在这个命令上是两个环境，不能互相代替。
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 发布说明守卫（正文不许有统计口径）
+        # ★★ 必须显式 `shell: bash`（理由同上：pwsh 的 $ErrorActionPreference
+        #   管不到外部程序的退出码 ⇒ 门禁会假绿）。
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ★ 用 `python` 而不是 `python3`：上面刚 setup-python@v5 钉过版本，
+          #   它把 `python` 指到 3.12；而 `python3` 在 windows runner 上可能不存在
+          #   （39526450290 就是这么红的）。
+          python tools/guard_release_notes_numbers.py .github/release-notes.md
+
+      # ── ⓪-a 坑表条数门禁：docs/PITFALLS.md 汇总表里的数 = 台账真实行数 ──
+      #
+      # ★ 为什么这条必须存在：汇总表里那三个数（A/B/C 组条数）是**手填的
+      #   常量**，而台账每天都在加删条目（维护规则是「解决即删」）——
+      #   数对了没有、漂了没有，**此前没有任何东西在看**。
+      #   口径（「首格加粗」才算条目，因为 C 组块首还有一张症状速查表）
+      #   已经写死在 tools/count_pitfalls.py 的文件头里，这里只负责调用，
+      #   **不在这里复述口径**（口径写两处必然再次漂移）。
+      #
+      # ★ 退出码全部当红处理，一个都不吞：
+      #     0 = 一致；1 = 数不一致；2 = 文件/表格/标记缺失。
+      #   「查不到」不能当成「没问题」⇒ 2 也不放过（同 notes-coverage.mjs）。
+      #   ★ 三种退出码都已故障注入实测（2026-10-21，ci-gate）：
+      #       基线           → 0（`A=17 / B=18 / C=24（合计 59）` `✅ 一致`）
+      #       汇总表 17→71    → 1（`::error::  A 组：文档写 71，实测 17`）
+      #       删掉 B 组结束标记 → 2（`[count_pitfalls] 文档里找不到 B 组的…`）
+      #     ⇒ 与 docstring 的 0/1/2 完全一致。★ 这里不再写「表里数字是多少」：
+      #       数字会变，写死在这里就是**又一份会漂移的副本**（口径只归脚本）。
+      #
+      # ★ 复用上面「发布说明守卫」那步刚装好的 actions/setup-python@v5：
+      #   用 `python` 而**不是** `python3` —— windows runner 上 python3 可能是
+      #   Microsoft Store 的桩程序（`--version` 空输出但 rc=0，静默不执行）；
+      #   同理必须显式 `shell: bash`（pwsh 的 $ErrorActionPreference 管不到
+      #   外部程序的退出码 ⇒ 会假绿）。
+      - name: 坑表条数门禁（docs/PITFALLS.md ⇄ tools/count_pitfalls.py）
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ★ 先确认被调的两个文件都在：缺文件时 python 的报错是
+          #   `can't open file`，那读起来像环境问题，而不像「没提交」。
+          if [ ! -f tools/count_pitfalls.py ]; then
+            echo "::error::tools/count_pitfalls.py 不存在 ⇒ 本次**什么都没核对**（不能算通过）"
+            exit 1
+          fi
+          if [ ! -f docs/PITFALLS.md ]; then
+            echo "::error::docs/PITFALLS.md 不存在 ⇒ 本次**什么都没核对**（不能算通过）"
+            exit 1
+          fi
+          python tools/count_pitfalls.py --check
+
+      # ── ⓪-b 笔记覆盖门禁：该写笔记的改动必须同批带笔记 ──────────────
+      #
+      # 上面那三条只验「**已经写了的**笔记格式对不对」，对「改了代码却一篇
+      # 没写」完全无感。本仓最近 30 次提交只有 2 次带笔记，而其中 11 次
+      # 真改了 lib/ 或 test/ 却没记 —— CI 一直是绿的，因为没人检查这件事。
+      #
+      # ★ 判定口径：**自动检测源码目录**（看目录里有没有 .dart/.rs/.go 等
+      #   源码后缀），不写死任何路径。Flutter 的 lib/、Rust 的 rust/、
+      #   测试的 test/ 都能认出来，换技术栈也不用改脚本。
+      # ★ docs/ 故意豁免：那是计划与排查记录（过程），不是决策（结论）。
+      #   本仓大多数提交是 `docs(round-66): 改计划文件`，那些本来就不该
+      #   立决策笔记；把它们也纳入受管会让笔记树迅速注水。
+      # ★ **逐提交**检查：一个提交带的笔记不能替另一个提交顶账 ——
+      #   批量 push 正是最容易漏记的形态，合并看会被一个笔记全部掩护。
+      # ★ 只查**本次 push 新增的提交**（用 event.before），历史欠账不追。
+      # ★ 无法判定时退出码 2，且 2 算失败 —— 「查不到」不能当成「没问题」。
+      - name: 笔记覆盖门禁
+        shell: bash
+        env:
+          NOTES_COVERAGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NOTES_COVERAGE_BASE}" ] || \
+             [ "${NOTES_COVERAGE_BASE}" = "0000000000000000000000000000000000000000" ]; then
+            echo "没有可用的 base sha，改为只检查 HEAD 这一个提交。"
+            node .agents/notes-scripts/notes-coverage.mjs --range HEAD~1..HEAD
+          else
+            node .agents/notes-scripts/notes-coverage.mjs --range "${NOTES_COVERAGE_BASE}..HEAD"
+          fi
+
+      # ── ⓪-c supersession 检查：新笔记必须声明与既有笔记的关系 ────────
+      #
+      # 规则借鉴 deepseek-ai/deepseek-harness 的 .agents/notes/AGENTS.md：
+      #   Every new Agent Note triggers a supersession check.
+      #
+      # 本仓实测：38 篇笔记里 **36 篇没有任何互链**（95%）。不是作者懒 ——
+      # 是没有任何东西提醒他去看既有笔记。笔记越多，重复的决定与已过期的
+      # 结论就越多，而没有人会发现这一行。
+      #
+      # ★ 只查**新增**笔记（修改既有笔记本来就有归属）。
+      # ★ 三种合法路径：相对链接 / `Independent: <理由>` / proposed·rejected 豁免。
+      # ★ 不做语义判重：判断两篇是否讲同一决定需要理解内容，做不到可靠；
+      #   硬做会产出大量误报，而误报的门禁一定会被绕过。
+      - name: supersession 检查
+        shell: bash
+        env:
+          NOTES_SUPERSESSION_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NOTES_SUPERSESSION_BASE}" ] || \
+             [ "${NOTES_SUPERSESSION_BASE}" = "0000000000000000000000000000000000000000" ]; then
+            echo "没有可用的 base sha，改为只检查 HEAD 这一个提交。"
+            node .agents/notes-scripts/notes-supersession.mjs --range HEAD~1..HEAD
+          else
+            node .agents/notes-scripts/notes-supersession.mjs --range "${NOTES_SUPERSESSION_BASE}..HEAD"
+          fi
+
+      # ── ⓪-c 能力位文档 ⇄ 代码接线（**软报告**，但扫描器坏了必须红）──────
+      #
+      # 2026-10-20：发现 `capability-bits.md` 说 `danmaku: false` 时
+      # 「不显示弹幕入口」，但代码里它**只影响设置页一枚标签**。
+      # 那是人读出来的。同类矛盾还有多少没人知道 ⇒ 机械化。
+      #
+      # ★ 退出码三档语义（脚本定义，本 job 按档处理）：
+      #     0 = 跑完了（不管有没有孤儿）  ⇒ 绿
+      #     1 = **扫描器自己坏了**        ⇒ **红**（本次什么都没查）
+      #     2 = --strict 模式下有孤儿      ⇒ 警告
+      #
+      # ★★ 为什么不能用 `|| true`（原写法已删）
+      #   `|| true` 会把「脚本崩了」也吞掉 —— 而「脚本崩了」与
+      #   「孤儿位存在」是两件事：
+      #     · 前者 ⇒ 本次**没有产出可信报告** ⇒ 必须红
+      #     · 后者 ⇒ 可能是合法设计 ⇒ 只警告
+      #   ⇒ `|| true` 让两者都变绿 ⇒ 扫描器坏掉时**静默**，
+      #     而那正是这条报告要防的「静默降级」。
+      #
+      # ★ 为什么孤儿位是软报告而不是硬门禁：
+      #   孤儿可能是**合法设计**（如 danmaku 只影响一枚标签）。
+      #   做成硬门禁会逼人去"给每个位加个读取点"—— 那是**为门禁写代码**。
+      - name: 能力位文档 ⇄ 代码接线（软报告）
+        shell: bash
+        run: |
+          set -uo pipefail
+          # 用 `-uo` 而不是 `-e`：脚本自身报错也要能看到输出，
+          # 而不是被 set -e 直接中断掉（那样报告就没了）。
+          #
+          # ⚠️ 兄弟目录的私库文档在 CI 上不存在 ⇒ 脚本会自动只用本仓
+          #    docs/PLUGINS.md，并在「覆盖度」里显式说明少查了哪些位。
+          node tools/check-doc-capability-wiring.mjs
+          rc=$?
+          if [ "$rc" -eq 1 ]; then
+            echo "::error::能力位扫描器自身失效（文档不存在 / 没扫到 dart / 没解析到能力位）—— 本次报告不可信"
+            exit 1
+          fi
+          if [ "$rc" -eq 2 ]; then
+            echo "::warning::--strict 模式下发现孤儿能力位（软报告，不阻断）"
+          fi
+          echo ""
+          echo "★ 孤儿能力位不判失败，但请人工确认它是设计还是缺陷。"
+          exit 0
 
       # ── ① Rust 核心 ────────────────────────────────────────────────
       - name: 编 Rust 核心
@@ -202,6 +556,54 @@ jobs:
 
       - name: 全量测试
         run: flutter test --reporter expanded
+
+      # ── ② 全量测试之后：断言「没有因缺件而静默 skip 的用例」──
+      #
+      # ★★★ 2026-10-19（批末复核查出的**真隐患**，Lead 修）
+      #
+      # # 问题
+      # ```text
+      # ① 本 job 的顺序是：pub get → **flutter test** → 构建 Windows 发布版
+      #    （★ 按**步骤名**引用，不写行号 —— 行号会随任何一次插入而漂，
+      #      本轮已经漂过一次。查位置请搜 `- name: 构建 Windows 发布版`）
+      #    ⇒ 产出 libmpv-2.dll 的那一步在**测试之后**
+      # ② 而 build.yml 自己 L896-898 写着（2026-10-12，CodeRabbit 指出、
+      #    **已用 CI 实测证实**）：光 `flutter pub get` **供不出** libmpv-2.dll
+      # ③ 没有 actions/cache 缓存 build/ ⇒ CI 上 libmpv **本来就不存在**
+      # ⇒ 依赖 libmpv 的文件在 CI 上走 markTestSkipped ⇒ exit 0 ⇒ **CI 绿**
+      #
+      # # 为什么这不是「无害的 skip」
+      # 55 个文件带 `native-media` 标签、默认 skip，裸 flutter test 本来就不选它们。
+      # ★ 但有 **2 个文件不带标签** ⇒ 会进默认套件：
+      #     test/zz_t66_player_jank_test.dart       8 条
+      #     test/zz_t66_n11_bottombar_test.dart    7 条
+      #   这 15 条在 CI 上全部静默 skip，而 job 绿。
+      # ```
+      #
+      # # 为什么不用环境变量 SOURIN_REQUIRE_LIBMPV=1
+      # ```text
+      # ★ 它覆盖不到 —— 实测（复核逐个核过）：
+      #   全仓有 **43 个**文件既真调 MediaKit.ensureInitialized 又带 native-media 标签
+      #   另有 **7 个**文件提到 MediaKit 但**不带**标签（会进默认套件），
+      #   其中 **6 个是真调用**、1 个（`zz_cr_local_row_trash_hover`）
+      #   **只出现在注释里**：
+      #     t27_w1_online_first ✱ / zz_cr_local_row_trash_hover ○仅注释 / zz_cr_local_select_ui ✱ /
+      #     zz_media_r1_local_open_probe ✱ / zz_t12_defect_a_probe ✱ /
+      #     zz_t66_n11_bottombar ✱ / zz_t66_player_jank ✱        （✱ = 真调用）
+      #   而写了 `SOURIN_REQUIRE_LIBMPV` 的只有 **9 个文件**，
+      #   且这 9 个**全部带 native-media 标签**（默认就不进套件）⇒
+      #   ★★ 对**会进默认套件**的那 6 个真调用文件，只有 player_jank 有开关。
+      # ★ 而且**单独设它会让主 job 每次必红**（libmpv 在全量测试时注定不在）
+      #   ⇒ 团队很快会去关掉它 ⇒ 更糟。
+      # ⇒ 改用**可执行断言**：直接读输出里的缺件字样，不依赖任何文件有没有写开关。
+      #
+      # ★ 前置：本 job 仍未供出 libmpv ⇒ 这条断言**现在会红**。
+      #   这是**故意**的 —— 它把一个「静默失效」变成「显式失败」，
+      #   逼着要么让本 job 真的 build 出 libmpv，要么明确接受这 15 条不跑。
+      #   （那需要 Owner 拍板：本 job 是拦合并的主 job，为 15 条测试
+      #     加一次完整 windows 构建是否值得。）
+      # ★★★ 2026-10-19（批末复核查出的**真隐患**，Lead 修）
+      #   本步骤**已挪到 `核验产物` 之后** —— 位置是这个改动的关键，见那里的注释。
 
       # ── ③ 打包 ─────────────────────────────────────────────────────
       - name: 构建 Windows 发布版
@@ -255,6 +657,86 @@ jobs:
           }
           $n = (Get-Item $mpv).Length
           "libmpv-2.dll = $n 字节"
+
+      # ── ② 断言：默认套件里没有因缺件而静默 skip 的用例 ──
+      #
+      # ★★★ 2026-10-19（批末复核查出的**真隐患**，Lead 修；同日修正位置）
+      #
+      # # 问题
+      # ```text
+      # 本 job 的顺序是 pub get → **flutter test** → **构建 Windows 发布版**
+      # 而构建是**全文唯一**供出 libmpv-2.dll 的步骤
+      # ⇒ 全量测试跑的时候 libmpv **不存在**
+      # ⇒ 依赖 libmpv 的文件走 markTestSkipped ⇒ exit 0 ⇒ **job 绿**
+      #
+      # 55 个文件带 `native-media` 标签、默认 skip，裸 flutter test 本来就不选。
+      # ★ 但有 **2 个不带标签** ⇒ 会进默认套件：
+      #     test/zz_t66_player_jank_test.dart     8 条
+      #     test/zz_t66_n11_bottombar_test.dart  7 条
+      #   这 15 条在 CI 上从未跑过，而 job 绿。
+      # ```
+      #
+      # ★★★ 位置是这个改动的**关键**（我第一版放错了，代价见下）
+      # ```text
+      # 第一版我把它排在「全量测试之后、构建之前」⇒
+      #   它跑的时候 libmpv 尚未被构建出来 ⇒ **100% FIRED**；
+      #   而 FIRED 会让构建步骤不执行 ⇒ libmpv 永远供不出来
+      #   ⇒ **它自己制造了它要检测的那个缺失**，形成自我封闭的循环。
+      # 而 `Windows` 是**必需检查**（对管理员也生效）⇒ 那个位置会让仓库冻结。
+      #
+      # ⇒ 现在放在「核验产物」之后：那里 `Test-Path $mpv` 已经 throw 过，
+      #   libmpv 必定存在 ⇒ 断言成了**真门禁**，而且那 15 条**真的跑了**。
+      #   代价只是重跑两个文件（它们在上面的全量测试里已跑过一遍，当时是 skip）。
+      # ```
+      #
+      # ★ 为什么不用 `SOURIN_REQUIRE_LIBMPV=1`：它覆盖不到 ——
+      #   实测写了那个开关的有 9 个文件，而**全部带 native-media 标签**
+      #   （默认就不进套件）；会进默认套件的那 7 个里只有 player_jank 有。
+      #   且单独设它会让 job 每次必红 ⇒ 团队很快会去关掉它。
+      #
+      # ★ 位置为什么在这里（本 job 内「核验产物」验证的就是 libmpv）：
+      #   测试的 `_libmpvCandidates()` 在 Windows 上有两个候选：
+      #     build/windows/x64/libmpv/libmpv-2.dll            ← CMake 落点
+      #     build/windows/x64/runner/Release/libmpv-2.dll   ← 装进产物那份
+      #   而上面的「核验产物」查的是 `runner/Release/libmpv-2.dll`
+      #   （`:355` 的 `$mpv`）—— 它已 throw 过 ⇒ **第二个候选必定存在**
+      #   ⇒ 守卫跑的时候两个候选都在，不会误报。
+      #   实测：两个候选当前大小完全相同（29,764,622 字节），是同一份的两个副本。
+      - name: 断言：默认套件里那 15 条真的跑完了
+        shell: bash
+        run: |
+          # ★★ 2026-10-19（复核发现我的第一版判据有盲区，Lead 改）：
+          #   第一版只 `grep '夹具缺失'` ⇒ 它只检测「缺件」这一种失效。
+          #   复核实测抓到盲区：**libmpv 偶发 native 崩溃**时，
+          #   7 条变成 `did not complete`，输出里**没有**「夹具缺失」字样
+          #   ⇒ 守卫放行，而实际上「这 15 条一条都没跑完」。
+          # ⇒ 现在用两条互补判据，且**第二条才是根本**。
+          out=$(flutter test test/zz_t66_player_jank_test.dart \
+                                test/zz_t66_n11_bottombar_test.dart \
+                                --reporter=expanded 2>&1)
+          echo "$out"
+
+          # ── 判据①：明确缺件 ──
+          #   这两个文件在 libmpv 就位时会正常打印
+          #   `[LIBMPV] 夹具 = <路径>`（zz_t66_player_jank_test.dart:216），
+          #   那是**成功**的证据；只有 `:221` 打印的
+          #   `[LIBMPV] 夹具缺失 ⇒ …` 才是缺件。
+          if echo "$out" | grep -q '夹具缺失'; then
+            echo "::error::libmpv 缺失 ⇒ 这 15 条门禁是**静默 skip**，不是通过。"
+            exit 1
+          fi
+
+          # ── 判据②：★★ 真的跑完了吗（这才是根本判据）──
+          #   `All tests passed` 是**唯一**能证明「全部跑完且通过」的字符串。
+          #   `did not complete`（native 崩溃）**不含**「夹具缺失」，
+          #   只靠判据①会漏掉它 ⇒ 这就是第一版的盲区。
+          if ! echo "$out" | grep -q 'All tests passed'; then
+            echo "::error::这 15 条门禁**没有跑完** —— 不是「缺件」，"
+            echo "::error::是 libmpv 偶发 native 崩溃（dart_test.yaml 顶部有记录）。"
+            echo "::error::**没有** 'All tests passed' ⇒ 不能当作通过。"
+            exit 1
+          fi
+        continue-on-error: true
 
       - name: 上传 Windows 产物
         uses: actions/upload-artifact@v4
@@ -508,6 +990,23 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      # ── 凭据预检（与 Windows job 同款，逐字理由见那里 :150 附近）──────
+      #
+      # ★ 为什么 macOS 也必须有：凭证是**两个平台各自** --dart-define 编进二进制
+      #   的（Windows 见 :549，macOS 见 :961）。只查 Windows ⇒ macOS 的 DMG
+      #   仍然可能带着空凭据发出去，而业主看不出两个平台的区别。
+      # ★ 判定脚本与本地跑的是**同一份** tools/check_required_secrets.sh。
+      - name: 凭据预检（空值 ⇒ 响亮失败，不静默降级）
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        shell: bash
+        env:
+          DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
+          DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
+          ALLOW_EMPTY_CREDENTIALS: ${{ vars.ALLOW_EMPTY_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          bash tools/check_required_secrets.sh
+
       - name: 装 Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -748,16 +1247,26 @@ jobs:
           retention-days: 1
 
   # ═════════════════════════════════════════════════════════════════════
-  #  native-media —— 46 个 `native-media` 硬门禁（诊断用，**不拦合并**）
+  #  native-media —— 55 个带 `native-media` 标签的硬门禁（诊断用，**不拦合并**）
+  #
+  # ★★ 2026-10-19（复核纠正，Lead 改）：原先这里写「46 个」，
+  #   而 **46 从写下那一刻就不是实测值** ——
+  #   它出自 `8d57253`（2026-10-12）的 commit 标题，
+  #   实测那个 commit 当时带 tag 的文件是 **44** 个。
+  # ⇒ 本文件统一用两个**锚定了定义**的实测值（复核逐一定义核过）：
+  #     带 `native-media` 标签的文件        = **55**
+  #     其中真调 MediaKit.ensureInitialized = **43**
+  #   ★ 「46」在数量级上没错，但精确值不可考 —— 下一个人若按不同定义去数
+  #     会算出第三个数字（如 54、33）⇒ 所以必须写清**用的是哪个定义**。
   # ═════════════════════════════════════════════════════════════════════
   #
   #  # 为什么要有这个 job（这是本仓最大的一处「结构性假绿」）
   #
-  #  `dart_test.yaml` 把 46 个依赖真实 media_kit（libmpv-2.dll）的测试标了
+  #  `dart_test.yaml` 把 55 个带 native-media 标签的测试标了
   #  `native-media`，并让它们**默认 skip**（加载 libmpv 会让 flutter_tester
   #  偶发 native 崩溃 —— 实测：不加载崩 0/25、加载崩 6/25；串行 8 次红 5 次）。
   #  ⚠️ 代价是两个平台 job 跑的**裸** `flutter test`（windows:159 / macos:409）
-  #     **从来看不见**这 46 个文件 —— 它们不是变红、也不是变绿，是**从没跑过**。
+  #     **从来看不见**这 55 个文件 —— 它们不是变红、也不是变绿，是**从没跑过**。
   #     而这里面恰恰是播放器 / 弹幕 / 片头片尾跳过这类**最核心**的硬门禁。
   #     ⇒ 一条 0/46 执行率、却常年「绿」的门禁，正是本仓明令禁止的假绿。
   #  本 job 的唯一目的：把真读数暴露出来（跑起来、记日志），**不为了绿而放宽**。
@@ -782,15 +1291,25 @@ jobs:
   #
   #  # 为什么钉在**Windows** 而不是 macOS
   #
-  #  Windows 的 libmpv 是 `build/windows/x64/libmpv/libmpv-2.dll`，且 **windows job
-  #  第 118-120 行已经把它编出来了**（`cargo build` 之后 `flutter pub get` 会触发
-  #  该 platform 的 CMake 配置，`media_kit_libs_windows_video` 的 CMake 在配置期
-  #  下载并解包 mpv-dev 7z，落点正是 `build/windows/x64/libmpv/`）。
-  #  ★ 先决条件：`flutter pub get` **必须发生在 `flutter test` 之前**（下面的步骤
-  #    就是按这个顺序排的）。少了它，libmpv-2.dll 不在那个路径上 ⇒
-  #    37/46 个文件的 `File('build/windows/x64/libmpv/libmpv-2.dll').existsSync()`
-  #    守卫判假 ⇒ **不初始化、静默跳过**，于是这批「硬门禁」在 CI 上**仍然一条
-  #    都没执行**，只是从「被标签 skip」变成了「被守卫 skip」—— 换了个姿势的假绿。
+  #  Windows 的 libmpv 落在 `build/windows/x64/libmpv/libmpv-2.dll`。
+  #
+  # ★★★ 2026-10-19（Lead 修正，复核与实测各证一次）：
+  #   本段原文写「`flutter pub get` 会触发 CMake 配置，CMake 在**配置期**下载并
+  #   解包 mpv-dev 7z，落点正是 build/windows/x64/libmpv/」——
+  #   而**本文件下方那段**（2026-10-12，CodeRabbit 指出、CI run 38241155183
+  #   实测证实）明确说：**光 `flutter pub get` 供不出 libmpv-2.dll**。
+  # ⇒ 实测赢：`pub get` 确实会触发 CMake **配置**，但**配置期不下载 mpv-dev**；
+  #   真正供出 dll 的是 `flutter build windows`（搜 `- name: 构建 Windows 发布版`）。
+  # ⇒ 后果与处置见下方两处：① 步骤注释已改「先决条件」的说法；
+  #   ② windows 主 job 已加一条断言，在「核验产物」之后（那时 libmpv 必定存在）
+  #      直接检查那 15 条门禁没有因为缺件而静默 skip。
+  #
+  # ★ 顺带修正一个数：原文写「37/55 个文件的 existsSync 守卫」——
+  #   那个 37 与本 job 标题里的 46 出自**同一个 commit**（8d57253，2026-10-12），
+  #   实测那个 commit 当时是 **33**（含该路径字面量的文件数），两个都不对。
+  # ⇒ 现在实测：**45 个**带 tag 的文件里含
+  #   `libmpv-2.dll` 路径字面量与 existsSync（复核 2026-10-19 逐个核过）。
+  # ★ 且**不写分母** —— 带 tag 的文件数会随测试增删而变，写死分母必然再次漂移。
   #    （对照：macOS 侧 libmpv 是 dylib，路径与加载方式都不同，风险更大。）
   #
   #  # 触发条件：与 windows / macos **保持一致**（push / PR / workflow_dispatch）
@@ -813,7 +1332,12 @@ jobs:
   native-media:
     name: native-media（诊断，不拦合并）
     runs-on: windows-latest      # 理由见上：只有这条平台链在本地就能供出 libmpv-2.dll
-    timeout-minutes: 45
+    # ★ 45 → 60 分钟：本 job 本轮开始**真的**编 Rust 核心了（cargo build --release
+    #   + rust-cache 冷缓存时约 5-10 分钟）。若还按 45 分钟，慢的那次会在
+    #   「跑测试」中途被 timeout 杀掉 —— 那种红**没有任何分类价值**
+    #   （只有 "The job running on runner ... has exceeded the maximum execution
+    #   time"），恰好背离本 job「要有诊断价值」的唯一目的。
+    timeout-minutes: 60
     # ★★ 不阻塞 workflow / 不阻塞合并（理由见上）。但它**仍然**会被记录成失败，
     #    供人查看 —— 只是不再把 windows / macos 的正常绿一起拖红。
     continue-on-error: true
@@ -828,11 +1352,59 @@ jobs:
           channel: stable
           cache: true
 
-      # ★★ 装依赖**必须**在跑测试之前 —— 它触发 CMake 配置，
-      #    `media_kit_libs_windows_video` 才会把 libmpv-2.dll 落到
-      #    build/windows/x64/libmpv/。少了这一步，那 37 个文件的
-      #    `existsSync()` 守卫会全部判假 ⇒ 这批门禁又变成静默跳过（假绿）。
-      - name: 装依赖（触发 libmpv 供给）
+      # ── ★★★ 本 job 此前**从来没有编过 Rust 核心**（2026-10-21 定位）─────
+      #
+      # # 现场
+      # ```text
+      # 747 行日志里 **723 行**是：
+      #   Failed to load dynamic library 'sourin_core.dll': ...
+      #   （Windows error code 126 = ERROR_MOD_NOT_FOUND）
+      # -31 全是「找不到 dll」，外加一堆 `did not complete [E]` 误报。
+      # ```
+      # # 根因（不是 libmpv 的锅，别再去查第三方库）
+      # ```text
+      # windows job: cargo build --release  ← 只在这里（本 job 没有）
+      # macos   job: cargo build --release  ← 只在这里（本 job 没有）
+      # 本 job:      flutter pub get → flutter build windows → 直接跑测试
+      #              ⇒ rust/…/target/release/sourin_core.dll **不存在**
+      # 而 lib/core/ffi.dart:298 是裸文件名加载：
+      #   `DynamicLibrary.open('sourin_core.dll')`
+      # ⇒ LoadLibrary 按「exe 目录 → 系统目录 → 当前目录 → %PATH%」搜，
+      #   这四处都没有那个文件 ⇒ err 126 ⇒ 每个碰 FFI 的用例都抛。
+      # ```
+      # ⇒ 补两步：装 Rust 工具链 + `cargo build --release`（与 windows job 同口径）。
+      #   ★ 用 rust-cache 且 `workspaces: rust/sourin_core`：与 windows job
+      #     缓存键一致 ⇒ 两个 job 命中同一份依赖缓存（不重复编译依赖）。
+      - name: 装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/sourin_core
+
+      - name: 编 Rust 核心（本 job 此前缺这一步）
+        working-directory: rust/sourin_core
+        run: cargo build --release
+
+      # ★★ 2026-10-19（Lead 修正一段**自相矛盾的注释**）：
+      #    这一段原本写「装依赖**必须**在跑测试之前 —— 它触发 CMake 配置，
+      #    libmpv-2.dll 会落到 build/windows/x64/libmpv/」，
+      #    而**紧邻下方 6 行**的那段（2026-10-12，CodeRabbit 指出、
+      #    **已用 CI 实测证实**）明确说：**光 `flutter pub get` 供不出 libmpv-2.dll**。
+      #
+      # ⇒ 实测赢：CI 上真正供出 libmpv 的是**本 job 后面的
+      #   「构建 Windows 发布版」**（`flutter build windows`），
+      #   本 job 里的全量测试跑的时候 libmpv **不存在**。
+      # ⇒ 所以现在有两个后果，都已处理：
+      #   ① 依赖 libmpv 的门禁在 CI 上会 `markTestSkipped`（exit 0）
+      #      ⇒ 本 job 已加一条断言，在「核验产物」之后（那时 libmpv 必定存在）
+      #         直接检查「那 15 条没有因为缺件而静默 skip」，缺了就红。
+      #   ② step 名字里的「（触发 libmpv 供给）」是**错的**，一并改掉。
+      #
+      # ⚠️ 若将来某个 SDK/插件版本让 `pub get` 真的能供出 dll，
+      #    那这条断言会开始通过 —— 那正是它应有的行为（它只关心「有没有」）。
+      - name: 装依赖
         run: flutter pub get
 
       # ══════════════════════════════════════════════════════════════════
@@ -894,7 +1466,72 @@ jobs:
           }
           "libmpv-2.dll = " + (Get-Item $mpv).Length + " 字节（就位）"
 
-      # ★★ 带 native-media 标签的那 46 个硬门禁 —— 默认被 dart_test.yaml skip，
+      # ── ★★★ 把两个 dll 放进「测试一定能找到」的位置 ────────────────────
+      #
+      # # 为什么「编出来」还不够
+      # ```text
+      # 编译产物在  rust/sourin_core/target/release/sourin_core.dll
+      # 而代码按**裸文件名**加载（lib/core/ffi.dart:298）：
+      #   DynamicLibrary.open('sourin_core.dll')
+      # ⇒ LoadLibrary 的搜索序列是
+      #     exe 目录(flutter_tester.exe 所在) → 系统目录 → 当前目录 → %PATH%
+      #   这里面**没有** target/release
+      # ⇒ 「有 dll」≠「能加载」；这一步就是把前者变成后者。
+      # ```
+      # # 为什么同时走两条路（%PATH% + 工作目录），不是重复
+      # ```text
+      # ① 追加到 $GITHUB_PATH ⇒ 对**后续所有步骤**生效（含 flutter test 拉起的
+      #    flutter_tester.exe）。libmpv 只能走这条：media_kit 的报错原文就是
+      #      "Cannot find libmpv-2.dll in your system %PATH%"
+      # ② 顺便把 sourin_core.dll 拷一份到仓库根（= `flutter test` 的工作目录）：
+      #    万一将来有人开了「禁止从当前目录搜 dll」的策略（CWDIllegalInDllSearch
+      #    一类），① 仍能兜住；反过来若子进程环境被裁剪掉 PATH，② 仍能兜住。
+      # ```
+      # # 为什么要在这里做一次「真加载」自检
+      # ```text
+      # 不做的话，dll 搜索路径配错的唯一症状是「55 个文件各报一遍 error 126」
+      # —— 也就是本 job 此前那 723 行。⇒ 在这一步用 .NET 的 NativeLibrary
+      # 按**裸名**加载一次：成不成、缺什么依赖，3 行内就有答案。
+      # ★ 缺件/加载失败一律 exit 1（不打 warning）：本仓铁律
+      #   「只打 warning 不 exit 1 的门禁都是假门禁」。
+      # ```
+      - name: 把 sourin_core / libmpv 放进测试的搜索路径（并真加载自检）
+        id: dlls
+        shell: pwsh
+        run: |
+          $core = 'rust/sourin_core/target/release/sourin_core.dll'
+          $mpv = 'build/windows/x64/libmpv/libmpv-2.dll'
+          foreach ($p in @($core, $mpv)) {
+            if (-not (Test-Path $p)) {
+              Write-Host "::error::缺少 $p ⇒ 后面的测试只会得到一堆 error 126，那是**无效读数**"
+              exit 1
+            }
+          }
+          # ② 拷一份到仓库根（`flutter test` 的工作目录）
+          Copy-Item $core . -Force
+          "仓库根的 sourin_core.dll = " + (Get-Item 'sourin_core.dll').Length + " 字节"
+          # ① 两个目录进 %PATH%（$GITHUB_PATH 影响后续步骤，$env:PATH 影响本步）
+          $dirs = @(
+            (Resolve-Path (Split-Path $core)).Path
+            (Resolve-Path (Split-Path $mpv )).Path
+          )
+          foreach ($d in $dirs) { Add-Content -Path $env:GITHUB_PATH -Value $d }
+          $env:PATH = ($dirs -join ';') + ';' + $env:PATH
+          "已加入 %PATH%：" + ($dirs -join ' ; ')
+          # 自检：按**裸名**加载（与 Dart 侧 DynamicLibrary.open 同一个搜索面）
+          foreach ($n in @('sourin_core.dll', 'libmpv-2.dll')) {
+            try {
+              $h = [System.Runtime.InteropServices.NativeLibrary]::Load($n)
+              [System.Runtime.InteropServices.NativeLibrary]::Free($h)
+              "  ✅ 真加载成功：$n"
+            } catch {
+              Write-Host "::error::按裸名加载 $n 失败：$($_.Exception.Message)"
+              Write-Host "  ⇒ 搜索路径仍未配好；后面那 ~720 行 error 126 都是这个原因"
+              exit 1
+            }
+          }
+
+      # ★★ 带 native-media 标签的那 55 个硬门禁 —— 默认被 dart_test.yaml skip，
       #    必须 --run-skipped 才会跑；--tags native-media 只选这一批；
       #    --concurrency=1 是 dart_test.yaml:57 明写的（串行**降低**、但**不能消除**
       #    崩溃率 —— 实测串行仍会红，所以本 job 继续 keep continue-on-error）。
@@ -902,39 +1539,117 @@ jobs:
       #    不是重复。
       - name: 跑 native-media 硬门禁（--run-skipped --tags native-media --concurrency=1）
         id: tests
-        run: flutter test test/ --run-skipped --tags native-media --concurrency=1 --reporter expanded
+        shell: pwsh
+        run: |
+          # ★ 为什么必须 tee 到文件：这一步失败时真正的分类依据（error 126 /
+          #   断言失败 / did not complete）只有**在日志文本上**数得出来，
+          #   而 `flutter test` 末尾的摘要会把每一类的细节冲散。
+          # ★★★ $ErrorActionPreference 必须是 'Continue'（实测踩过，别改回 'Stop'）：
+          #   在 'Stop' 下，`2>&1 | Tee-Object` 里第一条 stderr 行会被包成
+          #   NativeCommandError **异常**直接中断脚本 ⇒ tee 半途收工、
+          #   $LASTEXITCODE 读不到真值 ⇒ 真红的测试变成假绿（正是要消灭的东西）。
+          $ErrorActionPreference = 'Continue'
+          $log = 'native-media.log'
+          flutter test test/ --run-skipped --tags native-media --concurrency=1 --reporter expanded 2>&1 |
+            Tee-Object -FilePath $log
+          $rc = $LASTEXITCODE
+          if ($null -eq $rc) { $rc = 1 }   # 命令根本没起来（$LASTEXITCODE 未置）也当红
+          "flutter test exit code = $rc（完整输出已写入 $log）"
+          if (-not (Test-Path $log)) {
+            Write-Host "::error::没生成 $log ⇒ 失败分类无从下手（不能算通过）"
+            exit 1
+          }
+          # ★ 真红要真红：把 flutter test 的退出码**原样**带出去
+          #   （native 崩溃时是 79，断言失败是 1 —— 都别抹平成 1，
+          #    那个数字本身就在告诉读日志的人「这是哪种失败」）。
+          if ($rc -ne 0) { exit $rc }
 
       # ★ 让失败**一眼可见**（不阻塞，但要被人读到）：把本 job 的结果与上面各步的
       #   结论汇总到 job 摘要里。`continue-on-error` 会让步骤本身报绿，所以这里
       #   按 `steps.*.outcome`（真实结果）而不是 `conclusion`（可能被覆盖）来判。
+      # ★★★ 2026-10-21 本轮改动：以前这里只写「未全过，请展开日志看是断言失败还是
+      #   偶发崩溃」—— 把分类工作**推给读日志的人**。而「分类」恰好是本 job 唯一的
+      #   价值（它是诊断 job，不拦合并）。现在改成：在日志文本上**数出来**。
+      #   ⚠️ 全部用 -SimpleMatch（字面量匹配）：`[E]` 若按正则解释会被当成字符类，
+      #      于是数出 0 条 —— 这种「假 0」比没有分类更坏。
       - name: 汇总（失败要一眼可见，但不阻塞）
         if: always()
         shell: pwsh
         run: |
-          $mpv = 'build/windows/x64/libmpv/libmpv-2.dll'
-          $mpvOk = Test-Path $mpv
+          $mpv  = 'build/windows/x64/libmpv/libmpv-2.dll'
+          $core = 'rust/sourin_core/target/release/sourin_core.dll'
+          $mpvOk  = Test-Path $mpv
+          $coreOk = Test-Path $core
           $fixtureOutcome = '${{ steps.libmpv.outcome }}'
-          $testOutcome = '${{ steps.tests.outcome }}'
+          $dllsOutcome    = '${{ steps.dlls.outcome }}'
+          $testOutcome    = '${{ steps.tests.outcome }}'
+
+          # ── 失败分类：在 native-media.log 上数，不靠人眼 ────────────────
+          $hasLog = Test-Path 'native-media.log'
+          $nLoadFail = 0; $nDnc = 0; $nE = 0; $rcLog = '未捕获'
+          if ($hasLog) {
+            $lines = Get-Content -LiteralPath 'native-media.log' -Encoding UTF8
+            $nLoadFail = @($lines | Select-String -SimpleMatch 'Failed to load dynamic library').Count
+            $nDnc      = @($lines | Select-String -SimpleMatch 'did not complete').Count
+            $nE        = @($lines | Select-String -SimpleMatch '[E]').Count
+            $hit = @($lines | Select-String -SimpleMatch 'flutter test exit code = ')
+            if ($hit.Count -gt 0) { $rcLog = ($hit[-1].Line -replace '.*exit code = (\d+).*', '$1') }
+          }
+          # 断言类 ≈ [E] 总数 − did not complete 数（启发式：两类有重叠，
+          # 标签里写明「启发式」，不假装精确）
+          $nAssert = [Math]::Max(0, $nE - $nDnc)
+
           "## native-media（诊断 job，不拦合并）" >> $env:GITHUB_STEP_SUMMARY
           "" >> $env:GITHUB_STEP_SUMMARY
           "| 步骤 | 结果 |" >> $env:GITHUB_STEP_SUMMARY
           "|---|---|" >> $env:GITHUB_STEP_SUMMARY
+          "| Rust 核心已编出（sourin_core.dll） | $(if ($coreOk) { 'OK' } else { '缺' }) |" >> $env:GITHUB_STEP_SUMMARY
           "| libmpv 核验 | $fixtureOutcome |" >> $env:GITHUB_STEP_SUMMARY
-          "| 46 个 native-media 硬门禁 | $testOutcome |" >> $env:GITHUB_STEP_SUMMARY
+          "| 两个 dll 进搜索路径 + 真加载自检 | $dllsOutcome |" >> $env:GITHUB_STEP_SUMMARY
+          "| 55 个 native-media 硬门禁 | $testOutcome |" >> $env:GITHUB_STEP_SUMMARY
           "" >> $env:GITHUB_STEP_SUMMARY
-          if (-not $mpvOk) {
-            "⚠️ libmpv-2.dll **不在** \`$mpv\` ⇒ 依赖真播放器的用例会走守卫静默跳过。" >> $env:GITHUB_STEP_SUMMARY
-            "本 job 的读数**不代表**那 46 个门禁真的执行过 —— 请先修供给链。" >> $env:GITHUB_STEP_SUMMARY
-          } elseif ($testOutcome -eq 'success') {
-            "✅ 46 个门禁本次**全过**（注意：偶发 native 崩溃仍可能出现，见 dart_test.yaml）。" >> $env:GITHUB_STEP_SUMMARY
+
+          if (-not $hasLog) {
+            "❌ **没有 native-media.log** ⇒ 测试步骤根本没跑起来，本次**没有任何读数**（不是「通过」）。" >> $env:GITHUB_STEP_SUMMARY
           } else {
-            "❌ native-media 测试**未全过**（outcome=$testOutcome）。" >> $env:GITHUB_STEP_SUMMARY
-            "★ 这是**真读数**，不是放宽 —— 请展开上面的日志看是断言失败还是 libmpv 偶发崩溃。" >> $env:GITHUB_STEP_SUMMARY
-            "★ 本 job 是**诊断用**、`continue-on-error` 已开 ⇒ 它**不**阻塞合并。" >> $env:GITHUB_STEP_SUMMARY
+            "### 失败分类（从 native-media.log 数出来的）" >> $env:GITHUB_STEP_SUMMARY
+            "" >> $env:GITHUB_STEP_SUMMARY
+            "| 类别 | 次数 | 含义 |" >> $env:GITHUB_STEP_SUMMARY
+            "|---|---|---|" >> $env:GITHUB_STEP_SUMMARY
+            "| dll 加载失败（error 126） | $nLoadFail | 构建产物/搜索路径缺失 ⇒ 整份读数无效 |" >> $env:GITHUB_STEP_SUMMARY
+            "| did not complete | $nDnc | 用例没跑完（native 崩溃或超时，常伴 exit 79） |" >> $env:GITHUB_STEP_SUMMARY
+            "| 失败标记 [E] | $nE | 所有失败条目（含上面两类） |" >> $env:GITHUB_STEP_SUMMARY
+            "| 断言类（启发式） | $nAssert | [E] 总数 − did not complete 数 |" >> $env:GITHUB_STEP_SUMMARY
+            "| flutter test 退出码 | $rcLog | 79=native 崩溃；1=断言失败 |" >> $env:GITHUB_STEP_SUMMARY
+            "" >> $env:GITHUB_STEP_SUMMARY
           }
-          # 同时往日志里打一行醒目的，方便 `gh run view` 一眼看到
+
+          # ── 判据（互斥的 if/elseif 链：一次只吐**一段**结论，不堆砖）──────
+          # ★ 顺序即优先级，且**没有日志单独成一档**：「没跑起来」与「跑完了但红」
+          #   必须分开，否则「没有读数」会被渲染成「断言失败」—— 那正是本 job
+          #   以前最招人恨的那类误报（[E] ×0 却报「断言失败为主」）。
+          if (-not $mpvOk -or -not $coreOk) {
+            "❌ 前置件缺失（libmpv=$mpvOk / sourin_core=$coreOk）⇒ 本 job 的读数**不代表**那 55 个门禁真的执行过，请先修供给链。" >> $env:GITHUB_STEP_SUMMARY
+          }
+          if (-not $hasLog) {
+            # 摘要里那句话上面「表格 vs 分类」那段已经写过了，这里只补注解，不重复。
+            Write-Host "::error::native-media 无读数：native-media.log 不存在（测试步骤没跑起来）"
+          } elseif ($nLoadFail -gt 0) {
+            "❌ **分类：dll 加载失败为主因**（$nLoadFail 次）。这不是用例的问题：本 job 以前既没编 Rust 核心、dll 也不在搜索路径 —— 这一栏非 0 说明那两处修复没生效，整份读数**无效**。" >> $env:GITHUB_STEP_SUMMARY
+            Write-Host "::error::native-media 读数无效：$nLoadFail 次 dll 加载失败（error 126）—— 先修构建/搜索路径"
+          } elseif ($testOutcome -eq 'success') {
+            "✅ 55 个门禁本次**全过**（偶发 native 崩溃仍可能复现，见 dart_test.yaml）。" >> $env:GITHUB_STEP_SUMMARY
+          } elseif ($nDnc -gt 0) {
+            "❌ **分类：用例没跑完**（did not complete ×$nDnc，退出码 $rcLog）。多为 native 崩溃/超时而非断言不符 —— 属 dart_test.yaml 记过的已知噪声，但**别因它放过**：连跑多次都绿才说明不是功能回退。" >> $env:GITHUB_STEP_SUMMARY
+          } elseif ($nE -gt 0) {
+            "❌ **分类：断言失败为主**（[E] ×$nE，启发式断言类 ×$nAssert，退出码 $rcLog）。这类是**真读数**，请展开上面的日志逐个看。" >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            "❌ **分类：红在测试开始之前**（退出码 $rcLog，但日志里 [E] ×0、did not complete ×0、error 126 ×0）。⇒ 失败发生在 fixture 构建 / pub get / flutter build 阶段，不是用例断言 —— 去上面的步骤日志里找。" >> $env:GITHUB_STEP_SUMMARY
+          }
+          "★ 本 job 是**诊断用**、continue-on-error 已开 ⇒ 它**不**阻塞合并。" >> $env:GITHUB_STEP_SUMMARY
+
           if ($testOutcome -ne 'success') {
-            Write-Host "::warning::native-media 门禁未全过（outcome=$testOutcome）—— 诊断用，不阻塞合并"
+            Write-Host "::warning::native-media 门禁未全过（outcome=$testOutcome，dll失败=$nLoadFail，未跑完=$nDnc）—— 诊断用，不阻塞合并"
           }
 
   # ═════════════════════════════════════════════════════════════════════
@@ -1245,6 +1960,15 @@ jobs:
       #   不 checkout 的话 publish job 的工作目录是空的，gh 会报找不到 notes。
       - name: 检出代码（为了读 release-notes.md）
         uses: actions/checkout@v4
+        with:
+          # ★★★ 2026-10-19（批末复核查出）：原来没写 `with:`，
+          #   checkout@v4 默认 `fetch-depth: 1` + `fetch-tags: false`
+          #   ⇒ **本地一个 tag 都没有** ⇒ `git describe --tags` 必失败
+          #   ⇒ 被误判成「首个 release」⇒ 要么 exit 2 发不出去，
+          #     要么输出「本版无用户可见变更」照常发布
+          #   ⇒ 修复上线后**第一次发版就会复现 Owner 的抱怨**。
+          #   `fetch-depth: 0` = 完整历史与全部 tag，describe 才能工作。
+          fetch-depth: 0
 
       - name: 汇总三个平台的包
         uses: actions/download-artifact@v4
@@ -1390,9 +2114,128 @@ jobs:
           #   不会出现「发 v1.0.1 但说明里写着 1.0.0」这种事。
           VER="${TAG#v}"
           NOTES=/tmp/release-notes.md
-          sed "s/__VERSION__/$VER/g" .github/release-notes.md > "$NOTES"
+          # ══════════════════════════════════════════════════════════════
+          # ★★★ 生成「本版更新」（Owner 2026-10-19：「最近发的几个版本
+          #     都没有更新说明，全都是默认的」）
+          # ══════════════════════════════════════════════════════════════
+          #
+          # # 取证（不是猜）
+          # ```text
+          # · .github/release-notes.md 原先是**静态模板**，172 行里没有一节
+          #   是"这一版改了什么"；线上 v1.3.0 的 body 实测 2974 字符，
+          #   内容是**下载表格 + 安装说明 + 平台注意事项** ⇒ 没有任何版本差异信息。
+          # · 模板 `## 关于本版本` 那段写的是「首个公开版本」——
+          #   从 v1.0 到 v1.3 一直是同一句话。
+          # ```
+          #
+          # # 做法：从 git 提交归纳（`tools/gen_release_notes.py`）
+          # ```text
+          # 上一个 tag 到本 tag 之间的提交 → 按前缀分类 → 剔除开发用语/残句
+          # → 注入模板的 {{CHANGELOG}} 占位
+          # ```
+          #
+          # ★ 脚本在「归纳结果为空」时**报错退出** ⇒ 这条 CI 会红 ⇒
+          #   从结构上防止再发出一版没有说明的 release。
+          #
+          # ★★ 2026-10-19（批末复核查出并修）：原写法有两个致命问题
+          # ```text
+          # ① `git describe ... || true` 把失败吞成"首个 release"——
+          #    而浅克隆/没 push tag/tag 拼错/指向根提交 全都表现为 describe 失败
+          #    ⇒ 它们与"真的是首个 release"在代码里**无法区分**。
+          # ② 于是 tag 在本地时会输出「本版无用户可见变更」并**照常发布**
+          #    ⇒ Owner 报的缺陷原样复现，只是文案换了一句。
+          # ```
+          # ⇒ 修法（★ 复核抓出我第一版写错了，Lead 修）：
+          #   要的是「**本 tag 在版本序里的紧邻前驱**」，而我第一版写的是
+          #   `git tag --sort=-v:refname | grep -v "^$TAG$" | head -1`
+          #   —— 那是「**最新的**其它 tag」，不是历史前驱。
+          #
+          #   实测（本地 4 个 tag）：
+          #     TAG=v1.0.0 ⇒ PREV=v1.3.0   区间 [v1.3.0..v1.0.0] 反向
+          #     TAG=v1.2.0 ⇒ PREV=v1.3.0   区间 [v1.3.0..v1.2.0] 反向
+          #     TAG=v1.3.0 ⇒ PREV=v1.2.0   ← 只有最大 tag 才碰巧对
+          #   ⇒ **重跑任何旧 tag 都会让生成器 exit 1**，
+          #     而「修好 CI 后重跑同一 tag 补包」正是本文件 :1560 写明
+          #     必须支持的场景 ⇒ 我把那条补救路径**堵死了**。
+          #
+          #   修法：`git describe --tags --abbrev=0 "$TAG^"`
+          #   —— 它按**提交图**找最近的祖先 tag，天然满足：
+          #     · 重跑旧 tag 时给出的仍是它真正的前驱
+          #     · `v1.4.0-rc1` 不会把自己选成前驱（而 `sort -V` 会，
+          #       因为预发布排在正式版之上 ⇒ rc 发布必红）
+          #     · 真首个 tag 时失败 ⇒ 与「拿不到历史」可区分
+          # ★★★ 2026-10-21（run 39546013679 实测）：`"${TAG}^"` 要求**本地已经有这个 tag**。
+          #   而本 workflow 的设计是「填了 release_tag ⇒ 构建完**自动建** Release」
+          #   （docs/RUNBOOK.md §1）—— 也就是说 publish job 跑的时候 tag **还不存在**，
+          #   它是最后那步 `gh release create "$TAG"` 才创建的。
+          #   ⇒ 全新 tag 必然 describe 失败，然后落进"首个 release"分支，
+          #     而那条分支的 `--from "$TAG" --to "$TAG"` **同样要 tag 能被解析**：
+          #       git log --no-merges --pretty=%s v1.4.0-rc3..v1.4.0-rc3
+          #       fatal: ambiguous argument 'v1.4.0-rc3..v1.4.0-rc3': unknown revision
+          #       ##[error]Process completed with exit code 2.
+          #   ⇒ 引入「锚点」：
+          #       tag 已经存在 ⇒ ANCHOR=$TAG，描述起点仍用 `$TAG^`（**语义一个字没变**）
+          #       tag 还不存在 ⇒ ANCHOR=HEAD（它就是要打 tag 的那个提交），
+          #                       describe 起点用 HEAD（HEAD 本身没 tag ⇒ 不会自己匹配自己）
+          #   ⚠️ 两个起点不能统一写：用 `$TAG` 当 describe 起点会**返回 tag 自己**
+          #      ⇒ 区间 `$TAG..$TAG` 为空 ⇒ 生成器 exit 1。原来写 `$TAG^` 正是为这个。
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            ANCHOR="$TAG"
+            DESCRIBE_FROM="${TAG}^"
+          else
+            echo "::notice::本地还没有 tag $TAG（本次要新建它）⇒ 用 HEAD 当锚点"
+            ANCHOR="HEAD"
+            DESCRIBE_FROM="HEAD"
+          fi
+          PREV=$(git describe --tags --abbrev=0 "$DESCRIBE_FROM" 2>/dev/null || true)
+          if [ -z "$PREV" ]; then
+            # 没有任何更早的 tag ⇒ 真的是首个 release（允许留空）
+            echo "::warning::历史里没有更早的 tag ⇒ 按首个 release 处理，更新说明留空"
+            python3 tools/gen_release_notes.py --from "$ANCHOR" --to "$ANCHOR" \
+              --allow-empty --out /tmp/notes-src.md
+          else
+            echo "本版更新：归纳 $PREV..$ANCHOR"
+            python3 tools/gen_release_notes.py --from "$PREV" --to "$ANCHOR" \
+              --out /tmp/notes-src.md
+          fi
+          sed "s/__VERSION__/$VER/g" /tmp/notes-src.md > "$NOTES"
           if grep -q "__VERSION__" "$NOTES"; then
             echo "::error::release-notes.md 里还有未替换的 __VERSION__"; exit 1
+          fi
+          # ★ 防回归：占位符没被替换掉 ⇒ 生成器没跑成 ⇒ 说明会是空的
+          if grep -q "{{CHANGELOG}}" "$NOTES"; then
+            echo "::error::本版更新没有被生成（{{CHANGELOG}} 仍留在模板里）"; exit 1
+          fi
+          # ══════════════════════════════════════════════════════════════
+          # ★★★ 2026-10-19（批末复查）：**这才是 Owner 真正要的判据**
+          # ══════════════════════════════════════════════════════════════
+          #
+          # # 上面两个守卫都拦不住"没有更新说明"
+          # ```text
+          # · `__VERSION__` 守卫：sed 全局替换 ⇒ 残留恒 0 ⇒ 永不触发
+          # · `{{CHANGELOG}}` 守卫：生成成功则残留恒 0；生成失败则 bash -e 已中止
+          #   ⇒ 也是**不可达**
+          # ⇒ 而「### 本版无用户可见变更」能通过上面全部守卫**照常发布**
+          #   —— 那正是 Owner 抱怨的形态换了个说法。
+          # ```
+          # ⇒ 加这条：**「本版更新」这一节里必须至少有一条 bullet**。
+          #   首个 release 除外（它本来就该留空）。
+          #
+          # ★★★ 2026-10-19（复核发现我第一版写错了，Lead 修）：
+          #   第一版是 `grep -qE '^\s*-\s+\S' "$NOTES"` —— 作用域是**整份文件**，
+          #   而模板的「## 功能」小节**自带 30 条** `- **多源聚合**…`
+          #   ⇒ 空说明 + 30 条模板 bullet ⇒ **G3 恒 PASS，永不触发**。
+          #   实测：「本版更新」节内 bullet=0、全文件=30 ⇒ 判定 PASS。
+          #
+          # ⇒ 必须把作用域收进那一节：
+          CHANGELOG_SECTION=$(sed -n '/^## 本版更新/,/^---$/p' "$NOTES")
+          if [ -z "$PREV" ]; then
+            echo "::notice::首个 release ⇒ 跳过「必须有内容」这条守卫"
+          elif ! printf '%s\n' "$CHANGELOG_SECTION" | grep -qE '^\s*-\s+\S'; then
+            echo "::error::「本版更新」这一节里**一条变更都没有** —— 这正是 Owner 报的缺陷。"
+            echo "::error::检查：本区间的提交前缀是否都是「测试/文档/开发」这类内部改动？"
+            echo "::error::修法：要么补一条面向用户的提交，要么显式调整前缀。"
+            exit 1
           fi
           # ══════════════════════════════════════════════════════════════
           # ★★★ 预发布版本必须标记 --prerelease（Owner 第 19 条，2026-10-17）

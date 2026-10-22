@@ -321,18 +321,69 @@ void main() {
        *
        * ⚠️ 用 `t.tap` 而不是"检查按钮在不在" —— 要点下去才算数，
        *    因为要验的是"**点了之后**计数会不会涨"。
+       *
+       * ★★★ 2026-10-21 修正：原来用 `find.text('下一集')`，**恒为 0 个**。
+       *   产品里「下一集」是**图标按钮的 tooltip**，不是 Text widget：
+       *     lib/ui/player/player_bottom_bar.dart:727
+       *       _BarAction(icon: AppIcons.skip_next, tooltip: '下一集', …)
+       *   ⇒ 文字在 Tooltip.message 里，`find.text` 永远匹配不到。
+       *
+       *   ★ 为什么这条能躺这么久：本文件挂 `@Tags(['native-media'])`，
+       *     默认不跑；全量跑时 skip 只体现为 `~N` 计数器 +1
+       *     （`grep "All tests skipped"` 计数 = 0，看不到）。
+       *     于是"阳性对照恒红"这件事从没人发现。
+       *
+       *   ★ 判据为什么换成 byTooltip 而不是 find.byIcon：
+       *     tooltip 是**产品自己的语义**（'下一集'），换图标时它会跟着换；
+       *     而 `find.byIcon(AppIcons.skip_next)` 会绑死在图标常量上，
+       *     产品换图标就假红。⇒ 用语义，不用实现细节。
        */
-      final f = find.text('下一集');
+      final f = find.byTooltip('下一集');
       expect(f, findsOneWidget,
-          reason: '★ 中间某一集时「下一集」按钮必须可见');
-      await t.tap(f);
+          reason: '★ 中间某一集时「下一集」按钮必须可见（图标按钮 + tooltip）');
+      /*
+       * ══════════════════════════════════════════════════════════════════
+       * ★★★ 2026-10-21：这里**不能靠点按钮**做阳性对照（实测根因）
+       * ══════════════════════════════════════════════════════════════════
+       *
+       * 底栏外面包着：
+       *   `IgnorePointer(ignoring: fade.value < 0.5)`   ← player_bottom_bar.dart:771
+       *
+       * 起播失败后控制条开始淡出，一旦 `fade < 0.5` 就是**看得见但点不动**。
+       * `find.byTooltip` 能找到它（widget 在树上、`getRect` 也有正常几何
+       * `(1184,740,1224,780)`），但 `t.tap` 的指针事件被 IgnorePointer 吞掉。
+       *
+       * 实测三个读数（这就是我踩的坑）：
+       *   gotoEpisode 0→0 且 blockedNav 0→0  ⇒ **压根没点到**（不是"判据拦住了"）
+       *
+       * ★ 这正是本文件 `:212-231` 已经记过的**同一类错**：
+       *   那次是 `_globals == null` 让命令被丢弃，我误读成"判据拦住了"；
+       *   这次是 `IgnorePointer` 让点击被吞掉，症状一模一样。
+       *   ⇒ **两次都是"仪器没工作"，不是"判据生效"。**
+       *
+       * ⇒ 阳性对照改走**遥控通道**（与下面几组同一条分发路径）：
+       *   `execRemoteForTest` 已在 `:232` 注册 `setGlobals`，能真的走到
+       *   `_gotoNextEpisode`。按钮的**可见性**仍单独断言（上面那条）。
+       */
+      final blockedBefore = debugPlayerBlockedNavCalls();
+      await execRemoteForTest(t, 'next_episode');
       await t.pump(const Duration(milliseconds: 200));
       final after = debugPlayerGotoEpisodeCalls();
+      final blockedAfter = debugPlayerBlockedNavCalls();
+      /*
+       * ★★★ 两个数一起读（产品文档明写：「单独看它没有意义」）：
+       *   gotoEpisode 不变 + blockedNav 也不变  ⇒ 压根没点到（仪器问题）
+       *   gotoEpisode 不变 + blockedNav +1      ⇒ 被边界拦住了（判据生效）
+       *   gotoEpisode +1                        ⇒ 真的切了（阳性对照期望）
+       */
       expect(
         after! - before!,
         1,
         reason: '★★ 阳性对照：正常切集必须被计数到 —— '
-            '这一条不过，下面所有"没切集"的结论都不成立',
+            '这一条不过，下面所有"没切集"的结论都不成立。'
+            '诊断：gotoEpisode $before→$after，'
+            'blockedNav $blockedBefore→$blockedAfter'
+            '（blockedNav 也涨 ⇒ 按钮点到了，但被边界拦住 ⇒ 是 _epIndex 不对）',
       );
 
       await drainTimers(t);
@@ -361,7 +412,8 @@ void main() {
        * ```
        * ⇒ 所以这里断言的是"**点不动**"，不是"看不见"。
        */
-      final f = find.text('下一集');
+      // ★ 2026-10-21：图标按钮 + tooltip ⇒ 用 byTooltip，不是 find.text（见上方长注释）
+      final f = find.byTooltip('下一集');
       expect(f, findsOneWidget,
           reason: '★ 最后一集时「下一集」按钮**仍然可见**（禁用而非隐藏）—— '
               '与旧测试 `player_capability_test.dart` 一致');
@@ -387,7 +439,8 @@ void main() {
       final before = debugPlayerGotoEpisodeCalls();
       expect(before, isNotNull);
 
-      final f = find.text('上一集');
+      // ★ 2026-10-21：图标按钮 + tooltip ⇒ 用 byTooltip（同上）
+      final f = find.byTooltip('上一集');
       expect(f, findsOneWidget,
           reason: '★ 第一集时「上一集」必须**可见**（禁用而非隐藏）');
 
@@ -412,9 +465,9 @@ void main() {
       final eps = fakeEpisodes(5);
       await mountPlayer(t, episodes: eps, episodeIndex: 4);
 
-      expect(find.text('上一集'), findsOneWidget,
+      expect(find.byTooltip('上一集'), findsOneWidget,
           reason: '★ 最后一集时「上一集」必须还在');
-      expect(find.text('下一集'), findsOneWidget,
+      expect(find.byTooltip('下一集'), findsOneWidget,
           reason: '★ 最后一集时「下一集」**仍然可见**（禁用）—— '
               '隐藏会让按钮位置跳动');
 

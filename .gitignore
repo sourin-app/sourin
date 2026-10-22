@@ -103,6 +103,10 @@ key.properties
 /.probe/
 /.probe_i12/
 /.probe_i56/
+# DSH（承载本会话的 agent runtime）自己写的进度目录。
+# 与 `.probe/` 同类：一次性产物、不进库；但它由 harness 生成而非本仓库，
+# 所以要在本仓库显式忽略，否则每次跑完工作树都脏。
+/.dsh-progress/
 /.local/
 /%SystemDrive%/
 /%TEMP%/
@@ -126,6 +130,46 @@ key.properties
 *cookie*.json
 *credential*
 *.session
+#
+# ★ 例外（2026-10-19，CS-1 登录态同步）：`*credential*` 是为了防**真实凭据落盘**，
+#   但它同时误伤了**实现源码**的文件名 —— `sync/credentials.rs` 是加密与黑名单逻辑，
+#   里面一个字节的凭据都没有，却不进库 ⇒ 编译不过、CI 拿不到。
+#   ⇒ 只放行这一个**精确路径**。
+#   ⚠️ 不要写成 `!*credential*.rs`：那会让任何名字含 credential 的文件一起进库
+#      （含本地探针、临时导出物），把这条安全规则的边界拆掉。
+#
+# ★★ 已知这条 glob 会误伤**两类**东西（都已在下面按精确路径放行）：
+#    ① 实现源码（`sync/credentials.rs`）
+#    ② 门禁测试（`test/zz_t66_cs1_credentials_gate_test.dart`）
+#    ⇒ 将来再有名字含 credential 的合法文件，**加精确路径，不要放宽 glob**。
+#    判据：`git check-ignore -v <路径>` 能告诉你是哪条规则命中的；
+#          提交前对每个新文件跑一次，否则会**静默丢文件**（不进 status 也不报错）。
+!rust/sourin_core/src/sync/credentials.rs
+#
+# ★ 例外（2026-10-19，CS-1）：CS-1 的**门禁测试**文件名里也有 credential。
+#   它是断言源码（"口令未设时状态行必须写凭据未同步"那些），不含任何凭据。
+#   ⚠️ 同样只放行**精确路径** —— 不放宽成 `!test/zz_t66_cs1_*.dart`
+#      （那会把将来的临时诊断文件一起放进来）。
+!test/zz_t66_cs1_credentials_gate_test.dart
+
+# ★ 例外（2026-10-21，发版时 CI 抓出来）：**决策笔记**的文件名里有 credentials
+#   同样被误伤 —— 它是讲"凭据平面怎么设计"的笔记，不是凭据本身。
+#
+#   ★★ 这次的暴露方式值得记：这两篇笔记**在本地一直存在、门禁一直绿**，
+#      但因为从未进过 git，CI 一 checkout 就找不到
+#      ⇒ `verify-agent-note-tree.ts` 报 link target does not exist，
+#        Windows job 的「决策笔记门禁」红，**整条发版流水线断在这里**。
+#
+#   ★ 也就是说：`*credential*` 挡掉的不只是"文件没进库"，
+#     它还会让**任何指向被挡文件的链接在 CI 上静默断链**，
+#     而本地永远验不出来（本地磁盘上有那个文件）。
+#     ⇒ 判据：**"本地能读到" ≠ "CI 能读到" ≠ "别人 clone 下来能读到"。**
+#       三者是三个不同的可访问性，门禁绿只证明第一个。
+#
+#   ⚠️ 同样只放行**精确路径**（两篇都点名），不放宽成 `!.agents/notes/**`。
+#     否则将来任何临时笔记、含真实凭据的草稿都会一起进库。
+!.agents/notes/implemented/process/2026-10-12-danmaku-credentials-build-time-secrets.md
+!.agents/notes/implemented/process/2026-10-15-dev-data-seed-readonly-no-credentials.md
 
 
 # 无头 UI 截图的落盘目录（测试产物，不入库；由 SOURIN_SHOT_DIR 指定）
@@ -158,3 +202,38 @@ tools/.dandanplay.local.json
 # CI 要跑它们，且校验口径必须与笔记同版本 —— 只放技能目录的话，
 # 下游 clone 与 CI 都拿不到，门禁就成了本地才能复现的东西。
 !.agents/notes-scripts/
+#
+# ★ 例外（2026-10-20）：笔记看板的 HTML 模板也进仓库。
+#   `build-board.ts` 用 `resolve(__dirname, '../assets/agent-notes-board.html')`
+#   找它，缺了就报 `❌ Template not found` —— 而那是**运行时才报**，
+#   所以 CI 里加了一步 `test -f` 专门挡它。
+#
+# ⚠️ gitignore 的一条硬规则（本轮实测踩到）：
+#   `.agents/*` 把 **assets 目录本身**忽略了，而 git **不会**进入被忽略的目录，
+#   所以 `!.agents/assets/agent-notes-board.html` **单独写不生效**
+#   （`git check-ignore` 仍报 .gitignore:174）。
+#   ⇒ 必须先放行目录、再放行文件。
+#   ⚠️ 但「放行目录」会把该目录下**所有**文件一起放行 ——
+#      所以第二行必须显式写成**精确文件路径**，且要用 `/` 锚定目录边界。
+#      判据：往 .agents/assets/ 放一个 `_tmp_x.txt` ⇒ 必须仍被忽略（实测过）。
+!.agents/assets/
+!.agents/assets/agent-notes-board.html
+# 目录已放行，这里把该目录下「除模板外的一切」重新忽略回去。
+# 顺序很重要：gitignore 是**最后一条匹配生效**，所以这条要放在模板之后。
+/.agents/assets/*
+!/.agents/assets/agent-notes-board.html
+
+# ── PowerShell 在仓库根跑命令时留下的缓存 ──
+# 2026-10-18 实测（第 66 轮）：在仓库根跑 `pwsh`/`powershell` 时，
+# $HOME 被解析成相对路径 ⇒ 生成 Microsoft/Windows/PowerShell/ModuleAnalysisCache。
+# 与产品无关，纯工具副产物。
+Microsoft/
+
+# ── `flutter test --reporter json` 的输出 ──
+# 2026-10-20 实测：做全量红分类时在仓库根落了 base.json / main.json
+# （各约 1MB，内容是逐条测试事件流）。它们**未被忽略** ⇒ 一旦 `git add` 就会
+# 把 2MB 测试日志提交进仓库，而 `git diff` 里看不出来（是新增文件，不是改动）。
+# ★ 判据：这类「工具输出」不该由人记得手动删 —— 让 .gitignore 挡住。
+#   模式取的是这两个具体名字（不是 `*.json`，那会误伤配置）。
+/base.json
+/main.json

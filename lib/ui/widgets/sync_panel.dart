@@ -124,6 +124,8 @@ import 'package:material_ui/material_ui.dart';
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
 import 'overlay_motion.dart';
+import '../../design/widgets/app_glass_dialog.dart';
+import '../../design/widgets/app_text_button.dart';
 import 'settings_kit.dart';
 import '../../design/icons/app_icons.dart';
 
@@ -142,6 +144,15 @@ class _SyncPanelState extends State<SyncPanel> {
   SyncSettings? _settings;
   List<SyncBackupEntry> _backups = const [];
   bool _syncBusy = false;
+
+  /*
+   * ★ 凭据同步状态（CS-1）
+   *
+   * `null` = 还没读到（或核心库不可用）。
+   * ⚠️ 读到 `null` 时状态行显示「凭据未同步（状态未知）」——
+   *    **不许**退化成"同步完成"或干脆不显示（那就是假绿）。
+   */
+  CredentialsStatus? _cred;
 
   /// 面板内联消息（替代原来的宿主 toast，见文件头「消息怎么报」）
   String _ok = '';
@@ -193,7 +204,31 @@ class _SyncPanelState extends State<SyncPanel> {
       debugPrint('[SYNC] 云盘状态读取失败（未配置时属正常）: $e');
     }
     await _reloadSettings();
+    /*
+     * ★ 顺序：备份列表在凭据状态**之前**。
+     *
+     * 这不是随意排的 —— 每多一次串行 `await`，后面那次就多晚一帧才拿到数据。
+     * 实测：把凭据状态插在中间后，`t95` 的「已连接态」用例
+     * （只 `pump` 50ms）看到的是「云端备份（0 份）」而不是 3 份 ——
+     * 数据没错，是**还没回来**。⇒ 把新加的那次放到最后，
+     * 保证既有面板的时序不被改变。
+     */
     await _reloadBackups();
+    await _reloadCredentials();
+  }
+
+  /// 读凭据同步状态
+  ///
+  /// 契约上**永不失败**（纯本地读），但仍包一层：核心库不可用时
+  /// `callAsync` 会抛 —— 那时 `_cred` 保持 `null`，状态行显示"状态未知"。
+  Future<void> _reloadCredentials() async {
+    try {
+      final c = await SourinApi.credentialsStatus();
+      if (!mounted) return;
+      setState(() => _cred = c);
+    } catch (e) {
+      debugPrint('[SYNC] 凭据同步状态读取失败: $e');
+    }
   }
 
   Future<void> _reloadSettings() async {
@@ -383,6 +418,223 @@ class _SyncPanelState extends State<SyncPanel> {
     });
   }
 
+  // ── ★ 凭据同步（CS-1，2026-10-19）────────────────────────────────
+  //
+  // 登录态随云同步：口令存系统钥匙串，凭据加密后跟着云盘走。
+  //
+  // # ★★ 状态行是这一段的全部意义（防假绿）
+  //
+  // ```text
+  // 未设口令 + 开关开着  ⇒ 「凭据未同步（未设置口令）」  ← 最容易写成"完成"的那条
+  // 开关关着            ⇒ 「凭据未同步（未开启）」
+  // 两个都满足          ⇒ 「凭据将同步：N 个源」
+  // 状态读不到          ⇒ 「凭据未同步（状态未知）」
+  // ```
+  //
+  // ⚠️ 判据用后端给的 `willSync`（= enabled && passphraseSet），
+  //    **不在这里自己拼** —— 自己拼必然有人漏一个条件。
+
+  /// 开关凭据同步
+  Future<void> _toggleCredentials(bool on) async {
+    await _busy('正在保存凭据同步设置…', () async {
+      try {
+        final c = await SourinApi.setCredentialsEnabled(on);
+        if (!mounted) return;
+        setState(() => _cred = c);
+        /*
+         * ★★ 开了开关但没设口令 ⇒ **必须**提示"还没真正同步"。
+         *
+         * 只报"已开启"会让用户以为登录态已经在走了 —— 那正是假绿。
+         */
+        if (on && !c.passphraseSet) {
+          _sayErr('已开启，但还没设置口令 ⇒ 凭据未同步。请点「设置口令」。');
+        } else {
+          _sayOk('凭据同步${on ? '已开启' : '已关闭'}');
+        }
+      } catch (e) {
+        _sayErr('凭据同步设置保存失败：$e');
+      }
+    });
+  }
+
+  /// 设 / 改 / 清口令
+  Future<void> _setPassphrase() async {
+    final r = await showAppDialog<({String pass, bool clear})>(
+      context: context,
+      builder: (_) => _PassphraseDialog(hasExisting: _cred?.passphraseSet == true),
+    );
+    if (r == null) return;
+
+    await _busy('正在保存口令…', () async {
+      try {
+        final c = await SourinApi.setCredentialsPassphrase(r.clear ? '' : r.pass);
+        if (!mounted) return;
+        setState(() => _cred = c);
+        if (r.clear) {
+          _sayOk('口令已清除 —— 凭据将不再同步');
+        } else {
+          _sayOk(
+            c.enabled
+                ? '口令已设置，下次同步会带上登录态'
+                : '口令已设置（凭据同步开关还关着）',
+          );
+        }
+      } catch (e) {
+        _sayErr('口令保存失败：$e');
+      }
+    });
+  }
+
+  /// 当前状态行文案（**唯一判据**，见上面的大段注释）
+  ///
+  /// ★ 抽成方法而不是写在 build 里：这样单测能直接断言文案，
+  ///   而不用去 find 某个 `Text`（后者会把排版也绑进断言）。
+  String _credLabel(CredentialsStatus? c) {
+    /*
+     * ★ 读不到状态时**也走同一条判据**（`CredentialsStatus.unknown.statusLabel`），
+     *   而不是在这里另写一句 "凭据未同步（状态未知）"。
+     *   理由是实测出来的：面板里再写一份，同一句话就有两个渲染点，
+     *   而本门禁的"唯一性"检查会把它们判红 —— 因为故障注入只能打中一个。
+     */
+    return (c ?? CredentialsStatus.unknown).statusLabel;
+  }
+
+  /// 状态行的颜色：真的会同步才用主题色，否则用中性色
+  ///
+  /// ⚠️ **不许**在"未设置口令"时用成功色 —— 颜色本身也是判据，
+  ///   绿色的「凭据未同步」比文字更容易被误读成"没问题"。
+  Color _credColor(CredentialsStatus? c, ColorScheme colors) =>
+      (c?.willSync ?? false) ? colors.primary : colors.onSurfaceVariant;
+
+  /// 凭据同步那一块 UI
+  Widget _credentialsSection(ColorScheme colors) {
+    final c = _cred;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _subTitle(colors, '登录态（凭据）'),
+        const SizedBox(height: Sp.x1),
+        _note(
+          colors,
+          '把各内容源已保存的登录态一起同步到云盘，换设备不用重新登录。'
+          /*
+           * ★★★ 这三句是**关键告知**，不是描述文案。
+           *
+           * 用户看到「登录态同步到云盘」的第一反应是
+           * 「我的账号密码要传到别人的服务器？」⇒ 不敢开。
+           * 而真实机制是：**本机**用你的口令加密，上传的是密文，
+           * 服务端拿到也解不开。少了这一句，用户会**直接不用**这个功能。
+           *
+           * ⚠️ 不要把它拆成两句分散在两处 —— 门禁
+           *    （zz_t66_cs1_user_text_gate_test.dart）钉的是**连续的一句**。
+           */
+          '凭据在【本机】用你的口令加密后才上传（AES-256-GCM）：'
+          '上传的是密文，网盘那边解不开（口令不在服务器上）。'
+          '口令本身只存在系统钥匙串里。',
+        ),
+        const SizedBox(height: Sp.x2),
+        // ★★ 状态行 —— 未设口令时**必须**显示「凭据未同步」
+        Row(
+          children: [
+            Icon(
+              (c?.willSync ?? false)
+                  ? AppIcons.check_circle_outline
+                  : AppIcons.error_outline,
+              size: 14,
+              color: _credColor(c, colors),
+            ),
+            const SizedBox(width: Sp.x1),
+            Flexible(
+              child: Text(
+                _credLabel(c),
+                key: const ValueKey('sync-credentials-status'),
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: _credColor(c, colors),
+                ),
+              ),
+            ),
+          ],
+        ),
+        /*
+         * ★★ 同步**方向**的说明**不在这里另起一行**。
+         *
+         * # 为什么不（这是实测发现的重复）
+         *
+         * 第一版我在状态行下面又加了一行 `_note(directionNote)`，
+         * 而 `statusLabel` 里**也**含这句 ⇒ 屏幕上同一句话出现两次。
+         * 更糟的是它让门禁失去判别力：
+         * ```text
+         * 注入"把 statusLabel 里的方向语义去掉" ⇒ 面板上仍有那行独立 note
+         * ⇒ find.textContaining('仅上行') 照样找得到 ⇒ **门禁仍绿**
+         * ```
+         * ⇒ 方向文案**只有一个渲染点**（就是状态行那个 Text），
+         *   门禁断言它，注入才真的会红。
+         */
+        if (c != null && c.plaintextPasswordProviders.isNotEmpty) ...[
+          const SizedBox(height: Sp.x2),
+          // ★ 明文存了账号密码的源 —— 单独提示（比 Cookie 严重一档）
+          _note(
+            colors,
+            '⚠️ 这些源把「账号密码明文」存在本机：'
+            '${c.plaintextPasswordProviders.join('、')}。'
+            '它们会被一起加密同步 —— 如果你不希望密码离开这台设备，'
+            '请先在这些源里登出，再关闭上面的开关。',
+          ),
+        ],
+        const SizedBox(height: Sp.x3),
+        SettingsGestureToggle(
+          label: '随云盘同步登录态',
+          hint: '关掉后只同步收藏 / 追更 / 进度 / 源配置',
+          value: c?.enabled ?? false,
+          onChanged: _toggleCredentials,
+        ),
+        const SizedBox(height: Sp.x3),
+        Wrap(
+          spacing: Sp.x2,
+          runSpacing: Sp.x2,
+          children: [
+            OutlinedButton.icon(
+              onPressed: _syncBusy ? null : _setPassphrase,
+              icon: const Icon(AppIcons.lock_outline, size: 16),
+              label: Text(
+                (c?.passphraseSet ?? false) ? '修改口令' : '设置口令',
+              ),
+            ),
+            if (c?.passphraseSet ?? false)
+              OutlinedButton.icon(
+                onPressed: _syncBusy ? null : _clearPassphrase,
+                icon: const Icon(AppIcons.delete_outline, size: 16),
+                label: const Text('清除口令'),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _clearPassphrase() async {
+    final ok = await _confirm(
+      title: '清除凭据同步口令',
+      message: '清除后：\n\n'
+          '· 登录态「不再」同步（云端已有的那份不会被删）\n'
+          '· 已导出的含凭据的备份包「仍然需要」那个口令才能导入\n\n'
+          '忘记口令时也只能清除后重新设一个（旧包就解不开了）。',
+      okLabel: '清除',
+    );
+    if (!ok) return;
+    await _busy('正在清除口令…', () async {
+      try {
+        final c = await SourinApi.setCredentialsPassphrase('');
+        if (!mounted) return;
+        setState(() => _cred = c);
+        _sayOk('口令已清除');
+      } catch (e) {
+        _sayErr('清除失败：$e');
+      }
+    });
+  }
+
   Future<void> _disconnectSync() async {
     final ok = await _confirm(
       title: '断开云盘',
@@ -411,20 +663,24 @@ class _SyncPanelState extends State<SyncPanel> {
   }) async {
     final r = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
+      builder: (ctx) => AppGlassDialog(
+        title: title,
         content: Text(message),
-        actions: [
-          if (cancelLabel != null)
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: Text(cancelLabel),
-            ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text(okLabel),
-          ),
-        ],
+        // ★ `cancelLabel == null` 时**不画取消钮**（与改前 `if (cancelLabel != null)`
+        //   逐字等价）—— AppGlassDialogActions 固定两键，这一档自己拼。
+        // 改前确认键是 FilledButton（主色）⇒ 非错误色。
+        actions: cancelLabel == null
+            ? AppTextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(okLabel),
+              )
+            : AppGlassDialogActions(
+                cancelLabel: cancelLabel,
+                confirmLabel: okLabel,
+                confirmIsDestructive: false,
+                onCancel: () => Navigator.pop(ctx, false),
+                onConfirm: () => Navigator.pop(ctx, true),
+              ),
       ),
     );
     return r ?? false;
@@ -495,6 +751,16 @@ class _SyncPanelState extends State<SyncPanel> {
             ],
           ],
         ),
+        /*
+         * ★ 凭据同步（CS-1）
+         *
+         * ⚠️ **不受 `connected` 门控** —— 与自动备份那几块不同：
+         *    用户可以先设口令、再配云盘（两个独立操作）。
+         *    而"没口令 ⇒ 必须显示未同步"这条判据，恰好在
+         *    **还没连上云盘**时最容易被漏掉（界面以为没什么可显示的）。
+         */
+        const SizedBox(height: Sp.x5),
+        _credentialsSection(colors),
         // ★ 忙时给一行明确的进度文案 ——
         //   网络操作要好几秒到几十秒（整包备份更大），按钮变灰但页面
         //   毫无变化的话，用户会以为「点了没反应」而去连点。
@@ -932,6 +1198,10 @@ class _WebdavDialogState extends State<_WebdavDialog> {
     final colors = Theme.of(context).colorScheme;
     final p = _preset;
     return AlertDialog(
+      // R4-EXCEPTION: content 是 WebDAV 配置表单 —— SizedBox(width:420) +
+      // 自带 SingleChildScrollView(clipBehavior) + 预设 pill 的 Wrap + 表单字段。
+      // AppGlassDialog 的 maxWidth 默认 380 ⇒ 塞不下 420 宽的表单；
+      // 且它自带滚动区会与外壳的滚动区嵌套。
       title: const Text('配置云盘（WebDAV）'),
       content: SizedBox(
         width: 420,
@@ -1105,6 +1375,137 @@ class _WebdavDialogState extends State<_WebdavDialog> {
 // ★ 哪些能直接填、哪些要替换：见每个 `url` 里的 `<…>` 与 `note`。
 
 /// 一个 WebDAV 服务预设
+/// 设置 / 修改凭据同步口令的对话框
+///
+/// # 三条纪律（每一条都对应一个真实的坑）
+///
+/// ```text
+/// ① 口令输入用 obscureText —— 但这个 App 可能没有 TextField 的先例；
+///    直接用 material_ui 的 TextField（本文件已 import 整个 material_ui）
+///
+/// ② **不显示**当前口令（那要读钥匙串，而且显示明文本身就没必要）
+///    ⇒ 只显示"已设置 / 未设置"
+///
+/// ③ **不允许空口令**（空 = 清除，走另一个按钮 + 二次确认）
+///    ⇒ 否则用户手滑点确定就把口令清空了，而他很可能是想改一个
+/// ```
+class _PassphraseDialog extends StatefulWidget {
+  const _PassphraseDialog({required this.hasExisting});
+
+  /// 已经设过口令（影响标题与提示文案）
+  final bool hasExisting;
+
+  @override
+  State<_PassphraseDialog> createState() => _PassphraseDialogState();
+}
+
+class _PassphraseDialogState extends State<_PassphraseDialog> {
+  final _ctl = TextEditingController();
+  final _ctl2 = TextEditingController();
+  String _err = '';
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    _ctl2.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final p = _ctl.text;
+    if (p.isEmpty) {
+      setState(() => _err = '口令不能为空（要清除口令请用「清除口令」按钮）');
+      return;
+    }
+    /*
+     * ★ 短口令要拦：口令是**唯一**的密钥来源，
+     *   4 位数字在离线爆破面前等于没有（PBKDF2 只保护"不知道口令的人"）。
+     *   这里只做**下限提示**，不强制复杂度 —— 强制复杂度会让用户写便利贴。
+     */
+    if (p.length < 8) {
+      setState(() => _err = '口令太短（至少 8 位）—— 它是解开登录态的唯一钥匙');
+      return;
+    }
+    if (p != _ctl2.text) {
+      setState(() => _err = '两次输入的口令不一致');
+      return;
+    }
+    Navigator.pop(context, (pass: p, clear: false));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return AlertDialog(
+      // R4-EXCEPTION: content 是**口令表单**（两个 TextField + 错误文案 +
+      // 警示文案，包在 SizedBox(width:380) 的 Column 里）⇒ 不是确认框。
+      // AppGlassDialog 内容区 textAlign:center 会让两个输入框居中；
+      // 且 maxHeight 默认 420 可能压掉下面的「忘记口令」警示。
+      title: Text(widget.hasExisting ? '修改凭据同步口令' : '设置凭据同步口令'),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.hasExisting
+                  ? '改口令只会影响「以后」的同步与导出；'
+                      '云端已有的那份、以及之前导出的备份包仍需要「旧口令」才能解开。'
+                  : '这个口令用来加密登录态（各内容源已保存的登录态）。'
+                      '它只存在系统钥匙串里，不会上传、也不会写进备份包。',
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+                height: 1.6,
+              ),
+            ),
+            const SizedBox(height: Sp.x3),
+            TextField(
+              controller: _ctl,
+              autofocus: true,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: '口令（至少 8 位）'),
+              onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: Sp.x2),
+            TextField(
+              controller: _ctl2,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: '再输一次'),
+              onSubmitted: (_) => _submit(),
+            ),
+            if (_err.isNotEmpty) ...[
+              const SizedBox(height: Sp.x2),
+              Text(
+                _err,
+                style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+              ),
+            ],
+            const SizedBox(height: Sp.x3),
+            Text(
+              '⚠️ 忘记口令 = 云端那份和已导出的备份包都解不开（没有找回途径）。'
+              '建议存进密码管理器。',
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+                height: 1.6,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('保存')),
+      ],
+    );
+  }
+}
+
 class _WebdavPreset {
   const _WebdavPreset({
     required this.name,

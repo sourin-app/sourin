@@ -1878,6 +1878,262 @@ fn map_js_error(msg: &str) -> ProviderError {
     }
 }
 
+/// raw-deflate 回退（仅在 `r.text()` 解码失败时调用）
+///
+/// # 它解决什么
+/// ```text
+/// 某些站返回 `Content-Encoding: deflate`，但是 **raw-deflate**（无 zlib 头），
+/// 而 reqwest 的 `deflate` 特性按 **zlib** 格式解
+/// ⇒ `r.text().await` 报 `error decoding response body`
+/// ⇒ 插件拿不到任何数据。
+/// ```
+///
+/// # 为什么要重发一次请求
+/// ```text
+/// `r.text()` 会**消耗** response（`take self`），失败后拿不到原始字节
+/// ⇒ 只能重发。这个回退只在"正常解压失败"时才走，
+///   正常站**一次都不会**重发 ⇒ 零回归风险。
+/// ```
+///
+/// # 返回值
+/// ```text
+/// Some(文本) ⇒ 回退成功（已按原状态码包好前缀）
+/// None       ⇒ 回退也不行（调用方保留原错误）
+/// ```
+async fn try_raw_deflate_fallback(
+    proxy: &Option<Arc<crate::proxy::ProxyStore>>,
+    provider: &str,
+    method: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+    body: Option<&str>,
+    status: &reqwest::StatusCode,
+) -> Option<String> {
+    /*
+     * ★★★ 2026-10-21（CodeRabbit PR#32 ①）：不能再从零新建 client
+     *
+     * # 旧实现漏了什么（用户可见后果）
+     * ```text
+     * 旧：let raw_client = reqwest::Client::builder().no_gzip()… .build()
+     *     ⇒ 这个 client **没有** 任何代理配置
+     *
+     *   1. 用户给这个源配了自定义代理（ProxyStore::client_for 配的）
+     *      ⇒ 回退请求走**直连**
+     *      ⇒ 轻则回退失败（那台站必须靠代理才通）
+     *      ⇒ 重则**暴露用户真实出口 IP** —— 站点看到的不是代理地址
+     *   2. 丢掉了 `user_agent`
+     *      ⇒ 按 UA 分流的站点把回退请求当爬虫
+     *   3. 丢掉了 `client_for` 的绕过列表（bypass）
+     * ```
+     *
+     * # 修法：同一个 `build_client`，只换「自动解压」这一个开关
+     * ```text
+     * `proxy.rs::client_for_ex(provider, None, AutoDecompress::Off)`
+     *   ⇒ 代理/认证/绕过列表/UA/timeout **全部一致**
+     *   ⇒ 唯一差别是三个 no_gzip/no_deflate/no_brotli
+     * ```
+     *
+     * # 为什么**不能**直接复用调用方传进来的 `client`
+     * ```text
+     * 那个 client 是自动解压的 ⇒ `r.bytes()` 重踩同一个解压坑
+     * ⇒ 回退形同虚设（这正是 2026-10-18 二次实测那段注释写的事）
+     * ```
+     *
+     * # 无代理时也不能裸建
+     * ```text
+     * `default_client()` 有统一的 timeout + UA；
+     * 旧代码里的裸 builder 连 UA 都没有。
+     * ⇒ 无代理路径改为「default_client 的配置 + 关自动解压」。
+     * ```
+     */
+    let raw_client = match proxy {
+        Some(px) => px
+            .client_for_ex(provider, None, crate::proxy::AutoDecompress::Off)
+            // 代理配置坏了也不该把回退整个吞掉：退回"无代理但关解压"的客户端，
+            // 至少行为与修复前一致（旧代码本来就没代理），不会更差。
+            .unwrap_or_else(|_| raw_decompress_off_client()),
+        None => raw_decompress_off_client(),
+    };
+    let req = if method == "POST" {
+        raw_client.post(url)
+    } else {
+        raw_client.get(url)
+    };
+    let mut req = req;
+    for (k, v) in headers {
+        // ★ 不发 Accept-Encoding：让服务端按它自己的意愿给（有的站强制压缩）
+        if k.eq_ignore_ascii_case("accept-encoding") {
+            continue;
+        }
+        req = req.header(k, v);
+    }
+    if let Some(b) = body {
+        req = req.body(b.to_string());
+    }
+    let r = req.send().await.ok()?;
+    // ★ 只对 deflate 响应做回退；别的编码交给上层报错
+    let enc = r
+        .headers()
+        .get(reqwest::header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !enc.contains("deflate") {
+        return None;
+    }
+    let bytes = r.bytes().await.ok()?;
+    /*
+     * ★★★ 依次尝试三种格式（2026-10-18 二次修复）
+     *
+     * # 为什么不是只试 raw-deflate
+     * ```text
+     * 本站实测：声明 `Content-Encoding: deflate`，内容确实是 raw-deflate。
+     * 但「声明 deflate、内容却是 zlib 或 gzip」在 HTTP 世界里**真实存在**
+     * （某些反代的压缩配置与响应头不同步）。
+     *
+     * 只试 raw-deflate 的话，那种站会**静默失败**：
+     *   解不开 ⇒ return None ⇒ 保留原错误 ⇒ 用户看不到数据，日志也只是原错误。
+     * ⇒ 成本极低（三次尝试都在内存里），收益是把"名不副实"也覆盖掉。
+     * ```
+     *
+     * # 顺序有讲究
+     * ```text
+     * raw-deflate 在前：本站实测就是它（最常见的情况优先，少走一次尝试）
+     * zlib        其次：deflate 的标准封装（带 2 字节头）
+     * gzip        最后：名不副实的兜底
+     * ```
+     *
+     * ★ 三种都失败 ⇒ 返回 None，**保留调用方的原始错误**（不编造新错误）。
+     */
+    use std::io::Read as _;
+    let mut out = String::new();
+    let ok = flate2::read::DeflateDecoder::new(&bytes[..])
+        .read_to_string(&mut out)
+        .is_ok()
+        || {
+            out.clear();
+            flate2::read::ZlibDecoder::new(&bytes[..])
+                .read_to_string(&mut out)
+                .is_ok()
+        }
+        || {
+            out.clear();
+            flate2::read::GzDecoder::new(&bytes[..])
+                .read_to_string(&mut out)
+                .is_ok()
+        };
+    if !ok {
+        return None;
+    }
+    if status.is_success() {
+        Some(out)
+    } else {
+        Some(format!(
+            "__ERR__HTTP {status}: {}",
+            out.chars().take(200).collect::<String>()
+        ))
+    }
+}
+
+/// 仅供集成测试调用 `do_http` 的转发出口（`do_http` 本身是私有的）
+///
+/// # 为什么需要它
+/// ```text
+/// `do_http` 是模块私有 —— 这**是对的**（插件只能通过 `host.http` 走到它）。
+/// 但 CodeRabbit PR#32 ② 的判据必须是「服务端 accept 了几次」，
+/// 那需要一个**从外部**驱动一次真 HTTP 往返的入口。
+///
+/// 替代方案都更差：
+///   · 把 `do_http` 改成 `pub` ⇒ 扩大公开面，为测试改产品 API
+///   · 走完整插件链路（起 QuickJS + 装插件）⇒ 慢、且与 HTTP 层无关
+/// ⇒ 一个 `#[doc(hidden)]` 的薄转发，公开面最小。
+/// ```
+#[doc(hidden)]
+pub async fn do_http_for_test(
+    proxy: &Option<Arc<crate::proxy::ProxyStore>>,
+    provider: &str,
+    method: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+    body: Option<String>,
+) -> String {
+    do_http(proxy, provider, method, url, headers, body).await
+}
+
+/// `r.text()` 的失败**是不是真的解压/解码失败**（决定要不要回退重发）
+///
+/// # ★★★ 为什么不能用 `e.is_decode()` —— 实测推翻了 CodeRabbit 的建议
+///
+/// ```text
+/// CodeRabbit PR#32 ② 的修法：「只在 e.is_decode() 时进入回退」。
+/// 实测（2026-10-21，本机真 TcpListener 四种场景）：
+///
+///   场景                               is_decode  is_timeout
+///   ────────────────────────────────────────────────────────
+///   A 读 body 超时（头已到，body 没来）   **true**    true
+///   B 连接中途断开（Content-Length 不够） **true**    false
+///   C 完整 raw-deflate（真解压失败）      **true**    false
+///   D raw-deflate 被截断（解压中途失败）  **true**    false
+///
+/// ⇒ 四种**全部** is_decode = true
+/// ⇒ 照 CR 的原话改，A/B 照样回退重发 ⇒ **修不掉**。
+/// ```
+///
+/// # 那靠什么区分
+///
+/// ```text
+/// reqwest 把真实原因藏在 `source()` 链的第 2 层：
+///
+///   A  ... → "operation timed out"
+///   B  ... → "error reading a body from connection"
+///   C  ... → "deflate decompression error"     ← 只有这个该回退
+///   D  ... → "deflate decompression error"     ← 同上
+///
+/// ⇒ 判据：**source 链里出现解压失败的标志文本**才回退。
+/// ```
+///
+/// # 为什么不判「不是超时/不是连接错误」而是要「是解压错误」
+///
+/// ```text
+/// 白名单比黑名单安全：将来 reqwest 新增一类 body 错误（如 HTTP/3 流中断），
+/// 黑名单会漏掉它 ⇒ 又变成"未知错误也重发"。
+/// 白名单下未知错误一律不回退 ⇒ 最坏是少一次回退（退回原错误），
+/// 而不是多一次重发（用户可见事故）。
+/// ```
+fn is_real_decompress_failure(e: &reqwest::Error) -> bool {
+    /*
+     * ① 先排除超时：即使 source 链里恰好也有解压字样，
+     *    超时说明**请求已经到达服务端**，重发就是执行两次。
+     */
+    if e.is_timeout() {
+        return false;
+    }
+
+    /*
+     * ② 走 source 链，找解压失败的标志。
+     *
+     * flate2 / reqwest 的原文是 "deflate decompression error"
+     * （也可能带 gzip/brotli 字样）。这里只认「decompress」这个根。
+     */
+    use std::error::Error as _;
+    let mut src: Option<&(dyn std::error::Error + 'static)> = e.source();
+    while let Some(s) = src {
+        let msg = s.to_string();
+        let lower = msg.to_ascii_lowercase();
+        if lower.contains("decompress")
+            || lower.contains("deflate")
+            || lower.contains("gzip")
+            || lower.contains("brotli")
+            || lower.contains("zlib")
+        {
+            return true;
+        }
+        src = s.source();
+    }
+
+    false
+}
+
 /// 插件 HTTP 请求（走站点代理配置）
 ///
 /// 返回**响应文本**，失败返回 `__ERR__<原因>` 前缀串。
@@ -1945,13 +2201,58 @@ async fn do_http(
     for (k, v) in headers {
         req = req.header(k, v);
     }
-    if let Some(b) = body {
-        req = req.body(b);
+    /*
+     * ★ 2026-10-18：`body` 用 `as_deref()` 而不是 move。
+     *
+     * 原来写 `if let Some(b) = body { req = req.body(b); }` ——
+     * 那会**部分移动** `body` ⇒ 下面 raw-deflate 回退里
+     * `body.as_deref()` 变成「借用已移动的值」⇒ E0382 编译不过。
+     *
+     * 改成 `as_deref()`（只借不拿）+ `to_string()`（克隆一份给 reqwest）
+     * ⇒ body 保持可用，回退还发一次同样的请求体。
+     * 代价：多一次 String 克隆 —— 请求体本来就不大（插件侧 JSON），可接受。
+     */
+    if let Some(b) = body.as_deref() {
+        req = req.body(b.to_string());
     }
 
     match req.send().await {
         Ok(r) => {
             let status = r.status();
+            /*
+             * ★★★ 2026-10-18（E2E 验证发现）：**raw-deflate 回退**
+             *
+             * # 真实缺陷
+             * ```text
+             * 某些站的弹幕接口返回 `Content-Encoding: deflate`，
+             * 但它是 **raw-deflate**（无 zlib 头），
+             * 而 reqwest 的 `deflate` 特性按 **zlib** 格式解
+             * ⇒ `r.text().await` 报 `error decoding response body`
+             * ⇒ 插件拿不到任何数据，整个弹幕功能失效。
+             * ```
+             *
+             * # 实测证据
+             * ```text
+             * 同一接口两个不同 id 都是这样（不是偶发）：
+             *   前 2 字节 ecfd / bcfd ⇒ zlib 解压 False，raw 解压 True
+             * ⇒ 这是**该接口的固定行为**，不是数据傏坏
+             * ```
+             *
+             * # 为什么是「回退」而不是「直接关掉自动解压」
+             * ```text
+             * 关掉自动解压 ⇒ 影响**所有插件**（gzip/brotli/deflate 全要插件自己处理）
+             * 而回退只在"正常解压失败"时才走第二次
+             * ⇒ 正常站一个字节都不受影响（零回归风险）
+             * ```
+             *
+             * # ⚠️ 只在 `r.text()` 失败时才重发，不预先读 body
+             * ```text
+             * `r.text()` 会消耗 response（take self）
+             * ⇒ 必须先 `r.bytes()` 拿到原始字节，再自己解压
+             * ⇒ 所以本实现是：正常路径照旧 `text()`，
+             *   失败后重发一次并用 bytes() + 手动 raw-inflate
+             * ```
+             */
             match r.text().await {
                 Ok(t) => {
                     if status.is_success() {
@@ -1961,7 +2262,35 @@ async fn do_http(
                         format!("__ERR__HTTP {status}: {}", t.chars().take(200).collect::<String>())
                     }
                 }
-                Err(e) => format!("__ERR__读取响应失败: {e}"),
+                Err(e) => {
+                    /*
+                     * ★★★ 2026-10-21（CodeRabbit PR#32 ②）：**只在真解压失败时回退**
+                     *
+                     * ```text
+                     * 改前：Err(e) 分支不区分错误类型 ⇒ 一律重发
+                     * ⇒ 读 body 超时 / 连接断开也会重发
+                     * ⇒ 那个 POST **已经到达服务端**，重发就是执行两次
+                     *   （发弹幕 ⇒ 屏幕上出现两条）
+                     * ⇒ GET 还会多等一次 HTTP_TIMEOUT_SECS ⇒ 失败延迟最长 30s
+                     * ```
+                     *
+                     * 判据见 [`is_real_decompress_failure`] ——
+                     * **不能用 `e.is_decode()`**，实测四种失败全是 true。
+                     */
+                    if !is_real_decompress_failure(&e) {
+                        return format!("__ERR__读取响应失败: {e}");
+                    }
+
+                    // ★ 回退：重发一次，自己拿原始字节并按 raw-deflate 解
+                    match try_raw_deflate_fallback(
+                        proxy, provider, method, url, headers, body.as_deref(), &status,
+                    )
+                    .await
+                    {
+                        Some(t) => t,
+                        None => format!("__ERR__读取响应失败: {e}"),
+                    }
+                }
             }
         }
         Err(e) => format!("__ERR__请求失败: {e}"),
@@ -2969,6 +3298,21 @@ fn default_client() -> reqwest::Client {
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/143.0.0.0")
         .build()
         .expect("build http client")
+}
+
+/// `default_client()` 的 raw 版：**同样的 timeout + UA，只关掉自动解压**
+///
+/// 供「没有 ProxyStore」的路径（例如离线测试 / 未挂代理的场景）在
+/// raw-deflate 回退时使用。旧代码在这里裸建 builder，连 UA 都没有。
+fn raw_decompress_off_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/143.0.0.0")
+        .no_gzip()
+        .no_deflate()
+        .no_brotli()
+        .build()
+        .expect("build raw http client")
 }
 
 // ─────────────────────────── MediaProvider 实现 ───────────────────────────
@@ -7072,4 +7416,164 @@ globalThis.plugin = { id: 'old', capabilities: { vod: true, search: true } };
             .expect_err("默认实现必须报 Unsupported");
         assert_eq!(e2.kind, ErrorKind::Unsupported);
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // ★★★ 2026-10-18（E2E 验证发现）：raw-deflate 解码
+    // ══════════════════════════════════════════════════════════════════
+    //
+    // # 为什么要有这个测试
+    // ```text
+    // 缺陷现场：某些站返回 `Content-Encoding: deflate`，但内容是 raw-deflate
+    //          （无 zlib 头），reqwest 按 zlib 解 ⇒ error decoding response body
+    //          ⇒ 插件拿不到任何数据。
+    //
+    // 而"代码里有 DeflateDecoder 这一行"Dart 侧断言得出来 ——
+    // 但那证明不了它**解得出东西**。
+    // ⇒ 这个测试造真实 raw-deflate 字节流，解回原文并比对。
+    // ```
+    //
+    // ⚠️ 用 flate2 自己压一份 raw-deflate（`DeflateEncoder`），再解回 —— 
+    //    这是**往返验证**，能同时排除"压缩端写错"和"解压端写错"。
+    #[test]
+    fn raw_deflate_roundtrip() {
+        use std::io::{Read as _, Write as _};
+
+        const SAMPLE: &str = "<?xml version=\"1.0\"?><i><d p=\"3.84800,4,25,15138834\">                              测试弹幕 &amp; 符号</d></i>";
+
+        // ① 压成 raw-deflate（注意是 DeflateEncoder，**不是** ZlibEncoder）
+        let mut enc = flate2::write::DeflateEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        );
+        enc.write_all(SAMPLE.as_bytes()).expect("压缩失败");
+        let raw_bytes = enc.finish().expect("收尾失败");
+
+        // ② 关键断言：它**不是** zlib 格式
+        //    zlib 头固定以 0x78 开头（CMF 字节，deflate + 32K 窗口）
+        //    若这里是 0x78，说明我们造的不是 raw-deflate，测试就失去意义
+        assert_ne!(
+            raw_bytes[0], 0x78,
+            "★ 造出来的数据带 zlib 头 ⇒ 这个测试没覆盖 raw-deflate 场景"
+        );
+
+        // ③ 用生产代码同款解码器解回
+        let mut out = String::new();
+        flate2::read::DeflateDecoder::new(&raw_bytes[..])
+            .read_to_string(&mut out)
+            .expect("raw-deflate 解码失败");
+
+        assert_eq!(out, SAMPLE, "★ 往返不一致 ⇒ 解码路径有问题");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ★★★ 2026-10-18（代理审查 + 注入实测发现）：client 配置必须被盯住
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // # 为什么前面两个测试不够（已实测）
+    // ```text
+    // raw_deflate_roundtrip                 ⇒ 测的是 flate2 的编解码往返
+    // zlib_decoder_cannot_read_raw_deflate  ⇒ 测的是 ZlibDecoder 的行为
+    //
+    // ★ 两者都**不经过 reqwest、不测 no_gzip/no_deflate/no_brotli 配置**
+    // ⇒ 实测：删掉 `        .no_deflate()` 后，
+    //   这两个测试**仍然全绿**（2 passed; 0 failed）
+    // ⇒ 而那正是 9ca4076 那次修复失效的根因。
+    // ```
+    //
+    // # 这个测试怎么做到"会红"
+    // ```text
+    // 起一个本地 HTTP 服务器，返回真的 raw-deflate 字节
+    // + `Content-Encoding: deflate`，然后调**生产代码里的 do_http()**。
+    //
+    // 这走的是完整真实链路：
+    //   reqwest 自动解压 → 失败 → 我们的回退 → raw_client 重发 → 解压
+    //   ⇒ 任何一环断了都会失败
+    //
+    // 如果删掉 `.no_deflate()`：raw_client 也会自动解压
+    //   ⇒ 它拿到的就是"已解压后的文本被当成压缩流"⇒ 解码失败 ⇒ 本测试红。
+    // ```
+    //
+    // ★ 本地服务器 = 不联网、不依赖外部站点、可离线跑。
+    #[tokio::test]
+    async fn do_http_decodes_raw_deflate_end_to_end() {
+        use std::io::{Read as _, Write as _};
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        const BODY: &str = "<i><d p=\"1,5,25,16711680\">端到端测试 raw-deflate</d></i>";
+
+        // ① 压成 raw-deflate
+        let mut enc =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(BODY.as_bytes()).expect("压缩失败");
+        let raw_bytes = enc.finish().expect("收尾失败");
+        assert_ne!(
+            raw_bytes[0], 0x78,
+            "★ 带 zlib 头 ⇒ 这个测试失去意义"
+        );
+
+        // ② 起本地服务器（只服务一次）
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind 失败");
+        let addr = listener.local_addr().expect("addr 失败");
+        let body_for_srv = raw_bytes.clone();
+        let srv = tokio::spawn(async move {
+          // ★ 两次请求：第一次 reqwest 自动解压失败，第二次是回退
+          for _ in 0..2 {
+            let (mut sock, _) = listener.accept().await.expect("accept 失败");
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Encoding: deflate\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body_for_srv.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(&body_for_srv).await;
+            let _ = sock.flush().await;
+          }
+        });
+
+        // ③ 调**生产代码**
+        let url = format!("http://{}/x.xml", addr);
+        let headers = HashMap::new();
+        let out = do_http(&None, "test-provider", "GET", &url, &headers, None).await;
+        let _ = srv.await;
+
+        // ④ 断言
+        assert!(
+            !out.starts_with("__ERR__"),
+            "★ 回退失败，返回错误: {out}"
+        );
+        assert_eq!(out, BODY, "★ 解出来的内容不对 (len={})", out.len());
+    }
+
+    /// ★ 反向对照：`ZlibDecoder` 解 raw-deflate **必须失败**
+    ///
+    /// ```text
+    /// 这条证明"为什么需要回退"：
+    ///   reqwest 内部用的就是 zlib 语义 ⇒ 它解 raw-deflate 必然报错
+    /// ⇒ 不写这条的话，将来有人把回退删掉，
+    ///   只跑 raw_deflate_roundtrip 仍然绿（因为那是我们自己解压的）
+    /// ```
+    #[test]
+    fn zlib_decoder_cannot_read_raw_deflate() {
+        use std::io::{Read as _, Write as _};
+
+        let mut enc = flate2::write::DeflateEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        );
+        enc.write_all(b"hello raw deflate").expect("压缩失败");
+        let raw_bytes = enc.finish().expect("收尾失败");
+
+        let mut out = String::new();
+        let r = flate2::read::ZlibDecoder::new(&raw_bytes[..]).read_to_string(&mut out);
+        assert!(
+            r.is_err(),
+            "★ ZlibDecoder 竟然解开了 raw-deflate ⇒ 那这条回退就不必要了，\
+             请重新评估缺陷是否真实存在"
+        );
+    }
+
 }
+

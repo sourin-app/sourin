@@ -48,7 +48,7 @@ class _AppSwitchState extends State<AppSwitch> {
 
   @override
   Widget build(BuildContext context) {
-    final t = AppTheme.of(context);
+    final t = AppTheme.resolvedOf(context);
     final on = widget.value;
     final enabled = widget.onChanged != null;
 
@@ -123,7 +123,7 @@ class AppDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = AppTheme.of(context);
+    final t = AppTheme.resolvedOf(context);
     return Padding(
       padding: EdgeInsets.only(left: indent, right: indent),
       child: Container(

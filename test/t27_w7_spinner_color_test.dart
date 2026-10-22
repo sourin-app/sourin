@@ -158,7 +158,26 @@ const Map<String, String> kColorlessWhitelist = {};
 /// 修复后必须各含 ≥1 处带 color: 的 CPI（钉回退）
 const List<String> kFixedMustHaveColor = [
   'lib/ui/widgets/bili_import_dialog.dart',
-  'lib/ui/widgets/danmaku_settings_dialog.dart',
+  // ★★★ 2026-10-19 移出：`lib/ui/widgets/danmaku_settings_dialog.dart`
+  //
+  // ```text
+  // commit `ff54fbe` 把那 4 处 CircularProgressIndicator 全部迁到了
+  // `AppInlineSpinner`（行内小圈需要描边按 size 按比例缩放 —— Material 的
+  // CPI 做不到：实测 AppLoading 的 stroke 写死 4.0，14px 时描边占直径
+  // 28.6%，比原来粗 33%）。
+  // ⇒ 该文件现在 **0 处 CPI**（实测，`grep -c CircularProgressIndicator` = 0）。
+  //
+  // ★ 它**不是**「回退了修复」，而是**换了实现**：
+  //   本清单的语义是「钉回退」（修复后必须**仍有**带 color 的 CPI），
+  //   对一个已经没有 CPI 的文件，"钉回退"不再有意义。
+  //   ⇒ 从清单移除。
+  //   ⚠️ **不要**改成「必须 0 处 CPI」——那会禁止将来合理地再引入 CPI。
+  //
+  // ★★ 钉回退的职责**已转移**，不是丢失：
+  //   `test/zz_t66_app_inline_spinner_test.dart` 钉住
+  //   「那 5 处必须是 AppInlineSpinner、且 color 原样保留、描边按 size 缩放」。
+  //   ⇒ 两边合起来仍然覆盖「这批行内小圈不许被改坏」。
+  // ```
   'lib/ui/widgets/provider_import_dialog.dart',
   'lib/ui/widgets/proxy_panel.dart',
   'lib/ui/widgets/source_switch_dialog.dart',

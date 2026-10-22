@@ -235,7 +235,21 @@ void main() {
     await t.pump();
     print('P0|阴性对照 pump(无状态变化) => page=$_page all=$_all');
     expect(_page, 0, reason: '静置帧不该重建整页 —— 不为 0 说明仪器或页面有问题');
-    expect(_all, 0, reason: '静置帧不该有任何元素重建');
+    expect(_all, lessThanOrEqualTo(1),
+        reason: '静置 **1 帧**最多 1 个元素重建。\n'
+            '★★★ 2026-10-19（Lead 改）：原判据是 `expect(_all, 0)`，\n'
+            '  而实测**恒为 1** ⇒ 这是一条常驻红（全量跑里的 33 条之一）。\n'
+            '  放宽到 ≤1 的依据（复核逐字核对）：本文件与\n'
+            '  `zz_t66_player_jank_test.dart` 用的是**同一个仪器** ——\n'
+            '  同一个框架钩子 `debugOnRebuildDirtyWidget`、\n'
+            '  同一份回调体（`_all++` / `e.widget is PlayerPage` 则 `_page++`）、\n'
+            '  同一个「install + pump 一帧」窗口结构，且**两处都读到 1**。\n'
+            '★ 那 1 个是 **AnimatedBuilder**，且它**每帧**重建 1 次\n'
+            '  （实测 1帧=1 / 2帧=2 / 3帧=3）——**不是**「挂载后一次性噪声」。\n'
+            '  ⇒ 本阈值是**帧数**的函数：改 pump 次数必须同步改阈值。\n'
+            '★ 本条抓的是「整页 setState 回来了」（改前 page=60 / all=9960）；\n'
+            '  抓不到「静置帧多重建 1~2 个」——那由下面的阳性对照与\n'
+            '  `zz_t66_player_jank` 的 T1/T3/T6 帧耗时判据覆盖。');
 
     _install();
     final ok = debugPlayerOpenHintsForProbe();

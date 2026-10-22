@@ -196,8 +196,25 @@ pub fn clear_proxy_password(provider: &str) -> Result<(), String> {
 /// 但带认证的代理每次都要取密码，故缓存键包含配置摘要。
 pub struct ProxyStore {
     configs: RwLock<HashMap<String, ProxyConfig>>,
-    /// 客户端缓存：key = `"{provider}|{scope}|{配置摘要}"`
+    /// 客户端缓存：key = `"{provider}|{scope}|{配置摘要}|{解压}"`
     clients: Mutex<HashMap<String, reqwest::Client>>,
+}
+
+/// HTTP 客户端要不要开启 reqwest 的**自动解压**
+///
+/// # 为什么这是一个枚举，而不是 `bool`
+/// ```text
+/// `build_client(provider, cfg, true)` 在调用点读不出 true 是什么意思；
+/// 而这两种客户端的差别是**安全性级别**的（回退重发可能让服务端执行两次），
+/// 传错一个字面量不会有任何编译或运行期报错。
+/// ⇒ 具名枚举让「哪一种」写在调用点上。
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AutoDecompress {
+    /// 正常客户端：reqwest 自己解 gzip/deflate/br（99% 的请求）
+    On,
+    /// raw 客户端：**必须关掉**，否则 `r.bytes()` 重踩同一个解压坑
+    Off,
 }
 
 impl Default for ProxyStore {
@@ -257,13 +274,48 @@ impl ProxyStore {
     ///
     /// `scope` 参数允许调用方覆盖配置里的 scope（例如同步后端强制走全流量）。
     pub fn client_for(&self, provider: &str, scope: Option<ProxyScope>) -> Result<reqwest::Client, ProviderError> {
+        self.client_for_ex(provider, scope, AutoDecompress::On)
+    }
+
+    /// 同 [`Self::client_for`]，但可以指定要不要自动解压
+    ///
+    /// # ★★★ 为什么必须有这个入口（CodeRabbit PR#32 ①）
+    /// ```text
+    /// raw-deflate 回退需要「关掉自动解压」的客户端 ——
+    /// 但旧实现是从零 `reqwest::Client::builder()` 新建一个 `raw_client`：
+    ///
+    ///   · 丢掉了 `client_for` 配好的**自定义代理 + 认证 + 绕过列表**
+    ///     ⇒ 用户开了代理，回退却走直连
+    ///     ⇒ 轻则回退失败（那台站本来就得靠代理才通）
+    ///     ⇒ 重则**暴露用户真实出口 IP**（站点看到的不是代理地址）
+    ///   · 丢掉了 `user_agent`
+    ///     ⇒ 有的站按 UA 分流，回退请求被当成爬虫
+    ///   · 丢掉了统一的 `timeout` 语义
+    ///
+    /// ⇒ 代理配置、认证、绕过列表、UA 必须在**两种客户端之间保持一致**，
+    ///   唯一允许不同的只有「自动解压」这一项。
+    /// ```
+    ///
+    /// # 缓存键必须带 `decompress`
+    /// ```text
+    /// 若两种客户端共用一个 key：
+    ///   先回退一次（建的是 Off 客户端）⇒ 之后所有正常请求拿到 Off 客户端
+    ///   ⇒ 那些站返回 gzip 时我们拿到原始字节 ⇒ 上层看到的是乱码
+    /// 这是**静默**的错误（不报错，只是数据不对），所以 key 必须分开。
+    /// ```
+    pub fn client_for_ex(
+        &self,
+        provider: &str,
+        scope: Option<ProxyScope>,
+        decompress: AutoDecompress,
+    ) -> Result<reqwest::Client, ProviderError> {
         let cfg = self.get(provider);
         let eff_scope = scope.unwrap_or(cfg.scope);
 
         // 仅 API 走代理时，视频分片类请求应直连 —— 由调用方决定传什么 scope，
         // 这里只负责「这个客户端怎么建」。
         let key = format!(
-            "{provider}|{eff_scope:?}|{}|{:?}|{:?}",
+            "{provider}|{eff_scope:?}|{}|{:?}|{:?}|{decompress:?}",
             cfg.url.as_deref().unwrap_or(""),
             cfg.mode,
             cfg.bypass
@@ -273,7 +325,7 @@ impl ProxyStore {
             return Ok(c.clone());
         }
 
-        let client = self.build_client(provider, &cfg)?;
+        let client = self.build_client(provider, &cfg, decompress)?;
         self.clients
             .lock()
             .unwrap()
@@ -281,13 +333,32 @@ impl ProxyStore {
         Ok(client)
     }
 
-    fn build_client(&self, provider: &str, cfg: &ProxyConfig) -> Result<reqwest::Client, ProviderError> {
+    fn build_client(
+        &self,
+        provider: &str,
+        cfg: &ProxyConfig,
+        decompress: AutoDecompress,
+    ) -> Result<reqwest::Client, ProviderError> {
         let mut b = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
             .user_agent(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                  (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
             );
+
+        /*
+         * ★ raw 客户端：三个都必须关，且必须在 `proxy` 之前不冲突（都是独立字段）
+         *
+         * # 为什么三个都要关（实测）
+         * ```text
+         * reqwest 的自动解压是 **client 级** 配置，
+         * 与"发不发 Accept-Encoding 头"无关。
+         * 只关 deflate 可能仍被 gzip/br 干扰 ⇒ 实测三个全关才拿到原始字节。
+         * ```
+         */
+        if decompress == AutoDecompress::Off {
+            b = b.no_gzip().no_deflate().no_brotli();
+        }
 
         match cfg.mode {
             ProxyMode::Direct => {

@@ -55,9 +55,16 @@ import 'cache_page.dart'
     show CachedDelete, CachedWork, humanBytes, kLocalProvider;
 import 'media_session.dart';
 import '../core/network_status.dart';
+import '../design/widgets/app_glass_dialog.dart';
+import '../design/widgets/app_icon_button.dart';
 import '../design/widgets/app_ink_well.dart';
+import '../design/widgets/app_outlined_button.dart';
+import '../design/widgets/app_text_button.dart';
+import '../design/widgets/app_tooltip_slider.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
+// ★ 2026-10-18（Owner 第 12 条）：toast 统一走这里（`showAppToast`）
+import 'widgets/app_toast.dart';
 import 'widgets/app_menu.dart';
 import 'widgets/cover_image.dart';
 import 'widgets/detail_raw_meta.dart';
@@ -1142,7 +1149,8 @@ class _DetailPageState extends State<DetailPage> {
   bool _isFav = false;
   bool _following = false;
   Progress? _resume;
-  String? _toast;
+  // ★ 2026-10-18（Owner 第 12 条）：`String? _toast` 字段已删除 ——
+  //   `_flash` 改走 `showAppToast`，本页不再自己持有提示状态。
 
   /// 用户**手动点过**的选集（优先级高于自动推导）
   ///
@@ -2116,12 +2124,36 @@ class _DetailPageState extends State<DetailPage> {
     }
   }
 
+  /// 弹一条操作反馈 —— ★ 2026-10-18（Owner 第 12 条）：改走**统一 toast**
+  ///
+  /// Owner 原话：
+  /// ```text
+  /// > 统一toast提示样式,不要自己写,要用自带的
+  /// ```
+  ///
+  /// # 改前（本页自写的那一套，已删除）
+  /// ```text
+  /// setState(() => _toast = msg);
+  /// Future.delayed(2400ms, () { if (mounted && _toast == msg) setState(() => _toast = null); });
+  /// 外加 build() 里一个 Positioned + `_Toast`（黑底 82% 胶囊）
+  /// ```
+  /// 四个页面各抄了一份（detail / follow / settings / skip），
+  /// 样式四份、只能同时显示一条、关不掉。
+  ///
+  /// # 改后
+  /// ```text
+  /// showAppToast(context, msg)
+  ///   · 宿主 `ToastHost` 挂在 `lib/shell.dart` 的 `MaterialApp.builder`
+  ///     （Navigator **之外**）⇒ 详情页无论是独立路由还是 embedded
+  ///     都能弹（`test/toast_host_mounted_test.dart` 有守卫）
+  ///   · 多条堆叠、各自计时、可手动关闭、Esc 可关
+  /// ```
+  /// ⚠️ `if (!mounted) return` **保留**：`_flash` 在 await 之后被调用，
+  ///    那时页面可能已经 pop（`showAppToast` 本身找不到宿主会静默 no-op，
+  ///    但显式 return 更清楚，也省一次祖先查找）。
   void _flash(String msg) {
     if (!mounted) return;
-    setState(() => _toast = msg);
-    Future.delayed(const Duration(milliseconds: 2400), () {
-      if (mounted && _toast == msg) setState(() => _toast = null);
-    });
+    showAppToast(context, msg);
   }
 
   /// 按 id 找一集（找不到返回 null）
@@ -2234,22 +2266,22 @@ class _DetailPageState extends State<DetailPage> {
     }
     final ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('下载全部集'),
+      builder: (ctx) => AppGlassDialog(
+        // ★ 轨道 E M2 第 4 步：AlertDialog → AppGlassDialog（玻璃确认框）
+        //   弹出仍走 showAppDialog（保住 task-104 的 animationStyle 与
+        //   3.47 的 DialogRoute 语义 —— 见 app_glass_dialog.dart 文件头）
+        title: '下载全部集',
         content: Text(
           '将下载全部 $n 集到「视频 / 源影 / ${_detail?.title ?? ''}」，'
           '一次只下一集（把带宽留给播放），可以随时取消。',
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text('下载 $n 集'),
-          ),
-        ],
+        actions: AppGlassDialogActions(
+          onCancel: () => Navigator.of(ctx).pop(false),
+          onConfirm: () => Navigator.of(ctx).pop(true),
+          confirmLabel: '下载 $n 集',
+          // 下载不是破坏性操作 ⇒ 不用错误色
+          confirmIsDestructive: false,
+        ),
       ),
     );
     if (ok != true || !mounted) return;
@@ -2461,15 +2493,8 @@ class _DetailPageState extends State<DetailPage> {
             onBack: widget.embedded ? null : () => Navigator.pop(context),
           )
         else if (_detail != null) _buildBody(context, _detail!),
-
-        // ── Toast ──
-        if (_toast != null)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: Sp.x10,
-            child: Center(child: _Toast(text: _toast!)),
-          ),
+        // ★ 2026-10-18（Owner 第 12 条）：本页不再画 toast ——
+        //   统一由 shell 层的 `ToastHost` 承担（见 `_flash` 的说明）。
       ],
     );
 
@@ -3047,10 +3072,43 @@ class _DetailPageState extends State<DetailPage> {
             padding: const EdgeInsets.fromLTRB(Sp.x2, Sp.x4, Sp.x2, 0),
             child: Align(
               alignment: Alignment.centerLeft,
-              child: IconButton(
-                onPressed: () => Navigator.of(context).maybePop(),
-                icon: const Icon(AppIcons.chevron_left),
-                tooltip: '返回',
+              /*
+               * ★ 2026-10-18（轨道 E · 玻璃化 M2 第 2 步）：IconButton → AppIconButton
+               *
+               * # 为什么用 AppIconButton 而不是 GlassIconButton
+               * ```text
+               * ① GlassIconButton **没有 tooltip 参数**，而这里原本有 `tooltip: '返回'`
+               *    —— 换过去会丢鼠标悬停提示（桌面端主要输入方式是鼠标）。
+               * ② AppIconButton 的参数与 `IconButton(onPressed:, icon:, tooltip:)`
+               *    **逐个对齐**，是"同一个东西的自建版"，替换是机械的。
+               * ③ 它依赖链零 Material（AppIconButton → AppInkWell → PressFeedback）。
+               * ```
+               *
+               * ⚠️ 一处**已知的功能收窄**（组件自身注释已如实标注）：
+               *    `AppIconButton` 目前把 tooltip 文本挂成 `Semantics.label`，
+               *    **悬停气泡**还没接（Material 的 Tooltip 属于 Material 层）。
+               *    ⇒ 读屏器仍能念出「返回」，但鼠标悬停不出气泡。
+               *    这是"暂时收窄"，不是"做完了"。
+               */
+              child: SizedBox(
+                /*
+                 * ★★★ 为什么必须显式 48×48（实测，不是猜的）
+                 *
+                 * 实测原 Material `IconButton(tooltip:)` 的真实尺寸 = **48×48**
+                 * （.probe/probe_e_origsize_test.dart）。
+                 * 而 `AppIconButton` 默认 iconSize=24 ⇒ 热区 24+8*2 = **40×40**。
+                 * ⇒ 直接替换会让返回按钮的触控目标**缩水 8dp**。
+                 *   项目规范要求触控目标 ≥34dp（坑 35），40 虽然过线，
+                 *   但**缩小**本身就是回归 —— 且 48 是 iOS/Material 的通用最小热区。
+                 * ⇒ 显式锁 48，与替换前逐值一致。
+                 */
+                width: 48,
+                height: 48,
+                child: AppIconButton(
+                  onPressed: () => Navigator.of(context).maybePop(),
+                  icon: const Icon(AppIcons.chevron_left),
+                  tooltip: '返回',
+                ),
               ),
             ),
           ),
@@ -3178,22 +3236,18 @@ class _DetailPageState extends State<DetailPage> {
   Future<void> _confirmDeleteLocalEpisode(LocalEpisodeRef ref) async {
     final ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除这一集？'),
+      builder: (ctx) => AppGlassDialog(
+        // ★ 轨道 E M2 第 4 步：AlertDialog → AppGlassDialog（删除是破坏性 ⇒ 错误色）
+        title: '删除这一集？',
         content: Text(
           '${ref.episodeTitle}\n'
           '文件会从磁盘上真正删除，此操作不可恢复。',
         ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
+        actions: AppGlassDialogActions(
+          onCancel: () => Navigator.of(ctx).pop(false),
+          onConfirm: () => Navigator.of(ctx).pop(true),
+          confirmLabel: '删除',
+        ),
       ),
     );
     if (ok != true || !mounted) return;
@@ -3226,22 +3280,18 @@ class _DetailPageState extends State<DetailPage> {
 
     final ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除选中的集？'),
+      builder: (ctx) => AppGlassDialog(
+        // ★ 轨道 E M2 第 4 步：AlertDialog → AppGlassDialog（批量删除，破坏性）
+        title: '删除选中的集？',
         content: Text(
           '将删除 ${picked.length} 集 / 共 ${humanBytes(bytes)}。\n'
           '文件会从磁盘上真正删除，此操作不可恢复。',
         ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
+        actions: AppGlassDialogActions(
+          onCancel: () => Navigator.of(ctx).pop(false),
+          onConfirm: () => Navigator.of(ctx).pop(true),
+          confirmLabel: '删除',
+        ),
       ),
     );
     if (ok != true || !mounted) return;
@@ -3257,7 +3307,7 @@ class _DetailPageState extends State<DetailPage> {
   Future<void> _deleteLocalPaths(List<LocalEpisodeRef> refs) async {
     final dir = _localWorkDir();
     if (dir == null) {
-      _sayLocal('找不到这部作品的文件夹，已取消删除');
+      _flash('找不到这部作品的文件夹，已取消删除');
       return;
     }
     var deleted = 0;
@@ -3283,7 +3333,7 @@ class _DetailPageState extends State<DetailPage> {
      */
     widget.onLocalEpisodesChanged?.call();
     AppLog.write('LOCAL', '本地删除：${refs.length} 集，实际删掉 $deleted 个文件');
-    _sayLocal(deleted > 0
+    _flash(deleted > 0
         ? '已删除 $deleted 个文件'
         : '没有删除任何文件（文件可能已经不在了）');
   }
@@ -3296,14 +3346,6 @@ class _DetailPageState extends State<DetailPage> {
     if (widget.localEpisodes.isEmpty) return null;
     final p = Directory(widget.localEpisodes.first.absolutePath).parent.path;
     return p.isEmpty ? null : p;
-  }
-
-  /// 一句话反馈（与 cache_page._say 同款）
-  void _sayLocal(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 3)),
-    );
   }
 
   /// ★★★ task-12 ⑤ + task-17 ③：本地模式的「已下载」那一段
@@ -3338,7 +3380,7 @@ class _DetailPageState extends State<DetailPage> {
             const _BlockTitle(text: '已下载'),
             const Spacer(),
             if (eps.isNotEmpty)
-              TextButton(
+              AppTextButton(
                 onPressed: () => setState(() {
                   _localSelectMode = true;
                   _localChecked.clear();
@@ -3421,7 +3463,7 @@ class _DetailPageState extends State<DetailPage> {
             ),
           ),
           const Spacer(),
-          TextButton(
+          AppTextButton(
             onPressed: () => setState(() {
               // ★ 全选/全不选：已经全选了就变成"全不选"（一个按钮两个方向）
               if (_localChecked.length == eps.length) {
@@ -3434,14 +3476,14 @@ class _DetailPageState extends State<DetailPage> {
             }),
             child: Text(_localChecked.length == eps.length ? '全不选' : '全选'),
           ),
-          TextButton(
+          AppTextButton(
             // ★ 一集都没勾 ⇒ 禁用（不给"点了没反应"的按钮）
             onPressed: n == 0
                 ? null
                 : () => unawaited(_confirmDeleteLocalSelected()),
             child: const Text('删除'),
           ),
-          TextButton(
+          AppTextButton(
             onPressed: () => setState(() {
               _localSelectMode = false;
               _localChecked.clear();
@@ -4237,6 +4279,13 @@ class _Info extends StatelessWidget {
              */
             if (!localMode)
               _ToggleButton(
+                /*
+                 * ★ 轨道 E M2 第 3 步：给四枚按钮各自一个**语义位置 Key**。
+                 * 门禁（t27_w3）从此按 Key 定位，不再靠 `find.byType(OutlinedButton)`
+                 * —— 判据守的是「四枚同源同档」这个产品契约，不是"它们内部
+                 * 是不是 Material 的 ButtonStyleButton"这个实现细节。
+                 */
+                key: const ValueKey('detail-action-favorite'),
                 icon: isFav ? AppIcons.star : AppIcons.star_border,
                 label: isFav ? '已收藏' : '收藏',
                 on: isFav,
@@ -4254,6 +4303,7 @@ class _Info extends StatelessWidget {
              */
             if (!localMode)
               _ToggleButton(
+                key: const ValueKey('detail-action-follow'),
                 icon: following ? AppIcons.notifications : AppIcons.notifications_none,
                 label: following ? '追更中' : '追更',
                 on: following,
@@ -4283,7 +4333,10 @@ class _Info extends StatelessWidget {
              *    别把它并进上面那个 `if (showActions)`（那样三枚会一起消失）。
              */
             if (!hasLocalFile) ...[
-              OutlinedButton.icon(
+              AppOutlinedButton.icon(
+                key: const ValueKey('detail-action-switch-source'),
+                // ★ 轨道 E M2 第 3 步：OutlinedButton.icon → AppOutlinedButton.icon
+                //   （几何由组件内复刻 Material 密度策略保证，实测两平台逐值相同）
                 onPressed: onSwitchSource,
                 /*
                  * ══════════════════════════════════════════════════════════
@@ -4324,10 +4377,8 @@ class _Info extends StatelessWidget {
                   color: _pillForeground(colors, on: false),
                 ),
                 label: const Text('换源'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: _pillForeground(colors, on: false),
-                  side: _pillBorderStyle(colors, on: false),
-                ),
+                foregroundColor: _pillForeground(colors, on: false),
+                borderColor: _pillBorderStyle(colors, on: false).color,
               ),
             ],
 
@@ -4354,6 +4405,7 @@ class _Info extends StatelessWidget {
              *    已经区分开：那边是「到缓存」，这边是「下载」。
              */
             _DownloadButton(
+              key: const ValueKey('detail-action-download'),
               episodeCount: episodeCount,
               onDownloadCurrent: onDownloadCurrent,
               onDownloadAll: onDownloadAll,
@@ -4528,6 +4580,7 @@ Color _pillForeground(ColorScheme colors, {required bool on}) =>
 /// 可切换的按钮（收藏 / 追更）
 class _ToggleButton extends StatelessWidget {
   const _ToggleButton({
+    super.key,
     required this.icon,
     required this.label,
     required this.on,
@@ -4542,17 +4595,22 @@ class _ToggleButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return OutlinedButton.icon(
+    /*
+     * ★ 2026-10-18（轨道 E · 玻璃化 M2 第 3 步）：OutlinedButton.icon → AppOutlinedButton.icon
+     *
+     * 几何由 `AppOutlinedButton` 内部复刻 Material 的密度策略保证
+     * （实测两平台逐值相同：windows 72×32 / android 72×48）。
+     * 颜色仍由本文件的 `_pillForeground` / `_pillBorderStyle` 提供 ⇒ 同源。
+     */
+    return AppOutlinedButton.icon(
       onPressed: onTap,
       // ★ T27-03：icon 色与文字色取同一个构造 —— 主题的 iconColor 链走
-      //   foreground 派生色，与 styleFrom 的 foregroundColor 不同源，必须显式。
+      //   foreground 派生色，与 foregroundColor 不同源，必须显式。
       icon: Icon(icon, size: 16, color: _pillForeground(colors, on: on)),
       label: Text(label),
-      style: OutlinedButton.styleFrom(
-        foregroundColor: _pillForeground(colors, on: on),
-        backgroundColor: on ? colors.primary.withValues(alpha: 0.16) : null,
-        side: _pillBorderStyle(colors, on: on),
-      ),
+      foregroundColor: _pillForeground(colors, on: on),
+      backgroundColor: on ? colors.primary.withValues(alpha: 0.16) : null,
+      borderColor: _pillBorderStyle(colors, on: on).color,
     );
   }
 }
@@ -4572,6 +4630,7 @@ class _ToggleButton extends StatelessWidget {
 ///    见本文件 T27-03 段头「手画壳整段删除」那一段。这里只剩行为。
 class _DownloadButton extends StatelessWidget {
   const _DownloadButton({
+    super.key,
     required this.episodeCount,
     required this.onDownloadCurrent,
     required this.onDownloadAll,
@@ -4675,11 +4734,24 @@ class _DownloadButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    // ⚠️ 悬停提示靠外层 Tooltip（`OutlinedButton` 本身没有 tooltip 参数）。
-    //    Tooltip 未弹出时外层只有 MouseRegion（RenderProxyBox）⇒ 不改变按钮几何。
-    return Tooltip(
+    /*
+     * ★ 2026-10-18（轨道 E · 玻璃化 M2 第 3 步）：
+     *   `Tooltip` + `OutlinedButton.icon` → `AppTooltip` + `AppOutlinedButton.icon`
+     *
+     * # 两处都必须换
+     * ```text
+     * ① Tooltip 属于 Material 层 ⇒ 留着就摘不掉 material_ui；
+     *    本仓已有自建 `AppTooltip`（lib/design/widgets/app_tooltip_slider.dart），
+     *    悬停气泡/WaitDuration(500ms) 语义对齐，换成它**功能不丢**。
+     * ② OutlinedButton ⇒ AppOutlinedButton（几何由组件内复刻密度策略保证）。
+     * ```
+     *
+     * ⚠️ 悬停提示必须留着：这枚按钮是「下载」，用户靠它的文字辨认，
+     *    但 MouseRegion/AppTooltip 未弹出时只有 RenderProxyBox ⇒ 不改变几何。
+     */
+    return AppTooltip(
       message: '下载',
-      child: OutlinedButton.icon(
+      child: AppOutlinedButton.icon(
         onPressed: () => unawaited(_openMenu(context)),
         // ★ 图标色与文字色取同一个构造（与 _ToggleButton 逐字同源）
         icon: Icon(
@@ -4687,14 +4759,12 @@ class _DownloadButton extends StatelessWidget {
           size: 16,
           color: _pillForeground(colors, on: false),
         ),
-        // ⚠️ label **不给** style：让它继承按钮主题那份 btnText
-        //    （字号 sm=14 / 行高 1 / 字重 w500）—— 这正是「同源」；
+        // ⚠️ 字号/字重由 AppOutlinedButton 内部统一给
+        //    （sm=14 / 行高 1 / 字重 w500）—— 这正是「同源」；
         //    手抄任何一项都会重演 Owner 1011 反馈③（字重差一档）。
         label: const Text('下载'),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: _pillForeground(colors, on: false),
-          side: _pillBorderStyle(colors, on: false),
-        ),
+        foregroundColor: _pillForeground(colors, on: false),
+        borderColor: _pillBorderStyle(colors, on: false).color,
       ),
     );
   }
@@ -4886,17 +4956,55 @@ class _LocalRowDeleteButtonState extends State<_LocalRowDeleteButton> {
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
-      child: Tooltip(
+      /*
+       * ★ 2026-10-18（轨道 E · 玻璃化 M2 第 2 步）：Tooltip + IconButton → AppTooltip + AppIconButton
+       *
+       * # 与上面那个返回按钮的**关键差异**
+       * ```text
+       * 返回按钮：tooltip 是 IconButton 的**参数** ⇒ 换 AppIconButton 即可。
+       * 这里：Tooltip 包在**外层**，且它承担的是"悬停才显形的图标"里
+       *       唯一的文字说明 ⇒ 不能靠 AppIconButton 的 Semantics.label 代替
+       *       （那只有读屏器能看到，鼠标用户仍然看不到提示）。
+       *
+       * ⇒ 外层改用本仓的 `AppTooltip`（lib/design/widgets/app_tooltip_slider.dart），
+       *   它的 message / waitDuration(500ms，与 Material 一致) 语义对齐，
+       *   **悬停气泡不丢**。这样两个按钮的 tooltip 能力都保住了。
+       * ```
+       *
+       * ⚠️ 尺寸：原来是 `BoxConstraints.tightFor(width: 28, height: 28)` + iconSize 16
+       *    （"与 cache_page 的 28×28 同款：够点，但不抢版面"）。
+       *    `AppIconButton` 的尺寸由 `iconSize` 推出来（size + pad*2），
+       *    传 iconSize: 16 ⇒ pad = 4（size<=20 时）⇒ 实际 24×24。
+       *    **24 < 28** ⇒ 比原来小。这里显式补回 28，避免触控目标缩水。
+       */
+      child: AppTooltip(
         message: '删除这一集',
-        child: IconButton(
-          // ★ 与 cache_page 的 28×28 同款：够点，但不抢版面
-          constraints: const BoxConstraints.tightFor(width: 28, height: 28),
-          padding: EdgeInsets.zero,
-          iconSize: 16,
-          onPressed: widget.onTap,
-          icon: Icon(
-            AppIcons.delete_outline_rounded,
-            color: _hover ? colors.error : Colors.transparent,
+        child: SizedBox(
+          /*
+           * ★★★ 为什么是 48 而不是注释里写的 28（实测推翻了注释）
+           *
+           * 原代码写的是 `constraints: BoxConstraints.tightFor(width: 28, height: 28)`
+           * 且注释说「与 cache_page 的 28×28 同款：够点，但不抢版面」。
+           * 但实测（.probe/probe_e_origsize_test.dart）：
+           *   Material `IconButton(constraints: tightFor(28,28), padding: zero, iconSize: 16)`
+           *   的真实尺寸 = **48×48** —— `constraints` 被 Material 的
+           *   最小触控约束**覆盖**了，28 从来没生效过。
+           *
+           * ⇒ 那个 28 是**注释里的意图**，不是运行时事实。
+           *   替换后若真按 28 做，触控目标会比原来**小 20dp**。
+           * ⇒ 按**实测值** 48 对齐，与替换前逐值一致。
+           *
+           * ⚠️ 视觉上图标仍是 16px、行高不变；变的只是可点击范围（更大 = 更好点）。
+           */
+          width: 48,
+          height: 48,
+          child: AppIconButton(
+            onPressed: widget.onTap,
+            iconSize: 16,
+            icon: Icon(
+              AppIcons.delete_outline_rounded,
+              color: _hover ? colors.error : Colors.transparent,
+            ),
           ),
         ),
       ),
@@ -5043,32 +5151,11 @@ class _EpsSkeleton extends StatelessWidget {
   }
 }
 
-class _Toast extends StatelessWidget {
-  const _Toast({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: Sp.x5,
-        vertical: Sp.x3,
-      ),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.82),
-        borderRadius: Radii.rFull,
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          fontSize: FontSizes.sm,
-          color: Colors.white,
-        ),
-      ),
-    );
-  }
-}
+// ★ 2026-10-18（Owner 第 12 条）：本页私有的 `_Toast`（黑底 82% 胶囊）已删除。
+//   toast 统一走 `lib/ui/widgets/app_toast.dart` 的 `showAppToast`
+//   ——「不要自己写,要用自带的」。同批删除的还有 follow / playback /
+//   skip / data_manage 四处；player_page 与 live_groups_page 由各自的
+//   轨道处理（见本轮交付说明）。
 
 class _ErrorView extends StatelessWidget {
   const _ErrorView({required this.message, required this.onBack});
@@ -5159,7 +5246,9 @@ class _ErrorView extends StatelessWidget {
             const SizedBox(height: Sp.x6),
             // ★ task-58：`onBack == null`（合并页）⇒ 不画（返回由 MediaPage 负责）
             if (onBack != null)
-              OutlinedButton(onPressed: onBack, child: const Text('返回')),
+              // ★ 轨道 E M2 第 3 步：OutlinedButton → AppOutlinedButton
+              //   （这一枚**不在**操作行四枚里，是错误页的独立按钮）
+              AppOutlinedButton(onPressed: onBack, child: const Text('返回')),
           ],
         ),
       ),

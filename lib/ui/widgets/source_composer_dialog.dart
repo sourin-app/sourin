@@ -117,12 +117,18 @@ ComposerDraft composerDraftFromJson(Map<String, Object?> j) {
 ///
 /// # 这个数是怎么来的（算出来的，不是试出来的）
 /// ```text
-/// 弹窗 width 860 − 内容区左右 padding（Sp.x6 × 2 = 48）= 812 dp
-/// 两栏 + 中间 Sp.x5(20) 间距 ⇒ 每栏 (812 − 20) / 2 = 396 dp
-/// 左栏里「字段标签 132 + 输入框」⇒ 输入框还有 264 dp —— 够填一个 JSONPath。
+/// 弹窗 width 820 − 内容区左右 padding（Sp.x6 × 2 = 48）= 772 dp
+/// 两栏 + 中间 Sp.x5(20) 间距 ⇒ 每栏 (772 − 20) / 2 = 376 dp
+/// 左栏里「字段标签 132 + 输入框」⇒ 输入框还有 244 dp —— 够填一个 JSONPath。
 /// 再窄：手机 411 dp − 48 = 363 dp，两栏各 171 dp ⇒ 输入框只剩 39 dp，**不可用**。
-/// ⇒ 取 760：比 812 略小留余量，且明显高于任何手机宽度。
+/// ⇒ 取 760：比 772 略小留余量，且明显高于任何手机宽度。
 /// ```
+///
+/// ⚠️ 2026-10-19（R4）：上面按 820 重算过（改前按 860 算）。
+///    探针实测 820 下这条输入框是 **210px**（不是 244 —— 标签 132 之外
+///    还有 `_mapRow` 的 Padding/边框等开销）⇒ 理论值偏乐观，
+///    **判据用实测值，不要用上面这串推导的尾数**。
+///    760 这个阈值本身没动：820 的内容区 784 仍 ≥ 760（两栏），余量 24px。
 const double kComposerTwoPaneMinWidth = 760;
 
 /// 可视化编排弹窗
@@ -257,7 +263,30 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
       title: '可视化编排',
       subtitle: '左边改，右边实时看；不用下一步',
       icon: AppIcons.auto_fix_high_outlined,
-      width: 860,
+      /*
+       * ★★ 2026-10-19（R4）：860 → **820**。
+       *
+       * §3.5 的宽度白名单只有 {460, 560, 820} —— 860 是**白名单外的档次**，
+       * 全仓只有这一个弹窗在用，等于给自己开了个例外。
+       *
+       * # 为什么改 820 而不是"论证 860 必要"（实测，不是拍的）
+       * ```text
+       * 探针（1600x1000、loadRealFonts、两档各渲一次、勾选端点让字段映射行出现）：
+       *   width 820 → 内容区 784，字段映射输入框最窄 **210.0px**，exception=null
+       *   width 860 → 内容区 824，同一条输入框      **230.0px**，exception=null
+       * ```
+       * 820 下**没有任何 RenderFlex 溢出**，输入框 210px 远高于本文件
+       * 自己定的"不可用"下限（`kComposerTwoPaneMinWidth` 的推导里算过：
+       * 输入框剩 39dp 才叫不可用）。
+       * ⇒ 860 多出来的 40px 买不到新能力，却要占一个白名单外的档位；
+       *   代价只是输入框窄 20px（210 vs 230），仍放得下一个 JSONPath。
+       *
+       * ⚠️ 副作用（已核对）：内容区 784 ≥ `kComposerTwoPaneMinWidth`(760)
+       *    ⇒ **仍是两栏**，没有退化成上下堆叠。
+       *    但余量只剩 24px —— 谁再动内容区的左右 padding（Sp.x6*2 = 48），
+       *    这里会先翻成单栏。改 padding 前先重跑一次测量。
+       */
+      width: 820,
       fill: widget.fill,
       motion: true,
       onClose: () => Navigator.of(context).maybePop(),

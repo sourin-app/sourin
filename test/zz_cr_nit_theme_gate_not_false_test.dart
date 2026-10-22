@@ -155,16 +155,36 @@ void main() {
   });
 
   group('④ 腿 B 负对照：真代码里去掉绑定，门禁必须变红', () {
-    test('★ 去掉真代码里的 theme 绑定 → 门禁 false', () {
-      final mutated =
-          real.replaceFirst('      theme: materialTheme,', '      theme: null,');
+    /*
+     * ★★ 2026-10-19（Lead 修）：变异点必须与**产品现状**对齐
+     * ```text
+     * 产品在 M4（2026-10-18）之后已把根换成 `WidgetsApp`，主题改由
+     *   `AppThemeHost(data: materialTheme)` 注入 —— `theme:` 参数已不存在
+     *   （见 lib/shell.dart:2177-2181 的迁移记录）。
+     * ⇒ 下面两条变异改的是 `theme: materialTheme,`，而真文件里**那一行早就不存在**
+     *   ⇒ replaceFirst 静默不命中 ⇒ 变异体 == 原文件 ⇒ 门禁当然还绿
+     *   ⇒ 这是 AGENTS.md §8 第 6 种坑的变体：**「注入无效」被读成了「门禁有效」**。
+     * ⇒ 修法：变异点换成**现在真实存在**的那一行，且每条都先 assert 变异确实发生。
+     * ```
+     */
+
+    /// 真文件里当前的主题绑定锚点（M4 之后：`AppThemeHost(data: materialTheme)`）
+    const kCurrentBinding = 'data: materialTheme,';
+
+    test('★ 去掉真代码里的主题注入 → 门禁 false', () {
+      expect(real.contains(kCurrentBinding), isTrue,
+          reason: '★ 锚点不在真文件里 ⇒ 先修测试（M4 已改绑定形态）');
+      final mutated = real.replaceFirst(kCurrentBinding, 'data: null,');
+      expect(mutated, isNot(equals(real)),
+          reason: '★★ 变异必须真的发生（否则下面那句断言验的是原文件）');
+
       final f = File(_tmpDir!.path + '/shell_theme_binding_removed.dart');
       f.writeAsStringSync(mutated);
 
-      expect(mutated.contains('      theme: materialTheme,'), isFalse,
+      expect(mutated.contains(kCurrentBinding), isFalse,
           reason: '前提：绑定确实被去掉了');
       expect(shellThemeBindingHasMatch(f.readAsStringSync()), isFalse,
-          reason: '★★ 门禁真的会红：入口不再把主题挂到 MaterialApp.theme 上');
+          reason: '★★ 门禁真的会红：入口不再把主题挂到产品根的主题宿主上');
     });
 
     test('★ 去掉主题来源 AppTheme.themeFor(brightness) → 门禁 false', () {
@@ -172,6 +192,8 @@ void main() {
         '    final materialTheme = AppTheme.themeFor(brightness);',
         '    final materialTheme = AppTheme.resolve();',
       );
+      expect(mutated, isNot(equals(real)), reason: '★★ 变异必须真的发生');
+
       final f = File(_tmpDir!.path + '/shell_theme_source_removed.dart');
       f.writeAsStringSync(mutated);
 
@@ -181,16 +203,17 @@ void main() {
           reason: '★★ 主题来源不是 AppTheme.themeFor(brightness) 时，门禁必须失败');
     });
 
-    test('★ MaterialApp 改用另一个主题来源 → 门禁 false', () {
-      final mutated = real.replaceFirst(
-        '      theme: materialTheme,',
-        '      theme: foruiTheme,',
-      );
+    test('★ 主题注入改用另一个来源 → 门禁 false', () {
+      expect(real.contains(kCurrentBinding), isTrue,
+          reason: '★ 锚点不在真文件里 ⇒ 先修测试');
+      final mutated = real.replaceFirst(kCurrentBinding, 'data: foruiTheme,');
+      expect(mutated, isNot(equals(real)), reason: '★★ 变异必须真的发生');
+
       final f = File(_tmpDir!.path + '/shell_other_theme.dart');
       f.writeAsStringSync(mutated);
 
       expect(shellThemeBindingHasMatch(f.readAsStringSync()), isFalse,
-          reason: '★★ MaterialApp 必须用 materialTheme；裸 forui 主题会让卡片底等于背景色');
+          reason: '★★ 产品根必须用 materialTheme；裸 forui 主题会让卡片底等于背景色');
     });
   });
 

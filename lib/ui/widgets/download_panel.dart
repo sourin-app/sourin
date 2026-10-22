@@ -57,6 +57,7 @@ import '../tokens.dart';
 import 'cover_image.dart';
 import 'overlay_motion.dart';
 import '../../design/icons/app_icons.dart';
+import '../../design/widgets/app_glass_dialog.dart';
 
 /// ★★★ task-12 缺陷 A：「磁盘上已经下好了」的一集（不属于内存队列）
 ///
@@ -231,6 +232,7 @@ class DownloadPanel extends StatelessWidget {
     final ok = await showAppDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        // R4-EXCEPTION: 机制③ 内联 TextStyle 警示色会被 DefaultTextStyle 覆盖
         title: const Text('删除整部剧的下载？'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -596,22 +598,20 @@ class _DownloadRow extends StatelessWidget {
   ) async {
     final ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除这一集的下载？'),
+      builder: (ctx) => AppGlassDialog(
+        title: '删除这一集的下载？',
         content: Text(
           '「${t.episodeTitle.isEmpty ? t.fileName : t.episodeTitle}」\n'
           '已下载的文件会被删除，此操作不可恢复。',
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
+        // 改前两个都是 TextButton（「删除」不是 FilledButton）
+        // ⇒ 按原形态定：不是错误色主按钮。
+        actions: AppGlassDialogActions(
+          confirmLabel: '删除',
+          confirmIsDestructive: false,
+          onCancel: () => Navigator.of(ctx).pop(false),
+          onConfirm: () => Navigator.of(ctx).pop(true),
+        ),
       ),
     );
     if (ok == true) await DownloadQueue.remove(t.id);

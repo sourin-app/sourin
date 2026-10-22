@@ -85,7 +85,7 @@ class _AppTextFieldState extends State<AppTextField> {
 
   @override
   Widget build(BuildContext context) {
-    final t = AppTheme.of(context);
+    final t = AppTheme.resolvedOf(context);
     final focused = _focus.hasFocus;
 
     final field = EditableText(

@@ -53,8 +53,18 @@ import 'package:material_ui/material_ui.dart';
 import 'app_palette.dart';
 import 'app_typeface.dart';
 import 'tokens.dart';
+import 'theme/light_tokens.dart';
 import 'theme/theme_language.dart';
 import 'theme/theme_pack.dart';
+
+// ★ 2026-10-18（轨道 E）：`LightTokens` 已搬到 `theme/light_tokens.dart`。
+//   这行 `export` 保证**现有 19 处 import 本文件的调用点一行都不用改**
+//   （含 `app_theme.dart` 的 `export 'theme_bridge.dart' show LightTokens;` 转发链）。
+//   ⚠️ 上面那个 `import` 与这里这个 `export` **两行都要**，作用域不同：
+//      export 让导入本文件的人看到 LightTokens；
+//      import 让本文件自己的 _buildLight() 能用它。
+//      只写 export ⇒ 本文件 6 处 LightTokens. 全报 Undefined name。
+export 'theme/light_tokens.dart';
 
 // ★ task-50 候选 C2：二级页转场改为「用户选的风格」
 //   ⚠️ 不能写在 `material_ui` 那行之前 —— dart 惯例：package import 在前，
@@ -621,92 +631,34 @@ ThemeData _buildDark([AppPalette? override]) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 //  浅色
-// ═══════════════════════════════════════════════════════════════════════
-
-/// 浅色主题的语义色（照抄原版 `theme-light.css`）
-class LightTokens {
-  /// `--bg-base: #eef0f6`
-  static const bgBase = Color(0xFFEEF0F6);
-
-  /// `--bg-elevated: #ffffff`
-  static const bgElevated = Color(0xFFFFFFFF);
-
-  /// `--text-primary: rgb(16 18 26 / 0.93)`
-  ///
-  /// ⚠️ 不是纯黑 —— 原版注释：「不能纯黑（刺眼）」。合成后约 `#1E2028`。
-  static const textPrimary = Color(0xFF1E2028);
-
-  /// 原版 `--text-secondary: rgb(16 18 26 / 0.60)`；本值 = **加深后**的等价色，
-  /// 不再照抄 CSS 的字面合成值。
-  ///
-  /// ⚠️ 为什么不能再写 `rgb(16 18 26 / 0.60)` 的合成值 `#70727A`：
-  /// 原版那支是**带 alpha** 的色，它在原版里合成在**抬升的白卡 `#ffffff`** 上
-  /// ⇒ `#70727A over #FFFFFF` = 4.80:1 ✓（那才是原设计的意图）。
-  /// Flutter 侧把它**压平成不透明常量**后，它就落到**页面底 `#EEF0F6`** 上
-  /// ⇒ **4.21:1 ✗**（< WCAG AA 4.5）。
-  /// 这正是「把 alpha 色压平」引入的回归：原设计在卡片上达标，压平后挂在页面底上不达标。
-  ///
-  /// ⇒ 修法：调**前景**（不动 `bgBase`，`#EEF0F6` 是原版 `--bg-base`，牵动整站底色），
-  ///    取 `#60626B`（同色相、更暗一档）：
-  /// ```text
-  /// 对页面底 #EEF0F6 = 5.33:1 ✓
-  /// 对白卡   #FFFFFF = 6.08:1 ✓
-  /// 对 surface2 #F5F7FA = 5.66:1 ✓
-  /// 与正文 #1E2028 仍明显不同 ⇒ 「次要 ≠ 正文」的层级保留
-  /// ```
-  static const textSecondary = Color(0xFF60626B);
-
-  /// `--divider`
-  ///
-  /// ★ task-31：原 `#DFE1E8` 对页面底只有 **1.06:1** —— 分隔线形同虚设。
-  ///   取 `#D5DAE5`，与 [glassStroke] 同色相、略深一档（分隔线本就该比描边明显）。
-  ///   ⚠️ 无测试钉值（`grep DFE1E8 test/` = 0）。
-  static const divider = Color(0xFFD5DAE5);
-
-  /// `--glass-stroke`
-  ///
-  /// ★ task-31：原 `#E4E6EC` 在页面底 `#EEF0F6` 上只有 **1.03:1** —— 描边等于没画。
-  ///   （这正是 `theme_bridge.dart:428-429` 那条注释描述过的同一类缺陷：
-  ///    「thumb 像悬空的一个点」）。取 `#D3D9E4`（1.16:1），
-  ///    刚好「看得见轮廓但不像分割线」。
-  ///   ⚠️ 这个常量同时被 `outline` 与 `border` 两个角色用 —— 改一处两处都受益，
-  ///      且**没有任何测试**钉它的值（`grep E4E6EC test/` = 0 命中）。
-  static const glassStroke = Color(0xFFD3D9E4);
-
-  /// `--brand-1` 浅色档
-  ///
-  /// ★ task-31：原值 `#3b6fe0`。**不改它** —— 有 6 条测试钉着这个值
-  ///   （`task32_source_highlight_test.dart:54/59`、`provider_import_test.dart:1155/1158`、
-  ///   `zz_cr_switch_style_test.dart:156`、`zz_cr_settings_8_navstate_test.dart:429`）。
-  ///   改它会让「源条选中环」那组断言变红，且那是**行为契约**不是皮肤。
-  static const brand = Color(0xFF3B6FE0);
-
-  /// `--brand-2: #8b4de8`
-  static const brand2 = Color(0xFF8B4DE8);
-
-  /// 原版 `--danger` 即 `#d93025`；本值 = **加深后**的等价色，不再照抄 CSS 的字面值。
-  ///
-  /// ⚠️ 为什么不用字面值 `#D93025`：它直接在**页面底 `#EEF0F6`** 上只有
-  /// **4.19:1 ✗**（< WCAG AA 4.5）—— 原版把它当**实心底 + 白字**用
-  /// （`onError = #FFFFFF` 对 `#D93025` = 4.77:1，那是另一种用法，不受影响），
-  /// 而 Flutter 侧把它当**页面底上的前景字色**（`colorScheme.error`、
-  /// `AppPalette.error`）用 ⇒ 必须自己够暗。
-  ///
-  /// ⇒ 修法：调**前景**、同色相加深一档 → `#C22A20`：
-  /// ```text
-  /// 对页面底 #EEF0F6 = 5.01:1 ✓
-  /// 对白卡   #FFFFFF = 5.71:1 ✓
-  /// 对 surface2 #F5F7FA = 5.32:1 ✓
-  /// ```
-  /// ⚠️ 只加深前景 ⇒ `onError`/白字仍保持 `#FFFFFF`（对比只会更高，不破坏实心红按钮）。
-  static const error = Color(0xFFC22A20);
-  static const errorContainer = Color(0xFFFCE8E6);
-
-  /// 次级容器（`--surface-2` 合成值）
-  static const surface2 = Color(0xFFF5F7FA);
-}
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ★★★ 2026-10-18（轨道 E · M1）：`LightTokens` **已搬走**
+//
+// ```text
+// 它原来就在这下面（第 624–709 行，86 行），现在整块搬到
+//   lib/ui/theme/light_tokens.dart
+//
+// 为什么搬：本文件是**胶水文件**（590 多行的职责是把色值喂给 Material
+// 组件主题，换玻璃组件后要整段删掉），而 LightTokens 是**真色值**，
+// 被 12 个 lib 文件 + 7 个测试消费。两者混在一起，删胶水时极易误伤。
+//
+// ⚠️ 兼容：下面那两行让**现有 19 处 import 本文件的调用点一行都不用改**
+//    （包括 `app_theme.dart` 那句 `export 'theme_bridge.dart' show LightTokens;`
+//     的转发链）。
+//
+// ★ 为什么 `export` 与 `import` **两行都要**（这是 Dart 的语义，不是冗余）：
+// ```text
+// export '…'  → 只影响**导入本文件的人**，让 LightTokens 出现在他们的命名空间
+// import '…'  → 只影响**本文件自己**，让下面的 _buildLight() 能用 LightTokens
+// 两者作用域不同、互不替代。少了 import，本文件里 6 处 LightTokens.
+// 全变「Undefined name」（我第一版就只写了 export，dart analyze 当场报 6 条 error）。
+// ```
+// ⚠️ 且**两条都得在文件顶部**：Dart 要求 directive 出现在所有声明之前
+//    （放在这里会被判 directive_after_declaration —— 我第二版就是这样撞的）。
+//    所以实际位置见文件头 import 区末尾。
 
 ThemeData _buildLight([AppPalette? override]) {
   final t = AppTypeface.forPlatform(Brightness.light);

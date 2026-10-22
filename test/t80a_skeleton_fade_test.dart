@@ -23,10 +23,36 @@
 // ```text
 // 两个页面挂载淡入 sliver 的**帧号不确定**：
 //   · 搜索页：靠 `debugFeedHit` → `setState` ⇒ 下一帧才重建到结果分支
-//   · 浏览页：靠 `addPostFrameCallback(_init)` → await FFI(必抛) → finally setState
+//   · 浏览页：靠 `addPostFrameCallback(_init)` → await 取页 → `_loading=false`
 //             ⇒ 要经过若干个微任务回合才落到空态分支
 // ⇒ 死数 pump 次数会把"挂载帧"数错，而**数错一帧就整体偏移 45ms**
 //   （读数全错，却依然"看起来像"四个不同的值 ⇒ 假绿）。
+//
+// # ★★★ 2026-10-21 修：浏览页的两处夹具前提（原第 26 行注释写错了）
+// ```text
+// 改前这里写的是「await FFI(必抛) → **finally** setState」。
+// ★ 而 `browse_page.dart` 的 `_init()` **没有** try/finally：
+//     Future<void> _init() async {
+//       if (!_isRankMode) {
+//         try { await SourinApi.getCategories(...) } catch (_) { … }  ← 只有这一处
+//       }
+//       await _load(1);                                     ← 裸 await
+//       if (mounted) setState(() => _loading = false);      ← 走不到
+//     }
+//   ⇒ 真实行为：`getCategories` 的 FFI 在 `flutter test` 里**不返回**
+//     ⇒ `_init()` 卡在第一个 await ⇒ `_load` **一次都没被调用**（实测 called=0）
+//     ⇒ `_loading` 恒 true ⇒ 永远停在**骨架分支** ⇒ 空态 `FadeInSliver` 不挂载。
+// ```
+// ★ 这不是产品缺陷，是**夹具前提不成立**：`BrowsePage` 早就提供了构造注入口
+//   `pageLoaderForTest`（`browse_page.dart:76`），且文档**明确写着**为什么必须用它
+//   （「挂载后再注入就已经晚了」）。本文件一直没用。
+//
+// ★ 第二层：即使注入了 loader，`getCategories` 那一步仍然挂着
+//   ⇒ `tester.pump()`（只推假时钟、**不驱动真实 Future**）永远等不到
+//   ⇒ 必须把 `pumpWidget` 放进 `t.runAsync(...)`。
+//   （本仓既有同款记录：AGENTS.md §8「pumpWidget 后页面一直停在 loading」）
+//
+// ⇒ 两处一起修：**注入 loader + runAsync 驱动**。实测 called=1 / fade=1 / empty=1。
 //
 // ⇒ 本探针的纪律：
 //     1) **轮询**（每次 `pump()` 不带时长 ⇒ 假时钟**不前进**）直到
@@ -56,12 +82,14 @@
 //   （两页各自的分支都是 `else` 互斥的 ⇒ 同时最多挂载 1 个。）
 // ```
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/models.dart';
+import 'package:sourin_spike/core/models.dart' as models show Page, MediaItem;
 import 'package:sourin_spike/ui/browse_page.dart';
 import 'package:sourin_spike/ui/search_page.dart';
 import 'package:sourin_spike/ui/widgets/fade_in_sliver.dart';
@@ -371,21 +399,107 @@ void main() {
   group('① 浏览页：骨架 → 空态 的淡入（四刻读数）', () {
     testWidgets('★★ 四刻读数互不相同（骨架阶段无包装 + 落空态分支）', (t) async {
       await sizeView(t, kViewport);
-      await t.pumpWidget(
-        host(const BrowsePage(provider: 'demo', title: '电影'), kViewport),
-      );
+      /*
+       * ★★★ 2026-10-21 修（夹具前提）：
+       * 必须注入 `pageLoaderForTest`，并且把 `pumpWidget` 放进 `runAsync`。
+       * 理由见文件头「两处夹具前提」那段；一句话：
+       *   不注入 ⇒ `_load` 走真 FFI；不放 `runAsync` ⇒ `getCategories`
+       *   那个真实 Future 永远不完成 ⇒ `_init()` 卡住 ⇒ 停在骨架分支。
+       *
+       * ★ 注入的是**空列表** ⇒ 落 `_items.isEmpty` 的空态分支
+       *   （正是本测试要测的那个 `FadeInSliver`）。
+       */
+      await t.runAsync(() async {
+        await t.pumpWidget(
+          host(
+            BrowsePage(
+              provider: 'demo',
+              title: '电影',
+              pageLoaderForTest: (p) async => models.Page<models.MediaItem>(
+                items: const <models.MediaItem>[],
+                page: 1,
+                pageCount: 1,
+              ),
+            ),
+            kViewport,
+          ),
+        );
+        // 让 `getCategories`（真 FFI，必失败）+ `_load` 的 Future 有机会跑完
+        for (var i = 0; i < 12; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          await t.pump();
+        }
+      });
 
-      // ── 前置：第 1 帧必须是骨架（`_loading` 初值 true），且骨架无包装 ──
-      note('【浏览页】第 1 帧 fadeCount = ${fadeCount(t)}（期望 0：骨架分支不包淡入）');
+      // ── 前置：骨架阶段（`_loading` 初值 true）不该有淡入包装 ──
+      //
+      // ★ 为什么这条不能像改前那样在 `pumpWidget` 之后读：
+      //   `pumpWidget` 会把第 1 帧（含 post-frame 回调）跑完才返回 ⇒
+      //   返回时可能**已经**落到空态分支了。改前那条断言之所以能过，
+      //   恰恰是因为 `_init()` 卡住了（永远停在骨架）—— 也就是说
+      //   **它靠一个夹具 bug 才成立**。修好夹具后它会读到 1 而假红。
+      // ⇒ 改成用**永不完成的 loader** 单独确认骨架分支确实不包淡入。
+      var sawSkeletonUnwrapped = false;
+      await t.runAsync(() async {
+        await t.pumpWidget(const SizedBox());
+        await t.pumpWidget(
+          host(
+            BrowsePage(
+              provider: 'demo',
+              title: '电影',
+              // ★ 永不完成 ⇒ `_loading` 恒 true ⇒ 稳定停在骨架分支
+              pageLoaderForTest: (p) =>
+                  Completer<models.Page<models.MediaItem>>().future,
+            ),
+            kViewport,
+          ),
+        );
+        for (var i = 0; i < 6; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          await t.pump();
+        }
+        sawSkeletonUnwrapped = fadeCount(t) == 0;
+      });
+      expect(
+        sawSkeletonUnwrapped,
+        isTrue,
+        reason: '★ 前置：骨架分支**不该**有淡入包装'
+            '（骨架是立刻反馈，包了就是延迟反馈，与骨架存在的目的相反）',
+      );
+      note('【浏览页】骨架阶段 fadeCount = 0 ✓（已确认无包装）');
+
+      // ── 换成会立刻返回空列表的 loader ⇒ 落空态分支 ──
+      await t.runAsync(() async {
+        await t.pumpWidget(const SizedBox());
+        await t.pumpWidget(
+          host(
+            BrowsePage(
+              provider: 'demo',
+              title: '电影',
+              pageLoaderForTest: (p) async => models.Page<models.MediaItem>(
+                items: const <models.MediaItem>[],
+                page: 1,
+                pageCount: 1,
+              ),
+            ),
+            kViewport,
+          ),
+        );
+        // 让 `getCategories`（真 FFI，必失败）+ `_load` 的 Future 有机会跑完
+        for (var i = 0; i < 12; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          await t.pump();
+        }
+      });
+
+      note('【浏览页】诊断后 fadeCount = ${fadeCount(t)}（期望 1：已落空态分支）');
       expect(
         fadeCount(t),
-        0,
-        reason: '★ 前置：`_loading` 初值 true ⇒ 第 1 帧是骨架分支，不该有淡入包装',
+        1,
+        reason: '★★ 前置：注入了空列表 loader ⇒ 应落到「空态」分支的 FadeInSliver；'
+            '若为 0 说明分支没走到（不是"动画没播"）',
       );
 
-      // ── 之后 `_init()` 必抛（无核心 DLL）⇒ `finally` 把 `_loading` 置 false
-      //    ⇒ 落**空态**分支 ⇒ 那个 `FadeInSliver` 真实挂载。
-      //    ★ 这条路径是**生产代码自己走出来的**，不需要任何注入口。
       final (pts, pumps) = await sampleFour(t, '浏览页');
 
       note('');
@@ -434,12 +548,38 @@ void main() {
 
     testWidgets('★★ ② 阴性对照：Reduce Motion 开 ⇒ 四刻读数完全相同', (t) async {
       await sizeView(t, kViewport);
-      await t.pumpWidget(
-        host(
-          const BrowsePage(provider: 'demo', title: '电影'),
-          kViewport,
-          reduceMotion: true,
-        ),
+      /*
+       * ★★★ 2026-10-21 修：与阳性对照**同一处夹具前提** ——
+       * 注入 `pageLoaderForTest`（空列表 ⇒ 落空态分支）+ `runAsync` 驱动。
+       * 不修的话这条会一直卡在骨架分支，永远测不到 `FadeInSliver`。
+       */
+      await t.runAsync(() async {
+        await t.pumpWidget(
+          host(
+            BrowsePage(
+              provider: 'demo',
+              title: '电影',
+              pageLoaderForTest: (p) async => models.Page<models.MediaItem>(
+                items: const <models.MediaItem>[],
+                page: 1,
+                pageCount: 1,
+              ),
+            ),
+            kViewport,
+            reduceMotion: true,
+          ),
+        );
+        for (var i = 0; i < 12; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          await t.pump();
+        }
+      });
+
+      expect(
+        fadeCount(t),
+        1,
+        reason: '★★ 前置：阴性对照也必须真的挂到 `FadeInSliver` 上，'
+            '否则「四刻相同」是空树上的恒真断言',
       );
 
       final (pts, pumps) = await sampleFour(t, '浏览页/ReduceMotion');

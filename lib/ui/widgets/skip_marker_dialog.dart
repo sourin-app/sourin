@@ -149,10 +149,13 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
+import 'app_dialog_shell.dart';
 import 'app_loading.dart';
 import 'skip_timeline.dart';
 import '../../ui/app_palette.dart';
+import '../../core/ffi.dart';
 import '../../design/icons/app_icons.dart';
+import 'app_toast.dart';
 
 /*
  * ═══════════════════════════════════════════════════════════════════════
@@ -446,6 +449,29 @@ class SkipMarkerDialog extends StatefulWidget {
   State<SkipMarkerDialog> createState() => _SkipMarkerDialogState();
 }
 
+/// 读取跳过点的三种状态
+///
+/// # 为什么必须是三态（而不是 `bool _loading`）
+///
+/// ```text
+/// 两态时「读取失败」被塞进"读完了"那一档，四个值保持 null
+///   ⇒ 与「用户从没设过」在 UI 上**完全一样**（都画「片头未设」）
+///   ⇒ 用户以为自己设的片头片尾丢了，可能**重设一遍覆盖真实配置**
+/// ```
+///
+/// ★ 判据：**故障不许伪装成正常状态。**
+/// 这与本文件既有的 `_previewError`（「预览不可用：…（不影响设置）」）同一思路。
+enum _LoadState {
+  /// 还在读 —— 只显示转圈，**不渲染**那四行
+  loading,
+
+  /// 读成功 —— 四行照常渲染；此时 null 才真的表示"未设置"
+  ok,
+
+  /// 读失败或超时 —— 显示错误 + 重试，**绝不**渲染"未设置"
+  failed,
+}
+
 /// 保存结果（`null` 的点 = 该区间被清空）
 class SkipMarkerResult {
   const SkipMarkerResult({
@@ -637,6 +663,76 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   bool _loading = true;
   bool _saving = false;
 
+  /// 正在重置（清空四个点）—— 与 [_saving] 分开
+  ///
+  /// ⚠️ 不复用 `_saving`：两者对应的按钮不同（重置 / 确认设置），
+  ///    混用会让"重置中"也把保存按钮禁掉，或反之。
+  bool _resetting = false;
+
+  /// 写操作（保存 / 重置）失败的原因 —— 显示在底栏，让用户知道没成功
+  ///
+  /// ★ 与读路径的 `_loadError` 分开：那个管"数据读不出来"，
+  ///   这个管"写不进去"。两者可能同时发生，分开存才不会互相覆盖。
+  String? _saveError;
+
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ 读取跳过点的三态（2026-10-18 · 第 66 轮）
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * # 为什么不能继续用 `bool _loading`
+   *
+   * ```text
+   * `_loading` 只有两个状态：还在读 / 读完了。
+   * 而「读取**失败**」被塞进了"读完了"那一档 —— 走 `catch` 后
+   * `_loading = false`，四个值保持 null。
+   *
+   * ⇒ 于是「核心层卡住/报错」在 UI 上和「用户从没设过跳过点」
+   *   **长得一模一样**，都渲染成「片头未设 / 片尾未设」。
+   *
+   * ★ 这不是理论问题：用户明明设过片头片尾，核心层超时后看到
+   *   「片头未设」，会以为**配置丢了**，很可能重新设一遍
+   *   ⇒ 把真实配置**覆盖掉**。
+   *   ⇒ 一次误读，引发一次真写入。
+   * ```
+   *
+   * # 三态各自的确切含义
+   *
+   * ```text
+   * loading  —— 还在读，显示转圈。**不许**渲染那四行。
+   * ok       —— 读成功。四行照常渲染，null 值**此时才**表示"未设置"。
+   * failed   —— 读失败/超时。显示错误 + 重试。**绝不**渲染"未设置"。
+   * ```
+   *
+   * # 与既有的 `_previewError` 是同一个思路
+   *
+   * 预览那条已经是「失败就如实说：预览不可用：…（不影响设置）」。
+   * 读取这条以前没有，现在补齐 —— 两处的判据是同一句：
+   * **故障不许伪装成正常状态。**
+   */
+  _LoadState _loadState = _LoadState.loading;
+
+  /// 读失败的原因（只在 [_loadState] == failed 时有意义，给用户看）
+  String? _loadError;
+
+  /// 读跳过点的超时时长
+  ///
+  /// # 为什么是 10 秒（而不是 2~3 秒）
+  ///
+  /// ```text
+  /// 这条路径的目的是 **兜底不挂死**，不是 SLA 守护。
+  ///
+  /// · 正常耗时：Dart → FFI 线程池 → Rust → 读一条记录，毫秒级
+  ///   ⇒ 真到 10 秒说明已经异常了（而不是"有点慢"）。
+  /// · 为什么不用 2~3 秒：那会拿一个**从未实测过 p99** 的操作去卡阈值，
+  ///   可能把"慢但正常"的用户打成"读取失败"，反而制造新问题。
+  /// · 为什么不用 5 秒：那是从探针里的原生调用类推的，没有依据。
+  /// · 10 秒在本仓有 8 处使用（如 `delivery_test.dart`），是有先例的数。
+  ///
+  /// ⚠️ 将来若真做了 p99 实测，应按 p99 × 10 调整并改这里。
+  /// ```
+  static const Duration _kLoadTimeout = Duration(seconds: 10);
+
   double get _total => _mediaDuration > 0
       ? _mediaDuration
       : widget.duration.inSeconds.toDouble().clamp(1, double.infinity);
@@ -670,9 +766,26 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   }
 
   /// 读已存的跳过点（有就回填，用户改起来方便）
+  ///
+  /// # ★ 三态 + 超时（2026-10-18）
+  ///
+  /// ```text
+  /// 成功        ⇒ _loadState = ok     ⇒ 四行照常渲染
+  /// 抛异常      ⇒ _loadState = failed ⇒ 显示「读取跳过点失败：…」+ 重试
+  /// 10 秒不返回 ⇒ _loadState = failed ⇒ 同上（超时文案另有措辞）
+  /// ```
+  ///
+  /// ⚠️ 失败时**四个值保持 null**，但 UI 走 failed 分支而**不是**未设置分支 ——
+  ///    这是本函数的关键：null 此时**不代表**"用户没设过"，
+  ///    只代表"我们没读到"。判据见 [_LoadState] 的说明。
+  ///
+  /// ★ 为什么必须有超时：核心里 `get_skip_marker` 走 FFI 线程池，
+  ///   若核心层卡住（死锁 / 池满 / 数据库文件锁），这个 Future **永不完成**
+  ///   ⇒ 以前的表现是"永久转圈，没有报错、没有出路"。
   Future<void> _loadExisting() async {
     try {
-      final m = await SourinApi.getSkipMarker(widget.provider, widget.id);
+      final m = await SourinApi.getSkipMarker(widget.provider, widget.id)
+          .timeout(_kLoadTimeout);
       if (!mounted) return;
       setState(() {
         _introStart = m?.introStart;
@@ -682,6 +795,8 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
         // 原版默认 true —— 设了跳过点就是希望自动跳
         _autoSkip = m?.autoSkip ?? true;
         _loading = false;
+        _loadState = _LoadState.ok;
+        _loadError = null;
       });
       /*
        * ★ task-52：时长可能**比这里先到**（`_maybeInitialLocate` 里有
@@ -689,13 +804,40 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
        *   否则那条路径下首帧定位被静默跳过，预览又是全黑。
        */
       _maybeInitialLocate();
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadState = _LoadState.failed;
+        _loadError = '核心层 ${_kLoadTimeout.inSeconds} 秒无响应';
+      });
+      debugPrint('[SKIPDLG] 读跳过点超时（${_kLoadTimeout.inSeconds}s）');
+      // 读失败也要出画面 —— 否则用户看到的是"打不开的黑框"
+      _maybeInitialLocate();
     } catch (e) {
       if (!mounted) return;
-      setState(() => _loading = false);
+      setState(() {
+        _loading = false;
+        _loadState = _LoadState.failed;
+        _loadError = userErrorText(e, fallback: '读取跳过点失败，请稍后重试');
+      });
       debugPrint('[SKIPDLG] 读跳过点失败: $e');
       // 读失败也要出画面 —— 否则用户看到的是"打不开的黑框"
       _maybeInitialLocate();
     }
+  }
+
+  /// 重试读取（失败态那个「重试」按钮）
+  ///
+  /// ⚠️ 必须**真的**重新调用 [_loadExisting] —— 只把状态改回 loading
+  ///    而不重新发请求的话，用户会看到转圈然后再次失败（或永远转圈），
+  ///    等于按钮没有作用。
+  void _retryLoad() {
+    setState(() {
+      _loadState = _LoadState.loading;
+      _loadError = null;
+    });
+    unawaited(_loadExisting());
   }
 
   /// 起一个**独立的**预览播放器（Owner 明确要求的形态）
@@ -894,7 +1036,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
       debugPrint('[SKIPDLG] 独立预览播放器已启动（与主播放器无关）');
     } catch (e) {
       if (!mounted) return;
-      setState(() => _previewError = '$e');
+      setState(() => _previewError = userErrorText(e, fallback: '预览无法启动'));
       debugPrint('[SKIPDLG] 预览启动失败: $e');
     }
   }
@@ -1267,6 +1409,20 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   }
 
   /// 保存
+  ///
+  /// # ★ 超时 + 失败态（2026-10-18）
+  ///
+  /// ```text
+  /// 改前：await SourinApi.setSkipMarker(...) 没有超时
+  ///   ⇒ 核心层卡住 ⇒ Future 永不完成 ⇒ `_saving` 永不复位
+  ///   ⇒ `_canSave` 永为 false（它第一行就是 `if (_saving) return false;`）
+  ///   ⇒ 保存按钮**永久禁用**、文案永久「保存中…」
+  ///   ⇒ 用户点不动、也没法重试，只能关窗重开
+  /// 改后：10 秒超时 ⇒ 显式失败 + 复位 _saving ⇒ 可以再试
+  /// ```
+  ///
+  /// ⚠️ 与读路径共用 [_kLoadTimeout]（同一个核心层、同一个理由：
+  ///    兜底不挂死，不是 SLA 守护）。
   Future<void> _save() async {
     /*
      * ★ 前端也要校验区间合法性（2026-09-24）
@@ -1278,7 +1434,10 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
      * 但让用户点了"确认"才看到报错很糟 —— 这里先在 UI 层拦一道，
      * 把不合法的组合直接禁用按钮（见 `_canSave`）。
      */
-    setState(() => _saving = true);
+    setState(() {
+      _saving = true;
+      _saveError = null;
+    });
     try {
       await SourinApi.setSkipMarker(
         widget.provider,
@@ -1289,7 +1448,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
         outroStart: _outroStart,
         outroEnd: _outroEnd,
         autoSkip: _autoSkip,
-      );
+      ).timeout(_kLoadTimeout);
       if (!mounted) return;
       Navigator.of(context).pop(SkipMarkerResult(
         introStart: _introStart,
@@ -1298,33 +1457,125 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
         outroEnd: _outroEnd,
         autoSkip: _autoSkip,
       ));
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() {
+        _saving = false; // ★ 必须复位，否则按钮永久禁用
+        _saveError = '核心层 ${_kLoadTimeout.inSeconds} 秒无响应';
+      });
+      _toast('保存失败：超时');
     } catch (e) {
       if (!mounted) return;
-      setState(() => _saving = false);
-      _toast('保存失败：$e');
+      setState(() {
+        _saving = false;
+        _saveError = userErrorText(e, fallback: '保存失败，请稍后重试');
+      });
+      _toast('保存失败：${userErrorText(e, fallback: '请稍后重试')}');
     }
   }
 
   /// 重置（清空四个点）
+  ///
+  /// # ★★★ 破坏性操作：失败**必须**如实说，且要重读服务器真实状态
+  ///
+  /// ```text
+  /// 改前：
+  ///   try { await clearSkipMarker(...) } catch (e) { debugPrint(...) }   // 只记日志
+  ///   setState(四值全清)        ← ★ 失败也清
+  ///   _toast('已重置')          ← ★ 失败也报"已重置"
+  ///
+  /// ⇒ 用户以为清掉了，实际根本没删
+  /// ⇒ 下次打开发现跳过点还在 ⇒ 判定"这软件有 bug"
+  /// ```
+  ///
+  /// **「重置」是删数据的操作。静默失败不只是体验问题 ——
+  ///   用户以为删了、实际没删，是隐私风险**（比如他想清掉某个看过记录）。
+  ///
+  /// # 为什么失败后要**重读**而不是"保留本地值"
+  ///
+  /// ```text
+  /// 失败时的本地值本身也**未必可信**：
+  ///   · 可能上游刚被别处改过
+  ///   · 可能是上一次读取超时留下的陈旧值
+  /// ⇒ 唯一可靠的做法：**问服务器现在到底是什么**
+  /// ★ 判据：失败后 UI 显示的必须是**服务器的真实状态**，不是本地猜的。
+  /// ```
   Future<void> _reset() async {
-    try {
-      await SourinApi.clearSkipMarker(widget.provider, widget.id);
-    } catch (e) {
-      debugPrint('[SKIPDLG] 清除失败: $e');
-    }
-    if (!mounted) return;
     setState(() {
-      _introStart = null;
-      _introEnd = null;
-      _outroStart = null;
-      _outroEnd = null;
+      _resetting = true;
+      _saveError = null;
     });
-    _toast('已重置');
+    try {
+      await SourinApi.clearSkipMarker(widget.provider, widget.id)
+          .timeout(_kLoadTimeout);
+      if (!mounted) return;
+      setState(() {
+        _introStart = null;
+        _introEnd = null;
+        _outroStart = null;
+        _outroEnd = null;
+        _resetting = false;
+      });
+      _toast('已重置');
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() {
+        _resetting = false;
+        _saveError = '重置失败：核心层 ${_kLoadTimeout.inSeconds} 秒无响应';
+      });
+      _toast('重置失败：超时');
+      /*
+       * ★★ 必须重读，让 UI 显示服务器的真实状态。
+       *    不清空本地值、也不保留它们 —— 而是**以服务器为准**。
+       */
+      _loadState = _LoadState.loading;
+      await _loadExisting();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _resetting = false;
+        _saveError = '重置失败：${userErrorText(e, fallback: '请稍后重试')}';
+      });
+      debugPrint('[SKIPDLG] 清除失败: $e');
+      _toast('重置失败：${userErrorText(e, fallback: '请稍后重试')}');
+      // ★ 同上：以服务器真实状态为准
+      _loadState = _LoadState.loading;
+      await _loadExisting();
+    }
   }
 
-  /// 能不能保存（区间合法性 —— 原版后端会抛错，这里提前拦）
-  bool get _canSave {
-    if (_saving) return false;
+  /// 输入本身合法吗（只看区间，**不含**「是否正在忙」）
+  ///
+  /// # ★ 2026-10-18 从 `_canSave` 拆出来的理由
+  ///
+  /// ```text
+  /// 改前 `_canSave` 混了两件事：
+  ///   ① 输入是否合法（区间检查）
+  ///   ② 当前是否在忙（_saving）
+  ///
+  /// 而底栏那行提示写的是 `if (!_canSave) 显示「区间不合法：…」`
+  ///   ⇒ 它假设 `_canSave == false` 一定是"输入有错"
+  ///   ⇒ 于是 `_saving == true` 时（此时 `_canSave` 必为 false）
+  ///      保存过程中会闪一句「区间不合法：需要 起点 < 终点…」
+  ///   ⇒ 而此刻区间**明明是合法的**（用户刚因为合法才点的保存）
+  ///   ⇒ 假报错。
+  /// ```
+  ///
+  /// **⇒ 判据必须拆开：**
+  /// ```text
+  /// _inputValid —— 回答"用户填得对不对"（纯输入校验）
+  /// _canSave    —— 回答"现在能不能按这个按钮"（输入合法 且 不忙）
+  ///
+  /// 提示文案用 `_inputValid`（它要说的是"输入有错"）
+  /// 按钮 onPressed 用 `_canSave`（它要说的是"能不能点"）
+  /// ```
+  ///
+  /// ★ 为什么不用 `if (!_canSave && !_saving)` 这种补丁式修法：
+  ///   那样每加一种"忙"的状态（`_resetting` 已经出现了）都要在这行
+  ///   多补一个 `&&` 条件，而漏补一次就会重新出现假报错。
+  ///   拆成两个判据后，**语义就分开了**：`_busy` 再怎么增长，
+  ///   提示文案只看 `_inputValid`，永远不受影响。
+  bool get _inputValid {
     // 片头：起点 < 终点
     if (_introStart != null && _introEnd != null && _introStart! >= _introEnd!) {
       return false;
@@ -1339,6 +1590,17 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
     }
     return true;
   }
+
+  /// 当前是否在忙（保存或重置进行中）——
+  ///
+  /// 单独提出来是为了让「忙」的**种类增加时**只改这一处。
+  bool get _busy => _saving || _resetting;
+
+  /// 能不能保存（区间合法性 —— 原版后端会抛错，这里提前拦）
+  ///
+  /// ★ 语义 = [_inputValid] 且不在忙。**不要**用它判断"输入有错"，
+  ///   那个用 [_inputValid]（见它的说明：混用会产生假报错）。
+  bool get _canSave => _inputValid && !_busy;
 
   /// 弹一条 2 秒的提示（"被夹到边界了"）
   ///
@@ -1433,13 +1695,33 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   ///    两层保护：即使将来 `_toast` 又抛，值也已经写进去了
   /// ```
   void _toast(String msg) {
+    /*
+     * ★ 2026-10-18（轨道 E 第 5 步）：SnackBar → showAppToast。
+     *
+     * # 这里的 try/catch 是 2026-10-02 那次事故的**补丁**
+     * ```text
+     * showSnackBar 在"全树无 Scaffold"时会抛断言
+     *   （'_scaffolds.isNotEmpty' / "no descendant Scaffolds to present to"），
+     * 而 `ScaffoldMessenger.maybeOf` 只保证 messenger 存在、不保证能显示
+     * ⇒ 当年的 `?.` 形同虚设，异常把 `_applyEdge` 里的赋值吞掉
+     * ⇒ 「只要「+」被夹到边界，值就卡住不动」（t463）。
+     *
+     * 当时的修法是**外面包 try/catch** + 把赋值挪到提示之前（两层保护）。
+     * ```
+     * # 现在换掉根因
+     * ```text
+     * `showAppToast` 内部本来就是 `AppToaster.maybeOf(context)?.show(...)`
+     *   ⇒ 找不到宿主**静默 no-op，不抛异常**
+     * ⇒ 不需要 try/catch 了。但**保留**它：
+     *   ① 这个文件的守护测试（t463/t465）依赖"绝不抛"这个性质
+     *   ② 万一将来 toast 层又引入会抛的路径，这里仍是最后一道防线
+     *   ⇒ 提示是**尽力而为**的东西，任何情况下都不该让调用方崩。
+     * ```
+     */
     try {
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-      );
+      showAppToast(context, msg);
     } catch (e) {
       // ★ 提示失败**绝不能**影响功能 —— 降级成一行日志
-      //   测试宿主（全树无 Scaffold）会走到这里，生产不会
       debugPrint('[SKIPDLG] 提示失败（已忽略）：$e / 原文：$msg');
     }
   }
@@ -1933,29 +2215,135 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
     final boxW = math.min(kDialogMaxW, availW);
     final boxH = math.min(kDialogMaxH, availH);
 
-    return Dialog(
-      backgroundColor: colors.background,
-      // 默认 40 的横向内边距正是窄窗口塌成竖条的原因之一 —— 收紧它
-      insetPadding: const EdgeInsets.symmetric(
-        horizontal: margin,
-        vertical: margin,
-      ),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(Radii.lg),
-      ),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: boxW, maxHeight: boxH),
-        child: _loading
-            ? const SizedBox(
-                height: 200,
-                child: Center(child: AppLoading()),
-              )
-            : Padding(
-                padding: const EdgeInsets.all(Sp.x5),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-19（R4）：裸 `Dialog` → 统一外壳 `AppDialogShell`
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * 改前这里是自建的 `Dialog(backgroundColor: … / shape: 圆角 / child:
+     * ConstrainedBox(...))` —— 全仓唯一一个没走外壳的宽弹窗
+     * （其余 6 个都走 `AppDialogShell`；外壳文件头记着改前"宽度四种、高度三种"）。
+     *
+     * # 收拢后白拿到的三件事
+     * ```text
+     * ① 标题栏（title + subtitle + 右上角关闭 IconButton）——
+     *    改前这个弹窗**根本没有标题**：打开只知道是"片头片尾设置"，
+     *    不知道是**哪一部**片的（`widget.title` 只写进了存储，从没显示过）
+     * ② 圆角/底色/描边取自同一处 —— 改前是 `Radii.lg`(22) + 写死
+     *    `colors.background`，与其余弹窗的 `Radii.rLg` + surfaceContainerHighest
+     *    是**两套写法**（数值同为 22，但取色语义不同）
+     * ③ Esc 关闭 / 焦点循环 / 点遮罩关闭收口到外壳
+     * ```
+     *
+     * # ⚠️ `maxHeight` **必须破例**（620 会把第四行挤出视口 —— 实测）
+     *
+     * 规范默认 620，但本弹窗有**实测反证**（本轮探针，1280x800 视口、
+     * 直接渲卡片本体、读真实 `getRect`）：
+     * ```text
+     * 卡片高 620 ⇒ 滚动视口底 618.0，四行里 **1 行掉出视口**（outOfView=1）
+     * 卡片高 740 ⇒ 滚动视口底 678.0，四行 **全在视口内**（outOfView=0）
+     * 预览高度预算 previewHeightFor(620) = 620-144-360 = **116**
+     *                 previewHeightFor(740) = **236**
+     * ```
+     * `kChromeH`(144) + `kMidRestH`(360) 都是**真机实测**的固定开销，
+     * 620 扣完只剩 116 给预览 —— 16:9 下约 206x116，比 Owner 当年嫌小的
+     * 277x156 **还小**（「中间的预览太小了」）。
+     * ⇒ 620 会**同时复发两个已修缺陷**：第四行看不见 + 预览看不清。
+     * ⇒ 这里显式传 `boxH`（= min(740, 窗口高-32)）并保留本注释；
+     *    §3.5 写明「maxHeight 可覆盖」，前提就是写清为什么（即这一段）。
+     *
+     * ⚠️ `kDialogMaxH = 740` / `kDialogMaxW = 820` **照样在用**：
+     *    `test/skip_history_dialog_test.dart` 钉着它们，而且
+     *    `previewHeightFor(boxH)` 的高度预算正是从 `kDialogMaxH` 推的
+     *    —— 只改外壳外壳、不动预算，预览会算得比实际可用高，第四行照样掉出去。
+     */
+    return AppDialogShell(
+      /*
+       * 标题 = 片名。
+       * ⚠️ 外壳的 `title` **不限行**，`subtitle` 才 `maxLines: 1` ——
+       *    超长片名会把标题栏撑成两行、把四行读数往下挤。
+       *    这里先自己截断（外壳没有 `titleMaxLines` 参数，且本轮只许动外壳的
+       *    这一处调用，不去扩它的接口）。
+       */
+      title: widget.title.isEmpty
+          ? '片头片尾'
+          : (widget.title.length > 24
+              ? '${widget.title.substring(0, 24)}…'
+              : widget.title),
+      // 副标题说清这个窗在干嘛（改前既没有标题、也没有副标题）
+      subtitle: '拖动箭头设片头片尾；设好后播放时自动跳过',
+      /*
+       * 图标：`movie_outlined`。
+       * 与 `source_composer_dialog`(auto_fix_high) / `subtitle_panel`(subtitles)
+       * 同族 —— 有图标的标题栏才是"统一形态"。
+       */
+      icon: AppIcons.movie_outlined,
+      // `onClose` 必须传 —— 外壳只在它非空时才渲染右上角关闭钮
+      onClose: () => Navigator.of(context).pop(),
+      /*
+       * 宽度 820（= `kDialogMaxW`，§3.5 的宽版面档，**白名单内**）。
+       * ⚠️ 外壳的 `width` 是**固定宽**，改前是 `ConstrainedBox(maxWidth:)`
+       *    —— 窄窗口下改前会跟着窗口缩（`orchestrator_skip_dialog_size_test.dart`
+       *    守着"不塌成竖条"这个语义）。所以这里传 `boxW` = min(820, 可用宽)，
+       *    把那条既有能力原样保住。
+       */
+      width: boxW,
+      /*
+       * `fill` 用默认 `true`：本弹窗经 `showAppDialog` 挂载
+       * （`player_page.dart:9410`），外壳的 `fill` 只决定"谁负责定位"，
+       * 两种取值在 `showDialog` 路由下都渲染成"遮罩 + 居中卡片"。
+       */
+      maxHeight: boxH,
+      /*
+       * 内容**自己管滚动**（中段 `Expanded` + `SingleChildScrollView`，
+       * 见下面大段"中段必须可滚动"）。外壳若再套一层
+       * `SingleChildScrollView`，`Expanded` 会因高度无界而崩
+       * —— 与 `danmaku_settings_dialog` / `source_switch_dialog` 同一处理。
+       */
+      scrollable: false,
+      /*
+       * ── 底部按钮区：走外壳的 `actions`（2026-10-19，R4）──
+       *
+       * # 为什么必须挪到这里（这是"三个弹窗按钮区一致"的判据）
+       * ```text
+       * 外壳 `_ActionBar` = Divider(height:1) + Padding(fromLTRB(x6, x2, x6, x3))
+       *                    + Row(mainAxisAlignment: end)
+       * ⇒ 分隔线 / 右对齐 / 间距全部由外壳一处给出。
+       * 改前 `_footer` 是**自己画的一行 Row**（没有分隔线）⇒ 与另外两个弹窗
+       * 差一条分隔线，而且按钮区高度也不一样（探针 hasDivider=false）。
+       * ```
+       * ★ 只取 OK 态的按钮：loading / failed 两态**不该有**保存按钮
+       *   （读不到数据时"确认设置"是无意义的；failed 态有自己的「重试」）。
+       *
+       * ⚠️ 硬约束：`test/skip_marker_test.dart:651` 钉着源码里必须有
+       *    `_footer(colors)` 这个字面量（"保存是这个弹窗的唯一出口"）。
+       *    所以这里**仍然调用 `_footer`**，只是它现在返回的是「纯按钮行」，
+       *    由外壳的 `_ActionBar` 负责分隔线/右对齐/间距。
+       */
+      actions: _loadState == _LoadState.ok ? _footer(colors) : null,
+      child: switch (_loadState) {
+        /*
+         * ★ 三态分支（2026-10-18）
+         *
+         * loading ⇒ 只转圈（与改前一致）
+         * ok      ⇒ 正常渲染四行（与改前一致）
+         * failed  ⇒ **错误 + 重试**，绝不渲染"片头未设"
+         *
+         * ⚠️ 改前这里是 `_loading ? 转圈 : 正常` ——
+         *    读取失败也走"正常"那条，于是画成「片头未设」，
+         *    与"用户真的没设过"无法区分。见 `_LoadState` 的说明。
+         */
+        _LoadState.loading => const SizedBox(
+            height: 200,
+            child: Center(child: AppLoading()),
+          ),
+        _LoadState.failed => _loadFailedPanel(colors),
+        _LoadState.ok => Padding(
+              padding: const EdgeInsets.all(Sp.x5),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                     // ── 固定头（标题行 —— 原版显示时长摘要）──
                     _header(colors),
 
@@ -2226,11 +2614,62 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
 
                     const SizedBox(height: Sp.x2),
 
-                    // ── 固定脚（保存按钮永远可见）──
-                    _footer(colors),
+                    /*
+                     * ⚠️ 2026-10-19（R4）：保存按钮**已挪到外壳的 `actions:`**
+                     *    （见上面 `actions:` 那段注释）—— 那里才有分隔线 +
+                     *    右对齐 + 与另外两个弹窗同一组间距。
+                     *    这里不再渲染 `_footer`，否则会出现**两排**保存按钮。
+                     */
                   ],
                 ),
               ),
+        },
+    );
+  }
+
+  /// 读取失败态：明确说"读不到"，并给重试出路
+  ///
+  /// # 为什么文案要主动排除"未设置"这个误解
+  ///
+  /// ```text
+  /// 用户设过片头片尾，核心层超时后如果画成「片头未设」，
+  /// 他会以为配置丢了 ⇒ 很可能重设一遍 ⇒ **覆盖真实配置**。
+  /// ⇒ 所以这里必须直说"不是「没设置过」"。
+  /// ```
+  ///
+  /// ★ 风格与同文件既有的「预览不可用：…（不影响设置）」保持一致：
+  ///   如实说故障 + 告诉用户能做什么。
+  Widget _loadFailedPanel(AppPalette colors) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(Sp.x5),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(AppIcons.warning_amber, size: 32, color: colors.error),
+            const SizedBox(height: Sp.x3),
+            Text(
+              '读取跳过点失败：${_loadError ?? '未知原因'}',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: FontSizes.base, color: colors.error),
+            ),
+            const SizedBox(height: Sp.x2),
+            Text(
+              // ★ 这句是关键：主动排除"未设置"的误解
+              '（不是「没设置过」—— 请重试，或关闭后重新打开）',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.mutedForeground,
+              ),
+            ),
+            const SizedBox(height: Sp.x4),
+            TextButton(
+              onPressed: _retryLoad,
+              child: const Text('重试'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2299,12 +2738,34 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
               ),
             ),
             const SizedBox(width: Sp.x1),
-            Text(
-              text,
-              style: TextStyle(
-                fontSize: FontSizes.sm,
-                fontWeight: set ? FontWeight.w600 : FontWeight.w400,
-                color: set ? colors.foreground : colors.mutedForeground,
+            /*
+             * ★★ 2026-10-19（t486 溢出归零）：文字必须**可缩**。
+             *
+             * # 极窄 300 逻辑宽下这一行曾报 `RenderFlex overflowed`：
+             * ```text
+             *   徽章内 Row 可用宽 202.0（删掉头部那个 32px 关闭钮之后）
+             *   子项 = 色点 7 + Sp.x1 4 + 文字 199.5 = 210.5  ⇒ 溢出 8.5
+             * ```
+             * 根因：文字是**无 flex 的子项**，在 `mainAxisSize.min` 的 Row 里
+             * 按自身固有宽度要空间，而外层 `Wrap` 给它的上限只有 202
+             * ⇒ 放不下就**溢出**（而不是被压缩）。
+             *
+             * # 修法（**不缩字号**、**不砍掉省略号**）
+             * `Flexible` + `TextOverflow.ellipsis`：空间不够时压缩文字本身、
+             * 末尾出省略号 ⇒ 既**零溢出**，又**保住**「放不下会省略」这个可见行为。
+             * ⚠️ 用 `Flexible` 而不是 `Expanded`：徽章在 `Wrap` 里，
+             *    宽裕时必须 shrink-wrap（`Expanded` 会强行撑满、两个徽章被拉开）。
+             */
+            Flexible(
+              child: Text(
+                text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: FontSizes.sm,
+                  fontWeight: set ? FontWeight.w600 : FontWeight.w400,
+                  color: set ? colors.foreground : colors.mutedForeground,
+                ),
               ),
             ),
           ],
@@ -2341,23 +2802,28 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
           ),
         ),
         const SizedBox(width: Sp.x2),
-        // ⚠️ 必须外层 `SizedBox` 钉死（`constraints` 单给不够 —— 见 `_StepBtn`）
-        SizedBox(
-          width: kHeaderBtn,
-          height: kHeaderBtn,
-          child: IconButton(
-            onPressed: () => Navigator.of(context).pop(),
-            icon: const Icon(AppIcons.close, size: 20),
-            tooltip: '关闭',
-            padding: EdgeInsets.zero,
-            visualDensity: VisualDensity.compact,
-            style: IconButton.styleFrom(
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              minimumSize: const Size(kHeaderBtn, kHeaderBtn),
-              padding: EdgeInsets.zero,
-            ),
-          ),
-        ),
+        /*
+         * ⚠️ 2026-10-19（R4）：这里**删掉了**旧的内联关闭按钮
+         *    （`SizedBox(width: kHeaderBtn, child: IconButton(...tooltip:'关闭'))`）。
+         *
+         * # 为什么（实测两个关闭钮）
+         * ```text
+         * 收拢到 AppDialogShell 后，外壳的 `_Header` 已经画了一个关闭钮
+         * （`tooltip: '关闭'`，`:573`）。再留这一个 ⇒ 同一张卡片上有**两个 ×**，
+         * 而且两者**不在同一条线上**：
+         *   探针读数  nClose=2
+         *     外壳那个  closeRight=1030  距卡片右缘 **20px**（Sp.x3=12 + 图标留白）
+         *     _header 那个 closeRight=?   距卡片右缘 **16px**
+         * ⇒ 两个 × 差 4px，视觉上就是"歪的"（Owner 说的「丑」正是这类）。
+         * ```
+         * 外壳的关闭钮是 §3.5 规定的**唯一**位置（标题栏右侧），
+         * 所以删内联那个，只保留外壳的。
+         *
+         * ⚠️ 预算：这条**不影响** `kChromeH` —— `_header` 这一行的高度
+         *    由徽章 + `kHeaderBtn`(32) 撑着，删掉按钮后这一行仍高 32
+         *    （徽章所在 Row 的 crossAxisAlignment 决定了行高），
+         *    已用探针复测（见报告 ③ 的 cardH / 视口读数）。
+         */
       ],
     );
   }
@@ -2749,7 +3215,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
       return Expanded(
         child: Tooltip(
           message: playing
-              ? '正在循环播放$label整段 —— 点一下**暂停在这一帧**'
+              ? '正在循环播放$label整段 —— 点一下「暂停在这一帧」'
               : ok
                   ? '循环播放$label整段${usingDefault ? "（未设置，用默认范围）" : ""}'
                   : '$label区间还没设，或长度不足 1 秒',
@@ -2850,20 +3316,72 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
     );
   }
 
+  /// 底部按钮行 —— **由外壳的 `_ActionBar` 承载**（分隔线 / 右对齐 / 间距）
+  ///
+  /// ⚠️ 2026-10-19（R4）：这里**不再自己画分隔线和外边距**。
+  /// ```text
+  /// 改前：`_footer` 是一整行 Row，直接塞在内容区底部
+  ///       ⇒ 没有 Divider，也没有外壳那套 fromLTRB(Sp.x6, Sp.x2, Sp.x6, Sp.x3)
+  ///       ⇒ 与 update / composer 的按钮区**差一条分隔线**（探针 hasDivider=false）
+  /// 现在：外壳 `_ActionBar` 给 Divider + Padding + Row(end)，
+  ///       本方法只负责"按钮本身" ⇒ 三处形态由**同一段代码**产出。
+  /// ```
+  /// ★ 保留方法名 `_footer`：`test/skip_marker_test.dart` 钉着
+  ///   `dlg.contains('_footer(colors)')`（不许改别人的测试）。
   Widget _footer(AppPalette colors) {
     return Row(
+      /*
+       * ★ `mainAxisSize: MainAxisSize.min` 是**必须**的（2026-10-19 实测踩到）。
+       *
+       * 外壳的 `_ActionBar` 把 `actions` 放进 `Row(mainAxisAlignment: end,
+       * children: [child])` —— 而 Row 给**非 flex 孩子**的是**无界宽**约束。
+       * 我第一版在这个 `_footer` 里用了 `Flexible`（想给错误文案兜底），
+       * 立刻抛：
+       * ```text
+       * RenderFlex children have non-zero flex but incoming width constraints
+       * are unbounded.
+       * ⇒ zz_t66_skip_write_path_test 掉 4 条（①②③⑦ 的布局全崩）
+       * ```
+       * ⇒ 按钮行只 shrink-wrap（min），**不用任何 flex**；长文案改用
+       *   `ConstrainedBox(maxWidth) + FittedBox(scaleDown)` 兜。
+       */
+      mainAxisSize: MainAxisSize.min,
+      // ★ 靠右 —— 与外壳 `_ActionBar` 的 Row(mainAxisAlignment: end) 一致
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
-        if (!_canSave)
-          Padding(
-            padding: const EdgeInsets.only(right: Sp.x3),
-            child: Text(
-              // 说清为什么不给保存（不给原因的话用户会以为按钮坏了）
-              '区间不合法：需要 起点 < 终点，且片头在片尾之前',
-              style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+        /*
+         * ⚠️ 错误/校验文案：**不能**用 Flexible（父级宽无界，见上），
+         * 改为「硬上限宽 + scaleDown」。
+         *
+         * 那段文案是「区间不合法：需要 起点 < 终点，且片头在片尾之前」，
+         * `_saveError` 还可能是 `$e` 抛出的任意长字符串 —— 不限宽就会把
+         * 按钮挤出卡片（RenderFlex overflow）。
+         * `FittedBox(scaleDown)` 让长文案缩小而不换行 ⇒ 按钮区高度恒定。
+         */
+        if (_saveError != null || !_inputValid)
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 260),
+            child: Padding(
+              padding: const EdgeInsets.only(right: Sp.x3),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Text(
+                  // 写失败必须如实说 —— 绝不静默（尤其是重置：它删数据）
+                  // 说清为什么不给保存（不给原因的话用户会以为按钮坏了）
+                  _saveError ?? '区间不合法：需要 起点 < 终点，且片头在片尾之前',
+                  maxLines: 1,
+                  style: TextStyle(
+                      fontSize: FontSizes.cap, color: colors.error),
+                ),
+              ),
             ),
           ),
-        TextButton(onPressed: _reset, child: const Text('重置')),
+        TextButton(
+          // ★ 重置是破坏性操作：忙的时候不许并发操作
+          onPressed: _busy ? null : _reset,
+          child: Text(_resetting ? '重置中…' : '重置'),
+        ),
         const SizedBox(width: Sp.x2),
         FilledButton(
           onPressed: _canSave ? _save : null,

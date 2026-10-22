@@ -441,10 +441,60 @@ class ClipDownloader {
 
   static const String kMpvCacheDirKey = 'cache-dir';
 
+  static const String kMpvCacheSecsKey = 'cache-secs';
+
+  /*
+   * ★★★ 前向缓存的时间上界：10 分钟（用户点名要的）
+   *
+   * # 为什么必须**同时**有时间上界和字节上界
+   *
+   * ```text
+   * 只给字节上界（改前就是这样）：
+   *   demuxer-max-bytes = 256MB ⇒ 只要没读满 256MB 就一直往后读
+   *   ⇒ 一个 900 秒的片子会被**从头预读到 938 秒**（实测读数）
+   *   ⇒ 这正是用户说的「不要提前一次性把所有的都拉取完」
+   *
+   * 只给时间上界：
+   *   4K 高码率下 600 秒可能要 1.5~3GB ⇒ 字节失控
+   *
+   * 两个都给（现在）：
+   *   ★ 谁先撞谁生效 —— 实测（2Mbps/60min 片，字节上限固定 256MB）：
+   *       无 cache-secs ⇒ 窗口 938s / 起播拉 240MB
+   *       cache-secs=600 ⇒ 窗口 622s / 起播拉 164MB   （-34% / -32%）
+   *       cache-secs=300 ⇒ 窗口 322s / 起播拉  89MB   （-66% / -63%）
+   *   ★ 高码率 4K 下 600 秒的字节量 > 256MB ⇒ 字节上限先撞
+   *     ⇒ 实际窗口更短，**不会失控**，也就不需要动态算码率
+   * ```
+   *
+   * # 为什么取 600 而不是 300
+   *
+   * ```text
+   * 用户原话：「五分钟或者十分钟，你自己取舍」
+   * 取 10 分钟，因为：
+   *   · 实测 600s 对「拖回去一点」这种常见操作仍然命中
+   *   · 用户对拖动体验敏感（另有一条转圈问题在查）
+   *   · 真嫌不够可以调大这一个常量，不牵动别的逻辑
+   * ```
+   *
+   * # 与「拖动变卡」的关系（实测已排除）
+   *
+   * ```text
+   * 担心：窗口从 938s 缩到 622s ⇒ 拖到 800s（旧窗口内/新窗口外）会不会更慢？
+   * 实测（先填满缓存、再把网络限到 1.5MB/s、然后拖到 800s）：
+   *   无 cache-secs ⇒ 命中，到可播 297 ms
+   *   cache-secs=600 ⇒ 未命中，到可播 468 ms
+   * ⇒ 差 171 ms，且**绝对时长仍在半秒内**，用户感知不到「转圈很久」。
+   *   注意这 171ms 只在「恰好落在 600~938 秒之间」这一窄带上出现；
+   *   拖到更远处（如 1800s）两者都要现拉，无差异。
+   * ```
+   */
+  static const int kMpvCacheSecs = 600;
+
   /// 要回读取证的属性（顺序 = 报告里的显示顺序）
   static const List<String> kMpvCacheKeys = [
     kMpvMaxBytesKey,
     kMpvMaxBackBytesKey,
+    kMpvCacheSecsKey,
     kMpvCacheDirKey,
   ];
 
@@ -457,11 +507,17 @@ class ClipDownloader {
   }
 
   /// 把「缓存上限」翻译成 mpv 属性表（键值对，顺序稳定便于断言）
+  ///
+  /// ★ `demuxer-max-bytes` 与 `demuxer-max-back-bytes` **必须保持相等**：
+  ///   这两个是「前向预读」与「回看」的上界，用户配置的是同一个「缓存上限」。
+  ///   不要把回看单独调小 —— 4K 高码率下回看 10 分钟需要 1.5~3GB，
+  ///   256MB 对 4K 回看**不是浪费，是必要**（用户明确要求默认保持 256MB）。
   static List<(String, String)> mpvCacheProperties(String cacheDir) {
     final bytes = cacheLimitBytes.toString();
     return [
       (kMpvMaxBytesKey, bytes),
       (kMpvMaxBackBytesKey, bytes),
+      (kMpvCacheSecsKey, kMpvCacheSecs.toString()),
       (kMpvCacheDirKey, cacheDir),
     ];
   }

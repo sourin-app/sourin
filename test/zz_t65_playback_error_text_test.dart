@@ -177,7 +177,16 @@ void main() {
       '该内容需要大会员': PlaybackFailureKind.permission,
       'vip 专享': PlaybackFailureKind.permission,
       'connection refused': PlaybackFailureKind.proxy,
-      '内置代理没起来': PlaybackFailureKind.proxy,
+      /*
+       * ★ 2026-10-18（第 66 轮 R2）：这条样本原来是字面量 `'内置代理没起来'`。
+       *
+       * 那是 `hideInternalUrls()` 的**产物**，不是真实错误原文 ——
+       * 现在 `classify` 读原文（不再被展示改写污染），所以这个字面量
+       * **永远不可能作为输入出现**，留着它是在测一个不存在的场景。
+       *
+       * ⇒ 换成真机上确实会出现的那一条（Owner 2026-10-18 19:03:06 的日志原文）。
+       */
+      'Failed to open http://127.0.0.1:57106/s/18df9acccb813f/.': PlaybackFailureKind.proxy,
     };
 
     samples.forEach((text, expected) {

@@ -49,6 +49,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/ui/tokens.dart';
 import 'package:sourin_spike/ui/widgets/skip_marker_dialog.dart';
 import 'package:sourin_spike/ui/widgets/skip_timeline.dart';
@@ -66,6 +67,67 @@ Widget _host(Widget child) {
 
 /// 打开**真实**弹窗（走真实 `showDialog`，与生产同一条约束链）
 Future<void> _open(WidgetTester t, {Size win = const Size(1280, 800)}) async {
+  /*
+   * ═══════════════════════════════════════════════════════════════════
+   * ★★★ 必须顶替核心层传输，否则本文件在「有 DLL 的工作区」会全红
+   * ═══════════════════════════════════════════════════════════════════
+   *
+   * # 现象（2026-10-18 实测）
+   *
+   * 工作区根目录有 `sourin_core.dll` 时，③ 组 4 条全红，报的是：
+   * ```text
+   * The finder "Found 0 widgets with type "SingleChildScrollView""
+   * The finder "Found 0 widgets with text "片头开始""
+   * ```
+   * 而同样的代码在**没有 DLL** 的 worktree 里是 `+10 全绿`。
+   *
+   * # 根因（逐层查到的，不是猜的）
+   *
+   * ```text
+   * SkipMarkerDialog.initState
+   *   → _loadExisting()                       skip_marker_dialog.dart:677
+   *     → await SourinApi.getSkipMarker(...)  :679   ← ★ 真实 FFI
+   *       → SourinCore.callAsync('get_skip_marker')
+   *
+   * 有 DLL  ⇒ 动态库被加载 ⇒ 请求真的发出去，但**没有 Rust 运行时服务它**
+   *          ⇒ 这个 Future **永不完成**（不返回、也不抛）
+   * 无 DLL  ⇒ 加载失败 ⇒ 立刻抛 ⇒ 走 catch ⇒ _loading = false
+   * ```
+   * 而弹窗的渲染分支是（`skip_marker_dialog.dart:1969`）：
+   * ```dart
+   * child: _loading ? SizedBox(height: 200, child: AppLoading())  // 只有转圈
+   *                  : Padding(... 四行 + 时间轴 ...)
+   * ```
+   * **⇒ `_loading` 永为 true ⇒ 只画转圈 ⇒ 四行标签一个都不存在。**
+   *
+   * ★ 关键旁证：这个过程**零异常**（`takeException == null`、
+   *   `FlutterError count == 0`）—— 不是崩了，是走到另一条正常分支，
+   *   所以从错误日志里完全看不出来。
+   *
+   * # 为什么用 `debugSkipMarkerFetcher` 而不是别的办法
+   *
+   * `core/sourin_api.dart:1228-1232` 的注释写得很清楚，这个注入点**就是**
+   * 为这个场景准备的：
+   * ```text
+   * 「★ 它让门禁能在**不加载 libmpv** 的前提下驱动真实的 _loadSkipMarker()
+   *   竞态路径（否则只能打 native-media 标签、在 CI 里被默认跳过）」
+   * ```
+   * 生产路径逐字不变（该字段默认 null）。
+   *
+   * # 为什么不是 skip、不是放宽断言
+   *
+   * 本文件 ③ 组守的是用户报过的真实缺陷（"只看到片头两行"）——
+   * 判据是「色条加了高度之后第四行会不会被挤出视口」。
+   * skip 掉就等于这条护栏从此不存在；放宽断言更是把缺陷放回去。
+   * **注入 fake 只是把「跳过点存储」这个无关变量固定住，
+   *   让测试专心测它该测的布局几何。**
+   *
+   * ⚠️ 本文件测的是**布局几何**，不关心跳过点存储里存了什么 ⇒
+   *    fake 返回 null（"没设过跳过点"）就够了，与 ③ 组的四行默认态一致。
+   */
+  SourinApi.debugSkipMarkerFetcher = (provider, id) async => null;
+  addTearDown(() => SourinApi.debugSkipMarkerFetcher = null);
+
   t.view.physicalSize = win;
   t.view.devicePixelRatio = 1.0;
   addTearDown(t.view.reset);

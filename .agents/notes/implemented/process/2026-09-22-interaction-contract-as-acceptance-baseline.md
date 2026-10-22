@@ -15,6 +15,8 @@ Status: implemented
 `PLAYER-CONTRACT.md` 与 `INTERACTION-CONTRACT.md` 逐条从原版源码提取，带源码行号，
 作为验收基准。与基准的有意差异必须先问 Owner。
 
+Independent: 验收基准的定义（交互契约）。它本身是流程基石，没有更上位的既有流程决定。
+
 ## Alternatives considered
 
 - **以新版实现为准，边做边定** —— 它最强的论据是迭代快、不被旧实现束缚。

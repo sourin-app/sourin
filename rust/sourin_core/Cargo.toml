@@ -77,7 +77,28 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 tower-http = { version = "0.6", default-features = false, features = ["cors"] }
 rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# ★ 2026-10-18（E2E 验证发现）：raw-deflate 回退需要手动解压。
+#   已在依赖树里（reqwest 的 deflate 特性间接引入 flate2 1.1.10），
+#   这里只是提成直接依赖，**不新增编译单元**。
+flate2 = "1"
 log = "0.4"
+
+# ★ 凭据加密（2026-10-18，CS-1）
+#
+# 用于「登录态随云同步」的加密：PBKDF2 派生密钥 + AES-256-GCM。
+#
+# ⚠️ **不是新依赖** —— `ring` 早已在依赖树里（`reqwest → rustls → ring`），
+#    这里只是把它从**传递依赖**提成**直接依赖**，不新增下载、不新增编译单元。
+#    与上面 `flate2` 完全同一种情况。
+#
+# # 为什么用 ring 而不是 chacha20poly1305 + argon2
+# ```text
+# · ring 已在树里 ⇒ 零新增供应链风险、零新增编译时间
+# · ring 自带 aead（AES-256-GCM / ChaCha20-Poly1305）与 pbkdf2（HMAC-SHA256）
+# · 代价：ring **没有 argon2**，只能用 PBKDF2
+#   ⇒ 用足够高的迭代次数补偿（见 sync/credentials.rs 的 ITERATIONS 与理由）
+# ```
+ring = "0.17"
 
 # ── 下面这些是实测编译时补出来的（第一轮 177 个 error 全是缺 crate）──
 anyhow = "1"

@@ -317,6 +317,135 @@ class SourinApi {
     return m.map((k, v) => MapEntry(k, v == true));
   }
 
+  /// ★★★ 2026-10-18（第 66 轮 N10 取证）：运行期开关并行预取
+  ///
+  /// # 为什么需要它
+  /// ```text
+  /// 环境变量 `SOURIN_PREFETCH_DISABLE` 只在 StreamProxy::new() 里读一次
+  /// ⇒ 进程内改环境变量无效，必须重启进程
+  /// 而 streamproxy.rs 的注释自己写明：CDN 吞吐每分钟在变，
+  ///   跨进程对照里两个变量同时在变 ⇒ 量不出真实差值
+  /// ⇒ 只有**同进程内交替 ON/OFF** 才能做单变量 A/B
+  /// ```
+  ///
+  /// # 安全性
+  /// 只改一个 AtomicBool；下一次请求生效（plan_prefetch 每次请求都读）
+  /// ⇒ 不影响已在飞的请求，不碰任何连接/缓存状态。
+  ///
+  /// # ⚠️⚠️ 仅实验用：生产代码**不调用**这三个方法
+  ///
+  /// ```text
+  /// 真实调用点（全部在 .probe/n10_real/，gitignore，不随包发布）：
+  ///   .probe/n10_real/accept_ab.dart:247,346   setPrefetchDisabled
+  ///   .probe/n10_real/real_ab.dart:227,306     setPrefetchDisabled
+  ///   .probe/n10_real/real_ab.dart:228,309     prefetchDisabled
+  ///   .probe/n10_real/accept_ab.dart:349       inYieldWindow
+  ///   .probe/probe_tests/t66_n10_*_probe.dart  prefetchDisabled
+  /// ```
+  ///
+  /// **生产路径走的是另一对**：
+  /// ```text
+  /// `beginYieldForSeek()` / `endYieldForSeek()`
+  ///   ⇒ 由 `player_page.dart::_beginPrefetchYield()` 在 seek 后调用
+  ///   ⇒ 它们是**已接线**的生产 API，与这里的三个"强制开关"不是一回事：
+  ///      · begin/end ：seek 后**自动**让路 2 秒，产品行为
+  ///      · set/get   ：**人工**强制 ON/OFF，只为 A/B 对照
+  /// ```
+  ///
+  /// # ★ 为什么保留（而不是删掉）
+  /// ```text
+  /// ① N10（拖动转圈）的**根因验证**依赖它们：
+  ///    「同进程内交替 ON/OFF 量出真实差值」这个实验，
+  ///    必须能人为控制开关 ⇒ 删掉以后重验要重写整套探针。
+  /// ② 它们是**只读探针 + 一个开关**，不参与任何产品决策 ——
+  ///    `prefetchDisabled()` / `inYieldWindow()` 纯查询，
+  ///    `setPrefetchDisabled()` 只在探针里被调用。
+  /// ③ 将来若做用户可选的"省流模式"，这里就是现成的入口
+  ///    （但**现在没有**任何 UI 接它）。
+  /// ```
+  ///
+  /// # ★ 仓库硬约束的例外声明
+  /// ```text
+  /// 本仓要求「新增公开 API 必须同时给出调用点」。
+  /// ⇒ 这三个是**例外**：调用点在 `.probe/`（不进版本库发布范围）。
+  /// ⇒ 例外理由就是上面「为什么保留」三条，写在这里以备审计。
+  /// ⚠️ 若将来 `.probe/` 被整体删除，这三个方法应一并删除。
+  /// ```
+  static Future<void> setPrefetchDisabled(bool disabled) async {
+    await SourinCore.callAsync('set_prefetch_disabled', {
+          'disabled': disabled,
+        });
+  }
+
+  /// 读当前并行预取开关 —— ⚠️ **仅实验用**（详见上方 [setPrefetchDisabled] 的例外声明）
+  ///
+  /// 调用点：`.probe/n10_real/real_ab.dart:228,309`、
+  ///         `.probe/probe_tests/t66_n10_cold_seek_probe.dart:175` 等。
+  /// 生产代码**不调用**。
+  static Future<bool> prefetchDisabled() async {
+    final r = await SourinCore.callAsync('prefetch_disabled');
+    return jmap(r)['disabled'] == true;
+  }
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════
+   *  ★★★ N10：seek 让路窗口
+   * ═══════════════════════════════════════════════════════════════════
+   *
+   * # 背景（真机实测，2026-10-18，详见 streamproxy.rs 的 `yield_until_ms`）
+   * ```text
+   * 预取 ON   seek 到某位置后（逐 500ms 采样）：
+   *   t+500ms    demuxer-cache-time 读不到
+   *   t+1000ms   播放位置**卡死不动**
+   *   t+1500ms   才恢复
+   * 预取 OFF  同一位置：t+500ms 立刻有缓存
+   *
+   * ⇒ 4 路并行预取在 seek 后与"当前播放点"抢同一条上行，
+   *   当前点排在后面 ⇒ mpv 手里没有可播数据 ⇒ 转圈亮起，
+   *   而底栏缓冲条画的是预取拉回来的**别处**数据 ⇒ 用户看到"条满了还在转"。
+   * ```
+   *
+   * # 为什么只在 seek 后短暂让路，不一刀切关掉
+   * ```text
+   * 实测远端 seek(85%)：预取 ON 162ms vs OFF 190ms
+   * ⇒ 预取在远处是**有益的**，关掉是用一个 bug 换另一个 bug
+   * ```
+   */
+
+  /// 让路窗口长度（与 Rust 侧 `StreamProxy::YIELD_WINDOW_MS` 保持一致）
+  ///
+  /// 2 秒 —— 实测 seek 后恢复 500ms~1500ms，留 33% 余量。
+  /// ⚠️ 两侧必须同步修改；`zz_t66_prefetch_yield_test.dart` 有源码字面量校验。
+  static const int yieldWindowMs = 2000;
+
+  /// 进入让路窗口：接下来 [yieldWindowMs] 内预取让路给前台读取
+  ///
+  /// 返回 `true` 表示**本次是首次进入**窗口
+  /// ⇒ 调用方据此决定要不要起恢复定时器。
+  /// 连续 seek 时返回 `false`（Rust 侧已重置截止时刻），**不要**再起第二个定时器。
+  static Future<bool> beginYieldForSeek() async {
+    final r = await SourinCore.callAsync('begin_yield_for_seek');
+    return jmap(r)['first'] == true;
+  }
+
+  /// 结束让路窗口：**恢复**进入前的开关状态（不是无条件打开预取）
+  ///
+  /// ⚠️ 页面销毁时必须调用，否则预取会一直处于让路状态。
+  static Future<void> endYieldForSeek() async {
+    await SourinCore.callAsync('end_yield_for_seek');
+  }
+
+  /// 当前是否处于让路窗口内 —— ⚠️ **仅实验/门禁用**
+  ///
+  /// 调用点：`.probe/n10_real/accept_ab.dart:349`（A/B 跑完复位时打印）。
+  /// 生产代码**不调用**（生产侧不需要"问"，它只在 seek 时主动 begin/end）。
+  ///
+  /// ★ 保留理由见 [setPrefetchDisabled] 的例外声明 —— 同一组三个方法。
+  static Future<bool> inYieldWindow() async {
+    final r = await SourinCore.callAsync('in_yield_window');
+    return jmap(r)['inWindow'] == true;
+  }
+
   /// 导入声明式源（JSON 配置）
   static Future<ProviderManifest> importDeclarativeProvider(String json) async {
     final r = await SourinCore.callAsync(
@@ -1143,6 +1272,25 @@ class SourinApi {
   /// ② 片头整体在片尾之前：intro_end <= outro_start
   /// ```
   /// 违反会返回错误（`SourinCoreException`）。
+  /// 写跳过点 —— ⚠️ 与 [debugSkipMarkerFetcher] 同一纪律：
+  /// **生产路径永不为非 null**（默认 null ⇒ 生产路径逐字不变）。
+  ///
+  /// ★ 为什么要它：门禁要能构造「保存超时 / 保存失败」这两种情形。
+  ///   否则只能等真实核心层不可用 —— 那既不可控也不可复跑。
+  @visibleForTesting
+  static Future<void> Function({
+    String? title,
+    int? introStart,
+    int? introEnd,
+    int? outroStart,
+    int? outroEnd,
+    bool? autoSkip,
+  })? debugSkipMarkerWriter;
+
+  /// 清空跳过点 —— 同上，生产路径永不为非 null
+  @visibleForTesting
+  static Future<void> Function()? debugSkipMarkerClearer;
+
   static Future<void> setSkipMarker(
     String provider,
     String id, {
@@ -1152,24 +1300,43 @@ class SourinApi {
     int? outroStart,
     int? outroEnd,
     bool? autoSkip,
-  }) =>
-      SourinCore.callAsync('set_skip_marker', {
-        'provider': provider,
-        'id': id,
-        if (title != null) 'title': title,
-        if (introStart != null) 'intro_start': introStart,
-        if (introEnd != null) 'intro_end': introEnd,
-        if (outroStart != null) 'outro_start': outroStart,
-        if (outroEnd != null) 'outro_end': outroEnd,
-        if (autoSkip != null) 'auto_skip': autoSkip,
-      });
+  }) {
+    final fake = debugSkipMarkerWriter;
+    if (fake != null) {
+      // 门禁注入：fake 顶替核心层传输。生产路径永为 null。
+      return fake(
+        title: title,
+        introStart: introStart,
+        introEnd: introEnd,
+        outroStart: outroStart,
+        outroEnd: outroEnd,
+        autoSkip: autoSkip,
+      );
+    }
+    return SourinCore.callAsync('set_skip_marker', {
+      'provider': provider,
+      'id': id,
+      if (title != null) 'title': title,
+      if (introStart != null) 'intro_start': introStart,
+      if (introEnd != null) 'intro_end': introEnd,
+      if (outroStart != null) 'outro_start': outroStart,
+      if (outroEnd != null) 'outro_end': outroEnd,
+      if (autoSkip != null) 'auto_skip': autoSkip,
+    });
+  }
 
   /// 清除跳过点
-  static Future<void> clearSkipMarker(String provider, String id) =>
-      SourinCore.callAsync('clear_skip_marker', {
-        'provider': provider,
-        'id': id,
-      });
+  static Future<void> clearSkipMarker(String provider, String id) {
+    final fake = debugSkipMarkerClearer;
+    if (fake != null) {
+      // 门禁注入：fake 顶替核心层传输。生产路径永为 null。
+      return fake();
+    }
+    return SourinCore.callAsync('clear_skip_marker', {
+      'provider': provider,
+      'id': id,
+    });
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   //  插件管理
@@ -1805,8 +1972,24 @@ class SourinApi {
   }
 
   /// 导出备份到指定路径
-  static Future<BackupExportResult> backupExport(String path) async {
-    final r = await SourinCore.callAsync('backup_export', {'path': path});
+  ///
+  /// # ★ 登录态（CS-1）
+  ///
+  /// 传了 [passphrase] ⇒ 用**与云同步完全同一套**加密把登录态打进包里
+  /// （`credentials::encrypt`，不是第二套格式）。
+  /// 不传 ⇒ 包里**不含登录态**，且返回值里 `credentialsIncluded == false`
+  /// + 一句 `credentialsNote` —— **界面必须显示它**，
+  /// 不许让用户以为"备份了全部数据"。
+  ///
+  /// ⚠️ 口令**不进包**（包是用户会分发的东西）：导入时要重新输入。
+  static Future<BackupExportResult> backupExport(
+    String path, {
+    String? passphrase,
+  }) async {
+    final r = await SourinCore.callAsync('backup_export', {
+      'path': path,
+      if (passphrase != null && passphrase.isNotEmpty) 'passphrase': passphrase,
+    });
     return BackupExportResult.fromJson(jmap(r) ?? {});
   }
 
@@ -1830,8 +2013,22 @@ class SourinApi {
   /// ```
   /// **不能简化成"导入即覆盖"** —— 那会把用户本机较新的进度打回旧值
   ///（备份可能是三天前的，而用户这两天又看了几集）。
-  static Future<ImportSummary> backupImport(String path) async {
-    final r = await SourinCore.callAsync('backup_import', {'path': path});
+  ///
+  /// # ★ 登录态（CS-1）
+  ///
+  /// 包里含登录态时**必须**给对 [passphrase]，否则后端返回
+  /// 「口令不正确（或这个备份包已被改动），登录态没有导入」。
+  ///
+  /// ★★ 后端**不会**静默跳过凭据只导入其它平面 ——
+  ///    那会让用户以为"恢复成功"，而每个源其实都要重新登。
+  static Future<ImportSummary> backupImport(
+    String path, {
+    String? passphrase,
+  }) async {
+    final r = await SourinCore.callAsync('backup_import', {
+      'path': path,
+      if (passphrase != null && passphrase.isNotEmpty) 'passphrase': passphrase,
+    });
     return ImportSummary.fromJson(jmap(r) ?? {});
   }
 
@@ -1931,16 +2128,22 @@ class SourinApi {
   @visibleForTesting
   static Future<List<SyncBackupEntry>> Function()? debugSyncBackupListFetcher;
 
+  /// 凭据同步状态的注入点（同上面三个的理由 —— 只读接口才给注入）
+  @visibleForTesting
+  static Future<CredentialsStatus> Function()? debugCredentialsStatusFetcher;
+
   /// 装/卸这三个注入点（`null` = 恢复真实实现）
   @visibleForTesting
   static void installSyncDebugFetchers({
     Future<SyncStatus> Function()? status,
     Future<SyncSettings> Function()? settings,
     Future<List<SyncBackupEntry>> Function()? backups,
+    Future<CredentialsStatus> Function()? credentials,
   }) {
     debugSyncStatusFetcher = status;
     debugSyncSettingsFetcher = settings;
     debugSyncBackupListFetcher = backups;
+    debugCredentialsStatusFetcher = credentials;
   }
 
   /// 同步状态（设置页据此显示「已连接 / 未配置」）
@@ -1958,9 +2161,62 @@ class SourinApi {
   }
 
   /// 立即同步 —— 返回每一步的汇总
+  ///
+  /// ★ 返回里**一定有一条 `plane == "credentials"`**（CS-1）。
+  ///   没有口令时它的 `note` 是「凭据未同步：…」——
+  ///   [SyncSummary.note] 必须显示出来，不许只报"同步完成"。
   static Future<List<SyncSummary>> syncNow() async {
     final r = await SourinCore.callAsync('sync_now');
     return jlist<SyncSummary>(r, SyncSummary.fromJson).toList();
+  }
+
+  // ── ★ 凭据同步（CS-1，2026-10-19）────────────────────────────────
+  //
+  // 登录态随云同步：口令存**系统钥匙串**（不落盘、不进导出包），
+  // 凭据用 PBKDF2(600k) + AES-256-GCM 加密后传 `data/credentials.enc`。
+  //
+  // ⚠️ 下面三个接口**都不需要已连接** —— 纯本地读 / 只写钥匙串与设置文件。
+
+  /// 读凭据同步状态
+  ///
+  /// ★★ **永不失败**（纯本地读），且返回里带一个**派生**字段
+  ///    `willSync = enabled && passphraseSet`。
+  ///    界面**只看 `willSync`** 就不可能假绿 ——
+  ///    自己拼 `enabled && passphraseSet` 必然有人漏一个条件。
+  static Future<CredentialsStatus> credentialsStatus() async {
+    final f = debugCredentialsStatusFetcher;
+    if (f != null) return f();
+    final r = await SourinCore.callAsync('credentials_status');
+    return CredentialsStatus.fromJson(jmap(r) ?? {});
+  }
+
+  /// 设 / 改 / 清凭据同步口令（空串 = 清除）
+  ///
+  /// 返回改完之后的完整状态（同 [credentialsStatus]），可直接刷 UI。
+  static Future<CredentialsStatus> setCredentialsPassphrase(
+    String passphrase,
+  ) async {
+    final r = await SourinCore.callAsync('set_credentials_passphrase', {
+      'passphrase': passphrase,
+    });
+    return CredentialsStatus.fromJson(jmap(r) ?? {});
+  }
+
+  /// 开关凭据同步
+  ///
+  /// ⚠️ 允许「开着但没口令」—— 但状态里 `willSync` 会是 `false`，
+  ///    界面必须显示「凭据未同步」，**不许**显示「同步完成」。
+  static Future<CredentialsStatus> setCredentialsEnabled(bool enabled) async {
+    final r = await SourinCore.callAsync('set_credentials_enabled', {
+      'enabled': enabled,
+    });
+    return CredentialsStatus.fromJson(jmap(r) ?? {});
+  }
+
+  /// 只同步凭据这一个平面（不等整轮同步）
+  static Future<SyncSummary> syncCredentialsNow() async {
+    final r = await SourinCore.callAsync('sync_credentials_now');
+    return SyncSummary.fromJson(jmap(r) ?? {});
   }
 
   // ── 云盘设置 + 整体备份（2026-09-29 新增，契约 §1/§2/§5）────────────
@@ -3516,7 +3772,27 @@ class PlaybackFailure {
   /// ⚠️ 不许出现：宿主类名、内部代理地址、开发过程用语。
   String get headline => switch (kind) {
     PlaybackFailureKind.source => '这个源没有返回可播放地址',
-    PlaybackFailureKind.proxy => '内置代理没起来',
+    /*
+     * ★★★ 2026-10-18（第 66 轮 R2，Owner 真机反馈）
+     *
+     * 原文案是「内置代理没起来」。**它在多数情况下是假话**：
+     * ```text
+     * Owner 实测日志（sourin-2026-10-18.log）：
+     *   19:03:01  起播 OK   端口 57106
+     *   19:03:06  起播失败  Failed to open http://127.0.0.1:57106/…
+     *   19:03:48  起播 OK   端口 57106   ← 同一个端口，代理一直活着
+     *   19:07:25  起播 OK   端口 57106
+     * ⇒ 代理没"没起来"，是**那一条流**打不开。
+     * ```
+     * Owner 的原话是「内置代理没起来，这个要修复啊，很严重的 bug」——
+     * 他看到这句话，合理地以为代理进程挂了。**措辞制造了一个不存在的故障。**
+     *
+     * ⇒ 改成如实描述「这一条流取不到」。它同时覆盖两种真实情况：
+     *    · 代理真没起来（那就整页都播不了，用户能自己看出来）
+     *    · 代理活着但这条流失败（这才是绝大多数）
+     * ⚠️ 这里**不能**写具体端口 —— 那是内部地址，随进程退出就失效。
+     */
+    PlaybackFailureKind.proxy => '这一条流取不到',
     PlaybackFailureKind.decode => '这个格式解不了',
     PlaybackFailureKind.permission => '这个内容需要源站会员，或不在当前地区',
     PlaybackFailureKind.network => '源站暂时连不上',
@@ -3526,7 +3802,12 @@ class PlaybackFailure {
   /// 给用户的**下一步**（空串 = 没什么可说的，别硬凑）
   String get nextStep => switch (kind) {
     PlaybackFailureKind.source => '换一个源，或者换一集再试。',
-    PlaybackFailureKind.proxy => '点「重试」。如果一直这样，重启客户端。',
+    /*
+     * ★ 2026-10-18（R2 同批）：原文是「点『重试』。如果一直这样，重启客户端。」
+     * 代理活着时重启客户端**没有用**（见 headline 那段实测日志），
+     * 让用户去做一件无效的事，比不给建议更糟。
+     */
+    PlaybackFailureKind.proxy => '点「重试」，或者换一条线路。',
     PlaybackFailureKind.decode => '换一条线路试试（右上角的线路列表）。',
     PlaybackFailureKind.permission => '换一个源。这不是客户端能绕过的东西。',
     PlaybackFailureKind.network => '等一会儿再点「重试」。',
@@ -3602,17 +3883,83 @@ class PlaybackErrorText {
   /// ```
   ///
   /// ⚠️ 只用于**文案**：日志与 AppLog 照旧记完整地址（那是排查用的）。
+  ///
+  /// ★★ 2026-10-19（Lead 修，`r3-dns` 复核时查出）：原正则只认 `/s/<id>` **一种形态**
+  /// ```text
+  //  原：RegExp(r'https?://(?:127\.0\.0\.1|localhost|\[::1\]):\d+/s/\S*')
+  //  实测（Lead 亲自跑，四条输入对照）：
+  //    ok    '…http://127.0.0.1:57106/s/18df9acc/.'  ⇒ '内置代理取不到这条流'
+  //    LEAK  'LEAK http://127.0.0.1:1/'              ⇒ 原样输出
+  //    LEAK  'boom http://127.0.0.1:9999/api/v2/…' ⇒ 原样输出
+  //    LEAK  '取流失败 http://localhost:2080/movie/x.mp4' ⇒ 原样输出
+  //  ⇒ 换端口/换路径就直接漏，与本函数自己写的三条理由（用户看不懂 /
+  //    端口失效会误导排查 / 暴露内部实现）**直接冲突**。
+  //  ⇒ 修法：**不锚定任何路径**，环回 host + 端口后面一律吃掉。
+  // ```
+  ///
+  /// ⚠️ 为什么不能贪吃过头：`\S*` 会把**紧跟其后的标点与后续文字**一起吞掉
+  ///   （例如「取流失败(地址)后重试」里的 `)` 与「后重试」）。
+  ///   而环回 URL 在句中几乎总是被空白、行尾或标点包围，所以**只吃 URL 自身的字符集**。
+  ///
+  /// ★★ 2026-10-19（Lead 第三次修）：字符类**只放 URL 真正可能出现的 ASCII 字符**
+  /// ```text
+  /// 放： A-Za-z0-9 - . _ ~ % : / ? # [ ] @ & = + ;
+  /// 不放： ) ] } > ' " ` , ! * (   ← 这些是**句子结构**，不是 URL
+  ///       其它一切（含全部 CJK）也**不在集合内** ⇒ 天然终止匹配
+  /// ```
+  /// ⇒ 好处有两层，不必再单独维护一份「中文标点」清单：
+  ///   ① `)` 后面的正文**根本进不来**（不是进来了再剪掉）
+  ///   ② query `?a=1&b=2` **保得住**（`? & =` 都在集合里）
+  ///      —— 第一版把 ASCII 标点排掉是为了救 `)`，结果把 query 也吃掉了；
+  ///      这里改为**精确列出 URL 字符**，两个问题一起消失。
   static final RegExp _loopbackProxyUrl = RegExp(
-    r'https?://(?:127\.0\.0\.1|localhost|\[::1\]):\d+/s/\S*',
+    r'https?://(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:[/?#][A-Za-z0-9\-._~%:/?#\[\]@&=+;,]*)?',
     caseSensitive: false,
   );
 
   /// 把内部代理地址从**用户可见文案**里抹掉
   ///
   /// 替换成一句中性说明，而不是留空 —— 留空会让句子读起来像被截断了。
+  ///
+  /// ★★ 2026-10-19（Lead 第二次修，`r4-dialog` 复核时查出的真缺陷）：
+  /// 第一版只把 **CJK 标点**排除在字符类外，**ASCII 标点仍在射程内** ⇒
+  /// ```text
+  /// IN : '取流失败(http://127.0.0.1:8080/s/x)后重试'
+  /// OUT: '取流失败(（内置代理地址）'      ← ')' 连同「后重试」三个字全没了
+  /// IN : 'see http://127.0.0.1:8080/s/x, retry'
+  /// OUT: 'see （内置代理地址） retry'    ← ', ' 被吃
+  /// ```
+  /// ★ 这正是本函数注释里说的那种「缺字句」，只是发生在 ASCII 上。
+  ///
+  /// # 为什么是「字符类 + 事后剪尾」两条一起上，而不是只改字符类
+  /// ```text
+  /// 只把 ASCII 标点排进字符类 ⇒ 修复上面两条，但 URL 的 query 会被吃掉：
+  ///   '…/api?a=1&b=2' 里 '&'、'=' 一旦排掉 → 只剩 '?a'，信息错得**更隐蔽**。
+  /// 而 `)` 这条**事后剪尾救不回来** —— 它已经被字符类吃进 match 里了。
+  /// ⇒ 两条必须同时上：字符类负责「别多吞」，剪尾负责「别把尾随标点带走」。
+  /// ```
   static String hideInternalUrls(String raw) {
     if (raw.isEmpty) return raw;
-    var s = raw.replaceAll(_loopbackProxyUrl, '（内置代理地址）');
+
+    // ① 正则逐字匹配，但每个 match 命中后**剪掉尾随标点**
+    const tailPunct = '.,;:!?)]}>\'"`';
+    final buf = StringBuffer();
+    var last = 0;
+    for (final m in _loopbackProxyUrl.allMatches(raw)) {
+      var hit = m[0]!;
+      var cut = 0;
+      while (hit.length - cut > 1 && tailPunct.contains(hit[hit.length - 1 - cut])) {
+        cut++;
+      }
+      buf
+        ..write(raw.substring(last, m.start))
+        ..write('（内置代理地址）')
+        ..write(hit.substring(hit.length - cut));
+      last = m.end;
+    }
+    buf.write(raw.substring(last));
+    var s = buf.toString();
+
     // 抹掉之后会剩下「Failed to open （内置代理地址）」这种英文尾巴，
     // 整句替换成中文（**只认这一种已知形态**，别的英文原样留着）
     s = s.replaceAll(
@@ -3651,14 +3998,163 @@ class PlaybackErrorText {
   /// ⚠️ 判据顺序：**代理 → 权限 → 限流 → 解码 → 源**。
   ///    代理排最前是因为那条 502 正文只有代理会产出；
   ///    解码排在源前面，是因为「取到流但解不了」比「源没给地址」更具体。
+  /// 从一段错误文本里抠出**明确的** HTTP 状态码（没有就返回 null）
+  ///
+  /// # 为什么要这么小心（不能简单 `contains('403')`）
+  /// ```text
+  /// 反例（都会造成误判）：
+  ///   「第 403 集不存在」      ← 集数
+  ///   「视频时长 403 秒」      ← 时长
+  ///   「403号房间」            ← 房间号
+  ///   「/videos/202503/20/...」← 路径里的数字
+  /// ```
+  /// ⇒ 只认**带协议上下文**的形态：
+  /// ```text
+  /// http 403 / http/1.1 403 / 403 forbidden / status=403 / status: 403
+  /// 以及**整段文本恰好就是**一个三位状态码（如 "403"）
+  /// ```
+  /// ⚠️ 只认 100..599 区间 —— 避免把年份、id 之类当成状态码。
+  static int? _extractHttpStatus(String lower) {
+    /*
+     * ★ 先做**排除**：文本里含 URL 时不认「裸三位数」与 `http<数字>` 形态
+     *
+     * # 实测踩到的误判（本文件的门禁抓到的，不是猜的）
+     * ```text
+     * 输入: https://cdn.example.com/videos/202503/20/x.m3u8
+     * 改前: 正则 `http[/\s]*[0-9.]*\s*(\d{3})` 从 "…/202503/…" 里
+     *       抠出 "503" ⇒ 归成 network（源站限流）—— 完全错误的归因
+     * ```
+     * URL 里的数字是**路径/时间戳**，与状态码无关。
+     * ⇒ 含 `://` 的文本一律不认裸数字，只认显式的 `status=NNN` 或 `NNN Forbidden`。
+     */
+    final looksLikeUrl = lower.contains('://');
+
+    // ① 带协议/状态上下文
+    for (final re in <RegExp>[
+      // `http 403` / `http/1.1 403` / `http status 403`
+      //
+      // ⚠️ 必须要求 http 后面**紧跟**可选版本号再是状态码，
+      //    且**不许**跨越 `/` 之外的路径字符 —— 否则会从 URL 里抠数字。
+      RegExp(r'\bhttp(?:/[0-9.]*)?\s+(?:status\s*[:=]?\s*)?(\d{3})\b'),
+      RegExp(r'\bstatus\s*[:=]\s*(\d{3})\b'),
+      RegExp(r'\b(\d{3})\s+(?:forbidden|unauthorized|too\s+many|'
+          r'internal\s+server|bad\s+gateway|service\s+unavailable|'
+          r'gateway\s+time-?out|not\s+found)\b'),
+    ]) {
+      final m = re.firstMatch(lower);
+      if (m != null) {
+        final n = int.tryParse(m.group(1) ?? '');
+        if (n != null && n >= 100 && n <= 599) return n;
+      }
+    }
+    // ② 整段文本恰好就是一个状态码（插件/代理有时只回这三个字符）
+    //
+    // ⚠️ 含 URL 时**不认**这一条：URL 里恰好只有三位数字的情形不该被当状态码。
+    if (!looksLikeUrl) {
+      final whole = lower.trim();
+      if (RegExp(r'^\d{3}$').hasMatch(whole)) {
+        final n = int.tryParse(whole);
+        if (n != null && n >= 100 && n <= 599) return n;
+      }
+    }
+    return null;
+  }
+
+  /// 归因：把一条失败**归到几类之一**（第 6 条）
+  ///
+  /// 判据顺序见本方法内注释（HTTP 状态码 → 代理 → 权限 → 限流 → 解码 → 源）。
   static PlaybackFailure classify(
     Object? error, {
     String? kindHint,
     bool hadCandidates = false,
   }) {
     final raw = error == null ? '' : error.toString();
-    final text = stripHostErrorNoise(hideInternalUrls(raw));
+    /*
+     * ★★★ 2026-10-18（第 66 轮 R2，Owner 真机报「内置代理没起来」）：这里原来是
+     *
+     *     final text = stripHostErrorNoise(hideInternalUrls(raw));
+     *
+     * `hideInternalUrls` 是**给用户看的展示函数**（把 `127.0.0.1:57106` 抹成
+     * 「内置代理取不到这条流」），但它被拿来**生成归因输入** ⇒ 自我强化的误判环：
+     *
+     * ```text
+     * 真实错误：Failed to open http://127.0.0.1:57106/s/18df9acc…/.
+     *   ① hideInternalUrls 改写成「内置代理取不到这条流」
+     *   ② 下面 ① 段的 proxyDown 判据含 lower.contains('内置代理')
+     *   ③ ⇒ 恒命中 ⇒ kind = proxy ⇒ UI 显示「内置代理没起来」
+     * ```
+     * **Owner 实测反证**：同一端口 57106 在 43 秒后（19:03:48）、4 分钟后、
+     * 6 分钟后**都成功起播**。代理一直是活的，是他点的那一条流取不到。
+     *
+     * ⇒ 归因必须读**原始文本**。展示改写只在渲染时做（`player_page.dart:17110`
+     *   那里仍然调用 hideInternalUrls，那是对的）。
+     *
+     * ★ 这条属于本轮反复出现的同一类错误：**判据作用在了被改写过的对象上**。
+     */
+    final text = stripHostErrorNoise(raw);
+    /*
+     * ★ `detail` 是**给用户看的正文** ⇒ 必须用净化版（抹掉 127.0.0.1:PORT 这类
+     *   内部地址，见 Owner 第 6 条诉求 + `zz_r65_error_text_test` ③）。
+     *   而 `lower` 是**归因输入** ⇒ 必须用原文，否则又会落进
+     *   「hideInternalUrls 的产物『内置代理…』让 proxyDown 恒真」那个误判环。
+     * ⇒ 两个用途，两份文本，不许混用。
+     */
+    final display = hideInternalUrls(text);
     final lower = text.toLowerCase();
+
+    /*
+     * ── ⓪ 先按 **HTTP 状态码** 归因（轨道 H · 2026-10-18 新增）─────────
+     *
+     * # 为什么必须排在所有关键词之前
+     *
+     * ```text
+     * 实测（`.probe/round65-c/samples_run6.log`，32 个源 35 条样本）：
+     *   代理把上游的 403 原样转出来，正文是一张 **HTML 错误页**：
+     *     <h1>403 Forbidden</h1>
+     *     <p>The region has been denied.</p>
+     *   而改前的判据只认中文关键词（「大会员」「地区」「版权」…），
+     *   **完全没有 403/401 这两个数字**。
+     *   ⇒ 这条真实的「源站地区限制」落到 unknown，
+     *     用户看到的是那张 HTML 错误页原文 —— 既看不懂也不知道该找谁。
+     * ```
+     *
+     * # 判据顺序：数字比词可靠
+     * ```text
+     * 「403」是**协议层事实**；「地区」是我们从人话里猜的。
+     * 协议事实优先 —— 这跟本仓 `classify_error` 的
+     * 「先认标准前缀，再退中文关键词」是同一条纪律。
+     * ```
+     *
+     * ⚠️ 只在**明确的 HTTP 状态**上下文里认这三个数（`http 403` / `403 forbidden`
+     *    / `status=403` / 单独出现的 403 作为独立词），
+     *    避免把「403 集」「403 号」这类**内容里的数字**当成状态码。
+     */
+    final httpCode = _extractHttpStatus(lower);
+    if (httpCode != null) {
+      // 401 / 403 ⇒ 源站权限（E 类：只优化提示，不绕过）
+      if (httpCode == 401 || httpCode == 403) {
+        return PlaybackFailure(
+          kind: PlaybackFailureKind.permission,
+          detail: display,
+          // ★ 权限问题重试一万次都一样
+          canRetry: false,
+        );
+      }
+      // 429 / 5xx ⇒ 源站限流或临时故障（F 类）
+      if (httpCode == 429 || (httpCode >= 500 && httpCode <= 599)) {
+        return PlaybackFailure(
+          kind: PlaybackFailureKind.network,
+          detail: display,
+        );
+      }
+      // 404 / 410 ⇒ 地址没了，归源解析失败
+      if (httpCode == 404 || httpCode == 410) {
+        return PlaybackFailure(
+          kind: PlaybackFailureKind.source,
+          detail: display,
+        );
+      }
+    }
 
     // ── ① 内置代理（B 类）────────────────────────────────────────
     /*
@@ -3682,16 +4178,29 @@ class PlaybackErrorText {
      * 只有下面这些才是「代理这一层坏了」：
      * ```text
      * · 环回地址被拒（Connection refused）—— 代理进程没起/端口已死
-     * · hideInternalUrls 的产物「内置代理…」—— mpv 打不开代理地址
+     * · mpv 打不开**本机环回地址**（`Failed to open http://127.0.0.1:PORT/…`）
      * ```
+     *
+     * ⚠️ 2026-10-18（第 66 轮 R2）：原来这条判据写的是
+     *    `lower.contains('内置代理')` —— 那是 `hideInternalUrls()` 的**产物**。
+     *    而上面 `text` 现在已是原文，**这四个字永远不会出现** ⇒ 死判据。
+     *    必须改成认**环回地址本身**（`127.0.0.1` / `localhost`）。
+     *
+     *    Owner 实测（19:03:06 失败、19:03:48 同端口成功）证明：
+     *    归成 proxy 本身没错，错的是**「没起来」这个措辞** ——
+     *    代理是起来的，只是那一条流打不开。措辞见 `_headline`。
      */
-    final proxyDown = lower.contains('内置代理') ||
-        lower.contains('connection refused') ||
-        lower.contains('连接被拒绝');
+    final loopbackFailed = lower.contains('127.0.0.1') ||
+        lower.contains('localhost') ||
+        lower.contains('[::1]');
+    final proxyDown = lower.contains('connection refused') ||
+        lower.contains('连接被拒绝') ||
+        // mpv 明确说「打不开」+ 目标是环回地址 ⇒ 是代理这一层
+        (lower.contains('failed to open') && loopbackFailed);
     if (proxyDown) {
       return PlaybackFailure(
         kind: PlaybackFailureKind.proxy,
-        detail: text,
+        detail: display,
         // 代理重启后重试通常就好；换源治不了代理
         canSwitchSource: false,
       );
@@ -3706,7 +4215,7 @@ class PlaybackErrorText {
     if (lower.contains('取流失败')) {
       return PlaybackFailure(
         kind: PlaybackFailureKind.source,
-        detail: text,
+        detail: display,
       );
     }
 
@@ -3719,21 +4228,33 @@ class PlaybackErrorText {
     if (permWords.any(lower.contains) || kindHint == 'unauthorized') {
       return PlaybackFailure(
         kind: PlaybackFailureKind.permission,
-        detail: text,
+        detail: display,
         // ★ 权限问题重试一万次都一样 —— 不给重试按钮是**诚实**
         canRetry: false,
       );
     }
 
     // ── ③ 源站限流 / 临时故障（F 类）─────────────────────────────
+    /*
+     * ★★★ 裸数字（429/502/503/504）**不能**用 `contains` 判
+     *
+     * 实测误判（本文件门禁抓到的）：
+     * ```text
+     * https://cdn.example.com/videos/202503/20/x.m3u8  ⇒ contains('502') 命中 "202503"
+     * https://cdn.example.com/a/503/x.m3u8             ⇒ contains('503') 命中 "/503/"
+     * 两条都被归成「源站限流」—— 而它们只是**路径里恰好有那几个数字**。
+     * ```
+     * ⇒ 数字一律走 [`_extractHttpStatus`]（带协议上下文才算），
+     *    `netWords` 只留**文字**关键词。
+     */
     const netWords = <String>[
-      'timeout', '超时', 'timed out', '429', '502', '503', '504',
+      'timeout', '超时', 'timed out',
       'too many requests', '稍后', '限流', 'temporarily',
     ];
     if (netWords.any(lower.contains) || kindHint == 'network') {
       return PlaybackFailure(
         kind: PlaybackFailureKind.network,
-        detail: text,
+        detail: display,
       );
     }
 
@@ -3747,7 +4268,7 @@ class PlaybackErrorText {
     if (decodeWords.any(lower.contains)) {
       return PlaybackFailure(
         kind: PlaybackFailureKind.decode,
-        detail: text,
+        detail: display,
       );
     }
 
@@ -3759,11 +4280,130 @@ class PlaybackErrorText {
     if (srcWords.any(lower.contains) || !hadCandidates) {
       return PlaybackFailure(
         kind: PlaybackFailureKind.source,
-        detail: text,
+        detail: display,
       );
     }
 
     return PlaybackFailure(kind: PlaybackFailureKind.unknown, detail: text);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  N12 · 登录轮询失败**按真因分类**（Owner：「提示网络异常 这也是bug」）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 缺陷（改前）
+//
+// `lib/ui/widgets/provider_login_panel.dart` 的二维码轮询里是：
+// ```dart
+// } catch (_) {
+//   _qrPolling = false;
+//   if (mounted) setState(() => _qrMsg = '网络异常，重试中…');
+//   return;
+// }
+// ```
+// **catch-all 吞掉一切**，然后一律告诉用户「网络异常」。
+//
+// # 为什么这是缺陷（不是措辞问题）
+//
+// ```text
+// 实测（轨道 H · 第 4 步）：
+//   核心层 qr_login_start  ✓ 440ms 真申请成功
+//   qr_login_poll 假 key   ✓ 42ms  status=Expired（正常返回，不抛）
+//   qr_login_poll 真 key   ✓ 41ms  status=Pending（正常返回，不抛）
+//   连打 3 次              ✓ 59/86/85ms 全 Pending，一次没抛
+// ⇒ 网络其实一直是好的。那句「网络异常」是**猜的**。
+// ```
+// 用户看到「网络异常」会去查网线、换 Wi-Fi、重启路由 —— 全是白费。
+// 这正是 Owner 第 6 条抱怨的同一个毛病：
+// **「不知道是源的问题还是软件本身的问题」**。
+//
+// # 改法：**先分类，再说人话**
+//
+// ```text
+// network   SocketException / TimeoutException / 'network:' 前缀 / 超时
+//           ⇒ 「网络异常，重试中…」  ← 这时原文案是**对的**，保留
+// notReady  核心未就绪 / dll 没绑上 / UnsupportedError
+//           ⇒ 「核心未就绪，正在重试…」 ← 与网络无关，别让用户查网线
+// other     其余
+//           ⇒ 「轮询失败：<原文>」     ← 透传，但保留真因
+// ```
+//
+// ⚠️ 分类是**纯函数**，不碰 UI、不碰网络 ⇒ 可以脱离界面直接单测。
+class QrPollErrorText {
+  const QrPollErrorText._();
+
+  /// 网络类错误的关键词（命中即认为是真的网络问题）
+  ///
+  /// ⚠️ 用 `kind` 而不是只靠字符串：`SourinCoreException.kind` 是**结构化**的
+  ///    （`network` 由核心侧判定），比从文案里猜可靠。
+  static bool _isNetwork(Object? e) {
+    final s = (e ?? '').toString().toLowerCase();
+    // 结构化 kind 优先
+    if (e is SourinCoreException && e.kind == 'network') return true;
+    const words = <String>[
+      'socketexception',
+      'timeoutexception',
+      'handshakeexception',
+      'network:',
+      'network is unreachable',
+      'connection refused',
+      'connection reset',
+      'connection closed',
+      'connection terminated',
+      'failed host lookup',
+      '超时',
+      '网络',
+      '连不上',
+      '连接被',
+    ];
+    return words.any(s.contains);
+  }
+
+  /// 「核心还没准备好」类错误
+  ///
+  /// ```text
+  /// 实测形态（lib/core/ffi.dart）：
+  ///   UnsupportedError('不支持的平台: …')
+  ///   DynamicLibrary.open 失败（dll 不在）
+  ///   核心尚未启动 / 核心不可用
+  /// ```
+  /// 这些**与网络毫无关系**，告诉用户「网络异常」是纯粹的误导。
+  static bool _isNotReady(Object? e) {
+    final s = (e ?? '').toString().toLowerCase();
+    if (e is UnsupportedError) return true;
+    const words = <String>[
+      '核心尚未启动',
+      '核心不可用',
+      '核心未就绪',
+      'core not',
+      'dynamiclibrary',
+      'failed to load dynamic library',
+      'sourin_core.dll',
+      'libsourin_core',
+      'not bound',
+      '未绑定',
+    ];
+    return words.any(s.contains);
+  }
+
+  /// 给用户看的文案（**必须与真因一致**）
+  ///
+  /// 返回值刻意保持「可读的一句话」：UI 直接 `setState(() => _qrMsg = ...)`。
+  static String of(Object? e) {
+    if (_isNetwork(e)) {
+      // ★ 原文案在这里是**正确的** —— 网络真的坏了，就该这么说
+      return '网络异常，重试中…';
+    }
+    if (_isNotReady(e)) {
+      // ★ 与网络无关：别让用户去查网线
+      return '核心未就绪，正在重试…';
+    }
+    // 其余：透传真因（先剥掉宿主包装前缀，与第 7 条同一纪律）
+    final raw = PlaybackErrorText.stripHostErrorNoise(
+      PlaybackErrorText.hideInternalUrls((e ?? '').toString()),
+    );
+    return raw.isEmpty ? '轮询失败，重试中…' : '轮询失败：$raw';
   }
 }
 

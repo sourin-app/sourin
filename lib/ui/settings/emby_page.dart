@@ -124,6 +124,7 @@ import '../../core/sourin_api.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import '../widgets/overlay_motion.dart';
+import '../../design/widgets/app_glass_dialog.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
 import '../../design/icons/app_icons.dart';
@@ -639,23 +640,20 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
   Future<void> _deleteInstance(_EmbyInstance inst) async {
     final ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('删除源「${inst.name}」？'),
+      builder: (ctx) => AppGlassDialog(
+        title: '删除源「${inst.name}」？',
         content: Text(
           '会删掉插件文件 ${inst.file}，这个源会从首页源栏消失。\n\n'
           '它的配置与登录凭据（plugins/.data/${inst.id}.json）不会被删 —— '
           '以后用同一个 id 再装回来，地址和账号还在。',
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
+        // 改前确认键是 **FilledButton**（主色）⇒ 按原形态，非错误色。
+        actions: AppGlassDialogActions(
+          confirmLabel: '删除',
+          confirmIsDestructive: false,
+          onCancel: () => Navigator.of(ctx).pop(false),
+          onConfirm: () => Navigator.of(ctx).pop(true),
+        ),
       ),
     );
     if (ok != true) return;

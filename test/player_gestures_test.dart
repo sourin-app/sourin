@@ -253,11 +253,18 @@ void main() {
             '分流删掉后窄带也没有存在理由 —— 整屏都是播放/暂停。',
       );
       // 单击改走 onTap（唯一语义 = 播放/暂停）
+      /*
+       * ★★ 2026-10-19（R3-④）：断言从字面量改成意图判据。
+       * R3-④ 把它改成 `onTap: (_anySheetOpen || _sheetGuardHold) ? null : _togglePlay`
+       * ⇒ 字面量 `onTap: _togglePlay` 没了，但**意图仍为真**。
+       * 判据：那行 onTap 必须以 `_togglePlay` 结尾（允许守卫前缀）。
+       */
       expect(
-        noComments.contains('onTap: _togglePlay'),
+        RegExp(r'onTap:\s*[^,\n]*_togglePlay\s*,').hasMatch(noComments),
         isTrue,
-        reason: '★ 单击必须挂 `onTap: _togglePlay` —— '
-            '单击现在**只有**播放/暂停一种语义（用户没说要动它）。',
+        reason: '★ 单击必须落到 `_togglePlay` —— '
+            '单击现在**只有**播放/暂停一种语义（用户没说要动它）。\n'
+            '  允许守卫前缀，但落点必须仍是 _togglePlay。',
       );
     });
 
@@ -375,11 +382,17 @@ void main() {
        * 所以这条必须**继续为真**。
        */
       final noComments = _stripComments(page);
+      /*
+       * ★★ 2026-10-19（R3-④）：同上，字面量 → 意图判据。
+       * R3-④ 加了守卫前缀 `(_anySheetOpen || _sheetGuardHold) ? null : `。
+       * 意图（单击触发播放/暂停）仍为真 ⇒ 判据改为「以 _togglePlay 结尾」。
+       */
       expect(
-        noComments.contains('onTap: _togglePlay'),
+        RegExp(r'onTap:\s*[^,\n]*_togglePlay\s*,').hasMatch(noComments),
         isTrue,
         reason: '★ 单击必须触发播放/暂停 —— 用户只说去掉"单击快进快退"，'
-            '**没有**说去掉"点画面暂停"',
+            '**没有**说去掉"点画面暂停"。\n'
+            '  允许 R3-④ 的守卫前缀，但落点必须仍是 _togglePlay。',
       );
       expect(
         noComments.contains('_centerBandRatio'),

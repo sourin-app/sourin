@@ -47,6 +47,18 @@
 // // ★ 之后所有静态断言都断言 `code`，**不要**断言原始文本
 // ```
 
+/// 是不是标识符字符（用来判断 `r` 是不是某个标识符的一部分）
+///
+/// ★ 为什么需要：`foo'…'` 里那个 `r` 也在 `'` 前面，但它是**普通字符串**，
+///   不是 raw string 前缀。若不查前一个字符，就会把它误认成 raw string。
+bool _isIdentChar(String c) {
+  final code = c.codeUnitAt(0);
+  return (code >= 0x30 && code <= 0x39) || // 0-9
+      (code >= 0x41 && code <= 0x5A) || // A-Z
+      (code >= 0x61 && code <= 0x7A) || // a-z
+      c == '_' || c == r'$';
+}
+
 /// 剥掉注释（`//` 行注释 **和** `/* */` 块注释）
 ///
 /// ⚠️ 这是本文件所有静态断言的前提 —— 见文件头说明。
@@ -67,13 +79,19 @@ String stripComments(String src) {
   var i = 0;
   String? quote; // 当前是否在字符串里（记录引号字符）
 
+  // ★★★ 2026-10-19：当前这个字符串是不是 **raw string**（`r'…'` / `r"…"`）
+  // raw string 里 **没有转义** ⇒ 遇到引号就是结束，不能走"转义"分支。
+  // 这一个 bool 就是本次最小修法的全部。
+  var inRaw = false;
+
   while (i < src.length) {
     final c = src[i];
     final next = i + 1 < src.length ? src[i + 1] : '';
 
     // ── 在字符串里：原样保留，只找结束引号 ──
     if (quote != null) {
-      if (c == r'\') {
+      if (!inRaw && c == r'\') {
+        // 普通字符串：`\` 转义下一个字符
         out.write(c);
         if (next.isNotEmpty) {
           out.write(next);
@@ -81,13 +99,68 @@ String stripComments(String src) {
           continue;
         }
       }
-      if (c == quote) quote = null;
+      // ★ raw string：引号本身即结束（`r'\'` 的那个 `'` 就是收尾）
+      if (c == quote) {
+        quote = null;
+        inRaw = false;
+      }
       out.write(c);
       i++;
       continue;
     }
 
     // ── 不在字符串里 ──
+    if (c == "'" || c == '"') {
+      quote = c;
+      out.write(c);
+      i++;
+      continue;
+    }
+    /*
+     * ★★★ 2026-10-19（第 66 轮，Lead 指派）：识别 **raw string** `r'…'` / `r"…"`
+     *
+     * # 为什么必须加（实测真缺陷，不是假想）
+     * ```text
+     * Dart 允许 **原始字符串以反斜杠结尾**：`r'\'`（内容就是一个 `\`）。
+     * 而状态机在字符串里的转义分支是：
+     *     if (c == r'\') { out.write(c); out.write(next); i += 2; continue; }
+     * 对 `r'\'`：
+     *     ① 进入单引号模式（r 被原样写出）
+     *     ② 遇到 `\` ⇒ 判定为"转义" ⇒ 把**下一个字符（那个单引号本身）**写出
+     *     ③ quote **永远不会**被置回 null
+     * ⇒ **该行之后整个文件**都被当成"字符串内容"原样保留
+     * ⇒ 后面的 `//` 与 `/* */` 全都不再被剥 ⇒ **大量假阳性**
+     *
+     * # 实测影响（改前）
+     * ```text
+     * `lib/ui/cache_page.dart:1097` 就有那一行：
+     *     p = p.replaceAll(r'\', '/');
+     * ⇒ 剥后 `cache_page.dart` 有 **374 行**仍长得像注释（本轮实测）
+     * ⇒ 另有 delivery_test.dart / main.dart / t98_codec_probe.dart 同形态
+     * ```
+     *
+     * ★ 顺带更正一条**此前的误判**（我自己的，也可能是听来的）：
+     *   「stripComments 不认 `///`，把 `///` 当成 `//` + 游离 `/`」—— **不对**。
+     *   实测：`stripComments('/// 而我们要回答的是"**我们**有没有泄漏"。')`
+     *        返回 **空串** ⇒ `///` 行**本来就被完全剥掉**，它不是那条假阳性的成因。
+     *   （`///` 里含引号也不会有事：行注释分支先于引号判定生效，见代码顺序。）
+     */
+    if (c == 'r' && next != '') {
+      // ★ `next` 就是紧跟在 `r` 后面的那个字符（= 可能的引号），
+      //   **不是** src[i+2]（我第一版写成 i+2 ⇒ 永远看不到引号 ⇒ 分支从不生效。
+      //   这与本会话 R8「固定字符窗口取函数体」是同一类错误：索引算错却看起来合理。）
+      // `r'…'` / `r"…"`：raw string **没有转义**，终止引号就是那个引号本身
+      if ((next == "'" || next == '"') &&
+          // `r` 也可能只是标识符的尾巴（如 `var'x'`）⇒ 前一个字符是标识符字符时不认
+          !(i > 0 && _isIdentChar(src[i - 1]))) {
+        out.write('r');
+        out.write(next);
+        quote = next;
+        inRaw = true;
+        i += 2;
+        continue;
+      }
+    }
     if (c == "'" || c == '"') {
       quote = c;
       out.write(c);

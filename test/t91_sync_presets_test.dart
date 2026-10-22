@@ -479,8 +479,59 @@ void main() {
       await t.pump();
 
       await t.tap(find.text('保存并测试'));
-      await t.pump();
-      await t.pump(const Duration(milliseconds: 600));
+      /*
+       * ★★★ 2026-10-19（CS-1 收尾时定位）：整段等待**必须**放进
+       *   `t.runAsync` —— 否则本用例是**红的**，而且红得极具误导性。
+       *
+       * # 症状
+       * ```text
+       * 期望找到含「配置失败」的 Text ⇒ Found 0 widgets
+       * ```
+       *
+       * # 真因（**不是**"断言绑死了字面量"，也不是产品缺陷）
+       * ```text
+       * pop 之后 `_configureWebdav` 会调 `SourinApi.configureWebdav(...)`
+       * ⇒ 那是一次 **FFI 异步调用**（`SourinCore.callAsync`）。
+       * ★ FFI 的回调是**原生线程**经消息端口投递回来的
+       *   ⇒ **`flutter_test` 的 fake clock 不驱动它**
+       *   ⇒ 那个 Future 在 fake clock 下**永不完成**
+       *   ⇒ `_busy` 的 `finally` 永远不跑 ⇒ 面板永远停在
+       *     「正在检查地址并准备目录…」⇒ **「配置失败」那条自然不会出现**。
+       * ```
+       *
+       * # 实测（同一份代码，只改等待方式）
+       * ```text
+       * 普通 pump（改前）  ⇒ pump 2 秒后 Future 未完成 ⇒ 面板停在「正在检查…」
+       *   ⇒ 「配置失败」Found 0
+       * runAsync（改后）    ⇒ 立刻拿到
+       *   「配置失败：SourinCoreException(unsupported): 核心尚未启动 —— 请先调用 sourin_start」
+       * ```
+       *
+       * ★ 与 r4 查的 skip `_LoadState` 是**同一族**：
+       *   「真实时间轴 vs fake clock」—— 凡是**真 IO / 真原生回调**，
+       *   在 flutter_test 里都得用 `runAsync` 才推得动。
+       * ★ 真机上没有这个问题（真进程有真时钟）⇒ 只在 flutter_test 里要包。
+       *
+       * ⚠️ **断言一个字都没改** —— 只把等待方式换成能驱动真实回调的。
+       */
+      await t.runAsync(() async {
+        for (var i = 0; i < 60; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          await t.pump();
+          if (find.textContaining('配置失败').evaluate().isNotEmpty) break;
+        }
+      });
+      /*
+       * ★★ 还要再等**关窗动画**走完（实测 2026-10-19）：
+       *   `runAsync` 里等到「配置失败」出现时，**对话框还在树上** ——
+       *   `Navigator.pop` 之后它要走一遍出场动画（Motion.base 260ms），
+       *   动画没走完 ⇒ `find.byType(AlertDialog)` **仍然是 1**。
+       *   实测：再 pump 2 秒 ⇒ AlertDialog 数 = 0、「配置云盘（WebDAV）」消失。
+       * ⇒ 所以这里要**在 runAsync 之后**再 pump 一段，让动画收尾。
+       */
+      for (var i = 0; i < 20; i++) {
+        await t.pump(const Duration(milliseconds: 100));
+      }
 
       // ★ 用 `findsNothing` 而不是 `isEmpty`：`Finder` 不是 `Iterable`，
       //   matcher 的 `isEmpty` 对它会**无条件返回 false** ——
@@ -493,7 +544,8 @@ void main() {
       );
       /*
        * ★ pop 之后 `_configureWebdav` 会调 `SourinApi.configureWebdav(...)`。
-       *   测试进程里没有 `sourin_core.dll` ⇒ 必然抛 ⇒ 面板显示「配置失败：…」。
+       *   测试进程里**核心没启动**（没调 `sourin_start`）⇒ 必然抛
+       *   ⇒ 面板显示「配置失败：…」。
        *   **这条断言恰恰证明"值真的交出去了"**：若 pop 出去的是 null
        *   （或 record 没走到），`_configureWebdav` 会 `if (r == null) return;`
        *   直接返回 ⇒ 面板上不会出现任何消息。
@@ -504,6 +556,15 @@ void main() {
         reason: '★★ pop 出来的值没有被交给 API —— '
             '面板上没有「配置失败」说明 `_configureWebdav` 提前 return 了'
             '（pop 的是 null，或 record 字段没接上）',
+      );
+      // ★★ 成对断言（AGENTS §8「判据只到结论到不了原因」那条坑）：
+      //   「配置失败」在，**但**面板**不该**同时显示成功态
+      //   —— 否则"报错文案在"与"其实成功了"会一起成立。
+      expect(
+        find.textContaining('已连接'),
+        findsNothing,
+        reason: '★★ 核心没启动 ⇒ 不可能连上；'
+            '若这一条红，说明面板把两件事混着说了',
       );
     });
 

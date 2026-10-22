@@ -17,6 +17,7 @@ import '../../core/app_update/app_update_controller.dart';
 import '../../core/app_update/client.dart';
 import '../../core/app_update/install.dart';
 import '../../core/app_update/release.dart';
+import 'widgets/app_toast.dart';
 import 'widgets/update_dialog.dart';
 
 abstract final class AppUpdateBootstrap {
@@ -62,8 +63,10 @@ abstract final class AppUpdateBootstrap {
     if (msg != null) {
       final c2 = _dialogContext;
       if (c2 != null && c2.mounted) {
-        ScaffoldMessenger.maybeOf(c2)
-            ?.showSnackBar(SnackBar(content: Text(msg)));
+        // ★ 2026-10-18（轨道 E 第 5 步）：SnackBar → showAppToast
+        //   理由见 cache_page._say 的注释（`?.` 不保证能显示，
+        //   skip_marker_dialog 有真实事故记录）
+        showAppToast(c2, msg);
       }
     }
   }

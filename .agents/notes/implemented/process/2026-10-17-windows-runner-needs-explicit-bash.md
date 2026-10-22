@@ -31,6 +31,8 @@ Windows job 里凡是**多命令串跑且以退出码为判据**的 step，一�
 单命令 step 不必改（它末尾就是第一条，`$LASTEXITCODE` 恰好正确），
 但只要出现「命令 A 失败、命令 B 成功」的可能，就必须改。
 
+Independent: Windows runner 必须显式 shell: bash。CI 配置的一条独立坑。
+
 ## Alternatives considered
 
 - **保持默认 pwsh，改成逐条判断退出码** —— 它最强的论据是不改变 runner 的既有约定，

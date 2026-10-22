@@ -33,6 +33,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/ui/widgets/skip_marker_dialog.dart';
 import 'package:sourin_spike/ui/widgets/skip_timeline.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
@@ -199,6 +200,21 @@ Future<void> openDialog(WidgetTester t) async {
 }
 
 void main() {
+  /*
+   * ★★★ 第 66 轮：注入 `debugSkipMarkerFetcher`
+   * ```text
+   * 不注入时 `SkipMarkerDialog._loadExisting()` 调真 FFI：异常落在**真实时间**轴上，
+   * 而 `_kLoadTimeout`=10s（skip_marker_dialog.dart:733）被建成 **FakeTimer**，
+   * 本文件的 pump 预算不足 10s ⇒ `_LoadState` 卡在 loading
+   * ⇒ 时间轴与四个按钮根本不挂载
+   * （实测基线失败读数：`Found 0 widgets with text "片头整段"` / `text "预览"`）。
+   * ⇒ 注入 `(_, __) async => null` = "没设过跳过点"（**正常结果**）⇒ 直接 ok。
+   * ⚠️ tearDown 必须置回 null —— 它是**进程级 static**，不复位会串到别的用例。
+   * ⚠️ 只加 widget 级注入；A/B 组那些源码级断言与本条无关。
+   */
+  setUp(() => SourinApi.debugSkipMarkerFetcher = (_, __) async => null);
+  tearDown(() => SourinApi.debugSkipMarkerFetcher = null);
+
   setUpAll(() {
     tlRaw = File('lib/ui/widgets/skip_timeline.dart').readAsStringSync();
     tlSrc = stripComments(tlRaw);

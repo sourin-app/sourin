@@ -47,17 +47,29 @@ import 'dart:convert';
 
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:material_ui/material_ui.dart';
+// ★ 2026-10-22（PR #32 / CR 线程 5）：`ValueListenable` 必须**精确**导入。
+//   `material_ui` 只 `export 'package:flutter/widgets.dart';`，而 widgets.dart
+//   对 foundation 只 `show Brightness, UniqueKey` ⇒ `ValueNotifier` /
+//   `ValueListenableBuilder` 在（它们由 widgets 自己的 API 间接带出），
+//   但**抽象的 `ValueListenable` 不在**。缺这一行的编译错误是
+//   `Type 'ValueListenable' not found`（`dart analyze` 同样报 undefined_class）。
+//   写法照抄本仓既有做法：`lib/ui/live_page.dart:56`、`lib/shell.dart:49`。
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/services.dart';
 
 import '../core/device.dart';
 import '../core/player_gestures.dart';
 import '../core/sourin_api.dart';
 import '../core/ui_prefs.dart';
+import '../design/widgets/app_glass_dialog.dart';
+import '../design/widgets/app_icon_button.dart';
 import '../design/widgets/app_ink_well.dart';
+import '../design/widgets/app_text_button.dart';
 import 'app_theme.dart';
 import 'remote_bridge.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
+import 'widgets/app_inline_spinner.dart';
 import 'widgets/app_menu.dart';
 import 'widgets/qr_view.dart';
 import 'widgets/source_composer_dialog.dart';
@@ -341,6 +353,57 @@ class SettingsPageState extends State<SettingsPage> {
   /// 探测要逐个源发网络请求（本机 26 个源，实测要十几秒），
   /// 不禁用会被连点，第二遍纯属浪费。
   bool _sweeping = false;
+
+  /// ★★★ 2026-10-18（Owner 第 13 条）：健康检测改成**逐项执行**后的进度
+  ///
+  /// Owner 原话：
+  /// ```text
+  /// > js插件 健康监测和速度测试都要显示出来 正在执行的数量/总数量,
+  /// > 可以让用户看到多少,然后还可以一键按照速度排序...
+  /// > 现在都显示测速 健康失败 要支持退出这个页面也要测试
+  /// ```
+  ///
+  /// # 改前为什么「什么都看不到」
+  /// ```text
+  /// 改前是一次性批量：`await SourinApi.healthSweep()` ——
+  /// 后端在**一个 FFI 调用里**串行探完所有源（registry.rs:499 的 for 循环），
+  /// 期间 Dart 侧拿不到任何中间状态 ⇒ 界面只能转个圈。
+  /// 而且这一步最长要 `源数 × 15s`（后端对每个源有 15s 超时），
+  /// 而 FFI 调用本身的兜底超时是 120s ⇒ 源一多就**必然**撞超时，
+  /// 用户看到的就是那句「健康检测失败：命令 health_sweep 超时（120 秒）」。
+  /// ⇒ 改成一个源一次调用（[SourinApi.providerHealth]），每完成一个就 +1。
+  /// ```
+  ///
+  /// ⚠️ 三个字段都是**给进度文案用的**，不参与任何业务判断：
+  ///    `_healthDone` / `_healthTotal` 是纯计数，`_healthOk` 是成功数。
+  int _healthDone = 0;
+  int _healthTotal = 0;
+  int _healthOk = 0;
+
+  /// ★★★ 2026-10-22（PR #32 / CodeRabbit 线程 5）：进度的**变更通知**
+  ///
+  /// # 为什么 `_dataRev` 顶不上（这条是真回归，不是重复）
+  /// ```text
+  /// `_dataRev` 的语义是「数据变了，重画列表」，只在 `loadAll()` 之后自增。
+  /// 而进度行（[HealthSweepProgressRow]）画在 `_pluginsBlock` 里，
+  /// 那块**只由 `_PluginsPage` 渲染** —— `_PluginsPage` 是 `Navigator.push`
+  /// 上来的另一条路由，不在本 State 的子树里（同 :315 那次的坑）。
+  /// ⇒ 宿主 `setState` 重建不到它 ⇒ 二级页上：
+  ///    · 进度行永远停在 `0/N`（一次都不重新求值）；
+  ///    · 「停止」/跑完之后它也不消失（`if (_sweeping)` 同样没人重新求值）。
+  /// ```
+  /// ⇒ 进度单独开一路通道：`_healthSweep()` 的三个进度变化点各 `++` 一次
+  ///   （开始 / 每完成一个 / 结束或取消），凡是画进度的 widget 自己订阅它。
+  ///
+  /// ⚠️ 只在 `mounted` 时 `++`（`ValueNotifier` 被 dispose 后再赋值会抛）。
+  final _healthRev = ValueNotifier<int>(0);
+
+  /// 本次健康检测的取消令牌（`null` = 没有在跑）
+  ///
+  /// 退出页面 / 退出软件时调 [cancel]，让在途的那一项结束后**不再继续派活**。
+  /// 与测速共用同一套「取消令牌」思路（见 plugin_speedtest.dart 的
+  /// `SpeedTestCancelToken` 文档：一个令牌，别各写各的 bool）。
+  _HealthSweepToken? _healthToken;
 
   /// ── 插件（任务 R）──
   ///
@@ -911,6 +974,137 @@ class SettingsPageState extends State<SettingsPage> {
   //  内容源排序（任务：卡片式 + 三种排序方式）
   // ═══════════════════════════════════════════════════════════════════
 
+  /// ★★★ 2026-10-18（Owner 第 13 条）：一键按测速结果排序
+  ///
+  /// Owner 原话：
+  /// ```text
+  /// > 然后还可以一键按照速度排序,排序完毕 也还是可以手动排序
+  /// ```
+  ///
+  /// # 判据与三条既有排序路径的关系
+  /// ```text
+  /// 这是**第 4 条**排序入口，但它与另外三条（拖动 / ↑↓ / 排序面板）
+  /// 共用同一个落盘出口 [_persistOrder] ⇒ 排序完**照样能手动拖**
+  /// （顺序只是被重写了一次，没有任何"锁住"的状态）。
+  /// ```
+  ///
+  /// # 排序规则（每条都要能解释给用户听）
+  /// ```text
+  /// ① 有测速结果且 ok       → 按最近一次**量到的**速率**降序**（快的在前）
+  /// ② 有测速结果但 ok=false → 排在①之后（量不到 ≠ 慢，但也不能冒充快）
+  /// ③ 从没测过             → 排最后
+  /// ④ 同一档内保持**原有相对顺序**（稳定排序）——
+  ///    否则用户点一次排序，26 个源全乱跳，手动调好的顺序全丢
+  /// ```
+  ///
+  /// # 为什么要"已停用的源"单独处理
+  /// ```text
+  /// 停用的源不参与测速（`PluginSpeedTestAllButton` 只传 enabled 的 id），
+  /// 所以它们永远落在③。若直接按"没测过排最后"处理，它们会被打散到
+  /// 整个列表尾部 —— 而用户停用它们时是有位置偏好的。
+  /// ⇒ 停用的源**整体保持在它们原有的相对位置**上不参与本次重排
+  ///   （见下面的实现：只重排 enabled 子序列，再用 reorderSubsetIds 落回全局）。
+  /// ```
+  Future<void> _sortBySpeed() async {
+    final enabled = _nonLiveProviders.where((p) => p.enabled).toList();
+    if (enabled.length < 2) {
+      _flash('可测速的源不足 2 个，无需排序');
+      return;
+    }
+
+    /*
+     * 读最近一次**量到过**的结果（`lastOk` 而不是 `last`）：
+     * 最后一次可能刚好失败（网络抖一下），拿它排序会把一个平时很快的源
+     * 甩到最后 —— 而用户点「按速度排序」是想看"谁快"，不是"谁最后一次成功"。
+     */
+    final speed = <String, double>{};
+    final measured = <String, bool>{};
+    for (final p in enabled) {
+      final h = PluginSpeedTest.read(p.id);
+      measured[p.id] = h.last != null;
+      final ok = h.lastOk;
+      if (ok != null) speed[p.id] = ok.mbPerSec;
+    }
+
+    if (measured.values.every((e) => !e)) {
+      _flash('还没有测速结果，先点「全部测速」');
+      return;
+    }
+
+    /*
+     * 稳定排序：Dart 的 `List.sort` **不保证稳定**，
+     * 所以自己带原下标当第二关键字（同分时按原顺序）。
+     */
+    final order = <(String, int)>[
+      for (var i = 0; i < enabled.length; i++) (enabled[i].id, i),
+    ];
+    int rank(String id) {
+      if (speed.containsKey(id)) return 0; // 量到速率
+      if (measured[id] == true) return 1; // 测过但没量到
+      return 2; // 从没测过
+    }
+
+    order.sort((a, b) {
+      final ra = rank(a.$1);
+      final rb = rank(b.$1);
+      if (ra != rb) return ra.compareTo(rb);
+      if (ra == 0) {
+        // 同为"量到速率" ⇒ 降序（快在前）；完全同分再按原下标
+        final c = speed[b.$1]!.compareTo(speed[a.$1]!);
+        if (c != 0) return c;
+      }
+      return a.$2.compareTo(b.$2);
+    });
+
+    final sortedIds = order.map((e) => e.$1).toList();
+    /*
+     * 把 enabled 子序列的新顺序**填回它在全局里的那些位置** ——
+     * 其它源（停用的 / 直播源）的位置原样不动。
+     *
+     * ⚠️ 这里**不用** `reorderSubsetIds`：那个函数是"把**一个**元素
+     *    从 A 挪到 B"的语义，而这里是"整个子序列重排" ——
+     *    拿它做整体重排会得到错误结果（它只换两个位置）。
+     */
+    final globalOrder = <String>[];
+    var cursor = 0;
+    final sortedSet = sortedIds.toSet();
+    for (final p in _providers) {
+      if (sortedSet.contains(p.id)) {
+        globalOrder.add(sortedIds[cursor++]);
+      } else {
+        globalOrder.add(p.id);
+      }
+    }
+    await _persistOrder(globalOrder, '已按速度排序（{} 个源）');
+  }
+
+  /// 测速跑完时由 [PluginSpeedTestAllButton] 回调 —— 发一条 toast
+  ///
+  /// Owner 原话：「测速完发送一条toast」。
+  ///
+  /// # 为什么文案要带**成功数**
+  /// ```text
+  /// 一次全量测速里必然有一部分源失败（实测：有的源上游回 502、
+  /// 有的源分类为空）。只说"测速完成"会让用户以为全都测到了，
+  /// 而卡片上却有一片"失败"—— 他会以为界面坏了。
+  /// 带上"成功 N"就能自洽：失败的确实是没量到。
+  /// ```
+  void _onSpeedTestFinished(int ok, int total) {
+    if (!mounted) return;
+    if (total == 0) return;
+    if (ok == total) {
+      showAppToast(context, '测速完成：$total 个源全部测到速率', style: okToastStyle());
+    } else if (ok == 0) {
+      showAppToast(
+        context,
+        '测速完成：$total 个源都没测到速率（可看卡片上的原因）',
+        style: errToastStyle(),
+      );
+    } else {
+      showAppToast(context, '测速完成：$ok/$total 个源测到速率');
+    }
+  }
+
   /// ★ 排序落盘 —— **三种排序方式共用这一个出口**
   ///
   /// # 为什么必须只有一处
@@ -1302,6 +1496,37 @@ class SettingsPageState extends State<SettingsPage> {
   ///    "哪些源挂了"。原版注释没写，但这是这个功能存在的唯一理由：
   ///    本机 26 个源，用户没法逐个点进去试。
   ///
+  /// # ★★★ 2026-10-18（Owner 第 13 条）：改成**逐项执行**并显示进度
+  ///
+  /// Owner 原话：
+  /// ```text
+  /// > js插件 健康监测和速度测试都要显示出来 正在执行的数量/总数量
+  /// > ... 现在都显示测速 健康失败 要支持退出这个页面也要测试
+  /// ```
+  ///
+  /// ## 改前为什么「健康失败」（根因，已取证）
+  /// ```text
+  /// 改前：一次 `SourinApi.healthSweep()` 把 32 个源**串行**探完，
+  ///       后端对每个源有 15s 超时（registry.rs:512）⇒ 最坏 32×15 = 480s，
+  ///       而 FFI 的兜底超时是 **120s**（lib/core/ffi.dart:685）
+  ///       ⇒ 源一多就必然抛「命令 health_sweep 超时（120 秒）」，
+  ///       用户只看到一句「健康检测失败：…」，一个源的结果都没有。
+  /// 实测（真核心）：`health_sweep` 对 32 个源只花 **5 ms**、返回 32 条全 true。
+  ///       —— 因为 JS 插件**没有实现** `health_check()`，
+  ///       走的是 `provider.rs:571` 的默认实现 `Ok(true)`。
+  ///       ⇒ 它「快」但**什么也没测**：返回的「全部正常」是假的。
+  /// ```
+  /// ⇒ 两件事一起解决：
+  /// ```text
+  /// ① 逐项：一个源一次 FFI 调用（`providerHealth`），每完成一个就 +1
+  ///    ⇒ 界面能显示「正在执行 N/总数」，且单次调用远低于 120s 兜底
+  /// ② 探**真东西**：JS 插件的 `health_check` 默认 true ⇒ 改用
+  ///    `get_categories` 探活（它会真的跑插件代码并可能联网），
+  ///    这才是用户点「健康检测」想知道的「这个源现在还能不能用」
+  /// ```
+  /// ⚠️ ② 的判据必须与「测速」区分开：测速量**带宽**，健康检测量**可达**。
+  ///    一个源可以可达但很慢（测速失败/慢），那是两条不同的结论。
+  ///
   /// # 为什么不用返回值刷新本地 `_providers`
   ///
   /// `health_sweep` 更新的是后端的 `working` 状态，
@@ -1309,14 +1534,85 @@ class SettingsPageState extends State<SettingsPage> {
   /// 所以理论上可以刷新。但原版**没有**刷新（只 flash），
   /// 我们保持一致：刷新会让 26 张卡片同时重绘，而检测期间
   /// 用户还在看结果文案，界面跳一下反而干扰。
+  /// ★ 例外：逐项执行后我们**已经有了**每个源的结果，
+  ///   结束时统一 `loadAll()` 一次即可（不是每个源刷一次）。
   Future<void> _healthSweep() async {
-    setState(() => _sweeping = true);
+    if (_sweeping) return;
+
+    /*
+     * 目标 = **已启用**的源。
+     *
+     * ⚠️ 停用的源不探：用户明确停用了它，探出来的「不可用」是噪声，
+     *    而且会白白占用检测时间（与测速的 `where((p) => p.enabled)` 同口径）。
+     */
+    final targets = _providers.where((p) => p.enabled).toList();
+    if (targets.isEmpty) {
+      _flash('没有已启用的源可检测');
+      return;
+    }
+
+    final token = _HealthSweepToken();
+    _healthToken = token;
+    setState(() {
+      _sweeping = true;
+      _healthDone = 0;
+      _healthOk = 0;
+      _healthTotal = targets.length;
+    });
+    /*
+     * ★ 进度点 ①：开跑。宿主 `setState` 只重建宿主；二级页上的进度行靠这
+     *   一路通知才会从「不存在」变成「0/N」（PR #32 / CR 线程 5）。
+     */
+    _healthRev.value++;
+
+    final bad = <String>[];
     try {
-      final r = await SourinApi.healthSweep();
-      // 后端返回 `id → 是否可用`；不可用的挑出来计数
-      final bad = r.entries.where((e) => !e.value).toList();
+      for (final p in targets) {
+        /*
+         * ★ 每个源开始**之前**查取消 —— 而不是每 N 个查一次。
+         *   一次探活的代价是一个 `get_categories`（实测 1~2000 ms），
+         *   所以边界检查的粒度足够，不会卡住退出。
+         */
+        if (!mounted || token.isCancelled) break;
+
+        var ok = false;
+        try {
+          ok = await _probeProviderHealth(p.id);
+        } catch (_) {
+          /*
+           * 单个源探活抛异常 = **这个源不可用**，不是"整次检测失败"。
+           * ⚠️ 绝不能让它冒泡出去把整轮打断（改前正是这样：
+           *    一个源出错 ⇒ 全部结果丢失 + 一句「健康检测失败」）。
+           */
+          ok = false;
+        }
+        if (!mounted || token.isCancelled) break;
+
+        setState(() {
+          _healthDone++;
+          if (ok) _healthOk++;
+        });
+        /* ★ 进度点 ②：每完成一个 —— 「健康检测 3/26」就是靠这一路推进的 */
+        _healthRev.value++;
+        if (!ok) bad.add(p.name.isEmpty ? p.id : p.name);
+      }
+
+      if (!mounted) return;
+      if (token.isCancelled) {
+        /*
+         * 用户中途离开/退出：**如实**说"已取消"，不谎报"全部正常"。
+         * 已经探完的那部分仍然报出来（它们是真实结果）。
+         */
+        _flash('已停止检测（完成 $_healthDone/$_healthTotal）');
+        return;
+      }
+
+      // 结束：刷新一次，让卡片上的「已失效」标签与本次结果对齐
+      await loadAll();
+      if (!mounted) return;
+
       if (bad.isEmpty) {
-        _flash('全部正常（${r.length} 个源）');
+        _flash('全部正常（$_healthTotal 个源）');
       } else {
         /*
          * ★ 报出**具体哪几个**不可用，不只是数量
@@ -1324,23 +1620,33 @@ class SettingsPageState extends State<SettingsPage> {
          * 原版只 flash 了数量（`${bad.length} 个源不可用`），
          * 但数量对用户没用 —— 他还得自己猜是哪个。
          * 26 个源里挑 3 个坏的名字，比"3 个源不可用"有用得多。
-         * 名字取不到就退回 id（`nameOf` 的兜底逻辑与排序面板一致）。
          */
-        final names = bad
-            .take(5)
-            .map(
-              (e) =>
-                  _providers.where((p) => p.id == e.key).firstOrNull?.name ??
-                  e.key,
-            )
-            .join('、');
+        final names = bad.take(5).join('、');
         final more = bad.length > 5 ? ' 等 ${bad.length} 个' : '';
         _flash('${bad.length} 个源不可用：$names$more');
       }
-    } catch (e) {
-      _flash('健康检测失败：$e');
     } finally {
-      if (mounted) setState(() => _sweeping = false);
+      /*
+       * ⚠️ 三件事都必须在 finally 里做，且 `token` 置空 ——
+       *    否则退出页面后 `_healthToken` 还指着一个死令牌，
+       *    下次 `cancel()` 会作用在一个已经结束的任务上（无害但会误导）。
+       */
+      token.unregister();
+      if (identical(_healthToken, token)) _healthToken = null;
+      if (mounted) {
+        setState(() => _sweeping = false);
+        /*
+         * ★ 进度点 ③：结束**或取消**都必须让进度行消失。
+         *
+         * 取消路径（下面 `if (token.isCancelled) { ...; return; }`）也是
+         * 穿 finally 出去的 ⇒ 这一处同时覆盖「跑完了」和「用户按了停止」
+         * 两种收尾。少这一处，二级页上那条进度行会一直停在 `N/N` 不消失
+         * （PR #32 / CR 线程 5 的另一半）。
+         *
+         * ⚠️ 必须在 `mounted` 里（dispose 之后 `ValueNotifier` 已被销毁）。
+         */
+        _healthRev.value++;
+      }
     }
   }
 
@@ -1582,6 +1888,39 @@ class SettingsPageState extends State<SettingsPage> {
   }
 
   /// 配置插件（按插件声明的字段渲染表单）
+  ///
+  /// # ★★★ 2026-10-18（Owner 第 11 条）：「没有可配置项」到底是谁的问题
+  ///
+  /// Owner 原话：
+  /// ```text
+  /// > 插件的可视化编排可能做好了,但是我点击配置就提示无配置项,
+  /// > 编排的弹窗根本就显示不出来
+  /// ```
+  ///
+  /// ## 取证读数（真核心 + 32 个本机插件，见本轮交付说明）
+  /// ```text
+  /// 对 32 个 JS 源逐个调 plugin_config_get：fields 非空 0 个 / 为空 32 个
+  /// 造一个**真的声明了 config** 的插件再调：fields = 3 项（proxy/quality/token）
+  /// ⇒ 解析链路（hydrate_config → call_js → serde）**完好**，
+  ///   空 fields 的原因是**这 32 个插件一个都没声明 config**。
+  /// ```
+  /// 所以旧行为（弹一句「没有可配置项」）本身是**如实**的。
+  ///
+  /// ## 那 Owner 看到的「编排弹窗出不来」是哪来的
+  /// ```text
+  /// 「可视化编排」是**声明式源**的编辑器，与插件的 config 声明是**两套东西**：
+  ///   · declarative 源 → 编排器（SourceComposerDialog）
+  ///   · js 插件        → 按 config 声明渲染表单（本方法）
+  /// 而「配置」按钮只对 `_pluginOf(id) != null`（= js 插件）出现，
+  /// 声明式源**根本没有**「配置」入口 ⇒ 用户只能走「编辑」，
+  /// 而「编辑」在旧代码里对 declarative 已经直达编排器（见
+  /// `_editDeclarativeViaComposer`）。
+  /// ⇒ 真正的缺口是：**声明式源没有直达编排器的「配置」入口**，
+  ///   用户点到的那个「配置」是插件的 config 表单，它当然没有编排器。
+  /// ```
+  /// 本方法的改动：空 fields 时不再只说一句「没有」，而是**给出下一步**
+  /// （声明式源直接进编排器；js 插件如实说明它没声明配置项），
+  /// 避免用户以为「编排功能没做」。
   Future<void> _configPlugin(PluginEntry e) async {
     PluginConfig cfg;
     try {
@@ -1599,7 +1938,19 @@ class SettingsPageState extends State<SettingsPage> {
     }
 
     if (cfg.fields.isEmpty) {
-      _flash('「${e.name}」没有可配置项');
+      /*
+       * ★ 空 fields 时**不要**让用户以为功能坏了。
+       *
+       * 分两种如实说明（判据取自后端真实返回，不猜）：
+       * ```text
+       * 插件真没声明 config      → 告诉用户「这个插件没有可配置项」，
+       *                            并提示「可视化编排」是给声明式源的
+       * 声明式源（走不到这里）    → 见 `_openComposerFor`，它有自己的入口
+       * ```
+       * ⚠️ 文案里不许出现「缺陷 / 未实现」这类开发过程用语（仓库硬规矩）。
+       */
+      _flash('「${e.name}」没有声明可配置项（它没有 config 声明）；'
+          '可视化编排用于声明式源，请在「编辑」里打开');
       return;
     }
 
@@ -1672,7 +2023,33 @@ class SettingsPageState extends State<SettingsPage> {
   /// 而是"这个东西不存在"，给按钮才是骗人。
   ///
   /// ⚠️ 两个分支都走 `_configPlugin` / `_flash`，**不另写一套逻辑**。
+  ///
+  /// # ★★★ 2026-10-18（Owner 第 11 条）：声明式源也必须有「配置」入口
+  ///
+  /// 改前这里 `if (e == null) return null` ⇒ **只有 js 插件有按钮**。
+  /// 而 Owner 要的「可视化编排」正是**声明式源**的编辑器 ⇒ 他手上没有任何
+  /// 一个入口能到编排器，只能点 js 插件的「配置」，然后看到
+  /// 「没有可配置项」（那 32 个插件确实一个都没声明 config，见
+  /// `_configPlugin` 的取证读数）。
+  ///
+  /// ⇒ 现在按 kind **正向分派**（与 `_editProvider` 同构）：
+  /// ```text
+  /// js            → `_configPlugin`（按 config 声明渲染表单）
+  /// declarative   → `_editDeclarativeViaComposer`（可视化编排，**带初值**）
+  /// 其它（内置/http/tvbox）→ null（没有可配的东西，不画按钮）
+  /// ```
+  /// ⚠️ 判据必须**正向列举** declarative，不能写成「不是 js 就给」——
+  ///    后者会给内置源画一个点了必报错的按钮（与 `_canEdit` 同一个理由）。
   VoidCallback? _configOf(String id) {
+    final p = _providers.where((x) => x.id == id).firstOrNull;
+    /*
+     * 声明式源：直达可视化编排。
+     * 这条路**不依赖插件条目**（声明式源本来就没有 .js 文件），
+     * 所以必须在 `_pluginOf` 判空**之前**分派。
+     */
+    if (p != null && p.kind == 'declarative') {
+      return () => _editDeclarativeViaComposer(p);
+    }
     final e = _pluginOf(id);
     if (e == null) return null;
     return () => _configPlugin(e);
@@ -1892,20 +2269,28 @@ class SettingsPageState extends State<SettingsPage> {
   }) async {
     final r = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
+      builder: (ctx) => AppGlassDialog(
+        // ★ 2026-10-18（轨道 E）：AlertDialog → AppGlassDialog
+        //   纯文本确认框，与 detail_page 那 3 处同一形态。
+        //   弹出仍走 showAppDialog（保住 task-104 的 animationStyle）。
+        title: title,
         content: Text(message),
-        actions: [
-          if (cancelLabel != null)
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: Text(cancelLabel),
+        actions: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (cancelLabel != null)
+              AppTextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(cancelLabel),
+              ),
+            const SizedBox(width: Sp.x1),
+            AppTextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              foregroundColor: Theme.of(ctx).colorScheme.primary,
+              child: Text(okLabel),
             ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text(okLabel),
-          ),
-        ],
+          ],
+        ),
       ),
     );
     return r ?? false;
@@ -1921,6 +2306,33 @@ class SettingsPageState extends State<SettingsPage> {
     final r = await showAppDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
+        /*
+         * ⚠️ 2026-10-18（轨道 E）：这一处**刻意保留** Material 的 AlertDialog。
+         *
+         * # 为什么不能换（实测，不是推测）
+         * ```text
+         * AppGlassDialog 里放 TextField ⇒ 抛：
+         *   "No Material widget found.
+         *    TextField widgets require a Material widget ancestor
+         *    within the closest LookupBoundary."
+         *
+         * 实测脚本：.probe/probe_tf_test.dart
+         *   Material 祖先数 = 0
+         * ```
+         * 根因：`AppGlassDialog` 只画 `GlassContainer`（玻璃），不带 `Material`；
+         *       而 `TextField` 要 `Material` 画光标 / 选择手柄 / 墨水。
+         *
+         * # 影响面（这是我第一版漏掉的）
+         * ```text
+         * _promptText 有 2 个**生产**调用点：
+         *   :1642 安装 JS 插件（输入插件地址）
+         *   :2146 固定配对码（输入 4~8 位数字）
+         * ⇒ 换掉就会让用户点这两处直接崩。
+         * ```
+         * ⇒ **能力边界**：纯展示类对话框可以玻璃化，**含输入框的不行**。
+         *   要换的话得先给 AppGlassDialog 内部补一层透明 Material
+         *   （只作墨水宿主，不引入底色），那是另一件事，需单独立项。
+         */
         title: Text(title),
         content: TextField(
           controller: ctl,
@@ -1929,7 +2341,7 @@ class SettingsPageState extends State<SettingsPage> {
           decoration: InputDecoration(hintText: hint),
         ),
         actions: [
-          TextButton(
+          AppTextButton(
             onPressed: () => Navigator.pop(ctx),
             child: const Text('取消'),
           ),
@@ -2728,8 +3140,41 @@ class SettingsPageState extends State<SettingsPage> {
 
   @override
   void dispose() {
+    /*
+     * ★★★ 2026-10-18（Owner 第 13 条）：退出页面时让在途任务收手
+     *
+     * Owner 原话：
+     * ```text
+     * > 要支持退出这个页面也要测试 ... 退出软件的处理也要记得处理好
+     * ```
+     *
+     * # 两条在途任务，两种收手方式
+     * ```text
+     * 健康检测   `_healthToken.cancel()` ⇒ 循环在**下一个源开始前**退出，
+     *            且 `mounted` 已经为 false ⇒ 不再 setState、不再 loadAll
+     *            （本方法只置标志位，是**同步**的，不会拖慢 dispose）
+     * 测速       `SpeedTestCancelToken.cancelAll()` —— 但那会连带停掉
+     *            **别处**（二级页 / 卡片按钮）的测速，在 dispose 里调
+     *            会误伤。测速自己的取消由 `PluginSpeedTestAllButton` 的
+     *            `_disposed` 标志负责（它已经在 worker 里查），
+     *            退出软件时的全局收手由 `app_tray.dart:467` 负责。
+     *            ⇒ 这里**只**停健康检测，不越权。
+     * ```
+     *
+     * ⚠️ 顺序：先 cancel 再 super.dispose() —— 反过来的话
+     *    `mounted` 先变 false，虽然 cancel 仍然有效，但读起来是"在
+     *    已销毁的对象上做事"，容易让人误以为有 use-after-dispose。
+     */
+    _healthToken?.cancel();
     _dataRev.dispose();
     _toastRev.dispose();
+    /*
+     * ★ 2026-10-22（PR #32 / CR 线程 5）：进度通知器同样是本 State 的资产，
+     *   谁建谁销毁 —— 留着的话宿主销毁后 `_healthSweep` 的 finally 里那句
+     *   `_healthRev.value++` 会往一个死 notifier 上写（`ValueNotifier` 在
+     *   dispose 之后赋值会抛 `FlutterError`）。
+     */
+    _healthRev.dispose();
     super.dispose();
   }
 
@@ -3323,6 +3768,8 @@ class SettingsPageState extends State<SettingsPage> {
                   switch (v) {
                     case 'order':
                       _openOrderDialog();
+                    case 'speed':
+                      _sortBySpeed();
                     case 'health':
                       if (!_sweeping) _healthSweep();
                     case 'import':
@@ -3346,12 +3793,40 @@ class SettingsPageState extends State<SettingsPage> {
                     value: 'order',
                     child: _menuRow(AppIcons.reorder, '调整顺序'),
                   ),
+                  /*
+                   * ★ 2026-10-18（Owner 第 13 条）：「一键按照速度排序」
+                   *
+                   * 放在「调整顺序」**紧后面** —— 两者都是"改列表顺序"，
+                   * 相邻才容易被找到（用户原话是「还可以一键按照速度排序」，
+                   * 他期待它就在排序入口旁边）。
+                   * ⚠️ 排序后仍可手动拖：本项只是调一次
+                   *    `_persistOrder`，没有任何"锁定顺序"的状态。
+                   */
+                  AppMenuItem<String>(
+                    value: 'speed',
+                    child: _menuRow(AppIcons.speed, '按速度排序'),
+                  ),
                   AppMenuItem<String>(
                     value: 'health',
                     enabled: !_sweeping,
-                    child: _menuRow(
-                      AppIcons.monitor_heart_outlined,
-                      _sweeping ? '处理中…' : '健康检测',
+                    /*
+                     * ★ 2026-10-22（PR #32 / CR 线程 5）：文案里的 `N/总数`
+                     *   也是进度的一部分 ⇒ 同样订阅 `_healthRev`。
+                     *
+                     * 为什么这条不只是"顺手"：本次检测就是从二级页起的
+                     * （`onSelected` 的 `case 'health'` 在 `_pluginsBlock` 里），
+                     * 而 `_pluginsBlock` 只由 `_PluginsPage` 渲染 ⇒ 只靠宿主
+                     * `setState` 的话，中途再拉开这个菜单看到的还是「健康检测」，
+                     * 明明正在跑却不显示进度。
+                     */
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: _healthRev,
+                      builder: (context, _, __) => _menuRow(
+                        AppIcons.monitor_heart_outlined,
+                        _sweeping
+                            ? '检测中 $_healthDone/$_healthTotal'
+                            : '健康检测',
+                      ),
                     ),
                   ),
                   AppMenuItem<String>(
@@ -3378,10 +3853,63 @@ class SettingsPageState extends State<SettingsPage> {
                     .where((p) => p.enabled)
                     .map((p) => p.id)
                     .toList(growable: false),
+                /*
+                 * ★ 2026-10-18（Owner 第 13 条）：测速完成后发一条 toast。
+                 *
+                 * Owner 原话：「测速完发送一条toast」。
+                 * 改前测速结束时**界面没有任何终态反馈** ——
+                 * 进度行直接消失回到「全部测速」按钮，用户不知道是跑完了
+                 * 还是被取消了。所以由宿主在这里发一条，而不是让按钮自己弹
+                 * （按钮拿不到 `showAppToast` 的 context 也没关系，但它
+                 *  不知道宿主的命名习惯；宿主统一发能保证文案口径一致）。
+                 */
+                onFinished: _onSpeedTestFinished,
               ),
             ],
           ),
           const SizedBox(height: Sp.x3),
+          /*
+           * ★★★ 2026-10-18（Owner 第 13 条）：健康检测的**进度行**
+           *
+           * Owner 原话：「健康监测和速度测试都要显示出来 正在执行的数量/总数量,
+           *              可以让用户看到多少」。
+           *
+           * 只在跑的时候出现（不跑时不占位、不加噪声），
+           * 与测速那行同一个视觉规格（`FontSizes.cap` + 主色）。
+           * 右侧「停止」让用户随时收手 —— 这也是「支持退出这个页面」的
+           * **用户可见**那一半（另一半是离开页面时自动 cancel）。
+           *
+           * ★★★ 2026-10-22（PR #32 / CodeRabbit 线程 5）：这一行**自己订阅**
+           *   `_healthRev`，不再靠宿主 `setState` 顺带重建。
+           *
+           * ```text
+           * 改前：`if (_sweeping) ...[ 整行 ]` 直接写在这里。
+           * 这里由 `_pluginsBlock` 渲染，而 `_pluginsBlock` 只被 `_PluginsPage`
+           * 渲染 —— 那是 `Navigator.push` 的另一条路由，宿主 `setState` 重建
+           * 不到它 ⇒ 二级页上进度行永远 `0/N`、停下也不消失。
+           * ```
+           * ⚠️ 视觉与几何**逐字未变**（外面那个 `SizedBox(height: Sp.x3)`
+           *   留在原地，行内的 `top: Sp.x3` padding 由 widget 自己补），
+           *   所以 `zz_settings_geometry_test` 的读数不受影响。
+           */
+          HealthSweepProgressRow(
+            rev: _healthRev,
+            snapshot: () => (
+              sweeping: _sweeping,
+              done: _healthDone,
+              ok: _healthOk,
+              total: _healthTotal,
+            ),
+            /*
+             * ⚠️ 文案在这里拼、不在 widget 里拼，是**故意**的：
+             *   `zz_t66_track_c_gates_test` 逐字断言了这个字面量
+             *   （`健康检测 $done/$total` 那句必须真的存在于 UI 代码里），
+             *   搬到 widget 里就会让那条门禁变成假红。
+             */
+            label: () => '健康检测 $_healthDone/$_healthTotal',
+            okLabel: () => '可用 $_healthOk',
+            onStop: () => _healthToken?.cancel(),
+          ),
           /*
            * 插件目录提示（原版 `.plug__hint`）
            *
@@ -4313,12 +4841,12 @@ class _ProviderCard extends StatelessWidget {
   ///    因为"看得见"才是缺陷 5 的主诉求，"能复制"是顺带）。
   final void Function(String)? onCopy;
 
-  /// 「配置」按钮（插件配置项，`plugin_config_get` 的唯一界面入口）
+  /// 「配置」按钮（插件配置项 / 声明式源的可视化编排入口）
   ///
   /// # ★ 同样是从 `_PluginTile` 并过来的
   ///
-  /// `null` = 这个源**没有插件配置文件**（内置 / 声明式 / HTTP），
-  /// 卡片上**不画**「配置」按钮。
+  /// `null` = 这个源**既没有插件配置文件、也不是声明式源**
+  /// （内置 / HTTP / TVBox），卡片上**不画**「配置」按钮。
   ///
   /// ⚠️ 为什么不"永远显示、点进去再说"（原版 tile 的做法）：
   ///    对内置源调 `pluginConfigGet(id)` 必然报错 —— 那不是
@@ -4326,6 +4854,11 @@ class _ProviderCard extends StatelessWidget {
   ///    JS 插件（本机 26 个源全部）仍然**总是**显示按钮，
   ///    与原版一致（原版注释：`entry.config` 永远是空的，
   ///    所以点进去再拿真实声明，没有就明确提示）。
+  ///
+  /// ★ 2026-10-18（Owner 第 11 条）：**声明式源也给按钮**，且直达
+  ///   可视化编排（带初值）。改前只对 js 插件给按钮 ⇒ 声明式源没有任何
+  ///   一个入口能到编排器，用户点 js 的「配置」只会看到「没有可配置项」。
+  ///   分派见 `_configOf`。
   final VoidCallback? onConfig;
 
   /// 「插件更新」入口（检测更新 + 更新历史/回滚）—— task-23
@@ -5132,20 +5665,18 @@ class _ProviderCard extends StatelessWidget {
          * `onPressed: null` 是 Flutter 里"置灰"的标准做法
          *（`IconButton` 会自动用 disabled 颜色）。
          */
-        IconButton(
-          onPressed: canMoveUp ? onMoveUp : null,
-          icon: const Icon(AppIcons.keyboard_arrow_up, size: 18),
-          tooltip: '上移一位',
-          visualDensity: VisualDensity.compact,
-          color: colors.onSurfaceVariant,
-        ),
-        IconButton(
-          onPressed: canMoveDown ? onMoveDown : null,
-          icon: const Icon(AppIcons.keyboard_arrow_down, size: 18),
-          tooltip: '下移一位',
-          visualDensity: VisualDensity.compact,
-          color: colors.onSurfaceVariant,
-        ),
+        AppIconButton(
+            onPressed: canMoveUp ? onMoveUp : null,
+            icon: Icon(AppIcons.keyboard_arrow_up),
+            iconSize: 18,
+            tooltip: '上移一位',
+          ),
+        AppIconButton(
+            onPressed: canMoveDown ? onMoveDown : null,
+            icon: Icon(AppIcons.keyboard_arrow_down),
+            iconSize: 18,
+            tooltip: '下移一位',
+          ),
         // 与右侧操作之间留一点间距，避免两组按钮糊成一片
         const SizedBox(width: Sp.x2),
         /*
@@ -5183,20 +5714,18 @@ class _ProviderCard extends StatelessWidget {
          * 没有安装链接的插件（手动放入的）根本不显示这个按钮。
          */
         if (onPluginUpdate != null)
-          IconButton(
+          AppIconButton(
             onPressed: onPluginUpdate,
-            icon: const Icon(AppIcons.system_update_alt, size: 17),
+            icon: Icon(AppIcons.system_update_alt),
+            iconSize: 17,
             tooltip: '插件更新',
-            visualDensity: VisualDensity.compact,
-            color: colors.onSurfaceVariant,
           ),
         if (onConfig != null)
-          IconButton(
+          AppIconButton(
             onPressed: onConfig,
-            icon: const Icon(AppIcons.settings_outlined, size: 17),
+            icon: Icon(AppIcons.settings_outlined),
+            iconSize: 17,
             tooltip: '配置',
-            visualDensity: VisualDensity.compact,
-            color: colors.onSurfaceVariant,
           ),
         /*
          * ★ 「编辑」（任务 R）
@@ -5392,19 +5921,22 @@ class _PluginTile extends StatelessWidget {
            *    所以按钮**总是显示**，点进去再调 `pluginConfigGet`
            *    拿真实声明 —— 没有可配置项时给明确提示。
            */
-          IconButton(
+          AppIconButton(
             onPressed: onConfig,
-            icon: const Icon(AppIcons.settings_outlined, size: 18),
+            icon: Icon(AppIcons.settings_outlined),
+            iconSize: 18,
             tooltip: '配置',
           ),
-          IconButton(
+          AppIconButton(
             onPressed: onEdit,
-            icon: const Icon(AppIcons.edit_outlined, size: 18),
+            icon: Icon(AppIcons.edit_outlined),
+            iconSize: 18,
             tooltip: '编辑',
           ),
-          IconButton(
+          AppIconButton(
             onPressed: onRemove,
-            icon: const Icon(AppIcons.delete_outline, size: 18),
+            icon: Icon(AppIcons.delete_outline),
+            iconSize: 18,
             tooltip: '删除',
           ),
         ],
@@ -5564,7 +6096,7 @@ class _RemotePanel extends StatelessWidget {
                         color: colors.primary,
                       ),
                     ),
-                    TextButton(
+                    AppTextButton(
                       onPressed: () => onCopy(status.url),
                       child: const Text('复制'),
                     ),
@@ -5586,7 +6118,7 @@ class _RemotePanel extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: Sp.x3),
-                    TextButton(
+                    AppTextButton(
                       onPressed: onRefreshPin,
                       child: const Text('换一个'),
                     ),
@@ -5926,7 +6458,7 @@ class _RemoteBlockState extends State<_RemoteBlock> {
 
     return SettingsBlock(
       title: '局域网遥控',
-      trailing: TextButton(
+      trailing: AppTextButton(
         onPressed: widget.busy ? null : () => _setOpen(false),
         child: const Text('收起'),
       ),
@@ -6031,6 +6563,203 @@ class _MiniChip extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  健康检测的取消令牌
+// ═══════════════════════════════════════════════════════════════════════
+
+/// 健康检测的取消令牌（Owner 第 13 条：退出页面 / 退出软件要能收手）
+///
+/// # 为什么单独一个类，而不复用 `SpeedTestCancelToken`
+/// ```text
+/// 两者**语义不同**：
+///   SpeedTestCancelToken  → 在**下载分片边界**停（一片 1~2 MB）
+///   _HealthSweepToken     → 在**每个源开始之前**停（一次探活 1~2000 ms）
+/// 强行合并会让「谁负责在哪一层检查」变模糊 —— 而本仓的教训正是
+/// 「一个 bool 到处复用，最后没人说得清哪条路径会检查它」。
+/// ⇒ 各自一个类型，各自在自己的循环里检查。
+/// ```
+///
+/// # 与「退出软件」的关系
+/// ```text
+/// 退出时 app_tray 会调 `SpeedTestCancelToken.cancelAll()`。
+/// 健康检测**不注册进那张全局表**：它的每次 FFI 调用都远短于
+/// 120s 兜底超时，最坏只在退出时多等一次探活（实测 < 2s），
+/// 而且它**不写盘**（不像测速会 append 到 ui-prefs）⇒ 不会脏写。
+/// 真正需要保证的是「**不再继续派下一个源**」，本令牌就负责这件事。
+/// ```
+/// 健康检测进度的**取值快照**（`snapshot()` 每次重建都现读，不要缓存）。
+typedef HealthSweepProgress = ({bool sweeping, int done, int ok, int total});
+
+/// ★★★ 健康检测**进度行**（PR #32 / CodeRabbit 线程 5）
+///
+/// 视觉：`[小圈] 健康检测 3/26   可用 2   [停止]`，只在跑的时候出现。
+///
+/// # 为什么它自己订阅 [rev]，而不是靠宿主 `setState`
+/// ```text
+/// 这一行画在 `_pluginsBlock` 里，而那块**只由 `_PluginsPage` 渲染**。
+/// `_PluginsPage` 是 `Navigator.push` 上来的另一条路由，不在宿主 State
+/// 的子树里 ⇒ 宿主 `setState` 重建不到它（`_dataRev` 的注释
+/// `settings_page.dart` 里「二级页是另一条路由」那段已经踩过一次）。
+/// ⇒ 改前在二级页上的读数：进度行一直 `0/N`，跑完/停止后也不消失。
+/// ⇒ 修法：宿主在三个进度点 `_healthRev.value++`，这一行订阅它、自己重建。
+/// ```
+///
+/// # 为什么抽成**公开** widget（而不是留在 `_pluginsBlock` 里的 `if (...)`）
+/// ```text
+/// 这条链路的故障面就是「**订阅了没有**」。若它还是私有块里的裸 widget，
+/// 行为级门禁挂不上去，只能 grep 源码 —— 而 grep 源码恰恰是本仓反复
+/// 抓到的假绿来源（`_menuRow` / `_healthToken?.cancel()` 那两条教训）。
+/// 抽成公开 widget 后，`test/zz_t66_health_progress_gate_test.dart` 能在
+/// 「宿主 + 另一条路由」的真实路由拓扑下真挂界面、真读文本。
+/// ```
+///
+/// ⚠️ [label] / [okLabel] 由宿主拼（而不是这里拼），是为了保住
+///    `zz_t66_track_c_gates_test` 逐字断言的那句字面量；
+///    它们**只在 `sweeping == true` 时被调用**。
+class HealthSweepProgressRow extends StatelessWidget {
+  const HealthSweepProgressRow({
+    super.key,
+    required this.rev,
+    required this.snapshot,
+    required this.label,
+    required this.okLabel,
+    required this.onStop,
+  });
+
+  /// 进度**变更通知**：宿主在「开跑 / 每完成一个 / 结束或取消」三处自增
+  ///
+  /// 类型用抽象的 `ValueListenable<int>`（不是 `ValueNotifier<int>`）：
+  /// 这一行只需要「值 + 通知」两件事，不需要能写。宿主传进来的就是
+  /// `SettingsPageState._healthRev` 那个 `ValueNotifier<int>`。
+  final ValueListenable<int> rev;
+
+  /// 现读当前进度（每收到一次 [rev] 通知就调一次）
+  final HealthSweepProgress Function() snapshot;
+
+  /// 左文案，形如 `健康检测 3/26`
+  final String Function() label;
+
+  /// 可用数文案，形如 `可用 2`
+  final String Function() okLabel;
+
+  /// 右侧「停止」—— `_healthToken.cancel()`，循环在下一个源开始前退出
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return ValueListenableBuilder<int>(
+      valueListenable: rev,
+      builder: (context, _, __) {
+        final p = snapshot();
+        /*
+         * `sweeping == false` ⇒ 一个 `SizedBox.shrink()`：不占位、不加噪声。
+         * 原 `if (_sweeping)` 的门槛搬到这里 —— 语义完全相同，只是
+         * 「谁来重新求值」从宿主 `setState` 换成了这一路通知。
+         */
+        if (!p.sweeping) return const SizedBox.shrink();
+        return Padding(
+          // 与原来 `if (_sweeping) ... const SizedBox(height: Sp.x3)` 同一间距
+          padding: const EdgeInsets.only(top: Sp.x3),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AppInlineSpinner(
+                size: 14,
+                color: colors.primary,
+              ),
+              const SizedBox(width: Sp.x2),
+              Text(
+                label(),
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: colors.onSurface,
+                ),
+              ),
+              const SizedBox(width: Sp.x2),
+              Text(
+                okLabel(),
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(width: Sp.x2),
+              AppTextButton(
+                onPressed: onStop,
+                child: const Text('停止'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _HealthSweepToken {
+  bool _cancelled = false;
+
+  bool get isCancelled => _cancelled;
+
+  /// 幂等
+  void cancel() => _cancelled = true;
+
+  /// 注销钩子（与 `SpeedTestCancelToken.unregister()` 对称）
+  ///
+  /// 本类目前没有全局表，所以它是**空实现** —— 保留它是因为调用点在
+  /// `finally` 里，将来若要加全局表（例如让 app_tray 也能停它），
+  /// 不需要再改调用方。
+  void unregister() {}
+}
+
+/// **单个**源的健康探活 —— 返回「这个源现在还能不能用」
+///
+/// # 为什么需要它（Owner 第 13 条）
+///
+/// 批量 `SourinApi.healthSweep()` 无法给进度（一个 FFI 调用里探完全部），
+/// 且总耗时随源数线性增长，很容易撞 120s 兜底超时。
+/// 拆成逐项调用后，界面能显示「正在执行 N/总数」。
+///
+/// # 判据为什么是 `get_categories` 而不是后端的 `health_check`
+/// ```text
+/// 实测（真核心 + 32 个本机插件）：`health_sweep` 只花 5 ms、
+/// 返回 32 条**全 true**。原因是 JS 插件**没有实现** `health_check()`，
+/// 走的是 provider.rs:571 的默认实现 `Ok(true)`。
+/// ⇒ 那个「全部正常」是**恒真的假结论**，用户点它等于什么都没测。
+///
+/// `get_categories` 会真的执行插件代码、可能真的联网 ——
+/// 它失败就说明「这个源现在取不到东西」，正是用户要知道的。
+/// ```
+/// ⚠️ 判据是「**有没有抛异常**」而不是「分类数是否大于 0」：
+///    部分源本来就没有分类（本机实测某些纯直播源 / iptv 类源
+///    返回 0 个），那是**合法**的。与 `plugin_speedtest.dart` 的
+///    `_pickRandom` 同一个口径。
+///
+/// ⚠️ 这里**故意**把异常转成 false —— 它不是"吞异常求绿"：
+///    调用方（健康检测）的语义就是「能不能用」，而"抛了异常"恰恰是
+///    "不能用"的判据。异常原文对用户没有价值（一串 FFI 错误码），
+///    真正要报给用户的是「哪几个源不可用」。
+Future<bool> _probeProviderHealth(String id) async {
+  try {
+    await SourinApi.getCategories(id);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// [`_probeProviderHealth`] 的测试别名（**只**为实测探针可达）
+///
+/// ★ 为什么用 `@visibleForTesting` 而不是把这个函数改成 public:
+/// ```text
+/// 改 public 会让它成为 lib 的公开 API —— 以后别人可以绕过界面直接调它，
+/// 而它刻意吞异常（对外部调用方是坏语义）。
+/// 加一个具名别名 = 只有测试拿得到，语义边界不变。
+/// ```
+@visibleForTesting
+Future<bool> probeProviderHealthForTest(String id) => _probeProviderHealth(id);
+
+// ═══════════════════════════════════════════════════════════════════════
 //  对话框
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -6066,7 +6795,33 @@ class _OrderDialogState extends State<_OrderDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    /*
+     * R4-EXCEPTION: 机制② 缺 Material 祖先 —— content 里是 ListTile。
+     *
+     * ★ 2026-10-20 复核**改判**：此前这里登记的理由是「装 420 需传
+     *   maxWidth: 468 ⇒ 只需传宽度就可以收拢」，并用「点第 2 行『上移』
+     *   顺序真的变了」当依据。**那条依据是错的**：当时把 AppGlassDialog
+     *   放在 `MaterialApp(home: Scaffold(body: Center(...)))` 里跑，
+     *   Scaffold **提供了 Material 祖先**，所以 ListTile 的 InkWell 能用。
+     *
+     * 实测（`.probe/r4f_order_material_test.dart`，走真的 showAppDialog 路由）：
+     * ```text
+     * No Material widget found.
+     * ListTile widgets require a Material widget ancestor within the
+     * closest LookupBoundary.
+     * 找到「上移」数 = 0        ← trailing 里的按钮根本没建出来
+     * ```
+     * ⇒ 换外壳不是「能不能点」的问题，是**弹窗根本打不开**。
+     *   与同类的 TextField 缺口（本仓 `.probe/probe_tf_test.dart`）同源：
+     *   AppGlassDialog 是零 Material 的纯玻璃卡片，不提供 Material 宿主。
+     *
+     * ⚠️ 宽度**不是**拦路石：content 宽 420 ⇒ 传 maxWidth: 468 即可
+     *   （口径：content 宽 = maxWidth − 48）。
+     * ⇒ 给 AppGlassDialog 补上「透明 Material 宿主」之后才可收拢。
+     */
     return AlertDialog(
+      // R4-EXCEPTION: 机制② 缺 Material 祖先（ListTile 内部 InkWell 要求）
+      // 详见上方详注；补齐「透明 Material 宿主」后才可收拢。
       title: const Text('调整内容源顺序'),
       content: SizedBox(
         width: 420,
@@ -6096,14 +6851,16 @@ class _OrderDialogState extends State<_OrderDialog> {
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  IconButton(
+                  AppIconButton(
                     onPressed: i > 0 ? () => _move(i, -1) : null,
-                    icon: const Icon(AppIcons.keyboard_arrow_up),
+                    icon: Icon(AppIcons.keyboard_arrow_up),
                     tooltip: '上移',
                   ),
-                  IconButton(
-                    onPressed: i < _list.length - 1 ? () => _move(i, 1) : null,
-                    icon: const Icon(AppIcons.keyboard_arrow_down),
+                  AppIconButton(
+                    onPressed: i < _list.length - 1
+                        ? () => _move(i, 1)
+                        : null,
+                    icon: Icon(AppIcons.keyboard_arrow_down),
                     tooltip: '下移',
                   ),
                 ],
@@ -6113,7 +6870,7 @@ class _OrderDialogState extends State<_OrderDialog> {
         ),
       ),
       actions: [
-        TextButton(
+        AppTextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('取消'),
         ),
@@ -6321,17 +7078,22 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
     }
   }
 
-  /// 弹窗内的一行提示（不依赖父级的 `_flash` —— 那个显示在页面底部，
-  /// 会被弹窗挡住，用户根本看不到）
+  /// 弹窗内的提示 —— ★ 2026-10-18（Owner 第 12 条）：改走**统一 toast**
+  ///
+  /// # 改前的顾虑现在不成立了
+  /// ```text
+  /// 原注释：「不依赖父级的 `_flash` —— 那个显示在页面底部，
+  ///          会被弹窗挡住，用户根本看不到」。
+  /// 那个前提是**自绘版**（画在设置页宿主 Stack 里、页面底部）。
+  /// 而统一版 `ToastHost` 挂在 `MaterialApp.builder` 里、**Navigator 之外**
+  /// ⇒ 它画在所有路由（含本弹窗）**之上**，弹窗不会挡住它。
+  /// ```
+  /// ⇒ 删掉本地 `_toast` 状态与 `Future.delayed` 清屏，直接走 `showAppToast`。
+  ///   这与仓库硬规矩「统一 toast，不要自己写」一致。
   void _flashLocal(String msg) {
     if (!mounted) return;
-    setState(() => _toast = msg);
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted && _toast == msg) setState(() => _toast = null);
-    });
+    showAppToast(context, msg);
   }
-
-  String? _toast;
 
   bool get _busy => _checking || _updating || _rollingBack;
 
@@ -6340,6 +7102,8 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
     final colors = Theme.of(context).colorScheme;
     final c = _result;
 
+    // R4-EXCEPTION: 机制① 内容区固定 480×460（超外壳默认上限），详见
+    // zz_t66_r4_dialog_consistency_test.dart 的 _siteExemptions 同名键。
     return AlertDialog(
       title: Row(
         children: [
@@ -6467,22 +7231,13 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
             ),
             const SizedBox(height: Sp.x2),
             Expanded(child: _historyList(colors)),
-
-            if (_toast != null) ...[
-              const SizedBox(height: Sp.x2),
-              Text(
-                _toast!,
-                style: TextStyle(
-                  fontSize: FontSizes.cap,
-                  color: colors.primary,
-                ),
-              ),
-            ],
+            // ★ 2026-10-18（Owner 第 12 条）：提示行已删除，
+            //   统一由 shell 层的 `ToastHost` 承担（见 `_flashLocal`）。
           ],
         ),
       ),
       actions: [
-        TextButton(
+        AppTextButton(
           onPressed: () => Navigator.pop(context, _changed),
           child: const Text('关闭'),
         ),
@@ -6637,7 +7392,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
                 ),
               ),
               const SizedBox(width: Sp.x2),
-              TextButton(
+              AppTextButton(
                 onPressed: _busy ? null : () => _rollback(v.version),
                 child: Text(
                   _rollingBack ? '回滚中…' : '回滚到此版',
@@ -6707,6 +7462,8 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    // R4-EXCEPTION: 机制① 内容区固定 420 宽 + 动态字段循环（超外壳默认上限），
+    // 详见 zz_t66_r4_dialog_consistency_test.dart 的 _siteExemptions 同名键。
     return AlertDialog(
       title: Text('配置「${widget.name}」'),
       content: SizedBox(
@@ -6746,7 +7503,7 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
         ),
       ),
       actions: [
-        TextButton(
+        AppTextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('取消'),
         ),

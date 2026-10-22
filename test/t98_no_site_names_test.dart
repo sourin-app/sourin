@@ -247,6 +247,56 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
         '**真实 MediaId**（`MediaId::new("bilibili", ...)`）——后者是插件自己写进来的标识，'
         '改成别的字串就接不上插件。不是产品文案。'
   ),
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ 2026-10-19（CS-1 凭据平面）：**缓存 key 黑名单里的真实插件 id**
+   *
+   * # 为什么这 4 条必须逐字保留（不是"懒得改"）
+   *
+   * ```text
+   * `CACHE_KEYS` 是同步时**剔除缓存**的黑名单，判据是
+   *   `plugins/.data/<provider>.json` 里的 `key`
+   * ⇒ 必须逐字匹配用户机器上的真实 id。改成中性词（`fake-a`）
+   *   ⇒ 黑名单永不命中 ⇒ 246KB 的频道缓存被加密上传到用户的 WebDAV
+   *   ⇒ 而**没有任何编译错误、没有测试会红** —— 静默功能失效。
+   * ```
+   *
+   * # 锚串为什么用整条元组而不是 `is_cache_key(` / `CACHE_KEYS`
+   *
+   * ```text
+   * 本文件已有判据（下方「行级豁免必须是唯一锚串」那条用例）：
+   * 宽锚串会把**整片代码**放行。
+   * `is_cache_key(` 在该文件的单元测试里出现 10 次，
+   * `CACHE_KEYS` 出现 6 次 ⇒ 任一个都会让测试模块里新加的站名一起混过去。
+   * ⇒ 用 `("<id>", "<key>")` 这条**唯一**的元组字面量。
+   * ★ 代价：CACHE_KEYS 增删条目时这里要跟着改（漏了会红，不会静默失效）。
+   * ```
+   *
+   * ⚠️ 只豁免 `credentials.rs` 里 `CACHE_KEYS` 的这 4 行。
+   *    同文件的**单元测试**里出现的真实 id 已于同日改为「从 CACHE_KEYS 派生」，
+   *    不再硬编码站名 —— 那是升级（覆盖全部条目且随增删自动跟随），不是妥协。
+   */
+  (
+    'rust/sourin_core/src/sync/credentials.rs',
+    '("douyu-live", "list_v1")',
+    '运行期必需的真实插件 id：黑名单必须逐字匹配 plugins/.data/<id>.json，'
+        '中性化 ⇒ 缓存被传上云且无任何报错（静默失效）。'
+  ),
+  (
+    'rust/sourin_core/src/sync/credentials.rs',
+    '("huya-live", "list_v1")',
+    '同上：该缓存真机 246KB，是 .data 里最大的一个。'
+  ),
+  (
+    'rust/sourin_core/src/sync/credentials.rs',
+    '("iqiyi", "albums")',
+    '同上：专辑/搜索缓存（读侧解析失败返回 {} ⇒ 丢了无所谓，正因如此才要剔）。'
+  ),
+  (
+    'rust/sourin_core/src/sync/credentials.rs',
+    '("bilibili-live", "rooms_v1")',
+    '同上：宿主内置 legacy 桩写的频道缓存。'
+  ),
 ];
 
 /// 该行是否命中某条行级豁免
@@ -256,10 +306,85 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
 ///    而不必真的往产品文件里插脏数据（插脏数据会污染工作区）。
 bool isExemptLineForTest(String rel, String line) => _isExemptLine(rel, line);
 
+// ══════════════════════════════════════════════════════════════════════
+//  ★ 内部台账豁免（2026-10-21）
+// ══════════════════════════════════════════════════════════════════════
+//
+// # 为什么需要
+//
+// 本门禁的语义是「**产品代码与用户可见文档**里不许出现具体站名」。
+// 但 `native-media-audit.json` 这类**内部开发台账**必须逐字引用**测试文件名**，
+// 而文件名本身可能含站名（`live_cctv_real_test.dart`）。
+//
+// ```text
+// t98（本门禁）  ：'cctv' 不许出现
+// native-media 台账判据 d ：key 必须逐字等于 live_cctv_real_test.dart
+// ```
+// ⇒ **两个都正确的判据在同一个字符串上互相排斥。**
+//   根因：这个字符串同时承担了两个语义（"站点名" / "文件标识符"）。
+//
+// # 处置：承认"内部台账里的**文件名引用**"是合法用途
+//
+// ★ 豁免条件**比"整文件豁免"严得多**，三个条件**同时**成立才豁免：
+// ```text
+// ① 路径在**内部台账**目录下（下表，`/` 结尾 = 整棵子树）
+// ② 该行**同时**含 `_test.dart`（即它引用的是一个测试文件名）
+// ③ 命中站名的那一行 —— 同文件里其它行照样报
+// ```
+//
+// ⚠️ 不豁免 `docs/` 根目录下的**用户文档**（README 等），
+//    不豁免 `lib/`、`test/`。台账 ≠ 用户可见文档。
+//
+// ★ 写成**数据**而不是 if 里的字符串判断：这样"新加一个内部台账目录
+//   但忘了登记"会被下面的自检抓住（本仓 PITFALLS 有这条）。
+const List<String> _internalLedgerPrefixes = <String>[
+  '.agents/notes/', // 决策笔记（内部台账）
+  'docs/notes/', // 开发记录（内部台账）
+];
+
+/// 内部台账里"引用测试文件名"的那一行所必须包含的标记。
+///
+/// ★ 用 `_test.dart` 而不是更宽的 `test/`：前者只在"点名某个测试文件"时出现，
+///   后者会匹配到 `test/` 目录名之类无关内容，豁免面会变宽。
+const String _internalLedgerFileRefMarker = '_test.dart';
+
+/// 该行是否是「内部台账里引用测试文件名」的合法行。
+bool _isInternalLedgerFileRef(String rel, String line) {
+  final p = rel.replaceAll('\\', '/');
+  final inLedger = _internalLedgerPrefixes.any(p.startsWith);
+  return inLedger && line.contains(_internalLedgerFileRefMarker);
+}
+
+/// 测试可见版本：给「豁免宽度」自检用。
+bool isInternalLedgerFileRefForTest(String rel, String line) =>
+    _isInternalLedgerFileRef(rel, line);
+
+int _exemptLineHitCount = 0;
+int _internalLedgerHitCount = 0;
+
+/// 本轮扫描中「行级豁免 / 内部台账豁免」各命中多少次。
+///
+/// ★ 覆盖度读数：没有它，「豁免了 3 处」与「扫描器坏了、一处都没扫到」
+///   在输出上**无法区分**（本仓那条「结果必须携带『我查了多少』」）。
+(int, int) get exemptHitCountsForTest =>
+    (_exemptLineHitCount, _internalLedgerHitCount);
+
+void resetExemptHitCountsForTest() {
+  _exemptLineHitCount = 0;
+  _internalLedgerHitCount = 0;
+}
+
 bool _isExemptLine(String rel, String line) {
   final p = rel.replaceAll('\\', '/');
   for (final e in _exemptLines) {
-    if (p.contains(e.$1) && line.contains(e.$2)) return true;
+    if (p.contains(e.$1) && line.contains(e.$2)) {
+      _exemptLineHitCount++;
+      return true;
+    }
+  }
+  if (_isInternalLedgerFileRef(p, line)) {
+    _internalLedgerHitCount++;
+    return true;
   }
   return false;
 }
@@ -401,6 +526,7 @@ void main() {
     final files = collectFiles(root);
     expect(files, isNotEmpty,
         reason: '★ 阳性对照：一个文件都没扫到 ⇒ 扫描器坏了，本门禁是假绿');
+    resetExemptHitCountsForTest();
 
     final offenders = <String>[];
     for (final rel in files) {
@@ -452,6 +578,24 @@ void main() {
       offenders.addAll(reported);
     }
 
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     *  ★★★ 覆盖度打印（2026-10-21）
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * 没有这行输出时，「豁免了 3 处」与「扫描器坏了、一处都没扫到」
+     * 在**输出上完全无法区分** —— 两者都是"绿 + 零 offenders"。
+     *
+     * ⇒ 把"我查了多少、豁免了多少"显式打出来。
+     *   这是本仓那条纪律的落地：「一个看起来像结果的东西，
+     *   必须携带『我查了多少』的信息」。
+     */
+    final (lineHits, ledgerHits) = exemptHitCountsForTest;
+    // ignore: avoid_print
+    print('[T98-COVERAGE] 扫描文件=${files.length}  '
+        '行级豁免命中=$lineHits  内部台账豁免命中=$ledgerHits  '
+        'offenders=${offenders.length}');
+
     expect(
       offenders,
       isEmpty,
@@ -460,6 +604,56 @@ void main() {
           '具体网站由**用户的本地插件**提供，不进仓库。\n'
           '命中：\n  ${offenders.join('\n  ')}\n'
           '⇒ 改成中性词（「本站」「这个源」「外部弹幕」），或把插件移出仓库。',
+    );
+  });
+
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   *  ★★★ 内部台账豁免：宽度自检（2026-10-21）
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * 豁免是**削弱门禁**的动作，所以它的边界必须被另一条判据钉住 ——
+   * 否则今天加一条、明天加一条，门禁会静默失效。
+   *
+   * 下面五条覆盖「该豁免的 / 不该豁免的」两个方向。
+   */
+  test('★★★ 内部台账豁免的边界（三个条件必须同时成立）', () {
+    // ① 内部台账 + 引用测试文件名 ⇒ **豁免**
+    expect(
+      isInternalLedgerFileRefForTest(
+          'docs/notes/native-media-audit.json', '  "live_cctv_real_test.dart": {'),
+      isTrue,
+      reason: '★ 内部台账里引用测试文件名 ⇒ 应当豁免（本次事故的正例）',
+    );
+    // ② 内部台账但**没**引用测试文件名 ⇒ **不豁免**（普通叙述里的站名照样报）
+    expect(
+      isInternalLedgerFileRefForTest('docs/notes/plan.md', '我们要支持 cctv 直播'),
+      isFalse,
+      reason: '★★ 台账里写站名做**叙述**仍应被抓 —— 豁免只给"文件名引用"',
+    );
+    // ③ 引用测试文件名但**不在**内部台账（产品代码/测试目录）⇒ **不豁免**
+    expect(
+      isInternalLedgerFileRefForTest('lib/core/foo.dart', '// see live_cctv_real_test.dart'),
+      isFalse,
+      reason: '★★ lib/ 下引用测试文件名也照样报 —— 豁免只给内部台账目录',
+    );
+    expect(
+      isInternalLedgerFileRefForTest('test/bar_test.dart', 'ref: live_cctv_real_test.dart'),
+      isFalse,
+      reason: '★★ test/ 目录不在豁免范围内（test/ 本身另有整目录豁免，'
+          '但那是另一条规则，不该由"内部台账"这条兜）',
+    );
+    // ④ docs/ **根目录**下的用户文档 ⇒ **不豁免**（只有 docs/notes/ 是台账）
+    expect(
+      isInternalLedgerFileRefForTest('docs/README.md', 'run live_cctv_real_test.dart'),
+      isFalse,
+      reason: '★★ docs/ 根目录是**用户可见文档**，不是内部台账',
+    );
+    // ⑤ 路径前缀必须真的匹配（防"把 .agents/notes 写成 .agents/note"）
+    expect(
+      isInternalLedgerFileRefForTest('.agents/note/x.md', 'live_cctv_real_test.dart'),
+      isFalse,
+      reason: '★ 前缀必须逐字匹配（`.agents/notes/` 带尾斜杠）',
     );
   });
 

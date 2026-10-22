@@ -297,19 +297,42 @@ void main() {
     test('★ 入口是**图标按钮**（不是文字按钮）', () {
       /*
        * 卡片单格 299px，5 个按钮已经占 264px（见 `_cardWideMinWidth` 的预算）。
-       * 再加一个文字按钮（约 60px）必然溢出 → 必须是图标（约 40px），
+       * 再加一个文字按钮（约 60px）必然溢出 → 必须是图标按钮，
        * 且窄版会跟着换行（`wide` 分支已处理）。
+       *
+       * ★ 2026-10-18（第 66 轮 M 批次玻璃化）：产品代码把
+       *   `IconButton` 换成了 `AppIconButton`（自绘玻璃版），
+       *   本断言随之改为认新类名 —— **行为约束没变**（仍是图标按钮、仍不撑爆）。
+       * ```text
+       * 尺寸核算（改后比改前更小，余量反而变大）：
+       *   改前 Material IconButton  48x48（Material 的最小点击区）
+       *   改后 AppIconButton        17 + pad 4*2 = 25px
+       *   ⇒ 卡片仍不会撑爆；「不是文字按钮」这条约束照样成立。
+       * ```
+       * ⚠️ 反向断言（文字按钮）保留在下面 —— 它才是这条测试真正要防的东西。
        */
       final card = codeOnly().substring(
         codeOnly().indexOf('class _ProviderCard'),
         codeOnly().indexOf('class _ProviderIcon'),
       );
       expect(
-        RegExp(r'if \(onPluginUpdate != null\)\s*IconButton\(').hasMatch(card),
+        RegExp(r'if \(onPluginUpdate != null\)\s*AppIconButton\(').hasMatch(card),
         isTrue,
-        reason: '★ 必须是 IconButton（文字按钮会撑爆 299px 的卡片）',
+        reason: '★ 必须是图标按钮（文字按钮会撑爆 299px 的卡片）',
       );
-      expect(card.contains("visualDensity: VisualDensity.compact"), isTrue);
+      // ★ 反向：不许回退成文字按钮（那才是这条测试防的缺陷）
+      expect(
+        RegExp(r'onPluginUpdate != null\)\s*TextButton\(').hasMatch(card),
+        isFalse,
+        reason: '★ 不许用 TextButton —— 约 60px，必然撑爆 299px 的卡片',
+      );
+      // 图标尺寸必须有界（防止有人把 iconSize 调到撑爆）
+      expect(
+        RegExp(r'iconSize:\s*\d+').hasMatch(card),
+        isTrue,
+        reason: '★ 图标尺寸必须显式指定，不许用默认值（默认 24 ⇒ 点击区 32px，'
+            '五个按钮会把预算吃紧）',
+      );
     });
 
     test('★ 弹窗宽度有界（照 _SkipHistoryDialog 的模式）', () {

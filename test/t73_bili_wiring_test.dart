@@ -88,6 +88,19 @@ const String _dialogPath = 'lib/ui/widgets/danmaku_settings_dialog.dart';
 final String _page = stripComments(File(_pagePath).readAsStringSync());
 final String _dialog = stripComments(File(_dialogPath).readAsStringSync());
 
+/// 取「从 [start] 这个成员开头，到**下一个同级成员开头**」的切片。
+///
+/// ★ 2026-10-18（task-66）：替代 `substring(i0, i0 + 2600)` 那种字符数魔数。
+///   魔数窗口会因为"函数里加了几行注释"而假红（本次实测被咬到），
+///   而这个切片边界由代码结构决定，与字符数无关。
+String _memberSlice(String src, int start) {
+  final rest = src.substring(start + 1);
+  final m = RegExp(
+    r'\n  (?:Future<[^\n]*?>|void|bool|int|String|double|Widget|List<[^\n]*?>) _?[A-Za-z]',
+  ).firstMatch(rest);
+  return m == null ? src.substring(start) : src.substring(start, start + 1 + m.start);
+}
+
 /// 断言 `needle` 在 `src` 里**恰好**出现 [want] 次，并返回首次下标。
 int indexOfExactly(String src, String needle, {int want = 1, String? why}) {
   final hits = <int>[];
@@ -217,8 +230,35 @@ void main() {  // ════════════════════�
        *   ⇒ 「往回 600 字符找 if (」的启发式不适用了；判据的实质不变
        *     （控制条门控必须排除这些面板 flag），断言对象搬到唯一真源上。
        */
-      expect(_page.contains('if (!_chromeVisible && !keepForFade) {'), isTrue,
-          reason: '★ 底栏显隐必须读唯一真源 `_chromeVisible`（T27-13 唯一真源）');
+      /*
+       * ★★★ 2026-10-18（N11 ddb0794 之后修判据）：原来的断言是
+       *
+       * ```text
+       * expect(_page.contains('if (!_chromeVisible && !keepForFade) {'), isTrue, ...)
+       * ```
+       *
+       * **已过时**：N11 把 `keepForFade` 这个中间变量**按设计删掉了**
+       * （职责被 `_bottomOccupied` + ListenableBuilder 吸收，
+       *  见 player_page.dart:15380-15400 的长注释）。
+       * 实测 `grep -c "if (!_chromeVisible && !keepForFade) {"` ⇒ 0，
+       * 唯一出现处是注释。
+       *
+       * ⇒ 照 `t27_w13_chrome_ssot_test.dart:216-228` 的正确范本改成两条：
+       *   ① 反向断言：**不许**用 `_chromeVisible` 决定要不要卸下底栏
+       *      （否则就是第二个真源 ⇒ 分裂复发，那才是真缺陷）
+       *   ② 实质断言：只在占据态才卸下
+       * 这样守的是**安全属性**，实现再换写法也不红。
+       */
+      expect(
+        RegExp(r'if\s*\(\s*!\s*_chromeVisible').hasMatch(_page),
+        isFalse,
+        reason: '★★ 不许用 `_chromeVisible` 决定要不要**卸下**底栏。'
+            '底栏显隐的真源是 `_bottomFade`，`_chromeVisible` 若又当装卸判据 '
+            '⇒ 就是第二个真源 ⇒ 分裂复发。',
+      );
+      expect(_page.contains('if (_bottomOccupied) {'), isTrue,
+          reason: '★★ 底栏**只在占据态**才卸下。'
+              '占据态那块归占据者 —— 留在树里会叠字 + 抢点击。');
       final ci = _page.indexOf('bool get _chromeVisible =>');
       expect(ci, greaterThan(0),
           reason: '★ 找不到唯一真源 `_chromeVisible` ⇒ 控制条门控结构变了');
@@ -338,7 +378,29 @@ void main() {  // ════════════════════�
     test('② _loadBiliDanmaku 用的是同一套令牌/loading 骨架', () {
       final i0 = _page.indexOf('Future<void> _loadBiliDanmaku(');
       expect(i0, greaterThan(0));
-      final body = _page.substring(i0, i0 + 2600);
+      /*
+       * ★★★ 2026-10-18（task-66 轨道 I）：窗口从「2600 个字符」改成
+       *     「这个函数开头 → 下一个同级成员开头」。
+       *
+       * # 为什么必须改（这次真的被咬到了）
+       * ```text
+       * 2600 是个**字符数**魔数。task-66 在 `_loadBiliDanmaku` 里加了
+       * 一段说明"手动绑定后也要聚合"的注释（约 900 字）⇒ 后面的断言
+       * 全被推出窗口 ⇒ 本条**假红**（代码完全正确，只是注释变长了）。
+       *
+       * 实测：
+       *   HEAD    stripComments 后 panelPinHead 在窗口内 offset 1520
+       *   改后                  offset 1907，第二条针被推到 2600 之外
+       * ⇒ 只要有人往这个函数加注释，本条就随机红。这不是判据，是定时炸弹。
+       * ```
+       * # 新窗口为什么更严而不是更松
+       * ```text
+       * 旧窗口：i0 .. i0+2600（可能**跨进下一个函数**，钉到不属于它的代码）
+       * 新窗口：i0 .. 下一个同级成员开头（边界精确，不漏也不多）
+       * ```
+       * ⚠️ 判据语义**一条都没放宽** —— 下面每条 expect 原样保留。
+       */
+      final body = _memberSlice(_page, i0);
       expect(body.contains('final token = ++_danmakuFetchToken;'), isTrue,
           reason: '★ 换集时旧响应必须被丢掉（与 dandanplay 同一条规矩）');
       expect(body.contains('if (!mounted || token != _danmakuFetchToken) return;'),
@@ -346,7 +408,13 @@ void main() {  // ════════════════════�
           reason: '★★ 令牌判据不能省 —— 否则第 5 集会短暂显示第 3 集的弹幕');
       expect(body.contains('_danmakuLoading = true;'), isTrue);
       expect(body.contains('_danmakuLoading = false;'), isTrue);
-      expect(body.contains('_danmakuComments = r.comments;'), isTrue);
+      /*
+       * ⚠️ 2026-10-18：`= r.comments;` 在这条路上**已按 task-66 改掉**
+       *    （改成聚合后的 `= agg.comments;`，否则手动绑定后插件那份弹幕消失）。
+       *    ⇒ 针跟着改成新形态，判据强度不变（仍钉"成功支必须把结果灌进渲染层"）。
+       */
+      expect(body.contains('_danmakuComments = agg.comments;'), isTrue,
+          reason: '★ task-66：成功支必须灌**聚合后**的结果（两条来源合并）');
       /*
        * ★★★ OPS-10 B（业主 1009 B②「还是显示 没收到凭证」）的刻意修复：
        *   三处状态文案都加了**来源前缀**（player_page.dart:4733 dandanplay 前缀 /
@@ -385,18 +453,44 @@ void main() {  // ════════════════════�
       // prefer_interpolation_to_compose_strings 报 lint（const 也不允许 '+'）。
       const pin5489 = '$panelPinHead\n      );\n    });\n    _biliCid = cid;';
       const pin5543 = '$panelPinHead\n      );\n    });\n    _biliCid = r.cid;';
+      /*
+       * ★★★ 2026-10-18（task-66 轨道 I）：两条针**各自定位于它所属的函数**。
+       *
+       * # 改前为什么把两条都放在 `_loadBiliDanmaku` 的窗口里
+       * ```text
+       * 旧窗口是 `i0 .. i0+2600`（字符数魔数）。当时这个长度**恰好**
+       * 跨进了下一个函数 `_biliApplyComments`，所以两条针能在同一个
+       * `body` 里各找到一次 —— 那是**巧合**，不是设计。
+       * ```
+       * # 现在为什么必须分开
+       * ```text
+       * 窗口改成按函数边界切（见上方 _memberSlice 的说明）⇒
+       * `_loadBiliDanmaku` 的切片**不再**包含 `_biliApplyComments`
+       * ⇒ pin5543 在那个 body 里必然找不到。
+       * ```
+       * ⚠️ 判据强度**不变**：仍然是"两条都要在、各钉一次、退回无前缀形态当场红"，
+       *    只是各自在**正确的函数体**里查 —— 这比原来更严（原来靠窗口跨函数
+       *    才能同时看到两条，窗口一缩就假红）。
+       */
+      final applyBody = _memberSlice(
+        _page,
+        _page.indexOf('Future<void> _biliApplyComments('),
+      );
       expect(body.contains(pin5489), isTrue,
           reason: '★★ 5489（_loadBiliDanmaku 收尾）的面板读数必须带「外部视频站 · 」前缀，'
               '且后面紧跟 _biliCid = cid; —— 退回 status: r.summary, 当场红');
-      expect(body.contains(pin5543), isTrue,
+      expect(applyBody.contains(pin5543), isTrue,
           reason: '★★ 5543（_biliApplyComments 收尾）的面板读数必须带「外部视频站 · 」前缀，'
               '且后面紧跟 _biliCid = r.cid; —— 退回 status: r.summary, 当场红');
-      indexOfExactly(body, panelPinHead, want: 2,
-          why: '★★ 5489 与 5543 是两条独立的面板读数，这个窗口里必须**两条都在**；'
+      // 两条都在各自函数体里恰好一次（防止"写两遍蒙对一边"）
+      indexOfExactly(body, panelPinHead, want: 1,
+          why: '★★ 5489 在 _loadBiliDanmaku 里必须**恰好一次**');
+      indexOfExactly(applyBody, panelPinHead, want: 1,
+          why: '★★ 5543 在 _biliApplyComments 里必须**恰好一次**；'
               '只写一次 contains 的话退回其中一条照样绿（= 只钉住一半）');
       // ignore: avoid_print
-      print('[BSTATUS] i0=$i0 窗口长=${body.length} / 5489 针 rel=${body.indexOf(pin5489)}'
-          ' / 5543 针 rel=${body.indexOf(pin5543)}');
+      print('[BSTATUS] i0=$i0 len=${body.length} / 5489=${body.indexOf(pin5489)}'
+          ' / applyLen=${applyBody.length} 5543=${applyBody.indexOf(pin5543)}');
       expect(body.contains('markBiliSynced();'), isTrue,
           reason: '★ 同步时间要记，否则自动更新永远认为缓存还新鲜');
     });
@@ -496,17 +590,20 @@ void main() {  // ════════════════════�
        * (配置 / bilibili / 弹弹play), so the tab is named after the source itself
        * instead of the generic "来源".
        *
-       * ★ 2026-10-17 (Owner 第 11 条): tabs are named after **capability**, not
-       * after one vendor (配置 / dan-api / 插件提供 / 官方兜底). The request +
-       * search sections live under 「插件提供」 now.
+       * ★ 2026-10-18 第四版（Owner 亲自截图第 ① 条）：
+       *   「bilibili的弹幕设置怎么没了」
+       *   ⇒ 第三版把它藏成「插件提供」里一枚叫「外部弹幕…」的按钮 ——
+       *      **减少点击层数 ≠ 提高可发现性**，藏在别的名字下等于没有。
+       *   ⇒ 现在它在「弹幕来源」页签里是**平级的一行**，名字就叫出来，
+       *      右侧动作按钮从「外部弹幕…」改成「打开…」。
        */
-      await t.tap(find.text('插件提供'));
+      await t.tap(find.text('弹幕来源'));
       await t.pumpAndSettle();
-      final btn = find.widgetWithText(TextButton, '外部弹幕…');
+      final btn = find.widgetWithText(TextButton, '打开…');
       expect(btn, findsOneWidget);
       /*
-       * ⚠️ 按钮在面板最末尾 —— 800×600 的测试面里它在 y=956（屏幕外），
-       *    `t.tap` 会打印 “would not hit test on the specified widget” 然后
+       * ⚠️ 按钮在面板末尾 —— 800×600 的测试面里它在屏幕外，
+       *    `t.tap` 会打印 "would not hit test on the specified widget" 然后
        *    静默不触发。必须先滚进视口（`player_capability_test.dart:1114`
        *    就是这么滚 chip 的）。
        */
@@ -523,23 +620,46 @@ void main() {  // ════════════════════�
       expect(opened, 1);
     });
 
-    testWidgets('③ 没传 onOpenBili ⇒ 按钮不画（旧宿主零破坏）', (t) async {
+    testWidgets('③ 没传 onOpenBili ⇒ 那一行的动作按钮不画（旧宿主零破坏）', (t) async {
       await t.pumpWidget(_host(_danmakuDialog()));
       await t.pumpAndSettle();
-      // 同上：外部弹幕源相关的东西现在在「插件提供」页签下。
-      await t.tap(find.text('插件提供'));
+      // 同上：来源行现在在「弹幕来源」页签下。
+      await t.tap(find.text('弹幕来源'));
       await t.pumpAndSettle();
-      expect(find.text('外部弹幕…'), findsNothing,
-          reason: '★ 面板可以被别的宿主复用而不带上 B 站 —— 那时不该有这枚按钮');
-      expect(find.text('重新获取弹幕'), findsOneWidget, reason: '阳性对照');
+      expect(find.text('打开…'), findsNothing,
+          reason: '★ 面板可以被别的宿主复用而不带上那个源 —— 那时不该有这枚按钮');
+      /*
+       * ★ 但那一行**仍然在**（只是没有动作按钮）——
+       *   它如实说"未绑定"，用户才知道这条路存在、需要宿主支持。
+       *   这与改前"整枚按钮不画"不同：现在**可见性**与**可操作性**分开了。
+       */
+      expect(find.text('本片源自带'), findsOneWidget,
+          reason: '阳性对照：来源行本身仍在');
     });
 
-    test('④ 面板文件里那枚按钮是可选的（onOpenBili 声明为可空）', () {
+    test('④ 面板里那个入口是可选的（onOpenBili 声明为可空）', () {
       expect(_dialog.contains('this.onOpenBili,'), isTrue,
           reason: '★ 不能设成 required —— 那会让既有的两处调用点编译不过');
       expect(_dialog.contains('final VoidCallback? onOpenBili;'), isTrue);
-      expect(_dialog.contains('if (widget.onOpenBili != null)'), isTrue,
-          reason: '★ 为 null 时整枚不画');
+      /*
+       * ★ 2026-10-18 第四版（Owner 第 1 条）：
+       *   入口从「请求」节里那枚 `TextButton.icon('外部弹幕…')`
+       *   搬到了「弹幕来源」页签的**平级一行**（`_sourceRow` 的 trailing）。
+       *   ⇒ 判据跟着换形态，但语义不变：**为 null 时那个动作不画**。
+       */
+      expect(
+        _dialog.contains(
+          'trailing: widget.onOpenBili == null\n              ? null\n              : _rowAction(\'打开…\', widget.onOpenBili!),',
+        ),
+        isTrue,
+        reason: '★ 为 null 时那一行的动作按钮不画（旧宿主零破坏）',
+      );
+      /*
+       * 反向：上一版那枚重复的按钮**必须已经删掉** ——
+       * 两个入口指向同一个回调会让用户问"有什么区别"（看图台抓到的）。
+       */
+      expect(_dialog.contains("'外部弹幕…'"), isFalse,
+          reason: '★★ 重复入口已删（来源行里的「打开…」是唯一入口）');
     });
   });
 

@@ -12,6 +12,7 @@
 //    先证明这台仪器**看得见**目标，再报 0。否则 0 可能只是
 //    「我搜错了地方」—— 本仓已经踩过这个坑。
 
+import 'dart:convert';
 import 'dart:io';
 
 // ★ `ResizeImage` / `ResizeImagePolicy` 不需要单独 import painting：
@@ -45,6 +46,43 @@ Future<BuildContext> _ctxWithDpr(WidgetTester tester, double dpr) async {
 
 /// 读生产源码（`flutter test` 的 cwd = 包根，与既有测试同款）。
 String _src(String rel) => File(rel).readAsStringSync();
+
+/// 读 **git blob**（仓库里真正存的内容），而不是工作区文件。
+///
+/// # 为什么存在（2026-10-18，第 66 轮 EOL 调查）
+/// ```text
+/// `_src()` 读的是工作区，而本机 `core.autocrlf = true`
+/// ⇒ git 在**检出时**会把 blob 里的裸 LF 转成 CRLF
+/// ⇒ 任何「工作区里有没有裸 LF」的断言都会恒绿
+/// ⇒ 测量对象被 git 的自动转换**替换**了，测不到仓库的真实状态。
+///
+/// 实测：blob 里 `lib/ui/live_page.dart` 有 103 行裸 LF，
+///       而工作区是 0 行 —— 旧 E1 全绿，没发现。
+/// ```
+///
+/// # 返回
+/// ```text
+/// 成功 ⇒ blob 的 UTF-8 文本
+/// 失败 ⇒ null（调用方必须断言非 null，并说明这是**环境问题**）
+/// ```
+///
+/// ⚠️ 需要 `git` 可执行且 cwd 在仓库内。没有 git 时**返回 null 而不是退回读工作区**
+/// —— 退回读工作区就等于恢复那个假绿。
+String? _gitBlob(String rel) {
+  try {
+    final r = Process.runSync(
+      'git',
+      <String>['show', 'HEAD:$rel'],
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+    );
+    if (r.exitCode != 0) return null;
+    return r.stdout as String;
+  } on ProcessException {
+    // git 不存在 / 不可执行
+    return null;
+  }
+}
 
 /// 剥掉注释（本仓惯例：每个测试文件各自实现一份，无共享 helper）。
 ///
@@ -467,20 +505,106 @@ void main() {
   // E. 行尾与体量
   // ═══════════════════════════════════════════════════════════════════
   group('E. 行尾与体量', () {
-    test('E1 live_page.dart 保持 CRLF，另四个保持 LF（不许整文件被重写）', () {
-      final live = _src('lib/ui/live_page.dart');
-      expect(live.contains('\r\n'), isTrue, reason: 'live_page.dart 被改成 LF 了');
-      expect(live.replaceAll('\r\n', '').contains('\n'), isFalse,
-          reason: 'live_page.dart 里混进了裸 LF');
+    /*
+     * ★★ E1 为什么改成读 **blob**（2026-10-18，第 66 轮 EOL 调查结论）
+     *
+     * # 旧实现是假绿
+     * ```text
+     * 旧 E1 用 `_src()` = `File(rel).readAsStringSync()` 读**工作区**。
+     * 而本机 `core.autocrlf = true` ⇒ 检出时把 blob 里的裸 LF **转成 CRLF**
+     * ⇒ 「工作区里有没有裸 LF」永远回答 false
+     * ⇒ 这条断言在任何 blob 状态下都**恒绿**，测不到仓库里真正存了什么。
+     *
+     * 实测（第 66 轮）：blob 里 live_page.dart 有 103 行裸 LF，
+     * 而工作区是 0 行、E1 全绿 —— 它就是没发现。
+     * ```
+     *
+     * # 为什么不能只断言「工作区是 CRLF」
+     * ```text
+     * 工作区是 git **转换后**的产物，不是事实来源。
+     * 唯一可靠的事实是 **blob**（`git show HEAD:<path>`）。
+     * ⇒ 测量对象必须换成 blob，否则测的是 git 的转换行为，不是我们的数据。
+     * ```
+     *
+     * # 双向检查
+     * ```text
+     * ① 被 `.gitattributes` 钉了 `eol=lf` 的文件 ⇒ blob 里**不许**有 \r
+     * ② 豁免文件（`-text -eol`，如 live_page.dart）⇒ blob 里**不许**混裸 LF
+     * 两个方向都要查，才叫「规范被遵守」—— 只查一半会漏掉另一类的污染。
+     * ```
+     *
+     * # ⚠️ 本测试需要 git 可执行
+     * ```text
+     * 它运行 `git show` ⇒ 在**非 git 环境**（源码包解压后跑）会失败。
+     * 这是有意的：宁可明确失败，也不要退回读工作区（那就是旧的假绿）。
+     * 失败时的报错文案会说明原因，不会让人误以为是行尾真的错了。
+     * ```
+     */
+    test('E1 blob 行尾符合 .gitattributes（豁免文件纯 CRLF，其余无 CR）', () {
+      // ── 豁免文件：blob 必须纯 CRLF，不许混裸 LF ──────────────────────
+      const exempt = 'lib/ui/live_page.dart';
+      final liveBlob = _gitBlob(exempt);
+      expect(liveBlob, isNotNull,
+          reason: '★ 读不到 $exempt 的 blob。'
+              '本测试用 `git show HEAD:$exempt` 读取，需要 git 且当前目录是仓库根。'
+              '若是源码包/CI 无 git 环境 ⇒ 这是环境问题，不是行尾问题。');
+      expect(liveBlob!.contains('\r\n'), isTrue,
+          reason: '$exempt 的 blob 被改成 LF 了（它在 .gitattributes 里是 `-text -eol`，'
+              '要求保持 CRLF，理由见该文件 :56-72：不许整文件重写，否则 blame 全失效）');
 
+      /*
+       * ★ 判据：把 CRLF 全去掉后，不应再有裸 \n。
+       * 这与旧断言同形，但**测量对象从工作区换成了 blob** —— 这是关键区别。
+       */
+      expect(liveBlob.replaceAll('\r\n', '').contains('\n'), isFalse,
+          reason: '$exempt 的 **blob** 里混进了裸 LF。'
+              '★ 注意：这条在旧实现里查的是工作区，而 core.autocrlf=true 会把'
+              '裸 LF 转成 CRLF ⇒ 旧断言恒绿、测不出来（第 66 轮实测漏掉 103 行）。');
+
+      // ── 被钉 eol=lf 的文件：blob 里不许有 \r ─────────────────────────
       for (final p in <String>[
         'lib/ui/widgets/cover_image.dart',
         'lib/ui/widgets/poster_card.dart',
         'lib/ui/follow_page.dart',
         'lib/ui/detail_page.dart',
       ]) {
-        expect(_src(p).contains('\r'), isFalse, reason: '$p 里混进了 CR');
+        final blob = _gitBlob(p);
+        expect(blob, isNotNull, reason: '★ 读不到 $p 的 blob（需要 git 环境）');
+        expect(blob!.contains('\r'), isFalse,
+            reason: '$p 的 **blob** 里混进了 CR。'
+                '它在 .gitattributes 里命中 `*.dart text eol=lf` ⇒ 入库时应归一成 LF。'
+                '★ 同样地，旧实现查工作区，受 autocrlf 影响，可能测不到。');
       }
+    });
+
+    /*
+     * ★★ E1b：自检 —— 证明 `_gitBlob` 这台仪器**看得见**行尾差异
+     *
+     * 没有这一条，E1 的「blob 里没有裸 LF」可能是
+     * 「`_gitBlob` 返回了错的东西 / 恒返回空」⇒ 又是假绿。
+     * 本仓惯例：每条「零命中」式断言都配阳性对照。
+     */
+    test('E1b 自检：_gitBlob 真的能区分 CRLF 与 LF', () {
+      // 阳性对照 1：豁免文件应当**含** CRLF
+      final live = _gitBlob('lib/ui/live_page.dart');
+      expect(live, isNotNull, reason: '前置：blob 必须可读');
+      expect(live!.contains('\r\n'), isTrue,
+          reason: '★★ 自检失败：$live 里连一个 CRLF 都没有 ⇒ '
+              '要么 _gitBlob 读错了对象，要么这个文件真的变成 LF 了。'
+              '无论哪种，E1 的"没有裸 LF"都不可信。');
+
+      // 阳性对照 2：一个 eol=lf 文件应当**不含** CR
+      final ci = _gitBlob('lib/ui/widgets/cover_image.dart');
+      expect(ci, isNotNull, reason: '前置：blob 必须可读');
+      expect(ci!.contains('\r'), isFalse,
+          reason: '★ 这个文件按规范应是纯 LF；若有 CR 则 E1 的第二半会红');
+
+      // 阳性对照 3：字符串层面证明判据本身有效（不依赖仓库状态）
+      expect('a\r\nb'.replaceAll('\r\n', '').contains('\n'), isFalse,
+          reason: '纯 CRLF 字符串剥完不应剩裸 LF');
+      expect('a\nb'.replaceAll('\r\n', '').contains('\n'), isTrue,
+          reason: '★★ 判据自检：含裸 LF 的字符串剥完**必须**剩裸 LF，'
+              '否则 E1 的主断言恒假 (=永远报存在) 或恒真 (=永远不报)。');
     });
 
     test('E2 live_page.dart 仍 > 50000 字符', () {

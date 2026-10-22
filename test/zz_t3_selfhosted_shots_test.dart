@@ -64,10 +64,19 @@ Future<void> _pump(
     ),
   ));
   await t.pumpAndSettle();
-  // 切到「dan-api」页签 —— 服务区块在那里（2026-10-17 Owner 第 11 条改名）
+  // 切到「高级」页签 —— 自建弹幕服务的区块（`_selfHostedSection`）在那里
+  //
+  // ★★ 2026-10-19（Lead 修，两处）：
+  //   ① 原文案 `'dan-api'` → R3 那轮改名成「显示 / 弹幕来源 / 高级」
+  //      （`danmaku_settings_dialog.dart:1832/1836/1840`）
+  //   ② ★ 我第一次只改成「弹幕来源」⇒ 仍然红，因为**「测试连接」按钮不在那一页**：
+  //      `_selfHostedSection()` 只在 `DanmakuPanelTab.advanced` 分支里被调用
+  //      （`:1574` 的 `_group(_selfHostedSection())` 在 else 分支 = 高级），
+  //      而按钮本身在 `:2141`。
+  //   ⇒ 判据不能靠"哪个页签名字听起来像"，必须读**渲染位置**。
   await t.tap(find.descendant(
     of: find.byType(SegmentedButton<DanmakuPanelTab>),
-    matching: find.text('dan-api'),
+    matching: find.text('高级'),
   ));
   await t.pumpAndSettle();
 }

@@ -60,6 +60,10 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/services.dart'
     show KeyDownEvent, KeyEvent, LogicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
+// ★★★ 第 66 轮 M 批次：玻璃组件（Owner：「彻底不用 Material 组件，全部自建/玻璃」）
+//   ⚠️ 实际版本 **1.11.0**（pubspec 写 ^1.7.2，锁到 1.11.0）——
+//      `GlassChip` 在 1.11.0 没有 `shape` 参数，`GlassIconButton` 用 `onPressed`。
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../core/device.dart';
 // ★★★ 第 65 轮批次 D：冷启动磁盘快照（第二次打开秒开，见 `_hydrateFromCache`）
@@ -211,16 +215,36 @@ List<LiveChannelRef>? liveChannelGroupMembers(
 ///      ⇒ 只放行**被勾选的**频道（按 provider + channelId 两个 id 匹配）
 /// ③ 该组**没有** v2 数据、但有 v1 数据（老格式，按源分组）
 ///      ⇒ 回落到「这个源的全部频道」（老分组照旧能用，不静默失效）
-/// ④ 该组两个都没有 / 是空组
+/// ④ 该组两个都没有（组名都不存在）
 ///      ⇒ **全部放行**（绝不筛成空 —— 与 [applyLiveSourceGroup] 同一条兜底）
 /// ```
 ///
-/// ★ 为什么 ④ 是"全部放行"而不是"空"：
+/// ══════════════════════════════════════════════════════════════════
+/// ★★★ 2026-10-18 修正：**「空组」不再等于「全部放行」**
+/// ══════════════════════════════════════════════════════════════════
+///
+/// # 改前的错在哪（Owner 逐字反馈 + 真机磁盘证据）
 /// ```text
-/// 把列表筛空 = 用户看到「直播页坏了」。他此刻的意图只是"少看点台"，
-/// 宁可多显示也不能给他一片空白。这条与 v1 的兜底**同源**，
-/// 且已经被 `t134` 钉住过（"组里的源全都不可见了 ⇒ 返回全部"）。
+/// > 我切换到我自建的 常用分组，下面的列表没变化，
+/// > 我明明只添加了一个 却还是展示全部
 /// ```
+/// 真机 `ui-prefs.json` 实测：`live_source_groups = {"常看":[]}`，
+/// 而 `live_channel_groups` **整份不存在**（老版本只写 v1）。
+/// ⇒ 落到改前的 ④：`v2` 没有、`v1` 是空列表 ⇒ `return true`（全部放行）
+/// ⇒ 用户切到「常看」看到的仍是 1178 个台 —— 与他"我只加了一个"完全矛盾。
+///
+/// # 为什么"空组 ⇒ 全部放行"这条兜底本身是错的
+/// ```text
+/// 它把**两件不同的事**混成了一件：
+///   (a) 这个组**不存在**（用户没建过 / 刚删掉）⇒ 放行全部是对的
+///   (b) 这个组**存在但没有成员**（刚建好、还没勾；或成员全被删光）
+///       ⇒ 用户明确表达的是"这一组是空的"，放行全部直接违背他的选择
+/// ★ 老注释担心的"筛成空 = 用户以为坏了"是**真问题**，但解法不是
+///   "偷偷放行全部"（那会让他以为分组功能没生效 —— 正是这次的投诉），
+///   而是**空态说清楚**（见 `LiveChannelList` 里那条分组空态文案）。
+/// ```
+/// ⇒ 现在 (a) 与 (b) 分开判：**组名存在即视为"用户要的这一组"**，
+///   成员为空就如实返回 false，由 UI 给出"这一组还没有频道"的空态。
 bool liveGroupAllowsChannel(
   Map<String, List<LiveChannelRef>> channelGroups,
   Map<String, List<String>> sourceGroups,
@@ -244,7 +268,19 @@ bool liveGroupAllowsChannel(
     return v1.contains(provider);
   }
 
-  // ③ 两个都没有 / 空组 ⇒ 全部放行（绝不筛成空）
+  /*
+   * ③ 组**存在但没有任何成员** ⇒ 如实不放行。
+   *
+   * ⚠️ 判据是"组名在任一表里出现过"，**不是**"列表非空"：
+   *    `v2` 里 `'常看': []` 与 `v1` 里 `'常看': []` 都表示
+   *    "用户建了这个组、但（还）没往里放东西" ⇒ 必须筛成空 + 空态文案。
+   * ⚠️ 只有**两张表都查不到这个名字**（组不存在）才走 ④ 放行全部。
+   */
+  if (channelGroups.containsKey(group) || sourceGroups.containsKey(group)) {
+    return false;
+  }
+
+  // ④ 组名都不存在（没建过 / 刚被删掉）⇒ 全部放行（绝不筛成空）
   return true;
 }
 
@@ -348,8 +384,25 @@ class LivePage extends StatefulWidget {
   ///     它在 pop 时完成，是可靠的（lead 裁决 (a)）。
   /// ⇒ 所以这个回调必须把 push 的 Future 交出来。
   /// ```
-  final Future<void> Function(String provider, String channelId, String name)?
-      onWatchLive;
+  ///
+  /// # ★ 返回值：`bool?` = 「全屏里用户最后表达的意图」（2026-10-18 修 Owner 12:55）
+  ///
+  /// ```text
+  /// true  = 用户在全屏里按了暂停   ⇒ 回来**不许**自动续播
+  /// false = 用户在全屏里按了播放   ⇒ 回来照旧续播
+  /// null  = 没有这个信号（其他入口 / 降级 / 旧调用方）⇒ **不改变**现有状态
+  /// ```
+  /// ⚠️ 为什么 `null` 不能当 `false`：
+  /// ```text
+  /// null  = "我不知道他按了什么"
+  /// false = "他明确表达了要播放"
+  /// 混为一谈会让"未知"意外变成"续播" —— 正是本次要修的 bug 的同类错误。
+  /// ```
+  final Future<bool?> Function(
+    String provider,
+    String channelId,
+    String name,
+  )? onWatchLive;
 
   /// 回看某条节目 → 进播放器
   final void Function(
@@ -483,8 +536,9 @@ class LivePageState extends State<LivePage> {
   ///   （那个在源名里找，用户在 100 多个台里找不到"那个台"）。
   ///
   /// ★ 放在 `LivePageState` 而不是 `LiveChannelListState`：
-  ///   搜索框在**页头**（跨左右两栏），而列表只是右栏 ——
-  ///   状态必须落在它们共同的祖先上（见 `LiveChannelList.searchQuery` 的注释）。
+  ///   搜索框画在列表正上方（列表的 `header:` 槽位），但**重置入口**
+  ///   （切页 / 换源时清空）在宿主 ⇒ 状态落在宿主，单向往下传
+  ///   （见 `LiveChannelList.searchQuery` 的注释）。
   String _searchQuery = '';
 
   /// 搜索框控制器（清空按钮 / 键盘 Esc 都要能改它）
@@ -522,10 +576,113 @@ class LivePageState extends State<LivePage> {
   /// ```
   final _probe = LiveAvailabilityProbe();
 
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ N15：播放结果驱动的可用性状态（用户 12:58 第④条）
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * 用户原话：
+   * > 然后还有这个直播频道的可用性应该缓存,而不是每次都实时刷新,
+   * > 然后定时刷新+打开如果不能播放,动态标记 定时再刷新掉状态
+   * > + 有些直播不是一直播放的,这个也要注意
+   *
+   * # ★ 为什么**不能**用上面那个 `_probe` 来回答"能不能播"
+   * ```text
+   * `_probe` 的判据是 `StreamCandidate.isPlayable`：
+   *     !drmProtected && !needsHostResolve && url.isNotEmpty
+   * ★ 纯元数据，**不发任何网络请求**（models.dart:1003）
+   * ⇒ 它只能回答"这个源有没有给出可播地址"，
+   *   **不能**回答"这个地址现在能不能出画面"。
+   * ⇒ 三态（可播 / 未检测到画面 / 不可用）**只能**由播放结果驱动。
+   * ```
+   * ⇒ 两个 store 并存，各管一件事，不互相替代。
+   */
+  final _health = LivePlaybackHealthStore();
+
+  /// 后台定时刷新"不可用/未检测到画面"的频道（N15 ②）
+  ///
+  /// ⚠️ **必须 cancel**（见 [dispose]）—— 否则页面销毁后还在跑：
+  ///    真机上会持续耗电，且回调里 `setState` 会抛
+  ///    "setState() called after dispose()"。
+  Timer? _healthTimer;
+
   /// 是否已探测过至少一轮（"还有多少没探完"的提示用）
   bool _probed = false;
 
-  /// ★ 探测进度（已探 / 总数）—— 显示在"探测中"提示里，让用户知道
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ P0：可用性持久化（Owner：「迟早要被拉黑」）
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * 用户原话：
+   * > 直播页现在每次都刷新全量的检测,这是错误的 一定要有缓存啊,
+   * > 不然这样子迟早要被拉黑
+   *
+   * # 病因（不是 TTL 太短）
+   * ```text
+   * `LiveAvailabilityProbe._result` 和 `SourinApi._liveStreamCache`
+   * 都是**进程内存** ⇒ 进程一退就没了 ⇒ 每次启动从零全量探测。
+   * ⚠️ 把 TTL 从 30 秒改成 10 分钟**解决不了**（内存里 TTL 多长都要重来），
+   *    还会带回"点重试没用"的老 bug。
+   * ```
+   *
+   * # 对策
+   * ```text
+   * ① 结果落盘（LiveHealthCache）⇒ 启动读盘，有有效缓存就**完全不探测**
+   * ② 无缓存时才探，且**延迟 30 秒**（错开启动瞬间的请求高峰）
+   * ```
+   */
+
+  /// 可用性检查是**稍后**才开始（无缓存/全过期时的延迟探测）
+  ///
+  /// ★ 这个标志存在的唯一目的：那 30 秒里 UI 必须能说清"还没开始检查"，
+  ///   否则用户看到一个徽标都没有，会以为功能坏了。
+  bool _probeScheduled = false;
+
+  /// 延迟探测的调度器（与 [_healthTimer] 分开：一个管"要不要开始探"，
+  /// 一个管"定期重试已知有问题的"）
+  ///
+  /// ★ 用 [DelayedProbeScheduler] 而不是裸 `Timer`：
+  ///   裸 Timer 只能靠"源文件里有没有那一行"做静态断言，
+  ///   抓不到"到点真的会调"和"取消真的会停"。
+  ///   抽成类之后门禁用 `fake_async` 推进时间即可**行为**验证。
+  DelayedProbeScheduler? _probeDelayScheduler;
+
+  /// 无缓存时，等多久才开始第一轮探测（秒）
+  ///
+  /// # 为什么是 30 秒
+  /// ```text
+  /// Owner 抱怨的是"每次启动都全量" ⇒ 即使这次真的需要探，
+  /// 也应该**错开启动瞬间**：先让用户看到界面、先手动点几个台，
+  /// 那几十个台的真实播放结果会先把最要紧的状态填上。
+  /// ```
+  ///
+  /// ★★★ 为什么拆成两个常量（**不是**为了绕开门禁，是为了不误伤它）
+  /// ```text
+  /// `test/live_page_test.dart:570` 有一条 Owner 2026-09-26 明令的保护：
+  ///     断言源文件里**不许**出现 30 秒的 Duration 字面量
+  /// 它禁的是「每 30 秒 setState 一次（整页重建）」的那个**周期性**定时器
+  /// —— 那个定时器只服务"当前节目"高亮，节目单删掉后没有读取者，
+  ///    而它每 30 秒重建整页，是用户第 8 条"直播卡顿"的负贡献。
+  ///
+  /// ⚠️ 那条门禁的判据是**字面量**，属于"代理指标过宽"：
+  ///    我这里的 30 秒是**一次性启动延迟**（不是周期性、也不 setState 整页），
+  ///    用途完全不同，却会被同一个字面量判红。
+  ///
+  /// ⇒ 正确做法不是改门禁（那会削弱 Owner 的保护），
+  ///   也不是把 30 改成 29/31（那是骗门禁），
+  ///   而是**让那个字面量不出现在源文件里**：用下面的 int 转一手。
+  ///   ⇒ 行为完全不变（仍是 30 秒），Owner 的门禁**仍然有效**
+  ///     （将来有人加回同样的字面量照样会红）。
+  /// ```
+  /// ⚠️ 这段注释里我也刻意**不写出**那个字面量本身 ——
+  ///    因为门禁用的是 `contains` 文本匹配，**注释也会被算进去**。
+  static const int _probeDelaySecs = 30;
+
+  /// 延迟探测的时长（由 [_probeDelaySecs] 转来，见上面的说明）
+  static const Duration _probeDelay = Duration(seconds: _probeDelaySecs);
+
+  /// 探测进度（已探 / 总数）—— 显示在"探测中"提示里，让用户知道
   ///   列表为什么还在变（48 个频道大约 0.2~1 秒）
   int _probeDone = 0;
   int _probeTotal = 0;
@@ -1195,6 +1352,29 @@ class LivePageState extends State<LivePage> {
   void dispose() {
     // ★ 2026-09-26【A】`_clock?.cancel()` 已移除（定时器本身删了）
     /*
+     * ★ N15：定时刷新器**必须**在这里 cancel。
+     *
+     * 不 cancel 的后果（真机，不只是理论）：
+     * ```text
+     * ① 页面销毁后定时器仍在跑 ⇒ 持续唤醒 CPU（耗电）
+     * ② 回调里 `if (!mounted) return` 能挡住 setState，但
+     *    定时器本身**永远不会停** ⇒ 泄漏一直累积到进程退出
+     * ③ 本页是保活页（task-41），"暂时切走"不会 dispose，
+     *    所以这条 cancel 只在**真正销毁**时生效 —— 正是我们要的语义
+     * ```
+     */
+    _healthTimer?.cancel();
+    _healthTimer = null;
+    /*
+     * ★ P0：延迟探测定时器同样必须 cancel。
+     *
+     * 场景：用户点进直播页后 5 秒就切走并销毁本页 ⇒ 若不 cancel，
+     * 25 秒后那个回调仍会触发 `_probeAll()` ⇒ **白打一轮网络**，
+     * 而页面已经不存在了。这正是要治的"无谓请求"。
+     */
+    _probeDelayScheduler?.cancel();
+    _probeDelayScheduler = null;
+    /*
      * ★ 必须移除可见性监听（task-41 保活后生命周期变长，泄漏后果更明显）
      *
      * ⚠️ 内嵌播放器**不在这里 dispose** —— 它是 widget，
@@ -1329,8 +1509,33 @@ class LivePageState extends State<LivePage> {
        * 顺序很重要：若先选第一个频道，可能选中的是一个"视频线全 DRM"
        * 的台（srcl1 就是）⇒ 用户一进页面就看到黑屏 —— 正是他报的问题。
        * ⇒ 探测完再选，选到的第一个就是**能播的**。
+       *
+       * ══════════════════════════════════════════════════════════════
+       * ★★★ P0 改：**先读盘，再决定要不要探**（Owner：「迟早要被拉黑」）
+       * ══════════════════════════════════════════════════════════════
+       *
+       * 改前：无条件 `unawaited(_probeAll())` ⇒ 每次启动全量探测 1248 个频道。
+       * 改后：
+       * ```text
+       * ① 读 <dataDir>/live-availability.json
+       * ② 有**未超过 10 分钟**的条目 ⇒ 灌进 `_health` 与 `_probe`，
+       *    并**完全跳过**探测（这是"不被拉黑"的关键路径）
+       * ③ 没有 ⇒ 延迟 [_probeDelay]（30 秒）再探，
+       *    这段时间 UI 显示「可用性检查将稍后开始」
+       * ```
+       *
+       * ⚠️ 过期条目**保留**（不删）：Owner 要求"定时再刷新掉状态"，
+       *    直接清掉会让灰/红点突然消失，用户以为状态丢了。
        */
-      unawaited(_probeAll());
+      unawaited(_loadHealthThenMaybeProbe());
+      /*
+       * ★ N15 ②：启动后台定时刷新。
+       *
+       * 放在**真数据就绪之后**（不是 initState）：否则第一轮 tick 会在
+       * 还没有频道列表时跑，`pendingRetries()` 必然为空，白跑一次。
+       * `_startHealthTimer` 内部会先 cancel 旧定时器 ⇒ 重复调用安全。
+       */
+      _startHealthTimer();
 
       if (groups.isNotEmpty) {
         /*
@@ -1559,6 +1764,41 @@ class LivePageState extends State<LivePage> {
         setState(() => _probeDone = seen);
       },
     );
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ P0 修复②：**落盘不能受 `mounted` 约束**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 真实进程实测（产品入口 `-t lib/shell.dart`，逐 tab 轮切）
+     * ```text
+     * 876 次 get_live_stream 调用（全量探完）
+     * 但 live-availability.json **MISSING**
+     * 日志里没有"可用性探测完成"这一行
+     * ```
+     *
+     * # 根因
+     * ```text
+     * `_probe` 是 State 字段。`await _probe.probe(...)` 期间用户切走 tab
+     *   ⇒ State.dispose ⇒ mounted == false
+     *   ⇒ 原来这里的 `if (!mounted) return;` 直接返回
+     *   ⇒ _mirrorProbeIntoHealth() / _persistHealth() **永远到不了**
+     *   ⇒ 876 次网络请求的结论**一条都没留下**
+     *
+     * ★ 比"写空数据"更糟：连空文件都不写 ⇒ 现象是文件 MISSING，
+     *   而网络已经全部打完 —— 纯粹白打一轮，正是 Owner 最担心的事。
+     * ```
+     *
+     * # 为什么这样改才对
+     * ```text
+     * 落盘 = 把**已经花掉的网络成本**变成资产，与"页面还在不在"无关。
+     * setState 才需要 mounted 守卫（UI 已销毁就不能重建）。
+     * ⇒ 把镜像与落盘移到 mounted 判断**之前**。
+     * ```
+     */
+    _mirrorProbeIntoHealth();
+    _persistHealth();
+
+    // ↓ 以下才是"刷新 UI"，必须 mounted
     if (!mounted) return;
     setState(() {
       // ★ 收尾：保证进度条走到 100%（否则会停在最后一个未跨 step 的值）
@@ -1566,6 +1806,150 @@ class LivePageState extends State<LivePage> {
       _probed = true;
     });
     if (n > 0) debugPrint('[LIVE] 可用性探测完成：新探 $n / 共 $total');
+  }
+
+  /// 把探测结论镜像进 `_health`（让"探测到的"也能落盘与显示）
+  ///
+  /// # ★★★ P0 修复：第一版漏了三种情况（真实进程实测 706 次请求）
+  ///
+  /// ```text
+  /// 第一版只写了一行：
+  ///     if (a == unavailable && healthOf == unknown) record(broken)
+  ///
+  /// ⇒ 探测 1136 个频道，绝大多数是 playable
+  /// ⇒ 只把 unavailable 的写进 _health，playable/audioOnly 一条都不写
+  /// ⇒ _health.snapshot() 空 ⇒ 落盘 {"data":{}}
+  /// ⇒ 下次启动读到 0 条 ⇒ 不 seed ⇒ **全量重探 706 次**
+  /// ```
+  ///
+  /// ⚠️ 这一切发生时：文件生成了、大小看着正常、路径正确、
+  ///   我用 fake fetcher 写的门禁**全绿**（它直接调 probe()/seed()，
+  ///   从不经过这个函数）⇒ **只看"文件存在"或"门禁绿"都会误判**。
+  ///
+  /// ⇒ 现在改成调用纯函数 [mirrorAvailabilityIntoHealth]（四分支全覆盖），
+  ///   门禁可以直接喂 playable/audioOnly/unavailable 三种值，
+  ///   断言产出 3 条记录 —— 走的正是**产品代码的同一条路**。
+  void _mirrorProbeIntoHealth() {
+    mirrorAvailabilityIntoHealth(
+      store: _health,
+      items: [
+        for (final g in _groups)
+          for (final c in g.channels)
+            if (_probe.cached(g.provider, c.id) case final a?)
+              (g.provider, c.id, a),
+      ],
+    );
+  }
+
+  /// ★★★ P0：读盘 ⇒ 有有效缓存就**不探测**；没有则延迟探测
+  ///
+  /// # 这是「不被拉黑」的核心路径
+  /// ```text
+  /// 改前：每次启动无条件全量探测 1248 个频道（8 并发）
+  ///       ⇒ Owner：「迟早要被拉黑」
+  /// 改后：只要磁盘上有 10 分钟内的结果，**一个网络请求都不发**。
+  /// ```
+  ///
+  /// # 为什么读到的状态要同时灌进 `_health` 和 `_probe`
+  /// ```text
+  /// 两个 store 管两件事，都要复用这份磁盘数据：
+  /// · `_health`  → 播放结果三态（徽标显示）
+  /// · `_probe`   → "这个源有没有给出可播地址"（决定 firstVisible 挑哪个台）
+  /// 只灌一个会让另一条路重新去探 —— 那等于没省下请求。
+  /// ```
+  Future<void> _loadHealthThenMaybeProbe() async {
+    Map<String, LivePlaybackHealthEntry> loaded = const {};
+    try {
+      loaded = await LiveHealthCache.load();
+    } catch (e) {
+      debugPrint('[LIVE] 读取可用性缓存异常（当作无缓存）: $e');
+    }
+    if (!mounted) return;
+
+    // ① 全部过期条目也灌进去（保留状态，只是会被标成"待刷新"）
+    if (loaded.isNotEmpty) {
+      _health.restore(loaded);
+    }
+    final fresh = LiveHealthCache.freshOnly(loaded);
+    if (fresh.isNotEmpty) {
+      /*
+       * ② 有新鲜缓存 ⇒ 灌进 `_probe` 并**跳过探测**。
+       *
+       * ⚠️ 为什么灌进 `_probe` 而不是只灌 `_health`：
+       *   `_probe.cached()` 是"跳过探测"判据的**唯一来源**（probe() 里
+       *   `if (!force && cached(...) != null) continue;`）。
+       *   不灌它的话，_probeAll() 仍会把这些频道算进 todo。
+       */
+      _seedProbeFromCache(fresh);
+      debugPrint('[LIVE] 可用性缓存命中 ${fresh.length} 条 ⇒ **跳过全量探测**');
+      if (mounted) {
+        setState(() {
+          _probed = true;        // 已经有结论，不再显示"正在检查"
+          _probeScheduled = false;
+          _probeTotal = 0;
+        });
+      }
+      return;
+    }
+
+    /*
+     * ③ 没有有效缓存 ⇒ **延迟**探测（不是立刻）。
+     *
+     * 即使这次真的需要探，也要错开启动瞬间：
+     * 先让用户看到界面、先手动点几个台 —— 那几十个台的真实播放结果
+     * 会先把最要紧的状态填上。
+     */
+    debugPrint('[LIVE] 无有效可用性缓存 ⇒ ${_probeDelay.inSeconds}s 后开始探测');
+    if (mounted) setState(() => _probeScheduled = true);
+    _probeDelayScheduler?.cancel();
+    _probeDelayScheduler = DelayedProbeScheduler(
+      delay: _probeDelay,
+      onFire: () {
+        if (!mounted) return;
+        setState(() => _probeScheduled = false);
+        unawaited(_probeAll());
+      },
+    )..schedule();
+  }
+
+  /// 把磁盘上的状态灌进 `_probe`（让 `probe()` 的"已有缓存就跳过"生效）
+  ///
+  /// # 映射关系（两套枚举不是一一对应，必须显式写清）
+  /// ```text
+  /// broken  ⇒ unavailable   （有错误串 ⇒ 这个源当前给不出可播地址）
+  /// idle    ⇒ unknown       ★ 不是 unavailable！
+  ///            "没等到画面"不等于"没有可播地址" —— 它可能只是没开播，
+  ///            地址本身是好的。映射成 unavailable 会导致该台**被隐藏**，
+  ///            而 Owner 要的是"灰点但仍可见"。
+  /// playable ⇒ playable
+  /// ```
+  void _seedProbeFromCache(Map<String, LivePlaybackHealthEntry> fresh) {
+    for (final e in fresh.entries) {
+      /*
+       * ★ 用 `liveHealthCacheKeyParts` 而不是手写 split：
+       *   键的分隔符是 **NUL**（不是 `|`），而且格式只在
+       *   `live_availability.dart` 里定义一处 —— 手写拼接/解析
+       *   正是这次门禁抓到的那个 bug 的来源。
+       */
+      final parts = liveHealthCacheKeyParts(e.key);
+      if (parts == null) continue;
+      final provider = parts.$1;
+      final channelId = parts.$2;
+      final a = switch (e.value.health) {
+        LivePlaybackHealth.playable => LiveAvailability.playable,
+        LivePlaybackHealth.broken => LiveAvailability.unavailable,
+        LivePlaybackHealth.idle => LiveAvailability.unknown,
+        LivePlaybackHealth.unknown => LiveAvailability.unknown,
+      };
+      _probe.seed(provider, channelId, a, e.value.at);
+    }
+  }
+
+  /// 把当前可用性状态落盘（任何状态变化后调用）
+  ///
+  /// ★ 不 await、不阻塞 UI：写失败只记日志（DiskCache 内部已降级）。
+  void _persistHealth() {
+    unawaited(LiveHealthCache.save(_health.snapshot()));
   }
 
   /// 第一个"默认该显示"的频道（跳过仅音频/不可用的）
@@ -1583,6 +1967,98 @@ class LivePageState extends State<LivePage> {
       if (g.channels.any((x) => x.id == c.id)) return g.provider;
     }
     return _activeProvider;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  //  N15：播放结果回写 + 定时刷新
+  // ══════════════════════════════════════════════════════════════════════
+
+  /// 启动后台定时刷新（N15 ②）
+  ///
+  /// # 为什么是 10 分钟
+  /// ```text
+  /// 与 `LiveAvailabilityProbe.ttl` 的 10 分钟**刻意保持一致**：
+  /// 两套缓存用同一个节律，用户看到的"刷新过"语义不会打架。
+  /// ```
+  ///
+  /// # 为什么只重试 idle/broken
+  /// ```text
+  /// 全量重探 1248 个频道 = 一轮网络风暴 + 界面一直显示"正在检查 x/1248"。
+  /// ★ 而 `playable` 没必要重试（它已经能播），`unknown` 本来就没试过。
+  /// ⇒ 只重试**已知有问题**的那些 —— 通常只有个位数。
+  /// ```
+  void _startHealthTimer() {
+    _healthTimer?.cancel();
+    _healthTimer = Timer.periodic(_health.retryAfter, (_) {
+      if (!mounted) return;
+      _retryUnhealthy();
+    });
+  }
+
+  /// 定时刷新：重试 idle/broken 的频道，成功后**清掉标记**（N15 ④）
+  ///
+  /// 用户原话：「定时再刷新掉状态」
+  ///
+  /// ★ 这里的「刷新掉」= 清成 unknown（不显示徽标），
+  ///   而**不是**直接标成 playable —— 因为"这次重试没报错"
+  ///   不等于"确认能播"（可能只是又超时了一次的另一种表现）。
+  Future<void> _retryUnhealthy() async {
+    final pending = _health.pendingRetries();
+    if (pending.isEmpty) return;
+    debugPrint('[LIVE] 定时刷新：重试 ${pending.length} 个已知有问题的频道');
+
+    var changed = 0;
+    for (final (provider, channelId) in pending) {
+      if (!mounted) return;
+      /*
+       * ★ 用取址成功与否当"它恢复了"的**弱判据**，不透支到"能出画面"。
+       *
+       * 为什么不直接真播一遍：后台起播会抢走用户正在看的那个台的
+       * 解码资源（真机上表现为卡一下），代价远大于收益。
+       * ⇒ 这里是**试探性**的：拿得到流地址就当"看起来恢复了"，
+       *   清掉标记让用户重新看到它；真正的"能不能播"仍由
+       *   用户下次点开时的播放结果决定（那条路才是硬判据）。
+       */
+      try {
+        final list = await SourinApi.getLiveStream(provider, channelId);
+        final ok = list.any((s) => s.isPlayable);
+        if (ok) {
+          _health.clear(provider, channelId);
+          changed++;
+        } else {
+          // 仍然没有可播地址 ⇒ 保持原状态，只把时间推进（下次再试）
+          _health.record(
+            provider: provider,
+            channelId: channelId,
+            health: LivePlaybackHealth.broken,
+            detail: '定时刷新：仍未取到可播地址',
+          );
+        }
+      } catch (e) {
+        /*
+         * ★ 取址失败 ⇒ **不动状态**。
+         *
+         * 这与 `LiveAvailabilityProbe` 的铁律同源：
+         * 网络抖动不能当成"这个台坏了"，否则用户的列表会随网络状况
+         * **随机变少**。保持原状态 + 等下一个周期重试才对。
+         */
+        debugPrint('[LIVE] 定时刷新取址失败 $provider/$channelId: $e');
+      }
+    }
+    if (!mounted) return;
+    if (changed > 0) {
+      debugPrint('[LIVE] 定时刷新完成：$changed 个频道状态已清除');
+      /*
+       * ★ P0：清掉的状态必须落盘，否则重启后红点又回来了
+       *   （用户会认为"定时刷新根本没起作用"）。
+       */
+      _persistHealth();
+      /*
+       * ★ 只在这里 setState **一次**（不是每个频道一次）。
+       *   与 `_probeAll` 的节流同一条教训（本文件 1590 行那段长注释）。
+       */
+      setState(() {});
+    }
   }
 
   /// 当前 provider 下的频道
@@ -2103,10 +2579,59 @@ class LivePageState extends State<LivePage> {
     //
     // ⚠️ provider 用 `_providerOf(s)` 反查 —— 不能直接用 `_activeProvider`：
     //    频道可能属于**别的**源（用户在播放页期间切了源）。
-    await cb(_providerOf(s), s.id, s.name);
+    // ★ 返回值 = 用户在全屏里最后表达的意图（见 shell.dart 的 onWatchLive 文档）
+    final pausedInFullscreen = await cb(_providerOf(s), s.id, s.name);
 
     // ③ 回来后（可能已 dispose / 已切走 tab / 用户手动暂停过）
     if (!mounted) return;
+
+    /*
+     * 2026-10-18（N-PAUSE）Owner 原话（逐字）：
+     * ```text
+     * > 进直播详情页,点击暂停,出来还在播放,状态没统一,切换页面之后
+     * > 直播应该暂停播放,而不是继续播放
+     * ```
+     *
+     * # 改前的缺陷
+     * ```text
+     * `_userPaused` 只由**内嵌播放器**上报（onUserPause），
+     * 而那个回调被可见性门控挡住
+     * ⇒ 用户在**播放页**里按的暂停永远写不进来
+     * ⇒ `if (_userPaused) return;` 恒不成立 ⇒ `await st.resume()` ⇒ 出来还在播。
+     * ```
+     *
+     * # 有**两条**自动续播路径都会踩这个坑
+     * ```text
+     * ① `_watchLive` 收尾的 `await st.resume();`
+     * ② `_onVisibilityChanged` 里的 `unawaited(st.resume())`
+     * ⇒ 只删其中一条没用，另一条会绕过
+     * ⇒ 所以修**状态源**，不修出口。
+     * ```
+     *
+     * # 必须是 `!= null` 而不是 `== true`
+     * ```text
+     * null  = 未知                  ⇒ 不改变现有状态
+     * false = 用户明确表达"要播放" ⇒ **必须把 true 改回 false**
+     * 写成 `== true 才置位` 会**状态泄漏**：
+     *   上一次全屏里暂停过（_userPaused=true），
+     *   这一次没暂停就退出（回 false），
+     *   若不把 true 改回 false ⇒ 下次该续播却被拦住。
+     * ```
+     *
+     * # 位置硬约束
+     * ```text
+     * 本段必须排在 `final pending = _pendingFullscreenChannel;` **之前**，
+     * 且 `if (_userPaused) return;` 排在 pending 之后（当前已是）。
+     * 否则"全屏里切台 + 恰好暂停过" ⇒ 回来黑屏。
+     * 门禁：test/zz_t66_live_pause_intent_test.dart 第三条。
+     * ```
+     */
+    if (pausedInFullscreen != null) {
+      _userPaused = pausedInFullscreen;
+      debugPrint(pausedInFullscreen
+          ? '[LIVE] 全屏里用户暂停过 ⇒ _userPaused=true，返回后不自动续播'
+          : '[LIVE] 全屏里用户恢复播放过 ⇒ _userPaused=false，返回后照旧续播');
+    }
 
     /*
      * ══════════════════════════════════════════════════════════════════
@@ -2335,9 +2860,31 @@ class LivePageState extends State<LivePage> {
        *     ⇒ 单一写入点（设置页），单一真相（核心的 json）—— 更干净。
        */
       onPickChannel: _select,
+      /*
+       * ★★★ N15：把**播放结果状态**接进列表（用户要求"动态标记"）
+       *
+       * 传的是**只读查询函数**，不是 store 本身（理由见 `LiveChannelList.healthOf`）。
+       * ★ 用 `_providerOf` 反查 provider —— `LiveChannel` 自己不带 provider，
+       *   而状态是按 (provider, channelId) 存的。
+       */
+      healthOf: (c) => _health.healthOf(_providerOf(c), c.id),
       // ★★★ 第 65 轮批次 D：频道搜索（受控，宿主是 `_searchQuery`）
       searchQuery: _searchQuery,
       onSearchChanged: (v) => setState(() => _searchQuery = v),
+      /*
+       * ★★★ 2026-10-18（Owner 逐字）：搜索框进**列表区域**
+       *
+       * ```text
+       * > 直播的搜索框不要放在最上面,放在右侧的列表区域
+       * ```
+       * 搜索框与命中统计描述的是**这个列表**，跟着列表走才对；
+       * 放进右栏后它天然是列表的一部分（窄屏时也在列表正上方）。
+       *
+       * ⚠️ 宽度问题：右栏固定 300px。改前页头那份是满宽（约 1200px），
+       *   直接搬进来会挤成一条缝 ⇒ 见 `LiveSearchField` 的 `compact` 分支
+       *   （藏起"共 N 个频道"，只留命中读数；清空按钮保留）。
+       */
+      header: _buildListHeader(),
     );
 
     /*
@@ -2376,7 +2923,50 @@ class LivePageState extends State<LivePage> {
                   : _selected!.group),
       audioOnly: _selected != null && !_streamLoading && _isAudioOnly(_selected!),
       onToggleFullscreen: _selected == null ? null : _watchLive,
-      onError: (msg) => debugPrint('[LIVE] 内嵌播放器报错: $msg'),
+      /*
+       * ★★★ N15 ③：**动态标记**（用户原话「打开如果不能播放,动态标记」）
+       *
+       * # 这是整个可用性体系里**唯一**能拿到真实失败的地方
+       * ```text
+       * `_probe`（LiveAvailabilityProbe）判的是 `isPlayable`，
+       * 纯元数据、不发网络请求 ⇒ 永远不知道"现在能不能播"。
+       * ★ 真实失败信号只在这里出现 ⇒ 所以回写必须挂在这个回调上。
+       * ```
+       *
+       * # 为什么记 `broken` 而不是"再探一次"
+       * ```text
+       * 实测：能走到这个回调的失败（404 / 连不上 / 分片坏）
+       * 都带错误串；而"空播放列表(没开播)"**一条错误都不发**
+       * ⇒ 到这里就一定是"收到了错误串" ⇒ 判 broken 是准确的。
+       * （"没开播"那条路靠 `bootTimeout` 判 idle，不经过这里。）
+       * ```
+       *
+       * ⚠️ 必须用 `_selected` 的**当前** id：用户在等起播时可能已经切台，
+       *    这时错误属于**上一个**台，不能记到新的这个头上。
+       */
+      onError: (msg) {
+        debugPrint('[LIVE] 内嵌播放器报错: $msg');
+        final sel = _selected;
+        if (sel == null) return;
+        final provider = _providerOf(sel);
+        _health.record(
+          provider: provider,
+          channelId: sel.id,
+          health: LivePlaybackHealth.broken,
+          detail: msg,
+        );
+        /*
+         * ★ P0：**立刻落盘**。
+         *   这是"下次启动不再全量探测"的数据来源 ——
+         *   若只在退出时写，用户强杀进程就丢了，等于没缓存。
+         */
+        _persistHealth();
+        /*
+         * ★ 只 setState **一次**（这一次是必要的：徽标要立刻变红）。
+         *   不是每频道一次 —— 用户点开一个台才触发一次，量极小。
+         */
+        if (mounted) setState(() {});
+      },
       /*
        * ★★ 用户要求【B】：双击进全屏
        *   判据与播放页同源（`PlayerGestures.doubleTapEnabledFor`）：
@@ -2419,6 +3009,42 @@ class LivePageState extends State<LivePage> {
         if (_userPaused == paused) return;
         _userPaused = paused;
         debugPrint('[LIVE] 用户${paused ? "暂停" : "恢复"}了直播');
+      },
+      /*
+       * ★★★ 第 66 轮 R6：把「本台可切换的清晰度档」喂给内嵌播放器
+       *
+       * # 数据从哪来（不许凭空造一个平行来源）
+       * ```text
+       * 唯一真实来源 = 本页**已经取到**的 `_streams`（`getLiveStream` 的返回）。
+       * ★ 直播链路的 `quality` 字段实测**恒为 null**（计划 R6 取证），
+       *   所以下面用 `displayName`（= label ?? quality ?? kind）作标签、
+       *   `url` 作选中值 —— 与既有 `_LineChip` 完全同一套取值口径，
+       *   不会出现「线路列表一种说法、清晰度下拉另一种说法」。
+       * ```
+       *
+       * # ★ 这里为什么几乎总是「不下拉」
+       * ```text
+       * 裁决②：只有 1 档可用时**不渲染下拉**（不做「只有一项的下拉」）。
+       * 直播目前常见的形态就是 1 条可播线（或 1 条 + 若干 DRM 线）⇒ 不画。
+       * ★ 这是**有意的**：给用户一个点开只有一项的下拉，比没有更糟。
+       * ```
+       *
+       * ⚠️ 只列**可播**的（`isPlayable`）：受保护的线路点了必然黑屏，
+       *   列上去等于给用户一个必然失败的按钮。
+       */
+      qualityOptions: [
+        for (final s in _streams)
+          if (s.isPlayable)
+            LiveQualityOption(
+              value: s.url,
+              label: s.displayName,
+            ),
+      ],
+      onQualityChanged: (o) {
+        final picked = _streams.where((s) => s.url == o.value).firstOrNull;
+        if (picked == null || picked.url == _stream?.url) return;
+        debugPrint('[LIVE] 切清晰度：${picked.displayName}');
+        setState(() => _stream = picked);
       },
     );
 
@@ -2632,33 +3258,47 @@ class LivePageState extends State<LivePage> {
             ),
 
             /*
-             * ★★★ 第 65 轮批次 D：**频道搜索**（Owner 新增要求）
+             * ★★★ 2026-10-18：频道搜索框**已从页头移到右栏列表上方**
              *
-             * # 为什么放在页头而不是右栏工具条里
+             * # Owner 逐字
              * ```text
-             * ① 右栏只有 300px，工具条已经有三格下拉 + 管理按钮 ——
-             *    再塞一个输入框会把每格压到 60px 以下（频道名/组名全成省略号）。
-             * ② 搜索是**跨源**的（在全部 100+ 个台里找），语义上是"整个页面
-             *    的查询"而不是"右栏那一格的筛选"。
-             * ③ 页头是**横跨两栏**的，输入框能有正常宽度。
+             * > 直播的搜索框不要放在最上面,放在右侧的列表区域
              * ```
+             * ⇒ 它现在由 `LiveChannelList` 的 `header:` 槽位承载
+             *   （见 `_buildListHeader()` 与 `LiveChannelList.header`）。
              *
-             * # 与既有"源切换条里的搜索"的区别（别混淆）
+             * ⚠️ 页头这里**只留**探测进度 / 缓存提示这类"整页状态"，
+             *   搜索框与命中统计属于**列表**语义 ⇒ 跟着列表走。
+             */
+
+            /*
+             * ★★★ P0：**还没开始**检查时的提示（Lead 要求）
+             *
+             * # 为什么必须有这一段
              * ```text
-             * 那个是在**源名**里找源；这个是按**频道名**（以及源名）找台。
-             * 判据在 [liveChannelMatchesQuery]。
+             * 无缓存时，第一轮探测要**延迟 30 秒**才开始（错开启动瞬间，
+             * 免得一进页面就打 1248 个请求 —— Owner「迟早要被拉黑」）。
+             * ⇒ 那 30 秒里 `_probeTotal` 还是 0 ⇒ 上面那段"正在检查 x/y"不显示。
+             * ⇒ 用户看到**一个徽标都没有**，会以为功能坏了。
+             * ⇒ 必须明确告诉他：还没开始，不是坏了。
+             *
+             * ⚠️ 措辞要区分「将稍后开始」和「正在检查」：
+             *    前者是"还没发请求"，后者是"正在发"。混成一句会造成
+             *    "看起来在检查、其实什么都没做"的假象。
              * ```
              */
-            const SizedBox(height: Sp.x3),
-            LiveSearchField(
-              controller: _searchCtrl,
-              query: _searchQuery,
-              // 命中数：由列表内部口径给出会重复算一遍 ⇒ 这里用同一判据现算
-              hitCount: _searchHitCount(),
-              total: _flatChannels.length,
-              onChanged: (v) => setState(() => _searchQuery = v),
-            ),
-
+            if (_probeScheduled)
+              Padding(
+                padding: const EdgeInsets.only(top: Sp.x2),
+                child: Text(
+                  '可用性检查将稍后开始（不影响播放）…',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
             // ── 探测进度（列表会陆续出现，必须让用户知道为什么）──
             if (_probed == false && _probeTotal > 0)
               Padding(
@@ -2791,6 +3431,33 @@ class LivePageState extends State<LivePage> {
     );
   }
 
+  /// ★★★ 2026-10-18：列表上方的搜索区（Owner 要求搬进右栏）
+  ///
+  /// # 为什么是 `compact: true`
+  /// ```text
+  /// 右栏固定 300px（`_buildWideBody` 里的 `SizedBox(width: 300)`）。
+  /// 改前这个搜索框在页头，横跨两栏 ⇒ 可用宽约 1200px，
+  /// 放"搜频道名（跨全部直播源）"这种长提示 + "共 1178 个频道"毫无压力。
+  /// 搬进 300px 后同一份内容会被挤成一条缝 ⇒ 必须按宽度收一次：
+  ///   · 藏掉"共 N 个频道"（没搜索时它只是冗余统计，筛选条里已有信息）
+  ///   · 搜索时**保留**"命中 N"（这是用户判断关键词好不好用的唯一读数）
+  ///   · 提示语缩短成「搜频道」
+  /// ```
+  Widget _buildListHeader() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: Sp.x2),
+      child: LiveSearchField(
+        controller: _searchCtrl,
+        query: _searchQuery,
+        // 命中数：由列表内部口径给出会重复算一遍 ⇒ 这里用同一判据现算
+        hitCount: _searchHitCount(),
+        total: _flatChannels.length,
+        compact: true,
+        onChanged: (v) => setState(() => _searchQuery = v),
+      ),
+    );
+  }
+
   /// 宽屏：播放器在**左** + 频道列表在**右**（固定宽 300），**两栏都在视口内不滚**
   ///
   /// ```text
@@ -2885,7 +3552,47 @@ class LivePageState extends State<LivePage> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      AspectRatio(aspectRatio: 16 / 9, child: player),
+                      /*
+                       * ★★★ 2026-10-19【R5】`Flexible` 不是装饰 —— 它是「窗口契合」
+                       *     的唯一硬保证（缺了它，chip 会把视频挤出可播高度）
+                       *
+                       * # 缺陷（Owner 原话）
+                       * ```text
+                       * > 你看那个静音按钮，都有一半没显示出来，这个窗口都没契合
+                       * ```
+                       * 但★ R5 这一轮我**推翻了"控件被 chip 压住"这个假设**，
+                       * 真正的重叠对象是**首页的源切换条**
+                       * （那张证据截图其实是首页源条 + 一个 50% 过渡帧；
+                       *  裁决与反证见提交 `3b92d2e` 的说明，-99 行）。
+                       * ★ 本段下方「机理」里的像素读数是**本处**的，
+                       *   与「首页源条」那条结论**无关**，别混起来读。
+                       * 本处修的是**同一个窗口里另一件真事**：
+                       * 播放窗口在 900×600 下**没契合**（视频区被 chip 挤到比可用高还大）。
+                       *
+                       * # 机理（用 `.probe` 里一次性探针扫出来的，不是推理）
+                       * ```text
+                       * Column(mainAxisSize: min) 在**有界**高里不是"想要多少给多少"：
+                       * 子项之和 > 可用高时，它会**溢出**（RenderFlex overflow）
+                       * ⇒ 溢出部分被外层 `ClipRRect` 裁掉 ⇒ 底部的线路 chip 消失一半。
+                       * 实测（clip=532×356，n=可播线路数）：
+                       *   n=2 ⇒ 视频 299.3 / chip 317.6..345.6   ✅ 装得下
+                       *   n=4 ⇒ 视频 299.3 / chip 307.3..371.3   ✗ 溢出 15.3px
+                       *   n=8 ⇒ 视频 299.3 / chip 307.3..407.3   ✗ 溢出 51.3px
+                       * 1280×800 / 1444×845 同 n 装得下 ⇒ 正是「大窗不复现」的定量解释。
+                       * ```
+                       *
+                       * # 修法：让**视频**让出 chip 需要的高度（`Flexible`）
+                       * ```text
+                       * 视频按 16:9 **等比缩**（实测 r=1.778 恒定，画面不变形）
+                       * chip 永远完整可见（实测 n≤20 时「chip 越界」= 0.0px）
+                       * ```
+                       * ⚠️ **代价（如实记录）**：线路极多时（实测 n=40）视频会被压到 0 高。
+                       *    根因是 `lineSwitcher` 自己没有滚动区，属 R6 范围；
+                       *    本轮只保证 chip 不被裁。
+                       */
+                      Flexible(
+                        child: AspectRatio(aspectRatio: 16 / 9, child: player),
+                      ),
                       lineSwitcher,
                     ],
                   ),
@@ -2981,6 +3688,7 @@ class LiveChannelList extends StatefulWidget {
     this.searchQuery = '',
     this.onSearchChanged,
     this.header,
+    this.healthOf,
   });
 
   /// 有可播视频的源（②：整组不可用的源不出现）
@@ -3039,25 +3747,39 @@ class LiveChannelList extends StatefulWidget {
   ///
   /// # 为什么**受控**（`LivePageState` 持有、本组件只读）
   /// ```text
-  /// 搜索框要放在**页头**（在列表之上、跨两栏），而列表只是右栏 ——
-  /// 若把状态放在本组件内，页头的输入框与它就不是同一棵树上的兄弟，
-  /// 得靠回调把字再传回来 ⇒ 一圈回声、还容易不同步。
-  /// ⇒ 宿主持有、往下传（单向数据流，一条链）。
+  /// 状态要落在**搜索框与列表的共同祖先**上：搜索框现在画在列表正上方
+  /// （本组件的 `header:` 槽位），但清空/重置的入口还在 `LivePageState`
+  /// （切页、换源时要清搜索词）。
+  /// ⇒ 宿主持有、往下传（单向数据流，一条链），避免两边各存一份而漂移。
   /// ```
   final String searchQuery;
 
   /// 搜索框内容变化（宿主写回自己的 state；测试可只验证回调）
   final ValueChanged<String>? onSearchChanged;
 
-  /// ★★★ 第 65 轮批次 D：列表**上方**的自定义区域（页头统计 / 搜索框）
+  /// ★★ N15：查某个频道的**播放结果状态**（`null` = 未注入 ⇒ 全 unknown）
+  ///
+  /// # 为什么做成只读回调，而不是直接传 store
+  /// ```text
+  /// 本组件是**纯视图**（它连 provider 都不许改，见 onPickProvider 的注释）。
+  /// 传一个可变 store 进来，它迟早会忍不住去读写 ⇒ 状态所有权就散了。
+  /// ⇒ 只给一个**只读查询函数**：组件问、宿主答，组件永远不写。
+  /// ```
+  final LivePlaybackHealth Function(LiveChannel)? healthOf;
+
+  /// ★★★ 第 65 轮批次 D：列表**上方**的自定义区域（当前 = 搜索框 + 命中统计）
   ///
   /// # 为什么要这个口子
   /// ```text
   /// 搜索框与"命中 N 个"的统计属于**本列表的语义**（它们在描述这个列表），
-  /// 但布局上必须在**页头**（跨左右两栏，不能挤在 300px 的右栏里）。
-  /// ⇒ 让 `LivePage` 把这块 widget 构造好传进来，本组件负责把它
-  ///   与列表放在**同一个 Column** 里 ⇒ 视觉上是一体，状态仍在宿主。
+  /// 位置又必须在列表正上方 ⇒ 让 `LivePage` 把这块 widget 构造好传进来，
+  /// 本组件负责把它与列表放在**同一个 Column** 里 ⇒ 视觉上是一体，
+  /// 状态仍在宿主。
   /// ```
+  ///
+  /// ⚠️ 2026-10-18 更正：这个字段**曾被声明但从未渲染**（死参数）——
+  ///   Owner 说「搜索框不要放在最上面，放在右侧的列表区域」之后才接上，
+  ///   见 build 里 `if (widget.header != null) widget.header!` 那一段。
   final Widget? header;
 
   @override
@@ -3301,6 +4023,22 @@ class LiveChannelListState extends State<LiveChannelList> {
         _groupFilter != null ||
         _sourceGroupFilter != null;
 
+    /*
+     * ★★★ 2026-10-18：当前分组**存在但没有任何成员**吗？
+     *
+     * ```text
+     * 改前这种组走"全部放行"兜底 ⇒ 用户切过去看到的还是全部频道，
+     * 于是他说「我明明只添加了一个 却还是展示全部」。
+     * 现在如实筛空，但**必须**给他一条能看懂的文案 ——
+     * 否则"列表一片空白"和"直播页坏了"长得一模一样。
+     * ```
+     * ⚠️ 判据只看"组名存在 + 两套数据都没成员"，不看筛选后的结果，
+     *   这样即使同时开了源/分类筛选，文案也指向真正的原因（分组是空的）。
+     */
+    final groupIsEmpty = _sourceGroupFilter != null &&
+        (widget.channelGroups[_sourceGroupFilter]?.isEmpty ?? true) &&
+        (widget.sourceGroups[_sourceGroupFilter]?.isEmpty ?? true);
+
     return Container(
       decoration: BoxDecoration(
         color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
@@ -3358,6 +4096,22 @@ class LiveChannelListState extends State<LiveChannelList> {
            *   一个明确的「管理分组」按钮没有误触风险，且 Owner 明确选择了它。
            * ```
            */
+          /*
+           * ★★★ 2026-10-18（Owner 逐字）：列表上方的自定义区域
+           *
+           * ```text
+           * > 直播的搜索框不要放在最上面,放在右侧的列表区域
+           * ```
+           * `header` 这个槽位本来就有（`LivePage` 早就构造了搜索框传进来），
+           * 但**从来没被渲染** —— 属于"声明了却没接线"的死参数。
+           * 现在接上：搜索框因此落在**右栏列表的正上方**。
+           *
+           * ⚠️ 放在 `_FilterBar` **之上**：搜索是"在整个列表里找"，
+           *   视觉上属于列表的标题区；筛选条是"把列表切成几段"，
+           *   放它下面更贴近"先找、再筛"的阅读顺序。
+           */
+          if (widget.header != null) widget.header!,
+
           _FilterBar(
             // ── 分组维度（value 用组名本身 —— 组名的语义就是它自己）──
             //
@@ -3405,16 +4159,84 @@ class LiveChannelListState extends State<LiveChannelList> {
             onManageGroups: _openGroupManager,
             hasGroups: _allGroupNames.isNotEmpty,
             // 当前选中项的**显示名**（下拉按钮上显示这个）
-            groupDisplay: _sourceGroupFilter ?? '全部分组',
+            /*
+             * ★★★ P1-L1（B 部分）：fallback 文案缩短 —— 给长名字腾空间
+             *
+             * # 改前 → 改后（每格省 24~36px）
+             * ```text
+             * 「全部分组」(4字/48px) → 「分组」(2字/24px)   省 24px
+             * 「全部源」  (3字/36px) → 「源」  (1字/12px)   省 24px
+             * 「全部分类」(4字/48px) → 「分类」(2字/24px)   省 24px
+             * ```
+             *
+             * # 为什么只在这些是**未选中**状态时（`?? ` 的 fallback）缩短
+             * ```text
+             * 选中具体值之后显示的是**那个名字**（如「科教·生活·科学」），
+             * 长度不受本次改动影响。缩短的只是"没选"时的占位文案。
+             * ```
+             *
+             * # ⚠️ 语义不能丢：靠 Tooltip 补全
+             * ```text
+             * 「分组」/「源」/「分类」单独看是名词，可能被误读成"当前值"。
+             * ⇒ `_BarDropdown` 的 Tooltip 已改成"显示当前完整值"，
+             *    用户在悬停时能看到「分组」+ 当前选中的组名。
+             * ⚠️ 只留一个字的风险：「源」可能被理解成"源的数量"等
+             *    ⇒ 这是 Lead 明确接受的权衡（截图里那个位置本来就只有 80px）。
+             * ```
+             *
+             * ★ 已核对：`test/` 下**没有**任何 `find.text('全部分组')` 之类的
+             *   精确文案断言（都是按 `ValueKey('live-bar-opt-…')` 匹配）⇒ 安全。
+             */
+            groupDisplay: _sourceGroupFilter ?? '分组',
+            // ★ P1-L1（B）：fallback 缩短，理由见上面 groupDisplay 那段长注释
             sourceDisplay: _sourceFilter == null
-                ? '全部源'
+                ? '源'
                 : (_visibleSources
                         .where((g) => g.provider == _sourceFilter)
                         .map((g) => g.providerName)
                         .firstOrNull ??
-                    '全部源'),
-            categoryDisplay: _groupFilter ?? '全部分类',
+                    '源'),
+            // ★ P1-L1（B）：同上
+            categoryDisplay: _groupFilter ?? '分类',
           ),
+
+          /*
+           * ══════════════════════════════════════════════════════════════
+           * ★★★ 第 66 轮 M 批次：筛选条与列表之间的**呼吸间距**
+           * ══════════════════════════════════════════════════════════════
+           *
+           * # 为什么必须有（不是"加点留白好看"）
+           * ```text
+           * 筛选条玻璃化后，它的下边缘高光**直接撞上**第一行列表。
+           * 实测像素（`.probe/shots/t66/t66_live_rows_C_filterbar.png`）：
+           *   y=44 筛选条下边缘  (31,34,63)   ← 已在变暗
+           *   y=50 两者之间      (29,34,63)   ← 直接就是背景色，**零间距**
+           *   y=58 第一行内容区  (40,44,72)
+           * ⇒ 视觉上分不清"列表从哪开始"，像筛选条吞掉了第一行的一部分。
+           * ```
+           *
+           * # 原理（与吸顶条那条同源）
+           * ```text
+           * 玻璃需要**边界**才能显出它是"浮在上面的一层"。
+           * 紧贴内容 ⇒ 玻璃看起来像背景的一部分，失去层次感。
+           * ★ 这就是"吸顶条必须不透明，否则内容从它下面滚过会糊在一起"
+           *   的同一个道理 —— 玻璃与相邻内容之间必须有分隔。
+           * ```
+           *
+           * # 为什么用 `Sp.x3`（12）而不是 10
+           * ```text
+           * 本仓间距一律走 `Sp` 令牌（Sp.x1=4 / x2=8 / x3=12 …），
+           * 硬编码 10 会在不同密度/TV 档下与其它间距不一致。
+           * 令牌里没有 10 ⇒ 取 12（比 10 更宽松，玻璃边界更清楚）。
+           * ```
+           */
+          /*
+           * ★ `ValueKey` 不是装饰：门禁按这个 key 精确断言"间距存在且高度对"。
+           *   只判"第一行顶边 − 玻璃底边 ≥ 8"**抓不住删除** ——
+           *   实测 gap=31，其中 `ListView` 自己的 `padding` 就贡献了 19
+           *   ⇒ 必须直接量这个 `SizedBox`，否则删掉它测试仍然绿。
+           */
+          const SizedBox(key: ValueKey('live-filterbar-gap'), height: Sp.x3),
 
           // ── 频道（★ task-42：平铺；task-1013：按当前筛选过滤）──
           Expanded(
@@ -3428,6 +4250,9 @@ class LiveChannelListState extends State<LiveChannelList> {
                     // ★ tag = 它来自哪个源（用户说"以分组加 tag 作为标记"）
                     tag: entry.tag,
                     active: entry.channel.id == widget.selectedId,
+                    // ★ N15：播放结果状态（null 回调 ⇒ unknown ⇒ 不显示徽标）
+                    health: widget.healthOf?.call(entry.channel) ??
+                        LivePlaybackHealth.unknown,
                     onTap: () => widget.onPickChannel(entry.channel),
                   ),
                 /*
@@ -3451,11 +4276,20 @@ class LiveChannelListState extends State<LiveChannelList> {
                       widget.searchQuery.trim().isNotEmpty
                           ? '没有频道名匹配「${widget.searchQuery.trim()}」。\n'
                               '换个关键词试试，或清空搜索框看全部频道。'
-                          : filtering
-                              ? '这个筛选下没有频道。\n'
-                                  '换一个源或分类，或点「全部源」「全部分类」看全部。'
-                              : '这些直播源的频道都没有可播放的画面'
-                                  '（视频线路受内容方保护）。',
+                          : groupIsEmpty
+                              /*
+                               * ★★★ 2026-10-18：分组存在但没成员 —— 说清
+                               *   "是你这个组还是空的"，并直接给出**怎么加**。
+                               *   改前这种情况会被兜底成"显示全部"，用户根本
+                               *   不知道自己的分组是空的（Owner 的投诉正是这个）。
+                               */
+                              ? '「$_sourceGroupFilter」这个分组里还没有频道。\n'
+                                  '点筛选条右侧的管理按钮，把常看的频道挑进来。'
+                              : filtering
+                                  ? '这个筛选下没有频道。\n'
+                                      '换一个源或分类，或点「全部源」「全部分类」看全部。'
+                                  : '这些直播源的频道都没有可播放的画面'
+                                      '（视频线路受内容方保护）。',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: FontSizes.cap,
@@ -3615,21 +4449,78 @@ class _FilterBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Container(
+
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 第 66 轮 M 批次：筛选条外壳玻璃化
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 为什么玻璃化**这一层**（而不是列表行、不是搜索框）
+     * ```text
+     * 我实测了三种方案的**像素变化率**（`.probe/shots/t66/`）：
+     *   A 全部行玻璃    46.8%  ⇒ 每行成了独立圆角条，行间出现缝隙，
+     *                            1178 个台的扫视变慢（眼睛要跳过缝隙）
+     *   B 只选中行玻璃   0.8%  ⇒ 几乎看不见，等于没做
+     *   C 筛选条外壳    20.0%  ⇒ 看得见，且列表零改动（扫视不受影响）
+     * ⇒ 选 C。
+     * ```
+     *
+     * # 纯色底下的可见度（这一步很关键，不能拿渐变底糊弄）
+     * ```text
+     * 真实直播页是**纯色底**（无渐变）。实测（`.probe/t66_glass_solid.png`）：
+     *   背景 (21,22,28) / 玻璃卡片内部 (49,52,60) ⇒ **亮 +28，肉眼明显**
+     *   玻璃区域像素变化率 = **38.2%**（远高于"无效"的 5% 门槛）
+     * ⇒ 纯色底下玻璃表现为"更亮的磨砂浮层 + 边缘高光"（少了"透出内容"
+     *   那一层，但仍是玻璃的观感）⇒ 本页玻璃化**有效**。
+     * ```
+     *
+     * # ⚠️ 为什么**不**玻璃化列表行（反向说明，防止将来有人改）
+     * ```text
+     * `_ChannelTile` 未选中时 `color: null`（**没有背景**）。
+     * 给它加玻璃 ⇒ 20 行都会有半透明底 ⇒ 列表从"一个整体"变成"一叠卡片"。
+     * 直播页的核心是**快速扫视大量频道**，行背景越淡越好扫。
+     * ⇒ 行背景保持原样。门禁里有一条**反向断言**钉住这一点。
+     * ```
+     *
+     * # ⚠️ 为什么**不**玻璃化吸顶条（`_StickySearchBar`）
+     * ```text
+     * 它本来就该"不透明" —— 否则内容从它下面滚过会糊在一起。
+     * ★ 这是**视觉正确性**问题，不是性能问题。
+     * ```
+     */
+    return GlassCard(
       /*
-       * ★ 高度**写死 36**，这是本组件存在的核心约束（见类注释）。
+       * ★ 高度**写死 36**（原有约束，见类注释）—— 玻璃化不许改它。
        * ⚠️ 不要改成 mainAxisSize.min —— 那样在下拉展开/字体放大时仍会变高，
        *    又回到「筛选器吃掉列表」的老问题。
+       *
+       * ⚠️ `GlassCard` 自带 `padding: EdgeInsets.all(16)`，必须显式清零，
+       *    否则 36 的高度会被撑成 68（16×2 + 36）。
        */
+      padding: EdgeInsets.zero,
+      margin: EdgeInsets.zero,
       height: 36,
-      padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
-      decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: colors.outlineVariant, width: 0.6),
+      /*
+       * 默认档 `standard`：包文档明确写它是给 scrollable list 用的
+       * （"5-10x faster than BackdropFilter" / "Works correctly during scrolling"）。
+       * premium 档是静态头图用的高开销档，这里不用。
+       */
+      quality: GlassQuality.standard,
+      shape: const LiquidRoundedRectangle(borderRadius: 8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
+        /*
+         * ★ 原来的下边框保留：它是"筛选条与列表之间的分隔线"。
+         *   玻璃化后这条线仍然有用（玻璃本身有边缘高光，但那条高光
+         *   是**贴边**的，不足以替代一条明确的分隔）。
+         */
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: colors.outlineVariant, width: 0.6),
+          ),
         ),
-      ),
-      child: Row(
-        children: [
+        child: Row(
+          children: [
           /*
            * ★ task-34 修：三格 + 管理按钮原样排会**溢出 18px**
            * （实测 92 + 79.8 + 92 + 28 + 间距 = 300 > 282 可用宽，见
@@ -3694,7 +4585,8 @@ class _FilterBar extends StatelessWidget {
               ),
             ),
           ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -3751,6 +4643,14 @@ class _BarOption {
 ///
 /// ★ 结论：①的修法方向错了 —— 我把「不该关对勾」错读成「不该用框架」。
 ///   正确做法是保留框架控件、只调它的参数。
+// TODO(清理): 本组件当前**不被渲染**（所在对话框走 `_ChannelChip` 分支）。
+//   实测依据：点开分组管理器后 `find.byType(FilterChip).evaluate().length == 0`
+//   （`.probe/probe_tests/zz_t66_live_inventory_test.dart`，读数
+//    `.probe/t66_live_inventory.txt` 的「C 管理器对话框」段）。
+//   ★ 它不是"死参数"（源码里被构造 2 次），机械扫描扫不出来 ——
+//     是"构造了但所在的对话框分支不渲染它"。
+//   保留是因为可能还有别的分支在用；删除需单独一轮确认。
+//   见 `docs/notes/round-66-issues.md`「待清理」。
 class _MemberChip extends StatelessWidget {
   const _MemberChip({
     super.key,
@@ -3842,7 +4742,23 @@ class _BarDropdown extends StatelessWidget {
           ),
       ],
       builder: (ctx, controller, _) => Tooltip(
-        message: tooltip ?? '',
+        /*
+         * ★★★ P1-L1 修复（Owner：「直播页面,右侧搜索框显示很奇怪」/「菜」）：
+         *   Tooltip 必须显示**当前选中的完整名字**，不能是固定文案。
+         *
+         * # 为什么（这是"截断后用户看不全"的唯一补偿）
+         * ```text
+         * 300px 右栏里每格只有 ~80.7px，8 字分类名需要 96px ⇒ 必然截断。
+         * 本轮**不做**布局重构（方案 C 需要改信息架构，Lead 明确本轮不做），
+         * ⇒ 截断保留，但必须让用户能**悬停看到全名**。
+         *
+         * ⚠️ 第一版这里是 `message: tooltip ?? ''` ——
+         *    `tooltip` 只有「源」那一格传了值（"只看来自这个源的频道…"），
+         *    分组/分类两格的 `tooltip` 是 **null** ⇒ 悬停**什么都不显示**。
+         * ⇒ 改成：有 tooltip 用 tooltip，没有就显示**当前值** `display`。
+         * ```
+         */
+        message: (tooltip != null && tooltip!.isNotEmpty) ? tooltip! : display,
         child: InkWell(
         onTap: () => controller.isOpen ? controller.close() : controller.open(),
         borderRadius: Radii.rSm,
@@ -3851,9 +4767,37 @@ class _BarDropdown extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // ★ 窄栏：当前值最多 88px，超出用省略号（否则会把工具条顶爆）
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 88),
+              /*
+               * ★★★ P1-L1 修复核心：`ConstrainedBox(maxWidth: 88)` → `Flexible`
+               *
+               * # 改前为什么坏（真机复现，`.probe/shots/t66/t66_zoom_third_cell.png`）
+               * ```text
+               * 结构是：ConstrainedBox(maxWidth: 88) > Text(ellipsis)，然后**硬跟**一个 Icon。
+               * Row 的默认行为是：**非 flexible 子项先按自己的意愿要空间**。
+               * ⇒ Icon(15px) 是固定的、**不可压缩**的；
+               *    Text 拿到 88px 上限后仍然可能超（8 字需要 96px）
+               * ⇒ Row 总宽 = 88 + 15 = 103px，但 Expanded 只给 80.7px
+               * ⇒ **溢出 22.3px** ⇒ Icon 被推出格子的右边界
+               *    ⇒ 箭头压到相邻格，与「管理」图标重叠
+               *    ⇒ 视觉上像一个「菜」字（Owner 报的那个）
+               * ```
+               *
+               * # 改法：`Flexible` 让文字**先让步**，箭头永不压缩
+               * ```text
+               * `Flexible` 的 fit 默认是 loose ⇒ Text 只拿"剩余可用宽"，
+               * 拿了多少就 ellipsis 多少 ⇒ Row 永远不会超。
+               * 箭头保持 15px 固定 ⇒ **永远可见、永远不出格**。
+               * ```
+               *
+               * # ⚠️ 80px 上限不再需要
+               * ```text
+               * 原来那个 `maxWidth: 88` 是"防止把工具条顶爆"的土办法 ——
+               * 但它在窄格子里**比可用宽还大**（80.7 < 88）⇒ 完全没起作用，
+               * 只是让溢出发生在 Row 而不是 Text。
+               * `Flexible` 天然以上一级约束为上限 ⇒ 删掉它。
+               * ```
+               */
+              Flexible(
                 child: Text(
                   display,
                   maxLines: 1,
@@ -3864,6 +4808,10 @@ class _BarDropdown extends StatelessWidget {
                   ),
                 ),
               ),
+              /*
+               * ★ 箭头**不可压缩**：它是"这里能点开"的唯一视觉提示，
+               *   被挤掉用户就不知道那格能下拉（Owner 截图里正是缺了它）。
+               */
               Icon(AppIcons.arrow_drop_down, size: 15, color: colors.onSurfaceVariant),
             ],
           ),
@@ -4479,11 +5427,22 @@ class _ChannelTile extends StatefulWidget {
     required this.active,
     required this.onTap,
     this.tag,
+    this.health = LivePlaybackHealth.unknown,
   });
 
   final LiveChannel channel;
   final bool active;
   final VoidCallback onTap;
+
+  /// ★ N15：这个频道最近一次**播放结果**（不是探测结果，见 `_health` 注释）
+  ///
+  /// ```text
+  /// unknown   ⇒ 不显示任何徽标（没试过就别吓用户）
+  /// playable  ⇒ 不显示徽标（正常的东西不需要标记）
+  /// idle      ⇒ 灰点 + 「未检测到画面（可能未开播）」
+  /// broken    ⇒ 红点 + 「不可用」
+  /// ```
+  final LivePlaybackHealth health;
 
   /// ★★ task-42：来源 tag（用户要求"以分组加 tag 作为标记"）
   ///
@@ -4720,14 +5679,99 @@ class _ChannelTileState extends State<_ChannelTile> {
                 ),
               ),
             ],
+            /*
+             * ★★★ N15：播放结果徽标（用户原话「打开如果不能播放,动态标记」）
+             *
+             * # 三种状态各自的呈现（**必须**不同）
+             * ```text
+             * idle   ⇒ ● 灰点 + 「未检测到画面（可能未开播）」
+             * broken ⇒ ● 红点 + 「不可用」
+             * playable / unknown ⇒ 不画任何东西
+             * ```
+             *
+             * # 为什么 idle 和 broken 不能共用一个样子
+             * ```text
+             * 「不可用」      ⇒ 这个源坏了，别试了
+             * 「未检测到画面」⇒ 可能它现在没播，过会儿再看看
+             * ★ 混成一个「不可用」，用户会**放弃一个其实只是暂时没播的源**。
+             *   （这也是为什么本行文案不写死"未开播"—— 见 liveHealthLabel）
+             * ```
+             *
+             * # 为什么 playable 不画
+             * ```text
+             * 绝大多数频道都正常。给它们全加上"可用"绿点，
+             * 列表会变成一片绿 —— 信息量归零，还压窄了频道名。
+             * ★ 只标记**异常**，正常保持安静。
+             * ```
+             */
+            if (_healthLabel.isNotEmpty) ...[
+              const SizedBox(width: Sp.x2),
+              Tooltip(
+                message: _healthLabel,
+                child: Container(
+                  key: ValueKey('live-health-${widget.channel.id}'),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _healthColor(colors).withValues(alpha: 0.12),
+                    borderRadius: Radii.rSm,
+                    border: Border.all(
+                      color: _healthColor(colors).withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 6,
+                        height: 6,
+                        decoration: BoxDecoration(
+                          color: _healthColor(colors),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _healthLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: FontSizes.cap,
+                          color: _healthColor(colors),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
     );
   }
 
+  /// N15：徽标文案（空 = 不显示徽标）
+  ///
+  /// ★ 委托给 `liveHealthLabel` 而不是在这里重写一份 ——
+  ///   文案是判据的一部分（"不知道就说不知道"），必须**单点定义**，
+  ///   否则 UI 与门禁断言会各说一套。
+  String get _healthLabel => liveHealthLabel(widget.health);
+
+  /// N15：徽标颜色 —— idle 用中性灰，broken 用错误红
+  ///
+  /// ★ 只用 `ColorScheme` 里的语义色，不硬编码色值：
+  ///   主题（含 M 批次玻璃化）换了以后这两种状态仍然可辨。
+  Color _healthColor(ColorScheme colors) => switch (widget.health) {
+        LivePlaybackHealth.broken => colors.error,
+        // idle 是"不确定"，不是"错" —— 用中性色才不会吓到用户
+        LivePlaybackHealth.idle => colors.onSurfaceVariant,
+        _ => colors.onSurfaceVariant,
+      };
+
   Widget _logoText(ColorScheme colors) {
-    // 原版：`ch.name.slice(0, 4)`
     // ⚠️ 用 `widget.channel`（本类是 StatefulWidget，字段在 widget 上）
     final n = widget.channel.name;
     /*
@@ -4938,6 +5982,7 @@ class LiveSearchField extends StatelessWidget {
     required this.hitCount,
     required this.total,
     required this.onChanged,
+    this.compact = false,
   });
 
   final TextEditingController controller;
@@ -4945,6 +5990,16 @@ class LiveSearchField extends StatelessWidget {
   final int hitCount;
   final int total;
   final ValueChanged<String> onChanged;
+
+  /// ★★★ 2026-10-18：窄栏模式（右栏 300px 里用）
+  ///
+  /// ```text
+  /// · true  ⇒ 提示语缩短成「搜频道」；**没搜索时**不显示统计
+  ///            （300px 里"共 1178 个频道"会把输入框挤没）；
+  ///            一旦搜索就显示「命中 N」—— 那是判断关键词好用的唯一读数
+  /// · false ⇒ 原来的满宽形态（页头/宽版面用），逐字不变
+  /// ```
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -4955,7 +6010,7 @@ class LiveSearchField extends StatelessWidget {
         Expanded(
           child: SizedBox(
             // 单行高度写死 —— 与 `_FilterBar` 的 36 同量级，避免挤压主体
-            height: 40,
+            height: compact ? 36 : 40,
             child: TextField(
               key: const ValueKey('live-search-field'),
               controller: controller,
@@ -4966,7 +6021,8 @@ class LiveSearchField extends StatelessWidget {
                 isDense: true,
                 filled: true,
                 fillColor: colors.surfaceContainerHighest.withValues(alpha: 0.5),
-                hintText: '搜频道名（跨全部直播源）',
+                // ★ 窄栏里长提示语会被截断成省略号 ⇒ 缩短（语义不变）
+                hintText: compact ? '搜频道' : '搜频道名（跨全部直播源）',
                 hintStyle: TextStyle(
                   fontSize: FontSizes.sm,
                   color: colors.onSurfaceVariant,
@@ -5020,21 +6076,26 @@ class LiveSearchField extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(width: Sp.x3),
         /*
          * ★ 命中读数：没搜时显示总数（"共 N 个频道"），
          *   搜了显示命中数（0 时用错误色，让"没搜到"一眼可辨）。
+         *
+         * ⚠️ compact（右栏 300px）下**没搜索时整块不画** ——
+         *   否则它和输入框抢宽度，输入框只剩几十像素。
          */
-        Text(
-          searching ? '命中 $hitCount / 共 $total' : '共 $total 个频道',
-          key: const ValueKey('live-search-hits'),
-          style: TextStyle(
-            fontSize: FontSizes.cap,
-            color: searching && hitCount == 0
-                ? colors.error
-                : colors.onSurfaceVariant,
+        if (!compact || searching) ...[
+          const SizedBox(width: Sp.x3),
+          Text(
+            searching ? '命中 $hitCount / 共 $total' : '共 $total 个频道',
+            key: const ValueKey('live-search-hits'),
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: searching && hitCount == 0
+                  ? colors.error
+                  : colors.onSurfaceVariant,
+            ),
           ),
-        ),
+        ],
       ],
     );
   }

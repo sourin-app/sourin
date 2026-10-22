@@ -703,7 +703,10 @@ impl AppState {
                             cfg,
                             state.db.clone(),
                             state.device_id.clone(),
-                        ) {
+                        )
+                        /* ★ 挂 data_dir —— 凭据平面要读 `<data_dir>/plugins/.data/` */
+                        .map(|e| e.with_data_dir(state.data_dir.clone()))
+                        {
                             Ok(engine) => {
                                 *state.sync.write().await = Some(Arc::new(engine));
                                 log::info!(

@@ -24,7 +24,7 @@ const REQUIRED: Record<string, string[][]> = {
   ],
   implemented: [
     ["## Decision", "## 决定", "## 决策"],
-    ["## Consequences", "## 后果", "## 影响", "## 结果", "## 结果与代价", "## 影响与验证"],
+    ["## Consequences", "## 后果", "## 影响", "## 结果", "## 结果与代价", "## 影响与验证", "## 后果与边界"],
   ],
   rejected: [
     ["## Proposal", "## 提议", "## 方案", "## 提案"],
@@ -38,7 +38,7 @@ const BANNED_IMPLEMENTED = new Set([
   "## 验收标准", "## 验收条件", "## 接受标准",
 ]);
 
-const ALTERNATIVES_RE = /^## (?:Alternatives considered|.{0,8}?(?:替代方案|备选(?:方案)?))$/;
+const ALTERNATIVES_RE = /^## (?:Alternatives considered|.{0,8}?(?:替代方案|备选(?:方案)?|其他做法))$/;
 const FORMAT_ADOPTED = "2026-07-05";
 const GRANDFATHER = "<!-- agent-note-format: alternatives-not-recorded (pre-format Agent Note) -->";
 

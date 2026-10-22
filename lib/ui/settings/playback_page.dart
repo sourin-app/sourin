@@ -149,6 +149,8 @@ import '../../core/download_queue.dart';
 import '../../core/sourin_api.dart';
 import 'export_dir.dart';
 import '../tokens.dart';
+// ★ 2026-10-18（Owner 第 12 条）：toast 统一走这里（`showAppToast`）
+import '../widgets/app_toast.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
 // ★ ④「回读 mpv 设置」按钮直接调 player_page 的探针钩子 —— 那是**生产**
@@ -161,6 +163,41 @@ const List<XTypeGroup> _logGroups = <XTypeGroup>[
   XTypeGroup(label: '日志文件', extensions: <String>['log', 'txt']),
   XTypeGroup(label: '全部文件'),
 ];
+
+/// 「播放器临时缓存」那一行显示的文案
+///
+/// # ★★★ 为什么抽成顶层纯函数（2026-10-18 第 66 轮自审发现）
+///
+/// 原来这段是**内联三元表达式**，而守它的门禁（`zz_t66_mpv_cache_ui_test.dart`）
+/// 全部读源码字符串：
+/// ```text
+/// expect(src.contains('_mpvBytes > 0'), isTrue)
+/// expect(src.contains("'0 B'"), isFalse)
+/// expect(src.contains('humanBytes(_mpvBytes)'), isTrue)
+/// ```
+/// **实测（我真的注入了）**：把三元表达式的两个分支**写反** ⇒
+/// ```text
+/// 0 字节时显示「0 B · 仅不可 seek 的流会落盘」
+/// >0   时显示「不占磁盘（网络流在内存里缓存）」
+/// ```
+/// 用户看到的信息**完全相反**（正是该文件开头描述的那个坑），
+/// 而上面那些 `contains` **一条都没红**，`+5 All tests passed`。
+///
+/// ⇒ 抽成纯函数后，门禁可以直接断言**返回值**，分支写反必红：
+/// ```text
+/// expect(mpvCacheLabel(0), contains('不占磁盘'));
+/// expect(mpvCacheLabel(2048), contains('2.0 KB'));
+/// ```
+///
+/// ★ 这是「判据要读真实结果，不能读喂进去的那个值」的直接后果 ——
+///   源码里有 `_mpvBytes > 0` 这几个字符，**不等于**分支方向是对的。
+String mpvCacheLabel(int bytes) {
+  if (bytes <= 0) {
+    // 真的没落盘：说清"为什么是 0"，别让用户以为缓存坏了、更别让他去清 0 个文件
+    return '不占磁盘（网络流在内存里缓存）';
+  }
+  return '${ClipDownloader.humanBytes(bytes)} · 仅不可 seek 的流会落盘';
+}
 
 class PlaybackSettingsPage extends StatefulWidget {
   const PlaybackSettingsPage({super.key});
@@ -204,7 +241,8 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
   bool _mpvReadBusy = false;
 
   bool _logBusy = false;
-  String? _toast;
+  // ★ 2026-10-18（Owner 第 12 条）：`String? _toast` 字段已删除 ——
+  //   `_flash` 改走 `showAppToast`，本页不再自己持有提示状态。
   String _lastExportPath = '';
   int _lastExportBytes = 0;
 
@@ -264,12 +302,18 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
     }
   }
 
+  /// 弹一条操作反馈 —— ★ 2026-10-18（Owner 第 12 条）：改走**统一 toast**
+  ///
+  /// Owner 原话：「统一toast提示样式,不要自己写,要用自带的」。
+  ///
+  /// 改前是本页自写的一套（`setState(_toast)` + 3 秒 `Future.delayed`，
+  /// 外加 build() 里一个 `_toast != null` 的文本行）。
+  /// 现在统一到 `lib/ui/widgets/app_toast.dart` 的 `showAppToast`：
+  /// 宿主挂在 `MaterialApp.builder`（Navigator 之外）⇒ 本页是 push 上来的
+  /// 二级路由也天然能弹，且与设置页/详情页**同一套样式**。
   void _flash(String msg) {
     if (!mounted) return;
-    setState(() => _toast = msg);
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted && _toast == msg) setState(() => _toast = null);
-    });
+    showAppToast(context, msg);
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -546,13 +590,8 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
         _cacheBlock(colors),
         const SizedBox(height: Sp.x5),
         _logBlock(colors),
-        if (_toast != null) ...[
-          const SizedBox(height: Sp.x4),
-          Text(
-            _toast!,
-            style: TextStyle(fontSize: FontSizes.sm, color: colors.primary),
-          ),
-        ],
+        // ★ 2026-10-18（Owner 第 12 条）：本页不再画提示行 ——
+        //   统一由 shell 层的 `ToastHost` 承担（见 `_flash` 的说明）。
       ],
     );
   }
@@ -567,7 +606,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
       ),
       children: [
         Text(
-          '限制**同时进行**的片段下载任务数。排队中的任务不占带宽，'
+          '限制「同时进行」的片段下载任务数。排队中的任务不占带宽，'
           '前面的下载完成一个，后面的才开始一个。',
           style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
         ),
@@ -628,7 +667,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
            */
           '片段缓存入口：播放页 → 播放设置（齿轮）→ 「下载本集到缓存」。'
           '那里用的就是上面这个上限。\n\n'
-          '★ 整片下载（详情页头部的「下载」按钮）**不占**这个上限 —— '
+          '★ 整片下载（详情页头部的「下载」按钮）「不占」这个上限 —— '
           '它落在「视频 / 源影 / <剧名>/」下，是用户自己的文件，'
           '不会被自动淘汰。',
           style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
@@ -648,7 +687,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
       children: [
         Text(
           '「下载」按钮（详情页头部 / 每一集）落在哪个目录、同时下几集。'
-          '与上面「片段下载并发」是**两笔账**：片段进缓存会被自动淘汰，'
+          '与上面「片段下载并发」是「两笔账」：片段进缓存会被自动淘汰，'
           '整片是你自己的文件，永远不会被自动删。',
           style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
         ),
@@ -772,8 +811,8 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
       ),
       children: [
         Text(
-          '应用数据目录里有**三个**缓存目录，用途不同、能不能删也不同。'
-          '下面每个数字都是**真实读盘**得到的，不是估算。',
+          '应用数据目录里有「三个」缓存目录，用途不同、能不能删也不同。'
+          '下面每个数字都是「真实读盘」得到的，不是估算。',
           style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
         ),
         const SizedBox(height: Sp.x4),
@@ -810,13 +849,48 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
           value: '${ClipDownloader.humanBytes(_cacheBytes)}'
               '（$_cacheFiles 个文件）· clip-cache',
         ),
+        /*
+         * ★★★ 2026-10-18（N14 取证结论）：这一行原本**永远显示 0 B**
+         *
+         * # 实测事实
+         * ```text
+         * <dataDir>/mpv-cache 目录**始终是空的**（探针 0 字节；
+         * 用户真实目录 %APPDATA%\app.sourin.player\mpv-cache 也是空的）
+         * 原因：mpv 对**可 seek 的 HTTP Range 源不落盘**，只在内存里。
+         * ```
+         *
+         * ⇒ 旧文案「播放器缓存 0 B · mpv-cache」会让用户以为：
+         * ```text
+         * ① 「我的缓存没生效」→ 去点「清空播放器缓存」，清了 0 个文件
+         * ② 「为什么别人的播放器缓存占几个 G，我的是 0」→ 怀疑软件坏了
+         * ```
+         * 都是**假问题**，但用户无法知道。
+         *
+         * # 为什么保留这个目录而不删掉
+         * ```text
+         * `cache-dir` 仍在传给 mpv（clip_download.dart 的 mpvCacheProperties）。
+         * 它对**不可 seek 的流**（直播 / 某些 HLS）仍会落盘，
+         * 只是当前这些源没走到那条路。
+         * ⇒ 不能因为"现在是 0"就把机制删了。
+         * ```
+         */
         SettingsInfoRow(
-          label: '播放器缓存',
-          value: '${ClipDownloader.humanBytes(_mpvBytes)} · mpv-cache',
+          label: '播放器临时缓存',
+          value: mpvCacheLabel(_mpvBytes),
         ),
         SettingsInfoRow(
           label: '截图',
           value: '${ClipDownloader.humanBytes(_shotsBytes)} · shots',
+        ),
+        /*
+         * ★ 预读窗口必须显式告诉用户，否则「上限 256MB」会被理解成
+         *   「最多占 256MB 磁盘」——而真正限制「往后拉多少」的是时间窗。
+         *   用户点名要求「只缓存播放 + 一个时间段」，这一行就是那条规则的读数。
+         */
+        const SettingsInfoRow(
+          label: '预读窗口',
+          value: '最多 ${ClipDownloader.kMpvCacheSecs ~/ 60} 分钟'
+              '（到点即停，不会把整部片子一次拉完）',
         ),
         SettingsInfoRow(
           label: '合计',
@@ -857,10 +931,10 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
            * ★ 「清理」到底清了什么，必须逐字说清（Owner 第 6 条「可以进行
            *   管理」）。三档的删除代价差别很大，混成一句「已清理」就是在骗人。
            */
-          '「按上限清理」只腾出**超限的那部分**，顺序是：'
+          '「按上限清理」只腾出「超限的那部分」，顺序是：'
           '① 播放器缓存（删了只是重缓冲）→ ② 片段缓存（删了要重新下）'
-          '→ ③ 截图（**不可再生**，只在①②都不够时才动）。'
-          '「清空片段缓存」只清 clip-cache，**不碰**截图与播放器缓存。',
+          '→ ③ 截图（「不可再生」，只在①②都不够时才动）。'
+          '「清空片段缓存」只清 clip-cache，「不碰」截图与播放器缓存。',
           style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
         ),
         if (_mpvReadback.isNotEmpty) ...[

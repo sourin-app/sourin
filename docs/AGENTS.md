@@ -200,11 +200,50 @@ flutter analyze lib            # 0 error；不要新增 warning
 · 明确列出「没做的」及原因 —— 不许把没做的混进「已完成」
 ```
 
-**验证纪律**：编译过 / 单测绿 / SHA256 都**不算**实测。
-「完整跑实测」= 本轮 diff 影响到的功能**逐条真跑**（实机 / 真请求 / 真数据）。
+**验证纪律**：编译过 / 单测绿 / SHA256 都**不算**实测。「完整跑实测」= 本轮 diff 影响到的功能**逐条真跑**（实机 / 真请求 / 真数据）。
 改动攒完后**统一跑一次**（一次构建 + 部署 + 实机验证），不要每改一处验一次。
 工作树里存在在途未提交改动时，「在某个提交上跑测试」实际测的是**工作树** ——
 要证明「修复前应当红」的红基线，必须用 `git worktree add` 检出纯净副本再跑。
+
+### ★★★ 收尾必做：真机隔离启动一次
+
+```text
+★ 判据：全量 flutter test 全绿 **不足以**说明产品能用。
+
+2026-10-18 实测（第 66 轮）：
+  全量 flutter test ⇒ **4131 通过**
+  但产品 Release 启动后**第一次弹窗就崩**：
+    Null check operator used on a null value
+    #0 MaterialLocalizations.of (material_ui/src/material_localizations.dart:718)
+    #1 new DialogRoute        (material_ui/src/dialog.dart:1906)
+    #5 showAppDialog          (ui/widgets/overlay_motion.dart:324)
+  ⇒ 4131 个用例**没有一个**抓到它，因为它只在真机触发。
+```
+
+做法（收尾时跑一次，约 3 分钟）：
+
+```bash
+flutter build windows --release -t lib/shell.dart   # ★ 别漏 -t
+# 隔离数据目录启动（不用真实数据目录）
+export APPDATA="<临时目录>/appdata" USERPROFILE="<临时目录>/userprofile"
+export SOURIN_NO_REMOTE_AUTOSTART=1
+build/windows/x64/runner/Release/sourin_spike.exe &
+```
+
+必须确认三件事：
+
+```text
+① 日志里**零** `Unhandled Exception`（不是"看起来没崩"，是 grep 计数 = 0）
+② 窗口完整渲染（截图留档，界面改动要亲眼看过）
+③ 触发一次弹窗（更新窗 / 设置页任一对话框）—— 这是最容易漏的路径
+```
+
+⚠️ 清理：exe 会 fork 子进程，`taskkill //PID $!` 杀不掉父 PID。
+用「启动前后 PID 差集」精确清理，或 `Get-Process sourin_spike | Stop-Process`。
+
+**报告纪律**：回归报告必须写明覆盖范围，例如
+「本报告只覆盖 `flutter test` + `cargo test`，**不含真机启动验证**」——
+**先报「我验了什么」，再说「结论是什么」。**
 
 ---
 
@@ -239,25 +278,146 @@ flutter analyze lib            # 0 error；不要新增 warning
   rg --hidden --glob '!.agents/notes/archived/**' "关键词" .agents/notes/
   ```
 
+### 7.1 笔记是「现行法律」，不是流水账
+
+> 2026-10-20 按上游 `agent-notes` 规范（`write-notes-like-deepseek`）补齐。
+> 上面几节只讲了「什么该写」，这一节讲**已有笔记怎么维护** —— 缺了它，
+> 笔记树会退化成一份按时间堆积的变更日志。
+
+**① 优先就地同步事实，非必要不新建。**
+既有笔记守护的模块演进了、但核心决策没被推翻 ⇒ **直接改那篇的事实**
+（路径、类名、默认参数、行号）。在文末追加 `### 2026-xx-xx 更新：…` 是**错的** ——
+任何人打开这篇笔记，看到的都该是 HEAD 的绝对事实，而不是一段历史。
+
+**② 时态永保现在时。** 写「系统用 SQLite 做持久化」，不写「系统不再用 JSONL，现在用 SQLite」。
+门禁只拒提案式标题，现在时靠这条纪律，不靠词法扫描。
+
+**③ 决定或理由翻转 ⇒ 新开一篇并互链，禁止改写 `## Decision` 成反面。**
+事实可以就地改，**决定不能**。否则 git 就成了旧理由的唯一副本，
+而读代码的人不会再去看 git log。
+
+**④ 写新笔记前当场审计，禁止推迟。** 按模块名/关键词搜
+`proposed` + `implemented` + `rejected`，每篇命中当场分类：
+无关 / 部分重叠（互链）/ 完全吸收（吸收后删或归档）/ 过时提案（reject 或删）。
+分类结果与新笔记**一起落盘**。
+
+**⑤ 新笔记必须声明与既有笔记的关系**（CI 门禁 `notes-supersession.mjs`）。
+三种合法路径，满足其一即可：
+
+```text
+· 正文里有指向既有笔记的相对链接      → 表示它接在某个决定之后
+· 正文写 `Independent: <理由>`        → 表示确实无关（给理由这个动作会逼你真去查一遍）
+· 它本身是 proposed / rejected        → 想法与否定阶段允许孤立
+```
+
+**⑥ 取代：部分重叠 vs 完全吸收。**
+
+```text
+部分重叠  两篇都留，双方加相对链接；只更新仍成立的事实。禁止归档。
+完全吸收  先把旧篇的独有内容（安全边界、否定性保证、失败场景、
+          重新引入条件、验证缺口）搬进新篇，再二选一：
+            · 删     —— 新篇已吸收全部独有内容，且入站链接改完
+            · 归档   —— 旧篇还有独立杠杆时用 archive-agent-note.ts
+          归档篇只插 `Archived:` 一行；**指针写在新笔记里，不写进归档篇**。
+```
+
   笔记树**进仓库**，与代码同批提交。CI 会在 Windows job 上跑
   `.agents/notes-scripts/` 里的三条校验（tree / format / archived），红即不许合。
-  本地跑同样三条：
+  本地跑**一条**就够 —— `notes-gate.mjs` 依次跑那三条，并额外要求笔记树非空：
 
   ```bash
-  npx --yes tsx .agents/notes-scripts/verify-agent-note-tree.ts
-  npx --yes tsx .agents/notes-scripts/verify-agent-note-format.ts
-  npx --yes tsx .agents/notes-scripts/verify-archived-agent-notes.ts
+  node .agents/notes-scripts/notes-gate.mjs
   ```
+
+  > ★ 为什么不直接一条条跑那三个脚本：它们在**空集合**上都 `exit 0` 并打印
+  > `ok: 0 note(s)`。目录改名、glob 写错、只匹配到 0 个文件时，三道门禁会
+  > 一起变绿而什么都没查。`notes-gate.mjs` 只加「0 篇即失败」这一条，其余
+  > 判定完全交给原脚本（不复制规则，免得两边各说一套）。
+  >
+  > 它自己探测 runner：本地 Node 能原生跑 `.ts` 就用 `node`，否则回落 `npx --yes tsx`。
+  > 想强制指定：`NOTES_RUNNER=node` 或 `NOTES_RUNNER=tsx`。
+
+  另有两道 CI 门禁，本地也能跑（`--range` 给提交区间）：
+
+  ```bash
+  node .agents/notes-scripts/notes-coverage.mjs    --range HEAD~1..HEAD
+  node .agents/notes-scripts/notes-supersession.mjs --range HEAD~1..HEAD
+  ```
+
+  **门禁自测**（证明这些门禁真的会红，不是恒绿）：
+
+  ```bash
+  node .agents/notes-scripts/notes-selftest.mjs
+  ```
+
+  它在临时 git 仓库里造夹具，逐条断言**具体退出码**：三种合法链接写法必须被
+  `supersession` 认出、归档门禁对拼错的 ref / 全零 sha / 相对基线被改写的封印
+  必须红、`notes-gate` 对空树必须红。跑完会把夹具删掉，不碰真实笔记树。
+
+  **软报告**（不进 CI，退出码恒 0；只在排查锚点/看进度时用）：
+
+  ```bash
+  npx --yes tsx .agents/notes-scripts/check-note-anchors.ts   # 源码里 // Note: 锚点体检
+  npx --yes tsx .agents/notes-scripts/build-board.ts --init .probe/board.html "源影决策看板"
+  ```
+
+  ★ 脚本与模板的权威副本在 `.agents/notes-scripts/`（含 `templates/`）。
+  更新方式是整体同步，不要手改单个脚本 —— 三个 verify 脚本的口径必须与笔记同版本，
+  否则本地绿、CI 红。
 
 ---
 
-## 8. 当前已知的坑（保持精简，解决即删）
+## 8. 当前已知的坑 → 见 [PITFALLS.md](PITFALLS.md)
 
-| 现象 | 原因 / 怎么办 |
-|---|---|
-| 改了 Rust 但行为没变 | 90% 是构建树里的 `.dll` 没换新。删掉包目录里的那个 `.dll` 强制重拷；或直接改 Rust 源让 cargo 真的重编 |
-| `flutter test test/` 偶发 `did not complete` | `flutter_tester` 加载 libmpv 原生崩溃（第三方库）。判断「是不是我改坏的」时**先单跑那个文件** |
-| Android 上所有命令都超时 | `jniLibs/*/libsourin_core.so` 是**手动拷贝**的产物，改过 `ffi.rs` 要重编三个 target 并重拷 |
-| 深色主题「看不见字」但不报错 | 主题角色取值有回归门禁 `test/theme_regression_test.dart`（含 WCAG 对比度断言） |
-| 开发版**不弹**更新窗（要验更新流程时） | 有意为之：开发/探针构建跳过启动检查（本地 HEAD 永远比线上新，弹了对开发者是纯噪声）。要验就手动点「设置 → 关于 → 检查更新」 |
-| 开发版「忽略此版本」像没记住 | 「忽略」现在会**等到落盘才关窗**（`ignoreVersion` 返回 Future）。若仍旧弹，先看数据目录里 `ui-prefs.json` 的 `appupdate.ignoredVersion` 在不在 |
+> 2026-10-21 拆出：坑表已长到 46KB，占本文件的 71%，
+> 触发 workspace 指令预算截断 —— **末尾条目加载不到**，等于对着空气写。
+> 拆出后本文件只留**开工必读**，坑表作为**查询台账**放 [PITFALLS.md](PITFALLS.md)。
+
+台账按「你什么时候需要它」分三组（不按时间排序）：
+
+| 组 | 什么时候看 | 里面是什么 |
+|---|---|---|
+| **A. 判据设计** | 要写/改任何门禁、报告、检查脚本 | 恒真/恒假、作用域错配、覆盖度静默、判据只到结论不到原因、约束方向不对称、先测报错率、缺X vs 被跳过、给魔数编叙事、门禁不能import被检查项、两判据互相排斥、测量越精密越不问对象、副本必漂移、??兜底注入无效、同统计量相等量的是背景、需不需要做X≠X不存 |
+| **B. 取证与验证** | 要声称「修好了 / 没坏 / 不是我的问题」 | 假绿形态、验证别人的改动、skip 区恒红、证据碎片、取证被遮挡、报告里的「可能」、搜索范围假设、改了什么vs看到什么、论证门禁的文档被门禁扫、比对不一致是转换的证据、动真实数据用标志位、审计盲区是别人的产物、更新状态时删掉独有证 |
+| **C. 环境与工具链** | 命令行为异常、测试莫名红、脚本静默失效 | 注入无效的 6 种形态、BOM、复制粘贴、环境变量回退链、图标字体缺失、改模板vs已发布副本、日志说选了A≠看到A、找不到先排除不该出 |
+
+
+> 三组**各有几条**不在本文件复述 —— 数字只有一个出处：`docs/PITFALLS.md` 顶部汇总表，由 `tools/count_pitfalls.py` 从台账本身算出来，CI 每次核对（不一致 ⇒ 红）。★ 本文件曾经手抄过一份（A17/B19/C28），三处都是错数，且没有任何东西在看它。
+
+**三条最常复发的**（背下来比查表快）：
+
+```text
+① 写了 ≠ 接线了。定义常量/函数/开关 ≠ 它被接上。
+   自问：这条路径真的会执行到吗？我的判据会不会恒真/恒假？
+② 门禁不许「同一个源比同一个源」。
+   验证方法：把要防的缺陷**人为还原**，门禁**必须变红**。
+③ 判据输出必须能区分「查了没问题」与「没查/我坏了」。
+   门禁必须打印覆盖度（查了 N/M 处）。只打「✅ 通过」视为未完成。
+```
+
+完整案例与五种假绿形态另见 [../CONTRIBUTING.md](../CONTRIBUTING.md) 的「⑥ 两条硬规矩」。
+
+---
+
+## 9. 本文件与 PITFALLS.md 的分工（改之前先读）
+
+```text
+AGENTS.md   开工 10 分钟必读：怎么跑、哪些线不能踩、交付长什么样
+PITFALLS.md 干活时查：遇到怪现象 / 写门禁前 / 报结论前
+```
+
+**为什么拆**：本文件曾把 39 条坑内联在 §8，长到 46KB。
+workspace 会把超过预算的指令文件**截断**，而截断发生在**末尾** ——
+结果是最新写的几条坑谁也读不到，而作者以为「我写进 AGENTS.md 了」。
+
+⇒ ★ 判据：**任何会被自动加载的指令文件，改完要确认「末尾读得到」。**
+  判据不是「我写入成功」，而是「它在我下一次被加载时还在」。
+
+新增坑的规则：
+
+```text
+· 加进 PITFALLS.md 对应组的**表头之后**（最新在上）——不要加在表尾
+· 解决即删；过期的条目比没有更糟（它会让人按过期结论行事）
+· 只写代码里读不出来的：why / 陷阱 / 判据
+· 每条带日期
+```

@@ -30,6 +30,45 @@
 //    显式调一次 `load()`，断言计数真的增加。否则"没增加"可能只是
 //    仪器不灵（比如 FFI 某天在测试里能跑通，就一行日志都没有）。
 //
+// ═══════════════════════════════════════════════════════════════════════
+// ★★★ 2026-10-19：**这个仪器已经失效了**（4 条用例因此标了
+//      `@Tags(['instrument-broken'])`，默认 skip）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 失效事实（实测，不是推测）
+// ```text
+// 仪器假设：[SHELF] 行数 ÷ 3 = load() 调用次数
+//           —— 前提是「每次 load() 必打 3 行」
+//
+// 但产品里 [SHELF] 的打印点**只有 6 处**，且没有一处在 load() 的成功路径：
+//   lib/ui/widgets/my_shelf.dart:557   切 tab（不是 load）
+//                              :662   取收藏**失败**
+//                              :668   取追更**失败**
+//                              :674   取历史**失败**
+//                              :792   加载**失败**
+//                              :1121  清空历史**失败**
+//
+// ⇒ 成功的 load() **一行都不打** ⇒ 计数恒 0
+// ⇒ 阳性对照 `expect(pos, greaterThan(after))` 必然失败
+// ⇒ 4 条用例红，但**红的原因不是产品坏了**
+// ```
+//
+// # ★ 为什么叫 instrument-broken 而不是 known-failure
+// ```text
+// 坏的是**尺子**（仪器），不是被测产品，也不是用例写错了。
+// 叫 known-failure 会让人以为"产品有已知缺陷" —— 那是误导。
+// ```
+//
+// # 退出这一档的条件（写给后来人）
+// ```text
+// 让 load() 的成功路径也有可数信号，二选一：
+//   ① 产品加一个 `@visibleForTesting int debugLoadCount`，测试直接读它
+//   ② 成功时也打一行 `[SHELF] 已加载: ...`（并同步把除数 3 改掉）
+// ⇒ 然后删掉那 4 个 `@Tags(['instrument-broken'])`，并把
+//   `dart_test.yaml` 里的 instrument-broken 档一起删掉。
+// ★ 这一档**只该变短**。
+// ```
+//
 // ⚠️ `debugPrint` 是 foundation 的**调试变量**，改完必须在**测试体内**
 //    就地恢复 —— 放到 `addTearDown` 里太晚：`_verifyInvariants` 先跑，
 //    会报 "The value of a foundation debug variable was changed"。
@@ -170,7 +209,7 @@ void main() {
       } finally {
         cap.uninstall();
       }
-    });
+    }, tags: ['instrument-broken']);
 
     testWidgets('★ 点**当前** tab 也要刷新（用户"看看有没有新的"的自然动作）',
         (tester) async {
@@ -211,7 +250,7 @@ void main() {
       } finally {
         cap.uninstall();
       }
-    });
+    }, tags: ['instrument-broken']);
   });
 
   // ═══════════════════════════════════════════════════════════════════
@@ -281,7 +320,7 @@ void main() {
       } finally {
         cap.uninstall();
       }
-    });
+    }, tags: ['instrument-broken']);
 
     testWidgets('★★★ 首次加载**失败**时，返回也必须重试（真机探针抓出的 bug）',
         (tester) async {
@@ -363,7 +402,7 @@ void main() {
       } finally {
         cap.uninstall();
       }
-    });
+    }, tags: ['instrument-broken']);
   });
   //
   // # 这个 bug 是"让切 tab 刷新"**引入**的，必须单独守
@@ -613,7 +652,36 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       final hs = <double>[];
-      for (final e in find.byType(InkWell).evaluate()) {
+      /*
+       * ★ 2026-10-19（漂移修正）：定位器从 `InkWell` 换成 `GestureDetector`
+       *
+       * # 断言本意（未变）
+       *   追更页那三个 tab 的**触控目标高度 ≥34px**（DEVELOPMENT.md 坑 35），
+       *   且必须与首页「我的」逐字同构 —— 只改一处会变成"一个页面对、
+       *   一个页面不对"。
+       *
+       * # 为什么定位器必须改（产品改动是**有意**的，不是退化）
+       * ```text
+       * 2026-10-18 轨道 E · 玻璃化 M2：follow_page.dart:1605/2033
+       *   `InkWell` → `_GlassTapSurface`（内部走 GlassButton.custom）
+       * ⇒ 追更页的 InkWell 数量从 3 变成 **0**
+       * ⇒ 旧定位器量到 0 个 ⇒ `hs.length` = 0 ⇒ 报「量到 0 个 ⇒ 假绿」
+       * ```
+       * 而首页「我的」的 `_ShelfTabChip` **仍是 InkWell**（my_shelf.dart:2383），
+       * 所以上面那条「我的」用例没红 —— 两条用例的定位器**本来就是分开的**。
+       *
+       * # 新定位器为什么是 GestureDetector
+       * ```text
+       * 实测（.probe/rv6/probe_t36b.dart）：
+       *   追更页 InkWell = 0
+       *   GestureDetector = 3，尺寸全是 96.0x41.0
+       *   （GlassButton 内部就是 GestureDetector，见
+       *     liquid_glass_widgets-1.13.0/.../glass_button.dart:1035/1049）
+       * ⇒ 仍用「宽 96」作为 tab 的辨识特征，量的是同一个 render box 高度，
+       *   断言值 34px 未动。
+       * ```
+       */
+      for (final e in find.byType(GestureDetector).evaluate()) {
         final box = e.renderObject as RenderBox?;
         if (box == null) continue;
         if ((box.size.width - 96).abs() < 0.5) hs.add(box.size.height);
@@ -680,6 +748,91 @@ void main() {
                 '滚动位置记忆永远恢复不了）');
         await tester.pump(const Duration(milliseconds: 500));
       }
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ⑥ 元断言：instrument-broken 登记不许被悄悄抹掉
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 为什么需要（这是「登记」类机制的固有漏洞）
+  // ```text
+  // 那 4 条用例靠 `tags: ['instrument-broken']` 默认 skip。
+  // 但「默认 skip」有个副作用：**它们不再红了**。
+  // ⇒ 若有人直接把文件删掉 / 把这 4 个 testWidgets 删掉 / 把 tags 去掉
+  //    （去 tags 会让它们重新变红，所以大概率是前两种），
+  //    全量读数会**变干净**，而登记凭空消失，没人会发现。
+  // ⇒ 这是「登记即豁免」的通病：豁免一旦被删，看起来像"问题解决了"。
+  // ```
+  //
+  // # 判据（三条，都是元断言）
+  // ```text
+  // ① 本文件必须存在，且仍含 instrument-broken 标记
+  // ② 标记数量必须**恰好 4**（删掉一条就红 —— 它只该变短，但要**显式**变短）
+  // ③ dart_test.yaml 里必须仍有 instrument-broken 档（否则 tag 失效、
+  //    那 4 条会静默变成"未知 tag"而重新参与默认跑）
+  // ```
+  //
+  // ★ 退出方式（与文件头一致）：修好仪器后，
+  //   ① 删那 4 个 tags → ② 删本 group → ③ 删 dart_test.yaml 那档。
+  //   三步**一起**做，因为本 group 就是为了防止"只做第一步"。
+  group('⑥ 元断言：instrument-broken 登记必须仍在', () {
+    test('★ 本文件的 instrument-broken 标记必须恰好 4 处', () {
+      final self = File('test/t36_cache_refresh_test.dart').readAsStringSync();
+      /*
+       * ★ 只数**代码里**的 tags 参数，不数注释里的举例。
+       *
+       * 判据：`}, tags: ['instrument-broken']);` 出现在**行尾**
+       *       （本文件的 4 处都是这个形态；注释里的举例后面还有别的字）。
+       * ⚠️ 我第一版用 `tags: \['instrument-broken'\]` 裸匹配 ⇒
+       *    把本 group 自己注释里那句举例也数进去了 ⇒ 实测 5 处 ⇒ 假红。
+       */
+      final hits = RegExp(
+        r"^\s*\}, tags: \['instrument-broken'\]\);\s*$",
+        multiLine: true,
+      ).allMatches(self);
+      expect(
+        hits.length,
+        4,
+        reason: '★ instrument-broken 标记数量变了（实测 ${hits.length}，应为 4）。\n'
+            '  · 若你**修好了仪器** ⇒ 请把 4 个 tags、本 group、'
+            'dart_test.yaml 那档**一起**删掉（只删一处会让另一处红）。\n'
+            '  · 若你**删了某条用例** ⇒ 请显式把期望值改小，'
+            '并说明那条用例去哪了 —— 不要让它静默消失。',
+      );
+    });
+
+    test('★ dart_test.yaml 里必须有 instrument-broken 档（否则 tag 失效）', () {
+      final yml = File('dart_test.yaml').readAsStringSync();
+      expect(
+        yml.contains('instrument-broken:'),
+        isTrue,
+        reason: '★ dart_test.yaml 里没有 instrument-broken 档 ⇒ '
+            '上面那 4 个 tags 变成**未知 tag** ⇒ 它们会重新参与默认跑 ⇒ '
+            '全量又变成 -4，而登记的意义消失。',
+      );
+      // ★ 语义检查：必须是 skip（默认跳过、可手动跑），不能是 exclude
+      final m = RegExp(
+        r'instrument-broken:\s*\n\s*skip:',
+      ).firstMatch(yml);
+      expect(
+        m,
+        isNotNull,
+        reason: '★ instrument-broken 必须用 `skip:` 而不是 `exclude_tags:`。\n'
+            '  理由与 evidence 那条相同（dart_test.yaml 顶部实测）：\n'
+            '  `exclude_tags` 发生在**选择之前** ⇒ 排除了就无法用 --tags 放行；\n'
+            '  `skip:` 则默认跳过、--run-skipped 能放行 ⇒ 两条路径都对。',
+      );
+    });
+
+    test('★ 手动跑的命令必须写在 skip 文案里（否则没人知道怎么复现）', () {
+      final yml = File('dart_test.yaml').readAsStringSync();
+      expect(
+        yml.contains('--run-skipped --tags instrument-broken'),
+        isTrue,
+        reason: '★ skip 文案里必须给出**可复制的**手动跑命令。\n'
+            '  否则读者看到 ~4 只知道"没跑"，不知道"怎么让它跑起来"。',
+      );
     });
   });
 }

@@ -27,6 +27,8 @@ Status: implemented
 机械门禁是 `test/t98_no_site_names_test.dart`，**白名单式**（扫描所有会发布的文本，
 命中名单即报错），并带阳性对照 —— 否则一条「扫描关键词」的测试天然容易变成恒不绿的空转。
 
+Independent: 仓库不出现站名。一条独立的命名纪律（有机械门禁 t98 守着）。
+
 ## Alternatives considered
 
 - **把弹幕服务名也列进禁名单** —— 它最强的论据是「既然要中性化，就一次清干净」。

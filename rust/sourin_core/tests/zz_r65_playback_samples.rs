@@ -357,7 +357,20 @@ async fn collect_unplayable_samples() {
         println!("  · {} ({})", m.id, m.name);
     }
 
-    // 取前若干个启用的源做样本（全量太慢，且判据与源数无关）
+    // 取哪几个源做样本
+    //
+    // ★ 2026-10-18（轨道 H）：改成**可按 id 精确指定**，因为
+    //   「只取前 N 个」会把样本集锁死在字母序靠前的那几个源上 ——
+    //   上一轮就是这样：9 条样本里 6 条来自同一个源，
+    //   六类归因里 B/C/E/F 一条真实样本都没抓到。
+    //   用法：`R65_SOURCES=<id1>,<id2>,<id3>`（逗号分隔的源 id）
+    //        不设则退回旧的 `R65_LIMIT`（取前 N 个）
+    let pick: Option<Vec<String>> = std::env::var("R65_SOURCES").ok().map(|s| {
+        s.split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect()
+    });
     let limit: usize = std::env::var("R65_LIMIT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -365,7 +378,23 @@ async fn collect_unplayable_samples() {
 
     let mut samples: Vec<Sample> = Vec::new();
 
-    for m in manifests.iter().take(limit) {
+    let selected: Vec<_> = match &pick {
+        Some(ids) => manifests
+            .iter()
+            .filter(|m| ids.iter().any(|want| want == &m.id))
+            .collect(),
+        None => manifests.iter().take(limit).collect(),
+    };
+    println!(
+        "\n═══ 本轮取样源: {} 个（{}）═══",
+        selected.len(),
+        match &pick {
+            Some(ids) => format!("R65_SOURCES={}", ids.join(",")),
+            None => format!("R65_LIMIT={limit}"),
+        }
+    );
+
+    for m in selected {
         println!("\n─── 源 {} ({}) ───", m.id, m.name);
 
         // ① 分类 ⇒ 列表（最稳的入口：多数源都有分类）
@@ -483,7 +512,32 @@ async fn collect_unplayable_samples() {
                             None => println!("          fetch 跳过"),
                         }
                         // ⑥ ffprobe 上游真址（A 类判据）：解不了的是什么编码
-                        let probe = probe_upstream(&c.url, &c.headers).await;
+                        //
+                        // ★ 优化：**已经证明能播的就不用再探**
+                        //
+                        // # 为什么
+                        // ```text
+                        // 判据链条是「fetch 拿到 206 + 合法容器签名 ⇒ 这条能播」。
+                        // 既然能播，那它就不是 A 类（A = 封装/流结构异常）。
+                        // 再花 25~45 秒 ffprobe 一遍，只为一个已知结论 ⇒ 纯浪费，
+                        // 上一轮整次取证 385 秒里大半耗在这里（还多次撞 900s 超时）。
+                        // ```
+                        // ⚠️ 但**失败的要照探** —— 那才是要归类的对象。
+                        let already_playable = fetch
+                            .as_ref()
+                            .map(|f| {
+                                (f.status == 200 || f.status == 206)
+                                    && looks_like_media(&f.head_hex)
+                            })
+                            .unwrap_or(false);
+                        let probe = if already_playable {
+                            println!(
+                                "          probe 跳过（fetch 已证明能播，不必再探编码）"
+                            );
+                            None
+                        } else {
+                            probe_upstream(&c.url, &c.headers).await
+                        };
                         match &probe {
                             Some(p) if p.err.is_empty() => println!(
                                 "          probe → {} {}x{} audio={} container={}",
@@ -515,54 +569,247 @@ async fn collect_unplayable_samples() {
         }
     }
 
-    // ── 归类汇总（纯读数，不做判断）──
+    // ── 归类汇总 ──
     println!("\n\n══════════ 归类汇总 ══════════");
-    let mut a = 0; // 有候选、非 DRM、非 nhr ⇒ 宿主应能播（解码问题要到播放器才知道）
-    let mut b = 0; // 有候选且走代理（nwr+hdrs）
-    let mut c = 0; // 有候选但 nhr=true（宿主未解析）
-    let mut d = 0; // resolve 失败 / 无候选 / url 非法
-    let mut e = 0; // DRM
-    let mut f = 0; // 网络类错误
+    println!(
+        "★ 归类判据 = **真实 HTTP 结果**，不是结构属性。\n  \
+         「走了代理」不等于「播不了」；「有 == 206 + 合法容器」就等于**能播**，\n  \
+         它既不是缺陷也不是我们的锅 —— 那类样本必须**单独计数**，\n  \
+         否则归类表会把大量能播的样本算成缺陷（上一轮就是这么误标 16 条的）。\n"
+    );
+    let mut ok = 0; // ★ 真能播（206/200 + 合法容器签名）—— 不是缺陷
+    let mut a = 0; // 封装修复不了 / 流结构异常（原「解码不足」，解码器实测是齐的）
+    let mut b = 0; // 代理链路断（连不上代理 / 代理 5xx 且上游正常）
+    let mut c = 0; // 分P/选集路由错
+    let mut d = 0; // 插件解析错（resolve 失败 / 无候选 / url 形态不可用）
+    let mut e = 0; // 源站会员/地区限制
+    let mut f = 0; // 源站限流/临时故障
     for s in &samples {
-        let kind = if !s.resolve_ok || s.candidates.is_empty() {
-            if s.resolve_err.contains("超时")
-                || s.resolve_err.contains("timeout")
-                || s.resolve_err.contains("502")
-                || s.resolve_err.contains("503")
-                || s.resolve_err.contains("504")
-            {
-                f += 1;
-                "F 源站限流/临时故障"
-            } else {
-                d += 1;
-                "D 插件解析错"
-            }
-        } else if s.candidates.iter().all(|c| c.drm) {
-            e += 1;
-            "E 源站权限/DRM"
-        } else if s.candidates.iter().all(|c| c.needs_host_resolve) {
-            c += 1;
-            "C/D 需宿主解析"
-        } else if s.candidates.iter().any(|c| c.not_web_ready && !c.headers.is_empty()) {
-            b += 1;
-            "B 走本地代理"
-        } else {
-            a += 1;
-            "A 直连（解码能力待验）"
-        };
+        let verdict = verdict_of(s);
+        match verdict.0 {
+            '=' => ok += 1,
+            'A' => a += 1,
+            'B' => b += 1,
+            'C' => c += 1,
+            'D' => d += 1,
+            'E' => e += 1,
+            'F' => f += 1,
+            _ => {}
+        }
         println!(
-            "  {} / {} → {}（detail_ok={} resolve_ok={} 候选={}）",
+            "  {} / {} → {}（detail_ok={} resolve_ok={} 候选={}）  [{}]",
             s.provider,
             s.id,
-            kind,
+            verdict.1,
             s.detail_ok,
             s.resolve_ok,
-            s.candidates.len()
+            s.candidates.len(),
+            verdict.2,
         );
     }
     println!(
-        "\n  计数：A={a} B={b} C={c} D={d} E={e} F={f}  样本总数={}",
+        "\n  计数：★能播={ok} A={a} B={b} C={c} D={d} E={e} F={f}  \
+         样本总数={}",
         samples.len()
     );
+    println!(
+        "\n  ★ 关键分母：**不可播样本 = {}**（能播的 {ok} 条不计入缺陷）",
+        samples.len() - ok
+    );
     println!("\n★ 读数只做归类，不预设结论 —— 归类表由人按上面的原始读数填。");
+}
+
+/// 单条样本的归类 —— **只看真实读数**
+///
+/// 返回 `(类字符, 人类可读的类别名, 判据一句话)`
+///
+/// # 为什么必须按 HTTP 结果而不是结构属性
+///
+/// ```text
+/// 上一轮的写法是：
+///   "候选里有 not_web_ready && headers 非空 ⇒ 归 B"
+/// 实测立刻暴露它的荒谬：
+///   154 / 64346  fetch → status=206 bytes=4096 ct=video/mp4
+///                head = 00 00 00 18 66 74 79 70 6d 70 34 32   （ftyp-mp42，合法 MP4）
+///   这条**明明能播**，却被算成「B 类缺陷」。
+/// 32 个源里每个走代理的都会被这么误标 ⇒ 缺陷数虚高，真正的问题被淹掉。
+/// ```
+///
+/// ⇒ 现在的判据顺序（**结果优先，结构靠后**）：
+/// ```text
+/// ① 抓到 200/206 + 合法容器签名        → = 能播（不是缺陷）
+/// ② 代理连不上（Connection refused）    → B
+/// ③ 502/503 且 err 提到上游连不上      → F（源站/上游临时故障）
+/// ④ 401/403 + 权限词                    → E（源站限制，不绕过）
+/// ⑤ 429 / timeout                       → F
+/// ⑥ resolve 失败 / 无候选 / url 形态坏  → D（插件解析错）
+/// ⑦ 有流但 ffprobe 认不出容器           → A（封装/流结构异常）
+/// ⑧ 以上都不是                          → ? （如实标"未归类"，不硬凑）
+/// ```
+fn verdict_of(s: &Sample) -> (char, &'static str, String) {
+    // ① 先找**任何一条**真能取的候选 —— 有一条能播就算能播
+    for c in &s.candidates {
+        if let Some(fr) = &c.fetch {
+            if (fr.status == 200 || fr.status == 206) && looks_like_media(&fr.head_hex) {
+                return (
+                    '=',
+                    "★ 能播（不是缺陷）",
+                    format!(
+                        "status={} ct={} head={}",
+                        fr.status,
+                        fr.content_type,
+                        fr.head_hex
+                    ),
+                );
+            }
+        }
+    }
+
+    // ①.5 代理层自己坏了（连接被拒 / 端口死）
+    for c in &s.candidates {
+        if let Some(fr) = &c.fetch {
+            let low = fr.err.to_lowercase();
+            if low.contains("connection refused")
+                || fr.err.contains("连接被拒绝")
+                || fr.err.contains("已失效")
+            {
+                return (
+                    'B',
+                    "B 代理链路断",
+                    format!("fetch 连不上代理: {}", fr.err),
+                );
+            }
+        }
+    }
+
+    // ③ 上游/源站临时故障（502/503/504/timeout/429）
+    for c in &s.candidates {
+        if let Some(fr) = &c.fetch {
+            let st = fr.status;
+            if st == 429 || st == 502 || st == 503 || st == 504 {
+                return (
+                    'F',
+                    "F 源站限流/临时故障",
+                    format!("fetch status={st} ct={}", fr.content_type),
+                );
+            }
+        }
+    }
+    if s.resolve_err.contains("超时")
+        || s.resolve_err.contains("timeout")
+        || s.resolve_err.contains("429")
+    {
+        return ('F', "F 源站限流/临时故障", format!("resolve: {}", s.resolve_err));
+    }
+
+    // ④ 源站权限（E 类：只优化提示，不绕过）
+    for c in &s.candidates {
+        if let Some(fr) = &c.fetch {
+            if fr.status == 401 || fr.status == 403 {
+                return (
+                    'E',
+                    "E 源站会员/地区限制",
+                    format!(
+                        "fetch status={} ct={} head={}",
+                        fr.status, fr.content_type, fr.head_hex
+                    ),
+                );
+            }
+        }
+    }
+
+    // ⑤ DRM
+    if !s.candidates.is_empty() && s.candidates.iter().all(|c| c.drm) {
+        return ('E', "E 源站版权/DRM 限制", "全部候选 drm=true".to_string());
+    }
+
+    // ⑥ 插件解析错（D）
+    if !s.resolve_ok || s.candidates.is_empty() {
+        return (
+            'D',
+            "D 插件解析错",
+            format!("resolve_ok={} 候选=0 err={}", s.resolve_ok, s.resolve_err),
+        );
+    }
+    // url 形态本身不可用，也归 D
+    for c in &s.candidates {
+        if !(c.url.starts_with("http://") || c.url.starts_with("https://")) {
+            return (
+                'D',
+                "D 插件解析错",
+                format!("url 不是 http(s): {}", redact(&c.url)),
+            );
+        }
+    }
+
+    // ⑦ 有流但探测认不出容器 ⇒ 封装/流结构异常（A 的新判据）
+    for c in &s.candidates {
+        if let Some(pr) = &c.probe {
+            if pr.video_codec.is_empty() && !pr.err.is_empty() {
+                return (
+                    'A',
+                    "A 封装/流结构异常",
+                    format!("ffprobe: {}", pr.err),
+                );
+            }
+        }
+    }
+
+    // ⑧ 有候选但一条都没抓到读数 —— 如实标未归类，绝不硬凑
+    let any_fetch = s.candidates.iter().any(|c| c.fetch.is_some());
+    if !any_fetch {
+        return (
+            '?',
+            "? 未归类（没有 fetch 读数）",
+            "所有候选都没抓到 HTTP 读数 —— 取证不足，不是产品结论".to_string(),
+        );
+    }
+
+    ('?', "? 未归类", "有读数但不符合任何一类判据".to_string())
+}
+
+/// 容器/播放列表签名判定 —— 「这条响应到底是不是媒体」
+///
+/// # 为什么必须看签名而不只看状态码
+/// ```text
+/// 实测有站点回 200 但正文是 HTML 错误页（防盗链、风控页）。
+/// 只看状态码会把它当"能播"，归因就全错了。
+/// ```
+fn looks_like_media(head_hex: &str) -> bool {
+    // 空白（还没读到正文）⇒ 不算证据
+    if head_hex.trim().is_empty() {
+        return false;
+    }
+    let bytes: Vec<u8> = head_hex
+        .split_whitespace()
+        .filter_map(|h| u8::from_str_radix(h, 16).ok())
+        .collect();
+    if bytes.len() < 4 {
+        return false;
+    }
+    // ① MP4/MOV 族：偏移 4 处是 "ftyp"（或 ftyp/free/moov/mdat/styp）
+    if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
+        return true;
+    }
+    // ② MPEG-TS：0x47 同步字节
+    if bytes[0] == 0x47 {
+        return true;
+    }
+    // ③ FLV
+    if bytes.len() >= 3 && &bytes[0..3] == b"FLV" {
+        return true;
+    }
+    // ④ 文本型播放列表 / 分片
+    let txt: String = bytes
+        .iter()
+        .map(|&x| if (32..127).contains(&x) { x as char } else { '.' })
+        .collect();
+    if txt.contains("#EXTM3U") || txt.contains("#EXTINF") {
+        return true;
+    }
+    // ⑤ WebM/MKV（EBML 头 1A 45 DF A3）
+    if bytes.len() >= 4 && bytes[0] == 0x1A && bytes[1] == 0x45 && bytes[2] == 0xDF {
+        return true;
+    }
+    false
 }

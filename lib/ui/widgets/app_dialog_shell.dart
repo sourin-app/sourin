@@ -42,7 +42,11 @@
 /// Incorrect use of ParentDataWidget。
 library;
 
+import 'dart:math' as math;
+
 import 'package:flutter/services.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
+    show GlassContainer, LiquidRoundedRectangle;
 import 'package:material_ui/material_ui.dart';
 
 import '../app_scaffold.dart';
@@ -72,7 +76,28 @@ class AppDialogShell extends StatelessWidget {
     this.icon,
     this.closeEnabled = true,
     this.forceDarkCard = false,
+    this.glass = false,
   });
+
+  /// 卡片是否走**玻璃材质**（2026-10-18，任务 B）
+  ///
+  /// # 为什么是可选、且默认 `false`
+  /// ```text
+  /// 这个外壳被**全仓 7 个弹窗**共用。玻璃化只针对弹幕面板，
+  /// 默认 false ⇒ 其余 6 个弹窗**逐像素不变**（零回归）。
+  /// 想玻璃化哪个就显式传 true。
+  /// ```
+  /// # 玻璃化做了什么
+  /// ```text
+  /// 卡片外面套一层 `GlassContainer`（半透明 + 模糊 + 描边），
+  /// 同时把内层 `Material` 的底色置透明、描边置 none
+  /// ⇒ 材质只由一层承担，不会叠出两层底。
+  ///
+  /// ⚠️ 内层 `Material` **必须保留**：框架的 SwitchListTile / ChoiceChip
+  ///    把涟漪画在最近的 Material 上，去掉会抛
+  ///    "ink splashes may be invisible"。
+  /// ```
+  final bool glass;
 
   /// 卡片高度上限的**绝对值**（与改前 7 个弹窗的 620 对齐）。
   ///
@@ -81,6 +106,54 @@ class AppDialogShell extends StatelessWidget {
   ///   t70 的 3 条 tap 测试红（HEAD 基线 +76 全绿）。
   ///   0.8 这个数是拍的，没有依据 —— 改回「绝对值 + 视口夹取」。
   static const double _kMaxHeight = 620;
+
+  /// 视口窄于此值时**放弃留边距**（卡片贴边），**不是**"弹窗没有意义"。
+  ///
+  /// ★ 2026-10-21（R4-⑤）：260 是从 `skip_marker_dialog.dart:2210` 抄来的
+  ///   **经验值**。它的原注释写的是「内容可用宽（下限 260 —— 低于这个宽度
+  ///   弹窗就没有意义了）」—— 那句是**断言，不是论证**，而且语义是错的（见下）。
+  ///
+  /// # 出处不可考（查过了）
+  /// ```text
+  /// $ git log -S "260.0" -- lib/ui/widgets/skip_marker_dialog.dart
+  ///   b289bb6 2026-10-08 源影 · Flutter：跨端视频聚合客户端（首次开源）
+  /// ⇒ 唯一命中的提交就是"首次开源"，拿不到更早的推导。
+  /// $ grep -nE "MinWidth|minWidth|MinHeight" lib/ui/tokens.dart   ⇒ 0
+  /// ⇒ tokens 里**没有"尺寸下限"这一类**（260 只以 Motion.base 的形式存在，
+  ///    那是动画时长，不是宽度）。
+  /// ```
+  ///
+  /// ⚠️ 它**不是**从"竖条事故"推导出来的 —— 别把两件事混起来：
+  /// ```text
+  /// 竖条事故（skip_marker_dialog:2164-2175 有完整记录）：
+  ///   窗口 120 宽 → Dialog 默认 insetPadding 40*2 → 可用宽 40
+  ///   → 再减 Sp.x5*2(40) 内边距 = **0** ⇒ 卡片塌成 40x640 竖条。
+  /// ⇒ 那次证明的是"**下限不能是 0**"（否则可用宽退化成 0），
+  ///   推不出"下限应该是 260"。260 是另一个独立的（且无据的）选择。
+  /// ```
+  ///
+  /// # ★ 实测（2026-10-21）：它不是"安全下限"，是"边距消失的临界点"
+  /// ```text
+  /// vp=300 ⇒ cardW 268 / 边距 16
+  /// vp=260 ⇒ cardW 260 / 边距  0
+  /// vp=120 ⇒ cardW 120 / 边距  0    ← 它**照样渲染**，没有"没意义"
+  /// ```
+  /// `SizedBox(width: 260)` 仍然会被父级约束压到更小 ⇒ **它不造成溢出**。
+  /// 它的唯一效果就是让 left/right margin 从 16 变成 0。
+  ///
+  /// ⚠️ 语义差别的危险之处：
+  /// ```text
+  /// 「低于它就没意义」    ⇒ 可能被引用成"再窄就不该开"（甚至加一条禁止逻辑）
+  /// 「低于它不再留边距」  ⇒ 只是边距策略的临界点，安全、无副作用
+  /// ⇒ 错误的语义比没有语义更危险，因为它会指导别人做错事。
+  /// ```
+  ///
+  /// ⇒ 若将来要给它真实依据，需要回答：
+  ///   「260 宽下哪个弹窗的内容开始不可用」——**目前没有任何人测过**。
+  ///   在那之前，**不要把它当安全下限引用**。
+  static const double _kMinDialogWidth = 260;
+
+
 
   final String title;
   final String? subtitle;
@@ -209,15 +282,112 @@ class AppDialogShell extends StatelessWidget {
      * `AppThemeHost` 会把 `Theme` 换掉 ⇒ 子树里所有 `Theme.of` 都拿到深色，
      * 与 `PlayerPanelTheme`（player_page.dart:201）同一个手法。
      */
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-21（R4-⑤）：宽度**按视口夹取** + 窄视口自动留边距
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 改前的缺陷（真机前置的像素验证抓到，不是推断）
+     * ```text
+     * 外壳直接 `SizedBox(width: width)`，**没有任何视口夹取**，
+     * 且 `margin` 默认 `EdgeInsets.zero`。
+     *
+     * 视口 800x600 下的实测（三弹窗）：
+     *   composer(width 820)  卡片 = [0,0 .. 800,600]  边距 **0/0/0/0**
+     *   skip   (width 768)   卡片 = [16,16 .. 784,584] 边距 16（它自己夹取）
+     *   update (width 460)   卡片 = [170,122 .. 630,478] 居中
+     *
+     * ⇒ 卡片顶满屏幕时：遮罩看不见（四角像素=卡片色，不是遮罩色）、
+     *   圆角被切掉、标题栏顶到屏幕最上沿。
+     * ```
+     *
+     * # 为什么修在**外壳**而不是各弹窗
+     * ```text
+     * 7 个弹窗里有 5 个是「硬编码 width + 不夹取」：
+     *   composer 820 / plugin_edit 560 / bili 560 / danmaku 560 / provider 560
+     * 只修 composer ⇒ 另外 5 个仍留着同一个坑，而下一个人看到 composer 是好的，
+     * 就会以为外壳是对的。**「5 个有隐患只有 1 个修」比「6 个都没修」更难发现。**
+     * ```
+     *
+     * # 夹取公式（照抄 `skip_marker_dialog` 的既有写法，不是新发明）
+     * ```text
+     * maxW        = 视口宽 − 两侧外边距（Sp.x4 = 16）
+     * effectiveW  = min(传入的 width, maxW)
+     * 夹取发生 ⇔ width > maxW
+     * ```
+     * ⚠️ 下限 260：与 `skip_marker_dialog` 的 `math.max(..., 260.0)` 同源 ——
+     *    低于 260 的弹窗没有意义（实测窄窗口塌成竖条那次就是这个数）。
+     *
+     * # 大视口**零影响**（这是回归判据，已实测）
+     * ```text
+     * 1280x800 下 width 460/820/820 全部 < maxW(1248) ⇒ 不夹取 ⇒ effectiveW == width
+     * ⇒ 卡片宽度与改前**逐像素相同**（实测 cardW 460/820/820，改前改后一致）。
+     * ```
+     */
+    final viewport = MediaQuery.sizeOf(context);
+    // 两侧各留 16（Sp.x4）—— 与 skip_marker_dialog 的 margin 同值
+    const double horizontalMargin = Sp.x4;
+    final maxCardW =
+        math.max(viewport.width - horizontalMargin * 2, _kMinDialogWidth);
+    final effectiveW = math.min(width, maxCardW);
+
     final card = _maybeDark(
       SizedBox(
-        width: width,
+        width: effectiveW,
         child: ConstrainedBox(
         // ★ 同时给 minHeight：`Flexible` 里的滚动区需要有界高度才生效。
         //   只给 maxHeight 时，Column(mainAxisSize.min) 在 loose 约束下会
         //   把内容全部撑开（实测 30 行内容算出 1303px，滚动条形同虚设）。
         // ★ 2026-10-16 修：这里原来写死 `_kMaxHeight`，`maxHeight` 字段
         //   **声明了却从没被读** —— 传了不生效（dlg-subtitle 实测抓到）。
+        /*
+         * ★★★ 2026-10-21（R4-⑤）：高度也要**按视口夹取**。
+         *
+         * # 改前的缺陷（与宽度同源，同一轮发现的第二处）
+         * ```text
+         * 改前：maxHeight ?? _kMaxHeight  —— 只认常量，不认视口。
+         * 视口 800x600、composer(maxHeight 620) 实测：
+         *   卡片 = 768x**600**，上下边距 **0/0**
+         *   左右已有 16（宽度夹取修好之后）
+         * ⇒ 上下仍然贴满屏幕：标题栏顶到 y=0、底部按钮区压到 y=600。
+         * ```
+         * # 修法：与宽度对称
+         * ```text
+         * maxCardH = max(视口高 − 2*Sp.x4, 下限)
+         * effectiveMaxH = min(maxHeight ?? _kMaxHeight, maxCardH)
+         * ```
+         * 下限用 320（与 `skip_marker_dialog` 的
+         * `math.max(media.height - margin*2, 320.0)` 同源）：再矮就没有意义，
+         * 那种场合宁可让卡片顶到边（此时内部一定可滚，判据 C 钉着）。
+         *
+         * ★ 大视口零影响：1280x800 下 maxCardH = 768 > 620 ⇒ 取 620，与改前一致。
+         */
+        /*
+         * ══════════════════════════════════════════════════════════════
+         * ★ 高度：**不加视口夹取**（原因见下，这是与宽度不对称的地方）
+         * ══════════════════════════════════════════════════════════════
+         *
+         * # 我试过加，然后回退了（2026-10-21，t70 变红抓到的）
+         * ```text
+         * 加夹取：maxHeight = min(maxHeight ?? 620, 视口高 - 32)
+         *   800x600 视口下 ⇒ 620 被夹到 568
+         *   ⇒ 卡片比父级约束**允许的**还矮 32px
+         *   ⇒ t70「立即更新」按钮落到 y=598（视口 600），点击打空 ⇒ 那条红
+         * ```
+         * # 为什么宽度需要夹取、高度不需要
+         * ```text
+         * 宽度：`SizedBox(width:)` 是**紧**约束，父级只会把它压到视口宽，
+         *       **不会**自动留边距 ⇒ 卡片贴满屏幕（这是真缺陷，已修）。
+         *       夹取 = 主动留白，方向正确。
+         *
+         * 高度：`ConstrainedBox(maxHeight:)` 给的是**上界**，父级约束
+         *       （Scaffold.body / showDialog 路由）本来就会把它压到视口内。
+         *       实测 800x600：不加夹取时卡片高 = **600**（正好视口高），
+         *       不溢出、内部可滚。
+         *       ⇒ 再夹一次（568）是**双重夹取**，只会让卡片更矮、把内容挤出去。
+         * ```
+         * ⇒ 高度的"按视口夹取"由**父级约束**天然完成，外壳只负责常量上限 620。
+         */
         constraints: BoxConstraints(maxHeight: maxHeight ?? _kMaxHeight),
         child: Material(
           // card 类型 + antiAlias 裁剪：框架的 SwitchListTile / ChoiceChip
@@ -236,22 +406,61 @@ class AppDialogShell extends StatelessWidget {
           //   #14161C 几乎同档 ⇒ 统一到它观感变化最小，且明暗两套都有定义。
           //   原用 `surface`@0.98（深色 #0A0A0A）—— 卡片与页面底几乎同色，
           //   "浮起来"的感觉没了。
-          color: forceDarkCard
-              // 深色档：与 DanmakuTextColors.panelBg 同源（业主 fig1 实测值）
+          color: glass
+              /*
+               * ★★★ 2026-10-19（第 66 轮 R3-① / R3-②）：`Colors.transparent` → **实色衬底**
+               *
+               * # 改前为什么是 transparent
+               * ```text
+               * 任务 B 玻璃化时把遮光整个交给外层 `GlassContainer`，
+               * 内层 Material 置透明 —— 当时的目标是"别叠出两层底"。
+               * ```
+               * # 但真渲染像素取证证明那样**把文字弄糊了**
+               * ```text
+               * 在最坏底图（纯白 + 高饱和动画色块）上真渲染本弹窗，
+               * 对每个 Text 的矩形做颜色直方图（众数=真实背景、次众数=字形）：
+               *
+               *   卡片内真实背景  rgb(94,91,45) / rgb(95,35,50) / rgb(26,85,94)
+               *                   ← **橄榄/暗红/暗青**，全是底下色块透上来的
+               *   说明档 #8E939B 对 rgb(94,91,45) = **2.09:1**（正文线 4.5）
+               *   次要档 #B9BEC6 对 rgb(94,91,45) = **3.74:1**
+               *
+               * 而"常量对 #14161B"是 5.86~14.5:1（t27_w1 早钉过）——
+               * 两组数字对不上，唯一解释就是**真实背景根本不是那个常量色**。
+               * ```
+               * # 修法：玻璃只负责质感，遮光由这层实色负责
+               * ```text
+               * 玻璃档也给它一个**高不透明度**的实色底（与非玻璃档同源 #14161B@0.98）。
+               * ⇒ 文字永远压在自己那层实色上，与底下画面无关；
+               *   外层的 GlassContainer 仍然在（描边/模糊/高光都是它画的），
+               *   只是**不再承担遮光** —— 这是职责划分，不是把玻璃删掉。
+               *
+               * ⚠️ 保留 2% 透明度（0.98）：与 `forceDarkCard` 那一支完全一致，
+               *    玻璃的"透一点底色"观感仍在，但不足以污染文字对比度。
+               * ⚠️ 涟漪宿主仍是这个 Material（只是它现在**有底色**了，更好）——
+               *    `SwitchListTile` / `ChoiceChip` 依赖它，不能删。
+               * ```
+               */
               ? const Color(0xFF14161B).withValues(alpha: 0.98)
-              : Theme.of(context).colorScheme.surfaceContainerHighest,
+              : forceDarkCard
+                  // 深色档：与 DanmakuTextColors.panelBg 同源（业主 fig1 实测值）
+                  ? const Color(0xFF14161B).withValues(alpha: 0.98)
+                  : Theme.of(context).colorScheme.surfaceContainerHighest,
           shape: RoundedRectangleBorder(
             borderRadius: Radii.rLg,
             // ★ 2026-10-16 修：原来用 `dividerColor` —— 它是**亮灰**
             //   （深色 #938F99 / 浅色 #79747E），画在卡片边上很显眼。
             //   实测 `outlineVariant` 才是这套主题的「弱化描边」
             //   （深色 #222222 / 浅色 #DFE1E8），与各面板改前用的同一个角色。
-            side: BorderSide(
-              color: forceDarkCard
-                  // 深色档：与 DanmakuTextColors.border 同源
-                  ? const Color(0xFF4A4E56)
-                  : Theme.of(context).colorScheme.outlineVariant,
-            ),
+            side: glass
+                // 玻璃档：描边由 GlassContainer 画，Material 这层不再画
+                ? BorderSide.none
+                : BorderSide(
+                    color: forceDarkCard
+                        // 深色档：与 DanmakuTextColors.border 同源
+                        ? const Color(0xFF4A4E56)
+                        : Theme.of(context).colorScheme.outlineVariant,
+                  ),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -283,6 +492,40 @@ class AppDialogShell extends StatelessWidget {
         ),
       ),
     );
+    /*
+     * ★★ 2026-10-18（任务 B）：玻璃档 —— 在卡片**外面**套一层材质。
+     *
+     * # 为什么包在外面而不是改里面的 Material
+     * ```text
+     * Material 必须继续存在（涟漪宿主），且必须是**内层**；
+     * 玻璃只是"外观"，把它套在最外层最直观，也不动内部结构。
+     *
+     * 玻璃档时 Material 的 color 已置透明、side 已置 none（见上），
+     * ⇒ 材质完全由这层 GlassContainer 承担，不会叠出两层底。
+     * ```
+     * ⚠️ `glass == false` 时**原样返回** ⇒ 其余 6 个弹窗逐像素不变。
+     */
+    final shelled = glass
+        ? GlassContainer(
+            /*
+             * ★ 玻璃轮廓的圆角取 `Radii.lg`（22），改前是硬编码 `20`。
+             *
+             * 同一个壳里原本**两个值**：内层 Material 的
+             * `RoundedRectangleBorder(borderRadius: Radii.rLg)`（见 :303）是 22，
+             * 而这一层是 20。玻璃档下观感由**这一层**决定 —— 内层 Material 的
+             * color 已置透明、side 已置 none（它不画底也不描边），且
+             * `Material.clipBehavior` 默认 `Clip.none`（它不裁切）——
+             * ⇒ 真正被看见的圆角一直是 20，§3.5 的「圆角 Radii.rLg」
+             * 在玻璃档上**名不副实**。两处现已统一成 `Radii.lg`。
+             *
+             * ⚠️ 别把这里改回字面量：§3.5 写「圆角一律 Radii.*，禁硬编码」，
+             *    引 token 才能在下一次调 `Radii.lg` 时自动跟上。
+             */
+            shape: const LiquidRoundedRectangle(borderRadius: Radii.lg),
+            padding: EdgeInsets.zero,
+            child: card,
+          )
+        : card;
     final overlay = GestureDetector(
       /*
        * 点背景关闭（与播放页其它面板一致）
@@ -306,11 +549,35 @@ class AppDialogShell extends StatelessWidget {
       child: _scrim(context,
         Center(
           child: Padding(
+            /*
+             * 外边距。
+             *
+             * ★ 2026-10-21（R4-⑤）：默认值从 `EdgeInsets.zero` 改成
+             *   **只在"视口太窄、宽度被夹取"时**留左右边距。
+             *
+             * # 为什么不能无条件给默认 margin（Lead 明确要求实测）
+             * ```text
+             * 无条件 `EdgeInsets.symmetric(horizontal: Sp.x4)` 会让**大视口**下
+             * 卡片也被塞进一个 16px 的 Padding 里 —— 虽然卡片本身宽度不变，
+             * 但它在 `Center` 里的"可用盒"变了，且 bottom sheet 形态
+             * （`fill: false` + 宿主 Stack）的定位语义会被动到。
+             * ⇒ 只在大视口零影响的前提下才敢改默认值，而这个前提
+             *   只有在**夹取发生**时才成立。
+             * ```
+             * # 夹取时为什么必须留边距
+             * ```text
+             * 夹取后 `effectiveW == 视口宽 - 32` ⇒ 两侧天然各有 16px 留白，
+             * 卡片**不会**贴满屏幕；而 `margin` 再叠一层 16 会让它变成
+             * `视口宽 - 64` ⇒ 双重夹取，反而更窄（这正是 skip 自算 + 外壳夹取
+             * 若同时存在会出的问题，见 skip 那边的注释）。
+             * ⇒ 夹取时**不额外加 margin**：宽度公式已经把边距算进去了。
+             * ```
+             */
             padding: margin ?? EdgeInsets.zero,
             child: GestureDetector(
               // 卡片内部的点击不能穿透到背景（否则点滑块也会关掉面板）
               onTap: () {},
-              child: motion ? OverlayCardMotion(child: card) : card,
+              child: motion ? OverlayCardMotion(child: shelled) : shelled,
             ),
           ),
         ),

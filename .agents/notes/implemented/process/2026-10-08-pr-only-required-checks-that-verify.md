@@ -16,6 +16,8 @@ Status: implemented
 `main` 开分支保护，任何直推被服务端拒绝（GH006）。必需检查只列 `Windows` 与 `macOS`
 两个 job，**不列** `Android` 与发 Release —— 后两者在 PR 上会被 job 级 `if:` 判成 skipped。
 
+Independent: PR 流程与必需检查的准入标准。与「禁假绿」相关但那是另一篇的具体判据，本篇讲流程形态。
+
 ## Alternatives considered
 
 - **把 Android / Release job 也列进必需检查** —— 它最强的论据是覆盖更全：

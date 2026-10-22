@@ -506,9 +506,51 @@ void main() {
       ]) {
         expect(cond.contains(k), isTrue, reason: '★ 底栏绘制条件少了 $k（在 _chromeVisible 里）');
       }
-      // 底栏渲染点必须读唯一真源（用 ListenableBuilder 包住，淡出窗口内留树）
-      expect(_page.contains('if (!_chromeVisible && !keepForFade) {'), isTrue,
-          reason: '★ 底栏显隐必须读唯一真源 `_chromeVisible` —— T27-13 的唯一真源');
+      // 底栏渲染点必须读唯一真源 —— 但这个真源在 N11（ddb0794）**换了一次**
+      //
+      // ★★★ 2026-10-19（漂移修正）：断言锚点 `if (!_chromeVisible && !keepForFade) {`
+      //   已随产品改动失效，新锚点是 `if (_bottomOccupied) {`
+      //
+      // # 断言本意（未变）
+      //   「底栏显隐必须读**唯一真源**，不许各渲染点自己算门控」
+      //   —— 这是 T27-13（Owner 第 3/5 条「上下栏同时消失/显示」）的守卫。
+      //
+      // # 为什么锚点必须换（产品改动是**有意**的，且更严格）
+      // ```text
+      // 旧：底栏在 `!_chromeVisible && !keepForFade` 时**留在树里淡出**
+      //     ⇒ 淡出窗口内 398 个元素仍在重建
+      // 新（N11 / ddb0794）：改成分两支
+      //     ① `_bottomOccupied`（错误层/选集/换源/设置/弹幕/字幕/直播频道/
+      //        音频提示/画面死亡）⇒ `SizedBox.shrink()` 整条卸下
+      //     ② 其余 ⇒ **恒挂**，显隐只翻 `_bottomFade` 的 opacity
+      //     ⇒ 重建归零，且"看不见时点不到"由 IgnorePointer 保证
+      // ```
+      // ⇒ 真源从 `_chromeVisible` 换成 `_bottomOccupied`，**判据实质未变**：
+      //   底栏渲染点仍只读一个 getter，不自己拼条件。
+      //
+      // # 新锚点守的是什么（不能只是"字符串存在"）
+      // ```text
+      // ① `bool get _bottomOccupied =>` 必须存在（真源本体）
+      // ② 它必须列全那几个"底部归占据者"的状态
+      // ③ 渲染点必须写 `if (_bottomOccupied)` 并在该支返回 shrink
+      //    —— 漏了 ③ 就会"一刀切常挂" ⇒ 错误提示上叠底栏按钮（可点）
+      //    （结构级行为由 zz_t66_n11_bottombar_test.dart T2 用故障注入守着）
+      // ```
+      final bi = _page.indexOf('bool get _bottomOccupied =>');
+      expect(bi, greaterThan(0),
+          reason: '★ 唯一真源 `_bottomOccupied` 不见了 —— 底栏又各自算门控了');
+      final bcond = _page.substring(bi, _page.indexOf(';', bi));
+      for (final k in const [
+        '_episodeSheetOpen',
+        '_streamSheetOpen',
+        '_settingsOpen',
+        '_liveChannelsOpen',
+      ]) {
+        expect(bcond.contains(k), isTrue,
+            reason: '★ 底栏占据条件少了 $k（在 _bottomOccupied 里）');
+      }
+      expect(_page.contains('if (_bottomOccupied) {'), isTrue,
+          reason: '★ 底栏渲染点必须读唯一真源 `_bottomOccupied` —— T27-13 的唯一真源');
       // 自动收底栏时不能把滑条收掉（否则拖到一半条就没了）
       expect(_page.contains('!_hintsOpen && !_zoomOpen'), isTrue);
     });

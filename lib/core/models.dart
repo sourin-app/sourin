@@ -2541,6 +2541,7 @@ class BackupPreview {
     this.exportedAt,
     this.counts = const {},
     this.plugins = const [],
+    this.credentials = const BackupCredentialsInfo(),
   });
 
   final int version;
@@ -2553,6 +2554,9 @@ class BackupPreview {
 
   /// 插件清单：(文件名, 字节数)
   final List<(String, int)> plugins;
+
+  /// 包里有没有登录态（`backup_inspect` 才有；`backup_preview` 恒为不含）
+  final BackupCredentialsInfo credentials;
 
   factory BackupPreview.fromJson(Map<String, dynamic> j) {
     final c = <String, int>{};
@@ -2575,22 +2579,214 @@ class BackupPreview {
       exportedAt: (j['exportedAt'] as num?)?.toInt(),
       counts: c,
       plugins: p,
+      credentials: BackupCredentialsInfo.fromJson(jmap(j['credentials'])),
     );
   }
 }
 
 /// 备份导出结果
+///
+/// # ★ `credentialsIncluded` / `credentialsNote` 必须显示给用户
+///
+/// 导出时没设口令 ⇒ 包里**不含登录态**。若界面只报"已导出"，
+/// 用户会以为换台机器就能直接接着用 —— 实际每个源都要重新登。
+/// ⇒ 那条 `credentialsNote` 就是为这个写的，**不要吞掉**。
 class BackupExportResult {
-  const BackupExportResult({required this.path, required this.bytes});
+  const BackupExportResult({
+    required this.path,
+    required this.bytes,
+    this.credentialsIncluded = false,
+    this.credentialsProviders = 0,
+    this.credentialsNote,
+  });
 
   final String path;
   final int bytes;
+
+  /// 包里是否**真的**含登录态（加密后的）
+  final bool credentialsIncluded;
+
+  /// 含了几个源的登录态
+  final int credentialsProviders;
+
+  /// 后端给的说明（含"没带登录态"的原因）
+  final String? credentialsNote;
 
   factory BackupExportResult.fromJson(Map<String, dynamic> j) =>
       BackupExportResult(
         path: j['path'] as String? ?? '',
         bytes: (j['bytes'] as num?)?.toInt() ?? 0,
+        credentialsIncluded: j['credentialsIncluded'] as bool? ?? false,
+        credentialsProviders:
+            (j['credentialsProviders'] as num?)?.toInt() ?? 0,
+        credentialsNote: j['credentialsNote'] as String?,
       );
+}
+
+/// 备份包里的**登录态元信息**（`backup_inspect` 返回，不含任何凭据内容）
+///
+/// 导入前要先知道包里有没有登录态 —— 有的话必须**先让用户输口令**，
+/// 否则用户点了导入才被告知"需要口令"，会以为导入失败。
+class BackupCredentialsInfo {
+  const BackupCredentialsInfo({
+    this.included = false,
+    this.providers = 0,
+    this.plaintextPasswordProviders = const [],
+  });
+
+  /// 包里有没有加密的登录态
+  final bool included;
+
+  /// 含几个源
+  final int providers;
+
+  /// ★ 其中**明文存了账号密码**的源（不是令牌，是密码）
+  ///
+  /// 这类要**单独**提示：Cookie 泄露可撤销，密码泄露影响面大得多
+  /// （用户可能在别处复用同一密码）。
+  final List<String> plaintextPasswordProviders;
+
+  factory BackupCredentialsInfo.fromJson(Map<String, dynamic> j) =>
+      BackupCredentialsInfo(
+        included: j['included'] as bool? ?? false,
+        providers: (j['providers'] as num?)?.toInt() ?? 0,
+        plaintextPasswordProviders:
+            jstrList(j['plaintextPasswordProviders']),
+      );
+}
+
+/// 凭据同步状态（`credentials_status` / `set_credentials_*` 的返回）
+///
+/// # ★★ 界面只该看 [willSync]
+///
+/// ```text
+/// enabled       用户开关
+/// passphraseSet 钥匙串里有没有口令
+/// willSync      ★ enabled && passphraseSet —— 由**后端**算，不是前端拼
+/// ```
+///
+/// 让每个界面自己拼 `enabled && passphraseSet`，必然有人漏一个条件 ——
+/// 而漏掉的后果正是"显示已同步、其实一个字节都没走"（本仓的假绿同类）。
+class CredentialsStatus {
+  const CredentialsStatus({
+    this.enabled = false,
+    this.passphraseSet = false,
+    bool? willSync,
+    this.providers = 0,
+    this.plaintextPasswordProviders = const [],
+  })  : _willSync = willSync,
+        _isUnknown = false;
+
+  /// 「状态读不到」专用构造（面板在没有数据时用它，**不自己拼文案**）
+  const CredentialsStatus._unknown()
+      : enabled = false,
+        passphraseSet = false,
+        _willSync = false,
+        providers = 0,
+        plaintextPasswordProviders = const [],
+        _isUnknown = true;
+
+  /// 是否处于"读不到状态"（只有 [CredentialsStatus.unknown] 为 true）
+  final bool _isUnknown;
+
+  final bool enabled;
+  final bool passphraseSet;
+
+  /// 后端显式给的值；`null` = 没给（老核心）⇒ 由 [willSync] 现算
+  final bool? _willSync;
+
+  /// ★ 真的会同步吗 —— **唯一判据**
+  ///
+  /// # 为什么是「有就用后端的、没有就现算」而不是纯存字段
+  ///
+  /// ```text
+  /// 纯存字段     → 手工构造时（测试/其它调用点）会得到 willSync=false，
+  ///                即使 enabled && passphraseSet 都为 true —— 自相矛盾
+  /// 纯 getter    → 后端将来若收紧判据（比如还要 data_dir 就绪），
+  ///                前端会忽略它 ⇒ 两边判据漂开
+  /// ⇒ 有就用后端的（权威），没有才现算（兜底）—— 两者都不会错
+  /// ```
+  bool get willSync => _willSync ?? (enabled && passphraseSet);
+
+  /// 本机有几个源存了登录态
+  final int providers;
+
+  /// 明文存了账号密码的源
+  final List<String> plaintextPasswordProviders;
+
+  /// 同步**方向**的唯一权威文案
+  ///
+  /// # ★★ 为什么这句话必须存在（而不是"锦上添花"）
+  ///
+  /// 本轮的凭据同步**只做上行**（本机 → 云端）。它**不会**把云端的
+  /// 登录态拉回本机 —— 换设备恢复走的是「备份导入」那条路。
+  ///
+  /// ```text
+  /// 只写「凭据将同步」         ⇒ 用户以为两台机器都会有
+  ///                              ⇒ 换设备后发现要重新登录            （假绿）
+  ///                              这是本仓反复出现的「显示成功但只做了一半」
+  /// 写清「仅上行 + 取回用导入」 ⇒ 用户知道下一步该干什么
+  /// ```
+  ///
+  /// ⚠️ **抽成常量**而不是在两处手写：文案与门禁必须锚在**同一份真相**上，
+  ///    否则改了一处、门禁还在断言另一处（那是最常见的假绿形态）。
+  static const String directionNote = '仅上行：本机 → 云端；从云端取回请用「备份导入」';
+
+  /// 状态读不到时的文案（`_cred == null`，例如核心库未启动 / FFI 未接入）
+  ///
+  /// ★ 抽成常量而不是让面板自己 `return '凭据未同步（状态未知）'`：
+  ///   那会在面板里产生**第二处**同样的文案 ⇒ 门禁的满足点变成 2
+  ///   ⇒ 故障注入打不中（本仓三个"门禁自身假绿"的共性）。
+  ///   由 `zz_t66_cs1_render_point_uniqueness_test.dart` 机械核对。
+  static const String unknownLabel = '凭据未同步（状态未知）';
+
+  /// 状态读不到时用的**状态对象** —— 面板直接拿它走 `statusLabel`
+  ///
+  /// # ★ 为什么用 `_unknown` 标志而不是 `CredentialsStatus()`
+  ///
+  /// 空构造是 `enabled: false` ⇒ `statusLabel` 会走「凭据未同步（未开启）」
+  /// 那个分支，**说错了原因**（不是用户没开，是我们没读到）。
+  /// 第一版就是这么写的，被 `①-c` 用例当场抓住。
+  ///
+  /// ⇒ 加一个内部标志，只用于这一条分支。它是 `const`，
+  ///   所以 `unknown` 仍可作编译期常量。
+  static const CredentialsStatus unknown = CredentialsStatus._unknown();
+
+  /// 状态行文案 —— **唯一判据**
+  ///
+  /// ```text
+  /// enabled == false      ⇒ 「凭据未同步（未开启）」
+  /// passphraseSet == false ⇒ 「凭据未同步（未设置口令）」  ★ 最容易写成"完成"的那条
+  /// 其它                   ⇒ 「凭据将同步：N 个源（仅上行…取回用导入）」
+  /// ```
+  String get statusLabel {
+    // ★ 读不到状态**优先**判：它既不是"没开"也不是"没口令"
+    if (_isUnknown) return unknownLabel;
+    if (!enabled) return '凭据未同步（未开启）';
+    if (!passphraseSet) return '凭据未同步（未设置口令）';
+    /*
+     * ★ 会同步时**必须**把方向说清：能同步 ≠ 两边都有了。
+     */
+    return providers > 0
+        ? '凭据将同步：$providers 个源（$directionNote）'
+        : '凭据将同步（本机暂无登录态；$directionNote）';
+  }
+
+  factory CredentialsStatus.fromJson(Map<String, dynamic> j) {
+    final enabled = j['enabled'] as bool? ?? false;
+    final passphraseSet = j['passphraseSet'] as bool? ?? false;
+    return CredentialsStatus(
+      enabled: enabled,
+      passphraseSet: passphraseSet,
+      /*
+       * ★ 容错：后端没给 `willSync` 时**自己算**（老版本核心）。
+       *   但算的是**同一个式子** —— 不是"enabled 就当作会同步"。
+       */
+      willSync: j['willSync'] as bool? ?? (enabled && passphraseSet),
+      providers: (j['providers'] as num?)?.toInt() ?? 0,
+      plaintextPasswordProviders: jstrList(j['plaintextPasswordProviders']),
+    );
+  }
 }
 
 /// 备份导入汇总

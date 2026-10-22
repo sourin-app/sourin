@@ -32,6 +32,11 @@
 //    核心会把封面换成 `http://127.0.0.1:<port>/s/...` 并附上正确请求头。
 
 import 'package:material_ui/material_ui.dart';
+// ★★★ 第 66 轮 M 批次：玻璃组件（Owner：「彻底不用 Material 组件，全部自建/玻璃」）
+//   ⚠️ 包实际版本是 **1.11.0**（pubspec 写 ^1.7.2，锁到 1.11.0）
+//      ⇒ API 与 1.7.2 不同：GlassChip 有 label/selected/onTap，
+//         GlassButton 的图标版要 icon 必填、文本版要 GlassButton.custom。
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../../core/device.dart';
 import '../tokens.dart';
@@ -438,6 +443,28 @@ class _PosterCardState extends State<PosterCard> {
                                 // 原版：`unread > 99 ? "99+" : unread`
                                 text: widget.unread > 99 ? '99+' : '${widget.unread}',
                                 color: AppColors.badge,
+                                /*
+                                 * ★ 未读数走「实心强调」而不是玻璃 —— 这是**修一个
+                                 *   我自己刚造出来的对比度缺陷**（截图抓到）。
+                                 *
+                                 * # 缺陷（`.probe/shots/t66/t66_card_after_chip.png`）
+                                 * ```text
+                                 * 第一版我把两个角标都换成玻璃，未读数把红色当**文字色**：
+                                 *   深色玻璃底 + AppColors.badge（红）文字
+                                 * ⇒ 截图里那个「7」几乎看不见（深红压深灰）。
+                                 *   原来是"红底白字"，对比度很高 ⇒ 这是我的改动造成的**功能退化**，
+                                 *   不是美化取舍。
+                                 * ```
+                                 * # 修法：未读数保留**不透明红底 + 白字**（不走玻璃）
+                                 * ```text
+                                 * 未读数是**功能性信号**（有多少集没看），不是装饰。
+                                 * 玻璃的价值是"背景透过来"，但这里**可读性 > 通透感**。
+                                 * ⇒ 角标（badge，纯装饰性）走玻璃；未读数（unread，功能性）保留实心。
+                                 * ```
+                                 * ★ 这条也回答 Owner 的「全部玻璃」：**不是所有元素都该玻璃**，
+                                 *   功能性数字的对比度优先。我在交付说明里会写明这一点。
+                                 */
+                                solid: true,
                               ),
                             ),
 
@@ -727,27 +754,96 @@ class _PosterCardState extends State<PosterCard> {
 }
 
 /// 海报上的小标签（角标 / 未读数）
+///
+/// # ★★★ 第 66 轮 M 批次：玻璃化（Owner 原话「彻底不用 Material 组件，全部自建/玻璃」）
+///
+/// # 为什么**只有这一层**值得玻璃化
+/// ```text
+/// 我截图看过整张卡片（`.probe/shots/t66/t66_card_before.png`）：
+///   卡片 = **海报图片**（占 2/3 面积，几乎不透明）+ 下方两行文字。
+/// ⇒ 在海报**本体**上加玻璃是**看不见的**：玻璃的视觉本质是"背景透过来"，
+///   而海报本身是实色图片 ⇒ 模糊一块实色图 = 实色图（零变化，纯浪费 GPU）。
+/// ⇒ 真正"浮在图片之上、背景会透过来"的层只有这两个角标。
+///   它们原来是不透明的黑底（alpha 0.62）⇒ 换成玻璃后图片会**透出来**，
+///   这才是玻璃该用的地方。
+/// ```
+///
+/// # 为什么用 `GlassChip` 而不是 `GlassCard`
+/// ```text
+/// 角标是"一小块带文字的胶囊" ⇒ `GlassChip` 的语义（label + 圆角胶囊）正好。
+/// `GlassCard` 是容器（默认 padding 16、形状是超椭圆），套在这个尺寸上
+/// 会把 2 字角标撑得很大。
+/// ```
+///
+/// # 为什么不保留原来的 `color:` 参数
+/// ```text
+/// 原来未读数用 `AppColors.badge`（红色底）。玻璃化后底色由
+/// `GlassChip` 的 specular/fill 决定，**不能**再叠一个不透明红底
+/// （那样玻璃就看不见了）。
+/// ⇒ 未读数的"红"改由 `labelStyle` 的**文字色**承担（见调用点），
+///   并保留 `selected` 语义给将来用。★ 未读的**可辨识度**不能丢：
+///   原设计靠"红底白字"，现在靠"玻璃底 + 红字 + 加粗"。
+/// ```
 class _Chip extends StatelessWidget {
-  const _Chip({required this.text, this.color});
+  const _Chip({required this.text, this.color, this.solid = false});
 
   final String text;
+
+  /// 语义色（未读数用 `AppColors.badge`）
   final Color? color;
+
+  /// `true` ⇒ **不走玻璃**，画不透明实心底（未读数专用）
+  ///
+  /// 见调用点那段说明：未读数是功能性信号，可读性优先于通透感。
+  final bool solid;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: 2),
-      decoration: BoxDecoration(
-        color: color ?? Colors.black.withValues(alpha: 0.62),
-        borderRadius: Radii.rFull,
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          fontSize: FontSizes.cap,
-          fontWeight: FontWeight.w600,
-          color: Colors.white,
+    /*
+     * 实心分支：保留改动前的观感（红底白字），一个像素都不动。
+     * ⚠️ 这不是"没玻璃化干净"，是**有意保留**：见调用点的对比度说明。
+     */
+    if (solid) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: 2),
+        decoration: BoxDecoration(
+          color: color ?? Colors.black.withValues(alpha: 0.62),
+          borderRadius: Radii.rFull,
         ),
+        child: Text(
+          text,
+          style: const TextStyle(
+            fontSize: FontSizes.cap,
+            fontWeight: FontWeight.w600,
+            color: Colors.white,
+          ),
+        ),
+      );
+    }
+
+    return GlassChip(
+      label: text,
+      /*
+       * ★ 默认档（`GlassQuality.standard`）—— 不是随手写的：
+       *   本卡片在**长列表**里（首页一个源可到 693 张）。
+       *   包内文档原话：standard 档 "Use when: Widget is in a scrollable
+       *   list (ListView, GridView, etc.)" / "Works correctly during scrolling"
+       *   / "5-10x faster than BackdropFilter"。
+       *   premium 档是给静态头图用的 ⇒ 这里用 standard。
+       */
+      quality: GlassQuality.standard,
+      // ⚠️ 1.11.0 的 `GlassChip` **没有** `shape` 参数（1.7.2 有）——
+      //    它的胶囊形状由组件自己决定。这也是"必须按 1.11.0 API 写"的一个实例。
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: 2),
+      labelStyle: TextStyle(
+        fontSize: FontSizes.cap,
+        fontWeight: FontWeight.w600,
+        /*
+         * 有 `color`（= 未读数）⇒ 用那个色**当文字色**；
+         * 否则用白色（角标在深色海报上）。
+         * ⚠️ 原来是"底色"，现在变"文字色"—— 见类注释的说明。
+         */
+        color: color ?? Colors.white,
       ),
     );
   }

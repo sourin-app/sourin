@@ -39,6 +39,35 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+/// 按**大括号配对**取某个方法/函数的完整函数体（含最外层 `{}`）。
+///
+/// # 为什么需要它（2026-10-19 批末复核）
+/// ```text
+/// 源码级断言若用「从某处起固定 N 字符」的窗口，会随注释增删而漂移：
+///   窗口太短 ⇒ 漏掉后半段（假绿）；窗口太长 ⇒ 混进下一个函数（假红）。
+/// 本仓已有实例：`zz_t66_sheettimer_dispose_test.dart` 的 dispose 函数体
+///   真实长度 **6813** 字符，而它原来用的是固定 2600 窗口 ⇒ 只覆盖 38%，
+///   窗口外有 24 个清理调用（含 `_player.dispose()`）。
+/// ⇒ 一律改用大括号配对，不依赖长度。
+/// ```
+///
+/// 找不到 [signature] 时返回空串（调用方必须自己断言非空，否则是空断言）。
+String _balancedBody(String src, String signature) {
+  final i = src.indexOf(signature);
+  if (i < 0) return '';
+  final open = src.indexOf('{', i);
+  if (open < 0) return '';
+  var depth = 0;
+  for (var k = open; k < src.length; k++) {
+    if (src[k] == '{') depth++;
+    if (src[k] == '}') {
+      depth--;
+      if (depth == 0) return src.substring(open, k + 1);
+    }
+  }
+  return src.substring(open);
+}
+
 void main() {
   group('内容源卡片布局', () {
     late String src;
@@ -87,11 +116,40 @@ void main() {
       //   `'maxLines: 1,\n            overflow: …'`（12 空格），
       //   只要编辑器/格式化动一下缩进就假红 —— 它守的是
       //   「名称限一行 + 省略号」，不是那个空格数。改成正则。
+      //
+      // ★★★ 2026-10-19（批末复核）：**上面那个改法修好了假红，却留下了假绿。**
+      //
+      // ```text
+      // 实测（settings_page.dart）：
+      //   `maxLines: 1,` + `overflow: TextOverflow.ellipsis,` 全文件命中 **6 处**
+      //     line 5300 / 5379 / 5469 / 5822 / 6376 / 6959
+      //   而 `_nameRow` 方法体内**只有 1 处**（line 5297 附近）
+      // ⇒ 原断言 `hasMatch(src)` 扫的是**整个文件**
+      // ⇒ 把「名称行」那一处的 maxLines/ellipsis **删掉**，断言**仍然绿**
+      //    （剩下 5 处别的控件顶着）
+      // ⇒ 它守不住它声称要守的东西 = 恒真断言（比没有断言更糟）
+      // ```
+      //
+      // ⇒ 改成**局部窗口**：只在 `_nameRow` 方法体内找。
+      //   ★ 顺带加一条计数断言（恰好 1 处）—— 若哪天有人给名称行里
+      //     再塞一个带 ellipsis 的 Text，这条会红，逼人重看。
+      final nameRowBody = _balancedBody(src, 'Widget _nameRow(ColorScheme colors)');
       expect(
-        RegExp(r'maxLines:\s*1,\s*\n\s*overflow:\s*TextOverflow\.ellipsis,')
-            .hasMatch(src),
-        isTrue,
-        reason: '★ 名称必须 `maxLines: 1` + ellipsis —— 这是"不换行"的实现',
+        nameRowBody,
+        isNotEmpty,
+        reason: '★ 前提：`_nameRow` 方法体没取到 ⇒ 下面两条都是空断言',
+      );
+      final ellipsisHits = RegExp(
+        r'maxLines:\s*1,\s*\n\s*overflow:\s*TextOverflow\.ellipsis,',
+      ).allMatches(nameRowBody).length;
+      expect(
+        ellipsisHits,
+        1,
+        reason: '★ 名称行里必须**恰好** 1 处 `maxLines: 1` + ellipsis。\n'
+            '0 处 ⇒ 名称会折行（原版实测：28 张里 2 张折行，高 30px）；\n'
+            '2+ 处 ⇒ 名称行里多了别的限行文本，判据要重看。\n'
+            '★ 实测当前 = 1（全文件是 6，所以**必须**限定在 _nameRow 里，'
+            '全局扫会恒真）。',
       );
     });
 

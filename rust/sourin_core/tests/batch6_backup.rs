@@ -73,7 +73,7 @@ async fn backup_round_trip() {
     cw::set_skip_marker(&st, "srca", "1", Some("剧A".into()), Some(0), Some(60), None, None, Some(true)).unwrap();
 
     let backup_path = st.data_dir.join("test-backup.json");
-    let exported = cb::backup_export(&st, backup_path.to_str().unwrap()).expect("export");
+    let exported = cb::backup_export(&st, backup_path.to_str().unwrap(), None).expect("export");
     println!("✓ 导出: {} 字节 → {}", exported["bytes"], exported["path"]);
     assert!(backup_path.exists(), "备份文件应存在");
     assert!(exported["bytes"].as_u64().unwrap() > 0);
@@ -89,7 +89,7 @@ async fn backup_round_trip() {
     let st2 = fresh("roundtrip-target").await;
     assert_eq!(commands::list_all_progress(&st2).unwrap().len(), 0, "新库应该是空的");
 
-    let sum = cb::backup_import(&st2, backup_path.to_str().unwrap()).await.expect("import");
+    let sum = cb::backup_import(&st2, backup_path.to_str().unwrap(), None).await.expect("import");
     println!("✓ 导入汇总:");
     println!("   收藏 +{} 更新{}", sum.favorites_added, sum.favorites_updated);
     println!("   追更 +{}", sum.following_added);
@@ -127,7 +127,7 @@ async fn import_does_not_regress_newer_local_data() {
     // 机器 A：看到 100 秒
     cw::save_progress(&st, "p", "1", "剧", None, None, None, 100, 1000, None).unwrap();
     let backup = st.data_dir.join("old.json");
-    cb::backup_export(&st, backup.to_str().unwrap()).unwrap();
+    cb::backup_export(&st, backup.to_str().unwrap(), None).unwrap();
     println!("✓ 机器 A 导出备份（进度 100 秒）");
 
     // 机器 B：同一部片看到 900 秒（更新）
@@ -137,7 +137,7 @@ async fn import_does_not_regress_newer_local_data() {
     println!("✓ 机器 B 本机进度: {} 秒（updated_at={}）", before.position, before.updated_at);
 
     // ★ 导入旧备份
-    let sum = cb::backup_import(&st2, backup.to_str().unwrap()).await.unwrap();
+    let sum = cb::backup_import(&st2, backup.to_str().unwrap(), None).await.unwrap();
     println!("✓ 导入旧备份: 进度更新 {} 条", sum.progress_updated);
 
     let after = commands::get_progress(&st2, "p", "1").unwrap().unwrap();
@@ -168,7 +168,7 @@ async fn import_does_not_regress_newer_local_data() {
         println!("✓ 机器 C 本机进度 50 秒，updated_at 手动调成 2000 年（故意做旧）");
     }
 
-    let sum2 = cb::backup_import(&st3, backup.to_str().unwrap()).await.unwrap();
+    let sum2 = cb::backup_import(&st3, backup.to_str().unwrap(), None).await.unwrap();
     let a3 = commands::get_progress(&st3, "p", "1").unwrap().unwrap();
     println!("✓ 导入后 {} 秒（进度更新 {} 条）", a3.position, sum2.progress_updated);
     assert_eq!(a3.position, 100, "本机较旧时，备份的值应被采用");
@@ -253,7 +253,7 @@ async fn import_does_not_regress_newer_local_data_legacy_key() {
     }
     println!("✓ 手搓了一个**旧格式**备份包（key=a:1，位置 200 秒，时间戳更旧）");
 
-    let sum = cb::backup_import(&st, zip_path.to_str().unwrap()).await.unwrap();
+    let sum = cb::backup_import(&st, zip_path.to_str().unwrap(), None).await.unwrap();
     let after = commands::get_progress(&st, "a", "1").unwrap().unwrap();
     println!(
         "✓ 导入旧格式备份后 {} 秒（进度更新 {} 条）",
@@ -303,7 +303,7 @@ async fn import_does_not_regress_newer_local_data_legacy_key() {
             .unwrap();
         zw.finish().unwrap();
     }
-    let sum2 = cb::backup_import(&st2, zip2.to_str().unwrap()).await.unwrap();
+    let sum2 = cb::backup_import(&st2, zip2.to_str().unwrap(), None).await.unwrap();
     let a2 = commands::get_progress(&st2, "a", "1").unwrap().unwrap();
     println!(
         "✓ 反向：本机做旧 ⇒ 旧格式备份（更新）被采用：{} 秒（更新 {} 条）",
@@ -320,7 +320,7 @@ async fn import_preserves_local_group_and_note() {
 
     cw::set_favorite(&st, "p", "1", true, Some("剧".into()), None, None, None).await.unwrap();
     let backup = st.data_dir.join("b.json");
-    cb::backup_export(&st, backup.to_str().unwrap()).unwrap();
+    cb::backup_export(&st, backup.to_str().unwrap(), None).unwrap();
 
     // 机器 B：本机整理了分组和备注
     let st2 = fresh("preserve-target").await;
@@ -335,7 +335,7 @@ async fn import_preserves_local_group_and_note() {
     }
     println!("✓ 机器 B 本机设了分组「我的分组」+ 备注");
 
-    let sum = cb::backup_import(&st2, backup.to_str().unwrap()).await.unwrap();
+    let sum = cb::backup_import(&st2, backup.to_str().unwrap(), None).await.unwrap();
     let after = commands::list_favorites(&st2, false).await.unwrap();
     let f = after.iter().find(|x| x.key == "p:1").unwrap();
 
@@ -361,7 +361,7 @@ async fn import_plugins_is_idempotent() {
     println!("✓ 造了一个插件 b6.js");
 
     let backup = st.data_dir.join("b.json");
-    cb::backup_export(&st, backup.to_str().unwrap()).unwrap();
+    cb::backup_export(&st, backup.to_str().unwrap(), None).unwrap();
     let insp = cb::backup_inspect(backup.to_str().unwrap()).unwrap();
     let n_plugins = insp["counts"]["plugins"].as_u64().unwrap();
     println!("✓ 备份里含 {n_plugins} 个插件");
@@ -386,13 +386,13 @@ async fn import_plugins_is_idempotent() {
 
     // 导入到另一个库
     let st2 = fresh("plugin-idem-target").await;
-    let sum1 = cb::backup_import(&st2, backup.to_str().unwrap()).await.unwrap();
+    let sum1 = cb::backup_import(&st2, backup.to_str().unwrap(), None).await.unwrap();
     println!("✓ 第 1 次导入: 写入 {:?} 改名 {:?}", sum1.plugins_written, sum1.plugins_renamed);
     assert_eq!(sum1.plugins_written.len(), 1, "第 1 次应正常写入");
     assert!(sum1.plugins_renamed.is_empty(), "第 1 次不该改名");
 
     // ★ 再导入一次同一个包 → 内容相同，应**跳过**（不产生副本）
-    let sum2 = cb::backup_import(&st2, backup.to_str().unwrap()).await.unwrap();
+    let sum2 = cb::backup_import(&st2, backup.to_str().unwrap(), None).await.unwrap();
     println!("✓ 第 2 次导入: 写入 {:?} 改名 {:?}（都应为空 = 幂等）",
         sum2.plugins_written, sum2.plugins_renamed);
     assert!(
@@ -706,7 +706,7 @@ async fn old_format_backup_does_not_regress_newer_local_progress() {
     }
     println!("✓ 已构造老格式 zip 备份（key=\"p:1\", pos=100，一天前）");
 
-    let sum = cb::backup_import(&st, zip_path.to_str().unwrap())
+    let sum = cb::backup_import(&st, zip_path.to_str().unwrap(), None)
         .await
         .unwrap();
     println!("✓ 导入结果: 进度更新 {} 条", sum.progress_updated);

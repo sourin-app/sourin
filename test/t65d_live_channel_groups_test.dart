@@ -117,9 +117,25 @@ void main() {
           reason: '★★★ v2 说了算 —— 否则用户勾掉的台会被老数据放回来');
     });
 
-    test('★★ 组不存在 / 是空组 ⇒ 全部放行（绝不筛成空）', () {
-      // 与 v1 的 applyLiveSourceGroup 同一条兜底纪律
+    test('★★ 组**不存在** ⇒ 全部放行（绝不筛成空）', () {
+      // 与 v1 的 applyLiveSourceGroup 同一条兜底纪律：
+      // 组没建过 / 刚被删掉 ⇒ 不能把列表筛空（用户会以为功能坏了）
       expect(liveGroupAllowsChannel(const {}, const {}, '不存在的组', 'a', 'b'), isTrue);
+    });
+
+    /*
+     * ★★★ 2026-10-18 修正（Owner 真机投诉）
+     *
+     * > 我切换到我自建的 常用分组，下面的列表没变化，
+     * > 我明明只添加了一个 却还是展示全部
+     *
+     * 真机磁盘：`live_source_groups = {"常看":[]}`、`live_channel_groups` 不存在。
+     * 改前落到"空组 ⇒ 全部放行"⇒ 切过去仍是全部频道（正是投诉的现象）。
+     *
+     * ⇒ 「组**不存在**」与「组**存在但空**」必须分开：
+     *    前者放行全部（兜底），后者如实筛空 + 由 UI 给空态文案。
+     */
+    test('★★★ 组**存在但是空组** ⇒ 一个都不放行（不再"全部放行"）', () {
       expect(
         liveGroupAllowsChannel(
           const {'空组': <LiveChannelRef>[]},
@@ -128,8 +144,14 @@ void main() {
           'a',
           'b',
         ),
-        isTrue,
-        reason: '★ 用户清空的组不能把列表筛空 —— 他会以为功能坏了',
+        isFalse,
+        reason: '★ 用户明确建了一个空组 ⇒ 他说的是"这一组没有东西"，'
+            '偷偷放行全部会让他以为分组根本没生效',
+      );
+      expect(
+        liveGroupAllowsChannel(const {}, const {'空组': <String>[]}, '空组', 'a', 'b'),
+        isFalse,
+        reason: '★★ 真机上的形态：v1 有组名、值是空列表、v2 整份缺失',
       );
     });
   });

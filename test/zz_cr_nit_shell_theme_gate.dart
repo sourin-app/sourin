@@ -24,12 +24,32 @@
 
 import '_support/strip_comments.dart';
 
-/// 「AppTheme.themeFor(brightness) 的结果真的挂到了 MaterialApp.theme 上」
+/// 「AppTheme.themeFor(brightness) 的结果真的挂到了**产品根**的主题宿主上」
 ///
 /// 只匹配**剥掉注释之后**的代码（${[stripComments] 调用在下面）。
+///
+/// ★★ 2026-10-19（Lead 修）：判据必须同时认**两种**绑定形态
+/// ```text
+/// 改前（M4 之前）：产品根是 MaterialApp ⇒ 断言 `…theme: materialTheme,`
+/// 改后（M4 2026-10-18，8157a03）：产品根是 WidgetsApp ⇒ `theme:` 参数不存在
+///   （WidgetsApp 不知道什么叫 Material 主题），主题改由
+///   `AppThemeHost(data: materialTheme)` 注入 —— 见 lib/shell.dart:2177-2181
+///   的迁移记录：「主题源一字未变 —— 只是没有 Material 组件来消费它了」。
+///
+/// ⇒ 第一版只认 `MaterialApp\(`，产品迁移后这条门禁**必然红**，
+///   而红的原因不是缺陷，是**判据停在迁移前**。
+///   （实测：纯净 HEAD 上 `theme_regression_test.dart` 就是 +10 -1，
+///     绿的反而是「什么都没验到」那一版。）
+///
+/// ⇒ 两段用 `[\s\S]*?` 连起来，**任一形态成立即通过**；
+///   但两者都要求 `AppTheme.themeFor(brightness)` 那一行**真的在**，
+///   防止退化成「只要有 AppThemeHost 就算过」。
 final RegExp kShellThemeBinding = RegExp(
   r'final materialTheme = AppTheme\.themeFor\(brightness\);'
-  r'[\s\S]*?MaterialApp\([\s\S]*?theme:\s*materialTheme,',
+  // 形态一（M4 之前）：MaterialApp.theme
+  r'[\s\S]*?(?:MaterialApp\([\s\S]*?theme:\s*materialTheme,'
+  // 形态二（M4 之后）：WidgetsApp + AppThemeHost 注入
+  r'|AppThemeHost\(\s*data:\s*materialTheme,)',
 );
 
 /// 对 [rawSource]（`lib/shell.dart` 的原始文本）判这条门禁。

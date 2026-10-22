@@ -157,9 +157,43 @@ void main() {
     expect(page.contains('_canUseTopBarBack,'), isTrue,
         reason: '★ 错误态返回口（`_canUseTopBarBack`）必须保持 `||` 分支 —— '
             'AND 掉它会把"不能播放时左上角返回"也抹掉（Owner 2026-10-09 报过）');
-    // 底栏渲染点也读同一真源。
-    expect(page.contains('if (!_chromeVisible && !keepForFade) {'), isTrue,
-        reason: '★ 底栏的显隐必须读唯一真源 `_chromeVisible`（与顶栏读同一真源）');
+    /*
+     * ★★★ N11（2026-10-18）：底栏这半边从「钉实现串」改成「钉契约」
+     *
+     * # 改前（已删）
+     * ```text
+     * expect(page.contains('if (!_chromeVisible && !keepForFade) {'), isTrue,
+     *     reason: '底栏的显隐必须读唯一真源 `_chromeVisible`');
+     * ```
+     * ⇒ 钉的是 `keepForFade` 这个变量名。
+     *
+     * # 为什么改
+     * ```text
+     * N11 让底栏从「`shrink ⇄ child` 装卸」改成**恒挂**：
+     *   卸下与否只由 `_bottomOccupied` 决定；显隐（淡入淡出）由
+     *   `fade: _bottomFade`（与顶栏**同一个** `_controlsFade` 实例）驱动。
+     * ⇒ `keepForFade` 不再需要，变量消失是**改进**而非退步。
+     * ```
+     *
+     * # 现在守什么：底栏不许再用 `_chromeVisible` 自己算一套装卸门控
+     * ```text
+     * 这才是"同源"的真实意图 —— 顶/底栏不能各算各的门控。
+     * 改前靠"必须有 keepForFade"间接表达，现在直接反向断言：
+     * 代码里**不存在** `if (!_chromeVisible` 这种以它为装卸判据的写法。
+     * ```
+     * ★ 该断言在**改前实现**下也会红（改前正是那个写法）
+     *   ⇒ 有鉴别力，不是"怎么改都绿"。
+     */
+    expect(
+      RegExp(r'if\s*\(\s*!\s*_chromeVisible').hasMatch(page),
+      isFalse,
+      reason: '★★ 底栏不许用 `_chromeVisible` 决定要不要**卸下** —— 那会出现'
+          '第二套门控（T27-13 分裂复发）。显隐真源是 `_bottomFade`'
+          '（与顶栏同一个 `_controlsFade` 实例）。',
+    );
+    // 底栏仍必须真的喂 `_bottomFade`（= 与顶栏同一条动画）。
+    expect(page.contains('fade: _bottomFade,'), isTrue,
+        reason: '★ 底栏渲染点必须喂 `_bottomFade`（与顶栏同一条动画 ⇒ 不会错开）');
   });
 
   test('B3 顶栏 fade 在横幅出现时钉成 dismissed（visible=false 只挡指针）', () {

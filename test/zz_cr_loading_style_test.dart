@@ -274,7 +274,25 @@ void main() {
       ],
       <String>[
         'lib/ui/widgets/skip_marker_dialog.dart',
-        'child: _loading',
+        // ★ 2026-10-19（漂移修正）：锚点 `child: _loading` → `_LoadState.loading =>`
+        //
+        // # 断言本意（未变）
+        //   「这个页级/遮罩级忙指示必须走共享组件 `AppLoading`，
+        //     且附近不许再有裸 `CircularProgressIndicator`」
+        //
+        // # 为什么锚点必须换（产品改动是**有意**的，且修的是真缺陷）
+        // ```text
+        // 旧：`_loading ? 转圈 : 正常渲染`  —— 只有两态
+        //     读取**失败**时也走"正常"那支 ⇒ 画成「片头未设」
+        //     ⇒ 与"用户真的没设过"无法区分（假陈述）
+        // 新（2026-10-18）：`_LoadState { loading, ok, failed }` 三态 switch
+        //     loading ⇒ 只转圈（与改前一致）
+        //     ok      ⇒ 正常渲染四行
+        //     failed  ⇒ 错误 + 重试，绝不渲染"片头未设"
+        // ```
+        // ⇒ 转圈那一支的锚点现在是 `_LoadState.loading =>`，
+        //   它下面紧跟 `Center(child: AppLoading())`，判据实质不变。
+        '_LoadState.loading =>',
       ],
       <String>[
         'lib/ui/widgets/skip_marker_dialog.dart',
@@ -299,10 +317,6 @@ void main() {
       <String>[
         'lib/ui/widgets/bili_import_dialog.dart',
         "label: const Text('立即更新'),",
-      ],
-      <String>[
-        'lib/ui/widgets/danmaku_settings_dialog.dart',
-        'if (s.loading) ...[',
       ],
       <String>[
         'lib/ui/widgets/plugin_speedtest.dart',

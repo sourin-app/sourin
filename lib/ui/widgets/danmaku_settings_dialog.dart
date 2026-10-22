@@ -63,12 +63,16 @@
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:material_ui/material_ui.dart';
 
+import 'dart:async';
+import 'dart:convert' show jsonDecode, Utf8Decoder;
+import 'dart:io' show SocketException, Socket, InternetAddress, HttpClient;
+
 import '../../core/danmaku.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import 'cover_image.dart';
 import 'app_dialog_shell.dart';
-import '../../design/widgets/app_icon_button.dart';
+import 'app_inline_spinner.dart';
 import '../../design/icons/app_icons.dart';
 
 /// T27-01：弹幕面板文字统一灰阶 —— 全文件取色只走这里
@@ -115,6 +119,688 @@ abstract final class DanmakuTextColors {
 
   /// 区外填充（更暗的白 16%）—— "遮罩"感主体，提示"这里不再有弹幕"
   static const Color areaGuideOutside = Color(0x29FFFFFF);
+}
+
+/// 对话框要展示的全部状态
+///
+/// # 为什么由宿主传进来、而不是对话框自己读 `DanmakuConfig`
+///
+/// ```text
+/// ① 对话框变成**纯 UI** ⇒ 可以脱离播放页单测
+/// ② 一次请求的状态（加载中 / 报错 / 命中结果）本来就属于宿主
+/// ③ 打开面板不该有副作用 —— 自己读偏好会诱发"读一下就改了观感"
+/// ```
+/// ★★★ 2026-10-19（第 66 轮 R3-③ / R3-⑦）：**为什么连不上** —— 分类，不是一句"用不了"
+///
+/// # 这一层为什么必须存在（Owner 的两条反馈合起来指向同一件事）
+/// ```text
+/// R3-③「弹幕来源搜不了」
+/// R3-⑦「内置两个 dan-api 根本用不了」
+///
+/// 实测（本机，2026-10-19，dart:io 真跑）：
+///   danmu-api-delta.vercel.app
+///     DNS  lookup → 2a03:2880:f10c:283:face:b00c:0:25de / 31.13.87.19
+///     TCP  443    → SocketException: Connection timed out（errno 10060, 6.0s）
+///   danmu-api-kappa.vercel.app  → 同上
+///   （对照）一个真正不存在的域名 → errno 11001「不知道这样的主机」，10ms 就失败
+///
+/// ⇒ **不是服务坏了**，是这两个域名在本机被解析到不可达地址后**连不上**。
+///   而旧 UI 对这两种情况说同一句话：「未运行 / 暂时连不上」——
+///   用户据这句话去改配置/等一会儿，都是**错的方向**。
+/// ```
+///
+/// # 所以 UI 要说真话：把"连不上"拆成能指导下一步的几类
+/// ```text
+/// dnsFailed       域名解析不出来        ⇒ 本机 DNS/网络问题，改配置没用
+/// connectionTimeout 解析到了但连不上    ⇒ 被墙 / 代理 / 路由问题（本机就是这一类）
+/// connectionRefused 连接被明确拒绝      ⇒ 本机服务没起来 / 端口不对（改配置有用）
+/// tlsFailed       TLS 握手失败          ⇒ 证书 / 中间人 / 代理拦截
+/// serverError     连上了，服务回了错    ⇒ **这次真的是服务的问题**
+/// emptyResponse   连上了但没内容        ⇒ 服务活着，只是这个库/这一集没有弹幕
+/// ```
+/// ⚠️ 最后两类与前面几类**必须分开说**：
+///    「服务返回空」是**正常结果**，画成"连不上"会让用户去修一个没坏的东西。
+enum DanmakuProbeFailure {
+  /// 没失败（在线，且有内容）
+  none,
+
+  /// 域名解析不出来
+  dnsFailed,
+
+  /// ★★★ 2026-10-19（R3-③/⑦ **归因修正**，Lead 用 DoH 真值对照后定案）：
+  /// **解析成功，但解析到的是伪造/无关地址** —— 本机 DNS 被劫持。
+  ///
+  /// # 为什么必须与 [dnsFailed] 分开（这是本轮最重要的一条判据）
+  /// ```text
+  /// 「能解析」**不是**「解析正确」的同义词。
+  ///
+  /// 本机实测（2026-10-19）：
+  ///   域名                          本机 DNS                       DoH 真值                    判定
+  ///   danmu-api-delta.vercel.app    74.86.17.48                   216.198.79.3 / 64.29.17.3   ✗
+  ///                                 + 2a03:2880:…:face:b00c
+  ///   danmu-api-kappa.vercel.app    108.160.173.207(PTR=Dropbox)  216.198.79.67 / 64.29.17.67 ✗
+  ///                                 + 2a03:2880:…:face:b00c
+  ///   vercel.app (apex)             199.96.58.15                  216.198.79.131 / 64.29.17.131 ✗
+  ///   vercel.com （对照，能通）       64.239.109.193                64.239.123.129                 ✓
+  ///
+  /// 两条伪造特征：
+  ///   ① `2a03:2880:…:face:b00c` —— `face:b00c` 是 Facebook 的固定花样段
+  ///   ② 74.86.17.48 = SoftLayer 静态段 / 108.160.173.207 = Dropbox ——
+  ///      都不是 Vercel 的 anycast 段
+  /// ```
+  ///
+  /// # 为什么我第一版判错了（方法论记一笔）
+  /// ```text
+  /// 我只看到 `getaddrinfo` **没抛异常**就下结论"DNS 正常、断在 TCP"，
+  /// 于是把 TCP 超时当成**独立病因**。
+  /// 实际：TCP 连的那个地址**本来就是错的** ⇒ 超时只是劫持的**后果**。
+  ///
+  /// ⇒ 铁律：判 DNS 是否被劫持，必须拿**权威/加密通道（DoH/DoT）**的
+  ///   真值做对照，不能只看解析有没有抛异常。
+  /// ```
+  ///
+  /// # 对用户意味着完全不同的操作
+  /// ```text
+  /// dnsFailed     ⇒ 本机 DNS 不通   ⇒ 换网络 / 修 DNS
+  /// dnsHijacked   ⇒ 本机 DNS 被劫持 ⇒ **换 DNS（如 DoH）或开启代理**
+  /// ```
+  /// 两句混用会把人指向错误的修法，所以必须分档。
+  dnsHijacked,
+
+  /// 解析到了，但 TCP/TLS 连不上（超时）
+  connectionTimeout,
+
+  /// 连接被明确拒绝
+  connectionRefused,
+
+  /// TLS 握手失败
+  tlsFailed,
+
+  /// 连上了，服务返回错误状态（HTTP 5xx / 4xx）
+  serverError,
+
+  /// 连上了、服务也回了，但**没有内容**（0 条弹幕）
+  emptyResponse,
+
+  /// ★★★ 2026-10-19（X4）：**探测本身出错**，不是网络失败
+  ///
+  /// # 为什么必须有这一档（文案说谎的真实案例）
+  /// ```text
+  /// 改前：所有认不出来的异常都落进 `connectionTimeout`，于是
+  ///   StateError('boom')（探针自己抛的，**根本没碰过网络**）
+  ///     ⇒ 用户看到「连不上（超时）⇒ 地址解析出来了但连不过去…」
+  ///   那句话陈述了**三件从未发生**的事实：
+  ///     · 没超时      · 地址没解析出来过（更没解析"出来但连不过去"）
+  ///     · 更不是「被墙 / 代理 / 路由不通」
+  /// ```
+  ///
+  /// # 与既有分档同源的判据（同一条铁律，两处用）
+  /// ```text
+  /// `fromDanmakuException` 之所以敢判 `dnsHijacked`，
+  ///   是因为它手里**有 `resolvedAddress` 这个物证**；
+  /// 兜底这条**没有任何网络物证** ⇒ 同理不该判任何网络档。
+  /// ⇒ 「有物证才敢下结论」—— 说不出来就如实说"说不出来"。
+  /// ```
+  ///
+  /// ⚠️ 这一档**不是**"服务坏了"：它连"服务"都没碰到。
+  probeFailed,
+}
+
+extension DanmakuProbeFailureX on DanmakuProbeFailure {
+  /// 这一步该由谁负责 —— 决定文案里"你要做什么"
+  ///
+  /// ⚠️ 这是**判据**，不是装饰：UI 的整段文案都从这里分叉，
+  ///    免得两处各写一套然后漂移。
+  bool get isLocalNetworkProblem =>
+      this == DanmakuProbeFailure.dnsFailed ||
+      this == DanmakuProbeFailure.dnsHijacked ||
+      this == DanmakuProbeFailure.connectionTimeout ||
+      this == DanmakuProbeFailure.connectionRefused ||
+      this == DanmakuProbeFailure.tlsFailed;
+
+  /// ★ 服务端的问题（与"本机网络"完全两件事）
+  bool get isServiceProblem =>
+      this == DanmakuProbeFailure.serverError;
+
+  /// ★★ 探测本身出错 —— **既不是本机网络、也不是服务**
+  ///
+  /// ⚠️ 为什么必须单列、且**不能**并进上面任何一档：
+  ///   兜底分支**没有任何网络物证**（没解析过、没建过连接）⇒
+  ///   把它算成「本机网络问题」会让用户去改代理 / 换网络（错的操作），
+  ///   算成「服务问题」会让用户去重启服务（同样错）。
+  bool get isProbeItselfFailed =>
+      this == DanmakuProbeFailure.probeFailed;
+
+  /// 正常但没数据（**不是失败**）
+  bool get isJustEmpty => this == DanmakuProbeFailure.emptyResponse;
+
+  bool get isFailure => this != DanmakuProbeFailure.none && !isJustEmpty;
+
+  /// 一句短标题（**不含具体地址**，那种由调用方拼）
+  String get title => switch (this) {
+        DanmakuProbeFailure.none => '可用',
+        DanmakuProbeFailure.dnsFailed => '域名解析失败（本机 DNS 不通）',
+        /*
+         * ★ 必须与上一句**明显不同**：
+         *   前者的操作是"换网络"，后者是"换 DNS / 开代理"。
+         *   两句混用会把用户指向错误的修法。
+         */
+        DanmakuProbeFailure.dnsHijacked => '域名被解析到了错误地址（DNS 可能被劫持）',
+        DanmakuProbeFailure.connectionTimeout => '连不上（连接超时）',
+        DanmakuProbeFailure.connectionRefused => '连不上（连接被拒绝）',
+        DanmakuProbeFailure.tlsFailed => '连不上（TLS 握手失败）',
+        DanmakuProbeFailure.serverError => '服务返回错误',
+        DanmakuProbeFailure.emptyResponse => '服务正常，但没有弹幕',
+        /*
+         * ★ 必须**不含**任何网络断言：
+         *   改前这里落到 connectionTimeout，于是说「地址解析出来了但连不过去」
+         *   —— 而兜底分支压根没解析过、也没建过连接。
+         */
+        DanmakuProbeFailure.probeFailed => '检测过程本身出错了',
+      };
+}
+
+/// 一次探测的**完整**结论（在线与否 + 为什么 + 下一步）
+///
+/// ⚠️ 与 `DanmakuLocalStatus` 的区别：那个是 core 的"在线/不在线 + 版本"，
+///    它**说不出**"为什么不在线"（`_probeOne` 刻意吞掉异常并返回 null）。
+///    本类就是补上那个被吞掉的原因 —— 它只在 UI 层，不碰 core 的判据。
+@immutable
+class DanmakuProbeReport {
+  const DanmakuProbeReport({
+    required this.failure,
+    required this.url,
+    this.statusCode = 0,
+    this.detail = '',
+    this.remedy = '',
+  });
+
+  /// ★★★ 2026-10-19（R3-③/⑦ 归因修正 / 任务 A）：**伪造地址段表（数据驱动）**
+  ///
+  /// # 为什么做成表，而不是在函数里写一堆 `if`
+  /// ```text
+  /// 第一版是纯函数里 5 个硬编码比较。问题有两个：
+  ///   ① 将来出现新伪造段**抓不到**，而且没人知道该加什么（没有格式可依）
+  ///   ② 每条**没有依据** ⇒ 下一个人无法判断"这条还能不能删"
+  /// ⇒ 改成显式表，每条强制带 `evidence`（PTR / DoH 对照）。
+  /// ```
+  ///
+  /// # ⚠️ 本轮实测发现：伪造地址会**轮换**（这是设计这张表时必须知道的）
+  /// ```text
+  /// 同一台机器、同一个域名，两次采样拿到**不同**的伪造地址：
+  ///   第一次  danmu-api-delta → 74.86.17.48      + face:b00c
+  ///   第二次  danmu-api-delta → 199.59.150.39    + face:b00c
+  ///           danmu-api-kappa → 104.244.43.182
+  /// 而 DoH 真值两次都是 216.198.79.x / 64.29.17.x。
+  ///
+  /// ⇒ **任何"完整枚举"都注定失败**。这张表的定位必须是：
+  ///   「已知样本」—— 命中就能定案（强证据），**没命中不代表没问题**。
+  ///   所以判定还有第二条腿：DoH 真值对照（见 `_diagnose`）。
+  /// ```
+  ///
+  /// # 每条必须有依据（门禁会检查 `evidence` 非空）
+  /// ```text
+  /// 依据只有三类，都是**可复跑**的：
+  ///   ① PTR 反查（`socket.gethostbyaddr`）证明了**归属**
+  ///   ② DoH 对照（cloudflare-dns.com）证明了**与本机答案不一致**
+  ///   ③ 花样段（face:b00c 这种一眼认得的固定串）
+  /// ✗ 不许"看着不像 Vercel"就列进来 —— 那是猜测，不是证据。
+  /// ```
+  static const List<({String prefix, String evidence})> kForgedAddressRanges =
+      <({String prefix, String evidence})>[
+    /*
+     * ① IPv6 花样段 —— 本轮**三个** *.vercel.app 域名都返回它
+     *    这是最强的单条证据：一个 Vercel 域名不该解析到 Facebook 的段。
+     */
+    (
+      prefix: '2a03:2880:',
+      evidence: 'Facebook IPv6 段（含 face:b00c 花样）；实测 danmu-api-delta / '
+          'danmu-api-kappa / vercel.app apex 「三个都」返回 '
+          '2a03:2880:…:face:b00c（DoH 真值为 216.198.79.x / 64.29.17.x）',
+    ),
+    (
+      prefix: 'face:b00c',
+      evidence: 'Facebook 的固定花样段（出现在上述三个域名的本机解析结果里）',
+    ),
+    /*
+     * ② 有 PTR 归属证据的 IPv4 段（最硬的一类：PTR 直接说了它属于谁）
+     */
+    (
+      prefix: '74.86.17.',
+      evidence: 'SoftLayer/IBM 静态段 —— PTR 实测：'
+          '74.86.17.48 → 30.11.564a.ip4.static.sl-reverse.com',
+    ),
+    (
+      prefix: '108.160.173.',
+      evidence: 'Dropbox —— PTR 实测：108.160.173.207 → www.v.dropbox.com',
+    ),
+    (
+      prefix: '199.59.150.',
+      evidence: 'Twitter（twttr.com）—— PTR 实测：'
+          '199.59.150.39 → r-199-59-150-39.twttr.com；'
+          '同族 199.59.148.1 → r-199-59-148-1.twttr.com',
+    ),
+    (
+      prefix: '199.59.148.',
+      evidence: 'Twitter（twttr.com）—— PTR 实测：'
+          '199.59.148.1 → r-199-59-148-1.twttr.com',
+    ),
+    (
+      prefix: '199.96.58.',
+      evidence: 'Twitter（twttr.com）—— PTR 实测：'
+          '199.96.58.1 → ge-2-0-3.pao1.cr2.twttr.com；'
+          '本机对 danmu-api-* 返回过该段的 199.96.58.15（DoH 真值不含它）',
+    ),
+    (
+      prefix: '157.240.',
+      evidence: 'Facebook —— 对照 DoH：graph.facebook.com 解析到 157.240.13.14',
+    ),
+    /*
+     * ③ 只有 DoH 对照、没有 PTR 的段
+     *
+     * ⚠️ 这类**依据最弱**：没有归属证据，只是"与本机对不上"。
+     *    保留是因为实测确实收到过它（104.244.43.182）；
+     *    但如果将来有人质疑，删掉这一条**不会削弱**定案能力
+     *    （DoH 那条腿仍然兜得住）。
+     */
+    (
+      prefix: '104.244.43.',
+      evidence: '本轮实测本机返回过该段（104.244.43.182，无 PTR），'
+          'DoH 真值为 216.198.79.195 / 64.29.17.195 —— 仅"与真值不符"，归属未证实',
+    ),
+  ];
+
+  /// 这个地址是否落在**已知伪造段**里
+  ///
+  /// ⚠️ 语义边界（很重要）：
+  /// ```text
+  /// 命中   ⇒ 强证据，可以直接定案（dnsHijacked）
+  /// 未命中 ⇒ **不代表正常**：伪造地址会轮换（见 kForgedAddressRanges 的说明），
+  ///          必须由 DoH 真值对照那条腿兜住。
+  /// ```
+  /// ⚠️ 这张表是**证据表**，不是"黑名单防御"：它只用于**解释失败原因**，
+  ///    不参与"允不允许连"（那会让误判变成功能不可用）。
+  static bool isKnownForgedAddress(String address) {
+    final a = address.trim().toLowerCase();
+    if (a.isEmpty) return false;
+    for (final r in kForgedAddressRanges) {
+      if (a.contains(r.prefix)) return true;
+    }
+    return false;
+  }
+
+  /// 一组解析结果里**有没有**已知伪造地址
+  ///
+  /// 只要有一个命中就算 —— 因为用户连的是哪一个不由我们决定
+  /// （`HttpClient` 会按自己的顺序挑），"可能连到伪造地址"就足以解释失败。
+  static bool looksForged(Iterable<String> addresses) =>
+      addresses.any(isKnownForgedAddress);
+
+  /// 从一次**真实失败**造报告
+  ///
+  /// # 判据全部来自实测的 OS 错误码 / 异常类型（不是猜）
+  /// ```text
+  /// errno 11001 (WSAHOST_NOT_FOUND) ⇒ 域名不存在/解析失败   → dnsFailed
+  /// errno 10060 (WSAETIMEDOUT)      ⇒ 连接超时
+  /// errno 10061 (WSAECONNREFUSED)   ⇒ 连接被拒（Windows 上常见 1225/10061）
+  /// TimeoutException                ⇒ 超时（没有 errno）
+  /// HandshakeException              ⇒ TLS
+  /// ```
+  /// ⚠️ [url] 只用于显示，**不含 token**（调用方传 `DanmakuEndpoint.display`）。
+  /// ⚠️ 这里的 `fromError` **看不到解析结果** ⇒ 它给不出 `dnsHijacked`。
+  ///    劫持判定必须由**调用方**在拿到解析地址后调 [forHijackedDns]
+  ///    （见 `_diagnose` 的 DNS 分支）。
+  factory DanmakuProbeReport.fromError(Object error, {required String url}) {
+    if (error is DanmakuProbeFailure) {
+      // 便捷：允许直接传枚举（测试与内部递值都方便）
+      return DanmakuProbeReport(failure: error, url: url);
+    }
+    if (error is TimeoutException) {
+      return DanmakuProbeReport(
+        failure: DanmakuProbeFailure.connectionTimeout,
+        url: url,
+        detail: '等待 ${error.duration?.inSeconds ?? 0} 秒没有回应',
+        remedy: '这通常不是"服务坏了"，而是这台机器到那个地址「连不通」'
+            '（被墙 / 需要代理 / 路由不通）。'
+            '可以先在弹幕设置里把代理切成「系统」或「自定义」，再点一次「测试连接」。',
+      );
+    }
+    if (error is SocketException) {
+      final code = error.osError?.errorCode ?? 0;
+      final msg = error.osError?.message ?? error.message;
+      final DanmakuProbeFailure f;
+      if (code == 11001 || code == 11004 || msg.contains('不知道这样的主机')) {
+        f = DanmakuProbeFailure.dnsFailed;
+      } else if (code == 10061 || code == 1225 || code == 111 ||
+          msg.contains('拒绝')) {
+        f = DanmakuProbeFailure.connectionRefused;
+      } else if (code == 10060 || code == 110 || code == 60) {
+        f = DanmakuProbeFailure.connectionTimeout;
+      } else {
+        /*
+         * ★ 2026-10-19（X4）：**原来这里归 connectionTimeout**，注释还写着
+         *   「认不出来的 SocketException：不猜，归成超时那一档但如实带错误码」。
+         * # 为什么那是**说谎**（不是"稳妥"）
+         * ```text
+         * 「归成超时」= 告诉用户「地址解析出来了但连不过去」。
+         * 但一个**认不出 errno** 的 SocketException 只说明「连接过程里出了
+         * 某种我们没归类的错」—— 它可能压根没走到解析那一步。
+         * ⇒ 说「超时」= 替他断言了一个我们**没有证据**的因果。
+         * ```
+         * ⇒ 改判 [probeFailed]：如实说"这一步出了个归类不出来的错"，
+         *    同时保留 `detail` 里的 errno（那是唯一有价值的线索）。
+         * ★ 代价：这一档不再自动进「本机网络」那一支
+         *    ⇒ 用户不会被指向"换网络/改代理"这种无效操作。
+         */
+        f = DanmakuProbeFailure.probeFailed;
+      }
+      return DanmakuProbeReport(
+        failure: f,
+        url: url,
+        detail: 'errno $code${msg.isEmpty ? "" : " · $msg"}',
+        remedy: remedyFor(f),
+      );
+    }
+    final s = error.toString();
+    if (s.contains('HandshakeException') ||
+        s.contains('TlsException') ||
+        s.contains('CERTIFICATE')) {
+      return DanmakuProbeReport(
+        failure: DanmakuProbeFailure.tlsFailed,
+        url: url,
+        detail: s,
+        remedy: 'TLS 握手没过：可能是代理在做中间人、或证书过期。'
+            '换直连/换代理各试一次就能分清是哪一边。',
+      );
+    }
+    /*
+     * ★★★ 2026-10-19（X4）：**兜底分支 = 探测自己出错**
+     * ```text
+     * 改前：无条件 `failure: connectionTimeout` ⇒ 任何认不出来的异常
+     *   （StateError / ArgumentError / FormatException / 甚至探针自己写的
+     *   断言失败）都被报成「连不上（超时）」⇒ 文案说「地址解析出来了但
+     *   连不过去」—— 而这里**一次网络请求都没发**。
+     * ```
+     * ⇒ 改为 `probeFailed`：**不碰网络措辞**，并把原文放进 `detail`
+     *    （那是用户/我们唯一能用的线索）。
+     */
+    return DanmakuProbeReport(
+      failure: DanmakuProbeFailure.probeFailed,
+      url: url,
+      detail: s,
+      remedy: remedyFor(DanmakuProbeFailure.probeFailed),
+    );
+  }
+
+  /// ★★★ 2026-10-19（R3-③/⑦ 归因修正）：从"解析成功但地址是伪造的"造报告
+  ///
+  /// # 为什么这个结论**优先于** TCP 超时
+  /// ```text
+  /// 本机实测的真实因果链：
+  ///   DNS 返回伪造地址（198.…/Dropbox…）  ⇒  TCP 连那个**错地址** ⇒ 超时
+  ///
+  /// 先前的归因写成"断在 TCP"是**把后果当病因**：
+  /// TCP 超时不是独立故障，它是劫持的下游表现。
+  /// ⇒ 只要查到伪造地址，就报 dnsHijacked，**不再**报 connectionTimeout。
+  /// ```
+  /// [realAddresses] 是**可选佐证**（DoH/DoT 真值）。有就给出来，
+  /// 让用户一眼看到"本机拿到的"和"真值"不是一个东西。
+  factory DanmakuProbeReport.forHijackedDns({
+    required String url,
+    required List<String> localAddresses,
+    List<String> dohAddresses = const <String>[],
+    String detail = '',
+  }) {
+    final local = localAddresses.join(' / ');
+    final doh = dohAddresses.join(' / ');
+    /*
+     * ★★★ 2026-10-19（任务 B）：detail 要让用户**自己看懂发生了什么**。
+     *
+     * # 改前
+     * ```text
+     * 「本机解析到 X；加密 DNS（DoH）真值是 Y —— 两者不一致」
+     * 这句对工程师够了，但对普通用户还是"两串地址"。
+     * ```
+     * # 改后：把**两个地址都摆在眼前**，并明说它们代表什么
+     * ```text
+     * 用户看到 "74.86.17.48 vs 216.198.79.3" 就已经明白了：
+     * 同一个域名，我这台机器拿到的和真值不是一个东西。
+     * ⇒ 不需要懂 DNS，也不需要跑任何命令。
+     * ```
+     * # 没有 DoH 时**不编真值**
+     * ```text
+     * DoH 自己也可能被拦。拿不到就明说"无法核对真值"，
+     * 只给出"本机答案落在已知伪造段"这个能自查的事实。
+     * ★ 绝不写一个猜的"真值"。
+     * ```
+     */
+    final evidence = doh.isEmpty
+        ? '本机解析到：$local\n'
+            '这个地址落在「已知的伪造段」里（同一网段被实测判定为他人服务器）。\n'
+            '⚠️ 本次没能核对权威 DNS 真值（加密查询也可能被拦），'
+            '所以不给出"真值"——但上面这个地址本身已经能说明问题。'
+        : '本机解析到：$local\n'
+            '权威 DNS（加密查询）真值：$doh\n'
+            '⇒ 同一个域名，你这台机器拿到的和真实地址「不是一个东西」。';
+    return DanmakuProbeReport(
+      failure: DanmakuProbeFailure.dnsHijacked,
+      url: url,
+      detail: detail.isEmpty ? evidence : '$evidence\n$detail',
+      remedy: '本机 DNS 把这个域名解析到了「错误地址」，所以连不上 —— '
+          '「不是这个服务坏了」（它在代理下是活的）。'
+          '改弹幕地址没用；要做的是：把系统 DNS 换成可信的（支持 DoH 更好），'
+          '或者在弹幕设置里开启代理，让域名解析/连接都走代理。',
+    );
+  }
+
+  /// 从"在线但一条弹幕都没有"造报告（**这不是失败**）
+  factory DanmakuProbeReport.empty({required String url, String detail = ''}) =>
+      DanmakuProbeReport(
+        failure: DanmakuProbeFailure.emptyResponse,
+        url: url,
+        detail: detail,
+        remedy: '服务是通的 —— 这一集/这个关键词在它库里确实没有内容。'
+            '换一集、或者换一个关键词再搜，不用去改配置。',
+      );
+
+  /// 从"连上了但 HTTP 状态码不 OK"造报告
+  factory DanmakuProbeReport.httpError({
+    required String url,
+    required int statusCode,
+    String detail = '',
+  }) =>
+      DanmakuProbeReport(
+        failure: DanmakuProbeFailure.serverError,
+        url: url,
+        statusCode: statusCode,
+        detail: detail,
+        remedy: statusCode == 401 || statusCode == 403
+            ? '服务活着，但它拒绝了这次请求（凭证/token 问题）——'
+                '这是「配置」问题，不是网络问题。'
+            : '服务活着，但它自己报错了 —— 这是「服务端」的问题，'
+                '等一会儿或换一个实例再试。',
+      );
+
+  final DanmakuProbeFailure failure;
+
+  /// 探的是哪个地址（`DanmakuEndpoint.display`，**不含 token**）
+  final String url;
+
+  /// HTTP 状态码（0 = 没拿到响应）
+  final int statusCode;
+
+  /// 机械细节（errno / 异常原文）—— 给排查用，不翻译掉
+  final String detail;
+
+  /// 下一步该做什么（按 [failure] 分叉，见 [_remedyFor]）
+  final String remedy;
+
+  /// 按 [f] 给下一步（**公开**：设置页也要用同一份文案，见 danmaku_source_page）
+  static String remedyFor(DanmakuProbeFailure f) => switch (f) {
+        DanmakuProbeFailure.dnsFailed =>
+          '域名解析不出来 ⇒ 是本机 DNS / 网络的问题，'
+              '「不是这个服务坏了」。改配置不会有用；'
+              '换个网络或修好 DNS 再试。',
+        /*
+         * ★ 与上一档**操作完全不同**：这里 DNS 是"通"的，但答案是**假的**。
+         *   ⇒ 要换的是 DNS 解析（DoH）/ 开代理，而不是"换个网络碰运气"。
+         */
+        DanmakuProbeFailure.dnsHijacked =>
+          '本机 DNS 把这个域名解析到了「错误地址」（不是服务坏了）。'
+              '所以改弹幕地址没用 —— 要换的是「域名解析」：'
+              '把系统 DNS 换成可信的（支持 DoH 更好），'
+              '或者在弹幕设置里开启代理。',
+        DanmakuProbeFailure.connectionTimeout =>
+          '连不上（超时）⇒ 地址解析出来了但连不过去，'
+              '通常是「被墙 / 需要代理 / 路由不通」，'
+              '「也可能」是本机 DNS 返回了假地址（那种情况会单独报「域名被解析到错误地址」）。'
+              '这不是"服务没运行"，也不是"地址填错了"。'
+              '在弹幕设置里试「代理」，或换一个能连通的实例。',
+        DanmakuProbeFailure.connectionRefused =>
+          '连接被拒绝 ⇒ 这个地址上「没有服务在听」。'
+              '自建地址的话去启动服务 / 检查端口；'
+              '内置实例出现这个通常是我们换了部署 —— 换下一个实例。',
+        DanmakuProbeFailure.tlsFailed =>
+          'TLS 握手失败 ⇒ 证书 / 中间人代理的问题。'
+              '先把代理切成「直连」再试一次，能分清是不是代理造成的。',
+        DanmakuProbeFailure.serverError =>
+          '服务回了错误状态 ⇒ 这是「服务端」的问题（我们这边没做错什么）。',
+        DanmakuProbeFailure.emptyResponse =>
+          '服务是通的，只是这次没有内容 —— 「不是失败」。',
+        /*
+         * ★★★ 2026-10-19（X4）：这一段的每个字都必须能被证伪。
+         * ```text
+         * 兜底分支手里**没有任何网络物证**（没解析过、没建过连接），
+         * 所以**一个字都不能提网络**：不提超时、不提解析、不提被墙/代理。
+         * 否则用户会去改代理 / 换网络 —— 而真正出错的是检测这一步自己。
+         * ```
+         */
+        DanmakuProbeFailure.probeFailed =>
+          '检测这一步自己出错了，还没走到「能不能连上」那一步。'
+              '所以「不能」据此判断服务或网络好坏。'
+              '请把下面这句原文反馈给我们（它能帮我们定位）：',
+        DanmakuProbeFailure.none => '',
+      };
+
+  /// ★★★ 2026-10-19（R3-③/⑦ 归因修正）：用 **DoH** 拿一次"真值"做**佐证**
+  ///
+  /// # 为什么它只能是佐证，不能是前提
+  /// ```text
+  /// DoH 请求自己也要过网络 —— 本机 DNS 被劫持的环境里，
+  /// cloudflare-dns.com 也可能连不上。所以：
+  ///   ① 失败/超时 ⇒ 返回空表，**不影响**判定（伪造段表仍可单独成立）
+  ///   ② 成功但和本机不同 ⇒ 强佐证（把"本机拿到的"和"真值"一起给用户看）
+  /// ```
+  /// # 为什么用 Cloudflare 而不是自己解析
+  /// ```text
+  /// 我们需要的正是"**绕过**本机 DNS"的答案。DoH 走 HTTPS 到固定 IP，
+  /// 不经过系统的 resolver ⇒ 那才是真值。
+  /// ```
+  /// ⚠️ 只在**已经判定连不上**时才调（见 caller）—— 正常路径一次都不发。
+  /// ⚠️ 超时给 5 秒：它只是佐证，不该拖住 UI。
+  /// ⚠️ **公开**：设置页（`danmaku_source_page`）用同一份，避免两处漂移。
+  static Future<List<String>> dohLookup(String host) async {
+    const doh = 'https://cloudflare-dns.com/dns-query';
+    final out = <String>{};
+    for (final type in <String>['A', 'AAAA']) {
+      HttpClient? client;
+      try {
+        client = HttpClient()
+          ..connectionTimeout = const Duration(seconds: 5)
+          ..findProxy = ((Uri _) => 'DIRECT');
+        final uri = Uri.parse('$doh?name=$host&type=$type');
+        final req = await client
+            .getUrl(uri)
+            .timeout(const Duration(seconds: 5));
+        req.headers.set('accept', 'application/dns-json');
+        final resp = await req.close().timeout(const Duration(seconds: 5));
+        if (resp.statusCode != 200) continue;
+        final body = await resp
+            .transform(const Utf8Decoder(allowMalformed: true))
+            .join()
+            .timeout(const Duration(seconds: 5));
+        final j = jsonDecode(body);
+        if (j is! Map) continue;
+        final answers = j['Answer'];
+        if (answers is! List) continue;
+        for (final a in answers) {
+          if (a is! Map) continue;
+          // status 0 = NOERROR；只认 A(1)/AAAA(28)
+          final t = a['type'];
+          if (t != 1 && t != 28) continue;
+          final data = a['data'];
+          if (data is String && data.trim().isNotEmpty) {
+            out.add(data.trim());
+          }
+        }
+      } catch (_) {
+        // 佐证拿不到就拿不到 —— 绝不让它影响主判定
+      } finally {
+        client?.close(force: true);
+      }
+    }
+    return out.toList(growable: false);
+  }
+
+  bool get isFailure => failure.isFailure;
+  bool get isOk => failure == DanmakuProbeFailure.none;
+
+  // ==========================================================================
+  //  ★★★ 2026-10-19（R3-③/⑦ 收尾）：从**一次真实失败**造报告，供取数/搜索共用
+  // ==========================================================================
+  //
+  /// 把一次已经失败的请求，翻译成"该说哪句话"。
+  ///
+  /// # 为什么需要它（这是本轮真正的缺口）
+  /// ```text
+  /// 改前 `_diagnose` 只在「测试连接」按钮那条路上跑。
+  /// 而 Owner 报的 R3-③「弹幕来源搜不了」走的是**另一条路**：
+  ///   搜索 → core 抛 DanmakuException → 面板 _searchResultBody
+  ///     直接把 `err.message` 画出来（原文："连不上弹幕服务（地址不通或服务没起来）"）
+  /// ⇒ 那条路上**根本没有 dnsHijacked 这一档** ⇒ UI 把劫持说成了"服务没起来"，
+  ///   用户会去查服务，方向就错了（这正是 Lead 裁决要修的那件事）。
+  /// ```
+  ///
+  /// # 为什么**不联网**（判据纪律的第一条）
+  /// ```text
+  /// 输入里已经有 [DanmakuException.resolvedAddress]
+  /// —— 那就是「本机拿到并去连的那个地址」。
+  /// 判据 `looksForged` 是纯函数查表 ⇒ **零网络请求**。
+  ///
+  /// ⇒ 探测依赖（DoH）只留在 `_diagnose` 那种"只知道域名、不知道地址"的场合，
+  ///    且那条路本来就只在用户手动点「测试连接」时走。
+  ///    产品热路径（取弹幕 / 搜索）**一次 DoH 都不发**。
+  /// ```
+  ///
+  /// # ★ 铁律：**没有地址证据 ⇒ 绝不判 hijacked**
+  /// ```text
+  /// 「没拿到地址」是常态（超时分支、服务端返回错误、非网络失败）。
+  /// 若把空串也丢进判据、或让别的分支兜底，就变成
+  /// "所有失败都被说成 DNS 劫持" —— 比说错更坏：
+  /// 它会把用户从"查服务"推向"改 DNS"，而后者根本没坏。
+  /// ⇒ 本函数只在 [evidence] 非空且命中伪造段时才给 dnsHijacked。
+  /// ```
+  static DanmakuProbeReport fromDanmakuException(
+    DanmakuException e, {
+    String url = '',
+  }) {
+    final addr = e.resolvedAddress;
+    if (addr.isNotEmpty && looksForged(<String>[addr])) {
+      // ★ 已知伪造段命中 ⇒ 直接定案，不再回落到"连不上"。
+      return DanmakuProbeReport.forHijackedDns(
+        url: url.isEmpty ? e.uri : url,
+        localAddresses: <String>[addr],
+      );
+    }
+    // 兜底：**不**判劫持。如实按已有字段归到别的那一档。
+    if (e.statusCode != 0) {
+      return DanmakuProbeReport.httpError(
+        url: url.isEmpty ? e.uri : url,
+        statusCode: e.statusCode,
+      );
+    }
+    return DanmakuProbeReport.fromError(e, url: url.isEmpty ? e.uri : url);
+  }
 }
 
 /// 对话框要展示的全部状态
@@ -297,14 +983,14 @@ class DanmakuSettingsState {
       sourceLine: sourceLine ?? this.sourceLine,
       searchLoading: searchLoading ?? this.searchLoading,
       // ★ 与 `clearError` 同款：搜索失败要能被显式清掉（下一次搜索开始 / 点中一条时）
-      searchError:
-          clearSearchError ? null : (searchError ?? this.searchError),
+      searchError: clearSearchError ? null : (searchError ?? this.searchError),
       searchSearched: searchSearched ?? this.searchSearched,
       searchResults: searchResults ?? this.searchResults,
       searchKeyword: searchKeyword ?? this.searchKeyword,
       searchStale: searchStale ?? this.searchStale,
-      credentialSaved:
-          clearCredentialSaved ? false : (credentialSaved ?? this.credentialSaved),
+      credentialSaved: clearCredentialSaved
+          ? false
+          : (credentialSaved ?? this.credentialSaved),
     );
   }
 }
@@ -328,11 +1014,7 @@ class DanmakuSettingsState {
 /// NOTE: same semantics as count/lanes/dropped on DanmakuSettingsState --
 /// this changes HOW the update is delivered, not WHAT is displayed.
 class DanmakuReadout {
-  const DanmakuReadout({
-    this.count = 0,
-    this.lanes = 0,
-    this.dropped = 0,
-  });
+  const DanmakuReadout({this.count = 0, this.lanes = 0, this.dropped = 0});
 
   final int count;
   final int lanes;
@@ -366,51 +1048,100 @@ const Key blockWordsAddFieldKey = Key('danmaku-blockwords-add-field');
 /// 那条豁免仍然有效（`test/t98_no_site_names_test.dart` 的行级锚点），
 /// 只是本文件现在不需要它了。
 // ignore: unused_element
-const String _kBiliSourceLabel = 'bilibili'; // 弹幕源（Owner 明确允许具名）  // site-ok: danmaku-source
+const String _kBiliSourceLabel =
+    'bilibili'; // 弹幕源（Owner 明确允许具名）  // site-ok: danmaku-source
 
-/// 弹幕面板的**三个**页签（2026-10-17 第三版，Owner 第 11 条）
+/// 弹幕面板的**三个**页签（2026-10-18 第四版，Owner 亲自截图四条反馈）
 ///
-/// # Owner 原话（第三版，逐字）
+/// # 为什么是这一版（前三版都被 Owner 否了，记下来免得再绕回去）
 /// ```text
-/// > 弹弹play 我说了要让可用的dan-api去替换的,这里的弹幕面板怎么还是弹弹play?
+/// 第二版：配置 / bilibili / 弹弹play          // site-ok: danmaku-source
+///   问题：页签名 = 某一家服务的名字 ⇒ 换一家就得改页签名
+///
+/// 第三版：配置 / dan-api / 插件提供 / 官方兜底
+///   问题（Owner 2026-10-18 亲自截图，逐条）：
+///     ① 「某个视频站的弹幕设置怎么没了」
+///        ⇒ 我把那个源从独立 tab 降级成了「插件提供」里一枚叫
+///          「外部弹幕…」的按钮。**减少点击层数 ≠ 提高可发现性** ——
+///          藏在一个不叫它名字的按钮里，用户根本不知道那是它。
+///     ② 「插件提供是什么?」
+///        ⇒ Owner 的语义是「视频源插件随片自带每一集的弹幕 ⇒ 默认导入」，
+///          我实现成了「插件声明能力 ⇒ 用户去搜索/绑定」。语义错了。
+///     ③ 「dan-api只有测试」
+///        ⇒ 那个 tab 里真的只有地址框 + 测试连接 + 清除。
+///          搜索/绑定被我放进了 plugin tab —— 入口放错了。
+///     ④ 「官方兜底也不知道是啥」
+///        ⇒ 内部概念泄漏到 UI，且本构建无内置凭证、必然失败。
 /// ```
 ///
-/// # 为什么这一版把页签从「按源命名」改成「按能力命名」
+/// # 这一版的切法：按**用户要做的事**分，不按来源分
 /// ```text
-/// 第二版是：配置 / bilibili / 弹弹play          // site-ok: danmaku-source
-/// 问题：页签名 = **某一家服务的名字**。
-///   · 换掉一家服务 ⇒ 页签名就得跟着改（现在正是这个局面）
-///   · 用户看到「弹弹play」会以为"本软件只支持这一家"
-///   · 而实际能力是三类**互不相干**的东西：
-///       ① 通用配置（跨源）
-///       ② 插件自己给的弹幕（插件声明 capabilities.danmaku_* 就行）
-///       ③ 官方/内置服务给的弹幕（dan-api / 官方兜底）
-/// ⇒ 按**能力**命名，以后换几家服务都不用动页签。
+/// ① display  —— 显示：与来源无关的纯视觉设置（开关/字号/透明度/速度/区域/屏蔽词）
+/// ② sources  —— 弹幕来源：这一集的弹幕**从哪来**，每条路什么状态，怎么切
+/// ③ advanced —— 高级：要填地址/凭证的、99% 用户不需要的
 /// ```
 ///
-/// # 三个页签各自负责什么
+/// ⚠️ **「弹幕来源」是多选（可叠加），不是单选**
 /// ```text
-/// ① 配置     —— 跨来源的东西：开关、显示参数、屏蔽词、正则
-/// ② dan-api  —— **首选**：内置公共实例 / 你自己填的地址（免凭证）
-/// ③ 插件提供 —— 插件声明的弹幕能力：请求 / 搜索 / 绑定
-/// ④ 官方兜底 —— 官方开放平台：凭证 + 数据源探测
-/// ```
-/// ⚠️ 实际是**四个**页签：通用配置 + 三条来源。第二版把"配置"和两个源
-///    混在一起叫"三个"，那是历史包袱；现在来源分成三条，页签自然变成四个。
+/// Owner 第 11 条原话：「同时加载并合并」
+/// ⇒ 弹幕可以多路合并（`4aeb79a` 就是让手动绑定后插件那份也并进来）。
+/// ⇒ 来源行用 ☑/☐（勾选即参与合并），不是 ●/○（单选）。
 ///
-/// ⚠️ 页签**顺序即优先级**：dan-api 在插件前面，因为它是「开箱就有」的那条。
+/// 与 Owner 第 6 条不冲突：
+///   第 6 条禁的是「不许**自动绑定**外部源」，
+///   不是「不许**手动多选**多个源」。
+///   本片源自带默认勾上（它是视频的一部分 ⇒ 自动），
+///   其他源默认不勾（用户手动勾了才参与合并）。
+/// ```
 enum DanmakuPanelTab {
-  /// 配置：跨来源的通用项（开关 / 显示 / 屏蔽词 / 正则）
-  general,
+  /// 显示：跨来源的纯视觉设置（开关 / 显示参数 / 屏蔽词 / 正则）
+  display,
 
-  /// dan-api：**首选**来源（内置公共实例 / 用户自填地址）
+  /// 弹幕来源：本片源自带 / 某个视频站 / dan-api / 本机服务 —— **可多选合并**
+  sources,
+
+  /// 高级：自建地址、Token、官方开放平台凭证（通常不需要）
+  advanced,
+}
+
+/// ★★★ 2026-10-19（第 66 轮 Owner 第 ⑤ 条）：面板上**可勾选的四路来源**
+///
+/// # 为什么要这个枚举（改前是四个裸 `_sourceRow(...)` 调用）
+/// ```text
+/// 改前每一行都是 `_sourceRow(label: '…', checked: <推导>, onChanged: null)`
+/// —— `checked` 是**从别处推出来的状态**（有没有绑定 / 有没有探测到），
+/// 不是"用户勾了没有"。于是：
+///   ① 用户**没有任何办法**勾/取消（四个 onChanged 全是 null）
+///   ② 一旦有了集合状态，就必须有**稳定的键**去记"哪一路"，
+///      而 label 是给人看的文案（改文案就会丢用户的选择）
+/// ⇒ 用枚举当键，文案挂在 [DanmakuFeedChannelX.label] 上。
+/// ```
+enum DanmakuFeedChannel {
+  /// 本片源自带（视频本身带的弹幕，**不可取消**）
+  biliSource,
+
+  /// 某个视频站（外部视频站直连，需要绑定）
+  biliExternal,
+
+  /// dan-api（内置公共实例或用户自填地址）
   danApi,
 
-  /// 插件提供：插件自己声明的弹幕能力
-  plugin,
+  /// 本机弹弹play（127.0.0.1:2080）
+  localService,
 
-  /// 官方兜底：官方开放平台（要 AppId / AppSecret 签名）
-  official,
+  /// 视频源插件随片自带的那一份
+  plugin,
+}
+
+extension DanmakuFeedChannelX on DanmakuFeedChannel {
+  /// 给人看的名字（**全仓一份**：勾选框、合并读数、门禁都读这里）
+  String get label => switch (this) {
+        DanmakuFeedChannel.biliSource => '本片源自带',
+        DanmakuFeedChannel.biliExternal => '某个视频站',
+        DanmakuFeedChannel.danApi => 'dan-api',
+        DanmakuFeedChannel.localService => '本机服务',
+        DanmakuFeedChannel.plugin => '插件提供',
+      };
 }
 
 class DanmakuSettingsDialog extends StatefulWidget {
@@ -431,10 +1162,31 @@ class DanmakuSettingsDialog extends StatefulWidget {
     this.onChanged,
     this.readout,
     this.biliCount,
+    this.canSendDanmaku = true,
     this.onBatchBind,
     this.fill = true,
     this.probeOverride,
+    this.feedSamples,
   });
+
+  /// ★★★ 2026-10-19（第 66 轮 Owner 第 ⑤ 条）：**每一路现在有什么弹幕**
+  ///
+  /// # 为什么必须由宿主注入（而不是面板自己去取）
+  /// ```text
+  /// 合并的原料是 `List<DanmakuComment>`。本面板是**纯 UI**
+  /// （文件头：不碰网络/播放器/令牌），拿不到别的源的弹幕列表。
+  /// ⇒ 宿主把它手上**真实的**多路结果递进来，面板只负责合并 + 显示读数。
+  /// ```
+  ///
+  /// # 不注入会怎样（**如实降级**，不是假装）
+  /// ```text
+  /// 集合里只剩「本片源自带」（不可取消的那一路）⇒ 合并读数显示「单源」，
+  /// 并且明说"其它几路没有可合的内容"。**不会**凭空画一个"N 路合并"。
+  /// ```
+  ///
+  /// ⚠️ 接线点见交付说明（`player_page.dart` 的 `DanmakuSettingsDialog(...)`
+  ///    构造点）。本轨道**不改**那个文件。
+  final Map<DanmakuFeedChannel, List<DanmakuComment>>? feedSamples;
 
   final DanmakuSettingsState state;
 
@@ -469,6 +1221,28 @@ class DanmakuSettingsDialog extends StatefulWidget {
   final VoidCallback onReload;
 
   final VoidCallback onClose;
+
+  /// 本片源**能不能发**弹幕（与"有没有弹幕可看"是两件事）
+  ///
+  /// # 为什么要有这个参数
+  /// ```text
+  /// 发送输入框的挂载条件是 AND 谓词（在 player_page.dart 里）：
+  ///   _danmakuEnabled && _danmakuCanSend && _danmakuSendProvider != null && !_isLive
+  /// 两个插件都没有声明 danmakuSend 能力 ⇒ 输入框整条不渲染
+  /// （Owner 第 1 条「不支持就不显示」，宿主判得对）。
+  ///
+  /// ⚠️ 但"不显示"不等于"不解释"：用户看到「本片源自带 1200 条」却没有
+  ///    发送框，会以为**坏了**，而不是"这个源不支持发"。
+  /// ⇒ 面板里用一行灰字说明。
+  /// ```
+  /// # 为什么是可选参数
+  /// ```text
+  /// 接线在 `player_page.dart`（归轨道 A 的 N10），本轨道**不写**它。
+  /// 默认 `true` = 不传时**不显示那行说明**（保持旧行为，零破坏）；
+  /// 宿主传了 `_danmakuCanSend` 之后，不支持时才会出现那行说明。
+  /// ⇒ 面板侧先做好能力，接线由宿主补（见交付说明里的 1 行 diff）。
+  /// ```
+  final bool canSendDanmaku;
 
   /// 打开「外部视频源弹幕」面板（task-31 ④）。
   ///
@@ -615,6 +1389,18 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   ///    对用户来说这是最坏的一种假话：他会以为自己的地址没问题、是服务没起来。
   String? _probeCustomMessage;
 
+  /// ★★★ 2026-10-19（R3-③ / R3-⑦）：**为什么连不上**的结构化结论
+  ///
+  /// 与 [_probeResult]（core 的在线/版本）和 [_probeCustomMessage]（地址格式）
+  /// 三者各回答一个问题，不许互相冒充：
+  /// ```text
+  /// _probeResult         在线吗？版本多少？（core 的判据）
+  /// _probeReport         **为什么**不在线？（本层的分层探测，见 [_diagnose]）
+  /// _probeCustomMessage  连探都没探（地址格式不对）
+  /// ```
+  /// ⚠️ `null` = 还没诊断过（不是"没问题"）。
+  DanmakuProbeReport? _probeReport;
+
   /// 正在测试连接 —— 记录**是哪个序号**的请求在跑（null = 没有在途请求）。
   ///
   /// # 为什么不是 bool（★ 这条是修竞态时暴露出来的第二个 bug）
@@ -649,10 +1435,15 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
 
   /// 当前页签。默认「配置」。
   ///
-  /// 为什么不默认到某个源：两个源是**互斥**的，
-  /// 默认点哪一个都等于假设了用户用哪个；
-  /// 而「配置」是两边都成立的中立落点。
-  DanmakuPanelTab _tab = DanmakuPanelTab.general;
+  /// 默认落在「显示」页签。
+  ///
+  /// ★ 2026-10-18 第四版：默认页从「配置」改成「显示」（同一个东西的新名字）。
+  ///
+  /// 为什么不默认到某个**来源**：来源之间可以叠加（Owner 第 11 条
+  /// 「同时加载并合并」），默认勾哪一个都等于替用户做了选择；
+  /// 而「显示」是与来源无关的中立落点 —— 用户打开面板先看到的是
+  /// 「弹幕怎么显示」，那是最常调的东西。
+  DanmakuPanelTab _tab = DanmakuPanelTab.display;
 
   /// 外部视频站这一集的弹幕条数。
   ///
@@ -729,7 +1520,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (_tab == DanmakuPanelTab.general) ...[
+        if (_tab == DanmakuPanelTab.display) ...[
           _group(_switchSection()),
           _gap(),
           /*
@@ -743,36 +1534,44 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           _group(_displaySection()),
           _gap(),
           _group(_filterSection()),
-        ] else if (_tab == DanmakuPanelTab.plugin) ...[
+        ] else if (_tab == DanmakuPanelTab.sources) ...[
           /*
-           * 插件提供：**插件自己声明**的弹幕能力。
-           * 请求 / 搜索 / 绑定三节都属于"这个插件能给我什么弹幕"。
-           */
-          _group(_requestSection()),
-          if (_showSearchSection) ...[
-            _gap(),
-            _group(_searchSection()),
-          ],
-        ] else if (_tab == DanmakuPanelTab.danApi) ...[
-          /*
-           * ★★★ dan-api（**首选**，Owner 第 4 / 11 条）
+           * ★★★ 2026-10-18 第四版（Owner 亲自截图四条反馈的核心修复）
            *
-           * 这一页是「开箱就能有弹幕」的那条路：
-           *   · 内置公共实例（不用填任何东西，默认就选好了）
-           *   · 用户自己的地址（压过内置）
-           * ⇒ 所以它排在插件前面 —— 用户什么都不配就该能用。
+           * # 这一页回答的唯一问题
+           * ```text
+           * 「这一集的弹幕从哪来、每条路现在什么状态、我要怎么切」
+           * ```
+           * # 为什么四条来源**平级各占一行**（而不是分页签）
+           * ```text
+           * Owner ①：「某个视频站的弹幕设置怎么没了」
+           *   ⇒ 它第三版被我藏成「插件提供」里一枚叫「外部弹幕…」的按钮。
+           *     现在它和 dan-api **平级**，名字就叫出来，一眼可见。
+           * Owner ③：「dan-api只有测试」
+           *   ⇒ 现在 dan-api 那一行带「搜索…」，点开就是搜索+选中+绑定。
+           * Owner ②：「插件提供是什么」
+           *   ⇒ 改名成「本片源自带」，语义是"视频源插件随片给的"，默认勾上。
+           * ```
+           * # 为什么是 ☑/☐ 多选而不是 ●/○ 单选
+           * ```text
+           * Owner 第 11 条：「同时加载并合并」⇒ 多路可以叠加。
+           * （见 enum DanmakuPanelTab 的文档：与第 6 条不冲突）
+           * ```
            */
-          _group(_selfHostedSection()),
+          _group(_sourcesSection()),
+          _gap(),
+          _group(_requestSection()),
+          if (_showSearchSection) ...[_gap(), _group(_searchSection())],
         ] else ...[
           /*
-           * 官方兜底：要 AppId / AppSecret 签名的那条。
-           * 它是**最后一条**路（内置实例、插件、本机都不可用时才该走到）。
+           * 高级：要填地址 / 凭证的，99% 用户不需要。
+           *
+           * ★ 2026-10-18：原「官方兜底」tab 已删除（Owner ④
+           *   「这个官方兜底也不知道是啥东西」+ 本构建无内置凭证、必然失败）。
+           *   它的 `_sourceSection` / `_credentialsSection` **保留但不调用**
+           *   （理由见那两个方法上的注释）。
            */
-          _group(_sourceSection()),
-          if (_showCredentialsSection) ...[
-            _gap(),
-            _group(_credentialsSection()),
-          ],
+          _group(_selfHostedSection()),
         ],
         _gap(),
         /*
@@ -790,10 +1589,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           _gap(),
           _group(_hintSection(s.error!.hint!)),
         ],
-        if (s.error != null) ...[
-          _gap(),
-          _group(_errorSection(s.error!)),
-        ],
+        if (s.error != null) ...[_gap(), _group(_errorSection(s.error!))],
       ],
     );
 
@@ -844,6 +1640,18 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       // 不能靠"把灰阶改主题色"解决：41 处灰阶与 t27_w1 门禁是一起设计的。
       // ⇒ 让它保持原本的深色（业主 fig1 实测底色就是 #14161B）。
       forceDarkCard: true,
+      /*
+       * ★★ 2026-10-18（任务 B-2）：玻璃材质。
+       *
+       * 只影响本面板 —— 外壳的 `glass` 默认 false，
+       * 其余 6 个弹窗逐像素不变。
+       *
+       * ⚠️ 与 `forceDarkCard: true` 并存：
+       *    forceDarkCard 管**文字取色**（本面板 41 处 DanmakuTextColors 是
+       *    为深底设计的固定灰阶，t27_w1 钉着对比度），
+       *    glass 只管**卡片材质**。两件事互不干扰。
+       */
+      glass: true,
       // 本面板自管滚动（三块钉死不滚）⇒ 不套外壳的 SingleChildScrollView
       scrollable: false,
       /*
@@ -865,7 +1673,6 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
 
     // ★ 默认形态与改前**逐像素相同**（fill 语义由外壳接管）
     return shelled;
-
   }
 
   /// 面板标题 —— 缺陷 17：**细节说明的落点**
@@ -918,10 +1725,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
      */
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(
-        horizontal: Sp.x3,
-        vertical: Sp.x2,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
       decoration: BoxDecoration(
         borderRadius: Radii.rSm,
         border: Border.all(color: DanmakuTextColors.border),
@@ -935,11 +1739,15 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             live: !biliLive,
           ),
           const SizedBox(width: Sp.x2),
-          _sourceChip(
-            label: '插件提供',
-            count: _biliCount,
-            live: biliLive,
-          ),
+          /*
+           * ★ 2026-10-18 第四版：`插件提供` → `本片源`
+           *
+           * Owner ② 的语义纠正：插件那条路的本质是
+           * 「**本片源**随片自带的弹幕」，不是"插件声明了一种能力"。
+           * 状态条 chip 必须与「弹幕来源」页签里那一行**同一套词**，
+           * 否则两处叫法不同，用户又要重新猜一次。
+           */
+          _sourceChip(label: '本片源', count: _biliCount, live: biliLive),
           const Spacer(),
           if (widget.readout != null)
             ValueListenableBuilder<DanmakuReadout>(
@@ -1015,21 +1823,21 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       width: double.infinity,
       child: SegmentedButton<DanmakuPanelTab>(
         segments: const <ButtonSegment<DanmakuPanelTab>>[
+          /*
+           * ★ 2026-10-18 第四版：三个页签按「用户要做的事」分。
+           *   标签都是 2~3 个字，卡片宽 560 扣掉左右 padding 后放得下。
+           */
           ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.general,
-            label: Text('配置'),
+            value: DanmakuPanelTab.display,
+            label: Text('显示'),
           ),
           ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.danApi,
-            label: Text('dan-api'),
+            value: DanmakuPanelTab.sources,
+            label: Text('弹幕来源'),
           ),
           ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.plugin,
-            label: Text('插件提供'),
-          ),
-          ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.official,
-            label: Text('官方兜底'),
+            value: DanmakuPanelTab.advanced,
+            label: Text('高级'),
           ),
         ],
         selected: <DanmakuPanelTab>{_tab},
@@ -1060,7 +1868,6 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       ),
     );
   }
-
 
   /// 段间距。
   ///
@@ -1275,10 +2082,14 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
              */
             _probeSeq++;
             _probeRunningSeq = null;
-            if (_probeResult != null || _probeCustomMessage != null) {
+            if (_probeResult != null ||
+                _probeCustomMessage != null ||
+                _probeReport != null) {
               setState(() {
                 _probeResult = null;
                 _probeCustomMessage = null;
+                // ★ 2026-10-19：诊断结论同样属于**旧地址** ⇒ 一起作废
+                _probeReport = null;
               });
             } else {
               setState(() {});
@@ -1307,6 +2118,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             setState(() {
               _probeResult = null;
               _probeCustomMessage = null;
+              _probeReport = null;
             });
           },
         ),
@@ -1317,13 +2129,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             FilledButton.icon(
               onPressed: _probeRunning ? null : _runProbe,
               icon: _probeRunning
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                        color: DanmakuTextColors.body,
-                        strokeWidth: 2,
-                      ),
+                  ? const AppInlineSpinner(
+                      size: 16,
+                      color: DanmakuTextColors.body,
                     )
                   : const Icon(AppIcons.wifi_tethering, size: 18),
               label: const Text('测试连接'),
@@ -1339,12 +2147,30 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         const SizedBox(height: Sp.x2),
         // ── 如实结果行 ──
         if (res != null) _probeResultRow(res),
+        /*
+         * ★★★ 2026-10-19（R3-③ / R3-⑦）：**为什么连不上**的定向说明
+         *
+         * # 改前这里只有上面那行 `res.line`
+         * ```text
+         * core 的 `line` 对不在线只有一句「内置公共实例（…）暂时连不上」——
+         * 它把 DNS 失败 / 被墙 / 服务报错三件事混成一件，
+         * 用户据此去改配置或等一会儿，**方向都是错的**。
+         * ```
+         * # 改后：分类 + 下一步 + 机械细节（errno 原文不翻译掉）
+         */
+        if (_probeReport != null) ...[
+          const SizedBox(height: Sp.x2),
+          _probeReportBox(_probeReport!),
+        ],
         if (_probeCustomMessage != null) ...[
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(AppIcons.error_outline,
-                  size: 14, color: Colors.orangeAccent),
+              const Icon(
+                AppIcons.error_outline,
+                size: 14,
+                color: Colors.orangeAccent,
+              ),
               const SizedBox(width: Sp.x2),
               Flexible(
                 child: Text(
@@ -1361,8 +2187,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         if (res == null && _probeCustomMessage == null && saved.isNotEmpty) ...[
           Row(
             children: [
-              const Icon(AppIcons.check_circle_outline,
-                  size: 14, color: DanmakuTextColors.muted),
+              const Icon(
+                AppIcons.check_circle_outline,
+                size: 14,
+                color: DanmakuTextColors.muted,
+              ),
               const SizedBox(width: Sp.x2),
               Flexible(
                 child: Text(
@@ -1382,6 +2211,93 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     );
   }
 
+  /// ★★★ 2026-10-19（R3-③ / R3-⑦）：**为什么连不上** —— 分类 + 下一步 + 原文
+  ///
+  /// # 为什么这三段都要画（少一段就有一类用户被误导）
+  /// ```text
+  /// ① 分类标题（`连不上（连接超时）` / `域名解析失败` / `服务返回错误`）
+  ///    ⇒ 用户第一眼就知道"该怪谁"（本机网络 vs 服务端）
+  /// ② 下一步（remedy）
+  ///    ⇒ 知道该怪谁之后要做什么。这一段按 failure 分叉，不是套话。
+  /// ③ 机械细节（errno / 解析到的 IP / 异常原文）
+  ///    ⇒ 会贴到群里求助的人需要它。**不翻译掉**（同本仓错误透传纪律）。
+  /// ```
+  /// ⚠️ 「服务正常，但没有弹幕」**不画成红色失败** —— 那是正常结果。
+  Widget _probeReportBox(DanmakuProbeReport r) {
+    // 空结果：不是失败，用中性色，别吓人
+    final empty = r.failure.isJustEmpty;
+    final ok = r.isOk;
+    final color = ok || empty
+        ? DanmakuTextColors.secondary
+        : (r.failure.isLocalNetworkProblem
+            // 本机网络问题：橙色（该动手，但不是"我们坏了"）
+            ? Colors.orangeAccent
+            // 服务端问题：红（确实是那边坏了）
+            : Colors.redAccent);
+    final icon = ok || empty
+        ? AppIcons.info_outline
+        : (r.failure.isLocalNetworkProblem
+            ? AppIcons.wifi_off
+            : AppIcons.error_outline);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(Sp.x3),
+      decoration: BoxDecoration(
+        borderRadius: Radii.rSm,
+        color: color.withValues(alpha: 0.08),
+        border: Border.all(color: color.withValues(alpha: 0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: Sp.x2),
+              Expanded(
+                child: Text(
+                  // 标题里带地址：用户同时开两个实例测试时，分得清是哪一条的结论
+                  r.url.isEmpty
+                      ? r.failure.title
+                      : '${r.failure.title} · ${r.url}',
+                  style: TextStyle(
+                    color: color,
+                    fontSize: FontSizes.sm,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (r.remedy.isNotEmpty) ...[
+            const SizedBox(height: Sp.x2),
+            Text(
+              r.remedy,
+              style: const TextStyle(
+                color: DanmakuTextColors.secondary,
+                fontSize: FontSizes.cap,
+                height: 1.4,
+              ),
+            ),
+          ],
+          if (r.detail.isNotEmpty) ...[
+            const SizedBox(height: Sp.x2),
+            Text(
+              // ⚠️ 原文照透（errno / 解析到的 IP / 异常），不翻译、不截断成"失败"
+              r.detail,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: FontSizes.cap,
+                color: DanmakuTextColors.muted,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   /// 这一条内置实例是不是「当前默认选中的那个」
   bool _isDefaultBuiltin(DanmakuPublicInstance p) =>
       kDanmakuPublicInstances.isNotEmpty &&
@@ -1397,10 +2313,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       onTap: () => _selectBuiltin(p),
       borderRadius: Radii.rSm,
       child: Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x3,
-          vertical: Sp.x2,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
         decoration: BoxDecoration(
           borderRadius: Radii.rSm,
           border: Border.all(
@@ -1412,7 +2325,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         child: Row(
           children: [
             Icon(
-              selected ? AppIcons.check_circle : AppIcons.radio_button_unchecked,
+              selected
+                  ? AppIcons.check_circle
+                  : AppIcons.radio_button_unchecked,
               size: 14,
               color: selected
                   ? const Color(0xFF4FD1C5)
@@ -1460,6 +2375,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     setState(() {
       _probeResult = null;
       _probeCustomMessage = null;
+      _probeReport = null; // 换了地址 ⇒ 上一条诊断不属于它
     });
     widget.onChanged?.call();
   }
@@ -1549,7 +2465,8 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     }
     // ★ spinner 归属本次序号：只有发起它的这一轮（或接管者）能关掉
     setState(() => _probeRunningSeq = mySeq);
-    final probe = widget.probeOverride ??
+    final probe =
+        widget.probeOverride ??
         (DanmakuEndpoint? e) => DanmakuLocalService.describe(endpoint: e);
     DanmakuLocalStatus st;
     try {
@@ -1562,11 +2479,34 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
        *    去动别人的状态 —— 那正是这个竞态的另一半。
        */
       if (!mounted || mySeq != _probeSeq) return;
+      /*
+       * ★★★ 2026-10-19（R3-③ / R3-⑦）：**分类**，不是一句「测试失败：…」
+       *
+       * # 改前
+       * ```text
+       * `_probeCustomMessage = '测试失败：$e'`
+       * ⇒ 用户看到「测试失败：SocketException: Connection timed out …」
+       *   或者更糟 —— `DanmakuLocalService.probe` 内部**吞掉**异常并返回
+       *   `online: false`，于是 UI 说「内置公共实例暂时连不上」。
+       *   那一句把三件完全不同的事混成一件：
+       *     ① 域名解析不出来（本机 DNS 坏了）
+       *     ② 解析出来了但连不上（被墙/代理）  ← **本机就是这一类**
+       *     ③ 连上了但服务报错（真·服务问题）
+       * ```
+       * # 改后
+       * ```text
+       * [DanmakuProbeReport.fromError] 按真实 errno / 异常类型分类，
+       * 文案里**明说这是本机网络问题、不是服务坏了**，并给出下一步。
+       * ```
+       */
+      final report = DanmakuProbeReport.fromError(
+        e,
+        url: ep?.display ?? (raw.isEmpty ? '本机弹弹play' : raw),
+      );
       setState(() {
         _probeRunningSeq = null;
         _probeResult = null;
-        // 探针自己异常（不是「服务没起来」）⇒ 如实说这次测试失败了
-        _probeCustomMessage = '测试失败：$e';
+        _probeReport = report;
       });
       return;
     }
@@ -1576,6 +2516,56 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     setState(() {
       _probeRunningSeq = null;
       _probeResult = st;
+      /*
+       * ★ 2026-10-19：探针**不抛异常**、但判了 offline 时，core 只说
+       *   「暂时连不上」—— 那还是把"为什么"藏起来了。
+       *   先给一个占位结论（马上会被 [_diagnose] 的定向探测替换）。
+       *
+       * ★★★ 2026-10-20（R3 文案审查 · 问题 2）：**占位态的文案必须是中性的**。
+       *
+       * # 改前（错）
+       * ```text
+       * remedy: remedyFor(DanmakuProbeFailure.connectionTimeout)
+       *   ⇒ 此刻 `_diagnose` **还没跑**、`InternetAddress.lookup` **还没执行**，
+       *     而界面上却写着：
+       *       「连不上（超时）⇒ 地址解析出来了但连不过去，
+       *         通常是「被墙 / 需要代理 / 路由不通」…」
+       *   ⇒ 替用户断言了三件**当时尚未发生**的事：
+       *       · 地址解析出来了（没解析过）
+       *       · 连不过去（没连过）
+       *       · 通常是被墙 / 需要代理（没有任何依据）
+       * ```
+       * # 改后：照抄设置页 `danmaku_source_page.dart:215` 那版
+       * ```text
+       * '连不上 —— 正在确认是本机网络还是服务端的问题…'
+       *
+       * ① 它只说"连不上"（这是**已观测到**的事实：探针判了 offline）
+       * ② "正在确认"如实表达"还不知道"
+       * ③ 等 `_diagnose` 回来，会被真正的分档文案替换
+       *
+       * ★ 同仓**已经**有正确写法（设置页），本处只是对齐 ——
+       *   不是新设计，所以不需要论证，只需要一致。
+       * ★ 顺带：131 字 → 25 字，占位态更短，不会溢出。
+       * ```
+       */
+      _probeReport = st.online
+          ? const DanmakuProbeReport(
+              failure: DanmakuProbeFailure.none,
+              url: '',
+            )
+          : DanmakuProbeReport(
+              failure: DanmakuProbeFailure.connectionTimeout,
+              url: ep?.display ?? raw,
+              detail: '正在分层诊断（DNS / TCP）…',
+              /*
+               * ⚠️ **不要**在这里用 `remedyFor(connectionTimeout)` ——
+               *    那条 remedy 是"诊断完成态"的文案，它陈述的是
+               *    「地址解析出来了但连不过去」这种**需要证据**的结论。
+               *    占位态没有任何证据，只能用中性句。
+               *    门禁 `zz_t66_r3_placeholder_wording_test.dart` 钉着这一点。
+               */
+              remedy: '连不上 —— 正在确认是本机网络还是服务端的问题…',
+            );
     });
     // 测通了 ⇒ 落盘（用户点的就是「这个地址可用」，不落盘等于白填）
     // ⚠️ 落盘用**发起时捕获**的 raw/rawToken，不是当前输入框的值。
@@ -1583,6 +2573,130 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       UiPrefs.setDanmakuEndpoint(raw);
       UiPrefs.setDanmakuToken(rawToken);
     }
+    /*
+     * ★★★ 2026-10-19（R3-③ / R3-⑦ 的关键一步）：判了 offline 之后，
+     *   **真的去问一次"为什么"**（DNS / TCP），而不是笼统说连不上。
+     *
+     * 放在 setState 之后、不阻塞首帧：用户先看到"连不上"，
+     * 一两秒后原因补上来（比让他盯着一个转圈等 6 秒好）。
+     *
+     * ⚠️ **注入了探针就不许打真网络**（与 `DanmakuSourcePage` 同一条纪律）：
+     *    `probeOverride` 的语义是"零联网"。第一版无条件调 `_diagnose`，
+     *    害得既有门禁报 "A Timer is still pending"（Socket.connect 的 6s 超时
+     *    定时器活过了测试体）。注入方想给原因就自己抛带 errno 的异常，
+     *    走上面的 catch —— 那条路**已经**会分类。
+     */
+    if (!st.online && ep != null && widget.probeOverride == null) {
+      unawaited(_diagnose(ep, mySeq));
+    }
+  }
+
+  /// 判了 offline ⇒ 分层探测：DNS → TCP → 给出**具体**是哪一层断了
+  ///
+  /// # 为什么要自己探一遍（core 已经探过了）
+  /// ```text
+  /// `DanmakuLocalService._probeOne` **刻意吞掉异常**返回 null
+  /// （见它的文档：「404 会让部分服务直接抛，那是"这个端点没有"而不是"服务没起来"」）。
+  /// 对"服务有没有起"这个问题那是对的；但对我们现在要回答的问题
+  /// ——「**为什么**连不上」—— 它把唯一的证据扔掉了。
+  /// ⇒ 这一层把证据捡回来（而且只在 UI 层，不动 core 的判据）。
+  /// ```
+  ///
+  /// ⚠️ 全程带 [mySeq] 守卫：地址改过就作废（同 `_runProbe` 的纪律）。
+  /// ⚠️ 超时给得很短（DNS 4s / TCP 6s）：目的是**分类**，不是等它成功。
+  Future<void> _diagnose(DanmakuEndpoint ep, int mySeq) async {
+    DanmakuProbeReport report;
+    try {
+      final addrs = await InternetAddress.lookup(ep.host)
+          .timeout(const Duration(seconds: 4));
+      if (addrs.isEmpty) {
+        report = DanmakuProbeReport(
+          failure: DanmakuProbeFailure.dnsFailed,
+          url: ep.display,
+          detail: 'DNS 没返回任何地址',
+          remedy: DanmakuProbeReport.remedyFor(DanmakuProbeFailure.dnsFailed),
+        );
+      } else {
+        /*
+         * ★★★ 2026-10-19（R3-③/⑦ 归因修正）：**先核地址对不对，再谈 TCP**。
+         *
+         * # 为什么判定放在 TCP 之前
+         * ```text
+         * 本机实测：DNS 返回 74.86.17.48 / 2a03:2880:…:face:b00c，
+         * 而 DoH 真值是 216.198.79.3 / 64.29.17.3。
+         * ⇒ TCP 连的是**错地址**，超时只是下游后果。
+         *   若先报 connectionTimeout，用户会去配代理碰运气；
+         *   报 dnsHijacked 才会让他去**换 DNS**（正确的修法）。
+         * ```
+         */
+        final local = addrs.map((a) => a.address).toList(growable: false);
+        if (DanmakuProbeReport.looksForged(local)) {
+          final doh = await DanmakuProbeReport.dohLookup(ep.host);
+          report = DanmakuProbeReport.forHijackedDns(
+            url: ep.display,
+            localAddresses: local,
+            dohAddresses: doh,
+          );
+        } else {
+          final port = ep.hasPort ? ep.port : (ep.scheme == 'https' ? 443 : 80);
+          try {
+            final s = await Socket.connect(ep.host, port,
+                timeout: const Duration(seconds: 6));
+            s.destroy();
+            // TCP 通了 ⇒ 问题在 HTTP 层（服务活着但拒绝/报错）
+            report = DanmakuProbeReport(
+              failure: DanmakuProbeFailure.serverError,
+              url: ep.display,
+              detail: 'TCP $port 可以连上，但探测端点没有给出可用响应',
+              remedy: '网络是通的（TCP 连得上）⇒ 这次的问题在「服务端」：'
+                  '它可能正在冷启动、或者这个实例的接口变了。'
+                  '等几秒重试，或换一个实例。',
+            );
+          } on TimeoutException {
+            /*
+             * TCP 超时 + 地址**不在**伪造段 ⇒ 真的可能是被墙/代理。
+             * 但仍然补一句"DoH 真值不同也可能是劫持"—— 因为伪造段表
+             * 不可能穷举，`looksForged` 只是**强证据**不是**充要条件**。
+             */
+            final doh = await DanmakuProbeReport.dohLookup(ep.host);
+            final differs = doh.isNotEmpty &&
+                doh.toSet().intersection(local.toSet()).isEmpty;
+            report = differs
+                // 地址表没命中，但 DoH 真值完全不同 ⇒ 同样是劫持
+                ? DanmakuProbeReport.forHijackedDns(
+                    url: ep.display,
+                    localAddresses: local,
+                    dohAddresses: doh,
+                    detail: 'TCP $port 连接超时',
+                  )
+                : DanmakuProbeReport(
+                    failure: DanmakuProbeFailure.connectionTimeout,
+                    url: ep.display,
+                    detail: 'DNS 解析到 ${local.join(", ")}，'
+                        '但 TCP $port 连接超时',
+                    remedy: DanmakuProbeReport.remedyFor(
+                      DanmakuProbeFailure.connectionTimeout,
+                    ),
+                  );
+          } on SocketException catch (e) {
+            report = DanmakuProbeReport.fromError(e, url: ep.display);
+          }
+        }
+      }
+    } on TimeoutException {
+      report = DanmakuProbeReport(
+        failure: DanmakuProbeFailure.dnsFailed,
+        url: ep.display,
+        detail: 'DNS 查询超时（4 秒）',
+        remedy: DanmakuProbeReport.remedyFor(DanmakuProbeFailure.dnsFailed),
+      );
+    } on SocketException catch (e) {
+      report = DanmakuProbeReport.fromError(e, url: ep.display);
+    } catch (e) {
+      report = DanmakuProbeReport.fromError(e, url: ep.display);
+    }
+    if (!mounted || mySeq != _probeSeq) return;
+    setState(() => _probeReport = report);
   }
 
   /// 清除 ⇒ 回到内置路径（本机 2080 → 官方）。
@@ -1598,6 +2712,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       _endpointToken.text = '';
       _probeResult = null;
       _probeCustomMessage = null;
+      _probeReport = null;
     });
     widget.onChanged?.call();
   }
@@ -1638,7 +2753,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       padding: const EdgeInsets.only(top: Sp.x2),
       child: Text(
         text,
-        style: const TextStyle(color: DanmakuTextColors.muted, fontSize: FontSizes.cap),
+        style: const TextStyle(
+          color: DanmakuTextColors.muted,
+          fontSize: FontSizes.cap,
+        ),
       ),
     );
   }
@@ -1714,7 +2832,21 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
      *   （下面填 / 改用免签名的那两条路）。
      */
     if (!DanmakuConfig.isConfigured) {
-      return '弹幕已开启，但凭证未配置（官方边会失败）';
+      /*
+       * ★★★ 2026-10-18 第四版（Owner ④：「这个官方兜底也不知道是啥东西」）
+       *
+       * 改前：`'弹幕已开启，但凭证未配置（官方边会失败）'`
+       * ```text
+       * 「官方边」是**内部叫法**（我们把官方开放平台那条路叫"官方边"）。
+       * Owner 明确说过他不知道"官方兜底"是什么 ⇒ 同一个词根的"官方边"
+       * 也不该出现在用户面前。
+       *
+       * ⇒ 改成用户视角：**现在能不能用**、**用什么**。
+       *   本构建内置实例默认就绪 ⇒ 用户根本不需要关心凭证。
+       * ```
+       * ⚠️ 判据（`isConfigured`）一个字没改，只改措辞。
+       */
+      return '弹幕已开启 · 正在用免凭证的来源';
     }
     if (DanmakuConfig.usingBuiltinAppId) {
       return '弹幕已开启（内置凭证 AppId ${DanmakuConfig.maskedAppId}）';
@@ -1756,6 +2888,32 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// ★ 2026-10-14（Owner 反馈「凭证流程根本没走通」）：输入框**恢复**，
   ///   但不再挂在这一节里 —— 它独立成 [_credentialsSection]（可门控、带如实
   ///   状态行）。本节现在只剩这一行**只读**的本机探测结果。
+  ///
+  /// ══════════════════════════════════════════════════════════════════
+  /// ★★★ 2026-10-18：**已从 UI 移除**（保留代码，不再被调用）
+  /// ══════════════════════════════════════════════════════════════════
+  /// Owner 亲自截图：「这个官方兜底也不知道是啥东西」。
+  /// 加上本构建**没有内置凭证**（这条边必然 403），它占一个页签却只能
+  /// 告诉用户"我用不了" ⇒ 那个页签已删除（见 [DanmakuPanelTab]）。
+  ///
+  /// **为什么保留这个方法而不是物理删除**：
+  /// ```text
+  /// 这套「数据源探测 + 签名」逻辑将来真接入官方开放平台时可以直接复用；
+  /// 删掉容易，重写难。
+  /// ```
+  /// **要恢复的话**：在「高级」页签里加回对它的调用即可
+  /// （`_credentialsSection` 同理）。
+  ///
+  /// ⚠️ 这段注释里**故意不写出那个调用形态的字面量**：
+  ///    门禁 `zz_t66_danmaku_panel_semantics_test` 数的是"剥注释后
+  ///    还剩几个调用点"，而 stripComments 只认 `//` 与 `/* */` ——
+  ///    写在 `///` 文档注释里的调用形态**也会被剥掉**，
+  ///    但如果我把它写成裸字面量就会被数进去 ⇒ 假红。
+  ///    所以这里只用文字描述，不写代码形态。
+  ///
+  /// ⚠️ 它现在**不可达**（没有任何调用点）—— 这正是 Lead 要求的形态：
+  ///    "不是死代码但被调用"，而是"保留但确实不可达"。
+  // ignore: unused_element
   Widget _sourceSection() {
     if (widget.state.sourceLine.isEmpty) return const SizedBox.shrink();
     return Column(
@@ -1773,6 +2931,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// callbacks being present (because it contained the input boxes), but the
   /// section is read-only status now -- and users must always be able to see
   /// whether built-in credentials are in effect.
+  ///
+  /// ★ 2026-10-18：随 `_credentialsSection` 一起**不再被调用**（见那里的说明）。
+  // ignore: unused_element
   bool get _showCredentialsSection => true;
 
   /// ★★★ 2026-10-14（Owner）：「凭证」节 —— 两个输入框 + 保存 / 清除 + **如实**状态行
@@ -1788,6 +2949,18 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 这三档与 [_statusText] 是**两个不同的问题**：[_statusText] 说"弹幕现在
   /// 什么状态"，本节说"凭证这个配置项现在什么情况"。两条都如实、且都不许
   /// 在 UI 里自己拼字符串判断 —— 判据全在 `DanmakuConfig`。
+  ///
+  /// ══════════════════════════════════════════════════════════════════
+  /// ★★★ 2026-10-18：**已从 UI 移除**（保留代码，不再被调用）
+  /// ══════════════════════════════════════════════════════════════════
+  /// 与 [_sourceSection] 同一条裁决（Owner「这个官方兜底也不知道是啥东西」+
+  /// 本构建无内置凭证）。整个「官方兜底」页签已删除。
+  ///
+  /// **为什么保留**：AppId/AppSecret 的签名与状态判断逻辑将来可复用。
+  /// **怎么恢复**：在「高级」页签里加回对它的调用即可
+  /// （理由同 `_sourceSection` 上那段：注释里不写调用形态的字面量，
+  ///   否则门禁会把注释数成调用点 ⇒ 假红）。
+  // ignore: unused_element
   Widget _credentialsSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1860,7 +3033,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         if (!DanmakuConfig.isConfigured) ...[
           _hint(
             '本构建没有内置凭证，官方边会失败（服务端会回「没收到凭证」）。'
-            '改用本机外部弹幕 / 外部视频源弹幕 —— 那两条路**免签名**、不需要凭证。',
+            '改用本机外部弹幕 / 外部视频源弹幕 —— 那两条路「免签名」、不需要凭证。',
           ),
         ],
         if (DanmakuConfig.isConfigured)
@@ -1922,8 +3095,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           widget.onSetArea,
           '${(s.area * 100).round()}%',
         ),
-        _hint('弹幕从画面**顶部往下**能占用的高度比例（对齐 某视频站）。'
-            '默认 50% = 只占上半屏，下半屏留给画面与字幕；拖到 100% 才铺满全屏。'),
+        _hint(
+          '弹幕从画面「顶部往下」能占用的高度比例（对齐 某视频站）。'
+          '默认 50% = 只占上半屏，下半屏留给画面与字幕；拖到 100% 才铺满全屏。',
+        ),
       ],
     );
   }
@@ -1946,16 +3121,28 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _sectionTitle('显示哪些弹幕', note: '即时生效'),
-        _typeSwitch('滚动弹幕', DanmakuConfig.showScroll, DanmakuConfig.setShowScroll),
+        _typeSwitch(
+          '滚动弹幕',
+          DanmakuConfig.showScroll,
+          DanmakuConfig.setShowScroll,
+        ),
         _typeSwitch('顶部弹幕', DanmakuConfig.showTop, DanmakuConfig.setShowTop),
-        _typeSwitch('底部弹幕', DanmakuConfig.showBottom, DanmakuConfig.setShowBottom),
+        _typeSwitch(
+          '底部弹幕',
+          DanmakuConfig.showBottom,
+          DanmakuConfig.setShowBottom,
+        ),
         _hint('关掉某一类 ⇒ 那一类的弹幕不再进入渲染（也不占轨道）'),
         const SizedBox(height: 8),
         _blockWordsHeader(),
         _blockWordsWrap(),
         _blockWordsAddField(),
         const SizedBox(height: Sp.x2),
-        _typeSwitch('按正则匹配', DanmakuConfig.blockRegex, DanmakuConfig.setBlockRegex),
+        _typeSwitch(
+          '按正则匹配',
+          DanmakuConfig.blockRegex,
+          DanmakuConfig.setBlockRegex,
+        ),
         _hint(
           DanmakuConfig.blockRegex
               ? '当前按正则解释（写错了会自动跳过那一条，不会屏蔽全部）'
@@ -2245,6 +3432,500 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   bool get _showSearchSection =>
       widget.onSearch != null && widget.onPickMatch != null;
 
+  // ══════════════════════════════════════════════════════════════════
+  //  ★★★ 2026-10-18 第四版：弹幕来源（可多选，勾选即参与合并）
+  // ══════════════════════════════════════════════════════════════════
+
+  /// ★★★ 2026-10-19（第 66 轮 Owner 第 ⑤ 条）：**真正可多选**的绑定集合
+  ///
+  /// # 改前是什么（实测读数，不是推测）
+  /// ```text
+  /// 上一版 `_sourcesSection` 的标题写着「可多选 · 勾上即合并」，
+  /// 而四个 `_sourceRow(...)` 调用点**全部** `onChanged: null`
+  /// （实测 4/4，见 2401-2530 行）⇒ `_sourceRow` 把勾选框画成**只读**
+  /// （它自己的文档也写着「勾选框只读」）。
+  ///
+  /// ⇒ 用户看到「可多选」，但**一个都点不动** —— 这就是本仓明令禁止的
+  ///   "画了个假开关"。而 Owner 原话正是：
+  ///   「弹幕源可以绑定多个」。
+  /// ```
+  ///
+  /// # 改后：集合是真状态，且**有消费方**
+  /// ```text
+  /// `_enabledFeeds` 是本面板持有的「用户勾了哪几路」。
+  /// 它的消费方不是"画个勾" —— 而是 [DanmakuFeedBinding.merge]：
+  /// 拿**真实的**多路弹幕列表做合并，输出条数与去重数。
+  /// 门禁 `zz_t66_r3_multi_source_test.dart` 读的是**合并结果**，
+  /// 不是控件状态（读控件状态的门禁会让"勾上了但没合并"照样绿）。
+  /// ```
+  ///
+  /// # 为什么"本片源自带"不可取消
+  /// ```text
+  /// 它是**视频本身带的**弹幕 —— 用户取消不了"这个视频自带弹幕"这个事实。
+  /// 与 Owner 第 2 条同一条语义（那条要求它**默认**勾上）。
+  /// ⇒ 它始终在集合里，勾选框只读且**恒为勾**。
+  /// ```
+  final Set<DanmakuFeedChannel> _enabledFeeds = <DanmakuFeedChannel>{
+    DanmakuFeedChannel.biliSource,
+  };
+
+  /// 勾选/取消一路来源
+  void _toggleFeed(DanmakuFeedChannel ch, bool on) {
+    // 本片源自带不可取消（见 [_enabledFeeds] 的文档）
+    if (ch == DanmakuFeedChannel.biliSource) return;
+    setState(() {
+      if (on) {
+        _enabledFeeds.add(ch);
+      } else {
+        _enabledFeeds.remove(ch);
+      }
+    });
+    widget.onChanged?.call();
+  }
+
+  /// 当前**真的**勾着、且这一路**确实有数据**的通道（喂给合并器）
+  ///
+  /// # 什么算"有数据"（两种事实，强度不同）
+  /// ```text
+  /// ① 宿主注入了**逐条内容**（`_feedSamples`）⇒ 能真的合并/去重
+  /// ② 只给了**条数**（只有「本片源自带」有这条路：`biliCount`）
+  ///    ⇒ 只能计数，不能去重 —— 这一点必须在读数里**说出来**，
+  ///      不能拿"合计"冒充"合并后"
+  /// ```
+  /// ⚠️ 只勾了不算：勾上 dan-api 而宿主没给内容时，它**不进**这里
+  ///    （否则读数会凭空多一路 —— 那是捏造）。
+  List<DanmakuFeedChannel> get _activeFeedChannels => <DanmakuFeedChannel>[
+        for (final ch in DanmakuFeedChannel.values)
+          if (_enabledFeeds.contains(ch) && _hasDataFor(ch)) ch,
+      ];
+
+  /// 这一路手上有没有**任何**可用读数（逐条内容，或至少一个条数）
+  bool _hasDataFor(DanmakuFeedChannel ch) {
+    if (_feedSamples.containsKey(ch)) return true;
+    // 本片源自带的条数由宿主单独给（`biliCount`），没有内容也是真事实
+    if (ch == DanmakuFeedChannel.biliSource) return _biliCount != null;
+    return false;
+  }
+
+  /// 这一路的条数（内容优先；没有内容时退到宿主给的条数）
+  int _countOf(DanmakuFeedChannel ch) {
+    final s = _feedSamples[ch];
+    if (s != null) return s.length;
+    if (ch == DanmakuFeedChannel.biliSource) return _biliCount ?? 0;
+    return 0;
+  }
+
+  /// 每一路都有**逐条内容**吗（没有就只能计数，不能去重）
+  bool get _canMergeItemByItem => _activeFeedChannels
+      .every((ch) => _feedSamples.containsKey(ch));
+
+  /// 本面板手上**真实可合**的几路样本（宿主没给的就是没有）
+  ///
+  /// # 为什么宿主必须注入
+  /// ```text
+  /// 合并的原料是 `List<DanmakuComment>`，而本面板是**纯 UI**
+  /// （见文件头：不碰网络/播放器/令牌）。它拿不到别的源的弹幕列表。
+  /// ⇒ 宿主通过 [DanmakuSettingsDialog.feedSamples] 注入"每一路现在有什么"。
+  ///   不注入 ⇒ 面板**如实**退成"只有本片源那一路的条数"，
+  ///   并在读数里明说"未逐条合并"。
+  /// ```
+  Map<DanmakuFeedChannel, List<DanmakuComment>> get _feedSamples =>
+      widget.feedSamples ?? const <DanmakuFeedChannel, List<DanmakuComment>>{};
+
+  /// 合并读数（**这就是"多绑真的生效"的证据**）
+  ///
+  /// 调用 core 的 `DanmakuAggregator.merge`（同一份去重/排序实现）——
+  /// 本面板**不重写**合并逻辑：写第二份就会与取弹幕那条路漂移。
+  ///
+  /// ⚠️ 只有**每一路都有逐条内容**时才做逐条合并；
+  ///    缺内容时返回 null，由 [_activeSummary] 走"仅合计"的如实文案。
+  DanmakuAggregate? get _mergedPreview {
+    final chans = _activeFeedChannels;
+    if (chans.isEmpty || !_canMergeItemByItem) return null;
+    return DanmakuAggregator.merge(<DanmakuFeedInput>[
+      for (final ch in chans)
+        DanmakuFeedInput(
+          kind: _coreChannelOf(ch),
+          comments: _feedSamples[ch] ?? const <DanmakuComment>[],
+          detail: ch.label,
+        ),
+    ]);
+  }
+
+  /// 面板的通道 ⇒ core 的来源类别（合并器的入参）
+  ///
+  /// ⚠️ `biliSource` / `biliExternal` / `danApi` 三路都映射到 `imported`：
+  ///    本仓把「不是插件、不是本机服务」的那几路一律归在**导入源**语义下
+  ///    （见 `player_page._aggregateDanmaku` 的 `primaryKind`）。
+  ///    `DanmakuSourceChannel` 是 core 的**类别**，不是"具体哪一路" ——
+  ///    具体哪一路由 `DanmakuFeedInput.detail` 区分（见 [_mergedPreview]）。
+  static DanmakuSourceChannel _coreChannelOf(DanmakuFeedChannel ch) =>
+      switch (ch) {
+        DanmakuFeedChannel.biliSource => DanmakuSourceChannel.imported,
+        DanmakuFeedChannel.biliExternal => DanmakuSourceChannel.imported,
+        DanmakuFeedChannel.danApi => DanmakuSourceChannel.imported,
+        DanmakuFeedChannel.localService => DanmakuSourceChannel.local,
+        DanmakuFeedChannel.plugin => DanmakuSourceChannel.plugin,
+      };
+
+  /// 「弹幕来源」页签 —— 这一页回答**唯一**一个问题：
+  /// 「这一集的弹幕从哪来、每条路现在什么状态、我要怎么切」。
+  ///
+  /// # 四条来源为什么**平级各占一行**
+  /// ```text
+  /// Owner 2026-10-18 亲自截图，四条反馈里两条直接指向这里：
+  ///
+  /// ① 「某个视频站的弹幕设置怎么没了」
+  ///    ⇒ 第三版被我藏成「插件提供」里一枚叫「外部弹幕…」的按钮。
+  ///      **减少点击层数 ≠ 提高可发现性** —— 藏在别的名字下等于没有。
+  ///      现在它与 dan-api **平级**，名字直接叫出来。
+  ///
+  /// ③ 「dan-api只有测试」
+  ///    ⇒ 第三版那个 tab 里真的只有地址框 + 测试连接 + 清除。
+  ///      现在 dan-api 那一行带「搜索…」，点开就是搜索 + 选中 + 绑定。
+  ///
+  /// ② 「插件提供是什么」
+  ///    ⇒ Owner 的语义：视频源插件**随片自带**每一集的弹幕 ⇒ 默认导入。
+  ///      所以这一行改名「本片源自带」，且**默认勾上**（见 [_sourceRow]）。
+  /// ```
+  ///
+  /// # 为什么是 ☑/☐ 多选，不是 ●/○ 单选
+  /// ```text
+  /// Owner 第 11 条原话：「同时加载并合并」
+  /// ⇒ 多路可以叠加（`4aeb79a` 让手动绑定后插件那份也并进来）。
+  ///
+  /// 与 Owner 第 6 条不冲突：
+  ///   第 6 条禁的是「不许**自动绑定**外部源」，
+  ///   不是「不许**手动多选**多个源」。
+  /// ```
+  ///
+  /// ★★★ 2026-10-19（第 66 轮 Owner 第 ⑤ 条）：**勾选框从只读改成真可点**
+  /// ```text
+  /// 改前四个调用点全是 `onChanged: null` ⇒ 一个都点不动，
+  /// 标题却写着「可多选」—— 假开关（本仓明令禁止的形态）。
+  /// 改后：除「本片源自带」（不可取消，理由见 [_enabledFeeds]）外，
+  /// 每一路都能勾/取消，且勾选结果**真的**进 [DanmakuFeedBinding.merge]。
+  /// ```
+  Widget _sourcesSection() {
+    final s = widget.state;
+    final biliBound = _biliCount != null;
+    final local = _probeResult;
+    final localOnline = local?.online ?? false;
+    final danApiReady = DanmakuConfig.effectiveEndpoint != null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionTitle('弹幕来源', note: '可多选 · 勾上即合并'),
+        _hint(
+          '勾上的来源会「同时加载并合并」（重复的自动去掉）。'
+          '本片源自带默认勾上 —— 那是视频本身带的弹幕。',
+        ),
+        const SizedBox(height: Sp.x2),
+        /*
+         * ① 本片源自带 —— **默认勾上**
+         *
+         * Owner ②：「比如某个视频源 它本身视频源每一集都有对应的弹幕数据,
+         *          那么就默认导入他自身的就行了」
+         * ⇒ 它是视频的一部分 ⇒ 自动。这与第 6 条「其他都要手动绑定」自洽。
+         */
+        _sourceRow(
+          channel: DanmakuFeedChannel.biliSource,
+          detail: _biliCount == null ? '本片源没有提供' : '$_biliCount 条 · 可看',
+          // 它恒在集合里（见 [_enabledFeeds]）⇒ 恒为勾
+          checked: true,
+          // 勾上 ≠ 可取消：它是视频自带的，用户取消不了"视频本身带弹幕"这件事
+          onChanged: null,
+          trailing: _badge('默认'),
+        ),
+        /*
+         * ★★★ 2026-10-18（Lead 追加口径）：「能看」与「能发」是两件事
+         *
+         * # 为什么必须有这一行
+         * ```text
+         * 发送输入框的挂载条件是 AND 谓词：
+         *   _danmakuEnabled && _danmakuCanSend && _danmakuSendProvider != null && !_isLive
+         * 两个插件都**没有**声明 danmakuSend 能力 ⇒ 输入框整条不渲染
+         * （Owner 第 1 条「不支持就不显示」，宿主判得对）。
+         *
+         * ⚠️ 但"不显示"不等于"不解释"：
+         *    用户看到上面写着「本片源自带 1200 条」，却没有发送框 ⇒
+         *    他会以为**坏了**，而不是"这个源不支持发"。
+         * ```
+         * # 所以：输入框仍然不显示，但这里明说一句
+         * ```text
+         * 这与 Owner 第 1 条**不矛盾**：
+         *   那条说的是「不支持发弹幕 ⇒ 不显示**发送输入框**」，
+         *   不是「不许告诉用户为什么没有」。
+         * ```
+         *
+         * ★★★ 2026-10-20（裁决 A：把解释搬到**发现点**）
+         * ```text
+         * 改前条件是 `biliBound && !canSendDanmaku`
+         *   ⇒ 没绑定这一路时**什么都不说**：用户看到「本片源没有提供」+ 没有发送框，
+         *     只剩一片空白，不知道是"这一路没内容"还是"这源根本发不了"。
+         * 改后条件是 `!canSendDanmaku`
+         *   ⇒ 「能不能发」与「有没有绑定某一路」是两件事，前者为假就该解释。
+         *
+         * 文案按 R6 先例：**给「能做什么」**，不写干瘪的否定；
+         * 且原因必须**指向片源**（不许写成网络/登录/设置/出错），
+         * 否则用户会去翻设置找不存在的问题（同 AGENTS §8「只到结论不到原因」的教训）。
+         * ```
+         */
+        if (!widget.canSendDanmaku)
+          const Padding(
+            padding: EdgeInsets.only(left: Sp.x6, top: 2),
+            child: Text(
+              '弹幕可以看、调样式、合并多路来源；发送只在支持发送的片源里提供',
+              style: TextStyle(
+                color: DanmakuTextColors.muted,
+                fontSize: FontSizes.cap,
+              ),
+            ),
+          ),
+        const SizedBox(height: Sp.x1),
+        /*
+         * ② 某个视频站 —— **独立可见的入口**（Owner ① 的核心修复）
+         *
+         * ⚠️ 这一行里出现的站名是 Owner 明确允许的弹幕源语境
+         *    （见 `_kBiliSourceLabel` 上的历史说明与 t98 行级豁免）。
+         */
+        _sourceRow(
+          channel: DanmakuFeedChannel.biliExternal,
+          detail: biliBound ? '已绑定' : '未绑定',
+          checked: _enabledFeeds.contains(DanmakuFeedChannel.biliExternal),
+          /*
+           * ★★★ 2026-10-19（Owner 第 ⑤ 条）：**可点了**
+           *
+           * 改前这里是 `onChanged: null` ⇒ 复选框只读，标题却写着「可多选」。
+           * 现在勾上 = 这一路参与合并（[DanmakuMergePreview]）。
+           *
+           * ⚠️ 没绑定时勾它**不假装已绑定**：下面的 detail 仍然写「未绑定」，
+           *    合并读数也会如实说"这一路没有可合的内容"（宿主没给样本）。
+           *    勾选表达的是"我要它参与"，绑定与否是另一个事实。
+           */
+          onChanged: (v) => _toggleFeed(DanmakuFeedChannel.biliExternal, v),
+          trailing: widget.onOpenBili == null
+              ? null
+              : _rowAction('打开…', widget.onOpenBili!),
+        ),
+        const SizedBox(height: Sp.x1),
+        /*
+         * ③ dan-api —— 搜索 + 选中 + 绑定（Owner ③ 的核心修复）
+         *
+         * ⚠️ 它和 ② 用的是**同一个搜索/绑定通道**（`onSearch` / `onPickMatch`），
+         *    宿主侧共用同一个 client —— 技术上一直能搜，
+         *    第三版只是把入口错放进了 plugin tab。
+         */
+        _sourceRow(
+          channel: DanmakuFeedChannel.danApi,
+          detail: danApiReady
+              ? (DanmakuConfig.usingPublicInstance
+                    ? '内置实例 · 免凭证'
+                    : '自填地址 · 免凭证')
+              : '未配置',
+          checked: _enabledFeeds.contains(DanmakuFeedChannel.danApi),
+          onChanged: (v) => _toggleFeed(DanmakuFeedChannel.danApi, v),
+          trailing: _showSearchSection
+              ? _rowAction('搜索…', () => _focusSearch(s))
+              : null,
+        ),
+        const SizedBox(height: Sp.x1),
+        /*
+         * ④ 本机服务 —— 探测 + 使用
+         */
+        _sourceRow(
+          channel: DanmakuFeedChannel.localService,
+          detail: local == null
+              ? '未检测'
+              : (localOnline
+                    ? '已运行${local.version == null ? "" : " · v${local.version}"}'
+                    : '未运行'),
+          checked: _enabledFeeds.contains(DanmakuFeedChannel.localService),
+          onChanged: (v) => _toggleFeed(DanmakuFeedChannel.localService, v),
+          trailing: _probeRunning
+              ? const AppInlineSpinner(
+                  size: 14,
+                  color: DanmakuTextColors.body,
+                )
+              : _rowAction('检测', _runProbe),
+        ),
+        const SizedBox(height: Sp.x3),
+        /*
+         * 当前生效读数 —— 与顶部状态条**同一套口径**，
+         * 但这里额外说明"几路在合并"，因为这一页是用户做选择的地方。
+         */
+        _hint(_activeSummary()),
+      ],
+    );
+  }
+
+  /// 「当前生效」那一行 —— ★ 2026-10-19：改成读**真实合并结果**
+  ///
+  /// # 改前是什么（读数）
+  /// ```text
+  /// 它把「本片源 $_biliCount 条 + 本机服务 + dan-api」拼成一句话，
+  /// 括号里再补 `state.count` —— 那是**宿主取回来的总条数**，
+  /// 与"用户勾了哪几路"**没有任何因果关系**。
+  /// ⇒ 用户勾上 dan-api 之后，这句话的括号里**不会变**（除非宿主重取），
+  ///   于是"勾选参与合并"在读数上**看不出来** —— 又一处假接线。
+  /// ```
+  /// # 改后
+  /// ```text
+  /// 直接读 [DanmakuMergePreview]（= `DanmakuAggregator.merge` 的真结果）：
+  ///   · 单路  ⇒ `单源 · 本片源自带 1200 条`
+  ///   · 多路  ⇒ `3 路 → 合并后 1400 条（跨源去重 100）`
+  /// 勾/取消一路 ⇒ 这句话**立刻**变 —— 这是"多绑真的生效"的可见证据。
+  /// ```
+  String _activeSummary() {
+    final chans = _activeFeedChannels;
+    if (chans.isEmpty) {
+      return '当前生效：还没有任何来源在供弹幕 —— 上面的来源可以勾选，'
+          '或者用下面的「重新获取弹幕」再试一次。';
+    }
+    final agg = _mergedPreview;
+    final names = chans.map((c) => c.label).join(' + ');
+
+    /*
+     * ① 只有一路 ⇒ 不叫"合并"，直接报这一路的条数。
+     */
+    if (chans.length < 2) {
+      return '当前生效：单源 · ${chans.first.label} '
+          '${_countOf(chans.first)} 条';
+    }
+
+    /*
+     * ② 多路 + 每一路都有逐条内容 ⇒ 真的逐条合并（能报去重数）。
+     */
+    if (agg != null) {
+      final deduped = agg.deduped;
+      return '当前生效：${chans.length} 路（$names）'
+          '→ 合并后 ${agg.comments.length} 条'
+          '${deduped > 0 ? "（跨源去重 $deduped 条）" : ""}';
+    }
+
+    /*
+     * ③ 多路但缺逐条内容 ⇒ **只能计数**，必须说出来。
+     *    ⚠️ 这里若写"合并后"，就是拿"相加"冒充"合并" ——
+     *       两者在有重复时会给出不同的数字，用户会照着错数字排错。
+     */
+    final sum = chans.fold<int>(0, (a, c) => a + _countOf(c));
+    return '当前生效：${chans.length} 路（$names）合计 $sum 条 —— '
+        '其中有的路只有条数、没有逐条内容，所以「未逐条合并/去重」';
+  }
+
+  /// 一行来源：勾选框 + 名字 + 状态 + 右侧动作
+  ///
+  /// ★★★ 2026-10-19（第 66 轮 Owner 第 ⑤ 条）：**勾选框变成真控件**
+  /// ```text
+  /// 改前：`onChanged == null` ⇒ 只读图标（注释里写着"拨了也没有实现去消费它，
+  ///       那就是画了个假开关"—— 那句话是对的，但结论错了：
+  ///       正确的修法是**补上消费方**，不是把控件锁死不让点。）
+  /// 改后：`onChanged != null` ⇒ 整行可点，勾/取消写进 [_enabledFeeds]，
+  ///       由 [DanmakuMergePreview]（= core 的 `DanmakuAggregator.merge`）消费。
+  ///
+  /// ⚠️ 仍然保留 `onChanged == null` 的用法：**本片源自带**不可取消
+  ///    （它是视频本身带的，取消不了这个事实）。
+  /// ```
+  Widget _sourceRow({
+    required DanmakuFeedChannel channel,
+    required String detail,
+    required bool checked,
+    required ValueChanged<bool>? onChanged,
+    Widget? trailing,
+  }) {
+    final label = channel.label;
+    final tappable = onChanged != null;
+    final row = Row(
+      children: [
+        Icon(
+          checked
+              ? AppIcons.check_box_rounded
+              : AppIcons.check_box_outline_blank_rounded,
+          size: 16,
+          color: checked ? DanmakuTextColors.body : DanmakuTextColors.muted,
+        ),
+        const SizedBox(width: Sp.x2),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(
+              color: checked
+                  ? DanmakuTextColors.body
+                  : DanmakuTextColors.secondary,
+              fontSize: FontSizes.cap,
+              fontWeight: checked ? FontWeight.w600 : FontWeight.normal,
+            ),
+          ),
+        ),
+        Text(
+          detail,
+          style: const TextStyle(
+            color: DanmakuTextColors.muted,
+            fontSize: FontSizes.cap,
+          ),
+        ),
+        if (trailing != null) ...[const SizedBox(width: Sp.x2), trailing],
+      ],
+    );
+    if (!tappable) return row;
+    /*
+     * 只读行**不套** InkWell：套了就变成"能点但没反应"，
+     * 那与"看起来能点实际上不能点"是同一种谎，只是反过来。
+     */
+    return InkWell(
+      onTap: () => onChanged(!checked),
+      borderRadius: Radii.rSm,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: row,
+      ),
+    );
+  }
+
+  /// 小徽标（如「默认」）
+  Widget _badge(String text) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: 2),
+    decoration: BoxDecoration(
+      borderRadius: Radii.rFull,
+      border: Border.all(color: DanmakuTextColors.border),
+    ),
+    child: Text(
+      text,
+      style: const TextStyle(
+        color: DanmakuTextColors.muted,
+        fontSize: FontSizes.cap,
+      ),
+    ),
+  );
+
+  /// 行内小动作按钮
+  Widget _rowAction(String text, VoidCallback onTap) => TextButton(
+    onPressed: onTap,
+    style: TextButton.styleFrom(
+      minimumSize: const Size(0, 28),
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    ),
+    child: Text(
+      text,
+      style: const TextStyle(
+        color: DanmakuTextColors.body,
+        fontSize: FontSizes.cap,
+      ),
+    ),
+  );
+
+  /// 「搜索…」：把关键词填好并交给宿主去搜
+  ///
+  /// ⚠️ 面板**自己不发请求**（本文件的分工，见 `onSearch` 的文档）：
+  ///    它只把关键词递出去，宿主去调客户端。
+  void _focusSearch(DanmakuSettingsState s) {
+    final kw = s.searchKeyword.trim();
+    _searchKeyword.text = kw;
+    widget.onSearch?.call(kw);
+  }
+
   Widget _requestSection() {
     final s = widget.state;
     return Column(
@@ -2278,7 +3959,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           children: [
             TextButton.icon(
               onPressed: s.loading ? null : widget.onReload,
-              icon: const Icon(AppIcons.refresh, color: DanmakuTextColors.body, size: 18),
+              icon: const Icon(
+                AppIcons.refresh,
+                color: DanmakuTextColors.body,
+                size: 18,
+              ),
               label: const Text(
                 '重新获取弹幕',
                 style: TextStyle(color: DanmakuTextColors.body),
@@ -2286,31 +3971,29 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             ),
             if (s.loading) ...[
               const SizedBox(width: Sp.x3),
-              const SizedBox(
-                width: 16,
-                height: 16,
-                // T27-07：显式给色 —— body #E6E6E6 对面板底 #14161B ≥4.5:1（t27_w1 钉过）。
-                child: CircularProgressIndicator(
-                  color: DanmakuTextColors.body,
-                  strokeWidth: 2,
-                ),
+              // T27-07：显式给色 —— body #E6E6E6 对面板底 #14161B ≥4.5:1（t27_w1 钉过）。
+              const AppInlineSpinner(
+                size: 16,
+                color: DanmakuTextColors.body,
               ),
             ],
-            if (widget.onOpenBili != null) ...[
-              const SizedBox(width: Sp.x3),
-              TextButton.icon(
-                onPressed: widget.onOpenBili,
-                icon: const Icon(
-                  AppIcons.play_circle_outline,
-                  color: DanmakuTextColors.body,
-                  size: 18,
-                ),
-                label: const Text(
-                  '外部弹幕…',
-                  style: TextStyle(color: DanmakuTextColors.body),
-                ),
-              ),
-            ],
+            /*
+             * ★★★ 2026-10-18 第四版：这里**不再**画「外部弹幕…」按钮
+             *
+             * # 为什么删（看图台抓到的重复入口）
+             * ```text
+             * 上一版这里有一枚 `TextButton.icon('外部弹幕…')`。
+             * 本版「弹幕来源」页签里已经有**平级的一行**：
+             *     某个视频站   已绑定   [打开…]
+             * 两个入口指向**同一个** `widget.onOpenBili` ⇒
+             * 用户会问"这两个有什么区别"（截图实测：同一个面板里两处都能打开）。
+             *
+             * ⇒ 保留「弹幕来源」里那行（Owner 第 1 条要的可见性），
+             *   删掉这里这枚（它是上一版"藏在请求节里"的产物）。
+             * ```
+             * ⚠️ **能力没变**：`onOpenBili` 仍然被 `_sourcesSection` 消费，
+             *    `BiliImportDialog` 一字未动。
+             */
           ],
         ),
         _hint(
@@ -2371,16 +4054,13 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               padding: const EdgeInsets.only(top: 2),
               child: FilledButton.icon(
                 // 载入中禁用 ⇒ 防连点（同时也把"正在搜"这件事画在按钮上）
-                onPressed:
-                    s.searchLoading ? null : () => _submitSearch(_searchKeyword.text),
+                onPressed: s.searchLoading
+                    ? null
+                    : () => _submitSearch(_searchKeyword.text),
                 icon: s.searchLoading
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                          color: DanmakuTextColors.body,
-                          strokeWidth: 2,
-                        ),
+                    ? const AppInlineSpinner(
+                        size: 16,
+                        color: DanmakuTextColors.body,
                       )
                     : const Icon(AppIcons.search, size: 18),
                 label: const Text('搜索'),
@@ -2392,7 +4072,8 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         // 关键词来自宿主最近一次搜索 ⇒ 把它回填进输入框
         // （用户在别处改了关键字 / 面板重开时，输入框要跟上；本地输入时
         //  两者相同 ⇒ 不打断光标）
-        if (s.searchKeyword.isNotEmpty && s.searchKeyword != _searchKeyword.text)
+        if (s.searchKeyword.isNotEmpty &&
+            s.searchKeyword != _searchKeyword.text)
           _syncKeyword(s.searchKeyword),
         _searchResultBody(s),
       ],
@@ -2424,9 +4105,51 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     }
     final err = s.searchError;
     if (err != null) {
-      return Text(
-        '搜索失败：${err.message}',
-        style: const TextStyle(color: Colors.orangeAccent, fontSize: FontSizes.sm),
+      /*
+       * ★★★ 2026-10-19（R3-③/⑦ 收尾）：搜索失败**也走分类**。
+       *
+       * # 改前（Owner 看到的那句）
+       * ```text
+       * Text('搜索失败：${err.message}')
+       *   ⇒ 本机 DNS 被劫持时画出来的是
+       *     「搜索失败：连不上弹幕服务（地址不通或服务没起来）。请检查地址 / 服务是否在运行。」
+       *     —— 把"被劫持"说成"服务没起来"，用户会去查服务。方向错的。
+       * ```
+       *
+       * # 改后
+       * ```text
+       * 分类命中伪造段 ⇒ 换成 [DanmakuProbeFailureX.title] 那档文案
+       *   （"域名被解析到了错误地址"）+ 该档的下一步（换 DNS / 开代理），
+       *   并且**仍然**把 core 的原文 `err.message` 原样留着 ——
+       *   不翻译掉服务端的真实说法，只在上面补一条"这一步该做什么"。
+       *
+       * ★ 没命中时行为与改前**逐字同形**（`err.message` 照旧），
+       *   ⇒ 本次改动**不会**影响任何没被劫持的场景。
+       */
+      final report = DanmakuProbeReport.fromDanmakuException(err);
+      final hijacked = report.failure == DanmakuProbeFailure.dnsHijacked;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '搜索失败：${err.message}',
+            style: const TextStyle(
+              color: Colors.orangeAccent,
+              fontSize: FontSizes.sm,
+            ),
+          ),
+          if (hijacked) ...[
+            const SizedBox(height: Sp.x2),
+            Text(
+              report.failure.title,
+              style: const TextStyle(
+                color: Colors.orangeAccent,
+                fontSize: FontSizes.sm,
+              ),
+            ),
+            _hint(report.remedy),
+          ],
+        ],
       );
     }
     if (!s.searchSearched) {
@@ -2444,8 +4167,12 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           // 必须显式告诉用户"这一批结果已经对不上了"。
           const Text(
             '搜索期间画面已换集，这批结果可能对不上 —— 建议重新搜索',
-            style: TextStyle(color: Colors.orangeAccent, fontSize: FontSizes.cap),
-          ),        ],
+            style: TextStyle(
+              color: Colors.orangeAccent,
+              fontSize: FontSizes.cap,
+            ),
+          ),
+        ],
         const SizedBox(height: Sp.x1),
         for (final m in s.searchResults) _matchTile(m, s.searchStale),
         /*
@@ -2491,10 +4218,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       child: Container(
         width: double.infinity,
         margin: const EdgeInsets.only(bottom: Sp.x1),
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x3,
-          vertical: Sp.x2,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
         decoration: BoxDecoration(
           borderRadius: Radii.rSm,
           border: Border.all(color: DanmakuTextColors.border),
@@ -2545,8 +4269,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                         errorBuilder: (_, __, ___) => Container(
                           decoration: BoxDecoration(
                             borderRadius: Radii.rSm,
-                            border:
-                                Border.all(color: DanmakuTextColors.border),
+                            border: Border.all(color: DanmakuTextColors.border),
                           ),
                           child: const Icon(
                             AppIcons.movie_outlined,
@@ -2611,7 +4334,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       children: [
         Row(
           children: [
-            const Icon(AppIcons.info_outline, size: 18, color: DanmakuTextColors.muted),
+            const Icon(
+              AppIcons.info_outline,
+              size: 18,
+              color: DanmakuTextColors.muted,
+            ),
             const SizedBox(width: Sp.x2),
             Flexible(
               child: Text(
@@ -2628,7 +4355,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         const SizedBox(height: Sp.x2),
         Text(
           h.text,
-          style: const TextStyle(color: DanmakuTextColors.secondary, fontSize: FontSizes.sm),
+          style: const TextStyle(
+            color: DanmakuTextColors.secondary,
+            fontSize: FontSizes.sm,
+          ),
         ),
         if (h.url.isNotEmpty) ...[
           const SizedBox(height: Sp.x2),
@@ -2684,10 +4414,44 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           ),
         ),
         if (e.isAuthProblem)
+          /*
+           * ★★★ 2026-10-20（R3 文案审查 · 问题 1）：删掉「去凭证节填 AppId」那半句。
+           *
+           * # 为什么删（不是恢复凭证入口）
+           * ```text
+           * 改前这句话是：
+           *   「…或在上面的「凭证」节填一对 AppId / AppSecret 并保存，再点「重新获取弹幕」。」
+           *
+           * 而「凭证」那一节 `_credentialsSection` **已经是死代码**：
+           *   · 全文件只有定义(:2932)与注释提及，**零调用点**
+           *   · 注释自己写着 :1571「保留但不调用」
+           *   · 全仓 UI 层**没有任何地方**调 `setAppId` / `setAppSecret`
+           *     （`grep -rn "setAppId\|setAppSecret" lib/ui/` ⇒ 只命中一条注释）
+           *
+           * ⇒ 用户照着这句话去找「上面的凭证节」，**找不到**；
+           *   而且整个客户端**没有**任何地方能填 AppId。
+           *   这不是"指错了行动"，是**指向一个不存在的控件**。
+           * ```
+           * # 为什么不恢复凭证入口
+           * ```text
+           * 恢复 `_credentialsSection` 是**功能改动**（要把 setAppId/setAppSecret
+           * 接回 UI），而它当初被摘掉是有原因的（:1571 + :26 那段关于写入口的说明）。
+           * 现在恢复 = 重开一个已经被有意关掉的入口 ⇒ 那是产品决策，不是文案修复。
+           * ⇒ 只删掉指向它的那半句，保留**前两条可行路径**。
+           * ```
+           * # 删完句子仍然通顺
+           * ```text
+           * 「这是凭证问题。可行的几步（按代价从低到高）：
+           *    改用本机外部弹幕（免签名）或 外部视频源弹幕；
+           *    再点「重新获取弹幕」。」
+           * ↑ 两条路都真实存在：
+           *   · 本机弹弹play / 外部视频源 —— 免签名，不需要 AppId
+           *   · 「重新获取弹幕」按钮在「请求」节（:2694），可达
+           * ```
+           */
           _hint(
             '这是凭证问题。可行的几步（按代价从低到高）：'
             '改用本机外部弹幕（免签名）或 外部视频源弹幕；'
-            '或在上面的「凭证」节填一对 AppId / AppSecret 并保存，'
             '再点「重新获取弹幕」。',
           ),
       ],

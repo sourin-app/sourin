@@ -21,6 +21,8 @@ Status: implemented
 ② 「忽略此版本」必须**写完盘再关窗**（ignoreVersion 返回 Future，调用方 await）。
 ```
 
+Independent: 开发模式更新检查 + 忽略落盘。两处都是更新流程的局部修正。
+
 ## Alternatives considered
 
 - **用 `kDebugMode` 判开发模式** —— 它最强的论据是语义直白。

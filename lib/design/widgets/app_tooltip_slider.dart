@@ -79,7 +79,7 @@ class _AppTooltipState extends State<AppTooltip> {
     if (overlay == null) return;
 
     _entry = OverlayEntry(builder: (ctx) {
-      final t = AppTheme.of(ctx);
+      final t = AppTheme.resolvedOf(ctx);
       return Positioned(
         // 贴在 child 正上方居中 —— 与 Material Tooltip 的默认位置一致
         width: 240,
@@ -190,7 +190,7 @@ class _AppSliderState extends State<AppSlider> {
 
   @override
   Widget build(BuildContext context) {
-    final t = AppTheme.of(context);
+    final t = AppTheme.resolvedOf(context);
     final enabled = widget.onChanged != null;
     final min = widget.min;
     final max = widget.max;

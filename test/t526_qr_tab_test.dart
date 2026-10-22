@@ -55,12 +55,39 @@ void _claim(WidgetTester tester) {
 }
 
 /// 推几帧，让 postFrame 里的自动申请二维码跑完（并认领它抛出的异常）
+///
+/// ★★★ 2026-10-21：必须放进 `runAsync` 并**让出真实时间**
+///
+/// ```text
+/// 改前现象（本文件 1 条红）：
+///   Expected: at least one matching candidate
+///     Actual: Found 0 widgets with text "二维码获取失败，请重试或切换到「其它方式」。"
+///
+/// 根因：provider_login_panel.dart:757 的 _startQrLogin() 里
+///   final r = await SourinApi.providerQrLoginStart(providerId);   ← 真 FFI
+///   `tester.pump()` 只推 fake clock，驱动不了真实 IO
+///   ⇒ 那条 await 永不落地 ⇒ catch 分支走不到 ⇒ 失败文案不出现。
+///
+/// 实测（裸 pump vs runAsync）：
+///   裸 pump        ⇒ 失败文案=0  扫码登录=1  TextField=0
+///   runAsync+轮询  ⇒ 失败文案=2  扫码登录=1  TextField=0
+///
+/// ★ 先排除了「文案不一致」这个嫌疑再下的结论：
+///   产品 provider_login_panel.dart:764/771/990 与测试断言是**同一串**（都含「或」）；
+///   另有一处 lib/t526_qr_probe.dart:505 写的是不带「或」的版本 —— 那是探针，与生产线无关。
+/// ```
+///
+/// ⚠️ 轮询条件用 `pumpWidget` 时无法预知目标，所以这里**推固定的真实时间总量**
+///    （≈600ms）而不是等某个具体控件 —— 本文件所有用例的前置都只是"二维码申请结束"。
 Future<void> _settle(WidgetTester tester) async {
-  await tester.pump();
-  _claim(tester);
-  await tester.pump();
-  _claim(tester);
-  await tester.pump(const Duration(milliseconds: 100));
+  await tester.runAsync(() async {
+    for (var i = 0; i < 20; i++) {
+      // ★ 这一行是「让出真实时间」—— 它才是驱动真实 IO 的东西。
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await tester.pump();
+      _claim(tester);
+    }
+  });
   _claim(tester);
 }
 

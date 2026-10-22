@@ -24,10 +24,15 @@
 // ⇒ 本文件把「判据」抽成可单独调用的形态来测，宿主接线由源码契约断言守。
 // ```
 
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/models.dart';
+import 'package:sourin_spike/ui/player/player_bottom_bar.dart';
+import 'package:sourin_spike/ui/player/player_more_menu.dart';
+import 'package:sourin_spike/ui/player/player_popover.dart';
 import 'package:sourin_spike/ui/player_page.dart';
 import 'package:sourin_spike/ui/tokens.dart';
 import 'package:sourin_spike/design/icons/app_icons.dart';
@@ -108,7 +113,7 @@ void main() {
   // ═══════════════════════════════════════════════════════════════════
 
   testWidgets('★★★ 发送栏出现时，用户能看到输入框和「发送」', (t) async {
-    await t.pumpWidget(_host(DanmakuSendBar(
+    await t.pumpWidget(_host(DanmakuSendInline(
       provider: 'demo',
       episodeId: 'ep1',
       onSend: (text, ms) async => null,
@@ -122,13 +127,13 @@ void main() {
         reason: '★ 入口图标在');
     expect(find.byType(TextField), findsOneWidget,
         reason: '★ 必须有输入框');
-    expect(find.text('发条弹幕…'), findsOneWidget,
+    expect(find.text('发个弹幕…'), findsOneWidget,
         reason: '★ 空态有提示文案');
   });
 
   testWidgets('★★ 空输入时按钮不可点（防误发空弹幕）', (t) async {
     var called = 0;
-    await t.pumpWidget(_host(DanmakuSendBar(
+    await t.pumpWidget(_host(DanmakuSendInline(
       provider: 'demo',
       episodeId: 'ep1',
       onSend: (text, ms) async {
@@ -147,7 +152,7 @@ void main() {
   testWidgets('★★★ 输入后点发送 ⇒ 真的把文本交出去', (t) async {
     String? got;
     int? gotMs;
-    await t.pumpWidget(_host(DanmakuSendBar(
+    await t.pumpWidget(_host(DanmakuSendInline(
       provider: 'demo',
       episodeId: 'ep1',
       positionMs: () => 12345,
@@ -175,7 +180,7 @@ void main() {
   // ═══════════════════════════════════════════════════════════════════
 
   testWidgets('★★★ 发送失败 ⇒ 错误原因显示出来，且输入框内容**保留**', (t) async {
-    await t.pumpWidget(_host(DanmakuSendBar(
+    await t.pumpWidget(_host(DanmakuSendInline(
       provider: 'demo',
       episodeId: 'ep1',
       onSend: (text, ms) async => '这个源不支持发送弹幕',
@@ -195,7 +200,7 @@ void main() {
   });
 
   testWidgets('★★ 成功后清空输入框', (t) async {
-    await t.pumpWidget(_host(DanmakuSendBar(
+    await t.pumpWidget(_host(DanmakuSendInline(
       provider: 'demo',
       episodeId: 'ep1',
       onSend: (text, ms) async => null,
@@ -213,7 +218,7 @@ void main() {
   });
 
   testWidgets('★★ onSend 抛异常时也不静默（兜底）', (t) async {
-    await t.pumpWidget(_host(DanmakuSendBar(
+    await t.pumpWidget(_host(DanmakuSendInline(
       provider: 'demo',
       episodeId: 'ep1',
       onSend: (text, ms) async => throw StateError('boom'),
@@ -233,153 +238,139 @@ void main() {
   //  ④ ★★★ 2026-10-17（Owner 第 9 条 + Lead 定案）
   //      不支持发送的源 ⇒ **置灰但可见**，且原因必须可读
   // ═══════════════════════════════════════════════════════════════════
-  //
-  // # 这一组守的是"两次改判"之后的口径
-  // ```text
-  // 第一版（改前）：canSend=false ⇒ 整条不渲染
-  //   ✗ Owner 第 9 条：「并没有发送弹幕的入口,这个需要修复」
-  //     入口消失 ⇒ 用户连这个能力存在都不知道
-  //
-  // 第二版：入口常驻，但点了才报「这个源不支持发送弹幕」
-  //   ✗ Lead 否掉：每次点都撞一次墙，体验是负的
-  //
-  // 现在：入口常驻 + **置灰点不动** + **一行原因说清为什么**
-  //   ✓ 用户知道有这能力，也知道现在做不到，且不撞墙
-  // ```
-  group('④ 不支持发送 ⇒ 置灰但可见（不是消失、也不是点了报错）', () {
-    const reason = '这个源没有开放发送弹幕能力，换一个源再试';
-
-    testWidgets('★★★ 控件**存在**（不是整条消失）', (t) async {
-      await t.pumpWidget(_host(const DanmakuSendBar(
-        provider: 'demo',
-        episodeId: 'ep1',
-        onSend: _neverSend,
-        canSend: false,
-        disabledReason: reason,
-      )));
-      await t.pumpAndSettle();
-
-      expect(find.byType(DanmakuSendBar), findsOneWidget,
-          reason: '★★★ Owner 第 9 条要的就是"入口在" —— 整条消失等于没修');
-      expect(find.byType(TextField), findsOneWidget,
-          reason: '★ 输入区还在（看得出来这里有发送功能）');
-    });
-
-    testWidgets('★★★ 输入框与「发送」都点不动（不撞墙）', (t) async {
-      var called = 0;
-      await t.pumpWidget(_host(DanmakuSendBar(
-        provider: 'demo',
-        episodeId: 'ep1',
-        canSend: false,
-        disabledReason: reason,
-        /*
-         * ★★★ 必须先塞一行文字 —— 否则这条用例是**假绿**（故障注入抓出来的）：
-         * 输入框空着时 `_canSend` 本来就是 false（因为"没内容"），
-         * 把 canSend 从判据里拿掉也照样绿。
-         * 只有带内容时，绿才证明"拦住它的是 canSend"。
-         */
-        debugInitialText: '这行字不该被发出去',
-        onSend: (text, ms) async {
-          called++;
-          return null;
-        },
-      )));
-      await t.pumpAndSettle();
-
-      // 输入框 disabled ⇒ 打不进字
-      final tf = t.widget<TextField>(find.byType(TextField));
-      expect(tf.enabled, isFalse,
-          reason: '★★ 只禁按钮而让人白打一行字，是另一种浪费');
-      expect(tf.controller?.text, '这行字不该被发出去',
-          reason: '★ 前置条件：框里**确实有内容**（见 debugInitialText 的注释）');
-
+  /*
+   * ★★★ 2026-10-18（第 66 轮 Owner 第 1 条）：口径**已反转**
+   *
+   * # Owner 原话
+   * ```text
+   * > 弹幕那个发送不要搞一个悬浮,就跟其他网站一样的设计,下面操作栏加一个
+   * > 输入框,然后是发送弹幕的,随弹幕能力开关显示 也随此网站是否支持弹幕
+   * > 能力显示.不支持就不显示
+   * ```
+   * Owner 2026-10-18 复核确认「按这轮优先」，且「弹幕总开关关闭时也不显示」。
+   *
+   * # 三代口径的演进（这一组的断言必须跟着走）
+   * ```text
+   * 第一版：不支持 ⇒ 整条不渲染
+   *        ✗ Owner 第 9 条：「并没有发送弹幕的入口,这个需要修复」
+   * 第二版：常驻 + 点了报错
+   *        ✗ Lead 否掉：每次点都撞墙
+   * 第三版（第 65 轮）：常驻 + 置灰点不动 + 一行原因
+   *        ✓ 当时认为最优
+   * 第四版（本轮，Owner 拍板）：**不支持就不显示**
+   *        ⇒ canSend / disabledReason 两个字段删除
+   * ```
+   *
+   * ⚠️ 所以原来那一组「置灰但可见」的断言**全部作废**。
+   *    按仓库纪律：行为有意改变时改断言**新行为**，
+   *    且**新断言在旧行为下必须变红**（证明行为真的变了，不是断言跟着改）。
+   *    验证方式：把 `canSend` 参数加回去、让它渲染出置灰态 ⇒
+   *    下面这三条必须红（`findsNothing` 会变成 findsOneWidget 而失败）。
+   */
+  group('④ 不支持发送 ⇒ 整条**不渲染**（第 66 轮口径，旧口径已作废）', () {
+    testWidgets('★★★ 判据为假时宿主传 null ⇒ 底栏里没有输入框、没有「发送」',
+        (t) async {
       /*
-       * ★★★ 直接断言按钮的 `onPressed == null`，**不靠"点了没反应"**。
-       *
-       * # 为什么（故障注入抓出来的）
-       * ```text
-       * 第一版只写 `tap(...)` 然后 `expect(called, 0)` —— 假绿：
-       * 把 `canSend` 从判据里拿掉（`_canSend` 只看"有没有输入文字"），
-       * 那条用例**照样绿**，因为它没输入文字 ⇒ `_canSend` 本来就 false。
-       * ⇒ 必须①先塞内容 ②直接问控件"你能不能点"。
-       * ```
+       * ★ 走**真实接线路径**：把 `danmakuSend: null` 传给底栏本体，
+       *   而不是只测那个小组件 —— 否则"宿主算错判据"这类缺陷测不出来。
        */
-      final btn = t.widget<TextButton>(
-        find.widgetWithText(TextButton, '发送'),
-      );
-      expect(btn.onPressed, isNull,
-          reason: '★★★ 置灰态按钮的 onPressed 必须是 null —— '
-              '只灰不禁会让用户点了撞墙，而"撞了才报错"正是 Lead 否掉的那版');
-      await t.tap(find.text('发送'), warnIfMissed: false);
+      await t.pumpWidget(_host(const _BottomBarHarness(danmakuSend: null)));
       await t.pumpAndSettle();
-      expect(called, 0,
-          reason: '★★★ 置灰态点发送**绝不能**真的发出去，也不该报错 —— 就是点不动');
+
+      expect(find.byType(TextField), findsNothing,
+          reason: '★★★ 不支持 ⇒ 输入框不该出现（Owner：不支持就不显示）');
+      expect(find.text('发送'), findsNothing,
+          reason: '★★★ 发送按钮也不该出现');
+      expect(find.textContaining('发个弹幕'), findsNothing,
+          reason: '★ 连 placeholder 都不该有 —— 整条不存在');
     });
 
-    testWidgets('★★★ 原因文案**可读**（不能只灰着不说）', (t) async {
-      await t.pumpWidget(_host(const DanmakuSendBar(
-        provider: 'demo',
-        episodeId: 'ep1',
-        onSend: _neverSend,
-        canSend: false,
-        disabledReason: reason,
+    testWidgets('★★ 判据为真时正常出现（这个改动没弄坏正常路径）', (t) async {
+      await t.pumpWidget(_host(_BottomBarHarness(
+        danmakuSend: DanmakuSendData(
+          provider: 'demo',
+          episodeId: 'ep1',
+          onSend: (text, ms) async => null,
+        ),
       )));
       await t.pumpAndSettle();
 
-      expect(find.textContaining('没有开放发送弹幕'), findsOneWidget,
-          reason: '★★★ Lead 要求：置灰状态下**必须能看到原因**。'
-              'findOneWidget 同时钉住"别重复两遍"（hint 用短句，长句只在这里）');
-      expect(find.textContaining('换一个源'), findsOneWidget,
-          reason: '★★ 文案要指出下一步 —— 只说"不支持"等于把问题丢回给用户');
-      expect(find.byIcon(AppIcons.info_outline), findsOneWidget,
-          reason: '★ 有个信息图标，不是凭空一行灰字');
+      expect(find.byType(TextField), findsOneWidget,
+          reason: '★★ 能发的时候必须有输入框');
+      expect(find.text('发送'), findsOneWidget,
+          reason: '★★ 能发的时候必须有发送按钮');
     });
 
-    testWidgets('★★ 支持发送时**正常可用**（这个改动没弄坏正常路径）', (t) async {
-      String? got;
-      await t.pumpWidget(_host(DanmakuSendBar(
-        provider: 'demo',
-        episodeId: 'ep1',
-        canSend: true,
-        onSend: (text, ms) async {
-          got = text;
-          return null;
-        },
-      )));
-      await t.pumpAndSettle();
-
-      final tf = t.widget<TextField>(find.byType(TextField));
-      expect(tf.enabled, isTrue, reason: '★★ 能发的时候输入框必须能用');
-
-      await t.enterText(find.byType(TextField), '正常发一条');
-      await t.pump();
-      await t.tap(find.text('发送'));
-      await t.pumpAndSettle();
-
-      expect(got, '正常发一条', reason: '★★ 正常路径一个字都没受影响');
-      expect(find.textContaining('没有开放发送弹幕'), findsNothing,
-          reason: '★ 能发的时候不该显示那句灰字（噪音）');
-    });
-
-    testWidgets('★★ 空 disabledReason 时也有兜底文案（不出现空行）', (t) async {
-      await t.pumpWidget(_host(const DanmakuSendBar(
-        provider: 'demo',
-        episodeId: 'ep1',
-        onSend: _neverSend,
-        canSend: false,
-        // 故意不给原因
-      )));
-      await t.pumpAndSettle();
-
-      expect(find.textContaining('不支持发送弹幕'), findsWidgets,
-          reason: '★ 宿主漏传原因也不能出现一行空白 —— 那比没提示更糟');
+    testWidgets('★★★ 源码里**没有** canSend / disabledReason 这两个逃生口',
+        (t) async {
+      /*
+       * ★ 反向断言：源码里不许再出现 `canSend:` / `disabledReason:`
+       *   这两处传参。它们一旦回来，说明有人把"置灰可见"那版又接回去了，
+       *   而 Owner 已明确否掉它。
+       *
+       * ⚠️ 判在**剥注释后**的文本上 —— 否则注释里提一句就会假红。
+       */
+      final src = File('lib/ui/player/player_bottom_bar.dart')
+          .readAsStringSync();
+      final code = src
+          .replaceAll(RegExp(r'/\*[\s\S]*?\*/'), '')
+          .replaceAll(RegExp(r'//.*'), '');
+      expect(code.contains('canSend:'),
+          isFalse,
+          reason: '★★★ 不许再传 canSend —— 那是第 65 轮"置灰可见"的入口，已作废');
+      expect(code.contains('disabledReason:'),
+          isFalse,
+          reason: '★★★ 同理，disabledReason 也不该再出现');
     });
   });
 }
 
-/// 一个"永远不该被调用"的发送动作（置灰态用例用）
+/// 把 `danmakuSend` 直接喂给底栏本体的最小宿主
 ///
-/// ⚠️ 定义成顶层函数是为了能用在 `const` 构造里。
-Future<String?> _neverSend(String text, int? ms) async {
-  throw StateError('置灰态不该触发发送：$text@$ms');
+/// # 为什么不搭整个 PlayerPage
+/// ```text
+/// PlayerPage 构造需要 media_kit（libmpv-2.dll），在 flutter_tester 里
+/// 会偶发 native 崩溃（见本文件顶部那段证据）。
+/// ⇒ 测「底栏收到 null / 非 null 时的渲染」只需要底栏本体。
+/// ```
+class _BottomBarHarness extends StatelessWidget {
+  const _BottomBarHarness({required this.danmakuSend});
+
+  final DanmakuSendData? danmakuSend;
+
+  @override
+  Widget build(BuildContext context) => Stack(
+        /*
+         * ★ 必须套 Stack：`PlayerBottomBar.build` 返回的是 `Positioned`
+         *   （它本来就只能挂在播放页那个整屏 Stack 里）。
+         *   直接放进 Center 会抛 ParentDataWidget 断言 —— 这不是产品缺陷，
+         *   是测试宿主搭错了。
+         */
+        children: [
+          PlayerBottomBar(
+            controller: PopoverController(),
+            playing: true,
+            positionListenable: ValueNotifier(Duration.zero),
+            duration: const Duration(minutes: 20),
+            isLive: false,
+            rate: 1,
+            volume: 100,
+            muted: false,
+            fullscreen: false,
+            onTogglePlay: () {},
+            onSeek: (_) {},
+            onVolume: (_) {},
+            onToggleMute: () {},
+            onRate: (_) {},
+            onToggleFullscreen: () {},
+            onEpisodes: () {},
+            hasEpisodes: false,
+            showEpisodeNav: false,
+            onNext: () {},
+            hasNext: false,
+            more: const PlayerMoreMenuData(groups: <MoreMenuGroup>[]),
+            danmakuSend: danmakuSend,
+          ),
+        ],
+      );
 }

@@ -55,6 +55,8 @@ Material 能不能换成 AppSurface」。判错的代价是双向的：
 
 **B 类（能换）清零**。剩余全部有硬约束。
 
+Independent: 逐控件清单式判定，结论分散在 17 处；没有单一上位决定可以挂靠。
+
 ## Alternatives considered
 
 - **靠 grep 子树里有没有 ListTile 决定** —— 最强论据是快。否决理由：

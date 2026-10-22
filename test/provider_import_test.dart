@@ -80,7 +80,7 @@ void main() {
       code = _code(src);
     });
 
-    test('★★ 健康检测：按钮存在 + 真的调了 healthSweep()', () {
+    test('★★ 健康检测：按钮存在 + 真的逐项探活（不许假接线）', () {
       /*
        * 原版 `SettingsView.vue:1716`：
        * ```html
@@ -92,15 +92,70 @@ void main() {
        * ⚠️ 关键是**第二半** —— `healthSweep()` 的包装在
        *    `sourin_api.dart:145` 一直存在，缺的是调用点。
        *    只断言按钮文案会**假通过**（注释里就写着这四个字）。
+       *
+       * # ★★★ 2026-10-18（第 66 轮 · 轨道 C · Owner 第 13 条）：换载体，不换用意
+       *
+       * 本条原来钉 `code.contains('SourinApi.healthSweep()')`。
+       * 改它的理由**不是**"测试挡路了"，而是那个实现被实测证明是错的
+       * （读数与后端证据见下），用意「不许假接线」原样保留。
+       *
+       * ## 为什么批量 health_sweep 不能用（Lead 已复核的三条代码证据）
+       * ```text
+       * rust/sourin_core/src/provider.rs:571
+       *     trait 默认实现 async fn health_check() -> bool { true }
+       * rust/sourin_core/src/providers/declarative.rs:688  有真实现
+       * rust/sourin_core/src/providers/http.rs:485         有真实现
+       * ⇒ 只有 declarative / http 两类有真探活；
+       *   **JS 插件全部落到 trait 默认 ⇒ 恒 true**。
+       * ```
+       * 真机读数（真核心 + 32 个本机插件，全部是 js）：
+       * ```text
+       * health_sweep           → 32 条全 true，耗时 3 ms（什么都没测）
+       * 逐项 get_categories    → 31 可用 / 0 不可用，耗时 1981 ms（真的跑了插件）
+       * ```
+       * 工程上还有一条独立的否决理由：批量入口的耗时是 `源数 × 15s`
+       * （后端每源 15s 超时），而 FFI 兜底超时是 120s
+       * （`lib/core/ffi.dart:685`）⇒ 源一多必然抛超时、**所有结果全丢**。
+       * 那正是 Owner 看到的「健康失败」。
+       *
+       * ## 新判据（用意 = 「必须真的探测，不能只有文案」）
+       * ```text
+       * _probeProviderHealth(  必须存在且被 _healthSweep 调用（真探测）
+       * SourinApi.healthSweep() 必须**不**出现在剥注释后的代码里（禁回旧路）
+       * ```
+       * ⚠️ 反向断言是在 `code`（= `_code(src)`，**已剥注释**）上判的 ——
+       *    所以将来谁在注释里写「不要用 SourinApi.healthSweep()」也不会假红。
+       *    （这条正是 Lead 特别要求的：反向断言必须在剥注释后的文本上判。）
        */
       expect(code.contains('健康检测'), isTrue, reason: '按钮文案必须是「健康检测」');
+
+      // ① 正向：必须存在逐项探活，且**真的被健康检测调用**
+      expect(
+        code.contains('_probeProviderHealth('),
+        isTrue,
+        reason: '★★ 必须逐项探活（单个源一次调用）—— 这样才有"N/总数"，'
+            '也不会把 N 个源的最坏耗时堆进一个 120s 兜底的 FFI 调用里',
+      );
+      final iSweep = code.indexOf('Future<void> _healthSweep() async {');
+      expect(iSweep, greaterThan(0), reason: '★ 找不到 _healthSweep —— 结构变了');
+      final sweepBody = code.substring(iSweep, code.indexOf('\n  }', iSweep));
+      expect(
+        sweepBody.contains('_probeProviderHealth(p.id)'),
+        isTrue,
+        reason: '★★ 光**定义**了 _probeProviderHealth 不算接线 —— '
+            '必须在 _healthSweep 的循环里真的调用它（这就是"不许假接线"）',
+      );
+
+      // ② 反向：禁回批量老路（判在已剥注释的 `code` 上）
       expect(
         code.contains('SourinApi.healthSweep()'),
-        isTrue,
-        reason: '★ 必须真调 healthSweep() —— 光有按钮是假接线',
+        isFalse,
+        reason: '★★★ **不许**再用批量 healthSweep —— 实测对 32 个 js 源返回恒 true、'
+            '3 ms 什么也没测（JS 插件无 health_check 覆盖，落到 trait 默认实现）',
       );
+
       // 探测期间禁用 + 文案变「检测中…」（原版 `:disabled="sweepping"`）
-      expect(code.contains('检测中…'), isTrue, reason: '探测中要有「检测中…」文案');
+      expect(code.contains('检测中'), isTrue, reason: '探测中要有「检测中…」文案');
       expect(code.contains('_sweeping'), isTrue, reason: '必须有 _sweeping 状态位');
     });
 
@@ -115,6 +170,17 @@ void main() {
        *
        * ⚠️ 只显示"检测完成"等于没做 —— 用户点这个按钮就是想知道
        *    **哪些源挂了**。本机 26 个源，没法逐个点进去试。
+       *
+       * # ★ 2026-10-18（轨道 C）：换载体，不换用意
+       *
+       * 本条原来钉 `code.contains('where((e) => !e.value)')` ——
+       * 那个判据依附批量返回值 `id → bool` 这个 Map。逐项调用后
+       * 后端不再返回这个 Map，所以载体必须换。
+       *
+       * **用意完全没变**：`全好` 与 `全坏` 不能颠倒，
+       * 即「失败的源必须被挑出来记进 bad」。
+       * 新载体是 `if (!ok) bad.add(` —— 它是同一个意思：
+       * `ok == false` 才进 bad。
        */
       expect(
         code.contains('全部正常'),
@@ -126,11 +192,18 @@ void main() {
         isTrue,
         reason: '★ 有坏的必须报出数量（原版文案是 bad.length 个源不可用）',
       );
-      // 判据是 `!e.value`（后端返回 `id → 是否可用`）
       expect(
-        code.contains('where((e) => !e.value)'),
+        code.contains('if (!ok) bad.add('),
         isTrue,
-        reason: '★ 必须把 false 的挑出来 —— 判据写反的话"全好"和"全坏"会颠倒',
+        reason: '★★ 必须把**失败**（ok == false）的源挑出来记进 bad —— '
+            '判据写反成 `if (ok)` 的话"全好"和"全坏"会颠倒。'
+            '（等价于改前的 `where((e) => !e.value)`，只是载体从 Map 变成逐项 bool）',
+      );
+      // 反面：不许把成功也塞进 bad（那会让"全好"报成"全坏"）
+      expect(
+        code.contains('if (ok) bad.add('),
+        isFalse,
+        reason: '★★ 判据写反的**字面形态**：成功的不许进 bad',
       );
     });
 

@@ -407,15 +407,133 @@ pub fn backup_default_name(state: &AppState) -> Result<String, String> {
 }
 
 /// 导出备份到指定路径
+///
+/// # ★ 凭据（登录态）也在包里 —— 加密后放在 `settings.json`
+///
+/// ```text
+/// 用户给了口令 ⇒ 用**与云同步完全同一套** credentials::encrypt 加密，
+///                密文 base64 后写进 settings.json 的 credentials 字段
+/// 用户没给口令 ⇒ 包里**不含凭据**，但在返回值里如实说明
+///                （credentialsIncluded=false + note），
+///                绝不让用户以为"备份了全部数据"
+/// ```
+///
+/// ★ 为什么放在 `settings.json` 而不是新加一个 zip 条目：
+///   导入侧 `backup::read_backup` 的宽容读取已经覆盖了它
+///   （缺字段 = 空对象，不报错），而新增 zip 条目要同步改
+///   `write_backup_to_vec` / `read_backup` / `BackupContents` 三个地方
+///   —— 那是 `backup.rs`，不在本轮可改范围。
+///
+/// ⚠️ 口令**不进包**：包是用户会分发的东西，口令在里面等于没加密。
 pub fn backup_export(
     state: &AppState,
     path: &str,
+    passphrase: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    let payload = build_backup_payload(state)?;
+    let mut payload = build_backup_payload(state)?;
+    let cred = attach_credentials_to_payload(state, &mut payload, passphrase)?;
     let p = std::path::PathBuf::from(path);
     let size = crate::backup::write_backup(&p, &payload)?;
-    log::info!("已导出备份到 {path}（{size} 字节）");
-    Ok(serde_json::json!({ "path": path, "bytes": size }))
+    log::info!(
+        "已导出备份到 {path}（{size} 字节，凭据：{}）",
+        if cred.included { "已加密包含" } else { "未包含" }
+    );
+    Ok(serde_json::json!({
+        "path": path,
+        "bytes": size,
+        "credentialsIncluded": cred.included,
+        "credentialsProviders": cred.providers,
+        "credentialsNote": cred.note,
+    }))
+}
+
+/// 把加密后的凭据塞进备份载荷的 `settings.json`
+///
+/// # 返回
+/// `(included, providers, note)` —— 供 `backup_export` 如实回报
+struct CredentialAttach {
+    included: bool,
+    providers: usize,
+    note: Option<String>,
+}
+
+/// 把加密后的凭据塞进备份载荷的 `settings.json`
+///
+/// # ★ 这里的 `note` 会**原样**进入界面的 `Text`
+///
+/// ```text
+/// Rust 拼好的字符串 ⇒ FFI ⇒ BackupExportResult.credentialsNote
+///   ⇒ backup_panel.dart 的 Text（全仓**没有** markdown 渲染器）
+/// ```
+/// ⇒ 所有对齐/强调符号都会被用户看到。已知两种形态：
+/// ```text
+/// ① `**强调**`  —— 2026-10-20 修掉，并有门禁 zz_t66_rust_markdown_gate
+/// ② 连续空格    —— 2026-10-20 修掉（本函数第二个 note），
+///                门禁在 zz_t66_cs1_user_text_gate_test.dart
+/// ```
+/// ⚠️ 不要用多个空格去"对齐"文案 —— 界面是自动换行的。
+fn attach_credentials_to_payload(
+    state: &AppState,
+    payload: &mut crate::backup::BackupPayload,
+    passphrase: Option<&str>,
+) -> Result<CredentialAttach, String> {
+    use crate::sync::credentials as cred;
+
+    // ① 先看有没有东西可带 —— 没有就不该因为"没给口令"报错
+    let bundle = cred::collect(&state.data_dir)?;
+    if bundle.is_empty() {
+        return Ok(CredentialAttach {
+            included: false,
+            providers: 0,
+            note: Some("本机没有已保存的登录态，包里不含凭据".into()),
+        });
+    }
+
+    // ② 没口令 ⇒ **明确说明没带**，不许静默
+    let Some(pass) = passphrase.filter(|p| !p.is_empty()) else {
+        return Ok(CredentialAttach {
+            included: false,
+            providers: 0,
+            note: Some(
+                "未设置导出用的口令 ⇒ 这个包里「不含登录态」（其它数据都在）。要一起备份登录态，请在导出时设置口令。"
+                    .into(),
+            ),
+        });
+    };
+
+    // ③ 加密（与云同步**同一个函数**，不是第二套格式）
+    let blob = cred::encrypt_bundle(pass, &bundle)
+        .map_err(|e| format!("凭据加密失败（导出已中止）: {e}"))?;
+
+    /*
+     * ④ 写进 settings.json
+     *
+     * ★ 字段名带 `_v1`：将来换算法时导入侧能按版本分支，
+     *   而不是"解不开就报口令错"。
+     * ⚠️ 值里**只有密文**（base64），不含任何明文键名以外的信息。
+     */
+    let plaintext_pw = bundle.plaintext_password_providers.clone();
+    if let Some(o) = payload.settings.as_object_mut() {
+        o.insert(
+            "credentials".to_string(),
+            serde_json::json!({
+                "_v1": cred::b64_encode(&blob),
+                "format": "SRCRED01",
+                "providers": bundle.kept,
+                // ★ 让导入侧/界面知道"这个包里有明文密码类的凭据"
+                "plaintextPasswordProviders": plaintext_pw,
+            }),
+        );
+    }
+
+    Ok(CredentialAttach {
+        included: true,
+        providers: bundle.kept,
+        note: Some(format!(
+            "已加密包含 {} 个源的登录态（口令不会进包，导入时要重新输入）",
+            bundle.kept
+        )),
+    })
 }
 
 /// 检视一个备份文件（不导入，只报告内容）
@@ -440,7 +558,37 @@ pub fn backup_inspect(path: &str) -> Result<serde_json::Value, String> {
         "plugins": c.plugins.iter()
             .map(|(k, v)| serde_json::json!({"name": k, "bytes": v.len()}))
             .collect::<Vec<_>>(),
+        /*
+         * ★ 这个包里有没有登录态（CS-1）
+         *
+         * 导入前必须知道 —— 含凭据的包要**先让用户输口令**，
+         * 否则用户点了导入才被告知"需要口令"，会以为导入失败。
+         *
+         * ⚠️ 只报**有没有**、**几个源**、以及"有没有明文密码类"，
+         *    **不报**任何凭据内容（连键名都不报）——
+         *    这是检视接口，用户可能只是看一眼。
+         */
+        "credentials": inspect_credentials_segment(&c.settings),
     }))
+}
+
+/// 从备份包的 `settings.json` 里读出凭据段的**元信息**（不含内容）
+fn inspect_credentials_segment(settings: &serde_json::Value) -> serde_json::Value {
+    let Some(seg) = settings.get("credentials") else {
+        return serde_json::json!({
+            "included": false,
+            "providers": 0,
+            "plaintextPasswordProviders": [],
+        });
+    };
+    serde_json::json!({
+        "included": seg.get("_v1").and_then(|v| v.as_str()).is_some(),
+        "providers": seg.get("providers").and_then(|v| v.as_u64()).unwrap_or(0),
+        "plaintextPasswordProviders": seg
+            .get("plaintextPasswordProviders")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    })
 }
 
 /// 抓取平台自带历史并保存为备份镜像（**只读，不回写**）
@@ -488,6 +636,97 @@ pub async fn backup_platform_history(
 // ⑤ 源配置     只补新的，**同 id 保留本机的**
 // ⑥ 插件       同名内容相同则跳过；不同才改名保存
 // ```
+/// 导入备份里的**登录态**（`settings.json` 的 `credentials` 段）
+///
+/// # ★★ 语义：口令错 ⇒ 整次导入失败，**绝不静默跳过凭据**
+///
+/// ```text
+/// 错误做法：解不开就 continue，其它平面照常导入
+///   ⇒ 界面报"导入成功"
+///   ⇒ 用户以为登录态回来了，实际每个源都要重新登
+///   ⇒ 这是本仓反复出现的"假绿"，且这次代价最高（用户换机后才发现）
+/// 正确做法：解不开 ⇒ Err("口令不正确…")
+///   ⇒ 用户重新输一次口令就可重试（其它平面还没写，不会留半截状态）
+/// ```
+///
+/// ⚠️ 顺序也因此重要：本段放在 ⑥ 之后、但**在任何写操作之外**
+///    —— 它只会在**解密成功后**才写 `.data/`，解密失败时整次导入
+///    连插件都已经写完了…
+///
+/// ## 关于"已经写了一部分"
+///
+/// ①～⑥ 段是**合并语义**（幂等、不删数据），所以"凭据没导进来"
+/// 不会导致数据不一致 —— 用户重试一次就行。
+/// 真正的风险是"以为导进来了"，所以必须报错。
+fn apply_imported_credentials(
+    state: &AppState,
+    settings: &serde_json::Value,
+    passphrase: Option<&str>,
+    sum: &mut crate::backup::ImportSummary,
+) -> Result<(), String> {
+    use crate::sync::credentials as cred;
+
+    let Some(seg) = settings.get("credentials") else {
+        // 包里不含凭据 —— 正常（导出时没给口令 / 本机本来就没登录态）
+        return Ok(());
+    };
+    let Some(b64) = seg.get("_v1").and_then(|v| v.as_str()) else {
+        return Err(
+            "备份包里的凭据段格式不认识（缺少 _v1 字段）—— 这个包可能已损坏".to_string(),
+        );
+    };
+
+    // ② 没给口令 ⇒ 明确要求输入，不许"跳过"
+    let Some(pass) = passphrase.filter(|p| !p.is_empty()) else {
+        return Err(
+            "这个备份包含登录态，导入需要设置口令（在导出时设置的那个口令）".to_string(),
+        );
+    };
+
+    // ③ base64 → 解密（口令错在这里暴露）
+    let blob = cred::b64_decode(b64)
+        .ok_or_else(|| "备份包里的凭据段已损坏（base64 解码失败）".to_string())?;
+
+    /*
+     * ★★★ 错误映射：`WrongPasswordOrTampered` ⇒ **明确说"口令不正确"**。
+     *
+     * 注意 `CryptoError` 的 Display 已经写了「口令不正确，或凭据包已被篡改」——
+     * 这里**不要**把它简化成"导入失败"，否则用户不知道该重输口令还是该换包。
+     */
+    let bundle = cred::decrypt_bundle(pass, &blob).map_err(|e| match e {
+        cred::CryptoError::WrongPasswordOrTampered => {
+            "口令不正确（或这个备份包已被改动），登录态没有导入".to_string()
+        }
+        other => format!("登录态解密失败，没有导入: {other}"),
+    })?;
+
+    // ④ 写回 `.data/`（合并语义：本机独有的键保留）
+    let out = cred::restore(&state.data_dir, &bundle)?;
+    if !out.failed.is_empty() {
+        for (id, why) in &out.failed {
+            sum.skipped.push(format!("登录态 {id} 恢复失败: {why}"));
+        }
+    }
+
+    /*
+     * ⑤ 汇报
+     *
+     * ★ 成功恢复的条数**不塞进 `sum.skipped`** —— 那个字段的语义是
+     *   "有东西没进来"，把成功混进去会让 UI 把成功当"部分失败"报警。
+     *
+     * ⚠️ `ImportSummary` 定义在 `backup.rs`（本轮不可改），所以这里
+     *    不新增字段；恢复条数由 UI 在导入后调 `credentials_status`
+     *    （`providers` 字段）读回来 —— 那条命令本来就要在导入后刷一次。
+     */
+    log::info!(
+        "已从备份恢复 {} 个源的登录态（明文密码类：{:?}）",
+        out.providers,
+        seg.get("plaintextPasswordProviders")
+    );
+    let _ = sum; // 目前只在失败分支用 `skipped`
+    Ok(())
+}
+
 /// ★ 真正的导入实现（同步）—— **不要直接调它**，用 [`backup_import`]
 ///
 /// 抽出来的原因见下面 `backup_import` 的注释：导入末尾要重新注册插件，
@@ -495,6 +734,7 @@ pub async fn backup_platform_history(
 fn backup_import_sync(
     state: &AppState,
     path: &str,
+    passphrase: Option<&str>,
 ) -> Result<crate::backup::ImportSummary, String> {
     let c = crate::backup::read_backup(std::path::Path::new(path))?;
     let mut sum = crate::backup::ImportSummary::default();
@@ -723,6 +963,9 @@ fn backup_import_sync(
         }
     }
 
+    // ── ⑥-b 凭据（登录态）—— ★ 口令错必须**整次失败**，不许静默跳过 ──
+    apply_imported_credentials(state, &c.settings, passphrase, &mut sum)?;
+
     log::info!(
         "已导入备份 {path}：收藏 +{} 更新{}，进度更新{}，历史 +{}，跳过点更新{}，插件 {}+{}",
         sum.favorites_added,
@@ -777,8 +1020,9 @@ fn backup_import_sync(
 pub async fn backup_import(
     state: &AppState,
     path: &str,
+    passphrase: Option<&str>,
 ) -> Result<crate::backup::ImportSummary, String> {
-    let mut sum = backup_import_sync(state, path)?;
+    let mut sum = backup_import_sync(state, path, passphrase)?;
 
     // ── ⑦ 插件注册（⑥ 段写完盘之后）──
     let dir = plugins_dir(&state.data_dir);
@@ -852,7 +1096,13 @@ pub async fn configure_webdav(
     let saved_user = cfg.username.clone();
     let saved_dir = cfg.remote_dir.clone();
     let engine =
-        crate::sync::SyncEngine::new_webdav(cfg, state.db.clone(), state.device_id.clone())?;
+        crate::sync::SyncEngine::new_webdav(cfg, state.db.clone(), state.device_id.clone())?
+            /*
+             * ★ 必须挂 data_dir —— 凭据平面从 `<data_dir>/plugins/.data/` 读登录态。
+             *   不挂的话 `sync_credentials` 只会返回"引擎未挂载数据目录"，
+             *   用户看到"同步完成"但登录态永远不过去（假绿）。
+             */
+            .with_data_dir(state.data_dir.clone());
 
     // ★ 先建目录，再自检（顺序不能反 —— 见函数文档）
     engine.prepare().await?;
@@ -934,7 +1184,8 @@ pub async fn sync_status(state: &AppState) -> Result<serde_json::Value, String> 
      *    它们不属于设置文件，所以在这里补进去（而不是塞进
      *    `to_public_json`）。
      */
-    let mut v = settings.to_public_json(connected);
+    let pass_set = crate::sync::credentials_passphrase::is_set();
+    let mut v = settings.to_public_json(connected, pass_set);
     if let Some(o) = v.as_object_mut() {
         o.insert(
             "deviceId".to_string(),
@@ -963,7 +1214,7 @@ pub async fn test_sync(state: &AppState) -> Result<String, String> {
 /// # 三步
 ///
 /// ```text
-/// 1) 收藏 + 进度 + manifest
+/// 1) 收藏 + 进度 + manifest（★ 含凭据平面）
 /// 2) 内容源配置（LWW 合并）
 /// 3) ★ 若远端胜出，把合并结果**真正生效**
 /// ```
@@ -971,6 +1222,18 @@ pub async fn test_sync(state: &AppState) -> Result<String, String> {
 /// ⚠️ 第 3 步的 `if merged != local` 判断不能省 ——
 /// 否则**每次同步都重建全部源**（几十个插件重新加载，
 /// 用户会看到界面卡一下，而且没必要）。
+///
+/// # ★ 凭据口令从哪来（CS-1）
+///
+/// ```text
+/// 开关关着        ⇒ 传 None  ⇒ 凭据平面回一条「凭据未同步」摘要
+/// 开关开着 + 有口令 ⇒ 传 Some(口令) ⇒ 真的加密上传
+/// 开关开着 + 没口令 ⇒ 传 None  ⇒ ★ 同样回「凭据未同步」
+/// ```
+///
+/// ★★ 第三种是**本仓反复出现的假绿同类**：开关是开的、用户以为在同步，
+///    而登录态一个字节都没走。所以判据必须是「**口令在不在**」，
+///    不是「开关开没开」—— 见 `credentials_status_json`。
 pub async fn sync_now(
     state: &AppState,
 ) -> Result<Vec<crate::sync::SyncSummary>, String> {
@@ -981,8 +1244,16 @@ pub async fn sync_now(
         .clone()
         .ok_or_else(|| "尚未配置云盘".to_string())?;
 
+    /*
+     * 凭据口令：**开关 + 口令**两个条件都满足才带上。
+     *
+     * ⚠️ 只读一次并 move 进去 —— 口令是 `String`（不是 `&str`），
+     *    下面 `await` 跨线程，借用活不过 await 点。
+     */
+    let pass = credential_passphrase_for_sync(state);
+
     // 1) 收藏 + 进度 + manifest
-    let mut out = e.sync_all().await?;
+    let mut out = e.sync_all_with_passphrase(pass.as_deref()).await?;
 
     // 2) 内容源配置
     let (local, local_at) = {
@@ -1009,6 +1280,138 @@ pub async fn sync_now(
     }
 
     Ok(out)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ★ 凭据同步（CS-1，2026-10-19）—— 登录态随云同步
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 这一组的四件事
+//
+// ```text
+// credentials_status_json   读状态（开关 / 口令有没有设 / 会不会真的同步）
+// set_credentials_passphrase 设 / 改 / 清口令（进系统钥匙串，不落盘）
+// set_credentials_enabled   开关（偏好，落 sync-settings.json）
+// sync_credentials_now      只同步凭据这一个平面（诊断用，不等整轮）
+// ```
+//
+// # ★★ 本组最容易写成"假绿"的地方（已经在实现里挡住）
+//
+// ```text
+// 错误做法：status 里只报 credentialsEnabled
+//   ⇒ 开关开着、没设口令 ⇒ 界面显示"凭据同步已开启"
+//   ⇒ 用户以为登录态过去了，其实一个字节都没走
+// 正确做法：status 里同时报 credentialsPassphraseSet，
+//   并给一个**派生字段** credentialsWillSync = enabled && passphraseSet
+//   ⇒ UI 只看 credentialsWillSync 就不可能假绿
+// ```
+
+/// 读凭据同步状态（**永不失败** —— 纯本地读，UI 一进页面就调）
+///
+/// # 返回字段
+///
+/// ```json
+/// {
+///   "enabled": false,            // 用户开关
+///   "passphraseSet": false,      // 钥匙串里有没有口令
+///   "willSync": false,           // ★ enabled && passphraseSet
+///   "providers": 2,              // 本机有几个源存了登录态
+///   "plaintextPasswordProviders": ["某插件"]  // ★ 明文存了账号密码的源
+/// }
+/// ```
+///
+/// ★ `willSync` 是**派生**的，不由调用方自己算 ——
+///   让 UI 各自拼 `enabled && passphraseSet` 必然有人漏一个条件，
+///   而漏掉的后果正是"显示已同步、其实没同步"。
+pub fn credentials_status_json(state: &AppState) -> serde_json::Value {
+    let s = crate::sync::load_settings(&state.data_dir);
+    let passphrase_set = crate::sync::credentials_passphrase::is_set();
+    let bundle = crate::sync::credentials::collect(&state.data_dir).unwrap_or_default();
+    serde_json::json!({
+        "enabled": s.credentials_enabled,
+        "passphraseSet": passphrase_set,
+        "willSync": s.credentials_enabled && passphrase_set,
+        "providers": bundle.kept,
+        // ★ 明文存了账号密码的源 —— 导出前要**单独**提示（见 backup_panel）
+        "plaintextPasswordProviders": bundle.plaintext_password_providers,
+    })
+}
+
+/// 设 / 改 / 清凭据同步口令
+///
+/// # 空口令 = 清除（不是"存一个空串"）
+///
+/// 与 `webdav_credential::set` 同一语义：空串表示"别同步了"。
+/// 若真的把空串存进钥匙串，`credentials::encrypt` 会**拒绝**
+/// （空口令等于不加密）—— 那会让同步在运行时静默失败。
+///
+/// # 返回值
+///
+/// 改完之后的完整状态（同 [`credentials_status_json`]），
+/// Dart 侧拿到就能直接刷 UI，不用再读一次。
+pub fn set_credentials_passphrase(
+    state: &AppState,
+    passphrase: &str,
+) -> Result<serde_json::Value, String> {
+    crate::sync::credentials_passphrase::set(passphrase)?;
+    let cleared = passphrase.is_empty();
+    log::info!(
+        "凭据同步口令{}",
+        if cleared { "已清除" } else { "已设置" }
+    );
+    Ok(credentials_status_json(state))
+}
+
+/// 开关凭据同步（偏好字段，落 `sync-settings.json`）
+///
+/// ⚠️ 允许「开着但没口令」—— 不在这里报错。
+///    理由：用户可能先开开关、再去设口令（两个独立操作，与自动同步同款）。
+///    **但状态里 `willSync` 必须是 false**，UI 据此显示「凭据未同步」。
+pub fn set_credentials_enabled(
+    state: &AppState,
+    enabled: bool,
+) -> Result<serde_json::Value, String> {
+    let mut s = crate::sync::load_settings(&state.data_dir);
+    s.credentials_enabled = enabled;
+    crate::sync::save_settings(&state.data_dir, &s)?;
+    log::info!("凭据同步开关 → {enabled}");
+    Ok(credentials_status_json(state))
+}
+
+/// 只同步凭据平面（不等整轮同步，诊断/手动补救用）
+///
+/// # 为什么单独一条命令
+///
+/// ```text
+/// 整轮同步要跑收藏 + 进度 + 内容源，网络差时几十秒
+/// 而"我改了口令想立刻确认能传上去"只需要凭据那一个平面
+/// ```
+///
+/// ★ 没有口令时**不报错**，返回 `note = "凭据未同步：…"` ——
+///   与 `sync_all` 里的处理一致（那是"未同步"这个状态，不是故障）。
+pub async fn sync_credentials_now(
+    state: &AppState,
+) -> Result<crate::sync::SyncSummary, String> {
+    let e = state
+        .sync
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| "尚未配置云盘".to_string())?;
+    let pass = credential_passphrase_for_sync(state);
+    e.sync_credentials(pass.as_deref()).await
+}
+
+/// 取「本轮同步该用的口令」—— **开关与口令两个条件都满足才给**
+///
+/// ★★ 这个函数是防假绿的唯一判据点。
+///    任何"要不要同步凭据"的判断都必须经过它，不要在别处重写一遍条件。
+fn credential_passphrase_for_sync(state: &AppState) -> Option<String> {
+    let s = crate::sync::load_settings(&state.data_dir);
+    if !s.credentials_enabled {
+        return None;
+    }
+    crate::sync::credentials_passphrase::get()
 }
 
 /// 把合并后的源配置应用到运行时
@@ -1106,7 +1509,7 @@ pub async fn sync_platform_history(
 pub async fn sync_settings_get(state: &AppState) -> Result<serde_json::Value, String> {
     let s = crate::sync::load_settings(&state.data_dir);
     let connected = state.sync.read().await.is_some();
-    Ok(s.to_public_json(connected))
+    Ok(s.to_public_json(connected, crate::sync::credentials_passphrase::is_set()))
 }
 
 /// 改云盘设置（只改传进来的字段，`None` = 不动）—— ★ **不需要已连接**
@@ -1147,7 +1550,7 @@ pub async fn sync_settings_set(
         s.auto_backup_interval_minutes
     );
     let connected = state.sync.read().await.is_some();
-    Ok(s.to_public_json(connected))
+    Ok(s.to_public_json(connected, crate::sync::credentials_passphrase::is_set()))
 }
 
 /// 立即上传一份**整体备份**到云盘，并按保留份数清理旧份

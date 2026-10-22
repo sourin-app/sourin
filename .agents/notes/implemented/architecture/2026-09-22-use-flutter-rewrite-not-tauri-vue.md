@@ -16,6 +16,8 @@ Tauri 版跑在 WebView2 上、走 Media Foundation 解码，而 Windows 默认�
 整个客户端重写为 Flutter（UI）+ Rust（业务）双栈，取代最初的 Tauri + Vue 实现。
 播放走 libmpv（自带完整 FFmpeg，完全不碰 Media Foundation）。
 
+Independent: 技术栈选型（Flutter 而非 Tauri+Vue）。与上一条是同一时期的两项独立选型，彼此不是取代关系。
+
 ## Alternatives considered
 
 - **在 Tauri 版里塞第三方解码器** —— 它最强的论据是改动面最小：保住已有的 Vue 界面

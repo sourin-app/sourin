@@ -46,6 +46,24 @@ Future<void> _pump(WidgetTester t) async {
   _claim(t);
 }
 
+/// 有界推进，替代 `pumpAndSettle()`
+///
+/// ★★★ 2026-10-21：`ShellPage` 上**永远有 21 个 transient ticker**
+/// （实测 `transientCallbackCount` 恒定 21，连推 85 帧一帧都不降）
+/// ⇒ `pumpAndSettle()` 等的是「没有帧被调度」，**永远等不到** ⇒ 超时。
+///
+/// ⚠️ 那 21 个 ticker 的**具体来源未查**（`AppLoading` 计数实测 = 0，
+///   与本文件无关）。不查的理由：**它不改变改法** ——
+///    无论谁占 ticker，"有界推进"都是正确做法。
+///
+/// 判据：有界推进后 UI 完全可用（实测 5 个 tab 全部命中 = 1）。
+Future<void> _settleBounded(WidgetTester t, {int frames = 40}) async {
+  for (var i = 0; i < frames; i++) {
+    await t.pump(const Duration(milliseconds: 16));
+    _claim(t);
+  }
+}
+
 /// 药丸当前的 left（读**真实渲染**，不读 State 私有字段）
 ///
 /// 药丸 = Stack 里那个带**渐变**的 DecoratedBox（见 _BottomPalette.pillGradient）。
@@ -98,8 +116,9 @@ void main() {
         reason: '★★★ 拖动时药丸必须跟手 —— 这正是 Owner 报的缺陷');
 
     await g.up();
-    await t.pumpAndSettle();
-    _claim(t);
+    // ★ 不能用 pumpAndSettle：本页永远有 21 个 ticker 在跑（实测恒定不降），
+    //   它等的是「没有帧被调度」⇒ 永远等不到。改成有界推进。
+    await _settleBounded(t);
   });
 
   testWidgets('★★★ 拖动零延迟（1ms 内必须跟上，不能是 420ms 追尾）', (t) async {
@@ -118,8 +137,7 @@ void main() {
     expect(b - a, greaterThan(30),
         reason: '★★★ 若走 420ms 补间，1ms 内只挪几个像素 ⇒ 这里会红');
     await g.up();
-    await t.pumpAndSettle();
-    _claim(t);
+    await _settleBounded(t);
   });
 
   testWidgets('★★★ 纯点击必须仍然走 420ms 补间（规格④零回归）', (t) async {
@@ -130,7 +148,13 @@ void main() {
     await t.pump();
     await t.pump(const Duration(milliseconds: 60));
     final mid = _pillLeft(t);
-    await t.pumpAndSettle();
+    /*
+     * ★ 这里原本是 `pumpAndSettle()`，同样永远等不到静止。
+     *   但这条语义要求「补间跑完」，所以推进量必须**覆盖 420ms 补间**：
+     *   用有界推进 600ms（> 420ms），而不是随便推几帧。
+     */
+    await t.pump(const Duration(milliseconds: 600));
+    _claim(t);
     final after = _pillLeft(t);
     debugPrint('[T36] 点击: 前=' + before.toStringAsFixed(1) +
         ' 60ms=' + mid.toStringAsFixed(1) +

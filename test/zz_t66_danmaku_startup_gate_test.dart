@@ -44,6 +44,8 @@
 // 读数写在交付报告里（禁止假绿 —— CONTRIBUTING ⑥ 规矩二）。
 // ```
 
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:sourin_spike/core/danmaku.dart';
@@ -392,6 +394,153 @@ void main() {
               '若出现 > 700 ⇒ 那个端点拿了超过共享预算的额度。');
     });
   });
+
+  /*
+   * ══════════════════════════════════════════════════════════════════════
+   *  ② 源码契约：启动路径里**不许** await dan-api
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * ★★ 2026-10-21（PR #32 复核线程 8/9）：上面那几条「首帧」用例量的是
+   *    **模拟器** `_simulateStartup` —— 它不调 `main()`、不构建 shell，
+   *    `debugSetDanmakuTransportForTest` 在那条路径上**没有任何调用方**。
+   *    ⇒ 有人在真实启动路径里加一句 `await DanmakuLocalService.probe();`，
+   *      上面那几条照样全绿（假绿的形状：判据没经过被测对象）。
+   *    这一组补那个洞：**不模拟**，直接读产品源码 `lib/shell.dart`。
+   *
+   * # 为什么必须「先剥注释再匹配」
+   * ```text
+   * lib/shell.dart 的注释里**大段引用**了错误写法原文
+   *   （例如「反例：await DanmakuLocalService.probe();」）。
+   * 不剥注释 ⇒ 代码改对了反而红（假红）；
+   * 而假红的下场是有人去把注释删掉 —— 缺陷本体毫发无损。
+   * ```
+   *
+   * # 为什么 `await` 必须带**词边界**
+   * ```text
+   * unawaited(DanmakuLocalService.probe());   ← 这是**正确**写法（后台异步）
+   * 它的字面量里含 await 子串（u-n-await-ed）
+   * ⇒ 不带边界的判据会把正确写法判红。
+   * ⇒ 下面第三条用例专门守这个（好样本必绿）。
+   * ```
+   *
+   * # 匹配目标（**读 lib/shell.dart 与 lib/core/danmaku.dart 确认过的真名**）
+   * ```text
+   * DanmakuLocalService.probe(     lib/core/danmaku.dart:2780  ← 真网络调用
+   * .loadFor(                      lib/core/danmaku.dart:2674  ← ExternalDanmakuClient
+   * .fetchComments(                lib/core/danmaku.dart      ← 同上，取弹幕正文
+   * ```
+   * ⚠️ `DanmakuLocalService.describe(` 不计入：它只拼字符串，不发网络。
+   */
+  group('★★★ ② 源码契约：启动期不许 await dan-api', () {
+    test('★★★ lib/shell.dart 的 main() 里没有 await dan-api', () {
+      final body = _extractBlock(_shellCode, _mainSignature);
+      expect(
+        _danApiAwaitRe.hasMatch(body),
+        isFalse,
+        reason: '★★★ `main()` 里等待 dan-api ⇒ 首帧被一次 HTTP 拖住数秒'
+            '（公网 serverless 冷启动 3~6 s，Owner 第 9 条）。'
+            '匹配到的片段：${_danApiAwaitRe.firstMatch(body)?.group(0)}',
+      );
+    });
+
+    test('★★★ 启动期每个 initState() 里没有 await dan-api', () {
+      final hits = <String>[];
+      var scanned = 0;
+      var from = 0;
+      while (true) {
+        final at = _shellCode.indexOf(_initStateSignature, from);
+        if (at < 0) break;
+        from = at + 1;
+        scanned++;
+        final body = _extractBlockFrom(_shellCode, at);
+        final m = _danApiAwaitRe.firstMatch(body);
+        if (m != null) {
+          // ★ 行号要算到 await 那一行：块内相对偏移 + 块的 `{` 绝对偏移。
+          //   指到签名行等于让 Owner 自己再翻一遍代码。
+          final abs = _blockOpen(_shellCode, at) + m.start;
+          final line = _shellCode.substring(0, abs).split(_nl).length;
+          hits.add('lib/shell.dart:$line `${m.group(0)}`');
+        }
+      }
+      /*
+       * ★ 反空转前置：一个 initState() 都没扫到 ⇒ 判据什么都没看。
+       * ```text
+       * 这不是"没问题"，这是"判据失效"：
+       *   shell.dart 里的启动期 widget 一旦换个写法（比如改成 build 里起请求），
+       *   本用例会**静默通过**，而它存在的全部价值就是"扫到并检查"。
+       * ```
+       */
+      expect(
+        scanned,
+        greaterThan(0),
+        reason: '★★ 判据扫到 0 处 `$_initStateSignature` —— 要么 shell.dart '
+            '的启动期写法全变了，要么判据失效。两种情况都必须红。',
+      );
+      expect(
+        hits,
+        isEmpty,
+        reason: '★★★ 这些 initState() 里 await 了 dan-api：$hits$_nl'
+            '启动期 widget 的 initState 等待网络 = 首帧被拖住。'
+            '正确写法是 `unawaited(...)` 或起请求后让界面先出一帧。',
+      );
+    });
+
+    test('★ 判据自检：坏样本必红 / 好样本必绿 / 注释引用不许误判', () {
+      // ① 真的 await ⇒ 必红
+      const bad = 'void f() async { await DanmakuLocalService.probe(); }';
+      // ② 正确写法 unawaited( ⇒ 必绿（含 await 子串，但没有词边界）
+      const good = 'void f() { unawaited(DanmakuLocalService.probe()); }';
+      // ③ 注释里引用错误写法 ⇒ 剥掉注释后必绿
+      final quoted =
+          '// 反例：await DanmakuLocalService.probe();${_nl}void f() {}';
+      // ④ 另一条真实 dan-api 入口（ExternalDanmakuClient.loadFor）也要认
+      const badLoad = 'void f() async { await c.loadFor(fileName: n); }';
+      // ⑤ await 与调用点**跨行**也要认（真实代码经常换行写）
+      final badWrapped =
+          'void f() async { await$_nl' '    DanmakuLocalService.probe(); }';
+
+      expect(_danApiAwaitRe.hasMatch(bad), isTrue,
+          reason: '★ 判据自己坏了：连真的 await 都认不出来。');
+      expect(_danApiAwaitRe.hasMatch(badWrapped), isTrue,
+          reason: '★ await 与调用点跨行时必须仍然认得出（间隔里含换行）。');
+      expect(_danApiAwaitRe.hasMatch(badLoad), isTrue,
+          reason: '★ `loadFor(` 也是 dan-api 入口，漏了它就漏掉一半缺陷形态。');
+      expect(_danApiAwaitRe.hasMatch(good), isFalse,
+          reason: '★ `unawaited(` 里含 await 子串 ⇒ 判据必须带词边界，'
+              '否则「后台异步」的正确写法会被判成阻塞（假红逼人删注释）。');
+      expect(_danApiAwaitRe.hasMatch(_stripDartComments(quoted)), isFalse,
+          reason: '★ 注释里引用的错误写法必须被剥掉 —— '
+              'lib/shell.dart 的注释里就有这种原文，不剥 ⇒ 假红。');
+      /*
+       * ⑥ 判据的**适用范围**自检：本文件的剥注释器不认三引号字符串。
+       * ```text
+       * Dart 允许 ''' 或 """ 三引号字符串；一旦 shell.dart 里出现，
+       * 本剥注释器会把边界算错 ⇒ 后面的代码可能被当成字符串清空 ⇒ **假绿**。
+       * 所以：出现三引号 = 判据失效 = 必须红（逼人先把剥注释器扩好）。
+       * ```
+       */
+      final hasTripleQuoted =
+          _shellRaw.contains("'''") || _shellRaw.contains('"""');
+      expect(
+        hasTripleQuoted,
+        isFalse,
+        reason: '★ shell.dart 里出现了三引号字符串 ⇒ 本文件的剥注释器认不出边界，'
+            '判据可能漏扫（假绿）。先把 [_stripDartComments] 扩成能认三引号。',
+      );
+    });
+
+    test('★ 判据自检：源码里找不到 main() 时必须红（不许静默绿）', () {
+      var threw = false;
+      try {
+        _extractBlock('class A {}${_nl}void notMain() {}', _mainSignature);
+      } on TestFailure {
+        threw = true;
+      }
+      expect(threw, isTrue,
+          reason: '★ 签名一改，[_extractBlock] 若返回空串 ⇒ 判据永远绿（假绿）。'
+              '这里钉住：找不到被测对象必须抛 TestFailure。');
+    });
+  });
 }
 
 /// 记录「每次 send **实际花了多久**」的假传输层
@@ -434,4 +583,162 @@ class _RecordingBudgetTransport implements DanmakuTransport {
 
   @override
   void close() {}
+}
+
+// ── 源码契约用的「读文件 + 剥注释 + 切块」（只在本文件用） ──────────────────
+
+/// 换行符。
+///
+/// ★ 本文件新增的源码契约部分**不在字符串字面量里写任何转义序列** ——
+/// 上一轮就是把这个 `n` 转义写成了真实换行，整份文件 41 个 analyze error。
+/// 这里用 [String.fromCharCode] 拿到它，写进来的字节就是跑起来的字节。
+final String _nl = String.fromCharCode(10);
+
+/// 反斜杠（同上：不写字面量转义）。
+final String _bs = String.fromCharCode(92);
+
+/// 未经处理的产品源码
+final String _shellRaw = File('lib/shell.dart').readAsStringSync();
+
+/// 产品源码（启动路径的**唯一**真身）。先剥注释，再做任何匹配。
+final String _shellCode = _stripDartComments(_shellRaw);
+
+/// `main()` 的签名 —— 精确到 `async`。
+///
+/// 不是 async 的 `main()` 里根本不能 await，那条门禁也就无从谈起；
+/// 签名一变 ⇒ [_extractBlock] 直接 fail（**红**），不会静默放过。
+const String _mainSignature = 'Future<void> main() async';
+
+/// 启动期 widget 的固定写法（本仓 3 处，见 lib/shell.dart 的 initState）
+const String _initStateSignature = 'void initState()';
+
+/// `await`（**两侧词边界**）+ 160 字符内命中一个真实 dan-api 入口
+///
+/// # 匹配目标（都是从源码里读出来的真名，不是猜的）
+/// ```text
+/// DanmakuLocalService.probe(   lib/core/danmaku.dart:2780  真网络探测
+/// .loadFor(                    lib/core/danmaku.dart:2674  ExternalDanmakuClient
+/// .fetchComments(              lib/core/danmaku.dart       ExternalDanmakuClient
+/// ```
+/// ⚠️ `DanmakuLocalService.describe(` **不计入**：它只拼提示字符串，不发网络。
+///
+/// # 为什么用 lookaround 而不是词边界简写
+/// ```text
+/// 同一个意思，但整条正则**一个反斜杠都不带** ——
+/// 上一轮的教训：源码里的转义序列会被工具链二次解释
+/// （写 \\b 可能落成退格符、写 \\n 可能落成真实换行）。
+/// 这条判据自己不含可被误解释的字符 ⇒ 写进来的就是跑起来的。
+/// ```
+///
+/// # 词边界为什么**必需**
+/// ```text
+/// unawaited(DanmakuLocalService.probe());   ← 这是**正确**写法（后台异步）
+/// 它的字面量里含 await 子串（u-n-await-ed）
+/// ⇒ 不带边界的判据会把正确写法判红 ⇒ 逼人去删掉正确代码。
+/// ```
+final RegExp _danApiAwaitRe = RegExp(
+  '(?<![A-Za-z0-9_])await(?![A-Za-z0-9_])'
+  '[^;{}]{0,160}'
+  '(?:DanmakuLocalService[.]probe[(]|[.]loadFor[(]|[.]fetchComments[(])',
+);
+
+/// 剥掉 Dart 注释，并把**字符串字面量的内容清空**（引号保留）。
+///
+/// # 为什么清空字符串内容（不只是剥注释）
+/// ```text
+/// ① 提示文案 / 错误消息里可能**就写着** await DanmakuLocalService.probe()
+///    （给人看的示例），不清空 ⇒ 把代码改对了反而红。
+/// ② [_extractBlockFrom] 靠花括号计数切块：字符串里的 { 或 } 会让它提前
+///    收尾，切出一段**截断**的 main() ⇒ 后面的违规写法看不见（假绿）。
+/// ```
+///
+/// # 行号
+/// 注释与字符串里的**换行一律保留** ⇒ 打出来的行号与 `lib/shell.dart` 对得上
+/// （红的时候要能直接跳过去）。
+///
+/// ⚠️ 已知不认三引号字符串（Dart 允许，但本仓 shell.dart 目前 0 处）。
+///    对此有专门的断言守着，见「判据自检」里的适用范围那条。
+String _stripDartComments(String src) {
+  final out = StringBuffer();
+  var i = 0;
+  while (i < src.length) {
+    // ① 行注释：丢到行尾（行尾换行由主循环照抄 ⇒ 行号不变）
+    if (i + 1 < src.length && src[i] == '/' && src[i + 1] == '/') {
+      while (i < src.length && src[i] != _nl) {
+        i++;
+      }
+      continue;
+    }
+    // ② 块注释：整段丢，但逐行补换行
+    if (i + 1 < src.length && src[i] == '/' && src[i + 1] == '*') {
+      i += 2;
+      while (i + 1 < src.length && !(src[i] == '*' && src[i + 1] == '/')) {
+        if (src[i] == _nl) out.write(_nl);
+        i++;
+      }
+      i += 2;
+      continue;
+    }
+    // ③ 字符串字面量：引号保留，内容清空（换行保留）
+    if (src[i] == "'" || src[i] == '"') {
+      final q = src[i];
+      out.write(q);
+      i++;
+      while (i < src.length && src[i] != q) {
+        if (src[i] == _nl) out.write(_nl);
+        // 转义：连下一个字符一起跳过，否则 'it\'s' 会提前收尾
+        if (src[i] == _bs && i + 1 < src.length) {
+          if (src[i + 1] == _nl) out.write(_nl);
+          i += 2;
+          continue;
+        }
+        i++;
+      }
+      if (i < src.length) {
+        out.write(src[i]);
+        i++;
+      }
+      continue;
+    }
+    out.write(src[i]);
+    i++;
+  }
+  return out.toString();
+}
+
+/// 按签名切出**整个函数体**（含花括号）。
+///
+/// ★ 找不到签名必须 **fail（红）**，不能返回空串 ——
+///   返回空串等于「判据什么都没检查，然后报绿」，那是本仓最恨的假绿。
+String _extractBlock(String code, String sig) {
+  final at = code.indexOf(sig);
+  if (at < 0) {
+    fail('源码里找不到 `$sig` —— 判据找不到被测对象时必须红，'
+        '不能当成「没有问题」：$sig');
+  }
+  return _extractBlockFrom(code, at);
+}
+
+/// 从 [at] 起按花括号配平切块（[code] 必须是剥过注释、清过字符串内容的）
+String _extractBlockFrom(String code, int at) {
+  final open = _blockOpen(code, at);
+  var depth = 0;
+  for (var i = open; i < code.length; i++) {
+    if (code[i] == '{') depth++;
+    if (code[i] == '}') {
+      depth--;
+      if (depth == 0) return code.substring(open, i + 1);
+    }
+  }
+  return fail('从偏移 $at 起的块花括号没有闭合 —— 源码被改坏了');
+}
+
+/// [at] 之后第一个 `{` 的绝对偏移 —— 单独抽出来是为了把块内相对偏移
+/// 还原成**绝对行号**：红的时候要指到 `await` 那一行，不是签名那一行。
+int _blockOpen(String code, int at) {
+  final open = code.indexOf('{', at);
+  if (open < 0) {
+    fail('偏移 $at 之后找不到 `{` —— 源码被改坏了（判据找不到被测对象必须红）');
+  }
+  return open;
 }

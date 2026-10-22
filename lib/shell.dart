@@ -1938,7 +1938,11 @@ class _SourinAppState extends State<SourinApp>
           ),
         ),
       ),
-      child: WidgetsApp(
+      child: ScrollConfiguration(
+        behavior: const _SourinScrollBehavior(),
+        // ↓ 下面这块有 700 行：不整体缩进，否则本次 diff 会变成「全文件重排」，
+        //   而这里真正的语义只有一句「WidgetsApp 外面多包一层」。
+        child: WidgetsApp(
       /*
        * ★★★ 2026-10-18（M4）：`pageRouteBuilder` **必须给**，否则白屏
        *
@@ -2089,6 +2093,17 @@ class _SourinAppState extends State<SourinApp>
        * 而 Navigator 自己的过渡动画（如 Cupertino 的 page transition）
        * 会读不到它 ⇒ arm64 修复可能失效。
        * ```
+       */
+      /*
+       * ★★★ 2026-10-21（PR #32 复核线程 1/9）：这段注释**写对了但代码没跟上** ——
+       *   M4 那次把 MaterialApp 换成 WidgetsApp 时，`scrollBehavior` 参数被删掉，
+       *   `ScrollConfiguration` 却没有补上 ⇒ `_SourinScrollBehavior` 只剩一个
+       *   **没有任何实例化点**的类声明，`Clip.none` 从来没挂到任何滚动视图上
+       *   （arm64「内容区全空白」的修复从 2026-10-18 起其实是失效的）。
+       *   而 `zz_t66_scroll_behavior_gate_test` 当时 grep 的是 `'_SourinScrollBehavior()'`，
+       *   正好被构造函数声明满足 ⇒ 假绿。
+       *   ⇒ 现在真的包上（见下面 `child: ScrollConfiguration(`），
+       *     门禁也改成「剥掉注释后必须找得到这个绑定」。
        */
       /*
        * ★★ 2026-10-18（M4）：从 MaterialApp 改成 WidgetsApp后，
@@ -2655,6 +2670,7 @@ class _SourinAppState extends State<SourinApp>
         coreDataDir: widget.coreDataDir,
         liveChannelStep: _liveChannelStep,
         occlusion: _occlusion.occluders,
+      ),
       ),
       ),
     );

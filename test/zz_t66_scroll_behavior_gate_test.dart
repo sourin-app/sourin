@@ -78,8 +78,52 @@ String _stripComments(String src) {
   return out.toString();
 }
 
+/// 真的挂到 App 上了吗 —— 判据是**包裹写法**本身：
+/// `ScrollConfiguration(behavior: const _SourinScrollBehavior())`
+///
+/// ★★ 2026-10-21（PR #32 复核线程 1/9、9/9）：这里原来是
+///   `shell.contains('_SourinScrollBehavior()')` —— 而类体里的构造函数声明
+///   `const _SourinScrollBehavior();` **本身**就含这个子串
+///   ⇒ 从 2026-10-18（M4 把 MaterialApp 换成 WidgetsApp）到 2026-10-21，
+///   `ScrollConfiguration` 其实一直**没有被挂上**（arm64 修复实际失效），
+///   而这条断言一直是绿的。
+///   ⇒ 判据改成匹配「包裹写法」：构造函数声明不满足它，删掉挂载点必然红。
+final RegExp _scrollMountRe = RegExp(
+  r'ScrollConfiguration\(\s*behavior:\s*const\s+_SourinScrollBehavior\(\)',
+);
+
+bool _hasScrollConfigMount(String code) => _scrollMountRe.hasMatch(code);
+
 void main() {
   final shell = _stripComments(_read('lib/shell.dart'));
+
+  group('★ 判据自检（防正则空转 / 防被构造函数声明满足）', () {
+    // ★ 没有这两条，「判据自己坏了」和「被测对象坏了」在输出上长得一样。
+    //   本仓 PITFALLS A 组：判据必须有一条能证明它会红。
+    test('坏样本必须判红：只有类声明、没有任何挂载点', () {
+      const bad = '''
+class _SourinScrollBehavior extends ScrollBehavior {
+  const _SourinScrollBehavior();
+}
+''';
+      expect(
+        _hasScrollConfigMount(_stripComments(bad)),
+        isFalse,
+        reason: '★★★ 判据被构造函数声明满足了 —— 这正是 2026-10-18～10-21 '
+            '那次假绿的形状。',
+      );
+    });
+
+    test('好样本必须判绿：真的包了一层 ScrollConfiguration', () {
+      const good = '''
+child: ScrollConfiguration(
+  behavior: const _SourinScrollBehavior(),
+  child: WidgetsApp(),
+),
+''';
+      expect(_hasScrollConfigMount(_stripComments(good)), isTrue);
+    });
+  });
 
   group('★★★ arm64「内容区全空白」修复必须保留（去 Material 时最容易丢的一条）', () {
     test('★★★ ScrollBehavior 类仍然存在且被真的挂上去', () {
@@ -93,11 +137,19 @@ void main() {
       );
 
       // ② 真的挂到 App 上（定义了但没挂 = 等于删了）
+      //
+      // ★★ 2026-10-22（PR #32 复核线程 1/9 的收尾）：这里原来写的是
+      //   `shell.contains('_SourinScrollBehavior()')` —— 而类体里的构造函数
+      //   声明 `const _SourinScrollBehavior();` **本身**就含这个子串
+      //   ⇒ 把挂载点整段删掉，这条断言**照样绿**。
+      //   （2026-10-18～10-21 那次假绿就是这个形状：断言被类声明满足了。）
+      //   ⇒ 改成包裹写法判据（上面的 `_scrollMountRe`），构造函数不满足它。
       expect(
-        shell.contains('_SourinScrollBehavior()'),
+        _hasScrollConfigMount(shell),
         isTrue,
-        reason: '★★★ 类还在，但没有被实例化挂到 App 上 —— 效果等于删掉。\n'
-            '`scrollBehavior:` 参数必须指向它。',
+        reason: '★★★ 类还在，但 `ScrollConfiguration(behavior: const '
+            '_SourinScrollBehavior())` 没有真的把 App 包起来 —— 效果等于删掉'
+            '（arm64「内容区全空白」的修复失效）。',
       );
 
       // ③ 它必须真的改 decorationClipBehavior（不是只继承不覆写）

@@ -55,6 +55,70 @@ interface MaskedSource {
   commented: boolean[];
 }
 
+/**
+ * Blank out inline code spans (`` `x` ``, ``` ``x`` ```) with spaces, preserving
+ * length so byte offsets still line up.
+ *
+ * ★ 为什么必须做：一篇笔记**记录** `<!--` 这个语法时，它会把这串字符写在行内
+ * 代码里。不遮蔽行内代码，`l.indexOf("<!--")` 就把行内代码当成真注释的开头，
+ * 于是 `inComment` 一路吃到文末 —— 后面所有 `## 小节` 全被判成注释行，
+ * 门禁报「缺 ## Consequences」，而笔记明明写了。
+ * 2026-10-22 实测：`2026-10-22-release-notes-renderer-shows-markup-as-text.md`
+ * 的第 70、78 行各有一个未闭合的行内 `<!--`，CI 因此变红，本地也红。
+ * 遮蔽后行号与偏移都不变，报错指的行还是原文件那一行。
+ */
+function blankInlineCode(line: string): string {
+  let out = "";
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== "`") {
+      out += line[i];
+      i++;
+      continue;
+    }
+    // 被反斜杠转义的反引号不是围栏（`\`x\`` 在 Markdown 里是三个普通字符）。
+    // 不认转义，`\`<!--\`` 这种「想展示语法但不想开注释」的写法反而会遮蔽掉
+    // 真正的 `<!--`，于是未闭合的注释被漏判、后面的 `## 小节` 全算有效。
+    if (isEscaped(line, i)) {
+      out += "`";
+      i++;
+      continue;
+    }
+    let ticks = 0;
+    while (line[i + ticks] === "`") ticks++;
+    const fence = "`".repeat(ticks);
+    // 闭合用的反引号串必须等长（`` ` `` 与 ``` `` ``` 不是同一种围栏），
+    // 且同样不能是被转义的那种。
+    let close = -1;
+    let probe = i + ticks;
+    while (probe < line.length) {
+      const at = line.indexOf(fence, probe);
+      if (at === -1) break;
+      if (!isEscaped(line, at)) {
+        close = at;
+        break;
+      }
+      probe = at + ticks;
+    }
+    if (close === -1) {
+      // 未闭合的反引号按字面处理（与 Markdown 一致），不吞掉本行其余内容。
+      out += line.slice(i, i + ticks);
+      i += ticks;
+      continue;
+    }
+    out += " ".repeat(close + ticks - i);
+    i = close + ticks;
+  }
+  return out;
+}
+
+/** 该位置是否被奇数个连续反斜杠转义。 */
+function isEscaped(line: string, idx: number): boolean {
+  let slashes = 0;
+  for (let k = idx - 1; k >= 0 && line[k] === "\\"; k--) slashes++;
+  return slashes % 2 === 1;
+}
+
 /** Normalize BOM/CRLF, then mask fenced code and HTML comment regions. */
 function maskSource(raw: string): MaskedSource {
   const normalized = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
@@ -65,11 +129,13 @@ function maskSource(raw: string): MaskedSource {
   let inComment = false;
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
+    // 行内代码先抹成等长空格：反引号里的 `<!--` / ``` ``` ``` 都不该改变状态机。
+    const scan = blankInlineCode(l);
     fenced[i] = inFence;
     commented[i] = inComment;
     // A fence opens/closes only on its own line (≤3 leading spaces); fence
     // mentions inside inline code or prose never toggle state.
-    if (!inComment && /^\s{0,3}```/.test(l)) {
+    if (!inComment && /^\s{0,3}```/.test(scan)) {
       fenced[i] = true;
       inFence = !inFence;
     } else if (inFence) {
@@ -78,8 +144,13 @@ function maskSource(raw: string): MaskedSource {
     // Fence interiors are opaque: a `<!--` in a HTML/JSX sample must not
     // leak the comment mask past the closing fence.
     if (inFence) continue;
-    const openIdx = inComment ? -1 : l.indexOf("<!--");
-    const closeIdx = l.indexOf("-->");
+    // 开注释只在「没在注释里」时找，且要在遮蔽后的文本上找：行内代码里的
+    // `<!--` 是展示语法，不该开注释。
+    const openIdx = inComment ? -1 : scan.indexOf("<!--");
+    // 关注释反过来：注释一旦打开，里面的反引号没有 Markdown 语义，`-->` 就该
+    // 生效。若仍用遮蔽后的 `scan` 去找，`-->` 恰好写在行内代码里时会被抹掉，
+    // 注释一路吃到文末，后面真正有效的 `## 小节` 全被判成注释。
+    const closeIdx = (inComment ? l : scan).indexOf("-->");
     if (inComment) {
       commented[i] = true;
       if (closeIdx !== -1) inComment = false;

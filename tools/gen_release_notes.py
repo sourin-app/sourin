@@ -1338,6 +1338,23 @@ def validate_manual_notes(text: str) -> list[str]:
     return errs
 
 
+def _force_utf8_stdio() -> None:
+    """把 stdout/stderr 切成 UTF-8
+
+    ★ Windows 上默认编码不是 UTF-8（CI 的 runner 上是 cp1252 / 本机是 GBK），
+      中文会被写成 `\\u4eba` 这种转义 ⇒ **报错信息人读不懂**，
+      门禁也没法断言「第 N 行」这类中文。
+      `run_selftest()` 里早就有这段，现在提到 `main()` 入口，所有路径共用
+      （幂等：重复 reconfigure 没有副作用；流被重定向到不支持 reconfigure
+      的对象时静默跳过）。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:  # pragma: no cover —— 老 Python / 被重定向的流
+            pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     # ★ 2026-10-21：`--from` 不再是 argparse 的 required —— `--selftest` 不需要区间。
@@ -1367,6 +1384,11 @@ def main() -> int:
         "但仍走同一套机械校验（条目/表格/开发用语/占位符）",
     )
     args = ap.parse_args()
+
+    # ★ 2026-10-22：所有路径共用的 UTF-8 兜底（详见 _force_utf8_stdio 的注释）。
+    #   必须在任何输出之前调用 —— 人工稿校验的报错是中文，
+    #   在 Windows runner 上不切编码就会变成 `\u7b2c 4 \u884c` 这种没人能读的东西。
+    _force_utf8_stdio()
 
     if args.selftest:
         return run_selftest()

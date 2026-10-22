@@ -153,6 +153,13 @@ v1.4.0-rc4 发版前实测：`python tools/gen_release_notes.py --from v1.4.0-rc
   - 条目正文里的 `<i>提示</i>` 与 `![封面](…)` ⇒ 退出码 1，
     分别报「第 3 行有 HTML 标签」「第 4 行有图片」
 - 行号对齐：违规内容放在第 4 行 ⇒ 报错写「第 4 行」（不是前移后的第 3 行）
+- **CI 首次真跑暴露的第四个问题（本地测不出来）**：
+  Windows runner 上 python 的 stdout/stderr 不是 UTF-8，
+  生成器的中文报错被写成 `\u7b2c 4 \u884c` 转义 ⇒ 报错人读不懂、
+  门禁也断言不到「第 4 行」。修法是**两侧都钉住编码**：
+  生成器入口 `_force_utf8_stdio()`（原本只有 `run_selftest()` 里有这段），
+  门禁 `Process.runSync(..., stdoutEncoding: Utf8Codec(), stderrEncoding: Utf8Codec())`。
+  复现：`PYTHONIOENCODING=cp1252 python tools/gen_release_notes.py --manual <坏稿>` ⇒ 中文正常。
 - `flutter test test/zz_t1022_manual_release_notes_gate_test.dart --concurrency=1` ⇒ `+9 All tests passed!`
   （含「不合格的稿会被拒」「未知小标题会被拒」「注释会被拒」
   「正文里的图片/标签会被拒」「行号对得上原文件」—— 守卫不是恒绿）。

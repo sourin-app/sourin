@@ -25,6 +25,7 @@
 //   生成器的校验是权威口径；Dart 复刻必然漂移。
 //   （CI 的 Windows/macOS job 都装了 python，见 build.yml 的 setup-python@v5。）
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -62,6 +63,28 @@ List<File> manualNoteFiles() {
     ..sort((a, b) => a.path.compareTo(b.path));
 }
 
+/// 跑一次生成器，返回结果。
+///
+/// ★ 必须显式指定 UTF-8 解码：`Process.runSync` 默认按**系统编码**解子进程输出，
+///   Windows 上是 cp1252 / GBK ⇒ 生成器打的中文会变成乱码或 `\uXXXX`，
+///   于是断言「第 4 行」永远失败（本门禁在 CI 上真的这样红过一次）。
+///   生成器侧也做了对应的 `_force_utf8_stdio()` —— 两边都钉住才算钉住。
+ProcessResult runGenerator(String py, File file) {
+  return Process.runSync(
+    py,
+    <String>[
+      'tools/gen_release_notes.py',
+      '--manual',
+      file.path,
+      '--out',
+      '${file.parent.path}/out.md',
+    ],
+    workingDirectory: Directory.current.path,
+    stdoutEncoding: const Utf8Codec(),
+    stderrEncoding: const Utf8Codec(),
+  );
+}
+
 void main() {
   final py = findPython();
 
@@ -92,6 +115,8 @@ void main() {
           '${Directory.systemTemp.path}/manual_notes_gate_out.md',
         ],
         workingDirectory: Directory.current.path,
+        stdoutEncoding: const Utf8Codec(),
+        stderrEncoding: const Utf8Codec(),
       );
       expect(r.exitCode, 0,
           reason: '人工稿 ${f.path} 没通过生成器校验（退出码 ${r.exitCode}）：\n'
@@ -121,17 +146,7 @@ void main() {
           '| 平台 | 说明 |\n'
           '|---|---|\n'
           '- 门禁改成结构锚了\n');
-      final r = Process.runSync(
-        py,
-        <String>[
-          'tools/gen_release_notes.py',
-          '--manual',
-          bad.path,
-          '--out',
-          '${tmpDir.path}/out.md',
-        ],
-        workingDirectory: Directory.current.path,
-      );
+      final r = runGenerator(py, bad);
       expect(r.exitCode, 1,
           reason: '带表格 + 开发用语的人工稿竟然通过了（退出码 ${r.exitCode}）'
               '⇒ 生成器的守卫恒绿 ⇒ 这条门禁没有意义。\n'
@@ -144,21 +159,6 @@ void main() {
       }
     }
   });
-
-  /// 跑一次生成器，返回 (退出码, stderr)。
-  ProcessResult runGenerator(String py, File file) {
-    return Process.runSync(
-      py,
-      <String>[
-        'tools/gen_release_notes.py',
-        '--manual',
-        file.path,
-        '--out',
-        '${file.parent.path}/out.md',
-      ],
-      workingDirectory: Directory.current.path,
-    );
-  }
 
   test('未知的小标题会被拒（文档承诺的规则，校验必须与它一致）', () {
     if (py == null) {

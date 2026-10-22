@@ -107,6 +107,32 @@ shell.dart 里出现 ''' / """ ⇒ 红（剥注释器认不出边界 ⇒ 可能�
 Owner 还得自己再翻一遍。抽出 `_blockOpen(code, at)` 用「块的 `{` 绝对偏移 + 块内 start」
 → 读数变成 `lib/shell.dart:1719 `await DanmakuLocalService.probe(``。
 
+## 同批：三处被本次改动撞红的旧门禁（全量跑才现形）
+
+产品代码一动，三条**早就存在**的读源码门禁同时假红 —— 它们守的语义都对，
+但都用「今天的文本形状」当锚。逐条修，并且**每条都保留原来的语义**：
+
+```text
+zz_t66_prefetch_yield_test.dart:90   窗口 [\s\S]{0,200}? → 700
+  ↑ 给回调接上 .catchError 后，Timer 到 endYieldForSeek 之间多了 6 行说明注释
+  ★ 这条对「有没有 catchError」是宽容的（见 2026-10-19-selfaudit 的更正）：
+    别指望它守住"异常被接住"，它只守"到点会调 end"
+
+zz_t66_r7_material_audit_test.dart:68  删掉「1941 行必须是 WidgetsApp(」这个行号锚
+  ↑ 包一层 ScrollConfiguration 后 1941 变成 `child: ScrollConfiguration(`
+  → 改成按内容锚：找到 `child: ScrollConfiguration(`，断言下一行是
+    `behavior: const _SourinScrollBehavior()`，且往下 40 行内出现 `WidgetsApp(`
+  ★ 顺带删掉只被它调用的 lineAt()，不留诱导下一个人再写行号锚的样板
+
+zz_t66_raw_deflate_test.dart:211  `[^}]*` → `[\s\S]{0,2000}?`
+  ↑ Err 分支里先放了 `if !is_real_decompress_failure(&e) { … }` 这个带 `}` 的闸门
+    ⇒ `[^}]*` 一遇到闸门的 `}` 就停住
+```
+
+★ 判据：**读源码的门禁，锚要绑在「结构/语义」上，不绑在「第几行」「窗口正好多长」。**
+三条都是同一个病：锚写成了当天的字面形状，改产品的人一动就假红，
+而假红的下场永远是「有人去把门禁改松」，直到它守不住任何东西。
+
 ## Alternatives considered
 
 ### ① 用 analyzer 包做 AST 判断，不做文本匹配

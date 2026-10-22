@@ -87,7 +87,11 @@ void main() {
      * ⇒ 这种"静默退化"必须由门禁守住。
      */
     final re = RegExp(
-      r'_prefetchYieldTimer\s*=\s*Timer\([\s\S]{0,200}?endYieldForSeek\(\)',
+      // ★ 2026-10-22：窗口从 200 放宽到 700 —— PR #32 复核线程 4/9 给回调接上
+      //   `.catchError` 后，Timer 到真正调 endYieldForSeek 之间多了 6 行说明注释。
+      //   ★ 本判据对「有没有 catchError」是**宽容的**（只看有没有调 end），
+      //     别指望它守住"异常被接住"那件事。
+      r'_prefetchYieldTimer\s*=\s*Timer\([\s\S]{0,700}?endYieldForSeek\(\)',
     );
     expect(
       re.hasMatch(page),

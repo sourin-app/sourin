@@ -208,7 +208,11 @@ void main() {
               '删掉调用点后，前面 6 条断言全部仍然绿。');
 
       // 而且必须在 `r.text()` 失败的 Err 分支里调
-      final errBranch = RegExp(r'Err\(e\)\s*=>\s*\{[^}]*try_raw_deflate_fallback',
+      // ★ 2026-10-22：原来用 `[^}]*` 卡窗口，PR #32 ①② 在 Err 分支里先放了
+      //   `if !is_real_decompress_failure(&e) { … }` 这个带 `}` 的闸门
+      //   ⇒ `[^}]*` 一遇到闸门的 `}` 就停 ⇒ 判据假红。改成有界跨行窗口。
+      final errBranch = RegExp(
+              r'Err\(e\)\s*=>\s*\{[\s\S]{0,2000}?try_raw_deflate_fallback\(',
               dotAll: true)
           .hasMatch(code);
       expect(errBranch, isTrue,

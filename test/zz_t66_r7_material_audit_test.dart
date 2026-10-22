@@ -48,12 +48,9 @@ void main() {
   String read(String rel) =>
       File('lib/$rel').readAsStringSync();
 
-  /// 一行去掉行尾空白（Windows 上按 \r\n 切，避免留下隐藏字符）
-  String? lineAt(String rel, int n) {
-    final lines = read(rel).split(RegExp(r'\r?\n'));
-    if (n < 1 || n > lines.length) return null;
-    return lines[n - 1].trim();
-  }
+  // ★ 2026-10-22：`lineAt(rel, n)` 已删 —— 唯一的调用方是「shell.dart:1941」那个
+  //   行号锚，本次把它换成按内容的锚（`child: ScrollConfiguration(`）。行号锚会漂，
+  //   留着它只会诱导下一个人再写一条"第 N 行必须写着 X"的判据。
 
   setUpAll(() {
     libRoot = Directory.current.path;
@@ -65,11 +62,31 @@ void main() {
   // ① 材料化第一项：产品根到底是不是 MaterialApp
   // ────────────────────────────────────────────────────────────────────
   group('① 产品根：WidgetsApp（计划里那行「待办」已过期）', () {
-    test('★★★ lib/shell.dart:1941 的根 widget 是 WidgetsApp，不是 MaterialApp', () {
-      final l = lineAt('shell.dart', 1941);
-      expect(l, isNotNull, reason: 'shell.dart 少于 1941 行 ⇒ 行号锚漂了，要更新本门禁');
-      expect(l, contains('WidgetsApp('));
-      expect(l, isNot(contains('MaterialApp(')),
+    test('★★★ lib/shell.dart 的 App 根是 WidgetsApp，不是 MaterialApp', () {
+      /*
+       * ★ 2026-10-22（PR #32 复核线程 1/9）：锚从「1941 行必须是 WidgetsApp(」
+       *   改成「找到 ScrollConfiguration 那一行，再往下的窗口里必须出现 WidgetsApp(」。
+       *   原来那个行号锚在本次给 App 外面包一层 ScrollConfiguration 后立刻假红
+       *   （1941 变成了 `child: ScrollConfiguration(`）—— **行号锚天生会漂**，
+       *   而它想守的语义是"根是 WidgetsApp"，不是"第 1941 行写着 WidgetsApp"。
+       */
+      final lines = read('shell.dart').split(RegExp(r'\r?\n'));
+      final at = lines.indexWhere((l) => l.contains('child: ScrollConfiguration('));
+      expect(at, greaterThan(0),
+          reason: '★ 找不到 `child: ScrollConfiguration(` ⇒ 外层那层没挂上'
+              '（或写法变了），要更新本门禁');
+      expect(
+        lines[at + 1].trim(),
+        startsWith('behavior: const _SourinScrollBehavior()'),
+        reason: '★ ScrollConfiguration 挂的不是 _SourinScrollBehavior() ⇒ '
+            'arm64 Clip.none 那组修复又失效了',
+      );
+      final window =
+          lines.sublist(at, (at + 40).clamp(0, lines.length)).join('\n');
+      expect(window, contains('WidgetsApp('),
+          reason: '★ ScrollConfiguration 下面 40 行内没有 WidgetsApp( ⇒ 根换了，'
+              '本门禁要跟着更新并改写结论');
+      expect(window, isNot(contains('MaterialApp(')),
           reason: '若产品根改回 MaterialApp，本门禁要跟着更新并改写结论');
     });
 

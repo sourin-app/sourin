@@ -61,12 +61,17 @@ v1.4.0-rc4 发版前实测：`python tools/gen_release_notes.py --from v1.4.0-rc
    - 至少一条 `- ` 条目（漏写 ⇒ 又变成「默认说明」，那正是 Owner 报过的形态）
    - 不许表格 / 图片 / HTML 标签 / 围栏代码块 / `---` 分隔线
      （客户端渲染器 `lib/ui/widgets/release_notes.dart` 不支持这些，会原样漏出）
+   - 不许 HTML 注释（渲染器**不剥**注释 ⇒ 注释会被原样显示给用户）
    - 不许模板占位符残留（`{{…}}` / `__VERSION__`）
    - 不许开发用语（AGENTS §4 那批 + 本仓工程词表），
      唯一例外是产品界面上的正式叫法「健康检测」
    - 不许具体站名
    - 正文里的英文词只许是用户认识的那批（`_FINAL_KEEP_ASCII ∪ _MEDIA_FORMAT_TOKENS`）
-   - 每条错误**带行号**（人工稿是人写的，报错必须能直接定位到那一行）
+   - 分类小标题只许四个（新增 / 改进 / 修复 / 调整），**其它小标题直接拒**
+     （文档承诺了这条规则 ⇒ 校验必须与文档一致，否则文档在骗人）
+   - 每条错误**带行号**，且行号对**原文件**（不剥注释、不跳空行）——
+     人工稿是人写的，报错指错行比报错本身更糟
+     （剥掉注释再校验会让多行注释之后的行号整体前移）
 5. **门禁**（`test/zz_t1022_manual_release_notes_gate_test.dart`）：
    目录存在、每份稿能过生成器校验、文件名是版本号、
    **不合格的稿会被拒**（守卫不是恒绿）、CI 里确实接上了 `--manual`。
@@ -142,7 +147,14 @@ v1.4.0-rc4 发版前实测：`python tools/gen_release_notes.py --from v1.4.0-rc
 - `python tools/gen_release_notes.py --manual docs/release-notes/v1.4.0-rc4.md --out <tmp>` ⇒ 退出码 0，
   13 行更新说明。
 - 故障注入：一份带表格 + 「门禁」的人工稿 ⇒ 退出码 1，报「第 3 行出现了开发用语『门禁』」。
-- `flutter test test/zz_t1022_manual_release_notes_gate_test.dart --concurrency=1` ⇒ `+5 All tests passed!`
-  （含「不合格的稿会被拒」这条 —— 守卫不是恒绿）。
+- 故障注入（CodeRabbit 三条评审意见转成用例）：
+  - 未知小标题 `### 性能` ⇒ 退出码 1，报「第 1 行的小标题『性能』不在允许的分类里」
+  - 跨三行 HTML 注释（内含 `{{CHANGELOG}}`）⇒ 退出码 1，报「第 3 行有 HTML 注释（跨 3 行）」
+  - 条目正文里的 `<i>提示</i>` 与 `![封面](…)` ⇒ 退出码 1，
+    分别报「第 3 行有 HTML 标签」「第 4 行有图片」
+- 行号对齐：违规内容放在第 4 行 ⇒ 报错写「第 4 行」（不是前移后的第 3 行）
+- `flutter test test/zz_t1022_manual_release_notes_gate_test.dart --concurrency=1` ⇒ `+9 All tests passed!`
+  （含「不合格的稿会被拒」「未知小标题会被拒」「注释会被拒」
+  「正文里的图片/标签会被拒」「行号对得上原文件」—— 守卫不是恒绿）。
 - `.github/workflows/build.yml` 经 `yaml.safe_load` 解析通过，jobs 仍为
   `windows / macos / native-media / android / publish`。

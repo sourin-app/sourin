@@ -1223,34 +1223,86 @@ _MANUAL_ASCII_ALLOWED = _FINAL_KEEP_ASCII | _MEDIA_FORMAT_TOKENS | {"ua"}
 _MANUAL_HEADINGS = ("新增", "改进", "修复", "调整")
 
 
-def _strip_html_comments(text: str) -> str:
-    """剥掉 HTML 注释（注释不是正文，且人工稿里连注释都不该有）"""
-    return re.sub(r"<!--.*?-->", "", text, flags=re.S)
+# HTML 标签：要求有 `>` 收尾，避免把「速度 <b/s」这种写法误判成标签
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^>]*)?/?>")
+# 行首是标签但没写完（`<i`）—— 同样不许
+_HTML_TAG_HEAD_RE = re.compile(r"^\s*</?[a-zA-Z][a-zA-Z0-9]*(\s|>|/)")
+# Markdown 图片：![说明](地址)
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]")
+
+
+def _html_comment_spans(lines: list[str]) -> list[tuple[int, int]]:
+    """找出 HTML 注释覆盖的行区间（1-based，含首尾行）
+
+    ★ 为什么是「找出来并拒绝」而不是「剥掉再看」：
+      ① 剥掉会让**错误行号对不上原文件**（多行注释一删，后面所有行号都前移），
+         人工稿是人写的，报错指错行比报错本身更糟；
+      ② 剥掉之后，注释里藏的占位符会被当成「注释内的东西」逃过检查，
+         而注释在生成阶段会被**原样注入 Release 正文** ⇒
+         后面 build.yml 的占位符检查才拦得住，但那时已经晚了一拍。
+      ⇒ 正确做法：按**原行号**拒绝注释。
+    """
+    spans: list[tuple[int, int]] = []
+    start = 0
+    in_comment = False
+    for i, line in enumerate(lines, 1):
+        if in_comment:
+            if "-->" in line:
+                spans.append((start, i))
+                in_comment = False
+            continue
+        idx = line.find("<!--")
+        if idx == -1:
+            continue
+        start = i
+        if "-->" in line[idx + 4:]:
+            spans.append((start, i))
+        else:
+            in_comment = True
+    if in_comment:
+        spans.append((start, len(lines)))
+    return spans
 
 
 def validate_manual_notes(text: str) -> list[str]:
     """校验人工确认稿；返回错误列表（空 = 通过）
 
     ★ 每条错误都带行号 —— 人工稿是人写的，报错必须能直接定位到那一行。
+    ★ 行号一律对**原文件**（不剥注释、不跳空行），
+      否则「报错指错行」比「报错」本身更坑人。
     """
     errs: list[str] = []
-    body = _strip_html_comments(text)
-    lines = body.splitlines()
+    lines = text.splitlines()
 
-    bullets = [i for i, l in enumerate(lines) if re.match(r"^\s*[-*]\s+\S", l)]
+    # ① 注释：整段拒绝（并把里面的行从后续检查里排除）
+    comment_lines: set[int] = set()
+    for a, b in _html_comment_spans(lines):
+        comment_lines.update(range(a, b + 1))
+        errs.append(
+            f"第 {a} 行有 HTML 注释（跨 {b - a + 1} 行）—— 人工稿不该带注释："
+            "客户端渲染器不剥注释，它会被原样显示给用户"
+        )
+
+    # ② 至少一条条目（注释里的条目不算数）
+    bullets = [
+        i for i, l in enumerate(lines, 1)
+        if i not in comment_lines and re.match(r"^\s*[-*]\s+\S", l)
+    ]
     if not bullets:
         errs.append("整份稿里一条条目都没有（每条说明要写成「- 开头」的一行）")
 
     for i, line in enumerate(lines, 1):
+        if i in comment_lines:
+            continue
         s = line.strip()
         if not s:
             continue
-        if re.match(r"^\s*\|", line):
+        if re.search(r"^\s*\|", line):
             errs.append(f"第 {i} 行是表格行 —— 客户端渲染器不支持表格")
-        if re.match(r"^\s*!\[", line):
-            errs.append(f"第 {i} 行是图片 —— 客户端渲染器不支持图片")
-        if re.match(r"^\s*</?[a-zA-Z][a-zA-Z0-9]*(\s|>|/)", line):
-            errs.append(f"第 {i} 行是 HTML 标签 —— 客户端渲染器不支持")
+        if _MD_IMAGE_RE.search(line):
+            errs.append(f"第 {i} 行有图片 —— 客户端渲染器不支持图片")
+        if _HTML_TAG_RE.search(line) or _HTML_TAG_HEAD_RE.match(line):
+            errs.append(f"第 {i} 行有 HTML 标签 —— 客户端渲染器不支持")
         if s.startswith("```"):
             errs.append(f"第 {i} 行是围栏代码块 —— 客户端渲染器不支持")
         if s == "---":
@@ -1260,9 +1312,15 @@ def validate_manual_notes(text: str) -> list[str]:
         if "__VERSION__" in line:
             errs.append(f"第 {i} 行有版本号占位符残留")
 
-        # 分类小标题：允许「修复」这个词（那是分类名，不是开发用语）
-        heading_text = s.lstrip("#").strip()
-        if heading_text in _MANUAL_HEADINGS:
+        # ③ 分类小标题：只许四个（未知的小标题直接拒掉 ——
+        #    文档承诺了这条规则，校验就必须与它一致）
+        if s.startswith("#"):
+            heading_text = s.lstrip("#").strip()
+            if heading_text and heading_text not in _MANUAL_HEADINGS:
+                errs.append(
+                    f"第 {i} 行的小标题「{heading_text}」不在允许的分类里"
+                    f"（只许：{'、'.join(_MANUAL_HEADINGS)}）"
+                )
             continue
 
         masked = line

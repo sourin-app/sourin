@@ -115,8 +115,8 @@ void main() {
     }
     final tmpDir = Directory.systemTemp.createTempSync('sourin_manual_gate');
     try {
-      final bad = File('${tmpDir.path}/bad.md');
       // 三处违规：表格行 + 开发用语「门禁」+ 没有可用的分类小标题
+      final bad = File('${tmpDir.path}/bad.md');
       bad.writeAsStringSync('### 修复\n\n'
           '| 平台 | 说明 |\n'
           '|---|---|\n'
@@ -135,6 +135,123 @@ void main() {
       expect(r.exitCode, 1,
           reason: '带表格 + 开发用语的人工稿竟然通过了（退出码 ${r.exitCode}）'
               '⇒ 生成器的守卫恒绿 ⇒ 这条门禁没有意义。\n'
+              '${r.stderr.toString()}');
+    } finally {
+      try {
+        tmpDir.deleteSync(recursive: true);
+      } catch (_) {
+        // 临时目录删不掉不影响结论
+      }
+    }
+  });
+
+  /// 跑一次生成器，返回 (退出码, stderr)。
+  ProcessResult runGenerator(String py, File file) {
+    return Process.runSync(
+      py,
+      <String>[
+        'tools/gen_release_notes.py',
+        '--manual',
+        file.path,
+        '--out',
+        '${file.parent.path}/out.md',
+      ],
+      workingDirectory: Directory.current.path,
+    );
+  }
+
+  test('未知的小标题会被拒（文档承诺的规则，校验必须与它一致）', () {
+    if (py == null) {
+      markTestSkipped('本机没有 python ⇒ 无从验证守卫会红');
+      return;
+    }
+    final tmpDir = Directory.systemTemp.createTempSync('sourin_manual_gate');
+    try {
+      final f = File('${tmpDir.path}/bad_heading.md');
+      f.writeAsStringSync('### 性能\n\n- 播放更顺畅。\n');
+      final r = runGenerator(py, f);
+      expect(r.exitCode, 1,
+          reason: '「### 性能」这种未知小标题竟然通过了 ⇒ '
+              '文档里写的「只许四个分类」与校验不一致。\n'
+              '${r.stderr.toString()}');
+    } finally {
+      try {
+        tmpDir.deleteSync(recursive: true);
+      } catch (_) {
+        // 临时目录删不掉不影响结论
+      }
+    }
+  });
+
+  test('HTML 注释会被拒（渲染器不剥注释，会原样显示给用户）', () {
+    if (py == null) {
+      markTestSkipped('本机没有 python ⇒ 无从验证守卫会红');
+      return;
+    }
+    final tmpDir = Directory.systemTemp.createTempSync('sourin_manual_gate');
+    try {
+      final f = File('${tmpDir.path}/bad_comment.md');
+      f.writeAsStringSync('### 修复\n\n'
+          '<!-- 跨两行的注释\n'
+          '第二行\n'
+          '-->\n\n'
+          '- 某条说明。\n');
+      final r = runGenerator(py, f);
+      expect(r.exitCode, 1,
+          reason: '含 HTML 注释的稿竟然通过了 ⇒ 注释会被原样注入 Release 正文。\n'
+              '${r.stderr.toString()}');
+    } finally {
+      try {
+        tmpDir.deleteSync(recursive: true);
+      } catch (_) {
+        // 临时目录删不掉不影响结论
+      }
+    }
+  });
+
+  test('条目正文里的图片与 HTML 标签也会被拒（不只行首）', () {
+    if (py == null) {
+      markTestSkipped('本机没有 python ⇒ 无从验证守卫会红');
+      return;
+    }
+    final tmpDir = Directory.systemTemp.createTempSync('sourin_manual_gate');
+    try {
+      final f = File('${tmpDir.path}/bad_inline.md');
+      f.writeAsStringSync('### 修复\n\n'
+          '- 更新好了<i>提示</i>\n'
+          '- 封面图 ![封面](https://x.app/a.png)\n');
+      final r = runGenerator(py, f);
+      expect(r.exitCode, 1,
+          reason: '条目正文里的图片/HTML 标签竟然通过了 ⇒ '
+              '这些内容会被原样漏给用户。\n'
+              '${r.stderr.toString()}');
+    } finally {
+      try {
+        tmpDir.deleteSync(recursive: true);
+      } catch (_) {
+        // 临时目录删不掉不影响结论
+      }
+    }
+  });
+
+  test('校验用的行号对得上原文件（报错不能指错行）', () {
+    if (py == null) {
+      markTestSkipped('本机没有 python ⇒ 无从验证守卫会红');
+      return;
+    }
+    final tmpDir = Directory.systemTemp.createTempSync('sourin_manual_gate');
+    try {
+      // 第 3 行放违规内容；前面有 2 行合法内容 + 1 行空行
+      final f = File('${tmpDir.path}/line_no.md');
+      f.writeAsStringSync('### 修复\n'
+          '\n'
+          '- 正常的一条说明。\n'
+          '- 门禁改成了结构锚。\n');
+      final r = runGenerator(py, f);
+      expect(r.exitCode, 1, reason: '违规稿竟然通过了');
+      expect(r.stderr.toString(), contains('第 4 行'),
+          reason: '报错行号不是 4 ⇒ 行号被前移了（剥注释/跳空行）⇒ '
+              '人工稿是人写的，报错指错行比报错本身更坑人。\n'
               '${r.stderr.toString()}');
     } finally {
       try {

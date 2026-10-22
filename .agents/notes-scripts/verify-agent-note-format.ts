@@ -55,6 +55,44 @@ interface MaskedSource {
   commented: boolean[];
 }
 
+/**
+ * Blank out inline code spans (`` `x` ``, ``` ``x`` ```) with spaces, preserving
+ * length so byte offsets still line up.
+ *
+ * ★ 为什么必须做：一篇笔记**记录** `<!--` 这个语法时，它会把这串字符写在行内
+ * 代码里。不遮蔽行内代码，`l.indexOf("<!--")` 就把行内代码当成真注释的开头，
+ * 于是 `inComment` 一路吃到文末 —— 后面所有 `## 小节` 全被判成注释行，
+ * 门禁报「缺 ## Consequences」，而笔记明明写了。
+ * 2026-10-22 实测：`2026-10-22-release-notes-renderer-shows-markup-as-text.md`
+ * 的第 70、78 行各有一个未闭合的行内 `<!--`，CI 因此变红，本地也红。
+ * 遮蔽后行号与偏移都不变，报错指的行还是原文件那一行。
+ */
+function blankInlineCode(line: string): string {
+  let out = "";
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== "`") {
+      out += line[i];
+      i++;
+      continue;
+    }
+    let ticks = 0;
+    while (line[i + ticks] === "`") ticks++;
+    const fence = "`".repeat(ticks);
+    // 闭合用的反引号串必须等长（`` ` `` 与 ``` `` ``` 不是同一种围栏）。
+    const close = line.indexOf(fence, i + ticks);
+    if (close === -1) {
+      // 未闭合的反引号按字面处理（与 Markdown 一致），不吞掉本行其余内容。
+      out += line.slice(i, i + ticks);
+      i += ticks;
+      continue;
+    }
+    out += " ".repeat(close + ticks - i);
+    i = close + ticks;
+  }
+  return out;
+}
+
 /** Normalize BOM/CRLF, then mask fenced code and HTML comment regions. */
 function maskSource(raw: string): MaskedSource {
   const normalized = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
@@ -65,11 +103,13 @@ function maskSource(raw: string): MaskedSource {
   let inComment = false;
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
+    // 行内代码先抹成等长空格：反引号里的 `<!--` / ``` ``` ``` 都不该改变状态机。
+    const scan = blankInlineCode(l);
     fenced[i] = inFence;
     commented[i] = inComment;
     // A fence opens/closes only on its own line (≤3 leading spaces); fence
     // mentions inside inline code or prose never toggle state.
-    if (!inComment && /^\s{0,3}```/.test(l)) {
+    if (!inComment && /^\s{0,3}```/.test(scan)) {
       fenced[i] = true;
       inFence = !inFence;
     } else if (inFence) {
@@ -78,8 +118,8 @@ function maskSource(raw: string): MaskedSource {
     // Fence interiors are opaque: a `<!--` in a HTML/JSX sample must not
     // leak the comment mask past the closing fence.
     if (inFence) continue;
-    const openIdx = inComment ? -1 : l.indexOf("<!--");
-    const closeIdx = l.indexOf("-->");
+    const openIdx = inComment ? -1 : scan.indexOf("<!--");
+    const closeIdx = scan.indexOf("-->");
     if (inComment) {
       commented[i] = true;
       if (closeIdx !== -1) inComment = false;

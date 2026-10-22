@@ -311,6 +311,70 @@ try {
     return code === 1;
   });
 
+  // ── format：行内代码里的注释起始符不许把遮蔽吃穿 ─────────────────────
+  // 2026-10-22 的真红：一篇记录 `<!--` 语法的笔记，把这串字符写在行内代码里，
+  // 而 maskSource 当时只挡围栏、不挡行内代码 ⇒ inComment 一路吃到文末 ⇒
+  // 后面明明写着的 ## Consequences 被判成注释行，门禁报「缺 Consequences」。
+  test("format 门禁：行内代码里的 <!-- 不算注释开头（正向对照）", () => {
+    const rel = "implemented/bug-fix/2026-01-04-inline-code.md";
+    const text = [
+      "# Agent Note: 行内代码里写着注释起始符",
+      "",
+      "Status: implemented",
+      "",
+      "## Problem",
+      "",
+      "这篇笔记要记录 `<!--` 这个语法，但它写在反引号里，后面没有闭合的 `-->`。",
+      "",
+      "## Decision",
+      "",
+      "自测夹具：行内代码应当被遮蔽成空格，状态机不受影响。",
+      "",
+      "## Alternatives considered",
+      "",
+      "- **不做** — 夹具只需要过格式。",
+      "",
+      "## Consequences",
+      "",
+      "- **收益**：夹具可跑。",
+      ""
+    ].join("\n");
+    writeNote(root, rel, text);
+    const code = gate(root, "verify-agent-note-format.ts");
+    rmSync(join(root, NOTES, rel));
+    return code === 0;
+  });
+
+  test("format 门禁：真的未闭合注释仍要遮住后面的小节（反向对照）", () => {
+    const rel = "implemented/bug-fix/2026-01-04-real-comment.md";
+    const text = [
+      "# Agent Note: 忘记收尾的注释",
+      "",
+      "Status: implemented",
+      "",
+      "## Problem",
+      "",
+      "<!-- 这里开始一段忘记收尾的注释",
+      "",
+      "## Decision",
+      "",
+      "这段落在注释里，门禁应当看不见它。",
+      "",
+      "## Alternatives considered",
+      "",
+      "- **不做** — 夹具。",
+      "",
+      "## Consequences",
+      "",
+      "- **收益**：夹具可跑。",
+      ""
+    ].join("\n");
+    writeNote(root, rel, text);
+    const code = gate(root, "verify-agent-note-format.ts");
+    rmSync(join(root, NOTES, rel));
+    return code === 1;
+  });
+
   // ── archived：封印与基线 ────────────────────────────────────────────
   const archivedRel = "archived/process/2026-01-05-old.md";
   writeNote(root, archivedRel, archivedNote("已封存笔记"));

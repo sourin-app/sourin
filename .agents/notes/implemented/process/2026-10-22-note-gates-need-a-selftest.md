@@ -66,7 +66,7 @@ CI 挂成独立一步 `笔记门禁自测`（①.7），与门禁本体分开：
 
 ## Consequences
 
-- **收益**：门禁的否定面从「据说会红」变成 15 条可执行断言；空集合这条
+- **收益**：门禁的否定面从「据说会红」变成 17 条可执行断言；空集合这条
   从此不会静默变绿。判据再被改错时，`笔记门禁自测` 会先红，而不是等到某天
   有人手动试出来。
 - **代价与已知上限**：
@@ -78,15 +78,20 @@ CI 挂成独立一步 `笔记门禁自测`（①.7），与门禁本体分开：
     不是凭印象写的 —— 手搓 ≠ 真格式，这条教训也适用于任何「用假数据测门禁」的场合。
   - 自测只证明**这些用例**会红，不证明门禁覆盖了所有漏洞。
     新增判据时要同时加一条用例，否则新判据仍然是不可证伪的。
+    2026-10-22 晚补记：这条警告当天就应验了 —— format 门禁的遮蔽器只认围栏代码块、
+    不认行内代码，一篇记录 HTML 注释语法的笔记把自己后面的 `## Consequences` 遮掉，
+    门禁报「缺小节」。自测当时 15 条全绿，因为夹具里没有「笔记正文出现自己的元字符」
+    这种形态。补了两条对照用例（正向：行内 `<!--` 未闭合必须绿；反向：真未闭合注释
+    必须红），详见 [../bug-fix/2026-10-22-note-format-gate-masks-inline-code.md](../bug-fix/2026-10-22-note-format-gate-masks-inline-code.md)。
     重访信号：`notes-coverage.mjs` 目前还没有对应自测（它的 `--range` 语义依赖
     暂存区与提交区间，夹具成本更高），哪天它出问题就得补上。
 
 ## Verification
 
 ```bash
-node .agents/notes-scripts/notes-selftest.mjs   # → notes-selftest: 15/15 通过
+node .agents/notes-scripts/notes-selftest.mjs   # → notes-selftest: 17/17 通过
 AGENT_NOTE_ROOT=.agents/notes-nonexistent node .agents/notes-scripts/notes-gate.mjs   # → exit 1
-node .agents/notes-scripts/notes-gate.mjs       # → notes-gate: 三道门禁全部通过（130 篇笔记）
+node .agents/notes-scripts/notes-gate.mjs       # → notes-gate: 三道门禁全部通过（139 篇笔记）
 ```
 
 相关：[门禁必须有能力红](../testing/2026-10-12-gates-must-be-able-to-fail.md)、

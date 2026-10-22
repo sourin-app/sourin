@@ -109,9 +109,17 @@ AGENT_NOTE_ARCHIVE_BASE_REF=refs/heads/nope node .agents/notes-scripts/verify-ar
 AGENT_NOTE_ARCHIVE_BASE_REF=$(printf '0%.0s' {1..40}) node .agents/notes-scripts/verify-archived-agent-notes.ts  # exit 1
 AGENT_NOTE_ARCHIVE_BASE_REF=HEAD node .agents/notes-scripts/verify-archived-agent-notes.ts              # exit 0
 
-# 全部 15 条判据（夹具在临时 git 仓库里现造现删）
-node .agents/notes-scripts/notes-selftest.mjs              # → 15/15
+# 全部判据（夹具在临时 git 仓库里现造现删）
+node .agents/notes-scripts/notes-selftest.mjs              # → 17/17
 ```
 
+2026-10-22 晚补记：本篇说的「判据写错时没人发现」后来又遇到第三个实例 ——
+format 门禁的遮蔽器只认围栏代码块、不认行内代码，导致一篇记录 HTML 注释语法的笔记
+把自己后面的 `## Consequences` 遮掉，门禁报「缺小节」而笔记里明明写着。
+那个缺陷**会被本仓的自测漏掉**，因为自测夹具里没有「笔记正文出现自己的元字符」这种形态。
+详见 [./2026-10-22-note-format-gate-masks-inline-code.md](./2026-10-22-note-format-gate-masks-inline-code.md)。
+本篇的三处判定不放宽，只在自测里补了那两条对照用例。
+
 相关：[门禁必须有能力红](../testing/2026-10-12-gates-must-be-able-to-fail.md)、
-[笔记门禁需要自测](../process/2026-10-22-note-gates-need-a-selftest.md)。
+[笔记门禁需要自测](../process/2026-10-22-note-gates-need-a-selftest.md)、
+[格式门禁遮蔽行内代码](./2026-10-22-note-format-gate-masks-inline-code.md)。

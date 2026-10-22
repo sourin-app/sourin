@@ -33,6 +33,15 @@ Actions → 构建 → Run workflow
    `DANDANPLAY_APP_ID` / `DANDANPLAY_APP_SECRET`。缺了不会失败 ——
    包里的凭证为空串，App 回落到**用户自填**凭证（功能降级但不崩）。
 2. **Android 包必须在同一轮里勾上 build_android** —— 否则那轮的 Release 没有 APK。
+3. **本版更新从哪来**（2026-10-22 新增）：默认由
+   `tools/gen_release_notes.py` 从 git 历史自动归纳；**归纳为空 ⇒ CI 直接红**
+   （这是有意的强制点，别去加 `--allow-empty` 绕）。
+   若这一版的改动**自动归纳产不出来**（提交标题全是工程黑话），
+   写一份人工确认稿 `docs/release-notes/<TAG>.md`（文件名 = 本次 tag），
+   CI 会优先用它。稿子仍被机械校验：至少一条条目、不许表格/图片/代码块、
+   不许开发用语与站名、不许占位符残留。细节见
+   [release-notes/](release-notes/) 与决策笔记
+   [../.agents/notes/implemented/process/2026-10-22-release-notes-manual-override.md](../.agents/notes/implemented/process/2026-10-22-release-notes-manual-override.md)。
 
 发版前的合并检查清单见 [../CONTRIBUTING.md](../CONTRIBUTING.md)「⑦ 合并前必须满足」。
 

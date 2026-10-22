@@ -38,6 +38,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -1157,6 +1158,128 @@ def run_selftest() -> int:
     return 0
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# ★★★ 人工确认稿通道（2026-10-22）
+#
+# # 为什么要它
+# ```text
+# 2026-10-22 实测：v1.4.0-rc3..HEAD 区间 16 条提交里 7 条**真修复**
+# （健康检测进度不刷新 / 读屏念英文 / 滚动区空白 / 弹幕重复发送 /
+#   过期源反复全量检测 / 切进度偶发闪退）在自动归纳下**一条都产不出来**：
+#   · 「健康检测」里的「检测」被工程词表按段删空
+#   · 「本地化」「Material」等英文词被「正文只许有用户认识的 ASCII 词」判掉
+#   · 「门禁」「探针」「脚本」这些词让整段消失
+# ⇒ 自动路径**结构性地**产不出用户能读懂的说明
+#   ⇒ 「说明为空 ⇒ CI 红」那条守卫会红 ⇒ 这一版根本发不出去。
+# ```
+#
+# # 为什么是「人工稿」而不是放宽清洗
+# ```text
+# 放宽清洗这条路上一轮已经走过：rc3 的 93 行里 40 行用户读不懂。
+# 人工稿让**人**来写「用户会看到什么变化」，而门禁只负责**拦**明显不合格的稿子。
+# 这正是 [../.agents/notes/implemented/process/2026-10-19-release-notes-generated-from-git.md]
+# 的「何时该翻案」第一条要求的形态：说明若要按用户视角重写，
+# 就降级为「给写的人一份草稿 + 人工确认」，而不是继续加黑名单。
+# ```
+#
+# # 通道长什么样
+# ```text
+# docs/release-notes/<TAG>.md  —— 人工确认稿（**只有**本版更新的正文）
+#   · 存在 ⇒ CI 用它当本版更新（不再自动归纳）
+#   · 不存在 ⇒ 走原来的自动归纳（默认路径一个字没改）
+# ```
+#
+# # 人工稿仍然被机械校验（否则「人工」等于「随便」）
+#   ① 至少一条条目
+#   ② 不许有表格 / 图片 / HTML 标签 / 围栏代码块 / 分隔线（渲染器不支持）
+#   ③ 不许有模板占位符残留
+#   ④ 不许出现开发用语（AGENTS §4）与具体站名
+#   ⑤ 正文里的英文词只许是用户认识的那批
+# ```
+
+# 人工稿里**允许**出现的开发用语例外：它们是产品界面上的正式叫法
+# （设置页那个按钮就叫「健康检测」，而「检测」本身在工程语境里是门禁词）
+_MANUAL_ALLOWED_TERMS = ("健康检测",)
+
+# 人工稿里**不许**出现的开发用语（AGENTS §4 那条铁律 + 本仓工程词表）
+_MANUAL_BANNED_WORDS = (
+    "修复", "缺陷", "毛病", "Owner", "探针", "踩坑", "已知问题", "task-",
+    "门禁", "断言", "假绿", "假红", "用例", "台账", "落盘", "接线",
+    "透传", "归一", "自检", "workflow", "编译", "注册表", "判据",
+    "取证", "证据", "截图", "夹具", "快照", "脚本", "工单", "覆盖度",
+    "覆盖率", "契约", "归因", "源码", "代码", "分支", "自审", "决策",
+    "笔记", "编排", "重建", "局部化", "链路", "探测", "计数器", "仪器",
+    "观测点", "埋点", "耗时", "上界", "指纹", "条红", "恒红", "全绿",
+    "红清零", "能力位", "失败态", "写路径", "粘滞", "解绑", "单例",
+    "轮询", "真机", "文案", "全仓", "构建产物", "复核", "抓出",
+    "核心层", "跳过点", "原样复发", "CodeRabbit", "commit", "注入",
+    "检测",  # ★ 例外只有「健康检测」（见 _MANUAL_ALLOWED_TERMS）
+)
+
+# 人工稿里允许出现的英文词：用户认识的专有名词 + 数据格式名 + 少量产品缩写
+_MANUAL_ASCII_ALLOWED = _FINAL_KEEP_ASCII | _MEDIA_FORMAT_TOKENS | {"ua"}
+
+# 人工稿的分类小标题：只有这四个（与自动路径的 order 一致）
+_MANUAL_HEADINGS = ("新增", "改进", "修复", "调整")
+
+
+def _strip_html_comments(text: str) -> str:
+    """剥掉 HTML 注释（注释不是正文，且人工稿里连注释都不该有）"""
+    return re.sub(r"<!--.*?-->", "", text, flags=re.S)
+
+
+def validate_manual_notes(text: str) -> list[str]:
+    """校验人工确认稿；返回错误列表（空 = 通过）
+
+    ★ 每条错误都带行号 —— 人工稿是人写的，报错必须能直接定位到那一行。
+    """
+    errs: list[str] = []
+    body = _strip_html_comments(text)
+    lines = body.splitlines()
+
+    bullets = [i for i, l in enumerate(lines) if re.match(r"^\s*[-*]\s+\S", l)]
+    if not bullets:
+        errs.append("整份稿里一条条目都没有（每条说明要写成「- 开头」的一行）")
+
+    for i, line in enumerate(lines, 1):
+        s = line.strip()
+        if not s:
+            continue
+        if re.match(r"^\s*\|", line):
+            errs.append(f"第 {i} 行是表格行 —— 客户端渲染器不支持表格")
+        if re.match(r"^\s*!\[", line):
+            errs.append(f"第 {i} 行是图片 —— 客户端渲染器不支持图片")
+        if re.match(r"^\s*</?[a-zA-Z][a-zA-Z0-9]*(\s|>|/)", line):
+            errs.append(f"第 {i} 行是 HTML 标签 —— 客户端渲染器不支持")
+        if s.startswith("```"):
+            errs.append(f"第 {i} 行是围栏代码块 —— 客户端渲染器不支持")
+        if s == "---":
+            errs.append(f"第 {i} 行是分隔线 —— 它会截断更新说明那一节")
+        if "{{" in line or "}}" in line:
+            errs.append(f"第 {i} 行有模板占位符残留")
+        if "__VERSION__" in line:
+            errs.append(f"第 {i} 行有版本号占位符残留")
+
+        # 分类小标题：允许「修复」这个词（那是分类名，不是开发用语）
+        heading_text = s.lstrip("#").strip()
+        if heading_text in _MANUAL_HEADINGS:
+            continue
+
+        masked = line
+        for allowed in _MANUAL_ALLOWED_TERMS:
+            masked = masked.replace(allowed, "")
+        for w in _MANUAL_BANNED_WORDS:
+            if w in masked:
+                errs.append(f"第 {i} 行出现了开发用语「{w}」—— 用户可见文案不许用它")
+        for name in _SITE_NAMES:
+            if name.lower() in line.lower():
+                errs.append(f"第 {i} 行出现了具体站名 —— 仓库与用户文案里都不许写")
+        for w in _ASCII_WORD_RE.findall(line):
+            if w.lower() not in _MANUAL_ASCII_ALLOWED:
+                errs.append(f"第 {i} 行的英文词「{w}」用户读不懂 —— 换成中文说法")
+    return errs
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     # ★ 2026-10-21：`--from` 不再是 argparse 的 required —— `--selftest` 不需要区间。
@@ -1178,10 +1301,59 @@ def main() -> int:
         action="store_true",
         help="允许归纳结果为空（默认**报错退出**，防止又发出一版没有说明的 release）",
     )
+    ap.add_argument(
+        "--manual",
+        default="",
+        help="人工确认稿路径（如 docs/release-notes/v1.4.0-rc4.md）。"
+        "给了就用它当本版更新正文（自动归纳被跳过），"
+        "但仍走同一套机械校验（条目/表格/开发用语/占位符）",
+    )
     args = ap.parse_args()
 
     if args.selftest:
         return run_selftest()
+
+    # ★ 2026-10-22：人工确认稿通道。
+    #   人工稿**不需要** --from（它不是从 git log 归纳出来的），
+    #   但仍需要 --template（要把正文填进模板的占位符里）。
+    if args.manual:
+        if not os.path.isfile(args.manual):
+            sys.stderr.write(
+                f"[gen_release_notes] ★ 人工确认稿 {args.manual} 不存在。\n"
+                "  ⇒ 要么建这个文件，要么别传 --manual（走自动归纳）。\n"
+            )
+            return 2
+        with open(args.manual, encoding="utf-8") as f:
+            changelog = f.read()
+        errs = validate_manual_notes(changelog)
+        if errs:
+            sys.stderr.write(
+                f"[gen_release_notes] ★ 人工确认稿 {args.manual} 有 {len(errs)} 处问题：\n"
+            )
+            for e in errs:
+                sys.stderr.write(f"  - {e}\n")
+            sys.stderr.write("  ⇒ 改稿后重跑。\n")
+            return 1
+        titles = []
+        src = open(args.template, encoding="utf-8").read()
+        if "{{CHANGELOG}}" not in src:
+            sys.stderr.write(
+                f"[gen_release_notes] ★ 模板 {args.template} 里没有 {{{{CHANGELOG}}}} 占位。\n"
+                "  ⇒ 先在 .github/release-notes.md 里加一节，否则本脚本无处注入。\n"
+            )
+            return 1
+        out = src.replace("{{CHANGELOG}}", changelog.strip())
+        if args.out:
+            with open(args.out, "w", encoding="utf-8", newline="\n") as f:
+                f.write(out)
+            sys.stderr.write(f"[gen_release_notes] 已写出 {args.out}\n")
+        else:
+            sys.stdout.write(out)
+        sys.stderr.write(
+            f"[gen_release_notes] ok: 人工确认稿 {args.manual} "
+            f"→ {len(changelog.splitlines())} 行更新说明\n"
+        )
+        return 0
 
     if not args.frm:
         sys.stderr.write("[gen_release_notes] 缺 --from（除 --selftest 外必填）\n")

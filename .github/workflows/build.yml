@@ -2179,6 +2179,29 @@ jobs:
           #                       describe 起点用 HEAD（HEAD 本身没 tag ⇒ 不会自己匹配自己）
           #   ⚠️ 两个起点不能统一写：用 `$TAG` 当 describe 起点会**返回 tag 自己**
           #      ⇒ 区间 `$TAG..$TAG` 为空 ⇒ 生成器 exit 1。原来写 `$TAG^` 正是为这个。
+          # ══════════════════════════════════════════════════════════════
+          # ★★★ 2026-10-22：人工确认稿通道
+          # ══════════════════════════════════════════════════════════════
+          #
+          # # 为什么要有这条
+          # ```text
+          # v1.4.0-rc3..HEAD 区间 16 条提交里 7 条**真修复**
+          # （健康检测进度不刷新 / 读屏念英文 / 滚动区空白 / 弹幕重复发送 /
+          #   过期源反复全量检测 / 切进度偶发闪退）在自动归纳下**一条都产不出来**：
+          #   · 「健康检测」里的「检测」被工程词表按段删空
+          #   · 「本地化」「Material」等英文词被「正文只许有用户认识的 ASCII 词」判掉
+          #   · 「门禁」「探针」「脚本」这些词让整段消失
+          # ⇒ 自动路径**结构性地**产不出用户能读懂的说明
+          # ⇒ 「本版更新至少一条 bullet」那条守卫会红 ⇒ 这一版根本发不出去。
+          # ```
+          #
+          # # 形态
+          # ```text
+          # docs/release-notes/<TAG>.md 存在 ⇒ 用它当本版更新（不再自动归纳）
+          # 不存在 ⇒ 走原来的自动归纳（默认路径一个字没改）
+          # ```
+          # ★ 人工稿**仍然被机械校验**（条目 / 表格 / 开发用语 / 占位符），
+          #   所以「人工」不等于「随便」。
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
             ANCHOR="$TAG"
             DESCRIBE_FROM="${TAG}^"
@@ -2188,7 +2211,12 @@ jobs:
             DESCRIBE_FROM="HEAD"
           fi
           PREV=$(git describe --tags --abbrev=0 "$DESCRIBE_FROM" 2>/dev/null || true)
-          if [ -z "$PREV" ]; then
+          MANUAL_NOTES="docs/release-notes/$TAG.md"
+          if [ -f "$MANUAL_NOTES" ]; then
+            echo "本版更新：使用人工确认稿 $MANUAL_NOTES"
+            python3 tools/gen_release_notes.py --manual "$MANUAL_NOTES" \
+              --out /tmp/notes-src.md
+          elif [ -z "$PREV" ]; then
             # 没有任何更早的 tag ⇒ 真的是首个 release（允许留空）
             echo "::warning::历史里没有更早的 tag ⇒ 按首个 release 处理，更新说明留空"
             python3 tools/gen_release_notes.py --from "$ANCHOR" --to "$ANCHOR" \

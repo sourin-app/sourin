@@ -2125,8 +2125,11 @@ class _SourinAppState extends State<SourinApp>
        * ```
        */
       /*
-       * ★★★ 2026-10-18（M4 真机验证抓到）：**必须**包含
-       *   `DefaultMaterialLocalizations.delegate`，否则弹窗一开就崩。
+       * ★★★ 2026-10-18（M4 真机验证抓到）：delegates 里**必须**有 Material 的
+       *   delegate，否则弹窗一开就崩。
+       *   （当时挂的是 `DefaultMaterialLocalizations` 的英文版；2026-10-22 换成
+       *   material_ui 1.6.0 的 `GlobalMaterialLocalizations`（真中文），
+       *   见下面「曾经用 DefaultMaterialLocalizations」一段与 decision note）
        *
        * # 真实故障（真机隔离启动，`showUpdateDialog` 首次触发）
        * ```text
@@ -2151,23 +2154,38 @@ class _SourinAppState extends State<SourinApp>
        *
        * # 为什么用 `DefaultMaterialLocalizations` 而不是 `GlobalMaterialLocalizations`
        * ```text
-       * · Global* 来自 flutter_localizations，其类型是 flutter 侧的
+       * ⚠️ 这段是 2026-10-18 的旧结论，**2026-10-22 已被推翻**，留作历史：
+       * · 旧理由：Global* 来自 flutter_localizations，类型是 flutter 侧的
        *   MaterialLocalizations；本仓已无 `package:flutter/material.dart`，
        *   混用会有类型冲突风险
-       * · Default* 来自 material_ui 本身，与 DialogRoute 同源 ⇒ 类型必然一致
-       * · 代价：只有英文文案。但本仓弹窗文案全部是**自己写的**
-       *   （AppDialogShell / AppGlassDialog），Material 的默认文案基本用不到；
-       *   真正被读的是 `dialogLabel` / `modalBarrierDismissLabel` 这类无障碍标签。
+       * · 旧结论：Default* 来自 material_ui 本身，与 DialogRoute 同源 ⇒ 类型必然一致
+       * · 旧代价：只有英文文案。当时判断「本仓弹窗文案全部是自己写的，无所谓」
        * ```
        *
-       * ★ 判据：删掉这一行后 `test/zz_t66_material_localizations_test.dart`
-       *   必须变红（该门禁断言 delegates 里含 Material 的 delegate）。
+       * # ★ 推翻它的证据（material_ui 1.6.0）
+       * ```text
+       * ① 上面那条类型理由**不成立**：material_ui 1.6.0 自带
+       *    global_material_localizations.dart:72
+       *      `abstract class GlobalMaterialLocalizations implements MaterialLocalizations`
+       *    —— 这个 GlobalMaterialLocalizations 是 **material_ui 自己**的，
+       *    实现的也是 material_ui 自己的 MaterialLocalizations ⇒ 与 DialogRoute 同源。
+       * ② 旧代价其实不是「无所谓」：Material 真正被读的是**无障碍标签**
+       *    （showDialog → modalBarrierDismissLabel），中文用户开读屏听到的是
+       *    英文 "Dismiss"。这不叫「看不见所以没影响」。
+       * ⇒ 2026-10-22 换成 material_ui 1.6.0 的 GlobalMaterialLocalizations
+       *   （zh 的 modalBarrierDismissLabel = '关闭'）。
+       *   决策全文与回头条件见 .agents/notes/implemented/architecture/
+       *   2026-10-22-material-localizations-use-material-ui-global.md
+       * ```
+       *
+       * ★ 判据：把 `kAppLocalizationsDelegates` 里 Material 那一项去掉后，
+       *   `test/zz_t66_material_localizations_test.dart` 必须变红
+       *   （门禁**真的挂**这组代理到树上，断言 zh_CN 下
+       *   `MaterialLocalizations.of` 非 null 且 modalBarrierDismissLabel 是中文）。
+       *   集合本体在文件末尾的 `kAppLocalizationsDelegates`（提成顶层常量是为了
+       *   门禁能 import 它去真挂，而不是 grep 类名 —— grep 到 ≠ 树上生效）。
        */
-      localizationsDelegates: const [
-        _AnyLocaleMaterialDelegate(),
-        GlobalWidgetsLocalizations.delegate,
-        GlobalCupertinoLocalizations.delegate,
-      ],
+      localizationsDelegates: kAppLocalizationsDelegates,
       supportedLocales: [Locale("zh", "CN"), Locale("en", "US")],
       /*
        * ★ 两层 theme 都要给（2026-09-22 实测踩到）
@@ -8589,100 +8607,54 @@ Size _probeWindowSize() {
 }
 
 /*
- * ★★★ 2026-10-18（M4 真机验证）：`material_ui` 的 delegate 只认 `en`，
- *   中文环境下**根本不会加载** ⇒ 必须自己包一层。
+ * ★★★ App 的本地化代理集合（2026-10-22，PR #32 CodeRabbit 线程 2）
  *
- * # 真实故障链（我踩了两次才查清）
+ * # 为什么提到**顶层常量**（而不是直接写在 WidgetsApp 参数里）
  * ```text
- * 第一次：delegates 里压根没有 Material 的 ⇒ 启动后第一次弹更新窗就崩
- *         Null check operator used on a null value
- *         #0 MaterialLocalizations.of (material_ui/src/material_localizations.dart:718)
- *
- * 第二次：加了 `DefaultMaterialLocalizations.delegate` 仍然崩。
- *         查源码（material_ui-1.6.0:726）：
- *           bool isSupported(Locale locale) => locale.languageCode == 'en';
- *         而本仓 supportedLocales 首选 `zh_CN`
- *         ⇒ Localizations 解析时**跳过**这个 delegate
- *         ⇒ `Localizations.of<MaterialLocalizations>()` 仍是 null
+ * 门禁要能把这组代理**真的挂到树上**，断言行为：
+ *   zh_CN 下 `MaterialLocalizations.of(context)` 非 null
+ *   且 `modalBarrierDismissLabel` 是中文（'关闭'），不是英文 'Dismiss'
+ * 「grep 到某个类名」和「它在树上真的生效」是两件事 ——
+ * 上一版门禁就是 grep 类名：把 Material 代理换成英文 Default 版抓不住
+ * （那正是本轮要修的形状）。
+ * ⇒ 提成公开常量，test/zz_t66_material_localizations_test.dart 直接 import 来挂。
  * ```
  *
- * # 为什么不用 `GlobalMaterialLocalizations`
+ * # 三项的分工（⚠️ 不要整包换成 material_ui 的 `GlobalMaterialLocalizations.delegates`）
  * ```text
- * 它来自 flutter_localizations，实现的是 **flutter 侧**的 `MaterialLocalizations`
- * （`package:flutter/material.dart` 里的那个类型），
- * 与 `material_ui` 的 `MaterialLocalizations` 是**两个不同的类型**。
- * 本仓已禁用 `package:flutter/material.dart` ⇒ 混用会类型冲突，
- * 且 `Localizations.of<material_ui 的 MaterialLocalizations>` 依然拿不到。
+ * GlobalMaterialLocalizations   ← material_ui **1.6.0 自带**
+ *   global_material_localizations.dart:72
+ *     `abstract class GlobalMaterialLocalizations implements MaterialLocalizations`
+ *   ⇒ 实现的是 **material_ui 自己**的 MaterialLocalizations，
+ *     与 DialogRoute / showDialog 期望的类型**同源**（不存在 flutter/material 侧冲突）。
+ *   :650 `static const LocalizationsDelegate<MaterialLocalizations> delegate`
+ *   zh 文案是真的：MaterialLocalizationZh.modalBarrierDismissLabel = '关闭'
+ *     （generated_material_localizations.dart:45298）
+ *   isSupported = kMaterialSupportedLanguages.contains(languageCode)，含 'zh'
+ *     （同文件 :701；'zh' 在 :46601 附近）
+ *
+ * GlobalWidgetsLocalizations    ← flutter_localizations
+ *   WidgetsApp 自己要（文本方向 LTR/RTL）
+ *
+ * GlobalCupertinoLocalizations  ← flutter_localizations（**flutter 侧**类型）
+ *   本仓第三方组件读 flutter 侧 CupertinoLocalizations
+ *
+ * ⚠️ 为什么**不能**用 `GlobalMaterialLocalizations.delegates` 整包：
+ *   那个集合（global_material_localizations.dart:674）里的 Cupertino 代理
+ *   来自 **cupertino_ui** 包（同文件 :5 `import 'package:cupertino_ui/...'`），
+ *   其 CupertinoLocalizations 与 flutter 侧**不是同一个类型**
+ *   ⇒ 整包塞进来会把本仓需要的 flutter 侧 Cupertino 代理顶掉 / 变成多余代理。
+ *   类型是否真的不同：门禁里有一条可执行断言守着（见
+ *   test/zz_t66_material_localizations_test.dart 的「整包换掉会怎样」用例）。
  * ```
  *
- * # 本类的做法
- * ```text
- * 无条件 `isSupported => true`，load 时**忽略传入的 locale**，
- * 一律返回 `DefaultMaterialLocalizations()`（英文）。
- *
- * 代价：Material 内置文案是英文。但本仓所有弹窗文案都是**自己写的**
- *       （AppDialogShell / AppGlassDialog），真正被读的只有
- *       `dialogLabel` / `modalBarrierDismissLabel` 这类**无障碍标签**，
- *       它们不出现在视觉上。
- * ⇒ 这个代价可以接受；换来的是「弹窗不再崩」。
- * ```
+ * 决策记录（旧方案 `_AnyLocaleMaterialDelegate` 为什么作废、什么条件下要回头看）：
+ * `.agents/notes/implemented/architecture/2026-10-22-material-localizations-use-material-ui-global.md`
  */
-class _AnyLocaleMaterialDelegate
-    extends LocalizationsDelegate<MaterialLocalizations> {
-  const _AnyLocaleMaterialDelegate();
+const List<LocalizationsDelegate<dynamic>> kAppLocalizationsDelegates =
+    <LocalizationsDelegate<dynamic>>[
+  GlobalMaterialLocalizations.delegate,
+  GlobalWidgetsLocalizations.delegate,
+  GlobalCupertinoLocalizations.delegate,
+];
 
-  /// ★ 无条件 true —— 这是本类的全部意义。
-  /// 若改成 `locale.languageCode == 'en'`，中文环境下又会退化成 null。
-  ///
-  /// # ⚠️⚠️ 恒真带来的**语言不一致**（2026-10-18 第 7 波审查新增）
-  ///
-  /// ```text
-  /// `isSupported` 恒真 ⇒ Flutter 的 locale 协商对**任何**语言都"成功"
-  ///   ⇒ `MaterialLocalizations` 一律拿到 `load()` 返回的**英文**
-  ///   （load 忽略入参，硬编码 Locale('en','US')）
-  /// 而 `GlobalWidgetsLocalizations.delegate` 会走**该语言自己的**版本
-  ///   ⇒ 两者语言**可能不一致**
-  /// ```
-  ///
-  /// # 当前**不可见**（已核实全仓的消费面，不是想当然）
-  ///
-  /// ```text
-  /// 本仓能到达的 MaterialLocalizations 成员只有**无障碍语义标签**：
-  ///   · showDialog  → modalBarrierDismissLabel（读屏用，不画到屏幕）
-  ///   · ExpansionTile → collapsedHint / expandedHint（同上）
-  ///
-  /// 以下组件**用量全是 0**（`grep` 实测）：
-  ///   TimePicker / DatePicker / CalendarDatePicker / AboutDialog /
-  ///   showLicensePage / BackButton / Stepper / PaginatedDataTable / SearchAnchor
-  ///   ⚠️ `Tooltip` 那 24 处**不读** MaterialLocalizations
-  ///      （`material/tooltip.dart` 里 `Localizations` 零命中）
-  ///   ⚠️ `Drawer` 那 26 处是**自绘**的 `PlayerEpisodePanelStyle.rightDrawer`，
-  ///      不是 Material 的 `Drawer`
-  /// ⇒ 所以"Material 内置文案是英文"目前**没有用户可见后果**。
-  /// ```
-  ///
-  /// # ★ 未来陷阱（引入新组件前必读）
-  ///
-  /// ```text
-  /// 一旦引入任何**带可见文案**的 Material 组件
-  ///   （典型：TimePicker / DatePicker / AboutDialog / 带"OK/CANCEL"的默认对话框）
-  /// ⇒ 会出现「**界面中文 + 该组件英文**」的混排
-  ///
-  /// 届时的修法（二选一）：
-  ///   ① 接真正的 zh 本地化：`GlobalMaterialLocalizations.delegate`
-  ///      + `flutter_localizations` 依赖（但本仓未引入该依赖）
-  ///   ② 该组件自行提供中文文案（像 AppDialogShell / AppGlassDialog 那样）
-  /// ```
-  @override
-  bool isSupported(Locale locale) => true;
-
-  @override
-  Future<MaterialLocalizations> load(Locale locale) =>
-      DefaultMaterialLocalizations.load(const Locale('en', 'US'));
-
-  @override
-  bool shouldReload(_AnyLocaleMaterialDelegate old) => false;
-
-  @override
-  String toString() => '_AnyLocaleMaterialDelegate()';
-}

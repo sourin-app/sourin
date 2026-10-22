@@ -24,8 +24,9 @@
 // ```text
 // 那样测的是**探针的根**，不是产品的根。R4 的故障点恰恰在「根上有没有
 // 提供 MaterialLocalizations / Material 祖先」这一层：
-//   产品的根是 `SourinApp`（内部 `WidgetsApp` + `_AnyLocaleMaterialDelegate()`
-//   + GlobalWidgets/Cupertino delegates，见 shell.dart:1941 / :2151），
+//   产品的根是 `SourinApp`（内部 `WidgetsApp` + material_ui 的
+//   `GlobalMaterialLocalizations.delegate` + GlobalWidgets/Cupertino delegates，
+//   见 shell.dart:1941 / :2151），
 //   **不是** `MaterialApp`（R7 已把 MaterialApp 彻底去掉，真实调用 0 处）。
 // ⇒ 本探针直接 `runApp(RepaintBoundary(child: SourinApp()))` ——
 //   用的是**产品自己的根**，一个字段都不复刻。

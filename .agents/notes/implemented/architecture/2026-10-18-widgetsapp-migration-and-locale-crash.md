@@ -40,6 +40,14 @@ MaterialApp 免费提供了四样东西：
 
 ### ② MaterialLocalizations 用「兜底 delegate」补上
 
+> **2026-10-22 更新**：本小节的**取舍已被推翻**，实现换成 material_ui 1.6.0 自带的
+> `GlobalMaterialLocalizations.delegate`（真中文文案，不再是英文兜底）。
+> 推翻理由与证据见
+> [2026-10-22-material-localizations-use-material-ui-global.md](2026-10-22-material-localizations-use-material-ui-global.md)：
+> 当时「`Global*` 来自 flutter_localizations、类型与 material_ui 不同源会冲突」这个
+> 前提不成立 —— material_ui 1.6.0 已经自带同源的 `GlobalMaterialLocalizations`。
+> 下面保留原决策原文（含其当时的判断与代价），不当作现行实现。
+
 `fix(round-66/M4)`：`WidgetsApp` 缺 `MaterialLocalizations` ⇒ 任何
 `DialogRoute` 构造时 `MaterialLocalizations.of(context)` 抛 null check。
 

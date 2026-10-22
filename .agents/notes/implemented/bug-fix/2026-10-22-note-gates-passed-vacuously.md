@@ -110,7 +110,7 @@ AGENT_NOTE_ARCHIVE_BASE_REF=$(printf '0%.0s' {1..40}) node .agents/notes-scripts
 AGENT_NOTE_ARCHIVE_BASE_REF=HEAD node .agents/notes-scripts/verify-archived-agent-notes.ts              # exit 0
 
 # 全部判据（夹具在临时 git 仓库里现造现删）
-node .agents/notes-scripts/notes-selftest.mjs              # → 17/17
+node .agents/notes-scripts/notes-selftest.mjs              # → 19/19
 ```
 
 2026-10-22 晚补记：本篇说的「判据写错时没人发现」后来又遇到第三个实例 ——

@@ -51,10 +51,10 @@ CI 报 `missing one of ["## Consequences", …]`，而笔记里那句话就摆�
 const scan = blankInlineCode(l);
 if (!inComment && /^\s{0,3}```/.test(scan)) { … }
 const openIdx = inComment ? -1 : scan.indexOf("<!--");
-const closeIdx = scan.indexOf("-->");
+const closeIdx = (inComment ? l : scan).indexOf("-->");
 ```
 
-三条实现约束：
+五条实现约束：
 
 1. **等长替换**（`" ".repeat(close + ticks - i)`），不是删除 —— 字节偏移不变，
    同一行内后续内容的列位置不变，报错行号仍等于原文件行号。
@@ -62,6 +62,18 @@ const closeIdx = scan.indexOf("-->");
    `line.indexOf("`".repeat(ticks), i + ticks)` 才对得上。
 3. **找不到闭合就按字面保留反引号**，不吞掉本行其余内容 —— 与 Markdown 语义一致
    （未闭合的反引号就是普通字符）。这一条防的是「遮蔽器把整行抹掉」这种更隐蔽的假绿。
+4. **转义的反引号不是围栏**（2026-10-22 评审意见，`isEscaped()` 数前导反斜杠的奇偶）。
+   `\`x\`` 在 Markdown 里是三个普通字符；不认转义的话，一行故意写成
+   `\`<!--\`` 的笔记里那个**真的** `<!--` 会被遮蔽掉 ⇒ 未闭合注释漏判 ⇒
+   后面的必备小节全被当成有效标题 ⇒ 门禁假绿。闭合侧也要跳过被转义的候选，
+   否则会拿一个转义反引号当收尾。
+5. **`inComment == true` 时用原文 `l` 找 `-->`**（同批评审意见）。
+   注释一旦打开，里面的反引号没有 Markdown 语义，`-->` 就该生效；仍用 `scan`
+   去找的话，恰好写在行内代码里的 `-->` 被抹掉，注释一路吃到文末 ⇒
+   后面真正有效的 `## Consequences` 被判成注释 ⇒ 门禁假红。
+   反过来 `inComment == false` 时**必须**用 `scan` 找 `<!--` —— 两个方向不对称，
+   因为它们回答的是两个不同问题：行内代码里能不能**开**注释（不能），
+   注释里能不能**关**注释（能）。
 
 `lines` 仍返回**原文**（`isProseLine` 读原文），只有状态机读遮蔽后的文本。
 
@@ -112,12 +124,15 @@ const closeIdx = scan.indexOf("-->");
 ## Verification
 
 - `node .agents/notes-scripts/notes-gate.mjs` ⇒
-  `ok: 137 note(s) verified` + `ok: 1 archived note(s) verified, 1 seal(s) in manifest`
-  + `三道门禁全部通过（138 篇笔记）`（修前：`format:` 那行报缺 `## Consequences`）
-- `node .agents/notes-scripts/notes-selftest.mjs` ⇒ `notes-selftest: 17/17 通过（runner=node）`
-  （原 15 条 + 本篇新增的正向/反向 2 条）
-- **红过才算数**：新增的两条用例里，正向那条在修 `blankInlineCode` 之前是红的
-  （`exit 1`，正是 CI 报的同一个错）；反向那条在修前修后都必须绿，用来证明
-  遮蔽器没有把「真注释」也一起放过。
+  `ok: 138 note(s) verified` + `ok: 1 archived note(s) verified, 1 seal(s) in manifest`
+  + `三道门禁全部通过（139 篇笔记）`（修前：`format:` 那行报缺 `## Consequences`）
+- `node .agents/notes-scripts/notes-selftest.mjs` ⇒ `notes-selftest: 19/19 通过（runner=node）`
+  （原 15 条 + 本篇 2 条 + 评审意见补的 2 条）
+- **红过才算数**，而且四条都做了「旧实现 vs 新实现」对照
+  （把旧版脚本 `git show <旧提交>:… > _baseline.ts`，用 `AGENT_NOTE_ROOT` 指向同一个夹具）：
+  - 行内 `` `<!--` `` 未闭合（正向）⇒ 基线 `exit 1`、当前 `exit 0`
+  - 真的未闭合注释（反向）⇒ 两边都必须 `exit 1`，证明注释遮蔽没被废掉
+  - 转义反引号 `` \`<!--\` `` ⇒ `1bc35b7`（缺约束 4）`exit 0` 假绿、当前 `exit 1`
+  - 注释内写在反引号里的 `` `-->` `` ⇒ `1bc35b7`（缺约束 5）`exit 1` 假红、当前 `exit 0`
 - 手工复现：`AGENT_NOTE_ROOT=<临时树> npx tsx .agents/notes-scripts/verify-agent-note-format.ts`
   ⇒ 修前 `missing one of ["## Consequences", …]`，修后 `ok: 1 note(s) verified`

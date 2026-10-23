@@ -5122,6 +5122,26 @@ class _ProviderCard extends StatelessWidget {
                                 _sourceLine(colors),
                               ],
                               /*
+                       * ★ task-7：源类型 · 上次源更新时间
+                       *
+                       * Owner 要求：JS 插件卡片显示「源类型 · 上次源更新时间」。
+                       *
+                       * ⚠️ **单独一行**，理由同上面的 task-5 来源行：
+                       *    `_descLine` 是最挤的一行（211px 装"描述 · v版本 · 文件名"），
+                       *    再往里塞会把文件名挤没 —— 而文件名恰恰是"我该改哪个文件"。
+                       *
+                       * ⚠️ 两样都缺时**整行不画**（`_sourceMetaLine == null`）——
+                       *    本机 31 个 legacy 插件没有 `@type`/`@updated`，
+                       *    所以它们的卡片高度与本次改动**逐像素相同**（零回归）。
+                       *
+                       * ⚠️ 绝不显示占位垃圾：缺一样就只显示另一样，
+                       *    两样都缺整行消失（没有「· 」「null」「-」）。
+                       */
+                              if (_sourceMetaLine != null) ...[
+                                const SizedBox(height: 4),
+                                _sourceMetaText(colors),
+                              ],
+                              /*
                        * ⚠️ `Capabilities` **没有** `hasAny` 之类的聚合 getter
                        *    （只有 8 个 bool 字段）—— 而 `models.dart` 不在
                        *    我这次允许改动的文件范围内，所以在这里本地算。
@@ -5554,6 +5574,112 @@ class _ProviderCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ★ task-7：源类型 · 上次源更新时间
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// 源类型原文（`@type` / 运行时 `sourceStatus.sources[].type`；空串 = 没有）
+  String get _sourceKind => pluginEntry?.kind ?? '';
+
+  /// 上次源更新时间原文（ISO8601 带时区；空串 = 没有）
+  String get _sourceUpdatedAt => pluginEntry?.updated ?? '';
+
+  /// 副标题文案 `类型 · 更新时间`；**`null` = 整行不画**
+  ///
+  /// # 为什么用 `null` 而不是空串表示"没有"
+  ///
+  /// 这判断直接决定**要不要占那一行高度**（见调用处
+  /// `if (_sourceMetaLine != null)`）。空串也能判，但 `null`
+  /// 让"没有"这件事在类型上就说不出来一个占位符 —— 物理上不可能
+  /// 拼出 `' · '` 这种空分隔符。
+  ///
+  /// # 缺值规则
+  /// ```text
+  /// 只有类型          → 「点播源」
+  /// 只有时间          → 「更新 10-23 09:10」
+  /// 两样都没有        → null（整行消失，连 4px 间距都不占）
+  /// ```
+  /// ⚠️ 老插件（本机 31 个）走第三种 ⇒ 卡片与改动前**逐像素相同**。
+  String? get _sourceMetaLine {
+    final parts = <String>[
+      if (_sourceKind.isNotEmpty) _kindTextOf(_sourceKind),
+      if (_sourceUpdatedAt.isNotEmpty) '更新 ${_shortUpdated(_sourceUpdatedAt)}',
+    ];
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+
+  /// 类型 slug → 界面文案（**未知值原样透出**，如实而不猜）
+  ///
+  /// 五个中文文案对应插件仓契约里的五个取值；第三方插件若自造一个
+  ///（比如 `podcast`），我们**照原样显示** —— 那比"其它"更接近事实，
+  /// 也比隐藏起来更有用。
+  ///
+  /// ⚠️ 与 `_kindLabel`（provider.kind 的 chip 文案）是**两件事**：
+  ///    那个说的是"这个源是不是插件（js）"，这个说的是
+  ///    "这个插件的上游是什么形态"，别混。
+  static String _kindTextOf(String v) {
+    switch (v) {
+      case 'video-site':
+        return '点播源';
+      case 'aggregator':
+        return '聚合源';
+      case 'iptv':
+        return '直播源';
+      case 'emby':
+        return 'Emby';
+      case 'other':
+        return '其它';
+      default:
+        return v;
+    }
+  }
+
+  /// ISO8601 → 卡片上的短时间（**按本地时区**显示）
+  ///
+  /// ```text
+  /// 2026-10-23T09:10:00+08:00 → 「10-23 09:10」
+  /// 2026-10-23                → 「10-23」        （只有日期就不显示 00:00）
+  /// 跨年                     → 「2025-12-01 08:00」（带年份，避免年份混淆）
+  /// 解析不了                 → 原样返回该字符串   （第三方乱写时如实显示）
+  /// ```
+  /// ⚠️ 最后一条是硬要求：**绝不显示 `null`**、绝不显示 `Invalid Date` 之类
+  ///    的解析器产物。解析不了就把作者写的东西原样摆出来，让用户自己判断。
+  static String _shortUpdated(String raw) {
+    final t = DateTime.tryParse(raw);
+    if (t == null) return raw;
+    final l = t.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    final md = '${two(l.month)}-${two(l.day)}';
+    // 没有时间部分（`2026-10-23`）→ 只显示日期，别造出一个假的 00:00
+    if (!raw.contains('T')) return md;
+    final hm = '${two(l.hour)}:${two(l.minute)}';
+    return l.year == DateTime.now().year ? '$md $hm' : '${l.year}-$md $hm';
+  }
+
+  /// 类型 · 更新时间 那一行
+  ///
+  /// Tooltip 里保留**原值**（slug + 完整 ISO8601）——
+  /// 卡片上只放短文案，但"到底是什么值"一个字节都不丢：
+  /// 排查"这个源的上游多久没动了"时，用户需要看到带时区的原始时间。
+  Widget _sourceMetaText(ColorScheme colors) {
+    final tips = <String>[
+      if (_sourceKind.isNotEmpty) '源类型：${_kindTextOf(_sourceKind)}（$_sourceKind）',
+      if (_sourceUpdatedAt.isNotEmpty) '上次源更新：$_sourceUpdatedAt',
+    ];
+    final text = Text(
+      _sourceMetaLine!,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: FontSizes.cap,
+        color: colors.onSurfaceVariant,
+        height: 1.4,
+      ),
+    );
+    if (tips.isEmpty) return text;
+    return Tooltip(message: tips.join('\n'), child: text);
   }
 
   /// 能力标签行

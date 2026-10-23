@@ -303,6 +303,9 @@ void main() {
         'quote.md': ('### 修复\n\n- 播放更顺畅。\n- 说明如下：\n\n> 旧版需要手动重连。\n', '引用块'),
         'strike.md': ('### 修复\n\n- ~~旧的说明~~ 换成新的。\n', '删除线'),
         'underscore.md': ('### 修复\n\n- __重要__ 提示。\n', '下划线粗体'),
+        // Setext 标题是第三种写法：`====` 下划线。它是在语法矩阵门禁
+        // （zz_t1024）第一次跑时被抓出来的 —— 前面三条判据都看不见它。
+        'setext.md': ('### 修复\n\n- 播放更顺畅。\n\n另一段标题\n====\n', 'Setext'),
       };
       for (final entry in cases.entries) {
         final (body, needle) = entry.value;

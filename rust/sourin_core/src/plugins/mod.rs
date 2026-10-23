@@ -3969,7 +3969,15 @@ impl MediaProvider for JsPluginProvider {
          *    当文本显示（虽然不好扫，但用户至少能看到出了什么事）。
          *    所以这里是 `unwrap_or_default()` 而不是 `?`。
          */
-        start.svg = crate::remote::qr_svg_for(&start.url).unwrap_or_default();
+        /*
+         * ★ 上游给了**图片地址**时，绝不能再拿 url 去画二维码。
+         *
+         * 腾讯 ptqrshow 这类接口：url 就是「那张 PNG 的地址」，
+         * 把它编码成二维码 = 让用户扫一个图片链接，扫完什么都不会发生。
+         * 这种时候清空 svg，交给界面直接显示图片
+         * （provider_login_panel.dart 里的 imageUrl 分支）。
+         */
+        start.finalize_qr_rendering();
         Ok(start)
     }
 

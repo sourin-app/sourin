@@ -933,6 +933,14 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
 
     final svg = (_qr?['svg'] as String?) ?? '';
     final url = (_qr?['url'] as String?) ?? '';
+    /*
+     * ★ 上游直接下发图片的二维码（腾讯 ptqrshow）。
+     *
+     * 腾讯不给「可编码的地址」，只给一张 PNG。Rust 侧看到 imageUrl
+     * 就会清空 svg（见 sourin_core/src/plugins/mod.rs 的 qr_login_start），
+     * 所以这里两个分支是互斥的：有图就不画 SVG，有 SVG 就不拉图。
+     */
+    final imageUrl = (_qr?['imageUrl'] as String?) ?? '';
     final hint = (_qr?['hint'] as String?) ?? '';
     final expired = _qrMsg.contains('失效');
     final failed = _qrMsg.contains('获取失败');
@@ -959,6 +967,34 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
                 size: 184,
                 fallback: const Text(
                   '二维码不可用',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: Colors.black54,
+                  ),
+                ),
+              ),
+            )
+          else if (imageUrl.isNotEmpty)
+            /*
+             * ★ 上游直接给图片的站点（腾讯）：原图就是二维码，不要再画。
+             *   同样要白底 —— PNG 本身可能是透明底，深色主题下扫不出来。
+             */
+            Container(
+              width: 200,
+              height: 200,
+              padding: const EdgeInsets.all(Sp.x2),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(Radii.md),
+              ),
+              child: Image.network(
+                imageUrl,
+                width: 184,
+                height: 184,
+                fit: BoxFit.contain,
+                errorBuilder: (_, _, _) => const Text(
+                  '二维码图片加载失败',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: FontSizes.cap,

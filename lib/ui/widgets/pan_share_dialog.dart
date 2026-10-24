@@ -27,6 +27,7 @@
 // `Material(type: transparency)`；所有 Text 显式 `TextAlign.left`。
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/ffi.dart' show userErrorText;
 import '../../core/sourin_api.dart';
 import '../../design/icons/app_icons.dart';
 import '../../design/widgets/app_glass_dialog.dart';
@@ -78,7 +79,9 @@ class _PanShareDialogState extends State<PanShareDialog> {
       setState(() => _status = s);
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = '识别失败：$e');
+      // ★ 不许把异常原文倒进用户可见字段（本仓硬约束，
+      //   门禁 zz_t66_user_error_text_gate 会抓）。走统一收口。
+      setState(() => _error = userErrorText(e, fallback: '识别没有完成，请稍后重试'));
     } finally {
       if (mounted) setState(() => _busy = false);
     }

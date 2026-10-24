@@ -1473,6 +1473,15 @@ pub enum PersistedProvider {
         #[serde(default)]
         categories: Vec<TvboxCategoryEntry>,
     },
+    /// m3u/txt 播放列表直播源：只存列表地址，频道每次拉取时解析
+    ///
+    /// 不存频道列表：列表会增删台，存快照会让用户看到过期的台；
+    /// 而重新拉一次的成本很低（几百 KB）。
+    M3uLive {
+        id: String,
+        name: String,
+        url: String,
+    },
 }
 
 impl PersistedProvider {
@@ -1482,6 +1491,7 @@ impl PersistedProvider {
             PersistedProvider::Declarative { id, .. } => id,
             PersistedProvider::Http { id, .. } => id,
             PersistedProvider::Tvbox { id, .. } => id,
+            PersistedProvider::M3uLive { id, .. } => id,
         }
     }
 }

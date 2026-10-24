@@ -279,6 +279,13 @@ impl AppState {
                 } => {
                     http_to_restore.push((id.clone(), base_url.clone(), headers.clone()));
                 }
+                // m3u/txt 播放列表直播源：纯 HTTP，同步重建即可（不联网）
+                PersistedProvider::M3uLive { id, name, url } => {
+                    let p = crate::providers::m3u_live::M3uLiveProvider::new(name, url);
+                    registry.register(Arc::new(p));
+                    let _ = id;
+                    ok += 1;
+                }
                 // TVBox 源是纯 HTTP 协议，不需要握手 → 同步重建即可，
                 // 分类表在导入时已探测并持久化，这里不再联网。
                 PersistedProvider::Tvbox {

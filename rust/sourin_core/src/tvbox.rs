@@ -1481,6 +1481,51 @@ impl MediaProvider for TvboxAppleCmsProvider {
 ///
 /// 流程：解析 → 分类（type=1 留，其余归档）→ 并发探测 type=1 站点
 /// → 可用的注册成 Provider 并持久化 → 返回导入报告。
+/// 把注册过的直播源写进持久化列表
+///
+/// # 为什么单独一个函数
+/// `import_tvbox_config` 有**两条**返回路径（一个点播源都没探测成功时走早返回），
+/// 两条都必须落盘 —— 否则"这次能用、重启后消失"是最难查的分裂。
+/// 抽成函数而不是复制两遍：复制的那份迟早会漂。
+///
+/// # 为什么直接写 `third_party` 而不走 `to_persist`
+/// `to_persist` 里放的是"探测成功的点播源"，与直播源生命周期无关；
+/// 而 m3u 源除了 `{id,name,url}` 没有别的要存，直接写更直白。
+/// `persist_from_registry` 只是把当前列表克隆落盘，**不改列表**，
+/// 所以这里写进去的条目不会被它覆盖（已核实现）。
+fn persist_live_rows(
+    state: &crate::state::AppState,
+    rows: &[serde_json::Value],
+) -> std::result::Result<(), String> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    {
+        let mut list = state
+            .third_party
+            .write()
+            .map_err(|_| "第三方源列表被污染".to_string())?;
+        for r in rows {
+            let id = r.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let url = r.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            if id.is_empty() || url.is_empty() {
+                continue;
+            }
+            // 同一地址重复导入 ⇒ 同 id ⇒ 先删旧再推新（幂等）
+            list.retain(|x| x.id() != id);
+            list.push(crate::model::PersistedProvider::M3uLive {
+                id: id.to_string(),
+                name: name.to_string(),
+                url: url.to_string(),
+            });
+        }
+    }
+    crate::commands_provider::persist_from_registry(state)?;
+    crate::commands_provider::touch_providers(state);
+    Ok(())
+}
+
 pub async fn import_tvbox_config(
     state: &crate::state::AppState,
     input: &str,
@@ -1531,12 +1576,42 @@ pub async fn import_tvbox_config(
     }
 
     let (jobs, mut skipped, lives) = collect_sites(&cfg, &base_url);
+
+    // ── 直播源：解析成 provider 并注册（P1'.2b）─────────────────────
+    //
+    // ★ 必须在 `jobs.is_empty()` 的早返回**之前**做 ——
+    //   Owner 给的那份配置里 100 个站点全是 Java（无可用 job），
+    //   正好走早返回分支；若把这段放在后面，那份配置的直播源永远进不来。
+    //
+    // ★ 这里只**注册**，落盘由下面统一处理（早返回与正常路径各一次），
+    //   否则重启后列表就丢了。
+    let mut live_rows: Vec<serde_json::Value> = Vec::new();
+    for l in &lives {
+        let lname = l.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let lurl = l.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        if lurl.trim().is_empty() {
+            continue; // 没有地址的条目无法播放，不注册也不虚报
+        }
+        let p = crate::providers::m3u_live::M3uLiveProvider::new(lname, lurl);
+        let pid = crate::provider::MediaProvider::manifest(&p).id.clone();
+        let pname = crate::provider::MediaProvider::manifest(&p).name.clone();
+        state.registry.register(Arc::new(p));
+        live_rows.push(serde_json::json!({
+            "id": pid,
+            "name": pname,
+            "url": lurl.trim(),
+        }));
+    }
     if jobs.is_empty() {
+        // 即便一个点播源都用不了，直播源也可能可用 ⇒ 必须落盘
+        persist_live_rows(state, &live_rows)?;
         return Ok(serde_json::json!({
             "totalSites": cfg.get("sites").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
             "imported": [],
             "skipped": skipped,
             "lives": lives,
+        "liveImported": live_rows,
+            "liveImported": live_rows,
         }));
     }
 
@@ -1646,6 +1721,9 @@ pub async fn import_tvbox_config(
         // 标记改动时间：云同步据此判断「本地是新的」
         crate::commands_provider::touch_providers(state);
     }
+    // 直播源单独落盘（它不走 `to_persist`：那份列表由 persist_from_registry 重建，
+    // 而 m3u 源没有 manifest 以外的东西要存，直接写 third_party 更直接）
+    persist_live_rows(state, &live_rows)?;
 
     // ── 记下「这些源是从哪来的」（task-12）───────────────────────────
     //

@@ -35,6 +35,22 @@ use crate::model::LiveChannel;
 /// 返回的 `id` 是**稳定**的（由 URL 与出现序号决定），
 /// 这样刷新列表后同一个频道的 id 不变，用户的"上次看的台"才不会丢。
 pub fn parse_playlist(text: &str, source_key: &str) -> Vec<LiveChannel> {
+    parse_playlist_with_urls(text, source_key)
+        .into_iter()
+        .map(|(ch, _)| ch)
+        .collect()
+}
+
+/// 与 [`parse_playlist`] 相同，但**同时返回每个频道的播放地址**
+///
+/// # 为什么需要它
+/// `LiveChannel` 模型里**故意没有**播放地址字段（频道列表不该把地址泄露到
+/// UI 层）。但 provider 的 `live_stream(channel_id)` 必须按 id 反查地址 ⇒
+/// 需要一个"带地址"的视图。两个入口共用同一套解析逻辑，不重复实现。
+pub fn parse_playlist_with_urls(
+    text: &str,
+    source_key: &str,
+) -> Vec<(LiveChannel, String)> {
     let body = strip_bom(text);
     if looks_like_m3u(body) {
         parse_m3u(body, source_key)
@@ -56,8 +72,8 @@ fn looks_like_m3u(s: &str) -> bool {
 
 // ─────────────────────────── m3u ───────────────────────────
 
-fn parse_m3u(text: &str, source_key: &str) -> Vec<LiveChannel> {
-    let mut out: Vec<LiveChannel> = Vec::new();
+fn parse_m3u(text: &str, source_key: &str) -> Vec<(LiveChannel, String)> {
+    let mut out: Vec<(LiveChannel, String)> = Vec::new();
     // 待与 URL 配对的 EXTINF 信息
     let mut pending: Option<Attrs> = None;
 
@@ -89,7 +105,8 @@ fn parse_m3u(text: &str, source_key: &str) -> Vec<LiveChannel> {
             .filter(|s| !s.trim().is_empty())
             .or_else(|| attrs.tvg_name.clone().filter(|s| !s.trim().is_empty()))
             .unwrap_or_else(|| fallback_name(url));
-        out.push(make_channel(source_key, &name, url, &attrs, out.len()));
+        let ch = make_channel(source_key, &name, url, &attrs, out.len());
+        out.push((ch, url.to_string()));
     }
     out
 }
@@ -170,8 +187,8 @@ fn attr_value(s: &str, key: &str) -> Option<String> {
 
 // ─────────────────────────── txt ───────────────────────────
 
-fn parse_txt(text: &str, source_key: &str) -> Vec<LiveChannel> {
-    let mut out = Vec::new();
+fn parse_txt(text: &str, source_key: &str) -> Vec<(LiveChannel, String)> {
+    let mut out: Vec<(LiveChannel, String)> = Vec::new();
     for raw in text.lines() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -201,9 +218,8 @@ fn parse_txt(text: &str, source_key: &str) -> Vec<LiveChannel> {
         } else {
             name
         };
-        out.push(make_channel(
-            source_key, display, url, &a, out.len(),
-        ));
+        let ch = make_channel(source_key, display, url, &a, out.len());
+        out.push((ch, url.to_string()));
     }
     out
 }
@@ -256,6 +272,14 @@ fn make_channel(
         group: attrs.group.clone().filter(|s| !s.is_empty()),
         now_playing: None,
     }
+}
+
+/// 由地址派生稳定短键（供 provider 生成 manifest.id 用）
+///
+/// 语义要求：**同一个 URL 永远得到同一个键**，否则重复导入同一份
+/// 播放列表会产生两个源、用户"上次看的台"也会因为 id 变化而丢。
+pub fn stable_key(url: &str) -> String {
+    short_hash(url.trim())
 }
 
 /// 稳定短哈希（FNV-1a 64），只用于拼 id，不需要密码学强度

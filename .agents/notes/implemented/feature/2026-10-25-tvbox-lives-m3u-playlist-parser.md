@@ -77,6 +77,34 @@ TVBox 配置的 `lives[]` 是一组直播源地址，指向 `.m3u` 或 `.txt` �
   `legacy_protocols_are_accepted_but_relative_paths_are_not` **双双 FAILED**，
   恢复后 13 passed。证明"垃圾行不许混进来"这条真能变红。
 
+
+## 追加：接入层 `M3uLiveProvider`（同一决定的落地）
+
+解析器只是纯函数，用户看不到东西。要让它变成"能看的直播源"，必须做成
+**provider** —— 因为直播页取数是
+`get_live_channels → registry.live_all() → 每个 provider 的 live_channels()`。
+绕开 registry 直接塞数据就得改直播页取数链路，而且"刷新""取流"无处安放。
+
+`src/providers/m3u_live.rs`：
+
+- **一个播放列表 URL = 一个 provider**：TVBox 的每个 `lives[i]` 是独立列表，
+  manifest.id 由 `m3u::stable_key(url)` 派生 ⇒ **同一地址重复导入不产生第二个源**
+- `live_channels()` **每次重拉**（列表会增删台），解析结果填进
+  `HashMap<频道id, 播放地址>` 缓存
+- `live_stream(id)` 走缓存反查地址 —— 切台是高频调用，每次重拉整个列表会卡
+- `LiveChannel` 模型**故意没有**播放地址字段（频道列表不该把地址泄露到 UI 层）
+  ⇒ `m3u.rs` 新增 `parse_playlist_with_urls()` 返回 `(频道, 地址)` 对，
+  两个入口共用同一套解析逻辑，不重复实现
+- 点播方法（`list`/`detail`/`resolve`）**明确返回 unsupported**，
+  不返回空页 —— 否则 UI 会显示"暂无内容"而不是"这个源本来就没有点播"
+
+验证：`cargo test --lib m3u` → **18 passed**（含 provider 5 条）；
+注入"用地址长度当 id"（模拟不稳定 id）⇒
+`id_is_derived_from_url_so_reimport_is_stable` **FAILED**，恢复后复绿。
+
+**仍未做**：持久化（`PersistedProvider` 还没有 m3u 变体）、
+`import_tvbox_config` 也还没把 lives 注册进去 ⇒ **用户目前仍看不到直播源**。
+
 ## Consequences
 
 **收益**

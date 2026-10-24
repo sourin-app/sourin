@@ -8,6 +8,8 @@
 pub mod declarative;
 /// HTTP Provider（进程外插件契约）—— 见 `providers/http.rs`
 pub mod http;
+/// m3u/txt 播放列表直播源（TVBox lives[] 落地）
+pub mod m3u_live;
 
 pub use declarative::DeclarativeProvider;
 pub use http::HttpProvider;

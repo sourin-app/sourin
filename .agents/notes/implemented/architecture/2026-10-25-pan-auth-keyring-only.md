@@ -7,7 +7,7 @@ Status: implemented
 本模块只是把它用在网盘 cookie 上，两处互不影响（服务名不同）。
 
 与登录态同步那边的关系是**边界互补、不重叠**：
-[登录态单向同步](../feature/2026-10-19-login-state-sync-one-way.md) 讨论的是
+[登录态单向同步](../../proposed/feature/2026-10-19-login-state-sync-one-way.md) 讨论的是
 "把哪些登录态写到云端/备份"（`*credential*` 的 gitignore 规则就来自那条线），
 本模块讨论的是"网盘 cookie 在本机怎么存"。两者共同遵守一条底线：
 **凭据不进任何会被复制的地方** —— 那边不进备份，这边不进数据目录。

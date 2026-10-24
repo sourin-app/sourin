@@ -707,6 +707,42 @@ pub fn skip_reason(kind: Option<i64>) -> String {
     }
 }
 
+/// 从配置里提取**可用的**解析服务前缀
+///
+/// # 只取 `type: 0`
+/// `type: 0` 是「URL 前缀式」：`https://jx.example/?url=<页面地址>`，
+/// 我们把页面地址拼上去发一次 GET 就能拿回播放地址 —— 纯 HTTP，能做。
+///
+/// `type: 3` 是「WebView 式」：需要一个真实浏览器内核去跑页面里的 JS。
+/// 本仓没有 WebView，**不假装支持**（静默跳过，不占位）。
+///
+/// # 为什么现在才接
+/// `try_parsers` 早就存在，但它只用了编译期常量 `PARSE_SERVICES`（1 个）。
+/// 配置里 `parses[]` 声明的东西**从来没被读过** —— 配置作者验证过的解析器
+/// 反而没被用上。这个函数补的就是这一跳。
+pub fn collect_parsers(cfg: &serde_json::Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let Some(arr) = cfg.get("parses").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for p in arr {
+        let t = p.get("type").and_then(|v| v.as_i64());
+        if t != Some(0) {
+            continue; // type 3 = WebView 式，本仓无法执行
+        }
+        let u = jstr(p, "url");
+        let u = u.trim();
+        if u.is_empty() || !starts_http(u) {
+            continue;
+        }
+        // 去重（配置里常有重复条目）
+        if !out.iter().any(|x| x == u) {
+            out.push(u.to_string());
+        }
+    }
+    out
+}
+
 /// 扫描配置：挑出 type=1 的站点，其余分类归档
 ///
 /// 返回值：(待探测站点, 跳过清单, 直播源清单)
@@ -913,6 +949,15 @@ pub struct TvboxAppleCmsProvider {
     classes: Vec<TvboxCategoryEntry>,
     client: reqwest::Client,
     proxy: Option<Arc<crate::proxy::ProxyStore>>,
+    /// 配置里声明的解析服务前缀（TVBox 的 `parses[]` 中 `type: 0` 那些）
+    ///
+    /// ★ 优先于内置的 [`PARSE_SERVICES`]：那是配置作者**明确选用**的解析器，
+    ///   比我们硬编码的那一个更贴合用户拿到的配置。
+    ///   内置列表仍然作为兜底（配置没写时才用）。
+    ///
+    /// 只取 `type: 0`（URL 前缀式）。`type: 3`（WebView 式）本仓无法执行 ——
+    /// 那需要真实浏览器内核，不在这里假装支持。
+    parsers: Vec<String>,
 }
 
 impl TvboxAppleCmsProvider {
@@ -968,6 +1013,7 @@ impl TvboxAppleCmsProvider {
             classes,
             client,
             proxy: None,
+            parsers: Vec::new(),
         })
     }
 
@@ -1061,7 +1107,25 @@ impl TvboxAppleCmsProvider {
     ///
     /// ★ 任何一个环节出错都 **continue** 而不是抛出 —— 解析服务挂掉是常态，
     /// 不该让整次播放解析崩在这里。
+    /// 挂上配置里声明的解析服务前缀
+    ///
+    /// 与 `with_proxy` 同一个 builder 风格：不改 `new()` 签名，
+    /// 既有调用点零改动。
+    pub fn with_parsers(mut self, parsers: Vec<String>) -> Self {
+        self.parsers = parsers;
+        self
+    }
+
     async fn try_parsers(&self, page_url: &str) -> Option<String> {
+        // ★ 先试**配置里**声明的（配置作者明确选用的），再退回内置兜底。
+        //   顺序不能反：用户拿到的配置里写过哪个解析器，就说明作者验证过它；
+        //   内置那一个是我们的兜底，不该抢在前面。
+        if !self.parsers.is_empty() {
+            let refs: Vec<&str> = self.parsers.iter().map(|s| s.as_str()).collect();
+            if let Some(u) = self.try_parsers_with(page_url, &refs).await {
+                return Some(u);
+            }
+        }
         self.try_parsers_with(page_url, &PARSE_SERVICES).await
     }
 
@@ -1676,7 +1740,9 @@ pub async fn import_tvbox_config(
         let id = unique_id(&to_id(&job.name, &job.api, job.index), &mut used);
         let provider =
             TvboxAppleCmsProvider::new(id.clone(), job.name.clone(), &job.api, ok.classes.clone())
-                .map_err(|e| format!("生成源「{}」失败：{e}", job.name))?;
+                .map_err(|e| format!("生成源「{}」失败：{e}", job.name))?
+                // ★ 把配置里声明的解析器挂上（优先于内置兜底）
+                .with_parsers(collect_parsers(&cfg));
         let manifest = MediaProvider::manifest(&provider).clone();
         state
             .registry
@@ -1686,6 +1752,7 @@ pub async fn import_tvbox_config(
             name: manifest.name.clone(),
             api: normalize_api_url(&job.api),
             categories: ok.classes.clone(),
+            parsers: collect_parsers(&cfg),
         });
         imported.push(serde_json::json!({
             "id": id,
@@ -2602,6 +2669,7 @@ pub async fn update_tvbox_source(
             name: manifest.name.clone(),
             api: api_norm.clone(),
             categories: ok.classes.clone(),
+            parsers: collect_parsers(&cfg),
         });
         meta_writes.push((
             sid.clone(),
@@ -4550,6 +4618,7 @@ mod real_sites {
                 name: "非凡┃影视".to_string(),
                 api: "http://cj.ffzyapi.com/api.php/provide/vod".to_string(),
                 categories: Vec::new(),
+                parsers: Vec::new(),
             });
         }
         crate::commands_provider::persist_from_registry(&st).expect("落盘失败");
@@ -4684,6 +4753,69 @@ mod real_sites {
             .expect("★ 重启后直播源应仍在注册表里");
         assert_eq!(m2.kind, "m3u_live");
         println!("[EVIDENCE] L-after-restart id={} kind={}", m2.id, m2.kind);
+    }
+
+    // ── 配置里的解析器（parses[]）──
+
+    #[test]
+    fn collect_parsers_takes_only_type0_with_http_url() {
+        let cfg = serde_json::json!({
+            "parses": [
+                // 要的：type 0 + http 前缀
+                {"name": "a", "type": 0, "url": "https://jx.example/?url="},
+                // 跳过：type 3 是 WebView 式，本仓无法执行
+                {"name": "b", "type": 3, "url": "Web"},
+                // 跳过：空 url
+                {"name": "c", "type": 0, "url": ""},
+                // 跳过：不是 http
+                {"name": "d", "type": 0, "url": "jx.example/?url="},
+                // 要的：另一个 type 0
+                {"name": "e", "type": 0, "url": "http://jx2.example/?url="},
+                // 跳过：重复
+                {"name": "f", "type": 0, "url": "https://jx.example/?url="},
+            ]
+        });
+        let got = collect_parsers(&cfg);
+        assert_eq!(
+            got,
+            vec![
+                "https://jx.example/?url=".to_string(),
+                "http://jx2.example/?url=".to_string(),
+            ],
+            "★ 只收 type:0 + http 且去重；type:3 不许混进来"
+        );
+    }
+
+    #[test]
+    fn collect_parsers_handles_missing_or_broken_section() {
+        assert!(collect_parsers(&serde_json::json!({})).is_empty());
+        assert!(collect_parsers(&serde_json::json!({"parses": "oops"})).is_empty());
+        assert!(collect_parsers(&serde_json::json!({"parses": []})).is_empty());
+    }
+
+    #[test]
+    fn with_parsers_is_a_builder_that_does_not_change_new() {
+        // 关键：`new()` 签名不能变（既有调用点依赖它），
+        // 解析器只能通过 builder 挂上。
+        let p = TvboxAppleCmsProvider::new("t1", "n1", "http://x/api.php/provide/vod", vec![])
+            .expect("构造应成功");
+        assert!(p.parsers.is_empty(), "未调 with_parsers 时必须是空的");
+        let p2 = p.with_parsers(vec!["https://jx.example/?url=".into()]);
+        assert_eq!(p2.parsers.len(), 1);
+    }
+
+    #[test]
+    fn old_persisted_tvbox_without_parsers_still_loads() {
+        // 向后兼容：旧清单里没有 parsers 字段 ⇒ 读出来是空 Vec，行为退回内置兜底
+        let json = r#"{"kind":"tvbox","id":"x","name":"n","api":"http://a/b","categories":[]}"#;
+        let p: crate::model::PersistedProvider =
+            serde_json::from_str(json).expect("旧清单必须仍能读");
+        match p {
+            crate::model::PersistedProvider::Tvbox { parsers, .. } => {
+                assert!(parsers.is_empty(), "缺字段 ⇒ 空，不许解析失败")
+            }
+            _ => panic!("kind 应识别为 tvbox"),
+        }
     }
 
 }

@@ -21,6 +21,13 @@
 //! cookie 一旦落盘，就跟着备份到处跑（本仓 `DATA-DIR.md` 里已经点过
 //! `sync-settings.json` 含凭据的风险）。
 //!
+//! # 测试纪律：不同测试必须用**不同的盘**
+//!
+//! 系统钥匙串是**进程外共享状态**，而 `cargo test` 默认并行跑。
+//! 两个测试同时操作 `pan/quark` 会互相覆盖 —— 实测踩过：
+//! `roundtrip` 读到了另一个测试写进去的值（`left "q=1"` vs `right "sess=abc123"`）。
+//! ⇒ 每个用例用各自的盘，从根上消除共享，而不是依赖执行顺序。
+//!
 //! # 与 `PanKind` 的关系
 //!
 //! 一个盘一份凭据（键名 `pan/<kind.code()>`）。同一账号重复登录会**覆盖**，
@@ -286,11 +293,20 @@ mod tests {
             println!("[SKIP] 系统钥匙串不可用 ⇒ 跳过");
             return;
         }
-        save(&cred(PanKind::Quark, "q=1", None)).unwrap();
-        save(&cred(PanKind::Baidu, "b=2", None)).unwrap();
-        assert_eq!(load(PanKind::Quark).unwrap().cookie, "q=1");
-        assert_eq!(load(PanKind::Baidu).unwrap().cookie, "b=2", "★ 不许串盘");
-        clear(PanKind::Quark).ok();
-        clear(PanKind::Baidu).ok();
+        // ★ 必须用与前两个测试**不同的盘**：
+        //   cargo test 默认并行跑，而系统钥匙串是**进程外共享状态**。
+        //   实测踩过：三个测试都用 Quark ⇒ 互相覆盖，
+        //   roundtrip 读到了 collide 测试写的值（left "q=1" vs right "sess=abc123"）。
+        save(&cred(PanKind::Pan115, "p115=1", None)).unwrap();
+        save(&cred(PanKind::Tianyi, "ty=2", None)).unwrap();
+        assert_eq!(load(PanKind::Pan115).unwrap().cookie, "p115=1");
+        assert_eq!(load(PanKind::Tianyi).unwrap().cookie, "ty=2", "★ 不许串盘");
+        assert!(
+            load(PanKind::Quark).map(|c| c.cookie.contains("p115")).unwrap_or(false)
+                == false,
+            "★ 115 的值不许出现在夸克的键上"
+        );
+        clear(PanKind::Pan115).ok();
+        clear(PanKind::Tianyi).ok();
     }
 }

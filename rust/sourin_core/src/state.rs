@@ -293,6 +293,7 @@ impl AppState {
                     name,
                     api,
                     categories,
+                    parsers,
                 } => match crate::tvbox::TvboxAppleCmsProvider::new(
                     id.clone(),
                     name.clone(),
@@ -300,7 +301,10 @@ impl AppState {
                     categories.clone(),
                 ) {
                     Ok(p) => {
-                        registry.register(Arc::new(p.with_proxy(proxy.clone())));
+                        registry.register(Arc::new(
+                            p.with_proxy(proxy.clone())
+                                .with_parsers(parsers.clone()),
+                        ));
                         ok += 1;
                     }
                     // 单个源失败只跳过它自己 —— 不影响其余源与内置插件

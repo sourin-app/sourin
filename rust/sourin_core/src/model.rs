@@ -1472,6 +1472,12 @@ pub enum PersistedProvider {
         api: String,
         #[serde(default)]
         categories: Vec<TvboxCategoryEntry>,
+        /// 配置里声明的解析服务前缀（`parses[]` 的 `type: 0`）
+        ///
+        /// `#[serde(default)]` 让**旧清单**（没有这个字段）照常能读，
+        /// 读出来是空 Vec ⇒ 退回内置兜底，行为与改动前一致。
+        #[serde(default)]
+        parsers: Vec<String>,
     },
     /// m3u/txt 播放列表直播源：只存列表地址，频道每次拉取时解析
     ///

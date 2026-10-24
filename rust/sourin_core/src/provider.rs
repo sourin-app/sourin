@@ -912,10 +912,10 @@ mod qr_start_tests {
         }
     }
 
-    /// 老路（B 站那种给地址的）不受影响。
+    /// 老路（只给地址、不给图片那种）不受影响。
     #[test]
     fn url_only_still_renders_svg() {
-        let mut s = start("https://passport.bilibili.com/h5-app/passport/login/scan", None);
+        let mut s = start("https://passport.example.com/h5-app/passport/login/scan", None);
         s.finalize_qr_rendering();
         assert!(s.image_url.is_none());
         assert!(s.svg.starts_with("<svg") || s.svg.contains("svg"), "应生成 SVG: {}", &s.svg[..s.svg.len().min(60)]);
@@ -935,7 +935,7 @@ mod qr_start_tests {
     /// 老插件不传 imageUrl 时必须是 None（而不是解析失败）。
     #[test]
     fn missing_image_url_is_none() {
-        let json = r#"{"key":"k","url":"https://passport.bilibili.com/scan"}"#;
+        let json = r#"{"key":"k","url":"https://passport.example.com/scan"}"#;
         let s: QrLoginStart = serde_json::from_str(json).expect("应能反序列化");
         assert!(s.image_url.is_none());
     }

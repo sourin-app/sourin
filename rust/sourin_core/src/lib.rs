@@ -75,6 +75,9 @@ pub mod args;
 /// m3u / txt 直播播放列表解析（TVBox lives[] 导入的前置能力）
 pub mod m3u;
 
+/// 网盘分享链接识别（网盘能力的第一个跳）
+pub mod pan;
+
 // ── 详情与播放链路 ──
 pub mod playback;
 

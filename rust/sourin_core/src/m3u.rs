@@ -13,7 +13,7 @@
 //!
 //! ```text
 //! #EXTM3U                                    ← 标准 m3u
-//! #EXTINF:-1 tvg-logo="..." group-title="央视",CCTV-1
+//! #EXTINF:-1 tvg-logo="..." group-title="分组名",频道一
 //! http://host/1.m3u8
 //!
 //! 央视一套,http://host/1.m3u8                 ← 朴素 txt（很多 "tv.txt" 就是这种）
@@ -299,17 +299,17 @@ mod tests {
     #[test]
     fn parses_standard_m3u_with_attrs() {
         let text = "#EXTM3U\n\
-                    #EXTINF:-1 tvg-id=\"c1\" tvg-name=\"CCTV1\" tvg-logo=\"http://x/l.png\" group-title=\"央视\",综合频道\n\
+                    #EXTINF:-1 tvg-id=\"c1\" tvg-name=\"CH1\" tvg-logo=\"http://x/l.png\" group-title=\"分组甲\",综合频道\n\
                     http://host/1.m3u8\n\
-                    #EXTINF:-1 group-title=\"卫视\",某卫视\n\
+                    #EXTINF:-1 group-title=\"分组乙\",某频道\n\
                     http://host/2.m3u8\n";
         let ch = parse_playlist(text, "src");
         assert_eq!(ch.len(), 2);
         assert_eq!(ch[0].name, "综合频道", "逗号后的显式名优先");
         assert_eq!(ch[0].logo.as_deref(), Some("http://x/l.png"));
-        assert_eq!(ch[0].group.as_deref(), Some("央视"));
-        assert_eq!(ch[1].name, "某卫视");
-        assert_eq!(ch[1].group.as_deref(), Some("卫视"));
+        assert_eq!(ch[0].group.as_deref(), Some("分组甲"));
+        assert_eq!(ch[1].name, "某频道");
+        assert_eq!(ch[1].group.as_deref(), Some("分组乙"));
     }
 
     #[test]

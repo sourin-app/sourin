@@ -72,6 +72,9 @@ pub mod persist;
 // 每个命令各自解析 JSON 字段 = 每个消费者一份私有契约。
 pub mod args;
 
+/// m3u / txt 直播播放列表解析（TVBox lives[] 导入的前置能力）
+pub mod m3u;
+
 // ── 详情与播放链路 ──
 pub mod playback;
 

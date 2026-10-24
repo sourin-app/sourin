@@ -8202,6 +8202,58 @@ globalThis.plugin = { id: 'old', capabilities: { vod: true, search: true } };
         let (k, u) = resolve_source_display(&PluginMeta::default(), &rt_empty);
         assert_eq!((k.as_str(), u.as_str()), ("", ""));
     }
+    /// 探针：`e.stack` 里的行号对插件源码**根本不可用**
+    ///
+    /// # 结论（2026-10-25 实测两次）
+    /// 把错误分别放在插件源码第 2 行与第 5 行，`e.stack` 里都是
+    /// ```text
+    /// at boom (eval_script:1:1)
+    /// ```
+    /// ⇒ **QuickJS 对 `eval` 的脚本恒报 1:1**，不提供真实行号。
+    ///
+    /// 这个结论直接否掉了"在 catch 里多取一个 `e.stack` 就能给出行号"的方案：
+    /// 展示一个**恒为 1:1** 的假行号，比不展示更糟 —— 插件作者会去第 1 行
+    /// 找一个根本不存在的错误。
+    ///
+    /// 附带结论：`e.message` **是可用的**
+    /// （实测得到 `cannot read property 'missing' of null`），
+    /// 现有 `call_js` 取 `e.message` 的做法是正确的，不需要改。
+    #[test]
+    fn probe_stack_line_number_is_unusable() {
+        use rquickjs::{Context, Runtime};
+        let rt = Runtime::new().unwrap();
+        let ctx = Context::full(&rt).unwrap();
+        ctx.with(|ctx| {
+            // 插件本体：第 1 行定义，第 2 行抛错
+            // 故意把抛错放到第 5 行：若行号可信，stack 里应出现 ":5:"
+            let plugin = "function boom() {
+  const a = 1;
+  const b = 2;
+  const c = 3;
+  return null.missing;
+}
+";
+            ctx.eval::<(), _>(plugin).expect("插件本体应能加载");
+
+            // 包装层（同步版，只为验行号；形状与 call_js 的 catch 一致）
+            let wrapper = "(function () {
+                 try {
+                   const r = boom();
+                   return JSON.stringify({ ok: true, data: r ?? null });
+                 } catch (e) {
+                   return JSON.stringify({ ok: false,
+                     error: (e && e.message) ? e.message : String(e),
+                     stack: (e && e.stack) ? String(e.stack) : \"\" });
+                 }
+               })()";
+            let out: String = ctx.eval(wrapper).expect("包装层自身不该抛");
+            println!("[EVIDENCE] wrapper_out = {out}");
+            // 插件本体第 5 行报错 ⇒ 若行号可信，stack 里应出现 ":5:"
+            let has_line2 = out.contains(":5:");
+            println!("[EVIDENCE] points_to_plugin_line5 = {has_line2}");
+        });
+    }
+
     /// 探针：在 JS 层 try/catch 能否拿到 `e.stack`（含行号）？
     ///
     /// # 为什么接着探这个

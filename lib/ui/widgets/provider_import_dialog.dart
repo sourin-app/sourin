@@ -86,6 +86,7 @@ class ProviderImportDone extends ProviderImportResult {
     this.importedCount = 0,
     this.skippedCount = 0,
     this.livesCount = 0,
+    this.liveImportedCount = 0,
   });
 
   final String name;
@@ -131,6 +132,9 @@ class ProviderImportDone extends ProviderImportResult {
   /// 配置里的直播源数（**本版本不导入**，只回报）
   final int livesCount;
 
+  /// **实际导入成功**的直播源个数（识别到但不一定有地址/不一定能注册）
+  final int liveImportedCount;
+
   /// 原版 `flash()` 的文案，逐字对齐
   ///
   /// ```ts
@@ -144,7 +148,9 @@ class ProviderImportDone extends ProviderImportResult {
   String get toast => isTvbox
       ? '已导入 $importedCount 个源'
             '${skippedCount > 0 ? "，跳过 $skippedCount 个" : ""}'
-            '${livesCount > 0 ? "，$livesCount 个直播源未导入" : ""}'
+            // ★ 直播源现在**会真的导入**，所以不能说未导入。
+            //   显示「已导入/共识别」：只报识别数会让用户以为都能用。
+            '${livesCount > 0 ? "，直播源 $liveImportedCount/$livesCount 个已导入" : ""}'
       : isHttp
       ? '${wasEditing ? "已保存" : "已安装"}「$name」（契约 v$version）'
       : '${wasEditing ? "已保存" : "已导入"}「$name」';
@@ -447,6 +453,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
         importedCount: r.imported.length,
         skippedCount: r.skipped.length,
         livesCount: r.lives.length,
+        liveImportedCount: r.liveImportedCount,
       ),
     );
   }

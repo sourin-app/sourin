@@ -734,7 +734,7 @@ void main() {
       await t.pumpAndSettle();
       await t.tap(find.descendant(
         of: find.byType(SegmentedButton<DanmakuPanelTab>),
-        matching: find.text('弹幕来源'),
+        matching: find.text('高级'),
       ));
       await t.pumpAndSettle();
 

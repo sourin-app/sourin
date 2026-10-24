@@ -111,98 +111,19 @@ const _bareShellWhitelist = <String, String>{
 /// ✗ 不用 'AlertDialog('（同一文件里可能有多处）
 /// ```
 const _siteExemptions = <String, String>{
-  'lib/ui/settings_page.dart#这一处**刻意保留** Material':
-      '轨道 E 实测结论：这一处**刻意保留** Material 的 AlertDialog。'
-          '实测依据（源码同处有完整记录）：AppGlassDialog 里放 TextField 会抛'
-          '"TextField widgets require a Material widget ancestor"。'
-          '它不是「单行提示卡」—— 是一个带输入框的表单区，换过去会崩。'
-          '源码同处有完整实测记录。',
-  // ═══ R4 第二步 · 第一批「简单确认框」收拢后，逐处登记剩下不合形态的 ═══
+  // ═══ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）═══
+  // 基线里 13 处生产 `AlertDialog(` 已全部迁到统一外壳，逐处登记随之失去意义，
+  // 故删除其豁免（属正当减法：登记的是"这一处不能换"，既然换了就不该再登记）。
+  // 迁移的机制②/③/⑤ 缺口都在**调用点**就地补齐，未改共享组件：
+  //   · 机制② 缺 Material 宿主 ⇒ content 就地包 `MaterialType.transparency`；
+  //   · 机制⑤ 内容区写死 `textAlign:center` ⇒ 显式传 `TextAlign.left`；
+  //   · 机制③ 内联 TextStyle 定色 ⇒ 显式样式优先于 DefaultTextStyle。
+  // 逐处等价性与仪器自检见 test/zz_dialog18_unified_shell_test.dart。
+  // 仍保留下面 2 条**真豁免**（这两处按设计不走统一外壳）。
   'lib/t104_overlay_exit_probe.dart#真机探针，验证统一入口本身':
       '真机探针，**故意验证统一入口本身**：它已经在走 showAppDialog（:300），'
           '这里的 AlertDialog 只是 builder 里的内容。换成 AppGlassDialog 会让'
           '探针测不到它真正要测的那条路径。',
-  'lib/ui/settings/theme_page.dart#contentPadding: EdgeInsets.zero':
-      'content 是整个主题预览面板 ThemePreviewBody（重内容），且用了 '
-          'contentPadding: EdgeInsets.zero + 自定义 backgroundColor: p.palette.card。'
-          'AppGlassDialog 的内边距写死 fromLTRB(24,22,24,16) 且**没有 backgroundColor '
-          '参数** ⇒ 换过去会把预览塞进 24px 边距、玻璃底盖掉调色板底色（会变丑）。'
-          '★ 待办①：组件补 padding/backgroundColor 两个可选参数后才可收拢。',
-  'lib/ui/settings/theme_page.dart#粘贴主题包 JSON':
-      '★★ 2026-10-19 复核：**也是两条机制叠加**，此前只写了 textAlign（分类不完整）。'
-          '机制④：content 外面包了 `SizedBox(width:460)`（实测两处都是 460）。'
-          '机制②：content 是**表单**，实测含 **2 个 `TextField`** '
-          '（maxLines:10/minLines:6 的 JSON 粘贴框）⇒ 换过去**同样会抛** '
-          '"require a Material widget ancestor"。'
-          '★ **先解②、再解④**。'
-          '机制④口径：装 460 需传 `maxWidth: 508`（content 宽 = maxWidth − 48）。'
-          '另有一条独立问题：`DefaultTextStyle` 写死 `textAlign:center`，'
-          '多行输入框居中会很难用 ⇒ 属「组件待办 textAlign 可控」，与上面两条并列。',
-  'lib/ui/widgets/sync_panel.dart#配置云盘（WebDAV）':
-      '★★ 2026-10-19 复核：这是**两条机制叠加**，此前只写了机制④（分类不完整）。'
-          '机制④：content 是 `SizedBox(width:420)` + 自带 '
-          '`SingleChildScrollView(clipBehavior)` + 预设 pill 的 Wrap + 表单字段。'
-          '机制②：content **含 4 个 `TextField`** ⇒ 换过去**同样会抛** '
-          '"require a Material widget ancestor"。'
-          '★ **先解②、再解④**（顺序不能反：②不解决，弹窗根本打不开，'
-          '传再宽的 maxWidth 也没用）。'
-          '机制④可绕的实测口径：`AppGlassDialog` 卡片左右 padding 各 24 ⇒ '
-          'content 实测宽 = maxWidth − 48 ⇒ 装 420 需传 `maxWidth: 468`（非 420）。',
-  // ── R4 第二步 · 第二批：逐处登记（机制 + 具体数字，Lead 裁决 ①②）──
-  // 机制② 缺 Material 祖先（外壳零 Material ⇒ ListTile / InkWell 一路也抛）
-  'lib/ui/settings_page.dart#调整内容源顺序':
-      '★★ 2026-10-20 **改判：机制②（缺 Material 祖先），此前写「可以收拢」是错的**。'
-          'content 是 SizedBox(420x400) + ListView.builder，每行是 **`ListTile`** '
-          '（`ListTile` 内部是 `InkWell`，而 `InkWell` 要求 Material 祖先）。'
-          '`AppGlassDialog` 是零 Material 的纯玻璃卡片，不提供 Material 宿主 ⇒ '
-          '在**真的 showAppDialog 路由**里实测抛 '
-          '"No Material widget found. ListTile widgets require a Material '
-          'widget ancestor" ⇒ 弹窗根本打不开，「上移」按钮连建都没建出来'
-          '（实测找到「上移」= 0 个）。'
-          '★ 为什么上一版会判错（如实记录）：那次把 `AppGlassDialog` 放在 '
-          '`MaterialApp(home: Scaffold(body: Center(...)))` 里跑，Scaffold '
-          '**提供了 Material 祖先** ⇒ 「点第 2 行『上移』顺序真的变了」是仪器造成的，'
-          '不是外壳能用。重测脚本：`.probe/r4f_order_material_test.dart`。'
-          '⚠️ 宽度**不是**拦路石：装 420 传 `maxWidth: 468` 即可（content 宽 = maxWidth − 48）。'
-          '⇒ 给 `AppGlassDialog` 补「透明 Material 宿主」之后才可收拢。',
-  // 机制① 固定尺寸 + 自带滚动区
-  // ⚠️ 2026-10-20：外壳默认值已从 380/420 抬到 **460/620**（对齐 §3.5），
-  //    下列理由里的"装不下"要按新默认重新算，别再用旧的 380/420 对账。
-  'lib/ui/settings_page.dart#插件更新 · ':
-      '机制①：content 是 SizedBox(width:480, height:460) + Column，'
-          '源码注释写明「有界高度（照 _SkipHistoryDialog）：内容再多也只占 460px」。'
-          '外壳默认 maxWidth 460 / maxHeight 620 ⇒ 装 480 宽需显式传 '
-          '`maxWidth: 528`（content 宽 = maxWidth − 48）⇒ 属调用点决策，本轮不动。',
-  'lib/ui/settings_page.dart#配置「':
-      '机制①：content 是 SizedBox(width:420) + SingleChildScrollView'
-          '(clipBehavior) + 动态字段循环（for (final f in widget.config.fields)）。'
-          '外壳默认 maxWidth 460 ⇒ 420 宽的内容只剩 460 − 48 = 412，差 8px；'
-          '装得下需显式传 `maxWidth: 468` ⇒ 属调用点决策，本轮不动。',
-  'lib/ui/widgets/tvbox_source_panel.dart#订阅更新 · ':
-      '★★ 2026-10-19 复核：这是**两条机制叠加**，此前只写了机制④（分类不完整）。'
-          '机制④：content 是 `SizedBox(width:560, height:480)` + 自带滚动，'
-          '源码注释写明「有界高度（照 _PluginUpdateDialog）：内容再多也只占 480px」。'
-          '机制②：content **含 `TextField`** ⇒ 换过去**同样会抛** '
-          '"require a Material widget ancestor"。'
-          '★ **必须先解②**（不解决则弹窗打不开，宽度无关）。'
-          '⚠️ 机制④的可绕代价：装 560 需传 `maxWidth: 608`'
-          '（实测口径：content 宽 = maxWidth − 48）⇒ **608 不在 §3.5 白名单 '
-          '{460,560,820} 内** ⇒ 真要换，得先决定「破白名单」还是「缩内容」。',
-  // 机制② 表单 / 输入框（AppGlassDialog 缺 Material 祖先 ⇒ TextField 抛异常）
-  "lib/ui/widgets/backup_panel.dart#title: const Text('设置导出用口令')":
-      '机制②：content 含 **TextField**（设置导出用口令），包在 SizedBox(width:380) '
-          '的 Column 里。实测：AppGlassDialog 里放 TextField 会抛 '
-          '"TextField widgets require a Material widget ancestor" ⇒ 换过去直接崩。',
-  'lib/ui/widgets/backup_panel.dart#这个备份包含登录态':
-      '机制②：content 含 **TextField**（输入导出时设的口令），包在 SizedBox(width:380) '
-          '的 Column 里。同上：换过去会抛 "require a Material widget ancestor"。'
-          '★ **别与下面那条搞混**（verify-34 在这里误判过一次「机制写反」，'
-          '根因是两个标题只差一个字）：'
-          '本条 = `title: const Text(\'这个备份包含登录态\')`，'
-          '在 `_ImportPassphraseDialog`（有 TextField）⇒ **机制②**；'
-          '另一条 = `title: const Text(\'这个备份文件含登录态\')`，'
-          '是 `showAppDialog` 里那段 StringBuffer 清单（无输入框）⇒ **机制⑤**。'
-          '两条是**两个不同的弹窗**，不是同一处的两种说法。',
   'lib/ui/widgets/provider_login_panel.dart#constraints: const BoxConstraints(maxWidth: 460)':
       '★ 2026-10-19 复核**改判**（此前写的是「机制②」，实测**不成立**）。'
           '**不属于机制②**：按括号块逐字量过，`Dialog(` 的 1706 字符块内 '
@@ -215,37 +136,6 @@ const _siteExemptions = <String, String>{
           '真实障碍：标题是**自绘** `Text("登录 ' r'$providerName' '")`，'
           '而 `AppGlassDialog.title` 只收 `String`，没有可对位的参数 ⇒ '
           '**属调用点改动**（把自绘标题改成 title 参数），**不需改组件**。',
-  // 机制③ 内联 TextStyle 定颜色 ⇒ 被外壳 DefaultTextStyle 覆盖
-  'lib/ui/widgets/download_panel.dart#删除整部剧的下载？':
-      '机制③：content 是结构化 Column（含条件子项 if (p.episodeCount > 0) 与 '
-          'p.fileNames.take(5) 列表），其中「此操作不可恢复。」用**内联** '
-          "TextStyle(color: Colors.red) 定警示色。AppGlassDialog 的内容区被 "
-          'DefaultTextStyle 统一覆盖字色/字重 ⇒ 那个红色会被冲掉，'
-          '警示语义丢失。'
-          '★ **这一条提醒的不只是这一处**：任何「用内联 TextStyle 定颜色」的弹窗内容，'
-          '换外壳后颜色都会被覆盖 ⇒ 这是**收拢前要先查**的一个通用检查项。',
-  'lib/ui/widgets/sync_panel.dart#width: 380,':
-      '★★ 2026-10-19 复核：这是**两条机制叠加**，此前只写了 textAlign（分类不完整）。'
-          '机制④：content 包在 `SizedBox(width:380)` 的 Column 里。'
-          '机制②：content **含 3 个 `TextField`**（口令表单）⇒ 换过去**同样会抛** '
-          '"require a Material widget ancestor"。'
-          '★ **先解②、再解④**。'
-          '⚠️ 另有一条独立问题（不在本次三条机制内，单列）：'
-          '`AppGlassDialog` 内容区 `DefaultTextStyle` 写死 `textAlign: center`，'
-          '会让两个输入框居中（注册表此前提过，本条保留提醒）。'
-          '机制④口径：装 380 需传 `maxWidth: 428`（content 宽 = maxWidth − 48）。',
-  // 机制⑤ 内容区 `DefaultTextStyle` 写死 `textAlign: center` ⇒ 多行左对齐正文被逐行居中
-  'lib/ui/widgets/backup_panel.dart#builder: (ctx) => AlertDialog':
-      '机制⑤：正文是**多行左对齐清单**，外壳会把每一行居中对齐。'
-          'body 由 StringBuffer 逐行 writeln 拼成（约 460 字）：`·` 项目符号行、'
-          '「特别注意」警示段、以及**靠行首两个空格**做续行缩进的源名列表。'
-          '`AppGlassDialog` 内容区的 DefaultTextStyle 写死 `textAlign: center` ⇒ '
-          '项目符号不再对齐、行首续行缩进失去意义，一段**靠左才成立**的警示清单'
-          '会被逐行居中。'
-          '⚠️ 如实交代另两点**不是**拦路石（免得下一个人重复查宽度/按钮）：'
-          '宽度：正文 `SizedBox(width:460)` ⇒ 传 `maxWidth: 508` 即可容纳；'
-          '三个按钮（继续 / 取消 / 不导入）：`actions` 是自由 Widget，可照 app_tray 自己拼 Row。'
-          '⇒ 补齐「内容区 textAlign 可控（至少能左对齐）」之后才可收拢。',
 };
 
 /// 把「剥注释后的行号」还原成**原文**那一处的上下文，供特征串匹配

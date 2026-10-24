@@ -88,35 +88,14 @@ const _dialogPath = 'lib/ui/widgets/danmaku_settings_dialog.dart';
 
 /// 那段「这是凭证问题」的 remedy 全文（从第一个引号到最后一个）
 String authRemedyText() {
-  final s = _strip(File(_dialogPath).readAsStringSync());
+  final s = _strip(File('lib/ui/danmaku_search_page.dart').readAsStringSync());
   final anchor = s.indexOf('这是凭证问题');
   expect(anchor, greaterThanOrEqualTo(0),
       reason: '找不到「这是凭证问题」这段 remedy —— 判据失效（它被改名/删了？）');
-  // 往前找到开引号
-  var start = anchor;
-  while (start > 0 && s[start] != "'") {
-    start--;
-  }
-  // 往后找到该字符串字面量链结束（最后一个闭引号后不是相邻的 '）
-  var i = anchor;
-  var lastQuote = anchor;
-  while (i < s.length) {
-    if (s[i] == "'") {
-      lastQuote = i;
-      // 看看后面紧接的是不是 `'`（相邻字面量拼接）
-      var j = i + 1;
-      while (j < s.length && (s[j] == '\n' || s[j] == ' ')) {
-        j++;
-      }
-      if (j < s.length && s[j] == "'") {
-        i = j + 1;
-        continue;
-      }
-      break;
-    }
-    i++;
-  }
-  return s.substring(start, lastQuote + 1);
+  // 独立页的补救动作按真实回调插值；提取整个 Text 参数，不能在插值引号处截断。
+  final end = s.indexOf('if (widget.onOpenLocal', anchor);
+  expect(end, greaterThan(anchor), reason: '诊断补救段必须以真实操作控件为边界。');
+  return s.substring(anchor, end);
 }
 
 void main() {

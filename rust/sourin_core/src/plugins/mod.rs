@@ -557,6 +557,31 @@ fn snake_to_camel(s: &str) -> String {
 ///    Rust 侧是 `Vec<(String, String)>`，而插件按契约写
 ///    `{ Referer: 'x' }` 这种对象 —— serde 会报
 ///    `invalid type: map, expected a sequence`
+/// 从 `call_js` 的表达式里抽出**插件方法名**（供覆盖层白名单过滤）
+///
+/// # 为什么需要它
+/// `call_js` 是通用执行入口，表达式形态有几种：
+/// ```text
+///   "plugin.home()"
+///   "plugin.search(\"kw\", 1)"
+///   "(plugin.rank ? plugin.rank(\"tv\", 1) : Promise.reject(...))"
+///   "(plugin.categories ? plugin.categories() : [])"
+/// ```
+/// 覆盖层只该作用于**数据类**方法，不该碰 `login` / `qr_login_poll` / `logout`。
+///
+/// # 解析规则（宁可不匹配，也不要错匹配）
+/// 取**第一个** `plugin.<ident>` 出现处的 ident。取不到就返回 `""`
+/// —— 空串不会命中任何非空白名单，等价于"不应用覆盖层"，是安全侧。
+fn method_name_from_expr(expr: &str) -> &str {    let Some(pos) = expr.find("plugin.") else {
+        return "";
+    };
+    let rest = &expr[pos + "plugin.".len()..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
 fn js_value_to_rust(v: serde_json::Value) -> serde_json::Value {
     match v {
         serde_json::Value::Object(map) => {
@@ -1961,10 +1986,37 @@ impl JsPluginProvider {
             return Err(map_js_error(msg));
         }
 
-        let data = wrapped
+        let mut data = wrapped
             .get("data")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
+
+        // ★ 源个性化覆盖层（2026-10-24，Owner 裁定）
+        //
+        // 挂在这里而不是逐个 provider 方法，理由见 `overrides` 模块头与
+        // .agents/notes/proposed/architecture/2026-10-24-source-override-layer-after-call-js.md：
+        // 16 条链路各改一次必然漂移（本仓 `save_hook` 有"两条路径发散"的实测教训）。
+        //
+        // ⚠️ 必须按**方法名白名单**过滤：`call_js` 也跑 `login` / `qr_login_poll`
+        //    这类非数据调用，覆盖层不该作用在会话/轮询结果上。
+        //
+        // ⚠️ 覆盖层不可用时**原样透出**（`apply_override` 保证不改 data），
+        //    绝不因为覆盖层坏了就让源不可用。
+        if let Some(dir) = self.data_dir.as_deref() {
+            let method = method_name_from_expr(&expr);
+            let outcome = crate::overrides::apply_override(
+                Some(dir),
+                &self.manifest.id,
+                method,
+                &mut data,
+            );
+            if outcome == crate::overrides::OverrideOutcome::Applied {
+                log::debug!(
+                    "覆盖层已应用: id={} method={method}",
+                    self.manifest.id
+                );
+            }
+        }
 
         // ★ 命名风格 + headers 形态转换（见模块顶部说明）
         let mut rust = js_value_to_rust(data);

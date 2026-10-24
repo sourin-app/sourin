@@ -305,6 +305,24 @@
     "note": "全绿",
     "result": "+1 ~0 -0"
   },
+  "zz_t1023_player_route_exit_order_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-24",
+    "note": "全绿",
+    "result": "+3 ~0 -0"
+  },
+  "zz_t1023_player_search_integration_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-24",
+    "note": "全绿",
+    "result": "+2 ~0 -0"
+  },
+  "zz_t1023_player_seek_behavior_test.dart": {
+    "audited": false,
+    "lastAudited": "2026-10-24",
+    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester 崩溃）—— D 类环境问题，不是断言失败。注：同一份代码本次会话稍早的串行复跑曾得 +16 ~0 -0，读数不稳定，故不按全绿记录",
+    "result": null
+  },
   "zz_t12_local_play_probe_test.dart": {
     "audited": true,
     "lastAudited": "2026-10-21",

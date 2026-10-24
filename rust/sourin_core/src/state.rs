@@ -261,7 +261,9 @@ impl AppState {
         for item in &persisted {
             match item {
                 PersistedProvider::Declarative { id, json } => {
-                    match crate::providers::DeclarativeProvider::from_json(json) {
+                    match crate::providers::DeclarativeProvider::from_json(json)
+                        .map(|p| p.with_data_dir(data_dir.clone()))
+                    {
                         Ok(p) => {
                             registry.register(Arc::new(p));
                             ok += 1;

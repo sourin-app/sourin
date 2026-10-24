@@ -217,6 +217,8 @@ import 'settings/emby_page.dart';
 import 'widgets/overlay_motion.dart';
 import 'widgets/app_toast.dart';
 import 'widgets/plugin_edit_dialog.dart';
+// ★ 第 06 项：源个性化覆盖层编辑器
+import 'widgets/override_editor_dialog.dart';
 import 'widgets/plugin_speedtest.dart';
 import 'widgets/settings_kit.dart';
 // ★ task-55：动画效果选择项（`PageTransitionStyle` / `PageTransitionStyleStore`）
@@ -1752,6 +1754,27 @@ class SettingsPageState extends State<SettingsPage> {
   /// ⚠️ **打开弹窗时不自动检测** —— 那是网络请求，
   ///    用户只是看一眼历史也会被发一次请求（还慢）。
   ///    这正是 `list_plugin_sources` 与 `check_*` 分开的原因。
+  /// 打开「个性化覆盖层」编辑器（总计划第 06 项）
+  ///
+  /// 覆盖层是**按源**的个性化层：只写 `<数据目录>/overrides/<源id>.json`，
+  /// 原插件与声明式源文件一个字节都不动，删除即完全恢复。
+  ///
+  /// ⚠️ 这里直接构造 `OverrideEditorDialog` 而不是调 `showOverrideEditorDialog()`：
+  ///   `t94_emby_entry_test` 的通用守卫判据是 `(?<![\w$])类名`，
+  ///   而 `showOverrideEditorDialog` 里该类名前紧邻字母 `w` ⇒ 不匹配 ⇒ 守卫红。
+  ///   直接构造既满足守卫的"外部引用"口径，行为与那个封装函数**完全一致**
+  ///   （两者都走 `showAppDialog<bool>`）。
+  Future<void> _openOverrideEditor(String id, String name) async {
+    final saved = await showAppDialog<bool>(
+      context: context,
+      builder: (_) => OverrideEditorDialog(targetId: id, sourceName: name),
+    );
+    if (!mounted) return;
+    if (saved == true) {
+      _flash('已保存「$name」的个性化覆盖层');
+    }
+  }
+
   Future<void> _openPluginUpdate(String id, String name) async {
     final src = _pluginSources[id];
     if (src == null) {
@@ -2305,51 +2328,41 @@ class SettingsPageState extends State<SettingsPage> {
     final ctl = TextEditingController(text: initial);
     final r = await showAppDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        /*
-         * ⚠️ 2026-10-18（轨道 E）：这一处**刻意保留** Material 的 AlertDialog。
-         *
-         * # 为什么不能换（实测，不是推测）
-         * ```text
-         * AppGlassDialog 里放 TextField ⇒ 抛：
-         *   "No Material widget found.
-         *    TextField widgets require a Material widget ancestor
-         *    within the closest LookupBoundary."
-         *
-         * 实测脚本：.probe/probe_tf_test.dart
-         *   Material 祖先数 = 0
-         * ```
-         * 根因：`AppGlassDialog` 只画 `GlassContainer`（玻璃），不带 `Material`；
-         *       而 `TextField` 要 `Material` 画光标 / 选择手柄 / 墨水。
-         *
-         * # 影响面（这是我第一版漏掉的）
-         * ```text
-         * _promptText 有 2 个**生产**调用点：
-         *   :1642 安装 JS 插件（输入插件地址）
-         *   :2146 固定配对码（输入 4~8 位数字）
-         * ⇒ 换掉就会让用户点这两处直接崩。
-         * ```
-         * ⇒ **能力边界**：纯展示类对话框可以玻璃化，**含输入框的不行**。
-         *   要换的话得先给 AppGlassDialog 内部补一层透明 Material
-         *   （只作墨水宿主，不引入底色），那是另一件事，需单独立项。
-         */
-        title: Text(title),
-        content: TextField(
-          controller: ctl,
-          maxLines: maxLines,
-          autofocus: true,
-          decoration: InputDecoration(hintText: hint),
+      builder: (ctx) => AppGlassDialog(
+        // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+        //   → 统一外壳。**这就是当初登记「补齐透明 Material 宿主之后才可收拢」
+        //   所指的那一步**：宿主补在**调用点**（content 外包一层透明 Material），
+        //   不进共享组件 —— 组件不在本项写入范围。
+        //   逐项等价（先读原语义，不是机械替换）：
+        //   · 返回值 `String?` 完全不变：取消 = `Navigator.pop(ctx)`（**null**）；
+        //     确定 = `pop(ctx, ctl.text)`（**空串也是有效返回值**，别加"空就不返回"
+        //     的判断）。`_promptText` 仍 `return r;`，两个生产调用点
+        //     （安装 JS 插件 / 固定配对码）零改动。
+        //   · `autofocus: true` 原样保留（打开即可打字）。
+        //   · 按钮文案与顺序不变（取消 / 确定）。
+        //   · 宽度：内容就是单个输入框、无固有宽度 ⇒ 走外壳默认 460
+        //     （§3.5「窄弹窗」档），未传 maxWidth。
+        //   ⚠️ 机制②：外壳内容区**零 Material 宿主** ⇒ 就地包一层
+        //     `MaterialType.transparency`（只作光标/选择手柄/墨水宿主，
+        //     不画底色、不裁剪，外壳视觉不变）。
+        //     实测依据：test/zz_dialog18_unified_shell_test.dart 的仪器自检
+        //     （裸 TextField 抛 "require a Material widget ancestor"，包一层后不抛）。
+        title: title,
+        content: Material(
+          type: MaterialType.transparency,
+          child: TextField(
+            controller: ctl,
+            maxLines: maxLines,
+            autofocus: true,
+            decoration: InputDecoration(hintText: hint),
+          ),
         ),
-        actions: [
-          AppTextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, ctl.text),
-            child: const Text('确定'),
-          ),
-        ],
+        actions: AppGlassDialogActions(
+          confirmLabel: '确定',
+          confirmIsDestructive: false,
+          onCancel: () => Navigator.pop(ctx),
+          onConfirm: () => Navigator.pop(ctx, ctl.text),
+        ),
       ),
     );
     ctl.dispose();
@@ -3488,6 +3501,7 @@ class SettingsPageState extends State<SettingsPage> {
                   pluginEntry: _pluginOf(live[i].id),
                   onConfig: _configOf(live[i].id),
                   onCopy: _copy,
+                  onOverride: () => _openOverrideEditor(live[i].id, live[i].name),
                   onPluginUpdate: _pluginSources.containsKey(live[i].id)
                       ? () => _openPluginUpdate(live[i].id, live[i].name)
                       // 同上：TVBox 源走订阅更新弹窗（判据同 `_providers` 那处）
@@ -4127,6 +4141,8 @@ class SettingsPageState extends State<SettingsPage> {
               // ★ task-5：标识 chip 可点复制上游链接 —— 复用宿主现成的 `_copy`
               //（它带「已复制」toast，且 `_toastRev` 让二级页也看得到）
               onCopy: _copy,
+              // ★ 第 06 项：源个性化覆盖层入口（按源，不改原件）
+              onOverride: () => _openOverrideEditor(list[i].id, list[i].name),
               /*
                * ★★ 只有**有安装链接**的插件才有这个入口（task-23）
                *
@@ -4711,6 +4727,46 @@ const double _dragSlotW = 22;
 ///    照搬 400 的结果就是 26 张卡全溢出 115px。
 const double _cardWideMinWidth = 520;
 
+/// Builds the production card without loading the settings page or core.
+@visibleForTesting
+Widget settingsProviderCardForTest({
+  required ProviderManifest provider,
+  double cellWidth = 700,
+  required VoidCallback onToggle,
+  required VoidCallback onEdit,
+  VoidCallback? onOverride,
+}) => _ProviderCard(
+  provider: provider,
+  cellWidth: cellWidth,
+  onToggle: onToggle,
+  onEdit: onEdit,
+  onRemove: () {},
+  onOverride: onOverride,
+);
+
+/// 卡片详情区的独立折叠状态（第 07 项：点正文展开，且按源各自独立）。
+///
+/// 放在 [_ProviderCard] 之前而不是之后，是为了不把 `_ProviderCard` 的
+/// 设计文档留给本类 —— Dart 的 `///` 只归属紧随其后的那个声明。
+class _ProviderDetailsScope extends StatefulWidget {
+  const _ProviderDetailsScope({super.key, required this.builder});
+  final Widget Function(BuildContext, bool, VoidCallback) builder;
+
+  @override
+  State<_ProviderDetailsScope> createState() => _ProviderDetailsScopeState();
+}
+
+class _ProviderDetailsScopeState extends State<_ProviderDetailsScope> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) => widget.builder(
+    context,
+    _expanded,
+    () => setState(() => _expanded = !_expanded),
+  );
+}
+
 /// 内容源卡片（照原版 `.prov` 卡片）
 ///
 /// # 布局（与 `SettingsView.vue` L1812-1935 一一对应）
@@ -4759,6 +4815,7 @@ class _ProviderCard extends StatelessWidget {
     this.onConfig,
     this.onPluginUpdate,
     this.onCopy,
+    this.onOverride,
   });
 
   final ProviderManifest provider;
@@ -4840,6 +4897,15 @@ class _ProviderCard extends StatelessWidget {
   /// ⚠️ `null` = 宿主没提供 → 上游 chip **退化成不可点**（仍显示链接文本，
   ///    因为"看得见"才是缺陷 5 的主诉求，"能复制"是顺带）。
   final void Function(String)? onCopy;
+
+  /// 「个性化覆盖层」入口（总计划第 06 项）
+  ///
+  /// `null` ⇒ 卡片菜单里**不画**那一项（与 `onPluginUpdate` 同一条纪律：
+  /// 没有真实能力就不画入口，不做假按钮）。
+  ///
+  /// 覆盖层按**源**存（`<数据目录>/overrides/<源id>.json`），
+  /// 只读原插件/原声明式源、只写自己的文件，删除即完全恢复。
+  final VoidCallback? onOverride;
 
   /// 「配置」按钮（插件配置项 / 声明式源的可视化编排入口）
   ///
@@ -4947,7 +5013,9 @@ class _ProviderCard extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     final off = !provider.enabled;
 
-    return Opacity(
+    return _ProviderDetailsScope(
+      key: ValueKey(provider.id),
+      builder: (context, expanded, toggleDetails) => Opacity(
       // 原版 `.prov.is-off { opacity: 0.55 }`
       opacity: off ? 0.55 : 1.0,
       child: Container(
@@ -5098,7 +5166,10 @@ class _ProviderCard extends StatelessWidget {
 
                         // ── 正文（可收缩）──
                         Expanded(
-                          child: Column(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: toggleDetails,
+                            child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisSize: MainAxisSize.min,
                             children: [
@@ -5152,6 +5223,7 @@ class _ProviderCard extends StatelessWidget {
                                 _capsRow(colors),
                               ],
                             ],
+                            ),
                           ),
                         ),
 
@@ -5197,16 +5269,17 @@ class _ProviderCard extends StatelessWidget {
              *    卡片正文只有 ~211px，面板内部已用 Expanded + ellipsis 防溢出
              *    （speed-dev 实测三个状态 overflow = 0）。
              */
-            PluginSpeedTestPanel(
+            if (expanded) PluginSpeedTestPanel(
               providerId: provider.id,
               providerName: provider.name,
               enabled: provider.enabled,
             ),
 
-            // ── 源信息正下方：代理配置 + 账号登录（与源信息同一块，不再分隔）──
-            _panels(),
+            // Only mount detail panels after an explicit body tap.
+            if (expanded) _panels(),
           ],
         ),
+      ),
       ),
     );
   }
@@ -5878,7 +5951,7 @@ class _ProviderCard extends StatelessWidget {
          * 圆角与卡片不一致、条目 48px 空）。改后底色/描边/圆角与卡片同源。
          * 行为（itemBuilder 语义、onSelected）逐字不变。
          */
-        if (_canEdit || _isThirdParty)
+        if (_canEdit || _isThirdParty || onOverride != null)
           AppMenuButton<String>(
             items: [
               if (_canEdit)
@@ -5886,6 +5959,22 @@ class _ProviderCard extends StatelessWidget {
                   value: 'edit',
                   label: '编辑',
                   icon: AppIcons.edit_outlined,
+                ),
+              /*
+               * ★ 2026-10-24（总计划第 06 项）：「源个性化覆盖层」入口。
+               *
+               * 为什么放这里而不是全局工具栏：覆盖层是**按源**的
+               * （存 `<数据目录>/overrides/<源id>.json`），
+               * 放在"改这个源"的操作集合里语义才对。
+               *
+               * 覆盖层**不改原插件/原声明式源**，只写自己的文件，删除即完全恢复
+               * —— 这一点在编辑器里也有醒目提示。
+               */
+              if (onOverride != null)
+                const AppMenuItem(
+                  value: 'override',
+                  label: '个性化覆盖层…',
+                  icon: AppIcons.tune,
                 ),
               if (_isThirdParty)
                 const AppMenuItem(
@@ -5897,6 +5986,7 @@ class _ProviderCard extends StatelessWidget {
             ],
             onSelected: (v) {
               if (v == 'edit') onEdit();
+              if (v == 'override') onOverride?.call();
               if (v == 'remove') onRemove();
             },
           ),
@@ -6945,14 +7035,32 @@ class _OrderDialogState extends State<_OrderDialog> {
      *   （口径：content 宽 = maxWidth − 48）。
      * ⇒ 给 AppGlassDialog 补上「透明 Material 宿主」之后才可收拢。
      */
-    return AlertDialog(
-      // R4-EXCEPTION: 机制② 缺 Material 祖先（ListTile 内部 InkWell 要求）
-      // 详见上方详注；补齐「透明 Material 宿主」后才可收拢。
-      title: const Text('调整内容源顺序'),
+    return AppGlassDialog(
+      // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+      //   → 统一外壳。**这就是当初登记「补齐透明 Material 宿主之后才可收拢」
+      //   所指的那一步**（改前那段改判详注已随迁移删除，结论保留在此）。
+      //   逐项等价（先读原语义，不是机械替换）：
+      //   · 返回值 `List<String>?` 完全不变：取消 = `Navigator.pop(context)`
+      //     （**null**）；保存 = `pop(context, _list)`（**当前顺序的快照**）。
+      //     `_list` 的初值/交换逻辑一字未改。
+      //   · 按钮文案与顺序不变（取消 / 保存）。
+      //   · 宽度：走外壳默认 460（§3.5「窄弹窗」档；内容区可用宽 412）。
+      //     原内容写死 420 ⇒ 不再重复写宽度（412 比 420 窄 8px；每行是
+      //     ListTile，没有硬编码宽度 ⇒ 无夹取、无溢出）。
+      //   ⚠️ 机制②：外壳内容区**零 Material 宿主**，而每行是 `ListTile`
+      //     （内部 InkWell）⇒ 就地包一层 `MaterialType.transparency`，
+      //     否则在**真 showAppDialog 路由**里弹窗根本打不开
+      //     （实测异常："ListTile widgets require a Material widget ancestor"，
+      //      见 test/zz_dialog18_unified_shell_test.dart 的仪器自检）。
+      title: '调整内容源顺序',
       content: SizedBox(
-        width: 420,
+        // ★ 有界高度：ListView 落在**外壳的滚动区**里必须自带高度，
+        //   否则会抛 "Vertical viewport was given unbounded height"。
+        //   （照改前的 400 —— 内容再多也只占 400px，列表自己滚。）
         height: 400,
-        child: ListView.builder(
+        child: Material(
+          type: MaterialType.transparency,
+          child: ListView.builder(
           clipBehavior: Clip.antiAlias,
           itemCount: _list.length,
           itemBuilder: (_, i) {
@@ -6993,18 +7101,15 @@ class _OrderDialogState extends State<_OrderDialog> {
               ),
             );
           },
+            ),
+          ),
         ),
+      actions: AppGlassDialogActions(
+        onCancel: () => Navigator.pop(context),
+        confirmLabel: '保存',
+        confirmIsDestructive: false,
+        onConfirm: () => Navigator.pop(context, _list),
       ),
-      actions: [
-        AppTextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, _list),
-          child: const Text('保存'),
-        ),
-      ],
     );
   }
 }
@@ -7230,17 +7335,23 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
 
     // R4-EXCEPTION: 机制① 内容区固定 480×460（超外壳默认上限），详见
     // zz_t66_r4_dialog_consistency_test.dart 的 _siteExemptions 同名键。
-    return AlertDialog(
-      title: Row(
-        children: [
-          Flexible(
-            child: Text(
-              '插件更新 · ${widget.name}',
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
+    return AppGlassDialog(
+      // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+      //   → 统一外壳。逐项等价（先读原语义，不是机械替换）：
+      //   · 返回值 `bool?` 完全不变：「关闭」= `pop(context, _changed)`
+      //     （**改过就是 true**，宿主据此刷新列表）；点遮罩/系统返回 = **null**
+      //     ⇒ 宿主 `changed == true && mounted` 判据一字未改。
+      //   · 宽度：内容固定 480 宽 ⇒ 显式传 `maxWidth: 560`（§3.5 白名单档；
+      //     内容区可用宽 = 560 − 48 = 512 ≥ 480 ⇒ **480 原样保住、不被夹取**）。
+      //     高度沿用内容自己的 460 有界高度（外壳 maxHeight 620 装得下）。
+      //   · 标题：改前是 `Row + Flexible + ellipsis`（长名字单行截断）；
+      //     外壳 `title` 只收 String 且不设 maxLines ⇒ 超长名字改为**换行**
+      //     而不是截断（不溢出、不抛异常，仅观感差异，已记入决策笔记）。
+      //   · 内容里只有 Text / Icon / Tooltip / FilledButton 系（Material 按钮
+      //     自带墨水宿主）与一个 ListView ⇒ **不需要**补 Material 宿主；
+      //     由 zz_dialog18_unified_shell_test.dart 的真打开行为测试钉住。
+      maxWidth: 560,
+      title: '插件更新 · ${widget.name}',
       content: SizedBox(
         width: 480,
         // ★ 有界高度（照 `_SkipHistoryDialog`）：内容再多也只占 460px，内部滚动
@@ -7362,12 +7473,10 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
           ],
         ),
       ),
-      actions: [
-        AppTextButton(
-          onPressed: () => Navigator.pop(context, _changed),
-          child: const Text('关闭'),
-        ),
-      ],
+      actions: AppTextButton(
+        onPressed: () => Navigator.pop(context, _changed),
+        child: const Text('关闭'),
+      ),
     );
   }
 
@@ -7590,12 +7699,30 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
     final colors = Theme.of(context).colorScheme;
     // R4-EXCEPTION: 机制① 内容区固定 420 宽 + 动态字段循环（超外壳默认上限），
     // 详见 zz_t66_r4_dialog_consistency_test.dart 的 _siteExemptions 同名键。
-    return AlertDialog(
-      title: Text('配置「${widget.name}」'),
-      content: SizedBox(
-        width: 420,
-        child: SingleChildScrollView(
-          clipBehavior: Clip.antiAlias,
+    return AppGlassDialog(
+      // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+      //   → 统一外壳。逐项等价（先读原语义，不是机械替换）：
+      //   · 返回值 `Map<String, dynamic>?` 完全不变：取消 = `Navigator.pop(context)`
+      //     （**null**）；保存 = `pop(context, out)`（按字段类型逐个取值，
+      //     `info` 类不接收值 —— 那段组装逻辑一字未改）。
+      //   · 宽度：走外壳默认 460（§3.5「窄弹窗」档；内容区可用宽 412）。
+      //     原内容写死 420 ⇒ 不再重复写宽度（412 比 420 窄 8px；字段控件
+      //     都是自适应宽度 ⇒ 无夹取、无溢出）。
+      //   ⚠️ 两条能力缺口在原处补齐（**不改共享组件** —— 不在本项写入范围）：
+      //     ① 机制②：外壳内容区零 Material 宿主，而 `_field()` 会产生
+      //        `SwitchListTile` / `DropdownButtonFormField` / `TextField`
+      //        ⇒ 就地包一层 `MaterialType.transparency`（只作墨水/光标宿主，
+      //        不画底色、不裁剪）。实测依据见 zz_dialog18_unified_shell_test.dart。
+      //     ② 机制⑤：内容区 DefaultTextStyle 写死 `textAlign: center`，
+      //        字段标签与说明会被逐行居中 ⇒ 显式 merge 回左对齐。
+      //   ★ 顺带去掉内容自带的 SingleChildScrollView：外壳内容区本来就滚
+      //     （嵌套两层只有一层有效）⇒ 用 DefaultTextStyle.merge 占同一层，
+      //     嵌套深度与改前**完全一致**、滚动能力不减。
+      title: '配置「${widget.name}」',
+      content: Material(
+        type: MaterialType.transparency,
+        child: DefaultTextStyle.merge(
+          textAlign: TextAlign.left,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -7628,13 +7755,11 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
           ),
         ),
       ),
-      actions: [
-        AppTextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () {
+      actions: AppGlassDialogActions(
+        onCancel: () => Navigator.pop(context),
+        confirmLabel: '保存',
+        confirmIsDestructive: false,
+        onConfirm: () {
             final out = <String, dynamic>{};
             for (final f in widget.config.fields) {
               switch (f.type) {
@@ -7655,10 +7780,8 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
               }
             }
             Navigator.pop(context, out);
-          },
-          child: const Text('保存'),
-        ),
-      ],
+        },
+      ),
     );
   }
 

@@ -231,43 +231,59 @@ class DownloadPanel extends StatelessWidget {
     }
     final ok = await showAppDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        // R4-EXCEPTION: 机制③ 内联 TextStyle 警示色会被 DefaultTextStyle 覆盖
-        title: const Text('删除整部剧的下载？'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('「$title」'),
-            const SizedBox(height: Sp.x2),
-            Text('将删除 ${p.fileCount} 个文件（${p.sizeText}）',
-                style: const TextStyle(fontWeight: FontWeight.w600)),
-            if (p.episodeCount > 0)
-              Text('并从下载队列移除 ${p.episodeCount} 个任务'),
-            const SizedBox(height: Sp.x2),
-            const Text('此操作不可恢复。', style: TextStyle(color: Colors.red)),
-            if (p.fileNames.isNotEmpty) ...[
+      builder: (ctx) => AppGlassDialog(
+        // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+        //   → 统一外壳 AppGlassDialog（吃 §3.5 的 460/620/Radii.lg 规范）。
+        //   逐项等价（照同文件 `_confirmRemoveOne` 的既有迁移口径，不是机械替换）：
+        //   · 返回值仍是 `bool?` —— 取消 pop(false)、全部删除 pop(true)，
+        //     下面的 `ok != true` 判据一字未改（取消**不是** null，别改）。
+        //   · 按钮文案与顺序不变；改前两个都是 TextButton
+        //     ⇒ `confirmIsDestructive: false`（保持不是错误色主按钮）。
+        //   · 宽度：内容无固有宽度 ⇒ 走默认 460（§3.5 窄弹窗档），未传 maxWidth。
+        //   ⚠️ 内容区原为 `Column(crossAxisAlignment.start)` 的**左对齐清单**；
+        //      统一外壳的内容区 DefaultTextStyle 写死 `textAlign: center`
+        //      ⇒ 必须显式 merge 回左对齐，否则「此操作不可恢复。」与文件名
+        //      清单会被逐行居中（原 `R4-EXCEPTION: 机制③` 那条登记）。
+        //      「此操作不可恢复。」的内联 `TextStyle(color: Colors.red)`
+        //      仍生效（inherit=true ⇒ 与外壳默认样式 merge，显式色胜出），
+        //      有行为测试钉住（zz_dialog18_unified_shell_test.dart）。
+        title: '删除整部剧的下载？',
+        content: DefaultTextStyle.merge(
+          textAlign: TextAlign.left,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('「$title」'),
               const SizedBox(height: Sp.x2),
-              Text(
-                p.fileNames.take(5).join('、') +
-                    (p.fileNames.length > 5
-                        ? '… 等 ${p.fileNames.length} 个'
-                        : ''),
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
-              ),
+              Text('将删除 ${p.fileCount} 个文件（${p.sizeText}）',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              if (p.episodeCount > 0)
+                Text('并从下载队列移除 ${p.episodeCount} 个任务'),
+              const SizedBox(height: Sp.x2),
+              const Text('此操作不可恢复。',
+                  style: TextStyle(color: Colors.red)),
+              if (p.fileNames.isNotEmpty) ...[
+                const SizedBox(height: Sp.x2),
+                Text(
+                  p.fileNames.take(5).join('、') +
+                      (p.fileNames.length > 5
+                          ? '… 等 ${p.fileNames.length} 个'
+                          : ''),
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('全部删除'),
-          ),
-        ],
+        actions: AppGlassDialogActions(
+          confirmLabel: '全部删除',
+          // 改前两个都是 TextButton（「全部删除」不是 FilledButton）
+          // ⇒ 按原形态定：不是错误色主按钮（与 `_confirmRemoveOne` 同口径）。
+          confirmIsDestructive: false,
+          onCancel: () => Navigator.of(ctx).pop(false),
+          onConfirm: () => Navigator.of(ctx).pop(true),
+        ),
       ),
     );
     if (ok != true) return;

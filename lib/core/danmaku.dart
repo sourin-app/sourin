@@ -681,6 +681,16 @@ abstract class DanmakuTransport {
 ///                            不跟随重定向的话永远拿不到弹幕
 /// connectionTimeout        —— 移动网络下别无限等
 /// ```
+/// Null selects environment proxy resolution; DIRECT stays explicit.
+String danmakuProxyForUri(
+  Uri uri,
+  String? findProxy, {
+  Map<String, String>? environment,
+}) => findProxy ?? HttpClient.findProxyFromEnvironment(
+  uri,
+  environment: environment ?? Platform.environment,
+);
+
 class IoDanmakuTransport implements DanmakuTransport {
   /// [findProxy] 是 `HttpClient.findProxy` 的**直接值**（如
   /// `'PROXY 127.0.0.1:7890'` / `'DIRECT'`）；null = 直连。
@@ -708,7 +718,8 @@ class IoDanmakuTransport implements DanmakuTransport {
               ..connectionTimeout = const Duration(seconds: 10)
               ..userAgent = 'sourin-flutter-spike/danmaku'
               // 无条件赋值（见构造函数文档：null ⇒ 显式 'DIRECT'）
-              ..findProxy = ((String? p) => (Uri _) => p ?? 'DIRECT')(findProxy));
+              ..findProxy = ((String? p) => (Uri uri) =>
+                  danmakuProxyForUri(uri, p))(findProxy));
 
   final HttpClient _client;
   final Duration timeout;
@@ -2892,9 +2903,12 @@ class DanmakuLocalService {
   ///    `_probeOne` 的 404 快速失败，不吃这个预算。
   static Future<DanmakuLocalStatus> probe({
     DanmakuTransport? transport,
-    Duration timeout = const Duration(seconds: 2),
+    Duration? timeout,
     DanmakuEndpoint? endpoint,
   }) async {
+    timeout ??= _isPublicEndpoint(endpoint)
+        ? const Duration(seconds: 12)
+        : const Duration(seconds: 2);
     final t = transport ??
         IoDanmakuTransport(
           timeout: timeout,
@@ -2911,11 +2925,26 @@ class DanmakuLocalService {
      */
     final clock = Stopwatch()..start();
     Duration remaining() {
-      final left = timeout - clock.elapsed;
+      final left = timeout! - clock.elapsed;
       return left.isNegative ? Duration.zero : left;
     }
 
     try {
+      // Public instances expose search, not desktop metadata. Give the useful
+      // endpoint the full bounded budget instead of spending it on known 404s.
+      if (_isPublicEndpoint(endpoint) && endpoint != null) {
+        final publicStatus = await _probeOne(
+          t,
+          endpoint.resolve(searchProbePath, const {'keyword': 'a'}),
+          remaining(),
+          endpoint: endpoint,
+        );
+        return publicStatus ?? DanmakuLocalStatus(
+          online: false,
+          endpoint: endpoint,
+          isPublicInstance: true,
+        );
+      }
       // ① 首选：弹弹play 桌面版的原生端点（本机 2080 与本机自建实例同款拼法）
       final st0 = await _probeOne(
         t,

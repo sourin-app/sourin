@@ -720,6 +720,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
   ///    `GlobalKey`** ⇒ 它不会被重建 ✓（这正是"只重建该重建的那一半"）。
   Future<void> _onDetailSwitchSource(String provider, String id) async {
     if (provider == _provider && id == _contentId) return;
+    final resumeFrom = _session?.currentPosition;
     debugPrint('[MEDIA] 详情区请求换源 ⇒ 页内换 '
         '$_provider:$_contentId → $provider:$id');
 
@@ -798,6 +799,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
       id: id,
       title: widget.title,
       cover: widget.cover,
+      resumeFrom: resumeFrom,
     ));
 
     /*

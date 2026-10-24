@@ -93,7 +93,7 @@ void main() {
        * 注入"删掉一处"后仍满足 >=10 ⇒ **注入不变红**，看起来像假绿。
        * ⇒ 精确值 + 写明它怎么来的（改前 10 个 TextButton + 1 个原有 = 11）。
        */
-      expect(RegExp(r'AppTextButton\(').allMatches(code).length, 11,
+      expect(RegExp(r'AppTextButton\(').allMatches(code).length, 8,
           reason: '★★ 必须正好 11 处 AppTextButton'
               '（10 个替换来的 + 1 个原本就有）');
       expect(RegExp(r'AppIconButton\(').allMatches(code).length, 9,
@@ -122,10 +122,10 @@ void main() {
       final code = _settings();
       final n = RegExp(r'(?<!App)\bAlertDialog\(').allMatches(code).length;
       // ignore: avoid_print
-      print('[SET] 保留的 AlertDialog = $n（预期 4：3 复杂表单 + 1 含输入框）');
-      expect(n, 4,
+      print('[SET] 剩余 AlertDialog = $n（第 18 项后预期 0）');
+      expect(n, 0,
           reason: '★ 登记：4 个对话框因能力边界保留 AlertDialog');
-      expect(RegExp(r'AppGlassDialog\(').allMatches(code).length, 1,
+      expect(RegExp(r'AppGlassDialog\(').allMatches(code).length, 5,
           reason: '★ 纯文本确认框已换（1 处：_confirm）');
     });
 
@@ -146,11 +146,28 @@ void main() {
       final i = raw.indexOf('Future<String?> _promptText(');
       expect(i, greaterThan(0), reason: '前提：_promptText 存在');
       final body = raw.substring(i, i + 2600);
-      expect(body.contains('AlertDialog('), isTrue,
-          reason: '★★★ 含 TextField 的对话框必须用 AlertDialog'
-              '（AppGlassDialog 没有 Material 宿主，TextField 会抛）');
-      expect(body.contains('AppGlassDialog('), isFalse,
-          reason: '★★★ 不许换成 AppGlassDialog —— 会让 2 个生产调用点崩溃');
+      /*
+       * ★ 2026-10-24（第 18 项迁壳）：按本测试**自己注释里写的指引**更新 ——
+       *   原文：「若将来有人给 AppGlassDialog 补了透明 Material 宿主，
+       *         这条会红 ⇒ 那时应该更新它并**同时**加一条"TextField 能用"的行为断言。」
+       *
+       * 实际发生的是：第 18 项选择**在调用点**补 `MaterialType.transparency`
+       * （而不是改共享组件）。所以判据从「必须是 AlertDialog」改为
+       * 「必须是 AppGlassDialog **且** content 就地包了透明 Material」。
+       *
+       * ★ 判别力没丢，反而更精确：去掉那层 Material ⇒ 这条立刻红。
+       *   「TextField 能用」的行为证据在 test/zz_dialog18_unified_shell_test.dart
+       *   的仪器自检里（裸 TextField 抛 / 包了不抛，两组实测 + 走真实路由）。
+       */
+      expect(body.contains('AppGlassDialog('), isTrue,
+          reason: '★ 含 TextField 的对话框走统一外壳（第 18 项）');
+      expect(body.contains('MaterialType.transparency'), isTrue,
+          reason: '★★★ 必须就地补透明 Material 宿主 —— '
+              'AppGlassDialog 零 Material，TextField 会抛 '
+              '"require a Material widget ancestor"（实测），'
+              '去掉这层会让 2 个生产调用点崩溃');
+      expect(body.contains('AlertDialog('), isFalse,
+          reason: '★★★ 不许退回裸 AlertDialog');
     });
 
     test('★ 登记：FilledButton 仍有（本仓无自建填充按钮）', () {

@@ -1197,16 +1197,34 @@ class _WebdavDialogState extends State<_WebdavDialog> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final p = _preset;
-    return AlertDialog(
-      // R4-EXCEPTION: content 是 WebDAV 配置表单 —— SizedBox(width:420) +
-      // 自带 SingleChildScrollView(clipBehavior) + 预设 pill 的 Wrap + 表单字段。
-      // AppGlassDialog 的 maxWidth 默认 380 ⇒ 塞不下 420 宽的表单；
-      // 且它自带滚动区会与外壳的滚动区嵌套。
-      title: const Text('配置云盘（WebDAV）'),
-      content: SizedBox(
-        width: 420,
-        child: SingleChildScrollView(
-          clipBehavior: Clip.antiAlias,
+    return AppGlassDialog(
+      // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+      //   → 统一外壳 AppGlassDialog。逐项等价（先读原语义，不是机械替换）：
+      //   · 返回值 `({url,user,pass,dir})?` 完全不变：
+      //       取消 = `Navigator.pop(context)`（**null**）；
+      //       保存并测试 = `pop(记录)`；
+      //       地址/用户名空 或 地址里还有 <…> 占位符 = **只 setState 报 _hint、不关窗**。
+      //     三条分支一字未改。
+      //   · 宽度：走外壳默认 460（§3.5「窄弹窗」档；内容区可用宽 = 460 − 48 = 412）。
+      //     原内容写死 420 宽 —— 那是 AlertDialog 那套边距下的值；这里不再重复写
+      //     宽度，让内容填满外壳内容区（412，比 420 窄 8px）。表单字段与手势胶囊
+      //     都没有硬编码宽度 ⇒ 无夹取、无溢出。
+      //   ⚠️ 两条能力缺口在原处补齐（**不改共享组件** —— 它不在本项写入范围）：
+      //     ① 机制②「外壳内容区零 Material 宿主」：实测这一处含 4 个 TextField
+      //        与 ChoiceChip 手势胶囊，分别抛「TextField widgets require a Material
+      //        widget ancestor」「_InkResponseStateWidget widgets require a Material
+      //        widget ancestor」⇒ 就地包一层 `MaterialType.transparency`
+      //        （只作墨水/光标/选择手柄宿主，不画底色、不裁剪，外壳视觉不变）。
+      //     ② 机制⑤「内容区 DefaultTextStyle 写死 textAlign: center」：左对齐表单
+      //        会被逐行居中 ⇒ 显式 merge 回左对齐。
+      //   ★ 顺带去掉内容自带的 SingleChildScrollView：外壳内容区本来就滚
+      //     （嵌套两层滚动只有一层有效）⇒ 用 DefaultTextStyle.merge 占同一层，
+      //     嵌套深度与改前**完全一致**、滚动能力不减（外壳 maxHeight 620 内可滚）。
+      title: '配置云盘（WebDAV）',
+      content: Material(
+        type: MaterialType.transparency,
+        child: DefaultTextStyle.merge(
+          textAlign: TextAlign.left,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -1326,13 +1344,13 @@ class _WebdavDialogState extends State<_WebdavDialog> {
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () {
+      actions: AppGlassDialogActions(
+        onCancel: () => Navigator.pop(context),
+        confirmLabel: '保存并测试',
+        // 改前是「TextButton 取消 + FilledButton 保存并测试」⇒ 确认键走主色，
+        // 与 settings_page._confirm 同一口径（本仓无自建填充按钮）。
+        confirmIsDestructive: false,
+        onConfirm: () {
             final url = _url.text.trim();
             if (url.isEmpty || _user.text.trim().isEmpty) return;
             /*
@@ -1352,10 +1370,8 @@ class _WebdavDialogState extends State<_WebdavDialog> {
               pass: _pass.text,
               dir: _dir.text.trim(),
             ));
-          },
-          child: const Text('保存并测试'),
-        ),
-      ],
+        },
+      ),
     );
   }
 }
@@ -1436,14 +1452,27 @@ class _PassphraseDialogState extends State<_PassphraseDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return AlertDialog(
-      // R4-EXCEPTION: content 是**口令表单**（两个 TextField + 错误文案 +
-      // 警示文案，包在 SizedBox(width:380) 的 Column 里）⇒ 不是确认框。
-      // AppGlassDialog 内容区 textAlign:center 会让两个输入框居中；
-      // 且 maxHeight 默认 420 可能压掉下面的「忘记口令」警示。
-      title: Text(widget.hasExisting ? '修改凭据同步口令' : '设置凭据同步口令'),
-      content: SizedBox(
-        width: 380,
+    return AppGlassDialog(
+      // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+      //   → 统一外壳。逐项等价（先读原语义，不是机械替换）：
+      //   · 返回值 `({pass,clear})?` 完全不变：取消 = `Navigator.pop(context)`
+      //     （**null**）；保存 = `_submit()` —— 三道校验（非空 / ≥8 位 / 两次一致）
+      //     任一不过就 setState 报 _err **不关窗**。`_submit` 一字未改。
+      //   · 宽度：走外壳默认 460（§3.5「窄弹窗」档；内容区可用宽 412）。
+      //     原内容写死 380 ⇒ 不再重复写宽度，输入框随之填满 412（宽 +32px，
+      //     这是唯一的内容尺寸差异，已写进决策笔记）。
+      //   · 高度：改前注释里「maxHeight 默认 420 可能压掉下面的警示」是**旧值** ——
+      //     组件早已按 §3.5 收敛到绝对值 620 ⇒ 这里不需要再覆盖 maxHeight。
+      //   ⚠️ 机制②：外壳内容区零 Material 宿主，这里两个 TextField 会抛
+      //     「TextField widgets require a Material widget ancestor」⇒ 就地包一层
+      //     `MaterialType.transparency`（只作光标/选择手柄宿主，不画底色、不裁剪）。
+      //   ⚠️ 机制⑤：内容区 DefaultTextStyle 写死 `textAlign: center` ⇒ 两段警示
+      //     文案与错误行显式 `textAlign: TextAlign.left`（见下面三个 Text）。
+      // ⚠️ 外壳 `title` 收 `String`（改前是 `Text` 包一层）——
+      //    文案表达式逐字不变（同一对三元的同一分支）。
+      title: widget.hasExisting ? '修改凭据同步口令' : '设置凭据同步口令',
+      content: Material(
+        type: MaterialType.transparency,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1454,6 +1483,7 @@ class _PassphraseDialogState extends State<_PassphraseDialog> {
                       '云端已有的那份、以及之前导出的备份包仍需要「旧口令」才能解开。'
                   : '这个口令用来加密登录态（各内容源已保存的登录态）。'
                       '它只存在系统钥匙串里，不会上传、也不会写进备份包。',
+              textAlign: TextAlign.left,
               style: TextStyle(
                 fontSize: FontSizes.cap,
                 color: colors.onSurfaceVariant,
@@ -1479,6 +1509,7 @@ class _PassphraseDialogState extends State<_PassphraseDialog> {
               const SizedBox(height: Sp.x2),
               Text(
                 _err,
+                textAlign: TextAlign.left,
                 style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
               ),
             ],
@@ -1486,6 +1517,7 @@ class _PassphraseDialogState extends State<_PassphraseDialog> {
             Text(
               '⚠️ 忘记口令 = 云端那份和已导出的备份包都解不开（没有找回途径）。'
               '建议存进密码管理器。',
+              textAlign: TextAlign.left,
               style: TextStyle(
                 fontSize: FontSizes.cap,
                 color: colors.onSurfaceVariant,
@@ -1495,13 +1527,14 @@ class _PassphraseDialogState extends State<_PassphraseDialog> {
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
-        ),
-        FilledButton(onPressed: _submit, child: const Text('保存')),
-      ],
+      actions: AppGlassDialogActions(
+        onCancel: () => Navigator.pop(context),
+        confirmLabel: '保存',
+        // 改前是「TextButton 取消 + FilledButton 保存」⇒ 确认键走主色
+        //（与 settings_page._confirm 同一口径；本仓无自建填充按钮）。
+        confirmIsDestructive: false,
+        onConfirm: _submit,
+      ),
     );
   }
 }

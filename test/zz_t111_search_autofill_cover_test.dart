@@ -134,10 +134,10 @@ void main() {
   group('T111-③ 面板渲染', () {
     test('★ 结果行真的画封面，且失败有占位（不留空洞）', () {
       final dlg = stripComments(
-          readRepoFile('lib/ui/widgets/danmaku_settings_dialog.dart'));
+          readRepoFile('lib/ui/danmaku_search_page.dart'));
       expect(dlg.contains('coverImage('), isTrue,
           reason: '要用本仓统一的 coverImage()（按布局尺寸解码，避免糊/浪费）');
-      expect(dlg.contains('m.cover.isEmpty'), isTrue,
+      expect(dlg.contains('match.cover.isEmpty'), isTrue,
           reason: '★ 空封面要有明确分支，否则会拿空 URL 去请求');
       expect(dlg.contains('errorBuilder'), isTrue,
           reason: '★ 死链要能降级，不能把整行弄崩');
@@ -162,7 +162,7 @@ void main() {
 
     test('★ 拆成两行显示（标题 + 集数），不再用「·」拼成一行', () {
       final dlg = stripComments(
-          readRepoFile('lib/ui/widgets/danmaku_settings_dialog.dart'));
+          readRepoFile('lib/ui/danmaku_search_page.dart'));
       expect(dlg.contains(r"'\$title · \$ep'"), isFalse,
           reason: '改版后标题与集数分两行（有了封面，横排空间不够）');
     });
@@ -189,9 +189,9 @@ void main() {
 
     test('★ 预填不是锁定：用户仍可编辑后再搜', () {
       final dlg = stripComments(
-          readRepoFile('lib/ui/widgets/danmaku_settings_dialog.dart'));
+          readRepoFile('lib/ui/danmaku_search_page.dart'));
       // 输入框必须绑 controller（用户可改），而不是显示一个静态 Text
-      expect(dlg.contains('controller: _searchKeyword'), isTrue,
+      expect(dlg.contains('controller: _keyword'), isTrue,
           reason: '★ 必须是可编辑输入框（预填只是初值）');
     });
   });

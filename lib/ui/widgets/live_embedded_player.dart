@@ -48,13 +48,14 @@ import 'dart:async';
 
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart' show ValueListenable, visibleForTesting;
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/app_log.dart';
 import '../../core/models.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
+import '../media_session.dart';
 import 'app_loading.dart';
 import '../../design/widgets/app_icon_button.dart' show AppSurface;
 import '../../design/widgets/app_ink_well.dart';
@@ -91,6 +92,69 @@ class LiveQualityOption {
   bool get selectable => !drm && value.isNotEmpty;
 }
 
+/// Executes the same command-before-intent ordering used by the live controls.
+@visibleForTesting
+Future<void> runLiveUserPlaybackToggle({
+  required bool playing,
+  required Future<void> Function() pause,
+  required Future<void> Function() play,
+  required void Function(bool paused)? onUserPause,
+}) async {
+  if (playing) {
+    await pause();
+    onUserPause?.call(true);
+  } else {
+    await play();
+    onUserPause?.call(false);
+  }
+}
+
+/// Retain this object before unmounting; completion is not inferred from unmount.
+class LiveEmbeddedDisposalReceipt {
+  LiveEmbeddedDisposalReceipt() : instanceId = ++_nextId;
+  static int _nextId = 0;
+  final int instanceId;
+  final Completer<void> _completion = Completer<void>();
+  bool _started = false;
+  bool _hadNativePlayer = false;
+  DateTime? _completedAt;
+  Object? _error;
+  StackTrace? _stackTrace;
+
+  bool get started => _started;
+  bool get hadNativePlayer => _hadNativePlayer;
+  DateTime? get completedAt => _completedAt;
+  Object? get error => _error;
+  StackTrace? get stackTrace => _stackTrace;
+  Future<void> get completed => _completion.future;
+
+  // The future is observed here so asynchronous disposal errors are retained
+  // rather than escaping from synchronous State.dispose as unhandled errors.
+  void _start(Future<void> Function()? disposeNative) {
+    if (_started) return;
+    _started = true;
+    _hadNativePlayer = disposeNative != null;
+    unawaited(_observe(disposeNative));
+  }
+
+  Future<void> _observe(Future<void> Function()? disposeNative) async {
+    try {
+      if (disposeNative != null) await disposeNative();
+    } catch (error, stackTrace) {
+      _error = error;
+      _stackTrace = stackTrace;
+    } finally {
+      _completedAt = DateTime.now().toUtc();
+      _completion.complete();
+    }
+  }
+
+  /// Tests exercise the same observer, not a replacement native player.
+  @visibleForTesting
+  void observeForTest(Future<void> Function()? disposeNative) =>
+      _start(disposeNative);
+}
+
 /// 直播内嵌播放器
 ///
 /// ★ 生命周期由外部持有（[LiveEmbeddedPlayerState]）——
@@ -111,10 +175,15 @@ class LiveEmbeddedPlayer extends StatefulWidget {
     this.qualityOptions = const <LiveQualityOption>[],
     this.onQualityChanged,
     this.showDanmakuNote = true,
+    this.playWhenReady = true,
   });
 
   /// 要播的流；null = 还没选频道 / 正在取流
   final StreamCandidate? stream;
+
+  /// Whether a newly opened stream may start playing.
+  /// Fullscreen handoff preserves the user's pause intent through channel changes.
+  final bool playWhenReady;
 
   /// 频道名（右上角显示）
   final String title;
@@ -209,6 +278,24 @@ class LiveEmbeddedPlayer extends StatefulWidget {
 }
 
 class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
+  final LiveEmbeddedDisposalReceipt _disposalReceipt =
+      LiveEmbeddedDisposalReceipt();
+
+  /// Capture before unmount; completion does not imply audible silence.
+  LiveEmbeddedDisposalReceipt get disposalReceiptForProbe => _disposalReceipt;
+
+  /// Shared with the bottom bar; preserves native command then user intent.
+  Future<void> toggleUserPlaybackForProbe() async {
+    final p = _player;
+    if (p == null || _disposed) return;
+    await runLiveUserPlaybackToggle(
+      playing: p.state.playing,
+      pause: p.pause,
+      play: p.play,
+      onUserPause: widget.onUserPause,
+    );
+  }
+
   Player? _player;
   VideoController? _controller;
 
@@ -575,9 +662,9 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
      * ⚠️ 顺序：必须在 `_playingSub` 等订阅**之前**置 `_muted`，
      *   否则 volume 订阅回流的 0 会先撞上 `_muted == false`（无害，但会多一次 setState）。
      */
-    _muted = true;
-    unawaited(p.setVolume(0));
-    AppLog.write('LIVE', '默认静音 ⇒ _muted=true 且音量下发 0');
+    // Preserve explicit controls or a fullscreen snapshot received before creation.
+    unawaited(p.setVolume(_muted || !_visibleNow ? 0 : desiredVolume));
+    AppLog.write('LIVE', '初始化音量 ⇒ muted=$_muted');
 
     _playingSub = p.stream.playing.listen((v) {
       if (!mounted) return;
@@ -810,8 +897,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
       if (native0 is NativePlayer) {
         await _applyLiveFastStart(p);
       }
-      await p.open(Media(st.url, httpHeaders: st.httpHeaders));
-      await p.play();
+      await p.open(Media(st.url, httpHeaders: st.httpHeaders), play: false);
+      if (widget.playWhenReady && _visibleNow) {
+        await p.play();
+      }
       // ★ 计时：首次起播的 open+play 耗时。
       //   留着是因为它是**下一次定位起播慢的唯一数据源**（Owner 报过 8 秒）。
       debugPrint('[LIVE] 首次 open+play = '
@@ -927,8 +1016,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
       // ★ headers 是 `Media` 的构造参数（见 `_openCurrent` 的说明）
       await _applyLiveFastStart(p); // ★ 换台路径同样要设（见 _applyLiveFastStart）
       final tSwitch = DateTime.now();
-      await p.open(Media(st.url, httpHeaders: st.httpHeaders));
-      await p.play();
+      await p.open(Media(st.url, httpHeaders: st.httpHeaders), play: false);
+      if (widget.playWhenReady && _visibleNow) {
+        await p.play();
+      }
       /*
        * ★ 2026-13 计时探针（Owner 报「切到直播页要 8 秒才出画面」）：
        *   `open()`+`play()` 只是**下发 loadfile**（不等流打开）⇒ 这行数值很小是正常的。
@@ -1658,9 +1749,48 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   /// 当前音量（0~100）
   double get volume => _player?.state.volume ?? 100;
 
-  Future<void> setVolume(double v) async {
+  LivePlaybackSnapshot get playbackSnapshot => LivePlaybackSnapshot(
+        playing: isPlaying,
+        muted: muted,
+        volume: desiredVolume,
+      );
+
+  /// Restore user intent before playback; hidden players remain silent.
+  Future<void> applyPlaybackSnapshot(
+    LivePlaybackSnapshot snapshot, {
+    bool restorePlaying = true,
+  }) async {
     if (_disposed) return;
-    await _player?.setVolume(v.clamp(0, 100));
+    _volumeBeforeMute = snapshot.volume;
+    _volumeBeforeHide = _visibleNow ? null : snapshot.volume;
+    if (mounted) setState(() => _muted = snapshot.muted);
+    await _player?.setVolume(
+        snapshot.muted || !_visibleNow ? 0 : snapshot.volume);
+    if (!restorePlaying || _disposed) return;
+    if (snapshot.playing && _visibleNow) {
+      await resume();
+    } else {
+      await pause();
+    }
+  }
+
+  /// User-requested volume, independent of temporary visibility muting.
+  double get desiredVolume {
+    final preferred = double.tryParse(
+        UiPrefs.get('dsh.playprefs.lastVolume') ?? '');
+    return (_volumeBeforeMute ?? _volumeBeforeHide ??
+        _player?.state.volume ??
+        ((preferred != null && preferred >= 0 && preferred <= 1)
+            ? preferred * 100 : 100)).clamp(0, 100).toDouble();
+  }
+
+  Future<void> setVolume(double v) async {
+    if (_disposed || !v.isFinite) return;
+    final next = v.clamp(0, 100).toDouble();
+    if (next > 0) _volumeBeforeMute = next;
+    if (!_visibleNow) _volumeBeforeHide = next;
+    if (mounted) setState(() => _muted = next == 0);
+    await _player?.setVolume(_visibleNow ? next : 0);
   }
 
   /*
@@ -1699,9 +1829,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   Future<void> toggleMute() async {
     if (_disposed) return;
     final p = _player;
-    if (p == null) return;
     AppLog.write('LIVE', '静音按钮被点击：_muted=$_muted '
-        'volume=${p.state.volume}');
+        'volume=${p?.state.volume}');
     if (_muted) {
       /*
        * 取消静音：三级瀑布求恢复目标（**绝不下发 0**）
@@ -1723,15 +1852,16 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
         restore = (v != null && v >= 0 && v <= 1) ? v * 100 : 100;
       }
       if (restore <= 0) restore = 100;
-      _volumeBeforeMute = null;
-      await p.setVolume(restore.clamp(1, 100));
+      _volumeBeforeMute = restore.clamp(1, 100).toDouble();
+      if (!_visibleNow) _volumeBeforeHide = _volumeBeforeMute;
+      await p?.setVolume(_visibleNow ? _volumeBeforeMute! : 0);
       if (mounted) setState(() => _muted = false);
       AppLog.write('LIVE', '取消静音 ⇒ 音量还原到 ${restore.round()}');
     } else {
       // 静音：先抓快照再压 0（顺序不能反 —— 反了就抓不到原音量）
-      final cur = p.state.volume;
+      final cur = desiredVolume;
       if (cur > 0) _volumeBeforeMute = cur;
-      await p.setVolume(0);
+      await p?.setVolume(0);
       if (mounted) setState(() => _muted = true);
       AppLog.write('LIVE', '已静音 ⇒ 音量压到 0（快照 $_volumeBeforeMute）');
     }
@@ -1743,7 +1873,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   ///   它是**显式状态**，不由 `state.volume == 0` 反推 ——
   ///   因为 `pause()` 在不可见时也会把音量压成 0（那不是"用户静音"）。
   bool get muted => _muted;
-  bool _muted = false;
+  bool _muted = true;
 
   /// 静音前的音量（null = 没静音过）
   double? _volumeBeforeMute;
@@ -1852,7 +1982,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     final p = _player;
     _player = null;
     _controller = null;
-    unawaited(p?.dispose() ?? Future.value());
+    _disposalReceipt._start(p == null ? null : p.dispose);
     super.dispose();
   }
 
@@ -2049,18 +2179,9 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
               child: _EmbedBar(
                 playing: _ready,
                 muted: muted,
-                onTogglePlay: () async {
-                  final p = _player;
-                  if (p == null) return;
-                  if (p.state.playing) {
-                    await p.pause();
-                    // ★ 上报"是用户暂停的" —— 可见性变化时不要自动播
-                    widget.onUserPause?.call(true);
-                  } else {
-                    await p.play();
-                    widget.onUserPause?.call(false);
-                  }
-                },
+                volume: muted ? 0 : desiredVolume,
+                onVolumeChanged: (value) => unawaited(setVolume(value)),
+                onTogglePlay: toggleUserPlaybackForProbe,
                 onMute: toggleMute,
                 accent: colors.primary,
                 // ★ R6：清晰度下拉（≥2 可选档才画，判据在上面一次算清）
@@ -2277,6 +2398,8 @@ class _EmbedBar extends StatelessWidget {
   const _EmbedBar({
     required this.playing,
     required this.muted,
+    required this.volume,
+    required this.onVolumeChanged,
     required this.onTogglePlay,
     required this.onMute,
     required this.accent,
@@ -2292,6 +2415,8 @@ class _EmbedBar extends StatelessWidget {
   /// 改前这里没有这个字段，图标是**写死的常量** `AppIcons.volume_off_outlined`
   /// ⇒ 永远画成"已静音"，与真实音量无关（Owner 缺陷 ①）。
   final bool muted;
+  final double volume;
+  final ValueChanged<double> onVolumeChanged;
 
   final Future<void> Function() onTogglePlay;
   final Future<void> Function() onMute;
@@ -2358,6 +2483,22 @@ class _EmbedBar extends StatelessWidget {
               icon: muted ? AppIcons.volume_off_outlined : AppIcons.volume_up_outlined,
               tooltip: muted ? '取消静音' : '静音',
               onTap: () => unawaited(onMute()),
+            ),
+            Flexible(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 120),
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: Slider(
+                    key: const ValueKey('live-volume-slider'),
+                    value: volume.clamp(0, 100).toDouble(),
+                    min: 0,
+                    max: 100,
+                    label: '${volume.round()}%',
+                    onChanged: onVolumeChanged,
+                  ),
+                ),
+              ),
             ),
 
             /*

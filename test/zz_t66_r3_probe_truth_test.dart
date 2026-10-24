@@ -295,6 +295,14 @@ void main() {
         matching: find.text('高级'),
       ));
       await t.pumpAndSettle();
+      await t.scrollUntilVisible(
+        find.text('测试连接'),
+        150,
+        scrollable: find.descendant(
+          of: find.byKey(const ValueKey('danmaku-settings-scroll')),
+          matching: find.byType(Scrollable),
+        ).first,
+      );
       await t.tap(find.text('测试连接'));
       await t.pumpAndSettle();
     }

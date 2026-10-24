@@ -49,6 +49,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/ui/widgets/settings_kit.dart';
 import 'package:sourin_spike/ui/widgets/sync_panel.dart';
+import 'package:sourin_spike/design/widgets/app_glass_dialog.dart';
 
 import '_support/strip_comments.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
@@ -460,8 +461,14 @@ void main() {
         reason: '★★★ 地址里还有 <主机> 却没提示 ⇒ 直接提交后后端只会报'
             '「无法连接（检查地址与网络）」，用户会去反复改密码',
       );
+      /*
+       * ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：这个对话框已从 Material 的
+       *   `AlertDialog` 迁到统一外壳 `AppGlassDialog` ⇒ 定位件换成**真实承载件**。
+       *   **不变量一字未改**：「有占位符时对话框不能关」。
+       *   （若将来又换外壳，这一条会红 —— 那是它应该做的事。）
+       */
       expect(
-        find.byType(AlertDialog),
+        find.byType(AppGlassDialog),
         findsOneWidget,
         reason: '★★ 有占位符时对话框**不能关** —— 关了用户就看不到那句提示了',
       );
@@ -525,8 +532,10 @@ void main() {
        * ★★ 还要再等**关窗动画**走完（实测 2026-10-19）：
        *   `runAsync` 里等到「配置失败」出现时，**对话框还在树上** ——
        *   `Navigator.pop` 之后它要走一遍出场动画（Motion.base 260ms），
-       *   动画没走完 ⇒ `find.byType(AlertDialog)` **仍然是 1**。
-       *   实测：再 pump 2 秒 ⇒ AlertDialog 数 = 0、「配置云盘（WebDAV）」消失。
+       *   动画没走完 ⇒ `find.byType(AppGlassDialog)` **仍然是 1**
+       *   （2026-10-24 第 18 项：承载件已从 Material AlertDialog 换成统一外壳，
+       *     判据随之换型，等待逻辑与原来完全相同）。
+       *   实测：再 pump 2 秒 ⇒ AppGlassDialog 数 = 0、「配置云盘（WebDAV）」消失。
        * ⇒ 所以这里要**在 runAsync 之后**再 pump 一段，让动画收尾。
        */
       for (var i = 0; i < 20; i++) {
@@ -538,7 +547,7 @@ void main() {
       //   实测它一边打印「Found 0 widgets」一边判 FAIL，是个假红。
       //   （要 `isEmpty` 得先 `.evaluate()`，见上面 ⓪ 组。）
       expect(
-        find.byType(AlertDialog),
+        find.byType(AppGlassDialog),
         findsNothing,
         reason: '★ 地址合法就该 pop 出结果（`Navigator.pop(context, (url:…))`）',
       );
@@ -576,7 +585,8 @@ void main() {
       await t.pump();
       await t.pump(const Duration(milliseconds: 400));
 
-      expect(find.byType(AlertDialog), findsNothing, reason: '★ 取消应关掉对话框');
+      expect(find.byType(AppGlassDialog), findsNothing,
+          reason: '★ 取消应关掉对话框（`Navigator.pop(context)` ⇒ null）');
       expect(
         find.textContaining('配置失败'),
         findsNothing,

@@ -54,6 +54,12 @@ pub mod sync;
 // ── 插件引擎 ──
 pub mod plugins;
 
+// ── 源个性化覆盖层（二次编排 / 劫持）──
+//
+// 挂在 `plugins::PluginProvider::call_js` 取出 `data` 之后、`js_value_to_rust` 之前。
+// 设计见 .agents/notes/proposed/architecture/2026-10-24-source-override-layer-after-call-js.md
+pub mod overrides;
+
 // ── 局域网遥控 ──
 pub mod remote;
 

@@ -118,9 +118,30 @@ void main() {
     test('⑤ ★ 位置那条老路径没被改坏（同一手法的既有先例）', () {
       // _onPositionTick 里不该出现 setState（2026-10-09 已修，别回退）
       final body = bodyOf(pp, 'void _onPositionTick(Duration p)');
-      expect(body.contains('setState'), isFalse,
-          reason: '位置 tick 也不能 setState（每秒一次整页重建的老毛病）');
-      expect(body.contains('_positionNotifier.value'), isTrue);
+      final positionBranch = bodyOf(body, 'if (secChanged)');
+      expect(positionBranch.contains('setState'), isFalse,
+          reason: '每秒位置分支仍禁止整页 setState');
+      expect(positionBranch.contains('_positionNotifier.value'), isTrue);
+      expect(RegExp(r'setState\s*\(').allMatches(body).length, 1,
+          reason: '只允许故障恢复的一次横幅清理');
+      final recovery = bodyOf(body, 'if (_playbackFailure != null');
+      expect(recovery, contains('_recoveryProgress += p - _position;'));
+      final threshold = bodyOf(recovery,
+          'if (_recoveryProgress >= const Duration(seconds: 3))');
+      expect(threshold, contains('setState(() => _playbackFailure = null)'));
+      final outsideThreshold = recovery.replaceFirst(threshold, '');
+      expect(outsideThreshold.contains('setState'), isFalse,
+          reason: '不足3秒的恢复推进不得重建');
+      final outsideRecovery = body.replaceFirst(recovery, '');
+      expect(outsideRecovery.contains('setState'), isFalse,
+          reason: '无横幅的普通tick不得重建');
+      final guard = body.substring(body.indexOf('if (_playbackFailure != null'),
+          body.indexOf('{', body.indexOf('if (_playbackFailure != null')));
+      for (final condition in ['_sawFirstFrame', '_player.state.playing',
+        '!_player.state.buffering', 'p > _position',
+        'p - _position <= const Duration(seconds: 2)']) {
+        expect(guard, contains(condition));
+      }
     });
 
     test('⑥ 面板开着时不再有任何"每秒一次"的整页 setState 入口', () {

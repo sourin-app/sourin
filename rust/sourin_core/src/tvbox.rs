@@ -4601,4 +4601,89 @@ mod real_sites {
         drop(st);
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// ★ 核心：Owner 给的那份配置形态 —— **点播源全不可用，但有直播源**
+    ///
+    /// 这条门禁守两件事：
+    /// 1. Java 源（type 3）不许被算进 imported（不虚报）
+    /// 2. 直播源**必须**被导入、注册、落盘、并在重启后恢复
+    ///    （放在早返回分支之前处理，否则这份配置的直播源永远进不来）
+    #[tokio::test]
+    async fn lives_are_imported_even_when_all_sites_are_java() {
+        std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+        // 自包含临时目录（不依赖相邻子模块的 helper，避免跨 mod 可见性纠缠）
+        let dir = std::env::temp_dir().join(format!(
+            "sourin_tvbox_lives_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+
+        // 1 个 Java 源（不可用）+ 1 个直播源 ⇒ 会走 jobs.is_empty() 早返回
+        let cfg = concat!(
+            r#"{"spider":"http://x/spider.jar;md5;000","#,
+            r#""sites":[{"key":"j1","name":"Java源","type":3,"api":"csp_Foo"}],"#,
+            r#""lives":[{"name":"测试直播","url":"http://127.0.0.1:1/test.m3u"}]}"#
+        );
+
+        let st = AppState::bootstrap(dir.clone()).await.expect("首次 bootstrap 失败");
+        let res = import_tvbox_config(&st, cfg).await.expect("导入失败");
+        println!("[EVIDENCE] L-import-result {res}");
+
+        // ① Java 源不许进 imported
+        assert_eq!(
+            res["imported"].as_array().map(|a| a.len()).unwrap_or(0),
+            0,
+            "★ Java 源一个都不许被导入：{res}"
+        );
+        assert_eq!(
+            res["skipped"].as_array().map(|a| a.len()).unwrap_or(0),
+            1,
+            "Java 源应进 skipped：{res}"
+        );
+
+        // ② 直播源必须被导入
+        let live = res["liveImported"]
+            .as_array()
+            .expect("返回体必须有 liveImported");
+        assert_eq!(live.len(), 1, "★ 直播源必须被导入：{res}");
+        let lid = live[0]["id"].as_str().unwrap_or_default().to_string();
+        assert!(!lid.is_empty(), "直播源必须带 id：{res}");
+        println!("[EVIDENCE] L-live-id {lid}");
+
+        // ③ 注册表里当场可见，且 kind 正确
+        let m = st
+            .registry
+            .manifests()
+            .into_iter()
+            .find(|x| x.id == lid)
+            .expect("★ 导入当场注册表里就该有直播源");
+        assert_eq!(m.kind, "m3u_live", "kind 必须是 m3u_live，实际 {}", m.kind);
+        assert!(m.capabilities.live, "必须声明 live 能力");
+
+        // ④ 落盘（含变体标签，重启靠它认出来）
+        let file = crate::persist::providers_file(&dir);
+        let text = std::fs::read_to_string(&file).unwrap_or_default();
+        println!("[EVIDENCE] L-persisted-body {text}");
+        assert!(text.contains(&lid), "清单应记录直播源 id：{text}");
+        assert!(
+            text.contains("m3u_live"),
+            "清单应记录 m3u_live 变体标签：{text}"
+        );
+        drop(st);
+
+        // ⑤ 重启后仍在（不带这一步就是"这次能用、重启消失"）
+        let st2 = AppState::bootstrap(dir).await.expect("重启 bootstrap 失败");
+        let m2 = st2
+            .registry
+            .manifests()
+            .into_iter()
+            .find(|x| x.id == lid)
+            .expect("★ 重启后直播源应仍在注册表里");
+        assert_eq!(m2.kind, "m3u_live");
+        println!("[EVIDENCE] L-after-restart id={} kind={}", m2.id, m2.kind);
+    }
+
 }

@@ -22,7 +22,7 @@ void main() {
       onBiliSelectPage: (_) {}, onClose: () {},
     )));
     await tester.enterText(find.byType(TextField), '作品');
-    await tester.tap(find.text('搜索 dan-api 与 Bilibili'));
+    await tester.tap(find.text('搜索 dan-api 与视频站'));
     await tester.pump();
     expect(searches, ['dan:作品', 'bili:作品']);
     await tester.tap(find.byType(CheckboxListTile));

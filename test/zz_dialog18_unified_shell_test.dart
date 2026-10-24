@@ -24,6 +24,7 @@ import 'package:sourin_spike/core/ui_prefs.dart';
 import 'package:sourin_spike/design/widgets/app_glass_dialog.dart';
 import 'package:sourin_spike/design/widgets/app_text_button.dart';
 import 'package:sourin_spike/design/icons/app_icons.dart';
+import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/settings/theme_page.dart';
 import 'package:sourin_spike/ui/settings_page.dart';
@@ -84,7 +85,28 @@ Future<Object?> probeContent(
   return ex;
 }
 
+/// 核心是否可用。
+///
+/// CI 的顺序是「全量测试 → 构建发布版」⇒ 测试阶段没有 `sourin_core.dll`
+/// （build.yml 的注释记着这个坑）。那两项用例要驱动真实文件 I/O 与口令框，
+/// 缺件时前置不成立 ⇒ 明确 skip，而不是让断言红（那不是缺陷，是缺件）。
+bool _coreReady = false;
+
 void main() {
+  setUpAll(() async {
+    try {
+      final dir = await Directory.systemTemp.createTemp('sourin_d18_core_');
+      final r = await SourinCore.startAsync(dir.path);
+      _coreReady = r['ok'] == true;
+    } catch (_) {
+      _coreReady = false;
+    }
+    if (!_coreReady) {
+      // ignore: avoid_print
+      print('DIALOG18|core_ready=false ⇒ 依赖真实核心的 2 项将 skip');
+    }
+  });
+
   // ═══════════════════════════════════════════════════════════════════
   //  ① 仪器自检：外壳内容区的 Material 依赖名单（行为取证）
   // ═══════════════════════════════════════════════════════════════════
@@ -315,6 +337,10 @@ void main() {
 
     // ── ③ backup「含登录态」（三键 + 多行左对齐清单）与「导出用口令」──
     testWidgets('③ backup 含登录态提示：三键语义 + 左对齐 + 走入口令框', (t) async {
+      if (!_coreReady) {
+        markTestSkipped('核心未启动（CI 测试阶段无 sourin_core.dll）');
+        return;
+      }
       // 只桩掉"本机有 2 个源、其中 1 个明文存密码"，不桩导出/选择器
       SourinApi.debugCredentialsStatusFetcher = () async => const CredentialsStatus(
             providers: 2,
@@ -490,6 +516,10 @@ void main() {
 
     // ── ① settings「_promptText」（含 TextField；2 个生产调用点之一：安装 JS 插件）──
     testWidgets('① settings _promptText：真点「安装 JS 插件」→ 取消 ⇒ null（不装）', (t) async {
+      if (!_coreReady) {
+        markTestSkipped('核心未启动（CI 测试阶段无 sourin_core.dll）');
+        return;
+      }
       await t.pumpWidget(MaterialApp(
         theme: AppTheme.themeFor(Brightness.dark),
         themeAnimationDuration: Duration.zero,

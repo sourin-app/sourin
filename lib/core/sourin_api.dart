@@ -1400,6 +1400,19 @@ class SourinApi {
     return PluginInstallResult.fromJson(jmap(r) ?? {});
   }
 
+  // ── 网盘分享识别与凭据状态（P3）──────────────────────────────────
+  //
+  // 返回的是**分层原因**，不是一句"不支持"：
+  //   认不出 / 认出了但没有分享 id / 需要先登录 / 登录已过期 / 已登录但取直链未接入
+  //
+  // ⚠️ `resolvable` 恒为 false（取直链尚未实现）。
+
+  /// 识别一段文本里的网盘分享，并带上该盘的凭据状态
+  static Future<PanShareStatus> identifyPanShare(String text) async {
+    final r = await SourinCore.callAsync('identify_pan_share', {'text': text});
+    return PanShareStatus.fromJson(jmap(r));
+  }
+
   /// 导入 TVBox 配置（task-5）
   ///
   /// [config] 既可以是 TVBox 配置的 **JSON 文本**，也可以是配置的 **URL**
@@ -4420,3 +4433,50 @@ class QrPollErrorText {
   }
 }
 
+/// 网盘分享的识别结果 + 凭据状态
+///
+/// 由 Rust 侧 `identify_pan_share` 返回。**不给结论性布尔值**，
+/// 而是给分层原因 —— 用户需要知道"卡在哪一步"，不是"不行"。
+class PanShareStatus {
+  const PanShareStatus({
+    this.kind = 'unknown',
+    this.kindName = '未知网盘',
+    this.shareId = '',
+    this.pwd,
+    this.loggedIn = false,
+    this.account,
+    this.expired = false,
+    this.keyringAvailable = true,
+    this.resolvable = false,
+    this.reason = '',
+  });
+
+  final String kind;
+  final String kindName;
+  final String shareId;
+  final String? pwd;
+  final bool loggedIn;
+  final String? account;
+  final bool expired;
+  final bool keyringAvailable;
+  /// **当前恒为 false**：取直链功能尚未实现
+  final bool resolvable;
+  /// 分层的真实原因（可直接显示给用户）
+  final String reason;
+
+  /// 是否认出了盘**且**拿到了分享 id
+  bool get recognized => kind != 'unknown' && shareId.isNotEmpty;
+
+  factory PanShareStatus.fromJson(Map<String, dynamic> j) => PanShareStatus(
+        kind: j['kind'] as String? ?? 'unknown',
+        kindName: j['kindName'] as String? ?? '未知网盘',
+        shareId: j['shareId'] as String? ?? '',
+        pwd: j['pwd'] as String?,
+        loggedIn: j['loggedIn'] == true,
+        account: j['account'] as String?,
+        expired: j['expired'] == true,
+        keyringAvailable: j['keyringAvailable'] != false,
+        resolvable: j['resolvable'] == true,
+        reason: j['reason'] as String? ?? '',
+      );
+}

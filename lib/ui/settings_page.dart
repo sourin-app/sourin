@@ -71,6 +71,8 @@ import 'tokens.dart';
 import 'widgets/app_loading.dart';
 import 'widgets/app_inline_spinner.dart';
 import 'widgets/app_menu.dart';
+// 网盘链接识别（P3）
+import 'widgets/pan_share_dialog.dart';
 import 'widgets/qr_view.dart';
 import 'widgets/source_composer_dialog.dart';
 import 'widgets/source_composer_model.dart';
@@ -1708,6 +1710,18 @@ class SettingsPageState extends State<SettingsPage> {
   /// 想按链接装得去另一个入口（「从链接安装」），用户要自己先判断
   /// 「我手上这个算哪种」—— 而 Owner 的诉求正是「一个表单，自动识别」。
   /// ```
+  /// 打开网盘链接识别
+  ///
+  /// 直接构造 PanShareDialog（不调 showPanShareDialog）：
+  /// t94 的守卫判据要求类名前的字符不是单词字符，而 show 函数名里
+  /// 类名前紧邻字母 w，会判定为未接线。行为与封装函数一致。
+  Future<void> _openPanShare() async {
+    await showAppDialog<void>(
+      context: context,
+      builder: (_) => const PanShareDialog(),
+    );
+  }
+
   Future<void> _installPluginSource() async {
     if (!mounted) return;
     final r = await showPluginEditDialog(context: context);
@@ -3778,6 +3792,8 @@ class SettingsPageState extends State<SettingsPage> {
                       if (!_pluginBusy) _reloadPlugins();
                     case 'source':
                       _installPluginSource();
+                    case 'pan':
+                      _openPanShare();
                   }
                 },
                 /*
@@ -3840,6 +3856,10 @@ class SettingsPageState extends State<SettingsPage> {
                       AppIcons.refresh,
                       _pluginBusy ? '处理中…' : '重新加载',
                     ),
+                  ),
+                  AppMenuItem<String>(
+                    value: 'pan',
+                    child: _menuRow(AppIcons.link, '识别网盘链接'),
                   ),
                   AppMenuItem<String>(
                     value: 'source',

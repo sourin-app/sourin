@@ -1328,6 +1328,29 @@ def validate_manual_notes(text: str) -> list[str]:
             errs.append(f"第 {i} 行有 HTML 标签 —— 客户端渲染器不支持")
         if s.startswith("```"):
             errs.append(f"第 {i} 行是围栏代码块 —— 客户端渲染器不支持")
+        # ★ 2026-10-23：把「人工稿的输入约束」补齐到与**渲染器认识的语法**一致。
+        #   原来只拦表格 / 图片 / HTML / 围栏，判据写在 zz_t66 那一侧（模板层）时
+        #   是拿 markdown 包的 BlockSyntax 白名单反查的，覆盖引用块；人工稿这条路
+        #   只靠逐条正则，于是 `> 引用` 与 `~~删~~` / `__粗__` 会原样漏给用户 ——
+        #   同一件事两处判据、其中一处更弱，正是「又一种未知语法还会漏一次」的形态。
+        #   三个判断刻意按「渲染器认不认」写，而不是按「Markdown 规不规范」：
+        #   `_inline()` 只认 `**粗**`、`` `代码` ``、`[文字](链接)`，别的一律原样显示。
+        if re.match(r"^\s*>", line):
+            errs.append(f"第 {i} 行是引用块 —— 客户端渲染器不支持（`>` 会原样显示）")
+        if re.search(r"~~[^~\n]+~~", line):
+            errs.append(f"第 {i} 行有删除线标记 `~~` —— 客户端渲染器不支持")
+        if re.search(r"__[^_\n]+__", line):
+            errs.append(f"第 {i} 行有下划线粗体标记 `__` —— 客户端渲染器只认 `**` 加粗")
+        # ★ 2026-10-23 补：Setext 标题的下划线。
+        #   `哨兵标题` 下一行写 `====` 是 Markdown 的另一种标题写法，前面三条判据
+        #   都看不见它，渲染器也不认 ⇒ `====` 原样出现在用户面前。
+        #   这一格不是猜的：`test/zz_t1024_release_notes_grammar_matrix_test.dart`
+        #   的语法矩阵第一次跑就把它抓了出来（矩阵断言「放行 ⇒ 渲染结果不许含标记」）。
+        if re.fullmatch(r"=+", s):
+            errs.append(
+                f"第 {i} 行是 Setext 标题的下划线（`===`）—— 客户端渲染器不认这种标题，"
+                f"`===` 会原样显示；标题请写成 `### 修复` 这种"
+            )
         # ★ 2026-10-22（评审意见）：`s == "---"` 只挡住了一种写法，
         #   `- - -` / `***` / `___` 同样属于分隔线，统一按 _MD_SEP_RE 判。
         #   渲染器会跳过分隔线，拒它是在守人工稿的输入约束（见文件头 ③）。
@@ -1362,7 +1385,12 @@ def validate_manual_notes(text: str) -> list[str]:
         for name in _SITE_NAMES:
             if name.lower() in line.lower():
                 errs.append(f"第 {i} 行出现了具体站名 —— 仓库与用户文案里都不许写")
-        for w in _ASCII_WORD_RE.findall(line):
+        # ★ 2026-10-23：链接的**目标**不是用户可见文案 —— 渲染器只把方括号里的
+        #   文字画出来，`](…)` 里的地址既不显示也不该被「英文词用户读不懂」判。
+        #   实测被误伤的例子：`[帮助页](https://example.com/help)` 里那个 `help`
+        #   会把一份完全合规的稿子拒掉。所以英文词只扫**去掉链接目标之后**的文本。
+        prose = re.sub(r"\]\([^)\n]*\)", "]", line)
+        for w in _ASCII_WORD_RE.findall(prose):
             if w.lower() not in _MANUAL_ASCII_ALLOWED:
                 errs.append(f"第 {i} 行的英文词「{w}」用户读不懂 —— 换成中文说法")
     return errs

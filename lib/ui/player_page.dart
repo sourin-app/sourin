@@ -137,6 +137,7 @@ import 'widgets/bili_import_dialog.dart';
 import 'widgets/danmaku_info_panel.dart';
 import 'widgets/danmaku_overlay.dart';
 import 'widgets/danmaku_settings_dialog.dart';
+import 'danmaku_search_page.dart';
 import 'widgets/episode_strip.dart';
 import 'widgets/motion_prefs.dart';
 import 'widgets/overlay_motion.dart';
@@ -146,7 +147,6 @@ import 'widgets/provider_name.dart';
 import 'widgets/skip_marker_dialog.dart';
 import 'widgets/source_switch_dialog.dart';
 import '../ui/app_scaffold.dart';
-import '../ui/app_theme.dart';
 import '../design/icons/app_icons.dart';
 
 /// 把播放页里的**浮层面板**包成深色皮肤（task-28 ①-B）
@@ -464,6 +464,8 @@ class PlayerPage extends StatefulWidget {
     this.onLiveChannelStep,
     this.onLiveChannels,
     this.onLiveChannelPick,
+    this.initialLivePlayback,
+    this.onLivePlaybackExit,
     this.isTv = false,
     this.isTouchOnly = false,
     /*
@@ -563,6 +565,10 @@ class PlayerPage extends StatefulWidget {
 
   /// 非空 = 直播模式（禁进度条、过滤部分提示）
   final String? liveChannelId;
+
+  /// 从内嵌直播播放器交接的状态，仅直播模式使用。
+  final LivePlaybackSnapshot? initialLivePlayback;
+  final ValueChanged<LivePlaybackSnapshot>? onLivePlaybackExit;
 
   /// ★★★ task-53【#4b】直播时 ↑/↓ 切频道（用户第 4 条，**第二次强调**）
   ///
@@ -794,6 +800,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ 与 `_error` 分开的理由同 [_liveAudioOnlyNotice]：
   ///    `_error` 的语义是"起播失败"，它和"正在播放"是**互斥**的。
   String? _playbackFailure;
+  Duration _recoveryProgress = Duration.zero;
 
   /// 本次起播是否**已经确认出过画面**（`stream.width` 首次非空）
   ///
@@ -890,6 +897,19 @@ class _PlayerPageState extends State<PlayerPage>
 
   bool _playing = false;
   double _volume = 100;
+  bool _livePlaybackExitReported = false;
+
+  LivePlaybackSnapshot get _livePlaybackSnapshot => LivePlaybackSnapshot(
+    playing: _playing,
+    muted: _muted,
+    volume: _muted ? (_volumeBeforeMute ?? _lastVolume * 100) : _volume,
+  );
+
+  void _reportLivePlaybackExit() {
+    if (!_isLive || _livePlaybackExitReported) return;
+    _livePlaybackExitReported = true;
+    widget.onLivePlaybackExit?.call(_livePlaybackSnapshot);
+  }
 
   // ── task-18 ③④⑤：片段下载 / 日志 ──
   //
@@ -1944,6 +1964,15 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 弹幕设置面板是否打开
   bool _danmakuSheetOpen = false;
+  bool _danmakuSearchOpen = false;
+
+  /// 独立弹幕搜索页的会话内草稿（第 11/12 项：关闭再打开不丢关键词与选择）。
+  ///
+  /// 由播放器 State 持有，而不是页面自己或 static 全局量：
+  /// 搜索页在 `_danmakuSearchOpen` 为假时**整棵卸载**，页面内 State 随之消失；
+  /// static 又会跨视频串味，落盘则把临时输入变成设置项。
+  /// 因此草稿跟着播放器会话走，与"返回播放器后选择仍在"的验收一致。
+  final DanmakuSearchDraft _danmakuSearchDraft = DanmakuSearchDraft();
 
   /// ★ Owner 2026-10-11：是否正在拖「显示区域」滑杆（true ⇒ 画面上点亮引导遮罩）
   ///
@@ -3187,6 +3216,17 @@ class _PlayerPageState extends State<PlayerPage>
      * 起播后再设会有一个"先满音量再变小"的突跳，用户能听出来。
      */
     _loadPlayPrefs();
+    final initialLivePlayback = widget.initialLivePlayback;
+    if (_isLive && initialLivePlayback != null) {
+      _playing = initialLivePlayback.playing;
+      _muted = initialLivePlayback.muted;
+      _volumeBeforeMute = initialLivePlayback.muted
+          ? initialLivePlayback.volume
+          : null;
+      _lastVolume = initialLivePlayback.volume / 100;
+      _volume = initialLivePlayback.muted ? 0 : initialLivePlayback.volume;
+      _sendVolume(_volume);
+    }
     _loadDanmakuPrefs();
 
     _setHwdec();
@@ -4514,6 +4554,21 @@ class _PlayerPageState extends State<PlayerPage>
     if (!mounted) return;
     debugPlayerPositionTicks++; // ★ 仅探针计数（task-72 ④ 量化）
     final secChanged = p.inSeconds != _position.inSeconds;
+    if (_playbackFailure != null &&
+        _sawFirstFrame &&
+        _player.state.playing &&
+        !_player.state.buffering &&
+        p > _position &&
+        p - _position <= const Duration(seconds: 2)) {
+      _recoveryProgress += p - _position;
+      if (_recoveryProgress >= const Duration(seconds: 3)) {
+        setState(() => _playbackFailure = null);
+        _recoveryProgress = Duration.zero;
+        AppLog.write('PLAY', '连续播放推进，清除播放中断横幅');
+      }
+    } else {
+      _recoveryProgress = Duration.zero;
+    }
     _position = p; // ★ 无条件更新（读值语义不变）
     if (secChanged) {
       debugPlayerPositionSetStates++; // ★ 仅探针计数
@@ -5191,7 +5246,10 @@ class _PlayerPageState extends State<PlayerPage>
        *    `?? cache[...]` 兜底，空 Map 不会破坏任何东西。
        */
       if (!debugPlayerSkipOpenForProbe) {
-        await _player.open(Media(st.url, httpHeaders: st.httpHeaders));
+        await _player.open(
+          Media(st.url, httpHeaders: st.httpHeaders),
+          play: !_isLive || (widget.initialLivePlayback?.playing ?? true),
+        );
       }
       /*
        * ★★★ task-22 P1-11：`video-zoom` 是**逐文件**属性 —— mpv 换文件时会
@@ -5436,7 +5494,7 @@ class _PlayerPageState extends State<PlayerPage>
        */
       final pending = _pendingSeek;
       if (pending != null && pending > Duration.zero) {
-        _pendingSeek = null;
+        // 保持续播意图，直到 seek 落地；等待 duration 时禁止自动片头抢跑。
         /*
          * 每次起播拿一个新的代次号，同时把"已 seek"标志复位 ——
          * 换集/换源后**必须能再续播一次**（新集有自己的进度）。
@@ -5501,6 +5559,9 @@ class _PlayerPageState extends State<PlayerPage>
   /// 夹取       目标超过真实时长时夹到 duration（新源可能更短）
   /// 只做一次   由 _resumeSeekDone 保证
   /// ```
+  // Test-only native seek boundary. Null preserves the real player call.
+  Future<void> Function(Duration)? _resumeSeekForProbe;
+
   Future<void> _seekAfterReady(Duration target, int token) async {
     if (_resumeSeekDone) return;
     _resumeSeekDone = true;
@@ -5538,7 +5599,7 @@ class _PlayerPageState extends State<PlayerPage>
     if (t < Duration.zero) t = Duration.zero;
 
     try {
-      await _player.seek(t);
+      await (_resumeSeekForProbe ?? _player.seek)(t);
       // ★ N10：续播恢复到上次位置 ⇒ 同属"跳到中间位置"，预取会让路
       _beginPrefetchYield();
       debugPrint(
@@ -5547,6 +5608,9 @@ class _PlayerPageState extends State<PlayerPage>
       );
     } catch (e) {
       debugPrint('[PLAYER] 续播 seek 失败: $e');
+    } finally {
+      // 旧会话的异步完成不得清掉新会话的续播意图。
+      if (mounted && token == _seekToken) _pendingSeek = null;
     }
   }
 
@@ -9308,6 +9372,8 @@ class _PlayerPageState extends State<PlayerPage>
   void _maybeSkip(Duration pos) {
     final m = _skipMarker;
     if (m == null || _isLive) return;
+    // 续播落地前的位置属于新流初始化，不是自动跳过的依据。
+    if (_pendingSeek != null) return;
 
     /*
      * ★ 全局「自动跳过片头」开关（原版 `autoSkipOn`，默认 true）
@@ -9706,7 +9772,13 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   /// 执行换源
+  // Test transport boundaries only; session transitions remain production code.
+  Future<MediaDetail> Function(String, String)? _switchDetailForProbe;
+  Future<void> Function(SwitchPick)? _switchRepointForProbe;
+
   Future<void> _applySwitch(SwitchPick p) async {
+    // Invalidate the old waiter before detail lookup or record migration.
+    ++_seekToken;
     /*
      * ★ 用**当前真实进度**而不是弹层传进来的旧值
      *
@@ -9730,7 +9802,7 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ 详情里**不一定**带 episodes，所以再调一次 `getEpisodes`
        *    （与详情页的取法一致）。
        */
-      final d = await SourinApi.getDetail(p.provider, p.id);
+      final d = await (_switchDetailForProbe ?? SourinApi.getDetail)(p.provider, p.id);
       final srcCode = d.sources.isNotEmpty ? d.sources.first.code : null;
 
       var eps = d.episodes;
@@ -9796,12 +9868,17 @@ class _PlayerPageState extends State<PlayerPage>
        *    守卫，同 provider 直接 `Ok(())`。判据只有一份，不在这边重写。
        */
       try {
-        await SourinApi.repointItem(
-          fromProvider: _provider,
-          fromId: _contentId,
-          toProvider: p.provider,
-          toId: p.id,
-        );
+        final repoint = _switchRepointForProbe;
+        if (repoint != null) {
+          await repoint(p);
+        } else {
+          await SourinApi.repointItem(
+            fromProvider: _provider,
+            fromId: _contentId,
+            toProvider: p.provider,
+            toId: p.id,
+          );
+        }
         debugPrint(
           '[PLAYER] ★ 换源迁移记录完成: '
           '$_provider:$_contentId → ${p.provider}:${p.id}',
@@ -9994,6 +10071,9 @@ class _PlayerPageState extends State<PlayerPage>
   /// 被当成换会话 ⇒ 无谓重启。四元组正是"决定播哪条流"的最小集合
   /// （判据实现见 `PlayRequestData.isSameSessionAs`）。
   @override
+  Duration get currentPosition => _position;
+
+  @override
   Future<void> applySession(PlayRequestData req) async {
     /*
      * ① 同一会话 ⇒ 早退，不白重启一次流
@@ -10017,6 +10097,10 @@ class _PlayerPageState extends State<PlayerPage>
       );
       return;
     }
+
+    // Invalidate an old resume waiter even when the new session has no resume.
+    // Keep this after the same-session early return and before any async work.
+    ++_seekToken;
 
     debugPrint(
       '[PLAYER] applySession：换会话 ⇒ ${req.provider}:${req.id} '
@@ -10088,8 +10172,11 @@ class _PlayerPageState extends State<PlayerPage>
       _outroSkipped = false;
       _nextCountdown = 0;
       _countdownTimer?.cancel();
-      // 换会话后**不续播旧位置**（新源/新集的秒数没有意义）
-      _pendingSeek = null;
+      // 只有显式换源携带续播意图；普通换集仍从头播放。
+      _pendingSeek = req.resumeFrom != null &&
+              req.resumeFrom! > const Duration(seconds: 3)
+          ? req.resumeFrom
+          : null;
     });
 
     /*
@@ -10398,6 +10485,8 @@ class _PlayerPageState extends State<PlayerPage>
   Future<void> _gotoEpisode(Episode ep) async {
     final i = _episodes.indexWhere((e) => e.id == ep.id);
     if (i < 0) return;
+    // Cancel the previous media's waiter before any asynchronous transition.
+    ++_seekToken;
 
     /*
      * ★ 只读探针：计"真正执行了切集"（task-28 ①-C 的行为层判据）
@@ -10788,7 +10877,7 @@ class _PlayerPageState extends State<PlayerPage>
         if (_isLive) return;
         final target = Duration(seconds: pos < 0 ? 0 : pos);
         final clamped = target > _duration ? _duration : target;
-        await _player.seek(clamped);
+        await _seekByUser(clamped);
         // ★ N10：遥控器/手机发起跳转 ⇒ 用户在等电视出画面，预取必须让路
         _beginPrefetchYield();
         _flash('跳到 ${clamped.inSeconds}s');
@@ -10881,7 +10970,7 @@ class _PlayerPageState extends State<PlayerPage>
         final pos = c.number('position')?.toInt();
         if (pos == null || _isLive) return;
         final t = Duration(seconds: pos < 0 ? 0 : pos);
-        await _player.seek(t > _duration ? _duration : t);
+        await _seekByUser(t > _duration ? _duration : t);
         // ★ N10：手机微调、电视出画面 —— 最需要立即出画面的场景之一
         _beginPrefetchYield();
         _flash('预览 ${t.inSeconds}s');
@@ -10925,6 +11014,8 @@ class _PlayerPageState extends State<PlayerPage>
   /// resolve 并播放」，且**保留当前剧集与进度**）。
   Future<void> _remoteSwitchSource(String code) async {
     if (code == _sourceCode) return; // 已经是这条线路，别白重启一次流
+    // Retire the old waiter; a new playback may schedule its own resume.
+    ++_seekToken;
     final ep = _epIndex < _episodes.length ? _episodes[_epIndex] : null;
     // ⚠️ `_resolveAndPlay` 是**位置参数**（不是命名参数）
     await _resolveAndPlay(_provider, _contentId, ep?.id, code);
@@ -11592,6 +11683,7 @@ class _PlayerPageState extends State<PlayerPage>
       // ★ task-53【③】「所有直播」面板（用户第 3 条）
       _liveChannelsOpen ||
       // ★ task-13 ⑦ 弹幕设置面板（同样是 Positioned.fill 的全屏浮层）
+      _danmakuSearchOpen ||
       _danmakuSheetOpen ||
       // ★ task-31 ④ 外部弹幕弹幕导入面板（同款全屏浮层）
       _biliSheetOpen ||
@@ -11789,6 +11881,7 @@ class _PlayerPageState extends State<PlayerPage>
       !_episodeSheetOpen &&
       !_streamSheetOpen &&
       !_settingsOpen &&
+      !_danmakuSearchOpen &&
       !_danmakuSheetOpen &&
       !_biliSheetOpen &&
       !_subtitlePanelOpen &&
@@ -11802,10 +11895,12 @@ class _PlayerPageState extends State<PlayerPage>
   /// `Positioned(bottom: 0)`，浮层是铺满的 scrim）⇒ 底栏必须**整条卸下**，
   /// 而不是留在树里淡出（否则它会和占据者叠字、或抢走占据者的点击）。
   bool get _bottomOccupied =>
+      _playbackFailure != null ||
       _error != null ||
       _episodeSheetOpen ||
       _streamSheetOpen ||
       _settingsOpen ||
+      _danmakuSearchOpen ||
       _danmakuSheetOpen ||
       _biliSheetOpen ||
       _subtitlePanelOpen ||
@@ -12180,6 +12275,16 @@ class _PlayerPageState extends State<PlayerPage>
     _flash('${prev}x');
   }
 
+  Future<void> Function(Duration)? _userSeekForProbe;
+
+  // Explicit user intent wins over automatic intro and an in-flight resume.
+  Future<void> _seekByUser(Duration target) {
+    _introSkipped = true;
+    _pendingSeek = null;
+    ++_seekToken;
+    return (_userSeekForProbe ?? _player.seek)(target);
+  }
+
   void _seekBy(int seconds) {
     _seekByCalls++; // ★ 只读探针（交付实测读它证明"单击不再跳秒"）
     /*
@@ -12195,7 +12300,7 @@ class _PlayerPageState extends State<PlayerPage>
     final clamped = target < Duration.zero
         ? Duration.zero
         : (target > _duration ? _duration : target);
-    _player.seek(clamped);
+    _seekByUser(clamped);
     // ★ N10：快进/快退（键盘 ←/→、按钮）—— Owner 最常用的操作之一
     _beginPrefetchYield();
     _flash(seconds > 0 ? '快进 ${seconds}s' : '快退 ${-seconds}s');
@@ -12206,7 +12311,7 @@ class _PlayerPageState extends State<PlayerPage>
     if (_isLive) return;
     if (_duration <= Duration.zero) return;
     final target = _duration * (pct / 100.0);
-    _player.seek(target);
+    _seekByUser(target);
     // ★ N10：点进度条跳到 N% ⇒ 用户主动跳转，预取让路
     _beginPrefetchYield();
     _flash('跳到 $pct%');
@@ -13839,6 +13944,8 @@ class _PlayerPageState extends State<PlayerPage>
         _escCloseSheet(() => _biliSheetOpen = false);
       } else if (_subtitlePanelOpen) {
         _escCloseSheet(() => _subtitlePanelOpen = false);
+      } else if (_danmakuSearchOpen) {
+        _escCloseSheet(() => _danmakuSearchOpen = false);
       } else if (_danmakuSheetOpen) {
         /*
          * ★ task-13 ⑦ 弹幕设置面板 —— 它挂在设置面板**之后**
@@ -14210,6 +14317,9 @@ class _PlayerPageState extends State<PlayerPage>
      */
     if (_exiting) return;
     _exiting = true;
+    // 在任何暂停清理和路由返回之前捕获用户播放意图。
+    // dispose 仅兜底；单次守卫防止退场阶段重复回传。
+    _reportLivePlaybackExit();
     /*
      * ★★★ task-8 ①（Owner 2026-10-09 第三批）：返回卡顿
      *
@@ -14319,16 +14429,12 @@ class _PlayerPageState extends State<PlayerPage>
      * ```text
      * 直播页需要知道用户在本页里按过暂停没有，
      * 否则它无法判断"切回来要不要自动续播"。
-     * 而 `maybePop()` **不能带返回值** ⇒ 只能用 `pop(result)`。
+     * 主动退出使用 `pop(result)`，把暂停意图作为路由结果带回。
      * ```
      *
-     * # ⚠️ 语义差异已核实（不是想当然）
-     * ```text
-     * `maybePop()` 会先问 PopScope/WillPopScope 同不同意；
-     * `pop(x)`      直接弹，**绕过**那个检查。
-     * ★ 本页 `grep -c "PopScope|WillPopScope"` = **0** ⇒ 跳过检查无副作用。
-     *   若将来加了 PopScope，这里必须改回先询问再 pop。
-     * ```
+     * 根部 PopScope 不拦截返回，只在成功 pop 后回传直播快照。
+     * 主动退出已提前回传；成功 pop 通知与 dispose 兜底复用同一去重保护。
+     * 若将来引入 canPop=false 的返回拦截，需要重新核对主动退出契约。
      */
     if (mounted) Navigator.of(context).pop<bool>(_userWantsPause);
   }
@@ -14424,6 +14530,7 @@ class _PlayerPageState extends State<PlayerPage>
 
   @override
   void dispose() {
+    _reportLivePlaybackExit();
     /*
      * ★ 2026-10-08（Owner 第 9 条）：控制条动画控制器必须跟着本页销毁 ——
      *   否则 flutter_test 会判红（AnimationController 泄漏）。
@@ -14645,7 +14752,7 @@ class _PlayerPageState extends State<PlayerPage>
       isLive: _isLive,
     );
 
-    return Scaffold(
+    final page = Scaffold(
       backgroundColor: Colors.black,
       body: Focus(
         /*
@@ -15833,7 +15940,7 @@ class _PlayerPageState extends State<PlayerPage>
                         onTogglePlay: _togglePlay,
                         onSeek: (d) {
                           if (!_isLive) {
-                            _player.seek(d);
+                            _seekByUser(d);
                             _beginPrefetchYield();
                           }
                         },
@@ -16370,6 +16477,11 @@ class _PlayerPageState extends State<PlayerPage>
                           onSetArea: _setDanmakuArea,
                           onReload: _reloadDanmaku,
                           onOpenBili: _openBiliSheet,
+                          onOpenSearch: () => setState(() {
+                            _danmakuSheetOpen = false;
+                            _biliSheetOpen = false;
+                            _danmakuSearchOpen = true;
+                          }),
                           // ★★★ 2026-10-14（Owner）：「搜索番剧」区的两个回调
                           //   面板只把关键词 / 选中的一条递过来，网络与状态全在宿主。
                           onSearch: (kw) => unawaited(_searchDanmaku(kw)),
@@ -16404,6 +16516,37 @@ class _PlayerPageState extends State<PlayerPage>
                         ),
                       ),
                     ),
+
+                    if (_danmakuSearchOpen)
+                      Positioned.fill(
+                        child: DanmakuSearchPage(
+                          state: _danmakuSettings,
+                          biliState: _biliState,
+                          draft: _danmakuSearchDraft,
+                          localTitles: _episodes.map((e) => e.title).toList(),
+                          onSearch: (keyword) => unawaited(_searchDanmaku(keyword)),
+                          onBiliSearch: _biliSearch,
+                          onPickMatch: _pickDanmakuMatch,
+                          onBatchBind: (matches) => unawaited(_batchBindDanmaku(matches)),
+                          onBiliImport: (input) => unawaited(_biliImport(input, 0)),
+                          onBiliSelectPage: _biliSelectPage,
+                          /*
+                           * ★ 第 12 项：请求状态与返回详情搬进本页的可展开诊断区后，
+                           *   诊断区里那两条补救动作必须**真实可用**，否则提示悬空
+                           *   （zz_t66_r3_no_dangling_hint 守的就是这条）。
+                           * ⇒ 直接接生产已有入口，不新造分支：
+                           *   · 「重新获取弹幕」= _loadDanmaku（与底栏重新获取同一实现）
+                           *   · 「改用本机外部弹幕」= _useLocalDanmakuSource
+                           */
+                          onReload: () => unawaited(_loadDanmaku()),
+                          onOpenLocal: _useLocalDanmakuSource,
+                          onClose: () {
+                            setState(() => _danmakuSearchOpen = false);
+                            _restoreBarsAfterSheet();
+                            _holdSheetGuard();
+                          },
+                        ),
+                      ),
 
                     /*
                  * ── 外部弹幕弹幕导入面板（task-31 ④）──
@@ -16839,6 +16982,12 @@ class _PlayerPageState extends State<PlayerPage>
           ),
         ),
       ),
+    );
+    return PopScope<bool>(
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) _reportLivePlaybackExit();
+      },
+      child: page,
     );
   }
 }
@@ -18744,6 +18893,31 @@ Future<bool> debugPlayerApplySessionForProbe(PlayRequestData req) async {
   return true;
 }
 
+/// Drive the production source-switch entry; replace only external transport.
+Future<bool> debugPlayerApplySwitchForProbe({
+  required String provider,
+  required String id,
+  required MediaDetail detail,
+}) async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._switchDetailForProbe = (_, __) async => detail;
+  s._switchRepointForProbe = (_) async {};
+  try {
+    await s._applySwitch(SwitchPick(
+      provider: provider,
+      id: id,
+      title: detail.title,
+      episodeIndex: 1,
+      position: 0,
+    ));
+    return true;
+  } finally {
+    s._switchDetailForProbe = null;
+    s._switchRepointForProbe = null;
+  }
+}
+
 /// 探针：直接调**生产方法** `showRewatchPrompt`（把浮层摆出来）
 bool debugPlayerShowRewatchPromptForProbe(Duration position) {
   final s = _livePlayerState;
@@ -18814,6 +18988,35 @@ bool debugPlayerResetResumeGuardForProbe() {
   s._resumedThisSession = false;
   s._pendingSeek = null;
   s._position = Duration.zero;
+  return true;
+}
+
+/// Inject only the native user-seek boundary; production dispatch stays intact.
+bool debugPlayerSetUserSeekForProbe(Future<void> Function(Duration)? seek) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._userSeekForProbe = seek;
+  return true;
+}
+
+/// Observe only the native resume seek boundary, not cancellation logic.
+bool debugPlayerSetResumeSeekForProbe(Future<void> Function(Duration)? seek) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._resumeSeekForProbe = seek;
+  return true;
+}
+
+/// Start the production resume waiter with an unknown media duration.
+/// Tests must advance duration and drive session changes separately.
+Future<bool> debugPlayerStartResumeWaitForProbe(Duration target) async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._duration = Duration.zero;
+  s._realDuration = Duration.zero;
+  s._pendingSeek = target;
+  s._resumeSeekDone = false;
+  await s._seekAfterReady(target, ++s._seekToken);
   return true;
 }
 

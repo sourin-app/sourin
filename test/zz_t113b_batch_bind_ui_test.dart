@@ -52,7 +52,9 @@ void main() {
       File('lib/ui/widgets/danmaku_settings_dialog.dart').readAsStringSync());
   final page = stripComments(File('lib/ui/player_page.dart').readAsStringSync());
 
-  group('T113b-1 panel side', () {
+  final search = stripComments(File('lib/ui/danmaku_search_page.dart').readAsStringSync());
+
+  group('T113b-1 independent search page', () {
     test('** onBatchBind is declared optional (old hosts must still compile)', () {
       expect(panel.contains('this.onBatchBind,'), isTrue,
           reason: '** required would break every existing call site');
@@ -60,18 +62,28 @@ void main() {
           isTrue);
     });
 
-    test('** the button only renders when the host wired the callback', () {
-      expect(panel.contains('if (widget.onBatchBind != null)'), isTrue,
-          reason: '** no callback, no button -- same rule as onOpenBili');
+    // 第12项将搜索与批量绑定迁入独立页；旧面板不再渲染提交按钮。
+    test('independent search requires the host binding callback', () {
+      expect(search.contains('required this.onBatchBind'), isTrue,
+          reason: '独立页必须由宿主提供真实绑定回调，不渲染空操作按钮。');
+      expect(panel.contains('if (widget.onBatchBind != null)'), isFalse,
+          reason: '旧面板不得重复渲染批量绑定表单。');
     });
 
-    test('*** the button is inside the search-results body (not somewhere dead)', () {
-      final body = bodyOf(panel, 'Widget _searchResultBody(');
-      expect(body, isNotEmpty, reason: 'helper must find the function');
-      expect(body.contains('widget.onBatchBind'), isTrue,
-          reason: '*** declaring the callback but never using it = dead feature');
-      expect(body.contains("'整部绑定'"), isTrue,
-          reason: 'the button must have user-visible copy');
+    test('preview is separate from guarded explicit confirmation', () {
+      final body = bodyOf(search, 'Widget build(BuildContext context)');
+      expect(body, isNotEmpty);
+      expect(body.contains("'预览批量绑定'"), isTrue);
+      expect(body.contains('if (_preview)'), isTrue);
+      expect(body.contains("'确认并交由播放器绑定'"), isTrue);
+      expect(RegExp(r'widget\.onBatchBind\(selected\)').allMatches(body).length, 1,
+          reason: '只有明确确认可提交；预览不得触发绑定。');
+      expect(body.contains('conflicts.isNotEmpty || plan.items.isEmpty || s.searchLoading || s.searchStale ? null'), isTrue,
+          reason: '冲突、空计划、在途或过期结果都不得提交。');
+      expect(body.contains('onChanged: s.searchLoading || s.searchStale ? null'), isTrue,
+          reason: '过期或在途结果不可选择。');
+      expect(body.contains('buildBatchBindPlan(localTitles:'), isTrue,
+          reason: '独立页预览必须复用核心对齐算法。');
     });
 
     test('** the panel does NOT re-implement alignment (single definition)', () {

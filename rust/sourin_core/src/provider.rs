@@ -628,9 +628,46 @@ pub struct QrLoginStart {
     /// **由宿主渲染**的二维码 SVG（插件不提供）
     #[serde(default)]
     pub svg: String,
+    /// 上游**直接下发**的二维码图片地址（如腾讯 `ptqrshow` 直接回一张 PNG）。
+    ///
+    /// 2026-10-23：有的站点不提供「可编码成二维码的地址」，只给一张图。
+    /// 这时插件填这里，宿主直接显示那张图，**不再**拿 `url` 去生成 SVG ——
+    /// 否则画出来的二维码编码的是「图片的 URL」，扫了没有任何作用。
+    #[serde(
+        default,
+        rename = "imageUrl",
+        alias = "image_url",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub image_url: Option<String>,
     /// 提示语（插件可给，如"请用 某视频站 App 扫码"）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+}
+
+impl QrLoginStart {
+    /// 收尾：决定这张二维码到底怎么显示。
+    ///
+    /// - 上游给了 `image_url`（腾讯 ptqrshow 那种）⇒ **直接用图片**，
+    ///   清空 `svg`。拿 `url` 去生成 SVG 的话，二维码编码的是「图片的地址」，
+    ///   扫了只会打开一张 PNG，登录不可能成功。
+    /// - 没给图片 ⇒ 走老路，宿主把 `url` 渲染成 SVG。
+    ///
+    /// 抽成独立函数是为了**不联网就能测**（见文件底部 `qr_start` 三条用例）：
+    /// 真二维码要真网络，分支写反了却只有肉眼能发现。
+    pub fn finalize_qr_rendering(&mut self) {
+        self.image_url = self
+            .image_url
+            .take()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        if self.image_url.is_some() {
+            self.svg = String::new();
+        } else {
+            self.svg = crate::remote::qr_svg_for(&self.url).unwrap_or_default();
+        }
+    }
 }
 
 /// 扫码登录：轮询到的状态
@@ -830,4 +867,77 @@ mod session_expiry_tests {
         assert!(base64url_decode("+/").is_some());
         assert!(base64url_decode("!!!").is_none(), "非法字符应返回 None");
     }
+}
+
+#[cfg(test)]
+mod qr_start_tests {
+    use super::QrLoginStart;
+
+    fn start(url: &str, image_url: Option<&str>) -> QrLoginStart {
+        QrLoginStart {
+            key: "k".into(),
+            url: url.into(),
+            svg: String::new(),
+            image_url: image_url.map(|s| s.to_string()),
+            hint: None,
+        }
+    }
+
+    /// 腾讯那种：只给一张 PNG ⇒ 必须留下图片地址、**不画** SVG。
+    #[test]
+    fn image_url_wins_over_svg() {
+        let mut s = start(
+            "https://ptqrshow.qq.com/x?appid=716027609&t=1",
+            Some("https://ptqrshow.qq.com/x?appid=716027609&t=1"),
+        );
+        s.finalize_qr_rendering();
+        assert_eq!(
+            s.image_url.as_deref(),
+            Some("https://ptqrshow.qq.com/x?appid=716027609&t=1")
+        );
+        assert!(
+            s.svg.is_empty(),
+            "有图片地址时绝不能生成 SVG —— 那样二维码里编码的是图片 URL，扫了没用"
+        );
+    }
+
+    /// 空白图片地址（插件写了但没值）要当没写，退回 SVG 路线。
+    #[test]
+    fn blank_image_url_falls_back_to_svg() {
+        for blank in ["", "   ", "\n\t"] {
+            let mut s = start("https://passport.example.com/qr?k=abc", Some(blank));
+            s.finalize_qr_rendering();
+            assert!(s.image_url.is_none(), "空白图片地址必须被清掉: {blank:?}");
+            assert!(!s.svg.is_empty(), "没有图片时宿主必须渲染出 SVG");
+        }
+    }
+
+    /// 老路（只给地址、不给图片那种）不受影响。
+    #[test]
+    fn url_only_still_renders_svg() {
+        let mut s = start("https://passport.example.com/h5-app/passport/login/scan", None);
+        s.finalize_qr_rendering();
+        assert!(s.image_url.is_none());
+        assert!(s.svg.starts_with("<svg") || s.svg.contains("svg"), "应生成 SVG: {}", &s.svg[..s.svg.len().min(60)]);
+    }
+    /// ★ 插件写的是 `imageUrl`（camelCase），字段是 `image_url`。
+    ///
+    /// 没有这条 `rename` 的话 serde 会去找 `image_url`，插件传的 camelCase
+    /// 键**被静默忽略** ⇒ 又退回「拿图片地址当二维码内容」的错误路径，
+    /// 而且没有任何报错。这类错必须用真 JSON 反序列化测出来。
+    #[test]
+    fn parses_camel_case_image_url() {
+        let json = r#"{"key":"k","url":"https://ptqrshow.qq.com/x","svg":"","imageUrl":"https://ptqrshow.qq.com/x"}"#;
+        let s: QrLoginStart = serde_json::from_str(json).expect("应能反序列化");
+        assert_eq!(s.image_url.as_deref(), Some("https://ptqrshow.qq.com/x"));
+    }
+
+    /// 老插件不传 imageUrl 时必须是 None（而不是解析失败）。
+    #[test]
+    fn missing_image_url_is_none() {
+        let json = r#"{"key":"k","url":"https://passport.example.com/scan"}"#;
+        let s: QrLoginStart = serde_json::from_str(json).expect("应能反序列化");
+        assert!(s.image_url.is_none());
+    }
+
 }

@@ -325,6 +325,27 @@ pub struct PluginEntry {
     pub error: Option<String>,
     /// ★ 插件声明的配置项（设置页据此渲染表单）
     pub config: Vec<crate::model::ConfigField>,
+    /// ★ 源类型（task-7）—— 卡片副标题「类型 · 更新时间」的前半段
+    ///
+    /// 取值口径见 [crate::plugins::resolve_source_display]：
+    /// 头注释 `@type` 优先，没有才用运行时 `sourceStatus.sources[].type`。
+    ///
+    /// ⚠️ `skip_serializing_if` —— 老插件（没写 `@type`）的 JSON
+    ///    **与加这两个字段之前一字节不差**（Lead 的「零回归」硬要求）。
+    ///
+    /// ★★ `rename = "type"` 是硬契约（task-7）：契约里插件头注释的键名是
+    ///    `@type`，Dart 侧 `PluginEntry.fromJson` 读的是 `j['type']`。
+    ///    不写这个 rename，JSON 键会变成 `kind`，Dart 侧拿到空串 ⇒
+    ///    **类型在界面上永远不显示**（真机上就是这么炸出来的：
+    ///    卡片只显示「更新 10-23 09:05」没有「点播源」前缀）。
+    #[serde(rename = "type", skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// ★ 上次源更新时间（task-7）—— 副标题后半段（ISO8601 带时区）
+    ///
+    /// 运行时 `sourceStatus.sources[].updatedAt` 的**最新值**优先，
+    /// 没有才回落头注释 `@updated`。空串 = 两边都没有 ⇒ 界面**整行不显示**。
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub updated: String,
 }
 
 /// 插件列表结果
@@ -382,6 +403,9 @@ pub fn list_plugins(state: &AppState) -> Result<PluginListResult, String> {
         .collect();
 
     let mut plugins = Vec::new();
+    // ★ task-7：插件私有存储目录（`plugins/.data/`，与 plugins/mod.rs 一致）
+    //   运行时 `sourceStatus` 从这里读；不存在时 read_source_status 直接降级。
+    let store_dir = dir.join(".data");
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             let path = e.path();
@@ -411,6 +435,25 @@ pub fn list_plugins(state: &AppState) -> Result<PluginListResult, String> {
              *    这里只依赖 `src`（已经读进来了），零额外 IO。
              */
             let upstream = crate::plugins::upstream_of(&src);
+
+            /*
+             * ★ task-7：卡片要显示「源类型 · 上次源更新时间」
+             *
+             * 两个值分别来自两个地方，合成口径见
+             * [crate::plugins::resolve_source_display]：
+             *   type    ← 头注释 @type 优先（插件级声明更准）
+             *   updated ← 运行时 sourceStatus.sources[].updatedAt 最新值优先
+             *             （那才是"真的验证过上游"的证据），
+             *             退而用头注释 @updated（作者自报）
+             *
+             * ⚠️ 运行时那份来自 `plugins/.data/<id>.json` —— 是**用户可改、
+             *    插件可写**的普通文件。`read_source_status` 内部把
+             *    文件不存在/坏 JSON/非法时间串全部降级成空串，
+             *    **一个坏文件只让那张卡片少显示一行，不连坐、不 panic**。
+             */
+            let runtime_status = crate::plugins::read_source_status(&store_dir, &meta.id);
+            let (source_kind, source_updated) =
+                crate::plugins::resolve_source_display(&meta, &runtime_status);
 
             /*
              * ★ 从 registered 里找（已 hydrate）——
@@ -450,6 +493,9 @@ pub fn list_plugins(state: &AppState) -> Result<PluginListResult, String> {
                 loaded: loaded_ok,
                 error,
                 config,
+                // ★ task-7：类型 + 上次源更新时间（空串 = 不显示，见字段注释）
+                kind: source_kind,
+                updated: source_updated,
             });
         }
     }

@@ -714,6 +714,7 @@ pub async fn import_declarative_provider(
     json: &str,
 ) -> Result<crate::model::ProviderManifest, String> {
     let p = crate::providers::DeclarativeProvider::from_json(json)
+        .map(|p| p.with_data_dir(state.data_dir.clone()))
         .map_err(|e| format!("{:?}: {}", e.kind, e.message))?;
     let manifest = crate::provider::MediaProvider::manifest(&p).clone();
     state.registry.register(std::sync::Arc::new(p));

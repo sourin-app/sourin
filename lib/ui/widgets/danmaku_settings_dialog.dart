@@ -64,13 +64,12 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:material_ui/material_ui.dart';
 
 import 'dart:async';
-import 'dart:convert' show jsonDecode, Utf8Decoder;
-import 'dart:io' show SocketException, Socket, InternetAddress, HttpClient;
+import 'dart:io' show SocketException;
 
 import '../../core/danmaku.dart';
+import '../../core/danmaku_network_diagnostics.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
-import 'cover_image.dart';
 import 'app_dialog_shell.dart';
 import 'app_inline_spinner.dart';
 import '../../design/icons/app_icons.dart';
@@ -699,48 +698,7 @@ class DanmakuProbeReport {
   /// ⚠️ 只在**已经判定连不上**时才调（见 caller）—— 正常路径一次都不发。
   /// ⚠️ 超时给 5 秒：它只是佐证，不该拖住 UI。
   /// ⚠️ **公开**：设置页（`danmaku_source_page`）用同一份，避免两处漂移。
-  static Future<List<String>> dohLookup(String host) async {
-    const doh = 'https://cloudflare-dns.com/dns-query';
-    final out = <String>{};
-    for (final type in <String>['A', 'AAAA']) {
-      HttpClient? client;
-      try {
-        client = HttpClient()
-          ..connectionTimeout = const Duration(seconds: 5)
-          ..findProxy = ((Uri _) => 'DIRECT');
-        final uri = Uri.parse('$doh?name=$host&type=$type');
-        final req = await client
-            .getUrl(uri)
-            .timeout(const Duration(seconds: 5));
-        req.headers.set('accept', 'application/dns-json');
-        final resp = await req.close().timeout(const Duration(seconds: 5));
-        if (resp.statusCode != 200) continue;
-        final body = await resp
-            .transform(const Utf8Decoder(allowMalformed: true))
-            .join()
-            .timeout(const Duration(seconds: 5));
-        final j = jsonDecode(body);
-        if (j is! Map) continue;
-        final answers = j['Answer'];
-        if (answers is! List) continue;
-        for (final a in answers) {
-          if (a is! Map) continue;
-          // status 0 = NOERROR；只认 A(1)/AAAA(28)
-          final t = a['type'];
-          if (t != 1 && t != 28) continue;
-          final data = a['data'];
-          if (data is String && data.trim().isNotEmpty) {
-            out.add(data.trim());
-          }
-        }
-      } catch (_) {
-        // 佐证拿不到就拿不到 —— 绝不让它影响主判定
-      } finally {
-        client?.close(force: true);
-      }
-    }
-    return out.toList(growable: false);
-  }
+  static Future<List<String>> dohLookup(String host) => lookupDanmakuDoh(host);
 
   bool get isFailure => failure.isFailure;
   bool get isOk => failure == DanmakuProbeFailure.none;
@@ -1156,6 +1114,7 @@ class DanmakuSettingsDialog extends StatefulWidget {
     required this.onReload,
     required this.onClose,
     this.onOpenBili,
+    this.onOpenSearch,
     this.onSearch,
     this.onPickMatch,
     this.onHintAction,
@@ -1249,6 +1208,9 @@ class DanmakuSettingsDialog extends StatefulWidget {
   /// 传 null ⇒ 按钮**不画** —— 面板本身不认识 某视频站，也不知道宿主有没有接。
   /// 这只是「另一个弹幕源」的入口，与 弹弹play 凭证同层。
   final VoidCallback? onOpenBili;
+
+  /// Opens the host-owned search route; no search state is copied here.
+  final VoidCallback? onOpenSearch;
 
   /// ★★★ 2026-10-14（Owner）：用户点了「搜索番剧」区的「搜索」按钮。
   ///
@@ -1367,7 +1329,6 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 这里更明显 —— 搜索框被 `searchResults` / `searchLoading` 的
   /// 状态变化带着重建（搜索一返回就 setState），用局部 controller
   /// 会把用户刚敲的关键词整段吃掉。
-  final TextEditingController _searchKeyword = TextEditingController();
 
   /// 自建弹幕服务地址输入框（owner 第 6 条的落地点）。
   ///
@@ -1487,7 +1448,6 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   void dispose() {
     _blockWords.dispose();
     _blockSearch.dispose();
-    _searchKeyword.dispose();
     _endpointUrl.dispose();
     _endpointToken.dispose();
     super.dispose();
@@ -1558,10 +1518,12 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
            * （见 enum DanmakuPanelTab 的文档：与第 6 条不冲突）
            * ```
            */
-          _group(_sourcesSection()),
-          _gap(),
-          _group(_requestSection()),
-          if (_showSearchSection) ...[_gap(), _group(_searchSection())],
+          if (widget.onOpenSearch != null)
+            FilledButton.tonal(
+              onPressed: widget.onOpenSearch,
+              child: const Text('搜索弹幕与绑定剧集'),
+            ),
+          const Text('来源开关位于高级设置。启用来源不代表已绑定或加载成功。'),
         ] else ...[
           /*
            * 高级：要填地址 / 凭证的，99% 用户不需要。
@@ -1571,6 +1533,8 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
            *   它的 `_sourceSection` / `_credentialsSection` **保留但不调用**
            *   （理由见那两个方法上的注释）。
            */
+          _group(_sourcesSection()),
+          _gap(),
           _group(_selfHostedSection()),
         ],
         _gap(),
@@ -1589,7 +1553,11 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           _gap(),
           _group(_hintSection(s.error!.hint!)),
         ],
-        if (s.error != null) ...[_gap(), _group(_errorSection(s.error!))],
+        if (s.error != null && widget.onOpenSearch != null)
+          TextButton(
+            onPressed: widget.onOpenSearch,
+            child: const Text('查看请求与服务端详情'),
+          ),
       ],
     );
 
@@ -1604,20 +1572,18 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
      */
     final body = Padding(
       padding: const EdgeInsets.symmetric(horizontal: Sp.x6),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _statusSection(),
-          _sourceStatusStrip(),
-          _tabBar(),
-          Flexible(
-            child: SingleChildScrollView(
-              clipBehavior: Clip.antiAlias,
-              padding: const EdgeInsets.only(top: Sp.x3, bottom: Sp.x4),
-              child: settings,
-            ),
-          ),
-        ],
+      child: SingleChildScrollView(
+        key: const ValueKey('danmaku-settings-scroll'),
+        padding: const EdgeInsets.only(top: Sp.x3, bottom: Sp.x4),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _statusSection(),
+            _sourceStatusStrip(),
+            _tabBar(),
+            settings,
+          ],
+        ),
       ),
     );
 
@@ -2022,6 +1988,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     const builtins = kDanmakuPublicInstances;
     final usingBuiltin = saved.trim().isEmpty && builtins.isNotEmpty;
     return Column(
+      key: const ValueKey('danmaku-self-hosted-section'),
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _sectionTitle('dan-api 服务', note: '免凭证 · 首选'),
@@ -2607,91 +2574,13 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   Future<void> _diagnose(DanmakuEndpoint ep, int mySeq) async {
     DanmakuProbeReport report;
     try {
-      final addrs = await InternetAddress.lookup(ep.host)
-          .timeout(const Duration(seconds: 4));
-      if (addrs.isEmpty) {
-        report = DanmakuProbeReport(
-          failure: DanmakuProbeFailure.dnsFailed,
-          url: ep.display,
-          detail: 'DNS 没返回任何地址',
-          remedy: DanmakuProbeReport.remedyFor(DanmakuProbeFailure.dnsFailed),
-        );
-      } else {
-        /*
-         * ★★★ 2026-10-19（R3-③/⑦ 归因修正）：**先核地址对不对，再谈 TCP**。
-         *
-         * # 为什么判定放在 TCP 之前
-         * ```text
-         * 本机实测：DNS 返回 74.86.17.48 / 2a03:2880:…:face:b00c，
-         * 而 DoH 真值是 216.198.79.3 / 64.29.17.3。
-         * ⇒ TCP 连的是**错地址**，超时只是下游后果。
-         *   若先报 connectionTimeout，用户会去配代理碰运气；
-         *   报 dnsHijacked 才会让他去**换 DNS**（正确的修法）。
-         * ```
-         */
-        final local = addrs.map((a) => a.address).toList(growable: false);
-        if (DanmakuProbeReport.looksForged(local)) {
-          final doh = await DanmakuProbeReport.dohLookup(ep.host);
-          report = DanmakuProbeReport.forHijackedDns(
-            url: ep.display,
-            localAddresses: local,
-            dohAddresses: doh,
-          );
-        } else {
-          final port = ep.hasPort ? ep.port : (ep.scheme == 'https' ? 443 : 80);
-          try {
-            final s = await Socket.connect(ep.host, port,
-                timeout: const Duration(seconds: 6));
-            s.destroy();
-            // TCP 通了 ⇒ 问题在 HTTP 层（服务活着但拒绝/报错）
-            report = DanmakuProbeReport(
-              failure: DanmakuProbeFailure.serverError,
-              url: ep.display,
-              detail: 'TCP $port 可以连上，但探测端点没有给出可用响应',
-              remedy: '网络是通的（TCP 连得上）⇒ 这次的问题在「服务端」：'
-                  '它可能正在冷启动、或者这个实例的接口变了。'
-                  '等几秒重试，或换一个实例。',
-            );
-          } on TimeoutException {
-            /*
-             * TCP 超时 + 地址**不在**伪造段 ⇒ 真的可能是被墙/代理。
-             * 但仍然补一句"DoH 真值不同也可能是劫持"—— 因为伪造段表
-             * 不可能穷举，`looksForged` 只是**强证据**不是**充要条件**。
-             */
-            final doh = await DanmakuProbeReport.dohLookup(ep.host);
-            final differs = doh.isNotEmpty &&
-                doh.toSet().intersection(local.toSet()).isEmpty;
-            report = differs
-                // 地址表没命中，但 DoH 真值完全不同 ⇒ 同样是劫持
-                ? DanmakuProbeReport.forHijackedDns(
-                    url: ep.display,
-                    localAddresses: local,
-                    dohAddresses: doh,
-                    detail: 'TCP $port 连接超时',
-                  )
-                : DanmakuProbeReport(
-                    failure: DanmakuProbeFailure.connectionTimeout,
-                    url: ep.display,
-                    detail: 'DNS 解析到 ${local.join(", ")}，'
-                        '但 TCP $port 连接超时',
-                    remedy: DanmakuProbeReport.remedyFor(
-                      DanmakuProbeFailure.connectionTimeout,
-                    ),
-                  );
-          } on SocketException catch (e) {
-            report = DanmakuProbeReport.fromError(e, url: ep.display);
-          }
-        }
-      }
-    } on TimeoutException {
+      final response = await diagnoseDanmakuEndpoint(ep);
       report = DanmakuProbeReport(
-        failure: DanmakuProbeFailure.dnsFailed,
+        failure: DanmakuProbeFailure.serverError,
         url: ep.display,
-        detail: 'DNS 查询超时（4 秒）',
-        remedy: DanmakuProbeReport.remedyFor(DanmakuProbeFailure.dnsFailed),
+        detail: 'HTTP ${response.statusCode}: 探活未确认服务可用，请重试连接测试',
+        remedy: '已按当前代理配置请求服务；HTTP 可达不代表弹幕协议可用。',
       );
-    } on SocketException catch (e) {
-      report = DanmakuProbeReport.fromError(e, url: ep.display);
     } catch (e) {
       report = DanmakuProbeReport.fromError(e, url: ep.display);
     }
@@ -3465,9 +3354,24 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// 与 Owner 第 2 条同一条语义（那条要求它**默认**勾上）。
   /// ⇒ 它始终在集合里，勾选框只读且**恒为勾**。
   /// ```
-  final Set<DanmakuFeedChannel> _enabledFeeds = <DanmakuFeedChannel>{
-    DanmakuFeedChannel.biliSource,
-  };
+  static const _feedsPreferenceKey = 'danmaku.feeds.enabled';
+  final Set<DanmakuFeedChannel> _enabledFeeds = _loadEnabledFeeds();
+
+  static Set<DanmakuFeedChannel> _loadEnabledFeeds() {
+    final saved = UiPrefs.get(_feedsPreferenceKey);
+    const supported = <DanmakuFeedChannel>{
+      DanmakuFeedChannel.biliSource,
+      DanmakuFeedChannel.biliExternal,
+      DanmakuFeedChannel.danApi,
+      DanmakuFeedChannel.localService,
+    };
+    if (saved == null) return {...supported};
+    final names = saved.split(',').toSet();
+    return {
+      DanmakuFeedChannel.biliSource,
+      ...supported.where((channel) => names.contains(channel.name)),
+    };
+  }
 
   /// 勾选/取消一路来源
   void _toggleFeed(DanmakuFeedChannel ch, bool on) {
@@ -3480,6 +3384,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         _enabledFeeds.remove(ch);
       }
     });
+    UiPrefs.set(_feedsPreferenceKey,
+      _enabledFeeds.map((channel) => channel.name).join(','));
+    UiPrefs.flush();
     widget.onChanged?.call();
   }
 
@@ -3726,7 +3633,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               : '未配置',
           checked: _enabledFeeds.contains(DanmakuFeedChannel.danApi),
           onChanged: (v) => _toggleFeed(DanmakuFeedChannel.danApi, v),
-          trailing: _showSearchSection
+          trailing: widget.onOpenSearch != null
               ? _rowAction('搜索…', () => _focusSearch(s))
               : null,
         ),
@@ -3755,7 +3662,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
          * 当前生效读数 —— 与顶部状态条**同一套口径**，
          * 但这里额外说明"几路在合并"，因为这一页是用户做选择的地方。
          */
-        _hint(_activeSummary()),
+        KeyedSubtree(
+          key: const ValueKey('danmaku-active-feed-summary'),
+          child: _hint(_activeSummary()),
+        ),
       ],
     );
   }
@@ -3921,412 +3831,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// ⚠️ 面板**自己不发请求**（本文件的分工，见 `onSearch` 的文档）：
   ///    它只把关键词递出去，宿主去调客户端。
   void _focusSearch(DanmakuSettingsState s) {
-    final kw = s.searchKeyword.trim();
-    _searchKeyword.text = kw;
-    widget.onSearch?.call(kw);
+    widget.onOpenSearch?.call();
   }
 
-  Widget _requestSection() {
-    final s = widget.state;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _sectionTitle('请求'),
-        /*
-         * ★★★ 2026-10-14（Owner 第 2 条）：「外部弹幕…」降一层
-         *
-         * # Owner 原话（逐字）
-         * ```text
-         * > [外部]弹幕搜索绑定交互太麻烦
-         * ```
-         *
-         * # 改前要三层才摸得到
-         * ```text
-         * 齿轮 → 轻量悬浮窗「高级设置」 → 全屏卡片里那颗「外部弹幕…」
-         * 最坏 6 次交互（开 popover、点高级设置、点按钮、再搜索、再选、再绑）。
-         * ```
-         * # 现在：它就在面板第一屏的「请求」节里
-         * ```text
-         * 齿轮 → 轻量悬浮窗「高级设置」 → 全屏卡片 → 「外部弹幕…」 ← 少一层
-         * 而且它与旁边的「重新获取弹幕」**同层同权重**（都是弹幕相关动作），
-         * 不再藏在"高级"里 —— 弹幕的事本来就该在弹幕面板里一眼可见。
-         * ```
-         *
-         * ⚠️ **只改位置，不改能力**：`onOpenBili` 与 `BiliImportDialog`
-         *    一字未动（既有 t73/t100 那几条测试照旧跑）。
-         */
-        Row(
-          children: [
-            TextButton.icon(
-              onPressed: s.loading ? null : widget.onReload,
-              icon: const Icon(
-                AppIcons.refresh,
-                color: DanmakuTextColors.body,
-                size: 18,
-              ),
-              label: const Text(
-                '重新获取弹幕',
-                style: TextStyle(color: DanmakuTextColors.body),
-              ),
-            ),
-            if (s.loading) ...[
-              const SizedBox(width: Sp.x3),
-              // T27-07：显式给色 —— body #E6E6E6 对面板底 #14161B ≥4.5:1（t27_w1 钉过）。
-              const AppInlineSpinner(
-                size: 16,
-                color: DanmakuTextColors.body,
-              ),
-            ],
-            /*
-             * ★★★ 2026-10-18 第四版：这里**不再**画「外部弹幕…」按钮
-             *
-             * # 为什么删（看图台抓到的重复入口）
-             * ```text
-             * 上一版这里有一枚 `TextButton.icon('外部弹幕…')`。
-             * 本版「弹幕来源」页签里已经有**平级的一行**：
-             *     某个视频站   已绑定   [打开…]
-             * 两个入口指向**同一个** `widget.onOpenBili` ⇒
-             * 用户会问"这两个有什么区别"（截图实测：同一个面板里两处都能打开）。
-             *
-             * ⇒ 保留「弹幕来源」里那行（Owner 第 1 条要的可见性），
-             *   删掉这里这枚（它是上一版"藏在请求节里"的产物）。
-             * ```
-             * ⚠️ **能力没变**：`onOpenBili` 仍然被 `_sourcesSection` 消费，
-             *    `BiliImportDialog` 一字未动。
-             */
-          ],
-        ),
-        _hint(
-          '当前片源没有本地文件（播放的是流地址），拿不到文件哈希，'
-          '所以只用片名去匹配 —— 匹配不到时会自动退到按番剧名 + 集数搜索。'
-          '自动匹配总是不中时，用下面的「搜索番剧」手动指定。',
-        ),
-      ],
-    );
-  }
-
-  /// ★★★ 2026-10-14（Owner）：「搜索番剧」—— 手动搜索 + 选中即载入
-  ///
-  /// Owner 原话：> 弹幕我没有看到[弹幕服务]的搜索功能和绑定
-  ///
-  /// # 后端早就有了，缺的只是这层 UI
-  /// ```text
-  /// 客户端那侧的 `searchEpisodes()`（core/danmaku.dart）是**真 HTTP**
-  /// （`GET /api/v2/search/episodes`），返回 `List<DanmakuMatch>`（番剧名 + 集名 + episodeId）；
-  /// 但全仓**没有一个 UI 调它** ⇒ 用户只能等 `loadFor()` 自动匹配。
-  /// 本区就是那层 UI：搜索 → 列结果 → 点一条 → 宿主用它的 episodeId 取弹幕。
-  /// ```
-  ///
-  /// # 四种状态都要有**明确**的显示（空/载入/失败/有结果）
-  /// ```text
-  /// 载入中 ⇒ 一行「正在搜索…」+ 转圈（按钮同时禁用，防连点）
-  /// 失败   ⇒ 沿用 `searchError.message` 的**真实原文**（不翻译成"网络错误"）
-  /// 空结果 ⇒ 明确空态文案「没搜到，换个关键词试试」——空白会让人以为没反应
-  /// 有结果 ⇒ 每条一行（番剧名 + 集名 + 库#id），点一条即载入
-  /// ```
-  Widget _searchSection() {
-    final s = widget.state;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _sectionTitle('搜索番剧', note: '手动指定要哪一集'),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _searchKeyword,
-                style: const TextStyle(
-                  color: DanmakuTextColors.body,
-                  fontSize: FontSizes.sm,
-                ),
-                decoration: const InputDecoration(
-                  hintText: '番剧名 / 关键词',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-                // 回车 = 点「搜索」（键盘用户少摸一次鼠标）
-                onSubmitted: (v) => _submitSearch(v),
-              ),
-            ),
-            const SizedBox(width: Sp.x2),
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: FilledButton.icon(
-                // 载入中禁用 ⇒ 防连点（同时也把"正在搜"这件事画在按钮上）
-                onPressed: s.searchLoading
-                    ? null
-                    : () => _submitSearch(_searchKeyword.text),
-                icon: s.searchLoading
-                    ? const AppInlineSpinner(
-                        size: 16,
-                        color: DanmakuTextColors.body,
-                      )
-                    : const Icon(AppIcons.search, size: 18),
-                label: const Text('搜索'),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: Sp.x2),
-        // 关键词来自宿主最近一次搜索 ⇒ 把它回填进输入框
-        // （用户在别处改了关键字 / 面板重开时，输入框要跟上；本地输入时
-        //  两者相同 ⇒ 不打断光标）
-        if (s.searchKeyword.isNotEmpty &&
-            s.searchKeyword != _searchKeyword.text)
-          _syncKeyword(s.searchKeyword),
-        _searchResultBody(s),
-      ],
-    );
-  }
-
-  /// 把宿主的关键词同步进输入框（见调用点注释：只在两者不同时才写）
-  Widget _syncKeyword(String kw) {
-    // ⚠️ 不能在 build 里直接改 controller（会触发 "setState during build"）⇒
-    //    排到这一帧之后（addPostFrameCallback）。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _searchKeyword.text != kw) {
-        _searchKeyword.text = kw;
-      }
-    });
-    return const SizedBox.shrink();
-  }
-
-  void _submitSearch(String raw) {
-    final kw = raw.trim();
-    if (kw.isEmpty) return; // 空关键词不发请求（后端空搜必然搜不到，白跑一趟）
-    widget.onSearch?.call(kw);
-  }
-
-  /// 搜索结果的四种状态显示
-  Widget _searchResultBody(DanmakuSettingsState s) {
-    if (s.searchLoading) {
-      return _hint('正在搜索…');
-    }
-    final err = s.searchError;
-    if (err != null) {
-      /*
-       * ★★★ 2026-10-19（R3-③/⑦ 收尾）：搜索失败**也走分类**。
-       *
-       * # 改前（Owner 看到的那句）
-       * ```text
-       * Text('搜索失败：${err.message}')
-       *   ⇒ 本机 DNS 被劫持时画出来的是
-       *     「搜索失败：连不上弹幕服务（地址不通或服务没起来）。请检查地址 / 服务是否在运行。」
-       *     —— 把"被劫持"说成"服务没起来"，用户会去查服务。方向错的。
-       * ```
-       *
-       * # 改后
-       * ```text
-       * 分类命中伪造段 ⇒ 换成 [DanmakuProbeFailureX.title] 那档文案
-       *   （"域名被解析到了错误地址"）+ 该档的下一步（换 DNS / 开代理），
-       *   并且**仍然**把 core 的原文 `err.message` 原样留着 ——
-       *   不翻译掉服务端的真实说法，只在上面补一条"这一步该做什么"。
-       *
-       * ★ 没命中时行为与改前**逐字同形**（`err.message` 照旧），
-       *   ⇒ 本次改动**不会**影响任何没被劫持的场景。
-       */
-      final report = DanmakuProbeReport.fromDanmakuException(err);
-      final hijacked = report.failure == DanmakuProbeFailure.dnsHijacked;
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '搜索失败：${err.message}',
-            style: const TextStyle(
-              color: Colors.orangeAccent,
-              fontSize: FontSizes.sm,
-            ),
-          ),
-          if (hijacked) ...[
-            const SizedBox(height: Sp.x2),
-            Text(
-              report.failure.title,
-              style: const TextStyle(
-                color: Colors.orangeAccent,
-                fontSize: FontSizes.sm,
-              ),
-            ),
-            _hint(report.remedy),
-          ],
-        ],
-      );
-    }
-    if (!s.searchSearched) {
-      return _hint('输入番剧名或关键词后点「搜索」，从结果里点一集即可载入它的弹幕');
-    }
-    if (s.searchResults.isEmpty) {
-      return _hint('没搜到，换个关键词试试');
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (s.searchStale) ...[
-          const SizedBox(height: Sp.x1),
-          // 见 `DanmakuSettingsState.searchStale` 的长注释：错位是真缺陷，
-          // 必须显式告诉用户"这一批结果已经对不上了"。
-          const Text(
-            '搜索期间画面已换集，这批结果可能对不上 —— 建议重新搜索',
-            style: TextStyle(
-              color: Colors.orangeAccent,
-              fontSize: FontSizes.cap,
-            ),
-          ),
-        ],
-        const SizedBox(height: Sp.x1),
-        for (final m in s.searchResults) _matchTile(m, s.searchStale),
-        /*
-         * 2026-10-15 (Owner): batch binding.
-         *
-         * Placed right under the result list because that is where the user
-         * has just decided WHICH work this is.  Asking them to bind 12
-         * episodes one at a time after that is busywork -- the results are
-         * the same every time, only the episode number changes.
-         *
-         * Only shown when there is something to batch, and only when the host
-         * actually wired the callback (same gating rule as every other action
-         * in this panel: no callback, no button).
-         */
-        if (widget.onBatchBind != null) ...[
-          const SizedBox(height: Sp.x2),
-          TextButton.icon(
-            onPressed: () => widget.onBatchBind!(s.searchResults),
-            icon: const Icon(
-              AppIcons.playlist_add_check,
-              color: DanmakuTextColors.body,
-              size: 18,
-            ),
-            label: const Text(
-              '整部绑定',
-              style: TextStyle(color: DanmakuTextColors.body),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-
-  /// 结果列表里的一条 —— 点它 ⇒ 载入这一集的弹幕
-  Widget _matchTile(DanmakuMatch m, bool stale) {
-    final title = m.animeTitle.isNotEmpty ? m.animeTitle : '未命名作品';
-    final ep = m.episodeTitle.isNotEmpty ? m.episodeTitle : '未命名剧集';
-    return InkWell(
-      // stale 时**仍然可点**（用户可能有自己的判断），但那一行的文字已经
-      // 标了"可能对不上" ⇒ 是知情选择，不是误点。
-      onTap: () => widget.onPickMatch?.call(m),
-      borderRadius: Radii.rSm,
-      child: Container(
-        width: double.infinity,
-        margin: const EdgeInsets.only(bottom: Sp.x1),
-        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
-        decoration: BoxDecoration(
-          borderRadius: Radii.rSm,
-          border: Border.all(color: DanmakuTextColors.border),
-          color: stale
-              ? null
-              : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.03),
-        ),
-        child: Row(
-          children: [
-            /*
-             * 2026-10-15 (Owner: "I remember it could show covers? see if you
-             * can.") -- yes it can, via /api/v2/bangumi/{animeId}.
-             *
-             * The poster is 2:3, so the box is 2:3 (28x42).  That ratio
-             * matters: coverImage() picks cacheHeight based on layoutHeight,
-             * and ResizeImage keeps the aspect ratio, so a 2:3 box decodes a
-             * 2:3 thumbnail rather than scaling a 16:9 still down.
-             *
-             * cover == '' means the lookup failed (offline, unknown work, or
-             * the request was swallowed on purpose so search still works) =>
-             * fall back to a neutral placeholder rather than an empty gap,
-             * so the rows keep a consistent baseline.
-             */
-            SizedBox(
-              width: 28,
-              height: 42,
-              child: m.cover.isEmpty
-                  ? Container(
-                      decoration: BoxDecoration(
-                        borderRadius: Radii.rSm,
-                        border: Border.all(color: DanmakuTextColors.border),
-                      ),
-                      child: const Icon(
-                        AppIcons.movie_outlined,
-                        size: 14,
-                        color: DanmakuTextColors.muted,
-                      ),
-                    )
-                  : ClipRRect(
-                      borderRadius: Radii.rSm,
-                      child: coverImage(
-                        context,
-                        url: m.cover,
-                        layoutWidth: 28,
-                        layoutHeight: 42,
-                        fit: BoxFit.cover,
-                        // A broken poster URL must not blow up the row.
-                        errorBuilder: (_, __, ___) => Container(
-                          decoration: BoxDecoration(
-                            borderRadius: Radii.rSm,
-                            border: Border.all(color: DanmakuTextColors.border),
-                          ),
-                          child: const Icon(
-                            AppIcons.movie_outlined,
-                            size: 14,
-                            color: DanmakuTextColors.muted,
-                          ),
-                        ),
-                      ),
-                    ),
-            ),
-            const SizedBox(width: Sp.x2),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: DanmakuTextColors.body,
-                      fontSize: FontSizes.sm,
-                    ),
-                  ),
-                  Text(
-                    ep,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: DanmakuTextColors.muted,
-                      fontSize: FontSizes.cap,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: Sp.x2),
-            // 库 id 对用户没意义，但排错时要能说清"载的是哪一条"⇒ 弱化显示
-            Text(
-              '#${m.episodeId}',
-              style: const TextStyle(
-                color: DanmakuTextColors.muted,
-                fontSize: FontSizes.cap,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 中文可操作指引（Owner 第 1 条）—— 原文照旧留在 [_errorSection] 里
-  ///
-  /// 文案与动作**全部**来自 `core/danmaku.dart` 的 `DanmakuHint`
-  /// （纯函数，有单测钉住），这里只负责画，不做任何判断 ——
-  /// 判断散到 UI 里就会与库侧的判据漂移。
   Widget _hintSection(DanmakuHint h) {
     final a = h.action;
     return Column(
@@ -4383,78 +3890,4 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   }
 
   /// 服务端返回的原文 —— **一个字都不改写**（这是排错的唯一线索）
-  Widget _errorSection(DanmakuException e) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _sectionTitle('服务端返回'),
-        Text(
-          e.message,
-          style: const TextStyle(
-            color: Colors.orangeAccent,
-            fontSize: FontSizes.sm,
-          ),
-        ),
-        const SizedBox(height: Sp.x2),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(Sp.x3),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.5),
-            borderRadius: Radii.rSm,
-            border: Border.all(color: DanmakuTextColors.border),
-          ),
-          child: Text(
-            e.detail,
-            style: const TextStyle(
-              fontFamily: 'monospace',
-              fontSize: FontSizes.cap,
-              color: DanmakuTextColors.secondary,
-            ),
-          ),
-        ),
-        if (e.isAuthProblem)
-          /*
-           * ★★★ 2026-10-20（R3 文案审查 · 问题 1）：删掉「去凭证节填 AppId」那半句。
-           *
-           * # 为什么删（不是恢复凭证入口）
-           * ```text
-           * 改前这句话是：
-           *   「…或在上面的「凭证」节填一对 AppId / AppSecret 并保存，再点「重新获取弹幕」。」
-           *
-           * 而「凭证」那一节 `_credentialsSection` **已经是死代码**：
-           *   · 全文件只有定义(:2932)与注释提及，**零调用点**
-           *   · 注释自己写着 :1571「保留但不调用」
-           *   · 全仓 UI 层**没有任何地方**调 `setAppId` / `setAppSecret`
-           *     （`grep -rn "setAppId\|setAppSecret" lib/ui/` ⇒ 只命中一条注释）
-           *
-           * ⇒ 用户照着这句话去找「上面的凭证节」，**找不到**；
-           *   而且整个客户端**没有**任何地方能填 AppId。
-           *   这不是"指错了行动"，是**指向一个不存在的控件**。
-           * ```
-           * # 为什么不恢复凭证入口
-           * ```text
-           * 恢复 `_credentialsSection` 是**功能改动**（要把 setAppId/setAppSecret
-           * 接回 UI），而它当初被摘掉是有原因的（:1571 + :26 那段关于写入口的说明）。
-           * 现在恢复 = 重开一个已经被有意关掉的入口 ⇒ 那是产品决策，不是文案修复。
-           * ⇒ 只删掉指向它的那半句，保留**前两条可行路径**。
-           * ```
-           * # 删完句子仍然通顺
-           * ```text
-           * 「这是凭证问题。可行的几步（按代价从低到高）：
-           *    改用本机外部弹幕（免签名）或 外部视频源弹幕；
-           *    再点「重新获取弹幕」。」
-           * ↑ 两条路都真实存在：
-           *   · 本机弹弹play / 外部视频源 —— 免签名，不需要 AppId
-           *   · 「重新获取弹幕」按钮在「请求」节（:2694），可达
-           * ```
-           */
-          _hint(
-            '这是凭证问题。可行的几步（按代价从低到高）：'
-            '改用本机外部弹幕（免签名）或 外部视频源弹幕；'
-            '再点「重新获取弹幕」。',
-          ),
-      ],
-    );
-  }
 }

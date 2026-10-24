@@ -61,6 +61,37 @@ pub struct PluginMeta {
     pub description: String,
     #[serde(default)]
     pub homepage: String,
+    /// ★ 源类型（头部注释 `@type`）—— 插件作者声明的**源形态**
+    ///
+    /// 取值契约（插件仓按此写）：
+    /// ```text
+    /// video-site    单站视频源（站点自己的接口）
+    /// aggregator    聚合源（一个插件里挂多份上游 / TVBox 订阅）
+    /// iptv          直播源（IPTV / m3u / txt）
+    /// emby          Emby 服务器
+    /// other         其它
+    /// ```
+    ///
+    /// ⚠️ **Rust 字段名是 `kind` 而不是 `type`**（`type` 是关键字），
+    ///    但**序列化名必须是 `type`** —— Dart 侧 `PluginEntry.fromJson`
+    ///    读的就是 `type`。`#[serde(rename)]` 让两边对得上。
+    ///
+    /// ⚠️ 空串 = 源码里**没写** `@type`（老插件全这样，实测本机 32 个 `.js`
+    ///    无一命中）—— 界面据此**不显示**类型，而不是猜一个。
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    /// ★ 上次源更新时间（头部注释 `@updated`，ISO8601 带时区）
+    ///
+    /// 语义：插件作者**最后一次真实验证上游源**的时间，
+    /// 形如 `2026-10-23T09:10:00+08:00`。
+    ///
+    /// ⚠️ 只是"作者说的时间"，**不是宿主保证的真实性**。
+    ///    运行时真值优先：`plugins/.data/<id>.json` 的 `sourceStatus`
+    ///    里有 `updatedAt` 时，列表用的是那个（见 [read_source_status]）。
+    ///
+    /// ⚠️ 空串 = 没写（老插件），界面不显示。
+    #[serde(default)]
+    pub updated: String,
 }
 
 /// 解析脚本头部的 `@key value` 元信息
@@ -71,27 +102,26 @@ pub struct PluginMeta {
 /// 按行首匹配**一个都匹配不到**。
 ///
 /// 值取到「下一个 `@` / 换行 / 注释结束符」为止。
+///
+/// # ★ 两套定位规则（2026-10-23 起，为 `@type` / `@updated` 而加）
+///
+/// 老字段（id/name/version/author/description/homepage）继续用**裸查找**
+/// `find("@key")` —— 它们在真实插件里已经跑了几十轮，改成严格规则
+/// 属于无谓的回归风险（本仓规矩：能不动就不动）。
+///
+/// 新字段（`@type` / `@updated`）用 [find_tag] 的**边界版**，因为：
+/// ```text
+/// "JSDoc 里 @typedef / @type {Object} 非常常见"
+/// 裸 find("@type") 会命中 @typedef 并返回 "def {Object}" 这种垃圾
+///   ⇒ 卡片上会显示「def {Object}」，比不显示更糟
+/// ```
+/// 边界版要求 `@type` 后面紧跟空白 / `:` / 注释结束，见 [find_tag]。
 pub fn parse_meta(src: &str) -> PluginMeta {
     // 只看开头 2KB（元信息约定在文件头部）
     let head: String = src.chars().take(2048).collect();
 
-    let get = |key: &str| -> String {
-        let tag = format!("@{key}");
-        let Some(pos) = head.find(&tag) else {
-            return String::new();
-        };
-        let rest = &head[pos + tag.len()..];
-        let end = [
-            rest.find('@'),
-            rest.find('\n'),
-            rest.find("*/"),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(rest.len());
-        rest[..end].trim().to_string()
-    };
+    // 老字段：裸查找（行为与加新字段前**逐字相同**）
+    let get = |key: &str| -> String { tag_value(&head, key, false) };
 
     PluginMeta {
         id: get("id"),
@@ -100,8 +130,291 @@ pub fn parse_meta(src: &str) -> PluginMeta {
         author: get("author"),
         description: get("description"),
         homepage: get("homepage"),
+        // ★ 新字段：边界查找 + 多候选 + 值净化（见 pick_source_type / pick_updated）
+        kind: pick_source_type(&head),
+        updated: pick_updated(&head),
     }
 }
+
+/// 在头部注释里定位 `@key`，返回它的**字节偏移**
+///
+/// `boundary == false` —— 裸查找（老字段用，保持原行为）。
+///
+/// `boundary == true` —— `@key` 后面必须紧跟「值的开始」，
+/// 否则继续往后找下一个 `@key`。合法后继字符：
+/// ```text
+/// 空白（空格 / Tab / CR / LF）   `@type video-site` / `@updated 2026-...`
+/// ':'                            `@type: video-site`（不强制，但认）
+/// '/'                            `@type */`（空值 + 注释结束）
+/// 字符串末尾                     `@type`（空值）
+/// ```
+/// ⚠️ 关键的一条：**`@typedef` / `@updatedAt` 这类"同前缀的长 tag"必须被拒**
+///    （后继是字母 ⇒ 不是我们要的 tag）⇒ 继续找下一个。
+///    `@upstream` 之类**不同前缀**天然不会命中 `@type`，测试里一并钉住。
+fn find_tag(head: &str, key: &str, boundary: bool) -> Option<usize> {
+    find_tag_from(head, key, boundary, 0)
+}
+
+/// [find_tag] 的可续扫版本（`from` = 上次命中之后的位置，给收集全部候选用）
+fn find_tag_from(head: &str, key: &str, boundary: bool, from: usize) -> Option<usize> {
+    let tag = format!("@{key}");
+    if from >= head.len() {
+        return None;
+    }
+    if !boundary {
+        return head[from..].find(&tag).map(|rel| from + rel);
+    }
+    let mut from = from;
+    while let Some(rel) = head[from..].find(&tag) {
+        let pos = from + rel;
+        let ok = match head[pos + tag.len()..].chars().next() {
+            None => true,
+            Some(c) => c.is_whitespace() || c == ':' || c == '/',
+        };
+        if ok {
+            return Some(pos);
+        }
+        // 命中了一个「同前缀但更长」的 tag（@typedef 等）—— 跳过它继续找
+        from = pos + tag.len();
+    }
+    None
+}
+
+/// 收集 `@key` 的**全部**候选值（按出现顺序，边界规则同 [find_tag]）
+///
+/// # 为什么新字段要"多候选"而不是"取第一个"
+///
+/// JSDoc 里 `@type {Object}` 是**合法且常见**的写法，它会通过边界检查
+/// （`@type` 后面是空格），但它**不是**我们要的源类型。若只取第一个命中，
+/// 一个同时写了 `@type {Object}` 和 `@type video-site` 的文件就会解析失败。
+///
+/// ⇒ 逐候选过净化（[clean_source_type] / [clean_updated]），
+///   **取第一个净化后非空的** —— 垃圾候选天然被跳过，真候选照样命中。
+fn tag_values(head: &str, key: &str) -> Vec<String> {
+    let tag = format!("@{key}");
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(pos) = find_tag_from(head, key, true, from) {
+        out.push(value_after(head, pos, &tag, true));
+        from = pos + tag.len();
+    }
+    out
+}
+
+/// 取 `@key` 的值（到下一个 `@` / 换行 / `*/` 为止，两端 trim）
+///
+/// ⚠️ 终止符里**没有** `:` / `+` / `-` —— 所以
+///    `@updated 2026-10-23T09:10:00+08:00` 的时区部分**完整保留**。
+///    （只按 `@` 切是安全的：ISO8601 里不含 `@`；而下一个 tag 一定以 `@` 开头。）
+fn tag_value(head: &str, key: &str, boundary: bool) -> String {
+    let Some(pos) = find_tag(head, key, boundary) else {
+        return String::new();
+    };
+    value_after(head, pos, &format!("@{key}"), boundary)
+}
+
+/// 从 `pos`（`@key` 的起始位置）开始取值的公共实现
+fn value_after(head: &str, pos: usize, tag: &str, boundary: bool) -> String {
+    let rest = &head[pos + tag.len()..];
+    let end = [rest.find('@'), rest.find('\n'), rest.find("*/")]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(rest.len());
+    let raw = rest[..end].trim();
+    // `@type: video-site` 这种带冒号的写法（boundary 模式下才可能走到）
+    let raw = if boundary {
+        raw.trim_start_matches(':').trim()
+    } else {
+        raw
+    };
+    raw.to_string()
+}
+
+/// ★ `@type` 的值：全部候选中取**第一个净化后非空的**
+fn pick_source_type(head: &str) -> String {
+    tag_values(head, "type")
+        .iter()
+        .map(|v| clean_source_type(v))
+        .find(|v| !v.is_empty())
+        .unwrap_or_default()
+}
+
+/// ★ `@updated` 的值：全部候选中取**第一个看着像日期**的
+fn pick_updated(head: &str) -> String {
+    tag_values(head, "updated")
+        .iter()
+        .map(|v| clean_updated(v))
+        .find(|v| !v.is_empty())
+        .unwrap_or_default()
+}
+
+/// 净化 `@type` 的值：只接受「一个 token」（字母/数字/`-`/`_`）
+///
+/// # 为什么必须净化（不是洁癖）
+///
+/// 就算过了 [find_tag] 的边界检查，仍有两种会漏进来的垃圾：
+/// ```text
+/// ① JSDoc 的 `@type {Object}`  ← 后继是空格，边界检查**放行**
+///    ⇒ 值是 "{Object}" ⇒ 卡片上显示「{Object}」⇒ 用户看不懂
+/// ② 作者手滑 `@type video site` ⇒ 值是 "video site"
+/// ```
+/// 契约里的取值都是**单个 slug**（`video-site` / `aggregator` / `iptv` /
+/// `emby` / `other`）。所以只放行 slug 字符集，其余一律当"没写"。
+/// 超长（> 32）同样丢弃 —— 那是解析错位，不是真的类型名。
+fn clean_source_type(raw: &str) -> String {
+    let t = raw.trim();
+    if t.is_empty() || t.len() > 32 {
+        return String::new();
+    }
+    if !t
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return String::new();
+    }
+    t.to_string()
+}
+
+/// 净化 `@updated` 的值：必须**看起来像日期**，否则当"没写"
+///
+/// 只做一条极轻的检查：`YYYY-...`（前 4 位数字 + `-`）。
+/// ```text
+/// "2026-10-23T09:10:00+08:00"  ✓ 原样返回（一个字节都不改）
+/// "2026-10-23"                 ✓ 只有日期也认
+/// "{Object}" / "待验证"         ✗ 丢弃（界面不显示垃圾）
+/// ```
+/// ⚠️ 不在 Rust 侧重排格式 —— 格式化是界面的事（Dart 侧按本地时区显示）。
+///    这里只保证"塞给界面的东西至少是个日期"。
+fn clean_updated(raw: &str) -> String {
+    let t = raw.trim();
+    let b = t.as_bytes();
+    if b.len() >= 5 && b[..4].iter().all(|c| c.is_ascii_digit()) && b[4] == b'-' {
+        t.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// 运行时源状态（从 `plugins/.data/<id>.json` 的 `sourceStatus` 键里读出来）
+///
+/// # 数据形态（★ 插件仓正在按此写，宿主只读不写）
+///
+/// `host.store.set('sourceStatus', JSON.stringify({...}))` ——
+/// ⚠️ store 的 value 只能是**字符串**（见 `store.set` 的绑定签名
+/// `move |key: String, value: String|`），所以这里要**二次 JSON.parse**。
+///
+/// ```json
+/// {"sources":[
+///   {"id":"migu","type":"video-site","updatedAt":"2026-10-23T09:10:00+08:00","state":"ok"},
+///   {"id":"demo-iptv","type":"iptv",      "updatedAt":"2026-10-20T11:00:00+08:00","state":"ok"}
+/// ]}
+/// ```
+/// `type` / `updatedAt` / `state` 都是**可选**的（老插件只有 id/url 也可能）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PluginSourceStatus {
+    /// 上游源类型：取**第一个**非空的 `type`（各源的 type 通常一致）
+    pub kind: String,
+    /// 上游源**最新**的 `updatedAt`（挑最大，而不是取第一个）
+    pub updated: String,
+}
+
+/// 读插件的运行时源状态；**任何失败都降级为 `Default`，绝不 panic**
+///
+/// # 降级契约（重要）
+/// ```text
+/// 文件不存在 / 读不动 / 不是合法 JSON / sourceStatus 缺失
+/// sourceStatus 不是字符串也不是对象 / sources 不是数组 / 元素不是对象
+/// updatedAt 不是合法 RFC3339 / type 不是 slug
+///     ⇒ 对应字段留空，由调用方回退到头注释的 @type / @updated
+/// ```
+/// 设计原则：**列表页不该因为某个插件的私有存储写坏了就整页崩掉**。
+/// 一个坏文件只让那一张卡片少显示一行，不连坐。
+pub fn read_source_status(data_dir: &std::path::Path, plugin_id: &str) -> PluginSourceStatus {
+    let mut out = PluginSourceStatus::default();
+    // 1) 整个 store 映射（坏文件 → 空映射，不 panic）
+    let map = store_load(data_dir, plugin_id);
+
+    // 2) 取 sourceStatus —— 契约是「JSON 字符串」，但对「已经是对象」
+    //    的写法也宽容（author 手写 .data 文件时可能直接写对象）
+    let status = match map.get("sourceStatus") {
+        Some(serde_json::Value::String(s)) => match serde_json::from_str(s) {
+            Ok(v) => v,
+            Err(_) => return out, // 字符串里不是合法 JSON ⇒ 降级
+        },
+        Some(v @ serde_json::Value::Object(_)) => v.clone(),
+        _ => return out,
+    };
+
+    // 3) 遍历 sources，挑 type（第一个）/ updatedAt（最大）
+    let Some(sources) = status.get("sources").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    let mut newest: Option<(chrono::DateTime<chrono::FixedOffset>, String)> = None;
+    for s in sources {
+        if let Some(t) = s.get("type").and_then(|v| v.as_str()) {
+            let t = clean_source_type(t);
+            if !t.is_empty() && out.kind.is_empty() {
+                out.kind = t;
+            }
+        }
+        // `updatedAt` 是契约定名；`updated_at` 只是顺手兼容（下划线风格）
+        let raw = s
+            .get("updatedAt")
+            .or_else(|| s.get("updated_at"))
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim())
+            .unwrap_or("");
+        // ⚠️ 运行时值**必须**能解析成真时间才收（界面上要按本地时区重排），
+        //    解析不了就当没有 —— 回退头注释，而不是把垃圾塞进界面
+        let Ok(t) = chrono::DateTime::parse_from_rfc3339(raw) else {
+            continue;
+        };
+        if newest.as_ref().map(|(best, _)| t > *best).unwrap_or(true) {
+            newest = Some((t, raw.to_string()));
+        }
+    }
+    if let Some((_, raw)) = newest {
+        out.updated = raw;
+    }
+    out
+}
+
+/// ★ 把「头注释」与「运行时状态」合成卡片要显示的那两个值
+///
+/// 返回 `(kind, updated)`，任一可能为空串（=界面不显示）。
+///
+/// # 优先级（2026-10-23 Lead 批准的口径，**故意两边不一样**）
+///
+/// ```text
+/// kind    ：头注释 @type 优先 ── 插件级声明更准
+///           （aggregator 这类插件里每个源可能各有 type，
+///            卡片上要显示的是「这个插件是什么」，不是某个源是什么）
+///           头注释没写 → 用运行时的 sources[].type（有总比没有强）
+///
+/// updated ：运行时 updatedAt 优先 ── 那才是「真的验证过上游」的证据
+///           运行时没有/非法 → 回落头注释 @updated（作者自报）
+/// ```
+/// 这个函数是**纯函数**（不碰磁盘），所以能直接单测，
+/// 而 `commands_provider.rs` 的接线只剩两行。
+pub fn resolve_source_display(
+    meta: &PluginMeta,
+    runtime: &PluginSourceStatus,
+) -> (String, String) {
+    let kind = if !meta.kind.is_empty() {
+        meta.kind.clone()
+    } else {
+        runtime.kind.clone()
+    };
+    // 两边都已各自净化过（slug / 日期形状），这里只做取值
+    let updated = if !runtime.updated.is_empty() {
+        runtime.updated.clone()
+    } else {
+        meta.updated.clone()
+    };
+    (kind, updated)
+}
+
 
 /// 从插件源码里提取**上游接口地址**（只服务界面显示，不参与插件运行）
 ///
@@ -244,6 +557,31 @@ fn snake_to_camel(s: &str) -> String {
 ///    Rust 侧是 `Vec<(String, String)>`，而插件按契约写
 ///    `{ Referer: 'x' }` 这种对象 —— serde 会报
 ///    `invalid type: map, expected a sequence`
+/// 从 `call_js` 的表达式里抽出**插件方法名**（供覆盖层白名单过滤）
+///
+/// # 为什么需要它
+/// `call_js` 是通用执行入口，表达式形态有几种：
+/// ```text
+///   "plugin.home()"
+///   "plugin.search(\"kw\", 1)"
+///   "(plugin.rank ? plugin.rank(\"tv\", 1) : Promise.reject(...))"
+///   "(plugin.categories ? plugin.categories() : [])"
+/// ```
+/// 覆盖层只该作用于**数据类**方法，不该碰 `login` / `qr_login_poll` / `logout`。
+///
+/// # 解析规则（宁可不匹配，也不要错匹配）
+/// 取**第一个** `plugin.<ident>` 出现处的 ident。取不到就返回 `""`
+/// —— 空串不会命中任何非空白名单，等价于"不应用覆盖层"，是安全侧。
+fn method_name_from_expr(expr: &str) -> &str {    let Some(pos) = expr.find("plugin.") else {
+        return "";
+    };
+    let rest = &expr[pos + "plugin.".len()..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
 fn js_value_to_rust(v: serde_json::Value) -> serde_json::Value {
     match v {
         serde_json::Value::Object(map) => {
@@ -1648,10 +1986,37 @@ impl JsPluginProvider {
             return Err(map_js_error(msg));
         }
 
-        let data = wrapped
+        let mut data = wrapped
             .get("data")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
+
+        // ★ 源个性化覆盖层（2026-10-24，Owner 裁定）
+        //
+        // 挂在这里而不是逐个 provider 方法，理由见 `overrides` 模块头与
+        // .agents/notes/proposed/architecture/2026-10-24-source-override-layer-after-call-js.md：
+        // 16 条链路各改一次必然漂移（本仓 `save_hook` 有"两条路径发散"的实测教训）。
+        //
+        // ⚠️ 必须按**方法名白名单**过滤：`call_js` 也跑 `login` / `qr_login_poll`
+        //    这类非数据调用，覆盖层不该作用在会话/轮询结果上。
+        //
+        // ⚠️ 覆盖层不可用时**原样透出**（`apply_override` 保证不改 data），
+        //    绝不因为覆盖层坏了就让源不可用。
+        if let Some(dir) = self.data_dir.as_deref() {
+            let method = method_name_from_expr(&expr);
+            let outcome = crate::overrides::apply_override(
+                Some(dir),
+                &self.manifest.id,
+                method,
+                &mut data,
+            );
+            if outcome == crate::overrides::OverrideOutcome::Applied {
+                log::debug!(
+                    "覆盖层已应用: id={} method={method}",
+                    self.manifest.id
+                );
+            }
+        }
 
         // ★ 命名风格 + headers 形态转换（见模块顶部说明）
         let mut rust = js_value_to_rust(data);
@@ -3656,7 +4021,15 @@ impl MediaProvider for JsPluginProvider {
          *    当文本显示（虽然不好扫，但用户至少能看到出了什么事）。
          *    所以这里是 `unwrap_or_default()` 而不是 `?`。
          */
-        start.svg = crate::remote::qr_svg_for(&start.url).unwrap_or_default();
+        /*
+         * ★ 上游给了**图片地址**时，绝不能再拿 url 去画二维码。
+         *
+         * 腾讯 ptqrshow 这类接口：url 就是「那张 PNG 的地址」，
+         * 把它编码成二维码 = 让用户扫一个图片链接，扫完什么都不会发生。
+         * 这种时候清空 svg，交给界面直接显示图片
+         * （provider_login_panel.dart 里的 imageUrl 分支）。
+         */
+        start.finalize_qr_rendering();
         Ok(start)
     }
 
@@ -7575,5 +7948,311 @@ globalThis.plugin = { id: 'old', capabilities: { vod: true, search: true } };
         );
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    //  task-7：设置 → JS 插件卡片「源类型 · 上次源更新时间」
+    //
+    //  三组东西要证明：
+    //    ① 头注释 @type / @updated 能解析，且**不被同前缀 tag 误命中**
+    //    ② 老插件（没写这两个字段）解析成空串、不 panic、零回归
+    //    ③ 运行时 sourceStatus 读得出来、坏数据降级不 panic
+    // ═══════════════════════════════════════════════════════════════
+
+    /// ★ ① 两个字段都有 → 正确解析（真实多行头注释形态）
+    #[test]
+    fn t7_meta_type_and_updated_parsed() {
+        let src = "/**\n * 某站视频源\n *\n * @id site-a\n * @name 某站\n * \
+                   @version 1.0.0\n * @type video-site\n \
+                   * @updated 2026-10-23T09:10:00+08:00\n * @author dsh\n */\nconst x = 1;\n";
+        let m = parse_meta(src);
+        assert_eq!(m.kind, "video-site", "@type 没解析出来");
+        assert_eq!(
+            m.updated, "2026-10-23T09:10:00+08:00",
+            "@updated 没解析出来"
+        );
+        // 老字段必须一字不变（新字段的加入不许影响既有解析）
+        assert_eq!(m.id, "site-a");
+        assert_eq!(m.name, "某站");
+        assert_eq!(m.version, "1.0.0");
+        assert_eq!(m.author, "dsh");
+
+        // 真实世界最常见的「一行塞多个 tag」形态
+        let m = parse_meta("/** @id s @name n @type aggregator @updated 2026-10-20T11:00:00+08:00 */");
+        assert_eq!(m.kind, "aggregator");
+        assert_eq!(m.updated, "2026-10-20T11:00:00+08:00");
+    }
+
+    /// ★ ② 老插件没有这两个字段 → 空串，且绝不 panic
+    ///
+    /// 仓里 31 个 legacy `.js` 全是这两种头部形态之一，
+    /// 空串 = 界面**整行不显示**（见 settings_page 的渲染条件）。
+    #[test]
+    fn t7_meta_legacy_plugin_has_no_type_or_updated() {
+        // 形态 A：一行式（`@name … @version … @author … @id srcl */`）
+        let m = parse_meta("/** @name 某电视台站 @version 1.0.0 @author dsh @id srcl */\nfunction srcl(){}");
+        assert_eq!(m.kind, "", "老插件不许凭空冒出一个类型");
+        assert_eq!(m.updated, "", "老插件不许凭空冒出一个更新时间");
+        assert_eq!(m.id, "srcl");
+
+        // 形态 B：多行 + 中文说明 + 上游地址（TVBox 转换器生成的）
+        let m = parse_meta(
+            "/**\n * 影视天涯 —— 由 TVBox 源自动转换\n *\n * @id tyyszy\n \
+             * @author tvbox-convert\n *\n * 上游接口（苹果CMS v10）：http://tyyszy.com/api.php/provide/vod\n */\nconst API = 1;",
+        );
+        assert_eq!(m.kind, "");
+        assert_eq!(m.updated, "");
+
+        // 退化输入：空串 / 半个注释 / 只有一个 `@` / 只有 `@type` —— 全都不许 panic
+        for src in ["", "/", "   ", "/**", "@", "@type", "@type ", "/* @ */"] {
+            let m = parse_meta(src);
+            assert_eq!(m.kind, "", "输入 {src:?} 居然解析出了类型");
+            assert_eq!(m.updated, "", "输入 {src:?} 居然解析出了时间");
+        }
+    }
+
+    /// ★ ③ 带时区的时间串必须**逐字节完整保留**（不许被截成 `+08:00` 之前）
+    #[test]
+    fn t7_updated_keeps_timezone_offset() {
+        let cases = [
+            ("2026-10-23T09:10:00+08:00", "正偏移"),
+            ("2026-10-22T21:10:00-05:00", "负偏移"),
+            ("2026-10-23T01:10:00.123Z", "毫秒 + Z"),
+            ("2026-10-23", "只有日期"),
+        ];
+        for (v, why) in cases {
+            let src = format!("/*\n * @id x\n * @updated {v}\n */\n");
+            let m = parse_meta(&src);
+            assert_eq!(m.updated, v, "★ {why} 的时间串被改写了");
+        }
+        // 紧跟 `*/` 收尾（值的终止符是 `*/`）
+        let m = parse_meta("/** @id x @updated 2026-10-23T09:10:00+08:00 */");
+        assert_eq!(m.updated, "2026-10-23T09:10:00+08:00");
+        // 后面还有别的 tag（值的终止符是下一个 `@`）—— 时间串本身就完整
+        let m = parse_meta("/** @updated 2026-10-23T09:10:00+08:00 @id x */");
+        assert_eq!(m.updated, "2026-10-23T09:10:00+08:00");
+        assert_eq!(m.id, "x");
+    }
+
+    /// ★ ④ `get("type")` 不许被同前缀的其它 tag 误命中
+    ///
+    /// 这条是 Lead 点名要求的：`@typedef` / `@upstream` / `@typeX` 之类
+    /// 若被当成 `@type`，卡片上会显示 `def {Object}` 这种垃圾。
+    #[test]
+    fn t7_type_not_hijacked_by_similar_tags() {
+        // 只有 `@typedef` → 类型必须为空（老实现会返回 "def {Object}"）
+        let m = parse_meta("/**\n * @typedef {Object} Foo\n * @id x\n * @type\n */");
+        assert_eq!(m.kind, "", "★ @typedef 被当成 @type 了");
+
+        // `@typedef` 在前、真 `@type` 在后 → 取真的
+        let m = parse_meta("/** @typedef {Object} Foo @id x @type iptv */");
+        assert_eq!(m.kind, "iptv");
+
+        // JSDoc 的 `@type {Object}` 在前、真 `@type` 在后 → 跳过垃圾取真的
+        let m = parse_meta("/** @type {Object} @id x @type emby */");
+        assert_eq!(m.kind, "emby");
+
+        // 异前缀 / 同前缀长 tag 都不许命中
+        assert_eq!(parse_meta("/** @upstream http://a/b @id x */").kind, "");
+        assert_eq!(parse_meta("/** @typeX video-site @id x */").kind, "");
+        assert_eq!(parse_meta("/** @updatedAt 2026-10-23T09:10:00+08:00 */").updated, "");
+
+        // 冒号写法也认
+        assert_eq!(parse_meta("/** @type: aggregator @id x */").kind, "aggregator");
+
+        // 带空格的错误写法 → 拒绝（宁可空，也不显示半截 "video site"）
+        assert_eq!(parse_meta("/** @type video site @id x */").kind, "");
+
+        // 值是 JSDoc 对象（没有第二个候选）→ 空
+        assert_eq!(parse_meta("/** @type {Object} @id x */").kind, "");
+    }
+
+    /// ★ ④b 契约兼容：`@type:` / `@updated:` 的**冒号写法**必须认
+    ///
+    /// # 为什么要专门锁一条
+    /// 契约原文写的是 `@type<空白>值`，但 `@type:video-site` 是**人会写**
+    /// 的一种（Lead 2026-10-23 裁定：宽松成「空白或冒号」都认）。
+    /// 这里把三种写法各锁一遍：紧贴（`@type:iptv`）、留空（`@type : emby`）、
+    /// 以及时间值同样走冒号（`@updated:…`）—— 时间串里的 `+08:00`
+    /// 必须**逐字保留**，不能被冒号剥离逻辑顺手吃掉。
+    #[test]
+    fn t7_colon_form_is_accepted_for_type_and_updated() {
+        // ① 紧跟冒号、无空格
+        let m = parse_meta("/**\n * @id x\n * @type:iptv\n * @updated:2026-10-23T09:10:00+08:00\n */");
+        assert_eq!(m.kind, "iptv", "★ `@type:iptv` 必须认（冒号紧贴值）");
+        assert_eq!(
+            m.updated, "2026-10-23T09:10:00+08:00",
+            "★ `@updated:…` 的值必须逐字保留（含 +08:00）"
+        );
+
+        // ② 冒号两侧都留空
+        let m = parse_meta("// @type : emby\n// @updated : 2026-10-23T09:10:00+08:00\n@id x");
+        assert_eq!(m.kind, "emby", "★ `@type : emby` 必须认");
+        assert_eq!(m.updated, "2026-10-23T09:10:00+08:00");
+
+        // ③ 冒号写法与空白写法同时存在时，取**第一个**净化后非空的
+        let m = parse_meta("/** @type:other @type video-site @id x */");
+        assert_eq!(m.kind, "other");
+    }
+
+    /// ★ ⑤ 序列化名必须是 `type`（Dart 侧按 `type` 读）
+    #[test]
+    fn t7_meta_serializes_key_type_not_kind() {
+        let m = PluginMeta {
+            id: "x".into(),
+            name: "n".into(),
+            kind: "iptv".into(),
+            updated: "2026-10-23T09:10:00+08:00".into(),
+            ..Default::default()
+        };
+        let j = serde_json::to_value(&m).expect("序列化失败");
+        assert_eq!(
+            j.get("type").and_then(|v| v.as_str()),
+            Some("iptv"),
+            "★ 序列化名必须是 type"
+        );
+        assert!(j.get("kind").is_none(), "★ 不许把 Rust 字段名 kind 泄到 JSON");
+        assert_eq!(
+            j.get("updated").and_then(|v| v.as_str()),
+            Some("2026-10-23T09:10:00+08:00")
+        );
+
+        // 缺字段 → 空串（老数据、老前端都不炸）
+        let back: PluginMeta = serde_json::from_str(r#"{"id":"x","name":"n"}"#).expect("反序列化失败");
+        assert_eq!(back.kind, "");
+        assert_eq!(back.updated, "");
+
+        // 从 `type` 键读回来（Rust 字段叫 kind，但认 JSON 键 type）
+        let back: PluginMeta = serde_json::from_str(
+            r#"{"id":"x","name":"n","type":"emby","updated":"2026-10-23"}"#,
+        )
+        .expect("反序列化失败");
+        assert_eq!(back.kind, "emby");
+        assert_eq!(back.updated, "2026-10-23");
+    }
+
+    /// ★ ⑥ 运行时 sourceStatus：type 取第一个非空，updatedAt 取**最新**
+    ///
+    /// 「最新」按**时间点**比（`2026-10-23T02:00:00Z` 比
+    /// `2026-10-23T09:10:00+08:00` 晚），不是按字符串比 —— 字符串比会取错。
+    #[test]
+    fn t7_runtime_status_reads_latest_updated_at() {
+        let dir = std::env::temp_dir().join(format!("dsh-t7-srcstatus-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        // 契约：`sourceStatus` 是**字符串**（host.store 只收 String）
+        let inner = serde_json::json!({
+            "sources": [
+                {"id": "demo-iptv", "type": "iptv", "updatedAt": "2026-10-20T11:00:00+08:00", "state": "ok"},
+                {"id": "migu", "updatedAt": "2026-10-23T09:10:00+08:00", "state": "ok"},
+                {"id": "z", "updatedAt": "2026-10-23T02:00:00Z"},
+                {"id": "x", "type": "video-site", "updatedAt": "2026-10-01T00:00:00+08:00"}
+            ]
+        })
+        .to_string();
+        let body = serde_json::json!({ "token": "keep-me", "sourceStatus": inner });
+        std::fs::write(
+            dir.join("subhub.json"),
+            serde_json::to_string(&body).unwrap(),
+        )
+        .expect("写测试数据失败");
+
+        let st = read_source_status(&dir, "subhub");
+        assert_eq!(st.kind, "iptv", "type 应取第一个非空");
+        assert_eq!(
+            st.updated, "2026-10-23T02:00:00Z",
+            "★ updatedAt 应取时间点最新的那条（而不是第一条 / 字符串最大的）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ ⑦ 坏数据全部降级，**绝不 panic**
+    #[test]
+    fn t7_runtime_status_degrades_on_bad_data() {
+        let dir = std::env::temp_dir().join(format!("dsh-t7-srcbad-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let d = PluginSourceStatus::default();
+
+        // ① 文件不存在
+        assert_eq!(read_source_status(&dir, "nope"), d);
+
+        // ② 文件不是合法 JSON
+        std::fs::write(dir.join("corrupt.json"), "{不是 JSON").unwrap();
+        assert_eq!(read_source_status(&dir, "corrupt"), d);
+
+        // ③ sourceStatus 是字符串但里面不是合法 JSON
+        std::fs::write(dir.join("badstr.json"), r#"{"sourceStatus":"{\"sources\":["}"#).unwrap();
+        assert_eq!(read_source_status(&dir, "badstr"), d);
+
+        // ④ sources 是空数组
+        std::fs::write(dir.join("empty.json"), r#"{"sourceStatus":"{\"sources\":[]}"}"#).unwrap();
+        assert_eq!(read_source_status(&dir, "empty"), d);
+
+        // ⑤ sources 不是数组
+        std::fs::write(dir.join("weird.json"), r#"{"sourceStatus":{"sources":"nope"}}"#).unwrap();
+        assert_eq!(read_source_status(&dir, "weird"), d);
+
+        // ⑥ updatedAt 不是合法时间串 → 丢掉时间，保留合法的 type
+        std::fs::write(
+            dir.join("badtime.json"),
+            r#"{"sourceStatus":"{\"sources\":[{\"id\":\"a\",\"type\":\"iptv\",\"updatedAt\":\"昨天\"}]}"}"#,
+        )
+        .unwrap();
+        let st = read_source_status(&dir, "badtime");
+        assert_eq!(st.kind, "iptv", "type 合法就该留");
+        assert_eq!(st.updated, "", "★ 非法时间串必须丢弃（由调用方回退头注释）");
+
+        // ⑦ 老插件的 .data 文件（没有 sourceStatus 键）
+        std::fs::write(dir.join("legacy.json"), r#"{"token":"t"}"#).unwrap();
+        assert_eq!(read_source_status(&dir, "legacy"), d);
+
+        // ⑧ 非 UTF-8 二进制垃圾
+        std::fs::write(dir.join("bin.json"), &[0xffu8, 0xfe, 0x00, 0x7b]).unwrap();
+        assert_eq!(read_source_status(&dir, "bin"), d);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ ⑧ 合成口径（Lead 批准：type 头注释优先、updated 运行时优先）
+    #[test]
+    fn t7_resolve_display_precedence() {
+        // 两边都有 → type 用头注释，updated 用运行时
+        let meta = PluginMeta {
+            kind: "aggregator".into(),
+            updated: "2026-10-01T00:00:00+08:00".into(),
+            ..Default::default()
+        };
+        let rt = PluginSourceStatus {
+            kind: "video-site".into(),
+            updated: "2026-10-23T09:10:00+08:00".into(),
+        };
+        assert_eq!(
+            resolve_source_display(&meta, &rt),
+            (
+                "aggregator".to_string(),
+                "2026-10-23T09:10:00+08:00".to_string()
+            )
+        );
+
+        // 头注释缺 type → 用运行时的
+        let meta_no_kind = PluginMeta {
+            updated: "2026-10-01T00:00:00+08:00".into(),
+            ..Default::default()
+        };
+        assert_eq!(resolve_source_display(&meta_no_kind, &rt).0, "video-site");
+
+        // 运行时缺 updated → 回落头注释
+        let rt_empty = PluginSourceStatus::default();
+        let meta_kind = PluginMeta {
+            kind: "iptv".into(),
+            updated: "2026-10-01T00:00:00+08:00".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_source_display(&meta_kind, &rt_empty),
+            ("iptv".to_string(), "2026-10-01T00:00:00+08:00".to_string())
+        );
+
+        // 老插件两边都空 → 都空串（界面据此**整行不显示**）
+        let (k, u) = resolve_source_display(&PluginMeta::default(), &rt_empty);
+        assert_eq!((k.as_str(), u.as_str()), ("", ""));
+    }
 }
 

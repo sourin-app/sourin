@@ -59,6 +59,7 @@ import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/widgets/backup_panel.dart';
+import 'package:sourin_spike/design/widgets/app_text_button.dart';
 
 import 'support/ui_shot.dart';
 
@@ -323,7 +324,15 @@ void main() {
       await tester.runAsync(() async {
         await tester.enterText(find.byType(TextField), kUiPass);
         await tester.pump();
-        await tester.tap(find.widgetWithText(FilledButton, '导出'));
+        /*
+         * ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：口令框已迁到统一外壳，
+         *   它的「导出」是**自建按钮 `AppTextButton`**（改前是 Material 的
+         *   `FilledButton`）⇒ 定位件随之换型。
+         *   ⚠️ 不能继续用 `find.widgetWithText(FilledButton, '导出')`：那会命中
+         *   **弹窗背后**面板卡片上那个同名的 Material 导出按钮（点它会被遮罩挡住、
+         *   等于什么都没点）—— 那才是一条假绿。
+         */
+        await tester.tap(find.widgetWithText(AppTextButton, '导出'));
         for (var i = 0; i < 60; i++) {
           await Future<void>.delayed(const Duration(milliseconds: 50));
           await tester.pump();

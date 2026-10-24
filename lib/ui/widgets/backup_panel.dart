@@ -149,6 +149,8 @@ import '../tokens.dart';
 // ★ 导出前的知情提示要用它（与 sync_panel 同一个对话框封装）
 import 'overlay_motion.dart' show showAppDialog;
 import '../../design/icons/app_icons.dart';
+import '../../design/widgets/app_glass_dialog.dart';
+import '../../design/widgets/app_text_button.dart';
 
 /// 备份导出 / 导入面板
 ///
@@ -601,40 +603,46 @@ class _BackupPanelState extends State<BackupPanel> {
 
     final choice = await showAppDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        /*
-         * R4-EXCEPTION: 机制⑤ —— 正文是**多行左对齐清单**，外壳会把字居中。
-         *
-         * body 由 StringBuffer 逐行 writeln 拼成（约 20 行）：`·` 项目符号、
-         * 「特别注意」警示段、以及**靠行首两个空格**做续行缩进的源名列表。
-         * `AppGlassDialog` 的内容区 DefaultTextStyle 写死 `textAlign: center`
-         * ⇒ 换过去后：项目符号不再对齐、「  「源名」」这类续行缩进失去意义，
-         * 一段**靠左才成立**的警示清单会被逐行居中。属组件能力缺口。
-         *
-         * ⚠️ 如实交代另外两点**不是**拦路石（免得下一个人重复查）：
-         *   · 宽度：正文 SizedBox(width:460) ⇒ 传 maxWidth:508 即可容纳；
-         *   · 三个按钮：`actions` 是自由 Widget，可照 app_tray 那样自己拼 Row。
-         * ⇒ 补齐「内容区 textAlign 可控（至少能左对齐）」之后才可收拢。
-         */
-        title: const Text('这个备份文件含登录态'),
-        content: SizedBox(
-          width: 460,
-          child: SingleChildScrollView(child: Text(body.toString())),
+      builder: (ctx) => AppGlassDialog(
+        // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+        //   → 统一外壳。逐项等价（先读原语义，不是机械替换）：
+        //   · 返回值 `String?` 三态**逐字不变**：取消 = pop()（**null** ⇒ 调用方
+        //     `if (choice == null) return null;`）、不含登录态导出 = 'plain'、
+        //     设口令并加密 = 'encrypt'。按钮文案与顺序也不变（取消 / 不含… / 设口令…）。
+        //   · 宽度：正文原为 SizedBox(width:460) ⇒ 显式传 `maxWidth: 560`
+        //     （§3.5 白名单档；内容区可用宽 = 560 − 48 = 512 ≥ 460 ⇒ 正文量度基本不变）。
+        //   ⚠️ 机制⑤（原 R4-EXCEPTION 登记的那条）：外壳内容区 DefaultTextStyle 写死
+        //     `textAlign: center`，而这段正文是**靠左才成立**的清单 —— 项目符号行、
+        //     「特别注意」警示段、以及**靠行首两个空格**做续行缩进的源名列表。
+        //     ⇒ 就地显式 `textAlign: TextAlign.left`（不再是「组件能力缺口」：
+        //      `Text.textAlign` 显式传入时**优先于** DefaultTextStyle.textAlign，
+        //      所以调用点就能修好，不必改共享组件）。
+        //   ⚠️ 内容里没有 TextField/ListTile/Switch/InkWell（纯 Text 清单）⇒
+        //      **不需要**补 Material 宿主（依据：zz_dialog18_unified_shell_test.dart
+        //      的仪器自检实测名单）。
+        maxWidth: 560,
+        title: '这个备份文件含登录态',
+        content: Text(body.toString(), textAlign: TextAlign.left),
+        actions: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppTextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消'),
+            ),
+            const SizedBox(width: Sp.x1),
+            AppTextButton(
+              onPressed: () => Navigator.pop(ctx, 'plain'),
+              child: const Text('不含登录态导出'),
+            ),
+            const SizedBox(width: Sp.x1),
+            AppTextButton(
+              onPressed: () => Navigator.pop(ctx, 'encrypt'),
+              foregroundColor: Theme.of(ctx).colorScheme.primary,
+              child: const Text('设口令并加密'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, 'plain'),
-            child: const Text('不含登录态导出'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'encrypt'),
-            child: const Text('设口令并加密'),
-          ),
-        ],
       ),
     );
     if (choice == null) return null;
@@ -1404,11 +1412,23 @@ class _ExportPassphraseDialogState extends State<_ExportPassphraseDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    // R4-EXCEPTION: 机制② 含 TextField，AppGlassDialog 缺 Material 祖先会抛异常
-    return AlertDialog(
-      title: const Text('设置导出用口令'),
-      content: SizedBox(
-        width: 380,
+    return AppGlassDialog(
+      // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+      //   → 统一外壳。逐项等价（先读原语义，不是机械替换）：
+      //   · 返回值 `({pass,clear})?` 不变：取消 = pop()（**null**）；
+      //     导出 = `_submit()` —— 口令 <8 位就 setState 报 _err **不关窗**。
+      //     `_submit` 与「不用 TextEditingController」都一字未改
+      //     （后者受 settings_panels_test 那条反向判据保护）。
+      //   · 宽度：原 SizedBox(width:380) ⇒ 走外壳默认 460（§3.5「窄弹窗」档，
+      //     内容区可用宽 412）⇒ 输入框随之填满 412（+32px，唯一内容尺寸差异）。
+      //   ⚠️ 机制②（原 R4-EXCEPTION 登记的那条）：外壳内容区**零 Material 宿主**，
+      //     实测这里放裸 TextField 抛「TextField widgets require a Material widget
+      //     ancestor」⇒ 就地包一层 `MaterialType.transparency`（只作光标/选择手柄
+      //     宿主，不画底色、不裁剪）。**不改共享组件** —— 它不在本项写入范围。
+      //   ⚠️ 机制⑤：两段说明文字显式左对齐（见下面两个 Text 的 textAlign）。
+      title: '设置导出用口令',
+      content: Material(
+        type: MaterialType.transparency,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1416,6 +1436,7 @@ class _ExportPassphraseDialogState extends State<_ExportPassphraseDialog> {
             Text(
               '登录态会用这个口令加密后放进包里。\n'
               '口令本身「不会」进包 —— 导入时要重新输入它。',
+              textAlign: TextAlign.left,
               style: TextStyle(
                 fontSize: FontSizes.cap,
                 color: colors.onSurfaceVariant,
@@ -1437,6 +1458,7 @@ class _ExportPassphraseDialogState extends State<_ExportPassphraseDialog> {
               const SizedBox(height: Sp.x2),
               Text(
                 _err,
+                textAlign: TextAlign.left,
                 style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
               ),
             ],
@@ -1444,6 +1466,7 @@ class _ExportPassphraseDialogState extends State<_ExportPassphraseDialog> {
             Text(
               '⚠️ 忘记这个口令 ⇒ 这个包里的登录态就解不开了。'
               '其它数据（收藏 / 进度 / 插件）不受影响。',
+              textAlign: TextAlign.left,
               style: TextStyle(
                 fontSize: FontSizes.cap,
                 color: colors.onSurfaceVariant,
@@ -1453,13 +1476,14 @@ class _ExportPassphraseDialogState extends State<_ExportPassphraseDialog> {
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
-        ),
-        FilledButton(onPressed: _submit, child: const Text('导出')),
-      ],
+      actions: AppGlassDialogActions(
+        onCancel: () => Navigator.pop(context),
+        confirmLabel: '导出',
+        // 改前是「TextButton 取消 + FilledButton 导出」⇒ 确认键走主色
+        //（与 settings_page._confirm 同一口径；本仓无自建填充按钮）。
+        confirmIsDestructive: false,
+        onConfirm: _submit,
+      ),
     );
   }
 }
@@ -1497,11 +1521,20 @@ class _ImportPassphraseDialogState extends State<_ImportPassphraseDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    // R4-EXCEPTION: 机制② 含 TextField（输入导出口令），缺 Material 祖先会抛异常
-    return AlertDialog(
-      title: const Text('这个备份包含登录态'),
-      content: SizedBox(
-        width: 380,
+    return AppGlassDialog(
+      // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+      //   → 统一外壳。逐项等价（先读原语义，不是机械替换）：
+      //   · 返回值 `({pass,clear})?` 不变：**只有两个出口**（输对口令 / 取消整次导入），
+      //     取消 = pop()（**null**）；口令为空就 setState 报 _err **不关窗**。
+      //     刻意**不给**"跳过凭据"按钮的语义不变。
+      //   · 宽度：原 SizedBox(width:380) ⇒ 走外壳默认 460（§3.5「窄弹窗」档，
+      //     内容区可用宽 412）⇒ 输入框随之填满 412（+32px，唯一内容尺寸差异）。
+      //   ⚠️ 机制②：外壳内容区零 Material 宿主，裸 TextField 会抛 ⇒ 就地包一层
+      //     `MaterialType.transparency`（只作光标/选择手柄宿主，不画底色、不裁剪）。
+      //   ⚠️ 机制⑤：两段说明文字显式左对齐（见下面两个 Text 的 textAlign）。
+      title: '这个备份包含登录态',
+      content: Material(
+        type: MaterialType.transparency,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1510,6 +1543,7 @@ class _ImportPassphraseDialogState extends State<_ImportPassphraseDialog> {
               '请输入「导出这个包时」设置的口令。\n\n'
               '输入正确后，各内容源的登录态会被恢复到本机 —— '
               '换设备后不用重新登录。',
+              textAlign: TextAlign.left,
               style: TextStyle(
                 fontSize: FontSizes.cap,
                 color: colors.onSurfaceVariant,
@@ -1531,6 +1565,7 @@ class _ImportPassphraseDialogState extends State<_ImportPassphraseDialog> {
               const SizedBox(height: Sp.x2),
               Text(
                 _err,
+                textAlign: TextAlign.left,
                 style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
               ),
             ],
@@ -1538,6 +1573,7 @@ class _ImportPassphraseDialogState extends State<_ImportPassphraseDialog> {
             Text(
               '⚠️ 口令不对时「整次导入会失败」（不会只导一半）—— '
               '其它数据都还在包里，重新输一次即可。',
+              textAlign: TextAlign.left,
               style: TextStyle(
                 fontSize: FontSizes.cap,
                 color: colors.onSurfaceVariant,
@@ -1547,13 +1583,13 @@ class _ImportPassphraseDialogState extends State<_ImportPassphraseDialog> {
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消导入'),
-        ),
-        FilledButton(onPressed: _submit, child: const Text('导入')),
-      ],
+      actions: AppGlassDialogActions(
+        onCancel: () => Navigator.pop(context),
+        cancelLabel: '取消导入',
+        confirmLabel: '导入',
+        confirmIsDestructive: false,
+        onConfirm: _submit,
+      ),
     );
   }
 }

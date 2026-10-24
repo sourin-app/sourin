@@ -68,6 +68,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart'
     show GestureBinding, PointerAddedEvent, PointerDownEvent, PointerUpEvent;
 import 'package:flutter/rendering.dart' show RenderBox, RenderRepaintBoundary;
+import 'package:flutter/scheduler.dart' show FrameTiming, SchedulerBinding;
 import 'package:flutter/widgets.dart';
 // 只为**类型判据**（`is AlertDialog`）——本文件不构造任何 Material 弹窗，
 // 豁免对照那两个框由产品自己的页面点出来（见 case 09 的注释）。
@@ -424,10 +425,16 @@ List<_Case> _cases() => <_Case>[
       // ```
       _Case(
         '09_exempt_theme_paste_json',
-        'lib/ui/settings/theme_page.dart:269（真实路径：ThemeSettingsPage →'
+        'lib/ui/settings/theme_page.dart:285（真实路径：ThemeSettingsPage →'
             ' tap「粘贴 JSON」→ _pasteJson）',
-        '豁免对照 —— 主题包 JSON 粘贴窗（产品自己的 Material AlertDialog）',
-        isShell: false,
+        // ★ 2026-10-24（总计划第 18 项）：这处**不再是豁免**。
+        //   它原来登记为「产品自己的 Material AlertDialog」，理由是外壳内容区
+        //   零 Material 宿主 ⇒ TextField 会抛；迁移时在**调用点**包了
+        //   `Material(type: MaterialType.transparency)` + 显式左对齐，
+        //   已改为 `AppGlassDialog` ⇒ 与其余用例同属统一外壳，`isShell: true`。
+        '统一外壳 —— 主题包 JSON 粘贴窗（第 18 项已从 Material AlertDialog 迁入；'
+            '机制②/⑤ 在调用点补齐）',
+        isShell: true,
         trigger: () async {
           _pushRealPage(const ThemeSettingsPage());
           await _settle(frames: 2, ms: 600);
@@ -527,6 +534,80 @@ Future<void> _settle({int frames = 2, int ms = 450}) async {
   await Future<void>.delayed(Duration(milliseconds: ms));
   await WidgetsBinding.instance.endOfFrame;
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  弹窗开合帧耗时采集（总计划第 13 项：逐类测「打开、关闭」的帧耗时）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 为什么必须在这一层采
+// ```text
+// 产品自带的 `SOURIN_FRAME_LOG=1`（shell.dart:361）只做**全局**汇总：
+//   ① 逐帧只在**超预算**时才记；② 完整数据只有每 5 秒的 p50/p95 汇总。
+// ⇒ 它**无法按"打开弹窗/关闭弹窗"切分**，而第 13 项要的正是分类读数。
+// ⇒ 本探针本来就要逐个打开 11 个弹窗，天然是分类采样的最佳位置。
+// ```
+//
+// # 判据（与 t74 探针同口径）
+// ```text
+// build / raster 都按 16.7ms（60fps）预算；n 不足时**明说**，不硬报 p95。
+// 窗口内 0 帧 ⇒ 记「无读数」，**不得**解释成"不卡"（t74 探针的同一条自检）。
+// ```
+final List<FrameTiming> _dialogTimings = <FrameTiming>[];
+bool _timingOn = false;
+int _timingBatches = 0;
+
+/// 「打开」阶段墙钟起点（trigger 之前记录）
+DateTime _openStartedAt = DateTime.now();
+
+void _startDialogTimings() {
+  if (_timingOn) return;
+  _timingOn = true;
+  _dialogTimings.clear();
+  _timingBatches = 0;
+  SchedulerBinding.instance.addTimingsCallback(_onDialogTimings);
+}
+
+void _onDialogTimings(List<FrameTiming> t) {
+  _timingBatches++;
+  _dialogTimings.addAll(t);
+}
+
+void _stopDialogTimings() {
+  if (!_timingOn) return;
+  _timingOn = false;
+  SchedulerBinding.instance.removeTimingsCallback(_onDialogTimings);
+}
+
+/// 采一段窗口的帧读数并落盘。返回该窗口的帧数（0 ⇒ 无读数）。
+int _reportDialogTimings(String label) {
+  _stopDialogTimings();
+  return _emitTimings(label);
+}
+
+/// 只报告、不注销（供 settle 期间轮询后统一注销）
+int _emitTimings(String label) {
+  final n = _dialogTimings.length;
+  if (n == 0) {
+    _say('  FRAME $label n=0 batches=$_timingBatches'
+        '（窗口内没有任何帧 ⇒ 无读数，不能解释成"不卡"）');
+    return 0;
+  }
+  final b = <int>[for (final t in _dialogTimings) t.buildDuration.inMicroseconds]
+    ..sort();
+  final r = <int>[for (final t in _dialogTimings) t.rasterDuration.inMicroseconds]
+    ..sort();
+  int pct(List<int> v, double p) =>
+      v[((v.length - 1) * p).round().clamp(0, v.length - 1)];
+  final jb = b.where((x) => x > 16700).length;
+  final jr = r.where((x) => x > 16700).length;
+  _say('  FRAME $label n=$n batches=$_timingBatches');
+  _say('    build : p50=${pct(b, .5)} p95=${pct(b, .95)} max=${b.last} '
+      '超预算=$jb');
+  _say('    raster: p50=${pct(r, .5)} p95=${pct(r, .95)} max=${r.last} '
+      '超预算=$jr');
+  return n;
+}
+
 
 /// 从**渲染树**读对话框卡片的精确 rect（不是靠颜色猜边界）
 ///
@@ -1210,6 +1291,14 @@ Future<void> _runCase(_Case c) async {
 
   final errBefore = _errs.length;
 
+  // ★ 第 13 项：从"打开"这一刻开始采帧，settle 之后报告（见 _reportDialogTimings）
+  // ⚠️ 实测坑：`addTimingsCallback` 的回调**只在帧批次投递时**才触发。
+  //   若 trigger 全程同步完成（`showAppDialog` 立刻返回 Future，帧还没画），
+  //   回调一次都不会进 ⇒ `batches=0 / n=0`。
+  //   ⇒ 注册必须在 trigger **之前**，且 trigger 之后要**显式让出事件循环**。
+  _startDialogTimings();
+  _openStartedAt = DateTime.now();
+
   if (c.trigger != null) {
     // 真实路径：不改写任何东西，直接调产品代码
     // ⚠️ 前置闸：只有 closeAction == ask 时点 X 才会弹框；
@@ -1240,14 +1329,41 @@ Future<void> _runCase(_Case c) async {
     ).ignore();
   }
 
+  // ⚠️ 让出事件循环：帧批次投递是异步的，同步走到这里回调还没被调用过。
+  //   三次 endOfFrame 覆盖「首帧 + 入场动效首帧 + 动效中段」，
+  //   让 `addTimingsCallback` 至少收到两批。
+  await SchedulerBinding.instance.endOfFrame;
+  await SchedulerBinding.instance.endOfFrame;
+  await SchedulerBinding.instance.endOfFrame;
+
+  // ★ 第 13 项「打开」分类：从 trigger 到本框稳定 = 打开 + 入场动效的全部帧
+  //
+  // ⚠️ 实测结论（不要再用 timings 回调量打开阶段）：
+  //   连续三版尝试（提前注册 / `delayed(0)` / 连等 3 次 `endOfFrame`）
+  //   都得到 `batches=0`，即 `addTimingsCallback` 回调**一次都没进**。
+  //   对照：同一份代码里**关闭**阶段能拿到 n=34。
+  //   差别在于关闭阶段的帧是由 `_settle()` 里的 `Future.delayed(420ms)`
+  //   连续驱动出来的，而打开阶段的入场动效在 `showAppDialog` 内部已经跑完。
+  //   ⇒ 在**没证实**为什么回调不投递之前，不继续猜（纪律：不按假设盲改）。
+  //   ⇒ 打开阶段改用**墙钟**读数（`_openWallUs`），它是可测的，且不与 timings 混淆。
+  final openWallUs = DateTime.now().difference(_openStartedAt).inMicroseconds;
   await _settle();
+  final openFrames = _reportDialogTimings('${c.id} 打开');
+  _say('  OPEN_WALL ${c.id} = ${openWallUs}us '
+      '（trigger→稳定墙钟；timings 回调投递 ${_timingBatches} 批）');
   final rect = _dialogRect();
   await _capture(c, rect);
 
   // 收尾：把框关掉，再等退场动效走完（否则下一框会叠在这个上面）
   final nav = AppTray.navigatorKey.currentState;
   if (nav != null && nav.canPop()) nav.pop();
+  // ★ 第 13 项「关闭」分类：从 pop 到退场动效结束的帧
+  _startDialogTimings();
   await _settle(frames: 1, ms: 420);
+  _reportDialogTimings('${c.id} 关闭');
+  if (openFrames == 0) {
+    _say('  NOTE ${c.id}: 打开窗口 0 帧 ⇒ 该框无打开耗时读数（不解释成"不卡"）');
+  }
   if (c.cleanup != null) await c.cleanup!();
 
   final added = _errs.length - errBefore;

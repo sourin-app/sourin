@@ -171,7 +171,8 @@ void main() {
         (t) async {
       await t.pumpWidget(_host(_panel(biliCount: 1200, onOpenBili: () {})));
       await t.pumpAndSettle();
-      await _tapTab(t, '弹幕来源');
+      // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
+      await _tapTab(t, '高级');
 
       /*
        * ⚠️ 这里断言"四行来源都在"，用的是**可见文字**而不是类型 ——
@@ -193,7 +194,8 @@ void main() {
         onOpenBili: () => opened++,
       )));
       await t.pumpAndSettle();
-      await _tapTab(t, '弹幕来源');
+      // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
+      await _tapTab(t, '高级');
       await t.tap(find.text('打开…'));
       await t.pumpAndSettle();
       expect(opened, 1, reason: '★★ 画了按钮就得能点');
@@ -207,7 +209,8 @@ void main() {
     testWidgets('★★★ 不再出现「插件提供」这个用户看不懂的词', (t) async {
       await t.pumpWidget(_host(_panel(biliCount: 1200, onOpenBili: () {})));
       await t.pumpAndSettle();
-      await _tapTab(t, '弹幕来源');
+      // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
+      await _tapTab(t, '高级');
 
       expect(find.textContaining('插件提供'), findsNothing,
           reason: '★★★ Owner 第 2 条：他明确说了这个词他不懂。'
@@ -218,7 +221,8 @@ void main() {
         (t) async {
       await t.pumpWidget(_host(_panel(biliCount: 1200, onOpenBili: () {})));
       await t.pumpAndSettle();
-      await _tapTab(t, '弹幕来源');
+      // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
+      await _tapTab(t, '高级');
 
       /*
        * Owner 第 2 条原话：「那么就默认导入他自身的就行了」
@@ -234,7 +238,8 @@ void main() {
     testWidgets('★★ 没有弹幕时如实说「本片源没有提供」（不假装有）', (t) async {
       await t.pumpWidget(_host(_panel(biliCount: null, onOpenBili: () {})));
       await t.pumpAndSettle();
-      await _tapTab(t, '弹幕来源');
+      // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
+      await _tapTab(t, '高级');
 
       expect(find.text('本片源没有提供'), findsOneWidget,
           reason: '★ 如实 —— 不能显示"0 条"（0 是"供了但为空"，语义不同）');
@@ -264,11 +269,13 @@ void main() {
         biliCount: 1200,
         onOpenBili: () {},
         onSearch: (_) {},
+        onOpenSearch: () {},
         onPickMatch: (_) {},
         fill: false,
       )));
       await t.pumpAndSettle();
-      await _tapTab(t, '弹幕来源');
+      // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
+      await _tapTab(t, '高级');
 
       expect(find.text('dan-api'), findsOneWidget,
           reason: '★★★ Owner 第 3 条：dan-api 必须能搜、能选、能绑，'
@@ -279,6 +286,7 @@ void main() {
 
     testWidgets('★★ 点「搜索…」把关键词交给宿主（面板自己不发请求）', (t) async {
       final seen = <String>[];
+      var opened = 0;
       await t.pumpWidget(_host(DanmakuSettingsDialog(
         state: _state(searchKeyword: '测试番剧'),
         onSetEnabled: (_) {},
@@ -291,16 +299,20 @@ void main() {
         biliCount: 1200,
         onOpenBili: () {},
         onSearch: seen.add,
+        onOpenSearch: () => opened++,
         onPickMatch: (_) {},
         fill: false,
       )));
       await t.pumpAndSettle();
-      await _tapTab(t, '弹幕来源');
+      // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
+      await _tapTab(t, '高级');
       await t.tap(find.text('搜索…'));
       await t.pumpAndSettle();
 
-      expect(seen, <String>['测试番剧'],
-          reason: '★★ 面板只把关键词递出去 —— 请求由宿主发（本文件的分工）');
+      expect(opened, 1,
+          reason: '第12项：旧入口只导航到独立搜索页。');
+      expect(seen, isEmpty,
+          reason: '打开搜索页不得自动提交；关键词由独立页草稿保留。');
     });
   });
 
@@ -391,7 +403,8 @@ void main() {
         canSendDanmaku: false,
       )));
       await t.pumpAndSettle();
-      await _tapTab(t, '弹幕来源');
+      // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
+      await _tapTab(t, '高级');
 
       expect(find.textContaining(hint), findsOneWidget,
           reason: '★★★ 不能发就必须解释，否则用户以为功能坏了');
@@ -416,7 +429,8 @@ void main() {
        */
       await t.pumpWidget(_host(_panel(canSendDanmaku: false)));
       await t.pumpAndSettle();
-      await _tapTab(t, '弹幕来源');
+      // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
+      await _tapTab(t, '高级');
 
       expect(find.textContaining(hint), findsOneWidget,
           reason: '★★★ 「不能发」与「没绑定」是两件事，前者为假就该解释');
@@ -429,7 +443,8 @@ void main() {
         canSendDanmaku: true,
       )));
       await t.pumpAndSettle();
-      await _tapTab(t, '弹幕来源');
+      // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
+      await _tapTab(t, '高级');
 
       expect(find.textContaining(hint), findsNothing,
           reason: '★★ 能发的时候说"不支持"就是错误信息');

@@ -26,6 +26,20 @@ import '../core/models.dart';
 /// ⚠️ 必须把**当前源 + 该源下的剧集列表 + 剧集下标**一起交给播放器：
 ///    右侧栏的「选集」与「下一集」都依赖它们。若只传单集 id，
 ///    播放器就无法知道下一集是谁，自动连播无从实现。
+/// 两个直播播放器实例之间的最小状态交接。
+/// volume 是非静音期望音量，不是原生静音后的临时零值。
+class LivePlaybackSnapshot {
+  LivePlaybackSnapshot({
+    required this.playing,
+    required this.muted,
+    required double volume,
+  }) : volume = volume.isFinite ? volume.clamp(0.0, 100.0).toDouble() : 100.0;
+
+  final bool playing;
+  final bool muted;
+  final double volume;
+}
+
 class PlayRequestData {
   const PlayRequestData({
     required this.provider,
@@ -38,6 +52,7 @@ class PlayRequestData {
     this.episodes = const [],
     this.episodeIndex,
     this.localPath,
+    this.resumeFrom,
   });
 
   final String provider;
@@ -49,6 +64,9 @@ class PlayRequestData {
   final String? sourceCode;
   final List<Episode> episodes;
   final int? episodeIndex;
+
+  /// 仅显式换源携带续播意图，不参与会话身份判定。
+  final Duration? resumeFrom;
 
   /// ★★★ task-12 ④ 改动 B（2026-10-09）：本地文件**绝对路径**（`null` = 走网络解析）
   ///
@@ -151,6 +169,9 @@ class PlayRequestData {
 /// ③ 同一会话（`isSameSessionAs`）必须**早退**，不白重启一次流
 /// ```
 abstract interface class MediaSession {
+  /// 当前播放位置，仅供显式换源续播捕获。
+  Duration get currentPosition;
+
   /// 把当前会话换成 [req]（换源 / 选集 / 换集都走它）
   Future<void> applySession(PlayRequestData req);
 

@@ -33,6 +33,29 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const NOTES_ROOT = process.env.AGENT_NOTE_ROOT || ".agents/notes";
+
+/* 归档「只增不改」的基线。
+ *
+ * 不设 AGENT_NOTE_ARCHIVE_BASE_REF 时，vendored 默认拿 **HEAD** 比 —— 而 HEAD
+ * 与「提交后的工作区」是同一份内容，于是「改归档笔记内容 + 同步更新封印 + 提交」
+ * 这种改动它发现不了（实测：默认 exit 0，显式指旧 ref 才 exit 1）。
+ * 这里钉 origin/main：任何**已合并**的封印改动都会对上历史基线。
+ *
+ * 没有 origin/main（本地新仓 / 浅克隆）时退回 HEAD 并**告警** ——
+ * 退让可以，静默不行：否则「冻结强度下降」只存在于注释里。
+ * 与 dsh-agent-notes 插件的默认口径一致（lib/notes.js 的 archived 分支）。 */
+if (!process.env.AGENT_NOTE_ARCHIVE_BASE_REF) {
+  const probe = spawnSync("git", ["rev-parse", "--verify", "--end-of-options", "refs/remotes/origin/main^{commit}"], {
+    encoding: "utf8",
+    windowsHide: true
+  });
+  if ((probe.status ?? 1) === 0) {
+    process.env.AGENT_NOTE_ARCHIVE_BASE_REF = "refs/remotes/origin/main";
+  } else {
+    console.warn("notes-gate: warning: 没有可解析的 origin/main，归档 append-only 基线退回 HEAD ——");
+    console.warn("notes-gate: 已提交的封印改动看不见（只防工作区未提交的改动）。设 AGENT_NOTE_ARCHIVE_BASE_REF 可补回。");
+  }
+}
 const SCRIPTS_DIR = ".agents/notes-scripts";
 
 /** 三道门禁，按「越基础越先跑」的顺序。 */

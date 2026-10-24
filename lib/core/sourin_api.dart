@@ -42,6 +42,8 @@
 //    用 `show` 限定，不把整个 foundation 拉进来。
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
+import 'dart:convert' show jsonEncode;
+
 import 'ffi.dart';
 import 'json_utils.dart';
 import 'models.dart';
@@ -250,6 +252,35 @@ class SourinApi {
   static Future<List<String>> getProviderOrder() async {
     final r = await SourinCore.callAsync('get_provider_order');
     return jstrList(r);
+  }
+
+  // ── 源个性化覆盖层（第 06 项 P2）────────────────────────────────────
+  //
+  // 三条命令只读写 `<数据目录>/overrides/`，**绝不改插件与声明式源文件**。
+  // 覆盖层不可用（损坏/无权限）时，Rust 侧会原样透出原始数据，
+  // 所以这里读失败也只当作"未个性化"，不让整个源不可用。
+
+  /// 读取某源的覆盖层；`null` = 尚未个性化（正常状态，不是错误）
+  static Future<Map<String, dynamic>?> getOverrideLayer(String id) async {
+    final r = await SourinCore.callAsync('get_override_layer', {'id': id});
+    if (r is! Map) return null;
+    final layer = r['layer'];
+    return layer is Map ? Map<String, dynamic>.from(layer) : null;
+  }
+
+  /// 保存覆盖层（只写 overrides 目录）
+  static Future<String> saveOverrideLayer(Map<String, dynamic> layer) async {
+    final r = await SourinCore.callAsync('save_override_layer', {
+      'layer': jsonEncode(layer),
+    });
+    if (r is Map && r['path'] is String) return r['path'] as String;
+    return '';
+  }
+
+  /// 删除覆盖层 = 完全回到原行为；返回是否真的删掉了
+  static Future<bool> deleteOverrideLayer(String id) async {
+    final r = await SourinCore.callAsync('delete_override_layer', {'id': id});
+    return r is Map && r['existed'] == true;
   }
 
   /// 某个源是否启用

@@ -461,7 +461,18 @@ void main() {
        */
       final i = _page.indexOf('if (k == LogicalKeyboardKey.escape ||');
       expect(i, greaterThan(0));
-      final body = _page.substring(i, (i + 700).clamp(0, _page.length));
+      final functionStart = _page.lastIndexOf('KeyEventResult _onKey(', i);
+      expect(functionStart, greaterThanOrEqualTo(0));
+      final open = _page.indexOf('{', functionStart);
+      expect(open, greaterThan(functionStart), reason: '键盘处理函数必须有函数体');
+      var depth = 1;
+      var end = open + 1;
+      for (; end < _page.length && depth > 0; end++) {
+        if (_page[end] == '{') depth++;
+        if (_page[end] == '}') depth--;
+      }
+      expect(depth, 0, reason: 'Esc 分支花括号必须配平');
+      final body = _page.substring(open + 1, end - 1);
       final iSettings = body.indexOf('else if (_settingsOpen)');
       final iZoom = body.indexOf('else if (_zoomOpen)');
       final iEpisode = body.indexOf('else if (_episodeSheetOpen)');

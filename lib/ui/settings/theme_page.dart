@@ -45,6 +45,8 @@ import '../widgets/overlay_motion.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
 import '../../design/icons/app_icons.dart';
+import '../../design/widgets/app_glass_dialog.dart';
+import '../../design/widgets/app_text_button.dart';
 
 class ThemeSettingsPage extends StatefulWidget {
   const ThemeSettingsPage({super.key});
@@ -196,37 +198,53 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
   Future<void> _previewPack(BuildContext context, ThemePack p) async {
     await showAppDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        // R4-EXCEPTION: content 是整个主题预览面板（重内容），且用了
-        // contentPadding.zero + 自定义 backgroundColor: p.palette.card。
-        // AppGlassDialog 内边距写死 fromLTRB(24,22,24,16) 且没有 backgroundColor
-        // 参数 ⇒ 换过去会把预览塞进 24px 边距、玻璃底盖掉调色板底色（会变丑）。
-        // ★ 待办：组件补 padding/backgroundColor 两个可选参数后才可收拢。
-        backgroundColor: p.palette.card,
-        title: Text(
-          '预览 · ${p.name}',
-          style: TextStyle(
-            fontSize: FontSizes.lg,
-            fontWeight: FontWeight.w600,
-            color: p.palette.foreground,
-          ),
+      builder: (ctx) => AppGlassDialog(
+        // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+        //   → 统一外壳。逐项等价（先读原语义，不是机械替换）：
+        //   · 返回值 `void` 不变：两个出口都是 `Navigator.pop(ctx)`（无值），
+        //     「用这套」仍是**先 pop 再 _pickPack**（顺序一字未改 —— 先关窗再
+        //     切主题，否则切主题引发的整树重建会打在已 pop 的路由上）。
+        //   · 按钮文案与顺序不变（关闭 / 用这套）。
+        //   · 宽度：content 是**固定 460 宽**的主题预览面板
+        //     （`ThemePreviewBody` 自绘 `Container(width: 460)`）⇒ 显式传
+        //     `maxWidth: 560`（§3.5 白名单档；外壳内容区可用宽 = 560 − 48 = 512
+        //     > 460 ⇒ 460 不会被夹取）。
+        //   ⚠️ 两处**有意的观感变化**（这是本次统一的目标，不是副作用）：
+        //     ① 卡片底色从 `p.palette.card`（每套主题自己的卡色）改为外壳统一
+        //        的卡片色；被预览的主题色仍由 ThemePreviewBody 内部自绘的
+        //        `p.background` 完整展示（就是那块 460 宽的预览），语义不丢。
+        //     ② 内容内边距从 0 改为外壳的 24/22/24/16（§3.5 规范值）。
+        //     这两条原先是登记为「待组件补 padding/backgroundColor 参数」的
+        //     R4-EXCEPTION；本轮按「弹窗样式不统一」的口径收拢，残留差异
+        //     已写进决策笔记。
+        //   ⚠️ 必须补 Material 宿主：预览里有 2 个 `Switch`，实测抛
+        //     「_MaterialSwitch widgets require a Material widget ancestor」
+        //     （见 test/zz_dialog18_unified_shell_test.dart 的仪器自检）。
+        maxWidth: 560,
+        title: '预览 · ${p.name}',
+        content: Material(
+          type: MaterialType.transparency,
+          child: ThemePreviewBody(pack: p),
         ),
-        contentPadding: EdgeInsets.zero,
-        content: SingleChildScrollView(child: ThemePreviewBody(pack: p)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('关闭'),
-          ),
-          FilledButton(
-            // 「用这套」是唯一会真正切换的入口，并且立即关掉弹窗
-            onPressed: () {
-              Navigator.pop(ctx);
-              _pickPack(context, p);
-            },
-            child: const Text('用这套'),
-          ),
-        ],
+        actions: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppTextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('关闭'),
+            ),
+            const SizedBox(width: Sp.x1),
+            AppTextButton(
+              // 「用这套」是唯一会真正切换的入口，并且立即关掉弹窗
+              onPressed: () {
+                Navigator.pop(ctx);
+                _pickPack(context, p);
+              },
+              foregroundColor: Theme.of(ctx).colorScheme.primary,
+              child: const Text('用这套'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -266,34 +284,58 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
     final ctl = TextEditingController();
     final src = await showAppDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        // R4-EXCEPTION: content 是**表单**（TextField，maxLines:10/minLines:6 的
-        // JSON 粘贴框，外面还包了 SizedBox(width:460)）⇒ 不是「纯文本确认框」。
-        // AppGlassDialog 内容区被 DefaultTextStyle 强制 textAlign:center，
-        // 多行输入框居中会很难用 ⇒ 属组件能力缺口。
-        title: const Text('粘贴主题包 JSON'),
-        content: SizedBox(
-          width: 460,
-          child: TextField(
-            controller: ctl,
-            maxLines: 10,
-            minLines: 6,
-            decoration: const InputDecoration(
-              hintText: '{\n  "name": "我的主题",\n  "brightness": "dark",\n'
-                  '  "colors": { "primary": "#8ED9A8" }\n}',
+      builder: (ctx) => AppGlassDialog(
+        // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+        //   → 统一外壳。逐项等价（先读原语义，不是机械替换）：
+        //   · 返回值 `String?` 语义完全不变：取消 = `Navigator.pop(ctx)`（**null**，
+        //     调用方 `if (src == null || !mounted) return;` 一字未改）；
+        //     导入 = `pop(ctx, ctl.text)`（**空串也是有效返回值**，照旧会去
+        //     importFromString —— 不要顺手加"空就不返回"的判断，那是行为变更）。
+        //   · `ctl.dispose()` 仍在 await 之后（顺序不变）。
+        //   · 宽度：content 是**固定 460 宽**的多行输入框 ⇒ 显式传
+        //     `maxWidth: 560`（§3.5 白名单档；内容区可用宽 512 > 460 不夹取）。
+        //   ⚠️ 两条能力缺口在原处补齐（**不改共享组件** —— 它不在本项写入范围）：
+        //     ① 机制②：外壳内容区零 Material 宿主，实测 TextField 抛
+        //        「TextField widgets require a Material widget ancestor」
+        //        ⇒ 就地包一层 `MaterialType.transparency`（只作光标/选择手柄/
+        //        墨水的宿主，不画底色、不裁剪，外壳视觉不变）。
+        //     ② 机制⑤：外壳内容区 `DefaultTextStyle` 写死 `textAlign: center`，
+        //        多行输入框的内容会逐行居中 ⇒ 显式 merge 回左对齐。
+        maxWidth: 560,
+        title: '粘贴主题包 JSON',
+        content: Material(
+          type: MaterialType.transparency,
+          child: DefaultTextStyle.merge(
+            textAlign: TextAlign.left,
+            child: SizedBox(
+              width: 460,
+              child: TextField(
+                controller: ctl,
+                maxLines: 10,
+                minLines: 6,
+                decoration: const InputDecoration(
+                  hintText: '{\n  "name": "我的主题",\n  "brightness": "dark",\n'
+                      '  "colors": { "primary": "#8ED9A8" }\n}',
+                ),
+              ),
             ),
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, ctl.text),
-            child: const Text('导入'),
-          ),
-        ],
+        actions: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppTextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消'),
+            ),
+            const SizedBox(width: Sp.x1),
+            AppTextButton(
+              onPressed: () => Navigator.pop(ctx, ctl.text),
+              foregroundColor: Theme.of(ctx).colorScheme.primary,
+              child: const Text('导入'),
+            ),
+          ],
+        ),
       ),
     );
     ctl.dispose();

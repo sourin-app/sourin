@@ -2188,6 +2188,8 @@ class PluginEntry {
     this.loaded = false,
     this.error,
     this.config = const [],
+    this.kind = '',
+    this.updated = '',
   });
 
   final String file;
@@ -2226,6 +2228,26 @@ class PluginEntry {
   /// 插件声明的配置项
   final List<ConfigField> config;
 
+  /// ★ 源类型（task-7）—— 卡片副标题「类型 · 更新时间」的前半段
+  ///
+  /// 取值：`video-site` / `aggregator` / `iptv` / `emby` / `other`
+  ///（插件头部注释 `@type` 的契约取值），也可能是第三方自造的值。
+  ///
+  /// ⚠️ 空串 = 没有类型信息（老插件，或两侧都没写）——
+  ///    界面**不显示**类型，绝不显示 `null` 或占位符。
+  ///
+  /// ⚠️ JSON 键是 `type`（Rust 侧字段名 `kind` + `#[serde(rename)]`）——
+  ///    这里 Dart 字段也叫 `kind`，与 Rust 对齐；**别再改回 `type`**
+  ///    （Dart 里 `type` 不与关键字冲突，但两边同名更好查）。
+  final String kind;
+
+  /// ★ 上次源更新时间（task-7，ISO8601 带时区，如 `2026-10-23T09:10:00+08:00`）
+  ///
+  /// Rust 侧已保证：运行时 `updatedAt` 最新值优先，退而用头注释 `@updated`。
+  /// ⚠️ 空串 = 没有时间信息 —— 界面不显示，绝不显示 `null`。
+  /// ⚠️ 解析失败（第三方乱写）时界面原样显示该字符串，**不猜时间**。
+  final String updated;
+
   factory PluginEntry.fromJson(Map<String, dynamic> j) => PluginEntry(
         file: j['file'] as String? ?? '',
         id: j['id'] as String? ?? '',
@@ -2237,6 +2259,9 @@ class PluginEntry {
         loaded: j['loaded'] as bool? ?? false,
         error: j['error'] as String?,
         config: jlist<ConfigField>(j['config'], ConfigField.fromJson),
+        // ★ task-7：同上，缺键 → 空串（界面据此不显示，不会出现 "null"）
+        kind: j['type'] as String? ?? '',
+        updated: j['updated'] as String? ?? '',
       );
 }
 

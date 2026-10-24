@@ -91,6 +91,7 @@ import '../shell.dart' show AppTab, ShellScope;
 //    ⚠️ episode_strip.dart **只读复用，不改它**（lead 明确：别人在改）
 import 'widgets/episode_strip.dart';
 import 'live_availability.dart';
+import 'media_session.dart';
 import 'tokens.dart';
 import 'widgets/cover_image.dart';
 // ★ 2026-09-26【A】用户要求"删除掉节目单" ⇒ 不再 import
@@ -99,6 +100,45 @@ import 'widgets/cover_image.dart';
 import 'widgets/app_dialog_shell.dart';
 import 'widgets/live_embedded_player.dart';
 import '../design/icons/app_icons.dart';
+
+/// Observes the production roundtrip without equating pop with restoration.
+class LiveRoundtripReceipt {
+  final Completer<void> _routeResult = Completer<void>();
+  final Completer<void> _finished = Completer<void>();
+  DateTime? _routeReturnedAt;
+  DateTime? _restoredAt;
+  Object? _error;
+
+  Future<void> get routeResultReturned => _routeResult.future;
+  Future<void> get finished => _finished.future;
+  DateTime? get routeReturnedAt => _routeReturnedAt;
+  DateTime? get restoredAt => _restoredAt;
+  Object? get error => _error;
+
+  void _markRouteReturned() {
+    _routeReturnedAt = DateTime.now().toUtc();
+    if (!_routeResult.isCompleted) _routeResult.complete();
+  }
+
+  /// Runs the original operation; exceptions remain visible to its caller.
+  Future<void> observe(Future<void> Function() operation,
+      {bool Function()? restored}) async {
+    try {
+      await operation();
+      if (_routeReturnedAt != null && (restored?.call() ?? true)) {
+        _restoredAt = DateTime.now().toUtc();
+      }
+    } catch (error) {
+      _error = error;
+      rethrow;
+    } finally {
+      _finished.complete();
+    }
+  }
+
+  /// Used by the production route boundary and deterministic ordering tests.
+  void markRouteReturnedForProbe() => _markRouteReturned();
+}
 
 /// ★ task-1013：源筛选 chip 的稳定测试锚点
 ///
@@ -366,6 +406,7 @@ class LivePage extends StatefulWidget {
   const LivePage({
     super.key,
     this.onWatchLive,
+    this.onWatchLivePlayback,
     this.onWatchReplay,
     this.isTv = false,
     this.visible,
@@ -403,6 +444,14 @@ class LivePage extends StatefulWidget {
     String channelId,
     String name,
   )? onWatchLive;
+
+  /// Fullscreen handoff preserving playback and audio intent.
+  final Future<LivePlaybackSnapshot?> Function(
+    String provider,
+    String channelId,
+    String name,
+    LivePlaybackSnapshot initialPlayback,
+  )? onWatchLivePlayback;
 
   /// 回看某条节目 → 进播放器
   final void Function(
@@ -2229,7 +2278,7 @@ class LivePageState extends State<LivePage> {
   /// （`loadAll(keepSelection: true)` 那条路），**不是**用户主动换台。
   ///
   /// ★★★ task-82【Q4】：两者必须区分 —— 见下面第一段短路。
-  Future<void> _select(LiveChannel ch, {bool restoring = false}) async {
+  Future<void> _select(LiveChannel ch, {bool restoring = false, bool preservePlaybackIntent = false}) async {
     final provider = _providerOf(ch);
 
     /*
@@ -2312,8 +2361,8 @@ class LivePageState extends State<LivePage> {
       _streams = [];
       _stream = null;
       _streamLoading = true;
-      // ★ 换台是用户的主动行为 ⇒ 清掉"用户暂停"标记（他要看新台）
-      _userPaused = false;
+      // 主动换台恢复播放；全屏返回接管频道时保留返回的暂停意图。
+      if (!preservePlaybackIntent) _userPaused = false;
     });
 
     /*
@@ -2559,13 +2608,24 @@ class LivePageState extends State<LivePage> {
   ///    ★ 而且内嵌播放器那时可能也已 dispose ⇒ 不能盲目调 pause/play
   ///      （`LiveEmbeddedPlayerState` 里有 `_disposed` 守卫，但这里也要防）
   /// ```
-  Future<void> _watchLive() async {
+  /// Probe wrapper awaits the original navigation and restoration operation.
+  Future<void> watchLiveForProbe(LiveRoundtripReceipt receipt) =>
+      receipt.observe(() => _watchLive(receipt: receipt),
+          restored: () => mounted);
+
+  Future<void> _watchLive({LiveRoundtripReceipt? receipt}) async {
     final s = _selected;
     if (s == null) return;
-    final cb = widget.onWatchLive;
-    if (cb == null) return;
+    final legacyCallback = widget.onWatchLive;
+    final playbackCallback = widget.onWatchLivePlayback;
+    if (legacyCallback == null && playbackCallback == null) return;
 
     final embedded = _embedKey.currentState;
+    final initialPlayback = embedded?.playbackSnapshot ?? LivePlaybackSnapshot(
+      playing: !_userPaused,
+      muted: true,
+      volume: 100,
+    );
 
     // ① 跳转前暂停内嵌（只在它真的在放时才暂停/记标记）
     final wasPlaying = embedded?.isPlaying ?? false;
@@ -2580,7 +2640,17 @@ class LivePageState extends State<LivePage> {
     // ⚠️ provider 用 `_providerOf(s)` 反查 —— 不能直接用 `_activeProvider`：
     //    频道可能属于**别的**源（用户在播放页期间切了源）。
     // ★ 返回值 = 用户在全屏里最后表达的意图（见 shell.dart 的 onWatchLive 文档）
+    final returnedPlayback = playbackCallback == null
+        ? null
+        : await playbackCallback(_providerOf(s), s.id, s.name, initialPlayback);
+    Future<bool?> cb(String provider, String channelId, String name) async {
+      if (playbackCallback == null) {
+        return await legacyCallback!(provider, channelId, name);
+      }
+      return returnedPlayback == null ? null : !returnedPlayback.playing;
+    }
     final pausedInFullscreen = await cb(_providerOf(s), s.id, s.name);
+    receipt?._markRouteReturned();
 
     // ③ 回来后（可能已 dispose / 已切走 tab / 用户手动暂停过）
     if (!mounted) return;
@@ -2650,6 +2720,15 @@ class LivePageState extends State<LivePage> {
      * ⚠️ `_pausedForFullscreen` 仍要清 —— 它是"为全屏让路"的事实，
      *    现在已经不在全屏了，留着会污染下一次可见性变化。
      */
+    if (returnedPlayback != null) {
+      await _embedKey.currentState?.applyPlaybackSnapshot(
+        returnedPlayback,
+        restorePlaying: false,
+      );
+      if (!mounted) return;
+      // A paused embedded player may have been resumed in fullscreen.
+      _pausedForFullscreen = true;
+    }
     final pending = _pendingFullscreenChannel;
     if (pending != null) {
       _pendingFullscreenChannel = null;
@@ -2661,7 +2740,7 @@ class LivePageState extends State<LivePage> {
         return;
       }
       debugPrint('[LIVE] 从全屏返回 ⇒ 接手播放全屏里切到的台：${pending.name}');
-      await _select(pending);
+      await _select(pending, preservePlaybackIntent: true);
       return;
     }
 
@@ -2912,6 +2991,7 @@ class LivePageState extends State<LivePage> {
        * （`pause()`/`resume()` 的既有语义不变）。
        */
       visible: widget.visible,
+      playWhenReady: !_userPaused,
       stream: _stream,
       title: _selected?.name ?? '未选择频道',
       subtitle: _selected == null

@@ -120,6 +120,7 @@ import 'ui/detail_page.dart';
 import 'ui/follow_page.dart';
 import 'ui/home_page.dart';
 import 'ui/live_page.dart';
+import 'ui/media_session.dart' show LivePlaybackSnapshot;
 // ★ task-58：合并页（上播放器 + 下详情）—— 详情页入口现在指向它
 import 'ui/media_page.dart';
 import 'ui/search_page.dart';
@@ -158,6 +159,22 @@ import './design/icons/app_icons.dart';
 /// hwdec 后端      d3d11va  mediacodec 各平台硬件加速接口不同
 /// ```
 final bool kIsDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+/// Shell's live route boundary; push completes only when the route exits.
+Future<LivePlaybackSnapshot?> handoffLivePlayback({
+  required LivePlaybackSnapshot initialPlayback,
+  required PlayerPage Function(
+    LivePlaybackSnapshot? initial,
+    ValueChanged<LivePlaybackSnapshot>? reportExit,
+  ) buildPlayer,
+  required Future<void> Function(PlayerPage player) push,
+}) async {
+  LivePlaybackSnapshot? returnedPlayback;
+  await push(buildPlayer(initialPlayback, (snapshot) {
+    returnedPlayback = snapshot;
+  }));
+  return returnedPlayback;
+}
+
 /// 底栏条目 —— **顺序与语义必须与原版一致**
 ///
 /// 源：`src/App.vue` L79–109
@@ -5346,35 +5363,20 @@ class _ShellPageState extends State<ShellPage>
            * ⇒ 所以这里**必须**把它交出去。
            * ```
            */
-          onWatchLive: (provider, channelId, name) {
-            /*
-             * ★★★ 2026-10-18（N-PAUSE）：`push<bool>` 把"用户是不是要暂停"带回直播页
-             *
-             * # Owner 原话（逐字）
-             * ```text
-             * > 进直播详情页,点击暂停,出来还在播放,状态没统一,切换页面之后
-             * > 直播应该暂停播放,而不是继续播放
-             * ```
-             *
-             * # 为什么要用 pop 的返回值（而不是新增回调）
-             * ```text
-             * live_page 已经 `await cb(...)` 了这个 Future，
-             * 而 `Navigator.push<T>()` 的返回值就是 pop 时带的 T。
-             * ⇒ 只需把 T 定为 bool，**就能把状态传回去，零新增状态容器**。
-             * ★ 比「加一个 ValueNotifier 穿过三层」少得多，也不担心漏传。
-             * ```
-             *
-             * # 降级行为
-             * ```text
-             * PlayerPage 从**别的入口**进入时（非 onWatchLive），
-             * 那个 push 是 push<void> ⇒ 我们 pop 的布尔会被 **静默丢弃**（不报错）
-             * ⇒ live_page 拿到 null ⇒ 按"未知 ⇒ 不改变 _userPaused"处理（它那边已实现）
-             * ★ 不把 null 当 false：否则"未知"会意外变成"继播"。
-             * ```
-             */
-            return Navigator.of(context).push<bool>(
-              MaterialPageRoute<bool>(
-                builder: (_) => PlayerPage(
+          onWatchLivePlayback: (provider, channelId, name, initialPlayback) async {
+            // 两个播放器交接播放、静音和期望音量，不只传暂停布尔值。
+            // 退出快照须在路由 Future 完成前报告；缺失报告保持未知，
+            // 不把 null 当作播放意图，也不读取暂停清理后的原生状态。
+            return handoffLivePlayback(
+              initialPlayback: initialPlayback,
+              push: (player) async {
+                await Navigator.of(context).push<bool>(
+                  MaterialPageRoute<bool>(builder: (_) => player),
+                );
+              },
+              buildPlayer: (initial, reportExit) => PlayerPage(
+                  initialLivePlayback: initial,
+                  onLivePlaybackExit: reportExit,
                   provider: provider,
                   id: channelId,
                   title: name,
@@ -5413,7 +5415,6 @@ class _ShellPageState extends State<ShellPage>
                   isTv: Device.isTv,
                   isTouchOnly: Device.isTouchOnly,
                 ),
-              ),
             );
           },
           onWatchReplay: (provider, channelId, title, episodeTitle) {

@@ -101,6 +101,7 @@ class _StartupReading {
     required this.firstFrameAt,
     required this.inFlightAtFirstFrame,
     required this.requestsAtFirstFrame,
+    required this.maxInFlightBeforeFirstFrame,
   });
 
   /// 从"启动开始"到"首帧"的耗时
@@ -108,17 +109,19 @@ class _StartupReading {
 
   /// 首帧那一刻，dan-api 的**在途请求数**
   ///
-  /// ★ 这是本门禁最强的判据：> 0 说明首帧**等过**（或至少与）网络，
-  ///   而那正是 Owner 说的"阻塞启动"。
+  /// 瞬时值只说明首帧时仍有请求；已完成的阻塞请求须结合历史峰值判断。
   final int inFlightAtFirstFrame;
 
   /// 首帧那一刻已经发出的 dan-api 请求数
   final int requestsAtFirstFrame;
 
+  /// 首帧之前传输层实际观测到的最大并发数；已完成请求也不会丢失证据。
+  final int maxInFlightBeforeFirstFrame;
+
   @override
   String toString() =>
       '首帧 ${firstFrameAt.inMilliseconds}ms / 首帧时在途=$inFlightAtFirstFrame / '
-      '首帧时已发=$requestsAtFirstFrame';
+      '首帧时已发=$requestsAtFirstFrame / 首帧前在途峰值=$maxInFlightBeforeFirstFrame';
 }
 
 /// 模拟"应用启动到首帧"：跑一段**与真实启动同构**的前台工作，并在首帧时刻取样。
@@ -148,7 +151,7 @@ Future<_StartupReading> _simulateStartup({
    * ★ 故障注入点：**故意**在启动路径上等一次 dan-api。
    *
    * 这就是"有人把 await 加回启动路径"的等价形态 ——
-   * 加了它，首帧必须被拖长、且首帧时在途数 > 0 ⇒ 门禁红。
+   * 加了它，首帧必须被拖长，且首帧前在途峰值 > 0 ⇒ 门禁红。
    */
   if (injectBlockingProbe) {
     final ep = DanmakuConfig.publicInstanceEndpoint;
@@ -165,6 +168,7 @@ Future<_StartupReading> _simulateStartup({
     firstFrameAt: sw.elapsed,
     inFlightAtFirstFrame: transport.inFlight,
     requestsAtFirstFrame: transport.calls.length,
+    maxInFlightBeforeFirstFrame: transport.maxInFlight,
   );
 }
 
@@ -289,9 +293,12 @@ void main() {
               '读数：$bad\n'
               '若这里没变长 ⇒ 注入没生效 ⇒ 上一条主门禁是**假绿**，必须重写。');
 
-      // ② 首帧时请求确实在途（这就是"阻塞"的直接证据）
-      expect(bad.inFlightAtFirstFrame, greaterThan(0),
-          reason: '★★★ 注入生效判据：首帧时 dan-api 请求必须在途。读数：$bad');
+      // ② 读取传输层历史峰值：await 完成后首帧在途数可以为零，
+      // 但启动期间确实发起过请求的证据必须保留，不能拿瞬时值替代历史。
+      expect(bad.maxInFlightBeforeFirstFrame, greaterThan(0),
+          reason: '★★★ 注入生效判据：首帧之前确有 dan-api 请求在途。读数：$bad');
+      expect(bad.requestsAtFirstFrame, greaterThan(0),
+          reason: '注入必须经过真实传输层，不能仅靠延时伪造阻塞。读数：$bad');
     });
   });
 

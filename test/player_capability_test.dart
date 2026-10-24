@@ -1088,8 +1088,22 @@ void real() {}
        */
       final i = page.indexOf('if (k == LogicalKeyboardKey.escape ||');
       expect(i, greaterThan(0));
-      final body = page.substring(i, i + 700);
+      final functionStart = page.lastIndexOf('KeyEventResult _onKey(', i);
+      expect(functionStart, greaterThanOrEqualTo(0));
+      final open = page.indexOf('{', functionStart);
+      expect(open, greaterThan(functionStart), reason: '键盘处理函数必须有函数体');
+      var depth = 1;
+      var end = open + 1;
+      for (; end < page.length && depth > 0; end++) {
+        if (page[end] == '{') depth++;
+        if (page[end] == '}') depth--;
+      }
+      expect(depth, 0, reason: 'Esc 分支花括号必须配平');
+      final body = page.substring(open + 1, end - 1);
       final iSettings = body.indexOf('else if (_settingsOpen)');
+      final iZoom = body.indexOf('else if (_zoomOpen)');
+      expect(iZoom, greaterThan(iSettings),
+          reason: '★ 设置面板必须先于缩放滑条关闭');
       final iEpisode = body.indexOf('else if (_episodeSheetOpen)');
       expect(iSettings, greaterThan(0), reason: '★ Esc 必须能关设置面板');
       expect(iSettings, lessThan(iEpisode),

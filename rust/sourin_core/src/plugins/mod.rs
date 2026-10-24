@@ -307,7 +307,7 @@ fn clean_updated(raw: &str) -> String {
 /// ```json
 /// {"sources":[
 ///   {"id":"migu","type":"video-site","updatedAt":"2026-10-23T09:10:00+08:00","state":"ok"},
-///   {"id":"cctv","type":"iptv",      "updatedAt":"2026-10-20T11:00:00+08:00","state":"ok"}
+///   {"id":"demo-iptv","type":"iptv",      "updatedAt":"2026-10-20T11:00:00+08:00","state":"ok"}
 /// ]}
 /// ```
 /// `type` / `updatedAt` / `state` 都是**可选**的（老插件只有 id/url 也可能）。
@@ -8140,7 +8140,7 @@ globalThis.plugin = { id: 'old', capabilities: { vod: true, search: true } };
         // 契约：`sourceStatus` 是**字符串**（host.store 只收 String）
         let inner = serde_json::json!({
             "sources": [
-                {"id": "cctv", "type": "iptv", "updatedAt": "2026-10-20T11:00:00+08:00", "state": "ok"},
+                {"id": "demo-iptv", "type": "iptv", "updatedAt": "2026-10-20T11:00:00+08:00", "state": "ok"},
                 {"id": "migu", "updatedAt": "2026-10-23T09:10:00+08:00", "state": "ok"},
                 {"id": "z", "updatedAt": "2026-10-23T02:00:00Z"},
                 {"id": "x", "type": "video-site", "updatedAt": "2026-10-01T00:00:00+08:00"}

@@ -102,7 +102,7 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
               TextField(controller: _keyword, onSubmitted: (_) => _search(),
                 decoration: const InputDecoration(labelText: '跨渠道搜索关键词')),
               FilledButton(onPressed: s.searchLoading || b.loading ? null : _search,
-                child: const Text('搜索 dan-api 与 Bilibili')),
+                child: const Text('搜索 dan-api 与视频站')),
               const Text('搜索、启用、绑定与加载是不同状态；确认绑定前请核对剧集。'),
               if (s.searchLoading || b.loading) const LinearProgressIndicator(),
               const Text('dan-api 剧集'),
@@ -155,7 +155,7 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                 }, child: const Text('确认并交由播放器绑定')),
               ],
               const Divider(),
-              const Text('Bilibili 视频与分P'),
+              const Text('视频站视频与分P'),
               if (b.error != null) Text(b.error.toString()),
               for (final item in b.searchResults)
                 ListTile(title: Text(item.title), subtitle: Text(item.bvid),
@@ -163,7 +163,7 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
               for (final page in b.pages)
                 ListTile(title: Text('P${page.page}'),
                   onTap: b.loading ? null : () => widget.onBiliSelectPage(page.page)),
-              const Text('Bilibili 使用既有视频导入与分P绑定链路，不转换成 dan-api 剧集编号。'),
+              const Text('视频站使用既有视频导入与分P绑定链路，不转换成 dan-api 剧集编号。'),
               const Divider(),
               ExpansionTile(
                 title: const Text('请求与服务端详情'),

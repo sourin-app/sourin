@@ -10,7 +10,7 @@ Status: implemented
 
 ## Decision
 
-设置面板的状态、页签与内容放入同一有界滚动区域，来源配置移入高级页签。独立 DanmakuSearchPage 接收宿主 DanmakuSettingsState、BiliImportState 与现有回调，只持有关键词、选中集合和预览开关。dan-api 批量预览复用 buildBatchBindPlan，确认后仍交由宿主绑定；过期结果禁止选择与绑定。Bilibili 保留视频导入和分P回调，不将其编号转换成 dan-api 剧集编号。
+设置面板的状态、页签与内容放入同一有界滚动区域，来源配置移入高级页签。独立 DanmakuSearchPage 接收宿主 DanmakuSettingsState、BiliImportState 与现有回调，只持有关键词、选中集合和预览开关。dan-api 批量预览复用 buildBatchBindPlan，确认后仍交由宿主绑定；过期结果禁止选择与绑定。站点A 保留视频导入和分P回调，不将其编号转换成 dan-api 剧集编号。
 
 设置页删除拆出后无调用的请求、搜索、错误详情私有区块。来源搜索入口只触发 onOpenSearch。诊断调用共享 diagnoseDanmakuEndpoint，保留 mounted 与请求序号守卫；兼容 dohLookup 委托 lookupDanmakuDoh。HTTP 可达不代表协议探活成功，递归解析差异不直接判定劫持。
 
@@ -22,11 +22,11 @@ Status: implemented
 
 ### 页面自己请求并维护绑定状态
 
-未采用。播放器已有 onSearch、onPickMatch、onBatchBind 和 Bilibili 导入链路，页面复制网络与绑定逻辑会形成第二真源。
+未采用。播放器已有 onSearch、onPickMatch、onBatchBind 和 站点A 导入链路，页面复制网络与绑定逻辑会形成第二真源。
 
-### 用 dan-api 批量绑定替代 Bilibili 批量预览
+### 用 dan-api 批量绑定替代 站点A 批量预览
 
-未采用。两种渠道的身份与分集映射不同，当前页面只实现 dan-api 批量预览；Bilibili 批量预览仍是明确缺口。
+未采用。两种渠道的身份与分集映射不同，当前页面只实现 dan-api 批量预览；站点A 批量预览仍是明确缺口。
 
 ## Consequences
 
@@ -40,4 +40,4 @@ Status: implemented
 - flutter test test/zz_t1028_danmaku_small_window_test.dart --reporter compact：退出 0，420x360 布局构建、切高级与滚动无异常。
 - flutter analyze lib/ui/danmaku_search_page.dart lib/ui/widgets/danmaku_settings_dialog.dart：退出 0，No issues found。
 - 未运行全量测试，未提交推送发布，未重启客户端。无 profile 或原尺寸截图证据，不宣称卡顿或毛边改善。
-- Bilibili 批量预览、播放器实际挂载与端到端集成、实网诊断仍待验收；leader 独立验收前 task-6 保持进行中。
+- 站点A 批量预览、播放器实际挂载与端到端集成、实网诊断仍待验收；leader 独立验收前 task-6 保持进行中。

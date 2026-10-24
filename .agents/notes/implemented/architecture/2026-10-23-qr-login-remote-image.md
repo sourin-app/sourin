@@ -1,4 +1,4 @@
-# Agent Note: 扫码登录要支持「上游只给一张图」的站点（腾讯 ptqrshow）
+# Agent Note: 扫码登录要支持「上游只给一张图」的站点（站点C ptqrshow）
 
 Status: implemented
 
@@ -14,10 +14,10 @@ Related: [2026-10-18-cross-language-shape-must-run-against-real-parser.md](2026-
 宿主                → remote::qr_svg_for(&start.url) → SVG → 界面显示
 ```
 
-B 站、芒果、优酷都符合这个模型。**腾讯不符合**：它只给
+站点A、站点B、站点B都符合这个模型。**站点C不符合**：它只给
 `https://ptqrshow.qq.com/...` 这个 **PNG 图片**地址，登录票据在图片里。
 
-于是腾讯插件填 `url = <那张 PNG 的地址>`，宿主照规矩把它编码成二维码 ——
+于是站点C插件填 `url = <那张 PNG 的地址>`，宿主照规矩把它编码成二维码 ——
 用户拿手机扫出来的结果是「一张 PNG 的链接」，扫完什么都不发生。
 **没有任何报错**：二维码画出来了、也扫得动、就是登不上。
 
@@ -54,7 +54,7 @@ pub image_url: Option<String>,
   5 种图片格式的嗅探。不如把「显示一张 URL 图」这件事交给 UI 层。
 - **宿主自己去抓图再转 QR**：需要图像识别（从位图里解二维码），
   引入一个只为两家站点服务的重依赖，且失败模式更玄学。
-- **不支持腾讯扫码，只保留 Cookie 登录**：腾讯的 Cookie 有效期短，
+- **不支持站点C扫码，只保留 Cookie 登录**：站点C的 Cookie 有效期短，
   用户体验最差的就是这条。既然插件侧已经能拿到图片地址，缺的只是 UI 一行。
 
 ## Consequences

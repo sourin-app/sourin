@@ -2961,6 +2961,7 @@ class TvboxImportResult {
     this.imported = const [],
     this.skipped = const [],
     this.lives = const [],
+    this.liveImportedCount = 0,
     this.multiRepo = false,
     this.repos = const [],
   });
@@ -2971,6 +2972,14 @@ class TvboxImportResult {
   final List<TvboxImportedSource> imported;
   final List<TvboxSkippedSite> skipped;
   final List<TvboxLiveSource> lives;
+
+  /// **实际导入成功**的直播源个数（`liveImported` 的长度）
+  ///
+  /// 与 `lives`（配置里识别到的）不是一回事：`lives` 是"配置里有几个"，
+  /// 这个才是"真正注册成直播源、重启后还在"的个数。
+  /// UI 必须用这个数说"已导入 N 个"，不能用 `lives.length` ——
+  /// 后者会让人以为识别到就等于能用。
+  final int liveImportedCount;
 
   /// ★ 这是一份**多仓**配置（只有 `urls`，没有 `sites`）
   ///
@@ -2989,6 +2998,10 @@ class TvboxImportResult {
         imported: _listOf(j['imported'], TvboxImportedSource.fromJson),
         skipped: _listOf(j['skipped'], TvboxSkippedSite.fromJson),
         lives: _listOf(j['lives'], TvboxLiveSource.fromJson),
+        // ★ 用 `is List` 而不是 `as List?`：后者在字段是字符串时会**抛类型错误**，
+        //   把整个导入结果解析打挂（实测被 zz_t1035 抓到）。缺字段/类型异常都退化为 0。
+        liveImportedCount:
+            j['liveImported'] is List ? (j['liveImported'] as List).length : 0,
         multiRepo: j['multiRepo'] == true,
         repos: _listOf(j['repos'], TvboxSubRepo.fromJson),
       );

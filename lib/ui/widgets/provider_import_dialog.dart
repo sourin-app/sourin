@@ -1002,7 +1002,10 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
         children: [
           Text(
             '成功 ${ok.length} 个 · 跳过 ${skip.length} 个'
-            '${lives.isNotEmpty ? " · 直播源 ${lives.length} 个（未导入）" : ""}'
+            // ★ 2026-10-25：lives 现在**会真的导入**（注册成 m3u_live 源并落盘），
+            //   所以这里不能再写"未导入"。显示「已导入/识别」两个数：
+            //   识别数是配置里有几个，导入数才是真正能用、重启后还在的个数。
+            '${lives.isNotEmpty ? " · 直播源 ${r.liveImportedCount}/${lives.length} 个已导入" : ""}'
             '（配置共 ${r.totalSites} 个 site）',
             style: TextStyle(
               fontSize: FontSizes.sm,

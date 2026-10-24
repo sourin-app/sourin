@@ -1610,7 +1610,6 @@ pub async fn import_tvbox_config(
             "imported": [],
             "skipped": skipped,
             "lives": lives,
-        "liveImported": live_rows,
             "liveImported": live_rows,
         }));
     }
@@ -1772,6 +1771,7 @@ pub async fn import_tvbox_config(
         "imported": imported,
         "skipped": skipped,
         "lives": lives,
+        "liveImported": live_rows,
     }))
 }
 

@@ -56,6 +56,15 @@ class _PanShareDialogState extends State<PanShareDialog> {
   String _error = '';
   PanShareStatus? _status;
 
+  /// 匿名列目录的结果（null = 还没列 / 列失败）
+  PanShareListing? _listing;
+
+  /// 列目录失败的人话原因（空 = 没失败）
+  String _listError = '';
+
+  /// 列目录进行中
+  bool _listBusy = false;
+
   @override
   void dispose() {
     _text.dispose();
@@ -72,6 +81,9 @@ class _PanShareDialogState extends State<PanShareDialog> {
       _busy = true;
       _error = '';
       _status = null;
+      // 换了输入 ⇒ 上一次的目录结果不再对应当前链接，必须清掉
+      _listing = null;
+      _listError = '';
     });
     try {
       final s = await SourinApi.identifyPanShare(t);
@@ -84,6 +96,35 @@ class _PanShareDialogState extends State<PanShareDialog> {
       setState(() => _error = userErrorText(e, fallback: '识别没有完成，请稍后重试'));
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 真的去列一次目录（第 20 项：把"能列出文件"这句话兑现）
+  ///
+  /// ⚠️ 失败就**如实说原因**，绝不用空列表冒充"这个分享里没文件" ——
+  ///    那是两种完全不同的处境（Rust 侧也一样：拿不到就 Err）。
+  Future<void> _listFiles() async {
+    final s = _status;
+    if (s == null || !s.recognized) return;
+    setState(() {
+      _listBusy = true;
+      _listError = '';
+      _listing = null;
+    });
+    try {
+      final l = await SourinApi.panListShare(
+        _text.text.trim(),
+        pwd: s.pwd,
+      );
+      if (!mounted) return;
+      setState(() => _listing = l);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _listError = userErrorText(e, fallback: '列目录没有完成，请稍后重试');
+      });
+    } finally {
+      if (mounted) setState(() => _listBusy = false);
     }
   }
 
@@ -151,6 +192,27 @@ class _PanShareDialogState extends State<PanShareDialog> {
             if (s != null) ...[
               SizedBox(height: Sp.x4),
               _resultPanel(t, s),
+              /*
+               * ★ 第 20 项「看得见 / 列得出」：识别成功且拿到分享 id 后，
+               *   给一个**真的会去列目录**的入口。
+               *   改前 reason 对用户承诺"未登录也能列出分享里的文件"，
+               *   但产品里没有任何地方能列 ⇒ 承诺跑在能力前面。
+               */
+              if (s.recognized) ...[
+                SizedBox(height: Sp.x2),
+                AppTextButton(
+                  key: const ValueKey<String>('pan-share-list-files'),
+                  onPressed: _listBusy ? null : _listFiles,
+                  child: Text(_listBusy ? '正在列出文件…' : '列出分享里的文件'),
+                ),
+              ],
+              if (_listError.isNotEmpty || _listing != null) ...[
+                SizedBox(height: Sp.x2),
+                PanShareListingSection(
+                  listing: _listing,
+                  error: _listError,
+                ),
+              ],
             ],
           ],
         ),
@@ -262,6 +324,174 @@ class _PanShareDialogState extends State<PanShareDialog> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// 分享目录区块的**三态容器**：有清单 / 只有失败原因 / 两者都没有
+///
+/// # 为什么再抽一层（而不是让对话框自己写 if）
+/// ```text
+/// 三态每一条都是用户可见行为：
+///   ① 有清单      ⇒ 必须画列表（否则"列得出"这件事没兑现）
+///   ② 只有失败    ⇒ 必须画原因（否则用户以为"这个分享里没文件"）
+///   ③ 两者都没有  ⇒ **零尺寸**（没点过"列出文件"时不许占位）
+/// 让对话框内联写 if 的话，测试只能整页挂载 + 起 FFI 才能驱动 —— 那是假门槛。
+/// ⇒ 抽成公开 widget，测试直接喂三态。
+/// ```
+class PanShareListingSection extends StatelessWidget {
+  const PanShareListingSection({super.key, this.listing, this.error = ''});
+
+  final PanShareListing? listing;
+  final String error;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = listing;
+    if (l != null) return PanShareListingView(listing: l);
+    if (error.isNotEmpty) {
+      final t = Theme.of(context);
+      return Text(
+        error,
+        key: const ValueKey<String>('pan-share-listing-error'),
+        textAlign: TextAlign.left,
+        style: t.textTheme.bodySmall?.copyWith(color: t.colorScheme.error),
+      );
+    }
+    // 没点过「列出文件」⇒ 一个像素都不占
+    return const SizedBox.shrink();
+  }
+}
+
+/// 分享目录的**文件列表区**（公开：可被 widget test 直接渲染）
+///
+/// # 为什么抽成公开 widget（与 `TvboxImportResultView` / `TvboxUpdateResultView` 同一条纪律）
+/// ```text
+/// 私有方法让"列表到底画没画、有没有点名条目"在测试里摸不到，
+/// 只能退化成本文件里出现某个字符串的伪判据 —— 那种判据抓不到
+/// "if 恒 false 把整块摘掉"这一类回归。
+/// ⇒ 判据对象必须能被测试直接喂数据渲染。
+/// ```
+///
+/// # 它会说的三件事（也**只**说这三件）
+/// ```text
+/// ① 标题 + "N 个条目"（N 来自真实条目数，不是另算）
+/// ② 逐条：名字 / 大小 / 是否目录（目录不显示"0 B"噪声）
+/// ③ note 原文 + "可列不可播"（resolvable 恒 false 时显式说出来）
+/// ```
+/// ⚠️ 这里**不**出现播放 / 下载按钮：能列 ≠ 能播，假入口比没有更糟。
+class PanShareListingView extends StatelessWidget {
+  const PanShareListingView({super.key, required this.listing});
+
+  final PanShareListing listing;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context);
+    final shown = listing.entries.take(50).toList(growable: false);
+    return Container(
+      key: const ValueKey<String>('pan-share-listing'),
+      width: double.infinity,
+      padding: EdgeInsets.all(Sp.x3),
+      decoration: BoxDecoration(
+        color: t.colorScheme.surfaceContainerHighest.withValues(alpha: 0.35),
+        borderRadius: Radii.rMd,
+        border: Border.all(color: t.colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            listing.title.isEmpty ? '分享里的文件' : listing.title,
+            key: const ValueKey<String>('pan-share-listing-title'),
+            textAlign: TextAlign.left,
+            style: t.textTheme.labelLarge?.copyWith(
+              color: t.colorScheme.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          SizedBox(height: Sp.x1),
+          Text(
+            '${listing.count} 个条目',
+            key: const ValueKey<String>('pan-share-listing-count'),
+            textAlign: TextAlign.left,
+            style: t.textTheme.labelSmall?.copyWith(
+              color: t.colorScheme.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
+          for (var i = 0; i < shown.length; i++) ...[
+            SizedBox(height: 2),
+            Row(
+              key: ValueKey<String>('pan-share-listing-entry-$i'),
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  shown[i].isDir
+                      ? AppIcons.folder_outlined
+                      : AppIcons.description_outlined,
+                  size: 14,
+                  color: t.colorScheme.onSurface.withValues(alpha: 0.65),
+                ),
+                SizedBox(width: Sp.x1),
+                Expanded(
+                  child: Text(
+                    shown[i].name,
+                    textAlign: TextAlign.left,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: t.textTheme.labelSmall
+                        ?.copyWith(color: t.colorScheme.onSurface),
+                  ),
+                ),
+                if (shown[i].sizeText.isNotEmpty) ...[
+                  SizedBox(width: Sp.x2),
+                  Text(
+                    shown[i].sizeText,
+                    textAlign: TextAlign.right,
+                    style: t.textTheme.labelSmall?.copyWith(
+                      color: t.colorScheme.onSurface.withValues(alpha: 0.6),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ],
+          if (listing.count > shown.length) ...[
+            SizedBox(height: 2),
+            Text(
+              '还有 ${listing.count - shown.length} 个条目未列出',
+              textAlign: TextAlign.left,
+              style: t.textTheme.labelSmall?.copyWith(
+                color: t.colorScheme.onSurface.withValues(alpha: 0.6),
+              ),
+            ),
+          ],
+          if (listing.note.isNotEmpty) ...[
+            SizedBox(height: Sp.x2),
+            Text(
+              listing.note,
+              key: const ValueKey<String>('pan-share-listing-note'),
+              textAlign: TextAlign.left,
+              style: t.textTheme.labelSmall?.copyWith(
+                color: t.colorScheme.onSurface,
+                height: 1.4,
+              ),
+            ),
+          ],
+          const SizedBox(height: Sp.x1),
+          // ★ 能力边界：能列 ≠ 能播。这句必须**始终**出现（resolvable 恒 false 时）
+          if (!listing.resolvable)
+            Text(
+              '这里只能列出文件，当前版本还不能用它播放（取直链需要登录账号）',
+              key: const ValueKey<String>('pan-share-listing-not-resolvable'),
+              textAlign: TextAlign.left,
+              style: t.textTheme.labelSmall?.copyWith(
+                color: t.colorScheme.onSurface.withValues(alpha: 0.6),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

@@ -167,6 +167,46 @@ pub fn parse_quark_token(json: &str) -> Result<(String, String), String> {
     Ok((stoken, title))
 }
 
+/// 夸克 / UC **共用**的 detail 解析（两家的字段与目录判据完全同形）
+///
+/// ★★ 目录判据只有**一条**：`file_type == 0 ⇒ 目录`，`== 1 ⇒ 文件`。
+///   实测依据（`.probe/pan-anon-uc.log`）：UC 样本的目录 `file_type=0`、
+///   夸克样本的 `.iso` `file_type=1` —— 两家是**同一条规则**，不是相反。
+///   ⚠️ `pan-anon-probe.md` §2 第 63 行"判据不同/相反"是表述歧义：
+///     它把"夸克用 1 判文件"与"UC 用 0 判目录"当成两套，其实是一体的两面。
+///   ⇒ 谁把这里写反（0 当文件），`uc_detail_dir_is_zero_and_file_is_one` 立刻红。
+fn parse_detail_shared(v: &Value, label: &str) -> Result<Vec<PanEntry>, String> {
+    let code = v.get("code").and_then(|x| x.as_i64()).unwrap_or(-1);
+    if code != 0 {
+        let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("（上游没给 message）");
+        return Err(format!("{label} 返回 code={code} message={msg}"));
+    }
+    let list = v
+        .get("data")
+        .and_then(|d| d.get("list"))
+        .and_then(|l| l.as_array())
+        .ok_or_else(|| format!("{label} 响应里没有 data.list（结构可能变了）"))?;
+    let mut out = Vec::with_capacity(list.len());
+    for it in list {
+        let name = it.get("file_name").and_then(|x| x.as_str()).unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        out.push(PanEntry {
+            name: name.to_string(),
+            size: num_of(it.get("size")),
+            // 唯一判据：0 = 目录
+            is_dir: it.get("file_type").and_then(|x| x.as_i64()) == Some(0),
+        });
+    }
+    if out.is_empty() {
+        return Err(format!(
+            "{label} 的 list 为空或每项都缺 file_name（不是空分享，多半是结构变了）"
+        ));
+    }
+    Ok(out)
+}
+
 /// 解析夸克 `sharepage/detail` 的响应
 ///
 /// 期望：`{"code":0,"data":{"list":[{"file_name":…,"size":…,"file_type":0|1,"fid":…}]}}`
@@ -179,27 +219,7 @@ pub fn parse_quark_detail(json: &str) -> Result<Vec<PanEntry>, String> {
         let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("（上游没给 message）");
         return Err(format!("detail 返回 code={code} message={msg}"));
     }
-    let list = v
-        .get("data")
-        .and_then(|d| d.get("list"))
-        .and_then(|l| l.as_array())
-        .ok_or_else(|| "detail 响应里没有 data.list（结构可能变了）".to_string())?;
-    let mut out = Vec::with_capacity(list.len());
-    for it in list {
-        let name = it.get("file_name").and_then(|x| x.as_str()).unwrap_or("");
-        if name.is_empty() {
-            continue;
-        }
-        out.push(PanEntry {
-            name: name.to_string(),
-            size: num_of(it.get("size")),
-            is_dir: it.get("file_type").and_then(|x| x.as_i64()) == Some(0),
-        });
-    }
-    if out.is_empty() {
-        return Err("detail 的 list 为空或每项都缺 file_name（不是空分享，多半是结构变了）".to_string());
-    }
-    Ok(out)
+    parse_detail_shared(&v, "detail")
 }
 
 /// 解析百度分享页 HTML 里的 `yunData.file_list`
@@ -305,9 +325,10 @@ pub async fn list_share(kind: PanKind, share_id: &str, pwd: Option<&str>) -> Res
     }
     match kind {
         PanKind::Quark => quark_list(share_id, pwd).await,
+        PanKind::Uc => uc_list(share_id, pwd).await,
         PanKind::Baidu => baidu_list(share_id, pwd).await,
         other => Err(format!(
-            "{} 的匿名列目录还没有实现（本批只做了夸克与百度两个盘，见 .probe/pan-anon-probe.md）",
+            "{} 的匿名列目录还没有实现（目前已做：夸克 / UC / 百度；见 .probe/pan-anon-probe.md）",
             other.display()
         )),
     }
@@ -395,6 +416,162 @@ async fn quark_list(pwd_id: &str, passcode: Option<&str>) -> Result<PanListing, 
         title,
         entries,
         note: anonymous_note(PanKind::Quark.display(), n),
+    })
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  UC（与夸克同族，但**token 主机不同**）
+// ══════════════════════════════════════════════════════════════════════
+//
+// # 实测规格（`.probe/pan-anon-uc.log`，2026-10-26）
+// ```text
+// ① GET  https://drive.uc.cn/s/<pwd_id>  → 200（SPA 壳，2227 B，只为拿 cookie）
+//    下发 set-cookie: ctoken=…（**必须带着它**去 ②）
+// ② POST https://drive.uc.cn/…/sharepage/token  → **HTTP 403**（主机错，不是"必须登录"）
+//    POST https://pc-api.uc.cn/1/clouddrive/share/sharepage/token?pr=UCBrowser&fr=pc
+//      → 200 {"status":200,"code":0,"message":"ok","data":{"stoken":…,"title":…}}
+// ③ GET  https://pc-api.uc.cn/1/clouddrive/share/sharepage/detail
+//      ?pr=UCBrowser&fr=pc&pwd_id=&stoken=&pdir_fid=0&force=0&_page=1&_size=50&_sort=…
+//      → 200 code=0；list[0] = {file_name:"战邮1942", size:0, file_type:0, fid:…}
+// ```
+//
+// # ★ 目录/文件的判据：**与夸克是同一条规则**，不是相反
+// ```text
+// 实测两家都是 `file_type == 0 ⇒ 目录`、`== 1 ⇒ 文件`：
+//   夸克样本  .iso  → file_type=1（文件）
+//   UC 样本   目录  → file_type=0（目录）
+// ⚠️ `.probe/pan-anon-probe.md` §2 第 63 行写成"判据不同/相反"是**表述歧义**
+//   （它把"夸克用 1 判文件"与"UC 用 0 判目录"当成两套规则，其实是同一条的两面）。
+//   ⇒ 代码只维护**一个**判据（`is_dir = file_type == 0`，见 `parse_detail_shared`），
+//     并用 UC 的目录样本单独钉一条单测：谁把判据写反，那条立刻红。
+// ```
+const UC_TOKEN: &str =
+    "https://pc-api.uc.cn/1/clouddrive/share/sharepage/token?pr=UCBrowser&fr=pc";
+const UC_DETAIL: &str = "https://pc-api.uc.cn/1/clouddrive/share/sharepage/detail";
+
+/// 解析 UC `sharepage/token`：**同时**看 `status` 与 `code`，失败回显 `message`
+///
+/// ⚠️ 不猜码值（探测只实测了 `code=0` 这一种成功态；非 0 的语义未实测，
+/// 所以只把上游原文透出来，不自己编"是不是分享过期"）。
+pub fn parse_uc_token(json: &str) -> Result<(String, String), String> {
+    let v: Value = serde_json::from_str(json)
+        .map_err(|e| format!("token 响应不是 JSON（{e}）：{}", head(json)))?;
+    let status = v.get("status").and_then(|x| x.as_i64());
+    let code = v.get("code").and_then(|x| x.as_i64());
+    let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("（上游没给 message）");
+    if status.unwrap_or(0) != 0 && status != Some(200) {
+        return Err(format!("token 返回 status={status:?} message={msg}"));
+    }
+    if code.unwrap_or(-1) != 0 {
+        return Err(format!("token 返回 code={code:?} message={msg}"));
+    }
+    let d = v.get("data").ok_or_else(|| "token 响应缺 data".to_string())?;
+    let stoken = d.get("stoken").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    if stoken.is_empty() {
+        return Err("token 响应里没有 stoken（结构可能变了）".to_string());
+    }
+    let title = d.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    Ok((stoken, title))
+}
+
+/// 解析 UC `sharepage/detail`（判据与夸克共用 `parse_detail_shared`）
+pub fn parse_uc_detail(json: &str) -> Result<Vec<PanEntry>, String> {
+    let v: Value = serde_json::from_str(json)
+        .map_err(|e| format!("detail 响应不是 JSON（{e}）：{}", head(json)))?;
+    let status = v.get("status").and_then(|x| x.as_i64());
+    if status.unwrap_or(0) != 0 && status != Some(200) {
+        let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("（上游没给 message）");
+        return Err(format!("detail 返回 status={status:?} message={msg}"));
+    }
+    parse_detail_shared(&v, "UC")
+}
+
+async fn uc_list(pwd_id: &str, passcode: Option<&str>) -> Result<PanListing, String> {
+    let c = client()?;
+    let mut steps: Vec<String> = Vec::new();
+
+    // ① 分享页：只为拿 cookie（UC 的 token 接口**必须**带它，否则会话对不上）
+    let mut cookies = String::new();
+    match c.get(format!("https://drive.uc.cn/s/{pwd_id}")).send().await {
+        Ok(r) => {
+            cookies = cookies_of(&r);
+            if !r.status().is_success() {
+                steps.push(format!("分享页返回 HTTP {}", r.status().as_u16()));
+            }
+            if cookies.is_empty() {
+                steps.push("分享页没下发 cookie（token 可能会被拒）".to_string());
+            }
+        }
+        Err(e) => steps.push(format!("分享页请求失败：{e}")),
+    }
+
+    // ② token（主机必须是 pc-api.uc.cn；drive.uc.cn 实测 403）
+    let token_json = match c
+        .post(UC_TOKEN)
+        .header(reqwest::header::ORIGIN, "https://drive.uc.cn")
+        .header(reqwest::header::REFERER, format!("https://drive.uc.cn/s/{pwd_id}"))
+        .header(reqwest::header::COOKIE, cookies.clone())
+        .json(&serde_json::json!({
+            "pwd_id": pwd_id,
+            "passcode": passcode.unwrap_or(""),
+        }))
+        .send()
+        .await
+    {
+        Ok(r) => {
+            let st = r.status().as_u16();
+            match r.text().await {
+                Ok(t) => t,
+                Err(e) => return Err(fail(&steps, format!("读 token 响应失败：{e}"))),
+            }
+            .also_check(st, &mut steps)
+        }
+        Err(e) => return Err(fail(&steps, format!("token 请求失败：{e}"))),
+    };
+    let (stoken, title) = match parse_uc_token(&token_json) {
+        Ok(v) => v,
+        Err(e) => return Err(fail(&steps, e)),
+    };
+
+    // ③ detail（同一主机，带 stoken）
+    let detail_json = match c
+        .get(UC_DETAIL)
+        .query(&[
+            ("pr", "UCBrowser"),
+            ("fr", "pc"),
+            ("pwd_id", pwd_id),
+            ("stoken", stoken.as_str()),
+            ("pdir_fid", "0"),
+            ("force", "0"),
+            ("_page", "1"),
+            ("_size", "50"),
+            ("_sort", "file_type:asc,updated_at:desc"),
+        ])
+        .header(reqwest::header::ORIGIN, "https://drive.uc.cn")
+        .header(reqwest::header::REFERER, format!("https://drive.uc.cn/s/{pwd_id}"))
+        .header(reqwest::header::COOKIE, cookies)
+        .send()
+        .await
+    {
+        Ok(r) => {
+            let st = r.status().as_u16();
+            match r.text().await {
+                Ok(t) => t,
+                Err(e) => return Err(fail(&steps, format!("读 detail 响应失败：{e}"))),
+            }
+            .also_check(st, &mut steps)
+        }
+        Err(e) => return Err(fail(&steps, format!("detail 请求失败：{e}"))),
+    };
+    let entries = match parse_uc_detail(&detail_json) {
+        Ok(v) => v,
+        Err(e) => return Err(fail(&steps, e)),
+    };
+    let n = entries.len();
+    Ok(PanListing {
+        title,
+        entries,
+        note: anonymous_note(PanKind::Uc.display(), n),
     })
 }
 
@@ -626,6 +803,56 @@ mod tests {
         assert_eq!(v.as_array().unwrap().len(), 2);
     }
 
+    // ── UC（与夸克同族，token 主机不同）──────────────────────────────
+    const UC_TOKEN_OK: &str = r#"{"status":200,"code":0,"message":"ok","data":{"stoken":"tok","title":"战邮1942"}}"#;
+    /// ★★★ 钉死目录判据：UC 的目录是 `file_type:0`、文件是 `1`
+    ///
+    /// 这是本文件**最容易被写反**的一条：把 0 当文件 ⇒ 目录被画成文件、
+    /// 用户点进去发现播不了。反面：把 `is_dir` 判据改成 `== Some(1)` ⇒ 本条红。
+    const UC_DETAIL_OK: &str = r#"{"status":200,"code":0,"message":"ok","data":{"list":[
+        {"file_name":"战邮1942","size":0,"file_type":0,"fid":"5a847771"},
+        {"file_name":"第一集.mp4","size":123456,"file_type":1,"fid":"f2"}]}}"#;
+
+    #[test]
+    fn uc_token_parses_ok() {
+        let (stoken, title) = parse_uc_token(UC_TOKEN_OK).expect("应能解析");
+        assert_eq!(stoken, "tok");
+        assert_eq!(title, "战邮1942");
+    }
+
+    #[test]
+    fn uc_detail_dir_is_zero_and_file_is_one() {
+        let v = parse_uc_detail(UC_DETAIL_OK).expect("应能解析");
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].name, "战邮1942");
+        assert!(v[0].is_dir, "★★ UC 的 file_type=0 是**目录**（写反这里就会红）");
+        assert_eq!(v[1].size, 123456);
+        assert!(!v[1].is_dir, "★ UC 的 file_type=1 是文件");
+    }
+
+    #[test]
+    fn uc_token_errs_echo_upstream_message() {
+        for (bad, want) in [
+            (r#"{"status":200,"code":-1,"message":"分享已失效"}"#, "分享已失效"),
+            (r#"{"status":403,"code":0,"message":"forbidden"}"#, "forbidden"),
+            (r#"<html><h2>403 Forbidden</h2></html>"#, "不是 JSON"),
+        ] {
+            let e = parse_uc_token(bad).expect_err("必须 Err");
+            assert!(e.contains(want), "错误里要回显上游原文（不要猜码值）：{e}");
+        }
+    }
+
+    #[test]
+    fn uc_detail_bad_shapes_all_err() {
+        for bad in [
+            r#"{"status":200,"code":0,"data":{"list":[]}}"#,
+            r#"{"status":200,"code":-404,"message":"啥都木有"}"#,
+            r#"not json"#,
+        ] {
+            assert!(parse_uc_detail(bad).is_err(), "坏样本必须 Err：{bad}");
+        }
+    }
+
     /// ★ 硬纪律②：失败必须**汇总**，不许只留最后一个
     #[test]
     fn fail_aggregates_every_step() {
@@ -666,7 +893,8 @@ mod tests {
     /// 不支持的盘：必须可读 Err（不是空列表）
     #[test]
     fn unsupported_kinds_err_with_reason() {
-        for k in [PanKind::Aliyun, PanKind::Pan123, PanKind::Pan115, PanKind::Tianyi, PanKind::Uc, PanKind::Unknown] {
+        // ★ UC 已实现（2026-10-26），从"未实现清单"里移出（下方有它的真实用例）
+        for k in [PanKind::Aliyun, PanKind::Pan123, PanKind::Pan115, PanKind::Tianyi, PanKind::Unknown] {
             let r = futures_lite_block(list_share(k, "abc", None));
             assert!(r.is_err(), "{:?} 应 Err", k);
             assert!(r.unwrap_err().contains("还没有实现"));
@@ -725,6 +953,20 @@ mod tests {
         println!("[LIVE-BAIDU] title={:?} count={} note={}", l.title, l.entries.len(), l.note);
         for e in l.entries.iter().take(3) {
             println!("[LIVE-BAIDU]   {} size={} dir={}", e.name, e.size, e.is_dir);
+        }
+        assert!(!l.entries.is_empty(), "★ 列目录成功就必须有条目");
+    }
+
+    #[tokio::test]
+    #[ignore = "真网络：PAN_LIVE=1 PAN_UC_ID=<pwd_id> cargo test --lib pan_list --release -- --ignored --nocapture"]
+    async fn live_uc_lists_anonymous() {
+        let id = live_env("PAN_UC_ID");
+        let l = list_share(PanKind::Uc, &id, None)
+            .await
+            .expect("UC 匿名列目录应成功");
+        println!("[LIVE-UC] title={:?} count={} note={}", l.title, l.entries.len(), l.note);
+        for e in l.entries.iter().take(3) {
+            println!("[LIVE-UC]   {} size={} dir={}", e.name, e.size, e.is_dir);
         }
         assert!(!l.entries.is_empty(), "★ 列目录成功就必须有条目");
     }

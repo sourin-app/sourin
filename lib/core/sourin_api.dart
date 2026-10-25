@@ -1444,6 +1444,47 @@ class SourinApi {
     return PanShareStatus.fromJson(jmap(r));
   }
 
+  /// **匿名列出分享里的文件**（`pan_list_share`）
+  ///
+  /// # 这是第 20 项"看得见"的那一半
+  /// ```text
+  /// `identify_pan_share` 的 reason 早就对用户承诺"未登录也能列出分享里的文件"，
+  /// 但 Dart 侧一直没有调用点 ⇒ 文案跑在能力前面。
+  /// 本方法就是那句话的落点：真的去问核心，把目录列给用户看。
+  /// ```
+  ///
+  /// # 失败语义：**抛**，不返回空列表
+  /// Rust 侧拿不到目录时返回可读 Err（绝不空列表冒充"没文件"）——
+  /// 这里跟着抛，由界面用 [userErrorText] 收口成一句人话。
+  ///
+  /// # 能力边界
+  /// `resolvable` 恒 false：**能列 ≠ 能播**。界面不许因此画播放入口。
+  static Future<PanShareListing> panListShare(
+    String text, {
+    String? pwd,
+  }) async {
+    // ★ 门禁注入点（生产恒 null）：flutter test 里没有 dll，只能喂假数据
+    final f = debugPanListShareFetcher;
+    if (f != null) return f(text, pwd);
+    final r = await SourinCore.callAsync('pan_list_share', {
+      'text': text,
+      if (pwd != null && pwd.isNotEmpty) 'pwd': pwd,
+    });
+    return PanShareListing.fromJson(jmap(r));
+  }
+
+  /// 门禁注入点：`pan_list_share` 的替身（生产恒 null）
+  ///
+  /// # 为什么允许注入
+  /// ```text
+  /// 列目录是**真网络**（匿名链路要打上游），而 `flutter test` 里既没有 dll
+  /// 也不该出网 ⇒ 界面判据只能靠喂数据。
+  /// ⚠️ 与 `debugRestoreFailuresFetcher` 同一条纪律：**生产路径永不为非 null**。
+  /// ```
+  @visibleForTesting
+  static Future<PanShareListing> Function(String text, String? pwd)?
+      debugPanListShareFetcher;
+
   /// 导入 TVBox 配置（task-5）
   ///
   /// [config] 既可以是 TVBox 配置的 **JSON 文本**，也可以是配置的 **URL**
@@ -4804,4 +4845,90 @@ class PanShareStatus {
         resolvable: j['resolvable'] == true,
         reason: j['reason'] as String? ?? '',
       );
+}
+
+/// 分享里的一个条目（网盘目录项）
+///
+/// 字段与 Rust `pan_list::ShareEntry::to_json` **逐字对应**：`{name, size, isDir}`。
+class PanShareEntry {
+  const PanShareEntry({
+    required this.name,
+    required this.size,
+    required this.isDir,
+  });
+
+  final String name;
+
+  /// 字节数（目录通常是 0）
+  final int size;
+
+  final bool isDir;
+
+  /// 人类可读大小；目录或 0 字节 ⇒ 空串（不显示"0 B"这种噪声）
+  String get sizeText {
+    if (isDir || size <= 0) return '';
+    const units = <String>['B', 'KB', 'MB', 'GB', 'TB'];
+    var v = size.toDouble();
+    var i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return i == 0
+        ? '${v.toStringAsFixed(0)} ${units[i]}'
+        : '${v.toStringAsFixed(1)} ${units[i]}';
+  }
+
+  factory PanShareEntry.fromJson(Map<String, dynamic> j) => PanShareEntry(
+        name: '${j['name'] ?? ''}',
+        size: (j['size'] as num?)?.toInt() ?? 0,
+        isDir: j['isDir'] == true,
+      );
+}
+
+/// 一次**匿名列目录**的结果（`pan_list_share`）
+///
+/// # 能力边界（界面必须如实呈现）
+/// ```text
+/// `resolvable == false` 恒成立：**能列目录 ≠ 能播**。
+/// ⇒ 界面可以列文件，但不许出现"播放/下载"入口（假入口比没有更糟）。
+/// ```
+class PanShareListing {
+  const PanShareListing({
+    required this.title,
+    required this.entries,
+    required this.note,
+    required this.resolvable,
+  });
+
+  /// 分享标题（Rust 拿不到时为空串）
+  final String title;
+
+  final List<PanShareEntry> entries;
+
+  /// 分层说明（例如"未登录时能列出 N 个文件，但取直链需要登录…"）
+  final String note;
+
+  /// **恒 false**（预留位：将来真能取直链时由 Rust 置 true）
+  final bool resolvable;
+
+  int get count => entries.length;
+
+  factory PanShareListing.fromJson(Map<String, dynamic> j) {
+    final raw = j['entries'];
+    final entries = <PanShareEntry>[];
+    if (raw is List) {
+      for (final e in raw) {
+        if (e is Map) {
+          entries.add(PanShareEntry.fromJson(e.cast<String, dynamic>()));
+        }
+      }
+    }
+    return PanShareListing(
+      title: j['title'] as String? ?? '',
+      entries: entries,
+      note: j['note'] as String? ?? '',
+      resolvable: j['resolvable'] == true,
+    );
+  }
 }

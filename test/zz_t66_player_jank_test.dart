@@ -156,6 +156,28 @@ int _other = 0;
 /// 所有元素重建次数之和（= 重建「面」）
 int _all = 0;
 
+/// 把**挂载后的异步起播**排空，再开始计数（与 `t72_jank_test` 同一口径）
+///
+/// # 为什么必须有（全量里的假红就是这个）
+/// ```text
+/// `_mount()` 只 pump 挂载帧；起播链路是**真异步**：
+///   `_load() → await resolveStream(FFI) → await _prepareResume() → setState(...)`
+/// 它的 setState **落在哪一帧取决于机器负载**：
+///   · 空闲：在 `_installRebuildCounter()` 之前落地 ⇒ 阴性对照 page=0（绿）
+///   · 全量并发：拖到 install **之后**落地 ⇒ 阴性对照读 page=1 ⇒ 红，
+///     而那时红的是"测量窗口被异步回调污染"，**说明不了产品对错**。
+/// ⇒ 计数前先 `runAsync` 让真实定时器/IO 跑完，再 pump 到没有待处理帧。
+/// ```
+Future<void> _drainAsyncBoot(WidgetTester t) async {
+  // `runAsync` 里是**真实**异步区：FFI/IO 的完成回调能真正跑到
+  await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 60)));
+  for (var i = 0; i < 8; i++) {
+    await t.pump();
+    if (!t.binding.hasScheduledFrame) break;
+  }
+  debugOnRebuildDirtyWidget = null;
+}
+
 /// 该元素是否属于**顶栏子树**（含它自己）
 ///
 /// `_TopBar` 是 `player_page.dart` 的私有 widget ⇒ 测试拿不到类型，
@@ -394,11 +416,16 @@ void main() {
     if (!_requireSourinCore()) return;
     await _mount(t);
 
+    // ★ 先排空异步起播（否则它的 setState 可能落进测量窗口 —— 全量并发下的假红源）
+    await _drainAsyncBoot(t);
     _installRebuildCounter();
     await t.pump();
     // ignore: avoid_print
     print('P0 阴性对照 pump(无状态变化) => page=$_page all=$_all');
-    expect(_page, 0, reason: '静置帧不该重建整页');
+    expect(_page, 0,
+        reason: '静置帧不该重建整页 —— 不为 0 说明**测量窗口被异步回调污染**'
+            '（起播 setState 落在 install 之后），或页面真的在无故重建。'
+            '★ 计数前已 `_drainAsyncBoot`，若仍读到 page>0 才怀疑产品');
     // ★★★ 2026-10-19（批末复核，Lead 修）：`all` 的期望从 0 放宽到 ≤1，
     //   但**不是**为了让门禁变绿，而是因为「必须恰好 0」这个前提在本机不成立。
     //
@@ -436,12 +463,31 @@ void main() {
 
     _installRebuildCounter();
     final ok = debugPlayerOpenHintsForProbe();
+    /*
+     * ★ pump **两次**：`setState` 只标脏，第一次 pump 才真正 build；
+     *   第二次兜住"该帧与别的 dirty 元素合并"的情形 —— 不靠"一次刚好够"。
+     */
+    await t.pump();
     await t.pump();
     // ignore: avoid_print
-    print('P0 阳性对照 openHints(ok=$ok) => page=$_page all=$_all');
+    print('P0 阳性对照 openHints(ok=$ok) => page=$_page topBar=$_topBar '
+        'all=$_all');
     expect(ok, isTrue, reason: '钩子本身要生效，否则下面的断言是空的');
+    /*
+     * ★ 阳性对照**不放宽**（仍要求 page >= 1），但把"为什么没采到"分开报：
+     *   `page==0 && all==0` ⇒ **仪器没采到帧**（钩子没挂上 / 被别的用例清了 /
+     *   该 pump 内没有任何元素重建）—— 是**仪器问题，不是产品问题**；
+     *   `page==0 && all>0` ⇒ 真·没有整页重建，那才该查产品。
+     */
+    if (_page == 0 && _all == 0) {
+      fail('仪器没采到帧：`debugOnRebuildDirtyWidget` 在该 pump 内一次都没被调用'
+          '（page=$_page topBar=$_topBar all=$_all）⇒ **不是产品问题**。'
+          '先重跑；若稳定复现，检查是否有别的用例在 teardown 时把钩子清了'
+          '（`debugOnRebuildDirtyWidget = null`）。');
+    }
     expect(_page, greaterThanOrEqualTo(1),
-        reason: '阳性对照必须 >=1 —— 否则本文件的重建计数没有区分力');
+        reason: '阳性对照必须 >=1 —— 否则本文件的重建计数没有区分力。'
+            '★ 只接受 page>=1；`page==0 && all>0` 才是产品侧信号');
   });
 
   // ════════════════════════════════════════════════════════════════════

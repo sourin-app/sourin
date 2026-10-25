@@ -59,7 +59,7 @@ csp 源重启恢复失败时，实现做了三件事：跳过这一条源、`log
 - 同族（互链）：[../bug-fix/2026-10-25-identity-must-carry-discriminator.md](../bug-fix/2026-10-25-identity-must-carry-discriminator.md)
   —— 那篇讲"判据的输出不许超出输入"，本篇是它的下一步：**已经知道的事必须能被问到**。
   两篇一起构成第 19 项"四处处处如实"的两半（别虚报 / 别沉默）。
-- 部分重叠：[../architecture/2026-10-24-source-override-layer-after-call-js.md](../architecture/2026-10-24-source-override-layer-after-call-js.md)
+- 部分重叠：[../architecture/2026-10-24-source-override-layer-after-call-js.md](../../../proposed/architecture/2026-10-24-source-override-layer-after-call-js.md)
   —— 那篇是覆盖层"只写 overrides/ 不动原件"的边界，与本篇的只读命令是同一套"读写路径要能被审计"的思路。
 
 ## Testing

@@ -60,9 +60,15 @@
 //
 // ## ③ 结论
 // ```text
-// 浏览链路（分类 + 搜索）**已实证可用**（8 分类 / 20 条目，真网络）；
-// `detail` / `play` 尚未逐条真网络验证（play 依赖响应里的 vod_play_url）⇒ 已在 mod.rs **注册**，
-// 并在文件头如实标注"未验证的部分"，不写成"全部已验"。
+// 四段链路**全部真网络实证**（2026-10-26，`.probe/app99-live11.log`）：
+// ```text
+// home  → 8 个分类（来自 systemInit 响应的 categorys.data）
+// list  → 20 条真实条目
+// detail→ 1 集，首集地址 = 真 m3u8
+// play  → 1 条候选（该 m3u8，带 UA 头）
+// ```
+// ⚠️ 但**登录态**仍不可用：第二段 `POST /app/userInfo` 被服务端拒（code:1 user info error）。
+//    这不影响浏览/取流（上面四段都是在无 token 下跑通的）。
 // 证据：.probe/app99-live*.log、.probe/dex-App99-disasm.md
 // ```
 //
@@ -806,8 +812,20 @@ fn items_of(v: &serde_json::Value) -> Result<Vec<CspItem>, String> {
 fn detail_of(d: &serde_json::Value, id: &str) -> Result<CspDetail, String> {
     let title = d.get("name").and_then(|s| s.as_str()).unwrap_or("").to_string();
     let desc = d.get("blurb").and_then(|s| s.as_str()).unwrap_or("").to_string();
-    let from = d.get("vod_play_from").and_then(|s| s.as_str()).unwrap_or("");
-    let urls = d.get("vod_play_url").and_then(|s| s.as_str()).unwrap_or("");
+    /*
+     * ★ 真实响应（2026-10-26 实测）用的字段名是 **`play_from` / `play_url`**，
+     *   不是苹果CMS 的 `vod_play_from` / `vod_play_url`（我最初按后者写，detail 一直"没有可播地址"）。
+     *   两种都认：前者优先，后者兜底（不同源/不同版本可能不一致）。
+     */
+    let pick = |a: &str, b: &str| {
+        d.get(a)
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| d.get(b).and_then(|s| s.as_str()))
+            .unwrap_or("")
+    };
+    let from = pick("play_from", "vod_play_from");
+    let urls = pick("play_url", "vod_play_url");
     let mut episodes: Vec<CspEpisode> = Vec::new();
     for (i, seg) in urls.split("$$$").next().unwrap_or("").split('#').enumerate() {
         let mut it = seg.split('$');
@@ -826,8 +844,14 @@ fn detail_of(d: &serde_json::Value, id: &str) -> Result<CspDetail, String> {
         });
     }
     if episodes.is_empty() {
+        // 不猜字段名：把真实结构打出来（只打键名）
+        let top: Vec<String> = d
+            .as_object()
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default();
+        eprintln!("[APP99] detail.data 顶层键={top:?}；前 200 字符={}", &d.to_string()[..d.to_string().len().min(200)]);
         return Err(format!(
-            "这个条目没有可播地址（vod_play_url 为空；线路={from}）"
+            "这个条目没有可播地址（vod_play_url 为空；线路={from}）；data 顶层键={top:?}"
         ));
     }
     Ok(CspDetail {

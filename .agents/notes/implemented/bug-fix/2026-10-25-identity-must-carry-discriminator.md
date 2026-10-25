@@ -79,7 +79,7 @@ Status: implemented
 ## Testing
 
 - 第 15 项：`live_duplicate_channel_key_test` **+6**（④只有点的那行高亮 ⑤交接 provider 正确 ⑥键盘不跳源），
-  3 次注入（退回纯 id ⇒ `{iptv:cctv1, other:cctv1}` 两行同亮；`_providerOf` 去掉来源优先 ⇒ `Expected other / Actual iptv`）；
+  3 次注入（退回纯 id ⇒ `{iptv:<同一频道 id>, other:<同一频道 id>}` 两行同亮；`_providerOf` 去掉来源优先 ⇒ `Expected other / Actual iptv`）；
   老入口兼容 **+96**；`live_page_test` 静态契约 **6 条 + 1 次注入**（删"先按身份找"那段 for ⇒ 红）。
 - DoH：`t1027` **+30** / `r3_dns_hijack` **+22**，4 条注入（关 /24 容差、伪造段门禁恒 false、
   different 归回劫持、删 `185.45.6.`）各自按名字红。

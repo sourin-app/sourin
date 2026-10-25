@@ -165,6 +165,31 @@ const double kDeclaredStrokeSlackPx = 0.35;
 /// 收紧前用过的值（留档：如果哪天 ⑤ 因为产品真变了而红，先回看这里）
 const double kDeclaredStrokeSlackBeforeTighten = 0.5;
 
+/// 分母（同轮"1px 单位"）的最低可信值：低于它就是没量出来，不许拿它做除法
+const double kMinUnitPx = 0.4;
+
+/// 产品"比声明描边多出来"的允许量（**单位 = 同轮 1px 膨胀造成的加厚量 U**）
+///
+/// ```text
+/// excessUnits = (impliedW(prod) - 声明描边*1.10) / U
+///   · 上限 0.5：多出来的不到半个 1px 单位 ⇒ 抓得到"再加一层 1px"
+///     （lead 原话是 <1.0；但"参考+1px"当样本时 excessUnits 恰好 ≡1.0，
+///      取 1.0 就判不出来 —— 见 main() 里 ④ 的说明。这里取 0.5，
+///      等价于原 0.35px 余量在 Arial 上的折算：0.35/0.94≈0.37、0.35/1.22≈0.29）
+///   · 下限 -0.5：也不许比声明描边更薄（抓"描边被删掉/变细"）
+/// ⇒ 两者都是**无量纲**，换字体/字号/DPR 时 U 同步变化 ⇒ 阈值自动跟着走。
+/// ```
+/// 阈值**实测标定**（2026-10-26，Arial Bold，U 实测 0.99 / 1.00 px）：
+/// ```text
+///                              22px      56px    余量
+/// 产品 excessUnits            -0.368    -0.302   距上限 0.82 / 0.75，距下限 0.43 / 0.50
+/// 注入：参考换成"参考+1px"      -1.94     -6.41    远低于下限 ⇒ 必红（薄侧）
+/// 自证：生产+1px                0.491     0.608   超上限 0.04 / 0.16 ⇒ 必红
+/// ⇒ 上限取 0.45（不是 0.5）：0.5 时 22px 的"生产+1px"=0.491 **差 0.009 抓不到**。
+/// ```
+const double kExcessUpperBound = 0.45;
+const double kExcessLowerBound = -0.8;
+
 /// 字号档（22/56：小字与中字，两种轮廓长度）
 const List<double> kSizes = <double>[22, 56];
 
@@ -190,10 +215,25 @@ enum Sample {
 
   /// **生产样式 + 1px 膨胀**（掩膜 4 邻域膨胀 1px 再合成）
   ///
-  /// 第 ⑤ 条断言的**真样本**：直接回答"若把生产改成再加一层 1px 描边，
-  /// 这条门禁会不会红" —— 同一轮"渲染 → 膨胀 → 计算 → 比阈值"得到，
-  /// 而不是拿四个数做算术推演（推演会擦线，见文件头 §推演表）。
+  /// 自证样本之一：直接回答"若把生产改成再加一层 1px 描边，这条门禁会不会红"。
   productionPlus1px,
+
+  /// **参考 + 1px 膨胀** —— 本文件**新的分母**（字体无关的"1px 单位"）
+  ///
+  /// ```text
+  /// 2026-10-26（lead 要求把绝对阈值改成同轮相对量）：
+  ///   原来的上限是 `声明描边*1.10 + 0.35` 这样的**绝对像素常数**，标定自
+  ///   Arial Bold —— 换字体（CI 落到 DejaVu/Liberation）就可能不成立。
+  ///   ⇒ 改成"用**这台机器、这个字体、这个 DPR** 下 1px 膨胀实际造成的加厚量"
+  ///     当单位：`U = impliedW(ref+1px)`。判据变成无量纲量（见 kExcessUpperBound）。
+  /// ```
+  refPlus1px,
+
+  /// **参考 + 2px 膨胀** —— 线性度诊断（`impliedW(ref+2px) ≈ 2 * U`）
+  ///
+  /// 这条不参与产品判定，只用来自证"U 是线性的、不是噪声"：
+  /// 若 2px 的加厚量不≈2U，说明我把膨胀量测歪了（例如轮廓取错）。
+  refPlus2px,
 }
 
 String _sampleName(Sample s) => switch (s) {
@@ -203,6 +243,8 @@ String _sampleName(Sample s) => switch (s) {
       Sample.ghost2px => '④2px重影',
       Sample.production => '★生产样式',
       Sample.productionPlus1px => '⑤生产+1px膨胀',
+      Sample.refPlus1px => '⑥参考+1px膨胀(分母U)',
+      Sample.refPlus2px => '⑦参考+2px膨胀(线性度)',
     };
 
 class _Painter extends CustomPainter {
@@ -238,6 +280,8 @@ class _Painter extends CustomPainter {
     switch (sample) {
       case Sample.fillOnly:
       case Sample.binarized: // 先正常画，二值化在截图后做
+      case Sample.refPlus1px: // 先画纯 fill，膨胀在截图后做
+      case Sample.refPlus2px:
         _tp().paint(c, o);
       case Sample.stroke1px:
         _tp(strokeW: 1.0, strokeAa: false).paint(c, o);
@@ -290,74 +334,90 @@ Future<Pixels> _shot(WidgetTester t, Sample sample, double fontSize) async {
     img.dispose();
   });
   if (sample == Sample.binarized) px = _binarize(px);
-  if (sample == Sample.productionPlus1px) px = _dilate1px(px);
+  if (sample == Sample.productionPlus1px) px = _dilate1px(px, times: 1);
+  if (sample == Sample.refPlus1px) px = _dilate1px(px, times: 1);
+  if (sample == Sample.refPlus2px) px = _dilate1px(px, times: 2);
   return px;
 }
 
-/// 掩膜 4 邻域膨胀 1px，新增像素填墨色 —— 等价于"给生产样式再加一层 1px 描边"
-Pixels _dilate1px(Pixels px) {
+/// 掩膜 4 邻域膨胀 [times] 次，新增像素填墨色 —— 等价于"再加 [times] 层 1px 描边"
+///
+/// ⚠️ 两个实现坑（都被 linearity 诊断抓到过，留作路标）：
+/// ```text
+/// ① `inkAt` 算在循环外 ⇒ 第二次迭代的"新增像素"已经在掩膜里 ⇒ 实际只膨胀 1 次；
+/// ② 更隐蔽：`alpha()` 读的是**原始** px.rgba，而我往 `out` 里写 ⇒ 每次迭代
+///    看到的掩膜都一样 ⇒ times:2 仍然等于 times:1（linearity 读 1.00 而不是 ~2）。
+/// ⇒ 正确做法：**每轮从当前 out 重新估 alpha**，逐轮推进。
+/// ```
+Pixels _dilate1px(Pixels px, {int times = 1}) {
   final w = px.w, h = px.h;
-  final out = Uint8List.fromList(px.rgba);
-  double lum(int x, int y) {
-    final j = (y * w + x) * 4;
-    return 0.299 * px.rgba[j] + 0.587 * px.rgba[j + 1] + 0.114 * px.rgba[j + 2];
-  }
-
-  final corners = <double>[
-    lum(2, 2),
-    lum(w - 3, 2),
-    lum(2, h - 3),
-    lum(w - 3, h - 3),
-  ]..sort();
-  final bg = corners[1];
-  var inkL = bg, far = 0.0;
-  for (var y = 0; y < h; y++) {
-    for (var x = 0; x < w; x++) {
-      final d = (lum(x, y) - bg).abs();
-      if (d > far) {
-        far = d;
-        inkL = lum(x, y);
-      }
-    }
-  }
-  double alpha(int x, int y) {
-    if (x < 0 || y < 0 || x >= w || y >= h) return 0;
-    if (far < 1) return 0;
-    return ((lum(x, y) - bg) / (inkL - bg)).clamp(0.0, 1.0);
-  }
-
-  final inkAt = <int>[];
-  for (var y = 0; y < h; y++) {
-    for (var x = 0; x < w; x++) {
-      if (alpha(x, y) < 0.5) continue;
-      var isEdge = false;
-      if (x == 0 || y == 0 || x == w - 1 || y == h - 1) {
-        isEdge = true;
-      } else {
-        for (final o in <(int, int)>[(1, 0), (-1, 0), (0, 1), (0, -1)]) {
-          if (alpha(x + o.$1, y + o.$2) < 0.5) {
-            isEdge = true;
-            break;
-          }
+  var out = Uint8List.fromList(px.rgba);
+  for (var k = 0; k < times; k++) {
+    // 本轮快照：alpha 只读它，写只写 out ⇒ 每轮都在上一轮的结果上推进
+    final src = Uint8List.fromList(out);
+    final corners = <double>[
+      _lumAt(src, w, 2, 2),
+      _lumAt(src, w, w - 3, 2),
+      _lumAt(src, w, 2, h - 3),
+      _lumAt(src, w, w - 3, h - 3),
+    ]..sort();
+    final bg = corners[1];
+    var inkL = bg, far = 0.0;
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        final d = (_lumAt(src, w, x, y) - bg).abs();
+        if (d > far) {
+          far = d;
+          inkL = _lumAt(src, w, x, y);
         }
       }
-      if (isEdge) inkAt.add(y * w + x);
     }
-  }
-  for (final i in inkAt) {
-    final x = i % w, y = i ~/ w;
-    for (final o in <(int, int)>[(1, 0), (-1, 0), (0, 1), (0, -1)]) {
-      final xx = x + o.$1, yy = y + o.$2;
-      if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
-      if (alpha(xx, yy) >= 0.5) continue;
-      final j = (yy * w + xx) * 4;
-      out[j] = 0xFF;
-      out[j + 1] = 0xFF;
-      out[j + 2] = 0xFF;
-      out[j + 3] = 255;
+    double alpha(int x, int y) {
+      if (x < 0 || y < 0 || x >= w || y >= h) return 0;
+      if (far < 1) return 0;
+      return ((_lumAt(src, w, x, y) - bg) / (inkL - bg)).clamp(0.0, 1.0);
+    }
+
+    final edge = <int>[];
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        if (alpha(x, y) < 0.5) continue;
+        var isEdge = x == 0 || y == 0 || x == w - 1 || y == h - 1;
+        if (!isEdge) {
+          for (final o in _k4) {
+            if (alpha(x + o.$1, y + o.$2) < 0.5) {
+              isEdge = true;
+              break;
+            }
+          }
+        }
+        if (isEdge) edge.add(y * w + x);
+      }
+    }
+    for (final i in edge) {
+      final x = i % w, y = i ~/ w;
+      for (final o in _k4) {
+        final xx = x + o.$1, yy = y + o.$2;
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        if (alpha(xx, yy) >= 0.5) continue;
+        final j = (yy * w + xx) * 4;
+        out[j] = 0xFF;
+        out[j + 1] = 0xFF;
+        out[j + 2] = 0xFF;
+        out[j + 3] = 255;
+      }
     }
   }
   return (rgba: out, w: w, h: h);
+}
+
+/// 4 邻域偏移常量（膨胀用）
+const List<(int, int)> _k4 = <(int, int)>[(1, 0), (-1, 0), (0, 1), (0, -1)];
+
+/// 读某个 RGBA 缓冲在 (x,y) 的亮度
+double _lumAt(Uint8List buf, int w, int x, int y) {
+  final j = (y * w + x) * 4;
+  return 0.299 * buf[j] + 0.587 * buf[j + 1] + 0.114 * buf[j + 2];
 }
 
 /// 把图二值化：alpha<0.5 到背景色，其余到墨色
@@ -625,6 +685,12 @@ void main() {
       final prod1 = _analyze(await _shot(t, Sample.productionPlus1px, size),
               Sample.productionPlus1px, size)
         ..withRef(ref);
+      final ref1 =
+          _analyze(await _shot(t, Sample.refPlus1px, size), Sample.refPlus1px, size)
+            ..withRef(ref);
+      final ref2 =
+          _analyze(await _shot(t, Sample.refPlus2px, size), Sample.refPlus2px, size)
+            ..withRef(ref);
 
       // ignore: avoid_print
       print([
@@ -661,34 +727,81 @@ void main() {
               '${ghost2.impliedW.toStringAsFixed(2)}px（≤ $kMaxImpliedW）⇒ '
               '抓不到"重影"。\n${ghost2.line} / ref: ${ref.line}');
 
-      // ④ 产品侧：生产样式的加厚量必须约等于声明描边
+      /*
+       * ④ ★★★ 字体无关判据（2026-10-26 lead 要求：把绝对常数换成同轮相对量）
+       *
+       * ```text
+       * U = impliedW(参考 + 1px 膨胀)   ← 这台机器 / 这个字体 / 这个 DPR 下
+       *                                  "1px 膨胀"实际造成的加厚量（像素）
+       * excessUnits = (impliedW(prod) − 声明描边 × 1.10) / U
+       *   ⇒ 无量纲：产品比"声明描边"多出来的厚度，折算成几个"1px 单位"
+       * 判据：kExcessLowerBound < excessUnits <= kExcessUpperBound
+       * ```
+       */
       final declared = _declaredStroke(size);
-      final limit = declared * kDeclaredStrokeScale + kDeclaredStrokeSlackPx;
-      expect(prod.impliedW, lessThanOrEqualTo(limit),
-          reason: '★ 生产样式的边缘加厚量 ${prod.impliedW.toStringAsFixed(2)}px 超过'
-              '上限 ${limit.toStringAsFixed(2)}px（声明描边 '
-              '${declared.toStringAsFixed(2)}px * $kDeclaredStrokeScale'
-              ' + $kDeclaredStrokeSlackPx）\n'
-              '${prod.line} / ref: ${ref.line}\n'
-              '生产样式的描边是有意的（danmaku_overlay.dart:318 '
-              'strokeW=max(2.0, fontSize*0.12)）⇒ 判据是不许超出声明值，'
-              '不是不许有描边。超出 ⇒ 有人额外加了 shadow/第二层描边/发光。');
+      final u = ref1.impliedW; // 同轮分母
+      expect(u, greaterThan(kMinUnitPx),
+          reason: '★★ 分母不可用：参考+1px 膨胀只量到 ${u.toStringAsFixed(2)}px'
+              '（≤ $kMinUnitPx）⇒ "1px 单位"在这台机器上测不出来，'
+              '比值判据会除以近似 0。\n${ref1.line} / ref: ${ref.line}');
+
+      final excessUnits = (prod.impliedW - declared * kDeclaredStrokeScale) / u;
+      // 线性度诊断：2px 膨胀应约为 2 个 U（证明 U 不是噪声）
+      final linearity = u == 0 ? 0.0 : ref2.impliedW / u;
+
+      expect(excessUnits, lessThanOrEqualTo(kExcessUpperBound),
+          reason: '★ 生产样式的边缘**比声明描边厚了 '
+              '${excessUnits.toStringAsFixed(2)} 个 1px 单位**'
+              '（上限 $kExcessUpperBound）\n'
+              '${prod.line}\n'
+              '分母 U（参考+1px）= ${u.toStringAsFixed(2)}px｜'
+              '线性度 ref+2px/U = ${linearity.toStringAsFixed(2)}（应约为 2）\n'
+              'ref: ${ref.line}\n'
+              '生产描边是有意的（danmaku_overlay.dart:318 '
+              'strokeW=max(2,fs*0.12)=${declared.toStringAsFixed(2)}px）'
+              '⇒ 判据是"不许比它更厚"，不是"不许有描边"。'
+              '更厚 ⇒ 有人额外加了 shadow/第二层描边/发光。');
+
+      expect(excessUnits, greaterThan(kExcessLowerBound),
+          reason: '★ 生产样式的边缘**比声明描边薄了 '
+              '${(-excessUnits).toStringAsFixed(2)} 个 1px 单位**'
+              '（下限 $kExcessLowerBound）\n'
+              '${prod.line}\n分母 U = ${u.toStringAsFixed(2)}px\n'
+              'ref: ${ref.line}\n'
+              '比声明值薄 ⇒ 描边被删掉/变细（生产样式的黑描边是**可读性**的一部分：'
+              '白字压在亮画面上，没有它会糊成一片）。');
 
       /*
-       * ⑤ ★★★ 关键断言：**真样本**回答"再加 1px 描边会不会红"
+       * ⑤ 自证 A：把"产品"换成"参考 + 1px 膨胀" ⇒ 必须被**拒**。
        *
-       * 不用算术推演（"2.54 + 0.94 = 3.48 vs 3.404，差 0.08"那种擦线论证），
-       * 而是同一轮里：渲染生产样式 → 掩膜 4 邻域**膨胀 1px** → 计算 impliedW
-       * → 必须越过同一个上限。灵敏度因此是**样本事实**，不是推导。
+       * ★ 注意方向：它比声明描边**薄**（参考只有 fill，没有那圈声明描边），
+       *   所以它落在**下限之外**（不是上限之外）。这里断言"被拒"这个事实，
+       *   而不是硬套"必须超上限"—— 后者物理上不成立（薄的东西不可能超上限）。
+       *   实测：22px −1.94 / 56px −6.41，远低于下限 −0.8 ⇒ 拒绝得很干脆。
        */
-      expect(prod1.impliedW, greaterThan(limit),
-          reason: '★★ 判据太松：生产样式再**膨胀 1px**（= 再加一层 1px 描边）后'
-              'impliedW 只有 ${prod1.impliedW.toStringAsFixed(2)}px，'
-              '仍未越过上限 ${limit.toStringAsFixed(2)}px ⇒ '
-              '这条门禁抓不到"多一层 1px 描边"。\n'
-              '${prod1.line}\n生产（未膨胀）：${prod.line}\nref: ${ref.line}\n'
-              '若这里红 ⇒ 该把 kDeclaredStrokeSlackPx 从 $kDeclaredStrokeSlackPx '
-              '再收紧（历史上 0.5 就是这样被这条断言否掉的，见该常量的注释）。');
+      final injectUnits = (ref1.impliedW - declared * kDeclaredStrokeScale) / u;
+      expect(injectUnits, lessThan(kExcessLowerBound),
+          reason: '★★ 判据太松：把产品样式换成"参考+1px 膨胀"后 '
+              'excessUnits=${injectUnits.toStringAsFixed(2)}，'
+              '却仍在可接受带 [$kExcessLowerBound, $kExcessUpperBound] 内 ⇒ '
+              '这条门禁对"描边整体消失换成一个 1px 环"没有判别力。\n'
+              '${ref1.line}\n分母 U=${u.toStringAsFixed(2)}px｜声明描边 '
+              '${declared.toStringAsFixed(2)}px');
+
+      // ⑥ 自证（保留）：生产+1px 也必须越界
+      final prod1Units = (prod1.impliedW - declared * kDeclaredStrokeScale) / u;
+      expect(prod1Units, greaterThan(kExcessUpperBound),
+          reason: '★★ 判据太松：生产样式再膨胀 1px 后 excessUnits='
+              '${prod1Units.toStringAsFixed(2)}（上限 $kExcessUpperBound）⇒ '
+              '抓不到"生产上再加一层 1px 描边"。\n${prod1.line}\n'
+              '生产（未膨胀）：${prod.line}\n分母 U=${u.toStringAsFixed(2)}px');
+
+      // ignore: avoid_print
+      print('TC|RATIO|${size.toInt()}px|U=${u.toStringAsFixed(3)}px '
+          'linearity=${linearity.toStringAsFixed(2)} '
+          'prod_excessUnits=${excessUnits.toStringAsFixed(3)} '
+          'inject_refPlus1_excessUnits=${injectUnits.toStringAsFixed(3)} '
+          'prodPlus1_excessUnits=${prod1Units.toStringAsFixed(3)}');
     });
   }
 }

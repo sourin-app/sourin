@@ -374,7 +374,10 @@ void main() {
 
     test('★★★ 查了连不上：说"问过三个源都连不上"，不说"没查"', () async {
       final r = await queried(const <String>[]);
-      expect(r.failure, DanmakuProbeFailure.dnsHijacked);
+      // 2026-10-26 契约更新：**"查了但没拿到真值"属于"一侧缺失"**，
+      // 按四档顺序落 dnsUnverifiable（旧断言写 dnsHijacked，是把"没查到"
+      // 当成了"劫持"—— 那正是本次要修掉的误诊）。
+      expect(r.failure, DanmakuProbeFailure.dnsUnverifiable);
       expect(r.detail, contains('问过三个加密 DNS 源'));
       expect(r.detail, contains('没能核对'));
       // ★ 反证：不许退化成"根本没查"（那会把网络问题说成"我们没做"，

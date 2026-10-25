@@ -155,7 +155,6 @@ abstract final class DanmakuTextColors {
 /// connectionRefused 连接被明确拒绝      ⇒ 本机服务没起来 / 端口不对（改配置有用）
 /// tlsFailed       TLS 握手失败          ⇒ 证书 / 中间人 / 代理拦截
 /// serverError     连上了，服务回了错    ⇒ **这次真的是服务的问题**
-/// emptyResponse   连上了但没内容        ⇒ 服务活着，只是这个库/这一集没有弹幕
 /// ```
 /// ⚠️ 最后两类与前面几类**必须分开说**：
 ///    「服务返回空」是**正常结果**，画成"连不上"会让用户去修一个没坏的东西。
@@ -219,7 +218,6 @@ enum DanmakuProbeFailure {
   serverError,
 
   /// 连上了、服务也回了，但**没有内容**（0 条弹幕）
-  emptyResponse,
 
   /// ★★★ 2026-10-19（X4）：**探测本身出错**，不是网络失败
   ///
@@ -330,9 +328,8 @@ extension DanmakuProbeFailureX on DanmakuProbeFailure {
    * ```
    */
   /// 正常但没数据（**不是失败**）
-  bool get isJustEmpty => this == DanmakuProbeFailure.emptyResponse;
 
-  bool get isFailure => this != DanmakuProbeFailure.none && !isJustEmpty;
+  bool get isFailure => this != DanmakuProbeFailure.none;
 
   /// 一句短标题（**不含具体地址**，那种由调用方拼）
   String get title => switch (this) {
@@ -356,7 +353,6 @@ extension DanmakuProbeFailureX on DanmakuProbeFailure {
         DanmakuProbeFailure.connectionRefused => '连不上（连接被拒绝）',
         DanmakuProbeFailure.tlsFailed => '连不上（TLS 握手失败）',
         DanmakuProbeFailure.serverError => '服务返回错误',
-        DanmakuProbeFailure.emptyResponse => '服务正常，但没有弹幕',
         /*
          * ★ 必须**不含**任何网络断言：
          *   改前这里落到 connectionTimeout，于是说「地址解析出来了但连不过去」
@@ -723,19 +719,32 @@ class DanmakuProbeReport {
      *   而本机若恰好命中 .67、DoH 给 .131 —— 完全健康的网络也会被判 different。
      * ⇒ 现在只有"不同 **且** 本机地址落在已知伪造段"才定案劫持。
      */
+    final hasTruth = dohQueried || doh.isNotEmpty;
+    final forged = looksForged(localAddresses);
     final different = cmp == DanmakuDnsComparison.different;
-    final hijacked = different && looksForged(localAddresses);
-    final failure = !(dohQueried || doh.isNotEmpty)
-        ? DanmakuProbeFailure.dnsHijacked // 没查 ⇒ 仍按"本机答案落在伪造段"报
-        : doh.isEmpty
-            ? DanmakuProbeFailure.dnsHijacked // 查了但没拿到 ⇒ 同上（成因另说）
-            : hijacked
-                ? DanmakuProbeFailure.dnsHijacked
-                : cmp == DanmakuDnsComparison.overlap
-                    ? DanmakuProbeFailure.dnsConsistent
-                    : different
-                        ? DanmakuProbeFailure.dnsInconsistent
-                        : DanmakuProbeFailure.dnsUnverifiable;
+    // 伪造段是**地址级物证**：缺真值时也定案；有真值时只在"不同"才定案
+    final hijacked = forged && (!hasTruth || different);
+    /*
+     * 四档顺序（自上而下短路，位置不能换）：
+     *   ① 缺真值（没查 / 查了没拿到）  伪造段 → dnsHijacked，否则 → dnsUnverifiable
+     *   ② 有真值 + 同 /24（含相同）   → dnsConsistent
+     *   ③ 有真值 + 跨段不同          伪造段 → dnsHijacked，否则 → dnsInconsistent
+     * 为什么 ① 在最前：没有真值时 cmp 恒为 unavailable，若先判 ②③，
+     *   "没查过"会掉进"不同"那一支，而两者下一步动作完全不同。
+     * 为什么缺真值也要看伪造段：伪造段表本身就是物证（改前 doh.isEmpty 一律
+     *   报 hijacked 是误诊；现在改成"伪造段才算"）。
+     */
+    final failure = !hasTruth
+        ? (forged
+            ? DanmakuProbeFailure.dnsHijacked
+            : DanmakuProbeFailure.dnsUnverifiable)
+        : cmp == DanmakuDnsComparison.overlap
+            ? DanmakuProbeFailure.dnsConsistent
+            : different
+                ? (forged
+                    ? DanmakuProbeFailure.dnsHijacked
+                    : DanmakuProbeFailure.dnsInconsistent)
+                : DanmakuProbeFailure.dnsUnverifiable;
     /*
      * ★★★ 2026-10-19（任务 B）：detail 要让用户**自己看懂发生了什么**。
      *
@@ -772,7 +781,7 @@ class DanmakuProbeReport {
      * ⚠️ "有没有查" = `dohQueried` **或** `dohAddresses` 非空 ——
      *    拿到地址本身就证明查过（老调用点只传地址、不传开关，不能因此降档）。
      */
-    final evidence = !(dohQueried || doh.isNotEmpty)
+    final evidence = !hasTruth && forged
         ? '本机解析到：$local\n'
             '这个地址落在「已知的伪造段」里（同一网段被实测判定为他人服务器）。\n'
             '注意：取弹幕 / 搜索这条路径不做额外查询 —— 本次没能核对权威 DNS 真值；'
@@ -798,9 +807,7 @@ class DanmakuProbeReport {
                         '权威 DNS（加密查询）真值：$doh\n'
                         '⇒ 两边有交集：本机解析与权威 DNS 一致 ⇒ '
                         '「问题不在 DNS」，不是劫持。'
-                    : '本机解析到：$local\n'
-                        '权威 DNS（加密查询）真值：$doh\n'
-                        '⚠️ 拿到了真值，但没有可比较的本机答案 ⇒ '
+                    : '本机解析到：$local，没有可比较的本机/权威答案 ⇒ '
                         '既不能说被劫持，也不能说没问题（这里不猜）。';
     return DanmakuProbeReport(
       failure: failure,
@@ -878,16 +885,6 @@ class DanmakuProbeReport {
       comparison: compareDanmakuDns(localAddresses, addresses),
     );
   }
-
-  /// 从"在线但一条弹幕都没有"造报告（**这不是失败**）
-  factory DanmakuProbeReport.empty({required String url, String detail = ''}) =>
-      DanmakuProbeReport(
-        failure: DanmakuProbeFailure.emptyResponse,
-        url: url,
-        detail: detail,
-        remedy: '服务是通的 —— 这一集/这个关键词在它库里确实没有内容。'
-            '换一集、或者换一个关键词再搜，不用去改配置。',
-      );
 
   /// 从"连上了但 HTTP 状态码不 OK"造报告
   factory DanmakuProbeReport.httpError({
@@ -975,8 +972,6 @@ class DanmakuProbeReport {
               '先把代理切成「直连」再试一次，能分清是不是代理造成的。',
         DanmakuProbeFailure.serverError =>
           '服务回了错误状态 ⇒ 这是「服务端」的问题（我们这边没做错什么）。',
-        DanmakuProbeFailure.emptyResponse =>
-          '服务是通的，只是这次没有内容 —— 「不是失败」。',
         /*
          * ★★★ 2026-10-19（X4）：这一段的每个字都必须能被证伪。
          * ```text
@@ -1063,6 +1058,28 @@ class DanmakuProbeReport {
   /// "所有失败都被说成 DNS 劫持" —— 比说错更坏：
   /// 它会把用户从"查服务"推向"改 DNS"，而后者根本没坏。
   /// ⇒ 本函数只在 [evidence] 非空且命中伪造段时才给 dnsHijacked。
+  /// ```
+  /// # 跨层归因的**总优先级**（自上而下短路，顺序不能换）
+  ///
+  /// ```text
+  /// ① looksForged(resolvedAddress) 命中伪造段 ⇒ dnsHijacked（连 statusCode 都不看）
+  ///    为什么第一：伪造段是地址级物证，它解释了后面所有症状；先判 statusCode
+  ///    会把"劫持"说成"服务端错误"。
+  /// ② statusCode != 0 ⇒ serverError（httpError）
+  ///    为什么第二：拿到状态码说明连接已建立、对方是这个服务 ⇒ 问题在服务端/凭证。
+  /// ③ 其余交给 fromError 的四层：
+  ///    3a TimeoutException → connectionTimeout
+  ///    3b SocketException  → 按 errno
+  ///    3c DanmakuException.failureKind → timeout / socket(errno) / protocol
+  ///    3d toString 含 Handshake/Tls/CERT → tlsFailed
+  ///    3e 其它 → probeFailed（不碰网络措辞）
+  /// ```
+  ///
+  /// ## 举例
+  /// ```text
+  /// 问：同时"DNS 被劫持"且"服务返回 500"，用户看到哪档？
+  /// 答：劫持档 —— ① 先 return 了，500 那一支走不到（500 是连错主机的后果）。
+  /// 问：DNS 正常但服务 401？答：serverError（② 命中），指"凭证/token"。
   /// ```
   static DanmakuProbeReport fromDanmakuException(
     DanmakuException e, {
@@ -2522,17 +2539,15 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// ```
   /// ⚠️ 「服务正常，但没有弹幕」**不画成红色失败** —— 那是正常结果。
   Widget _probeReportBox(DanmakuProbeReport r) {
-    // 空结果：不是失败，用中性色，别吓人
-    final empty = r.failure.isJustEmpty;
     final ok = r.isOk;
-    final color = ok || empty
+    final color = ok
         ? DanmakuTextColors.secondary
         : (r.failure.isLocalNetworkProblem
             // 本机网络问题：橙色（该动手，但不是"我们坏了"）
             ? Colors.orangeAccent
             // 服务端问题：红（确实是那边坏了）
             : Colors.redAccent);
-    final icon = ok || empty
+    final icon = ok
         ? AppIcons.info_outline
         : (r.failure.isLocalNetworkProblem
             ? AppIcons.wifi_off
@@ -2914,6 +2929,25 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       );
     } catch (e) {
       report = DanmakuProbeReport.fromError(e, url: ep.display);
+      /*
+       * 2026-10-26（第 05 项归因完整性修复）：**入口放宽**。
+       * 改前只有"本机地址命中伪造段"才做 DoH 对照 ⇒ dnsConsistent /
+       * dnsInconsistent / dnsUnverifiable 三档在生产里一次都执行不到。
+       * 现在只要拿到本机地址就问一次权威 DNS，由四档顺序自己决定说哪句：
+       * 健康网络得到"一致"，跨段但都正常得到"不一致"，缺真值得到"无法比较"。
+       */
+      final local = <String>[
+        if (e is SocketException && e.address != null) e.address!.address,
+        if (e is DanmakuException && e.resolvedAddress.isNotEmpty)
+          e.resolvedAddress,
+      ];
+      if (local.isNotEmpty) {
+        report = await DanmakuProbeReport.hijackReportWithTruth(
+          url: ep.display,
+          localAddresses: local,
+          host: ep.host,
+        );
+      }
     }
     if (!mounted || mySeq != _probeSeq) return;
     setState(() => _probeReport = report);

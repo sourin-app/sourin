@@ -637,14 +637,13 @@ class _ActiveProbeReport extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final empty = report.failure.isJustEmpty;
     final ok = report.isOk;
-    final color = ok || empty
+    final color = ok
         ? colors.onSurfaceVariant
         : (report.failure.isLocalNetworkProblem
             ? colors.error
             : colors.error);
-    final icon = ok || empty
+    final icon = ok
         ? AppIcons.info_outline
         : (report.failure.isLocalNetworkProblem
             ? AppIcons.wifi_off

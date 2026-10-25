@@ -84,7 +84,7 @@
 // ```text
 // ① 把 `fromError` 里 SocketException 一律归成 connectionTimeout（不分 errno）
 //    ⇒ ①②③ 组的区分断言红
-// ② 把 emptyResponse 也归成 isFailure ⇒ ⑤ 组红
+// ② 把「空结果」当成失败画成红色 ⇒ ⑤ 组红
 // ③ 把 `_probeReportBox` 删掉（不画）⇒ 全部 UI 断言红
 // ```
 
@@ -181,13 +181,19 @@ void main() {
           reason: '★★ 服务端问题不许被归到"你网络不好"');
     });
 
-    test('★★★ 服务返回空 ⇒ emptyResponse，且 **不是失败**', () {
-      final r = DanmakuProbeReport.empty(url: 'https://x');
-      expect(r.failure, DanmakuProbeFailure.emptyResponse);
-      expect(r.failure.isJustEmpty, isTrue);
-      expect(r.failure.isFailure, isFalse,
-          reason: '★★★ 「服务活着但没有这一集」是**正常结果**，'
-              '画成失败会让用户去修一个没坏的东西');
+    test('★★★ 原「服务返回空」档已删除（零生产调用点）', () {
+      /*
+       * 2026-10-26：该「服务返回空」档与其工厂方法已删除。
+       * 理由：全库 `grep` 显示它**没有任何生产调用点** ——
+       * core 的"没有弹幕"是返回空列表，不抛异常 ⇒ 这一档永远不会发生。
+       * 留着就是"声称了能力但永远不会出现"，比删掉更误导。
+       * 这里保留一条**存在性判据**：确保它不会被悄悄加回来。
+       */
+      expect(
+        DanmakuProbeFailure.values.any((f) => f.name.startsWith('empty')),
+        isFalse,
+        reason: '★ 这一档已按"零调用点即死档"删除；若有人加回来，这条会红',
+      );
     });
   });
 
@@ -204,15 +210,13 @@ void main() {
         _sock(10060, 'Connection timed out'),
         url: 'https://a',
       );
-      final empty = DanmakuProbeReport.empty(url: 'https://a');
 
       final titles = <String>{
         dns.failure.title,
         timeout.failure.title,
-        empty.failure.title,
       };
-      expect(titles.length, 3,
-          reason: '★★★ 三件事各有一句话 —— 混成一句就是本轮要修的病');
+      expect(titles.length, 2,
+          reason: '★★ DNS 失败与连接超时各有一句话 —— 混成一句就是本组要修的病');
     });
 
     test('★★★ DNS 失败的 remedy 必须点明「不是服务坏了」', () {
@@ -236,10 +240,18 @@ void main() {
           reason: '★★★ 必须**明确否掉**那句会误导人的话');
     });
 
-    test('★★★ 服务返回空的 remedy 不许提"去改配置"', () {
-      final r = DanmakuProbeReport.empty(url: 'https://a');
-      expect(r.remedy, contains('不用去改配置'),
-          reason: '★★★ 服务活着 ⇒ 改配置没有任何用');
+    test('★★★ 兜底档的 remedy 不许把用户指向改配置/改网络', () {
+      // 原「服务返回空」档已删（零调用点）；这里改钉**真实可达**的兜底档：
+      // 认不出来的错只能说"这一步自己出错了"，不许指任何配置或网络动作。
+      final r = DanmakuProbeReport.fromError(
+        StateError('boom'),
+        url: 'https://a',
+      );
+      expect(r.failure, DanmakuProbeFailure.probeFailed);
+      expect(r.remedy, contains('原文反馈'),
+          reason: '★ 兜底档唯一的下一步是把原文反馈给我们');
+      expect(r.remedy, isNot(contains('代理')));
+      expect(r.remedy, isNot(contains('DNS')));
     });
 
     test('★★ 内置实例的真实失败（errno 10060）不会被说成"没运行"', () {

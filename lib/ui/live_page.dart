@@ -620,6 +620,15 @@ class LivePageState extends State<LivePage> {
   final TextEditingController _searchCtrl = TextEditingController();
 
   LiveChannel? _selected;
+
+  /// ★ 第 15 项缺口：选中项**属于哪个源**
+  ///
+  /// ```text
+  /// `_selected` 只有频道对象（id 在**源内**唯一）。
+  /// 两个源撞同一个 id 时，光看 `_selected`/`_groups` 无法回答
+  /// "用户点的是哪一个" ⇒ 记下来源，选中身份 = (`_selectedProvider`, id)。
+  /// ```
+  String _selectedProvider = '';
   // ★ 2026-09-26【A】用户要求"删除掉节目单" ⇒ `_epg` / `_epgLoading`
   //   / `_epgKey` / `_now` / `_clock` 全部移除（含取数与定时器）
 
@@ -1605,6 +1614,15 @@ class LivePageState extends State<LivePage> {
               '${DateTime.now().difference(_mountedAt).inMilliseconds} ms',
         );
 
+    /*
+     * ★ 第 15 项缺口：恢复选中要用**选中身份**（provider:id）。
+     * ```text
+     * 只记 id 的话，两个源撞同一 id 时 `_findChannel(prevId)` 会取
+     * **第一个命中**的源 ⇒ 用户切走再回来，选中的台悄悄换成了另一个源的。
+     * ```
+     * ⚠️ 老路径（`_selectedProvider` 为空）仍按 id 恢复 —— 行为不变。
+     */
+    final prevSel = keepSelection ? _selectedSel : null;
     final prevId = keepSelection ? _selected?.id : null;
     try {
       // ★ 第 16 项验收：`debugLiveGroupsFetcher` 只在测试里非 null（生产恒走 FFI）
@@ -1665,7 +1683,19 @@ class LivePageState extends State<LivePage> {
          * 所以优先找回原来那个频道（见文件头注释）。
          */
         final all = groups.expand((g) => g.channels).toList();
-        final restored = prevId != null
+        /*
+         * ★ 第 15 项缺口：优先按**选中身份**（provider:id）找回；
+         *   找不到（或老状态没有 provider）再退回按 id 找 —— 行为不变。
+         */
+        LiveChannel? restored;
+        if (prevSel != null) {
+          for (final g in groups) {
+            if (g.provider != prevSel.provider) continue;
+            restored = g.channels.where((c) => c.id == prevSel.id).firstOrNull;
+            if (restored != null) break;
+          }
+        }
+        restored ??= prevId != null
             ? all.where((c) => c.id == prevId).firstOrNull
             : null;
         final target = restored ?? _firstVisible(all);
@@ -2082,12 +2112,32 @@ class LivePageState extends State<LivePage> {
   }
 
   /// 频道属于哪个 provider（`_groups` 里反查）
+  /// 这个频道**属于哪个源**
+  ///
+  /// # 判据顺序（第 15 项缺口修复）
+  /// ```text
+  /// ① 它就是**当前选中**那个 ⟹ 直接用 [_selectedProvider]
+  ///    （用户点过哪一行是已知事实，比"按 id 扫一遍取第一个命中"可靠）
+  /// ② 否则按 id 扫 `_groups`（老行为，保留给"还没选中/来自别处"的频道）
+  /// ③ 都查不到 ⟹ `_activeProvider`（老兜底）
+  /// ```
+  /// ⚠️ ② 之所以留着：`_neighborEntry` / 全屏切台 / 恢复选中 都可能有
+  ///    "手里只有一个频道对象"的时刻；那条路继续用老判据，行为不变。
   String _providerOf(LiveChannel c) {
+    if (_selectedProvider.isNotEmpty &&
+        _selected != null &&
+        _selected!.id == c.id) {
+      return _selectedProvider;
+    }
     for (final g in _groups) {
       if (g.channels.any((x) => x.id == c.id)) return g.provider;
     }
     return _activeProvider;
   }
+
+  /// 当前选中身份（null = 没选中）—— 给列表做"哪一行是高亮"的判据
+  LiveChannelSel? get _selectedSel =>
+      _selected == null ? null : LiveChannelSel(_selectedProvider, _selected!.id);
 
   // ══════════════════════════════════════════════════════════════════════
   //  N15：播放结果回写 + 定时刷新
@@ -2212,8 +2262,19 @@ class LivePageState extends State<LivePage> {
   /// unavailable → 不显示
   /// unknown     → ★ 显示（探不到 ≠ 不可用 —— 铁律 51 的对偶）
   /// ```
-  List<LiveChannel> get _visibleChannels {
-    final out = <LiveChannel>[];
+  List<LiveChannel> get _visibleChannels =>
+      [for (final e in _visibleEntries) e.channel];
+
+  /// 与 [_visibleChannels] **同一套判据**，但带上 provider
+  ///
+  /// ```text
+  /// 键盘 ↑/↓ 要按"选中身份（provider:id）"定位当前行，
+  /// 不能再用 `indexWhere((c) => c.id == cur.id)` —— 两个源同 id 时
+  /// 那会永远命中**第一个**，按 ↓ 就会在"两个同名台之间跳源"。
+  /// ⇒ 判据只写一份（本 getter），`_visibleChannels` 由它派生。
+  /// ```
+  List<({LiveChannel channel, String provider})> get _visibleEntries {
+    final out = <({LiveChannel channel, String provider})>[];
     for (final g in _groups) {
       // ★ 用户手动关掉的源：不显示它的频道（③ 的启停）
       if (!_providerEnabled(g.provider)) continue;
@@ -2222,7 +2283,7 @@ class LivePageState extends State<LivePage> {
         if (a == LiveAvailability.unavailable) continue;
         // ★★ task-42：audioOnly 也**直接删掉**（不再给"显示"开关）
         if (a == LiveAvailability.audioOnly) continue;
-        out.add(c);
+        out.add((channel: c, provider: g.provider));
       }
     }
     return out;
@@ -2349,8 +2410,15 @@ class LivePageState extends State<LivePage> {
   /// （`loadAll(keepSelection: true)` 那条路），**不是**用户主动换台。
   ///
   /// ★★★ task-82【Q4】：两者必须区分 —— 见下面第一段短路。
-  Future<void> _select(LiveChannel ch, {bool restoring = false, bool preservePlaybackIntent = false}) async {
-    final provider = _providerOf(ch);
+  Future<void> _select(
+    LiveChannel ch, {
+    String? provider,
+    bool restoring = false,
+    bool preservePlaybackIntent = false,
+  }) async {
+    // ★ 第 15 项缺口：能拿到"用户点的是哪个源"就**必须**用它 ——
+    //   `_providerOf` 的兜底仍按 id 扫，两个源同 id 时它会取第一个命中。
+    final prov = provider ?? _providerOf(ch);
 
     /*
      * ══════════════════════════════════════════════════════════════════
@@ -2400,7 +2468,10 @@ class LivePageState extends State<LivePage> {
      * ```
      */
     if (restoring && _userPaused) {
-      setState(() => _selected = ch);
+      setState(() {
+        _selected = ch;
+        _selectedProvider = prov;
+      });
       /*
        * ★★★ 2026-10-08（Owner 第 3 条）：「保留原流」必须**同时保证静默**
        *
@@ -2428,6 +2499,7 @@ class LivePageState extends State<LivePage> {
 
     setState(() {
       _selected = ch;
+      _selectedProvider = prov;
       // ★ 换台 ⇒ 清掉上一条流（避免播放器还挂着上一个台的声音）
       _streams = [];
       _stream = null;
@@ -2446,7 +2518,7 @@ class LivePageState extends State<LivePage> {
      *   ⇒ 首帧更快；且不再有"节目单迟到"引起的额外 setState/重建
      * ```
      */
-    unawaited(_loadStream(provider, ch.id));
+    unawaited(_loadStream(prov, ch.id));
   }
 
   /// ★ 取这个频道的流，并选出**第一条能播的**线路
@@ -2461,7 +2533,13 @@ class LivePageState extends State<LivePage> {
   Future<void> _loadStream(String provider, String channelId) async {
     try {
       final list = await SourinApi.getLiveStream(provider, channelId);
-      if (!mounted || _selected?.id != channelId) return;
+      // ★ 第 15 项缺口：守卫要连 provider 一起比 —— 两个源撞同一 id 时，
+      //   只比 id 会让"另一个源的同名台"的迟到结果落到当前台上。
+      if (!mounted ||
+          _selected?.id != channelId ||
+          (_selectedProvider.isNotEmpty && _selectedProvider != provider)) {
+        return;
+      }
       final playable = list.where((s) => s.isPlayable).toList();
       setState(() {
         _streams = list;
@@ -2474,7 +2552,11 @@ class LivePageState extends State<LivePage> {
           '可播 ${playable.length}，选用 ${_stream?.displayName ?? "无"}');
     } catch (e) {
       debugPrint('[LIVE] 取流失败 $channelId: $e');
-      if (!mounted || _selected?.id != channelId) return;
+      if (!mounted ||
+          _selected?.id != channelId ||
+          (_selectedProvider.isNotEmpty && _selectedProvider != provider)) {
+        return;
+      }
       setState(() {
         _streams = [];
         _stream = null;
@@ -2504,9 +2586,10 @@ class LivePageState extends State<LivePage> {
   /// 隐藏掉的台（仅音频/不可用）不该被切到 —— 否则用户按 ↓
   /// 会跳到一个"看不到的台"，感觉像卡住了。
   void cycleChannel(int delta) {
-    final next = _neighborChannel(delta);
+    final next = _neighborEntry(delta);
     if (next == null) return;
-    unawaited(_select(next));
+    // ★ 第 15 项缺口：切台必须带上"来自哪个源"，否则同 id 时取错流
+    unawaited(_select(next.channel, provider: next.provider));
   }
 
   /// ★★★ task-53【#4b】算出"相邻的下一个台" —— ★ **纯查询，不起播**
@@ -2531,14 +2614,18 @@ class LivePageState extends State<LivePage> {
   ///
   /// ★ 而把它拆出来后，**两处共用同一份取模算式**（铁律 170：
   ///   一条纪律一个实现）—— 不会出现"直播页循环、播放页越界"。
-  LiveChannel? _neighborChannel(int delta) {
-    final list = _visibleChannels;
+  ({LiveChannel channel, String provider})? _neighborEntry(int delta) {
+    final list = _visibleEntries;
     // ③ 逻辑层
     debugPrint('[LIVE-KEY] ③ 逻辑层：cycleChannel($delta) 列表=${list.length} 个'
-        '（当前选中=${_selected?.id ?? "无"}）');
+        '（当前选中身份=${_selectedSel?.rowKey ?? "无"}）');
     if (list.isEmpty) return null;
-    final cur = _selected;
-    var i = cur == null ? -1 : list.indexWhere((c) => c.id == cur.id);
+    final cur = _selectedSel;
+    var i = cur == null
+        ? -1
+        : list.indexWhere(
+            (e) => liveChannelRowKey(e.provider, e.channel.id) == cur.rowKey,
+          );
     if (i < 0) {
       // 当前选中的不在可见列表里（比如是隐藏的仅音频台）⇒ 从头开始
       i = 0;
@@ -2546,7 +2633,8 @@ class LivePageState extends State<LivePage> {
       // ★ 取模实现循环（Dart 的 % 对负数返回非负，正是我们要的）
       i = (i + delta) % list.length;
     }
-    debugPrint('[LIVE-KEY]    ⇒ 切到第 $i 个：${list[i].name}');
+    debugPrint('[LIVE-KEY]    ⇒ 切到第 $i 个：${list[i].channel.name}'
+        '（provider=${list[i].provider}）');
     return list[i];
   }
 
@@ -2564,9 +2652,9 @@ class LivePageState extends State<LivePage> {
   ///    并记下 `_pendingFullscreenChannel`，等 pop 回来再接手播放。
   /// ```
   ({String provider, LiveChannel channel})? stepChannelForFullscreen(int delta) {
-    final next = _neighborChannel(delta);
+    final next = _neighborEntry(delta);
     if (next == null) return null;
-    return _adoptChannelForFullscreen(next);
+    return _adoptChannelForFullscreen(next.channel, provider: next.provider);
   }
 
   /// ★★★ task-53【③】把**当前可见频道列表**交给播放页（供"所有直播"面板）
@@ -2631,14 +2719,16 @@ class LivePageState extends State<LivePage> {
   ///    并记下 `_pendingFullscreenChannel`，等 pop 回来再接手播放。
   /// ```
   ({String provider, LiveChannel channel}) _adoptChannelForFullscreen(
-    LiveChannel next,
-  ) {
-    final provider = _providerOf(next);
-    debugPrint('[LIVE-KEY] 全屏切台 ⇒ ${next.name}（provider=$provider）'
+    LiveChannel next, {
+    String? provider,
+  }) {
+    final prov = provider ?? _providerOf(next);
+    debugPrint('[LIVE-KEY] 全屏切台 ⇒ ${next.name}（provider=$prov）'
         '：本页只改选中，起播交给播放页');
 
     setState(() {
       _selected = next;
+      _selectedProvider = prov;
       /*
        * ★ 清空线路 ⇒ 内嵌播放器 `didUpdateWidget` 看到 `b == null` 会 `stop()`
        *   ⇒ 旧台的声音立刻停（不会一边全屏新台、一边后台旧台）。
@@ -2650,7 +2740,7 @@ class LivePageState extends State<LivePage> {
       _userPaused = false;
     });
     _pendingFullscreenChannel = next;
-    return (provider: provider, channel: next);
+    return (provider: prov, channel: next);
   }
 
   // ★ 2026-09-26【A】`_fmtTime` 已移除（只被节目单/回看标题使用）
@@ -2706,7 +2796,11 @@ class LivePageState extends State<LivePage> {
   ///   （真实起播/双播放器音频释放）正好对应，如实写进交付说明。
   /// ```
   @visibleForTesting
-  Future<void> selectChannelForProbe(LiveChannel channel) => _select(channel);
+  Future<void> selectChannelForProbe(
+    LiveChannel channel, {
+    String? provider,
+  }) =>
+      _select(channel, provider: provider);
 
   Future<void> _watchLive({LiveRoundtripReceipt? receipt}) async {
     final s = _selected;
@@ -3012,6 +3106,9 @@ class LivePageState extends State<LivePage> {
           if (_providerEnabled(g.provider)) g.provider,
       },
       channels: _flatChannels,
+      // ★ 第 15 项缺口：传**选中身份**（provider:id），不再只传 id
+      selectedRow: _selectedSel?.rowKey,
+      // ⚠️ 老字段仍传（兼容只认 id 的读法/老用例）：它只在 `selectedRow == null` 时生效
       selectedId: _selected?.id,
       /*
        * ★ 2026-09-26【②】`onToggleProvider` **已移除** ——
@@ -3034,6 +3131,8 @@ class LivePageState extends State<LivePage> {
        *     ⇒ 单一写入点（设置页），单一真相（核心的 json）—— 更干净。
        */
       onPickChannel: _select,
+      // ★ 点行时把"来自哪个源"一起交给 `_select`
+      onPickEntry: (e) => _select(e.channel, provider: e.provider),
       /*
        * ★★★ N15：把**播放结果状态**接进列表（用户要求"动态标记"）
        *
@@ -3842,6 +3941,46 @@ Key liveChannelTileKey(String provider, String channelId) =>
 Key liveChannelHighlightKey(String provider, String channelId) =>
     ValueKey('live-channel-highlight-${liveChannelRowKey(provider, channelId)}');
 
+/// **选中身份** = `(provider, id)` —— 能区分"两个源里的同一个频道 id"
+///
+/// # 为什么选中身份也必须带 provider（第 15 项的最后一个缺口）
+/// ```text
+/// 行 key 早已改成 `provider:id`（行**身份**修好了），
+/// 但"选中"仍然只记一个 `id`：
+///   · `LiveChannelList.selectedId` 只带 id ⇒ 两个源同 id 时**两行同时高亮**
+///   · `_providerOf` 按 id 扫 `_groups` 取**第一个命中** ⇒ 换台时可能把
+///     "另一个源的同名台"当成当前台（取错流 / 高亮跳源）
+/// ⇒ 选中身份也必须带 provider。`==`/`hashCode` 是判据的一部分：
+///   要用它做"这一行是不是选中那行"的比较、也要能放进 Set/Map。
+/// ```
+class LiveChannelSel {
+  const LiveChannelSel(this.provider, this.id);
+
+  /// 从 `provider:id` 还原（key / prefs 里存的就是这个拼法）
+  static LiveChannelSel? tryParse(String? row) {
+    if (row == null) return null;
+    final i = row.indexOf(':');
+    if (i <= 0 || i >= row.length - 1) return null;
+    return LiveChannelSel(row.substring(0, i), row.substring(i + 1));
+  }
+
+  final String provider;
+  final String id;
+
+  /// 与 key 用的是**同一个拼法**（`liveChannelRowKey`）
+  String get rowKey => liveChannelRowKey(provider, id);
+
+  @override
+  bool operator ==(Object other) =>
+      other is LiveChannelSel && other.provider == provider && other.id == id;
+
+  @override
+  int get hashCode => Object.hash(provider, id);
+
+  @override
+  String toString() => rowKey;
+}
+
 
 /// ★★★ 源 / 分类**筛选**后的频道列表（task-1013 用户要求）
 ///
@@ -3894,6 +4033,8 @@ class LiveChannelList extends StatefulWidget {
     required this.channels,
     required this.selectedId,
     required this.onPickChannel,
+    this.selectedRow,
+    this.onPickEntry,
     this.onPickProvider,
     this.onPickGroup,
     this.sourceGroups = const {},
@@ -3917,9 +4058,35 @@ class LiveChannelList extends StatefulWidget {
   /// ★ 平铺的频道（跨源混合，每项带来源 tag）
   final List<LiveFlatEntry> channels;
 
+  /// ⚠️ **兼容字段**：只带 id（`LivePage` 仍传，老用例也用）。
+  ///
+  /// # 第 15 项缺口：它单独存在时会**分不清源**
+  /// ```text
+  /// 列表是跨源平铺的，而频道 id 只在源内唯一。
+  /// 两个源撞同一个 id 时，`entry.channel.id == selectedId` 会**同时命中两行**
+  /// ⇒ 用户点一行、两行一起亮（且 `_providerOf` 也会取错源）。
+  /// ⇒ 新代码请传 [selectedRow]（`provider:id`）；本字段只在
+  ///   `selectedRow == null` 时作为**老行为兜底**生效。
+  /// ```
   final String? selectedId;
 
   final ValueChanged<LiveChannel> onPickChannel;
+
+  /// ★ 选中身份（`provider:id`）—— **优先于** [selectedId]
+  ///
+  /// 非空时用它判"哪一行是高亮"，`selectedId` 被忽略。
+  final String? selectedRow;
+
+  /// ★ 点行回调（带 provider）—— 与 [onPickChannel] **二选一**，本回调优先
+  ///
+  /// # 为什么不是改 [onPickChannel] 的签名
+  /// ```text
+  /// `onPickChannel` 是**公开** API，多个既有用例与调用点按
+  /// `(LiveChannel) => …` 在用。改签名会要求它们一起改（跨文件契约一次动太大）。
+  /// ⇒ 新增一个带 provider 的入口，内部优先生效；
+  ///   老入口保留并在注释里标明"不带源，已不足以表达选中身份"。
+  /// ```
+  final void Function(LiveFlatEntry entry)? onPickEntry;
 
   /// ★ 测试用注入口（**生产路径永不传**）：源筛选被点击时回调
   ///
@@ -4486,11 +4653,22 @@ class LiveChannelListState extends State<LiveChannelList> {
                     channel: entry.channel,
                     // ★ tag = 它来自哪个源（用户说"以分组加 tag 作为标记"）
                     tag: entry.tag,
-                    active: entry.channel.id == widget.selectedId,
+                    /*
+                     * ★ 第 15 项缺口：选中判据用**身份**（provider:id），
+                     *   不再用裸 id（两个源同 id 时那样会两行一起高亮）。
+                     * ⚠️ `selectedRow == null` 时退回老判据 —— 只影响
+                     *   "还没跟上新字段"的调用点，不改它们的行为。
+                     */
+                    active: widget.selectedRow != null
+                        ? liveChannelRowKey(entry.provider, entry.channel.id) ==
+                            widget.selectedRow
+                        : entry.channel.id == widget.selectedId,
                     // ★ N15：播放结果状态（null 回调 ⇒ unknown ⇒ 不显示徽标）
                     health: widget.healthOf?.call(entry.channel) ??
                         LivePlaybackHealth.unknown,
-                    onTap: () => widget.onPickChannel(entry.channel),
+                    onTap: () => widget.onPickEntry != null
+                        ? widget.onPickEntry!(entry)
+                        : widget.onPickChannel(entry.channel),
                   ),
                 /*
                  * ★ 全被剔除时的空态 —— 不能只留一片空白

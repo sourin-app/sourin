@@ -55,15 +55,15 @@
   },
   "t104_overlay_exit_test.dart": {
     "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "有 2 条红（断言失败，需处置）",
-    "result": "+18 ~0 -2"
+    "lastAudited": "2026-10-25",
+    "note": "计数迁移 settings_page 5→9 / provider_import_dialog 2→3 / sync_panel 2→3 / total 15→21（live-accept 把裸 showDialog 改成 showAppDialog）",
+    "result": "+20 ~0 -0"
   },
   "t108_danmaku_manual_search_test.dart": {
     "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "有 3 条红（断言失败，需处置）",
-    "result": "+2 ~0 -3"
+    "lastAudited": "2026-10-25",
+    "note": "D 类迁移完成：内联搜索框已迁到独立搜索页；页签切换改成 ensureVisible+tapAt(getCenter) 并把「切过去没有」做成断言（锚：测试连接在 + 显示弹幕不在）；三连跑一致",
+    "result": "+5 ~0 -0"
   },
   "t118_control_bars_link_test.dart": {
     "audited": true,
@@ -139,9 +139,9 @@
   },
   "t27_w9_bar_linkage_test.dart": {
     "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "有 3 条红（断言失败，需处置）",
-    "result": "+13 ~0 -3"
+    "lastAudited": "2026-10-25",
+    "note": "_chromeVisible 门控字面 11→12 项（本批新增 !_danmakuSearchOpen）；B1/B3 前提从「等 _load 自然失败」改成显式 debugPlayerInjectStreamErrorForProbe",
+    "result": "+16 ~0 -0"
   },
   "t458_hints_entry_ui_test.dart": {
     "audited": true,
@@ -212,7 +212,7 @@
   "t92_bottom_bar_row_fit_test.dart": {
     "audited": true,
     "lastAudited": "2026-10-25",
-    "note": "旧判据找的是已搬走的按钮（D 已过期）；按真实底栏重写后全绿（几何断言保留 + 横向 ScrollView 换形判据 + 两条对照），注入两处变异 ⇒ +3 -4 证明非空转",
+    "note": "D 类：旧判据找的是已搬走的按钮（截图/弹幕设置进「更多」菜单，more_vert→more_horiz）；按真实底栏重写后绿，注入两处变异 ⇒ +3 -4",
     "result": "+7 ~0 -0"
   },
   "t92_embed_first_frame_hint_test.dart": {
@@ -228,15 +228,15 @@
     "result": "+7 ~0 -0"
   },
   "zz_cr_backbtn_backarrow_test.dart": {
-    "audited": false,
+    "audited": true,
     "lastAudited": "2026-10-25",
-    "note": "② 红：真实产品缺陷（顶栏看得见点不到，_autoHideNow 漏 _pushControlsLive）；修复后应转绿并重新登记",
-    "result": null
+    "note": "② 曾红：真产品缺陷（顶栏看得见点不到，_autoHideNow 漏 _pushControlsLive）；产品 1 行修复后转绿，仪表打印 ignoring=false inHitPath=true 闭环",
+    "result": "+7 ~0 -0"
   },
   "zz_cr_dmk_c_import_test.dart": {
     "audited": true,
     "lastAudited": "2026-10-25",
-    "note": "文案按站名铁律中性化（具体站名改为「外部视频站」），两处断言同步迁移后全绿",
+    "note": "文案按站名铁律中性化（具体站名→外部视频站），两处断言同步迁移",
     "result": "+4 ~0 -0"
   },
   "zz_cr_dmk_d_badge_test.dart": {

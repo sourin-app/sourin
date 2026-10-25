@@ -67,7 +67,7 @@ _other      其余
   （libmpv 原生崩溃，本仓已知），复跑即可；不许为了躲它把标签加回去。
 - 相关：`zz_cr_backbtn_backarrow ②` 只覆盖**错误态**且带 native-media 标签 +
   `_requireLibmpv()` 跳过，所以它替代不了上面这条非错误态门禁 —— 两条都要留着。
-- 部分重叠（互链，不归档）：[2026-10-18-bottom-bar-unmount-per-hover.md](../../bug-fix/2026-10-18-bottom-bar-unmount-per-hover.md)
+- 部分重叠（互链，不归档）：[2026-10-18-bottom-bar-unmount-per-hover.md](../bug-fix/2026-10-18-bottom-bar-unmount-per-hover.md)
   讲的是"底栏在 hover 时不该卸载"的**行为**约束；本篇讲的是**测量方式**——
   同一个重建量必须按来源拆开，否则阈值会把缺陷态当成基线。两篇并存：前者守行为，本篇守仪器。
 

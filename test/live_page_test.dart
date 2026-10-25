@@ -533,15 +533,47 @@ void main() {
         reason: '★ 签名必须保留 `keepSelection` —— shell.dart 靠它调 '
             '`loadAll(keepSelection: true)`',
       );
+      /*
+       * ★★★ 2026-10-25 契约迁移（逐字串随实现更新，不变量没变）
+       *
+       * ```text
+       * 实现变了：选中**身份**从"只记 id"改成"记 (provider, id)"
+       *   （跨源同 id 时只记 id 会两行同亮、`_providerOf` 取错源）。
+       * 不变量没变：**切走又切回时，用户原来在看的那个台必须还在选中**。
+       * ⇒ 三条逐字断言跟着实现改成新形态，判据强度不减：
+       *   ① id 与 provider **都**在 `keepSelection` 为真时才取（否则等于每次都重置）
+       *   ② 恢复时**先按身份**（同源同 id）找
+       *   ③ 找不到才退回按 id（老状态/频道换了源时不至于丢选中）
+       *   ④ 最后仍是"找回优先于第一个"
+       * ```
+       * ⚠️ 这里只断言**单行片段**（不含换行），避免受 CRLF/LF 影响。
+       */
       expect(
         live.contains('final prevId = keepSelection ? _selected?.id : null;'),
         isTrue,
-        reason: '保留选中 = 先记住旧 id，再从新列表里找回',
+        reason: '保留选中 = 先记住旧 id（③ 的兜底那一半），再从新列表里找回',
       );
       expect(
-        live.contains('final restored = prevId != null'),
+        live.contains('final prevSel = keepSelection ? _selectedSel : null;'),
         isTrue,
-        reason: '原版 `const restored = prevId ? all.find(...) : undefined`',
+        reason: '★ 2026-10-25 起选中身份带 provider ⇒ 也要记住 (provider, id)；'
+            '同样必须受 `keepSelection` 门控（否则每次进页面都重置选中）',
+      );
+      expect(
+        live.contains('if (g.provider != prevSel.provider) continue;'),
+        isTrue,
+        reason: '★★ 恢复必须**优先按身份**找：先在"同一个源"里找同 id 的台 '
+            '—— 跨源同 id 时按 id 扫全场会取到另一个源的同名台',
+      );
+      expect(
+        live.contains('c.id == prevSel.id'),
+        isTrue,
+        reason: '★ 身份匹配的另一半：同源 + 同 id',
+      );
+      expect(
+        live.contains('restored ??= prevId != null'),
+        isTrue,
+        reason: '找不到同一源的那个台时**才**退回按 id 找（老状态/换源）',
       );
       expect(
         live.contains('final target = restored ??'),

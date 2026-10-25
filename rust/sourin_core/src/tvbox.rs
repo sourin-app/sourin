@@ -607,6 +607,58 @@ pub fn strip_tags(s: &str) -> String {
 /// ② 否则取 api 域名（去 www.）第一段，长度 ≥2 → 小写
 /// ③ 兜底 tvbox{index+1}
 /// ```
+/// CRC-32（IEEE 802.3，与 zlib/crc32 同参数）—— 只用来把名字压成 8 位十六进制
+///
+/// 为什么自己写 10 行而不是引 crate：`crc32` 这类小功能一旦引依赖，
+/// 就要为它背供应链与编译时间；而这里只需要"稳定、够散、跨平台一致"。
+fn crc32_ieee(bytes: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for b in bytes {
+        crc ^= *b as u32;
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+/// csp 源的 id 基串 —— **与配置里的顺序无关**
+///
+/// # 为什么不能沿用 `to_id`
+/// `to_id(name, api, index)` 对 csp 会一路退到 `format!("tvbox{}", index+1)`：
+/// ```text
+/// ① 名字里的 ASCII 字母数字 → "哔哩｜资源合集" 一个都没有
+/// ② host_of(api)            → api 是 "csp_Bili"，没有 http(s):// 前缀
+/// ③ 兜底                    → tvbox{配置序号}
+/// ```
+/// ⇒ 用户在配置里插一条/删一条/改顺序，再导入一次，**id 全变**：
+/// 旧源残留 + 收藏/进度对不上（而苹果CMS 有 ② 兜底，不受影响）。
+///
+/// # 现在的口径
+/// ```text
+/// csp-<class 小写>-<name 的 crc32 十六进制>
+/// 例：csp-bili-3f2a9c41
+/// ```
+/// 同一份配置里名字不同 ⇒ 不撞；重排 ⇒ **不变**。
+/// ⚠️ 名字完全相同（两份 csp_Bili 都叫"哔哩"）仍会撞 ⇒ 交给 `unique_id` 加 `-2`，
+///    那种情况下"顺序"是唯一可区分信息，退化是**必然**的，不是本函数的缺陷。
+fn csp_id_base(class: &str, name: &str) -> String {
+    format!(
+        "csp-{}-{:08x}",
+        class.to_ascii_lowercase(),
+        crc32_ieee(name.as_bytes())
+    )
+}
+
+/// 一个站点该用哪个 id 基串（按类型分流）
+fn id_base_for(job: &SiteJob) -> String {
+    match job.csp.as_deref() {
+        Some(class) => csp_id_base(class, &job.name),
+        None => to_id(&job.name, &job.api, job.index),
+    }
+}
+
 pub fn to_id(name: &str, api: &str, index: usize) -> String {
     let from_name: String = name
         .chars()
@@ -1874,7 +1926,8 @@ pub async fn import_tvbox_config(
                 continue;
             }
         };
-        let id = unique_id(&to_id(&job.name, &job.api, job.index), &mut used);
+        // ★ csp 源用"与顺序无关"的 id（见 csp_id_base）；其余沿用 to_id
+        let id = unique_id(&id_base_for(job), &mut used);
         // ★ 按站点类型建 Provider：csp_Bili 走 Rust 重写实现，其余走苹果CMS
         let provider = build_site_provider(
             &id,
@@ -2167,6 +2220,11 @@ pub struct RemoteSite {
     pub key: String,
     pub name: String,
     pub api: String,
+    /// 配置里的 `sites[].ext` 归一文本（没有 ⇒ None）
+    ///
+    /// ★ 参与 diff：csp 源的行为参数（站点列表/口令/分类名覆盖）全在 ext 里。
+    ///   不比它 ⇒ 用户改了 ext，检测更新会答"远端与本地一致，无需更新"。
+    pub ext: Option<String>,
 }
 
 /// 本地已注册的 TVBox 源（对比用）
@@ -2177,6 +2235,8 @@ pub struct LocalSite {
     pub key: String,
     pub name: String,
     pub api: String,
+    /// 已落盘记录里的 ext（`PersistedProvider::Tvbox.ext`）
+    pub ext: Option<String>,
     /// 这个源是不是**当前这份订阅**导入的
     ///
     /// # ★ 为什么必须有这个标记（真实场景）
@@ -2263,7 +2323,20 @@ pub fn diff_sites(local: &[LocalSite], remote: &[RemoteSite]) -> SiteDiff {
                 diff.unchanged_foreign += 1;
                 break;
             }
-            if normalize_api_url(&r.api) != normalize_api_url(&l.api) || r.name != l.name {
+            /*
+             * ★ ext 也要比：csp 源的"站点列表/口令/分类名覆盖"全在 ext 里，
+             *   不比它 ⇒ 用户改了 ext 却得到"无需更新"（第 19 项收口的缺口）。
+             *   归一：空白当 None，其余 trim 后逐字比（不做语义解析）。
+             */
+            let ext_of = |e: &Option<String>| -> Option<String> {
+                e.as_deref()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            };
+            if normalize_api_url(&r.api) != normalize_api_url(&l.api)
+                || r.name != l.name
+                || ext_of(&r.ext) != ext_of(&l.ext)
+            {
                 diff.changed.push(SiteChange {
                     id: l.id.clone(),
                     key: l.key.clone(),
@@ -2355,7 +2428,7 @@ pub fn multi_repo_repos(cfg: &serde_json::Value, base_url: &str) -> Vec<serde_js
 /// 从本地已注册的源里挑出 TVBox 源（id / name / api）
 fn local_tvbox_sources(
     state: &crate::state::AppState,
-) -> std::result::Result<Vec<(String, String, String)>, String> {
+) -> std::result::Result<Vec<(String, String, String, Option<String>)>, String> {
     let list = state
         .third_party
         .read()
@@ -2363,8 +2436,12 @@ fn local_tvbox_sources(
         .clone();
     let mut out = Vec::new();
     for p in list.iter() {
-        if let crate::model::PersistedProvider::Tvbox { id, name, api, .. } = p {
-            out.push((id.clone(), name.clone(), api.clone()));
+        // ★ 带上 ext：diff 要用它判断"远端改了 ext"（否则会答"无需更新"）
+        if let crate::model::PersistedProvider::Tvbox {
+            id, name, api, ext, ..
+        } = p
+        {
+            out.push((id.clone(), name.clone(), api.clone(), ext.clone()));
         }
     }
     Ok(out)
@@ -2386,7 +2463,7 @@ pub fn list_tvbox_sources(
     let metas = load_tvbox_metas(&state.data_dir);
     let mut out = Vec::new();
     let mut with_source = 0usize;
-    for (id, name, api) in sources.iter() {
+    for (id, name, api, _ext) in sources.iter() {
         let meta = metas.get(id);
         let url = meta
             .and_then(|m| m.source_url.clone())
@@ -2422,7 +2499,7 @@ pub fn set_tvbox_source(
     let sources = local_tvbox_sources(state)?;
     let found = sources
         .iter()
-        .find(|(sid, _, _)| sid == id)
+        .find(|(sid, _, _, _)| sid == id)
         .ok_or_else(|| format!("没有找到 TVBox 源 {id}"))?;
     let url = url.trim();
 
@@ -2496,11 +2573,11 @@ pub async fn check_tvbox_updates(
     let metas = load_tvbox_metas(&state.data_dir);
 
     // 按 id 过滤（只查一个源）
-    let picked: Vec<(String, String, String)> = match only_id {
+    let picked: Vec<(String, String, String, Option<String>)> = match only_id {
         Some(want) => {
             let one = sources
                 .iter()
-                .find(|(id, _, _)| id == want)
+                .find(|(id, _, _, _)| id == want)
                 .ok_or_else(|| format!("没有找到 TVBox 源 {want}"))?;
             vec![one.clone()]
         }
@@ -2518,7 +2595,7 @@ pub async fn check_tvbox_updates(
     // 要查的链接（去重；BTreeSet 保证顺序稳定，结果可复现）
     let mut wanted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut skipped_ids: Vec<String> = Vec::new();
-    for (id, _, _) in picked.iter() {
+    for (id, _, _, _) in picked.iter() {
         match url_of(id) {
             Some(u) => {
                 wanted.insert(u);
@@ -2538,11 +2615,12 @@ pub async fn check_tvbox_updates(
     for url in wanted.iter() {
         let pool: Vec<LocalSite> = sources
             .iter()
-            .map(|(sid, name, api)| LocalSite {
+            .map(|(sid, name, api, ext)| LocalSite {
                 id: sid.clone(),
                 key: metas.get(sid).map(|m| m.site_key.clone()).unwrap_or_default(),
                 name: name.clone(),
                 api: api.clone(),
+                ext: ext.clone(),
                 in_link: url_of(sid).as_deref() == Some(url.as_str()),
             })
             .collect();
@@ -2609,6 +2687,11 @@ pub async fn check_tvbox_updates(
                 key: j.key.clone(),
                 name: j.name.clone(),
                 api: normalize_api_url(&j.api),
+                // 空串 ⇒ None（与落盘口径一致：没写 ≠ 写了空）
+                ext: {
+                    let e = j.ext.trim();
+                    if e.is_empty() { None } else { Some(e.to_string()) }
+                },
             })
             .collect();
         let diff = diff_sites(&locals, &remote);
@@ -2658,7 +2741,7 @@ pub async fn update_tvbox_source(
     delete_missing: bool,
 ) -> std::result::Result<serde_json::Value, String> {
     let sources = local_tvbox_sources(state)?;
-    if !sources.iter().any(|(sid, _, _)| sid == id) {
+    if !sources.iter().any(|(sid, _, _, _)| sid == id) {
         return Err(format!("没有找到 TVBox 源 {id}"));
     }
     let Some(url) = read_tvbox_meta(&state.data_dir, id)
@@ -2693,11 +2776,12 @@ pub async fn update_tvbox_source(
     };
     let locals: Vec<LocalSite> = sources
         .iter()
-        .map(|(sid, name, api)| LocalSite {
+        .map(|(sid, name, api, ext)| LocalSite {
             id: sid.clone(),
             key: metas.get(sid).map(|m| m.site_key.clone()).unwrap_or_default(),
             name: name.clone(),
             api: api.clone(),
+            ext: ext.clone(),
             in_link: in_link(sid),
         })
         .collect();
@@ -2709,6 +2793,10 @@ pub async fn update_tvbox_source(
             key: j.key.clone(),
             name: j.name.clone(),
             api: normalize_api_url(&j.api),
+            ext: {
+                let e = j.ext.trim();
+                if e.is_empty() { None } else { Some(e.to_string()) }
+            },
         })
         .collect();
     let diff = diff_sites(&locals, &remote);
@@ -2821,7 +2909,7 @@ pub async fn update_tvbox_source(
                     continue;
                 }
                 (
-                    unique_id(&to_id(&job.name, &job.api, job.index), &mut used),
+                    unique_id(&id_base_for(job), &mut used),
                     true,
                 )
             }
@@ -4216,19 +4304,31 @@ mod task12_subscription {
     }
 
     fn remote(key: &str, name: &str, api: &str) -> RemoteSite {
+        remote_ext(key, name, api, None)
+    }
+
+    /// 带 ext 的远端站（task-42：diff 要比 ext）
+    fn remote_ext(key: &str, name: &str, api: &str, ext: Option<&str>) -> RemoteSite {
         RemoteSite {
             key: key.to_string(),
             name: name.to_string(),
             api: api.to_string(),
+            ext: ext.map(|s| s.to_string()),
         }
     }
 
     fn local(id: &str, key: &str, name: &str, api: &str) -> LocalSite {
+        local_ext(id, key, name, api, None)
+    }
+
+    /// 带 ext 的本地站
+    fn local_ext(id: &str, key: &str, name: &str, api: &str, ext: Option<&str>) -> LocalSite {
         LocalSite {
             id: id.to_string(),
             key: key.to_string(),
             name: name.to_string(),
             api: api.to_string(),
+            ext: ext.map(|s| s.to_string()),
             // 单测默认都是"本订阅的"
             in_link: true,
         }
@@ -5453,4 +5553,217 @@ async fn csp_live_import_persists_source_to_disk() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+}
+
+// ── ★ task-42：三处契约修正的门禁（陈旧报告到期 / csp id 顺序无关 / diff 比 ext）──
+#[cfg(test)]
+mod t1042_contract_fixes {
+    use super::*;
+    use crate::persist::{restore_failures_file, write_restore_failures, RestoreFailure};
+    use crate::state::AppState;
+
+    /// 本模块自带的站点构造器（task12 那两份是私有 helper，跨模块拿不到）
+    fn local_ext(id: &str, key: &str, name: &str, api: &str, ext: Option<&str>) -> LocalSite {
+        LocalSite {
+            id: id.to_string(),
+            key: key.to_string(),
+            name: name.to_string(),
+            api: api.to_string(),
+            ext: ext.map(|s| s.to_string()),
+            in_link: true,
+        }
+    }
+
+    fn remote_ext(key: &str, name: &str, api: &str, ext: Option<&str>) -> RemoteSite {
+        RemoteSite {
+            key: key.to_string(),
+            name: name.to_string(),
+            api: api.to_string(),
+            ext: ext.map(|s| s.to_string()),
+        }
+    }
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "sourin-t1042-{tag}-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        std::fs::create_dir_all(&d).expect("建临时目录失败");
+        std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+        d
+    }
+
+    // ── ① 陈旧失败报告必须"到期"（病修好后不能一直挂红字）──
+    #[tokio::test]
+    async fn stale_restore_failures_are_deleted_after_clean_boot() {
+        let dir = tmp("stale-report");
+        // 造一份"上次启动有失败"的报告
+        write_restore_failures(
+            &dir,
+            &[RestoreFailure {
+                id: "bad".to_string(),
+                api: "csp_PanWebShare".to_string(),
+                reason: "csp_PanWebShare 尚未实现".to_string(),
+            }],
+        )
+        .expect("写报告");
+        assert!(restore_failures_file(&dir).exists(), "前置：报告先在");
+
+        // 这次启动**零失败**（清单为空）
+        let _st = AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+
+        assert!(
+            !restore_failures_file(&dir).exists(),
+            "★★ 病修好之后再启动，旧报告必须被删 —— 陈旧告警比没有告警更误导。\
+             改前 state.rs 用 `if !restore_failures.is_empty()` 包着写调用 ⇒ 空列表时\
+             根本不调用、于是永远删不掉（注入：把那个 if 加回去，本条必红）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── ② csp id 与配置顺序无关（appleCMS 的 to_id 行为不变）──
+    #[test]
+    fn csp_id_base_is_order_independent_and_apple_path_kept() {
+        // csp：同名同类 ⇒ 同 id，与 index 无关（id_base_for 里不看 job.index）
+        let a = csp_id_base("Bili", "哔哩｜资源合集");
+        let b = csp_id_base("Bili", "哔哩｜资源合集");
+        assert_eq!(a, b, "同一份配置里同一源必须同 id");
+        assert!(a.starts_with("csp-bili-"), "口径：csp-<class 小写>-<crc32>，实际 {a}");
+        assert_ne!(
+            a,
+            csp_id_base("Bili", "哔哩｜音乐合集"),
+            "★ 不同名字必须不同 id（否则 10 个 csp_Bili 会撞成一个）"
+        );
+        // 顺序无关：文件名/序号不进 id —— 用两个不同 index 的 SiteJob 验证
+        let mk = |i: usize| SiteJob {
+            index: i,
+            key: "k".to_string(),
+            name: "哔哩｜资源合集".to_string(),
+            api: "csp_Bili".to_string(),
+            kind: Some(3),
+            csp: Some("Bili".to_string()),
+            ext: String::new(),
+        };
+        assert_eq!(
+            id_base_for(&mk(0)),
+            id_base_for(&mk(7)),
+            "★★ csp 的 id 不许含配置序号（插一条/重排就全变 ⇒ 旧源残留 + 收藏失配）"
+        );
+        // appleCMS 行为**不变**：仍由 api host 兜底，同样与 index 无关
+        assert_eq!(
+            to_id("非凡┃影视", "http://cj.ffzyapi.com/api.php/provide/vod", 3),
+            to_id("非凡┃影视", "http://cj.ffzyapi.com/api.php/provide/vod", 9),
+            "苹果CMS 的 id 本来就不该随 index 变（改名会破坏既有收藏）"
+        );
+    }
+
+    // ── ③ diff 必须能看出 ext 变化（否则"改了 ext 却报无需更新"）──
+    #[test]
+    fn diff_detects_ext_change() {
+        let l = vec![local_ext(
+            "id1",
+            "k1",
+            "哔哩｜资源合集",
+            "csp_Bili",
+            Some(r#"{"n":"旧"}"#),
+        )];
+        let r = vec![remote_ext(
+            "k1",
+            "哔哩｜资源合集",
+            "csp_Bili",
+            Some(r#"{"n":"新"}"#),
+        )];
+        let d = diff_sites(&l, &r);
+        assert_eq!(
+            d.changed.len(),
+            1,
+            "★★ ext 变了必须报 changed（csp 的站点列表/口令/分类覆盖都只在 ext 里）"
+        );
+        assert_eq!(d.added.len(), 0, "同一个 key 不是新增");
+        assert_eq!(d.removed.len(), 0, "同一个 key 不是消失");
+
+        // 对照一：ext 完全相同 ⇒ unchanged（不许对一切都报 changed）
+        let same = vec![remote_ext(
+            "k1",
+            "哔哩｜资源合集",
+            "csp_Bili",
+            Some(r#"{"n":"旧"}"#),
+        )];
+        let d2 = diff_sites(&l, &same);
+        assert_eq!(d2.changed.len(), 0, "ext 没变就不许报 changed");
+        assert_eq!(d2.unchanged, 1);
+
+        // 对照二：None 与 "空白串" 等价（落盘口径：没写 ≠ 写了空，但空白等于没写）
+        let l_none = vec![local_ext("id1", "k1", "同名", "csp_Bili", None)];
+        let r_blank = vec![remote_ext("k1", "同名", "csp_Bili", Some("   "))];
+        assert_eq!(
+            diff_sites(&l_none, &r_blank).changed.len(),
+            0,
+            "空白串应归一成 None，不许因此报 changed"
+        );
+    }
+
+    // ── ②b 真网络：同一份配置重排后重新导入 ⇒ 同一源 id 不变（#[ignore] 纪律）──
+    #[tokio::test]
+    #[ignore = "真网络：CSP_LIVE=1 cargo test --lib t1042 --release -- --ignored --nocapture"]
+    async fn csp_ids_survive_reorder_on_reimport() {
+        assert_eq!(
+            std::env::var("CSP_LIVE").ok().as_deref(),
+            Some("1"),
+            "★ 导入要探测 csp（真网络）：显式跑必须给 CSP_LIVE=1"
+        );
+        std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+        let dir_a = tmp("reorder-a");
+        let dir_b = tmp("reorder-b");
+
+        let site = |n: &str, key: &str| {
+            format!(
+                r#"{{"key":"{key}","name":"{n}","type":3,"api":"csp_Bili"}}"#
+            )
+        };
+        let cfg_a = format!(
+            r#"{{"sites":[{},{}]}}"#,
+            site("哔哩｜资源合集", "b1"),
+            site("哔哩｜音乐合集", "b2")
+        );
+        let cfg_b = format!(
+            r#"{{"sites":[{},{}]}}"#,
+            site("哔哩｜音乐合集", "b2"),
+            site("哔哩｜资源合集", "b1")
+        );
+
+        let st_a = AppState::bootstrap(dir_a.clone()).await.expect("bootstrap A");
+        let res_a = import_tvbox_config(&st_a, &cfg_a).await.expect("导入 A");
+        drop(st_a);
+        let st_b = AppState::bootstrap(dir_b.clone()).await.expect("bootstrap B");
+        let res_b = import_tvbox_config(&st_b, &cfg_b).await.expect("导入 B");
+
+        let ids = |res: &serde_json::Value| -> std::collections::BTreeMap<String, String> {
+            res["imported"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|r| {
+                    (
+                        r["name"].as_str().unwrap_or("").to_string(),
+                        r["id"].as_str().unwrap_or("").to_string(),
+                    )
+                })
+                .collect()
+        };
+        let (ia, ib) = (ids(&res_a), ids(&res_b));
+        println!("[EVIDENCE] t1042-reorder A={ia:?} B={ib:?}");
+        assert_eq!(ia.len(), 2, "两次导入都应得到 2 个源：{res_a} / {res_b}");
+        for name in ["哔哩｜资源合集", "哔哩｜音乐合集"] {
+            assert_eq!(
+                ia.get(name),
+                ib.get(name),
+                "★★ 重排配置后重新导入，「{name}」的 id 必须不变（否则收藏/进度全失配）"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
 }

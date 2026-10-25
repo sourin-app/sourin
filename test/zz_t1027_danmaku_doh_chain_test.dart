@@ -562,4 +562,139 @@ void main() {
       expect(body, contains('forHijackedDns'));
     });
   });
+
+  // ──────────────────────────────────────────────────────────────────────
+  //  ⑥ 实网复核后的两条修正（2026-10-25 真实 DoH 读数驱动）
+  //
+  //  实网读数（.probe/real-doh-20261025-191634.log）：
+  //    本机系统 DNS → 185.45.6.57 (IPv4) + 2a03:2880:…face:b00c (IPv6)
+  //    三家真 DoH   → 216.198.79.131 / .195 / .67（同 /24 不同末位，dns.google 两次都不同）
+  //
+  //  A：IPv4 185.45.6.57 此前**不在**伪造段表 ⇒ 判不出劫持（IPv6 却判得出）。
+  //  B：`different` **不等于**劫持 —— 多 A/anycast 时"不同"是常态。
+  // ──────────────────────────────────────────────────────────────────────
+  group('⑦ 实网复核修正（A：IPv4 伪造段；B："不同"≠劫持）', () {
+    test('★★★ A：IPv4 185.45.6.57 必须判得出（此前判不出，IPv6 却判得出）', () {
+      /*
+       * 为什么这条必须存在：`SocketException.resolvedAddress` 只带
+       * **OS 实际选去连的那一个**地址 ⇒ 选 IPv4 时用户看到"连不上"，
+       * 选 IPv6 时才看到"DNS 被劫持"。同一台机器两种结论 = 缺陷。
+       */
+      expect(DanmakuProbeReport.isKnownForgedAddress('185.45.6.57'), isTrue,
+          reason: '★★★ 实网实测的 IPv4 劫持段必须命中');
+      expect(DanmakuProbeReport.looksForged(<String>['185.45.6.57']), isTrue);
+      // 阴性对照：同一天的 DoH 真值一个都不许被判成伪造
+      for (final truth in <String>[
+        '216.198.79.131',
+        '64.29.17.131',
+        '216.198.79.67',
+        '64.29.17.67',
+        '216.198.79.195',
+      ]) {
+        expect(DanmakuProbeReport.isKnownForgedAddress(truth), isFalse,
+            reason: '$truth 是实网 DoH 真值，不许被判成伪造');
+      }
+      // 回归保护：IPv6 那条一直判得出
+      expect(
+        DanmakuProbeReport.isKnownForgedAddress(
+            '2a03:2880:f117:83:face:b00c:0:25de'),
+        isTrue,
+        reason: '★ IPv4/IPv6 两条路都要判得出来（只补 IPv4 不算完）',
+      );
+    });
+
+    test('★★★ B①：同一 /24 不同末位 ⇒ 判"一致"，不报劫持', () {
+      // 实网：.131/.195/.67 都在 216.198.79.0/24（另有 64.29.17.0/24）
+      expect(
+        compareDanmakuDns(<String>['216.198.79.67'],
+            <String>['216.198.79.131', '64.29.17.131']),
+        DanmakuDnsComparison.overlap,
+        reason: '★★★ 同 /24 必须算一致（否则健康网络也会被判"劫持"）',
+      );
+      expect(
+        compareDanmakuDns(<String>['64.29.17.67'], <String>['64.29.17.131']),
+        DanmakuDnsComparison.overlap,
+      );
+      final r = DanmakuProbeReport.forHijackedDns(
+        url: 'https://danmu-api-kappa.vercel.app',
+        localAddresses: const <String>['216.198.79.67'],
+        dohAddresses: const <String>['216.198.79.131'],
+        dohQueried: true,
+      );
+      expect(r.failure, DanmakuProbeFailure.dnsConsistent);
+      expect(r.failure, isNot(DanmakuProbeFailure.dnsHijacked));
+      expect(r.remedy, contains('别去改 DNS'));
+    });
+
+    test('★★★ B②：完全不相交 **且** 落在伪造段 ⇒ 判劫持', () {
+      expect(
+        compareDanmakuDns(<String>['74.86.17.48'], <String>['216.198.79.131']),
+        DanmakuDnsComparison.different,
+      );
+      final r = DanmakuProbeReport.forHijackedDns(
+        url: 'https://x',
+        localAddresses: const <String>['74.86.17.48'],
+        dohAddresses: const <String>['216.198.79.131'],
+        dohQueried: true,
+      );
+      expect(r.failure, DanmakuProbeFailure.dnsHijacked,
+          reason: '★★★ 有伪造段归属证据时才敢定案劫持');
+      expect(r.failure.title, contains('劫持'));
+      expect(r.remedy, contains('DNS 换成可信的'));
+    });
+
+    test('★★★ B③：完全不相交但两边都是正常段 ⇒ 判"不一致"，不得说劫持', () {
+      // 多 A / anycast 的真实形态：本机 216.198.79.67 vs 真值 64.29.17.131（跨 /24）
+      expect(
+        compareDanmakuDns(<String>['216.198.79.67'], <String>['64.29.17.131']),
+        DanmakuDnsComparison.different,
+      );
+      final r = DanmakuProbeReport.forHijackedDns(
+        url: 'https://x',
+        localAddresses: const <String>['216.198.79.67'],
+        dohAddresses: const <String>['64.29.17.131'],
+        dohQueried: true,
+      );
+      expect(r.failure, DanmakuProbeFailure.dnsInconsistent,
+          reason: '★★★ 没有伪造段证据 ⇒ 只能说不一致');
+      expect(r.failure, isNot(DanmakuProbeFailure.dnsHijacked));
+      expect(r.failure.title, isNot(contains('劫持')),
+          reason: '★★ 标题里不许出现"劫持"两个字');
+      expect(r.remedy, contains('别去改 DNS'));
+      expect(r.remedy, isNot(contains('DNS 换成可信的')),
+          reason: '★★★ 不许把用户推去改一个没坏的 DNS');
+      expect(r.detail, contains('不一致'));
+    });
+
+    test('★★ 三档（一致 / 不一致 / 劫持）的 title 与 remedy 两两不同', () {
+      final consistent = DanmakuProbeReport.forHijackedDns(
+        url: 'https://x',
+        localAddresses: const <String>['216.198.79.67'],
+        dohAddresses: const <String>['216.198.79.131'],
+        dohQueried: true,
+      );
+      final inconsistent = DanmakuProbeReport.forHijackedDns(
+        url: 'https://x',
+        localAddresses: const <String>['216.198.79.67'],
+        dohAddresses: const <String>['64.29.17.131'],
+        dohQueried: true,
+      );
+      final hijacked = DanmakuProbeReport.forHijackedDns(
+        url: 'https://x',
+        localAddresses: const <String>['74.86.17.48'],
+        dohAddresses: const <String>['216.198.79.131'],
+        dohQueried: true,
+      );
+      expect(
+        {consistent.failure.title, inconsistent.failure.title,
+                hijacked.failure.title}.length,
+        3,
+        reason: '★ 三档必须是三句不同的话（防止"换个说法"蒙过去）',
+      );
+      expect(
+        {consistent.remedy, inconsistent.remedy, hijacked.remedy}.length,
+        3,
+      );
+    });
+  });
 }

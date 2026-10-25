@@ -265,6 +265,19 @@ enum DanmakuProbeFailure {
   /// ⇒ 这一档既不能判劫持、也不能说没事；如实说"比不了"，**不猜**。
   /// ```
   dnsUnverifiable,
+
+  /// ★★★ 2026-10-25（实网复核后新增）：查到了真值、跨网段完全不重合，**但本机地址不在伪造段表**
+  ///
+  /// ```text
+  /// 实网实测（2026-10-25）：同一域名同一天，三家真 DoH 彼此就不一致
+  ///   cloudflare/doh.pub/1.12.12.12 → 216.198.79.131
+  ///   dns.google 两次              → 216.198.79.195 / 216.198.79.67
+  /// ⇒ 真实 CDN 多 A/anycast 是常态。**"不同"本身不构成劫持证据**。
+  /// 判据分层：
+  ///   different + 本机落伪造段 ⇒ dnsHijacked（有归属证据才敢定案）
+  ///   different + 两边都是正常段 ⇒ **本档**：如实说"不一致"，别叫人改 DNS
+  /// ```
+  dnsInconsistent,
 }
 
 extension DanmakuProbeFailureX on DanmakuProbeFailure {
@@ -283,6 +296,8 @@ extension DanmakuProbeFailureX on DanmakuProbeFailure {
        */
       this == DanmakuProbeFailure.dnsConsistent ||
       this == DanmakuProbeFailure.dnsUnverifiable ||
+      // 不一致但都是正常段 ⇒ 还是用户侧排查（重试/换实例），不是服务端坏了
+      this == DanmakuProbeFailure.dnsInconsistent ||
       this == DanmakuProbeFailure.connectionTimeout ||
       this == DanmakuProbeFailure.connectionRefused ||
       this == DanmakuProbeFailure.tlsFailed;
@@ -335,6 +350,8 @@ extension DanmakuProbeFailureX on DanmakuProbeFailure {
          */
         DanmakuProbeFailure.dnsConsistent => '域名解析正确（与权威 DNS 一致）· 不是劫持',
         DanmakuProbeFailure.dnsUnverifiable => '查到了权威真值，但没法与本机答案比较',
+        // ★ 与上一档的区别：这里**真的比过了**，只是不同；所以标题里不能有"劫持"两字
+        DanmakuProbeFailure.dnsInconsistent => '与本机解析不一致（可能是多地址 / CDN）',
         DanmakuProbeFailure.connectionTimeout => '连不上（连接超时）',
         DanmakuProbeFailure.connectionRefused => '连不上（连接被拒绝）',
         DanmakuProbeFailure.tlsFailed => '连不上（TLS 握手失败）',
@@ -452,6 +469,18 @@ class DanmakuProbeReport {
      *    但如果将来有人质疑，删掉这一条**不会削弱**定案能力
      *    （DoH 那条腿仍然兜得住）。
      */
+    (
+      prefix: '185.45.6.',
+      evidence: '★ 实网实测（2026-10-25，真实 DoH 对照）：本机系统 DNS 把 '
+          'danmu-api-kappa.vercel.app 解析到 185.45.6.57，而当日三家真 DoH '
+          '（cloudflare / doh.pub / 1.12.12.12）一致给出 216.198.79.131 · 64.29.17.131 '
+          '⇒ 与该字段无交集。'
+          '★ 为什么必须补这一条（IPv4/IPv6 两条路都要判得出来）：同一台机器同时拿到 '
+          'IPv6 2a03:2880:…:face:b00c（在表内 ⇒ 判得出劫持）与 IPv4 185.45.6.57'
+          '（此前「不在」表内 ⇒ 判不出）；而 SocketException.resolvedAddress '
+          '只带「OS 实际选去连的那一个」 —— 选到 IPv4 时上层只能看到"连不上"，'
+          '把用户指向网络/代理，方向就错了。这就是本次补它的原因。',
+    ),
     (
       prefix: '104.244.43.',
       evidence: '本轮实测本机返回过该段（104.244.43.182，无 PTR），'
@@ -688,7 +717,14 @@ class DanmakuProbeReport {
      *   · overlap     ⇒ [DanmakuProbeFailure.dnsConsistent]（"问题不在 DNS"）
      *   · unavailable ⇒ [DanmakuProbeFailure.dnsUnverifiable]（如实说比不了）
      */
-    final hijacked = cmp == DanmakuDnsComparison.different;
+    /*
+     * ★ 2026-10-25（实网复核）：**"不同"不再自动等于劫持**。
+     * 实网反例：一家真 DoH 自己两次就给了 .195 / .67（Vercel 多 A），
+     *   而本机若恰好命中 .67、DoH 给 .131 —— 完全健康的网络也会被判 different。
+     * ⇒ 现在只有"不同 **且** 本机地址落在已知伪造段"才定案劫持。
+     */
+    final different = cmp == DanmakuDnsComparison.different;
+    final hijacked = different && looksForged(localAddresses);
     final failure = !(dohQueried || doh.isNotEmpty)
         ? DanmakuProbeFailure.dnsHijacked // 没查 ⇒ 仍按"本机答案落在伪造段"报
         : doh.isEmpty
@@ -697,7 +733,9 @@ class DanmakuProbeReport {
                 ? DanmakuProbeFailure.dnsHijacked
                 : cmp == DanmakuDnsComparison.overlap
                     ? DanmakuProbeFailure.dnsConsistent
-                    : DanmakuProbeFailure.dnsUnverifiable;
+                    : different
+                        ? DanmakuProbeFailure.dnsInconsistent
+                        : DanmakuProbeFailure.dnsUnverifiable;
     /*
      * ★★★ 2026-10-19（任务 B）：detail 要让用户**自己看懂发生了什么**。
      *
@@ -749,6 +787,12 @@ class DanmakuProbeReport {
                 ? '本机解析到：$local\n'
                     '权威 DNS（加密查询）真值：$doh\n'
                     '⇒ 同一个域名，你这台机器拿到的和真实地址「不是一个东西」。'
+                : different
+                    ? '本机解析到：$local\n'
+                        '权威 DNS（加密查询）真值：$doh\n'
+                        '⚠️ 两边不在同一网段，但本机地址「不在」已知伪造段里 '
+                        '⇒ 这只能说明「不一致」，不能据此说被劫持'
+                        '（大站多 A / anycast 时，同一天不同源给出不同末位是常态）。'
                 : cmp == DanmakuDnsComparison.overlap
                     ? '本机解析到：$local\n'
                         '权威 DNS（加密查询）真值：$doh\n'
@@ -907,6 +951,15 @@ class DanmakuProbeReport {
               '（本机没留下可比的解析结果）。'
               '所以既不能说是劫持、也不能说没事 —— 这里不猜。'
               '请重试一次「测试连接」；若一直这样，把下面这句原文反馈给我们。',
+        /*
+         * ★★ 实网实测（2026-10-25）：三家真 DoH 彼此就会不一致（Vercel 多 A），
+         *   所以不能把用户推去改 DNS（那是没坑的东西）。
+         *   真要改 DNS 的前提是本机地址落在**伪造段**（那时走 dnsHijacked）。
+         */
+        DanmakuProbeFailure.dnsInconsistent =>
+          '本机与权威 DNS 拿到的不是同一组地址，但本机地址「不」在已知伪造段 '
+              '⇒ 这只能说明「不一致」，「别去改 DNS」（大站多地址时这是常态）。'
+              '先重试一次、或换一个实例。',
         DanmakuProbeFailure.connectionTimeout =>
           '连不上（超时）⇒ 地址解析出来了但连不过去，'
               '通常是「被墙 / 需要代理 / 路由不通」，'

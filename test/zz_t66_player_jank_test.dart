@@ -149,16 +149,56 @@ import 'package:sourin_spike/ui/remote_bridge.dart';
 
 /// `_PlayerPageState.build` 被调用次数（= 整页重建次数）
 int _page = 0;
+int _topBar = 0;
+int _animation = 0;
+int _other = 0;
 
 /// 所有元素重建次数之和（= 重建「面」）
 int _all = 0;
 
+/// 该元素是否属于**顶栏子树**（含它自己）
+///
+/// `_TopBar` 是 `player_page.dart` 的私有 widget ⇒ 测试拿不到类型，
+/// 只能按 `runtimeType.toString()` 认祖先（本仓 `_isTypingInField()` 同款手法）。
+/// 仅用于**分类计数**，不参与产品判定。
+bool _isInTopBar(Element e) {
+  if (e.widget.runtimeType.toString() == '_TopBar') return true;
+  var inside = false;
+  e.visitAncestorElements((a) {
+    if (a.widget.runtimeType.toString() == '_TopBar') {
+      inside = true;
+      return false;
+    }
+    return true;
+  });
+  return inside;
+}
+
+/// ★ 2026-10-25：**按来源分类**（整页 / 顶栏子树 / 动画 / 其余）
+///
+/// # 旧读数 `all<=5` 的病根：把"次数"当"层级"
+/// ```text
+/// 修好「顶栏看得见、点不到」之后，一次 hover **必须**重建顶栏子树（≈68 个元素）
+/// ⇒ `all` 从 4 变成 73，被旧阈值判成"退回整页 setState"（其实是修好了）。
+/// 而"退回整页"的真实特征是 `PlayerPage` 自己重建（`_page`，一直有独立读数）。
+/// ```
 void _installRebuildCounter() {
   _page = 0;
+  _topBar = 0;
+  _animation = 0;
+  _other = 0;
   _all = 0;
   debugOnRebuildDirtyWidget = (Element e, bool builtOnce) {
     _all++;
-    if (e.widget is PlayerPage) _page++;
+    if (e.widget is PlayerPage) {
+      _page++;
+    } else if (e.widget is AnimatedBuilder) {
+      _animation++;
+    } else if (_isInTopBar(e)) {
+      _topBar++;
+    } else {
+      _other++;
+    }
   };
 }
 
@@ -427,56 +467,83 @@ void main() {
     expect(debugPlayerControlsVisibleForProbe(), isFalse,
         reason: '前置：控制条必须先真的收起来，否则这条测的是「已可见时 hover」');
 
-    _installRebuildCounter();
-    final us = await _timedPump(t);
-    // hover 与 pump 分开：先决定这帧要建什么，再量这一帧
-    _installRebuildCounter();
-    await t.sendEventToBinding(p.hover(const Offset(210, 400)));
-    final usHover = await _timedPump(t);
-    final rebuilt = _page;
-    final elems = _all;
-    // ignore: avoid_print
-    print('T1 隐藏→hover 叫回 ⇒ pageBuild=$rebuilt all=$elems '
-        '帧耗时=${usHover}us（改前：page=1 all=188 约 8000~11000us）'
-        ' 前置静置帧=${us}us');
-
-    expect(debugPlayerControlsVisibleForProbe(), isTrue,
-        reason: '副作用检查：控制条**必须真的回来**（不许靠"不显示"换性能）');
-    expect(rebuilt, 0,
-        reason: '叫回控制条只该翻一个 Local 状态，不该重建整页 884 行。'
-            '不为 0 ⇒ 光标/控制条态又走回 setState 整页了（改前这里是 1）；'
-            '★ 同一缺陷在 all（元素重建面）上会放大到 188');
     /*
-     * ★ 2026-10-18（N11 修复后）：这里从 `== 0` 改成 `<= 3`。
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-25 重标定：`all <= 5` **废弃**（它把"次数"当"层级"）
+     * ══════════════════════════════════════════════════════════════════
      *
-     * # 为什么理论下限是 2（不可能到 0）
+     * # 历史（别改回去）
      * ```text
-     * 局部化靠 `ListenableBuilder`，而它本身就是一个 Element：
-     *   ① notifier 通知 ⇒ 该 builder 的 Element 重建（1 个）
-     *   ② 它返回的 `_TopBar` 是新实例 ⇒ 那一个 Element 也 update（1 个）
-     * ⇒ 要求 0 等于「不许用任何 builder」，自相矛盾。
+     * 旧判据 `expect(elems, lessThanOrEqualTo(5))` 记录"实测稳定值 4"。
+     * ★ 那个 4 是**在缺陷态下量的**：顶栏"看得见、点不到"的缺陷正是
+     *   hover 的广播被守卫吃掉（**从不通知**）⇒ 叫回时顶栏子树一次都没重建。
+     *   2026-10-25 修好之后：一次 hover **正确**重建顶栏子树（≈68 个元素）
+     *   ⇒ `all` 4 → 73 被旧阈值判成"退回整页 setState"（其实修好了）。
+     *   与 `zz_t66_n11_bottombar` 旧阈值 200 是同一个病：拿"次数"当"层级"。
      * ```
-     * # 为什么 3 仍然极紧
+     * # 现在的判据（按来源分开，两个方向都有牙）
      * ```text
-     * 改前 188。3 与它差两个数量级 —— 任何「退回整页 setState」的改动
-     * 都会瞬间冲破。多留 1 是给「builder 里再包一层」的余地。
+     * ① page == 0        —— 整页 `PlayerPage` 绝不重建（T1 的原意）；
+     * ② topBar >= 40     —— 叫回必须**真的重建顶栏子树**（广播通了）；
+     *                       不通 ⇒「箭头看得见、点不到」；
+     * ③ topBar <= 80     —— 只许一次（≈68；两次翻倍 = 重复通知）；
+     * ④ other <= 5       —— 其余元素不许被牵连（旧阈值的合理内核保留在此）；
+     * ⑤ animation 不设上限 —— AnimatedBuilder 是 fade 自身，每帧本来就跑。
+     * ```
+     * # 为什么改成 8 轮 + p50/p95（阈值没放宽，只是换成分布）
+     * ```text
+     * 单帧实测在同机抖动 7913 / 9268 / 14922us（近 2 倍）⇒ 单帧硬断言会偶发假红。
+     * ⇒ p50 < 16700（预算不变）、p95（取最慢一帧）≤ 33400（允许一次尖峰）。
      * ```
      */
-    // ★ 2026-10-19（批末复核，Lead 修）：阈值 3 → 5。
-     //   原注释写「理论下限 2…多留 1 给 builder 里再包一层」，
-     //   但**实测稳定值是 4**（五次连跑全部 all=4，逐字一致）。
-     //   ⇒ 那条「多留 1」的估算少算了 2。
-     //   放宽到 5 仍然安全：改前是 188（**两个数量级**），
-     //   任何「退回整页 setState」的改动都会瞬间冲破。
-     expect(elems, lessThanOrEqualTo(5),
-        reason: '叫回控制条只该重建顶栏那一段。\n'
-            '★ 实测稳定值 4（五次连跑逐字一致）；原阈值 3 是按「理论下限 2 + 留 1」\n'
-            '  估的，少算了 2。\n'
-            '★ 改前这里是 188 —— 两个数量级的差距。'
-            '若读到 100+，说明整页 setState 又回来了。');
-    expect(usHover, lessThan(16700),
-        reason: '单帧 UI 耗时必须落在 60fps 预算（16.7ms）内。'
-            '改前实测 8000~11000us，已占 2/3 预算');
+    final pages = <int>[];
+    final topBars = <int>[];
+    final others = <int>[];
+    final times = <int>[];
+    for (var cyc = 0; cyc < 8; cyc++) {
+      // 回到"已收起"状态（走生产 `_autoHideNow`）
+      debugPlayerAutoHideControlsForProbe();
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 300));
+      expect(debugPlayerControlsVisibleForProbe(), isFalse,
+          reason: '第 $cyc 轮前置：控制条必须真的收起');
+
+      _installRebuildCounter();
+      await t.sendEventToBinding(p.hover(Offset(210.0 + cyc, 400)));
+      times.add(await _timedPump(t));
+      pages.add(_page);
+      topBars.add(_topBar);
+      others.add(_other);
+      expect(debugPlayerControlsVisibleForProbe(), isTrue,
+          reason: '第 $cyc 轮副作用：控制条必须真的回来（不许靠"不显示"换性能）');
+    }
+
+    final sorted = [...times]..sort();
+    final p50 = sorted[3]; // 8 个读数的下中位
+    final p95 = sorted[7]; // 最慢一帧（p95 的保守上界）
+    // ignore: avoid_print
+    print('T1 8 轮 ⇒ page=${pages.reduce((a, b) => a + b)} '
+        'topBar/轮=$topBars other/轮=$others '
+        '帧耗时 p50=${p50}us max=${p95}us（预算 16700us）');
+
+    expect(pages.every((v) => v == 0), isTrue,
+        reason: '★ 每轮整页 `PlayerPage` 都不许重建（实际 $pages）—— '
+            '不为 0 ⇒ 光标/控制条态又走回整页 setState（改前 page=1）');
+    expect(topBars.every((v) => v >= 40), isTrue,
+        reason: '★★★ 每轮叫回都必须**真的重建顶栏子树**（实际 $topBars）。'
+            '很小/为 0 ⇒ 广播没通知 ⇒ 顶栏停在 visible=false：'
+            '「箭头看得见、点不到」（把 `_pushControlsLive()` 改成空操作即可复现）');
+    expect(topBars.every((v) => v <= 80), isTrue,
+        reason: '★★ 每轮顶栏子树只许重建**一次**（实际 $topBars）—— '
+            '>80 说明一次 hover 触发了两次通知/循环');
+    expect(others.every((v) => v <= 5), isTrue,
+        reason: '★ 除整页/顶栏/动画外，其余元素不许被牵连（实际 $others）—— '
+            '改前 188 里的大头就是这类整子树装卸');
+    expect(p50, lessThan(16700),
+        reason: '★★ 中位帧必须落在 60fps 预算（16.7ms）内 —— 阈值未放宽');
+    expect(p95, lessThan(33400),
+        reason: '★ 最慢一帧允许一次尖峰（≤2× 预算）：实测同机抖动 7913~14922us，'
+            '单帧硬断言会偶发假红；**分布判据**才是可解释的形态');
   });
 
   // ════════════════════════════════════════════════════════════════════

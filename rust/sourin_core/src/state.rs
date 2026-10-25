@@ -380,10 +380,16 @@ impl AppState {
          * 为什么不是只打 warn 就完：日志用户看不到，而"我明明导入过的源
          * 重启后没了"是必须能自查的事。写失败**不影响启动**（只是少一份报告）。
          */
-        if !restore_failures.is_empty() {
-            if let Err(e) = crate::persist::write_restore_failures(&data_dir, &restore_failures) {
-                log::warn!("写 restore-failures.json 失败（不影响启动）: {e}");
-            }
+        /*
+         * ★ 必须**无条件**调用（不能套 `if !restore_failures.is_empty()`）。
+         *
+         * 套了守卫的后果：上一次留下的失败报告，在"这次全部恢复成功"时
+         * **永远不会被删** —— 用户修好之后仍旧看到一条陈旧告警，
+         * 而陈旧告警比没有告警更误导。空列表由 `write_restore_failures`
+         * 自己翻译成"删文件"（见 persist.rs 的同名函数）。
+         */
+        if let Err(e) = crate::persist::write_restore_failures(&data_dir, &restore_failures) {
+            log::warn!("写 restore-failures.json 失败（不影响启动）: {e}");
         }
 
         /*

@@ -4172,6 +4172,21 @@ class SettingsPageState extends State<SettingsPage> {
          * 所以它就是原版「JS 插件」区块里那张 `.plug__list` ——
          * **不再有第二份** `_PluginTile` 列表。
          */
+        /*
+         * ★ 2026-10-26（用户当场看不到"聚合"的根因之一）：
+         *   列表为空时**必须有一句话 + 一个按钮**告诉用户下一步做什么。
+         *
+         * 改前：空列表就是一片空白。用户真实数据目录里
+         *   `third-party-providers.json == []`、`tvbox-sources.json` 不存在，
+         *   而"导入"入口藏在右上角 ⋮ 菜单里 ⇒ **用户不知道自己该点哪**。
+         * ⇒ 只在 `isEmpty` 时出现（非空时组件自己返回零尺寸）；
+         *   有源时**一个像素都不占**，原有布局零变化。
+         *   门禁 `zz_t1046` 用注入证明"有源时不许画"。
+         */
+        SourcesEmptyState(
+          isEmpty: list.isEmpty,
+          onImport: _openImportDialog,
+        ),
         ReorderableCardGrid(
           // ★ 只画非直播源（见本方法开头的说明）
           itemCount: list.length,
@@ -4904,6 +4919,67 @@ class _TestProviderCardsHostState extends State<_TestProviderCardsHost> {
             ),
         ],
       );
+}
+
+/// **空列表时的下一步提示**（第 20/19 项收口：用户当场"看不到聚合"的根因之一）
+///
+/// # 为什么需要它（用户数据是真实证据）
+/// ```text
+/// 用户真实数据目录里 `third-party-providers.json == []`、`tvbox-sources.json` 不存在
+/// ⇒ 他从没成功导入过 TVBox 配置；而"导入"入口藏在右上角 ⋮ 菜单里
+///   （tooltip「更多操作」→「导入」）⇒ **空列表 = 一片空白 = 用户不知道该点哪**。
+/// ```
+/// # 行为契约
+/// ```text
+/// isEmpty == true  ⇒ 一句人话 + 一个显式「导入」按钮（直接打开导入对话框）
+/// isEmpty == false ⇒ **零尺寸**（有源时不许占位、不许改变原布局）
+/// ```
+/// ⚠️ `isEmpty` 由**宿主**给（不自己判断列表），这样门禁能直接驱动两种状态；
+///    注入「忽略 isEmpty」⇒ 「有源时必须不画」那条立刻红。
+class SourcesEmptyState extends StatelessWidget {
+  const SourcesEmptyState({
+    super.key,
+    required this.isEmpty,
+    required this.onImport,
+  });
+
+  final bool isEmpty;
+  final VoidCallback onImport;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isEmpty) return const SizedBox.shrink();
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      key: const ValueKey<String>('sources-empty-state'),
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: Sp.x3),
+      padding: const EdgeInsets.all(Sp.x4),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
+        borderRadius: Radii.rLg,
+        border: Border.all(color: colors.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Text(
+            '还没有导入任何源 —— 点「导入」粘贴 TVBox 配置或订阅地址',
+            key: const ValueKey<String>('sources-empty-text'),
+            style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
+          ),
+          const SizedBox(height: Sp.x3),
+          FilledButton.icon(
+            key: const ValueKey<String>('sources-empty-import'),
+            onPressed: onImport,
+            icon: const Icon(AppIcons.download, size: 16),
+            label: const Text('导入'),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// 测试用的**最小宿主**：只持一张卡的展开态。

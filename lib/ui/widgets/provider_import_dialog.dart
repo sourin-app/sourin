@@ -868,8 +868,9 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
     Text(
       '粘贴 TVBox 配置 JSON（含 sites 段），或直接填配置地址。'
       '导入时会并发探测每个站点，只把能连上的建成内容源 —— '
-      'type1（苹果 CMS）可用；type3 需要 Java JAR / drpy 引擎，本机跑不了；'
-      'type0/4 是别的协议。直播源（lives）本版本不导入。',
+      'type1（苹果 CMS）可用；type3（csp 源）已支持 4 类共 20 个源，'
+      '其余类会显示「尚未实现」并写明原因；type0/4 是别的协议；'
+      '直播源（lives）本版本不导入。',
       style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
     ),
     const SizedBox(height: Sp.x3),

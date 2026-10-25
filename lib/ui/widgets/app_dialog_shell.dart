@@ -505,7 +505,7 @@ class AppDialogShell extends StatelessWidget {
      * ```
      * ⚠️ `glass == false` 时**原样返回** ⇒ 其余 6 个弹窗逐像素不变。
      */
-    final shelled = glass
+    final shelled = (glass && !skipGlassShellFor(context))
         ? GlassContainer(
             /*
              * ★ 玻璃轮廓的圆角取 `Radii.lg`（22），改前是硬编码 `20`。
@@ -817,3 +817,31 @@ class _ActionBar extends StatelessWidget {
     );
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  玻璃档的「要不要挂」判据（第 13 项：7ms 的模糊值不值得画）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 为什么这里会有一个开关
+// ```text
+// 本外壳的玻璃档内层是 `#14161B @ alpha 0.98`（见 build 里 glass 分支的 color）
+// ⇒ 玻璃画的模糊对最终像素的贡献上限只有 2%。
+// 要证明"糊了一层几乎看不见的东西"，只能把玻璃**摘掉再渲一张**逐像素比
+// （判据见 test/zz_t1044_glass_blur_parity_test.dart）。
+// ⇒ 这个开关是**仪器**：生产恒 false，行为逐字不变。
+// ```
+
+/// 测量时临时摘掉玻璃层（生产恒 false；逐像素对照用）
+///
+/// 与 `app_glass_dialog.dart` 的同名开关**各自独立**：两套外壳的
+/// "要不要挂玻璃"必须能单独验证，混用一个开关会让对照实验互相污染。
+@visibleForTesting
+bool debugSkipGlassShell = false;
+
+/// 这一次要不要跳过玻璃层
+///
+/// 两条判据：① 仪器开关；② 用户声明了"减少动效"（`disableAnimations`）。
+/// 对后者来说，这笔合成开销换不到任何信息 —— 模糊只是质感。
+bool skipGlassShellFor(BuildContext context) =>
+    debugSkipGlassShell ||
+    (MediaQuery.maybeOf(context)?.disableAnimations ?? false);

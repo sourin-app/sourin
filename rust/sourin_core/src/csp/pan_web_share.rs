@@ -348,8 +348,11 @@ pub fn home_from_html(html: &str) -> Result<CspHome, String> {
 /// `home` / `detail` / `play` 一直都给了可读 Err，只有 list 漏了 —— 现在补齐。
 pub fn list_from_html(html: &str, page: u32, path: &str) -> Result<CspList, String> {
     let items = parse_items(html);
-    let _ = path; // ★ 注入①：退回"空列表即 Ok"（假装支持）
-
+    if items.is_empty() {
+        return Err(format!(
+            "{path} 页面能打开但没解析出任何条目（站点模板可能已改版，或被风控页替换）"
+        ));
+    }
     Ok(CspList {
         items,
         page,

@@ -47,7 +47,7 @@ import 'package:flutter/widgets.dart';
 // 只为 GlassContainer（玻璃材质）。TODO(M5)：玻璃层若也自建则删本 import。
 // ignore: depend_on_referenced_packages
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
-    show GlassContainer, LiquidRoundedSuperellipse;
+    show GlassContainer, LiquidRoundedSuperellipse, LiquidShape;
 
 import '../../ui/theme/app_colors.dart';
 import '../../ui/tokens.dart' show Radii, Sp;
@@ -149,9 +149,12 @@ class AppGlassDialog extends StatelessWidget {
         alignment: Alignment.center,
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: maxWidth, maxHeight: maxHeight),
-          child: GlassContainer(
-            /*
-             * ★ 圆角取 `Radii.lg`（22），**不再写字面量**（改前是硬编码 20）。
+          child: _glassOrPlain(
+            context,
+            shape: const LiquidRoundedSuperellipse(borderRadius: Radii.lg),
+            child: DecoratedBox(
+              /*
+               * ★ 圆角取 `Radii.lg`（22），**不再写字面量**（改前是硬编码 20）。
              *
              * # 为什么改
              * ```text
@@ -171,9 +174,6 @@ class AppGlassDialog extends StatelessWidget {
              *      默认 clipBehavior = Clip.none）；非玻璃档才轮到内层 `Radii.rLg`。
              *   ⇒ 两边必须同时是 `Radii.lg`，否则玻璃档与非玻璃档圆角又分叉。
              */
-            shape: const LiquidRoundedSuperellipse(borderRadius: Radii.lg),
-            padding: EdgeInsets.zero,
-            child: DecoratedBox(
               /*
                * ★ 实色垫层（P0 修：正文对比度 2.01:1 —— 与 R3-① 同类缺陷）
                *
@@ -359,4 +359,54 @@ class AppGlassDialogActions extends StatelessWidget {
       ],
     );
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  玻璃层的「要不要挂」判据（第 13 项：7ms 的模糊值不值得画）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 为什么这里会有一个开关
+// ```text
+// 本卡片的内层垫层是**不透明**的（见 build 里 `c.surfaceContainerHigh`，
+// 深色 #171717 / 浅色 #FFFFFF，alpha 恒 1.0），且圆角与外层玻璃同为 Radii.lg
+// ⇒ 玻璃画的模糊/高光/描边全被这层盖住。
+// 要证明"糊了一层看不见的东西"，只能把玻璃**摘掉再渲一张**逐像素比
+// （判据见 test/zz_t1044_glass_blur_parity_test.dart）。
+// ⇒ 这个开关是**仪器**：生产恒 false，行为逐字不变。
+// ```
+
+/// 测量时临时摘掉玻璃层（生产恒 false；只给逐像素对照用）
+@visibleForTesting
+bool debugSkipGlassDialog = false;
+
+/// 这一次要不要跳过玻璃层
+///
+/// # 这是一条**有意的取舍**，不是性能优化
+/// ```text
+/// 省的是 raster 成本（玻璃档实测 raster p50 7155us / p95 7876us）；
+/// 代价是**可感知的**：逐像素对照（test/zz_t1044_glass_blur_parity_test.dart）
+///   摘掉玻璃 ⇒ Δpeak 58 / 受影响像素 0.71%，且差**全在边缘描边**，
+///   卡片内部 zero（interiorΔpeak = 0）。
+/// ⇒ 也就是说：这条分支不是"看不见的浪费"，而是"用户说少点效果，就少一点"。
+/// ```
+/// # 判据
+/// ① [debugSkipGlassDialog] —— 测量仪器（生产恒 false）；
+/// ② `MediaQuery.disableAnimations` —— 用户已声明减少动效/效果。
+///
+/// # 若要回退（Owner 认为不可接受时，**一行**）
+/// ```dart
+/// bool _skipGlass(BuildContext context) => debugSkipGlassDialog;
+/// ```
+bool _skipGlass(BuildContext context) =>
+    debugSkipGlassDialog ||
+    (MediaQuery.maybeOf(context)?.disableAnimations ?? false);
+
+/// 按 [_skipGlass] 决定是否包一层 `GlassContainer`
+Widget _glassOrPlain(
+  BuildContext context, {
+  required LiquidShape shape,
+  required Widget child,
+}) {
+  if (_skipGlass(context)) return child;
+  return GlassContainer(shape: shape, padding: EdgeInsets.zero, child: child);
 }

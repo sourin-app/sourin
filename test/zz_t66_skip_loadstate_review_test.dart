@@ -76,8 +76,32 @@ void main() {
     //
 
     testWidgets('★★★ A2：只加 runAsync（仍不注入）⇒ **失败文案出现**', (t) async {
-      // ★ 这是因果的关键一跳：A 与 A2 的**唯一**差别是「让真实事件循环跑」
+      /*
+       * ══════════════════════════════════════════════════════════════
+       * ★★★ 2026-10-26（与 t72_jank P0 同一口径）：**不赌固定窗口**
+       * ══════════════════════════════════════════════════════════════
+       *
+       * # 改前为什么会在全量里假红
+       * ```text
+       * 原来写死 `for (i<12) { delay(250ms); pump(); }` = **固定 3 秒**预算，
+       * 而这条用例等的是**真实 FFI** 的异常投递：
+       *   · 空闲时：实测 430~450ms 就投递完 ⇒ 3 秒够 ⇒ 绿
+       *   · 全量并发时：FFI/callAsync 被拖慢 ⇒ 3 秒内还没投递 ⇒ 仍停在 loading
+       *     ⇒ 「失败文案」找不到 ⇒ 红
+       * 而那时红的是"**仪器没等到异步落地**"，**说明不了产品有没有写失败文案**。
+       * ```
+       * # 改法（不放宽断言）
+       * ```text
+       * ① 把"固定 3 秒"换成**轮询到文案真的出现**（真实时间，上限 30 秒）；
+       * ② 上限到了还没出现 ⇒ 红在**专属原因**上，并打印现场（timeline/失败文案/转圈）；
+       * ③ 主断言仍是 `findsWidgets`（一个字都没放宽）。
+       * ```
+       */
+      final sw = Stopwatch()..start();
+      bool failedShown() =>
+          find.textContaining('读取跳过点失败').evaluate().isNotEmpty;
       await t.runAsync(() async {
+        // ★ 因果的关键一跳不变：A 与 A2 的唯一差别仍是「让真实事件循环跑」
         await t.pumpWidget(_host(const SkipMarkerDialog(
           provider: 'demo',
           id: 'reviewA2',
@@ -85,14 +109,23 @@ void main() {
           streamUrl: '',
           duration: Duration(minutes: 47, seconds: 6),
         )));
-        for (var i = 0; i < 12; i++) {
-          await Future<void>.delayed(const Duration(milliseconds: 250));
+        // 轮询：每 50ms 真实让一次事件循环，再 pump 一帧
+        while (sw.elapsed < const Duration(seconds: 30) && !failedShown()) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
           await t.pump();
           while (t.takeException() != null) {}
         }
       });
       // ignore: avoid_print
-      print('REVIEW|A2|${_probeCounts(t)}');
+      print('REVIEW|A2|${_probeCounts(t)} elapsed=${sw.elapsedMilliseconds}ms');
+
+      if (!failedShown()) {
+        fail('仪器没等到异步落地：真实 FFI 在 ${sw.elapsedMilliseconds}ms 内'
+            '没有把异常投递出来（现场 ${_probeCounts(t)}）'
+            '⇒ `_LoadState` 仍停在 loading，**不是产品没写失败文案**。'
+            '先重跑；若稳定复现，检查 `SourinApi.getSkipMarker` 是否被别处注入/'
+            '或核心处于"能成功返回"的状态（那样本用例的前提就不成立）。');
+      }
 
       // ★★★ A2 必须看到 failed 文案：真 FFI 异常在**真实时间**上投递了
       expect(

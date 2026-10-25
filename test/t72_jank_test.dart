@@ -199,6 +199,31 @@ void _prepareLibmpvFixture() {
       '候选 = ${_libmpvCandidates()}');
 }
 
+/// 把**挂载后的异步起播**跑干净，再开始计数
+///
+/// # 为什么必须有（全量里的假红就是这个）
+/// ```text
+/// `_mount()` 只 pump 了挂载帧；起播链路是**真异步**：
+///   `_load()` → `await SourinApi.resolveStream(...)`（FFI）→ `await _prepareResume()`
+///   → `setState(...)`（`_loading=false` / `_error` 等）
+/// 它的 setState **落在哪一帧完全取决于机器负载**：
+///   · 单跑/空闲：在 `_install()` 之前就落地 ⇒ 阴性对照读到 page=0 all=1（绿）
+///   · 全量并发：拖到 `_install()` **之后**才落地 ⇒ 阴性对照读到 page=1 ⇒ 红，
+///     而那时红的是"测量窗口被异步回调污染"，**说明不了产品对错**。
+/// ⇒ 对策：计数前先用 `runAsync` 让**真实**定时器/IO 跑一小段，再 pump 掉它引发的帧，
+///   使"起播已落定"成为计数前的**确定状态**（不是靠运气）。
+/// ```
+Future<void> _drainAsyncBoot(WidgetTester t) async {
+  // `runAsync` 里是**真实**异步区：FFI/IO 的完成回调能真正跑到
+  await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 60)));
+  // 把它引发的 setState 全部落到帧上（多 pump 几次，直到没有待处理帧）
+  for (var i = 0; i < 8; i++) {
+    await t.pump();
+    if (!t.binding.hasScheduledFrame) break;
+  }
+  _uninstall();
+}
+
 /// 依赖播放器的用例开头调用：`if (!_requireLibmpv()) return;`
 ///
 /// 返回 `true` = 夹具就绪可继续；`false` = **已标记跳过，调用方必须 return**
@@ -231,10 +256,15 @@ void main() {
     if (!_requireLibmpv()) return;
     await _mount(t);
 
+    // ★ 先把异步起播排空（否则它的 setState 可能落进测量窗口 —— 全量并发下的假红源）
+    await _drainAsyncBoot(t);
     _install();
     await t.pump();
     print('P0|阴性对照 pump(无状态变化) => page=$_page all=$_all');
-    expect(_page, 0, reason: '静置帧不该重建整页 —— 不为 0 说明仪器或页面有问题');
+    expect(_page, 0,
+        reason: '静置帧不该重建整页 —— 不为 0 说明**测量窗口被异步回调污染**'
+            '（起播 setState 落在 install 之后），或页面真的在无故重建。'
+            '★ 计数前已 `_drainAsyncBoot`，若仍读到 page>0 才怀疑产品');
     expect(_all, lessThanOrEqualTo(1),
         reason: '静置 **1 帧**最多 1 个元素重建。\n'
             '★★★ 2026-10-19（Lead 改）：原判据是 `expect(_all, 0)`，\n'
@@ -253,11 +283,32 @@ void main() {
 
     _install();
     final ok = debugPlayerOpenHintsForProbe();
+    /*
+     * ★ pump **两次**：`setState` 只标脏，第一次 pump 才真正跑 build；
+     *   若这一帧里还有别的 dirty 元素（或 load 的尾巴）被合并，
+     *   第二次 pump 保证"该建的那一帧"一定已经发生 —— 不靠"一次 pump 刚好够"。
+     */
+    await t.pump();
     await t.pump();
     print('P0|阳性对照 openHints(ok=$ok) => page=$_page all=$_all');
     expect(ok, isTrue, reason: '钩子本身要生效，否则下面的断言是空的');
+    /*
+     * ★ 阳性对照**不放宽**（仍然要求 page >= 1），但把"为什么没采到"分开报：
+     *   ① `page == 0` 且 `all == 0` ⇒ **仪器没采到帧**（钩子没挂上 / 被别的用例
+     *      覆盖 / 该 pump 内没有任何元素重建）—— 这是**仪器问题，不是产品问题**；
+     *   ② `all > 0` 但 `page == 0` ⇒ 真·没有整页重建（那才可能是产品的错）。
+     * ⇒ 红的时候一眼能分清该修仪器还是该查产品（Lead 要求的第 2 条）。
+     */
+    if (_page == 0 && _all == 0) {
+      fail('仪器没采到帧：`debugOnRebuildDirtyWidget` 在该 pump 内一次都没被调用'
+          '（page=0 all=0）⇒ **不是产品问题**。'
+          '先重跑；若稳定复现，检查是否有别的用例在 teardown 时把钩子清了'
+          '（`debugOnRebuildDirtyWidget = null`）。');
+    }
     expect(_page, greaterThanOrEqualTo(1),
-        reason: '阳性对照必须 >=1 —— 否则仪器没有区分力（铁律：一条永远为真的断言比没有断言更危险）');
+        reason: '阳性对照必须 >=1 —— 否则仪器没有区分力'
+            '（铁律：一条永远为真的断言比没有断言更危险）。'
+            '★ 这里只接受"page>=1"；`page==0 && all>0` 才是产品侧信号');
   });
 
   // ═══ 候选 A：hover 不再整页重建 ══════════════════════════════════════

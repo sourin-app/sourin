@@ -69,6 +69,8 @@
 // ```
 // ⚠️ 但**登录态**仍不可用：第二段 `POST /app/userInfo` 被服务端拒（code:1 user info error）。
 //    这不影响浏览/取流（上面四段都是在无 token 下跑通的）。
+// ⚠️ **play 的边界**：已验证的是"能拿到并返回播放地址"，**"真起播"没验过** ——
+//    要 media_kit/mpv 真把那串 m3u8 拉起来才算端到端。别把这条读成"已经播过"。
 // 证据：.probe/app99-live*.log、.probe/dex-App99-disasm.md
 // ```
 //
@@ -622,8 +624,10 @@ impl App99 {
         Ok(())
     }
 
-    /// 业务请求：body → 加密 → 签名 → POST → 解密 → JSON
-    async fn call(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
+    /// 业务请求：body → 加密 → 签名 → POST → **返回原始 base64 响应**
+    ///
+    /// 与 [`App99::call`] 分开，是为了能**把真实响应落成夹具**（测试要知道密文原文）。
+    async fn call_raw(&self, path: &str, body: serde_json::Value) -> Result<(String, String), String> {
         let (host, key, token, uuid, version, nonce, ts, enc) = {
             let g = self.state.lock().map_err(|_| "状态锁中毒".to_string())?;
             let st = g
@@ -681,7 +685,15 @@ impl App99 {
         if text.trim().is_empty() {
             return Err(format!("{path} 返回空响应"));
         }
-        let plain = decrypt_body(&key, text.trim()).map_err(|e| format!("{path} 响应解密失败：{e}"))?;
+        let _ = key; // 解密在 call() 里做（这里只负责把密文带出去）
+        Ok((uuid, text.trim().to_string()))
+    }
+
+    /// 业务请求：加密 → 签名 → POST → 解密 → JSON
+    async fn call(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
+        let (uuid, b64) = self.call_raw(path, body).await?;
+        let key = key_of(&uuid)?;
+        let plain = decrypt_body(&key, &b64).map_err(|e| format!("{path} 响应解密失败：{e}"))?;
         parse_loose_json(&plain).map_err(|e| format!("{path} 响应不是 JSON：{e}"))
     }
 }
@@ -961,6 +973,56 @@ mod tests {
         assert!(err.contains("name"), "错误要点名**第一个**缺的键（此处是 name）：{err}");
     }
 
+    // ── ★★ detail 真实响应验收（离线）：解出 play_from / play_url 并能映射成播放候选 ──
+    #[test]
+    fn decrypts_known_detail_fixture_to_playable_candidates() {
+        let mut cands = vec![
+            std::path::PathBuf::from(".probe/app99-known-detail.json"),
+            std::path::PathBuf::from("../.probe/app99-known-detail.json"),
+            std::path::PathBuf::from("../../.probe/app99-known-detail.json"),
+            std::path::PathBuf::from("../../../.probe/app99-known-detail.json"),
+        ];
+        let Some(path) = cands.iter_mut().find(|p| p.exists()).cloned() else {
+            eprintln!("[SKIP] 找不到 .probe/app99-known-detail.json —— detail 真实响应验收未执行");
+            return;
+        };
+        let raw = std::fs::read_to_string(&path).expect("读夹具");
+        let j: serde_json::Value = parse_loose_json(&raw).expect("夹具必须是 JSON");
+        let uuid = j.get("uuid").and_then(|x| x.as_str()).expect("夹具缺 uuid");
+        let b64 = j.get("response_b64").and_then(|x| x.as_str()).expect("夹具缺 response_b64");
+        let want_id = j.get("request_id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+
+        let key = key_of(uuid).expect("uuid 必须是合法密钥长度");
+        let plain = decrypt_body(&key, b64).expect("★ detail 真实响应必须能解开");
+        let v: serde_json::Value = parse_loose_json(&plain).expect("解出来必须是合法 JSON");
+        let data = v.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        assert!(!data.is_null(), "detail 响应里应有 data 字段");
+
+        // ★ 这条守的正是我当初写错的那个字段名错误：必须用 `play_from`/`play_url`
+        let from = data.get("play_from").and_then(|x| x.as_str()).unwrap_or("");
+        let url = data.get("play_url").and_then(|x| x.as_str()).unwrap_or("");
+        assert!(
+            !url.is_empty(),
+            "★ 真实 detail 响应里 `play_url` 不能为空（我最初写成 vod_play_url 就是这条抓出来的）"
+        );
+        eprintln!("[FIXTURE-DETAIL] play_from={from:?} play_url 前 120 字符={}", &url[..url.len().min(120)]);
+
+        // 还能映射成播放候选（否则"解得开但用不了"）
+        let det = detail_of(&data, &want_id).expect("应能映射成 CspDetail");
+        assert!(!det.episodes.is_empty(), "至少 1 集");
+        assert!(
+            det.episodes[0].id.starts_with("http"),
+            "首集应是 http(s) 地址，实际 {}",
+            det.episodes[0].id
+        );
+        eprintln!(
+            "[FIXTURE-DETAIL] 映射结果：标题={} 集数={} 首集={}",
+            det.title,
+            det.episodes.len(),
+            det.episodes[0].id
+        );
+    }
+
     // ── ★★ 真实响应验收（lead 要的那条）：读夹具 → 解密 → 合法 JSON + 含 player ──
     //
     // 夹具由 `app99_live_handshake_and_search_decrypt_to_json` 在真网络成功时写出：
@@ -1024,7 +1086,8 @@ mod tests {
             "★ 这条要真网络：显式跑就必须给 CSP_LIVE=1（不给就失败，不许记成 ok）"
         );
         // ext 取自用户配置里 csp_App99 的那个源（不含任何账号凭据）
-        let ext = r#"{"host":"http://103.217.190.91:19987/app/bn","appkey":"24d625a8a29b4700a1a294c6f3b29e2c","versionName":"3.5.8","name":"半日闲","package":"com.yf.lelian","buildNumber":"2001","buildSignature":"A40DA80A59D170CAA950CF15C18C454D47A39B26989D8B640ECD745BA71BF5DC"}"#;
+        // ★ 固定 uuid：夹具要能离线复算，就必须知道当时用的 key
+        let ext = r#"{"host":"http://103.217.190.91:19987/app/bn","appkey":"24d625a8a29b4700a1a294c6f3b29e2c","versionName":"3.5.8","name":"半日闲","package":"com.yf.lelian","buildNumber":"2001","buildSignature":"A40DA80A59D170CAA950CF15C18C454D47A39B26989D8B640ECD745BA71BF5DC","uuid":"b2d948ee-3f9f-52ea-3bbf-98ffc4bd1266"}"#;
         let site = App99::new();
         // ① 握手（内部就是 systemInit：加密 + 签名 + 解密）
         let home = site.home(ext).await;
@@ -1054,8 +1117,29 @@ mod tests {
         };
         assert!(!l.items.is_empty(), "搜索应至少返回 1 条真实条目");
 
-        // ③ 详情（真网络）：用搜索首条的 id
+        // ③ 详情（真网络）：用搜索首条的 id，并**落一份真实响应夹具**（可离线复算）
         let first = l.items[0].id.clone();
+        if let Ok((uuid, b64)) = site
+            .call_raw("/vod/detail", serde_json::json!({ "id": first }))
+            .await
+        {
+            let fixture = serde_json::json!({
+                "captured_at": "2026-10-26",
+                "endpoint": "/vod/detail",
+                "request_id": first,
+                "uuid": uuid,
+                "response_b64": b64,
+            });
+            if let Ok(body) = serde_json::to_string_pretty(&fixture) {
+                for p in [
+                    "../.probe/app99-known-detail.json",
+                    "../../.probe/app99-known-detail.json",
+                ] {
+                    let _ = std::fs::write(p, &body);
+                }
+                eprintln!("[APP99] detail 夹具已写出（{} 字节）", body.len());
+            }
+        }
         let det = site.detail(&first, ext).await;
         match &det {
             Ok(d) => eprintln!(

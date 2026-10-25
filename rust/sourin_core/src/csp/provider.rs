@@ -343,7 +343,9 @@ mod tests {
         let err = CspProvider::new("id", "名", sample, "", Vec::new())
             .err()
             .expect("没实现的类不能建 Provider");
-        assert_eq!(err, format!("{sample} 尚未实现"));
+        // ★ 文案的唯一来源是 `unimplemented_reason`（App99 这种"有具体原因"的类
+        //   文案会是"暂不可用：…"，硬编码"尚未实现"就会随升级假红）
+        assert_eq!(err, crate::csp::unimplemented_reason(sample));
     }
 
     #[test]

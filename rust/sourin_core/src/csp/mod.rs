@@ -33,6 +33,7 @@
 // ★ ② 的文案是**唯一来源** [`unimplemented_reason`] —— 不许各处自己拼，
 //   否则同一个东西在不同界面（导入报告 / 检测更新 / 日志）文案会漂。
 
+pub mod app99;
 pub mod bili;
 pub mod pan_web_share;
 pub mod zhinan;
@@ -86,7 +87,26 @@ pub fn is_csp(api: &str) -> bool {
 /// 形如 `csp_AppDrama 尚未实现` —— 与配置里写的 api 逐字对应，
 /// 用户能直接看出是哪个类、并且知道**不是配置坏了**。
 pub fn unimplemented_reason(api: &str) -> String {
-    format!("{} 尚未实现", api.trim())
+    let api = api.trim();
+    match unimplemented_note(api) {
+        // ★ 有具体原因的类：说清"为什么还不能用"，比笼统的"尚未实现"更有用，
+        //   也不会被误读成"我们还没动手"（App99 是**实现完了但服务端拒绝**）。
+        Some(note) => format!("{api} 暂不可用：{note}"),
+        None => format!("{api} 尚未实现"),
+    }
+}
+
+/// 已知的"不是简单未实现"的具体原因（按 api 逐字匹配）
+///
+/// 为什么需要它：`csp_App99` 的代码已经写完并验证到"能解开真实响应"，
+/// 卡在服务端拒绝第二段握手 —— 说成"尚未实现"是**不准确**的。
+pub fn unimplemented_note(api: &str) -> Option<&'static str> {
+    match class_of(api)? {
+        // App99 已注册（浏览链路实证可用）⇒ 不再需要"暂不可用"的原因。
+        // 保留这个 match 作为**机制**：将来某个类"实现了但被服务端挡住"时，往这里加一条。
+        "App99" => None,
+        _ => None,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -215,6 +235,11 @@ fn build_registry() -> BTreeMap<&'static str, Builder> {
     // csp_PanWebShare：配置里覆盖 6 个源（仅次于 csp_Bili）。
     // 浏览类接口（home/list/detail）真抓站点 HTML；网盘分享的直链需要
     // 账号 + 本地转发服务 ⇒ play 如实报「需要登录」（见该文件头的能力边界）。
+    // csp_App99：配置里 2 个源。AES/CBC 加密协议（取证 + 真网络都过了，见文件头）。
+    // ⚠️ 已验：home（8 分类）/ list（20 条目）；未验：detail / play。
+    m.insert(app99::App99::CLASS, || {
+        Arc::new(app99::App99::new()) as Arc<dyn CspSite>
+    });
     m.insert(pan_web_share::PanWebShare::CLASS, || {
         Arc::new(pan_web_share::PanWebShare::new()) as Arc<dyn CspSite>
     });
@@ -308,7 +333,9 @@ pub fn unimplemented_sample() -> &'static str {
         "csp_4KZhinan",
     ];
     for c in CANDIDATES {
-        if !is_implemented(c) {
+        // ★ 有 unimplemented_note 的类（如 App99）文案是"暂不可用：…"，
+        //   不能拿来当"尚未实现"字面量的样本 —— 否则断言会随文案升级而假红。
+        if !is_implemented(c) && unimplemented_note(c).is_none() {
             return c;
         }
     }

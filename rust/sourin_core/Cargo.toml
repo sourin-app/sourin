@@ -81,6 +81,17 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 #   已在依赖树里（reqwest 的 deflate 特性间接引入 flate2 1.1.10），
 #   这里只是提成直接依赖，**不新增编译单元**。
 flate2 = "1"
+
+# ★ 第19项 csp_App99（2026-10-26）：响应/请求体是 AES-128/256-CBC + PKCS5。
+#   **为什么不能用 ring**：ring 只提供 AES-**GCM**，没有 CBC 模式（本项目的凭据加密用 GCM 是对的，
+#   但这里必须与站点协议一致）；`aes` + `cbc` 是 RustCrypto 的纯 Rust 实现，
+#   无 C 依赖、不引入任何运行时，编译产物很小。
+#   `cipher` 是这两个 crate 的共同底座（由 `cbc` 传递引入，不另外指定版本）。
+#   已用于 App99（浏览链路对真实站点实证：home 8 分类 / list 20 条；
+#   userInfo 被拒只影响登录态）。
+aes = "0.8"
+cbc = "0.1"
+
 log = "0.4"
 
 # ★ 凭据加密（2026-10-18，CS-1）

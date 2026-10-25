@@ -1500,6 +1500,37 @@ class SourinApi {
     return TvboxSourceList.fromJson(jmap(r));
   }
 
+  /// ★ 上次启动**哪些源没恢复 + 为什么**（第19项第 4 处"不告知"的补口）
+  ///
+  /// # 这条命令解决什么
+  /// csp 源重启恢复失败时，以前只有日志一句 warn + 磁盘一个文件，
+  /// **界面什么都不说** —— 用户只知道"我的源没了"。
+  /// 现在把清单读回来，由 [TvboxRestoreFailuresView] 在源对话框/更新结果里点名。
+  ///
+  /// # 纯本地读
+  /// Rust 侧直接读 sidecar（`restore-failures.json`），不发任何网络请求。
+  static Future<List<RestoreFailure>> restoreFailures() async {
+    final f = debugRestoreFailuresFetcher;
+    if (f != null) return f();
+    final r = await SourinCore.callAsync('restore_failures');
+    return parseRestoreFailures(jmap(r));
+  }
+
+  /// 把 Rust 的 `{"count":N,"items":[…]}` 解析成清单
+  ///
+  /// ⚠️ 拆成独立函数（而不是藏在 [restoreFailures] 里）是为了**可单测**：
+  ///    `flutter test` 里没有 dll，`callAsync` 必然失败，行为判据只能靠喂 JSON。
+  @visibleForTesting
+  static List<RestoreFailure> parseRestoreFailures(Map<String, dynamic> j) {
+    final raw = j['items'];
+    if (raw is! List) return const <RestoreFailure>[];
+    return raw
+        .whereType<Map>()
+        .map((m) => RestoreFailure.fromJson(m.cast<String, dynamic>()))
+        .where((f) => f.id.isNotEmpty || f.api.isNotEmpty)
+        .toList(growable: false);
+  }
+
   /// 给某个 TVBox 源指定/清除订阅链接
   ///
   /// ```text
@@ -2174,6 +2205,13 @@ class SourinApi {
 
   /// 凭据同步状态的注入点（同上面三个的理由 —— 只读接口才给注入）
   @visibleForTesting
+  /// ★ 恢复失败清单的注入点（`null` = 走真核心）
+  ///
+  /// 为什么需要：`flutter test` 里没有 dll ⇒ `callAsync('restore_failures')` 必失败，
+  /// 而"有清单要画提示 / 没清单不许画"这两条**渲染**判据必须能在测试里驱动。
+  @visibleForTesting
+  static Future<List<RestoreFailure>> Function()? debugRestoreFailuresFetcher;
+
   static Future<CredentialsStatus> Function()? debugCredentialsStatusFetcher;
 
   /// 装/卸这三个注入点（`null` = 恢复真实实现）
@@ -3228,6 +3266,32 @@ class TvboxSourceInfo {
         siteKey: j['siteKey'] as String? ?? '',
         installedAt: (j['installedAt'] as num?)?.toInt() ?? 0,
       );
+}
+
+/// 一条「上次启动没能恢复的源」
+///
+/// 字段与 Rust 侧 `persist::RestoreFailure` **逐字对应**（`id` / `api` / `reason`）。
+/// `reason` 是**实现层的原文**（例如「csp_X 尚未实现」），Dart 侧只展示、不改写 ——
+/// 「尚未实现」和「网络失败」是两件事，用户据此决定该等版本还是重试。
+class RestoreFailure {
+  const RestoreFailure({
+    required this.id,
+    required this.api,
+    required this.reason,
+  });
+
+  factory RestoreFailure.fromJson(Map<String, dynamic> j) => RestoreFailure(
+        id: (j['id'] ?? '').toString(),
+        api: (j['api'] ?? '').toString(),
+        reason: (j['reason'] ?? '').toString(),
+      );
+
+  final String id;
+  final String api;
+  final String reason;
+
+  /// 给用户看的名字：优先 `api`（例如「csp_PanWebShare」），没有就退回 id
+  String get displayName => api.isNotEmpty ? api : id;
 }
 
 /// [SourinApi.listTvboxSources] 的返回

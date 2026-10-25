@@ -122,6 +122,24 @@ pub fn write_restore_failures(dir: &Path, rows: &[RestoreFailure]) -> Result<(),
     Ok(())
 }
 
+/// 恢复失败清单的**对外视图**（FFI 命令 `restore_failures` 的唯一数据源）
+///
+/// # 为什么单独一个函数，而不是让 ffi 直接拼 JSON
+/// 判据只有一份：`count` 与 `items` 必须同源（否则界面可能出现
+/// "写了 2 条但说 0 条"这种自相矛盾的读数）。单测也只需要喂一个目录。
+///
+/// 返回结构（与 Dart 侧 `SourinApi.restoreFailures` 逐字对应）：
+/// ```json
+/// {"count": 1, "items": [{"id":"…","api":"csp_X","reason":"csp_X 尚未实现"}]}
+/// ```
+pub fn restore_failures_json(dir: &Path) -> serde_json::Value {
+    let rows = load_restore_failures(dir);
+    serde_json::json!({
+        "count": rows.len(),
+        "items": rows,
+    })
+}
+
 /// 读恢复失败报告（不存在 / 损坏 ⇒ 空列表，**绝不 panic**）
 pub fn load_restore_failures(dir: &Path) -> Vec<RestoreFailure> {
     match std::fs::read_to_string(restore_failures_file(dir)) {
@@ -247,6 +265,31 @@ mod tests {
             }
             _ => panic!("应识别为 tvbox"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
+    /// `restore_failures_json`：count 与 items 同源；无报告时是空数组（不是 null）
+    #[test]
+    fn restore_failures_json_shape_and_empty() {
+        let dir = tmp_dir("rfjson");
+        let empty = restore_failures_json(&dir);
+        assert_eq!(empty["count"], 0, "没有报告时 count 必须是 0：{empty}");
+        assert!(
+            empty["items"].as_array().map(|a| a.is_empty()).unwrap_or(false),
+            "items 必须是空数组（不是 null —— Dart 侧按 List 解析）：{empty}"
+        );
+
+        let rows = vec![RestoreFailure {
+            id: "tvbox3".to_string(),
+            api: "csp_PanWebShare".to_string(),
+            reason: "csp_PanWebShare 尚未实现".to_string(),
+        }];
+        write_restore_failures(&dir, &rows).expect("写报告");
+        let v = restore_failures_json(&dir);
+        assert_eq!(v["count"], 1);
+        assert_eq!(v["items"][0]["id"], "tvbox3");
+        assert_eq!(v["items"][0]["reason"], "csp_PanWebShare 尚未实现");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

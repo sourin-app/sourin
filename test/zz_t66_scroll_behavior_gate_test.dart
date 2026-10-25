@@ -183,8 +183,70 @@ child: ScrollConfiguration(
         reason: '★★★ `ScrollableDetails` 只有 4 个字段（direction/controller/physics/'
             'decorationClipBehavior）。手写构造器搬字段出过错：\n'
             '  ① 用错字段名 ② 多写了不存在的 restorationId\n'
-            '`copyWith` 是 SDK 维护的，加字段时不会漏。',
+            '`copyWith` 是 SDK 维护的，加字段时不会漏。\n'
+            '★★ 但 **`copyWith` 存在 ≠ `copyWith` 里只有安全字段**：\n'
+            '   `_WrappedScrollBehavior.shouldNotify` 对 `physics`/`platform` 是'
+            '**按实例比较**的 ⇒ 往里塞「每次 build 新建」的实例会让每一帧都判'
+            '"behavior 变了" ⇒ ScrollPosition 被重建 ⇒ 在飞的拖拽/惯性丢失。\n'
+            '   实测证据：`.probe/item04-inject-physics.log`（`+4 -1`，'
+            'offset 仍是 320.0 但 activity 从 null 变 IdleScrollActivity）。\n'
+            '   ⇒ 下面那条判据（`copyWith` 里不许出现 physics:/platform:）守的就是它。',
       );
+    });
+
+    /*
+     * ★★★ 2026-10-25（第 04 项注入红取证后补的判据）
+     *
+     * # 为什么需要它（上一组 6 条**一条都抓不到**这个形态）
+     * ```text
+     * 上面那条只断言 `.copyWith(` **存在** ⇒ 往实参里加 `physics: ClampingScrollPhysics()`
+     * 它**照样绿**（判据是反向的）。而 zz_t1026 的 `same(position)` 虽然能抓，
+     * 但那是**行为**测试（要真挂载真滚动），比源码门禁慢且晚。
+     * ⇒ 这里补一条静态判据，与行为判据形成"双保险"。
+     * ```
+     *
+     * # 注入实测（撤销验证，已恢复）
+     * ```text
+     * 往 `SourinHorizontalRail.build` 的 copyWith 里加一行
+     *   `physics: ClampingScrollPhysics(),`
+     * ⇒ zz_t1026: +4 -1（test:159 `expect(controller.position, same(position))` 红）
+     *   红正文：offset 两边都是 320.0，但实例号 #685bc → #003b1、
+     *   activity 从 null → IdleScrollActivity#ba29a（= 在飞活动被丢）
+     * ⇒ 本判据同时变红。日志 `.probe/item04-inject-physics.log`。
+     * ```
+     *
+     * ⚠️ **必须先剥注释**：本仓 `lib/ui/widgets/sourin_scroll_behavior.dart`
+     *   的 doc 注释里**故意**写着 `physics: ClampingScrollPhysics()` 当反例（第 26 行），
+     *   不剥就会恒红 —— 这正是本文件 `_stripComments` 存在的理由。
+     */
+    test('★★★ SourinHorizontalRail 的 copyWith 里不许出现 physics:/platform:', () {
+      final src = _stripComments(_read('lib/ui/widgets/sourin_scroll_behavior.dart'));
+      final at = src.indexOf('parent.copyWith(');
+      expect(at, greaterThanOrEqualTo(0),
+          reason: '前提：`SourinHorizontalRail` 里那次 `parent.copyWith(` 调用点还在'
+              '（上面那条已钉"必须用 copyWith"）');
+      // 取到该调用的实参串。本文件这次调用的实参里没有嵌套圆括号
+      // （`{...parent.dragDevices, PointerDeviceKind.mouse}` / `scrollbars: false`），
+      // 所以"到第一个右括号"就够；若将来实参里出现括号，改为括号配对扫描。
+      final close = src.indexOf(')', at);
+      expect(close, greaterThan(at), reason: '前提：copyWith 调用的右括号');
+      final args = src.substring(at, close);
+      for (final bad in const ['physics:', 'platform:']) {
+        expect(args.contains(bad), isFalse,
+            reason: '★★ `copyWith` 里出现 `$bad` ⇒ 每次 build 新建实例 ⇒ '
+                '`shouldNotify` 按实例比较 ⇒ ScrollPosition 被重建（offset 保住但'
+                '**在飞拖拽/惯性丢失**）。\n'
+                '要么不加，要么加 `const` 实例。\n'
+                '实测证据：`.probe/item04-inject-physics.log`。实参串：$args');
+      }
+      /*
+       * ★ 阳性对照（防空转）：判据本身**确实**能看见 `physics:`。
+       *   反面：把 `args` 错取成空串、或把 `contains` 写成恒 false ⇒ 这条红。
+       */
+      const injected = 'parent.copyWith(physics: ClampingScrollPhysics(), '
+          'dragDevices: d, scrollbars: false)';
+      expect(injected.contains('physics:'), isTrue,
+          reason: '★ 阳性对照失败：注入形态（copyWith 里带 physics:）必须能被判据看见');
     });
   });
 

@@ -700,7 +700,18 @@ Widget _resultBox(ColorScheme colors, List<Widget> children) {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
-      children: children,
+      children: [
+        /*
+         * ★ 上次启动没能恢复的源（第19项第 4 处「不告知」的出口）
+         *
+         * 挂在结果盒子顶部而不是各视图里各写一遍：这个盒子是
+         * 「源对话框」与「更新结果面板」**共用**的容器 ⇒ 一处插入两处生效，
+         * 也不会因为将来新增第三个视图再漏一次。
+         * 空清单时它渲染 `SizedBox.shrink()` ⇒ 不占位、不画（阴性对照见单测）。
+         */
+        const TvboxRestoreFailuresView(),
+        ...children,
+      ],
     ),
   );
 }
@@ -843,5 +854,122 @@ class TvboxUpdateResultView extends StatelessWidget {
         ),
       ],
     ]);
+  }
+}
+
+/// 「上次启动没能恢复的源」提示条 —— 有才画，没有就一行都不占
+///
+/// # 为什么必须有它（第19项第 4 处「不告知」）
+/// csp 源重启恢复失败时，以前只有日志一句 warn 和磁盘上一个文件，
+/// 界面上什么都不说 ⇒ 用户只知道「我的源没了」，不知道是**哪个、为什么**。
+///
+/// # 两种数据来源
+/// ```text
+/// failures == null  → 自己去问核心（SourinApi.restoreFailures，纯本地读）
+/// failures != null  → 直接用（单测用它喂「有清单」「空清单」两种情形）
+/// ```
+/// ★ 读不到（无核心/命令未接）时**什么都不画**：宁可不说，也不假告警。
+class TvboxRestoreFailuresView extends StatefulWidget {
+  const TvboxRestoreFailuresView({super.key, this.failures});
+
+  /// 直接给定的清单（测试注入；null ⇒ 走核心）
+  final List<RestoreFailure>? failures;
+
+  @override
+  State<TvboxRestoreFailuresView> createState() =>
+      _TvboxRestoreFailuresViewState();
+}
+
+class _TvboxRestoreFailuresViewState extends State<TvboxRestoreFailuresView> {
+  List<RestoreFailure> _rows = const <RestoreFailure>[];
+
+  @override
+  void initState() {
+    super.initState();
+    final given = widget.failures;
+    if (given != null) {
+      _rows = given;
+      return;
+    }
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final rows = await SourinApi.restoreFailures();
+      if (!mounted || rows.isEmpty) return;
+      setState(() => _rows = rows);
+    } catch (_) {
+      // 读不到就说不了 —— 不许用「猜测」填出告警
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    /*
+     * ★ 阴性判据：清单为空 ⇒ **不画**（返回零尺寸）。
+     *   反过来（常驻一条红字）会让用户学会无视它，警示就失效了。
+     */
+    if (_rows.isEmpty) return const SizedBox.shrink();
+
+    final colors = Theme.of(context).colorScheme;
+    final shown = _rows.take(5).toList(growable: false);
+    return Container(
+      key: const ValueKey<String>('tvbox-restore-failures'),
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: Sp.x2),
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
+      decoration: BoxDecoration(
+        color: colors.errorContainer.withValues(alpha: 0.35),
+        borderRadius: Radii.rLg,
+        border: Border.all(color: colors.error.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '上次启动没能恢复 ${_rows.length} 个源',
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              height: 1.4,
+              fontWeight: FontWeight.w600,
+              color: colors.onErrorContainer,
+            ),
+          ),
+          const SizedBox(height: 2),
+          for (final f in shown)
+            Text(
+              '${f.displayName}：${f.reason}',
+              key: ValueKey<String>('tvbox-restore-failure-${f.displayName}'),
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                height: 1.4,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          if (_rows.length > shown.length) ...[
+            const SizedBox(height: 2),
+            Text(
+              '还有 ${_rows.length - shown.length} 个没列出',
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                height: 1.4,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ],
+          const SizedBox(height: Sp.x1),
+          Text(
+            '重新导入一次即可；如果还是不行，把上面这句原因发给我们。',
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              height: 1.4,
+              color: colors.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

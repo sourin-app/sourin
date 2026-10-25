@@ -792,11 +792,27 @@ void main() {
     await _mount(t);
     await _enterFullscreenPlaying(t);
 
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-26：把三条"存在性"判据换成**数值判据**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 原来为什么弱（composer-ui 清单点名）
+     * ```text
+     * ① `expect(initial, isNotNull)` —— 只证明探针**返回了记录**；
+     *    哪怕顶栏那条 `Opacity` 的值是 0.0（控制条早该可见却是全透明），
+     *    只要记录非 null 就绿 ⇒ 抓不到"起手就是透明"的退化。
+     * ② `expect(before, isNotNull)` —— 同上，只证明 `$1` 存在；
+     *    下面已有 `before > 0.9`，这条与它重复，且存在性本身没有判别力。
+     * ⇒ 换成：**起手顶栏必须基本不透明（实测 1.00）**，容差 0.05。
+     * ```
+     */
     final initial = debugPlayerControlBarsOpacity();
-    expect(initial, isNotNull, reason: '前置：顶/底栏的 fade 探针要能用');
+    expect(initial, isNotNull, reason: '前置：顶/底栏的 fade 探针要能用（null = 播放页没挂上）');
     final before = initial!.$1;
-    expect(before, isNotNull,
-        reason: '前置：此刻顶栏那条 `Opacity` 必须真的在树上（否则下面采样全空）');
+    expect(before, closeTo(1.0, 0.05),
+        reason: '★ 起手顶栏那条 `Opacity` 必须**基本不透明**（实测 1.00）。'
+            '只判"非 null"抓不到"值被冻成 0"的退化');
 
     debugPlayerAutoHideControlsForProbe();
     await t.pump();
@@ -817,10 +833,26 @@ void main() {
     expect(before!, greaterThan(0.9),
         reason: '前置：隐藏之前控制条应当基本不透明（= 1.0 附近）');
     final mid = samples.where((o) => o > 0.02 && o < 0.98).toList();
-    expect(mid, isNotEmpty,
+    /*
+     * ★ 2026-10-26：`isNotEmpty` → **三条数值判据**（数目 / 单调性 / 终值）
+     * ```text
+     * 原来：只要出现过**一个**中间帧就绿 —— 20 帧里 19 帧是 1.0、只有 1 帧 0.5
+     *      也算"有动画"，抓不到"动画被砍得只剩一帧"（≈硬切）的退化。
+     * 现在：① 中间帧**数目** ≥ 6（实测 9/20，220ms 淡出）；
+     *       ② 淡出期间必须**单调下降**（首 > 尾；实测 0.96 → 0.07）；
+     *       ③ 20 帧后必须落到 ~0（实测 0.00）—— 否则"淡出停在中途"也会绿。
+     * ```
+     */
+    expect(mid.length, greaterThanOrEqualTo(6),
         reason: '★★ 红线：不许用「减少/去掉淡入淡出」换帧率。'
-            '采样里必须出现 0<opacity<1 的**中间帧**；'
-            '一个都没有 ⇒ 动画被砍成了硬切。采样=$samples');
+            '20 帧采样里必须出现 **≥6 个** 0<opacity<1 的中间帧'
+            '（实测 9 个）；只剩 0~1 个 ⇒ 动画被砍成了硬切。采样=$samples');
+    expect(mid.first, greaterThan(mid.last),
+        reason: '★★ 淡出期间 opacity 必须**单调下降**（首帧 ${mid.isEmpty ? "-" : mid.first}'
+            ' > 尾帧 ${mid.isEmpty ? "-" : mid.last}）—— 否则不是淡出，是乱跳');
+    expect(samples.last, lessThan(0.02),
+        reason: '★ 20 帧之后必须已经落到 ~0（实测 0.00）—— '
+            '否则"淡出停在中途"也会绿');
     expect(_page, 0,
         reason: '动画期间整页 build 必须为 0 —— 动画帧只该驱动被 AnimatedBuilder '
             '包住的那几层。改前这里是 0（因为底栏那条已经局部化了），'

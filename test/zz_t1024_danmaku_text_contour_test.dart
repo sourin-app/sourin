@@ -86,6 +86,20 @@
 // ⇒ 据此把 slack 收到 0.35（有证据的收紧，见 kDeclaredStrokeSlackPx 注释）。
 // ```
 //
+// # ★ 可运行性（2026-10-26：挂起也是缺陷）
+// ```text
+// 症状（composer-ui 实测）：本文件**首跑挂起 11 分钟**，kill 后复跑 <90s 通过。
+// 病因：`pumpAndSettle()` 等的是"帧彻底安静"，而它**默认 10 分钟超时** ——
+//   11 分钟 ≈ 10 分钟超时 + 收尾 ⇒ 一旦引擎侧有东西持续请求帧（首帧/字体加载/
+//   别的测试残留的 ticker），它就一直等，**失败方式是挂住而不是红**。
+// 本舞台是静态的（ColoredBox + CustomPaint，零动画零定时器）⇒ 该调用没有任何
+//   收益，已换成两次**有界** pump（真实渲染那一步没删，照样 toImage）。
+// 另外两处加固：`runAsync` 加 30s 上限（它原本无超时）；每个用例
+//   `timeout: Timeout(Duration(seconds: 90))`（正常 <1s 测试时间 ⇒ 90s ≈ 90 倍余量）。
+// ⇒ **若你看到它挂起：先重跑**；仍挂则说明上面这三处加固之外又有新的无界等待，
+//   请按 `grep -n "pumpAndSettle\|runAsync\|await " ` 逐个查。
+// ```
+//
 // # 跑法（不带 tag，进默认全量）
 // ```powershell
 // flutter test test/zz_t1024_danmaku_text_contour_test.dart --concurrency=1
@@ -105,19 +119,6 @@
 // ⚠️ 判据本身是**归一的**（`impliedW = Δarea / refContour`，约等于边缘平均加厚
 // 的像素数）=> 换字体不影响"1px 描边必须越界"这类结论；但阈值是按 Arial Bold
 // 实测标定的，换字体后第一次跑应当核对矩阵读数。
-// ```
-
-// # 跑法（不带 tag，进默认全量）
-// ```powershell
-// flutter test test/zz_t1024_danmaku_text_contour_test.dart --concurrency=1
-// ```
-//
-// # 环境依赖（缺件时明确 skip，不假装通过）
-// ```text
-// 需要一款真实字体（默认测试字体 Ahem 是实心方块、无抗锯齿 ⇒ ① 的判据会失真）。
-// 候选：C:/Windows/Fonts/arialbd.ttf -> arial.ttf -> segoeui.ttf。
-// 一个都没有 ⇒ markTestSkipped 并写明缺什么 + 替代覆盖在哪
-// （CI windows-latest 有 Arial）。
 // ```
 
 import 'dart:io';
@@ -324,15 +325,43 @@ Future<Pixels> _shot(WidgetTester t, Sample sample, double fontSize) async {
       ),
     ),
   ));
-  await t.pumpAndSettle();
+
+  /*
+   * ★★★ 有界推进（2026-10-26）：**不再用 `pumpAndSettle()`**
+   *
+   * ```text
+   * composer-ui 实测本文件**首跑挂起 11 分钟**（kill 后复跑 <90s 通过）。
+   * 11 分钟 ≈ `pumpAndSettle()` 的**默认 10 分钟超时** + 收尾 ⇒ 病因就在这里：
+   * 它等的是"帧彻底安静"，只要有东西持续请求帧（引擎首帧/字体加载、别的
+   * 测试残留的 ticker、CI 上的 timer 抖动）它就一直等，而**失败方式是把整个
+   * 测试挂住**，不是红。
+   *
+   * 本舞台是**静态**的（ColoredBox + CustomPaint，零动画、零定时器）
+   * ⇒ `pumpAndSettle` 在这里一点额外作用都没有，两次固定 pump 就完成了
+   *   布局 + 绘制。**真实渲染那一步一个字都没删**（下面照样 toImage）。
+   * ```
+   */
+  await t.pump();
+  await t.pump(const Duration(milliseconds: 50));
+
   final b = t.renderObject<RenderRepaintBoundary>(find.byKey(kBoundary));
   late Pixels px;
-  await t.runAsync(() async {
-    final img = await b.toImage(pixelRatio: kDpr);
-    final bd = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
-    px = (rgba: bd!.buffer.asUint8List(), w: img.width, h: img.height);
-    img.dispose();
-  });
+  /*
+   * `runAsync` 是必须的（`toImage` 要真实光栅化，fake-async 推不动），
+   * 但它**没有自带超时** ⇒ 引擎卡住时同样会挂到测试级超时。
+   * 这里给它 30s 上限，让"卡住"变成**一条明确的失败**而不是挂起。
+   */
+  await t
+      .runAsync(() async {
+        final img = await b.toImage(pixelRatio: kDpr);
+        final bd = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+        px = (rgba: bd!.buffer.asUint8List(), w: img.width, h: img.height);
+        img.dispose();
+      })
+      .timeout(const Duration(seconds: 30), onTimeout: () {
+        fail('★★ toImage 30s 没返回 ⇒ 这台机器上光栅化卡住了（不是产品问题）。\n'
+            '已知处置：重跑一次；若稳定复现，检查是否有别的测试在并发占着引擎。');
+      });
   if (sample == Sample.binarized) px = _binarize(px);
   if (sample == Sample.productionPlus1px) px = _dilate1px(px, times: 1);
   if (sample == Sample.refPlus1px) px = _dilate1px(px, times: 1);
@@ -802,6 +831,13 @@ void main() {
           'prod_excessUnits=${excessUnits.toStringAsFixed(3)} '
           'inject_refPlus1_excessUnits=${injectUnits.toStringAsFixed(3)} '
           'prodPlus1_excessUnits=${prod1Units.toStringAsFixed(3)}');
-    });
+      /*
+       * ★ 显式超时：**可运行性也是门禁的一部分**。
+       * 不写这一行时，一旦引擎/帧循环卡住，测试会挂到 flutter_test 的
+       * 10 分钟默认超时（composer-ui 实测过一次 11 分钟的首跑挂起）。
+       * 90s 的取法：本用例正常 **<1s 测试时间**（7 次 toImage + 纯 CPU 统计），
+       * 90s 是它的 ~90 倍余量，足够慢机；同时把"挂起"压缩成"90s 内明确红"。
+       */
+    }, timeout: const Timeout(Duration(seconds: 90)));
   }
 }

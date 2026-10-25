@@ -50,6 +50,72 @@ import 'package:sourin_spike/ui/remote_bridge.dart';
 
 import 't102_playback_failure_banner_test.dart' as fixture;
 
+/// 把 Dart 源码里的注释替换成空白（保留换行与字符串字面量）。
+///
+/// ★ 为什么必须剥：本文件的判据①是按"文本先后"断言的，而注释里**也会出现**同样的
+///   挂载点文本与类名。实测（2026-10-26）：把挂载点那行文本写进注释、放在底栏之前，
+///   判据立刻红 —— 说明它读到了注释。反过来，真实挂载点被搬走而注释里留着旧文本时，
+///   它会**假绿**。本仓已多次踩到"门禁读注释"（站名门禁 / native-media 登记门禁 / EOL 门禁同源）。
+String _stripComments(String src) {
+  final out = StringBuffer();
+  var i = 0;
+  final n = src.length;
+  while (i < n) {
+    final c = src[i];
+    if (c == '/' && i + 1 < n && src[i + 1] == '/') {
+      while (i < n && src[i] != '\n') {
+        out.write(' ');
+        i++;
+      }
+      continue;
+    }
+    if (c == '/' && i + 1 < n && src[i + 1] == '*') {
+      var depth = 0;
+      while (i < n) {
+        if (src.startsWith('/*', i)) {
+          depth++;
+          out.write('  ');
+          i += 2;
+        } else if (src.startsWith('*/', i)) {
+          depth--;
+          out.write('  ');
+          i += 2;
+          if (depth == 0) break;
+        } else {
+          out.write(src[i] == '\n' ? '\n' : ' ');
+          i++;
+        }
+      }
+      continue;
+    }
+    if (c == "'" || c == '"') {
+      final triple = (i + 2 < n && src[i + 1] == c && src[i + 2] == c);
+      final delim = triple ? c * 3 : c;
+      out.write(delim);
+      i += delim.length;
+      while (i < n) {
+        if (!triple && src[i] == r'\' && i + 1 < n) {
+          out.write(src[i]);
+          out.write(src[i + 1]);
+          i += 2;
+          continue;
+        }
+        if (src.startsWith(delim, i)) {
+          out.write(delim);
+          i += delim.length;
+          break;
+        }
+        out.write(src[i]);
+        i++;
+      }
+      continue;
+    }
+    out.write(c);
+    i++;
+  }
+  return out.toString();
+}
+
 const kBannerText = '播放中断了（画面还在，可以重试）';
 
 /// 挂页 → 清错误 → 标首帧 → 注入一条"播放中"的错误 ⇒ 横幅出现
@@ -84,7 +150,18 @@ void main() {
   tearDown(() => RemoteBridge.instance.stop());
 
   test('① 源码顺序：三条横幅的挂载点都在 `_BottomBar(` **之后**', () {
-    final src = File('lib/ui/player_page.dart').readAsStringSync();
+    /*
+     * ★ 2026-10-26：**先剥注释再找锚点**。
+     *
+     * 踩过的坑（一次真红，不是假想）：把挂载点那行文本写进**注释**、放在底栏之前，
+     * 这条判据立刻变红 —— 说明它对顺序敏感，但也说明**注释能骗过它**：
+     *   · 往注释里写一遍同样的文本 ⇒ 假红
+     *   · 有人把真实挂载点搬走、只在注释里留一行旧文本 ⇒ 假绿
+     * 本仓已多次踩到"门禁读注释"（站名门禁、native-media 登记门禁、EOL 门禁同源），
+     * 所以这里统一先剥注释再匹配。
+     */
+    final src = _stripComments(
+        File('lib/ui/player_page.dart').readAsStringSync());
     /*
      * ⚠️ 锚点必须是**挂载点**，不是注释里提到的那个名字。
      * 实测：`src.indexOf('_BottomBar(')` 命中的是文件头那条注释
@@ -182,7 +259,8 @@ void main() {
   });
 
   test('⑤ 源码契约：恢复判据读的是页面 `_playing`，不是每次 tick 一次原生属性', () {
-    final src = File('lib/ui/player_page.dart').readAsStringSync();
+    final src = _stripComments(
+        File('lib/ui/player_page.dart').readAsStringSync());
     expect(src, contains('_recoveryProgress += p - _position;'),
         reason: '★ 推进量必须按真实差值累计');
     expect(src, contains('_recoveryProgress >= const Duration(seconds: 3)'),

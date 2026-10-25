@@ -91,6 +91,27 @@
 // flutter test test/zz_t1024_danmaku_text_contour_test.dart --concurrency=1
 // ```
 //
+// # 环境依赖（缺字体 => **fail**，不 skip、不假装通过）
+// ```text
+// 需要一款真实字体（默认测试字体 Ahem 是实心方块、无抗锯齿 => 本文件的判据会失真）。
+// 候选 `kFontCandidates` 覆盖三平台（CI 有 macOS / Linux 的 test job）：
+//   Windows：C:/Windows/Fonts/arialbd.ttf -> arial.ttf -> segoeui.ttf -> seguisb.ttf
+//   macOS  ：/System/Library/Fonts/Supplemental/Arial Bold.ttf -> Arial.ttf -> /System/Library/Fonts/SFNS.ttf
+//   Linux  ：/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf -> DejaVuSans.ttf
+//            -> liberation/LiberationSans-Bold.ttf -> liberation2/...
+// 一条都没有 => **fail**（不是 markTestSkipped）：与 `test/support/core_gate.dart`
+// 的既有约定一致 —— "门禁跑不起来"必须**可见**，否则 CI 结论会从"红"变成
+// "绿（有 N 项跳过）"，一个跑不了的门禁可以一路混进发布。
+// ⚠️ 判据本身是**归一的**（`impliedW = Δarea / refContour`，约等于边缘平均加厚
+// 的像素数）=> 换字体不影响"1px 描边必须越界"这类结论；但阈值是按 Arial Bold
+// 实测标定的，换字体后第一次跑应当核对矩阵读数。
+// ```
+
+// # 跑法（不带 tag，进默认全量）
+// ```powershell
+// flutter test test/zz_t1024_danmaku_text_contour_test.dart --concurrency=1
+// ```
+//
 // # 环境依赖（缺件时明确 skip，不假装通过）
 // ```text
 // 需要一款真实字体（默认测试字体 Ahem 是实心方块、无抗锯齿 ⇒ ① 的判据会失真）。
@@ -518,17 +539,39 @@ Reading _analyze(Pixels px, Sample sample, double fontSize) {
   );
 }
 
+/// 按平台顺序找一款**真实字体**（三平台的候选都列上，见文件头 §字体依赖）
+///
+/// ★ 为什么把 Linux/macOS 的路径也列上：本仓 CI 有 macOS 与 Linux 的测试 job。
+///   只列 Windows 字体 ⇒ 那些 job 会因为这台机器"没有 Arial"而红，
+///   而它们其实有 DejaVu / Liberation（同样是**真实字体**，判据照样成立：
+///   `impliedW = Δarea / refContour` 是**归一的**，与具体字形无关）。
+const List<String> kFontCandidates = <String>[
+  // Windows
+  'C:/Windows/Fonts/arialbd.ttf',
+  'C:/Windows/Fonts/arial.ttf',
+  'C:/Windows/Fonts/segoeui.ttf',
+  'C:/Windows/Fonts/seguisb.ttf',
+  // macOS
+  '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+  '/System/Library/Fonts/Supplemental/Arial.ttf',
+  '/System/Library/Fonts/Helvetica.ttc',
+  '/System/Library/Fonts/SFNS.ttf',
+  // Linux（GitHub runners 通常自带 fonts-dejavu-core / fonts-liberation）
+  '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+  '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+  '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf',
+];
+
 void main() {
   String? fontPath;
 
   setUpAll(() async {
-    for (final p in <String>[
-      'C:/Windows/Fonts/arialbd.ttf',
-      'C:/Windows/Fonts/arial.ttf',
-      'C:/Windows/Fonts/segoeui.ttf',
-    ]) {
+    for (final p in kFontCandidates) {
       final f = File(p);
       if (!f.existsSync()) continue;
+      // .ttc 是字体集合：FontLoader 只吃单字体 ttf/otf ⇒ 跳过（免得 load 抛错）
+      if (p.toLowerCase().endsWith('.ttc')) continue;
       final loader = FontLoader(kProbeFont)
         ..addFont(f.readAsBytes().then((b) => ByteData.view(b.buffer)));
       await loader.load();
@@ -542,17 +585,31 @@ void main() {
   for (final size in kSizes) {
     testWidgets('${size.toInt()}px：四类样本判别力矩阵 + 生产样式加厚量', (t) async {
       if (fontPath == null) {
-        markTestSkipped(
-          '缺真实字体（候选 arialbd/arial/segoeui 都不在）⇒ 无法验证'
-          '"边缘被加硬/加厚"这一类；替代覆盖：'
-          'zz_t1024_danmaku_text_edge_test.dart 只覆盖"毛边/发光"（过渡坡上限），'
-          '不覆盖本文件的二值化/描边/重影。',
-        );
-        return;
+        /*
+         * ★★ 缺字体 ⇒ **红**，不是 skip。
+         *
+         * 与 `test/support/core_gate.dart` 的既有约定一致：
+         *   Windows 上缺 `sourin_core.dll` 也是 **fail** 而不是 skip ——
+         *   因为"门禁跑不起来"必须**可见**，否则 CI 结论会从"红"变成
+         *   "绿（有 N 项跳过）"，一个跑不了的门禁可以一路混进发布。
+         * ⚠️ 这里缺的是**这台机器没有真实字体**（不是产品问题），
+         *   但仍要红：本门禁的全部判据都建立在"文字被真实光栅化"之上，
+         *   用默认测试字体（Ahem，实心方块无抗锯齿）测出来的是假数据。
+         *   候选路径已列在 kFontCandidates（三平台），缺全部才走到这里。
+         */
+        fail('★★ 这台机器没有可用的真实字体 ⇒ 门禁**无法运行**（不是通过、不是跳过）。\n'
+            '已尝试（${kFontCandidates.length} 条，Windows/macOS/Linux）：\n'
+            '  ${kFontCandidates.join('\n  ')}\n'
+            '为什么必须红而不是 skip：本门禁的判据（partialFrac / impliedW）'
+            '只在**真实字体被栅格化**时成立；默认测试字体 Ahem 是实心方块、'
+            '无抗锯齿 ⇒ 读数恒为假（partialFrac≈0、impliedW≈0）。\n'
+            '修法：装一款真实字体（Linux: fonts-dejavu-core / fonts-liberation；'
+            'macOS: Arial 或 SFNS；Windows: Arial）。\n'
+            '替代覆盖：`zz_t1024_danmaku_text_edge_test.dart` 覆盖"毛边/发光"'
+            '（过渡坡上限），但它**同样**依赖真实字体 ⇒ 缺字体时两条都红，这是有意的。');
       }
 
-      final ref =
-          _analyze(await _shot(t, Sample.fillOnly, size), Sample.fillOnly, size);
+      final ref = _analyze(await _shot(t, Sample.fillOnly, size), Sample.fillOnly, size);
       final binarized =
           _analyze(await _shot(t, Sample.binarized, size), Sample.binarized, size)
             ..withRef(ref);

@@ -3458,11 +3458,8 @@ class _PlayerPageState extends State<PlayerPage>
       _bootWatch = Stopwatch()..start();
       _bootMark('① 点播放', '本地文件 $_provider/$_contentId');
       setState(() {
-        _loading = true;
-        _error = null;
-        _errorKind = null;
+        _neutralizeErrorState(loading: true);
         _sawFirstFrame = false;
-        _playbackFailure = null;
       });
       unawaited(_bootLocalFile());
     } else {
@@ -4621,8 +4618,14 @@ class _PlayerPageState extends State<PlayerPage>
      * 出画面后把之前那条非阻断横幅收掉 —— 已经恢复了就不该继续吓用户。
      */
     _player.stream.width.listen((w) {
-      if (!mounted) return;
       if (w == null || w <= 0) return;
+      /*
+       * ★ 2026-10-26：整段逻辑收进 `_handleFirstFrame`（**探针同调一份**）。
+       *   原来这里是一大段内联 + 一段 AppLog + setState，而
+       *   `debugPlayerMarkFirstFrameForProbe` 逐字复刻了同一段 ——
+       *   生产加字段探针不会跟 ⇒ 门禁测复刻件（假绿）。现在只有一份实现。
+       */
+      _handleFirstFrame(w);
       /*
        * 只有"已经是正常播放中"这一种情况才早退（避免每帧都重建）。
        *
@@ -4682,6 +4685,64 @@ class _PlayerPageState extends State<PlayerPage>
     });
     // 缺陷 13：接上缓冲区间轮询器（内部会看 kBufferRangeMode 决定是否真的读属性）
     _bindBufferPoller();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ★★★ 2026-10-26：把"两处状态机"收成**单点**（探针与生产同调一份）
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 为什么必须抽（task-14/本轮审计的直接教训）
+  // ```text
+  // 探针原先"逐字复刻"生产闭包 ⇒ 生产加一个字段、探针不跟 ⇒ 门禁测的是**复刻件**，
+  // 却照样绿灯（task-14 抓到的 InjectStreamError 就是这类假绿）。
+  // ⇒ 现在：`stream.width` 监听与探针都调 [_handleFirstFrame]；
+  //        三处起播复位与探针都调 [_neutralizeErrorState]。
+  // ```
+
+  /// 清掉"起播错误三件套"，并同步 loading（**生产三处复位 + 探针**共用）
+  ///
+  /// 负责：`_error` / `_errorKind` / `_playbackFailure` 归零 + `_loading`。
+  /// **不负责**的（各调用点语义不同，留在原地）：`_sawFirstFrame`、
+  /// `_videoOutputDead`、`_startFailureElapsed`、`_current`。
+  void _neutralizeErrorState({required bool loading}) {
+    _error = null;
+    _errorKind = null;
+    _playbackFailure = null;
+    _loading = loading;
+  }
+
+  /// 「首个视频帧已出」的**唯一**处理点（`stream.width` 监听与探针共用）
+  ///
+  /// [w] 为 0/负 时直接返回（与监听里 `w == null || w <= 0` 同义）；
+  /// 生产传真实宽度，探针传一个**合成宽度**（见 `debugPlayerMarkFirstFrameForProbe`）。
+  void _handleFirstFrame(int w) {
+    if (!mounted) return;
+    if (w <= 0) return;
+    /*
+     * 只有"已经是正常播放中"这一种情况才早退（避免每帧都重建）。
+     * ⚠️ 判据里**必须**带上 `_error` 与 `!_videoOutputDead`（理由见历史注释，
+     *    两条都是真 bug 的修复：错误层永久残留 / 看门狗误立旗后横幅赖着不走）。
+     */
+    if (_sawFirstFrame &&
+        _playbackFailure == null &&
+        _error == null &&
+        !_videoOutputDead) {
+      return;
+    }
+    AppLog.write(
+      'PLAY',
+      '首帧已出（${w}x${_player.state.height}）—— '
+          '此刻之后的 stream.error 按"可恢复中断"处理，不再盖全屏',
+    );
+    setState(() {
+      _sawFirstFrame = true;
+      // ★ 有画面了 ⇒ 之前那条"起播失败"已经不成立，全屏错误层必须撤掉
+      _neutralizeErrorState(loading: false);
+      // ★ 缺陷⑧：出画面了 ⇒ 上一次起播失败的耗时不再代表当前状态
+      _startFailureElapsed = null;
+      // ★ Owner 缺陷④：画面真的出帧 ⇒ 输出层是活的，看门狗判决作废
+      _videoOutputDead = false;
+    });
   }
 
   /// ★★★ 缺陷⑧（2026-10-25）：`stream.error` 的**唯一**处理点
@@ -4913,12 +4974,10 @@ class _PlayerPageState extends State<PlayerPage>
     }
 
     setState(() {
-      _loading = true;
-      _error = null;
-      _errorKind = null;
-      // ★ 新一轮起播 ⇒ 上一轮的"出过画面"与非阻断横幅全部作废
+      // ★ 错误三件套 + loading 走单点（探针同调一份）
+      _neutralizeErrorState(loading: true);
+      // ★ 新一轮起播 ⇒ 上一轮的"出过画面"作废
       _sawFirstFrame = false;
-      _playbackFailure = null;
       // ★ 缺陷⑧：上一轮的失败耗时也作废（否则重试会把旧耗时带进归因）
       _startFailureElapsed = null;
     });
@@ -5556,14 +5615,12 @@ class _PlayerPageState extends State<PlayerPage>
     _startPlaybackCalls++;
     setState(() {
       _current = st;
-      _loading = true;
-      _error = null;
-      _errorKind = null;
+      // ★ 错误三件套 + loading 走单点（探针同调一份）
+      _neutralizeErrorState(loading: true);
       // 换流后旧的判决作废（看门狗靠代次号自行放弃）
       _videoOutputDead = false;
       // ★ 换了条流 ⇒ "出过画面"要重新判定（新流可能根本打不开）
       _sawFirstFrame = false;
-      _playbackFailure = null;
       // ★ 缺陷⑧：本次起播的失败耗时重新计
       _startFailureElapsed = null;
     });
@@ -13530,8 +13587,8 @@ class _PlayerPageState extends State<PlayerPage>
   /// 抽出来之后**生产**（Timer 回调）与**探针**
   /// （debugAutoHideControlsForProbe）调的是**同一个方法** ⇒
   /// 测试验的就是生产路径，而不是测试自己又写了一遍判据。
-  /// 这也是本仓探针的一贯纪律（见 debugPlayerInjectStreamErrorForProbe
-  /// 的「逐字复刻」说明）。
+  /// 这也是本仓探针的一贯纪律（参见 `_handleStreamError` / `_handleFirstFrame`：
+  /// 探针与生产**同调一份**，而不是各写一遍）。
   /// ```
   ///
   /// 判据（四条，缺一不可）：
@@ -14610,7 +14667,9 @@ class _PlayerPageState extends State<PlayerPage>
        * 空格分支（上面几行）有 `if (_anySheetOpen) return ignored;`，
        * 而 M 分支原来**没有** ⇒ 选集/设置/线路/提示 打开、焦点在页内时按 M，
        * 会把**后台播放器**静音（用户看不到、也听不出，回来发现没声音）。
-       * 而焦点在页外时，`:13879` 的全局门控（`if (_anySheetOpen) return false;`）
+       * 而焦点在页外时，`_onHardwareKey` 开头的全局门控
+     * （`if (_anySheetOpen) return false;` —— ★ 原来这里写的是 `:13879`，
+     *   2026-10-26 复核时该行号已漂到一条注释上，故改成代码片段锚）
        * 已经挡住 ⇒ **同一个键两种语义**，这正是"两套真相"的典型。
        * ```
        * ⚠️ 只补 M（不动 J/L/F/P/N 等既有键位）—— 与当年"只加在空格分支、
@@ -18514,9 +18573,13 @@ SkipMarker? debugPlayerSkipMarkerForProbe() => _livePlayerState?._skipMarker;
 /// 走的是生产字段 `_playSessionGen` 与生产清理动作（清 `_skipMarker`），
 /// 不是另写一份。用于在**不加载 libmpv** 的前提下复现竞态。
 ///
-/// ⚠️ 它不是"绕过生产路径"：三条真实切换路径（换源 `:7495`、换会话 `:7732`、
-///    切集 `:8079`）做的就是这三件事（`_playSessionGen++` + `_skipMarker = null`
-///    + `_position = Duration.zero`）。这里只是把同一组动作暴露给测试。
+/// ⚠️ 它不是"绕过生产路径"：三条真实切换路径（**换源 `_applySwitch`**、
+///    **换会话 `applySession`**、**切集 `_gotoEpisode`**）做的就是这三件事
+///    （`_playSessionGen++` + `_skipMarker = null` + `_position = Duration.zero`）。
+///    这里只是把同一组动作暴露给测试。
+///    ★ 2026-10-26：原来这里写的是 `:7495` / `:7732` / `:8079` 三个**行号**，
+///      实测三条**全部已漂**（现在是 `statusCode:` / `searchLoading:` /
+///      `void _setDanmakuOpacity`）⇒ 改成**方法名符号锚**，不再随行号失效。
 /// ★ `_position` 复位是 CodeRabbit PR #10 第二轮点出的：少了它，
 ///   `_currentSkipProbePosition()`（取 max(`state.position`, `_position`)）
 ///   会读到**上一集**的位置 ⇒ 补判可能误判"已到片尾"⇒ 刚起播就弹下一集倒计时。
@@ -19231,34 +19294,25 @@ bool debugPlayerBackForProbe() {
 bool debugPlayerInjectStreamErrorForProbe(String message) {
   final s = _livePlayerState;
   if (s == null) return false;
-  /*
-   * ★ 2026-10-25（缺陷⑧）：不再"逐字复刻"那段闭包体，直接调**生产方法**
-   *   `_handleStreamError` —— 它同时负责 elapsed 的取值。
-   *   复刻件与生产漂移过一次（本轮起播失败没带耗时就属于这类），
-   *   所以现在只有一份实现。
-   */
+  // 直调**生产方法** `_handleStreamError`（它同时负责 elapsed 的取值）。
   return s._handleStreamError(message);
 }
 
 /// 模拟「首个视频帧已出」（★ 第 9 条回归测试用）
 ///
-/// 逐字复刻 `_bindPlayerStreams` 里 `stream.width` 那个闭包体：
-/// 落一行日志 + 把 `_sawFirstFrame` 立起来 + 收掉非阻断横幅。
+/// # 它调的是**生产方法本身**（2026-10-26 起）
+/// ```text
+/// 原来这里照 `_bindPlayerStreams` 里 `stream.width` 的闭包体**另写了一份** ——
+/// 生产那边每加一个"首帧要清/要立的字段"，那一份都不会跟
+/// ⇒ 门禁测的是复刻件（task-14 抓到的 InjectStreamError 就是同类假绿）。
+/// ⇒ 现在直接调 `_handleFirstFrame(w)`：监听与探针**只有一份实现**。
+/// ```
+/// ⚠️ 宽度用**合成值 1920**：探针不依赖真实解码（测试环境没有画面），
+///    而 `_handleFirstFrame` 对 `w <= 0` 会早退（那是"没画面"的真实语义）。
 bool debugPlayerMarkFirstFrameForProbe() {
   final s = _livePlayerState;
   if (s == null) return false;
-  AppLog.write('PLAY', '首帧已出（探针注入）—— 此刻之后的 stream.error 按"可恢复中断"处理');
-  // ignore: invalid_use_of_protected_member
-  s.setState(() {
-    s._sawFirstFrame = true;
-    // ★ 与生产闭包体逐字一致：有画面 ⇒ 撤掉全屏错误层
-    s._error = null;
-    s._errorKind = null;
-    s._loading = false;
-    s._playbackFailure = null;
-    // ★ 缺陷⑧：有画面 ⇒ 上一次起播失败的耗时作废（与生产 `stream.width` 同一动作）
-    s._startFailureElapsed = null;
-  });
+  s._handleFirstFrame(1920);
   return s._sawFirstFrame;
 }
 
@@ -19420,12 +19474,7 @@ bool debugPlayerClearErrorForProbe() {
   if (s == null) return false;
   AppLog.write('PLAY', '错误态已中性化（探针清空 _error/_errorKind/_playbackFailure）');
   // ignore: invalid_use_of_protected_member
-  s.setState(() {
-    s._error = null;
-    s._errorKind = null;
-    s._loading = false;
-    s._playbackFailure = null;
-  });
+  s.setState(() => s._neutralizeErrorState(loading: false));
   return s._error == null;
 }
 
@@ -19976,7 +20025,8 @@ Future<int> debugPlayerLoadDanmakuForProbe(String fileName) async {
 ///
 /// 没有 AppId/AppSecret 时 ① 段必然拿到 403，`_danmakuError` 被置上，
 /// 于是弹幕层左上角会挂一个「弹幕失败：Missing Authentication Headers」
-/// 角标（`_danmakuBadge` :3318-3331）。
+/// 角标（`_danmakuBadge` 那个 getter；★ 2026-10-26 去掉了写死的 `:3318-3331`，
+/// 原区间已漂 —— 现在指向符号，不随行号失效）。
 ///
 /// ④ 段的像素对照要测的是**滚动弹幕自己**，而那个角标正好落在弹幕带
 /// （视频区顶部 5 条泳道）里，尺寸还不小 ⇒ 不排掉它，「弹幕开 vs 关」

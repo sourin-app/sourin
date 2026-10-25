@@ -789,9 +789,8 @@ class DanmakuProbeReport {
         : doh.isEmpty
             ? '本机解析到：$local\n'
                 '这个地址落在「已知的伪造段」里（同一网段被实测判定为他人服务器）。\n'
-                '⚠️ 已经按当前代理设置问过三个加密 DNS 源，全都连不上 —— '
-                '可能是网络封锁了 DoH，也可能是没开代理 ⇒ 本次没能核对权威 DNS 真值；'
-                '但上面这个地址本身已经能说明问题。'
+                '⚠️ 已经按当前代理设置问过三个加密 DNS 源，全都连不上 —— 本次没能核对权威 DNS 真值（这次没有可比较的权威答案）。'
+                '可能是网络封锁了 DoH，也可能是没开代理；但上面这个地址本身已经能说明问题。'
             : hijacked
                 ? '本机解析到：$local\n'
                     '权威 DNS（加密查询）真值：$doh\n'
@@ -1468,6 +1467,8 @@ class DanmakuSettingsDialog extends StatefulWidget {
     this.onBatchBind,
     this.fill = true,
     this.probeOverride,
+    this.dohOverride,
+    this.routeOverride,
     this.feedSamples,
   });
 
@@ -1641,6 +1642,20 @@ class DanmakuSettingsDialog extends StatefulWidget {
   ///    一次由用户点击触发的、针对用户自己填的地址的请求 ——
   ///    它不读任何宿主状态，所以自持无妨。
   final Future<DanmakuLocalStatus> Function(DanmakuEndpoint?)? probeOverride;
+
+  /// 测试注入口：替换权威 DNS（DoH）查找（生产恒 null ⇒ 走真实 `dohLookup`）
+  ///
+  /// ⚠️ 与 `probeOverride` 同一套约定：注入后**不产生真实 DoH 请求**。
+  ///   存在的理由：四档归因（一致/不一致/劫持/无法比较）原本只能靠单测合成，
+  ///   而"生产入口能不能真走到"必须用组件测试证明（这是本项最大的欠账）。
+  final Future<List<String>> Function(String host)? dohOverride;
+
+  /// 测试注入口：替换"HTTP 路由诊断"（生产恒 null ⇒ 走 `diagnoseDanmakuEndpoint`）
+  ///
+  /// ⚠️ 它同时承担一个**可达性**职责：注入了它，`_diagnose` 才会在
+  ///   `probeOverride != null`（零联网探针）时也被调用 —— 否则组件测试
+  ///   根本进不到分层诊断那条路。
+  final Future<DanmakuHttpResponse> Function(DanmakuEndpoint?)? routeOverride;
 
   @override
   State<DanmakuSettingsDialog> createState() => _DanmakuSettingsDialogState();
@@ -2899,7 +2914,15 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
      *    定时器活过了测试体）。注入方想给原因就自己抛带 errno 的异常，
      *    走上面的 catch —— 那条路**已经**会分类。
      */
-    if (!st.online && ep != null && widget.probeOverride == null) {
+    /*
+     * 2026-10-26（第 05 项 part B）：放宽调用条件。
+     * 改前只有 `probeOverride == null`（真联网）才会进分层诊断 ⇒ 组件测试
+     * 进不来，四档"生产入口驱动"无从验证。现在：注入了 `routeOverride`
+     * 也放行（那条路本身也是零联网的），生产行为不变（两个 override 都为 null）。
+     */
+    if (!st.online &&
+        ep != null &&
+        (widget.probeOverride == null || widget.routeOverride != null)) {
       unawaited(_diagnose(ep, mySeq));
     }
   }
@@ -2920,7 +2943,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   Future<void> _diagnose(DanmakuEndpoint ep, int mySeq) async {
     DanmakuProbeReport report;
     try {
-      final response = await diagnoseDanmakuEndpoint(ep);
+      final response = widget.routeOverride != null
+          ? await widget.routeOverride!(ep)
+          : await diagnoseDanmakuEndpoint(ep);
       report = DanmakuProbeReport(
         failure: DanmakuProbeFailure.serverError,
         url: ep.display,
@@ -2946,6 +2971,8 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           url: ep.display,
           localAddresses: local,
           host: ep.host,
+          // ★ 注入口：组件测试靠它把四档都逼出来（生产 null ⇒ 真实 DoH）
+          lookup: widget.dohOverride,
         );
       }
     }

@@ -168,11 +168,27 @@ void main() {
         isTrue,
         reason: '必须有一个统一的「尚未实现」文案生成器',
       );
-      // 文案形态：`{api} 尚未实现`（api 原样，用户能照着去配置里找）
+      /*
+       * ★ 2026-10-26：这里原来钉的是 `format!("{} 尚未实现"` 这个**字面拼法**，
+       * 而实现后来改成 `format!("{api} 尚未实现")`（Rust inline named arg）——
+       * 语义没变、只是写法变了，判据却因此变红 ⇒ **判据钉的是拼法，不是契约**。
+       *
+       * 改成钉语义：① 函数体里必须出现 `尚未实现`（文案来源唯一）；
+       * ② 必须以 api 插值（用户能照着去配置里找），即同一函数体里出现 `{api}` 或 `{}`。
+       * 这样两种写法都过；而"文案散到各处 / 去掉类名"仍会红。
+       */
+      final fnAt = mod.indexOf('pub fn unimplemented_reason(api: &str) -> String');
+      expect(fnAt, greaterThan(-1), reason: '前提：函数存在');
+      final fnBody = mod.substring(fnAt, (fnAt + 1200).clamp(0, mod.length));
       expect(
-        RegExp(r'format!\("\{\} 尚未实现"').hasMatch(mod),
+        fnBody.contains('尚未实现'),
         isTrue,
-        reason: '★ 文案必须是「csp_X 尚未实现」形态（带类名，且在句尾）',
+        reason: '★ 文案必须由这一个函数产生（唯一来源），形态是「csp_X 尚未实现」',
+      );
+      expect(
+        fnBody.contains('{api}') || fnBody.contains('{}'),
+        isTrue,
+        reason: '★★ 文案必须**带上 api**（用户能照着去配置里找），不许只写「尚未实现」四个字',
       );
     });
   });

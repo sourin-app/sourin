@@ -4,7 +4,7 @@
 // 门禁要锁死的是**三个方向的判断**，少一条就会出现「静默假装支持」：
 // ```text
 // ① 已实现的类（csp_Bili）      → 必须进 jobs（真探测），绝不能进 skipped
-// ② 没实现的类（csp_PanWebShare）→ 必须进 skipped，reason 逐字 = "csp_X 尚未实现"
+// ② 没实现的类（csp_XBPQ）→ 必须进 skipped，reason 逐字 = "csp_X 尚未实现"
 // ③ 不是 csp 的 type:3          → 维持原有文案（spider / 需要 Java），别被新分支吃掉
 // ```
 //
@@ -89,9 +89,9 @@ fn implemented_csp_api_survives_base_url_resolution() {
 #[test]
 fn unimplemented_csp_is_skipped_with_exact_reason() {
     let cfg = cfg_with(
-        r#"{"key":"p1","name":"木偶","type":3,"api":"csp_PanWebShare",
+        r#"{"key":"p1","name":"木偶","type":3,"api":"csp_XBPQ",
             "ext":{"site":["https://123.666291.xyz"]}},
-           {"key":"p2","name":"短剧","type":3,"api":"csp_AppDrama"}"#,
+           {"key":"p2","name":"短剧","type":3,"api":"csp_XBPQ"}"#,
     );
     let (jobs, skipped, _) = collect_sites(&cfg, "");
     assert!(jobs.is_empty(), "没实现的类不许进 jobs，实际 {jobs:?}");
@@ -102,11 +102,11 @@ fn unimplemented_csp_is_skipped_with_exact_reason() {
         .map(|s| s["reason"].as_str().unwrap_or("").to_string())
         .collect();
     assert!(
-        reasons.contains(&"csp_PanWebShare 尚未实现".to_string()),
+        reasons.contains(&"csp_XBPQ 尚未实现".to_string()),
         "★ 文案必须是「csp_X 尚未实现」，实际 {reasons:?}"
     );
     assert!(
-        reasons.contains(&"csp_AppDrama 尚未实现".to_string()),
+        reasons.contains(&"csp_XBPQ 尚未实现".to_string()),
         "实际 {reasons:?}"
     );
     // stage 仍是 "type"：与既有 skipped 结构一致（UI 按 stage 分组）
@@ -176,7 +176,7 @@ fn build_site_provider_rejects_unimplemented_class() {
         index: 0,
         key: "x".to_string(),
         name: "木偶".to_string(),
-        api: "csp_PanWebShare".to_string(),
+        api: "csp_XBPQ".to_string(),
         kind: Some(3),
         csp: Some("PanWebShare".to_string()),
         ext: String::new(),
@@ -188,13 +188,13 @@ fn build_site_provider_rejects_unimplemented_class() {
     let err = build_site_provider("x", &job, &ok, None, Vec::new())
         .map(|_| ())
         .expect_err("没实现的类不能建出 Provider");
-    assert_eq!(err, "csp_PanWebShare 尚未实现");
+    assert_eq!(err, "csp_XBPQ 尚未实现");
 }
 
 // ── ⑤ 端到端（真网络，CSP_LIVE=1 才跑）────────────────────────────────
 //
 // 这条是**导入报告**级的证据：真配置形态 → 真探测上游接口 →
-// csp_Bili 进 imported、csp_PanWebShare 进 skipped。
+// csp_Bili 进 imported、csp_XBPQ 进 skipped。
 /// 真网络用例 —— **默认不跑**（`#[ignore]`），要跑必须显式点名 + 设 CSP_LIVE=1
 ///
 /// ```text
@@ -224,7 +224,7 @@ async fn csp_live_import_reports_bili_imported_and_others_skipped() {
         {"key":"bili1","name":"哔哩｜资源合集","type":3,"api":"csp_Bili",
          "ext":{"json":"https://x/cover.png","cookie":"http://127.0.0.1:9978/file/bili_cookie.txt"}},
         {"key":"bili2","name":"哔哩｜音乐合集","type":3,"api":"csp_Bili","ext":{"n":"哔哩音乐"}},
-        {"key":"pan1","name":"木偶","type":3,"api":"csp_PanWebShare",
+        {"key":"pan1","name":"木偶","type":3,"api":"csp_XBPQ",
          "ext":{"site":["https://123.666291.xyz"]}},
         {"key":"js1","name":"某JS源","type":3,"api":"https://x.example/a.js"}
       ]
@@ -255,7 +255,7 @@ async fn csp_live_import_reports_bili_imported_and_others_skipped() {
         .map(|s| s["reason"].as_str().unwrap_or("").to_string())
         .collect();
     assert!(
-        reasons.contains(&"csp_PanWebShare 尚未实现".to_string()),
+        reasons.contains(&"csp_XBPQ 尚未实现".to_string()),
         "没实现的类必须在 skipped 里且文案准确，实际 {reasons:?}"
     );
     assert!(

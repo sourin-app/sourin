@@ -60,9 +60,23 @@ void main() {
      *   ⇒ 不关就会红在**与本判据无关**的那条路径上（已实测，见交付说明）。
      */
     debugSkipPlayerCreation = true;
+    /*
+     * ★★★ 2026-10-26：**必须造出"正在播放"这个前置**
+     *
+     * ```text
+     * 内嵌侧新增了与全屏同源的判据：**只有真的在播才允许自动收起**
+     * （`_playingForAutohide`，对齐 `player_page.dart` 的 `_autoHideNow`）。
+     * 而 widget 测试里 `_player == null` ⇒ `isPlaying` 恒 false
+     * ⇒ 不注入就等于"一直暂停"，控件**永远不该收**。
+     * ⇒ 这里是**前置注入**，不是放宽断言：三条既有断言一个字没改；
+     *   下面 ⑤ 专门用 `debugForcePlaying = false` 验"暂停不收"。
+     * ```
+     */
+    debugForcePlaying = true;
   });
   tearDown(() {
     debugSkipPlayerCreation = false;
+    debugForcePlaying = null;
   });
 
   testWidgets('① 初始可见 → 3s 后自动隐藏（hitTestable 归 0）', (t) async {
@@ -145,6 +159,115 @@ void main() {
     expect(t.getRect(bar), hiddenRect,
         reason: '★★ 隐藏时改了布局（`Visibility` 那种移除孩子）⇒ '
             '视频区域高度会跳，第 17 项"控制条不挤占视频"会被破坏');
+
+    await t.pumpWidget(const SizedBox.shrink());
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ④⑤⑥ 与全屏对齐：**暂停时不收起**（第 16 项一致性）
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // # 对齐的是哪条判据
+  // ```text
+  // 全屏 `player_page.dart` 的 `_autoHideNow` 守卫要求 `_playing`
+  // ⇒ 暂停时控件常显（用户刚按暂停，正要看那个播放键）。
+  // 内嵌改前没有这条 ⇒ 暂停 3s 后照样淡出 ⇒ 两种形态观感不同。
+  // ```
+  testWidgets('④ 正在播 + 3s ⇒ 收起（新判据的"允许收起"那一半）', (t) async {
+    debugForcePlaying = true;
+    t.view.devicePixelRatio = 1.0;
+    t.view.physicalSize = const Size(640, 360);
+    addTearDown(() {
+      t.view.resetPhysicalSize();
+      t.view.resetDevicePixelRatio();
+    });
+
+    await t.pumpWidget(_host(
+      const LiveEmbeddedPlayer(stream: null, title: '在播'),
+    ));
+    await t.pump();
+    final state =
+        t.state<LiveEmbeddedPlayerState>(find.byType(LiveEmbeddedPlayer));
+
+    final mouse = await _mousePointer(t);
+    await _hover(mouse, t, t.getCenter(find.byType(LiveEmbeddedPlayer)));
+    await t.pump(const Duration(seconds: 3));
+    await t.pump();
+
+    expect(state.controlsVisibleForProbe, isFalse,
+        reason: '★★★ 正在播放时 3s 无交互必须收起控件（与全屏一致）');
+    expect(find.byKey(liveEmbedBarKey).hitTestable(), findsNothing);
+
+    await t.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('⑤ 暂停 + 3s ⇒ **不收起**（对齐全屏 `_autoHideNow` 的 `_playing` 判据）',
+      (t) async {
+    debugForcePlaying = false; // = 暂停态
+    t.view.devicePixelRatio = 1.0;
+    t.view.physicalSize = const Size(640, 360);
+    addTearDown(() {
+      t.view.resetPhysicalSize();
+      t.view.resetDevicePixelRatio();
+    });
+
+    await t.pumpWidget(_host(
+      const LiveEmbeddedPlayer(stream: null, title: '暂停'),
+    ));
+    await t.pump();
+    final state =
+        t.state<LiveEmbeddedPlayerState>(find.byType(LiveEmbeddedPlayer));
+
+    final mouse = await _mousePointer(t);
+    await _hover(mouse, t, t.getCenter(find.byType(LiveEmbeddedPlayer)));
+    await t.pump(const Duration(seconds: 3));
+    await t.pump();
+
+    expect(state.controlsVisibleForProbe, isTrue,
+        reason: '★★★ 暂停时控件被自动收起了 ⇒ 用户刚按暂停就找不到播放键'
+            '（与全屏 `_autoHideNow` 的 `_playing` 判据不一致）');
+    expect(find.byKey(liveEmbedBarKey).hitTestable(), findsOneWidget,
+        reason: '★ 暂停时控制条必须仍然可点（这是"不收"的真正意义）');
+
+    await t.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('⑥ 暂停 → 恢复播放 + 3s ⇒ 收起（证明计时器被**重新装**上了）', (t) async {
+    debugForcePlaying = false;
+    t.view.devicePixelRatio = 1.0;
+    t.view.physicalSize = const Size(640, 360);
+    addTearDown(() {
+      t.view.resetPhysicalSize();
+      t.view.resetDevicePixelRatio();
+    });
+
+    await t.pumpWidget(_host(
+      const LiveEmbeddedPlayer(stream: null, title: '暂停后恢复'),
+    ));
+    await t.pump();
+    final state =
+        t.state<LiveEmbeddedPlayerState>(find.byType(LiveEmbeddedPlayer));
+
+    // ① 暂停态：装计时器（hover）→ 到点**被挡**、且一次性计时器已烧掉
+    final mouse = await _mousePointer(t);
+    await _hover(mouse, t, t.getCenter(find.byType(LiveEmbeddedPlayer)));
+    await t.pump(const Duration(seconds: 3));
+    await t.pump();
+    expect(state.controlsVisibleForProbe, isTrue, reason: '前提：暂停时不收');
+
+    // ② 恢复播放（生产路径：`resume()` 必须**重新装**计时器）
+    debugForcePlaying = true;
+    await state.resume();
+    await t.pump();
+    expect(state.controlsVisibleForProbe, isTrue,
+        reason: '刚恢复播放时控件还在（3s 还没到）');
+
+    // ③ 再推 3s ⇒ 这次必须收起
+    await t.pump(const Duration(seconds: 3));
+    await t.pump();
+    expect(state.controlsVisibleForProbe, isFalse,
+        reason: '★★★ 恢复播放后没有重新计时 ⇒ 控件**永远常显**'
+            '（暂停那次把一次性计时器烧掉了，`resume()` 里必须重装）');
 
     await t.pumpWidget(const SizedBox.shrink());
   });

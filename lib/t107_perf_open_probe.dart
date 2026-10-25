@@ -691,9 +691,9 @@ class _Dlg {
 }
 
 List<_Dlg> _dlgs() => <_Dlg>[
-      _Dlg('01_tray_close', 'lib/core/app_tray.dart:241（真实调用）',
+      _Dlg('01_tray_close', 'lib/core/app_tray.dart（AppTray.onWindowClose → showAppDialog<CloseAction>）',
           trigger: () async => AppTray.instance.onWindowClose()),
-      _Dlg('02_cache_delete', 'lib/ui/cache_page.dart:1878', build: (_) {
+      _Dlg('02_cache_delete', 'lib/ui/cache_page.dart（「删除整部」的 AppGlassDialog）', build: (_) {
         return AppGlassDialog(
           title: '删除整部？',
           content: const Text('「三体（2023）」\n'
@@ -702,7 +702,7 @@ List<_Dlg> _dlgs() => <_Dlg>[
           actions: _acts(confirmLabel: '删除'),
         );
       }),
-      _Dlg('03_data_manage_clear', 'lib/ui/settings/data_manage_page.dart:195',
+      _Dlg('03_data_manage_clear', 'lib/ui/settings/data_manage_page.dart（「清理图片缓存」的 AppGlassDialog）',
           build: (_) {
         return AppGlassDialog(
           title: '清理「图片缓存」',
@@ -711,7 +711,7 @@ List<_Dlg> _dlgs() => <_Dlg>[
           actions: _acts(confirmLabel: '清理'),
         );
       }),
-      _Dlg('04_emby_delete_source', 'lib/ui/settings/emby_page.dart:643',
+      _Dlg('04_emby_delete_source', 'lib/ui/settings/emby_page.dart（「删除源」的 AppGlassDialog）',
           build: (_) {
         return AppGlassDialog(
           title: '删除源「客厅 Emby」？',
@@ -722,7 +722,7 @@ List<_Dlg> _dlgs() => <_Dlg>[
         );
       }),
       _Dlg('05_skip_confirm_2btn',
-          'lib/ui/settings/skip_page.dart:301 + 调用点 :233', build: (_) {
+          'lib/ui/settings/skip_page.dart（「清除片头片尾」确认框）+ 它的调用点', build: (_) {
         return AppGlassDialog(
           title: '清除片头片尾',
           content: const Text('确定清除「三体（2023）」的片头片尾设置吗？\n\n'
@@ -730,7 +730,7 @@ List<_Dlg> _dlgs() => <_Dlg>[
           actions: _acts(confirmLabel: '清除'),
         );
       }),
-      _Dlg('06_sync_confirm_2btn', 'lib/ui/widgets/sync_panel.dart:651', build: (_) {
+      _Dlg('06_sync_confirm_2btn', 'lib/ui/widgets/sync_panel.dart（「删除云端备份」的 AppGlassDialog）', build: (_) {
         return AppGlassDialog(
           title: '删除云端备份',
           content: const Text('确定删掉云端的这一份备份吗？\n\n'
@@ -739,7 +739,7 @@ List<_Dlg> _dlgs() => <_Dlg>[
           actions: _acts(confirmLabel: '删除'),
         );
       }),
-      _Dlg('07_shell_glass', 'lib/ui/widgets/app_dialog_shell.dart:377（玻璃档）',
+      _Dlg('07_shell_glass', 'lib/ui/widgets/app_dialog_shell.dart（AppDialogShell(glass: true)）',
           build: (_) {
         return AppDialogShell(
           title: '弹窗外壳 · 玻璃档',

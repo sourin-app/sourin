@@ -5331,7 +5331,7 @@ async fn unimplemented_csp_is_skipped_on_restore_without_breaking_others() {
         crate::model::PersistedProvider::Tvbox {
             id: "bad-csp".to_string(),
             name: "木偶".to_string(),
-            api: "csp_PanWebShare".to_string(),
+            api: "csp_AppDrama".to_string(),
             categories: Vec::new(),
             parsers: Vec::new(),
             ext: Some(r#"{"site":["https://123.666291.xyz"]}"#.to_string()),
@@ -5363,9 +5363,9 @@ async fn unimplemented_csp_is_skipped_on_restore_without_breaking_others() {
     assert_eq!(fails.len(), 1, "应恰好一条失败记录，实际 {fails:?}");
     let f: &RestoreFailure = &fails[0];
     assert_eq!(f.id, "bad-csp");
-    assert_eq!(f.api, "csp_PanWebShare");
+    assert_eq!(f.api, "csp_AppDrama");
     assert_eq!(
-        f.reason, "csp_PanWebShare 尚未实现",
+        f.reason, "csp_AppDrama 尚未实现",
         "★ 原因必须是实现层原文（用户据此判断是等版本还是重试）"
     );
 
@@ -5603,8 +5603,8 @@ mod t1042_contract_fixes {
             &dir,
             &[RestoreFailure {
                 id: "bad".to_string(),
-                api: "csp_PanWebShare".to_string(),
-                reason: "csp_PanWebShare 尚未实现".to_string(),
+                api: "csp_AppDrama".to_string(),
+                reason: "csp_AppDrama 尚未实现".to_string(),
             }],
         )
         .expect("写报告");

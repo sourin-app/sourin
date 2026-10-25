@@ -145,6 +145,19 @@ Widget? debugVideoSlotOverride;
 @visibleForTesting
 bool debugSkipPlayerCreation = false;
 
+/// ★ 测试注入口：**强制播放态**（生产恒 `null` = 不覆盖）
+///
+/// # 为什么需要（第 16 项：暂停态与全屏对齐）
+/// ```text
+/// 内嵌的真实播放态来自 `_player.state.playing`，而 `flutter test` 里
+/// 没有 libmpv ⇒ `_player == null` ⇒ 恒 false。
+/// 要对齐全屏那条"**暂停时不收起控件**"的判据（`player_page.dart` 的
+/// `_autoHideNow` 要求 `_playing`），就必须能在测试里**造出"正在播"**；
+/// 否则新用例只能验"暂停不收"那一半，"在播要收"那半永远验不了（假绿）。
+/// ⇒ 与 [debugSkipPlayerCreation] 同一套约定：生产恒 null。
+/// ```
+bool? debugForcePlaying;
+
 /// ═══════════════════════════════════════════════════════════════════════
 ///  第 16 项缺口①：**共享的播放动作入口**（内嵌与全屏共用同一套）
 /// ═══════════════════════════════════════════════════════════════════════
@@ -505,6 +518,17 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
     _hideTimer?.cancel();
     _hideTimer = Timer(_controlsHideDelay, () {
       if (!mounted || _disposed) return;
+      /*
+       * ★ 第 16 项对齐（与全屏 `_autoHideNow` 同判据）：
+       *   暂停时**不收起**控件 —— 用户刚按暂停，正需要那个播放键。
+       * ⚠️ 到点被这条挡住时，计时器**已经烧掉且不重装**（一次性）；
+       *   恢复播放由 [resume] 重新装（见那里的调用）—— 否则"暂停 3 秒后
+       *   再按播放"会永远停在"控件常显"。
+       */
+      if (!_playingForAutohide) {
+        debugPrint('[LIVE] 暂停中 ⇒ 控件不自动收起');
+        return;
+      }
       if (!_controlsVisible) return;
       setState(() => _controlsVisible = false);
     });
@@ -523,6 +547,21 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   /// 控件当前是否可见（门禁断言隐藏/唤起真的发生）
   @visibleForTesting
   bool get controlsVisibleForProbe => _controlsVisible;
+
+  /// 「正在播放」—— 自动收起的**唯一判据**（第 16 项：与全屏对齐）
+  ///
+  /// # 为什么必须有这条判据
+  /// ```text
+  /// 全屏 `player_page.dart` 的 `_autoHideNow` 守卫是
+  ///   `_playing && !_hintsOpen && !_zoomOpen && _popover.openId == null`
+  /// ⇒ **暂停时控件常显**（用户刚按了暂停，正要看播放键）。
+  /// 而内嵌侧改前**没有** playing 判据 ⇒ 暂停 3 秒后控件照样淡出
+  /// ⇒ 同一条验收（第 16 项"内嵌与全屏一致"）在两种形态下观感不同。
+  /// ⇒ 现在两边同判据：**只有真的在播，才允许自动收起**。
+  /// ⚠️ 测试里 `_player == null` ⇒ [isPlaying] 恒 false ⇒ 用
+  ///    [debugForcePlaying] 造"正在播"（生产恒 null，不影响真机）。
+  /// ```
+  bool get _playingForAutohide => debugForcePlaying ?? isPlaying;
 
   Player? _player;
   VideoController? _controller;
@@ -1979,6 +2018,16 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
     if (p != null) {
       debugPrint('[LIVE] 续播（visible=$_visibleNow，playing=${p.state.playing}）');
     }
+    /*
+     * ★ 第 16 项对齐：**恢复播放 ⇒ 重新开始"3 秒后收起"**
+     *
+     * ```text
+     * 暂停期间计时器到点被 `_playingForAutohide` 挡掉，**不重装**（一次性）。
+     * 若这里不补装，用户"暂停 → 播放"之后控件会**永远常显**
+     * （与全屏不一致：全屏的 `_showControls()`/起播成功都会重装）。
+     * ```
+     */
+    _armHideTimer();
   }
 
   /// 不可见期间被压掉的音量（null = 没压过）

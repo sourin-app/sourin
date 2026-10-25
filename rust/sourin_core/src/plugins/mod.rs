@@ -13,7 +13,7 @@
 //! 详见 `research/插件API契约设计.md`。要点：
 //!   · 脚本头部注释声明元信息（`@id` / `@name` / `@version`）
 //!   · 脚本给 `globalThis.plugin` 赋一个对象，方法名对应 `MediaProvider` 的方法
-//!   · 宿主注入 `host.http` / `host.store` / `host.crypto` / `host.log`
+//!   · 宿主注入 `host.http` / `host.store` / `host.log` / `host.config` / `host.util`
 //!
 //! # 实测得出的三条硬规则
 //!
@@ -1604,10 +1604,11 @@ impl JsPluginProvider {
              *   const r = JSON.parse(await host.playback.probe(url))
              *   // r = { verdict, kind, contentType, message, retryable }
              *
-             * # verdict 的四种取值（**互不混淆**）
+             * # verdict 的五种取值（**互不混淆**）
              *   playable        —— 可以尝试播放
              *   dash_unsupported—— DASH 格式，本播放器**未实现**（不是内容坏了）
              *   drm             —— 受 DRM 保护，**架构上不可能播**
+             *   not_a_stream    —— 能访问但返回的不是媒体流（防盗链/错误页）
              *   unreachable     —— 网络/HTTP 失败，**可以重试**
              */
             let playback = Object::new(ctx.clone())?;
@@ -1820,8 +1821,8 @@ impl JsPluginProvider {
                    *   const r = JSON.parse(await host.playback.probe(url))
                    *   // r = { verdict, kind, contentType, message, retryable }
                    *
-                   * verdict 四种取值互不混淆：
-                   *   playable / dash_unsupported / drm / unreachable
+                   * verdict 五种取值互不混淆：
+                   *   playable / dash_unsupported / drm / not_a_stream / unreachable
                    */
                   playback: host_playback,
                   store: host_store,

@@ -34,6 +34,8 @@
 //   否则同一个东西在不同界面（导入报告 / 检测更新 / 日志）文案会漂。
 
 pub mod bili;
+pub mod pan_web_share;
+pub mod zhinan;
 pub mod provider;
 
 use std::collections::BTreeMap;
@@ -81,7 +83,7 @@ pub fn is_csp(api: &str) -> bool {
 
 /// 「这一类我们还没写」的**唯一**文案
 ///
-/// 形如 `csp_PanWebShare 尚未实现` —— 与配置里写的 api 逐字对应，
+/// 形如 `csp_AppDrama 尚未实现` —— 与配置里写的 api 逐字对应，
 /// 用户能直接看出是哪个类、并且知道**不是配置坏了**。
 pub fn unimplemented_reason(api: &str) -> String {
     format!("{} 尚未实现", api.trim())
@@ -210,6 +212,17 @@ fn build_registry() -> BTreeMap<&'static str, Builder> {
     m.insert(bili::Bili::CLASS, || {
         Arc::new(bili::Bili::new()) as Arc<dyn CspSite>
     });
+    // csp_PanWebShare：配置里覆盖 6 个源（仅次于 csp_Bili）。
+    // 浏览类接口（home/list/detail）真抓站点 HTML；网盘分享的直链需要
+    // 账号 + 本地转发服务 ⇒ play 如实报「需要登录」（见该文件头的能力边界）。
+    m.insert(pan_web_share::PanWebShare::CLASS, || {
+        Arc::new(pan_web_share::PanWebShare::new()) as Arc<dyn CspSite>
+    });
+    // csp_4KZhinan：配置里覆盖 2 个源（指南 / 小丑）。纯 HTML 抓取，
+    // 站点从 `ext.site` 取；播放是网盘分享页（见该文件头的能力边界）。
+    m.insert(zhinan::Zhinan::CLASS, || {
+        Arc::new(zhinan::Zhinan::new()) as Arc<dyn CspSite>
+    });
     m
 }
 
@@ -273,6 +286,35 @@ pub fn ext_text(v: Option<&serde_json::Value>) -> String {
     }
 }
 
+
+/// 取一个**当前仍未实现**的 `csp_X` 样本（只给测试用）
+///
+/// # 为什么不是写死一个类名
+/// 第 19 项是"按覆盖面逐个实现"的滚动任务：`csp_4KZhinan` 在本轮就被另一位执行者
+/// 实现了（我写死的反向断言当场变红）。写死类名的判据**会随着别人推进而失效**，
+/// 而失效方式是"红"，容易被误读成回归。
+/// ⇒ 候选表按"最不可能马上被实现"的顺序排，运行时取第一个仍未实现的；
+///    真的全实现了 ⇒ 明确 panic 说"这个反向断言该删了或换判据"。
+#[cfg(test)]
+pub fn unimplemented_sample() -> &'static str {
+    const CANDIDATES: &[&str] = &[
+        "csp_App99",
+        "csp_XBPQ",
+        "csp_Wogg",
+        "csp_HJZhenCai",
+        "csp_DongLi",
+        "csp_AppDrama",
+        "csp_PanWebShare",
+        "csp_4KZhinan",
+    ];
+    for c in CANDIDATES {
+        if !is_implemented(c) {
+            return c;
+        }
+    }
+    panic!("所有候选项都已实现 —— 这条反向断言需要换一个新样本");
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  测试
 // ═══════════════════════════════════════════════════════════════════════
@@ -321,24 +363,30 @@ mod tests {
         assert_eq!(site.class(), "Bili", "实现的类名必须与注册键一致");
         assert!(is_implemented("csp_Bili"));
         assert!(implemented_classes().contains(&"Bili"));
+        // ★ 第 19 项第二个实现类：PanWebShare（配置里 6 个源）
+        let pan = route("csp_PanWebShare").expect("csp_PanWebShare 必须能路由到实现");
+        assert_eq!(pan.class(), "PanWebShare");
     }
 
     #[test]
     fn route_misses_unimplemented_class() {
         // ★ 反向断言：没写的类必须**返回 None**，而不是给个空实现糊过去
-        assert!(route("csp_PanWebShare").is_none());
-        assert!(!is_implemented("csp_PanWebShare"));
-        assert!(route("csp_AppDrama").is_none());
-        assert!(route("csp_4KZhinan").is_none());
+        let sample = unimplemented_sample();
+        assert!(
+            route(sample).is_none(),
+            "★ {sample} 目前仍未实现，route 必须返回 None（不许给空实现糊过去）"
+        );
+        assert!(!is_implemented(sample));
         // 大小写不同 = 不同的类名，不许命中
         assert!(route("csp_bili").is_none());
+        assert!(route("csp_panwebshare").is_none(), "类名大小写敏感");
     }
 
     #[test]
     fn unimplemented_reason_quotes_api_verbatim() {
         assert_eq!(
-            unimplemented_reason("csp_PanWebShare"),
-            "csp_PanWebShare 尚未实现"
+            unimplemented_reason("csp_AppDrama"),
+            "csp_AppDrama 尚未实现"
         );
         assert_eq!(
             unimplemented_reason("  csp_AppDrama "),

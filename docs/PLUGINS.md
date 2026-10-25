@@ -18,6 +18,8 @@
 ## 最小插件
 
 ```javascript
+/** @id my-source @name 我的源 @version 1.0.0 */
+
 globalThis.plugin = {
   id: 'my-source',
   name: '我的源',
@@ -79,14 +81,18 @@ globalThis.plugin = {
 };
 ```
 
+关键的一点：头部注释里的 `@id` 是必填的，缺了会被直接拒绝安装
+（报错原文：`插件缺少 @id（头部注释里必须有，如 @id srcl）`）。上面的示例能跑，
+前提就是第一行那行头注释。
+
 ## 可用的 host API
 
 | API | 说明 |
 |---|---|
 | `host.http.get(url, opts)` | GET，返回**响应体字符串** |
 | `host.http.post(url, body, opts)` | POST |
-| `host.http.raw(method, url, opts)` | 返回 `{status, body, headers}` —— **需要读响应头时用这个** |
-| `host.log.info/warn/error(msg)` | 写进应用日志 |
+| `host.http.raw(method, url, opts)` | 返回 `{status, body, setCookie}` —— 需要读响应头时用这个。`setCookie` 是数组（Cookie 的 Expires 含逗号，拼成串再切分有歧义）；返回的是 JSON 文本，要自己 `JSON.parse` |
+| `host.log.debug/info/warn/error(msg)` | 写进应用日志（四级） |
 | `host.store.get/set/remove(k[, v])` | 插件私有存储（落在 `plugins/.data/<id>.json`），值是**字符串** |
 | `host.config.get/getBool/getNumber/getString/all()` | 读用户在设置页填的值 |
 | `host.util.urlEncode/urlDecode/sleep` | 小工具 |
@@ -100,8 +106,6 @@ globalThis.plugin = {
 > ⚠️ **2026-10-17 更正**：本表原写作 `host.cache.*` —— **宿主从来没有这个 API**
 > （`plugins/mod.rs` 里注入的是 `host.store`，全仓搜 `cache` 零注入点）。
 > 同时漏了 `config` / `util` / `base`。原表是凭印象写的，没有对照注入代码。
-
-> `opts` 支持 `headers`（对象）。同名头只保留**第一个**。
 
 ## 安装插件
 
@@ -342,76 +346,6 @@ async play({ id, episodeId }) {
 > （`test/t98_no_site_names_test.dart` 扫 `.md`）。
 > 我写这段时就犯了一次：用真实站名当反面例子 ⇒ t98 立刻判红。
 > 规则的正确用法是「只写代号，代号的含义由插件自己定义」。
-
-真实映射关系由**插件自己持有**（插件不进仓库）。
-
-#### 宿主侧的当前状态（诚实说明）
-
-```text
-解析能力本身**尚未选型** —— 三条候选路线（自实现签名 / 无头浏览器 / 插件侧解）
-都还在评估，见 .probe/t33/REPORT_R2.md §3。
-
-⇒ 现在声明 needsHostResolve: true 的候选会被标为**不可播**，
-  用户看到「所有线路都不可播」而不是黑屏。
-⇒ **这是有意的诚实当前态**，不是缺陷：宿主不会假装能解却播不出来。
-```
-### ★ 宿主解析能力：`needsHostResolve` / `siteId` / `streamFlags`（2026-10-17）
-
-有些站点的插件**拿不到**可播地址（要签名 / DRM / 需要浏览器环境），
-只能给出**播放页 URL**。这类插件可以声明「请宿主来解」。
-
-```js
-async play({ id, episodeId }) {
-  return [{
-    url: 'https://s1.example/watch/' + episodeId,  // ★ 播放页 URL，不是可播地址
-    label: '默认',
-    needsHostResolve: true,   // ★ 声明：url 是播放页，请宿主解析
-    siteId: 'S1',             // ★ 站点代号（**不是站名**，见下方警告）
-    streamFlags: { drm: false, hdr: false },  // 可选：你知道就填，不确定就不填
-  }];
-}
-```
-
-#### 三个字段的语义
-
-| 字段 | 类型 | 默认 | 说明 |
-|---|---|---|---|
-| `needsHostResolve` | bool | `false` | `true` = `url` 是**播放页 URL**，宿主负责解出真实地址 |
-| `siteId` | string? | `null` | 站点**代号**（`S1` / `S2` / …），供宿主选择对应解析器 |
-| `streamFlags` | object | 全空 | 这条流**是什么**（不是「请求宿主做什么」），见下 |
-
-`streamFlags` 的子字段：
-
-| 子字段 | 类型 | 含义 |
-|---|---|---|
-| `drm` | bool | 受 DRM 保护。**宿主一定播不了**，会如实告诉用户 |
-| `hdr` | bool | HDR 内容。不影响可播性（宿主会降到 SDR） |
-| `codec` | string? | 编码名（`h264` / `hevc` / `av1`）。**不知道就留空，不要猜** |
-
-#### ⚠️⚠️ 三条硬纪律
-
-```text
-① 不声明 = 行为与以前**逐字相同**
-   三个字段全部有默认值，老插件不传任何东西，宿主行为一点不变。
-   实测：rust/sourin_core/tests/zz_t33_host_resolve_contract.rs 有 7 条测试钉住这一点。
-
-② needsHostResolve=true 时，url 必须是**播放页 URL**，不是可播地址
-   若你其实拿到了可播地址，就不要声明这个位 —— 声明了反而会让宿主白解一遍。
-
-③ 不许把「宿主还没解出来」说成 DRM
-   drm=true 意味着「受版权保护，永远播不了」，宿主会这样告诉用户。
-   而「解析失败」是另一回事。混用就是让宿主对用户说假话。
-```
-
-#### ⚠️ `siteId` 只能写代号，不能写站名
-
-本仓有机械门禁 `test/t98_no_site_names_test.dart`：
-**具体视频网站的名字不许出现在仓库任何可发布文本里**（含 `.js` / `.md`）。
-
-```text
-✓ siteId: 'S1'          ← 代号
-✗ siteId: '<具体站名>'   ← 写真实站名，会被门禁判红
-```
 
 真实映射关系由**插件自己持有**（插件不进仓库）。
 

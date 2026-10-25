@@ -339,10 +339,11 @@ mod tests {
 
     #[test]
     fn new_rejects_unimplemented_class() {
-        let err = CspProvider::new("id", "名", "csp_PanWebShare", "", Vec::new())
+        let sample = crate::csp::unimplemented_sample();
+        let err = CspProvider::new("id", "名", sample, "", Vec::new())
             .err()
             .expect("没实现的类不能建 Provider");
-        assert_eq!(err, "csp_PanWebShare 尚未实现");
+        assert_eq!(err, format!("{sample} 尚未实现"));
     }
 
     #[test]

@@ -166,4 +166,86 @@ void main() {
       expect(find.textContaining('还有 2 个没列出'), findsOneWidget);
     });
   });
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  ④ 挂到「源列表页」：列表头部那一行（第 19 项最后一跳）
+  // ═════════════════════════════════════════════════════════════════════
+  //
+  // # 这一组补的是**接线 + 异步读取**，不是组件本身
+  // ```text
+  // ③ 组证的是"给一份清单，它画不画"（构造参数直喂）。
+  // 本组证的是另外两件事：
+  //   ① 它走**核心读取**那条路（`SourinApi.restoreFailures` → fetcher 注入）；
+  //   ② 源列表页的头部**真的把它挂上了**。
+  // 少了 ②，把 `TvboxRestoreFailuresView()` 从列表头删掉，③ 组**照样全绿**
+  // —— 那正是"做完了但没接上"的经典漏法。
+  // ```
+  //
+  // ⚠️ 挂载点为什么用源码判据而不是整页渲染：源列表是**二级页**
+  //    （`_PluginsPage`，同文件里是私有类，构造要 `SettingsPageState` 宿主），
+  //    整页挂载还要预载 dll + 真导航才能到。渲染断言已在上面/下面真跑，
+  //    这里只补"那一行在不在、在不在最上面"。
+  group('④ 源列表页头部已挂载（接线 + 异步读取路径）', () {
+    tearDown(() {
+      SourinApi.debugRestoreFailuresFetcher = null;
+    });
+
+    Widget host(Widget child) => MaterialApp(
+          theme: AppTheme.themeFor(Brightness.dark),
+          home: Scaffold(body: SingleChildScrollView(child: child)),
+        );
+
+    testWidgets('★★★ 核心给出清单 ⇒ 列表头部那一条真画出来并点名', (t) async {
+      SourinApi.debugRestoreFailuresFetcher =
+          () async => const <RestoreFailure>[
+                RestoreFailure(
+                  id: 'tvbox9',
+                  api: 'csp_AppDrama',
+                  reason: 'csp_AppDrama 尚未实现',
+                ),
+              ];
+
+      await t.pumpWidget(host(const TvboxRestoreFailuresView()));
+      // 异步读取路径：`initState` 里发起，落地后 setState ⇒ 需要两帧
+      await t.pump();
+      await t.pump();
+
+      final box = find.byKey(const ValueKey<String>('tvbox-restore-failures'));
+      expect(box, findsOneWidget,
+          reason: '★★★ 核心说"上次有源没恢复"，列表页就必须画出来 —— '
+              '把 if 改成恒 false（注入）本条立刻红');
+      final all = t
+          .widgetList<Text>(find.descendant(of: box, matching: find.byType(Text)))
+          .map((w) => w.data ?? '')
+          .join('\n');
+      expect(all, contains('csp_AppDrama'),
+          reason: '★★ 必须点名（用户要知道是哪一条没回来）');
+      expect(all, contains('尚未实现'), reason: '★★ 原因照原样透出');
+    });
+
+    testWidgets('★★ 核心返回空清单 ⇒ 一行不画、零尺寸（不占位）', (t) async {
+      SourinApi.debugRestoreFailuresFetcher = () async => const <RestoreFailure>[];
+
+      await t.pumpWidget(host(const TvboxRestoreFailuresView()));
+      await t.pump();
+      await t.pump();
+
+      expect(find.byKey(const ValueKey<String>('tvbox-restore-failures')),
+          findsNothing,
+          reason: '★★ 一切正常时列表头不许挂任何提示（阴性对照）');
+      expect(t.getSize(find.byType(TvboxRestoreFailuresView)).height, 0,
+          reason: '★ 空清单必须零尺寸，不能悄悄占掉列表上方一块空白');
+    });
+
+    test('★ 挂载点：列表头部第一行就是这个组件（在动作按钮之前）', () {
+      final src = File('lib/ui/settings_page.dart').readAsStringSync();
+      final mount = src.indexOf('const TvboxRestoreFailuresView(),');
+      expect(mount, greaterThan(0),
+          reason: '★ 组件没被挂上 ⇒ 用户永远看不到恢复失败（③④ 渲染断言也管不到挂载点）');
+      final install = src.indexOf('onPressed: _installPlugin,');
+      expect(install, greaterThan(0), reason: '前提：找到动作按钮区');
+      expect(mount, lessThan(install),
+          reason: '★ 必须在动作按钮**之前**（= 列表最上面）：放在卡片后面等于没说');
+    });
+  });
 }

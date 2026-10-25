@@ -73,7 +73,7 @@ Status: implemented
   —— 那篇讲"搜索页的诊断区与草稿"，本篇的 DNS 归因分层正是挂在同一片诊断区的**判据**上（它管"信息放哪"，本篇管"归因能推到哪一步"）。
 - [2026-10-24-live-embedded-mute-intent-and-probes.md](2026-10-24-live-embedded-mute-intent-and-probes.md)
   —— 那篇是直播"静音意图"的状态契约，本篇的选中身份 `(provider,id)` 是同一层级上的身份契约（一个是状态、一个是身份）。
-- [../../testing/2026-10-25-rebuild-threshold-must-not-encode-defect.md](../../testing/2026-10-25-rebuild-threshold-must-not-encode-defect.md)
+- [../../testing/2026-10-25-rebuild-threshold-must-not-encode-defect.md](../testing/2026-10-25-rebuild-threshold-must-not-encode-defect.md)
   —— 同批的门禁测量方法决策：那篇讲"阈值不许编码缺陷态"，本篇讲"判据不许超出输入"。两篇一起才构成这批的"证据纪律"。
 
 ## Testing

@@ -378,9 +378,17 @@ void main() {
         reason: '唯一真源 `_chromeVisible` 的 12 项门控'
             '（C && !err && !8flag && !notice && !dead）'
             '是 T27-09/T27-13 真值表的模型来源，字面漂移 = 模型失效');
-    // 底栏渲染点必须读唯一真源（用 ListenableBuilder 包住，淡出窗口内留树）
-    expect(src.contains('if (!_chromeVisible && !keepForFade) {'), isTrue,
-        reason: '★ 底栏显隐必须读唯一真源 `_chromeVisible`（T27-13 唯一真源）');
+    /*
+     * ★ 2026-10-25（task-38）：这一条原来的字面是
+     *   `if (!_chromeVisible && !keepForFade) {` —— **已过期**：底栏在 N11 之后
+     *   改成「非占据态**恒挂** + 只翻 fade 透明度」，`keepForFade` 变量整个不存在了
+     *   （现在只在注释里出现），源码里 `_chromeVisible` 只剩顶栏那一处读者。
+     *   保留意图（底栏不许再自己算第二套布尔真源）：底栏唯一允许的"卸下"是
+     *   **占据态**那一条；显隐一律由 fade 驱动。
+     */
+    expect(src.contains('if (_bottomOccupied) {'), isTrue,
+        reason: '★ 底栏只允许在**占据态**整条卸下（N11 之后的形态）——'
+            '否则恒挂、显隐只翻 fade，不再有第二套布尔真源');
     // 顶栏 visible 公式字面（t118⑧ 同款，本文件自证模型）
     // ★ 2026-10-11 缺陷④ → T27-13：顶栏正常支**不再内联**那串判据，
     //   改为与底栏共读 `_chromeVisible`；错误态返回口 `|| _canUseTopBarBack` 不变。
@@ -451,8 +459,9 @@ void main() {
      * 与真实起播失败走同一条路径（不是测试自己复刻一遍）。
      */
     if (debugPlayerErrorForProbe() == null) {
-      expect(debugPlayerInjectStreamErrorForProbe('起播失败：回归测试'), isTrue,
-          reason: '前置：注入起播失败没生效（探针找不到 PlayerPage？）');
+      // ⚠️ 这个探针返回的是 `_handleStreamError` 的返回值 = `had`（是否已出首帧），
+      //    **不是**"注入成功"。没出过画面时它必然 false —— 别拿它当判据。
+      debugPlayerInjectStreamErrorForProbe('起播失败：回归测试');
       await t.pump();
     }
     expect(debugPlayerErrorForProbe(), isNotNull, reason: '前置：必须先进入错误态');
@@ -535,8 +544,8 @@ void main() {
     await mountPlayer(t);
     // ★ 2026-10-25（task-38）：同 B1 —— 显式注入，不靠「_load 必败」这个环境巧合。
     if (debugPlayerErrorForProbe() == null) {
-      expect(debugPlayerInjectStreamErrorForProbe('起播失败：回归测试'), isTrue,
-          reason: '前置：注入起播失败没生效');
+      // ⚠️ 返回值 = `had`（出过首帧才 true），不是"注入成功" —— 不判它。
+      debugPlayerInjectStreamErrorForProbe('起播失败：回归测试');
       await t.pump();
     }
     expect(debugPlayerErrorForProbe(), isNotNull, reason: '前置：必须先进入错误态');

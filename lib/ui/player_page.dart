@@ -1066,6 +1066,7 @@ class _PlayerPageState extends State<PlayerPage>
   final ValueNotifier<bool> _controlsLive = ValueNotifier<bool>(true);
 
 
+
   /*
    * ═══════════════════════════════════════════════════════════════════
    *  ★★★ N10：seek 让路窗口的定时器
@@ -1134,6 +1135,13 @@ class _PlayerPageState extends State<PlayerPage>
   }
   /// 把 `_controlsVisible` 推给 [_controlsLive]（值没变不通知）
   void _pushControlsLive() {
+    /*
+     * ★★★ 2026-10-25（交叉复核钉死的真缺陷）：**每个写 `_controlsVisible` 的点
+     *   都必须走到这里**，否则 notifier 会停在旧值 ⇒ 下一次"翻回去"的 push
+     *   因 `当前值 == 目标值` 提前 return、不通知 ⇒ 顶栏不重建 ⇒
+     *   `IgnorePointer` 继续挡，而动画已到 1.0 ⇒「箭头看得见、点不到」。
+     *   缺口原来是 `_autoHideNow()`（隐藏路径只 setState）。
+     */
     if (_controlsLive.value == _controlsVisible) return;
     _controlsLive.value = _controlsVisible;
   }
@@ -13594,16 +13602,13 @@ class _PlayerPageState extends State<PlayerPage>
         _popover.openId == null) {
       setState(() => _controlsVisible = false);
       /*
-       * ★★★ 2026-10-25：**必须把新值推给订阅者**（交叉复核钉死的真缺陷）
+       * ★★★ 2026-10-25（交叉复核钉死的真缺陷：箭头看得见、点不到）
        *
-       * 漏这一行时：本路径只 setState ⇒ `_controlsLive` 停在 true
-       * ⇒ 鼠标叫回那次 push 因 `true == true` 提前 return、不通知
-       * ⇒ `_TopBar` 不重建、`IgnorePointer` 仍挡，但动画已到 1.0
-       * ⇒ 「返回箭头看得见、点不到」。
-       * 对照：`_showControls()` / `_collapseControlsForSheet()` 都是
-       * `写值 → _pushControlsLive() → _applyControlsMotion()` 三步齐全。
-       * ⚠️ 必须在 `setState` **之后**（读的是新值）。
-       * ⚠️ 门禁：`zz_t1024_chrome_autohide_hittest_test`、`zz_cr_backbtn_backarrow` ②。
+       * **必须把新值推给订阅者**：漏这一行时 `_controlsLive` 停在 true
+       * ⇒ 鼠标叫回那次 push 因"值没变"提前 return、不通知 ⇒ 顶栏不重建、
+       * `IgnorePointer` 仍挡，而动画已到 1.0 ⇒「拉开看得到、点不到」。
+       * ⚠️ 放 `setState` 之后（读新值）。门禁：`zz_t1024_chrome_autohide_hittest`、
+       * `zz_cr_backbtn_backarrow` ②。
        */
       _pushControlsLive();
       /*
@@ -15276,6 +15281,12 @@ class _PlayerPageState extends State<PlayerPage>
 
   @override
   Widget build(BuildContext context) {
+    /*
+     * ★ 记录"这一次 build 会把 `_controlsVisible` 渲染成什么" ——
+     *   `_pushControlsLive()` 的守卫拿它跟目标值比（见该方法的注释）。
+     *   本句是**纯赋值**（不 setState、不通知），只服务于那个判据。
+     *   ⚠️ 必须放在 build 的**第一句**（早退分支之前也要记，否则早退后守卫会误判）。
+     */
     final hints = hintsFor(
       isTv: widget.isTv,
       isTouchOnly: widget.isTouchOnly,
@@ -19435,6 +19446,7 @@ String debugPlayerPlaybackFailureState() {
 /// 于是"鼠标唤起"那次 push 因 `true == true` 提前 return ⇒ 顶栏不重建 ⇒
 /// 返回箭头看得到却点不到（不透明度 1.0 + IgnorePointer 仍挡）。
 bool? debugPlayerControlsLiveForProbe() => _livePlayerState?._controlsLive.value;
+
 
 bool? debugPlayerControlsVisible() {
   final s = _livePlayerState;

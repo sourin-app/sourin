@@ -116,7 +116,19 @@ void main() {
   setUp(() => RemoteBridge.instance.stop());
   tearDown(() => RemoteBridge.instance.stop());
 
-  testWidgets('① 不变量：自动收起后 `_controlsLive` 必须跟着 `_controlsVisible` 一起变', (t) async {
+  testWidgets('① 机制：自动收起后`_controlsLive` 必须跟着 `_controlsVisible` 一起变（含隐藏路径）', (t) async {
+    /*
+     * # 这条钉的是**修法的机制**（不是视觉）
+     * ```text
+     * 隐藏路径原来只 `setState`、**不推** `_controlsLive` ⇒ notifier 停在 true。
+     * ⚠️ 代价已知：推一次会让顶栏子树多重建一遍（`zz_t66_n11` T4 的 8 轮总重建
+     *    20 → 576）—— 那是**修正后应有的成本**，旧阈值是按"有缺陷时的 20"定的，
+     *    已单独报给 Lead 重新标定（本文件只钉正确性）。
+     * 而推送守卫比的是 `_controlsLive.value`：只要它停在旧值 true，
+     * 下一次 hover 的 push 就是 `true == true` ⇒ 提前 return ⇒ 不通知
+     * ⇒ 顶栏不重建（`IgnorePointer` 仍挡）而动画已到 1.0 ⇒ 箭头看得见点不到。
+     * ```
+     */
     await fixture.mountPlayer(t);
     expect(debugPlayerClearErrorForProbe(), isTrue);
     expect(debugPlayerMarkFirstFrameForProbe(), isTrue);
@@ -129,16 +141,16 @@ void main() {
     expect(debugPlayerControlsLiveForProbe(), isTrue,
         reason: '自检：唤起态两者都该是 true');
 
-    // ── 自动收起（走生产 `_autoHideNow`）──
+    // ── 自动收起（走生产 `_autoHideNow`，整页 setState 路径）──
     expect(debugPlayerAutoHideControlsForProbe(), isTrue);
     await settleMotion(t);
 
     expect(debugPlayerControlsVisibleForProbe(), isFalse,
         reason: '自检：控制条必须真的收起');
     expect(debugPlayerControlsLiveForProbe(), isFalse,
-        reason: '★★★ 不变量：收起后 `_controlsLive` 必须也是 false —— '
-            '改前它停在 true（`_autoHideNow` 漏 push），于是下一次"叫回"'
-            '会因为 `true == true` 提前 return，顶栏永远收不到通知');
+        reason: '★★★ 收起后 `_controlsLive` 必须也是 false —— 它就是 push 守卫的判据；'
+            '改前它停在 true（`_autoHideNow` 漏 push）⇒ hover 的 push 被守卫吃掉'
+            '⇒ 顶栏不重建 ⇒ 箭头看得见点不到');
 
     // ── 鼠标叫回 ──
     expect(debugPlayerHoverControlsForProbe(), isTrue);

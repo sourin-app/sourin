@@ -37,14 +37,51 @@ import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/ui/player_page.dart';
 
 // ── 重建计数 ────────────────────────────────────────────
-int _page = 0;
+int _page = 0;      // 整页（PlayerPage 自身）重建
+int _topBar = 0;    // 顶栏子树重建（≈69 个元素/次）
+int _animation = 0; // AnimatedBuilder（fade 动画自身，每帧本来就会重建）
+int _other = 0;     // 其余元素重建
 int _all = 0;
+
+/// 这个元素是否属于**顶栏子树**（含它自己）
+///
+/// # 为什么用 `runtimeType.toString()`
+/// `_TopBar` 是 `player_page.dart` 的**私有** widget ⇒ 测试拿不到类型。
+/// 本仓既有做法就是这个字符串判据（`_isTypingInField()` 认 `EditableText`
+/// 同款）——它只用于**分类计数**，不参与产品判定。
+bool _isInTopBar(Element e) {
+  if (e.widget.runtimeType.toString() == '_TopBar') return true;
+  var inside = false;
+  e.visitAncestorElements((a) {
+    if (a.widget.runtimeType.toString() == '_TopBar') {
+      inside = true;
+      return false;
+    }
+    return true;
+  });
+  return inside;
+}
+
+/// ★ 2026-10-25（task-34 后续，Lead 裁决"重标定但要有牙"）：
+/// **把"整页"与"顶栏子树"分开计量** —— 只对"整页/其余"下"不随轮次增长"的断言，
+/// 顶栏子树**允许**增长（那是修好"看得见点不到"之后的必然成本）。
 void _installCounter() {
   _page = 0;
+  _topBar = 0;
+  _other = 0;
   _all = 0;
   debugOnRebuildDirtyWidget = (e, _) {
     _all++;
-    if (e.widget is PlayerPage) _page++;
+    if (e.widget is PlayerPage) {
+      _page++;
+    } else if (e.widget is AnimatedBuilder) {
+      // ★ 动画自身的 ticker：**每帧本来就该重建**，不算违规（单列）
+      _animation++;
+    } else if (_isInTopBar(e)) {
+      _topBar++;
+    } else {
+      _other++;
+    }
   };
 }
 
@@ -80,8 +117,13 @@ bool _requireLibmpv() {
 /// ```text
 /// 这个文件原本只检查 libmpv，不检查 `sourin_core.dll`。
 /// 而实测（队友 `code-selfreview`）：
-///   完整环境 ⇒ T4 8 轮 all=20、p50=1.0ms；T5 类型数组 = [AnimatedBuilder]
-///   缺  核心 ⇒ T4 8 轮 all=**8**、p50=0.7ms；T5 类型数组 = **[]**
+///   完整环境 ⇒ T4 8 轮 page=0 / topBar=544 / animation=260 / other=12（2026-10-25）
+///   缺  核心 ⇒ 读数失真（原记录 T4 all 从 20 变 8）⇒ 缺核心时本文件明确 skip
+///
+/// ★★★ 2026-10-25：**旧的 `all=20` 基线已废弃** —— 它是**按缺陷态**量的
+/// （顶栏"看得见点不到"的缺陷正是"hover 的广播被守卫吃掉⇒从不通知"
+/// ⇒ 顶栏一次都不重建）。修好之后隐藏/叫回各通知一次，顶栏子树必然重建。
+/// ⇒ 现行判据按**来源**分类（page / topBar / animation / other），见 T4/T5 内注释。
 ///
 /// ★ 危险处：`expect(totalAll, lessThan(200))` 在两种环境下**都通过**
 ///   ⇒ 缺核心时这条**性能断言变成假绿**（读数变小，而不是变大）。
@@ -322,6 +364,9 @@ void main() {
 
     var totalAll = 0;
     var totalPage = 0;
+    var totalTopBar = 0;
+    var totalAnimation = 0;
+    var totalOther = 0;
     final costs = <int>[];
     for (var cyc = 0; cyc < 8; cyc++) {
       debugPlayerAutoHideControlsForProbe();
@@ -337,6 +382,9 @@ void main() {
       sw.stop();
       costs.add(sw.elapsedMicroseconds);
       totalPage += _page;
+      totalTopBar += _topBar;
+      totalAnimation += _animation;
+      totalOther += _other;
       totalAll += _all;
       expect(debugPlayerControlsVisibleForProbe(), isTrue,
           reason: '第 $cyc 轮副作用：控制条必须回来（不许靠"不显示"换性能）');
@@ -345,13 +393,49 @@ void main() {
 
     final sorted = [...costs]..sort();
     // ignore: avoid_print
-    print('T4 8 轮 ⇒ pageBuild=$totalPage all=$totalAll '
+    print('T4 8 轮 ⇒ page=$totalPage topBar=$totalTopBar '
+        'animation=$totalAnimation other=$totalOther all=$totalAll '
         'p50=${(sorted[4] / 1000).toStringAsFixed(1)}ms '
-        'max=${(sorted.last / 1000).toStringAsFixed(1)}ms'
-        '（改前基线：all=1624，本机实测 p50≈55ms / max≈73ms）');
+        'max=${(sorted.last / 1000).toStringAsFixed(1)}ms');
 
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-25 重标定（原阈值 200 是**按缺陷态标定的**，已废弃）
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 历史（别改回去）
+     * ```text
+     * 旧判据：`expect(totalAll, lessThan(200))`，注释里写着"修后实测 20"。
+     * ★ 但那个 20 是**在缺陷态下量的**：顶栏"看得见点不到"的缺陷正是
+     *   `_showControls()` 的广播被守卫吃掉（hover **从不通知**）
+     *   ⇒ 8 轮里顶栏一次都没重建 ⇒ 总重建数自然只有 20。
+     *   2026-10-25 修好之后：每次隐藏+每次叫回各通知一次 ⇒
+     *   顶栏子树（≈72 个元素）×8 轮 = 576。
+     * ⇒ 把 200 改成 800 等于**给魔数编叙事**（本仓已记录的坑）：
+     *   它既允许"整页退化到 576"（假绿），也允许"通知缺失"（点不到）通过。
+     * ```
+     *
+     * # 现在的判据：**两个方向都钉**
+     * ```text
+     * ① 整页 build 必须为 0（N11 的局部化，不许退化）；
+     * ② 其余元素（既非整页、也非顶栏子树）不许随轮次增长 ——
+     *    这是"通知太多导致连锁重建"的方向（阈值 40 = 8 轮 × 5 的余量）；
+     * ③ 顶栏子树**每轮至少重建一次**（8 轮 ≥ 8）——
+     *    这是"通知缺失"的方向：把 `_pushControlsLive()` 改成空操作，
+     *    顶栏在该重建时没重建 ⇒ 箭头看得见点不到 ⇒ 本断言立刻红。
+     * ```
+     */
     expect(totalPage, 0,
         reason: '整页 build 必须为 0（N11 的局部化，此前已修好，不许退化）');
+    expect(totalOther, lessThan(40),
+        reason: '★ 除整页与顶栏外的元素不许随隐藏/叫回增长'
+            '（实际 $totalOther）—— 变大说明通知引发了连锁重建，'
+            '不是"顶栏子树该重建"那 72 个元素');
+    expect(totalTopBar, greaterThanOrEqualTo(8),
+        reason: '★★★ 8 轮里顶栏子树必须**每轮至少重建一次**（实际 $totalTopBar）。'
+            '为 0 ⇒ 鼠标叫回时广播没通知 ⇒ 顶栏停在 visible=false：'
+            '「箭头看得见、点不到」（本批修掉的那个缺陷）。'
+            '把 `_pushControlsLive()` 改成空操作即可复现本红。');
     /*
      * ★ 阈值怎么定的（不是拍的）
      * ```text
@@ -362,10 +446,13 @@ void main() {
      *    · 离改前的 1624 有 8 倍距离（退回整树装卸立刻冲破）
      * ```
      */
-    expect(totalAll, lessThan(200),
-        reason: '★★ 8 轮总重建必须 < 200。'
-            '改前 = 1624（子树被反复 deactivate/activate）；'
-            '修后 = 20。若读到 1000+ ⇒ 底栏又退回 `shrink ⇄ child` 装卸了。');
+    /*
+     * ⚠️ 旧的那条 `expect(totalAll, lessThan(200))` **已删除**（不是放宽，是换判据）：
+     * 它把"缺陷态的 20"当基线，与上面 ①②③ 相比**两个方向都更弱**。
+     * 仍要防"整树反复装卸"（改前 1624）：那个形态会被 ② 抓到
+     * （整树装卸的元素既不属于顶栏、也不属于整页 ⇒ 全落进 `_other`）。
+     */
+
   });
 
   // ════════════════════════════════════════════════════════════════════
@@ -379,17 +466,29 @@ void main() {
     await _enterFullscreenPlaying(t);
 
     final types = <String>[];
+    var page = 0;
+    var topBar = 0;
+    var animation = 0;
+    var other = 0;
     debugOnRebuildDirtyWidget = (e, _) {
-      _all++;
-      if (e.widget is PlayerPage) _page++;
+      if (e.widget is PlayerPage) {
+        page++;
+      } else if (e.widget is AnimatedBuilder) {
+        animation++; // fade 动画自身的 ticker —— 每帧本来就该重建
+      } else if (_isInTopBar(e)) {
+        topBar++;
+      } else {
+        other++;
+      }
       types.add(e.widget.runtimeType.toString());
     };
     await t.pump();
     debugOnRebuildDirtyWidget = null;
     // ignore: avoid_print
-    print('T5 静置帧重建类型 = $types');
+    print('T5 静置帧 ⇒ page=$page topBar=$topBar animation=$animation '
+        'other=$other 类型=$types');
 
-    expect(_page, 0, reason: '静置帧不该重建整页');
+    expect(page, 0, reason: '静置帧不该重建整页');
     /*
      * ★ 判据修正（如实记录为什么不是 0）
      * ```text
@@ -406,9 +505,28 @@ void main() {
      * ```
      * ⚠️ 我不改既有门禁的 P0 —— 那是别人的文件，且它的严格值有它的道理。
      */
-    expect(_all, lessThanOrEqualTo(2),
-        reason: '★ 阴性对照：静置帧不该有成规模重建（实测 1：一个 AnimatedBuilder tick）。'
-            '若这里读到几十/上百 ⇒ 本文件的计数器本身有问题（假红/假绿温床）');
+    /*
+     * ★ 2026-10-25 重标定（Lead 细化后的口径：**按来源分类，三个 0**）
+     * ```text
+     * 旧判据 `_all <= 2` 是按**缺陷态**标定的（那时 hover 从不通知，
+     * 静置帧连动画 tick 都可能没有）。
+     * 现在按来源分开：
+     *   page       整页重建            ⇒ 必须 0
+     *   topBar     顶栏子树重建        ⇒ 必须 0（静置时它没有理由重建）
+     *   animation  AnimatedBuilder 自身 ⇒ **允许 >0**（fade 每一帧本来就在重建）
+     *   other      其余               ⇒ 必须 0
+     * ⚠️ `topBar == 0` 与 `page == 0` 是**不同层级**的判据：
+     *    前者能抓住"只有顶栏被无谓重建"，后者抓"整页重建"，缺一不可。
+     * ```
+     */
+    expect(topBar, 0,
+        reason: '★★ 静置帧顶栏子树不该重建（实际 $topBar）—— '
+            '它比"整页重建"更细：能抓住"只有顶栏被反复通知"的浪费');
+    expect(other, 0,
+        reason: '★ 静置帧除整页/顶栏/动画外不该有任何重建（实际 $other）');
+    expect(page, 0, reason: '静置帧不该重建整页');
+    // animation 故意不断言上限：fade 动画跑起来就是每帧一次
+    expect(animation, greaterThanOrEqualTo(0));
   });
 
   // ════════════════════════════════════════════════════════════════════

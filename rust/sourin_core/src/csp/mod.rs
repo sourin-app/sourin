@@ -34,6 +34,7 @@
 //   否则同一个东西在不同界面（导入报告 / 检测更新 / 日志）文案会漂。
 
 pub mod app99;
+pub mod first_aid;
 pub mod bili;
 pub mod pan_web_share;
 pub mod zhinan;
@@ -240,6 +241,13 @@ fn build_registry() -> BTreeMap<&'static str, Builder> {
     m.insert(app99::App99::CLASS, || {
         Arc::new(app99::App99::new()) as Arc<dyn CspSite>
     });
+    /*
+     * csp_FirstAid：**已实现但未注册（未通电）**。
+     * 2026-10-26 真网络：home/list/play 三段通了（见 .probe/firstaid-live4.log），
+     * 但 detail 的标题解析仍命中页面 <style> 里的 CSS 文本 ⇒ **四段未全通**，
+     * 按"未通过真网络验证不许注册"的规矩撤掉。修好后把下面三行恢复即可。
+     */
+    // m.insert(first_aid::FirstAid::CLASS, || { … });
     m.insert(pan_web_share::PanWebShare::CLASS, || {
         Arc::new(pan_web_share::PanWebShare::new()) as Arc<dyn CspSite>
     });

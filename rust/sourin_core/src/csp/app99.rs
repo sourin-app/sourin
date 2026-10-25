@@ -76,7 +76,7 @@
 //
 // # 能力边界（如实）
 // ```text
-// ✅ 握手 / 搜索 / 详情 / 取流（vod_play_url 里的直链或分享链接）
+// ✅ 握手 / 搜索 / 详情 / 取流（`play_url` 里的**直链**可播；播放页/分享页地址会**如实报错**）
 // ⛔ 需要登录的条目：服务端会在响应里给空/错误，我们**如实透出**，不伪造
 // ⛔ 分类页：`categories` 由握手响应下发；下发了就用，没下发就如实报"该源没给分类"
 // ```
@@ -286,6 +286,34 @@ fn now_ms() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
+
+/// 校验上游 `code`（**唯一实现**，call 与 handshake 共用）
+///
+/// # 为什么必须有（live-accept 复核指出的真缺陷）
+/// 之前 `call()` 解密后直接 `parse_loose_json` 返回 ⇒ 上游报错时
+/// `list` 会报"没有 data 数组（字段名可能改了）"、`detail` 会报"返回 0 条"，
+/// **把"服务端说不行"归因成"字段名改了/没数据"** —— 方向完全错，用户和我们都会被误导。
+pub fn parse_envelope(path: &str, v: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let code = v.get("code").and_then(|x| x.as_i64()).unwrap_or(0);
+    if code != 0 {
+        let msg = v
+            .get("msg")
+            .and_then(|x| x.as_str())
+            .unwrap_or("（上游没给 msg）");
+        return Err(format!("{path} 返回 code={code} msg={msg}"));
+    }
+    Ok(v.clone())
+}
+
+/// token 判定（唯一实现）：空 ⇒ Err，由调用方决定是否降级
+pub fn require_token(token: String) -> Result<String, String> {
+    if token.trim().is_empty() {
+        Err("登录态不可用（userInfo 未给 user_token）".to_string())
+    } else {
+        Ok(token)
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  实例
 // ═══════════════════════════════════════════════════════════════════════
@@ -462,7 +490,7 @@ impl App99 {
                 &plain[..plain.len().min(240)]
             );
         }
-        Ok(token)
+        require_token(token)
     }
 
     /// 握手：POST `{host}/app/systemInit` → 解密 → 拿 token / categories
@@ -529,6 +557,8 @@ impl App99 {
         }
         let plain = decrypt_body(&key, text.trim()).map_err(|e| format!("握手响应解密失败：{e}"))?;
         let v = parse_loose_json(&plain).map_err(|e| format!("握手响应不是 JSON：{e}：{plain:.200}"))?;
+        // ★ systemInit 也有 code（实测成功时是 0）；!=0 必须如实报
+        let v = parse_envelope("/app/systemInit", &v)?;
         // 结构 dump（只打键名，便于找 token 的嵌套位置）
         {
             let top: Vec<String> = v.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
@@ -694,7 +724,9 @@ impl App99 {
         let (uuid, b64) = self.call_raw(path, body).await?;
         let key = key_of(&uuid)?;
         let plain = decrypt_body(&key, &b64).map_err(|e| format!("{path} 响应解密失败：{e}"))?;
-        parse_loose_json(&plain).map_err(|e| format!("{path} 响应不是 JSON：{e}"))
+        let v = parse_loose_json(&plain).map_err(|e| format!("{path} 响应不是 JSON：{e}"))?;
+        // ★ code != 0 必须原样报出来（别归因成"字段名改了"）
+        parse_envelope(path, &v)
     }
 }
 
@@ -1005,6 +1037,10 @@ mod tests {
             !url.is_empty(),
             "★ 真实 detail 响应里 `play_url` 不能为空（我最初写成 vod_play_url 就是这条抓出来的）"
         );
+        assert!(
+            !from.is_empty(),
+            "★ `play_from` 不许为空 —— 之前只打印不断言，字段名再写错一次也不会红"
+        );
         eprintln!("[FIXTURE-DETAIL] play_from={from:?} play_url 前 120 字符={}", &url[..url.len().min(120)]);
 
         // 还能映射成播放候选（否则"解得开但用不了"）
@@ -1165,6 +1201,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── ★ 上游 code != 0 必须原样报出（live-accept 复核第 1/2 条）──
+    #[test]
+    fn envelope_rejects_upstream_error_code() {
+        let v: serde_json::Value =
+            parse_loose_json(r#"{"code":1,"msg":"user info error","userInfo":""}"#).unwrap();
+        let err = parse_envelope("/app/systemInit", &v).expect_err("★ code!=0 必须 Err");
+        assert!(err.contains("code=1"), "错误里要带上游 code：{err}");
+        assert!(err.contains("user info error"), "还要带 msg：{err}");
+        // 对照：code=0 必须放行（否则"永远 Err"也能过 ⇒ 假绿）
+        let ok: serde_json::Value = parse_loose_json(r#"{"code":0,"msg":"init"}"#).unwrap();
+        assert!(parse_envelope("/vod/search", &ok).is_ok());
+        // 缺 code 字段 ⇒ 视为 0（同一份响应里没见过 code 时不该阻断）
+        let none: serde_json::Value = parse_loose_json(r#"{"data":[]}"#).unwrap();
+        assert!(parse_envelope("/vod/search", &none).is_ok());
+    }
+
+    // ── ★ 空 token 必须 Err，不许静默降级（复核第 3 条）──
+    #[test]
+    fn require_token_rejects_empty() {
+        let err = require_token(String::new()).expect_err("空 token 必须 Err");
+        assert!(err.contains("未给 user_token"), "{err}");
+        assert!(require_token("  ".to_string()).is_err(), "空白也算没有");
+        assert_eq!(require_token("tk".to_string()).unwrap(), "tk");
     }
 
     #[test]

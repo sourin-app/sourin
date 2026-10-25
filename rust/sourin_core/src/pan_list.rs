@@ -44,6 +44,10 @@ pub struct PanEntry {
     pub name: String,
     pub size: u64,
     pub is_dir: bool,
+    /// 夸克/UC 的子目录句柄（`pdir_fid` 用）；百度没有这个字段 ⇒ None
+    pub fid: Option<String>,
+    /// 百度的子目录路径（`path=` 用，实测字段名就叫 `path`）；夸克/UC ⇒ None
+    pub path: Option<String>,
 }
 
 /// 一次匿名列目录的结果
@@ -66,6 +70,8 @@ impl PanListing {
                 "name": e.name,
                 "size": e.size,
                 "isDir": e.is_dir,
+                "fid": e.fid,
+                "path": e.path,
             })).collect::<Vec<_>>(),
             "note": self.note,
             // ★ 如实声明能力：能列目录 ≠ 能播
@@ -197,6 +203,8 @@ fn parse_detail_shared(v: &Value, label: &str) -> Result<Vec<PanEntry>, String> 
             size: num_of(it.get("size")),
             // 唯一判据：0 = 目录
             is_dir: it.get("file_type").and_then(|x| x.as_i64()) == Some(0),
+            fid: it.get("fid").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            path: it.get("path").and_then(|x| x.as_str()).map(|s| s.to_string()),
         });
     }
     if out.is_empty() {
@@ -248,6 +256,17 @@ pub fn parse_baidu_yundata(html: &str) -> Result<(String, Vec<PanEntry>), String
             name: name.to_string(),
             size: num_of(it.get("size")),
             is_dir: it.get("isdir").and_then(|x| x.as_i64()).unwrap_or(0) == 1,
+            // 百度没有 `fid`，只有 `fs_id`（数字）⇒ 当 fid 存着，方便界面统一处理
+            fid: it
+                .get("fs_id")
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    _ => String::new(),
+                })
+                .filter(|s| !s.is_empty()),
+            // ★ 实测字段名就是 `path`（形如 `/sharelink…/G-诡异降临`），不是 `dir`
+            path: it.get("path").and_then(|x| x.as_str()).map(|s| s.to_string()),
         });
     }
     if out.is_empty() {
@@ -320,13 +339,38 @@ fn fail(steps: &[String], last: String) -> String {
 ///
 /// `pwd` 是用户自己填的提取码（**只提交已知的**，不做验证码、不猜）。
 pub async fn list_share(kind: PanKind, share_id: &str, pwd: Option<&str>) -> Result<PanListing, String> {
+    list_share_at(kind, share_id, pwd, None).await
+}
+
+/// 列**某一层**（`dir = None` ⇒ 根；`Some(entry)` ⇒ 进这个目录，**只进一层**）
+///
+/// ★ 没有递归入口：要再进一层，调用方必须拿着上一层的条目再单独调一次。
+///   这是有意的（递归爬取等于批量抓取，越界）。
+pub async fn list_share_at(
+    kind: PanKind,
+    share_id: &str,
+    pwd: Option<&str>,
+    dir: Option<&PanEntry>,
+) -> Result<PanListing, String> {
     if share_id.trim().is_empty() {
         return Err("分享 id 为空（这不是分享链接？）".to_string());
     }
+    if let Some(d) = dir {
+        if !d.is_dir {
+            return Err(format!("「{}」不是目录，不能进", d.name));
+        }
+        let has_handle = match kind {
+            PanKind::Baidu => d.path.as_deref().map(|p| !p.is_empty()).unwrap_or(false),
+            _ => d.fid.as_deref().map(|f| !f.is_empty()).unwrap_or(false),
+        };
+        if !has_handle {
+            return Err(subdir_no_handle(kind, &d.name));
+        }
+    }
     match kind {
-        PanKind::Quark => quark_list(share_id, pwd).await,
-        PanKind::Uc => uc_list(share_id, pwd).await,
-        PanKind::Baidu => baidu_list(share_id, pwd).await,
+        PanKind::Quark => quark_list(share_id, pwd, dir).await,
+        PanKind::Uc => uc_list(share_id, pwd, dir).await,
+        PanKind::Baidu => baidu_list(share_id, pwd, dir).await,
         other => Err(format!(
             "{} 的匿名列目录还没有实现（目前已做：夸克 / UC / 百度；见 .probe/pan-anon-probe.md）",
             other.display()
@@ -334,7 +378,11 @@ pub async fn list_share(kind: PanKind, share_id: &str, pwd: Option<&str>) -> Res
     }
 }
 
-async fn quark_list(pwd_id: &str, passcode: Option<&str>) -> Result<PanListing, String> {
+async fn quark_list(
+    pwd_id: &str,
+    passcode: Option<&str>,
+    dir: Option<&PanEntry>,
+) -> Result<PanListing, String> {
     let c = client()?;
     let mut steps: Vec<String> = Vec::new();
 
@@ -387,7 +435,6 @@ async fn quark_list(pwd_id: &str, passcode: Option<&str>) -> Result<PanListing, 
             ("fr", "pc"),
             ("pwd_id", pwd_id),
             ("stoken", stoken.as_str()),
-            ("pdir_fid", "0"),
             ("force", "0"),
             ("_page", "1"),
             ("_size", "50"),
@@ -396,6 +443,10 @@ async fn quark_list(pwd_id: &str, passcode: Option<&str>) -> Result<PanListing, 
         .header(reqwest::header::ORIGIN, "https://pan.quark.cn")
         .header(reqwest::header::REFERER, format!("https://pan.quark.cn/s/{pwd_id}"))
         .header(reqwest::header::COOKIE, cookies);
+    // ★ 导航参数：根 ⇒ pdir_fid=0；子目录 ⇒ 该条目的 fid（**只进一层**）
+    let detail = nav_params(PanKind::Quark, dir)
+        .iter()
+        .fold(detail, |acc, (k, v)| acc.query(&[(k.as_str(), v.as_str())]));
     let detail_json = match detail.send().await {
         Ok(r) => {
             let st = r.status().as_u16();
@@ -409,7 +460,13 @@ async fn quark_list(pwd_id: &str, passcode: Option<&str>) -> Result<PanListing, 
     };
     let entries = match parse_quark_detail(&detail_json) {
         Ok(v) => v,
-        Err(e) => return Err(fail(&steps, e)),
+        Err(e) => {
+            let msg = match dir {
+                Some(d) => subdir_denied(PanKind::Quark, &d.name),
+                None => e,
+            };
+            return Err(fail(&steps, msg));
+        }
     };
     let n = entries.len();
     Ok(PanListing {
@@ -445,6 +502,71 @@ async fn quark_list(pwd_id: &str, passcode: Option<&str>) -> Result<PanListing, 
 //   ⇒ 代码只维护**一个**判据（`is_dir = file_type == 0`，见 `parse_detail_shared`），
 //     并用 UC 的目录样本单独钉一条单测：谁把判据写反，那条立刻红。
 // ```
+/// 极简 URL 编码（只用 `reqwest`/`url` 已有的能力会引入依赖，这里手写够用）
+///
+/// 保留 `/` 与 `-._~`（百度 `path` 是**路径**，斜杠必须原样保留）；
+/// 其余非字母数字一律 `%XX`（按 UTF-8 字节）。
+pub fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        let c = *b as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '/') {
+            out.push(c);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{:02X}", b));
+        }
+    }
+    out
+}
+
+/// 「进下一层」的查询参数（纯函数，便于离线测 + 注入）
+///
+/// # 实测依据（2026-10-26）
+/// ```text
+/// 夸克/UC：`sharepage/detail?…&pdir_fid=<子目录 fid>` —— 根目录用 `0`
+///          （探测里根就是 `pdir_fid=0`；子目录的 `fid` 在同一响应里给出）
+/// 百度   ：分享页条目里有 `path` 字段（形如 `/sharelink…/G-诡异降临`），
+///          再取时用 `&path=<urlencoded>`（**字段名是 `path`，不是 `dir`** ——
+///          这是从真实响应里 dump 出来的，见 .probe 里的探测记录）
+/// ```
+/// ⚠️ 子目录**只进一层**：本函数只表达"进哪个目录"，没有任何递归入口。
+pub fn nav_params(kind: PanKind, dir: Option<&PanEntry>) -> Vec<(String, String)> {
+    match kind {
+        PanKind::Baidu => match dir.and_then(|d| d.path.as_deref()) {
+            Some(p) if !p.is_empty() => vec![("path".to_string(), url_encode(p))],
+            _ => Vec::new(),
+        },
+        _ => {
+            // ★ 根才用 "0"。子目录必须用**它自己的** fid ——
+            //   拿不到就调用方已经拦掉了（见 `list_share_at` 的句柄守卫），
+            //   这里绝不静默退回 "0"（那会**把根目录当成子目录列出来**，
+            //   用户点进"某目录"却看到根的孩子，是很隐蔽的错）。
+            let fid = match dir {
+                None => "0",
+                Some(d) => d.fid.as_deref().unwrap_or(""),
+            };
+            vec![("pdir_fid".to_string(), fid.to_string())]
+        }
+    }
+}
+
+/// 子目录**拿不到句柄**（夸克/UC 没 fid、百度没 path）时的可读错误
+pub fn subdir_no_handle(kind: PanKind, name: &str) -> String {
+    format!(
+        "「{name}」是目录，但这个盘没给出可用的目录句柄，进不去（{}）",
+        kind.display()
+    )
+}
+
+/// 子目录进不去时的**统一可读错误**（硬纪律：不许空列表冒充"这里没文件"）
+pub fn subdir_denied(kind: PanKind, name: &str) -> String {
+    format!(
+        "这个子目录需要登录{}后才能列出（「{name}」：匿名访问被拒/返回空）",
+        kind.display()
+    )
+}
+
 const UC_TOKEN: &str =
     "https://pc-api.uc.cn/1/clouddrive/share/sharepage/token?pr=UCBrowser&fr=pc";
 const UC_DETAIL: &str = "https://pc-api.uc.cn/1/clouddrive/share/sharepage/detail";
@@ -486,7 +608,11 @@ pub fn parse_uc_detail(json: &str) -> Result<Vec<PanEntry>, String> {
     parse_detail_shared(&v, "UC")
 }
 
-async fn uc_list(pwd_id: &str, passcode: Option<&str>) -> Result<PanListing, String> {
+async fn uc_list(
+    pwd_id: &str,
+    passcode: Option<&str>,
+    dir: Option<&PanEntry>,
+) -> Result<PanListing, String> {
     let c = client()?;
     let mut steps: Vec<String> = Vec::new();
 
@@ -534,19 +660,22 @@ async fn uc_list(pwd_id: &str, passcode: Option<&str>) -> Result<PanListing, Str
     };
 
     // ③ detail（同一主机，带 stoken）
-    let detail_json = match c
+    let mut uc_req = c
         .get(UC_DETAIL)
         .query(&[
             ("pr", "UCBrowser"),
             ("fr", "pc"),
             ("pwd_id", pwd_id),
             ("stoken", stoken.as_str()),
-            ("pdir_fid", "0"),
             ("force", "0"),
             ("_page", "1"),
             ("_size", "50"),
             ("_sort", "file_type:asc,updated_at:desc"),
-        ])
+        ]);
+    for (k, v) in nav_params(PanKind::Uc, dir) {
+        uc_req = uc_req.query(&[(k.as_str(), v.as_str())]);
+    }
+    let detail_json = match uc_req
         .header(reqwest::header::ORIGIN, "https://drive.uc.cn")
         .header(reqwest::header::REFERER, format!("https://drive.uc.cn/s/{pwd_id}"))
         .header(reqwest::header::COOKIE, cookies)
@@ -565,7 +694,13 @@ async fn uc_list(pwd_id: &str, passcode: Option<&str>) -> Result<PanListing, Str
     };
     let entries = match parse_uc_detail(&detail_json) {
         Ok(v) => v,
-        Err(e) => return Err(fail(&steps, e)),
+        Err(e) => {
+            let msg = match dir {
+                Some(d) => subdir_denied(PanKind::Uc, &d.name),
+                None => e,
+            };
+            return Err(fail(&steps, msg));
+        }
     };
     let n = entries.len();
     Ok(PanListing {
@@ -575,7 +710,11 @@ async fn uc_list(pwd_id: &str, passcode: Option<&str>) -> Result<PanListing, Str
     })
 }
 
-async fn baidu_list(surl: &str, pwd: Option<&str>) -> Result<PanListing, String> {
+async fn baidu_list(
+    surl: &str,
+    pwd: Option<&str>,
+    dir: Option<&PanEntry>,
+) -> Result<PanListing, String> {
     let c = client()?;
     let mut steps: Vec<String> = Vec::new();
     let code = pwd.unwrap_or("").to_string();
@@ -660,12 +799,16 @@ async fn baidu_list(surl: &str, pwd: Option<&str>) -> Result<PanListing, String>
     }
 
     // ③ 带 cookie 再取分享页，从 HTML 里抠 file_list
-    let html = match c
+    // ★ 进子目录：实测分享页条目里带 `path`（`/sharelink…/目录名`），
+    //   再取时用 `&path=<urlencoded>`（字段名是 `path`，不是 `dir`）。
+    let mut sub_req = c
         .get(&first)
         .header(reqwest::header::COOKIE, cookies)
-        .header(reqwest::header::REFERER, "https://pan.baidu.com/")
-        .send()
-        .await
+        .header(reqwest::header::REFERER, "https://pan.baidu.com/");
+    for (k, v) in nav_params(PanKind::Baidu, dir) {
+        sub_req = sub_req.query(&[(k.as_str(), v.as_str())]);
+    }
+    let html = match sub_req.send().await
     {
         Ok(r) => {
             let st = r.status().as_u16();
@@ -679,7 +822,13 @@ async fn baidu_list(surl: &str, pwd: Option<&str>) -> Result<PanListing, String>
     };
     let (title, entries) = match parse_baidu_yundata(&html) {
         Ok(v) => v,
-        Err(e) => return Err(fail(&steps, e)),
+        Err(e) => {
+            let msg = match dir {
+                Some(d) => subdir_denied(PanKind::Baidu, &d.name),
+                None => e,
+            };
+            return Err(fail(&steps, msg));
+        }
     };
     let n = entries.len();
     Ok(PanListing {
@@ -761,8 +910,10 @@ mod tests {
     // ── 百度：好样本（JS 对象字面量形态，非严格 JSON）────────────────
     const BAIDU_HTML: &str = r#"<html><head><title>某影片 - 百度网盘</title></head><body>
 <script>locals.mset({ "yunData": { "shareid": 63975555959, "uk": "0",
-  "file_list": [{"server_filename":"G-诡异降临","isdir":1,"size":0},
-                {"server_filename":"readme.txt","isdir":0,"size":12345}] } });</script>
+  "file_list": [{"server_filename":"G-诡异降临","isdir":1,"size":0,"fs_id":371018630578153,
+                 "path":"/sharelink1-2/G-诡异降临"},
+                {"server_filename":"readme.txt","isdir":0,"size":12345,"fs_id":2,
+                 "path":"/sharelink1-2/readme.txt"}] } });</script>
 </body></html>"#;
 
     #[test]
@@ -882,6 +1033,90 @@ mod tests {
         );
     }
 
+    // ── 进子目录（只进一层）────────────────────────────────────────
+    fn entry(name: &str, is_dir: bool, fid: Option<&str>, path: Option<&str>) -> PanEntry {
+        PanEntry {
+            name: name.to_string(),
+            size: 0,
+            is_dir,
+            fid: fid.map(|s| s.to_string()),
+            path: path.map(|s| s.to_string()),
+        }
+    }
+
+    /// ★★ 导航参数：根用 0，子目录用它自己的句柄（**写死成根 ⇒ 本条红**）
+    #[test]
+    fn nav_params_root_vs_subdir() {
+        // 夸克/UC：根 ⇒ pdir_fid=0
+        assert_eq!(
+            nav_params(PanKind::Quark, None),
+            vec![("pdir_fid".to_string(), "0".to_string())]
+        );
+        // 夸克/UC：子目录 ⇒ 该条目的 fid（不是 0！）
+        let d = entry("子目录", true, Some("fid-abc"), None);
+        assert_eq!(
+            nav_params(PanKind::Quark, Some(&d)),
+            vec![("pdir_fid".to_string(), "fid-abc".to_string())]
+        );
+        assert_eq!(
+            nav_params(PanKind::Uc, Some(&d)),
+            vec![("pdir_fid".to_string(), "fid-abc".to_string())]
+        );
+        // 百度：子目录 ⇒ path（保留斜杠，其余百分号编码）
+        let b = entry("G-诡异降临", true, Some("123"), Some("/sharelink1-2/G-诡异降临"));
+        let got = nav_params(PanKind::Baidu, Some(&b));
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "path", "★ 实测字段名是 path，不是 dir");
+        assert!(got[0].1.starts_with("/sharelink1-2/"), "斜杠要保留：{}", got[0].1);
+        // 百度：根 ⇒ 空参数（不带 path）
+        assert!(nav_params(PanKind::Baidu, None).is_empty());
+    }
+
+    /// 子目录**没有句柄** ⇒ 可读 Err（不许静默退回根）
+    #[test]
+    fn subdir_without_handle_is_an_error_not_root() {
+        let blk = futures_lite_block;
+        // 夸克目录没有 fid
+        let d = entry("空句柄目录", true, None, None);
+        let e = blk(list_share_at(PanKind::Quark, "abc", None, Some(&d))).expect_err("必须 Err");
+        assert!(e.contains("进不去"), "要可读：{e}");
+        assert!(e.contains("空句柄目录"), "要点名是哪个目录：{e}");
+        // 百度目录没有 path
+        let b = entry("无 path 目录", true, None, None);
+        let e2 = blk(list_share_at(PanKind::Baidu, "abc", None, Some(&b))).expect_err("必须 Err");
+        assert!(e2.contains("进不去"), "要可读：{e2}");
+    }
+
+    /// 传一个**文件**进去 ⇒ 直接拒（不是"列出来看"）
+    #[test]
+    fn entering_a_file_is_rejected() {
+        let f = entry("某影片.mp4", false, Some("fid1"), None);
+        let e = futures_lite_block(list_share_at(PanKind::Quark, "abc", None, Some(&f)))
+            .expect_err("文件不是目录");
+        assert!(e.contains("不是目录"), "{e}");
+    }
+
+    /// 子目录被拒时的文案（"需要登录"而不是"这里没文件"）
+    #[test]
+    fn subdir_denied_message_says_login() {
+        let m = subdir_denied(PanKind::Baidu, "G-诡异降临");
+        assert!(m.contains("需要登录"), "{m}");
+        assert!(m.contains("G-诡异降临"), "要点名：{m}");
+        assert!(!m.contains("0 个文件"), "不许用它冒充'空目录'：{m}");
+    }
+
+    /// 混排（目录 + 文件）都要在，且各自带上能继续导航的句柄
+    #[test]
+    fn mixed_entries_keep_navigation_handles() {
+        let (_, v) = parse_baidu_yundata(BAIDU_HTML).expect("应能解析");
+        assert_eq!(v.len(), 2);
+        assert!(v[0].is_dir && v[0].path.is_some(), "目录要带 path 才能进：{:?}", v[0]);
+        assert!(!v[1].is_dir);
+        let q = parse_quark_detail(QUARK_DETAIL_OK).expect("应能解析");
+        assert!(q[0].fid.is_some(), "夸克条目要带 fid 才能进：{:?}", q[0]);
+        assert!(q[1].is_dir && q[1].fid.is_some(), "夸克目录也要带 fid");
+    }
+
     #[test]
     fn anonymous_note_is_layered_and_readable() {
         let n = anonymous_note("夸克网盘", 3);
@@ -956,6 +1191,7 @@ mod tests {
         }
         assert!(!l.entries.is_empty(), "★ 列目录成功就必须有条目");
     }
+
 
     #[tokio::test]
     #[ignore = "真网络：PAN_LIVE=1 PAN_UC_ID=<pwd_id> cargo test --lib pan_list --release -- --ignored --nocapture"]

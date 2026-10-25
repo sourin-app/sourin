@@ -43,6 +43,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
+// ★ 审计 B9：缺 dll 的统一处置（Windows ⇒ fail；其它平台 ⇒ 点名 skip）
+import 'support/core_gate.dart';
 
 // ─────────────────────────── ③ 的扫描器 ───────────────────────────
 
@@ -324,7 +326,22 @@ void main() {
 
     test('读一个不存在的备份包 ⇒ 界面拿到的是插件原文，不是宿主类名', () async {
       if (!hasNativeCore) {
-        markTestSkipped('未提供 sourin_core.dll 或已强制模拟缺失，跳过真核心用例');
+        if (forceMissingDll) {
+          /*
+           * ★ 审计 B9：`T66_FORCE_MISSING_DLL` 是**人肉模拟**缺件
+           *   （不移动 DLL 也能走一遍 setup/skip/teardown），不是"这台机器缺件"。
+           *   ⇒ 它继续 skip，但 reason 必须说清"这是模拟，不是真缺"，
+           *     否则它会被误读成"Windows 上也允许缺 dll"。
+           */
+          markTestSkipped(
+              'T66_FORCE_MISSING_DLL 强制模拟缺件（**不是**真缺 dll）'
+              '—— 本次没有校验到：真核心错误原文那条判据');
+          return;
+        }
+        handleMissingCore(
+          missing: kCoreDllPaths.join('、'),
+          notVerified: '真核心错误原文那条判据（SourinCoreException → 用户文案）',
+        );
         return;
       }
 

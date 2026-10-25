@@ -58,6 +58,8 @@ import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/cache_page.dart';
 import 'package:sourin_spike/ui/player_page.dart';
 import 'package:sourin_spike/ui/remote_bridge.dart';
+// ★ 审计 B9：缺 dll 的统一处置（Windows ⇒ fail；其它平台 ⇒ 点名 skip）
+import 'support/core_gate.dart';
 
 /// 站点键上**原本就有的**那条在线记录（模拟「用户先在线上看过第 3 集」）
 const String kSiteProvider = 'bilibili';
@@ -128,11 +130,21 @@ void main() {
       if (!SourinCore.isStarted) {
         await SourinCore.startAsync(sandbox.path);
       }
-      coreReady = SourinCore.isStarted;
-      coreWhy = coreReady ? '核心已启动' : 'startAsync 返回了但 isStarted=false';
-    } catch (e) {
+    } catch (e, st) {
       coreReady = false;
       coreWhy = e.toString();
+      // ★★★ 2026-10-25（审计 B9）：改前这里是 `catch (e) { coreReady = false; … }`
+      //   —— 任何异常（含核心自报错、FFI 契约坏、IO）都变成"如实跳过"。
+      //   现在只对 dlopen/符号缺失按平台处置（Windows ⇒ fail），其余一律 fail。
+      coreStartFailedThenSkip(e, st, notVerified: '镜像写入的 5 条行为判据');
+      return;
+    }
+    coreReady = SourinCore.isStarted;
+    coreWhy = coreReady ? '核心已启动' : 'startAsync 返回了但 isStarted=false';
+    if (!coreReady) {
+      // ★ 没抛异常却起不来：这不是缺件，是契约/环境坏了 ⇒ 不许降级成 skip
+      fail('核心启动返回成功但 isStarted=false（$coreWhy）—— 这不是缺件，'
+          '是契约或环境坏了 ⇒ 不许 skip。本次没有校验到：镜像写入的 5 条行为判据');
     }
     debugPrint('T26W4 环境: coreReady=$coreReady why=$coreWhy '
         'sandbox=${sandbox.path}');
@@ -221,8 +233,11 @@ void main() {
     test('★★★ 会话手上的「集号」是**文件名** ⇒ 不是站点集 id ⇒ 一条镜像都不写',
         () async {
       if (!coreReady) {
-        markTestSkipped('flutter_tester 起不了真核心（$coreWhy）—— '
-            '`saveProgressWithMirror` 第一步就要真 FFI，这里如实跳过而不是假红');
+        // ★ 审计 B9：改前是 markTestSkipped —— Windows 上"仓库提交物缺失"会变绿。
+        handleMissingCore(
+          missing: 'sourin_core.dll（$coreWhy）',
+          notVerified: '「拿不到站点集 id ⇒ 一条镜像都不写」这条行为判据',
+        );
         return;
       }
       await saveProgressWithMirror(
@@ -249,8 +264,11 @@ void main() {
     testWidgets('★★★ 本地看完一集之后，站点键那条的作品标题与集 ID 逐字不变',
         (t) async {
       if (!coreReady) {
-        markTestSkipped('flutter_tester 起不了真核心（$coreWhy）—— '
-            '本组全部读数来自真 SQLite，起不来就如实跳过而不是假红');
+        // ★ 审计 B9：同上（真 SQLite 读数不能因为缺件被算作"通过"）
+        handleMissingCore(
+          missing: 'sourin_core.dll（$coreWhy）',
+          notVerified: '「站点键上原有在线记录不被镜像抹掉」这条真 SQLite 判据',
+        );
         return;
       }
       // ★ 摘掉注入点：注入点只证明「调用了」，不证明「真落库」

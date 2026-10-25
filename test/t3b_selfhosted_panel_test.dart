@@ -131,6 +131,8 @@ void main() {
       // ① 填 A，点「测试连接」⇒ 请求悬在 await 里
       await t.enterText(_urlField, 'http://10.0.0.1:1111');
       await t.pump();
+      // 高级页包含来源选择，先滚动到真实按钮再操作，保留探测结果断言。
+      await t.ensureVisible(find.text('测试连接'));
       await t.tap(find.text('测试连接'));
       await t.pump();
       expect(seen?.host, '10.0.0.1', reason: '阳性对照：探针确实被调用且拿到 A');
@@ -169,6 +171,8 @@ void main() {
 
       await t.enterText(_urlField, 'http://10.0.0.1:1111');
       await t.pump();
+      // 高级页包含来源选择，先滚动到真实按钮再操作，保留探测结果断言。
+      await t.ensureVisible(find.text('测试连接'));
       await t.tap(find.text('测试连接'));
       await t.pump();
       expect(calls, 1);
@@ -203,9 +207,12 @@ void main() {
       UiPrefs.setDanmakuEndpoint('http://10.0.0.1:1111');
       await _pumpOnDanApiTab(t, probe: (e) => gate.future);
 
+      // 高级页包含来源选择，先滚动到真实按钮再操作，保留探测结果断言。
+      await t.ensureVisible(find.text('测试连接'));
       await t.tap(find.text('测试连接'));
       await t.pump();
       // 请求在途时用户点「清除」
+      await t.ensureVisible(find.text('清除'));
       await t.tap(find.text('清除'));
       await t.pumpAndSettle();
       expect(UiPrefs.danmakuEndpoint, '', reason: '阳性对照：清除先生效了');
@@ -228,6 +235,8 @@ void main() {
 
       await t.enterText(_urlField, 'http://10.0.0.1:1111');
       await t.pump();
+      // 高级页包含来源选择，先滚动到真实按钮再操作，保留探测结果断言。
+      await t.ensureVisible(find.text('测试连接'));
       await t.tap(find.text('测试连接'));
       await t.pump();
       await t.enterText(_tokenField, 'newtoken');
@@ -253,6 +262,8 @@ void main() {
 
       await t.enterText(_urlField, 'http://10.0.0.1:1111');
       await t.pump();
+      // 高级页包含来源选择，先滚动到真实按钮再操作，保留探测结果断言。
+      await t.ensureVisible(find.text('测试连接'));
       await t.tap(find.text('测试连接'));
       await t.pump();
       // 全程不改输入 ⇒ 序号不变
@@ -274,6 +285,8 @@ void main() {
 
       await t.enterText(_urlField, 'http://10.0.0.1:1111');
       await t.pump();
+      // 高级页包含来源选择，先滚动到真实按钮再操作，保留探测结果断言。
+      await t.ensureVisible(find.text('测试连接'));
       await t.tap(find.text('测试连接'));
       await t.pump();
       await t.enterText(_urlField, 'http://10.0.0.2:2222');
@@ -336,10 +349,15 @@ void main() {
           ));
       await t.enterText(_urlField, 'http://127.0.0.1:9321');
       await t.pump();
+      // 高级页包含来源选择，先滚动到真实按钮再操作，保留探测结果断言。
+      await t.ensureVisible(find.text('测试连接'));
       await t.tap(find.text('测试连接'));
       await t.pumpAndSettle();
       expect(find.textContaining('已就绪'), findsOneWidget);
-      expect(find.textContaining('v1.21.5'), findsOneWidget);
+      expect(find.descendant(
+        of: find.byKey(const ValueKey('danmaku-self-hosted-section')),
+        matching: find.textContaining('v1.21.5'),
+      ), findsOneWidget);
       expect(UiPrefs.danmakuEndpoint, 'http://127.0.0.1:9321',
           reason: '★ 测通了就该落盘，否则用户白填');
     });
@@ -351,9 +369,14 @@ void main() {
           ));
       await t.enterText(_urlField, 'http://127.0.0.1:9321');
       await t.pump();
+      // 高级页包含来源选择，先滚动到真实按钮再操作，保留探测结果断言。
+      await t.ensureVisible(find.text('测试连接'));
       await t.tap(find.text('测试连接'));
       await t.pumpAndSettle();
-      expect(find.textContaining('未运行'), findsOneWidget);
+      expect(find.descendant(
+        of: find.byKey(const ValueKey('danmaku-self-hosted-section')),
+        matching: find.textContaining('未运行'),
+      ), findsOneWidget);
       expect(UiPrefs.danmakuEndpoint, '',
           reason: '★★ 探不通还写偏好 = 假装配好了；用户下次起播会用这个死地址');
     });
@@ -365,6 +388,8 @@ void main() {
           ));
       await t.enterText(_urlField, 'http://');
       await t.pump();
+      // 高级页包含来源选择，先滚动到真实按钮再操作，保留探测结果断言。
+      await t.ensureVisible(find.text('测试连接'));
       await t.tap(find.text('测试连接'));
       await t.pumpAndSettle();
       expect(find.textContaining('地址格式不对'), findsOneWidget);
@@ -412,6 +437,8 @@ void main() {
       await _pumpOnDanApiTab(t, probe: (e) async => throw StateError('boom'));
       await t.enterText(_urlField, 'http://127.0.0.1:9321');
       await t.pump();
+      // 高级页包含来源选择，先滚动到真实按钮再操作，保留探测结果断言。
+      await t.ensureVisible(find.text('测试连接'));
       await t.tap(find.text('测试连接'));
       await t.pumpAndSettle();
 
@@ -440,6 +467,8 @@ void main() {
           ));
       await t.enterText(_urlField, 'http://127.0.0.1:9321');
       await t.pump();
+      // 高级页包含来源选择，先滚动到真实按钮再操作，保留探测结果断言。
+      await t.ensureVisible(find.text('测试连接'));
       await t.tap(find.text('测试连接'));
       await t.pumpAndSettle();
       expect(find.textContaining('已就绪'), findsOneWidget);
@@ -462,7 +491,10 @@ void main() {
       UiPrefs.setDanmakuToken(secret);
       // ⚠️ **不**点测试连接 —— 这一态才走 _maskedEndpoint（打码 helper）
       await _pumpOnDanApiTab(t);
-      expect(find.textContaining('当前生效'), findsOneWidget,
+      expect(find.descendant(
+        of: find.byKey(const ValueKey('danmaku-self-hosted-section')),
+        matching: find.textContaining('当前生效'),
+      ), findsOneWidget,
           reason: '阳性对照：这一行必须真的渲染出来，否则下面扫的是空气');
       for (final s in allTexts(t)) {
         expect(s.contains(secret), isFalse,
@@ -487,6 +519,8 @@ void main() {
             endpoint: DanmakuEndpoint(
                 baseUrl: 'http://127.0.0.1:9321', token: 'SUPERSECRETTOKEN'),
           ));
+      // 高级页包含来源选择，先滚动到真实按钮再操作，保留探测结果断言。
+      await t.ensureVisible(find.text('测试连接'));
       await t.tap(find.text('测试连接'));
       await t.pumpAndSettle();
       expect(find.textContaining('已就绪'), findsOneWidget,
@@ -503,6 +537,7 @@ void main() {
       UiPrefs.setDanmakuEndpoint('http://10.0.0.9:9321');
       UiPrefs.setDanmakuToken('t');
       await _pumpOnDanApiTab(t);
+      await t.ensureVisible(find.text('清除'));
       await t.tap(find.text('清除'));
       await t.pumpAndSettle();
       expect(UiPrefs.danmakuEndpoint, '');

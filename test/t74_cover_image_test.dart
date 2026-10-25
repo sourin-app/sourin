@@ -438,17 +438,17 @@ void main() {
         }
       }
       /*
-       * ★ 2026-10-25：判据本意是「**封面图**必须走统一 helper」
-       *   （缓存、占位、错误处理三件套），不是"全仓禁止 Image.network"。
+       * ★ 2026-10-25：本判据的**本意**是「封面图必须走统一 helper」
+       *   （缓存、占位、错误处理三件套），不是"全仓禁止 `Image.network`"。
        *
-       * `provider_login_panel.dart` 那处是**扫码登录的二维码**：
-       *   · 不是封面图，没有"占位图 / 撕裂 / 缓存策略"这些诉求
-       *   · 外层已锁死 200×200 白底 + BoxFit.contain + 自带 errorBuilder
-       *     （失败显示「二维码图片加载失败」，比封面 helper 的兜底更贴切）
+       * `provider_login_panel.dart:991` 那处是**扫码登录的二维码**：
+       *   · 它不是封面图，没有"占位图 / 撕裂 / 缓存策略"这些诉求
+       *   · 外层已经锁死 200×200 白底 + `BoxFit.contain` + 自带 `errorBuilder`
+       *     （失败时显示「二维码图片加载失败」，比封面 helper 的兜底更贴切）
        * ⇒ 它**本来就该豁免**。加进白名单，而不是把 helper 硬套到二维码上。
        *
        * ⚠️ 判别力没丢：白名单是**精确文件名**，任何人再新增第三处
-       *   Image.network 仍会让 hits 多出一项而红。
+       *   `Image.network` 仍会让 `hits` 多出一项而红。
        */
       const allowed = <String>[
         'cover_image.dart',

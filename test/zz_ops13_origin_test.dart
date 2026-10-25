@@ -33,6 +33,8 @@ import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/models.dart' show Progress;
 import 'package:sourin_spike/core/progress_origin.dart';
 import 'package:sourin_spike/ui/cache_page.dart' show kLocalProvider;
+// ★ 审计 B9：缺 dll 的统一处置（Windows ⇒ fail；其它平台 ⇒ 点名 skip）
+import 'support/core_gate.dart';
 
 String _src(String rel) => File(rel).readAsStringSync();
 
@@ -604,14 +606,25 @@ void main() {
         ok = SourinCore.isStarted;
         why = ok ? '核心已启动' : 'startAsync 返回了但 isStarted=false';
       } catch (e) {
+        // ★ 审计 B9：改前任何异常都当"加载不了 dll"⇒ skip。
+        //   现在只放行 dlopen/符号缺失；其余（核心自报错/IO）必须 fail。
+        if (!isLibMissingForGate(e)) {
+          fail('真核心启动失败，但**不是**缺件（不许降级成 skip）：$e');
+        }
         why = e.toString();
+        handleMissingCore(
+          missing: kCoreDllPaths.join('、'),
+          notVerified: 'origin 端到端两条（真核心读写进度）',
+          error: e,
+        );
+        return;
       }
       // ignore: avoid_print
       print('[OPS13] 真核心探针: ok=$ok  why=$why');
       if (!ok) {
-        return markTestSkipped(
-            'flutter_tester 加载不了 sourin_core.dll（$why）—— '
-            '端到端那两条会如实跳过并打印原因');
+        // 没抛异常却起不来 ⇒ 契约/环境坏了，不是缺件
+        fail('核心 startAsync 成功返回但 isStarted=false（$why）'
+            '—— 这不是缺件（不许 skip）。本次没有校验到：origin 端到端两条');
       }
       expect(SourinCore.isStarted, isTrue);
     });

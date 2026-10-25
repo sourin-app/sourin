@@ -78,6 +78,62 @@ pub fn persist_from_registry(state: &AppState) -> Result<(), String> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  恢复失败报告（第19项收口）
+// ═══════════════════════════════════════════════════════════════════════
+
+/// 一条「重启后没能恢复的源」
+///
+/// # 为什么要有这个（而不只是 `log::warn`）
+///
+/// 用户视角的故障是「我明明导入过这个源，重启后没了」。
+/// 日志他在界面里看不到，所以必须有一份**可查询**的记录：
+/// ```text
+/// data_dir/restore-failures.json
+/// [{"id":"tvbox3","api":"csp_PanWebShare","reason":"csp_PanWebShare 尚未实现"}]
+/// ```
+/// `reason` 直接用**实现层给的原文**（不二次改写）——
+/// 「尚未实现」和「网络失败」是两件事，用户/我们据此决定该等下一个版本还是重试。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct RestoreFailure {
+    pub id: String,
+    pub api: String,
+    pub reason: String,
+}
+
+/// 恢复失败报告的文件名
+pub fn restore_failures_file(dir: &Path) -> PathBuf {
+    dir.join("restore-failures.json")
+}
+
+/// 写恢复失败报告（覆盖写；空列表时**删掉旧报告**）
+///
+/// 为什么空列表要删：上一次的失败报告如果留着，用户会一直看到
+/// 一个早就修好的告警 —— 陈旧数据比没有数据更误导。
+pub fn write_restore_failures(dir: &Path, rows: &[RestoreFailure]) -> Result<(), String> {
+    let p = restore_failures_file(dir);
+    if rows.is_empty() {
+        let _ = std::fs::remove_file(&p);
+        return Ok(());
+    }
+    let tmp = p.with_extension("json.tmp");
+    let body = serde_json::to_string_pretty(rows).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, body).map_err(|e| format!("写临时报告失败: {e}"))?;
+    std::fs::rename(&tmp, &p).map_err(|e| format!("替换报告失败: {e}"))?;
+    Ok(())
+}
+
+/// 读恢复失败报告（不存在 / 损坏 ⇒ 空列表，**绝不 panic**）
+pub fn load_restore_failures(dir: &Path) -> Vec<RestoreFailure> {
+    match std::fs::read_to_string(restore_failures_file(dir)) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            log::warn!("restore-failures.json 解析失败（将忽略）: {e}");
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  测试
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -155,4 +211,43 @@ mod tests {
         assert!(providers_file(&dir).exists(), "目标文件应该存在");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// 失败报告：写→读一致；空列表 ⇒ 删文件（陈旧告警比没有更糟）
+    #[test]
+    fn restore_failures_roundtrip_and_cleared_when_empty() {
+        let dir = tmp_dir("rf");
+        assert!(load_restore_failures(&dir).is_empty(), "没有报告时读出来必须是空");
+        let rows = vec![RestoreFailure {
+            id: "tvbox3".to_string(),
+            api: "csp_PanWebShare".to_string(),
+            reason: "csp_PanWebShare 尚未实现".to_string(),
+        }];
+        write_restore_failures(&dir, &rows).expect("写报告");
+        let got = load_restore_failures(&dir);
+        assert_eq!(got, rows, "写进去的必须原样读回来（reason 不许被改写）");
+        assert!(restore_failures_file(&dir).exists());
+        // 空列表 ⇒ 删掉旧报告
+        write_restore_failures(&dir, &[]).expect("清空报告");
+        assert!(!restore_failures_file(&dir).exists(), "空报告应删文件，避免陈旧告警");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 旧清单（`Tvbox` 没有 `ext` 字段）必须照常能读 —— 阴性对照
+    #[test]
+    fn old_tvbox_json_without_ext_still_loads() {
+        let dir = tmp_dir("oldext");
+        let body = r#"[{"kind":"tvbox","id":"a","name":"n","api":"csp_Bili","categories":[]}]"#;
+        std::fs::write(providers_file(&dir), body).unwrap();
+        let got = load_persisted(&dir);
+        assert_eq!(got.len(), 1, "旧清单不许整份被丢");
+        match &got[0] {
+            PersistedProvider::Tvbox { ext, api, .. } => {
+                assert_eq!(api, "csp_Bili");
+                assert!(ext.is_none(), "缺字段 ⇒ None（不是空串、更不是解析失败）");
+            }
+            _ => panic!("应识别为 tvbox"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

@@ -215,11 +215,71 @@ void main() {
     final escDefs =
         RegExp(r'void _escCloseSheet\(VoidCallback flip\)\s*\{').allMatches(page).length;
     expect(escDefs, 1, reason: '★ Esc 链关点助手 `_escCloseSheet` 必须恰好定义一次');
+    /*
+     * ★★★ task-34（2026-10-25）：Esc 链改成**点名清单**，不再只钉一个数字。
+     *
+     * # 为什么必须点名（上一轮就漂过一次）
+     * ```text
+     * 改前：`expect(escCalls, 8)` —— 本批新增了**弹幕搜索页**这个关点，
+     *       实际变 9 ⇒ 报 `Expected: <8> Actual: <9>`，
+     *       但**看报错根本不知道多的是哪一处**（只能去数源码）。
+     *       「只把 8 改成 9」的迁移等于把清单又埋回一个裸数字，下次继续漂。
+     * ⇒ 现在：把 9 个分支**逐个写出来**，再断言
+     *       count == 清单长度 + 每个片段**恰好出现一次**。
+     *   新增关点时，报错会直接指出"清单里缺 X / 多了一条没登记的 Y"。
+     * ```
+     */
+    const escBranches = <String, String>{
+      '选集 episode': '_escCloseSheet(() => _episodeSheetOpen = false);',
+      '提示 hints': '_escCloseSheet(() => _hintsOpen = false);',
+      'B站弹幕 bili': '_escCloseSheet(() => _biliSheetOpen = false);',
+      '字幕搜索 subtitle': '_escCloseSheet(() => _subtitlePanelOpen = false);',
+      // ★ 本批（第 12 项）新增的第 9 个关点：弹幕搜索页
+      '弹幕搜索 danmakuSearch':
+          '_escCloseSheet(() => _danmakuSearchOpen = false);',
+      '弹幕设置 danmaku': '_escCloseSheet(() => _danmakuSheetOpen = false);',
+      '缩放 zoom': '_escCloseSheet(() => _zoomOpen = false);',
+      '清晰度 stream': '_escCloseSheet(() => _streamSheetOpen = false);',
+      '直播频道 liveChannels':
+          '_escCloseSheet(() => _liveChannelsOpen = false);',
+    };
+    for (final e in escBranches.entries) {
+      final hits =
+          RegExp(RegExp.escape(e.value)).allMatches(page).length;
+      expect(hits, 1,
+          reason: '★★ Esc 链分支「${e.key}」必须**恰好一处**（实际 $hits）：'
+              '${e.value} ｜ 0 = 这个关点丢了 Esc 出口（按 Esc 关不掉面板）；'
+              '>1 = 重复接线（两份真相，迟早漂）');
+    }
     final escCalls = RegExp(r'_escCloseSheet\(\(').allMatches(page).length;
-    expect(escCalls, 8,
-        reason: '★★ Esc 链的 8 个浮层分支（hints/bili/subtitle/danmaku/zoom/'
-            'episode/stream/liveChannels）都必须走 `_escCloseSheet`'
-            '（= setState 翻 flag + 叫回控制条）。实际=$escCalls');
+    expect(escCalls, escBranches.length,
+        reason: '★★★ Esc 链的关点**必须与上面清单一一对应**：'
+            '实际=$escCalls，清单=${escBranches.length}。'
+            '不等 ⇒ 新增/删除了关点却没登记（本批新增的正是'
+            '「弹幕搜索 danmakuSearch」，它是第 12 项搬进页内的搜索页，'
+            'Esc 关掉时也要把顶/底栏叫回来）。');
+
+    /*
+     * ★★★ 第 12 项：弹幕搜索页的 **onClose** 也必须复位顶/底栏（点名，不只数总数）
+     *
+     * # 为什么它必须恢复
+     * ```text
+     * `_danmakuSearchOpen` 进了 `_bottomOccupied` ⇒ 搜索页一开，底栏整条卸下。
+     * 关闭时若只翻 flag 不叫回控制条，用户会看到"面板没了、底栏也不回来"，
+     * 得再动一下鼠标才出现（Owner 报的"关掉面板底栏不回来"同款）。
+     * ```
+     * ⚠️ 与 Esc 分支是**两条不同的入口**：Esc 走 `_escCloseSheet`，
+     *    点右上角 X 走这段 `onClose`。两条都要能恢复，少一条就有一条路被漏掉。
+     */
+    const danmakuSearchOnClose = 'setState(() => _danmakuSearchOpen = false);';
+    final onCloseAt = page.indexOf(danmakuSearchOnClose);
+    expect(onCloseAt, greaterThanOrEqualTo(0),
+        reason: '★ 找不到弹幕搜索页的 onClose（锚点：$danmakuSearchOnClose）');
+    final onCloseBody = page.substring(
+        onCloseAt, (onCloseAt + 300).clamp(0, page.length));
+    expect(onCloseBody.contains('_restoreBarsAfterSheet();'), isTrue,
+        reason: '★★★ 弹幕搜索页 onClose 必须调用 `_restoreBarsAfterSheet()` —— '
+            '否则点 X 关掉搜索页后顶/底栏不回来（删掉那一行 ⇒ 本条立刻红）');
 
     // 三个 close 探针必须与生产同路径（否则行为组验的是假路径）。
     for (final fn in const [

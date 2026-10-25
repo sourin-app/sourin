@@ -11,7 +11,7 @@
 // # ⚠️ 为什么这里钉的是**结构**而不是「跑一遍听声音」
 //
 // ```text
-// flutter_tester 里 `Player.setVolume()` **永不完成**，`p.state.volume` **恒 100.0**。
+// flutter_tester 里 `Player.setVolume()` **永不完成**，`desiredVolume` **恒 100.0**。
 //   本轮（verify-34，2026-10-20 19:20）两次独立实测：
 //     ① 挂真 LiveEmbeddedPlayer + await toggleMute() ⇒ 两条用例各撞 5 分钟超时；
 //     ② 裸 Player（真 libmpv）+ `t.runAsync` 里 setVolume(37)/setVolume(0)
@@ -27,7 +27,9 @@
 //   ② 取消静音**不得**写死常量下发；
 //   ③ 先下发、后翻 `_muted`（下发失败时 UI 不许显示成功）；
 //   ④ 静音分支先抓快照、再压 0；
-//   ⑤ 快照用完即清（`_volumeBeforeMute = null`），否则第二次静音会用过期值。
+//   ⑤ 下发前缓存本次恢复值；该字段是持久的用户意图缓存，不再用完即清。
+//      setVolume 与 applyPlaybackSnapshot 必须覆盖缓存；隐藏时不得用原生 0 污染它。
+//      下方 stream:null 行为测试覆盖两轮隐藏/静音/显示/取消静音（37→64），不是原生音频证据。
 //
 // # 判据可测出反面（防空转）
 //
@@ -48,6 +50,8 @@ library;
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:sourin_spike/ui/widgets/live_embedded_player.dart';
 
 /// 剥掉 `//` 行注释与 `/* */` 块注释（含 `///` 文档注释）
 ///
@@ -168,7 +172,7 @@ List<String> violationsIn(String body) {
   final iPref = un.indexOf('dsh.playprefs.lastVolume');
   final iSet = un.indexOf('setVolume(');
   final iFlip = un.indexOf('setState(() => _muted = false)');
-  final iClear = un.indexOf('_volumeBeforeMute = null');
+  final iClear = un.indexOf('_volumeBeforeMute = restore.clamp(1, 100).toDouble()');
 
   // ① 三级瀑布：快照 → 偏好
   if (iSnapshot < 0) v.add('V1-取消静音没用静音前快照');
@@ -187,14 +191,14 @@ List<String> violationsIn(String body) {
   if (iSet < 0) v.add('V5b-取消静音没有下发音量');
   if (iFlip < 0) v.add('V5c-取消静音没有把 _muted 翻回 false');
   // ④ 静音分支：先抓快照再压 0
-  final iCur = mu.indexOf('p.state.volume');
+  final iCur = mu.indexOf('desiredVolume');
   final iZero = mu.indexOf('setVolume(0)');
   if (iCur < 0 || iZero < 0 || iZero < iCur) {
     v.add('V6-静音分支没先抓快照就压 0');
   }
   // ⑤ 快照用完即清
   if (iClear < 0 || (iSet >= 0 && iClear > iSet)) {
-    v.add('V7-快照没在下发前清空');
+    v.add('V7-最新恢复音量没在下发前缓存');
   }
   return v;
 }
@@ -207,11 +211,11 @@ const String _goodFixture = '''
       restore = (v != null && v >= 0 && v <= 1) ? v * 100 : 100;
     }
     if (restore <= 0) restore = 100;
-    _volumeBeforeMute = null;
+    _volumeBeforeMute = restore.clamp(1, 100).toDouble();
     await p.setVolume(restore.clamp(1, 100));
     if (mounted) setState(() => _muted = false);
   } else {
-    final cur = p.state.volume;
+    final cur = desiredVolume;
     if (cur > 0) _volumeBeforeMute = cur;
     await p.setVolume(0);
     if (mounted) setState(() => _muted = true);
@@ -219,6 +223,36 @@ const String _goodFixture = '''
 ''';
 
 void main() {
+  testWidgets('隐藏中静音后显示取消静音恢复最新用户音量', (tester) async {
+    final visible = ValueNotifier<bool>(true);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: SizedBox(
+      width: 532, height: 356,
+      child: LiveEmbeddedPlayer(stream: null, title: 'mute regression', visible: visible),
+    ))));
+    final state = tester.state<LiveEmbeddedPlayerState>(find.byType(LiveEmbeddedPlayer));
+    await state.setVolume(37);
+    visible.value = false;
+    await state.pause();
+    await state.toggleMute();
+    expect(state.muted, isTrue);
+    expect(state.desiredVolume, 37);
+    visible.value = true;
+    await state.resume();
+    await state.toggleMute();
+    expect(state.muted, isFalse);
+    expect(state.desiredVolume, 37);
+    await state.setVolume(64);
+    visible.value = false;
+    await state.pause();
+    await state.toggleMute();
+    visible.value = true;
+    await state.resume();
+    await state.toggleMute();
+    expect(state.muted, isFalse);
+    expect(state.desiredVolume, 64, reason: '保留缓存必须被最新用户设置覆盖，不能恢复旧37或隐藏态0');
+    await tester.pumpWidget(const SizedBox.shrink());
+    visible.dispose();
+  });
   final src =
       File('lib/ui/widgets/live_embedded_player.dart').readAsStringSync();
   final body = toggleMuteBody(src);
@@ -233,7 +267,7 @@ void main() {
       final cases = <String, String>{
         'V1-取消静音没用静音前快照': _goodFixture
             .replaceFirst('var restore = _volumeBeforeMute ?? 0;', 'var restore = 0.0;')
-            .replaceFirst('_volumeBeforeMute = null;', ''),
+            .replaceFirst('_volumeBeforeMute = restore.clamp(1, 100).toDouble();', ''),
         'V2-取消静音没读偏好音量': _goodFixture.replaceFirst(
             "UiPrefs.get('dsh.playprefs.lastVolume')", "UiPrefs.get('x')"),
         'V4-取消静音写死了常量音量': _goodFixture.replaceFirst(
@@ -243,10 +277,10 @@ void main() {
             .replaceFirst('if (mounted) setState(() => _muted = false);',
                 'if (mounted) setState(() => _muted = false);\n    await p.setVolume(restore);'),
         'V6-静音分支没先抓快照就压 0': _goodFixture.replaceFirst(
-            'final cur = p.state.volume;\n    if (cur > 0) _volumeBeforeMute = cur;',
+            'final cur = desiredVolume;\n    if (cur > 0) _volumeBeforeMute = cur;',
             ''),
-        'V7-快照没在下发前清空':
-            _goodFixture.replaceFirst('_volumeBeforeMute = null;', ''),
+        'V7-最新恢复音量没在下发前缓存':
+            _goodFixture.replaceFirst('_volumeBeforeMute = restore.clamp(1, 100).toDouble();', ''),
       };
       cases.forEach((code, fixture) {
         expect(violationsIn(fixture), contains(code),
@@ -298,16 +332,16 @@ void main() {
 
     test('★ 静音分支先抓快照、再压 0', () {
       final mu = muteBranch(body!);
-      final iCur = mu.indexOf('p.state.volume');
+      final iCur = mu.indexOf('desiredVolume');
       final iZero = mu.indexOf('setVolume(0)');
       expect(iCur, greaterThanOrEqualTo(0), reason: '★ 压 0 之前必须先读当前音量');
       expect(iZero, greaterThan(iCur),
           reason: '★★ 顺序反了：先压 0 再读 ⇒ 快照永远是 0，取消静音必然回落兜底值');
     });
 
-    test('★ 快照用完即清，且清在下发之前', () {
+    test('★ 最新恢复值在下发之前写入持久意图缓存', () {
       final un = unmuteBranch(body!);
-      final iClear = un.indexOf('_volumeBeforeMute = null');
+      final iClear = un.indexOf('_volumeBeforeMute = restore.clamp(1, 100).toDouble()');
       final iSet = un.indexOf('setVolume(');
       expect(iClear, greaterThanOrEqualTo(0),
           reason: '★ 用了快照却不清理 ⇒ 下次静音会拿过期值');

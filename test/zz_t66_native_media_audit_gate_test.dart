@@ -82,12 +82,88 @@ const String kTag = 'native-media';
 ///    其余 27 个是**注释里在讨论这个标签**（例如
 ///    `skip_pair_grouping_test.dart` 明确写着"不能改成 @Tags(native-media)"）。
 ///    裸 contains 会把它们全算进来 ⇒ 要求 27 个不该登记的文件也登记。
+/// 把 Dart 源码里的注释替换成空格（保留换行与字符串字面量）。
+///
+/// ★ 2026-10-25：**必须先剥注释再找 `@Tags(...)`** —— 实测踩到：
+///   `zz_t1024_chrome_autohide_hittest_test.dart` 的文档注释里写着
+///   「为什么**不能**加 `@Tags(['native-media'])`」，
+///   而它**本人并没有挂标签**（默认全量会正常运行它）。
+///   不剥注释 ⇒ 正则把注释里的那串当成真标签 ⇒ 要求一个不该登记的文件去登记，
+///   于是这条门禁红，而红的原因是**它自己读错了**。
+///   （同类陷阱本仓已踩过三次：门禁读注释 = 假红/假绿的高发形态。）
+///
+/// 实现是一个最小的状态机：字符串（含 `'''` 与 `"""` 三引号）、行注释、块注释。
+/// 注释被替换为等长空白（保列号），字符串原样保留。
+String stripCommentsForTags(String src) {
+  final out = StringBuffer();
+  var i = 0;
+  final n = src.length;
+  while (i < n) {
+    final c = src[i];
+    // 行注释
+    if (c == '/' && i + 1 < n && src[i + 1] == '/') {
+      while (i < n && src[i] != '\n') {
+        out.write(' ');
+        i++;
+      }
+      continue;
+    }
+    // 块注释（Dart 可嵌套）
+    if (c == '/' && i + 1 < n && src[i + 1] == '*') {
+      var depth = 0;
+      while (i < n) {
+        if (src.startsWith('/*', i)) {
+          depth++;
+          out.write('  ');
+          i += 2;
+        } else if (src.startsWith('*/', i)) {
+          depth--;
+          out.write('  ');
+          i += 2;
+          if (depth == 0) break;
+        } else {
+          out.write(src[i] == '\n' ? '\n' : ' ');
+          i++;
+        }
+      }
+      continue;
+    }
+    // 三引号 / 单引号字符串：原样复制
+    if (c == "'" || c == '"') {
+      final triple = (i + 2 < n && src[i + 1] == c && src[i + 2] == c);
+      final delim = triple ? c * 3 : c;
+      out.write(delim);
+      i += delim.length;
+      while (i < n) {
+        if (!triple && src[i] == r'\' && i + 1 < n) {
+          out.write(src[i]);
+          out.write(src[i + 1]);
+          i += 2;
+          continue;
+        }
+        if (src.startsWith(delim, i)) {
+          out.write(delim);
+          i += delim.length;
+          break;
+        }
+        out.write(src[i]);
+        i++;
+      }
+      continue;
+    }
+    out.write(c);
+    i++;
+  }
+  return out.toString();
+}
+
 List<String> tagsInSource(String src) {
   final out = <String>[];
+  final code = stripCommentsForTags(src);
   // 覆盖两种写法：`@Tags(['a'])` 与 `@Tags(<String>['a'])`
   final re = RegExp(r'@Tags\s*\(\s*(?:<String>\s*)?\[(.*?)\]\s*\)',
       multiLine: true, dotAll: true);
-  for (final m in re.allMatches(src)) {
+  for (final m in re.allMatches(code)) {
     final body = m.group(1) ?? '';
     for (final s in RegExp(r"'([^']*)'").allMatches(body)) {
       out.add(s.group(1)!);

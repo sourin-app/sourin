@@ -62,9 +62,83 @@ const int kRounds = 3;
 String kNl() => String.fromCharCode(10);
 
 /// 上游：真 HttpServer + 真 m3u8 + 真分片字节 + 真封面图
+///
+/// # ★★★ 封面闸门（2026-10-25：阳性对照从"靠运气撞名"改成"强制撞名"）
+/// ```text
+/// 改前：阳性对照靠"三集几乎同时收尾 + 7 MiB 封面把写 tmp→rename 窗口拉宽"
+///   来**碰**撞名。实测（全量跑，`.probe/lead-full-suite-r26.log`）：
+///   3 轮全部「撞名=0」⇒ 阳性对照红。原因不是产品坏了，而是**三集的封面抓取
+///   返回时刻本来就错开**：谁先拿到字节谁先写 tmp→rename，第二、三个到达时
+///   第一个的 tmp 已经被搬走又重建 ⇒ rename 反而都成功 ⇒ 一条"撞名"都记不到。
+///   ⇒ 这条对照在慢机/负载机上会**误杀**，而且它的红说明不了产品对错。
+///
+/// 改后：把三集的封面请求**全部停在同一个 await 上**（本类的 gate），
+///   确认三个都到齐（`parked == kEps`）后一次性放行 ⇒ 三具收尾体真正同时
+///   进入「写 tmp → rename」窗口 ⇒ 撞名由运气变成**前置条件成立后的必然结果**。
+///   ★ 闸门只在"关掉串行化"的那一轮用（开着串行化时同一目录只允许一具收尾体
+///     在跑，硬等三个会死锁 —— 这是产品语义，不是缺陷）。
+/// ```
 class Upstream {
   late HttpServer _srv;
   int get port => _srv.port;
+
+  // ── 封面闸门状态 ────────────────────────────────────────────────
+  int _gateExpect = 0;
+  int _gateParked = 0;
+  int _gatePeak = 0;
+  Completer<void>? _gateRelease;
+  Completer<void>? _gateAllParked;
+
+  /// 本进程里 `/cover.jpg` 一共被请求过几次（**覆盖度读数**：
+  /// 证明"封面这条路真的走过"，而不是三个任务都没抓封面）
+  int coverRequests = 0;
+
+  /// 历史最大"同时在闸门口停着"的请求数
+  int get gatePeakParked => _gatePeak;
+
+  /// 武装闸门：接下来 [expect] 个 `/cover.jpg` 请求会被停在闸门口
+  void armCoverGate(int expect) {
+    _gateExpect = expect;
+    _gateParked = 0;
+    _gatePeak = 0;
+    coverRequests = 0;
+    _gateRelease = Completer<void>();
+    _gateAllParked = expect > 0 ? Completer<void>() : null;
+  }
+
+  /// 等 `expect` 个请求全部停在闸门口（超时返回 false ⇒ 前置失效要如实报）
+  Future<bool> waitAllCoverParked(Duration timeout) async {
+    final c = _gateAllParked;
+    if (c == null) return false;
+    try {
+      await c.future.timeout(timeout);
+      return true;
+    } on TimeoutException {
+      return false;
+    }
+  }
+
+  /// 放行（幂等；**必须**在 finally 里调用，否则失败时会把测试挂到 6 分钟超时）
+  void releaseCoverGate() {
+    _gateExpect = 0;
+    final r = _gateRelease;
+    if (r != null && !r.isCompleted) r.complete();
+    _gateRelease = null;
+    _gateAllParked = null;
+  }
+
+  Future<void> _passGate() async {
+    final release = _gateRelease;
+    if (release == null || _gateExpect <= 0) return;
+    _gateParked++;
+    if (_gateParked > _gatePeak) _gatePeak = _gateParked;
+    final all = _gateAllParked;
+    if (all != null && _gateParked >= _gateExpect && !all.isCompleted) {
+      all.complete();
+    }
+    await release.future;
+    _gateParked--;
+  }
 
   Future<void> start() async {
     _srv = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -108,9 +182,14 @@ class Upstream {
         return;
       }
       if (path == '/cover.jpg') {
+        coverRequests++;
+        // ★ 先设头（客户端已在等 body），再进闸门 —— 这样三个请求会**真的**
+        //   停在"等 body"这个 await 上，而不是停在建连阶段（建连阶段停着
+        //   不会让三具收尾体同时在飞）。
         final body = List<int>.filled(kCoverBytes, kCoverByte);
         req.response.headers.contentType = ContentType.parse('image/jpeg');
         req.response.headers.contentLength = body.length;
+        await _passGate();
         req.response.add(body);
         await req.response.close();
         return;
@@ -165,6 +244,11 @@ class RoundResult {
   final int coverLen;
   final List<String> residue;
   final List<String> tail;
+
+  /// 本轮的**前置读数**（2026-10-25 新增）：封面闸门等到了几个 / 是否全部到齐
+  final int gatePeak;
+  final bool allParked;
+  final int coverRequests;
   RoundResult({
     required this.dir,
     required this.quiet,
@@ -176,6 +260,9 @@ class RoundResult {
     required this.coverLen,
     required this.residue,
     required this.tail,
+    required this.gatePeak,
+    required this.allParked,
+    required this.coverRequests,
   });
 
   bool get collided => collision > 0 || coverNull;
@@ -221,7 +308,11 @@ void main() {
   }
 
   /// 跑一轮：全新作品目录 + 三集同时入队 + 等收尾干净 + 采读数
-  Future<RoundResult> _round(int n) async {
+  ///
+  /// [forceCoverOverlap]：武装封面闸门，把三集的封面请求**全部停在同一个
+  ///   await** 上，到齐后一次性放行（只有"关掉串行化"的阳性对照才允许用：
+  ///   开着串行化时同一目录只允许一具收尾体在跑，硬等三个会死锁）。
+  Future<RoundResult> _round(int n, {bool forceCoverOverlap = false}) async {
     final sep = Platform.pathSeparator;
     final d = Directory(Directory.systemTemp.absolute.path +
         sep +
@@ -241,11 +332,28 @@ void main() {
     DownloadQueue.setConcurrency(kEps);
 
     final cover = 'http://127.0.0.1:' + ups.port.toString() + '/cover.jpg';
-    for (var k = 0; k < kEps; k++) {
-      final ok = DownloadQueue.enqueue(_task(k, cover: cover));
-      if (!ok) {
-        throw StateError('前置失败：第$k集入队被拒（同 id 且 queued/running）');
+    if (forceCoverOverlap) ups.armCoverGate(kEps);
+    var allParked = false;
+    try {
+      for (var k = 0; k < kEps; k++) {
+        final ok = DownloadQueue.enqueue(_task(k, cover: cover));
+        if (!ok) {
+          throw StateError('前置失败：第$k集入队被拒（同 id 且 queued/running）');
+        }
       }
+      if (forceCoverOverlap) {
+        /*
+         * ★★★ 这里的等待**不是**在赌时间，而是在**确认前置条件**：
+         *   三个封面请求必须同时停在闸门口。等到 ⇒ 收尾体的
+         *   「写 tmp → rename」窗口必然重叠（同一时刻三具都在跑）。
+         *   等不到（超时）⇒ 前置失效，由调用方按"阳性对照没做成"如实报红，
+         *   而不是让它以"撞名=0"的形式伪装成产品问题。
+         */
+        allParked = await ups.waitAllCoverParked(const Duration(seconds: 25));
+      }
+    } finally {
+      // ★ 必须放行：否则三具收尾体永远停在闸门口，测试会挂到 6 分钟超时
+      if (forceCoverOverlap) ups.releaseCoverGate();
     }
 
     final quiet = await _waitQuiet();
@@ -295,6 +403,9 @@ void main() {
       coverLen: coverLen,
       residue: _tmpResidue(workDir),
       tail: tail,
+      gatePeak: ups.gatePeakParked,
+      allParked: allParked,
+      coverRequests: ups.coverRequests,
     );
   }
 
@@ -338,33 +449,75 @@ void main() {
     expect(bad, isEmpty, reason: bad.join('\n'));
   }, timeout: const Timeout(Duration(minutes: 6)));
 
-  test('★★ 阳性对照：关掉收尾串行化以后，同样的并发必须**真的**撞名（证明上一条不是假绿）',
+  test('★★ 阳性对照：关掉收尾串行化 + 三集封面请求压在同一个 await 上，必须**真的**撞名',
       () async {
     /*
      * ★★ 这条用例证明的是「上一条有牙齿」：
      *   debugDisableFinishSerialization = true ⇒ _serializeFinish 直接跑 body，
      *   于是固定名 _sourin-cover.jpg.tmp 又会被三集同时用。
-     *   7 MiB 的封面把「写 tmp → rename」的窗口拉到十几~几十毫秒 ⇒ 必然重叠。
-     *   如果这里**撞不出来**，那上一条的绿说明不了任何事（门禁是假的）。
+     *
+     * ★★★ 2026-10-25 改法（原版靠运气，全量跑会误杀）：
+     * ```text
+     * 改前只靠「三集几乎同时收尾 + 7 MiB 封面」去**碰**撞名。
+     * 实测反例（`.probe/lead-full-suite-r26.log`，全量第 1229 条之后）：
+     *   3 轮全部「撞名=0 同时在跑=3 coverFile为空=false」
+     *   ⇒ 阳性对照红。它红的时候**说明不了产品是坏的**：三个封面抓取返回
+     *      时刻本来就错开，第一个 rename 把 tmp 搬走后，后两个到达时
+     *      tmp 已被重建 ⇒ rename 反而成功 ⇒ 一条撞名都记不到。
+     *
+     * 现在：`Upstream` 的封面闸门把三个 /cover.jpg 全部停在"等 body"这个
+     *   await 上，**确认三个都到齐**（gatePeak == kEps）后一次性放行。
+     *   ⇒ 「写 tmp → rename」三窗口必然重叠 ⇒ 撞名变成前置条件的必然结果。
+     * ```
+     * ⚠️ 闸门只在本条用：上一轮（开着串行化）同一目录只允许一具收尾体在跑，
+     *    硬等三个会死锁。
      */
     DownloadQueue.debugDisableFinishSerialization = true;
     final rounds = <RoundResult>[];
     for (var n = 1; n <= kRounds; n++) {
-      rounds.add(await _round(n));
+      rounds.add(await _round(n, forceCoverOverlap: true));
     }
     final collided = rounds.where((r) => r.collided).length;
     final detail = <String>[];
     for (var i = 0; i < rounds.length; i++) {
       final r = rounds[i];
-      detail.add('第${i + 1}轮：撞名=${r.collision} coverFile为空=${r.coverNull} '
+      detail.add('第${i + 1}轮：撞名=${r.collision} 封面请求=${r.coverRequests} '
+          '闸门峰值=${r.gatePeak} 全部到齐=${r.allParked} '
+          'coverFile为空=${r.coverNull} '
           '三集状态=${r.states.join('/')} 同时在跑=${r.maxRun} 残留=${r.residue.length}');
     }
-    expect(rounds.every((r) => r.quiet), isTrue, reason: '前置：每轮队列都要跑完');
-    expect(rounds.every((r) => r.maxRun >= kEps), isTrue,
-        reason: '前置：三集必须真的同时在跑，否则撞不出来\n' + detail.join('\n'));
+    expect(rounds.every((r) => r.quiet), isTrue, reason: '前置：每轮队列都要跑完\n' + detail.join('\n'));
+
+    /*
+     * ★ 读数**总是**打印（不只在失败时）：这条对照的全部价值在于
+     *   「前置成立 + 撞名发生」这两件事同时为真，两者都必须能从日志里看见。
+     *   只打印"通过"就等于让下一个人无法复核仪器到底做了什么。
+     */
+    // ignore: avoid_print
+    print('T26W3_POSITIVE_CONTROL|' + detail.join(' || '));
+
+    /*
+     * ★★★ 新的**前置判据**（替代原来那条"maxRun >= kEps"）：
+     *   maxRun 数的是**下载阶段**同时在跑的下载数，它成立也证明不了三具
+     *   **收尾体**同时在飞 —— 而撞名只发生在收尾阶段。改前那条前置是
+     *   "看着像成立"，实测就是这样：maxRun=3 却撞名=0。
+     *   ⇒ 现在直接断言"三个封面请求同时停在闸门口"：这是撞名的**充分条件**。
+     */
+    expect(rounds.every((r) => r.allParked), isTrue,
+        reason: '★★ 前置失效：没能把三个封面请求同时压在闸门口'
+            '（25s 内没到齐）⇒ 本轮测的不是"并发撞名"，红是因为**仪器没做成**，'
+            '不是产品问题。若稳定复现，先查 DownloadQueue 的并发上限或封面是否被跳过。\n' +
+            detail.join('\n'));
+    expect(rounds.every((r) => r.gatePeak >= kEps), isTrue,
+        reason: '★★ 前置失效：闸门峰值只到 ${rounds.map((r) => r.gatePeak).toList()}，'
+            '期望 ≥ $kEps\n' + detail.join('\n'));
+    expect(rounds.every((r) => r.coverRequests >= kEps), isTrue,
+        reason: '★★ 前置失效：封面请求次数不足（每轮应 ≥ $kEps 次）\n' + detail.join('\n'));
+
     expect(collided, greaterThan(0),
-        reason: '★★ 阳性对照失效：关掉串行化以后 $kRounds 轮竟然一次都没撞上 ⇒ '
-            '这条探针根本撞不出 CR-06，上一条的绿是假的。\n' +
+        reason: '★★ 阳性对照失效：前置**已经成立**（三个封面同时压住并放行）'
+            '却一条撞名都没记到 ⇒ 这说明 `_atomicReplaceWith` 的失败记账'
+            '（或"原子替换彻底失败"这条日志）坏了，而不是"运气不好"。\n' +
             detail.join('\n') +
             '\n最后一轮日志尾部：\n' + rounds.last.tail.join('\n'));
   }, timeout: const Timeout(Duration(minutes: 6)));

@@ -63,10 +63,10 @@ void main() {
      *   但「seek 之后紧跟 _beginPrefetchYield」这个语义必须保。
      */
     final re = RegExp(
-      r'_player\.seek\(d\);[\s\S]{0,80}?_beginPrefetchYield\(\);',
+      r'_seekByUser\(clamped\);\s*_beginPrefetchYield\(\);',
     );
     expect(
-      re.hasMatch(page),
+      re.hasMatch(page.replaceAll(RegExp(r'/\*[\s\S]*?\*/|//[^\r\n]*'), '')),
       isTrue,
       reason: '★ seek 之后必须调用 _beginPrefetchYield()：'
           '否则预取不会让路给前台读取，N10 的修复等于没做。',

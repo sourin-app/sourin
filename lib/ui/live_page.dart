@@ -53,7 +53,7 @@ import '../ui/app_scaffold.dart';
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart' show ValueListenable, visibleForTesting;
 // ★ 2026-09-25：不再需要 `HardwareKeyboard`（改用
 //   `FocusManager.instance.addEarlyKeyEventHandler`）—— 见 `initState` 的长注释。
 //   `KeyEventResult` 由 `material_ui`（widgets）导出，不在这里 show。
@@ -91,6 +91,7 @@ import '../shell.dart' show AppTab, ShellScope;
 //    ⚠️ episode_strip.dart **只读复用，不改它**（lead 明确：别人在改）
 import 'widgets/episode_strip.dart';
 import 'live_availability.dart';
+import 'media_session.dart';
 import 'tokens.dart';
 import 'widgets/cover_image.dart';
 // ★ 2026-09-26【A】用户要求"删除掉节目单" ⇒ 不再 import
@@ -98,7 +99,47 @@ import 'widgets/cover_image.dart';
 //   （那两个文件本身**保留** —— 别的页面可能还在用；只删本页的引用）
 import 'widgets/app_dialog_shell.dart';
 import 'widgets/live_embedded_player.dart';
+import 'widgets/overlay_motion.dart' show showAppDialog;
 import '../design/icons/app_icons.dart';
+
+/// Observes the production roundtrip without equating pop with restoration.
+class LiveRoundtripReceipt {
+  final Completer<void> _routeResult = Completer<void>();
+  final Completer<void> _finished = Completer<void>();
+  DateTime? _routeReturnedAt;
+  DateTime? _restoredAt;
+  Object? _error;
+
+  Future<void> get routeResultReturned => _routeResult.future;
+  Future<void> get finished => _finished.future;
+  DateTime? get routeReturnedAt => _routeReturnedAt;
+  DateTime? get restoredAt => _restoredAt;
+  Object? get error => _error;
+
+  void _markRouteReturned() {
+    _routeReturnedAt = DateTime.now().toUtc();
+    if (!_routeResult.isCompleted) _routeResult.complete();
+  }
+
+  /// Runs the original operation; exceptions remain visible to its caller.
+  Future<void> observe(Future<void> Function() operation,
+      {bool Function()? restored}) async {
+    try {
+      await operation();
+      if (_routeReturnedAt != null && (restored?.call() ?? true)) {
+        _restoredAt = DateTime.now().toUtc();
+      }
+    } catch (error) {
+      _error = error;
+      rethrow;
+    } finally {
+      _finished.complete();
+    }
+  }
+
+  /// Used by the production route boundary and deterministic ordering tests.
+  void markRouteReturnedForProbe() => _markRouteReturned();
+}
 
 /// ★ task-1013：源筛选 chip 的稳定测试锚点
 ///
@@ -366,6 +407,7 @@ class LivePage extends StatefulWidget {
   const LivePage({
     super.key,
     this.onWatchLive,
+    this.onWatchLivePlayback,
     this.onWatchReplay,
     this.isTv = false,
     this.visible,
@@ -403,6 +445,14 @@ class LivePage extends StatefulWidget {
     String channelId,
     String name,
   )? onWatchLive;
+
+  /// Fullscreen handoff preserving playback and audio intent.
+  final Future<LivePlaybackSnapshot?> Function(
+    String provider,
+    String channelId,
+    String name,
+    LivePlaybackSnapshot initialPlayback,
+  )? onWatchLivePlayback;
 
   /// 回看某条节目 → 进播放器
   final void Function(
@@ -444,6 +494,31 @@ class LivePage extends StatefulWidget {
 }
 
 class LivePageState extends State<LivePage> {
+  /// ★★★ 第 16 项验收用的**频道数据注入口**（生产路径恒为 `null`）
+  ///
+  /// # 为什么必须有（这是"整页能不能被验"的开关）
+  /// ```text
+  /// `loadAll()` 取数只走 `SourinApi.getLiveChannels()`（FFI）。
+  /// 隔离环境没有核心 DLL ⇒ 抛错 ⇒ `_loadError != null`
+  ///   ⇒ `build` 走到 `LiveLoadPhase.failed` 那一支
+  ///   ⇒ **整页只画一张错误卡**，连 `LiveEmbeddedPlayer` 都不挂载。
+  /// ⇒ 「切全屏保留频道/播放状态/音量/静音」这条判据（第 16 项）
+  ///   在测试里连一行都跑不到，只能读源码字符串 —— 而本仓铁律是
+  ///   `不许假绿`（源码字符串查不出"代码写了但没生效"）。
+  /// ```
+  ///
+  /// # 为什么做成**静态**可注入，而不是给 `LivePage` 加构造参数
+  /// ```text
+  /// ① 构造参数是**产品 API**：`shell.dart` 每处调用都要跟着改，
+  ///    而且会给"从外面喂频道"留下一条合法路径（不该存在）。
+  /// ② 静态口子只影响 `loadAll` 的**取数那一句**，
+  ///    其余（`_persistCache` / 探测 / 定时器 / 选中恢复）全部照原路走
+  ///    ⇒ 验的是真实路径，不是另一条平行实现。
+  /// ③ 生产路径 `null` ⇒ 行为**逐字节不变**。
+  /// ```
+  @visibleForTesting
+  static Future<List<LiveGroup>> Function()? debugLiveGroupsFetcher;
+
   List<LiveGroup> _groups = [];
   bool _loading = true;
   String _activeProvider = '';
@@ -689,6 +764,27 @@ class LivePageState extends State<LivePage> {
 
   /// ★★★ 内嵌播放器（用户要求"右侧放个播放器，默认打开就自动播"）
   final _embedKey = GlobalKey<LiveEmbeddedPlayerState>();
+
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   *  第 16 项缺口①：空格 / M 走**共享动作入口**
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * # 为什么不让本页自己判"空格 ⇒ 暂停"
+   * ```text
+   * 计划要求「内嵌与全屏**一致**」。判定表若两边各写一份必然漂移
+   * （本仓已有前科：`describe` 与 `select` 各写一份 2s 默认值）。
+   * ⇒ 按键判定与动作派发都在 `live_embedded_player.dart` 的
+   *   `livePlaybackActionForKey` / `dispatchLivePlaybackAction`（单点），
+   *   本页只负责"拿到内嵌播放器这个 target"。
+   * 全屏侧由 `player_page` 实现同一个 `LivePlaybackTarget` 接口即可复用。
+   * ```
+   */
+  LivePlaybackAction? _lastPlaybackAction;
+
+  /// 门禁用：最后一次成功派发的播放动作（null = 还没派发过）
+  @visibleForTesting
+  LivePlaybackAction? get lastPlaybackActionForProbe => _lastPlaybackAction;
 
   /// 当前频道取到的**全部**流候选
   ///
@@ -1287,6 +1383,28 @@ class LivePageState extends State<LivePage> {
       cycleChannel(-1);
       return true;
     }
+
+    /*
+     * ── 第 16 项缺口①：空格 = 播放/暂停、M = 静音（共享动作入口）──
+     *
+     * ```text
+     * 判定表不在这里，在 `livePlaybackActionForKey`（内嵌与全屏同一份）。
+     * · 没有内嵌播放器（窄布局 / 还没挂载）⇒ **不消费**，把键放行
+     *   （否则会把别处的空格吃掉，比如某个按钮的激活键）
+     * · 派发前先 `revealControls()`：用户按键之后控件必须出现，
+     *   否则"按了空格，界面什么都没变"——比常显更难用
+     * ```
+     */
+    final playbackAction = livePlaybackActionForKey(k);
+    if (playbackAction != null) {
+      final st = _embedKey.currentState;
+      if (st == null) return false;
+      _lastPlaybackAction = playbackAction;
+      debugPrint('[LIVE-KEY] ④ 动作层：\${playbackAction.name}');
+      st.revealControls();
+      unawaited(dispatchLivePlaybackAction(st, playbackAction));
+      return true;
+    }
     return false;
   }
 
@@ -1489,7 +1607,9 @@ class LivePageState extends State<LivePage> {
 
     final prevId = keepSelection ? _selected?.id : null;
     try {
-      final groups = await SourinApi.getLiveChannels();
+      // ★ 第 16 项验收：`debugLiveGroupsFetcher` 只在测试里非 null（生产恒走 FFI）
+      final groups = await (LivePageState.debugLiveGroupsFetcher?.call() ??
+          SourinApi.getLiveChannels());
       mark('真数据就绪（${groups.length} 个源 / '
           '${groups.fold<int>(0, (n, g) => n + g.channels.length)} 个频道）');
       if (!mounted) return;
@@ -2229,7 +2349,7 @@ class LivePageState extends State<LivePage> {
   /// （`loadAll(keepSelection: true)` 那条路），**不是**用户主动换台。
   ///
   /// ★★★ task-82【Q4】：两者必须区分 —— 见下面第一段短路。
-  Future<void> _select(LiveChannel ch, {bool restoring = false}) async {
+  Future<void> _select(LiveChannel ch, {bool restoring = false, bool preservePlaybackIntent = false}) async {
     final provider = _providerOf(ch);
 
     /*
@@ -2312,8 +2432,8 @@ class LivePageState extends State<LivePage> {
       _streams = [];
       _stream = null;
       _streamLoading = true;
-      // ★ 换台是用户的主动行为 ⇒ 清掉"用户暂停"标记（他要看新台）
-      _userPaused = false;
+      // 主动换台恢复播放；全屏返回接管频道时保留返回的暂停意图。
+      if (!preservePlaybackIntent) _userPaused = false;
     });
 
     /*
@@ -2559,13 +2679,48 @@ class LivePageState extends State<LivePage> {
   ///    ★ 而且内嵌播放器那时可能也已 dispose ⇒ 不能盲目调 pause/play
   ///      （`LiveEmbeddedPlayerState` 里有 `_disposed` 守卫，但这里也要防）
   /// ```
-  Future<void> _watchLive() async {
+  /// Probe wrapper awaits the original navigation and restoration operation.
+  Future<void> watchLiveForProbe(LiveRoundtripReceipt receipt) =>
+      receipt.observe(() => _watchLive(receipt: receipt),
+          restored: () => mounted);
+
+  /// ★★★ 第 16 项验收用的**频道注入口**（生产路径永不调用）
+  ///
+  /// # 为什么必须有
+  /// ```text
+  /// 判据要核的是「切全屏保留频道/播放状态/音量/静音」——
+  /// 那段逻辑在 `_watchLive` 里，而它**第一句**就是
+  /// `final s = _selected; if (s == null) return;`。
+  /// `_selected` 只由 `_select` 写，`_select` 又只由**列表点击**触发；
+  /// 而列表数据 `_groups` 只由 FFI 填（隔离环境恒为空）
+  /// ⇒ 没有这个入口，"全屏往返"整条链**一行都跑不到**，
+  ///   只能读源码字符串（那正是本仓铁律 `不许假绿` 禁止的证据）。
+  /// ```
+  ///
+  /// # 为什么是**直接转调** `_select` 而不是另写一条假路径
+  /// ```text
+  /// 走的就是用户点频道时走的那一个方法：
+  /// 设置 `_selected` → 清流 → 取流（这里会失败并被 catch）→ 播放器接管。
+  /// ★ 副作用与真实路径完全一致，没有"测试专用状态"。
+  /// ⚠️ 取流失败会让 `_stream` 停在 null ⇒ 与本轮**不能验**的那部分
+  ///   （真实起播/双播放器音频释放）正好对应，如实写进交付说明。
+  /// ```
+  @visibleForTesting
+  Future<void> selectChannelForProbe(LiveChannel channel) => _select(channel);
+
+  Future<void> _watchLive({LiveRoundtripReceipt? receipt}) async {
     final s = _selected;
     if (s == null) return;
-    final cb = widget.onWatchLive;
-    if (cb == null) return;
+    final legacyCallback = widget.onWatchLive;
+    final playbackCallback = widget.onWatchLivePlayback;
+    if (legacyCallback == null && playbackCallback == null) return;
 
     final embedded = _embedKey.currentState;
+    final initialPlayback = embedded?.playbackSnapshot ?? LivePlaybackSnapshot(
+      playing: !_userPaused,
+      muted: true,
+      volume: 100,
+    );
 
     // ① 跳转前暂停内嵌（只在它真的在放时才暂停/记标记）
     final wasPlaying = embedded?.isPlaying ?? false;
@@ -2580,7 +2735,17 @@ class LivePageState extends State<LivePage> {
     // ⚠️ provider 用 `_providerOf(s)` 反查 —— 不能直接用 `_activeProvider`：
     //    频道可能属于**别的**源（用户在播放页期间切了源）。
     // ★ 返回值 = 用户在全屏里最后表达的意图（见 shell.dart 的 onWatchLive 文档）
+    final returnedPlayback = playbackCallback == null
+        ? null
+        : await playbackCallback(_providerOf(s), s.id, s.name, initialPlayback);
+    Future<bool?> cb(String provider, String channelId, String name) async {
+      if (playbackCallback == null) {
+        return await legacyCallback!(provider, channelId, name);
+      }
+      return returnedPlayback == null ? null : !returnedPlayback.playing;
+    }
     final pausedInFullscreen = await cb(_providerOf(s), s.id, s.name);
+    receipt?._markRouteReturned();
 
     // ③ 回来后（可能已 dispose / 已切走 tab / 用户手动暂停过）
     if (!mounted) return;
@@ -2650,6 +2815,15 @@ class LivePageState extends State<LivePage> {
      * ⚠️ `_pausedForFullscreen` 仍要清 —— 它是"为全屏让路"的事实，
      *    现在已经不在全屏了，留着会污染下一次可见性变化。
      */
+    if (returnedPlayback != null) {
+      await _embedKey.currentState?.applyPlaybackSnapshot(
+        returnedPlayback,
+        restorePlaying: false,
+      );
+      if (!mounted) return;
+      // A paused embedded player may have been resumed in fullscreen.
+      _pausedForFullscreen = true;
+    }
     final pending = _pendingFullscreenChannel;
     if (pending != null) {
       _pendingFullscreenChannel = null;
@@ -2661,7 +2835,7 @@ class LivePageState extends State<LivePage> {
         return;
       }
       debugPrint('[LIVE] 从全屏返回 ⇒ 接手播放全屏里切到的台：${pending.name}');
-      await _select(pending);
+      await _select(pending, preservePlaybackIntent: true);
       return;
     }
 
@@ -2912,6 +3086,7 @@ class LivePageState extends State<LivePage> {
        * （`pause()`/`resume()` 的既有语义不变）。
        */
       visible: widget.visible,
+      playWhenReady: !_userPaused,
       stream: _stream,
       title: _selected?.name ?? '未选择频道',
       subtitle: _selected == null
@@ -3629,6 +3804,45 @@ class LivePageState extends State<LivePage> {
 ///   两者不能混用（源名可改、可重名；id 不会）。
 typedef LiveFlatEntry = ({LiveChannel channel, String tag, String provider});
 
+// ═══════════════════════════════════════════════════════════════════════
+//  频道行的**稳定 key** —— 生产与测试共用同一拼法（R1）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 为什么必须带 `provider`
+// ```text
+// 列表是**跨源平铺**的（task-42），而 `_visibleChannels` **不按 id 去重**
+// ⇒ 两个源都有**同一个频道 id** 时，兄弟节点会出现两个相同的 `key`
+//   （`ListView(children:)` 不触发 Duplicate keys 断言，但 sliver 的
+//    key→element 匹配会歧义 ⇒ 行/焦点串槽；测试里 `find.byKey` 会多命中，
+//    `getRect` 直接抛 "Too many elements"）。
+// ⇒ key 用 `provider:id` 组合：同一 id 在不同源下是**不同的行**，
+//   这正是用户看到的事实（两个台名一样，但来自两个源）。
+// ```
+//
+// # 为什么抽成函数（不许两处各拼一次）
+// ```text
+// 生产 build 与门禁断言必须**同一个拼法**：
+//   各拼一次 ⇒ 改一处忘一处 ⇒ 门禁照样绿（假绿），或者只改测试（更糟）。
+// ⇒ 单点定义：[liveChannelRowKey] / [liveChannelTileKey] / [liveChannelHighlightKey]。
+// ```
+
+/// 一行的身份（`provider:id`）
+///
+/// ★ 分隔符用 `:` —— provider 与 id 都不含 `:`（provider 是插件 id，
+///   channel id 来自 `LiveChannel.fromJson` 的 `id`），
+///   所以拼接是**无歧义**的（`a:b` + `c` 与 `a` + `b:c` 不会撞）。
+String liveChannelRowKey(String provider, String channelId) =>
+    '$provider:$channelId';
+
+/// 行（`InkWell`，点击热区）的 key
+Key liveChannelTileKey(String provider, String channelId) =>
+    ValueKey('live-channel-tile-${liveChannelRowKey(provider, channelId)}');
+
+/// 行内**高亮块**（`Container.decoration`）的 key —— 与行分开，几何可分别量
+Key liveChannelHighlightKey(String provider, String channelId) =>
+    ValueKey('live-channel-highlight-${liveChannelRowKey(provider, channelId)}');
+
+
 /// ★★★ 源 / 分类**筛选**后的频道列表（task-1013 用户要求）
 ///
 /// # 用户原话
@@ -3991,7 +4205,28 @@ class LiveChannelListState extends State<LiveChannelList> {
   /// ⚠️ 写回 prefs 后立刻 setState —— 筛选条要在同一帧反映新数据，
   ///   不靠 didUpdateWidget（那只在上游 widget 变化时才跑）。
   Future<void> _openGroupManager() async {
-    final changed = await showDialog<bool>(
+    /*
+     * ★ 2026-10-25（第 18 项"样式统一"的遗漏）：这里曾直接调 `showDialog`。
+     *
+     * ```text
+     * 后果：这一个弹窗**不吃**统一入口的进出动效 token
+     *   （`overlay_motion.dart` 的 `showAppDialog`），
+     *   而门禁 `test/t104_overlay_exit_test.dart:612`
+     *   要求「lib 里除唯一入口外不许出现裸 showDialog」。
+     * ⇒ 改成 `showAppDialog`，动效与其它 15 处一致。
+     *
+     * 参数映射（逐个核对，没有一个被静默丢掉）：
+     *   context  ⇒ context（同名）
+     *   builder  ⇒ builder（同名）
+     *   barrierDismissible ⇒ 未传（原调用也没传 ⇒ 两边都是默认 true，语义不变）
+     *   useRootNavigator   ⇒ 未传（原调用也没传 ⇒ 两边都是默认 true）
+     *   barrierColor/barrierLabel/useSafeArea/routeSettings/anchorPoint/
+     *   traversalEdgeBehavior/fullscreenDialog/requestFocus
+     *                      ⇒ 原调用全部未传，`showAppDialog` 的默认值
+     *                        与 `showDialog` 同源（它内部就是转发给 showDialog）
+     * ```
+     */
+    final changed = await showAppDialog<bool>(
       context: context,
       builder: (_) => _SourceGroupManagerDialog(
         groups: widget.sourceGroups,
@@ -4246,6 +4481,8 @@ class LiveChannelListState extends State<LiveChannelList> {
               children: [
                 for (final entry in shown)
                   _ChannelTile(
+                    // ★ R1：身份 = provider + id（跨源同名频道不许撞 key）
+                    provider: entry.provider,
                     channel: entry.channel,
                     // ★ tag = 它来自哪个源（用户说"以分组加 tag 作为标记"）
                     tag: entry.tag,
@@ -5423,12 +5660,21 @@ class _LineChip extends StatelessWidget {
 /// 频道行（task-42：平铺 + 行尾来源 tag）
 class _ChannelTile extends StatefulWidget {
   const _ChannelTile({
+    required this.provider,
     required this.channel,
     required this.active,
     required this.onTap,
     this.tag,
     this.health = LivePlaybackHealth.unknown,
   });
+
+  /// ★★★ R1：这一行属于**哪个源** —— key 的一半（`provider:id`）
+  ///
+  /// ```text
+  /// 列表跨源平铺，而频道 id 只在**源内**唯一（两个源撞同一个 id 是常态）。
+  /// ⇒ 行的身份必须带 provider，否则兄弟 key 重复（见 `liveChannelRowKey`）。
+  /// ```
+  final String provider;
 
   final LiveChannel channel;
   final bool active;
@@ -5558,6 +5804,19 @@ class _ChannelTileState extends State<_ChannelTile> {
     final active = widget.active;
 
     return InkWell(
+      /*
+       * ★★★ 第 15 项验收：给**行本身**一个稳定 key
+       *
+       * # 为什么必须有（不然"选中只作用于目标项"根本没法机器验）
+       * ```text
+       * 判据要求区分三件东西：频道高亮 / 焦点环 / 筛选浮层，
+       * 并证明高亮**不越出本行**、不遮文字按钮、不留透明拦截层。
+       * 没有 key ⇒ 测试只能数 `Container` 个数（脆弱）或读源码字符串
+       * （假绿）。有 key ⇒ 可以直接 `getRect` / `hitTestable` 量几何与命中。
+       * ★ 与 `live-volume-slider` 同一个理由：可控性不是装饰，是判据前提。
+       * ```
+       */
+      key: liveChannelTileKey(widget.provider, widget.channel.id),
       onTap: widget.onTap,
       /*
        * ★★★ task-82【Q3】把**本行自己的** node 交给 `InkWell`
@@ -5570,6 +5829,18 @@ class _ChannelTileState extends State<_ChannelTile> {
       focusNode: _node,
       borderRadius: Radii.rSm,
       child: Container(
+        /*
+         * ★★★ 第 15 项验收：高亮**块本身**单独一个 key
+         *
+         * # 为什么不能跟行共用一个 key
+         * ```text
+         * 行 = InkWell（点击热区，含 margin 之外的范围）；
+         * 高亮 = 这个 Container 的 decoration（画在 padding 盒里、含 2px 下边距）。
+         * 要证明"高亮不越出本行 / 不遮相邻项"，必须能分别量这两个矩形
+         * ⇒ 一个 key 量不出两个盒子。
+         * ```
+         */
+        key: liveChannelHighlightKey(widget.provider, channel.id),
         /*
          * ★★★ task-34（Owner 第 12 条）：「分类+源把列表都挤得看不到了」
          *

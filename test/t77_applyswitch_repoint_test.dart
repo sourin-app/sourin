@@ -298,5 +298,33 @@ void main() {
           reason: '★★★ `_remoteSwitchSource` 不该调 repointItem —— '
               '它是"同 provider 换线路"，provider 没变 ⇒ 不该迁移');
     });
+
+    // ══════════════════════════════════════════════════════════════
+    //  ★★★ 缺陷③（2026-10-25）：换源**不续播**的另一半
+    // ══════════════════════════════════════════════════════════════
+    //
+    // # 为什么这条也属于本文件
+    // `_applySwitch` 同时承担两件事：repoint（记录搬家）+ 续播（位置带走）。
+    // 它们**共用同一段前置代码**（都在 setState 里、都在 `_resolveAndPlay` 之前）。
+    // 只守住 repoint 而丢掉续播，用户看到的就是"换源后回到开头"——
+    // 与"记录没搬"是同一批反馈里的两条。
+    //
+    // # 判据（行为断言在 `zz_t1025_switch_resume_test.dart`）
+    // ```text
+    // `_applySwitch` 必须仍把当前播放位置写进 `_pendingSeek`，
+    // 且**沿用 3 秒阈值**（太短的位置没有"续播"的意义）
+    // ```
+    test('★★★ 缺陷③：`_applySwitch` 仍写续播意图（3 秒阈值）', () {
+      final body = dartFnBody(
+          playerPage, 'Future<void> _applySwitch(SwitchPick p) async {');
+      expect(body.contains('_resolveAndPlay'), isTrue,
+          reason: '★ 仪器自检：切出来的必须真是那个函数体');
+      expect(
+          body.contains(
+              '_pendingSeek = position > 3 ? Duration(seconds: position) : null;'),
+          isTrue,
+          reason: '★★★ 换源必须带走当前位置；'
+              '这里的 3 秒阈值与 `applySession` 的 `resumeFrom > 3s` 是同一条纪律');
+    });
   });
 }

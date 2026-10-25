@@ -4,6 +4,31 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 
+/// 只有「动态库/符号缺失」这一类异常才算"环境缺件"
+///
+/// # 为什么必须有它（2026-10-25 交叉复核：这里原来是 `catch (_) {}`）
+/// ```text
+/// 原写法把**任何**启动异常都降级成 `coreReady = false` ⇒ 后续 3 条 FFI
+/// 用例 `markTestSkipped`。后果：
+///   · FFI 契约真的坏了（签名改错 / JSON 字段改名 / 初始化顺序回归）
+///     ⇒ 测试**一样是绿的**（只是多了几个 skip）；
+///   · 而"缺件"与"坏了"在用户那里是两件完全不同的事，门禁必须能分开。
+/// ⇒ 只对下面这些**可指名的**缺件标记放行，其余 `fail()`。
+/// 手法与 `zz_dialog18_unified_shell_test.dart:109 _isLibMissing` 同一套。
+/// ```
+bool _isLibMissing(Object e) {
+  final s = e.toString().toLowerCase();
+  const marks = <String>[
+    'failed to load dynamic library',
+    'cannot open shared object',
+    'the specified module could not be found',
+    '找不到指定的模块',
+    'undefined symbol',
+    'error code: 126',
+  ];
+  return marks.any(s.contains);
+}
+
 /// 网盘分享识别 + 凭据状态的门禁
 ///
 /// # 这条链路上的真问题
@@ -21,12 +46,33 @@ void main() {
     try {
       final r = await SourinCore.startAsync(dataDir.path);
       coreReady = r['ok'] == true;
-    } catch (_) {
+    } catch (e, st) {
+      /*
+       * ★ 2026-10-25（task-24 C）：这里原来是 `catch (_) { coreReady = false; }`
+       * ⇒ **任何**异常都被当成"缺 DLL"，随后 3 条 FFI 用例静默 skip。
+       * 现在分两类：
+       *   ① 不是缺件（契约破坏 / 初始化回归 / JSON 形状错）⇒ **fail**，把红露出来；
+       *   ② 是缺件：非 Windows ⇒ 允许 skip；**Windows ⇒ 必须 fail** ——
+       *      本仓 Windows 的 dll 由 `cargo build --release` 产出并拷进 `windows/`
+       *      （CI `.github/workflows/build.yml:518-528` 也是这么做的）
+       *      ⇒ 本机缺它说明环境没搭好，skip 会把这件事藏起来。
+       */
+      if (!_isLibMissing(e)) {
+        fail('核心启动失败（**不是**缺件 ⇒ 不许降级成 skip）：$e\n$st');
+      }
+      if (Platform.isWindows) {
+        fail('Windows 上缺 sourin_core.dll 必须 fail（不许 skip）：$e\n'
+            '先 `cd rust/sourin_core && cargo build --release`，'
+            '再把 sourin_core.dll 拷到 windows/'
+            '（CI 见 .github/workflows/build.yml:518-528）。');
+      }
       coreReady = false;
+      // ignore: avoid_print
+      print('PAN_E2E|lib_missing ⇒ 本文件 FFI 部分会 skip（非 Windows 缺件）：$e');
     }
     if (!coreReady) {
       // ignore: avoid_print
-      print('PAN_E2E|core_ready=false ⇒ 本文件 FFI 部分会 skip（CI 测试阶段无 DLL）');
+      print('PAN_E2E|core_ready=false ⇒ 本文件 FFI 部分会 skip');
     }
   });
 
@@ -110,7 +156,7 @@ void main() {
         reason: '★ 不能笼统说"不支持"：认出了盘但缺 id 与认不出是两回事');
   });
 
-  test('认出分享且未登录 ⇒ 原因要指向"需要先登录"', () async {
+  test('认出分享后 ⇒ 原因必须与「登录态/过期」两字段**一一对应**（④⑤ 两档也钉死）', () async {
     // 用天翼云盘：测试机上大概率没有它的登录态
     final s = await call('https://cloud.189.cn/t/abcdef');
     if (s == null) {
@@ -119,12 +165,33 @@ void main() {
     }
     expect(s.kind, 'tianyi');
     expect(s.shareId, 'abcdef');
+    /*
+     * ★★★ 2026-10-25（task-24 C）：这一段原来是
+     * ```text
+     *   if (!s.loggedIn) { expect(reason, contains('需要先登录')); }
+     *   else            { expect(reason, isNotEmpty); }   // ← 兜底，等于没验
+     * ```
+     * ⇒ **④过期 / ⑤已登录但未接直链** 两档从来没有断言，
+     *   而 `else expect(reason, isNotEmpty)` 连"非空"都能过。
+     *
+     * 现在改成**按响应自己的两个字段选档**，每一档都断言**逐字文案**：
+     *   ③ 未登录      → 「需要先登录<盘名>」
+     *   ④ 已登录过期  → 「<盘名>的登录已过期，请重新登录」
+     *   ⑤ 已登录正常  → 「已登录；取直链功能尚未接入」（`resolvable=false` 的如实声明）
+     * ⚠️ 这是**全映射**判据：无论本机停在哪个状态，落到的那一档文案都必须逐字对上，
+     *    不再有"非空即过"的出口。④⑤ 在本机可能不触发（需要钥匙串里有对应凭据），
+     *    缺的是**夹具**而不是判据——这一点如实登记，不假装覆盖。
+     */
     if (!s.loggedIn) {
-      expect(s.reason, contains('需要先登录'),
-          reason: '★ 未登录时说"需要先登录"，而不是"不支持"');
+      expect(s.reason, '需要先登录${s.kindName}',
+          reason: '★★ ③ 未登录档：必须点名是哪个网盘，且不是"不支持"');
+    } else if (s.expired) {
+      expect(s.reason, '${s.kindName}的登录已过期，请重新登录',
+          reason: '★★ ④ 过期档：必须说"过期"，不许退回"需要先登录"（那是误诊）');
     } else {
-      // 万一测试机真登录过，就断言"已登录"这条分支的原因
-      expect(s.reason, isNotEmpty);
+      expect(s.reason, '已登录；取直链功能尚未接入',
+          reason: '★★★ ⑤ 已登录但取直链未实现：逐字断言 —— '
+              '这一档的全部意义就是**不许**冒充能播');
     }
     expect(s.resolvable, isFalse, reason: '无论登不登录，取直链都还没做');
   });

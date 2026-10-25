@@ -629,10 +629,10 @@ void main() {
       );
     });
 
-    test('★★ 15 处生产调用点逐个都在统一入口上', () {
+    test('★★ 19 处生产调用点逐个都在统一入口上', () {
       const want = <String, int>{
         'lib/ui/player_page.dart': 1,
-        'lib/ui/settings_page.dart': 5,
+        'lib/ui/settings_page.dart': 9,
         'lib/ui/settings/emby_page.dart': 1,
         'lib/ui/settings/skip_page.dart': 1,
         'lib/ui/widgets/provider_import_dialog.dart': 2,
@@ -653,7 +653,7 @@ void main() {
         );
         total += got;
       });
-      expect(total, 15, reason: '★ 用户说的 18 处，实测生产调用点是 15 处（其余是注释与真机探针）');
+      expect(total, 19, reason: '★ 用户说的 18 处，实测生产调用点是 19 处（其余是注释与真机探针）；2026-10-25 task-38：settings_page 5→9（新增 4 处生产调用点）⇒ 合计 15→19');
       /*
        * ★ task-14 ③ 反面对照：showAppDialog(...)（不带类型参数）也必须被数到
        *

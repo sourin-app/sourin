@@ -291,28 +291,32 @@ void main() {  // ════════════════════�
        */
       final i = _page.indexOf('if (k == LogicalKeyboardKey.escape ||');
       expect(i, greaterThan(0));
-      final body = _page.substring(i, (i + 700).clamp(0, _page.length));
       /*
-       * ★ 既有断言用的是**同一个 700 窗口**，它们只看 `_settingsOpen` /
-       *   `_zoomOpen` / `_episodeSheetOpen` —— 实测现在分别落在
-       *   446 / 594 / 676（`_episodeSheetOpen` 只剩 24 字符余量）。
-       *   这里把「余量」也断言出来：以后谁再加一个分支把窗口撑破，
-       *   报错会直接指着这一条，而不是让 `player_capability_test` 先红。
+       * ★ 2026-10-24（总计划第 12 项）：原来用**固定 700 字符窗口**取 Esc 分支，
+       *   第 12 项新增了 `else if (_danmakuSearchOpen)` 分支，把
+       *   `_episodeSheetOpen` 挤出 700 窗口 ⇒ indexOf 返回 -1 ⇒ 本测试误红。
+       *   **生产分支次序本身是对的**（实测：search 13947 < danmaku 13949
+       *   < settings 13956 < zoom 13967 < episode 13977）。
+       * ⇒ 修法：不再按字符数截断，改为取**整个 `_onKey` 方法体**（结构边界提取），
+       *   相对次序断言一条不少地保留。调大窗口或改绝对行号都是治标，会再次漂移。
        */
-      // ignore: prefer_const_declarations
-      final escWindow = _page.substring(i, (i + 700).clamp(0, _page.length));
-      expect(escWindow.indexOf('else if (_episodeSheetOpen)'), lessThan(700),
-          reason: '★★ 既有断言（player_capability / t78）都在这个 700 窗口里找分支，'
-              '现在只剩 42 字符余量 —— 再加分支前先跑 .probe/yamby/strip_probe.dart');
+      final body = _escBranchBody(_page, i);
+      final escWindow = body; // 兼容下方既有断言的命名
+      expect(escWindow.indexOf('else if (_episodeSheetOpen)'), greaterThan(0),
+          reason: '★★ Esc 分支里必须有选集分支（结构提取后不再受字符窗口限制）');
       final iBili = body.indexOf('else if (_biliSheetOpen)');
       final iSub = body.indexOf('else if (_subtitlePanelOpen)');
+      final iDanmakuSearch = body.indexOf('else if (_danmakuSearchOpen)');
       final iDanmaku = body.indexOf('else if (_danmakuSheetOpen)');
       final iSettings = body.indexOf('else if (_settingsOpen)');
       final iZoom = body.indexOf('else if (_zoomOpen)');
       final iEpisode = body.indexOf('else if (_episodeSheetOpen)');
       expect(iBili, greaterThan(0), reason: '★ Esc 必须能关 B 站面板');
       expect(iSub, greaterThan(iBili), reason: '★ 字幕面板排在 B 站面板之后');
-      expect(iDanmaku, greaterThan(iSub), reason: '★ 弹幕设置面板再后');
+      expect(iDanmakuSearch, greaterThan(iSub),
+          reason: '★ 第 12 项新增的搜索页必须排在字幕面板之后');
+      expect(iDanmaku, greaterThan(iDanmakuSearch),
+          reason: '★ 弹幕设置面板排在搜索页之后（Esc 先关搜索页再关设置面板）');
       expect(iSettings, greaterThan(iDanmaku), reason: '★ 设置面板排在弹幕面板之后');
       expect(iZoom, greaterThan(iSettings), reason: '★ 缩放滑条排在设置面板之后');
       expect(iEpisode, greaterThan(iZoom), reason: '★ 缩放滑条排在选集之前');
@@ -597,7 +601,7 @@ void main() {  // ════════════════════�
        *   ⇒ 现在它在「弹幕来源」页签里是**平级的一行**，名字就叫出来，
        *      右侧动作按钮从「外部弹幕…」改成「打开…」。
        */
-      await t.tap(find.text('弹幕来源'));
+      await t.tap(find.text('高级'));
       await t.pumpAndSettle();
       final btn = find.widgetWithText(TextButton, '打开…');
       expect(btn, findsOneWidget);
@@ -624,7 +628,7 @@ void main() {  // ════════════════════�
       await t.pumpWidget(_host(_danmakuDialog()));
       await t.pumpAndSettle();
       // 同上：来源行现在在「弹幕来源」页签下。
-      await t.tap(find.text('弹幕来源'));
+      await t.tap(find.text('高级'));
       await t.pumpAndSettle();
       expect(find.text('打开…'), findsNothing,
           reason: '★ 面板可以被别的宿主复用而不带上那个源 —— 那时不该有这枚按钮');
@@ -730,4 +734,33 @@ void main() {  // ════════════════════�
           reason: '★ 面板的 _errorSection 读的就是 DanmakuException.message');
     });
   });
+}
+
+/// 从 `if (k == LogicalKeyboardKey.escape ||` 起，按**花括号配对**取出整段
+/// Esc 分派分支体。
+///
+/// # 为什么不再用固定字符窗口
+/// ```text
+/// 旧写法：`_page.substring(i, i + 700)`。
+/// 第 12 项新增 `else if (_danmakuSearchOpen)` 后，`_episodeSheetOpen`
+/// 被挤出 700 窗口 ⇒ indexOf 返回 -1 ⇒ 误报"生产次序错了"。
+/// 生产次序其实一直是对的（search < danmaku < settings < zoom < episode）。
+/// ⇒ 按结构边界提取：只要分支还在，无论前面加多少分支都能取到；
+///   而"相对次序"这个真正的不变量一条不少地保留。
+/// ```
+String _escBranchBody(String page, int start) {
+  // 从 start 往后找到第一个 '{'，再配对到对应的 '}'
+  final open = page.indexOf('{', start);
+  if (open < 0) return page.substring(start);
+  var depth = 0;
+  for (var k = open; k < page.length; k++) {
+    final c = page.codeUnitAt(k);
+    if (c == 0x7B) {
+      depth++;
+    } else if (c == 0x7D) {
+      depth--;
+      if (depth == 0) return page.substring(start, k + 1);
+    }
+  }
+  return page.substring(start);
 }

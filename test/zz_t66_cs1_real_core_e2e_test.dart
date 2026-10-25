@@ -56,6 +56,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
+// ★ 审计 B9：缺 dll 的统一处置（Windows ⇒ fail；其它平台 ⇒ 点名 skip）
+import 'support/core_gate.dart';
 
 /// 把 build 产物里的 `sourin_core.dll` 放到**仓库根**，让 `DynamicLibrary.open` 能成功
 ///
@@ -120,6 +122,12 @@ void main() {
     touchedKeyring = false;
 
     if (!hasCore) {
+      // ★ 审计 B9：改前这里只写一行 skipReason ⇒ Windows 上缺件变绿。
+      //   Windows ⇒ fail；其它平台 ⇒ skip 且点名缺什么 + 没校验到什么。
+      handleMissingCore(
+        missing: kCoreDllPaths.join('、'),
+        notVerified: 'CS1 端到端（真核心 + 真钥匙串往返）',
+      );
       skipReason = '缺少 sourin_core.dll（未找到构建产物）⇒ 未验证';
       return;
     }

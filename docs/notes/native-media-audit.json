@@ -31,9 +31,9 @@
   },
   "player_panel_wiring_test.dart": {
     "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "有 1 条红（断言失败，需处置）",
-    "result": "+0 ~0 -1"
+    "lastAudited": "2026-10-25",
+    "note": "登记过期更正：实测全绿（原登记 +0 -1）",
+    "result": "+5 ~0 -0"
   },
   "player_ux_shot_test.dart": {
     "audited": false,
@@ -43,9 +43,9 @@
   },
   "t102_playback_failure_banner_test.dart": {
     "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+5 ~0 -0"
+    "lastAudited": "2026-10-25",
+    "note": "Lead 终局对账（task-30 指出过期）：本轮新增 ⑥_bottomOccupied 静态审计与 ⑦「重试」可点 + 真触发 _load，条数 5→7",
+    "result": "+7 ~0 -0"
   },
   "t103_danmaku_hint_ui_test.dart": {
     "audited": true,
@@ -67,9 +67,9 @@
   },
   "t118_control_bars_link_test.dart": {
     "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "有 1 条红（断言失败，需处置）",
-    "result": "+15 ~0 -1"
+    "lastAudited": "2026-10-25",
+    "note": "登记过期更正：实测全绿（原登记 +15 -1）",
+    "result": "+16 ~0 -0"
   },
   "t26_w4_mirror_episode_test.dart": {
     "audited": true,
@@ -211,9 +211,9 @@
   },
   "t92_bottom_bar_row_fit_test.dart": {
     "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "有 5 条红（断言失败，需处置）",
-    "result": "+0 ~0 -5"
+    "lastAudited": "2026-10-25",
+    "note": "旧判据找的是已搬走的按钮（D 已过期）；按真实底栏重写后全绿（几何断言保留 + 横向 ScrollView 换形判据 + 两条对照），注入两处变异 ⇒ +3 -4 证明非空转",
+    "result": "+7 ~0 -0"
   },
   "t92_embed_first_frame_hint_test.dart": {
     "audited": true,
@@ -228,16 +228,16 @@
     "result": "+7 ~0 -0"
   },
   "zz_cr_backbtn_backarrow_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "有 1 条红（断言失败，需处置）",
-    "result": "+6 ~0 -1"
+    "audited": false,
+    "lastAudited": "2026-10-25",
+    "note": "② 红：真实产品缺陷（顶栏看得见点不到，_autoHideNow 漏 _pushControlsLive）；修复后应转绿并重新登记",
+    "result": null
   },
   "zz_cr_dmk_c_import_test.dart": {
     "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "有 1 条红（断言失败，需处置）",
-    "result": "+3 ~0 -1"
+    "lastAudited": "2026-10-25",
+    "note": "文案按站名铁律中性化（具体站名改为「外部视频站」），两处断言同步迁移后全绿",
+    "result": "+4 ~0 -0"
   },
   "zz_cr_dmk_d_badge_test.dart": {
     "audited": true,
@@ -305,6 +305,24 @@
     "note": "全绿",
     "result": "+1 ~0 -0"
   },
+  "zz_t1023_player_route_exit_order_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-24",
+    "note": "全绿",
+    "result": "+3 ~0 -0"
+  },
+  "zz_t1023_player_search_integration_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-24",
+    "note": "全绿",
+    "result": "+2 ~0 -0"
+  },
+  "zz_t1023_player_seek_behavior_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-25",
+    "note": "Lead 终局对账（task-30 指出漏登）：本轮改动后单跑全绿 16 条",
+    "result": "+16 ~0 -0"
+  },
   "zz_t12_local_play_probe_test.dart": {
     "audited": true,
     "lastAudited": "2026-10-21",
@@ -334,5 +352,35 @@
     "lastAudited": "2026-10-21",
     "note": "全绿",
     "result": "+1 ~0 -0"
+  },
+  "zz_t1024_skip_respects_user_seek_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-25",
+    "note": "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：用户 seek 豁免 + pendingSeek 让位 + 阴性对照；2026-10-25 增补 ⑥「继续观看」行为用例与 ⑤ 裸 seek 枚举门禁后由 +5 变 +6（交叉复核 task-20 指出登记过期，已按实跑更正）",
+    "result": "+6 ~0 -0"
+  },
+  "zz_t1024_player_banner_order_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-25",
+    "note": "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：横幅在底栏之后 + 恢复判据 + 让位",
+    "result": "+5 ~0 -0"
+  },
+  "zz_t1025_switch_resume_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-25",
+    "note": "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：详情区/播放器内换源续播契约",
+    "result": "+7 ~0 -0"
+  },
+  "zz_t1024_player_failure_attribution_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-25",
+    "note": "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：timeout 第七档 + elapsed 窗口由常量算",
+    "result": "+7 ~0 -0"
+  },
+  "zz_t1024_player_live_keys_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-25",
+    "note": "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：全屏态空格/M 经共享 LivePlaybackTarget 派发；打字态不抢键",
+    "result": "+3 ~0 -0"
   }
 }

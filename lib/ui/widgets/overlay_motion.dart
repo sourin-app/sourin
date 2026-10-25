@@ -502,7 +502,10 @@ class _SheetExitMotionState extends State<SheetExitMotion>
       // ★ 退场期间**立即**停止接收点击：Opacity 只影响绘制、不影响命中测试
       //   ⇒ 不包的话用户点"正在淡出的"面板会打在已经关闭的面板上
       //   （同 SheetTransition 的类文档：那条 = 用户报的"点了没反应"）
-      child: IgnorePointer(ignoring: !widget.visible, child: widget.child),
+      child: ExcludeFocus(
+        excluding: !widget.visible,
+        child: IgnorePointer(ignoring: !widget.visible, child: widget.child),
+      ),
     );
   }
 }

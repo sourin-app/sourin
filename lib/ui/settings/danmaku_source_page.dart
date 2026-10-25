@@ -42,7 +42,8 @@
 import 'package:material_ui/material_ui.dart';
 
 import 'dart:async';
-import 'dart:io' show SocketException, Socket, InternetAddress;
+import 'dart:io' show SocketException;
+import '../../core/danmaku_network_diagnostics.dart';
 
 import '../../core/danmaku.dart';
 import '../../core/ui_prefs.dart';
@@ -56,10 +57,16 @@ import '../widgets/danmaku_settings_dialog.dart'
 import '../../design/icons/app_icons.dart';
 
 class DanmakuSourcePage extends StatefulWidget {
-  const DanmakuSourcePage({super.key, this.probeOverride});
+  const DanmakuSourcePage({super.key, this.probeOverride, this.dohOverride});
 
   /// 测试注入口：替换真实网络探测（同弹幕面板的同名参数）
   final Future<DanmakuLocalStatus> Function(DanmakuEndpoint?)? probeOverride;
+
+  /// 测试注入口：替换「权威 DNS 真值」查询（默认 = 跟随当前代理的多源 DoH）
+  ///
+  /// ★ 只在**判定了"本机解析到伪造段"之后**才被调用（见 [_diagnose]），
+  ///   与 [probeOverride] 一样是"零联网"纪律的出口：注入后不产生真实 DoH 请求。
+  final Future<List<String>> Function(String host)? dohOverride;
 
   @override
   State<DanmakuSourcePage> createState() => _DanmakuSourcePageState();
@@ -131,14 +138,15 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
   ///   而且切换后要**立刻**影响下一次弹幕请求（不需要重开页面）。
   void _setProxy(DanmakuProxyMode? m) {
     if (m == null) return;
-    setState(() => _proxyMode = m);
+    _proxyMode = m;
     UiPrefs.setDanmakuProxy(mode: m.name, url: _proxyUrl.text);
+    _invalidate();
   }
 
   /// 地址输入变化 ⇒ 落盘（仅 custom 模式时才有输入框）
   void _saveProxyUrl() {
     UiPrefs.setDanmakuProxy(mode: _proxyMode.name, url: _proxyUrl.text);
-    setState(() {});  // 让诊断行进更新
+    _invalidate();
   }
 
   /// 输入一变 ⇒ 上次的测试结果立刻作废（否则会显示与当前输入无关的结论）
@@ -251,126 +259,75 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
     }
   }
 
-  /// 判了 offline ⇒ DNS → TCP 分层定位（与播放页面板同一套判据）
+  /// 从一次失败里取出「本机解析到、并且真的去连了」的那个地址
   ///
-  /// ⚠️ 全程带 [mySeq] 守卫：输入改过就作废（同 [_probe] 的纪律）。
+  /// # 为什么两种异常都要看
+  /// ```text
+  /// · SocketException.address  —— HttpClient/Socket 直接抛的时候带着它
+  /// · DanmakuException.resolvedAddress —— core 翻译过一层之后带着它
+  /// 二者语义相同（都只做展示、都不打码 token）。取不到就**返回空表**：
+  /// 空表 ⇒ 上层不会拿它去跑伪造段判据（"没证据"与"证据是空的"必须分开）。
+  /// ```
+  static List<String> _resolvedAddressesOf(Object e) {
+    if (e is DanmakuException) {
+      return e.resolvedAddress.isEmpty
+          ? const <String>[]
+          : <String>[e.resolvedAddress];
+    }
+    if (e is SocketException) {
+      final a = e.address;
+      return a == null ? const <String>[] : <String>[a.address];
+    }
+    return const <String>[];
+  }
+
+  /// Diagnose the actual HTTP route; preserve stale-input guards.
   Future<void> _diagnose(
     DanmakuEndpoint? ep,
     int mySeq,
     String rawUrl,
   ) async {
-    final url = ep?.display ?? (rawUrl.isEmpty ? '本机弹弹play' : rawUrl);
+    final url = ep?.display ?? "本机弹弹play";
     DanmakuProbeReport report;
     try {
-      if (ep == null) {
-        // 本机 2080 那条路：解析不会有问题，直接问端口
-        try {
-          final s = await Socket.connect(
-            '127.0.0.1',
-            2080,
-            timeout: const Duration(seconds: 3),
-          );
-          s.destroy();
-          report = DanmakuProbeReport(
-            failure: DanmakuProbeFailure.serverError,
-            url: url,
-            detail: '127.0.0.1:2080 可以连上，但探测端点没有给出可用响应',
-            remedy: '本机端口是通的，但那个程序没按弹幕服务协议回应 —— '
-                '确认 2080 上跑的是弹弹play 桌面端。',
-          );
-        } on TimeoutException {
-          report = DanmakuProbeReport(
-            failure: DanmakuProbeFailure.connectionTimeout,
-            url: url,
-            detail: 'TCP 127.0.0.1:2080 连接超时',
-            remedy: DanmakuProbeReport.remedyFor(
-              DanmakuProbeFailure.connectionTimeout,
-            ),
-          );
-        } on SocketException catch (e) {
-          report = DanmakuProbeReport.fromError(e, url: url);
-        }
-      } else {
-        final addrs = await InternetAddress.lookup(ep.host)
-            .timeout(const Duration(seconds: 4));
-        if (addrs.isEmpty) {
-          report = DanmakuProbeReport(
-            failure: DanmakuProbeFailure.dnsFailed,
-            url: url,
-            detail: 'DNS 没返回任何地址',
-            remedy:
-                DanmakuProbeReport.remedyFor(DanmakuProbeFailure.dnsFailed),
-          );
-        } else {
-          /*
-           * ★★★ 2026-10-19（R3-③/⑦ 归因修正）：**先核地址对不对，再谈 TCP**。
-           * 与播放页面板用**同一份**判据（`DanmakuProbeReport.looksForged`）——
-           * 两处各写一套就会漂移成"设置页说被墙、面板说被劫持"。
-           */
-          final local = addrs.map((a) => a.address).toList(growable: false);
-          if (DanmakuProbeReport.looksForged(local)) {
-            final doh = await DanmakuProbeReport.dohLookup(ep.host);
-            report = DanmakuProbeReport.forHijackedDns(
-              url: url,
-              localAddresses: local,
-              dohAddresses: doh,
-            );
-          } else {
-            final port =
-                ep.hasPort ? ep.port : (ep.scheme == 'https' ? 443 : 80);
-            try {
-              final s = await Socket.connect(ep.host, port,
-                  timeout: const Duration(seconds: 6));
-              s.destroy();
-              report = DanmakuProbeReport(
-                failure: DanmakuProbeFailure.serverError,
-                url: url,
-                detail: 'TCP $port 可以连上，但探测端点没有给出可用响应',
-                remedy: '网络是通的（TCP 连得上）⇒ 这次的问题在「服务端」：'
-                    '它可能正在冷启动、或者这个实例的接口变了。'
-                    '等几秒重试，或换一个实例。',
-              );
-            } on TimeoutException {
-              /*
-               * 伪造段表没命中，但 DoH 真值完全不同 ⇒ 同样是劫持
-               * （表不可能穷举，`looksForged` 是**强证据**不是充要条件）。
-               */
-              final doh = await DanmakuProbeReport.dohLookup(ep.host);
-              final differs = doh.isNotEmpty &&
-                  doh.toSet().intersection(local.toSet()).isEmpty;
-              report = differs
-                  ? DanmakuProbeReport.forHijackedDns(
-                      url: url,
-                      localAddresses: local,
-                      dohAddresses: doh,
-                      detail: 'TCP $port 连接超时',
-                    )
-                  : DanmakuProbeReport(
-                      failure: DanmakuProbeFailure.connectionTimeout,
-                      url: url,
-                      detail: 'DNS 解析到 ${local.join(", ")}，'
-                          '但 TCP $port 连接超时',
-                      remedy: DanmakuProbeReport.remedyFor(
-                        DanmakuProbeFailure.connectionTimeout,
-                      ),
-                    );
-            } on SocketException catch (e) {
-              report = DanmakuProbeReport.fromError(e, url: url);
-            }
-          }
-        }
-      }
-    } on TimeoutException {
+      final response = await diagnoseDanmakuEndpoint(ep);
       report = DanmakuProbeReport(
-        failure: DanmakuProbeFailure.dnsFailed,
+        failure: DanmakuProbeFailure.serverError,
         url: url,
-        detail: 'DNS 查询超时（4 秒）',
-        remedy: DanmakuProbeReport.remedyFor(DanmakuProbeFailure.dnsFailed),
+        detail: 'HTTP ${response.statusCode}: 探活未确认服务可用，请重试连接测试',
+        remedy: "已按当前代理配置请求服务；HTTP 可达不代表弹幕协议可用。",
       );
-    } on SocketException catch (e) {
-      report = DanmakuProbeReport.fromError(e, url: url);
     } catch (e) {
       report = DanmakuProbeReport.fromError(e, url: url);
+      /*
+       * ★★★ 2026-10-25（第 05 项独立验收）：**判了"解析到伪造段"就去核对真值**
+       *
+       * # 改前的两处缺失（都在这一段上）
+       * ```text
+       * ① 真值查询链路存在（`lookupDanmakuDoh` 跟随代理、多源降级、排除 alidns），
+       *    但**一个生产调用点都没有** ⇒ 用户永远看不到「权威真值」那一档，
+       *    手册里"点「测试连接」可以核对"这句话是空头承诺。
+       * ② 没有真值时，文案只会说「加密查询也可能被拦」——
+       *    把"根本没查"说成了"查了被拦"。
+       * ```
+       * # 现在的判据
+       * ```text
+       * 本机地址非空 且 命中已知伪造段 ⇒ 真的去问一次 DoH（跟随当前代理），
+       *   拿到真值 ⇒ "查到"档；三个源都连不上 ⇒ "查了连不上"档。
+       * 热路径（取弹幕/搜索）**不查**（同步纯函数，零网络）⇒ "根本没查"档。
+       * ```
+       * ⚠️ 仍然只有用户**主动点「测试连接」**才会走到这里（`_probe` 里
+       *    `probeOverride == null` 才调），不是启动/取数副作用。
+       */
+      final local = _resolvedAddressesOf(e);
+      if (local.isNotEmpty && DanmakuProbeReport.looksForged(local)) {
+        report = await DanmakuProbeReport.hijackReportWithTruth(
+          url: url,
+          localAddresses: local,
+          host: ep?.host ?? '',
+          lookup: widget.dohOverride,
+        );
+      }
     }
     if (!mounted || mySeq != _seq) return;
     setState(() => _report = report);

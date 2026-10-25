@@ -44,6 +44,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/models.dart';
+import 'package:sourin_spike/ui/player/player_bottom_bar.dart';
 import 'package:sourin_spike/ui/player_page.dart';
 import 'package:sourin_spike/ui/remote_bridge.dart';
 
@@ -200,5 +201,142 @@ void main() {
         reason: '★★★ `_load` 与 `_startPlayback` 都必须复位「出过画面」—— '
             '否则换了条根本打不开的流，错误会被当成「可恢复中断」而**不弹全屏**'
             '（用户对着黑屏什么都没有）');
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ⑥ ★★★ 缺陷②（2026-10-25）：横幅与底栏的**结构**关系
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // # 为什么补在**这个**文件里
+  // 本文件就是「非阻断横幅」那一条缺陷的门禁（Owner 第 9 条）。
+  // 缺陷② 是它的直接续集：横幅不消失 + 盖住底栏。判据放同一处，
+  // 免得将来只跑 t102 的人以为横幅这件事已经全绿。
+  //
+  // # 判据
+  // ```text
+  // ① `_bottomOccupied` 计入 `_playbackFailure` ⇒ 占据态时底栏整条卸下
+  //    （否则底栏与横幅抢同一块底部区域 ⇒ 「重试」被盖住点不到）
+  // ② 恢复判据存在：`_playing` + 位置连续推进 ≥ 3 秒 ⇒ 清横幅
+  // ③ 跳过的 `debugPlayerMaybeSkipForProbe` 那条竞态让位（缺陷③同一处）
+  // ```
+  // ⚠️ 行为断言在 `zz_t1024_player_banner_order_test.dart`
+  //    （② 恢复 / ③ 暂停阴性对照 / ④ `_bottomOccupied` 为真且底栏不在树上）；
+  //    这里只钉**源码结构**，两处一起才算完整。
+  test('⑥ ★★★ `_bottomOccupied` 计入横幅，且恢复判据用 3 秒推进', () {
+    final src = File('lib/ui/player_page.dart').readAsStringSync();
+
+    final occAt = src.indexOf('bool get _bottomOccupied =>');
+    expect(occAt, greaterThan(-1), reason: '锚点不存在：`bool get _bottomOccupied =>`');
+    final occBody = src.substring(occAt, occAt + 800);
+    expect(occBody, contains('_playbackFailure != null'),
+        reason: '★★★ 不算 `_playbackFailure` ⇒ 底栏会跟横幅抢同一块底部区域');
+
+    expect(src, contains('_recoveryProgress += p - _position;'),
+        reason: '★★ 恢复必须是"位置**连续推进**"，不是"又出了一帧"'
+            '（掉帧/缓冲重试期间 stream.width 不会再发）');
+    expect(src, contains('_playing &&'),
+        reason: '★★ 暂停时位置推进不算恢复（否则横幅会在用户暂停时自己跑掉）');
+    expect(src, contains('_recoveryProgress >= const Duration(seconds: 3)'),
+        reason: '★ 3 秒阈值（要能过 t72_jank 这类掉帧场景）');
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ⑦ ★★★ task-14（2026-10-25）：横幅出现后「重试」**真的点得到**
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // # 补的是什么（交叉复核指出的证据缺口）
+  // ```text
+  // 第 02 项原来只验到「横幅顺序对 + `_bottomOccupied` 让位」，
+  // **没有一条**把两者渲染出来断言「重试」按钮真的可点。
+  // 而 Owner 报的原症状正是"点不到"：
+  //   「鼠标一动控件浮现就盖住「重试」」。
+  // ⇒ 本用例：横幅出现 → 断言 hitTestable + 真的 tap → `_load()` 计数 +1；
+  //   再把控制条**钉在显示态**（`debugPlayerForceBarsForShot`，最坏情形），
+  //   断言底栏仍然不在树上、重试仍然点得到。
+  // ```
+  // # 两道防线（各自独立，缺一都会复发）
+  // ```text
+  // ① `_bottomOccupied` 计入 `_playbackFailure` ⇒ 底栏整条卸下（抢不到点击）
+  // ② 三条横幅画在 `_BottomBar` **之后**（后写的在上）⇒ 即使底栏在，也压不住横幅
+  // ```
+  // ⚠️ 注入结论（本用例实测）：删掉 ① 会红；只把横幅搬回底栏之前**不会**红 ——
+  //    因为 ① 已经把底栏卸下了。① + 把横幅搬回之前 一起注入才红。
+  //    顺序本身由 `zz_t1024_player_banner_order_test` ① 做源码顺序断言守住。
+  testWidgets('⑦ ★★★ 横幅出现后「重试」真的点得到，且点了真的重新起播', (t) async {
+    await mountPlayer(t);
+    expect(debugPlayerClearErrorForProbe(), isTrue);
+    expect(debugPlayerMarkFirstFrameForProbe(), isTrue);
+
+    // ── 先让控制条可见（鼠标唤起态），量它原本占的那条带 ──
+    debugPlayerHoverControlsForProbe();
+    await t.pump();
+    expect(find.byType(PlayerBottomBar), findsOneWidget,
+        reason: '夹具自检：唤起控制条后底栏必须在树上');
+    final barRect = t.getRect(find.byType(PlayerBottomBar));
+
+    // ── 注入一条"播放中"的错误 ⇒ 非阻断横幅 ──
+    expect(debugPlayerInjectStreamErrorForProbe('fixture stream interrupted'),
+        isTrue,
+        reason: '★ 返回 true = 已出过画面 ⇒ 走非阻断横幅（不是全屏错误层）');
+    await t.pump();
+
+    final retry = find.text('重试');
+    expect(retry, findsWidgets, reason: '横幅必须给「重试」出口');
+    expect(retry.first.hitTestable(), findsOneWidget,
+        reason: '★★★ 「重试」在它的中心点必须**可命中** —— '
+            'Owner 报的就是"鼠标一动控件浮现就盖住重试，点不到"');
+
+    // ── 几何：重试落在底栏原本占的那条带里（所以"谁在上面"才重要）──
+    final retryRect = t.getRect(retry.first);
+    expect(retryRect.bottom, greaterThan(barRect.top),
+        reason: '★ 「重试」$retryRect 落在底栏带 $barRect 之外 ⇒ '
+            '本用例没覆盖到真正的重叠区，判据失去意义');
+    expect(debugPlayerBottomOccupiedForProbe(), isTrue,
+        reason: '★★ `_bottomOccupied` 必须为真（横幅占据底部）');
+    expect(find.byType(PlayerBottomBar), findsNothing,
+        reason: '★★ 第一道防线：占据态底栏整条卸下 ⇒ 它不可能抢走这一次点击');
+
+    // ── 最坏情形：把控制条钉在显示态，底栏仍不许回来 ──
+    expect(debugPlayerForceBarsForShot(), isTrue);
+    await t.pump();
+    expect(find.byType(PlayerBottomBar), findsNothing,
+        reason: '★★★ 控制条被强制显示时底栏仍必须让位 —— '
+            '否则它画在横幅上（改前形态）就会盖住「重试」');
+    expect(find.text('重试').hitTestable(), findsOneWidget,
+        reason: '★★★ 控制条被唤起之后，「重试」仍然必须点得到');
+
+    /*
+     * ── 「真的重新起播」的行为证据 ──
+     *
+     * ⚠️ 这里**不能**用 `tester.tap` 做行为断言：本仓已记录的仪器限制是
+     *   「`flutter_tester` 里 `PlayerPage` 整棵树的**指针回调不派发**」
+     *   （`test/t98` 文件头 / `debugOpenEpisodesForProbe` 的注释）。
+     *   本轮实测复核（`.probe/fix01-tap-probe.log`）：
+     *   ```text
+     *   底栏 InkWell 上 `tester.tap` ⇒ `debugPlayerTogglePlayCalls` 0 → 0
+     *   横幅「重试」`hitTestable()` = 1，`tester.tap` ⇒ `_loadCalls` 1 → 1
+     *   ```
+     *   ⇒ 不是横幅的问题，是这台仪器**不派发**手势。若在这里硬断言 tap 生效，
+     *     测试会**永久红**；那属于"用错误期待值逼代码让步"，本仓禁止。
+     * ⇒ 行为证据改为：**读那颗真实按钮的 `onPressed` 并调用它**。
+     *   那是**同一颗按钮的同一个回调**（`FilledButton(onPressed: onRetry)`），
+     *   既不是旁路、也不是复刻；"点得到"由 `hitTestable()` 证明。
+     */
+    final button = find.widgetWithText(FilledButton, '重试');
+    expect(button, findsOneWidget,
+        reason: '★ 横幅的「重试」必须是一颗真实按钮（不是一段文字）');
+    final btn = t.widget<FilledButton>(button);
+    expect(btn.onPressed, isNotNull,
+        reason: '★★ 按钮必须 enabled（disabled 的按钮在真机上点不动）');
+
+    final before = debugPlayerLoadCallsForProbe();
+    expect(before, isNotNull, reason: '★ 探针必须接上（null = 播放页没挂）');
+    btn.onPressed!(); // = onRetry = `() => unawaited(_load())`
+    await t.pump();
+    expect(debugPlayerLoadCallsForProbe(), before! + 1,
+        reason: '★★★ 「重试」必须真的重新起播（`_load()` 计数 +1）；'
+            '只把横幅关掉的"假重试"会在这里被抓住');
+
+    await drain(t);
   });
 }

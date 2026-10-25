@@ -257,11 +257,16 @@ impl AppState {
         // HTTP 源待重连清单：id / base_url / headers（同步阶段收集，后台阶段使用）
         let mut http_to_restore: Vec<(String, String, std::collections::HashMap<String, String>)> =
             Vec::new();
+        // ★ 恢复失败的源（第19项：csp 未实现类等）——
+        //   除了 warn，还落盘到 data_dir/restore-failures.json，供界面/排查查询。
+        let mut restore_failures: Vec<crate::persist::RestoreFailure> = Vec::new();
         let mut ok = 0usize;
         for item in &persisted {
             match item {
                 PersistedProvider::Declarative { id, json } => {
-                    match crate::providers::DeclarativeProvider::from_json(json) {
+                    match crate::providers::DeclarativeProvider::from_json(json)
+                        .map(|p| p.with_data_dir(data_dir.clone()))
+                    {
                         Ok(p) => {
                             registry.register(Arc::new(p));
                             ok += 1;
@@ -294,26 +299,91 @@ impl AppState {
                     api,
                     categories,
                     parsers,
-                } => match crate::tvbox::TvboxAppleCmsProvider::new(
-                    id.clone(),
-                    name.clone(),
-                    api,
-                    categories.clone(),
-                ) {
-                    Ok(p) => {
-                        registry.register(Arc::new(
-                            p.with_proxy(proxy.clone())
-                                .with_parsers(parsers.clone()),
-                        ));
-                        ok += 1;
+                    ext,
+                } => {
+                    /*
+                     * ★★★ 第19项收口：`csp_Xxx` 必须走 **csp 路由**，不许走苹果CMS
+                     *
+                     * # 为什么这里要分支（改前是单一路径）
+                     * csp 源的 api 是 `"csp_Bili"`（不是 URL）：
+                     * ```text
+                     * TvboxAppleCmsProvider::new("csp_Bili") → Err("接口地址不是 http(s)")
+                     * ⇒ 用户重启后源消失，且日志只有一句"恢复失败"
+                     * ```
+                     * 现在按 api 形态分流：
+                     * ```text
+                     * csp_Xxx → csp::provider::CspProvider::new(id, name, api, ext, categories)
+                     * 其余    → TvboxAppleCmsProvider::new(...)（原行为一字未改）
+                     * ```
+                     *
+                     * # 未实现的类：如实降级，不静默、不 panic、不连坐
+                     * ```text
+                     * · 落一条 warn（含类名与原因）
+                     * · 记进 restore_failures ⇒ 写入 data_dir/restore-failures.json（可查询）
+                     * · **只跳过这一条**：其余源照常恢复
+                     * ```
+                     * 为什么不做成 panic 或整体失败：一条旧配置里的坏类
+                     * 不该让用户所有源都起不来（那正是本文件反复强调的
+                     * "单个源失败只跳过它自己"）。
+                     */
+                    if crate::csp::is_csp(api) {
+                        let ext_text = ext.as_deref().unwrap_or("");
+                        match crate::csp::provider::CspProvider::new(
+                            id.clone(),
+                            name.clone(),
+                            api,
+                            ext_text,
+                            categories.clone(),
+                        ) {
+                            Ok(p) => {
+                                registry.register(Arc::new(p));
+                                ok += 1;
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "csp 源 {id}（{api}）恢复失败（已跳过，其余源不受影响）: {e}"
+                                );
+                                restore_failures.push(crate::persist::RestoreFailure {
+                                    id: id.clone(),
+                                    api: api.clone(),
+                                    reason: e,
+                                });
+                            }
+                        }
+                    } else {
+                        match crate::tvbox::TvboxAppleCmsProvider::new(
+                            id.clone(),
+                            name.clone(),
+                            api,
+                            categories.clone(),
+                        ) {
+                            Ok(p) => {
+                                registry.register(Arc::new(
+                                    p.with_proxy(proxy.clone())
+                                        .with_parsers(parsers.clone()),
+                                ));
+                                ok += 1;
+                            }
+                            // 单个源失败只跳过它自己 —— 不影响其余源与内置插件
+                            Err(e) => log::warn!("TVBox 源 {id} 恢复失败（已跳过）: {e}"),
+                        }
                     }
-                    // 单个源失败只跳过它自己 —— 不影响其余源与内置插件
-                    Err(e) => log::warn!("TVBox 源 {id} 恢复失败（已跳过）: {e}"),
-                },
+                }
             }
         }
         if ok > 0 {
             log::info!("已同步恢复 {ok} 个第三方源");
+        }
+        /*
+         * ★ 把"哪些源没恢复起来 + 为什么"写出去（可查询）
+         *
+         * 为什么不是只打 warn 就完：日志用户看不到，而"我明明导入过的源
+         * 重启后没了"是必须能自查的事。写失败**不影响启动**（只是少一份报告）。
+         */
+        if !restore_failures.is_empty() {
+            if let Err(e) = crate::persist::write_restore_failures(&data_dir, &restore_failures) {
+                log::warn!("写 restore-failures.json 失败（不影响启动）: {e}");
+            }
         }
 
         /*

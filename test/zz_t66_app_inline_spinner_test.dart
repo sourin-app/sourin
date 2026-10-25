@@ -20,10 +20,10 @@
 // # 这 5 处是哪 5 处（2026-10-19 迁移时的实测清单）
 //
 // ```text
-//   danmaku_settings_dialog.dart:2132  16px  FilledButton.icon 的 icon 位
-//   danmaku_settings_dialog.dart:3702  14px  SwitchListTile 的 trailing 位
-//   danmaku_settings_dialog.dart:3930  16px  Row 里 if (s.loading)
-//   danmaku_settings_dialog.dart:4016  16px  FilledButton.icon 的 icon 位
+//   danmaku_settings_dialog.dart:2099  16px  FilledButton.icon 的 icon 位
+//   danmaku_settings_dialog.dart:3654  14px  SwitchListTile 的 trailing 位
+//   第 12 项迁移：原搜索行与搜索按钮两处不再属于行内小圈清单。
+//   独立搜索页改用在途态整行 LinearProgressIndicator，由下方独立断言守护。
 //   settings_page.dart:3821            14px  健康检测行内（color: colors.primary）
 // ```
 //
@@ -53,7 +53,7 @@ const List<String> kMigratedFiles = <String>[
 
 /// 每个文件应有的 AppInlineSpinner 处数（迁移时实测）
 const Map<String, int> kExpectedCount = <String, int>{
-  'lib/ui/widgets/danmaku_settings_dialog.dart': 4,
+  'lib/ui/widgets/danmaku_settings_dialog.dart': 2,
   'lib/ui/settings_page.dart': 1,
 };
 
@@ -131,7 +131,15 @@ String? _callBodyAt(String code, int start) {
 }
 
 void main() {
-  test('★★★ 迁移后的 5 处必须仍是 AppInlineSpinner（钉回退）', () {
+  test('搜索页在真实搜索在途态保留整行加载反馈且不回退灰圈', () {
+    final code = _codeOnly(File('lib/ui/danmaku_search_page.dart').readAsStringSync());
+    expect(RegExp(r'if\s*\(s\.searchLoading\s*\|\|\s*b\.loading\)\s*const\s+LinearProgressIndicator\(').hasMatch(code), isTrue,
+        reason: '第12项迁移的是加载反馈形态，不是删除反馈；必须由两渠道真实在途态驱动。�');
+    expect(RegExp(r'(?<![A-Za-z0-9_.])CircularProgressIndicator\(').hasMatch(code), isFalse,
+        reason: '独立搜索页不得退回未显式配色的灰圈。');
+  });
+
+  test('★★★ 现存 3 处行内小圈必须仍是 AppInlineSpinner（钉回退）', () {
     for (final path in kMigratedFiles) {
       final f = File(path);
       expect(f.existsSync(), isTrue,

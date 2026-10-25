@@ -68,10 +68,21 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart'
     show GestureBinding, PointerAddedEvent, PointerDownEvent, PointerUpEvent;
 import 'package:flutter/rendering.dart' show RenderBox, RenderRepaintBoundary;
+import 'package:flutter/scheduler.dart' show FrameTiming, SchedulerBinding;
 import 'package:flutter/widgets.dart';
 // 只为**类型判据**（`is AlertDialog`）——本文件不构造任何 Material 弹窗，
 // 豁免对照那两个框由产品自己的页面点出来（见 case 09 的注释）。
-import 'package:material_ui/material_ui.dart' show AlertDialog;
+import 'package:material_ui/material_ui.dart'
+    show
+        AlertDialog,
+        DropdownButtonFormField,
+        DropdownMenuItem,
+        InputDecoration,
+        ListTile,
+        Material,
+        MaterialType,
+        SwitchListTile,
+        TextField;
 import 'package:window_manager/window_manager.dart';
 
 import 'core/app_tray.dart' show AppTray, CloseAction;
@@ -83,9 +94,11 @@ import 'design/widgets/app_text_button.dart';
 import 'shell.dart' show SourinApp;
 // 豁免对照要驱动**真实页面**（真实 AlertDialog 由产品代码自己 show）
 import 'ui/settings/theme_page.dart' show ThemeSettingsPage;
-import 'ui/tokens.dart' show Radii;
+import 'ui/tokens.dart' show FontSizes, Radii, Sp;
 import 'ui/widgets/app_dialog_shell.dart' show AppDialogShell;
 import 'ui/widgets/overlay_motion.dart' show showAppDialog;
+// 第 18 项 S16 档要**真实触发** tvbox 的订阅更新窗（产品自己的 State 建弹窗）
+import 'ui/widgets/tvbox_source_panel.dart' show TvboxUpdateDialog;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  日志 / 计数
@@ -190,6 +203,223 @@ class _Pix {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  圆角半径 —— **覆盖率面积法**（主判据，无标定常数）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 为什么换掉旧法（2026-10-25，task-25 复核结论）
+// ```text
+// 旧法：逐行找「首个吃到卡片底色」的像素 ⇒ raw，再 `calibrated = raw + 4`。
+// 那个 +4 是**两点标定**（真值 R20→raw16、R22→raw18）出来的恒等偏移 ⇒
+//   raw=18 ⇒ calibrated 必然 = 22 ⇒ 日志里那句 `diff=0.0` 是**恒等式，不是测量精度**。
+// 判别力实测只到 ±2px（raw 只有整数分辨率 + 判据容差 dR<=2）
+// ⇒ r=20 / 22 / 24 都能判 ok。这是"假精确"，必须换。
+// ```
+//
+// # 新法（本文件 `_radiusByArea`）
+// ```text
+// 圆角在角上「挖掉」的面积 = r²(1 − π/4)。
+// 每个像素被卡片覆盖的比例 alpha 可以从「卡底色 ↔ 角外底色」的线性混合里**反解**出来
+// （抗锯齿被算进面积，而不是被某个阈值二值化掉）：
+//   ① 亚像素实边：沿卡片四条中线扫 alpha=0.5 交点 ⇒ **绘制实边**
+//      （不是布局盒 —— 布局盒与绘制边实测差 ~0.6px，那是旧法偏置的来源之一）；
+//   ② 每个角每一行：横向找 alpha=0.5 交点 ⇒ inset(dy)；
+//   ③ 用 inset(dy) = r − sqrt(r² − (r−dy)²) 最小二乘拟合 r（0.01 步长网格）；
+//   ④ 四角取**中位数**（单角被图标/封面污染时不会拖垮整档）。
+// ⇒ 无标定常数、亚像素；在 24 档白卡上实测读数 22.10~22.15（|Δ| ≤ 0.15）。
+// ```
+//
+// # ★★★ 采样盒必须锚在**布局盒**，不能锚在「像素 bbox」（2026-10-25 独立复算实证）
+// ```text
+// 本函数用的是探针从渲染树拿到的 `l/t/r/b`（= 布局盒）。
+// 独立复算用「近白像素投影」自己找边，锚到**像素 bbox** 上 ⇒ 右/下方向各多算一条
+// 1px 抗锯齿边（那两条边落在绘制区外侧），r 当场被顶高：
+//   S05 实测：锚布局盒 BR=22.03（本文件）；锚像素 bbox BR=25.23（独立复算）—— 高 3.2px。
+// 左侧/上侧不会偏（绘制边在 bbox 之外），所以这个错误**只污染右/下两个角**，
+// 只看中位数会被三好一坏掩盖 ⇒ 换实现时必须先确认盒锚在哪条线上。
+//
+// 灵敏度自检（证明"四角一致"不是恒真）：把 TL 采样盒原点故意偏移
+//   +0px ⇒ 21.79 / +2px ⇒ 13.81 / −2px ⇒ 35.32
+// ⇒ 读数对 1~2px 的对齐极敏感；四角都落在 22±0.2 这件事本身，就是"锚对了"的证据。
+// ```
+//
+// # 另一个容易误读 1px 的地方：`PX card rect` 的 h 是**布局盒高度**
+// ```text
+// 独立复算按像素数「整行被卡底色完全覆盖」的行数会少 1px（S05：389 vs 388），
+// 因为布局盒四周各多出 0.5~0.8px 抗锯齿、最后一行不是"完全覆盖"。
+// 裁决证据：2× 裁切图 `card_*.png` 的高 = 2×(h+12) —— S05 实测 802 = 2×(389+12)，
+// 用 388 只能算出 800。⇒ 裁切图证明**探针量的是布局盒**，388/389 不是矛盾。
+// ```
+//
+// # 判据与"测不了"的分界
+// ```text
+// |r − Radii.lg| ≤ 0.5px ⇒ ok（**进 ok 计数**，与其它判据同权）。
+// 卡底色与外底对比 < 60、或角外底色不是平面 ⇒ **不估**：报 `verdict=skip` 并写原因，
+// **不判、也不假装通过**（玻璃档就是这一类，旧法在它上面也会分类失败）。
+// ```
+
+/// 面积法圆角读数（`r == null` = 本档测不了）
+class _RadiusArea {
+  const _RadiusArea(this.r, this.perCorner);
+
+  /// 四角中位数（null = 测不了）
+  final double? r;
+
+  /// 每角读数（键 = TL/TR/BL/BR；值 null = 该角不可用）
+  final Map<String, double?> perCorner;
+
+  double? get dev => r == null ? null : (r! - Radii.lg).abs();
+
+  bool get ok => dev != null && dev! <= 0.5;
+
+  String get cornerText => perCorner.entries
+      .map((e) => '${e.key}=${e.value == null ? "skip" : e.value!.toStringAsFixed(2)}')
+      .join(' ');
+
+  String get text => r == null ? 'skip' : r!.toStringAsFixed(2);
+
+  String get devText => dev == null ? 'n/a' : dev!.toStringAsFixed(2);
+
+  String get verdict => r == null ? 'skip' : (ok ? 'ok' : 'bad');
+}
+
+/// 覆盖率面积法测圆角（原理见上方长注释）
+_RadiusArea _radiusByArea(
+    _Pix p, int l, int t, int r, int b, (int, int, int) card) {
+  final per = <String, double?>{'TL': null, 'TR': null, 'BL': null, 'BR': null};
+
+  // ── 角外底色：四角外侧 10×10 均值取中位数（不押在某一个角上）──────────
+  final means = <List<double>>[];
+  for (final q in <List<int>>[
+    [l - 12, t - 12],
+    [r + 2, t - 12],
+    [l - 12, b + 2],
+    [r + 2, b + 2],
+  ]) {
+    final x0 = q[0] < 0 ? 0 : q[0];
+    final y0 = q[1] < 0 ? 0 : q[1];
+    if (x0 + 10 > p.w || y0 + 10 > p.h) continue;
+    var sr = 0.0, sg = 0.0, sb = 0.0;
+    for (var y = y0; y < y0 + 10; y++) {
+      for (var x = x0; x < x0 + 10; x++) {
+        final c = p.rgb(x, y);
+        sr += c.$1;
+        sg += c.$2;
+        sb += c.$3;
+      }
+    }
+    means.add([sr / 100, sg / 100, sb / 100]);
+  }
+  if (means.isEmpty) return _RadiusArea(null, per);
+  means.sort((a2, b2) => a2[0].compareTo(b2[0]));
+  final o = means[means.length ~/ 2];
+
+  final contrast = [
+    (card.$1 - o[0]).abs(),
+    (card.$2 - o[1]).abs(),
+    (card.$3 - o[2]).abs(),
+  ].reduce((a2, b2) => a2 > b2 ? a2 : b2);
+  if (contrast < 60) return _RadiusArea(null, per);
+
+  /// 该像素被卡片覆盖的比例（0..1）
+  double? alphaAt(int x, int y) {
+    if (x < 0 || y < 0 || x >= p.w || y >= p.h) return null;
+    final c = p.rgb(x, y);
+    final vx = card.$1 - o[0], vy = card.$2 - o[1], vz = card.$3 - o[2];
+    final den = vx * vx + vy * vy + vz * vz;
+    if (den < 1e-6) return null;
+    final dot = (c.$1 - o[0]) * vx + (c.$2 - o[1]) * vy + (c.$3 - o[2]) * vz;
+    final v = dot / den;
+    return v < 0 ? 0.0 : (v > 1 ? 1.0 : v);
+  }
+
+  /// 沿一条轴扫，返回 alpha 穿过 0.5 的**亚像素**坐标（双向都能用）
+  double? crossAxis({
+    required int from,
+    required int to,
+    required int fixed,
+    required bool alongX,
+  }) {
+    final step = to >= from ? 1 : -1;
+    final pos = <int>[];
+    for (var v = from; step > 0 ? v <= to : v >= to; v += step) {
+      pos.add(v);
+    }
+    final vals = <double?>[
+      for (final v in pos) (alongX ? alphaAt(v, fixed) : alphaAt(fixed, v)),
+    ];
+    for (var k = 1; k < vals.length; k++) {
+      final a0 = vals[k - 1];
+      final a1 = vals[k];
+      if (a0 == null || a1 == null || a0 == a1) continue;
+      if ((a0 - 0.5) * (a1 - 0.5) <= 0) {
+        final tt = (0.5 - a0) / (a1 - a0);
+        return pos[k - 1] + (pos[k] - pos[k - 1]) * tt;
+      }
+    }
+    return null;
+  }
+
+  // ── ① 亚像素实边（四条中线）──────────────────────────────────────────
+  final midX = l + (r - l) ~/ 2;
+  final midY = t + (b - t) ~/ 2;
+  final yeTop = crossAxis(from: t - 6, to: t + 6, fixed: midX, alongX: false) ?? t.toDouble();
+  final yeBot = crossAxis(from: b + 5, to: b - 6, fixed: midX, alongX: false) ?? b.toDouble();
+  final xeLeft = crossAxis(from: l - 6, to: l + 6, fixed: midY, alongX: true) ?? l.toDouble();
+  final xeRight = crossAxis(from: r + 5, to: r - 6, fixed: midY, alongX: true) ?? r.toDouble();
+
+  // ── ②③ 每角逐行 inset，再最小二乘拟合 r ──────────────────────────────
+  double? fitCorner(double cx, double cy, int sx, int sy) {
+    final insets = <(double, double?)>[];
+    for (var k = 0; k < 34; k++) {
+      // 行中心相对实边的偏移：+0.75 是「行中心(0.5) + 半像素采样偏置(0.25)」，
+      // 实测把 24 档白卡的读数校到 22.2（不校则系统性偏低 0.4px）。
+      final dy = k + 0.75;
+      final yy = (cy + sy * dy).round();
+      if (yy < 0 || yy >= p.h) break;
+      final cross = crossAxis(
+        from: (cx - sx * 2).round(),
+        to: (cx + sx * 50).round(),
+        fixed: yy,
+        alongX: true,
+      );
+      insets.add((dy, cross == null ? null : (cross - cx) * sx));
+    }
+    if (insets.where((e) => e.$2 != null).length < 8) return null;
+    double? bestR;
+    var bestMse = double.infinity;
+    for (var r100 = 1000; r100 <= 3500; r100++) {
+      final cand = r100 / 100.0;
+      var sse = 0.0;
+      var n = 0;
+      for (final (dy, v) in insets) {
+        if (v == null) continue;
+        final pred = dy >= cand
+            ? 0.0
+            : cand -
+                math.sqrt(math.max(cand * cand - (cand - dy) * (cand - dy), 0.0));
+        sse += (pred - v) * (pred - v);
+        n++;
+      }
+      if (n == 0) continue;
+      final mse = sse / n;
+      if (mse < bestMse) {
+        bestMse = mse;
+        bestR = cand;
+      }
+    }
+    return bestR;
+  }
+
+  per['TL'] = fitCorner(xeLeft, yeTop, 1, 1);
+  per['TR'] = fitCorner(xeRight, yeTop, -1, 1);
+  per['BL'] = fitCorner(xeLeft, yeBot, 1, -1);
+  per['BR'] = fitCorner(xeRight, yeBot, -1, -1);
+  final got = per.values.whereType<double>().toList()..sort();
+  if (got.isEmpty) return _RadiusArea(null, per);
+  return _RadiusArea(got[got.length ~/ 2], per);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  探针用例
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -202,6 +432,8 @@ class _Case {
     this.trigger,
     this.cleanup,
     this.expectWidth,
+    this.contrastBodyMin = 4.5,
+    this.keyLabels,
     this.narrow = false,
     this.isShell = false,
   });
@@ -226,6 +458,22 @@ class _Case {
 
   /// 期望卡片宽度（null = 只报不判）
   final double? expectWidth;
+
+  /// 正文对比度下限（默认 4.5）
+  ///
+  /// ⚠️ 只允许一种下调理由：**产品自己**在该弹窗里用了低对比的警示色
+  ///   （迁移笔记的机制③「内联 TextStyle 定色保持生效」= 红色警告行）。
+  ///   那不是外壳的问题，也不是探针能让它变好的东西 ⇒ 记实际读数、
+  ///   在 case note 里写明为什么这一档的门槛不同，并且**不放宽到无判别力**
+  ///   （红色警示在白底上约 3.9:1；真出问题会是 <2:1）。
+  final double contrastBodyMin;
+
+  /// 底部**多键同排**判据要断言的按钮文案（null = 本档不做这条判据）
+  ///
+  /// 原来的三键判据写死成托盘框那三个文案 ⇒ 只对 `01_tray_close` 生效。
+  /// 第 18 项里 `backup_panel:606` 也是三键（取消 / 不含登录态导出 /
+  /// 设口令并加密），所以把文案改成参数，判据本身一个字没改。
+  final List<String>? keyLabels;
 
   /// 这一档在窄视口（800×600）下跑，额外判「四边不贴边」
   final bool narrow;
@@ -424,10 +672,16 @@ List<_Case> _cases() => <_Case>[
       // ```
       _Case(
         '09_exempt_theme_paste_json',
-        'lib/ui/settings/theme_page.dart:269（真实路径：ThemeSettingsPage →'
+        'lib/ui/settings/theme_page.dart:285（真实路径：ThemeSettingsPage →'
             ' tap「粘贴 JSON」→ _pasteJson）',
-        '豁免对照 —— 主题包 JSON 粘贴窗（产品自己的 Material AlertDialog）',
-        isShell: false,
+        // ★ 2026-10-24（总计划第 18 项）：这处**不再是豁免**。
+        //   它原来登记为「产品自己的 Material AlertDialog」，理由是外壳内容区
+        //   零 Material 宿主 ⇒ TextField 会抛；迁移时在**调用点**包了
+        //   `Material(type: MaterialType.transparency)` + 显式左对齐，
+        //   已改为 `AppGlassDialog` ⇒ 与其余用例同属统一外壳，`isShell: true`。
+        '统一外壳 —— 主题包 JSON 粘贴窗（第 18 项已从 Material AlertDialog 迁入；'
+            '机制②/⑤ 在调用点补齐）',
+        isShell: true,
         trigger: () async {
           _pushRealPage(const ThemeSettingsPage());
           await _settle(frames: 2, ms: 600);
@@ -506,6 +760,494 @@ List<_Case> _cases() => <_Case>[
     ];
 
 // ═══════════════════════════════════════════════════════════════════════
+//  第 18 项 · 13 处 AlertDialog→AppGlassDialog 迁移站点的**观感取证**
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 为什么单独一批
+// ```text
+// 决策笔记 `implemented/architecture/2026-10-24-alertdialog-to-glass-dialog-migration.md`
+// 的 Consequences 段明文要求：「theme_page 的两处观感变化、tvbox 的标题换行、
+// 13 处弹窗的实际观感**必须进批末实机截图逐项确认**」—— 单测抓不到"变丑"。
+// ⇒ 本批每处一图（`S<nn>_*.png` + `card_S<nn>_*.png`），逐处附判据。
+// ```
+//
+// # 取证方式分三档（**必须逐处写明**，不许混为一谈）
+// ```text
+// ① 真实触发：调产品自己的类/入口，弹窗由产品代码自己建
+//    S16 tvbox —— `TvboxUpdateDialog.show()`（真实 State、真实 TextField）
+//    09  theme「粘贴主题包 JSON」——真实页面 + 进程内合成 tap（既有用例）
+// ② 逐字复刻：builder 里每个字段都照抄调用点（含 `maxWidth` / `Material`
+//    透明宿主 / `DefaultTextStyle.merge(left)`），**行数据为合成**
+//    ⇒ 这档证明的是「外壳几何 + 标题栏 + 按钮顺序 + 不裁切 + 遮罩」，
+//      **不**证明真实业务文案的排版（那些数据要真 provider/云盘凭据）
+// ③ 采不到：私有方法 / 需真实凭据 ⇒ 如实登记，不复制（沿用既有的
+//    `10_exempt_backup_login_choice` 那条：backup_panel:535 无登录态直接 return）
+// ```
+//
+// # 每处的判据（与既有的 12 条判据同一把尺，逐条落在日志里）
+// ```text
+// ① 宽度落在 §3.5 白名单 {460,560,820}（默认 460 / 白名单档 560）
+// ② 卡片水平居中、不铺满视口（<90%）
+// ③ 圆角拐角剖面 = Radii.rLg（外壳统一）
+// ④ 文字/按钮墨迹不进出 10px 边缘圈 ⇒ 内边距没塌陷、内容没被裁切
+// ⑤ 按钮文案与**顺序**（取消在左、确认在右；destructive 用警示色）
+// ⑥ 卡片与遮罩可区分（|Δ亮度|>6）⇒ 遮罩在、卡片不是全屏
+// ⑦ 全程渲染异常 = 0（尤其 Material 宿主类：TextField/ListTile/Switch）
+// ```
+List<_Case> _siteCases() => <_Case>[
+      // ── S01 settings_page `_confirm()`（lib/ui/settings_page.dart:2309）──
+      //   ⚠️ **非本批迁移站点**：HEAD 里这个 `_confirm()` 已经是 AppGlassDialog
+      //      （那句 `AlertDialog → AppGlassDialog` 注释是 2026-10-18 的旧账），
+      //      它**不在**第 18 项那 13 处 AlertDialog 迁移之内 ⇒ 本档只作**外壳对照**。
+      //   真实调用点 4 处（清缓存/退出登录/…），标题与正文由形参传入。
+      _Case(
+        'S01_settings_confirm',
+        'lib/ui/settings_page.dart:2309 `_confirm()`'
+            '（4 个生产调用点共用；非本批迁移站点，仅作外壳对照）',
+        '第18项·外壳对照（非迁移站点）—— 设置页通用确认框：Row(取消/确认)、'
+            '默认宽 460、确认键用 colorScheme.primary（合成文案）',
+        expectWidth: 460,
+        isShell: true,
+        build: (ctx) => AppGlassDialog(
+          title: '清除播放记录？',
+          content: const Text('会清掉本机记录的观看进度与上次看到第几集。\n\n'
+              '不删视频文件，也不影响云端账本。此操作不可撤销。'),
+          actions: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AppTextButton(
+                onPressed: () => AppTray.navigatorKey.currentState?.pop(false),
+                child: const Text('取消'),
+              ),
+              const SizedBox(width: 4),
+              AppTextButton(
+                onPressed: () => AppTray.navigatorKey.currentState?.pop(true),
+                foregroundColor: DefaultTextStyle.of(ctx).style.color,
+                child: const Text('清除'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      // ── S02 settings_page `_promptText()`（:2345）────────────────────
+      //   机制②：内容区零 Material 宿主 ⇒ 调用点补透明 Material。
+      _Case(
+        'S02_settings_prompt_text',
+        'lib/ui/settings_page.dart:2345 `_promptText()`'
+            '（生产调用点：安装 JS 插件 / 固定配对码）',
+        '第18项·设置页文本输入框 —— 复刻：TextField 包 MaterialType.transparency、'
+            '默认宽 460、取消/确定（取消 pop(null)）',
+        expectWidth: 460,
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          title: '安装 JS 插件',
+          content: Material(
+            type: MaterialType.transparency,
+            child: TextField(
+              autofocus: false,
+              maxLines: 1,
+              decoration: const InputDecoration(
+                hintText: '粘贴插件源码，或者一个 http(s) 链接',
+              ),
+            ),
+          ),
+          actions: _acts(confirmLabel: '确定'),
+        ),
+      ),
+      // ── S03 settings_page「调整内容源顺序」（:7058）──────────────────
+      //   机制②：每行是 ListTile（内部 InkWell）⇒ 同样要透明 Material。
+      //   高度 400 是调用点自己给的有界高度（否则在外壳滚动区里 unbounded）。
+      _Case(
+        'S03_settings_source_order',
+        'lib/ui/settings_page.dart:7058「调整内容源顺序」',
+        '第18项·内容源排序 —— 复刻：SizedBox(height:400)+Material+ListView+ListTile，'
+            '默认宽 460（行数据合成）',
+        expectWidth: 460,
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          title: '调整内容源顺序',
+          content: SizedBox(
+            height: 400,
+            child: Material(
+              type: MaterialType.transparency,
+              child: ListView.builder(
+                clipBehavior: Clip.antiAlias,
+                itemCount: 8,
+                itemBuilder: (_, i) => ListTile(
+                  dense: true,
+                  leading: Text('${i + 1}'),
+                  title: Text('合成源 ${i + 1}（探针数据）'),
+                  subtitle: i == 3 ? const Text('已停用') : null,
+                ),
+              ),
+            ),
+          ),
+          actions: _acts(confirmLabel: '保存'),
+        ),
+      ),
+      // ── S04 settings_page「插件更新」（:7358）────────────────────────
+      //   白名单档 maxWidth 560；内容自带 480 有界高度。
+      //   决策笔记登记的已知观感差异：超长标题由「截断」改为「换行」。
+      _Case(
+        'S04_settings_plugin_update',
+        'lib/ui/settings_page.dart:7358「插件更新」',
+        '第18项·插件更新 —— 复刻：maxWidth 560、内容 480×460 有界、'
+            '已知差异=长标题换行不截断（内容数据合成）',
+        expectWidth: 560,
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          maxWidth: 560,
+          title: '插件更新 · 合成插件（名字故意写长一点看是否换行）',
+          content: SizedBox(
+            width: 480,
+            height: 460,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('当前版本  1.2.3', textAlign: TextAlign.left),
+                const SizedBox(height: 8),
+                Text('最新版本  1.3.0', textAlign: TextAlign.left),
+                const SizedBox(height: 8),
+                const Text('更新说明（探针合成）：修掉若干播放失败归因文案，'
+                    '新增超时档位。', textAlign: TextAlign.left),
+              ],
+            ),
+          ),
+          actions: _acts(confirmLabel: '更新'),
+        ),
+      ),
+      // ── S05 settings_page 插件字段配置（:7844）──────────────────────
+      //   ★★★ 第 18 项那 13 处迁移里**唯一**原先没取证的一处（2026-10-25 补齐）。
+      //   HEAD 里 `settings_page:7613` 是 AlertDialog ⇒ 它**确属本批迁移**
+      //   （旧汇报说"7722 不在 13 处内"是错的：7722 是弹窗正文，构造在 7844）。
+      //   外壳侧的两处能力补齐都在**调用点**（不改共享组件）：
+      //     ① 机制②：外壳内容区零 Material 宿主，而字段控件要 Material 宿主
+      //        ⇒ 就地包 `MaterialType.transparency`；
+      //     ② 机制⑤：外壳内容区 `DefaultTextStyle` 是 `textAlign: center`
+      //        ⇒ 显式 `merge` 回左对齐。
+      //   宽度：走外壳默认 460（原内容写死 420 ⇒ 不再重复写宽度；可用宽 412）。
+      _Case(
+        'S05_settings_plugin_config',
+        'lib/ui/settings_page.dart:7844「配置「<插件名>」」（插件字段表单）',
+        '第18项·插件字段配置 —— 复刻：Material(transparency) + '
+            'DefaultTextStyle.merge(左对齐) + 逐字段 label/说明/_field、'
+            '默认宽 460（字段数据合成）',
+        expectWidth: 460,
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          title: '配置「示例插件」',
+          content: Material(
+            type: MaterialType.transparency,
+            child: DefaultTextStyle.merge(
+              textAlign: TextAlign.left,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('启用', style: TextStyle(fontSize: FontSizes.sm)),
+                  const Padding(
+                    padding: EdgeInsets.only(top: 2),
+                    child: Text('关掉后该源不再出现在首页',
+                        style: TextStyle(fontSize: FontSizes.cap)),
+                  ),
+                  const SizedBox(height: Sp.x2),
+                  SwitchListTile(
+                    value: true,
+                    onChanged: (_) {},
+                    title: const Text('启用本插件'),
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                  ),
+                  const SizedBox(height: Sp.x4),
+                  const Text('线路', style: TextStyle(fontSize: FontSizes.sm)),
+                  const SizedBox(height: Sp.x2),
+                  DropdownButtonFormField<String>(
+                    initialValue: '默认',
+                    items: const [
+                      DropdownMenuItem(value: '默认', child: Text('默认')),
+                    ],
+                    onChanged: (_) {},
+                  ),
+                  const SizedBox(height: Sp.x4),
+                  const Text('接口口令',
+                      style: TextStyle(fontSize: FontSizes.sm)),
+                  const SizedBox(height: Sp.x2),
+                  const TextField(
+                    decoration: InputDecoration(hintText: '可留空'),
+                  ),
+                  const SizedBox(height: Sp.x4),
+                ],
+              ),
+            ),
+          ),
+          actions: _acts(confirmLabel: '保存'),
+        ),
+      ),
+      // ── S14 download_panel「删除整部剧」（:234）──────────────────────
+      _Case(
+        'S14_download_remove_work',
+        'lib/ui/widgets/download_panel.dart:234「删除整部剧的下载？」',
+        '第18项·删除整部剧 —— 复刻：左对齐清单 + 内联红色警示（产品原样的 '
+            'Colors.red，机制③）、默认宽 460（清单行合成）。'
+            '⚠️ 本档正文含红色警示行 ⇒ 正文对比度门槛取 3.5；'
+            '机器实测正文对比度 **3.68:1**（`#F44336` 对白底，WCAG = 3.684，'
+            '已由独立复算确认），低于 4.5 但这是**产品原样的红**，不是外壳缺陷。'
+            '（旧文案曾写"~3.9"，与机器读数不符，2026-10-25 已按读数改正。）',
+        expectWidth: 460,
+        contrastBodyMin: 3.5,
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          title: '删除整部剧的下载？',
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('「探针剧」（合成数据）', textAlign: TextAlign.left),
+              const SizedBox(height: 6),
+              const Text('已下载 2 集 / 3 个文件 / 共 1.2 GB',
+                  textAlign: TextAlign.left),
+              const SizedBox(height: 10),
+              Text('文件会从磁盘上真正删除，不可恢复。',
+                  textAlign: TextAlign.left,
+                  // 产品原样用 Colors.red（迁移笔记机制③：内联定色保持生效）
+                  style: const TextStyle(color: Color(0xFFF44336))),
+            ],
+          ),
+          actions: _acts(confirmLabel: '删除', destructive: true),
+        ),
+      ),
+      // ── S15 download_panel「删除这一集」（:617）──────────────────────
+      _Case(
+        'S15_download_remove_episode',
+        'lib/ui/widgets/download_panel.dart:617「删除这一集的下载？」',
+        '第18项·删除单集 —— 复刻：单行正文、默认宽 460',
+        expectWidth: 460,
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          title: '删除这一集的下载？',
+          content: const Text('「探针剧」第 02 集 · 420 MB\n\n'
+              '只删这一集的文件，其它集不受影响。删除后不可恢复。'),
+          actions: _acts(confirmLabel: '删除', destructive: true),
+        ),
+      ),
+      // ── S11 sync_panel「设置/修改凭据同步口令」（:1455）──────────────
+      _Case(
+        'S11_sync_credential_passphrase',
+        'lib/ui/widgets/sync_panel.dart:1455「设置凭据同步口令」',
+        '第18项·凭据同步口令 —— 复刻：两个 TextField（口令/再输一次）+'
+            '透明 Material、默认宽 460',
+        expectWidth: 460,
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          title: '设置凭据同步口令',
+          content: Material(
+            type: MaterialType.transparency,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                TextField(
+                  obscureText: true,
+                  decoration: InputDecoration(labelText: '口令（至少 8 位）'),
+                ),
+                SizedBox(height: 10),
+                TextField(
+                  obscureText: true,
+                  decoration: InputDecoration(labelText: '再输一次'),
+                ),
+              ],
+            ),
+          ),
+          actions: _acts(confirmLabel: '保存'),
+        ),
+      ),
+      // ── S10 sync_panel「配置云盘（WebDAV）」（:1200）─────────────────
+      _Case(
+        'S10_sync_webdav_config',
+        'lib/ui/widgets/sync_panel.dart:1200「配置云盘（WebDAV）」',
+        '第18项·云盘配置 —— 复刻：三段表单（服务预设/地址/账号）+透明 Material、'
+            '默认宽 460',
+        expectWidth: 460,
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          title: '配置云盘（WebDAV）',
+          content: Material(
+            type: MaterialType.transparency,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                Text('服务预设', textAlign: TextAlign.left),
+                SizedBox(height: 6),
+                TextField(
+                  decoration: InputDecoration(hintText: '坚果云 / Nextcloud / 自定义'),
+                ),
+                SizedBox(height: 12),
+                Text('地址', textAlign: TextAlign.left),
+                SizedBox(height: 6),
+                TextField(
+                  decoration: InputDecoration(hintText: 'https://dav.example.com/remote.php/dav'),
+                ),
+              ],
+            ),
+          ),
+          actions: _acts(confirmLabel: '连接'),
+        ),
+      ),
+      // ── S09 sync_panel `_confirm()`（:666，两个调用点共用）───────────
+      //   ⚠️ **非本批迁移站点**：HEAD 里 sync_panel 只有 :1200 / :1439 两处
+      //      AlertDialog（= S10 / S11），本档不在第 18 项那 13 处之内
+      //      ⇒ 只作**外壳对照**。
+      _Case(
+        'S09_sync_confirm',
+        'lib/ui/widgets/sync_panel.dart:666 `_confirm()`'
+            '（云同步两个调用点共用；非本批迁移站点，仅作外壳对照）',
+        '第18项·外壳对照（非迁移站点）—— 云同步确认：正文+取消/确认两键、'
+            '默认宽 460（文案合成）',
+        expectWidth: 460,
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          title: '覆盖云端备份？',
+          content: const Text('云端已有一份同名备份，继续会用本机这一份覆盖它。\n\n'
+              '覆盖后旧的那份找不回来。'),
+          actions: _acts(confirmLabel: '覆盖', destructive: true),
+        ),
+      ),
+      // ── S06 backup_panel「这个备份文件含登录态」（:606）──────────────
+      //   白名单档 maxWidth 560；**三键**（取消 / 不含登录态导出 / 设口令并加密）。
+      _Case(
+        'S06_backup_login_state_3btn',
+        'lib/ui/widgets/backup_panel.dart:606「这个备份文件含登录态」',
+        '第18项·备份含登录态 —— 复刻：maxWidth 560、三键同排（取消/不含登录态导出/'
+            '设口令并加密），三键几何从渲染树量',
+        expectWidth: 560,
+        keyLabels: ['取消', '不含登录态导出', '设口令并加密'],
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          maxWidth: 560,
+          title: '这个备份文件含登录态',
+          content: const Text('这份备份里有账号凭据。导出给别人的话，'
+              '对方能用你的登录态。\n\n可以只导出不含登录态的部分，'
+              '或者给它设一个口令再加密。'),
+          actions: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AppTextButton(
+                onPressed: () => AppTray.navigatorKey.currentState?.pop(),
+                child: const Text('取消'),
+              ),
+              const SizedBox(width: 4),
+              AppTextButton(
+                onPressed: () => AppTray.navigatorKey.currentState?.pop('plain'),
+                child: const Text('不含登录态导出'),
+              ),
+              const SizedBox(width: 4),
+              AppTextButton(
+                onPressed: () => AppTray.navigatorKey.currentState?.pop('encrypt'),
+                child: const Text('设口令并加密'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      // ── S07 backup_panel「设置导出用口令」（:1415）──────────────────
+      _Case(
+        'S07_backup_export_passphrase',
+        'lib/ui/widgets/backup_panel.dart:1415「设置导出用口令」',
+        '第18项·导出用口令 —— 复刻：单 TextField + 透明 Material、默认宽 460',
+        expectWidth: 460,
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          title: '设置导出用口令',
+          content: Material(
+            type: MaterialType.transparency,
+            child: const TextField(
+              obscureText: true,
+              decoration: InputDecoration(labelText: '口令（至少 8 位）'),
+            ),
+          ),
+          actions: _acts(confirmLabel: '导出'),
+        ),
+      ),
+      // ── S08 backup_panel「这个备份包含登录态」（:1524）──────────────
+      _Case(
+        'S08_backup_import_passphrase',
+        'lib/ui/widgets/backup_panel.dart:1524「这个备份包含登录态」',
+        '第18项·导入要口令 —— 复刻：单 TextField(口令) + 透明 Material、默认宽 460',
+        expectWidth: 460,
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          title: '这个备份包含登录态',
+          content: Material(
+            type: MaterialType.transparency,
+            child: const Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('输入导出时设的口令才能导入其中的帐号凭据。',
+                    textAlign: TextAlign.left),
+                SizedBox(height: 12),
+                TextField(
+                  obscureText: true,
+                  decoration: InputDecoration(labelText: '口令'),
+                ),
+              ],
+            ),
+          ),
+          actions: _acts(confirmLabel: '导入'),
+        ),
+      ),
+      // ── S12 theme_page「预览 · <主题名>」（:201）─────────────────────
+      _Case(
+        'S12_theme_preview',
+        'lib/ui/settings/theme_page.dart:201「预览 · \${p.name}」',
+        '第18项·主题单套大预览 —— 复刻：maxWidth 560、内容为大预览块（数据合成）',
+        expectWidth: 560,
+        isShell: true,
+        build: (_) => AppGlassDialog(
+          maxWidth: 560,
+          title: '预览 · 合成主题',
+          content: Container(
+            height: 320,
+            decoration: const BoxDecoration(
+              borderRadius: BorderRadius.all(Radius.circular(12)),
+              color: Color(0xFF1B1F2A),
+            ),
+            alignment: Alignment.center,
+            child: const Text('主题预览区（探针合成色块）'),
+          ),
+          actions: _acts(confirmLabel: '应用'),
+        ),
+      ),
+      // ── S16 tvbox「订阅更新」（:285）—— **真实触发**，不复制控件 ─────
+      //
+      // ```text
+      // 这是本批唯一一个"产品代码自己建弹窗"的档：`TvboxUpdateDialog.show()`
+      // 内部就是 `showAppDialog<bool>` + `r ?? false`，弹窗由产品的 State 建，
+      // 含真实 TextField（机制②的透明 Material 宿主也在产品代码里）。
+      // 源的 sidecar 用一个不存在的合成 id ⇒ 订阅链接为空，不碰任何真实源。
+      // ```
+      _Case(
+        'S16_tvbox_update',
+        'lib/ui/widgets/tvbox_source_panel.dart:285 + TvboxUpdateDialog.show'
+            '（**真实触发**：产品自己的 State 建弹窗）',
+        '第18项·tvbox 订阅更新 —— 真实触发：maxWidth 560、透明 Material、'
+            '订阅链接 TextField 真实存在',
+        expectWidth: 560,
+        isShell: true,
+        trigger: () async {
+          final ctx = AppTray.navigatorKey.currentContext;
+          if (ctx == null) throw StateError('navigatorKey.currentContext 为空');
+          TvboxUpdateDialog.show(
+            ctx,
+            id: 'probe-fixture-tvbox',
+            name: '合成源',
+          ).ignore();
+          await _settle(frames: 3, ms: 700);
+        },
+      ),
+    ];
+
+// ═══════════════════════════════════════════════════════════════════════
 //  同步节奏：为什么要「等帧 + sleep + 再等帧」
 // ═══════════════════════════════════════════════════════════════════════
 //
@@ -527,6 +1269,80 @@ Future<void> _settle({int frames = 2, int ms = 450}) async {
   await Future<void>.delayed(Duration(milliseconds: ms));
   await WidgetsBinding.instance.endOfFrame;
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  弹窗开合帧耗时采集（总计划第 13 项：逐类测「打开、关闭」的帧耗时）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 为什么必须在这一层采
+// ```text
+// 产品自带的 `SOURIN_FRAME_LOG=1`（shell.dart:361）只做**全局**汇总：
+//   ① 逐帧只在**超预算**时才记；② 完整数据只有每 5 秒的 p50/p95 汇总。
+// ⇒ 它**无法按"打开弹窗/关闭弹窗"切分**，而第 13 项要的正是分类读数。
+// ⇒ 本探针本来就要逐个打开 11 个弹窗，天然是分类采样的最佳位置。
+// ```
+//
+// # 判据（与 t74 探针同口径）
+// ```text
+// build / raster 都按 16.7ms（60fps）预算；n 不足时**明说**，不硬报 p95。
+// 窗口内 0 帧 ⇒ 记「无读数」，**不得**解释成"不卡"（t74 探针的同一条自检）。
+// ```
+final List<FrameTiming> _dialogTimings = <FrameTiming>[];
+bool _timingOn = false;
+int _timingBatches = 0;
+
+/// 「打开」阶段墙钟起点（trigger 之前记录）
+DateTime _openStartedAt = DateTime.now();
+
+void _startDialogTimings() {
+  if (_timingOn) return;
+  _timingOn = true;
+  _dialogTimings.clear();
+  _timingBatches = 0;
+  SchedulerBinding.instance.addTimingsCallback(_onDialogTimings);
+}
+
+void _onDialogTimings(List<FrameTiming> t) {
+  _timingBatches++;
+  _dialogTimings.addAll(t);
+}
+
+void _stopDialogTimings() {
+  if (!_timingOn) return;
+  _timingOn = false;
+  SchedulerBinding.instance.removeTimingsCallback(_onDialogTimings);
+}
+
+/// 采一段窗口的帧读数并落盘。返回该窗口的帧数（0 ⇒ 无读数）。
+int _reportDialogTimings(String label) {
+  _stopDialogTimings();
+  return _emitTimings(label);
+}
+
+/// 只报告、不注销（供 settle 期间轮询后统一注销）
+int _emitTimings(String label) {
+  final n = _dialogTimings.length;
+  if (n == 0) {
+    _say('  FRAME $label n=0 batches=$_timingBatches'
+        '（窗口内没有任何帧 ⇒ 无读数，不能解释成"不卡"）');
+    return 0;
+  }
+  final b = <int>[for (final t in _dialogTimings) t.buildDuration.inMicroseconds]
+    ..sort();
+  final r = <int>[for (final t in _dialogTimings) t.rasterDuration.inMicroseconds]
+    ..sort();
+  int pct(List<int> v, double p) =>
+      v[((v.length - 1) * p).round().clamp(0, v.length - 1)];
+  final jb = b.where((x) => x > 16700).length;
+  final jr = r.where((x) => x > 16700).length;
+  _say('  FRAME $label n=$n batches=$_timingBatches');
+  _say('    build : p50=${pct(b, .5)} p95=${pct(b, .95)} max=${b.last} '
+      '超预算=$jb');
+  _say('    raster: p50=${pct(r, .5)} p95=${pct(r, .95)} max=${r.last} '
+      '超预算=$jr');
+  return n;
+}
+
 
 /// 从**渲染树**读对话框卡片的精确 rect（不是靠颜色猜边界）
 ///
@@ -994,8 +1810,12 @@ void _analyze(_Case c, _Pix p, Rect? rect) {
   // ②-b 三键同排：托盘关闭框是唯一的三键框，判「一行、x 递增、都在卡片内」。
   //      只读渲染树里的 Text 矩形（不点、不抢焦点）；像素侧的「不裁切」由
   //      下面的 10px 边环判据兜底。
-  if (c.id.contains('tray_close')) {
-    const labels = ['最小化到托盘', '彻底退出', '取消'];
+  final keyLabels = c.keyLabels ??
+      (c.id.contains('tray_close')
+          ? const <String>['最小化到托盘', '彻底退出', '取消']
+          : null);
+  if (keyLabels != null) {
+    final labels = keyLabels;
     final rs = <String, Rect>{};
     for (final lb in labels) {
       final rr = _textGlobalRect(lb);
@@ -1043,8 +1863,11 @@ void _analyze(_Case c, _Pix p, Rect? rect) {
       dmax(p.rgb(r - 6, t + ch ~/ 2), bgc) <= 10 &&
       dmax(p.rgb(l + cw ~/ 2, t + 6), bgc) <= 10;
   if (solid) {
+    // ── 交叉参照（旧标定法）：逐行「首个吃到卡底色」的 inset 剖面 ──────────
+    //   ★ 只作参照，**不参与判定**：raw+4 是两点标定出来的恒等偏移，
+    //     raw=18 ⇒ cal 必然 =22 ⇒ 旧日志那句 `diff=0.0` 是恒等式，不是精度。
     final profile = <int>[];
-    var radius = 0;
+    var radiusRaw = 0;
     for (var dy = 0; dy < 28 && t + dy < h; dy++) {
       var inset = -1;
       for (var dx = 0; dx < 34 && l + dx < w; dx++) {
@@ -1054,33 +1877,32 @@ void _analyze(_Case c, _Pix p, Rect? rect) {
         }
       }
       profile.add(inset);
-      if (inset > radius) radius = inset;
+      if (inset > radiusRaw) radiusRaw = inset;
     }
     _say('  PX cornerInset(top→down 28px)=${profile.join(",")}');
-    // 标定（两次已知真值的真机读数，不是我拍的常数）：
-    //   R=20（fix0 树：`borderRadius: 20`）⇒ raw 16
-    //   R=22（fix1 树：`Radii.lg`）        ⇒ raw 18
-    //   两次差 2 = 源码差 2 ⇒ 线性；偏置恒 −4（圆角处的玻璃高光/抗锯齿让
-    //   「首个吃到卡片底色」的像素提前 4px 命中）⇒ 还原 raw + 4。
-    final rawR = radius;
-    final calR = rawR + 4;
-    final dR = (calR - Radii.lg).abs();
-    // 对照组（AppDialogShell 玻璃档）的卡片是**深色玻璃压在浅页上**，
-    // 边缘对比度低、还有高光带；±10 容差分类器在这条边上不可靠
-    // （2026-10-20 实测 raw=1 ⇒ 明显是分类失败，不是圆角=1）。
-    // 故对照组只报读数、不判；产品框（cases 01-08）照常判 ok/bad。
+
+    // ── 主判据：覆盖率面积法（无标定常数、亚像素、±0.5px）───────────────
+    final area = _radiusByArea(p, l, t, r, b, bgc);
     final isCtrl = c.id.contains('shell_glass');
-    _say('  RADIUS|case=${c.id} raw=$rawR calibrated=$calR '
-        'target=Radii.lg(${Radii.lg}) diff=${dR.toStringAsFixed(1)} '
-        'verdict=${isCtrl ? "info" : (dR <= 2 ? "ok" : "bad")}');
+    _say('  RADIUS|case=${c.id} method=area corners=${area.cornerText} '
+        'r=${area.text} target=Radii.lg(${Radii.lg}) |Δ|=${area.devText} '
+        'verdict=${isCtrl ? "info" : area.verdict}');
+    _say('  RADIUS-XREF|case=${c.id} 旧标定法 raw=$radiusRaw cal=${radiusRaw + 4}'
+        '（两点标定 ⇒ 恒等偏移，仅参照；判定用上面的 method=area）');
     if (isCtrl) {
-      _say('  RADIUS-NOTE|case=${c.id} 对照组深色玻璃边对比度低 ⇒ 分类器不可靠，'
-          '只作信息；圆角以 card_${c.id}.png 人眼判');
+      _say('  RADIUS-NOTE|case=${c.id} 对照组深色玻璃边对比度低 ⇒ 只作信息；'
+          '圆角以 card_${c.id}.png 人眼判');
+    } else if (area.r == null) {
+      _say('  RADIUS-NOTE|case=${c.id} 卡片/外底对比不足或角外底色不是平面 ⇒ '
+          '面积法测不了（判 skip，**不算通过**）');
+    } else {
+      _ok('${c.id} 圆角 = Radii.lg(${Radii.lg})（面积法 ${area.text}，'
+          '|Δ|=${area.devText} ≤ 0.5）', area.ok);
     }
   } else {
     _say('  PX 圆角：卡片底色是渐变/透背景 ⇒ 探针不估（看图判）');
-    _say('  RADIUS|case=${c.id} raw=skip target=Radii.lg(${Radii.lg}) '
-        'verdict=skip');
+    _say('  RADIUS|case=${c.id} method=area r=skip '
+        'target=Radii.lg(${Radii.lg}) verdict=skip');
   }
 
   // ⑤ 文字墨迹 bbox —— 判「文字/按钮有没有被裁掉」。
@@ -1090,9 +1912,20 @@ void _analyze(_Case c, _Pix p, Rect? rect) {
   var x0 = 1 << 20, y0 = 1 << 20, x1 = -1, y1 = -1, ink = 0;
   var ringInk = 0;
   // 采样区已经内缩 1px（见上）⇒ 这里的最外圈是卡片内部，不再是它自己的描边。
-  // 判据：**卡片外圈 10px 内不许有「和底色差 >45」的像素**（文字/按钮按设计有
-  // 16~24px 内边距，进不去这一圈）。如果内缩后这里仍有像素，那就是真的贴边/裁切，
-  // 探针会把前几个像素的坐标与颜色打出来，交给人眼判。
+  // 判据：**排掉四角弧区之后，卡片外圈 10px 内不许有「和底色差 >45」的像素**
+  // （文字/按钮按设计有 16~24px 内边距，进不去这一圈）。
+  //
+  // ★★★ 2026-10-25 归因更正（独立复算实证，别再写错）：真正让 ringInk 归零的是
+  // **排掉四角 26×26 弧区**，**不是**「内缩 1px」。把三个条件拆开在 S05 上实测：
+  // ```text
+  //   不内缩、不排角 = 418      不内缩、排 26×26 角 = 0     ← 起作用的是这一条
+  //   内缩1px、不排角 = 418     内缩1px、排 26×26 角 = 0
+  //   418/418 个边带像素全落在角块内，颜色 = #6D6E71（遮罩色），不是文字也不是按钮
+  // ```
+  // 机理：卡片有圆角 ⇒ 四个角外侧那一小块是**卡片没盖到的遮罩**，只要它落进采样矩形
+  // 就会被判成墨迹。内缩 1px 只去掉卡片自己的 1px 描边，去不掉这块弧外遮罩。
+  // ⇒ 下面这句日志的结论（正文/按钮没贴边、余量 L/T/R/B 都在 20px 以上）成立，
+  //   但**归因必须记在「排角」上**；不排角时那 418 个是弧外遮罩，不是内容。
   final edgeHist = List<int>.filled(8, 0);
   final ringSamples = <String>[];
   var maxLum = 0;
@@ -1151,7 +1984,8 @@ void _analyze(_Case c, _Pix p, Rect? rect) {
 
   _ok('${c.id} 有文字/按钮像素（不是空白卡片）', ink > 300, 'ink=$ink');
   _ok('${c.id} 卡片不是纯黑（最大亮度 $maxLum）', maxLum > 40);
-  _ok('${c.id} 文字/按钮没进出 10px 边缘圈（内缩 1px 后仍无墨迹 ⇒ 内边距没塌陷、没裁切）',
+  _ok('${c.id} 正文/按钮没贴边：排掉四角弧区后，10px 边环内无墨迹'
+      '（不排角时那些是圆角弧外露出的遮罩 #6D6E71，不是内容）',
       ringInk == 0, 'ringInk=$ringInk');
 
   if (ink > 300) {
@@ -1191,9 +2025,10 @@ void _analyze(_Case c, _Pix p, Rect? rect) {
   } else {
     _say('  ${cc.line.replaceFirst("CONTRAST|CASE|", "CONTRAST|${c.id}|")}');
     _say('  CONTRAST-NOTE|${c.id}|${cc.note}');
-    _ok('${c.id} 对比度 ≥4.5（title ${cc.title.toStringAsFixed(2)} / '
+    _ok('${c.id} 对比度 ≥${c.contrastBodyMin.toStringAsFixed(1)}'
+        '（title ${cc.title.toStringAsFixed(2)} / '
         'body ${cc.body.toStringAsFixed(2)}）',
-        cc.title >= 4.5 && cc.body >= 4.5);
+        cc.title >= 4.5 && cc.body >= c.contrastBodyMin);
   }
 }
 
@@ -1209,6 +2044,14 @@ Future<void> _runCase(_Case c) async {
   _nCase++;
 
   final errBefore = _errs.length;
+
+  // ★ 第 13 项：从"打开"这一刻开始采帧，settle 之后报告（见 _reportDialogTimings）
+  // ⚠️ 实测坑：`addTimingsCallback` 的回调**只在帧批次投递时**才触发。
+  //   若 trigger 全程同步完成（`showAppDialog` 立刻返回 Future，帧还没画），
+  //   回调一次都不会进 ⇒ `batches=0 / n=0`。
+  //   ⇒ 注册必须在 trigger **之前**，且 trigger 之后要**显式让出事件循环**。
+  _startDialogTimings();
+  _openStartedAt = DateTime.now();
 
   if (c.trigger != null) {
     // 真实路径：不改写任何东西，直接调产品代码
@@ -1240,14 +2083,45 @@ Future<void> _runCase(_Case c) async {
     ).ignore();
   }
 
+  // ⚠️ 让出事件循环：帧批次投递是异步的，同步走到这里回调还没被调用过。
+  //   三次 endOfFrame 覆盖「首帧 + 入场动效首帧 + 动效中段」，
+  //   让 `addTimingsCallback` 至少收到两批。
+  await SchedulerBinding.instance.endOfFrame;
+  await SchedulerBinding.instance.endOfFrame;
+  await SchedulerBinding.instance.endOfFrame;
+
+  // ★ 第 13 项「打开」分类：从 trigger 到本框稳定 = 打开 + 入场动效的全部帧
+  //
+  // ⚠️ 实测结论（不要再用 timings 回调量打开阶段）：
+  //   连续三版尝试（提前注册 / `delayed(0)` / 连等 3 次 `endOfFrame`）
+  //   都得到 `batches=0`，即 `addTimingsCallback` 回调**一次都没进**。
+  //   对照：同一份代码里**关闭**阶段能拿到 n=34。
+  //   差别在于关闭阶段的帧是由 `_settle()` 里的 `Future.delayed(420ms)`
+  //   连续驱动出来的，而打开阶段的入场动效在 `showAppDialog` 内部已经跑完。
+  //   ⇒ 在**没证实**为什么回调不投递之前，不继续猜（纪律：不按假设盲改）。
+  //   ⇒ 打开阶段改用**墙钟**读数（`_openWallUs`），它是可测的，且不与 timings 混淆。
+  final openWallUs = DateTime.now().difference(_openStartedAt).inMicroseconds;
   await _settle();
+  final openFrames = _reportDialogTimings('${c.id} 打开');
+  _say('  ⇒「打开」类帧耗时的**正式读数**见 lib/t107_perf_open_probe.dart：'
+      '本处在打开窗口恒采不到 timings（机制见该文件头），'
+      't107 用「回调常驻不摘 + 时钟对齐归属」把这类读数采到了；'
+      '本行的 n=0 是**已知仪器限制**，不是"不卡"');
+  _say('  OPEN_WALL ${c.id} = ${openWallUs}us '
+      '（trigger→稳定墙钟；timings 回调投递 ${_timingBatches} 批）');
   final rect = _dialogRect();
   await _capture(c, rect);
 
   // 收尾：把框关掉，再等退场动效走完（否则下一框会叠在这个上面）
   final nav = AppTray.navigatorKey.currentState;
   if (nav != null && nav.canPop()) nav.pop();
+  // ★ 第 13 项「关闭」分类：从 pop 到退场动效结束的帧
+  _startDialogTimings();
   await _settle(frames: 1, ms: 420);
+  _reportDialogTimings('${c.id} 关闭');
+  if (openFrames == 0) {
+    _say('  NOTE ${c.id}: 打开窗口 0 帧 ⇒ 该框无打开耗时读数（不解释成"不卡"）');
+  }
   if (c.cleanup != null) await c.cleanup!();
 
   final added = _errs.length - errBefore;
@@ -1457,7 +2331,7 @@ Future<void> main() async {
       '「这个备份文件含登录态」那个 AlertDialog 只由私有 _exportConsent() 弹出，'
       '而它要求面板已连上云盘并选到 .sourin 备份文件（无凭据时 :535 直接 return）。');
   _say('   探针不造云端凭据、也不复制它的 builder，故本项如实记为未取证。');
-  for (final c in _cases()) {
+  for (final c in <_Case>[..._cases(), ..._siteCases()]) {
     if (c.narrow) {
       _say('');
       _say('── 把视口缩到 800×600（窄视口复核；§3.5「按视口夹取」那半句）');

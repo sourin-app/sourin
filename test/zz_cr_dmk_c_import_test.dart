@@ -295,7 +295,18 @@ void main() {
     final tip = debugPlayerFlashForProbeText();
     expect(tip, isNotNull, reason: '★★★ 导入成功必须有一句提示（改前一个字都没有）');
     expect(tip, contains('3'), reason: '★ 必须说清多少条：$tip');
-    expect(tip, contains('B 站'), reason: '★ 必须说清这是哪个源的弹幕：$tip');
+    /*
+     * ★ 2026-10-25（task-38）：期望子串从「B 站」改成「外部视频站」。
+     *
+     * ```text
+     * 判据的**意图**是"必须说清这是哪个源的弹幕"，不是"必须写死那个站名"。
+     * 产品已按 t98 铁律（仓库里不许出现具体视频网站的名字）把用户可见文案
+     * 中性化成「外部视频站弹幕已导入：这一集 3 条（新增 3 条）」
+     * ⇒ 本条跟着换成中性词。**不要**为了让它过而把站名加回产品。
+     * ```
+     */
+    expect(tip, contains('外部视频站'),
+        reason: '★ 必须说清这是哪个源的弹幕（产品已按站名铁律中性化为「外部视频站」）：$tip');
 
     /*
      * ★ OPS-10 B：「UI 上如实反映实际用的是哪个源的弹幕」
@@ -307,8 +318,9 @@ void main() {
      */
     final status = debugPlayerDanmakuStatus();
     expect(status, isNotNull);
-    expect(status, startsWith('B 站 · '),
-        reason: '★★ 面板读数必须点名来源，否则「如实反映来源」是空话：$status');
+    expect(status, startsWith('外部视频站 · '),
+        reason: '★★ 面板读数必须点名来源，否则「如实反映来源」是空话'
+            '（产品已按 t98 站名铁律把前缀中性化成「外部视频站 · 」）：$status');
     debugPrint('[DMK-C] ① 导入后提示条 = $tip（共 $n 条上屏）');
 
     // ★ 这句话必须**真的画在树上**（不是只写进了 _tip 字段）

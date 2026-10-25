@@ -54,6 +54,12 @@ pub mod sync;
 // ── 插件引擎 ──
 pub mod plugins;
 
+// ── 源个性化覆盖层（二次编排 / 劫持）──
+//
+// 挂在 `plugins::PluginProvider::call_js` 取出 `data` 之后、`js_value_to_rust` 之前。
+// 设计见 .agents/notes/proposed/architecture/2026-10-24-source-override-layer-after-call-js.md
+pub mod overrides;
+
 // ── 局域网遥控 ──
 pub mod remote;
 
@@ -101,6 +107,18 @@ pub mod commands_remote;
 // 把 TVBox 配置里的苹果CMS 站点就地转成原生 Provider。
 // 为什么不生成 JS 插件：见 tvbox.rs 顶部说明。
 pub mod tvbox;
+
+// ── ★ TVBox `csp_Xxx` 路由层（第19项）──
+//
+// 配置里 `type:3` + `api:"csp_Bili"` 的源，在原版 APK 里是 Android DEX jar
+// 里的 Java 类。本仓**不嵌 JVM**（桌面端没有 DexClassLoader，且 DEX 是
+// Android 专属），改为用 Rust 重写用得到的类：
+// ```text
+// api "csp_Bili" → 注册表键 "Bili" → csp::bili::Bili（真发上游接口）
+// 没写的类       → 导入报告 skipped，reason "csp_X 尚未实现"
+// ```
+// 配置格式零改动。设计见 csp/mod.rs 顶部。
+pub mod csp;
 
 // ── ★ FFI 层（给 Flutter 用）──
 //

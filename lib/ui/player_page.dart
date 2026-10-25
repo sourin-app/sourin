@@ -137,7 +137,11 @@ import 'widgets/bili_import_dialog.dart';
 import 'widgets/danmaku_info_panel.dart';
 import 'widgets/danmaku_overlay.dart';
 import 'widgets/danmaku_settings_dialog.dart';
+import 'danmaku_search_page.dart';
 import 'widgets/episode_strip.dart';
+// ★ 第 16 项：内嵌 / 全屏**共用**的播放动作契约（第 16 项闭合用）
+import 'widgets/live_embedded_player.dart'
+    show LivePlaybackAction, LivePlaybackTarget, dispatchLivePlaybackAction, livePlaybackActionForKey;
 import 'widgets/motion_prefs.dart';
 import 'widgets/overlay_motion.dart';
 import 'widgets/player_settings_sheet.dart';
@@ -146,7 +150,6 @@ import 'widgets/provider_name.dart';
 import 'widgets/skip_marker_dialog.dart';
 import 'widgets/source_switch_dialog.dart';
 import '../ui/app_scaffold.dart';
-import '../ui/app_theme.dart';
 import '../design/icons/app_icons.dart';
 
 /// 把播放页里的**浮层面板**包成深色皮肤（task-28 ①-B）
@@ -464,6 +467,8 @@ class PlayerPage extends StatefulWidget {
     this.onLiveChannelStep,
     this.onLiveChannels,
     this.onLiveChannelPick,
+    this.initialLivePlayback,
+    this.onLivePlaybackExit,
     this.isTv = false,
     this.isTouchOnly = false,
     /*
@@ -563,6 +568,10 @@ class PlayerPage extends StatefulWidget {
 
   /// 非空 = 直播模式（禁进度条、过滤部分提示）
   final String? liveChannelId;
+
+  /// 从内嵌直播播放器交接的状态，仅直播模式使用。
+  final LivePlaybackSnapshot? initialLivePlayback;
+  final ValueChanged<LivePlaybackSnapshot>? onLivePlaybackExit;
 
   /// ★★★ task-53【#4b】直播时 ↑/↓ 切频道（用户第 4 条，**第二次强调**）
   ///
@@ -733,9 +742,39 @@ final _arrowKeys = <LogicalKeyboardKey>{
 
 class _PlayerPageState extends State<PlayerPage>
     with SingleTickerProviderStateMixin
-    implements MediaSession {
+    implements MediaSession, LivePlaybackTarget {
   late final Player _player;
   late final VideoController _controller;
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ★★★ 第 16 项（2026-10-25）：内嵌 / 全屏**快捷键一致** —— 契约实现
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 为什么要实现这个接口（而不是在本页再写一套"空格=播放暂停、M=静音"）
+  // ```text
+  // 内嵌播放器已经有一份「按键 → 动作」的映射（`livePlaybackActionForKey`）
+  // 与「动作 → 调用」（`dispatchLivePlaybackAction`）。
+  // 若全屏侧再手写一份 ⇒ 两处语义迟早漂（本仓反复吃过"两套真相"的亏：
+  // `_isTypingInField` 抽函数、`_bottomOccupied` 单点、`seek-intent` 标记…）。
+  // ⇒ 全屏侧只**实现接口**，把动作转调既有的 `_togglePlay` / `_toggleMute`：
+  //   状态反馈、快照、闪光提示、计数探针全部复用，**一行逻辑都不复制**。
+  // ```
+  // ⚠️ `_player` 是 `late final`（initState 里创建）—— 按键只会在挂载后到达，
+  //    这里直接读，不做 `?.`（`?.` 会掩盖"还没 initState 就有人读"的真 bug）。
+  @override
+  bool get isPlaying => _player.state.playing;
+  // ⚠️ `_player` 是 `late final`（initState 里创建）⇒ **只在挂载之后读**。
+  //    本 getter 会被 UI（底栏走 `_playing` 镜像）与探针读；按键/探针都发生在
+  //    挂载后，所以这里**故意不做** `?.`——那会掩盖"未 initState 就有人读"的真 bug。
+
+  @override
+  bool get muted => _muted;
+
+  @override
+  Future<void> togglePlayPause() async => _togglePlay();
+
+  @override
+  Future<void> toggleMute() async => _toggleMute();
 
   /// 候选流（多清晰度/多线路）
   List<StreamCandidate> _streams = [];
@@ -794,6 +833,61 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ 与 `_error` 分开的理由同 [_liveAudioOnlyNotice]：
   ///    `_error` 的语义是"起播失败"，它和"正在播放"是**互斥**的。
   String? _playbackFailure;
+  Duration _recoveryProgress = Duration.zero;
+
+  // ───────────────────────────────────────────────────────────────────
+  //  ★★★ 缺陷①（2026-10-25）：用户主动 seek 的**豁免窗口**
+  // ───────────────────────────────────────────────────────────────────
+  //
+  // # 修的是什么
+  // ```text
+  // 片头区间是 [0, 69s]（三条真实片源都从 0 开始）。
+  // 用户把进度条拖到 0 ⇒ 一切正常；
+  // 但位置流下一秒就 tick 到 0 ⇒ `_maybeSkip` 命中片头区间 ⇒ seek(69)。
+  // 用户看到的就是「拖到 0 自动往前」，拖几次就是「越拖越往前」。
+  // ```
+  //
+  // # 为什么不能只靠 `_seekByUser` 里那句 `_introSkipped = true`
+  // ```text
+  // 那个标志确实能挡一次，但它是**会话级**的、而且有 5 处复位点
+  // （`_applySwitch` / `_applySession` / `_gotoEpisode` / 存设置 / 开 autoSkip）。
+  // 只要用户在"拖回 0"之后又碰过其中任何一条路径，`_introSkipped` 回到 false，
+  // 下一次 tick 又会把他弹走 —— 这正是 Owner 说的"拖几次累加"的形态。
+  // ```
+  // ⇒ 所以要多一份**与 `_introSkipped` 正交**的证据：用户刚刚（2 秒内）
+  //   主动 seek 到过某处 ⇒ 这一刻的自动跳过让位。
+  //
+  // ⚠️ 用**单调时钟**（`Stopwatch`）而不是 `DateTime.now()`：
+  //    系统改时间（NTP 校正、用户手动调）会让墙钟差值变成负数或几小时，
+  //    2 秒窗口就失效了。
+  final Stopwatch _userSeekClock = Stopwatch()..start();
+
+  /// 最近一次**用户主动 seek** 的落点（`null` = 本次会话还没拖过）
+  Duration? _lastUserSeek;
+
+  /// 上面那次 seek 发生时刻的**单调读数**（`_userSeekClock.elapsed`）
+  Duration? _lastUserSeekAt;
+
+  /// 豁免窗口宽度
+  static const Duration _kUserSeekGraceWindow = Duration(seconds: 2);
+
+  /// 记录一次用户主动 seek（`_seekByUser` 是**唯一**入口 —— 五条路径都汇到它）
+  void _noteUserSeek(Duration target) {
+    _lastUserSeek = target;
+    _lastUserSeekAt = _userSeekClock.elapsed;
+  }
+
+  /// 此刻是否处在「用户刚拖过」的豁免窗口内
+  ///
+  /// ⚠️ 判据只读两个字段，不改状态 —— 这样 `_maybeSkip` 可以被反复调用
+  ///    （位置流每秒一次）而不会因为"读一次就消费"而在第二次 tick 时误跳。
+  bool _withinUserSeekGrace() {
+    final at = _lastUserSeekAt;
+    if (at == null) return false;
+    final age = _userSeekClock.elapsed - at;
+    return age >= Duration.zero && age <= _kUserSeekGraceWindow;
+  }
+
 
   /// 本次起播是否**已经确认出过画面**（`stream.width` 首次非空）
   ///
@@ -890,6 +984,19 @@ class _PlayerPageState extends State<PlayerPage>
 
   bool _playing = false;
   double _volume = 100;
+  bool _livePlaybackExitReported = false;
+
+  LivePlaybackSnapshot get _livePlaybackSnapshot => LivePlaybackSnapshot(
+    playing: _playing,
+    muted: _muted,
+    volume: _muted ? (_volumeBeforeMute ?? _lastVolume * 100) : _volume,
+  );
+
+  void _reportLivePlaybackExit() {
+    if (!_isLive || _livePlaybackExitReported) return;
+    _livePlaybackExitReported = true;
+    widget.onLivePlaybackExit?.call(_livePlaybackSnapshot);
+  }
 
   // ── task-18 ③④⑤：片段下载 / 日志 ──
   //
@@ -1485,6 +1592,9 @@ class _PlayerPageState extends State<PlayerPage>
   /// 与 `_seekByCalls` 配对：理想结果是单击后 `togglePlay +1 且 seekBy +0`。
   int _togglePlayCalls = 0;
 
+  /// `_toggleMute()` 被调用的次数（**仅探针读**，第 16 项快捷键一致性）
+  int _toggleMuteCalls = 0;
+
   /// 用户最后一次表达的意图：true = 他要暂停
   ///
   /// ★ 与 `_playing` 的区别：`_playing` 是**回报的现状**，
@@ -1944,6 +2054,15 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 弹幕设置面板是否打开
   bool _danmakuSheetOpen = false;
+  bool _danmakuSearchOpen = false;
+
+  /// 独立弹幕搜索页的会话内草稿（第 11/12 项：关闭再打开不丢关键词与选择）。
+  ///
+  /// 由播放器 State 持有，而不是页面自己或 static 全局量：
+  /// 搜索页在 `_danmakuSearchOpen` 为假时**整棵卸载**，页面内 State 随之消失；
+  /// static 又会跨视频串味，落盘则把临时输入变成设置项。
+  /// 因此草稿跟着播放器会话走，与"返回播放器后选择仍在"的验收一致。
+  final DanmakuSearchDraft _danmakuSearchDraft = DanmakuSearchDraft();
 
   /// ★ Owner 2026-10-11：是否正在拖「显示区域」滑杆（true ⇒ 画面上点亮引导遮罩）
   ///
@@ -2681,6 +2800,30 @@ class _PlayerPageState extends State<PlayerPage>
   /// 进入播放页只续播一次；换集/换源走 `_pendingSeek` 那条路（已实现）。
   bool _resumedThisSession = false;
 
+  /// ★★★ task-26（2026-10-25）：`_prepareResume` 的**代次快照**字段
+  ///
+  /// # 它修的是什么（第 03 项不变量「换集从 0 开始」被打破）
+  /// ```text
+  /// `_gotoEpisode` 里明写 `_pendingSeek = null;   // 新集从 0 开始（不是续播）`
+  /// 但**在途的 `_load()`** 会在换集之后才走到 `await _prepareResume()`：
+  ///   `_prepareResume` 内部先 `await getProgress(...)`（真 FFI，几百 ms）
+  ///   ⇒ 等它回来时 `_epIndex` 已经是**新集**、`_playSessionGen` 也变了
+  ///   ⇒ 它按"新集"算 `curEpId` ⇒ 集号守卫通过 ⇒ `_pendingSeek = 1200s`
+  ///   ⇒ 换集变成"续播到 20:00"（实测 4 条红，原文见
+  ///     `.probe/fix03-rewatch-before.log`）
+  /// ```
+  ///
+  /// # 为什么**不**在 `_prepareResume` 里判 `_episodeStartAction == prompt`
+  /// ```text
+  /// ① 缺陷在**默认模式**（`fromStart`）同样成立 —— 门禁 ① 用的就是缺省偏好，
+  ///    只判 prompt 根本修不到它。
+  /// ② 反过来，prompt 模式下"首次进入播放页"仍应正常续播（浮层只在**换集**时弹）
+  ///    ⇒ 按偏好一刀切会砍掉正常续播。
+  /// ⇒ 判据必须是"**这次读取还是不是同一个会话**"，而不是"用户偏好是什么"。
+  /// ```
+  /// ⇒ 用**代次快照**（进入时记下 `_playSessionGen` + `_epIndex`，`await` 回来后比对），
+  ///   与 `_loadSkipMarker` 的 `gen` 守卫、`_reload` 的 `_rewatchToken` 守卫同一纪律。
+
   /// 本次起播的续播 seek **是否已经做过**
   ///
   /// ⚠️ 与 `_resumedThisSession` 是**两件事**，不能合并：
@@ -2714,6 +2857,51 @@ class _PlayerPageState extends State<PlayerPage>
   /// 续播位置 → 它永远停在 0 → 代次保护形同虚设。
   /// hwdec 取证是**每次起播都要做**的，所以需要自己的、无条件自增的代次。
   int _hwdecToken = 0;
+
+  // ───────────────────────────────────────────────────────────────────
+  //  ★★★ 缺陷⑧（2026-10-25）：起播失败要有**耗时**，否则归因只能瞎猜
+  // ───────────────────────────────────────────────────────────────────
+  //
+  // # 为什么必须自己计时
+  // ```text
+  // mpv 的报错原文只有：Failed to open http://127.0.0.1:52199/s/…/.
+  // ——**不含耗时**。而"等不及（超时）"与"真打不开"的唯一区别就是耗时。
+  // ⇒ 只能由播放器自己记下"发起点"，在错误到达时算差。
+  // ```
+  //
+  // # 为什么用独立 Stopwatch（不复用 `_bootWatch`）
+  // ```text
+  // `_bootWatch` 在 `_load()` 入口启动，覆盖"取流地址"那段（插件 + 网络），
+  // 而超时窗口量的是 mpv **打开 URL** 那一段 —— 两者起点不同（相差几秒），
+  // 混用会让 5 秒窗口整体偏移，判据当场失真。
+  // ⇒ `_loadClock` 在 `_startPlayback` 里**紧邻 open() 之前**取起点。
+  // ```
+  final Stopwatch _loadClock = Stopwatch()..start();
+
+  /// `player.open()` 发起时刻的单调读数（`null` = 还没起播过）
+  Duration? _loadStartedAt;
+
+  /// `_load()` 被调用的次数（**仅探针读**：第 02 项「重试真的触发重新起播」）
+  int _loadCalls = 0;
+
+  /// `_startPlayback()` 被调用的次数（**仅探针读**：task-26「换集后不许再播旧候选」）
+  ///
+  /// 判据形态：用户点开作品后**立刻**切集 ⇒ 只有**新集**那一次起播；
+  /// 在途的旧 `_load()` 不许再开一次（否则最后打开的是上一集的流）。
+  int _startPlaybackCalls = 0;
+
+  /// 上一次**起播失败**的耗时（只在失败路径写；成功/新一轮起播清空）
+  ///
+  /// 喂给 `PlaybackErrorText.classify(..., elapsed: …)` —— 见 [PlaybackFailureKind.timeout]。
+  Duration? _startFailureElapsed;
+
+  /// 从"发起 open"到此刻的耗时（没起播过 ⇒ `null`，**不**编一个 0）
+  Duration? _elapsedSinceLoadStart() {
+    final started = _loadStartedAt;
+    if (started == null) return null;
+    final d = _loadClock.elapsed - started;
+    return d.isNegative ? null : d;
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   //  ★★ 起播阶段计时（task-24：用户要「播放提速」，先量化再动手）
@@ -3187,6 +3375,17 @@ class _PlayerPageState extends State<PlayerPage>
      * 起播后再设会有一个"先满音量再变小"的突跳，用户能听出来。
      */
     _loadPlayPrefs();
+    final initialLivePlayback = widget.initialLivePlayback;
+    if (_isLive && initialLivePlayback != null) {
+      _playing = initialLivePlayback.playing;
+      _muted = initialLivePlayback.muted;
+      _volumeBeforeMute = initialLivePlayback.muted
+          ? initialLivePlayback.volume
+          : null;
+      _lastVolume = initialLivePlayback.volume / 100;
+      _volume = initialLivePlayback.muted ? 0 : initialLivePlayback.volume;
+      _sendVolume(_volume);
+    }
     _loadDanmakuPrefs();
 
     _setHwdec();
@@ -3715,6 +3914,30 @@ class _PlayerPageState extends State<PlayerPage>
         } else {
           await native.setProperty('hwdec', _hwdecMode.wire);
         }
+
+        /*
+         * ★★★ 缺陷⑧（2026-10-25）：把 `network-timeout` 的取值**显式下沉**给 mpv
+         *
+         * # 为什么要显式下发（media_kit 本来就有个默认 5）
+         * ```text
+         * media_kit 1.2.6 的默认值写在库里：
+         *   real.dart:2394  'network-timeout': '5'
+         * ⇒ 默认值住在**第三方**，归因那边（PlaybackErrorText.classify）
+         *   却要用同一个数字算窗口 ⇒ 两边迟早不一致。
+         * 本仓唯一设过这条的是直播组件（`live_embedded_player.dart` 设 3）。
+         * ⇒ 点播这条路现在显式设成 kPlaybackNetworkTimeoutSeconds，
+         *   "mpv 等多久"与"判据窗口多宽"从此是**同一个常量**。
+         * ```
+         *
+         * # ⚠️ 为什么保持 5 秒（没有放大到计划里曾提的 15 秒）
+         * 计划「实施前证据纠偏」已取消"先改成 15"的预设：没有证据证明放大
+         * 能救回那些流，而放大只会让**真正坏掉的流**让用户多等 10 秒。
+         * 等真实源/真机拿到对照数据再决定 —— 换值只需改这个常量。
+         */
+        await native.setProperty(
+          'network-timeout',
+          '$kPlaybackNetworkTimeoutSeconds',
+        );
 
         /*
          * ══════════════════════════════════════════════════════════════
@@ -4380,31 +4603,7 @@ class _PlayerPageState extends State<PlayerPage>
      */
     _player.stream.error.listen((e) {
       if (!mounted) return;
-      /*
-       * ★ 落盘：这条错误**必须**能在事后看到。
-       *
-       * Owner 第 9 条给的只有一张截图（`Failed to open http://127.0.0.1:63534/s/…`），
-       * 而那个端口随进程退出就失效 ⇒ **事后无法回连**，只能靠当时留下的字。
-       * 之前全走 `debugPrint` ⇒ Release 版什么都没有。
-       */
-      AppLog.write('PLAY', _sawFirstFrame ? '播放中断（已有画面，非阻断）：$e' : '起播失败：$e');
-      /*
-       * ★ 直播**起播失败**（未出画面）优先怀疑地址本身已坏 ⇒ 踢掉该频道
-       *   的取址缓存，让用户重试时能拿到新地址（否则 30s TTL 内一直命中
-       *   同一份坏地址，表现为"点重试没用"）。仅在从未出过画面时这样做：
-       *   出过画面后的中断是"可恢复抖动"（换流/缓冲），地址本身没错，
-       *   踢缓存反而把"切台≈0ms"的收益丢掉。
-       */
-      if (_isLive && !_sawFirstFrame) {
-        SourinApi.invalidateLiveStream(_provider, _liveChannelId!);
-      }
-      setState(() {
-        if (_sawFirstFrame) {
-          _playbackFailure = e;
-        } else {
-          _error = e;
-        }
-      });
+      _handleStreamError(e);
     });
     /*
      * ★ 记录"出过画面"这个事实（Owner 第 9 条的判据输入）
@@ -4454,6 +4653,8 @@ class _PlayerPageState extends State<PlayerPage>
         _errorKind = null;
         _loading = false;
         _playbackFailure = null;
+        // ★ 缺陷⑧：出画面了 ⇒ 上一次起播失败的耗时不再代表当前状态
+        _startFailureElapsed = null;
         /*
          * ★★★ Owner 缺陷④（2026-10-11）：「播放正常却提示无法显示」的自愈
          *
@@ -4473,6 +4674,70 @@ class _PlayerPageState extends State<PlayerPage>
     });
     // 缺陷 13：接上缓冲区间轮询器（内部会看 kBufferRangeMode 决定是否真的读属性）
     _bindBufferPoller();
+  }
+
+  /// ★★★ 缺陷⑧（2026-10-25）：`stream.error` 的**唯一**处理点
+  ///
+  /// # 为什么抽成方法（原先直接写在 `listen` 的闭包里）
+  /// ```text
+  /// ① 归因要带 elapsed ⇒ 必须能读到"发起 open 的时刻"，
+  ///    而那是本 State 的字段，闭包里写得出来但**测不了**
+  ///    （widget 测试驱动不到 `_player.stream.error`：没有真流）。
+  /// ② 探针 `debugPlayerInjectStreamErrorForProbe` 原先**复刻**了这段逻辑
+  ///    （"逐字复刻"）。复刻件一旦与生产漂移，门禁就变成"测复刻件"。
+  /// ⇒ 现在生产与探针调**同一个方法**，不存在两份。
+  /// ```
+  ///
+  /// 返回 `true` = 这条错误来自"已有画面之后的抖动"（走非阻断横幅）。
+  bool _handleStreamError(String e) {
+    final had = _sawFirstFrame;
+    /*
+     * ★ 落盘：这条错误**必须**能在事后看到。
+     *
+     * Owner 第 9 条给的只有一张截图（`Failed to open http://127.0.0.1:63534/s/…`），
+     * 而那个端口随进程退出就失效 ⇒ **事后无法回连**，只能靠当时留下的字。
+     * 之前全走 `debugPrint` ⇒ Release 版什么都没有。
+     */
+    AppLog.write('PLAY', had ? '播放中断（已有画面，非阻断）：$e' : '起播失败：$e');
+    /*
+     * ★ 直播**起播失败**（未出画面）优先怀疑地址本身已坏 ⇒ 踢掉该频道
+     *   的取址缓存，让用户重试时能拿到新地址（否则 30s TTL 内一直命中
+     *   同一份坏地址，表现为"点重试没用"）。仅在从未出过画面时这样做：
+     *   出过画面后的中断是"可恢复抖动"（换流/缓冲），地址本身没错，
+     *   踢缓存反而把"切台≈0ms"的收益丢掉。
+     */
+    if (_isLive && !_sawFirstFrame) {
+      SourinApi.invalidateLiveStream(_provider, _liveChannelId!);
+    }
+    /*
+     * ★ 缺陷⑧：**起播失败**这一支才计耗时（播放中的抖动与"等太久"无关）。
+     *   没有起播起点（`_loadStartedAt == null`）时给 `null` —— 归因那边
+     *   拿到 null 就退回保守的 proxy 判断，**不编造**一个 0。
+     */
+    final elapsed = had ? null : _elapsedSinceLoadStart();
+    if (!had && elapsed != null) {
+      AppLog.write(
+        'PLAY',
+        '起播失败耗时 ${(elapsed.inMilliseconds / 1000.0).toStringAsFixed(2)}s'
+            '（network-timeout=${kPlaybackNetworkTimeoutSeconds}s，'
+            '判据窗口 ±${kPlaybackTimeoutWindowSlack.inMilliseconds}ms）',
+      );
+    }
+    setState(() {
+      /*
+       * ⚠️ 这里**必须**保留 `if (_sawFirstFrame) {` 这个字面形态：
+       *    `t102_playback_failure_banner_test` ⑤ 用源码文本钉住
+       *    「分流按 `_sawFirstFrame` 判，不许一律写 `_error`」。
+       *    功能等价（`had` 就是它的快照），所以按判据要求的形态写。
+       */
+      if (_sawFirstFrame) {
+        _playbackFailure = e;
+      } else {
+        _error = e;
+        _startFailureElapsed = elapsed;
+      }
+    });
+    return had;
   }
 
   /// ★★★ task-72【④】位置 tick 的**唯一**处理点
@@ -4514,6 +4779,50 @@ class _PlayerPageState extends State<PlayerPage>
     if (!mounted) return;
     debugPlayerPositionTicks++; // ★ 仅探针计数（task-72 ④ 量化）
     final secChanged = p.inSeconds != _position.inSeconds;
+    /*
+     * ★★★ 缺陷②（2026-10-25）：**正向恢复判据** —— 横幅必须能自己消失
+     *
+     * # 改前为什么永远不消失
+     * ```text
+     * `_playbackFailure` 的**唯一**清除路径是 `stream.width` 再次非空
+     * （那是"分辨率变化"事件）。而 `_sawFirstFrame` 一旦为 true，
+     * 后面再没有事件会清它 ⇒ 播放其实已经恢复（位置在推进），
+     * 横幅却永久压在画面上。
+     * ```
+     * # 判据（按计划原文）
+     * ```text
+     * `_playing == true`（页面自己的播放态，来自 stream.playing）
+     * && 位置**连续**推进累计 ≥ 3 秒
+     * && 单次推进 ≤ 2 秒（跳变/seek 不算"连续推进"，掉帧也不算暂停）
+     * ⇒ 清 `_playbackFailure`
+     * ```
+     * ⚠️ 用 `_playing`（页面字段）而不是 `_player.state.playing`：
+     *    后者是**每次 tick 一次原生属性读**，且在 flutter_tester 里没有
+     *    真实流时恒为 false ⇒ 判据无法被驱动（门禁只能靠复刻一份假逻辑，那是假绿）。
+     *    `_playing` 本身就是 `stream.playing` 的镜像，语义相同、读数免费。
+     * ⚠️ 阈值 3 秒：要能过 `t72_jank` 这类掉帧场景（掉帧 ≠ 暂停）。
+     */
+    if (_playbackFailure != null &&
+        _sawFirstFrame &&
+        _playing &&
+        // ★ 缓冲中不算"在放"（`zz_t1023_player_recovery_contract_test` ③ 钉着这一条）：
+        //   缓冲停顿不是恢复，只是网络又卡了一下。
+        !_player.state.buffering &&
+        p > _position &&
+        p - _position <= const Duration(seconds: 2)) {
+      _recoveryProgress += p - _position;
+      if (_recoveryProgress >= const Duration(seconds: 3)) {
+        final advanced = _recoveryProgress.inMilliseconds / 1000.0;
+        setState(() => _playbackFailure = null);
+        _recoveryProgress = Duration.zero;
+        AppLog.write(
+          'PLAY',
+          '播放已恢复，清掉中断横幅（位置连续推进 ${advanced.toStringAsFixed(1)}s）',
+        );
+      }
+    } else {
+      _recoveryProgress = Duration.zero;
+    }
     _position = p; // ★ 无条件更新（读值语义不变）
     if (secChanged) {
       debugPlayerPositionSetStates++; // ★ 仅探针计数
@@ -4535,6 +4844,38 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   Future<void> _load() async {
+    /*
+     * ★ task-14（2026-10-25）：`_load` 的**调用次数**（仅探针读）
+     *
+     * 第 02 项原来只验到"横幅顺序 + 底栏让位"，没有一条断言证明
+     * 「用户**点得到**重试、且点了真的重新起播」。点得到 → `hitTestable()`；
+     * 真的重新起播 → 这个计数 +1（横幅的 `onRetry` 就是 `_load()`）。
+     * ⚠️ 只增计数，不改任何流程；起播流程本身逐字节不变。
+     */
+    _loadCalls++;
+    /*
+     * ★★★ task-26（2026-10-25）：记下**进入本次加载时**的会话代次。
+     *
+     * # 它挡的是什么（与 `_prepareResume` 的代次守卫同一族的第二个漏洞）
+     * ```text
+     * 用户点开作品 → 起播链路 `_load()` 正在 `await resolveStream(...)`
+     *   → 他立刻点了第 3 集 ⇒ `_gotoEpisode` 把 `_playSessionGen` 推大、
+     *     并自己 `_reload()` 起播第 3 集
+     *   → 那条**在途**的 `_load()` 回来后仍会 `_startPlayback(旧候选)`
+     *     ⇒ **最后打开的是上一集的流**，而 UI 已是第 3 集（串集）
+     * ```
+     * 实测（`.probe/fix03-final-zz_rewatch_prompt_test.log`）：
+     * ```text
+     * 11:54:30.984 起播（_reload ⇒ 第3集）
+     * [PLAYER] 读进度期间换了集/会话 ⇒ 本次续播作废（代次 0 → 1，集 0 → 2）
+     * 11:54:31.000 起播（★ 在途 _load 用**旧候选**又开了一次）
+     * ```
+     * ⇒ 与 `_loadSkipMarker` 的 `gen` 守卫、`_reload` 的 `_rewatchToken` 守卫
+     *   同一条纪律：**代次变了就丢弃在途结果**。
+     *
+     * ⚠️ 放弃时**不动 `_loading`** —— 新的那次加载自己会收尾（同 `_reload` 的注释）。
+     */
+    final genAtLoadStart = _playSessionGen;
     /*
      * ★ 阶段计时起点（task-24）—— 必须在第一个 await 之前
      *   见 `_bootMark` 的说明：用户点播放到首帧拆成 4 段。
@@ -4570,6 +4911,8 @@ class _PlayerPageState extends State<PlayerPage>
       // ★ 新一轮起播 ⇒ 上一轮的"出过画面"与非阻断横幅全部作废
       _sawFirstFrame = false;
       _playbackFailure = null;
+      // ★ 缺陷⑧：上一轮的失败耗时也作废（否则重试会把旧耗时带进归因）
+      _startFailureElapsed = null;
     });
 
     try {
@@ -4602,6 +4945,15 @@ class _PlayerPageState extends State<PlayerPage>
       );
 
       if (!mounted) return;
+      /*
+       * ★ task-26：换集/换源已经推进代次 ⇒ 本次结果属于**旧会话**，丢弃。
+       *   不收尾 `_loading`（新会话自己会收尾，见上面的字段注释）。
+       */
+      if (genAtLoadStart != _playSessionGen) {
+        debugPrint('[PLAYER] 丢弃过期的起播结果（会话代次 '
+            '$genAtLoadStart → $_playSessionGen）—— 换集后不许播旧候选');
+        return;
+      }
       setState(() => _streams = list);
 
       /*
@@ -4714,6 +5066,18 @@ class _PlayerPageState extends State<PlayerPage>
        */
       await _prepareResume();
 
+      /*
+       * ★★★ task-26：**续播准备期间**也可能换集（`_prepareResume` 里 `await
+       *   getProgress(...)` 是真 FFI）。那一刻 `_gotoEpisode/_reload` 已经
+       *   自己起播了新集 ⇒ 这里若再 `_startPlayback(旧候选)`，**最后打开的
+       *   反而是上一集的流**（实测：换集后多出一次 `起播`，且它排在最后）。
+       *   与上面 resolve 之后那道同一条判据，只是检查点更晚。
+       */
+      if (!mounted || genAtLoadStart != _playSessionGen) {
+        debugPrint('[PLAYER] 丢弃过期的起播（续播准备期间换了集/会话：代次 '
+            '$genAtLoadStart → $_playSessionGen）');
+        return;
+      }
       await _startPlayback(first);
       await _loadSkipMarker();
     } catch (e) {
@@ -4748,6 +5112,36 @@ class _PlayerPageState extends State<PlayerPage>
   Future<void> _prepareResume() async {
     // ① 直播没有进度概念
     if (_isLive) return;
+    /*
+     * ★★★ task-26（2026-10-25）：本次加载是**换集**触发的 ⇒ 自动续播让位。
+     *
+     * 第 03 项的不变量是「**换集不续播 / 换集从 0 开始**」。
+     * `_gotoEpisode` 已经清了 `_pendingSeek`，但**在途的 `_load()`** 晚一步
+     * 仍会走到这里（它 resolve 完流才轮到 `_prepareResume`）——
+     * 那一刻 `_epIndex` 已是新集，库里的新集旧进度会通过集号守卫，
+     * 于是 `_pendingSeek = 1200s`，换集被顶成"续播到 20:00"（实测 4 条红）。
+     *
+     * ⚠️ 与「用户意图 seek 豁免」（`_seekByUser` / `_lastUserSeek`）是**两件事**：
+     *    那个管的是"用户拖到 0 之后别被自动跳片头弹走"（同一集内）；
+     *    这个管的是"换了集就别自动续播"（跨集）。
+     *    两条都是"用户意图优先"，但判据、时机、作用域都不同，不许合并。
+     * ⚠️ 一次性位：用掉即清 ⇒ 用户随后点「重试」时，`_prepareResume` 照常
+     *    走"保位"那条路（不会被永久禁掉）。
+     */
+    /*
+     * ★★★ task-26（2026-10-25）：换集 ⇒ 自动续播让位（第 03 项不变量）。
+     *
+     * 判据是「进入本方法时的会话代次 / 集号」与「读完进度时」是否仍然一致。
+     * 不一致 = 读取期间用户切了集（或整个会话被换掉）⇒ 这次读到的位置
+     * 属于**新集**，但它是被**旧加载**拿到并写进 `_pendingSeek` 的
+     * ⇒ 必须作废，否则「换集从 0 开始」被顶成"续播到 20:00"。
+     *
+     * ⚠️ 与「用户意图 seek 豁免」（`_seekByUser` / `_lastUserSeek`）是**两件事**：
+     *    那个管同一集内"用户拖到 0 之后别被自动跳片头弹走"；
+     *    这个管跨集"换了集就别自动续播"。判据、时机、作用域都不同，不许合并。
+     */
+    final genAtEntry = _playSessionGen;
+    final epAtEntry = _epIndex;
     // 本次会话已经续播过（重复调用会覆盖用户当前的播放位置）
     if (_resumedThisSession) return;
 
@@ -4906,6 +5300,17 @@ class _PlayerPageState extends State<PlayerPage>
        * 我们**没有转码那条路**（libmpv 原生硬解，不存在"从第 0 秒
        * 开始转"的问题），所以只需要秒数。
        */
+      /*
+       * ★ task-26：读进度期间换过集/会话 ⇒ 这次续播作废。
+       *
+       * 位置：必须放在**所有 await 之后、写入 `_pendingSeek` 之前** ——
+       *   放前面只能挡住"进入时就已切换"，挡不住"读完才切换"（真实现场）。
+       */
+      if (!mounted || _playSessionGen != genAtEntry || _epIndex != epAtEntry) {
+        debugPrint('[PLAYER] 读进度期间换了集/会话 ⇒ 本次续播作废'
+            '（代次 $genAtEntry → $_playSessionGen，集 $epAtEntry → $_epIndex）');
+        return;
+      }
       _pendingSeek = Duration(seconds: pos);
       _resumedThisSession = true;
       debugPrint('[PLAYER] ★ 检测到上次进度 ${pos}s，将续播');
@@ -5091,11 +5496,31 @@ class _PlayerPageState extends State<PlayerPage>
     if (pos == null) return;
     _rewatchTimer?.cancel();
     setState(() => _rewatchPrompt = null);
-    unawaited(_player.seek(pos));
+    /*
+     * ★★★ task-14（2026-10-25，交叉复核查出的**真缺陷**）：这里原来是
+     *
+     *     unawaited(_player.seek(pos));     // ← 裸 seek
+     *
+     * 后果与缺陷①**同形**（只是换了个入口）：
+     * ```text
+     * 用户点「继续观看」，pos 落在片头区间内（典型：手动片头 introStart>0，
+     * 或者用户此前碰过 `_introSkipped` 的 5 处复位点之一）
+     *   ⇒ 下一秒的位置 tick 进 `_maybeSkip(pos)` ⇒ 命中 [start, end)
+     *   ⇒ 自动 seek(introEnd) 把用户刚选的位置**顶掉**
+     * ```
+     * 「继续观看」是**用户主动意图**（他明确选了"从这个位置接着看"），
+     * 不是程序性 seek ⇒ 必须走 [_seekByUser]：
+     * ```text
+     * ① `_noteUserSeek(pos)`  ⇒ 2 秒豁免窗口（`_maybeSkip` 让位）
+     * ② `_introSkipped = true` ⇒ 本集不再自动跳片头（用户已表态）
+     * ③ `++_seekToken`        ⇒ 作废在途的续播 waiter（他刚选了位置，别被抢）
+     * ```
+     */
+    unawaited(_seekByUser(pos));
     // ★ N10：用户主动「继续观看」⇒ 跳到中间位置，预取会让路（见 _beginPrefetchYield）
     _beginPrefetchYield();
     _flash('已跳到上次观看位置');
-    debugPrint('[PLAYER] 浮层「继续观看」⇒ seek 到 ${pos.inSeconds}s');
+    debugPrint('[PLAYER] 浮层「继续观看」⇒ seek 到 ${pos.inSeconds}s（用户意图）');
   }
 
   /// ★ 待用户裁决的"上次看到哪"（null = 没有浮层）
@@ -5120,6 +5545,7 @@ class _PlayerPageState extends State<PlayerPage>
   int _rewatchToken = 0;
 
   Future<void> _startPlayback(StreamCandidate st) async {
+    _startPlaybackCalls++;
     setState(() {
       _current = st;
       _loading = true;
@@ -5130,7 +5556,18 @@ class _PlayerPageState extends State<PlayerPage>
       // ★ 换了条流 ⇒ "出过画面"要重新判定（新流可能根本打不开）
       _sawFirstFrame = false;
       _playbackFailure = null;
+      // ★ 缺陷⑧：本次起播的失败耗时重新计
+      _startFailureElapsed = null;
     });
+    /*
+     * ★★★ 缺陷⑧（2026-10-25）：「起播失败耗时」的**计时起点**
+     *
+     * 必须在 `open()` **紧邻之前**取，而不是在 `_load()` 入口 ——
+     * 两者相差"插件 + resolveStream"那一段（几百毫秒到几秒），
+     * 而超时窗口量的是 mpv **打开 URL** 那一段。
+     * ⇒ 起点搞错，5 秒窗口整体偏移，判据就永远是错的。
+     */
+    _loadStartedAt = _loadClock.elapsed;
 
     try {
       /*
@@ -5191,7 +5628,10 @@ class _PlayerPageState extends State<PlayerPage>
        *    `?? cache[...]` 兜底，空 Map 不会破坏任何东西。
        */
       if (!debugPlayerSkipOpenForProbe) {
-        await _player.open(Media(st.url, httpHeaders: st.httpHeaders));
+        await _player.open(
+          Media(st.url, httpHeaders: st.httpHeaders),
+          play: !_isLive || (widget.initialLivePlayback?.playing ?? true),
+        );
       }
       /*
        * ★★★ task-22 P1-11：`video-zoom` 是**逐文件**属性 —— mpv 换文件时会
@@ -5436,7 +5876,7 @@ class _PlayerPageState extends State<PlayerPage>
        */
       final pending = _pendingSeek;
       if (pending != null && pending > Duration.zero) {
-        _pendingSeek = null;
+        // 保持续播意图，直到 seek 落地；等待 duration 时禁止自动片头抢跑。
         /*
          * 每次起播拿一个新的代次号，同时把"已 seek"标志复位 ——
          * 换集/换源后**必须能再续播一次**（新集有自己的进度）。
@@ -5481,6 +5921,8 @@ class _PlayerPageState extends State<PlayerPage>
           // ★ 结构化类别（能从 SourinCoreException 拿到就记下来）
           _errorKind = _kindOf(e);
           _loading = false;
+          // ★ 缺陷⑧：`open()` 抛异常同样要带耗时（归因才分得清"等太久"与"真打不开"）
+          _startFailureElapsed = _elapsedSinceLoadStart();
         });
       }
     }
@@ -5501,6 +5943,9 @@ class _PlayerPageState extends State<PlayerPage>
   /// 夹取       目标超过真实时长时夹到 duration（新源可能更短）
   /// 只做一次   由 _resumeSeekDone 保证
   /// ```
+  // Test-only native seek boundary. Null preserves the real player call.
+  Future<void> Function(Duration)? _resumeSeekForProbe;
+
   Future<void> _seekAfterReady(Duration target, int token) async {
     if (_resumeSeekDone) return;
     _resumeSeekDone = true;
@@ -5538,7 +5983,8 @@ class _PlayerPageState extends State<PlayerPage>
     if (t < Duration.zero) t = Duration.zero;
 
     try {
-      await _player.seek(t);
+      // seek-intent: programmatic — 续播落地（`_pendingSeek` 消费），不是用户此刻的拖拽
+      await (_resumeSeekForProbe ?? _player.seek)(t);
       // ★ N10：续播恢复到上次位置 ⇒ 同属"跳到中间位置"，预取会让路
       _beginPrefetchYield();
       debugPrint(
@@ -5547,6 +5993,9 @@ class _PlayerPageState extends State<PlayerPage>
       );
     } catch (e) {
       debugPrint('[PLAYER] 续播 seek 失败: $e');
+    } finally {
+      // 旧会话的异步完成不得清掉新会话的续播意图。
+      if (mounted && token == _seekToken) _pendingSeek = null;
     }
   }
 
@@ -9308,6 +9757,8 @@ class _PlayerPageState extends State<PlayerPage>
   void _maybeSkip(Duration pos) {
     final m = _skipMarker;
     if (m == null || _isLive) return;
+    // 续播落地前的位置属于新流初始化，不是自动跳过的依据。
+    if (_pendingSeek != null) return;
 
     /*
      * ★ 全局「自动跳过片头」开关（原版 `autoSkipOn`，默认 true）
@@ -9330,10 +9781,49 @@ class _PlayerPageState extends State<PlayerPage>
       final start = m.introStart ?? 0;
       final end = m.introEnd!;
       if (sec >= start && sec < end) {
+        /*
+         * ★★★ 缺陷①（2026-10-25）：**用户刚拖过就让他赢**
+         *
+         * ```text
+         * 用户把进度条拖到 0（或拖回片头区间内任何位置）
+         *   ⇒ `_seekByUser` 记下 `_lastUserSeek` / `_lastUserSeekAt`
+         *   ⇒ 位置流下一秒 tick 到 0，命中 [0, 69)
+         *   ⇒ 没有这一条 ⇒ seek(69) ⇒ 「拖到 0 自动往前」
+         * ```
+         * 判定用**单调时钟的 2 秒窗口**（不是"读过一次就消费"）：
+         * 位置流每秒 tick，若"读一次就消费"，第二秒的 tick 就会把他弹走。
+         *
+         * ⚠️ 这里**同时**把 `_introSkipped` 置位：用户已经用 seek 表过态，
+         *    本集不需要再自动跳片头。但**不能只靠它** —— 那 5 处复位点
+         *    会让本标志回到 false（见字段注释里"拖几次累加"那段）。
+         * ⚠️ 阴性对照（`zz_t1024_skip_respects_user_seek_test` ②）：
+         *    起播自动落在区间内（**没有**用户 seek）⇒ 仍然必须跳，
+         *    所以本豁免只能挂在 `_withinUserSeekGrace()` 上，不许扩大成
+         *    "任何 seek 之后都不跳"。
+         */
+        if (_withinUserSeekGrace()) {
+          _introSkipped = true;
+          final target = _lastUserSeek;
+          AppLog.write(
+            'PLAY',
+            '片头不自动跳（用户主动 seek 豁免）：'
+                '位置 ${sec}s 落在片头 $start → $end，'
+                '上次用户 seek 落点 ${target?.inSeconds ?? -1}s',
+          );
+          return;
+        }
         _introSkipped = true;
         debugPrint('[PLAYER] 跳过片头 $start → $end');
+        /*
+         * ★ 缺陷①第 2 条：跳过动作**落盘**（原先只有 debugPrint ⇒ Release 无迹）
+         *
+         * 事后对齐时间轴时，"这一下 seek 是自动跳过还是用户拖的"必须能分。
+         * 与「起播」「首帧已出」「播放已恢复」同一批 [PLAY] 日志。
+         */
+        AppLog.write('PLAY', '跳过片头 $start → $end（触发源=自动，位置 ${sec}s）');
         _skipSeekCalls++; // ★ 只读探针（fix/skip-auto-seek）：真的发出了 seek
         _lastSkipSeek = Duration(seconds: end);
+        // seek-intent: programmatic — 自动跳片头（不是用户意图；触发源见上一行 AppLog）
         _player.seek(Duration(seconds: end));
         // ★ N10：跳到片头结束（可能几分钟后）⇒ 预取会让路
         //   ⚠️ 不影响上面 `_skipSeekCalls++` 那个只读探针：它数的是"发出了几次 seek"，
@@ -9425,6 +9915,7 @@ class _PlayerPageState extends State<PlayerPage>
         // 单集循环：回到 0 接着播（原版 flashTip("单集循环")）
         // seek-yield: skip —— 目标是起点(0)，mpv 起播本就从此处读，预取不会抢；
         //   且紧接着 play()，挂上反而会每次循环都打断预取、影响循环连续性
+        // seek-intent: programmatic — 单集循环回到起点（由 onEnded 触发）
         unawaited(_player.seek(Duration.zero));
         unawaited(_player.play());
         _flash('单集循环');
@@ -9706,7 +10197,13 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   /// 执行换源
+  // Test transport boundaries only; session transitions remain production code.
+  Future<MediaDetail> Function(String, String)? _switchDetailForProbe;
+  Future<void> Function(SwitchPick)? _switchRepointForProbe;
+
   Future<void> _applySwitch(SwitchPick p) async {
+    // Invalidate the old waiter before detail lookup or record migration.
+    ++_seekToken;
     /*
      * ★ 用**当前真实进度**而不是弹层传进来的旧值
      *
@@ -9730,7 +10227,7 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ 详情里**不一定**带 episodes，所以再调一次 `getEpisodes`
        *    （与详情页的取法一致）。
        */
-      final d = await SourinApi.getDetail(p.provider, p.id);
+      final d = await (_switchDetailForProbe ?? SourinApi.getDetail)(p.provider, p.id);
       final srcCode = d.sources.isNotEmpty ? d.sources.first.code : null;
 
       var eps = d.episodes;
@@ -9796,12 +10293,17 @@ class _PlayerPageState extends State<PlayerPage>
        *    守卫，同 provider 直接 `Ok(())`。判据只有一份，不在这边重写。
        */
       try {
-        await SourinApi.repointItem(
-          fromProvider: _provider,
-          fromId: _contentId,
-          toProvider: p.provider,
-          toId: p.id,
-        );
+        final repoint = _switchRepointForProbe;
+        if (repoint != null) {
+          await repoint(p);
+        } else {
+          await SourinApi.repointItem(
+            fromProvider: _provider,
+            fromId: _contentId,
+            toProvider: p.provider,
+            toId: p.id,
+          );
+        }
         debugPrint(
           '[PLAYER] ★ 换源迁移记录完成: '
           '$_provider:$_contentId → ${p.provider}:${p.id}',
@@ -9994,6 +10496,9 @@ class _PlayerPageState extends State<PlayerPage>
   /// 被当成换会话 ⇒ 无谓重启。四元组正是"决定播哪条流"的最小集合
   /// （判据实现见 `PlayRequestData.isSameSessionAs`）。
   @override
+  Duration get currentPosition => _position;
+
+  @override
   Future<void> applySession(PlayRequestData req) async {
     /*
      * ① 同一会话 ⇒ 早退，不白重启一次流
@@ -10017,6 +10522,10 @@ class _PlayerPageState extends State<PlayerPage>
       );
       return;
     }
+
+    // Invalidate an old resume waiter even when the new session has no resume.
+    // Keep this after the same-session early return and before any async work.
+    ++_seekToken;
 
     debugPrint(
       '[PLAYER] applySession：换会话 ⇒ ${req.provider}:${req.id} '
@@ -10088,8 +10597,11 @@ class _PlayerPageState extends State<PlayerPage>
       _outroSkipped = false;
       _nextCountdown = 0;
       _countdownTimer?.cancel();
-      // 换会话后**不续播旧位置**（新源/新集的秒数没有意义）
-      _pendingSeek = null;
+      // 只有显式换源携带续播意图；普通换集仍从头播放。
+      _pendingSeek = req.resumeFrom != null &&
+              req.resumeFrom! > const Duration(seconds: 3)
+          ? req.resumeFrom
+          : null;
     });
 
     /*
@@ -10398,6 +10910,8 @@ class _PlayerPageState extends State<PlayerPage>
   Future<void> _gotoEpisode(Episode ep) async {
     final i = _episodes.indexWhere((e) => e.id == ep.id);
     if (i < 0) return;
+    // Cancel the previous media's waiter before any asynchronous transition.
+    ++_seekToken;
 
     /*
      * ★ 只读探针：计"真正执行了切集"（task-28 ①-C 的行为层判据）
@@ -10788,7 +11302,7 @@ class _PlayerPageState extends State<PlayerPage>
         if (_isLive) return;
         final target = Duration(seconds: pos < 0 ? 0 : pos);
         final clamped = target > _duration ? _duration : target;
-        await _player.seek(clamped);
+        await _seekByUser(clamped);
         // ★ N10：遥控器/手机发起跳转 ⇒ 用户在等电视出画面，预取必须让路
         _beginPrefetchYield();
         _flash('跳到 ${clamped.inSeconds}s');
@@ -10881,7 +11395,7 @@ class _PlayerPageState extends State<PlayerPage>
         final pos = c.number('position')?.toInt();
         if (pos == null || _isLive) return;
         final t = Duration(seconds: pos < 0 ? 0 : pos);
-        await _player.seek(t > _duration ? _duration : t);
+        await _seekByUser(t > _duration ? _duration : t);
         // ★ N10：手机微调、电视出画面 —— 最需要立即出画面的场景之一
         _beginPrefetchYield();
         _flash('预览 ${t.inSeconds}s');
@@ -10925,6 +11439,8 @@ class _PlayerPageState extends State<PlayerPage>
   /// resolve 并播放」，且**保留当前剧集与进度**）。
   Future<void> _remoteSwitchSource(String code) async {
     if (code == _sourceCode) return; // 已经是这条线路，别白重启一次流
+    // Retire the old waiter; a new playback may schedule its own resume.
+    ++_seekToken;
     final ep = _epIndex < _episodes.length ? _episodes[_epIndex] : null;
     // ⚠️ `_resolveAndPlay` 是**位置参数**（不是命名参数）
     await _resolveAndPlay(_provider, _contentId, ep?.id, code);
@@ -11592,6 +12108,7 @@ class _PlayerPageState extends State<PlayerPage>
       // ★ task-53【③】「所有直播」面板（用户第 3 条）
       _liveChannelsOpen ||
       // ★ task-13 ⑦ 弹幕设置面板（同样是 Positioned.fill 的全屏浮层）
+      _danmakuSearchOpen ||
       _danmakuSheetOpen ||
       // ★ task-31 ④ 外部弹幕弹幕导入面板（同款全屏浮层）
       _biliSheetOpen ||
@@ -11789,6 +12306,7 @@ class _PlayerPageState extends State<PlayerPage>
       !_episodeSheetOpen &&
       !_streamSheetOpen &&
       !_settingsOpen &&
+      !_danmakuSearchOpen &&
       !_danmakuSheetOpen &&
       !_biliSheetOpen &&
       !_subtitlePanelOpen &&
@@ -11802,10 +12320,12 @@ class _PlayerPageState extends State<PlayerPage>
   /// `Positioned(bottom: 0)`，浮层是铺满的 scrim）⇒ 底栏必须**整条卸下**，
   /// 而不是留在树里淡出（否则它会和占据者叠字、或抢走占据者的点击）。
   bool get _bottomOccupied =>
+      _playbackFailure != null ||
       _error != null ||
       _episodeSheetOpen ||
       _streamSheetOpen ||
       _settingsOpen ||
+      _danmakuSearchOpen ||
       _danmakuSheetOpen ||
       _biliSheetOpen ||
       _subtitlePanelOpen ||
@@ -12180,6 +12700,57 @@ class _PlayerPageState extends State<PlayerPage>
     _flash('${prev}x');
   }
 
+  Future<void> Function(Duration)? _userSeekForProbe;
+
+  // Explicit user intent wins over automatic intro and an in-flight resume.
+  /// **用户意图 seek 的唯一入口**（★ task-14 校正了口径）
+  ///
+  /// # 口径（逐字，别再放宽）
+  /// ```text
+  /// "唯一入口"只针对**用户意图**的 seek。
+  /// 程序性 seek（自动跳片头 / 单集循环 / 续播落地 / 探针）**不**走这里，
+  /// 它们各自带 `// seek-intent: programmatic — <理由>` 标记。
+  /// ```
+  /// # 当前的全部用户意图入口（都在生产代码里 grep 得到）
+  /// ```text
+  /// ① 底栏进度条拖动     `_BottomBar(onSeek:)` → `_seekByUser(d)`
+  /// ② 键盘 ←/→ 与按钮    `_seekBy()` → `_seekByUser(clamped)`
+  /// ③ 点进度条 N%        `_seekToPercent()` → `_seekByUser(target)`
+  /// ④ 远端 `seek_to`     `_remoteSeekTo()` → `await _seekByUser(clamped)`
+  /// ⑤ 远端 `skip_preview` `_remoteSkipPreview()` → `await _seekByUser(t)`
+  /// ⑥ 浮层「继续观看」    `continueFromRewatchPrompt()` → `_seekByUser(pos)`
+  /// ```
+  /// # ★ 为什么必须汇到一个点（task-14 的教训）
+  /// ```text
+  /// 缺陷①的修法是"给用户 seek 一个 2 秒豁免窗口 + 置 `_introSkipped`"。
+  /// 只要有**一条**用户路径绕过本方法，那条路径就会重演"拖到 0 被弹回去"。
+  /// 实测已发生过一次：`continueFromRewatchPrompt` 里是裸 `_player.seek(pos)`
+  /// （交叉复核查出，task-14 修）。⇒ 结构门禁
+  /// `zz_t1024_skip_respects_user_seek_test` ⑥ 会**枚举** `_player.seek` 的每一处，
+  /// 要求它"在本方法内"或"带 programmatic 标记" —— 新增一条裸路径必然红。
+  /// ```
+  /// # 程序性 seek 的完整清单（与本方法并列，**不许**算作入口）
+  /// ```text
+  /// · `_maybeSkip` 自动跳片头          `_player.seek(Duration(seconds: end))`
+  /// · `_onEnded` 单集循环              `_player.seek(Duration.zero)`
+  /// · `_seekAfterReady` 续播落地       `(_resumeSeekForProbe ?? _player.seek)(t)`
+  /// · `debugPlayerSeekForProbe`       探针直驱原生边界
+  /// ```
+  Future<void> _seekByUser(Duration target) {
+    _introSkipped = true;
+    _pendingSeek = null;
+    ++_seekToken;
+    /*
+     * ★★★ 缺陷①（2026-10-25）：记下"用户刚刚主动 seek 过"这个事实。
+     *
+     * ⚠️ 与上面 `_introSkipped = true` 是**两件事**：那个是"本集不再自动跳"，
+     *    这个是"接下来 2 秒内 `_maybeSkip` 让位"。前者的 5 处复位点会把它
+     *    清回 false，而后者是单调时钟上的一个时间戳，不受那些复位影响。
+     */
+    _noteUserSeek(target);
+    return (_userSeekForProbe ?? _player.seek)(target);
+  }
+
   void _seekBy(int seconds) {
     _seekByCalls++; // ★ 只读探针（交付实测读它证明"单击不再跳秒"）
     /*
@@ -12195,7 +12766,7 @@ class _PlayerPageState extends State<PlayerPage>
     final clamped = target < Duration.zero
         ? Duration.zero
         : (target > _duration ? _duration : target);
-    _player.seek(clamped);
+    _seekByUser(clamped);
     // ★ N10：快进/快退（键盘 ←/→、按钮）—— Owner 最常用的操作之一
     _beginPrefetchYield();
     _flash(seconds > 0 ? '快进 ${seconds}s' : '快退 ${-seconds}s');
@@ -12206,7 +12777,7 @@ class _PlayerPageState extends State<PlayerPage>
     if (_isLive) return;
     if (_duration <= Duration.zero) return;
     final target = _duration * (pct / 100.0);
-    _player.seek(target);
+    _seekByUser(target);
     // ★ N10：点进度条跳到 N% ⇒ 用户主动跳转，预取让路
     _beginPrefetchYield();
     _flash('跳到 $pct%');
@@ -12344,6 +12915,7 @@ class _PlayerPageState extends State<PlayerPage>
   ///    广播写成 0（见音量监听器），所以「当前值」在取消静音那一刻恒为 0，
   ///    它**不可能**是正确答案。
   void _toggleMute() {
+    _toggleMuteCalls++; // ★ 只读探针（第 16 项：全屏 M 必须真的静音，不只是画个图标）
     if (_muted) {
       /*
        * ★ 取消静音：三级瀑布求恢复目标
@@ -13022,6 +13594,19 @@ class _PlayerPageState extends State<PlayerPage>
         _popover.openId == null) {
       setState(() => _controlsVisible = false);
       /*
+       * ★★★ 2026-10-25：**必须把新值推给订阅者**（交叉复核钉死的真缺陷）
+       *
+       * 漏这一行时：本路径只 setState ⇒ `_controlsLive` 停在 true
+       * ⇒ 鼠标叫回那次 push 因 `true == true` 提前 return、不通知
+       * ⇒ `_TopBar` 不重建、`IgnorePointer` 仍挡，但动画已到 1.0
+       * ⇒ 「返回箭头看得见、点不到」。
+       * 对照：`_showControls()` / `_collapseControlsForSheet()` 都是
+       * `写值 → _pushControlsLive() → _applyControlsMotion()` 三步齐全。
+       * ⚠️ 必须在 `setState` **之后**（读的是新值）。
+       * ⚠️ 门禁：`zz_t1024_chrome_autohide_hittest_test`、`zz_cr_backbtn_backarrow` ②。
+       */
+      _pushControlsLive();
+      /*
          * ★★★ 2026-10-08（Owner 追加：顶栏要与底栏**联动**一起消失）
          *
          * # 改前这里**没有**这一行 —— 这正是「顶栏一直不消失」的根因之一
@@ -13433,6 +14018,39 @@ class _PlayerPageState extends State<PlayerPage>
       unawaited(_toggleFullscreen());
       return true;
     }
+    /*
+     * ★★★ 第 16 项（2026-10-25）：**内嵌 / 全屏快捷键一致**的最后一块拼图
+     *
+     * # 为什么放在这里（既有分支**之后**）
+     * ```text
+     * ① 空格在上面已有专门分支（还带"浮层让位"的长注释）⇒ 这里**只兜 M**，
+     *    但判据仍走**共用契约**（`livePlaybackActionForKey`）：
+     *    ⚠️ 范围限定：**只对这一块兜底链**成立（这里按契约派发全键位）。
+     *       `_onKey`（焦点树路径）仍是逐键分支（空格/M/J/L/F/P/N…），
+     *       它有自己的**页面上下文门控**（浮层让位 / 打字 / 仅桌面），
+     *       那些不属于"键位判定表"，所以没有一并改成 dispatch。
+     *       ⇒ 契约新增键位时：**兜底链自动跟上**，`_onKey` 需要人工补分支。
+     * ② 位置必须在 `_focusIsInsideThisPage` 之后（焦点在页内 ⇒ 交给 `_onKey`，
+     *    否则**双触发**：静音又被取消 = 看起来没反应）。
+     * ③ 也必须在输入框门控（门控③）之后 —— 打字时的空格/M 都要放行。
+     * ```
+     *
+     * # 为什么是 `unawaited(...)` 而不是 `await`
+     * ```text
+     * 本 handler 是**同步**的（`KeyEventResult`/`bool` 必须立刻回答"我处理了吗"）；
+     * 而 `dispatchLivePlaybackAction` 返回 `Future<bool>`。
+     * ⇒ 按本函数既有写法（`unawaited(_toggleFullscreen())` 同款）先派发、后返回 handled。
+     *    ⚠️ 契约文档里那行 `if (dispatch(...)) return true;` 是**示意**（Future 不能当 bool 用），
+     *       真实写法见下 —— 语义等价：动作已派发即视为"这个键我处理了"。
+     * ```
+     * ⚠️ `target == null` 的"放行"语义由 `dispatch` 自己负责；本页 `this` 恒非 null。
+     */
+    final liveAction = livePlaybackActionForKey(k);
+    if (liveAction != null) {
+      debugPrint('[PLAYER-KEY] ⓪ 硬件兜底：$k ⇒ 共用契约动作 ${liveAction.name}');
+      unawaited(dispatchLivePlaybackAction(this, liveAction));
+      return true;
+    }
     return false;
   }
 
@@ -13839,6 +14457,8 @@ class _PlayerPageState extends State<PlayerPage>
         _escCloseSheet(() => _biliSheetOpen = false);
       } else if (_subtitlePanelOpen) {
         _escCloseSheet(() => _subtitlePanelOpen = false);
+      } else if (_danmakuSearchOpen) {
+        _escCloseSheet(() => _danmakuSearchOpen = false);
       } else if (_danmakuSheetOpen) {
         /*
          * ★ task-13 ⑦ 弹幕设置面板 —— 它挂在设置面板**之后**
@@ -13977,6 +14597,23 @@ class _PlayerPageState extends State<PlayerPage>
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.keyM) {
+      /*
+       * ★★★ 2026-10-25（交叉复核抓的必需修复）：**浮层打开时 M 必须让位**
+       *
+       * # 缺陷（V43h 那个真 bug 的**同一形态**，只是当时只修了空格）
+       * ```text
+       * 空格分支（上面几行）有 `if (_anySheetOpen) return ignored;`，
+       * 而 M 分支原来**没有** ⇒ 选集/设置/线路/提示 打开、焦点在页内时按 M，
+       * 会把**后台播放器**静音（用户看不到、也听不出，回来发现没声音）。
+       * 而焦点在页外时，`:13879` 的全局门控（`if (_anySheetOpen) return false;`）
+       * 已经挡住 ⇒ **同一个键两种语义**，这正是"两套真相"的典型。
+       * ```
+       * ⚠️ 只补 M（不动 J/L/F/P/N 等既有键位）—— 与当年"只加在空格分支、
+       *    不碰 Enter 语义"同一纪律：一次只改一处、可单独注入验证。
+       * ⚠️ 判据是 `_anySheetOpen`（选集/设置/线路/提示 四者的并集），
+       *    与空格分支**共用同一个真源**，不另写一份。
+       */
+      if (_anySheetOpen) return KeyEventResult.ignored;
       _toggleMute();
       return KeyEventResult.handled;
     }
@@ -14210,6 +14847,9 @@ class _PlayerPageState extends State<PlayerPage>
      */
     if (_exiting) return;
     _exiting = true;
+    // 在任何暂停清理和路由返回之前捕获用户播放意图。
+    // dispose 仅兜底；单次守卫防止退场阶段重复回传。
+    _reportLivePlaybackExit();
     /*
      * ★★★ task-8 ①（Owner 2026-10-09 第三批）：返回卡顿
      *
@@ -14319,16 +14959,12 @@ class _PlayerPageState extends State<PlayerPage>
      * ```text
      * 直播页需要知道用户在本页里按过暂停没有，
      * 否则它无法判断"切回来要不要自动续播"。
-     * 而 `maybePop()` **不能带返回值** ⇒ 只能用 `pop(result)`。
+     * 主动退出使用 `pop(result)`，把暂停意图作为路由结果带回。
      * ```
      *
-     * # ⚠️ 语义差异已核实（不是想当然）
-     * ```text
-     * `maybePop()` 会先问 PopScope/WillPopScope 同不同意；
-     * `pop(x)`      直接弹，**绕过**那个检查。
-     * ★ 本页 `grep -c "PopScope|WillPopScope"` = **0** ⇒ 跳过检查无副作用。
-     *   若将来加了 PopScope，这里必须改回先询问再 pop。
-     * ```
+     * 根部 PopScope 不拦截返回，只在成功 pop 后回传直播快照。
+     * 主动退出已提前回传；成功 pop 通知与 dispose 兜底复用同一去重保护。
+     * 若将来引入 canPop=false 的返回拦截，需要重新核对主动退出契约。
      */
     if (mounted) Navigator.of(context).pop<bool>(_userWantsPause);
   }
@@ -14424,6 +15060,7 @@ class _PlayerPageState extends State<PlayerPage>
 
   @override
   void dispose() {
+    _reportLivePlaybackExit();
     /*
      * ★ 2026-10-08（Owner 第 9 条）：控制条动画控制器必须跟着本页销毁 ——
      *   否则 flutter_test 会判红（AnimationController 泄漏）。
@@ -14645,7 +15282,7 @@ class _PlayerPageState extends State<PlayerPage>
       isLive: _isLive,
     );
 
-    return Scaffold(
+    final page = Scaffold(
       backgroundColor: Colors.black,
       body: Focus(
         /*
@@ -15298,6 +15935,16 @@ class _PlayerPageState extends State<PlayerPage>
                           _error,
                           kindHint: _errorKind,
                           hadCandidates: _streams.isNotEmpty,
+                          /*
+                           * ★★★ 缺陷⑧（2026-10-25）：把**播放器自己测到的耗时**
+                           * 一起交给归因。
+                           *
+                           * mpv 的 `Failed to open …` 原文里没有时间 ⇒ 只靠文案
+                           * 永远区分不了"等不及（超时）"与"真打不开"。
+                           * 这个值只在**起播失败**路径写（见 `_handleStreamError`），
+                           * 拿到 `null` 时归因退回保守的 proxy 判断 —— 不猜。
+                           */
+                          elapsed: _startFailureElapsed,
                         ),
                       ),
 
@@ -15525,58 +16172,6 @@ class _PlayerPageState extends State<PlayerPage>
                     ),
                     ),
 
-                    /*
-                 * ── 直播"只有音频能播"的提示（用户报的黑屏）──
-                 *
-                 * 央视视频轨被 DRM 加密（ffmpeg 实测 386 条解码错误），
-                 * 三条线路里只有「仅音频」能播 → 有声无画面。
-                 *
-                 * ★ 这条**不能**放进 `_error`：`_error` 的语义是"起播失败"，
-                 *   而这里是"起播成功了，只是没有画面"。两者必须能并存 ——
-                 *   否则用户要么看到黑屏没解释，要么被一个假错误挡住。
-                 *
-                 * 原版对应实现见 `PlayerView.vue:4281-4299`。
-                 */
-                    if (_liveAudioOnlyNotice != null)
-                      _LiveAudioOnlyBanner(
-                        lineName: _liveAudioOnlyNotice!,
-                        onBack: () => unawaited(_exitPlayer()),
-                      ),
-
-                    /*
-                 * ── 「画面出不来但音频正常」的提示 ──
-                 *
-                 * 由 `_watchVideoOutput()` 立旗（判据：有视频轨 &&
-                 * `vo-configured != yes`，五臂实测见 `.probe\t376_matrix.txt`）。
-                 * 与上面那条并列：都是"起播成功了，只是没有画面"，
-                 * 都**不能**放进 `_error`（那会与"正在播放"互斥）。
-                 */
-                    if (_videoOutputDead)
-                      _VideoOutputDeadBanner(
-                        onBack: () => unawaited(_exitPlayer()),
-                      ),
-
-                    /*
-                 * ── 「播放中断」的非阻断提示（★ 2026-10-08，Owner 第 9 条）──
-                 *
-                 * Owner 截图（u9_1c91d6a6.png）：
-                 * ```text
-                 * 播放失败
-                 * Failed to open http://127.0.0.1:63534/s/18dc2c90fcf9b1f03f3446afdd80/.
-                 * ```
-                 * 这条来自 `_player.stream.error`，而 mpv **已经出过画面**
-                 * 之后再来的错误多半是换流 / 重连 / 单帧解码失败 —— 可恢复抖动。
-                 *
-                 * 用全屏 `_ErrorOverlay` 处理它的后果：正在看的画面被整块盖掉，
-                 * 用户以为"播放器崩了"，其实重试一下就好（Owner 就是这么报的）。
-                 * ⇒ 与上面两条并列：**起播成功了，只是这一下断了**，
-                 *   所以用同一种横幅形态，并且必须能一键重试。
-                 */
-                    if (_playbackFailure != null && _error == null)
-                      _PlaybackFailureBanner(
-                        message: _playbackFailure!,
-                        onRetry: () => unawaited(_load()),
-                      ),
                     // ── 下一集倒计时 ──
                     if (_nextCountdown > 0)
                       _NextCountdown(
@@ -15833,7 +16428,7 @@ class _PlayerPageState extends State<PlayerPage>
                         onTogglePlay: _togglePlay,
                         onSeek: (d) {
                           if (!_isLive) {
-                            _player.seek(d);
+                            _seekByUser(d);
                             _beginPrefetchYield();
                           }
                         },
@@ -16086,6 +16681,73 @@ class _PlayerPageState extends State<PlayerPage>
                             : null,
                       ),
                     ),
+                    /*
+                     * ★★★ 缺陷②（2026-10-25）：三条横幅**必须排在 `_BottomBar` 之后**
+                     *
+                     * # 为什么顺序就是修复本身的一部分
+                     * ```text
+                     * Stack 的绘制顺序 = children 的书写顺序（后写的画在上面）。
+                     * 改前这三条横幅写在 `_BottomBar` **之前** ⇒ 鼠标一动控件浮现，
+                     * 底栏就画在横幅之上 ⇒ 「重试」被盖住、点不到（Owner 报的就是这个）。
+                     * ```
+                     * ⚠️ 另一道保险是 `_bottomOccupied` 计入 `_playbackFailure`
+                     *    （占据态时底栏整条卸下），但**顺序仍然必须对**：
+                     *    两者是"结构 + 让位"两道独立防线，缺一条都会复发。
+                     * ⚠️ 门禁 `zz_t1024_player_banner_order_test.dart` 做**源码顺序**断言，
+                     *    把这段搬回底栏之前 ⇒ 立刻红。
+                     */
+                    /*
+                 * ── 直播"只有音频能播"的提示（用户报的黑屏）──
+                 *
+                 * 央视视频轨被 DRM 加密（ffmpeg 实测 386 条解码错误），
+                 * 三条线路里只有「仅音频」能播 → 有声无画面。
+                 *
+                 * ★ 这条**不能**放进 `_error`：`_error` 的语义是"起播失败"，
+                 *   而这里是"起播成功了，只是没有画面"。两者必须能并存 ——
+                 *   否则用户要么看到黑屏没解释，要么被一个假错误挡住。
+                 *
+                 * 原版对应实现见 `PlayerView.vue:4281-4299`。
+                 */
+                    if (_liveAudioOnlyNotice != null)
+                      _LiveAudioOnlyBanner(
+                        lineName: _liveAudioOnlyNotice!,
+                        onBack: () => unawaited(_exitPlayer()),
+                      ),
+
+                    /*
+                 * ── 「画面出不来但音频正常」的提示 ──
+                 *
+                 * 由 `_watchVideoOutput()` 立旗（判据：有视频轨 &&
+                 * `vo-configured != yes`，五臂实测见 `.probe\t376_matrix.txt`）。
+                 * 与上面那条并列：都是"起播成功了，只是没有画面"，
+                 * 都**不能**放进 `_error`（那会与"正在播放"互斥）。
+                 */
+                    if (_videoOutputDead)
+                      _VideoOutputDeadBanner(
+                        onBack: () => unawaited(_exitPlayer()),
+                      ),
+
+                    /*
+                 * ── 「播放中断」的非阻断提示（★ 2026-10-08，Owner 第 9 条）──
+                 *
+                 * Owner 截图（u9_1c91d6a6.png）：
+                 * ```text
+                 * 播放失败
+                 * Failed to open http://127.0.0.1:63534/s/18dc2c90fcf9b1f03f3446afdd80/.
+                 * ```
+                 * 这条来自 `_player.stream.error`，而 mpv **已经出过画面**
+                 * 之后再来的错误多半是换流 / 重连 / 单帧解码失败 —— 可恢复抖动。
+                 *
+                 * 用全屏 `_ErrorOverlay` 处理它的后果：正在看的画面被整块盖掉，
+                 * 用户以为"播放器崩了"，其实重试一下就好（Owner 就是这么报的）。
+                 * ⇒ 与上面两条并列：**起播成功了，只是这一下断了**，
+                 *   所以用同一种横幅形态，并且必须能一键重试。
+                 */
+                    if (_playbackFailure != null && _error == null)
+                      _PlaybackFailureBanner(
+                        message: _playbackFailure!,
+                        onRetry: () => unawaited(_load()),
+                      ),
 
                     /*
                      * ★★★ 2026-10-17（Owner 第 2 条后半句）：弹幕发送入口
@@ -16370,6 +17032,11 @@ class _PlayerPageState extends State<PlayerPage>
                           onSetArea: _setDanmakuArea,
                           onReload: _reloadDanmaku,
                           onOpenBili: _openBiliSheet,
+                          onOpenSearch: () => setState(() {
+                            _danmakuSheetOpen = false;
+                            _biliSheetOpen = false;
+                            _danmakuSearchOpen = true;
+                          }),
                           // ★★★ 2026-10-14（Owner）：「搜索番剧」区的两个回调
                           //   面板只把关键词 / 选中的一条递过来，网络与状态全在宿主。
                           onSearch: (kw) => unawaited(_searchDanmaku(kw)),
@@ -16404,6 +17071,37 @@ class _PlayerPageState extends State<PlayerPage>
                         ),
                       ),
                     ),
+
+                    if (_danmakuSearchOpen)
+                      Positioned.fill(
+                        child: DanmakuSearchPage(
+                          state: _danmakuSettings,
+                          biliState: _biliState,
+                          draft: _danmakuSearchDraft,
+                          localTitles: _episodes.map((e) => e.title).toList(),
+                          onSearch: (keyword) => unawaited(_searchDanmaku(keyword)),
+                          onBiliSearch: _biliSearch,
+                          onPickMatch: _pickDanmakuMatch,
+                          onBatchBind: (matches) => unawaited(_batchBindDanmaku(matches)),
+                          onBiliImport: (input) => unawaited(_biliImport(input, 0)),
+                          onBiliSelectPage: _biliSelectPage,
+                          /*
+                           * ★ 第 12 项：请求状态与返回详情搬进本页的可展开诊断区后，
+                           *   诊断区里那两条补救动作必须**真实可用**，否则提示悬空
+                           *   （zz_t66_r3_no_dangling_hint 守的就是这条）。
+                           * ⇒ 直接接生产已有入口，不新造分支：
+                           *   · 「重新获取弹幕」= _loadDanmaku（与底栏重新获取同一实现）
+                           *   · 「改用本机外部弹幕」= _useLocalDanmakuSource
+                           */
+                          onReload: () => unawaited(_loadDanmaku()),
+                          onOpenLocal: _useLocalDanmakuSource,
+                          onClose: () {
+                            setState(() => _danmakuSearchOpen = false);
+                            _restoreBarsAfterSheet();
+                            _holdSheetGuard();
+                          },
+                        ),
+                      ),
 
                     /*
                  * ── 外部弹幕弹幕导入面板（task-31 ④）──
@@ -16839,6 +17537,12 @@ class _PlayerPageState extends State<PlayerPage>
           ),
         ),
       ),
+    );
+    return PopScope<bool>(
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) _reportLivePlaybackExit();
+      },
+      child: page,
     );
   }
 }
@@ -17863,6 +18567,69 @@ bool debugPlayerSetAutoSkipForProbe(bool v) {
 /// 配对使用：理想结果是 `togglePlay +1 且 seekBy +0`。
 int? debugPlayerTogglePlayCalls() => _livePlayerState?._togglePlayCalls;
 
+/// ★ 第 16 项探针：`_toggleMute()` 被调用了几次（`null` = 没挂页）
+///
+/// 判据形如：全屏按 M ⇒ 计数 +1 **且** `_muted` 真的翻转（不是只画图标）。
+int? debugPlayerToggleMuteCalls() => _livePlayerState?._toggleMuteCalls;
+
+/// ★ 第 16 项探针：`_isTypingInField()` 的当前判决（`null` = 没挂页）
+///
+/// 打字态门控是"空格/M 不许被抢"的唯一判据；探针只读它，不改焦点。
+bool? debugPlayerIsTypingForProbe() => _livePlayerState?._isTypingInField();
+
+/// `_onKey` 探针用的进程级焦点节点（实现里不用它，只为满足签名）
+final FocusNode debugPlayerOnKeyProbeNode =
+    FocusNode(debugLabel: 'onKey-probe');
+
+/// ★ 探针：**真的走一遍**焦点树路径 `_onKey`（`KeyEventResult.ignored` = 放行）
+///
+/// 与 [debugPlayerHardwareKeyForProbe] 的分工：
+/// ```text
+/// 那个测"焦点不在页内"的兜底链；这个测"焦点在页内"的主链
+/// （浮层让位 / 打字 / 仅桌面 这些**页面上下文**门控都在 `_onKey` 里）。
+/// ```
+bool? debugPlayerFocusKeyHandledForProbe(LogicalKeyboardKey k) {
+  final s = _livePlayerState;
+  if (s == null) return null;
+  // `_onKey(FocusNode node, KeyEvent event)` —— 实现里 `node` **未被使用**
+  // （只出现在签名上）⇒ 传一个进程级的探针节点即可，不必借用真实焦点树节点。
+  final r = s._onKey(
+    debugPlayerOnKeyProbeNode,
+    KeyDownEvent(
+      timeStamp: Duration.zero,
+      physicalKey: PhysicalKeyboardKey(0),
+      logicalKey: k,
+    ),
+  );
+  return r == KeyEventResult.handled;
+}
+
+/// ★ 第 16 项探针：`_muted` 当前值（`null` = 没挂页）
+bool? debugPlayerMutedForProbe() => _livePlayerState?._muted;
+
+/// ★ 第 16 项探针：**真的走一遍**硬件键 handler（`_onHardwareKey`）
+///
+/// # 为什么不能 `tester.sendKeyEvent`
+/// ```text
+/// 本仓已记录：`flutter_tester` 里 `PlayerPage` 整棵树的**指针回调不派发**；
+/// 键盘走 `FocusManager.addEarlyKeyEventHandler` 也依赖真实事件循环，
+/// widget 测试里不稳。而这里要验的恰恰是**那条 handler 的判定**，
+/// 不是 Flutter 的事件派发 ⇒ 直接调生产方法（与 `debugPlayerMaybeSkipForProbe`
+/// 同一手法：测的是生产代码本身，不是测试复刻的副本）。
+/// ```
+/// 返回 `null` = 没挂页；`true` = handler 说"我处理了"。
+bool? debugPlayerHardwareKeyForProbe(LogicalKeyboardKey k) {
+  final s = _livePlayerState;
+  if (s == null) return null;
+  return s._onHardwareKey(
+    KeyDownEvent(
+      timeStamp: Duration.zero,
+      physicalKey: PhysicalKeyboardKey(0),
+      logicalKey: k,
+    ),
+  );
+}
+
 /// ★ 累计调用 `_toggleFullscreen` 的次数（task-42 新增，探针用）
 ///
 /// # 为什么必须单独计数（不能只看 `_fullscreen` 布尔）
@@ -18453,18 +19220,13 @@ bool debugPlayerBackForProbe() {
 bool debugPlayerInjectStreamErrorForProbe(String message) {
   final s = _livePlayerState;
   if (s == null) return false;
-  final had = s._sawFirstFrame;
-  // 逐字复刻 `_bindPlayerStreams` 里那个闭包体（含日志与分流）
-  AppLog.write('PLAY', had ? '播放中断（已有画面，非阻断）：$message' : '起播失败：$message');
-  // ignore: invalid_use_of_protected_member
-  s.setState(() {
-    if (had) {
-      s._playbackFailure = message;
-    } else {
-      s._error = message;
-    }
-  });
-  return had;
+  /*
+   * ★ 2026-10-25（缺陷⑧）：不再"逐字复刻"那段闭包体，直接调**生产方法**
+   *   `_handleStreamError` —— 它同时负责 elapsed 的取值。
+   *   复刻件与生产漂移过一次（本轮起播失败没带耗时就属于这类），
+   *   所以现在只有一份实现。
+   */
+  return s._handleStreamError(message);
 }
 
 /// 模拟「首个视频帧已出」（★ 第 9 条回归测试用）
@@ -18483,8 +19245,143 @@ bool debugPlayerMarkFirstFrameForProbe() {
     s._errorKind = null;
     s._loading = false;
     s._playbackFailure = null;
+    // ★ 缺陷⑧：有画面 ⇒ 上一次起播失败的耗时作废（与生产 `stream.width` 同一动作）
+    s._startFailureElapsed = null;
   });
   return s._sawFirstFrame;
+}
+
+// ───────────────────────────────────────────────────────────────────
+//  ★★★ 缺陷① / ② / ⑧（2026-10-25）的探针接缝
+// ───────────────────────────────────────────────────────────────────
+//
+// 统一纪律（与全仓探针一致）：
+// ```text
+// · 只读探针只返回真实字段；
+// · 写探针只改**状态**，不改判定逻辑（判定仍只有生产代码里那一份）；
+// · 返回 false = 播放页没挂上 —— 调用方必须据此判红，
+//   否则"没挂页"会伪装成"行为正确"（本仓踩过这个假绿）。
+// ```
+
+/// 缺陷①：让**用户主动 seek** 真的发生一次（走生产 `_seekByUser`）
+///
+/// ⚠️ 走生产方法而不是直接写字段：`_noteUserSeek` 是接在 `_seekByUser`
+///    里的，绕过它就测不到"接线是否还在"。
+bool debugPlayerUserSeekForProbe(Duration target) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  unawaited(s._seekByUser(target));
+  return true;
+}
+
+/// 缺陷①：读豁免窗口的两个真实字段（`null` = 还没记过 / 没挂页）
+///
+/// 返回 `'position=<s> ageMs=<n>'`；无播放页返回 `'no-state'`。
+String debugPlayerUserSeekStateForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return 'no-state';
+  final pos = s._lastUserSeek?.inMilliseconds;
+  final at = s._lastUserSeekAt;
+  final age = at == null ? null : (s._userSeekClock.elapsed - at).inMilliseconds;
+  return 'position=${pos ?? "-"} ageMs=${age ?? "-"}';
+}
+
+/// 缺陷①：把"用户 seek 的时刻"往前拨 [age]，用来验证 **2 秒窗口真的会过期**
+///
+/// 只改时间戳，不改窗口宽度、不改判定 —— 这就是"过期"这条阴性对照唯一的
+/// 可行驱动方式（真实测试里没法等 2 秒还要保持位置流不 tick）。
+bool debugPlayerAgeUserSeekForProbe(Duration age) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  if (s._lastUserSeekAt == null) return false;
+  s._lastUserSeekAt = s._userSeekClock.elapsed - age;
+  return true;
+}
+
+/// 缺陷①：复位 `_introSkipped`（模拟生产里那 5 处复位点之一）
+///
+/// # 为什么必须能复位（否则门禁是假绿）
+/// `_seekByUser` 自己就会把 `_introSkipped` 置 true ⇒ 只断言"拖到 0 不跳"
+/// 的话，**删掉** 2 秒豁免那条判据测试**照样绿**（两重保护挡着）。
+/// 生产里 `_applySwitch` / `_applySession` / `_gotoEpisode` / 存设置 / 开 autoSkip
+/// 都会把它清回 false ⇒ 用户"拖回 0 → 碰了上述任一条 → 又被弹走"。
+/// 复位它之后仍然不跳，才能证明**豁免判据本身**在起作用。
+bool debugPlayerResetIntroSkippedForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._introSkipped = false;
+  return true;
+}
+
+/// 缺陷②：读"恢复推进量"（累计推进了多少毫秒，清横幅后归零）
+///
+/// ⚠️ 「把 `_playing` 置位」复用既有的 `debugPlayerSetPlayingForProbe`
+///    （它走生产的 `debugSetPlayingForProbe`，不是另开一个真相）。
+String debugPlayerRecoveryStateForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return 'no-state';
+  return 'recoveryMs=${s._recoveryProgress.inMilliseconds} '
+      'failure=${s._playbackFailure ?? "-"}';
+}
+
+/// 缺陷②：读底栏是否「让位」（= `_bottomOccupied` 这个**生产判据**）
+///
+/// 与 `zz_t1023_player_seek_behavior_test` 里"底栏被卸下"那条行为断言配对：
+/// 一个测结构树，一个测判据本身。无播放页返回 null。
+bool? debugPlayerBottomOccupiedForProbe() => _livePlayerState?._bottomOccupied;
+
+/// 缺陷①/③：直接摆一个 `_pendingSeek`（续播意图），用来验"续播期间不许自动跳"
+///
+/// ⚠️ 只改字段，不改任何判定 —— `_maybeSkip` 里 `if (_pendingSeek != null) return;`
+///    仍是**唯一**的让位实现。
+bool debugPlayerSetPendingSeekForProbe(Duration? target) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._pendingSeek = target;
+  return true;
+}
+
+/// 缺陷①：读「本集是否已判定跳过片头」（`_introSkipped` 真实字段）
+bool? debugPlayerIntroSkippedForProbe() => _livePlayerState?._introSkipped;
+
+/// 缺陷③：读 `MediaSession.currentPosition`（**接口**上的那个 getter）
+///
+/// # 为什么不直接读 `_position`
+/// 详情区换源续播走的是 `_session?.currentPosition`（`media_page.dart`），
+/// 而 `MediaSession` 是播放器与合并页之间的**契约**。
+/// 断言"接口返回的就是当前播放位置"才覆盖了那条路径的起点；
+/// 只读 `_position` 会漏掉"getter 写错/被改成常量 0"这种缺陷。
+Duration? debugPlayerSessionCurrentPositionForProbe() =>
+    _livePlayerState?.currentPosition;
+
+/// 缺陷⑧：把"open 发起点"往前拨 [ago]，用来在无真实起播的环境里
+/// 造出"失败耗时落在超时窗内"这个**真实读数**
+bool debugPlayerAgeLoadStartForProbe(Duration ago) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._loadStartedAt = s._loadClock.elapsed - ago;
+  return true;
+}
+
+/// 缺陷⑧：读最近一次起播失败的耗时（`null` = 没有 / 没计时）
+Duration? debugPlayerStartFailureElapsedForProbe() =>
+    _livePlayerState?._startFailureElapsed;
+
+/// 缺陷⑧：读渲染路径用的归因输入（与 `build` 里那次 classify 同源）
+///
+/// 返回 `'kind=<name> elapsedMs=<n>'`；无播放页或没有错误时 `'no-state'` / `'no-error'`。
+String debugPlayerFailureAttributionForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return 'no-state';
+  final err = s._error;
+  if (err == null) return 'no-error';
+  final f = PlaybackErrorText.classify(
+    err,
+    kindHint: s._errorKind,
+    hadCandidates: s._streams.isNotEmpty,
+    elapsed: s._startFailureElapsed,
+  );
+  return 'kind=${f.kind.name} elapsedMs=${s._startFailureElapsed?.inMilliseconds ?? "-"}';
 }
 
 /// ★★★ CR #22 ② 门禁用：把「起播失败」态**中性化**成干净态（不清别的字段）
@@ -18531,6 +19428,14 @@ String debugPlayerPlaybackFailureState() {
 }
 
 /// 读「底栏是否可见」（★ 第 3 条：关掉面板后底栏必须回来）
+/// ★ 顶栏/底栏"显隐广播"的当前值（`_controlsLive`）—— 只读
+///
+/// 不变量：**任何时候** `_controlsLive.value == _controlsVisible`。
+/// 改前 `_autoHideNow()` 不推这个值 ⇒ 隐藏后它仍停在 true，
+/// 于是"鼠标唤起"那次 push 因 `true == true` 提前 return ⇒ 顶栏不重建 ⇒
+/// 返回箭头看得到却点不到（不透明度 1.0 + IgnorePointer 仍挡）。
+bool? debugPlayerControlsLiveForProbe() => _livePlayerState?._controlsLive.value;
+
 bool? debugPlayerControlsVisible() {
   final s = _livePlayerState;
   if (s == null) return null;
@@ -18744,6 +19649,31 @@ Future<bool> debugPlayerApplySessionForProbe(PlayRequestData req) async {
   return true;
 }
 
+/// Drive the production source-switch entry; replace only external transport.
+Future<bool> debugPlayerApplySwitchForProbe({
+  required String provider,
+  required String id,
+  required MediaDetail detail,
+}) async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._switchDetailForProbe = (_, __) async => detail;
+  s._switchRepointForProbe = (_) async {};
+  try {
+    await s._applySwitch(SwitchPick(
+      provider: provider,
+      id: id,
+      title: detail.title,
+      episodeIndex: 1,
+      position: 0,
+    ));
+    return true;
+  } finally {
+    s._switchDetailForProbe = null;
+    s._switchRepointForProbe = null;
+  }
+}
+
 /// 探针：直接调**生产方法** `showRewatchPrompt`（把浮层摆出来）
 bool debugPlayerShowRewatchPromptForProbe(Duration position) {
   final s = _livePlayerState;
@@ -18755,6 +19685,36 @@ bool debugPlayerShowRewatchPromptForProbe(Duration position) {
 /// 探针：读"浮层是否正在显示"（与渲染用的是同一个字段）
 bool debugPlayerRewatchPromptVisible() =>
     _livePlayerState?._rewatchPrompt != null;
+
+/// ★ task-14：**真的点一次「继续观看」**（走生产 `continueFromRewatchPrompt`）
+///
+/// # 为什么必须是生产方法
+/// ```text
+/// 缺陷就藏在"这条入口绕过了用户意图通道"上（裸 `_player.seek`）。
+/// 测试若自己在外面 `_player.seek(...)`，测的是测试自己，不是那条入口。
+/// ⇒ 走生产方法 ⇒ 修好后 `_noteUserSeek` / `_introSkipped` 都会生效；
+///   回退成裸 seek ⇒ `_maybeSkip` 立刻把位置顶掉（用例变红）。
+/// ```
+/// 返回 false = 没挂页或没有待处理的浮层。
+bool debugPlayerContinueRewatchForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  if (s._rewatchPrompt == null) return false;
+  s.continueFromRewatchPrompt();
+  return true;
+}
+
+/// ★ task-14 探针：`_load()` 至今被调用了几次（`null` = 没挂页）
+///
+/// 第 02 项「点重试 ⇒ 真的重新起播」用它做**差值**断言（+1）。
+int? debugPlayerLoadCallsForProbe() => _livePlayerState?._loadCalls;
+
+/// ★ task-26 探针：`_startPlayback()` 至今被调用了几次（`null` = 没挂页）
+///
+/// 用来钉住「换集后不许再用**旧候选**起播」：点开作品后立刻切集，
+/// 正确结果是 **1 次**（新集那一次）；在途旧链路抢跑就会变成 2 次。
+int? debugPlayerStartPlaybackCallsForProbe() =>
+    _livePlayerState?._startPlaybackCalls;
 
 /// ★★★ 探针读数：当前会话**自己那把键**（`provider:id`），`null` = 没挂上。
 ///
@@ -18817,9 +19777,39 @@ bool debugPlayerResetResumeGuardForProbe() {
   return true;
 }
 
+/// Inject only the native user-seek boundary; production dispatch stays intact.
+bool debugPlayerSetUserSeekForProbe(Future<void> Function(Duration)? seek) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._userSeekForProbe = seek;
+  return true;
+}
+
+/// Observe only the native resume seek boundary, not cancellation logic.
+bool debugPlayerSetResumeSeekForProbe(Future<void> Function(Duration)? seek) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._resumeSeekForProbe = seek;
+  return true;
+}
+
+/// Start the production resume waiter with an unknown media duration.
+/// Tests must advance duration and drive session changes separately.
+Future<bool> debugPlayerStartResumeWaitForProbe(Duration target) async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._duration = Duration.zero;
+  s._realDuration = Duration.zero;
+  s._pendingSeek = target;
+  s._resumeSeekDone = false;
+  await s._seekAfterReady(target, ++s._seekToken);
+  return true;
+}
+
 bool debugPlayerSeekForProbe(Duration target) {
   final s = _livePlayerState;
   if (s == null) return false;
+  // seek-intent: programmatic — 仅探针（测试直接驱动原生 seek 边界）
   s._player.seek(target);
   return true;
 }

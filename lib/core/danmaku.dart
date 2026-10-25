@@ -547,6 +547,38 @@ String sha256Hex(String text) {
 /// ```
 /// 所以 [xErrorMessage] / [errorCode] / [errorMessage] / [body] 全部原样保留，
 /// [message] 只是给人看的一句话总结，**不替换**原文。
+/// 一次请求**在 core 层**是怎么失败的（归因），与 [DanmakuException.message] 的文案分开
+///
+/// # 为什么必须有它（2026-10-25 · 第 05 项带出的真缺陷）
+/// ```text
+/// 改前只有 message 这一条信息通道，而 message 是**给人看的文案**。
+/// 于是上层（`DanmakuProbeReport.fromError`）只能靠**异常类型**归因：
+///   `TimeoutException` ⇒ 超时档
+/// 可到了 UI 手里，异常已经被 core 翻译成 `DanmakuException` 了 ——
+///   类型信息**在路上丢了** ⇒ 掉进兜底 `probeFailed`（"检测过程本身出错了"）。
+/// 实测后果：最常见的「网络超时」被说成"检测这一步自己出错了，
+///   请把原文反馈给我们"，把用户推向反馈日志，而不是重试/检查网络。
+/// ```
+/// ⇒ 把**归因**作为独立字段随异常带出去：文案改字不影响归因，归因也不再靠字符串猜。
+/// ⚠️ 默认值 [none] ⇒ 所有既有构造点（含测试里手写的 `DanmakuException('…')`）
+///    行为逐字不变，只是"没有归因"。
+enum DanmakuFailureKind {
+  /// 没带归因（既有构造点 / 非网络失败）
+  none,
+
+  /// 等回应等到超时（core 里 catch 的是 `TimeoutException`）
+  timeout,
+
+  /// 连接/发送阶段的 socket 失败（core 里 catch 的是 `SocketException`）
+  ///
+  /// ⚠️ 具体档位（解析失败 / 连接被拒 / 超时）由 [DanmakuException.osErrorCode]
+  ///    交给同一套 errno 判据细分 —— 本枚举只说"这是 socket 层"。
+  socket,
+
+  /// 协议层错误（core 里 catch 的是 `HttpException`：这个地址回的不是弹幕协议）
+  protocol,
+}
+
 class DanmakuException implements Exception {
   DanmakuException(
     this.message, {
@@ -558,10 +590,25 @@ class DanmakuException implements Exception {
     this.uri = '',
     this.resolvedAddress = '',
     this.hint,
+    this.failureKind = DanmakuFailureKind.none,
+    this.osErrorCode = 0,
   });
 
   /// 中文一句话总结（UI 主文案）
   final String message;
+
+  /// **归因**：这次失败发生在哪一层（与 [message] 的文案解耦）
+  ///
+  /// 上层（[DanmakuProbeReport.fromError] / `fromDanmakuException`）优先读它；
+  /// 为 [DanmakuFailureKind.none] 时才退回按异常类型/errno 猜。
+  final DanmakuFailureKind failureKind;
+
+  /// 原始 errno（仅 [DanmakuFailureKind.socket] 有意义；0 = 没拿到）
+  ///
+  /// ★ 单独带出来的理由：`SocketException` 在 core 里被翻译成
+  ///   `DanmakuException` 之后，errno 本来也一起丢了 ⇒ 上层再也分不清
+  ///   「解析不出来（11001）」「连接被拒（10061）」「连接超时（10060）」。
+  final int osErrorCode;
 
   /// HTTP 状态码，0 表示还没发出去就失败了（DNS / 连接超时等）
   final int statusCode;
@@ -681,6 +728,16 @@ abstract class DanmakuTransport {
 ///                            不跟随重定向的话永远拿不到弹幕
 /// connectionTimeout        —— 移动网络下别无限等
 /// ```
+/// Null selects environment proxy resolution; DIRECT stays explicit.
+String danmakuProxyForUri(
+  Uri uri,
+  String? findProxy, {
+  Map<String, String>? environment,
+}) => findProxy ?? HttpClient.findProxyFromEnvironment(
+  uri,
+  environment: environment ?? Platform.environment,
+);
+
 class IoDanmakuTransport implements DanmakuTransport {
   /// [findProxy] 是 `HttpClient.findProxy` 的**直接值**（如
   /// `'PROXY 127.0.0.1:7890'` / `'DIRECT'`）；null = 直连。
@@ -708,7 +765,8 @@ class IoDanmakuTransport implements DanmakuTransport {
               ..connectionTimeout = const Duration(seconds: 10)
               ..userAgent = 'sourin-flutter-spike/danmaku'
               // 无条件赋值（见构造函数文档：null ⇒ 显式 'DIRECT'）
-              ..findProxy = ((String? p) => (Uri _) => p ?? 'DIRECT')(findProxy));
+              ..findProxy = ((String? p) => (Uri uri) =>
+                  danmakuProxyForUri(uri, p))(findProxy));
 
   final HttpClient _client;
   final Duration timeout;
@@ -2302,6 +2360,8 @@ class ExternalDanmakuClient {
         '弹幕服务没有响应（超时）。可以稍后重试。',
         // statusCode 0 = 还没拿到响应（同 DanmakuException 的既有约定）
         uri: _safeUri(uri),
+        // ★ 归因随异常带出（不要靠上面那句文案去猜；文案以后可以改）
+        failureKind: DanmakuFailureKind.timeout,
       );
     } on SocketException catch (e) {
       /*
@@ -2332,6 +2392,9 @@ class ExternalDanmakuClient {
         '连不上弹幕服务（地址不通或服务没起来）。请检查地址 / 服务是否在运行。',
         uri: _safeUri(uri),
         resolvedAddress: _addressOf(e),
+        // ★ 归因 + errno 一起带出：上层据此细分「解析失败 / 被拒 / 超时」
+        failureKind: DanmakuFailureKind.socket,
+        osErrorCode: e.osError?.errorCode ?? 0,
       );
     } on HttpException {
       /*
@@ -2342,6 +2405,7 @@ class ExternalDanmakuClient {
       throw DanmakuException(
         '弹幕服务返回了不合法的响应（协议错误）。请确认这个地址是弹幕服务。',
         uri: _safeUri(uri),
+        failureKind: DanmakuFailureKind.protocol,
       );
     }
   }
@@ -2769,12 +2833,22 @@ enum DanmakuSourceKind {
 class DanmakuSourceSelector {
   /// 返回应该使用的数据源。
   ///
-  /// [transport] 可注入假 transport 做双环境单测；[timeout] 限制探测
-  /// 最长等待，避免本地服务假死时拖住取弹幕。
+  /// [transport] 可注入假 transport 做双环境单测。
   /// [endpoint] 非空时**优先**探用户自建后端（见 [DanmakuEndpoint]）。
+  ///
+  /// # ★★★ 2026-10-25（第 05 项复核修复 C3）：[timeout] 默认 **null**
+  /// ```text
+  /// 改前：`Duration timeout = const Duration(seconds: 2)` 并**无条件透传**给
+  ///   [DanmakuLocalService.probe] ⇒ `probe` 里那句
+  ///   `timeout ??= 公共 15s / 本机 2s` 永远拿不到 null ⇒
+  ///   **公共实例的分档被这一层默认值顶掉**，只剩 2s（实测必然假阴性）。
+  ///   这与 `describe()` 被修掉的是**同一个病**，只是位置高了一层。
+  /// 现在：默认 null ⇒ 交给 `probe` 按实例类型分档；
+  ///   需要卡死预算的调用方仍可显式传一个 Duration。
+  /// ```
   static Future<DanmakuSourceKind> select({
     DanmakuTransport? transport,
-    Duration timeout = const Duration(seconds: 2),
+    Duration? timeout,
     DanmakuEndpoint? endpoint,
   }) async {
     final status = await DanmakuLocalService.probe(
@@ -2890,11 +2964,36 @@ class DanmakuLocalService {
   /// ⚠️ 默认 [timeout] 保持 2 s 不变（与改前逐字一致）：
   ///    本机 2080 是毫秒级，2 s 足够；内置公网实例本来就要靠
   ///    `_probeOne` 的 404 快速失败，不吃这个预算。
+  /// 公共实例的探活预算（**分档的另一半**，见 [localProbeBudget]）
+  ///
+  /// # 为什么是 15s 而不是 2s（实测读数，`plan-2026-10-23` 缺陷⑤ 根因三）
+  /// ```text
+  /// 预算   结果              耗时
+  ///  2 s   online=false      2004ms（三次 _probeOne 共用一个 deadline，
+  ///                              version 那条 404 就要 2.7s ⇒ 后面的端点
+  ///                              一个字节都没发出去）
+  /// 12 s   online=false     12001ms（两个 404 先烧掉约 4s，活的 search
+  ///                              端点只剩 8s 不到 ⇒ 撞线）
+  /// 30 s   online=true      10745ms（viaPath=anime）
+  /// ```
+  /// ⇒ 只放宽预算不够，**同时**把唯一活的端点（search）提到最前（见 [probe]）。
+  ///   这两条一起做之后，真实耗时约 5s；15s 是留了 2~3 倍余量的上界，
+  ///   而不是"实测值+1s"这种看着刚好、换个网络就假阴性的数。
+  /// ⚠️ 别把本档的数值改小又只留 search：本机回环与自建后端仍是 2s，
+  ///   它们是毫秒级；混成一个数会让公网实例假阴性或让本机白等。
+  static const Duration publicProbeBudget = Duration(seconds: 15);
+
+  /// 本机 / 自建后端的探活预算（回环与局域网本来就是毫秒级）
+  static const Duration localProbeBudget = Duration(seconds: 2);
+
   static Future<DanmakuLocalStatus> probe({
     DanmakuTransport? transport,
-    Duration timeout = const Duration(seconds: 2),
+    Duration? timeout,
     DanmakuEndpoint? endpoint,
   }) async {
+    timeout ??= _isPublicEndpoint(endpoint)
+        ? publicProbeBudget
+        : localProbeBudget;
     final t = transport ??
         IoDanmakuTransport(
           timeout: timeout,
@@ -2911,11 +3010,26 @@ class DanmakuLocalService {
      */
     final clock = Stopwatch()..start();
     Duration remaining() {
-      final left = timeout - clock.elapsed;
+      final left = timeout! - clock.elapsed;
       return left.isNegative ? Duration.zero : left;
     }
 
     try {
+      // Public instances expose search, not desktop metadata. Give the useful
+      // endpoint the full bounded budget instead of spending it on known 404s.
+      if (_isPublicEndpoint(endpoint) && endpoint != null) {
+        final publicStatus = await _probeOne(
+          t,
+          endpoint.resolve(searchProbePath, const {'keyword': 'a'}),
+          remaining(),
+          endpoint: endpoint,
+        );
+        return publicStatus ?? DanmakuLocalStatus(
+          online: false,
+          endpoint: endpoint,
+          isPublicInstance: true,
+        );
+      }
       // ① 首选：弹弹play 桌面版的原生端点（本机 2080 与本机自建实例同款拼法）
       final st0 = await _probeOne(
         t,
@@ -3042,9 +3156,14 @@ class DanmakuLocalService {
 
   /// 「数据源」状态行文案：本机显示「检测到本机外部弹幕 未运行」，
   /// 在线时显示端口（带版本更好）。
+  ///
+  /// ⚠️ [timeout] 默认 **null**（= 按实例类型分档，见 [probe]）。
+  /// 改前这里默认写死 `Duration(seconds: 2)` 并**原样透传**给 [probe]，
+  /// ⇒ 传 null 才有分档，而生产两处调用都用默认值 ⇒ 分档被自己这层默认值
+  /// 顶掉了，公共实例永远只有 2s（实测必然假阴性）。
   static Future<DanmakuLocalStatus> describe({
     DanmakuTransport? transport,
-    Duration timeout = const Duration(seconds: 2),
+    Duration? timeout,
     DanmakuEndpoint? endpoint,
   }) => probe(transport: transport, timeout: timeout, endpoint: endpoint);
 }

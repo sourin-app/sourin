@@ -2,21 +2,19 @@
 library;
 
 // ══════════════════════════════════════════════════════════════════════
-//  t92 行为级：底栏按钮行在「单行真放得下」之前**必须**换形，不许画出边界
+//  t92 行为级：底栏按钮行「单行真放得下吗」——不换形就不许画出边界
 // ══════════════════════════════════════════════════════════════════════
 //
 // # 这条测试要钉住的缺陷（task-33 真渲染探针取证，不是静态推断）
 //
-// 播放页底栏的按钮行是二选一：宽屏 `row`（14 项，行内带 `Spacer`）/
-// 窄屏 `compactRow`（三行，第三行自带横向滚动兜底）。选谁由
-// `player_page.dart` 里的 `fits` 决定。
-//
-// 缺陷期判据是 `fits = 约束有界 && 约束宽 >= _kBottomBarFitWidth(480)`：
+// 播放页底栏的按钮行有两种形态：**单行**（常驻项 + 条件项同一 Row，行内带
+// `Spacer`）/ **两行**（常驻项一行 + 条件项自己一行、带横向滚动兜底）。
+// 选哪一种由**可用宽**决定。缺陷期判据是 `fits = 约束有界 && 约束宽 >= 480`：
 // 它只回答「约束有界吗」，**不回答「单行真放得下吗」**。
 // 900 dp 视口（媒体页在 900 处切左右分栏 ⇒ 底栏可用宽只剩 528 dp）
-// 走的是 `row`：`Spacer`（`Expanded`）被压到 0，行仍按**固有宽 771.43**
-// 布局并**画出边界**，超出的按钮被祖先 `Stack` 裁掉 —— 用户看到的是
-// 按钮凭空消失，而且没有滚动条可滑。
+// 走的是单行：`Spacer`（`Expanded`）被压到 0，行仍按**固有宽**布局并
+// **画出边界**，超出的按钮被祖先 `Stack` 裁掉 —— 用户看到的是按钮凭空消失，
+// 而且没有滚动条可滑。
 //
 // 读数（`.probe/android_fix/diag_bar11.txt`，真渲染探针，textScale 1.0）：
 // ```text
@@ -34,25 +32,50 @@ library;
 //
 // # 为什么这一条以前抓不到
 // `RenderFlex` 的溢出**只是 debug 诊断**（release 里静默裁切、无任何提示），
-// 而当时所有测试都跑在 1280x800（可用 864 > 771.43）⇒ 永远不触发。
+// 而当时所有测试都跑在 1280x800（可用 864 > 固有宽）⇒ 永远不触发。
 // ⇒ 本文件是**唯一**覆盖 [528, 830) 这一段的守卫。
 //
-// # 断言与证据同层（不用语法层断言）
-// 不写「源码里阈值改成 830 了」那种断言（lesson #562：一次让功能变强的
-// 重构会把它判红，而真正的回归它又抓不住）。这里断言渲染层的三件事：
+// ══════════════════════════════════════════════════════════════════════
+//  ★★★ 2026-10-25（task-38）：判定 **D 已过期**，判据已重写
+// ══════════════════════════════════════════════════════════════════════
+//
+// # 判 D 的证据（实测，不是"看着像"）
 // ```text
-// ① FlutterError.onError 里没有 overflowed（Flutter 自己的溢出诊断）
-// ② 按钮行 maxRight <= avail（真几何：最右子项右缘不出行宽）
-// ③ 换形确实发生了（compactRow 专属的 Icons.more_vert 在、
-//    宽屏专属的 Icons.tune 不在）
+// 旧档位的四个标记（tooltip '截图' / Icons.photo_camera / Icons.tune /
+// Icons.more_vert）在**今天的底栏里一个都不存在**：
+//   · 截图 与 弹幕设置(tune) 已搬进「更多」菜单
+//     （player_page.dart:6385 / :6467，都在 `_moreMenuGroups` 里），不在底栏按钮行；
+//   · 「更多」那枚用的是 `AppIcons.more_horiz`（0xe402），**不是** more_vert（0xe404）。
+// 实测（`.probe/final-t92-diag.log`，逐档 dump 底栏图标码点集）：
+//   1280/1152/1024/960/900/800 六档的底栏图标集里都没有 0xe4b6 / 0xe683 / 0xe404，
+//   但都有 0xe57f(`settings`) ⇒ **底栏渲染正常**（不是产品没画），
+//   是**旧断言在找已经搬走的按钮** ⇒ 原来那 5 条红全是测试自身过期。
 // ```
 //
-// ★ 仪器自检（本文件必须自己证明尺子灵敏）：
-//   ① 那一组在 1280 dp 断言走的是**宽屏**那一支（`Icons.tune` 在、
-//   `Icons.more_vert` 不在）—— 若它报「换形了」，说明 finder 判据写错，
-//   ② 的几何断言也就失去了意义。
-// ★ 红度证明：把 `_kBottomBarRowWidth` 改回 480 ⇒ 900/1024 两组的
-//   ① 与 ② 一起红（读数见上表）。
+// # 同时确认：那条真缺陷确实**已经修好了**（所以几何判据继续有意义）
+// ```text
+// 形态选择现在在 `PlayerBottomBar._buttonsRow`
+// （lib/ui/player/player_bottom_bar.dart:1477-1580）：
+//     final wide = avail >= _kBarRowWidth;   // 720
+//     wide  ⇒ Row([...primary, Spacer(), ...secondary])
+//     否则  ⇒ Column([Row(primary + Spacer + 全屏),
+//                     SingleChildScrollView(Row(secondary))])
+// ⇒ 窄档把条件项放进**横向滚动**里，结构上不可能溢出。
+// 实测（同一次诊断）：900/960/1024 可用宽 528/588/652 全 < 720 ⇒ 两行 + 1 个横向滚动；
+//   1152/1280 可用宽 774/864 ≥ 720 ⇒ 单行 + 0 个横向滚动。
+// 所有档位的行几何：size == avail == maxRight（毫厘不差），**零溢出**。
+// ```
+//
+// # 因此本文件现在断言什么（都仍是"渲染层事实"，不写源码字符串）
+// ```text
+// ① 底栏真的渲染了：PlayerBottomBar ≥ 1、量到 ≥ 1 根横向行、齿轮(settings)在。
+// ② 形态确实跟着可用宽换：available ≥ 720 ⇒ 单行（**整页 0 个横向 ScrollView**）；
+//    < 720 ⇒ 两行（**整页恰好 1 个横向 ScrollView** = 条件项那条兜底）。
+// ③ 任何宽度下都不许画出边界：每根行 maxRight ≤ avail + 0.01、size ≤ avail + 0.01。
+// ④ 尺子自证（两条对照，缺一条本文件就可能是恒绿）：
+//    · 合成一个**已知溢出**的 Row ⇒ `_guard` 必须抓到 'overflowed'；
+//    · 旧标记必须**一个都不在** ⇒ D 的判定可复算（谁把它们搬回底栏，这条会红）。
+// ```
 //
 // ⚠️ 视口必须用 `tester.view.physicalSize` / `devicePixelRatio`，
 //    **不能**用 `setSurfaceSize` —— 后者只改布局约束、不改 FlutterView
@@ -65,6 +88,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'package:sourin_spike/ui/player/player_bottom_bar.dart';
 import 'package:sourin_spike/ui/theme_bridge.dart';
 import 'package:sourin_spike/ui/media_page.dart';
 import 'package:sourin_spike/ui/remote_bridge.dart';
@@ -166,9 +190,8 @@ void _claim(WidgetTester t) {
 /// 挂载**真实** `MediaPage`（⇒ 真实 `PlayerPage` ⇒ 真实 `_BottomBar`）
 ///
 /// ★ 用 `MediaPage` 而不是直接挂 `PlayerPage`：底栏最窄的那一刻就是
-///   `media_page.dart:703` 的 `final wide = mq.size.width >= 900;` 把视口
-///   切成分栏之后（视频列只剩 视口−32−detailW）—— 直接挂 PlayerPage 会
-///   漏掉这个「越宽反而越窄」的拐点（900 的可用宽 528 < 800 的 768）。
+///   `media_page.dart` 把视口切成分栏之后（视频列只剩 视口−32−detailW）——
+///   直接挂 PlayerPage 会漏掉这个「越宽反而越窄」的拐点（900 的可用宽 528 < 800 的 768）。
 Future<void> _mountMedia(WidgetTester t, double w, double h) async {
   t.view.devicePixelRatio = 1.0;
   t.view.physicalSize = Size(w, h);
@@ -186,67 +209,45 @@ Future<void> _moreFrames(WidgetTester t) async {
   }
 }
 
-/// 首帧的 widget 层判据（**必须**与 `_barRows` 同一时刻取）
+/// 首帧的一次完整取证
 ///
-/// ⚠️ 这些计数**不能**等 `_moreFrames` 之后再取：`_load()` 挂在
+/// ⚠️ widget 计数**不能**等 `_moreFrames` 之后再取：`_load()` 挂在
 ///    `addPostFrameCallback` 上，flutter_tester 里 `sourin_core.dll`
 ///    加载不了 ⇒ `_load()` 必失败 ⇒ `_error` 置上 ⇒ 底栏整条消失
 ///    （`t63_shot_ui_test.dart` 的 `frames: 1` 就是为同一件事）。
 ///    第一版 t92 正是在 8 帧之后才做 finder 断言 ⇒ 五条全红在
-///    「Found 0 widgets」—— 那是**仪器**问题，不是被测代码的问题。
-class _Ui {
-  _Ui(this.shot, this.cam, this.gear, this.tune, this.more);
-
-  /// `tooltip '截图'`：宽屏支与 compactRow **都有** ⇒ 通用阳性对照
-  final int shot;
-
-  /// `Icons.photo_camera`：两支都有
-  final int cam;
-
-  /// `Icons.settings`：两支都有
-  final int gear;
-
-  /// `Icons.tune`：**只有**宽屏支有（compactRow 的 t68 E③ 要求它是 0）
-  final int tune;
-
-  /// `Icons.more_vert`：**只有** compactRow 有（`player_page.dart:11630`）
-  final int more;
-
-  @override
-  String toString() =>
-      'shot=' + shot.toString() + ' cam=' + cam.toString() + ' gear=' +
-          gear.toString() + ' tune=' + tune.toString() + ' more=' +
-          more.toString();
-}
-
-/// 一条宽度档位的完整取证：首帧几何 + 首帧 widget 判据 + 溢出正文
-Future<({List<_BarRow> rows, List<String> ovf, _Ui ui})> _probe(
+///    「Found 0 widgets」—— 那是**仪器**问题。
+Future<({List<_BarRow> rows, List<String> ovf, int gear, int scrolls})> _probe(
   WidgetTester t,
   double w,
 ) async {
   final sink = <String>[];
   late List<_BarRow> rows;
-  late _Ui ui;
+  late int gear;
+  late int scrolls;
   await _guard(sink, () async {
     await _mountMedia(t, w, 900);
     // ★ 首帧：底栏一定还在（`_load()` 的 post-frame 回调还没跑）
     rows = _barRows(t);
-    ui = _Ui(
-      find.byTooltip('截图').evaluate().length,
-      find.byIcon(Icons.photo_camera).evaluate().length,
-      find.byIcon(Icons.settings).evaluate().length,
-      find.byIcon(Icons.tune).evaluate().length,
-      find.byIcon(Icons.more_vert).evaluate().length,
-    );
+    gear = find.byIcon(Icons.settings).evaluate().length;
+    scrolls = find.byType(SingleChildScrollView).evaluate().length;
     await _moreFrames(t);
   });
   _claim(t);
   return (
     rows: rows,
     ovf: sink.where((s) => s.contains('overflowed')).toList(),
-    ui: ui,
+    gear: gear,
+    scrolls: scrolls,
   );
 }
+
+/// 底栏「单行」所需的可用宽（= `player_bottom_bar.dart` 的 `_kBarRowWidth`）
+///
+/// ⚠️ 这是**复制**进测试的常量（原常量私有）。它只用来解释档位分界，
+///   判据本身用的是"可观测的后果"（单行 / 两行），且两侧都留了余量：
+///   1024 可用 652（<720 ⇒ 两行）、1152 可用 774（≥720 ⇒ 单行）。
+const double _kRowFitExplainWidth = 720;
 
 void main() {
   setUpAll(() {
@@ -258,65 +259,143 @@ void main() {
   setUp(() => RemoteBridge.instance.stop());
   tearDown(() => RemoteBridge.instance.stop());
 
-  testWidgets('t92 ① 仪器自检：1280 dp 走**宽屏**那一支（tune 在 / more_vert 不在）',
+  testWidgets('t92 ① 仪器自检：1280 dp 底栏渲染且走**单行**（几何必须量到东西）',
       (t) async {
     final r = await _probe(t, 1280);
+    final barRows = r.rows.where((x) => x.avail.isFinite).toList();
 
-    expect(r.ui.shot, 1,
-        reason: '★★ 阳性对照（首帧）：tooltip 截图 在宽屏支与 compactRow '
-            '**都有** —— 若这条不过，说明底栏压根没渲染（仪器问题），'
-            '下面所有几何断言都没有意义。实测 ' + r.ui.toString());
-    expect(r.ui.tune, 1,
-        reason: '★ 宽屏专属：Icons.tune 只在 row 里（compactRow 的 t68 E③ '
-            '要求它是 0）⇒ 它在一个就证明走的是宽屏那一支。实测 ' +
-            r.ui.toString());
-    expect(r.ui.more, 0,
-        reason: '★ more_vert 是 compactRow 专属（player_page.dart:11630）。实测 ' +
-            r.ui.toString());
+    // ★★★ 阳性对照：底栏必须真的在。
+    //   旧版这里断的是 tooltip '截图'，而截图已搬进「更多」菜单 ⇒ 那条早已失效
+    //   （见文件头 D 的判定）：空转的阳性对照比没有更糟。
+    expect(find.byType(PlayerBottomBar), findsWidgets,
+        reason: '★★ 阳性对照：底栏组件本身必须挂上（否则下面所有几何断言都是空转）');
+    expect(r.gear, 1,
+        reason: '★★ 阳性对照：底栏的齿轮（Icons.settings，0xe57f）必须在 —— '
+            '它在两种形态里都渲染，是最稳的"底栏真的画出来了"标记。实测 '
+            'gear=${r.gear} rows=${r.rows}');
+    expect(barRows, isNotEmpty,
+        reason: '★ 必须量到「约束有界」的横向行（否则断言空转）');
 
-    expect(r.ovf, isEmpty, reason: '★ 1280x800 可用 864.00 > 固有 771.43，'
-        '修前修后都不该溢出（这是「没修坏」的对照）');
-    final wide = r.rows.where((x) => x.kids >= 3 && x.avail.isFinite).toList();
-    expect(wide, isNotEmpty, reason: '★ 至少量到一根「有内容的、约束有界的」行');
-    for (final x in r.rows.where((x) => x.avail.isFinite)) {
+    // ★ 形态判据：可用 864 ≥ 720 ⇒ 单行 ⇒ 整页没有横向滚动兜底
+    expect(r.scrolls, 0,
+        reason: '★ 1280 可用宽 ${barRows.first.avail.toStringAsFixed(0)} ≥ '
+            '$_kRowFitExplainWidth ⇒ 必须走**单行**（条件项直接排在常驻项后面），'
+            '也就是整页不该出现横向 ScrollView。实测 scrolls=${r.scrolls}');
+
+    expect(r.ovf, isEmpty,
+        reason: '★ 1280x800 可用 864 > 固有宽，修前修后都不该溢出（「没修坏」对照）');
+    for (final x in barRows) {
+      expect(x.maxRight, lessThanOrEqualTo(x.avail + 0.01),
+          reason: '★ 最右子项右缘不得超出行宽：' + x.toString());
+      expect(x.size, lessThanOrEqualTo(x.avail + 0.01),
+          reason: '★ 行自身宽度不得超出可用宽：' + x.toString());
+    }
+    // ignore: avoid_print
+    print('[t92] 1280 rows=${r.rows.map((x) => x.toString()).join(' | ')} '
+        'gear=${r.gear} scrolls=${r.scrolls}');
+  });
+
+  group('t92 ② 换形守卫（可用宽 < $_kRowFitExplainWidth ⇒ 两行 + 横向兜底）', () {
+    for (final w in <double>[900, 960, 1024]) {
+      testWidgets('视口 ' + w.toInt().toString() + ' dp：换形、不画出边界', (t) async {
+        final r = await _probe(t, w);
+        final barRows = r.rows.where((x) => x.avail.isFinite).toList();
+        final avail = barRows.isEmpty ? 0.0 : barRows.first.avail;
+
+        expect(barRows, isNotEmpty, reason: '★ 必须量到底栏（否则断言空转）');
+        expect(avail, lessThan(_kRowFitExplainWidth),
+            reason: '★ 这一档的可用宽必须 < $_kRowFitExplainWidth 才叫"窄档"'
+                '（实测 avail=${avail.toStringAsFixed(0)}）');
+        expect(r.scrolls, 1,
+            reason: '★ 窄档必须换形到「常驻项一行 + 条件项一行（横向滚动兜底）」'
+                '⇒ 整页恰好 1 个横向 ScrollView。实测 scrolls=${r.scrolls} '
+                '（0 = 还在单行 ⇒ 换形失效；>1 = 底栏之外又多出滚动容器，需人看）');
+        expect(barRows.length, greaterThanOrEqualTo(2),
+            reason: '★ 两行形态：至少量到 2 根有界横向行，实测 ${barRows.length} 根');
+
+        expect(r.ovf, isEmpty,
+            reason: '★ 这一档**不许**有 RenderFlex 溢出（缺陷期读数：900 ⇒ 243 px、'
+                '960 ⇒ 183 px、1024 ⇒ 119 px）。实测：' + r.ovf.join(' / '));
+        for (final x in barRows) {
+          expect(x.maxRight, lessThanOrEqualTo(x.avail + 0.01),
+              reason: '★ [' +
+                  w.toInt().toString() +
+                  '] 最右子项右缘不得超出行宽：' +
+                  x.toString());
+          expect(x.size, lessThanOrEqualTo(x.avail + 0.01),
+              reason: '★ [' +
+                  w.toInt().toString() +
+                  '] 行自身宽度不得超出可用宽：' +
+                  x.toString());
+        }
+        // ignore: avoid_print
+        print('[t92] ${w.toInt()} rows=${r.rows.map((x) => x.toString()).join(' | ')} '
+            'gear=${r.gear} scrolls=${r.scrolls}');
+      });
+    }
+  });
+
+  testWidgets('t92 ③ 边界：1152 dp 可用 774 ≥ $_kRowFitExplainWidth ⇒ 回到单行',
+      (t) async {
+    final r = await _probe(t, 1152);
+    final barRows = r.rows.where((x) => x.avail.isFinite).toList();
+    expect(barRows, isNotEmpty);
+    expect(barRows.first.avail, greaterThanOrEqualTo(_kRowFitExplainWidth),
+        reason: '★ 1152 的可用宽必须回到 ≥ $_kRowFitExplainWidth（实测 '
+            '${barRows.first.avail.toStringAsFixed(0)}）');
+    expect(r.scrolls, 0, reason: '★ 单行档不该有横向滚动兜底，实测 ${r.scrolls}');
+    expect(r.ovf, isEmpty, reason: '★ 不许溢出：' + r.ovf.join(' / '));
+    for (final x in barRows) {
       expect(x.maxRight, lessThanOrEqualTo(x.avail + 0.01),
           reason: '★ 最右子项右缘不得超出行宽：' + x.toString());
     }
     // ignore: avoid_print
-    print('[t92] 1280 rows=' + r.rows.map((x) => x.toString()).join(' | '));
+    print('[t92] 1152 rows=${r.rows.map((x) => x.toString()).join(' | ')}');
   });
 
-  for (final w in <double>[900, 960, 1024, 1152]) {
-    testWidgets('t92 ② 视口 ' + w.toInt().toString() + ' dp：换形、不画出边界',
-        (t) async {
-      final r = await _probe(t, w);
-      final tag = '[' + w.toInt().toString() + '] ';
-
-      expect(r.ovf, isEmpty,
-          reason: '★ 这一档**不许**有 RenderFlex 溢出（缺陷期读数：900 ⇒ 243 px、'
-              '960 ⇒ 183 px、1024 ⇒ 119 px）。实测：' + r.ovf.join(' / '));
-      expect(r.ui.shot, 1,
-          reason: '★★ 阳性对照（首帧）：截图按钮必须在（两支都有）。实测 ' +
-              r.ui.toString());
-      expect(r.ui.more, 1,
-          reason: '★ 必须换形到 compactRow —— 「更多」是它专属的入口。实测 ' +
-              r.ui.toString());
-      expect(r.ui.tune, 0,
-          reason: '★ 宽屏专属的 tune 不许在（它在「更多」菜单里是**文字**项，'
-              '没有图标）。实测 ' + r.ui.toString());
-
-      final measured = r.rows.where((x) => x.avail.isFinite).toList();
-      expect(measured, isNotEmpty, reason: '★ 必须量到底栏（否则断言是空转）');
-      expect(measured.where((x) => x.kids >= 3).length, greaterThanOrEqualTo(1),
-          reason: '★ 至少要有一根有内容的行（0 子项的行是空转）');
-      for (final x in measured) {
-        expect(x.maxRight, lessThanOrEqualTo(x.avail + 0.01),
-            reason: '★ ' + tag + '最右子项右缘不得超出行宽：' + x.toString());
-        expect(x.size, lessThanOrEqualTo(x.avail + 0.01),
-            reason: '★ ' + tag + '行自身宽度不得超出可用宽：' + x.toString());
-      }
-      // ignore: avoid_print
-      print('[t92] ' + tag + 'rows=' + r.rows.map((x) => x.toString()).join(' | '));
+  // ══════════════════════════════════════════════════════════════════
+  //  ④ 尺子自证 —— 两条对照，缺一条本文件就可能恒绿
+  // ══════════════════════════════════════════════════════════════════
+  testWidgets('t92 ④-a 阴性对照：合成一个已知溢出的 Row ⇒ _guard 必须抓到', (t) async {
+    // 反面：把 `_guard` 的 sink 丢掉 / 把 `contains('overflowed')` 写错 ⇒ 这条红。
+    final sink = <String>[];
+    await _guard(sink, () async {
+      await t.pumpWidget(Directionality(
+        textDirection: TextDirection.ltr,
+        child: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 100,
+            child: Row(children: const [SizedBox(width: 400, height: 10)]),
+          ),
+        ),
+      ));
     });
-  }
+    _claim(t);
+    expect(sink.where((s) => s.contains('overflowed')), isNotEmpty,
+        reason: '★★ 阴性对照失败：合成溢出没被 _guard 抓到 ⇒ 上面所有 '
+            '"ovf 为空" 的断言都是空转（这条是本文件的尺子）');
+  });
+
+  testWidgets('t92 ④-b 阳性对照：旧档位标记必须**已不在**底栏（D 判定可复算）',
+      (t) async {
+    // 2026-10-25 判本文件「D 已过期」的依据就是这四个标记都没了。
+    // 钉住它们 ⇒ 谁把「截图 / 弹幕设置 / 更多(竖点)」搬回底栏，这条会红，
+    // 提醒重新评估本文件的档位判据（而不是让判据悄悄漂）。
+    await _mountMedia(t, 1280, 900);
+    final shot = find.byTooltip('截图').evaluate().length;
+    final cam = find.byIcon(Icons.photo_camera).evaluate().length;
+    final tune = find.byIcon(Icons.tune).evaluate().length;
+    final mv = find.byIcon(Icons.more_vert).evaluate().length;
+    // ignore: avoid_print
+    print('[t92] 旧标记复算 shot=$shot cam=$cam tune=$tune more_vert=$mv');
+    expect(shot + cam + tune + mv, 0,
+        reason: '★ 四个旧标记应当**都不在**底栏：截图/弹幕设置已搬进「更多」菜单'
+            '（player_page.dart:6385 / :6467），「更多」那枚是 more_horiz(0xe402) '
+            '不是 more_vert(0xe404)。实测 shot=$shot cam=$cam tune=$tune '
+            'more_vert=$mv ⇒ 若有任何一个非 0，说明产品或已回退，'
+            '本文件的档位判据需要重新评估');
+    await _moreFrames(t);
+    _claim(t);
+  });
 }

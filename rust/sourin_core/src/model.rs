@@ -1478,6 +1478,22 @@ pub enum PersistedProvider {
         /// 读出来是空 Vec ⇒ 退回内置兜底，行为与改动前一致。
         #[serde(default)]
         parsers: Vec<String>,
+        /// 配置里 `sites[].ext` 的**原样文本**（没有就是 `None`）
+        ///
+        /// # 为什么必须存（第19项收口，2026-10-25）
+        ///
+        /// `csp_Xxx` 源的行为由 ext 决定：
+        /// ```text
+        /// {"site":[...]}      该站点的镜像域名列表
+        /// {"cookie":"…"}      登录态来源
+        /// {"n":"…"}           分类名覆盖
+        /// ```
+        /// 不存 ext 的后果不是「少一个字段」，而是「**恢复出来的源不是用户配的那个**」：
+        /// 能播，但播的是默认站点/默认分类 —— 比打不开更难查（用户会以为源本来就这样）。
+        ///
+        /// `#[serde(default)]` ⇒ 旧清单（没有这个字段）照常能读，读出 `None`。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ext: Option<String>,
     },
     /// m3u/txt 播放列表直播源：只存列表地址，频道每次拉取时解析
     ///

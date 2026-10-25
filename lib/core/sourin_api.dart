@@ -42,6 +42,8 @@
 //    用 `show` 限定，不把整个 foundation 拉进来。
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
+import 'dart:convert' show jsonEncode;
+
 import 'ffi.dart';
 import 'json_utils.dart';
 import 'models.dart';
@@ -250,6 +252,35 @@ class SourinApi {
   static Future<List<String>> getProviderOrder() async {
     final r = await SourinCore.callAsync('get_provider_order');
     return jstrList(r);
+  }
+
+  // ── 源个性化覆盖层（第 06 项 P2）────────────────────────────────────
+  //
+  // 三条命令只读写 `<数据目录>/overrides/`，**绝不改插件与声明式源文件**。
+  // 覆盖层不可用（损坏/无权限）时，Rust 侧会原样透出原始数据，
+  // 所以这里读失败也只当作"未个性化"，不让整个源不可用。
+
+  /// 读取某源的覆盖层；`null` = 尚未个性化（正常状态，不是错误）
+  static Future<Map<String, dynamic>?> getOverrideLayer(String id) async {
+    final r = await SourinCore.callAsync('get_override_layer', {'id': id});
+    if (r is! Map) return null;
+    final layer = r['layer'];
+    return layer is Map ? Map<String, dynamic>.from(layer) : null;
+  }
+
+  /// 保存覆盖层（只写 overrides 目录）
+  static Future<String> saveOverrideLayer(Map<String, dynamic> layer) async {
+    final r = await SourinCore.callAsync('save_override_layer', {
+      'layer': jsonEncode(layer),
+    });
+    if (r is Map && r['path'] is String) return r['path'] as String;
+    return '';
+  }
+
+  /// 删除覆盖层 = 完全回到原行为；返回是否真的删掉了
+  static Future<bool> deleteOverrideLayer(String id) async {
+    final r = await SourinCore.callAsync('delete_override_layer', {'id': id});
+    return r is Map && r['existed'] == true;
   }
 
   /// 某个源是否启用
@@ -2885,6 +2916,44 @@ class ProviderImportSeed {
 //    不是 derive 出来的 —— 所以两边对不上时**编译期发现不了**，
 //    只能靠这里的解析 + 单测/实机覆盖。
 
+// ═══════════════════════════════════════════════════════════════════════
+//  TVBox「本次可用、但重启后需重新导入」的**共用文案**（唯一来源）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 为什么这条文案必须共用（而不是两处各写一遍）
+// ```text
+// 它有两个消费者，走的是**两个不同入口**：
+//   ① 首次导入结果面板 —— provider_import_dialog.dart / TvboxImportResultView
+//   ② 订阅应用更新结果面板 —— tvbox_source_panel.dart / TvboxUpdateResultView
+// 各写一遍的必然结局：一处说「重启后需要重新导入」、另一处说「重启会丢」，
+// 用户在两个入口看到两种说法，会以为是**两件不同的事**。
+// （同款理由见 rust 侧 `csp::unimplemented_reason`：文案漂移不是排版问题，
+//   而是让用户对同一件事建立两套预期。）
+// ⇒ 措辞只在这里出现；改一句话只改这一处。
+// ```
+
+/// 逐源后缀（列表行尾的短标记）
+const String kTvboxUnpersistedRowSuffix = '（重启后需重新导入）';
+
+/// 副提示：**会发生什么 + 怎么恢复 + 原件不动**（三件事缺一不可）
+const String kTvboxUnpersistedHint =
+    '这些源的数据没有随程序保存；重新导入同一份配置即可恢复，配置文件本身不会被改动。';
+
+/// 警示标题 —— 必须**点名**（用户要靠名字判断"是不是我正在用的那个源"）
+String tvboxUnpersistedWarningText(List<String> names) =>
+    '⚠ 以下源本次可用，但重启后需要重新导入：${names.join('、')}';
+
+/// 关窗后的提示后缀（导入路径的 toast 用；更新路径没有 toast，只有面板）
+String tvboxUnpersistedToastSuffix(int count) => '，其中 $count 个重启后需重新导入';
+
+/// 从一批「远端站」里挑出**本次可用但不会落盘**的名字（订阅更新路径用）
+///
+/// ⚠️ 空名字不进清单：清单是给用户看的，混进 `''` 会变成「甲乙、、丙」。
+List<String> tvboxUnpersistedNames(Iterable<TvboxRemoteSite> sites) => <String>[
+      for (final s in sites)
+        if (!s.persisted && s.name.trim().isNotEmpty) s.name,
+    ];
+
 /// 导入成功的一个源
 class TvboxImportedSource {
   const TvboxImportedSource({
@@ -2893,6 +2962,8 @@ class TvboxImportedSource {
     required this.api,
     this.categories = 0,
     this.total = 0,
+    this.persisted = true,
+    this.kindTag = '',
   });
 
   final String id;
@@ -2907,6 +2978,27 @@ class TvboxImportedSource {
   /// 探到的影片总数（后端给的 `total`，可能为 0）
   final int total;
 
+  /// ★ 这个源**重启后还在不在**（Rust 侧 `"persisted"`）
+  ///
+  /// # 为什么必须有这一位（2026-10-25，第 19 项 P2 修复）
+  /// ```text
+  /// TVBox 里 `type:3 + api:"csp_Bili"` 的源，由 Rust 重写实现（不嵌 JVM）。
+  /// 但 `PersistedProvider::Tvbox` 没有 `ext` 字段、restore 也只建苹果CMS，
+  /// 所以这一批**本次可用、重启后消失**（见 rust/sourin_core/src/tvbox.rs 的长注释）。
+  ///
+  /// 改前：Rust 已经诚实吐了 `"persisted": false`，而这里**根本不解析**
+  ///       ⇒ 界面只会说「已导入 N 个源」⇒ 用户重启后找不到源，
+  ///       且没有任何解释。那是本仓明令禁止的「不告知」。
+  /// ```
+  /// ⚠️ **缺字段按 `true` 兼容旧核心**：老 dll 没有这个键，那时所有源
+  ///    确实都是落盘的（csp 分支还没实现），按 true 才是当时的真话。
+  final bool persisted;
+
+  /// Rust 侧给的来源标记（`"csp"` / `"appleCms"` / 缺省空串）
+  ///
+  /// 只用于界面提示与排查，**不参与任何逻辑判断** —— 逻辑一律看 [persisted]。
+  final String kindTag;
+
   factory TvboxImportedSource.fromJson(Map<String, dynamic> j) =>
       TvboxImportedSource(
         id: j['id'] as String? ?? '',
@@ -2914,6 +3006,10 @@ class TvboxImportedSource {
         api: j['api'] as String? ?? '',
         categories: (j['categories'] as num?)?.toInt() ?? 0,
         total: (j['total'] as num?)?.toInt() ?? 0,
+        // ⚠️ 用 `is bool` 而不是 `as bool?`：字段是字符串/数字时后者抛类型错误，
+        //    把整份导入结果解析打挂（与下面 liveImported 同一类坑）。
+        persisted: j['persisted'] is bool ? j['persisted'] as bool : true,
+        kindTag: j['kindTag'] as String? ?? '',
       );
 }
 
@@ -2977,6 +3073,7 @@ class TvboxImportResult {
     this.liveImportedCount = 0,
     this.multiRepo = false,
     this.repos = const [],
+    this.notPersisted = const [],
   });
 
   /// 配置里 `sites` 数组的长度
@@ -3006,6 +3103,21 @@ class TvboxImportResult {
   /// 多仓配置里的子仓清单（`multiRepo` 为 true 时才有）
   final List<TvboxSubRepo> repos;
 
+  /// ★ **本次可用、但重启后需要重新导入**的源名（Rust 侧 `"notPersisted"`）
+  ///
+  /// # 这条清单存在的唯一理由：不骗人
+  /// ```text
+  /// csp 源（`api: "csp_Bili"`）目前不落盘（原因见 TVBox 侧的注释）。
+  /// 若界面只说「已导入 2 个源」，用户下次启动会以为源被自己弄丢了。
+  /// ⇒ Rust 每次导入都吐这份清单，界面必须**逐名列出来**并说明要重新导入。
+  /// ```
+  ///
+  /// ⚠️ 没有这个键（旧核心）⇒ 空列表 = 「没有这种源」，与事实一致。
+  final List<String> notPersisted;
+
+  /// 有没有「重启后要重新导入」的源（界面据此决定要不要画警示）
+  bool get hasNotPersisted => notPersisted.isNotEmpty;
+
   factory TvboxImportResult.fromJson(Map<String, dynamic> j) => TvboxImportResult(
         totalSites: (j['totalSites'] as num?)?.toInt() ?? 0,
         imported: _listOf(j['imported'], TvboxImportedSource.fromJson),
@@ -3017,6 +3129,7 @@ class TvboxImportResult {
             j['liveImported'] is List ? (j['liveImported'] as List).length : 0,
         multiRepo: j['multiRepo'] == true,
         repos: _listOf(j['repos'], TvboxSubRepo.fromJson),
+        notPersisted: _stringsOf(j['notPersisted']),
       );
 
   static List<T> _listOf<T>(
@@ -3029,6 +3142,17 @@ class TvboxImportResult {
               .map((e) => f(e.cast<String, dynamic>()))
               .toList(growable: false)
           : const [];
+
+  /// 只收**非空字符串**：Rust 侧是 `Vec<String>`，但旧版本/将来改动可能
+  /// 出现 null 或非字符串 —— 那种情况退化成"没有这一项"，而不是把整份
+  /// 结果解析打挂（同 `_listOf` 的纪律）。
+  static List<String> _stringsOf(Object? raw) => raw is List
+      ? raw
+          .whereType<String>()
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList(growable: false)
+      : const [];
 }
 
 /// 多仓配置里的一个子仓（task-12）
@@ -3135,16 +3259,45 @@ class TvboxSourceList {
 
 /// 一条**新增**的远端站点（本地还没有）
 class TvboxRemoteSite {
-  const TvboxRemoteSite({this.key = '', this.name = '', this.api = ''});
+  const TvboxRemoteSite({
+    this.key = '',
+    this.name = '',
+    this.api = '',
+    this.persisted = true,
+    this.kindTag = '',
+  });
 
   final String key;
   final String name;
   final String api;
 
+  /// ★ 这个源**重启后还在不在**（Rust 侧 `update_tvbox_source` 的
+  /// `added` / `changed` 行里有 `"persisted": job.csp.is_none()`）
+  ///
+  /// # 为什么订阅更新这条路也要这一位（2026-10-25，第 19 项 P2 第二次）
+  /// ```text
+  /// 首次导入那条路已经会提示「重启后需重新导入」；
+  /// 但订阅「检测更新 → 应用更新」这条路**也能新增 csp 源**（远端配置里多了一条
+  /// csp_Bili），而那些源同样不落盘（原因见 rust/sourin_core/src/tvbox.rs）。
+  /// ⇒ 只在导入路径提示 = 换个入口又变成「不告知」。
+  /// ```
+  /// ⚠️ **缺字段按 `true` 兼容旧核心**（老 dll 这条路上没有这个键，
+  ///    那时确实都是落盘的；按 false 才是说谎）。
+  final bool persisted;
+
+  /// 来源标记（`"csp"` / `"appleCms"` / 缺省空串）
+  ///
+  /// ⚠️ Rust 的**更新**响应目前只给 `persisted`、没有 `kindTag`；
+  ///    这里照样容错解析，将来补上时不用再改 Dart。
+  final String kindTag;
+
   factory TvboxRemoteSite.fromJson(Map<String, dynamic> j) => TvboxRemoteSite(
         key: j['key'] as String? ?? '',
         name: j['name'] as String? ?? '',
         api: j['api'] as String? ?? '',
+        // ⚠️ 同 TvboxImportedSource：`is bool` 容错，非 bool 不当 true 处理会抛
+        persisted: j['persisted'] is bool ? j['persisted'] as bool : true,
+        kindTag: j['kindTag'] as String? ?? '',
       );
 }
 
@@ -3739,6 +3892,39 @@ class PluginDanmakuSendResult {
 // 判据见 [PlaybackErrorText.stripHostErrorNoise]：只削**开头**的已知前缀，
 // 中间出现的同名字样一律不碰（插件自己说的话里也可能有这些词）。
 
+/// mpv `network-timeout` 的**实际取值**（秒）—— 双方共用的**唯一来源**。
+///
+/// # 为什么必须是一个常量（而不是判据里的字面量 `5.0`）
+///
+/// 这条值有两个消费者，它们**必须**始终一致：
+/// ```text
+/// ① 播放器：`player_page._setHwdec()` 起播前 `setProperty('network-timeout', …)`
+///           —— 决定 mpv 到底等多久
+/// ② 归因：`PlaybackErrorText.classify()` 的超时窗口
+///           —— `[t - 0.5s, t + 0.5s]`，t 就是这个值
+/// ```
+/// 若②里写死 `5.0`：把①调到 15 之后，所有真超时都不再命中窗口 ⇒
+/// `PlaybackFailureKind.timeout` 变成**死档**，用户看到的又回到「这一条流取不到」。
+/// ⇒ 这是本计划里最容易踩空的一处（"改了一层忘了另一层"）。
+///
+/// # 为什么是 5（而不是计划里曾提的 15）
+///
+/// media_kit 1.2.6 的默认值就是 5
+///（`media_kit-1.2.6/lib/src/player/native/player/real.dart:2394`：`'network-timeout': '5'`）。
+/// 把它**显式**下发（而不是依赖库的默认）之后，"实际取值"就从"第三方默认"
+/// 变成了本仓的一个常量 —— 归因窗口才有可依赖的参照。
+/// ⚠️ 放大到 15 会延长**真正坏掉的流**的等待（用户对着黑屏多等 10 秒）；
+///    本仓目前**没有**证据证明该放大（计划「实施前证据纠偏」已取消那个预设），
+///    ⇒ 保持 5，把证据留给真实源/真机。
+const int kPlaybackNetworkTimeoutSeconds = 5;
+
+/// 超时窗口的容差：判定区间 = `[t - slack, t + slack]`
+///
+/// 为什么需要容差：mpv 的报错到达 Dart 侧还要经过事件队列与我们的日志，
+/// 实测偏差在几十毫秒量级（Owner 日志里四次失败 5.129 / 5.132 / 5.133 / 5.133 秒）；
+/// 0.5 秒足以覆盖这个抖动，又窄到不会把 0.2 秒的"打不开"误判成"等不及"。
+const Duration kPlaybackTimeoutWindowSlack = Duration(milliseconds: 500);
+
 /// 一次播放失败**归到哪一类**（决定给用户看什么、给什么按钮）
 ///
 /// # 为什么要分类而不是一句话兜底
@@ -3751,8 +3937,27 @@ class PluginDanmakuSendResult {
 /// decode     这个格式解不了       → 换线路（这条线路的编码本机解不了）
 /// permission 源站要会员/地区      → 换源（软件不绕过，也不该假装能修）
 /// network    源站限流/临时故障     → 等一会儿重试
+/// timeout    mpv 等不及（超时窗）   → 重试；反复出现就发日志（★ 新增，见下）
 /// unknown    归不到上面任何一类   → 只显示原文，不猜
 /// ```
+///
+/// ★★★ `timeout` 是**新增的第七档**（2026-10-25，缺陷⑧第三层）。
+///
+/// # 为什么必须与 `proxy` 分开（这是本次的核心）
+/// ```text
+/// mpv 报的原文只有一句：Failed to open http://127.0.0.1:52199/s/…/.
+/// 它**不含耗时**，所以改前它必然落进 proxy ⇒ 文案「这一条流取不到」。
+/// 而真实情况常常是：内置代理活着（同一端口 40 秒后就成功起播，Owner 日志实测），
+/// 只是签名直链经代理首字节超过了 mpv 的 `network-timeout`。
+/// ⇒ 把"等不及"说成"取不到"，会让用户以为软件坏了（与 2026-10-18 那次
+///   「内置代理没起来」是同一类误归的复发）。
+/// ```
+/// # 判据从哪来
+/// mpv 的 `Failed to open` 不带时间 ⇒ 只能由**播放器自己计时**：
+/// `player_page.dart` 在起播时记下单调时钟起点，`stream.error` 到达时
+/// 把 `elapsed` 一起传给 [PlaybackErrorText.classify]。
+/// ⚠️ 窗口**必须**由 [kPlaybackNetworkTimeoutSeconds] 算出来，
+///    不许写字面量 5.0 —— 否则哪天把 `network-timeout` 调大，这一档永远不命中。
 enum PlaybackFailureKind {
   /// 源解析失败：插件没返回可播地址 / 返回的地址本身不可用
   source,
@@ -3768,6 +3973,16 @@ enum PlaybackFailureKind {
 
   /// 源站限流 / 5xx / 超时
   network,
+
+  /// ★ 第七档（2026-10-25）：mpv 在 `network-timeout` 窗口内没等到首字节
+  ///
+  /// 与 [proxy] 的区别是**判据**而不是措辞：
+  /// ```text
+  /// proxy   环回地址被拒 / mpv 打不开（耗时不在超时窗内，或拿不到耗时）
+  /// timeout 环回地址 + `Failed to open` + 耗时落在 [t-0.5s, t+0.5s]
+  ///         （t = [kPlaybackNetworkTimeoutSeconds]）
+  /// ```
+  timeout,
 
   /// 归不到任何一类
   unknown,
@@ -3822,6 +4037,13 @@ class PlaybackFailure {
     PlaybackFailureKind.decode => '这个格式解不了',
     PlaybackFailureKind.permission => '这个内容需要源站会员，或不在当前地区',
     PlaybackFailureKind.network => '源站暂时连不上',
+    /*
+     * ★ 2026-10-25（缺陷⑧第三层）：新增档位。
+     *
+     * ⚠️ 文案里**不许出现「代理」二字**（门禁 `zz_t1024_player_failure_attribution_test`
+     *    逐字断言）—— 这一档存在的全部意义就是**不再把锅甩给代理**。
+     */
+    PlaybackFailureKind.timeout => '这条流等太久了',
     PlaybackFailureKind.unknown => '播放失败',
   };
 
@@ -3837,6 +4059,7 @@ class PlaybackFailure {
     PlaybackFailureKind.decode => '换一条线路试试（右上角的线路列表）。',
     PlaybackFailureKind.permission => '换一个源。这不是客户端能绕过的东西。',
     PlaybackFailureKind.network => '等一会儿再点「重试」。',
+    PlaybackFailureKind.timeout => '点「重试」；一直这样就把日志发给我们。',
     PlaybackFailureKind.unknown => '',
   };
 
@@ -4088,11 +4311,17 @@ class PlaybackErrorText {
 
   /// 归因：把一条失败**归到几类之一**（第 6 条）
   ///
-  /// 判据顺序见本方法内注释（HTTP 状态码 → 代理 → 权限 → 限流 → 解码 → 源）。
+  /// 判据顺序见本方法内注释
+  ///（HTTP 状态码 → 超时窗 → 代理 → 权限 → 限流 → 解码 → 源）。
+  ///
+  /// [elapsed] = 从**发起起播**到这条错误到达的耗时（`null` = 调用方没计时）。
+  /// 只有 mpv 那条「Failed to open」链路会传它 —— 原文里**没有耗时**，
+  /// 想区分"等不及"与"真打不开"只能靠播放器自己计时（见 `PlaybackFailureKind.timeout`）。
   static PlaybackFailure classify(
     Object? error, {
     String? kindHint,
     bool hadCandidates = false,
+    Duration? elapsed,
   }) {
     final raw = error == null ? '' : error.toString();
     /*
@@ -4219,6 +4448,38 @@ class PlaybackErrorText {
     final loopbackFailed = lower.contains('127.0.0.1') ||
         lower.contains('localhost') ||
         lower.contains('[::1]');
+    /*
+     * ★★★ 2026-10-25（缺陷⑧第三层）：**先判"等不及"，再判"打不开"**
+     *
+     * # 判据（顺序不能反）
+     * ```text
+     * ① 原文有 `failed to open` + 目标是环回地址 + elapsed 落在超时窗内 ⇒ timeout
+     * ② Connection refused / 连接被拒绝                          ⇒ proxy（这才是真没起来）
+     * ③ 其余 `failed to open` + 环回                              ⇒ proxy（保守，维持现状）
+     * ```
+     * 若把 ③ 提到 ① 前面，① 永远不可达 —— 三档就退化成一档（本次修的正是这个）。
+     *
+     * # 为什么窗口是「算出来的」而不是 `5.0`
+     * `network-timeout` 的实际值来自 [kPlaybackNetworkTimeoutSeconds]，
+     * 而**同一常量**由 `player_page._setHwdec()` 下发给 mpv。
+     * 只改一边 ⇒ 判据当场过期（计划「二、风险与边界」最后一条记的就是这个坑）。
+     * ⚠️ 禁止把下面的表达式改成字面量：门禁 `zz_t1024_player_failure_attribution_test`
+     *    会**真的改常量**再跑一次，窗口不跟着走就红。
+     */
+    final timeoutWindow = Duration(seconds: kPlaybackNetworkTimeoutSeconds);
+    final withinTimeoutWindow = elapsed != null &&
+        elapsed >= timeoutWindow - kPlaybackTimeoutWindowSlack &&
+        elapsed <= timeoutWindow + kPlaybackTimeoutWindowSlack;
+    if (withinTimeoutWindow && loopbackFailed && lower.contains('failed to open')) {
+      return PlaybackFailure(
+        kind: PlaybackFailureKind.timeout,
+        detail: display,
+        // 「等太久」是**可重试**的（mpv / 代理可能只是这一次慢）
+        canRetry: true,
+        // 换源也能绕开这一条慢流 —— 两种出路都成立
+        canSwitchSource: true,
+      );
+    }
     final proxyDown = lower.contains('connection refused') ||
         lower.contains('连接被拒绝') ||
         // mpv 明确说「打不开」+ 目标是环回地址 ⇒ 是代理这一层

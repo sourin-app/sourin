@@ -87,6 +87,7 @@ class ProviderImportDone extends ProviderImportResult {
     this.skippedCount = 0,
     this.livesCount = 0,
     this.liveImportedCount = 0,
+    this.notPersisted = const [],
   });
 
   final String name;
@@ -135,6 +136,13 @@ class ProviderImportDone extends ProviderImportResult {
   /// **实际导入成功**的直播源个数（识别到但不一定有地址/不一定能注册）
   final int liveImportedCount;
 
+  /// ★ **本次可用、但重启后需要重新导入**的源名（第 19 项 P2 修复）
+  ///
+  /// 与 [TvboxImportResult.notPersisted] 同一份数据。它必须出现在 toast 里 ——
+  /// 用户在弹窗里看过警示，关窗后那句"已导入 N 个源"如果只报喜不报忧，
+  /// 下次启动找不到源时就想不起这条了。
+  final List<String> notPersisted;
+
   /// 原版 `flash()` 的文案，逐字对齐
   ///
   /// ```ts
@@ -145,12 +153,18 @@ class ProviderImportDone extends ProviderImportResult {
   ///
   /// ⚠️ TVBox 的跳过数**必须**出现在文案里：一句「已导入 5 个源」
   ///    会让用户以为配置里就只有 5 个，剩下的 40 个去哪了永远是个谜。
+  ///
+  /// ★ 同理（2026-10-25）：**「重启后需重新导入」的数也必须出现**。
+  ///   已有 2 个源可用、但其中 1 个重启就没了，只报"已导入 2 个"
+  ///   等于把「能用多久」这件事藏起来。
   String get toast => isTvbox
       ? '已导入 $importedCount 个源'
             '${skippedCount > 0 ? "，跳过 $skippedCount 个" : ""}'
             // ★ 直播源现在**会真的导入**，所以不能说未导入。
             //   显示「已导入/共识别」：只报识别数会让用户以为都能用。
             '${livesCount > 0 ? "，直播源 $liveImportedCount/$livesCount 个已导入" : ""}'
+            // ★ 文案来自 core 的共用常量（与订阅更新面板同一句话，防漂移）
+            '${notPersisted.isNotEmpty ? tvboxUnpersistedToastSuffix(notPersisted.length) : ""}'
       : isHttp
       ? '${wasEditing ? "已保存" : "已安装"}「$name」（契约 v$version）'
       : '${wasEditing ? "已保存" : "已导入"}「$name」';
@@ -454,6 +468,9 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
         skippedCount: r.skipped.length,
         livesCount: r.lives.length,
         liveImportedCount: r.liveImportedCount,
+        // ★ 第 19 项 P2：把「重启后需重新导入」的清单一路带到 toast ——
+        //   关窗后的那句提示是用户唯一还看得到的东西。
+        notPersisted: r.notPersisted,
       ),
     );
   }
@@ -630,7 +647,13 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
             if (_tvboxResult!.multiRepo)
               _tvboxMultiRepoPanel(colors, _tvboxResult!)
             else
-              _tvboxResultPanel(colors, _tvboxResult!),
+              /*
+               * ★ 第 19 项 P2：面板抽成**公开 widget**（`TvboxImportResultView`），
+               *   这样"警示真的画出来"可以用 widget test 直接验 ——
+               *   留在 State 的私有方法里就只能靠"源码里有这个字符串"这种
+               *   伪判据（那正是本次缺陷溜过去的原因）。
+               */
+              TvboxImportResultView(result: _tvboxResult!),
           ],
 
           if (_error.isNotEmpty) ...[
@@ -992,10 +1015,44 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
   /// 「已导入 5 个源」这句话本身没错，但它**丢掉了剩下 50 多个 site 的去向** ——
   /// 用户没法判断"是我这份配置太老，还是这个 App 能力太弱"。
   /// 所以这里把三类清单都列出来，每条带原因。
-  Widget _tvboxResultPanel(ColorScheme colors, TvboxImportResult r) {
-    final ok = r.imported;
-    final skip = r.skipped;
-    final lives = r.lives;
+}
+
+/// TVBox 导入结果明细面板（成功 / 跳过 / 直播源 / **重启后需重新导入**）
+///
+/// # 为什么是**公开** widget 而不是 State 的私有方法（2026-10-25，第 19 项 P2）
+/// ```text
+/// 改前：`_tvboxResultPanel(colors, r)` 是 `_ProviderImportDialogState` 的私有方法
+///       ⇒ 想验"那句警示到底画没画出来"，测试**摸不到**它
+///       ⇒ 只能退化成"源码里有这个字符串吗"的伪判据
+///       ⇒ 于是「Rust 诚实标注了 csp 不落盘，界面却什么都没说」漏过了整轮门禁。
+/// ⇒ 抽成公开 widget：喂一份 TvboxImportResult 就能断言渲染结果（见 zz_t1040 ④c）。
+/// ```
+///
+/// # 为什么叫 `…View` 而不是 `…Panel`（刻意的，不是笔误）
+/// ```text
+/// 本仓有一条通用守卫（test/t94_emby_entry_test.dart）：
+///   每个公开的 `*Page / *Panel / *Sheet / *Dialog` 类都必须被 lib/ 里**其它文件**引用
+///   —— 防的是"写完二级页却没接入口"。
+/// 而本类是**对话框内部的结果视图**：只在定义文件里被实例化，本来就不该有外部入口
+/// ⇒ 叫 Panel 会被那条守卫判成"漏接"。
+/// 而且**不能靠白名单**放行：给一条真缺陷开例外，守卫就废了（那正是它存在的意义）。
+/// ⇒ 改名规避误判。
+///
+/// ⚠️ 若将来它真的变成**可导航入口**（例如独立的结果页），
+///   就该改叫回 `TvboxImportResultPanel` 并**接到某个屏幕**上 ——
+///   那时守卫会替我们检查"到底接没接"。
+/// ```
+class TvboxImportResultView extends StatelessWidget {
+  const TvboxImportResultView({super.key, required this.result});
+
+  final TvboxImportResult result;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final ok = result.imported;
+    final skip = result.skipped;
+    final lives = result.lives;
     return Container(
       padding: const EdgeInsets.all(Sp.x3),
       decoration: BoxDecoration(
@@ -1012,14 +1069,48 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
             // ★ 2026-10-25：lives 现在**会真的导入**（注册成 m3u_live 源并落盘），
             //   所以这里不能再写"未导入"。显示「已导入/识别」两个数：
             //   识别数是配置里有几个，导入数才是真正能用、重启后还在的个数。
-            '${lives.isNotEmpty ? " · 直播源 ${r.liveImportedCount}/${lives.length} 个已导入" : ""}'
-            '（配置共 ${r.totalSites} 个 site）',
+            '${lives.isNotEmpty ? " · 直播源 ${result.liveImportedCount}/${lives.length} 个已导入" : ""}'
+            '（配置共 ${result.totalSites} 个 site）',
             style: TextStyle(
               fontSize: FontSizes.sm,
               fontWeight: FontWeight.w600,
               color: colors.onSurface,
             ),
           ),
+          /*
+           * ★★★ 第 19 项 P2 修复：**重启后需重新导入**的源必须点名列出
+           *
+           * 为什么放在「可用」列表**上方**：这是一条会改变用户预期的信息
+           * （"我现在能用，但下次启动就没了"）。放在列表下方，用户看到
+           * 一列打勾的源就关窗了。
+           *
+           * 为什么必须**逐名列出**而不是只说"有 N 个"：用户要判断
+           * "我是不是正需要这几个源"，只有名字能回答。
+           */
+          if (result.hasNotPersisted) ...[
+            const SizedBox(height: Sp.x2),
+            Text(
+              // ★ 共用文案（core）：与订阅更新结果面板**逐字相同**
+              tvboxUnpersistedWarningText(result.notPersisted),
+              key: const ValueKey<String>('tvbox-not-persisted'),
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                height: 1.4,
+                fontWeight: FontWeight.w600,
+                color: colors.error,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              kTvboxUnpersistedHint,
+              key: const ValueKey<String>('tvbox-not-persisted-hint'),
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                height: 1.4,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ],
           if (ok.isNotEmpty) ...[
             const SizedBox(height: Sp.x2),
             Text(
@@ -1031,7 +1122,11 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
             ),
             for (final s in ok.take(20))
               Text(
-                '· ${s.name}（${s.categories} 类 / ${s.total} 部）',
+                '· ${s.name}（${s.categories} 类 / ${s.total} 部）'
+                // ⚠️ 逐源再标一次"重启后需重新导入"：用户可能只扫这一行，
+                //    不看上面的警示块（而且 ok 最多列 20 条，警示块是全局的）。
+                '${s.persisted ? "" : kTvboxUnpersistedRowSuffix}',
+                key: ValueKey<String>('tvbox-imported-${s.id}'),
                 style: TextStyle(
                   fontSize: FontSizes.cap,
                   color: colors.onSurface,

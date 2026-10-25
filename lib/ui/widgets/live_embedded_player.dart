@@ -48,17 +48,178 @@ import 'dart:async';
 
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart' show ValueListenable, visibleForTesting;
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/app_log.dart';
 import '../../core/models.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
+import '../media_session.dart';
 import 'app_loading.dart';
 import '../../design/widgets/app_icon_button.dart' show AppSurface;
 import '../../design/widgets/app_ink_well.dart';
 import '../../design/icons/app_icons.dart';
+
+// ═══════════════════════════════════════════════════════════════════════
+//  第 17 项验收：视频填充 / 黑边归属 —— 三个**可测量的**单点定义
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 为什么这三样要提到顶层（而不是散在 build 里）
+// ```text
+// 判据原文：
+//   17 视频未填满与上下黑边：先测**容器尺寸 / 视频显示尺寸 / fit 策略**，
+//      **区分**布局留白与片源自带黑边；控制条在视口内、不额外挤占视频高度。
+//
+// 「区分」是判据的核心 —— 两种黑边看着一样，成因完全不同：
+//   · 片源自带黑边（正常）：mpv 在**纹理内部**按 [liveEmbeddedVideoFit] 缩放，
+//     槽位矩形仍等于播放器盒子 ⇒ 黑边属于画面内容；
+//   · 布局留白（缺陷）：外层套了 `AspectRatio`/`Padding`/`Center`，
+//     槽位矩形**自己变小** ⇒ 上下露出父级黑底，且控制条会被挤。
+// ⇒ 只有把「槽位」「黑底」「控制条」三个盒子分别量出来，才能判定是哪一种。
+//   所以三者各有一个 key —— 这些 key 是判据的前提，不是装饰。
+// ```
+//
+// ⚠️ 与 `live-volume-slider` / `live-filterbar-gap` 同一条纪律：
+//    门禁要按 key 精确取矩形，否则删掉/改坏以后测试仍然绿。
+
+/// 视频**槽位**（`Positioned.fill`，`c == null` 时也存在）
+///
+/// 它的矩形 = 视频被允许显示的整个区域。判据：
+/// 槽位矩形 **等于** 播放器盒子 ⇒ 没有任何布局留白。
+const Key liveVideoSlotKey = ValueKey('live-video-slot');
+
+/// 播放器的黑色**底**（`ColoredBox`），即"容器尺寸"的载体
+///
+/// 与 [liveVideoSlotKey] 一起用：槽位 == 黑底 ⇒ 视频铺满了容器。
+const Key liveVideoGroundKey = ValueKey('live-video-ground');
+
+/// 底部控制条（播放/静音/音量），**叠在视频上**而不是排在视频下
+///
+/// 判据：控制条矩形落在槽位矩形**内部**、底边贴播放器底边
+/// ⇒ 没有额外挤占视频高度。
+const Key liveEmbedBarKey = ValueKey('live-embed-bar');
+
+/// 视频缩放策略：**不拉伸**，按片源宽高比缩放，多出来的部分由 mpv 在
+/// 纹理内部补黑边（= 片源自带黑边，不是布局留白）。
+///
+/// ★ 单点定义：`Video(fit: liveEmbeddedVideoFit)` 与测试断言读的是**同一个值**
+///   ⇒ 想改成 `BoxFit.fill`（拉伸变形）或 `BoxFit.cover`（裁掉画面）必须同时
+///     改动这里，测试立刻变红。
+/// ⚠️ 与 `player_page.dart` 的取舍保持一致（那里也是按比例、不拉伸）。
+const BoxFit liveEmbeddedVideoFit = BoxFit.contain;
+
+/// ★★★ 第 17 项验收用的**叶子注入口**（生产恒 `null`）
+///
+/// # 为什么需要它（`Video` 在 `flutter test` 里挂不起来）
+/// ```text
+/// `Video` 要一个真 `VideoController`，而它要 `Player()` ⇒ 要 libmpv。
+/// `flutter test` 里加载 libmpv 会让 flutter_tester 偶发 native 崩溃
+/// （`dart_test.yaml` 因此把 native-media 整体默认 skip）。
+/// ⇒ 「视频显示尺寸 / 它被哪层包住」这两件**本来永远测不到**。
+/// ```
+///
+/// # 它替换的是什么（替换范围必须最小）
+/// ```text
+/// 只替换 `Positioned.fill` 的**直接孩子**（那个"视频层"）。
+/// ★ 外面那层 `Positioned.fill(key: liveVideoSlotKey)` **不动** ——
+///   判据要验的正是"视频层有没有被留白层包住"，动了外面就等于自证。
+/// ⇒ 门禁注入一个 `SizedBox.expand` 当叶子，然后断言：
+///     · 叶子矩形 == 播放器黑底矩形
+///     · 叶子到槽位之间**没有** AspectRatio / Padding / Center / FittedBox / Align
+///   （改前只量外层槽位 ⇒ 有人在槽位**内部**加 Padding 仍全绿，这是复核查到的缺口3）
+/// ```
+Widget? debugVideoSlotOverride;
+
+/// ★ 测试注入口：**跳过真实 `Player()` 创建**（生产恒 false）
+///
+/// ```text
+/// `flutter test` 没有 libmpv ⇒ `Player()` 必抛
+/// `Exception: MediaKit.ensureInitialized must be called…`。
+/// 而"控件自动隐藏/唤起"的判据必须把虚拟时间推进 3s，
+/// 必然越过 `_createDelay`（380ms）⇒ 一定撞上那条异常。
+/// ⇒ 门禁用一个开关把"延迟建播放器"这条与本判据无关的路径关掉。
+/// ⚠️ 只跳过**原生创建**；控件、计时、布局、命中判定全部照真跑。
+/// ```
+@visibleForTesting
+bool debugSkipPlayerCreation = false;
+
+/// ═══════════════════════════════════════════════════════════════════════
+///  第 16 项缺口①：**共享的播放动作入口**（内嵌与全屏共用同一套）
+/// ═══════════════════════════════════════════════════════════════════════
+///
+/// # 为什么必须抽成接口，而不是两边各写一份按键判定
+/// ```text
+/// 计划第 16 项要的是「内嵌与全屏**一致**」。
+/// 若内嵌判 `space`、全屏再判一次 `space`，两份判定迟早漂移
+/// （本仓已有前科：`describe` 与 `select` 各写一份 2s 默认值）。
+/// ⇒ 单点定义：**按键 → 动作**（[livePlaybackActionForKey]）与
+///   **动作 → 调用**（[dispatchLivePlaybackAction]）都在这里，
+///   内嵌与全屏只负责提供 [LivePlaybackTarget]。
+/// ```
+///
+/// # 全屏侧怎么接（`player_page.dart` 由另一组接线，本文件只给契约）
+/// ```dart
+/// class PlayerPageState extends State<PlayerPage> implements LivePlaybackTarget {
+///   @override bool get isPlaying => _player?.state.playing ?? false;
+///   @override bool get muted => _muted;
+///   @override Future<void> togglePlayPause() => _togglePlay();
+///   @override Future<void> toggleMute() => _toggleMute();
+/// }
+/// // 按键处：dispatchLivePlaybackAction(this, action)
+/// ```
+enum LivePlaybackAction {
+  /// 空格：播放/暂停
+  togglePlayPause,
+
+  /// M：静音/取消静音
+  toggleMute,
+}
+
+/// 谁来实现：内嵌播放器（[LiveEmbeddedPlayerState]）与全屏播放页
+///
+/// ⚠️ 只有**实际动作 + 状态反馈**三样，不做"图标状态"这种视图层的东西 ——
+///    图标由各自的 UI 读 [isPlaying]/[muted] 自己画（单一状态源）。
+abstract class LivePlaybackTarget {
+  bool get isPlaying;
+  bool get muted;
+
+  /// 播放/暂停（**用户意图**，不是"此刻解码器在不在放"）
+  Future<void> togglePlayPause();
+
+  /// 静音/取消静音
+  Future<void> toggleMute();
+}
+
+/// 按键 → 动作（唯一的按键判定表）
+///
+/// ```text
+/// 空格 ⇒ 播放/暂停
+/// M    ⇒ 静音/取消静音
+/// 其余 ⇒ null（调用方必须 return false，把键放行给别处）
+/// ```
+LivePlaybackAction? livePlaybackActionForKey(LogicalKeyboardKey key) {
+  if (key == LogicalKeyboardKey.space) return LivePlaybackAction.togglePlayPause;
+  if (key == LogicalKeyboardKey.keyM) return LivePlaybackAction.toggleMute;
+  return null;
+}
+
+/// 执行动作；返回 **是否真的派发了**（`target == null` ⇒ false，键要放行）
+Future<bool> dispatchLivePlaybackAction(
+  LivePlaybackTarget? target,
+  LivePlaybackAction action,
+) async {
+  if (target == null) return false;
+  switch (action) {
+    case LivePlaybackAction.togglePlayPause:
+      await target.togglePlayPause();
+    case LivePlaybackAction.toggleMute:
+      await target.toggleMute();
+  }
+  return true;
+}
+
 
 /// ★★★ 第 66 轮 R6：一个可切换的清晰度档（值 + 用户可见标签）
 ///
@@ -91,6 +252,69 @@ class LiveQualityOption {
   bool get selectable => !drm && value.isNotEmpty;
 }
 
+/// Executes the same command-before-intent ordering used by the live controls.
+@visibleForTesting
+Future<void> runLiveUserPlaybackToggle({
+  required bool playing,
+  required Future<void> Function() pause,
+  required Future<void> Function() play,
+  required void Function(bool paused)? onUserPause,
+}) async {
+  if (playing) {
+    await pause();
+    onUserPause?.call(true);
+  } else {
+    await play();
+    onUserPause?.call(false);
+  }
+}
+
+/// Retain this object before unmounting; completion is not inferred from unmount.
+class LiveEmbeddedDisposalReceipt {
+  LiveEmbeddedDisposalReceipt() : instanceId = ++_nextId;
+  static int _nextId = 0;
+  final int instanceId;
+  final Completer<void> _completion = Completer<void>();
+  bool _started = false;
+  bool _hadNativePlayer = false;
+  DateTime? _completedAt;
+  Object? _error;
+  StackTrace? _stackTrace;
+
+  bool get started => _started;
+  bool get hadNativePlayer => _hadNativePlayer;
+  DateTime? get completedAt => _completedAt;
+  Object? get error => _error;
+  StackTrace? get stackTrace => _stackTrace;
+  Future<void> get completed => _completion.future;
+
+  // The future is observed here so asynchronous disposal errors are retained
+  // rather than escaping from synchronous State.dispose as unhandled errors.
+  void _start(Future<void> Function()? disposeNative) {
+    if (_started) return;
+    _started = true;
+    _hadNativePlayer = disposeNative != null;
+    unawaited(_observe(disposeNative));
+  }
+
+  Future<void> _observe(Future<void> Function()? disposeNative) async {
+    try {
+      if (disposeNative != null) await disposeNative();
+    } catch (error, stackTrace) {
+      _error = error;
+      _stackTrace = stackTrace;
+    } finally {
+      _completedAt = DateTime.now().toUtc();
+      _completion.complete();
+    }
+  }
+
+  /// Tests exercise the same observer, not a replacement native player.
+  @visibleForTesting
+  void observeForTest(Future<void> Function()? disposeNative) =>
+      _start(disposeNative);
+}
+
 /// 直播内嵌播放器
 ///
 /// ★ 生命周期由外部持有（[LiveEmbeddedPlayerState]）——
@@ -111,10 +335,15 @@ class LiveEmbeddedPlayer extends StatefulWidget {
     this.qualityOptions = const <LiveQualityOption>[],
     this.onQualityChanged,
     this.showDanmakuNote = true,
+    this.playWhenReady = true,
   });
 
   /// 要播的流；null = 还没选频道 / 正在取流
   final StreamCandidate? stream;
+
+  /// Whether a newly opened stream may start playing.
+  /// Fullscreen handoff preserves the user's pause intent through channel changes.
+  final bool playWhenReady;
 
   /// 频道名（右上角显示）
   final String title;
@@ -208,7 +437,93 @@ class LiveEmbeddedPlayer extends StatefulWidget {
   State<LiveEmbeddedPlayer> createState() => LiveEmbeddedPlayerState();
 }
 
-class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
+class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
+    implements LivePlaybackTarget {
+  final LiveEmbeddedDisposalReceipt _disposalReceipt =
+      LiveEmbeddedDisposalReceipt();
+
+  /// Capture before unmount; completion does not imply audible silence.
+  LiveEmbeddedDisposalReceipt get disposalReceiptForProbe => _disposalReceipt;
+
+  /// Shared with the bottom bar; preserves native command then user intent.
+  /// ★ 共享动作入口（第 16 项缺口①）：**直接转调**既有实现，不复制一份
+  @override
+  Future<void> togglePlayPause() => toggleUserPlaybackForProbe();
+
+  Future<void> toggleUserPlaybackForProbe() async {
+    final p = _player;
+    if (p == null || _disposed) return;
+    await runLiveUserPlaybackToggle(
+      playing: p.state.playing,
+      pause: p.pause,
+      play: p.play,
+      onUserPause: widget.onUserPause,
+    );
+  }
+
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   *  第 16 项缺口②：**控件自动隐藏 + 鼠标移动唤起**
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * # 为什么用**一次性** Timer 而不是 `Timer.periodic`
+   * ```text
+   * 自动隐藏要的是"最后一次交互后 N 秒**发生一次**"
+   * ⇒ 每次交互（鼠标移动 / 按键动作）都 cancel 旧的再起一个新的。
+   * Timer.periodic 会永远每 N 秒回调一次：页面保活时白耗电，
+   * 而且"隐藏之后再不需要它"却停不下来。
+   * ```
+   *
+   * # 隐藏/显示只改"能不能看到 + 能不能点到"，**不改布局**
+   * ```text
+   * 用 IgnorePointer + AnimatedOpacity（不是 Visibility 移除孩子）：
+   *   · 隐藏后 hitTestable() = 0（点不到 = 已收起）
+   *   · 但**占位不变** ⇒ 视频区域高度不变
+   *     （第 17 项"控制条不挤占视频"仍成立）
+   * ```
+   */
+  bool _controlsVisible = true;
+  Timer? _hideTimer;
+
+  /// 无交互多久后收起控件（只影响观感，不影响判据）
+  static const Duration _controlsHideDelay = Duration(seconds: 3);
+
+  /// 让控件重新出现，并**重置**隐藏计时（鼠标移动 / 按键动作都会调）
+  ///
+  /// ★ 公开（不是私有）：`live_page.dart` 的键盘动作也要唤起控件，
+  ///   否则用户按空格暂停后控件永远不出现（比"常显"更难用）。
+  void revealControls() {
+    _hideTimer?.cancel();
+    if (!_controlsVisible && mounted) {
+      setState(() => _controlsVisible = true);
+    }
+    _armHideTimer();
+  }
+
+  /// 起一个**一次性**隐藏计时（已卸载/已 dispose 则什么都不做）
+  void _armHideTimer() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(_controlsHideDelay, () {
+      if (!mounted || _disposed) return;
+      if (!_controlsVisible) return;
+      setState(() => _controlsVisible = false);
+    });
+  }
+
+  /// 控件层的"可见 + 可点"包装（见 [_controlsVisible] 的长注释）
+  Widget _controlsChrome(Widget child) => IgnorePointer(
+        ignoring: !_controlsVisible,
+        child: AnimatedOpacity(
+          opacity: _controlsVisible ? 1 : 0,
+          duration: const Duration(milliseconds: 160),
+          child: child,
+        ),
+      );
+
+  /// 控件当前是否可见（门禁断言隐藏/唤起真的发生）
+  @visibleForTesting
+  bool get controlsVisibleForProbe => _controlsVisible;
+
   Player? _player;
   VideoController? _controller;
 
@@ -465,6 +780,18 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   void initState() {
     super.initState();
     /*
+     * ★ 只在**有流**（真的有画面可看）时才自动收起。
+     *
+     * ```text
+     * stream == null 是"还没选台 / 取流失败"：那时控制条是用户唯一的出口
+     * （重试、调音量）⇒ 不许自动收起。
+     * ★ 另一个有意为之的副作用：没有流的 widget 不挂任何 Timer，
+     *   已有一批只 pump() 不 dispose 的用例因此完全不受影响
+     *   （pending Timer 会让 testWidgets 直接失败）。
+     * ```
+     */
+    if (widget.stream != null) _armHideTimer();
+    /*
      * ★★★ task-74 ⑤ 的核心改动：原生重活**不在**这里同步跑
      *
      * 改前是 `_create();` —— 它内部的
@@ -517,6 +844,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     //   （回归风险 ③）。改前这里没有这个检查是因为它跟 `initState`
     //   在同一帧、不可能被抢先。
     if (_disposed) return;
+    // ★ 测试注入口（生产恒 false）：见 [debugSkipPlayerCreation]
+    if (debugSkipPlayerCreation) return;
     /*
      * ★ 缓冲调小 —— 直播换台要快（与 PlayerPage 注释里同一理由）
      *
@@ -575,9 +904,9 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
      * ⚠️ 顺序：必须在 `_playingSub` 等订阅**之前**置 `_muted`，
      *   否则 volume 订阅回流的 0 会先撞上 `_muted == false`（无害，但会多一次 setState）。
      */
-    _muted = true;
-    unawaited(p.setVolume(0));
-    AppLog.write('LIVE', '默认静音 ⇒ _muted=true 且音量下发 0');
+    // Preserve explicit controls or a fullscreen snapshot received before creation.
+    unawaited(p.setVolume(_muted || !_visibleNow ? 0 : desiredVolume));
+    AppLog.write('LIVE', '初始化音量 ⇒ muted=$_muted');
 
     _playingSub = p.stream.playing.listen((v) {
       if (!mounted) return;
@@ -810,8 +1139,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
       if (native0 is NativePlayer) {
         await _applyLiveFastStart(p);
       }
-      await p.open(Media(st.url, httpHeaders: st.httpHeaders));
-      await p.play();
+      await p.open(Media(st.url, httpHeaders: st.httpHeaders), play: false);
+      if (widget.playWhenReady && _visibleNow) {
+        await p.play();
+      }
       // ★ 计时：首次起播的 open+play 耗时。
       //   留着是因为它是**下一次定位起播慢的唯一数据源**（Owner 报过 8 秒）。
       debugPrint('[LIVE] 首次 open+play = '
@@ -927,8 +1258,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
       // ★ headers 是 `Media` 的构造参数（见 `_openCurrent` 的说明）
       await _applyLiveFastStart(p); // ★ 换台路径同样要设（见 _applyLiveFastStart）
       final tSwitch = DateTime.now();
-      await p.open(Media(st.url, httpHeaders: st.httpHeaders));
-      await p.play();
+      await p.open(Media(st.url, httpHeaders: st.httpHeaders), play: false);
+      if (widget.playWhenReady && _visibleNow) {
+        await p.play();
+      }
       /*
        * ★ 2026-13 计时探针（Owner 报「切到直播页要 8 秒才出画面」）：
        *   `open()`+`play()` 只是**下发 loadfile**（不等流打开）⇒ 这行数值很小是正常的。
@@ -1653,14 +1986,54 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   /// ★ 见 [pause] 的长注释：恢复时要用它还原，**不能**写死 100。
   double? _volumeBeforeHide;
 
+  @override
   bool get isPlaying => _player?.state.playing ?? false;
 
   /// 当前音量（0~100）
   double get volume => _player?.state.volume ?? 100;
 
-  Future<void> setVolume(double v) async {
+  LivePlaybackSnapshot get playbackSnapshot => LivePlaybackSnapshot(
+        playing: isPlaying,
+        muted: muted,
+        volume: desiredVolume,
+      );
+
+  /// Restore user intent before playback; hidden players remain silent.
+  Future<void> applyPlaybackSnapshot(
+    LivePlaybackSnapshot snapshot, {
+    bool restorePlaying = true,
+  }) async {
     if (_disposed) return;
-    await _player?.setVolume(v.clamp(0, 100));
+    _volumeBeforeMute = snapshot.volume;
+    _volumeBeforeHide = _visibleNow ? null : snapshot.volume;
+    if (mounted) setState(() => _muted = snapshot.muted);
+    await _player?.setVolume(
+        snapshot.muted || !_visibleNow ? 0 : snapshot.volume);
+    if (!restorePlaying || _disposed) return;
+    if (snapshot.playing && _visibleNow) {
+      await resume();
+    } else {
+      await pause();
+    }
+  }
+
+  /// User-requested volume, independent of temporary visibility muting.
+  double get desiredVolume {
+    final preferred = double.tryParse(
+        UiPrefs.get('dsh.playprefs.lastVolume') ?? '');
+    return (_volumeBeforeMute ?? _volumeBeforeHide ??
+        _player?.state.volume ??
+        ((preferred != null && preferred >= 0 && preferred <= 1)
+            ? preferred * 100 : 100)).clamp(0, 100).toDouble();
+  }
+
+  Future<void> setVolume(double v) async {
+    if (_disposed || !v.isFinite) return;
+    final next = v.clamp(0, 100).toDouble();
+    if (next > 0) _volumeBeforeMute = next;
+    if (!_visibleNow) _volumeBeforeHide = next;
+    if (mounted) setState(() => _muted = next == 0);
+    await _player?.setVolume(_visibleNow ? next : 0);
   }
 
   /*
@@ -1696,12 +2069,12 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
    *   （不是写死 100，也不是读当前音量 —— 后者静音时恒为 0）。
    * ```
    */
+  @override
   Future<void> toggleMute() async {
     if (_disposed) return;
     final p = _player;
-    if (p == null) return;
     AppLog.write('LIVE', '静音按钮被点击：_muted=$_muted '
-        'volume=${p.state.volume}');
+        'volume=${p?.state.volume}');
     if (_muted) {
       /*
        * 取消静音：三级瀑布求恢复目标（**绝不下发 0**）
@@ -1723,15 +2096,16 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
         restore = (v != null && v >= 0 && v <= 1) ? v * 100 : 100;
       }
       if (restore <= 0) restore = 100;
-      _volumeBeforeMute = null;
-      await p.setVolume(restore.clamp(1, 100));
+      _volumeBeforeMute = restore.clamp(1, 100).toDouble();
+      if (!_visibleNow) _volumeBeforeHide = _volumeBeforeMute;
+      await p?.setVolume(_visibleNow ? _volumeBeforeMute! : 0);
       if (mounted) setState(() => _muted = false);
       AppLog.write('LIVE', '取消静音 ⇒ 音量还原到 ${restore.round()}');
     } else {
       // 静音：先抓快照再压 0（顺序不能反 —— 反了就抓不到原音量）
-      final cur = p.state.volume;
+      final cur = desiredVolume;
       if (cur > 0) _volumeBeforeMute = cur;
-      await p.setVolume(0);
+      await p?.setVolume(0);
       if (mounted) setState(() => _muted = true);
       AppLog.write('LIVE', '已静音 ⇒ 音量压到 0（快照 $_volumeBeforeMute）');
     }
@@ -1742,8 +2116,9 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
   /// ★ 与 VOD 侧（`player_page.dart::_muted`）同一套语义：
   ///   它是**显式状态**，不由 `state.volume == 0` 反推 ——
   ///   因为 `pause()` 在不可见时也会把音量压成 0（那不是"用户静音"）。
+  @override
   bool get muted => _muted;
-  bool _muted = false;
+  bool _muted = true;
 
   /// 静音前的音量（null = 没静音过）
   double? _volumeBeforeMute;
@@ -1825,6 +2200,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
      * 让**已在飞行中的那一轮**立刻放弃，而不是等它跑完再对着
      * 已卸载的 State 调 `setState`。
      */
+    _hideTimer?.cancel();
+    _hideTimer = null;
     _videoOutputToken++;
     /*
      * ★★★ 必须释放（lead 约束 2：否则解码器泄漏）
@@ -1852,7 +2229,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     final p = _player;
     _player = null;
     _controller = null;
-    unawaited(p?.dispose() ?? Future.value());
+    _disposalReceipt._start(p == null ? null : p.dispose);
     super.dispose();
   }
 
@@ -1921,7 +2298,16 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
     final doubleTapToFullscreen =
         !isTouch && widget.onToggleFullscreen != null;
 
-    return ClipRRect(
+    return MouseRegion(
+      /*
+       * ★ 第 16 项缺口②：鼠标移动 ⇒ 唤起控件。
+       *
+       * ⚠️ 必须挂在**最外层**（ClipRRect 之外）：控件隐藏时它自己被
+       *   `IgnorePointer` 挡住命中 ⇒ 挂在控件内部的 `onHover` 收不到事件，
+       *   用户就再也"叫不出来"了（这正是"永不恢复"那种缺陷）。
+       */
+      onHover: (_) => revealControls(),
+      child: ClipRRect(
       borderRadius: Radii.rLg,
       child: GestureDetector(
         // ★ 只在"全屏可用且非触摸端"时挂 —— 否则为 null（见上面互斥说明）
@@ -1932,19 +2318,50 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
               }
             : null,
         child: ColoredBox(
+        key: liveVideoGroundKey,
         color: Colors.black,
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (c != null)
-              Video(
-                controller: c,
-                /*
-                 * ⚠️ `fill` 用默认黑边策略 —— 直播分辨率杂，
-                 *    拉伸会让画面变形（与 PlayerPage 的取舍一致）。
-                 */
-                controls: NoVideoControls,
-              ),
+            /*
+             * ══════════════════════════════════════════════════════════
+             *  第 17 项验收：视频槽位（**无论有没有解码器都存在**）
+             * ══════════════════════════════════════════════════════════
+             *
+             * # 为什么必须是一层显式的 `Positioned.fill` + key
+             * ```text
+             * 判据要求"先测容器尺寸/视频显示尺寸/fit 策略，区分**布局留白**
+             * 与**片源自带黑边**"。
+             * · 片源自带黑边 = mpv 按 `BoxFit.contain` 把画面缩进纹理里
+             *   ⇒ 纹理仍铺满本槽位，黑边是**图像内容**的一部分；
+             * · 布局留白 = 有人给视频套 `AspectRatio`/`Padding`/`Center`
+             *   ⇒ 本槽位的**矩形本身变小**，上下露出父级黑底。
+             * ⇒ 只要能量出"槽位矩形 == 播放器盒子"，就能把后者彻底排除。
+             * ★ 没有 key 就只能数 `Positioned` 个数或读源码字符串（假绿）。
+             * ```
+             *
+             * ⚠️ `c == null` 时槽位里放一个空 `SizedBox.expand()`：
+             *   它**不绘制、不命中**（`RenderConstrainedBox` 无 child ⇒
+             *   `hitTestSelf` 为 false）⇒ 不会吃掉播放器的双击。
+             */
+            Positioned.fill(
+              key: liveVideoSlotKey,
+              child: debugVideoSlotOverride ??
+                  (c == null
+                  ? const SizedBox.expand()
+                  : Video(
+                      controller: c,
+                      /*
+                       * ⚠️ 不拉伸：直播分辨率杂，拉伸会让画面变形
+                       *    （与 PlayerPage 的取舍一致）。
+                       * ★ 第 17 项要求"fit 策略"可核 ⇒ 抽成**单点常量**
+                       *   [liveEmbeddedVideoFit]，测试直接断言它的值，
+                       *   而不是去信一条注释（注释不会因为改代码而变红）。
+                       */
+                      fit: liveEmbeddedVideoFit,
+                      controls: NoVideoControls,
+                    )),
+            ),
 
             // ── 加载 / 缓冲 ──
             /*
@@ -1998,11 +2415,11 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
               child: Row(
                 children: [
                   if (widget.onToggleFullscreen != null)
-                    _RoundBtn(
+                    _controlsChrome(_RoundBtn(
                       icon: AppIcons.fullscreen,
                       tooltip: '全屏播放',
                       onTap: widget.onToggleFullscreen!,
-                    ),
+                    )),
                 ],
               ),
             ),
@@ -2043,31 +2460,37 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
 
             // ── 底部：播放/暂停 + 静音（直播必需的最小控制）──
             Positioned(
+              /*
+               * ★★★ 第 17 项验收：控制条的 key
+               *
+               * # 为什么必须能单独量它
+               * ```text
+               * 判据：「控制条在视口内、**不额外挤占视频高度**」。
+               * 正确的形态是"叠在视频上"（`Positioned(bottom: 0)`），
+               * 坏形态是"排在视频下面"（`Column`）。
+               * 两者都能通过"控制条在视口内"，只有量几何才能分开：
+               *   · 叠加 ⇒ 控制条底边 == 播放器底边，且它的矩形落在视频槽位里
+               *   · 下排 ⇒ 视频槽位底边被顶上去（槽位变矮）⇒ 视频高度被挤掉
+               * ⇒ 有了 key，测试可以对槽位与控制条分别取 `getRect` 做包含判断。
+               * ```
+               */
+              key: liveEmbedBarKey,
               left: 0,
               right: 0,
               bottom: 0,
-              child: _EmbedBar(
+              child: _controlsChrome(_EmbedBar(
                 playing: _ready,
                 muted: muted,
-                onTogglePlay: () async {
-                  final p = _player;
-                  if (p == null) return;
-                  if (p.state.playing) {
-                    await p.pause();
-                    // ★ 上报"是用户暂停的" —— 可见性变化时不要自动播
-                    widget.onUserPause?.call(true);
-                  } else {
-                    await p.play();
-                    widget.onUserPause?.call(false);
-                  }
-                },
+                volume: muted ? 0 : desiredVolume,
+                onVolumeChanged: (value) => unawaited(setVolume(value)),
+                onTogglePlay: toggleUserPlaybackForProbe,
                 onMute: toggleMute,
                 accent: colors.primary,
                 // ★ R6：清晰度下拉（≥2 可选档才画，判据在上面一次算清）
                 qualityOptions: selectableQuality,
                 currentQuality: currentQuality,
                 onQualityChanged: widget.onQualityChanged,
-              ),
+              )),
             ),
 
             /*
@@ -2108,6 +2531,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer> {
           ],
         ),
         ),
+      ),
       ),
     );
   }
@@ -2277,6 +2701,8 @@ class _EmbedBar extends StatelessWidget {
   const _EmbedBar({
     required this.playing,
     required this.muted,
+    required this.volume,
+    required this.onVolumeChanged,
     required this.onTogglePlay,
     required this.onMute,
     required this.accent,
@@ -2292,6 +2718,8 @@ class _EmbedBar extends StatelessWidget {
   /// 改前这里没有这个字段，图标是**写死的常量** `AppIcons.volume_off_outlined`
   /// ⇒ 永远画成"已静音"，与真实音量无关（Owner 缺陷 ①）。
   final bool muted;
+  final double volume;
+  final ValueChanged<double> onVolumeChanged;
 
   final Future<void> Function() onTogglePlay;
   final Future<void> Function() onMute;
@@ -2358,6 +2786,22 @@ class _EmbedBar extends StatelessWidget {
               icon: muted ? AppIcons.volume_off_outlined : AppIcons.volume_up_outlined,
               tooltip: muted ? '取消静音' : '静音',
               onTap: () => unawaited(onMute()),
+            ),
+            Flexible(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 120),
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: Slider(
+                    key: const ValueKey('live-volume-slider'),
+                    value: volume.clamp(0, 100).toDouble(),
+                    min: 0,
+                    max: 100,
+                    label: '${volume.round()}%',
+                    onChanged: onVolumeChanged,
+                  ),
+                ),
+              ),
             ),
 
             /*

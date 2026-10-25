@@ -55,6 +55,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
+// ★ 审计 B9：缺 dll 的统一处置（Windows ⇒ fail；其它平台 ⇒ 点名 skip）
+import 'support/core_gate.dart';
 
 /// 候选 DLL —— 按「最可能含 danmaku 命令」排序
 ///
@@ -100,8 +102,11 @@ void main() {
       }
     }
     if (dllPath == null) {
-      installNote = '找不到含 danmaku 命令的 sourin_core 产物'
-          '（候选: ${_dllCandidates.join(', ')}）—— 真链路测试无法进行';
+      // ★ 审计 B9：改前 installNote + return ⇒ 缺件变 skip。Windows 必须红。
+      handleMissingCore(
+        missing: _dllCandidates.join('、'),
+        notVerified: 'danmaku FFI 键名的真链路判据（episodeId/mediaId 到插件手里）',
+      );
       return;
     }
 
@@ -111,7 +116,14 @@ void main() {
     try {
       DynamicLibrary.open(File(dllPath!).absolute.path);
     } catch (e) {
-      installNote = 'DLL 预加载失败: $e';
+      if (!isLibMissingForGate(e)) {
+        fail('DLL 预加载失败，但**不是**缺件（不许降级成 skip）：$e');
+      }
+      handleMissingCore(
+        missing: dllPath!,
+        notVerified: 'danmaku FFI 键名的真链路判据（episodeId/mediaId 到插件手里）',
+        error: e,
+      );
       return;
     }
 
@@ -159,13 +171,14 @@ void main() {
     try {
       await SourinCore.startAsync(sandbox.path);
       coreUp = SourinCore.isStarted;
-    } catch (e) {
-      installNote = '核心起不来: $e';
+    } catch (e, st) {
+      coreStartFailedThenSkip(e, st,
+          notVerified: 'danmaku FFI 键名的真链路判据（episodeId/mediaId 到插件手里）');
       return;
     }
     if (!coreUp) {
-      installNote = 'startAsync 返回了但 isStarted=false —— 核心实际没起来';
-      return;
+      fail('核心 startAsync 返回了但 isStarted=false —— 这不是缺件（不许 skip），'
+          '本次没有校验到：danmaku FFI 键名的真链路判据');
     }
 
     /*

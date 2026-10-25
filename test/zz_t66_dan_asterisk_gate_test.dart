@@ -354,7 +354,7 @@ void main() {
     testWidgets('★★ DanmakuHint 的 text 渲染出来不含 markdown 粗体',
         (tester) async {
       // ★ 直接验那个**渲染路径**：Text(h.text)
-      //   （danmaku_settings_dialog.dart:4253 消费它）
+      //   （danmaku_settings_dialog.dart:3864 消费它）
       const h = DanmakuHint(
         title: '凭证没通过',
         text: '弹幕服务说这次请求的凭证不对（unauthorized）。'

@@ -37,6 +37,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
+// ★ 审计 B9：缺 dll 的统一处置（Windows ⇒ fail；其它平台 ⇒ 点名 skip）
+import 'support/core_gate.dart';
 
 const List<String> _dllCandidates = <String>[
   r'rust\sourin_core\target\debug\sourin_core.dll',
@@ -101,13 +103,25 @@ void main() {
       }
     }
     if (dllPath == null) {
-      installNote = '找不到 sourin_core 产物（候选: ${_dllCandidates.join(", ")}）';
+      // ★ 审计 B9：改前 installNote + return ⇒ 缺件变 skip（CI 绿）。Windows 必须红。
+      handleMissingCore(
+        missing: _dllCandidates.join('、'),
+        notVerified: '真核心发弹幕的端到端判据（正文 / 进度 / 集 id 真的到上游）',
+      );
       return;
     }
     try {
       DynamicLibrary.open(File(dllPath!).absolute.path);
     } catch (e) {
-      installNote = 'DLL 预加载失败: $e';
+      // ★ 只对 dlopen/符号缺失按平台处置；其它（权限、路径坏）必须 fail
+      if (!isLibMissingForGate(e)) {
+        fail('DLL 预加载失败，但**不是**缺件（不许降级成 skip）：$e');
+      }
+      handleMissingCore(
+        missing: dllPath!,
+        notVerified: '真核心发弹幕的端到端判据（正文 / 进度 / 集 id 真的到上游）',
+        error: e,
+      );
       return;
     }
 
@@ -143,13 +157,16 @@ void main() {
     try {
       await SourinCore.startAsync(sandbox.path);
       coreUp = SourinCore.isStarted;
-    } catch (e) {
-      installNote = '核心起不来: $e';
+    } catch (e, st) {
+      // ★ 审计 B9：改前任何异常都变 skip。现在只放行 dlopen/符号缺失。
+      coreStartFailedThenSkip(e, st,
+          notVerified: '真核心发弹幕的端到端判据（正文 / 进度 / 集 id 真的到上游）');
       return;
     }
     if (!coreUp) {
-      installNote = 'startAsync 返回了但 isStarted=false';
-      return;
+      // 没抛异常却起不来 = 契约/环境坏了，不是缺件 ⇒ 不许 skip
+      fail('核心 startAsync 返回了但 isStarted=false —— 这不是缺件（不许 skip），'
+          '本次没有校验到：真核心发弹幕的端到端判据');
     }
 
     // ── ⑤ 装插件 ──

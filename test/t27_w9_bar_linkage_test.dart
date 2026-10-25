@@ -357,7 +357,9 @@ void main() {
      *   `bool get _chromeVisible`；底栏渲染点写 `if (_chromeVisible)`，
      *   顶栏 `visible` 的正常支也读它 ⇒ 两栏读**同一表达式**，不可能分裂。
      *   ⇒ 本判据（「模型来源」）跟着搬到 getter 上：
-     *     原文仍是这 11 项（只是缩进从 24 空格变为 6 空格）。
+     *     原文仍是这 12 项（只是缩进从 24 空格变为 6 空格）。
+     ★ 2026-10-25（task-38）：产品新增第 12 项 `!_danmakuSearchOpen`（弹幕手动搜索独立页），
+       本字面跟着补上 —— 它是**判据的模型来源**，漏一项 = 模型失效，不是"多打个字"。
      */
     const gate = '_chromeVisible =>\n'
         '      _controlsVisible &&\n'
@@ -365,6 +367,7 @@ void main() {
         '      !_episodeSheetOpen &&\n'
         '      !_streamSheetOpen &&\n'
         '      !_settingsOpen &&\n'
+        '      !_danmakuSearchOpen &&\n'
         '      !_danmakuSheetOpen &&\n'
         '      !_biliSheetOpen &&\n'
         '      !_subtitlePanelOpen &&\n'
@@ -372,8 +375,8 @@ void main() {
         '      _liveAudioOnlyNotice == null &&\n'
         '      !_videoOutputDead;';
     expect(src.contains(gate), isTrue,
-        reason: '唯一真源 `_chromeVisible` 的 11 项门控'
-            '（C && !err && !7flag && !notice && !dead）'
+        reason: '唯一真源 `_chromeVisible` 的 12 项门控'
+            '（C && !err && !8flag && !notice && !dead）'
             '是 T27-09/T27-13 真值表的模型来源，字面漂移 = 模型失效');
     // 底栏渲染点必须读唯一真源（用 ListenableBuilder 包住，淡出窗口内留树）
     expect(src.contains('if (!_chromeVisible && !keepForFade) {'), isTrue,
@@ -441,8 +444,18 @@ void main() {
 
   testWidgets('B1 登记特例行为：错误态（未 forceBars）⇒ 底栏不挂载而 C=1', (t) async {
     await mountPlayer(t);
-    expect(debugPlayerErrorForProbe(), isNotNull,
-        reason: 'flutter_tester 里 _load 必败 ⇒ 错误态');
+    /*
+     * ★ 2026-10-25（task-38）：**不再依赖**「flutter_tester 里 _load 必败 ⇒ _error 置上」
+     * 这个环境巧合 —— 实测今天它不成立了（debugPlayerErrorForProbe() 返回 null）。
+     * 改成**显式注入**起播失败：探针转调生产方法 _handleStreamError，
+     * 与真实起播失败走同一条路径（不是测试自己复刻一遍）。
+     */
+    if (debugPlayerErrorForProbe() == null) {
+      expect(debugPlayerInjectStreamErrorForProbe('起播失败：回归测试'), isTrue,
+          reason: '前置：注入起播失败没生效（探针找不到 PlayerPage？）');
+      await t.pump();
+    }
+    expect(debugPlayerErrorForProbe(), isNotNull, reason: '前置：必须先进入错误态');
     expect(debugPlayerControlsVisibleForProbe(), isTrue,
         reason: '错误态 C 仍为 true（顶栏靠 _canUseTopBarBack 返回口亮着）');
     expect(bottomBar, findsNothing,
@@ -520,7 +533,13 @@ void main() {
 
   testWidgets('B3 错误态下开浮层 ⇒ 顶栏也收（特例不被浮层穿透）', (t) async {
     await mountPlayer(t);
-    expect(debugPlayerErrorForProbe(), isNotNull);
+    // ★ 2026-10-25（task-38）：同 B1 —— 显式注入，不靠「_load 必败」这个环境巧合。
+    if (debugPlayerErrorForProbe() == null) {
+      expect(debugPlayerInjectStreamErrorForProbe('起播失败：回归测试'), isTrue,
+          reason: '前置：注入起播失败没生效');
+      await t.pump();
+    }
+    expect(debugPlayerErrorForProbe(), isNotNull, reason: '前置：必须先进入错误态');
     expect(debugPlayerOpenSettingsForProbe(), isTrue);
     await t.pump();
     expect(debugPlayerControlsVisibleForProbe(), isFalse,

@@ -685,6 +685,19 @@ pub struct SiteJob {
     pub api: String,
     /// 原始 type（仅用于报告）
     pub kind: Option<i64>,
+    /// `type: 3` + `api: csp_Xxx` 且 **Xxx 有 Rust 实现**时的类名（`"Bili"`）
+    ///
+    /// ```text
+    /// None     → 苹果CMS 站点，走 probe_apple_cms 探测
+    /// Some("Bili") → csp 源，走 csp::provider::probe_categories 探测
+    /// ```
+    /// ★ 只有**注册表里真的有实现**才会是 `Some` —— 没实现的类根本不进 jobs
+    ///   （见 `collect_sites`：它们直接进 skipped，reason 写「csp_X 尚未实现」）。
+    pub csp: Option<String>,
+    /// 配置里 `sites[].ext` 的**原样文本**（没有就是空串）
+    ///
+    /// 本层不解析、不填默认值（见 `crate::csp::ext_text`）。
+    pub ext: String,
 }
 
 fn site_type(v: &serde_json::Value) -> Option<i64> {
@@ -696,6 +709,21 @@ fn site_type(v: &serde_json::Value) -> Option<i64> {
 }
 
 /// 不支持的类型说明（对应 TYPE_DESC）
+///
+/// # 适用范围（第19项之后收窄了）
+/// 这个函数只说**「这种 type 本身就不支持」**，现在只用于：
+/// ```text
+/// type 3 且 api **不是** csp_ 形态（drpy JS / 需要真 Java 的 jar）
+/// type 0 / 1（不该走到这里）/ 4 / 未知 / 未声明
+/// ```
+/// `type 3 + api: "csp_Xxx"` 走**另一条判据**（查 csp 注册表）：
+/// ```text
+/// 已实现 → 进 jobs（真发 HTTP）
+/// 没实现 → crate::csp::unimplemented_reason() = "csp_Xxx 尚未实现"
+/// ```
+/// ⚠️ 两条绝不能混：`csp_Xxx` 不能说成「需要 Java 运行时」——
+///    那类源的行为我们已经用 Rust 重写了，只是**这一个大类还没写**而已；
+///    说成需要 Java 会让用户以为「这台机器装个 Java 就能用」，是不实描述。
 pub fn skip_reason(kind: Option<i64>) -> String {
     match kind {
         Some(1) => "苹果CMS（可转换）".to_string(),
@@ -713,8 +741,22 @@ pub fn skip_reason(kind: Option<i64>) -> String {
 /// `type: 0` 是「URL 前缀式」：`https://jx.example/?url=<页面地址>`，
 /// 我们把页面地址拼上去发一次 GET 就能拿回播放地址 —— 纯 HTTP，能做。
 ///
-/// `type: 3` 是「WebView 式」：需要一个真实浏览器内核去跑页面里的 JS。
-/// 本仓没有 WebView，**不假装支持**（静默跳过，不占位）。
+/// `parses[]` 里的 `type: 3` 是「WebView 式」：需要一个真实浏览器内核去跑
+/// 页面里的 JS。本仓没有 WebView，**不假装支持**（静默跳过，不占位）。
+///
+/// # ⚠️ 这里的 `type: 3` 与 `sites[]` 的 `type: 3` **不是同一件事**
+///
+/// 两处 type 数字撞车，是 TVBox 配置本身的命名巧合；语义完全不同，
+/// 别看到「第19项把 sites 的 type:3 接进来了」就以为这里也该接：
+/// ```text
+/// parses[].type: 3  = 解析服务（拿一个页面地址 → 换出直链）
+///                     形态是「把 url 丢给一个网页播放页」，只能靠浏览器跑
+///                     ⇒ 本仓仍然不支持，且**与 csp 注册表毫无关系**
+/// sites[].type: 3   = 爬虫源（自带分类/详情/取流的一整套接口）
+///                     api 形如 "csp_Xxx" 的，第19项用 Rust 重写后可以真跑
+/// ```
+/// 换句话说：`csp_Bili` 能播，不代表「WebView 式解析服务」能跑 ——
+/// 前者是**我们自己实现了那个类的四个方法**，后者需要别人家的 JS 执行环境。
 ///
 /// # 为什么现在才接
 /// `try_parsers` 早就存在，但它只用了编译期常量 `PARSE_SERVICES`（1 个）。
@@ -728,7 +770,7 @@ pub fn collect_parsers(cfg: &serde_json::Value) -> Vec<String> {
     for p in arr {
         let t = p.get("type").and_then(|v| v.as_i64());
         if t != Some(0) {
-            continue; // type 3 = WebView 式，本仓无法执行
+            continue; // parses[] 的 type 3 = WebView 式，本仓无法执行（≠ sites[] 的 type 3）
         }
         let u = jstr(p, "url");
         let u = u.trim();
@@ -789,7 +831,44 @@ pub fn collect_sites(
                 name: raw_name,
                 api,
                 kind,
+                csp: None,
+                ext: crate::csp::ext_text(s.get("ext")),
             });
+        } else if kind == Some(3) && crate::csp::is_csp(&raw_api) {
+            // ── type:3 + csp_Xxx ────────────────────────────────────────
+            //
+            // ★ 这里有**三种**结局，必须分清（需求原话：
+            //   「没实现的类必须进不支持」）：
+            // ```text
+            // ① 注册表里有这个类   → 进 jobs，当成可用源（真发 HTTP 探测）
+            // ② 注册表里没这个类   → 进 skipped，reason = "csp_X 尚未实现"
+            // ③ api 不是 csp_ 形态 → 落到最后的 else（原有的 type:3 文案）
+            // ```
+            //
+            // ⚠️ ② 不能悄悄 continue：静默跳过 = 用户以为「配置里没这个站」。
+            //
+            // ⚠️ api 必须用**原串**，不能过 `resolve_api`：
+            //   `csp_Bili` 不是 URL，按相对地址补全会变成
+            //   `https://配置所在域/path/csp_Bili` —— 那是彻底错的地址。
+            if crate::csp::is_implemented(&raw_api) {
+                jobs.push(SiteJob {
+                    index: i,
+                    key: jstr(s, "key"),
+                    name: raw_name,
+                    // 归一化（剥查询串/尾斜杠）保留 `csp_Bili` 原样
+                    api: normalize_api_url(&raw_api),
+                    kind,
+                    csp: crate::csp::class_of(&raw_api).map(|c| c.to_string()),
+                    ext: crate::csp::ext_text(s.get("ext")),
+                });
+            } else {
+                skipped.push(serde_json::json!({
+                    "name": raw_name,
+                    "type": kind,
+                    "stage": "type",
+                    "reason": crate::csp::unimplemented_reason(&raw_api),
+                }));
+            }
         } else {
             skipped.push(serde_json::json!({
                 "name": raw_name,
@@ -914,6 +993,64 @@ pub async fn probe_apple_cms(
     }
     let total = vj.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
     Ok(ProbeOk { classes, total })
+}
+
+/// 按站点类型选**探测方式** —— 苹果CMS 与 csp 两条路
+///
+/// # 为什么要收口成一个函数
+/// `import_tvbox_config` 与 `update_tvbox_source` 两处都要探测，
+/// 探测逻辑如果各写一份，「csp 源在两处行为不同」这类 bug 迟早出现
+/// （本仓已经因为两份拷贝漂移踩过一次：见 `collect_parsers` 的注释）。
+pub async fn probe_site(
+    client: &reqwest::Client,
+    job: &SiteJob,
+) -> std::result::Result<ProbeOk, String> {
+    match job.csp.as_deref() {
+        // csp 源：问一次 home()，把**真实分类**拿回来
+        Some(class) => {
+            log::debug!("探测 csp 源 {}（类 {class}）", job.api.trim());
+            let classes = crate::csp::provider::probe_categories(&job.api, &job.ext)
+                .await
+                .map_err(|e| format!("{} 探测失败：{e}", job.api.trim()))?;
+            // total 留 0：csp 源的「条目总数」只有具体分类才有，不在这里编一个
+            Ok(ProbeOk { classes, total: 0 })
+        }
+        None => probe_apple_cms(client, &job.api).await,
+    }
+}
+
+/// 按站点类型建 Provider（苹果CMS / csp 的 Rust 实现）
+///
+/// `id` / 名称 / api 的语义与 `collect_sites` 产出的 [`SiteJob`] 一致；
+/// 两个导入路径（首次导入、订阅更新）共用这一份，避免行为漂移。
+pub fn build_site_provider(
+    id: &str,
+    job: &SiteJob,
+    ok: &ProbeOk,
+    proxy: Option<Arc<crate::proxy::ProxyStore>>,
+    parsers: Vec<String>,
+) -> std::result::Result<Arc<dyn MediaProvider>, String> {
+    match job.csp.as_deref() {
+        Some(_) => {
+            let p = crate::csp::provider::CspProvider::new(
+                id,
+                job.name.clone(),
+                &job.api,
+                &job.ext,
+                ok.classes.clone(),
+            )?;
+            Ok(Arc::new(p) as Arc<dyn MediaProvider>)
+        }
+        None => {
+            let p = TvboxAppleCmsProvider::new(id, job.name.clone(), &job.api, ok.classes.clone())?
+                .with_parsers(parsers);
+            let p = match proxy {
+                Some(pr) => p.with_proxy(pr),
+                None => p,
+            };
+            Ok(Arc::new(p) as Arc<dyn MediaProvider>)
+        }
+    }
 }
 
 /// type_pid：null / 0 表示没有父类
@@ -1687,10 +1824,10 @@ pub async fn import_tvbox_config(
     for (idx, job) in jobs.iter().enumerate() {
         let client = client.clone();
         let sem = sem.clone();
-        let api = job.api.clone();
+        let job = job.clone();
         set.spawn(async move {
             let _permit = sem.acquire_owned().await;
-            (idx, probe_apple_cms(&client, &api).await)
+            (idx, probe_site(&client, &job).await)
         });
     }
     while let Some(joined) = set.join_next().await {
@@ -1738,21 +1875,45 @@ pub async fn import_tvbox_config(
             }
         };
         let id = unique_id(&to_id(&job.name, &job.api, job.index), &mut used);
-        let provider =
-            TvboxAppleCmsProvider::new(id.clone(), job.name.clone(), &job.api, ok.classes.clone())
-                .map_err(|e| format!("生成源「{}」失败：{e}", job.name))?
-                // ★ 把配置里声明的解析器挂上（优先于内置兜底）
-                .with_parsers(collect_parsers(&cfg));
-        let manifest = MediaProvider::manifest(&provider).clone();
-        state
-            .registry
-            .register(Arc::new(provider.with_proxy(state.proxy.clone())));
+        // ★ 按站点类型建 Provider：csp_Bili 走 Rust 重写实现，其余走苹果CMS
+        let provider = build_site_provider(
+            &id,
+            job,
+            &ok,
+            Some(state.proxy.clone()),
+            collect_parsers(&cfg),
+        )
+        .map_err(|e| format!("生成源「{}」失败：{e}", job.name))?;
+        let manifest = provider.manifest().clone();
+        state.registry.register(provider);
+        /*
+         * ── 落盘：csp 源与苹果CMS 源**一样写**（第19项收口，2026-10-25）────
+         *
+         * # 为什么现在能写了
+         * 之前不写，是因为重启重建只认苹果CMS：
+         * ```text
+         * PersistedProvider::Tvbox { .. } => TvboxAppleCmsProvider::new(api)
+         * api = "csp_Bili" 不是 http 地址 ⇒ 必然失败 ⇒ 写进去也是"重启即失效"
+         * ```
+         * 现在两件配套都到位了：
+         * ```text
+         * ① model.rs：Tvbox 增加 ext（csp 的行为参数，旧清单缺省 None 仍可读）
+         * ② state.rs：api 形如 csp_X 时走 csp::provider::CspProvider::new
+         * ```
+         * ⇒ 写它就是**真的持久**，不再是"骗用户重启后还在"。
+         */
         to_persist.push(crate::model::PersistedProvider::Tvbox {
             id: id.clone(),
             name: manifest.name.clone(),
             api: normalize_api_url(&job.api),
             categories: ok.classes.clone(),
             parsers: collect_parsers(&cfg),
+            // ★ ext 原样保存：csp 源的行为参数（站点列表/口令/分类名覆盖）。
+            //   空串 ⇒ None（"配置没写"与"写了空"要能区分）
+            ext: {
+                let e = job.ext.trim();
+                if e.is_empty() { None } else { Some(e.to_string()) }
+            },
         });
         imported.push(serde_json::json!({
             "id": id,
@@ -1760,6 +1921,10 @@ pub async fn import_tvbox_config(
             "api": normalize_api_url(&job.api),
             "categories": ok.classes.len(),
             "total": ok.total,
+            // ★ 供界面/汇报如实显示「这次导入的源重启后还在不在」
+            //   csp 源现在也落盘 ⇒ 一律 true（旧值 job.csp.is_none() 已废）
+            "persisted": true,
+            "kindTag": if job.csp.is_some() { "csp" } else { "appleCms" },
         }));
         // 记下 (id, site key, 名称, 接口) —— 落盘订阅来源时要用（见下）
         meta_rows.push((
@@ -1839,6 +2004,9 @@ pub async fn import_tvbox_config(
         "skipped": skipped,
         "lives": lives,
         "liveImported": live_rows,
+        // ★ 保留这个键（Dart 侧 `notPersisted` 已接线），但现在恒为空：
+        //   csp 源已落盘 ⇒ 没有任何"重启后需要重新导入"的源。
+        "notPersisted": Vec::<String>::new(),
     }))
 }
 
@@ -2582,10 +2750,14 @@ pub async fn update_tvbox_source(
     for (idx, (remote_idx, _)) in todos.iter().enumerate() {
         let client = client.clone();
         let sem = sem.clone();
-        let api = jobs.get(*remote_idx).map(|j| j.api.clone()).unwrap_or_default();
+        // ★ 与首次导入同一条探测路由（csp 源不能拿去当苹果CMS 探）
+        let job = jobs.get(*remote_idx).cloned();
         set.spawn(async move {
             let _permit = sem.acquire_owned().await;
-            (idx, probe_apple_cms(&client, &api).await)
+            match job {
+                Some(job) => (idx, probe_site(&client, &job).await),
+                None => (idx, Err("远端站点下标越界".to_string())),
+            }
         });
     }
     while let Some(joined) = set.join_next().await {
@@ -2655,21 +2827,35 @@ pub async fn update_tvbox_source(
             }
         };
 
-        let provider =
-            TvboxAppleCmsProvider::new(sid.clone(), job.name.clone(), &job.api, ok.classes.clone())
-                .map_err(|e| format!("生成源「{}」失败：{e}", job.name))?;
-        let manifest = MediaProvider::manifest(&provider).clone();
-        state
-            .registry
-            .register(Arc::new(provider.with_proxy(state.proxy.clone())));
+        let provider = build_site_provider(
+            &sid,
+            job,
+            &ok,
+            Some(state.proxy.clone()),
+            collect_parsers(&cfg),
+        )
+        .map_err(|e| format!("生成源「{}」失败：{e}", job.name))?;
+        let manifest = provider.manifest().clone();
+        state.registry.register(provider);
 
         let api_norm = normalize_api_url(&job.api);
+        /*
+         * ★ 与首次导入同一条规矩：csp 源**也要落盘**（含 ext）。
+         *
+         * 只改导入不改更新，会出现「更新一次，源就再也回不来了」——
+         * 比不更新更糟。两条路径必须写同一份结构（特别是 `ext`：
+         * 更新时配置里的 ext 可能与上次不同，用户改过就该被新值覆盖）。
+         */
         to_persist.push(crate::model::PersistedProvider::Tvbox {
             id: sid.clone(),
             name: manifest.name.clone(),
             api: api_norm.clone(),
             categories: ok.classes.clone(),
             parsers: collect_parsers(&cfg),
+            ext: {
+                let e = job.ext.trim();
+                if e.is_empty() { None } else { Some(e.to_string()) }
+            },
         });
         meta_writes.push((
             sid.clone(),
@@ -2687,6 +2873,8 @@ pub async fn update_tvbox_source(
             "api": api_norm,
             "categories": ok.classes.len(),
             "total": ok.total,
+            // csp 源现在也落盘 ⇒ 一律 true
+            "persisted": true,
         });
         if is_new {
             added_out.push(row);
@@ -2986,19 +3174,88 @@ mod tests {
 
     #[test]
     fn collect_sites_classifies_by_type() {
+        // SAMPLE 里的 4 个站 = 2 个 type:1（可用）+ type:3 csp_DongLi（未实现）
+        //                    + type:0 解析式 JSON（不支持）
         let cfg = parse_loose_json(SAMPLE).unwrap();
         let (jobs, skipped, lives) = collect_sites(&cfg, "");
         assert_eq!(jobs.len(), 2, "两个 type=1 站点");
         assert_eq!(jobs[0].name, "暴风");
         assert_eq!(jobs[1].name, "中文名源");
-        assert_eq!(skipped.len(), 2);
+        // ★ 不许变成「静默丢弃」：两个不可用站点**都必须**在 skipped 里
+        assert_eq!(skipped.len(), 2, "两个不可用站点都必须进 skipped");
         assert_eq!(lives.len(), 1);
         let reasons: Vec<String> = skipped
             .iter()
             .map(|s| s["reason"].as_str().unwrap().to_string())
             .collect();
-        assert!(reasons.iter().any(|r| r.contains("spider")));
-        assert!(reasons.iter().any(|r| r.contains("纯 JSON API")));
+
+        /*
+         * ── 第19项迁移（2026-10-25）──────────────────────────────────
+         *
+         * 旧断言：`reasons.any(contains("spider"))`。
+         *
+         * 为什么它会红、而且**红得对**：
+         * `csp_DongLi` 是 `type:3 + api:"csp_Xxx"`，第19项之后这条不再走
+         * `skip_reason(Some(3))`（那句「spider…需要 Java 运行时」），
+         * 而是查 csp 注册表 —— 没这个类 ⇒ reason = "csp_DongLi 尚未实现"。
+         *
+         * ⇒ 新断言守的**不变量**变了，而且更硬：
+         * ```text
+         * ① 源码里必须能看到**类名**（用户能照着去配置里找到是哪一条）
+         * ② 必须写明「尚未实现」（这是真话：这一类我们还没写）
+         * ③ 不许再说「需要 Java 运行时」（假话：这条路根本不走 Java）
+         * ```
+         * ③ 比旧断言严格：旧断言只要求出现 "spider"，改文案也照样绿。
+         */
+        let csp_reason = reasons
+            .iter()
+            .find(|r| r.contains("csp_"))
+            .unwrap_or_else(|| panic!("未实现的 csp 类必须如实进 skipped，实际 {reasons:?}"))
+            .clone();
+        assert!(
+            csp_reason.contains("csp_DongLi"),
+            "① reason 里必须带类名，实际 {csp_reason:?}"
+        );
+        assert!(
+            csp_reason.ends_with("尚未实现"),
+            "② reason 必须写明尚未实现，实际 {csp_reason:?}"
+        );
+        assert!(
+            !csp_reason.contains("Java") && !csp_reason.contains("spider"),
+            "③ ★ csp 类「不许」再用「需要 Java 运行时」那套说辞（那是另一条路的事），实际 {csp_reason:?}"
+        );
+        // type:0 那条仍走 skip_reason(Some(0))，文案不变
+        assert!(
+            reasons.iter().any(|r| r.contains("纯 JSON API")),
+            "实际 {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn collect_sites_reason_names_the_right_bucket() {
+        // 同一份配置里同时存在「非 csp 的 type:3」与「csp 未实现」——
+        // 两条 reason 必须**分别命中各自那一句**，不许互换
+        let cfg = parse_loose_json(
+            r#"{"sites":[
+                {"key":"js","name":"某JS源","type":3,"api":"https://x.example/a.js"},
+                {"key":"csp","name":"东篱","type":3,"api":"csp_DongLi"}
+            ]}"#,
+        )
+        .unwrap();
+        let (_, skipped, _) = collect_sites(&cfg, "");
+        assert_eq!(skipped.len(), 2);
+        let find = |name: &str| -> String {
+            skipped
+                .iter()
+                .find(|s| s["name"] == name)
+                .and_then(|s| s["reason"].as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        // 非 csp 的 type:3：JS/jar 那套，仍然要提 Java（这是真话）
+        assert!(find("某JS源").contains("需要 Java 运行时"), "{}", find("某JS源"));
+        // csp 未实现：只提类名，不提 Java
+        assert_eq!(find("东篱"), "csp_DongLi 尚未实现");
     }
 
     #[test]
@@ -3018,6 +3275,27 @@ mod tests {
         assert!(skip_reason(Some(4)).contains("其它"));
         assert!(skip_reason(Some(9)).contains("type=9"));
         assert!(skip_reason(None).contains("未声明"));
+
+        /*
+         * ── 第19项补充：这个函数**只**对「非 csp 的 type:3」负责 ──────────
+         *
+         * 下面三条守的是「两条判据没有互相渗透」这个不变量 ——
+         * 光靠上面 `contains("Java")` 是锁不住的：
+         * 如果有人图省事把 csp 分支也塞回 `skip_reason`，
+         * 上面那条**仍然是绿的**（它只测函数本身），
+         * 而用户会看到「csp_Bili 需要 Java 运行时」这种假话。
+         */
+        // ① 函数本身不该知道 csp 这回事（csp 文案唯一来源是 unimplemented_reason）
+        let s3 = skip_reason(Some(3));
+        assert!(
+            !s3.contains("csp_") && !s3.contains("尚未实现"),
+            "★ skip_reason 不许掺 csp 文案，实际 {s3:?}"
+        );
+        // ② csp 文案反过来也不许掺 Java
+        let csp = crate::csp::unimplemented_reason("csp_DongLi");
+        assert!(!csp.contains("Java") && !csp.contains("spider"), "实际 {csp:?}");
+        // ③ 两者**逐字不同**：混用会立刻在导入报告里露出破绽
+        assert_ne!(s3, csp);
     }
 
     #[test]
@@ -4619,6 +4897,7 @@ mod real_sites {
                 api: "http://cj.ffzyapi.com/api.php/provide/vod".to_string(),
                 categories: Vec::new(),
                 parsers: Vec::new(),
+                ext: None,
             });
         }
         crate::commands_provider::persist_from_registry(&st).expect("落盘失败");
@@ -4817,5 +5096,361 @@ mod real_sites {
             _ => panic!("kind 应识别为 tvbox"),
         }
     }
+
+}
+
+// ── ★ 第19项：TVBox csp_Xxx 路由的门禁 ──
+//
+// 测试体在 csp/route_tests.rs（属于 csp 这条线的写范围），
+// 但必须以 tvbox 的子模块形式编译 —— 判据对象是这里的私有函数。
+#[cfg(test)]
+#[path = "csp/route_tests.rs"]
+mod t1040_csp_route;
+
+// ── ★ 第19项收口：csp 源落盘 + 重启恢复的门禁（测试体内联，见 task-23 写范围）──
+#[cfg(test)]
+mod t1041_csp_persist {
+// ═══════════════════════════════════════════════════════════════════════════
+// t1041_csp_persist —— csp 源落盘 + 重启恢复（第19项收口）
+//
+// 覆盖四件事，缺一条这个功能就不算真的可用：
+// ```text
+// ① 落盘：providers.json 里**真的**有这条源，含 api=`csp_Bili` 与 ext
+// ② 重启：同一个 data_dir 再 bootstrap ⇒ 源被重建，且走的是 csp 路由
+// ③ 降级：未实现的类落盘后重启 ⇒ 只跳过它自己 + 有可查询的原因
+// ④ 阴性对照：旧清单没有 ext 字段 ⇒ 照常能读（在 persist.rs 的单测里）
+// ```
+//
+// ⚠️ 这里**故意不用真网络**：`CspProvider::new` 不联网（只有 home/list/detail/play 才发请求），
+//    所以"重启恢复"可以在离线环境稳定复现。导入路径的真网络用例单独 `#[ignore]` 门禁。
+// ═══════════════════════════════════════════════════════════════════════════
+
+use super::*;
+use crate::persist::{
+    load_persisted, load_restore_failures, providers_file, save_persisted, RestoreFailure,
+};
+use crate::provider::MediaProvider;
+use crate::state::AppState;
+
+fn tmp(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!(
+        "sourin-t1041-{tag}-{}-{}",
+        std::process::id(),
+        now_secs()
+    ));
+    std::fs::create_dir_all(&d).expect("建临时目录失败");
+    // 别让 bootstrap 去起 8642 的遥控服务（并发跑测试会撞端口）
+    std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+    d
+}
+
+/// 一条**像导入产出的** csp 源清单记录
+fn csp_row(ext: Option<&str>) -> crate::model::PersistedProvider {
+    crate::model::PersistedProvider::Tvbox {
+        id: "tvbox1".to_string(),
+        name: "哔哩｜资源合集".to_string(),
+        api: "csp_Bili".to_string(),
+        categories: vec![crate::model::TvboxCategoryEntry {
+            id: "4".to_string(),
+            name: "游戏".to_string(),
+            pid: None,
+        }],
+        parsers: Vec::new(),
+        ext: ext.map(|s| s.to_string()),
+    }
+}
+
+// ── ① + ② 落盘 → 重启恢复 ───────────────────────────────────────────
+#[tokio::test]
+async fn csp_source_survives_restart_via_csp_route() {
+    let dir = tmp("restart");
+    // 先写一份"导入后应该长这样"的清单（等价于 import 的落盘结果）
+    save_persisted(&dir, &[csp_row(Some(r#"{"n":"哔哩音乐"}"#))]).expect("写清单");
+
+    // ── 首次启动 ──
+    let st1 = AppState::bootstrap(dir.clone()).await.expect("首次 bootstrap");
+    let m1 = st1
+        .registry
+        .manifests()
+        .into_iter()
+        .find(|m| m.id == "tvbox1");
+    let m1 = m1.expect("csp 源必须在首次启动时被恢复");
+    assert_eq!(m1.kind, "tvbox", "kind 仍是 tvbox（UI 分组不变）");
+    assert!(
+        m1.description.as_deref().unwrap_or("").contains("Rust 重写"),
+        "★ 恢复出来的必须是 csp 的 Rust 实现，而不是苹果CMS：{:?}",
+        m1.description
+    );
+    drop(st1);
+
+    // ── 模拟重启：同一个 data_dir 再 bootstrap 一次 ──
+    let st2 = AppState::bootstrap(dir.clone()).await.expect("重启 bootstrap");
+    let m2 = st2
+        .registry
+        .manifests()
+        .into_iter()
+        .find(|m| m.id == "tvbox1")
+        .expect("★ 重启后源还在（这正是第19项之前做不到的事）");
+    assert!(
+        m2.description.as_deref().unwrap_or("").contains("Rust 重写"),
+        "重启后仍必须是 csp 路由建的源：{:?}",
+        m2.description
+    );
+
+    // 清单里的 api / ext 必须原样保留（丢了 ext ⇒ 恢复出来的不是用户配的那个源）
+    let saved = load_persisted(&dir);
+    let row = saved
+        .iter()
+        .find(|p| p.id() == "tvbox1")
+        .expect("清单里应仍有这条");
+    match row {
+        crate::model::PersistedProvider::Tvbox { api, ext, .. } => {
+            assert_eq!(api, "csp_Bili", "★ api 必须保持 csp 形态（不是被补成 URL）");
+            assert_eq!(
+                ext.as_deref(),
+                Some(r#"{"n":"哔哩音乐"}"#),
+                "★★ ext 必须原样保存并读回 —— 丢了就等于换了个源"
+            );
+        }
+        _ => panic!("应仍是 tvbox"),
+    }
+
+    // 重启没有失败 ⇒ 不该留下失败报告
+    assert!(
+        load_restore_failures(&dir).is_empty(),
+        "全部成功时不该有 restore-failures.json"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── ③ 未实现的类：只跳过它自己 + 原因可查询 ─────────────────────────
+#[tokio::test]
+async fn unimplemented_csp_is_skipped_on_restore_without_breaking_others() {
+    let dir = tmp("degrade");
+    let rows = vec![
+        crate::model::PersistedProvider::Tvbox {
+            id: "bad-csp".to_string(),
+            name: "木偶".to_string(),
+            api: "csp_PanWebShare".to_string(),
+            categories: Vec::new(),
+            parsers: Vec::new(),
+            ext: Some(r#"{"site":["https://123.666291.xyz"]}"#.to_string()),
+        },
+        // 一条完全无关、必须活下来的源（m3u 直播源不联网、不同类）
+        crate::model::PersistedProvider::M3uLive {
+            id: "live-1".to_string(),
+            name: "某电视台".to_string(),
+            url: "http://example.test/a.m3u".to_string(),
+        },
+    ];
+    save_persisted(&dir, &rows).expect("写清单");
+
+    let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+    let ids: Vec<String> = st.registry.manifests().iter().map(|m| m.id.clone()).collect();
+    assert!(
+        !ids.iter().any(|i| i == "bad-csp"),
+        "未实现的 csp 类不该被注册（否则点进去必报错）：{ids:?}"
+    );
+    // ⚠️ M3uLiveProvider 的 manifest id 是**生成式**（`m3ulive-<hash>`），
+    //    不是清单里那个 id —— 所以判据按前缀认，别按精确 id 认（那样会假红）
+    assert!(
+        ids.iter().any(|i| i.starts_with("m3ulive-")),
+        "★ 一条坏源**不许**带走其它源：{ids:?}"
+    );
+
+    // 原因必须可查询（不能只在日志里）
+    let fails = load_restore_failures(&dir);
+    assert_eq!(fails.len(), 1, "应恰好一条失败记录，实际 {fails:?}");
+    let f: &RestoreFailure = &fails[0];
+    assert_eq!(f.id, "bad-csp");
+    assert_eq!(f.api, "csp_PanWebShare");
+    assert_eq!(
+        f.reason, "csp_PanWebShare 尚未实现",
+        "★ 原因必须是实现层原文（用户据此判断是等版本还是重试）"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── ④ 清单文件本体：csp 记录必须带 ext（结构断言，防"字段加了但没写"）──
+#[tokio::test]
+async fn persisted_file_contains_csp_api_and_ext() {
+    let dir = tmp("file-shape");
+    save_persisted(&dir, &[csp_row(Some(r#"{"cookie":"http://127.0.0.1:9978/c.txt"}"#))])
+        .expect("写清单");
+    let raw = std::fs::read_to_string(providers_file(&dir)).expect("读清单");
+    // ★ 用 JSON 解析而不是在 pretty 文本里找裸引号：
+    //   ext 是**字符串里的 JSON**，落盘后引号都被转义成 \"，字符串匹配会假红
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("清单必须是合法 JSON");
+    let row = &v[0];
+    assert_eq!(row["kind"], "tvbox");
+    assert_eq!(row["api"], "csp_Bili", "清单里必须有 api 原文");
+    let ext = row["ext"].as_str().unwrap_or("");
+    assert!(
+        ext.contains("cookie") && ext.contains("127.0.0.1:9978"),
+        "★ ext 必须落进文件（不是只在内存里），实际 ext={ext:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── ⑥ 订阅更新路径：新 csp 源落盘时 ext 必须一起写（task-23 缺口）──────
+//
+// 为什么单独一条：task12 那批 update 用例**全是苹果CMS 源**，
+// 更新路径的 `ext` 若被漏写，`zz_t1040` ④b 那种"文件里存在 `ext: {`"
+// 的存在性断言**抓不到**（导入路径还写着，字符串照样在）。
+// 所以这条走**真行为**：真的更新一次，然后读清单断言 ext 还在。
+//
+// ⚠️ 真网络：更新时会 `probe_site` → csp 的 `home()` 要打**上游接口**（真 HTTP）。
+//    与 B10 同一条纪律：`#[ignore]`，显式跑必须给 CSP_LIVE=1。
+#[tokio::test]
+#[ignore = "真网络：CSP_LIVE=1 cargo test --lib t1041 --release -- --ignored --nocapture"]
+async fn update_path_persists_ext_for_new_csp_source() {
+    assert_eq!(
+        std::env::var("CSP_LIVE").ok().as_deref(),
+        Some("1"),
+        "★ 这条要真网络（csp 探测）：显式跑就必须给 CSP_LIVE=1"
+    );
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    let dir = tmp("update-ext");
+
+    // ── 假订阅源站：一份"远端多了一条 csp_Bili"的配置 ──
+    let cfg_body = r#"{"sites":[
+      {"key":"bili-new","name":"哔哩｜新来的","type":3,"api":"csp_Bili",
+       "ext":{"n":"远端配的分类名","cookie":"http://127.0.0.1:9978/file/bili_cookie.txt"}}
+    ]}"#;
+    let body_for_http = cfg_body.to_string();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("绑定假源站失败");
+    let port = listener.local_addr().expect("取端口失败").port();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut stream) = conn else { break };
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+            loop {
+                let mut h = String::new();
+                match reader.read_line(&mut h) {
+                    Ok(0) => break,
+                    Ok(_) if h == "\r\n" || h == "\n" => break,
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body_for_http.len(),
+                body_for_http
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    let sub_url = format!("http://127.0.0.1:{port}/tvbox.json");
+
+    // ── 本地已有一个"同订阅"里的苹果CMS 源（update 要求这条 id 存在且有 srcUrl）──
+    save_persisted(
+        &dir,
+        &[crate::model::PersistedProvider::Tvbox {
+            id: "tvbox0".to_string(),
+            name: "老源".to_string(),
+            api: "http://cj.example.com/api.php/provide/vod".to_string(),
+            categories: Vec::new(),
+            parsers: Vec::new(),
+            ext: None,
+        }],
+    )
+    .expect("写清单");
+    write_tvbox_meta(
+        &dir,
+        "tvbox0",
+        &TvboxSourceMeta {
+            source_url: Some(sub_url.clone()),
+            site_key: "old".to_string(),
+            site_name: "老源".to_string(),
+            api: "http://cj.example.com/api.php/provide/vod".to_string(),
+            installed_at: now_secs(),
+        },
+    )
+    .expect("写 meta");
+
+    let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+    // apply_new=true ⇒ 远端新增的 csp 源要真的加进来（正是 ④d 描述的场景）
+    let upd = update_tvbox_source(&st, "tvbox0", true, false)
+        .await
+        .expect("更新不该失败");
+    println!("[EVIDENCE] t1041-update {upd}");
+    let added = upd["added"].as_array().cloned().unwrap_or_default();
+    assert_eq!(added.len(), 1, "远端新增的 csp 源应被加进来，实际 {upd}");
+    assert_eq!(added[0]["api"], "csp_Bili");
+    assert_eq!(
+        added[0]["persisted"],
+        serde_json::json!(true),
+        "★ 更新路径同样要如实吐 persisted:true"
+    );
+
+    // ★ 本条的核心：**清单里**这条 csp 源必须带 ext（不是只在返回值里）
+    let saved = load_persisted(&dir);
+    let row = saved
+        .iter()
+        .find(|p| {
+            matches!(p, crate::model::PersistedProvider::Tvbox { api, .. } if api == "csp_Bili")
+        })
+        .expect("清单里应有这条 csp 源");
+    match row {
+        crate::model::PersistedProvider::Tvbox { api, ext, .. } => {
+            assert_eq!(api, "csp_Bili", "★ api 必须保持 csp 形态");
+            let ext = ext.as_deref().unwrap_or("");
+            assert!(
+                ext.contains("远端配的分类名"),
+                "★★★ 更新路径必须把 ext 一起落盘（漏写 ⇒ 重启后建出行为不对的源），实际 ext={ext:?}"
+            );
+        }
+        _ => panic!("应落成 tvbox 记录"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── ⑤ 真网络：导入一条 csp 源 ⇒ 报告 persisted=true 且清单里有 ext ──
+//
+// 与 B10 同一条纪律：真网络用例 `#[ignore]`，显式跑时必须给 CSP_LIVE=1。
+#[tokio::test]
+#[ignore = "真网络：CSP_LIVE=1 cargo test --lib t1041 --release -- --ignored --nocapture"]
+async fn csp_live_import_persists_source_to_disk() {
+    assert_eq!(
+        std::env::var("CSP_LIVE").ok().as_deref(),
+        Some("1"),
+        "★ 这条要真网络：显式跑就必须给 CSP_LIVE=1（不给就失败，不许记成 ok）"
+    );
+    std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+    let dir = tmp("live-import");
+    let cfg = r#"{"sites":[
+      {"key":"bili1","name":"哔哩｜资源合集","type":3,"api":"csp_Bili",
+       "ext":{"n":"哔哩音乐","cookie":"http://127.0.0.1:9978/file/bili_cookie.txt"}}
+    ]}"#;
+    let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+    let res = import_tvbox_config(&st, cfg).await.expect("导入");
+    println!("[EVIDENCE] t1041-import {res}");
+    let imported = res["imported"].as_array().cloned().unwrap_or_default();
+    assert_eq!(imported.len(), 1, "应导入 1 条，实际 {res}");
+    assert_eq!(
+        imported[0]["persisted"],
+        serde_json::json!(true),
+        "★★ 现在 csp 源**真的**落盘，报告必须吐 true（旧值是 false）"
+    );
+
+    let saved = load_persisted(&dir);
+    let row = saved.iter().find(|p| p.id() == "tvbox1").expect("清单里应有它");
+    match row {
+        crate::model::PersistedProvider::Tvbox { api, ext, .. } => {
+            assert_eq!(api, "csp_Bili");
+            let ext = ext.as_deref().unwrap_or("");
+            assert!(ext.contains("哔哩音乐"), "★ ext 必须原样落盘，实际 {ext:?}");
+        }
+        _ => panic!("应落成 tvbox 记录"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 }

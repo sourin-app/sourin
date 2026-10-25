@@ -363,6 +363,13 @@ void main() {
 
       final back = _readArrow(t);
       print('② 鼠标一动后箭头读数 = $back');
+      // ★ 一行仪表（task-38 定案 A/B 用，不改任何判据）：
+      //   `_canUseTopBarBack = isDesktop && _error != null && !_anySheetOpen && _controlsVisible`
+      //   —— 这四个分量全暴露在既有探针上，打出来就能判定
+      //   「ignoring=true 是产品没放行（A）」还是「读数取错源（B）」。
+      print('② 定案四分量 = err:${debugPlayerErrorForProbe() != null} '
+          'C:${debugPlayerControlsVisibleForProbe()} '
+          'sheet:${debugPlayerAnySheetOpen()}');
       expect(
         back.opacity,
         1.0,

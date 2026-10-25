@@ -151,7 +151,11 @@ Widget _host(Widget child) => MaterialApp(
     );
 
 void main() {
-  setUp(() => UiPrefs.debugResetForTest());
+  // 明确从仅启用本片源开始，再由真实点击启用 dan-api。
+  // 生产默认值已变为全来源启用，空偏好不再代表本测试的单源前置状态。
+  setUp(() => UiPrefs.debugResetForTest({
+        'danmaku.feeds.enabled': 'biliSource',
+      }));
   tearDown(() => UiPrefs.debugResetForTest());
 
   // ═══════════════════════════════════════════════════════════════════
@@ -260,14 +264,15 @@ void main() {
       await t.pumpAndSettle();
       await t.tap(find.descendant(
         of: find.byType(SegmentedButton<DanmakuPanelTab>),
-        matching: find.text('弹幕来源'),
+        matching: find.text('高级'),
       ));
       await t.pumpAndSettle();
 
+      await t.ensureVisible(find.text('dan-api'));
       await t.tap(find.text('dan-api'));
       await t.pumpAndSettle();
 
-      final line = find.textContaining('当前生效：');
+      final line = find.textContaining(RegExp(r'^当前生效：(单源|[0-9]+ 路|还没有任何来源)'));
       expect(line, findsOneWidget);
       final txt = (t.widget<Text>(line).data)!;
       expect(txt, contains('2 路'),
@@ -303,13 +308,14 @@ void main() {
       await t.pumpAndSettle();
       await t.tap(find.descendant(
         of: find.byType(SegmentedButton<DanmakuPanelTab>),
-        matching: find.text('弹幕来源'),
+        matching: find.text('高级'),
       ));
       await t.pumpAndSettle();
+      await t.ensureVisible(find.text('dan-api'));
       await t.tap(find.text('dan-api'));
       await t.pumpAndSettle();
 
-      final txt = (t.widget<Text>(find.textContaining('当前生效：')).data)!;
+      final txt = (t.widget<Text>(find.textContaining(RegExp(r'^当前生效：(单源|[0-9]+ 路|还没有任何来源)'))).data)!;
       /*
        * 降级路径**分两种情形**，两种都必须如实：
        *
@@ -366,13 +372,14 @@ void main() {
       await t.pumpAndSettle();
       await t.tap(find.descendant(
         of: find.byType(SegmentedButton<DanmakuPanelTab>),
-        matching: find.text('弹幕来源'),
+        matching: find.text('高级'),
       ));
       await t.pumpAndSettle();
+      await t.ensureVisible(find.text('dan-api'));
       await t.tap(find.text('dan-api'));
       await t.pumpAndSettle();
 
-      final txt = (t.widget<Text>(find.textContaining('当前生效：')).data)!;
+      final txt = (t.widget<Text>(find.textContaining(RegExp(r'^当前生效：(单源|[0-9]+ 路|还没有任何来源)'))).data)!;
       expect(txt, isNot(contains('合并后')),
           reason: '★★★ 本片源没有逐条内容 ⇒ 去重做不了，说"合并后"就是撒谎');
       expect(txt, contains('合计'),

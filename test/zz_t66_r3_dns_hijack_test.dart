@@ -35,11 +35,16 @@
 //   ⇒ 判「劫持」的依据是**地址**，不是「解析有没有抛异常」。
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:material_ui/material_ui.dart';
+
 import 'package:sourin_spike/core/danmaku.dart';
+import 'package:sourin_spike/ui/danmaku_search_page.dart';
+import 'package:sourin_spike/ui/widgets/bili_import_dialog.dart';
 import 'package:sourin_spike/ui/widgets/danmaku_settings_dialog.dart';
 
 void main() {
@@ -260,6 +265,124 @@ void main() {
   });
 
   // ────────────────────────────────────────────────────────────────────
+  //  ③b ★★★ 修复 B：**真接线**（驱动真实 widget，不是字符串匹配源码）
+  // ────────────────────────────────────────────────────────────────────
+  //
+  // # 为什么这一段必须存在（复核给的证据）
+  // ```text
+  // 复核实测：`fromDanmakuException` 在 lib/ 里**零生产调用点**，
+  //   而它的注释指着一个**不存在**的 `_searchResultBody`
+  //   （`grep -rni searchresultbody lib/` 只命中注释本身）。
+  // ⇒ 之前 ③ 那组只证明"这个函数体里没有 HTTP/DoH"，对
+  //   "热路径到底有没有用它"是**恒真**的。
+  // # 现在
+  // ```text
+  // 真正的渲染点在 `lib/ui/danmaku_search_page.dart` 的 `_hotPathFailure`
+  //   （搜索失败 + 取弹幕失败两处都接了）。
+  // ⇒ 本组 pump 真实 `DanmakuSearchPage`，断言屏幕上**真的出现**了归因标题：
+  //     伪造段地址 ⇒ 出现"错误地址/劫持"标题；
+  //     真值地址   ⇒ **不**出现该标题（反向：证明 widget 用的是判据，不是常量）。
+  // ```
+  group('③b 热路径真接线（驱动真实 DanmakuSearchPage）', () {
+    DanmakuSettingsState stateWith(DanmakuException? searchError) =>
+        DanmakuSettingsState(
+          enabled: true,
+          appId: '',
+          appSecret: '',
+          fontScale: 1,
+          opacity: 1,
+          speed: 1,
+          area: 1,
+          searchSearched: true,
+          searchError: searchError,
+        );
+
+    Widget pageWith(DanmakuException? searchError) => MaterialApp(
+          home: DanmakuSearchPage(
+            state: stateWith(searchError),
+            biliState: const BiliImportState(),
+            localTitles: const <String>['第1集'],
+            onSearch: (_) {},
+            onBiliSearch: (_) {},
+            onPickMatch: (_) {},
+            onBatchBind: (_) {},
+            onBiliImport: (_) {},
+            onBiliSelectPage: (_) {},
+            onClose: () {},
+          ),
+        );
+
+    testWidgets('★★★ 搜索失败：伪造段地址 ⇒ 搜索页真的画出"劫持"归因', (tester) async {
+      await tester.pumpWidget(pageWith(DanmakuException(
+        '连不上弹幕服务（地址不通或服务没起来）。请检查地址 / 服务是否在运行。',
+        resolvedAddress: '74.86.17.48',
+      )));
+      await tester.pump();
+
+      // 归因标题（来自 DanmakuProbeReport.failure.title）
+      expect(find.textContaining('错误地址'), findsWidgets,
+          reason: '★★★ 搜索页没画出归因 ⇒ `fromDanmakuException` 仍然是死代码'
+              '（改前这里只有 error.toString() 的原文）');
+      // 行动建议（来自 remedy）：必须指向"换 DNS / 代理"，不是"查服务"
+      expect(find.textContaining('DNS 换成可信的'), findsWidgets,
+          reason: '★ 归因块必须带上可照做的下一步');
+
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets('★★★ 反向：真值地址 ⇒ 搜索页**不**说劫持（判据不是常量）', (tester) async {
+      await tester.pumpWidget(pageWith(DanmakuException(
+        '连不上弹幕服务（地址不通或服务没起来）。请检查地址 / 服务是否在运行。',
+        resolvedAddress: '216.198.79.3',
+      )));
+      await tester.pump();
+
+      expect(find.textContaining('错误地址'), findsNothing,
+          reason: '★★★ 地址不在伪造段却画出"劫持"⇒ 归因是写死的常量，'
+              '那比不接更糟（会把所有失败都推去改 DNS）');
+
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    test('★★★ 接线位置与"诊断区不许再插块"（含实测可达性理由）', () {
+      final src = File('lib/ui/danmaku_search_page.dart').readAsStringSync();
+      /*
+       * ① 归因块只在**列表层**（搜索失败）出现**一次**。
+       *    主判据是上面两个 widget 用例；这条防"接到别处"或"接了两套"。
+       */
+      expect(
+        RegExp(r'_hotPathFailure\(s\.searchError!\)').hasMatch(src),
+        isTrue,
+        reason: '★ 搜索失败那一处没接线',
+      );
+      expect(RegExp(r'_hotPathFailure\(').allMatches(src).length, 2,
+          reason: '★ `_hotPathFailure` 只该有 1 处定义 + 1 处调用；'
+              '多处调用=同一份归因铺了两遍（会挤占诊断区的可点区域）');
+
+      /*
+       * ② 诊断区（详情展开区）里**不许**再插归因块。
+       *    2026-10-25 实测（.probe/fixlive-regress1.log）：把归因块插进诊断区后，
+       *    两个动作按钮的中心点从 y=560 被推到 y≈645，而 800x600 窗口底边是 600
+       *    ⇒ `hitTestable()` 变 0，`zz_t1028_danmaku_regressions_test`
+       *      的「凭证补救动作真实可达」直接红。
+       *    ⇒ 这条断言把"不要再插回去"钉住（否则下次谁再插一遍又会静默回归）。
+       */
+      final anchor = src.indexOf('for (final error in [s.error, s.searchError])');
+      expect(anchor, greaterThan(0),
+          reason: '★ 诊断区那个 for 循环不见了（锚点漂了就要改门禁）');
+      // 循环体够长（中间有一大段说明注释）：取到文件尾，足够覆盖整个 children 块
+      final loopBody = src.substring(anchor);
+      expect(loopBody, contains('SelectableText(error.toString())'),
+          reason: '★ 诊断区必须仍然渲染 error 原文（那是证据，不能只剩结论）');
+      expect(loopBody.split('_hotPathFailure').length - 1, lessThanOrEqualTo(1),
+          reason: '★ 诊断区又被插了归因块 ⇒ 动作按钮会被挤出视口（实测过）');
+
+      expect(src, contains('fromDanmakuException'),
+          reason: '★ 归因必须来自单一判据（不许在页面里另写一套）');
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────
   // ④ 反证：伪造段表本身不能判真值地址（防止判据写成恒真）
   // ────────────────────────────────────────────────────────────────────
   group('④ 伪造段表反证', () {
@@ -286,4 +409,126 @@ void main() {
       }
     });
   });
+
+  // ────────────────────────────────────────────────────────────────────
+  //  ⑤ 归因不再靠猜类型（task-33：修第 05 项带出的新语义破坏）
+  //
+  //  # 缺陷（task-29 复核实锤）
+  //  ```text
+  //  core 的 `_send` 把 TimeoutException 翻成 DanmakuException 之后，
+  //  类型信息就丢了 ⇒ `fromError` 里 `error is TimeoutException` 为假
+  //    ⇒ 落到兜底 probeFailed（"检测过程本身出错了，请把原文反馈给我们"）。
+  //  最常见的「网络超时」因此被错误归因，且原本没有任何门禁盯它。
+  //  ```
+  //  # 修法（正解②）
+  //  ```text
+  //  DanmakuException.failureKind（core 在 catch 里直接填）+ osErrorCode，
+  //  UI 直接读；文案与归因解耦 —— 以后改文案不会静默改掉归因。
+  //  ```
+  //  ⚠️ 下面两条正向用例**真的走 core 的翻译**（假 transport 抛真异常），
+  //     而不是手写一个带 kind 的 DanmakuException —— 后者证明不了 core 会填。
+  // ────────────────────────────────────────────────────────────────────
+  group('⑤ 归因读 failureKind（不许再靠猜异常类型）', () {
+    test('★★★ 正向：真 TimeoutException → core 翻译 → 超时档（不是 probeFailed）', () async {
+      final client = ExternalDanmakuClient(
+        transport: _ThrowTransport(TimeoutException('假超时', const Duration(seconds: 8))),
+        appId: 'a',
+        appSecret: 'b',
+      );
+      DanmakuException? caught;
+      try {
+        await client.match(fileName: '第01话');
+      } on DanmakuException catch (e) {
+        caught = e;
+      }
+      expect(caught, isNotNull, reason: '前提：假 transport 抛超时必须被翻译成 DanmakuException');
+      expect(caught!.failureKind, DanmakuFailureKind.timeout,
+          reason: '★★★ core 必须在 catch 处就把归因带上（这就是"文案与归因分离"的落点）');
+      expect(caught.message, contains('超时'), reason: '前提：这句就是用户会看到的原文');
+
+      final r = DanmakuProbeReport.fromDanmakuException(caught);
+      expect(r.failure, DanmakuProbeFailure.connectionTimeout,
+          reason: '★★★ 核心超时原文 ⇒ 必须是"连不上（超时）"档');
+      expect(r.failure, isNot(DanmakuProbeFailure.probeFailed),
+          reason: '★★★ 改前就是这里错的：超时被说成"检测过程本身出错了"');
+      expect(r.failure.title, contains('连接超时'),
+          reason: '★ 屏幕上的标题必须说超时（用户据此决定"重试/查网络"）');
+      expect(r.remedy, isNot(contains('反馈给我们')),
+          reason: '★ 超时不该让用户去反馈日志');
+    });
+
+    test('★★★ 正向：真 SocketException(10061) → core 翻译 → 连接被拒档（errno 不许丢）', () async {
+      final client = ExternalDanmakuClient(
+        transport: _ThrowTransport(SocketException(
+          '拒绝',
+          osError: const OSError('远程计算机拒绝网络连接。', 10061),
+        )),
+        appId: 'a',
+        appSecret: 'b',
+      );
+      DanmakuException? caught;
+      try {
+        await client.match(fileName: '第01话');
+      } on DanmakuException catch (e) {
+        caught = e;
+      }
+      expect(caught, isNotNull);
+      expect(caught!.failureKind, DanmakuFailureKind.socket);
+      expect(caught.osErrorCode, 10061,
+          reason: '★★ errno 必须随异常带出去 —— 否则上层分不清'
+              '「解析失败 / 被拒 / 超时」，只能一律归成"检测出错"');
+
+      final r = DanmakuProbeReport.fromDanmakuException(caught);
+      expect(r.failure, DanmakuProbeFailure.connectionRefused,
+          reason: '★★★ 10061 ⇒ 连接被拒（这条只有 errno 能分辨，靠文案永远分不出来）');
+      expect(r.failure, isNot(DanmakuProbeFailure.probeFailed));
+      expect(r.failure, isNot(DanmakuProbeFailure.connectionTimeout),
+          reason: '★ 被拒 ≠ 超时：一个该去启动服务，一个该去看网络/代理');
+    });
+
+    test('★★★ 反向：陌生异常仍必须 probeFailed（证明没把所有东西都归成超时）', () {
+      final r = DanmakuProbeReport.fromError(
+        StateError('boom-detail'),
+        url: 'https://x',
+      );
+      expect(r.failure, DanmakuProbeFailure.probeFailed,
+          reason: '★★★ 反向判据：认不出来的错必须保持"检测过程本身出错"，'
+              '不许因为这次修超时就把它也说成超时');
+      expect(r.failure, isNot(DanmakuProbeFailure.connectionTimeout));
+    });
+
+    test('★★★ 反向：没带归因的 DanmakuException 也不许被猜成超时', () {
+      final r = DanmakuProbeReport.fromDanmakuException(
+        DanmakuException('某种完全陌生的失败'),
+      );
+      expect(r.failure, DanmakuProbeFailure.probeFailed,
+          reason: '★★ failureKind == none ⇒ 不猜；改前改后都该是 probeFailed');
+      expect(r.failure, isNot(DanmakuProbeFailure.connectionTimeout));
+    });
+
+    test('★★ 反向：认不出的 errno 仍是 probeFailed（X4 的老规矩没被顺手改掉）', () {
+      final r = DanmakuProbeReport.fromError(
+        SocketException('怪错误', osError: const OSError('怪错误', 99999)),
+        url: 'https://x',
+      );
+      expect(r.failure, DanmakuProbeFailure.probeFailed,
+          reason: '★ 认不出的 errno 不许归成超时（否则等于替用户断言一个没证据的因果）');
+    });
+  });
+}
+
+/// 抛指定异常的 transport（用来驱动 core 的 `_send` 三个 catch）
+class _ThrowTransport implements DanmakuTransport {
+  _ThrowTransport(this.error);
+  final Object error;
+  @override
+  Future<DanmakuHttpResponse> send({
+    required String method,
+    required Uri uri,
+    required Map<String, String> headers,
+    String? body,
+  }) async =>
+      throw error;
+  @override
+  void close() {}
 }

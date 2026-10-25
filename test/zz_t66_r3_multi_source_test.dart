@@ -108,20 +108,26 @@ Future<void> _openSources(
   await t.pumpAndSettle();
   await t.tap(find.descendant(
     of: find.byType(SegmentedButton<DanmakuPanelTab>),
-    matching: find.text('弹幕来源'),
+    // 第12项将来源选择移入高级；继续驱动真实开关验证合并结果。
+    matching: find.text('高级'),
   ));
   await t.pumpAndSettle();
 }
 
 /// 点某一路的勾选框（整行可点，按**文案**定位那一行）
 Future<void> _toggleRow(WidgetTester t, String label) async {
+  await t.ensureVisible(find.text(label));
   await t.tap(find.text(label));
   await t.pumpAndSettle();
 }
 
 /// 从「当前生效」那一行读出读数（面板里唯一以「当前生效：」开头的文案）
 String _activeLine(WidgetTester t) {
-  final f = find.textContaining('当前生效：');
+  // 高级页同时显示服务端地址状态；限定真实合并读数，避免同名文案冲突。
+  final f = find.descendant(
+    of: find.byKey(const ValueKey('danmaku-active-feed-summary')),
+    matching: find.textContaining('当前生效：'),
+  );
   expect(f, findsOneWidget, reason: '找不到「当前生效」读数行 —— 判据失效');
   return (t.widget<Text>(f).data)!;
 }
@@ -133,7 +139,10 @@ bool _onScreen(WidgetTester t, String text) => find
     .isNotEmpty;
 
 void main() {
-  setUp(() => UiPrefs.debugResetForTest());
+  // 第10项首次默认全部启用；本组显式构造单源起点，继续验证合并与去重。
+  setUp(() => UiPrefs.debugResetForTest(<String, String>{
+    'danmaku.feeds.enabled': 'biliSource',
+  }));
   tearDown(() => UiPrefs.debugResetForTest());
 
   /// UiPrefs.set 会排 300ms 定时器（见 task35 的说明），跑掉它免得报 pending

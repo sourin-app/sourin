@@ -135,6 +135,20 @@ class BatchBindPlan {
   String toString() => 'BatchBindPlan(${items.length}/${totalLocal} 集, 未匹配 ${unmatchedLocal.length})';
 }
 
+/// Distinct candidate IDs sharing a parsed episode number need a user choice.
+Map<int, List<DanmakuMatch>> batchBindConflicts(List<DanmakuMatch> matches) {
+  final grouped = <int, Map<int, DanmakuMatch>>{};
+  for (final match in matches) {
+    final number = episodeNumberFrom(match.episodeTitle);
+    if (number == null) continue;
+    grouped.putIfAbsent(number, () => <int, DanmakuMatch>{})[match.episodeId] = match;
+  }
+  return {
+    for (final entry in grouped.entries)
+      if (entry.value.length > 1) entry.key: entry.value.values.toList(),
+  };
+}
+
 /// 从剧集标题里抠出**集号**（1 基）；抠不到返回 null。
 ///
 /// # 为什么要认这么多种写法

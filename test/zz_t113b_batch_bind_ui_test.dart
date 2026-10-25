@@ -52,26 +52,53 @@ void main() {
       File('lib/ui/widgets/danmaku_settings_dialog.dart').readAsStringSync());
   final page = stripComments(File('lib/ui/player_page.dart').readAsStringSync());
 
-  group('T113b-1 panel side', () {
+  final search = stripComments(File('lib/ui/danmaku_search_page.dart').readAsStringSync());
+
+  group('T113b-1 independent search page', () {
     test('** onBatchBind is declared optional (old hosts must still compile)', () {
       expect(panel.contains('this.onBatchBind,'), isTrue,
           reason: '** required would break every existing call site');
       expect(panel.contains('final ValueChanged<List<DanmakuMatch>>? onBatchBind;'),
-          isTrue);
+          isTrue,
+          reason: '** 类型必须是可空的 `ValueChanged<List<DanmakuMatch>>?`：'
+              '「声明成必填」和「声明成非空类型」是两条独立的破坏路径，'
+              '前者让旧调用点编译不过，后者让宿主无法表达"这次不绑定"');
     });
 
-    test('** the button only renders when the host wired the callback', () {
-      expect(panel.contains('if (widget.onBatchBind != null)'), isTrue,
-          reason: '** no callback, no button -- same rule as onOpenBili');
+    // 第12项将搜索与批量绑定迁入独立页；旧面板不再渲染提交按钮。
+    test('independent search requires the host binding callback', () {
+      expect(search.contains('required this.onBatchBind'), isTrue,
+          reason: '独立页必须由宿主提供真实绑定回调，不渲染空操作按钮。');
+      expect(panel.contains('if (widget.onBatchBind != null)'), isFalse,
+          reason: '旧面板不得重复渲染批量绑定表单。');
     });
 
-    test('*** the button is inside the search-results body (not somewhere dead)', () {
-      final body = bodyOf(panel, 'Widget _searchResultBody(');
-      expect(body, isNotEmpty, reason: 'helper must find the function');
-      expect(body.contains('widget.onBatchBind'), isTrue,
-          reason: '*** declaring the callback but never using it = dead feature');
-      expect(body.contains("'整部绑定'"), isTrue,
-          reason: 'the button must have user-visible copy');
+    test('preview is separate from guarded explicit confirmation', () {
+      final body = bodyOf(search, 'Widget build(BuildContext context)');
+      // ★ 2026-10-25（审计 B13）：下面四条原来是从旧文件迁移时**丢了 reason** 的
+      //   裸 expect。补回的理由写的是"这条断言到底守哪个不变量"，不是复述代码。
+      expect(body, isNotEmpty,
+          reason: '★ 前置：brace-balanced 提取必须真的取到 build 方法体。'
+              '取空 ⇒ 后面所有 contains 都会恒假/恒真，整组判据同时失效');
+      expect(body.contains("'预览批量绑定'"), isTrue,
+          reason: '★★ 预览入口必须**有用户可见的文案**：声明了回调却没有任何按钮，'
+              '就是"有这个功能但用户点不到"的死特性（迁移前的原话：'
+              'declaring the callback but never using it = dead feature）');
+      expect(body.contains('if (_preview)'), isTrue,
+          reason: '★★ 确认区只在**预览之后**才渲染：没有这一层，'
+              '用户会绕过"当前视频剧集 → 弹幕剧集"映射直接提交，'
+              '等于回到"按列表顺序盲绑"的老毛病');
+      expect(body.contains("'确认并交由播放器绑定'"), isTrue,
+          reason: '★★ 确认按钮必须带**后果说明**的文案（"交由播放器绑定"）：'
+              '只写「确定」会让用户不知道这一下会改播放器的绑定状态');
+      expect(RegExp(r'widget\.onBatchBind\(selected\)').allMatches(body).length, 1,
+          reason: '只有明确确认可提交；预览不得触发绑定。');
+      expect(body.contains('conflicts.isNotEmpty || plan.items.isEmpty || s.searchLoading || s.searchStale ? null'), isTrue,
+          reason: '冲突、空计划、在途或过期结果都不得提交。');
+      expect(body.contains('onChanged: s.searchLoading || s.searchStale ? null'), isTrue,
+          reason: '过期或在途结果不可选择。');
+      expect(body.contains('buildBatchBindPlan(localTitles:'), isTrue,
+          reason: '独立页预览必须复用核心对齐算法。');
     });
 
     test('** the panel does NOT re-implement alignment (single definition)', () {

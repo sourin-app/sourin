@@ -429,6 +429,18 @@ void main() {
           reason: '★★ 真实渲染里也不该有「继续观看」');
       expect(debugPlayerPendingSeekForProbe(), isNull,
           reason: '★★★ 换集一律从头 ⇒ _pendingSeek == null（与改前逐字一致）');
+      /*
+       * ★★★ task-26：**换集后不许再用旧候选起播**。
+       *
+       * 现场：`mountOnline` 起播链路还在 `await`（解析流 / 读进度），
+       * 用户此刻点了第 3 集 ⇒ `_gotoEpisode → _reload()` 已经起播新集。
+       * 若在途的旧 `_load()` 之后仍 `_startPlayback(旧候选)`，**最后打开的
+       * 是上一集的流**（实测日志里能看到两次 `起播`，且旧的那次排在后面）。
+       * ⇒ 正确计数 = **1**（只有新集那一次）。
+       */
+      expect(debugPlayerStartPlaybackCallsForProbe(), 1,
+          reason: '★★★ 换集后只许起播**一次**（新集）—— 旧链路抢跑会变 2 次，'
+              '用户最后看到的是上一集的画面');
       await drainTimers(t);
     });
   });
@@ -815,12 +827,62 @@ void main() {
        * ★ 停住的位置是 `_reload()` 里那个 `await resolveStream`（慢的假
        *    resolve 卡住它），**不是**测试自己插的 sleep。
        */
+      /*
+       * ★★★ task-34（2026-10-25）：**不再靠固定毫秒赌时序，改为等"真实事件"**
+       *
+       * # 改前的两条路都被实测否定（记录在案，别再走回头路）
+       * ```text
+       * ① 固定窗口 80ms：快机上 0ms 与 80ms 的 `_resolveLog` 完全相同
+       *    （[cycani/51464, cycani/51463]）⇒ 这个窗口**没有判别力**；
+       *    慢机上两趟都可能还没发出 ⇒ 绿着但没造出竞态。
+       * ② 把第一趟的"进度读取"拖慢 200ms（Lead 批准过的方案，我也试了）：
+       *    第3集那趟在 `readRewatchProgress` 处被挡住，等它回来时
+       *    `_rewatchToken` 早就变了 ⇒ CR #22 ⑤ 的守卫**直接 return**，
+       *    它**一次 resolve 都不会发** ⇒ `_resolveLog` 只有第2集一条
+       *    （实测 [cycani/51463]）⇒ 本用例要复现的"旧 resolve 把 `_streams`
+       *    盖回去"这条路径**根本走不到**（守卫在更早的地方就拦住了）。
+       * ```
+       * # 现在的做法：**轮询等真实事件**（不猜时间，也不改生产）
+       * ```text
+       * 先发起第3集那趟 → 轮询等到 `_fakeResolveCalls == 1`
+       *   （= 它真的走到 `_reload()` 的 `await resolveStream` 上了）
+       * → 这时才发起第2集 ⇒ 交错**确定**发生，与机器快慢无关。
+       * ```
+       */
       await t.runAsync(() async {
-        final f1 = debugPlayerGotoEpisodeForProbe(episodes[2]); // 第3集：读到 20:00
-        await Future<void>.delayed(const Duration(milliseconds: 80));
-        await debugPlayerGotoEpisodeForProbe(episodes[1]); // 第2集：后发先至
-        await f1; // 等慢的那次收尾
+        final f1 = debugPlayerGotoEpisodeForProbe(episodes[2]); // 第3集：慢 resolve（400ms）
+        /*
+         * ★ 自守卫①：等到"第3集那趟**真的发出**了 resolve"为止。
+         *   判据是事件（`_fakeResolveCalls`），不是毫秒 —— 慢机也只是多等几轮。
+         *   ⚠️ 有界轮询：2 秒内还没发出就**明确失败**，不许无限等。
+         */
+        final deadline = DateTime.now().add(const Duration(seconds: 2));
+        while (_fakeResolveCalls == 0 && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+        expect(_fakeResolveCalls, 1,
+            reason: '★★ 仪器自检：第3集那趟必须**已经发出并卡住** resolve'
+                '（实际 $_fakeResolveCalls 条，2 秒内没等到就是没造出交错）');
+        expect(_resolveLog, ['$provider/$ep3Id'],
+            reason: '★★ 仪器自检：此刻 `_resolveLog` 必须只有第3集那一条'
+                '（实际 $_resolveLog）');
+
+        final f2 = debugPlayerGotoEpisodeForProbe(episodes[1]); // 第2集：后发
+        await Future.wait([f1, f2]); // 两趟都收尾
       });
+
+      /*
+       * ★★★ 自守卫②（**请求发生顺序**）：真正的"后发先至"证据
+       * ```text
+       * 第3集先发、第2集后发 —— 这是被测场景的定义。
+       * 把两次切集**对调**（先第2集后第3集）⇒ 本条立刻红（见注入记录）。
+       * ```
+       */
+      expect(_resolveLog.length, 2,
+          reason: '★★ 仪器自检：两次切集必须各发出一次 resolve（实际 $_resolveLog）');
+      expect(_resolveLog, ['$provider/$ep3Id', '$provider/$ep2Id'],
+          reason: '★★★ 仪器自检：请求顺序必须是「先第3集、后第2集」（实际 $_resolveLog）'
+              '—— 顺序不对就说明本用例没在测"后发先至"');
       await t.pump();
       while (t.takeException() != null) {}
 

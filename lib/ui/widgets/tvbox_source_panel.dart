@@ -46,6 +46,8 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/sourin_api.dart';
+import '../../design/widgets/app_glass_dialog.dart';
+import '../../design/widgets/app_text_button.dart';
 import 'overlay_motion.dart';
 import '../tokens.dart';
 import '../../design/icons/app_icons.dart';
@@ -262,148 +264,158 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
     final it = _check?.itemOf(widget.id);
     final busy = _savingLink || _checking || _updating;
 
-    // R4-EXCEPTION: 机制① + 机制② —— 内容区固定 560×480（超外壳默认上限），
-    // 且含 TextField（外壳缺 Material 祖先）。详见
-    // zz_t66_r4_dialog_consistency_test.dart 的 _siteExemptions 同名键。
-    return AlertDialog(
-      title: Row(
-        children: [
-          Flexible(
-            child: Text(
-              '订阅更新 · ${widget.name}',
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
-      content: SizedBox(
-        width: 560,
-        // ★ 有界高度（照 _PluginUpdateDialog）：内容再多也只占 480px，内部滚动
-        height: 480,
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // ── 订阅链接（可编辑：贴文本导入的源在这里补链接）──
-              Text(
-                '订阅链接',
-                style: TextStyle(
-                  fontSize: FontSizes.cap,
-                  color: colors.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: Sp.x1),
-              Row(
+    // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
+    //   → 统一外壳 AppGlassDialog。逐项等价（先读原语义，不是机械替换）：
+    //   · 返回值 `bool?` 不变（「关闭」pop(context, _changed)；静默关闭 = null
+    //     ⇒ `show()` 里 `r ?? false` 一字未改）。
+    //   · 宽度：原内容固定 560 宽、超 §3.5 默认 460 档 ⇒ **显式传 maxWidth: 560**
+    //     （§3.5 白名单三档之一）。外壳内容区可用宽 = 560 − 48(左右各 24) = 512
+    //     ⇒ 内层再写 `width: 560` 会被夹到 512（写了是误导），故只保留高度约束。
+    //   · 高度：仍是「有界高度（照 _PluginUpdateDialog）：内容再多也只占 480px，
+    //     内部滚动」——原样保留；外壳默认 maxHeight 620 > 480 + 标题/按钮，不夹。
+    //   ⚠️ 两处能力缺口在原处补齐，**不改共享组件**（组件不在本项写入范围）：
+    //     ① 机制②「外壳零 Material ⇒ TextField/ListTile 抛 No Material widget
+    //        found」⇒ content 外包一层 `MaterialType.transparency`（只作墨水/光标
+    //        宿主，不画底色、不裁剪，外壳视觉不变）。
+    //     ② 内容区 DefaultTextStyle 写死 `textAlign: center` ⇒ 显式 merge 回
+    //        左对齐（原 content 是 crossAxisAlignment.start 的左对齐表单）。
+    //   ⚠️ 已知微差：原 title 是 `Row + Flexible + ellipsis`（长名字单行截断），
+    //      AppGlassDialog.title 只收 String 且不设 maxLines ⇒ 超长名字改为**换行**
+    //      而不是截断（不会溢出、不会抛异常，仅观感差异）。
+    return AppGlassDialog(
+      maxWidth: 560,
+      title: '订阅更新 · ${widget.name}',
+      content: Material(
+        type: MaterialType.transparency,
+        child: DefaultTextStyle.merge(
+          textAlign: TextAlign.left,
+          child: SizedBox(
+            // ★ 有界高度（照 _PluginUpdateDialog）：内容再多也只占 480px，内部滚动
+            height: 480,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _urlCtl,
-                      enabled: !busy,
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        hintText: 'https://example.com/tvbox.json',
+                  // ── 订阅链接（可编辑：贴文本导入的源在这里补链接）──
+                  Text(
+                    '订阅链接',
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: Sp.x1),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _urlCtl,
+                          enabled: !busy,
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            hintText: 'https://example.com/tvbox.json',
+                          ),
+                          style: const TextStyle(fontSize: FontSizes.cap),
+                          onSubmitted: (_) => _saveLink(),
+                        ),
                       ),
-                      style: const TextStyle(fontSize: FontSizes.cap),
-                      onSubmitted: (_) => _saveLink(),
+                      const SizedBox(width: Sp.x2),
+                      FilledButton.tonal(
+                        onPressed: busy ? null : _saveLink,
+                        child: Text(
+                          _savingLink ? '保存中…' : (_hasLink ? '保存' : '填入'),
+                        ),
+                      ),
+                      if (_hasLink) ...[
+                        const SizedBox(width: Sp.x2),
+                        TextButton(
+                          onPressed: busy
+                              ? null
+                              : () {
+                                  _urlCtl.text = '';
+                                  _saveLink();
+                                },
+                          child: const Text('清除'),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: Sp.x1),
+                  Text(
+                    _hasLink
+                        ? '这个链接下的全部源共用同一条订阅，检测一次对比全部。'
+                        : '这个源是贴文本导入的，没有订阅链接 —— 查不了更新。填入当初的配置地址即可。',
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: colors.onSurfaceVariant,
                     ),
                   ),
-                  const SizedBox(width: Sp.x2),
-                  FilledButton.tonal(
-                    onPressed: busy ? null : _saveLink,
-                    child: Text(
-                      _savingLink ? '保存中…' : (_hasLink ? '保存' : '填入'),
-                    ),
+                  const SizedBox(height: Sp.x3),
+
+                  // ── 检测按钮 + 结果 ──
+                  Row(
+                    children: [
+                      FilledButton.tonalIcon(
+                        onPressed: (busy || !_hasLink) ? null : () => _checkNow(),
+                        icon: const Icon(AppIcons.refresh, size: 16),
+                        label: Text(_checking ? '检测中…' : '检测更新'),
+                      ),
+                      const SizedBox(width: Sp.x3),
+                      Expanded(child: _checkSummary(colors, it)),
+                    ],
                   ),
-                  if (_hasLink) ...[
-                    const SizedBox(width: Sp.x2),
-                    TextButton(
-                      onPressed: busy
-                          ? null
-                          : () {
-                              _urlCtl.text = '';
-                              _saveLink();
-                            },
-                      child: const Text('清除'),
+                  const SizedBox(height: Sp.x2),
+
+                  /*
+                   * ★ 有变化才出现「更新」区 —— **绝不自动应用**
+                   *
+                   * 与 _PluginUpdateDialog 同一条：用户要的是「检测更新」，
+                   * 不是「自动更新」。看到结果再决定要不要改本地。
+                   */
+                  if (it != null && it.ok && it.hasChanges) ...[
+                    _applyBox(colors, it),
+                    const SizedBox(height: Sp.x2),
+                  ],
+
+                  if (_applied != null) ...[
+                    TvboxUpdateResultView(result: _applied!),
+                    const SizedBox(height: Sp.x2),
+                  ],
+
+                  if (it != null &&
+                      it.ok &&
+                      !it.hasChanges &&
+                      it.removed.isNotEmpty) ...[
+                    _removedPanel(colors, it.removed),
+                    const SizedBox(height: Sp.x2),
+                  ],
+
+                  if (it != null && it.multiRepo) ...[
+                    _multiRepoPanel(colors, it),
+                    const SizedBox(height: Sp.x2),
+                  ],
+
+                  if (_error != null) ...[
+                    Text(
+                      _error!,
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: colors.error,
+                      ),
                     ),
+                    const SizedBox(height: Sp.x2),
                   ],
                 ],
               ),
-              const SizedBox(height: Sp.x1),
-              Text(
-                _hasLink
-                    ? '这个链接下的全部源共用同一条订阅，检测一次对比全部。'
-                    : '这个源是贴文本导入的，没有订阅链接 —— 查不了更新。填入当初的配置地址即可。',
-                style: TextStyle(
-                  fontSize: FontSizes.cap,
-                  color: colors.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: Sp.x3),
-
-              // ── 检测按钮 + 结果 ──
-              Row(
-                children: [
-                  FilledButton.tonalIcon(
-                    onPressed: (busy || !_hasLink) ? null : () => _checkNow(),
-                    icon: const Icon(AppIcons.refresh, size: 16),
-                    label: Text(_checking ? '检测中…' : '检测更新'),
-                  ),
-                  const SizedBox(width: Sp.x3),
-                  Expanded(child: _checkSummary(colors, it)),
-                ],
-              ),
-              const SizedBox(height: Sp.x2),
-
-              /*
-               * ★ 有变化才出现「更新」区 —— **绝不自动应用**
-               *
-               * 与 _PluginUpdateDialog 同一条：用户要的是「检测更新」，
-               * 不是「自动更新」。看到结果再决定要不要改本地。
-               */
-              if (it != null && it.ok && it.hasChanges) ...[
-                _applyBox(colors, it),
-                const SizedBox(height: Sp.x2),
-              ],
-
-              if (_applied != null) ...[
-                _appliedPanel(colors, _applied!),
-                const SizedBox(height: Sp.x2),
-              ],
-
-              if (it != null &&
-                  it.ok &&
-                  !it.hasChanges &&
-                  it.removed.isNotEmpty) ...[
-                _removedPanel(colors, it.removed),
-                const SizedBox(height: Sp.x2),
-              ],
-
-              if (it != null && it.multiRepo) ...[
-                _multiRepoPanel(colors, it),
-                const SizedBox(height: Sp.x2),
-              ],
-
-              if (_error != null) ...[
-                Text(
-                  _error!,
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.error,
-                  ),
-                ),
-                const SizedBox(height: Sp.x2),
-              ],
-            ],
+            ),
           ),
-        ),
+        ), // ← DefaultTextStyle.merge(textAlign: TextAlign.left) 收尾
+      ), // ← Material(type: MaterialType.transparency) 收尾
+      actions: AppTextButton(
+        onPressed: () => Navigator.pop(context, _changed),
+        child: const Text('关闭'),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, _changed),
-          child: const Text('关闭'),
-        ),
-      ],
     );
   }
 
@@ -479,22 +491,10 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
   }
 
   /// 一块灰底面板（与 `SettingsEntryRow` 同一套视觉）
-  Widget _box(ColorScheme colors, List<Widget> children) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x3),
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerHighest.withValues(alpha: 0.3),
-        borderRadius: Radii.rLg,
-        border: Border.all(color: colors.outlineVariant),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: children,
-      ),
-    );
-  }
+  Widget _box(ColorScheme colors, List<Widget> children) =>
+      // ★ 与公开的结果面板（[TvboxUpdateResultView]）**共用同一份外壳样式**，
+      //   两处各写一份的话，"结果区"迟早出现两种底色/圆角。
+      _resultBox(colors, children);
 
   /// 一行开关
   ///
@@ -579,70 +579,11 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
   }
 
   /// 一键更新的结果（**如实报**：新增/变更/删除/失败/没应用，一个都不省）
-  Widget _appliedPanel(ColorScheme colors, TvboxSourceUpdate r) {
-    if (!r.updated) {
-      return _box(colors, [
-        Text(
-          r.reason ?? '远端与本地一致，没有改动',
-          style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
-        ),
-        if (r.removed.isNotEmpty) ...[
-          const SizedBox(height: Sp.x1),
-          Text(
-            '远端已消失 ${r.removed.length} 个站（未删除）',
-            style: TextStyle(
-              fontSize: FontSizes.cap,
-              color: colors.onSurfaceVariant,
-            ),
-          ),
-        ],
-      ]);
-    }
-    return _box(colors, [
-      Text(
-        '已更新',
-        style: TextStyle(
-          fontSize: FontSizes.sm,
-          fontWeight: FontWeight.w600,
-          color: colors.primary,
-        ),
-      ),
-      const SizedBox(height: Sp.x1),
-      Text(
-        '新增 ${r.added.length} · 变更 ${r.changed.length} · 删除 ${r.deleted.length}',
-        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurface),
-      ),
-      if (r.failed.isNotEmpty) ...[
-        const SizedBox(height: Sp.x1),
-        Text(
-          '有 ${r.failed.length} 个新站探测失败，没有注册',
-          style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
-        ),
-      ],
-      if (r.notApplied.isNotEmpty) ...[
-        const SizedBox(height: Sp.x1),
-        Text(
-          '按你的选择跳过了 ${r.notApplied.length} 个新增站',
-          style: TextStyle(
-            fontSize: FontSizes.cap,
-            color: colors.onSurfaceVariant,
-          ),
-        ),
-      ],
-      if (r.removed.isNotEmpty) ...[
-        const SizedBox(height: Sp.x1),
-        Text(
-          r.deleted.isEmpty
-              ? '远端已消失 ${r.removed.length} 个站：只报告，没有删'
-              : '远端已消失 ${r.removed.length} 个站，其中 ${r.deleted.length} 个已按你的选择删除',
-          style: TextStyle(
-            fontSize: FontSizes.cap,
-            color: colors.onSurfaceVariant,
-          ),
-        ),
-      ],
-    ]);
-  }
+  ///
+  /// ★ 2026-10-25（第 19 项 P2 第二次）：方法体搬进**公开** widget
+  ///   [TvboxUpdateResultView] —— 与导入面板同一条纪律：
+  ///   私有方法让"警示到底画没画"在测试里摸不到，只能退化为源码字符串判据，
+  ///   而那种判据抓不到任何跨层断链（上一轮的缺陷就是这么溜过去的）。
 
   /// 「远端已经没有这些站」清单（默认**只报告**）
   Widget _removedPanel(ColorScheme colors, List<TvboxLocalSite> removed) {
@@ -742,6 +683,165 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
             color: colors.onSurfaceVariant,
           ),
         ),
+    ]);
+  }
+}
+
+/// 结果区的统一外壳（`_box` 与公开面板共用同一份样式，防两处漂移）
+Widget _resultBox(ColorScheme colors, List<Widget> children) {
+  return Container(
+    width: double.infinity,
+    padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x3),
+    decoration: BoxDecoration(
+      color: colors.surfaceContainerHighest.withValues(alpha: 0.3),
+      borderRadius: Radii.rLg,
+      border: Border.all(color: colors.outlineVariant),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: children,
+    ),
+  );
+}
+
+/// 订阅「应用更新」的结果面板（**公开**，可被 widget test 直接渲染）
+///
+/// # 为什么必须是公开 widget（2026-10-25，第 19 项 P2 第二次）
+/// ```text
+/// 它原来是 `_TvboxSourcePanelState._appliedPanel` 私有方法 ⇒
+/// "那句警示到底画没画"在测试里摸不到 ⇒ 只能退化成"源码里有这个字符串"的伪判据。
+/// 而那正是这一轮缺陷（Rust 说了、Dart 没接）溜过整轮门禁的原因。
+/// ⇒ 与导入面板同一条纪律：行为判据要能**真渲染**，判据对象必须公开。
+/// ```
+///
+/// # 它会说的两件事
+/// ```text
+/// ① 新增/变更/删除/失败/没应用 —— 一条都不省（原有行为，逐字保留）
+/// ② 新增或变更里**不落盘**的源（csp）—— 文案与导入面板**同一份常量**
+///    （`tvboxUnpersistedWarningText` / `kTvboxUnpersistedHint`）
+/// ```
+/// ⚠️ 更新路径**没有 toast**（这个弹窗不关，结果就留在面板里），
+///    所以这里没有"关窗后还看得见"的问题 —— 但用户下次启动仍会找不到这些源，
+///    因此提示必须写在**面板里**且点名。
+///
+/// # 为什么叫 `…View` 而不是 `…Panel`（刻意的，不是笔误）
+/// ```text
+/// 通用守卫（test/t94_emby_entry_test.dart）要求：每个公开的
+/// `*Page / *Panel / *Sheet / *Dialog` 都必须被 lib/ 里**其它文件**引用
+/// （防"写完二级页却没接入口"）。
+/// 本类是**订阅更新对话框内部的结果视图**，只在本文件内实例化，
+/// 本来就不该有外部入口 ⇒ 叫 Panel 会被守卫判成"漏接"。
+/// 不加白名单：给一条真缺陷开例外，守卫就废了。
+///
+/// ⚠️ 若将来它真的成为**可导航入口**，就该改叫回 `TvboxUpdateResultPanel`
+///   并接到某个屏幕上 —— 那时守卫会替我们检查"到底接没接"。
+/// ```
+class TvboxUpdateResultView extends StatelessWidget {
+  const TvboxUpdateResultView({super.key, required this.result});
+
+  final TvboxSourceUpdate result;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final r = result;
+    if (!r.updated) {
+      return _resultBox(colors, [
+        Text(
+          r.reason ?? '远端与本地一致，没有改动',
+          style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
+        ),
+        if (r.removed.isNotEmpty) ...[
+          const SizedBox(height: Sp.x1),
+          Text(
+            '远端已消失 ${r.removed.length} 个站（未删除）',
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ]);
+    }
+
+    /*
+     * 「本次可用、但重启后需重新导入」的源 = added + changed 里 persisted==false 的。
+     * ⚠️ 只扫 added/changed：notApplied 是**没注册**的，removed/deleted 是删掉的 ——
+     *    它们都不属于"现在能用、重启就没了"这一类，混进来会让提示失真。
+     */
+    final unpersisted = tvboxUnpersistedNames(<TvboxRemoteSite>[
+      ...r.added,
+      ...r.changed,
+    ]);
+
+    return _resultBox(colors, [
+      Text(
+        '已更新',
+        style: TextStyle(
+          fontSize: FontSizes.sm,
+          fontWeight: FontWeight.w600,
+          color: colors.primary,
+        ),
+      ),
+      const SizedBox(height: Sp.x1),
+      Text(
+        '新增 ${r.added.length} · 变更 ${r.changed.length} · 删除 ${r.deleted.length}',
+        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurface),
+      ),
+      // ★ 「重启后需重新导入」—— 与导入面板逐字相同的共用文案
+      if (unpersisted.isNotEmpty) ...[
+        const SizedBox(height: Sp.x2),
+        Text(
+          tvboxUnpersistedWarningText(unpersisted),
+          key: const ValueKey<String>('tvbox-update-not-persisted'),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            height: 1.4,
+            fontWeight: FontWeight.w600,
+            color: colors.error,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          kTvboxUnpersistedHint,
+          key: const ValueKey<String>('tvbox-update-not-persisted-hint'),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            height: 1.4,
+            color: colors.onSurfaceVariant,
+          ),
+        ),
+      ],
+      if (r.failed.isNotEmpty) ...[
+        const SizedBox(height: Sp.x1),
+        Text(
+          '有 ${r.failed.length} 个新站探测失败，没有注册',
+          style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+        ),
+      ],
+      if (r.notApplied.isNotEmpty) ...[
+        const SizedBox(height: Sp.x1),
+        Text(
+          '按你的选择跳过了 ${r.notApplied.length} 个新增站',
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
+        ),
+      ],
+      if (r.removed.isNotEmpty) ...[
+        const SizedBox(height: Sp.x1),
+        Text(
+          r.deleted.isEmpty
+              ? '远端已消失 ${r.removed.length} 个站：只报告，没有删'
+              : '远端已消失 ${r.removed.length} 个站，其中 ${r.deleted.length} 个已按你的选择删除',
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
+        ),
+      ],
     ]);
   }
 }

@@ -34,6 +34,7 @@ import 'package:material_ui/material_ui.dart';
 import '../tokens.dart';
 import 'app_dialog_section.dart';
 import 'app_dialog_shell.dart';
+import 'composer_overrides_tab.dart';
 import 'source_composer_model.dart';
 import '../../design/icons/app_icons.dart';
 
@@ -132,6 +133,27 @@ ComposerDraft composerDraftFromJson(Map<String, Object?> j) {
 const double kComposerTwoPaneMinWidth = 760;
 
 /// 可视化编排弹窗
+///
+/// # 2026-10-25（P5）：「源定义」与「个性化覆盖」并成**一个**编排面板
+/// ```text
+/// Owner 原话（逐字）：
+/// > js插件也要支持,你想想方案吧,必须全部都可以,比如 只是链接,可以对数据
+/// > 二次编排修改,或者做劫持；js,可视化可自由编辑支持的,但不能影响原有插件本身,
+/// > 属于是个性化；声明式还是一样,不修改本身；可视化编排还是属于二次修改劫持的产物需求
+/// > 那个编排面板也要支持
+///
+/// 改前两套界面互不相通：
+///   本文件       声明式源的 endpoints / map（拼 JSON，**改的是源本身**）
+///   override_editor_dialog.dart  L1 字段映射 / L2 数据变换 / L3 JS 片段
+///                                （只写 overrides/<id>.json，**原件一个字节不动**）
+/// ⇒ 现在它们是本弹窗的两个页签：**同一个面板，两种"二次编排"**。
+///   · 有 [overridesTargetId] 才出现页签（新建源还没有 id，无处挂覆盖层）
+///   · [overridesOnly] = true ⇒ 直接落在覆盖层页签（JS 插件那条入口用它：
+///     插件本身没有声明式 JSON 可编，能编的只有覆盖层）
+/// ```
+///
+/// ⚠️ 覆盖层页签**不改原插件/原声明式源**：它的全部写操作只落在
+///    `<数据目录>/overrides/<id>.json`，删除即完全恢复（见 `ComposerOverridesTab`）。
 class SourceComposerDialog extends StatefulWidget {
   const SourceComposerDialog({
     super.key,
@@ -139,6 +161,12 @@ class SourceComposerDialog extends StatefulWidget {
     this.onSubmit,
     this.fill = true,
     this.submitLabel = '创建',
+    this.overridesTargetId,
+    this.overridesSourceName,
+    this.overridesOnly = false,
+    this.loadOverrideLayer,
+    this.saveOverrideLayer,
+    this.deleteOverrideLayer,
   });
 
   /// 编辑态初值（null = 新建）
@@ -151,6 +179,26 @@ class SourceComposerDialog extends StatefulWidget {
 
   /// 主按钮文案（编辑态传「保存」，新建态用缺省「创建」）
   final String submitLabel;
+
+  /// 覆盖层页签绑定的源 id（插件 @id 或声明式源 id）
+  ///
+  /// `null` ⇒ **不出现**覆盖层页签，弹窗与改前逐像素一致
+  /// （`provider_import_dialog` 的新建路径就是这种：还没有 id）。
+  final String? overridesTargetId;
+
+  /// 覆盖层页签显示的源名（只用于界面，不参与逻辑）
+  final String? overridesSourceName;
+
+  /// `true` ⇒ 直接落在覆盖层页签，且**不画**「源定义」页签与提交按钮
+  ///
+  /// 用于 **JS 插件**：插件本身没有声明式 JSON 可编，能编排的只有覆盖层
+  /// （L1/L2/L3）。这也是需求里「js 插件也要支持」的落点。
+  final bool overridesOnly;
+
+  /// ── 覆盖层 FFI 边界注入（仅供测试；生产路径为 null ⇒ 走 SourinApi）──
+  final Future<Map<String, dynamic>?> Function(String id)? loadOverrideLayer;
+  final Future<String> Function(Map<String, dynamic> layer)? saveOverrideLayer;
+  final Future<bool> Function(String id)? deleteOverrideLayer;
 
   @override
   State<SourceComposerDialog> createState() => _SourceComposerDialogState();
@@ -188,6 +236,18 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
   /// ⚠️ 但「UI 动了、数据没动」是这里最容易犯的错 —— 见 _reorder 的注释。
   List<ComposerEndpoint> _order = ComposerEndpoint.values.toList();
 
+  /// 当前页签：0 = 源定义（拼 JSON），1 = 个性化覆盖（L1/L2/L3）
+  ///
+  /// ⚠️ 只有 [SourceComposerDialog.overridesTargetId] 非空时页签才存在；
+  ///    没有 id 就没有覆盖层可挂（新建源正是这种情形）。
+  int _tab = 0;
+
+  /// 有没有覆盖层页签
+  bool get _hasOverrides {
+    final id = widget.overridesTargetId;
+    return id != null && id.trim().isNotEmpty;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -196,6 +256,12 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
      * 新建态：保持枚举序。
      */
     _order = _d.endpoints.keys.toList();
+    /*
+     * overridesOnly ⇒ 直接落在覆盖层页签（JS 插件那条入口）：
+     * 它没有声明式 JSON 可编，把用户丢在"① 站点"页签上等于让他先看一屏
+     * 与他无关的表单再自己找过去。
+     */
+    if (widget.overridesOnly && _hasOverrides) _tab = 1;
   }
 
   @override
@@ -260,8 +326,12 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     return AppDialogShell(
-      title: '可视化编排',
-      subtitle: '左边改，右边实时看；不用下一步',
+      title: _hasOverrides && widget.overridesOnly
+          ? '源个性化编排'
+          : (_hasOverrides ? '源编排与个性化' : '可视化编排'),
+      subtitle: _hasOverrides
+          ? '源定义（改 JSON）· 个性化覆盖（只写 overrides，原件不动）'
+          : '左边改，右边实时看；不用下一步',
       icon: AppIcons.auto_fix_high_outlined,
       /*
        * ★★ 2026-10-19（R4）：860 → **820**。
@@ -291,7 +361,97 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
       motion: true,
       onClose: () => Navigator.of(context).maybePop(),
       actions: Row(mainAxisSize: MainAxisSize.min, children: _actions(context)),
-      child: LayoutBuilder(
+      /*
+       * 没有绑定源 id ⇒ **不画页签**，树与改前逐像素一致
+       * （`provider_import_dialog` 的新建路径就是这种：还没有 id，无处挂覆盖层）。
+       */
+      child: _hasOverrides ? _withTabs(colors) : _declarativePane(colors),
+    );
+  }
+
+  /// 编排器正文 —— 有覆盖层页签时先画页签条，再画当前页
+  ///
+  /// # 为什么用 `Offstage` 而不是 `if`
+  /// ```text
+  /// `if` 会把另一页**销毁**：用户在 L1 里填了三行，切去「源定义」看一眼
+  /// 再切回来，三行全没了（而且会重新读一次覆盖层）。
+  /// `Offstage` 保住状态、不占位置、不参与命中测试 —— 正是页签要的语义。
+  /// 测试同样受益：`find.byType` 默认 `skipOffstage: true`，
+  /// 只找得到当前页的控件，不会因为"另一页也有同名输入框"而误命中。
+  /// ```
+  Widget _withTabs(ColorScheme colors) {
+    final overridesPane = ComposerOverridesTab(
+      key: const ValueKey<String>('composer-overrides-tab'),
+      targetId: widget.overridesTargetId!,
+      sourceName: widget.overridesSourceName ?? widget.overridesTargetId!,
+      loadLayer: widget.loadOverrideLayer,
+      saveLayer: widget.saveOverrideLayer,
+      deleteLayer: widget.deleteOverrideLayer,
+      compact: true,
+    );
+    if (widget.overridesOnly) return overridesPane;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        _tabBar(colors),
+        const SizedBox(height: Sp.x4),
+        Offstage(
+          offstage: _tab != 0,
+          child: _declarativePane(colors),
+        ),
+        Offstage(
+          offstage: _tab != 1,
+          child: overridesPane,
+        ),
+      ],
+    );
+  }
+
+  /// 两个页签的切换条
+  ///
+  /// ⚠️ 文案里点名**两种"编排"的区别**（这是 Owner 最容易被绕晕的地方）：
+  /// ```text
+  /// 源定义    改的是源本身（声明式 JSON）——「声明式还是一样,不修改本身」
+  /// 个性化覆盖 改的是数据（L1/L2/L3）——「二次编排修改/劫持」，
+  ///            只写 <数据目录>/overrides/<id>.json，原插件一个字节都不动
+  /// ```
+  Widget _tabBar(ColorScheme colors) {
+    Widget chip(int index, String label) {
+      final on = _tab == index;
+      return TextButton(
+        key: ValueKey<String>('composer-tab-$index'),
+        onPressed: () => setState(() => _tab = index),
+        style: TextButton.styleFrom(
+          foregroundColor: on ? colors.onPrimary : colors.onSurfaceVariant,
+          backgroundColor: on
+              ? colors.primary
+              : colors.surfaceContainerHighest.withValues(alpha: 0.5),
+          padding: const EdgeInsets.symmetric(
+            horizontal: Sp.x3,
+            vertical: Sp.x2,
+          ),
+          minimumSize: Size.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          shape: const RoundedRectangleBorder(borderRadius: Radii.rSm),
+        ),
+        child: Text(label, style: const TextStyle(fontSize: FontSizes.sm)),
+      );
+    }
+
+    return Wrap(
+      spacing: Sp.x2,
+      runSpacing: Sp.x2,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: <Widget>[
+        chip(0, '① 源定义（声明式 JSON）'),
+        chip(1, '② 个性化覆盖（L1/L2/L3）'),
+      ],
+    );
+  }
+
+  /// 源定义页：左改右看（宽）/ 上下堆叠（窄）—— 与改前**逐像素一致**
+  Widget _declarativePane(ColorScheme colors) => LayoutBuilder(
         builder: (context, box) {
           final twoPane = box.maxWidth >= kComposerTwoPaneMinWidth;
           final editor = _editorPane(colors);
@@ -316,25 +476,32 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
             ],
           );
         },
-      ),
-    );
-  }
+      );
 
   List<Widget> _actions(BuildContext context) => [
         TextButton(
           onPressed: () => Navigator.of(context).maybePop(),
           child: const Text('取消'),
         ),
-        const SizedBox(width: Sp.x2),
-        FilledButton(
-          onPressed: _canSubmit
-              ? () {
-                  _sync();
-                  widget.onSubmit?.call(_d.toJson());
-                }
-              : null,
-          child: Text(widget.submitLabel),
-        ),
+        /*
+         * 覆盖层页签上是**另一份**保存（`保存覆盖层`，见
+         * `ComposerOverridesTab`）—— 那是写 overrides/<id>.json，
+         * 与这里的"写回源定义"完全两件事。
+         * ⇒ 在那一页藏掉本按钮，避免用户以为它会保存覆盖层。
+         * `overridesOnly` 时整份提交都不存在（没有源定义可提交）。
+         */
+        if (_tab == 0 && !widget.overridesOnly) ...[
+          const SizedBox(width: Sp.x2),
+          FilledButton(
+            onPressed: _canSubmit
+                ? () {
+                    _sync();
+                    widget.onSubmit?.call(_d.toJson());
+                  }
+                : null,
+            child: Text(widget.submitLabel),
+          ),
+        ],
       ];
   // ═══════════════════════════════════════════════════════════════════
   //  左栏：分区卡片（站点 / 端点 / 字段映射）—— 全部在一屏内

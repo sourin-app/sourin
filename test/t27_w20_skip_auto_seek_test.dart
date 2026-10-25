@@ -57,6 +57,8 @@ import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/ui/player_page.dart';
 import 'package:sourin_spike/ui/remote_bridge.dart';
+// ★ 审计 B9：缺 dll 的统一处置（Windows ⇒ fail；其它平台 ⇒ 点名 skip）
+import 'support/core_gate.dart';
 
 /// 挂真实 PlayerPage（桌面场景）—— 与 `pc_arrow_keys_test.mountPlayer` 同款。
 ///
@@ -108,11 +110,16 @@ void main() {
       /*
        * 若测试进程里绑不上 sourin_core.dll（CI 裸环境），跳过本组 ——
        * **如实**标记 skip，不让"核心不可用"伪装成"库里写不进去"。
+       *
+       * ★★★ 2026-10-25（审计 B9）：改前这里是
+       * ```dart
+       * if (!hasCore) { markTestSkipped('本机无 sourin_core.dll（CI 裸环境）…'); return; }
+       * ```
+       * ⇒ **Windows 上把"仓库提交物缺失"写成了 skip**：CI 结论从红变绿
+       *   （"有 N 项跳过"），"核心没同步"能一路混进发布。
+       * 现在走统一处置：Windows ⇒ fail；其它平台 ⇒ skip 且点名缺什么 + 没校验到什么。
        */
-      final hasCore = File('windows/sourin_core.dll').existsSync() ||
-          File('sourin_core.dll').existsSync();
-      if (!hasCore) {
-        markTestSkipped('本机无 sourin_core.dll（CI 裸环境）—— 库往返用例跳过');
+      if (!requireCoreFiles(kCoreDllPaths, notVerified: '跳过标记的库往返（set/get）')) {
         return;
       }
 
@@ -137,8 +144,11 @@ void main() {
       try {
         final r = await SourinCore.startAsync(sandbox.path);
         coreWs = (r['dataDir'] ?? '').toString();
-      } catch (e) {
-        markTestSkipped('核心启动失败（$e）—— 库往返用例跳过');
+      } catch (e, st) {
+        // ★ 审计 B9：改前是无条件 `markTestSkipped('核心启动失败（$e）…')`
+        //   —— 那样连「核心自己报错」「FFI 契约坏了」也会变成 skip。
+        //   现在只对 dlopen/符号缺失按平台处置，其余一律 fail。
+        coreStartFailedThenSkip(e, st, notVerified: '跳过标记的库往返（set/get）');
         return;
       }
       /*

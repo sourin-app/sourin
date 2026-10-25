@@ -59,6 +59,7 @@ import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/widgets/backup_panel.dart';
+import 'package:sourin_spike/design/widgets/app_text_button.dart';
 
 import 'support/ui_shot.dart';
 
@@ -145,6 +146,24 @@ bool ensureCoreDll() {
 void main() {
   setUpAll(loadRealFonts);
 
+  /*
+   * ★ B4（反假绿审计）：Windows 上「找不到 dll」**不是环境缺件**，而是本仓坏了。
+   *
+   * ```text
+   * 本仓把 sourin_core.dll 当**提交物**：仓库根、windows/、build/…/Debug、
+   * build/…/Release 四处都有（四份哈希必须一致，见 zz_t1040）。
+   * ⇒ Windows 上它若不见了，是工作树被弄坏 / 忘了同步，**必须红**。
+   * 而 macOS / Android 的 CI job 天然没有 Windows dll ⇒ 那种情况才允许 skip。
+   * ```
+   * 判据写在这里而不是 group 的 `skip:` 参数里：group skip 是**静态**的，
+   * 判断不出"这台 Windows 为什么没有 dll"。
+   */
+  final coreAvailable = ensureCoreDll();
+  if (Platform.isWindows && !coreAvailable) {
+    fail('Windows 上缺 sourin_core.dll：它是本仓提交物（根目录 + build/… 四处），'
+        '缺了说明工作树坏了或没同步，**不是环境缺件** —— 因此不许 skip。');
+  }
+
   // ★ 记下**真的**文件选择器（tearDown 要还原成它）
   final realFileSelector = fsi.FileSelectorPlatform.instance;
 
@@ -163,7 +182,7 @@ void main() {
   /// 'libsourin_core.dylib'` 把整个 job 判失败，而那只是"这台机器没有 dll"。
   ///
   /// ★ 判据：**「没有跑这个用例的条件」与「这个用例失败」是两件事。**
-  final hasCore = ensureCoreDll();
+  final hasCore = coreAvailable;
 
   setUpAll(() async {
     if (!hasCore) {
@@ -323,7 +342,15 @@ void main() {
       await tester.runAsync(() async {
         await tester.enterText(find.byType(TextField), kUiPass);
         await tester.pump();
-        await tester.tap(find.widgetWithText(FilledButton, '导出'));
+        /*
+         * ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：口令框已迁到统一外壳，
+         *   它的「导出」是**自建按钮 `AppTextButton`**（改前是 Material 的
+         *   `FilledButton`）⇒ 定位件随之换型。
+         *   ⚠️ 不能继续用 `find.widgetWithText(FilledButton, '导出')`：那会命中
+         *   **弹窗背后**面板卡片上那个同名的 Material 导出按钮（点它会被遮罩挡住、
+         *   等于什么都没点）—— 那才是一条假绿。
+         */
+        await tester.tap(find.widgetWithText(AppTextButton, '导出'));
         for (var i = 0; i < 60; i++) {
           await Future<void>.delayed(const Duration(milliseconds: 50));
           await tester.pump();

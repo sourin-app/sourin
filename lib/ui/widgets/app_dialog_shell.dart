@@ -840,8 +840,21 @@ bool debugSkipGlassShell = false;
 
 /// 这一次要不要跳过玻璃层
 ///
-/// 两条判据：① 仪器开关；② 用户声明了"减少动效"（`disableAnimations`）。
-/// 对后者来说，这笔合成开销换不到任何信息 —— 模糊只是质感。
+/// # 这是一条**有意的取舍**，不是性能优化
+/// ```text
+/// 省的是 raster 成本；代价是**可感知的**：
+///   逐像素对照（test/zz_t1044_glass_blur_parity_test.dart）里摘掉玻璃
+///   ⇒ Δpeak 13 / 受影响像素 0.07%，差**全在边缘描边**，卡片内部 zero（interiorΔpeak ≤ 1）。
+/// ⇒ 不是"看不见的浪费"，而是"用户说少点效果，就少一点"。
+/// ```
+/// # 判据
+/// ① [debugSkipGlassShell] —— 测量仪器（生产恒 false）；
+/// ② `MediaQuery.disableAnimations` —— 用户已声明减少动效/效果。
+///
+/// # 若要回退（Owner 认为不可接受时，**一行**）
+/// ```dart
+/// bool skipGlassShellFor(BuildContext context) => debugSkipGlassShell;
+/// ```
 bool skipGlassShellFor(BuildContext context) =>
     debugSkipGlassShell ||
     (MediaQuery.maybeOf(context)?.disableAnimations ?? false);

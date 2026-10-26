@@ -183,10 +183,45 @@ class AppLog {
     unawaited(_append(line).catchError((Object _) {}));
   }
 
-  /// 日志目录：<dataDir>/logs
+  /// 测试/探针用：把日志目录钉到别处（null = 不覆盖）
+  ///
+  /// ★ 为什么需要（2026-10-26 实测）：`flutter test` 会走到真实
+  ///   `%APPDATA%pp.sourin.player\logs\sourin-YYYY-MM-DD.log` 里 ——
+  ///   当天那份里混进了 3060 行 `[DL] 探针日志` 和单测假地址
+  ///   （`127.0.0.1:1/never-played.mp4`）。测试污染用户真实日志，
+  ///   既让用户看到不存在的东西，也让"日志里有什么"没法作为取证。
+  ///
+  /// ★ 为什么用注入口而不是产品代码里的 `if (test)`：
+  ///   产品代码不该知道"测试"这回事；这里只是**一个可被覆盖的目录来源**，
+  ///   生产恒为 null ⇒ 行为与改前逐字一致。
+  @visibleForTesting
+  static String? debugLogDirOverride;
+
+  /// 运行期环境变量（与 Rust 侧 `SOURIN_LOG_FILE` 同一思路）
+  static const String envLogDir = 'SOURIN_LOG_DIR';
+
+  /// 日志目录：`$SOURIN_LOG_DIR` > 测试注入口 > `<dataDir>/logs`
   static Future<String> logDir() async {
-    final d = Directory(
-        '${await ClipDownloader.dataDir()}${Platform.pathSeparator}logs');
+    /*
+     * 优先级（自上而下）：
+     * ```text
+     * ① 测试注入口（debugLogDirOverride）—— 只在该进程内有效
+     * ② 环境变量 SOURIN_LOG_DIR —— 与 Rust 侧 SOURIN_LOG_FILE 对齐，
+     *    方便 CI / 探针 / 打包脚本统一定向
+     * ③ <dataDir>/logs —— 生产默认
+     * ```
+     * ⚠️ 必须在**第一次** `logDir()` 之前设好：`ClipDownloader.dataDir()`
+     *    有进程内缓存，但这里的①②是**每次调用都重新读**，所以覆盖
+     *    任何时候生效都不会被缓存吃掉。
+     */
+    final override = debugLogDirOverride?.trim() ?? '';
+    final fromEnv = (Platform.environment[envLogDir] ?? '').trim();
+    final chosen = override.isNotEmpty
+        ? override
+        : (fromEnv.isNotEmpty
+            ? fromEnv
+            : '${await ClipDownloader.dataDir()}${Platform.pathSeparator}logs');
+    final d = Directory(chosen);
     if (!await d.exists()) await d.create(recursive: true);
     return d.path;
   }

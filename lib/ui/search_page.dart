@@ -219,7 +219,7 @@ class SearchPageState extends State<SearchPage> {
   List<SearchHitGroup> _hits = [];
 
   /// 被跳过的源：(provider, reason)
-  List<({String provider, String reason})> _skipped = [];
+  List<({String provider, String name, String reason})> _skipped = [];
 
   /// 已搜完的源数（用于"已搜 12/25 个源"的进度提示）
   ///
@@ -377,7 +377,11 @@ class SearchPageState extends State<SearchPage> {
               if (ev.reason != null && ev.reason!.isNotEmpty) {
                 _skipped = [
                   ..._skipped,
-                  (provider: ev.provider, reason: ev.reason!),
+                  (
+                    provider: ev.provider,
+                    name: ev.providerName,
+                    reason: ev.reason!,
+                  ),
                 ];
               }
               _settled++;
@@ -509,7 +513,7 @@ class SearchPageState extends State<SearchPage> {
     setState(() {
       _skipped = [
         ..._skipped,
-        (provider: ev.provider, reason: reason),
+        (provider: ev.provider, name: ev.providerName, reason: reason),
       ];
       _settled++;
     });
@@ -866,8 +870,6 @@ class SearchPageState extends State<SearchPage> {
                  */
                 if (_searching) _SearchProgress(settled: _settled, total: _totalProviders),
 
-                // ★ 被跳过的源：明确告知，不静默失败
-                if (_skipped.isNotEmpty) _SkippedList(skipped: _skipped),
               ]),
             ),
           )
@@ -878,6 +880,20 @@ class SearchPageState extends State<SearchPage> {
         //    `SliverToBoxAdapter` 包一个普通 Box widget（同 `_NoResult`）。
         else
           const SliverToBoxAdapter(child: _IdleHint()),
+
+        /*
+         * ★★ 2026-10-26（可诊断性缺口）：**被跳过的源**与"有没有结果 / 是否还在搜"
+         * **无关** —— 所以它是上面整条 if/else 链的**并列元素**，不是替身：
+         * ```text
+         * · 还在搜（骨架）且已有源失败  ⇒ 现在也能看到"哪几路挂了"
+         *   （改前：骨架分支吃掉整条 else-if 链 ⇒ skipped 一个都不显示）
+         * · 全部源失败（空态）        ⇒ 「没有找到相关内容」+ 失败清单**同时**出现
+         * · 正常有结果                ⇒ 结果之后照旧列出失败源
+         * ```
+         * ⚠️ 判据见 `zz_t1052` ④：全源失败时**两者都必须在**；没有 skipped 时**不许**画空列表头。
+         */
+        if (_searched && _skipped.isNotEmpty)
+          SliverToBoxAdapter(child: _SkippedList(skipped: _skipped)),
         // ── 底部让位（悬浮底栏盖在所有路由之上）──
         //
         // ⚠️ 这里**不能**加 `const`：`Sp.bottomBarInset` 是 getter
@@ -1211,7 +1227,7 @@ class _SearchProgress extends StatelessWidget {
 class _SkippedList extends StatelessWidget {
   const _SkippedList({required this.skipped});
 
-  final List<({String provider, String reason})> skipped;
+  final List<({String provider, String name, String reason})> skipped;
 
   @override
   Widget build(BuildContext context) {
@@ -1249,7 +1265,7 @@ class _SkippedList extends StatelessWidget {
                 child: Row(
                   children: [
                     Text(
-                      s.provider,
+                      s.name.isEmpty ? s.provider : s.name,
                       style: TextStyle(
                         fontSize: FontSizes.sm,
                         color: colors.onSurfaceVariant,

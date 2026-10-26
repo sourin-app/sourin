@@ -51,6 +51,21 @@ SearchStreamEvent failed(String provider, String name, String reason) =>
       reason: reason,
     );
 
+
+/// 把目标滚进视口再断言
+///
+/// ```text
+/// `_SkippedList` 已是**独立 sliver**，结果一多就落到视口外 ⇒ SliverList
+/// 懒构建 ⇒ finder 找不到（`skipOffstage:false` 只搜"已建"的）。
+/// ⇒ 这是"测试没让它进视口"，不是"产品没显示"；判据强度不变。
+/// ```
+Future<void> reveal(WidgetTester t, Finder f) async {
+  if (f.evaluate().isNotEmpty) return;
+  await t.scrollUntilVisible(f, 200,
+      scrollable: find.byType(Scrollable).first, maxScrolls: 40);
+  await t.pump(const Duration(milliseconds: 60));
+}
+
 void main() {
   group('① csp 源结果真的出现在结果区', () {
     testWidgets('★★★ 喂 csp_Bili 一条命中 ⇒ 标题上屏', (t) async {
@@ -90,14 +105,18 @@ void main() {
           reason: '★★★ 一个源挂掉不许拖垮整体（错误隔离）；'
               '注入「失败就清空结果」本条立刻红');
       /*
-       * ★ 2026-10-26 复核：`_SkippedList` 里显示的是 **provider id**（`s.provider`，
-       *   `search_page.dart:1218`），不是可读名 —— `_skipped` 记录只存了 id + reason
-       *   （`search_page.dart:379-382`），**没存 providerName**。
-       *   ⇒ 这里如实断言 id，并把这个可诊断性缺口记在案。
+       * ★ 2026-10-26 修（本文件原断言已过期）：`_SkippedList` 现在显示
+       *   **可读名**（`s.name`，`search_page.dart:1256`），name 为空才回退
+       *   `s.provider`；`_skipped` 记录已扩成 `(provider, name, reason)`
+       *   （`:222`，真实流与 `debugFeedSkipped` 同一份组装）。
+       *   ⇒ 断言改成可读名，并且**不许**再露内部 id。
        */
-      expect(find.textContaining('csp-app99-x', skipOffstage: false),
+      await reveal(t, find.textContaining('💯某影视', skipOffstage: false));
+      expect(find.textContaining('💯某影视', skipOffstage: false),
           findsWidgets,
-          reason: '★★ 失败的源必须被点名（当前显示的是 provider **id**，见上方说明）');
+          reason: '★★ 失败的源要用**可读名**点名（当前显示 s.name）');
+      expect(find.textContaining('csp-app99-x', skipOffstage: false), findsNothing,
+          reason: '★★ 有 name 时不许把内部 provider id 露给用户');
       /*
        * ★★★ 2026-10-26 补：**原因也必须逐条显示**（可诊断性）
        *

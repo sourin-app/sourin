@@ -64,6 +64,9 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
   bool _saving = false;
   TvboxAggregate? _agg;
 
+  /// 配置里的 site 总数（读不到 ⇒ null ⇒ 底部说明整行不画）
+  int? _configSiteTotal;
+
   /// 当前勾选（**只含 implemented == true 的 id**）
   final Set<String> _selected = <String>{};
 
@@ -81,9 +84,15 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
     });
     try {
       final a = await SourinApi.tvboxAggregateGet();
+      /*
+       * 配置里的 site 总数：**只读 sidecar**（`list_tvbox_sources` 毫秒级、零网络）。
+       * 取不到就保持 null ⇒ 底部说明不画（口径：宁可不说，也不写死、不猜）。
+       */
+      final total = await SourinApi.tvboxConfigSiteTotal();
       if (!mounted) return;
       setState(() {
         _agg = a;
+        _configSiteTotal = total;
         _selected
           ..clear()
           ..addAll(a.sites.where((s) => s.implemented && s.enabled).map((s) => s.id));
@@ -184,6 +193,10 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
                     sites: a.sites,
                     selected: _selected,
                     onToggle: _toggle,
+                  ),
+                  TvboxAggregateUnimplementedNote(
+                    totalSites: _configSiteTotal,
+                    listedSites: a.sites.length,
                   ),
                   if (_saveError.isNotEmpty) ...<Widget>[
                     SizedBox(height: Sp.x2),
@@ -513,6 +526,52 @@ class TvboxAggregateCredentialsSection extends StatelessWidget {
         const SizedBox(height: Sp.x1),
         ProxyPanel(providerId: aggregateId, providerName: 'TVBox 聚合'),
       ],
+    );
+  }
+}
+
+/// 聚合页底部说明：**"配置里还有多少源在本机没实现"**
+///
+/// # 为什么需要这一行（Owner 定的契约取舍）
+/// ```text
+/// `sites[]` 只列 registry 里那 16 个（可操作的那些）——
+/// 把 73 条不可用塞进去会把唯一能动的东西淹没。
+/// 但"不提"等于骗人：用户会以为配置里就 16 个源。
+/// ⇒ 用**一行**把差额透明讲出来，并指向导入报告（那里有逐条原因）。
+/// ```
+/// # 数字必须**动态**
+/// ```text
+/// diff = totalSites - listedSites
+/// · totalSites 取不到（null）或 diff <= 0 ⇒ **整行不画**
+///   （绝不能出现"另有 0 个源…"这种废话，也不能写死 70）
+/// ```
+class TvboxAggregateUnimplementedNote extends StatelessWidget {
+  const TvboxAggregateUnimplementedNote({
+    super.key,
+    required this.totalSites,
+    required this.listedSites,
+  });
+
+  /// 配置里的 site 总数（`tvbox-sources.json` 的 `total`）；null = 取不到
+  final int? totalSites;
+
+  /// 聚合页真正列出来的（= `sites[]` 长度）
+  final int listedSites;
+
+  @override
+  Widget build(BuildContext context) {
+    final total = totalSites;
+    if (total == null) return const SizedBox.shrink();
+    final diff = total - listedSites;
+    if (diff <= 0) return const SizedBox.shrink();
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: Sp.x2),
+      child: Text(
+        '另有 $diff 个源在本机未实现，导入报告里有逐条原因',
+        key: const ValueKey<String>('tvbox-agg-unimplemented-note'),
+        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+      ),
     );
   }
 }

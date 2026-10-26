@@ -366,7 +366,7 @@ fn parse_search_items(html: &str) -> Vec<CspItem> {
     let re_title = regex::Regex::new(r#"(?is)title="([^"]+)""#).expect("title");
     let re_pic = regex::Regex::new(r#"(?is)data-src="([^"]+)""#).expect("pic");
     let starts: Vec<usize> = html
-        .match_indices("module-item")
+        .match_indices("module-search-item")
         .map(|(i, _)| i)
         .collect();
     let mut out: Vec<CspItem> = Vec::new();

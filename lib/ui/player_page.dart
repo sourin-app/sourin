@@ -4120,7 +4120,7 @@ class _PlayerPageState extends State<PlayerPage>
   // 现象：代理 206/468ms 正常转发、字节在流，但【首帧永远不出】；起播失败 0 次
   // 原因：mpv 按 **URL 后缀**选 demuxer ⇒ .mp3 走音频 demuxer ⇒ 只有音轨
   // ```
-  // 插件自己也写了这一点（`cycani.js:568-575`：「该站把 MP4 伪装成 .mp3…），
+  // 插件自己也写了这一点（`该源.js:568-575`：「该站把 MP4 伪装成 .mp3…），
   // 所以 `kind=mp4` 是**可信**的 ⇒ 用 kind 去纠正 mpv 的后缀猜测。
   //
   // ⚠️ 必须**每次起播都写一遍**（要么设 `mov`、要么显式清空）：

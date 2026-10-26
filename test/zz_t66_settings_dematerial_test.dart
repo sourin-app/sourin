@@ -93,9 +93,14 @@ void main() {
        * 注入"删掉一处"后仍满足 >=10 ⇒ **注入不变红**，看起来像假绿。
        * ⇒ 精确值 + 写明它怎么来的（改前 10 个 TextButton + 1 个原有 = 11）。
        */
-      expect(RegExp(r'AppTextButton\(').allMatches(code).length, 8,
-          reason: '★★ 必须正好 11 处 AppTextButton'
-              '（10 个替换来的 + 1 个原本就有）');
+      /*
+       * ★ 2026-10-26 更新：8 → **10**。
+       *   新增两处都是本轮的产品改动（TVBox 聚合入口）：
+       *   `tvbox-group-configure`（组标题右侧「配置」）与 `sources-empty-configure`（空态「聚合设置」）。
+       *   仍然**精确计数**、不用 `>=` —— 理由见上面那段（`>=` 会让"删掉一处"的注入不变红）。
+       */
+      expect(RegExp(r'AppTextButton\(').allMatches(code).length, 10,
+          reason: '★★ 必须正好 10 处 AppTextButton（8 个替换来的 + 1 个原有 + 2 个聚合入口）');
       expect(RegExp(r'AppIconButton\(').allMatches(code).length, 9,
           reason: '★★ 必须正好 9 处 AppIconButton');
     });

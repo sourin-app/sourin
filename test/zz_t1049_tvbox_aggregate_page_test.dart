@@ -57,6 +57,7 @@ void main() {
   tearDown(() {
     SourinApi.debugTvboxAggregateFetcher = null;
     SourinApi.debugTvboxAggregateUpdater = null;
+    SourinApi.debugTvboxConfigSiteTotalFetcher = null;
   });
 
   group('① 逐条渲染 + 未实现禁用勾选', () {
@@ -98,6 +99,7 @@ void main() {
 
   group('② 勾 3 个 ⇒ 保存的参数恰好这 3 个、顺序稳定', () {
     testWidgets('★★★ enabledSiteIds == [tv2,tv5,tv9] 按 site 原序', (t) async {
+      SourinApi.debugTvboxConfigSiteTotalFetcher = () async => 100;
       SourinApi.debugTvboxAggregateFetcher = () async =>
           TvboxAggregate(sites: sixteen());
       List<String>? saved;
@@ -130,6 +132,7 @@ void main() {
 
   group('③ 非法 id ⇒ 显示错误（不静默丢）', () {
     testWidgets('★★★ 后端 ok:false ⇒ 错误文案上屏', (t) async {
+      SourinApi.debugTvboxConfigSiteTotalFetcher = () async => 100;
       SourinApi.debugTvboxAggregateFetcher = () async =>
           TvboxAggregate(sites: sixteen());
       SourinApi.debugTvboxAggregateUpdater =
@@ -187,6 +190,46 @@ void main() {
       expect(find.text('去登录'), findsOneWidget, reason: '★ 文案逐字');
     });
   });
+
+  _noteGroup();
 }
 
 void _noop(String id, bool on) {}
+
+void _noteGroup() {
+  group('⑥ 未实现差额说明（动态计算）', () {
+    testWidgets('★★★ 配置 100 / 列出 16 ⇒ 出现且数字恰好 84（100-16）', (t) async {
+      await t.pumpWidget(host(const TvboxAggregateUnimplementedNote(
+        totalSites: 100,
+        listedSites: 16,
+      )));
+      await t.pump();
+      final f = find.byKey(const ValueKey<String>('tvbox-agg-unimplemented-note'));
+      expect(f, findsOneWidget, reason: '★★★ 差额 70 ⇒ 必须说出这 70 条去哪了');
+      expect(t.widget<Text>(f).data,
+          '另有 84 个源在本机未实现，导入报告里有逐条原因',
+          reason: '★★ 文案逐字 + 数字必须是算出来的（100-16=84；Lead 口径里的 70 是算术笔误）');
+    });
+
+    testWidgets('★★★ 配置 16 / 列出 16 ⇒ 整行不画（不许"另有 0 个"）', (t) async {
+      await t.pumpWidget(host(const TvboxAggregateUnimplementedNote(
+        totalSites: 16,
+        listedSites: 16,
+      )));
+      await t.pump();
+      expect(find.byKey(const ValueKey<String>('tvbox-agg-unimplemented-note')),
+          findsNothing,
+          reason: '★★★ diff 为 0 时不许出现；注入「把 70 写死」本条立刻红');
+    });
+
+    testWidgets('★★ total 取不到 ⇒ 不画（不猜数字）', (t) async {
+      await t.pumpWidget(host(const TvboxAggregateUnimplementedNote(
+        totalSites: null,
+        listedSites: 16,
+      )));
+      await t.pump();
+      expect(find.byKey(const ValueKey<String>('tvbox-agg-unimplemented-note')),
+          findsNothing);
+    });
+  });
+}

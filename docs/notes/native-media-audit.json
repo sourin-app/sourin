@@ -382,5 +382,23 @@
     "lastAudited": "2026-10-25",
     "note": "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：全屏态空格/M 经共享 LivePlaybackTarget 派发；打字态不抢键",
     "result": "+3 ~0 -0"
+  },
+  "zz_ikan_multiline_player_path_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-26",
+    "note": "31 线路 UI 可跑；+7 全绿",
+    "result": "+7 ~0 -0"
+  },
+  "zz_demuxer_override_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-26",
+    "note": "demuxer 覆盖下发/清空；+2 全绿",
+    "result": "+2 ~0 -0"
+  },
+  "zz_cycani_firstframe_probe_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-26",
+    "note": "真文件首帧探针（人工抽检）",
+    "result": "待跑：探针在写，暂不计绿"
   }
 }

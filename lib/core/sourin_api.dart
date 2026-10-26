@@ -289,6 +289,27 @@ class SourinApi {
     return TvboxAggregate.fromJson(jmap(r));
   }
 
+  /// 配置里的 TVBox site 总数（**只读 sidecar**，毫秒级零网络）
+  ///
+  /// 用途：聚合页底部那句「另有 N 个源在本机未实现」（N = 总数 - sites[] 长度）。
+  /// 取不到 ⇒ 返回 null（界面据此**不画**那一行，绝不写死数字）。
+  static Future<int?> tvboxConfigSiteTotal() async {
+    final f = debugTvboxConfigSiteTotalFetcher;
+    if (f != null) return f();
+    try {
+      final src = await listTvboxSources().timeout(
+        const Duration(milliseconds: 600),
+      );
+      return src.total > 0 ? src.total : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 门禁注入点：site 总数的替身（**生产恒 null**）
+  @visibleForTesting
+  static Future<int?> Function()? debugTvboxConfigSiteTotalFetcher;
+
   /// 门禁注入点：`tvbox_aggregate_get` 的替身（**生产恒 null**）
   @visibleForTesting
   static Future<TvboxAggregate> Function()? debugTvboxAggregateFetcher;

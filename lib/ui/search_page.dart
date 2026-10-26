@@ -516,6 +516,23 @@ class SearchPageState extends State<SearchPage> {
     setState(() => _totalProviders = n);
   }
 
+  /// ★ 测试注入口：模拟**流结束**（真实链路里 `_doSearch` 的 try 结束分支，见 :394-400）
+  ///
+  /// # 为什么必须有它（而不是把断言放宽）
+  /// ```text
+  /// 界面上「没有找到相关内容」只在 `_totalResults == 0 && !_searching` 时渲染；
+  /// 而 `_searching` 只由**流结束**置 false。没有这个口子时，门禁只能断言
+  /// "空结果不白屏"（空态文案 or 进度行）—— 那比"必须是空态文案"弱一档。
+  /// ⇒ 补这一段环境前置条件，**不改任何渲染逻辑**（生产从不调用）。
+  /// ```
+  @visibleForTesting
+  void debugEndSearch() {
+    setState(() {
+      _searching = false;
+      _currentToken = null;
+    });
+  }
+
   void _clear() {
     _cancelCurrent();
     setState(() {

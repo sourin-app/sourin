@@ -68,6 +68,7 @@ import '../design/widgets/app_text_button.dart';
 import 'app_theme.dart';
 import 'remote_bridge.dart';
 import 'tokens.dart';
+import 'settings/tvbox_aggregate_page.dart';
 import 'widgets/app_loading.dart';
 import 'widgets/app_inline_spinner.dart';
 import 'widgets/app_menu.dart';
@@ -3642,6 +3643,9 @@ class SettingsPageState extends State<SettingsPage> {
      *   直播源之间的相对顺序一个都不动。
      */
     final list = _nonLiveProviders;
+    // ★ 展示序列（TVBox 聚合组可折叠）：其他源在前、聚合组在后；折叠时整组省掉
+    //   纯函数 `tvboxGroupOrder` 不读 State ⇒ 门禁可直接注入（见 zz_t1048）
+    final visible = tvboxGroupOrder(list, expanded: _tvboxExpanded);
     /*
      * ⚠️ 下面这段（102 行）是**原区块的设计说明** —— ⑤ 搬迁时
      *    差点把它连同注释一起删掉。它解释的是"这块为什么长这样"：
@@ -4214,6 +4218,10 @@ class SettingsPageState extends State<SettingsPage> {
         SourcesEmptyState(
           isEmpty: list.isEmpty,
           onImport: _openImportDialog,
+          onConfigure: () => showAppDialog<void>(
+              context: context,
+              builder: (_) => const TvboxAggregatePage(),
+            ),
         ),
         /*
          * ★ 2026-10-26（Owner 架构要求 A′ 的 **B 半**）：
@@ -4233,25 +4241,29 @@ class SettingsPageState extends State<SettingsPage> {
             count: tvboxGroupCount(list),
             expanded: _tvboxExpanded,
             onToggle: () => setState(() => _tvboxExpanded = !_tvboxExpanded),
+            onConfigure: () => showAppDialog<void>(
+              context: context,
+              builder: (_) => const TvboxAggregatePage(),
+            ),
           ),
         ReorderableCardGrid(
           // ★ 只画非直播源（见本方法开头的说明）；折叠 TVBox 组时把它们整段省掉
-          itemCount: tvboxGroupOrder(list, expanded: _tvboxExpanded).length,
+          itemCount: visible.length,
           dragSlotWidth: _dragSlotW,
           // ★ TV 用更宽的列下限 —— 理由同上（live 列表那处有完整说明）。
           minItemWidth: Device.isTv ? 440 : kMinCardWidth,
-          onReorder: (o, n) => _onReorderWithin(tvboxGroupOrder(list, expanded: _tvboxExpanded), o, n),
+          onReorder: (o, n) => _onReorderWithin(visible, o, n),
           itemBuilder: (context, i, dragHandle, cellWidth) => Padding(
-            key: ValueKey(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id),
+            key: ValueKey(visible[i].id),
             padding: EdgeInsets.zero,
             child: _ProviderCard(
-              provider: tvboxGroupOrder(list, expanded: _tvboxExpanded)[i],
+              provider: visible[i],
               /*
                * ★ 第 07 项：展开态由宿主持有 —— 同一个 `Set` 同时服务
                * 「内容源」与「直播源」两份列表（按源 id，天然互不干扰）。
                */
-              expanded: _expandedProviderIds.contains(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id),
-              onToggleDetails: () => _toggleProviderDetails(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id),
+              expanded: _expandedProviderIds.contains(visible[i].id),
+              onToggleDetails: () => _toggleProviderDetails(visible[i].id),
               /*
                * ★ 本格宽度由网格传进来（`ReorderableCardGrid` 算的列数
                * 本来就是按它分的）。卡片用它决定按钮横排还是换行。
@@ -4277,11 +4289,11 @@ class SettingsPageState extends State<SettingsPage> {
                */
               canMoveUp: i > 0,
               canMoveDown: i < list.length - 1,
-              onMoveUp: () => _moveProviderBy(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id, -1),
-              onMoveDown: () => _moveProviderBy(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id, 1),
-              onToggle: () => _toggleProvider(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i]),
-              onRemove: _removeOf(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i]),
-              onEdit: () => _editProvider(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i]),
+              onMoveUp: () => _moveProviderBy(visible[i].id, -1),
+              onMoveDown: () => _moveProviderBy(visible[i].id, 1),
+              onToggle: () => _toggleProvider(visible[i]),
+              onRemove: _removeOf(visible[i]),
+              onEdit: () => _editProvider(visible[i]),
               /*
                * ★★ 合并后从原 `_PluginTile` **并过来**的两样
                *
@@ -4298,13 +4310,13 @@ class SettingsPageState extends State<SettingsPage> {
                * 文件，两个都传 null → 卡片上不画「配置」按钮、
                * 描述行也不拼文件名。
                */
-              pluginEntry: _pluginOf(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id),
-              onConfig: _configOf(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id),
+              pluginEntry: _pluginOf(visible[i].id),
+              onConfig: _configOf(visible[i].id),
               // ★ task-5：标识 chip 可点复制上游链接 —— 复用宿主现成的 `_copy`
               //（它带「已复制」toast，且 `_toastRev` 让二级页也看得到）
               onCopy: _copy,
               // ★ 第 06 项：源个性化覆盖层入口（按源，不改原件）
-              onOverride: () => _openOverrideEditor(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id, tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].name),
+              onOverride: () => _openOverrideEditor(visible[i].id, visible[i].name),
               /*
                * ★★ 只有**有安装链接**的插件才有这个入口（task-23）
                *
@@ -4316,9 +4328,9 @@ class SettingsPageState extends State<SettingsPage> {
                *（没有任何 meta）→ **26 张卡一个都不会有这个按钮**。
                * 这是**正确行为**，不是 bug —— 见字段注释的原则。
                */
-              onPluginUpdate: _pluginSources.containsKey(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id)
+              onPluginUpdate: _pluginSources.containsKey(visible[i].id)
                   ? () =>
-                        _openPluginUpdate(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id, tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].name)
+                        _openPluginUpdate(visible[i].id, visible[i].name)
                   /*
                    * TVBox 源走**另一个弹窗**（task-14 附加）
                    *
@@ -4332,8 +4344,8 @@ class SettingsPageState extends State<SettingsPage> {
                    * 两处都查不到 => 仍传 `null` => **不画按钮**
                    * （`test/plugin_update_ui_test.dart` 钉住了这个语义）。
                    */
-                  : _tvboxSources.containsKey(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id)
-                  ? () => _openTvboxUpdate(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id, tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].name)
+                  : _tvboxSources.containsKey(visible[i].id)
+                  ? () => _openTvboxUpdate(visible[i].id, visible[i].name)
                   : null,
             ),
           ),
@@ -4988,10 +5000,14 @@ class SourcesEmptyState extends StatelessWidget {
     super.key,
     required this.isEmpty,
     required this.onImport,
+    this.onConfigure,
   });
 
   final bool isEmpty;
   final VoidCallback onImport;
+
+  /// 「聚合设置」入口 —— 空态时也要能进 TVBox 聚合二级页（不许只在有源时出现）
+  final VoidCallback? onConfigure;
 
   @override
   Widget build(BuildContext context) {
@@ -5023,6 +5039,14 @@ class SourcesEmptyState extends StatelessWidget {
             icon: const Icon(AppIcons.download, size: 16),
             label: const Text('导入'),
           ),
+          if (onConfigure != null) ...<Widget>[
+            const SizedBox(height: Sp.x2),
+            AppTextButton(
+              key: const ValueKey<String>('sources-empty-configure'),
+              onPressed: onConfigure,
+              child: const Text('聚合设置'),
+            ),
+          ],
         ],
       ),
     );
@@ -8215,11 +8239,15 @@ class TvboxGroupHeader extends StatelessWidget {
     required this.count,
     required this.expanded,
     required this.onToggle,
+    this.onConfigure,
   });
 
   final int count;
   final bool expanded;
   final VoidCallback onToggle;
+
+  /// 「配置」入口（打开聚合二级页）—— null 则不画
+  final VoidCallback? onConfigure;
 
   @override
   Widget build(BuildContext context) {
@@ -8250,6 +8278,12 @@ class TvboxGroupHeader extends StatelessWidget {
                     ),
                   ),
                 ),
+                if (onConfigure != null)
+                  AppTextButton(
+                    key: const ValueKey<String>('tvbox-group-configure'),
+                    onPressed: onConfigure,
+                    child: const Text('配置'),
+                  ),
                 Text(
                   expanded ? '收起' : '展开',
                   key: const ValueKey<String>('tvbox-group-toggle-label'),

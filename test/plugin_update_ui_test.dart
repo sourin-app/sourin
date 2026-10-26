@@ -98,7 +98,7 @@ void main() {
          *     （Owner 要求直播源与 JS 插件分开显示，本 tab 只画非直播源）。
          *     判据（**没有来源 ⇒ 传 null ⇒ 不画按钮**）一个字没变。
          */
-        RegExp(r'\.containsKey\(\s*list\[i\]\.id\s*\)[\s\S]{0,600}?:\s*null,')
+        RegExp(r'\.containsKey\(\s*visible\[i\]\.id\s*\)[\s\S]{0,600}?:\s*null,')
             .hasMatch(code),
         isTrue,
         reason: '★★ 没有来源时必须传 `null`（→ 卡片上不画按钮），'

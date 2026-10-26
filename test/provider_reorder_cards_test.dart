@@ -242,8 +242,14 @@ void main() {
        */
       expect(src.contains('ReorderableCardGrid('), isTrue,
           reason: '★ 用户要求「可拖动排序」+「一行多个」→ 可拖拽网格');
-      expect(src.contains('onReorder: _onReorderProviders'), isTrue,
-          reason: '必须接上重排回调');
+      // ★ 2026-10-26：TVBox 聚合分组后，网格接的是**展示序列** visible 的重排；
+      //   两种写法都算接上了回调（判据语义不变：必须传 onReorder）。
+      expect(
+        RegExp(r'onReorder:\s*(_onReorderProviders|\(o, n\) => _onReorderWithin\()')
+            .hasMatch(src),
+        isTrue,
+        reason: '必须接上重排回调',
+      );
     });
 
     test('★★ 网格内部真的用 Draggable + DragTarget（不是静态布局）', () {
@@ -334,7 +340,7 @@ void main() {
        *    这里断言的是"有 Key"，不是"变量叫什么"。
        */
       expect(
-        block.contains('key: ValueKey(list[i].id)'),
+        block.contains('key: ValueKey(visible[i].id)'),
         isTrue,
         reason: '★ 没有 Key 会把"移动"当成"整块重建"，拖动动画会跳',
       );

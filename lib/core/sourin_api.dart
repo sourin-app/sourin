@@ -243,6 +243,64 @@ class SourinApi {
   // ═══════════════════════════════════════════════════════════════════
 
   /// 全部源（含启用状态与能力位）
+  // ── TVBox 聚合（A′）────────────────────────────────────────────────
+  //
+  // 契约：`.probe/ffi-contract-tvbox-aggregate.md`
+  // 命令：`tvbox_aggregate_get` / `tvbox_aggregate_set`
+  // 落盘：`<数据目录>/tvbox-aggregate.json`
+  //
+  // ★ `site.id` **就是** provider id（= `third-party-providers.json` 的
+  //   `PersistedProvider::Tvbox.id` = `tvbox-sources.json` 的 key =
+  //   `MediaId.provider`）⇒ 聚合不引入新 id，收藏/进度/弹幕绑定零迁移。
+
+  /// 读取聚合配置（含全部子站与其 `implemented`/`enabled`）
+  static Future<TvboxAggregate> tvboxAggregateGet() async {
+    final f = debugTvboxAggregateFetcher;
+    if (f != null) return f();
+    final r = await SourinCore.callAsync('tvbox_aggregate_get', const {});
+    return TvboxAggregate.fromJson(jmap(r));
+  }
+
+  /// 保存聚合配置（**部分更新**：只传要改的字段）
+  ///
+  /// `enabledSiteIds` 是"整体替换"；`pan` 是字段级合并。
+  /// 非法 id ⇒ Rust 侧返回可读错误（不许静默丢弃）。
+  static Future<TvboxAggregate> tvboxAggregateSet({
+    List<String>? enabledSiteIds,
+    String? panShareText,
+    String? panPwd,
+  }) async {
+    final updater = debugTvboxAggregateUpdater;
+    if (updater != null) {
+      return updater(
+        enabledSiteIds: enabledSiteIds,
+        panShareText: panShareText,
+        panPwd: panPwd,
+      );
+    }
+    final r = await SourinCore.callAsync('tvbox_aggregate_set', {
+      if (enabledSiteIds != null) 'enabledSiteIds': enabledSiteIds,
+      if (panShareText != null || panPwd != null)
+        'pan': <String, dynamic>{
+          if (panShareText != null) 'shareText': panShareText,
+          if (panPwd != null) 'pwd': panPwd,
+        },
+    });
+    return TvboxAggregate.fromJson(jmap(r));
+  }
+
+  /// 门禁注入点：`tvbox_aggregate_get` 的替身（**生产恒 null**）
+  @visibleForTesting
+  static Future<TvboxAggregate> Function()? debugTvboxAggregateFetcher;
+
+  /// 门禁注入点：`tvbox_aggregate_set` 的替身（**生产恒 null**）
+  @visibleForTesting
+  static Future<TvboxAggregate> Function({
+    List<String>? enabledSiteIds,
+    String? panShareText,
+    String? panPwd,
+  })? debugTvboxAggregateUpdater;
+
   static Future<List<ProviderManifest>> listProviders() async {
     final r = await SourinCore.callAsync('list_providers');
     // ★ A′：被聚合器接管的子站（hidden）不在列表里单独出现；
@@ -4936,3 +4994,114 @@ class PanShareListing {
     );
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TVBox 聚合（A′）：一个聚合源 + 子站启用集合
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 契约：`.probe/ffi-contract-tvbox-aggregate.md`（命令 `tvbox_aggregate_get` /
+// `tvbox_aggregate_set`，落盘 `<数据目录>/tvbox-aggregate.json`）。
+//
+// ★ `site.id` **就是** provider id（= `third-party-providers.json` 的
+//   `PersistedProvider::Tvbox.id` = `tvbox-sources.json` 的 key =
+//   `MediaId.provider`）⇒ 聚合不引入新 id，收藏/进度/弹幕绑定零迁移。
+
+/// 聚合里的一个子站
+class TvboxAggregateSite {
+  const TvboxAggregateSite({
+    required this.id,
+    required this.name,
+    this.api = '',
+    this.kindTag = '',
+    this.implemented = false,
+    this.enabled = false,
+    this.reason,
+  });
+
+  final String id;
+  final String name;
+  final String api;
+
+  /// `"csp"` / `"appleCms"` / `""`
+  final String kindTag;
+
+  /// 这一类**真的实现了**吗（`route(api).is_some()`）
+  ///
+  /// ⚠️ `false` ⇒ 界面必须**灰掉且不许勾选**（勾了也播不了，那是假入口），
+  ///    并逐字显示 [reason]（如 `csp_X 尚未实现`）。
+  final bool implemented;
+
+  final bool enabled;
+
+  /// 未实现/不可用的可读原因（`implemented == false` 时必有）
+  final String? reason;
+
+  factory TvboxAggregateSite.fromJson(Map<String, dynamic> j) =>
+      TvboxAggregateSite(
+        id: '${j['id'] ?? ''}',
+        name: '${j['name'] ?? ''}',
+        api: '${j['api'] ?? ''}',
+        kindTag: '${j['kindTag'] ?? ''}',
+        implemented: j['implemented'] == true,
+        enabled: j['enabled'] == true,
+        reason: j['reason'] as String?,
+      );
+
+  TvboxAggregateSite copyWith({bool? enabled}) => TvboxAggregateSite(
+        id: id,
+        name: name,
+        api: api,
+        kindTag: kindTag,
+        implemented: implemented,
+        enabled: enabled ?? this.enabled,
+        reason: reason,
+      );
+}
+
+/// `tvbox_aggregate_get` / `set` 的返回
+class TvboxAggregate {
+  const TvboxAggregate({
+    this.version = 1,
+    this.aggregateId = 'tvbox_agg',
+    this.enabledSiteIds = const <String>[],
+    this.sites = const <TvboxAggregateSite>[],
+    this.panShareText = '',
+    this.panPwd,
+  });
+
+  final int version;
+  final String aggregateId;
+  final List<String> enabledSiteIds;
+  final List<TvboxAggregateSite> sites;
+  final String panShareText;
+  final String? panPwd;
+
+  factory TvboxAggregate.fromJson(Map<String, dynamic> j) {
+    final rawSites = j['sites'];
+    final sites = <TvboxAggregateSite>[];
+    if (rawSites is List) {
+      for (final s in rawSites) {
+        if (s is Map) {
+          sites.add(TvboxAggregateSite.fromJson(s.cast<String, dynamic>()));
+        }
+      }
+    }
+    final rawIds = j['enabledSiteIds'];
+    final ids = <String>[];
+    if (rawIds is List) {
+      for (final id in rawIds) {
+        if (id is String && id.trim().isNotEmpty) ids.add(id);
+      }
+    }
+    final pan = j['pan'] is Map ? (j['pan'] as Map) : const <String, dynamic>{};
+    return TvboxAggregate(
+      version: (j['version'] as num?)?.toInt() ?? 1,
+      aggregateId: '${j['aggregateId'] ?? 'tvbox_agg'}',
+      enabledSiteIds: ids,
+      sites: sites,
+      panShareText: '${pan['shareText'] ?? ''}',
+      panPwd: pan['pwd'] as String?,
+    );
+  }
+}
+

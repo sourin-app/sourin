@@ -245,7 +245,11 @@ class SourinApi {
   /// 全部源（含启用状态与能力位）
   static Future<List<ProviderManifest>> listProviders() async {
     final r = await SourinCore.callAsync('list_providers');
-    return jlist<ProviderManifest>(r, ProviderManifest.fromJson).toList();
+    // ★ A′：被聚合器接管的子站（hidden）不在列表里单独出现；
+    //   但它们的 id 仍然有效（收藏/进度/弹幕绑定照旧路由）。
+    return jlist<ProviderManifest>(r, ProviderManifest.fromJson)
+        .where((m) => !m.hidden)
+        .toList();
   }
 
   /// 源的显示顺序

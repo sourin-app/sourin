@@ -1411,6 +1411,103 @@ class _SheetTransitionState extends State<SheetTransition>
 /// 与原版 Owner 描述的操作序列逐字对应。
 ///
 /// 桌面**不受影响**（桌面本来就没有这一层）。
+/// 按线路过滤剧集（`flag == null` ⇒ 原样返回，单线路源零开销）
+List<Episode> episodeLineFilter(List<Episode> all, String? flag) =>
+    flag == null ? all : all.where((e) => e.flag == flag).toList();
+
+/// 多线路的**线路条**（只在 `flags.length > 1` 时由调用方插入 —— 单线路不画）
+///
+/// # 为什么做成公开 widget
+/// 门禁要能直接按类型/字段断言（`find.byType(EpisodeLineBar)`、
+/// `LineChip.selected`），而不是去猜某个 Container 的颜色。
+class EpisodeLineBar extends StatelessWidget {
+  const EpisodeLineBar({
+    super.key,
+    required this.flags,
+    required this.selected,
+    required this.onPick,
+  });
+
+  /// 全部线路名（**去重保序**，顺序 = 第一条是默认线路）
+  final List<String> flags;
+
+  /// 当前选中线路
+  final String? selected;
+
+  final ValueChanged<String> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppPalette.of(context);
+    // ★ 单线路不画（调用方已有守卫，这里再兜一层 —— 双保险不冲突）
+    if (flags.length <= 1) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: Sp.x3),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('线路（${flags.length}）',
+              style: TextStyle(fontSize: 12, color: colors.mutedForeground)),
+          const SizedBox(height: Sp.x2),
+          Wrap(
+            spacing: Sp.x2,
+            runSpacing: Sp.x2,
+            children: [
+              for (final f in flags)
+                LineChip(
+                  flag: f,
+                  selected: f == selected,
+                  onTap: () => onPick(f),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 线路条里的一颗胶囊（**公开**类型：门禁按 `flag`/`selected` 字段断言）
+class LineChip extends StatelessWidget {
+  const LineChip({
+    super.key,
+    required this.flag,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String flag;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppPalette.of(context);
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
+        decoration: BoxDecoration(
+          color: selected ? colors.primary : colors.card,
+          borderRadius: BorderRadius.circular(Radii.sm),
+          border: Border.all(
+            color: selected ? colors.primary : colors.border,
+          ),
+        ),
+        child: Text(
+          flag,
+          style: TextStyle(
+            fontSize: 13,
+            color: selected ? colors.primaryForeground : colors.mutedForeground,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class EpisodePanel extends StatefulWidget {
   const EpisodePanel({
     super.key,
@@ -1420,6 +1517,9 @@ class EpisodePanel extends StatefulWidget {
     required this.onClose,
     this.chunkSize = kEpisodeChunkSize,
     this.isDesktopOverride,
+    this.flags = const [],
+    this.selectedFlag,
+    this.onPickFlag,
   });
 
   final List<Episode> episodes;
@@ -1427,6 +1527,15 @@ class EpisodePanel extends StatefulWidget {
   final void Function(Episode) onPick;
   final VoidCallback onClose;
   final int chunkSize;
+
+  /// 全部线路名（多线路才非空；`length > 1` 时才画线路条）
+  final List<String> flags;
+
+  /// 当前线路（null = 没选/单线路）
+  final String? selectedFlag;
+
+  /// 用户切线路
+  final ValueChanged<String>? onPickFlag;
 
   /// 测试用：强制形态（生产不传 —— 见 `EpisodeStrip.isDesktopOverride`）
   final bool? isDesktopOverride;
@@ -1445,18 +1554,37 @@ class _EpisodePanelState extends State<EpisodePanel> {
   /// 桌面**永远**是 false（桌面根本不显示箭头，见文件头说明）。
   bool _expanded = false;
 
+  /// 按线路过滤后的集 + 映射后的当前集下标
+  ///
+  /// ⚠️ `onPick` 传的是 **Episode 对象**（不是下标）⇒ 过滤不会改变"点了哪一集"的语义；
+  ///    但"高亮哪一格"要靠下标 ⇒ 必须重新映射，否则切线路后高亮会停在旧位置。
+  (List<Episode>, int) get _visibleAndIndex {
+    final eps = episodeLineFilter(widget.episodes, widget.selectedFlag);
+    final cur = widget.currentIndex >= 0 && widget.currentIndex < widget.episodes.length
+        ? widget.episodes[widget.currentIndex]
+        : null;
+    final i = cur == null ? 0 : eps.indexOf(cur);
+    return (eps, i < 0 ? 0 : i);
+  }
+
   EpisodeSheet _sheet({
     required bool asDialog,
     EpisodePanelStyle style = EpisodePanelStyle.bottomSheet,
-  }) => EpisodeSheet(
-    episodes: widget.episodes,
-    currentIndex: widget.currentIndex,
-    onPick: widget.onPick,
-    onClose: widget.onClose,
-    chunkSize: widget.chunkSize,
-    asDialog: asDialog,
-    style: style,
-  );
+  }) {
+    final (eps, cur) = _visibleAndIndex;
+    return EpisodeSheet(
+      episodes: eps,
+      currentIndex: cur,
+      onPick: widget.onPick,
+      onClose: widget.onClose,
+      chunkSize: widget.chunkSize,
+      asDialog: asDialog,
+      style: style,
+      flags: widget.flags,
+      selectedFlag: widget.selectedFlag,
+      onPickFlag: widget.onPickFlag,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1482,14 +1610,18 @@ class _EpisodePanelState extends State<EpisodePanel> {
       );
     }
 
+    final (eps, cur) = _visibleAndIndex;
     return _StripDrawer(
-      episodes: widget.episodes,
-      currentIndex: widget.currentIndex,
+      episodes: eps,
+      currentIndex: cur,
       onPick: widget.onPick,
       onClose: widget.onClose,
       onExpand: () => setState(() => _expanded = true),
       // ★ 形态判定要**传下去**（测试用 override 时才不会串形态）
       isDesktopOverride: widget.isDesktopOverride,
+      flags: widget.flags,
+      selectedFlag: widget.selectedFlag,
+      onPickFlag: widget.onPickFlag,
     );
   }
 }
@@ -1592,6 +1724,9 @@ class _StripDrawer extends StatelessWidget {
     required this.onClose,
     required this.onExpand,
     this.isDesktopOverride,
+    this.flags = const [],
+    this.selectedFlag,
+    this.onPickFlag,
   });
 
   final List<Episode> episodes;
@@ -1599,6 +1734,11 @@ class _StripDrawer extends StatelessWidget {
   final void Function(Episode) onPick;
   final VoidCallback onClose;
   final VoidCallback onExpand;
+
+  /// 全部线路名（`length > 1` 才画线路条）
+  final List<String> flags;
+  final String? selectedFlag;
+  final ValueChanged<String>? onPickFlag;
 
   /// ⚠️ 必须**透传**给里面的 `EpisodeStrip` —— 否则测试用
   ///    `isDesktopOverride: false` 打开手机形态面板时，
@@ -1617,7 +1757,7 @@ class _StripDrawer extends StatelessWidget {
         ? episodes[currentIndex].title
         : null;
 
-    final card = Container(
+    final cardContent = Container(
       width: math.min(920, screen.width),
       padding: const EdgeInsets.all(Sp.x4),
       decoration: BoxDecoration(
@@ -1697,7 +1837,14 @@ class _StripDrawer extends StatelessWidget {
             behavior: HitTestBehavior.opaque,
             onTap: () {},
             // ★ 底部抽屉 ⇒ 从下方上浮 24px（与 EpisodeSheet 的底部形态一致）
-            child: OverlayCardMotion(child: card),
+            /*
+             * ★ 2026-10-26：线路条放在 `OverlayCardMotion` **外面**（兄弟节点）
+             *
+             * ⚠️ 不能放进它里面：`OverlayCardMotion` 自带 `LookupBoundary`，
+             *    而卡片里的 `InkWell` 要求"最近的 LookupBoundary 之内有 Material"
+             *    ⇒ 放进去会报 `No Material widget found`（实测踩过）。
+             */
+            child: OverlayCardMotion(child: cardContent),
           ),
         ),
       ),
@@ -1732,6 +1879,9 @@ class EpisodeSheet extends StatefulWidget {
     this.chunkSize = kEpisodeChunkSize,
     this.asDialog = false,
     this.style = EpisodePanelStyle.bottomSheet,
+    this.flags = const [],
+    this.selectedFlag,
+    this.onPickFlag,
   });
 
   /// true = 居中弹窗；false = 底部抽屉（手机 / TV）
@@ -1752,6 +1902,15 @@ class EpisodeSheet extends StatefulWidget {
   final int currentIndex;
   final void Function(Episode) onPick;
   final VoidCallback onClose;
+
+  /// 全部线路名（`length > 1` 才画线路条；单线路源留空 = 不画）
+  final List<String> flags;
+
+  /// 当前线路
+  final String? selectedFlag;
+
+  /// 用户切线路
+  final ValueChanged<String>? onPickFlag;
 
   /// 每段多少集（超过就分段）
   final int chunkSize;
@@ -2030,6 +2189,13 @@ class _EpisodeSheetState extends State<EpisodeSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ★ 2026-10-26：多线路才画线路条（单线路不画 —— 不给用户多余 UI）
+          if (widget.flags.length > 1)
+            EpisodeLineBar(
+              flags: widget.flags,
+              selected: widget.selectedFlag,
+              onPick: (f) => widget.onPickFlag?.call(f),
+            ),
           // ── 头：标题 + 总数 + 关闭 ──
           Row(
             children: [

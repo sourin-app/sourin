@@ -1826,6 +1826,57 @@ class _PlayerPageState extends State<PlayerPage>
    * 初始化时从 widget 取，换源时整批替换。
    */
   late List<Episode> _episodes = widget.episodes;
+
+  /// 当前线路（多线路源才非 null；单线路恒 null ⇒ 线路条不画）
+  ///
+  /// # 为什么是"所选线路"而不是"当前集的线路"
+  /// ```text
+  /// 用户切线路时选集列表要跟着换（同一集在不同线路是**不同 id**），
+  /// 所以线路是**独立于当前集**的选择状态；切集不该改线路。
+  /// ```
+  /// 默认值 = 第一条线路（见 `_syncSelectedFlag()`）。
+  String? _selectedFlag;
+
+  /// 全部线路名（**去重保序**；未标注 flag 的集不参与）
+  static List<String> _flagsOf(List<Episode> eps) {
+    final out = <String>[];
+    for (final e in eps) {
+      final f = e.flag;
+      if (f == null || f.isEmpty) continue;
+      if (!out.contains(f)) out.add(f);
+    }
+    return out;
+  }
+
+  /// 让 `_selectedFlag` 落在"存在且默认第一条"的合法值上
+  ///
+  /// ⚠️ 拿到新 episodes 之后必须调用（initState / updateEpisodes / applySession），
+  ///    否则换源后 `_selectedFlag` 会指向旧源里不存在的线路 ⇒ 选集列表**全空**。
+  void _syncSelectedFlag() {
+    final flags = _flagsOf(_episodes);
+    if (flags.isEmpty) {
+      _selectedFlag = null;
+      return;
+    }
+    if (_selectedFlag == null || !flags.contains(_selectedFlag)) {
+      _selectedFlag = flags.first; // ★ 默认第一条
+    }
+  }
+
+  /// 用户切线路：只改"所选线路"，并把当前集对齐到新线路的同名集
+  ///
+  /// 同一集在不同线路是**不同 id** ⇒ 不映射的话切完线路会跳到"第 1 集"。
+  void _pickEpisodeFlag(String flag) {
+    if (flag == _selectedFlag) return;
+    final cur = _epIndex >= 0 && _epIndex < _episodes.length ? _episodes[_epIndex] : null;
+    setState(() {
+      _selectedFlag = flag;
+      if (cur != null) {
+        final i = _episodes.indexWhere((e) => e.flag == flag && e.title == cur.title);
+        if (i >= 0) _epIndex = i;
+      }
+    });
+  }
   late String _provider = widget.provider;
   late String _contentId = widget.id;
   late String? _sourceCode = widget.sourceCode;
@@ -3119,6 +3170,8 @@ class _PlayerPageState extends State<PlayerPage>
      * 登记是**幂等**的：同时只可能有一个播放页在树上（路由是全屏 push）。
      */
     _livePlayerState = this;
+    // ★ 多线路：默认选第一条线路（`_flagsOf` 为空 ⇒ 保持 null ⇒ 线路条不画）
+    _syncSelectedFlag();
 
     /*
      * ══════════════════════════════════════════════════════════════════
@@ -4995,6 +5048,7 @@ class _PlayerPageState extends State<PlayerPage>
               ? PlayRequest(
                   sourceCode: _sourceCode,
                   episodeId: widget.episodeId,
+                  flag: _selectedFlag,
                 )
               : null,
         );
@@ -7982,6 +8036,32 @@ class _PlayerPageState extends State<PlayerPage>
   /// ```
   /// ⚠️ **不在这里重写一份对齐逻辑** —— 那样两份定义必然漂移，
   ///    而对齐错一次就是“12 集全在放第1集”这种看不出来的错。
+  /// 第 11 项（2026-10-26）：**按用户确认的映射**落盘 —— **不重算**
+  ///
+  /// 为什么要单独一个方法：`_batchBindDanmaku` 会拿 results 重跑
+  /// `buildBatchBindPlan`，而用户在搜索页里**改过对应关系/调过顺序** ——
+  /// 重算会把用户的修改覆盖回去（那正是本轮缺陷）。
+  /// ⇒ 这里直接吃 items（已含 episodeIndex → episodeId 的最终映射）。
+  Future<void> _batchBindDanmakuPlan(
+    List<BatchBindPlanItem> items,
+    String workTitle,
+  ) async {
+    if (items.isEmpty) return;
+    saveDanmakuBind(
+      widget.provider,
+      widget.id,
+      DanmakuBindStore(
+        workTitle: workTitle,
+        episodes: <int, int>{
+          for (final it in items) it.episodeIndex: it.episodeId,
+        },
+        updatedAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (!mounted) return;
+    _flash('整部绑定完成：「$workTitle」绑了 ${items.length} 集');
+  }
+
   Future<void> _batchBindDanmaku(List<DanmakuMatch> results) async {
     if (results.isEmpty) return;
     final titles = _episodes.map((e) => e.title).toList();
@@ -10894,6 +10974,8 @@ class _PlayerPageState extends State<PlayerPage>
     );
     setState(() {
       _episodes = episodes;
+      // ★ 多线路：换了一批集后让"所选线路"落到合法值（默认第一条）
+      _syncSelectedFlag();
       /*
        * ★ 下标要**夹取**：当前 `_epIndex` 是基于**旧**列表算的。
        * 若新列表更短，不夹取就会越界 ⇒ `_episodes[_epIndex]` 抛异常。
@@ -11625,7 +11707,11 @@ class _PlayerPageState extends State<PlayerPage>
       final list = await SourinApi.resolveStream(
         _provider,
         _contentId,
-        req: PlayRequest(sourceCode: _sourceCode, episodeId: ep?.id),
+        req: PlayRequest(
+          sourceCode: _sourceCode,
+          episodeId: ep?.id,
+          flag: _selectedFlag,
+        ),
       );
       if (!mounted) return;
       if (token != _rewatchToken) {
@@ -17153,6 +17239,9 @@ class _PlayerPageState extends State<PlayerPage>
                           onBiliSearch: _biliSearch,
                           onPickMatch: _pickDanmakuMatch,
                           onBatchBind: (matches) => unawaited(_batchBindDanmaku(matches)),
+                          // 第 11 项：搜索页交上来的**用户确认映射**（含改号与拖动后的顺序）
+                          onBatchBindPlan: (items, title) =>
+                              unawaited(_batchBindDanmakuPlan(items, title)),
                           onBiliImport: (input) => unawaited(_biliImport(input, 0)),
                           onBiliSelectPage: _biliSelectPage,
                           /*
@@ -17313,6 +17402,9 @@ class _PlayerPageState extends State<PlayerPage>
                                       child: PlayerEpisodePanel(
                                         episodes: _episodes,
                                         currentIndex: _epIndex,
+                                        flags: _flagsOf(_episodes),
+                                        selectedFlag: _selectedFlag,
+                                        onPickFlag: _pickEpisodeFlag,
                                         onPick: _gotoEpisode,
                                         // ★★★ Owner 第 2 条：X 与「点空白」走**同一个**关点
                                         //   ⇒ 「暂停 ⇒ 恢复」必然成对，不会出现某种关法画面不动。
@@ -17325,6 +17417,9 @@ class _PlayerPageState extends State<PlayerPage>
                                       child: PlayerEpisodePanel(
                                         episodes: _episodes,
                                         currentIndex: _epIndex,
+                                        flags: _flagsOf(_episodes),
+                                        selectedFlag: _selectedFlag,
+                                        onPickFlag: _pickEpisodeFlag,
                                         onPick: _gotoEpisode,
                                         // ★★★ Owner 第 2 条：X 与「点空白」走**同一个**关点
                                         //   ⇒ 「暂停 ⇒ 恢复」必然成对，不会出现某种关法画面不动。

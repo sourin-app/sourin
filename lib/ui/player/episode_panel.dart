@@ -30,6 +30,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/models.dart';
 import '../tokens.dart';
+import '../widgets/episode_strip.dart' show EpisodeLineBar;
 import '../../design/icons/app_icons.dart';
 
 /// 选集面板的形态（按端分流，判据只在本件内做一次）
@@ -65,6 +66,9 @@ class PlayerEpisodePanel extends StatefulWidget {
     required this.onClose,
     this.style = PlayerEpisodePanelStyle.rightDrawer,
     this.segmentSize = 50,
+    this.flags = const [],
+    this.selectedFlag,
+    this.onPickFlag,
   });
 
   final List<Episode> episodes;
@@ -72,6 +76,22 @@ class PlayerEpisodePanel extends StatefulWidget {
   final void Function(Episode) onPick;
   final VoidCallback onClose;
   final PlayerEpisodePanelStyle style;
+
+  /// 全部线路名（**去重保序**；`length > 1` 才画线路条）
+  ///
+  /// # 为什么线路条要在这里画（而不是只画在 `EpisodeSheet` 里）
+  /// ```text
+  /// 播放页**实际渲染的是本组件**（`player_page.dart` 里 `PlayerEpisodePanel`），
+  /// 不是 `ui/widgets/episode_strip.dart` 的 `EpisodePanel`
+  /// ⇒ 只在那条路径加线路条 = "能力做了但用户看不到"。
+  /// ```
+  final List<String> flags;
+
+  /// 当前线路（null = 单线路/未选）
+  final String? selectedFlag;
+
+  /// 用户切线路（null = 不显示线路条）
+  final ValueChanged<String>? onPickFlag;
 
   /// 每段多少集（默认 50 —— 改前是 100，Owner 说"1-50 / 51-100"）
   final int segmentSize;
@@ -194,6 +214,15 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _header(),
+          // ★ 多线路才画线路条（单线路不画 —— 不给用户多余 UI）
+          if (widget.flags.length > 1) ...[
+            const SizedBox(height: Sp.x3),
+            EpisodeLineBar(
+              flags: widget.flags,
+              selected: widget.selectedFlag,
+              onPick: (f) => widget.onPickFlag?.call(f),
+            ),
+          ],
           if (_segmentCount > 1) ...[
             const SizedBox(height: Sp.x3),
             _segmentBar(),

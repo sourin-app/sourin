@@ -84,6 +84,7 @@ class ProviderManifest {
     this.working = true,
     this.brokenReason,
     this.enabled = true,
+    this.hidden = false,
   });
 
   final String id;
@@ -105,6 +106,16 @@ class ProviderManifest {
   final String? brokenReason;
   final bool enabled;
 
+  /// A′ 聚合：被聚合器**接管**的子站（列表里不单独展示，但 id 仍然有效）
+  ///
+  /// ```text
+  /// Rust 侧 `ProviderManifest.hidden`（默认 false）。
+  /// 子站 hidden ⇒ 设置页/首页不再单独画它，但 `provider:native` 仍然路由到它
+  /// ⇒ 收藏/进度/弹幕绑定/下载队列**零迁移**。
+  /// ⚠️ 旧核心没有这个键 ⇒ 按 false（不隐藏）—— 那时也确实没有聚合器。
+  /// ```
+  final bool hidden;
+
   factory ProviderManifest.fromJson(Map<String, dynamic> j) => ProviderManifest(
         id: jstr(j, 'id'),
         name: jstr(j, 'name'),
@@ -120,6 +131,7 @@ class ProviderManifest {
         working: j['working'] as bool? ?? true,
         brokenReason: j['broken_reason'] as String?,
         enabled: j['enabled'] as bool? ?? true,
+        hidden: j['hidden'] as bool? ?? false,
       );
 }
 
@@ -1324,6 +1336,7 @@ class Episode {
     required this.title,
     this.url,
     this.index = 0,
+    this.flag,
   });
 
   final String id;
@@ -1331,12 +1344,28 @@ class Episode {
   final String? url;
   final int index;
 
-  factory Episode.fromJson(Map<String, dynamic> j) => Episode(
-        id: j['id']?.toString() ?? '',
-        title: j['title'] as String? ?? '',
-        url: j['url'] as String?,
-        index: (j['index'] as num?)?.toInt() ?? 0,
-      );
+  /// 线路名（多线路源：同一条"第 1 集"在 N 条线路上各有一条，id 不同）
+  ///
+  /// # 为什么线路挂在**集**上而不是作品上
+  /// ```text
+  /// 多线路源（如 Ikanbot）的同一个"第 1 集"会在 N 条线路上各出现一次
+  /// ⇒ 线路是**集的一个维度**，不是详情里另一个独立集合。
+  /// Rust 侧同一决定见 `rust/sourin_core/src/csp/mod.rs` 的 `CspEpisode::flag`。
+  /// ```
+  /// ⚠️ 单线路源这里是 `null`（Rust 侧可能是空串 ⇒ 归一成 null，UI 才好判"有没有多线路"）。
+  final String? flag;
+
+  factory Episode.fromJson(Map<String, dynamic> j) {
+    final rawFlag = j['flag']?.toString().trim();
+    return Episode(
+      id: j['id']?.toString() ?? '',
+      title: j['title'] as String? ?? '',
+      url: j['url'] as String?,
+      index: (j['index'] as num?)?.toInt() ?? 0,
+      // ★ 空串 → null：UI 判"有没有多线路"只看 `!= null`，不要出现""这种假线路名
+      flag: (rawFlag == null || rawFlag.isEmpty) ? null : rawFlag,
+    );
+  }
 }
 
 /// 播放请求参数（`resolve_stream` 的可选入参）
@@ -1346,6 +1375,7 @@ class PlayRequest {
     this.episodeId,
     this.quality,
     this.extra,
+    this.flag,
   });
 
   final String? sourceCode;
@@ -1353,11 +1383,17 @@ class PlayRequest {
   final String? quality;
   final Map<String, dynamic>? extra;
 
+  /// 线路名（多线路源取流时必须带上 —— Rust 侧 `CspSite::play(flag, …)` 用它选线路）
+  ///
+  /// 单线路时不填（`null` ⇒ 不发这个键），保持后端"没写就是没有"的语义。
+  final String? flag;
+
   Map<String, dynamic> toJson() => {
         if (sourceCode != null) 'source_code': sourceCode,
         if (episodeId != null) 'episode_id': episodeId,
         if (quality != null) 'quality': quality,
         if (extra != null) 'extra': extra,
+        if (flag != null) 'flag': flag,
       };
 }
 

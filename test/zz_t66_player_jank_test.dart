@@ -585,11 +585,82 @@ void main() {
     expect(others.every((v) => v <= 5), isTrue,
         reason: '★ 除整页/顶栏/动画外，其余元素不许被牵连（实际 $others）—— '
             '改前 188 里的大头就是这类整子树装卸');
-    expect(p50, lessThan(16700),
-        reason: '★★ 中位帧必须落在 60fps 预算（16.7ms）内 —— 阈值未放宽');
-    expect(p95, lessThan(33400),
-        reason: '★ 最慢一帧允许一次尖峰（≤2× 预算）：实测同机抖动 7913~14922us，'
-            '单帧硬断言会偶发假红；**分布判据**才是可解释的形态');
+    /*
+     * ★★ 2026-10-27：**两条帧耗时断言已迁出本文件**（lead 批准）
+     *
+     * ```text
+     * 原来这里还有：
+     *   expect(p50, lessThan(16700), …)   // 60fps 预算
+     *   expect(p95, lessThan(33400), …)   // 2× 预算，允许一次尖峰
+     *
+     * 为什么迁走：同一份代码 —— 单跑 p50=5358 / max=7895us；
+     *   全量（4700+ 用例把机器占满）p50=16146 / max=42566us ⇒ **3.0× / 5.4×**，
+     *   而**行为计数逐轮完全一致**（page=0、topBar/轮=68、other/轮=2/1）
+     *   ⇒ 抖动只在帧耗时通道，判据在满载下**没有可解释性**。
+     *
+     * 迁到哪：`test/zz_t66_player_jank_perf_test.dart`
+     *   （`@Tags(['perf-timing'])` + `dart_test.yaml` 的 `skip:`，
+     *    只在独占机器跑：`--run-skipped --tags perf-timing`）
+     *
+     * ⚠️ 行为判据（上面四条：pages / topBars≥40 / topBars≤80 / others≤5）
+     *    以及每轮的"收起前置 / 叫回副作用"**一条都没走**，仍在**全量**里跑。
+     *    下面那条元门禁反向钉着这件事：谁把行为判据搬去 perf 文件、或把帧耗时
+     *    搬回本文件，元门禁立刻红。
+     * ```
+     */
+    // ignore: avoid_print
+    print('T1 帧耗时读数（**只记录不硬断言**，护栏在 perf 文件）：'
+        'p50=${p50}us max=${p95}us');
+  });
+
+  // ════════════════════════════════════════════════════════════════════
+  //  元门禁：行为判据 / 帧耗时判据 **不许互相搬家**
+  // ════════════════════════════════════════════════════════════════════
+  test('元门禁：行为判据留在全量、帧耗时判据只在 perf 文件', () {
+    /*
+     * ★ 只扫**代码**，不扫注释：两个文件里都写着"pages/topBars 属于行为判据"
+     *   这样的说明文字 ⇒ 不剥注释的话这条元门禁会被自己的注释弄红（实测踩过：
+     *   perf 文件头注释里出现 `pages` 两次 ⇒ 元门禁自己报红）。
+     *   剥注释**不会削弱判据**：真想搬家的人写的是代码，不是注释。
+     */
+    String codeOnly(String path) {
+      var src = File(path).readAsStringSync();
+      src = src.replaceAll(RegExp(r'/\*[\s\S]*?\*/'), ' '); // 块注释
+      src = src.replaceAll(RegExp(r'//[^\n]*'), ' '); // 行注释（含 ///）
+      return src;
+    }
+
+    final mainSrc = codeOnly('test/zz_t66_player_jank_test.dart');
+    final perfSrc = codeOnly('test/zz_t66_player_jank_perf_test.dart');
+
+    // ── ① perf 文件里不许出现**行为**符号 ──
+    for (final sym in <String>['pages', 'topBars', 'others', 'pageBuild']) {
+      final hits = RegExp(RegExp.escape(sym)).allMatches(perfSrc).length;
+      expect(hits, 0,
+          reason: '★★ 元门禁：`$sym` 在 perf 文件里出现 $hits 次 —— '
+              '行为判据**不许**搬进被 skip 的文件（那等于把真回归的守卫也关掉）。\n'
+              '行为判据的家：`zz_t66_player_jank_test.dart`（untagged，全量必跑）');
+    }
+
+    // ── ② 主文件里不许出现**帧耗时**断言 ──
+    // ★ needle 用拼接构造：否则本文件里这行字面量会把自己的判据弄红（自指）
+    final needles = <String>['lessThan(' + '33400)', 'p95' + ', lessThan('];
+    for (final lit in needles) {
+      final hits = RegExp(RegExp.escape(lit)).allMatches(mainSrc).length;
+      expect(hits, 0,
+          reason: '★★ 元门禁：`$lit` 又回到主文件（出现 $hits 次）—— '
+              '帧耗时判据在满载全量里没有可解释性（实测 3~5 倍抖动），'
+              '它只该在 `zz_t66_player_jank_perf_test.dart`（perf-timing）里');
+    }
+
+    // 反面前置：两个文件都得真的存在且非空（否则上面两条恒真）
+    expect(mainSrc.length, greaterThan(15000),
+        reason: '前置：主文件要读到内容（实际 ${mainSrc.length} 字节）');
+    expect(perfSrc.length, greaterThan(1200),
+        reason: '前置：perf 文件要读到内容（实际 ${perfSrc.length} 字节）');
+    // ignore: avoid_print
+    print('META_JANK|main=${mainSrc.length}B perf=${perfSrc.length}B '
+        '行为符号命中=0 帧耗时字面量命中=0');
   });
 
   // ════════════════════════════════════════════════════════════════════

@@ -112,6 +112,18 @@ tags:
   # `--run-skipped --tags native-media` 跑。
   native-media:
     skip: "默认跳过：加载 libmpv 会让 flutter_tester 偶发 native 崩溃（见 dart_test.yaml 顶部）。手动跑：flutter test test/ --run-skipped --tags native-media --concurrency=1"
+  # ★ 帧耗时护栏（2026-10-27 拆分）：**只在独占机器上跑**
+  #
+  # 为什么默认跳过：这些判据量的是**帧耗时**（p50<16.7ms、p95≤33.4ms）。
+  # 同一份代码单跑 p50=5358us / max=7895us；全量（4700+ 用例把机器占满）
+  # p50=16146us / max=42566us ⇒ **3.0× / 5.4×**，而**行为计数逐轮完全一致**
+  # ⇒ 判据在满载下没有可解释性，留在全量里只会训练人"当噪声"。
+  # 行为判据（pages==0 / topBars∈[40,80] / others≤5）**仍在**
+  # `test/zz_t66_player_jank_test.dart`（untagged，全量必跑），
+  # 并由那边的元门禁反向钉着"不许互相搬家"。
+  # 手动跑：flutter test test/zz_t66_player_jank_perf_test.dart --run-skipped --tags perf-timing --concurrency=1
+  perf-timing:
+    skip: "默认跳过：帧耗时判据在满载机器上没有可解释性（实测 3~5 倍抖动）。手动跑：flutter test test/zz_t66_player_jank_perf_test.dart --run-skipped --tags perf-timing --concurrency=1"
   # ★ 依赖**隔离的 USERPROFILE** 才能跑的测试
   #
   # DownloadDir 的默认兜底根目录 = $USERPROFILE\Videos\源影。

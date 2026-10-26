@@ -125,6 +125,32 @@ void main() {
         isNot(PlaybackFailureKind.timeout),
         reason: '★ 窗口上界之外 ⇒ 不是 timeout（例如 8 秒才失败 = 别的原因）');
 
+    /*
+     * ★★★ 2026-10-27（行为级判据，补 08-B 的牙）：
+     *
+     * # 为什么上面那四条还不够硬
+     * ```text
+     * 它们全部用 `t = Duration(seconds: kPlaybackNetworkTimeoutSeconds)` 推导 ——
+     * 把**产品里的窗口写死成 5000ms** 时，常量恰好是 5 ⇒ 四条照样绿（不敏感）。
+     * 只有源码文本判据能抓到，而文本判据最容易被"写法变了但语义没变"误伤。
+     * ```
+     * # 这一条怎么才敏感
+     * ```text
+     * 用一个**字面量** elapsed = 6500ms 断言"不是 timeout"（当前窗口 4.5~5.5s）。
+     * 若窗口改成由常量算、且常量被调大（注入：5 → 7）⇒ 窗口变成 6.5~7.5s
+     * ⇒ 6500ms 落进窗口 ⇒ 这条**必须红** ⇒ 证明"窗口真的跟着常量走"。
+     * 反过来，若产品把窗口写死 5s，把常量调成 7 这条**不会红** —— 那就说明
+     * 窗口与常量已经脱钩，需要另查（这正是本条要守的语义）。
+     * ```
+     */
+    expect(
+        kindOf(kOwnerMpvFailure,
+            elapsed: const Duration(milliseconds: 6500)),
+        isNot(PlaybackFailureKind.timeout),
+        reason: '★★★ 行为级：6500ms 在当前窗口（5s±0.5s）之外 ⇒ 不是 timeout。'
+            '把 `kPlaybackNetworkTimeoutSeconds` 注入成 7 ⇒ 窗口变成 6.5~7.5s ⇒ '
+            '本条**必须红**（证明窗口真的跟着常量走，不是写死 5.0）');
+
     // 源码判据：窗口表达式必须引用常量，不许写字面量
     final src = File('lib/core/sourin_api.dart').readAsStringSync();
     expect(src, contains('Duration? elapsed,'),

@@ -894,13 +894,26 @@ mod tests {
         assert_eq!(load(&dir), AggregateConfig::default(), "坏文件 ⇒ 默认值，不 panic");
     }
 
-    /// `hidden` 字段默认 false（旧数据/手写 JSON 不带它）
+    /// `hidden` 与旧数据的兼容：false 时不落盘这个键；缺这个键读回来必须是 false
+    ///
+    /// 用"自己序列化 → 再反序列化"来验，而不是手写一份 JSON ——
+    /// 手写 JSON 会因为将来给 `ProviderManifest` 加必填字段而假红（我第一版就这么红过）。
     #[test]
     fn manifest_hidden_defaults_false() {
-        let m: ProviderManifest = serde_json::from_str(
-            r#"{"id":"x","name":"n","version":"1","kind":"tvbox"}"#,
-        )
-        .expect("旧数据要能反序列化");
-        assert!(!m.hidden);
+        let mut m = manifest("x", "tvbox");
+        m.hidden = false;
+        let j = serde_json::to_value(&m).expect("manifest 应能序列化");
+        assert!(
+            j.get("hidden").is_none(),
+            "★ false 时不该出现 hidden 键（旧前端/旧文件都不用改）：{j}"
+        );
+        let back: ProviderManifest = serde_json::from_value(j).expect("缺 hidden 也要能读");
+        assert!(!back.hidden, "缺字段 ⇒ 默认 false");
+
+        // 反面：true 时必须真的写出来（否则 Dart 侧过滤看不到）
+        let mut t = manifest("y", "tvbox");
+        t.hidden = true;
+        let jt = serde_json::to_value(&t).expect("序列化");
+        assert_eq!(jt.get("hidden").and_then(|v| v.as_bool()), Some(true));
     }
 }

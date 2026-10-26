@@ -92,6 +92,8 @@ fn mk(session_mode: u8, can_auto: bool, login_required: bool) -> Arc<Simple> {
             working: true,
             broken_reason: None,
             enabled: None,
+            // A′：ProviderManifest 新增字段（默认 false = 正常展示）
+            hidden: false,
         },
         session_mode,
         can_auto,

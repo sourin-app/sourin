@@ -93,7 +93,8 @@ void main() {
   // ══════════════════════════════════════════════════════════════════
   testWidgets('① 保存超时 ⇒ 显式失败 + _saving 复位（按钮恢复可点）', (t) async {
     SourinApi.debugSkipMarkerWriter = ({String? title, int? introStart,
-            int? introEnd, int? outroStart, int? outroEnd, bool? autoSkip}) =>
+            int? introEnd, int? outroStart, int? outroEnd, bool? autoSkip,
+            List<({int endSec, int startSec})>? midrolls}) =>
         Completer<void>().future; // 永不完成
 
     await _open(t);
@@ -127,7 +128,8 @@ void main() {
   testWidgets('② 阴性对照：保存成功 ⇒ 弹窗正常关闭（没被失败态弄坏）', (t) async {
     var called = 0;
     SourinApi.debugSkipMarkerWriter = ({String? title, int? introStart,
-        int? introEnd, int? outroStart, int? outroEnd, bool? autoSkip}) async {
+        int? introEnd, int? outroStart, int? outroEnd, bool? autoSkip,
+            List<({int endSec, int startSec})>? midrolls}) async {
       called++;
     };
 
@@ -306,7 +308,8 @@ void main() {
   // ══════════════════════════════════════════════════════════════════
   testWidgets('⑦ 保存进行中不显示「区间不合法」（假报错）', (t) async {
     SourinApi.debugSkipMarkerWriter = ({String? title, int? introStart,
-            int? introEnd, int? outroStart, int? outroEnd, bool? autoSkip}) =>
+            int? introEnd, int? outroStart, int? outroEnd, bool? autoSkip,
+            List<({int endSec, int startSec})>? midrolls}) =>
         Completer<void>().future;
 
     await _open(t);

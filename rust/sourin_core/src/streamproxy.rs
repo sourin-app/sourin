@@ -106,11 +106,31 @@ fn sp_log(msg: &str) {
 }
 
 /// `[streamproxy]` 的落盘路径（与 Dart 侧 `AppLog` 同一个文件）
+/// 当前进程是不是**测试进程**（测试一律不许写真实数据目录）
+///
+/// ```text
+/// cfg!(test)        → cargo test --lib 的二进制
+/// FLUTTER_TEST=true → flutter test 里的 Dart 进程（DLL 在它进程内，读得到）
+/// DART_TEST         → 非 flutter 的 dart test
+/// SOURIN_TEST_LOG=1 → 手工兜底开关
+/// ```
+fn in_test_process() -> bool {
+    cfg!(test)
+        || matches!(std::env::var("FLUTTER_TEST").as_deref(), Ok("true") | Ok("1"))
+        || std::env::var("DART_TEST").is_ok()
+        || std::env::var("SOURIN_TEST_LOG").is_ok()
+}
+
 fn sp_log_file_path() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("SOURIN_LOG_FILE") {
         if !p.trim().is_empty() {
             return Some(std::path::PathBuf::from(p));
         }
+    }
+    // ★★ 测试进程：**不写真实日志**（要验格式请显式设 SOURIN_LOG_FILE）
+    //    否则测试夹具会往用户 logs/ 里写几千行噪声，"有没有首帧"就判不出来了。
+    if in_test_process() {
+        return None;
     }
     let base = std::env::var("APPDATA").ok()?;
     let day = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -2898,6 +2918,41 @@ pub async fn maybe_proxy(
 
 #[cfg(test)]
 mod tests {
+
+    // ══════════════════════════════════════════════════════════════════
+    //  测试**不许**写真实日志目录（2026-10-26：用户能看到测试噪声）
+    // ══════════════════════════════════════════════════════════════════
+
+    /// ★★ 行为判据：测试进程里 `sp_log_file_path()` 必须是 `None`
+    #[test]
+    fn test_process_never_resolves_real_log_path() {
+        assert!(in_test_process(), "cfg!(test) 下必须是测试进程");
+        let overridden = std::env::var("SOURIN_LOG_FILE")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+        if overridden {
+            println!("[SKIP-BRANCH] 有 SOURIN_LOG_FILE 覆盖 ⇒ 这条不断言路径");
+            return;
+        }
+        let q = sp_log_file_path();
+        assert!(
+            q.is_none(),
+            "★ 测试进程不许解析出真实日志路径（否则往用户 logs/ 写噪声）：{q:?}"
+        );
+    }
+
+    /// ★ 源码判据：落盘路径这个**唯一出口**里必须留着 `in_test_process()`
+    #[test]
+    fn log_path_source_declares_test_guard() {
+        let src = include_str!("streamproxy.rs");
+        let i = src.find("fn sp_log_file_path()").expect("函数必须还在");
+        let body = &src[i..(i + 2000).min(src.len())];
+        assert!(
+            body.contains("in_test_process()"),
+            "★ `sp_log_file_path` 里必须调用 `in_test_process()` 早退"
+        );
+    }
+
     use super::*;
 
     // ═══════════════════════════════════════════════════════════════

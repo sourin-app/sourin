@@ -84,7 +84,63 @@ use tokio::sync::mpsc;
  * · 请求头只打**名字**与长度（见 [`hdr_names`]），绝不打值
  */
 fn sp_log(msg: &str) {
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-26：**必须同时写进 App 的日志文件**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * ```text
+     * 改前只有 `eprintln!` ⇒ Windows GUI 版**没有控制台** ⇒ stderr 全丢。
+     * 实测：`sourin-2026-10-26.log` 里 `[streamproxy]` **0 条**，
+     * 于是"直连失败→回退代理"到底有没有发生，事后完全无法判定
+     * （业主报的「某动画站 5s 打不开」就卡在这）。
+     * ⇒ 追加写与 Dart 侧**同一个文件**、同一种行格式：
+     *    <dataDir>/logs/sourin-YYYY-MM-DD.log
+     *    2026-10-26 11:03:29.380 [streamproxy] …
+     * ```
+     * ⚠️ 失败一律**静默忽略**（日志写不进去不能反过来影响播放）。
+     * ⚠️ 可用 `SOURIN_LOG_FILE` 覆盖路径（测试/排查用）。
+     */
     eprintln!("[streamproxy] {msg}");
+    write_sp_log_file(msg);
+}
+
+/// `[streamproxy]` 的落盘路径（与 Dart 侧 `AppLog` 同一个文件）
+fn sp_log_file_path() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("SOURIN_LOG_FILE") {
+        if !p.trim().is_empty() {
+            return Some(std::path::PathBuf::from(p));
+        }
+    }
+    let base = std::env::var("APPDATA").ok()?;
+    let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+    Some(
+        std::path::PathBuf::from(base)
+            .join("app.sourin.player")
+            .join("logs")
+            .join(format!("sourin-{day}.log")),
+    )
+}
+
+/// 追加一行（失败静默；格式与 Dart 侧一致）
+fn write_sp_log_file(msg: &str) {
+    let Some(path) = sp_log_file_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let line = format!(
+        "{} [streamproxy] {msg}
+",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write as _;
+        let _ = f.write_all(line.as_bytes());
+    }
 }
 
 /// 统一的日志出口（见 [`sp_log`]）：`splog!("a={}", a)` ≡ `sp_log(&format!("a={}", a))`
@@ -351,9 +407,30 @@ pub struct StreamProxy {
 
 /// 代理到上游的请求超时
 ///
+/// ★★★ 2026-10-26：**30s → 3s**（业主报的「某动画站 5s 打不开」）
+/// ```text
+/// 播放器（mpv）的首字节窗口是 **5s**；改前这里是 30s ⇒
+///   · 第一跳（直连）卡满 5s ⇒ mpv 已经放弃 ⇒ **回退永远来不及**跑
+/// ⇒ 3s 直连 + 3s 回退 = 6s 预算，但**第一跳**必须在 mpv 的 5s 内让位：
+///   实测直连失败是"秒拒/秒超"，3s 足够；回退那一跳也按 3s 走
+///   （跨界的源本来就慢，宁可报错也不要让播放器一直等）。
+/// ```
+
+///
 /// 抽成常量是因为它现在**只在一处**构造（共享 Client），
 /// 而注释里多处引用它（改前是散落的字面量 30）。
-const UPSTREAM_TIMEOUT_SECS: u64 = 30;
+const UPSTREAM_TIMEOUT_SECS: u64 = 3;
+/// ★ 2026-10-26：**只限建连**（不再是整条请求总时限！）
+///
+/// ```text
+/// 事故：把 `UPSTREAM_TIMEOUT_SECS` 喂给 `Client::timeout` 是"整条请求含 body"的
+/// 总时限 ⇒ 3s 到点会把**正在播的长流**切断（这是新回归，不是修复）。
+/// ⇒ 建连用 `connect_timeout`，等响应头用 `tokio::time::timeout`（见 `send_headers`），
+///   拿到头之后用 `Body::from_stream` 透传 —— 长流**没有任何总时限**。
+/// ```
+const UPSTREAM_CONNECT_SECS: u64 = 3;
+/// 等**响应头**的上限（拿到头就立刻交给播放器；超时按"连接类失败"走回退）
+const UPSTREAM_HEADER_SECS: u64 = 3;
 
 /// 流表上限
 ///
@@ -407,7 +484,7 @@ impl StreamProxy {
         let mut me = Self::new();
         // ★ 只覆盖**回退用**的 `proxied`；主 client 仍是 .no_proxy()（默认直连）
         me.proxied = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(UPSTREAM_TIMEOUT_SECS))
+            .connect_timeout(std::time::Duration::from_secs(UPSTREAM_CONNECT_SECS))
             .proxy(reqwest::Proxy::all(proxy_url).expect("test proxy url"))
             .build()
             .expect("test proxied client");
@@ -437,7 +514,7 @@ impl StreamProxy {
          * ```
          */
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(UPSTREAM_TIMEOUT_SECS))
+            .connect_timeout(std::time::Duration::from_secs(UPSTREAM_CONNECT_SECS))
             .no_proxy()
             .build()
             .expect("流代理无法创建 HTTP 客户端（TLS 后端初始化失败）");
@@ -446,7 +523,7 @@ impl StreamProxy {
          *   只在主 client（直连）**连接类**失败后使用 —— 被墙/跨界的源需要它。
          */
         let proxied = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(UPSTREAM_TIMEOUT_SECS))
+            .connect_timeout(std::time::Duration::from_secs(UPSTREAM_CONNECT_SECS))
             .build()
             .expect("流代理无法创建（经代理）HTTP 客户端");
         Self {
@@ -466,8 +543,23 @@ impl StreamProxy {
              *   但**只读一次**、存进实例字段。之后无论谁改进程环境，
              *   这个实例的行为都不会再被别的测试影响。
              */
+            /*
+             * ══════════════════════════════════════════════════════════════
+             * ★★★ 2026-10-26：**预取默认关闭**（语义反转）
+             * ══════════════════════════════════════════════════════════════
+             *
+             * ```text
+             * 实测（业主"某动画站播不了"）：本地代理返回**首字节 12s+**，
+             * 同一条 URL 第二次直接挂住；而**直打上游 HTTP 206 < 1s**。
+             * 播放器（mpv）的首字节窗口只有 **5s** ⇒ 任何"先取一窗再回字节"
+             * 的设计都必然被判失败。预取只是**吞吐**优化，不能拿**起播**去换。
+             * ⇒ 默认 disabled（单连接透传，拿到上游响应头就 `Body::from_stream`）。
+             * ```
+             * 想开：`SOURIN_PREFETCH_ENABLE=1`（只在确认首字节不受影响时用）。
+             * ⚠️ 旧的 `SOURIN_PREFETCH_DISABLE` 名字在新默认下已无意义，不再读。
+             */
             prefetch_disabled: std::sync::atomic::AtomicBool::new(
-                std::env::var("SOURIN_PREFETCH_DISABLE").is_ok(),
+                std::env::var("SOURIN_PREFETCH_ENABLE").is_err(),
             ),
             // 0 = 不在让路窗口内（时刻 0 早于任何真实时刻）
             yield_until_ms: std::sync::atomic::AtomicU64::new(0),
@@ -2104,6 +2196,35 @@ fn debug_prefetch(plan: &PrefetchPlan, first_len: u64) {
 /// 播放列表里的子地址有三种形态，只有相对路径能靠相对解析走回代理。
 /// 所以这里对 m3u8 做**整体读取 + 改写**（见 `rewrite_playlist`），
 /// 其余内容仍然流式转发（一部剧 1~2 GB，不能读进内存）。
+/// 发一次请求但**只等到响应头**（body 由 `Body::from_stream` 后续流式转发）
+///
+/// 返回 `Err((错误文本, 是否连接类))`：
+/// · 连接类（连不上/建连超时/**等响应头超时**）⇒ 调用方回退系统代理
+/// · 非连接类（TLS/非法 URL）⇒ 直接失败，不回退
+///
+/// ⚠️ 这里用 `tokio::time::timeout` 只包**等头**这一小段；
+///    `Client::timeout` 是整条请求（含 body）的总时限 —— 那会切断长流。
+async fn send_headers(
+    rb: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, (String, bool)> {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(UPSTREAM_HEADER_SECS),
+        rb.send(),
+    )
+    .await
+    {
+        Ok(Ok(r)) => Ok(r),
+        Ok(Err(e)) => {
+            let conn = e.is_connect() || e.is_timeout();
+            Err((format!("{e}"), conn))
+        }
+        Err(_) => Err((
+            format!("等响应头超过 {UPSTREAM_HEADER_SECS}s（连接类失败 ⇒ 回退）"),
+            true,
+        )),
+    }
+}
+
 async fn forward_request(
     proxy: &Arc<StreamProxy>,
     hdr_token: &str,
@@ -2173,15 +2294,15 @@ async fn forward_request(
      * ⚠️ 与「插件 API 可能要走代理」是两件事：那条链路是 `http_call`，
      *   本函数只影响**取流**。
      */
-    let upstream = match rb.send().await {
+    let upstream = match send_headers(rb).await {
         Ok(r) => r,
-        Err(e) => {
+        Err((e, is_conn)) => {
             splog!(
-                "UP send FAILED after {}ms: {e}; upstream={}",
+                "UP send FAILED after {}ms: {e}; upstream={}; conn={is_conn}",
                 t_up.elapsed().as_millis(),
                 redact_url(upstream_url),
             );
-            if !(e.is_connect() || e.is_timeout()) {
+            if !is_conn {
                 // 非连接类（例如 TLS 证书、非法 URL）⇒ 保持原行为，不回退
                 return (StatusCode::BAD_GATEWAY, format!("取流失败: {e}")).into_response();
             }
@@ -2202,7 +2323,7 @@ async fn forward_request(
                     rb2 = rb2.header(header::RANGE, sv);
                 }
             }
-            match rb2.send().await {
+            match send_headers(rb2).await {
                 Ok(r) => {
                     splog!(
                         "[streamproxy] 经系统代理重试成功（{}ms）；host={}",
@@ -2211,7 +2332,7 @@ async fn forward_request(
                     );
                     r
                 }
-                Err(e2) => {
+                Err((e2, _)) => {
                     splog!(
                         "[streamproxy] 经系统代理也失败（{e2}）；host={}；直连错误={e}",
                         redact_url(upstream_url),

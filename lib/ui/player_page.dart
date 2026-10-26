@@ -148,6 +148,7 @@ import 'widgets/player_settings_sheet.dart';
 import 'widgets/provider_login_panel.dart';
 import 'widgets/provider_name.dart';
 import 'widgets/skip_marker_dialog.dart';
+import '../core/skip_window.dart' show SkipWindow, skipTarget, windowsOf;
 import 'widgets/source_switch_dialog.dart';
 import '../ui/app_scaffold.dart';
 import '../design/icons/app_icons.dart';
@@ -1791,6 +1792,12 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 是否已触发过片头跳过（避免反复跳）
   bool _introSkipped = false;
+
+  /// 已经"处理过"（跳过或让位）的**中插**窗口起点秒
+  ///
+  /// 为什么按窗口起点记而不是一个 bool：中插可以有多条，每条都要独立幂等
+  /// （位置流每秒 tick，不记就会在边界反复 seek）。
+  final Set<int> _midrollSkippedStarts = <int>{};
 
   /// 是否已触发过片尾跳过
   bool _outroSkipped = false;
@@ -9957,6 +9964,40 @@ class _PlayerPageState extends State<PlayerPage>
   /// 同【A】：抽方法是为了可被行为测试直接驱动。
   void _skipAfterMarkerLoad() => _maybeSkip(_currentSkipProbePosition());
 
+  /// 把 `SkipMarker` 展开成**可跳窗口**（片头 + 中插；**片尾不入列**）
+  ///
+  /// # 为什么片尾不进来
+  /// ```text
+  /// 现行片尾语义**不是 seek**，而是 `_startNextCountdown()`（让用户看完片尾/片尾曲）。
+  /// 若把片尾也塞进 `windowsOf`，`skipTarget` 会把它当成"跳到末尾" ⇒ **行为变化**
+  /// （跳过片尾曲 + 立刻触发播放结束分支）。所以片尾继续走原来的独立分支。
+  /// ```
+  List<SkipWindow> _skipWindowsOf(SkipMarker m) => windowsOf(
+        introStart: m.introStart,
+        introEnd: m.introEnd,
+        // ★ 只传 intro + midroll；outroStart/outroEnd 故意不传（见上）
+        midrolls: m.midrolls,
+      );
+
+  /// 标记某条窗口"已处理"（跳过或让位都算）——幂等靠它
+  void _markSkipped(SkipWindow w) {
+    switch (w.kind) {
+      case 'intro':
+        _introSkipped = true;
+      case 'midroll':
+        _midrollSkippedStarts.add(w.start.inSeconds);
+      default:
+        break; // 片尾不走这里
+    }
+  }
+
+  /// 该窗口是否已处理过
+  bool _alreadySkipped(SkipWindow w) => switch (w.kind) {
+        'intro' => _introSkipped,
+        'midroll' => _midrollSkippedStarts.contains(w.start.inSeconds),
+        _ => false,
+      };
+
   /// 播放位置变化时检查要不要跳
   void _maybeSkip(Duration pos) {
     final m = _skipMarker;
@@ -9980,62 +10021,85 @@ class _PlayerPageState extends State<PlayerPage>
 
     final sec = pos.inSeconds;
 
-    // ── 片头 ──
-    if (!_introSkipped && m.introEnd != null) {
-      final start = m.introStart ?? 0;
-      final end = m.introEnd!;
-      if (sec >= start && sec < end) {
-        /*
-         * ★★★ 缺陷①（2026-10-25）：**用户刚拖过就让他赢**
-         *
-         * ```text
-         * 用户把进度条拖到 0（或拖回片头区间内任何位置）
-         *   ⇒ `_seekByUser` 记下 `_lastUserSeek` / `_lastUserSeekAt`
-         *   ⇒ 位置流下一秒 tick 到 0，命中 [0, 69)
-         *   ⇒ 没有这一条 ⇒ seek(69) ⇒ 「拖到 0 自动往前」
-         * ```
-         * 判定用**单调时钟的 2 秒窗口**（不是"读过一次就消费"）：
-         * 位置流每秒 tick，若"读一次就消费"，第二秒的 tick 就会把他弹走。
-         *
-         * ⚠️ 这里**同时**把 `_introSkipped` 置位：用户已经用 seek 表过态，
-         *    本集不需要再自动跳片头。但**不能只靠它** —— 那 5 处复位点
-         *    会让本标志回到 false（见字段注释里"拖几次累加"那段）。
-         * ⚠️ 阴性对照（`zz_t1024_skip_respects_user_seek_test` ②）：
-         *    起播自动落在区间内（**没有**用户 seek）⇒ 仍然必须跳，
-         *    所以本豁免只能挂在 `_withinUserSeekGrace()` 上，不许扩大成
-         *    "任何 seek 之后都不跳"。
-         */
-        if (_withinUserSeekGrace()) {
-          _introSkipped = true;
-          final target = _lastUserSeek;
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     *  ★★★ 2026-10-26（`midrolls` 接线）：片头 + 中插走**同一个纯函数**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 改的是什么 / 没改的是什么
+     * ```text
+     * 改：判据从"手写 intro 的 if"变成 `skipTarget(...)`（lib/core/skip_window.dart）
+     *     ⇒ 中插（`SkipMarker.midrolls`）自动一并生效。
+     * 没改（逐条对齐）：
+     *   ① 半开区间 `start <= p < end`（= `SkipWindow.contains`）
+     *   ② **区间内必跳** ⇒ `tolerance: Duration.zero`
+     *      （不传 0 会引入"距窗口末尾 1s 不跳"，那是行为变化）
+     *   ③ grace：用户刚拖过 ⇒ **标记已处理 + 不跳 + 原日志 + return**
+     *      （不是"以后再说" —— 现行语义是"本窗口放弃"）
+     *   ④ 跳过动作本身：`_skipSeekCalls++` / `_lastSkipSeek` / `seek` /
+     *      `_beginPrefetchYield()` / `_flash(...)` / `AppLog` 一条不少
+     * ```
+     * ⚠️ 片尾**不在** `windowsOf` 里（它走 `_startNextCountdown()`，不是 seek）。
+     */
+    final windows = _skipWindowsOf(m)
+        .where((w) => !_alreadySkipped(w)) // 已经跳过/让位过的窗口不再参与
+        .toList();
+
+    // ① grace 前置：与改前**同一语义**（命中窗口 ⇒ 标记已处理 + 不跳）
+    if (_withinUserSeekGrace()) {
+      for (final w in windows) {
+        if (!w.contains(pos)) continue;
+        _markSkipped(w);
+        final target = _lastUserSeek;
+        // ★ 文案用**字面量**分支（代码里必须有 '跳过片头'/'片头不自动跳' 这些原串：
+        //   `zz_t1024_skip_respects_user_seek` ⑤ 是**源码结构门禁**，会逐字匹配）
+        if (w.kind == 'midroll') {
+          AppLog.write(
+            'PLAY',
+            '中插不自动跳（用户主动 seek 豁免）：'
+                '位置 ${sec}s 落在中插 ${w.start.inSeconds} → ${w.end.inSeconds}，'
+                '上次用户 seek 落点 ${target?.inSeconds ?? -1}s',
+          );
+        } else {
           AppLog.write(
             'PLAY',
             '片头不自动跳（用户主动 seek 豁免）：'
-                '位置 ${sec}s 落在片头 $start → $end，'
+                '位置 ${sec}s 落在片头 ${w.start.inSeconds} → ${w.end.inSeconds}，'
                 '上次用户 seek 落点 ${target?.inSeconds ?? -1}s',
           );
-          return;
         }
-        _introSkipped = true;
-        debugPrint('[PLAYER] 跳过片头 $start → $end');
-        /*
-         * ★ 缺陷①第 2 条：跳过动作**落盘**（原先只有 debugPrint ⇒ Release 无迹）
-         *
-         * 事后对齐时间轴时，"这一下 seek 是自动跳过还是用户拖的"必须能分。
-         * 与「起播」「首帧已出」「播放已恢复」同一批 [PLAY] 日志。
-         */
-        AppLog.write('PLAY', '跳过片头 $start → $end（触发源=自动，位置 ${sec}s）');
-        _skipSeekCalls++; // ★ 只读探针（fix/skip-auto-seek）：真的发出了 seek
-        _lastSkipSeek = Duration(seconds: end);
-        // seek-intent: programmatic — 自动跳片头（不是用户意图；触发源见上一行 AppLog）
-        _player.seek(Duration(seconds: end));
-        // ★ N10：跳到片头结束（可能几分钟后）⇒ 预取会让路
-        //   ⚠️ 不影响上面 `_skipSeekCalls++` 那个只读探针：它数的是"发出了几次 seek"，
-        //      让路只改预取优先级，不改 seek 次数。
-        _beginPrefetchYield();
-        _flash('已跳过片头');
         return;
       }
+    }
+
+    // ② 纯函数判定（grace 已在上面处理 ⇒ 这里传 null，避免双重语义）
+    final target = skipTarget(
+      position: pos,
+      windows: windows,
+      lastUserSeekAt: null,
+      tolerance: Duration.zero,
+    );
+    if (target != null) {
+      // 找到命中的那条窗口（用于幂等标记与文案）
+      final hit = windows.firstWhere((w) => w.contains(pos));
+      _markSkipped(hit);
+      if (hit.kind == 'midroll') {
+        debugPrint('[PLAYER] 跳过中插 ${hit.start.inSeconds} → ${hit.end.inSeconds}');
+        AppLog.write('PLAY', '跳过中插 ${hit.start.inSeconds} → ${hit.end.inSeconds}'
+            '（触发源=自动，位置 ${sec}s）');
+      } else {
+        debugPrint('[PLAYER] 跳过片头 ${hit.start.inSeconds} → ${hit.end.inSeconds}');
+        AppLog.write('PLAY', '跳过片头 ${hit.start.inSeconds} → ${hit.end.inSeconds}'
+            '（触发源=自动，位置 ${sec}s）');
+      }
+      _skipSeekCalls++; // ★ 只读探针（fix/skip-auto-seek）：真的发出了 seek
+      _lastSkipSeek = target;
+      // seek-intent: programmatic — 自动跳过（不是用户意图；触发源见上一行 AppLog）
+      _player.seek(target);
+      // ★ N10：跳到窗口结束（可能几分钟后）⇒ 预取会让路
+      _beginPrefetchYield();
+      _flash(hit.kind == 'midroll' ? '已跳过中插' : '已跳过片头');
+      return;
     }
 
     // ── 片尾 ──
@@ -18632,6 +18696,8 @@ bool debugPlayerSetSkipMarkerForProbe({
   int? introEnd,
   int? outroStart,
   int? outroEnd,
+  // ★ 2026-10-26：中插（与 `SkipMarker.midrolls` 同一形状）
+  List<({int startSec, int endSec})> midrolls = const [],
 }) {
   final s = _livePlayerState;
   if (s == null) return false;
@@ -18644,6 +18710,7 @@ bool debugPlayerSetSkipMarkerForProbe({
     introEnd: introEnd,
     outroStart: outroStart,
     outroEnd: outroEnd,
+    midrolls: midrolls,
   );
   return true;
 }

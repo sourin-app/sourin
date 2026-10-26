@@ -433,6 +433,16 @@ pub struct UpdateInfo {
 }
 
 /// 本地数据库
+/// 中插区间的**并集**（换源迁移用）：按起点排序 + 完全相同的去重
+///
+/// 为什么不"取其一"：中插是**多段**，取其一等于静默丢掉另一侧用户标过的广告。
+fn merge_spans(a: &[SkipSpan], b: &[SkipSpan]) -> Vec<SkipSpan> {
+    let mut v: Vec<SkipSpan> = a.iter().chain(b.iter()).cloned().collect();
+    v.sort_by_key(|s| (s.start, s.end));
+    v.dedup_by_key(|s| (s.start, s.end));
+    v
+}
+
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
 }
@@ -634,6 +644,26 @@ impl Db {
                 .map_err(|e| format!("补列 {col} 失败: {e}"))?;
                 log::info!("skip_markers 已补列 {col}");
             }
+        }
+        /*
+         * ★★ 2026-10-26：中插区间 `midrolls` 落库（**TEXT 存 JSON 数组**）
+         *
+         * # 为什么是 TEXT 不是多列
+         * 中插是 **N 段**区间（`[(600,660),(1200,1260),…]`），列表达不了变长；
+         * 拆 `midroll_1_start/…` 会写死上限，用户加第 4 段就没地方放。
+         * ⇒ 存 JSON 字符串，读的时候 `serde_json` 解析。
+         *
+         * # 为什么不用动 schema 版本
+         * 本库的迁移是"按列存在性补列"（上面那个 for 就是先例），
+         * 没有 `user_version` 版本机 ⇒ 加列即可，老库打开时自动补。
+         */
+        if !existing.iter().any(|c| c == "midrolls") {
+            conn.execute(
+                "ALTER TABLE skip_markers ADD COLUMN midrolls TEXT",
+                [],
+            )
+            .map_err(|e| format!("补列 midrolls 失败: {e}"))?;
+            log::info!("skip_markers 已补列 midrolls（TEXT/JSON）");
         }
 
         /*
@@ -1491,8 +1521,19 @@ impl Db {
     /// ⚠️ 抽出来是因为有**三处**（get / list / 将来的导出）要按同样的
     ///    列顺序解析 —— 列顺序一变就要改三处，很容易漏。
     ///    这里集中一处，SQL 里的 SELECT 也用同一个常量。
+    /// ⚠️ **顺序即索引**：`row_to_skip` 用 0..10 取值。
+    /// 新增列一律**加在末尾**（这次是 `midrolls` = 10），不要插到中间打乱既有索引。
+    ///
+    /// ★★★ **本文件里 `skip_markers` 的列清单共 3 处，加字段必须逐处跟**：
+    /// ```text
+    /// ① 这里 SKIP_COLS ............ SELECT 用（读）
+    /// ② upsert_skip_marker 的 INSERT（写）
+    /// ③ repoint_item 的 INSERT ...... 换源迁移（写）
+    /// ```
+    /// 漏第 ③ 处的后果不是"报错"，而是**用户换源后中插静默消失**
+    /// （2026-10-26 实测踩到：加 `midrolls` 时只改了 ①②，两条 repoint 测试红）。
     const SKIP_COLS: &'static str =
-        "key,provider,native_id,title,intro_start,intro_end,outro_start,outro_end,auto_skip,updated_at";
+        "key,provider,native_id,title,intro_start,intro_end,outro_start,outro_end,auto_skip,updated_at,midrolls";
 
     fn row_to_skip(r: &rusqlite::Row<'_>) -> rusqlite::Result<SkipMarker> {
         Ok(SkipMarker {
@@ -1505,7 +1546,15 @@ impl Db {
             outro_start: r.get::<_, Option<i64>>(6)?.map(|v| v as u64),
             outro_end: r.get::<_, Option<i64>>(7)?.map(|v| v as u64),
             auto_skip: r.get::<_, Option<i64>>(8)?.map(|v| v != 0),
-            midrolls: Vec::new(),
+            /*
+             * ★ 中插（库里是 JSON TEXT）：解析失败 ⇒ **空数组**，绝不 panic。
+             *   与 Dart 侧 `midrolls ?? const []` 同口径 —— 坏数据宁可少跳过，
+             *   也不能让"读一条收藏/跳过点"整条失败。
+             */
+            midrolls: r
+                .get::<_, Option<String>>(10)?
+                .and_then(|t| serde_json::from_str::<Vec<SkipSpan>>(&t).ok())
+                .unwrap_or_default(),
             updated_at: r.get(9)?,
         })
     }
@@ -1550,8 +1599,8 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             r#"INSERT INTO skip_markers
-                (key,provider,native_id,title,intro_start,intro_end,outro_start,outro_end,auto_skip,updated_at)
-               VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                (key,provider,native_id,title,intro_start,intro_end,outro_start,outro_end,auto_skip,updated_at,midrolls)
+               VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
                ON CONFLICT(key) DO UPDATE SET
                  title       = excluded.title,
                  -- ★ COALESCE：新值为 NULL 时保留旧值（部分更新语义）
@@ -1560,6 +1609,13 @@ impl Db {
                  outro_start = COALESCE(excluded.outro_start, skip_markers.outro_start),
                  outro_end   = COALESCE(excluded.outro_end,   skip_markers.outro_end),
                  auto_skip   = COALESCE(excluded.auto_skip,   skip_markers.auto_skip),
+                 /*
+                  * ★ 中插**不是**部分更新语义：我们总是传非 NULL 的 JSON 文本
+                  *   （空数组是 `"[]"`，不是 NULL）⇒ 这一行**一定会覆盖**旧值。
+                  *   行为上就是"用户把中插删光 ⇒ 库里也变空"，**这是对的**；
+                  *   ⚠️ 别看到"COALESCE"就以为它保留了旧值 —— COALESCE 只对 NULL 生效。
+                  */
+                 midrolls    = COALESCE(excluded.midrolls, skip_markers.midrolls),
                  updated_at  = excluded.updated_at"#,
             params![
                 m.key,
@@ -1572,6 +1628,8 @@ impl Db {
                 m.outro_end.map(|v| v as i64),
                 m.auto_skip.map(|b| if b { 1i64 } else { 0i64 }),
                 m.updated_at,
+                // ★ 空数组也照传（`"[]"`）⇒ 覆盖旧值是**有意**的，见上面的 SQL 注释
+                serde_json::to_string(&m.midrolls).unwrap_or_else(|_| "[]".to_string()),
             ],
         )
         .map_err(|e| format!("写入跳过点失败: {e}"))?;
@@ -2277,19 +2335,28 @@ impl Db {
                         outro_start: f.outro_start.or(t.outro_start),
                         outro_end: f.outro_end.or(t.outro_end),
                         auto_skip: f.auto_skip.or(t.auto_skip),
-                        midrolls: Vec::new(),
+                        /*
+                         * ★★★ 中插：**并集**（from ∪ to），不是取其一、更不是清空。
+                         *
+                         * 论证：片头/片尾各只有一对端点，所以"from 优先、缺的用 to 补"
+                         * 是对的；而中插是**多段**，"取其一"会静默丢掉另一侧用户标过的广告
+                         * （换源后广告又冒出来，用户会以为设置丢了）。
+                         * ⇒ 合并 + 按起点排序 + 去重。
+                         */
+                        midrolls: merge_spans(&f.midrolls, &t.midrolls),
                         updated_at: f.updated_at.max(t.updated_at),
                     },
                 };
                 tx.execute(
                     &format!(
                         "INSERT INTO skip_markers ({}) \
-                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) \
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) \
                          ON CONFLICT(key) DO UPDATE SET \
                            provider=excluded.provider, native_id=excluded.native_id, \
                            title=excluded.title, intro_start=excluded.intro_start, \
                            intro_end=excluded.intro_end, outro_start=excluded.outro_start, \
                            outro_end=excluded.outro_end, auto_skip=excluded.auto_skip, \
+                           midrolls=excluded.midrolls, \
                            updated_at=excluded.updated_at",
                         Self::SKIP_COLS
                     ),
@@ -2304,6 +2371,9 @@ impl Db {
                         merged.outro_end.map(|v| v as i64),
                         merged.auto_skip.map(|v| v as i32),
                         merged.updated_at,
+                        // ★ 中插跟着搬（不是 "[]" —— 那等于静默丢用户数据）
+                        serde_json::to_string(&merged.midrolls)
+                            .unwrap_or_else(|_| "[]".to_string()),
                     ],
                 )
                 .map_err(|e| format!("换源迁移：写 skip_markers 失败: {e}"))?;
@@ -2684,6 +2754,118 @@ fn row_to_history(r: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
 
 #[cfg(test)]
 mod tests {
+
+    // ══════════════════════════════════════════════════════════════════
+    //  中插区间 `midrolls` 的**持久化**（2026-10-26）
+    //  —— "字段加了但没入库" 是最隐蔽的假实现：内存里对、重启就丢
+    // ══════════════════════════════════════════════════════════════════
+
+    use super::*;
+
+    /// 造一条跳过点（不用 `SkipMarker::new` —— 它没有这个构造器）
+    fn marker(key: &str, title: &str) -> SkipMarker {
+        SkipMarker {
+            key: key.into(),
+            provider: "p".into(),
+            native_id: "n".into(),
+            title: title.into(),
+            intro_start: None,
+            intro_end: None,
+            outro_start: None,
+            outro_end: None,
+            midrolls: Vec::new(),
+            auto_skip: None,
+            updated_at: 1_700_000_000,
+        }
+    }
+
+    fn tmp_store(tag: &str) -> (std::path::PathBuf, Db) {
+        let dir = std::env::temp_dir().join(format!(
+            "store_midroll_{tag}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("s.db");
+        let _ = std::fs::remove_file(&p);
+        let st = Db::open(&p).expect("建库");
+        (p, st)
+    }
+
+    fn span(a: u64, b: u64) -> SkipSpan {
+        SkipSpan { start: a, end: b }
+    }
+
+    /// ★★★ 门禁①：写入 ⇒ **关连接并重开库** ⇒ 读回来一模一样
+    ///
+    /// 这条是"真持久化"的唯一证据：只测同一个 `Store` 实例读回，
+    /// 内存缓存也能骗过去（那就等于没验）。
+    /// 注入：把 upsert 的 `midrolls` 参数改传 `"[]"`（或删掉该列）⇒ 本条红。
+    #[test]
+    fn midrolls_survive_reopen() {
+        let (path, st) = tmp_store("reopen");
+        let mut m = marker("p:n", "标题");
+        m.midrolls = vec![span(600, 660), span(1200, 1260)];
+        st.upsert_skip_marker(&m).expect("写入");
+        drop(st); // ★ 关连接
+
+        let st2 = Db::open(&path).expect("重开库");
+        let got = st2.get_skip_marker("p:n").expect("读").expect("必须存在");
+        assert_eq!(
+            got.midrolls,
+            vec![span(600, 660), span(1200, 1260)],
+            "★ 中插必须真的落进 SQLite；读回不一致 = 重启即丢"
+        );
+    }
+
+    /// ★★ 门禁②：老库（表里**没有** midrolls 列）打开后自动补列，且旧数据不丢
+    #[test]
+    fn old_db_gets_midrolls_column_without_losing_data() {
+        let dir = std::env::temp_dir().join(format!("store_midroll_mig_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("old.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            // 手搓一个"老 schema"（没有 midrolls 列）并塞一行
+            let conn = rusqlite::Connection::open(&path).expect("开老库");
+            conn.execute_batch(
+                "CREATE TABLE skip_markers (
+                    key TEXT PRIMARY KEY, provider TEXT NOT NULL, native_id TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '', intro_start INTEGER, intro_end INTEGER,
+                    outro_start INTEGER, outro_end INTEGER, auto_skip INTEGER,
+                    updated_at INTEGER NOT NULL);
+                 INSERT INTO skip_markers
+                    (key,provider,native_id,title,intro_start,intro_end,outro_start,outro_end,auto_skip,updated_at)
+                    VALUES ('old:1','old','1','老数据',12,49,NULL,NULL,NULL,1700000000);",
+            )
+            .expect("造老库");
+        }
+        let st = Db::open(&path).expect("打开老库（应自动补列）");
+        let got = st.get_skip_marker("old:1").expect("读").expect("旧行必须还在");
+        assert_eq!(got.title, "老数据", "旧数据不许丢");
+        assert_eq!(got.intro_start, Some(12));
+        assert!(got.midrolls.is_empty(), "老库没有中插 ⇒ 空数组（不是报错）");
+    }
+
+    /// ★★ 门禁③：库里的 midrolls 是**坏 JSON** ⇒ 空数组，不许 panic / 不许整条读失败
+    #[test]
+    fn corrupt_midrolls_json_degrades_to_empty() {
+        let (path, st) = tmp_store("corrupt");
+        let mut m = marker("p:n", "标题");
+        m.midrolls = vec![span(600, 660)];
+        st.upsert_skip_marker(&m).expect("写入");
+        // 直接把库里的值改成坏 JSON
+        {
+            let conn = rusqlite::Connection::open(&path).expect("开库");
+            conn.execute("UPDATE skip_markers SET midrolls='{oops' WHERE key='p:n'", [])
+                .expect("写坏值");
+        }
+        drop(st);
+        let st2 = Db::open(&path).expect("重开");
+        let got = st2.get_skip_marker("p:n").expect("读不许失败").expect("行还在");
+        assert!(got.midrolls.is_empty(), "坏 JSON ⇒ 空数组（与 Dart 的 ?? const [] 同口径）");
+        assert_eq!(got.title, "标题", "其余字段不受影响");
+    }
+
     use super::*;
 
     fn fav(key: &str, following: bool) -> Favorite {

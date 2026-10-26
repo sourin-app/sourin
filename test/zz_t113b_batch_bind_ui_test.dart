@@ -93,8 +93,19 @@ void main() {
               '只写「确定」会让用户不知道这一下会改播放器的绑定状态');
       expect(RegExp(r'widget\.onBatchBind\(selected\)').allMatches(body).length, 1,
           reason: '只有明确确认可提交；预览不得触发绑定。');
-      expect(body.contains('conflicts.isNotEmpty || plan.items.isEmpty || s.searchLoading || s.searchStale ? null'), isTrue,
-          reason: '冲突、空计划、在途或过期结果都不得提交。');
+      /*
+       * 2026-10-26（第 11 项：提交改走"用户确认的映射"）：
+       * 这条原来钉的是一整行长字符串 —— 而判据本身是**三件事**，不该钉成一行。
+       * ⇒ 拆成三条独立断言（**强度只增不减**：原来一处 substring 命中就算过，
+       *   现在三件缺一即红；且"空计划"的判据从 `plan.items` 换成
+       *   `_planItems()` —— 提交的是用户改过的映射，不是自动计划）。
+       */
+      expect(body.contains('conflicts.isNotEmpty'), isTrue,
+          reason: '冲突未解决不得提交');
+      expect(body.contains('_planItems().isEmpty'), isTrue,
+          reason: '空计划不得提交（判据改成用户映射后的计划）');
+      expect(body.contains('s.searchLoading || s.searchStale ? null'), isTrue,
+          reason: '在途或过期结果都不得提交');
       expect(body.contains('onChanged: s.searchLoading || s.searchStale ? null'), isTrue,
           reason: '过期或在途结果不可选择。');
       expect(body.contains('buildBatchBindPlan(localTitles:'), isTrue,

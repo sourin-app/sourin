@@ -620,7 +620,12 @@ mod tests {
         );
         let ext = r#"{"site": ["https://4kzn.cc"]}"#;
         let site = Zhinan::new();
-        match site.search("兰香如故", 1, ext).await {
+        /*
+         * ⚠️ 关键词用「龙珠」不用「兰香如故」：实测 4kzn.cc 对「兰香如故」
+         *    返回的是**0 结果的搜索页**（HTTP 200、页面里 /book/ 链接 0 个）——
+         *    那是站点侧没有这个片，不是我们解析失败。用站内确实有的词才能验解析。
+         */
+        match site.search("龙珠", 1, ext).await {
             Ok(list) => {
                 assert!(!list.items.is_empty(), "★ 搜索必须返回条目");
                 eprintln!("[LIVE] 4KZhinan search: {} 条", list.items.len());

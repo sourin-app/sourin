@@ -808,6 +808,8 @@ impl CspSite for App99 {
             return Err("搜索词为空".to_string());
         }
         let page = if page == 0 { 1 } else { page };
+        // ★ 必须先握手（与 `list()` 一致）：`call` 依赖握手拿到的 host/key/token
+        self.handshake(_ext).await?;
         let body = serde_json::json!({
             "kw": kw,
             "page": page,

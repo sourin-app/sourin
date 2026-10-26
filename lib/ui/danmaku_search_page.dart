@@ -334,8 +334,26 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                   Text('第${conflict.key}集有多个候选，请明确选择一个：'),
                   for (final candidate in conflict.value)
                     TextButton(onPressed: s.searchLoading || s.searchStale ? null : () => setState(() {
+                      /*
+                       * 2026-10-26（冲突解决的回归修复）：**选完必须把映射也定下来**。
+                       * 只改 `_selected` 不改 `_assign` 的后果：`_planItems()` 里
+                       * 这条候选没有目标集 ⇒ 计划为空 ⇒ 确认按钮一直禁用（用户
+                       * 明明选完了却不能提交）—— 这是三条既有门禁抓到的真回归。
+                       * 目标集按**集号**定：本地标题里集号等于该冲突号的集。
+                       */
+                      final no = conflict.key;
+                      var local = widget.localTitles
+                          .indexWhere((t) => episodeNumberFrom(t) == no);
+                      if (local < 0 && no >= 1 && no <= widget.localTitles.length) {
+                        local = no - 1;
+                      }
                       _selected.removeAll(conflict.value.map((m) => m.episodeId));
                       _selected.add(candidate.episodeId);
+                      for (final m in conflict.value) {
+                        _assign.remove(m.episodeId);
+                      }
+                      if (local >= 0) _assign[candidate.episodeId] = local;
+                      _order = <int>[];
                       _saveDraft();
                     }), child: Text('选择 ${candidate.label} (#${candidate.episodeId})')),
                 ],

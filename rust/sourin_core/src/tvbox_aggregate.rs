@@ -357,18 +357,60 @@ impl TvboxAggregate {
         if children.is_empty() {
             return Ok(Vec::new());
         }
+        let total = children.len();
         let mut all = Vec::new();
+        // ★ 失败明细：`(子站 id, 原因)` —— 用于 ①汇总 warn ②"全部失败"时透给 registry
+        let mut fails: Vec<(String, String)> = Vec::new();
         for p in children {
             let cid = Self::child_id(&p);
             // ★ 硬纪律①：单站失败只记原因，**不中断**
             match tokio::time::timeout(CHILD_TIMEOUT, p.search(kw, page)).await {
                 Ok(Ok(page)) => all.extend(page.items.into_iter().map(|i| Self::wrap_item(&cid, i))),
-                Ok(Err(e)) => self.warn(format!("子站 {cid} 搜索失败：{e}")),
-                Err(_) => self.warn(format!(
-                    "子站 {cid} 搜索超时（{}s）",
-                    CHILD_TIMEOUT.as_secs()
-                )),
+                Ok(Err(e)) => {
+                    let why = format!("{e}");
+                    self.warn(format!("子站 {cid} 搜索失败：{why}"));
+                    fails.push((cid, why));
+                }
+                Err(_) => {
+                    let why = format!("超时（{}s）", CHILD_TIMEOUT.as_secs());
+                    self.warn(format!("子站 {cid} 搜索{why}"));
+                    fails.push((cid, why));
+                }
             }
+        }
+        /*
+         * ══════════════════════════════════════════════════════════════
+         * ★★★ 2026-10-26（Owner："为什么搜不到"必须能看到）
+         * ══════════════════════════════════════════════════════════════
+         *
+         * ```text
+         * 改前：单站失败只进 `self.warn(...)`（=log::warn + 内存列表），
+         *   **没有任何对用户可见的通道** ⇒ registry 把整条记成裸 `miss`，
+         *   用户只看到"搜不到"，看不到"登录态不可用"这类原因。
+         * ⇒ 现在分两种情形：
+         *   ① **部分失败**：有结果就算成功（保持原行为），失败仍进 warn；
+         *   ② **全部失败**：返回 Err ⇒ registry 的 `run_one` 会把它记成
+         *      **skipped 带 reason**，其中含子站名 + 前 3 条原因。
+         * 判据：只有"一个条目都没有"才算全失败 —— 只要有一条命中就不该报错。
+         * ```
+         */
+        if all.is_empty() && fails.len() == total && total > 0 {
+            let head: Vec<String> = fails
+                .iter()
+                .take(3)
+                .map(|(cid, why)| format!("{cid}：{why}"))
+                .collect();
+            self.warn(format!(
+                "全部 {total} 个子站都搜不到「{kw}」：{}",
+                head.join("；")
+            ));
+            return Err(ProviderError::new(
+                ErrorKind::Other,
+                format!(
+                    "全部 {total} 个子站都搜不到「{kw}」：{}",
+                    head.join("；")
+                ),
+            ));
         }
         Ok(Self::dedupe(all))
     }
@@ -809,6 +851,43 @@ mod tests {
         assert_eq!(page.items.len(), 1, "好站的条目必须在");
         let w = agg.take_warnings();
         assert!(w.iter().any(|m| m.contains("tvbox2")), "失败原因要留进结果：{w:?}");
+    }
+
+    /// ★★ 全部子站都失败 ⇒ **必须返回 Err 且带子站名+原因**（Owner 可见的唯一通道）
+    ///
+    /// # 为什么这条是"用户能不能看到原因"的判据
+    /// ```text
+    /// 改前全部失败也只 `warn` ⇒ registry 记成裸 `miss`（"搜不到"，但为什么？）
+    /// ⇒ 现在全部失败返回 Err ⇒ `run_one` 记成 skipped **带 reason**。
+    /// 注入：把"全部失败"改回 `Ok(vec![])` ⇒ 本条红。
+    /// ```
+    #[tokio::test]
+    async fn fanout_all_children_failed_returns_error_with_reasons() {
+        let a = Arc::new(FakeChild {
+            manifest: manifest("tvbox1", "tvbox"),
+            items: vec![],
+            fail_search: true,
+        }) as Arc<dyn MediaProvider>;
+        let b = Arc::new(FakeChild {
+            manifest: manifest("tvbox2", "tvbox"),
+            items: vec![],
+            fail_search: true,
+        }) as Arc<dyn MediaProvider>;
+        let agg = agg_with("allfail", vec![a, b], &["tvbox1", "tvbox2"]);
+        let err = agg
+            .search("兰香如故", 1)
+            .await
+            .expect_err("★ 全部子站失败必须报错（否则用户只看到裸 miss）");
+        let msg = format!("{err}");
+        assert!(msg.contains("全部 2 个子站都搜不到"), "要点名数量：{msg}");
+        assert!(msg.contains("tvbox1"), "要带失败子站名：{msg}");
+        assert!(msg.contains("子站挂了"), "要带子站给的原因：{msg}");
+        // 同时仍留一条 warn（排查用）
+        let w = agg.take_warnings();
+        assert!(
+            w.iter().any(|m| m.contains("全部 2 个子站都搜不到")),
+            "汇总也要进 warn：{w:?}"
+        );
     }
 
     /// ★ 注入点：删掉 `dedupe` 调用 ⇒ 本条红

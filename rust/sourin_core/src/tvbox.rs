@@ -1090,6 +1090,9 @@ pub fn build_site_provider(
                 &job.api,
                 &job.ext,
                 ok.classes.clone(),
+                // ★ 这里就是"从 TVBox 配置导入"的那条路（probe_site/build_site_provider）
+                //   ⇒ from_import: true（子站在源列表里藏起来，经 tvbox_agg 聚合使用）
+                true,
             )?;
             Ok(Arc::new(p) as Arc<dyn MediaProvider>)
         }

@@ -269,12 +269,45 @@ impl TvboxAggregate {
     }
 
     /// 已启用的子 provider（现查 registry，注册顺序无关）
+    ///
+    /// ★ 2026-10-26 修（composer-ui 真机核实发现的**产品回归**）：
+    ///   `registry` 的搜索/首页轮询现在会**排除 `hidden` 子站**（A′ 去重），
+    ///   而聚合源原本只扇出 `enabledSiteIds` 里的子站。两者叠起来就是：
+    ///   **用户刚导入、还没在聚合页勾任何子站时**，
+    ///   `enabledSiteIds` 空 ⇒ 聚合源一个子站都不扇出 ⇒ 16 个 csp 子站
+    ///   既不进 registry 的搜索目标（hidden 被排除）、也不进聚合扇出
+    ///   ⇒ **csp 源从"能被搜到"退化成"参与不了"**（实测：三次设不同
+    ///   `enabledSiteIds` 都只有 18 个 JS 源、112 条，`tvbox_agg` 一条不出）。
+    ///
+    ///   修法与 `registry` 的 fail-open 同一精神：**空启用集合 ⇒ 扇出全部
+    ///   `hidden` 子站**（也就是"导入过的全部"）。用户一旦在聚合页勾了子站，
+    ///   就严格按勾选的来。
     fn enabled_children(&self) -> Vec<Arc<dyn MediaProvider>> {
         let cfg = load(&self.data_dir);
-        cfg.enabled_site_ids
+        let picked: Vec<Arc<dyn MediaProvider>> = cfg
+            .enabled_site_ids
             .iter()
             .filter_map(|id| self.registry.get(id))
-            .collect()
+            .collect();
+        if !picked.is_empty() {
+            return picked;
+        }
+        // 空启用集合 ⇒ 兜底：所有 hidden 子站（= TVBox 导入的那批）
+        let mut all: Vec<Arc<dyn MediaProvider>> = self
+            .registry
+            .manifests()
+            .into_iter()
+            .filter(|m| m.hidden)
+            .filter_map(|m| self.registry.get(&m.id))
+            .collect();
+        all.sort_by(|a, b| a.manifest().id.cmp(&b.manifest().id));
+        if !all.is_empty() {
+            log::warn!(
+                "[tvbox_agg] 启用集合为空 ⇒ 兜底扇出全部 {} 个导入子站（否则 csp 源搜不到）",
+                all.len()
+            );
+        }
+        all
     }
 
     /// 按 `child::native` 找到子 provider + 原始 native
@@ -352,13 +385,24 @@ impl MediaProvider for TvboxAggregate {
         let mut out = Vec::new();
         for p in children {
             let cid = Self::child_id(&p);
+            /*
+             * ★ 2026-10-26 修（perf-probe 复核发现的用户可见缺陷）：
+             *   原来 `title: s.title` 原样用子站的标题 ⇒ 16 个子站都有「电影」「电视剧」
+             *   ⇒ 首页平铺出十几个**同名区块**，用户分不清哪条来自哪个源。
+             *   改成 `"{子站名} · {原标题}"`；子站名取不到时退回原标题（绝不出现" · 电影"这种残缺）。
+             */
+            let child_name = p.manifest().name.clone();
             match tokio::time::timeout(CHILD_TIMEOUT, p.home()).await {
                 Ok(Ok(secs)) => {
                     for s in secs {
                         out.push(Section {
                             // 区块 id 带子站前缀 ⇒ list() 能路由回哪个子站
                             id: format!("{cid}{SEP}{}", s.id),
-                            title: s.title,
+                            title: if child_name.trim().is_empty() {
+                                s.title
+                            } else {
+                                format!("{} · {}", child_name.trim(), s.title)
+                            },
                             source: match s.source {
                                 SectionSource::Category { category_id } => SectionSource::Category {
                                     category_id: format!("{cid}{SEP}{category_id}"),

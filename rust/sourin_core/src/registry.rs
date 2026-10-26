@@ -265,14 +265,41 @@ impl Registry {
             }
         }
 
-        let targets: Vec<_> = self
+        /*
+         * ★★ A′（2026-10-26）：`hidden` 的子站**不直接参与搜索**。
+         *
+         * 原因：TVBox 导入的子站都被置 `hidden: true`（列表不展示），
+         * 但它们**仍是 enabled**（要能被 `provider:native` 路由命中）；
+         * 而聚合源 `tvbox_agg` 自己也会扇出搜索同一批子站 ⇒
+         * 若这里不过滤，同一部片会被搜两遍（聚合一次 + 每个子站各一次），
+         * 用户看到重复结果、每多一个子站就多一轮无谓请求。
+         *
+         * ⚠️ **兜底（fail-open）**：若过滤后一个都不剩，说明聚合源还没被
+         *    启用任何子站（`enabledSiteIds` 为空）。这时如果把 hidden 也排除，
+         *    搜索会**整个空掉**——用户导入了 100 个源却搜不到任何东西。
+         *    所以此时退回"搜全部"，与加这个过滤之前的行为一致。
+         */
+        let candidates: Vec<(Arc<dyn MediaProvider>, bool)> = self
             .providers
             .read()
             .unwrap()
             .iter()
             .filter(|h| h.enabled && h.provider.manifest().capabilities.search)
-            .map(|h| h.provider.clone())
+            .map(|h| {
+                let p = h.provider.clone();
+                let hidden = p.manifest().hidden;
+                (p, hidden)
+            })
             .collect();
+        let mut targets: Vec<_> = candidates
+            .iter()
+            .filter(|(_, hidden)| !*hidden)
+            .map(|(p, _)| p.clone())
+            .collect();
+        if targets.is_empty() {
+            log::debug!("[registry] 没有可见源可搜 ⇒ 退回包含 hidden 子站（聚合未启用时的兜底）");
+            targets = candidates.into_iter().map(|(p, _)| p).collect();
+        }
 
         /*
          * `JoinSet` 要求 future 是 `'static` + `Send` —— 所以 keyword
@@ -435,14 +462,35 @@ impl Registry {
     ///
     /// 设置页仍照旧显示各源的登录状态（`session_state`），那是**另一个**职责。
     pub async fn home_all(&self) -> Vec<(String, String, Vec<Section>)> {
-        let targets: Vec<_> = self
+        /*
+         * ★★ A′（2026-10-26）：`hidden` 子站**不直接上首页**。
+         *
+         * 否则用户首页会同时看到「TVBox 聚合」的区块 **和** 16 个子站各自的
+         * 区块 —— 同一批内容重复两遍。子站的内容改由聚合源扇出提供。
+         * 兜底同 `for_each_search`：一个可见源都不剩时退回全部，
+         * 免得"导入了却首页空白"。
+         */
+        let candidates: Vec<(Arc<dyn MediaProvider>, bool)> = self
             .providers
             .read()
             .unwrap()
             .iter()
             .filter(|h| h.enabled)
-            .map(|h| h.provider.clone())
+            .map(|h| {
+                let p = h.provider.clone();
+                let hidden = p.manifest().hidden;
+                (p, hidden)
+            })
             .collect();
+        let mut targets: Vec<_> = candidates
+            .iter()
+            .filter(|(_, hidden)| !*hidden)
+            .map(|(p, _)| p.clone())
+            .collect();
+        if targets.is_empty() {
+            log::debug!("[registry] 没有可见源上首页 ⇒ 退回包含 hidden 子站（聚合未启用时的兜底）");
+            targets = candidates.into_iter().map(|(p, _)| p).collect();
+        }
 
         let mut out = Vec::new();
         for p in targets {
@@ -467,6 +515,19 @@ impl Registry {
 
     /// 全部直播频道聚合（按 provider 分组）
     pub async fn live_all(&self) -> Vec<(String, String, Vec<LiveChannel>)> {
+        /*
+         * ★★ A′（2026-10-26）：这里**故意不排除 `hidden`** —— 与 `for_each_search`
+         *    和 `home_all` 相反。别当成"漏改"把它补上。
+         *
+         * 原因：`hidden` 子站是被「TVBox 聚合」接管的那批导入源，
+         * 而聚合源现在**只做点播扇出**（`capabilities.live = false`）。
+         * 若这里也按 `!hidden` 过滤，导入的直播频道会**彻底消失** ——
+         * 聚合入口没有能力替它们出场，`live_all` 就成了唯一出口。
+         * ⇒ 重复（多一组频道）是可接受的；**消失是数据丢失，不可接受**。
+         *
+         * 什么时候可以补上这个过滤：聚合源实现 `live_channels()` 扇出之后，
+         * 那时 hidden 子站由聚合源统一出口，这里才该排除。
+         */
         let targets: Vec<_> = self
             .providers
             .read()
@@ -1684,6 +1745,146 @@ mod tests {
         assert_eq!(r.results.len(), 2, "两个好源仍应出结果（错误隔离）");
         assert_eq!(r.skipped.len(), 1, "坏源进 skipped");
         assert_eq!(r.skipped[0].0, "bad");
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  A′（2026-10-26）：hidden 子站不直接参与搜索/首页
+    // ══════════════════════════════════════════════════════════════════
+
+    /// 探针源：能搜、能出首页，并**数自己被调用了几次**
+    struct HiddenProbe {
+        manifest: ProviderManifest,
+        calls: Arc<AtomicUsize>,
+        home_calls: Arc<AtomicUsize>,
+    }
+
+    impl HiddenProbe {
+        fn new(id: &str, name: &str, hidden: bool) -> Arc<Self> {
+            Arc::new(Self {
+                manifest: ProviderManifest {
+                    id: id.into(),
+                    name: name.into(),
+                    version: "1".into(),
+                    kind: "tvbox".into(),
+                    description: None,
+                    icon: None,
+                    id_prefixes: vec![],
+                    capabilities: Capabilities {
+                        vod: true,
+                        search: true,
+                        ..Default::default()
+                    },
+                    hidden,
+                    cover_headers: Vec::new(),
+                    config: Vec::new(),
+                    api_version: 1,
+                    theme_color: None,
+                    working: true,
+                    broken_reason: None,
+                    enabled: None,
+                },
+                calls: Arc::new(AtomicUsize::new(0)),
+                home_calls: Arc::new(AtomicUsize::new(0)),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl MediaProvider for HiddenProbe {
+        fn manifest(&self) -> &ProviderManifest {
+            &self.manifest
+        }
+        async fn search(&self, _kw: &str, page: u32) -> Result<Page<MediaItem>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Page {
+                items: vec![MediaItem {
+                    id: MediaId {
+                        provider: self.manifest.id.clone(),
+                        native: "n1".into(),
+                    },
+                    title: format!("{} 的结果", self.manifest.name),
+                    cover: None,
+                    subtitle: None,
+                    badges: vec![],
+                    kind: crate::model::MediaKind::Movie,
+                    description: None,
+                }],
+                page,
+                page_count: None,
+                total: None,
+            })
+        }
+        async fn home(&self) -> Result<Vec<Section>> {
+            self.home_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![Section {
+                id: "s1".into(),
+                title: format!("{} 的区块", self.manifest.name),
+                source: SectionSource::Recent,
+                items: vec![],
+            }])
+        }
+        async fn resolve(
+            &self,
+            _id: &MediaId,
+            _req: &PlayRequest,
+        ) -> Result<Vec<StreamCandidate>> {
+            Ok(vec![])
+        }
+    }
+
+    /// ★★ 门禁①：**hidden 子站一次都不许被搜**，可见源（含聚合）照常搜
+    ///
+    /// # 这条挡的是什么
+    /// ```text
+    /// TVBox 导入的 16 个子站是 hidden 但仍 enabled ⇒
+    /// 若搜索只筛 `enabled && capabilities.search`，同一部片会被搜两遍：
+    ///   聚合源（扇出 16 个子站）一次 + 每个子站各自一次 = 17 次
+    /// 后果：结果重复、请求放大 17 倍。
+    /// ```
+    /// **注入验证**：把 `for_each_search` 里的 `.filter(|(_, hidden)| !*hidden)` 删掉 ⇒ 本条立刻红。
+    #[tokio::test]
+    async fn search_skips_hidden_subsites_and_keeps_visible() {
+        let reg = Registry::new();
+        let agg = HiddenProbe::new("tvbox_agg", "TVBox 聚合", false);
+        let sub1 = HiddenProbe::new("tvbox1", "子站一", true);
+        let sub2 = HiddenProbe::new("tvbox2", "子站二", true);
+        reg.register(agg.clone());
+        reg.register(sub1.clone());
+        reg.register(sub2.clone());
+
+        let r = reg.search_all("兰香如故", 1).await;
+        let ids: Vec<String> = r.results.iter().map(|(id, _, _)| id.clone()).collect();
+        assert_eq!(ids, vec!["tvbox_agg"], "只有可见/聚合源该被搜：{ids:?}");
+        assert_eq!(agg.calls.load(Ordering::SeqCst), 1, "聚合源必须被搜到（门禁②）");
+        assert_eq!(sub1.calls.load(Ordering::SeqCst), 0, "★ hidden 子站一不许被搜");
+        assert_eq!(sub2.calls.load(Ordering::SeqCst), 0, "★ hidden 子站二不许被搜");
+    }
+
+    /// ★ 兜底：**一个可见源都没有**时（聚合还没启用任何子站），hidden 子站仍要能搜
+    ///
+    /// 否则用户"导入了 100 个源却搜不到任何东西" —— 那比重复更糟。
+    #[tokio::test]
+    async fn search_falls_back_to_hidden_when_nothing_visible() {
+        let reg = Registry::new();
+        let sub = HiddenProbe::new("tvbox1", "子站一", true);
+        reg.register(sub.clone());
+        let r = reg.search_all("x", 1).await;
+        assert_eq!(r.results.len(), 1, "兜底必须生效：{:?}", r.results.len());
+        assert_eq!(sub.calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// ★★ 门禁③：hidden 子站不直接上首页（否则首页既有聚合区块又有 16 个子站区块）
+    #[tokio::test]
+    async fn home_skips_hidden_subsites_and_keeps_visible() {
+        let reg = Registry::new();
+        let agg = HiddenProbe::new("tvbox_agg", "TVBox 聚合", false);
+        let sub = HiddenProbe::new("tvbox1", "子站一", true);
+        reg.register(agg.clone());
+        reg.register(sub.clone());
+        let rows = reg.home_all().await;
+        let ids: Vec<String> = rows.iter().map(|(id, _, _)| id.clone()).collect();
+        assert_eq!(ids, vec!["tvbox_agg"], "首页只该有聚合源：{ids:?}");
+        assert_eq!(sub.home_calls.load(Ordering::SeqCst), 0, "★ hidden 子站不许上首页");
     }
 
 }

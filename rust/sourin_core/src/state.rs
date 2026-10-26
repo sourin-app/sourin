@@ -334,6 +334,9 @@ impl AppState {
                             api,
                             ext_text,
                             categories.clone(),
+                            // ★ 从落盘的 TVBox 源记录恢复 ⇒ 同样是"导入来源"
+                            //   （判据是来源，不是 id 命名 —— 见 CspProvider::new 的注释）
+                            true,
                         ) {
                             Ok(p) => {
                                 registry.register(Arc::new(p));

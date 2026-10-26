@@ -54,12 +54,21 @@ impl CspProvider {
     ///
     /// `api` 必须是注册表里有的类（否则 [`route`] 返回 None ⇒ 这里报错，
     /// 而不是建一个「什么都做不了」的 Provider）。
+    /// # `from_import`：来源是"由 TVBox 配置导入"吗（**显式标记，与 id 命名无关**）
+    ///
+    /// 判据为什么必须是显式参数而不是 `id.starts_with("csp-")`：
+    /// ```text
+    /// 将来加"内置 csp 源"时，最自然的命名就是 `csp-bili`（本文件类名都叫 `csp_*`）——
+    /// 用前缀判断会把**内置源静默藏起来**（用户永远看不到它）。
+    /// 而且本仓已有 `builtin-bili` 反例，它恰好绕开了前缀，证明不了这个坑。
+    /// ```
     pub fn new(
         id: impl Into<String>,
         name: impl Into<String>,
         api: &str,
         ext: &str,
         classes: Vec<TvboxCategoryEntry>,
+        from_import: bool,
     ) -> std::result::Result<Self, String> {
         let id = id.into();
         let name = name.into();
@@ -74,6 +83,15 @@ impl CspProvider {
             search: false,
             ..Default::default()
         };
+        /*
+         * ★ 是否"由 TVBox 配置导入的子站"—— 决定 manifest.hidden，判据是**调用点传入的
+         *   `from_import`**，与 id 怎么命名**无关**（上一版用 `id.starts_with("csp-")`，
+         *   会把将来命名成 `csp-bili` 的内置源静默藏起来 —— 交叉复核指出的真缺口）。
+         *
+         * 为什么要藏：A′ 的口径是"导入的 TVBox 源不单独出现在源列表里，只经由
+         * `tvbox_agg` 聚合入口使用"。appleCMS 子站已经这么做了（`tvbox.rs:1200 hidden: true`），
+         * 而 csp 子站走本文件，之前写死 `hidden: false` ⇒ 16 个 csp 子站全在列表里可见。
+         */
         let manifest = ProviderManifest {
             id,
             name,
@@ -94,7 +112,8 @@ impl CspProvider {
             working: true,
             broken_reason: None,
             enabled: None,
-            hidden: false,
+            // 导入来的子站藏起来（经 tvbox_agg 聚合使用）；内置 csp 源仍可见
+            hidden: from_import,
         };
         Ok(Self {
             manifest,
@@ -345,7 +364,7 @@ mod tests {
     #[test]
     fn new_rejects_unimplemented_class() {
         let sample = crate::csp::unimplemented_sample();
-        let err = CspProvider::new("id", "名", sample, "", Vec::new())
+        let err = CspProvider::new("id", "名", sample, "", Vec::new(), false)
             .err()
             .expect("没实现的类不能建 Provider");
         // ★ 文案的唯一来源是 `unimplemented_reason`（App99 这种"有具体原因"的类
@@ -353,9 +372,49 @@ mod tests {
         assert_eq!(err, crate::csp::unimplemented_reason(sample));
     }
 
+
+    // ── A′：TVBox 导入的 csp 子站必须 hidden，内置 csp 源必须可见 ──────────
+    #[test]
+    fn tvbox_imported_csp_subsites_are_hidden() {
+        // tvbox.rs 的 csp_id_base() 产出 `csp-<class>-<crc32>` 这种 id
+        let p = CspProvider::new("csp-bili-1a2b3c4d", "哔哩", "csp_Bili", "", Vec::new(), true)
+            .expect("csp_Bili 必须能建 Provider");
+        assert!(
+            p.manifest().hidden,
+            "★ 由 TVBox 导入的 csp 子站必须 hidden（否则 A′ 里 16 个子站又全冒出来）"
+        );
+    }
+
+    #[test]
+    fn builtin_csp_provider_stays_visible() {
+        // 非导入来源（将来内置源）用别的 id 形态 ⇒ 必须可见
+        let p = CspProvider::new("builtin-bili", "内置哔哩", "csp_Bili", "", Vec::new(), false)
+            .expect("合法");
+        assert!(
+            !p.manifest().hidden,
+            "★ 内置 csp 源不能被误藏 —— 判据是「是否来自 TVBox 导入」，不是「是不是 csp」"
+        );
+    }
+
+
+    // ── ★ 交叉复核那条真缺口：命名像 `csp-*` 但**不是导入**的源必须可见 ──────────
+    #[test]
+    fn builtin_provider_named_like_csp_stays_visible() {
+        let p = CspProvider::new("csp-builtin-x", "内置（名字像导入）", "csp_Bili", "", Vec::new(), false)
+            .expect("合法");
+        assert!(
+            !p.manifest().hidden,
+            "★ 判据是显式来源标记 —— 名字叫 `csp-builtin-x` 也不能被藏（旧实现用前缀判断会在此红）"
+        );
+        // 对照：同一命名、来源是导入 ⇒ 必须藏（证明这条不是"永远可见"的假绿）
+        let q = CspProvider::new("csp-builtin-x", "导入", "csp_Bili", "", Vec::new(), true)
+            .expect("合法");
+        assert!(q.manifest().hidden, "来源=导入 ⇒ 同一 id 也必须藏");
+    }
+
     #[test]
     fn new_rejects_empty_id() {
-        let err = CspProvider::new("", "名", "csp_Bili", "", Vec::new())
+        let err = CspProvider::new("", "名", "csp_Bili", "", Vec::new(), false)
             .err()
             .expect("空 id 必须报错");
         assert_eq!(err, "源 id 为空");
@@ -363,7 +422,7 @@ mod tests {
 
     #[test]
     fn new_keeps_api_and_declares_no_fake_search() {
-        let p = CspProvider::new("lib-bili", "哔哩", "csp_Bili", "{\"n\":\"x\"}", Vec::new())
+        let p = CspProvider::new("lib-bili", "哔哩", "csp_Bili", "{\"n\":\"x\"}", Vec::new(), false)
             .expect("csp_Bili 必须能建 Provider");
         assert_eq!(p.api(), "csp_Bili");
         assert_eq!(p.ext, "{\"n\":\"x\"}", "ext 必须原样透传");

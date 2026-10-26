@@ -418,6 +418,13 @@ impl CspSite for Zhinan {
     ///
     /// 解析**复用列表那套**（`parse_list`）—— 搜索结果页与分类页是同一个
     /// 列表模板（`.posts-item.book-item`），只是查询入口不同。
+    /// ★ 搜索能力声明（`capabilities.search` 直接用它的值）
+    ///
+    /// `HTML 搜索（?post_type=book&s=）已实现，但**未做真网络验证**`
+    fn supports_search(&self) -> bool {
+        true
+    }
+
     async fn search(&self, kw: &str, page: u32, ext: &str) -> Result<CspList, String> {
         let kw = kw.trim();
         if kw.is_empty() {

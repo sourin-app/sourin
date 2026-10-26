@@ -644,6 +644,13 @@ impl CspSite for PanWebShare {
     ///    浏览页是 `.module-item`，搜索页是 `.module-search-item` —— 但两者
     ///    的详情链接形态相同（`/index.php/vod/detail/id/<数字>.html`），
     ///    所以只换"切块标记"，id/标题/封面的取法与 `parse_items` 一致。
+    /// ★ 搜索能力声明（`capabilities.search` 直接用它的值）
+    ///
+    /// `HTML 搜索已真网络验证（2 条）`
+    fn supports_search(&self) -> bool {
+        true
+    }
+
     async fn search(&self, kw: &str, page: u32, ext: &str) -> Result<CspList, String> {
         let kw = kw.trim();
         if kw.is_empty() {

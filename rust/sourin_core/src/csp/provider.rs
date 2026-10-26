@@ -32,7 +32,8 @@ use crate::model::{
 };
 use crate::provider::{ListRequest, MediaProvider};
 
-use super::{route, CspSite};
+use super::{
+    CspList,route, CspSite};
 
 /// 首页最多给几个分类区块（与 `tvbox.rs` 的 HOME_SECTIONS 对齐）
 const HOME_SECTIONS: usize = 8;
@@ -76,11 +77,20 @@ impl CspProvider {
             return Err("源 id 为空".to_string());
         }
         let site = route(api).ok_or_else(|| super::unimplemented_reason(api))?;
+        /*
+         * ★ search 能力按 **这个类自己的声明** 判定，不再写死 false。
+         *
+         * 历史（别退回去）：
+         * ```text
+         * 早先写死 `search: false`，注释理由是"上游搜索接口要 buvid/风控签名，本实现没做"。
+         * 那句话已经过期 —— Bili 的 WBI 搜索真网络搜到 20 条、PanWebShare 搜到 2 条。
+         * 而写死 false 的后果是：`registry.rs:287` 的 `h.enabled && capabilities.search`
+         * 把**所有** csp 源直接排除在搜索之外，连"试着搜一下"的机会都没有。
+         * ```
+         */
         let capabilities = crate::model::Capabilities {
             vod: true,
-            // ★ search 声明为 false：上游搜索接口要 buvid/风控签名，
-            //   本实现没做 —— 声明 true 就是假能力位（用户点了只会报错）。
-            search: false,
+            search: site.supports_search(),
             ..Default::default()
         };
         /*
@@ -122,6 +132,54 @@ impl CspProvider {
             site,
             classes,
         })
+    }
+
+    /// 测试专用：直接注入一个 site（用于断言"search 真的转发到 site"）
+    #[cfg(test)]
+    pub(crate) fn for_test(id: &str, site: Arc<dyn CspSite>, ext: &str) -> Self {
+        let capabilities = crate::model::Capabilities {
+            vod: true,
+            search: site.supports_search(),
+            ..Default::default()
+        };
+        Self {
+            manifest: ProviderManifest {
+                id: id.to_string(),
+                name: id.to_string(),
+                version: "0".into(),
+                kind: "tvbox".into(),
+                description: None,
+                icon: None,
+                id_prefixes: Vec::new(),
+                capabilities,
+                cover_headers: Vec::new(),
+                config: Vec::new(),
+                api_version: 1,
+                theme_color: None,
+                working: true,
+                broken_reason: None,
+                enabled: None,
+                hidden: false,
+            },
+            api: "csp_Test".into(),
+            ext: ext.to_string(),
+            site,
+            classes: Vec::new(),
+        }
+    }
+
+    /// `CspList` → `Page<MediaItem>`（**list 与 search 共用**，避免两份映射漂移）
+    fn page_of(&self, out: CspList) -> Page<MediaItem> {
+        Page {
+            items: out
+                .items
+                .into_iter()
+                .map(|i| to_item(&self.manifest.id, i))
+                .collect(),
+            page: out.page,
+            page_count: out.page_count,
+            total: out.total,
+        }
     }
 
     /// 配置里的原始 api（`csp_Xxx`）
@@ -226,16 +284,32 @@ impl MediaProvider for CspProvider {
             .list(&req.category_id, page, &self.ext)
             .await
             .map_err(classify_err)?;
-        Ok(Page {
-            items: out
-                .items
-                .into_iter()
-                .map(|i| to_item(&self.manifest.id, i))
-                .collect(),
-            page: out.page,
-            page_count: out.page_count,
-            total: out.total,
-        })
+        Ok(self.page_of(out))
+    }
+
+    /// ★ 搜索：**同一套映射**（`page_of`），同一套错误分类（`classify_err`）
+    ///
+    /// # 为什么这条曾经整条缺失（真事故）
+    /// `CspProvider` 只覆写了 home/categories/list/detail/resolve，**没有 search**
+    /// ⇒ 落到 `MediaProvider::search` 的默认实现 `Err(unsupported("该源不支持搜索"))`。
+    /// 而各 site 类上的 `CspSite::search` 是另一层 —— 两层没接上，
+    /// 所以 `tvbox_agg` 扇出去、16 个子站被调，全都返回"不支持搜索" ⇒ 聚合搜索恒空。
+    async fn search(&self, keyword: &str, page: u32) -> Result<Page<MediaItem>> {
+        if !self.site.supports_search() {
+            return Err(ProviderError::unsupported(format!(
+                "{} 不支持搜索（该类的能力声明是 false）",
+                self.site.class()
+            )));
+        }
+        let page = if page == 0 { 1 } else { page };
+        let out = self
+            .site
+            .search(keyword, page, &self.ext)
+            .await
+            .map_err(classify_err)?;
+        // 空结果与 list 同口径：返回**空页**（让 registry 记成"命中但 0 条"），
+        // 不报错 —— 搜索没有结果是正常结果，不是故障。
+        Ok(self.page_of(out))
     }
 
     async fn detail(&self, id: &MediaId) -> Result<MediaDetail> {
@@ -412,6 +486,99 @@ mod tests {
         assert!(q.manifest().hidden, "来源=导入 ⇒ 同一 id 也必须藏");
     }
 
+
+    // ── ★ 搜索打通的三条门禁 ─────────────────────────────────────────────
+    struct FakeSite {
+        supports: bool,
+        seen: std::sync::Mutex<Vec<(String, u32, String)>>,
+    }
+
+    #[async_trait]
+    impl CspSite for FakeSite {
+        fn class(&self) -> &'static str {
+            "Fake"
+        }
+        fn supports_search(&self) -> bool {
+            self.supports
+        }
+        async fn home(&self, _ext: &str) -> std::result::Result<crate::csp::CspHome, String> {
+            Ok(Default::default())
+        }
+        async fn list(&self, _tid: &str, _p: u32, _ext: &str) -> std::result::Result<CspList, String> {
+            Ok(CspList::default())
+        }
+        async fn search(&self, kw: &str, page: u32, ext: &str) -> std::result::Result<CspList, String> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((kw.to_string(), page, ext.to_string()));
+            Ok(CspList {
+                items: vec![crate::csp::CspItem {
+                    id: "native-1".into(),
+                    title: "命中".into(),
+                    cover: None,
+                    subtitle: None,
+                }],
+                page,
+                page_count: None,
+                total: None,
+            })
+        }
+        async fn detail(&self, _id: &str, _ext: &str) -> std::result::Result<crate::csp::CspDetail, String> {
+            Ok(Default::default())
+        }
+        async fn play(
+            &self,
+            _f: &str,
+            _id: &str,
+            _ext: &str,
+        ) -> std::result::Result<Vec<crate::csp::CspPlay>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn search_forwards_to_site_with_ext() {
+        let site = Arc::new(FakeSite {
+            supports: true,
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let p = CspProvider::for_test("csp-fake-1", site.clone(), "{\"site\":[\"x\"]}");
+        let page = p.search("兰香如故", 2).await.expect("应转发成功");
+        assert_eq!(page.items.len(), 1, "映射必须复用 list 那一套");
+        let idstr = format!("{:?}", page.items[0].id);
+        assert!(idstr.contains("native-1"), "id 必须原样带上 native id：{idstr}");
+        let seen = site.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "★ 必须真的调到 site.search 一次");
+        assert_eq!(seen[0].0, "兰香如故");
+        assert_eq!(seen[0].1, 2);
+        assert_eq!(seen[0].2, "{\"site\":[\"x\"]}", "ext 必须原样透传");
+    }
+
+    #[tokio::test]
+    async fn search_refuses_when_class_declares_false() {
+        let site = Arc::new(FakeSite {
+            supports: false,
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let p = CspProvider::for_test("csp-fake-2", site.clone(), "");
+        assert!(p.manifest().capabilities.search == false, "能力位必须跟着 supports_search");
+        let err = p.search("x", 1).await.expect_err("声明 false 时不许搜");
+        assert!(format!("{err}").contains("不支持搜索"), "{err}");
+        assert!(site.seen.lock().unwrap().is_empty(), "不许偷偷发请求");
+    }
+
+    #[test]
+    fn capability_search_follows_supports_search_per_class() {
+        // ★ 直接对真实类断言（这几条就是"是否纳入聚合搜索"的判据）
+        assert!(crate::csp::bili::Bili::new().supports_search(), "Bili 已真网络验证");
+        assert!(crate::csp::pan_web_share::PanWebShare::new().supports_search(), "PanWebShare 已真网络验证");
+        assert!(crate::csp::zhinan::Zhinan::new().supports_search(), "4KZhinan 已实现（未真网络验证，注释写明）");
+        assert!(crate::csp::app99::App99::new().supports_search(), "App99 已实现（未单独真网络验证，注释写明）");
+        assert!(!crate::csp::first_aid::FirstAid::new().supports_search(), "FirstAid 是占位 Err");
+        assert!(!crate::csp::ikanbot::Ikanbot::new().supports_search(), "Ikanbot 搜索入口未确认");
+    }
+
     #[test]
     fn new_rejects_empty_id() {
         let err = CspProvider::new("", "名", "csp_Bili", "", Vec::new(), false)
@@ -429,10 +596,14 @@ mod tests {
         let m = p.manifest();
         assert_eq!(m.kind, "tvbox");
         assert!(m.capabilities.vod);
-        assert!(
-            !m.capabilities.search,
-            "★ 搜索没实现就不许声明（否则界面出现一个点了必报错的搜索框）"
+        // ★ 这条原先是"搜索没实现就不许声明 search"。现在 search 已实现，
+        //   口径改成：**能力位必须等于该类自己的 `supports_search()`**。
+        assert_eq!(
+            m.capabilities.search,
+            p.site.supports_search(),
+            "capabilities.search 必须与 supports_search() 一致（Bili 现在是 true）"
         );
+        assert!(m.capabilities.search, "Bili 的搜索已真网络验证 ⇒ 必须声明 true");
         assert!(m.description.as_deref().unwrap_or("").contains("Rust 重写"));
     }
 

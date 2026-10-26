@@ -546,6 +546,13 @@ impl CspSite for Bili {
     /// `.probe/bili-wbi-*.log`）；`w_rid = md5(排序查询串 + mixin_key)`
     /// ⇒ 必须引入 MD5 实现（ring 只有 SHA 系列，没有 MD5）。
     /// ```
+    /// ★ 搜索能力声明（`capabilities.search` 直接用它的值）
+    ///
+    /// `该源的 WBI 搜索已真网络验证（"兰香如故" 20 条）`
+    fn supports_search(&self) -> bool {
+        true
+    }
+
     async fn search(&self, kw: &str, page: u32, _ext: &str) -> Result<CspList, String> {
         let kw = kw.trim();
         if kw.is_empty() {

@@ -234,6 +234,16 @@ pub trait CspSite: Send + Sync {
     /// 方法体由各实现负责（本文件只声明）。
     async fn search(&self, kw: &str, page: u32, ext: &str) -> Result<CspList, String>;
 
+    /// 这个类**真的**支持搜索吗？（必选，与 [`CspSite::search`] 同一口径）
+    ///
+    /// # 为什么必须手写而不是给默认值
+    /// `capabilities.search` 会用它决定"要不要让 registry 把这个源纳入搜索"
+    /// （`registry.rs:287` 的 `h.enabled && capabilities.search` 会直接排除 false 的源）。
+    /// 如果默认给 `true`，占位 `Err` 的类也会被拉进搜索 ⇒ 假能力位；
+    /// 默认给 `false`，真实现了的类会被静默排除 ⇒ 又回到"csp 源搜不到"。
+    /// 所以**必选**：每个类自己表态。
+    fn supports_search(&self) -> bool;
+
     /// 详情（含剧集）
     async fn detail(&self, id: &str, ext: &str) -> Result<CspDetail, String>;
 

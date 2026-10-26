@@ -166,7 +166,12 @@ fn build_site_provider_dispatches_csp_to_rust_impl() {
         "描述要能看出这是 Rust 实现，实际 {:?}",
         m.description
     );
-    assert!(!m.capabilities.search, "搜索没做就不许声明");
+    // ★ 口径已变（2026-10-26）：`CspProvider::search` 已覆写、Bili 的 WBI 搜索真网络验过，
+    //   所以"搜索没做就不许声明"这条过期了。现在要求：**能力位 = 该类自己的声明**。
+    assert!(
+        m.capabilities.search,
+        "Bili 的搜索已实现并真网络验证 ⇒ manifest.capabilities.search 必须是 true"
+    );
 }
 
 #[test]

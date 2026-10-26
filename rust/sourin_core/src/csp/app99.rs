@@ -833,6 +833,13 @@ impl CspSite for App99 {
 
     /// 搜索：与 `list()` **同一条链路**（`POST /vod/search`，body 里 `kw`），
     /// 区别只是 `kw` 来自用户输入而不是分类 id。
+    /// ★ 搜索能力声明（`capabilities.search` 直接用它的值）
+    ///
+    /// `AES 链路的 /vod/search 已实现（与 list 同一端点），但**"按关键词"这条没单独真网络验证**`
+    fn supports_search(&self) -> bool {
+        true
+    }
+
     async fn search(&self, kw: &str, page: u32, _ext: &str) -> Result<CspList, String> {
         let kw = kw.trim();
         if kw.is_empty() {

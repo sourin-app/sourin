@@ -251,12 +251,21 @@ mod tests {
 
     // ── 需要钥匙串的（无后端时明确 skip，不静默通过）──
 
+    ///
+    /// ★ 2026-10-27：**改成显式 `#[ignore]`**。
+    ///
+    /// 改前是"运行时 `if !keyring_available() { return; }`"——那样在无钥匙串的
+    /// 机器上它会**以 passed 出现在读数里**，看起来"存取逻辑已被验证"，
+    /// 实际上一个断言都没执行（假绿）。现在它被 `cargo test` 明确计入
+    /// `ignored`，要跑必须 `--ignored` 且本机有钥匙串。
+    ///
+    /// ⚠️ 真正的**分档判据**不依赖钥匙串：见 `pan::reason_tier` 的四条单测
+    /// （①认不出 / ②无 id / ③未登录 / ④过期 / ⑤已登录无直链 全部逐字断言）。
     #[test]
+    #[ignore = "需要 OS 钥匙串：cargo test --lib pan_auth -- --ignored -Zunstable…（本机无钥匙串时会失败，属预期）"]
     fn roundtrip_through_keyring_when_available() {
         if !keyring_available() {
-            // 明确报出"没跑"，而不是让它绿
-            println!("[SKIP] 系统钥匙串不可用 ⇒ 跳过真实存取测试（这不是通过）");
-            return;
+            panic!("本机没有可用的系统钥匙串 ⇒ 这条只能在没有后端的环境里被跳过（--ignored 才跑）");
         }
         let c = cred(PanKind::Quark, "sess=abc123; uid=42", Some(1_900_000_000));
         save(&c).expect("保存应成功");
@@ -287,11 +296,12 @@ mod tests {
         assert!(load(PanKind::Uc).is_none(), "★ 空 cookie 必须等于登出，不能留下旧凭据");
     }
 
+    /// ★ 同上：显式 `#[ignore]`（改前是"运行时 return"，在读数里伪装成 passed）
     #[test]
+    #[ignore = "需要 OS 钥匙串（同 roundtrip_through_keyring_when_available）"]
     fn credentials_of_different_kinds_do_not_collide() {
         if !keyring_available() {
-            println!("[SKIP] 系统钥匙串不可用 ⇒ 跳过");
-            return;
+            panic!("本机没有可用的系统钥匙串 ⇒ --ignored 跑这条会失败（预期）");
         }
         // ★ 必须用与前两个测试**不同的盘**：
         //   cargo test 默认并行跑，而系统钥匙串是**进程外共享状态**。

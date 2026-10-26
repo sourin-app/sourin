@@ -87,6 +87,120 @@ impl PanKind {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════
+//  「为什么还不能取直链」—— 分档判据（**纯函数**）
+// ══════════════════════════════════════════════════════════════════════
+//
+// # 为什么要把它从 `pan_auth::load` 里剥出来
+// ```text
+// 原来的分档判定是内联在 FFI 命令里的，入参含 `pan_auth::load(kind)`
+// （读 **OS 钥匙串**）⇒ 在测试机上钥匙串不可用 ⇒
+// ④「需要登录」⑤「登录已过期」这两档**永远执行不到**，
+// 台账里"逐字断言已就位"其实是**恒不跑的空断言**（假绿）。
+// ⇒ 把**判定**抽成纯函数（入参是三个 bool），钥匙串只负责算这几个 bool。
+// ```
+
+/// 一次"能不能取直链"的输入状态（由调用方从钥匙串/凭据算出来）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PanLoginState {
+    /// 有没有该盘的凭据（`pan_auth::load(kind).is_some()`）
+    pub logged_in: bool,
+    /// 凭据是否已过期（有 `expires_at` 且早于 now；**没写过期时间 = 不过期**）
+    pub expired: bool,
+    /// 本版本是否已实现"取直链"（当前恒 false，见 `pan_list` 的模块头）
+    pub has_direct_link: bool,
+}
+
+impl PanLoginState {
+    /// 游客（未登录、无直链）
+    pub fn guest() -> Self {
+        Self { logged_in: false, expired: false, has_direct_link: false }
+    }
+}
+
+/// 分档结果（机器可读码 + 逐字文案的唯一来源）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanReasonTier {
+    /// ① 认不出网盘
+    Unknown,
+    /// ② 认出了，但链接里没有分享 id
+    NoShareId,
+    /// ③ 没登录
+    NeedLogin,
+    /// ④ 登录过期
+    Expired,
+    /// ⑤ 已登录且未过期，但本版本还没接入取直链
+    LoggedInNoDirectLink,
+    /// ⑥ 真的能取（`has_direct_link = true` 且已登录未过期）
+    Ready,
+}
+
+impl PanReasonTier {
+    /// 稳定的机器可读码（落盘/埋点用，**不要用 Debug 输出**）
+    pub fn code(self) -> &'static str {
+        match self {
+            PanReasonTier::Unknown => "unknown",
+            PanReasonTier::NoShareId => "no_share_id",
+            PanReasonTier::NeedLogin => "need_login",
+            PanReasonTier::Expired => "expired",
+            PanReasonTier::LoggedInNoDirectLink => "logged_in_no_direct_link",
+            PanReasonTier::Ready => "ready",
+        }
+    }
+    /// 这一档是否"还取不到直链"
+    pub fn resolvable(self) -> bool {
+        matches!(self, PanReasonTier::Ready)
+    }
+}
+
+/// **分档判定（纯函数）**：给定识别结果与登录状态，落在哪一档
+///
+/// ⚠️ **顺序即优先级**，改顺序就是改语义：
+/// ```text
+/// ① 认不出            → Unknown      （连"哪个盘"都不知道，轮不到谈登录）
+/// ② 没有分享 id       → NoShareId    （认出了盘，但这不是一条分享链接）
+/// ③ 没登录            → NeedLogin    （**必须先判它**：未登录时谈"过期"没有意义）
+/// ④ 过期              → Expired
+/// ⑤ 已登录但没直链     → LoggedInNoDirectLink
+/// ⑥ 都可              → Ready
+/// ```
+/// 注入反面：把 ③④ 顺序对调（先判 expired）⇒ `expired_tier_wins_over_need_login` 立刻红。
+pub fn reason_tier(kind: PanKind, share_id: &str, st: PanLoginState) -> PanReasonTier {
+    if kind == PanKind::Unknown {
+        return PanReasonTier::Unknown;
+    }
+    if share_id.trim().is_empty() {
+        return PanReasonTier::NoShareId;
+    }
+    if st.expired {
+        return PanReasonTier::Expired;   // INJECT: 顺序对调（过期判在未登录之前）
+    }
+    if !st.logged_in {
+        return PanReasonTier::NeedLogin;
+    }
+    if !st.has_direct_link {
+        return PanReasonTier::LoggedInNoDirectLink;
+    }
+    PanReasonTier::Ready
+}
+
+/// 逐字文案（**唯一来源**：FFI 与测试都用它，避免两处各写一份漂移）
+pub fn reason_text(kind: PanKind, tier: PanReasonTier) -> String {
+    match tier {
+        PanReasonTier::Unknown => "无法识别为受支持的网盘".to_string(),
+        PanReasonTier::NoShareId => {
+            "认出了网盘，但链接里没有分享 id（可能不是分享链接）".to_string()
+        }
+        PanReasonTier::NeedLogin => format!("需要先登录{}", kind.display()),
+        PanReasonTier::Expired => format!("{}的登录已过期，请重新登录", kind.display()),
+        PanReasonTier::LoggedInNoDirectLink => format!(
+            "已登录{}：能列出分享里的文件，但本版本仍未接入取直链",
+            kind.display()
+        ),
+        PanReasonTier::Ready => String::new(),
+    }
+}
+
 /// 一次分享的识别结果
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PanShare {
@@ -379,4 +493,92 @@ mod tests {
         assert_eq!(PanKind::Pan123.code(), "123");
         assert_eq!(PanKind::Uc.display(), "UC 网盘");
     }
+    // ── 分档判据（纯函数，★ 全部离线可跑；④⑤ 不再"执行不到"）──────────────
+    #[test]
+    fn tier_wise_texts_are_exact() {
+        use PanReasonTier::*;
+        let cases: [(PanLoginState, PanReasonTier); 6] = [
+            (PanLoginState::guest(), NeedLogin),
+            (
+                PanLoginState { logged_in: true, expired: true, has_direct_link: false },
+                Expired,
+            ),
+            (
+                PanLoginState { logged_in: true, expired: false, has_direct_link: false },
+                LoggedInNoDirectLink,
+            ),
+            (
+                PanLoginState { logged_in: true, expired: false, has_direct_link: true },
+                Ready,
+            ),
+            (PanLoginState { logged_in: false, expired: true, has_direct_link: false }, NeedLogin),
+            (PanLoginState { logged_in: false, expired: false, has_direct_link: true }, NeedLogin),
+        ];
+        for (st, want) in cases {
+            let got = reason_tier(PanKind::Quark, "abc", st);
+            assert_eq!(got, want, "状态 {st:?} 应落在 {want:?}，实际 {got:?}");
+        }
+        // ★ ④ 登录（逐字）
+        assert_eq!(
+            reason_text(PanKind::Quark, NeedLogin),
+            "需要先登录夸克网盘"
+        );
+        assert_eq!(reason_text(PanKind::Baidu, NeedLogin), "需要先登录百度网盘");
+        // ★ ⑤ 过期（逐字）
+        assert_eq!(
+            reason_text(PanKind::Quark, Expired),
+            "夸克网盘的登录已过期，请重新登录"
+        );
+        // 另一档（已登录但没直链）也逐字钉住
+        assert_eq!(
+            reason_text(PanKind::Uc, LoggedInNoDirectLink),
+            "已登录UC 网盘：能列出分享里的文件，但本版本仍未接入取直链"
+        );
+    }
+
+    /// ★ 识别层两档：认不出 / 没分享 id（与登录状态**无关**，要先判）
+    #[test]
+    fn tier_unknown_and_no_share_id_come_first() {
+        use PanReasonTier::*;
+        let logged_in = PanLoginState { logged_in: true, expired: false, has_direct_link: false };
+        assert_eq!(reason_tier(PanKind::Unknown, "abc", logged_in), Unknown);
+        assert_eq!(reason_tier(PanKind::Quark, "", logged_in), NoShareId);
+        assert_eq!(reason_tier(PanKind::Quark, "   ", logged_in), NoShareId);
+        assert_eq!(
+            reason_text(PanKind::Unknown, Unknown),
+            "无法识别为受支持的网盘"
+        );
+        assert_eq!(
+            reason_text(PanKind::Quark, NoShareId),
+            "认出了网盘，但链接里没有分享 id（可能不是分享链接）"
+        );
+    }
+
+    /// ★★ 顺序判据：**未登录 + 已过期** 必须落在 ③ 而不是 ④
+    ///
+    /// 注入反面：把 `reason_tier` 里 `expired` 的判断挪到 `!logged_in` 之前 ⇒ 本条红。
+    /// 语义理由：从没登录过的人看到"登录已过期"会以为"我登录过"，那是误导。
+    #[test]
+    fn expired_tier_wins_over_need_login() {
+        let st = PanLoginState { logged_in: false, expired: true, has_direct_link: false };
+        assert_eq!(
+            reason_tier(PanKind::Quark, "abc", st),
+            PanReasonTier::NeedLogin,
+            "★ 未登录优先于过期"
+        );
+    }
+
+    /// 码值稳定（落盘/埋点会用到）
+    #[test]
+    fn tier_codes_are_stable() {
+        assert_eq!(PanReasonTier::Unknown.code(), "unknown");
+        assert_eq!(PanReasonTier::NoShareId.code(), "no_share_id");
+        assert_eq!(PanReasonTier::NeedLogin.code(), "need_login");
+        assert_eq!(PanReasonTier::Expired.code(), "expired");
+        assert_eq!(PanReasonTier::LoggedInNoDirectLink.code(), "logged_in_no_direct_link");
+        assert_eq!(PanReasonTier::Ready.code(), "ready");
+        assert!(PanReasonTier::Ready.resolvable());
+        assert!(!PanReasonTier::LoggedInNoDirectLink.resolvable());
+    }
+
 }

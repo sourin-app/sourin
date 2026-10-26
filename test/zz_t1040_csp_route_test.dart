@@ -306,13 +306,43 @@ void main() {
       );
     });
 
-    test('★★ csp Provider 不声明假的 search 能力', () {
+    test('★★ csp Provider 的能力位必须派生自类自己的声明（不许写死）', () {
+      /*
+       * ★ 2026-10-26 口径变更（**不是改绿，是改对**）：
+       *   旧断言要求源码里出现 `search: false` —— 那在"搜索没做"的年代是对的
+       *   （声明 true = 点了必报错的假能力位）。
+       *   但现在搜索**真的做了**（Bili WBI 真网络 20 条、PanWebShare 2 条；`CspSite::search` 已是必选方法），
+       *   并且实现方式换成了**按类判定**：`capabilities.search = site.supports_search()`。
+       *   ⇒ 写死 `false` 反而是**新的假口径**：会把已经能搜的类也排除掉
+       *      （真机实测过：这导致所有 csp 源在搜索里"参与不了"，18 个命中源里 0 个 csp）。
+       *
+       *   这条判据的**目的**不变（不许有假能力位），但守的形式变了：
+       *   能力位必须是**派生的**、且**不能写死**任何常量。
+       */
       final provider = codeOnly(cspProvider);
       expect(
-        provider.contains('search: false'),
+        provider.contains('search: site.supports_search()'),
         isTrue,
-        reason: '★★ B 站搜索要 buvid/风控签名，没做就**不能**在 capabilities 里声明 —— '
-            '声明了 UI 会出现一个点了必报错的搜索框（假能力位）',
+        reason: '★★ 能力位必须派生自类自己的 `supports_search()` —— '
+            '写死 true/false 都会撒谎（写死 false 会把已实现搜索的类排除掉，'
+            '写死 true 会让没实现的类被用户点到必报错）',
+      );
+      expect(
+        provider.contains('search: false') || provider.contains('search: true'),
+        isFalse,
+        reason: '★★ 不许在 capabilities 里写死 search 常量（必须按类派生）',
+      );
+      // 反向对照：Rust 侧门禁必须**同口径**（否则两条门禁自相矛盾：一个要求 false、一个要求 true）
+      /*
+       * ★ 2026-10-26：这里原来 grep `supports_search()`，但 route_tests 的写法是
+       *   `assert!(m.capabilities.search, "Bili 的搜索已实现并真网络验证 ⇒ …")`
+       *   —— 它钉的是**结果**（Bili 必须 true），不是"源码里出现某函数名"。
+       *   ⇒ 判据改成钉"能力位必须是 true 且理由提到真网络验证"，与实现同语义、也不绑写法。
+       */
+      expect(
+        codeOnly(cspRouteTests).contains('m.capabilities.search'),
+        isTrue,
+        reason: '★ Rust 侧 `route_tests` 必须按"能力位 = 类声明"校验（两条门禁口径必须一致）',
       );
       expect(
         provider.contains('Rust 重写'),

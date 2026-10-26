@@ -97,7 +97,15 @@ DownloadTask _task(String title, int k) => DownloadTask(
       episodeId: 'ep$k',
       sourceCode: 'src',
       fileName: '第${(k + 1).toString().padLeft(2, '0')}集 探针',
-      cover: 'https://example.invalid/c.jpg',
+      /*
+       * ★ 2026-10-26（全量红/单跑绿 复核）：原来这里给的是
+       *   `https://example.invalid/c.jpg` —— 每次入队都会真的发一次 HTTPS
+       *   去缓存封面（日志里那条 `封面缓存失败（不阻断下载）：HandshakeException`
+       *   就是它）。用例跟"封面能否抓到"毫无关系，却因此**依赖真实网络**：
+       *   离线、代理抖动、examples.invalid 解析都会被判红。
+       *   ⇒ 封面留空（`cacheCoverImage` 对空串直接 return null，零网络）。
+       */
+      cover: '',
     );
 
 /// ★ 等某个任务到达**终态**（done/failed）。
@@ -168,6 +176,8 @@ Future<void> _waitFor(bool Function() pred, {int timeoutMs = 30000}) async {
 void main() {
   late Upstream ups;
   late String dir;
+  /// 每个用例独立目录（见 setUp 里的说明）
+  var _dirSeq = 0;
 
   setUp(() async {
     DownloadQueue.debugReset();
@@ -178,7 +188,16 @@ void main() {
     await ups.start();
     DownloadQueue.debugSetResolver((t) async =>
         StreamCandidate(url: 'http://127.0.0.1:${ups.port}/master.m3u8'));
-    final d = Directory('${_sandboxRoot().path}${Platform.pathSeparator}work')..createSync(recursive: true);
+    /*
+     * ★ 2026-10-26：目录按用例隔离。
+     *   原来四个用例共用 `<tmp>/t11_panel/work` —— 上一轮运行留下的
+     *   「探针剧/第NN集」会让下一次 `enqueue` 直接命中"已存在"，行为随之改变，
+     *   于是"单跑绿、全量红"（全量时用例顺序/耗时不固定）。
+     */
+    _dirSeq += 1;
+    final d = Directory('${_sandboxRoot().path}${Platform.pathSeparator}'
+        'work-${DateTime.now().microsecondsSinceEpoch}-$_dirSeq')
+      ..createSync(recursive: true);
     DownloadDir.setConfiguredDir(d.path);
     dir = d.path;
   });
@@ -309,6 +328,14 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 4)));
 
   test('② 面板：任务出现/清空时 tasks 通知面正确', () async {
+    /*
+     * ★ 2026-10-26：原来是**立刻**断言为空。
+     *   但 `setUp` 里的 `debugReset()` 与上一个用例的异步收尾是赛跑：
+     *   前一个下载的续命回调可能在 reset 之后又把任务塞回来
+     *   ⇒ 单跑（时序宽松）绿、全量（时序紧）红。
+     *   ⇒ 先**等**它空（等不到就按原样红，判据不降级），再断言。
+     */
+    await _waitFor(() => DownloadQueue.tasks.value.isEmpty, timeoutMs: 10000);
     expect(DownloadQueue.tasks.value, isEmpty, reason: '初始应为空（面板整块不画）');
     var notifications = 0;
     void lis() => notifications++;

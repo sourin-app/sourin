@@ -272,12 +272,20 @@ fn build_registry() -> BTreeMap<&'static str, Builder> {
     // m.insert(first_aid::FirstAid::CLASS, || { … });
 
     /*
-     * csp_Ikanbot（爱看｜蓝光秒播）：**已实现但未注册（未通电）**。
-     * 2026-10-26 真网络：home/list 通（6 分类 / 48 条），但 detail 的 /api/getResN
-     * 返回 {"state":-401,"message":"unauthorized"} —— 页面 e_token 需要 DEX 里的
-     * `Ikanbot.get_tks` 解扰后才能用。四段未全通 ⇒ 按规矩不注册。
+     * csp_Ikanbot（爱看｜蓝光秒播）：**已注册**（四段真网络全通，2026-10-26）。
+     * ```text
+     * home   6 分类 / 48 条
+     * list   /category/1 电影 48 条
+     * detail 线路维度：普通条目 1 条；/play/1001027 → **31 条**（xlm3u8/gsm3u8/jsm3u8…）
+     * play   返回 m3u8 + UA/Referer；实测该 CDN 直连 200 + #EXTM3U（真能播）
+     * ```
+     * 卡点历史（留档）：`/api/getResN` 曾返回 401，因为页面 `e_token` 是解扰过的 ——
+     * DEX 的 `Ikanbot.get_tks`（取 videoId 末 4 位、每位 `d%3+1` 起取 8 字符）
+     * 复刻后才通；那段读数是寄存器级反汇编得出的，别再"猜着重写"。
      */
-    // m.insert(ikanbot::Ikanbot::CLASS, || { … });
+    m.insert(ikanbot::Ikanbot::CLASS, || {
+        Arc::new(ikanbot::Ikanbot::new()) as Arc<dyn CspSite>
+    });
     m.insert(pan_web_share::PanWebShare::CLASS, || {
         Arc::new(pan_web_share::PanWebShare::new()) as Arc<dyn CspSite>
     });

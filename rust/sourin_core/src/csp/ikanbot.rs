@@ -316,6 +316,23 @@ pub fn get_tks(video_id: &str, t: &str) -> String {
     out
 }
 
+
+/// 取某个标签的第一个文本节点（去标签、trim、解实体）
+fn text_of_tag(html: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}");
+    let at = html.find(&open)?;
+    let rest = &html[at..];
+    let gt = rest.find('>')?;
+    let after = &rest[gt + 1..];
+    let lt = after.find('<')?;
+    let t = crate::tvbox::decode_entities(&after[..lt]).trim().to_string();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t)
+    }
+}
+
 /// 从详情页取三个隐藏字段
 pub fn hidden_fields(html: &str) -> (Option<String>, Option<String>, Option<String>) {
     let grab = |id: &str| -> Option<String> {
@@ -530,7 +547,18 @@ impl CspSite for Ikanbot {
             }
         }
         // 标题：h5 / .title（页面里取，取不到就用 id）
-        let title = html
+        // 标题：播放页是 <h1>…</h1>（实测），其次 <h5>，再退到 <title>
+        let title = text_of_tag(&html, "h1")
+            .or_else(|| text_of_tag(&html, "h5"))
+            .or_else(|| {
+                let at = html.find("<title>")?;
+                let r = &html[at + 7..];
+                r.find("</title>")
+                    .map(|e| crate::tvbox::decode_entities(&r[..e]).trim().to_string())
+            })
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| id.to_string());
+        let _ = &html
             .find("<h5")
             .and_then(|i| {
                 let r = &html[i..];
@@ -716,6 +744,18 @@ mod tests {
                     flags.len(),
                     flags
                 );
+                // ★ 再加一次"几十条线路"的固定样本（实测该 id 有 31 条线路）
+                if let Ok(rich) = s.detail("/play/1001027", ext).await {
+                    let mut fl: Vec<String> = rich.episodes.iter().map(|e| e.flag.clone()).collect();
+                    fl.dedup();
+                    eprintln!(
+                        "[LIVE] detail(/play/1001027): 线路数={} 前 3 条={:?}",
+                        fl.len(),
+                        fl.iter().take(3).cloned().collect::<Vec<_>>()
+                    );
+                } else {
+                    eprintln!("[LIVE] detail(/play/1001027) 失败（可能该条已下架）");
+                }
                 let ep = d.episodes[0].id.clone();
                 let plays = s.play(&d.episodes[0].flag, &ep, ext).await.expect("play 应成功");
                 eprintln!(

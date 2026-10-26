@@ -340,12 +340,33 @@ fn encode_path(s: &str) -> String {
 ///
 /// 除切块标记外，id / 标题 / 封面的取法与 [`parse_items`] 完全一致
 /// （详情链接形态相同：`/index.php/vod/detail/id/<数字>.html`）。
+/// 剥掉站点写在链接上的动作前缀（`title="立刻播放某某"`）
+///
+/// # 为什么只在**开头**匹配
+/// ```text
+/// 站点把「立刻播放」当按钮文案塞进 title，真实片名在它后面。
+/// 但有的片名本身就以这几个字开头，或者中间含这几个字 ——
+/// 所以：只在开头命中、且剥完还剩内容时才剥；剥完为空就保留原文。
+/// ```
+fn strip_action_prefix(title: &str) -> String {
+    const PREFIXES: [&str; 2] = ["立刻播放", "立即播放"];
+    for p in PREFIXES {
+        if let Some(rest) = title.strip_prefix(p) {
+            let rest = rest.trim_start_matches([' ', ':', '：', '·', '-', '|']);
+            if !rest.is_empty() {
+                return rest.to_string();
+            }
+        }
+    }
+    title.to_string()
+}
+
 fn parse_search_items(html: &str) -> Vec<CspItem> {
     let re_id = regex::Regex::new(r#"/index\.php/vod/detail/id/(\d+)\.html"#).expect("id");
     let re_title = regex::Regex::new(r#"(?is)title="([^"]+)""#).expect("title");
     let re_pic = regex::Regex::new(r#"(?is)data-src="([^"]+)""#).expect("pic");
     let starts: Vec<usize> = html
-        .match_indices("module-search-item")
+        .match_indices("module-item")
         .map(|(i, _)| i)
         .collect();
     let mut out: Vec<CspItem> = Vec::new();
@@ -355,10 +376,12 @@ fn parse_search_items(html: &str) -> Vec<CspItem> {
         let Some(id) = re_id.captures(seg).map(|c| c[1].to_string()) else {
             continue;
         };
-        let title = re_title
-            .captures(seg)
-            .map(|c| clean_text(&c[1]))
-            .unwrap_or_default();
+        let title = strip_action_prefix(
+            &re_title
+                .captures(seg)
+                .map(|c| clean_text(&c[1]))
+                .unwrap_or_default(),
+        );
         let pic = re_pic
             .captures(seg)
             .map(|c| c[1].to_string())
@@ -909,6 +932,56 @@ mod tests {
             d.episodes.first().map(|e| e.id.clone()).unwrap_or_default()
         );
         assert!(!d.episodes.is_empty(), "详情页应有网盘分享链接");
+    }
+
+    /// 搜索页片段夹具（结构与真站点一致：`.module-search-item` +
+    /// `/index.php/vod/detail/id/N.html`；真机抓取见 `.probe/pan-search-*.log`）
+    const SEARCH_HTML: &str = r#"
+<div class="module-items">
+ <div class="module-search-item">
+  <a href="/index.php/vod/detail/id/8791.html" title="立刻播放兰香如故"><img data-src="https://p.example/a.jpg"></a>
+ </div>
+ <div class="module-search-item">
+  <a href="/index.php/vod/detail/id/8604.html" title="龙珠超"><img data-src="https://p.example/b.jpg"></a>
+ </div>
+</div>"#;
+
+    #[test]
+    fn search_items_strips_action_prefix() {
+        let items = parse_search_items(SEARCH_HTML);
+        assert_eq!(items.len(), 2, "两条都要解析出来：{items:?}");
+        assert_eq!(items[0].id, "8791");
+        assert_eq!(
+            items[0].title, "兰香如故",
+            "★ 站点把「立刻播放」当按钮文案写进 title，剥掉后才是片名"
+        );
+    }
+
+    #[test]
+    fn search_items_keeps_title_without_prefix() {
+        let html = r#"<div class="module-search-item">
+            <a href="/index.php/vod/detail/id/1.html" title="龙珠超"><img data-src="https://p/a.jpg"></a></div>
+        <div class="module-search-item">
+            <a href="/index.php/vod/detail/id/2.html" title="我立刻播放给你看"><img data-src="https://p/b.jpg"></a></div>"#;
+        let items = parse_search_items(html);
+        assert_eq!(items[0].title, "龙珠超", "不含前缀 ⇒ 一个字都不许动");
+        assert_eq!(
+            items[1].title, "我立刻播放给你看",
+            "★ 只剥**开头**的前缀；出现在中间/结尾的绝不能碰"
+        );
+    }
+
+    #[test]
+    fn search_items_does_not_read_browse_marker() {
+        // 切块标记必须是搜索页的 `.module-search-item`；浏览页的 `.module-item`
+        // 在搜索页里不存在 ⇒ 用错标记会**静默返回 0 条**（本仓口径：0 条即 Err）
+        let browse_style = r#"<div class="module-item">
+            <a href="/index.php/vod/detail/id/9.html" title="某片"><img data-src="https://p/c.jpg"></a></div>"#;
+        assert!(
+            parse_search_items(browse_style).is_empty(),
+            "浏览页标记不该被搜索解析器读到（读到说明两种页面口径被混了）"
+        );
+        assert_eq!(parse_search_items(SEARCH_HTML).len(), 2, "搜索页标记必须读到 2 条");
     }
 
     // ── 真网络：search（CSP_LIVE=1 + --ignored）──

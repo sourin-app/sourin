@@ -242,7 +242,9 @@ impl Bili {
     ///
     /// ⚠️ `nav` 未登录也会给 `wbi_img`（WBI 设计如此）⇒ 不需要 Cookie。
     async fn wbi_mixin_key_live(&self) -> Result<String, String> {
-        let data = self.get_data("/x/web-interface/nav").await?;
+        // ★ 用"不检查 code"的取法：未登录时 nav 返回 code=-101，但 wbi_img 有
+        let raw = self.get_json_ignoring_code("/x/web-interface/nav").await?;
+        let data = raw.get("data").cloned().unwrap_or(Value::Null);
         let img = data
             .get("wbi_img")
             .and_then(|v| v.get("img_url"))
@@ -303,6 +305,41 @@ impl Bili {
             cover: nonempty(str_of(x, "pic")),
             subtitle: nonempty(subtitle),
         })
+    }
+
+    /// 取 JSON 但**不**把上游 `code != 0` 当失败
+    ///
+    /// # 为什么需要它（`nav` 的实测形态）
+    /// ```text
+    /// GET /x/web-interface/nav 未登录时返回：
+    ///   {"code":-101,"message":"账号未登录","data":{"isLogin":false,
+    ///     "wbi_img":{"img_url":"…7cd084941338484aae1ad9425b84077c.png",
+    ///                "sub_url":"…4932caff0ff746eab6f01bf08b70ac45.png"}}}
+    /// ⇒ `code=-101` 但 **`wbi_img` 照样给了**（WBI 设计如此：未登录也能签名搜索）。
+    ///   若走 `get_data`（把 code != 0 当错误），这里会直接报
+    ///   「上游返回 code=-101 message=账号未登录」—— 实测踩过。
+    /// ```
+    async fn get_json_ignoring_code(&self, path_and_query: &str) -> Result<Value, String> {
+        let url = format!("{}{}", self.base, path_and_query);
+        let resp = self
+            .client
+            .get(&url)
+            .header(reqwest::header::REFERER, REFERER)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|e| format!("请求 {url} 失败：{e}"))?;
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("读取 {url} 响应失败：{e}"))?;
+        if !status.is_success() {
+            let head: String = text.chars().take(120).collect();
+            return Err(format!("HTTP {}（{url}）：{head}", status.as_u16()));
+        }
+        serde_json::from_str(&text)
+            .map_err(|e| format!("{url} 返回的不是 JSON（{e}）：{}", head_of(&text)))
     }
 
     fn categories() -> Vec<CspCategory> {

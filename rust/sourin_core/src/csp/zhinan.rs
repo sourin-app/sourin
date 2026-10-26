@@ -195,6 +195,19 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+/// 搜索路径（WordPress 的 `?post_type=book&s=<kw>`；第 2 页起走 `/page/N/`）
+///
+/// ⚠️ 参数名就是 `s`（搜索）—— 写成 `q`/`keyword` 站点不认，会返回
+///    **正常的 0 结果页**（HTTP 200），我们这边表现为"没解析出条目"。
+fn search_path(kw: &str, page: u32) -> String {
+    let page = page.max(1);
+    if page == 1 {
+        format!("/?post_type=book&s={}", urlencode(kw))
+    } else {
+        format!("/page/{page}/?post_type=book&s={}", urlencode(kw))
+    }
+}
+
 fn strip_tags(s: &str) -> String {
     let t = re_tag().replace_all(s, " ");
     let t = t.replace("&amp;", "&").replace("&nbsp;", " ").replace("&quot;", "\"");
@@ -411,12 +424,7 @@ impl CspSite for Zhinan {
             return Err("搜索词为空".to_string());
         }
         let base = Self::site_of(ext);
-        let page = page.max(1);
-        let path = if page == 1 {
-            format!("/?post_type=book&s={}", urlencode(kw))
-        } else {
-            format!("/page/{page}/?post_type=book&s={}", urlencode(kw))
-        };
+        let path = search_path(kw, page);
         let html = self.get(&self.url_of(&base, &path)).await?;
         let raw = parse_list(&html)?;
         Ok(CspList {
@@ -607,6 +615,45 @@ mod tests {
             assert!(!play.is_empty());
             println!("LIVE|play|{}", play[0].url);
         }
+    }
+
+    /// 真搜索页片段（2026-10-26 抓自 `https://4kzn.cc/?post_type=book&s=龙珠`，
+    /// 原文 10 条，这里摘前两条；`posts-item book-item` 就是搜索结果的真实模板）
+    const REAL_SEARCH_HTML: &str = r#"
+<article class="posts-item book-item d-flex style-book-v post-21156">
+ <div class="item-header"><div class="item-media">
+  <a class="item-image" href="https://4kzn.cc/book/21156.html" target="_blank">
+   <img class="fill-cover lazy" src="https://4kzn.cc/t1.svg" data-src="https://img.alicdn.com/x.png" alt="初恋"></a>
+ </div></div>
+ <div class="item-body flex-fill"><h3 class="item-title line1">
+  <a href="https://4kzn.cc/book/21156.html" target="_blank">初恋这首情歌</a></h3></div>
+</article>
+<article class="posts-item book-item d-flex style-book-v post-21146">
+ <div class="item-header"><div class="item-media">
+  <a class="item-image" href="https://4kzn.cc/book/21146.html"><img data-src="https://img.alicdn.com/y.png"></a>
+ </div></div>
+ <div class="item-body"><h3><a href="https://4kzn.cc/book/21146.html">七龙珠</a></h3></div>
+</article>"#;
+
+    #[test]
+    fn search_path_keeps_post_type_and_s() {
+        let p1 = search_path("龙珠", 1);
+        assert!(p1.contains("post_type=book"), "要按书籍类型搜：{p1}");
+        assert!(p1.contains("&s="), "★ 参数名必须是 WordPress 的 `s`：{p1}");
+        assert!(p1.contains("%E9%BE%99%E7%8F%A0"), "搜索词要编码：{p1}");
+        let p2 = search_path("龙珠", 2);
+        assert!(p2.starts_with("/page/2/"), "第 2 页走分页路径：{p2}");
+        assert!(p2.contains("&s="));
+    }
+
+    #[test]
+    fn parse_real_search_page_yields_items() {
+        // 用**真搜索页**做夹具：不依赖网络也能证明解析口径对
+        let items = parse_list(REAL_SEARCH_HTML).expect("真搜索页片段必须解析得出来");
+        assert_eq!(items.len(), 2, "两条 article 都要出来：{items:?}");
+        assert_eq!(items[0].id, "21156");
+        assert_eq!(items[0].title, "初恋这首情歌");
+        assert_eq!(items[1].id, "21146");
     }
 
     // ── 真网络：search（CSP_LIVE=1 + --ignored）──

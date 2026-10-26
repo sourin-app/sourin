@@ -740,6 +740,37 @@ impl Default for App99 {
 //  CspSite
 // ═══════════════════════════════════════════════════════════════════════
 
+/// 搜索端点（DEX：与 `list` 同一个 `POST /vod/search`，只是 `kw` 来自用户）
+const SEARCH_PATH: &str = "/vod/search";
+
+/// 搜索请求体
+///
+/// ⚠️ 键名就是 `kw` —— 写成 `q`/`keyword` 服务端**不报错**，只会返回 0 条，
+///    我们这边表现为"搜不到"。夹具用例把这条钉住。
+fn search_body(kw: &str, page: u32) -> serde_json::Value {
+    serde_json::json!({
+        "kw": kw,
+        "page": if page == 0 { 1 } else { page },
+        "limit": 21,
+        "orderBy": "vod_hits_month",
+        "sort": "desc",
+    })
+}
+
+/// 空结果 ⇒ Err（与全仓口径一致：不许把"0 条"当成功返回）
+fn ensure_search_hits(
+    items: Vec<CspItem>,
+    kw: &str,
+    page: u32,
+) -> Result<Vec<CspItem>, String> {
+    if items.is_empty() {
+        return Err(format!(
+            "搜索「{kw}」第 {page} 页返回 0 条（服务端没给数据，不是我们解析失败）"
+        ));
+    }
+    Ok(items)
+}
+
 #[async_trait]
 impl CspSite for App99 {
     fn class(&self) -> &'static str {
@@ -810,22 +841,10 @@ impl CspSite for App99 {
         let page = if page == 0 { 1 } else { page };
         // ★ 必须先握手（与 `list()` 一致）：`call` 依赖握手拿到的 host/key/token
         self.handshake(_ext).await?;
-        let body = serde_json::json!({
-            "kw": kw,
-            "page": page,
-            "limit": 21,
-            "orderBy": "vod_hits_month",
-            "sort": "desc",
-        });
-        let v = self.call("/vod/search", body).await?;
+        let v = self.call(SEARCH_PATH, search_body(kw, page)).await?;
         let items = items_of(&v)?;
-        if items.is_empty() {
-            // 与既有口径一致：**空即 Err**（不是"搜到了 0 条"这种假成功）
-            return Err(format!(
-                "搜索「{kw}」第 {page} 页返回 0 条（服务端没给数据，不是我们解析失败）"
-            ));
-        }
-        Ok(CspList { items, page, page_count: None, total: None })
+        ensure_search_hits(items, kw, page)
+            .map(|items| CspList { items, page, page_count: None, total: None })
     }
 
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
@@ -1276,6 +1295,23 @@ mod tests {
         assert_eq!(det.episodes.len(), 2);
         assert_eq!(det.episodes[1].id, "http://a/2.m3u8");
         assert_eq!(det.episodes[0].title, "第1集");
+    }
+
+    #[test]
+    fn search_body_uses_kw_key() {
+        let b = search_body("兰香如故", 2);
+        assert_eq!(b["kw"], "兰香如故", "★ 键名必须是 `kw`（服务端只认它）：{b}");
+        assert_eq!(b["page"], 2);
+        assert_eq!(b["limit"], 21);
+        assert!(b.get("q").is_none(), "不许出现 `q` 这种想当然的别名字段");
+    }
+
+    #[test]
+    fn search_empty_hits_is_error() {
+        let err = ensure_search_hits(Vec::new(), "兰香如故", 1).unwrap_err();
+        assert!(err.contains("返回 0 条"), "空结果必须如实报错：{err}");
+        assert!(err.contains("兰香如故"), "报错要带上搜索词：{err}");
+        assert!(ensure_search_hits(Vec::new(), "x", 1).is_err());
     }
 
     // ── 真网络：search（CSP_LIVE=1 + --ignored）──

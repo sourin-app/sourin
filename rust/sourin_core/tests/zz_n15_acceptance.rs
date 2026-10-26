@@ -571,6 +571,7 @@ async fn c3_pgc_detail_and_resolve() {
         source_code: Some("default".into()),
         episode_id: Some(ep.id.clone()),
         quality: None,
+        flag: None,
     };
     let streams = p
         .resolve(&season_id, &req)

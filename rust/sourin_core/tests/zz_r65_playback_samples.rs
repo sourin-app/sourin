@@ -473,6 +473,7 @@ async fn collect_unplayable_samples() {
                     source_code: Some(String::new()),
                     episode_id: Some(id.clone()),
                     quality: None,
+                    flag: None,
                 })
                 .unwrap_or_default();
             match sourin_core::playback::resolve_stream(

@@ -238,6 +238,8 @@ impl MediaProvider for CspProvider {
                 },
                 order: (i + 1) as u32,
                 player_id: None,
+                // ★ 线路名透出到 wire（多线路源靠它分组；单线路源是"默认"/play_from 名）
+                flag: e.flag.clone(),
             })
             .collect();
         Ok(MediaDetail {
@@ -279,9 +281,11 @@ impl MediaProvider for CspProvider {
                 .map(|e| e.id.clone())
                 .ok_or_else(|| ProviderError::new(ErrorKind::NotFound, "这个条目没有可播放的剧集"))?
         };
+        // ★ 真 flag：来自 PlayRequest.flag（UI 选了哪条线路就传哪条），缺省空串
+        let flag = req.flag.clone().unwrap_or_default();
         let plays = self
             .site
-            .play("", &episode, &self.ext)
+            .play(&flag, &episode, &self.ext)
             .await
             .map_err(classify_err)?;
         if plays.is_empty() {

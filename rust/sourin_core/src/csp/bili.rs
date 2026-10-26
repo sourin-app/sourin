@@ -328,6 +328,7 @@ impl CspSite for Bili {
             episodes.push(CspEpisode {
                 id: format!("{bvid}|{cid}"),
                 title,
+                flag: "默认".to_string(),
             });
         }
         // 单个视频但 pages 缺失时，用顶层 cid 兜底（否则详情页没有可点的集）
@@ -336,6 +337,7 @@ impl CspSite for Bili {
                 episodes.push(CspEpisode {
                     id: format!("{bvid}|{cid}"),
                     title: str_of(&data, "title"),
+                    flag: "默认".to_string(),
                 });
             }
         }
@@ -366,6 +368,10 @@ impl CspSite for Bili {
     /// 取流：`playurl` + `fnval=1`（音视频合一的 mp4）
     ///
     /// `id` 形如 `BV1xx411c7mD|123456789`（[`CspSite::detail`] 里编的）。
+    async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
+        Err("Bili 不支持搜索（B 站的搜索要 WBI 签名（w_rid），本仓还没接 MD5）".to_string())
+    }
+
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
         let (bvid, cid) = id
             .split_once('|')

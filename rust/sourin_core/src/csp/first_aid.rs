@@ -330,6 +330,7 @@ pub fn detail_from_html(html: &str, id: &str) -> Result<CspDetail, String> {
         episodes: vec![CspEpisode {
             id: src,
             title: "正片".to_string(),
+            flag: "默认".to_string(),
         }],
     })
 }
@@ -420,6 +421,10 @@ impl CspSite for FirstAid {
     }
 
     /// 取流：**零解析** —— 详情里拿到的 m3u8 就是播放地址（DEX 的 playerContent 无常量）
+    async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
+        Err("FirstAid 不支持搜索（该类目前是撤注册状态（未通电），搜索一并未验）".to_string())
+    }
+
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
         let url = id.trim();
         if !crate::tvbox::starts_http(url) {

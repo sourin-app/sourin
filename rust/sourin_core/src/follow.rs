@@ -278,6 +278,7 @@ mod tests {
                         title: format!("第{i:02}集"),
                         order: i as u32,
                         player_id: None,
+                        flag: String::new(),
                     })
                     .collect(),
             })

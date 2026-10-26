@@ -394,6 +394,7 @@ fn parse_detail(html: &str, id: &str) -> CspDetail {
         episodes.push(CspEpisode {
             id: format!("pan|{url}"),
             title: format!("#{} {}", episodes.len() + 1, label),
+            flag: "默认".to_string(),
         });
         if episodes.len() >= 200 {
             break;
@@ -553,6 +554,10 @@ impl CspSite for PanWebShare {
     /// ```
     /// 其余一律 **如实报错**：说清是"哪家网盘 + 需要登录 + 本机没有转发服务"。
     /// ★ 不伪造直链 —— 伪造只会让用户点进去看到 404。
+    async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
+        Err("PanWebShare 不支持搜索（该类的搜索端点已知（/index.php/vod/search/wd/），但本类只做了浏览/详情）".to_string())
+    }
+
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
         let raw = id.trim();
         let url = raw.strip_prefix("pan|").unwrap_or(raw);

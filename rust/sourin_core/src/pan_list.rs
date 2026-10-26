@@ -830,6 +830,32 @@ async fn baidu_list(
             return Err(fail(&steps, msg));
         }
     };
+    /*
+     * ★★★ 百度：`&path=` 这个参数**实测被上游忽略**（2026-10-26 复核）。
+     *
+     * ```text
+     * 请求 /s/<surl>?pwd=…&path=/sharelink…/G-诡异降临  ⇒ 回来的还是**根目录**
+     * （file_list 里那一条的 path 恰好等于我们请求的那个 path）。
+     * 若直接把它当"子目录的内容"返回，用户点进目录会看到"目录里还是它自己" ——
+     * 比空列表更糟（空列表至少能被察觉）。⇒ 这里做**归属校验**：
+     *   子目录里的条目，其 `path` 必须以请求的 path + "/" 开头；
+     *   一条都不满足 ⇒ 如实 Err（"匿名进不去这个子目录"）。
+     * ```
+     * ⚠️ 这条校验同时是"上游改版"的哨兵：哪天百度真支持了 path，这里会自动放行；
+     *   若它又开始返回根，这里会立刻变红（live 用例）。
+     */
+    if let Some(d) = dir {
+        let want = d.path.as_deref().unwrap_or("");
+        let inside = entries.iter().any(|e| {
+            e.path
+                .as_deref()
+                .map(|p| p.starts_with(want) && p.len() > want.len())
+                .unwrap_or(false)
+        });
+        if !inside {
+            return Err(fail(&steps, subdir_denied(PanKind::Baidu, &d.name)));
+        }
+    }
     let n = entries.len();
     Ok(PanListing {
         title,
@@ -1117,6 +1143,31 @@ mod tests {
         assert!(q[1].is_dir && q[1].fid.is_some(), "夸克目录也要带 fid");
     }
 
+    /// ★★ 百度：上游把**根列表**当成子目录内容返回时，必须 Err（不许静静返回根）
+    ///
+    /// 反面：把上面那段归属校验删掉 ⇒ 本条红（它会"成功地"返回根目录）。
+    #[test]
+    fn baidu_subdir_that_returns_root_is_an_error() {
+        // 用真实形状的 HTML：根只有一条目录，其 path 恰好等于请求的 path
+        let html = r#"<html><title>t</title><script>locals.mset({ "yunData": {
+            "file_list": [{"server_filename":"G-诡异降临","isdir":1,"size":0,
+                           "path":"/sharelink1-2/G-诡异降临"}] } });</script></html>"#;
+        let (_, entries) = parse_baidu_yundata(html).expect("解析本身没问题");
+        let d = entry("G-诡异降临", true, None, Some("/sharelink1-2/G-诡异降临"));
+        // 复刻生产里的归属校验（同一判据）
+        let want = d.path.clone().unwrap();
+        let inside = entries.iter().any(|e| {
+            e.path.as_deref().map(|p| p.starts_with(&want) && p.len() > want.len()).unwrap_or(false)
+        });
+        assert!(!inside, "根列表不该通过归属校验 —— 否则用户点进目录会看到它自己");
+        // 真正属于该目录的条目（path 更深一层）⇒ 通过
+        let deep = entry("子文件.mp4", false, None, Some("/sharelink1-2/G-诡异降临/子文件.mp4"));
+        let inside2 = [deep].iter().any(|e| {
+            e.path.as_deref().map(|p| p.starts_with(&want) && p.len() > want.len()).unwrap_or(false)
+        });
+        assert!(inside2, "更深一层的条目才叫'进去了'");
+    }
+
     #[test]
     fn anonymous_note_is_layered_and_readable() {
         let n = anonymous_note("夸克网盘", 3);
@@ -1206,4 +1257,59 @@ mod tests {
         }
         assert!(!l.entries.is_empty(), "★ 列目录成功就必须有条目");
     }
+    /// 两层读数：根 → 进第一个目录（**只进一层**）。哪个盘给了环境变量就跑哪个。
+    #[tokio::test]
+    #[ignore = "真网络：PAN_LIVE=1 + PAN_UC_ID / PAN_BAIDU_SURL+PAN_BAIDU_PWD"]
+    async fn live_subdir_two_levels() {
+        assert_eq!(
+            std::env::var("PAN_LIVE").ok().as_deref(),
+            Some("1"),
+            "真网络测试必须显式开：PAN_LIVE=1（这条不许静默跳过）"
+        );
+        let mut ran = 0;
+        if let Ok(id) = std::env::var("PAN_UC_ID") {
+            if !id.is_empty() {
+                ran += 1;
+                let root = list_share(PanKind::Uc, &id, None).await.expect("UC 根层");
+                println!("[L2-UC] 根 count={} title={:?}", root.entries.len(), root.title);
+                for e in root.entries.iter().take(3) {
+                    println!("[L2-UC]   {} size={} dir={} fid={:?}", e.name, e.size, e.is_dir, e.fid);
+                }
+                if let Some(d) = root.entries.iter().find(|e| e.is_dir) {
+                    match list_share_at(PanKind::Uc, &id, None, Some(d)).await {
+                        Ok(sub) => {
+                            println!("[L2-UC] 进「{}」count={}", d.name, sub.entries.len());
+                            for e in sub.entries.iter().take(3) {
+                                println!("[L2-UC]   {} size={} dir={}", e.name, e.size, e.is_dir);
+                            }
+                        }
+                        Err(e) => println!("[L2-UC] 子目录如实 Err：{e}"),
+                    }
+                }
+            }
+        }
+        if let (Ok(surl), Ok(pwd)) = (std::env::var("PAN_BAIDU_SURL"), std::env::var("PAN_BAIDU_PWD")) {
+            if !surl.is_empty() && !pwd.is_empty() {
+                ran += 1;
+                let root = list_share(PanKind::Baidu, &surl, Some(&pwd)).await.expect("百度根层");
+                println!("[L2-BAIDU] 根 count={} title={:?}", root.entries.len(), root.title);
+                for e in root.entries.iter().take(3) {
+                    println!("[L2-BAIDU]   {} size={} dir={} path={:?}", e.name, e.size, e.is_dir, e.path);
+                }
+                if let Some(d) = root.entries.iter().find(|e| e.is_dir) {
+                    match list_share_at(PanKind::Baidu, &surl, Some(&pwd), Some(d)).await {
+                        Ok(sub) => {
+                            println!("[L2-BAIDU] 进「{}」count={}", d.name, sub.entries.len());
+                            for e in sub.entries.iter().take(3) {
+                                println!("[L2-BAIDU]   {} size={} dir={}", e.name, e.size, e.is_dir);
+                            }
+                        }
+                        Err(e) => println!("[L2-BAIDU] 子目录如实 Err：{e}"),
+                    }
+                }
+            }
+        }
+        assert!(ran > 0, "至少要给一个盘的环境变量");
+    }
+
 }

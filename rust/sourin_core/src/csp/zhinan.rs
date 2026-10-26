@@ -268,6 +268,7 @@ pub fn parse_detail(html: &str) -> Result<CspDetail, String> {
         }
         episodes.push(CspEpisode {
             title: pan_label(&url),
+            flag: "默认".to_string(),
             id: url,
         });
     }
@@ -382,6 +383,10 @@ impl CspSite for Zhinan {
         let mut d = parse_detail(&html)?;
         d.id = id.to_string();
         Ok(d)
+    }
+
+    async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
+        Err("4KZhinan 不支持搜索（该类的搜索是 HTML（?post_type=book&s=），尚未实现）".to_string())
     }
 
     async fn play(&self, _flag: &str, id: &str, ext: &str) -> Result<Vec<CspPlay>, String> {

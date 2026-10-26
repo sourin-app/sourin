@@ -773,6 +773,7 @@ impl MediaProvider for DeclarativeProvider {
                             title: title.clone(),
                             order: (i + 1) as u32,
                             player_id: Some(format!("line{idx}")),
+                            flag: String::new(),
                         });
                     }
                 }

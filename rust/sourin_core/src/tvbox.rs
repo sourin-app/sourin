@@ -1598,6 +1598,7 @@ impl MediaProvider for TvboxAppleCmsProvider {
                 },
                 order: (i + 1) as u32,
                 player_id: None,
+                flag: String::new(),
             })
             .collect();
 

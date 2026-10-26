@@ -197,6 +197,12 @@ pub struct Episode {
     /// 同源下的多线路标识（可选）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_id: Option<String>,
+    /// 线路名（多线路源用；单线路源是 `"默认"` 或站点自己的 `play_from`）
+    ///
+    /// 与 `player_id` 的区别：`player_id` 是"播放源"（Provider 级），
+    /// `flag` 是**同一个源内部的线路**（如爱看有几十条 `vod_play_from`）。
+    #[serde(default)]
+    pub flag: String,
 }
 
 /// 详情（含多源 + 剧集）
@@ -674,6 +680,9 @@ pub struct PlayRequest {
     /// 指定清晰度
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality: Option<String>,
+    /// 线路名（多线路源必带；对应 `Episode.flag`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flag: Option<String>,
 }
 
 // ─────────────────────────── 直播 & EPG ───────────────────────────

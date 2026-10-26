@@ -6932,6 +6932,7 @@ globalThis.plugin = {
             source_code: None,
             episode_id: Some("https://cdn.test/e2.m3u8".into()),
             quality: None,
+            flag: None,
         };
         let arg = p.resolve_first_arg(&MediaId::new("t9tvbox", "150758"), &req);
         assert_eq!(
@@ -6955,6 +6956,7 @@ globalThis.plugin = {
                 source_code: None,
                 episode_id: ep.map(|s| s.to_string()),
                 quality: None,
+                flag: None,
             };
             assert_eq!(
                 p.resolve_first_arg(&id, &req),
@@ -6973,6 +6975,7 @@ globalThis.plugin = {
             source_code: None,
             episode_id: Some("srca:51463".into()),
             quality: None,
+            flag: None,
         };
         // 条目 id 带自己的前缀 ⇒ 剥掉
         assert_eq!(

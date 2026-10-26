@@ -101,6 +101,7 @@ fn req_with(ep: Option<&str>) -> PlayRequest {
         source_code: None,
         episode_id: ep.map(|s| s.to_string()),
         quality: None,
+        flag: None,
     }
 }
 

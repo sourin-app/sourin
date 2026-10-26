@@ -800,6 +800,10 @@ impl CspSite for App99 {
         detail_of(&d, id)
     }
 
+    async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
+        Err("App99 不支持搜索（该类的 /vod/search 与 list 同一条链路，尚未单独暴露）".to_string())
+    }
+
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
         let raw = id.trim();
         if raw.starts_with("http") {
@@ -885,6 +889,7 @@ fn detail_of(d: &serde_json::Value, id: &str) -> Result<CspDetail, String> {
             } else {
                 name
             },
+            flag: "默认".to_string(),
         });
     }
     if episodes.is_empty() {

@@ -35,6 +35,7 @@
 
 pub mod app99;
 pub mod first_aid;
+pub mod ikanbot;
 pub mod bili;
 pub mod pan_web_share;
 pub mod zhinan;
@@ -163,6 +164,17 @@ pub struct CspList {
 pub struct CspEpisode {
     pub id: String,
     pub title: String,
+    /// 线路名（`vod_play_from` 里的那一段；单线路源填 `"默认"`）
+    ///
+    /// # 为什么加在 episode 上而不是 CspDetail 上
+    /// 多线路源（如 Ikanbot）的同一个"第 1 集"会在 N 条线路上各出现一次，
+    /// 线路是**集的一个维度**而不是详情的一个独立集合。加在这里：
+    /// ```text
+    /// · CspDetail 的扁平结构不动（方案 A，最小改动）
+    /// · CspSite::play(flag, …) 的 `flag` 终于有值（此前恒为空串）
+    /// · UI 按 flag 分组即可
+    /// ```
+    pub flag: String,
 }
 
 /// 详情
@@ -212,6 +224,16 @@ pub trait CspSite: Send + Sync {
     /// 分类列表（`tid` 为 home 里给出的分类 id）
     async fn list(&self, tid: &str, page: u32, ext: &str) -> Result<CspList, String>;
 
+    /// 搜索（`kw` 为关键词，`page` 从 1 起）
+    ///
+    /// # 为什么是**必选**方法而不是给默认实现
+    /// 默认 `Err("该类未实现搜索")` 会让"新增一个类"时**静默**留下一个"不支持"，
+    /// 正是本项目最忌讳的"看起来支持"。必选 ⇒ 编译器强迫每个类表态：
+    /// 真做，或**手写** `Err("<类名> 不支持搜索（原因）")` —— 写的人必须想一下。
+    ///
+    /// 方法体由各实现负责（本文件只声明）。
+    async fn search(&self, kw: &str, page: u32, ext: &str) -> Result<CspList, String>;
+
     /// 详情（含剧集）
     async fn detail(&self, id: &str, ext: &str) -> Result<CspDetail, String>;
 
@@ -248,6 +270,14 @@ fn build_registry() -> BTreeMap<&'static str, Builder> {
      * 按"未通过真网络验证不许注册"的规矩撤掉。修好后把下面三行恢复即可。
      */
     // m.insert(first_aid::FirstAid::CLASS, || { … });
+
+    /*
+     * csp_Ikanbot（爱看｜蓝光秒播）：**已实现但未注册（未通电）**。
+     * 2026-10-26 真网络：home/list 通（6 分类 / 48 条），但 detail 的 /api/getResN
+     * 返回 {"state":-401,"message":"unauthorized"} —— 页面 e_token 需要 DEX 里的
+     * `Ikanbot.get_tks` 解扰后才能用。四段未全通 ⇒ 按规矩不注册。
+     */
+    // m.insert(ikanbot::Ikanbot::CLASS, || { … });
     m.insert(pan_web_share::PanWebShare::CLASS, || {
         Arc::new(pan_web_share::PanWebShare::new()) as Arc<dyn CspSite>
     });

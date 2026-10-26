@@ -258,6 +258,13 @@ pub struct StreamProxy {
      *   ⇒ 一个慢请求不会"吃掉"后续请求的时间
      */
     client: reqwest::Client,
+    /// ★★★ 2026-10-26（Owner 定调）：**回退用的系统代理** client
+    ///
+    /// ```text
+    /// 媒体流**默认直连**（见 `client`）；只有直连连接类失败时才用这个
+    /// （读 HTTP_PROXY/HTTPS_PROXY）重试一次 —— 被墙的源才需要代理。
+    /// ```
+    proxied: reqwest::Client,
     /*
      * ═══════════════════════════════════════════════════════════════════
      * ★★★ 并行预取的开关 —— **每实例**，不是进程级环境变量
@@ -385,16 +392,63 @@ impl Default for StreamProxy {
 }
 
 impl StreamProxy {
+    /// ★ 仅测试用：构造一个**强制走指定代理**的实例（生产路径永远 `new()`）
+    ///
+    /// # 为什么需要（而不是在测试里 `set_var` 改环境变量）
+    /// ```text
+    /// `reqwest` 在**建 client 时**读环境变量；而 Rust 测试是**多线程并行**的，
+    /// `std::env::set_var` 会影响同进程里别的测试（且新版里已是 unsafe）。
+    /// ⇒ 用显式 `.proxy(Proxy::all(url))` 构造，行为等价、互不干扰。
+    /// ⚠️ 主 `client` 仍然是 `.no_proxy()`（默认直连，正是被测的默认行为），
+    ///    被强制的是**回退用的** `proxied`。
+    /// ```
+    #[cfg(test)]
+    pub fn new_with_proxy_for_test(proxy_url: &str) -> Self {
+        let mut me = Self::new();
+        // ★ 只覆盖**回退用**的 `proxied`；主 client 仍是 .no_proxy()（默认直连）
+        me.proxied = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(UPSTREAM_TIMEOUT_SECS))
+            .proxy(reqwest::Proxy::all(proxy_url).expect("test proxy url"))
+            .build()
+            .expect("test proxied client");
+        me
+    }
+}
+
+impl StreamProxy {
     pub fn new() -> Self {
         /*
          * ★ 共享 Client 的构造。`build()` 在这里**只会失败一次**
          *   （TLS 后端初始化失败等），所以用 `expect` 而不是把错误
          *   拖到每个请求里 —— 构造期就崩比"所有流都播不了但不知道为什么"好。
          */
+        /*
+         * ══════════════════════════════════════════════════════════════
+         * ★★★ 2026-10-26（Owner 定调）：**媒体流默认直连**
+         * ══════════════════════════════════════════════════════════════
+         *
+         * ```text
+         * 取舍：流代理拉的是**媒体 CDN**（国内站点为主）。
+         *   国内 CDN 走 Clash/系统代理只会**变慢或直接坏**：
+         *   `次元城` 就是"不能走 Clash、只能国内直连"的实例。
+         * 而「插件 API 可能需要代理」是**另一件事** —— 那条链路（http_call）
+         *   保持原样尊重系统代理，本函数只影响**取流**。
+         * ⇒ 默认 `.no_proxy()`；**失败再回退系统代理**（见 `proxied`）。
+         * ```
+         */
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(UPSTREAM_TIMEOUT_SECS))
+            .no_proxy()
             .build()
             .expect("流代理无法创建 HTTP 客户端（TLS 后端初始化失败）");
+        /*
+         * ★ 回退用：与主 client 同一超时，但**读系统代理**（不写 `.no_proxy()`）。
+         *   只在主 client（直连）**连接类**失败后使用 —— 被墙/跨界的源需要它。
+         */
+        let proxied = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(UPSTREAM_TIMEOUT_SECS))
+            .build()
+            .expect("流代理无法创建（经代理）HTTP 客户端");
         Self {
             table: Mutex::new(HashMap::new()),
             cover_table: Mutex::new(HashMap::new()),
@@ -405,6 +459,7 @@ impl StreamProxy {
             serve_task: Mutex::new(None),
             start_lock: tokio::sync::Mutex::new(()),
             client,
+            proxied,
             /*
              * ★ 从环境变量初始化 —— 保留生产上的回滚开关
              *   （`SOURIN_PREFETCH_DISABLE=1` 完全回到改动前的串行透传），
@@ -2090,19 +2145,84 @@ async fn forward_request(
      *   正是我们要与"手动 curl 同一 URL"对比的那个量。
      */
     let t_up = std::time::Instant::now();
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-26（Owner 定调）：**媒体流默认直连，失败才走系统代理**
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 现象（用户真实日志）
+     * ```text
+     * 07:22 起播成功（首帧 1920x1080）；07:23/07:26/07:28 三次
+     * 「Failed to open http://127.0.0.1:<port>/s/<token>」**正好 5s**。
+     * 5s 是**播放器侧**窗口 ⇒ 我们这台本地代理一个字节都没回。
+     * ```
+     * # 根因
+     * ```text
+     * 改前本函数用的 `proxy.client` **没有 `.no_proxy()`** ⇒ reqwest 默认读
+     * HTTP_PROXY（本机 127.0.0.1:7890）。而**媒体 CDN 走 Clash 只会变慢/失败**
+     * （Owner：次元城"不能走 Clash 代理，只能国内直连"）⇒ 代理一挂，
+     * 本地代理就卡在"等上游代理"，播放器 5s 先超时。
+     * ```
+     * # 修法（默认行为**反转**）
+     * ```text
+     * ① 默认直连（`client` 已 `.no_proxy()`）—— 国内 CDN 的正确路径
+     * ② **只有连接类失败**（连不上/超时）才用系统代理 client 再试一次
+     *    —— 被墙/跨界的源才需要；上游 403/404 是内容问题 ⇒ 不回退
+     * ③ 两条路径都有 `[streamproxy]` warn（带 host、不带 query）
+     * ```
+     * ⚠️ 与「插件 API 可能要走代理」是两件事：那条链路是 `http_call`，
+     *   本函数只影响**取流**。
+     */
     let upstream = match rb.send().await {
         Ok(r) => r,
         Err(e) => {
-            /*
-             * ★ task-57：上游失败必须带**耗时** ——
-             *   超时（30s 那个 timeout）与"立刻被拒"是完全不同的问题。
-             */
             splog!(
                 "UP send FAILED after {}ms: {e}; upstream={}",
                 t_up.elapsed().as_millis(),
                 redact_url(upstream_url),
             );
-            return (StatusCode::BAD_GATEWAY, format!("取流失败: {e}")).into_response()
+            if !(e.is_connect() || e.is_timeout()) {
+                // 非连接类（例如 TLS 证书、非法 URL）⇒ 保持原行为，不回退
+                return (StatusCode::BAD_GATEWAY, format!("取流失败: {e}")).into_response();
+            }
+            splog!(
+                "[streamproxy] 直连取上游失败（{e}），已改用系统代理重试；host={}",
+                redact_url(upstream_url),
+            );
+            /*
+             * 重建请求（`rb` 已被 `send()` 消耗）。这里重复一遍头/Range ——
+             * 故意的：改 `mk` 闭包会动到上面一大段既有代码，风险更大。
+             */
+            let mut rb2 = proxy.proxied.request(reqwest::Method::GET, upstream_url);
+            for (k, v) in headers {
+                rb2 = rb2.header(k.as_str(), v.as_str());
+            }
+            if let Some(range) = req_headers.get(header::RANGE) {
+                if let Ok(sv) = range.to_str() {
+                    rb2 = rb2.header(header::RANGE, sv);
+                }
+            }
+            match rb2.send().await {
+                Ok(r) => {
+                    splog!(
+                        "[streamproxy] 经系统代理重试成功（{}ms）；host={}",
+                        t_up.elapsed().as_millis(),
+                        redact_url(upstream_url),
+                    );
+                    r
+                }
+                Err(e2) => {
+                    splog!(
+                        "[streamproxy] 经系统代理也失败（{e2}）；host={}；直连错误={e}",
+                        redact_url(upstream_url),
+                    );
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        format!("取流失败（直连与系统代理均失败）：直连错误: {e}；系统代理错误: {e2}"),
+                    )
+                        .into_response();
+                }
+            }
         }
     };
 
@@ -4266,6 +4386,142 @@ mod tests {
     /// 所以这里钉两件事：
     /// ① 刚登记的那条**一定还在**（正在播的流不能被自己挤掉）；
     /// ② 被淘汰的必须是**最旧的**那一半，而不是全部。
+    // ══════════════════════════════════════════════════════════════════
+    //  ★★★ 2026-10-26（Owner 定调）：**媒体流默认直连**
+    // ══════════════════════════════════════════════════════════════════
+    //
+    // # 为什么（用户真实日志 + Owner 原话）
+    // ```text
+    // 现象：07:22 首帧 1920x1080 成功；07:23/07:26/07:28 三次「Failed to open
+    //   http://127.0.0.1:<port>/s/<token>」且**正好 5s**。
+    // Owner：次元城「**不能走 Clash 代理，只能国内直连**」。
+    // ⇒ 流代理拉的是**国内媒体 CDN**，走 Clash 只会变慢/失败。
+    // ```
+    // # 判据（本组）
+    // ```text
+    // ① 源码判据：主 client 必须 `.no_proxy()`（默认直连）；回退用的 client 不许加
+    // ② 行为判据：直连失败 ⇒ **确实又试了系统代理**（错误里两手都有）
+    // ```
+
+    /// ★ 默认直连：源码判据（`new()` 里主 client 必须 `.no_proxy()`）
+    ///
+    /// ⚠️ 这是**源码判据**不是网络判据：本机能连通时"没走代理"看不出来，
+    ///    所以只能钉结构；行为那一半由 ② 补。
+    #[test]
+    fn default_client_is_direct_no_proxy() {
+        let src = include_str!("streamproxy.rs");
+        let i = src.find("pub fn new() -> Self {").expect("new() 必须在");
+        /*
+         * ★ 2026-10-26 修（第二个坑）：这里原来是 `&src[i..(i + 3000).min(len)]` ——
+         *   **按字节切片**，而文件里全是中文 ⇒ 切点落在多字节字符中间会 panic
+         *   （`end byte index … is not a char boundary; it is inside '法'`）。
+         *   源码判据必须按**字符**取窗口，不能按字节。
+         */
+        let block: String = src[i..].chars().take(3000).collect();
+        assert!(
+            block.contains(".no_proxy()"),
+            "★★★ `StreamProxy::new()` 的主 client 必须 `.no_proxy()`：\n{block}"
+        );
+        // 回退那个 client 不许加 no_proxy（它就是要读系统代理）
+        /*
+         * ★ 2026-10-26 修的**第三个**坑（这条判据自己咬了自己三次，值得记）：
+         *   ① 找 `// ★ 回退用…` —— 实现里那句在**块注释**里（行首是 ` * `），找不到 ⇒ panic；
+         *   ② 修成找正文片段后，取 400 字节窗口 → **按字节切片落在中文中间** ⇒ char boundary panic；
+         *   ③ 改成按字符取窗口后，窗口里**包含了解释性注释**「不写 `.no_proxy()`」⇒ 断言读到注释里的字 ⇒ 红。
+         *   ⇒ 结论：源码判据**必须只读代码段**，不能把注释一起读进来。
+         *   这里改成从 `let proxied = …builder()` 起到 `.build()` 止的**代码切片**，注释天然被排除。
+         */
+        let k = src
+            .find("let proxied = reqwest::Client::builder()")
+            .expect("回退 client 的构造必须在");
+        let end = src[k..]
+            .find(".build()")
+            .expect("回退 client 的 .build() 必须在");
+        let prow: String = src[k..].chars().take(end).collect();
+        assert!(
+            !prow.contains(".no_proxy()"),
+            "★ 回退 client 不该 `.no_proxy()`（它要读 HTTP_PROXY 才能救被墙的源）:\n{prow}"
+        );
+    }
+
+    /// 起一个**只回 200** 的极简上游（axum），返回端口
+    async fn spawn_upstream_ok() -> u16 {
+        use axum::{routing::get, Router};
+        let app = Router::new().route(
+            "/f",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "video/mp2t")],
+                    vec![7u8; 32],
+                )
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(l, app).await;
+        });
+        port
+    }
+
+    /// 用 `.no_proxy()` 的裸 client 请求我们自己的本地代理（别让测试自己踩系统代理）
+    fn bare_get(url: String) -> reqwest::RequestBuilder {
+        reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .unwrap()
+            .get(url)
+    }
+
+    #[tokio::test]
+    async fn direct_ok_does_not_touch_proxy() {
+        // 直连可达 ⇒ 一次就成功（不该走回退）。回退 client 指向必死代理也不影响。
+        let up_port = spawn_upstream_ok().await;
+        let upstream = format!("http://127.0.0.1:{up_port}/f");
+        let proxy = Arc::new(StreamProxy::new_with_proxy_for_test("http://127.0.0.1:1"));
+        let port = proxy.ensure_started().await.expect("代理应能启动");
+        let token = proxy.register_at(&upstream, Vec::new(), port);
+        let local = if token.starts_with("http") {
+            token.clone()
+        } else {
+            format!("http://127.0.0.1:{port}/s/{token}/")
+        };
+        let resp = bare_get(local)
+            .send()
+            .await
+            .expect("请求本地代理不应失败");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(resp.bytes().await.unwrap().len(), 32);
+    }
+
+    #[tokio::test]
+    async fn direct_fail_falls_back_to_system_proxy_and_reports_both() {
+        /*
+         * 上游指向必死地址 ⇒ 直连失败 ⇒ **必须再试系统代理**（这里强制成必死代理）。
+         * 两次都失败时：错误信息要把**两手**都点名（本次排查就是被
+         * "只有一句 network-timeout"拖住的）。
+         */
+        let proxy = Arc::new(StreamProxy::new_with_proxy_for_test("http://127.0.0.1:1"));
+        let port = proxy.ensure_started().await.expect("代理应能启动");
+        let token = proxy.register_at("http://127.0.0.1:1/nope.ts", Vec::new(), port);
+        let local = if token.starts_with("http") {
+            token.clone()
+        } else {
+            format!("http://127.0.0.1:{port}/s/{token}/")
+        };
+        let resp = bare_get(local)
+            .send()
+            .await
+            .expect("请求本地代理不应失败");
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_GATEWAY);
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("直连") && body.contains("系统代理"),
+            "★★★ 错误必须说清「直连与系统代理都试过」（实际：{body}）"
+        );
+    }
+
     #[test]
     fn table_full_evicts_oldest_half_not_everything() {
         let p = Arc::new(StreamProxy::new());

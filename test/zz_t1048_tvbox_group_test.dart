@@ -109,4 +109,39 @@ void main() {
           reason: '★ 展开态由宿主持有（组件无状态）');
     });
   });
+  _hiddenGroup();
 }
+
+void _hiddenGroup() {
+  group('⑤ hidden：被聚合器接管的子站不单独出现', () {
+    test('★★★ hidden 的源被过滤，未 hidden 的仍在', () {
+      final list = <ProviderManifest>[
+        p('js1', 'js'),
+        ProviderManifest(id: 'tv1', name: 'tv1', kind: 'tvbox'),
+        ProviderManifest(id: 'tv2', name: 'tv2', kind: 'tvbox', hidden: true),
+      ];
+      final shown = visibleProviders(list);
+      expect(shown.map((e) => e.id).toList(), <String>['js1', 'tv1'],
+          reason: '★★★ hidden:true 必须从列表里消失（否则 16 张卡还在、聚合白做）；'
+              '注入「去掉 .where((p) => !p.hidden)」本条立刻红');
+      // 分组计数也必须在过滤后的集合上算
+      expect(tvboxGroupCount(shown), 1,
+          reason: '★★ 过滤在**分组之前** ⇒ 计数不能把 hidden 算进来');
+    });
+
+    test('★★ 全 hidden ⇒ 什么都不画（N=0）', () {
+      final list = <ProviderManifest>[
+        ProviderManifest(id: 'tv1', name: 'tv1', kind: 'tvbox', hidden: true),
+      ];
+      expect(visibleProviders(list), isEmpty);
+      expect(tvboxGroupCount(visibleProviders(list)), 0);
+    });
+
+    test('★ 接线：宿主先 visibleProviders 再分组', () {
+      final src = File('lib/ui/settings_page.dart').readAsStringSync();
+      expect(src.contains('visibleProviders(_nonLiveProviders)'), isTrue,
+          reason: '★ 过滤必须在宿主那一层生效，而不是只在某个纯函数里');
+    });
+  });
+}
+

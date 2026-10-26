@@ -5,7 +5,7 @@
 // # 为什么要有这个测试（这是审计发现的真问题，不是假想）
 // ```text
 // Rust 侧 Episode (model.rs:191-200) 序列化出的键：
-//     id / title / order / player_id
+//     id / title / order / player_id / flag（2026-10-26 加：多线路线路名）
 //
 // Dart  侧 Episode.fromJson (models.dart:1334-1339) 读的键：
 //     id / title / url / index
@@ -75,7 +75,7 @@ void main() {
   });
 
   group('★ 源码层：确认 Rust 那边到底发哪些键', () {
-    test('Rust Episode 的字段 = id/title/order/player_id', () {
+    test('Rust Episode 的字段 = id/title/order/player_id/flag', () {
       /*
        * 源码断言 —— 防止「Rust 加了字段但没人知道」。
        * 这不是重复测试，而是把**跨语言契约**钉在一条可执行的断言上：
@@ -84,11 +84,13 @@ void main() {
       final src = File('rust/sourin_core/src/model.rs').readAsStringSync();
       final i = src.indexOf('pub struct Episode {');
       expect(i, greaterThan(0));
-      final body = src.substring(i, (i + 400).clamp(0, src.length));
+      // ★ 2026-10-26：窗口从 400 → 1200 —— 加了 `flag` 字段后带上了多行文档注释，
+      //   400 字符已经覆盖不到结构体末尾（这条判据当时因此假红）。
+      final body = src.substring(i, (i + 1200).clamp(0, src.length));
       final end = body.indexOf('}');
       final decl = body.substring(0, end);
 
-      for (final f in ['id', 'title', 'order', 'player_id']) {
+      for (final f in ['id', 'title', 'order', 'player_id', 'flag']) {
         expect(decl.contains('pub $f:'), isTrue,
             reason: '★ Rust Episode 应有字段 $f —— 若这条红了，'
                 '请同步检查 lib/core/models.dart 的 Episode.fromJson');

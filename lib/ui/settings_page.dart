@@ -3642,7 +3642,7 @@ class SettingsPageState extends State<SettingsPage> {
      *   子序列内部，落盘时返回的仍是**新的全局顺序**，
      *   直播源之间的相对顺序一个都不动。
      */
-    final list = _nonLiveProviders;
+    final list = visibleProviders(_nonLiveProviders);
     // ★ 展示序列（TVBox 聚合组可折叠）：其他源在前、聚合组在后；折叠时整组省掉
     //   纯函数 `tvboxGroupOrder` 不读 State ⇒ 门禁可直接注入（见 zz_t1048）
     final visible = tvboxGroupOrder(list, expanded: _tvboxExpanded);
@@ -8205,6 +8205,19 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
 // ★ 卡片/id/启用态/排序**一个都没变** ⇒ provider:native 的
 //   收藏/进度/弹幕绑定/下载队列零迁移。
 // ```
+
+/// 列表层：把被聚合器接管的子站（`hidden`）挡在外面
+///
+/// # 为什么必须在**分组之前**过滤
+/// ```text
+/// A′ 落地后，16 个子站的 manifest 带 hidden:true，只留「TVBox 聚合」一条可见。
+/// 若先分组再过滤（或根本不过滤），`tvboxGroupCount` 会把 hidden 的也算进去
+/// ⇒ 标题写「16 个源」却一张卡都看不到；折叠开关也变成空操作。
+/// ⇒ 唯一入口：先 visibleProviders(...)，再交给分组/网格。
+/// ```
+@visibleForTesting
+List<ProviderManifest> visibleProviders(List<ProviderManifest> list) =>
+    list.where((p) => !p.hidden).toList();
 
 /// TVBox 导入源（`kind == 'tvbox'`）—— 归入「TVBox 聚合」组
 @visibleForTesting

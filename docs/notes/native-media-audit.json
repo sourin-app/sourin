@@ -400,5 +400,11 @@
     "lastAudited": "2026-10-26",
     "note": "真文件首帧探针（人工抽检）",
     "result": "待跑：探针在写，暂不计绿"
+  },
+  "zz_t1024_midroll_skip_test.dart": {
+    "audited": true,
+    "lastAudited": "2026-10-26",
+    "note": "中插广告接线：片头/中插同段 seek、grace 前置、片尾不入 windowsOf；+4 全绿",
+    "result": "+4 ~0 -0"
   }
 }

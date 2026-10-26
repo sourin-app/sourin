@@ -489,6 +489,32 @@ class SearchPageState extends State<SearchPage> {
   @visibleForTesting
   void debugFeedHit(SearchStreamEvent ev) => _addHit(_lastKeyword, ev);
 
+  /// ★ 测试注入口：喂一条"该源失败/被跳过"事件 ⇒ 写进 `_skipped`
+  ///
+  /// # 为什么必须有它（门禁缺口的实证）
+  /// ```text
+  /// `debugFeedHit` → `_addHit` **只碰 `_hits`**，从来不写 `_skipped`
+  /// ⇒ 在测试里喂 `failed(...)` 只会建出一个**空组**（组标题照样显示源名），
+  ///   `_SkippedList`（`源名 · 原因` 那段）**从未被任何门禁执行过**：
+  ///     ① 把 `'· ${s.reason}'` 换成固定串 ⇒ 测试仍绿
+  ///     ② 整段删掉 `for (final s in skipped)` ⇒ 测试仍绿
+  ///   这是"门禁看着绿、其实没覆盖"的又一例。
+  /// ```
+  /// ⚠️ 写入逻辑与真实流回调**同一份**（见上方 `case SearchEventKind.hit` 那段）：
+  ///    reason 为空 = 搜到了但没结果，**不算"跳过"**。
+  @visibleForTesting
+  void debugFeedSkipped(SearchStreamEvent ev) {
+    final reason = ev.reason;
+    if (reason == null || reason.isEmpty) return;
+    setState(() {
+      _skipped = [
+        ..._skipped,
+        (provider: ev.provider, reason: reason),
+      ];
+      _settled++;
+    });
+  }
+
   /// ★ 测试注入口：等于 `_loadProviderCount()` **成功**时的效果。
   ///
   /// # 为什么单独开一个口子（而不是塞进 `debugBeginSearch`）

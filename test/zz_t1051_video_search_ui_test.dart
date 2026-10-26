@@ -81,15 +81,38 @@ void main() {
       state.debugBeginSearch('测试');
       await t.pump();
       state.debugFeedHit(hit('csp-bili-adfc5b81', '🅱️哔哩｜资源合集', <String>['能搜到的片']));
-      state.debugFeedHit(failed('csp-app99-x', '💯某影视', '请求站点失败（超时）'));
+      // ★ 必须走 `debugFeedSkipped`：`debugFeedHit` 只碰 `_hits`，喂 failed() 只会建空组
+      state.debugFeedSkipped(failed('csp-app99-x', '💯某影视', '请求站点失败（超时）'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 100));
 
       expect(find.text('能搜到的片'), findsOneWidget,
           reason: '★★★ 一个源挂掉不许拖垮整体（错误隔离）；'
               '注入「失败就清空结果」本条立刻红');
-      expect(find.textContaining('某影视'), findsWidgets,
-          reason: '★★ 失败的源必须被点名（用户要知道"这一路没结果"而不是"全网没有"）');
+      /*
+       * ★ 2026-10-26 复核：`_SkippedList` 里显示的是 **provider id**（`s.provider`，
+       *   `search_page.dart:1218`），不是可读名 —— `_skipped` 记录只存了 id + reason
+       *   （`search_page.dart:379-382`），**没存 providerName**。
+       *   ⇒ 这里如实断言 id，并把这个可诊断性缺口记在案。
+       */
+      expect(find.textContaining('csp-app99-x', skipOffstage: false),
+          findsWidgets,
+          reason: '★★ 失败的源必须被点名（当前显示的是 provider **id**，见上方说明）');
+      /*
+       * ★★★ 2026-10-26 补：**原因也必须逐条显示**（可诊断性）
+       *
+       * 改前只钉"源名出现"⇒ 实测两种破坏都**不红**（真踩过）：
+       *   ① `'· ${s.reason}'` 换成固定串 `'· 已跳过'`
+       *   ② 整段删掉 `for (final s in skipped)`（只留"$N 个源未能返回结果"）
+       * 更糟的是：**skipped 那段 UI 从来没被任何门禁执行过** ——
+       *   旧写法用 `debugFeedHit` 喂 failed()，它只碰 `_hits`（建空组），
+       *   `_skipped` 恒空 ⇒ 上面那条"点名"其实命中的是**空组标题**。
+       *   （已改用 `debugFeedSkipped`，与真实流回调同一份写入逻辑。）
+       */
+      expect(find.textContaining('请求站点失败（超时）', skipOffstage: false),
+          findsWidgets,
+          reason: '★★ 失败原因必须**逐条**显示（不是只报"有源失败"）——'
+              '注入「reason 改成固定串 / 删掉逐条列表」本条立刻红');
     });
   });
 

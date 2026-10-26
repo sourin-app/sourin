@@ -1017,6 +1017,109 @@ mod tests {
         assert_eq!(load(&dir), AggregateConfig::default(), "坏文件 ⇒ 默认值，不 panic");
     }
 
+    /// 最小假子站：只实现了 `home()`，且**标题写死**（不看 id）——
+    /// 专给"两个子站同名分类"用：`FakeChild` 的标题带 id，天然可区分，测不出本缺陷。
+    struct SameTitleChild {
+        manifest: ProviderManifest,
+    }
+
+    #[async_trait]
+    impl MediaProvider for SameTitleChild {
+        fn manifest(&self) -> &ProviderManifest {
+            &self.manifest
+        }
+        async fn home(&self) -> Result<Vec<Section>, ProviderError> {
+            Ok(vec![Section {
+                id: "cat_movie".into(),
+                title: "电影".into(),
+                source: SectionSource::Category {
+                    category_id: "cat_movie".into(),
+                },
+                items: Vec::new(),
+            }])
+        }
+        async fn search(&self, _kw: &str, page: u32) -> Result<Page<MediaItem>, ProviderError> {
+            Ok(Page {
+                items: Vec::new(),
+                page,
+                page_count: None,
+                total: None,
+            })
+        }
+        async fn detail(&self, id: &MediaId) -> Result<MediaDetail, ProviderError> {
+            Ok(MediaDetail {
+                id: id.clone(),
+                title: String::new(),
+                cover: None,
+                description: None,
+                badges: Vec::new(),
+                kind: MediaKind::Movie,
+                meta: Default::default(),
+                sources: Vec::new(),
+                episodes: Vec::new(),
+            })
+        }
+        async fn resolve(
+            &self,
+            _id: &MediaId,
+            _req: &PlayRequest,
+        ) -> Result<Vec<StreamCandidate>, ProviderError> {
+            Ok(vec![])
+        }
+    }
+
+    /// ★ A4 门禁（总计划第 19 项）：两个子站有**同名分类** ⇒ 聚合首页的区块标题必须能区分子站
+    ///
+    /// # 为什么这条是判据
+    /// ```text
+    /// 缺陷：`home()` 里 `title: s.title` 原样用子站标题 ⇒ 16 个子站都有「电影」
+    ///   ⇒ 聚合首页平铺十几个同名区块，用户分不清哪条来自哪个源。
+    /// 修法（2135314 已落库）：`"{子站名} · {原标题}"`；子站名取不到时退回原标题。
+    /// 注入：把 title 改回 `s.title` ⇒ 本条红（两个区块标题都变成裸「电影」）。
+    /// ```
+    #[tokio::test]
+    async fn home_titles_distinguish_same_named_sections_across_children() {
+        let a = Arc::new(SameTitleChild {
+            manifest: manifest("tvbox1", "tvbox"),
+        }) as Arc<dyn MediaProvider>;
+        let b = Arc::new(SameTitleChild {
+            manifest: manifest("tvbox2", "tvbox"),
+        }) as Arc<dyn MediaProvider>;
+        let agg = agg_with("aggtitle", vec![a, b], &["tvbox1", "tvbox2"]);
+        let secs = agg.home().await.expect("聚合首页应成功");
+        assert_eq!(secs.len(), 2, "两个子站各出一个区块：{:?}", secs.iter().map(|s| &s.title).collect::<Vec<_>>());
+
+        // ① 标题可区分（本门禁的核心）
+        let titles: Vec<&str> = secs.iter().map(|s| s.title.as_str()).collect();
+        assert_ne!(titles[0], titles[1], "同名分类的区块标题必须可区分：{titles:?}");
+
+        // ② 标题里要能看到各自的子站名 + 原标题
+        assert!(
+            titles[0].contains("tvbox1") && titles[0].contains("电影"),
+            "区块①要带子站名 tvbox1 和原标题「电影」：{titles:?}"
+        );
+        assert!(
+            titles[1].contains("tvbox2") && titles[1].contains("电影"),
+            "区块②要带子站名 tvbox2 和原标题「电影」：{titles:?}"
+        );
+
+        // ③ 反向断言（路由契约不被牵动）：区块 id 仍带子站前缀，且不带子站名污染
+        assert!(secs[0].id.starts_with("tvbox1::"), "{}", secs[0].id);
+        assert!(secs[1].id.starts_with("tvbox2::"), "{}", secs[1].id);
+
+        // ④ 反向断言（防御"前缀残缺"回归）：子站名为空白时必须退回原标题，不许出现" · 电影"
+        let blank = Arc::new(SameTitleChild {
+            manifest: {
+                let mut m = manifest("tvbox9", "tvbox");
+                m.name = "   ".into();
+                m
+            },
+        }) as Arc<dyn MediaProvider>;
+        let agg9 = agg_with("aggtitle9", vec![blank], &["tvbox9"]);
+        let secs9 = agg9.home().await.expect("应成功");
+        assert_eq!(secs9[0].title, "电影", "子站名取不到 ⇒ 退回原标题（不许残缺前缀）");
+    }
+
     /// `hidden` 与旧数据的兼容：false 时不落盘这个键；缺这个键读回来必须是 false
     ///
     /// 用"自己序列化 → 再反序列化"来验，而不是手写一份 JSON ——

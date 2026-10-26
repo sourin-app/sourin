@@ -54,9 +54,16 @@ Widget host(Widget child) => MaterialApp(
 /// ⇒ 不是产品没显示，是测试没让它进视口；判据强度不变。
 /// ```
 Future<void> reveal(WidgetTester t, Finder f) async {
-  if (f.evaluate().isNotEmpty) return;
-  await t.scrollUntilVisible(f, 200,
-      scrollable: find.byType(Scrollable).first, maxScrolls: 40);
+  if (f.evaluate().isEmpty) {
+    // 真·懒构建（还没进树）⇒ 边滚边找
+    await t.scrollUntilVisible(f, 240,
+        scrollable: find.byKey(const ValueKey<String>('search-results-scroll')),
+        maxScrolls: 60);
+  } else {
+    // 已在树上但可能在视口外（`SliverToBoxAdapter` 的 child **建树即构建**）
+    // ⇒ 这里必须用 ensureVisible 真滚，否则"已构建"会让我们误以为不用滚
+    await t.ensureVisible(f);
+  }
   await t.pump(const Duration(milliseconds: 60));
 }
 
@@ -199,6 +206,82 @@ void _skippedAlongsideEmpty() {
       expect(find.textContaining('个源未能返回结果', skipOffstage: false),
           findsNothing,
           reason: '★★ 没有失败源时不许出现"0 个源未能返回结果"这种空列表头');
+    });
+  });
+
+  _revealNeeded();
+}
+
+void _revealNeeded() {
+  group('⑤ reveal() 必须真的在滚（30 条命中 ⇒ 失败清单在视口外）', () {
+    testWidgets('★★★ 空 reveal ⇒ 红；真 reveal ⇒ 失败清单可见', (t) async {
+      // 小窗口：确保 30 条命中一定把下面顶出视口
+      t.view.physicalSize = const Size(900, 700);
+      t.view.devicePixelRatio = 1.0;
+      addTearDown(t.view.resetPhysicalSize);
+      addTearDown(t.view.resetDevicePixelRatio);
+
+      await t.pumpWidget(host(const SearchPage()));
+      await t.pump();
+      final state = t.state<SearchPageState>(find.byType(SearchPage));
+      state.debugSetProviderCount(2);
+      state.debugBeginSearch('兰香如故');
+      await t.pump();
+      // ★ 30 条命中（同一源、标题各异）
+      state.debugFeedHit(SearchStreamEvent(
+        kind: SearchEventKind.hit,
+        provider: kCspProvider,
+        providerName: kCspName,
+        items: <MediaItem>[
+          for (var i = 0; i < 30; i++)
+            MediaItem(
+              id: '$kCspProvider:$i',
+              title: '兰香如故 第 $i 条',
+              provider: kCspProvider,
+            ),
+        ],
+      ));
+      state.debugFeedSkipped(SearchStreamEvent(
+        kind: SearchEventKind.miss,
+        provider: 'csp-app99-x',
+        providerName: '💯某影视',
+        reason: '请求站点失败（超时）',
+      ));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 120));
+
+      final scrollable = t.state<ScrollableState>(find
+          .descendant(
+            of: find.byKey(const ValueKey<String>('search-results-scroll')),
+            matching: find.byType(Scrollable),
+          )
+          .first);
+      expect(scrollable.position.pixels, 0,
+          reason: '★ 前置条件：滚之前偏移必须是 0（否则这条测不到"滚动"这件事）');
+
+      // ★ 前置条件（几何）：滚之前失败清单在**视口下方**
+      //
+      // 实测（`.probe/reveal_measure_test.dart`）：maxScrollExtent=3762、
+      // 失败清单 rect.top≈4313、视口高 700 ⇒ 它在视口外，但**已经在树上**
+      // （`SliverToBoxAdapter` 的 child 建树即构建，只是布局到视口外）。
+      // ⚠️ 所以"找不到它"永远不成立 —— 判据必须是**几何**，不是 finder 命中数。
+      final skipText = find.textContaining('个源未能返回结果', skipOffstage: false);
+      expect(t.getRect(skipText).top, greaterThan(700),
+          reason: '★★ 前置条件（几何）：滚之前失败清单必须在视口下方');
+
+      // 滚过去（reveal 内部按 key 找主滚动区）
+      await reveal(t, skipText);
+      await t.pump(const Duration(milliseconds: 80));
+
+      // ★★ reveal() 真的滚过的**双重证据**：偏移变大 + 目标进了视口
+      expect(scrollable.position.pixels, greaterThan(0),
+          reason: '★★★ reveal() 必须真的滚动（偏移 > 0）；'
+              '把它换成空实现 ⇒ 本条立刻红');
+      expect(t.getRect(skipText).top, lessThan(700),
+          reason: '★★★ 滚动后失败清单必须进入视口（否则 reveal 等于没滚）');
+
+      expect(skipText, findsWidgets,
+          reason: '★★★ 必须能滚到失败清单（这一条就是 reveal() 存在的证据）');
     });
   });
 }

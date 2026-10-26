@@ -55,14 +55,18 @@ SearchStreamEvent failed(String provider, String name, String reason) =>
 /// 把目标滚进视口再断言
 ///
 /// ```text
-/// `_SkippedList` 已是**独立 sliver**，结果一多就落到视口外 ⇒ SliverList
-/// 懒构建 ⇒ finder 找不到（`skipOffstage:false` 只搜"已建"的）。
-/// ⇒ 这是"测试没让它进视口"，不是"产品没显示"；判据强度不变。
+/// `_SkippedList` 已是**独立 sliver**；它常被布局到视口外，但**建树即构建**
+/// （`SliverToBoxAdapter` 的 child）⇒ `skipOffstage:false` 找得到、但**看不见**。
+/// ⇒ 判据必须"真的滚进视口"：已构建 ⇒ `ensureVisible`；未构建 ⇒ `scrollUntilVisible`。
 /// ```
 Future<void> reveal(WidgetTester t, Finder f) async {
-  if (f.evaluate().isNotEmpty) return;
-  await t.scrollUntilVisible(f, 200,
-      scrollable: find.byType(Scrollable).first, maxScrolls: 40);
+  if (f.evaluate().isEmpty) {
+    await t.scrollUntilVisible(f, 240,
+        scrollable: find.byKey(const ValueKey<String>('search-results-scroll')),
+        maxScrolls: 60);
+  } else {
+    await t.ensureVisible(f);
+  }
   await t.pump(const Duration(milliseconds: 60));
 }
 

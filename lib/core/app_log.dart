@@ -201,7 +201,20 @@ class AppLog {
   static const String envLogDir = 'SOURIN_LOG_DIR';
 
   /// 日志目录：`$SOURIN_LOG_DIR` > 测试注入口 > `<dataDir>/logs`
+  ///
+  /// # ⚠️⚠️ ① 测试注入口由 **`test/flutter_test_config.dart`** 设置
+  /// ```text
+  /// 那个文件是 flutter_test 的全局钩子，它在任何用例跑之前把
+  /// `debugLogDirOverride` 指到 `%TEMP%/sourin-test-logs`。
+  /// ⇒ **删掉/改坏它 = 所有 Dart 测试重新往用户的真实日志里写**
+  ///    （`%APPDATA%pp.sourin.player\logs\sourin-YYYY-MM-DD.log`）。
+  /// ⇒ 删它之前先想清楚：用户会在自己的日志里看到 `[DL] 探针日志`、
+  ///    `127.0.0.1:1/never-played.mp4` 这类**根本不存在的播放**。
+  /// ⇒ 2026-10-26 已经发生过一次：那个文件少一行 import ⇒ 整批用例
+  ///    "Failed to load"（全局测试配置的错误一次废掉一整批）。
+  /// ```
   static Future<String> logDir() async {
+    _warnIfUnisolated();
     /*
      * 优先级（自上而下）：
      * ```text
@@ -224,6 +237,51 @@ class AppLog {
     final d = Directory(chosen);
     if (!await d.exists()) await d.create(recursive: true);
     return d.path;
+  }
+
+  /// 自检：**在 `flutter test` 里却没设隔离** ⇒ 往 stderr 喊一声
+  ///
+  /// # 为什么要有这条
+  /// ```text
+  /// 隔离完全依赖 `test/flutter_test_config.dart` 设 `debugLogDirOverride`。
+  /// 那个文件一旦被删/写坏，测试就会**静默**污染用户真实日志 —— 今天已经
+  /// 发生过一次（少一行 import ⇒ 整批用例 Failed to load）。
+  /// ⇒ 这里加一个**廉价的自检**：检测到"跑在 flutter test 里、但没人设
+  ///    注入口"就往 stderr 打一条 warn。
+  /// ```
+  ///
+  /// ⚠️ **绝不改行为**：只提示，不抛异常、不换目录、不改状态 ——
+  ///    产品运行期（无 `FLUTTER_TEST`）一个字节都不会多写。
+  static bool _warnedUnisolated = false;
+
+  static void _warnIfUnisolated() {
+    if (_warnedUnisolated) return;
+    if (debugLogDirOverride != null) return;
+    if ((Platform.environment[envLogDir] ?? '').trim().isNotEmpty) return;
+    /*
+     * 判"是不是 flutter test"：**看可执行名**，别只看环境变量。
+     * ```text
+     * 实测（2026-10-26）：`flutter test` 的进程里 `Platform.environment`
+     * **没有** `FLUTTER_TEST`，而 Windows 上 `APPDATA` 又是有的 ⇒
+     * 旧判据（FLUTTER_TEST 或在无 APPDATA）**恒为假**，自检永远不喊
+     * （正是"写了但不会触发"那类）。
+     * ⇒ 改看 `Platform.executable`：`flutter test` 跑的是 `flutter_tester`。
+     * ```
+     */
+    final exe = Platform.executable.toLowerCase();
+    final inTest = exe.contains('flutter_tester') ||
+        exe.contains('flutter_tools') ||
+        (Platform.environment['FLUTTER_TEST'] ?? '').isNotEmpty;
+    if (!inTest) return;
+    _warnedUnisolated = true;
+    // ① 测试运行器会捕获 print/debugPrint（stderr 在 test isolate 里可能被吞）
+    debugPrint('[AppLog] WARN 未设日志隔离：正在写真实数据目录，检查 test/flutter_test_config.dart');
+    // ② 也发一份到 stderr，方便非测试场景（CI 脚本/探针）
+    stderr.writeln(
+      '[AppLog] ⚠️ 跑在测试环境里但没设日志隔离 ⇒ 正在写真实数据目录！'
+      '请检查 test/flutter_test_config.dart 是否还存在、且设置了 '
+      'AppLog.debugLogDirOverride。',
+    );
   }
 
   static String _stamp(DateTime t) {

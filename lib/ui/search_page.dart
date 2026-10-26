@@ -637,6 +637,15 @@ class SearchPageState extends State<SearchPage> {
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: _kContentMaxWidth),
           child: CustomScrollView(
+            // ★ 主滚动区**显式 key**：门禁按 key 定位它再滚动
+            //
+            // 为什么不能靠 `find.byType(Scrollable).first`：
+            // ```text
+            // 那是**隐式假设"页面只有一个滚动区"**。将来加横向分类条 / rails 时，
+            // `.first` 会滚到**错的**那个 Scrollable，且**不报错**（滚了没反应）
+            // —— 典型假绿来源。⇒ 主滚动区必须有 key。
+            // ```
+            key: const ValueKey<String>('search-results-scroll'),
             clipBehavior: Clip.antiAlias,
             slivers: [
         // ── 页头 ──（随内容滚走）

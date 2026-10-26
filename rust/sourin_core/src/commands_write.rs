@@ -197,6 +197,7 @@ pub fn set_skip_marker(
         outro_start,
         outro_end,
         auto_skip,
+        midrolls: Vec::new(),
         updated_at: chrono::Utc::now().timestamp_millis(),
     })
 }

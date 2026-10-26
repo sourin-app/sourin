@@ -372,6 +372,13 @@ pub struct HistoryEntry {
 /// ⚠️ 兼容旧数据：上一版只写了 `intro_end`（单点）。
 ///    读出来时若 `intro_start` 为空，视为 `0`（从开头就是片头）——
 ///    那正是旧版本的隐含语义。
+/// 一段可跳区间（秒，半开 `[start, end)`）—— 目前用于中插广告
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SkipSpan {
+    pub start: u64,
+    pub end: u64,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SkipMarker {
     /// `provider:native_id`
@@ -391,6 +398,15 @@ pub struct SkipMarker {
     /// 片尾**结束**位置（秒）。`None` = 跳到视频结尾
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outro_end: Option<u64>,
+    /// 中插广告区间（秒，**半开** `[start, end)`）
+    ///
+    /// # 为什么单独一个字段而不是挤进 intro/outro
+    /// `intro_*` / `outro_*` 各只有一对边界，**表达不了"片中间有 N 段"**。
+    /// 旧数据没有这个键 ⇒ `#[serde(default)]` 反序列化成空数组，**不会炸**（有往返测试钉住）。
+    /// 排序按起点升序；空数组时不序列化（旧客户端看到的是"没有这个键"，与旧行为一致）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub midrolls: Vec<SkipSpan>,
+
     /// 本作品是否启用自动跳过。`None` = 跟随全局开关
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_skip: Option<bool>,
@@ -1489,6 +1505,7 @@ impl Db {
             outro_start: r.get::<_, Option<i64>>(6)?.map(|v| v as u64),
             outro_end: r.get::<_, Option<i64>>(7)?.map(|v| v as u64),
             auto_skip: r.get::<_, Option<i64>>(8)?.map(|v| v != 0),
+            midrolls: Vec::new(),
             updated_at: r.get(9)?,
         })
     }
@@ -2260,6 +2277,7 @@ impl Db {
                         outro_start: f.outro_start.or(t.outro_start),
                         outro_end: f.outro_end.or(t.outro_end),
                         auto_skip: f.auto_skip.or(t.auto_skip),
+                        midrolls: Vec::new(),
                         updated_at: f.updated_at.max(t.updated_at),
                     },
                 };
@@ -2690,6 +2708,36 @@ mod tests {
             updated_at: 1000,
             deleted: false,
         }
+    }
+
+
+    // ── ★ midrolls 的向后兼容（"旧数据不能炸"就是靠这条钉住）──────────────
+    #[test]
+    fn skip_marker_midrolls_roundtrip() {
+        // ① 旧 JSON：**没有** midrolls 键 ⇒ 必须能反序列化，且为空数组
+        let old = r#"{"key":"p:n","provider":"p","native_id":"n","title":"t",
+                      "intro_start":0,"intro_end":69,"updated_at":0}"#;
+        let m: SkipMarker = serde_json::from_str(old).expect("旧数据必须能读");
+        assert!(m.midrolls.is_empty(), "缺 midrolls ⇒ 空数组，不是报错");
+        assert_eq!(m.intro_end, Some(69));
+
+        // ② 新 JSON：带 midrolls ⇒ 往返后一模一样
+        let with = SkipMarker {
+            midrolls: vec![
+                SkipSpan { start: 600, end: 660 },
+                SkipSpan { start: 900, end: 940 },
+            ],
+            ..m
+        };
+        let json = serde_json::to_string(&with).expect("序列化");
+        assert!(json.contains("midrolls"), "非空时必须序列化出来：{json}");
+        let back: SkipMarker = serde_json::from_str(&json).expect("再读回来");
+        assert_eq!(back.midrolls, with.midrolls, "★ 往返必须一致");
+
+        // ③ 空数组 ⇒ 不序列化该键（旧客户端看到的就是"没有这个键"）
+        let empty = SkipMarker { midrolls: Vec::new(), ..back };
+        let j2 = serde_json::to_string(&empty).expect("序列化");
+        assert!(!j2.contains("midrolls"), "空数组不写盘：{j2}");
     }
 
     #[test]
@@ -3167,6 +3215,7 @@ mod tests {
             outro_start: None,
             outro_end: None,
             auto_skip: Some(true),
+            midrolls: Vec::new(),
             updated_at: 700,
         })
         .unwrap();
@@ -4054,6 +4103,7 @@ mod tests {
             outro_start: None,
             outro_end: None,
             auto_skip: None,
+            midrolls: Vec::new(),
             updated_at: 100,
         })
         .unwrap();
@@ -4068,6 +4118,7 @@ mod tests {
             outro_start: Some(2500),
             outro_end: Some(2700),
             auto_skip: Some(false),
+            midrolls: Vec::new(),
             updated_at: 200,
         })
         .unwrap();

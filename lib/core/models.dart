@@ -2077,6 +2077,7 @@ class SkipMarker {
     this.outroStart,
     this.outroEnd,
     this.autoSkip,
+    this.midrolls = const [],
     this.updatedAt = 0,
   });
 
@@ -2091,6 +2092,19 @@ class SkipMarker {
 
   /// 是否自动跳过（而不是只显示按钮）
   final bool? autoSkip;
+
+  /// 中插广告区间（秒，半开 `[start, end)`）
+  ///
+  /// # 形状必须与 `skip_window.dart` 的 `windowsOf(midrolls:)` 入参**逐字一致**
+  /// ```text
+  /// windowsOf(midrolls: [({int startSec, int endSec}), …])
+  ///                      ↑ 名字/字段名都要对得上
+  /// ```
+  /// 今天已经踩过一次"名字对不上 ⇒ 静默传空 ⇒ 中插永远不跳"的坑，
+  /// 所以这里用**记录类型**而不是自定义类，让编译器帮我们钉住形状。
+  ///
+  /// 旧数据没有 `midrolls` 这个键 ⇒ `fromJson` 里 `?? const []` 兜住（不会炸）。
+  final List<({int startSec, int endSec})> midrolls;
 
   final int updatedAt;
 
@@ -2107,6 +2121,15 @@ class SkipMarker {
         outroStart: (j['outro_start'] as num?)?.toInt(),
         outroEnd: (j['outro_end'] as num?)?.toInt(),
         autoSkip: j['auto_skip'] as bool?,
+        // ★ 容忍缺字段：旧数据没有 `midrolls`（`?? const []`），不能因为新字段让老库读不出来
+        midrolls: ((j['midrolls'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((m) => (
+                  startSec: (m['start'] as num?)?.toInt() ?? 0,
+                  endSec: (m['end'] as num?)?.toInt() ?? 0,
+                ))
+            .where((e) => e.endSec > e.startSec)
+            .toList(),
         updatedAt: (j['updated_at'] as num?)?.toInt() ?? 0,
       );
 }

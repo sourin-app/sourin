@@ -4271,6 +4271,72 @@ mod tests {
     }
 
     /// ★★ skip_markers：**FROM 的非 null 优先，缺的用 TO 补**
+    /// ★★★ 换源迁移时**中插必须跟着搬**（不许静默丢）
+    ///
+    /// # 这条挡的是什么（2026-10-26 实测踩到）
+    /// ```text
+    /// repoint_item 里那条 INSERT 是**整段硬编码列清单**（不走 SKIP_COLS），
+    /// 加 `midrolls` 时只改了 SKIP_COLS 与 upsert ⇒
+    ///   ① 11 列 10 占位符 ⇒ 语句直接失败（"10 values for 11 columns"）
+    ///   ② 就算把占位符补上，若值仍传 `Vec::new()` ⇒ 用户换源后**中插广告区间消失**
+    /// ```
+    /// 注入验证：把 `merge` 里的 `midrolls:` 改回 `Vec::new()` ⇒ 本条立刻红。
+    #[test]
+    fn repoint_carries_midrolls_to_target() {
+        let db = Db::in_memory().unwrap();
+        // FROM：2 段中插
+        db.upsert_skip_marker(&SkipMarker {
+            key: "from:1".into(),
+            provider: "from".into(),
+            native_id: "1".into(),
+            title: "某剧".into(),
+            intro_start: None,
+            intro_end: None,
+            outro_start: None,
+            outro_end: None,
+            auto_skip: None,
+            midrolls: vec![
+                SkipSpan { start: 600, end: 660 },
+                SkipSpan { start: 1200, end: 1260 },
+            ],
+            updated_at: 100,
+        })
+        .unwrap();
+        // TO：1 段中插（且与 FROM 不重叠）⇒ 迁移后应是**并集 3 段**
+        db.upsert_skip_marker(&SkipMarker {
+            key: "to:2".into(),
+            provider: "to".into(),
+            native_id: "2".into(),
+            title: "某剧".into(),
+            intro_start: None,
+            intro_end: None,
+            outro_start: None,
+            outro_end: None,
+            auto_skip: None,
+            midrolls: vec![SkipSpan { start: 1800, end: 1860 }],
+            updated_at: 50,
+        })
+        .unwrap();
+
+        db.repoint_item("from:1", "to:2").unwrap();
+
+        let got = db.get_skip_marker("to:2").unwrap().expect("迁移后必须有 to 行");
+        assert_eq!(
+            got.midrolls,
+            vec![
+                SkipSpan { start: 600, end: 660 },
+                SkipSpan { start: 1200, end: 1260 },
+                SkipSpan { start: 1800, end: 1860 },
+            ],
+            "★ FROM 的 2 段必须跟着搬过来，并与 TO 的 1 段合成并集（按起点排序）"
+        );
+        assert!(
+            db.get_skip_marker("from:1").unwrap().is_none(),
+            "旧行必须删掉"
+        );
+    }
+
+
     #[test]
     fn repoint_skip_markers_prefers_from_and_fills_from_to() {
         let db = Db::in_memory().unwrap();

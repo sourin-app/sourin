@@ -230,6 +230,7 @@ mod tests {
                     kind: "builtin".into(),
                     description: None,
                     icon: None,
+                    hidden: false,
                     id_prefixes: vec![],
                     capabilities: Capabilities::default(),
                     cover_headers: Vec::new(),

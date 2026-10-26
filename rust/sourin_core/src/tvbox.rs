@@ -1195,6 +1195,9 @@ impl TvboxAppleCmsProvider {
             working: true,
             broken_reason: None,
             enabled: None,
+            // ★ A′：子站被「TVBox 聚合」接管 ⇒ 列表里不展示（路由不变，
+            //   收藏/进度/弹幕绑定仍走原子站 id）
+            hidden: true,
         };
         Ok(Self {
             manifest,

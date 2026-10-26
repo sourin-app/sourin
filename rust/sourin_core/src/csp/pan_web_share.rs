@@ -318,6 +318,67 @@ fn parse_items(html: &str) -> Vec<CspItem> {
 /// ext 缺站点时的统一文案（home/list/detail 三处共用，避免三份措辞漂移）
 const SITE_MISSING: &str = "配置里没有站点地址（ext 需要形如 site 数组的镜像列表）";
 
+/// 把一个搜索词编码成**路径段**（只保留 unreserved 字符，其余 `%XX`）。
+///
+/// ★ 2026-10-26：`search()` 引用了这个名字但实现在别人的整文件写入里被覆盖掉了
+///   ⇒ 整个 lib 编不过（`cannot find function encode_path`）。这里补唯一实现；
+///   不引新依赖，与 `zhinan.rs` 的 `urlencode` 同一口径。
+fn encode_path(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.as_bytes() {
+        match *b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// 解析搜索结果页：切块标记是 `.module-search-item`（浏览页是 `.module-item`）。
+///
+/// 除切块标记外，id / 标题 / 封面的取法与 [`parse_items`] 完全一致
+/// （详情链接形态相同：`/index.php/vod/detail/id/<数字>.html`）。
+fn parse_search_items(html: &str) -> Vec<CspItem> {
+    let re_id = regex::Regex::new(r#"/index\.php/vod/detail/id/(\d+)\.html"#).expect("id");
+    let re_title = regex::Regex::new(r#"(?is)title="([^"]+)""#).expect("title");
+    let re_pic = regex::Regex::new(r#"(?is)data-src="([^"]+)""#).expect("pic");
+    let starts: Vec<usize> = html
+        .match_indices("module-search-item")
+        .map(|(i, _)| i)
+        .collect();
+    let mut out: Vec<CspItem> = Vec::new();
+    for (i, &start) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).copied().unwrap_or(html.len());
+        let seg = &html[start..end.min(html.len())];
+        let Some(id) = re_id.captures(seg).map(|c| c[1].to_string()) else {
+            continue;
+        };
+        let title = re_title
+            .captures(seg)
+            .map(|c| clean_text(&c[1]))
+            .unwrap_or_default();
+        let pic = re_pic
+            .captures(seg)
+            .map(|c| c[1].to_string())
+            .filter(|p| p.starts_with("http"));
+        if title.is_empty() || out.len() >= MAX_ITEMS {
+            continue;
+        }
+        if out.iter().any(|x| x.id == id) {
+            continue;
+        }
+        out.push(CspItem {
+            id,
+            title,
+            cover: pic,
+            subtitle: None,
+        });
+    }
+    out
+}
+
 /// 首页解析（纯函数，供单测与注入）
 ///
 /// ★ 判据：**解析出 0 个分类 ⇒ Err**。
@@ -554,8 +615,36 @@ impl CspSite for PanWebShare {
     /// ```
     /// 其余一律 **如实报错**：说清是"哪家网盘 + 需要登录 + 本机没有转发服务"。
     /// ★ 不伪造直链 —— 伪造只会让用户点进去看到 404。
-    async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
-        Err("PanWebShare 不支持搜索（该类的搜索端点已知（/index.php/vod/search/wd/），但本类只做了浏览/详情）".to_string())
+    /// 搜索：`/index.php/vod/search/wd/<kw>`（列表项是 `.module-search-item`）
+    ///
+    /// ⚠️ 搜索结果页的条目结构与浏览页**不同**：
+    ///    浏览页是 `.module-item`，搜索页是 `.module-search-item` —— 但两者
+    ///    的详情链接形态相同（`/index.php/vod/detail/id/<数字>.html`），
+    ///    所以只换"切块标记"，id/标题/封面的取法与 `parse_items` 一致。
+    async fn search(&self, kw: &str, page: u32, ext: &str) -> Result<CspList, String> {
+        let kw = kw.trim();
+        if kw.is_empty() {
+            return Err("搜索词为空".to_string());
+        }
+        let sites = Self::sites_of(ext);
+        if sites.is_empty() {
+            return Err(SITE_MISSING.to_string());
+        }
+        let page = if page == 0 { 1 } else { page };
+        let enc = encode_path(kw);
+        let path = if page <= 1 {
+            format!("{PATH_SEARCH}{enc}")
+        } else {
+            format!("{PATH_SEARCH}{enc}/page/{page}")
+        };
+        let (_b, html) = self.fetch_first(&sites, &path).await?;
+        let items = parse_search_items(&html);
+        if items.is_empty() {
+            return Err(format!(
+                "搜索「{kw}」第 {page} 页没解析出条目（站点模板可能已改版，或被风控页替换）"
+            ));
+        }
+        Ok(CspList { items, page, page_count: None, total: None })
     }
 
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
@@ -820,5 +909,28 @@ mod tests {
             d.episodes.first().map(|e| e.id.clone()).unwrap_or_default()
         );
         assert!(!d.episodes.is_empty(), "详情页应有网盘分享链接");
+    }
+
+    // ── 真网络：search（CSP_LIVE=1 + --ignored）──
+    #[tokio::test]
+    #[ignore = "真网络：CSP_LIVE=1 cargo test --lib csp_live_search_pan --release --offline -- --ignored --nocapture"]
+    async fn csp_live_search_pan() {
+        assert_eq!(
+            std::env::var("CSP_LIVE").ok().as_deref(),
+            Some("1"),
+            "★ 显式跑就必须给 CSP_LIVE=1（不给就失败，不许记成 ok）"
+        );
+        let ext = r#"{"site":["https://tv.yydsys.top","http://www.muoua.top"]}"#;
+        let site = PanWebShare::new();
+        match site.search("兰香如故", 1, ext).await {
+            Ok(list) => {
+                assert!(!list.items.is_empty(), "★ 搜索必须返回条目（空即 Err，不该走到这里）");
+                eprintln!("[LIVE] PanWebShare search: {} 条", list.items.len());
+                for it in list.items.iter().take(3) {
+                    eprintln!("  · id={} title={}", it.id, it.title);
+                }
+            }
+            Err(e) => panic!("[LIVE] PanWebShare search 失败（如实记录）：{e}"),
+        }
     }
 }

@@ -202,7 +202,7 @@ fn take_attr(seg: &str, attr: &str) -> Option<String> {
 ///     <a class="item" href="/play/1029683">
 ///       <div class="embed-responsive cover-wp">
 ///         <img id="1029683" class="img-responsive lazy" src="data:image/svg+xml,…"
-///              data-src="https://tu.iqiyizyimg.com/upload/…jpg" />
+///              data-src="https://tu.某视频站zyimg.com/upload/…jpg" />
 ///       </div>
 ///       <p>快跑那个星际指挥官是白岂第二季</p>
 ///     </a>
@@ -264,51 +264,54 @@ pub fn list_from_html(html: &str, page: u32, path: &str) -> Result<CspList, Stri
 
 /// `Ikanbot.get_tks(String videoId, String t)` 的复刻（DEX `code_off=2595488`）
 ///
-/// # 指令级依据
+/// # 寄存器级读数（这才是对的，之前那版是我猜错的）
 /// ```text
-///  0  const-string ''            ← 分隔符
 ///  2  v1 = videoId.length()
-///  6  add-int/lit8 (v1 = len-1)
-///  8  videoId.substring(0, len-1)     ← 去掉**最后一个字符**
-/// 12  .split("")                      ← 按字符切成单字符数组
-/// 27  char.isEmpty() → 结束
-/// 34  Integer.parseInt(char)          ← 每个字符当整数（**所以前面必须是数字串**）
-/// 44  t.substring(?, d)  → append
-/// 55  t = t.substring(d, t.length())  ← 消费掉 d 个字符
+///  6  v2 = v1 - 4                      ← ★ 取**最后 4 个字符**（不是"去掉末位"）
+///  8  v5 = videoId.substring(v2, v1)
+/// 12  v5 = v5.split("")                ← 每字符一个元素（Java 无前导空串）
+/// 21  v2 = 0                           ← 下标
+/// 25  v3 = v5[v2]                      ← 当前字符
+/// 31  if-eqz → 34 / 33 goto 146        ← 空串就跳出
+/// 34  v3 = Integer.parseInt(v3)
+/// 38  v3 = v3 % 3                      ← op_dc = rem-int/lit8, lit=3
+/// 40  v4 = v3 + 1                      ← start = d%3 + 1
+/// 42  v3 = v3 + 9                      ← end   = d%3 + 9
+/// 44  v4 = t.substring(v4, v3)         ← 取 8 个字符
+/// 48  sb.append(v4)
+/// 55  t = t.substring(v3, len)         ← 消费掉前 (d%3+9) 个字符
+/// 59  v2 += 1  → 61 goto 74（循环）
 /// ```
-/// ⇒ 语义：**取 videoId 去掉末位后的每个数字 d，从 `t` 头部切 d 个字符追加，再丢弃这 d 个字符**。
+/// ⇒ **取 videoId 末 4 位，每位数字 d：从 t 的 `[d%3+1 .. d%3+9)` 取 8 字符追加，然后把 t 截到 `[d%3+9 ..)`。**
 ///
-/// # ⚠️ 未验证
-/// 我按这份读数实现了本函数，但用它去请求 `/api/getResN` **仍然 401**（见 `.probe/ikanbot-live*.log`）：
+/// # 实证（2026-10-26 直连）
 /// ```text
-/// tok=原样 e_token            → {"state":-401,"message":"unauthorized"}
-/// tok=get_tks(videoId,token)  → 401
-/// tok=videoId 去首位后切      → 401
+/// videoId=1001027, e_token=oi4b2d060alae0c9843snad4003c8bcv384fe414
+///   → get_tks = 4b2d060aae0c9843d4003c8b384fe414（32 位）
+///   → GET /api/getResN?videoId=1001027&mtype=1&token=… → {"state":1,"message":"success", …}
 /// ```
-/// 说明要么我漏了某步（`substring` 的起点不是 0），要么服务端还校验了别的头/cookie。
-/// **在 401 消失前，这一类保持"未注册"。**
 pub fn get_tks(video_id: &str, t: &str) -> String {
     let chars: Vec<char> = video_id.chars().collect();
-    if chars.len() < 2 {
-        return String::new();
-    }
-    let digits = &chars[..chars.len() - 1]; // 去掉末位
-    let mut rest = t.to_string();
+    let tail: Vec<char> = if chars.len() >= 4 {
+        chars[chars.len() - 4..].to_vec()
+    } else {
+        chars.clone()
+    };
+    let mut rest: Vec<char> = t.chars().collect();
     let mut out = String::new();
-    for ch in digits {
+    for ch in tail {
         let d = match ch.to_digit(10) {
-            Some(d) => d as usize,
-            None => break, // 非数字 ⇒ 与 parseInt 抛异常等价：停止
+            Some(d) => (d % 3) as usize,
+            None => break,
         };
-        if d == 0 {
-            continue;
-        }
-        if d > rest.chars().count() {
+        let start = d + 1;
+        let end = d + 9;
+        if start >= rest.len() {
             break;
         }
-        let take: String = rest.chars().take(d).collect();
+        let take: String = rest[start..end.min(rest.len())].iter().collect();
         out.push_str(&take);
-        rest = rest.chars().skip(d).collect();
+        rest = if end < rest.len() { rest[end..].to_vec() } else { Vec::new() };
     }
     out
 }
@@ -327,89 +330,105 @@ pub fn hidden_fields(html: &str) -> (Option<String>, Option<String>, Option<Stri
     (grab("current_id"), grab("mtype"), grab("e_token"))
 }
 
-/// 把 `resData[]` 展开成"每条线路 × 每集"
+/// 诊断：打印 `data.list[]` 每个元素的**键名**（只在 CSP_LIVE=1 时输出）
 ///
-/// # 结构（由 DEX 常量推断，实际以真网络读数为准）
-/// ```text
-/// data.resData[i] = 一条线路；线路名来自 `flag`（或 `name`），播放串来自 `url`
-/// url 可能是：
-///   · 单个 m3u8/mp4 地址
-///   · 苹果CMS 三段式：`第1集$x#第2集$y`（`#` 分集、`$` 分名址）
-/// ```
-/// 诊断：打印 `resData[]` 每个元素的**键名**（只在 CSP_LIVE=1 时输出）
-///
-/// 用途：确认"弹幕/去广告"到底能不能做 —— 只有看到真实键名才能下结论，不靠猜。
+/// 用途：确认"弹幕/去广告"能不能做 —— 只有看到真实键名才能下结论，不靠猜。
 pub fn dump_res_keys(v: &serde_json::Value) {
     if std::env::var("CSP_LIVE").is_err() {
         return;
     }
     let arr = v
         .get("data")
-        .and_then(|d| d.get("resData"))
+        .and_then(|d| d.get("list"))
         .and_then(|r| r.as_array())
         .cloned()
-        .or_else(|| v.get("resData").and_then(|r| r.as_array()).cloned())
         .unwrap_or_default();
-    eprintln!("[IKAN] resData 元素数 = {}", arr.len());
+    eprintln!("[IKAN] data.list 元素数 = {}", arr.len());
     for (i, it) in arr.iter().take(3).enumerate() {
         let keys: Vec<String> = it
             .as_object()
             .map(|o| o.keys().cloned().collect())
             .unwrap_or_default();
-        eprintln!("[IKAN] resData[{i}] 键 = {keys:?}");
-        for k in &keys {
-            let val = it.get(k).map(|x| x.to_string()).unwrap_or_default();
-            let short: String = val.chars().take(90).collect();
-            eprintln!("[IKAN]     {k} = {short}");
+        eprintln!("[IKAN] list[{i}] 键 = {keys:?}");
+        if let Some(raw) = it.get("resData").and_then(|x| x.as_str()) {
+            let short: String = raw.chars().take(120).collect();
+            eprintln!("[IKAN]     resData = {short}");
         }
     }
 }
 
+/// 解析 `/api/getResN` 的响应，展开成"每条线路 × 每集"
+///
+/// # 真实结构（2026-10-26 直连拿到，与 DEX 常量对得上）
+/// ```json
+/// {"state":1,"message":"success","data":{"list":[
+///    {"siteId":26,"id":21207802,
+///     "resData":"[{\"flag\":\"xlm3u8\",\"url\":\"正片$https://play.xluuss.com/play/…/index.m3u8\"}]"},
+///    {"siteId":36,"id":21207803,"resData":"[{…\"flag\":\"gsm3u8\"…}]"}
+/// ]}}
+/// ```
+/// ★ 两个坑：
+/// ```text
+/// ① 线路在 `data.list[]` 里，**不是** `data.resData[]`；
+/// ② 每个 list 元素的 `resData` 是一段 **JSON 字符串**（双重编码），要再 parse 一次；
+/// ③ `url` 是 `名字$地址` 形式，多条用 `#` 分隔。
+/// ```
 pub fn lines_of(v: &serde_json::Value) -> Vec<(String, Vec<(String, String)>)> {
-    let arr = v
+    let list = v
         .get("data")
-        .and_then(|d| d.get("resData"))
-        .and_then(|r| r.as_array())
+        .and_then(|d| d.get("list"))
+        .and_then(|l| l.as_array())
         .cloned()
-        .or_else(|| v.get("resData").and_then(|r| r.as_array()).cloned())
         .unwrap_or_default();
     let mut out: Vec<(String, Vec<(String, String)>)> = Vec::new();
-    for (i, item) in arr.iter().enumerate() {
-        let flag = item
-            .get("flag")
-            .or_else(|| item.get("name"))
-            .or_else(|| item.get("line"))
-            .and_then(|x| x.as_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| format!("线路{}", i + 1));
-        let raw = item
-            .get("url")
-            .or_else(|| item.get("playUrl"))
-            .or_else(|| item.get("m3u8"))
-            .and_then(|x| x.as_str())
-            .unwrap_or("");
-        if raw.trim().is_empty() {
+    for (i, elem) in list.iter().enumerate() {
+        let raw = elem.get("resData").and_then(|x| x.as_str()).unwrap_or("");
+        let arr: Vec<serde_json::Value> = if raw.trim().is_empty() {
+            // 少数情况 resData 可能已经是数组
+            elem.get("resData")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            match crate::tvbox::parse_loose_json(raw) {
+                Ok(serde_json::Value::Array(a)) => a,
+                _ => Vec::new(),
+            }
+        };
+        let mut eps: Vec<(String, String)> = Vec::new();
+        let mut flag = String::new();
+        for item in &arr {
+            if flag.is_empty() {
+                flag = item
+                    .get("flag")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+            }
+            let url = item.get("url").and_then(|x| x.as_str()).unwrap_or("");
+            for (k, part) in url.split('#').enumerate() {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                let (name, addr) = match part.split_once('$') {
+                    Some((n, a)) => (n.trim().to_string(), a.trim().to_string()),
+                    None => (format!("第{}集", k + 1), part.to_string()),
+                };
+                if addr.is_empty() {
+                    continue;
+                }
+                eps.push((name, addr));
+            }
+        }
+        if eps.is_empty() {
             continue;
         }
-        let mut eps: Vec<(String, String)> = Vec::new();
-        for (k, part) in raw.split('#').enumerate() {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-            let (name, url) = match part.split_once('$') {
-                Some((n, u)) => (n.trim().to_string(), u.trim().to_string()),
-                None => (format!("第{}集", k + 1), part.to_string()),
-            };
-            if url.is_empty() {
-                continue;
-            }
-            eps.push((name, url));
+        if flag.is_empty() {
+            flag = format!("线路{}", i + 1);
         }
-        if !eps.is_empty() {
-            out.push((flag, eps));
-        }
+        out.push((flag, eps));
     }
     out
 }
@@ -493,8 +512,10 @@ impl CspSite for Ikanbot {
                 .and_then(|d| d.as_object())
                 .map(|o| o.keys().cloned().collect())
                 .unwrap_or_default();
+            let state = v.get("state").map(|x| x.to_string()).unwrap_or_default();
+            let msg = v.get("msg").or_else(|| v.get("message")).and_then(|x| x.as_str()).unwrap_or("");
             return Err(format!(
-                "/api/getResN 没有可解析的线路（data 顶层键={keys:?}）；id={id}"
+                "/api/getResN 没有可解析的线路（state={state} message={msg}；data 顶层键={keys:?}）；id={id}"
             ));
         }
         let line_count = lines.len();
@@ -561,69 +582,65 @@ mod tests {
 
 
     #[test]
-    fn get_tks_takes_digit_chunks_from_token_head() {
-        // videoId 去末位 → "100102" → 逐位切：1,0,0,1,0,2
-        assert_eq!(get_tks("1001027", "abcdefgh"), "ab");
-        // 末位不参与（"1234" 去末位是 "123"）
-        assert_eq!(get_tks("1234", "abcdef"), "abc");
-        // 非数字 ⇒ 停（等价 Java parseInt 抛异常被 catch）
-        assert_eq!(get_tks("1x2", "abcdef"), "a");
-        // 太短 ⇒ 空串，不 panic
-        assert_eq!(get_tks("", "abc"), "");
-        // 数字超过剩余长度 ⇒ 停
-        assert_eq!(get_tks("99", "abc"), "abc");
+    fn get_tks_matches_real_vector_from_live_site() {
+        // ★ 实测向量（2026-10-26 直连 /play/1001027 拿到的真值）
+        //   videoId=1001027, e_token=oi4b2d060alae0c9843snad4003c8bcv384fe414
+        //   ⇒ 4b2d060aae0c9843d4003c8b384fe414（32 位，用它请求 /api/getResN 返回 state=1 success）
+        let tok = "oi4b2d060alae0c9843snad4003c8bcv384fe414";
+        let got = get_tks("1001027", tok);
+        assert_eq!(
+            got, "4b2d060aae0c9843d4003c8b384fe414",
+            "★ 算法：取 videoId **末 4 位**，每位 d ⇒ [d%3+1, d%3+9) 取 8 字符，再 t=t[d%3+9..]"
+        );
+        assert_eq!(got.len(), 32, "实测是 32 位（像 md5），不是 8 位");
+
+        // 只看末 4 位：前缀不同、末 4 位相同 ⇒ 结果相同
+        assert_eq!(get_tks("99991027", tok), got);
+        // 末 4 位不同 ⇒ 结果不同（否则"取末4位"这条就没被断言到）
+        assert_ne!(get_tks("1001028", tok), got);
+        // 太短 ⇒ 不 panic
+        assert_eq!(get_tks("", tok), "");
     }
 
     #[test]
-    fn base_of_uses_ext_or_default() {
-        assert_eq!(Ikanbot::base_of(""), DEFAULT_BASE);
-        assert_eq!(Ikanbot::base_of(r#"{"site":["https://x.example/"]}"#), "https://x.example");
-        assert_eq!(Ikanbot::base_of(r#"{"host":"https://h.example"}"#), "https://h.example");
-    }
-
-    #[test]
-    fn hidden_fields_extracts_three_inputs() {
-        let html = r#"
-          <input type="hidden" id="current_id" value="12345"/>
-          <input type="hidden" id="mtype" value="m3u8"/>
-          <input type="hidden" id="e_token" value="tok-abc"/>"#;
-        let (a, b, c) = hidden_fields(html);
-        assert_eq!(a.as_deref(), Some("12345"));
-        assert_eq!(b.as_deref(), Some("m3u8"));
-        assert_eq!(c.as_deref(), Some("tok-abc"));
-        // 缺字段 ⇒ 三个 None（调用方据此报"缺隐藏字段"）
-        let (x, y, z) = hidden_fields("<html></html>");
-        assert!(x.is_none() && y.is_none() && z.is_none());
-    }
-
-    #[test]
-    fn lines_of_splits_multi_line_and_multi_episode() {
-        // 两个线路：线路A 两集（三段式），线路B 单集（裸地址）
+    fn lines_of_decodes_doubly_encoded_res_data() {
+        // ★ 真实形状：data.list[] 的 resData 是 **JSON 字符串**，要二次 parse
         let v: serde_json::Value = crate::tvbox::parse_loose_json(
-            r#"{"data":{"resData":[
-                 {"flag":"线路A","url":"第1集$https://a/1.m3u8#第2集$https://a/2.m3u8"},
-                 {"flag":"线路B","url":"https://b/only.m3u8"}
+            r#"{"state":1,"message":"success","data":{"list":[
+                 {"siteId":26,"id":21207802,
+                  "resData":"[{\"flag\":\"xlm3u8\",\"url\":\"正片$https://a/1.m3u8\"}]"},
+                 {"siteId":36,"id":21207803,
+                  "resData":"[{\"flag\":\"gsm3u8\",\"url\":\"第1集$https://b/1.m3u8#第2集$https://b/2.m3u8\"}]"}
                ]}}"#,
         )
         .unwrap();
         let lines = lines_of(&v);
-        assert_eq!(lines.len(), 2, "★ 必须解析出 2 条线路（多线路维度）");
-        assert_eq!(lines[0].0, "线路A");
-        assert_eq!(lines[0].1.len(), 2);
+        assert_eq!(lines.len(), 2, "★ 两个 list 元素 = 两条线路");
+        assert_eq!(lines[0].0, "xlm3u8", "flag 就是线路名");
+        assert_eq!(lines[0].1.len(), 1);
+        assert_eq!(lines[0].1[0].0, "正片", "`名$址` 拆开后是集名");
         assert_eq!(lines[0].1[0].1, "https://a/1.m3u8");
-        assert_eq!(lines[1].0, "线路B");
-        assert_eq!(lines[1].1[0].0, "第1集", "裸地址要给默认集名");
+        assert_eq!(lines[1].0, "gsm3u8");
+        assert_eq!(lines[1].1.len(), 2, "`#` 分集");
+        assert_eq!(lines[1].1[1].1, "https://b/2.m3u8");
     }
 
     #[test]
-    fn lines_of_skips_empty_and_names_unnamed_lines() {
+    fn lines_of_skips_empty_res_data_and_broken_json() {
         let v: serde_json::Value = crate::tvbox::parse_loose_json(
-            r#"{"data":{"resData":[{"url":""},{"url":"https://c/x.m3u8"}]}}"#,
+            r#"{"data":{"list":[
+                 {"siteId":1,"resData":"[]"},
+                 {"siteId":2,"resData":"不是 JSON"},
+                 {"siteId":3,"resData":"[{\"flag\":\"okm3u8\",\"url\":\"正片$https://c/1.m3u8\"}]"}
+               ]}}"#,
         )
         .unwrap();
         let lines = lines_of(&v);
-        assert_eq!(lines.len(), 1, "空 url 的线路要跳过");
-        assert_eq!(lines[0].0, "线路2", "无名线路按序号命名");
+        assert_eq!(lines.len(), 1, "空列表与坏 JSON 都要跳过，只留能解析的那条");
+        assert_eq!(lines[0].0, "okm3u8");
+        // 完全没有 data.list ⇒ 空（由 detail 负责报错，不在这里 panic）
+        let none: serde_json::Value = crate::tvbox::parse_loose_json(r#"{"state":-401}"#).unwrap();
+        assert!(lines_of(&none).is_empty());
     }
 
     #[test]

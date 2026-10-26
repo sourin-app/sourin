@@ -94,6 +94,7 @@ impl CspProvider {
             working: true,
             broken_reason: None,
             enabled: None,
+            hidden: false,
         };
         Ok(Self {
             manifest,

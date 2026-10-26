@@ -393,6 +393,25 @@ impl AppState {
         }
 
         /*
+         * ★ TVBox 聚合源（A′，第 01 项）：把已启用子站聚成**一个**条目。
+         *
+         * 子站自己 `hidden: true`（列表不展示），但仍留在 registry 里
+         * ⇒ `provider:native` 路由不变 ⇒ 收藏/进度/弹幕绑定零迁移。
+         *
+         * ⚠️ **幂等**：bootstrap 可能被调用多次（测试、开发者热重启）。
+         *    重复 `register` 同 id 会让清单里出现两条、`list_providers` 重复，
+         *    所以先按 id 查一次，已存在就跳过（**绝不 panic**）。
+         */
+        if registry.get(crate::tvbox_aggregate::AGGREGATE_ID).is_none() {
+            registry.register(std::sync::Arc::new(
+                crate::tvbox_aggregate::TvboxAggregate::new(
+                    registry.clone(),
+                    data_dir.clone(),
+                ),
+            ));
+        }
+
+        /*
          * ⑧ 应用「停用」状态 —— ★ 必须在所有源注册完之后
          *
          * 顺序错了的后果：注册会把 `enabled` 重置回 true，

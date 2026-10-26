@@ -286,6 +286,7 @@ impl HttpProvider {
             working: rm.working,
             broken_reason: rm.broken_reason,
             enabled: None,
+            hidden: false,
         };
 
         Ok(Self {
@@ -365,7 +366,7 @@ impl HttpProvider {
 impl MediaProvider for HttpProvider {
     fn manifest(&self) -> &ProviderManifest {
         &self.manifest
-    }
+        }
 
     async fn home(&self) -> Result<Vec<Section>> {
         let v = self.get_json("/home", &[]).await?;

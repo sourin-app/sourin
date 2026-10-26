@@ -108,6 +108,7 @@ pub mod commands_remote;
 // 把 TVBox 配置里的苹果CMS 站点就地转成原生 Provider。
 // 为什么不生成 JS 插件：见 tvbox.rs 顶部说明。
 pub mod tvbox;
+pub mod tvbox_aggregate;
 
 // ── ★ TVBox `csp_Xxx` 路由层（第19项）──
 //

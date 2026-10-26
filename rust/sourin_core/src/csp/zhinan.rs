@@ -179,6 +179,22 @@ fn re_pan() -> &'static Regex {
     })
 }
 
+/// 最小百分号编码（只保留 RFC3986 unreserved）
+///
+/// ⚠️ 不引入 url 库：本仓依赖表里没有它，而搜索词只需要这一件事。
+fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        match *b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 fn strip_tags(s: &str) -> String {
     let t = re_tag().replace_all(s, " ");
     let t = t.replace("&amp;", "&").replace("&nbsp;", " ").replace("&quot;", "\"");
@@ -385,8 +401,33 @@ impl CspSite for Zhinan {
         Ok(d)
     }
 
-    async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
-        Err("4KZhinan 不支持搜索（该类的搜索是 HTML（?post_type=book&s=），尚未实现）".to_string())
+    /// 搜索：WordPress 的 `?post_type=book&s=<kw>`（第 2 页起加 `&paged=N`）
+    ///
+    /// 解析**复用列表那套**（`parse_list`）—— 搜索结果页与分类页是同一个
+    /// 列表模板（`.posts-item.book-item`），只是查询入口不同。
+    async fn search(&self, kw: &str, page: u32, ext: &str) -> Result<CspList, String> {
+        let kw = kw.trim();
+        if kw.is_empty() {
+            return Err("搜索词为空".to_string());
+        }
+        let base = Self::site_of(ext);
+        let page = page.max(1);
+        let path = if page == 1 {
+            format!("/?post_type=book&s={}", urlencode(kw))
+        } else {
+            format!("/page/{page}/?post_type=book&s={}", urlencode(kw))
+        };
+        let html = self.get(&self.url_of(&base, &path)).await?;
+        let raw = parse_list(&html)?;
+        Ok(CspList {
+            page,
+            page_count: None,
+            total: None,
+            items: raw
+                .into_iter()
+                .map(|r| CspItem { id: r.id, title: r.title, cover: r.cover, subtitle: None })
+                .collect(),
+        })
     }
 
     async fn play(&self, _flag: &str, id: &str, ext: &str) -> Result<Vec<CspPlay>, String> {
@@ -565,6 +606,29 @@ mod tests {
             let play = z.play("", &ep.id, ext).await.expect("网盘分享页要能出线路");
             assert!(!play.is_empty());
             println!("LIVE|play|{}", play[0].url);
+        }
+    }
+
+    // ── 真网络：search（CSP_LIVE=1 + --ignored）──
+    #[tokio::test]
+    #[ignore = "真网络：CSP_LIVE=1 cargo test --lib csp_live_search_zhinan --release --offline -- --ignored --nocapture"]
+    async fn csp_live_search_zhinan() {
+        assert_eq!(
+            std::env::var("CSP_LIVE").ok().as_deref(),
+            Some("1"),
+            "★ 显式跑就必须给 CSP_LIVE=1（不给就失败，不许记成 ok）"
+        );
+        let ext = r#"{"site": ["https://4kzn.cc"]}"#;
+        let site = Zhinan::new();
+        match site.search("兰香如故", 1, ext).await {
+            Ok(list) => {
+                assert!(!list.items.is_empty(), "★ 搜索必须返回条目");
+                eprintln!("[LIVE] 4KZhinan search: {} 条", list.items.len());
+                for it in list.items.iter().take(3) {
+                    eprintln!("  · id={} title={}", it.id, it.title);
+                }
+            }
+            Err(e) => panic!("[LIVE] 4KZhinan search 失败（如实记录）：{e}"),
         }
     }
 }

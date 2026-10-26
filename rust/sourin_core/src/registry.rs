@@ -813,6 +813,7 @@ mod tests {
                     kind: "test".into(),
                     description: None,
                     icon: None,
+                    hidden: false,
                     id_prefixes: vec![],
                     capabilities: Capabilities {
                         login_required,
@@ -1242,6 +1243,7 @@ mod tests {
                 kind: "test".into(),
                 description: None,
                 icon: None,
+                hidden: false,
                 id_prefixes: vec![],
                 capabilities: Capabilities {
                     login_required: true,
@@ -1377,6 +1379,7 @@ mod tests {
                     kind: "test".into(),
                     description: None,
                     icon: None,
+                    hidden: false,
                     id_prefixes: vec![],
                     capabilities: Capabilities {
                         search: true,
@@ -1447,6 +1450,7 @@ mod tests {
                     kind: "test".into(),
                     description: None,
                     icon: None,
+                    hidden: false,
                     id_prefixes: vec![],
                     capabilities: Capabilities {
                         search: true,

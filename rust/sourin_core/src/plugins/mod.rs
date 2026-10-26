@@ -785,6 +785,7 @@ impl JsPluginProvider {
             broken_reason: None,
             // 启用状态由 `list_providers` 在出口处统一填（Provider 不关心）
             enabled: None,
+            hidden: false,
         };
 
         Ok(Self {
@@ -3687,7 +3688,7 @@ fn raw_decompress_off_client() -> reqwest::Client {
 impl MediaProvider for JsPluginProvider {
     fn manifest(&self) -> &ProviderManifest {
         &self.manifest
-    }
+        }
 
     /// 首页分区 —— 调插件的 `plugin.home()`
     async fn home(&self) -> Result<Vec<Section>> {

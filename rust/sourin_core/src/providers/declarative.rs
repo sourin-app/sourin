@@ -277,6 +277,7 @@ impl DeclarativeProvider {
             working: true,
             broken_reason: None,
             enabled: None,
+            hidden: false,
         };
 
         Ok(Self {
@@ -649,7 +650,7 @@ fn split_path(p: &str) -> Vec<Seg> {
 impl MediaProvider for DeclarativeProvider {
     fn manifest(&self) -> &ProviderManifest {
         &self.manifest
-    }
+        }
 
     async fn categories(&self) -> Result<Vec<Category>> {
         let Some(ep) = &self.spec.endpoints.categories else {

@@ -71,7 +71,8 @@ impl M3uLiveProvider {
                 working: true,
                 broken_reason: None,
                 enabled: Some(true),
-            },
+            hidden: false,
+        },
             url: url.trim().to_string(),
             cache: Mutex::new(Vec::new()),
             urls: Mutex::new(std::collections::HashMap::new()),
@@ -140,7 +141,7 @@ impl M3uLiveProvider {
 impl MediaProvider for M3uLiveProvider {
     fn manifest(&self) -> &ProviderManifest {
         &self.manifest
-    }
+        }
 
     /// 播放列表不提供点播
     async fn categories(&self) -> Result<Vec<Category>> {

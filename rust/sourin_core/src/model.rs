@@ -1237,6 +1237,13 @@ pub struct ProviderManifest {
     #[serde(default)]
     pub id_prefixes: Vec<String>,
     pub capabilities: Capabilities,
+    /// ★ 列表里**不展示**（TVBox 子站被聚合器接管后置 true）。
+    ///
+    /// 只影响 `listProviders` 的展示；路由/收藏/进度/弹幕绑定都仍走原子站 id
+    /// ⇒ 打开聚合功能**不会**让用户已有的收藏失联。
+    /// 默认 false：旧数据、手写 manifest 都不带这个字段。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
     /// ★ 抓封面图时需要附加的请求头（插件声明）
     ///
     /// # 为什么需要（实测根因）

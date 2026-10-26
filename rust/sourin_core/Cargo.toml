@@ -82,6 +82,12 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 #   这里只是提成直接依赖，**不新增编译单元**。
 flate2 = "1"
 
+# ★ csp_Bili 的 WBI 搜索（2026-10-26）：该源的搜索要求 `w_rid = md5(参数排序串 + mixin_key)`。
+#   **为什么不能用 ring**：ring 只提供 SHA-1/256/384/512 系列，**没有 MD5**
+#   （WBI 的 `w_rid` 就是 MD5）；`md-5` 是 RustCrypto 的纯 Rust 实现，
+#   无 C 依赖、不引入运行时（`digest` 是它的底座，同版本）。
+md-5 = "0.10"
+
 # ★ 第19项 csp_App99（2026-10-26）：响应/请求体是 AES-128/256-CBC + PKCS5。
 #   **为什么不能用 ring**：ring 只提供 AES-**GCM**，没有 CBC 模式（本项目的凭据加密用 GCM 是对的，
 #   但这里必须与站点协议一致）；`aes` + `cbc` 是 RustCrypto 的纯 Rust 实现，

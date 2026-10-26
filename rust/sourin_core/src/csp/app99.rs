@@ -800,8 +800,30 @@ impl CspSite for App99 {
         detail_of(&d, id)
     }
 
-    async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
-        Err("App99 不支持搜索（该类的 /vod/search 与 list 同一条链路，尚未单独暴露）".to_string())
+    /// 搜索：与 `list()` **同一条链路**（`POST /vod/search`，body 里 `kw`），
+    /// 区别只是 `kw` 来自用户输入而不是分类 id。
+    async fn search(&self, kw: &str, page: u32, _ext: &str) -> Result<CspList, String> {
+        let kw = kw.trim();
+        if kw.is_empty() {
+            return Err("搜索词为空".to_string());
+        }
+        let page = if page == 0 { 1 } else { page };
+        let body = serde_json::json!({
+            "kw": kw,
+            "page": page,
+            "limit": 21,
+            "orderBy": "vod_hits_month",
+            "sort": "desc",
+        });
+        let v = self.call("/vod/search", body).await?;
+        let items = items_of(&v)?;
+        if items.is_empty() {
+            // 与既有口径一致：**空即 Err**（不是"搜到了 0 条"这种假成功）
+            return Err(format!(
+                "搜索「{kw}」第 {page} 页返回 0 条（服务端没给数据，不是我们解析失败）"
+            ));
+        }
+        Ok(CspList { items, page, page_count: None, total: None })
     }
 
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
@@ -1252,5 +1274,28 @@ mod tests {
         assert_eq!(det.episodes.len(), 2);
         assert_eq!(det.episodes[1].id, "http://a/2.m3u8");
         assert_eq!(det.episodes[0].title, "第1集");
+    }
+
+    // ── 真网络：search（CSP_LIVE=1 + --ignored）──
+    #[tokio::test]
+    #[ignore = "真网络：CSP_LIVE=1 cargo test --lib csp_live_search_app99 --release --offline -- --ignored --nocapture"]
+    async fn csp_live_search_app99() {
+        assert_eq!(
+            std::env::var("CSP_LIVE").ok().as_deref(),
+            Some("1"),
+            "★ 显式跑就必须给 CSP_LIVE=1（不给就失败，不许记成 ok）"
+        );
+        let ext = r#"{"host":"http://103.217.190.91:19987/app/bn","appkey":"24d625a8a29b4700a1a294c6f3b29e2c","versionName":"3.5.8","name":"半日闲","package":"com.yf.lelian","buildNumber":"2001","buildSignature":"A40DA80A59D170CAA950CF15C18C454D47A39B26989D8B640ECD745BA71BF5DC"}"#;
+        let site = App99::new();
+        match site.search("兰香如故", 1, ext).await {
+            Ok(list) => {
+                assert!(!list.items.is_empty(), "★ 搜索必须返回条目");
+                eprintln!("[LIVE] App99 search: {} 条", list.items.len());
+                for it in list.items.iter().take(3) {
+                    eprintln!("  · id={} title={}", it.id, it.title);
+                }
+            }
+            Err(e) => panic!("[LIVE] App99 search 失败（如实记录）：{e}"),
+        }
     }
 }

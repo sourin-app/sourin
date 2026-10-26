@@ -37,6 +37,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 use super::{CspCategory, CspDetail, CspEpisode, CspHome, CspItem, CspList, CspPlay, CspSite};
+use md5::{Digest, Md5};
 
 /// 上游站点根地址
 ///
@@ -112,6 +113,71 @@ pub struct Bili {
     client: reqwest::Client,
 }
 
+/// WBI 的 mixin 置换表（该站前端 `wbi` 混淆表的公开常量，64 项）
+///
+/// 取法：`candidates[..]` 里按本表下标取字符，拼成 32 字符的 key。
+const WBI_MIXIN_TABLE: [usize; 64] = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29,
+    28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25,
+    54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+];
+
+/// 从 `nav` 的两个图片地址拼出 64 字符候选串
+///
+/// ```text
+/// img_url = https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png
+/// sub_url = https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png
+/// ⇒ "7cd084941338484aae1ad9425b84077c4932caff0ff746eab6f01bf08b70ac45"
+/// ```
+fn wbi_key_candidates(img_url: &str, sub_url: &str) -> String {
+    fn stem(u: &str) -> String {
+        let name = u.rsplit('/').next().unwrap_or(u);
+        name.split('.').next().unwrap_or(name).to_string()
+    }
+    format!("{}{}", stem(img_url), stem(sub_url))
+}
+
+/// 由 64 字符候选串算出 **32 字符** mixin key（按 `WBI_MIXIN_TABLE` 置换后取前 32）
+///
+/// ⚠️ 置换表有 64 项，但**只取前 32 个字符**当 key —— 这一步漏了会得到 64 字符，
+/// 算出的 `w_rid` 必然错（实测：真实 key 是 `ea1db124af3c7062474693fa704f4ff8`）。
+fn wbi_mixin_key(candidates: &str) -> String {
+    let chars: Vec<char> = candidates.chars().collect();
+    WBI_MIXIN_TABLE
+        .iter()
+        .filter_map(|&i| chars.get(i).copied())
+        .take(32)
+        .collect()
+}
+
+/// 把参数按 key 排序拼成 `k=v&...`（值里 `!'()*` 按 WBI 规则剔除）
+fn wbi_sorted_query(params: &[(String, String)]) -> String {
+    let mut kv: Vec<(String, String)> = params
+        .iter()
+        .map(|(k, v)| {
+            let cleaned: String = v
+                .chars()
+                .filter(|c| !matches!(c, '!' | '\'' | '(' | ')' | '*'))
+                .collect();
+            (k.clone(), cleaned)
+        })
+        .collect();
+    kv.sort_by(|a, b| a.0.cmp(&b.0));
+    kv.iter()
+        .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// `w_rid = md5(排序串 + mixin_key)`（小写十六进制）
+fn wbi_rid(sorted_query: &str, mixin_key: &str) -> String {
+    let mut h = Md5::new();
+    h.update(sorted_query.as_bytes());
+    h.update(mixin_key.as_bytes());
+    let out = h.finalize();
+    out.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 impl Bili {
     /// 注册表用的类名（= api 去掉 `csp_` 前缀）
     pub const CLASS: &'static str = "Bili";
@@ -170,6 +236,73 @@ impl Bili {
             return Err(format!("上游返回 code={code} message={msg}（{url}）"));
         }
         Ok(v.get("data").cloned().unwrap_or(Value::Null))
+    }
+
+    /// 取 32 字符 mixin key（先 `nav` 拿两张 wbi 图，再置换）
+    ///
+    /// ⚠️ `nav` 未登录也会给 `wbi_img`（WBI 设计如此）⇒ 不需要 Cookie。
+    async fn wbi_mixin_key_live(&self) -> Result<String, String> {
+        let data = self.get_data("/x/web-interface/nav").await?;
+        let img = data
+            .get("wbi_img")
+            .and_then(|v| v.get("img_url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let sub = data
+            .get("wbi_img")
+            .and_then(|v| v.get("sub_url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if img.is_empty() || sub.is_empty() {
+            return Err(format!(
+                "nav 没给 wbi_img（img_url={img:?} sub_url={sub:?}）⇒ 拿不到 WBI key"
+            ));
+        }
+        let candidates = wbi_key_candidates(img, sub);
+        if candidates.chars().count() < 64 {
+            return Err(format!(
+                "wbi 候选串长度 {} < 64（img={img} sub={sub}）",
+                candidates.chars().count()
+            ));
+        }
+        Ok(wbi_mixin_key(&candidates))
+    }
+
+    /// 组织一条已签名查询串：`k=v&...&wts=..&w_rid=<md5>`
+    ///
+    /// `wts` 由调用方给（测试传固定值 ⇒ 签名**可复现**；生产传当前秒）。
+    fn signed_query(mixin_key: &str, mut params: Vec<(String, String)>, wts: u64) -> String {
+        params.push(("wts".to_string(), wts.to_string()));
+        let sorted = wbi_sorted_query(&params);
+        let rid = wbi_rid(&sorted, mixin_key);
+        format!("{sorted}&w_rid={rid}")
+    }
+
+    /// 搜索结果里的一条 → [`CspItem`]
+    ///
+    /// 与排行条的差别：搜索的 `duration` 是 **`"mm:ss"` 字符串**（排行是秒数），
+    /// 且多了 `author`；标题可能带 `<em class="keyword">` 高亮 ⇒ 先剥标签。
+    fn to_search_item(x: &Value) -> Option<CspItem> {
+        let bvid = str_of(x, "bvid");
+        if bvid.is_empty() {
+            return None;
+        }
+        let author = str_of(x, "author");
+        let dur = str_of(x, "duration");
+        let mut subtitle = author;
+        if !dur.is_empty() {
+            subtitle = if subtitle.is_empty() {
+                dur
+            } else {
+                format!("{subtitle} · {dur}")
+            };
+        }
+        Some(CspItem {
+            id: bvid,
+            title: strip_em(str_of(x, "title")),
+            cover: nonempty(str_of(x, "pic")),
+            subtitle: nonempty(subtitle),
+        })
     }
 
     fn categories() -> Vec<CspCategory> {
@@ -368,8 +501,65 @@ impl CspSite for Bili {
     /// 取流：`playurl` + `fnval=1`（音视频合一的 mp4）
     ///
     /// `id` 形如 `BV1xx411c7mD|123456789`（[`CspSite::detail`] 里编的）。
-    async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
-        Err("Bili 不支持搜索（B 站的搜索要 WBI 签名（w_rid），本仓还没接 MD5）".to_string())
+    /// WBI 搜索（`/x/web-interface/wbi/search/type`）
+    ///
+    /// # 为什么必须签名
+    /// ```text
+    /// 该源把搜索换到 WBI 后，**不带 `w_rid` 直接 403**（实测，见
+    /// `.probe/bili-wbi-*.log`）；`w_rid = md5(排序查询串 + mixin_key)`
+    /// ⇒ 必须引入 MD5 实现（ring 只有 SHA 系列，没有 MD5）。
+    /// ```
+    async fn search(&self, kw: &str, page: u32, _ext: &str) -> Result<CspList, String> {
+        let kw = kw.trim();
+        if kw.is_empty() {
+            return Err("搜索关键词为空".to_string());
+        }
+        let page = if page == 0 { 1 } else { page };
+        let mixin = self.wbi_mixin_key_live().await?;
+        let wts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let query = Bili::signed_query(
+            &mixin,
+            vec![
+                ("search_type".to_string(), "video".to_string()),
+                ("keyword".to_string(), kw.to_string()),
+                ("page".to_string(), page.to_string()),
+            ],
+            wts,
+        );
+        let data = self
+            .get_data(&format!("/x/web-interface/wbi/search/type?{query}"))
+            .await?;
+        let arr = data
+            .get("result")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let items: Vec<CspItem> = arr.iter().filter_map(Bili::to_search_item).collect();
+        if items.is_empty() {
+            // ★ 空即 Err（"搜不到"与"接口坏了"对用户是两件事）
+            let raw = data.get("numResults").and_then(|v| v.as_u64()).unwrap_or(0);
+            return Err(format!(
+                "WBI 搜索没有返回条目（keyword={kw} page={page} numResults={raw}）"
+            ));
+        }
+        let total = data
+            .get("numResults")
+            .and_then(|v| v.as_u64())
+            .filter(|n| *n > 0);
+        let page_count = data
+            .get("numPages")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32)
+            .filter(|n| *n > 0);
+        Ok(CspList {
+            items,
+            page,
+            page_count,
+            total,
+        })
     }
 
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
@@ -421,6 +611,21 @@ impl CspSite for Bili {
 // ═══════════════════════════════════════════════════════════════════════
 //  小工具（故意不引 serde 的 derive：这里要的是「缺字段就是空」，不是报错）
 // ═══════════════════════════════════════════════════════════════════════
+
+/// 去掉搜索高亮标签：`<em class="keyword">兰香</em>如故` → `兰香如故`
+fn strip_em(s: String) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.replace("&quot;", "\"").replace("&amp;", "&")
+}
 
 fn str_of(v: &Value, key: &str) -> String {
     match v.get(key) {
@@ -607,6 +812,79 @@ mod tests {
             })
             .collect();
         String::from_utf8(bytes).expect("基线必须是合法 UTF-8")
+    }
+
+    // ── WBI 签名：**自证式**测试（不靠"能搜到"来证明）────────────────────
+    //
+    // 三条向量，全部是**已知输入 → 已知输出**：
+    //   ① MD5 标准向量（RFC 1321）：md5("abc") = 900150983cd24fb0d6963f7d28e17f72
+    //   ② 真实 WBI 例子：两张 wbi 图 ⇒ mixin key = ea1db124af3c7062474693fa704f4ff8
+    //   ③ 固定 wts ⇒ 固定 w_rid（参数排序 + 剔除 + 拼接 一条龙）
+
+    #[test]
+    fn md5_known_vector_abc() {
+        // 先把"MD5 本身算得对"钉死，否则下面 w_rid 的错会归因不了
+        assert_eq!(wbi_rid("abc", ""), "900150983cd24fb0d6963f7d28e17f72");
+    }
+
+    #[test]
+    fn wbi_mixin_key_from_real_bili_images() {
+        // 真实值（该站公开的两个 wbi 图）
+        let cand = wbi_key_candidates(
+            "https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png",
+            "https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png",
+        );
+        assert_eq!(cand.len(), 64, "候选串必须是 64 字符（两张图各 32）");
+        assert_eq!(
+            wbi_mixin_key(&cand),
+            "ea1db124af3c7062474693fa704f4ff8",
+            "置换后必须取**前 32 个字符**当 key"
+        );
+    }
+
+    #[test]
+    fn wbi_sorted_query_sorts_by_key_and_strips_forbidden_chars() {
+        // 乱序输入 + 值里带 `!'()*` ⇒ 排序 + 剔除
+        let q = wbi_sorted_query(&[
+            ("b".to_string(), "x(y)".to_string()),
+            ("a".to_string(), "1".to_string()),
+            ("c".to_string(), "!2*".to_string()),
+        ]);
+        assert_eq!(q, "a=1&b=xy&c=2");
+    }
+
+    #[test]
+    fn wbi_rid_is_deterministic_with_fixed_wts() {
+        // 固定 mixin + 固定 wts ⇒ 固定 w_rid（换机器/换时间都不会变）
+        let key = "ea1db124af3c7062474693fa704f4ff8";
+        let q = Bili::signed_query(
+            key,
+            vec![
+                ("search_type".to_string(), "video".to_string()),
+                ("keyword".to_string(), "兰香如故".to_string()),
+                ("page".to_string(), "1".to_string()),
+            ],
+            1700000000,
+        );
+        assert_eq!(
+            q,
+            "keyword=%E5%85%B0%E9%A6%99%E5%A6%82%E6%95%85&page=1&search_type=video&wts=1700000000&w_rid=49a7285053e380c2ac5f656e43f30a70"
+        );
+    }
+
+    #[test]
+    fn wbi_search_item_strips_highlight_tags() {
+        let v = serde_json::json!({
+            "bvid": "BV1xx411c7mD",
+            "title": "《<em class=\"keyword\">兰香</em>如故》预告",
+            "author": "某UP主",
+            "pic": "//i0.hdslb.com/a.jpg",
+            "duration": "12:34"
+        });
+        let it = Bili::to_search_item(&v).expect("应能映射");
+        assert_eq!(it.title, "《兰香如故》预告", "高亮标签必须剥掉");
+        assert_eq!(it.subtitle.as_deref(), Some("某UP主 · 12:34"));
+        assert_eq!(it.id, "BV1xx411c7mD");
     }
 
     #[test]
@@ -849,6 +1127,55 @@ mod tests {
 /// 默认        → ignored（不计入 passed，输出里是 `i` 而不是 `ok`）
 /// --ignored   → 真的跑；此时**必须** CSP_LIVE=1，否则 assert 失败（不许静默通过）
 /// ```
+/// 真网络：WBI 搜索（**必须 `CSP_LIVE=1` + `--ignored`**）
+///
+/// 语义与 `csp_live_bili_home_list_detail_play` 一致：
+/// ```text
+/// 默认        → ignored（不计入 passed）
+/// --ignored   → 真跑；此时**必须** CSP_LIVE=1，否则 assert 失败（不许静默通过）
+/// ```
+///
+/// 断言：
+/// - 条目数 > 0；
+/// - 每条都有 bvid（`id` 非空）；
+/// - 标题里**不含** `<em`（高亮标签必须已在 `to_search_item` 剥掉）；
+/// - 打印条目数 + 前 3 条标题（报告用）。
+    #[tokio::test]
+    #[ignore = "真网络：CSP_LIVE=1 cargo test --lib csp_live_bili_search --release --offline -- --ignored --nocapture"]
+    async fn csp_live_bili_search() {
+        assert_eq!(
+            std::env::var("CSP_LIVE").ok().as_deref(),
+            Some("1"),
+            "★ 真上游用例：显式跑就必须给 CSP_LIVE=1（不给就失败，不许记成 ok）"
+        );
+        let site = Bili::new();
+        let kw = "兰香如故";
+        let list = site.search(kw, 1, "").await.expect("WBI 搜索应成功");
+        eprintln!("[LIVE] search({kw}) ⇒ 条目 {} 个", list.items.len());
+        for (i, it) in list.items.iter().take(3).enumerate() {
+            eprintln!(
+                "[LIVE]   #{} {} | {} | subtitle={:?}",
+                i + 1,
+                it.id,
+                it.title,
+                it.subtitle
+            );
+        }
+        eprintln!(
+            "[LIVE] total={:?} page_count={:?}",
+            list.total, list.page_count
+        );
+        assert!(!list.items.is_empty(), "搜索必须至少返回一条");
+        assert!(
+            list.items.iter().all(|i| !i.id.is_empty()),
+            "每条都必须有 bvid"
+        );
+        assert!(
+            list.items.iter().all(|i| !i.title.contains("<em")),
+            "标题里的 <em class=\"keyword\"> 高亮必须已剥掉"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "真网络：CSP_LIVE=1 cargo test --lib csp_live --release -- --ignored --nocapture"]
     async fn csp_live_bili_home_list_detail_play() {

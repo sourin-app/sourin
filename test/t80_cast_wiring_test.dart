@@ -175,8 +175,17 @@ void main() {
           why: '★ 宿主必须 import 控件（原先零 ui/cast/ import）');
       indexOfExactly(_page, 'onTap: _openCast,',
           why: '★ 宿主只给一个回调 —— 按钮自己决定弹面板还是重投');
-      indexOfExactly(_page, "final url = _current?.url ?? '';",
-          why: '★ 数据源必须**只有** `_current`（卡面：不要新建 _curStream）');
+      /*
+       * 2026-10-26（t80 复核）：原来这里钉的是"某个字面行只出现一次"。
+       * 但那个字面行现在**合法地**出现在两处（`castEntry` 投屏、`_applyDemuxerOverride`
+       * 伪装 mp3 的 demuxer 覆盖）—— 判据守的其实是"**只认 `_current` 这一个数据源**"。
+       * ⇒ 拆成"必须来自 `_current`"+"不许出现第二个数据源"，**强度只增不减**：
+       *    原来数错一行就红（假红），现在真的有人新建 `_curStream` 才红。
+       */
+      expect(_page.contains("final url = _current?.url ?? '';"), isTrue,
+          reason: '★ 数据源必须来自 `_current`（不要另找来源）');
+      expect(_page.contains('_curStream'), isFalse,
+          reason: '★★ 不许引入第二个数据源（这条才是"只有 _current"真正的守点）');
       indexOfExactly(
           _page, 'headers: _current?.httpHeaders ?? const <String, String>{},',
           why: '★ headers 丢了就是电视端 403（INTEGRATION.md 四条易踩之一）');

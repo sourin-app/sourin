@@ -123,11 +123,41 @@ Future<String> pickLanAddress() async {
     // 按接口名排优先级：投屏的目标（电视）几乎总在同一 Wi-Fi 上，
     // 而 Android 上还可能有 rmnet（蜂窝）、tun（VPN）、各种虚拟网卡，
     // 随便挑一个的结果是「地址看起来对，但电视根本连不上」。
-    int rank(String name) {
+    /*
+     * 2026-10-26（t69 复核）：**虚拟网卡必须先被排到最后**。
+     *
+     * 实测踩到：这台机器上 `FlClash`（TUN 代理）拿到 `198.18.0.1`，
+     * 而 `以太网 2`（真局域网）是 `10.168.1.115` —— 旧排序里两个都落到
+     * rank 3，按 `NetworkInterface.list()` 的先后就选中了 198.18.0.1。
+     * 后果：**给电视的地址是 TUN 的网关地址，电视永远拉不到**；
+     * 本机自己 dial 也会卡到超时（t69 的三条用例就是这么红的）。
+     *
+     * ⇒ 两层判据：网卡名像虚拟/VPN/TUN 的排后，地址落在 198.18.0.0/15
+     *   （TUN 常用的 benchmark 段）的一律排后；真私网段优先。
+     */
+    bool looksVirtual(String name) {
       final n = name.toLowerCase();
-      if (n.startsWith('wlan')) return 0;
-      if (n.startsWith('eth')) return 1;
-      if (n.startsWith('en')) return 2;
+      const marks = <String>[
+        'flclash', 'clash', 'mihomo', 'tun', 'tap', 'vpn', 'zerotier',
+        'vethernet', 'virtual', 'vmware', 'hyper-v', 'wsl',
+        'docker', 'vethernet', 'bluetooth', '蓝牙',
+      ];
+      return marks.any(n.contains);
+    }
+
+    bool isTunBenchmark(String addr) =>
+        addr.startsWith('198.18.') || addr.startsWith('198.19.');
+
+    int rank(String name, String addr) {
+      final n = name.toLowerCase();
+      // 虚拟/VPN/TUN 与 198.18/15 一律垫底（电视连的是局域网，不是它们的网关）
+      if (looksVirtual(name) || isTunBenchmark(addr)) return 9;
+      // 中文网卡名（Windows）：以太网 / 本地连接 = 有线，WLAN/无线 = 无线
+      if (n.startsWith('wlan') || n.contains('无线')) return 0;
+      if (n.startsWith('eth') || n.startsWith('en') || n.contains('以太网')) return 1;
+      if (n.contains('本地连接')) return 4;
+      // 真私网段优先于其它（172.25.x 是 WSL/Hyper-V 的默认交换机）
+      if (addr.startsWith('192.168.') || addr.startsWith('10.')) return 2;
       return 3;
     }
 
@@ -136,7 +166,7 @@ Future<String> pickLanAddress() async {
       for (final a in i.addresses) {
         if (a.type != InternetAddressType.IPv4) continue;
         if (a.isLoopback || a.isLinkLocal) continue;
-        candidates.add((r: rank(i.name), addr: a.address));
+        candidates.add((r: rank(i.name, a.address), addr: a.address));
       }
     }
     if (candidates.isEmpty) {

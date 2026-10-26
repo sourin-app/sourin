@@ -30,7 +30,8 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/models.dart';
 import '../tokens.dart';
-import '../widgets/episode_strip.dart' show EpisodeLineBar;
+import '../widgets/episode_strip.dart'
+    show EpisodeLineBar, episodeLineFilter;
 import '../../design/icons/app_icons.dart';
 
 /// 选集面板的形态（按端分流，判据只在本件内做一次）
@@ -111,12 +112,29 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
   bool get _isDrawer => widget.style != PlayerEpisodePanelStyle.bottomSheet;
 
   int get _segmentCount =>
-      (widget.episodes.length + widget.segmentSize - 1) ~/ widget.segmentSize;
+      (_eps.length + widget.segmentSize - 1) ~/ widget.segmentSize;
 
-  /// 当前这一段里的下标列表（倒序时反着）
+  /// 本线路的集（2026-10-26 修：面板原先**从不按 `selectedFlag` 过滤**，
+  /// 31 条线路时网格里是 124 格、切线路只换高亮 ⇒ 用户眼里"选了没用"）
+  ///
+  /// `episodeLineFilter` 在 `selectedFlag == null`（单线路源）时**原样返回**，
+  /// 所以单线路路径零变化、一集都不会少。
+  List<Episode> get _eps =>
+      episodeLineFilter(widget.episodes, widget.selectedFlag);
+
+  /// ★ `widget.currentIndex` 是**全集索引**，但面板渲染的是 `_eps`（线路内索引）
+  /// ⇒ 必须映射，否则高亮会停在旧位置（切线路后指到别人家的第 N 集）。
+  int get _curInLine {
+    final i = widget.currentIndex;
+    if (i < 0 || i >= widget.episodes.length) return -1;
+    final cur = widget.episodes[i];
+    return _eps.indexWhere((e) => e.id == cur.id);
+  }
+
+  /// 当前这一段里的下标列表（倒序时反着）—— 下标是**本线路内**的
   List<int> get _shown {
     final start = _segment * widget.segmentSize;
-    final end = (start + widget.segmentSize).clamp(0, widget.episodes.length);
+    final end = (start + widget.segmentSize).clamp(0, _eps.length);
     final idx = <int>[for (var i = start; i < end; i++) i];
     if (_descending) idx.reversed.toList();
     return _descending ? idx.reversed.toList() : idx;
@@ -126,7 +144,7 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
     for (var s = 0; s < _segmentCount; s++)
       EpisodeSegment(
         '${s * widget.segmentSize + 1}-'
-        '${((s + 1) * widget.segmentSize).clamp(0, widget.episodes.length)}',
+        '${((s + 1) * widget.segmentSize).clamp(0, _eps.length)}',
         s,
       ),
   ];
@@ -134,10 +152,31 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
   @override
   void initState() {
     super.initState();
-    if (widget.currentIndex >= 0) {
-      _segment = widget.currentIndex ~/ widget.segmentSize;
+    final cur = _curInLine;
+    if (cur >= 0) {
+      _segment = cur ~/ widget.segmentSize;
     }
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToCurrent());
+  }
+
+  /*
+   * ★ 切线路 ⇒ 分页与滚动都要跟着换线路重算（2026-10-26）
+   *
+   * ```text
+   * 否则：用户在第 3 段、切到只有 4 集的线路 ⇒ `_segment` 越界 ⇒ `_shown` 空、
+   * 网格空白（"切过去一片黑"），且 `_scrollToCurrent` 用的是旧分段。
+   * ```
+   */
+  @override
+  void didUpdateWidget(PlayerEpisodePanel old) {
+    super.didUpdateWidget(old);
+    if (old.selectedFlag != widget.selectedFlag ||
+        old.episodes.length != widget.episodes.length) {
+      final cur = _curInLine;
+      final maxSeg = _segmentCount <= 0 ? 0 : _segmentCount - 1;
+      _segment = cur >= 0 ? (cur ~/ widget.segmentSize).clamp(0, maxSeg) : 0;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToCurrent());
+    }
   }
 
   @override
@@ -152,11 +191,11 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
   ///   列数用 `LayoutBuilder` 的实测宽度算，与网格用**同一个函数**。
   void _scrollToCurrent() {
     if (!_controller.hasClients) return;
-    if (widget.currentIndex < 0 ||
-        widget.currentIndex >= widget.episodes.length) {
+    final cur = _curInLine; // ★ 线路内索引（不是全集索引）
+    if (cur < 0 || cur >= _eps.length) {
       return;
     }
-    final pos = _positionOf(widget.currentIndex, _lastColumns);
+    final pos = _positionOf(cur, _lastColumns);
     if (pos == null) return;
     final target = pos.clamp(0.0, _controller.position.maxScrollExtent);
     if ((target - _controller.position.pixels).abs() < 1) return;
@@ -246,7 +285,7 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
       ),
       const SizedBox(width: Sp.x2),
       Text(
-        '共 ${widget.episodes.length} 集',
+        '共 ${_eps.length} 集',
         style: const TextStyle(
           color: Color(0xFF9A9AA0),
           fontSize: FontSizes.cap,
@@ -341,9 +380,10 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
   }
 
   Widget _cell(int i, double cellW) {
-    final ep = widget.episodes[i];
-    final active = i == widget.currentIndex;
-    final watched = widget.currentIndex > 0 && i < widget.currentIndex;
+    final ep = _eps[i]; // ★ 本线路的集
+    final cur = _curInLine; // ★ 高亮位置也按线路内索引比
+    final active = i == cur;
+    final watched = cur > 0 && i < cur;
     return Semantics(
       button: true,
       selected: active,

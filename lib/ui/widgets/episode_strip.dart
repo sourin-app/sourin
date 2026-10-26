@@ -1449,17 +1449,38 @@ class EpisodeLineBar extends StatelessWidget {
           Text('线路（${flags.length}）',
               style: TextStyle(fontSize: 12, color: colors.mutedForeground)),
           const SizedBox(height: Sp.x2),
-          Wrap(
-            spacing: Sp.x2,
-            runSpacing: Sp.x2,
-            children: [
-              for (final f in flags)
-                LineChip(
-                  flag: f,
-                  selected: f == selected,
-                  onTap: () => onPick(f),
-                ),
-            ],
+          /*
+           * ★★★ 2026-10-26：`Wrap` → **横向单行滚动**
+           *
+           * ```text
+           * 改前是 `Wrap(spacing…, runSpacing…)`：线路少时很好看，但爱看那种
+           * **31 条线路**在 360 宽（窄屏/手机）下会折成 4 行 —— 实测把播放页
+           * 选集面板的 Column **撑破 283px**（RenderFlex overflowed by 283
+           * pixels on the bottom，episode_panel.dart:212），而且第 31 条线路
+           * 只能靠"往下滚整块面板"才看得到。
+           *
+           * 现在：**一行 + 横向滚动**（Scrollbar 不显式画，桌面端靠系统滚轮/
+           * 拖拽，移动端靠滑动）⇒ 高度恒为一行，线路再多也不会把面板撑高；
+           * 每颗 chip 的点击区域、`LineChip` 的判据字段一个字都没改。
+           * ```
+           */
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            // 让"横向可滚动"这件事在渲染树上**可断言**（Scrollable.axisDirection）
+            primary: false,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = 0; i < flags.length; i++) ...[
+                  if (i > 0) SizedBox(width: Sp.x2),
+                  LineChip(
+                    flag: flags[i],
+                    selected: flags[i] == selected,
+                    onTap: () => onPick(flags[i]),
+                  ),
+                ],
+              ],
+            ),
           ),
         ],
       ),

@@ -4109,6 +4109,63 @@ class _PlayerPageState extends State<PlayerPage>
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  //  ★★★ 2026-10-26（Owner 投诉收口）：伪装成 `.mp3` 的 MP4 ⇒ 强制 demuxer
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 真根因（live-accept 实机取证）
+  // ```text
+  // 上游 URL：…/5bC85Y+k5Za15Za1MDF6bS5tcDQ=.mp3
+  // base64 解出：           尼古喇喇01zm.mp4      ← 真身是 MP4，后缀被伪装成 .mp3
+  // 现象：代理 206/468ms 正常转发、字节在流，但【首帧永远不出】；起播失败 0 次
+  // 原因：mpv 按 **URL 后缀**选 demuxer ⇒ .mp3 走音频 demuxer ⇒ 只有音轨
+  // ```
+  // 插件自己也写了这一点（`cycani.js:568-575`：「该站把 MP4 伪装成 .mp3…），
+  // 所以 `kind=mp4` 是**可信**的 ⇒ 用 kind 去纠正 mpv 的后缀猜测。
+  //
+  // ⚠️ 必须**每次起播都写一遍**（要么设 `mov`、要么显式清空）：
+  //    否则切到下一条**真 mp3**时残留 `mov` ⇒ 那条反而解析不了。
+
+  /// 上一次真正下发给 mpv 的值（null = 已清空）。探针可读，用于门禁。
+  String? _demuxerOverride;
+
+  /// 是否需要强制 demuxer：`kind` 说是 mp4，但 URL 后缀写着 `.mp3`
+  static bool needsDemuxerOverride(String url, String kind) {
+    final k = kind.toLowerCase();
+    final path = url.split('?').first.split('#').first.toLowerCase();
+    return k.contains('mp4') && path.endsWith('.mp3');
+  }
+
+  /// 把 demuxer 覆盖**下发/清空**给 mpv（每次起播前调用一次）
+  Future<void> _applyDemuxerOverride() async {
+    final url = _current?.url ?? '';
+    final kind = _current?.kind ?? '';
+    final want = needsDemuxerOverride(url, kind) ? 'mov' : '';
+    try {
+      final native = _player.platform;
+      /*
+       * ⚠️ 两处护栏（都是实测踩出来的）：
+       * ① `debugPlayerSkipOpenForProbe` 为真时**不碰 mpv** —— 门禁里 mpv 未就绪，
+       *    `setProperty` 会永久挂住（本仓 `delivery_test.dart:762` 记过同一件事）；
+       * ② 真机路径给 2 秒上限：万一 mpv 卡住，也不能把**起播**跟着卡死
+       *    （这条属性只是"纠正后缀猜测"，拿不到就退回 mpv 自己的判断）。
+       */
+      if (native is NativePlayer && !debugPlayerSkipOpenForProbe) {
+        await native
+            .setProperty('demuxer-lavf-format', want)
+            .timeout(const Duration(seconds: 2), onTimeout: () {
+          debugPrint('[PLAYER] demuxer-lavf-format 下发超时（2s）—— 跳过');
+        });
+      }
+      _demuxerOverride = want.isEmpty ? null : want;
+      debugPrint('[PLAYER] mpv: demuxer-lavf-format='
+          '${want.isEmpty ? "（清空）" : want}（kind=$kind '
+          'url=${url.length > 60 ? url.substring(url.length - 60) : url}）');
+    } catch (e) {
+      debugPrint('[PLAYER] 下发 demuxer-lavf-format 失败: $e');
+    }
+  }
+
   /// ★★★ task-22 P2-9：把**当前**解码模式下发给 mpv（用户切档时走这条）
   ///
   /// 为什么不复用 [_setHwdec]：那一个被 `test/hwdec_timing_test.dart`
@@ -5746,6 +5803,8 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ headers 为空时传 `const {}` 与不传等价 —— media_kit 用
        *    `?? cache[...]` 兜底，空 Map 不会破坏任何东西。
        */
+      // ★ 伪装的 .mp3（其实是 mp4）必须在 open 前纠正 demuxer，否则只有音轨
+      await _applyDemuxerOverride();
       if (!debugPlayerSkipOpenForProbe) {
         await _player.open(
           Media(st.url, httpHeaders: st.httpHeaders),
@@ -19564,6 +19623,26 @@ String debugPlayerFailureAttributionForProbe() {
 /// 本钩子**不设** _sawFirstFrame —— 只清"起播失败/中断"三件套。
 /// 不设它，是因为本钩子不假装"出过画面"，只把错误态抹平。
 /// ```
+/// 探针：**纯判据**（不改状态）—— kind 说 mp4 且后缀 .mp3 才需要强制 demuxer
+bool debugPlayerNeedsDemuxerOverrideForProbe(String url, String kind) =>
+    _PlayerPageState.needsDemuxerOverride(url, kind);
+
+/// 探针：当前真正下发给 mpv 的 demuxer 覆盖值（null = 已清空）
+String? debugPlayerDemuxerFormatForProbe() =>
+    _livePlayerState?._demuxerOverride;
+
+/// 探针：按 (url, kind) 走一遍**生产**下发路径（设置或清空）
+///
+/// ⚠️ 它经 `_applyDemuxerOverride()` ⇒ 残留语义（切到真 mp3 必须清空）
+///    也是**生产逻辑**在验证，不是测试自己写的判据。
+Future<bool> debugPlayerApplyDemuxerForProbe(String url, String kind) async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._current = StreamCandidate(url: url, kind: kind);
+  await s._applyDemuxerOverride();
+  return true;
+}
+
 bool debugPlayerClearErrorForProbe() {
   final s = _livePlayerState;
   if (s == null) return false;

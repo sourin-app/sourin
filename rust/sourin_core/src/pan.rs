@@ -172,11 +172,11 @@ pub fn reason_tier(kind: PanKind, share_id: &str, st: PanLoginState) -> PanReaso
     if share_id.trim().is_empty() {
         return PanReasonTier::NoShareId;
     }
-    if st.expired {
-        return PanReasonTier::Expired;   // INJECT: 顺序对调（过期判在未登录之前）
-    }
     if !st.logged_in {
         return PanReasonTier::NeedLogin;
+    }
+    if st.expired {
+        return PanReasonTier::Expired;
     }
     if !st.has_direct_link {
         return PanReasonTier::LoggedInNoDirectLink;

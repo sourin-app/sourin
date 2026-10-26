@@ -135,4 +135,74 @@ void main() {
             '请独占机器跑：`flutter test test/zz_t66_player_jank_perf_test.dart '
             '--run-skipped --tags perf-timing --concurrency=1`');
   });
+  testWidgets('T3-perf 光标已隐藏时 60 次 hover：p99 在预算内', (t) async {
+    MediaKit.ensureInitialized();
+    await _mount(t);
+    final p = TestPointer(1, PointerDeviceKind.mouse);
+    await _enterFullscreenPlaying(t);
+    /*
+     * 让光标进入"已隐藏"态 —— 照抄主文件 `_enterHiddenCursor` 的时序：
+     * 先 hover 一次让 `_noteCursorActivity` 起计时，再跨过 `kCursorIdleHide`（3s）。
+     * ⚠️ 只调 `debugPlayerAutoHideControlsForProbe()` + 320ms **不够**：
+     *    光标空闲隐藏有自己的 3s 计时器，踩过（前置直接红）。
+     */
+    await t.sendEventToBinding(p.hover(const Offset(200, 400)));
+    await t.pump();
+    debugPlayerAutoHideControlsForProbe();
+    await t.pump(const Duration(seconds: 4));
+    await t.pump();
+    expect(debugPlayerCursorIdleHiddenForProbe(), isTrue,
+        reason: '前置：光标要先进入已隐藏态（否则测的是 T4 那组）');
+
+    final costs = <int>[];
+    for (var i = 0; i < 60; i++) {
+      await t.sendEventToBinding(p.hover(Offset(200.0 + i * 2, 400)));
+      costs.add(await _timedPump(t));
+    }
+    final sortedCosts = [...costs]..sort();
+    final p99 = sortedCosts[((sortedCosts.length - 1) * 0.99).round()];
+    // ignore: avoid_print
+    print('T3-perf ⇒ 60× hover 帧耗时 p99=${p99}us（预算 ${kBudgetUs}us）'
+        '干净机器基准 p99≈1049us（改前 7167us）');
+
+    expect(p99, lessThan(kBudgetUs),
+        reason: 'p99 必须在 60fps 预算内（改前 p99=7167us，接近半帧预算）。\n'
+            '⚠️ **满载机器上本判据无可解释性**（p99 比 p95 更容易被单帧尖峰打穿），'
+            '请独占机器跑：`flutter test test/zz_t66_player_jank_perf_test.dart '
+            '--run-skipped --tags perf-timing --concurrency=1`');
+  });
+
+  testWidgets('T6-perf 隐藏→hover 8 轮：每轮叫回那一帧的 p99 在预算内', (t) async {
+    MediaKit.ensureInitialized();
+    await _mount(t);
+    final p = TestPointer(1, PointerDeviceKind.mouse);
+    await _enterFullscreenPlaying(t);
+    await t.sendEventToBinding(p.hover(const Offset(200, 400)));
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 320));
+
+    final costs = <int>[];
+    for (var cyc = 0; cyc < kRounds; cyc++) {
+      debugPlayerAutoHideControlsForProbe();
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 300)); // 让淡出跑完
+      expect(debugPlayerControlsVisibleForProbe(), isFalse,
+          reason: '第 $cyc 轮前置：控制条要真的收起来');
+      await t.sendEventToBinding(p.hover(Offset(201.0 + cyc, 400)));
+      costs.add(await _timedPump(t));
+      expect(debugPlayerControlsVisibleForProbe(), isTrue,
+          reason: '第 $cyc 轮副作用：控制条必须回来');
+    }
+    final sortedCosts = [...costs]..sort();
+    final p99 = sortedCosts[((sortedCosts.length - 1) * 0.99).round()];
+    // ignore: avoid_print
+    print('T6-perf ⇒ 8 轮 p99=${p99}us（预算 ${kBudgetUs}us）'
+        '干净机器基准 p99≈5000us（改前 10645us）');
+
+    expect(p99, lessThan(kBudgetUs),
+        reason: '每一轮叫回控制条的帧都要在 60fps 预算内（改前 p99=10645us）。\n'
+            '⚠️ **满载机器上本判据无可解释性**，请独占机器跑：'
+            '`flutter test test/zz_t66_player_jank_perf_test.dart '
+            '--run-skipped --tags perf-timing --concurrency=1`');
+  });
 }

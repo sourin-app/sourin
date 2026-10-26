@@ -488,7 +488,7 @@ void main() {
     expect(_page, greaterThanOrEqualTo(1),
         reason: '阳性对照必须 >=1 —— 否则本文件的重建计数没有区分力。'
             '★ 只接受 page>=1；`page==0 && all>0` 才是产品侧信号');
-  });
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   // ════════════════════════════════════════════════════════════════════
   //  T1 ★ 控制条从隐藏被叫回来（Owner 报的**字面**路径）
@@ -496,6 +496,51 @@ void main() {
   //
   // 改前：pageBuild=1 / all=188 / 单帧 10855us（= 16.7ms 预算的 65%）
   // 每条 hover 都重建一次 884 行的 build，就是这个「卡」。
+  /*
+   * ★★★ T0 **轻量行为用例**（2026-10-27 新增）：只做 **1 轮** hover，
+   * 不测帧耗时、不做 8 轮 —— 目的是让**全量里始终有一条能跑完的**
+   * "控制条 hover 不整页重建"用例。
+   *
+   * ```text
+   * 背景：r45 全量里本文件出现 11 条 `did not complete`（30s 默认超时，
+   *   满载下 8 轮真渲染 + 60 次 hover 跑不完）。把帧耗时断言搬走只去掉了"红"，
+   *   没去掉"跑不完" ⇒ 需要一条**成本低到一定跑得完**的行为判据留在全量。
+   * 判据（两条，与 T1 完全同源）：`page == 0`、`topBar/轮 ∈ [40, 80]`。
+   * ```
+   */
+  testWidgets('T0 轻量：1 轮 hover 叫回 ⇒ 整页 build=0、顶栏重建 40~80 次', (t) async {
+    if (!_requireLibmpv()) return;
+    if (!_requireSourinCore()) return;
+    await _mount(t);
+    final p = TestPointer(1, PointerDeviceKind.mouse);
+    await _enterFullscreenPlaying(t);
+    await t.sendEventToBinding(p.hover(const Offset(200, 400)));
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 320));
+
+    debugPlayerAutoHideControlsForProbe();
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 300));
+    expect(debugPlayerControlsVisibleForProbe(), isFalse,
+        reason: '前置：控制条必须真的收起');
+
+    _installRebuildCounter();
+    await t.sendEventToBinding(p.hover(const Offset(210, 400)));
+    await t.pump();
+    final page = _page, topBar = _topBar;
+    // ignore: avoid_print
+    print('T0 轻量 1 轮 ⇒ page=$page topBar=$topBar（判据：page==0、40<=topBar<=80）');
+
+    expect(debugPlayerControlsVisibleForProbe(), isTrue,
+        reason: '副作用：控制条必须真的回来（不许靠"不显示"换性能）');
+    expect(page, 0,
+        reason: '★ 整页 `PlayerPage` 不许重建（实际 $page）—— 不为 0 ⇒ '
+            '光标/控制条态又走回整页 setState');
+    expect(topBar, inInclusiveRange(40, 80),
+        reason: '★★ 顶栏子树必须**真的重建**（实际 $topBar）：'
+            '<40 ⇒ 广播没通知（箭头看得见点不到）；>80 ⇒ 一次 hover 通知了两次');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
   testWidgets('T1 控制条隐藏后 1 次 hover 叫回 ⇒ 整页 build=0，单帧 < 16.7ms',
       (t) async {
     if (!_requireLibmpv()) return;
@@ -611,7 +656,7 @@ void main() {
     // ignore: avoid_print
     print('T1 帧耗时读数（**只记录不硬断言**，护栏在 perf 文件）：'
         'p50=${p50}us max=${p95}us');
-  });
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   // ════════════════════════════════════════════════════════════════════
   //  元门禁：行为判据 / 帧耗时判据 **不许互相搬家**
@@ -644,7 +689,11 @@ void main() {
 
     // ── ② 主文件里不许出现**帧耗时**断言 ──
     // ★ needle 用拼接构造：否则本文件里这行字面量会把自己的判据弄红（自指）
-    final needles = <String>['lessThan(' + '33400)', 'p95' + ', lessThan('];
+    final needles = <String>[
+      'lessThan(' + '33400)',
+      'p95' + ', lessThan(',
+      'lessThan(' + '16700)',
+    ];
     for (final lit in needles) {
       final hits = RegExp(RegExp.escape(lit)).allMatches(mainSrc).length;
       expect(hits, 0,
@@ -661,7 +710,7 @@ void main() {
     // ignore: avoid_print
     print('META_JANK|main=${mainSrc.length}B perf=${perfSrc.length}B '
         '行为符号命中=0 帧耗时字面量命中=0');
-  });
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   // ════════════════════════════════════════════════════════════════════
   //  T2 ★ 光标隐藏 / 恢复
@@ -780,7 +829,7 @@ void main() {
             'T1 同一路径是 4）。\n'
             '★ 原阈值 3 同样是按「理论下限 2 + 留 1」估的，与 T1 一样少算了。\n'
             '★ 改前这里是 188 —— 若读到 100+，说明整页 setState 又回来了。');
-  });
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   // ════════════════════════════════════════════════════════════════════
   //  T3 ★ 60 次/秒 hover（两种光标态都要 0）
@@ -825,9 +874,16 @@ void main() {
      *   updateChild，本轨道**未做**，如实记录。
      * ```
      */
-    expect(_pct(costs, .99), lessThan(16700),
-        reason: 'p99 必须在 60fps 预算内（改前 p99=7167us，接近半帧预算）');
-  });
+    /*
+     * 2026-10-27: T3 timing assertion (p99 < 16.7ms) moved out of this file.
+     * Same reason as T1: p99 is the most spike-sensitive; clean machine vs full
+     * suite differs 3-5x. Moved to zz_t66_player_jank_perf_test.dart (perf-timing).
+     * Behavior assertion `expect(_page, 0)` stays here (runs in full suite).
+     */
+    // ignore: avoid_print
+    print('T3 timing (record only, guard lives in perf file): '
+        'p99=${_pct(costs, .99)}us (budget 16700us)');
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   testWidgets('T4 光标已显示时 60 次 hover ⇒ 整页 build=0（回归守卫）', (t) async {
     if (!_requireLibmpv()) return;
@@ -851,7 +907,7 @@ void main() {
         reason: '这条在改前就是绿的（t72 的 PA 覆盖的正是它）—— '
             '★ 保留它是**阴性对照**：证明本文件不是"怎么都红"，'
             '而且改造光标路径后不许把它弄红');
-  });
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   // ════════════════════════════════════════════════════════════════════
   //  T5 ★ 淡入淡出动画仍在（不许砍动画换帧率 —— Owner 红线）
@@ -928,7 +984,7 @@ void main() {
         reason: '动画期间整页 build 必须为 0 —— 动画帧只该驱动被 AnimatedBuilder '
             '包住的那几层。改前这里是 0（因为底栏那条已经局部化了），'
             '★ 但顶栏 `_TopBar` 的 fade 只在它自己内部 AnimatedBuilder 里 ⇒ 同样必须是 0');
-  });
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   // ════════════════════════════════════════════════════════════════════
   //  T6 ★ 隐藏 → hover 循环（模拟用户反复停手/动手）
@@ -968,7 +1024,12 @@ void main() {
     expect(totalPage, 0,
         reason: '★ 这是 Owner 感受最直接的一条：停手→控制条收→一动鼠标它回来。'
             '改前 8 轮 8 次整页重建、每次 ~8ms');
-    expect(_pct(costs, .99), lessThan(16700),
-        reason: '每一轮叫回控制条的帧都要在 60fps 预算内（改前 p99=10645us）');
-  });
+    /*
+     * 2026-10-27: T6 timing assertion (p99 < 16.7ms) also moved out
+     * (same shape as T1/T3). Behavior assertion `expect(totalPage, 0)` stays.
+     */
+    // ignore: avoid_print
+    print('T6 timing (record only, guard lives in perf file): '
+        'p99=${_pct(costs, .99)}us (budget 16700us)');
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }

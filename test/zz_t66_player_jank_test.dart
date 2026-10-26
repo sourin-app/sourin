@@ -132,6 +132,9 @@
 //
 // ⚠️ 只在 `PlayerPage` 上量；不测 GPU、不测真机帧率 —— 那两条见文件末说明。
 
+@Tags(<String>['native-media'])
+library;
+
 import 'dart:io';
 
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
@@ -141,6 +144,19 @@ import 'package:media_kit/media_kit.dart';
 
 import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/ui/player_page.dart';
+
+// ★★★ 2026-10-27（lead 裁决 A）：本文件**必须**挂 `native-media`
+//
+// ```text
+// 它加载真 libmpv + 真 PlayerPage。实测（3 文件连跑、空载、13~16s）：
+//   run1 过；run2/run3 在 **7 秒** 时整个 suite 的用例（连 `tearDownAll`）
+//   一起 `did not complete` ⇒ **是 native 进程死，不是用例慢** ⇒ 加 timeout 治不了。
+// 这正是 `dart_test.yaml` 顶部 native-media 那段话写的现象。
+// ⇒ 归位到 native-media（默认 skip），手动跑：
+//   flutter test test/zz_t66_player_jank_test.dart --run-skipped --tags native-media --concurrency=1
+// 全量里仍有 hover 行为判据：`test/zz_t66_hover_behavior_light_test.dart`（untagged、不加载 libmpv）。
+// ```
+
 import 'package:sourin_spike/ui/remote_bridge.dart';
 
 // ══════════════════════════════════════════════════════════════════════

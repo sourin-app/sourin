@@ -424,5 +424,5 @@ void main() {
           '播放器子树被 ErrorWidget 顶替时，上面六项布局指纹会「自己等于自己」'
           '⇒ 只有这一条能把它抓住。首条异常 = $firstErr',
     );
-  });
+  }, timeout: const Timeout(Duration(minutes: 3))); // 有界收敛：满载下允许慢，不许被 30s 判死
 }

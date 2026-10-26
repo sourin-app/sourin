@@ -289,6 +289,10 @@ class SettingsPageState extends State<SettingsPage> {
   ///    进页面就发一串读配置请求。
   final Set<String> _expandedProviderIds = <String>{};
 
+  /// 「TVBox 聚合」分组是否展开（Owner A′ 的 B 半：默认展开，先让用户看见）
+  bool _tvboxExpanded = true;
+
+
   /// 切换某张卡的详情区展开态
   void _toggleProviderDetails(String id) {
     setState(() {
@@ -1196,6 +1200,30 @@ class SettingsPageState extends State<SettingsPage> {
       subsetIds: ids,
       oldIndex: i,
       newIndex: j,
+    );
+    if (next == null) return;
+    await _persistOrder(next, '顺序已保存（{} 个源）');
+  }
+
+  /// 在**任意子序列**内重排（TVBox 聚合分组用：折叠后展示顺序是 others+tvbox）
+  ///
+  /// 与 [_onReorderProviders] 同一条纪律：
+  ///   · 下标是**子序列内**的，不能拿去切全局 （会移走别的源）
+  ///   · 落盘仍是新的**全局顺序**（ 只重排子序列那几格）
+  Future<void> _onReorderWithin(
+    List<ProviderManifest> subset,
+    int oldIndex,
+    int newIndex,
+  ) async {
+    if (oldIndex < 0 || oldIndex >= subset.length) return;
+    if (newIndex < 0) newIndex = 0;
+    if (newIndex >= subset.length) newIndex = subset.length - 1;
+    if (newIndex == oldIndex) return;
+    final next = reorderSubsetIds(
+      allIds: _providers.map((p) => p.id).toList(),
+      subsetIds: subset.map((p) => p.id).toList(),
+      oldIndex: oldIndex,
+      newIndex: newIndex,
     );
     if (next == null) return;
     await _persistOrder(next, '顺序已保存（{} 个源）');
@@ -4187,24 +4215,43 @@ class SettingsPageState extends State<SettingsPage> {
           isEmpty: list.isEmpty,
           onImport: _openImportDialog,
         ),
+        /*
+         * ★ 2026-10-26（Owner 架构要求 A′ 的 **B 半**）：
+         *   TVBox 导入出来的源不再散成 16 张"平级卡"，而是收进
+         *   **「TVBox 聚合」**这一个可折叠分组标题下：
+         *   ```text
+         *   [其他源…（JS/HTTP/声明式，各自独立卡片）]
+         *   ┌ TVBox 聚合（16 个源）  ▸/▾
+         *   └ 折叠后只剩这一行；展开才是那 16 张卡
+         *   ```
+         * ⚠️ 这一层**只改展示分组**：卡片、id、启用态、排序一个都没变
+         *   （身份零迁移；`provider:native` 的收藏/进度/弹幕绑定不受影响）。
+         *   真正的"单个聚合源"由 Rust 侧 `hidden` + `csp/aggregate.rs` 承接。
+         */
+        if (tvboxGroupCount(list) > 0)
+          TvboxGroupHeader(
+            count: tvboxGroupCount(list),
+            expanded: _tvboxExpanded,
+            onToggle: () => setState(() => _tvboxExpanded = !_tvboxExpanded),
+          ),
         ReorderableCardGrid(
-          // ★ 只画非直播源（见本方法开头的说明）
-          itemCount: list.length,
+          // ★ 只画非直播源（见本方法开头的说明）；折叠 TVBox 组时把它们整段省掉
+          itemCount: tvboxGroupOrder(list, expanded: _tvboxExpanded).length,
           dragSlotWidth: _dragSlotW,
           // ★ TV 用更宽的列下限 —— 理由同上（live 列表那处有完整说明）。
           minItemWidth: Device.isTv ? 440 : kMinCardWidth,
-          onReorder: _onReorderProviders,
+          onReorder: (o, n) => _onReorderWithin(tvboxGroupOrder(list, expanded: _tvboxExpanded), o, n),
           itemBuilder: (context, i, dragHandle, cellWidth) => Padding(
-            key: ValueKey(list[i].id),
+            key: ValueKey(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id),
             padding: EdgeInsets.zero,
             child: _ProviderCard(
-              provider: list[i],
+              provider: tvboxGroupOrder(list, expanded: _tvboxExpanded)[i],
               /*
                * ★ 第 07 项：展开态由宿主持有 —— 同一个 `Set` 同时服务
                * 「内容源」与「直播源」两份列表（按源 id，天然互不干扰）。
                */
-              expanded: _expandedProviderIds.contains(list[i].id),
-              onToggleDetails: () => _toggleProviderDetails(list[i].id),
+              expanded: _expandedProviderIds.contains(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id),
+              onToggleDetails: () => _toggleProviderDetails(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id),
               /*
                * ★ 本格宽度由网格传进来（`ReorderableCardGrid` 算的列数
                * 本来就是按它分的）。卡片用它决定按钮横排还是换行。
@@ -4230,11 +4277,11 @@ class SettingsPageState extends State<SettingsPage> {
                */
               canMoveUp: i > 0,
               canMoveDown: i < list.length - 1,
-              onMoveUp: () => _moveProviderBy(list[i].id, -1),
-              onMoveDown: () => _moveProviderBy(list[i].id, 1),
-              onToggle: () => _toggleProvider(list[i]),
-              onRemove: _removeOf(list[i]),
-              onEdit: () => _editProvider(list[i]),
+              onMoveUp: () => _moveProviderBy(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id, -1),
+              onMoveDown: () => _moveProviderBy(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id, 1),
+              onToggle: () => _toggleProvider(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i]),
+              onRemove: _removeOf(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i]),
+              onEdit: () => _editProvider(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i]),
               /*
                * ★★ 合并后从原 `_PluginTile` **并过来**的两样
                *
@@ -4251,13 +4298,13 @@ class SettingsPageState extends State<SettingsPage> {
                * 文件，两个都传 null → 卡片上不画「配置」按钮、
                * 描述行也不拼文件名。
                */
-              pluginEntry: _pluginOf(list[i].id),
-              onConfig: _configOf(list[i].id),
+              pluginEntry: _pluginOf(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id),
+              onConfig: _configOf(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id),
               // ★ task-5：标识 chip 可点复制上游链接 —— 复用宿主现成的 `_copy`
               //（它带「已复制」toast，且 `_toastRev` 让二级页也看得到）
               onCopy: _copy,
               // ★ 第 06 项：源个性化覆盖层入口（按源，不改原件）
-              onOverride: () => _openOverrideEditor(list[i].id, list[i].name),
+              onOverride: () => _openOverrideEditor(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id, tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].name),
               /*
                * ★★ 只有**有安装链接**的插件才有这个入口（task-23）
                *
@@ -4269,9 +4316,9 @@ class SettingsPageState extends State<SettingsPage> {
                *（没有任何 meta）→ **26 张卡一个都不会有这个按钮**。
                * 这是**正确行为**，不是 bug —— 见字段注释的原则。
                */
-              onPluginUpdate: _pluginSources.containsKey(list[i].id)
+              onPluginUpdate: _pluginSources.containsKey(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id)
                   ? () =>
-                        _openPluginUpdate(list[i].id, list[i].name)
+                        _openPluginUpdate(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id, tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].name)
                   /*
                    * TVBox 源走**另一个弹窗**（task-14 附加）
                    *
@@ -4285,8 +4332,8 @@ class SettingsPageState extends State<SettingsPage> {
                    * 两处都查不到 => 仍传 `null` => **不画按钮**
                    * （`test/plugin_update_ui_test.dart` 钉住了这个语义）。
                    */
-                  : _tvboxSources.containsKey(list[i].id)
-                  ? () => _openTvboxUpdate(list[i].id, list[i].name)
+                  : _tvboxSources.containsKey(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id)
+                  ? () => _openTvboxUpdate(tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].id, tvboxGroupOrder(list, expanded: _tvboxExpanded)[i].name)
                   : null,
             ),
           ),
@@ -8117,5 +8164,113 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
           ),
         );
     }
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  「TVBox 聚合」分组（Owner 架构要求 A′ 的 B 半）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 为什么先做这一层（纯 Dart、零身份迁移）
+// ```text
+// 现状：一次 TVBox 导入把每个 site 变成一张独立卡（用户真实数据里是 16 张）
+// ⇒ 观感上"聚合"根本不存在。
+// Owner 要的是"一个插件条目"。完整 A′ 需要 Rust 侧 hidden + aggregate.rs；
+// 在那之前，先**把展示分组**做出来：16 张卡收进一个可折叠标题。
+// ★ 卡片/id/启用态/排序**一个都没变** ⇒ provider:native 的
+//   收藏/进度/弹幕绑定/下载队列零迁移。
+// ```
+
+/// TVBox 导入源（`kind == 'tvbox'`）—— 归入「TVBox 聚合」组
+@visibleForTesting
+bool isTvboxGroupedSource(ProviderManifest p) => p.kind == 'tvbox';
+
+/// 组内条目数（0 ⇒ 不画分组标题）
+@visibleForTesting
+int tvboxGroupCount(List<ProviderManifest> list) =>
+    list.where(isTvboxGroupedSource).length;
+
+/// 折叠态下的**展示顺序**：其他源在前，TVBox 组在后；折叠时整组省掉
+///
+/// ⚠️ 这是纯函数（不读 State）—— 门禁用注入证明折叠必须真的少画。
+@visibleForTesting
+List<ProviderManifest> tvboxGroupOrder(
+  List<ProviderManifest> list, {
+  required bool expanded,
+}) {
+  final others = <ProviderManifest>[];
+  final tvbox = <ProviderManifest>[];
+  for (final p in list) {
+    (isTvboxGroupedSource(p) ? tvbox : others).add(p);
+  }
+  if (!expanded) return others;
+  return <ProviderManifest>[...others, ...tvbox];
+}
+
+/// 「TVBox 聚合」分组标题（可折叠）
+class TvboxGroupHeader extends StatelessWidget {
+  const TvboxGroupHeader({
+    super.key,
+    required this.count,
+    required this.expanded,
+    required this.onToggle,
+  });
+
+  final int count;
+  final bool expanded;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: Sp.x2),
+      child: Material(
+        color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
+        borderRadius: Radii.rLg,
+        child: InkWell(
+          key: const ValueKey<String>('tvbox-group-header'),
+          borderRadius: Radii.rLg,
+          onTap: onToggle,
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x3),
+            child: Row(
+              children: <Widget>[
+                Icon(AppIcons.folder_outlined, size: 16, color: colors.primary),
+                const SizedBox(width: Sp.x2),
+                Expanded(
+                  child: Text(
+                    'TVBox 聚合（$count 个源）',
+                    key: const ValueKey<String>('tvbox-group-title'),
+                    style: TextStyle(
+                      fontSize: FontSizes.sm,
+                      fontWeight: FontWeight.w600,
+                      color: colors.onSurface,
+                    ),
+                  ),
+                ),
+                Text(
+                  expanded ? '收起' : '展开',
+                  key: const ValueKey<String>('tvbox-group-toggle-label'),
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: Sp.x1),
+                Icon(
+                  expanded
+                      ? AppIcons.keyboard_arrow_up
+                      : AppIcons.keyboard_arrow_down,
+                  size: 18,
+                  color: colors.onSurfaceVariant,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

@@ -1399,6 +1399,10 @@ class SourinApi {
     int? outroStart,
     int? outroEnd,
     bool? autoSkip,
+    /// 中插区间（与 `setSkipMarker` 的 `midrolls` 同形状）
+    ///
+    /// ★ 注入口必须跟着真入口长（今天反复踩过"注入口没跟上 ⇒ 门禁盖不到"）
+    List<({int startSec, int endSec})>? midrolls,
   })? debugSkipMarkerWriter;
 
   /// 清空跳过点 —— 同上，生产路径永不为非 null
@@ -1414,12 +1418,17 @@ class SourinApi {
     int? outroStart,
     int? outroEnd,
     bool? autoSkip,
+    /// 中插广告区间（秒，半开 `[startSec, endSec)`）
+    ///
+    /// 不传 ⇒ 后端保持旧行为（空数组）。传 `[]` ⇒ 明确清空。
+    List<({int startSec, int endSec})>? midrolls,
   }) {
     final fake = debugSkipMarkerWriter;
     if (fake != null) {
       // 门禁注入：fake 顶替核心层传输。生产路径永为 null。
       return fake(
         title: title,
+        midrolls: midrolls,
         introStart: introStart,
         introEnd: introEnd,
         outroStart: outroStart,
@@ -1436,6 +1445,11 @@ class SourinApi {
       if (outroStart != null) 'outro_start': outroStart,
       if (outroEnd != null) 'outro_end': outroEnd,
       if (autoSkip != null) 'auto_skip': autoSkip,
+      // ★ 中插：只有"明确给了"才传（`[]` 表示清空；不传 ⇒ 后端保持旧值/空数组）
+      if (midrolls != null)
+        'midrolls': [
+          for (final m in midrolls) {'start': m.startSec, 'end': m.endSec}
+        ],
     });
   }
 

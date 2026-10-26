@@ -159,6 +159,43 @@ pub fn clear_history(state: &AppState) -> Result<(), String> {
 /// ① 每个区间内部：start < end
 /// ② 片头整体在片尾之前：intro_end <= outro_start
 /// ```
+
+/// 中插区间的**校验 + 归一化**（纯函数，唯一实现）
+///
+/// 规则与理由：
+/// ```text
+/// ① 每段 end > start          —— 反了就是"负时长"，播到那会立刻 seek 回去、死循环
+/// ② 段数上限 200              —— 防止一次塞几万段把库撑爆（也防 UI 卡死）
+/// ③ 按 (start,end) 升序 + 去重 —— 与 store.rs 的 merge_spans 同口径；
+///    不排序的话库里顺序不确定，UI 上中插会"乱跳"
+/// ```
+/// ⚠️ 校验必须在**写库之前**（本函数被 `set_skip_marker` 在 upsert 之前调用）——
+///    否则坏数据会半写进库（真实事故：遥控端直接发命令绕过前端防呆）。
+pub fn normalize_midrolls(
+    midrolls: Vec<crate::store::SkipSpan>,
+) -> Result<Vec<crate::store::SkipSpan>, String> {
+    if midrolls.len() > 200 {
+        return Err(format!(
+            "中插区间最多 200 段，实际 {} 段（一次塞太多会把库撑爆）",
+            midrolls.len()
+        ));
+    }
+    for (i, s) in midrolls.iter().enumerate() {
+        if s.end <= s.start {
+            return Err(format!(
+                "第 {} 段 end 必须大于 start（实际 start={} end={}）",
+                i + 1,
+                s.start,
+                s.end
+            ));
+        }
+    }
+    let mut v = midrolls;
+    v.sort_by_key(|s| (s.start, s.end));
+    v.dedup_by_key(|s| (s.start, s.end));
+    Ok(v)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn set_skip_marker(
     state: &AppState,
@@ -170,6 +207,7 @@ pub fn set_skip_marker(
     outro_start: Option<u64>,
     outro_end: Option<u64>,
     auto_skip: Option<bool>,
+    midrolls: Vec<crate::store::SkipSpan>,
 ) -> Result<(), String> {
     if let (Some(s), Some(e)) = (intro_start, intro_end) {
         if s >= e {
@@ -187,6 +225,24 @@ pub fn set_skip_marker(
         }
     }
 
+    /*
+     * ★ 中插区间的校验（**必须在写库之前** —— 否则坏数据会半写进库）
+     *
+     * 为什么命令层要自己校验一遍（而不是信任调用方）：
+     * ```text
+     * 遥控端/脚本可能直接发命令，不经过 UI 的前端防呆（本仓真实事故：
+     * 上一版把整个视频 1420 秒设成了片头）。
+     * ```
+     * 规则：
+     * ```text
+     * ① 每段 end > start（u64 ⇒ start >= 0 天然成立）
+     * ② 段数上限 200（防止有人一次性塞几万段把库撑爆）
+     * ③ 按 (start, end) 升序 + 完全相同去重 —— 与 store.rs 的 merge_spans 同口径，
+     *    否则库里顺序不确定，UI 上会看到"中插顺序乱跳"
+     * ```
+     */
+    let midrolls = normalize_midrolls(midrolls)?;
+
     state.db.upsert_skip_marker(&SkipMarker {
         key: item_key(provider, id),
         provider: provider.to_string(),
@@ -197,7 +253,7 @@ pub fn set_skip_marker(
         outro_start,
         outro_end,
         auto_skip,
-        midrolls: Vec::new(),
+        midrolls,
         updated_at: chrono::Utc::now().timestamp_millis(),
     })
 }
@@ -556,4 +612,40 @@ pub fn repoint_item(
 
     log::info!("★ 换源迁移记录: {from_key} → {to_key}");
     state.db.repoint_item(&from_key, &to_key)
+}
+
+#[cfg(test)]
+mod midroll_tests {
+    use super::*;
+    use crate::store::SkipSpan;
+
+    fn sp(a: u64, b: u64) -> SkipSpan {
+        SkipSpan { start: a, end: b }
+    }
+
+    #[test]
+    fn midrolls_sorted_and_deduped() {
+        // ★ 顺序不确定 ⇒ 归一化后必须按 (start,end) 升序且完全相同的去重
+        let out = normalize_midrolls(vec![sp(1200, 1260), sp(600, 660), sp(600, 660)]).unwrap();
+        assert_eq!(out, vec![sp(600, 660), sp(1200, 1260)]);
+    }
+
+    #[test]
+    fn midrolls_rejects_reversed_span_with_index() {
+        let err = normalize_midrolls(vec![sp(600, 660), sp(1200, 1200)]).unwrap_err();
+        assert!(err.contains("第 2 段"), "文案要点名第几段：{err}");
+        assert!(err.contains("end 必须大于 start"), "{err}");
+    }
+
+    #[test]
+    fn midrolls_rejects_too_many() {
+        let many: Vec<SkipSpan> = (0..201).map(|i| sp(i * 10, i * 10 + 5)).collect();
+        let err = normalize_midrolls(many).unwrap_err();
+        assert!(err.contains("最多 200 段"), "{err}");
+    }
+
+    #[test]
+    fn empty_midrolls_is_fine() {
+        assert!(normalize_midrolls(Vec::new()).unwrap().is_empty());
+    }
 }

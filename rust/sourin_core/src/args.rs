@@ -165,6 +165,15 @@ impl<'a> Args<'a> {
     /// 类型不对  → 调用方传错了类型（如传数字当字符串）→ 改传参格式
     /// ```
     /// 混在一起报会让排查方向跑偏。
+
+    /// 取一个**原样 JSON 值**（数组/对象都行）—— 给"结构由调用方解析"的参数用
+    ///
+    /// 为什么不直接给 `Vec<SkipSpan>`：FFI 层不认识业务类型（`args.rs` 是通用参数层），
+    /// 由调用方把 `[{start,end},…]` 解析成自己的结构，错误文案也归它（能说清"第 N 段"）。
+    pub fn value_opt(&self, name: &str) -> Option<&'a Value> {
+        self.raw.get(name).filter(|v| !v.is_null())
+    }
+
     pub fn str(&self, name: &str) -> Result<&'a str, String> {
         let Some(v) = self.get(name) else {
             return Err(self.missing(name, "字符串"));

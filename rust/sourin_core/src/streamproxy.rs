@@ -416,17 +416,17 @@ pub struct StreamProxy {
 ///   （跨界的源本来就慢，宁可报错也不要让播放器一直等）。
 /// ```
 
-///
-/// 抽成常量是因为它现在**只在一处**构造（共享 Client），
-/// 而注释里多处引用它（改前是散落的字面量 30）。
-const UPSTREAM_TIMEOUT_SECS: u64 = 3;
-/// ★ 2026-10-26：**只限建连**（不再是整条请求总时限！）
+/// ★ 2026-10-26：**只限建连**（曾经这里是"整条请求总时限"，已删）
 ///
 /// ```text
-/// 事故：把 `UPSTREAM_TIMEOUT_SECS` 喂给 `Client::timeout` 是"整条请求含 body"的
-/// 总时限 ⇒ 3s 到点会把**正在播的长流**切断（这是新回归，不是修复）。
-/// ⇒ 建连用 `connect_timeout`，等响应头用 `tokio::time::timeout`（见 `send_headers`），
-///   拿到头之后用 `Body::from_stream` 透传 —— 长流**没有任何总时限**。
+/// 事故：早先把一个 30s→3s 的常量喂给 `Client::timeout` —— 那是
+/// 「整条请求含 body」的总时限 ⇒ 3s 到点会把**正在播的长流**切断。
+/// 那是新回归，不是修复。
+/// ⇒ 现在只有两层有界，**没有**第三层"整请求总时限"：
+///   ① 建连：`connect_timeout(UPSTREAM_CONNECT_SECS)`
+///   ② 等响应头：`tokio::time::timeout(UPSTREAM_HEADER_SECS, rb.send())`（`send_headers`）
+///   拿到头之后 `Body::from_stream` 透传 —— 长流**没有任何总时限**。
+/// ⚠️ 别再引入"整请求超时"常量：下一个人会以为有第三层，并把长流切断。
 /// ```
 const UPSTREAM_CONNECT_SECS: u64 = 3;
 /// 等**响应头**的上限（拿到头就立刻交给播放器；超时按"连接类失败"走回退）
@@ -2905,14 +2905,21 @@ mod tests {
     // ═══════════════════════════════════════════════════════════════
 
     /// 造一个默认状态的代理（预取开）
+    /// 建一个**预取显式开启**的代理
+    ///
+    /// ★ 2026-10-26：生产默认已改为**预取关**（`SOURIN_PREFETCH_ENABLE=1` 才开）。
+    ///   所以测试要验"预取行为"时必须**显式打开**，否则验的是一个空转分支。
     fn mk_proxy() -> Arc<StreamProxy> {
-        Arc::new(StreamProxy::new())
+        let p = Arc::new(StreamProxy::new());
+        p.set_prefetch_disabled(false);
+        p
     }
 
     /// ① 进入窗口后预取被判为禁用；结束后恢复
     #[test]
     fn yield_window_disables_then_restores_prefetch() {
         let p = mk_proxy();
+        p.set_prefetch_disabled(false); // ★ 新默认是关 ⇒ 显式开，才有"被窗口关掉"可验
         assert!(!p.prefetch_is_disabled(), "初始应为预取开");
 
         let first = p.begin_yield_for_seek();
@@ -2970,6 +2977,7 @@ mod tests {
     #[test]
     fn yield_window_expires_by_time() {
         let p = mk_proxy();
+        p.set_prefetch_disabled(false); // ★ 新默认关 ⇒ 先开，才能验"过期后自动恢复为开"
         p.begin_yield_for_seek();
         assert!(p.in_yield_window());
         // 手动把截止时刻拨到过去
@@ -3411,18 +3419,87 @@ mod tests {
         );
     }
 
-    /// ★ `UPSTREAM_TIMEOUT_SECS` 必须被真正用在共享 Client 上
+    /// ★ 超时语义（2026-10-26 改）：**建连超时** + **等响应头超时**，都不是"整请求总时限"
     ///
-    /// 改前那个 30 秒是**散落的字面量**；抽成常量后若忘了用，
-    /// 超时会退回 reqwest 默认（**无超时**）⇒ 上游挂住就永远不返回。
+    /// # 为什么必须这样（真实新回归）
+    /// ```text
+    /// 早先的"整请求总时限"（30s→3s）喂给 `Client::timeout` ⇒ 那是**整条请求含 body**
+    /// 的总时限 ⇒ 3s 到点会切断**正在播的长流**（prefetch/env 无关）。
+    /// ⇒ 现在只有两处有界：
+    ///   ① `connect_timeout(UPSTREAM_CONNECT_SECS)` —— 只限建连
+    ///   ② `send_headers()` 里 `tokio::time::timeout(UPSTREAM_HEADER_SECS, rb.send())`
+    ///      —— 只限"等响应头"，拿到头就交给 `Body::from_stream` 透传（**无总时限**）
+    /// ```
     #[test]
     fn upstream_timeout_is_applied() {
-        let p = StreamProxy::new();
-        let dbg = format!("{:?}", p.client);
+        // ① 源码判据：共享 Client 只配 connect_timeout，**不得**再配 timeout
+        let src = include_str!("streamproxy.rs");
+        let i = src.find("pub fn new() -> Self {").expect("new() 必须在");
+        let block = &src[i..(i + 3000).min(src.len())];
         assert!(
-            dbg.contains(&format!("{}s", UPSTREAM_TIMEOUT_SECS))
-                || dbg.contains(&UPSTREAM_TIMEOUT_SECS.to_string()),
-            "共享 Client 上必须能看到 {UPSTREAM_TIMEOUT_SECS}s 的超时配置；实际: {dbg}"
+            block.contains(".connect_timeout(std::time::Duration::from_secs(UPSTREAM_CONNECT_SECS))"),
+            "★ 共享 Client 必须配 `connect_timeout(UPSTREAM_CONNECT_SECS)`：
+{block}"
+        );
+        assert!(
+            !block.contains(".timeout("),
+            "★★ 共享 Client **不许**出现 `.timeout(`（任何形式都会切断长流；只留 `.connect_timeout`）：
+{block}"
+        );
+
+        // ② 行为判据：`send_headers` 对"对方不回响应头"必须在 UPSTREAM_HEADER_SECS 内失败，
+        //    且被判定为**连接类**（⇒ 调用方会回退代理）
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (ok, elapsed, is_conn) = rt.block_on(async {
+            // 监听但不 accept/不回包 ⇒ 建连成功、响应头永不回来（正好打在"等头"上）
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/stall", l.local_addr().unwrap());
+            let c = reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(UPSTREAM_CONNECT_SECS)).build().unwrap();
+            let t = std::time::Instant::now();
+            let r = send_headers(c.get(url)).await;
+            let e = t.elapsed();
+            (r.is_ok(), e, r.err().map(|(_, conn)| conn).unwrap_or(false))
+        });
+        assert!(!ok, "对方不回响应头 ⇒ 必须失败，不能无限等");
+        assert!(
+            elapsed < std::time::Duration::from_secs(UPSTREAM_HEADER_SECS + 2),
+            "★★ 必须在 {UPSTREAM_HEADER_SECS}s 附近放弃（实际 {:?}）⇒ 否则 mpv 的 5s 窗口撑不住",
+            elapsed
+        );
+        assert!(is_conn, "★ 等头超时必须被判定为**连接类**失败（否则不会回退系统代理）");
+    }
+
+    /// ★ 默认（无环境变量）⇒ **预取关**（2026-10-26 拍板的行为）
+    ///
+    /// 注入：把 `SOURIN_PREFETCH_ENABLE` 的语义改回"默认开" ⇒ 本条立刻红。
+    #[test]
+    fn prefetch_is_disabled_by_default() {
+        assert!(
+            streamproxy_env_absent(),
+            "本机不得预设 SOURIN_PREFETCH_ENABLE（否则这条验不到默认值）"
+        );
+        let p = StreamProxy::new();
+        assert!(
+            p.prefetch_is_disabled(),
+            "★★★ 默认必须**关闭预取**：实测首字节 12s vs 播放器 5s 窗口"
+        );
+        // 而且默认情况下 plan_prefetch 直接 None（不走并行预取那条路）
+        let h = hdr(&[
+            ("content-range", "bytes 0-1334656/339926897"),
+            ("content-type", "video/mp4"),
+        ]);
+        assert_eq!(
+            plan_prefetch(true, StatusCode::PARTIAL_CONTENT, &h, "/m.mp4", "video/mp4"),
+            None,
+            "预取关 ⇒ 必须返回 None（单连接透传，立刻回字节）"
+        );
+        // 对照：显式开启后才规划
+        assert!(
+            plan_prefetch(false, StatusCode::PARTIAL_CONTENT, &h, "/m.mp4", "video/mp4").is_some(),
+            "开着时必须还能规划（不是把功能删了）"
         );
     }
 
@@ -3447,8 +3524,13 @@ mod tests {
         // ── ① 实例之间互不影响 ──
         let a = StreamProxy::new();
         let b = StreamProxy::new();
-        assert!(!a.prefetch_is_disabled(), "新实例默认应当是**开**预取");
-        assert!(!b.prefetch_is_disabled(), "新实例默认应当是**开**预取");
+        // ★ 2026-10-26：默认已改为**关**（`SOURIN_PREFETCH_ENABLE=1` 才开）
+        assert!(a.prefetch_is_disabled(), "新实例默认应当是**关**预取");
+        assert!(b.prefetch_is_disabled(), "新实例默认应当是**关**预取");
+        // 显式打开，后面才验得到"改 A 不影响 B"
+        a.set_prefetch_disabled(false);
+        b.set_prefetch_disabled(false);
+        assert!(!a.prefetch_is_disabled() && !b.prefetch_is_disabled());
 
         a.set_prefetch_disabled(true);
         assert!(a.prefetch_is_disabled(), "改 A 之后 A 应当是关");
@@ -3476,22 +3558,31 @@ mod tests {
         assert!(!a.prefetch_is_disabled(), "能改回去（A/B 对照要来回切）");
 
         // ── ② 构造后改进程环境变量，已存在的实例不受影响 ──
+        // ★ 新语义：要**开**才读 `SOURIN_PREFETCH_ENABLE=1`（默认关）
         let c = StreamProxy::new();
+        c.set_prefetch_disabled(false);
         assert!(!c.prefetch_is_disabled());
-        std::env::set_var("SOURIN_PREFETCH_DISABLE", "1");
+        std::env::set_var("SOURIN_PREFETCH_ENABLE", "1");
         assert!(
             !c.prefetch_is_disabled(),
             "★ 已构造的实例**不能**被后设的环境变量影响 —— 竞态就是这么来的"
         );
-        // 新构造的实例才会读它（生产回滚开关仍然有效）
+        // 新构造的实例才会读它（显式开启的开关仍然有效）
         let d = StreamProxy::new();
         assert!(
-            d.prefetch_is_disabled(),
-            "新构造的实例应当读到环境变量（生产回滚能力不能丢）"
+            !d.prefetch_is_disabled(),
+            "`SOURIN_PREFETCH_ENABLE=1` 时新实例应当**开**预取"
         );
-        std::env::remove_var("SOURIN_PREFETCH_DISABLE");
-        // ★ 收尾：清干净，免得污染同一进程里后面的测试
-        assert!(!StreamProxy::new().prefetch_is_disabled(), "清掉后新实例应当回到开");
+        std::env::remove_var("SOURIN_PREFETCH_ENABLE");
+        // ★ 收尾：清干净，免得污染同进程后面测试
+        assert!(
+            StreamProxy::new().prefetch_is_disabled(),
+            "清掉后新实例应当回到默认（关）"
+        );
+    }
+
+    fn streamproxy_env_absent() -> bool {
+        std::env::var("SOURIN_PREFETCH_ENABLE").is_err()
     }
 
     /// 解析 Content-Range
@@ -3670,6 +3761,7 @@ mod tests {
         use axum::http::Request;
         use axum::response::IntoResponse;
 
+        // ★ 2026-10-26：预取默认关 ⇒ 本条要验"预取行为"必须显式开
         // 合成数据：4MB（> 512KB 阈值，会走预取）
         const TOTAL: u64 = 4 * 1024 * 1024;
         fn byte_at(i: u64) -> u8 {
@@ -3753,6 +3845,8 @@ mod tests {
         });
 
         let proxy = Arc::new(StreamProxy::new());
+        // ★ 2026-10-26：预取默认关 ⇒ 本条验"并行预取"必须显式打开
+        proxy.set_prefetch_disabled(false);
         proxy.ensure_started().await.unwrap();
         let local = proxy.register(
             &format!("http://127.0.0.1:{up_port}/big.mp4"),

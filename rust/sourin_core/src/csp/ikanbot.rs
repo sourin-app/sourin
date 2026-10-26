@@ -291,6 +291,18 @@ pub fn list_from_html(html: &str, page: u32, path: &str) -> Result<CspList, Stri
 ///   → GET /api/getResN?videoId=1001027&mtype=1&token=… → {"state":1,"message":"success", …}
 /// ```
 pub fn get_tks(video_id: &str, t: &str) -> String {
+    get_tks_checked(video_id, t).0
+}
+
+/// `get_tks` 的带诊断版本：返回 `(token, 是否**提前中止**)`
+///
+/// # 为什么要这个（2026-10-26）
+/// ```text
+/// 原实现遇到非数字字符直接 `break` ⇒ 若 videoId 末 4 位含字母（改版/脏 id），
+/// 会**静默**返回 8/16 位而不是 32 位 ⇒ 拿它去请求只会得到空结果，
+/// 而错误信息里看不出"是 id 脏了"。⇒ 把"提前中止"暴露给调用方，由调用点校验长度。
+/// ```
+pub fn get_tks_checked(video_id: &str, t: &str) -> (String, bool) {
     let chars: Vec<char> = video_id.chars().collect();
     let tail: Vec<char> = if chars.len() >= 4 {
         chars[chars.len() - 4..].to_vec()
@@ -299,23 +311,46 @@ pub fn get_tks(video_id: &str, t: &str) -> String {
     };
     let mut rest: Vec<char> = t.chars().collect();
     let mut out = String::new();
+    let mut stopped_early = false;
     for ch in tail {
         let d = match ch.to_digit(10) {
             Some(d) => (d % 3) as usize,
-            None => break,
+            None => {
+                // ★ 非数字 ⇒ 记下"提前中止"，由调用点判长度并给可读错误（不在这里猜）
+                stopped_early = true;
+                break;
+            }
         };
         let start = d + 1;
         let end = d + 9;
         if start >= rest.len() {
+            stopped_early = true;
             break;
         }
         let take: String = rest[start..end.min(rest.len())].iter().collect();
         out.push_str(&take);
         rest = if end < rest.len() { rest[end..].to_vec() } else { Vec::new() };
     }
-    out
+    (out, stopped_early)
 }
 
+
+/// 校验 `get_tks` 解出的 token 长度（合法 = **32 位**）
+///
+/// ```text
+/// 只在 `detail()` 里内联判断 ⇒ 要真网络才测得到。
+/// 抽成纯函数 ⇒ 离线钉住"脏 videoId ⇒ 显式失败"，
+/// 再用源码判据确认 `detail()` **确实调了它**（去掉调用 ⇒ 用例红）。
+/// ```
+pub fn ensure_token_len(video_id: &str, token: &str, stopped_early: bool) -> Result<(), String> {
+    if token.chars().count() == 32 {
+        return Ok(());
+    }
+    Err(format!(
+        "token 解码长度异常（{} 位，期望 32）：videoId={video_id} 可能含非数字字符（提前中止={stopped_early}）",
+        token.chars().count(),
+    ))
+}
 
 /// 取某个标签的第一个文本节点（去标签、trim、解实体）
 fn text_of_tag(html: &str, tag: &str) -> Option<String> {
@@ -513,7 +548,15 @@ impl CspSite for Ikanbot {
             }
         };
         // ★ token 不是原样用：DEX 里是 `Ikanbot.get_tks(videoId, e_token)` 之后才拼进 URL
-        let real_token = get_tks(&vid, &tk);
+        let (real_token, stopped_early) = get_tks_checked(&vid, &tk);
+        /*
+         * ★ 长度校验（2026-10-26）：合法 videoId 末 4 位全是数字 ⇒ 一定解出 32 位。
+         *   不是 32 位就说明 id 脏了（含字母）或 e_token 变短 ⇒ **显式失败**，
+         *   否则会拿一个残缺 token 去请求，回来只有空结果、还查不出原因。
+         */
+        if let Err(e) = ensure_token_len(&vid, &real_token, stopped_early) {
+            return Err(e);
+        }
         if std::env::var("CSP_LIVE").is_ok() {
             eprintln!("[IKAN] e_token={tk} → get_tks={real_token}");
         }
@@ -579,6 +622,13 @@ impl CspSite for Ikanbot {
         })
     }
 
+    /// ★ 搜索能力声明（`capabilities.search` 直接用它的值）
+    ///
+    /// `搜索入口未在 DEX 常量里确认，占位 Err`
+    fn supports_search(&self) -> bool {
+        false
+    }
+
     async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
         Err("Ikanbot 不支持搜索（该类的搜索入口未在 DEX 常量里确认）".to_string())
     }
@@ -610,6 +660,58 @@ mod tests {
 
 
     #[test]
+    /// ★★ 脏 videoId（末 4 位含字母）⇒ **必须显式失败**，不许静默截断
+    ///
+    /// # 防的是什么
+    /// ```text
+    /// `get_tks` 遇到非数字字符是 `break` ⇒ 会返回 8/16 位而**不报错**，
+    /// 拿去请求只会得到空结果，日志里也看不出是 id 脏了。
+    /// ⇒ 现在：`get_tks_checked` 暴露 `stopped_early`，`detail()` 调
+    ///   `ensure_token_len` 校验（≠32 位就 Err）。
+    /// ```
+    /// 注入：去掉 `detail()` 里那句 `ensure_token_len(...)` 调用 ⇒ 本条立刻红。
+    #[test]
+    fn dirty_video_id_is_rejected_not_silently_truncated() {
+        // 实测用的那条 e_token（干净 id ⇒ 解出 32 位）
+        let t = "oi4b2d060alae0c9843snad4003c8bcv384fe414";
+
+        // ① 脏 id：末 4 位里带字母 ⇒ 提前中止 + 长度不是 32
+        let (bad, stopped) = get_tks_checked("10010a7", t);
+        assert!(stopped, "末 4 位含非数字必须被标记为**提前中止**");
+        assert_ne!(
+            bad.chars().count(),
+            32,
+            "脏 id 不该解出 32 位（实际 {} 位：{bad}）",
+            bad.chars().count()
+        );
+        let err = ensure_token_len("10010a7", &bad, stopped).expect_err("★ 必须显式失败");
+        assert!(err.contains("长度异常"), "错误要可读且点名长度：{err}");
+        assert!(err.contains("10010a7"), "错误里要带 videoId 便于定位：{err}");
+
+        // ② 对照：干净 id ⇒ 32 位 ⇒ 通过
+        let (ok, ok_stopped) = get_tks_checked("1001027", t);
+        assert_eq!(ok.chars().count(), 32, "干净 id 应解出 32 位：{ok}");
+        ensure_token_len("1001027", &ok, ok_stopped).expect("干净 id 必须通过校验");
+
+        // ③ 源码判据：`detail()` 真的调了校验（去掉调用 ⇒ 本条红）
+        let src = include_str!("ikanbot.rs");
+        /*
+         * ③ 源码判据：`detail()` 必须调 `ensure_token_len`
+         *
+         * ⚠️ 自证陷阱：本测试的**字面量本身**里也有这个函数名 ⇒ 单看 `contains`
+         *   删掉调用也不会红。所以按**归一化后的出现次数**判：调用点 1 次 +
+         *   本断言的字面量 1 次 = **≥2**；去掉调用 ⇒ 只剩 1 次 ⇒ 红。
+         */
+        let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+        let hits = flat
+            .matches("ensure_token_len(&vid,&real_token,stopped_early)")
+            .count();
+        assert!(
+            hits >= 2,
+            "★ detail() 必须校验 token 长度（调用点不见了，只剩断言里的字面量：hits={hits}）"
+        );
+    }
+
     fn get_tks_matches_real_vector_from_live_site() {
         // ★ 实测向量（2026-10-26 直连 /play/1001027 拿到的真值）
         //   videoId=1001027, e_token=oi4b2d060alae0c9843snad4003c8bcv384fe414

@@ -298,6 +298,21 @@ class DanmakuMatch {
     );
   }
 
+  /// 候选行的**可读名字**（番剧名 + 集名）
+  ///
+  /// 2026-10-26（Owner：「只返回数字没有名字，用户无法区分」）：
+  /// 列表里**不许再出现裸 `#123456`** —— 两者都缺时也要明说"没有名字"。
+  /// ⚠️ 集号的解析在 `batch_bind.dart` 的 `episodeNumberFrom`（唯一判据），
+  ///    这里只管"名字"，避免同一件事两处解析。
+  String get displayName {
+    final a = animeTitle.trim();
+    final e = episodeTitle.trim();
+    if (a.isEmpty && e.isEmpty) return '弹幕库 #$episodeId（无名称）';
+    if (a.isEmpty) return e;
+    if (e.isEmpty) return a;
+    return '$a · $e';
+  }
+
   /// 一行给人看的描述，例：`某番 第 3 集（偏移 +90.0s）`
   String get label {
     final b = StringBuffer();

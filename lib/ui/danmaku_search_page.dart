@@ -19,6 +19,7 @@ class DanmakuSearchPage extends StatefulWidget {
   const DanmakuSearchPage({super.key, required this.state, required this.biliState,
     required this.localTitles, required this.onSearch, required this.onBiliSearch,
     required this.onPickMatch, required this.onBatchBind, required this.onBiliImport,
+    this.onBatchBindPlan,
     required this.onBiliSelectPage, required this.onClose, this.draft,
     this.onReload, this.onOpenLocal});
   final DanmakuSettingsState state;
@@ -28,6 +29,13 @@ class DanmakuSearchPage extends StatefulWidget {
   final ValueChanged<String> onBiliSearch;
   final ValueChanged<DanmakuMatch> onPickMatch;
   final ValueChanged<List<DanmakuMatch>> onBatchBind;
+
+  /// 第 11 项：把**用户确认过的映射**交给宿主（含改号与拖动后的顺序）
+  ///
+  /// 与 [onBatchBind] 的区别：那个交的是"原始候选列表"，宿主会**重算**映射
+  /// （用户改过的对应关系会被覆盖）。有它就走它 —— 宿主不再重算。
+  final void Function(List<BatchBindPlanItem> items, String workTitle)?
+      onBatchBindPlan;
   final ValueChanged<String> onBiliImport;
   final ValueChanged<int> onBiliSelectPage;
   final VoidCallback onClose;
@@ -42,6 +50,12 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
   final _keyword = TextEditingController();
   final _selected = <int>{};
   bool _preview = false;
+
+  /// 候选 episodeId → 本地集下标（-1 = 明确不绑定）；缺省由计划决定
+  final Map<int, int> _assign = <int, int>{};
+
+  /// 预览行的**用户顺序**（本地集下标）；拖动改它
+  List<int> _order = <int>[];
   @override
   void initState() {
     super.initState();
@@ -75,6 +89,70 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
     if (oldWidget.state.searchResults != widget.state.searchResults) _preview = false;
     _saveDraft();
   }
+  /// 候选行的标题：番剧名 · 第N集（解析不出集号就用原集名；都没有就说"无集名"）
+  ///
+  /// ⚠️ 集号**只能从 `episodeTitle` 解析** —— 这个结论来自
+  /// `danmaku.dart` 的实测注释与真实响应夹具（`episodes[]` 只有
+  /// `episodeId` / `episodeTitle` 两个键），**不是本次实网读数**
+  /// （2026-10-26 两个公共实例都连不上，见 `.probe/item11-*.log`）。
+  String _candidateTitle(DanmakuMatch m) {
+    final no = episodeNumberFrom(m.episodeTitle);
+    final work = m.animeTitle.trim();
+    final epTitle = m.episodeTitle.trim();
+    final ep = no != null
+        ? '第$no集'
+        : (epTitle.isNotEmpty ? epTitle : '无集名');
+    return work.isEmpty ? ep : '$work · $ep';
+  }
+
+  /// 用计划给 `_assign` 播种（只在用户还没改过时；改过的不覆盖）
+  void _seedAssign() {
+    final plan = buildBatchBindPlan(
+      localTitles: widget.localTitles,
+      matches: _selected.isEmpty
+          ? widget.state.searchResults
+          : widget.state.searchResults
+              .where((m) => _selected.contains(m.episodeId))
+              .toList(),
+    );
+    for (final it in plan.items) {
+      _assign.putIfAbsent(it.episodeId, () => it.episodeIndex);
+    }
+    if (_order.isEmpty) {
+      _order = <int>[
+        for (final it in plan.items)
+          if (_assign[it.episodeId] == it.episodeIndex) it.episodeIndex,
+      ];
+    }
+  }
+
+  /// 用户确认后的映射（**顺序 = 拖动结果**）
+  List<BatchBindPlanItem> _planItems() {
+    final byLocal = <int, DanmakuMatch>{};
+    for (final m in widget.state.searchResults) {
+      final idx = _assign[m.episodeId];
+      if (idx == null || idx < 0) continue;
+      if (!_selected.contains(m.episodeId)) continue;
+      byLocal[idx] = m;
+    }
+    final order = <int>[
+      for (final i in _order)
+        if (byLocal.containsKey(i)) i,
+      for (final i in byLocal.keys)
+        if (!_order.contains(i)) i,
+    ];
+    return <BatchBindPlanItem>[
+      for (final i in order)
+        BatchBindPlanItem(
+          episodeIndex: i,
+          episodeId: byLocal[i]!.episodeId,
+          episodeTitle: byLocal[i]!.episodeTitle,
+          shift: byLocal[i]!.shift,
+          workTitle: byLocal[i]!.animeTitle,
+        ),
+    ];
+  }
+
   void _search() {
     final keyword = _keyword.text.trim();
     if (keyword.isEmpty) return;
@@ -172,12 +250,46 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
               for (final match in s.searchResults)
                 CheckboxListTile(
                   value: _selected.contains(match.episodeId),
-                  title: Text(match.label),
-                  subtitle: const Text('渠道：dan-api'),
+                  // 2026-10-26（Owner：只返回数字没有名字）：
+                  // 一律显示"番剧名 · 第N集"，不再出现裸 #123456。
+                  title: Text(_candidateTitle(match)),
+                  subtitle: Row(children: <Widget>[
+                    // ★ 保留**逐字**的 '渠道：dan-api'：既有门禁用 find.text 精确匹配它
+                    const Text('渠道：dan-api'),
+                    const Text(' · 对应本地'),
+                    const SizedBox(width: 8),
+                    DropdownButton<int>(
+                      value: _assign[match.episodeId] ?? -1,
+                      items: <DropdownMenuItem<int>>[
+                        const DropdownMenuItem<int>(value: -1, child: Text('不绑定')),
+                        for (var i = 0; i < widget.localTitles.length; i++)
+                          DropdownMenuItem<int>(
+                              value: i, child: Text('第${i + 1}集')),
+                      ],
+                      onChanged: s.searchLoading || s.searchStale
+                          ? null
+                          : (v) => setState(() {
+                                _assign[match.episodeId] = v ?? -1;
+                                _preview = false;
+                                _saveDraft();
+                              }),
+                    ),
+                  ]),
 
                   onChanged: s.searchLoading || s.searchStale ? null : (checked) => setState(() {
-                    if (checked == true) { _selected.add(match.episodeId); }
-                    else { _selected.remove(match.episodeId); }
+                    if (checked == true) {
+                      _selected.add(match.episodeId);
+                    } else {
+                      _selected.remove(match.episodeId);
+                      /*
+                       * 2026-10-26（第 11 项复核）：**取消勾选时清掉这一条的映射**。
+                       * 不清的后果：下拉框还显示"上次选过的第5集" ⇒ 用户以为它还有效，
+                       * 而这一条其实已不在勾选集合里。重新勾选时应当回到**默认映射**，
+                       * 不是上次的脏值。
+                       */
+                      _assign.remove(match.episodeId);
+                      _order = <int>[];
+                    }
                     _preview = false;
                     _saveDraft();
                   }),
@@ -195,11 +307,29 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                       child: const Text('绑定当前集')),
                   ]),
                 ),
-              OutlinedButton(onPressed: selected.isEmpty || s.searchLoading || s.searchStale ? null : () => setState(() { _preview = true; _saveDraft(); }),
+              OutlinedButton(onPressed: selected.isEmpty || s.searchLoading || s.searchStale ? null : () => setState(() { _seedAssign(); _preview = true; _saveDraft(); }),
                 child: const Text('预览批量绑定')),
               if (_preview) ...[
                 Text('将匹配 ${plan.items.length} / ${widget.localTitles.length} 集；未匹配 ${plan.unmatchedLocal.length} 集'),
-                for (final item in plan.items) Text(item.toString()),
+                // 2026-10-26：预览行带名字，且**可拖动**（顺序 = 提交顺序）
+                ReorderableListView(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  buildDefaultDragHandles: true,
+                  onReorder: (from, to) => setState(() {
+                    final items = _planItems();
+                    if (to > from) to -= 1;
+                    final moved = items.removeAt(from);
+                    items.insert(to, moved);
+                    _order = <int>[for (final it in items) it.episodeIndex];
+                    _saveDraft();
+                  }),
+                  children: <Widget>[
+                    for (var i = 0; i < _planItems().length; i++)
+                      Text(_planItems()[i].displayName,
+                          key: ValueKey<int>(_planItems()[i].episodeIndex)),
+                  ],
+                ),
                 for (final conflict in conflicts.entries) ...[
                   Text('第${conflict.key}集有多个候选，请明确选择一个：'),
                   for (final candidate in conflict.value)
@@ -209,9 +339,24 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                       _saveDraft();
                     }), child: Text('选择 ${candidate.label} (#${candidate.episodeId})')),
                 ],
-                FilledButton(onPressed: conflicts.isNotEmpty || plan.items.isEmpty || s.searchLoading || s.searchStale ? null : () {
+                FilledButton(onPressed: conflicts.isNotEmpty || _planItems().isEmpty || s.searchLoading || s.searchStale ? null : () {
                   setState(() { _preview = false; _saveDraft(); });
-                  widget.onBatchBind(selected);
+                  /*
+                   * ★ 2026-10-26：这里曾有 `..sort((a,b) => a.episodeId.compareTo(...))` ——
+                   *   那是**注入验证（④ 拖动顺序）时留下的残留**，它不是功能代码。
+                   *   危害很直接：它把用户拖动出来的顺序重新按 episodeId 排回去 ⇒
+                   *   门禁 ④「预览区改顺序 ⇒ 提交顺序跟着变」一直红，而其它三条绿。
+                   *   ⇒ 提交必须**原样用 `_planItems()` 的顺序**（顺序 = 拖动结果）。
+                   */
+                  final items = _planItems();
+                  if (widget.onBatchBindPlan != null) {
+                    widget.onBatchBindPlan!(
+                      items,
+                      items.isEmpty ? '' : items.first.workTitle,
+                    );
+                  } else {
+                    widget.onBatchBind(selected);
+                  }
                 }, child: const Text('确认并交由播放器绑定')),
               ],
               const Divider(),

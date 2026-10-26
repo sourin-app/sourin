@@ -86,6 +86,8 @@ class BatchBindPlanItem {
     required this.episodeId,
     this.episodeTitle = "",
     this.shift = 0,
+    this.workTitle = "",
+    this.byFallback = false,
   });
 
   /// 本地第几集（0 基，与 `_epIndex` / `BiliEpisodeBinding.episodeIndex` 同口径）。
@@ -99,6 +101,30 @@ class BatchBindPlanItem {
 
   /// 时间轴偏移秒数。
   final double shift;
+
+  /// 这次铺的是哪部作品（弹幕库侧的名字；空 = 不知道）
+  final String workTitle;
+
+  /// 这一行是**按下标退路**配出来的（库那侧没有可解析的集号）
+  ///
+  /// ★ 必须让用户看见：退路是"顺序猜的"，猜错就是放错集。
+  final bool byFallback;
+
+  /// 预览行给人看的名字：`本地第N集 ← 番剧名 · 第M集`
+  ///
+  /// 2026-10-26：改成**带名字**，不再只有 `E1 -> #123`。
+  String get displayName {
+    final local = '本地第${episodeIndex + 1}集';
+    final work = workTitle.trim();
+    final ep = episodeTitle.trim();
+    final lib = <String>[
+      if (work.isNotEmpty) work,
+      if (ep.isNotEmpty) ep,
+    ].join(' · ');
+    final tail = lib.isEmpty ? '弹幕库 #$episodeId（无名称）' : lib;
+    final flag = byFallback ? '（按顺序匹配，请核对）' : '';
+    return '$local ← $tail$flag';
+  }
 
   @override
   String toString() =>
@@ -269,20 +295,24 @@ BatchBindPlan buildBatchBindPlan({
      * ⇒ `seq++` 移进「真的取用 unnumbered[seq]」的分支里。
      *   库这侧带集号却没配上时，老实记进 unmatchedLocal。
      */
+    var byFallback = false;
     if (hit == null && seq < unnumbered.length) {
       hit = unnumbered[seq];
       seq++; // * 只有**真的取用**了才推进 —— 见下面说明
+      byFallback = true; // ★ 这一行是"顺序猜的"，UI 必须标出来
     }
     if (hit == null) {
       unmatched.add(i);
       continue;
     }
     items.add(BatchBindPlanItem(
-      episodeIndex: i,
-      episodeId: hit.episodeId,
-      episodeTitle: hit.episodeTitle,
-      shift: hit.shift,
-    ));
+        episodeIndex: i,
+        episodeId: hit.episodeId,
+        episodeTitle: hit.episodeTitle,
+        shift: hit.shift,
+        workTitle: hit.animeTitle,
+        byFallback: byFallback,
+      ));
   }
 
   return BatchBindPlan(

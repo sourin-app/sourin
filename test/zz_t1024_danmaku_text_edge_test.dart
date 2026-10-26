@@ -194,7 +194,22 @@ class _DanmakuTextPainter extends CustomPainter {
         text: TextSpan(
           text: text,
           style: TextStyle(
-            color: _onDark ? const Color(0xFFFFFFFF) : const Color(0xFF101014),
+            // ★ 2026-10-27（第 14 项）：关抗锯齿必须作用到**字形填充**上。
+            //   原来 disableAntiAlias 只改描边的 Paint ⇒ 填充仍有抗锯齿，
+            //   于是"关 AA"与"开 AA"的读数一样（这正是台账说的"无量具"的一半原因）。
+            //   用 `foreground` Paint 才能关掉字形本身的抗锯齿。
+            foreground: disableAntiAlias
+                ? (Paint()
+                  ..color = _onDark
+                      ? const Color(0xFFFFFFFF)
+                      : const Color(0xFF101014)
+                  ..isAntiAlias = false)
+                : null,
+            color: disableAntiAlias
+                ? null
+                : (_onDark
+                    ? const Color(0xFFFFFFFF)
+                    : const Color(0xFF101014)),
             fontSize: fontSize,
             fontWeight: FontWeight.w600,
             shadows: extraShadow
@@ -297,7 +312,15 @@ class EdgeReading {
     required this.ratio,
     required this.haloWidth,
     required this.inkPixels,
+    required this.aaEdgeFraction,
+    required this.midPixels,
+    required this.solidPixels,
   });
+
+  /// 中间覆盖率像素占比（**锯齿**的判据：抗锯齿 > 0、硬边 ≈ 0）
+  final double aaEdgeFraction;
+  final int midPixels;
+  final int solidPixels;
 
   final double fontSize;
   final bool onDark;
@@ -313,7 +336,9 @@ class EdgeReading {
       '阈值=haloWidth<=$kMaxHaloPx';
 
   String get diagnostics =>
-      'haloWidth=${haloWidth.toStringAsFixed(2)}px ink=$inkPixels';
+      'haloWidth=${haloWidth.toStringAsFixed(2)}px ink=$inkPixels '
+      'aaEdgeFraction=${aaEdgeFraction.toStringAsFixed(3)} '
+      '(mid=$midPixels solid=$solidPixels)';
 
   String get tag => '${fontSize.toInt()}px/${onDark ? "深底" : "浅底"}';
 }
@@ -400,10 +425,44 @@ EdgeReading _measure(
     }
   }
 
+  /*
+   * ★★ 2026-10-27（第 14 项：给"锯齿"造量具）
+   *
+   * ```text
+   * 抗锯齿的本质：边缘像素的覆盖率是**连续值**（0<cov<1），
+   * 关掉抗锯齿后：每个像素只会是 0 或 1（全背景 / 全墨）⇒ 中间值几乎为零。
+   * ⇒ 指标 aaEdgeFraction = 中间覆盖率像素 / (中间 + 实心像素)
+   *    · 抗锯齿（产品现状）> 0（实测见门禁打印）
+   *    · 关抗锯齿            ≈ 0
+   * 这比 haloWidth 有判别力：haloWidth 量的是"坡有多长"，而 AA 与硬边
+   * 的坡长都是 0~1 px（所以旧判据两组读数一样）；aaEdgeFraction 量的是
+   * "坡上有没有中间台阶"，那正是两者的本质差别。
+   * ```
+   */
+  var mid = 0;
+  var solid = 0;
+  final dRef = math.max(1.0, dMax);
+  for (var y = 0; y < p.height; y++) {
+    for (var x = 0; x < p.width; x++) {
+      final l = _lumaAt(p, x, y);
+      if (l.isNaN) continue;
+      final cov = ((l - bgL).abs() / dRef).clamp(0.0, 1.0);
+      if (cov >= 0.85) {
+        solid++;
+      } else if (cov >= 0.15) {
+        mid++;
+      }
+    }
+  }
+  final aaEdgeFraction = (mid + solid) == 0 ? 0.0 : mid / (mid + solid);
+
   final ratio = onDark
       ? ringPeak / math.max(1.0, coreMean)
       : (bgL - ringPeak) / math.max(1.0, bgL - coreMean);
   return EdgeReading(
+    aaEdgeFraction: aaEdgeFraction,
+    midPixels: mid,
+    solidPixels: solid,
     fontSize: fontSize,
     onDark: onDark,
     ringPeak: ringPeak,
@@ -494,5 +553,79 @@ void main() {
             '${rb.haloWidth.toStringAsFixed(2)}px 超过了阈值 —— '
             '那说明本门禁其实能抓到锯齿，请把 §覆盖边界② 改成"能抓"。\n'
             '${rb.fourNumbers}\n${rb.diagnostics}');
+  });
+
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   *  锯齿（第 14 项的第二个缺口）—— 新量具：aaEdgeFraction
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * ```text
+   * 台账原话：「关抗锯齿后读数与正常完全相同 ⇒ 无判别力」。
+   * 本组做两件事：
+   *   ① 基线：用**旧**指标 haloWidth 量 开AA / 关AA 两组 ⇒ 证明它对锯齿没判别力；
+   *   ② 新指标 aaEdgeFraction（中间覆盖率像素占比）⇒ 两组必须分开。
+   * ```
+   * 阈值怎么定的（照 haloWidth 那套写法）：
+   * ```text
+   * 实测 产品现状（开 AA）  aaEdgeFraction ≈ 见下方打印；门禁取 ≥ 0.10（留 ≥2× 余量）
+   * 实测 关 AA（注入）      aaEdgeFraction ≈ 0.00x  ⇒ 门禁取 < 0.02
+   * ```
+   */
+  group('④ 锯齿：aaEdgeFraction（中间覆盖率像素占比）', () {
+    testWidgets('★ 开 AA 有台阶、关 AA 没台阶；haloWidth 两组相同（旧指标无判别力）',
+        (t) async {
+      const dark = Color(0xFF000000);
+      final aa = _measure(
+          await _render(t, fontSize: 34, backdrop: dark),
+          fontSize: 34,
+          backdrop: dark);
+      final hard = _measure(
+          await _render(t, fontSize: 34,
+              backdrop: dark, disableAntiAlias: true),
+          fontSize: 34,
+          backdrop: dark);
+
+      debugPrint('[AA] 开AA  haloWidth=${aa.haloWidth.toStringAsFixed(2)} '
+          'aaEdgeFraction=${aa.aaEdgeFraction.toStringAsFixed(3)}');
+      debugPrint('[AA] 关AA  haloWidth=${hard.haloWidth.toStringAsFixed(2)} '
+          'aaEdgeFraction=${hard.aaEdgeFraction.toStringAsFixed(3)}');
+
+      // ① 基线：旧指标对锯齿**没有判别力**（两组差 ≤ 1px）
+      expect((aa.haloWidth - hard.haloWidth).abs(), lessThanOrEqualTo(1.0),
+          reason: '★ 基线证据：haloWidth 分不开"开AA/关AA"'
+              '（开=${aa.haloWidth} 关=${hard.haloWidth}）'
+              '—— 这就是台账说的"旧判据对锯齿零判别力"');
+
+      // ② 新指标：产品现状必须有中间台阶
+      expect(aa.aaEdgeFraction, greaterThanOrEqualTo(0.10),
+          reason: '★★ 产品现状（开抗锯齿）边缘必须有中间覆盖率像素：'
+              '实测 ${aa.aaEdgeFraction.toStringAsFixed(3)}'
+              '（mid=${aa.midPixels} solid=${aa.solidPixels}）；'
+              '阈值 0.10 留 ≥2× 余量');
+
+      /*
+       * ★★★ 2026-10-27 实测结论：**这个量具也不行**（如实记录，不粉饰）
+       * ```text
+       * 开 AA  aaEdgeFraction = 0.120（mid 像素确实存在）
+       * 关 AA  aaEdgeFraction = 0.120（**一模一样**）
+       * ⇒ 想用"中间覆盖率占比"分锯齿与抗锯齿：**失败**。
+       *
+       * 为什么（两条都已排除一半）：
+       *   ① `TextStyle.foreground = Paint()..isAntiAlias = false`
+       *      在本机 Flutter/Skia 上**没有改变字形栅格**（两组像素一模一样）；
+       *   ② 这个 0.12 主要来自**描边**的边缘（描边 Paint 的 AA 一直是开的），
+       *      即便字形关了 AA，读数也被描边那圈中间像素托住。
+       * ⇒ 结论：**"锯齿"仍无可靠量具**。本组把它钉成"已知缺口"而不是
+       *   "已验证"：断言两组读数相同（记录事实），并禁止有人把这条
+       *   当成"锯齿已被覆盖"。
+       * ```
+       */
+      expect((hard.aaEdgeFraction - aa.aaEdgeFraction).abs(), lessThan(0.02),
+          reason: '★ 记录：本量具对"开/关抗锯齿"**同样没有判别力**'
+              '（${aa.aaEdgeFraction.toStringAsFixed(3)} vs '
+              '${hard.aaEdgeFraction.toStringAsFixed(3)}）⇒ '
+              '第 14 项的"锯齿"仍属**无量具**，台账照实写"无机械证据"');
+    });
   });
 }

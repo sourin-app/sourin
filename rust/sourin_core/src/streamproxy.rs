@@ -2946,7 +2946,16 @@ mod tests {
     fn log_path_source_declares_test_guard() {
         let src = include_str!("streamproxy.rs");
         let i = src.find("fn sp_log_file_path()").expect("函数必须还在");
-        let body = &src[i..(i + 2000).min(src.len())];
+        /*
+         * ★ 2026-10-28 修：这里原来是 `&src[i..(i + 2000).min(len)]` —— **按字节切片**。
+         *   同一个坑本文件里已经踩过两次（见下方 `default_client_is_direct_no_proxy`
+         *   里那段"三个坑"的注释），这是**第三处**没跟上。
+         *   触发条件很阴：切点恰好落在中文多字节字符中间就 panic，而窗口长度 2000
+         *   是否安全**取决于整份文件的行尾与前面内容的字节数** —— 换句话说，
+         *   一次无关的改动（或 git 把 LF 换成 CRLF）就能让它红，红得毫无道理。
+         *   ⇒ 一律按**字符**取窗口，别按字节。
+         */
+        let body: String = src[i..].chars().take(2000).collect();
         assert!(
             body.contains("in_test_process()"),
             "★ `sp_log_file_path` 里必须调用 `in_test_process()` 早退"
@@ -3490,7 +3499,8 @@ mod tests {
         // ① 源码判据：共享 Client 只配 connect_timeout，**不得**再配 timeout
         let src = include_str!("streamproxy.rs");
         let i = src.find("pub fn new() -> Self {").expect("new() 必须在");
-        let block = &src[i..(i + 3000).min(src.len())];
+        // ★ 2026-10-28：同上一条 —— 按**字符**取窗口（按字节会落在中文中间 panic）
+        let block: String = src[i..].chars().take(3000).collect();
         assert!(
             block.contains(".connect_timeout(std::time::Duration::from_secs(UPSTREAM_CONNECT_SECS))"),
             "★ 共享 Client 必须配 `connect_timeout(UPSTREAM_CONNECT_SECS)`：

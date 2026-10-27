@@ -45,6 +45,14 @@ pub enum PanKind {
     Pan115,
     /// 天翼云盘
     Tianyi,
+    /// ★ 2026-10-27（R3-C）：光鸭云盘
+    ///
+    /// ★ 为什么现在补：R3 批要做 `csp_PanGuangya`，而 `PanKind` 里**没有这一档**
+    ///   ⇒ 那个盘**连凭据键位都没有**（`pan/<kind.code()>` 无从拼出）
+    ///   ⇒ "做出来也存不了凭据"。属真缺口，不是可选项。
+    Guangya,
+    /// ★ 2026-10-27（R3-C）：迅雷云盘（同上，原先缺这一档）
+    Xunlei,
     /// 认不出（**不是错误**，是"这个链接不归我管"）
     Unknown,
 }
@@ -60,6 +68,8 @@ impl PanKind {
             PanKind::Pan123 => "123",
             PanKind::Pan115 => "115",
             PanKind::Tianyi => "tianyi",
+            PanKind::Guangya => "guangya",
+            PanKind::Xunlei => "xunlei",
             PanKind::Unknown => "unknown",
         }
     }
@@ -74,6 +84,8 @@ impl PanKind {
             PanKind::Pan123 => "123 网盘",
             PanKind::Pan115 => "115 网盘",
             PanKind::Tianyi => "天翼云盘",
+            PanKind::Guangya => "光鸭云盘",
+            PanKind::Xunlei => "迅雷云盘",
             PanKind::Unknown => "未知网盘",
         }
     }
@@ -294,12 +306,26 @@ fn detect_kind(url: &str) -> PanKind {
         PanKind::Baidu
     } else if host_is(&h, "aliyundrive.com") || host_is(&h, "alipan.com") {
         PanKind::Aliyun
-    } else if host_is(&h, "123pan.com") || host_is(&h, "123684.com") {
+    } else if host_is(&h, "123pan.com") || host_is(&h, "123684.com") || host_is(&h, "123pan.cn") {
+        // ★ 2026-10-27（R3-C）：补 `123pan.cn`
+        //   证据：参考实现的 123 盘正则已认 `123(?:[a-zA-Z0-9]{3}|pan)\.(?:com|cn)`
+        //   ⇒ 我们原来只认 `.com`/`123684.com` ⇒ `www.123pan.cn/s/xxx` 会被判成 Unknown。
         PanKind::Pan123
-    } else if host_is(&h, "115.com") || host_is(&h, "115cdn.com") {
+    } else if host_is(&h, "115.com") || host_is(&h, "115cdn.com") || host_is(&h, "anxia.com") {
+        // ★ 2026-10-27（R3-C）：补 `anxia.com`
+        //   证据同上（参考实现的 115 正则含 `115|115cdn|anxia`）。
         PanKind::Pan115
     } else if host_is(&h, "cloud.189.cn") {
         PanKind::Tianyi
+    } else if host_is(&h, "guangyapan.com") {
+        // ★ 2026-10-27（R3-C）：光鸭云盘主域名
+        //   证据（dex 字符串池）：`account.guangyapan.com/v1/auth/device/code`（扫码登录）、
+        //   `app.guangyapan.com/pan`（分享页）、`api.guangyapan.com/userres/v1/*`（接口）
+        PanKind::Guangya
+    } else if host_is(&h, "pan.xunlei.com") || host_is(&h, "xunlei.com") {
+        // ★ 2026-10-27（R3-C）：迅雷云盘主域名
+        //   证据（dex 字符串池）：`pan.xunlei.com`（分享页）+ `api-pan.xunlei.com/drive/v1/*`
+        PanKind::Xunlei
     } else {
         PanKind::Unknown
     }
@@ -394,12 +420,59 @@ mod tests {
             ("https://www.aliyundrive.com/s/xyz", PanKind::Aliyun),
             ("https://www.alipan.com/s/xyz", PanKind::Aliyun),
             ("https://www.123pan.com/s/abc", PanKind::Pan123),
+            // ★ 2026-10-27（R3-C）新增：`123pan.cn`（参考实现的正则已认 `.cn`）
+            ("https://www.123pan.cn/s/abc", PanKind::Pan123),
             ("https://115.com/s/abc", PanKind::Pan115),
+            // ★ 新增：`anxia.com`（参考实现的 115 正则含它）
+            ("https://anxia.com/s/abc", PanKind::Pan115),
             ("https://cloud.189.cn/t/abc", PanKind::Tianyi),
+            // ★★ 2026-10-27（R3-C）新增两档：光鸭 / 迅雷
+            ("https://app.guangyapan.com/pan", PanKind::Guangya),
+            ("https://pan.xunlei.com/s/abc", PanKind::Xunlei),
         ];
         for (url, want) in cases {
             assert_eq!(detect_kind(url), want, "url={url}");
         }
+    }
+
+    /// ★★★ R3-C 专项门禁：**光鸭 / 迅雷的链接不许被判成 Unknown**
+    ///
+    /// # 为什么单独一条（而不是并进上面那张表）
+    /// ```text
+    /// 上面那张表是"每个盘都认一认"的**正向清单**；本条的语义是
+    /// 「**这两个盘的凭据键位存在**」—— 它挡的是"PanKind 退回 7 档"这种回退：
+    ///   一旦 `PanKind::Guangya`/`Xunlei` 被删或域名表被改回 7 个域名，
+    ///   这两个盘的分享链接就变成 `Unknown` ⇒ `pan/<kind.code()>` 无从拼出
+    ///   ⇒ **做出来也存不了凭据**（R3-C 第 0 段查出的真缺口）。
+    /// ★ 注入验证（必须能红）：把 `detect_kind` 里的 guangya/xunlei 两个分支删掉
+    ///   ⇒ 本条红。
+    /// ```
+    #[test]
+    fn r3c_guangya_and_xunlei_are_not_unknown() {
+        // ① 两个盘的 code() 必须**非** "unknown"（否则凭据键位与"认不出"撞车）
+        assert_ne!(
+            PanKind::Guangya.code(),
+            PanKind::Unknown.code(),
+            "★★ 光鸭必须有独立的凭据键位（否则 pan/unknown 与'认不出'撞车）"
+        );
+        assert_ne!(
+            PanKind::Xunlei.code(),
+            PanKind::Unknown.code(),
+            "★★ 迅雷必须有独立的凭据键位"
+        );
+        // ② 它们的分享页链接要认得出
+        assert_eq!(
+            detect_kind("https://app.guangyapan.com/pan"),
+            PanKind::Guangya,
+            "★★★ 光鸭分享页被判成 Unknown ⇒ R3-C 的 PanGuangya 连凭据键位都没有"
+        );
+        assert_eq!(
+            detect_kind("https://pan.xunlei.com/s/abc"),
+            PanKind::Xunlei,
+            "★★★ 迅雷分享页被判成 Unknown ⇒ R3-C 的 PanXunlei 连凭据键位都没有"
+        );
+        // ③ 反空真（铁律 149）：这两个**确实**是两个不同的档，不是同一个被复用了两次
+        assert_ne!(PanKind::Guangya, PanKind::Xunlei);
     }
 
     #[test]

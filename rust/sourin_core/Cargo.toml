@@ -98,7 +98,62 @@ md-5 = "0.10"
 aes = "0.8"
 cbc = "0.1"
 
+# ★ R3-B csp_AppDrama（2026-10-27）：拿 ext 的 `publicKey` 做 `RSA/ECB/PKCS1Padding` 加密，
+#   解开 `dataKey`（那把 AES 钥匙）。
+#
+# # 为什么**没有替代路径**（不是"顺手引个大库"）
+# ```text
+# ① 它是**钥匙**，不是"其中一段"：没有它就拿不到 dataKey ⇒ 后面的 AES + JSON 段**全走不动**。
+# ② ring **顶替不了**：ring 0.17 的 RSA 只有 **OAEP 加密** + **PKCS1 签名**，
+#    **不支持 PKCS1v1.5 加密**（查过 ring/src/rsa/encryption.rs 与 padding/，无该路径）。
+#    而上游协议要的逐字就是 `RSA/ECB/PKCS1Padding`。
+# ③ 与既有纪律不冲突：本仓纪律是"**不新增运行时**"（不是"不新增依赖"）。
+#    `rsa` 与 `aes`/`cbc` **同性质**（RustCrypto 纯 Rust、无 C 依赖、无新执行体）。
+# ④ **先例一致**：`aes`/`cbc` 就是 App99 那次为"站点协议要求"加的，同一条理由。
+# ```
+# 依赖链（rsa → num-bigint-dig / pkcs1 / pkcs8 / spki）**已在本地 cargo 缓存里**
+# ⇒ 可 `--offline` 构建，不需要联网。
+rsa = "0.9"
+
 log = "0.4"
+
+# ★ csp 类注册插件化（R3-D，2026-10-27）：**编译/链接期**自注册
+#
+# Owner 原话：「要插件化开发,不要耦合太严重,未来还可能兼容其他平台」
+#
+# # 它替代了什么（改前）
+# ```text
+# `csp/mod.rs` 的 `build_registry()` 里**逐行 m.insert(...) 写死** 每个类：
+#   新增一个类 = 改核心文件 + 加一行 ⇒ 69 个待补类 = 69 行写死（Owner 说的"耦合太严重"）
+#   且键是 `&'static str` + 值是 `fn()` 函数指针的**静态表** ⇒ 外部/其他平台无法注册。
+# ⇒ 改后：类在**自己的文件**里 `inventory::submit!{…}` 自注册，核心只遍历一遍。
+# ```
+#
+# # ★ 为什么它不算违反本仓「不新增运行时」纪律（诚实契约第 4 条）
+# ```text
+# 那条纪律约束的是**运行期引擎**（会带进新的执行体 / 攻击面 / 体积，如 HTML 选择器库）。
+# `inventory` 做的事在**编译/链接期**：往产物里留一个链接器构造器
+#   （`.text.startup`(ELF) / `.CRT$XCU`(PE)）+ 一张静态链表；
+#   运行期只有"遍历这张本来就在 binary 里的链表" ⇒ **无解释器、无新线程、无新执行模型**。
+# 成本实测：`cargo tree -p inventory` ⇒ 只它自己一层；非 wasm **零传递依赖**、
+#   无 build.rs、无 proc-macro、不需要 nightly（stable 可用）。
+# ⇒ 与本仓既有先例（`flate2`/`ring` 提成直接依赖的理由是"不新增编译单元"；
+#   `md-5`/`aes`/`cbc` 是"纯 Rust、无 C 依赖、不引入任何运行时"）**同一档**。
+# ```
+#
+# ⚠️ **平台实测边界（照实写，不许在落地时变成"已支持 Android"）**
+# ```text
+# ✅ 已实测：Windows/MSVC —— 含本仓同款 `[profile.release]`（lto+strip）下，
+#    编成 cdylib 后被 **Dart FFI 真加载**，注册项完整存活（读数 3/3）。
+#    留档：`.probe/r3-linkreg-dll-load.log`（+ `.probe/r3-registry-decoupling-verdict.md` §1 表 c）。
+# ❓ **未实测：Android** —— 本机**缺 NDK 配置**（`clang.exe not found`），
+#    且**本仓自己交叉编也报同一个错**（对照：`cargo check --target armv7-linux-androideabi`）
+#    ⇒ 是**环境**限制，不是 inventory 的问题。
+#    源码依据：`inventory` 的 `link_section` 分支含 `target_os = "android"`（`.text.startup`），
+#    README 明写支持 "Android"。**但这只是"上游声明支持"，不是"我们验过"。**
+# ⇒ 本仓当前对 Android **未验**；将来真编 Android 时必须补验这一步。
+# ```
+inventory = "0.3"
 
 # ★ 凭据加密（2026-10-18，CS-1）
 #

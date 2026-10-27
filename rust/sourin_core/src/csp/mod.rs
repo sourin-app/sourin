@@ -39,7 +39,92 @@ pub mod ikanbot;
 pub mod bili;
 pub mod pan_web_share;
 pub mod zhinan;
+/*
+ * ── R3 批新增（**Lead 独占本段**）─────────────────────────────────────
+ *
+ * # 为什么由 Lead 独占
+ * R3 批有 6 个执行者**同时**在补 csp 类（batch A/B/C + 网盘 + AppDrama/XBPQ）。
+ * 每个类都要在这里加一行 `pub mod` ⇒ 若各写各的，同一时刻多人改同一段会互相覆盖。
+ * ⇒ 各执行者「**先写文件 → 报 Lead → Lead 加行 → 执行者复跑**」。
+ *
+ * # ⚠️ 加行的时序（这条必须遵守）
+ * ```text
+ * `pub mod x;` 指向的**文件必须已存在**，否则 `cargo check --lib` 直接失败 ——
+ * 而它会**连累所有并行执行者的读数**（他们跑什么都红，且红因不在自己身上）。
+ * ⇒ 所以**先确认文件存在再加行**，不许"先把行加上占位"。
+ * ```
+ */
+pub mod sports_kafei;
+pub mod ting_bokan;
+pub mod shared;
+pub mod app_yqk;
+pub mod jpys;
+pub mod app_ly;
+pub mod app_drama;
+pub mod djuu;
+pub mod shuang_xing;
+pub mod sou4k;
+pub mod yinhai;
+pub mod web1905;
+pub mod pan_drive;
+pub mod short_haokan;
+pub mod ting_shijie;
+pub mod hxq;
+pub mod wwys;
+pub mod app_ys_v2;
+pub mod douban;
+pub mod app_get;
+pub mod gui_gui;
+pub mod app_sy;
+pub mod app3q;
+pub mod app_fox;
+pub mod app_qi;
+pub mod app_ys;
+pub mod duboku;
+pub mod gulu;
+pub mod sao_huo;
+pub mod sou_ju;
+pub mod app_rj;
+pub mod hd_moli;
+pub mod libvio;
+pub mod yun_duo;
+pub mod czsapp;
 pub mod provider;
+
+/*
+ * ── R4 增量批（2026-10-27 深夜，Lead 独占本段，沿用 R3 批同一条纪律）──
+ * 25 个占位 `pub mod` 已先于实现接线：占位文件已存在 ⇒ cargo check 不会连累
+ * 并行执行者的读数（R3 批注释里的时序规则照样成立）。
+ * 三个执行者各写各的文件，互不重叠：
+ *   csp-b24 = sports_feiqiu…seed_hub（11，官方 jar 有参考）
+ *   csp-b25 = juhe_so…guan_ying（11，官方 jar 有参考）
+ *   csp-b26 = ren_ren / djlh / all_live（3，官方 jar 没有 ⇒ Owner 授权按站点协议独立反推）
+ */
+pub mod sports_feiqiu;
+pub mod ting_jinxia;
+pub mod short_weiguan;
+pub mod sports_guazi;
+pub mod sports_88;
+pub mod qingting_fm;
+pub mod short_hema;
+pub mod qu_pan_so;
+pub mod mi_pan_sou;
+pub mod pan_sou;
+pub mod seed_hub;
+pub mod juhe_so;
+pub mod yidong_4k;
+pub mod short_qimao;
+pub mod short_xingya;
+pub mod wogg;
+pub mod bili_ys;
+pub mod bdjmcc;
+pub mod hjzhen_cai;
+pub mod juying;
+pub mod wn4k;
+pub mod guan_ying;
+pub mod ren_ren;
+pub mod djlh;
+pub mod all_live;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -254,60 +339,195 @@ pub trait CspSite: Send + Sync {
 // ═══════════════════════════════════════════════════════════════════════
 //  注册表 + 路由
 // ═══════════════════════════════════════════════════════════════════════
+//
+// ★★★ 2026-10-27（R3-D）：注册方式从「核心写死」改成「**类自注册**」
+//
+// # Owner 原话（逐字）
+// ```text
+// 「要插件化开发,不要耦合太严重,未来还可能兼容其他平台」
+// ```
+//
+// # 改前有什么问题（这是本项要修的）
+// ```text
+// `build_registry()` 里**逐行 `m.insert(类::CLASS, || …)` 写死**：
+//   · 新增一个类 = **改核心文件 + 加一行** ⇒ 69 个待补类 = 69 行写死（"耦合太严重"）
+//   · 键 `&'static str` + 值 `fn()` 函数指针 = **静态表** ⇒ **外部/其他平台无法注册**
+//     ⇒ "未来兼容其他平台"在旧结构下**做不成**。
+// ```
+//
+// # 改后（判据见下）
+// ```text
+// 每个类在**自己的文件**里 `inventory::submit! { CspRegistration { … } }` 自注册；
+// 核心只做一件事：**遍历这份注册表并检测冲突**。
+// ⇒ 新增一个类**不需要改本文件的任何函数体**（只可能在 `pub mod` 列表里加一行声明；
+//   若新类放在已有模块里，连那行都不用加）。
+// ```
+pub use inventory;
+
+/// 一个类的**注册项** —— 类自己在文件里提交这一条
+///
+/// # 字段
+/// ```text
+/// class  去掉 `csp_` 前缀的类名，必须与 `api` 里的后半段**逐字**相同
+///        （大小写敏感：DEX 里 `Bili` 与 `bili` 是两个类，猜错等于"假装实现了"）
+/// make   无参构造函数（同一个类对 10 个站可以各建一个实例）
+/// ```
+///
+/// # 为什么用「自由函数 + 结构体」而不是 trait 对象
+/// ```text
+/// 与改前 `Builder = fn()` 同一形状 ⇒ **零运行期抽象成本**：
+/// 注册期只往静态链表里放一个结构体，取用时一次函数指针调用。
+/// ```
+pub struct CspRegistration {
+    pub class: &'static str,
+    pub make: fn() -> Arc<dyn CspSite>,
+}
+
+inventory::collect!(CspRegistration);
+
+/// ★★ 类**自注册**的唯一入口宏 —— 在类自己的文件里写一行即可
+///
+/// # 用法（照抄）
+/// ```rust,ignore
+/// crate::csp::register_site!(Bili);      // 类名：csp_Bili ⇒ 键 "Bili"
+/// ```
+///
+/// # 为什么做成宏而不是让每个文件手写 `inventory::submit!`
+/// ```text
+/// ① **统一形状**：`CspRegistration` 的字段名/构造方式只在一处定义 ⇒
+///    将来给注册项加字段（如"作者""能力位"）时，改这一个宏，不必改 69 个类。
+/// ② **把 `CLASS` 与注册键绑在一起**：宏里用 `$site::CLASS` **同时**当类名，
+///    ⇒ "注册键"与"类自己声明的 CLASS"在结构上不可能写歪
+///      （手写时很容易出现 `class: "Bili "` 这种带空格的静默错）。
+/// ```
+///
+/// # 它展开成什么
+/// ```text
+/// `inventory::submit! { CspRegistration { class: <$site>::CLASS, make: || Arc::new(<$site>::new()) } }`
+/// ⇒ 一个 `#[used]` + `link_section` 的链接器构造器（ELF `.text.startup` / PE `.CRT$XCU`）。
+///   **编译/链接期就位，运行期零额外成本**（见 Cargo.toml 里那段依赖说明）。
+/// ```
+///
+/// ⚠️ `$site` 必须是一个 `pub struct`，且有：
+/// `pub const CLASS: &'static str` 与 `pub fn new() -> Self` ——
+/// 缺任何一样都是**编译错误**（这正是我们要的：不许"注册了但构造不出来"）。
+#[macro_export]
+macro_rules! register_site {
+    ($site:ty) => {
+        $crate::csp::inventory::submit! {
+            $crate::csp::CspRegistration {
+                class: <$site>::CLASS,
+                make: || ::std::sync::Arc::new(<$site>::new())
+                    as ::std::sync::Arc<dyn $crate::csp::CspSite>,
+            }
+        }
+    };
+}
+pub use register_site;
+
+/// 从链接期注册表构建「类名 → 构造函数」，并在构建时**检测同名冲突**
+///
+/// # ★★ 为什么必须显式报错（验收②）
+/// ```text
+/// `inventory` 会把**所有**提交项都收进来 —— 包括两个模块注册了**同一个 CLASS** 的情况。
+/// 若用「后写覆盖先写」的朴素做法：
+///   ⇒ 用户会看到"我实现了这个类，但它没生效"（一个**静默故障**，
+///     而且排查方向会被带偏：他会去查配置，而不是查重名）。
+/// ⇒ 这里**必须在构建期就把它变成响亮错误**。
+/// ```
+///
+/// # 为什么冲突时**不返回一个"少一条"的表**（而是直接报错）
+/// ```text
+/// 少一条 = 那个类静默掉进「尚未实现」⇒ 与上面同一个故障，只是换了个位置。
+/// ```
+///
+/// # `Err` 的文案要求
+/// ```text
+/// 必须**点名那个重复的 class** —— 不然作者无法知道该改哪一个。
+/// ```
+pub fn build_registry_from_inventory() -> Result<BTreeMap<&'static str, Builder>, String> {
+    /*
+     * ⚠️ `inventory::iter::<T>` **不是**标准 `Iterator`（它是个专用类型，
+     *    只保证 `IntoIterator`）⇒ 不能直接 `.map(...)`。
+     *    ⇒ 用 `for` 收成 Vec 再交给纯函数（形状与 `submit!` 的收集语义无关，
+     *      纯函数那边只认 `IntoIterator<Item = CspRegistration>`）。
+     */
+    let mut regs: Vec<CspRegistration> = Vec::new();
+    for r in inventory::iter::<CspRegistration> {
+        regs.push(CspRegistration {
+            class: r.class,
+            make: r.make,
+        });
+    }
+    build_registry_from(regs)
+}
+
+/// 从**任意一组**注册项构建注册表（校验 + 冲突检测）
+/// —— 上面的函数只是它"输入来自链接期注册表"的包装
+///
+/// # 为什么把它单独抽出来（而不是只留 `…_from_inventory`）
+/// ```text
+/// 冲突与校验这两条**必须能被门禁驱动**，而链接期注册表在一个 test binary 里
+/// 是**不可追加**的（`submit!` 一旦写进任何被编译的文件，就永久生效了 ——
+/// 想在测试里"临时再注册一个"就只能靠全局状态，那比不测更糟）。
+/// ⇒ 把"构建"抽成接收输入的纯函数，门禁就能直接喂"两个同名项"来验它报错。
+/// ★ 生产路径**走的是同一个函数**（见 `registry()` 里那次调用）⇒
+///   不是"只测了个辅助函数"。
+/// ```
+pub fn build_registry_from(
+    regs: impl IntoIterator<Item = CspRegistration>,
+) -> Result<BTreeMap<&'static str, Builder>, String> {
+    let mut m: BTreeMap<&'static str, Builder> = BTreeMap::new();
+    let mut dupes: Vec<&'static str> = Vec::new();
+    /*
+     * ⚠️ 必须遍历**传进来的 `regs`** —— 我第一版这里写成了
+     *    `for reg in inventory::iter::<CspRegistration>`（直接读全局链接期表）。
+     *    后果：这个"纯函数"其实**完全忽略了自己的参数**，于是门禁喂进去的
+     *    "两个同名类"根本没被看到，冲突检测那条用例**假红**（它读到的是全局表里的 5 个真类）。
+     *    ★ 这正是"签名说有输入、实现却读全局"这一类静默错误 ——
+     *      单元测试之所以能抓住它，是因为我**故意**喂了与全局表不同的输入。
+     */
+    for reg in regs {
+        // ── 注册期校验（见文件头 Risks：不许出现"注册了但名字是空的"）──
+        if reg.class.trim().is_empty() {
+            return Err("csp 注册表：有一个类的 CLASS 是空串（注册项必须给出非空类名）".to_string());
+        }
+        // class 必须满足与配置里 api 同一套字符约束 —— 否则它**永远匹配不上**，
+        // 等于一个"注册了但谁也路由不到"的静默项。
+        if !reg
+            .class
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err(format!(
+                "csp 注册表：类名 `{}` 含非法字符（只允许 [A-Za-z0-9_]）—— \
+                 它永远匹配不上配置里的 api",
+                reg.class
+            ));
+        }
+        if m.insert(reg.class, reg.make).is_some() {
+            dupes.push(reg.class);
+        }
+    }
+    if !dupes.is_empty() {
+        dupes.sort_unstable();
+        dupes.dedup();
+        return Err(format!(
+            "csp 注册表：有 {} 个类名被**重复注册**：{}。\
+             每个 CLASS 只能注册一次 —— 两个模块注册同一个类名时，\
+             谁来生效是不确定的，所以这里显式失败而不是静默取一个。",
+            dupes.len(),
+            dupes.join(", ")
+        ));
+    }
+    Ok(m)
+}
 
 /// 构造函数（无参：同一个类对 10 个站可以各建一个实例）
 type Builder = fn() -> Arc<dyn CspSite>;
 
-fn build_registry() -> BTreeMap<&'static str, Builder> {
-    let mut m: BTreeMap<&'static str, Builder> = BTreeMap::new();
-    // ── 已实现 ────────────────────────────────────────────────────────
-    // csp_Bili：配置里覆盖 10 个源。真发 HTTP（上游公开 web 接口）。
-    m.insert(bili::Bili::CLASS, || {
-        Arc::new(bili::Bili::new()) as Arc<dyn CspSite>
-    });
-    // csp_PanWebShare：配置里覆盖 6 个源（仅次于 csp_Bili）。
-    // 浏览类接口（home/list/detail）真抓站点 HTML；网盘分享的直链需要
-    // 账号 + 本地转发服务 ⇒ play 如实报「需要登录」（见该文件头的能力边界）。
-    // csp_App99：配置里 2 个源。AES/CBC 加密协议（取证 + 真网络都过了，见文件头）。
-    // ⚠️ 已验：home（8 分类）/ list（20 条目）；未验：detail / play。
-    m.insert(app99::App99::CLASS, || {
-        Arc::new(app99::App99::new()) as Arc<dyn CspSite>
-    });
-    /*
-     * csp_FirstAid：**已实现但未注册（未通电）**。
-     * 2026-10-26 真网络：home/list/play 三段通了（见 .probe/firstaid-live4.log），
-     * 但 detail 的标题解析仍命中页面 <style> 里的 CSS 文本 ⇒ **四段未全通**，
-     * 按"未通过真网络验证不许注册"的规矩撤掉。修好后把下面三行恢复即可。
-     */
-    // m.insert(first_aid::FirstAid::CLASS, || { … });
 
-    /*
-     * csp_Ikanbot（爱看｜蓝光秒播）：**已注册**（四段真网络全通，2026-10-26）。
-     * ```text
-     * home   6 分类 / 48 条
-     * list   /category/1 电影 48 条
-     * detail 线路维度：普通条目 1 条；/play/1001027 → **31 条**（xlm3u8/gsm3u8/jsm3u8…）
-     * play   返回 m3u8 + UA/Referer；实测该 CDN 直连 200 + #EXTM3U（真能播）
-     * ```
-     * 卡点历史（留档）：`/api/getResN` 曾返回 401，因为页面 `e_token` 是解扰过的 ——
-     * DEX 的 `Ikanbot.get_tks`（取 videoId 末 4 位、每位 `d%3+1` 起取 8 字符）
-     * 复刻后才通；那段读数是寄存器级反汇编得出的，别再"猜着重写"。
-     */
-    m.insert(ikanbot::Ikanbot::CLASS, || {
-        Arc::new(ikanbot::Ikanbot::new()) as Arc<dyn CspSite>
-    });
-    m.insert(pan_web_share::PanWebShare::CLASS, || {
-        Arc::new(pan_web_share::PanWebShare::new()) as Arc<dyn CspSite>
-    });
-    // csp_4KZhinan：配置里覆盖 2 个源（指南 / 小丑）。纯 HTML 抓取，
-    // 站点从 `ext.site` 取；播放是网盘分享页（见该文件头的能力边界）。
-    m.insert(zhinan::Zhinan::CLASS, || {
-        Arc::new(zhinan::Zhinan::new()) as Arc<dyn CspSite>
-    });
-    m
-}
-
-/// 已实现的注册表（类名 → 构造函数）
+/// 已实现的注册表（类名 → 构造函数）—— **由类自己注册**（不再是核心写死）
 ///
 /// 键是**去掉 `csp_` 前缀的类名**，与配置里 `api` 的后半段逐字对应：
 /// ```text
@@ -315,9 +535,22 @@ fn build_registry() -> BTreeMap<&'static str, Builder> {
 /// ```
 /// ★ 大小写敏感：DEX 里 `Bili` 与 `bili` 是两个不同的类名，
 ///   这里跟着区分，猜错就等于「假装实现了」。
+///
+/// # ⚠️ 这里 `expect` 掉 `Err` 会不会把冲突变成静默故障？
+/// ```text
+/// 不会，而且这正是**故意的**：
+///   · 同名冲突是**编译/链接期的代码缺陷**（两个作者撞了名字），不是运行期数据问题
+///     ⇒ 需要在**开发阶段**就炸掉，而不是等某个用户的数据触发。
+///   · 门禁 `zz_r3_csp_registry` 里有一条**独立**的用例直接调
+///     `build_registry_from_inventory()` 并断言"注入两个同名类 ⇒ 返回 Err"，
+///     ⇒ 冲突**不可能**悄悄溜过去（那个用例会红）。
+///   · 若这里改成"返回一个少一条的表"，才是真正的静默故障（见上函数的注释）。
+/// ```
 pub fn registry() -> &'static BTreeMap<&'static str, Builder> {
     static R: once_cell::sync::Lazy<BTreeMap<&'static str, Builder>> =
-        once_cell::sync::Lazy::new(build_registry);
+        once_cell::sync::Lazy::new(|| {
+            build_registry_from_inventory().unwrap_or_else(|e| panic!("{e}"))
+        });
     &R
 }
 

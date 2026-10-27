@@ -194,6 +194,8 @@ impl Bili {
         let client = reqwest::Client::builder()
             .user_agent(UA)
             .timeout(Duration::from_secs(20))
+            // 与 pan_web_share 同一条纪律：不读系统代理（代理会把"站点可用"测成"全宕"）
+            .no_proxy()
             .build()
             .expect("build upstream http client");
         Self {
@@ -704,6 +706,24 @@ fn secs_text(secs: u64) -> String {
         format!("{m}:{s:02}")
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ★★★ 自注册（R3-D，2026-10-27）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 注册项**长在类自己的文件里** —— 新增一个类 = 新增文件，**不改核心注册表**。
+//
+// 改前这一行在 `csp/mod.rs` 的 `build_registry()` 里写死：
+// ```rust
+// m.insert(bili::Bili::CLASS, || Arc::new(bili::Bili::new()) as Arc<dyn CspSite>);
+// ```
+// ⇒ 每个类都要去改核心文件（Owner 说的"耦合太严重"，69 个待补类 = 69 行写死）。
+//
+// # 这个类的事实（从核心文件头搬过来，别丢）
+// ```text
+// csp_Bili：配置里覆盖 **10 个源**（本批最多的一个）。真发 HTTP（上游公开 web 接口）。
+// ```
+crate::csp::register_site!(Bili);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试

@@ -88,6 +88,12 @@ pub mod pan_list;
 /// 网盘登录凭据管理（系统钥匙串，cookie 不落盘）
 pub mod pan_auth;
 
+/// 网盘**扫码登录**协议层（R3-C B1：拿 token → 出码 → 轮询 → 换 cookie）
+///
+/// 与 `pan_auth` 分工：那个是与协议无关的凭据仓库（存/取/清），
+/// 各家的端点/UA/Referer 差异归这里。
+pub mod pan_login;
+
 // ── 详情与播放链路 ──
 pub mod playback;
 

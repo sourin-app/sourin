@@ -1,0 +1,1237 @@
+//! 网盘**扫码登录**协议层（R3-C B1）
+//!
+//! # 这一层做什么 / 不做什么
+//!
+//! ```text
+//! 本模块：扫码登录的**协议流程**（拿 token → 出二维码 → 轮询 → 换 cookie）
+//! 存储层：`pan_auth` 负责 cookie 的存/取/清（系统钥匙串）
+//! ```
+//! 分开的理由：`pan_auth` 是**与协议无关**的凭据仓库（它对夸克/UC/百度一视同仁）；
+//! 而扫码的端点和参数**每家网盘不同** ⇒ 那些差异归本模块。
+//!
+//! # ⚠️ 本模块的凭据来源是**参考实现的行为**（dex 字符串取证），不是照抄源码
+//!
+//! 各家的端点是**逐字**从参考实现的字符串常量里取的（jar 无 license ⇒ 只取行为/协议层）：
+//! ```text
+//! 夸克（已实现，本文件）：
+//!   ① https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin?client_id=532&v=1.2
+//!   ② https://su.quark.cn/4_eMHBJ?token=<token>&client_id=532&ssb=weblogin&…
+//!        （二维码内容就是 ② 这个 URL）
+//!   ③ https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=532&v=1.2&token=<token>
+//!   ④ https://pan.quark.cn/account/info?st=<service_ticket>&lw=scan   ⇒ 响应 Set-Cookie 即登录态
+//! 取证：`.probe/r3c-quark-login-endpoints.log`（含 UA / Referer / Accept 逐字）
+//! ```
+//!
+//! # ★ 能力已存在但**未接通的**部分（如实登记，不许当前提承诺）
+//!
+//! ```text
+//! 网盘直链播放还需要「本机转发服务」把 `Referer`/`Cookie` 带上。
+//! 本仓已有等价能力：`streamproxy::register(url, headers)`（streamproxy.rs:819）
+//!   —— 形态与 TVBox 的 `127.0.0.1:5266` 相同。
+//! ⚠️ 但"接口存在" ≠ "能力可用"：网盘直链常是 302 链、要 Range 透传，
+//!   这一条**尚未实测**。⇒ 在真验通之前，不把"能播"当已交付的承诺。
+//! ```
+//!
+//! # 为什么用枚举而不是 trait 对象（此刻）
+//!
+//! ```text
+//! 现在只有 1 家（夸克）。trait 的好处此刻兑现不了（没有第二个实现），
+//! 而枚举的坏处此刻也没有（没有第三方扩展）。
+//! ⇒ 先用枚举 + `match`，等 B2 加第二家时若发现分支重复明显再抽 trait。
+//!   **不为"将来可能要"提前抽象** —— 那会造出没有用例的机制。
+//! ```
+
+use std::time::Duration;
+
+use crate::pan::PanKind;
+
+/// 二维码登录的一次会话
+///
+/// 生命周期：`start` 产出 → UI 显示 `svg` → 按 ~2s 间隔 `poll` →
+/// 直到 `status != Pending`（或超时）。
+#[derive(Debug, Clone)]
+pub struct QrSession {
+    /// 会话标识（UI 侧用它做 poll 的 key；本模块内 = 网盘给的 token）
+    pub key: String,
+    /// 二维码**内容**（要编成图的那个 URL）
+    pub url: String,
+    /// 二维码 SVG（`remote::qr_svg_for` 产出；失败时为空串 ⇒ UI 退化成显示 URL）
+    pub svg: String,
+    /// 给用户的一句提示（如"用夸克 App 扫码"）
+    pub hint: String,
+    /// 会话创建时刻（Unix 秒）—— 用于超时判定
+    pub created_at: i64,
+}
+
+/// 轮询结果的三态（**不含"已登录"** —— 那是 `poll` 带上凭据的额外产出）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QrStatus {
+    /// 还没扫
+    Pending,
+    /// 扫了但没确认（多数网盘有这个中间态）
+    Scanned,
+    /// 已确认 —— 可以换 cookie 了
+    Confirmed,
+    /// 过期（用户太久没扫，要重新 start）
+    Expired,
+    /// 失败（网络/协议错）
+    Failed,
+}
+
+impl QrStatus {
+    /// 机器可读名（落盘/日志/UI 判断用；**不要**用 Debug 输出）
+    pub fn code(&self) -> &'static str {
+        match self {
+            QrStatus::Pending => "pending",
+            QrStatus::Scanned => "scanned",
+            QrStatus::Confirmed => "confirmed",
+            QrStatus::Expired => "expired",
+            QrStatus::Failed => "failed",
+        }
+    }
+}
+
+/// 一次轮询的完整产出
+#[derive(Debug, Clone)]
+pub struct PollOutcome {
+    pub status: QrStatus,
+    /// 给用户的话（失败说原因；成功说"登录成功：<账号>"）
+    pub message: String,
+    /// 确认后换到的登录态 —— `Some` 表示这次**真的**可以落盘了
+    ///
+    /// 形如 `save(&PanCredential { kind, account, cookie, .. })` 的入参。
+    pub credential: Option<crate::pan_auth::PanCredential>,
+}
+
+/// 扫码登录会话表（按网盘存"进行中的会话"）
+///
+/// # 为什么是全局表而不是参数传递
+/// UI 的调用形态是 `start{kind} → {key} → poll{kind,key}`：
+/// `key` 是**网盘给的 token**，而 `poll` 还需要知道"这是哪家的会话"以决定调哪个端点。
+/// 用 `kind` 作分区、`key` 作内层键，就能让 `poll` 只需 `(kind, key)` 两个参数
+/// —— 与 UI 契约（pan_settings_page.dart:35）一致，不必让 UI 侧多传协议信息。
+///
+/// ⚠️ 进程内全局状态：本仓有先例（会话缓存类），且**登录会话天然是进程内**的
+///    （用户关掉应用，未扫完的二维码本就该失效）。
+static SESSIONS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, SessionRecord>>,
+> = std::sync::OnceLock::new();
+
+struct SessionRecord {
+    /// 网盘给的 token（轮询与换 cookie 都要用它）
+    token: String,
+    /// 发起时刻（超时判定）
+    created_at: i64,
+}
+
+fn sessions() -> &'static std::sync::Mutex<std::collections::HashMap<String, SessionRecord>> {
+    SESSIONS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 会话有效期：超过它就让用户重新 start
+///
+/// 取值依据：夸克的二维码 token 有效期是**分钟级**（参考实现靠轮询返回的
+/// 过期状态判定，但我们也需要一个本地兜底，免得"UI 一直转圈"）。
+/// 5 分钟足够用户掏出手机；过短会让人扫到一半就被判过期。
+const SESSION_TTL_SECS: i64 = 300;
+
+/// 单次 HTTP 的预算（登录接口都很快；卡住说明网络问题，早失败早提示）
+const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 夸克云盘的 UA —— **逐字取自参考实现**（见文件头取证）
+///
+/// ★ 为什么必须逐字：夸克的 CAS 登录接口会看 UA，
+///   用一个"通用浏览器 UA"可能被当成不支持扫码的客户端。
+///   （参考实现给 `buildQuarkQrInfo` 与 `handleQuark` 用的是**两个不同** UA：
+///    前者是 Electron 版夸克云盘、后者是 Chrome。我照抄这个区分。）
+const UA_QUARK_QR: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+                           (KHTML, like Gecko) quark-cloud-drive/3.0.1 Chrome/100.0.4896.160 \
+                           Electron/18.3.5.12-a038f7b798 Safari/537.36 Channel/pckk_other_ch";
+const UA_QUARK_POLL: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                             (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+
+/// 建立 HTTP 客户端
+///
+/// ⚠️ 与 `csp/pan_web_share.rs` 同一条纪律：reqwest **默认读环境代理**，
+/// 而用户机器上的代理会把"接口可用"测成"全失败"。
+/// 登录接口尤其不能走代理（夸克的 CAS 对出口 IP 敏感）。
+fn client(ua: &str) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(ua)
+        .timeout(HTTP_TIMEOUT)
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("建 HTTP 客户端失败：{e}"))
+}
+
+/// 当前时刻（Unix 秒）
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  落盘日志 —— **现场可读性的前提**
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ★★ 为什么必须加（这是我报"准备读日志"时**发现自己缺的**）：
+// ```text
+// 我原来的 `pan_login` 里**一条落盘日志都没有**。
+// 而 Owner 现场点"获取二维码"时，我需要**读到他那次的响应/错误原文**才能判读
+//   （如"业务失败 status=?"/ "HTTP ?"/ Set-Cookie 有几条）。
+// ⇒ 没有落盘日志 ⇒ 现场读数只有他能看到（他不懂技术，我也拿不到原文）
+//   ⇒ 那次现场会**浪费** —— 正是 Lead 强调"一次现场验完"要避免的。
+// ```
+//
+// ★ 机制照抄 `streamproxy.rs:124-164`（同一条纪律）：
+//   · `SOURIN_LOG_FILE` 可覆盖（测试要验格式时用）
+//   · **测试进程不写真实日志**（否则测试夹具往用户 logs/ 写噪声）
+//   · 与 Dart 侧同一个文件、同一行格式（`时间 [tag] 消息`）
+//
+// ★ tag 用 `[PAN]`：与 `[streamproxy]` / `[PLAY]` / `[DMK]` 并列，
+//   现场可用一句 `grep '\[PAN\]'` 捞出全部网盘相关行。
+const LOG_TAG: &str = "PAN";
+
+fn in_test_process() -> bool {
+    // ⚠️ **必须用 `cfg!(test)`（编译期宏），不能用环境变量** —— 我第一版写成
+    //    `std::env::var("CARGO_CFG_TEST")` ⇒ **那个环境变量根本不存在**
+    //    ⇒ 判断恒为 false ⇒ 测试进程照样往**用户真实日志**写。
+    //    ★ 而且我那条门禁**真的抓到了它**（`log_path_is_guarded_in_test_process` 红，
+    //      读数里直接打印出了用户真实路径）—— 这就是"门禁有牙"的价值：
+    //      一个**看起来在做防护、实际恒 false** 的判断，只有"断言它生效"才能发现。
+    //    （与 `streamproxy.rs:117` 同一形态 —— 那处用的是 `cfg!(test)`。）
+    cfg!(test)
+        || matches!(std::env::var("FLUTTER_TEST").as_deref(), Ok("true") | Ok("1"))
+        || std::env::var("DART_TEST").is_ok()
+        || std::env::var("SOURIN_TEST_LOG").is_ok()
+}
+
+fn log_file_path() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("SOURIN_LOG_FILE") {
+        if !p.trim().is_empty() {
+            return Some(std::path::PathBuf::from(p));
+        }
+    }
+    if in_test_process() {
+        return None;
+    }
+    let base = std::env::var("APPDATA").ok()?;
+    let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+    Some(
+        std::path::PathBuf::from(base)
+            .join("app.sourin.player")
+            .join("logs")
+            .join(format!("sourin-{day}.log")),
+    )
+}
+
+/// 追加一行（失败静默 —— 日志不该影响功能）
+fn write_log(msg: &str) {
+    let Some(path) = log_file_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let line = format!(
+        "{} [{LOG_TAG}] {msg}\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write as _;
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// 脱敏后的 cookie 摘要（**只写键名与长度，绝不写值**）
+///
+/// ★ 硬规矩：cookie 是登录凭据，**不许进日志**（与 `pan_auth` 只把 cookie 放钥匙串同源）。
+///   但"有几条键、多少字节"足够判"Set-Cookie 形状对不对"，且不泄密。
+fn cookie_digest(cookie: &str) -> String {
+    let keys: Vec<&str> = cookie
+        .split(';')
+        .filter_map(|p| p.split('=').next())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    format!(
+        "{} 个键（{} 字节）: {}",
+        keys.len(),
+        cookie.len(),
+        keys.join(",")
+    )
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  夸克网盘（PanKind::Quark）—— B1 的唯一一家
+// ═══════════════════════════════════════════════════════════════════════
+
+/// 夸克业务码（★ 2026-10-27 真网络实测拿到的，不是猜的）
+///
+/// # 为什么必须按**业务码**判而不是按 HTTP 码
+/// ```text
+/// 真读数（`.probe/r3c-quark-first-two-hops-live.md`）：
+///   取 token 成功 ⇒ HTTP 200 + body `{"status":2000000,"message":"ok",…}`
+///   未扫描       ⇒ HTTP 200 + body `{"status":50004001,"message":"Query result is empty"}`
+/// ⇒ **HTTP 码一路都是 200**，"成功/未扫/过期"全在 body 的 `status` 里。
+///   原来只看 `resp.status()`（HTTP）⇒ 会把"业务失败"当成功。
+/// ```
+const QUARK_OK: i64 = 2_000_000;
+/// 未扫描（"还没人扫"）
+const QUARK_NOT_SCANNED: i64 = 50_004_001;
+
+/// 取 body 里的业务码（拿不到 ⇒ None，由调用方决定怎么办）
+fn quark_status_code(body: &str) -> Option<i64> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("status")?
+        .as_i64()
+}
+
+/// 取 body 里的 message（错误文案要如实带上它，方便用户/我们定位）
+fn body_message(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("message")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// 夸克：第一步拿二维码 token
+///
+/// 端点：`https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin?client_id=532&v=1.2`
+/// 响应：`{"status":2000000,"message":"ok","data":{"members":{"token":"…"}}}`
+/// （★ 真网络实测确认；见 `.probe/r3c-quark-first-two-hops-live.md`）
+async fn quark_start() -> Result<QrSession, String> {
+    let c = client(UA_QUARK_QR)?;
+    let resp = c
+        .get("https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin?client_id=532&v=1.2")
+        .header("Accept", "application/json, text/plain, */*")
+        .send()
+        .await
+        .map_err(|e| format!("请求夸克二维码接口失败：{e}"))?;
+
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读夸克响应失败：{e}"))?;
+    if !status.is_success() {
+        return Err(format!("夸克二维码接口返回 HTTP {status}：{}", tail(&body)));
+    }
+
+    // ★ 先看**业务码**（HTTP 200 也可能业务失败 —— 真读数确认过）
+    let code = quark_status_code(&body);
+    if let Some(c) = code {
+        if c != QUARK_OK {
+            let msg = body_message(&body).unwrap_or_default();
+            write_log(&format!(
+                "取码失败 kind=quark 业务码={c} message={msg} body={}",
+                tail(&body)
+            ));
+            return Err(format!(
+                "夸克二维码接口业务失败（status={c}）：{}",
+                if msg.is_empty() { tail(&body) } else { msg }
+            ));
+        }
+    }
+
+    let token = extract_qr_token(&body).ok_or_else(|| {
+        write_log(&format!("取码失败 kind=quark 无 token body={}", tail(&body)));
+        format!("夸克响应里没有找到二维码 token（协议可能变了）：{}", tail(&body))
+    })?;
+
+    // ② 二维码内容 = 这个 URL（参考实现逐字；实测 HTTP 302 ⇒ 是可扫的真码）
+    let url = format!(
+        "https://su.quark.cn/4_eMHBJ?token={token}&client_id=532&ssb=weblogin&uc_param_str=&uc_biz_str=S%3Acustom%7COPT%3ASAREA%400%7COPT%3AIMMERSIVE%401%7COPT%3ABACK_BTN_STYLE%400"
+    );
+    let svg = crate::remote::qr_svg_for(&url).unwrap_or_default();
+    // ★ 现场判读用：token 长度 + svg 是否非空（**不写完整 URL** —— 里面有 token）
+    write_log(&format!(
+        "取码成功 kind=quark token_len={} svg_len={} 业务码={:?}",
+        token.len(),
+        svg.len(),
+        code
+    ));
+
+    let created_at = now();
+    sessions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            kind_key(PanKind::Quark, &token),
+            SessionRecord {
+                token: token.clone(),
+                created_at,
+            },
+        );
+
+    Ok(QrSession {
+        key: token,
+        url,
+        svg,
+        hint: "用夸克 App 扫这个码（或夸克浏览器）".to_string(),
+        created_at,
+    })
+}
+
+/// 夸克：轮询扫码状态（扫中了就换 cookie）
+///
+/// 两个端点（参考实现逐字）：
+/// ```text
+/// ③ https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=532&v=1.2&token=<t>
+///      → data.service_ticket（拿到说明用户确认了）
+/// ④ https://pan.quark.cn/account/info?st=<ticket>&lw=scan
+///      → 响应头 Set-Cookie 就是登录态
+/// ```
+async fn quark_poll(token: &str) -> Result<PollOutcome, String> {
+    let c = client(UA_QUARK_POLL)?;
+
+    // ③ 换取 service_ticket
+    let url = format!(
+        "https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=532&v=1.2&token={token}"
+    );
+    let resp = c
+        .get(&url)
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Referer", "https://pan.quark.cn/")
+        .send()
+        .await
+        .map_err(|e| format!("轮询夸克扫码状态失败：{e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读夸克轮询响应失败：{e}"))?;
+
+    // 状态判定：参考实现看 `data.service_ticket` 与 `message`。
+    // ⚠️ 具体字段名会随协议变；这里**按行为重写**：
+    //    能取到 ticket ⇒ Confirmed；message 里含"过期/expired" ⇒ Expired；
+    //    其它一律 Pending（**宁可多问几次，不要误报成功**）。
+    let ticket = extract_service_ticket(&body);
+    let Some(ticket) = ticket else {
+        let st = classify_pending(&body);
+        // ★ 现场判读用：把**每次轮询的业务码**记下来（Owner 扫码时能看到它变化）
+        write_log(&format!(
+            "轮询 kind=quark 状态={} 业务码={:?} body={}",
+            st.code(),
+            quark_status_code(&body),
+            tail(&body)
+        ));
+        return Ok(PollOutcome {
+            status: st,
+            message: "等待扫码…".to_string(),
+            credential: None,
+        });
+    };
+
+    // ④ 用 ticket 换 cookie
+    let info_url = format!("https://pan.quark.cn/account/info?st={ticket}&lw=scan");
+    let resp = c
+        .get(&info_url)
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Referer", "https://pan.quark.cn/")
+        .send()
+        .await
+        .map_err(|e| {
+            write_log(&format!("换 cookie 请求失败 kind=quark err={e}"));
+            format!("换取夸克登录态失败：{e}")
+        })?;
+
+    // ★ 登录态在 **响应头 Set-Cookie**（参考实现逐字：它读 'set-cookie' 再按 ';' 切）
+    let cookie = collect_set_cookie(&resp);
+    if cookie.is_empty() {
+        write_log("换 cookie 失败 kind=quark 响应无 Set-Cookie（记响应头形状待查）");
+        return Err(
+            "夸克已确认扫码，但响应里没有 Set-Cookie（协议可能变了）⇒ 拿不到登录态".to_string(),
+        );
+    }
+    // ★ 脱敏记录：键名 + 长度（**绝不写值**）—— 足够判"形状对不对"
+    write_log(&format!(
+        "换 cookie 成功 kind=quark 摘要={}",
+        cookie_digest(&cookie)
+    ));
+
+    // ★★ 关键键校验（2026-10-27 Owner 现场真读数给的**基线**）
+    // ```text
+    // 实测拿到的夸克 cookie 是这 6 个键：
+    //   ctoken, __pus, __kp, __kps, __ktd, __uid
+    // ⇒ 若只剩一两个（或名字全不对），说明"登录态不完整" ——
+    //   那种情况下**请求会全 401**，但**不会在登录这一步报错** ⇒ 属静默假成功。
+    // ⇒ 这里至少钉住"必须有 uid 与 ctoken"，并在日志里如实记录缺了什么。
+    //    ⚠️ **故意宽松**（不做"必须 6 键一个不差"的硬门禁）：
+    //      网盘可能改键名/增减键 ⇒ 硬门禁会把"协议正常演进"误判成失败。
+    //      所以：**缺关键键 ⇒ 日志告警（但不算失败）**，让现场能看出异常；
+    //      真失败由后续取数（列文件 401）暴露 —— 那才是权威判据。
+    // ```
+    let missing: Vec<&str> = ["ctoken", "__uid"]
+        .iter()
+        .copied()
+        .filter(|k| !cookie.split(';').any(|p| p.trim().starts_with(&format!("{k}="))))
+        .collect();
+    if !missing.is_empty() {
+        write_log(&format!(
+            "⚠️ 登录态可能不完整 kind=quark 缺少关键键 {:?}（实测基线是 6 键 \
+             ctoken,__pus,__kp,__kps,__ktd,__uid）",
+            missing
+        ));
+    }
+
+    // ★ account 也从这个响应里取 —— **必须在读 body 之前先收 header**
+    //   （`Response` 的 body 只能消费一次；我第一版把它写成"传 &Response 进去再读"
+    //     ⇒ 那个函数永远返回 None = 看起来在取账号、其实永远取不到）
+    let body = resp.text().await.unwrap_or_default();
+    let account = account_from_body(&body).unwrap_or_else(|| "夸克网盘".to_string());
+
+    Ok(PollOutcome {
+        status: QrStatus::Confirmed,
+        message: format!("登录成功：{account}"),
+        credential: Some(crate::pan_auth::PanCredential {
+            kind: PanKind::Quark,
+            account,
+            cookie,
+            saved_at: now(),
+            // 夸克的会话 cookie 没有明确过期时间 ⇒ None（`PanCredential` 的既有语义）
+            expires_at: None,
+        }),
+    })
+}
+
+// ── 解析小工具（纯函数，可单测；不依赖网络）────────────────────────────
+
+/// 从响应体里找二维码 token
+///
+/// # 为什么写成"按候选字段名依次找"而不是钉死一个字段
+/// ```text
+/// 参考实现的 log 里出现的是 `data` + `members` 这类通用名（被混淆过）；
+/// 不同版本协议字段名变过。
+/// ⇒ 依次尝试已知候选；都找不到就返回 None（由调用方报"协议可能变了"），
+///   **不猜一个默认值** —— 猜出来的 token 只会让用户扫一个无效码。
+/// ```
+fn extract_qr_token(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    // ★ 每条路径写成**等长**数组（`&[&str; 3]`）—— 长度不一时无法放进同一个列表
+    //   （我第一版混了 2 元素与 3 元素 ⇒ 编译期就报 E0308，这里正是编译器的好处）
+    const PATHS: [[&str; 3]; 2] = [
+        ["data", "members", "token"],
+        ["data", "token", ""],
+    ];
+    for path in PATHS {
+        let mut cur = &v;
+        let mut ok = true;
+        for k in path.iter().filter(|k| !k.is_empty()) {
+            match cur.get(k) {
+                Some(n) => cur = n,
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok {
+            if let Some(s) = cur.as_str() {
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 从响应体里找 service_ticket（拿到 = 用户已确认）
+fn extract_service_ticket(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    const PATHS: [[&str; 2]; 2] = [
+        ["data", "service_ticket"],
+        ["data", "members"],
+    ];
+    for path in PATHS {
+        let mut cur = &v;
+        let mut ok = true;
+        for k in path {
+            match cur.get(k) {
+                Some(n) => cur = n,
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
+            continue;
+        }
+        // 直接是字符串 ⇒ 就是 ticket；是对象 ⇒ 再往里找一层
+        if let Some(s) = cur.as_str() {
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        } else if let Some(s) = cur.get("service_ticket").and_then(|x| x.as_str()) {
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 还没确认时，判"是哪种未完成态"
+///
+/// # ★ 2026-10-27 真网络实测后重写（原版靠关键词，是**运气**）
+/// ```text
+/// 真读数：未扫描时夸克返回 `{"status":50004001,"message":"Query result is empty"}`
+/// 原实现用关键词（expire/过期/scan）判 ⇒ 对这条**恰好**兜到 Pending，
+///   因为文案里不含那些词。★ 但那是运气：换一条文案（如 "expired token"）就会误判。
+/// ⇒ 改成**按业务码**识别已知态（那才是"行为"），关键词只作兜底。
+///   这也更符合"按行为重写、不逐字抄"的口径 —— 业务码是行为契约。
+/// ```
+fn classify_pending(body: &str) -> QrStatus {
+    if let Some(c) = quark_status_code(body) {
+        match c {
+            QUARK_NOT_SCANNED => return QrStatus::Pending,
+            QUARK_OK => {
+                // ★ 取码接口的"成功码"出现在轮询里 = 不该发生（轮询成功不是这个码）
+                //   ⇒ 如实标 Failed 而不是猜一个 Pending（那会让 UI 一直转圈）
+                return QrStatus::Failed;
+            }
+            _ => {}
+        }
+    }
+    // 兜底：关键词（业务码不在已知表里时）
+    let low = body.to_ascii_lowercase();
+    if low.contains("expire") || body.contains("过期") {
+        QrStatus::Expired
+    } else if low.contains("scan") || body.contains("已扫") {
+        QrStatus::Scanned
+    } else {
+        QrStatus::Pending
+    }
+}
+
+/// 收集响应里**全部** Set-Cookie（按 "; " 拼成一个 Cookie 头值）
+///
+/// # 为什么是"拼成一个"而不是只取第一条
+/// ```text
+/// 网盘登录后会下发多条 cookie（`__pus`、`__kp`、`__uid` …），
+/// 只留第一条 ⇒ 后续接口缺 cookie ⇒ 表现为"登录了但拉不到列表"（很难查）。
+/// 参考实现也是把整段按 ';' 切开再拼。
+/// ```
+fn collect_set_cookie(resp: &reqwest::Response) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for v in resp.headers().get_all(reqwest::header::SET_COOKIE).iter() {
+        let Ok(s) = v.to_str() else { continue };
+        // 一条 Set-Cookie 形如 `k=v; Path=/; HttpOnly` ⇒ 只要第一段
+        if let Some(kv) = s.split(';').next() {
+            let kv = kv.trim();
+            if !kv.is_empty() {
+                parts.push(kv.to_string());
+            }
+        }
+    }
+    parts.join("; ")
+}
+
+/// 从 account/info 的**响应体**里取账号显示名
+///
+/// # ⚠️ 我第一版写成 `fn account_from_info(resp: &reqwest::Response)`
+/// ```text
+/// 那是**永远返回 None 的空函数** —— 因为 `Response` 的 body 只能消费一次，
+/// 而调用点已经先读过 headers（Set-Cookie 必须先读）⇒ body 到这里已不可再用。
+/// ⇒ 形态正是"看起来在取账号、其实永远取不到"。
+/// 改成收**已读出的 body 字符串**：谁读的谁传，责任清楚。
+/// ```
+fn account_from_body(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    // 夸克 `account/info` 的常见字段（按候选依次找；找不到就由调用方兜底）
+    for k in ["nickname", "nick_name", "user_name", "name"] {
+        if let Some(s) = v.get("data").and_then(|d| d.get(k)).and_then(|x| x.as_str()) {
+            if !s.trim().is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 摘要一行响应（报错时给用户看，不要甩整页 HTML）
+fn tail(s: &str) -> String {
+    let t = s.trim();
+    let cut = t.char_indices().nth(200).map(|(i, _)| i).unwrap_or(t.len());
+    format!("{}…（共 {} 字节）", &t[..cut], t.len())
+}
+
+fn kind_key(kind: PanKind, token: &str) -> String {
+    format!("{}:{}", kind.code(), token)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  对外 API（ffi 的四条命令调这些）
+// ═══════════════════════════════════════════════════════════════════════
+
+/// 发起扫码（B1 只支持夸克；其余如实报"尚未接入"）
+pub async fn qr_login_start(kind: PanKind) -> Result<QrSession, String> {
+    match kind {
+        PanKind::Quark => quark_start().await,
+        // ⚠️ **不是**占位返回空：如实说清"这家还没接入"。
+        //    端点我已从参考实现取到（见 `.probe/r3c-pan-dexstrings.log`），
+        //    只是 B1 按 Lead 裁定**只做一家**。
+        other => Err(format!(
+            "{} 的扫码登录尚未接入（B1 只做夸克；其余按批推进）",
+            other.display()
+        )),
+    }
+}
+
+/// 轮询扫码状态（`key` = start 返回的 key）
+pub async fn qr_login_poll(kind: PanKind, key: &str) -> Result<PollOutcome, String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("扫码会话 key 为空 —— 请重新获取二维码".to_string());
+    }
+
+    // 会话超时兜底（本地时钟）
+    {
+        let map = sessions().lock().unwrap_or_else(|e| e.into_inner());
+        match map.get(&kind_key(kind, key)) {
+            None => {
+                // 没这个会话 ⇒ 可能是应用重启过。**如实说**，不要假装在轮询。
+                return Ok(PollOutcome {
+                    status: QrStatus::Expired,
+                    message: "这个二维码已失效（会话不在），请重新获取".to_string(),
+                    credential: None,
+                });
+            }
+            Some(rec) if now() - rec.created_at > SESSION_TTL_SECS => {
+                return Ok(PollOutcome {
+                    status: QrStatus::Expired,
+                    message: "二维码已超时，请重新获取".to_string(),
+                    credential: None,
+                });
+            }
+            Some(_) => {}
+        }
+    }
+
+    let out = match kind {
+        PanKind::Quark => quark_poll(key).await?,
+        other => {
+            return Err(format!(
+                "{} 的扫码登录尚未接入（B1 只做夸克）",
+                other.display()
+            ))
+        }
+    };
+
+    // ★ 确认后落盘（**这里**才是唯一写凭据的地方，与 `pan_auth::save` 同一入口）
+    if let Some(cred) = &out.credential {
+        crate::pan_auth::save(cred)?;
+        write_log(&format!(
+            "凭据已落盘 kind={} account={} 摘要={}",
+            kind.code(),
+            cred.account,
+            cookie_digest(&cred.cookie)
+        ));
+        // 会话用完即弃（凭据已落盘；再轮询同一 key 没有意义）
+        let mut map = sessions().lock().unwrap_or_else(|e| e.into_inner());
+        map.remove(&kind_key(kind, key));
+    }
+    Ok(out)
+}
+
+/// 登出（清钥匙串条目）
+pub fn logout(kind: PanKind) -> Result<(), String> {
+    crate::pan_auth::clear(kind)
+}
+
+/// 某个盘的登录状态（给 `pan_auth_status` 用）
+#[derive(Debug, Clone)]
+pub struct KindStatus {
+    pub kind: PanKind,
+    pub kind_name: &'static str,
+    pub logged_in: bool,
+    pub account: String,
+    pub expired: bool,
+}
+
+/// 查一个盘的登录状态
+pub fn status_of(kind: PanKind) -> KindStatus {
+    let cred = crate::pan_auth::load(kind);
+    KindStatus {
+        kind,
+        kind_name: kind.display(),
+        logged_in: cred.is_some(),
+        account: cred.as_ref().map(|c| c.account.clone()).unwrap_or_default(),
+        expired: cred.as_ref().map(|c| c.is_expired(now())).unwrap_or(false),
+    }
+}
+
+/// 全部盘的登录状态（**顺序固定**，便于 UI 与门禁比对）
+pub fn status_all() -> Vec<KindStatus> {
+    const ORDER: [PanKind; 9] = [
+        PanKind::Quark,
+        PanKind::Uc,
+        PanKind::Baidu,
+        PanKind::Guangya,
+        PanKind::Xunlei,
+        PanKind::Tianyi,
+        PanKind::Pan123,
+        PanKind::Aliyun,
+        PanKind::Pan115,
+    ];
+    ORDER.iter().copied().map(status_of).collect()
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  FFI 命令层（字段名与 `lib/ui/settings/pan_settings_page.dart:32-36` **逐字对齐**）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ★ 为什么字段名要"逐字对齐 UI 契约"：
+// ```text
+// UI 侧已经写好了（`pan_settings_page.dart:32-36` 那段就是契约）：
+//   pan_auth_status     {}        → { accounts: [{kind, kindName, loggedIn,
+//                                           account, expired, keyringAvailable}] }
+//   pan_qr_login_start  {kind}    → { key, url, svg, hint? }
+//   pan_qr_login_poll   {kind,key}→ { status, message?, account? }
+//   pan_logout          {kind}    → {}（清钥匙串条目）
+// ⇒ 若我这边字段名自作主张（如 `logged_in` 而不是 `loggedIn`），
+//   UI 读到的是 undefined ⇒ 界面显示"未登录"而实际已登录 = **假状态**。
+//   ⇒ 所以本节的 struct 用 `#[serde(rename_all = "camelCase")]` 钉住这一层。
+// ```
+
+/// `pan_auth_status` 的一行（字段名钉死见上面说明）
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRow {
+    /// 机器可读的盘标识（`PanKind::code()`，如 "quark"）
+    pub kind: &'static str,
+    /// 面向用户的名字（如 "夸克网盘"）
+    pub kind_name: &'static str,
+    /// 是否已登录（**唯一真相** = 钥匙串里有没有非空 cookie）
+    pub logged_in: bool,
+    /// 账号显示名（未登录时为空串）
+    pub account: String,
+    /// 是否已过期（`expires_at` 有值且已过）
+    pub expired: bool,
+    /// 钥匙串是否可用 —— UI 据此决定"要不要显示登录入口"
+    ///
+    /// 这个字段是**每行都带**的（而不是放在外面）：因为 UI 是逐行渲染的，
+    /// 且"某盘不可用"与"钥匙串整体不可用"在用户看来是同一件事。
+    pub keyring_available: bool,
+}
+
+/// `pan_auth_status` 的返回
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthStatus {
+    pub accounts: Vec<AccountRow>,
+}
+
+/// `pan_qr_login_start` 的返回
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QrStartResult {
+    pub key: String,
+    pub url: String,
+    pub svg: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hint: String,
+}
+
+/// `pan_qr_login_poll` 的返回
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QrPollResult {
+    /// pending / scanned / confirmed / expired / failed
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub message: String,
+    /// 登录成功时可读到账号名（UI 用它显示"已登录：xxx"）
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub account: String,
+}
+
+// ── 命令入口（ffi 只做转发；逻辑都在这里，便于单测）──────────────────
+
+/// `pan_auth_status` 命令体
+pub fn command_status() -> AuthStatus {
+    let ok = crate::pan_auth::keyring_available();
+    AuthStatus {
+        accounts: status_all()
+            .into_iter()
+            .map(|s| AccountRow {
+                kind: s.kind.code(),
+                kind_name: s.kind_name,
+                logged_in: s.logged_in,
+                account: s.account,
+                expired: s.expired,
+                keyring_available: ok,
+            })
+            .collect(),
+    }
+}
+
+/// `pan_qr_login_start` 命令体
+pub async fn command_qr_start(kind_code: &str) -> Result<QrStartResult, String> {
+    let kind = kind_from_code(kind_code)?;
+    let s = qr_login_start(kind).await?;
+    Ok(QrStartResult {
+        key: s.key,
+        url: s.url,
+        svg: s.svg,
+        hint: s.hint,
+    })
+}
+
+/// `pan_qr_login_poll` 命令体
+pub async fn command_qr_poll(kind_code: &str, key: &str) -> Result<QrPollResult, String> {
+    let kind = kind_from_code(kind_code)?;
+    let out = qr_login_poll(kind, key).await?;
+    Ok(QrPollResult {
+        status: out.status.code(),
+        message: out.message,
+        // 凭据已由 `qr_login_poll` 落盘；这里只回账号名给 UI
+        account: out.credential.map(|c| c.account).unwrap_or_default(),
+    })
+}
+
+/// `pan_logout` 命令体
+pub fn command_logout(kind_code: &str) -> Result<(), String> {
+    let kind = kind_from_code(kind_code)?;
+    logout(kind)
+}
+
+/// 把 UI 传来的 `kind` 字符串解析回 `PanKind`
+///
+/// # 为什么不直接用 `PanKind` 作为 FFI 参数类型
+/// ```text
+/// FFI 边界收到的是 **JSON 里的字符串**（`{"kind":"quark"}`）。
+/// 直接 `serde` 反序列化成枚举需要给 `PanKind` 加 `Deserialize` +
+/// 把 `code()`/`display()` 那套映射再写一遍 ⇒ **两处映射会漂**。
+/// ⇒ 这里按 `code()` 反查（**唯一来源**），未知值如实报错（不默认成某个盘）。
+/// ```
+pub fn kind_from_code(code: &str) -> Result<PanKind, String> {
+    let code = code.trim();
+    if code.is_empty() {
+        return Err("kind 为空 —— 请指定要登录哪个网盘".to_string());
+    }
+    // 用 status_all 的固定顺序当"全部候选"，避免再抄一份清单
+    const ORDER: [PanKind; 9] = [
+        PanKind::Quark,
+        PanKind::Uc,
+        PanKind::Baidu,
+        PanKind::Guangya,
+        PanKind::Xunlei,
+        PanKind::Tianyi,
+        PanKind::Pan123,
+        PanKind::Aliyun,
+        PanKind::Pan115,
+    ];
+    ORDER
+        .iter()
+        .copied()
+        .find(|k| k.code() == code)
+        .ok_or_else(|| {
+            format!(
+                "认不出网盘标识 '{code}'（可用值：{}）",
+                ORDER
+                    .iter()
+                    .map(|k| k.code())
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            )
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── 纯函数（不需要网络/钥匙串，CI 必跑）──
+
+    #[test]
+    fn extracts_qr_token_from_known_shapes() {
+        // 参考实现里 token 在 data.members.token 这一路
+        let a = r#"{"status":200,"data":{"members":{"token":"TK1"}}}"#;
+        assert_eq!(extract_qr_token(a).as_deref(), Some("TK1"));
+        let b = r#"{"data":{"token":"TK2"}}"#;
+        assert_eq!(extract_qr_token(b).as_deref(), Some("TK2"));
+        // 找不到 ⇒ None（**不猜默认值**）
+        assert_eq!(extract_qr_token(r#"{"data":{}}"#), None);
+        assert_eq!(extract_qr_token("不是 JSON"), None);
+    }
+
+    #[test]
+    fn missing_token_is_none_not_empty_string() {
+        // ★ 反空真：`Some("")` 与 `None` 是两件事，不能让空串冒充"找到了"
+        assert_eq!(extract_qr_token(r#"{"data":{"members":{"token":""}}}"#), None);
+    }
+
+    #[test]
+    fn extracts_service_ticket() {
+        assert_eq!(
+            extract_service_ticket(r#"{"data":{"service_ticket":"ST1"}}"#).as_deref(),
+            Some("ST1")
+        );
+        assert_eq!(extract_service_ticket(r#"{"data":{}}"#), None);
+    }
+
+    #[test]
+    fn classifies_expired_text() {
+        assert_eq!(classify_pending(r#"{"message":"二维码已过期"}"#), QrStatus::Expired);
+        assert_eq!(classify_pending(r#"{"msg":"expired"}"#), QrStatus::Expired);
+        assert_eq!(classify_pending(r#"{"data":{}}"#), QrStatus::Pending);
+    }
+
+    #[test]
+    fn qr_status_codes_are_stable() {
+        // 这些码会进 UI 判断与日志 ⇒ 改了就是破坏契约
+        assert_eq!(QrStatus::Pending.code(), "pending");
+        assert_eq!(QrStatus::Scanned.code(), "scanned");
+        assert_eq!(QrStatus::Confirmed.code(), "confirmed");
+        assert_eq!(QrStatus::Expired.code(), "expired");
+        assert_eq!(QrStatus::Failed.code(), "failed");
+    }
+
+    #[test]
+    fn tail_never_panics_on_short_or_multibyte() {
+        assert!(tail("").contains("0 字节"));
+        // 多字节字符不许被切在中间（否则会把日志本身变成乱码）
+        let s = "夸".repeat(300);
+        let t = tail(&s);
+        assert!(t.contains("共"));
+    }
+
+    #[test]
+    fn status_all_covers_nine_kinds_in_fixed_order() {
+        let all = status_all();
+        assert_eq!(all.len(), 9, "★ 9 个盘都要有状态行（不多不少）");
+        assert_eq!(all[0].kind, PanKind::Quark);
+        assert_eq!(all[8].kind, PanKind::Pan115);
+        // 反空真：kind_name 必须非空（否则 UI 显示空行）
+        for s in all {
+            assert!(!s.kind_name.is_empty(), "{:?} 的显示名不该为空", s.kind);
+        }
+    }
+
+    /// ★ 未接入的盘必须**如实报错**，不许返回一个空会话冒充成功
+    #[tokio::test]
+    async fn unimplemented_kind_says_so_instead_of_pretending() {
+        for k in [PanKind::Uc, PanKind::Baidu, PanKind::Pan115, PanKind::Guangya] {
+            let e = qr_login_start(k).await.expect_err("未接入的盘不许成功");
+            assert!(
+                e.contains("尚未接入"),
+                "★ 错误文案必须说清『未接入』（实际：{e}）"
+            );
+            assert!(
+                e.contains(k.display()),
+                "★ 文案里要带上是哪一家（实际：{e}）"
+            );
+        }
+    }
+
+    /// ★ 会话超时与"不存在"都必须报 Expired，**不许**静默 Pending
+    #[tokio::test]
+    async fn poll_without_session_reports_expired_not_pending() {
+        let out = qr_login_poll(PanKind::Quark, "no-such-key")
+            .await
+            .expect("不该 Err（『会话不在』是正常状态，不是错误）");
+        assert_eq!(
+            out.status,
+            QrStatus::Expired,
+            "★★ 会话不在 ⇒ 必须说『失效』，不许假装还在轮询（会让 UI 永远转圈）"
+        );
+        assert!(out.credential.is_none(), "没有会话就不该产出凭据");
+    }
+
+    #[tokio::test]
+    async fn poll_with_empty_key_is_error() {
+        let e = qr_login_poll(PanKind::Quark, "  ").await.expect_err("空 key 应报错");
+        assert!(e.contains("重新获取"), "文案要告诉用户怎么办：{e}");
+    }
+
+    // ── ★ FFI 契约门禁（字段名必须与 UI 逐字对齐）──
+
+    /// ★★★ 日志门禁：cookie **绝不许**进日志（那是登录凭据）
+    ///
+    /// ```text
+    /// 硬规矩（与 `pan_auth` 只把 cookie 放系统钥匙串同源）：
+    ///   日志会被 Owner 复制给我们、也可能随诊断包外发 ⇒ **写进去就泄了**。
+    /// ★ 但"有几条键、多少字节"足够判"Set-Cookie 形状对不对" ⇒ 用 `cookie_digest` 脱敏。
+    /// 注入验证：把 `cookie_digest(&cookie)` 换成直接 `cookie` ⇒ 本条红。
+    /// ```
+    #[test]
+    fn log_never_contains_cookie_value() {
+        let secret = "a1b2c3supersecret";
+        let cookie = format!("__pus={secret}; __kp=othervalue; __uid=12345");
+        let d = cookie_digest(&cookie);
+        assert!(
+            !d.contains(secret),
+            "★★★ 脱敏摘要里出现了 cookie 的**值**（会泄漏登录凭据）：{d}"
+        );
+        assert!(
+            !d.contains("othervalue") && !d.contains("12345"),
+            "★★★ 任何 cookie 值都不许出现：{d}"
+        );
+        // 但必须保留"可判形状"的信息（键名 + 数量 + 长度）
+        assert!(d.contains("__pus") && d.contains("__kp"), "键名要留下（判形状用）：{d}");
+        assert!(d.contains("3 个键"), "键数量要留下：{d}");
+        assert!(d.contains(&format!("{} 字节", cookie.len())), "长度要留下：{d}");
+    }
+
+    /// ★★★ 关键键校验门禁（基线来自 **Owner 现场真读数**）
+    ///
+    /// ```text
+    /// 实测（2026-10-27 16:49）拿到的夸克 cookie：
+    ///   ctoken, __pus, __kp, __kps, __ktd, __uid   ← **6 键 298 字节**
+    /// ⇒ 本条用真读数当基线，而不是我猜的键名。
+    /// ★ 为什么做成"告警"而不是"失败"：网盘可能改键名/增减键，
+    ///   硬门禁会把"协议正常演进"误判为故障。真失败由后续取数（列文件 401）暴露。
+    /// ★ 但"告警"本身也要被测：注入一个缺 `__uid` 的 cookie ⇒ **必须有告警**
+    ///   （否则告警功能形同虚设 —— 与 `in_test_process` 那次同族）。
+    /// ```
+    #[test]
+    fn incomplete_cookie_triggers_warning_not_silence() {
+        // 完整（按实测基线）
+        let full = "ctoken=a; __pus=b; __kp=c; __kps=d; __ktd=e; __uid=f";
+        let dig = cookie_digest(full);
+        assert!(dig.contains("6 个键"), "★ 完整 cookie 应是 6 键：{dig}");
+        // 缺 __uid ⇒ 必须被识别为"缺失"
+        let missing: Vec<&str> = ["ctoken", "__uid"]
+            .iter()
+            .copied()
+            .filter(|k| !full.split(';').any(|p| p.trim().starts_with(&format!("{k}="))))
+            .collect();
+        assert!(missing.is_empty(), "完整 cookie 不该报缺失：{missing:?}");
+        let bad = "ctoken=a; __pus=b";
+        let missing_bad: Vec<&str> = ["ctoken", "__uid"]
+            .iter()
+            .copied()
+            .filter(|k| !bad.split(';').any(|p| p.trim().starts_with(&format!("{k}="))))
+            .collect();
+        assert_eq!(
+            missing_bad,
+            vec!["__uid"],
+            "★★ 缺 `__uid` 必须被检出（否则告警形同虚设）"
+        );
+    }
+
+    /// ★★ 脱敏摘要必须能反映**键的增减**（形状判据的前提）
+    #[test]
+    fn digest_reflects_key_changes() {
+        let six = "ctoken=a; __pus=b; __kp=c; __kps=d; __ktd=e; __uid=f";
+        let two = "a=1; b=2";
+        assert_ne!(
+            cookie_digest(six),
+            cookie_digest(two),
+            "★ 键集合不同 ⇒ 摘要必须不同（否则形状变化看不出来）"
+        );
+    }
+
+    /// ★★ 日志模块的测试进程闸：测试**不许**写用户真实日志
+    ///
+    /// ```text
+    /// 与 `streamproxy.rs:131` 同一条纪律（那边注释写了原因：
+    /// "否则测试夹具会往用户 logs/ 里写几千行噪声"）。
+    /// ★ 注入验证：删掉 `in_test_process()` 那道判断 ⇒ 本条红。
+    /// ```
+    #[test]
+    fn log_path_is_guarded_in_test_process() {
+        // `cargo test` 环境里应当**解析不出**真实日志路径
+        let p = log_file_path();
+        match p {
+            None => {} // 正确：测试进程不写
+            Some(path) => {
+                let s = path.to_string_lossy().to_string();
+                assert!(
+                    !s.contains("app.sourin.player"),
+                    "★★★ 测试进程解析出了**用户真实**日志路径（会写噪声进去）：{s}\n\
+                     （若显式设了 SOURIN_LOG_FILE 则允许 —— 那是『要验格式』的意图）"
+                );
+            }
+        }
+    }
+
+    /// ★ FFI 契约门禁（字段名必须与 UI 逐字对齐）
+    ///
+    /// ```text
+    /// UI 契约（pan_settings_page.dart:32）：
+    ///   { accounts: [{kind, kindName, loggedIn, account, expired, keyringAvailable}] }
+    /// ★ 注入验证：把 `#[serde(rename_all = "camelCase")]` 删掉
+    ///   ⇒ 字段变成 kind_name/logged_in ⇒ 本条红（UI 会读到 undefined = 假状态）
+    /// ```
+    #[test]
+    fn ffi_status_field_names_match_ui_contract() {
+        let v = serde_json::to_value(command_status()).expect("应能序列化");
+        let arr = v.get("accounts").and_then(|a| a.as_array()).expect("要有 accounts 数组");
+        assert_eq!(arr.len(), 9);
+        let o = arr[0].as_object().expect("每行是对象");
+        for k in ["kind", "kindName", "loggedIn", "account", "expired", "keyringAvailable"] {
+            assert!(
+                o.contains_key(k),
+                "★★ UI 契约要求字段 `{k}`（实际字段：{:?}）—— 名字错了 UI 会读到 undefined",
+                o.keys().collect::<Vec<_>>()
+            );
+        }
+        // 反面：不许出现 snake_case 版本（那说明 rename 没生效/被重复加了）
+        for k in ["kind_name", "logged_in", "keyring_available"] {
+            assert!(!o.contains_key(k), "★ 不许同时存在 snake_case 字段 `{k}`");
+        }
+    }
+
+    #[test]
+    fn ffi_start_result_field_names() {
+        let s = QrStartResult {
+            key: "k".into(),
+            url: "u".into(),
+            svg: "<svg/>".into(),
+            hint: "h".into(),
+        };
+        let v = serde_json::to_value(s).unwrap();
+        for k in ["key", "url", "svg", "hint"] {
+            assert!(v.get(k).is_some(), "UI 契约要求字段 `{k}`");
+        }
+    }
+
+    #[test]
+    fn ffi_poll_result_status_is_a_code_not_debug() {
+        let p = QrPollResult {
+            status: QrStatus::Pending.code(),
+            message: String::new(),
+            account: String::new(),
+        };
+        let v = serde_json::to_value(p).unwrap();
+        assert_eq!(v.get("status").and_then(|x| x.as_str()), Some("pending"));
+        // 空 message/account **不该出现**（skip_serializing_if）—— 免得 UI 显示一个空提示
+        assert!(v.get("message").is_none(), "空 message 不该序列化出来");
+        assert!(v.get("account").is_none(), "空 account 不该序列化出来");
+    }
+
+    #[test]
+    fn kind_from_code_accepts_all_nine_and_rejects_junk() {
+        for k in [
+            PanKind::Quark, PanKind::Uc, PanKind::Baidu, PanKind::Guangya,
+            PanKind::Xunlei, PanKind::Tianyi, PanKind::Pan123, PanKind::Aliyun,
+            PanKind::Pan115,
+        ] {
+            assert_eq!(kind_from_code(k.code()).unwrap(), k, "code={}", k.code());
+        }
+        // ★ 未知值必须**报错**，不许默认成某个盘（那样用户点 A 盘的按钮会登 B 盘）
+        let e = kind_from_code("not-a-pan").expect_err("未知 kind 应报错");
+        assert!(e.contains("认不出"), "{e}");
+        let e = kind_from_code("   ").expect_err("空 kind 应报错");
+        assert!(e.contains("为空"), "{e}");
+    }
+
+    #[test]
+    fn kind_from_code_rejects_unknown_sentinel() {
+        // `Unknown` **不在**可选列表里 —— 它是"认不出链接"的标记，不是可登录的盘。
+        // 若有人把它加进 ORDER，本条会红（那会让 UI 出现一个"未知网盘"按钮）。
+        assert!(
+            kind_from_code(PanKind::Unknown.code()).is_err(),
+            "★ 『unknown』不该是可登录的盘"
+        );
+    }
+}

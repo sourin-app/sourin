@@ -3050,6 +3050,263 @@ pub async fn update_tvbox_source(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  N8b-1② 存量「TVBox 迁移 js 插件」的还原数据通道（2026-10-27）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 背景考证（.probe/n8b0-spec-audit.md §4）
+//
+// 本仓的导入/更新路径**从不生成 js 插件**（见本文件头部注释）；用户机器上
+// 那些 js 插件是历史外部工具 `tools/tvbox-convert.mjs` 生成的。转换器在
+// 生成文件的头注释里写了两样东西，构成还原的**可靠标记**：
+//
+// ```text
+//  @author tvbox-convert                       ← 来源标记（commands_provider.rs 的 PluginEntry 注释有逐字考证）
+//  * 上游接口（苹果CMS v10）：http://…          ← 原始链接，plugins::upstream_of 可提取
+// ```
+//
+// # 硬边界（Owner 裁定，2026-10-27）
+//
+// ```text
+// · 只认 @author == tvbox-convert 的文件；其它一律不列、不删、不猜
+//   —— 用户手写的 js 插件绝不能因为长得像就被当成迁移产物
+// · 还原是**逐文件显式**操作：本通道没有任何"批量还原/批量删除"入口
+// · 标记对但上游提取不出 ⇒ 进 undetermined 清单交 Leader 给 Owner 过目，
+//   绝不默认删除
+// ```
+//
+// # FFI 接线（本批写范围不含 ffi.rs —— 那是含 NUL 的文件，归 Lead）
+//
+// ```rust
+// // sync dispatch（与 tvbox_aggregate_get 同一段，ffi.rs ~:778）：
+// "tvbox_migratable_js" => with_state(|st| crate::tvbox::migratable_js(st)),
+// // async dispatch（与 import_tvbox_config 同一段，ffi.rs ~:2257）：
+// "tvbox_restore_js" => {
+//     let file = match a.str("file") { Ok(s) => s.to_string(), Err(e) => return err_json(&e, "other") };
+//     with_state_async(move |st| async move { crate::tvbox::restore_tvbox_js(st, &file).await }).await
+// }
+// ```
+//
+// （不接线的理由按 AGENTS「新增公开 API 必须给出调用点」的例外条款在此声明：
+//   ffi.rs 不在本批写入范围，且 Dart 侧接线归 tvbox-ui。）
+
+/// 迁移产物的作者标记（转换器写死在头注释里）
+pub const TVBOX_CONVERT_AUTHOR: &str = "tvbox-convert";
+
+/// 插件文件名校验（与 commands_provider::check_plugin_name 同一条规则）
+///
+/// ⚠️ 参数来自前端，必须当作**不可信输入**（防目录穿越）。
+fn check_js_file_name(file: &str) -> std::result::Result<(), String> {
+    if file.contains('/') || file.contains('\\') || file.contains("..") {
+        return Err("非法的文件名".to_string());
+    }
+    if !file.ends_with(".js") {
+        return Err("只接受 .js 插件文件".to_string());
+    }
+    Ok(())
+}
+
+/// `tvbox_migratable_js`：列出「TVBox 迁移产生的 js 插件」及其原始链接（**只读**）
+///
+/// 返回三段：
+/// ```text
+/// items         author=tvbox-convert 且上游可提取 —— UI 可逐条提供「还原为原始链接」
+/// undetermined  author=tvbox-convert 但上游提取不出 —— 判定不出，列清单交 Owner 过目
+///               （不进 items，更不允许删）
+/// （其余）      非迁移产物（用户手写/内置/其它作者）**完全不出现** —— 硬边界
+/// ```
+/// `alreadyLinked`：本地已有同接口的 tvbox 直连源（真还原只需删 js，不用重建）。
+pub fn migratable_js(state: &crate::state::AppState) -> std::result::Result<serde_json::Value, String> {
+    let list = crate::commands_provider::list_plugins(state)?;
+    // 已有 tvbox 直连源的 api 集合（persisted 清单是 api 的权威来源 ——
+    // manifest 不携带 api，别在这里猜）
+    let linked: std::collections::HashMap<String, String> = crate::persist::load_persisted(&state.data_dir)
+        .into_iter()
+        .filter_map(|p| match p {
+            crate::model::PersistedProvider::Tvbox { id, api, .. } => Some((api, id)),
+            _ => None,
+        })
+        .collect();
+
+    let mut items = Vec::new();
+    let mut undetermined = Vec::new();
+    for e in list.plugins {
+        if e.author != TVBOX_CONVERT_AUTHOR {
+            continue; // 非迁移产物：硬边界，不出现
+        }
+        if e.upstream.trim().is_empty() {
+            undetermined.push(serde_json::json!({
+                "file": e.file,
+                "id": e.id,
+                "name": e.name,
+                "reason": "上游接口无法提取（头部注释里没有「上游接口」行）",
+            }));
+            continue;
+        }
+        let linked_id = linked.get(e.upstream.trim()).cloned();
+        items.push(serde_json::json!({
+            "file": e.file,
+            "id": e.id,
+            "name": e.name,
+            "upstream": e.upstream,
+            "author": e.author,
+            "loaded": e.loaded,
+            "alreadyLinked": linked_id.is_some(),
+            "linkedProviderId": linked_id,
+        }));
+    }
+    Ok(serde_json::json!({
+        "ok": true,
+        "items": items,
+        "undetermined": undetermined,
+    }))
+}
+
+/// `tvbox_restore_js`：把一个迁移 js 插件「还原为原始链接」
+///
+/// 步骤（顺序即安全边界）：
+/// ```text
+/// ① 文件名校验（防穿越）+ 读源码
+/// ② @author 必须 == tvbox-convert（否则 Err —— 手写插件到此为止）
+/// ③ upstream 必须能提取且是 http(s)
+/// ④ alreadyLinked ⇒ 只删 js（同接口的直连源已在，重建就是重复）
+/// ⑤ 真探测上游（probe_site）—— 探测失败就 Err，**不删任何东西**
+/// ⑥ 建 tvbox kind 的直连 provider（build_site_provider，与导入同一路）
+///    注册 + 落盘 + 记 sidecar（source_url=None：单文件无从知道原订阅链接，
+///    如实不填 ⇒ UI 按「无订阅链接」口径显示）
+/// ⑦ 最后才删 js 文件（remove_plugin：unregister + remove_file）
+///    删除失败不回滚源（源已可用），如实在返回值里报 deleted:false
+/// ```
+pub async fn restore_tvbox_js(
+    state: &crate::state::AppState,
+    file: &str,
+) -> std::result::Result<serde_json::Value, String> {
+    check_js_file_name(file)?;
+    let src = crate::commands_provider::read_plugin(state, file)?;
+    let meta = crate::plugins::parse_meta(&src);
+    if meta.author != TVBOX_CONVERT_AUTHOR {
+        // 硬边界：不是转换器产物，一个字节都不动
+        return Err(format!(
+            "「{file}」不是 TVBox 迁移产生的插件（@author={}），已拒绝还原",
+            if meta.author.is_empty() { "（空）" } else { &meta.author }
+        ));
+    }
+    let upstream = crate::plugins::upstream_of(&src);
+    let upstream = upstream.trim().to_string();
+    if upstream.is_empty() {
+        return Err(format!(
+            "「{file}」的上游接口无法提取（判定不出），请先在清单里确认后再处理"
+        ));
+    }
+    if !starts_http(&upstream) {
+        return Err(format!("「{file}」的上游接口不是 http(s) 地址：{upstream}"));
+    }
+
+    // alreadyLinked：同接口的直连源已存在 ⇒ 只删 js
+    let already = crate::persist::load_persisted(&state.data_dir)
+        .into_iter()
+        .find_map(|p| match p {
+            crate::model::PersistedProvider::Tvbox { id, api, .. } if api == upstream => Some(id),
+            _ => None,
+        });
+    if let Some(pid) = already {
+        match crate::commands_provider::remove_plugin(state, file) {
+            Ok(()) => {
+                log::info!("N8b-1 还原：{file} 的上游 {upstream} 已有直连源 {pid}，仅删除迁移 js");
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "restored": false,
+                    "alreadyLinked": true,
+                    "linkedProviderId": pid,
+                    "deleted": true,
+                }));
+            }
+            Err(e) => {
+                return Ok(serde_json::json!({
+                    "ok": false, "alreadyLinked": true, "linkedProviderId": pid,
+                    "deleted": false, "error": e,
+                }));
+            }
+        }
+    }
+
+    // ⑤ 真探测上游（失败即 Err，不删不建）
+    let job = SiteJob {
+        index: 0,
+        key: String::new(),
+        name: meta.name.clone(),
+        api: upstream.clone(),
+        kind: Some(1),
+        csp: None,
+        ext: String::new(),
+    };
+    let client = probe_client();
+    let ok = probe_site(&client, &job)
+        .await
+        .map_err(|e| format!("上游探测失败（{upstream}）：{e} —— 迁移 js 保持原样，未做任何改动"))?;
+
+    // ⑥ 建直连 provider（与导入/更新同一条 build_site_provider 路）
+    let mut used: HashSet<String> = state
+        .registry
+        .manifests()
+        .iter()
+        .map(|m| m.id.clone())
+        .collect();
+    let id = unique_id(&to_id(&meta.name, &upstream, 0), &mut used);
+    let provider = build_site_provider(&id, &job, &ok, Some(state.proxy.clone()), Vec::new())
+        .map_err(|e| format!("生成直连源失败：{e}"))?;
+    let manifest = provider.manifest().clone();
+    state.registry.register(provider);
+    {
+        let mut list = state
+            .third_party
+            .write()
+            .map_err(|_| "第三方源列表被污染".to_string())?;
+        let pid = id.clone();
+        list.retain(|x| x.id() != pid);
+        list.push(crate::model::PersistedProvider::Tvbox {
+            id: id.clone(),
+            name: manifest.name.clone(),
+            api: upstream.clone(),
+            categories: ok.classes.clone(),
+            parsers: Vec::new(),
+            ext: None,
+        });
+    }
+    crate::commands_provider::persist_from_registry(state)?;
+    crate::commands_provider::touch_providers(state);
+    // 单文件还原不知道原订阅链接 ⇒ source_url 如实留 None（UI 按「无订阅链接」显示）
+    let _ = write_tvbox_meta(
+        &state.data_dir,
+        &id,
+        &TvboxSourceMeta {
+            source_url: None,
+            site_key: String::new(),
+            site_name: manifest.name.clone(),
+            api: upstream.clone(),
+            installed_at: now_secs(),
+        },
+    );
+
+    // ⑦ 最后删 js（探测/建源都成功后才动文件）
+    let deleted = match crate::commands_provider::remove_plugin(state, file) {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("N8b-1 还原：直连源 {id} 已建好，但删 {file} 失败：{e}");
+            false
+        }
+    };
+    log::info!("N8b-1 还原完成：{file} → {id}（{upstream}），deleted={deleted}");
+    Ok(serde_json::json!({
+        "ok": true,
+        "restored": true,
+        "id": id,
+        "name": manifest.name,
+        "api": upstream,
+        "deleted": deleted,
+    }))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  测试
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -5334,11 +5591,34 @@ async fn csp_source_survives_restart_via_csp_route() {
 #[tokio::test]
 async fn unimplemented_csp_is_skipped_on_restore_without_breaking_others() {
     let dir = tmp("degrade");
+    /*
+     * ★★ 2026-10-27（R3 增量批次，Lead 改）：样本从**写死 `csp_AppDrama`** 改成
+     *    **动态取一个仍未实现的类**（`crate::csp::unimplemented_sample()`）。
+     *
+     * # 为什么必须改（这不是"迁就"，是判据本身的前提被推倒了）
+     * ```text
+     * 本条要验的是「**未实现的** csp 类在恢复时被跳过、且原因可查询」。
+     * 它原先把 `csp_AppDrama` 当作"未实现"的样本 —— 那在写入时**是真的**。
+     * 但 R3 批正在**批量实现**这些类：`AppDrama` 已落地并注册 ⇒
+     *   · 它**不再是被跳过的**，于是 `bad-csp` 真的被注册进 registry
+     *   · 断言 `!ids.contains("bad-csp")` 失败
+     * ⇒ **判据没错，是"未实现样本"过期了**。
+     * ```
+     * # 为什么用现成的 `unimplemented_sample()` 而不是换一个写死的类名
+     * ```text
+     * `csp/mod.rs` 里已有该函数（它的注释逐字写明了本问题）：
+     *   候选表按"最不可能马上被实现"排序，**运行时取第一个仍未实现的**；
+     *   真的全实现了 ⇒ 明确 panic 说"这条反向断言该换判据"。
+     * ⇒ 换写死的类名只是把同一个坑推给下一个落地的人（本批已连续踩到两次同形）；
+     *   动态取样本才是**结构性**修法。
+     * ```
+     */
+    let unimplemented = crate::csp::unimplemented_sample();
     let rows = vec![
         crate::model::PersistedProvider::Tvbox {
             id: "bad-csp".to_string(),
             name: "木偶".to_string(),
-            api: "csp_AppDrama".to_string(),
+            api: unimplemented.to_string(),
             categories: Vec::new(),
             parsers: Vec::new(),
             ext: Some(r#"{"site":["https://123.666291.xyz"]}"#.to_string()),
@@ -5370,9 +5650,17 @@ async fn unimplemented_csp_is_skipped_on_restore_without_breaking_others() {
     assert_eq!(fails.len(), 1, "应恰好一条失败记录，实际 {fails:?}");
     let f: &RestoreFailure = &fails[0];
     assert_eq!(f.id, "bad-csp");
-    assert_eq!(f.api, "csp_AppDrama");
+    /*
+     * ⚠️ 这两条**也必须**跟着样本走（第一版只改了 rows 里的 api ⇒ 换样本后立刻又红）：
+     *    · `f.api` 必须是那个动态样本（不是写死的 `csp_AppDrama`）
+     *    · `f.reason` 必须是**实现层原文** `"<样本> 尚未实现"`
+     *      —— ★ 这正是本条要守的语义：用户据此判断"是等版本还是重试"，
+     *        所以**不许**在这里放松成 `contains("尚未实现")`（那会放走"原因被改写"的缺陷）。
+     */
+    assert_eq!(f.api, unimplemented);
     assert_eq!(
-        f.reason, "csp_AppDrama 尚未实现",
+        f.reason,
+        format!("{unimplemented} 尚未实现"),
         "★ 原因必须是实现层原文（用户据此判断是等版本还是重试）"
     );
 
@@ -5772,5 +6060,397 @@ mod t1042_contract_fixes {
         }
         let _ = std::fs::remove_dir_all(&dir_a);
         let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // t8b_direct —— N8b-1 直连化门禁（2026-10-27）
+    //
+    // ① 导入/订阅更新**不产 js 文件**（文件系统断言：导入前后插件目录文件集不变）
+    // ② 未实现类仍进"尚未实现"清单（逐字，既有机制不被直连化改动）
+    // ③ 迁移 js 的还原数据通道：清单只认 tvbox-convert 标记；还原全链路
+    //    （探测成功才建源+删 js；探测失败一个字节不动；手写插件拒绝）
+    // ═══════════════════════════════════════════════════════════════════
+    mod t8b_direct {
+        use super::*;
+        use crate::persist::save_persisted;
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        fn tmp8b(tag: &str) -> std::path::PathBuf {
+            let d = std::env::temp_dir().join(format!(
+                "sourin-t8b-{tag}-{}-{}",
+                std::process::id(),
+                now_secs()
+            ));
+            std::fs::create_dir_all(&d).expect("建临时目录失败");
+            std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+            d
+        }
+
+        /// 插件目录里的 .js 文件名集合（排序后比对 ⇒ "导入不新增文件"的判据）
+        fn js_files(dir: &std::path::Path) -> Vec<String> {
+            let pdir = crate::state::plugins_dir(dir);
+            let mut v: Vec<String> = std::fs::read_dir(&pdir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| {
+                    let p = e.path();
+                    if p.extension().and_then(|s| s.to_str()) == Some("js") {
+                        p.file_name().and_then(|s| s.to_str()).map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            v.sort();
+            v
+        }
+
+        /// 假站：同一端口回答三种请求（配置 / 苹果CMS 分类 / 苹果CMS 列表）
+        ///
+        /// 配置体由 `cfg_with_api` 生成 —— 端口绑定后才知道 api 地址，
+        /// 所以配置里要写 api 的站点交给这个闭包现场拼。
+        fn spawn_fake_site(
+            cfg_with_api: impl Fn(&str) -> String + Send + 'static,
+        ) -> (String, String) {
+            let api_base = "/api.php/provide/vod";
+            let class_body =
+                r#"{"class":[{"type_id":"1","type_name":"电影"},{"type_id":"2","type_name":"剧集"}]}"#.to_string();
+            let video_body = r#"{"list":[{"vod_id":"10","vod_name":"测试片","vod_pic":"",
+                "vod_play_url":"第1集$https://cdn.example.com/1.m3u8","vod_content":"简介","vod_remarks":"HD"}],
+                "total":1}"#
+                .to_string();
+            let listener = TcpListener::bind("127.0.0.1:0").expect("绑定假站失败");
+            let port = listener.local_addr().expect("取端口失败").port();
+            let cfg_body = cfg_with_api(&format!("http://127.0.0.1:{port}{api_base}"));
+            std::thread::spawn(move || {
+                for conn in listener.incoming() {
+                    let Ok(mut stream) = conn else { break };
+                    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                    let mut reqline = String::new();
+                    let _ = reader.read_line(&mut reqline);
+                    loop {
+                        let mut h = String::new();
+                        match reader.read_line(&mut h) {
+                            Ok(0) => break,
+                            Ok(_) if h == "\r\n" || h == "\n" => break,
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
+                    }
+                    let body = if reqline.contains("ac=videolist") {
+                        &video_body
+                    } else if reqline.contains("ac=list") {
+                        &class_body
+                    } else {
+                        &cfg_body
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.flush();
+                }
+            });
+            (
+                format!("http://127.0.0.1:{port}/tvbox.json"),
+                format!("http://127.0.0.1:{port}{api_base}"),
+            )
+        }
+
+        /// 一份迁移 js 的源码模板（头注释形态与转换器产物一致）
+        fn conv_js(id: &str, upstream: Option<&str>) -> String {
+            let up = upstream
+                .map(|u| format!(" * 上游接口（苹果CMS v10）：{u}\n"))
+                .unwrap_or_default();
+            format!(
+                "/**\n * 测试源 —— 由 TVBox 源自动转换\n *\n * @id {id}\n * @author tvbox-convert\n *\n{up} */\nconst API = 1;\n"
+            )
+        }
+
+        /// ①+a 导入不产 js：type:1（真探测）+ 未实现 csp（skipped）⇒ 插件目录文件集不变
+        ///
+        /// ★★ 快照必须取在 `bootstrap` **之后**（2026-10-27 修，第一版是错的）：
+        /// ```text
+        /// 错版：before 取在 bootstrap 之前 ⇒ before=[] ，
+        ///       而 bootstrap 会释放内置 demo.js ⇒ after=["demo.js"]
+        ///       ⇒ 断言恒红（且红的原因**不是**"导入产了 js"，是快照取早了）。
+        ///       更糟的是反过来如果内置 demo 释放失败，before==after==[] 会**恒绿**
+        ///       ⇒ 一条恒红/恒绿双面失效的门禁。
+        /// 正版：先 bootstrap，再取 before；并断言 before 里**确实有** demo.js
+        ///       （否则这条门禁就是空转的 —— 反假绿）。
+        /// ```
+        #[tokio::test]
+        async fn import_produces_no_js_files() {
+            let dir = tmp8b("import-nojs");
+            let (sub_url, _api) = spawn_fake_site(|api| {
+                format!(
+                    r#"{{"sites":[
+                  {{"key":"a1","name":"直连站","type":1,"api":"{api}"}},
+                  {{"key":"dl","name":"东篱","type":3,"api":"csp_DongLi"}}
+                ]}}"#
+                )
+            });
+            let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+            let before = js_files(&dir);
+            assert!(
+                before.iter().any(|f| f == "demo.js"),
+                "★ 前置：内置 demo.js 必须已在（否则 before/after 都空 ⇒ 本门禁空转）：{before:?}"
+            );
+            let res = import_tvbox_config(&st, &sub_url).await.expect("导入");
+            drop(st);
+
+            let after = js_files(&dir);
+            assert_eq!(
+                before, after,
+                "★ 导入前后插件目录的 .js 文件集必须逐字节相同（直连化：导入绝不产 js）"
+            );
+            // 直连化的另一半：type:1 真的进了（不是全跳过导致假绿）
+            let imported = res["imported"].as_array().cloned().unwrap_or_default();
+            assert_eq!(imported.len(), 1, "type:1 必须真导入：{res}");
+            assert_eq!(imported[0]["kindTag"], "appleCms");
+            // 未实现类仍是逐字原因（既有机制不许被本次改动弄丢）
+            let skipped = res["skipped"].as_array().cloned().unwrap_or_default();
+            assert!(
+                skipped.iter().any(|s| s["reason"] == "csp_DongLi 尚未实现"),
+                "未实现类必须逐字进清单：{skipped:?}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// ①+b 订阅更新同样不产 js：更新路径走完（新增 type:1 真注册）后文件集不变
+        #[tokio::test]
+        async fn update_produces_no_js_files() {
+            let dir = tmp8b("update-nojs");
+            let (sub_url, _api) = spawn_fake_site(|api| {
+                format!(
+                    r#"{{"sites":[
+                  {{"key":"a1","name":"直连站","type":1,"api":"{api}"}},
+                  {{"key":"b1","name":"新来的","type":1,"api":"{api}"}}
+                ]}}"#
+                )
+            });
+            save_persisted(
+                &dir,
+                &[crate::model::PersistedProvider::Tvbox {
+                    id: "tvbox0".to_string(),
+                    name: "老源".to_string(),
+                    api: "http://127.0.0.1:1/api.php/provide/vod".to_string(),
+                    categories: Vec::new(),
+                    parsers: Vec::new(),
+                    ext: None,
+                }],
+            )
+            .expect("写清单");
+            write_tvbox_meta(
+                &dir,
+                "tvbox0",
+                &TvboxSourceMeta {
+                    source_url: Some(sub_url.clone()),
+                    site_key: "a1".to_string(),
+                    site_name: "直连站".to_string(),
+                    api: "http://127.0.0.1:1/api.php/provide/vod".to_string(),
+                    installed_at: now_secs(),
+                },
+            )
+            .expect("写 meta");
+
+            let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+            // ★ 快照取在 bootstrap **之后**（理由同 ①+a：bootstrap 会释放内置 demo.js）
+            let before = js_files(&dir);
+            assert!(
+                before.iter().any(|f| f == "demo.js"),
+                "★ 前置：内置 demo.js 必须已在（否则本门禁空转）：{before:?}"
+            );
+            let upd = update_tvbox_source(&st, "tvbox0", true, false)
+                .await
+                .expect("更新");
+            drop(st);
+            let after = js_files(&dir);
+
+            assert!(
+                !upd["added"].as_array().cloned().unwrap_or_default().is_empty(),
+                "更新必须真的新增了源（否则这条是空转假绿）：{upd}"
+            );
+            assert_eq!(
+                before, after,
+                "★ 订阅更新前后插件目录的 .js 文件集必须相同（更新直达 Rust 配置，不经 js 中转）"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// ②+a 清单只认 tvbox-convert 标记；手写插件完全不出现
+        #[tokio::test]
+        async fn migratable_list_classifies_by_marker() {
+            let dir = tmp8b("migrate-list");
+            let pdir = crate::state::plugins_dir(&dir);
+            std::fs::create_dir_all(&pdir).expect("建插件目录");
+            std::fs::write(
+                pdir.join("conv.js"),
+                conv_js("conv1", Some("http://conv.example.com/api.php/provide/vod")),
+            )
+            .expect("写迁移插件");
+            std::fs::write(pdir.join("conv-noup.js"), conv_js("conv2", None)).expect("写无上游的迁移插件");
+            std::fs::write(
+                pdir.join("hand.js"),
+                "/**\n * 我自己的插件\n * @id hand1\n * @author myself\n *\n * 上游接口（苹果CMS v10）：http://hand.example.com/api.php/provide/vod\n */\nconst API = 1;\n",
+            )
+            .expect("写手写插件");
+
+            let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+            let res = migratable_js(&st).expect("清单");
+            drop(st);
+            let items = res["items"].as_array().cloned().unwrap_or_default();
+            let undet = res["undetermined"].as_array().cloned().unwrap_or_default();
+            assert_eq!(items.len(), 1, "只有标记+上游齐的进 items：{res}");
+            assert_eq!(items[0]["file"], "conv.js");
+            assert_eq!(items[0]["upstream"], "http://conv.example.com/api.php/provide/vod");
+            assert_eq!(undet.len(), 1, "标记对但上游提取不出 ⇒ 判定不出清单：{res}");
+            assert_eq!(undet[0]["file"], "conv-noup.js");
+            let dump = serde_json::to_string(&res).unwrap();
+            assert!(
+                !dump.contains("hand.js") && !dump.contains("hand1"),
+                "★ 硬边界：手写插件绝不能出现在任何一段里：{dump}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// ②+b 还原拒绝手写插件（一个字节不动）
+        #[tokio::test]
+        async fn restore_rejects_handwritten() {
+            let dir = tmp8b("restore-hand");
+            let pdir = crate::state::plugins_dir(&dir);
+            std::fs::create_dir_all(&pdir).expect("建插件目录");
+            let hand = pdir.join("hand.js");
+            std::fs::write(
+                &hand,
+                "/**\n * @id hand1\n * @author myself\n * 上游接口（苹果CMS v10）：http://x.example.com/api.php/provide/vod\n */\nconst API = 1;\n",
+            )
+            .expect("写手写插件");
+            let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+            let err = restore_tvbox_js(&st, "hand.js")
+                .await
+                .expect_err("手写插件必须被拒绝");
+            drop(st);
+            assert!(
+                err.contains("不是 TVBox 迁移产生的插件"),
+                "拒绝原因要点名标记：{err}"
+            );
+            assert!(hand.exists(), "★ 拒绝后文件必须原样存在");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// ②+c 还原全链路：真探测 → 建直连源（与导入同路）→ 删 js
+        #[tokio::test]
+        async fn restore_builds_direct_source_then_deletes_js() {
+            let dir = tmp8b("restore-full");
+            let (_sub, api) = spawn_fake_site(|_api| r#"{"sites":[]}"#.to_string());
+            let pdir = crate::state::plugins_dir(&dir);
+            std::fs::create_dir_all(&pdir).expect("建插件目录");
+            // ★ 先 bootstrap（它会释放内置 demo.js），**再**写迁移插件 + 取快照。
+            //   理由：把 demo.js 排除在"这次还原动到的东西"之外，判据才有意义。
+            let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+            std::fs::create_dir_all(&pdir).expect("建插件目录");
+            std::fs::write(pdir.join("conv.js"), conv_js("conv1", Some(&api))).expect("写迁移插件");
+
+            let before = js_files(&dir);
+            assert!(
+                before.iter().any(|f| f == "conv.js") && before.iter().any(|f| f == "demo.js"),
+                "★ 前置：conv.js 与内置 demo.js 都要在（否则本门禁空转）：{before:?}"
+            );
+            let res = restore_tvbox_js(&st, "conv.js").await.expect("还原");
+            let after = js_files(&dir);
+            let persisted = crate::persist::load_persisted(&dir);
+            drop(st);
+
+            assert_eq!(res["restored"], serde_json::json!(true), "{res}");
+            assert_eq!(res["api"], serde_json::json!(api), "{res}");
+            assert_eq!(res["deleted"], serde_json::json!(true), "{res}");
+            let id = res["id"].as_str().expect("id").to_string();
+            assert!(
+                !after.contains(&"conv.js".to_string()),
+                "★ 还原后 js 文件必须已删除：{after:?}"
+            );
+            // 直连源真的落了盘、真的在 registry（kind=tvbox，与导入产物同形）
+            assert!(
+                persisted.iter().any(|p| matches!(p,
+                    crate::model::PersistedProvider::Tvbox { api: a, .. } if a == &api)),
+                "清单里必须有同 api 的 tvbox 直连源：{persisted:?}"
+            );
+            assert_eq!(
+                before.iter().filter(|f| f.as_str() == "demo.js").count(),
+                after.iter().filter(|f| f.as_str() == "demo.js").count(),
+                "内置 demo.js 不该被这次还原动到"
+            );
+            let _ = id;
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// ②+d 探测失败 ⇒ 一个字节都不动（文件在、清单不变）
+        #[tokio::test]
+        async fn restore_probe_failure_keeps_everything() {
+            let dir = tmp8b("restore-dead");
+            let pdir = crate::state::plugins_dir(&dir);
+            std::fs::create_dir_all(&pdir).expect("建插件目录");
+            std::fs::write(
+                pdir.join("conv.js"),
+                conv_js("conv1", Some("http://127.0.0.1:9/api.php/provide/vod")),
+            )
+            .expect("写迁移插件");
+            let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+            let err = restore_tvbox_js(&st, "conv.js")
+                .await
+                .expect_err("探测失败必须 Err");
+            let persisted = crate::persist::load_persisted(&dir);
+            drop(st);
+            assert!(err.contains("上游探测失败"), "失败原因要点名探测：{err}");
+            assert!(
+                crate::state::plugins_dir(&dir).join("conv.js").exists(),
+                "★ 探测失败后迁移 js 必须原样在"
+            );
+            assert!(
+                !persisted.iter().any(|p| matches!(p,
+                    crate::model::PersistedProvider::Tvbox { api, .. } if api.contains("127.0.0.1:9"))),
+                "探测失败不许建源：{persisted:?}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// ②+e alreadyLinked：同接口直连源已存在 ⇒ 只删 js，不重建
+        #[tokio::test]
+        async fn restore_already_linked_only_deletes_js() {
+            let dir = tmp8b("restore-linked");
+            let pdir = crate::state::plugins_dir(&dir);
+            std::fs::create_dir_all(&pdir).expect("建插件目录");
+            let api = "http://linked.example.com/api.php/provide/vod";
+            std::fs::write(pdir.join("conv.js"), conv_js("conv1", Some(api))).expect("写迁移插件");
+            save_persisted(
+                &dir,
+                &[crate::model::PersistedProvider::Tvbox {
+                    id: "linked1".to_string(),
+                    name: "已是直连".to_string(),
+                    api: api.to_string(),
+                    categories: Vec::new(),
+                    parsers: Vec::new(),
+                    ext: None,
+                }],
+            )
+            .expect("写清单");
+            let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+            let res = restore_tvbox_js(&st, "conv.js").await.expect("还原");
+            drop(st);
+            assert_eq!(res["restored"], serde_json::json!(false), "{res}");
+            assert_eq!(res["alreadyLinked"], serde_json::json!(true), "{res}");
+            assert_eq!(res["linkedProviderId"], serde_json::json!("linked1"), "{res}");
+            assert_eq!(res["deleted"], serde_json::json!(true), "{res}");
+            assert!(
+                !crate::state::plugins_dir(&dir).join("conv.js").exists(),
+                "js 必须已删"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

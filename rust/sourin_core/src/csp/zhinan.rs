@@ -75,6 +75,8 @@ impl Zhinan {
         let client = reqwest::Client::builder()
             .user_agent(UA)
             .timeout(std::time::Duration::from_secs(20))
+            // 与 pan_web_share 同一条纪律：不读系统代理（代理会把"站点可用"测成"全宕"）
+            .no_proxy()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { client }
@@ -216,13 +218,30 @@ fn strip_tags(s: &str) -> String {
 
 /// 解析一页 HTML 里的列表项
 ///
-/// ⚠️ 返回 `Err` 的条件是"一页里连一个 article 都没有" —— 那是**页面结构变了**
-///    或**被反爬挡了**，必须如实报错（返回空列表会让用户以为"这个分类没内容"）。
+/// ⚠️ 返回 `Err` 的条件是"一页里连一个**可解析**的条目都没有"，必须如实报错
+///    （返回空列表会让用户以为"这个分类没内容"）。
+///
+/// # ★★ 2026-10-27（R3 复核）：报错文案**必须把"我们能解析什么"写出来**
+///
+/// ```text
+/// 改前：`页面里没有任何列表项（站点结构可能变了，或被反爬挡了）`
+/// ★ 这句**骗过人**：`favorites/技巧` 页**明明有 6 个 <article>**，
+///   只是它们是 `sites-item` 形态（本站的"资源导航/WP 站点条目"），
+///   而这个解析器只认 `book-item`。
+///   ⇒ 报错说"结构变了/被反爬"，把人往**错误方向**带（我当时就去查站点是不是挂了）。
+/// 改后：把实际形态与我们的支持面**都写进去** —— 下次一眼看穿。
+/// ```
 pub fn parse_list(html: &str) -> Result<Vec<RawItem>, String> {
     let mut out = Vec::new();
+    // ★ 记住"页面里到底出现了哪些形态"，用于报错时如实说（不是猜）
+    let mut seen_sites_only = 0usize;
     for cap in re_item().captures_iter(html) {
         let block = &cap[1];
         let Some(idc) = re_book_id().captures(block) else {
+            // 认得出它是不是"本站另一种形态"，只为把报错说准
+            if re_sites_body().is_match(block) {
+                seen_sites_only += 1;
+            }
             continue;
         };
         let id = idc[1].to_string();
@@ -238,12 +257,95 @@ pub fn parse_list(html: &str) -> Result<Vec<RawItem>, String> {
         out.push(RawItem { id, title, cover });
     }
     if out.is_empty() {
-        return Err("页面里没有任何列表项（站点结构可能变了，或被反爬挡了）".to_string());
+        return Err(empty_page_reason(html, seen_sites_only));
     }
     Ok(out)
 }
 
+/// 一页"解析不出条目"时，**如实**说明为什么（基于我们实际看到的东西）
+///
+/// # 为什么做成独立函数
+/// ```text
+/// 报错文案是**给人看的判断依据** —— 它必须能被单独测（见本文件测试组），
+/// 而不是埋在 `parse_list` 里靠"跑一遍看输出了啥"来验。
+/// ```
+fn empty_page_reason(html: &str, sites_only: usize) -> String {
+    // 页面里到底有几个 <article>（区分"一个都没有"和"有但不认"）
+    let total_articles = re_item().captures_iter(html).count();
+    if total_articles == 0 {
+        return "页面里没有任何 <article> 条目（站点结构可能变了，或真的没内容）".to_string();
+    }
+    if sites_only > 0 && sites_only == total_articles {
+        return format!(
+            "页面里没有任何**可解析**的列表项：{total_articles} 个 <article> 全是 \
+sites-item 形态（本站的「资源/站点导航」条目，不是影视条目）；\
+当前解析器只支持 book-item 形态"
+        );
+    }
+    format!(
+        "页面里没有任何**可解析**的列表项：{total_articles} 个 <article> 中 \
+{sites_only} 个是 sites-item、其余不符合 book-item 形态（缺 /book/N.html 或标题）"
+    )
+}
+
+/// ★ 认「站点导航条目」形态（`sites-item`）：只为**把报错说准**，不参与出条目
+///
+/// # 为什么不拿它出条目（裁定的 (A) 形态）
+/// ```text
+/// 实测 `favorites/技巧` 那 6 条全是「免费领取夸克网盘1TB空间，夸克每天领取容量教程」
+/// 这类**领网盘空间的教程/导航站条目** —— 不是影视内容。
+/// ⇒ 塞进"影视列表"是**把内容性质搞错**（产品缺陷，不是解析缺陷）。
+/// ⇒ 见 `INCLUDE_NAV_SECTIONS`（Owner 待定项）：
+///    现在**默认不列出** favorites 分类，也不拿它出条目。
+/// ```
+fn re_sites_body() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"class="[^"]*sites-body"#).expect("sites-body regex"))
+}
+
+/// 站点导航条目的 id（`/18433.html` —— **没有** `/book/` 前缀）
+///
+/// ⚠️ 当前**不使用**，保留为 Owner 选 (B) 时的接入点（见 `INCLUDE_NAV_SECTIONS`）。
+#[allow(dead_code)]
+fn re_sites_id() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"/(\d+)\.html""#).expect("sites id regex"))
+}
+
+/// 站点导航条目的标题（`<h3 class="item-title line1"><b>…</b></h3>` —— **没有** `<a>`）
+///
+/// ⚠️ 当前**不使用**（同上，Owner 选 (B) 时的接入点）。
+#[allow(dead_code)]
+fn re_sites_title() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?s)<h3[^>]*class="[^"]*item-title[^"]*"[^>]*>\s*<b>(.*?)</b>"#)
+            .expect("sites title regex")
+    })
+}
+
+/// ★★★ Owner 待定项：要不要列出「站点导航」类分类（`favorites/*`）
+///
+/// ```text
+/// 背景（2026-10-27 实测）：站点导航里有 `/books/*`（8 个，全是影视分类）
+/// 和 `/favorites/*`（1 个，导航显示名「更多资源+」，实质是"必看"Tab）。
+/// `favorites/技巧` 里 6 条**全是**「领夸克网盘空间教程」这类**导航/tips 条目**。
+///
+/// 裁定（Lead 2026-10-27）：选 **③ 分派**，并**先做 (A) 形态**（更保守：
+///   不会把非影视内容混进影视列表），同时**留出 (B) 的接入点**。
+///
+/// (A) `false`（当前）：favorites 分类**整类不列**（导航里也不显示）
+/// (B) `true`          ：favorites 分类**列出**，但条目按"非影视"另行呈现
+///
+/// ⇒ Owner 选 (B) 时：把此常量改 `true`，并在 `parse_categories` 里放开过滤、
+///   在 `list()` 里按 `kind` 分派到 `parse_sites_list`（上面两条 re_sites_* 已备好）。
+/// ```
+const INCLUDE_NAV_SECTIONS: bool = false;
+
 /// 解析导航里的分类（`/books/x`、`/favorites/x`）
+///
+/// ⚠️ `favorites/*` 默认被**过滤掉**（见 `INCLUDE_NAV_SECTIONS` 的说明）：
+///    它不是影视分类，列出来会让用户"点了发现没有影视"。
 pub fn parse_categories(html: &str) -> Vec<CspCategory> {
     let mut out: Vec<CspCategory> = Vec::new();
     for cap in re_nav().captures_iter(html) {
@@ -251,6 +353,10 @@ pub fn parse_categories(html: &str) -> Vec<CspCategory> {
         let slug = &cap[2];
         let name = strip_tags(&cap[3]);
         if name.is_empty() || name.chars().count() > 12 {
+            continue;
+        }
+        // ★ 「站点导航」类分类：默认不收（Owner 待定，见 INCLUDE_NAV_SECTIONS）
+        if kind == "favorites" && !INCLUDE_NAV_SECTIONS {
             continue;
         }
         let id = format!("{kind}:{slug}");
@@ -467,6 +573,22 @@ impl CspSite for Zhinan {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  ★★★ 自注册（R3-D，2026-10-27）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 注册项长在类自己的文件里 ⇒ 新增类 = 新增文件，**不改核心注册表**。
+// 改前这一行写死在 `csp/mod.rs` 的 `build_registry()` 里。
+//
+// # 这个类的事实（从核心文件头搬过来，别丢）
+// ```text
+// csp_4KZhinan：配置里覆盖 **2 个源**（指南 / 小丑）。**纯 HTML 抓取**，
+//   站点从 `ext.site` 取；播放是网盘分享页（见本文件头的能力边界）。
+// ★ 解析只用本仓已有的 `regex`（**不新增运行时** —— 诚实契约第 4 条），
+//   局限（不做 DOM 树）写在本文件头注释里。
+// ```
+crate::csp::register_site!(Zhinan);
+
+// ═══════════════════════════════════════════════════════════════════════
 //  测试：一半是**假 HTML**（hermetic），一半是**真网络**（CSP_LIVE=1 + #[ignore]）
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -547,7 +669,93 @@ mod tests {
         let cats = parse_categories(html);
         assert_eq!(cats[0].id, "books:zuixin");
         assert_eq!(cats[0].name, "最新");
-        assert!(cats.iter().any(|c| c.id.starts_with("favorites:")));
+        // ★ 2026-10-27 R3 复核：`favorites/*` 是**站点导航**类分类（不是影视分类）
+        //   ⇒ 默认**不收**（Owner 待定项，见 INCLUDE_NAV_SECTIONS 的长注释）
+        assert!(
+            !cats.iter().any(|c| c.id.starts_with("favorites:")),
+            "favorites 是站点导航分类，默认不许混进影视分类表：{cats:?}"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  ★★★ 2026-10-27 R3 复核：`favorites`（sites-item）那一处
+    // ═══════════════════════════════════════════════════════════════
+
+    /// `favorites/技巧` 的真实片段（站点导航条目：**没有** /book/、标题在 <b> 里）
+    ///
+    /// ⚠️ 这不是"编的坏样本"，是 **2026-10-27 真网络取回**的真实 markup 摘要
+    ///    （`.probe/r3-4kzhinan-review.log`；那页 6 个 article **全是**这个形态）。
+    const FIX_SITES_ITEM: &str = r#"
+<article class="posts-item sites-item d-flex style-sites-max post-19420 ajax-item" >
+  <a href="https://4kxc.com/18433.html" class="sites-body is-views" title="免费领取夸克网盘1TB空间">
+    <div class="item-image"><img class="fill-cover sites-icon lazy" data-src="https://t1.gstatic.cn/faviconV2?x=1" /></div>
+  </a>
+  <div class="item-body"><h3 class="item-title line1"><b>免费领取夸克网盘1TB空间，夸克每天领取容量教程</b></h3></div>
+</article>"#;
+
+    #[test]
+    fn sites_item_page_reports_real_reason_not_misleading() {
+        // ★ 这条守的正是 Lead 裁定的"报错文案必须能分辨形态"：
+        //   改前它说"结构可能变了/被反爬" —— **骗人**（页面明明有 6 个 article）
+        let err = parse_list(FIX_SITES_ITEM).unwrap_err();
+        assert!(
+            err.contains("sites-item"),
+            "★ 报错必须点名**实际形态**（sites-item），否则又会把人往'站点挂了'带：{err}"
+        );
+        assert!(
+            err.contains("可解析"),
+            "★ 报错必须说明是「我们解析不了」而不是「页面没内容」：{err}"
+        );
+        assert!(
+            !err.contains("被反爬"),
+            "★ 不许再出现'被反爬'这种**未经证实**的归因（实测那页绕代理 8/8 都 200）：{err}"
+        );
+    }
+
+    #[test]
+    fn sites_item_is_never_mixed_into_video_list() {
+        // ★ 反空真（铁律 149）：先证明"候选集非空"，否则下面的全称断言恒真
+        assert!(
+            re_item().captures_iter(FIX_SITES_ITEM).count() == 1,
+            "★ 前置：这页必须有 1 个 <article> 被 re_item 匹配到（否则本测试是空转）"
+        );
+        // 然后：它**不许**变成影视条目
+        let err = parse_list(FIX_SITES_ITEM).unwrap_err();
+        assert!(
+            err.contains("没有任何"),
+            "sites-item 不许产出影视条目（它会被当'领网盘空间教程'混进影视列表）"
+        );
+    }
+
+    #[test]
+    fn empty_page_reason_distinguishes_three_cases() {
+        // ① 一个 article 都没有 = 可能真没内容/结构变了
+        let e1 = parse_list("<html><body>nothing</body></html>").unwrap_err();
+        assert!(e1.contains("没有任何 <article>"), "① {e1}");
+        // ② 有 article 但全是 sites-item
+        let e2 = parse_list(FIX_SITES_ITEM).unwrap_err();
+        assert!(e2.contains("sites-item") && e2.contains("全是"), "② {e2}");
+        // ③ 有 article、既不是 book 也不是 sites = 结构真变了
+        let e3 = parse_list(r#"<article class="posts-item book-item post-1"><div>x</div></article>"#)
+            .unwrap_err();
+        assert!(e3.contains("不符合 book-item 形态"), "③ {e3}");
+    }
+
+    #[test]
+    fn books_pages_still_parse_normally() {
+        // ★ 基线不能被我改坏：8 个 books 分类实测 8/8 全通（真网络读数见交付说明）
+        let items = parse_list(FIX_LIST).expect("books 形态必须照常解析");
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn nav_sections_switch_is_owner_pending() {
+        // ★ 这个开关就是"Owner 选 (B)"的接入点：默认 (A) 不收
+        //   ⇒ 谁把它改成 true 而不接 parse_sites_list，本测试会提醒
+        assert!(
+            !INCLUDE_NAV_SECTIONS,
+            "默认必须是 (A)（不列 favorites）；改 true 前先接上 sites 条目的呈现"
+        );
     }
 
     #[test]
@@ -621,6 +829,63 @@ mod tests {
             let play = z.play("", &ep.id, ext).await.expect("网盘分享页要能出线路");
             assert!(!play.is_empty());
             println!("LIVE|play|{}", play[0].url);
+        }
+    }
+
+    /// ★★★ R3 复核（2026-10-27）：**逐分类覆盖读数** —— 哪些分类能出内容、哪些不能
+    ///
+    /// # 为什么单独一条（Lead 裁定 ⑤ 的硬要求）
+    /// ```text
+    /// 交付里必须**明确写出**该站哪些分类能出内容、哪些不能（如实，不许只写"修好了"）。
+    /// ⇒ 把这条做成**可复跑的探针**，而不是"我跑过一次所以我知道"。
+    /// ```
+    ///
+    /// # 跑法
+    /// ```text
+    /// CSP_LIVE=1 cargo test --lib zhinan_live_category_coverage --release \
+    ///   -- --ignored --nocapture
+    /// ```
+    /// ⚠️ 输出里每条分类一行 `LIVE|cat|<slug>|条目=N|OK|/|ERR|<原因>`
+    #[tokio::test]
+    #[ignore = "真网络：CSP_LIVE=1 cargo test --lib zhinan_live_category_coverage --release -- --ignored --nocapture"]
+    async fn zhinan_live_category_coverage() {
+        assert_eq!(
+            std::env::var("CSP_LIVE").ok().as_deref(),
+            Some("1"),
+            "显式跑这条就必须给 CSP_LIVE=1（不给就失败，而不是悄悄通过）"
+        );
+        // 两个站都测（指南 4kzn.cc / 小丑 4kxc.com）
+        for (name, site) in [("指南", "https://4kzn.cc"), ("小丑", "https://4kxc.com")] {
+            let ext = format!(r#"{{"site": ["{site}"]}}"#);
+            let z = Zhinan::new();
+            let home = match z.home(&ext).await {
+                Ok(h) => h,
+                Err(e) => {
+                    println!("LIVE|site|{name}|HOMEFAIL|{e}");
+                    continue;
+                }
+            };
+            println!(
+                "LIVE|site|{name}|分类={} 首页条目={}",
+                home.categories.len(),
+                home.items.len()
+            );
+            let mut ok_count = 0usize;
+            for c in &home.categories {
+                match z.list(&c.id, 1, &ext).await {
+                    Ok(l) if !l.items.is_empty() => {
+                        ok_count += 1;
+                        println!("LIVE|cat|{}|{}|条目={}|OK", name, c.id, l.items.len());
+                    }
+                    Ok(_) => println!("LIVE|cat|{}|{}|条目=0|EMPTY", name, c.id),
+                    Err(e) => println!("LIVE|cat|{}|{}|ERR|{e}", name, c.id),
+                }
+            }
+            println!(
+                "LIVE|sum|{name}|可出内容={}/{}",
+                ok_count,
+                home.categories.len()
+            );
         }
     }
 

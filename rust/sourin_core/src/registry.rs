@@ -22,6 +22,28 @@ impl Registry {
         }
     }
 
+    /// ★★ 2026-10-27（R2-B）：**兜底是否该生效** —— 判据只有一份（转调聚合侧）
+    ///
+    /// # 为什么可以从**内存**推出，不需要读文件
+    /// ```text
+    /// "用户是否已显式表达过停用意图" 在 registry 里**本来就看得出来**：
+    ///   有任何一个 handle 的 `enabled == false` ⇒ 用户停用过东西。
+    /// ⇒ 不必读 `<数据目录>/disabled-providers.json`，也就不必给 Registry 加路径字段
+    ///   （那会牵动 `state.rs` 的构造点，超出本卡 writeScope）。
+    /// ★ 而且内存派生**天然热重载**：`set_enabled` 一改，下一次 `*_all` 立刻看到。
+    /// ```
+    /// # 语义边界（写清楚，免得被误读）
+    /// ```text
+    /// 它回答「**要不要走兜底这条退路**」，**不是**「停用源要不要出现」——
+    /// 后者由候选集的 `.filter(|h| h.enabled)` 保证（那层与改动前一致）。
+    /// ```
+    fn fallback_allowed(&self) -> bool {
+        // ★ 判据语义与聚合侧 `tvbox_aggregate::fallback_allowed` **同一份**：
+        //   "有任一 handle 停用 ⇒ 用户表达过停用意图 ⇒ 不走兜底退路"。
+        //   （两边都从**同一份内存**派生 ⇒ 不会漂移；见那边文档里的"唯一来源"说明。）
+        self.manifests_all_enabled().unwrap_or(true)
+    }
+
     /// 注册一个 Provider
     pub fn register(&self, provider: Arc<dyn MediaProvider>) {
         let mut list = self.providers.write().unwrap();
@@ -121,6 +143,27 @@ impl Registry {
             .filter(|h| h.enabled)
             .map(|h| h.provider.manifest().clone())
             .collect()
+    }
+
+    /// ★★ 2026-10-27（R2-B）：**是否所有 handle 都处于启用态**
+    ///
+    /// # 用途
+    /// 兜底判据（`tvbox_aggregate::fallback_allowed`）用它回答
+    /// 「**用户是否显式停用过任何源**」——
+    /// 有任一 `enabled == false` ⇒ 用户表达过"我不要"。
+    ///
+    /// # 为什么返回 `Option<bool>` 而不是 `bool`
+    /// ```text
+    /// 空表（没有任何源）时"是否全都启用"是**无意义的真**（`all()` 对空集返回 true），
+    /// 而语义上"表里一个源都没有"与"有源且全启用"是两件事。
+    /// 返回 `None` 让调用方**显式表态**该怎么处理，而不是被 `all()` 的空集真值骗过去。
+    /// ```
+    pub fn manifests_all_enabled(&self) -> Option<bool> {
+        let list = self.providers.read().unwrap();
+        if list.is_empty() {
+            return None;
+        }
+        Some(list.iter().all(|h| h.enabled))
     }
 
     /// 按 id 取 Provider
@@ -297,8 +340,31 @@ impl Registry {
             .map(|(p, _)| p.clone())
             .collect();
         if targets.is_empty() {
-            log::debug!("[registry] 没有可见源可搜 ⇒ 退回包含 hidden 子站（聚合未启用时的兜底）");
-            targets = candidates.into_iter().map(|(p, _)| p).collect();
+            /*
+             * ★★★ 2026-10-27（R2-B）：兜底**只在用户还没表达过停用意图时**才走。
+             *
+             * # 它挡住的正是 Owner 报的 bug
+             * ```text
+             * > 首页关闭了,但是搜索页面还是能搜索出来
+             * ```
+             * 用户把 51 个源全停用（含全部 16 个 csp 子站）⇒ 可见源为空
+             *   ⇒ 老代码「退回包含 hidden 子站」⇒ 已停用的子站又被拉回来搜。
+             * ★ 注意 `candidates` **已经** `.filter(|h| h.enabled)`（:290）：
+             *   所以"停用源"本来就不在候选里；本判据额外处理的是
+             *   「用户已明确表达过『我不要』时，连"退回隐藏子站"这条退路也不走」。
+             * ```
+             * ⚠️ 与聚合侧（`tvbox_aggregate::fallback_allowed`）是**同一份判据** —— 不许各写一遍。
+             */
+            if self.fallback_allowed() {
+                log::debug!(
+                    "[registry] 没有可见源可搜 ⇒ 退回包含 hidden 子站（聚合未启用时的兜底）"
+                );
+                targets = candidates.into_iter().map(|(p, _)| p).collect();
+            } else {
+                log::debug!(
+                    "[registry] 没有可见源可搜，且用户已显式停用过源 ⇒ **不兜底**（尊重停用）"
+                );
+            }
         }
 
         /*
@@ -488,8 +554,17 @@ impl Registry {
             .map(|(p, _)| p.clone())
             .collect();
         if targets.is_empty() {
-            log::debug!("[registry] 没有可见源上首页 ⇒ 退回包含 hidden 子站（聚合未启用时的兜底）");
-            targets = candidates.into_iter().map(|(p, _)| p).collect();
+            /* ★★★ 2026-10-27（R2-B）：与 `search_all` 同一判据（见那处的长注释）。 */
+            if self.fallback_allowed() {
+                log::debug!(
+                    "[registry] 没有可见源上首页 ⇒ 退回包含 hidden 子站（聚合未启用时的兜底）"
+                );
+                targets = candidates.into_iter().map(|(p, _)| p).collect();
+            } else {
+                log::debug!(
+                    "[registry] 没有可见源上首页，且用户已显式停用过源 ⇒ **不兜底**（尊重停用）"
+                );
+            }
         }
 
         let mut out = Vec::new();
@@ -1887,4 +1962,110 @@ mod tests {
         assert_eq!(sub.home_calls.load(Ordering::SeqCst), 0, "★ hidden 子站不许上首页");
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    //  R2-B：registry 两处兜底**是否吃掉了"停用"**（决定性实验）
+    //
+    //  # 为什么要单独验这一条
+    //  计划把"三处兜底"列为同一风险面，但**两处的候选集已经 `.filter(h.enabled)`**
+    //  ⇒ 我判定它们**不会**漏"停用"（兜底只在"仍有已启用源"时才退回）。
+    //  判定不能靠读码 ⇒ 用实验钉住它，免得将来有人**去掉那个 filter** 而没人发现。
+    // ══════════════════════════════════════════════════════════════════════
+
+    /// ★★★ R2-B：**全部停用后，搜索必须真的空**（不许被兜底退回）
+    ///
+    /// ```text
+    /// 场景（= Owner 的机器）：所有源都 disabled
+    /// 期望：search_all 的 results 空 + 一个请求都不发（calls == 0）
+    /// 注入「删掉 candidates 里的 h.enabled 过滤」⇒ 本条红（兜底会退回隐藏子站）。
+    /// ```
+    #[tokio::test]
+    async fn r2b_search_empty_when_all_disabled() {
+        let reg = Registry::new();
+        let sub = HiddenProbe::new("tvbox1", "子站一", true);
+        reg.register(sub.clone());
+        // 用户显式停用（= 真链路里 set_enabled_persisted 做的两件事）
+        assert!(reg.set_enabled("tvbox1", false), "停用应命中");
+
+        let r = reg.search_all("x", 1).await;
+        assert!(
+            r.results.is_empty(),
+            "★★★ 全部停用后搜索必须为空，实际 {} 条（兜底把停用吃掉了 ⇒ Owner 报的 bug）",
+            r.results.len()
+        );
+        assert_eq!(
+            sub.calls.load(Ordering::SeqCst),
+            0,
+            "★★★ 停用的源**一个请求都不该发**（发出去就是把停用当没有）"
+        );
+    }
+
+    /// ★★★ R2-B：**全部停用后，首页也必须真的空**
+    #[tokio::test]
+    async fn r2b_home_empty_when_all_disabled() {
+        let reg = Registry::new();
+        let agg = HiddenProbe::new("tvbox_agg", "TVBox 聚合", false);
+        let sub = HiddenProbe::new("tvbox1", "子站一", true);
+        reg.register(agg.clone());
+        reg.register(sub.clone());
+        reg.set_enabled("tvbox_agg", false);
+        reg.set_enabled("tvbox1", false);
+
+        let rows = reg.home_all().await;
+        assert!(
+            rows.is_empty(),
+            "★★★ 全部停用后首页必须为空，实际 {:?}",
+            rows.iter().map(|(i, _, _)| i.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(sub.home_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// ★★★ R2-B（⚡ 热重载）：**不重启**改 enabled ⇒ 搜索/home/扇出立即反映
+    ///
+    /// ```text
+    /// Owner 硬要求：「开关要热重载生效，而不是必须重启软件才能生效」。
+    /// 本实验在**同一进程内**：先启用搜得到 ⇒ 停用后立即搜不到 ⇒ 再启用又搜得到。
+    /// 注入「把 enabled 判断结果缓存起来」⇒ 本条红。
+    /// ```
+    #[tokio::test]
+    async fn r2b_hot_reload_enabled_takes_effect_without_restart() {
+        let reg = Registry::new();
+        let sub = HiddenProbe::new("tvbox1", "子站一", true);
+        reg.register(sub.clone());
+
+        // ① 启用状态：兜底生效 ⇒ 搜得到
+        assert_eq!(reg.search_all("x", 1).await.results.len(), 1, "前置：启用时搜得到");
+
+        // ② 热重载：停用（**不重启**）
+        reg.set_enabled("tvbox1", false);
+        assert!(
+            reg.search_all("x", 1).await.results.is_empty(),
+            "★★★ 热重载失败：停用后（未重启）搜索应立即为空"
+        );
+        assert_eq!(reg.home_all().await.len(), 0, "★★★ 热重载失败：首页也应立即为空");
+
+        // ③ 反向也热：重新启用 ⇒ 立即回来
+        reg.set_enabled("tvbox1", true);
+        assert_eq!(
+            reg.search_all("x", 1).await.results.len(),
+            1,
+            "★★★ 热重载失败：重新启用后（未重启）应立即搜得到"
+        );
+    }
+
+    /// ★★ 守住 R2-B 的修法不被回退：`candidates` 必须**始终**按 `h.enabled` 过滤
+    ///
+    /// ```text
+    /// 上面两条是**行为**判据；这条是**源码锚点**，防的是"行为对了但靠别的巧合"。
+    /// 与 t73 的做法同源（源码锚点 + 行为断言两层）。
+    /// ```
+    #[test]
+    fn r2b_candidates_always_filter_enabled() {
+        let src = include_str!("registry.rs");
+        let n = src
+            .matches(".filter(|h| h.enabled && h.provider.manifest().capabilities.search)")
+            .count();
+        assert!(n >= 1, "★★ search_all 的候选必须按 enabled 过滤（实际 {n} 处）");
+        let hn = src.matches(".filter(|h| h.enabled)").count();
+        assert!(hn >= 2, "★★ home_all / 其它路径也要按 enabled 过滤（实际 {hn} 处）");
+    }
 }

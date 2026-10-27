@@ -125,7 +125,11 @@ pub mod guan_ying;
 pub mod ren_ren;
 pub mod djlh;
 pub mod all_live;
-
+pub mod pan_share;
+pub mod a_list;
+pub mod pan115;
+pub mod pan_xunlei;
+pub mod pan_guangya;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -513,7 +517,7 @@ pub fn build_registry_from(
         dupes.sort_unstable();
         dupes.dedup();
         return Err(format!(
-            "csp 注册表：有 {} 个类名被**重复注册**：{}。\
+            "csp 注册表：有 {} 个类名被「重复注册」：{}。\
              每个 CLASS 只能注册一次 —— 两个模块注册同一个类名时，\
              谁来生效是不确定的，所以这里显式失败而不是静默取一个。",
             dupes.len(),

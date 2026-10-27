@@ -260,6 +260,12 @@ impl AppState {
         // ★ 恢复失败的源（第19项：csp 未实现类等）——
         //   除了 warn，还落盘到 data_dir/restore-failures.json，供界面/排查查询。
         let mut restore_failures: Vec<crate::persist::RestoreFailure> = Vec::new();
+        /*
+         * ★ 2026-10-28：配置里**已经导入过**的 csp 类（api 逐字，如 `csp_Wogg`）。
+         *   下面「⑦'' 内置 csp 源」要跳过它们 —— 否则同一个类会出现两条源。
+         */
+        let mut imported_csp_apis: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut ok = 0usize;
         for item in &persisted {
             match item {
@@ -327,6 +333,11 @@ impl AppState {
                      * "单个源失败只跳过它自己"）。
                      */
                     if crate::csp::is_csp(api) {
+                        /*
+                         * ★ 2026-10-28：记下"配置里已经有的 csp 类"
+                         *   —— 下面「内置 csp 源」要跳过它们，否则同一个类会出两条源。
+                         */
+                        imported_csp_apis.insert(api.to_string());
                         let ext_text = ext.as_deref().unwrap_or("");
                         match crate::csp::provider::CspProvider::new(
                             id.clone(),
@@ -412,6 +423,68 @@ impl AppState {
                     data_dir.clone(),
                 ),
             ));
+        }
+
+        /*
+         * ⑦'' 内置 csp 源 —— **原版行为对标**（2026-10-28，Owner 逐字：
+         *   「哪个 tvbox 聚合源默认是自动的，不应该再额外生成配置，
+         *     参考的 apk 和链接他们就能实现」）
+         *
+         * # 改前是什么样
+         * ```text
+         * provider 只来自两处：⑦ 的 JS 插件 + 从落盘记录恢复的 TVBox 站点。
+         * ⇒ 我们在 Rust 里实现了 48 个 csp 类（`register_site!` 自注册），
+         *   但用户不导入订阅就**一条都看不到** —— 与原版"jar 里有什么类就出什么源"不符。
+         * ```
+         * # 现在
+         * ```text
+         * 为每个**已注册**的 csp 类自动建一条内置源：
+         *   id   = `csp-<kebab 类名>`（稳定 ⇒ 可被停用/排序/收藏）
+         *   name = 类名（中性，不含站名 —— 门禁 t98 会拦）
+         *   api  = `csp_<类名>`（与配置里的写法逐字一致）
+         *   ext  = 空（需要站点/账号的类会被该类自己的可读 Err 说明缺什么，
+         *          而不是"源直接消失" —— 那正是本仓最忌讳的"看起来没有"）
+         * ```
+         * # 幂等
+         * ```text
+         * · 按 id 查一遍：已存在（热重启/测试多次 bootstrap）就跳过；
+         * · 配置里已经导入过同一个 api 的 ⇒ 也跳过（`imported_csp_apis`），
+         *   否则同一类会出两条源。
+         * ```
+         * # 顺序
+         * ```text
+         * 必须在 ⑧「应用停用状态」**之前**：用户上次停用的内置源要能被恢复成停用。
+         * ```
+         */
+        let mut builtin_csp = 0usize;
+        for class in crate::csp::implemented_classes() {
+            let api = format!("csp_{class}");
+            if imported_csp_apis.contains(&api) {
+                continue;
+            }
+            let id = format!("csp-{}", kebab_class(class));
+            if registry.get(&id).is_some() {
+                continue;
+            }
+            match crate::csp::provider::CspProvider::new(
+                id,
+                class,
+                &api,
+                "",
+                Vec::new(),
+                false, // 内置源：不是"由 TVBox 配置导入"
+            ) {
+                Ok(p) => {
+                    registry.register(std::sync::Arc::new(p));
+                    builtin_csp += 1;
+                }
+                Err(e) => {
+                    log::warn!("内置 csp 源 {class} 建失败（已跳过，其余源不受影响）: {e}");
+                }
+            }
+        }
+        if builtin_csp > 0 {
+            log::info!("已自动暴露 {builtin_csp} 个内置 csp 源（原版行为：类即源）");
         }
 
         /*
@@ -1394,4 +1467,38 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// `CamelCase` 类名 → kebab-case（内置 csp 源的**稳定 id** 用）
+///
+/// # 为什么需要它
+/// ```text
+/// 类名是 `ALLLive` / `ShortHema` / `BiliYS` 这种大小写混写，
+/// 直接拼进 id（`csp-ALLLive`）在 URL/文件名/用户手改配置里都别扭；
+/// 统一成 `csp-all-live` / `csp-short-hema` 更好读，且**稳定**（同一个类永远同一个 id，
+/// 用户停用/排序/收藏都靠它）。
+/// ```
+/// # 判据
+/// ```text
+/// ① 大写字母前断开（除首字符）；② 连续大写（缩写，如 `YS`/`AL`）当成一个词；
+/// ③ 全部小写，用 `-` 连接；④ 不产生空段（`--`）。
+/// ```
+fn kebab_class(class: &str) -> String {
+    let mut out = String::with_capacity(class.len() + 4);
+    let chars: Vec<char> = class.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        if c.is_ascii_uppercase() {
+            let prev_is_lower = i > 0 && chars[i - 1].is_ascii_lowercase();
+            let next_is_lower = i + 1 < chars.len() && chars[i + 1].is_ascii_lowercase();
+            if i > 0 && (prev_is_lower || next_is_lower) && !out.ends_with('-') {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else if c.is_ascii_digit() || c.is_ascii_alphanumeric() {
+            out.push(*c);
+        } else {
+            out.push(*c);
+        }
+    }
+    out
 }

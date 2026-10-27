@@ -531,13 +531,13 @@ fn pkcs7_unpad(data: &[u8]) -> Result<Vec<u8>, String> {
     let pad = last as usize;
     if pad == 0 || pad > 16 || pad > data.len() {
         return Err(format!(
-            "PKCS7 填充不合法（末字节 {pad}）⇒ 多半是**密钥不对**，不是上游没内容"
+            "PKCS7 填充不合法（末字节 {pad}）⇒ 多半是「密钥不对」，不是上游没内容"
         ));
     }
     let cut = data.len() - pad;
     if data[cut..].iter().any(|&b| b as usize != pad) {
         return Err(format!(
-            "PKCS7 填充字节不一致（应为 {pad}）⇒ 多半是**密钥不对**，不是上游没内容"
+            "PKCS7 填充字节不一致（应为 {pad}）⇒ 多半是「密钥不对」，不是上游没内容"
         ));
     }
     Ok(data[..cut].to_vec())
@@ -560,7 +560,7 @@ fn not_wired(what: &str) -> String {
         "csp_AppDrama 的「{what}」段尚未打通：\
 上游要求设备注册/登录握手（实测 3 站 API 全部 302 → /api.php/app/user/login.html），\
 且 v5 接口是 protobuf（本卡按 Lead 裁定只做 v3 JSON 段）。\
-本条不是「这个源没内容」，是**我们还没打通**。"
+本条不是「这个源没内容」，是「我们还没打通」。"
     )
 }
 
@@ -570,7 +570,7 @@ impl CspSite for AppDrama {
         Self::CLASS
     }
 
-    /// 首页：**两跳取域**（ext.site → 真实 API 域）
+    /// 首页：「两跳取域」（ext.site → 真实 API 域）
     ///
     /// # 为什么 `home` 就做"取域"这件事
     /// ```text

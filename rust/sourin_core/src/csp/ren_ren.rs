@@ -313,7 +313,7 @@ pub fn parse_list(html: &str) -> Result<Vec<RawItem>, String> {
         out.push(RawItem { id, title, cover });
     }
     if out.is_empty() {
-        return Err("页面里有列表块但**没有一条**能解析出 aid/标题（模板可能改版）".to_string());
+        return Err("页面里有列表块但「没有一条」能解析出 aid/标题（模板可能改版）".to_string());
     }
     Ok(out)
 }
@@ -453,7 +453,7 @@ impl CspSite for RenRen {
         if page > 1 {
             // ★ 实测 `&page=2` 返回同一页（字节数相同）⇒ 不假装翻页
             return Err(format!(
-                "人人电影网的搜索页**不支持翻页参数**（实测 `&page=2` 与第 1 页响应字节数完全一致）\
+                "人人电影网的搜索页「不支持翻页参数」（实测 `&page=2` 与第 1 页响应字节数完全一致）\
                  ⇒ 只能取第 1 页（请求的是第 {page} 页）"
             ));
         }

@@ -405,14 +405,14 @@ impl CspSite for AppQi {
         let url = id.splitn(2, '|').nth(1).unwrap_or(id).trim().to_string();
         let has_key = !cfg.data_key.is_empty() && !cfg.data_iv.is_empty();
         Err(format!(
-            "AppQi 取流需要先用 ext 的 `dataKey`/`dataIv` 做 **AES 解密**（DEX `eduAesDecode`），\
+            "AppQi 取流需要先用 ext 的 `dataKey`/`dataIv` 做 「AES 解密」（DEX `eduAesDecode`），\
              再送站点下发的解析器（`parse_api_url`）——\
              本仓当前{}（线路={flag}，值前 24 字：{}）。\
              已实现的链路：home/initV120 → list/typeFilterVodList → detail/vodDetail → search。",
             if has_key {
                 "有密钥但仍无站点可验（订阅里 0 站）"
             } else {
-                "**没有该站配置**（订阅里 0 站，ext.dataKey/dataIv 缺失）"
+                "「没有该站配置」（订阅里 0 站，ext.dataKey/dataIv 缺失）"
             },
             url.chars().take(24).collect::<String>()
         ))

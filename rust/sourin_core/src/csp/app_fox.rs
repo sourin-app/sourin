@@ -289,7 +289,7 @@ impl CspSite for AppFox {
         let _ = host;
         let url = id.trim();
         Err(format!(
-            "AppFox 取流依赖站点下发的**解析器配置**（`/api.php/Appfox/config` 的 \
+            "AppFox 取流依赖站点下发的「解析器配置」（`/api.php/Appfox/config` 的 \
              playerList/jiexiDataList 的 playerCode + 解析地址）——\
              本仓当前无该站配置（订阅里 0 站）⇒ 不能解析（线路={flag}，值前 24 字：{}）。\
              已实现的链路：home/init → list/vodList → detail/vod → search。取流部分不做假通。",

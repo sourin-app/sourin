@@ -212,8 +212,8 @@ impl AppYs {
 
     fn need_host(ext: &str) -> Result<String, String> {
         host_of(ext).ok_or_else(|| {
-            "AppYs 是**多 CMS 自适应适配器**，需要调用方在 ext 里给出 host（键 `host`/`url`/`site`）——\
-             它自己**不读 ext 的 host**（DEX `init` 只调 `Spider.init`）。\
+            "AppYs 是「多 CMS 自适应适配器」，需要调用方在 ext 里给出 host（键 `host`/`url`/`site`）——\
+             它自己「不读 ext 的 host」（DEX `init` 只调 `Spider.init`）。\
              本仓当前无该站配置，且订阅里没有任何 csp_AppYs 站（该类为「做实现、不注册」状态）"
                 .to_string()
         })

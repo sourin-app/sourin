@@ -120,7 +120,7 @@ impl Bdjmcc {
     fn need_host(ext: &str) -> Result<String, String> {
         Self::host_of(ext).ok_or_else(|| {
             "Bdjmcc 需要 ext 里的站点地址（键 `site` 或 `host`）——订阅里本类 ext=null，\
-             且 DEX 里全类**没有**站点常量（`SITE` 字段从未被赋字符串）⇒ 当前真网络无可打的地址。\
+             且 DEX 里全类「没有」站点常量（`SITE` 字段从未被赋字符串）⇒ 当前真网络无可打的地址。\
              该类为「做实现、不注册」状态（见文件头三条判据）"
                 .to_string()
         })
@@ -431,7 +431,7 @@ impl CspSite for Bdjmcc {
             }]);
         }
         Err(format!(
-            "Bdjmcc 取流依赖站点下发的**解析接口**（iframe 里只有解析参数 `{token}`，\
+            "Bdjmcc 取流依赖站点下发的「解析接口」（iframe 里只有解析参数 `{token}`，\
              接口地址不在 DEX 常量里、本类也无 host 可验证）⇒ 不做假通；\
              已实现的链路：home → list → detail（未取证 search / play）"
         ))

@@ -561,8 +561,8 @@ impl PanDrive {
     ) -> Result<Vec<DriveEntry>, String> {
         Err(format!(
             "分享货架（share_id={share_id}）需要先换 share token（两步接口），\
-             本实现尚未接通 —— 端点已取证（**POST** 确认；无 cookie 时返 500/15000，\
-             经对照实验确认**不是**登录问题），真实参数形状未取证到 ⇒ 不猜参数"
+             本实现尚未接通 —— 端点已取证（「POST」 确认；无 cookie 时返 500/15000，\
+             经对照实验确认「不是」登录问题），真实参数形状未取证到 ⇒ 不猜参数"
         ))
     }
 }

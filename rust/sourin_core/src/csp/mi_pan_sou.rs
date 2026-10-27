@@ -147,7 +147,7 @@ impl Mipansou {
         Self::host_of(ext).ok_or_else(|| {
             "Mipansou 需要 ext 里的站点地址（键 `site`，形如 {\"site\":\"https://…\"}）—— \
              DEX 里没有 host 字面量（站点由父类 Pan 从 ext 取），\
-             而订阅这条 `csp_Mipansou` 没有 ext ⇒ 本仓**没有可用 host**，\
+             而订阅这条 `csp_Mipansou` 没有 ext ⇒ 本仓「没有可用 host」，\
              故本类为「做实现、不注册」状态"
                 .to_string()
         })

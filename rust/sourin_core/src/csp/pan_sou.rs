@@ -109,9 +109,9 @@ impl PanSou {
     fn need_host(ext: &str) -> Result<String, String> {
         Self::host_of(ext).ok_or_else(|| {
             "PanSou 需要 ext 里的 `pansouUrl`（形如 {\"pansouUrl\":\"https://…\"}）—— \
-             DEX 是从**本地文件** `/peizhi.json` 的 `pansouUrl` 拿的，\
+             DEX 是从「本地文件」 `/peizhi.json` 的 `pansouUrl` 拿的，\
              本仓没有那个文件也不该去猜宿主目录；而订阅这条 `csp_PanSou` 没有 ext \
-             ⇒ **没有可用 host**，故本类为「做实现、不注册」状态"
+             ⇒ 「没有可用 host」，故本类为「做实现、不注册」状态"
                 .to_string()
         })
     }

@@ -208,7 +208,7 @@ pub fn ensure_ok<'a>(v: &'a Value, what: &str) -> Result<&'a Value, String> {
             v.get("msg").and_then(|m| m.as_str()).unwrap_or("")
         )),
         None => Err(format!(
-            "上游 {what} 响应里没有 code 字段 —— ★ 实测本站当前返回 **HTTP 400 / `Failure`**，\
+            "上游 {what} 响应里没有 code 字段 —— ★ 实测本站当前返回 「HTTP 400 / `Failure`」，\
              即上游不可用（不是我们少带了参数）"
         )),
     }

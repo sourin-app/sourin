@@ -99,9 +99,9 @@ impl Djlh {
     fn need_host(ext: &str) -> Result<String, String> {
         host_of(ext).ok_or_else(|| {
             "Djlh 需要 ext 里的站点地址（键 `host`/`site`/`url`）。\
-             本类**没有写死站点**：官方 jar 里没有 Djlh（阴性结论），全 dex 也无第二個 DJ 站，\
+             本类「没有写死站点」：官方 jar 里没有 Djlh（阴性结论），全 dex 也无第二個 DJ 站，\
              GitHub 0 结果，域名单（djlh.com/.cc/.cn/.net、lunhuidj.com）全部 DNS 不存在，\
-             `djlunhui.com` 实测是赌博站；订阅里该源也没有 ext ⇒ **无可打 host**。\
+             `djlunhui.com` 实测是赌博站；订阅里该源也没有 ext ⇒ 「无可打 host」。\
              这不是「站点挂了」，是「还没有站」——详见文件头取证清单。"
                 .to_string()
         })
@@ -237,7 +237,7 @@ pub fn parse_items(html: &str) -> Result<Vec<CspItem>, String> {
         });
     }
     if out.is_empty() {
-        return Err("页面里有曲目块但**没有一条**能解析出标题（模板可能改版）".to_string());
+        return Err("页面里有曲目块但「没有一条」能解析出标题（模板可能改版）".to_string());
     }
     Ok(out)
 }

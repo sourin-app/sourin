@@ -183,7 +183,7 @@ impl Czsapp {
         if let Some(marker) = waf_marker_of(&text) {
             return Err(format!(
                 "上游被 WAF 拦截（{url}）：HTTP {status}，拦截页特征含 `{marker}`。\
-                 实测该站（www.4kcz.com / czzy.top / www.cz4k.com）被 **SafeLine(雷池)** 挡住：\
+                 实测该站（www.4kcz.com / czzy.top / www.cz4k.com）被 「SafeLine(雷池)」 挡住：\
                  6 域名 × 9 入口 × 浏览器级头全部 403，\
                  挑战页无可解逻辑、cookie 回放与 10 种常见绕过头均无效。\
                  这不是配置错，也不是「路径不对」——需要 WAF 对抗/浏览器指纹能力位。"

@@ -196,7 +196,7 @@ pub fn ensure_ok<'a>(v: &'a Value, what: &str) -> Result<&'a Value, String> {
             v.get("msg").and_then(|m| m.as_str()).unwrap_or("")
         )),
         None => Err(format!(
-            "上游热剧 {what} 响应里没有 code 字段 —— ★ 实测本站对**缺签名**的请求返 \
+            "上游热剧 {what} 响应里没有 code 字段 —— ★ 实测本站对「缺签名」的请求返 \
              `405 \"sign error\"`（非 JSON）；签名 = md5(KEY + 秒级时间戳)"
         )),
     }
@@ -517,7 +517,7 @@ impl AppRJ {
             let head = body.chars().take(60).collect::<String>();
             return Err(format!(
                 "上游热剧返回 HTTP {status}（{url}）：{head:?} —— \
-                 ★ 实测 `405 \"sign error\"` 表示**端点存在但签名不对**；\
+                 ★ 实测 `405 \"sign error\"` 表示「端点存在但签名不对」；\
                  签名 = md5({SIGN_KEY} + 秒级时间戳)；若为 `not found` 则可能路径变了"
             ));
         }

@@ -350,7 +350,7 @@ impl CspSite for AllLive {
             "wangyi" => self.wangyi_list(page).await?,
             "bili" | "dou\u{79}in" => {
                 return Err(format!(
-                    "平台 `{tid}` **未列入**：真网实测被风控挡住（某视频平台列表 `{{\"code\":-352}}` / \
+                    "平台 `{tid}` 「未列入」：真网实测被风控挡住（某视频平台列表 `{{\"code\":-352}}` / \
                      平台C `444 Access Denied, X-TT-System-Error: 3`）⇒ 不提供假能力位。\
                      当前可用平台：hu\u{79}a / dou\u{79}u / wangyi"
                 ))
@@ -412,13 +412,13 @@ impl CspSite for AllLive {
                 })
             }
             "dou\u{79}u" => Err(format!(
-                "平台B取流需要**第三方签名服务**（参考实现：POST `…/AllLive/<签名服务>`，\
+                "平台B取流需要「第三方签名服务」（参考实现：POST `…/AllLive/<签名服务>`，\
                  先把 `swf_api/homeH5Enc` 的混淆串换 sign，再调 `/lapi/live/getH5Play/{key}`）。\
                  本实现不内置该第三方签名（它不属于上游协议，且随时可能失效）⇒ 列表可用、取流不可用\
                  （room={key}）。"
             )),
             "wangyi" => Err(format!(
-                "平台C详情页已改版：实测 `{WANGYI}/{key}` → **308** 跳 `https://ds.163.com/glive/?ccid={key}`，\
+                "平台C详情页已改版：实测 `{WANGYI}/{key}` → 「308」 跳 `https://ds.163.com/glive/?ccid={key}`，\
                  参考实现里的 `props.pageProps.roomInfoInitData` 形态已不存在；\
                  我也试过 `/api/room/info` / `/api/room/getRoomInfo`（都 404）⇒ 没有可用取流端点，不做假通。"
             )),

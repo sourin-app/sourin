@@ -403,12 +403,12 @@ impl Gulu {
     /// ```
     fn handshake_gap(&self, seg: &str) -> String {
         format!(
-            "Gulu 的 `{seg}` 需要先完成握手（`{BASE}/handshake`），而握手**未取证**：\
+            "Gulu 的 `{seg}` 需要先完成握手（`{BASE}/handshake`），而握手「未取证」：\
              实测该端点对 8 种 `X-Handshake-Key` 形态都回 `400 invalid handshake key`，\
-             **不回任何公钥** ⇒ ①「对端公钥格式」无法实测；\
-             ② 反汇编显示 AES 密钥/IV 来自 `SecureRandom.nextBytes`（**每次会话随机**，非常量）\
+             「不回任何公钥」 ⇒ ①「对端公钥格式」无法实测；\
+             ② 反汇编显示 AES 密钥/IV 来自 `SecureRandom.nextBytes`（「每次会话随机」，非常量）\
              ⇒ 「如何用 ECDH 共享密钥把它包起来」的派生细节未取证。\
-             已就绪且**已单测**：我方 65 字节 SEC1 公钥（`ring::agreement::ECDH_P256`）、\
+             已就绪且「已单测」：我方 65 字节 SEC1 公钥（`ring::agreement::ECDH_P256`）、\
              `PbEncoder`（极简 protobuf）、AES-CBC（加/解密）。\
              绝不伪造分类/条目/播放地址。"
         )

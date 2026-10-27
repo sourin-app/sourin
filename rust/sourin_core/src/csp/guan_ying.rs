@@ -414,14 +414,14 @@ pub fn detail_of(v: &Value) -> Option<CspDetail> {
 fn login_wall_err(where_: &str) -> String {
     format!(
         "{where_}：站点返回「{LOGIN_WALL_TITLE}」——PoW（browser_verified）已过，\
-         但内容还要**账号登录**（DEX 里是 /user/login + PHPSESSID/app_auth）。\
+         但内容还要「账号登录」（DEX 里是 /user/login + PHPSESSID/app_auth）。\
          本仓没有该站账号 ⇒ 取不到数据。订阅里该源的 ext 也是 null（没有账号可配）。\
          已实现并真网验证的只有 PoW 这一段；解析器 `_obj.inlist/search/d` 结构待登录态样本证伪。"
     )
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  CspSite 实现（**没有 register_site!**）
+//  CspSite 实现（「没有 register_site!」）
 // ═══════════════════════════════════════════════════════════════════════
 
 #[async_trait]

@@ -319,7 +319,7 @@ pub fn parse_list(html: &str) -> Result<Vec<RawItem>, String> {
         });
     }
     if out.is_empty() {
-        return Err("页面里有 `video-card` 标记但**没有一条**能解析出标题（模板可能改版）".to_string());
+        return Err("页面里有 `video-card` 标记但「没有一条」能解析出标题（模板可能改版）".to_string());
     }
     Ok(out)
 }
@@ -587,8 +587,8 @@ impl CspSite for Wn4k {
         }
         if id == TIP_ID {
             return Err(format!(
-                "「{LOGIN_TIP}」：本源的网盘链接对**游客锁定**（真网实测 detail 页 meta 为 \
-                 `https://******（登录后可见）`）⇒ 没有可播地址。\
+                "「{LOGIN_TIP}」：本源的网盘链接对「游客锁定」（真网实测 detail 页 meta 为 \
+                 `https://（登录后可见）`）⇒ 没有可播地址。\
                  上游 DEX 同样要求登录（`/user/login/` + cookie 文件 wn4k_cookie.json），\
                  本仓当前没有该站账号，因此不做假通。"
             ));

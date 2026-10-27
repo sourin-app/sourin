@@ -534,11 +534,26 @@ void main() {
           File('lib/ui/media_page.dart').readAsStringSync());
       expect(mp.contains('_onDetailSwitchSource'), isTrue,
           reason: '★ 合并页的换源入口');
+      /*
+       * ⚠️ 2026-10-27（N2）：签名锚点更新 —— 前两个位置参数没变。
+       * ```text
+       * 改前正则：`..._onDetailSwitchSource\(String provider, String id\)`
+       * 改后：多了一对大括号包裹的**可选具名**参数
+       *       {Duration? resumeFrom, int? episodeIndex}（N2 续播）。
+       * ```
+       * ★ 本条要守的**契约没变**：位置参数仍是 `(provider, id)`、
+       *   阶段 2 仍能在这里挂钩。只是 N2 之后签名多了可选具名尾巴 ——
+       *   下面同时钉住**续播参数真的被收下**，把那颗修复纳入视野。
+       */
       expect(
-        RegExp(r'Future<void> _onDetailSwitchSource\(String provider, String id\)')
+        RegExp(r'Future<void> _onDetailSwitchSource\(\s*String provider,\s*'
+                r'String id,\s*\{\s*Duration\? resumeFrom,\s*int\? episodeIndex,\s*\}\s*\)')
             .hasMatch(mp),
         isTrue,
-        reason: '★ 签名必须仍是 (provider, id) —— 阶段 2 要在这里挂钩');
+        reason: '★★★ 签名必须仍是 (provider, id) 开头（阶段 2 在这里挂钩）；'
+            '★ N2 之后尾部多了 {resumeFrom, episodeIndex} 两个可选具名参数 —— '
+            '注入「删掉续播参数」本条立刻红',
+      );
       expect(mp.contains('_provider = provider;'), isTrue,
           reason: '★ 换源后 provider 变了 ⇒ key 变了 ⇒ 旧行留在库里');
 

@@ -64,6 +64,7 @@ import '../core/ui_prefs.dart';
 import '../design/widgets/app_glass_dialog.dart';
 import '../design/widgets/app_icon_button.dart';
 import '../design/widgets/app_ink_well.dart';
+import '../design/widgets/app_switch.dart';
 import '../design/widgets/app_text_button.dart';
 import 'app_theme.dart';
 import 'remote_bridge.dart';
@@ -244,6 +245,9 @@ import 'widgets/settings_sub_page.dart';
  * 两者都是纯本地读文件，界面上共用卡片上的同一个图标按钮。
  */
 import 'widgets/tvbox_source_panel.dart';
+// ★ N8b-3（2026-10-27）：网盘账号页（弹窗形态）—— 本行入口是它**唯一**的
+//   可达路径（见下方 SettingsEntryRow 那段注释）。
+import 'settings/pan_settings_page.dart';
 import '../ui/app_theme.dart';
 import '../design/icons/app_icons.dart';
 
@@ -1755,7 +1759,7 @@ class SettingsPageState extends State<SettingsPage> {
 
   /// 从 URL 安装插件
   Future<void> _installPlugin() async {
-    final url = await _promptText(title: '安装 JS 插件', hint: '插件地址（支持各种插件市场的链接）');
+    final url = await _promptText(title: '安装源', hint: '插件地址（支持各种插件市场的链接）');
     if (url == null || url.trim().isEmpty) return;
 
     _flash('正在下载…');
@@ -2163,8 +2167,54 @@ class SettingsPageState extends State<SettingsPage> {
   /// ```
   /// ⚠️ 判据必须**正向列举** declarative，不能写成「不是 js 就给」——
   ///    后者会给内置源画一个点了必报错的按钮（与 `_canEdit` 同一个理由）。
-  VoidCallback? _configOf(String id) {
+  /// 打开「TVBox 聚合源」管理页（R2-#2：**两处入口共用同一个页面**）
+///
+/// ```text
+/// 入口 ①：聚合源那类的**组头**（`TvboxGroupHeader.onConfigure`，R1 加）
+/// 入口 ②：聚合源**卡片自己的菜单**项「编辑链接…」（本次加）
+/// ★ 为什么两处都要：Owner 两次反馈点的位置不同（第一次读到的是"进不去"，
+///   第二次点的是**卡片菜单**）—— 而菜单项的可用性受 `kind` 门控（见 `_configOf` 的注释）。
+/// ```
+void _openAggregatePage() {
+  showAppDialog<void>(
+    context: context,
+    builder: (_) => const TvboxAggregatePage(),
+  );
+}
+
+VoidCallback? _configOf(String id) {
     final p = _providers.where((x) => x.id == id).firstOrNull;
+    /*
+     * ★★★ 2026-10-27（R2-#2 第二次反馈，Owner 逐字）：
+     *   「tvbox聚合源 还是不能编辑链接,继续优化」
+     *
+     * # 为什么**前两次的修法都没碰到这条**（这是真正的第三处断点）
+     * ```text
+     * 第 1 次（R1）：定位到"进聚合二级页的两条路都不可达"（空态入口只在列表为空时画、
+     *   组头入口需 tvboxDirect 非空），于是**给聚合源那类的组头加了入口**。
+     *   ⇒ 但 Owner **第二次**反馈 ⇒ 说明他点的不是组头，是**卡片自己的操作菜单**。
+     * 第 2 次（本次）：Owner 给的截图上，卡片菜单里**只有**「个性化覆盖层…」+「移除这个源」。
+     *   顺着截图查菜单项的门控：
+     *     · 「编辑」    ← `_canEdit`（只认 declarative/http/js）
+     *     · 「配置」    ← `onConfig`（= `_configOf(id)`）
+     *   而 `tvbox_agg` 是**内置 Rust 实现**（`kind` 空）⇒ `_canEdit == false`；
+     *   又**不是 declarative、也没有插件条目** ⇒ `_configOf` 走到 `_pluginOf(id) == null`
+     *   ⇒ **返回 null** ⇒ 「配置」按钮也不画。
+     *   ⇒ 三条按钮路**全部**不覆盖它，而它的菜单里那两项恰好是**唯一不受 kind 门控**的
+     *     ⇒ 这正是"菜单里只剩别的两个"的成因。
+     * ```
+     *
+     * # 修法：给 `tvbox_agg` 一条**显式分派**（正向列举，不是放宽通用判据）
+     * ```text
+     * 它与声明式源同构：**自己就有可编辑的配置**（那条订阅链接），只是载体不是 JSON/JS 文件，
+     * 而是聚合管理页（`TvboxAggregatePage`）。
+     * ⇒ 直接返回"打开聚合管理页"，与组头入口**同一条路**（同一个页面，两处入口）。
+     * ★ 放在 `declarative` 分派**之前** —— 它不依赖 `_pluginOf`，而下面那行 `_pluginOf` 会返回 null。
+     * ```
+     */
+    if (id == kTvboxAggregateId) {
+      return _openAggregatePage;
+    }
     /*
      * 声明式源：直达可视化编排。
      * 这条路**不依赖插件条目**（声明式源本来就没有 .js 文件），
@@ -2880,7 +2930,38 @@ class SettingsPageState extends State<SettingsPage> {
             ],
             SettingsEntryRow(
               icon: AppIcons.extension_outlined,
-              title: 'JS 插件',
+              /*
+               * ★★★ N8a（2026-10-27）：入口标题「JS 插件」→「源」
+               *
+               * Owner 原话（逐字）：
+               * > 设置页的js插件应该改名叫 聚合源 或者 源
+               *
+               * Owner 2026-10-27 已定案（计划 §「Owner 已拍板的 4 条答复」第 4 条）：
+               * > 名称：就叫「源」（N8a 定案）
+               *
+               * # 为什么是「源」而不是「聚合源」
+               * ```text
+               * 「聚合源」只是**其中一类**（TVBox 聚合那一条）。
+               * 这一页装的是**全部形态的内容源**（见 N8b-4 的五分类：
+               * TVBox 源 / JS 插件 / 声明式 / TVBox 聚合源 / 直播）。
+               * 用「聚合源」当总名会把总称与子类同名 —— 用户更分不清。
+               * ```
+               *
+               * ⚠️ 只是**面向用户的入口名**变了 ——
+               *    `kind` 取值、id、注册表、落盘格式**一个字节都没动**，
+               *    收藏/进度/弹幕绑定的 `provider:<id>` 路由完全不变。
+               */
+              title: '源',
+              /*
+               * ★ 副标题**保持不变**（`个内容源`），只改标题。
+               *
+               * 判据：N8a 的靶子是**「JS 插件」这个串**，副标题里没有它
+               * ⇒ 不在本项范围内。而且 `task43_plugins_subpage_test.dart:586`
+               * 逐字钉了这条副标题（该文件不在 Lead 授权的锚点清单里）
+               * ⇒ 改了会打断既有门禁，收益为零。
+               * 「内容源」是**类别描述**（这一页装的是内容源），
+               * 与入口名「源」不冲突 —— 见上面的长注释。
+               */
               subtitle: '${_providers.length} 个内容源 · 安装 / 编辑 / 更新 / 排序 / 代理',
               onTap: _openPluginsPage,
             ),
@@ -2940,6 +3021,63 @@ class SettingsPageState extends State<SettingsPage> {
               title: 'Emby',
               subtitle: '媒体服务器 · 安装插件 / 服务器地址 / 连接自检',
               onTap: () => _openSubPage(const EmbySettingsPage()),
+            ),
+            /*
+             * ★★★ N8b-3（2026-10-27，Lead 接线）：**网盘账号**入口
+             *
+             * # 为什么由 Lead 接（页面自己写明了）
+             * ```text
+             * pan_settings_page.dart:61 逐字：
+             *   「打开网盘账号配置页（设置页入口一行调用它；接线点在
+             *     settings_page.dart，由 Lead 统一接）」
+             * ⇒ 页面与门禁都已就绪，只是**少一级入口**。
+             * ```
+             *
+             * # 为什么必须接（不是"锦上添花"）
+             * ```text
+             * 它是**弹窗**形态（`showPanSettingsPage` → `showAppDialog`），
+             * 不是路由二级页 ⇒ 没有入口行，用户在设置页**根本到不了它**。
+             * 更硬的一条：`t94_emby_entry_test` 的通用守卫会扫出
+             * 「每个页面/面板/弹层/对话框类都必须被外部引用」——
+             * 未接线的页面被那条门禁直接判红
+             * （实测：`Actual: ['PanSettingsPage (lib/ui/settings/pan_settings_page.dart)']`）。
+             * 那条守卫的用途正是「防下一个漏接」。
+             * ```
+             *
+             * ⚠️ 注意：上面那行**不能**把四类后缀用斜杠加星号连写 ——
+             *    Dart 的块注释**可嵌套**，`斜杠+星号` 会开一层新注释，
+             *    于是整份文件在结尾报「unterminated multi-line comment」
+             *    （实测踩过：连带报出二十多条假的 undefined 错误）。
+             *
+             * # Owner 口径（计划 N8b-3）
+             * ```text
+             * 「网盘没有单独的配置页面」（Owner 原话）⇒ 本行就是那个入口；
+             * 账号本身**由 Owner 在场扫码登录**提供（计划「已拍板 4 条」第 2 条），
+             * 所以这里只做"能进去、能扫码、能看登录态"，不在本批取直链。
+             * ```
+             */
+            SettingsEntryRow(
+              icon: AppIcons.cloud_outlined,
+              title: '网盘账号',
+              subtitle: '扫码登录 · 查看登录状态 · 列目录（当前可列不可播）',
+              /*
+               * ⚠️ 这里**直接构造** `PanSettingsPage`（而不是调该文件的
+               *    `showPanSettingsPage(context)` 便捷函数）—— 两条理由：
+               * ```text
+               * ① 与兄弟入口同一形态：Emby / 直播分组 都是
+               *    `_openSubPage(const XxxPage())`，本仓只用一套写法；
+               * ② ★ `t94` 的通用守卫用**词边界**正则
+               *    `(?<![\w\$])PanSettingsPage(?![\w\$])` 数"有没有人引用它"。
+               *    而 `showPanSettingsPage` 里那个类名前面挨着 `w`（单词字符）
+               *    ⇒ **不匹配** ⇒ 门禁仍报"这个页面没人接"
+               *    （实测：`Actual: ['PanSettingsPage (...)']`）。
+               *    直接构造就会命中。这是那条守卫的真实口径，不是它坏了。
+               * ```
+               */
+              onTap: () => unawaited(showAppDialog<void>(
+                context: context,
+                builder: (_) => const PanSettingsPage(),
+              )),
             ),
 
             /*
@@ -3549,7 +3687,7 @@ class SettingsPageState extends State<SettingsPage> {
                    *   用户可见承诺：导入后这里会自己长出来。
                    */
                   Text(
-                    '在「JS 插件」里导入插件后，声明了直播能力的源会自动出现在这里。',
+                    '在「源」里导入后，声明了直播能力的源会自动出现在这里。',
                     style: TextStyle(
                       fontSize: FontSizes.sm,
                       color: colors.onSurfaceVariant,
@@ -3759,7 +3897,20 @@ class SettingsPageState extends State<SettingsPage> {
      * ⚠️ 不做假 UI：没有的能力就不画按钮（画了点了没反应更糟）。
      */
     return _Block(
-      title: 'JS 插件',
+      /*
+       * ★★★ N8a（2026-10-27）：区块标题「JS 插件」→「源」
+       *
+       * Owner 定名「源」（完整理由见一级页入口行那处注释）。
+       * 区块标题与入口行、页签**用同一个词** —— 用户从三处看到的都一致，
+       * 不再出现"入口叫 A、进去叫 B"。
+       *
+       * ⚠️ 下面那段 102 行的原区块设计说明（"合并内容源 + JS 插件…"）
+       *    **逐字保留**：它讲的是历史决策与实现机制（为什么合并、
+       *    为什么 `thirdParty` 必须排除 js），按 N8a 口径（注释里的
+       *    机制描述可保留）不动。它引用的 `_Block(title: 'JS 插件')`
+       *    字样也是**当时的事实**，不是用户可见文案。
+       */
+      title: '源',
       /*
        * ★ 关掉外层大框 —— 见 `_Block.boxed` 的说明。
        *
@@ -4236,25 +4387,143 @@ class SettingsPageState extends State<SettingsPage> {
          *   （身份零迁移；`provider:native` 的收藏/进度/弹幕绑定不受影响）。
          *   真正的"单个聚合源"由 Rust 侧 `hidden` + `csp/aggregate.rs` 承接。
          */
-        if (tvboxGroupCount(list) > 0)
-          TvboxGroupHeader(
-            count: tvboxGroupCount(list),
-            expanded: _tvboxExpanded,
-            onToggle: () => setState(() => _tvboxExpanded = !_tvboxExpanded),
-            onConfigure: () => showAppDialog<void>(
-              context: context,
-              builder: (_) => const TvboxAggregatePage(),
+        /*
+         * ══════════════════════════════════════════════════════════════
+         * ★★★ N8b-4（2026-10-27）：源列表按 kind **五分类**分组
+         * ══════════════════════════════════════════════════════════════
+         *
+         * Owner 原话：
+         * > 播放源（js插件页）页面应该区分 tvbox源 / js插件 / 声明式 /
+         * > tvbox聚合源 / 直播，这是不同的实现，应该坐在不同的分类下。
+         *
+         * # 这一层是**纯展示分组**（与既有 TVBox 折叠组同一条纪律）
+         * ```text
+         * 卡片 / id / 启用态 / 排序 / provider:native 路由**一个都没变**
+         * ⇒ 收藏 / 进度 / 弹幕绑定 / 下载队列 零迁移。
+         * ```
+         *
+         * # 与既有「TVBox 聚合」折叠组的关系（**保留，不推翻**）
+         * ```text
+         * 既有那条（`tvboxGroupCount` / `tvboxGroupOrder` / `TvboxGroupHeader`）
+         * 负责的是「TVBox 源」这一类的**可折叠**（16 张卡收进一行）。
+         * 本项**沿用**它当「TVBox 源」这一类的组头 —— 不另造第二个组头
+         * （Lead 裁定：不许顺手重构，一次大改无法归因）。
+         * ⇒ 五分类里的 `tvboxDirect` 用既有 TvboxGroupHeader，
+         *   其余四类用新增的 SourceClassHeader。
+         * ```
+         *
+         * # 为什么「TVBox 聚合源」是**独立一类**而不是并进「TVBox 源」
+         * ```text
+         * 两者 kind **都是 "tvbox"**（csp/provider.rs:126 与
+         * tvbox_aggregate.rs:231）⇒ 只按 kind 分组会糊成一组 ——
+         * 那正是 Owner 说的"没区分开"。
+         * ⇒ 聚合入口（固定 id `tvbox_agg`）**先判**，见 sourceClassOf。
+         * ```
+         *
+         * # 聚合源**只有一个入口**（Lead 加的那一条）
+         * ```text
+         * 被接管的子站 manifest 带 `hidden: true`
+         * （tvbox.rs:1203 / csp/provider.rs:126）⇒ 已被上面的
+         * `visibleProviders(...)` 挡在列表外。
+         * 本项**不再**把 N 个 hidden 子站平铺出来 ——
+         * 它们只经「TVBox 聚合源」那一条（`tvbox_agg`）使用。
+         * 门禁 `zz_t1059` 用注入证明：hidden 子站不得出现在任何分类里。
+         * ```
+         *
+         * # ★★★ 分组输入是 `list`（**折叠之前**的全集），不是 `visible`
+         * ```text
+         * `visible = tvboxGroupOrder(list, expanded: _tvboxExpanded)`
+         * 在**折叠时已经把 tvbox 组整段去掉**了。
+         * 若拿它去分组 ⇒ 折叠后「TVBox 源」这一类**整个消失**
+         * ⇒ 组头（那个「展开」按钮）跟着消失 ⇒ **再也点不回来**（单向开关）。
+         *
+         * ★ 既有门禁 `zz_t1048` **抓不到**它：它验的是两个纯函数的行为 +
+         *   接线字符串，而"折叠后组头还在不在"没人断言过 ——
+         *   这正是"改了分组必须重验折叠"的原因（交叉复核要盯的点）。
+         * ⇒ 修法：**分组基于全集 `list`**，TVBox 那一类的**条目**
+         *   再按折叠态取（折叠 ⇒ 空 ⇒ 连网格都不画）。
+         * ```
+         */
+        for (final (cls, sectionItems) in groupSourcesByClass(list)) ...[
+          // ── 组头：tvboxDirect 沿用既有可折叠组头，其余四类用新组头 ──
+          if (cls == SourceClass.tvboxDirect) ...[
+            /*
+             * ⚠️ 这一条**逐字保留**既有写法（`zz_t1048` 的门禁锚点）：
+             *    它不是新加的判断，而是"TVBox 源"这一类的非空判据。
+             */
+            if (tvboxGroupCount(list) > 0)
+              TvboxGroupHeader(
+                count: tvboxGroupCount(list),
+                expanded: _tvboxExpanded,
+                onToggle: () => setState(() => _tvboxExpanded = !_tvboxExpanded),
+                onConfigure: () => showAppDialog<void>(
+                  context: context,
+                  builder: (_) => const TvboxAggregatePage(),
+                ),
+              ),
+          ] else
+            SourceClassHeader(
+              label: cls.label,
+              count: sectionItems.length,
+              /*
+               * ★★★ 2026-10-27（R2-#2，Owner 当场实测）：
+               *   「对于 tvbox 聚合源 还是不能编辑链接」
+               *
+               * # 为什么必须在这里再给一个入口
+               * ```text
+               * 改前，进聚合二级页（里面才有"链接可改/测试连通/立即更新"）**只有两条路**：
+               *   ① `SourcesEmptyState.onConfigure`  → **列表为空**时才画（`:5224` 零尺寸）
+               *   ② `TvboxGroupHeader.onConfigure`   → 需 `cls == tvboxDirect` **且非空**
+               * ⇒ 而 Owner 的真数据里 16 个子站**全是 hidden**（A′：`tvbox_agg` 接管）
+               *   ⇒ `visibleProviders` 之后 `tvboxDirect == 0` ⇒ ② 不画；
+               *   他又**已有源**（37 条可见）⇒ ① 也不画
+               *   ⇒ **两条入口同时不可达**，聚合源卡片却看得见 ⇒ 正是"看得到但编辑不了"。
+               *   实测读数见 `.probe/r2-n8b2-entry-recon.log`（入口可达数 = 0）。
+               * ```
+               *
+               * # 挂在哪（为什么是"聚合源"这一类，而不是别处）
+               * ```text
+               * 本类的**唯一成员**就是 `tvbox_agg` 那条卡片（`sourceClassOf` 钉死 id）。
+               * 管理区管的是"这条聚合背后的链接/测试/更新" ⇒ 语义上就属于这一类。
+               * ⇒ 组头带入口 = **这一类只要存在就一定有入口**（不受 hidden/折叠影响）。
+               * ⚠️ 折叠只影响 `tvboxDirect` 那类的**条目**，本类从不折叠 ⇒ 入口恒在。
+               * ```
+               */
+              onConfigure: cls == SourceClass.tvboxAggregate
+                  ? () => showAppDialog<void>(
+                        context: context,
+                        builder: (_) => const TvboxAggregatePage(),
+                      )
+                  : null,
             ),
-          ),
-        ReorderableCardGrid(
-          // ★ 只画非直播源（见本方法开头的说明）；折叠 TVBox 组时把它们整段省掉
-          itemCount: visible.length,
-          dragSlotWidth: _dragSlotW,
-          // ★ TV 用更宽的列下限 —— 理由同上（live 列表那处有完整说明）。
-          minItemWidth: Device.isTv ? 440 : kMinCardWidth,
-          onReorder: (o, n) => _onReorderWithin(visible, o, n),
-          itemBuilder: (context, i, dragHandle, cellWidth) => Padding(
-            key: ValueKey(visible[i].id),
+          /*
+           * ★ 每组一个网格（**不是**一个总网格）——
+           *   组头与卡片必须同属一个分组容器，否则滚动时组头会与
+           *   别的类的卡片错位（"标题属于上一段还是下一段"读不出来）。
+           *
+           * ⚠️ `Builder` 只为**声明本组的局部别名**（集合字面量里不能写 `final`）。
+           *    别名让本组网格的代码与既有单网格版本**逐字相同**，
+           *    同时把边界（`canMoveUp/Down`）收在本组内 ——
+           *    否则「JS 插件」组的第一张会显示成"还能上移"
+           *    （因为全局还有别的类在它前面），点了却不动，用户读作"按钮坏了"。
+           *    （与既有 `canMoveDown: i < list.length - 1` 那条注释同一个理由。）
+           */
+          Builder(
+            builder: (_) {
+              final visible = cls == SourceClass.tvboxDirect
+                  ? tvboxGroupOrder(sectionItems, expanded: _tvboxExpanded)
+                  : sectionItems;
+              final list = sectionItems;
+              if (visible.isEmpty) return const SizedBox.shrink();
+              return ReorderableCardGrid(
+                // ★ 只画非直播源（见本方法开头的说明）；折叠 TVBox 组时把它们整段省掉
+                itemCount: visible.length,
+                dragSlotWidth: _dragSlotW,
+                // ★ TV 用更宽的列下限 —— 理由同上（live 列表那处有完整说明）。
+                minItemWidth: Device.isTv ? 440 : kMinCardWidth,
+                onReorder: (o, n) => _onReorderWithin(visible, o, n),
+                itemBuilder: (context, i, dragHandle, cellWidth) => Padding(
+                  key: ValueKey(visible[i].id),
             padding: EdgeInsets.zero,
             child: _ProviderCard(
               provider: visible[i],
@@ -4347,9 +4616,12 @@ class SettingsPageState extends State<SettingsPage> {
                   : _tvboxSources.containsKey(visible[i].id)
                   ? () => _openTvboxUpdate(visible[i].id, visible[i].name)
                   : null,
-            ),
+                  ),
+                ),
+              );
+            },
           ),
-        ),
+        ],
 
         // 空态（原版 `.prov-empty`：「还没有内容源，点击「导入源」添加」）
         if (_providers.isEmpty)
@@ -4420,7 +4692,19 @@ class SettingsPageState extends State<SettingsPage> {
 ///    漏一个就少一个 tab，而且滑动药丸的宽度算不出来。
 enum _PluginsTab {
   /// 内容源 / JS 插件 —— 原样复用 `SettingsPageState._pluginsBlock`
-  plugins('JS 插件'),
+  ///
+  /// ★★★ N8a（2026-10-27）：页签文案「JS 插件」→「源」
+  ///
+  /// 与一级页入口行 / 区块标题 / 二级页页头**同一个词**。
+  /// ⚠️ 判据：这是**导航用的页签名**（用户照着找入口），
+  ///    按 Lead 裁定的 N8a 门禁范围（导航 / 区块 / 页签标题）**必须**改。
+  ///    与 `'js' => 'JS 插件'` 那个 **kind chip** 不同 ——
+  ///    那个是分类名，放行（见 `_kindLabel` 的注释）。
+  ///
+  /// ⚠️ 本 tab 的**内容**没变：它仍是"排除直播源之外的全部源"
+  ///    （`_nonLiveProviders`）。五分类（N8b-4）是在**列表内部**再分组，
+  ///    不改变"有两个 tab"这个结构（一次大改无法归因，故不重构）。
+  plugins('源'),
 
   /// 只列 `capabilities.live` 为真的源，并允许在这一页启停 / 排序
   live('直播源');
@@ -4720,7 +5004,11 @@ class _PluginsPageState extends State<_PluginsPage> {
     return Stack(
       children: [
         SettingsSubPage(
-          title: 'JS 插件',
+          /*
+           * ★★★ N8a（2026-10-27）：二级页页头标题「JS 插件」→「源」
+           * 与入口行 / 区块标题 / 页签同一个词。
+           */
+          title: '源',
           subtitle: '内容源：安装 / 编辑 / 更新 / 排序 / 代理配置',
           /*
            * ★ task-74 ③：从 `children:` 换成 `scrollBody:` ——
@@ -4913,6 +5201,7 @@ Widget settingsProviderCardForTest({
   required VoidCallback onToggle,
   required VoidCallback onEdit,
   VoidCallback? onOverride,
+  Future<ProxyConfig> Function(String id)? proxyLoader,
 }) => _TestProviderCardHost(
   builder: (expanded, toggleDetails) => _ProviderCard(
     provider: provider,
@@ -4923,6 +5212,7 @@ Widget settingsProviderCardForTest({
     onOverride: onOverride,
     expanded: expanded,
     onToggleDetails: toggleDetails,
+    proxySummaryLoader: proxyLoader,
   ),
 );
 
@@ -5141,7 +5431,7 @@ class _TestProviderCardHostState extends State<_TestProviderCardHost> {
 class _ProviderCard extends StatelessWidget {
   const _ProviderCard({
     required this.provider,
-    required this.onToggle,
+    this.onToggle,
     required this.onRemove,
     required this.onEdit,
     this.dragHandle,
@@ -5157,10 +5447,23 @@ class _ProviderCard extends StatelessWidget {
     this.onOverride,
     this.expanded = false,
     this.onToggleDetails,
+    this.proxySummaryLoader,
   });
 
   final ProviderManifest provider;
-  final VoidCallback onToggle;
+
+  /*
+   * 启用/停用 —— null ⇒ **不画开关**（宿主没给这个能力）。
+   *
+   * ★★★ 2026-10-27（R2-A，Owner 原话「源 页面 加上 启用停用的开关功能,现在没有」）：
+   *   本字段此前是 `required VoidCallback`，但**从未被渲染**
+   *   （全类范围只出现 2 次：`required this.onToggle` + `final VoidCallback onToggle;`）。
+   *   ⇒ 宿主那两处 `onToggle:`（`:3692` 直播卡 / `:4516` 普通卡）传了个寂寞，
+   *     开关根本没长到卡片上。这正是 Owner 说的"现在没有"。
+   *   改成可选后语义变清楚：给了就画、不给就不画 ——
+   *   "有没有这个能力"由类型本身表达，而不是靠一个从不读它的字段。
+   */
+  final VoidCallback? onToggle;
   final VoidCallback onRemove;
 
   /// 详情区（测速 / 代理 / 登录）是否展开 —— **宿主持有的状态**
@@ -5168,6 +5471,10 @@ class _ProviderCard extends StatelessWidget {
   /// 见 [_TestProviderCardHost] 上方的长注释：卡片是 StatelessWidget，
   /// 它只把宿主给的布尔值渲染出来，不自己记。
   final bool expanded;
+
+  /// 代理摘要行的**测试缝**（N5a）：生产传 null 走 `SourinApi`；
+  /// 测试注入假 loader 驱动真实渲染。见 [_ProxyModeSummary]。
+  final Future<ProxyConfig> Function(String id)? proxySummaryLoader;
 
   /// 点「正文那一格」时回调宿主切换展开态
   ///
@@ -5580,6 +5887,25 @@ class _ProviderCard extends StatelessWidget {
                                 const SizedBox(height: 4),
                                 _capsRow(colors),
                               ],
+
+                              /*
+                               * ★ N5a（2026-10-27）：代理模式摘要行恢复**常显**
+                               *
+                               * Owner 原话：「还把 具体插件 是否 直连还是走代理
+                               * 这个功能给删除了」。功能其实没删 —— 第 07 项把
+                               * `_panels()` 改成「展开才挂载」后，原来恒渲染的
+                               * 「⚙ 直连」摘要行跟着从卡片上消失了，感知就是"被删"。
+                               *
+                               * 修法：摘要**常显**（直连/跟随系统/自定义 一眼可见），
+                               * 面板本体仍遵守第 07 项「展开才挂载」；点摘要 = 展开卡片。
+                               * 读取中/失败 → 零尺寸（不占行高、测试环境无 DLL 不出垃圾）。
+                               */
+                              _ProxyModeSummary(
+                                providerId: provider.id,
+                                colors: colors,
+                                onActivate: onToggleDetails,
+                                loader: proxySummaryLoader,
+                              ),
                             ],
                             ),
                           ),
@@ -5691,7 +6017,11 @@ class _ProviderCard extends StatelessWidget {
   ///
   /// ⚠️ 两个面板**自带显示条件**，调用方不用判断：
   /// ```text
-  /// ProxyPanel           永远显示（代理是通用能力）
+  /// ProxyPanel           挂载后永远显示（代理是通用能力）；
+  ///                      但挂载本身受第 07 项约束 —— **卡片展开才挂**。
+  ///                      展开前的"一眼看到代理模式"由卡片正文的
+  ///                      [_ProxyModeSummary] 摘要行承担（N5a，2026-10-27），
+  ///                      点它 = 展开卡片（onToggleDetails）。
   /// ProviderLoginPanel   只在 login_required || login_supported 时渲染，
   ///                      否则返回 SizedBox.shrink()
   /// ```
@@ -6132,6 +6462,13 @@ class _ProviderCard extends StatelessWidget {
 
   Widget _actions(ColorScheme colors) {
     /*
+     * ★ 提升成局部量：`onToggle` 是**公开 final 字段**，
+     *   Dart 对公开字段不做类型提升（`onToggle != null` 之后直接调它会报
+     *   unchecked_use_of_nullable_value）—— 与 `TvboxAggregateManageSection`
+     *   里 `panelBuilder` 那处同一个理由、同一个写法。
+     */
+    final VoidCallback? toggleEnabled = onToggle;
+    /*
      * ★★ 2026-09-25：`Row` → `Wrap`（**实测溢出 31px 逼出来的**）
      *
      * # 症状与量化
@@ -6185,6 +6522,58 @@ class _ProviderCard extends StatelessWidget {
       spacing: 0,
       runSpacing: 2,
       children: [
+        /*
+         * ══════════════════════════════════════════════════════════════
+         * ★★★ 2026-10-27（R2-A，Owner 当场实测）：
+         *   「源 页面 加上 启用停用的开关功能，现在没有」
+         *   「这个源 的开关要**热重载**生效，而不是开关状态之后必须重启软件才能生效」
+         * ══════════════════════════════════════════════════════════════
+         *
+         * # 为什么"现在没有"（根因，不是猜的）
+         * ```text
+         * 启停的**后端与逻辑一直都在**，缺的只是把这个控件画出来：
+         *   · `SourinApi.setProviderEnabled` / `getProviderEnabled` 都在
+         *   · 宿主早就有 `_toggleProvider(p)`（"写 → 读回真相 → 按真相报"三步）
+         *   · 宿主甚至**两处都接好了**：直播卡 `:3692`、普通卡 `:4516` —— 传的就是本字段
+         * ⇒ 但本字段在 `_ProviderCard` 里**只被声明、从未被渲染**（见字段注释）。
+         *   即：宿主 → 卡片这条线是**断的**，断在卡片没把它画出来。
+         * ```
+         * ★ 本文件既有注释早就写着这一格该有什么（`:6481-6485` 与 `:6425`）：
+         *   `[↑][↓]  │  编辑  停用  🗑`，且明写「**停用** 用户日常最常用的开关」
+         *   —— 它**写在设计里、从未落地**。本项就是把这一格补上。
+         *
+         * # 为什么用 `AppSwitch` 而不是再来一个图标按钮
+         * ```text
+         * 图标按钮表达"点一下做某事"（编辑/移除），**读不出当前状态**；
+         * 而 Owner 要的是一个**状态**（"启用才使用，未启用的都不生效"）
+         * ⇒ 必须一眼看出开还是关 ⇒ 用本仓既有的 `AppSwitch`
+         *   （`design/widgets/app_switch.dart`，44×26，自带 Semantics "开关，已打开/已关闭"）。
+         * 宽度：这一枚**替换**掉原设计里的「停用」文字按钮的位置，
+         *   且 `Wrap` 本来就按可用宽度折行（见上面那段）⇒ 窄版自动折到第二行，不溢出。
+         * ```
+         *
+         * # ⚡ 热重载（Owner 的硬要求）
+         * ```text
+         * `onToggle` 走宿主那三步：写 → **读回真相** → `loadAll()` 重拉列表。
+         * ⇒ 开关的视觉来自 `provider.enabled`（重拉后的**真相**），不是本地乐观取反
+         *   ⇒ 后端若说没改成，开关**弹回原位**（不会出现"界面开着、其实没生效"）。
+         * ⚠️ 所以这里**不许**加本地 `bool` 去"让开关先动起来" —— 那是乐观更新，
+         *   正是 `_toggleProvider` 注释明令防的（"点了停用其实没停成"却报成功）。
+         * ```
+         */
+        if (toggleEnabled != null) ...<Widget>[
+          AppSwitch(
+            key: ValueKey<String>('provider-enabled-switch-${provider.id}'),
+            value: provider.enabled,
+            /*
+             * ⚠️ 回调**忽略** `v`，直接转给宿主的 `onToggle` ——
+             *    因为"目标状态"由 `_toggleProvider` 自己算（`want = !p.enabled`）。
+             *    这里若用 `v`，就等于让同一个状态有了第二个真相来源，两边一旦不一致就分叉。
+             */
+            onChanged: (_) => toggleEnabled(),
+          ),
+          const SizedBox(width: Sp.x2),
+        ],
         /*
          * ══════════════════════════════════════════════════════════════
          * ★★ 「上一个 / 下一个」移动按钮（用户明确要求「卡片上的移动按钮」）
@@ -6308,7 +6697,14 @@ class _ProviderCard extends StatelessWidget {
          * 圆角与卡片不一致、条目 48px 空）。改后底色/描边/圆角与卡片同源。
          * 行为（itemBuilder 语义、onSelected）逐字不变。
          */
-        if (_canEdit || _isThirdParty || onOverride != null)
+        /*
+         * ⚠️ 外层门控也必须覆盖聚合源（R2-#2 第二次反馈）——
+         *   原判据是 `_canEdit || _isThirdParty || onOverride != null`，
+         *   而聚合源：`_canEdit == false`（kind 空）、`_isThirdParty == false`（kind 不是那四种）
+         *   ⇒ **若只加菜单项而不改这一行，整个菜单仍不画**（我差点只改一处）。
+         * ★ 判据仍是**按 id 显式列**（见下方那一项的理由）。
+         */
+        if (_canEdit || _isThirdParty || onOverride != null || provider.id == kTvboxAggregateId)
           AppMenuButton<String>(
             items: [
               if (_canEdit)
@@ -6316,6 +6712,33 @@ class _ProviderCard extends StatelessWidget {
                   value: 'edit',
                   label: '编辑',
                   icon: AppIcons.edit_outlined,
+                ),
+              /*
+               * ★★★ 2026-10-27（R2-#2 **第二次**反馈）：聚合源的「编辑链接…」
+               *
+               * # 为什么它必须**单独一项**、且**不受 `_canEdit` 门控**
+               * ```text
+               * Owner 的截图显示：聚合源卡片的菜单里**只有**
+               *   「个性化覆盖层…」+「移除这个源」——
+               * 因为「编辑」受 `_canEdit`（只认 declarative/http/js）、
+               *     「配置」受 `onConfig`（`_configOf` 对聚合源返回 null）⇒ **两项都不画**。
+               * ⇒ 而 Owner 要的就是"改这条聚合源的**订阅链接**"——
+               *   那是 `TvboxAggregatePage` 里的管理面板（`TvboxSourceManagePanel`）。
+               * ```
+               *
+               * # 判据为什么是"按 id 显式列"而不是放宽 `_canEdit`
+               * ```text
+               * `_canEdit` 的注释（:5597-5605）逐字写着**不许**写成"不等于 builtin"——
+               *   "将来新增源类型时会误放行（**点了报错比不放更糟**）"。
+               * 聚合源正是那个反例：它**有**可改的东西（链接），只是不是 JSON/JS 文件。
+               * ⇒ 所以按 `kTvboxAggregateId` **显式列**（正向列举），与 `_configOf` 同一条判据。
+               * ```
+               */
+              if (provider.id == kTvboxAggregateId)
+                const AppMenuItem(
+                  value: 'aggregateLink',
+                  label: '编辑链接…',
+                  icon: AppIcons.link,
                 ),
               /*
                * ★ 2026-10-24（总计划第 06 项）：「源个性化覆盖层」入口。
@@ -6344,6 +6767,7 @@ class _ProviderCard extends StatelessWidget {
             onSelected: (v) {
               if (v == 'edit') onEdit();
               if (v == 'override') onOverride?.call();
+              if (v == 'aggregateLink') onConfig?.call();
               if (v == 'remove') onRemove();
             },
           ),
@@ -6367,6 +6791,110 @@ class _ProviderCard extends StatelessWidget {
 /// ⚠️ 原版还有个 `theme_color` 支持（`background: color + '22'`）——
 ///    我们有 `provider.themeColor` 字段，接上它能让不同源有颜色区分
 ///    （比原版"每个都是同一个图标"更有信息量）。
+/// 卡片正文的**代理模式摘要行**（N5a，2026-10-27）
+///
+/// # 为什么必须有这一行
+///
+/// Owner 原话：「还把 具体插件 是否 直连还是走代理 这个功能给删除了」。
+/// 功能其实没删 —— 第 07 项把 `_panels()` 改成「展开才挂载」后，
+/// 原来恒渲染的「⚙ 直连」摘要行跟着从卡片上消失了，感知就是"被删"。
+/// 这行把摘要恢复成**常显**：直连 / 跟随系统 / 自定义（含地址）一眼可见；
+/// 面板本体仍遵守第 07 项「展开才挂载」，点摘要 = 展开卡片。
+///
+/// # 显示条件（零占位垃圾）
+/// ```text
+/// 读取中 / 读取失败（测试环境没有 DLL，必然抛错）→ 零尺寸，不占行高
+/// 读到 cfg                                       → 一行「⚙ {cfg.summary}」
+/// ```
+///
+/// # 数据源
+/// `SourinApi.proxyConfigWithPassword` 内部走共享缓存（`ProxyCache`，
+/// 26 张卡也只打 1 次全量 IPC，见 proxy_panel.dart 任务 AE 的注释）。
+/// [loader] 是**测试缝**：测试注入假 loader 驱动真实渲染，不 mock 生产逻辑。
+class _ProxyModeSummary extends StatefulWidget {
+  const _ProxyModeSummary({
+    required this.providerId,
+    required this.colors,
+    this.onActivate,
+    this.loader,
+  });
+
+  final String providerId;
+  final ColorScheme colors;
+
+  /// 点击摘要的回调 —— 生产传 `onToggleDetails`（点摘要 = 展开卡片）。
+  /// `null` ⇒ 只展示、不可点（与卡片正文不可点的语义一致）。
+  final VoidCallback? onActivate;
+
+  /// 测试缝（`@visibleForTesting` 语义由使用方保证，这里不设注解是因为
+  /// 私有类的构造参数没有可见性问题）。
+  final Future<ProxyConfig> Function(String id)? loader;
+
+  @override
+  State<_ProxyModeSummary> createState() => _ProxyModeSummaryState();
+}
+
+class _ProxyModeSummaryState extends State<_ProxyModeSummary> {
+  ProxyConfig? _cfg;
+  bool _settled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final cfg =
+          await (widget.loader ?? SourinApi.proxyConfigWithPassword)(widget.providerId);
+      if (!mounted) return;
+      setState(() {
+        _cfg = cfg;
+        _settled = true;
+      });
+    } catch (_) {
+      // 读取失败（典型：测试环境没有核心 DLL）→ 零尺寸，不出占位垃圾
+      if (!mounted) return;
+      setState(() {
+        _cfg = null;
+        _settled = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cfg = _cfg;
+    if (!_settled || cfg == null) return const SizedBox.shrink();
+    final row = Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(AppIcons.settings_outlined,
+              size: 13, color: widget.colors.onSurfaceVariant),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              cfg.summary,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: FontSizes.sm,
+                color: widget.colors.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    final onTap = widget.onActivate;
+    if (onTap == null) return row;
+    return GestureDetector(behavior: HitTestBehavior.opaque, onTap: onTap, child: row);
+  }
+}
+
 class _ProviderIcon extends StatelessWidget {
   const _ProviderIcon({required this.provider, required this.colors});
 
@@ -8223,10 +8751,221 @@ List<ProviderManifest> visibleProviders(List<ProviderManifest> list) =>
 @visibleForTesting
 bool isTvboxGroupedSource(ProviderManifest p) => p.kind == 'tvbox';
 
+// ═══════════════════════════════════════════════════════════════════════
+//  N8b-4（2026-10-27）：源列表**五分类**
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # Owner 原话（逐字，N8b 要点）
+// ```text
+// > 播放源（js插件页）页面应该区分 tvbox源 / js插件 / 声明式 /
+// > tvbox聚合源 / 直播，这是不同的实现，应该坐在不同的分类下。
+// ```
+//
+// # 与 N5a 取证的关系（这不是新需求，是同一句抱怨的另一半）
+// ```text
+// Owner 2026-10-27 答复：「就是卡顿，聚合源/js插件/声明式/直播并没有区分开」
+// ⇒ 「卡顿」归 N7；「没区分开」归本项（N8b-4）。N5a 只收敛为恢复代理入口。
+// ```
+//
+// # 判据为什么不能只看 `kind`（这是**实测**过的，不是猜的）
+// ```text
+// csp 直连导入源（csp/xx.rs）与 tvbox 聚合源（tvbox_aggregate.rs）的
+// `kind` **都是 "tvbox"** ——
+//   · csp 导入子站   tvbox.rs:1189 / csp/provider.rs:126   kind="tvbox"
+//   · tvbox 聚合源   tvbox_aggregate.rs:231                 kind="tvbox"
+// ⇒ 「TVBox 源」与「TVBox 聚合源」**只能靠 id 区分**
+//   （聚合源 id 是固定值 `AGGREGATE_ID = "tvbox_agg"`）。
+// 若只按 kind 分组，两类会糊成一组 —— 正是 Owner 说的"没区分开"。
+// ```
+//
+// # 为什么聚合源要判 `id == 'tvbox_agg'` 而不是"kind==tvbox 且能聚合"
+// ```text
+// `tvbox_agg` 是 Rust 侧**常量**（`pub const AGGREGATE_ID: &str = "tvbox_agg"`），
+// 且 Dart 侧 `TvboxAggregate.aggregateId` 也从后端读同名字段
+// （sourin_api.dart:5100 `this.aggregateId = 'tvbox_agg'`）。
+// ⇒ 逐字比对是**唯一**能一眼认出"哪一条是聚合入口"的判据。
+// ⚠️ 不写 `startsWith('tvbox_agg')`：子站走的是 `<agg>::<native>` **路由前缀**，
+//    不是 manifest id；放开前缀会把将来叫 `tvbox_agg_foo` 的源误判成聚合入口。
+// ```
+
+/// Rust 侧聚合入口的**固定 id**（`tvbox_aggregate.rs:42`）
+///
+/// ⚠️ 与 `TvboxAggregate.aggregateId` 的默认值同源；这里是**分类判据**，
+///    所以必须本地可见（分类是纯函数，不能异步问后端）。
+const String kTvboxAggregateId = 'tvbox_agg';
+
+/// 源的**展示分类**（N8b-4 五分类 + 「其他」兜底）
+///
+/// # 为什么有「其他」而不是硬塞进五类
+/// ```text
+/// kind 是**开放字符串**（后端 `pub kind: String`，不是 enum）。
+/// 实测本机存在：js / tvbox / declarative / http / ''（内置）/ m3u_live。
+/// Owner 点名五类之外还有 http 与内置 ⇒ 必须有个**如实**的落点，
+/// 否则要么把它们塞进不相干的类（"标错会让用户误判"，
+/// `_kindLabel` 的注释记着同一条），要么**静默吞掉**（更糟）。
+/// ⇒ 「其他」是显式的诚实兜底，不是垃圾桶：它显示真实 kind 标签。
+/// ```
+enum SourceClass {
+  /// TVBox 源（csp/苹果CMS 直连，`kind == 'tvbox'` 且**不是**聚合入口）
+  tvboxDirect('TVBox 源'),
+
+  /// JS 插件（`kind == 'js'`，磁盘上的 .js 文件）
+  js('JS 插件'),
+
+  /// 声明式（`kind == 'declarative'`，JSON 描述取数）
+  declarative('声明式'),
+
+  /// TVBox 聚合源（固定 id `tvbox_agg`，一个入口代表一批子站）
+  tvboxAggregate('TVBox 聚合源'),
+
+  /// 其他（http / 内置 / 将来新增的 kind）—— **如实显示，不吞**
+  other('其他');
+
+  const SourceClass(this.label);
+
+  /// 分组标题文案
+  final String label;
+}
+
+/// 判定一个源属于哪一类（**纯函数**，不读 State ⇒ 门禁可直接注入）
+///
+/// 顺序有讲究：**聚合源判据必须在 tvboxDirect 之前** —— 两者 kind 相同，
+/// 先判 tvboxDirect 会把聚合入口吃掉（那是本项要修的缺陷本体）。
+@visibleForTesting
+SourceClass sourceClassOf(ProviderManifest p) {
+  if (p.id == kTvboxAggregateId) return SourceClass.tvboxAggregate;
+  return switch (p.kind) {
+    'tvbox' => SourceClass.tvboxDirect,
+    'js' => SourceClass.js,
+    'declarative' => SourceClass.declarative,
+    _ => SourceClass.other,
+  };
+}
+
+/// 一批源分成若干个**非空**分组（保持 [SourceClass] 的声明顺序）
+///
+/// * 返回顺序 = Owner 点名的顺序（TVBox 源 / JS 插件 / 声明式 / TVBox 聚合源 / 其他）
+/// * **空分类整组不返回** —— 与 `tvboxGroupCount(n)>0 才画标题` 同一条：
+///   画一个"（0 个源）"的空标题是噪声（本仓既有原则）。
+///
+/// ⚠️ 纯函数：门禁用注入证明"去掉分组"必须真的变成一组。
+@visibleForTesting
+List<(SourceClass, List<ProviderManifest>)> groupSourcesByClass(
+  List<ProviderManifest> list,
+) {
+  final out = <(SourceClass, List<ProviderManifest>)>[];
+  for (final c in SourceClass.values) {
+    final items = list.where((p) => sourceClassOf(p) == c).toList(growable: false);
+    if (items.isNotEmpty) out.add((c, items));
+  }
+  return out;
+}
+
 /// 组内条目数（0 ⇒ 不画分组标题）
 @visibleForTesting
 int tvboxGroupCount(List<ProviderManifest> list) =>
     list.where(isTvboxGroupedSource).length;
+
+/// 一个分类的**组头**（N8b-4）
+///
+/// # 为什么复用 `SettingsGroupLabel` 而不是新画一个
+/// ```text
+/// 它已经是本页「分组标签」的既有承担者（弹幕源/Emby/直播分组那一排用的就是它），
+/// Owner 对"排版混乱"的那次反馈（2026-10-01）就是靠它收口的。
+/// 再造一个组头会立刻出现两种分组标签（本仓反复记录过这个形态）。
+/// ```
+///
+/// # 与 `TvboxGroupHeader` 的分工
+/// ```text
+/// TvboxGroupHeader     「TVBox 源」那一类专用 —— 它**可折叠**（16 张卡收进一行），
+///                      还带「配置」入口。既有门禁 `zz_t1048` 钉着它的文案与行为。
+/// SourceClassHeader    其余四类（JS 插件 / 声明式 / TVBox 聚合源 / 其他）——
+///                      只需"这是哪一类、几个"。
+/// ```
+/// ⚠️ `count` 只用于**副标题**（`N 个源`），不参与任何判据 ——
+///    非空分组才被 `groupSourcesByClass` 返回，所以这里恒 ≥ 1。
+class SourceClassHeader extends StatelessWidget {
+  const SourceClassHeader({
+    super.key,
+    required this.label,
+    required this.count,
+    this.onConfigure,
+  });
+
+  /// 分类名（`SourceClass.label`，逐字来自 Owner 点名的五类）
+  final String label;
+
+  /// 本类条目数
+  final int count;
+
+  /*
+   * 「配置」入口（打开聚合二级页）—— null 则不画。
+   *
+   * ★★★ 2026-10-27（R2-#2）：**只有「TVBox 聚合源」这一类传它**。
+   *
+   * # 为什么这一类必须有入口（Owner 原话「还是不能编辑链接」）
+   * ```text
+   * 本类的唯一成员是 `tvbox_agg`。它背后的链接/测试/更新都在聚合二级页里，
+   * 而改前那两条入口都不可达：
+   *   ① 空态入口   → 要有源才显示列表，Owner 有源 ⇒ 不画
+   *   ② TVBox 组头 → 要有**可见的** tvbox 直连源；Owner 那 16 个全 hidden ⇒ 不画
+   * ⇒ 用户在源列表里**看得见**「TVBox 聚合源」那张卡，却**没有任何路径**去改它的链接。
+   * ```
+   *
+   * # 为什么不给其他四类也加
+   * ```text
+   * 「TVBox 聚合源」的管理动作是**类级**的（一条链接管一批子站，与选哪张卡无关）。
+   * 其余四类（JS 插件/声明式/其他/直播）的管理动作都在**各自的卡片**上
+   * （编辑 / 启用 / 删除 / 排序）⇒ 在组头上再放一个入口是多余的第二入口
+   * （本仓反复记录过"同一件事两个入口"的形态）。
+   * ```
+   */
+  final VoidCallback? onConfigure;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    /*
+     * ⚠️ 有入口时**逐字沿用 `TvboxGroupHeader` 那条的版式**（Material + 内边距 +
+     *    右侧按钮），不用 `Row` 裸排 —— 否则同一页里两种组头视觉不一致。
+     *    `SettingsGroupLabel` 只承担"一句话"，塞按钮进去会挤掉它那条细线。
+     *    无入口时仍走 `SettingsGroupLabel`（既有版式零变化）。
+     */
+    if (onConfigure == null) {
+      return SettingsGroupLabel(text: '$label（$count 个源）');
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: Sp.x2),
+      child: Material(
+        color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
+        borderRadius: Radii.rLg,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x2),
+          child: Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  '$label（$count 个源）',
+                  key: const ValueKey<String>('source-class-title'),
+                  style: TextStyle(
+                    fontSize: FontSizes.sm,
+                    fontWeight: FontWeight.w600,
+                    color: colors.onSurface,
+                  ),
+                ),
+              ),
+              AppTextButton(
+                key: const ValueKey<String>('source-class-configure'),
+                onPressed: onConfigure,
+                child: const Text('配置'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 /// 折叠态下的**展示顺序**：其他源在前，TVBox 组在后；折叠时整组省掉
 ///

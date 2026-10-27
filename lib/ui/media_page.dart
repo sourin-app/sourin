@@ -718,11 +718,47 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
   /// ⚠️ 换源后 `_provider`/`_contentId` 变了 ⇒ 详情区用 `ValueKey` 重建
   ///    （它要按新源重新拉详情/剧集），而**播放器的 key 是稳定的
   ///    `GlobalKey`** ⇒ 它不会被重建 ✓（这正是"只重建该重建的那一半"）。
-  Future<void> _onDetailSwitchSource(String provider, String id) async {
+  Future<void> _onDetailSwitchSource(
+    String provider,
+    String id, {
+    Duration? resumeFrom,
+    int? episodeIndex,
+  }) async {
     if (provider == _provider && id == _contentId) return;
-    final resumeFrom = _session?.currentPosition;
+    /*
+     * ══════════════════════════════════════════════════════════════════════
+     * ★★★ N2（2026-10-27，Lead）：**续播点优先用弹层给的那份**
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * # 缺陷（读码可证的根因）
+     * ```text
+     * 弹层 `_pick` 算好并回传了 `position`（用户在换源弹层里看到的那个进度），
+     * 但 `detail_page` 那一行只传了 provider 与 id ⇒ 值被丢。
+     * 而这里只能拿 `_session?.currentPosition` —— 在**还在详情页**的时序下
+     * （播放器尚未起播 / 已停）它是 0 ⇒ `resumeFrom <= 3s` ⇒ 不续播。
+     * ```
+     *
+     * # 取值的优先级（**不是**"随便取一个非空的"）
+     * ```text
+     * ① `_session?.currentPosition` —— 会话在播时它最准（是**实时**的）
+     * ② 弹层给的 `resumeFrom`     —— 会话不在播时它是唯一可用的事实
+     * ⇒ 不能反过来：会话在播时用它，比弹层打开那一刻的旧值新。
+     *   弹层自己也承认这点（`player_page._applySwitch` 里那句
+     *   「弹层是在打开时读的 position，用户可能又看了几分钟才点选」）。
+     * ```
+     *
+     * ⚠️ 两个都拿不到 ⇒ 保持 null ⇒ 不续播（**不许**编一个 0 去 seek）。
+     */
+    final fromSession = _session?.currentPosition;
+    final effectiveResume = (fromSession != null && fromSession > Duration.zero)
+        ? fromSession
+        : resumeFrom;
     debugPrint('[MEDIA] 详情区请求换源 ⇒ 页内换 '
-        '$_provider:$_contentId → $provider:$id');
+        '$_provider:$_contentId → $provider:$id '
+        '（续播：session=${fromSession?.inSeconds ?? "-"}s '
+        '弹层=${resumeFrom?.inSeconds ?? "-"}s '
+        '⇒ 采用=${effectiveResume?.inSeconds ?? "不续播"}s'
+        '${episodeIndex != null ? " 集号=$episodeIndex" : ""}）');
 
     /*
      * ══════════════════════════════════════════════════════════════════
@@ -799,7 +835,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
       id: id,
       title: widget.title,
       cover: widget.cover,
-      resumeFrom: resumeFrom,
+      resumeFrom: effectiveResume,
     ));
 
     /*

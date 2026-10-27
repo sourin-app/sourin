@@ -50,7 +50,7 @@
 // ④ 静态契约        ⇒ 修复前红（无门控）
 //
 // # 跑法
-//   C:\Users\iuuuuuuuu\flutter\bin\flutter.bat test test/t27_w1_online_first_test.dart --concurrency=1
+//   flutter test test/t27_w1_online_first_test.dart --concurrency=1
 library;
 
 import 'dart:io';

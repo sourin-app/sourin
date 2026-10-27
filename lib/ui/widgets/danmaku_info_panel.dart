@@ -136,6 +136,7 @@ class DanmakuInfoData {
     this.truncated = false,
     this.sourceName,
     this.updatedAt,
+    this.bindings = const <DanmakuBindRouteView>[],
   });
 
   final DanmakuFeedKind source;
@@ -271,6 +272,14 @@ class DanmakuInfoData {
   ///    用户会以为"聚合只来了一半，不知道为什么"。
   final List<DanmakuAggregateFeed> aggregate;
 
+  /// ★★★ N6-②（2026-10-27，Owner：「绑定的什么来源、哪一个弹幕都要显示出来」）
+  ///
+  /// 「绑定」区逐路的快照。**空列表 = 宿主没递**（面板就不画这一节，
+  /// 退化成原样 —— 与 [aggregate] 的空列表语义同一口径）。
+  /// ⚠️ 宿主应**每次 build 现读**既有绑定存储再递进来（读也不新造存储）；
+  ///    本面板不缓存 —— 缓存了就会出现"解绑了但面板还显示绑着"的假象。
+  final List<DanmakuBindRouteView> bindings;
+
   bool get hasError => error != null && error!.isNotEmpty;
 
   /// 面板是否该有内容（全空时宿主可以直接不画）
@@ -298,6 +307,7 @@ class DanmakuInfoData {
     String? sourceName,
     DateTime? updatedAt,
     List<DanmakuAggregateFeed>? aggregate,
+    List<DanmakuBindRouteView>? bindings,
   }) =>
       DanmakuInfoData(
         source: source ?? this.source,
@@ -314,6 +324,7 @@ class DanmakuInfoData {
         truncated: truncated ?? this.truncated,
         sourceName: sourceName ?? this.sourceName,
         updatedAt: updatedAt ?? this.updatedAt,
+        bindings: bindings ?? this.bindings,
       );
 }
 
@@ -381,6 +392,84 @@ class DanmakuAggregateFeed {
   bool get failed => error.isNotEmpty;
 }
 
+/// ★★★ N6（2026-10-27，Owner 第 10 条批次）：弹幕渠道的四个"路"
+///
+/// # 为什么要一个独立的枚举
+/// ```text
+/// 「绑定」区要逐路显示"这一路绑到了谁"。四路与本仓的绑定存储一一对应：
+///   sourceNative   本片源自带 —— 无逐片绑定记录（旧10 强制常开语义）
+///   danApi         dan-api   —— core 的 DanmakuBindStore（batch_bind.dart）
+///   bili           外部视频站 —— core 的 BiliBinding（bili_bind.dart）
+///   localExternal  本机外部  —— 指向本机弹弹play 服务，无逐片绑定记录
+/// ```
+/// ⚠️ ★ 2026-10-27（N6 修，`t98_no_site_names_test` 实测抓出）：上面那一行
+/// {% raw %}`bili` 与 `Bili` **相邻**{% endraw %} 会被 t98 的扫描器在
+/// **去空白归一化后**拼成具体视频网站名（那是它故意的跨行拼接判据 CR#27）
+/// ⇒ 命中"仓库里不许出现具体视频网站名"。
+/// ⇒ 改成「外部视频站」：**枚举值 `bili` 与存储类名照旧**（代码一字未动），
+///    只是别让两个 `bili` token 在**注释里**贴在一起。
+enum DanmakuBindRoute {
+  /// 本片源自带
+  sourceNative,
+
+  /// dan-api（弹幕库）
+  danApi,
+
+  /// Bili（外部视频站直连）
+  bili,
+
+  /// 本机外部（本机弹弹play）
+  localExternal,
+}
+
+/// 「绑定」区里一路渠道的展示形态（宿主**现读**既有绑定存储后递进来，
+/// 本面板不碰存储 —— 与 [DanmakuInfoData] 同一条"只读快照"纪律）。
+@immutable
+class DanmakuBindRouteView {
+  const DanmakuBindRouteView({
+    required this.route,
+    required this.label,
+    this.note = '',
+    this.workTitle = '',
+    this.episodeNo = 0,
+    this.episodeTitle = '',
+    this.bindId = 0,
+    this.bound = false,
+    this.active = false,
+    this.unbindable = false,
+  });
+
+  final DanmakuBindRoute route;
+
+  /// 渠道名（`本片源自带` / `dan-api` / `Bili` / `本机外部`）。
+  final String label;
+
+  /// 没绑定时的说明（例：「片源自带，无需绑定」）。
+  /// 空 = 显示「未绑定」。**不能拿 note 把"没绑"说成"绑了"**。
+  final String note;
+
+  /// 绑定的番剧名（空 = 未知）。
+  final String workTitle;
+
+  /// 绑定的集号（1 基；0 = 未知）。
+  final int episodeNo;
+
+  /// 集名（Bili 路 = 分 P 名；可为空）。
+  final String episodeTitle;
+
+  /// 这一路绑定的 id（Bili 路 = cid；dan-api 路 = 弹幕库 episodeId）。
+  final int bindId;
+
+  /// 这一路当前是否绑定了弹幕。
+  final bool bound;
+
+  /// 当前**实际供弹**的是不是这一路（多路合并时宿主可标多路，也可能一路都不标）。
+  final bool active;
+
+  /// 是否允许解绑 —— 本片源自带恒 false（旧10 强制常开语义，Owner 硬边界）。
+  final bool unbindable;
+}
+
 /// 播放页右侧那个可折叠的「弹幕信息」面板
 ///
 /// # 交互（只有三件事，刻意做少）
@@ -397,8 +486,20 @@ class DanmakuInfoPanel extends StatefulWidget {
     super.key,
     required this.data,
     this.maxWidth = 300,
-    this.initiallyExpanded = false,
+    /*
+     * ★★★ N6-①（2026-10-27，Owner 逐字：「这里默认展开」）
+     *
+     * 根因：改前缺省 false，宿主（player_page 的 _DanmakuInfoPanelHost）
+     * 没传 ⇒ 点开徽标先见窄条，要**二次点击**才见全量卡片。
+     * Owner 要的是"从徽标进来就是要看详情" ⇒ 缺省翻成 true。
+     *
+     * # 收起能力保留
+     *   展开态右上角的 × 仍然收成窄条（_expanded = false），行为一字未改；
+     *   宿主若想要旧缺省（先窄条），显式传 `initiallyExpanded: false` 即可。
+     */
+    this.initiallyExpanded = true,
     this.onRequestClose,
+    this.onUnbindRoute,
   });
 
   final DanmakuInfoData data;
@@ -415,6 +516,14 @@ class DanmakuInfoPanel extends StatefulWidget {
   ///    而本回调让宿主决定要不要整块隐藏。两者刻意分开 ——
   ///    "收起"与"不要它了"是两件事。
   final VoidCallback? onRequestClose;
+
+  /// ★★★ N6-③（2026-10-27）：解绑某一路的回调
+  ///
+  /// 面板是纯 UI —— **清存储与刷新弹幕都归宿主**（清对应路的绑定记录、
+  /// 重取弹幕、重建 [DanmakuInfoData.bindings]）。本面板只负责：
+  ///   ① 只对 `bound && unbindable` 的路画解绑入口（本片源自带永不出现）；
+  ///   ② 回调没给（null）就不画 —— 不画一个点了没反应的死按钮。
+  final void Function(DanmakuBindRoute route)? onUnbindRoute;
 
   @override
   State<DanmakuInfoPanel> createState() => _DanmakuInfoPanelState();
@@ -614,6 +723,18 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
               if (d.aggregate.isNotEmpty) ...[
                 const SizedBox(height: Sp.x2),
                 _aggregateRows(d),
+              ],
+              /*
+               * ★★★ N6-②（2026-10-27）：「绑定」区 —— 逐路显示绑到了谁
+               *
+               * 与上面的「来源」区回答的是两个问题：
+               *   来源区 = 这次合并里每一路**来了多少条**（运行读数）
+               *   绑定区 = 每一路**绑定了哪个番剧/哪一集/哪个 id**（持久事实）
+               * 用户排错时两个都要看：合并少了一路，先查绑定区"那一路绑没绑"。
+               */
+              if (d.bindings.isNotEmpty) ...[
+                const SizedBox(height: Sp.x2),
+                _bindingSection(d),
               ],
               const SizedBox(height: Sp.x2),
               _matchRow(d),
@@ -983,6 +1104,128 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
     );
   }
 
+  /// ★★★ N6-②（2026-10-27）：「绑定」区 —— 逐路显示"这一路绑到了谁"
+  ///
+  /// # 布局为什么沿用 52 标签列 + 逐行
+  /// 与「来源」区同一套排版语言（Owner 看到的是一张卡，不是两张皮）。
+  ///
+  /// # 每行的三种事实必须分开说（不许互相冒充）
+  /// ```text
+  /// ① bound    ⇒ 番剧名 + 集 + id（id 的语系按路区分：Bili 是 cid，dan-api 是库 id）
+  /// ② !bound + note ⇒ 照抄 note（"片源自带，无需绑定" ≠ "未绑定"）
+  /// ③ !bound + 空 note ⇒ 「未绑定」—— 重新绑定走独立搜索页（旧11 的入口）
+  /// ```
+  /// 「供弹中」徽标 = [DanmakuBindRouteView.active]，宿主说了算（面板不猜）。
+  Widget _bindingSection(DanmakuInfoData d) {
+    final boundCount = d.bindings.where((r) => r.bound).length;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(
+              width: 52,
+              child: Text(
+                '绑定',
+                style: TextStyle(fontSize: FontSizes.cap, color: _fgDim),
+              ),
+            ),
+            Expanded(
+              child: Text(
+                boundCount > 0 ? '$boundCount 路已绑' : '各路均未绑定',
+                style: const TextStyle(fontSize: FontSizes.cap, color: _fgDim),
+              ),
+            ),
+          ],
+        ),
+        for (final r in d.bindings) _bindRow(r),
+      ],
+    );
+  }
+
+  Widget _bindRow(DanmakuBindRouteView r) {
+    final detailParts = <String>[
+      if (r.episodeNo > 0) '第${r.episodeNo}集',
+      if (r.episodeTitle.trim().isNotEmpty) r.episodeTitle.trim(),
+      if (r.bindId > 0)
+        r.route == DanmakuBindRoute.bili ? 'cid ${r.bindId}' : '库 #${r.bindId}',
+    ];
+    final line1 = r.bound
+        ? '${r.label}：${r.workTitle.trim().isEmpty ? '已绑定' : r.workTitle.trim()}'
+        : '${r.label}：${r.note.trim().isEmpty ? '未绑定' : r.note.trim()}';
+    return Padding(
+      key: ValueKey('dm-bind-${r.route.name}'),
+      padding: const EdgeInsets.only(top: Sp.x1),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(width: 52),
+          Icon(
+            r.active
+                ? AppIcons.play_circle_outline
+                : (r.bound
+                    ? AppIcons.check_circle_outline
+                    : AppIcons.remove),
+            size: 12,
+            color: r.active ? _accent : _fgDim,
+          ),
+          const SizedBox(width: Sp.x1),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        line1,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: FontSizes.cap,
+                          color: r.bound ? _fg : _fgDim,
+                          fontWeight: r.active ? FontWeight.w600 : FontWeight.w400,
+                        ),
+                      ),
+                    ),
+                    if (r.active) ...[
+                      const SizedBox(width: Sp.x2),
+                      _pill(text: '供弹中', color: _accent),
+                    ],
+                  ],
+                ),
+                // 第二行：集 + id 独占一行 —— 番剧名再长也不挤压 id（排查时最常用）
+                if (r.bound && detailParts.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 1),
+                    child: Text(
+                      detailParts.join(' · '),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: _fgDim,
+                        fontFeatures: <FontFeature>[
+                          FontFeature.tabularFigures(),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          if (r.bound && r.unbindable && widget.onUnbindRoute != null)
+            _UnbindHit(
+              route: r.route,
+              onTap: () => widget.onUnbindRoute!(r.route),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _matchRow(DanmakuInfoData d) {
     final m = d.match;
     final fallback = m.isFallback;
@@ -1315,4 +1558,52 @@ class _IconHit extends StatelessWidget {
     );
     return tooltip == null ? t : t;
   }
+}
+
+/// 「绑定」区每条绑定行的解绑入口（N6-③）
+///
+/// # 为什么是文字小钮而不是图标
+/// 「解绑」是个有后果的动作（清掉这一路的绑定记录），图标（×/断链）
+/// 语义不如文字直白 —— 与「收起」那枚 × 混用还会让人以为收的是面板。
+///
+/// ⚠️ 本文件不改存储：点了只回调 [DanmakuInfoPanel.onUnbindRoute]，
+///    清存储 / 刷弹幕 / 重建快照全归宿主。
+class _UnbindHit extends StatelessWidget {
+  const _UnbindHit({required this.route, required this.onTap});
+
+  final DanmakuBindRoute route;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: '解除「${_labelOf(route)}」这一路的绑定',
+      child: InkWell(
+        key: ValueKey('dm-unbind-${route.name}'),
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(Radii.xs),
+        child: Container(
+          // 命中区 ≥32px 高：浮在视频画面上，别让用户点三才中
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
+          child: const Text(
+            '解绑',
+            style: TextStyle(
+              fontSize: 11,
+              color: _danger,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  static String _labelOf(DanmakuBindRoute r) => switch (r) {
+        DanmakuBindRoute.sourceNative => '本片源自带',
+        DanmakuBindRoute.danApi => 'dan-api',
+        DanmakuBindRoute.bili => 'Bili',
+        DanmakuBindRoute.localExternal => '本机外部',
+      };
 }

@@ -692,7 +692,17 @@ class DetailPage extends StatefulWidget {
   final void Function(PlayRequestData req)? onPlay;
 
   /// 换源后跳到新源的详情页（整页重新加载）
-  final void Function(String provider, String id)? onOpenDetail;
+  /// ★★★ N2（2026-10-27）：跨源换源回调。
+///
+/// `resumeFrom` / `episodeIndex` 是**可选**的续播信息（弹层算好的那份）。
+/// 只有合并页换源（`MediaPage._onDetailSwitchSource`）会消费它们；
+/// 其余 8 个调用方（打开某个源的某个内容）忽略即可 —— 行为一字不变。
+final void Function(
+      String provider,
+      String id, {
+      Duration? resumeFrom,
+      int? episodeIndex,
+    })? onOpenDetail;
 
   /// ★ task-58：详情加载完成 ⇒ 通知外层
   ///
@@ -2432,7 +2442,50 @@ class _DetailPageState extends State<DetailPage> {
      * ```
      * 回调本身不用改 —— 由**调用方**决定语义（这是它作为回调的价值）。
      */
-    widget.onOpenDetail?.call(pick.provider, pick.id);
+    /*
+     * ══════════════════════════════════════════════════════════════════════
+     * ★★★ N2（2026-10-27，Lead）：**把弹层算好的进度与集号交给调用方**
+     * ══════════════════════════════════════════════════════════════════════
+     *
+     * # 缺陷（读码可证的根因，不是猜）
+     * ```text
+     * 弹层 `_SourceSwitchDialog._pick` 明明算好并回传了 `position` 与
+     * `episodeIndex`（见 `SwitchPick` 的字段），但这一行**只传了 provider 与 id**
+     * ⇒ 两个值在调用点被丢掉。
+     *
+     * 而合并页那条路（`MediaPage._onDetailSwitchSource`）只能拿
+     * `_session?.currentPosition` 当续播点 —— 在**还在详情页**（播放器尚未
+     * 起播/已停）的时序下那个值是 0 ⇒ `resumeFrom <= 3s` ⇒ 不续播。
+     * 这正是 Owner 说的「换源后还是没跟着上次的进度条走」。
+     * ```
+     *
+     * # 为什么用**可选具名参数**扩展回调，而不是换一个回调类型
+     * ```text
+     * `onOpenDetail` 有 9 个调用方（shell×4 / browse / follow / home /
+     * search / my_shelf / media），语义都是"打开某个源的某个内容" ——
+     * 其中只有**合并页换源**这一条需要续播信息。
+     * ⇒ 加可选具名参数 `resumeFrom` / `episodeIndex`：其它调用方**一个字都不用改**，
+     *   换源这条把它想要的两个事实带上。
+     *   （换成一个新回调类型会让 9 个调用方全部改签名，且要改 `MediaSession`
+     *     那条契约 —— 收益为零。）
+     * ```
+     *
+     * # 两条**必须**守住的边界
+     * ```text
+     * ① 只有**真的有时长意义**的 position 才带上（> 0 秒）；
+     *    0 / 负值一律传 null —— 免得调用方把"没进度"当成"从 0 秒续播"，
+     *    那会在新源上做一次无意义的 seek。
+     * ② 独立详情页那条路（`shell._openDetail`）**收下但不消费**：
+     *    它是 push 一个新详情页，没有正在播放的会话，续播无从谈起。
+     *    具名参数可选 ⇒ 它忽略即可，行为一字不变。
+     * ```
+     */
+    widget.onOpenDetail?.call(
+      pick.provider,
+      pick.id,
+      resumeFrom: pos > 0 ? Duration(seconds: pos) : null,
+      episodeIndex: pick.episodeIndex > 0 ? pick.episodeIndex : null,
+    );
   }
 
   /// 当前播放源的显示名（换源弹层里标「当前」用）

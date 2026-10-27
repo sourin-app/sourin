@@ -62,7 +62,9 @@ void main() {
 
   group('面板 · 行为', () {
     testWidgets('★ 收起态只显示条数，点一下展开', (t) async {
-      await t.pumpWidget(_host(const DanmakuInfoPanel(data: _loaded)));
+      // N6-①（2026-10-27）起缺省是展开 —— 要测收起态就显式传 false。
+      await t.pumpWidget(
+          _host(const DanmakuInfoPanel(data: _loaded, initiallyExpanded: false)));
       // 收起态：有"弹幕 1200"，没有"已载入"那一行
       expect(find.textContaining('1200'), findsOneWidget);
       expect(find.text('已载入'), findsNothing);

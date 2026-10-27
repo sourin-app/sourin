@@ -45,6 +45,7 @@
 
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/ffi.dart' show userErrorText;
 import '../../core/sourin_api.dart';
 import '../../design/widgets/app_glass_dialog.dart';
 import '../../design/widgets/app_text_button.dart';
@@ -71,6 +72,155 @@ String tvboxUpdateSummary(TvboxUpdateItem it) {
     return '已是最新（远端 ${it.remoteConvertible} 个可转换站点）';
   }
   return parts.join(' · ');
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  N8b-2（2026-10-27）：聚合源一行 = 链接可改 / 测试连通 / 立即更新
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # Owner 原话
+// ```text
+// > tvbox聚合源本来就是一个链接，要主动更新的，现在我都不能编辑和替换地址了。
+// > tvbox聚合源应该可以自己起名字、可以编辑链接、可以测试这个聚合源是否能用。
+// ```
+//
+// # 本项交付三个操作（**第四个「名字可改」本批做不了，见下**）
+// ```text
+// ① 链接可改     set_tvbox_source(id, url)          —— 命令已有
+// ② 测试连通     check_tvbox_updates(id)            —— 命令已有（真网络三态）
+// ③ 立即更新     update_tvbox_source(id, ...)       —— 命令已有
+// ```
+//
+// # ★★★ 「名字可改」——**点名 Rust 侧缺口，不做假入口**（Lead 裁定 A）
+// ```text
+// 取证：ffi.rs 全部 131 条 dispatch 里**没有任何** rename / set_name / alias 命令；
+//      `set_tvbox_source` 只收 {id,url}、`update_tvbox_source` 只收
+//      {id,applyNew,deleteMissing}；`save_override_layer` 是**数据变换层**
+//      （overrides.rs:312 `apply_override` 按 call_js 方法名作用于 list/detail
+//      的结果数据），**不碰 manifest.name** —— 而 `list_providers` 下发的
+//      正是 manifest.name。
+//      `TvboxSourceMeta.site_name` 字段存在（tvbox.rs:2113），但**没有任何
+//      命令写它**（只有 `set_tvbox_source` 在 old.site_name 为空时用 manifest 名兜底）。
+// ⇒ 本批**不画**改名入口（画一个点了没反应的输入框 = 假 UI，
+//   与仓库既有原则「没有的能力不假装有」一致）。
+// ⇒ 如实地在 UI 上说明这件事（见 [TvboxAggregateManageNote]）。
+// ```
+//
+// # 为什么「测试连通」用 `check_tvbox_updates` 而不是 plan 字面写的「csp home 探测」
+// ```text
+// （Lead 裁定 A，我复核过两条指控均成立）
+// ① `probe_site` / `csp::provider::probe_categories` 只被导入路径内部调用，
+//    **无任何命令暴露**给 Dart。
+// ② 已导入的 csp 源走 `get_categories` 时，`categories_or_probe()` 有短路：
+//    `if !self.classes.is_empty() { return Ok(self.classes.clone()) }`
+//    （csp/provider.rs:191-194）—— classes 由导入时的配置预填 ⇒ **零网络**。
+//    ⇒ 拿它当"测试连通"会**恒绿**（假门禁）。
+// ③ `health_sweep` → `health_check()` 基类**默认恒 return true**
+//    （provider.rs:571-573），csp/tvbox 均未覆写 ⇒ 对死掉的源**假报 true**。
+// ⇒ 三者都测不出"这个聚合源还能不能用"。
+// `check_tvbox_updates(id)` 是**唯一**真发网络请求、且三态齐全（无链接 /
+// 失败带原因 / ok+变更）的原语，语义上也吻合「聚合源本来就是一个链接」。
+// ```
+
+/// 「测试连通」的**三态**结论（纯数据 + 纯函数 ⇒ 门禁可离线断定）
+///
+/// # 为什么必须三态而不是布尔
+/// ```text
+/// 布尔把两件事挤成一件：
+///   · 「没有订阅链接」= 查不了（用户要补链接，不是"坏掉了"）
+///   · 「网络/解析失败」= 真失败（要重试或换链接）
+/// 而"失败"若显示成"已是最新"就是这个功能唯一不能犯的错
+/// （`tvboxUpdateSummary` 的注释记着同一条）。
+/// ```
+enum TvboxProbeState {
+  /// 还没测过（**与"测了但失败"是两回事**）
+  idle,
+
+  /// 正在测
+  running,
+
+  /// ① 这个源没有订阅链接 ⇒ 如实说"查不了"，并指出怎么补
+  noLink,
+
+  /// ② 真发请求了，但失败（网络 / 解析 / 多仓）⇒ 带**后端给的原因**
+  failed,
+
+  /// ③ 真发请求了，成功 ⇒ 报远端可转换站点数 / 变更多少
+  ok,
+}
+
+/// 「测试连通」的结果（三态 + 文案 + 是否「不能用」）
+class TvboxProbeResult {
+  const TvboxProbeResult({
+    required this.state,
+    required this.text,
+    this.detail,
+  });
+
+  final TvboxProbeState state;
+
+  /// 一行结论（界面直接显示）
+  final String text;
+
+  /// 失败时的**具体原因**（后端原文；没有就 null —— 不编一个）
+  final String? detail;
+
+  /// ★ 判据：这个聚合源现在**用不了**吗？
+  ///
+  /// ```text
+  /// noLink / failed ⇒ true（要用户动作：补链接 / 重试）
+  /// ok             ⇒ false
+  /// idle / running ⇒ false（还没结论，不能诬告）
+  /// ```
+  /// ⚠️ `running`/`idle` 必须 false —— 否则刚点下去就红一片，
+  ///    用户会以为源坏了（"没结论"不等于"坏"）。
+  bool get unusable =>
+      state == TvboxProbeState.noLink || state == TvboxProbeState.failed;
+
+  /// 按**状态**给配色用的语义（不是颜色值：配色归 UI，判据归这里）
+  bool get isBad => unusable;
+}
+
+/// 把 [TvboxUpdateItem] 判成三态结论（**纯函数**）
+///
+/// `it == null` 表示"这个 id 没有任何检测结果" ⇒ 没有链接（查不了）。
+/// ⚠️ 与 `tvboxUpdateSummary` **同源不重复**：本函数负责**分类**，
+///    文案复用那边的结论串（单一事实源）。
+TvboxProbeResult tvboxProbeOf(TvboxUpdateItem? it) {
+  if (it == null) {
+    return const TvboxProbeResult(
+      state: TvboxProbeState.noLink,
+      text: '查不了：这个源没有订阅链接',
+      detail: '填入它当初的配置地址即可检测',
+    );
+  }
+  if (it.multiRepo) {
+    return const TvboxProbeResult(
+      state: TvboxProbeState.failed,
+      text: '远端现在是一份「多仓」配置，不能直接用',
+      detail: '换一个子仓的地址（下面可以点）',
+    );
+  }
+  if (!it.ok) {
+    final why = (it.error ?? '').trim();
+    return TvboxProbeResult(
+      state: TvboxProbeState.failed,
+      text: '连不上：${why.isEmpty ? '后端没有给出原因' : why}',
+      // ★ 不编原因：后端没给就如实说没给
+      detail: why.isEmpty ? null : why,
+    );
+  }
+  final parts = <String>[
+    if (it.added.isNotEmpty) '新增 ${it.added.length}',
+    if (it.changed.isNotEmpty) '变更 ${it.changed.length}',
+  ];
+  return TvboxProbeResult(
+    state: TvboxProbeState.ok,
+    text: parts.isEmpty
+        ? '能用（远端 ${it.remoteConvertible} 个可转换站点）'
+        : '能用，且远端有更新：${parts.join(' · ')}',
+    detail: null,
+  );
 }
 
 /// 打开「TVBox 订阅更新」弹窗
@@ -854,6 +1004,395 @@ class TvboxUpdateResultView extends StatelessWidget {
         ),
       ],
     ]);
+  }
+}
+
+/// 「聚合源」一行管理面板（N8b-2）—— 链接可改 / 测试连通 / 立即更新
+///
+/// # 为什么是**独立公开组件**（而不是塞进弹窗里）
+/// ```text
+/// 与 `TvboxUpdateResultView` 同一条纪律（那个类的注释写得很长）：
+/// 私有方法让"这三个操作到底画没画、点了真发请求没有"在测试里摸不到，
+/// 只能退化成"源码里有这个字符串"的伪判据 —— 而那正是
+/// 「Rust 说了、Dart 没接」那轮缺陷溜过整轮门禁的原因。
+/// ⇒ 公开 + 可注入 [linkSaver] / [probeRunner] / [updater] 三个测试缝，
+///   门禁直接渲染真组件、真点按钮、真断言"请求发出去了"。
+/// ```
+///
+/// # 三个注入缝（**生产恒 null**，与全仓同一纪律）
+/// ```text
+/// linkSaver      set_tvbox_source(id, url)
+/// probeRunner    check_tvbox_updates(id)   ← 真网络
+/// updater        update_tvbox_source(id, applyNew, deleteMissing)
+/// ```
+class TvboxSourceManagePanel extends StatefulWidget {
+  const TvboxSourceManagePanel({
+    super.key,
+    required this.id,
+    required this.name,
+    this.sourceUrl,
+    this.linkSaver,
+    this.probeRunner,
+    this.updater,
+  });
+
+  /// 源 id（后端按它查 sidecar）
+  final String id;
+
+  /// 显示用名字
+  final String name;
+
+  /// 打开时已知的订阅链接（null / 空 = 没有链接）
+  final String? sourceUrl;
+
+  /// 测试缝：保存链接（生产 null ⇒ 走 `SourinApi.setTvboxSource`）
+  final Future<void> Function(String id, String url)? linkSaver;
+
+  /// 测试缝：测试连通（生产 null ⇒ 走 `SourinApi.checkTvboxUpdates`）
+  final Future<TvboxUpdateCheck> Function(String id)? probeRunner;
+
+  /// 测试缝：立即更新（生产 null ⇒ 走 `SourinApi.updateTvboxSource`）
+  final Future<TvboxSourceUpdate> Function(
+    String id, {
+    bool applyNew,
+    bool deleteMissing,
+  })? updater;
+
+  @override
+  State<TvboxSourceManagePanel> createState() =>
+      _TvboxSourceManagePanelState();
+}
+
+class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
+  late final TextEditingController _urlCtl;
+
+  bool _saving = false;
+  bool _probing = false;
+  bool _updating = false;
+
+  /// 连通结论（null = 还没测过 —— 与"测了但失败"是两回事）
+  TvboxProbeResult? _probe;
+
+  /// 更新结果（null = 没更新过）
+  TvboxSourceUpdate? _applied;
+
+  /// 面板级错误（保存失败 / 命令抛异常）
+  String? _error;
+
+  /// 后端是否认这个源有链接（保存成功后更新）
+  late bool _hasLink;
+
+  /*
+   * ⚠️ 这里**刻意没有** `_changed` 这种"告诉父级要刷新"的字段（我第一版留了一个，
+   *    `flutter analyze` 报 unused_field —— 已删）。
+   *
+   * 理由：本面板是**内嵌**在聚合二级页里的一行（不是自带 `Navigator.pop` 的弹窗），
+   *   它没有"返回值"这个出口。上面对照的 `TvboxUpdateDialog` 之所以有 `_changed`，
+   *   是因为它是弹窗、`pop(context, _changed)` 把结果交回调用方（见 :566）。
+   *   ⇒ 内嵌组件的刷新属**宿主页**的职责（重进该页即重新 `_load()`）；
+   *     在组件里留一个没人读的 `_changed` 只会让下一个人以为"这里会通知刷新"。
+   */
+
+  @override
+  void initState() {
+    super.initState();
+    _hasLink = (widget.sourceUrl ?? '').trim().isNotEmpty;
+    _urlCtl = TextEditingController(text: widget.sourceUrl ?? '');
+  }
+
+  @override
+  void dispose() {
+    _urlCtl.dispose();
+    super.dispose();
+  }
+
+  /// ① 链接可改 —— 保存 / 清除
+  ///
+  /// ⚠️ 传空串是**清除**（回到"贴文本导入"状态），不是错误。
+  Future<void> _saveLink() async {
+    if (_saving) return;
+    final url = _urlCtl.text.trim();
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final save = widget.linkSaver ?? SourinApi.setTvboxSource;
+      await save(widget.id, url);
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _hasLink = url.isNotEmpty;
+        // 链接变了 ⇒ 旧的结论失效（否则显示的是**上一条链接**的结果）
+        _probe = null;
+        _applied = null;
+      });
+      if (url.isNotEmpty) {
+        // 刚填上链接，顺手测一次 —— 用户填链接的**目的**就是想知道能不能用
+        await _testNow();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        /*
+         * ★★ 收口（zz_t66_user_error_text_gate ③）：**不许把异常原文倒进用户可见字段**。
+         *
+         * 改前是把 catch 变量直接插进文案（模板里那句「保存链接失败：」+ 变量）
+         * ⇒ 用户看到 `SourinCoreException(other): …`（宿主类名 + 内部地址）。
+         * 本仓唯一入口是 `userErrorText(e, fallback:)`（`lib/core/ffi.dart:257`）：
+         *   核心异常 ⇒ 只剩插件原文；非核心 ⇒ 兜底人话；原始串只进 `debugPrint`。
+         * ⚠️ 与 `provider_login_panel.dart` / `proxy_panel.dart` 同批同写法。
+         *
+         * ⚠️⚠️ 本注释**刻意不写出那个插值字面量** —— 门禁的扫描器会把
+         *    行内**引号里的内容**也当候选字面量（它只跳过 `//` 之后的，不跳块注释），
+         *    所以把那个「文案 + 变量」的写法原样抄进注释会被**计入犯规条数**
+         *    （我第一版就这么又红了一次）。描述行为用中文即可，别复现那个字面量。
+         */
+        _error = userErrorText(e, fallback: '保存订阅链接失败，请稍后重试');
+      });
+    }
+  }
+
+  /// ② 测试连通 —— **真发一次请求**（用户点了才联网，与全仓同一条）
+  Future<void> _testNow({bool keepApplied = false}) async {
+    if (_probing) return;
+    setState(() {
+      _probing = true;
+      _error = null;
+      if (!keepApplied) _applied = null;
+    });
+    try {
+      final probe = widget.probeRunner ??
+          (String id) => SourinApi.checkTvboxUpdates(id: id);
+      final check = await probe(widget.id);
+      if (!mounted) return;
+      setState(() {
+        _probe = tvboxProbeOf(check.itemOf(widget.id));
+        _probing = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      // ★ 命令本身抛异常也算"连不上"，但**原因如实说是命令失败**
+      //   （不伪装成"源坏了" —— 那是把工具故障诬告给用户的源）
+      /*
+       * ★★ 收口（zz_t66_user_error_text_gate ③）：`detail` 也是**用户可见**字段
+       *    （它会在三态结论行下渲染出来）⇒ 不许把 catch 变量直接插进去。
+       *    ⇒ 人话进 `detail`（收口后），原始串留在 `debugPrint`（`userErrorText` 内部做）。
+       * ⚠️ 同上一处：注释里**不复现那个插值字面量**（扫描器会把它计入犯规）。
+       */
+      final human = userErrorText(e, fallback: '检测命令失败，请稍后重试');
+      setState(() {
+        _probe = TvboxProbeResult(
+          state: TvboxProbeState.failed,
+          text: '连不上：检测命令失败',
+          detail: human,
+        );
+        _probing = false;
+      });
+    }
+  }
+
+  /// ③ 立即更新 —— 应用远端变化
+  Future<void> _applyUpdate() async {
+    if (_updating) return;
+    setState(() {
+      _updating = true;
+      _error = null;
+    });
+    try {
+      final run = widget.updater ??
+          (String id, {bool applyNew = true, bool deleteMissing = false}) =>
+              SourinApi.updateTvboxSource(
+                id,
+                applyNew: applyNew,
+                deleteMissing: deleteMissing,
+              );
+      final r = await run(widget.id, applyNew: true, deleteMissing: false);
+      if (!mounted) return;
+      setState(() {
+        _applied = r;
+        _updating = false;
+      });
+      if (r.updated) await _testNow(keepApplied: true);
+    } catch (e) {
+      if (!mounted) return;
+      // ★ 收口（zz_t66_user_error_text_gate ③）：与上面两处同一条
+      setState(() {
+        _updating = false;
+        _error = userErrorText(e, fallback: '更新失败，请稍后重试');
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final busy = _saving || _probing || _updating;
+    final probe = _probe;
+
+    return Column(
+      key: const ValueKey<String>('tvbox-manage'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        // ── ① 链接可改 ──
+        Text(
+          '订阅链接',
+          key: const ValueKey<String>('tvbox-manage-link-label'),
+          style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+        ),
+        const SizedBox(height: Sp.x1),
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: TextField(
+                key: const ValueKey<String>('tvbox-manage-link-input'),
+                controller: _urlCtl,
+                enabled: !busy,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  hintText: 'https://example.com/tvbox.json',
+                ),
+                style: const TextStyle(fontSize: FontSizes.cap),
+                onSubmitted: (_) => _saveLink(),
+              ),
+            ),
+            const SizedBox(width: Sp.x2),
+            FilledButton.tonal(
+              key: const ValueKey<String>('tvbox-manage-link-save'),
+              onPressed: busy ? null : _saveLink,
+              child: Text(_saving ? '保存中…' : (_hasLink ? '保存' : '填入')),
+            ),
+            if (_hasLink) ...<Widget>[
+              const SizedBox(width: Sp.x2),
+              TextButton(
+                key: const ValueKey<String>('tvbox-manage-link-clear'),
+                onPressed: busy
+                    ? null
+                    : () {
+                        _urlCtl.text = '';
+                        _saveLink();
+                      },
+                child: const Text('清除'),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: Sp.x1),
+        Text(
+          _hasLink
+              ? '这个链接下的全部源共用同一条订阅，检测一次对比全部。'
+              : '这个源是贴文本导入的，没有订阅链接 —— 查不了更新。填入当初的配置地址即可。',
+          style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+        ),
+        const SizedBox(height: Sp.x3),
+
+        // ── ② 测试连通 + ③ 立即更新 ──
+        Row(
+          children: <Widget>[
+            FilledButton.tonalIcon(
+              key: const ValueKey<String>('tvbox-manage-probe'),
+              onPressed: (busy || !_hasLink) ? null : () => _testNow(),
+              icon: const Icon(AppIcons.refresh, size: 16),
+              label: Text(_probing ? '正在测试…' : '测试连通'),
+            ),
+            const SizedBox(width: Sp.x3),
+            Expanded(child: _probeLine(colors, probe)),
+          ],
+        ),
+        const SizedBox(height: Sp.x2),
+
+        /*
+         * 「立即更新」**只在测试连通成功且有变化时**出现 ——
+         * 与 `_TvboxUpdateDialogState` 同一条：用户要的是"先看能不能用"，
+         * 再决定要不要改本地。没有变化时画一个"更新"按钮是假入口。
+         */
+        if (probe != null && probe.state == TvboxProbeState.ok) ...<Widget>[
+          FilledButton.icon(
+            key: const ValueKey<String>('tvbox-manage-update'),
+            onPressed: _updating ? null : _applyUpdate,
+            icon: const Icon(AppIcons.download_done, size: 16),
+            label: Text(_updating ? '更新中…' : '立即更新'),
+          ),
+          const SizedBox(height: Sp.x2),
+        ],
+
+        if (_applied != null) ...<Widget>[
+          TvboxUpdateResultView(result: _applied!),
+          const SizedBox(height: Sp.x2),
+        ],
+
+        if (_error != null)
+          Text(
+            _error!,
+            key: const ValueKey<String>('tvbox-manage-error'),
+            style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+          ),
+
+        // ── 名字可改：**如实说明缺口**，不画假入口 ──
+        const TvboxAggregateManageNote(),
+      ],
+    );
+  }
+
+  /// 三态结论行（**颜色随状态**，文案来自纯函数 [tvboxProbeOf]）
+  Widget _probeLine(ColorScheme colors, TvboxProbeResult? probe) {
+    if (_probing) {
+      return Text(
+        '正在连订阅链接…',
+        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+      );
+    }
+    if (probe == null) {
+      return Text(
+        _hasLink ? '还没测过 —— 点「测试连通」才会联网' : '没有订阅链接，测不了',
+        key: const ValueKey<String>('tvbox-manage-probe-idle'),
+        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+      );
+    }
+    return Text(
+      probe.text,
+      key: const ValueKey<String>('tvbox-manage-probe-result'),
+      style: TextStyle(
+        fontSize: FontSizes.cap,
+        color: probe.isBad ? colors.error : colors.primary,
+      ),
+    );
+  }
+}
+
+/// 「名字可改」缺口说明（N8b-2）—— 如实说，不画假入口
+///
+/// # 为什么用一条**常显**的说明而不是干脆不提
+/// ```text
+/// Owner 明确要求「聚合源应该可以自己起名字」。
+/// 本批做不了（Rust 侧无改名命令，见文件头取证）。
+/// 若**什么都不说**，用户会以为自己没找到入口 —— 那是"不告知"，
+/// 仓库已经为此修过 4 处（详见 `TvboxRestoreFailuresView` 的注释）。
+/// 若**画一个输入框**，点了没反应 = 假 UI（更糟）。
+/// ⇒ 唯一诚实的做法：说出来，并指明这是后端能力缺口。
+/// ```
+/// ⚠️ 一旦 Rust 侧补上改名命令，删掉本组件 + 接上真入口即可
+///    （门禁 `zz_t1058` 钉了"这一条必须存在直到能力到位"）。
+class TvboxAggregateManageNote extends StatelessWidget {
+  const TvboxAggregateManageNote({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: Sp.x2),
+      child: Text(
+        '改名暂未开放：当前版本还没有给源改名的接口，名字由导入的配置决定。',
+        key: const ValueKey<String>('tvbox-manage-rename-note'),
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          height: 1.4,
+          color: colors.onSurfaceVariant,
+        ),
+      ),
+    );
   }
 }
 

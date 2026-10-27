@@ -688,10 +688,28 @@ void main() {
       final clean = stripComments(raw);
       expect(clean.contains('items: rankItemsByTitleDesc(widget.title, ev.items),'),
           isTrue);
-      // 组间排序也是稳定的
+      /*
+       * 组间排序也是稳定的。
+       *
+       * ⚠️ 2026-10-27（N2）：锚点从 `stableRankDesc(_candidates, …)` 改成
+       *   `stableRankDesc(candidates, …)` —— N2 在渲染前先按 provider 维度
+       *   排掉当前源（`_candidates` ⇒ 过滤后的 `candidates`），**排序判据
+       *   本身没变**（仍必须是 `stableRankDesc`，且仍必须作用在写进列表的
+       *   那份数据上）。
+       *   ★ 这里**不放宽**：下面同时钉住"过滤那一步真的存在"，
+       *     免得有人把 `_candidates` 原样传进来（= 取消排除）而本条照旧绿。
+       */
       expect(
-        clean.contains('stableRankDesc(_candidates, (c) => c.score);'),
+        clean.contains('stableRankDesc(candidates, (c) => c.score);'),
         isTrue,
+        reason: '组间必须仍用 stableRankDesc（同分不许乱跳）',
+      );
+      // ★ N2 钉子：排除当前源那一步必须真的在位（否则上面那条会被"传原表"骗过）
+      expect(
+        clean.contains('.where((c) => c.provider != widget.currentProvider)'),
+        isTrue,
+        reason: '★★★ N2：候选必须先按 provider 维度排掉当前源 —— '
+            '这条与 t1055 配套：t1055 验行为，这条防"源码锚点被绕过"',
       );
       // ★ take(8) 之前必须已经排好 —— 排序发生在 _candidates.add(...) 里
       expect(clean.contains('candidate.items.take(8)'), isTrue);

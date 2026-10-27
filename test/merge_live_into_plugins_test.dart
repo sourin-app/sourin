@@ -357,9 +357,9 @@ void main() {
       );
     });
 
-    test('★★ 提示改指「设置 → JS 插件」', () {
+    test('★★ 提示改指「设置 → 源」', () {
       expect(
-        liveCode.contains('设置 → JS 插件'),
+        liveCode.contains('设置 → 源'),
         isTrue,
         reason: '★★ 提示必须指向**新位置**（JS 插件二级页的源卡片）',
       );
@@ -379,7 +379,7 @@ void main() {
        * 把注释删掉了 ⇒ 等于**先把要测的东西删掉再测它**。
        * ★ 一般化：判据选错了"看哪一份"，断言就会自我否定。
        */
-      final n = '设置 → JS 插件'.allMatches(liveRaw).length;
+      final n = '设置 → 源'.allMatches(liveRaw).length;
       expect(n, 2,
           reason: '★ 应恰好 2 处（1 个用户可见的 tooltip + 1 处注释说明），'
               '实际 $n 处 —— 少一处说明有地方没同步',

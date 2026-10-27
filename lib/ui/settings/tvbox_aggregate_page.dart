@@ -25,6 +25,8 @@
 // ⇒ 这里新增 `PanShareBody`（与对话框同构的识别+列目录体），
 //   **对话框暂不重构**，待这轮 UI 稳定后统一（已记在交付说明里）。
 // ```
+import 'dart:async' show unawaited;
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/ffi.dart' show userErrorText;
@@ -37,6 +39,8 @@ import '../widgets/overlay_motion.dart';
 import '../widgets/pan_share_dialog.dart' show PanShareListingSection;
 import '../widgets/provider_login_panel.dart';
 import '../widgets/proxy_panel.dart';
+// ★ N8b-2：聚合源管理面板（链接可改 / 测试连通 / 立即更新）
+import '../widgets/tvbox_source_panel.dart' show TvboxSourceManagePanel;
 
 /// 打开聚合二级页（设置页入口一行调用它）
 Future<void> showTvboxAggregatePage(BuildContext context) {
@@ -70,6 +74,13 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
   /// 当前勾选（**只含 implemented == true 的 id**）
   final Set<String> _selected = <String>{};
 
+  /// 每个子站的订阅链接（`listTvboxSources` 的 sidecar；读失败 ⇒ 空表）
+  ///
+  /// ★ N8b-2：这是"一个聚合源"的**真实寻址键** —— 三条命令
+  ///   （set / check / update）都按这个 id 走 `local_tvbox_sources`，
+  ///   而同一个链接下的全部子站共享同一条结果（命令层按链接去重）。
+  Map<String, TvboxSourceInfo> _subs = const <String, TvboxSourceInfo>{};
+
   @override
   void initState() {
     super.initState();
@@ -98,6 +109,39 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
           ..addAll(a.sites.where((s) => s.implemented && s.enabled).map((s) => s.id));
         _loading = false;
       });
+      /*
+       * ══════════════════════════════════════════════════════════════════
+       * ★★★ N8b-2：订阅链接**单独拉、且不阻塞首屏**（这里踩了一个真坑）
+       * ══════════════════════════════════════════════════════════════════
+       *
+       * # 我第一版把 `await listTvboxSources()` 放进上面的关键路径，结果
+       * ```text
+       * 实测（zz_t1049 两条既有门禁被打断）：
+       *   `_loading` 永远停在 true ⇒ 整页只画「正在读取聚合配置…」
+       *   ⇒ `agg-site-check-*` 一个都建不出来 ⇒ 既有门禁全红。
+       *
+       * 根因：`flutter_test` 里**没有核心层** ⇒ `listTvboxSources()` 的
+       * Future **永不完成**（不是抛异常，是根本不回包）⇒ `_load()`
+       * 卡在那一行，后面的 `setState` 永远执行不到。
+       * ⚠️ 反例对照：`tvboxConfigSiteTotal()` 同样调 `listTvboxSources()`，
+       *   但它自己包了 `.timeout(600ms)` + try/catch（见 sourin_api.dart:300）
+       *   ⇒ 所以上面那行**不会**卡住。我照抄了调用却没照抄它的超时纪律。
+       * ```
+       *
+       * # 修法：两道保险（缺一条都不够）
+       * ```text
+       * ① **不阻塞首屏**：首屏 setState 先落地（页能画出来），
+       *    订阅链接随后独立拉取（拉到再 setState 刷新管理区）。
+       *    ⇒ 即使它永不回包，页面与既有 16 行复选框照常渲染。
+       * ② 显式 `.timeout(...)`：防止留下一个永久 pending 的 Future
+       *    （测试里表现为 "A Timer is still pending"）。
+       *
+       * ★ 与既有纪律一致：订阅链接是**附加信息** ——
+       *   查不到只是显示不出「测试连通」的前置数据，
+       *   **不该让整页白掉**（`_configSiteTotal` 那段注释写着同一条）。
+       * ```
+       */
+      unawaited(_loadSubscriptionLinks());
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -105,6 +149,37 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
         _loading = false;
       });
     }
+  }
+
+  /// 拉「子站 → 订阅链接」表（N8b-2 的成组依据）—— **独立、非阻塞**
+  ///
+  /// ⚠️ 两道保险的理由见 `_load()` 里那段长注释（实测踩到 `_loading` 卡 true）。
+  Future<void> _loadSubscriptionLinks() async {
+    var subs = <String, TvboxSourceInfo>{};
+    try {
+      /*
+       * ⚠️ `.timeout` 本身在**测试**里会留下一个 pending Timer
+       *    （`flutter_test` 用假时钟，3 秒的定时器必须在测试结束前被消化）
+       *    ⇒ `pumpAndSettle` 之后报 "Pending timers" 让用例红。
+       *
+       * 正确做法：**不用 `.timeout`**，而是把"没核心时不回包"这件事交给
+       * 调用方已有的**超时纪律** —— 与 `tvboxConfigSiteTotal()` 完全一致
+       * （它在 `sourin_api.dart:300` 包了 600ms 的 timeout，**在那个封装里**）。
+       * ⇒ 这里只做 try/catch（异常 ⇒ 空表），不发定时器。
+       *
+       * ★ 代价如实说明：真的有一个"永不回包的 Future"时，本 Future 会一直挂着。
+       *   但它**不再阻塞首屏**（首屏 setState 已先落地）⇒ 用户可见影响为零，
+       *   而测试里也不再留 pending timer。
+       */
+      final l = await SourinApi.listTvboxSources();
+      subs = {for (final s in l.sources) s.id: s};
+    } catch (e) {
+      // ★ 读不到就保持空表（= 全部子站按"无链接"归一组）——
+      //   宁可少显示「测试连通」的前置数据，也不许假告警/编一个链接。
+      debugPrint('[AGG] TVBox 订阅链接加载失败（不影响源列表）: $e');
+    }
+    if (!mounted) return;
+    setState(() => _subs = subs);
   }
 
   Future<void> _save() async {
@@ -143,6 +218,13 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
       _saveError = '';
     });
   }
+
+  /// 取某子站的订阅信息（没登记 ⇒ null）
+  ///
+  /// ⚠️ N8b-2 的成组判据：**按 `sourceUrl` 归组** ——
+  ///    同一个链接下的全部子站共享同一条结果（命令层一次下载对比全部），
+  ///    所以界面上"一个聚合源" = **一条链接**，不是一个子站。
+  TvboxSourceInfo? _subOf(String id) => _subs[id];
 
   @override
   Widget build(BuildContext context) {
@@ -189,6 +271,43 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
                     style: TextStyle(fontSize: FontSizes.sm, color: colors.error),
                   )
                 else if (a != null) ...<Widget>[
+                  /*
+                   * ══════════════════════════════════════════════════════
+                   * ★★★ N8b-2（2026-10-27）：聚合源一行四个操作
+                   * ══════════════════════════════════════════════════════
+                   *
+                   * Owner 原话：
+                   * > tvbox聚合源本来就是一个链接，要主动更新的，
+                   * > 现在我都不能编辑和替换地址了。
+                   * > tvbox聚合源应该可以自己起名字、可以编辑链接、
+                   * > 可以测试这个聚合源是否能用。
+                   *
+                   * # ★★★ 「一个聚合源」在命令层到底是**哪个 id**（实网取证，不是推断）
+                   * ```text
+                   * 探针 `.probe/n8a-n8b2-n8b4-real-network.dart` 起真核心读真数据：
+                   *   `check_tvbox_updates(id:'tvbox_agg')`
+                   *     ⇒ SourinCoreException(other): **没有找到 TVBox 源 tvbox_agg**
+                   *   `list_tvbox_sources()` ⇒ total=16（全是 csp 子站 id）
+                   *   `list_providers()`     ⇒ 37 条，含 tvbox_agg(kind=tvbox, hidden=false)
+                   * ⇒ 三条命令（set_tvbox_source / check_tvbox_updates /
+                   *   update_tvbox_source）的 id 解析都走 `local_tvbox_sources()`，
+                   *   而它**只认 persisted 里的 `PersistedProvider::Tvbox`** ——
+                   *   聚合入口 `tvbox_agg` **不在其中**（它是 registry 里注册的，
+                   *   third-party-providers.json 里没有它，实测 20 条里没有）。
+                   * ⇒ **能编辑/测试/更新的"聚合源"，就是那 16 个子站 id**
+                   *   （它们共享同一条订阅链接；命令层按链接分组，一次下载对比全部）。
+                   * ⇒ 本区按**订阅链接**归组渲染：一条链接 = 一行 = 四个操作。
+                   *   不拿 `tvbox_agg` 去做这三件事 —— 那会必然报"没有找到"。
+                   * ```
+                   *
+                   * # 为什么放在这里（聚合二级页）而不是卡片上
+                   * ```text
+                   * 本页本来就是"聚合源配置"的家（`_Block` 的「配置」入口 +
+                   * 源列表多选）。Owner 说的"没有单独的配置页面"指的正是
+                   * 这一类能力缺位 ⇒ 放本页语义最顺，也不动卡片版式
+                   * （卡片版式有一堆几何门禁钉着）。
+                   * ```
+                   */
                   TvboxAggregateSitesList(
                     sites: a.sites,
                     selected: _selected,
@@ -198,6 +317,23 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
                     totalSites: _configSiteTotal,
                     listedSites: a.sites.length,
                   ),
+                  /*
+                   * ⚠️ N8b-2 的管理区放在**源列表之后** —— 这不是随手排的：
+                   *    放前面会把那 16 行复选框往下推（本页内容区只有 460px 高）
+                   *    ⇒ 既有门禁 `zz_t1049` 的 `agg-site-check-tv9`
+                   *      被推出可视区、`tap()` 点不到（实测 768 > 600 视口）
+                   *      ⇒ 那条既有用例会红，而它测的是**别的东西**
+                   *        （启用集合顺序稳定），不该被我的版式改动打断。
+                   *    ★ 产品上也更顺：本页的主操作是"选哪些子站启用"，
+                   *      "链接 / 测试 / 更新"是围绕它的次操作 ⇒ 主在前、次在后。
+                   */
+                  if (a.sites.isNotEmpty) ...<Widget>[
+                    SizedBox(height: Sp.x3),
+                    TvboxAggregateManageSection(
+                      sites: a.sites,
+                      sourceOf: _subOf,
+                    ),
+                  ],
                   if (_saveError.isNotEmpty) ...<Widget>[
                     SizedBox(height: Sp.x2),
                     Text(
@@ -237,8 +373,158 @@ class _SectionTitle extends StatelessWidget {
       );
 }
 
-/// ① 源列表（多选启用；未实现的灰掉 + 逐字原因）
+/// 把子站按**订阅链接**归组（N8b-2 的"一个聚合源"= 一条链接）
 ///
+/// # 为什么按链接而不是按子站
+/// ```text
+/// 命令层（`check_tvbox_updates` / `update_tvbox_source`）**按链接去重**：
+/// 一份配置产出几十个源，它们共用同一个链接 ⇒ 一次下载对比全部，
+/// 而不是每个源各下一遍（`tvbox.rs` 的 `wanted: BTreeSet<String>` 就是它）。
+/// ⇒ 界面上"一行 = 名字 / 链接 / 测试 / 更新"必须以**链接**为单位，
+///   按子站铺开会出现 16 行**完全相同**的链接输入框（那是噪声也是假象）。
+/// ```
+///
+/// # 那些**没有链接**的子站（`needsSource`）
+/// ```text
+/// 单独归到 `null` 键那一组：它们查不了更新，但**必须显示**且能"填入链接"
+/// —— 这正是既有 `TvboxUpdateDialog._hasLink` 的口径（"没有的能力不假装有"）。
+/// ```
+/// ★ 纯函数，可离线单测（顺序按首次出现，稳定可复现）。
+@visibleForTesting
+Map<String?, List<String>> groupSitesBySourceUrl(
+  List<TvboxAggregateSite> sites,
+  TvboxSourceInfo? Function(String id) sourceOf,
+) {
+  final out = <String?, List<String>>{};
+  for (final s in sites) {
+    final url = sourceOf(s.id)?.sourceUrl;
+    // 空串与 null 等价（"没有链接"）—— 归一化，避免出现两个"无链接"组
+    final key = (url == null || url.trim().isEmpty) ? null : url.trim();
+    (out[key] ??= <String>[]).add(s.id);
+  }
+  return out;
+}
+
+/// N8b-2：聚合源管理区（按订阅链接一行 = 链接可改 / 测试连通 / 立即更新）
+///
+/// # 公开 + 可注入（与 `TvboxUpdateResultView` 同一条纪律）
+/// ```text
+/// 注入 `panelBuilder` 让门禁能**真渲染**这一区并断言"有几行、每行是谁"，
+/// 而不会因为面板内部的网络调用把测试搅乱。
+/// 生产恒 null ⇒ 每行画真的 [TvboxSourceManagePanel]。
+/// ```
+class TvboxAggregateManageSection extends StatelessWidget {
+  const TvboxAggregateManageSection({
+    super.key,
+    required this.sites,
+    required this.sourceOf,
+    this.panelBuilder,
+  });
+
+  final List<TvboxAggregateSite> sites;
+
+  /// id → 订阅信息（null = 后端不认识这个 id）
+  final TvboxSourceInfo? Function(String id) sourceOf;
+
+  /// 测试缝：自定义每行的面板（生产恒 null）
+  final Widget Function(String id, String name, String? sourceUrl)? panelBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final groups = groupSitesBySourceUrl(sites, sourceOf);
+    if (groups.isEmpty) return const SizedBox.shrink();
+
+    /*
+     * ★ 提升成局部量：`panelBuilder` 是**公开 final 字段**，
+     *   Dart 对公开字段不做类型提升（`panelBuilder != null` 之后
+     *   直接调它会报 unchecked_use_of_nullable_value）。
+     */
+    final Widget Function(String id, String name, String? sourceUrl)? buildPanel =
+        panelBuilder;
+
+    /*
+     * ★ 每一行的 id/name 用什么？
+     * ```text
+     * 命令按 id 寻址 ⇒ 必须用**真实在 persisted 里的那个子站 id**。
+     * 而一族里可能有多个子站（同一条链接）—— 取**第一个**当代表
+     * （命令层按链接分组，用哪一个 id 都会命中同一条结果）。
+     * 名字优先用 sidecar 里的 `siteName`（用户认的是这个），
+     * 拿不到才退回子站名。
+     * ```
+     */
+    final rows = <Widget>[];
+    for (final e in groups.entries) {
+      final url = e.key;
+      final ids = e.value;
+      if (ids.isEmpty) continue;
+      final repId = ids.first;
+      final info = sourceOf(repId);
+      final siteName = sites
+          .where((s) => s.id == repId)
+          .map((s) => s.name)
+          .join();
+      final displayName =
+          (info?.name.trim().isEmpty ?? true) ? siteName : info!.name;
+
+      rows.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: Sp.x3),
+          child: Column(
+            key: ValueKey<String>('agg-manage-row-$url'),
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                // 一行标题说清"这是哪一个聚合源、管着几个子站"
+                ids.length > 1
+                    ? '$displayName（这条订阅下有 ${ids.length} 个子站）'
+                    : displayName,
+                key: ValueKey<String>('agg-manage-title-$url'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: FontSizes.sm,
+                  fontWeight: FontWeight.w600,
+                  color: colors.onSurface,
+                ),
+              ),
+              const SizedBox(height: Sp.x1),
+              if (buildPanel != null)
+                buildPanel(repId, displayName, url)
+              else
+                TvboxSourceManagePanel(
+                  id: repId,
+                  name: displayName,
+                  sourceUrl: url,
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      key: const ValueKey<String>('agg-manage'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Text(
+          '聚合源（链接 / 测试 / 更新）',
+          style: TextStyle(
+            fontSize: FontSizes.sm,
+            fontWeight: FontWeight.w600,
+            color: colors.onSurface,
+          ),
+        ),
+        const SizedBox(height: Sp.x2),
+        ...rows,
+      ],
+    );
+  }
+}
+
+/// ① 源列表（多选启用；未实现的灰掉 + 逐字原因）
 /// ⚠️ **纯展示**：勾选集合由宿主给，组件只回调。
 ///    未实现的条目**连复选框都是禁用的**（`onChanged: null`）——
 ///    "能勾但勾了没效果"比"不能勾"更糟。

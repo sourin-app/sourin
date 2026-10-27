@@ -182,7 +182,9 @@ void main() {
   // ═══════════════════════════════════════════════════════════════════
   group('③ 收起态', () {
     testWidgets('★★ 收起态不显示完整性说明', (t) async {
-      await t.pumpWidget(_host(DanmakuInfoPanel(data: _truncatedRealShape())));
+      // N6-①（2026-10-27）起缺省是展开 —— 要测收起态就显式传 false。
+      await t.pumpWidget(_host(
+          DanmakuInfoPanel(data: _truncatedRealShape(), initiallyExpanded: false)));
       await t.pumpAndSettle();
 
       /*
@@ -195,7 +197,8 @@ void main() {
     });
 
     testWidgets('★★ 展开后立刻出现（不许要再点一次）', (t) async {
-      await t.pumpWidget(_host(DanmakuInfoPanel(data: _truncatedRealShape())));
+      await t.pumpWidget(_host(
+          DanmakuInfoPanel(data: _truncatedRealShape(), initiallyExpanded: false)));
       await t.pumpAndSettle();
       await t.tap(find.byType(DanmakuInfoPanel));
       await t.pumpAndSettle();

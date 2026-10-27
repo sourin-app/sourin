@@ -341,7 +341,7 @@ void main() {
     log('B| 加载后 ListView = ${_count(find.byType(ListView))}');
 
     // ── 进二级页（「JS 插件」入口，默认 tab 就是内容源）──
-    final entry = _safe(find.text('JS 插件'));
+    final entry = _safe(find.text('源'));
     if (entry == null) {
       log('B| ★★ 一级页没找到「JS 插件」入口 ⇒ 读数无效');
       fail('设置页没有「JS 插件」入口');

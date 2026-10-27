@@ -86,7 +86,7 @@ Future<void> main() async {
 
   // ── 真磁盘目录 ──
   final rootPath = CachePage.debugScanRootOverride ??
-      'C:\\Users\\iuuuuuuuu\\Videos\\源影';
+      '${Platform.environment['USERPROFILE'] ?? ''}\\Videos\\源影';
   say('');
   say('下载根: $rootPath');
   final rootDir = Directory(rootPath);

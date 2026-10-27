@@ -21,7 +21,7 @@ class DanmakuSearchPage extends StatefulWidget {
     required this.onPickMatch, required this.onBatchBind, required this.onBiliImport,
     this.onBatchBindPlan,
     required this.onBiliSelectPage, required this.onClose, this.draft,
-    this.onReload, this.onOpenLocal});
+    this.onReload, this.onOpenLocal, this.workTitle});
   final DanmakuSettingsState state;
   final BiliImportState biliState;
   final List<String> localTitles;
@@ -42,6 +42,22 @@ class DanmakuSearchPage extends StatefulWidget {
   final VoidCallback? onReload;
   final VoidCallback? onOpenLocal;
   final DanmakuSearchDraft? draft;
+
+  /// 当前在给**哪一部作品**搜弹幕（宿主传进来；空 = 未知）
+  ///
+  /// # 为什么需要它（N4-3 #1，真机截图 `.probe/n4-3-layout/n4-3-wide-results.png`）
+  /// ```text
+  /// 顶栏只有「✕ 搜索弹幕与绑定剧集」，右侧 800px 是空白 ——
+  /// 用户在这个页面上**看不到自己在给哪部剧搜**：
+  /// 搜到两条同名剧时无从核对，绑错了也看不出。
+  /// ```
+  /// # 为什么由宿主传，不在这里去查
+  /// ```text
+  /// 页面拿到的只有 `localTitles`（每一集的标题），
+  /// 作品名只有宿主（播放页）知道 ⇒ 单一数据源，不在这里拼。
+  /// ```
+  final String? workTitle;
+
   @override
   State<DanmakuSearchPage> createState() => _DanmakuSearchPageState();
 }
@@ -59,8 +75,43 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
   @override
   void initState() {
     super.initState();
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ N4-2（2026-10-27）：**默认必须填剧名**（Owner 原话："默认没有
+     *      填充剧的名字"）
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 根因（读码即可证，不是猜）
+     * ```text
+     * 改前：_keyword.text = draft?.keyword ?? widget.state.searchKeyword;
+     *
+     * `??` 只在**左侧是 null** 时右转。而 `DanmakuSearchDraft()` 的
+     * 默认 `keyword = ''`（**空串，不是 null**，见本文件 :10）⇒
+     * 挂载点 `player_page.dart:2131` 造的正是一个默认 draft ⇒
+     * 左侧 '' 赢，右侧 `state.searchKeyword`（宿主已经算好的剧名，
+     * 见 `player_page.dart:7934` 那段长注释）**永远拿不到**。
+     * ⇒ 页面打开是空的。这就是 Owner 看到的现象。
+     * ```
+     *
+     * # 修法：把"空"和"有内容"分开判，而不是靠 `??`
+     * ```text
+     * draft.keyword 非空  ⇒ 用它的（跨卸载恢复用户自己打的词，旧11 语义）
+     * draft.keyword 为空  ⇒ 回退宿主的 `state.searchKeyword`（剧名预填）
+     * 两者都为空          ⇒ 保持空（阴性对照：没有剧名时不许报错、不许填占位串）
+     * ```
+     *
+     * # 为什么改判据而不是改默认值
+     * ```text
+     * 把 `DanmakuSearchDraft.keyword` 默认改成 null 也能过，但那要动
+     * 一个**被两处宿主共用的模型**，且会让"用户主动清空输入框"这一态
+     * 与"从没输入过"混在一起（清空后 draft.keyword == '' 又会去回退
+     * 宿主剧名 ⇒ 用户清不掉）。在**消费点**判空是范围最小、语义最准的。
+     * ```
+     */
     final draft = widget.draft;
-    _keyword.text = draft?.keyword ?? widget.state.searchKeyword;
+    final restored = draft?.keyword ?? '';
+    _keyword.text =
+        restored.isNotEmpty ? restored : widget.state.searchKeyword;
     _selected.addAll(draft?.selectedEpisodeIds ?? <int>{});
     _preview = draft?.previewing ?? false;
     _keyword.addListener(_saveDraft);
@@ -213,7 +264,23 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
         child: Column(children: [
           Row(children: [
             IconButton(onPressed: widget.onClose, icon: const Icon(Icons.close)),
-            const Expanded(child: Text('搜索弹幕与绑定剧集')),
+            /*
+             * ★★★ 2026-10-28（N4-3 #1）：**顶栏要有"我在给哪部剧搜"**
+             *
+             * 改前：只有 `搜索弹幕与绑定剧集`，右侧 800px 空白（真机截图）⇒ 用户无法核对。
+             * 现在：宿主传了 `workTitle` 就并进标题；没传就还是原来那句
+             *      （占位/无剧上下文时不该出现"搜索弹幕 · " 这种半截标题）。
+             * ⚠️ 标题**只加信息、不改可点区**：关闭按钮与列表位置一格没动。
+             */
+            Expanded(
+              child: Text(
+                (widget.workTitle == null || widget.workTitle!.trim().isEmpty)
+                    ? '搜索弹幕与绑定剧集'
+                    : '搜索弹幕 · ${widget.workTitle!.trim()}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
           ]),
           Expanded(child: ListView(
             padding: const EdgeInsets.all(16),
@@ -224,6 +291,54 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                 child: const Text('搜索 dan-api 与视频站')),
               const Text('搜索、启用、绑定与加载是不同状态；确认绑定前请核对剧集。'),
               if (s.searchLoading || b.loading) const LinearProgressIndicator(),
+              /*
+               * ★★★ 2026-10-28（N4-3 #11）：**过期态必须说出原因**
+               *
+               * # 改前是什么样（真机截图 `.probe/n4-3-layout/n4-3-wide-stale.png`）
+               * ```text
+               * `searchStale` 为真时，复选框 / 「绑定当前集」/ 批量按钮全部
+               * `onPressed: null` ⇒ **整列变灰**，而页面上**没有一个字**说明为什么点不动。
+               * 用户只能猜：没搜到？搜索中？还是坏了？
+               * ```
+               * # 为什么算缺陷而不算"观感"
+               * ```text
+               * 一个"点不动且不说原因"的界面把排障成本转嫁给用户；
+               * 与"失败必须可读"那一族判据同源（见 `.agents/notes/implemented/bug-fix/`）。
+               * ```
+               * # 为什么放在加载条**下面**
+               * ```text
+               * 它解释的是"下面那份结果列表"的状态 ⇒ 必须紧邻那份列表；
+               * 且与"搜索中"互斥（搜索中不显示过期）⇒ 不会抢同一个位置。
+               * ```
+               * # "换了集或换了源"是对 `searchStale` 语义的如实转述
+               * （宿主在换集 / 换源 / 重新搜索时把旧结果置为过期）。
+               */
+              if (!s.searchLoading && !b.loading && s.searchStale && s.searchResults.isNotEmpty)
+                Container(
+                  margin: const EdgeInsets.only(top: 8, bottom: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: const Color(0x55808080)),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.info_outline, size: 18),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '结果已过期：搜索页开着期间换了集或换了源，'
+                          '下面这些条目已不能再绑定。请重新点「搜索 dan-api 与视频站」。',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               const Text('dan-api 剧集'),
               /*
                * ★★★ 2026-10-25（第 05 项复核修复 B）：**热路径的三档归因真接线**
@@ -245,6 +360,26 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                * ```
                */
               if (s.searchError != null) _hotPathFailure(s.searchError!),
+              /*
+               * ★★★ 2026-10-28（N4-3 #10）：**空态要给出下一步**
+               *
+               * # 改前是什么样（`.probe/n4-3-layout/n4-3-wide-empty.png`）
+               * ```text
+               * 没搜过时，这一块只有一条**灰色禁用**的「预览批量绑定」按钮，
+               * 再往下 400px 全空 ⇒ 用户看到的是"这里什么都没有"，
+               * 而不是"接下来该做什么"。
+               * ```
+               * # 为什么与下面那条 `dan-api 未找到匹配剧集` 分成两句
+               * ```text
+               * 这条 = **还没搜**（该怎么做）；下面那条 = **搜过了但没匹配**（没找到）。
+               * 合成一句会把没搜过的人推去怀疑源里到底有没有内容。
+               * ```
+               */
+              if (!s.searchSearched && !s.searchLoading && s.searchResults.isEmpty)
+                const Text(
+                  '还没有结果：输入剧名后点上面的按钮。',
+                  style: TextStyle(fontSize: 12),
+                ),
               if (s.searchSearched && !s.searchLoading && s.searchResults.isEmpty)
                 const Text('dan-api 未找到匹配剧集'),
               for (final match in s.searchResults)
@@ -381,8 +516,70 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
               const Text('视频站视频与分P'),
               if (b.error != null) Text(b.error.toString()),
               for (final item in b.searchResults)
-                ListTile(title: Text(item.title), subtitle: Text(item.bvid),
-                  onTap: b.loading || !item.usable ? null : () => widget.onBiliImport(item.bvid)),
+                /*
+                 * ★★ 2026-10-27（R2-#7 Owner 实测）：**「搜索出来的视频站条目**
+                 *    **没有封面」**（原话逐字留档在 `.probe/owner-review-r2-feedback.md`
+                 *    与 `.probe/r2-bili-cover-rootcause.md` —— 本行**不写站名**：
+                 *    `t98_no_site_names_test.dart` 的语义是"产品代码与用户可见文档里
+                 *    不许出现具体站名"，而注释**改了不会坏** ⇒ 按该门禁自己的准入标准
+                 *    （"只有真正负载、必须逐字保留的字符串才配豁免"）不该占豁免额度）。
+                 *
+                 * # 根因（取证，不是猜）
+                 * ```text
+                 * 改前这里是**光板 `ListTile`** —— 只有 title + bvid：
+                 *     ListTile(title: Text(item.title), subtitle: Text(item.bvid), onTap: …)
+                 * `BiliSearchItem.cover` **根本没人读**。
+                 * ⇒ 数据层是好的：把**真** API 响应喂给产品自己的
+                 *   `biliSearchItemFromJson` ⇒ **17/17 条都带非空 cover**。
+                 * ⇒ 也不是防盗链：实测 8/8 个 `i*.hdslb.com` URL **不带任何
+                 *   headers 全部 200**（与本仓 `bili_api.dart:98` 那句
+                 *   「必须带 Referer」矛盾 —— 那句对**接口**成立，对**图床**不成立）。
+                 * ⇒ 就是**本页漏画了这一格**（同页 dan-api 分支
+                 *   `:331-343` **有**封面；`bili_import_dialog.dart:519`
+                 *   **也有** ⇒ 本仓早就会画，只是这里没抄）。
+                 * ```
+                 * # 为什么样式照抄同页 dan-api 分支
+                 * ```text
+                 * 同一个页面里两块结果**必须同构**，否则用户会以为"bili 这一路是残缺的"。
+                 * 但**长宽比不同**：dan-api 是番剧海报（28×42，2:3），
+                 * bili 是视频（16:9）⇒ 用 64×36。尺寸跟内容形态走，不跟邻块硬对齐。
+                 * ```
+                 * # 三条硬要求（都是从既有代码抄的规矩，不是自创）
+                 * ```text
+                 * ① **必须给 `errorBuilder`** —— `bili_import_dialog.dart:533-537`
+                 *    逐字记着：Flutter 的 Image 只在 `errorBuilder == null` 时才
+                 *    上报错误（SDK image.dart:1233 的 reportErrors）⇒ 不给的话，
+                 *    封面加载失败会在单测里变成一条**未捕获异常**，
+                 *    而用户其实只想看到"这条没封面"。
+                 * ② 必须包 `ClipRRect`（与两处既有画法一致）。
+                 * ③ 无封面给**占位图标** —— 不给会"塌一块"（空白），
+                 *    用户分不清"加载中"与"这条没有封面"。
+                 * ```
+                 * ⚠️ 本改动**不碰** `item.cover` 的取值：它仍是
+                 *    `biliSearchItemFromJson` 里 `biliSearchCoverUrl(_str(j['pic']))`
+                 *    的产物（含 `//` → `https:` 补全）。
+                 */
+                ListTile(
+                  leading: SizedBox(
+                    width: 64,
+                    height: 36,
+                    child: item.cover.isEmpty
+                        ? const _BiliThumbPlaceholder()
+                        : ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: coverImage(context, url: item.cover,
+                              layoutWidth: 64, layoutHeight: 36,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) =>
+                                  const _BiliThumbPlaceholder()),
+                          ),
+                  ),
+                  title: Text(item.title),
+                  subtitle: Text(item.bvid),
+                  onTap: b.loading || !item.usable
+                      ? null
+                      : () => widget.onBiliImport(item.bvid),
+                ),
               for (final page in b.pages)
                 ListTile(title: Text('P${page.page}'),
                   onTap: b.loading ? null : () => widget.onBiliSelectPage(page.page)),
@@ -437,4 +634,38 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
       ),
     );
   }
+}
+
+/// 视频站搜索条目**没有封面**时的占位（16:9 格子里的一枚暗底图标）。
+///
+/// # 为什么不直接用裸 `Icon`
+/// ```text
+/// 同页 dan-api 分支用的是裸 `const Icon(Icons.movie_outlined)`（番剧海报位）。
+/// 而这里要给**和封面同一块 16:9 格子**一个"这不是空白、是没图"的视觉：
+///   裸 Icon 在 64×36 里会居中飘着，看起来像"加载失败"而不是"没有封面"。
+///   ⇒ 给一块与封面同形的暗底 + 图标（与 `bili_import_dialog` 的
+///     `_thumbPlaceholder` 同一意图；那边是黑 0.5 底 + 图标）。
+/// ```
+///
+/// ★ 颜色**写死**（跟 `bili_import_dialog._thumbPlaceholder` 一样不跟随主题）：
+///   它压在一块半透明黑底上、不属于主题化容器；改成 `onSurfaceVariant`
+///   在浅色主题下会变成浅灰压黑底 ⇒ 图标消失（那边注释逐字记着这条，
+///   对比度会掉到 2:1 以下）。
+class _BiliThumbPlaceholder extends StatelessWidget {
+  const _BiliThumbPlaceholder();
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+        borderRadius: BorderRadius.circular(4),
+        child: ColoredBox(
+          color: Colors.black.withValues(alpha: 0.5),
+          child: const Center(
+            child: Icon(
+              Icons.movie_outlined,
+              size: 16,
+              color: Colors.white24,
+            ),
+          ),
+        ),
+      );
 }

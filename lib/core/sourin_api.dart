@@ -4269,6 +4269,106 @@ class PlaybackFailure {
   String toString() => 'PlaybackFailure(${kind.name}: $detail)';
 }
 
+/// ★★★ N5b（2026-10-27）：失败的**归属方** —— 「是插件的问题还是播放器本体的问题」
+///
+/// # Owner 原话（逐字）
+/// ```text
+/// 播放失败定位与诊断，这个如果播放失败应该具体是谁的问题，
+/// 在界面上显示出来是插件还是播放器本体的问题
+/// ```
+///
+/// # 与 [PlaybackFailureKind] 的关系：**正交的第二维**
+/// ```text
+/// kind   回答「发生了什么」（七档，旧08 已完成）
+/// owner  回答「该找谁」   （本项新增）
+/// ⇒ 一个 kind 恒定映射到一个 owner（纯函数，可单测、无副作用）。
+/// ```
+///
+/// # ★★ 纪律：归属判断错了比不显示更糟
+/// ```text
+/// 计划 N5b 明文：「source 档必须由插件真实错误驱动，不许"取不到就赖插件"」。
+/// ⇒ `source` 只在**插件确实报错/返回了空列表**时才判插件（见 classify 里
+///    的判据，不是"任何取流失败都算 source"）；
+///   `proxy` / `timeout` 是**我们自己的服务层与网络**，如实认下来，
+///   不许推给插件；
+///   `network` / `unknown` **不冒认**——写「说不清」比写错强。
+/// ```
+enum PlaybackFailureOwner {
+  /// 插件侧（源解析失败 / 插件返回空列表 / 插件抛错）
+  plugin,
+
+  /// 播放器本体（本机解码 / 权限之外的格式/封装问题）
+  player,
+
+  /// 内置播放服务或网络（环回取不到、等太久）
+  service,
+
+  /// 源站网络侧（限流 / 5xx / 连不上）
+  remote,
+
+  /// 说不清（不冒认 —— 冒认会把人引到错误的方向去查）
+  unknown,
+}
+
+extension PlaybackFailureOwnerText on PlaybackFailureOwner {
+  /// 归属徽标的**用户可见文案**（一行、短、不带开发用语）
+  ///
+  /// ⚠️ 不许出现：宿主类名、内部代理地址、"插件"以外的实现术语、
+  ///    开发过程用语、具体端口。
+  String get label => switch (this) {
+    PlaybackFailureOwner.plugin => '插件侧问题',
+    PlaybackFailureOwner.player => '播放器问题',
+    PlaybackFailureOwner.service => '播放服务/网络问题',
+    PlaybackFailureOwner.remote => '源站问题',
+    PlaybackFailureOwner.unknown => '说不清是哪一侧',
+  };
+}
+
+/// ★ N5b：七档 → 归属 的**唯一映射表**（纯函数）
+///
+/// # 为什么写成顶层函数而不是 `PlaybackFailure` 的 getter
+/// ```text
+/// 单测要能在**不构造** PlaybackFailure（也就不用造 detail）的情况下
+/// 把七档逐档断一遍 —— getter 必须先有实例，测起来要凑字符串。
+/// ★ 与 `PlaybackErrorText.classify` 同一条纪律：判据只有一个来源，
+///   不许 UI 里再写一份 switch。
+/// ```
+PlaybackFailureOwner ownerOf(PlaybackFailureKind kind) => switch (kind) {
+  // ── 插件侧 ──────────────────────────────────────────────
+  // 「这个源没有返回可播放地址」= 插件取流失败 / 返回空列表 /
+  // 返回的地址本身不可用 ⇒ 就是插件那一侧的事。
+  PlaybackFailureKind.source => PlaybackFailureOwner.plugin,
+
+  // ── 我们自己的服务层与网络 ───────────────────────────────
+  // proxy  = 环回地址被拒 / 转发失败（**内置代理**，是我们的组件）
+  // timeout= 环回地址 + 等太久（同样发生在**内置代理**这一段）
+  // ⇒ 这两档如实认在自己头上，不许推给插件
+  //   （旧08 的教训正是"不要把代理的问题说成插件的问题"）。
+  PlaybackFailureKind.proxy => PlaybackFailureOwner.service,
+  PlaybackFailureKind.timeout => PlaybackFailureOwner.service,
+
+  // ── 播放器本体 ──────────────────────────────────────────
+  // decode   = 取到了流，本机解不了 ⇒ 播放器（libmpv）这一侧
+  // permission = 源站明确要求会员/地区。它**不是**播放器的错，
+  //   但也**不是**插件的错（插件把源站的拒绝如实转述了）——
+  //   ⇒ 归 `player` 会把用户引去查播放器（无效方向），
+  //     归 `plugin` 会把源站的限制说成插件缺陷（冤枉）。
+  //   ⇒ 现落在 `unknown`（不冒认），并在下面的门禁里**逐档**钉住。
+  PlaybackFailureKind.decode => PlaybackFailureOwner.player,
+  PlaybackFailureKind.permission => PlaybackFailureOwner.unknown,
+
+  // ── 源站网络侧 ──────────────────────────────────────────
+  PlaybackFailureKind.network => PlaybackFailureOwner.remote,
+
+  // ── 说不清 ──────────────────────────────────────────────
+  PlaybackFailureKind.unknown => PlaybackFailureOwner.unknown,
+};
+
+/// `PlaybackFailure` 上的归属快捷方式（UI 只读这一维）
+extension PlaybackFailureOwnerView on PlaybackFailure {
+  PlaybackFailureOwner get owner => ownerOf(kind);
+}
+
 /// 播放失败文案的净化与归因（**纯函数**，无副作用、可单测）
 class PlaybackErrorText {
   const PlaybackErrorText._();

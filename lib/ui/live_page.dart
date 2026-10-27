@@ -4539,14 +4539,17 @@ class LiveChannelListState extends State<LiveChannelList> {
                 _BarOption(g.provider, g.providerName),
             ],
             /*
-             * ★ 这句提示**必须**指向新位置（设置 → JS 插件）——
+             * ★ 这句提示**必须**指向新位置（设置 → 源）——
              *   旧的「设置 → 直播源」区块已删，指过去是死链。
+             * ★ N8a（2026-10-27）：「JS 插件」入口已更名为「源」⇒
+             *   本提示跟着改名，否则用户按「JS 插件」找过去会**扑空**
+             *   （这正是 N8a 的连带影响，与 settings_page 同一批改）。
              * ⚠️ `test/merge_live_into_plugins_test.dart` 用
              *   「这句话在源码里恰好出现 2 次（1 tooltip + 1 注释）」钉住同步；
              *   下面那行注释就是第 2 处，**两处要一起改**。
              */
             sourceTooltip: '只看来自这个源的频道'
-                '（只改显示，不改配置；配置请去 设置 → JS 插件）',
+                '（只改显示，不改配置；配置请去 设置 → 源）',
             onPickSource: (v) => _pickSource(v.isEmpty ? null : v),
             // ── 分类维度（value 用分类名本身）──
             categoryValue: _groupFilter ?? '',

@@ -50,6 +50,48 @@ import '../tokens.dart';
 export '../../core/title_match.dart';
 
 // ───────────────────────────────────────────────────────────────────────
+//  N2 门禁注入口（2026-10-27）
+//
+//  # 为什么必须有它
+//
+//  `flutter test` 里没有核心 DLL ⇒ `SourinApi.listProviders()` 与
+//  `searchAllStream()` **都必然抛异常**（项目已知：`Failed to load dynamic
+//  library 'sourin_core.dll'`）⇒ `_candidates` 恒为空。
+//
+//  而本项要钉的是**过滤**（"候选里不许出现当前源"）。在空候选上断言
+//  "没有当前源"是**恒真**的 —— 铁律 149：候选集为空时，全称断言恒真。
+//  ⇒ "排掉了" 与 "根本没搜到" 在断言眼里一模一样。
+//
+//  ⇒ 这个口子只替换**取数那一段**（真实链路里 `listProviders` +
+//    `searchAllStream` 两个调用），喂进去的事件仍然走**同一个 `onEvent`
+//    闭包**（真的 `switch (ev.kind)` ⇒ 真的 `_candidates.add` + 真的排序
+//    ⇒ 真的渲染 ⇒ 真的过滤）。**不是**在测试里另写一份过滤逻辑。
+//
+//  # 生产零影响
+//  为 null 时（生产恒为 null）走原样的 FFI 分支，一行行为都不变。
+//  ★ 与 `pan_settings_page.dart:180 debugPanCredentialStatusFetcher`
+//    同款：顶层可变变量 + `@visibleForTesting` setter。
+// ───────────────────────────────────────────────────────────────────────
+
+/// 测试注入口：替换"取候选源"那一段的取数来源
+///
+/// 参数：`(keyword, onEvent)`，`onEvent` 与真实 `searchAllStream` 的回调
+/// **同签名同语义**（返回 false = 停止接收）。
+@visibleForTesting
+Future<void> Function(String keyword, bool Function(SearchStreamEvent ev) onEvent)?
+    debugSwitchSearchRunner;
+
+/// 注册/注销上面的注入口（测试在 addTearDown 里复位为 null）
+@visibleForTesting
+void debugSetSwitchSearchRunner(
+  Future<void> Function(
+          String keyword, bool Function(SearchStreamEvent ev) onEvent)?
+      f,
+) {
+  debugSwitchSearchRunner = f;
+}
+
+// ───────────────────────────────────────────────────────────────────────
 //  `titleSimilarity` / `bestTitleScore` / `stableRankDesc`
 //
 //  ★ task-73：**已搬到 `lib/core/title_match.dart`**
@@ -217,6 +259,21 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
     });
 
     try {
+      /*
+       * ★ N2 注入口：只替换"取数那一段"，`onEvent` 闭包**是同一个**
+       *   ⇒ 走的仍是真实的事件处理 / 累积 / 排序 / 过滤 / 渲染。
+       *   生产恒为 null ⇒ 走下面原样的 FFI 分支。
+       */
+      final injected = debugSwitchSearchRunner;
+      if (injected != null) {
+        await injected(kw, (ev) {
+          if (!mounted) return false;
+          _handleEvent(ev);
+          return true;
+        });
+        return;
+      }
+
       final providers = await SourinApi.listProviders();
       if (mounted) {
         setState(
@@ -226,7 +283,20 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
 
       await SourinApi.searchAllStream(kw, (ev) {
         if (!mounted) return false;
-        switch (ev.kind) {
+        _handleEvent(ev);
+        return true;
+      });
+    } catch (e) {
+      debugPrint('[SWITCH] 搜索失败: $e');
+    } finally {
+      if (mounted) setState(() => _searching = false);
+    }
+  }
+
+  /// 真实的事件处理段 —— 生产链路（`searchAllStream` 回调）与门禁注入路径
+  /// **共用这一份**（"判据只有一个来源"：不许测试里另写一遍累积/排序）。
+  void _handleEvent(SearchStreamEvent ev) {
+    switch (ev.kind) {
           case SearchEventKind.hit:
             /*
              * ★ 算相似度并**按相似度排序**（最可能"同一部"的排前面）
@@ -274,13 +344,6 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
           case SearchEventKind.error:
             break;
         }
-        return true;
-      });
-    } catch (e) {
-      debugPrint('[SWITCH] 搜索失败: $e');
-    } finally {
-      if (mounted) setState(() => _searching = false);
-    }
   }
 
   void _pick(MediaItem item) {
@@ -310,7 +373,38 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
      *    不确定 ⇒ 弹层每次重建都可能换序，用户看到列表在跳。
      *    与搜索页**同一套判据**（本仓铁律：判据只有一个来源）。
      */
-    final sorted = stableRankDesc(_candidates, (c) => c.score);
+    /*
+     * ★★★ N2（2026-10-27）：**换源必须排除当前片源**
+     *
+     * # Owner 原话（逐字）
+     * ```text
+     * 换源后还是没跟着上次的进度条走（换源应该要排除当前片源）
+     * ```
+     *
+     * # 为什么在**provider 维度**排而不是 item 维度
+     * ```text
+     * 候选是按源分组的（一个源一组 items）。用户点「换源」是为了
+     * 「换一个源看同一部片」—— 把自己正在看的那个源列在候选里，
+     * 点它就是原地不动，等于一个"点了没反应"的选项。
+     * ⇒ 排掉**整个当前源**，而不是只排掉它的那一条 item。
+     * ```
+     *
+     * # 排空之后不装没事
+     * ```text
+     * 只有一个源时（最典型：聚合源本身）排完就是空表 ⇒ 走下面既有的
+     * 「没有找到其他源」分支如实说，绝不回退成"把当前源又列出来"。
+     * ```
+     */
+    final candidates = _candidates
+        .where((c) => c.provider != widget.currentProvider)
+        .toList(growable: false);
+    final excludedCurrent = _candidates.length - candidates.length;
+    if (excludedCurrent > 0) {
+      debugPrint('[SWITCH] 候选排除当前源=${widget.currentProvider} '
+          '（排掉 $excludedCurrent 组，剩 ${candidates.length} 组）');
+    }
+
+    final sorted = stableRankDesc(candidates, (c) => c.score);
 
     /*
      * ★ 2026-10-16：外壳改走全仓统一的 `AppDialogShell`
@@ -526,11 +620,31 @@ class _CandidateBlock extends StatelessWidget {
                 ),
               ],
               /*
-               * ★ 当前源**要显示**而不是过滤掉
+               * ★★★ 2026-10-27（N2）：上面那段"当前源要显示而不是过滤掉"的
+               *   旧决定**已被 Owner 推翻**，这里如实记下，不留过期结论骗下一个人。
                *
-               * 原版注释：
-               * > 用户需要看到"我现在这个源也搜到了"，
-               * > 这能确认搜索是对的；过滤掉反而让人以为搜漏了。
+               * # 旧决定（原版注释，逐字）
+               * ```text
+               * 用户需要看到"我现在这个源也搜到了"，
+               * 这能确认搜索是对的；过滤掉反而让人以为搜漏了。
+               * ```
+               *
+               * # Owner 新决定（2026-10-27，逐字）
+               * ```text
+               * 换源后还是没跟着上次的进度条走（换源应该要排除当前片源）
+               * ```
+               * ⇒ 候选列表**在 provider 维度**就把当前源整组排掉（见 `build`
+               *   顶部那段）。点自己正在看的源 = 原地不动，是个"点了没反应"
+               *   的选项，留着只会让人以为换源没生效。
+               *
+               * # 这段徽标为什么**留着**
+               * ```text
+               * 它是 `_CandidateBlock` 的渲染契约（"条目属于当前源"该长什么样），
+               * 而**上游已经保证不会再有当前源的组进来** ⇒ 实际渲染中
+               * `isCurrent` 恒为 false，这段不会出现。
+               * 删掉它要连带改构造器签名，收益为零；留着是"能力在位但不触发"，
+               * 比"删了以后某人又想把当前源列回来时重新写一遍"更省事。
+               * ```
                */
               if (isCurrent) ...[
                 const SizedBox(width: Sp.x2),

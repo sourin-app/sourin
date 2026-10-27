@@ -57,7 +57,7 @@
 // 用法：
 // ```powershell
 // # 先 build 到 Release 目录，再从**含 libmpv-2.dll 的目录**运行
-// $env:Path = "C:\Users\iuuuuuuuu\flutter\bin;$env:Path"
+// $env:Path = "<flutter>\bin;$env:Path"
 // flutter build windows --release -t lib/t465_skip_dialog_probe.dart `
 //   --dart-define=DATA_DIR_OVERRIDE=D:\WishProject\sourin-flutter-spike\.probe\t465_data
 // # 把 Release\* 复制到 .probe\t465_run\ 后：

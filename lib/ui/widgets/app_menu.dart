@@ -53,12 +53,54 @@
 ///   另外 child 模式下菜单默认 `PopupMenuPosition.over`（盖住按钮），
 ///   而 detail_page 用的是 `under`（在按钮下方）⇒ 位置也会变。
 ///   ⇒ 所以 ② 走**函数**：调用方保留自己那套取位与按钮，只换菜单面。
+// ═══════════════════════════════════════════════════════════════════════
+//  ★★★ N7（2026-10-27）：menu 液态玻璃化 —— **面 = 框架 Material + 玻璃 tokens；
+//  材质只落在条目上**
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Owner 原话（N7）：「menu 也很丑，完全不适配现在的液态玻璃设计风格」。
+//
+// # 这一支为什么**没有**把「整块菜单面」做成玻璃（先写清楚，免得下一个人重做）
+// ```text
+// 菜单面那条 `Material` 在框架 `showMenu` 内部
+//   （flutter/src/material/popup_menu.dart:784  `_PopupMenuState.build`）
+// ⇒ 它**不受本文件控制**：本文件只能通过 `showMenu` 的参数给它
+//   color / shape / elevation / clipBehavior（这些已经全给了）。
+//
+// 要做出"整块面玻璃"只剩一条路：在菜单面**外面再套一层** `GlassContainer`。
+// 那正是**重复模糊层** —— 旧13 的台账 31/42 与 `test/zz_t1044_glass_blur_parity_test.dart`
+// 实测背书禁止的形态：
+//   · 台账 31 逐像素：模糊对卡片**内部零贡献**，可见差异**全在边缘那圈描边**；
+//   · t1044 实测：整层摘掉玻璃 Δpeak=58（画面会变）⇒ 玻璃不是"白付"，
+//     但**再叠一层**只会加 raster 成本，不会多出可见收益。
+// ⇒ 所以本文件**不**为了"整块面玻璃"而在外面加第二层 —— 这是形态的如实描述，
+//   不是把 Owner 的要求降级（裁定见 task-4 的 Lead 回复）。
+// ```
+//
+// # 那么玻璃到底落在哪
+// ```text
+// ① **面**：继续由框架 `Material` 承担，但颜色/圆角/描边**全部走本仓玻璃 tokens**
+//    （`AppMenuSurface`：surfaceContainerHighest + outlineVariant + Radii.md + elevation 0）
+//    —— 与 `AppDialogShell` / `AppGlassDialog` 的卡片同源。这一段 2026-10-17 已完成，
+//    本轮的 t137 关系判据钉着它，**不许动**。
+// ② **条目**：`AppMenuGlassSurface`（本文件新增）—— 每条一枚玻璃材质。
+//    这是"材质落在条目上"的唯一落点，**不再往面上叠第二层**。
+// ③ **动效**：从框架默认（300ms / linear）换成**本仓自己的动效档**
+//    （`Motion.base` + `Motion.easeOut`，与 `OverlayCardMotion` 同一套曲线/时长），
+//    并尊重「减少动效」⇒ `AnimationStyle.noAnimation`。
+// ```
+//
+// ⚠️ 两个开关都**生产恒 false**（`debugSkipGlassMenu` 恒 false），只用于 A/B 对照：
+//    默认行为（挂玻璃）一个像素都没动。
 library;
 
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
+    show GlassContainer, LiquidRoundedRectangle;
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
 import '../../design/icons/app_icons.dart';
+import 'motion_prefs.dart';
 
 /// 菜单面的**统一几何** —— `AppMenuButton` 与 [showAppMenu] 共用这一份。
 ///
@@ -90,6 +132,85 @@ class AppMenuSurface {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  N7：条目玻璃材质（**唯一**的玻璃落点）
+// ═══════════════════════════════════════════════════════════════════════
+
+/// 生产恒 `false` 的测量仪器开关 —— 只用于 A/B 对照（`test/zz_t1059_n7_menu_glass_test.dart`）。
+///
+/// # 为什么要有它（而不是"改产品行为来对照"）
+/// ```text
+/// 逐像素门禁需要"挂玻璃"与"不挂玻璃"两张图。若靠**改产品代码**来造对照，
+/// 那对照本身就在改产品 —— 门禁跑完还得记得改回来（旧批踩过"忘了回滚"）。
+/// ⇒ 用这个守卫：生产路径恒 false，只有测试把它翻 true。
+/// ```
+/// ⚠️ 与 `app_dialog_shell.dart` 的 `debugSkipGlassShell` /
+///    `app_glass_dialog.dart` 的 `debugSkipGlassDialog` **各自独立**：
+///    三个外壳三个开关，互不影响（改一个不会顺手改到别的弹窗）。
+bool debugSkipGlassMenu = false;
+
+/// 这一次要不要跳过条目玻璃
+///
+/// # 与「减少动效」的关系（旧13 的取舍：reduced-motion 档不挂玻璃）
+/// ```text
+/// `MediaQuery.disableAnimations` = 用户已声明减少动效/效果
+///   ⇒ 连材质也一起降下来（省的是 raster 成本；代价是**可感知的**，
+///     逐像素对照见 t1044：摘玻璃 Δpeak=58、全在边缘描边、卡片内部 zero）。
+/// 这与 `app_dialog_shell.dart:508` 的 `skipGlassShellFor` / `app_glass_dialog.dart`
+/// 的 `_skipGlass` 是**同一条判据**，三处形状一致。
+/// ```
+bool _skipGlassMenu(BuildContext context) =>
+    debugSkipGlassMenu ||
+    (MediaQuery.maybeOf(context)?.disableAnimations ?? false);
+
+/// 把**一条菜单项的内容**包上玻璃材质。
+///
+/// # 它是"材质"，不是"内容" —— 所以只包内容，不碰条目几何
+/// `PopupMenuItem` 自己的 `height: 40` / padding / `InkWell` / `Semantics`
+/// **一字不动**（那几样是行为契约，t137 与无障碍都钉着）；本件只在它们**里面**
+/// 加一层玻璃材质 ⇒ 点击、键盘、读屏全部走原路。
+///
+/// # 为什么不是"给整块面加玻璃"
+/// 见文件头那一段：菜单面在框架内部，外面再套一层 = 重复模糊层（被旧13 实测否定）。
+///
+/// # 为什么用 `LiquidRoundedRectangle` 而不是 `LiquidRoundedSuperellipse`
+/// `AppDialogShell` 玻璃档用的是 `LiquidRoundedRectangle(borderRadius: Radii.lg)`
+/// （`app_dialog_shell.dart:524`）⇒ 条目沿用**同一个形状类**，只是半径取 `Radii.md`
+/// （菜单比对话框矮一档，与 `AppMenuSurface` 的圆角语言一致）。
+Widget appMenuGlassItem(BuildContext context, Widget child) {
+  if (_skipGlassMenu(context)) return child;
+  return GlassContainer(
+    shape: kAppMenuGlassShape,
+    padding: EdgeInsets.zero,
+    child: child,
+  );
+}
+
+/// 菜单**进出场**的动效档 —— 与 `AppGlassDialog` 那一族同一套 token。
+///
+/// # 改前是什么（实测：本仓自己没给，全吃框架默认）
+/// ```text
+/// `showMenu` 不传 `popUpAnimationStyle` ⇒ `_PopupMenuRoute.transitionDuration`
+///   落在 `_kMenuDuration = 300ms`，`createAnimation` 的 curve 落在 `Curves.linear`
+///   （flutter/src/material/popup_menu.dart:50 / :1017-1026）
+/// ⇒ 与本仓 `Motion.base`(260ms) / `Motion.easeOut` 的动效**不是一套**，
+///   且与本仓所有浮层（对话框/抽屉）的观感不一致 —— 这正是 Owner
+///   说的「完全不适配现在设计风格」的一条具体成分。
+/// ```
+///
+/// # 为什么尊重「减少动效」时给 `noAnimation` 而不是"时长为 0 的动画"
+/// 与 `overlay_motion.dart:62 overlaySheetAnimationStyle` **同一条**判据：
+/// `noAnimation` 让路由**不建动画层**（零 ticker），而"时长 0"仍会建。
+AnimationStyle appMenuAnimationStyle(BuildContext context) =>
+    MotionPrefs.reduce(context)
+        ? AnimationStyle.noAnimation
+        : const AnimationStyle(
+            // 曲线/时长取本仓浮层那一套（`OverlayMotion.cardDuration` = Motion.base、
+            // `OverlayMotion.cardCurve` = Motion.easeOut）。
+            duration: OverlayMotion.cardDuration,
+            curve: OverlayMotion.cardCurve,
+          );
+
 /// 只统一**菜单面**的弹出函数 —— 给"已经有自己按钮"的调用方用。
 ///
 /// # 什么时候用它（而不是 [AppMenuButton]）
@@ -117,6 +238,8 @@ Future<T?> showAppMenu<T>({
     elevation: 0,
     shape: surface.shape,
     constraints: kAppMenuConstraints,
+    // ★ N7：动效吃本仓那一套（框架默认是 300ms/linear）—— 两个入口共用
+    popUpAnimationStyle: appMenuAnimationStyle(context),
     items: <PopupMenuEntry<T>>[
       for (final it in items) _appMenuItem<T>(context, it),
     ],
@@ -134,26 +257,53 @@ PopupMenuItem<T> _appMenuItem<T>(BuildContext context, AppMenuItem<T> it) {
     value: it.value,
     enabled: it.enabled,
     height: 40,
-    // ★ 调用方自带行时直接用（见 AppMenuItem.child 的文档）
-    child: it.child ??
-        Row(
-          children: [
-            if (it.icon != null) ...[
-              Icon(it.icon, size: 16, color: fg),
-              const SizedBox(width: Sp.x3),
-            ],
-            Expanded(
-              child: Text(
-                it.label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: FontSizes.sm, color: fg),
-              ),
-            ),
-          ],
-        ),
+    /*
+     * ★★★ N7：**条目玻璃** —— 唯一落点，包在 **child 的外面**。
+     *
+     * # 为什么包 child 而不是包整个条目
+     * ```text
+     * `PopupMenuItem.height` / padding / 内建 `InkWell` / `Semantics`
+     * 都在 `PopupMenuItemState.build` 里（framework 内部）：
+     *   ConstrainedBox(minHeight: height) → Padding → Align → buildChild()
+     * ⇒ 传进来的 `child` 正好**落在那一串里面** ⇒ 包它就是"给条目内容加材质"，
+     *   而条目高 40、点击、键盘、读屏语义**一个都没动**（t137 钉着那些）。
+     * ```
+     * ⚠️ 若包在 `PopupMenuItem` **外面**（包整个条目），会同时套住框架的
+     *    `InkWell` ⇒ 涟漪画到玻璃底下看不见，且禁用项的 IconTheme 也会被隔离。
+     */
+    child: appMenuGlassItem(context, it.child ?? _itemRow(it, fg)),
   );
 }
+
+/// 条目内容的标准排版（图标 16 + Sp.x3 间距 + 文字 sm）—— 与改前逐字相同。
+///
+/// ★ 抽出来的理由：N7 加玻璃时，`child: appMenuGlassItem(...)` 那一层需要一个
+///   **表达式**，而 `if (it.icon != null) ...[]` 的集合展开只能写在
+///   `children:` 里 ⇒ 用一个小函数比在调用点塞一个 `Builder` 干净。
+Widget _itemRow<T>(AppMenuItem<T> it, Color fg) => Row(
+      children: [
+        if (it.icon != null) ...[
+          Icon(it.icon, size: 16, color: fg),
+          const SizedBox(width: Sp.x3),
+        ],
+        Expanded(
+          child: Text(
+            it.label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: FontSizes.sm, color: fg),
+          ),
+        ),
+      ],
+    );
+
+/// 条目玻璃的**形状** —— 与 `AppMenuSurface` 同源（`Radii.md`）。
+///
+/// ★ 提成常量：`GlassContainer` 的 `shape` 是 `LiquidShape`（非 const 构造链上
+///   必须能 const 化，否则每帧 new 一个 shape 对象 ⇒ 触发 render 对象
+///   `shape` setter 的 `markNeedsPaint`，等于每帧重画一遍玻璃）。
+const LiquidRoundedRectangle kAppMenuGlassShape =
+    LiquidRoundedRectangle(borderRadius: Radii.md);
 
 /// 菜单项 —— 与 `PopupMenuItem` 同形，调用方改动最小
 ///
@@ -231,6 +381,8 @@ class AppMenuButton<T> extends StatelessWidget {
       elevation: 0,
       shape: surface.shape,
       constraints: kAppMenuConstraints,
+      // ★ N7：动效与 [showAppMenu] 共用同一份（框架默认 300ms/linear）
+      popUpAnimationStyle: appMenuAnimationStyle(context),
       onSelected: onSelected,
       itemBuilder: (context) => [
         for (final it in items) _buildItem(context, it),

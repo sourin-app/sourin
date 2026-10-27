@@ -354,29 +354,53 @@ void main() {  // ════════════════════�
   //  2. 起播取弹幕的优先级
   // ═══════════════════════════════════════════════════════════════════
 
-  group('2. B 站优先：绑了就一个 dandanplay 请求都不发', () {
-    test('① _loadDanmakuNamed 里 B 站分支在令牌之前、且 return 掉', () {
+  group('2. B 站弹幕：起播按 manual 分流（R2-#5：手绑的自动更新、非手绑的不套用）', () {
+    test('① 起播只套用手动绑定（R2-#5），dandanplay 主路原样', () {
       final i0 = _page.indexOf('Future<void> _loadDanmakuNamed(');
       expect(i0, greaterThan(0));
-      final iBind = _page.indexOf('final biliBind = loadBinding(', i0);
-      final iCid = _page.indexOf('final cid = biliBind.cidFor(_epIndex);', i0);
-      final iLoad = _page.indexOf('await _loadBiliDanmaku(cid);', i0);
       final iToken = _page.indexOf('final token = ++_danmakuFetchToken;', i0);
+      final iClient = _page.indexOf('final client = _ensureDanmakuClient(', i0);
+      expect(iToken, greaterThan(i0), reason: '★ 令牌仍在');
       // T27-13：这根针只锚前缀 `final client = _ensureDanmakuClient(`，
       // 不写死参数表 —— T27-05 给它加了 `unsignedLocal` 命名参数后调用点
       // 变成 `_ensureDanmakuClient(unsignedLocal: usingLocal);`，写死 `()`
       // 会让 indexOf 找不到返回 -1 ⇒ 假红（与被钉的顺序语义无关）。
-      // 语义不变：dandanplay 客户端的懒建必须在令牌之后（B 站分支
-      // return 掉了就不会建客户端），iClient > iToken 这条继续咬人。
-      final iClient = _page.indexOf('final client = _ensureDanmakuClient(', i0);
-      expect(iBind, greaterThan(i0), reason: '★ 必须查绑定');
-      expect(iCid, greaterThan(iBind), reason: '★ 必须按当前集算 cid');
-      expect(iLoad, greaterThan(iCid), reason: '★ 必须走 B 站那条路');
-      expect(iToken, greaterThan(iLoad),
-          reason: '★★ B 站分支必须在 final token = ++_danmakuFetchToken; 之前并 return —— '
-              '否则会继续往下建 dandanplay 客户端，绑了 B 站就不发 dandanplay 请求当场失效');
-      expect(iClient, greaterThan(iToken),
+      final iClientAll = iClient;
+      expect(iClientAll, greaterThan(iToken),
           reason: '★ dandanplay 客户端的懒建必须在令牌之后（原有顺序不能动）');
+      /*
+       * ★★★ R2-#5 **最终语义**（2026-10-27 第二次裁定，逐字：
+       *   > 我的意思是bilibi不要再自动绑定,手动绑定的以后就自动更新）
+       *
+       * # 2026-10-28 改（独立复核指出"只有源码级判据"之后）
+       * ```text
+       * 判据从"两条件拼在一行"抽成了**纯函数** `biliCidForAutoApply(...)`
+       * （`lib/core/bili/bili_bind.dart`）⇒ 行为现在由
+       * `test/zz_r2_5_bili_auto_apply_test.dart` 直接钉住（三态 + 边界），
+       * 本条退回它该干的事：**守调用点没被绕过**。
+       * ```
+       * # 本条守什么
+       * ```text
+       * 起播路径必须**通过那个纯函数**决定要不要套用，且把 manual 当入参传进去：
+       *   · 改成不看 manual（或直接把 binding 拿来用）⇒ 早期自动残留会被套用
+       *     （就是 Owner 撞到的"又自动绑了"）；
+       *   · 整段没有 ⇒ "手动绑定的以后就自动更新"失效。
+       * 注入记录：`.probe/r2-5-manual-gate-inject.log`（旧形态）、
+       *           `.probe/r2-5-purefn-inject.log`（抽成纯函数后）。
+       * ```
+       */
+      final body = _page.substring(i0, iClientAll);
+      final iPure = body.indexOf('biliCidForAutoApply(');
+      expect(iPure, greaterThan(-1),
+          reason: '★ 起播必须走三态判据的**唯一实现**（`biliCidForAutoApply`），'
+              '不许在这里另写一份条件（两份判据迟早漂移）');
+      final iManual = body.indexOf('manual: isManualBinding(', iPure);
+      expect(iManual, greaterThan(iPure),
+          reason: '★★ 必须把「这一部是不是手绑的」当入参传进去 —— '
+              '不传就等于「自动绑定」复活（manual=false 的残留也会生效）');
+      final iUse = body.indexOf('if (biliAutoCid > 0)', iManual);
+      expect(iUse, greaterThan(iManual),
+          reason: '★ 返回值必须真的被用来决定"要不要取这一集"（否则算出 0 也没用）');
     });
 
     test('② _loadBiliDanmaku 用的是同一套令牌/loading 骨架', () {
@@ -539,16 +563,62 @@ void main() {  // ════════════════════�
       );
     });
 
-    test('⑤ 解绑后能退回 dandanplay（分支查不到绑定就往下走）', () {
+    test('⑤ 解绑真的清记录；不带 manual 的裸套用形态不许回来（R2-#5）', () {
       final i0 = _page.indexOf('void _biliUnbind()');
       expect(i0, greaterThan(0));
       final body = _page.substring(i0, i0 + 900);
       expect(body.contains('clearBinding(widget.provider, widget.id);'), isTrue,
-          reason: '★ 解绑要真的把偏好删掉（否则下次起播还是 B 站）');
+          reason: '★ 解绑要真的把偏好删掉（记录不清 = 面板展示与解绑失去对象）');
       expect(body.contains('_danmakuComments = const <DanmakuComment>[];'), isTrue,
           reason: '★ 画面上的弹幕也要清 —— 留着会让用户以为解绑没生效');
-      expect(_page.contains('if (biliBind != null && !biliBind.isEmpty) {'), isTrue,
-          reason: '★ 这就是退回 dandanplay 的机制');
+      expect(_page.contains('if (biliBind != null && !biliBind.isEmpty) {'), isFalse,
+          reason: '★★ R2-#5（2026-10-27）：**不带 manual 判据**的套用形态不许回来 —— '
+              '它会让 manual=false 的历史残留也被自动套用（Owner 眼中的「自动绑定」）');
+    });
+
+    /*
+     * ★★ 覆盖缺口**已闭合**（2026-10-28，独立复核指出后当天解决）：
+     * ```text
+     * 缺口：本组 ①⑤⑦ 都是源码级判据，证明不了"运行时 manual=false 真的不套用"。
+     * 三次夹具尝试全部失败（都记在下方，别再重踩），最后换的思路是**在生产侧开缝**：
+     *   把三态判据抽成纯函数 `biliCidForAutoApply(binding:, manual:, episodeIndex:)`
+     *   （`lib/core/bili/bili_bind.dart:295`）⇒ 行为立刻变成可单测的。
+     *   ⇒ 行为级判据：`test/zz_r2_5_bili_auto_apply_test.dart`（4 条：三态 + 越界/无 cid）
+     *     注入（把 `if (!manual) return 0;` 改成 `if (false)`）⇒ ② 真红
+     *     （`Expected <0> / Actual <4242>`，日志 `.probe/r2-5-purefn-inject.log`）
+     *   ⇒ 本条（源码级）退回它该干的：**守调用点没被绕过**（必须走那个纯函数、必须把
+     *     manual 当入参传进去）。注入（把 `manual: isManualBinding(...)` 改成 `manual: true`）
+     *     ⇒ 本条红。
+     * ```
+     * # 三次失败尝试的结论（留档，避免重复投入）
+     * ```text
+     * v1 假 HttpClient —— 只换传输层，`updateDanmaku` 的分页/鉴权/重试仍在跑 ⇒ 挂死。
+     * v2 假 BiliApi  + await 探针 —— 挂死（3:15 did not complete）。
+     * v3 假 BiliApi  + unawaited+pump —— 两条都在 0 秒 did not complete。
+     * 已核：`updateDanmaku` 在 `danmaku()` 之前没有 await 其它 I/O；`markBiliSynced()` 是 void。
+     * ⇒ 卡点是这条链"等帧/等定时器"的语义与 flutter_test 的假时钟互锁，
+     *   不是夹具写错 ⇒ **不要再用测试技巧去绕，直接在生产侧开缝**。
+     * ```
+     */
+    test('⑦ 切集自动刷新也先问 manual（R2-#5 的第二条消费路径）', () {
+      /*
+       * ★ 为什么单独一条：起播那条改对了**不代表**这条对。
+       * `_biliAutoRefresh` 被 `updateEpisodes` / `_gotoEpisode` 调用，前置只有
+       * `biliAutoUpdateEnabled()`（全局开关）⇒ 若它不看 manual，
+       * manual=false 的残留照样会在"切一集"时自动套用 ⇒ Owner 的现象原样复现。
+       * 注入：删掉这行门控 ⇒ 本条红（`.probe/r2-5-manual-gate-inject.log`）。
+       */
+      final i0 = _page.indexOf('Future<void> _biliAutoRefresh() async {');
+      expect(i0, greaterThan(0), reason: '★ 方法还在');
+      final iGate = _page.indexOf(
+          'if (!isManualBinding(widget.provider, widget.id)) return;', i0);
+      expect(iGate, greaterThan(i0),
+          reason: '★★ 自动刷新必须先问 manual —— 只靠全局开关 = 残留也会自动刷新');
+      final iBind =
+          _page.indexOf('final b = loadBinding(widget.provider, widget.id);', i0);
+      expect(iBind, greaterThan(i0), reason: '★ 原本的读绑定还在');
+      expect(iGate, lessThan(iBind),
+          reason: '★ 门控在读绑定**之前**（先判够不够格，再去取数据）');
     });
 
     test('⑥ 客户端在 dispose 里被 close（与 dandanplay 同段收尾）', () {

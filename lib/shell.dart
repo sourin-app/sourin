@@ -8310,14 +8310,37 @@ void _installFrameLogger() {
       final chunk = src.substring(flushedLen);
       flushedLen = src.length;
       // ★ 异步写：不阻塞 UI isolate（CR #27）；追加而非重写。
+      /*
+       * ⚠️ 2026-10-27（批末实机验收抓出的**未捕获异常**，Lead 修）：
+       * ```text
+       * 原写法：`f.writeAsString(...).catchError((Object e) { 落盘失败不致命 })`
+       *   `File.writeAsString` 返回 `Future<File>`，而 handler 返回 `void`
+       *   ⇒ 运行期抛「Invalid argument(s) (onError): The error handler of
+       *      Future.catchError must return a value of the future's type」
+       *   ⇒ **每次 flush 失败路径上都冒一条未捕获异常**。
+       *
+       * ★ 归因实测（不是我猜的）：`.probe/accept-attr-framelog.sh`
+       *   SOURIN_FRAME_LOG=1 ⇒ unhandled=**3** ；SOURIN_FRAME_LOG=0 ⇒ unhandled=**0**
+       *   ⇒ 确证真凶就是这一处（只在开帧日志仪器时走到）。
+       *
+       * ★ 归属：**既存缺陷**（`git show HEAD:lib/shell.dart` 该段逐字相同），
+       *   不是本批任何改动引入 —— 但它**污染批末实机验收读数**
+       *   （未捕获异常计数是验收的必查项），所以顺手修掉。
+       *
+       * 修法：先把 `Future<File>` 映射成 `Future<Object?>`，再 catchError 返回 `null`
+       *   ⇒ handler 的返回值类型与 future 的元素类型一致，不再抛。
+       * ```
+       */
       unawaited(
         f
             .writeAsString(
           chunk,
           mode: firstWrite ? FileMode.write : FileMode.append,
         )
+            .then<Object?>((v) => v)
             .catchError((Object e) {
-          /* 落盘失败不致命 */
+          /* 落盘失败不致命 —— 返回 null 与 Future<Object?> 的元素类型一致 */
+          return null;
         }),
       );
       firstWrite = false;

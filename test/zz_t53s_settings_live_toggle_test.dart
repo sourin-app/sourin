@@ -338,7 +338,7 @@ Future<bool> _navToLiveTab(WidgetTester tester, String tag) async {
    *   **回到顶部**再往前扫（与 `task18_entry_test.dart:_scrollTo` 同一手法）。
    *   不做这一步就会得到「入口没找到」这种**仪器问题式假红**。
    */
-  if (_count(find.text('JS 插件')) == 0) {
+  if (_count(find.text('源')) == 0) {
     try {
       final pos = tester
           .state<ScrollableState>(find.byType(Scrollable).first)
@@ -350,12 +350,12 @@ Future<bool> _navToLiveTab(WidgetTester tester, String tag) async {
       log('$tag| ★ 跳回顶失败：${e.toString().split(String.fromCharCode(10)).first}');
     }
   }
-  final entry = _safe(find.text('JS 插件'));
+  final entry = _safe(find.text('源'));
   if (entry == null) {
     log('$tag| ★★ 一级页没找到「JS 插件」入口 ⇒ 后续读数全部无效');
     return false;
   }
-  log('$tag| 一级页「JS 插件」文本命中 = ${_count(find.text('JS 插件'))}');
+  log('$tag| 一级页「JS 插件」文本命中 = ${_count(find.text('源'))}');
   log('$tag| 入口行矩形 = ${_rect(tester, entry)}');
   await tester.ensureVisible(entry);
   await tester.pump();

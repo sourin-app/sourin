@@ -54,7 +54,7 @@ const String kStubName = 'stub_flutter.ps1';
 
 /// 真 flutter 那一行在脚本里的**形状**（唯一注入点）。
 ///
-/// ★ 跨平台（2026-10-10 预检）：原来是 `kRealFlutter = r'C:\Users\iuuuuuuuu\…'`
+/// ★ 跨平台（2026-10-10 预检）：原来是 `kRealFlutter = r'<USERPROFILE>\…'`
 ///   —— 那是**本机专属**路径：CI（macOS 跑 macOS、Windows 跑 windows-latest）
 ///   以及任何别人的机器上，`tools/run_client.ps1` 里那一行都**不是**这个值。
 ///   于是唯一注入点匹配不上 ⇒ 本文件 setUpAll 抛 StateError ⇒ 整文件红。
@@ -263,7 +263,7 @@ class FakeTree {
     //   锚点消失就**抛错停下**，绝不放行。
     //   锚点与替换串都是纯 ASCII，用 latin1 编解码不影响其余字节。
     // ★ 跨平台（2026-10-10 预检）：锚点**从被读的这份字节里提取**，
-    //   不再用写死的本机路径 —— 原写法（kRealFlutter = r'C:\Users\iuuuuuuuu\…'）
+    //   不再用写死的本机路径 —— 原写法（kRealFlutter = r'<USERPROFILE>\…'）
     //   在 CI 与别人的机器上必然匹配不上。
     //   「提取不到就抛错」这条铁律一字未改（_prereqOk 也会先挡一道）。
     final String? realFlutter = realFlutterPathIn(latin1.decode(bytes));

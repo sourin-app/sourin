@@ -152,6 +152,7 @@ import '../core/skip_window.dart' show SkipWindow, skipTarget, windowsOf;
 import 'widgets/source_switch_dialog.dart';
 import '../ui/app_scaffold.dart';
 import '../design/icons/app_icons.dart';
+import '../design/widgets/app_ink_well.dart';
 
 /// 把播放页里的**浮层面板**包成深色皮肤（task-28 ①-B）
 ///
@@ -2429,7 +2430,154 @@ class _PlayerPageState extends State<PlayerPage>
          */
         sourceName: _danmakuInfoSourceName,
         updatedAt: _danmakuInfoUpdatedAt,
+        /*
+         * ★★★ N6（2026-10-27）②：绑定区逐路明细。
+         *
+         * ⚠️ `bindings` 住在 `DanmakuInfoData` 上（面板只读 `d.bindings`）——
+         * 所以明细必须在这里带上，而不是从 `DanmakuInfoPanel(...)` 传。
+         * 第一版传错了位置（analyze 直接报 undefined_named_parameter）。
+         *
+         * # 什么时候带
+         * ```text
+         * 面板**可见时**才现读存储（`_danmakuInfoVisible`）——
+         * 不可见时白读四次 UiPrefs 没有意义。
+         * ```
+         */
+        bindings: _danmakuInfoVisible ? _danmakuBindings : const <DanmakuBindRouteView>[],
       );
+
+  /// ★★★ N6（2026-10-27）②：弹幕面板「绑定」区的**四路明细**
+  ///
+  /// # 数据来源：**现读既有绑定记录**，不新造存储（计划 N6 明文）
+  /// ```text
+  /// dan-api 路 ⇒ `loadDanmakuBind(provider, id)`（弹幕库绑定，UiPrefs）
+  /// Bili   路 ⇒ `loadBinding(provider, id)`（外部视频站绑定，bili_bind）
+  /// 两条 id 语系隔离（`batch_bind.dart` 开头 2026-10-15 的教训：
+  /// batch_bind 不许 import bili_bind）⇒ **在宿主侧拼行**，存储各归各家。
+  ///
+  /// 本片源自带 / 本机外部两路**没有逐片绑定记录**（旧10 语义）⇒
+  /// 只显示、不可解绑（`unbindable: false`）。
+  /// ```
+  ///
+  /// ⚠️ 「当前生效的那一路」用 `_infoSource` 判 —— 那是宿主的**既有事实**。
+  ///    面板的 `DanmakuAggregateFeed.label` 是**渠道类别名**（插件提供 /
+  ///    导入源 / 本机服务 / 本地弹幕库），与"四路 route"不是一套坐标，
+  ///    **不能**拿它当 route 匹配。
+  List<DanmakuBindRouteView> get _danmakuBindings {
+    final p = _provider;
+    final id = _contentId;
+    final epIdx = _epIndex;
+
+    // ── dan-api 路（弹幕库绑定）──
+    final dmStore = loadDanmakuBind(p, id);
+    final dmBindId = dmStore?.episodes[epIdx] ?? 0;
+
+    // ── Bili 路（外部视频站绑定）──
+    final bili = loadBinding(p, id);
+    final biliCid = bili == null ? 0 : bili.cidFor(epIdx);
+    BiliEpisodeBinding? biliEp;
+    if (bili != null && biliCid > 0) {
+      for (final e in bili.episodes) {
+        if (e.cid == biliCid) {
+          biliEp = e;
+          break;
+        }
+      }
+    }
+
+    // dan-api 在宿主语义里同时覆盖内置/自建服务那几档
+    final danApiActive = _infoSource == DanmakuInfoSource.service ||
+        _infoSource == DanmakuInfoSource.selfHosted;
+    final localActive = _infoSource == DanmakuInfoSource.localDanmaku ||
+        _infoSource == DanmakuInfoSource.library;
+
+    return <DanmakuBindRouteView>[
+      // ① 本片源自带 —— 旧10 强制常开语义 ⇒ **只显示、不可解绑**
+      DanmakuBindRouteView(
+        route: DanmakuBindRoute.sourceNative,
+        label: '本片源自带',
+        note: '随片加载，无法解绑',
+        bound: _infoSource != DanmakuInfoSource.none,
+        active: _infoSource != DanmakuInfoSource.none,
+        unbindable: false,
+      ),
+      // ② dan-api 路 —— 可解绑
+      DanmakuBindRouteView(
+        route: DanmakuBindRoute.danApi,
+        label: 'dan-api',
+        workTitle: dmStore?.workTitle ?? '',
+        episodeNo: dmBindId > 0 ? epIdx + 1 : 0,
+        bindId: dmBindId,
+        bound: dmStore != null && dmBindId > 0,
+        active: danApiActive,
+        unbindable: true,
+      ),
+      // ③ Bili 路 —— 可解绑
+      DanmakuBindRouteView(
+        route: DanmakuBindRoute.bili,
+        label: 'Bili',
+        workTitle: bili?.title ?? '',
+        episodeNo: biliCid > 0 ? epIdx + 1 : 0,
+        episodeTitle: biliEp?.part ?? '',
+        bindId: biliCid,
+        bound: bili != null && biliCid > 0,
+        active: _infoSource == DanmakuInfoSource.bili,
+        unbindable: true,
+      ),
+      // ④ 本机外部 —— 无逐片绑定记录（旧10 同族）⇒ 只显示
+      DanmakuBindRouteView(
+        route: DanmakuBindRoute.localExternal,
+        label: '本机外部',
+        note: '按当前播放地址自动匹配',
+        bound: localActive,
+        active: localActive,
+        unbindable: false,
+      ),
+    ];
+  }
+
+  /// ★★★ N6（2026-10-27）③：**解绑** —— 只解"用户/搜索建立的绑定"
+  ///
+  /// # Owner 原话（逐字）
+  /// ```text
+  /// 这里默认展开，然后来源、渠道、绑定的什么来源、哪一个弹幕都要显示出来，
+  /// 并且支持解绑。
+  /// ```
+  ///
+  /// # 硬边界（计划 N6 明文）
+  /// ```text
+  /// 只解绑用户/搜索建立的绑定；"本片源自带"那一路（旧10 强制常开语义）
+  /// **不提供解绑**，只显示。
+  /// ```
+  ///
+  /// # 为什么解绑后"重进页面仍是解绑态"
+  /// ```text
+  /// 清的是**既有存储**（dan-api 路 = UiPrefs 绑定；Bili 路 = bili_bind），
+  /// 不是内存态 ⇒ 重建/重进页面自然还是解绑后的样子。
+  /// 这就是持久化证据的来源。
+  /// ```
+  void _unbindDanmakuRoute(DanmakuBindRoute route) {
+    final p = _provider;
+    final id = _contentId;
+    switch (route) {
+      case DanmakuBindRoute.danApi:
+        clearDanmakuBind(p, id);
+        debugPrint('[DMK] 信息面板解绑：dan-api 路（$p:$id）');
+      case DanmakuBindRoute.bili:
+        clearBinding(p, id);
+        debugPrint('[DMK] 信息面板解绑：Bili 路（$p:$id）');
+      case DanmakuBindRoute.sourceNative:
+      case DanmakuBindRoute.localExternal:
+        // 面板侧本来就不给这两路解绑入口（unbindable == false）
+        // ⇒ 走到这里说明调用点错了，如实记一行，不静默。
+        debugPrint('[DMK] 信息面板解绑：$route 不可解绑 —— 调用点应当已挡住');
+        return;
+    }
+    // 解绑后重新取一次弹幕（复用既有 `_reloadDanmaku`：语义与解绑完全一致
+    // —— 别按旧绑定来，重新找一遍），并重建明细行。
+    _reloadDanmaku();
+    if (mounted) setState(() {});
+  }
 
   /// 面板要显示的「**具体哪个源**」（null = 宿主也不知道 ⇒ 面板走自己的降级路径）
   ///
@@ -7251,10 +7399,12 @@ class _PlayerPageState extends State<PlayerPage>
      * ```
      */
     /*
-     * ★★★ task-31 ④：绑了 外部视频站 ⇒ **外部视频站优先**，danmaku-service 一条请求都不发。
+     * ★★★ task-31 ④ → R2-#5 更正（2026-10-27）：优先序只剩 dan-api 这一路
      *
-     * 没绑（或这一集没有 cid）⇒ 直接往下走 —— 行为与接线前**逐字节相同**。
-     * 解绑后下一次起播就自动退回 danmaku-service。
+     * 原本这里是「绑了 外部视频站 ⇒ 外部视频站优先」。R2-#5（Owner 亲口
+     * 「就是不要自动绑定 已经绑定的不管」）把起播套用 外部视频站 历史绑定
+     * 整段删掉（见下方注释块）⇒ 现存优先序：dan-api 整部绑定（用户亲手绑）
+     * > danmaku-service 常规路；外部视频站弹幕只认当场手动入口。
      */
     /*
      * ★★★ 2026-10-15（整部绑定）：用户手动绑过的弹幕库对应关系**优先**。
@@ -7296,41 +7446,67 @@ class _PlayerPageState extends State<PlayerPage>
      * ⇒ 只在「马上要用」的那一行之前赋值，提前 return 的路径就不会污染它。
      */
 
-    final biliBind = loadBinding(widget.provider, widget.id);
-    if (biliBind != null && !biliBind.isEmpty) {
-      final cid = biliBind.cidFor(_epIndex);
-      if (cid > 0) {
-        await _loadBiliDanmaku(cid);
-        return;
-      }
-      /*
-       * ★★ Owner 第 9 条（2026-10-09）：绑了 外部视频站、但这一集没有 cid ⇒ **必须说出来**
-       *
-       * # 改前这里是**静默**落空（`}` 直接闭合）
-       * ```text
-       * 用户绑了 外部视频站 ⇒ 下面 danmaku-service 那条必定没有凭证 ⇒ 403 ⇒
-       *   _flash('弹幕失败：Missing Authentication Headers ｜ 弹幕服务没收到凭证…')
-       * 用户看到这句会以为「外部视频站要登录」——**完全不是**。
-       * 真实原因是「这一集没匹配到分 P」⇒ 两件事必须分开说。
-       * ```
-       *
-       * # ★ 为什么"外部视频站搜索免登录"不是问题所在（诊断时先排除了这条）
-       * ```text
-       * lib/core/bili/bili_api.dart:3 记着：外部视频站搜索接口本来就免登录，
-       * 未登录一样能搜。所以用户报的「未登录应该都能搜索」**本来就成立** ——
-       * 挡路的从来不是登录态，而是「绑定了 外部视频站之后就不再走搜索」这条路。
-       * ```
-       *
-       * # 为什么是 _flash 而不是角标/弹窗
-       * 与下面那条失败提示**同一条通道**（`_flash` → `_tip` → `_TipBubble`）：
-       * 用户先看到「已改用 danmaku-service」，紧接着看到 danmaku-service 的失败 ——
-       * 两句话连起来才是一个完整因果，用户就知道该去查分 P 而不是去登录 外部视频站。
-       *
-       * ⚠️ 这句话**逐字**是 `test/zz_t3_flash_probe_test.dart:46` 的 `kTipFallThrough`，
-       *    改一个字那个探针就会红（它是**故意**钉住这条文案的）。
-       */
-      if (!_danmakuEnabled) return;
-      _flash('外部视频站弹幕：这一集没匹配到分 P（cid），已改用 danmaku-service');
+    /*
+     * ★★★ 2026-10-27（R2-#5）：**起播只套用「手动绑过」的 外部视频站 绑定**
+     *
+     * # Owner 原话（同一件事问了两次，第二句才是完整语义）
+     * ```text
+     * 第一次：> 就是不要自动绑定 已经绑定的不管
+     * 第二次：> 我的意思是bilibi不要再自动绑定,手动绑定的以后就自动更新
+     * ```
+     *
+     * # ⇒ 三态，不是"一律关掉"
+     * ```text
+     * ① 没有任何绑定              ⇒ **永不自动建立**（不搜配、不猜标题）
+     * ② 有绑定但 manual == false  ⇒ **不套用、不自动更新**
+     *    （那是早期自动流程留下的残留 ⇒ 正是 Owner 眼中"又自动绑了"的来源）
+     * ③ 有绑定且 manual == true   ⇒ **起播套用 + 切集自动更新**
+     *    （第二句原话：「手动绑定的以后就自动更新」）
+     * ```
+     *
+     * # 为什么判据早就在、只是没用
+     * `bili_bind.dart:257 saveBinding` 从第一版起就把"手动绑过"单独存一个键
+     * （`BiliPrefs.manualKey`，见那里的注释：「这样自动流程改绑时不会把它抹掉」）
+     * ⇒ `isManualBinding()` 一直可用，但**起播与切集自动刷新两处都没问它**。
+     * · 一律套用 ⇒ ② 的残留让 Owner 说"又自动绑了"
+     * · 一律不套用 ⇒ ③ 失效（手绑过的每集都要重新点，"以后自动更新"是空话）
+     * 两种极端都错，所以这里必须是**按 manual 分流**。
+     *
+     * # 改前 / 改后的差别（只差一个条件）
+     * ```text
+     * 改前：if (biliBind != null && !biliBind.isEmpty) { ... return; }
+     *       —— 对 ② 也生效，这是真缺陷
+     * 改后：多了 && isManualBinding(provider, id)
+     *       —— ③ 保留（Owner 要的），② 关掉（Owner 不要的）
+     * ```
+     *
+     * # 记录一律不清
+     * 已存的绑定记录（含 ② 的残留）**不删**：弹幕信息面板仍读 `loadBinding`
+     * 展示、可解绑；用户若想启用，走面板手动入口把它变成 manual。
+     * ⇒ 这是"区分"而不是"清除"，所以不需要数据迁移。
+     *
+     * # 守护门禁
+     * `test/t73_bili_wiring_test.dart` 组2 ①⑤⑦：
+     *   ① 起播分支必须带 manual 判据（删掉判据 ⇒ 红）
+     *   ⑤ 不带 manual 的裸套用形态不许回来（加回来 ⇒ 红）
+     *   ⑦ 切集自动刷新同样必须先问 manual
+     * 注入记录见 `.probe/r2-5-manual-gate-inject.log`。
+     */
+    /*
+     * ★ 三态判据抽成纯函数（`bili_bind.dart: biliCidForAutoApply`）：
+     *   没有绑定 / manual=false / 这一集没 cid ⇒ 0 ⇒ 不套用；
+     *   有绑定且 manual=true ⇒ 该集 cid。
+     *   ⇒ 判据本身现在**可被单测直接钉住**（`test/zz_r2_5_bili_auto_apply_test.dart`），
+     *     不再只有源码级判据（那是 2026-10-28 独立复核指出的覆盖缺口）。
+     */
+    final biliAutoCid = biliCidForAutoApply(
+      binding: loadBinding(widget.provider, widget.id),
+      manual: isManualBinding(widget.provider, widget.id),
+      episodeIndex: _epIndex,
+    );
+    if (biliAutoCid > 0) {
+      await _loadBiliDanmaku(biliAutoCid);
+      return;
     }
 
     // ★ OPS-10 ⑤：没绑定（或这一集没 cid）才回到「开关说了算」
@@ -9085,6 +9261,23 @@ class _PlayerPageState extends State<PlayerPage>
   /// `shouldAutoUpdate` 已经把「开关关了 / 缓存还新鲜」两条判掉 ⇒ 这里
   /// 只管拿到绑定、按当前集算 cid、取一次。
   Future<void> _biliAutoRefresh() async {
+    /*
+     * ★★ R2-#5（2026-10-27）：**只对「手动绑过」的作品自动更新**
+     *
+     * # 为什么这条是必须的（比起播那条更容易漏）
+     * 两个调用点（`updateEpisodes` / `_gotoEpisode`）的前置条件只有
+     * `biliAutoUpdateEnabled()`（全局开关），**不看这一部是不是手绑的** ⇒
+     * 早期自动流程残留的 manual==false 记录会在这里被**自动套用**：
+     * 用户切一集，弹幕就"自己出来了" —— 正是 Owner 说的"自动绑定"。
+     * 起播那条已在 `_loadDanmakuNamed` 按 manual 分流，这里是同一语义的
+     * **第二条**消费路径（`bili_auto_update.dart` 的注释也把它与起播并列）。
+     *
+     * # 与全局开关的关系
+     * `biliAutoUpdateEnabled()` = "**允许**自动更新"（用户偏好，全局）；
+     * `isManualBinding()` = "**这一部够格**被自动更新"（数据来源，逐作品）。
+     * 两个都真才更新 —— 前者不是后者的替代品。
+     */
+    if (!isManualBinding(widget.provider, widget.id)) return;
     final b = loadBinding(widget.provider, widget.id);
     if (b == null || b.isEmpty) return;
     final cid = b.cidFor(_epIndex);
@@ -16307,6 +16500,13 @@ class _PlayerPageState extends State<PlayerPage>
                       dmInfoOpen: _danmakuInfoOpen,
                       onToggleDmInfo: () =>
                           setState(() => _danmakuInfoOpen = !_danmakuInfoOpen),
+                      /*
+                       * ★★★ N6（2026-10-27）③：解绑的落点是**宿主 State**
+                       *   （`_unbindDanmakuRoute`：清存储 + 重取弹幕 +
+                       *   重建明细行）。绑定明细（②）不走这里 —— 它是
+                       *   `_danmakuInfo.bindings`（见上面的 getter）。
+                       */
+                      onUnbindDanmakuRoute: _unbindDanmakuRoute,
                       onBack: () => unawaited(_exitPlayer()),
                       onHints: hints.isEmpty ? null : _toggleHints,
                       /*
@@ -17357,6 +17557,15 @@ class _PlayerPageState extends State<PlayerPage>
                           state: _danmakuSettings,
                           biliState: _biliState,
                           draft: _danmakuSearchDraft,
+                          /*
+                           * ★★★ 2026-10-28（N4-3 #1）：把**作品名**传进搜索页。
+                           *
+                           * 搜索页自己只知道每一集的标题（`localTitles`），
+                           * 作品名只有播放页有 ⇒ 单一数据源，在这里传。
+                           * 为什么不是"搜索页去查一次"：那会多一条数据通路，
+                           * 且两个来源迟早漂移（本仓踩过"两处同构必须一起改"的坑）。
+                           */
+                          workTitle: widget.title,
                           localTitles: _episodes.map((e) => e.title).toList(),
                           onSearch: (keyword) => unawaited(_searchDanmaku(keyword)),
                           onBiliSearch: _biliSearch,
@@ -18008,6 +18217,42 @@ class _ErrorOverlay extends StatelessWidget {
                 fontWeight: FontWeight.w600,
               ),
             ),
+            /*
+             * ════════════════════════════════════════════════════════════
+             * ★★★ N5b（2026-10-27）：**归属徽标** —— 这是插件的问题还是
+             *      播放器本体的问题
+             * ════════════════════════════════════════════════════════════
+             *
+             * # Owner 原话（逐字）
+             * ```text
+             * 播放失败定位与诊断，这个如果播放失败应该具体是谁的问题，
+             * 在界面上显示出来是插件还是播放器本体的问题
+             * ```
+             *
+             * # 为什么放在 headline 与正文**之间**
+             * ```text
+             * 顺序 = 用户心里的三个问题：
+             *   ① 发生了什么   ← headline（旧08 已有）
+             *   ② 这是谁的锅   ← 本行（N5b 新增）
+             *   ③ 原文怎么说   ← _body（旧08 已有）
+             * 归属是"一句可执行的分诊"，必须在细节**之前**，
+             * 否则用户先读一堆插件原文、再看到归属，认知顺序是反的。
+             * ```
+             *
+             * ⚠️ 第一版**插错了地方**（插在 `_body` 后面）—— 被
+             *    `zz_t1058` 的顺序判据当场抓住（badgeY > bodyY ⇒ 红）。
+             *    这正是那条几何断言的用途：只读源码看不出"顺序反了"。
+             *
+             * # 没归类时不画
+             * ```text
+             * `failure == null`（老路径 / 探针注入的裸串）⇒ **不画归属**。
+             * 不许猜 —— 归属判断错了比不显示更糟（计划 N5b 纪律）。
+             * ```
+             */
+            if (failure != null) ...[
+              const SizedBox(height: Sp.x2),
+              _OwnerBadge(owner: failure!.owner),
+            ],
             const SizedBox(height: Sp.x2),
             Text(
               _body,
@@ -18141,6 +18386,51 @@ class PlayerErrorCardForProbe extends StatelessWidget {
       onLogin: onLogin,
     );
   }
+}
+
+/*
+ * ══════════════════════════════════════════════════════════════════════
+ * ★★★ N5b（2026-10-27）：归属徽标 ——「插件侧问题 / 播放器问题 /
+ *      播放服务·网络问题 / 源站问题 / 说不清是哪一侧」
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * # 只做一件事：把 `PlaybackFailureOwner.label` 画成一个克制的小徽标
+ * ```text
+ * 判据不在本组件里 —— 在 `lib/core/sourin_api.dart` 的 `ownerOf(kind)`
+ * （纯函数，可单测）。UI 只负责显示。
+ * ★ 本仓铁律「判据只有一个来源」：不许在这里再写一份 switch。
+ * ```
+ *
+ * # 为什么不用 FilledButton / 卡片
+ * ```text
+ * 这是**分诊信息**，不是操作入口 ⇒ 不抢「重试 / 返回」的视觉权重。
+ * 用最轻的形态：细描边 + 小字 + 主题的 onSurfaceVariant 色。
+ * ```
+ *
+ * # 「说不清是哪一侧」也照画
+ * ```text
+ * 冒认一个方向会把用户引去查错的地方（N5b 纪律）。
+ * 如实说"说不清"比猜一个强 —— 但它**不写成错误**，只是一种结论。
+ * ```
+ */
+class _OwnerBadge extends StatelessWidget {
+  const _OwnerBadge({required this.owner});
+
+  final PlaybackFailureOwner owner;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    key: const ValueKey<String>('playback-owner-badge'),
+    padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 2),
+    decoration: BoxDecoration(
+      borderRadius: Radii.rFull,
+      border: Border.all(color: Colors.white24),
+    ),
+    child: Text(
+      owner.label,
+      style: const TextStyle(color: Colors.white70, fontSize: FontSizes.cap),
+    ),
+  );
 }
 
 /// 改前对照卡片（**只用于截图取证**，生产路径永不使用）
@@ -20442,6 +20732,25 @@ Future<int> debugPlayerReloadDanmakuForProbe({HttpClient? fake}) async {
   return s._danmakuComments.length;
 }
 
+/// 探针用：**直接注入一个假的 `BiliApi` 实例**（不经过 HttpClient）
+///
+/// # 为什么需要这个（2026-10-28 独立复核指出的覆盖缺口）
+/// ```text
+/// 现有的 `debugPlayerReloadDanmakuForProbe(fake: HttpClient)` 只能替换**传输层**，
+/// 而取数链路上还有分页/鉴权/重试 ⇒ 离线夹具里 `manual=true` 那条会**挂住**
+/// （实测 3~5 分钟 "did not complete"）⇒ 行为级判据写不出来，只剩源码级判据。
+/// ⇒ 这里再开一个更窄的口：直接换 `_biliApi` 对象本身。
+///   假实现只需覆写 `danmaku(cid)`（与 `t70_bili_danmaku_test.dart` 的 `_FakeApi` 同款），
+///   一次网络都不发 ⇒ 行为级判据可以稳定跑。
+/// ```
+/// ⚠️ 只在探针/测试里调用；生产路径不经过它。
+void debugPlayerSetBiliApiForProbe(BiliApi api) {
+  final s = _livePlayerState;
+  if (s == null) return;
+  // ignore: invalid_use_of_protected_member
+  s.setState(() => s._biliApi = api);
+}
+
 /// 用假 HttpClient 走一次**起播取 外部视频站弹幕**（探针用）
 ///
 /// 返回失败原文（成功 = 空串）。专门给 OPS-10 现象 A 的
@@ -20863,7 +21172,12 @@ class _TopBar extends StatelessWidget {
     this.dmInfo,
     this.onToggleDmInfo,
     this.dmInfoOpen = false,
+    this.onUnbindDanmakuRoute,
   });
+
+  /// ★★★ N6（2026-10-27）③：面板解绑回调（宿主 `_unbindDanmakuRoute`）
+  /// —— 本类只转发，不自己清存储。
+  final void Function(DanmakuBindRoute route)? onUnbindDanmakuRoute;
 
   final String title;
   final String? episodeTitle;
@@ -21088,6 +21402,38 @@ class _TopBar extends StatelessWidget {
                             vertical: 3,
                           ),
                           decoration: BoxDecoration(
+                            /*
+                             * ★ 2026-10-27（R2-#6）：这里**曾经被改过 0.85，现在已回滚到 0.55**。
+                             *
+                             * # 为什么回滚（Lead 自曝的一次改错对象）
+                             * ```text
+                             * 我依据 `.agents/notes/proposed/bug-fix/2026-10-20-…-adjacent-badge.md`
+                             * 把这一处（**站标徽章**，显示站名）从 0.55 改成了 0.85。
+                             * 那份记录断言：「chip 不透明 ⇒ 毛边不是 chip，是旁边那枚 badge」。
+                             *
+                             * ★ Owner 2026-10-27 **给了截图并指认**：毛边在**「弹幕」胶囊**上，
+                             *   不是这枚站标徽章 ⇒ **我改错了对象**，故回滚。
+                             *
+                             * ★ 而且我反证了那份记录：用 Owner 截图量到
+                             *   chip 内亮度 108.2、chip 外背景反推 240
+                             *   ⇒ chip 确实是 `black@0.55`（把亮背景压到 45%）。
+                             *   ⇒ 旧记录说"chip 不透明"是**因为它在纯黑背景上量的** ——
+                             *     `black@0.55` 叠在黑底上看起来就是纯黑，于是被误判成不透明。
+                             *   ⇒ **它的"排除 chip"结论建立在错误前提上**。
+                             * ```
+                             *
+                             * # 留这条注释的价值
+                             * ```text
+                             * 1. 防后人再按那份记录来改这里（它会白改一轮）。
+                             * 2. 记录本批第一条"**证据本身有前提错**"的案例：
+                             *    不是判据写错，而是**测量条件**（背景明暗）使读数失真。
+                             *    ⇒ 教训：**量半透明对象的边缘，必须在有内容的背景上量**，
+                             *      纯黑背景上量会把半透明误判成不透明。
+                             * ```
+                             *
+                             * ⚠️ 本处**保持 0.55 不动**（Owner 未指认它）；真正的对象是弹幕 chip
+                             *    （见 `_DanmakuChip` 的 `backgroundColor` 那一段）。
+                             */
                             // 与「直播」徽章同款底：黑 0.55 让它压得住任何画面
                             color: Colors.black.withValues(alpha: 0.55),
                             borderRadius: Radii.rFull,
@@ -21192,6 +21538,10 @@ class _TopBar extends StatelessWidget {
                 child: _DanmakuInfoPanelHost(
                   data: dmInfo!,
                   onClose: onToggleDmInfo!,
+                  /* ★★★ N6（2026-10-27）③：解绑的落点是**宿主 State**
+                   *   （`_PlayerPageState._unbindDanmakuRoute`：清存储 +
+                   *   重取弹幕 + 重建明细行），经 `_TopBar` 透传到这里。 */
+                  onUnbindRoute: onUnbindDanmakuRoute,
                 ),
               ),
             ),
@@ -21231,10 +21581,20 @@ class _TopBar extends StatelessWidget {
 ///   不过一旦宿主把 `dmInfo` 传成 null（例如控制条隐藏时不再传），整个子树
 ///   就会被移除 ⇒ 展开状态丢失。把这个状态提到宿主这一层最省心。
 class _DanmakuInfoPanelHost extends StatefulWidget {
-  const _DanmakuInfoPanelHost({required this.data, required this.onClose});
+  const _DanmakuInfoPanelHost({
+    required this.data,
+    required this.onClose,
+    this.onUnbindRoute,
+  });
 
   final DanmakuInfoData data;
   final VoidCallback onClose;
+
+  /// ★★★ N6（2026-10-27）③：解绑回调（宿主 `_unbindDanmakuRoute`）
+  ///
+  /// 绑定明细（②）**不走这里** —— 它是 `DanmakuInfoData.bindings`，
+  /// 随 [data] 一起进来。本类只做转发。
+  final void Function(DanmakuBindRoute route)? onUnbindRoute;
 
   @override
   State<_DanmakuInfoPanelHost> createState() => _DanmakuInfoPanelHostState();
@@ -21248,6 +21608,22 @@ class _DanmakuInfoPanelHostState extends State<_DanmakuInfoPanelHost> {
       // 窄窗口（手机竖屏）时收窄，避免挡掉太多画面
       maxWidth: MediaQuery.sizeOf(context).width < 640 ? 240 : 300,
       onRequestClose: widget.onClose,
+      /*
+       * ★★★ N6（2026-10-27）①：**默认展开**
+       *
+       * 根因是面板自身缺省 `initiallyExpanded = false`（且宿主没传）——
+       * 从徽标点进来只能看到窄条，要**再点一次**才见全量卡片。
+       * Owner 原话：「这里默认展开」。
+       * 收起能力（× 收回窄条）保留 —— 面板内部照旧管自己的展开态。
+       * ★ 面板侧缺省也已翻成 true；这里**显式**传一次，
+       *   把"宿主确实要求展开"这件事写死在调用点上（谁改回窄条都得先删这行）。
+       */
+      initiallyExpanded: true,
+      /* ★★★ N6（2026-10-27）③：解绑 —— 回调是宿主给的 `_unbindDanmakuRoute`
+       *   （清存储 + 重取弹幕 + 重建明细行都在那边）。
+       *   ⚠️ ②「绑定区逐路明细」**不走这里** —— 它是 `DanmakuInfoData.bindings`
+       *   的字段，随 `widget.data` 一起进来（面板只读 `d.bindings`）。 */
+      onUnbindRoute: widget.onUnbindRoute,
     );
   }
 }
@@ -21420,6 +21796,62 @@ Widget debugDanmakuInfoChipForProbe({
       clipBehavior: clipBehavior,
     );
 
+// 弹幕 chip 的**等效不透明填充色**（R2-#6 · Owner 裁定 (c)）
+//
+// # 取值依据（受控渲染实测，可复跑：`.probe/r3-chip-selfdraw-vs-actionchip.dart`）
+// ```text
+// 现状 `ActionChip(backgroundColor: black@0.55)` 在**纯红底**上实测内部 = (114,111,115)。
+// 而"黑@0.55 压在纯红底上"应得 (115,0,0) ⇒ **实测 G=111 ⇒ 它并不是压在红底上**。
+// 反推：它压在**chip 自带的近白面**上 ⇒ (114,111,115) = 0.45 × (白面≈253)。
+// ★ 所以"观感不变"的**不透明**等效色就是那个实测值本身：`0xFF726F73`。
+// ```
+//
+// # 为什么必须**不透明**（这是四次弯路后的结论）
+// ```text
+//   方案                       内部            边缘−内部(Δ)
+//   ActionChip(black@0.55)     (114,111,115)   +1.8    ← 现状
+//   自绘 + 半透明               (115,0,0)      **+41.9** ← 更糟（边缘改混背景）
+//   自绘 + 不透明黑             (0,0,0)        **+76.2** ← 最糟
+//   自绘 + 不透明灰 #726F73     (114,111,115)   **+0.0** ← ★ 本实现
+// ⇒ **Δ = 0** 意味着"边缘像素与内部同值" ⇒ **那圈亮边在数学上不存在**。
+//   （半透明时，边缘的未覆盖部分混的背景亮度与内部不同 ⇒ 必然有落差。）
+// ```
+const Color kDanmakuChipFill = Color(0xFF726F73);
+
+/// 弹幕信息 chip（R2-#6 · Owner 2026-10-27 裁定 **(c) 自绘药丸**）
+///
+/// # 起点：`.agents/notes/proposed/bug-fix/2026-10-20-danmaku-chip-edge-is-adjacent-badge.md`
+/// ```text
+/// 那是本问题的**第一份记录**，也是我第一次改错的依据 ——
+/// 它用六条像素证据断言「chip 不透明 ⇒ 毛边不是 chip，是旁边那枚 badge」。
+/// ★ 而 Owner 指认毛边**就在这个 chip 上**，且我后来用它自己的数据反证了它：
+///   它在**纯黑底**上量 chip ⇒ `black@0.55` 叠黑底看起来就是纯黑 ⇒ 被误判成"不透明"。
+/// ⇒ **不是它不严谨，是它的测量条件有系统偏差**（这是本批第一条"证据本身有前提错"）。
+/// ```
+///
+/// # 为什么从 `ActionChip` 改成自绘（**四次弯路的最终结论**）
+/// ```text
+/// 前三次（都记在上面与 `.probe/r2-6-selfdraw-verdict.md` 里）：
+///   ① 改错**对象**（改了站标徽章）② 对象对了但**方向错**（0.55→0.85，Δ 1.8→38.8）
+///   ③ 查出真病根是"chip 自带的亮面在边缘漏出"，但当时**不敢动构造**（怕破 UI-1 门禁）
+/// ⇒ Owner 这次明确选 (c)，我先做了**四方案受控渲染**，定出本形态：
+///   **自绘 + 不透明等效色** ⇒ 内部观感与现状**逐字相同**（114,111,115）而 **Δ=0**。
+/// ```
+///
+/// # ⚠️ 用 `AppInkWell` 而**不是**裸 `InkWell`（不是随意选，是门禁的形态要求）
+/// ```text
+/// `zz_ui1_no_handrolled_controls_test.dart:236` 的药丸门禁，判据是
+/// "**裸的 InkWell 加左括号**"（正则含一个负向后顾，**放过** `AppInkWell`）。
+/// ⚠️ 那段正则**不剥注释** —— 所以本段**不能**把那个字面写法原样写出来
+///    （第一版我写了，门禁立刻报 `lib/ui/player_page.dart:<本注释行>`：
+///     它把我这段**说明**当成了 offender。★ 与 t98 那次同形：
+///     **"写规则的人被规则绊"**，因为判据的触发条件覆盖了文档文本）。
+/// ⇒ 本实现用 `AppInkWell`：**既拿到 InkWell 的涟漪/焦点/可点，又不触发那条门禁**
+///   （该门禁自己的注释 :224-234 写明这个负向后顾是**有意**的 ——
+///    `AppInkWell` 是"去 Material 后的正确形态"）。
+/// ★ 这与"把药丸加进白名单"**不同**：白名单是**让门禁少查一处**（本批已记过"空条款=假绿"），
+///   而这里是**换成一个不触发判据的正确写法**。
+/// ```
 class _DanmakuInfoChip extends StatelessWidget {
   const _DanmakuInfoChip({
     required this.data,
@@ -21430,11 +21862,13 @@ class _DanmakuInfoChip extends StatelessWidget {
   final DanmakuInfoData data;
   final VoidCallback onTap;
 
-  /// ★ R1：交给 `ActionChip` 的 `Material.clipBehavior`
-  /// （见 [kDanmakuChipClipBehavior] 上方那份**实测读数**与裁决）。
+  /// ★ R1 遗留参数：从前交给 `ActionChip` 的 `Material.clipBehavior`。
   ///
-  /// 生产调用点（`:19602`）**不传**它 ⇒ 走默认值 `Clip.none`（= 框架默认、
-  /// 也是实测边缘最平的那一档）；只有像素探针为了做对照才显式换值。
+  /// ⚠️ 自绘形态下**没有 Material 裁剪**，所以它**已无作用**；
+  /// 保留它只为**不改调用点签名**（生产调用点不传它）。
+  /// ★ 像素探针若仍按"换 clipBehavior 做对照"的旧思路用它会**得到无差异读数** ——
+  ///   那是因为**该参数已失效**，不是探针坏了（`kDanmakuChipClipBehavior` 上方那段注释仍有效，
+  ///   它讲的是 `ActionChip` 时代的事，留作史料）。
   final Clip clipBehavior;
 
   @override
@@ -21442,48 +21876,38 @@ class _DanmakuInfoChip extends StatelessWidget {
     final bad = data.hasError;
     final n = data.count;
     final text = bad ? '弹幕 !' : (n == null ? '弹幕' : '弹幕 $n');
-    /*
-     * ★ 用框架的 `ActionChip`，不手写「InkWell + 全圆角容器」——
-     *   本仓 UI-1 门禁（`zz_ui1_no_handrolled_controls_test`）会直接判红：
-     *   手写药丸应当换成 ChoiceChip / FilterChip / ActionChip。
-     *
-     * 换来的不只是过门禁：整块可点、涟漪、焦点环、读屏语义都有了。
-     * 长相用 `backgroundColor` / `side` / `labelStyle` / `visualDensity` 调回去。
-     */
+    // ignore: unused_local_variable
+    final _ = clipBehavior; // 见上方说明：保留签名但不再消费
     return Tooltip(
       message: '弹幕信息（来源 / 条数 / 匹配方式 / 失败原因）',
-      child: ActionChip(
-        onPressed: onTap,
-        // ★ R1：显式把裁剪值传下去（默认 Clip.none = 实测边缘最平的一档）。
-        //   ⚠️ 不要"顺手"改成 Clip.antiAlias —— 探针实测它让环带峰值
-        //   从 0 升到 +1.59 亮度级（原因见 kDanmakuChipClipBehavior 上方）。
-        clipBehavior: clipBehavior,
-        // 与旁边站名/直播徽章同款：半透明黑底、无描边
-        backgroundColor: Colors.black.withValues(alpha: 0.55),
-        side: BorderSide.none,
-        // 顶栏很窄（Sp.x10 高），把 chip 的默认内边距压下来才不撐高
-        visualDensity: VisualDensity.compact,
-        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        labelPadding: const EdgeInsets.symmetric(horizontal: 0),
-        padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
-        shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
-        label: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              bad ? AppIcons.error_outline : AppIcons.subtitles_outlined,
-              size: 13,
-              color: bad ? const Color(0xFFFF6B6B) : Colors.white70,
-            ),
-            const SizedBox(width: Sp.x1),
-            Text(
-              text,
-              style: const TextStyle(
-                color: Colors.white70,
-                fontSize: FontSizes.cap,
+      child: AppInkWell(
+        onTap: onTap,
+        borderRadius: Radii.rFull,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 3),
+          decoration: const BoxDecoration(
+            // ★★ 不透明等效色（见 `kDanmakuChipFill` 的取值依据与四方案读数）
+            color: kDanmakuChipFill,
+            borderRadius: Radii.rFull,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                bad ? AppIcons.error_outline : AppIcons.subtitles_outlined,
+                size: 13,
+                color: bad ? const Color(0xFFFF6B6B) : Colors.white70,
               ),
-            ),
-          ],
+              const SizedBox(width: Sp.x1),
+              Text(
+                text,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: FontSizes.cap,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

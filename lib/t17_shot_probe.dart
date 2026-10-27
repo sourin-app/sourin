@@ -82,7 +82,7 @@ Future<void> main() async {
   ok('★ 前置条件：核心起来了', boot['ok'] == true, '$boot');
 
   // ★ 扫**真的**下载根（Owner 那个无旁文件的目录）
-  const realRoot = 'C:\\Users\\iuuuuuuuu\\Videos\\源影';
+  final realRoot = '${Platform.environment['USERPROFILE'] ?? ''}\\Videos\\源影';
   CachePage.debugScanRootOverride = realRoot;
   say('扫描根（注入）: $realRoot');
 

@@ -342,7 +342,7 @@ void main() {
       // ── 前置条件：两条行都在列表上 ──
       expect(find.byType(SettingsPage), findsOneWidget,
           reason: '一级设置页没建起来 —— 仪器问题，不是入口问题');
-      final jsRow = _entryRow('JS 插件');
+      final jsRow = _entryRow('源');
       final embyRow = _entryRow('Emby');
       expect(jsRow, findsOneWidget, reason: '设置列表里找不到「JS 插件」入口行');
       expect(embyRow, findsOneWidget, reason: '设置列表里找不到「Emby」入口行（对照组）');
@@ -398,12 +398,12 @@ void main() {
       //   而业主是按了键/遥控器之后才有的焦点。用真按键才证明
       //   "这条路上焦点真的会落到这一行"。
       var tabs = 0;
-      while (!_rowFocus(tester, 'JS 插件').hasFocus && tabs < kMaxTabs) {
+      while (!_rowFocus(tester, '源').hasFocus && tabs < kMaxTabs) {
         await tester.sendKeyEvent(LogicalKeyboardKey.tab);
         await tester.pumpAndSettle();
         tabs++;
       }
-      final focused = _rowFocus(tester, 'JS 插件').hasFocus;
+      final focused = _rowFocus(tester, '源').hasFocus;
       log('② Tab x' + tabs.toString() + ' 后「JS 插件」行 hasFocus=' +
           focused.toString() +
           '  primary=' +
@@ -489,7 +489,7 @@ void main() {
       final backJs = await _meanRgb(tester, pJs);
       final backEm = await _meanRgb(tester, pEm);
       final deltaHoverPose = _gray(backEm) - _gray(backJs);
-      final node = _rowFocus(tester, 'JS 插件');
+      final node = _rowFocus(tester, '源');
       log('⑥a 返回后(指针仍在行上=业主原姿势) JS=${_rgb(backJs)} Emby=${_rgb(backEm)}  Δ(Emby−JS)=${deltaHoverPose}  hasFocus=${node.hasFocus}');
       await _shoot(tester, 'zz8_after_pop_hover.png');
 
@@ -663,14 +663,14 @@ void main() {
       log('降级用例读数：coreReady=$_coreReady ErrorWidget=$errs '
           'SettingsPage=${find.byType(SettingsPage).evaluate().length} '
           'EntryRow=${find.byType(SettingsEntryRow).evaluate().length} '
-          'JS插件=${find.text('JS 插件').evaluate().length} '
+          'JS插件=${find.text('源').evaluate().length} '
           '关于=${find.text('关于').evaluate().length}');
       expect(find.byType(ErrorWidget), findsNothing,
           reason: '整棵设置页子树被换成 ErrorWidget（读数=$errs）⇒ build() 抛了异常。'
               '这就是 CI 上那条唯一的红：核心库不在时不许让异常逃出 build()');
       expect(find.byType(SettingsPage), findsOneWidget,
           reason: '一级设置页没建起来 —— 仪器问题，不是入口问题');
-      expect(find.text('JS 插件'), findsOneWidget,
+      expect(find.text('源'), findsOneWidget,
           reason: '核心库不在时「JS 插件」入口行也必须渲染出来');
       expect(find.text('关于'), findsOneWidget,
           reason: '核心库不在时「关于」入口行也必须渲染出来');

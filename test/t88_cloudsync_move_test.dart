@@ -108,7 +108,7 @@ void main() {
       for (final anchor in const [
         '内容源、网络与同步', // 页头副标题
         '局域网遥控', // 保留在一级页的区块（方案 A 之后）
-        'JS 插件', // 同上
+        '源', // 同上（N8a 更名）
         '备份与恢复', // ★ 二级页入口行 —— 搬迁的**起点**
         'BackupSettingsPage', // 入口行 push 的目标
         '_openSubPage', // 入口行的导航方法

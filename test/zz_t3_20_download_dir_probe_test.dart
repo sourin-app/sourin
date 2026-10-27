@@ -66,7 +66,7 @@ import 'package:sourin_spike/core/ui_prefs.dart';
 /// ★★ 只按**尾部标记**判，不比整串（2026-10-10 实测踩过）：
 /// `Directory.systemTemp` 在 Windows 上解析成 8.3 短名
 /// （C:\Users\IUUUUU~1\AppData\Local\Temp），而环境变量里的 USERPROFILE
-/// 是长名（C:\Users\iuuuuuuuu\AppData\Local\...）
+/// 是长名（<USERPROFILE>\AppData\Local\...）
 /// ⇒ 直接 startsWith(systemTemp.path) 会假红。
 /// 尾部标记足以区分「系统临时目录」与「真实用户目录 C:\Users\<你>」。
 bool underTemp(String p) {

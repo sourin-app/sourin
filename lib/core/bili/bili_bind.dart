@@ -274,6 +274,35 @@ void clearBinding(String provider, String id) {
 bool isManualBinding(String provider, String id) =>
     UiPrefs.get(BiliPrefs.manualKey(provider, id)) == '1';
 
+/// **起播该不该套用某条绑定？** —— 三态判据的**唯一实现**（返回该用的 cid，0 = 不套用）
+///
+/// # 为什么把它抽成纯函数（2026-10-28，独立复核指出的覆盖缺口）
+/// ```text
+/// 这个判断原先只写在 `player_page.dart` 的 `_loadDanmakuNamed` 里（两个条件拼在一行），
+/// 于是只能靠 **源码级** 判据（indexOf/contains）守 —— 那种判据证明不了"运行时行为"。
+/// 我试过三层测试夹具想去驱动真 PlayerPage，全部撞上 `flutter_test` 的假时钟
+/// （详见 `test/t73_bili_wiring_test.dart` 组2 的缺口注释）。
+/// ⇒ 正解是**在生产侧开一条缝**：把判据抽成纯函数，行为就变成可单测的了。
+/// ```
+///
+/// # 判据（三态，来自 Owner 两次原话）
+/// ```text
+/// · 没有绑定 / 空绑定            ⇒ 0（永不自动建立）
+/// · 有绑定但 manual == false     ⇒ 0（早期自动流程的残留，不套用）
+/// · 有绑定且 manual == true      ⇒ 该集的 cid（"手动绑定的以后就自动更新"）
+/// · manual=true 但这一集没 cid   ⇒ 0（对齐不上的集不猜）
+/// ```
+int biliCidForAutoApply({
+  required BiliBinding? binding,
+  required bool manual,
+  required int episodeIndex,
+}) {
+  if (binding == null || binding.isEmpty) return 0;
+  if (!manual) return 0;
+  final cid = binding.cidFor(episodeIndex);
+  return cid > 0 ? cid : 0;
+}
+
 // ══════════════════════════════════════════════════════════════════════
 //  二、分集对齐
 // ══════════════════════════════════════════════════════════════════════

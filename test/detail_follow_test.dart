@@ -606,8 +606,36 @@ expect(src, contains('_pickedEpisodeId ?? _selectedEpisodeId'));
        * （`shell.dart:2047`）—— 详情页只负责回调，不自己 push　        */
       expect(
         src,
-        contains('widget.onOpenDetail?.call(pick.provider, pick.id)'),
-        reason: '换源后跳到新源的详情页（整页重载）' ,
+        contains('widget.onOpenDetail?.call('),
+        reason: '换源后跳到新源的详情页（整页重载）—— 详情页只负责回调，不自己 push',
+      );
+      /*
+       * ⚠️ 2026-10-27（N2）：锚点随签名扩展更新，并把 N2 的修复纳入本条视野。
+       *
+       * 改前锚点：`widget.onOpenDetail?.call(pick.provider, pick.id)`
+       *   —— 那时这个调用点**只传两参**，弹层算好的 `position` /
+       *      `episodeIndex`（`SwitchPick` 的字段）在这里被丢掉。
+       *      那正是 Owner 报的「换源后还是没跟着上次的进度条走」的根因：
+       *      合并页只能退而读 `_session.currentPosition`，而"还在详情页"的
+       *      时序下它是 0 ⇒ 不续播。
+       * 改后：同一个调用点多带两个**可选具名**参数
+       *   `resumeFrom` / `episodeIndex`。
+       *
+       * ★ 本条的**契约一字未改**（详情页只负责回调、不自己 push）；
+       *   下面两颗钉子把「续播信息真的传了」「对端真的收了」也钉进来 ——
+       *   免得将来有人"简化"回两参形态、又把续播丢掉而这里照旧绿。
+       */
+      expect(
+        src,
+        contains('resumeFrom: pos > 0 ? Duration(seconds: pos) : null'),
+        reason: '★★★ N2：换源必须把**弹层算好的进度**交给调用方。'
+            '注入「只传 provider/id」本条立刻红 —— 那正是 Owner 报的缺陷',
+      );
+      expect(
+        RegExp(r'_onDetailSwitchSource\(\s*String provider,\s*String id,\s*\{')
+            .hasMatch(File('lib/ui/media_page.dart').readAsStringSync()),
+        isTrue,
+        reason: '★★ 合并页那一端必须**收下**续播参数（否则传了也白传）',
       );
     });
   });

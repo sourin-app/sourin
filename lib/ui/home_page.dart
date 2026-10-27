@@ -48,10 +48,12 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../core/disk_cache.dart';
-import '../core/json_utils.dart' show jmapOrNull;
+import '../core/ffi.dart' show SourinCore, userErrorText;
+import '../core/json_utils.dart' show jmapOrNull, jmap, jlist;
 import '../core/sourin_api.dart';
 import '../core/ui_prefs.dart';
 import 'live_availability.dart';
@@ -59,6 +61,7 @@ import 'tokens.dart';
 import 'widgets/fade_in_sliver.dart';
 import 'widgets/poster_card.dart';
 import 'widgets/press_feedback.dart';
+import 'widgets/motion_prefs.dart';
 import 'widgets/my_shelf.dart';
 import 'widgets/source_bar.dart';
 import 'widgets/sourin_scroll_behavior.dart';
@@ -649,6 +652,364 @@ final List<String> debugHomeLiveStripCandidates = <String>[];
 /// 探针可读的**过闸后名单**（同上，两者都为空 = 直播条没渲染）
 final List<String> debugHomeLiveStripPassed = <String>[];
 
+// ═══════════════════════════════════════════════════════════════════════
+//  ★★★ N9（2026-10-27）：聚合源首页**二级横向渠道条** + 分批加载
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # Owner 原话
+// ```text
+// > 首页的 tvbox 聚合源，本身是一个多渠道的，支持有二级横向渠道，
+// > 不然一次性加载太多非常卡顿
+// ```
+//
+// # 改前是什么形态（为什么要改）
+// ```text
+// 聚合 provider 的 home() 把**全部子站**的 home() 扇出、拼成一大坨
+//   （台账43 端到端 items=130；首页日志一次 getHome 返回 26 个分组）
+// 首页拿到什么铺什么 ⇒ 子站越多，首屏请求越放大（N 个子站 = N 次
+//   child.home()）+ 卡片量越大 ⇒ 越卡。
+// ```
+//
+// # 改后（本文件负责 UI 层，数据层由 Rust `channels()`/`channel_home()` 提供）
+// ```text
+// 聚合源在首页只占**一个区块**（渠道条 + 当前渠道的内容）：
+//   首屏只发 1 个渠道的请求（= 第一个渠道）而不是 N 个
+//   点别的渠道才发那一个渠道的请求；已看过的渠道**不再重发**（缓存）
+//   切渠道只换"当前渠道那一棵子树"，不整页 setState
+// ```
+//
+// # ⚠️⚠️ 与直播条的分流（漏了这条，聚合区块会**静默消失**）
+// ```text
+// 改前 home_page 里只有一句 `if (src.type == 'custom') _LiveStrip(...)`
+//   —— 它把**所有** custom 区块当直播条画，名单为空时整块零尺寸消失。
+// 而收敛后聚合源的 home() 只有一个区块，正是
+//   Custom{key:"tvbox_agg_channels"}（见 n8b0-spec-audit §5）
+// ⇒ 必须**按 key 分流**（不是按 type）：
+//     key == 'tvbox_agg_channels' ⇒ 渠道条那一块
+//     其它 custom                  ⇒ 直播条（srcl 的「正在直播」）
+// ```
+const String kTvboxAggChannelsKey = 'tvbox_agg_channels';
+
+/// 聚合源的 provider id（= Rust `tvbox_aggregate::AGGREGATE_ID`，**固定值**）
+///
+/// ⚠️ 只用来判"这条是不是聚合源"，不用来**构造**请求 ——
+///    命令自带聚合源 id，Dart 侧不传 `provider`（见下面的契约说明）。
+const String kTvboxAggregateId = 'tvbox_agg';
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ★★★ R2-#4（2026-10-27 Owner 实测）：渠道条的**液态玻璃**
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # Owner 原话（逐字）
+// ```text
+// > 4.二级横向渠道条应该还是液态玻璃
+// ```
+//
+// # 落点（Lead 侦查 + 我自己复核过一遍，结论一致）
+// ```text
+// `SourinHorizontalRail`（`widgets/sourin_scroll_behavior.dart:43`）是个**纯手势包装**
+//   —— `grep -c "Glass"` = 0，它不画任何材质。
+// ⇒ "看起来不是玻璃"的落点**不在 rail**，而在渠道条**自己那一层**：
+//   原实现是裸 `ActionChip`（Material 默认芯片）直接压在**首页底色**上，
+//   既没有玻璃材质、也没有外层玻璃容器。
+//   ★ 而当时源码里写着"与 source_bar 同一套意图" —— 实际上只借了**圆角**，
+//     没借**材质**（那句注释本身就是这条缺陷的成因：写得比做得多）。
+// ```
+// ★ 对照 `lib/ui/widgets/source_bar.dart:216`：源条的形状是
+//   `Center > GlassContainer(superellipse 999) > 44 高 > 可横滑 pill 列表`
+//   —— **外层那一个玻璃容器承担材质**，里面 25 个 pill 全是透明的
+//   （`_SourcePill` 只有选中项"更亮一层"的 `--surface-4` 底，**不是**玻璃）。
+//
+// # 为什么这里也做成"外层承担材质"（而不是给每个药丸上玻璃）
+// ```text
+// ① 与 source_bar / my_shelf 的**同一形状**：Owner 说的是"应该**还是**液态玻璃"
+//    —— "还是" = 与它旁边那条源条同款。给每个药丸各套一块玻璃 = N 块独立玻璃，
+//    正是 source_bar 注释里记着"连续踩两次"的那个错（"看起来不像时先怀疑结构"）。
+// ② 与 N7 裁定一致：**材质只落一层**，不许在外面再套（重复模糊层，旧13 结论）。
+//    这里 1 个玻璃容器 = 1 层模糊；内层药丸**不走** `GlassContainer`。
+// ```
+//
+// # ⚠️ 与 `SourinHorizontalRail` 的关系（本卡硬约束 3）
+// ```text
+// rail 是**全仓共用**的手势包装（my_shelf 三处轨道也用）⇒ **一个字节都不改它**。
+// 玻璃只加在本区块自己的视觉层：`SourinHorizontalRail > GlassContainer > ListView`。
+// 顺序是 **rail 在外、玻璃在内** —— rail 只管手势（dragDevices/scrollbars），
+// 玻璃只管材质，两者互不干涉。
+// ```
+const LiquidRoundedSuperellipse kAggChannelRailGlassShape =
+    LiquidRoundedSuperellipse(borderRadius: 999);
+
+/// 门禁注入点：强制**跳过**渠道条的玻璃层（**生产恒 false**）
+///
+/// # 与既有三处同一条纪律
+/// ```text
+/// `debugSkipGlassShell` （app_dialog_shell.dart:839）
+/// `debugSkipGlassDialog`（app_glass_dialog.dart）
+/// `debugSkipGlassMenu`  （app_menu.dart:150）
+/// ⇒ 每个外壳/区块一个**独立**开关，互不影响
+///   （混用一个会让对照实验互相污染 —— 那三处的注释都写了这条）。
+/// ```
+/// ★ 为什么必须有：逐像素门禁要"挂玻璃"与"不挂玻璃"两张图。
+///   若靠**改产品代码**造对照，那对照本身就在改产品（旧批踩过"忘了回滚"）。
+@visibleForTesting
+bool debugSkipGlassAggChannelRail = false;
+
+/// 这一次要不要跳过渠道条的玻璃
+///
+/// 判据与既有三处**逐字同形**：
+/// ```text
+/// ① 测量仪器（生产恒 false）
+/// ② `MediaQuery.disableAnimations` —— 用户已声明减少动效/效果
+/// ```
+/// ⚠️ 旧13 的取舍（reduced-motion 档不挂玻璃）在这里照样成立：
+///    省的是 raster 成本，代价是**可感知的** —— 逐像素对照见本卡门禁。
+bool _skipGlassAggChannelRail(BuildContext context) =>
+    debugSkipGlassAggChannelRail || MotionPrefs.reduce(context);
+
+/// 一个聚合**渠道**（TVBox 子站）
+///
+/// 契约（tvbox-rust 2026-10-27 冻结，逐字）：
+/// ```jsonc
+/// {"ok":true,"aggregateId":"tvbox_agg",
+///  "channels":[{"id":"sub1","name":"某站","enabled":true}]}
+/// ```
+/// ★ 字段名是 `id`/`name`（**不是** channel_id/channel_name）；
+///   `channels` 是对象里的数组，**不是**裸数组。
+/// ★ `id` 与 `MediaId.provider`、`PersistedProvider::Tvbox.id` **同一个字符串**
+///   ⇒ 它同时就是"按渠道取数"要传的 channel_id，不需要第二份映射。
+/// ★ csp「尚未实现」类根本不在 registry ⇒ 不会出现在这里（不是被过滤掉的）。
+class AggChannel {
+  const AggChannel({required this.id, required this.name, this.enabled = true});
+
+  final String id;
+  final String name;
+
+  /// 该渠道是否启用（契约里有这个字段；本条 UI 不据此过滤 ——
+  /// 命令侧只会返回可用的渠道，这里原样透传以免与 Rust 口径打架）
+  final bool enabled;
+
+  static AggChannel? fromJson(Map<String, dynamic> j) {
+    final id = '${j['id'] ?? ''}'.trim();
+    if (id.isEmpty) return null;
+    final name = '${j['name'] ?? ''}'.trim();
+    return AggChannel(
+      id: id,
+      // 名字为空是可能的（子站 manifest 没填 name）⇒ 退回 id，
+      // 绝不画一个空的药丸（用户点了不知道点的是什么）
+      name: name.isEmpty ? id : name,
+      enabled: j['enabled'] != false,
+    );
+  }
+}
+
+/// 聚合渠道清单的**解析结果**（与 FFI 报文分开：解析是纯函数，可离线测）
+class AggChannelsPayload {
+  const AggChannelsPayload({
+    this.ok = false,
+    this.channels = const <AggChannel>[],
+  });
+
+  /// 契约里的 `ok` 字段。★ `ok:false` 时错误文案在 `error` 字段里，
+  /// 由 `SourinCore` 那一层按既有 `err_json` 分类抛出来 ⇒ 到这里只会是 true。
+  final bool ok;
+  final List<AggChannel> channels;
+
+  static AggChannelsPayload fromJson(Map<String, dynamic> j) {
+    final raw = j['channels'];
+    final out = <AggChannel>[];
+    if (raw is List) {
+      for (final c in raw) {
+        if (c is Map) {
+          final ch = AggChannel.fromJson(c.cast<String, dynamic>());
+          if (ch != null) out.add(ch);
+        }
+      }
+    }
+    return AggChannelsPayload(ok: j['ok'] != false, channels: out);
+  }
+}
+
+/// 按渠道取数的**解析结果**
+///
+/// 契约（同上，逐字）：
+/// ```jsonc
+/// {"ok":true,"channelId":"sub1","channelName":"某站",
+///  "sections":[ Section... ]}
+/// ```
+/// 其中每个 `Section` 就是旧 `home()` 循环里**单个子站**那一段的形状：
+/// ```text
+/// id     = "sub1::<原区块 id>"
+/// title  = "某站 · 原标题"（子站名为空白则**退回原标题**）
+/// source = Category{category_id:"sub1::<原分类>"}
+/// ```
+/// ⇒ ★ **零新路由代码**：这些 id 直接把 `list()` 路由回对应子站
+///   （`tvbox_aggregate.rs` 的 `child::category` 前缀路由，既有能力）。
+class AggChannelHome {
+  const AggChannelHome({
+    this.ok = false,
+    this.channelId = '',
+    this.channelName = '',
+    this.sections = const <Section>[],
+  });
+
+  final bool ok;
+  final String channelId;
+  final String channelName;
+  final List<Section> sections;
+
+  static AggChannelHome fromJson(Map<String, dynamic> j) => AggChannelHome(
+        ok: j['ok'] != false,
+        channelId: '${j['channelId'] ?? ''}',
+        channelName: '${j['channelName'] ?? ''}',
+        // ★ 复用现成的 `Section.fromJson` —— 不另写一套映射
+        //   （另写必然与线上报文漂移，见 models.dart 里 note/subtitle 那个静默 bug）
+        sections: jlist<Section>(j['sections'], Section.fromJson),
+      );
+}
+
+/// 渠道清单与按渠道取数的**真实实现**（不经门禁 seam）
+///
+/// ⚠️ 命令名与参数是**契约**，不许在别处再写一遍字面量
+///   （改了字段名只该改一处 —— 同 `args.rs` 那句"契约的唯一所有者"）。
+class TvboxAggChannelApi {
+  TvboxAggChannelApi._();
+
+  /// 命令：`tvbox_agg_channels`，args `{}`（**sync**：只读 registry + 配置，不联网）
+  static const String channelsCmd = 'tvbox_agg_channels';
+
+  /// 命令：`tvbox_agg_channel_home`，args `{"channel_id": "<子站 provider id>"}`
+  /// （**async**：要发网络请求）
+  ///
+  /// ★ **没有** `provider` 参数 —— 聚合源 id 是固定常量，命令自带。
+  static const String channelHomeCmd = 'tvbox_agg_channel_home';
+
+  static Future<AggChannelsPayload> channelsReal() async {
+    final r = await SourinCore.callAsync(channelsCmd, const {});
+    return AggChannelsPayload.fromJson(jmap(r));
+  }
+
+  static Future<AggChannelHome> channelHomeReal(String channelId) async {
+    final r = await SourinCore.callAsync(channelHomeCmd, {
+      'channel_id': channelId,
+    });
+    return AggChannelHome.fromJson(jmap(r));
+  }
+}
+
+/// ═══════════════════════════════════════════════════════════════════════
+//  ★★★ N9 门禁注入点：渠道清单 / 按渠道取数的替身（**生产恒 null**）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 链路现状（2026-10-27，**已联通** —— 曾有一段"未落盘"的注释，已更正）
+// ```text
+// Rust 侧（tvbox-rust task-1 完成）：
+//   tvbox_aggregate.rs  channels_of / channel_home_of /
+//                       command_channels / command_channel_home
+//   home() 已收敛为**单个**渠道条区块（Custom{key:"tvbox_agg_channels"}）
+// ffi.rs（Lead 接线完成，cargo check --lib 0 error）：
+//   "tvbox_agg_channels"        sync ，args {}          （只读 registry+配置，零网络）
+//   "tvbox_agg_channel_home"    async，args {channel_id} （要发网络请求）
+// DLL：四份副本已同步（仓根 / windows/ / build/.../Release / rust/.../release）
+// ```
+// ⇒ **生产路径就是真 FFI**，不是桩。
+//
+// # 那为什么还留着这两个注入点
+// ```text
+// ① 门禁要**数请求次数**（"请求数 == 已看过的渠道数"）—— 需要确定性地喂
+//    N 个渠道 + 可控延迟，真注册表里未必有 N 个子站；
+// ② 与 `debugHomeFetcher` / `debugListFetcher` **同一条纪律**：
+//    默认 null ⇒ 生产路径逐字走真 FFI；装了替身才拐弯（探针进程退出即恢复，
+//    产品代码里零赋值）。
+// ```
+// ⚠️ 真联通本身另有证据：`test/zz_n9_agg_channel_rail_test.dart` 的 **⑥ 组**
+//    走的就是**真核心**（`SourinCore.startAsync` + 真 DLL + 回环 HTTP），
+//    不经 seam —— 那是"命令名/参数名/返回形状对得上"的判据。
+typedef AggChannelsFetcher = Future<AggChannelsPayload> Function();
+typedef AggChannelHomeFetcher = Future<AggChannelHome> Function(
+    String channelId);
+
+/// 门禁注入点（**生产恒 null**）
+@visibleForTesting
+AggChannelsFetcher? debugAggChannelsFetcher;
+
+/// 门禁注入点（**生产恒 null**）
+@visibleForTesting
+AggChannelHomeFetcher? debugAggChannelHomeFetcher;
+
+/// 装/卸这两个注入点（`null` = 恢复真实 FFI 实现）
+@visibleForTesting
+void debugSetAggChannelFetchers({
+  AggChannelsFetcher? channels,
+  AggChannelHomeFetcher? channelHome,
+}) {
+  debugAggChannelsFetcher = channels;
+  debugAggChannelHomeFetcher = channelHome;
+}
+
+/// 走**生产路径**取渠道清单（只有装了替身才拐弯）
+Future<AggChannelsPayload> fetchAggChannels() {
+  final f = debugAggChannelsFetcher;
+  if (f != null) return f();
+  return TvboxAggChannelApi.channelsReal();
+}
+
+/// 走**生产路径**按渠道取数
+Future<AggChannelHome> fetchAggChannelHome(String channelId) {
+  final f = debugAggChannelHomeFetcher;
+  if (f != null) return f(channelId);
+  return TvboxAggChannelApi.channelHomeReal(channelId);
+}
+
+/// ★★★ N9 探针：**按渠道取数的请求计数**（懒加载证据的**同源**读数）
+///
+/// # 为什么不是"数日志"（本仓已踩过两次）
+/// ```text
+/// ① 无核心环境：请求在第一个 IPC 就抛 ⇒ 后面的日志打不出
+/// ② flutter_test 里覆盖 debugPrint **捕获不到**（binding 会接管）
+/// ⇒ 要量"发了几次请求"，就直接记**请求本身**，不记它的副作用。
+/// ```
+/// # 判据形状（N9 的核心判据）
+/// ```text
+/// 请求数 == 已看过的渠道数
+///   ⇒ 首屏 1 次（只有第一个渠道被看过）
+///   ⇒ 点第 2 个渠道后 2 次（第 1 个**不重发**）
+///   ⇒ 切回第 1 个渠道后**仍然是 2 次**（缓存命中，不重发）
+/// 若有人把它改回"进区块就全量扇出 N 个子站" ⇒ 首屏就是 N 次 ⇒ 断言红。
+/// ```
+/// ⚠️ **不**用 `kDebugMode` 门控：真机探针是 release 构建（`kDebugMode=false`），
+///    门控会让计数器恒为 0 ⇒ 假红。代价只有一个 int 自增。
+final List<String> debugAggChannelHomeCalls = <String>[];
+
+/// 清空读数（门禁/探针启动前调用）
+@visibleForTesting
+void debugClearAggChannelReadouts() {
+  debugAggChannelHomeCalls.clear();
+  debugHomeAggChannelRenders.clear();
+  debugHomeAggRailSelections.clear();
+}
+
+/// ★★★ N9 探针：渠道条的**渲染读数**（防"结构判据被注释满足"）
+///
+/// 记录 `(渠道数, 当前渠道 id, 该渠道 sections 数)` —— 由**渲染路径自己**写。
+/// ★ 三件事只有它有读数：① 渠道条真的画了（渠道数 > 0）② 当前是哪个渠道
+///   ③ 该渠道的内容区块有几个（= 二级内容真的换了，不是只换了个高亮）。
+final List<({int channels, String current, int sections})>
+    debugHomeAggChannelRenders =
+    <({int channels, String current, int sections})>[];
+
+/// 最近一次聚合渠道条渲染读数（`null` = 本次会话还没渲染过）
+({int channels, String current, int sections})?
+    get debugHomeAggChannelRenderLast =>
+        debugHomeAggChannelRenders.isEmpty
+            ? null
+            : debugHomeAggChannelRenders.last;
+
+/// ★★★ N9 探针：渠道条的**选择记录**（用户/探针点了哪个渠道）
+///
+/// 与渲染读数分开：一个渠道"被选中"与"被画出来"是两件事 ——
+/// 合成一个数就分不清"点了没反应"与"点了但条没渲染"。
+final List<String> debugHomeAggRailSelections = <String>[];
+
 /// 发现页
 class HomePage extends StatefulWidget {
   const HomePage({
@@ -766,6 +1127,24 @@ class HomePageState extends State<HomePage> {
 
   bool _loading = true;
   String? _error;
+
+  // ══════════════════════════════════════════════════════════════════════
+  //  ★★★ N9（2026-10-27）：聚合源**二级渠道**的 UI 状态
+  // ══════════════════════════════════════════════════════════════════════
+  //
+  // # 为什么这些状态**不放在** HomePageState
+  //
+  // 全部放在 `_AggChannelsBlock` 自己的 State 里 —— 那是本任务"切渠道
+  // **不整页 setState**"这条判据的**结构性保证**：
+  // ```text
+  // 渠道条只是那一块区块的子树 ⇒ 它 setState 只重建自己
+  //   （不进 HomePageState.build ⇒ 不重建整页 ListView / 不重算 visible）
+  // ```
+  // 放在这里（HomePageState）就会变成"整页 setState"，
+  // 而判据恰恰是"不整页" —— 那是最容易被写错、也最难被事后发现的一条
+  //（表现只是"切渠道会闪一下"，不会有任何报错）。
+  //
+  // ⇒ 因此本类里**没有** N9 的渠道字段；见 `_AggChannelsBlockState`。
 
   /// ★★ task-11：dispose 后禁止再写状态（异步回来的后台刷新 / 缓存写入检查它）
   ///
@@ -1000,10 +1379,31 @@ class HomePageState extends State<HomePage> {
   void _maybeProbeLiveStrip() {
     final provider = _currentSource;
     if (provider.isEmpty) return;
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ N9：聚合渠道条**不是**直播条 —— 判据要排除它（按 key，不是按 type）
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 真机验收抓到的（`.probe/n9-ui-real-*.log`，不是推测）
+     * ```text
+     * [LIVE-PROBE] 探测失败 tvbox_agg/srclchild: 该源不支持直播
+     * [LIVE-PROBE] 探测失败 tvbox_agg/srcljilu  : 该源不支持直播
+     * … 共 8 条（= `kLivePreview` 的长度），首屏就发出去了
+     * ```
+     * 原因：判据只看了 `s.source.type == 'custom'`，而**聚合源的渠道条区块
+     * 正好也是 custom**（`Custom{key:"tvbox_agg_channels"}`）
+     *   ⇒ 聚合源被当成"有直播条的源" ⇒ 为它探 8 个 `srcl*` 频道
+     *   ⇒ 8 次**必然失败**的请求（聚合源没有直播能力）。
+     *
+     * ⇒ 这与本任务要消灭的"请求放大"是同一类问题（首屏多打 8 个请求），
+     *   所以必须在**同一处判据**上排除 —— 用 key，与渲染分流同源。
+     */
     final hasCustom = _groups
         .where((g) => g.provider == provider)
         .expand((g) => g.sections)
-        .any((s) => s.source.type == 'custom');
+        .any((s) =>
+            s.source.type == 'custom' &&
+            !_SectionBlock._isAggChannelsSection(s));
     if (!hasCustom) return;
     unawaited(_probeLiveStrip(provider));
   }
@@ -2231,6 +2631,17 @@ class HomePageState extends State<HomePage> {
                             ? _liveStripGate(g.provider)
                             : const <({String id, String name})>[],
                         onLiveStripRendered: _recordLiveStrip,
+                        /*
+                         * ★★★ N9：给聚合渠道条的**按渠道取数**通道。
+                         *
+                         * 只对渠道条那一条区块有意义（其余区块拿到也用不上）——
+                         * 传的是首页那两个私有读写的**包装**，不是新状态，
+                         * 所以渠道条拉回来的内容跟普通区块走同一份
+                         * `_sectionItems`（卡片渲染 / 缓存 / 命中判据**同源**）。
+                         */
+                        itemsOf: _itemsOf,
+                        loadSectionItems: (sec) =>
+                            _loadSection(g.provider, sec.id, sec.source),
                       ),
                 ]),
               ),
@@ -2391,12 +2802,38 @@ class _SectionBlock extends StatelessWidget {
     this.onBrowse,
     this.liveStrip = const <({String id, String name})>[],
     this.onLiveStripRendered,
+    required this.itemsOf,
+    required this.loadSectionItems,
   });
 
   final String provider;
   final Section section;
   final List<MediaItem> items;
   final void Function(MediaItem) onOpenDetail;
+
+  /// ★★★ N9：**按渠道取数**的两个回调（只有聚合渠道条用）
+  ///
+  /// # 为什么不让渠道条自己去调 `_itemsOf`
+  /// ```text
+  /// `_itemsOf` 读的是 `HomePageState._sectionItems`（首页私有状态）——
+  /// 渠道条够不到它。而渠道条**必须**把拉回来的 items 交给首页那个
+  /// 同一份表，否则：
+  ///   ① 卡片点了没反应（首页按 `_sectionItems` 画轨道，不是按渠道条的私有表）
+  ///   ② 切走再切回来又得重拉（缓存不在它手里）
+  /// ⇒ 传两个函数进来（读一份 / 写一份），而不是让它自己造一份并行状态。
+  ///   ★ 这也正是"复用首页既有磁盘缓存机制"这条要求的接线方式。
+  /// ```
+  final List<MediaItem> Function(String provider, String sectionId) itemsOf;
+  final Future<void> Function(Section section) loadSectionItems;
+
+  /// 这条区块是不是**聚合源的渠道条**（判据：`SectionSource.key`）
+  ///
+  /// ⚠️ 判据放在**一处**（本文件级的函数）而不是散在 build 里 ——
+  ///    `_SectionBlock` 的「查看全部」分流与内容区路由必须**同源**，
+  ///    只改一处就会出现"标题行给它「去直播」，内容区却给它渠道条"
+  ///    这种自相矛盾的区块（用户点「去直播」去了直播页，而下面画的是渠道条）。
+  static bool _isAggChannelsSection(Section s) =>
+      s.source.type == 'custom' && s.source.key == kTvboxAggChannelsKey;
 
   /// 点直播频道 → 进播放器
   ///
@@ -2487,7 +2924,11 @@ class _SectionBlock extends StatelessWidget {
                     label: '查看全部',
                     onTap: () => onBrowse?.call(provider, section.title, src),
                   )
-                else if (src.type == 'custom')
+                // ★★★ N9：聚合渠道条区块**不给**「去直播」——
+                //   它既不是 category 也不是 rank，旧代码按 `type == custom`
+                //   一律给「去直播」⇒ 点它会把用户送去直播页（完全不相干）。
+                else if (src.type == 'custom' &&
+                    !_SectionBlock._isAggChannelsSection(section))
                   _MoreButton(
                     label: '去直播',
                     onTap: () => onBrowse?.call(provider, section.title, src),
@@ -2520,7 +2961,44 @@ class _SectionBlock extends StatelessWidget {
            * ⚠️ `onLiveStripRendered` 把**闸前/闸后**两个数一起报上去 ——
            *    只报闸后数无法区分"闸生效了"与"直播条压根没渲染"。
            */
-          if (src.type == 'custom')
+          /*
+           * ══════════════════════════════════════════════════════════════
+           * ★★★ N9（2026-10-27）：与**聚合渠道条**分流 —— 判据是 key，
+           *       **不是** type
+           * ══════════════════════════════════════════════════════════════
+           *
+           * # 不分流会怎样（一个**静默**的故障，不报任何错）
+           * ```text
+           * 收敛后聚合源的 home() 只返回**一个**区块，它的 source 正是
+           *   Custom{key:"tvbox_agg_channels"}（n8b0-spec-audit §5）
+           * 而旧代码 `if (src.type == 'custom')` 把**所有** custom 都当直播条 ⇒
+           *   聚合区块走的是 `_LiveStrip(liveStrip: 空名单)`
+           *   ⇒ 零尺寸组件 ⇒ **整个聚合区块消失**
+           *   ⇒ 用户看不到渠道条，也不会看到任何报错
+           * ```
+           * ⇒ **先判 key，再判 type**（顺序也是契约的一部分：
+           *   写在 `else` 前面，聚合源一进来就走渠道条那条路）。
+           *
+           * ⚠️ 为什么用 key 而不是"`provider == 'tvbox_agg'`"：
+           *    ① key 是**区块自己声明的**取数方式（`SectionSource::Custom` 的
+           *       语义就是"界面按这个 key 自己解释"），判 provider 等于绕过契约；
+           *    ② 将来别的源用同一个 key ⇒ 行为自动一致，不需要改两处。
+           *    实测：`srcl` 的「正在直播」的 key 不是它（见 `srcl.js:391`）
+           *    ⇒ 两条路天然互斥。
+           */
+          if (_SectionBlock._isAggChannelsSection(section))
+            AggChannelsBlock(
+              // ★ 稳定 key：SliverList 按需回收/重建时保住 State
+              //   （渠道选择与已加载集合都在 State 里 —— 丢了就退化成"重拉"）
+              key: const ValueKey<String>('home-agg-channels'),
+              provider: provider,
+              onOpenDetail: onOpenDetail,
+              itemsOf: itemsOf,
+              loadItems: loadSectionItems,
+            )
+
+          // ── 直播区块：横向频道条 ──
+          else if (src.type == 'custom')
             _LiveStrip(
               provider: provider,
               channels: liveStrip,
@@ -2837,6 +3315,534 @@ class _LiveStrip extends StatelessWidget {
             ),
           );
         },
+        ),
+      ),
+    );
+  }
+}
+
+/// ═══════════════════════════════════════════════════════════════════════
+/// ★★★ N9（2026-10-27）：聚合源的**二级横向渠道条** + 分批加载
+/// ═══════════════════════════════════════════════════════════════════════
+///
+/// # Owner 原话
+/// ```text
+/// > 首页的 tvbox 聚合源，本身是一个多渠道的，支持有二级横向渠道，
+/// > 不然一次性加载太多非常卡顿
+/// ```
+///
+/// # 形态（与 `source_bar` / 旧04 的横向轨道**同一套**）
+/// ```text
+/// _Rail / _LiveStrip / SourceBar / my_shelf
+///   └ 都是：横向滚动条 + 「选中那个更亮一层」的药丸
+/// SourinHorizontalRail  ← 鼠标拖拽 + 局部关滚动条（旧04 的既有组件）
+/// ```
+/// ★ **复用 `SourinHorizontalRail`，不造第二套横向选择条**（N9 修法方向 4）。
+///   `setState` 只发生在本组件内部 ⇒ 切渠道**不整页 setState**
+///   （HomePageState.build 一个字节都不跑，见 `_AggChannelsBlockState` 的说明）。
+///
+/// # 懒加载（本任务的核心判据）
+/// ```text
+/// 进入区块        ⇒ 只拉**第 1 个渠道**（`_ensureLoaded(first)`）
+/// 点第 k 个渠道   ⇒ 只拉**第 k 个**（已拉过的直接命中，不重发）
+/// 切回来          ⇒ 命中，0 请求
+/// ⇒ 不变式：请求数 == 已看过的渠道数（`debugAggChannelHomeCalls`）
+/// ```
+/// ⚠️ **不是**"进区块就把 N 个子站全拉一遍"——那正是要改掉的扇出放大。
+///
+/// # 内容怎么画
+/// ```text
+/// 每个渠道的 sections 拿到后，**逐条走首页既有的 `_loadSection`** ——
+/// 而 `_loadSection` 对 `Category{category_id:"sub1::电影"}` 调的是
+/// `SourinApi.getList('tvbox_agg', 'sub1::电影')`，
+/// 由 Rust 侧既有的 `child::category` 前缀路由回子站（**零新路由代码**）。
+/// ★ items 落进首页**同一份** `_sectionItems` ⇒ 卡片渲染 / 缓存 / 命中判据同源。
+/// ```
+/// ⚠️ 类名**不带下划线**（`AggChannelsBlock`）—— 与 `MyShelf` / `SourceBar` 同例。
+///
+/// # 为什么（本轮唯一"多暴露一个符号"的地方，理由记在这里）
+/// ```text
+/// 门禁必须能**真挂载**这一块并驱动"点渠道" —— 而 `_` 前缀的类
+/// 只有同文件可见 ⇒ 门禁只能退化成"读源码断言源码里有某个字符串"，
+/// 那种判据**满足不了本任务的核心判据**：
+///   请求数 == 已看过的渠道数（要真发请求、真数次数）
+///   切渠道只换当前渠道子树（要真点、真看旧内容被替换）
+/// ⇒ 做成 public + `@visibleForTesting` 说明，而不是把判据降级成静态文本。
+/// ```
+/// ★ 它**不是**对外 API 面（`home_page.dart` 之外没有任何生产代码引用它；
+///   `design/` 侧也不用）。若将来要收回去，改回 `_` 前缀 + 让门禁改走
+///   `HomePage` 挂载即可（届时判据强度会下降，见上）。
+@visibleForTesting
+class AggChannelsBlock extends StatefulWidget {
+  const AggChannelsBlock({
+    super.key,
+    required this.provider,
+    required this.onOpenDetail,
+    required this.itemsOf,
+    required this.loadItems,
+  });
+
+  /// 本区块所属的源（= 聚合源 id，`tvbox_agg`）
+  final String provider;
+
+  final void Function(MediaItem) onOpenDetail;
+
+  /// 读首页那份 `_sectionItems`
+  final List<MediaItem> Function(String provider, String sectionId) itemsOf;
+
+  /// 把一个区块的取数**交给首页**去拉（落进同一份 `_sectionItems`）
+  final Future<void> Function(Section section) loadItems;
+
+  @override
+  State<AggChannelsBlock> createState() => AggChannelsBlockState();
+}
+
+@visibleForTesting
+class AggChannelsBlockState extends State<AggChannelsBlock> {
+  List<AggChannel> _channels = const <AggChannel>[];
+
+  /// 当前选中的渠道 id（空串 = 还没有渠道）
+  String _current = '';
+
+  /// ★★★ 懒加载的**唯一判据**：哪些渠道的 sections **已经在手上**
+  ///
+  /// # 为什么不是"items 非空就算拉过"（本仓踩过的同一个坑）
+  /// ```text
+  /// "拉过但结果为空"与"从来没拉过"在"items 是否为空"这个判据下**完全同形**
+  ///   ⇒ 空渠道会被**每一帧**判成没拉过 ⇒ 无限重拉
+  /// （同 `HomePageState._loadedBy` 那条注释，2026-10-26 实机踩过）
+  /// ```
+  /// ⇒ 把"拉过"记成**独立的事实**，不用"列表是不是空的"去推断。
+  final Set<String> _loadedChannels = <String>{};
+
+  /// 每个渠道的 sections（骨架）—— 只在**该渠道被看过之后**才有值
+  final Map<String, List<Section>> _sectionsByChannel =
+      <String, List<Section>>{};
+
+  /// ★ 每渠道的失败原因（**不**让一个渠道失败把整块变成错误）
+  ///
+  /// # 为什么必须按渠道分开（而不是一个全局 `_error`）
+  /// ```text
+  /// 渠道 2 挂了 ⇒ 全局 _error ⇒ 渠道 1 的内容跟着消失 ⇒ 用户觉得"整个源坏了"，
+  ///   而其实只有 1 个子站不可达（聚合源的既有纪律是"单站失败隔离"，
+  ///   见 tvbox_aggregate.rs 文件头的硬纪律 ①）。
+  /// ```
+  /// ⇒ 失败**挂在这个渠道上**，只把该渠道那块换成原因文案。
+  final Map<String, String> _channelErrors = <String, String>{};
+
+  bool _loadingChannels = false;
+
+  /// 清单本身的失败（拿不到渠道 ⇒ 整块只能如实报错，没有内容可画）
+  String? _listError;
+
+  @override
+  void initState() {
+    super.initState();
+    // ★ 进区块 ⇒ **只取渠道清单 + 只拉第一个渠道**（不是 N 个）
+    unawaited(_loadChannels());
+  }
+
+  /// 取渠道清单，然后**只拉第一个渠道**的数据
+  ///
+  /// # 为什么清单与首渠道内容分两步（不能合成一次请求）
+  /// ```text
+  /// 合成一次 ⇒ 服务端必须返回"清单 + 全部渠道内容" ⇒ 又变回扇出放大。
+  /// 而清单本身是**只读 registry + 配置**（Rust 侧 sync 命令，毫秒级零网络），
+  ///   拿到它才知道"第一个渠道是哪个" ⇒ 两步是懒加载的**必然形状**。
+  /// ```
+  Future<void> _loadChannels() async {
+    setState(() {
+      _loadingChannels = true;
+      _listError = null;
+    });
+    try {
+      final payload = await fetchAggChannels();
+      if (!mounted) return;
+      /*
+       * ★ 真机读数（N9 UI 层的"实机/实网"证据）——
+       *   渠道条那一块**只有这里**会出现在 stdout 上，没有它就只能靠测试。
+       *   两个数回答两个不同的问题：
+       *     channels=0 ⇒ 命令通了但这个源没有可用渠道（正常形态）
+       *     抛错       ⇒ 命令没接入/源坏了（下面 catch 里如实打原因）
+       */
+      debugPrint('[HOME] 聚合渠道清单: ${payload.channels.length} 个'
+          '（${payload.channels.take(5).map((c) => c.id).join(", ")}）'
+          '${payload.channels.length > 5 ? "…" : ""}');
+      setState(() {
+        _channels = payload.channels;
+        _loadingChannels = false;
+        // 当前渠道：保持已选的（切走再回来不跳），否则落到第一个
+        if (_channels.isNotEmpty &&
+            !_channels.any((c) => c.id == _current)) {
+          _current = _channels.first.id;
+        }
+      });
+      // ★ 首屏**只拉 1 个渠道** —— 这就是"不再全量扇出"的那一条
+      if (_channels.isNotEmpty) {
+        await _ensureLoaded(_current);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      /*
+       * ★ 真机读数：**接口未联通**必须在这里留下痕迹 ——
+       *   `ffi.rs` 的默认分支会回
+       *   `这个功能（\`tvbox_agg_channels\`）在当前版本还没有接入…`（kind=unsupported），
+       *   本行会把它原样打出来 ⇒ 交付说明里的"依赖未联通"**有实机读数可查**，
+       *   而不是靠声明。
+       */
+      debugPrint('[HOME] ★ 聚合渠道清单**取不到**（渠道条不画）: $e');
+      setState(() {
+        _loadingChannels = false;
+        // ★ 如实报错（不许吞异常装没事）——接口没接上时用户看到
+        //   "这个功能还没有接入"，而不是一个空条（看起来像"源里没渠道"）
+        _listError = userErrorText(e, fallback: '没有读到聚合渠道，请稍后重试');
+      });
+    }
+  }
+
+  /// ★★★ 按渠道取数（**懒加载的落点**：只有这里会发请求）
+  ///
+  /// [channelId] 的渠道已经拉过 ⇒ **直接返回，一个请求都不发**。
+  Future<void> _ensureLoaded(String channelId) async {
+    if (channelId.isEmpty) return;
+    if (_loadedChannels.contains(channelId)) return;
+    /*
+     * ⚠️ 先登记、再 await：否则同一渠道被快速点两次（或渠道条重建触发
+     *    第二次 `_ensureLoaded`）会**并发发两次请求** ——
+     *    计数判据"请求数 == 已看过的渠道数"当场变红，
+     *    而用户侧表现为"点一下卡两下"（同一个内容拉两遍）。
+     */
+    _loadedChannels.add(channelId);
+    // ★ 读数必须记在**发请求之前**（同"记调用本身、不记副作用"那条纪律）
+    debugAggChannelHomeCalls.add(channelId);
+    try {
+      final home = await fetchAggChannelHome(channelId);
+      if (!mounted) return;
+      debugPrint('[HOME] 按渠道取数完成（渠道=$channelId）: '
+          '${home.sections.length} 个区块');
+      setState(() {
+        _sectionsByChannel[channelId] = home.sections;
+        // 成功 ⇒ 清掉上一次的失败（渠道恢复可达时不该继续挂着旧错误）
+        _channelErrors.remove(channelId);
+      });
+      /*
+       * ★★★ 关键接线：把这些区块的**内容**交给首页既有路径去拉。
+       *
+       * ⚠️ 必须 `await` 完（而不是 unawaited）：探针/门禁要在
+       *    "渠道切换完成后"读到这张渠道的卡片 —— 不 await 就会读到
+       *    "区块骨架在、卡片还没回来"的中间态，判据变成时序彩票。
+       */
+      for (final s in home.sections) {
+        if (!mounted) return;
+        await widget.loadItems(s);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      debugPrint('[HOME] ★ 按渠道取数失败（渠道=$channelId）: $e');
+      setState(() {
+        // ★ 失败要**可查**、且**不连坐**：原因挂在这个渠道上，
+        //   只把该渠道那块换成原因文案（同聚合源"单站失败隔离"的既有纪律）
+        _channelErrors[channelId] =
+            userErrorText(e, fallback: '这个渠道没有取到内容，请稍后重试');
+      });
+    }
+  }
+
+  void _select(String id) {
+    if (id == _current) return;
+    // ★ 读数：选择本身（与"渲染出来"分开记 —— 见两个探针的说明）
+    debugHomeAggRailSelections.add(id);
+    // ★★★ 只 setState **本组件** ⇒ 只重建这一个区块的子树，
+    //     HomePageState.build 不跑（"切渠道不整页 setState"的结构性保证）
+    setState(() => _current = id);
+    unawaited(_ensureLoaded(id));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    /*
+     * ★★★ 渲染读数（防"结构判据被注释满足"）
+     *
+     * 由**渲染路径自己**写，与 `debugHomeLiveStrip` 同一条纪律：
+     * 要测"渠道条画了没有 / 画了几个渠道"，就直接记渲染时那个数。
+     *
+     * ⚠️⚠️ 读数**记在渠道条自己那个 widget 里**（`_AggChannelRail.build`），
+     *    **不是**在这里记 —— 这里只记 `_channels.length` 的话，把渠道条
+     *    整段注释掉、只留数据加载，读数**照样是 3** ⇒ "结构判据"变成假绿
+     *    （注入 B 实测抓到过：渠道条没了，读数仍是 3 ⇒ 那条断言绿着）。
+     *    记在 rail 的 build 里 ⇒ 渠道条不在树上 ⇒ **这一轮没有人写读数**
+     *    ⇒ 判据读到的是清空后的 null ⇒ 真的红。
+     */
+
+    // ── 清单失败：如实显示原因，不留空条 ──
+    if (_listError != null) {
+      return Padding(
+        padding: EdgeInsets.symmetric(horizontal: Layout.railPaddingOf(context)),
+        child: Text(
+          _listError!,
+          style: TextStyle(
+            fontSize: FontSizes.sm,
+            color: colors.error,
+          ),
+        ),
+      );
+    }
+
+    // ── 清单还在路上：与首页其它区块一致用骨架感（一行浅条）──
+    if (_loadingChannels && _channels.isEmpty) {
+      return SizedBox(
+        height: 40,
+        child: Padding(
+          padding:
+              EdgeInsets.symmetric(horizontal: Layout.railPaddingOf(context)),
+          child: Text(
+            '正在读取渠道…',
+            style: TextStyle(
+              fontSize: FontSizes.sm,
+              color: colors.onSurfaceVariant.withValues(alpha: 0.7),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // ── 一个渠道都没有：**如实说"还没导入"**（与"接口没接上"分开）──
+    /*
+     * ★★★ 两种"空"必须分得开（Lead 2026-10-27 复核点名的语义细节）
+     * ```text
+     * ① `ok:true` + `channels: []`  ⇒ **命令通了**，但这个源还没有可用子站
+     *    （用户还没导入过 TVBox 订阅 / 子站全被移除）
+     *    ⇒ 文案要说"还没导入聚合源" —— 这是**用户可行动**的状态
+     * ② `unsupported`（ffi.rs 默认分支）⇒ **功能没接线**
+     *    ⇒ 走上面的 `_listError` 分支，把核心原文如实显示
+     * ```
+     * ⚠️ 两者都"画不出渠道条"，但**成因与用户该做的事完全不同**：
+     *    合成一个"什么都不显示" ⇒ 用户没法区分"我该去导入"
+     *    和"这版没这功能"（后者该去更新版本）。
+     * ★ 这与 `_LiveStrip` 空名单"整块消失"**有意不同**：那里空 = "现在没有
+     *   能播的台"（临时态，且直播页有完整列表兜底）；这里空 = "还没有源"
+     *   （需要用户动作，不给提示就是纯静默）。
+     */
+    if (_channels.isEmpty) {
+      return Padding(
+        padding: EdgeInsets.symmetric(horizontal: Layout.railPaddingOf(context)),
+        child: Text(
+          '还没有导入 TVBox 聚合源',
+          style: TextStyle(
+            fontSize: FontSizes.sm,
+            color: colors.onSurfaceVariant.withValues(alpha: 0.7),
+          ),
+        ),
+      );
+    }
+
+    final sections = _sectionsByChannel[_current] ?? const <Section>[];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── 二级横向渠道条 ──
+        SizedBox(
+          height: 44,
+          child: _AggChannelRail(
+            channels: _channels,
+            current: _current,
+            // ★ 当前渠道的二级内容区块数 —— 与渠道条一起上报，
+            //   读数的**有无**回答"条画了没有"，读数的**值**回答"换没换内容"
+            currentSections: _sectionsByChannel[_current]?.length ?? 0,
+            onSelect: _select,
+          ),
+        ),
+        const SizedBox(height: Sp.x4),
+
+        // ── 当前渠道的二级内容（每个区块一条海报轨道）──
+        if (_channelErrors[_current] != null)
+          Padding(
+            padding:
+                EdgeInsets.symmetric(horizontal: Layout.railPaddingOf(context)),
+            child: Text(
+              _channelErrors[_current]!,
+              style: TextStyle(fontSize: FontSizes.sm, color: colors.error),
+            ),
+          )
+        else if (sections.isEmpty)
+          Padding(
+            padding:
+                EdgeInsets.symmetric(horizontal: Layout.railPaddingOf(context)),
+            child: Text(
+              '这个渠道还在加载…',
+              style: TextStyle(
+                fontSize: FontSizes.sm,
+                color: colors.onSurfaceVariant.withValues(alpha: 0.7),
+              ),
+            ),
+          )
+        else
+          for (final s in sections)
+            _Rail(
+              items: widget.itemsOf(widget.provider, s.id),
+              ranked: false,
+              onOpenDetail: widget.onOpenDetail,
+            ),
+      ],
+    );
+  }
+}
+
+/// 二级横向渠道条（N9）
+///
+/// # 为什么要单独一个 widget（**不是为了复用**，是为了判据有牙）
+/// ```text
+/// 渲染读数必须记在"渠道条**自己**的 build" 里：
+///   把条整段去掉 ⇒ 本 widget 不在树上 ⇒ **这一轮没有读数** ⇒
+///   "结构判据"读到 null ⇒ 红。
+/// 记在父组件（AggChannelsBlock.build）里 ⇒ 条没了读数照样有 ⇒ 假绿
+///   （注入 B 实测抓到过：条全注释掉，读数仍是 3 ⇒ 断言绿着）。
+/// ```
+/// ★ 这是本仓反复出现的那条纪律：**判据要与被测属性同源** ——
+///   要测"条画了没有"，就在**条的 build** 里记，而不是在它外面记。
+class _AggChannelRail extends StatelessWidget {
+  const _AggChannelRail({
+    required this.channels,
+    required this.current,
+    required this.currentSections,
+    required this.onSelect,
+  });
+
+  final List<AggChannel> channels;
+  final String current;
+  final int currentSections;
+  final void Function(String id) onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+
+    // ★ 读数（同源：本函数跑了 ⇒ 条真的被画了）
+    debugHomeAggChannelRenders.add((
+      channels: channels.length,
+      current: current,
+      sections: currentSections,
+    ));
+
+    /*
+     * ══════════════════════════════════════════════════════════════
+     * ★★★ R2-#4：整条渠道条 = **一个玻璃胶囊**（外层承担材质）
+     * ══════════════════════════════════════════════════════════════
+     *
+     * 形状与 `source_bar.dart:216` **同构**（那是源条，Owner 要"还是"它那款）：
+     * ```text
+     * Center
+     *   └ GlassContainer(superellipse 999, quality.standard)   ← ★ 唯一一层材质
+     *       └ 44 高
+     *           └ SourinHorizontalRail                           ← 手势（共用手势包装）
+     *               └ 可横滑的药丸列表（药丸本身**透明**）
+     * ```
+     *
+     * # 为什么玻璃在 rail **外面**（而不是 rail 与 ListView 之间）
+     * ```text
+     * ① `source_bar` 的玻璃容器**也**包着它自己那层滚动区 ⇒ 同构；
+     * ② 本文件那条"守恒律"判据要求 `SourinHorizontalRail(` 与
+     *    `child: ListView.separated(` **紧邻**（正则逐字：`rail(\s*child:`）——
+     *    插一层进中间会让它变红。那条门禁是**对的**：
+     *    它守的是"rail 真的直接包住了那个 ListView"（不是"数够几个"）。
+     *    ⇒ 玻璃挪到 rail 外面既保住该判据，又不改 rail 一个字节。
+     * ```
+     *
+     * # 为什么 `Center` + 内容宽度（而不是满宽）
+     * `source_bar` 的注释里记着 Owner 当时的原则：「**方案 A：悬浮胶囊**
+     * （与底部 tab 栏同款造型）」——理由是"用户不用学新东西"。渠道条是**同一族**
+     * 的二级选择条 ⇒ 沿用同一造型语言。
+     *
+     * # 为什么不是"每个药丸一块玻璃"
+     * 见文件里 `kAggChannelRailGlassShape` 那段：N 块独立玻璃 = N 层模糊，
+     * 正是 source_bar 记着"连续踩两次"的错，也与 N7"材质只落一层"相冲。
+     *
+     * ⚠️ `ConstrainedBox(maxWidth: 屏宽 - Sp.x8)`：渠道很多时不许把屏幕撑破
+     *   （与 `source_bar.dart:221` 同一个约束，值也一致）。
+     */
+    final rail = SourinHorizontalRail(
+      child: ListView.separated(
+        // ★ 与 `_LiveStrip` 逐字同款：内容带**零**横向内边距
+        //  （页根的 horizontalInsetOf 已经给了那一层）
+        clipBehavior: Clip.antiAlias,
+        scrollDirection: Axis.horizontal,
+        padding: EdgeInsets.zero,
+        itemCount: channels.length,
+        separatorBuilder: (_, __) => const SizedBox(width: Sp.x2),
+        itemBuilder: (context, i) {
+          final ch = channels[i];
+          final active = ch.id == current;
+          /*
+           * ★ 药丸形态与 `source_bar` 的 `_SourcePill` 同一套意图
+            *（**透明底** + 仅选中项"更亮一层"）。这里用 `ActionChip`
+            * 而不是再造一个 `_SourcePill`：
+            * ```text
+            * `_SourcePill` 是 source_bar.dart 的**私有**组件（`_` 前缀），
+            *   跨文件够不到；而它那套材质是"源条自己那个玻璃容器上"的
+            *   层级语义（--surface-4），搬到本块会把两套令牌混起来。
+            * ⇒ 用框架的 ActionChip（本文件 `_LiveStrip` 的既有用法），
+            *   描边/圆角显式给死 ⇒ 与直播条**同款**，不引入第二套视觉。
+            * ```
+            * ⚠️ **R2-#4**：材质在**外层**那个 `GlassContainer` 上（见 build 顶部），
+            *    所以药丸这里必须**保持透明**（`ActionChip` 默认底就是透明的）——
+            *    给它加任何不透明底都会把外层玻璃糊住 ⇒ 看起来又"不是玻璃"了。
+            *    ★ 这与 `_SourcePill` 的取舍**同源**：源条的 pill 也是透明的，
+            *      材质由它外面那块玻璃容器承担。
+            */
+          return Center(
+            child: ActionChip(
+              onPressed: () => onSelect(ch.id),
+              label: Text(
+                ch.name,
+                style: TextStyle(
+                  fontSize: FontSizes.sm,
+                  color: colors.onSurface,
+                  fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                ),
+              ),
+              side: BorderSide(
+                color: active ? colors.primary : colors.outlineVariant,
+              ),
+              shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
+              padding: const EdgeInsets.symmetric(
+                horizontal: Sp.x4,
+                vertical: Sp.x2,
+              ),
+              labelPadding: EdgeInsets.zero,
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          );
+        },
+      ),
+    );
+
+    return Center(
+      child: ConstrainedBox(
+        // `max-width: 100%` —— 渠道很多时不要把屏幕撑破
+        //（与 `source_bar.dart:221` 同一个约束，值也一致：屏宽 - Sp.x8）
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width - Sp.x8,
+        ),
+        child: SizedBox(
+          height: 44,
+          /*
+           * 顺序：**玻璃在外、rail 在内**（见上面那段长注释）。
+           * 玻璃只管材质，rail 只管手势（dragDevices + 局部关滚动条）。
+           * ★ `_skipGlassAggChannelRail(context)` 为真 ⇒ **原样返回 rail**
+           *   （逐像素门禁的"不挂玻璃"对照臂 + reduced-motion 档）。
+           */
+          child: _skipGlassAggChannelRail(context)
+              // reduced-motion / 测量仪器 ⇒ **整层不挂**（旧13 的取舍）
+              ? rail
+              : GlassContainer(
+                  shape: kAggChannelRailGlassShape,
+                  quality: GlassQuality.standard,
+                  padding: EdgeInsets.zero,
+                  child: rail,
+                ),
         ),
       ),
     );

@@ -446,7 +446,7 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
             title: '关于「源 id」',
             children: [
               Text(
-                '源 id 就是设置 → JS 插件里那张卡片标识的源（如 iptv）。'
+                '源 id 就是设置 → 源里那张卡片标识的源（如 iptv）。'
                 '这里手输而不用勾选，是因为还没读到频道清单'
                 '（读它要核心接口，核心不可用时会让整页打不开）。'
                 '先去直播页看一眼，回来这里就会变成逐频道勾选。',

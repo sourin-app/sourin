@@ -65,6 +65,7 @@ import '../../core/sourin_api.dart';
 import '../tokens.dart';
 import 'poster_card.dart';
 import 'press_feedback.dart';
+import 'sourin_scroll_behavior.dart';
 import '../../design/icons/app_icons.dart';
 
 /// tab 类型
@@ -1843,7 +1844,17 @@ class MyShelfState extends State<MyShelf> {
         else
           SizedBox(
             height: AppMetrics.posterWidth / AppMetrics.posterAspect + _shelfCardHeight,
-            child: ListView.separated(
+            /*
+             * N3（2026-10-27）：三条横向轨道（最近追更 / 最近收藏 / 播放历史）
+             * 补鼠标拖拽 —— 与 `home_page._Rail` 同款：包一层
+             * `SourinHorizontalRail`（内部 `parent.copyWith(dragDevices+mouse)`）。
+             * ★ 三个 tab 共用这一个 ListView，包这一处 = 三条轨道同时生效。
+             * 滚动条隐藏已由全局 `buildScrollbar` 覆写负责，这里只补 dragDevices。
+             * （tab 胶囊条 :1692 与骨架轨道 :2488 不在本次范围 —— 骨架是
+             *   `NeverScrollableScrollPhysics`，旧04 已裁定不用管。）
+             */
+            child: SourinHorizontalRail(
+              child: ListView.separated(
               clipBehavior: Clip.antiAlias,
               scrollDirection: Axis.horizontal,
               // ★ 内容带：「我的」轨道 ×1（原版 `.mine__rail` 无横向 padding）
@@ -1981,6 +1992,7 @@ class MyShelfState extends State<MyShelf> {
                   ),
                 );
               },
+              ),
             ),
           ),
       ],

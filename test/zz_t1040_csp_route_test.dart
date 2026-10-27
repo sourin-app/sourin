@@ -109,13 +109,39 @@ String rawTvbox() => File(tvboxRs).readAsStringSync();
 
 void main() {
   group('① 注册表：键 = 去掉 csp_ 前缀的类名，且 csp_Bili 真的登记了', () {
-    test('★ 注册表里插入了 bili::Bili::CLASS（不是硬编码字符串 "Bili"）', () {
+    test('★ 注册键来自类自己的 CLASS 常量（不是硬编码字符串 "Bili"）', () {
+      /*
+       * ★★★ 2026-10-28 修（独立复核抓到的**回归**，不是"存量红"）：
+       *
+       * # 改前这条断言什么
+       * ```text
+       * code.contains('m.insert(bili::Bili::CLASS')
+       * —— 它钉的是「核心**写死**注册表」那个旧实现里的那一行。
+       * ```
+       * # 为什么它会红
+       * ```text
+       * R3-D 把注册方式改成「**类自注册**」（`register_site!` + `inventory`）：
+       *   `csp/mod.rs` 里现在遍历链接期注册项，`m.insert(reg.class, reg.make)`
+       *   —— 原来那行 `m.insert(bili::Bili::CLASS, …)` **整段不存在了**。
+       * ⇒ 这条判据钉的是一个**已被删除的实现形态**：它红不代表注册坏了，
+       *   而是判据没跟上架构（本仓"判据作用在错误的对象上"的第 N 例）。
+       * ```
+       * # 改后断言什么（保住原意，换成新架构下的同一条不变量）
+       * ```text
+       * 原意 = "注册键必须来自**类自己声明的常量**，不许在核心写死字符串"
+       *   ⇒ 新形态下这条不变量落在两处：
+       *      ① 核心用 `reg.class`（来自 `<$site>::CLASS`，见 `register_site!` 宏）
+       *      ② 类自己的 `CLASS` 仍逐字是 "Bili"
+       *   两条一起断言，语义与改前**等价**，只是跟上了自注册。
+       * ```
+       * 注入：把 `m.insert(reg.class` 改成字面量 `m.insert("Bili"` ⇒ 本条红。
+       */
       final code = codeOnly(cspMod);
       expect(
-        code.contains('m.insert(bili::Bili::CLASS'),
+        code.contains('m.insert(reg.class'),
         isTrue,
-        reason: '注册表必须用 Bili::CLASS 这个常量登记 —— '
-            '写成字面量 "Bili" 时，实现改名就与注册键漂移（编译不报错，路由悄悄失效）',
+        reason: '★ 注册键必须来自注册项自带的 `class`（= 类自己的 CLASS 常量），'
+            '不许在核心写死字符串 —— 写成字面量时，实现改名就与注册键漂移',
       );
       // 类名常量本身必须是 "Bili"（与配置里 api: "csp_Bili" 的后半段逐字一致）
       final bili = codeOnly(cspBili);

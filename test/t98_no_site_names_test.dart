@@ -163,6 +163,27 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
   //   （且不会有编译错误，是**静默功能坏死**）。
   //   ⇒ 按 Owner 口径「不许为了删而删功能」，这些字符串**必须逐字保留**。
   //   ★ 只豁免**含该主机名的那一行**；同文件别处提到站名的文案照样被抓。
+  //
+  // ★★ 2026-10-28（N1–N9 批的 25 个 csp 类）：`csp/all_live.rs` 有两条
+  //   **真实响应夹具**（raw string `r#"…"#`）含平台 CDN 主机名。
+  //   为什么不能像同文件其它 122 处那样用 `\u{…}` 转义：
+  //   ```text
+  //   raw string 里 `\u` 是**字面反斜杠**，转义不生效 ⇒ 等于把夹具改成假 body；
+  //   而本仓判"上游死/活"的纪律是**必须读真实 body**
+  //   （.agents/notes/implemented/testing/2026-10-27-upstream-dead-is-a-strong-claim.md）
+  //   ⇒ 夹具必须逐字。同文件其余站名/主机名已全部转义或改名，只剩这两行。
+  //   ```
+  (
+    'rust/sourin_core/src/csp/all_live.rs',
+    'rpic.douyucdn.cn',
+    '真实响应夹具里的封面 CDN 主机名（raw string）：改了就成假 body，'
+        '而该类判活/判死依赖真实 body 形态。'
+  ),
+  (
+    'rust/sourin_core/src/csp/all_live.rs',
+    'al.hls.huya.com',
+    '同上：真实响应夹具里的直播 CDN 主机名（raw string），必须逐字保留。'
+  ),
   (
     'lib/core/bili/bili_api.dart',
     'bilibili.',
@@ -193,6 +214,57 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
     'lib/probe_cast.dart',
     'bilibili.',
     '同上：DLNA 探针里的真实 Referer 域名。'
+  ),
+  /*
+   * ══════════════════════════════════════════════════════════════════
+   * ★★★ 2026-10-27（R3 批 csp 实现）：`app_get.rs` 的**运行期播放页主机名**
+   *
+   * # 为什么必须逐字保留（**我先验证过，不是默认豁免**）
+   *
+   * ```text
+   * `needs_parse(url)` 用 `PAGE_HOSTS` 判断"取流结果是不是**第三方播放页**、
+   * 需要再经 parse 才能出 m3u8"。
+   *
+   * ★ 我先试了"删掉品牌表、只留通用后缀判据"（`.html`/`.htm`/`.shtml`）——
+   *   实测（`.probe/r3-appget-pagehosts-redundancy.dart`，可复跑）：
+   *     https://v.qq.com/x/cover/.../v4102hrb7cq.html   ⇒ 通用判据**能**判出
+   *     https://www.bilibili.com/video/BV1xx411c7mD      ⇒ 通用判据**判不出**（无 .html 后缀）
+   *     https://www.bilibili.com/bangumi/play/ep123456   ⇒ 通用判据**判不出**
+   *   ⇒ **品牌表不冗余**：存在只能靠主机名判的真实形态。
+   * ⇒ 若删掉 ⇒ 这些播放页会被当**直链**静默交出 ⇒ 用户点了播不出来还不知道为什么
+   *   ⇒ 且**没有编译错误、没有测试会红**（静默功能坏死）。
+   * ```
+   *
+   * # 为什么只豁免这 4 行（而不是整文件）
+   *
+   * ```text
+   * 只有**含该主机名的那一行**被豁免 —— 同文件别处新加的站名**照样报**。
+   * ⚠️ 同文件 :87 / :502 两处**注释**里的站名**不豁免**（注释改了不会坏）
+   *   ⇒ 已请该文件作者改成不含站名的等价说法（那是"能改就改"，不是妥协）。
+   * ```
+   */
+  (
+    'rust/sourin_core/src/csp/app_get.rs',
+    '"v.youku.com"',
+    '运行期必需的真实主机名：`needs_parse()` 靠它判"取流结果是第三方播放页"'
+        '（该类 URL 无 `.html` 后缀 ⇒ 通用后缀判据覆盖不到）。删/改 ⇒ 播放页被当直链'
+        '静默交出，无编译错误、无测试红。已验证过"删表会漏判"。'
+  ),
+  (
+    'rust/sourin_core/src/csp/app_get.rs',
+    '"www.iqiyi.com"',
+    '同上（真实播放页主机名；删/改 ⇒ 静默功能坏死）。'
+  ),
+  (
+    'rust/sourin_core/src/csp/app_get.rs',
+    '"v.iqiyi.com"',
+    '同上（同一家的移动端主机名，与 www. 不同域）。'
+  ),
+  (
+    'rust/sourin_core/src/csp/app_get.rs',
+    '"www.bilibili.com"',
+    '同上 —— ★ 这一条**实测最硬**：bilibili 的 `/video/BV…` 与 `/bangumi/play/ep…`'
+        '**无 `.html` 后缀** ⇒ 通用判据**判不出** ⇒ 必须靠主机名（见本段上方实测）。'
   ),
   (
     'rust/sourin_core/tests/t525_qr_login.rs',
@@ -296,6 +368,60 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
     'rust/sourin_core/src/sync/credentials.rs',
     '("bilibili-live", "rooms_v1")',
     '同上：宿主内置 legacy 桩写的频道缓存。'
+  ),
+  /*
+   * ══════════════════════════════════════════════════════════════════════
+   * ★★★ 2026-10-27（R3 零站类批量交付后）：`app_ys.rs` 的**平台名映射表**
+   * ══════════════════════════════════════════════════════════════════════
+   *
+   * # 为什么它们"改了会坏"（准入标准逐字是"真正负载、必须逐字保留")
+   * ```text
+   * `PLATFORM_NAMES` 是 DEX `s(String)` 的**逐字映射**，
+   *   生产路径**真的用它**：`app_ys.rs:370` 的
+   *     `let flag = platform_name(&line).map(...).unwrap_or(line.clone());`
+   *   —— 上游 `vod_play_from` 给的是**英文平台码**（youku/qq/iqiyi/…），
+   *      必须靠这张表转成中文线路名。
+   * ⇒ 删/改任何一项 ⇒ **线路名退化成英文码**（用户看到 youku 而不是"优酷M"）⇒ 功能降级。
+   * ```
+   *
+   * # 与"注释里的站名"的**区别**（这正是本表门槛的意义）
+   * ```text
+   * · 注释/文档里的站名 ⇒ 改了**不会坏** ⇒ 不豁免（改掉）
+   * · 本表这 6 行        ⇒ 值本身**就是产品数据** ⇒ 豁免
+   *   ★ 判据：`grep PLATFORM_NAMES` 能找到**使用点**（不是死表）；
+   *     且执行者已有门禁 `platform_name_map_matches_the_dex_literals` 钉住逐字。
+   * ```
+   *
+   * # 只豁免**含站名的那几行**（不是整个文件）
+   * ```text
+   * 同文件里新加的其它站名**照样报**（本表的语义就是"按行豁免"）。
+   * ★ 执行者那 6 处**测试断言**里的站名**不豁免** ——
+   *   断言改了不会坏（可改成用表自己的键/值）⇒ 已要求改成不含站名的等价形式。
+   * ```
+   */
+  (
+    'rust/sourin_core/src/csp/app_ys.rs',
+    '("youku", "优酷M")',
+    '★ DEX `s(String)` 平台名映射的**逐字一项**：英文平台码 ⇒ 中文线路名。'
+        '生产路径 `platform_name(&line)`（:370）真的用它把 `vod_play_from` 的英文码转中文。'
+        '删/改 ⇒ 线路名退化显示英文码 ⇒ 用户可见功能降级。'
+  ),
+  (
+    'rust/sourin_core/src/csp/app_ys.rs',
+    '("iqiyi", "爱奇艺M")',
+    '同上（映射表逐字项，生产路径在用）。'
+        '★ 注意 `iqiyi` 与 `qiyi` 是**两个不同的键**（上游两种写法都出现过），'
+        '合并会漏一种 —— 但那两条**表项本身**不含禁用词，故**只需豁免含 `iqiyi` 的这一行**。'
+  ),
+  (
+    'rust/sourin_core/src/csp/app_ys.rs',
+    '("mgtv", "芒果TVM")',
+    '同上（映射表逐字项，生产路径在用）。'
+  ),
+  (
+    'rust/sourin_core/src/csp/app_ys.rs',
+    '("bilibili", "哔哩M")',
+    '同上（映射表逐字项，生产路径在用）。'
   ),
 ];
 
@@ -595,6 +721,73 @@ void main() {
     print('[T98-COVERAGE] 扫描文件=${files.length}  '
         '行级豁免命中=$lineHits  内部台账豁免命中=$ledgerHits  '
         'offenders=${offenders.length}');
+
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★★★ 2026-10-27：**行级豁免条目必须"真在减掉东西"**（空条款 = 假绿）
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * # 为什么加这条（由一次**外部审计**发现，不是我自查到的）
+     * ```text
+     * 我为 `app_ys.rs` 的平台名映射表加了 **6 条**行级豁免（对应 6 行表项）。
+     * 执行者审计后指出：其中 **2 条（`qq`/`腾讯M` 与 `qiyi`/`奇艺M`）"用不上"** ——
+     *   因为 t98 的 `_banned` 表里是 `腾讯视频`（**不是** `腾讯`）、且**没有** `qiyi`，
+     *   所以那两行**本来就不产生 offender** ⇒ 那 2 条豁免**减掉的是 0**。
+     * ⇒ 我实测复现：删掉那 2 条 ⇒ `行级豁免命中 71 → 69`，`offenders` 仍 **0**。
+     *   ⇒ **确认：它们确实是空的**（只是让"豁免命中"这个数字看起来更大）。
+     * ```
+     *
+     * # 危害（与 `zz_ui1` 的"空条款 = 假绿"同一个形状）
+     * ```text
+     * · 空豁免让**豁免表的实际条目数虚高** ⇒ 后来人读表会以为"这些都必要"。
+     * · 更糟：它让 `行级豁免命中` 这个**覆盖度指标说谎** ——
+     *   该指标是用来证明"扫描器真在工作"的，被空条目掺水后就不可信了。
+     * · 且空条目会**掩盖**"某个真豁免其实已经失效"（真失效率被空条目稀释）。
+     * ```
+     *
+     * # 判据（**正向**：每条豁免必须至少减掉过 1 个 offender）
+     * ```text
+     * 对每条 `_exemptLines` 条目独立统计：**它命中了几行**、
+     * 以及"若**没有**它、会有多少个新增 offender"。
+     * ⇒ 后者为 0 ⇒ 该条是**空条款** ⇒ 判红（删除它，或说明为什么必须前瞻保留）。
+     * ★ 这条用的是**同一份 repoContent**（与主判据同源）⇒ 不是另一套口径。
+     * ```
+     */
+    final deadExempts = <String>[];
+    for (final e in _exemptLines) {
+      // 该条豁免在整仓里能命中几行
+      var hitLines = 0;
+      for (final rel in files) {
+        if (!rel.contains(e.$1)) continue;
+        for (final line in File(rel).readAsStringSync().split('\n')) {
+          if (line.contains(e.$2)) hitLines++;
+        }
+      }
+      // 它减掉多少：无它时，命中行里会有几条真的含禁用词
+      var wouldHaveReported = 0;
+      for (final rel in files) {
+        if (!rel.contains(e.$1)) continue;
+        for (final line in File(rel).readAsStringSync().split('\n')) {
+          if (!line.contains(e.$2)) continue;
+          if (scanForBanned(line).isNotEmpty) wouldHaveReported++;
+        }
+      }
+      if (wouldHaveReported == 0) {
+        deadExempts.add('${e.$1}  ←  marker: ${e.$2}  （命中 $hitLines 行，'
+            '但那些行**都不含禁用词** ⇒ 它减掉了 0 个 offender）');
+      }
+    }
+    // ignore: avoid_print
+    print('[T98-EXEMPT-DEAD] 空豁免条数=${deadExempts.length}');
+    expect(
+      deadExempts,
+      isEmpty,
+      reason: '★★★ 行级豁免表里有**空条款**（它没有减掉任何 offender）—— '
+          '空条款会让"豁免命中"这个覆盖度指标说谎，也会掩盖"真豁免已失效"。\n'
+          '处理：**删掉**它；若确有前瞻必要性（如该词将来会被加进 `_banned`），'
+          '则**不要**留在 `_exemptLines` 里 —— 等它真的产生 offender 时再加。\n'
+          '空条款：\n  ${deadExempts.join('\n  ')}',
+    );
 
     expect(
       offenders,

@@ -393,7 +393,7 @@ void main() {
   group('⑤ 直播源 tab 的控制面', () {
     test('★ tab 标签由枚举驱动（不手写两份 chip）', () {
       final e = blockOf(src, 'enum _PluginsTab {');
-      expect(e.contains("plugins('JS 插件')"), isTrue);
+      expect(e.contains("plugins('源')"), isTrue);
       expect(e.contains("live('直播源')"), isTrue);
       // 恰好两个 tab
       expect(RegExp(r"^\s{2}\w+\('", multiLine: true).allMatches(e).length, 2,
@@ -430,7 +430,7 @@ void main() {
       final tab = blockOf(src, 'Widget _liveTab(BuildContext context) {',
           close: '\n  }');
       expect(tab.contains('还没有支持直播的源'), isTrue);
-      expect(tab.contains('在「JS 插件」里导入插件后'), isTrue,
+      expect(tab.contains('在「源」里导入后'), isTrue,
           reason: '★ 空态要把 Owner 那句"导入插件就会自动出现"讲给用户');
     });
 

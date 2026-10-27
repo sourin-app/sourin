@@ -32,7 +32,7 @@
 // ④ 失效文件 localFile==null（不短路）
 //
 // # 跑法
-//   C:\Users\iuuuuuuuu\flutter\bin\flutter.bat test test/t27_w4_local_fav_play_test.dart --concurrency=1
+//   flutter test test/t27_w4_local_fav_play_test.dart --concurrency=1
 library;
 
 import 'dart:io';

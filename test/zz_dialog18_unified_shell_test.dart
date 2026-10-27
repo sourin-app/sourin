@@ -633,7 +633,7 @@ void main() {
       await t.pump();
       await t.pump(const Duration(milliseconds: 600));
 
-      final entry = find.text('安装 JS 插件');
+      final entry = find.text('安装源');
       /*
        * ⚠️ 覆盖边界（如实标注，不造假绿）：
        * `_promptText(title: '安装 JS 插件')` 是 `SettingsPage` 的**私有方法**，
@@ -660,7 +660,7 @@ void main() {
 
       expect(find.byType(AppGlassDialog), findsOneWidget,
           reason: '★ 必须走统一外壳（改前是 Material 的 AlertDialog）');
-      expect(find.text('安装 JS 插件'), findsWidgets, reason: '★ 标题');
+      expect(find.text('安装源'), findsWidgets, reason: '★ 标题');
       expect(find.byType(TextField), findsOneWidget,
           reason: '★★ 输入框必须真的建出来 —— 缺 Material 宿主时连建都不建');
       expect(t.takeException(), isNull,

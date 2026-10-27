@@ -95,7 +95,9 @@ void main() {
     });
 
     testWidgets('★★ 收起态也有玻璃（两种形态都要）', (t) async {
-      await t.pumpWidget(_host(DanmakuInfoPanel(data: _loaded())));
+      // N6-①（2026-10-27）起缺省是展开 —— 要测收起态就显式传 false。
+      await t.pumpWidget(
+          _host(DanmakuInfoPanel(data: _loaded(), initiallyExpanded: false)));
       await t.pumpAndSettle();
 
       expect(find.byType(GlassContainer), findsWidgets,
@@ -149,7 +151,8 @@ void main() {
     });
 
     testWidgets('★★ 收起态只显示条数（不泄漏详情）', (t) async {
-      await t.pumpWidget(_host(DanmakuInfoPanel(data: _loaded())));
+      await t.pumpWidget(
+          _host(DanmakuInfoPanel(data: _loaded(), initiallyExpanded: false)));
       await t.pumpAndSettle();
 
       expect(find.textContaining('1200'), findsOneWidget);
@@ -158,7 +161,8 @@ void main() {
     });
 
     testWidgets('★★ 点一下能展开（玻璃没挡住点击）', (t) async {
-      await t.pumpWidget(_host(DanmakuInfoPanel(data: _loaded())));
+      await t.pumpWidget(
+          _host(DanmakuInfoPanel(data: _loaded(), initiallyExpanded: false)));
       await t.pumpAndSettle();
 
       /*

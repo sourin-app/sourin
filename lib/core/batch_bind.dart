@@ -455,3 +455,106 @@ void saveDanmakuBind(String provider, String id, DanmakuBindStore s) {
 void clearDanmakuBind(String provider, String id) {
   UiPrefs.remove('$kDanmakuBindPrefix.$provider:$id');
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  N6（2026-10-27）：弹幕渠道绑定明细与解绑
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 为什么放在这里
+// 弹幕信息面板的「绑定」区要逐路显示"每一路绑到了谁"，数据必须**现读**
+// 既有绑定存储 —— Owner 口径：用既有绑定记录，不新造存储。
+//
+// ⚠⚠⚠ Bili 路（外部视频站）的读写归 `bili/bili_bind.dart`：
+//    T113c-3 门禁钉死本文件**不许 import** 那边（两个 id 语系隔离，
+//    见本文件开头 2026-10-15 的教训）。⇒ 本文件只承载：
+//      ① 渠道枚举与"哪路可解绑"的边界纯函数；
+//      ② dan-api（弹幕库）路的快照与清除。
+//    Bili 路的快照由宿主用 `loadBinding(...)` 现取、解绑用既有的
+//    `clearBinding(...)` —— 两路在宿主侧拼行，存储仍各归各家。
+
+/// 弹幕渠道（弹幕信息面板「绑定」区要逐路显示的四路）。
+///
+/// 与 UI 侧 `DanmakuFeedChannel`（danmaku_settings_dialog.dart 的同名枚举）
+/// 语义同序：core 不依赖 UI ⇒ 单独声明，两处要一起改
+/// （与 `player_page._aggregateFeedLabel` 的"两份词表要同步"是同一条纪律）。
+enum DanmakuBindChannel {
+  /// 本片源自带（视频本身带的弹幕，旧10 强制常开语义）
+  sourceNative,
+
+  /// dan-api（弹幕库；绑定记录 = 本文件的 DanmakuBindStore）
+  danApi,
+
+  /// Bili（外部视频站直连；绑定记录 = bili_bind.dart 的 BiliBinding）
+  bili,
+
+  /// 本机外部（本机弹弹play，指向 127.0.0.1 服务，没有逐片绑定记录）
+  localExternal,
+}
+
+/// 该渠道是否允许用户解绑。
+///
+/// 硬边界（旧10 契约 + N6 Owner 口径，2026-10-27）：
+/// ```text
+/// · sourceNative  本片源自带：强制常开 ⇒ **只显示，不给解绑入口**；
+/// · localExternal 本机外部  ：没有逐片绑定记录 ⇒ 无可解之物；
+/// · danApi / bili            ：各有既有绑定存储，允许解绑。
+/// ```
+bool danmakuChannelUnbindable(DanmakuBindChannel ch) =>
+    ch == DanmakuBindChannel.danApi || ch == DanmakuBindChannel.bili;
+
+/// 一路绑定在面板「绑定」区上的只读快照。
+class DanmakuChannelBinding {
+  const DanmakuChannelBinding({
+    required this.channel,
+    this.workTitle = '',
+    this.episodeIndex = 0,
+    this.episodeTitle = '',
+    this.page = 0,
+    this.bindId = 0,
+  });
+
+  final DanmakuBindChannel channel;
+
+  /// 绑定的番剧名（空 = 未知）。
+  final String workTitle;
+
+  /// 当前集（0 基，与 `BiliEpisodeBinding.episodeIndex` 同一坐标系）。
+  final int episodeIndex;
+
+  /// 集名（Bili 路 = 分 P 的 part；dan-api 路的存储没有集名 ⇒ 空）。
+  final String episodeTitle;
+
+  /// Bili 路的 P 号（1 基；其它路 0）。
+  final int page;
+
+  /// Bili 路 = 该集 cid；dan-api 路 = 弹幕库 episodeId；0 = 该集未绑定。
+  final int bindId;
+
+  bool get bound => bindId > 0;
+}
+
+/// dan-api（弹幕库）路的绑定快照：**现读**既有 `DanmakuBindStore`，
+/// 不缓存、不落新盘（"不新造存储"的另一半：读也不新造）。
+///
+/// 返回 null = **这一集**没有弹幕库绑定（整部绑了但缺这一集、或根本没绑过，
+/// 两种情况对用户是同一件事：这一集走的是别的路/模糊匹配）。
+DanmakuChannelBinding? loadDanmakuChannelBinding(
+    String provider, String id, int episodeIndex) {
+  final store = loadDanmakuBind(provider, id);
+  final eid = store?.episodes[episodeIndex] ?? 0;
+  if (store == null || eid <= 0) return null;
+  return DanmakuChannelBinding(
+    channel: DanmakuBindChannel.danApi,
+    workTitle: store.workTitle,
+    episodeIndex: episodeIndex,
+    bindId: eid,
+  );
+}
+
+/// 清除 dan-api（弹幕库）路的绑定 —— 与既有 upsert `saveDanmakuBind`
+/// 同一命名空间（`UiPrefs.remove`，坏键不留尸）。
+///
+/// ⚠️ Bili 路的解绑**不在这里**：走 `bili/bili_bind.dart` 既有的
+///    `clearBinding`（T113c-3 契约，理由见本节文件头）。
+void clearDanmakuChannelBinding(String provider, String id) =>
+    clearDanmakuBind(provider, id);

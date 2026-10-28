@@ -133,6 +133,20 @@ async fn builtin_sources_are_idempotent_across_bootstraps() {
         builtin1, builtin2,
         "★ 两次 bootstrap 的内置源数必须相同（幂等）：{builtin1} vs {builtin2}"
     );
+    /*
+     * ★ 只比**条数**不够：如果 id 里掺了随机/时间戳，"条数相同"照样成立，
+     *   但用户停用/排序/收藏全部失效（它们按 id 记）。⇒ 必须比 **id 集合**。
+     * 注入：把 id 改成带进程号/随机后缀 ⇒ 本条红（集合不同）。
+     */
+    let set1: std::collections::BTreeSet<String> =
+        ids1.iter().filter(|i| i.starts_with("csp-")).cloned().collect();
+    let set2: std::collections::BTreeSet<String> =
+        ids2.iter().filter(|i| i.starts_with("csp-")).cloned().collect();
+    assert_eq!(
+        set1, set2,
+        "★★ 两次 bootstrap 的内置源 **id 集合**必须逐字相同 —— 
+         否则用户停用/排序/收藏（都按 id 记）会在重启后全部失效"
+    );
     let uniq: HashSet<&String> = ids2.iter().collect();
     assert_eq!(
         uniq.len(), ids2.len(),

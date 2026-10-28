@@ -415,6 +415,14 @@ impl CspSite for PanXunlei {
     fn supports_search(&self) -> bool {
         false
     }
+    /// ★ 2026-10-28（Owner：「要逐类标注」）：本类**不填 ext 不能用**
+    ///
+    /// 依据：未登录必然 Err（真网读数：device_id / captcha_token 缺失）
+    /// ⇒ 默认不自动暴露（用户导入带 ext 的站点时照常出现）。
+    fn needs_ext(&self) -> bool {
+        true
+    }
+
 
     async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
         Err("迅雷云盘不支持搜索（它只列你自己的网盘目录）".to_string())

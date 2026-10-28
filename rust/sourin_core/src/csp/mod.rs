@@ -342,6 +342,28 @@ pub trait CspSite: Send + Sync {
     /// 所以**必选**：每个类自己表态。
     fn supports_search(&self) -> bool;
 
+    /// ★★★ 2026-10-28（Owner：「要逐类标注」）：**这个类不填 ext 能不能用**
+    ///
+    /// # 为什么需要它
+    /// ```text
+    /// 内置源自动暴露之后，每个注册类都会变成一条用户可见的源。
+    /// 但有一批类**必须靠 ext 才能工作**：
+    ///   · XBPQ  —— 配置驱动抓取器，ext 就是那份配置 URL/JSON；
+    ///   · Pan115 / Pan123 / PanAli / PanTianyi / PanXunlei / PanGuangya / PanShare / PanUC
+    ///     —— 网盘族，ext 至少要给账号态，否则必然 Err。
+    /// 让它们以空 ext 出现在源列表里 = 用户点进去只会看到「需要配置」的报错。
+    /// ⇒ 这些类**默认不自动暴露**（用户导入带 ext 的站点时照常出现）。
+    /// ```
+    /// # 默认值
+    /// ```text
+    /// 默认 `false`（能用）：绝大多数类是"有内置 host"的普通站点源，
+    /// 让它们默认出现在列表里才是原版行为（Owner 的原始诉求）。
+    /// 只有**有证据**必须 ext 的类才覆盖成 true —— 不许凭感觉标注。
+    /// ```
+    fn needs_ext(&self) -> bool {
+        false
+    }
+
     /// 详情（含剧集）
     async fn detail(&self, id: &str, ext: &str) -> Result<CspDetail, String>;
 
@@ -613,6 +635,33 @@ pub fn ext_text(v: Option<&serde_json::Value>) -> String {
     }
 }
 
+
+/// 某个类**不填 ext 能不能用**（按类名查一次实例；查不到类返回 `false`）
+///
+/// # 为什么要有这个自由函数
+/// ```text
+/// `state.rs` 的自动暴露只有类名（`implemented_classes()` 给的是字符串），
+/// 而 `needs_ext()` 是实例方法。这里按类名造一个实例再问一次 ——
+/// 比在 state.rs 里维护一份"需要 ext 的类名清单"更不容易漂移：
+/// **唯一的真相在各类自己的 `needs_ext()` 覆盖里**。
+/// ```
+/// 判据：**类名 → 实例必须存在**（不存在 = 拼错或未注册），此时返回 `false`
+/// 并把原因写进日志，避免"标错一个名字 ⇒ 该源永远不出现"这种静默失败。
+pub fn class_needs_ext(class: &str) -> bool {
+    match build_registry_from_inventory() {
+        Ok(map) => match map.get(class) {
+            Some(make) => make().needs_ext(),
+            None => {
+                log::warn!("class_needs_ext: 找不到类 {class}（未注册或拼错）⇒ 按 false 处理");
+                false
+            }
+        },
+        Err(e) => {
+            log::warn!("class_needs_ext: 注册表构建失败（{e}）⇒ 按 false 处理");
+            false
+        }
+    }
+}
 
 /// 取一个**当前仍未实现**的 `csp_X` 样本（只给测试用）
 ///

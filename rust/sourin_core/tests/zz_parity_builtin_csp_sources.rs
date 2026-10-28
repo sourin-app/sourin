@@ -74,13 +74,40 @@ async fn every_registered_csp_class_is_exposed_without_any_config() {
         .map(|m| m.id)
         .collect();
 
+    /*
+     * ★ 2026-10-28（Owner：「要逐类标注」）：`needs_ext()` 的类**不该**自动暴露
+     * ```text
+     * XBPQ（配置驱动）与网盘族不填 ext 必然报错，让它们以空 ext 出现在源列表里
+     * 只会让用户点进去看到"需要配置"。⇒ 期望集合 = 已注册类 − needs_ext 类。
+     * ```
+     */
+    let needs_ext: Vec<String> = classes
+        .iter()
+        .filter(|c| csp::class_needs_ext(c))
+        .map(|c| (*c).to_string())
+        .collect();
+    assert!(
+        !needs_ext.is_empty(),
+        "★ 前置：至少要有 1 个 needs_ext 的类（否则本条对'标注'这件事是空真）"
+    );
+
     let mut missing: Vec<String> = Vec::new();
+    let mut leaked: Vec<String> = Vec::new();
     for class in &classes {
         let want = format!("csp-{}", kebab(class));
-        if !ids.iter().any(|id| id == &want) {
+        let has = ids.iter().any(|id| id == &want);
+        if csp::class_needs_ext(class) {
+            if has {
+                leaked.push(format!("{class} → {want}"));
+            }
+        } else if !has {
             missing.push(format!("{class} → {want}"));
         }
     }
+    assert!(
+        leaked.is_empty(),
+        "★★ 这些类标了 needs_ext 却仍然自动暴露了（用户会点进去看到「需要配置」）: {leaked:?}"
+    );
 
     assert!(
         missing.is_empty(),
@@ -91,11 +118,12 @@ async fn every_registered_csp_class_is_exposed_without_any_config() {
 
     // 反向：内置源数必须与类数对得上（多出来的只能是导入的/插件/聚合，空目录下应为 0）
     let builtin = ids.iter().filter(|id| id.starts_with("csp-")).count();
+    let expected = classes.len() - needs_ext.len();
     assert_eq!(
         builtin,
-        classes.len(),
-        "★ 内置 csp 源数({builtin}) 必须等于已注册类数({})，实得源: {:?}",
-        classes.len(),
+        expected,
+        "★ 内置 csp 源数({builtin}) 必须等于「已注册类数 − needs_ext 类数」({expected})，实得源: {:?}",
+        
         ids
     );
 

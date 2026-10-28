@@ -518,6 +518,14 @@ impl CspSite for Xbpq {
     fn supports_search(&self) -> bool {
         false
     }
+    /// ★ 2026-10-28（Owner：「要逐类标注」）：本类**不填 ext 不能用**
+    ///
+    /// 依据：ext 就是那份配置 URL/JSON，类本身没有站点
+    /// ⇒ 默认不自动暴露（用户导入带 ext 的站点时照常出现）。
+    fn needs_ext(&self) -> bool {
+        true
+    }
+
 
     async fn detail(&self, id: &str, ext: &str) -> Result<CspDetail, String> {
         let id = id.trim();

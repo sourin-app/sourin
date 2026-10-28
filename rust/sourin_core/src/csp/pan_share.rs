@@ -661,6 +661,14 @@ impl CspSite for PanShare {
         // 原版这个类没有搜索入口：它是"人肉整理的分享库"，只能逐盘看
         false
     }
+    /// ★ 2026-10-28（Owner：「要逐类标注」）：本类**不填 ext 不能用**
+    ///
+    /// 依据：需要具体分享链接（ext 里的 share 参数）
+    /// ⇒ 默认不自动暴露（用户导入带 ext 的站点时照常出现）。
+    fn needs_ext(&self) -> bool {
+        true
+    }
+
 
     async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
         Err("PanShare 不支持搜索（它是一份人肉整理的分享库，按盘浏览）".to_string())

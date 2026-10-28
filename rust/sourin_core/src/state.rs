@@ -462,6 +462,15 @@ impl AppState {
             if imported_csp_apis.contains(&api) {
                 continue;
             }
+            /*
+             * ★ 2026-10-28（Owner：「要逐类标注」）：`needs_ext` 的类**不自动暴露**。
+             *   XBPQ（配置驱动）与网盘族不填 ext 必然报错，让它们以空 ext 出现在
+             *   源列表里只会让用户点进去看到「需要配置」。用户导入带 ext 的站点时照常出现
+             *   —— 那条路走上面的恢复分支，与这里无关。
+             */
+            if crate::csp::class_needs_ext(class) {
+                continue;
+            }
             let id = format!("csp-{}", kebab_class(class));
             if registry.get(&id).is_some() {
                 continue;

@@ -331,6 +331,14 @@ impl CspSite for Pan115 {
     fn supports_search(&self) -> bool {
         false
     }
+    /// ★ 2026-10-28（Owner：「要逐类标注」）：本类**不填 ext 不能用**
+    ///
+    /// 依据：未登录必然 Err（真网读数：errno=99「请重新登录」）
+    /// ⇒ 默认不自动暴露（用户导入带 ext 的站点时照常出现）。
+    fn needs_ext(&self) -> bool {
+        true
+    }
+
 
     /// 搜索：如实报"不支持"（**不许**占位返回空 —— 那会被当成"搜了但没结果"）
     async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {

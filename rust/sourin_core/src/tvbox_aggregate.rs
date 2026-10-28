@@ -962,7 +962,25 @@ pub async fn channel_home_of(
 /// 口径与扇出口径**同一份**（[`enabled_children`]）：用户勾了就用勾的，
 /// 没勾就兜底全部 hidden 子站。顺序即展示顺序（勾选顺序 / 兜底按 id 排序）。
 pub fn channels_of(registry: &Arc<Registry>, data_dir: &Path) -> Vec<(String, String, bool)> {
+    /*
+     * ★★★ 2026-10-28（修我自己上一处改动的连带）：**渠道条只列用户导入的子站**
+     *
+     * ```text
+     * 上一处把"兜底候选集"从 `.filter(hidden)` 放开成"所有启用源"——那是对的，
+     * 因为 Owner 要的是搜索像原版那样**扇出所有源**（73 条 vs 我们 0 条）。
+     * 但 `enabled_children` 被**两处**共用：扇出 + 这里的"渠道条"。
+     * ⇒ 放开的副作用是：首页那条横向渠道条从 1 个变成 **49 个 chip**（内置源全上条）。
+     *   门禁 `zz_n9_agg_channel_rail` 的 ⑥ 立刻抓到（Expected 1 / Actual 49）。
+     *
+     * ⇒ 分工写死在这里：
+     *   · **扇出（home/list/search）**：所有启用源（原版行为）
+     *   · **渠道条（channels）**  ：只列"用户导入的隐藏子站"（那是用户自己的分组概念）
+     * ```
+     */
     enabled_children(registry, data_dir)
+        .into_iter()
+        .filter(|p| p.manifest().hidden)
+        .collect::<Vec<_>>()
         .into_iter()
         .map(|p| {
             let m = p.manifest();

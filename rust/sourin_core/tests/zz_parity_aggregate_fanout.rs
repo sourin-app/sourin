@@ -58,9 +58,14 @@ async fn aggregate_fans_out_to_non_hidden_enabled_sources() {
      * `MediaProvider` 没暴露 `as_any`）。`channels_of` 就是 command 层与 provider 方法
      * 共用的那一个入口，所以判据守的仍是生产路径。
      */
-    let channels: Vec<String> = sourin_core::tvbox_aggregate::channels_of(&st.registry, &tmp)
+    /*
+     * ⚠️ 判据对象是**扇出候选集**（`enabled_children`），不是 `channels_of`：
+     *    `channels_of` 是首页那条横向渠道条，只列用户导入的隐藏子站（49 个内置源不该上条）。
+     *    两者共用过一份实现，放开兜底时把渠道条也撑爆了 —— N9 的门禁当场抓到。
+     */
+    let channels: Vec<String> = sourin_core::tvbox_aggregate::enabled_children(&st.registry, &tmp)
         .into_iter()
-        .map(|(id, _, _)| id)
+        .map(|p| p.manifest().id.clone())
         .collect();
 
     let mut missing: Vec<&String> = Vec::new();

@@ -73,6 +73,31 @@ R2-B 的意图（"用户显式停用过的源不许被拉回来"）**没有被�
 
 ## Relations
 
-- 前情：[./2026-10-28-builtin-csp-sources-auto-exposed.md](./2026-10-28-builtin-csp-sources-auto-exposed.md)
+- 前情：[../architecture/2026-10-28-builtin-csp-sources-auto-exposed.md](../architecture/2026-10-28-builtin-csp-sources-auto-exposed.md)
   —— 那篇让内置源"出现在列表里"；本篇让它们"能被搜到"。两件缺一，用户都看不到内容。
-- 相关（判据读错对象族）：[./2026-10-28-hardcoded-sample-classes-go-stale.md](./2026-10-28-hardcoded-sample-classes-go-stale.md)
+- 相关（判据读错对象族）：[../testing/2026-10-28-hardcoded-sample-classes-go-stale.md](../testing/2026-10-28-hardcoded-sample-classes-go-stale.md)
+
+## 追加（同日，被自己的门禁抓到的连带）
+
+放开兜底之后，`zz_n9_agg_channel_rail` ⑥ 当场红了：
+
+```text
+Expected: <1>    Actual: <49>
+★★★ 导入成功 1 个子站 ⇒ 渠道清单必须恰好有这么多。
+```
+
+根因：`enabled_children` 被**两处共用** —— 扇出（home/list/search）与首页那条**横向渠道条**
+（`channels_of`）。放开兜底把渠道条也撑成 49 个 chip（内置源全上条），而
+"渠道条"表达的是**用户自己导入的子站分组**，不该列内置源。
+
+分工写死：
+
+```text
+· 扇出（home/list/search）：所有启用源（原版行为 —— Owner 要的 73 条）
+· 渠道条（channels）      ：只列"用户导入的隐藏子站"（用户自己的分组概念）
+```
+
+判据也跟着分了：`tests/zz_parity_aggregate_fanout.rs` 改成断言 **`enabled_children`**
+（扇出候选集），而不是 `channels_of`（渠道条）—— 判据对象要与被测语义一致，
+否则下次还会"用 A 的读数去证明 B 的行为"。
+

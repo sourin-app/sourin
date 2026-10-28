@@ -30,6 +30,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/ffi.dart';  // userErrorText 也在这里
 import '../tokens.dart';
+import 'app_loading.dart';
 import 'overlay_motion.dart' show showAppDialog;
 import 'qr_view.dart';
 
@@ -244,9 +245,11 @@ class _PanQrLoginDialogState extends State<_PanQrLoginDialog> {
               ),
               const SizedBox(height: Sp.x3),
               if (_busy)
+                // ★ 不许直接用 CircularProgressIndicator（门禁 zz_t64_migrated_widget_gate：
+                //   本项目已把它迁到 AppLoading，自绘 _AppSpinner）
                 const Padding(
                   padding: EdgeInsets.all(Sp.x4),
-                  child: CircularProgressIndicator(),
+                  child: AppLoading(),
                 )
               else if (_error.isNotEmpty)
                 Text(

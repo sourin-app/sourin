@@ -994,6 +994,260 @@ async fn baidu_poll(channel_id: &str) -> Result<PollOutcome, String> {
     })
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  115 网盘（PanKind::Pan115）—— **自建扫码**，登录与网盘操作在参考实现里是两个类
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 取证（`.probe/r3c-nine-pan-login-protocols.md` 附：115 的完整登录流程 / `Qr115` 类）
+//
+// ```text
+// ① 取码  GET https://qrcodeapi.115.com/api/1.0/qandroid/1.0/token/
+//         → uid；二维码内容 = `https://115.com/scan/dg-<uid>`
+// ② 轮询  GET https://qrcodeapi.115.com/get/status/?uid=<uid>&_=0
+//         → 字段：state / code / data.status
+// ③ 换 cookie POST https://passportapi.115.com/app/1.0/qandroid/1.0/login/qrcode/
+//         → ★ cookie 必须含 **UID / CID / SEID / KID** 四键（取证给的验收判据）
+// UA（逐字）：`Mozilla/5.0 115disk/30.1.0`
+// ```
+//
+// # ⚠️ 两处"取值含义未取证"（写在一处，批末真机读数来了只改这里）
+// ```text
+// ① 状态码语义：取证只给了字段名（state / data.status），**没给取值表**。
+//    这里按最常见的两态映射：data.status == 1 ⇒ 已扫未确认；>= 2 ⇒ 已确认。
+//    映射错的表现是"扫了之后一直不动" ⇒ 每次轮询都把 body 记进日志，一眼能看出来。
+// ② 换 cookie 的请求体：取证只给了端点，没给表单字段 ⇒ 只发 `uid`（最小集合，
+//    不多编一个参数）。失败会如实报 HTTP/响应体。
+// ③ **验收判据不猜**：四键缺任何一个 ⇒ 直接判失败（这是取证里明确写下的判据）。
+// ```
+
+/// 115 的 UA（逐字取自取证）
+const UA_115: &str = "Mozilla/5.0 115disk/30.1.0";
+
+/// 115 取码（纯函数）
+fn pan115_token_url() -> &'static str {
+    "https://qrcodeapi.115.com/api/1.0/qandroid/1.0/token/"
+}
+
+/// 115 轮询（纯函数）
+fn pan115_status_url(uid: &str) -> String {
+    format!("https://qrcodeapi.115.com/get/status/?uid={uid}&_=0")
+}
+
+/// 115 换 cookie（纯函数；POST，表单只带 uid）
+fn pan115_login_url() -> &'static str {
+    "https://passportapi.115.com/app/1.0/qandroid/1.0/login/qrcode/"
+}
+
+/// 115 二维码内容（纯函数）
+fn pan115_qr_url(uid: &str) -> String {
+    format!("https://115.com/scan/dg-{uid}")
+}
+
+/// 从取码响应里取 `uid`
+fn pan115_uid(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    for path in [["data", "uid"], ["uid", ""]] {
+        let mut cur = &v;
+        let mut ok = true;
+        for k in path.iter().filter(|k| !k.is_empty()) {
+            match cur.get(k) {
+                Some(n) => cur = n,
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok {
+            if let Some(s) = cur.as_str() {
+                let s = s.trim();
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 115 的状态映射（`(QrStatus, 原始码)`；码打日志用）
+///
+/// ⚠️ 取值含义**未取证**（见上面"两处未取证"）—— 这是全文件唯一允许"按常见两态映射"的地方。
+fn pan115_status_of(body: &str) -> (QrStatus, Option<i64>) {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return (QrStatus::Pending, None),
+    };
+    let st = v
+        .get("data")
+        .and_then(|d| d.get("status"))
+        .and_then(|x| x.as_i64())
+        .or_else(|| v.get("status").and_then(|x| x.as_i64()));
+    match st {
+        Some(1) => (QrStatus::Scanned, st),
+        Some(n) if n >= 2 => (QrStatus::Confirmed, st),
+        _ => (QrStatus::Pending, st),
+    }
+}
+
+/// 从换 cookie 响应里拼出 `UID=…; CID=…; SEID=…; KID=…`
+///
+/// ★ 四键**缺一不可**（取证给的验收判据）—— 缺了就是"登录态不完整"，
+///   后续所有请求都会 401，但登录这一步**不会报错**（典型的静默假成功）。
+fn pan115_cookie_from_body(body: &str) -> Result<String, String> {
+    const KEYS: [&str; 4] = ["UID", "CID", "SEID", "KID"];
+    let v: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("115 换 cookie 返回的不是 JSON（{e}）：{}", tail(body)))?;
+    // 两种形状都认：`data.cookie{...}` 或顶层 `data{...}`
+    let src = v
+        .get("data")
+        .and_then(|d| d.get("cookie"))
+        .or_else(|| v.get("data"))
+        .or_else(|| v.get("cookie"));
+    let Some(src) = src else {
+        return Err(format!("115 换 cookie 响应里没有 cookie 段：{}", tail(body)));
+    };
+    let mut parts: Vec<String> = Vec::new();
+    let mut missing: Vec<&str> = Vec::new();
+    for k in KEYS {
+        let val = src
+            .get(k)
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if val.is_empty() {
+            missing.push(k);
+        } else {
+            parts.push(format!("{k}={val}"));
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "115 换 cookie 缺少关键键 {:?}（验收判据要求 UID/CID/SEID/KID 四键）：{}",
+            missing,
+            tail(body)
+        ));
+    }
+    Ok(parts.join("; "))
+}
+
+/// 115：第一步拿二维码
+async fn pan115_start() -> Result<QrSession, String> {
+    let c = client(UA_115)?;
+    let resp = c
+        .get(pan115_token_url())
+        .header("Accept", "application/json, text/plain, */*")
+        .send()
+        .await
+        .map_err(|e| format!("请求 115 二维码接口失败：{e}"))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读 115 响应失败：{e}"))?;
+    if !status.is_success() {
+        return Err(format!("115 二维码接口返回 HTTP {status}：{}", tail(&body)));
+    }
+    let uid = pan115_uid(&body).ok_or_else(|| {
+        write_log(&format!("取码失败 kind=115 无 uid body={}", tail(&body)));
+        format!("115 响应里没有 uid（协议可能变了）：{}", tail(&body))
+    })?;
+    let url = pan115_qr_url(&uid);
+    let svg = crate::remote::qr_svg_for(&url).unwrap_or_default();
+    write_log(&format!(
+        "取码成功 kind=115 uid_len={} svg_len={}",
+        uid.len(),
+        svg.len()
+    ));
+
+    let created_at = now();
+    sessions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            kind_key(PanKind::Pan115, &uid),
+            SessionRecord {
+                token: uid.clone(),
+                created_at,
+            },
+        );
+    Ok(QrSession {
+        key: uid,
+        url,
+        svg,
+        hint: "用 115 App 扫这个码".to_string(),
+        created_at,
+    })
+}
+
+/// 115：轮询 + 换 cookie
+async fn pan115_poll(uid: &str) -> Result<PollOutcome, String> {
+    let c = client(UA_115)?;
+    let resp = c
+        .get(pan115_status_url(uid))
+        .header("Accept", "application/json, text/plain, */*")
+        .send()
+        .await
+        .map_err(|e| format!("轮询 115 扫码状态失败：{e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读 115 轮询响应失败：{e}"))?;
+    let (st, code) = pan115_status_of(&body);
+    write_log(&format!(
+        "轮询 kind=115 状态={} 原始码={:?} body={}",
+        st.code(),
+        code,
+        tail(&body)
+    ));
+    if st != QrStatus::Confirmed {
+        let scanned = st == QrStatus::Scanned;
+        return Ok(PollOutcome {
+            status: st,
+            message: if scanned {
+                "已扫描，请在手机上确认".to_string()
+            } else {
+                "等待扫码…".to_string()
+            },
+            credential: None,
+        });
+    }
+
+    // ③ 换 cookie（POST 表单只带 uid —— 取证没给字段名，不多编）
+    let resp = c
+        .post(pan115_login_url())
+        .header("Accept", "application/json, text/plain, */*")
+        .form(&[("uid", uid)])
+        .send()
+        .await
+        .map_err(|e| {
+            write_log(&format!("换 cookie 请求失败 kind=115 err={e}"));
+            format!("换取 115 登录态失败：{e}")
+        })?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("115 换 cookie 返回 HTTP {status}：{}", tail(&body)));
+    }
+    let cookie = pan115_cookie_from_body(&body)?;
+    write_log(&format!(
+        "换 cookie 成功 kind=115 摘要={}",
+        cookie_digest(&cookie)
+    ));
+
+    Ok(PollOutcome {
+        status: QrStatus::Confirmed,
+        message: "登录成功：115 网盘".to_string(),
+        credential: Some(crate::pan_auth::PanCredential {
+            kind: PanKind::Pan115,
+            account: "115 网盘".to_string(),
+            cookie,
+            saved_at: now(),
+            expires_at: None,
+        }),
+    })
+}
+
 // ── 解析小工具（纯函数，可单测；不依赖网络）────────────────────────────
 /// 从响应体里找二维码 token
 ///
@@ -1170,9 +1424,10 @@ pub async fn qr_login_start(kind: PanKind) -> Result<QrSession, String> {
         PanKind::Quark => quark_start().await,
         PanKind::Uc => uc_start().await,
         PanKind::Baidu => baidu_start().await,
+        PanKind::Pan115 => pan115_start().await,
         // ⚠️ **不是**占位返回空：如实说清"这家还没接入"。
         other => Err(format!(
-            "{} 的扫码登录尚未接入（当前完成夸克/UC/百度；其余按批推进）",
+            "{} 的扫码登录尚未接入（当前完成夸克/UC/百度/115；其余按批推进）",
             other.display()
         )),
     }
@@ -1212,9 +1467,10 @@ pub async fn qr_login_poll(kind: PanKind, key: &str) -> Result<PollOutcome, Stri
         PanKind::Quark => quark_poll(key).await?,
         PanKind::Uc => uc_poll(key).await?,
         PanKind::Baidu => baidu_poll(key).await?,
+        PanKind::Pan115 => pan115_poll(key).await?,
         other => {
             return Err(format!(
-                "{} 的扫码登录尚未接入（当前完成夸克/UC/百度）",
+                "{} 的扫码登录尚未接入（当前完成夸克/UC/百度/115）",
                 other.display()
             ))
         }
@@ -1517,7 +1773,7 @@ mod tests {
     ///   （否则它会去发真网络请求 —— 断言就变成"靠网络失败通过"的假绿）。
     #[tokio::test]
     async fn unimplemented_kind_says_so_instead_of_pretending() {
-        for k in [PanKind::Pan115, PanKind::Guangya] {
+        for k in [PanKind::Guangya] {
             let e = qr_login_start(k).await.expect_err("未接入的盘不许成功");
             assert!(
                 e.contains("尚未接入"),
@@ -1531,6 +1787,70 @@ mod tests {
     }
 
     // ══════════════════════════════════════════════════════════════════
+    //  115 扫码（2026-10-28 接通）—— 验收判据是 cookie 四键
+    // ══════════════════════════════════════════════════════════════════
+
+    /// ★★ 三条 URL + 二维码内容逐字对齐取证
+    ///
+    /// ```text
+    /// 注入验证：把二维码内容前缀从 `dg-` 改成 `d-` ⇒ 本条 FAILED
+    ///   （扫出来的码与 App 约定的不一样，用户扫了没反应）。
+    /// ```
+    #[test]
+    fn pan115_urls_match_the_documented_flow() {
+        assert_eq!(
+            pan115_token_url(),
+            "https://qrcodeapi.115.com/api/1.0/qandroid/1.0/token/"
+        );
+        assert_eq!(
+            pan115_status_url("u1"),
+            "https://qrcodeapi.115.com/get/status/?uid=u1&_=0"
+        );
+        assert_eq!(
+            pan115_login_url(),
+            "https://passportapi.115.com/app/1.0/qandroid/1.0/login/qrcode/"
+        );
+        assert_eq!(pan115_qr_url("u1"), "https://115.com/scan/dg-u1");
+    }
+
+    /// ★★★ 四键验收：缺任何一个都必须失败（这是取证写下的判据）
+    ///
+    /// ```text
+    /// 注入验证：把 KEYS 里的 "SEID" 删掉 ⇒ 第三条断言 FAILED
+    ///   ⇒ 那种"只拿到两三个键"的登录态会被当成成功，后续全 401。
+    /// ```
+    #[test]
+    fn pan115_cookie_requires_all_four_keys() {
+        let ok = r#"{"state":1,"data":{"cookie":{"UID":"1","CID":"2","SEID":"3","KID":"4"}}}"#;
+        let c = pan115_cookie_from_body(ok).expect("四键齐全必须成功");
+        assert_eq!(c, "UID=1; CID=2; SEID=3; KID=4");
+
+        let miss = r#"{"state":1,"data":{"cookie":{"UID":"1","CID":"2","KID":"4"}}}"#;
+        let e = pan115_cookie_from_body(miss).expect_err("缺 SEID 必须失败");
+        assert!(e.contains("SEID"), "要点名缺哪个键：{e}");
+        assert!(e.contains("UID/CID/SEID/KID"), "要给出验收判据：{e}");
+
+        // 顶层 data 形状也认（另一种报文）
+        let flat = r#"{"data":{"UID":"a","CID":"b","SEID":"c","KID":"d"}}"#;
+        assert!(pan115_cookie_from_body(flat).is_ok());
+    }
+
+    /// ★★ 状态映射：1 = 已扫未确认，>=2 = 已确认，其它 = 等待
+    ///
+    /// ⚠️ 取值含义**未取证**（文件里已标注）—— 这条钉的是"映射只在一处、形状稳定"，
+    ///   而不是"取值一定对"。真读数来了改 `pan115_status_of` 一处即可。
+    #[test]
+    fn pan115_status_mapping_is_single_sourced() {
+        assert_eq!(pan115_status_of(r#"{"data":{"status":1}}"#), (QrStatus::Scanned, Some(1)));
+        assert_eq!(
+            pan115_status_of(r#"{"data":{"status":2}}"#),
+            (QrStatus::Confirmed, Some(2))
+        );
+        assert_eq!(pan115_status_of(r#"{"data":{"status":0}}"#), (QrStatus::Pending, Some(0)));
+        assert_eq!(pan115_status_of("not json"), (QrStatus::Pending, None));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
     //  百度扫码（2026-10-28 接通）—— passport 族，与 CAS 不同
     // ══════════════════════════════════════════════════════════════════
 
@@ -1541,8 +1861,7 @@ mod tests {
     /// （百度那一步的参数名是 `v`，值才是 sign —— 名字写错服务端不认，且不报错）
     /// ```
     #[test]
-    fn baidu_urls_match_the_documented_flow() {
-        assert_eq!(
+    fn baidu_urls_match_the_documented_flow() {        assert_eq!(
             baidu_qrcode_url(),
             "https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc"
         );

@@ -38,7 +38,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 import '_support/strip_comments.dart';
-import 'zz_cr_nit_shell_theme_gate.dart';
+import '_support/shell_theme_gate.dart';
 
 const String kShellPath = 'lib/shell.dart';
 const String kGatePath = 'test/theme_regression_test.dart';
@@ -120,7 +120,15 @@ void main() {
   group('② 腿 A：真门禁本身的结构（修之前是 RED）', () {
     test('★★ theme_regression_test.dart 必须 import 共享门禁实现', () {
       final gate = File(kGatePath).readAsStringSync();
-      expect(gate, contains("import 'zz_cr_nit_shell_theme_gate.dart'"),
+      /*
+       * ★ 2026-10-28：共享实现从 `test/zz_cr_nit_shell_theme_gate.dart` 挪到了
+       *   `test/_support/shell_theme_gate.dart` —— 因为它**没有 main**，
+       *   而 `flutter test` 会把所有 `test/zz_*.dart` 当测试文件跑 ⇒ 每次全量都报
+       *   "Failed to load: Missing definition of main"（一个什么都不守的假红）。
+       *   仓库既有约定：不参与测试的共享件放 `test/_support/`（如 strip_comments.dart）。
+       *   ⇒ 断言跟着路径走，语义不变：**真门禁必须 import 那份唯一的实现**。
+       */
+      expect(gate, contains("import '_support/shell_theme_gate.dart'"),
           reason: '★★ 真门禁必须复用共享实现（铁律 170：同一纪律只能有一个实现）');
     });
 

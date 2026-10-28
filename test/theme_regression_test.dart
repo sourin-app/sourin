@@ -38,7 +38,7 @@ import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 
 import '_support/strip_comments.dart';
-import 'zz_cr_nit_shell_theme_gate.dart';
+import '_support/shell_theme_gate.dart';
 
 /// WCAG 相对亮度
 double _lum(Color c) {

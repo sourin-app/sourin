@@ -22,7 +22,7 @@
 //  剥注释只用仓里既有的那一个实现 `test/_support/strip_comments.dart`，
 //  不抄第二份（10 个实现的教训就写在那个文件头上）。
 
-import '_support/strip_comments.dart';
+import 'strip_comments.dart';
 
 /// 「AppTheme.themeFor(brightness) 的结果真的挂到了**产品根**的主题宿主上」
 ///

@@ -111,6 +111,16 @@ const _bareShellWhitelist = <String, String>{
 /// ✗ 不用 'AlertDialog('（同一文件里可能有多处）
 /// ```
 const _siteExemptions = <String, String>{
+  // ═══ 2026-10-28（N4-1 的第三点：网盘登录要出二维码）═══
+  'lib/ui/widgets/pan_qr_login_dialog.dart#constraints: const BoxConstraints(maxWidth: 380)':
+      '★ 2026-10-28 新增：网盘扫码登录弹窗。**不属于可以换成 AppGlassDialog 的那类**——'
+          '它要承载 `QrView`（定尺 180 画布，靠 SVG 解析，标题/说明/状态三行要围着它排版），'
+          '而 AppGlassDialog 只接 String 标题、不能承载这个定尺画布。'
+          '按括号块量过：控件只有 Text/Column/Padding/ConstrainedBox/Dialog/QrView/'
+          'CircularProgressIndicator/TextButton —— TextField / TextFormField / '
+          'EditableText / InputDecoration 各 0 个（所以也不属于机制②）。'
+          '它替代的是「网盘源点登录后一片空白」的那个空面板（见笔记 '
+          '2026-10-28-pan-login-shows-qr-not-blank-panel.md）。',
   // ═══ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）═══
   // 基线里 13 处生产 `AlertDialog(` 已全部迁到统一外壳，逐处登记随之失去意义，
   // 故删除其豁免（属正当减法：登记的是"这一处不能换"，既然换了就不该再登记）。

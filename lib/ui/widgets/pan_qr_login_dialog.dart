@@ -28,7 +28,7 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
-import '../../core/ffi.dart';
+import '../../core/ffi.dart';  // userErrorText 也在这里
 import '../tokens.dart';
 import 'overlay_motion.dart' show showAppDialog;
 import 'qr_view.dart';
@@ -174,7 +174,8 @@ class _PanQrLoginDialogState extends State<_PanQrLoginDialog> {
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _error = '扫码登录暂时用不了：$e';
+        // ★ 不许把异常原文倒进用户可见字段（门禁 zz_t66_user_error_text_gate）
+        _error = userErrorText(e, fallback: '扫码登录暂时用不了，请稍后重试');
       });
     }
   }
@@ -215,6 +216,10 @@ class _PanQrLoginDialogState extends State<_PanQrLoginDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    // R4-EXCEPTION: 自建外壳（裸 Dialog）那一类 —— 本弹窗要自己定宽（380）并把
+    // 二维码居中，AppGlassDialog 只收 String 标题、不能承载 QrView 的定尺画布；
+    // 控件只有 Text/Column/QrView/TextButton，无任何输入控件。
+    // 见 _siteExemptions 同名键。
     return Dialog(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 380),

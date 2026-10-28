@@ -51,6 +51,8 @@ import 'package:material_ui/material_ui.dart';
 import '../core/ffi.dart';
 import '../core/sourin_api.dart';
 import '../core/title_match.dart';
+// 聚合源的 id 与「子站清单」FFI 契约的唯一所有者都在 home_page（不许在这里再写一遍字面量）
+import 'home_page.dart' show kTvboxAggregateId, TvboxAggChannelApi;
 import 'tokens.dart';
 import 'widgets/fade_in_sliver.dart';
 import 'widgets/poster_card.dart';
@@ -93,6 +95,75 @@ List<SearchHitGroup> rankHitGroups(
   List<SearchHitGroup> groups,
 ) =>
     stableRankDesc(groups, (g) => bestTitleScore(keyword, g.items));
+
+/// 从聚合条目的 id 里取出**子站 id**
+///
+/// # 形状（Rust `tvbox_aggregate.rs` 的 `wrap_item` 定的）
+/// ```text
+/// "<聚合id>:<子站id>::<子站原始 id>"   →  返回 "<子站id>"
+/// 例：tvbox_agg:csp-4k-zhinan::https://…  →  csp-4k-zhinan
+/// ```
+/// 认不出来（没有 `:` 或没有 `::`）⇒ `null`，由调用方兜底成"不分组的原样一组"。
+String? aggregateChildOf(String id) {
+  final i = id.indexOf(':');
+  if (i < 0) return null;
+  final rest = id.substring(i + 1);
+  final j = rest.indexOf('::');
+  if (j <= 0) return null;
+  return rest.substring(0, j);
+}
+
+/// 把一个 `hit` 事件拆成**按源分组**的若干组
+///
+/// # ★★★ 2026-10-28（Owner：原版搜「老舅」几十条、按源分组，我们做不到）
+/// ```text
+/// 非聚合源：一组（与改前一致）。
+/// 聚合源（`tvbox_agg`）：它的 items 是**十几个子站拼起来的**，
+///   而流式搜索是按 **provider** 分组的 ⇒ 改前全部条目挤在
+///   「TVBox 聚合」一个组里 —— 用户看不出哪条来自哪个站，
+///   也没法像原版那样"左边一排源、每组几条"。
+/// ⇒ 按条目 id 里的子站前缀拆开，组标题用子站名
+///   （名字来自 `tvbox_agg_channels`；拿不到就退回子站 id —— 不画空标题）。
+/// ```
+///
+/// ⚠️ **不许丢条目**：拆分前后 `items` 总数必须相等（`None` 兜底组也保留全部）。
+///   `split_preserves_every_item` 守这条 —— 丢一条就是"搜索结果变少"的静默 bug。
+List<SearchHitGroup> splitAggregateHit(
+  SearchStreamEvent ev, {
+  Map<String, String> channelNames = const <String, String>{},
+}) {
+  final single = <SearchHitGroup>[
+    (provider: ev.provider, name: ev.providerName, items: ev.items),
+  ];
+  // 非聚合源 / 空结果 ⇒ 保持改前行为（空结果也要留组标题，见 `_addHit` 注释）
+  if (ev.provider != kTvboxAggregateId || ev.items.isEmpty) return single;
+
+  final order = <String>[];
+  final buckets = <String, List<MediaItem>>{};
+  for (final it in ev.items) {
+    final key = aggregateChildOf(it.id) ?? '';
+    final bucket = buckets[key];
+    if (bucket == null) {
+      order.add(key);
+      buckets[key] = <MediaItem>[it];
+    } else {
+      bucket.add(it);
+    }
+  }
+  // 一个都没拆出来 ⇒ 原样一组（不许产出空列表把结果吞掉）
+  if (order.length == 1 && order.first == '') return single;
+
+  return [
+    for (final k in order)
+      (
+        provider: ev.provider,
+        name: k.isEmpty
+            ? ev.providerName
+            : (channelNames[k] ?? k), // ★ 名字缺失退回 id，绝不画空标题
+        items: buckets[k]!,
+      ),
+  ];
+}
 
 /// 搜索页
 class SearchPage extends StatefulWidget {
@@ -242,6 +313,40 @@ class SearchPageState extends State<SearchPage> {
   ///   ⇒ 一律在**收到事件的那一刻**用**当时那个关键词**算分并固化。
   String _lastKeyword = '';
 
+  /// 聚合源子站 id → 显示名（"全部"里按源分组时的组标题）
+  ///
+  /// ★ 来自 `tvbox_agg_channels`（**sync、零网络**，只读 registry + 配置）。
+  ///   读不到 ⇒ 组标题退回子站 id —— 分组本身不依赖它（那只看条目 id 前缀）。
+  Map<String, String> _aggChannelNames = const <String, String>{};
+
+  /// ★ 测试注入口（**生产恒 null**）：子站清单的替身
+  ///
+  /// `flutter test` 里没有核心 DLL ⇒ 真实命令必然抛异常 ⇒ 组标题会退回子站 id，
+  /// 于是"按源分组且标题是**子站名**"这条在测试里永远验不到（假绿）。
+  /// 本仓既有同款先例：`debugTvboxAggregateFetcher`、`debugAggChannelHomeFetcher`。
+  @visibleForTesting
+  static Future<Map<String, String>> Function()? debugAggChannelNamesFetcher;
+
+  static Future<Map<String, String>> _fetchAggChannelNames() async {
+    final f = debugAggChannelNamesFetcher;
+    if (f != null) return f();
+    final p = await TvboxAggChannelApi.channelsReal();
+    // ⚠️ 名字为空 ⇒ 用 id 兜底（`AggChannel.fromJson` 已经这样做了，这里再过一遍
+    //   是为了"契约万一变了"也不画空标题）
+    return {
+      for (final c in p.channels) c.id: c.name.isEmpty ? c.id : c.name,
+    };
+  }
+
+  Future<void> _loadAggChannelNames() async {
+    try {
+      final m = await _fetchAggChannelNames();
+      if (mounted) setState(() => _aggChannelNames = m);
+    } catch (e) {
+      debugPrint('[SEARCH] 子站名清单读取失败（组标题退回子站 id，不影响结果）: $e');
+    }
+  }
+
   /// 当前这次搜索的 token（用于取消）
   ///
   /// ⚠️ 用户连续改关键词时，旧的那次还在跑 ——
@@ -252,6 +357,8 @@ class SearchPageState extends State<SearchPage> {
   void initState() {
     super.initState();
     _loadProviderCount();
+    // ★ 聚合源"按源分组"的组标题（零网络命令；失败只退回子站 id）
+    _loadAggChannelNames();
     /*
      * ★★★ 第 66 轮轨道 F / L2-c：让搜索框**看得出自己被聚焦**
      *
@@ -440,21 +547,31 @@ class SearchPageState extends State<SearchPage> {
   ///    不会触发重建（列表引用没变）。
   void _addHit(String keyword, SearchStreamEvent ev) {
     setState(() {
+      /*
+       * ★★★ 2026-10-28：聚合源的事件要**先按子站拆开**再加进 `_hits`。
+       * ```text
+       * 改前：一个聚合事件 = 一个组 ⇒ 十几个子站的条目挤在「TVBox 聚合」下，
+       *       与 Owner 要的"像原版那样按源分组"不符（他数的是每组几条）。
+       * 拆开与排序都走真代码：`splitAggregateHit`（纯函数，有门禁）→ `rankHitGroups`。
+       * ```
+       */
+      final groups = splitAggregateHit(ev, channelNames: _aggChannelNames);
       _hits = rankHitGroups(keyword, [
         ..._hits,
-        (
-          provider: ev.provider,
-          name: ev.providerName,
-          /*
-           * ★ 组内也排（task-73 ②）—— 与组间**同一套判据**。
-           *
-           * ⚠️ 用 `item.title` 算，**不是** `item.note`
-           *    （`note` 是"全 27 集"这类副标题，与匹配度无关。
-           *      卡片副标题显示的确实还是 note —— 那是对的，
-           *      但**排序**不能用它）。
-           */
-          items: rankItemsByTitleDesc(keyword, ev.items),
-        ),
+        for (final g in groups)
+          (
+            provider: g.provider,
+            name: g.name,
+            /*
+             * ★ 组内也排（task-73 ②）—— 与组间**同一套判据**。
+             *
+             * ⚠️ 用 `item.title` 算，**不是** `item.note`
+             *    （`note` 是"全 27 集"这类副标题，与匹配度无关。
+             *      卡片副标题显示的确实还是 note —— 那是对的，
+             *      但**排序**不能用它）。
+             */
+            items: rankItemsByTitleDesc(keyword, g.items),
+          ),
       ]);
       _settled++;
     });

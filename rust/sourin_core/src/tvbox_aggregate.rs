@@ -484,12 +484,24 @@ impl TvboxAggregate {
         it
     }
 
-    /// 合并去重：同一子站同一 native 视为同一条；跨子站同 (title, kind) 也合并
+    /// 合并去重：**只合并"同一条"** —— 同一子站 + 同一个 `native`
+    ///
+    /// # ★★★ 2026-10-28（Owner 现场对照原版：搜"老舅"原版 73 条、我们 0 条）
+    /// ```text
+    /// 改前：key = (title, kind) ⇒ **跨源同名即合并**。
+    ///   十几个子站都返回「老舅（2023）」⇒ 只剩 1 条；
+    ///   而"全部"在原版里是**按源分组**逐条列的（同一个剧在 5 个源里就是 5 条）。
+    ///   ⇒ 这就是"原版几十条、我们几条"的直接原因（扇出没问题，是被合并掉了）。
+    /// 现在：只合并 `(provider, native)` 完全相同的重复（同一源翻页重叠才会出现），
+    ///   跨源同名**一律保留** —— 分组与去重各管一件事：
+    ///     分组：UI 按 id 前缀（子站）拆开（search_page 的 `splitAggregateHit`）
+    ///     去重：只挡"同一条被收了两次"
+    /// ```
     fn dedupe(items: Vec<MediaItem>) -> Vec<MediaItem> {
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::with_capacity(items.len());
         for it in items {
-            let key = (it.title.clone(), format!("{:?}", it.kind));
+            let key = (it.id.provider.clone(), it.id.native.clone());
             if seen.insert(key) {
                 out.push(it);
             }
@@ -1249,9 +1261,14 @@ mod tests {
         );
     }
 
-    /// ★ 注入点：删掉 `dedupe` 调用 ⇒ 本条红
+    /// ★★★ 跨源同名**不许合并**（原版"全部"就是按源逐条列 —— 几十条的来源）
+    ///
+    /// ```text
+    /// 注入验证：把 `dedupe` 的 key 改回 `(title, kind)` ⇒ 本条 FAILED（只剩 1 条）。
+    /// 这是 Owner 那条"搜老舅原版 73 条、我们 0 条"的直接判据。
+    /// ```
     #[tokio::test]
-    async fn fanout_dedupes_same_media() {
+    async fn fanout_keeps_same_title_from_different_sources() {
         let a = Arc::new(FakeChild {
             manifest: manifest("tvbox1", "tvbox"),
             items: vec![item("same", "同一部剧")],
@@ -1262,11 +1279,46 @@ mod tests {
             items: vec![item("same2", "同一部剧")],
             fail_search: false,
         }) as Arc<dyn MediaProvider>;
-        let agg = agg_with("dedupe", vec![a, b], &["tvbox1", "tvbox2"]);
+        let agg = agg_with("dedupe-cross", vec![a, b], &["tvbox1", "tvbox2"]);
         let page = agg.search("x", 1).await.expect("应成功");
-        assert_eq!(page.items.len(), 1, "两个子站给同一条内容只留一条：{:?}",
-            page.items.iter().map(|i| &i.title).collect::<Vec<_>>());
-        assert!(page.items[0].id.native.starts_with("tvbox1::"), "保留先到的那个");
+        assert_eq!(
+            page.items.len(),
+            2,
+            "★★ 两个子站各有一条 ⇒ 必须都留着（原版按源分组就是两条）：{:?}",
+            page.items.iter().map(|i| &i.title).collect::<Vec<_>>()
+        );
+        let mut children: Vec<String> = page
+            .items
+            .iter()
+            .map(|i| {
+                i.id.native
+                    .split_once(SEP)
+                    .map(|(c, _)| c.to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        children.sort();
+        assert_eq!(children, vec!["tvbox1".to_string(), "tvbox2".to_string()],
+            "★ 两条必须分属两个子站（UI 靠这个前缀分组）");
+    }
+
+    /// ★ 同一子站把同一条内容返回两次（翻页重叠）⇒ 仍只留一条
+    ///
+    /// ```text
+    /// 去重不能整个删掉：`_page` 重叠时同一 native 会被收两次，
+    /// 那会在列表里出现两个一模一样的卡片（用户点了两次同一条）。
+    /// 注入验证：把 `dedupe` 改成 `return items` ⇒ 本条 FAILED。
+    /// ```
+    #[tokio::test]
+    async fn fanout_dedupes_exact_same_item() {
+        let a = Arc::new(FakeChild {
+            manifest: manifest("tvbox1", "tvbox"),
+            items: vec![item("same", "同一部剧"), item("same", "同一部剧")],
+            fail_search: false,
+        }) as Arc<dyn MediaProvider>;
+        let agg = agg_with("dedupe-exact", vec![a], &["tvbox1"]);
+        let page = agg.search("x", 1).await.expect("应成功");
+        assert_eq!(page.items.len(), 1, "同一条被收两次 ⇒ 只留一条");
     }
 
     /// ★ 注入点：`route()` 里把 `split_once` 改成"整段当子站 id" ⇒ 本条红

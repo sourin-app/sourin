@@ -114,6 +114,7 @@ import 'app_loading.dart';
 import 'qr_view.dart';
 import '../../ui/app_palette.dart';
 import '../../design/icons/app_icons.dart';
+import 'pan_qr_login_dialog.dart';
 
 /// 会话状态（对应 Rust `SessionState`，`snake_case`）
 enum SessionState {
@@ -1405,6 +1406,21 @@ Future<bool> showProviderLoginDialog(
   required String providerId,
   required String providerName,
 }) async {
+  /*
+   * ★★★ 2026-10-28（Owner：「点击登录出现空白」）
+   * ```text
+   * 这个面板画的是**源自己声明的登录字段**（账号/密码/cookie）。
+   * 网盘类 csp 源（`csp-pan115` 等）没有任何登录字段 —— 它们的凭据是**扫码**拿的
+   * ⇒ 面板是空的 ⇒ 用户看到一片空白。
+   * ⇒ 网盘源改走扫码弹窗（复用 pan_settings_page 那条已跑通的链路）。
+   * ```
+   * 判据：按**源 id** 分流（`panKindOfProvider`），不是按名字猜。
+   */
+  final panKind = panKindOfProvider(providerId);
+  if (panKind != null) {
+    return showPanQrLoginDialog(context, kind: panKind);
+  }
+
   var ok = false;
   await showAppDialog<void>(
     context: context,

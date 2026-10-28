@@ -1321,6 +1321,14 @@ pub struct ProviderError {
     /// 是否需要用户先登录
     #[serde(default)]
     pub needs_login: bool,
+    /// ★ 2026-10-28：需要登录的是**哪个盘**（`quark` / `uc` / `baidu` / `115` / `123` /
+    /// `aliyun` / `tianyi` / `guangya` / `xunlei`）。
+    ///
+    /// 判据：UI 要靠它决定"弹哪个盘的二维码"；`None` = 与某个具体盘无关。
+    /// `skip_serializing_if` 让**不用登录的错误**序列化结果逐字不变
+    /// （老客户端/老快照不会因为多一个 `null` 字段而 diff）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1350,6 +1358,7 @@ impl ProviderError {
             kind,
             message: msg.into(),
             needs_login: matches!(kind, ErrorKind::Unauthorized),
+            login_kind: None,
         }
     }
     pub fn network(msg: impl Into<String>) -> Self {

@@ -196,7 +196,7 @@ impl CspProvider {
             .site
             .home(&self.ext)
             .await
-            .map_err(classify_err)?;
+            .map_err(|e| classify_err(self.site.class(), e))?;
         Ok(home
             .categories
             .into_iter()
@@ -217,7 +217,81 @@ impl CspProvider {
 /// 上游 code != 0 / JSON 不对    → Parse（源站改版或需要登录）
 /// 我们的实现没有这项能力        → Unsupported
 /// ```
-fn classify_err(e: String) -> ProviderError {
+/// 网盘类名 → 盘种 code（与 `pan::PanKind::code()` 同一套词；`None` = 不是网盘类）
+fn login_kind_of_class(class: &str) -> Option<&'static str> {
+    match class {
+        "Pan115" => Some("115"),
+        "Pan123" => Some("123"),
+        "PanAli" => Some("aliyun"),
+        "PanTianyi" => Some("tianyi"),
+        "PanXunlei" => Some("xunlei"),
+        "PanGuangya" => Some("guangya"),
+        "PanUC" => Some("uc"),
+        "PanQuark" => Some("quark"),
+        _ => None,
+    }
+}
+
+/// 这条错误文案是不是"要登录"（而不是"站点坏了"）
+///
+/// # 为什么用文案判定而不是让每个类改返回值
+/// ```text
+/// csp 实现层的 trait 返回 `String`（不是结构化的），8 个网盘类各有一堆返回点。
+/// 与其在那 8 个文件里逐处改（风险高、容易漏），不如在**唯一的分类点**判定：
+/// 这些文案全是我们自己写的、且都带上游原话，标记表放在一处、有门禁守着。
+/// ```
+/// 判据：**只有网盘类才走这条判定**（`login_kind_of_class` 不为 None）；
+/// 普通影视源出现同样的字眼不会变成"要登录"。
+fn looks_like_login_required(msg: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "请重新登录",
+        "未登录",
+        "登录过期",
+        "未授权",
+        "InvalidSessionKey",
+        "AccessTokenInvalid",
+        "device_id is empty",
+        "captcha_token",
+        "无效token",
+        "errno=99",
+        "code=20101",
+    ];
+    MARKERS.iter().any(|m| msg.contains(m))
+}
+
+fn classify_err(class: &str, e: String) -> ProviderError {
+    /*
+     * ★★★ 2026-10-28（Owner：网盘要"提示登录 + 出二维码"，而不是空白）
+     * ```text
+     * csp 实现层的错误是 `String`（trait 决定），而宿主错误类型是有结构的
+     * （`kind` + `needs_login`）。网盘族未登录时必须让 UI 能**认出**这是登录问题，
+     * 否则用户只看到一句"取流失败"，点也没地方点。
+     * ⇒ 约定一个前缀：`NEED_LOGIN:<盘种>|<人话>`。
+     *   这里把它翻译成 `Unauthorized` + `login_kind`，并把 `NEED_LOGIN:...|` 剥掉，
+     *   让消息本身仍是给用户看的原话。
+     * ```
+     * 约定只有这一个生产点（本函数），类那边只负责"打标记"。
+     */
+    if let Some(rest) = e.strip_prefix("NEED_LOGIN:") {
+        let (kind, msg) = match rest.split_once('|') {
+            Some((k, m)) => (k.to_string(), m.to_string()),
+            None => ("unknown".to_string(), rest.to_string()),
+        };
+        let mut err = ProviderError::unauthorized(msg.chars().take(200).collect::<String>());
+        err.login_kind = Some(kind);
+        return err;
+    }
+    /*
+     * ★ 2026-10-28：网盘类 + "要登录"的字眼 ⇒ Unauthorized + login_kind。
+     *   UI 靠 `login_kind` 决定弹哪个盘的二维码（Owner：点登录要出二维码，不是空白）。
+     */
+    if let Some(kind) = login_kind_of_class(class) {
+        if looks_like_login_required(&e) {
+            let mut err = ProviderError::unauthorized(e.chars().take(200).collect::<String>());
+            err.login_kind = Some(kind.to_string());
+            return err;
+        }
+    }
     let head = e.chars().take(200).collect::<String>();
     if e.starts_with("HTTP ") || e.contains("请求 ") || e.contains("读取 ") {
         ProviderError::network(head)
@@ -283,7 +357,7 @@ impl MediaProvider for CspProvider {
             .site
             .list(&req.category_id, page, &self.ext)
             .await
-            .map_err(classify_err)?;
+            .map_err(|e| classify_err(self.site.class(), e))?;
         Ok(self.page_of(out))
     }
 
@@ -306,7 +380,7 @@ impl MediaProvider for CspProvider {
             .site
             .search(keyword, page, &self.ext)
             .await
-            .map_err(classify_err)?;
+            .map_err(|e| classify_err(self.site.class(), e))?;
         // 空结果与 list 同口径：返回**空页**（让 registry 记成"命中但 0 条"），
         // 不报错 —— 搜索没有结果是正常结果，不是故障。
         Ok(self.page_of(out))
@@ -317,7 +391,7 @@ impl MediaProvider for CspProvider {
             .site
             .detail(&id.native, &self.ext)
             .await
-            .map_err(classify_err)?;
+            .map_err(|e| classify_err(self.site.class(), e))?;
         let episodes: Vec<Episode> = d
             .episodes
             .iter()
@@ -369,7 +443,7 @@ impl MediaProvider for CspProvider {
                 .site
                 .detail(&episode, &self.ext)
                 .await
-                .map_err(classify_err)?;
+                .map_err(|e| classify_err(self.site.class(), e))?;
             d.episodes
                 .first()
                 .map(|e| e.id.clone())
@@ -381,7 +455,7 @@ impl MediaProvider for CspProvider {
             .site
             .play(&flag, &episode, &self.ext)
             .await
-            .map_err(classify_err)?;
+            .map_err(|e| classify_err(self.site.class(), e))?;
         if plays.is_empty() {
             return Err(ProviderError::new(
                 ErrorKind::Other,
@@ -609,14 +683,28 @@ mod tests {
 
     #[test]
     fn classify_err_maps_network_and_upstream_codes() {
-        assert_eq!(classify_err("请求 x 失败：timeout".into()).kind, ErrorKind::Network);
-        assert_eq!(classify_err("HTTP 502（x）：bad".into()).kind, ErrorKind::Network);
+        assert_eq!(classify_err("Bili", "请求 x 失败：timeout".into()).kind, ErrorKind::Network);
+        /* ★ 2026-10-28：网盘类 + "要登录"的字眼 ⇒ Unauthorized + login_kind
+         *   （UI 靠 login_kind 决定弹哪个盘的二维码） */
+        let e = classify_err("Pan115", "上游返回：请重新登录（errno=99）".into());
+        assert_eq!(e.kind, ErrorKind::Unauthorized, "网盘类要认出这是登录问题");
+        assert_eq!(e.login_kind.as_deref(), Some("115"), "且要说清是哪个盘");
+        assert!(e.needs_login, "needs_login 必须跟着 Unauthorized");
+        assert!(!e.message.contains("NEED_LOGIN"), "标记要从消息里剥掉（用户读不懂）");
+
+        // 反空真：普通影视源出现同样的字眼**不许**变成"要登录"
+        let e2 = classify_err("Bili", "请重新登录".into());
+        assert_ne!(e2.kind, ErrorKind::Unauthorized, "非网盘类不许被误判成登录问题");
+        assert!(e2.login_kind.is_none());
+
+
+        assert_eq!(classify_err("Bili", "HTTP 502（x）：bad".into()).kind, ErrorKind::Network);
         assert_eq!(
-            classify_err("上游返回 code=-404 message=啥都木有".into()).kind,
+            classify_err("Bili", "上游返回 code=-404 message=啥都木有".into()).kind,
             ErrorKind::Parse
         );
         assert_eq!(
-            classify_err("csp_X 尚未实现".into()).kind,
+            classify_err("Bili", "csp_X 尚未实现".into()).kind,
             ErrorKind::Unsupported
         );
     }

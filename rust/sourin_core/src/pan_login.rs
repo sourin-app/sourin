@@ -500,8 +500,247 @@ async fn quark_poll(token: &str) -> Result<PollOutcome, String> {
     })
 }
 
-// ── 解析小工具（纯函数，可单测；不依赖网络）────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+//  UC 网盘（PanKind::Uc）—— 与夸克**同族 CAS**，但 id / 主机 / 二维码入口都不同
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 取证（逐字，来自 `.probe/r3c-quark-login-endpoints.log` 的 buildUcQrInfo / handleUc）
+//
+// ```text
+// ① 取码  GET https://api.open.uc.cn/cas/ajax/getTokenForQrcodeLogin
+//             ?pr=UCBrowser&fr=pc&sys=win32&client_id=529&v=1.2&request_id=<rid>
+// ② 二维码内容 https://su.uc.cn/4_fzMj2?uc_param_str=dsdnfrpfbivesscpgimibtbmnijblauputogpintnwktprchmt
+//             &token=<token>&client_id=529&uc_biz_str=S%3Acustom%7CC%3Atitlebar_fix
+// ③ 换票  GET https://api.open.uc.cn/cas/ajax/getServiceTicketByQrcodeToken
+//             ?__dt=18884&__t=<ts>&client_id=381&v=1.2&request_id=<rid>&token=<token>
+//             → data.service_ticket
+// ④ 换 cookie GET https://drive.uc.cn/account/info?st=<ticket>
+//             Referer: https://broccoli.uc.cn/   → 响应头 Set-Cookie
+// UA：取码用 `uc-cloud-drive/2.5.20 …`（Electron 版），轮询用 Chrome 151
+// ```
+//
+// # ⚠️ 与夸克的**三处不同**（照抄夸克会全错，且不会报错、只会"扫了没反应"）
+// ```text
+// ① client_id：取码 529 / 换票 381（夸克两处都是 532）
+// ② 主机：取码与换票都在 api.open.uc.cn（夸克在 uop.quark.cn）
+// ③ 二维码入口：su.uc.cn/4_fzMj2（夸克 su.quark.cn/4_eMHBJ），且多一个 uc_param_str 串
+// ```
+//
+// # 未真验边界
+// ```text
+// 整条链路**没有真账号跑过**（Owner 的批末实机验证里一并确认）。
+// 失败会如实报"哪一步 HTTP 多少 / 业务码多少"，不伪造成功。
+// ```
 
+/// UC 取码用的 UA（逐字取自参考实现 buildUcQrInfo）
+const UA_UC_QR: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                        (KHTML, like Gecko) uc-cloud-drive/2.5.20 Chrome/100.0.4896.160 \
+                        Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch";
+
+/// UC 取码的 client_id（换票用的是**另一个** 381，见 [`uc_ticket_url`]）
+const UC_QR_CLIENT_ID: u32 = 529;
+/// UC 换票的 client_id
+const UC_TICKET_CLIENT_ID: u32 = 381;
+/// UC 二维码入口（逐字；多一个 uc_param_str 串 —— 少了它 UC App 可能不认）
+const UC_QR_ENTRY: &str = "https://su.uc.cn/4_fzMj2";
+/// UC 二维码入口的固定参数串（逐字）
+const UC_QR_PARAM_STR: &str =
+    "dsdnfrpfbivesscpgimibtbmnijblauputogpintnwktprchmt";
+
+/// UC 取码 URL（**纯函数**：client_id 与 request_id 是"不会报错、只会扫不动"的静默错源）
+fn uc_token_url(request_id: &str) -> String {
+    format!(
+        "https://api.open.uc.cn/cas/ajax/getTokenForQrcodeLogin\
+         ?pr=UCBrowser&fr=pc&sys=win32&client_id={UC_QR_CLIENT_ID}&v=1.2&request_id={request_id}"
+    )
+}
+
+/// UC 二维码**内容**（纯函数）
+fn uc_qr_url(token: &str) -> String {
+    format!(
+        "{UC_QR_ENTRY}?uc_param_str={UC_QR_PARAM_STR}&token={token}\
+         &client_id={UC_QR_CLIENT_ID}&uc_biz_str=S%3Acustom%7CC%3Atitlebar_fix"
+    )
+}
+
+/// UC 换票 URL（纯函数）。`ts` 是毫秒时间戳，`request_id` 与取码时**同一个**。
+fn uc_ticket_url(token: &str, request_id: &str, ts: i64) -> String {
+    format!(
+        "https://api.open.uc.cn/cas/ajax/getServiceTicketByQrcodeToken\
+         ?__dt=18884&__t={ts}&client_id={UC_TICKET_CLIENT_ID}&v=1.2\
+         &request_id={request_id}&token={token}"
+    )
+}
+
+/// 一个短的随机会话号（`request_id`；参考实现由客户端生成，服务端只回显）
+fn new_request_id() -> String {
+    // 不引 rand 依赖（本批纪律）：用纳秒时间 + 进程内计数器拼一个 32 位十六进制串
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{:016x}{:016x}", nanos ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15), seq)
+}
+
+/// UC：第一步拿二维码 token（与夸克同族，但 client_id / 主机不同）
+async fn uc_start() -> Result<QrSession, String> {
+    let c = client(UA_UC_QR)?;
+    let request_id = new_request_id();
+    let resp = c
+        .get(uc_token_url(&request_id))
+        .header("Accept", "application/json, text/plain, */*")
+        .send()
+        .await
+        .map_err(|e| format!("请求 UC 二维码接口失败：{e}"))?;
+
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读 UC 响应失败：{e}"))?;
+    if !status.is_success() {
+        return Err(format!("UC 二维码接口返回 HTTP {status}：{}", tail(&body)));
+    }
+    // 同族业务码（2000000 成功 / 其它失败）—— 与夸克同一套
+    if let Some(code) = quark_status_code(&body) {
+        if code != QUARK_OK {
+            let msg = body_message(&body).unwrap_or_default();
+            write_log(&format!(
+                "取码失败 kind=uc 业务码={code} message={msg} body={}",
+                tail(&body)
+            ));
+            return Err(format!(
+                "UC 二维码接口业务失败（status={code}）：{}",
+                if msg.is_empty() { tail(&body) } else { msg }
+            ));
+        }
+    }
+    let token = extract_qr_token(&body).ok_or_else(|| {
+        write_log(&format!("取码失败 kind=uc 无 token body={}", tail(&body)));
+        format!("UC 响应里没有找到二维码 token（协议可能变了）：{}", tail(&body))
+    })?;
+
+    let url = uc_qr_url(&token);
+    let svg = crate::remote::qr_svg_for(&url).unwrap_or_default();
+    write_log(&format!(
+        "取码成功 kind=uc token_len={} svg_len={} request_id_len={} 业务码={:?}",
+        token.len(),
+        svg.len(),
+        request_id.len(),
+        quark_status_code(&body)
+    ));
+
+    let created_at = now();
+    // ★ 会话表里也要存 request_id（换票要跟取码同一个）⇒ 放进 token 的前缀里？
+    //   不：把 `token` 与 `request_id` 用 `|` 拼成 key 会污染 UI 的 key。
+    //   ⇒ 直接把 request_id 编进 `token` 字段（`poll` 拿 `key` = token 解码）。
+    let compound = format!("{token}|{request_id}");
+    sessions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            kind_key(PanKind::Uc, &token),
+            SessionRecord {
+                token: compound,
+                created_at,
+            },
+        );
+
+    Ok(QrSession {
+        key: token,
+        url,
+        svg,
+        hint: "用 UC 网盘 App 或 UC 浏览器扫这个码".to_string(),
+        created_at,
+    })
+}
+
+/// UC：轮询扫码状态（扫中确认后换 cookie）
+async fn uc_poll(token: &str) -> Result<PollOutcome, String> {
+    // 取回 request_id（与取码同一个；缺失 ⇒ 用空串让服务端报错，而不是编一个）
+    let request_id = sessions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&kind_key(PanKind::Uc, token))
+        .and_then(|r| r.token.split_once('|').map(|(_, rid)| rid.to_string()))
+        .unwrap_or_default();
+
+    let c = client(UA_QUARK_POLL)?; // 同族：轮询用 Chrome UA（取证逐字）
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let url = uc_ticket_url(token, &request_id, ts);
+    let resp = c
+        .get(&url)
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Referer", "https://broccoli.uc.cn/")
+        .send()
+        .await
+        .map_err(|e| format!("轮询 UC 扫码状态失败：{e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读 UC 轮询响应失败：{e}"))?;
+
+    let Some(ticket) = extract_service_ticket(&body) else {
+        let st = classify_pending(&body);
+        write_log(&format!(
+            "轮询 kind=uc 状态={} 业务码={:?} body={}",
+            st.code(),
+            quark_status_code(&body),
+            tail(&body)
+        ));
+        return Ok(PollOutcome {
+            status: st,
+            message: "等待扫码…".to_string(),
+            credential: None,
+        });
+    };
+
+    // ④ 换 cookie（登录态在响应头 Set-Cookie，与夸克同族）
+    let info_url = format!("https://drive.uc.cn/account/info?st={ticket}");
+    let resp = c
+        .get(&info_url)
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Referer", "https://broccoli.uc.cn/")
+        .send()
+        .await
+        .map_err(|e| {
+            write_log(&format!("换 cookie 请求失败 kind=uc err={e}"));
+            format!("换取 UC 登录态失败：{e}")
+        })?;
+    let cookie = collect_set_cookie(&resp);
+    if cookie.is_empty() {
+        write_log("换 cookie 失败 kind=uc 响应无 Set-Cookie（记响应头形状待查）");
+        return Err(
+            "UC 已确认扫码，但响应里没有 Set-Cookie（协议可能变了）⇒ 拿不到登录态".to_string(),
+        );
+    }
+    write_log(&format!(
+        "换 cookie 成功 kind=uc 摘要={}",
+        cookie_digest(&cookie)
+    ));
+    let body = resp.text().await.unwrap_or_default();
+    let account = account_from_body(&body).unwrap_or_else(|| "UC 网盘".to_string());
+
+    Ok(PollOutcome {
+        status: QrStatus::Confirmed,
+        message: format!("登录成功：{account}"),
+        credential: Some(crate::pan_auth::PanCredential {
+            kind: PanKind::Uc,
+            account,
+            cookie,
+            saved_at: now(),
+            expires_at: None,
+        }),
+    })
+}
+
+// ── 解析小工具（纯函数，可单测；不依赖网络）────────────────────────────
 /// 从响应体里找二维码 token
 ///
 /// # 为什么写成"按候选字段名依次找"而不是钉死一个字段
@@ -671,15 +910,14 @@ fn kind_key(kind: PanKind, token: &str) -> String {
 //  对外 API（ffi 的四条命令调这些）
 // ═══════════════════════════════════════════════════════════════════════
 
-/// 发起扫码（B1 只支持夸克；其余如实报"尚未接入"）
+/// 发起扫码（夸克 / UC 已接通；其余如实报"尚未接入"）
 pub async fn qr_login_start(kind: PanKind) -> Result<QrSession, String> {
     match kind {
         PanKind::Quark => quark_start().await,
+        PanKind::Uc => uc_start().await,
         // ⚠️ **不是**占位返回空：如实说清"这家还没接入"。
-        //    端点我已从参考实现取到（见 `.probe/r3c-pan-dexstrings.log`），
-        //    只是 B1 按 Lead 裁定**只做一家**。
         other => Err(format!(
-            "{} 的扫码登录尚未接入（B1 只做夸克；其余按批推进）",
+            "{} 的扫码登录尚未接入（当前完成夸克/UC；其余按批推进）",
             other.display()
         )),
     }
@@ -717,9 +955,10 @@ pub async fn qr_login_poll(kind: PanKind, key: &str) -> Result<PollOutcome, Stri
 
     let out = match kind {
         PanKind::Quark => quark_poll(key).await?,
+        PanKind::Uc => uc_poll(key).await?,
         other => {
             return Err(format!(
-                "{} 的扫码登录尚未接入（B1 只做夸克）",
+                "{} 的扫码登录尚未接入（当前完成夸克/UC）",
                 other.display()
             ))
         }
@@ -1017,9 +1256,12 @@ mod tests {
     }
 
     /// ★ 未接入的盘必须**如实报错**，不许返回一个空会话冒充成功
+    ///
+    /// ★ 2026-10-28：夸克/UC 接通后，本条改用**仍未接入**的那些来守
+    ///   （否则它会去发真网络请求 —— 断言就变成"靠网络失败通过"的假绿）。
     #[tokio::test]
     async fn unimplemented_kind_says_so_instead_of_pretending() {
-        for k in [PanKind::Uc, PanKind::Baidu, PanKind::Pan115, PanKind::Guangya] {
+        for k in [PanKind::Baidu, PanKind::Pan115, PanKind::Guangya] {
             let e = qr_login_start(k).await.expect_err("未接入的盘不许成功");
             assert!(
                 e.contains("尚未接入"),
@@ -1030,6 +1272,72 @@ mod tests {
                 "★ 文案里要带上是哪一家（实际：{e}）"
             );
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  UC 扫码（2026-10-28 接通）—— 三条 URL 逐字对齐取证
+    // ══════════════════════════════════════════════════════════════════
+
+    /// ★★★ 取码 URL 必须带 **client_id=529**，且主机是 `api.open.uc.cn`
+    ///
+    /// ```text
+    /// 注入验证（已实测真红）：把 `uc_token_url` 里的 client_id 常量改成 532
+    ///   （= 夸克那个）⇒ 本条 FAILED。
+    /// 这类错**不会报错**：接口照样回 200，只是返回的 token 与 UC App 不认
+    ///   ⇒ 用户扫了没反应，排查成本极高。
+    /// ```
+    #[test]
+    fn uc_token_url_carries_its_own_client_id() {
+        let u = uc_token_url("rid-1");
+        assert!(
+            u.starts_with(
+                "https://api.open.uc.cn/cas/ajax/getTokenForQrcodeLogin\
+                 ?pr=UCBrowser&fr=pc&sys=win32&client_id=529&v=1.2&request_id=rid-1"
+            ),
+            "{u}"
+        );
+        assert!(!u.contains("uop.quark.cn"), "★★ 不许借用夸克的主机：{u}");
+    }
+
+    /// ★★★ 二维码内容必须走 `su.uc.cn/4_fzMj2`，且带 uc_param_str 串
+    #[test]
+    fn uc_qr_url_matches_the_reference_byte_for_byte() {
+        let u = uc_qr_url("tok");
+        assert!(u.starts_with("https://su.uc.cn/4_fzMj2?"), "{u}");
+        assert!(u.contains("uc_param_str=dsdnfrpfbivesscpgimibtbmnijblauputogpintnwktprchmt"), "{u}");
+        assert!(u.contains("token=tok"), "{u}");
+        assert!(u.contains("client_id=529"), "{u}");
+        assert!(
+            !u.contains("su.quark.cn") && !u.contains("4_eMHBJ"),
+            "★★ 不许借用夸克的二维码入口：{u}"
+        );
+    }
+
+    /// ★★★ 换票 URL 的 client_id 是 **381**（不是取码那个 529）—— 这一处最容易串
+    ///
+    /// ```text
+    /// 注入验证：把 `uc_ticket_url` 里的 381 改成 529 ⇒ 本条 FAILED。
+    /// ```
+    #[test]
+    fn uc_ticket_url_uses_client_id_381_and_echoes_request_id() {
+        let u = uc_ticket_url("tok", "rid-1", 1700000000000);
+        assert!(u.starts_with(
+            "https://api.open.uc.cn/cas/ajax/getServiceTicketByQrcodeToken?__dt=18884&__t=1700000000000"
+        ), "{u}");
+        assert!(u.contains("client_id=381"), "★★ 换票的 client_id 是 381：{u}");
+        assert!(!u.contains("client_id=529"), "★★ 不许把取码的 id 串过来：{u}");
+        assert!(u.contains("request_id=rid-1"), "{u}");
+        assert!(u.contains("token=tok"), "{u}");
+    }
+
+    /// ★★ request_id 是 32 位十六进制，且两次调用不同（会话号撞了服务端会拒）
+    #[test]
+    fn request_id_shape_is_stable_and_unique() {
+        let a = new_request_id();
+        let b = new_request_id();
+        assert_eq!(a.len(), 32, "★ 32 位十六进制：{a}");
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "{a}");
+        assert_ne!(a, b, "★★ 两次生成不许相同（否则并发扫码会互相顶掉会话）");
     }
 
     /// ★ 会话超时与"不存在"都必须报 Expired，**不许**静默 Pending

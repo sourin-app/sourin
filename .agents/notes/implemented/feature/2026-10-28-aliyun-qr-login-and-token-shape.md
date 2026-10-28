@@ -20,21 +20,27 @@ Owner：「其余 7 家网盘登录扫码能出二维码」。阿里点「登录
 
 ## Decision
 
-### 1. 扫码头三跳（取证到的端点，报文形状标注来源）
+### 1. 扫码头三跳（端点与报文形状**都已逐字取证**）
 
 ```text
 ① 取码  passport.aliyundrive.com/newlogin/qrcode/generate.do
-        ?appName=aliyun_drive&fromSite=52&appEntrance=web&_bx-v=2.5.3
+        ?appName=aliyun_drive&fromSite=52&appName=aliyun_drive&appEntrance=web
+        &isMobile=false&lang=zh_CN&returnUrl=&bizParams=&_bx-v=2.2.3
         → content.data{qrCodeUrl, ck, t}
-② 轮询  passport.aliyundrive.com/newlogin/qrcode/query.do   （表单 ck + t）
+② 轮询  passport.aliyundrive.com/newlogin/qrcode/query.do
+        ?appName=aliyun_drive&fromSite=52&_bx-v=2.2.3   （表单 ck + t + _bx-v=2.2.3）
         → content.data.qrCodeStatus：NEW / SCANED / CONFIRMED / EXPIRED
 ③ 取凭据 CONFIRMED 的响应里 `bizExt` = **base64 的 JSON**，
         内含 pds_login_result.{access_token, refresh_token, expires_in}
 ```
 
-⚠️ 端点来自本仓取证（`r3c-pan-helper-endpoints.log` 的 merge.b.i）；
-**报文形状**（参数放 query 还是表单、bizExt 的层级）来自社区通行实现，
-本仓没有真账号读数 ⇒ 全部集中在三个函数里，失败会如实报 HTTP/字段缺失。
+★ 报文形状的出处（2026-10-28 晚补）：参考实现 dex 的
+`com.github.catvod.spider.merge.m.G.buildAliQrInfo` 与
+`merge.C0.h.b.e`（query.do），逐字 dump 得到 —— **不再依赖社区通行实现**。
+
+**因此改正了两处偏差**：原实现按社区实现写成 `_bx-v=2.5.3`，且缺
+`isMobile/lang/returnUrl/bizParams`。这类偏差**不会报错**，只会让服务端返回另一套字段
+（典型的"看起来在跑、其实参数不是逐字"）。门禁也从 `starts_with` 收紧为**逐字全等**。
 
 ### 2. 凭据约定（本条最重要的决定）
 

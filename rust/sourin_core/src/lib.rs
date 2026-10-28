@@ -94,6 +94,20 @@ pub mod pan_auth;
 /// 各家的端点/UA/Referer 差异归这里。
 pub mod pan_login;
 
+/// OAuth **设备码**（device flow）那一族网盘的扫码登录：光鸭 / 迅雷
+///
+/// 与 `pan_login` 分开放的理由：它们不是"把 token 拼进固定 URL 出码"，
+/// 而是"服务端给 verification_uri_complete，用户拿手机扫/输码"，
+/// 会话状态、轮询端点、凭据形态都与 CAS/passport 族不同（见该文件头）。
+pub mod pan_login_device;
+
+/// 天翼云盘（`PanKind::Tianyi`）的扫码登录：logbox 的 uuid 扫码（三跳 + 轮询）
+///
+/// 与 `pan_login` 分开放的理由：它的"二维码内容"是**本地拼出来的**
+/// （`URLDecoder.decode(getUUID.do 的 encodeuuid)`），不是服务端给的 QR；
+/// 且准备会话那一步必须**关闭重定向**读 `Location`（与所有其它家的形状都不同）。
+pub mod pan_login_tianyi;
+
 // ── 详情与播放链路 ──
 pub mod playback;
 

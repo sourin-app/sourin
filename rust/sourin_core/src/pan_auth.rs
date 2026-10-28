@@ -102,6 +102,12 @@ fn decode(raw: &str) -> Option<PanCredential> {
         "123" => PanKind::Pan123,
         "115" => PanKind::Pan115,
         "tianyi" => PanKind::Tianyi,
+        // ★ 2026-10-28：光鸭/迅雷的扫码接通后**必须**能解码回来
+        //   （`save` 写进去、`load` 读不出来 ⇒ 钥匙串里有凭据，UI 却永远说"未登录"。
+        //    这是"存得进、读不出"的典型静默失败，device-login 交回时点出来的。
+        //    门禁：`pan_auth::tests::every_code_roundtrips_through_decode`）
+        "guangya" => PanKind::Guangya,
+        "xunlei" => PanKind::Xunlei,
         _ => return None,
     };
     Some(PanCredential {
@@ -190,6 +196,43 @@ mod tests {
         assert!(decode("").is_none());
         assert!(decode("only-one-field").is_none());
         assert!(decode("bad\u{1f}1\u{1f}\u{1f}a\u{1f}c").is_none(), "未知盘");
+    }
+
+    /// ★★★ 每个**有 code 的盘**都必须 round-trip：`save` 能写进去的，`load` 必须能读回来
+    ///
+    /// ```text
+    /// 2026-10-28 的真实事故（device-login 交回时点出来的）：
+    ///   `decode` 的 match 表里**没有** guangya / xunlei ⇒ 这两个盘的凭据能存进钥匙串，
+    ///   但 `load` 永远 None ⇒ `status_of` 说"未登录"、UI 显示未登录。
+    ///   "存得进、读不出"是最难查的一类静默失败（用户以为没登上，其实登上了）。
+    /// 注入验证：删掉 `decode` 里的 "xunlei" 分支 ⇒ 本条 FAILED 并点名是哪一家。
+    /// ```
+    #[test]
+    fn every_code_roundtrips_through_decode() {
+        let all = [
+            PanKind::Quark,
+            PanKind::Uc,
+            PanKind::Baidu,
+            PanKind::Aliyun,
+            PanKind::Pan123,
+            PanKind::Pan115,
+            PanKind::Tianyi,
+            PanKind::Guangya,
+            PanKind::Xunlei,
+        ];
+        for k in all {
+            let c = cred(k, "k=v", None);
+            let back = decode(&encode(&c)).unwrap_or_else(|| {
+                panic!(
+                    "★★ {}（code={}）能 encode 但 decode 不认 ⇒ 登录后 UI 会一直显示未登录",
+                    k.display(),
+                    k.code()
+                )
+            });
+            assert_eq!(back.kind, k, "{} 解回来的盘种不对", k.display());
+        }
+        // 反面：Unknown 没有合法凭据，不该被解出来
+        assert!(decode(&encode(&cred(PanKind::Unknown, "k=v", None))).is_none());
     }
 
     #[test]

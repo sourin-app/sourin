@@ -1285,16 +1285,21 @@ async fn pan115_poll(uid: &str) -> Result<PollOutcome, String> {
 const UA_ALIYUN: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                          (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-/// 取码 URL（纯函数）
+/// 取码 URL（纯函数；**逐字对齐 dex 取证**，见本段文件头）
+///
+/// ★ 2026-10-28 修正：上一版按社区通行实现写成 `...&appEntrance=web&_bx-v=2.5.3`，
+///   与参考实现方法体里的逐字串**不一致**（少了 `isMobile/lang/returnUrl/bizParams`，
+///   且 `_bx-v` 是 **2.2.3**）。这类偏差不会报错，只会让服务端返回另一套字段。
 fn aliyun_generate_url() -> &'static str {
     "https://passport.aliyundrive.com/newlogin/qrcode/generate.do\
-     ?appName=aliyun_drive&fromSite=52&appEntrance=web&_bx-v=2.5.3"
+     ?appName=aliyun_drive&fromSite=52&appName=aliyun_drive&appEntrance=web\
+     &isMobile=false&lang=zh_CN&returnUrl=&bizParams=&_bx-v=2.2.3"
 }
 
-/// 轮询 URL（`ck`/`t` 走表单，见 `aliyun_poll`）
+/// 轮询 URL（`ck`/`t` 走表单，见 `aliyun_poll`）—— 取自 `buildAliQrInfo` 同族的 query 串
 fn aliyun_query_url() -> &'static str {
     "https://passport.aliyundrive.com/newlogin/qrcode/query.do\
-     ?appName=aliyun_drive&fromSite=52&appEntrance=web&_bx-v=2.5.3"
+     ?appName=aliyun_drive&fromSite=52&_bx-v=2.2.3"
 }
 
 /// 换 token 的 URL（纯函数）
@@ -1493,7 +1498,7 @@ async fn aliyun_poll(ck: &str) -> Result<PollOutcome, String> {
     let resp = c
         .post(aliyun_query_url())
         .header("Accept", "application/json, text/plain, */*")
-        .form(&[("ck", ck), ("t", t.as_str()), ("_bx-v", "2.5.3")])
+        .form(&[("ck", ck), ("t", t.as_str()), ("_bx-v", "2.2.3")])
         .send()
         .await
         .map_err(|e| format!("轮询阿里扫码状态失败：{e}"))?;
@@ -1717,41 +1722,27 @@ pub async fn qr_login_start(kind: PanKind) -> Result<QrSession, String> {
         PanKind::Baidu => baidu_start().await,
         PanKind::Pan115 => pan115_start().await,
         PanKind::Aliyun => aliyun_start().await,
+        // ★ 2026-10-28（晚）：取证补齐后，这三家都有真端点 ⇒ 真接通（不再是"如实报原因"）
+        PanKind::Guangya => crate::pan_login_device::guangya_start().await,
+        PanKind::Xunlei => crate::pan_login_device::xunlei_start().await,
+        PanKind::Tianyi => crate::pan_login_tianyi::tianyi_start().await,
         /*
-         * ★★★ 2026-10-28：剩下四家**逐家给准确原因**，不再共用一句"尚未接入"。
+         * 123 是真的没有扫码这条路（不是"没取证"）：
          * ```text
-         * 共用那句会让用户以为"这四家是同一种没做"，而实际是四种不同情况：
-         *   光鸭/迅雷 → OAuth **设备码**（不是二维码图）；缺的只是 device authorization 端点/客户端参数
-         *   天翼     → 要 **网页登录**（logbox + sessionKey 换 token）⇒ 核心没有内嵌浏览器
-         *   123      → 只有 **open-api 令牌**（用户自己去申请），**根本没有扫码**
-         * ⇒ 说清区别，用户才知道"等哪一步"还是"根本没这条路"。
+         * 全 dex 里 `login.123pan.com` 下**只有** `api/user/sign_in`（账号密码，两套报文），
+         * 全池 qrcode 命中 22 条逐条核对，没有一条属于 123
+         * （`.probe/pan-login-evidence-remaining.md` §5.3）。
          * ```
+         * ⇒ 画一个码只会扫不动。
          */
-        PanKind::Guangya => Err(
-            "光鸭网盘用 OAuth **设备码**登录（不是二维码）：端点已取证\
-             （account.guangyapan.com/v1/auth/device/code → /v1/auth/token），\
-             但客户端参数（client_id/scope）没有取证 ⇒ 现在发起会被服务端拒绝，\
-             所以先如实报出来，等真机读数补齐"
-                .to_string(),
-        ),
-        PanKind::Xunlei => Err(
-            "迅雷是 OAuth **设备码**（到指定网址输入码，不出二维码图）：\
-             换 token 的端点与 client_id 已取证（xluser-ssl.xunlei.com/v1/auth/token），\
-             但**申请设备码的那一步端点没有取证** ⇒ 现在发起只能靠猜，所以如实报出来"
-                .to_string(),
-        ),
-        PanKind::Tianyi => Err(
-            "天翼云盘要**网页登录**（open.e.189.cn 的 logbox → callbackUnify → \
-             getAccessTokenBySsKey 换 token），本核心没有内嵌浏览器 ⇒ 无法在这里出二维码"
-                .to_string(),
-        ),
         PanKind::Pan123 => Err(
-            "123 云盘只有 **open-api 开发者令牌**（要用户自己去申请），**没有扫码端点** ⇒ \
-             画一个码只会扫不动"
+            "123 云盘**没有扫码登录**这条路：官方只有账号密码登录\
+             （login.123pan.com/api/user/sign_in）与 open-api 开发者令牌，\
+             两者都不是二维码 ⇒ 不画一个扫不动的码"
                 .to_string(),
         ),
         other => Err(format!(
-            "{} 的扫码登录尚未接入（当前完成夸克/UC/百度/115/阿里）",
+            "{} 的扫码登录尚未接入",
             other.display()
         )),
     }
@@ -1762,6 +1753,34 @@ pub async fn qr_login_poll(kind: PanKind, key: &str) -> Result<PollOutcome, Stri
     let key = key.trim();
     if key.is_empty() {
         return Err("扫码会话 key 为空 —— 请重新获取二维码".to_string());
+    }
+
+    /*
+     * ★★★ 2026-10-28（晚）：**先分流再查表**。
+     * ```text
+     * 设备码族（光鸭/迅雷）与天翼各自管自己的会话表（在 pan_login_device / pan_login_tianyi 里）。
+     * 若先跑下面那段"本表的会话存在性检查"，它们的 key 一定不在本表
+     *   ⇒ 刚出码就被判 Expired，**一次 HTTP 都不会发生**（典型的"看起来在轮询、其实早退了"）。
+     * ⇒ 这两族在检查之前直接分流；落盘仍走本文件末尾同一入口（`pan_auth::save`）。
+     * ```
+     */
+    if crate::pan_login_device::is_device_flow(kind) || crate::pan_login_tianyi::is_tianyi_login(kind) {
+        let out = match kind {
+            PanKind::Guangya => crate::pan_login_device::guangya_poll(key).await?,
+            PanKind::Xunlei => crate::pan_login_device::xunlei_poll(key).await?,
+            PanKind::Tianyi => crate::pan_login_tianyi::tianyi_poll(key).await?,
+            other => unreachable!("is_device_flow/is_tianyi_login 与这里的 match 必须一致：{}", other.code()),
+        };
+        if let Some(cred) = &out.credential {
+            crate::pan_auth::save(cred)?;
+            write_log(&format!(
+                "凭据已落盘 kind={} account={} 摘要={}",
+                kind.code(),
+                cred.account,
+                cookie_digest(&cred.cookie)
+            ));
+        }
+        return Ok(out);
     }
 
     // 会话超时兜底（本地时钟）
@@ -1794,10 +1813,7 @@ pub async fn qr_login_poll(kind: PanKind, key: &str) -> Result<PollOutcome, Stri
         PanKind::Pan115 => pan115_poll(key).await?,
         PanKind::Aliyun => aliyun_poll(key).await?,
         other => {
-            return Err(format!(
-                "{} 的扫码登录尚未接入（当前完成夸克/UC/百度/115/阿里）",
-                other.display()
-            ))
+            return Err(format!("{} 的扫码登录尚未接入", other.display()))
         }
     };
 
@@ -2094,28 +2110,46 @@ mod tests {
 
     /// ★ 未接入的盘必须**如实报错**，不许返回一个空会话冒充成功
     ///
-    /// ★ 2026-10-28：夸克/UC/百度/115/阿里接通后，本条改用**剩下四家**来守，
-    ///   并且从"一句通用文案"升级成**逐家给准确原因**（四种不同情况，不能混成一句）。
+    /// ★ 2026-10-28（晚）：光鸭/迅雷/天翼接通后，**只剩 123**；它的"没有扫码"是
+    ///   **事实**（全 dex 只有账号密码 `sign_in`，见 `.probe/pan-login-evidence-remaining.md` §5.3），
+    ///   所以这条守的是"123 必须说清没有扫码，且不许回落到通用文案"。
     /// ```text
-    /// 注入验证：把光鸭那段改成通用 `other =>` 的文案 ⇒ `specific_reason` 断言 FAILED。
+    /// 注入验证：把 123 那段文案改成通用 `other =>` ⇒ 本条 FAILED。
     /// ```
     #[tokio::test]
     async fn unimplemented_kind_says_so_instead_of_pretending() {
-        // (盘, 这条文案里必须出现的关键词) —— 关键词就是"为什么现在做不到"
-        let cases: [(PanKind, &str); 4] = [
-            (PanKind::Guangya, "客户端参数"),
-            (PanKind::Xunlei, "申请设备码"),
-            (PanKind::Tianyi, "网页登录"),
-            (PanKind::Pan123, "open-api"),
-        ];
-        for (k, reason) in cases {
-            let e = qr_login_start(k).await.expect_err("未接入的盘不许成功");
-            assert!(e.contains(reason), "★★ {} 的文案要点明『{reason}』（实际：{e}）", k.display());
-            assert!(
-                !e.contains("尚未接入（当前完成"),
-                "★ 这四家不是同一种情况，不许回落到通用文案：{e}"
-            );
-        }
+        let e = qr_login_start(PanKind::Pan123)
+            .await
+            .expect_err("123 没有扫码，不许成功");
+        assert!(e.contains("没有扫码"), "★★ 要点明『没有扫码』（实际：{e}）");
+        assert!(
+            e.contains("sign_in") || e.contains("开发者令牌"),
+            "★ 要给出它实际有的两条路：{e}"
+        );
+        assert!(!e.contains("尚未接入"), "★ 这不是『没做』，是『没有这条路』：{e}");
+    }
+
+    /// ★★★ 三族的**路由判据**必须与 dispatch 一致（离线可断言，不碰网络）
+    ///
+    /// ```text
+    /// dispatch 里用 `is_device_flow(kind) || is_tianyi_login(kind)` 先分流，
+    /// 再 match 到具体函数；若两家谓词写宽了（如 is_device_flow 把天翼也算进去），
+    /// 会走到 `unreachable!` 直接 panic（比静默错好，但仍然要在这里钉住）。
+    /// 注入验证：把 `is_device_flow` 改成 `true`（所有盘）⇒ 本条 FAILED。
+    /// ```
+    #[test]
+    fn routing_predicates_partition_the_three_families() {
+        use crate::pan_login_device::is_device_flow;
+        use crate::pan_login_tianyi::is_tianyi_login;
+        assert!(is_device_flow(PanKind::Guangya));
+        assert!(is_device_flow(PanKind::Xunlei));
+        assert!(!is_device_flow(PanKind::Tianyi), "天翼不是设备码族");
+        assert!(is_tianyi_login(PanKind::Tianyi));
+        assert!(!is_tianyi_login(PanKind::Guangya));
+        assert!(
+            !is_device_flow(PanKind::Quark) && !is_tianyi_login(PanKind::Quark),
+            "CAS 族不许被这两家谓词吃掉"
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -2187,14 +2221,25 @@ mod tests {
     // ══════════════════════════════════════════════════════════════════
 
     /// ★★ 三条 URL 逐字对齐取证（appName/fromSite 写错 = 拿到别人的扫码页）
+    ///
+    /// ```text
+    /// ★ 2026-10-28 修正后：generate 要带 `isMobile/lang/returnUrl/bizParams` 且 `_bx-v=2.2.3`
+    ///   （上一版是社区通行实现里的 2.5.3，与参考实现逐字不符）。
+    /// 注入验证：把 `_bx-v=2.2.3` 改回 `2.5.3` ⇒ 本条 FAILED。
+    /// ```
     #[test]
     fn aliyun_urls_match_the_documented_flow() {
-        assert!(aliyun_generate_url().starts_with(
-            "https://passport.aliyundrive.com/newlogin/qrcode/generate.do?appName=aliyun_drive&fromSite=52"
-        ), "{}", aliyun_generate_url());
-        assert!(aliyun_query_url().starts_with(
-            "https://passport.aliyundrive.com/newlogin/qrcode/query.do?appName=aliyun_drive&fromSite=52"
-        ));
+        assert_eq!(
+            aliyun_generate_url(),
+            "https://passport.aliyundrive.com/newlogin/qrcode/generate.do\
+             ?appName=aliyun_drive&fromSite=52&appName=aliyun_drive&appEntrance=web\
+             &isMobile=false&lang=zh_CN&returnUrl=&bizParams=&_bx-v=2.2.3"
+        );
+        assert_eq!(
+            aliyun_query_url(),
+            "https://passport.aliyundrive.com/newlogin/qrcode/query.do\
+             ?appName=aliyun_drive&fromSite=52&_bx-v=2.2.3"
+        );
         assert_eq!(
             aliyun_token_url(),
             "https://auth.aliyundrive.com/v2/account/token"

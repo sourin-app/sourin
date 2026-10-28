@@ -740,6 +740,260 @@ async fn uc_poll(token: &str) -> Result<PollOutcome, String> {
     })
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  百度网盘（PanKind::Baidu）—— **passport 扫码**，与夸克 CAS **不是同一族**
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 取证（`.probe/r3c-nine-pan-login-protocols.md` 附二 + `r3c-pan-helper-endpoints.log`）
+//
+// ```text
+// ① 取二维码  GET passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc
+//             → data.channel_id / data.sign（参考实现拿它当 `v`）/ data.url（二维码内容）
+// ② 轮询      GET passport.baidu.com/channel/unicast?channel_id=<cid>&v=<v>
+//             → ★ 登录态在**响应头 set-cookie 的 BDUSS**
+// ③ 换登录态  GET passport.baidu.com/v3/login/main/qrbdusslogin?v=<v>&bduss=<BDUSS>
+// ④ 补 cookie GET pan.baidu.com/disk/main?from=homeFlow（pan 域的 STOKEN 等在这条响应里）
+// UA：Chrome/151 桌面；Referer：https://pan.baidu.com/
+// ```
+//
+// # 与夸克/UC 的**结构差异**（所以没有合并成一个实现）
+// ```text
+// ① 二维码不是"把 token 拼进固定 URL"，而是**响应里直接给 url 字段**；
+// ② "扫中了"的信号不是业务码，而是**响应头里出现 BDUSS**；
+// ③ 换登录态是"拿 BDUSS 再换一次"，cookie 来自**两次**响应 + 一次 pan 域请求。
+// ```
+//
+// # 未真验边界
+// ```text
+// 整条链路没有真账号跑过（批末实机验证一并做）。
+// 扫码未确认时**一律 Pending**（不靠关键词猜"已扫"）—— 百度侧没有可判定的业务码读数，
+// 猜成 Scanned 只会让 UI 显示"已扫描，请在手机上确认"而用户根本没扫。
+// ```
+
+/// 百度（passport）用的桌面 UA —— 逐字取自取证
+const UA_BAIDU: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                        (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+
+/// 百度取二维码（纯函数：URL 写错不会报错，只会返回另一套 errno）
+fn baidu_qrcode_url() -> &'static str {
+    "https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc"
+}
+
+/// 百度轮询（`v` = 取码响应里的 `sign`）
+fn baidu_unicast_url(channel_id: &str, v: &str) -> String {
+    format!("https://passport.baidu.com/channel/unicast?channel_id={channel_id}&v={v}")
+}
+
+/// 百度用 BDUSS 换登录态
+fn baidu_qrbduss_url(v: &str, bduss: &str) -> String {
+    format!("https://passport.baidu.com/v3/login/main/qrbdusslogin?v={v}&bduss={bduss}")
+}
+
+/// 从取码响应里取 `(channel_id, v, url)`
+///
+/// # 为什么 `v` 要按候选字段找
+/// ```text
+/// 取证里写的是"响应含 channel_id + v"，而实际报文里那个值是 `sign`
+/// （社区实现都拿 `sign` 当 `v` 用）。两个名字都试：
+///   先 `sign`（真报文），再 `v`（取证用词）。
+/// 都找不到 ⇒ None（由调用方报"协议可能变了"），**不编一个默认值**。
+/// ```
+fn baidu_qr_fields(body: &str) -> Option<(String, String, String)> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let data = v.get("data")?;
+    let cid = data.get("channel_id")?.as_str()?.trim().to_string();
+    let url = data.get("url")?.as_str()?.trim().to_string();
+    let sig = ["sign", "v"]
+        .iter()
+        .find_map(|k| data.get(*k).and_then(|x| x.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if cid.is_empty() || url.is_empty() || sig.is_empty() {
+        return None;
+    }
+    Some((cid, sig, url))
+}
+
+/// 从 cookie 串里取 `BDUSS` 的值（这是"已确认"的唯一判据）
+fn bduss_from_cookie(cookie: &str) -> Option<String> {
+    cookie
+        .split(';')
+        .map(|p| p.trim())
+        .find_map(|kv| kv.strip_prefix("BDUSS="))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// 合并两段 cookie：**后者同名覆盖前者**（与 `play` 里并 `__puus` 同一条语义）
+///
+/// # 为什么要合并而不是二选一
+/// ```text
+/// 百度登录态分散在**两次响应**里（qrbdusslogin 给 BDUSS/PTOKEN，disk/main 给 STOKEN 等），
+/// 只留一段 ⇒ 后面调盘接口缺键 ⇒ 表现是"登录了但拉不到列表"（难查）。
+/// ```
+fn merge_cookie(base: &str, extra: &str) -> String {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for part in base.split(';').chain(extra.split(';')) {
+        let kv = part.trim();
+        if kv.is_empty() {
+            continue;
+        }
+        let (k, _) = kv.split_once('=').unwrap_or((kv, ""));
+        let key = k.trim().to_string();
+        if key.is_empty() {
+            continue;
+        }
+        if let Some(slot) = out.iter_mut().find(|(kk, _)| *kk == key) {
+            slot.1 = kv.to_string(); // ★ 后到的赢（同名覆盖）
+        } else {
+            out.push((key, kv.to_string()));
+        }
+    }
+    out.into_iter().map(|(_, kv)| kv).collect::<Vec<_>>().join("; ")
+}
+
+/// 百度：第一步拿二维码
+async fn baidu_start() -> Result<QrSession, String> {
+    let c = client(UA_BAIDU)?;
+    let resp = c
+        .get(baidu_qrcode_url())
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Referer", "https://pan.baidu.com/")
+        .send()
+        .await
+        .map_err(|e| format!("请求百度二维码接口失败：{e}"))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读百度响应失败：{e}"))?;
+    if !status.is_success() {
+        return Err(format!("百度二维码接口返回 HTTP {status}：{}", tail(&body)));
+    }
+    let (channel_id, v, url) = baidu_qr_fields(&body).ok_or_else(|| {
+        write_log(&format!("取码失败 kind=baidu 字段不全 body={}", tail(&body)));
+        format!("百度响应里没有 channel_id/sign/url（协议可能变了）：{}", tail(&body))
+    })?;
+    let svg = crate::remote::qr_svg_for(&url).unwrap_or_default();
+    write_log(&format!(
+        "取码成功 kind=baidu cid_len={} v_len={} url_len={} svg_len={}",
+        channel_id.len(),
+        v.len(),
+        url.len(),
+        svg.len()
+    ));
+
+    let created_at = now();
+    sessions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            kind_key(PanKind::Baidu, &channel_id),
+            SessionRecord {
+                // 轮询要 `(channel_id, v)`，key 只能是其中一个 ⇒ v 编进 token
+                token: format!("{channel_id}|{v}"),
+                created_at,
+            },
+        );
+    Ok(QrSession {
+        key: channel_id,
+        url,
+        svg,
+        hint: "用百度网盘 App 扫这个码（扫码后需在手机上确认）".to_string(),
+        created_at,
+    })
+}
+
+/// 百度：轮询 + 用 BDUSS 换登录态
+async fn baidu_poll(channel_id: &str) -> Result<PollOutcome, String> {
+    let v = sessions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&kind_key(PanKind::Baidu, channel_id))
+        .and_then(|r| r.token.split_once('|').map(|(_, v)| v.to_string()))
+        .unwrap_or_default();
+    if v.is_empty() {
+        return Ok(PollOutcome {
+            status: QrStatus::Expired,
+            message: "这个二维码已失效（会话不在），请重新获取".to_string(),
+            credential: None,
+        });
+    }
+
+    let c = client(UA_BAIDU)?;
+    let resp = c
+        .get(baidu_unicast_url(channel_id, &v))
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Referer", "https://pan.baidu.com/")
+        .send()
+        .await
+        .map_err(|e| format!("轮询百度扫码状态失败：{e}"))?;
+    // ★ 先收响应头（body 一读 header 就没了）
+    let set_cookie = collect_set_cookie(&resp);
+    let body = resp.text().await.unwrap_or_default();
+
+    let Some(bduss) = bduss_from_cookie(&set_cookie) else {
+        write_log(&format!(
+            "轮询 kind=baidu 尚未确认 body={}",
+            tail(&body)
+        ));
+        return Ok(PollOutcome {
+            status: QrStatus::Pending,
+            message: "等待扫码…".to_string(),
+            credential: None,
+        });
+    };
+
+    // ③ 用 BDUSS 换登录态
+    let resp = c
+        .get(baidu_qrbduss_url(&v, &bduss))
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Referer", "https://pan.baidu.com/")
+        .send()
+        .await
+        .map_err(|e| {
+            write_log(&format!("换登录态请求失败 kind=baidu err={e}"));
+            format!("换取百度登录态失败：{e}")
+        })?;
+    let mut cookie = merge_cookie(&set_cookie, &collect_set_cookie(&resp));
+    let _ = resp.text().await; // body 里也有 errno，但判据用 cookie（下面）
+
+    // ④ 补 pan 域 cookie（STOKEN 等在这条响应里）
+    if let Ok(r) = c
+        .get("https://pan.baidu.com/disk/main?from=homeFlow")
+        .header("Cookie", &cookie)
+        .header("Referer", "https://pan.baidu.com/")
+        .send()
+        .await
+    {
+        cookie = merge_cookie(&cookie, &collect_set_cookie(&r));
+    }
+    if bduss_from_cookie(&cookie).is_none() {
+        write_log("换 cookie 失败 kind=baidu 合并后仍无 BDUSS");
+        return Err(
+            "百度已确认扫码，但合并后的 cookie 里没有 BDUSS（协议可能变了）⇒ 拿不到登录态"
+                .to_string(),
+        );
+    }
+    write_log(&format!(
+        "换 cookie 成功 kind=baidu 摘要={}",
+        cookie_digest(&cookie)
+    ));
+
+    Ok(PollOutcome {
+        status: QrStatus::Confirmed,
+        message: "登录成功：百度网盘".to_string(),
+        credential: Some(crate::pan_auth::PanCredential {
+            kind: PanKind::Baidu,
+            account: "百度网盘".to_string(),
+            cookie,
+            saved_at: now(),
+            expires_at: None,
+        }),
+    })
+}
+
 // ── 解析小工具（纯函数，可单测；不依赖网络）────────────────────────────
 /// 从响应体里找二维码 token
 ///
@@ -910,14 +1164,15 @@ fn kind_key(kind: PanKind, token: &str) -> String {
 //  对外 API（ffi 的四条命令调这些）
 // ═══════════════════════════════════════════════════════════════════════
 
-/// 发起扫码（夸克 / UC 已接通；其余如实报"尚未接入"）
+/// 发起扫码（夸克 / UC / 百度已接通；其余如实报"尚未接入"）
 pub async fn qr_login_start(kind: PanKind) -> Result<QrSession, String> {
     match kind {
         PanKind::Quark => quark_start().await,
         PanKind::Uc => uc_start().await,
+        PanKind::Baidu => baidu_start().await,
         // ⚠️ **不是**占位返回空：如实说清"这家还没接入"。
         other => Err(format!(
-            "{} 的扫码登录尚未接入（当前完成夸克/UC；其余按批推进）",
+            "{} 的扫码登录尚未接入（当前完成夸克/UC/百度；其余按批推进）",
             other.display()
         )),
     }
@@ -956,9 +1211,10 @@ pub async fn qr_login_poll(kind: PanKind, key: &str) -> Result<PollOutcome, Stri
     let out = match kind {
         PanKind::Quark => quark_poll(key).await?,
         PanKind::Uc => uc_poll(key).await?,
+        PanKind::Baidu => baidu_poll(key).await?,
         other => {
             return Err(format!(
-                "{} 的扫码登录尚未接入（当前完成夸克/UC）",
+                "{} 的扫码登录尚未接入（当前完成夸克/UC/百度）",
                 other.display()
             ))
         }
@@ -1261,7 +1517,7 @@ mod tests {
     ///   （否则它会去发真网络请求 —— 断言就变成"靠网络失败通过"的假绿）。
     #[tokio::test]
     async fn unimplemented_kind_says_so_instead_of_pretending() {
-        for k in [PanKind::Baidu, PanKind::Pan115, PanKind::Guangya] {
+        for k in [PanKind::Pan115, PanKind::Guangya] {
             let e = qr_login_start(k).await.expect_err("未接入的盘不许成功");
             assert!(
                 e.contains("尚未接入"),
@@ -1275,8 +1531,84 @@ mod tests {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  UC 扫码（2026-10-28 接通）—— 三条 URL 逐字对齐取证
+    //  百度扫码（2026-10-28 接通）—— passport 族，与 CAS 不同
     // ══════════════════════════════════════════════════════════════════
+
+    /// ★★ 三条 URL 逐字对齐取证
+    ///
+    /// ```text
+    /// 注入验证：把 unicast 的 `v=` 改成 `sign=` ⇒ 本条 FAILED。
+    /// （百度那一步的参数名是 `v`，值才是 sign —— 名字写错服务端不认，且不报错）
+    /// ```
+    #[test]
+    fn baidu_urls_match_the_documented_flow() {
+        assert_eq!(
+            baidu_qrcode_url(),
+            "https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc"
+        );
+        assert_eq!(
+            baidu_unicast_url("cid1", "sig1"),
+            "https://passport.baidu.com/channel/unicast?channel_id=cid1&v=sig1"
+        );
+        assert_eq!(
+            baidu_qrbduss_url("sig1", "bd1"),
+            "https://passport.baidu.com/v3/login/main/qrbdusslogin?v=sig1&bduss=bd1"
+        );
+    }
+
+    /// ★★★ 取码响应：真报文用 `sign`，取证用词是 `v` —— 两种都要认
+    ///
+    /// ```text
+    /// 注入验证：把候选键里的 "sign" 删掉 ⇒ 第一条断言 FAILED。
+    /// ```
+    #[test]
+    fn baidu_qr_fields_accept_sign_or_v() {
+        let real = r#"{"errno":0,"msg":"","data":{"channel_id":"cid1",
+            "sign":"sig1","url":"https://wappass.baidu.com/wp/?qrlogin&t=1"}}"#;
+        let (cid, v, url) = baidu_qr_fields(real).expect("真报文必须能解析");
+        assert_eq!((cid.as_str(), v.as_str()), ("cid1", "sig1"));
+        assert!(url.starts_with("https://wappass.baidu.com/wp/"), "{url}");
+
+        let alt = r#"{"data":{"channel_id":"cid2","v":"vv","url":"https://x"}}"#;
+        assert_eq!(baidu_qr_fields(alt).map(|(_, v, _)| v).as_deref(), Some("vv"));
+
+        // 缺字段 ⇒ None（不许编默认值）
+        assert!(baidu_qr_fields(r#"{"data":{"channel_id":"c"}}"#).is_none());
+        assert!(baidu_qr_fields("not json").is_none());
+    }
+
+    /// ★★★ "已确认"的唯一判据：响应头里出现 `BDUSS`
+    #[test]
+    fn bduss_detection_is_exact() {
+        assert_eq!(
+            bduss_from_cookie("PTOKEN=abc; BDUSS=xyz; STOKEN=s").as_deref(),
+            Some("xyz")
+        );
+        assert!(bduss_from_cookie("PTOKEN=abc; BDUSS=").is_none(), "空值不算");
+        assert!(bduss_from_cookie("XBDUSS=1").is_none(), "★ 前缀必须整键匹配");
+        assert!(bduss_from_cookie("").is_none());
+    }
+
+    /// ★★★ 合并 cookie：同名**后到覆盖**，不同名都留
+    ///
+    /// ```text
+    /// 注入验证：把 `slot.1 = kv` 改成"保留先到的" ⇒ 本条 FAILED。
+    /// 这条错了的表现是"登录成功但拉不到列表"（旧值把新值顶掉）。
+    /// ```
+    #[test]
+    fn merge_cookie_lets_later_win() {
+        let a = "BDUSS=old; PTOKEN=p1";
+        let b = "BDUSS=new; STOKEN=s1";
+        let m = merge_cookie(a, b);
+        assert_eq!(
+            bduss_from_cookie(&m).as_deref(),
+            Some("new"),
+            "★★ 后到的必须覆盖：{m}"
+        );
+        assert!(m.contains("PTOKEN=p1"), "没冲突的键要留着：{m}");
+        assert!(m.contains("STOKEN=s1"), "新键要进来：{m}");
+        assert_eq!(m.matches("BDUSS=").count(), 1, "★ 不许出现两条同名：{m}");
+    }
 
     /// ★★★ 取码 URL 必须带 **client_id=529**，且主机是 `api.open.uc.cn`
     ///

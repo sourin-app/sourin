@@ -636,6 +636,46 @@ pub fn ext_text(v: Option<&serde_json::Value>) -> String {
 }
 
 
+/// 内置源的稳定 id（`csp-4k-zhinan`）→ 类名（`4KZhinan`）
+///
+/// # 用途
+/// ```text
+/// `state.rs` 给每个注册类建一条内置源，id 是 `csp-<kebab 类名>`。
+/// 而聚合页要用 **api**（`csp_Xxx`）去判断"这个子站实现了没有" ——
+/// 内置源没有 TVBox 导入元数据（`tvbox-sources.json` 里查不到它），
+/// 于是 `tvbox_sites()` 拿到的 api 是空串 ⇒ 页面显示 `appleCms / 尚未实现`（实测 47 条全错）。
+/// ⇒ 这里按 id 反查类名，页面就能拿到真实 api。
+/// ```
+/// 判据：**只认内置源那条 id 规则**（`csp-` 前缀 + kebab）；查不到返回 `None`。
+pub fn class_from_builtin_id(id: &str) -> Option<&'static str> {
+    let kebab = id.strip_prefix("csp-")?;
+    implemented_classes()
+        .into_iter()
+        .find(|c| kebab_eq_class(c, kebab))
+}
+
+/// `ALLLive` vs `all-live` / `alllive`：按**同一套 kebab 规则**比较
+///
+/// ⚠️ 不能只用 `to_lowercase()`：`4KZhinan` → `4k-zhinan`（大写后跟小写要断开），
+///    而 `App99` → `app99`（数字不断开）。规则必须与生成 id 的那一份**逐字一致**。
+fn kebab_eq_class(class: &str, kebab: &str) -> bool {
+    let mut out = String::with_capacity(class.len() + 4);
+    let chars: Vec<char> = class.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        if c.is_ascii_uppercase() {
+            let prev_is_lower = i > 0 && chars[i - 1].is_ascii_lowercase();
+            let next_is_lower = i + 1 < chars.len() && chars[i + 1].is_ascii_lowercase();
+            if i > 0 && (prev_is_lower || next_is_lower) && !out.ends_with('-') {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(*c);
+        }
+    }
+    out == kebab
+}
+
 /// 某个类**不填 ext 能不能用**（按类名查一次实例；查不到类返回 `false`）
 ///
 /// # 为什么要有这个自由函数

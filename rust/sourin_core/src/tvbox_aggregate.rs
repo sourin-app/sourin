@@ -761,7 +761,20 @@ fn tvbox_sites(st: &crate::state::AppState) -> Vec<(String, String, String)> {
                 meta.map(|x| x.site_name.clone())
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| m.name.clone()),
-                meta.map(|x| x.api.clone()).unwrap_or_default(),
+                /*
+                 * ★★★ 2026-10-28（Owner 图3：47 条子站全显示「appleCms / 尚未实现」）
+                 * ```text
+                 * 内置 csp 源（id `csp-4k-zhinan`）**没有 TVBox 导入元数据**
+                 * ⇒ meta 为 None ⇒ api 空串 ⇒ 页面 kindTag=appleCms、implemented=false
+                 * ⇒ 47 条全被画成"尚未实现"并灰掉（实际它们都能用）。
+                 * ⇒ 元数据缺失时按 id 反查类名，得到真实 api（`csp_4KZhinan`）。
+                 * ```
+                 */
+                meta.map(|x| x.api.clone()).filter(|a| !a.is_empty()).unwrap_or_else(|| {
+                    crate::csp::class_from_builtin_id(&m.id)
+                        .map(|c| format!("csp_{c}"))
+                        .unwrap_or_default()
+                }),
             )
         })
         .collect();
@@ -789,7 +802,20 @@ fn build_response(st: &crate::state::AppState, cfg: &AggregateConfig) -> serde_j
                 "api": api,
                 "kindTag": if api.starts_with("csp_") { "csp" } else { "appleCms" },
                 "implemented": implemented,
-                "enabled": cfg.enabled_site_ids.iter().any(|x| x == &id2(&id)),
+                /*
+                 * ★★★ 2026-10-28（Owner：「tvbox 编辑，这些都没勾选是啥意思？我看不懂」）
+                 * ```text
+                 * 改前：`enabled` 直接查 `enabled_site_ids`。而他的配置里这个数组是**空**的
+                 * ⇒ 47 条全部"未勾选"，但实际**全都在用**（空数组 = 全部启用，见 enabled_children
+                 *   的兜底语义）。⇒ 界面说"没选"，行为是"全选"，自相矛盾。
+                 * ⇒ 空数组时按"全部启用"回报（与扇出/渠道条同一份判据）。
+                 * ```
+                 */
+                "enabled": if cfg.enabled_site_ids.is_empty() {
+                    true
+                } else {
+                    cfg.enabled_site_ids.iter().any(|x| x == &id2(&id))
+                },
                 // ★ 未实现类不许显示成可启用：这里给出与导入报告**同一句**原因
                 "reason": if implemented { serde_json::Value::Null }
                           else { serde_json::Value::String(unimplemented_reason(&api)) },

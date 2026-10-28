@@ -348,6 +348,8 @@ impl AppState {
                             // ★ 从落盘的 TVBox 源记录恢复 ⇒ 同样是"导入来源"
                             //   （判据是来源，不是 id 命名 —— 见 CspProvider::new 的注释）
                             true,
+                            // 导入的子站藏起来（经聚合二级页使用）
+                            true,
                         ) {
                             Ok(p) => {
                                 registry.register(Arc::new(p));
@@ -482,6 +484,14 @@ impl AppState {
                 "",
                 Vec::new(),
                 false, // 内置源：不是"由 TVBox 配置导入"
+                /*
+                 * ★ 2026-10-28（Owner 图1）：「Tvbox聚合源…应该属于第二个的二级页面，
+                 *   而不是直接平铺 这样子会引起误会」
+                 * ⇒ 内置 csp 源也藏进聚合二级页：一级列表只剩聚合那一条，
+                 *   二级页里才是这些类（可勾选、可停用）。
+                 * `hidden` 只影响展示 —— 搜索仍经聚合扇出到它们。
+                 */
+                true,
             ) {
                 Ok(p) => {
                     registry.register(std::sync::Arc::new(p));

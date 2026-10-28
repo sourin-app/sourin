@@ -70,6 +70,11 @@ impl CspProvider {
         ext: &str,
         classes: Vec<TvboxCategoryEntry>,
         from_import: bool,
+        // `hidden`：是否**在源列表里隐藏**（只影响展示；搜索/收藏/进度不受影响）。
+        // ★ 2026-10-28（Owner 图1）：内置 csp 源也要藏进聚合的**二级页** ——
+        //   它们是"TVBox 的类"，不是"聚合的子站"，平铺在一级列表里会引起误会。
+        //   与 `from_import` 分开传：来源（是否来自配置）与展示（藏不藏）是两件事。
+        hidden: bool,
     ) -> std::result::Result<Self, String> {
         let id = id.into();
         let name = name.into();
@@ -122,8 +127,19 @@ impl CspProvider {
             working: true,
             broken_reason: None,
             enabled: None,
-            // 导入来的子站藏起来（经 tvbox_agg 聚合使用）；内置 csp 源仍可见
-            hidden: from_import,
+            /*
+             * ★★★ 2026-10-28（Owner 图1：「Tvbox聚合源…应该属于第二个的二级页面，
+             *   而不是直接平铺 这样子会引起误会」）
+             * ```text
+             * 改前：导入来的子站 hidden（对），内置 csp 源**可见**（错）——
+             *   于是设置页出现"TVBox 聚合（47 个源）"这一组，把 47 个内置源**平铺**在
+             *   聚合卡片旁边，看起来像"聚合的子站"，其实它们是独立源。
+             * ⇒ 两类都藏进聚合的**二级页**（聚合卡片的 ⚙ / 组头的「配置」）：
+             *   一级列表只剩聚合那一条，二级页里才有这 47 条（带勾选、可停用）。
+             * ⚠️ `hidden` 只影响**列表展示**：搜索仍经聚合扇出到它们，收藏/进度不受影响。
+             * ```
+             */
+            hidden,
         };
         Ok(Self {
             manifest,
@@ -512,7 +528,7 @@ mod tests {
     #[test]
     fn new_rejects_unimplemented_class() {
         let sample = crate::csp::unimplemented_sample();
-        let err = CspProvider::new("id", "名", sample, "", Vec::new(), false)
+        let err = CspProvider::new("id", "名", sample, "", Vec::new(), false, false)
             .err()
             .expect("没实现的类不能建 Provider");
         // ★ 文案的唯一来源是 `unimplemented_reason`（App99 这种"有具体原因"的类
@@ -521,43 +537,67 @@ mod tests {
     }
 
 
-    // ── A′：TVBox 导入的 csp 子站必须 hidden，内置 csp 源必须可见 ──────────
+    // ── 可见性：由**显式参数**决定（不是 id 前缀，也不是"是不是 csp"）──────────
     #[test]
     fn tvbox_imported_csp_subsites_are_hidden() {
         // tvbox.rs 的 csp_id_base() 产出 `csp-<class>-<crc32>` 这种 id
-        let p = CspProvider::new("csp-bili-1a2b3c4d", "哔哩", "csp_Bili", "", Vec::new(), true)
-            .expect("csp_Bili 必须能建 Provider");
+        let p = CspProvider::new(
+            "csp-bili-1a2b3c4d", "哔哩", "csp_Bili", "", Vec::new(),
+            true,  // from_import
+            true,  // hidden
+        )
+        .expect("csp_Bili 必须能建 Provider");
         assert!(
             p.manifest().hidden,
             "★ 由 TVBox 导入的 csp 子站必须 hidden（否则 A′ 里 16 个子站又全冒出来）"
         );
     }
 
+    /*
+     * ★★★ 2026-10-28 改判（Owner 图1 逐字）：
+     * > Tvbox聚合源，是归属于 tvbox哪个源的…应该属于第二个的二级页面，
+     * > 而不是直接平铺 这样子会引起误会
+     *
+     * 改前（A′ 2026-10-27）：内置 csp 源**必须可见** —— 那时确实需要让用户看见新源。
+     * 改后：内置源与导入子站一样**藏进聚合二级页**，一级列表只剩聚合那一条。
+     * ⇒ 判据跟着翻面，但保留"可见性由显式参数决定"这条更重要的不变量。
+     */
     #[test]
-    fn builtin_csp_provider_stays_visible() {
-        // 非导入来源（将来内置源）用别的 id 形态 ⇒ 必须可见
-        let p = CspProvider::new("builtin-bili", "内置哔哩", "csp_Bili", "", Vec::new(), false)
-            .expect("合法");
+    fn builtin_csp_provider_is_hidden_by_owner_decision() {
+        let p = CspProvider::new(
+            "csp-bili", "内置哔哩", "csp_Bili", "", Vec::new(),
+            false, // from_import = false（它是内置源，不是导入的）
+            true,  // hidden —— Owner 2026-10-28：藏进聚合二级页
+        )
+        .expect("合法");
         assert!(
-            !p.manifest().hidden,
-            "★ 内置 csp 源不能被误藏 —— 判据是「是否来自 TVBox 导入」，不是「是不是 csp」"
+            p.manifest().hidden,
+            "★ 内置 csp 源现在也要 hidden（Owner：平铺在一级列表会引起误会）"
+        );
+        // 但**能力位**必须还在：hidden 只影响展示，不影响搜索/路由
+        assert!(
+            p.manifest().capabilities.vod,
+            "★ hidden 不许把能力位也藏掉（否则聚合扇出/搜索会少它）"
         );
     }
 
-
-    // ── ★ 交叉复核那条真缺口：命名像 `csp-*` 但**不是导入**的源必须可见 ──────────
     #[test]
-    fn builtin_provider_named_like_csp_stays_visible() {
-        let p = CspProvider::new("csp-builtin-x", "内置（名字像导入）", "csp_Bili", "", Vec::new(), false)
-            .expect("合法");
+    fn visibility_comes_from_the_parameter_not_the_id_prefix() {
+        // 同一个"像 csp"的 id：传 visible 就可见
+        let visible = CspProvider::new(
+            "csp-builtin-x", "内置（名字像导入）", "csp_Bili", "", Vec::new(), false, false,
+        )
+        .expect("合法");
         assert!(
-            !p.manifest().hidden,
-            "★ 判据是显式来源标记 —— 名字叫 `csp-builtin-x` 也不能被藏（旧实现用前缀判断会在此红）"
+            !visible.manifest().hidden,
+            "★ 判据是显式参数 —— 名字叫 `csp-builtin-x` 也不会被前缀判断藏掉"
         );
-        // 对照：同一命名、来源是导入 ⇒ 必须藏（证明这条不是"永远可见"的假绿）
-        let q = CspProvider::new("csp-builtin-x", "导入", "csp_Bili", "", Vec::new(), true)
-            .expect("合法");
-        assert!(q.manifest().hidden, "来源=导入 ⇒ 同一 id 也必须藏");
+        // 同一个 id：传 hidden 就藏（证明这条不是"永远可见"的假绿）
+        let hidden = CspProvider::new(
+            "csp-builtin-x", "导入", "csp_Bili", "", Vec::new(), true, true,
+        )
+        .expect("合法");
+        assert!(hidden.manifest().hidden, "显式 hidden=true ⇒ 必须藏");
     }
 
 
@@ -655,7 +695,7 @@ mod tests {
 
     #[test]
     fn new_rejects_empty_id() {
-        let err = CspProvider::new("", "名", "csp_Bili", "", Vec::new(), false)
+        let err = CspProvider::new("", "名", "csp_Bili", "", Vec::new(), false, false)
             .err()
             .expect("空 id 必须报错");
         assert_eq!(err, "源 id 为空");
@@ -663,7 +703,7 @@ mod tests {
 
     #[test]
     fn new_keeps_api_and_declares_no_fake_search() {
-        let p = CspProvider::new("lib-bili", "哔哩", "csp_Bili", "{\"n\":\"x\"}", Vec::new(), false)
+        let p = CspProvider::new("lib-bili", "哔哩", "csp_Bili", "{\"n\":\"x\"}", Vec::new(), false, false)
             .expect("csp_Bili 必须能建 Provider");
         assert_eq!(p.api(), "csp_Bili");
         assert_eq!(p.ext, "{\"n\":\"x\"}", "ext 必须原样透传");

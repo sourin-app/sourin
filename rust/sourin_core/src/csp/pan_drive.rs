@@ -364,6 +364,36 @@ fn parse_shelf_index(tid: &str) -> Result<usize, String> {
     })
 }
 
+/// 解析 `<货架下标>` 或 `<货架下标>:<目录 fid>`
+///
+/// # 为什么要两段式（2026-10-28 实测的缺陷）
+/// ```text
+/// 网盘条目分目录与文件，而列表接口靠 `pdir_fid` 决定"列哪一层"。
+/// 只传下标 ⇒ 永远列根 ⇒ 用户点了目录还是看到根（实测：5 项全目录，点进去还是这 5 项）。
+/// ⇒ 目录条目的 id 用 `<idx>:<fid>`，`list` 就列那一层。
+/// 只给裸 fid（旧数据/外部调用）⇒ 按第 0 个货架处理，保持向后兼容。
+/// ```
+fn parse_shelf_and_dir(tid: &str) -> Result<(usize, Option<String>), String> {
+    let t = tid.trim();
+    if t.is_empty() {
+        return Err("货架 id 为空（应是首页给出的数字下标）".to_string());
+    }
+    match t.split_once(':') {
+        Some((idx, fid)) => {
+            let i = parse_shelf_index(idx)?;
+            let fid = fid.trim();
+            Ok((i, if fid.is_empty() { None } else { Some(fid.to_string()) }))
+        }
+        None => {
+            if let Ok(i) = t.parse::<usize>() {
+                Ok((i, None))
+            } else {
+                Ok((0, Some(t.to_string())))
+            }
+        }
+    }
+}
+
 /// 按下标取货架（**纯函数**，同上）
 ///
 /// ⚠️ 越界**必须报错**，不许 `unwrap_or(第一个)`：
@@ -416,6 +446,10 @@ fn shelf_of<'a>(spec: &'a PanDriveSpec, idx: usize) -> Result<&'a Shelf, String>
 
 /// UC 匿名/带凭据换 token 的主机（实测：`drive.uc.cn` 上同一请求 403）
 const UC_SHARE_HOST: &str = "pc-api.uc.cn";
+
+/// 取直链时带的桌面 UA（CDN 认这个头；参考实现同样带）
+const PAN_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                      (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 /// 换 token 的 URL（实测逐字）
 fn uc_share_token_url() -> String {
@@ -568,13 +602,23 @@ impl CspSite for PanDrive {
         let Some(cookie) = self.cookie() else {
             return Err(login_hint(self.spec.kind));
         };
-        let idx = parse_shelf_index(tid)?;
+        /*
+         * ★★★ 2026-10-28（Owner：「必须要能播放」—— 真跑时发现点目录没反应）
+         * ```text
+         * 改前：`list` 只认"货架下标"，收到的 id 一律忽略 ⇒ 点进任何目录都**还是根目录**
+         *   （实测：列根 5 项全是目录 → 点「夸克上传文件」再列，还是那 5 项）
+         *   ⇒ 永远走不到文件 ⇒ 取直链无从谈起。
+         * 现在：`tid` 支持 `<货架下标>:<目录 fid>` 两段式；只有 fid 时按第 0 个货架处理。
+         * ```
+         */
+        let (idx, sub_fid) = parse_shelf_and_dir(tid)?;
         let shelf = shelf_of(&self.spec, idx)?;
 
         // ⚠️ 空 share_id = "我的网盘根目录" ⇒ 直接列根；
         //    非空 = 别人分享的货架 ⇒ 需要先换 share token（两步，未真跑通）
         let entries = if shelf.share_id.is_empty() {
-            self.list_dir(&cookie, &shelf.folder).await?
+            let dir = sub_fid.as_deref().unwrap_or(&shelf.folder);
+            self.list_dir(&cookie, dir).await?
         } else {
             self.list_shared(&cookie, &shelf.share_id, &shelf.folder)
                 .await?
@@ -583,8 +627,15 @@ impl CspSite for PanDrive {
         let items = entries
             .iter()
             .map(|e| CspItem {
-                // ★ id 用 `fid`：详情要拿它去取文件信息/播放地址
-                id: e.fid.clone(),
+                /*
+                 * ★ 目录条目给 `<idx>:<fid>`（点它能进目录）；文件给裸 `fid`
+                 *   （`play` 只认 fid，不改它的协议）。
+                 */
+                id: if e.is_dir {
+                    format!("{idx}:{}", e.fid)
+                } else {
+                    e.fid.clone()
+                },
                 title: e.name.clone(),
                 cover: None,
                 subtitle: if e.is_dir {
@@ -663,16 +714,137 @@ impl CspSite for PanDrive {
     /// ⇒ 我**不**在这里伪造一个 m3u8（那只会让用户点进去 404）。
     ///   做到哪一步说哪一步：本函数目前如实报"取流链路未接通"。
     /// ```
-    async fn play(&self, _flag: &str, _id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
-        if self.cookie().is_none() {
-            return Err(login_hint(self.spec.kind));
+    /// ★★★ 2026-10-28（Owner：「我登录了夸克，我用这个源播放 夸克网盘也还是不能播放」）
+    ///
+    /// # 改前为什么必然播不了
+    /// ```text
+    /// 这里直接返回"取流链路尚未接通"—— 一行网络请求都没发。
+    /// 用户登录了、也点到了文件，但实现根本不去要地址。
+    /// ```
+    /// # 现在
+    /// ```text
+    /// POST https://{api_host}/1/clouddrive/file/download?{pr_fr}
+    ///   {"fids":["<fid>"]}     + Cookie
+    /// → data[0].download_url
+    /// ★ 响应头会下发 `Set-Cookie: __puus=…` —— **CDN 认的正是它**：
+    ///   不并进直链的 Cookie 头，一律 403 `require login [auth miss]`
+    ///   （真网试了 6 种 Referer/UA/Cookie 组合全 403，读到响应头才定位到）。
+    /// ⇒ 这里读 Set-Cookie 并进 Cookie，再把 url + 三个头交给 streamproxy。
+    /// ```
+    /// # 为什么分享链接的取流仍不猜
+    /// ```text
+    /// `play` 只拿到 `fid`，**没有 share_id / fid_token** ⇒ 做不了"转存到我的网盘"那一步。
+    /// 要做分享直链，得先把 share 信息编进条目 id（改 list/detail 的 id 协议）——
+    /// 那是另一件事，本轮不猜。
+    /// ```
+    async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
+        let cookie = match self.cookie() {
+            Some(c) => c,
+            None => return Err(login_hint(self.spec.kind)),
+        };
+        let fid = id.trim();
+        if fid.is_empty() {
+            return Err("条目 id 为空".to_string());
         }
-        Err(format!(
-            "{} 的取流链路尚未接通：文件直链需要本机转发服务带上 Cookie/Referer，\
-             该能力（streamproxy::register）已存在但未实测接通 ⇒ 现在给不出可用地址，\
-             不伪造",
-            self.spec.kind.display()
-        ))
+        let url = self.api(&format!("file/download?{}", self.spec.pr_fr));
+        let body = format!(
+            "{{\"fids\":[{}]}}",
+            serde_json::Value::String(fid.to_string())
+        );
+        let resp = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Referer", self.spec.share_host)
+            .header("Cookie", &cookie)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| format!("{} 取下载地址请求失败：{e}", self.spec.kind.display()))?;
+        let status = resp.status();
+        // ★ 必须**在 text() 之前**收：响应体一读，headers 就没了
+        let mut set_cookie: Vec<String> = Vec::new();
+        for v in resp.headers().get_all("set-cookie") {
+            if let Ok(t) = v.to_str() {
+                if let Some(kv) = t.split(';').next() {
+                    let kv = kv.trim();
+                    if !kv.is_empty() {
+                        set_cookie.push(kv.to_string());
+                    }
+                }
+            }
+        }
+        let text = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
+        if !status.is_success() {
+            return Err(format!(
+                "{} 取下载地址返回 HTTP {status}：{}",
+                self.spec.kind.display(),
+                short(&text)
+            ));
+        }
+        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+            format!(
+                "{} 取下载地址返回的不是 JSON（{e}）：{}",
+                self.spec.kind.display(),
+                short(&text)
+            )
+        })?;
+        let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+        let msg = v.get("message").and_then(|m| m.as_str()).unwrap_or("");
+        if code != 0 {
+            let text = format!(
+                "{} 取下载地址失败（code={code}）：{msg}",
+                self.spec.kind.display()
+            );
+            let lower = msg.to_lowercase();
+            // 三态分清：登录问题要让 UI 弹扫码，不是报"文件不存在"
+            if lower.contains("login") || msg.contains("登录") || msg.contains("未授权") {
+                return Err(format!("NEED_LOGIN:{}|{text}", self.spec.kind.code()));
+            }
+            return Err(text);
+        }
+        let direct = v
+            .get("data")
+            .and_then(|d| d.as_array())
+            .and_then(|a| a.first())
+            .and_then(|f| f.get("download_url"))
+            .and_then(|u| u.as_str())
+            .unwrap_or("");
+        if direct.is_empty() {
+            return Err(format!(
+                "{} 取下载地址成功但没有 download_url（响应：{}）",
+                self.spec.kind.display(),
+                short(&text)
+            ));
+        }
+        // 把 Set-Cookie（主要是 `__puus`）并进 Cookie —— 缺它 CDN 一律 403
+        let mut merged = cookie.clone();
+        for kv in &set_cookie {
+            let key = kv.split('=').next().unwrap_or("").trim();
+            if key.is_empty() {
+                continue;
+            }
+            let kept: Vec<&str> = merged
+                .split(';')
+                .map(|p| p.trim())
+                .filter(|p| !p.is_empty() && !p.starts_with(&format!("{key}=")))
+                .collect();
+            merged = if kept.is_empty() {
+                kv.clone()
+            } else {
+                format!("{}; {}", kept.join("; "), kv)
+            };
+        }
+        Ok(vec![CspPlay {
+            url: direct.to_string(),
+            headers: vec![
+                ("Cookie".to_string(), merged),
+                ("Referer".to_string(), self.spec.share_host.to_string()),
+                ("User-Agent".to_string(), PAN_UA.to_string()),
+            ],
+            label: Some("原画".to_string()),
+        }])
     }
 }
 
@@ -1018,15 +1190,26 @@ mod tests {
         assert!(r.is_err(), "★ 货架下标越界（本盘只有几个）必须报错，实际：{r:?}");
     }
 
-    #[tokio::test]
-    async fn list_with_non_numeric_tid_is_error() {
-        let d = PanDrive::with_spec("PanQuark", quark_spec());
-        let e = d.list("abc", 1, "").await.expect_err("非数字 tid 应报错");
-        // ⚠️ 这里**只能**断言到"必须 Err"（不能断言具体文案）：
-        //   无 cookie 时**先**被登录闸拦（错误是"还未登录…"），拿不到 tid 那句。
-        //   ⇒ 精确文案的断言放在**纯函数** `parse_shelf_index` 的用例里（不依赖 cookie）。
-        //   ★ 我第一版在这里断言"含『数字』"⇒ 假红（判据依赖了一个不确定的前置状态）。
-        assert!(!e.is_empty(), "★ 必须给出可读的 Err（不许空串）");
+    #[test]
+    /// ★ 2026-10-28 重写：这条原先调 `list("abc")` 断言"必须 Err"，
+    /// 而它**依赖本机是否登录过网盘**（有凭据 ⇒ 走真网络、返回真列表 ⇒ 用例红）。
+    /// 那种"测试读机器状态"的用例不是判据，是运气 ⇒ 改成测**纯函数**。
+    fn parse_shelf_and_dir_handles_three_shapes() {
+        // ① 裸下标（首页给的货架号）
+        assert_eq!(parse_shelf_and_dir("2").unwrap(), (2, None));
+        // ② `<下标>:<目录 fid>` —— 点目录进那一层（2026-10-28 的真缺陷）
+        assert_eq!(
+            parse_shelf_and_dir("0:d8b433aba8804d229371d2de969aa3cf").unwrap(),
+            (0, Some("d8b433aba8804d229371d2de969aa3cf".to_string()))
+        );
+        // ③ 裸 fid（旧数据/外部调用）⇒ 第 0 个货架下的那一层
+        assert_eq!(
+            parse_shelf_and_dir("abc").unwrap(),
+            (0, Some("abc".to_string()))
+        );
+        // 反面：货架那一段不是数字 ⇒ 仍报错（不许静默当成第 0 个）
+        assert!(parse_shelf_and_dir("x:abc").is_err(), "货架段必须是数字");
+        assert!(parse_shelf_and_dir("").is_err(), "空串必须报错");
     }
 
     /// ★★★ 反"猜字段名"门禁：`parse_entries` 用到的键必须**都在取证清单里**

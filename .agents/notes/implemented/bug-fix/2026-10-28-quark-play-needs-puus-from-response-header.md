@@ -71,7 +71,9 @@ Owner：「我登录了夸克，我用这个源播放 夸克网盘也还是不�
 
 ## Relations
 
-- 前情：[./2026-10-28-needs-ext-per-class-annotation.md](./2026-10-28-needs-ext-per-class-annotation.md)
+- 前情：[../feature/2026-10-28-needs-ext-per-class-annotation.md](../feature/2026-10-28-needs-ext-per-class-annotation.md)
   —— 网盘类此前"默认不暴露"，因为空 ext 必然报错；现在它们真能播了。
-- 同族：[./2026-10-28-pan-login-shows-qr-not-blank-panel.md](./2026-10-28-pan-login-shows-qr-not-blank-panel.md)
+- 同族：[../feature/2026-10-28-pan-login-shows-qr-not-blank-panel.md](../feature/2026-10-28-pan-login-shows-qr-not-blank-panel.md)
   —— 那条解决"登录要能扫码"，这条解决"登录之后要能播"。
+- 续篇（本条当时的"已知边界：分享链接仍然不能播"现已接通）：
+  [../feature/2026-10-28-share-link-play-via-item-id.md](../feature/2026-10-28-share-link-play-via-item-id.md)

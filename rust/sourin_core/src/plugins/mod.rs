@@ -1114,7 +1114,7 @@ impl JsPluginProvider {
                     Ok(v) if v == "true" => {
                         probed_auto_login = true;
                         log::info!(
-                            "插件 {} 未声明 canAutoLogin，但**运行时探测为真** —— \
+                            "插件 {} 未声明 canAutoLogin，但「运行时探测为真」 —— \
                              按其实现为准（声明可能只是没跟上）",
                             self.manifest.id
                         );
@@ -1124,7 +1124,7 @@ impl JsPluginProvider {
                         /*
                          * ★ 纪律 ③：探测失败要留痕。
                          *
-                         * 不记的话，将来"某个插件探测失败"就是**静默的假 false** ——
+                         * 不记的话，将来"某个插件探测失败"就是「静默的假 false」 ——
                          * 用户又回到"看到验证码却说不出为什么"。
                          */
                         log::warn!(

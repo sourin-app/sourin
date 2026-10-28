@@ -130,6 +130,7 @@ void main() {
         await tester.pump();
       }
       await tester.ensureVisible(find.text('预览批量绑定'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('预览批量绑定'));
       await tester.pump();
 
@@ -143,11 +144,13 @@ void main() {
 
       final choice = find.textContaining('选择 ').last;
       await tester.ensureVisible(choice);
+      await tester.pumpAndSettle();
       await tester.tap(choice);
       await tester.pump();
       expect(tester.widget<FilledButton>(confirm).onPressed, isNotNull,
           reason: '选定后确认必须恢复可用');
       await tester.ensureVisible(confirm);
+      await tester.pumpAndSettle();
       await tester.tap(confirm);
       await tester.pump();
       expect(batches.single.map((m) => m.episodeId), <int>[22],
@@ -166,6 +169,7 @@ void main() {
       await tester.tap(find.byType(CheckboxListTile));
       await tester.pump();
       await tester.ensureVisible(find.text('预览批量绑定'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('预览批量绑定'));
       await tester.pump();
 
@@ -200,9 +204,11 @@ void main() {
       await tester.tap(tile);
       await tester.pump();
       await tester.ensureVisible(find.text('预览批量绑定'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('预览批量绑定'));
       await tester.pump();
       await tester.ensureVisible(find.text('确认并交由播放器绑定'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('确认并交由播放器绑定'));
       await tester.pump();
       expect(batches.single.single.episodeId, 42,

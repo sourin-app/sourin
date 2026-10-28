@@ -33,6 +33,7 @@ bool sourceEnabled(String label) => find.descendant(
 Future<void> toggleApi(WidgetTester t) async {
   final row = sourceRow('dan-api');
   await t.ensureVisible(row);
+  await t.pumpAndSettle();
   await t.tap(row);
   await t.pumpAndSettle();
 }
@@ -87,6 +88,7 @@ void main() {
       await t.pump();
     }
     await t.ensureVisible(find.text('预览批量绑定'));
+    await t.pumpAndSettle();
     await t.tap(find.text('预览批量绑定'));
     await t.pump();
     final confirm = find.widgetWithText(FilledButton, '确认并交由播放器绑定');
@@ -95,10 +97,12 @@ void main() {
     expect(batches, isEmpty);
     final choice = find.textContaining('选择 ').last;
     await t.ensureVisible(choice);
+    await t.pumpAndSettle();
     await t.tap(choice);
     await t.pump();
     expect(t.widget<FilledButton>(confirm).onPressed, isNotNull);
     await t.ensureVisible(confirm);
+    await t.pumpAndSettle();
     await t.tap(confirm);
     await t.pump();
     expect(batches.single.map((m) => m.episodeId), [22]);
@@ -119,6 +123,7 @@ void main() {
     await t.tap(find.byType(CheckboxListTile));
     await t.pump();
     await t.ensureVisible(find.text('预览批量绑定'));
+    await t.pumpAndSettle();
     await t.tap(find.text('预览批量绑定'));
     await t.pump();
     expect(draft.keyword, '保留关键词');
@@ -160,13 +165,16 @@ void main() {
     expect(RegExp(r'填.{0,6}AppId').hasMatch(text), isFalse);
     final local = find.widgetWithText(TextButton, '改用本机外部弹幕');
     await t.ensureVisible(local);
+    await t.pumpAndSettle();
     await t.tap(local);
     expect(locals, 1);
     final reload = find.widgetWithText(TextButton, '重新获取弹幕');
     await t.ensureVisible(reload);
+    await t.pumpAndSettle();
     await t.tap(reload);
     expect(reloads, 1);
     await t.ensureVisible(diagnostics);
+    await t.pumpAndSettle();
     await t.tap(diagnostics);
     await t.pumpAndSettle();
     expect(find.text('服务端返回详情'), findsNothing);

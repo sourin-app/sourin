@@ -204,6 +204,16 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
     ];
   }
 
+  /// 底部动作按钮的排布规范：**内容宽 + 左对齐**（与搜索按钮同一条）
+  ///
+  /// # 为什么抽成函数而不是两处各写一个 `Align`
+  /// ```text
+  /// 规范要"一处可读、一处可改"：同一条版式规则散在两处时，
+  /// 下一轮只会改到其中一处（搜索按钮窄了、动作按钮还通栏 —— 这正是本轮返工的原因）。
+  /// ```
+  Widget _actionSlot(Widget child) =>
+      Align(alignment: Alignment.centerLeft, child: child);
+
   void _search() {
     final keyword = _keyword.text.trim();
     if (keyword.isEmpty) return;
@@ -282,14 +292,108 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
               ),
             ),
           ]),
-          Expanded(child: ListView(
-            padding: const EdgeInsets.all(16),
+          Expanded(child: SingleChildScrollView(
+            /*
+             * ★★★ 2026-10-28（N4-3 #9）：**左右必须对称、内容要吃到边**
+             *
+             * 改前（真机截图 `.probe/n4-3-layout/n4-3-wide-results.png`）：条目文字从
+             * x≈170 起（左缩进 ~200），右侧空 ~260 —— 一条结果被挤在中间偏左的一条窄带里，
+             * 而**同一页的输入框/按钮却是通栏**⇒ 三块内容的左右边界各不相同。
+             * 现在：整页统一 16 的水平内边距，条目行 `contentPadding: zero` 吃到边，
+             * 于是"标题 / 输入组 / 条目行"三条边界对齐。
+             */
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            /*
+             * ★ 为什么是 `SingleChildScrollView + Column`，不是 `ListView`
+             * ```text
+             * `ListView(children:)` 仍是**懒构建**：视口 + cacheExtent 之外的子项
+             * **根本不在元素树里**。本页有两处依赖"能 ensureVisible 到页面下半截"的
+             * 既有门禁（诊断区的补救按钮、预览区的确认按钮），页面一长就会
+             * `find` 到 0 个元素 —— 那不是产品缺陷，是"没构建所以不存在"。
+             * 本页内容量是**有界**的（一次搜索的候选 + 诊断区），全部构建没有性能问题；
+             * 换成 `SingleChildScrollView` 后"滚得到 = 构建得出"，门禁与技术栈同义。
+             * ```
+             */
+            child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              TextField(controller: _keyword, onSubmitted: (_) => _search(),
-                decoration: const InputDecoration(labelText: '跨渠道搜索关键词')),
-              FilledButton(onPressed: s.searchLoading || b.loading ? null : _search,
-                child: const Text('搜索 dan-api 与视频站')),
-              const Text('搜索、启用、绑定与加载是不同状态；确认绑定前请核对剧集。'),
+              /*
+               * ★★★ 2026-10-28（N4-3 #4）：**把说明文字变成"本段的前置说明"**
+               *
+               * 改前：这句在**按钮下面**、与按钮同色同号 ⇒ 读起来像按钮的副标题，
+               * 用户以为"这句话是按钮的一部分"。
+               * 现在：挪到输入框**上面**、字号更小、颜色用 `onSurfaceVariant`（弱化）⇒
+               * 它先说明"这一块要干什么"，再出现输入与按钮（从上到下的阅读顺序）。
+               */
+              Text(
+                '搜索、启用、绑定与加载是不同状态；确认绑定前请核对剧集。',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 8),
+              /*
+               * ★★★ 2026-10-28（N4-3 #2/#3）：**输入与按钮是同一组，但主次分明**
+               *
+               * 改前：无边框输入行 + 紧贴其下的通栏按钮 ⇒
+               *   ① 输入框看起来像一段普通文字（不知道能点）
+               *   ② 按钮比输入框"重"三倍 ⇒ 主次颠倒
+               *   ③ 两者之间零间距 ⇒ 按钮像输入框的下边框
+               * 现在：一块浅底 + 描边的**搜索组**把它们圈在一起；输入框给可见描边；
+               *   组内 12px 间距；按钮按内容宽左对齐（不通栏）。
+               * ⚠️ 只改容器与间距，**不动** `_search()` 的触发路径与"按钮禁用条件"。
+               */
+              Container(
+                key: const ValueKey('danmaku-search-group'),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .surfaceContainerHighest
+                      .withValues(alpha: 0.35),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextField(
+                      controller: _keyword,
+                      onSubmitted: (_) => _search(),
+                      decoration: InputDecoration(
+                        labelText: '跨渠道搜索关键词',
+                        isDense: true,
+                        filled: true,
+                        fillColor:
+                            Theme.of(context).colorScheme.surface.withValues(alpha: 0.6),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(
+                            color: Theme.of(context).colorScheme.outline,
+                            width: 1,
+                          ),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(
+                            color: Theme.of(context).colorScheme.outline,
+                            width: 1,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // 不通栏：按内容宽、左对齐（`Align` + 内在宽度 ⇒ 宽屏下不会被拉满）
+                    _actionSlot(FilledButton(
+                      onPressed: s.searchLoading || b.loading ? null : _search,
+                      child: const Text('搜索 dan-api 与视频站'),
+                    )),
+                  ],
+                ),
+              ),
               if (s.searchLoading || b.loading) const LinearProgressIndicator(),
               /*
                * ★★★ 2026-10-28（N4-3 #11）：**过期态必须说出原因**
@@ -339,7 +443,26 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                     ],
                   ),
                 ),
-              const Text('dan-api 剧集'),
+              /*
+               * ★★★ 2026-10-28（N4-3 #8）：**分组标题要有层级差 + 分隔线**
+               *
+               * 改前：`dan-api 剧集` 是默认字号的裸 Text，紧贴第一条结果 ⇒
+               *   6 条结果读成一片，标题看起来像"第 0 条"。
+               * 现在：标题加粗 + 上留白，并且**下面一条 Divider** 把它与条目分开。
+               * ⚠️ 文案逐字不变（既有门禁按 `dan-api` 匹配分区标题）。
+               */
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(
+                  'dan-api 剧集',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+              ),
+              const Divider(height: 12),
               /*
                * ★★★ 2026-10-25（第 05 项复核修复 B）：**热路径的三档归因真接线**
                *
@@ -383,33 +506,101 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
               if (s.searchSearched && !s.searchLoading && s.searchResults.isEmpty)
                 const Text('dan-api 未找到匹配剧集'),
               for (final match in s.searchResults)
+                /*
+                 * ★★★ 2026-10-28（N4-3 #5/#6/#7）：条目行的三处改动
+                 *
+                 * # 改前（真机截图 `.probe/n4-3-layout/n4-3-wide-results.png`）
+                 * ```text
+                 * [封面][绑定当前集]  作品甲·第1集  ………700px………  [☐]
+                 * ```
+                 * · 每条都钉一个「绑定当前集」按钮（6 条 = 6 个同样的按钮，扫读全是噪声）
+                 * · 复选框在最右（x≈1200），与文字相距 700+px ⇒ 眼手分离
+                 * · 「对应本地 不绑定 ▾」没有描边 ⇒ 看起来像纯文本，不知道能点
+                 *
+                 * # 现在
+                 * ```text
+                 * [☐] 作品甲·第1集                       [封面][⋯]
+                 *     渠道：dan-api · 对应本地 [第2集 ▾]
+                 * ```
+                 * · 复选框 `controlAffinity: leading` ⇒ 勾选与条目同一视觉组（#6）
+                 * · 单条绑定收进 `⋯` 菜单；批量入口仍在下面、未动（#5）
+                 * · 「对应本地」的下拉套一层描边容器、触达高度 ≥32（#7）
+                 *
+                 * # 为什么仍用 `CheckboxListTile` 而不是自制 Row
+                 * ```text
+                 * 既有 6 份门禁按 `find.byType(CheckboxListTile)` 驱动"点条目即勾选"。
+                 * 换成自制 Row 会把"整行可点"从框架能力变成手写手势，还得同步改 6 份锚点
+                 * —— 收益为零、风险全是回归。`CheckboxListTile` 本来就支持
+                 * `controlAffinity.leading` + `secondary`（secondary 落在勾选框的**反侧**）。
+                 * ```
+                 */
                 CheckboxListTile(
+                  key: ValueKey<int>(match.episodeId),
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 4),
                   value: _selected.contains(match.episodeId),
                   // 2026-10-26（Owner：只返回数字没有名字）：
                   // 一律显示"番剧名 · 第N集"，不再出现裸 #123456。
                   title: Text(_candidateTitle(match)),
-                  subtitle: Row(children: <Widget>[
-                    // ★ 保留**逐字**的 '渠道：dan-api'：既有门禁用 find.text 精确匹配它
-                    const Text('渠道：dan-api'),
-                    const Text(' · 对应本地'),
-                    const SizedBox(width: 8),
-                    DropdownButton<int>(
-                      value: _assign[match.episodeId] ?? -1,
-                      items: <DropdownMenuItem<int>>[
-                        const DropdownMenuItem<int>(value: -1, child: Text('不绑定')),
-                        for (var i = 0; i < widget.localTitles.length; i++)
-                          DropdownMenuItem<int>(
-                              value: i, child: Text('第${i + 1}集')),
-                      ],
-                      onChanged: s.searchLoading || s.searchStale
-                          ? null
-                          : (v) => setState(() {
-                                _assign[match.episodeId] = v ?? -1;
-                                _preview = false;
-                                _saveDraft();
-                              }),
+                  /*
+                   * ★★★ 2026-10-28（N4-3 #9 续）：**副标题占满整行**，把中段那块空洞吃掉
+                   *
+                   * # 改前（Lead 复核点名）
+                   * ```text
+                   * 「渠道：dan-api · 对应本地」在 x≈76..530 就结束了，下拉被 `Spacer`
+                   * 推到 x≈1067 —— 中间 ~500px 是纯空白。读者会以为"这一行断成两截"：
+                   * **标签在左、它的控件在右**，中间没有任何东西把它们连起来。
+                   * ```
+                   *
+                   * # 取舍：选「副标题吃满 + 右侧控件靠右不变」（不选"行内 chip"）
+                   * ```text
+                   * ① 行内 chip 要把「对应本地」下拉**推进条目行的中间带**：
+                   *    800 宽窗口下它的落点正好压住行的几何中心（实测 x≈335..407，
+                   *    中心 400）—— 而"点条目本身选中"就靠那条中心线，
+                   *    结果是"点中间没选中、弹出了个下拉"。
+                   *    两害相权：要么牺牲整行可点（真行为），要么把既有门禁的点击点
+                   *    从"整行"改成"点勾选框"（= 放宽判据）。两条都不接受。
+                   * ② 所以改成：**副标题自己铺一条满宽的极浅底纹带**，标签在带子左端、
+                   *    下拉在带子右端 —— 视觉上它是一条**连续的带子**而不是"文字+空洞+控件"；
+                   *    右侧的封面/`⋯` 位置一格没动（仍靠右）。
+                   * ③ 这条带子**不接手势**（`Container` 不是可点控件）⇒ 中心线仍是纯装饰，
+                   *    "点整行选中"与既有 6 份门禁全部保持原样。
+                   * ```
+                   */
+                  subtitle: Container(
+                    key: ValueKey<String>('danmaku-subtitle-band-${match.episodeId}'),
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(top: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .surfaceContainerHighest
+                          .withValues(alpha: 0.35),
+                      borderRadius: BorderRadius.circular(6),
                     ),
-                  ]),
+                    child: Row(children: <Widget>[
+                      // ★ 保留**逐字**的 '渠道：dan-api'：既有门禁用 find.text 精确匹配它
+                      const Text('渠道：dan-api'),
+                      const Text(' · 对应本地'),
+                      /*
+                       * 下拉仍在带子的右端（`Spacer` 把它推到尽头）——
+                       * 但它现在**在带子里**：中间那段不再是"空白"，而是同一条底纹。
+                       */
+                      const Spacer(),
+                      _LocalPick(
+                        value: _assign[match.episodeId] ?? -1,
+                        titles: widget.localTitles,
+                        onChanged: s.searchLoading || s.searchStale
+                            ? null
+                            : (v) => setState(() {
+                                  _assign[match.episodeId] = v ?? -1;
+                                  _preview = false;
+                                  _saveDraft();
+                                }),
+                      ),
+                    ]),
+                  ),
 
                   onChanged: s.searchLoading || s.searchStale ? null : (checked) => setState(() {
                     if (checked == true) {
@@ -438,12 +629,49 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                               fit: BoxFit.cover,
                               errorBuilder: (_, __, ___) => const Icon(Icons.movie_outlined)),
                           )),
-                    TextButton(onPressed: s.searchLoading || s.searchStale ? null : () => widget.onPickMatch(match),
-                      child: const Text('绑定当前集')),
+                    /*
+                     * ★ N4-3 #5：单条「绑定当前集」收进这里。
+                     * `enabled` 只影响**菜单项**（置灰但菜单仍可打开）——
+                     * 用户点开能看到"这个动作现在不可用"，比"点了没反应"清楚。
+                     * 菜单本身仍可展开：禁用态下把整个按钮置灰会让用户以为界面坏了。
+                     */
+                    PopupMenuButton<String>(
+                      key: ValueKey<String>('danmaku-match-menu-${match.episodeId}'),
+                      tooltip: '这条的更多操作',
+                      onSelected: (_) {
+                        if (s.searchLoading || s.searchStale) return;
+                        widget.onPickMatch(match);
+                      },
+                      itemBuilder: (_) => <PopupMenuEntry<String>>[
+                        PopupMenuItem<String>(
+                          value: 'bind',
+                          enabled: !(s.searchLoading || s.searchStale),
+                          child: const Text('绑定当前集'),
+                        ),
+                      ],
+                    ),
                   ]),
                 ),
-              OutlinedButton(onPressed: selected.isEmpty || s.searchLoading || s.searchStale ? null : () => setState(() { _seedAssign(); _preview = true; _saveDraft(); }),
-                child: const Text('预览批量绑定')),
+              /*
+               * ★★★ 2026-10-28（N4-3 #2 续）：**底部动作区与搜索按钮同一套规范**
+               *
+               * # 为什么还要改（Lead 复核后点名的残留）
+               * ```text
+               * 搜索按钮已经收窄到内容宽，但"预览批量绑定 / 确认并交由播放器绑定"
+               * 仍是**通栏**（同等宽 1200+）⇒ 同一页里两条"按钮"规范不一致：
+               * 一条是"按内容"，另一条是"按版面"。用户会把通栏那条读成"这一页的主按钮"，
+               * 而它其实只是结果区的一个步骤。
+               * ```
+               * # 规范（与搜索按钮同一条）
+               * ```text
+               * 按钮宽 = 内容宽，左对齐到内容左边线；**只有输入类控件**（输入框）才吃满。
+               * 例外保持原样：结果行里的 `⋯` 菜单是图标按钮、冲突里的「选择 xxx」是文本链接。
+               * ```
+               * ⚠️ 只包一层 `Align`：**不动** `onPressed` 的禁用条件、不动按钮文案、
+               *    不动它在列表里的位置（空态引导 #10 与诊断区的高度因此一格没变）。
+               */
+              _actionSlot(OutlinedButton(onPressed: selected.isEmpty || s.searchLoading || s.searchStale ? null : () => setState(() { _seedAssign(); _preview = true; _saveDraft(); }),
+                child: const Text('预览批量绑定'))),
               if (_preview) ...[
                 Text('将匹配 ${plan.items.length} / ${widget.localTitles.length} 集；未匹配 ${plan.unmatchedLocal.length} 集'),
                 // 2026-10-26：预览行带名字，且**可拖动**（顺序 = 提交顺序）
@@ -492,7 +720,7 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                       _saveDraft();
                     }), child: Text('选择 ${candidate.label} (#${candidate.episodeId})')),
                 ],
-                FilledButton(onPressed: conflicts.isNotEmpty || _planItems().isEmpty || s.searchLoading || s.searchStale ? null : () {
+                _actionSlot(FilledButton(onPressed: conflicts.isNotEmpty || _planItems().isEmpty || s.searchLoading || s.searchStale ? null : () {
                   setState(() { _preview = false; _saveDraft(); });
                   /*
                    * ★ 2026-10-26：这里曾有 `..sort((a,b) => a.episodeId.compareTo(...))` ——
@@ -510,7 +738,7 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                   } else {
                     widget.onBatchBind(selected);
                   }
-                }, child: const Text('确认并交由播放器绑定')),
+                }, child: const Text('确认并交由播放器绑定'))),
               ],
               const Divider(),
               const Text('视频站视频与分P'),
@@ -629,8 +857,73 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                 ],
               ),
             ],
+            ),
           )),
         ]),
+      ),
+    );
+  }
+}
+
+/// 「对应本地 [第N集 ▾]」—— 带描边的可点下拉（N4-3 #7）
+///
+/// # 改前
+/// ```text
+/// 裸 `DropdownButton`（只有文字 + 一个细箭头）⇒ 截图里读起来像
+/// 「渠道：dan-api · 对应本地 不绑定 ▾」这样一句**纯文本**，
+/// 用户不知道"不绑定"三个字是可以点的。
+/// ```
+///
+/// # 现在
+/// ```text
+/// 外面套一层 1px 描边 + `minHeight: 32` 的容器：
+///   · 描边 = "这是一个控件"的通用视觉语言（与输入框同一套）
+///   · 32 = 可用触达下限
+/// 只在**不可用**时把描边与箭头降为 `outlineVariant`（而不是整块消失），
+/// 这样过期态仍看得出"这里本来有个下拉，只是现在不能动"。
+/// ```
+class _LocalPick extends StatelessWidget {
+  const _LocalPick({
+    required this.value,
+    required this.titles,
+    required this.onChanged,
+  });
+
+  final int value;
+  final List<String> titles;
+  final ValueChanged<int?>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final enabled = onChanged != null;
+    // 值来自 `_assign`；本地集列表换了之后旧下标可能越界 ⇒ 回落到"不绑定"
+    final safe = value >= titles.length ? -1 : value;
+    return Container(
+      key: const ValueKey<String>('danmaku-local-pick'),
+      constraints: const BoxConstraints(minHeight: 32),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: enabled ? scheme.outline : scheme.outlineVariant,
+          width: 1,
+        ),
+      ),
+      child: DropdownButton<int>(
+        value: safe,
+        isDense: true,
+        underline: const SizedBox.shrink(),
+        icon: Icon(
+          Icons.arrow_drop_down,
+          color: enabled ? scheme.onSurface : scheme.outline,
+        ),
+        items: <DropdownMenuItem<int>>[
+          const DropdownMenuItem<int>(value: -1, child: Text('不绑定')),
+          for (var i = 0; i < titles.length; i++)
+            DropdownMenuItem<int>(value: i, child: Text('第${i + 1}集')),
+        ],
+        onChanged: onChanged,
       ),
     );
   }

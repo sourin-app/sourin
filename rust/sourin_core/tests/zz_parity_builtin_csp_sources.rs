@@ -206,3 +206,52 @@ async fn disabled_builtin_source_stays_disabled_after_restart() {
     );
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+// ══════════════════════════════════════════════════════════════════════
+//  ④ 去重：配置里已经导入过的同一个 api，不许再自动建一条内置源
+// ══════════════════════════════════════════════════════════════════════
+//
+// # 为什么必须有这条（复核者点名的第三条缺口）
+// ```text
+// `state.rs` 用 `imported_csp_apis` 跳过"配置里已有"的类，否则同一个类会出现两条源
+// （一条来自用户导入、一条内置）。这只在代码里成立，**没有门禁**。
+// 一旦它坏了，用户会看到重复源，且两条行为不同（一条带 ext、一条空）。
+// ```
+// 注入：把 `imported_csp_apis.insert(...)` 删掉 ⇒ 本条红（会出现 `csp-wogg` 与 `user-wogg` 并存）。
+#[tokio::test]
+async fn imported_csp_api_is_not_duplicated_by_builtin_source() {
+    use sourin_core::model::{PersistedProvider, TvboxCategoryEntry};
+
+    let tmp = std::env::temp_dir().join(format!("sourin-builtin-csp-dedupe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("建临时目录");
+
+    // 用户"导入过"一个 csp_Wogg 的站点（带 ext，所以它自己可用）
+    let imported_id = "user-wogg".to_string();
+    sourin_core::persist::save_persisted(
+        &tmp,
+        &[PersistedProvider::Tvbox {
+            id: imported_id.clone(),
+            name: "用户导入的源".to_string(),
+            api: "csp_Wogg".to_string(),
+            categories: Vec::<TvboxCategoryEntry>::new(),
+            parsers: Vec::new(),
+            ext: Some("{\"site\":[\"https://example.invalid\"]}".to_string()),
+        }],
+    )
+    .expect("写导入清单");
+
+    let st = AppState::bootstrap(tmp.clone()).await.expect("bootstrap");
+
+    let ids: Vec<String> = st.registry.manifests().into_iter().map(|m| m.id).collect();
+    assert!(
+        ids.iter().any(|i| i == &imported_id),
+        "★ 前置：导入的源必须在（否则本条是空真）：{ids:?}"
+    );
+    assert!(
+        !ids.iter().any(|i| i == "csp-wogg"),
+        "★★ 配置里已有 `csp_Wogg` ⇒ **不许**再自动建 `csp-wogg`（同一类两条源）。
+         实际源 id: {ids:?}"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}

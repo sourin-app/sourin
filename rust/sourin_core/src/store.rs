@@ -1610,8 +1610,8 @@ impl Db {
                  outro_end   = COALESCE(excluded.outro_end,   skip_markers.outro_end),
                  auto_skip   = COALESCE(excluded.auto_skip,   skip_markers.auto_skip),
                  /*
-                  * ★ 中插**不是**部分更新语义：我们总是传非 NULL 的 JSON 文本
-                  *   （空数组是 `"[]"`，不是 NULL）⇒ 这一行**一定会覆盖**旧值。
+                  * ★ 中插「不是」部分更新语义：我们总是传非 NULL 的 JSON 文本
+                  *   （空数组是 `"[]"`，不是 NULL）⇒ 这一行「一定会覆盖」旧值。
                   *   行为上就是"用户把中插删光 ⇒ 库里也变空"，**这是对的**；
                   *   ⚠️ 别看到"COALESCE"就以为它保留了旧值 —— COALESCE 只对 NULL 生效。
                   */

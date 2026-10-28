@@ -29,11 +29,13 @@ void main() {
     await tester.pump();
     expect(batches, isEmpty);
     await tester.ensureVisible(find.text('预览批量绑定'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('预览批量绑定'));
     await tester.pump();
     expect(find.text('将匹配 1 / 2 集；未匹配 1 集'), findsOneWidget);
     expect(batches, isEmpty);
     await tester.ensureVisible(find.text('确认并交由播放器绑定'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('确认并交由播放器绑定'));
     await tester.pump();
     expect(batches.single.single.episodeId, 42);
@@ -47,7 +49,25 @@ void main() {
       onBiliSelectPage: (_) {}, onClose: () {},
     )));
     expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).onChanged, isNull);
-    expect(tester.widget<TextButton>(find.widgetWithText(TextButton, '绑定当前集')).onPressed, isNull);
+    /*
+     * ★ 2026-10-28（N4-3 #5）：**断言形态变了，语义没变**（不是放宽）
+     * ```text
+     * 改前：「绑定当前集」是每条结果左侧的常驻 TextButton ⇒ 这里断 `onPressed == null`。
+     * 现在：单条绑定收进条目菜单（`⋯`）⇒ 那个 TextButton 已不存在。
+     * ⇒ 改成**行为断言**：打开菜单 → 菜单项必须 `enabled == false` → 点它不触发回调。
+     *   `onPickMatch: (_) => fail('stale bind')` 原样保留：一旦真的回调，这条立刻炸
+     *   （比只读 `onPressed` 更强：它证明"点了也不会绑"，而不是"属性看起来是 null"）。
+     * ```
+     */
+    await tester.tap(find.byKey(const ValueKey<String>('danmaku-match-menu-42')));
+    await tester.pumpAndSettle();
+    final item = tester.widget<PopupMenuItem<String>>(
+      find.widgetWithText(PopupMenuItem<String>, '绑定当前集'),
+    );
+    expect(item.enabled, isFalse,
+        reason: '★ 过期态下菜单项必须置灰 —— 否则用户点了没反应且不知道原因');
+    await tester.tap(find.text('绑定当前集'), warnIfMissed: false);
+    await tester.pumpAndSettle();
   });
 
   // ══════════════════════════════════════════════════════════════════════
@@ -95,9 +115,11 @@ void main() {
     await tester.tap(tile);
     await tester.pump();
     await tester.ensureVisible(find.text('预览批量绑定'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('预览批量绑定'));
     await tester.pump();
     await tester.ensureVisible(find.text('确认并交由播放器绑定'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('确认并交由播放器绑定'));
     await tester.pump();
     expect(batches.single.single.episodeId, 42,

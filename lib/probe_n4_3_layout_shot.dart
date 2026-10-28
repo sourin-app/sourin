@@ -55,6 +55,10 @@ Future<void> _shot(String name) async {
     _say('!! 根不是 RenderRepaintBoundary，跳过 $name');
     return;
   }
+  // 仪器自证：把"边界尺寸 / 设备像素比 / 逻辑窗口"打出来，
+  // 免得把**窗口与图幅不一致**误读成"版面右侧留白"
+  final mq = WidgetsBinding.instance.platformDispatcher.views.first;
+  _say('RO size=${ro.size}  view.physical=${mq.physicalSize}  dpr=${mq.devicePixelRatio}');
   final img = await ro.toImage(pixelRatio: 1.0);
   final bytes = await img.toByteData(format: ui.ImageByteFormat.png);
   if (bytes == null) {

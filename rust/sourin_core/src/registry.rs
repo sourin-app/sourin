@@ -362,7 +362,7 @@ impl Registry {
                 targets = candidates.into_iter().map(|(p, _)| p).collect();
             } else {
                 log::debug!(
-                    "[registry] 没有可见源可搜，且用户已显式停用过源 ⇒ **不兜底**（尊重停用）"
+                    "[registry] 没有可见源可搜，且用户已显式停用过源 ⇒ 「不兜底」（尊重停用）"
                 );
             }
         }
@@ -562,7 +562,7 @@ impl Registry {
                 targets = candidates.into_iter().map(|(p, _)| p).collect();
             } else {
                 log::debug!(
-                    "[registry] 没有可见源上首页，且用户已显式停用过源 ⇒ **不兜底**（尊重停用）"
+                    "[registry] 没有可见源上首页，且用户已显式停用过源 ⇒ 「不兜底」（尊重停用）"
                 );
             }
         }
@@ -574,7 +574,7 @@ impl Registry {
                 continue;
             }
             /*
-             * ★ 这里**不再**按会话过滤（2026-10-15）—— 详见上面那段长注释。
+             * ★ 这里「不再」按会话过滤（2026-10-15）—— 详见上面那段长注释。
              *   一句话：`login_required` 只挡取流，不挡浏览；
              *   真要登录的源会由下面这行 `home()` 自己返回 Unauthorized。
              */

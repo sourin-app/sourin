@@ -729,27 +729,36 @@ mod tests {
 
         // ④ 取流：真音频流（只取前 1KB，不把 64k mp3 整段拉下来）
         //
-        // ★ 为什么**不能只测一个台**（本批实测撞到两次）：
+        // ★ 为什么**不能只测一个台**（本批实测撞到三次，形态每次都不一样）：
         //   · 这个 CDN **不支持 HEAD**（HEAD → 400 text/html）⇒ 必须 GET + Range；
-        //   · 单个台的 64k 流**会变**：id=4595 在 00:07 是 200 audio/mpeg，00:58 变 404 text/html，
-        //     而同一时刻 269/1952/20500164 仍是 200 audio/mpeg。
-        //   ⇒ 判据写成"前 5 个台里**至少一个**真出音频"，并且**逐个打印**每个台的读数，
-        //     这样台停了不会被误读成"我们拼错了地址"。
+        //   · 单个台的 64k 流**会变**：id=4595 在 00:07 是 200 audio/mpeg，00:58 变 404 text/html；
+        //   · **单次请求也会超时**：10:1x 复跑时 4595 直接 `TimedOut`（同一 URL 稍后又 200）。
+        //   ⇒ 判据写成"前 5 个台里**至少一个**真出音频"，并**逐个打印**每台读数（含超时）。
+        //   ⚠️ 早先这里写的是 `.expect("live GET 必须成功")` ⇒ 一次网络抖动就让整条 live 变红，
+        //      而它红的信息量是"网抖了"，不是"实现坏了"。已改成把每台的失败**记下来继续**。
         let probe = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
+            .timeout(std::time::Duration::from_secs(12))
             .no_proxy()
             .build()
             .expect("build live probe client");
         let mut ok_ids: Vec<String> = Vec::new();
+        let mut bad: Vec<String> = Vec::new();
         for it in l.items.iter().take(5) {
             let plays = s.play("蜻蜓FM", &it.id, "").await.expect("play 必须给地址");
-            let mut resp = probe
+            let resp = probe
                 .get(&plays[0].url)
                 .header(reqwest::header::USER_AGENT, UA)
                 .header(reqwest::header::RANGE, "bytes=0-1023")
                 .send()
-                .await
-                .expect("live GET(Range) 必须成功");
+                .await;
+            let mut resp = match resp {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("QingtingFM.play GET(Range) id={} → ERR {e}", it.id);
+                    bad.push(it.id.clone());
+                    continue;
+                }
+            };
             let status = resp.status();
             let ct = resp
                 .headers()
@@ -774,27 +783,23 @@ mod tests {
                             got += take;
                         }
                         Ok(None) => break,
-                        Err(e) => panic!("读流失败：{e}"),
+                        Err(e) => {
+                            println!("    ↳ 读流中断：{e}");
+                            break;
+                        }
                     }
                 }
-                println!(
-                    "    ↳ 首{}字节 = {:02x?}（音频帧）",
-                    got,
-                    &first[..got]
-                );
+                println!("    ↳ 首{}字节 = {:02x?}（音频帧）", got, &first[..got]);
                 assert!(got > 0, "audio 响应必须真的带字节（空体 = 壳页）");
                 ok_ids.push(it.id.clone());
             } else {
-                assert!(
-                    !status.is_success() || !is_audio,
-                    "content-type 与状态码必须自洽"
-                );
+                bad.push(it.id.clone());
             }
         }
-        println!("QingtingFM 取流可用台：{ok_ids:?}（前 5 个里）");
+        println!("QingtingFM 取流：可用={ok_ids:?} 未给音频={bad:?}（各取前 5 个里的）");
         assert!(
             !ok_ids.is_empty(),
-            "★ 前 5 个台里一个音频流都拿不到 ⇒ 取流链路有问题（不是单台停播）"
+            "★ 前 5 个台里一个音频流都拿不到（bad={bad:?}）⇒ 取流链路有问题（不是单台停播）"
         );
     }
 }

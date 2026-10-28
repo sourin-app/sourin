@@ -355,3 +355,48 @@ fn no_bare_reqwest_get_shortcut_in_csp() {
         offenders.join("\n  ")
     );
 }
+
+/// ★★★ 2026-10-28（独立复核抓到的**门禁漏洞**）：
+/// **不许用 `Client::new()` 当 builder 失败时的兜底**
+///
+/// # 漏洞长什么样
+/// ```text
+/// 有一批类写成：
+///     Client::builder().timeout(..).no_proxy().build()
+///         .unwrap_or_else(|_| reqwest::Client::new())   ← 兜底
+/// 上面那条 builder 门禁只查 `code.contains(".no_proxy()")` —— 它**看见了**，
+/// 于是报绿；可一旦 build 真的失败，跑起来的是**没有 no_proxy 的 Client::new()**
+/// ⇒ 又回去读系统代理了，而一切门禁都还是绿的。
+/// ```
+/// # 判据
+/// ```text
+/// csp 类里**一处 `Client::new()` 都不许有**：
+///   · 想要兜底 ⇒ 显式失败（`.expect(...)`），让问题在第一次请求就炸出来；
+///   · 想换配置 ⇒ 重新 `builder()`，别绕回默认 client。
+/// ```
+/// # 反空真
+/// `checked > 20`（扫到的类数必须够多，否则"0 命中"可能是没扫到东西）。
+#[test]
+fn no_bare_client_new_fallback_in_csp() {
+    let files = scan_csp_files();
+    let mut checked = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for (name, code) in &files {
+        checked += 1;
+        if code.contains("Client::new()") {
+            offenders.push(name.clone());
+        }
+    }
+    assert!(
+        checked > 20,
+        "★ 反空真：只扫到 {checked} 个类，说明扫描器坏了（不是「没有违规」）"
+    );
+    assert!(
+        offenders.is_empty(),
+        "★ 这些 csp 类用了 `Client::new()` —— 那是不经过 builder 的兜底，         一旦 builder 失败就会退回「读系统代理」的默认 client，而 builder 门禁看不出来。
+  {}
+         处置：把兜底改成 `.expect(..)`（显式失败），或重新 `builder()` 再配 no_proxy。",
+        offenders.join("
+  ")
+    );
+}

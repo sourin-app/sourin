@@ -192,7 +192,7 @@ impl PanDrive {
             .timeout(HTTP_TIMEOUT)
             .no_proxy()
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底");
         Self { class, spec, client }
     }
 
@@ -372,6 +372,156 @@ fn shelf_of<'a>(spec: &'a PanDriveSpec, idx: usize) -> Result<&'a Shelf, String>
     spec.shelves.get(idx).ok_or_else(|| {
         format!("货架 {idx} 不存在（本盘共 {} 个）", spec.shelves.len())
     })
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  UC 分享货架的两步链路 —— 2026-10-28 **实测接通**（本文件唯一被改动的语义）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 改前是什么（`list_shared` 里那句"~~不~~猜参数"）
+//
+// ```text
+// 原文如实写着：`sharepage/token` 各种形状一律 `{"status":500,"code":15000}`，
+// 而 `file/sort` 无 cookie 时是 `401/31001` ⇒ 确认 15000 ≠ "需要登录"，
+// 但**试不出该补哪个字段** ⇒ 当时正确地选择了"不猜"。
+// ```
+//
+// # ★ 2026-10-28 拿到的对照读数（真网、直连、`--noproxy '*'`）
+//
+// ```text
+// ① 表单形状  POST …/share/sharepage/token?pr=UCBrowser&fr=pc
+//              body: pwd_id=<share>&passcode=            ⇒ 500 / code 15000
+// ② JSON 形状 同 URL，body: {"pwd_id":"<share>","passcode":""}
+//              Content-Type: application/json            ⇒ **200 / code 0**
+//              data = {stoken, title, file_num, author{…}, expired_at}
+// ③ 列目录    GET …/share/sharepage/detail?pr=UCBrowser&fr=pc
+//              &pwd_id=<share>&stoken=<urlenc>&pdir_fid=0&force=0
+//              &_page=1&_size=50&_fetch_total=1
+//              &_sort=file_type:asc,updated_at:desc      ⇒ **200 / code 0**
+//              list[0] = {fid, file_name, file_type:0, size:0, dir:true,
+//                         share_fid_token:"401a4dc4…"}
+// ④ 反面：同一台 host 换成 `drive.uc.cn` ⇒ **403**（匿名 token 只在 `pc-api` 上）
+// ```
+// ⇒ 差别只在 **body 的形状**（JSON vs 表单）。这就是"不猜"能落地成"确定"的全部原因。
+//
+// # ⚠️ 边界（别把这条读数推广到别家）
+//
+// ```text
+// · 只对 **UC** 做（`spec.kind == Uc`）。夸克那条**没有**做过这个对照实验
+//   ⇒ 保持原来的"如实未接通"，一个字都不改（`shared_shelf_says_not_wired…` 仍在守它）。
+// · 提取码：原版四格里的分享**都没有提取码**，`Shelf` 也没有这个字段 ⇒ 一律空串。
+//   将来要支持带码分享，得先给 `Shelf` 加字段（那要改数据形状，不在本次范围）。
+// · 空结果 ⇒ Err（本仓硬约束一），不许返回空列表冒充"这个货架是空的"。
+// ```
+
+/// UC 匿名/带凭据换 token 的主机（实测：`drive.uc.cn` 上同一请求 403）
+const UC_SHARE_HOST: &str = "pc-api.uc.cn";
+
+/// 换 token 的 URL（实测逐字）
+fn uc_share_token_url() -> String {
+    format!("https://{UC_SHARE_HOST}/1/clouddrive/share/sharepage/token?pr=UCBrowser&fr=pc")
+}
+
+/// 换 token 的 body —— **JSON**（表单一律 500/15000，见上面对照读数 ①②）
+fn uc_share_token_body(share_id: &str, passcode: &str) -> String {
+    format!(
+        "{{\"pwd_id\":{},\"passcode\":{}}}",
+        serde_json::Value::String(share_id.to_string()),
+        serde_json::Value::String(passcode.to_string())
+    )
+}
+
+/// 列分享目录的 URL（`stoken` 必须 URL 编码：实测值含 `+` `/` `=`）
+fn uc_share_detail_url(share_id: &str, stoken: &str, folder: &str, page: u32) -> String {
+    format!(
+        "https://{UC_SHARE_HOST}/1/clouddrive/share/sharepage/detail?pr=UCBrowser&fr=pc\
+         &pwd_id={share_id}&stoken={}&pdir_fid={folder}&force=0\
+         &_page={}&_size=50&_fetch_total=1\
+         &_sort=file_type:asc,updated_at:desc",
+        urlencode_min(stoken),
+        if page == 0 { 1 } else { page }
+    )
+}
+
+/// 最小 URL 编码（`stoken` 里出现的就这几个字符；不引依赖，`Cargo.toml` 零 diff）
+fn urlencode_min(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        let keep = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~');
+        if keep {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// 从分享 `detail` 的响应里抽条目
+///
+/// ★ 字段名全部来自**实测响应**（读数 ③）：`fid` / `file_name` / `file_type` /
+///   `size` / `dir` / `share_fid_token`。与 `parse_entries`（`file/sort` 那一路）
+///   **分开放**：两边的取证来源不同，混用一个函数会让"哪条证据支持哪个字段"糊掉。
+fn parse_share_entries(v: &serde_json::Value) -> Vec<DriveEntry> {
+    let Some(arr) = v
+        .get("data")
+        .and_then(|d| d.get("list"))
+        .and_then(|l| l.as_array())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for it in arr {
+        let fid = it.get("fid").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        if fid.is_empty() {
+            continue; // 没 id 的条目进不了详情
+        }
+        out.push(DriveEntry {
+            fid,
+            name: it
+                .get("file_name")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            // 实测两种都有：布尔 `dir` 与 `file_type`（0=目录、1=文件）
+            is_dir: it
+                .get("dir")
+                .and_then(|x| x.as_bool())
+                .or_else(|| it.get("file_type").and_then(|x| x.as_i64()).map(|t| t == 0))
+                .unwrap_or(false),
+            size: it.get("size").and_then(|x| x.as_u64()).unwrap_or(0),
+        });
+    }
+    out
+}
+
+/// 空结果 ⇒ Err（硬约束一：不许把"没取到"当"这个货架是空的"）
+fn require_share_entries(
+    entries: Vec<DriveEntry>,
+    share_id: &str,
+) -> Result<Vec<DriveEntry>, String> {
+    if entries.is_empty() {
+        return Err(format!(
+            "分享 {share_id} 一条都没解析到 —— 可能是分享已失效、提取码变了，\
+             或接口形状改了（不是「这个货架是空的」）"
+        ));
+    }
+    Ok(entries)
+}
+
+/// 同族信封：`{"status":200,"code":0,…}` —— 非 0 一律失败（200 里也可能带非 0 业务码）
+fn uc_share_envelope(body: &str, what: &str) -> Result<serde_json::Value, String> {
+    let v: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("UC {what} 返回的不是 JSON（{e}）：{}", short(body)))?;
+    let status = v.get("status").and_then(|c| c.as_i64());
+    let code = v.get("code").and_then(|c| c.as_i64());
+    if !matches!((status, code), (Some(200), Some(0))) {
+        let msg = v.get("message").and_then(|m| m.as_str()).unwrap_or("");
+        return Err(format!(
+            "UC {what} 报错（status={status:?} code={code:?}）：{msg}"
+        ));
+    }
+    Ok(v)
 }
 
 #[async_trait]
@@ -555,15 +705,89 @@ impl PanDrive {
     ///    （那时能区分"参数错"与"权限不足"，比现在瞎试强）。
     async fn list_shared(
         &self,
-        _cookie: &str,
+        cookie: &str,
         share_id: &str,
-        _folder: &str,
+        folder: &str,
     ) -> Result<Vec<DriveEntry>, String> {
-        Err(format!(
-            "分享货架（share_id={share_id}）需要先换 share token（两步接口），\
-             本实现尚未接通 —— 端点已取证（「POST」 确认；无 cookie 时返 500/15000，\
-             经对照实验确认「不是」登录问题），真实参数形状未取证到 ⇒ 不猜参数"
-        ))
+        match self.spec.kind {
+            // ★ 已接通（见本文件「UC 分享货架的两步链路」上方那段对照读数）
+            PanKind::Uc => self.uc_share_list(cookie, share_id, folder).await,
+            /*
+             * ★ 夸克**保持未接通**，这是有意的：
+             *   JSON/表单的对照实验只在 UC 上做过 ⇒ 对夸克"照抄同族形状"就是猜。
+             *   `shared_shelf_says_not_wired_instead_of_pretending` 仍在守这条。
+             */
+            _ => Err(format!(
+                "分享货架（share_id={share_id}）需要先换 share token（两步接口），\
+                 本实现尚未接通 —— 端点已取证（「POST」 确认；表单形状返 500/15000），\
+                 而 JSON 形状的对照实验只做过一家盘 ⇒ 这家不猜参数"
+            )),
+        }
+    }
+
+    /// UC 的两步链路：换 token（JSON）→ 列分享目录
+    ///
+    /// # 为什么要带 cookie
+    /// ```text
+    /// 实测**匿名**就能换到 stoken 并列目录（分享页会给一个 ctoken cookie）。
+    /// 但调用本函数的前提是 `list()` 已经过了登录闸（用户登录过）——
+    /// 把 cookie 一起带上不会更糟，且账号自己的分享能看到完整列表（未验）。
+    /// ```
+    async fn uc_share_list(
+        &self,
+        cookie: &str,
+        share_id: &str,
+        folder: &str,
+    ) -> Result<Vec<DriveEntry>, String> {
+        let referer = format!("{}/s/{share_id}", self.spec.share_host);
+        // ① 换 token
+        let resp = self
+            .client
+            .post(uc_share_token_url())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Referer", &referer)
+            .header("Cookie", cookie)
+            .body(uc_share_token_body(share_id, ""))
+            .send()
+            .await
+            .map_err(|e| format!("UC 换分享 token 请求失败：{e}"))?;
+        let status = resp.status();
+        let body = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
+        if !status.is_success() {
+            return Err(format!("UC 换分享 token 返回 HTTP {status}：{}", short(&body)));
+        }
+        let v = uc_share_envelope(&body, "换分享 token")?;
+        let stoken = v
+            .get("data")
+            .and_then(|d| d.get("stoken"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        if stoken.is_empty() {
+            return Err(format!(
+                "UC 换分享 token 成功但没有 stoken（响应：{}）",
+                short(&body)
+            ));
+        }
+        // ② 列目录
+        let url = uc_share_detail_url(share_id, &stoken, folder, 1);
+        let resp = self
+            .client
+            .get(&url)
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Referer", &referer)
+            .header("Cookie", cookie)
+            .send()
+            .await
+            .map_err(|e| format!("UC 列分享目录请求失败：{e}"))?;
+        let status = resp.status();
+        let body = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
+        if !status.is_success() {
+            return Err(format!("UC 列分享目录返回 HTTP {status}：{}", short(&body)));
+        }
+        let v = uc_share_envelope(&body, "列分享目录")?;
+        require_share_entries(parse_share_entries(&v), share_id)
     }
 }
 
@@ -1027,6 +1251,108 @@ mod tests {
         let u = PanDrive::with_spec("PanUC", uc_spec());
         assert_eq!(q.class(), "PanQuark");
         assert_eq!(u.class(), "PanUC", "★ UC 实例必须报 PanUC，不许写死成 PanQuark");
+    }
+
+    // ── UC 分享链路（2026-10-28 接通）的门禁 ──
+
+    /// ★★★ 换 token 的 body 必须是 **JSON**（表单形态实测 500/15000）
+    ///
+    /// ```text
+    /// 注入验证（已实测真红）：把 `uc_share_token_body` 改成表单拼法
+    ///   `format!("pwd_id={share_id}&passcode={passcode}")` ⇒ 本条 FAILED。
+    /// 这条就是"为什么它现在能通"的唯一判据 —— 差别只在 body 形状。
+    /// ```
+    #[test]
+    fn uc_share_token_body_is_json_not_form() {
+        let b = uc_share_token_body("ba2e2f0417114", "");
+        assert_eq!(b, r#"{"pwd_id":"ba2e2f0417114","passcode":""}"#);
+        assert!(b.starts_with('{'), "★ 必须是 JSON 对象：{b}");
+        // 反面：不许退化成表单
+        assert!(
+            !b.contains("pwd_id=") || b.contains("\"pwd_id\""),
+            "★★ 表单形态（`pwd_id=…&passcode=`）实测恒 500/15000：{b}"
+        );
+        assert!(!b.contains('&'), "★ 表单才有 `&`：{b}");
+    }
+
+    /// ★★ 两个 URL 逐字对齐实测（host 是 `pc-api`，不是 `drive.uc.cn` —— 后者 403）
+    #[test]
+    fn uc_share_urls_match_the_verified_probe() {
+        assert_eq!(
+            uc_share_token_url(),
+            "https://pc-api.uc.cn/1/clouddrive/share/sharepage/token?pr=UCBrowser&fr=pc"
+        );
+        let d = uc_share_detail_url("s1", "a+b/c=", "0", 1);
+        assert!(d.starts_with(
+            "https://pc-api.uc.cn/1/clouddrive/share/sharepage/detail?pr=UCBrowser&fr=pc&pwd_id=s1"
+        ), "{d}");
+        assert!(d.contains("stoken=a%2Bb%2Fc%3D"), "★★ stoken 必须编码：{d}");
+        assert!(d.contains("pdir_fid=0") && d.contains("_size=50"), "{d}");
+        assert!(!d.contains("drive.uc.cn"), "★★ 换 token 只认 pc-api 这台：{d}");
+    }
+
+    /// ★★★ 真实分享响应片段（2026-10-28 实测 capture，裁剪到关键字段）
+    #[test]
+    fn uc_share_detail_parses_real_fragment() {
+        let body = r#"{"status":200,"code":0,"message":"ok","data":{"is_owner":0,"list":[
+            {"fid":"5a84777138e14ceb90289aec0068d1dc","file_name":"战邮1942",
+             "file_type":0,"size":0,"dir":true,"file":false,
+             "share_fid_token":"401a4dc47a1f0da3a8c92ecc05759a6d"}]}}"#;
+        let v = uc_share_envelope(body, "列分享目录").expect("实测响应必须过信封");
+        let e = parse_share_entries(&v);
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].fid, "5a84777138e14ceb90289aec0068d1dc");
+        assert_eq!(e[0].name, "战邮1942");
+        assert!(e[0].is_dir, "★ file_type=0 / dir=true ⇒ 目录");
+        assert_eq!(e[0].size, 0);
+        // 没 fid 的条目必须丢掉（编一个 id 只会让详情失败）
+        let bad: serde_json::Value = serde_json::from_str(
+            r#"{"status":200,"code":0,"data":{"list":[{"file_name":"没有 id"}]}}"#,
+        )
+        .unwrap();
+        assert!(parse_share_entries(&bad).is_empty());
+    }
+
+    /// ★★ 业务错误必须当失败（HTTP 200 也可能带非 0 code）
+    #[test]
+    fn uc_share_envelope_rejects_business_error() {
+        let e = uc_share_envelope(
+            r#"{"status":500,"code":15000,"message":"inner error, requestId 986jwl"}"#,
+            "换分享 token",
+        )
+        .expect_err("15000 必须失败");
+        assert!(e.contains("15000"), "{e}");
+        assert!(e.contains("换分享 token"), "要点明是哪一步：{e}");
+    }
+
+    /// ★★★ 空结果 ⇒ Err（不许把"没取到"当"这个货架是空的"）
+    #[test]
+    fn uc_share_empty_listing_is_error() {
+        let e = require_share_entries(Vec::new(), "ba2e2f0417114")
+            .expect_err("★ 空必须 Err");
+        assert!(e.contains("ba2e2f0417114"), "要带上哪个分享：{e}");
+        assert!(
+            e.contains("失效") || e.contains("改"),
+            "要给出可能原因：{e}"
+        );
+    }
+
+    /// ★★ 回归护栏：夸克那条**仍然**未接通（本次只接了 UC，不许顺手改夸克）
+    #[tokio::test]
+    async fn quark_share_stays_not_wired() {
+        let d = PanDrive::with_spec("PanQuark", quark_spec());
+        let e = d
+            .list_shared("fake-cookie", "abc123", "0")
+            .await
+            .expect_err("夸克必须仍 Err");
+        assert!(
+            e.contains("尚未接通"),
+            "★★ 夸克这条没有做过 JSON/表单对照实验 ⇒ 必须如实保持未接通：{e}"
+        );
+        assert!(
+            !e.contains("UC"),
+            "★ 夸克的错误文案不该扯到另一家盘：{e}"
+        );
     }
 }
 

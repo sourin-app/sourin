@@ -78,7 +78,7 @@ impl Zhinan {
             // 与 pan_web_share 同一条纪律：不读系统代理（代理会把"站点可用"测成"全宕"）
             .no_proxy()
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底");
         Self { client }
     }
 

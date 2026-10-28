@@ -101,3 +101,108 @@ async fn every_registered_csp_class_is_exposed_without_any_config() {
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+// ══════════════════════════════════════════════════════════════════════
+//  ② 幂等：同一目录连续 bootstrap 两次，内置源不能翻倍
+// ══════════════════════════════════════════════════════════════════════
+//
+// # 为什么必须有这条
+// ```text
+// 复核者指出的缺口：`state.rs` 里只"按 id 查一遍"，但**没有门禁**证明它真的幂等。
+// 开发期会反复 bootstrap（热重启、测试、开发者手动重启），一旦不幂等，
+// 用户会看到同一个类出现两条源，而且**没有任何报错**。
+// ```
+#[tokio::test]
+async fn builtin_sources_are_idempotent_across_bootstraps() {
+    use std::collections::HashSet;
+
+    let tmp = std::env::temp_dir().join(format!("sourin-builtin-csp-idem-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("建临时目录");
+
+    let st1 = AppState::bootstrap(tmp.clone()).await.expect("第一次 bootstrap");
+    let ids1: Vec<String> = st1.registry.manifests().into_iter().map(|m| m.id).collect();
+    let builtin1 = ids1.iter().filter(|i| i.starts_with("csp-")).count();
+
+    // 第二个 AppState 走同一份数据目录（模拟进程重启）
+    let st2 = AppState::bootstrap(tmp.clone()).await.expect("第二次 bootstrap");
+    let ids2: Vec<String> = st2.registry.manifests().into_iter().map(|m| m.id).collect();
+    let builtin2 = ids2.iter().filter(|i| i.starts_with("csp-")).count();
+
+    assert_eq!(
+        builtin1, builtin2,
+        "★ 两次 bootstrap 的内置源数必须相同（幂等）：{builtin1} vs {builtin2}"
+    );
+    let uniq: HashSet<&String> = ids2.iter().collect();
+    assert_eq!(
+        uniq.len(), ids2.len(),
+        "★ 第二次 bootstrap 出现了重复 id（清单长度 {} ≠ 去重后 {}）",
+        ids2.len(), uniq.len()
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  ③ 停用恢复：内置源被停用后，重启仍是停用
+// ══════════════════════════════════════════════════════════════════════
+//
+// # 为什么必须有这条
+// ```text
+// `state.rs` 里 ⑦''（建内置源）必须排在 ⑧（应用停用状态）**之前**。
+// 顺序反了 ⇒ 注册会把 enabled 重置回 true ⇒ 用户停用过的内置源"自己活了"。
+// 这条判据直接钉"顺序"的**后果**，而不是去读源码顺序。
+// ```
+#[tokio::test]
+async fn disabled_builtin_source_stays_disabled_after_restart() {
+    let tmp = std::env::temp_dir().join(format!("sourin-builtin-csp-dis-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("建临时目录");
+
+    // 第一次：拿到第一个内置源 id，写进 disabled-providers.json
+    let st1 = AppState::bootstrap(tmp.clone()).await.expect("第一次 bootstrap");
+    let victim = st1
+        .registry
+        .manifests()
+        .into_iter()
+        .map(|m| m.id)
+        .find(|i| i.starts_with("csp-"))
+        .expect("★ 前置：至少要有 1 个内置源");
+    drop(st1);
+
+    let dis_path = tmp.join("disabled-providers.json");
+    std::fs::write(&dis_path, format!("[\"{victim}\"]")).expect("写停用清单");
+
+    // 第二次：同目录重启 ⇒ 该源必须仍是停用
+    let st2 = AppState::bootstrap(tmp.clone()).await.expect("第二次 bootstrap");
+    /*
+     * ★★★ 判据必须读**正确的对象**（这条我自己先踩了一次）：
+     * ```text
+     * 我第一版读 `manifest().enabled` ⇒ 恒 None ⇒ 误判。
+     * 真因：`enabled` 存在 `ProviderHandle` 上，`manifests()` 只是 `manifest().clone()`
+     *       ⇒ **manifest 里根本没有启用态**（这是本仓"判据作用在错误的对象上"的又一例）。
+     * 正确读法：`enabled_manifests()`（只返回启用的）。
+     * ```
+     * 三态：
+     *   ① 源**消失**（manifests 里没有）      ⇒ 失败（用户收藏/进度会失去对象）
+     *   ② 源在 **enabled_manifests 里**        ⇒ 失败（停用被注册重置 / 清单没应用）
+     *   ③ 源在 manifests 但不在 enabled 里     ⇒ 通过
+     */
+    let all: Vec<String> = st2.registry.manifests().into_iter().map(|m| m.id).collect();
+    assert!(
+        all.iter().any(|i| i == &victim),
+        "★ 停用的内置源不该消失（消失 = 用户收藏/进度会失去对象）：{victim}"
+    );
+    let enabled_ids: Vec<String> = st2
+        .registry
+        .enabled_manifests()
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+    assert!(
+        !enabled_ids.iter().any(|i| i == &victim),
+        "★★ 被停用的内置源 {victim} 重启后仍在 enabled 清单里 ⇒
+         要么「建内置源」排在「应用停用状态」之后（注册把它重置回 true），
+         要么 disabled-providers.json 没被应用。"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}

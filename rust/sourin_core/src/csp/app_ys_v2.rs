@@ -469,7 +469,7 @@ impl AppYsV2 {
             .user_agent(UA)
             .timeout(std::time::Duration::from_secs(20))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底");
         Self {
             client,
             last_detail: std::sync::Mutex::new(None),

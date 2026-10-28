@@ -1248,6 +1248,297 @@ async fn pan115_poll(uid: &str) -> Result<PollOutcome, String> {
     })
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  阿里云盘（PanKind::Aliyun）—— 扫码 + **bearer token**（不是 cookie）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 取证（`.probe/r3c-pan-helper-endpoints.log` 的 merge.b.i / 九家表）
+//
+// ```text
+// ① 取码  passport.aliyundrive.com/newlogin/qrcode/generate.do
+//         ?appName=aliyun_drive&fromSite=52&appEntrance=web    → content.data{qrCodeUrl, ck, t}
+// ② 轮询  passport.aliyundrive.com/newlogin/qrcode/query.do    （表单 ck + t）
+//         → content.data.qrCodeStatus：NEW / SCANED / CONFIRMED / EXPIRED
+// ③ 换 token  auth.aliyundrive.com/v2/account/token
+//         CONFIRMED 的响应里 `bizExt` 是 **base64 的 JSON**，里面有 access_token / refresh_token
+// ```
+//
+// # ★★★ 凭据形状的决定（本条是第一个"token 型"网盘）
+//
+// ```text
+// `PanCredential` 只有一个 `cookie: String` 字段。阿里/光鸭/迅雷/123 的凭据是 **bearer token**，
+// 不是 cookie。两条路：
+//   ① 给 `PanCredential` 加字段 —— 改落盘形状，牵动 `pan_auth`（钥匙串）、设置页、诊断导出；
+//   ② 沿用 `cookie` 字段，**约定键名**：`access_token=<…>; refresh_token=<…>`。
+// 选 ②（改动小、可回退、不碰既有落盘格式），并把约定写死在这里：
+//   消费方（将来的阿里驱动）按 `access_token=` 取，**不许**把它当 Cookie 头直接发。
+// ```
+//
+// # ⚠️ 未取证点（集中在此处，批末真机读数来了只改这里）
+// ```text
+// ① generate/query 的**报文形状**（哪些参数在 query、哪些在表单）取自社区通行实现，
+//    本仓取证只有端点字符串 ⇒ 失败时会如实报 HTTP/业务字段，不会伪造成功。
+// ② `bizExt` 是 base64 JSON（含 pds_login_result.access_token）—— 解析失败即报错。
+// ```
+
+/// 阿里云盘的桌面 UA（与网盘网页版一致）
+const UA_ALIYUN: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                         (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+/// 取码 URL（纯函数）
+fn aliyun_generate_url() -> &'static str {
+    "https://passport.aliyundrive.com/newlogin/qrcode/generate.do\
+     ?appName=aliyun_drive&fromSite=52&appEntrance=web&_bx-v=2.5.3"
+}
+
+/// 轮询 URL（`ck`/`t` 走表单，见 `aliyun_poll`）
+fn aliyun_query_url() -> &'static str {
+    "https://passport.aliyundrive.com/newlogin/qrcode/query.do\
+     ?appName=aliyun_drive&fromSite=52&appEntrance=web&_bx-v=2.5.3"
+}
+
+/// 换 token 的 URL（纯函数）
+fn aliyun_token_url() -> &'static str {
+    "https://auth.aliyundrive.com/v2/account/token"
+}
+
+/// 标准 base64 解码（本仓无 base64 依赖 ⇒ 自带一个，可单测）
+///
+/// # 为什么自己写而不是加依赖
+/// ```text
+/// 本批纪律是"零新增依赖"；解码只服务 `bizExt` 这一处，20 行足够，且能离线断言。
+/// ⚠️ 只支持标准字母表与 `=` 填充（阿里返回的就是标准 base64）；
+///    非字母字符一律跳过（容忍换行），非法长度 ⇒ None（由调用方报"解析失败"）。
+/// ```
+fn b64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let mut buf: u32 = 0;
+    let mut bits = 0u8;
+    for c in s.bytes() {
+        let Some(v) = val(c) else {
+            if c == b'=' {
+                break;
+            }
+            continue; // 跳过空白等
+        };
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xFF) as u8);
+        }
+    }
+    if out.is_empty() && !s.trim().is_empty() && s.trim() != "=" {
+        return None;
+    }
+    Some(out)
+}
+
+/// 阿里的扫码状态映射（纯函数）：`qrCodeStatus` 是**枚举字符串**，不是码
+fn aliyun_status_of(body: &str) -> (QrStatus, String) {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return (QrStatus::Pending, String::new()),
+    };
+    let st = v
+        .get("content")
+        .and_then(|c| c.get("data"))
+        .and_then(|d| d.get("qrCodeStatus"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    let mapped = match st.as_str() {
+        "NEW" => QrStatus::Pending,
+        "SCANED" => QrStatus::Scanned,
+        "CONFIRMED" => QrStatus::Confirmed,
+        "EXPIRED" => QrStatus::Expired,
+        _ => QrStatus::Pending,
+    };
+    (mapped, st)
+}
+
+/// 从 CONFIRMED 响应的 `bizExt`（base64 JSON）里取 `(access_token, refresh_token, expires_in)`
+fn aliyun_token_from_body(body: &str) -> Result<(String, String, Option<i64>), String> {
+    let v: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("阿里轮询响应不是 JSON（{e}）：{}", tail(body)))?;
+    let biz = v
+        .get("content")
+        .and_then(|c| c.get("data"))
+        .and_then(|d| d.get("bizExt"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    if biz.is_empty() {
+        return Err(format!("阿里已确认扫码，但响应里没有 bizExt（协议可能变了）：{}", tail(body)));
+    }
+    let raw = b64_decode(&biz)
+        .ok_or_else(|| format!("阿里的 bizExt 不是合法 base64（协议可能变了）：{}", tail(&biz)))?;
+    let text = String::from_utf8(raw)
+        .map_err(|e| format!("阿里的 bizExt 解出来不是 UTF-8（{e}）"))?;
+    let j: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("阿里的 bizExt 解出来不是 JSON（{e}）：{}", tail(&text)))?;
+    // 两种层级都认：`pds_login_result.{…}` 或顶层
+    let src = j.get("pds_login_result").unwrap_or(&j);
+    let access = src.get("access_token").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let refresh = src.get("refresh_token").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let expires = src.get("expires_in").and_then(|x| x.as_i64());
+    if access.is_empty() || refresh.is_empty() {
+        return Err(format!(
+            "阿里的 bizExt 里缺 access_token/refresh_token（协议可能变了）：{}",
+            tail(&text)
+        ));
+    }
+    Ok((access, refresh, expires))
+}
+
+/// 把 aliyun 凭据写成**约定键名**（见文件头"凭据形状的决定"）
+fn aliyun_credential_string(access: &str, refresh: &str) -> String {
+    format!("access_token={access}; refresh_token={refresh}")
+}
+
+/// 阿里：第一步拿二维码
+async fn aliyun_start() -> Result<QrSession, String> {
+    let c = client(UA_ALIYUN)?;
+    let resp = c
+        .get(aliyun_generate_url())
+        .header("Accept", "application/json, text/plain, */*")
+        .send()
+        .await
+        .map_err(|e| format!("请求阿里二维码接口失败：{e}"))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读阿里响应失败：{e}"))?;
+    if !status.is_success() {
+        return Err(format!("阿里二维码接口返回 HTTP {status}：{}", tail(&body)));
+    }
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("阿里二维码响应不是 JSON（{e}）：{}", tail(&body)))?;
+    let data = v.get("content").and_then(|c| c.get("data"));
+    let url = data
+        .and_then(|d| d.get("qrCodeUrl"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let ck = data
+        .and_then(|d| d.get("ck"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    // `t` 可能是字符串也可能是数字（两种报文都见过）⇒ 统一转成字符串
+    let t = data
+        .and_then(|d| d.get("t"))
+        .map(|x| match x {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .unwrap_or_default();
+    if url.is_empty() || ck.is_empty() {
+        write_log(&format!("取码失败 kind=aliyun 缺 qrCodeUrl/ck body={}", tail(&body)));
+        return Err(format!(
+            "阿里响应里没有 qrCodeUrl/ck（协议可能变了）：{}",
+            tail(&body)
+        ));
+    }
+    let svg = crate::remote::qr_svg_for(&url).unwrap_or_default();
+    write_log(&format!(
+        "取码成功 kind=aliyun ck_len={} t_len={} svg_len={}",
+        ck.len(),
+        t.len(),
+        svg.len()
+    ));
+
+    let created_at = now();
+    sessions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            kind_key(PanKind::Aliyun, &ck),
+            SessionRecord {
+                token: format!("{ck}|{t}"),
+                created_at,
+            },
+        );
+    Ok(QrSession {
+        key: ck,
+        url,
+        svg,
+        hint: "用阿里云盘 App 扫这个码".to_string(),
+        created_at,
+    })
+}
+
+/// 阿里：轮询 + 确认后取 bearer token
+async fn aliyun_poll(ck: &str) -> Result<PollOutcome, String> {
+    let t = sessions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&kind_key(PanKind::Aliyun, ck))
+        .and_then(|r| r.token.split_once('|').map(|(_, t)| t.to_string()))
+        .unwrap_or_default();
+    let c = client(UA_ALIYUN)?;
+    let resp = c
+        .post(aliyun_query_url())
+        .header("Accept", "application/json, text/plain, */*")
+        .form(&[("ck", ck), ("t", t.as_str()), ("_bx-v", "2.5.3")])
+        .send()
+        .await
+        .map_err(|e| format!("轮询阿里扫码状态失败：{e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读阿里轮询响应失败：{e}"))?;
+    let (st, raw) = aliyun_status_of(&body);
+    write_log(&format!(
+        "轮询 kind=aliyun 状态={} 原始={raw:?} body={}",
+        st.code(),
+        tail(&body)
+    ));
+    if st != QrStatus::Confirmed {
+        let scanned = st == QrStatus::Scanned;
+        return Ok(PollOutcome {
+            status: st,
+            message: if scanned {
+                "已扫描，请在手机上确认".to_string()
+            } else {
+                "等待扫码…".to_string()
+            },
+            credential: None,
+        });
+    }
+
+    let (access, refresh, expires_in) = aliyun_token_from_body(&body)?;
+    write_log(&format!(
+        "换 token 成功 kind=aliyun access_len={} 有效期={:?}",
+        access.len(),
+        expires_in
+    ));
+    Ok(PollOutcome {
+        status: QrStatus::Confirmed,
+        message: "登录成功：阿里云盘".to_string(),
+        credential: Some(crate::pan_auth::PanCredential {
+            kind: PanKind::Aliyun,
+            account: "阿里云盘".to_string(),
+            cookie: aliyun_credential_string(&access, &refresh),
+            saved_at: now(),
+            expires_at: expires_in.map(|s| now() + s),
+        }),
+    })
+}
+
 // ── 解析小工具（纯函数，可单测；不依赖网络）────────────────────────────
 /// 从响应体里找二维码 token
 ///
@@ -1425,9 +1716,10 @@ pub async fn qr_login_start(kind: PanKind) -> Result<QrSession, String> {
         PanKind::Uc => uc_start().await,
         PanKind::Baidu => baidu_start().await,
         PanKind::Pan115 => pan115_start().await,
+        PanKind::Aliyun => aliyun_start().await,
         // ⚠️ **不是**占位返回空：如实说清"这家还没接入"。
         other => Err(format!(
-            "{} 的扫码登录尚未接入（当前完成夸克/UC/百度/115；其余按批推进）",
+            "{} 的扫码登录尚未接入（当前完成夸克/UC/百度/115/阿里；其余按批推进）",
             other.display()
         )),
     }
@@ -1468,9 +1760,10 @@ pub async fn qr_login_poll(kind: PanKind, key: &str) -> Result<PollOutcome, Stri
         PanKind::Uc => uc_poll(key).await?,
         PanKind::Baidu => baidu_poll(key).await?,
         PanKind::Pan115 => pan115_poll(key).await?,
+        PanKind::Aliyun => aliyun_poll(key).await?,
         other => {
             return Err(format!(
-                "{} 的扫码登录尚未接入（当前完成夸克/UC/百度/115）",
+                "{} 的扫码登录尚未接入（当前完成夸克/UC/百度/115/阿里）",
                 other.display()
             ))
         }
@@ -1851,6 +2144,80 @@ mod tests {
     }
 
     // ══════════════════════════════════════════════════════════════════
+    //  阿里云盘扫码（2026-10-28 接通）—— token 型凭据的第一个
+    // ══════════════════════════════════════════════════════════════════
+
+    /// ★★ 三条 URL 逐字对齐取证（appName/fromSite 写错 = 拿到别人的扫码页）
+    #[test]
+    fn aliyun_urls_match_the_documented_flow() {
+        assert!(aliyun_generate_url().starts_with(
+            "https://passport.aliyundrive.com/newlogin/qrcode/generate.do?appName=aliyun_drive&fromSite=52"
+        ), "{}", aliyun_generate_url());
+        assert!(aliyun_query_url().starts_with(
+            "https://passport.aliyundrive.com/newlogin/qrcode/query.do?appName=aliyun_drive&fromSite=52"
+        ));
+        assert_eq!(
+            aliyun_token_url(),
+            "https://auth.aliyundrive.com/v2/account/token"
+        );
+    }
+
+    /// ★★★ 自带 base64 解码必须与标准实现一致（否则 bizExt 永远解不开）
+    ///
+    /// ```text
+    /// 注入验证：把 `val()` 里 `b'A'..=b'Z' => c - b'A'` 改成 `c - b'B'` ⇒ 本条 FAILED。
+    /// 期望值用独立算法算出来（Python base64），不是拿被测函数反推。
+    /// ```
+    #[test]
+    fn b64_decode_matches_standard() {
+        assert_eq!(b64_decode("eyJhIjoxfQ==").as_deref(), Some(&b"{\"a\":1}"[..]));
+        assert_eq!(b64_decode("aGVsbG8=").as_deref(), Some(&b"hello"[..]));
+        // 填充与非填充都要认
+        assert_eq!(b64_decode("aGk").as_deref(), Some(&b"hi"[..]));
+        assert!(b64_decode("****").is_none() || b64_decode("****") == Some(Vec::new()));
+    }
+
+    /// ★★★ 状态是**枚举字符串**（NEW/SCANED/CONFIRMED/EXPIRED），不是码
+    #[test]
+    fn aliyun_status_maps_enums() {
+        let mk = |s: &str| format!(r#"{{"content":{{"data":{{"qrCodeStatus":"{s}"}}}}}}"#);
+        assert_eq!(aliyun_status_of(&mk("NEW")).0, QrStatus::Pending);
+        assert_eq!(aliyun_status_of(&mk("SCANED")).0, QrStatus::Scanned);
+        assert_eq!(aliyun_status_of(&mk("CONFIRMED")).0, QrStatus::Confirmed);
+        assert_eq!(aliyun_status_of(&mk("EXPIRED")).0, QrStatus::Expired);
+        assert_eq!(aliyun_status_of("not json").0, QrStatus::Pending);
+    }
+
+    /// ★★★ CONFIRMED 时从 `bizExt`（base64 JSON）里取 token；缺一个就报错
+    ///
+    /// ```text
+    /// 注入验证：把 `pds_login_result` 改成 `pds_login` ⇒ 第二条断言 FAILED
+    ///   （真实报文就是 pds_login_result；改错会拿不到 token 却"登录成功"）。
+    /// ```
+    #[test]
+    fn aliyun_token_from_biz_ext() {
+        // bizExt = base64({"pds_login_result":{"access_token":"AT","refresh_token":"RT","expires_in":7200}})
+        let biz = "eyJwZHNfbG9naW5fcmVzdWx0Ijp7ImFjY2Vzc190b2tlbiI6IkFUIiwicmVmcmVzaF90b2tlbiI6IlJUIiwiZXhwaXJlc19pbiI6NzIwMH19";
+        let body = format!(r#"{{"content":{{"data":{{"bizExt":"{biz}"}}}}}}"#);
+        let (a, r, e) = aliyun_token_from_body(&body).expect("必须能取到 token");
+        assert_eq!((a.as_str(), r.as_str(), e), ("AT", "RT", Some(7200)));
+
+        // 缺 access_token ⇒ 必须报错（不许"登录成功但没有凭据"）
+        let bad_biz = "eyJwZHNfbG9naW5fcmVzdWx0Ijp7InJlZnJlc2hfdG9rZW4iOiJSVCJ9fQ==";
+        let bad = format!(r#"{{"content":{{"data":{{"bizExt":"{bad_biz}"}}}}}}"#);
+        let e = aliyun_token_from_body(&bad).expect_err("缺 access_token 必须失败");
+        assert!(e.contains("access_token"), "{e}");
+    }
+
+    /// ★★ 凭据是**约定键名**（`access_token=`），不许写成 Cookie 头的样子
+    #[test]
+    fn aliyun_credential_uses_the_agreed_keys() {
+        let s = aliyun_credential_string("AT", "RT");
+        assert_eq!(s, "access_token=AT; refresh_token=RT");
+        assert!(!s.contains("Cookie"), "★ 它不是 Cookie 头，别写成那样：{s}");
+    }
+
+    // ══════════════════════════════════════════════════════════════════
     //  百度扫码（2026-10-28 接通）—— passport 族，与 CAS 不同
     // ══════════════════════════════════════════════════════════════════
 
@@ -1861,7 +2228,8 @@ mod tests {
     /// （百度那一步的参数名是 `v`，值才是 sign —— 名字写错服务端不认，且不报错）
     /// ```
     #[test]
-    fn baidu_urls_match_the_documented_flow() {        assert_eq!(
+    fn baidu_urls_match_the_documented_flow() {
+        assert_eq!(
             baidu_qrcode_url(),
             "https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc"
         );

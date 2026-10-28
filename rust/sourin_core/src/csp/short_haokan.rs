@@ -604,13 +604,13 @@ impl CspSite for ShortHaokan {
         }
         Err(format!(
             "csp_ShortHaokan 的详情未打通（实测：rec/detail 对 playlet_id={} 返回 status=3 参数错误；\
-             appui 的 video/commonlist 返回 status=0 但 results 为空）⇒ 本类**如实未实现详情**，\
+             appui 的 video/commonlist 返回 status=0 但 results 为空）⇒ 本类「如实未实现详情」，\
              可能缺一个未探到的必需参数或需要登录态。不做参数猜测。",
             truncate(id, 40)
         ))
     }
 
-    /// ★ play：依赖 detail 的 vid/clarityUrl ⇒ 同样**未打通**，如实报错
+    /// ★ play：依赖 detail 的 vid/clarityUrl ⇒ 同样「未打通」，如实报错
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
         let id = id.trim();
         if id.is_empty() {

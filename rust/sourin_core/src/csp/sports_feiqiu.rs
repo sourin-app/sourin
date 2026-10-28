@@ -193,7 +193,7 @@ pub fn unwrap_upstream(text: &str, what: &str) -> Result<Value, String> {
     }
     Err(format!(
         "{what} 被上游拒绝：code={code} message={msg:?}（带 data={has_data}）—— \
-         这是**拼装依据不足**（不是站点挂了）：该端点的 `data=` 字节形态仍未确定"
+         这是「拼装依据不足」（不是站点挂了）：该端点的 `data=` 字节形态仍未确定"
     ))
 }
 

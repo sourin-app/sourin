@@ -257,13 +257,13 @@ impl SouJu {
     /// ```
     fn signature_gap(&self, seg: &str) -> String {
         format!(
-            "SouJu 的 `{seg}` 需要 **HmacSHA256 签名**（头 `{}` / `{}` / `{}`），\
-             而**签名密钥未取证**：`SouJu.secret()` = `XC.s(SEC_A)`，\
+            "SouJu 的 `{seg}` 需要 「HmacSHA256 签名」（头 `{}` / `{}` / `{}`），\
+             而「签名密钥未取证」：`SouJu.secret()` = `XC.s(SEC_A)`，\
              `SEC_A` 的真值在混淆后的字符串解密器里（`XC.s`→`Z.A.run`→`e.g`/`c.c`/`B.a` 多层间接），\
-             且订阅里 SouJu **没有 ext**（无法配置密钥）。\
+             且订阅里 SouJu 「没有 ext」（无法配置密钥）。\
              实测独立证据：`/v1/feed/home`、`/v1/suggest`、`/v1/catalog/` 全部 \
              `401 Missing request signature`（`invalid_request_signature`）。\
-             **算法侧我已完整复刻并单测**：待签串 = `method\\npath\\ntimestamp\\nnonce`、\
+             「算法侧我已完整复刻并单测」：待签串 = `method\\npath\\ntimestamp\\nnonce`、\
              毫秒时间戳、大写 hex nonce、响应写回小写 hex 签名。\
              缺的只是密钥 ⇒ 绝不猜一个密钥去撞接口（那会得到「看起来通了」的假象）。",
             SIG_HEADERS[0], SIG_HEADERS[1], SIG_HEADERS[2]

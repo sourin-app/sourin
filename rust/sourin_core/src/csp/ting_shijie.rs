@@ -446,14 +446,14 @@ impl CspSite for TingShijie {
         }
         Err(format!(
             "csp_TingShijie 的取流端点未确定：DEX 常量给了 book/chapter 两个端点与 \
-             `chapterId`+`$` 的拼装常量，但**没有给出'用 chapterId 换音频直链'的那个端点**；\
+             `chapterId`+`$` 的拼装常量，但「没有给出'用 chapterId 换音频直链'的那个端点」；\
              且上游当前返回'数据库连接失败'（MySQL 1045）⇒ 无法从响应里反推。\
              不做端点猜测（chapterId={}）。",
             truncate(id, 40)
         ))
     }
 
-    /// DEX 的 11 个方法里**没有** searchContent ⇒ 如实声明不支持
+    /// DEX 的 11 个方法里「没有」 searchContent ⇒ 如实声明不支持
     fn supports_search(&self) -> bool {
         false
     }

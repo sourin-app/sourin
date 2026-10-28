@@ -527,10 +527,10 @@ impl CspSite for YunDuo {
         })?;
         let _ = flag;
         Err(format!(
-            "YunDuo 取流需要站点自身的 **wasm 解码器**（`/assets/web_app_wasm_bg-*.wasm`）——\
+            "YunDuo 取流需要站点自身的 「wasm 解码器」（`/assets/web_app_wasm_bg-*.wasm`）——\
              本仓不嵌 wasm 运行时，所以不能解 线路={line} 的值（前 24 字：{}）。\
-             已实测：`/api.php/web/decode/url` 手工拼 protobuf **被接受**\
-             （字段 f1=url、f2=vodFrom），缺的是它的**第二道签名**（wasm 内计算）。\
+             已实测：`/api.php/web/decode/url` 手工拼 protobuf 「被接受」\
+             （字段 f1=url、f2=vodFrom），缺的是它的「第二道签名」（wasm 内计算）。\
              绝不伪造播放地址。",
             val.chars().take(24).collect::<String>()
         ))
@@ -539,7 +539,7 @@ impl CspSite for YunDuo {
 
 /// 洗掉 `vod_content` 里的 HTML（实测是 `<p>…</p>`）
 ///
-/// 复用本仓既有 `strip_tags` / `decode_entities` ⇒ **不新增依赖**
+/// 复用本仓既有 `strip_tags` / `decode_entities` ⇒ 「不新增依赖」
 pub fn clean_html(html: &str) -> String {
     let stripped = crate::tvbox::strip_tags(html);
     let decoded = crate::tvbox::decode_entities(&stripped);

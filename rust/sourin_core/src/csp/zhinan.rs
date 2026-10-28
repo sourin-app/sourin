@@ -277,26 +277,26 @@ fn empty_page_reason(html: &str, sites_only: usize) -> String {
     }
     if sites_only > 0 && sites_only == total_articles {
         return format!(
-            "页面里没有任何**可解析**的列表项：{total_articles} 个 <article> 全是 \
+            "页面里没有任何「可解析」的列表项：{total_articles} 个 <article> 全是 \
 sites-item 形态（本站的「资源/站点导航」条目，不是影视条目）；\
 当前解析器只支持 book-item 形态"
         );
     }
     format!(
-        "页面里没有任何**可解析**的列表项：{total_articles} 个 <article> 中 \
+        "页面里没有任何「可解析」的列表项：{total_articles} 个 <article> 中 \
 {sites_only} 个是 sites-item、其余不符合 book-item 形态（缺 /book/N.html 或标题）"
     )
 }
 
-/// ★ 认「站点导航条目」形态（`sites-item`）：只为**把报错说准**，不参与出条目
+/// ★ 认「站点导航条目」形态（`sites-item`）：只为「把报错说准」，不参与出条目
 ///
 /// # 为什么不拿它出条目（裁定的 (A) 形态）
 /// ```text
 /// 实测 `favorites/技巧` 那 6 条全是「免费领取夸克网盘1TB空间，夸克每天领取容量教程」
-/// 这类**领网盘空间的教程/导航站条目** —— 不是影视内容。
-/// ⇒ 塞进"影视列表"是**把内容性质搞错**（产品缺陷，不是解析缺陷）。
+/// 这类「领网盘空间的教程/导航站条目」 —— 不是影视内容。
+/// ⇒ 塞进"影视列表"是「把内容性质搞错」（产品缺陷，不是解析缺陷）。
 /// ⇒ 见 `INCLUDE_NAV_SECTIONS`（Owner 待定项）：
-///    现在**默认不列出** favorites 分类，也不拿它出条目。
+///    现在「默认不列出」 favorites 分类，也不拿它出条目。
 /// ```
 fn re_sites_body() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();

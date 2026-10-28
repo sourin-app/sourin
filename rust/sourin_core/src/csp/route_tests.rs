@@ -89,9 +89,21 @@ fn implemented_csp_api_survives_base_url_resolution() {
 #[test]
 fn unimplemented_csp_is_skipped_with_exact_reason() {
     let cfg = cfg_with(
-        r#"{"key":"p1","name":"木偶","type":3,"api":"csp_XBPQ",
-            "ext":{"site":["https://123.666291.xyz"]}},
-           {"key":"p2","name":"短剧","type":3,"api":"csp_XBPQ"}"#,
+        /*
+         * ★★★ 2026-10-28 修（这次真的被咬到了，而且是**第 4 次**）：
+         * ```text
+         * 这里原来写死 `csp_XBPQ` 当"未实现的类"的样本。
+         * 本批把 XBPQ 实现了（register_site! 之后 `is_implemented` 为真）
+         * ⇒ 这条判据立刻红 —— 而代码一行没错，是**样本过期**。
+         * 同类事故在 `unimplemented_sample()` 的注释里已经记过一次
+         * （"写死类名的判据会随别人推进而失效，失效方式是红，容易被误读成回归"）。
+         * ⇒ 现在改用**合成类名**：它永远不会被实现，
+         *   判据只测"未实现 ⇒ 进 skipped + 文案逐字"，与"谁实现了什么"彻底解耦。
+         * ```
+         */
+        r#"{"key":"p1","name":"木偶","type":3,"api":"csp_NotAClassForTest",
+            "ext":{"site":["https://example.invalid"]}},
+           {"key":"p2","name":"短剧","type":3,"api":"csp_NotAClassForTest"}"#,
     );
     let (jobs, skipped, _) = collect_sites(&cfg, "");
     assert!(jobs.is_empty(), "没实现的类不许进 jobs，实际 {jobs:?}");
@@ -102,11 +114,11 @@ fn unimplemented_csp_is_skipped_with_exact_reason() {
         .map(|s| s["reason"].as_str().unwrap_or("").to_string())
         .collect();
     assert!(
-        reasons.contains(&"csp_XBPQ 尚未实现".to_string()),
-        "★ 文案必须是「csp_X 尚未实现」，实际 {reasons:?}"
+        reasons.contains(&"csp_NotAClassForTest 尚未实现".to_string()),
+        "★ 文案必须是「csp_<类名> 尚未实现」，实际 {reasons:?}"
     );
     assert!(
-        reasons.contains(&"csp_XBPQ 尚未实现".to_string()),
+        reasons.contains(&"csp_NotAClassForTest 尚未实现".to_string()),
         "实际 {reasons:?}"
     );
     // stage 仍是 "type"：与既有 skipped 结构一致（UI 按 stage 分组）
@@ -181,7 +193,8 @@ fn build_site_provider_rejects_unimplemented_class() {
         index: 0,
         key: "x".to_string(),
         name: "木偶".to_string(),
-        api: "csp_XBPQ".to_string(),
+        // 同上：用合成类名，别再用"当下恰好没实现"的真实类（会随进度过期）
+        api: "csp_NotAClassForTest".to_string(),
         kind: Some(3),
         csp: Some("PanWebShare".to_string()),
         ext: String::new(),
@@ -193,7 +206,7 @@ fn build_site_provider_rejects_unimplemented_class() {
     let err = build_site_provider("x", &job, &ok, None, Vec::new())
         .map(|_| ())
         .expect_err("没实现的类不能建出 Provider");
-    assert_eq!(err, "csp_XBPQ 尚未实现");
+    assert_eq!(err, "csp_NotAClassForTest 尚未实现");
 }
 
 // ── ⑤ 端到端（真网络，CSP_LIVE=1 才跑）────────────────────────────────

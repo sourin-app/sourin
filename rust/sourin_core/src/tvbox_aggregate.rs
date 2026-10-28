@@ -310,10 +310,22 @@ pub fn enabled_children(
     //   · 候选集已按 enabled 过滤 ⇒ **停用的一律不在**（无论走不走兜底）
     //   · 下面这个 `fallback_allowed` 只管"**要不要走兜底这条退路**"——
     //     用户已显式停用过源 ⇒ 不再拿"没勾选"当借口退回（那才是 Owner 报的 bug）
+    /*
+     * ★★★ 2026-10-28（Owner 现场对照原版：搜索"老舅"原版 73 条，我们 0 条）
+     * ```text
+     * 改前：兜底只收 `.filter(|m| m.hidden)` —— 也就是**只有 TVBox 导入的隐藏子站**。
+     *       内置 csp 源（`csp-*`，不 hidden）永远进不了聚合；
+     *       而你那批导入的 hidden 子站在 disabled-providers.json 里全被停用
+     *       ⇒ 候选集为空 ⇒ 聚合 0 个渠道 ⇒ 搜索 0 条。
+     * 原版的行为是**"全部" = 所有站都扇出**（他截图里左侧十几个源分组、73/73）。
+     * ⇒ 兜底改成：**所有仍启用的 provider，除了聚合自己**。
+     *   `hidden` 只该决定"要不要在源列表里露脸"，不该决定"能不能被搜到"。
+     * ```
+     */
     let mut all: Vec<Arc<dyn MediaProvider>> = registry
         .enabled_manifests()
         .into_iter()
-        .filter(|m| m.hidden)
+        .filter(|m| m.id != AGGREGATE_ID)
         .filter_map(|m| registry.get(&m.id))
         .collect();
     all.sort_by(|a, b| a.manifest().id.cmp(&b.manifest().id));

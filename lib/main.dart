@@ -24,6 +24,7 @@
 // media_kit 用 **Flutter 纹理**（不是原生子窗口），所以理论上没有
 // 这个问题 —— 但必须亲眼看到。
 import 'dart:io';
+import 'core/ime_fallback.dart';
 
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
@@ -33,6 +34,9 @@ import './design/icons/app_icons.dart';
 void main() {
   // ⚠️ 必须在 runApp 之前初始化 media_kit 的原生层
   WidgetsFlutterBinding.ensureInitialized();
+  // ★ runner 侧 IME 兜底通道（见 lib/core/ime_fallback.dart 的长注释）：
+  //   这台机器上引擎读不出 WM_IME_COMPOSITION 的合成串，改由 runner 读出来发给我们。
+  installImeFallbackChannel();
   MediaKit.ensureInitialized();
   runApp(const SpikeApp());
 }

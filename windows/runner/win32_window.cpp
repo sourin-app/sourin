@@ -13,6 +13,17 @@
 
 #include <cstdarg>
 
+/*
+ * ★ 2026-10-28（N4-1）：这两个**必须在匿名 namespace 之外** ——
+ * 否则 `SetImeCommitSink` 是内部链接，`flutter_window.cpp` 链接不到
+ * （实测 LNK2019：无法解析的外部符号 SetImeCommitSink）。
+ */
+static void (*g_ime_commit_sink)(const std::wstring& text) = nullptr;
+
+void SetImeCommitSink(void (*fn)(const std::wstring& text)) {
+  g_ime_commit_sink = fn;
+}
+
 namespace {
 
 /// IME 取证日志 —— 追加写到 `%TEMP%\sourin_ime.log`
@@ -29,6 +40,36 @@ namespace {
 /// `ImmGetContext` 的句柄值 —— **不含**合成字符串、不含任何输入文本。
 ///
 /// ⚠️ 有行数上限：正常打字频率下够一次排查，也不会让文件无限增长。
+/*
+ * ★★★ 2026-10-28（N4-1）：**runner 侧的 IME 兜底通道**
+ *
+ * 真机读数已经把问题钉死了：
+ *   窗口层收到 STARTCOMPOSITION -> COMPOSITION(GCS_RESULTSTR) -> ENDCOMPOSITION，
+ *   而 Dart 侧只收到一次 `len=0` 的 value 更新（合成串是空的）；
+ *   把我们的 ImmAssociateContextEx 整个删掉之后**仍然一样** => 不是我们抢了上下文，
+ *   是这条引擎版本的 Windows IME 路径读不出合成串。
+ *
+ * => 由 runner 自己读 ImmGetCompositionStringW(GCS_RESULTSTR)，
+ *    通过 MethodChannel（sourin/ime 的 commit）交给 Dart 插入当前焦点输入框。
+ *    默认关（SOURIN_IME_FALLBACK=1 才开）：先 A/B，确认没有双插再默认开。
+ */
+static bool ImeFallbackEnabled() {
+  /*
+   * ★ 2026-10-28：**默认开**（真机验证过了：Owner 打中文，两个输入区都出现 cjk=4）。
+   *   `SOURIN_IME_FALLBACK=0` 可关掉（排查用）。
+   *   为什么不是"默认关"：这台机器上引擎这条路**确定读不出串**，
+   *   默认关等于功能默认坏掉。
+   */
+  static const bool on = [] {
+    wchar_t buf[8] = {};
+    if (::GetEnvironmentVariableW(L"SOURIN_IME_FALLBACK", buf, 8) == 0) {
+      return true;  // 未设置 ⇒ 开
+    }
+    return !(buf[0] == L'0' && buf[1] == 0);  // 显式 "0" 才关
+  }();
+  return on;
+}
+
 void ImeTrace(const char* fmt, ...) {
   constexpr int kImeTraceMaxLines = 20000;
   static int s_lines = 0;
@@ -2104,6 +2145,30 @@ LRESULT CALLBACK SourinChildWndProc(HWND child,
                (lparam & GCS_RESULTSTR) ? " RESULTSTR" : "",
                (lparam & GCS_COMPSTR) ? " COMPSTR" : "",
                (lparam & GCS_CURSORPOS) ? " CURSORPOS" : "");
+      /*
+       * 兜底：把**提交结果**读出来交给 Dart（引擎这条路在这台机器上是空的，见上方注释）。
+       *   - 只处理 GCS_RESULTSTR（提交），不碰 COMPSTR（拼音预览）——预览仍交给引擎，
+       *     两边都接管会出现"预览一段、提交又插一段"的重复。
+       *   - 读到 0 长度 => 什么都不发（不许发空串，那会把用户已有的字清掉）。
+       */
+      if ((lparam & GCS_RESULTSTR) != 0 && ImeFallbackEnabled() &&
+          g_ime_commit_sink != nullptr) {
+        HIMC ctx = ::ImmGetContext(child);
+        if (ctx != nullptr) {
+          const LONG bytes = ::ImmGetCompositionStringW(ctx, GCS_RESULTSTR, nullptr, 0);
+          if (bytes > 0) {
+            std::wstring text;
+            text.resize(static_cast<size_t>(bytes) / sizeof(wchar_t));
+            const LONG got = ::ImmGetCompositionStringW(ctx, GCS_RESULTSTR, &text[0], bytes);
+            if (got > 0) {
+              text.resize(static_cast<size_t>(got) / sizeof(wchar_t));
+              ImeTrace("ime-fallback commit chars=%d", static_cast<int>(text.size()));
+              g_ime_commit_sink(text);
+            }
+          }
+          ::ImmReleaseContext(child, ctx);
+        }
+      }
       break;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
@@ -2272,6 +2337,34 @@ void MaybeSubclassChild(HWND parent, HWND child) {
    *    HIMC 在关联期间有效（它不是"借一下"的语义）。自建的那个由窗口持有，
    *    窗口销毁时系统回收；我们**不**在此销毁它（只销毁"没挂上"的那个）。
    */
+  /*
+   * ★★★ 2026-10-28（N4-1 决定性读数之后）：**默认不再碰 IME 关联**
+   *
+   * 真机同一时刻两个日志对上了：
+   *   窗口层 12:45:45.152 STARTCOMPOSITION → .154 COMPOSITION(RESULTSTR) → .155 ENDCOMPOSITION
+   *   Dart 层 12:45:45.154 EDIT field=page-static len=0 cjk=0 composing=none
+   * ⇒ 合成到了窗口、也被转发成了 value 更新，但**字符串是空的**。
+   *   这正是「引擎用 ImmGetCompositionStringW(GCS_RESULTSTR) 读不到东西」的形状，
+   *   即这条合成不属于引擎自己那个 ImmContext。
+   *
+   * 为什么可能是我们造成的：本函数用 ImmAssociateContextEx(child, ctx, IACE_DEFAULT)
+   * 给子窗口指定了上下文（当年为了修「打不了中文」）。而 Flutter 的 Windows 嵌入层
+   * 自己也在这条 HWND 上取用 IME 上下文并读合成串 —— 两个上下文并存时，
+   * 合成挂在其中一个上，另一个读出来就是空。
+   *
+   * 改成默认**不关联**（IME 上下文完全交还引擎），并保留环境变量 A/B：
+   *   SOURIN_IME_ASSOC_LEGACY=1  ⇒ 退回旧行为（继续 ImmAssociateContextEx）
+   *   不设                        ⇒ 新行为（不碰关联）
+   */
+  static const bool kAssocLegacy = [] {
+    wchar_t buf[8] = {};
+    return ::GetEnvironmentVariableW(L"SOURIN_IME_ASSOC_LEGACY", buf, 8) > 0;
+  }();
+  if (!kAssocLegacy) {
+    ImeTrace("assoc skipped child=%p (engine owns IME context)", child);
+    return;
+  }
+
   HIMC ime_ctx = ::ImmGetContext(child);
   const bool created = (ime_ctx == nullptr);
   if (created) {

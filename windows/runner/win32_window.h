@@ -1,4 +1,4 @@
-#ifndef RUNNER_WIN32_WINDOW_H_
+﻿#ifndef RUNNER_WIN32_WINDOW_H_
 #define RUNNER_WIN32_WINDOW_H_
 
 #include <windows.h>
@@ -98,5 +98,11 @@ class Win32Window {
   // window handle for hosted content.
   HWND child_content_ = nullptr;
 };
+
+// ★ 2026-10-28（N4-1）：runner 侧 IME 兜底 —— 把引擎读不到的提交串交给 Dart
+//
+// 调用方（FlutterWindow::OnCreate）传入一个把 std::wstring 转 UTF-8 后
+// 通过 MethodChannel 发给 Dart 的回调；传 nullptr 即摘掉。
+void SetImeCommitSink(void (*fn)(const std::wstring& text));
 
 #endif  // RUNNER_WIN32_WINDOW_H_

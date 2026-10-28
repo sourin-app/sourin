@@ -74,6 +74,7 @@
 // ```
 
 import 'dart:async';
+import 'core/ime_fallback.dart';
 import 'dart:io';
 
 import 'package:flutter/scheduler.dart' show SchedulerPhase;
@@ -87,6 +88,8 @@ import 'ui/widgets/danmaku_settings_dialog.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // 探针要能看见「兜底插进来」这件事，所以也装通道
+  installImeFallbackChannel();
   runApp(const _ImeProbeApp());
 }
 

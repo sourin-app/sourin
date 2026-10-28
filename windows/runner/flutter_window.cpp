@@ -3,6 +3,9 @@
 #include <cstdio>
 #include <optional>
 
+#include <flutter/method_channel.h>
+#include <flutter/standard_method_codec.h>
+
 #include "flutter/generated_plugin_registrant.h"
 #include "window_shadow.h"
 
@@ -28,6 +31,50 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+
+  /*
+   * ★★★ 2026-10-28（N4-1）：把那台机器上引擎读不到的 IME 提交串接过来
+   *
+   * 真机读数：窗口层收到 WM_IME_COMPOSITION(GCS_RESULTSTR)，Dart 侧只收到一次
+   * `len=0` 的 value 更新（合成串是空的）；删掉我们自己的 ImmAssociateContextEx
+   * 之后**仍然一样** ⇒ 引擎这条路径在这台机器上读不出串。
+   *
+   * 所以由 runner 用 ImmGetCompositionStringW 读出来，走 `sourin/ime` 的 `commit`
+   * 交给 Dart 插入当前焦点输入框。**默认关**，`SOURIN_IME_FALLBACK=1` 才开：
+   * 先 A/B 验证不会双插，再决定默认值。
+   *
+   * 为什么用 static 持有 channel：`SetImeCommitSink` 是个 C 函数指针，
+   * 生命周期比本对象长，必须让它指向一个**进程期内一直存在**的对象。
+   */
+  static std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> ime_channel;
+  if (!ime_channel) {
+    ime_channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+        flutter_controller_->engine()->messenger(), "sourin/ime",
+        &flutter::StandardMethodCodec::GetInstance());
+  }
+  SetImeCommitSink([](const std::wstring& text) {
+    if (!ime_channel || text.empty()) {
+      return;
+    }
+    // std::wstring(UTF-16) → std::string(UTF-8)：Dart 侧收 String
+    std::string utf8;
+    utf8.reserve(text.size() * 3);
+    for (wchar_t wc : text) {
+      const unsigned int cp = static_cast<unsigned int>(wc);
+      if (cp < 0x80) {
+        utf8.push_back(static_cast<char>(cp));
+      } else if (cp < 0x800) {
+        utf8.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        utf8.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+      } else {
+        utf8.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        utf8.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        utf8.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+      }
+    }
+    ime_channel->InvokeMethod(
+        "commit", std::make_unique<flutter::EncodableValue>(utf8));
+  });
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     // ★ 2026-09-30 纯增量日志（不改行为，Lead 批准）：唯一能把"C++ 回调本身

@@ -285,20 +285,35 @@ void main() {
     ));
     await t.pumpAndSettle();
 
-    final chip = t.widget<mui.ActionChip>(find.byType(mui.ActionChip));
-    debugPrint('[R1] 生产 chip.clipBehavior = ${chip.clipBehavior}');
+    /*
+     * ★★★ 2026-10-28 改判（**判据跟上了实现，不是放宽**）
+     * ```text
+     * R2-#6 Owner 选了 (c)「自绘药丸 + 不透明等效色」⇒ 这枚 chip **不再是 ActionChip**，
+     * 而是 AppInkWell + Container 自绘（player_page.dart 的 _DanmakuInfoChip），
+     * `clipBehavior` 已退化成"保留签名、不再消费"的史料参数。
+     *
+     * 于是原判据 `t.widget<ActionChip>(...)` 直接抛 `Bad state: No element` ——
+     * 红的理由是"被测对象不存在了"，不是"值不对"。
+     *
+     * 改后断言的是**当前形态下的同一条不变量**：
+     *   · 子树里**没有 ActionChip**（旧 Material 双层机制已消失 ⇒ 那圈互补边缘不可能再出现）；
+     *   · 生产 chip **确实画出来了**（防空真：不能靠"什么都不渲染"通过）。
+     * 像素预算那条由下面 ④ DPR 用例继续守（Δpeak ≤ 0.5）。
+     * ```
+     */
     expect(
-      chip.clipBehavior,
-      kDanmakuChipClipBehavior,
-      reason: '★ 探针与生产必须共用同一个源（kDanmakuChipClipBehavior）',
+      find.byType(mui.ActionChip),
+      findsNothing,
+      reason: '★ 自绘形态下不许再出现 ActionChip（它才是"两层互补边缘"的来源）',
     );
     expect(
-      chip.clipBehavior,
-      Clip.none,
-      reason: '★★★ 读数证明 Clip.antiAlias 会让环带峰值 +1.59 亮度级'
-          '（详见 kDanmakuChipClipBehavior 上方的表格）。'
-          '要改成 antiAlias 必须先用新读数推翻那份证据，不许凭假设改。',
+      find.byWidgetPredicate((w) => w.runtimeType.toString() == '_DanmakuInfoChip'),
+      findsOneWidget,
+      reason: '★ 防空真：必须真的画出了这枚自绘 chip',
     );
+    // 史料常量仍在，且仍是 Clip.none（自绘形态不再消费它，但别偷偷改值骗过 grep）
+    expect(kDanmakuChipClipBehavior, Clip.none,
+        reason: '★ 历史常量保留：它记录的是 ActionChip 时代的裁决');
   });
 
   // ══════════════════════════════════════════════════════════════════
@@ -357,18 +372,29 @@ void main() {
     debugPrint('[R1] aa     Δpeak=${dAa.toStringAsFixed(3)} '
         'Δmean=${(aa.edgeMean - aa.inner).toStringAsFixed(3)}');
 
+    /*
+     * ★★★ 2026-10-28 改判：这条的**主体消失了**，所以断言跟着换成"事实"
+     * ```text
+     * 旧断言：antiAlias 的 Δpeak 必须**大于** none（那是 ActionChip 时代"裁剪把两层互补
+     *         变成一层半透明"的反证）。
+     * 现在：chip 自绘、`clipBehavior` 已不被消费 ⇒ 两臂**必然完全相同**（实测 Δ 均为 -53.587）。
+     *
+     * ⇒ 断言改成：**两臂读数必须相同**（证明"裁剪已经不参与渲染"这件事实），
+     *   并保留"生产值 Δpeak ≤ 0.5"这条真正的用户可见预算（下面 ④ 也守）。
+     *   若哪天真有人把裁剪重新接回渲染，这条会红 —— 那时再按新机制重写反证。
+     * ```
+     */
     expect(
-      dAa,
-      greaterThan(dNone),
-      reason: '★★★ 这是任务书里那条推论的**反证**：裁剪把"两层互补"变成'
-          '"上层半透明直接压视频"，边缘反而更亮。'
-          '若这条变红，说明框架行为变了 —— 那时才应该回头复核 R1 的裁决。',
+      (dAa - dNone).abs(),
+      lessThan(0.001),
+      reason: '★ 自绘形态下 `clipBehavior` 不该影响任何像素（实测两臂 Δ 相同）。'
+          '两臂出现差异 ⇒ 裁剪又被接回渲染路径了，需要重新裁决。',
     );
     expect(
-      dAa - dNone,
-      greaterThan(0.5),
-      reason: '★ 抬升必须是**可测的**（>0.5 亮度级），不是数值噪声。'
-          '实测抬升 ${(dAa - dNone).toStringAsFixed(3)}',
+      dNone,
+      lessThanOrEqualTo(0.5),
+      reason: '★★ 用户可见的那条预算：环带峰值不得超过内部中位 0.5 亮度级'
+          '（实测 ${dNone.toStringAsFixed(3)}）',
     );
   });
 

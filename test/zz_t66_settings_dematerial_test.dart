@@ -99,8 +99,16 @@ void main() {
        *   `tvbox-group-configure`（组标题右侧「配置」）与 `sources-empty-configure`（空态「聚合设置」）。
        *   仍然**精确计数**、不用 `>=` —— 理由见上面那段（`>=` 会让"删掉一处"的注入不变红）。
        */
-      expect(RegExp(r'AppTextButton\(').allMatches(code).length, 10,
-          reason: '★★ 必须正好 10 处 AppTextButton（8 个替换来的 + 1 个原有 + 2 个聚合入口）');
+      /*
+       * ★★★ 2026-10-28 修：这里原本写 `10`，而它自己那句理由算的是
+       * 「8 个替换来的 + 1 个原有 + 2 个聚合入口 = **11**」
+       * ⇒ **断言值与它自己的依据差 1**（我从 HEAD 与工作区各数了一遍，都是 11 处）。
+       * 这是判据本身的算术错，不是产品漂移（`settings_page.dart` 本批没动过）。
+       * 保持"精确计数"口径不变（理由见上：`>=` 会让"删掉一处"的注入不变红），
+       * 只把 10 修正成 11，并把 11 的构成写清楚，供下一个人复核。
+       */
+      expect(RegExp(r'AppTextButton\(').allMatches(code).length, 11,
+          reason: '★★ 必须正好 11 处 AppTextButton（8 个替换来的 + 1 个原有 + 2 个聚合入口）');
       expect(RegExp(r'AppIconButton\(').allMatches(code).length, 9,
           reason: '★★ 必须正好 9 处 AppIconButton');
     });

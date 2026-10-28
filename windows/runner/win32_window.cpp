@@ -2063,24 +2063,35 @@ LRESULT CALLBACK SourinChildWndProc(HWND child,
     case WM_SETFOCUS:
     case WM_KILLFOCUS: {
       /*
-       * ★★★ 2026-10-14（CR #27）：`ImmGetContext` 必须配对 `ImmReleaseContext`
+       * ══════════════════════════════════════════════════════════════════
+       * ★★★ 2026-10-28（N4-1 A/B）：**删掉"只为打印句柄"的 ImmGetContext/Release**
+       * ══════════════════════════════════════════════════════════════════
        *
-       * # 缺陷（CR 指出，属实）
+       * # 这不是修 UI，是 A/B 求证（改前/改后各跑一次同一操作序列）
        * ```text
-       * Win32 契约：每次 `ImmGetContext(hwnd)` 之后都要 `ImmReleaseContext(hwnd, himc)`。
-       * 这里原来只取不还 —— 而本分支在**每次** WM_SETFOCUS / WM_KILLFOCUS /
-       *   WM_IME_SETCONTEXT 都会跑 ⇒ 泄漏随焦点切换**持续累积**。
-       * （另两处见 `MaybeSubclassChild`，同样已配对。）
+       * 1 号嫌疑：TSF/CUAS 形态的输入法（本机默认 = 搜狗拼音）下，
+       *   `ImmGetContext` + `ImmReleaseContext` 这对"取用/归还"在
+       *   **每次** WM_IME_SETCONTEXT / WM_SETFOCUS / WM_KILLFOCUS 上执行
+       *   （实测一次会话 357 + 357 + 271 = 985 次），有可能让 CUAS 文本存储**失活**；
+       *   症状正是 Owner 说的「打着打着就只能输入英文了」——
+       *   即一次合成提交之后，按键不再进 IME（isProcessKey 从 1 变 0）。
        * ```
-       * ⚠️ 这里只是为了**打印**一个句柄值 ⇒ 取完立刻还，语义不变、成本可忽略。
+       *
+       * # 为什么可以**直接删**而不是加开关
+       * ```text
+       * 这两行**唯一**的作用就是把 HIMC 句柄打进日志；删掉后
+       *   · 关联本身（`MaybeSubclassChild` 里的 `ImmAssociateContextEx` + 读回复验）**原样保留**
+       *   · 泄漏随焦点切换累积的问题也一并消失（不再取，就无需还）
+       *   · 生产零成本：不再为一行日志去取/还 IME 上下文
+       * ⇒ 改动比"加环境变量门控"更小，且 A/B 的对照就是"有没有这对调用"，干净。
+       * ```
+       *
+       * ⚠️ 判据必须看**改前/改后两次读数**（`.probe/n4-1-ime-ab.md`）：
+       *   只有"改后不再出现 isProcessKey=0 的退化"才算 1 号嫌疑成立；
+       *   两次一样 ⇒ 这条嫌疑**不成立**，要老实写成"未复现"，不许写成"修好了"。
        */
-      HIMC trace_ctx = ::ImmGetContext(child);
-      ImeTrace("child %s wparam=%llu ctx=%p", ImeMsgName(message),
-               static_cast<unsigned long long>(wparam),
-               static_cast<void*>(trace_ctx));
-      if (trace_ctx != nullptr) {
-        ::ImmReleaseContext(child, trace_ctx);
-      }
+      ImeTrace("child %s wparam=%llu", ImeMsgName(message),
+               static_cast<unsigned long long>(wparam));
       break;
     }
     case WM_IME_STARTCOMPOSITION:

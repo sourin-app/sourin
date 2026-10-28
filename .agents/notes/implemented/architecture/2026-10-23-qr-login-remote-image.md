@@ -64,3 +64,5 @@ pub image_url: Option<String>,
 - 界面白底必须保留：PNG 可能是透明底，深色主题下扫码识别率会掉。
 - `flutter analyze` 对本文件 0 issue；`cargo test --lib qr_start_tests` 5 passed；
   **实机视觉验证未做**（本期无法起 app 截屏），已在提交说明中如实标注。
+
+Independent: 本篇记录 2026-10-27 批内一次具体改动的决策；已按标题关键词在 .agents/notes 全树检索（同日与相关主题），未发现记录同一决定的笔记，故不构成取代关系。正文未改，仅补声明。

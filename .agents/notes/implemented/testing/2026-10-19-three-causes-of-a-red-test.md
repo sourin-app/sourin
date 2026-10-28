@@ -1,6 +1,14 @@
-# Agent Note: 红测试的三种成因 —— 断言漂移 / 仪器失效 / 真产品缺陷
+# Agent Note: 红测试的四种成因 —— 断言漂移 / 仪器失效 / 真产品缺陷 / 中间态
 
 Status: implemented
+
+> ⚠️ **文件名保留 `three-causes` 不动**（不改成 `four-causes`）：它已被 **5 篇笔记**用文件名引用
+> （`dll-drift` / `framework-assertion-is-not-throw` / `pin-back-lists` /
+> `register-instrument-broken` / `fake-clock-pumpwidget`），
+> 改名要同步 5 处入站链接 + 归档 manifest，**收益只是"名字好看"**。
+> ⇒ 标题与内容已更正为**四种**（④ 是 2026-10-27 补的），文件名当**稳定标识符**用。
+> ★ 这与本批另一条结论同族：**判据/标识符要区分"它是不是文档"** ——
+>   文件名是链接锚点（稳定优先），标题才是给人读的内容（准确优先）。
 
 Independent: 与本仓其它 testing 笔记的不同 —— 那几篇讲**单条判据**的对错
 （[恒绿断言的四种形态](../testing/2026-10-19-four-shapes-of-always-green-assertions.md)、
@@ -23,6 +31,36 @@ Independent: 与本仓其它 testing 笔记的不同 —— 那几篇讲**单条
 | **① 断言漂移** | 产品**有意**改了写法，断言还认旧形态 | **只改测试** | 7 条：`InkWell`→`_GlassTapSurface`、`TextButton`→`AppTextButton`、`Tooltip`→`AppTooltip` |
 | **② 仪器失效** | 断言的前提**不再成立**，但产品行为是对的 | **重设计仪器**，不是改断言 | 4 条：`shelfLoads` 恒 0 |
 | **③ 真产品缺陷** | 产品确实错了 | 改产品 | 1 条：5 处裸 `CircularProgressIndicator` |
+
+### ④ 第四类（2026-10-27 补）：**中间态** —— 编译时别人正在改那个文件
+
+多执行者共享同一棵源码树时，`cargo test` 会**重编**，而
+`impl_src_only(include_str!("<自己的文件>.rs"))` 这类"扫源码"判据取的是**那一刻的文件内容**
+⇒ 若某执行者正把夹具与实现**改到一半**，判据就会红在一个**即将不成立的中间状态**上。
+
+```text
+2026-10-27 实测（我在全量跑里见到"每次红的测试都不同"）：
+  run1 红 app_yqk::play_carries_a_referer…      ← 实现段里的字段名正在被改
+  run2 红 hxq::search_errs_with_the_real_reason…
+  run3 红 ting_shijie::upstream_db_error_is_surfaced_verbatim + wwys::…
+  ★ 症状与**并发**一模一样（不同测试、不固定），极容易被误判成"共享状态/竞态"。
+  ⇒ 我先查了 `strip_comments`（本批新加的工具）**是否含共享可变状态**：
+      grep static/OnceCell/Mutex/RefCell ⇒ **全 0** ⇒ **不可能是竞态**。
+  ⇒ 再看失败文件的 **mtime**：全在我跑之前 **<1 分钟**（17:34~17:39）
+  ⇒ 等它们改完立刻复跑 ⇒ **1124 passed / 0 failed 全绿**（两条模块也各全绿）
+⇒ ★ 判据：**"间歇红"先看失败文件的 mtime**，再看有没有共享状态。
+   两者顺序反了，就会花时间追一个不存在的竞态。
+```
+
+**四类的处置完全不同**（这是补 ④ 的理由）：
+
+```text
+① 断言漂移 ⇒ 改测试（且先证明产品那次改动是有意的）
+② 仪器失效 ⇒ 重设计仪器
+③ 真缺陷   ⇒ 改产品
+④ 中间态   ⇒ **什么都不改** —— 等对方写完，复跑即可
+   ★ 若把 ④ 当成 ③（去"修产品"）⇒ 会改坏一个本来正确的、正在被写的文件。
+```
 
 ## Decision
 

@@ -22,6 +22,29 @@ Status: implemented
 
 **草稿由播放器会话持有。** `DanmakuSearchDraft`（纯 Dart：`keyword` / `selectedEpisodeIds` / `previewing`）由 `PlayerPage` 的 `State` 持有并作为可选参数传入搜索页；页面 `initState` 从草稿恢复，输入、勾选、预览、确认、结果变化都回写。
 
+**★ 2026-10-27（N4-2）就地上修：「从草稿恢复」的判据要按"空"而不是按 null。** 上面那句
+「页面 `initState` 从草稿恢复」当初写成 `_keyword.text = draft?.keyword ?? widget.state.searchKeyword;`
+—— 而 `DanmakuSearchDraft.keyword` 的缺省是 `''`（**空串，不是 null**）⇒ `??` **永不右转**，
+宿主已经算好的剧名（`player_page.dart:7934` 那段：`_danmakuSearchKeyword` 非空用它、否则用 `_liveTitle`）
+**永远进不了输入框** ⇒ 用户看到的搜索框是空的（Owner 原话：「默认没有填充剧的名字」）。
+
+现在 `initState` 的判据是：
+
+```text
+draft.keyword 非空 ⇒ 用它的（跨卸载恢复：用户自己打的词比猜测的更好 —— 本笔记的旧11 语义）
+draft.keyword 为空 ⇒ 回退宿主的 state.searchKeyword（剧名预填）
+两者都为空        ⇒ 保持空（没有剧名不是错误，不许填占位串）
+```
+
+⚠️ **为什么在消费点判空，而不是把 `DanmakuSearchDraft.keyword` 的缺省改成 null**：改模型默认值会
+让"用户主动清空输入框"（`draft.keyword == ''`）与"从没输入过"混成同一态 ⇒ 清空后又去回退剧名，
+用户就**清不掉**那个框。在消费点判空是范围最小、语义最准的做法。
+
+验证：`test/zz_t1056_danmaku_search_prefill_test.dart`（5 用例：主判据 / 跨卸载恢复不被覆盖 /
+剧名也为空时保持空且不报错 / 无 draft 挂载走宿主 / **用户清空后不许回弹**）。
+故障注入：把判据改回 `draft?.keyword ?? …` ⇒ 2 项断言失败、退出码 1（`.probe/n4-2-injectA.log`）；
+恢复后 5 项通过、退出码 0（`.probe/n4-2-t1056-final.log`）。
+
 **来源选择走真实偏好。** 键 `danmaku.feeds.enabled`，按 `DanmakuFeedChannel.name` 逗号分隔写入 `UiPrefs` 并 `flush`；无记录时默认四路全开，「本片源自带」恒在且不可取消。
 
 **重复集号必须显式选择。** core 新增 `batchBindConflicts`，按解析集号聚合 `distinct episodeId`；搜索预览列出冲突候选，冲突未解除时禁用确认按钮，用户选定后只提交其保留的 ID。
@@ -66,3 +89,5 @@ Status: implemented
 - `node .agents/notes-scripts/notes-gate.mjs`：三道门禁通过、退出码 0。
 
 **以上均为专项测试证据，不替代实机验收。** 首次安装、旧配置迁移、主动关闭后重启、部分来源失败四类场景仍需实机确认；搜索页诊断区的实际可展开性、高级页签拥挤度、封面渲染效果均需亲眼看过。
+
+Independent: 本篇记录 2026-10-27 批内一次具体改动的决策；已按标题关键词在 .agents/notes 全树检索（同日与相关主题），未发现记录同一决定的笔记，故不构成取代关系。正文未改，仅补声明。

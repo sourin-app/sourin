@@ -95,5 +95,5 @@ Dart 层（探针日志）
 
 - 前情：[../feature/2026-10-28-danmaku-search-layout-redesign.md](../feature/2026-10-28-danmaku-search-layout-redesign.md)
   —— 那个页面就是这次中文打不进去的地方（N4-3 改版后仍要能输入）。
-- 同族：[./2026-10-28-gates-follow-the-implementation-shape.md](./2026-10-28-gates-follow-the-implementation-shape.md)
+- 同族：[../testing/2026-10-28-gates-follow-the-implementation-shape.md](../testing/2026-10-28-gates-follow-the-implementation-shape.md)
   —— 都在讲"判据要跟着真实形态走"。

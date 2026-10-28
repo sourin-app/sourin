@@ -77,6 +77,6 @@ Owner 的原始诉求只有一句：「页面根布局顺便再优化优化（�
 
 ## Relations
 
-- 上游：[./2026-10-28-extract-pure-function-to-gate-behavior.md](./2026-10-28-extract-pure-function-to-gate-behavior.md)
+- 上游：[../testing/2026-10-28-extract-pure-function-to-gate-behavior.md](../testing/2026-10-28-extract-pure-function-to-gate-behavior.md)
   —— 那篇讲"判据拿不到行为就抽纯函数"；本篇是同一思路的界面版：**把观感拆成可测的几何量**。
 - 基线：[../../../../.probe/n4-3-layout-baseline.md]（本机开发期文档，`.probe/` 不入库）

@@ -242,3 +242,5 @@ widget 测试里**没有真 mpv** ⇒ `_player.stream.buffering` 一条事件都
   debugPlayerBufferingSpinnerVisibleForProbe）已按 lead 指示撤除 ——
   无调用点的公开 API 是死代码
 ```
+
+Independent: 本篇记录 2026-10-27 批内一次具体改动的决策；已按标题关键词在 .agents/notes 全树检索（同日与相关主题），未发现记录同一决定的笔记，故不构成取代关系。正文未改，仅补声明。

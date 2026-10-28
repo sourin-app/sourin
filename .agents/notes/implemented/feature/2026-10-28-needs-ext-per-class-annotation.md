@@ -74,7 +74,7 @@ if crate::csp::class_needs_ext(class) { continue; }
 
 ## Relations
 
-- 前情：[./2026-10-28-builtin-csp-sources-auto-exposed.md](./2026-10-28-builtin-csp-sources-auto-exposed.md)
+- 前情：[../architecture/2026-10-28-builtin-csp-sources-auto-exposed.md](../architecture/2026-10-28-builtin-csp-sources-auto-exposed.md)
   —— 那篇决定"全暴露"；本篇是对它的**收窄**（Owner 试完后给的边界）。
-- 同族：[./2026-10-28-aggregate-only-saw-hidden-children.md](./2026-10-28-aggregate-only-saw-hidden-children.md)
+- 同族：[../bug-fix/2026-10-28-aggregate-only-saw-hidden-children.md](../bug-fix/2026-10-28-aggregate-only-saw-hidden-children.md)
   —— 那篇让源"能被搜到"；本篇让"用不了的源别摆出来"。

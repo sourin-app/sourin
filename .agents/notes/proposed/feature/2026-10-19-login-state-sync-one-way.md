@@ -158,3 +158,5 @@ flutter test test/zz_t66_cs1_credentials_gate_test.dart   +23 All tests passed
   · ③-b 方向语义 4 条（含"面板上真的渲染出"）
   · ④ 导出前提示含登录态 + 明文密码单独提示
 ```
+
+Independent: 本篇记录 2026-10-27 批内一次具体改动的决策；已按标题关键词在 .agents/notes 全树检索（同日与相关主题），未发现记录同一决定的笔记，故不构成取代关系。正文未改，仅补声明。

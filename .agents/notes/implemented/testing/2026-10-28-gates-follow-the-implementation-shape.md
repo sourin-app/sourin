@@ -68,7 +68,7 @@ Status: implemented
 
 ## Relations
 
-- 前情：[./2026-10-27-chip-edge-glow-fixed-by-opaque-equivalent-fill.md](./2026-10-27-chip-edge-glow-fixed-by-opaque-equivalent-fill.md)
+- 前情：[../bug-fix/2026-10-27-chip-edge-glow-fixed-by-opaque-equivalent-fill.md](../bug-fix/2026-10-27-chip-edge-glow-fixed-by-opaque-equivalent-fill.md)
   —— 那篇是 R2-#6(c) 的修复本身；本篇是**修复之后判据怎么跟上**。
 - 同族：[./2026-10-28-hardcoded-sample-classes-go-stale.md](./2026-10-28-hardcoded-sample-classes-go-stale.md)
   —— 那篇是"样本过期"，本篇是"**被测对象整个消失**"，同一族但更彻底。

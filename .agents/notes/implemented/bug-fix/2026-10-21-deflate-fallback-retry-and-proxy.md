@@ -136,3 +136,5 @@ source 链：request or response body error <-- operation timed out
 ## 附：为什么探针文件被删除了
 
 `zz_probe_error_kinds.rs` / `zz_probe_error_kinds2.rs` 是**结论性探针**，不是回归测试：它们验证的是「reqwest 的四种失败各自 `is_decode/is_timeout/source()` 长什么样」。这个事实不随本项目代码变化，只随 reqwest 版本变化，读数已完整抄录在本文档的表格里。留一个永远绿的探针会让「测试通过数」里混进不保护任何东西的条目 —— 所以删掉，把读数放在笔记里，并在 Consequences 里写明「若 reqwest 改文案，`c2` 会红」。
+
+Independent: 本篇记录 2026-10-27 批内一次具体改动的决策；已按标题关键词在 .agents/notes 全树检索（同日与相关主题），未发现记录同一决定的笔记，故不构成取代关系。正文未改，仅补声明。

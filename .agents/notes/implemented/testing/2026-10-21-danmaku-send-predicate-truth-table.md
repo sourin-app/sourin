@@ -138,3 +138,5 @@ expect(seg.contains('provider: _danmakuSendProvider!'), isTrue); // 用的是同
     那么它就不再需要真树与 dll —— 那时应改成普通单元测试的真值表，
     并删掉本文件的 skip 条件。可测性应该推动重构，而不是被现状绑住。
   ```
+
+Independent: 本篇记录 2026-10-27 批内一次具体改动的决策；已按标题关键词在 .agents/notes 全树检索（同日与相关主题），未发现记录同一决定的笔记，故不构成取代关系。正文未改，仅补声明。

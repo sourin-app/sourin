@@ -389,4 +389,4 @@ expect(measureBroken(a), equals(measureBroken(b)),
     reason: '写死的仪器 ⇒ 活性对照必须能抓到「两次读数相同」');
 ```
 
-
+Independent: 本篇记录 2026-10-27 批内一次具体改动的决策；已按标题关键词在 .agents/notes 全树检索（同日与相关主题），未发现记录同一决定的笔记，故不构成取代关系。正文未改，仅补声明。

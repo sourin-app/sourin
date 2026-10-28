@@ -1717,9 +1717,41 @@ pub async fn qr_login_start(kind: PanKind) -> Result<QrSession, String> {
         PanKind::Baidu => baidu_start().await,
         PanKind::Pan115 => pan115_start().await,
         PanKind::Aliyun => aliyun_start().await,
-        // ⚠️ **不是**占位返回空：如实说清"这家还没接入"。
+        /*
+         * ★★★ 2026-10-28：剩下四家**逐家给准确原因**，不再共用一句"尚未接入"。
+         * ```text
+         * 共用那句会让用户以为"这四家是同一种没做"，而实际是四种不同情况：
+         *   光鸭/迅雷 → OAuth **设备码**（不是二维码图）；缺的只是 device authorization 端点/客户端参数
+         *   天翼     → 要 **网页登录**（logbox + sessionKey 换 token）⇒ 核心没有内嵌浏览器
+         *   123      → 只有 **open-api 令牌**（用户自己去申请），**根本没有扫码**
+         * ⇒ 说清区别，用户才知道"等哪一步"还是"根本没这条路"。
+         * ```
+         */
+        PanKind::Guangya => Err(
+            "光鸭网盘用 OAuth **设备码**登录（不是二维码）：端点已取证\
+             （account.guangyapan.com/v1/auth/device/code → /v1/auth/token），\
+             但客户端参数（client_id/scope）没有取证 ⇒ 现在发起会被服务端拒绝，\
+             所以先如实报出来，等真机读数补齐"
+                .to_string(),
+        ),
+        PanKind::Xunlei => Err(
+            "迅雷是 OAuth **设备码**（到指定网址输入码，不出二维码图）：\
+             换 token 的端点与 client_id 已取证（xluser-ssl.xunlei.com/v1/auth/token），\
+             但**申请设备码的那一步端点没有取证** ⇒ 现在发起只能靠猜，所以如实报出来"
+                .to_string(),
+        ),
+        PanKind::Tianyi => Err(
+            "天翼云盘要**网页登录**（open.e.189.cn 的 logbox → callbackUnify → \
+             getAccessTokenBySsKey 换 token），本核心没有内嵌浏览器 ⇒ 无法在这里出二维码"
+                .to_string(),
+        ),
+        PanKind::Pan123 => Err(
+            "123 云盘只有 **open-api 开发者令牌**（要用户自己去申请），**没有扫码端点** ⇒ \
+             画一个码只会扫不动"
+                .to_string(),
+        ),
         other => Err(format!(
-            "{} 的扫码登录尚未接入（当前完成夸克/UC/百度/115/阿里；其余按批推进）",
+            "{} 的扫码登录尚未接入（当前完成夸克/UC/百度/115/阿里）",
             other.display()
         )),
     }
@@ -2062,19 +2094,26 @@ mod tests {
 
     /// ★ 未接入的盘必须**如实报错**，不许返回一个空会话冒充成功
     ///
-    /// ★ 2026-10-28：夸克/UC 接通后，本条改用**仍未接入**的那些来守
-    ///   （否则它会去发真网络请求 —— 断言就变成"靠网络失败通过"的假绿）。
+    /// ★ 2026-10-28：夸克/UC/百度/115/阿里接通后，本条改用**剩下四家**来守，
+    ///   并且从"一句通用文案"升级成**逐家给准确原因**（四种不同情况，不能混成一句）。
+    /// ```text
+    /// 注入验证：把光鸭那段改成通用 `other =>` 的文案 ⇒ `specific_reason` 断言 FAILED。
+    /// ```
     #[tokio::test]
     async fn unimplemented_kind_says_so_instead_of_pretending() {
-        for k in [PanKind::Guangya] {
+        // (盘, 这条文案里必须出现的关键词) —— 关键词就是"为什么现在做不到"
+        let cases: [(PanKind, &str); 4] = [
+            (PanKind::Guangya, "客户端参数"),
+            (PanKind::Xunlei, "申请设备码"),
+            (PanKind::Tianyi, "网页登录"),
+            (PanKind::Pan123, "open-api"),
+        ];
+        for (k, reason) in cases {
             let e = qr_login_start(k).await.expect_err("未接入的盘不许成功");
+            assert!(e.contains(reason), "★★ {} 的文案要点明『{reason}』（实际：{e}）", k.display());
             assert!(
-                e.contains("尚未接入"),
-                "★ 错误文案必须说清『未接入』（实际：{e}）"
-            );
-            assert!(
-                e.contains(k.display()),
-                "★ 文案里要带上是哪一家（实际：{e}）"
+                !e.contains("尚未接入（当前完成"),
+                "★ 这四家不是同一种情况，不许回落到通用文案：{e}"
             );
         }
     }

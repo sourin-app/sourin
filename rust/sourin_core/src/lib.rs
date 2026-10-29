@@ -107,6 +107,7 @@ pub mod pan_login_device;
 /// （`URLDecoder.decode(getUUID.do 的 encodeuuid)`），不是服务端给的 QR；
 /// 且准备会话那一步必须**关闭重定向**读 `Location`（与所有其它家的形状都不同）。
 pub mod pan_login_tianyi;
+pub mod provider_migration;
 
 /// 真网络度量探针（`#[ignore]`，只在手动跑时联网）：搜一个词到底出多少条
 #[cfg(test)]

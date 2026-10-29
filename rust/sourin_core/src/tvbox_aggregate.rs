@@ -359,6 +359,22 @@ pub fn enabled_children(
      * ```
      */
     let mut all: Vec<Arc<dyn MediaProvider>> = registry
+        /*
+         * ★★★ 2026-10-29（Owner："75 个源，就是 tvbox 聚合源支持的那个"）
+         * ```text
+         * 真机读数（逐个源直测，绕过聚合）：注册 98 个源 ⇒ **50 个能搜到「老舅」**。
+         * 而聚合扇出只有 47 个候选（14 出结果）—— 差在 `disabled-providers.json`
+         * 里躺着我方自动化写进去的 **51 个 id**（api/bfzyapi/cj/caiji/ffzy/cctv/bilibili…），
+         * 它们被 `enabled_manifests()` 整体排除。
+         *
+         * 试过在**这里**忽略停用（直接 `manifests()`）⇒ 扇出 98、结果 50，
+         * 但把 R2-B「用户显式停用就不搜」也一起推翻了，4 个门禁立刻红。
+         * ⇒ 正确做法是**修数据而不是破坏规则**：新增一次性迁移
+         *   [`crate::provider_migration::restore_auto_disabled_searchable`]，
+         *   把"自动化停用、且本身可搜索"的源从 disabled 列表里摘出来；
+         *   这里继续只用 `enabled_manifests()`（R2-B 不变，用户手停的仍不参与）。
+         * ```
+         */
         .enabled_manifests()
         .into_iter()
         .filter(|m| m.id != AGGREGATE_ID)

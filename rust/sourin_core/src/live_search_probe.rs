@@ -35,6 +35,45 @@ mod live_search_probe {
         let t0 = std::time::Instant::now();
         let res = st.registry.search_all(&kw, 1).await;
         let elapsed = t0.elapsed();
+        // ★ 逐个源直测（绕过聚合）：谁有结果、谁 0 条、谁报错 —— 这是"75 个源"的对标表
+        if std::env::var("SOURIN_LIVE_EACH").ok().as_deref() == Some("1") {
+            let mut ok = 0;
+            let mut empty = 0;
+            let mut err = 0;
+            for m in &manifests {
+                if m.id == "tvbox_agg" {
+                    continue;
+                }
+                let Some(p) = st.registry.get(&m.id) else { continue };
+                let id = crate::model::MediaId {
+                    provider: m.id.clone(),
+                    native: String::new(),
+                };
+                let _ = id;
+                match p.search(&kw, 1).await {
+                    Ok(page) if !page.items.is_empty() => {
+                        ok += 1;
+                        eprintln!("[EACH] {:<28} {:>3} 条", m.id, page.items.len());
+                    }
+                    Ok(_) => {
+                        empty += 1;
+                        eprintln!("[EACH] {:<28}   0 条", m.id);
+                    }
+                    Err(e) => {
+                        err += 1;
+                        eprintln!(
+                            "[EACH] {:<28} 错：{}",
+                            m.id,
+                            format!("{e}").chars().take(70).collect::<String>()
+                        );
+                    }
+                }
+            }
+            eprintln!("[EACH] ★ 汇总：有结果 {ok} / 空 {empty} / 错 {err}");
+        }
+        // ★ 聚合的候选子站数（判断"扇出到底覆盖了多少源"）
+        let kids = crate::tvbox_aggregate::enabled_children(&st.registry, &st.data_dir);
+        eprintln!("[LIVE] ★ 聚合候选子站数 = {}", kids.len());
         let mut total = 0usize;
         let mut per_child: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
@@ -59,7 +98,80 @@ mod live_search_probe {
         for (c, n) in &per_child {
             eprintln!("[LIVE]     {c:<28} {n}");
         }
+        // ? kind ??????"75 ??"???????????
+        let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for m in &manifests {
+            *kinds.entry(m.kind.clone()).or_insert(0) += 1;
+        }
+        eprintln!("[LIVE] ? ??????{:?}", kinds);
         let fails = crate::tvbox_aggregate::last_fanout_failures();
+        // 各 kind / 可搜索能力的源数（判断"75 个源"里本机到底有多少可搜索源）
+        {
+            let mut kinds: std::collections::BTreeMap<String, (usize, usize)> =
+                std::collections::BTreeMap::new();
+            for m in &manifests {
+                let e = kinds.entry(m.kind.clone()).or_insert((0, 0));
+                e.0 += 1;
+                if m.capabilities.search {
+                    e.1 += 1;
+                }
+            }
+            eprintln!("[LIVE] ★ 各类型源数（总数, 声明可搜索）：{kinds:?}");
+            // 启用/停用与 broken 原因（判断"75 个源"里被谁关掉的）
+            let mut en = 0usize;
+            let mut dis = 0usize;
+            let mut dis_samples: Vec<String> = Vec::new();
+            for m in &manifests {
+                if m.enabled.unwrap_or(true) {
+                    en += 1;
+                } else {
+                    dis += 1;
+                    if dis_samples.len() < 12 {
+                        dis_samples.push(format!(
+                            "{}[{}]{}{}",
+                            m.id,
+                            m.kind,
+                            if m.working { "" } else { " broken" },
+                            m.broken_reason
+                                .as_deref()
+                                .map(|r| format!(":{r}"))
+                                .unwrap_or_default()
+                        ));
+                    }
+                }
+            }
+            eprintln!("[LIVE] ★ 启用 {en} / 停用 {dis}；停用样本：{dis_samples:?}");
+            // 打印**导入的采集站**（非 csp-* 的 tvbox 源）id + ext 摘要（用于手工 curl 对照）
+            let mut shown2 = 0;
+            for m in &manifests {
+                if m.kind != "tvbox" || m.id.starts_with("csp-") || shown2 >= 15 {
+                    continue;
+                }
+                shown2 += 1;
+                let ext = m
+                    .config
+                    .iter()
+                    .find(|f| f.key == "ext" || f.key == "api")
+                    .map(|f| {
+                        format!(
+                            "{}={:?}",
+                            f.key,
+                            f.default
+                                .as_ref()
+                                .map(|d| {
+                                    d.as_str()
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_else(|| d.to_string())
+                                        .chars()
+                                        .take(80)
+                                        .collect::<String>()
+                                })
+                        )
+                    })
+                    .unwrap_or_default();
+                eprintln!("[LIVE]   采集站 {} | name={} | {ext}", m.id, m.name);
+            }
+        }
         eprintln!("[LIVE] ★ 上一个扇出里失败/超时的子站：{} 个", fails.len());
         let mut by_reason: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();

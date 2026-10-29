@@ -141,7 +141,9 @@ import 'widgets/danmaku_settings_dialog.dart';
 import 'danmaku_search_page.dart';
 import 'widgets/episode_strip.dart';
 // ★ 1.4（2026-10-30）：集号归一化判据与选集抽屉/详情栏同源（公共文件）
-import 'widgets/episode_filter.dart' show episodeNumberOf;
+// ★ 遥控端选集过滤（1.1 类推，lead 预授权）也用同一份判据
+import 'widgets/episode_filter.dart'
+    show episodeNumberOf, episodesForLine;
 // ★ 第 16 项：内嵌 / 全屏**共用**的播放动作契约（第 16 项闭合用）
 import 'widgets/live_embedded_player.dart'
     show LivePlaybackAction, LivePlaybackTarget, dispatchLivePlaybackAction, livePlaybackActionForKey;
@@ -11916,6 +11918,21 @@ class _PlayerPageState extends State<PlayerPage>
      */
     final multi = _episodes.length > 1 && !_isLive;
 
+    /*
+     * ★★★ 1.1 类推（2026-10-30，lead 预授权）：遥控端选集列表只报**当前线路**
+     *
+     * ```text
+     * 真机读数（driver-ops drive-20261029-234208.json）：
+     *   /api/state 的 episode_count = 2913、episodes 把 1..164 重复了 ~17 遍
+     *   ⇒ 手机选集面板同样在平铺全部线路（与本批 1.1 的右侧详情栏同根因）。
+     * 判据 = episodesForLine（episode_filter.dart 公共函数，与选集抽屉/
+     * 右侧详情栏**同一份**，不在这里抄第二份）；线路 = _selectedFlag
+     * （播放器的真源，_syncSelectedFlag/_pickEpisodeFlag 维护）。
+     * episodeOrder 的口径不变 —— 它回答"正在播第几集"，与列表过滤正交。
+     * ```
+     */
+    final remoteEps = episodesForLine(_episodes, _selectedFlag);
+
     final order = multi
         ? (_epOrder(_currentEpisodeTitle) ?? (_epIndex + 1))
         : 0;
@@ -11924,7 +11941,7 @@ class _PlayerPageState extends State<PlayerPage>
       playing: _playing,
       title: _title,
       episodeOrder: order,
-      episodeCount: multi ? _episodes.length : 0,
+      episodeCount: multi ? remoteEps.length : 0,
       position: _position.inSeconds,
       duration: _duration.inSeconds,
       volume: _volume.round().clamp(0, 100),
@@ -11942,11 +11959,13 @@ class _PlayerPageState extends State<PlayerPage>
        * 剧集列表 `(集号, 标题)` —— 手机端集号用于 `goto_episode`。
        * 集号口径与 `order` 一致：标题里能解析出「第N集」就用它，
        * 否则退回下标+1（原版 `episodes.map` 就是这么做的）。
+       * ★ 列表已是**当前线路** ⇒ `goto_episode` 的回查也必须只在本线路找
+       *   （见下面 case 的同口径注释），否则手机点第 5 集会落到第一条线路。
        */
       episodes: multi
           ? [
-              for (var i = 0; i < _episodes.length; i++)
-                (_epOrder(_episodes[i].title) ?? (i + 1), _episodes[i].title),
+              for (var i = 0; i < remoteEps.length; i++)
+                (_epOrder(remoteEps[i].title) ?? (i + 1), remoteEps[i].title),
             ]
           : const [],
       hasMedia: true,
@@ -12028,17 +12047,25 @@ class _PlayerPageState extends State<PlayerPage>
          * ★ 手机端给的是**集号**（「第5集」的 5），不是下标 ——
          *   各源的列表长度/缺集情况不同，按下标会跳错集
          *  （原版 `PlayerView.vue` 的 `execRemote` 也是按集号找）。
+         *
+         * ★★★ 2026-10-30（1.1 类推）：回查只在本线路找 ——
+         * `/api/state` 的 episodes 列表已经只报当前线路（见 `_remoteGetState`），
+         * 手机端能发来的集号都来自那份列表；全集里回查会命中**第一条线路**的
+         * 同集号（多线路源每条线路都有「第5集」）⇒ 点了却切回别的线路。
+         * 判据与列表同一份公共函数（episodesForLine），不许抄第二份。
          */
         final order = c.number('order')?.toInt();
         if (order == null) return;
-        final i = _episodes.indexWhere((e) => _epOrder(e.title) == order);
+        final lineEps = episodesForLine(_episodes, _selectedFlag);
+        final i = lineEps.indexWhere((e) => _epOrder(e.title) == order);
         if (i < 0) {
           debugPrint(
-            '[REMOTE] goto_episode 找不到第 $order 集（共 ${_episodes.length} 集）',
+            '[REMOTE] goto_episode 本线路找不到第 $order 集'
+            '（本线路共 ${lineEps.length} 集）',
           );
           return;
         }
-        await _gotoEpisode(_episodes[i]);
+        await _gotoEpisode(lineEps[i]);
         return;
 
       case 'seek':
@@ -19730,6 +19757,17 @@ bool debugPlayerPickEpisodeFlagForProbe(String flag) {
 /// ★ 1.4 门禁读数：当前集下标（全集索引，与 `_epIndex` 同义）
 int debugPlayerEpisodeIndexForProbe() =>
     _livePlayerState?._epIndex ?? -1;
+
+/// ★ 遥控选集过滤（1.1 类推，2026-10-30）门禁探针：
+/// 走**生产** `_remoteGetState()` 拿真实 `/api/state` 形状
+///
+/// ```text
+/// episodes 字段的过滤判据在生产方法内部 —— 探针只负责取回它，
+/// 门禁断言的是真 RemoteState，不是手抄副本（task-72 同一纪律）。
+/// 没挂播放页 ⇒ 返回 idle（调用方先断言非 idle 再断言字段）。
+/// ```
+RemoteState debugPlayerRemoteStateForProbe() =>
+    _livePlayerState?._remoteGetState() ?? RemoteState.idle();
 
 /// 打开「线路 / 清晰度」抽屉（探针用，返回是否成功）
 ///

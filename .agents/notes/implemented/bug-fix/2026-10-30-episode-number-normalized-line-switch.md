@@ -75,9 +75,23 @@ episode id 传给新 sourceCode 的 resolve，回落行为在 Rust 侧 —— �
 故障注入（实测真红后恢复复绿）：匹配退回标题全等 ⇒ ①② 红（③ 不跳 1 不变
 —— ③ 钉的是"匹配不到停住"这条独立不变量）
 纯判据 episodeNumberOf 的形态用例在 t20261030_right_detail_line_filter_test（01/1/第2集/第02集/EP3/预告）。
-真机：switch_source 复现等驱动器就绪；复现后若确认跳 1，接线点在
-_remoteSwitchSource（episode id 跨线路失效）与/或 _applySwitch（保集号不跳 1），
-复用 episodeNumberOf，本文件届时补记。
+```
+
+## 真机复现结论（2026-10-30 00:45，driver-ops 执行，lead 裁决：未复现 ⇒ 不额外接线）
+
+```text
+复现单：老舅（cctv 直连源，official/cdn 两线路）goto_episode=2 →
+  switch_source{code:'cdn'} → 终态。
+读数：ep 保持 2/27 且位置续播；终态 episode_order=3 是 10s 样片**自动连播**
+  到第 3 集（非跳 1）。换线前后 episode id 无前缀污染。
+证据：.probe/play-driver/results/repro14-20261030-004500.{logtail.txt,state.json}
+  + .probe/shots/ 截图。
+协议限制：switch_source 只走 sourceCode 维度；flag 维度（选集面板点线路）
+  遥控没有对应命令（csp resolve 完全忽略 sourceCode，csp/provider.rs:468 用
+  req.flag），锁屏下无法遥控复现。
+处置：维持 cead042 现状（归一化 + 停当前集号已覆盖面板路径，门禁+注入已证），
+  不做 _remoteSwitchSource/_applySwitch 额外接线。真机终验批末在抽测矩阵
+  （任务6）里顺带复核。
 ```
 
 ## Relations

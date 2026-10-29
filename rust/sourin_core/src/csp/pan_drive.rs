@@ -1350,6 +1350,11 @@ impl CspSite for PanDrive {
             if lower.contains("login") || msg.contains("登录") || msg.contains("未授权") {
                 return Err(format!("NEED_LOGIN:{}|{text}", self.spec.kind.code()));
             }
+            // ★ 2026-10-30（任务 5）：单文件超下载上限（23018）是**文件属性问题**，
+            //   不是网络/登录故障 —— 文案要点破，用户才知道该换线路而不是重试。
+            if is_size_limit_error(&text) {
+                return Err(format!("{text}（该文件超出账号单文件下载上限）"));
+            }
             return Err(text);
         }
         let direct = v
@@ -1662,33 +1667,96 @@ impl PanDrive {
         };
         // 先清上一次的临时转存（best-effort）
         self.purge_previous().await;
-        let picked = self.pick_share_video(&cookie, share_id, passcode).await?;
-        let token = picked.fid_token.clone().unwrap_or_default();
-        let new_fid = self
-            .save_into_temp_dir(&cookie, share_id, passcode, &picked.fid, &token)
-            .await?;
-        self.remember_temp(&new_fid);
-        // 复用 `play`（`share_save` 已把文件放进我自己的网盘 ⇒ 走到裸 fid 那条路）
-        let mut plays = self.play("", &new_fid, "").await?;
-        let mut out = plays
-            .pop()
-            .ok_or_else(|| "转存后取直链没有返回地址".to_string())?;
-        out.label = Some(format!("分享页 · {}", picked.name));
+        /*
+         * ★★★ 2026-10-30（现场反馈批次任务 5，Owner 图4：23018「download file size limit」）
+         * ```text
+         * 改前：pick_share_video 只挑**体积最大**的一个 ⇒ 账号单文件下载上限（23018）
+         *       挡住它时就整体失败 —— 分享里明明有能播的小文件。
+         * 改后：挑「**可下载**的最大」—— 按体积降序逐个试，遇 23018 降级到次大，
+         *       最多试 3 个（SHARE_PICK_MAX_TRIES）；每次降级写日志 + UI 文案。
+         * ```
+         */
+        let candidates = self.pick_share_candidates(&cookie, share_id, passcode).await?;
+        // 「夸克网盘」→「夸克」：Owner 指定的文案是「该分享的文件超出夸克下载上限」
+        let short_kind = self
+            .spec
+            .kind
+            .display()
+            .trim_end_matches("网盘")
+            .to_string();
+        let cookie2 = cookie.clone();
+        let share_id = share_id.to_string();
+        let passcode = passcode.to_string();
+        let (_idx, mut out, notes) = degrade_pick(
+            &candidates,
+            SHARE_PICK_MAX_TRIES,
+            &short_kind,
+            |entry| {
+                let cookie = cookie2.clone();
+                let share_id = share_id.clone();
+                let passcode = passcode.clone();
+                async move {
+                    self.degrade_attempt(&cookie, &share_id, &passcode, entry)
+                        .await
+                }
+            },
+        )
+        .await?;
+        // UI 文案：降级过要让人看见「跳过了几个超限文件」（否则像没发生一样）
+        out.label = Some(if notes.is_empty() {
+            format!("分享页 · {}", candidates[_idx].name)
+        } else {
+            format!(
+                "分享页 · {}（已跳过 {} 个超出下载上限的文件）",
+                candidates[_idx].name,
+                notes.len()
+            )
+        });
         Ok(out)
     }
 
-    /// 在分享里挑一个**视频文件**（BFS ≤ [`SHARE_PICK_MAX_DEPTH`] 层，取体积最大者）
-    async fn pick_share_video(
+    /// 降级重试里的**单次尝试**：转存候选 → 取直链
+    ///
+    /// ★ 失败的尝试**也** `remember_temp` —— 转存可能已成功（超限发生在取直链一步），
+    ///   不记下来下次 purge 就清不掉 ⇒ 用户网盘里堆垃圾（正是上批修掉的问题）。
+    async fn degrade_attempt(
         &self,
         cookie: &str,
         share_id: &str,
         passcode: &str,
-    ) -> Result<DriveEntry, String> {
+        entry: &DriveEntry,
+    ) -> Result<CspPlay, String> {
+        let token = entry.fid_token.clone().unwrap_or_default();
+        let new_fid = self
+            .save_into_temp_dir(cookie, share_id, passcode, &entry.fid, &token)
+            .await?;
+        self.remember_temp(&new_fid);
+        // 复用 `play`（`share_save` 已把文件放进我自己的网盘 ⇒ 走到裸 fid 那条路）
+        let mut plays = self.play("", &new_fid, "").await?;
+        plays
+            .pop()
+            .ok_or_else(|| "转存后取直链没有返回地址".to_string())
+    }
+
+    /// 在分享里收集**视频文件候选**（BFS ≤ [`SHARE_PICK_MAX_DEPTH`] 层）
+    ///
+    /// # 与旧 `pick_share_video`（只回最大一个）的差异
+    /// ```text
+    /// 返回按体积**降序**的候选清单，供 [`degrade_pick`] 逐个试（23018 降级用）。
+    /// 层数语义不变：**浅层优先** —— 某层凑够 [`SHARE_PICK_MAX_TRIES`] 个视频就不再下钻；
+    /// 一个视频都没有 ⇒ 兜底用"任意文件"清单（.iso/.exe 伪装很常见，真分享里见得到）。
+    /// ```
+    async fn pick_share_candidates(
+        &self,
+        cookie: &str,
+        share_id: &str,
+        passcode: &str,
+    ) -> Result<Vec<DriveEntry>, String> {
         let mut frontier: Vec<String> = vec!["0".to_string()];
         let mut scanned = 0usize;
-        let mut best: Option<DriveEntry> = None;
-        // 兜底：扩展名不认识但确实是文件的最大一个（真分享里 .iso/.exe 伪装很常见）
-        let mut best_any: Option<DriveEntry> = None;
+        let mut videos: Vec<DriveEntry> = Vec::new();
+        // 兜底：扩展名不认识但确实是文件（真分享里 .iso/.exe 伪装很常见）
+        let mut any_files: Vec<DriveEntry> = Vec::new();
         for depth in 0..=SHARE_PICK_MAX_DEPTH {
             let mut next: Vec<String> = Vec::new();
             for folder in &frontier {
@@ -1703,18 +1771,16 @@ impl PanDrive {
                         }
                         continue;
                     }
-                    if e.size > 0 && best_any.as_ref().map(|b| e.size > b.size).unwrap_or(true) {
-                        best_any = Some(e.clone());
-                    }
-                    if !is_video_name(&e.name) {
-                        continue;
-                    }
-                    if best.as_ref().map(|b| e.size > b.size).unwrap_or(true) {
-                        best = Some(e);
+                    if e.size > 0 {
+                        if is_video_name(&e.name) {
+                            videos.push(e.clone());
+                        }
+                        any_files.push(e);
                     }
                 }
             }
-            if best.is_some() {
+            // 凑够候选就不下钻（浅层优先；也省请求）
+            if videos.len() >= SHARE_PICK_MAX_TRIES {
                 break;
             }
             if next.is_empty() {
@@ -1722,16 +1788,75 @@ impl PanDrive {
             }
             frontier = next;
         }
-        if let Some(v) = best {
-            return Ok(v);
+        let mut pool = if !videos.is_empty() { videos } else { any_files };
+        pool.sort_by(|a, b| b.size.cmp(&a.size));
+        if pool.is_empty() {
+            return Err(format!(
+                "分享 {share_id} 里没有任何文件（已扫描 {scanned} 个条目）—— 不是\"没登录\"，是这个分享是空的"
+            ));
         }
-        if let Some(any) = best_any {
-            return Ok(any);
-        }
-        Err(format!(
-            "分享 {share_id} 里没有任何文件（已扫描 {scanned} 个条目）—— 不是\"没登录\"，是这个分享是空的"
-        ))
+        Ok(pool)
     }
+}
+
+/// 账号单文件下载上限的失败（夸克业务码 23018，message「download file size limit」）
+///
+/// **纯函数**：只看错误文本，不发请求 —— 门禁直接喂样例串
+/// （`play` 的错误串形状是 `"…（code=23018）：download file size limit"`，
+/// 两个特征都钉进来，任一命中即算超限）。
+pub fn is_size_limit_error(text: &str) -> bool {
+    text.contains("code=23018")
+        || text.to_lowercase().contains("download file size limit")
+}
+
+/// 降级重试**最多试几个候选**（Owner 指定：遇 23018 回退次大，最多试 3 个）
+pub const SHARE_PICK_MAX_TRIES: usize = 3;
+
+/// ★★★ 降级循环（**纯调度，不发网络** —— 网络在 `try_one` 里，门禁用假闭包喂）
+///
+/// 按候选顺序（体积降序）逐个尝试：
+/// ```text
+/// · 成功                ⇒ 返回（命中下标, 值, 降级记录）
+/// · 超限（23018）        ⇒ 记一条降级日志与记录，试下一个（最多 max_tries 个）
+/// · 其它错误            ⇒ **不降级**，原样抛出（降级只针对"文件太大"这一种失败）
+/// · 全部超限            ⇒ Err「该分享的文件超出<盘名>下载上限，请换一条线路」
+/// ```
+pub async fn degrade_pick<'a, T, Fut, F>(
+    candidates: &'a [DriveEntry],
+    max_tries: usize,
+    pan_short_name: &str,
+    mut try_one: F,
+) -> Result<(usize, T, Vec<String>), String>
+where
+    F: FnMut(&'a DriveEntry) -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    let mut notes: Vec<String> = Vec::new();
+    let tried = candidates.len().min(max_tries);
+    for (i, entry) in candidates.iter().take(tried).enumerate() {
+        match try_one(entry).await {
+            Ok(v) => return Ok((i, v, notes)),
+            Err(e) => {
+                if !is_size_limit_error(&e) {
+                    return Err(e);
+                }
+                log::warn!(
+                    "[PAN] 降级：第 {} 大的文件 {}（{}）超出下载上限 ⇒ 改试次大候选（{e}）",
+                    i + 1,
+                    entry.name,
+                    human_size(entry.size)
+                );
+                notes.push(format!(
+                    "已跳过超限文件 {}（{}）",
+                    entry.name,
+                    human_size(entry.size)
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "该分享的文件超出{pan_short_name}下载上限，请换一条线路（已尝试 {tried} 个候选）"
+    ))
 }
 
 /// 分享里找视频时最多下钻几层目录（整季分文件夹是常态）

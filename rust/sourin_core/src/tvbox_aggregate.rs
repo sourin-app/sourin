@@ -901,15 +901,49 @@ impl MediaProvider for TvboxAggregate {
             episode_id: stripped,
             ..req.clone()
         };
-        child
+        let mut cands = child
             .resolve(
                 &MediaId {
-                    provider: cid,
+                    provider: cid.clone(),
                     native,
                 },
                 &fixed,
             )
-            .await
+            .await?;
+        /*
+         * ★ 2026-10-30（现场反馈批次任务 2 的 Rust 半边）：播放源要显示
+         *   「<子源显示名> · <线路名/分享页文件名>」—— 聚合把 47 个子站揉成一个，
+         *   换源列表里若只有"原画"/"官方 HLS"这种内层 label，用户分不清是哪个子站。
+         *   子源名取 **route 到的那个 child 的 manifest.name**（不是配置里的 id）。
+         */
+        let child_name = child.manifest().name.clone();
+        for c in cands.iter_mut() {
+            let composed = compose_stream_label(&child_name, c.label.as_deref());
+            if !composed.is_empty() {
+                c.label = Some(composed);
+            }
+        }
+        Ok(cands)
+    }
+}
+
+/// 聚合播放源的展示名（**纯函数**，门禁直接喂）
+///
+/// ```text
+/// inner 有值 ⇒ 「<子源显示名> · <线路名>」   如「天天影视 · 分享页 · 老舅01.mp4」
+/// inner 空串 ⇒ 只给子源显示名
+/// 子源名也空 ⇒ 退回 inner（不产出「 · 」这种残缺串）
+/// ```
+pub fn compose_stream_label(child_name: &str, inner: Option<&str>) -> String {
+    let child = child_name.trim();
+    let inner = inner.map(str::trim).filter(|s| !s.is_empty());
+    match (child.is_empty(), inner) {
+        // 内层已带「子源 · 」前缀 ⇒ 不再套一层（有的子站 label 自带站名）
+        (false, Some(l)) if l.starts_with(&format!("{child} · ")) => l.to_string(),
+        (false, Some(l)) => format!("{child} · {l}"),
+        (false, None) => child.to_string(),
+        (true, Some(l)) => l.to_string(),
+        (true, None) => String::new(),
     }
 }
 

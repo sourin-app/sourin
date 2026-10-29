@@ -142,8 +142,9 @@ import 'danmaku_search_page.dart';
 import 'widgets/episode_strip.dart';
 // ★ 1.4（2026-10-30）：集号归一化判据与选集抽屉/详情栏同源（公共文件）
 // ★ 遥控端选集过滤（1.1 类推，lead 预授权）也用同一份判据
+// ★ 标题跟随（Owner 解锁授权）：详情标题展示层剥离内嵌集数后缀
 import 'widgets/episode_filter.dart'
-    show episodeNumberOf, episodesForLine;
+    show episodeNumberOf, episodesForLine, showTitleOf;
 // ★ 第 16 项：内嵌 / 全屏**共用**的播放动作契约（第 16 项闭合用）
 import 'widgets/live_embedded_player.dart'
     show LivePlaybackAction, LivePlaybackTarget, dispatchLivePlaybackAction, livePlaybackActionForKey;
@@ -11946,9 +11947,24 @@ class _PlayerPageState extends State<PlayerPage>
         ? (_epOrder(_currentEpisodeTitle) ?? (_epIndex + 1))
         : 0;
 
+    /*
+     * ★★★ 标题跟随（Owner 解锁授权，2026-10-30）：遥控 title 用**展示层拼装**
+     *
+     * ```text
+     * 真机读数（repro14）：CCTV 类源 detail.title = 「《老舅》 第1集」，
+     * 自动连播到第 3 集后 episode_order=3 而 title 仍「第1集」（陈旧快照）。
+     * 修法（lead 裁决）：title = 剥掉内嵌集数后缀的剧名 + 「第N集」（order
+     * 实时准确）；**不改写 _title 本体**（写库路径 t61 契约不动）。
+     * 单集/直播（order=0）⇒ 只出剧名。
+     * ```
+     */
+    final remoteTitle = order > 0
+        ? '${showTitleOf(_liveTitle, _episodes)} 第$order集'
+        : showTitleOf(_liveTitle, _episodes);
+
     return RemoteState(
       playing: _playing,
-      title: _title,
+      title: remoteTitle,
       episodeOrder: order,
       episodeCount: multi ? remoteEps.length : 0,
       position: _position.inSeconds,
@@ -16826,7 +16842,6 @@ class _PlayerPageState extends State<PlayerPage>
                     ListenableBuilder(
                       listenable: _controlsLive,
                       builder: (context, _) => _TopBar(
-                      title: _title,
                       episodeTitle: _epIndex < _episodes.length
                           ? _episodes[_epIndex].title
                           : widget.episodeTitle,
@@ -16834,6 +16849,10 @@ class _PlayerPageState extends State<PlayerPage>
                       // ★ task-32 接线契约（逐字）：state 必须传进 providerName；
                       //   聚合源的复合串在写入点算（见 _refreshAggregateTitleInPlace）
                       providerName: _providerName,
+                      // ★ 标题跟随（Owner 解锁授权）：顶栏剧名剥掉 CCTV 类源
+                      //   内嵌的集数后缀（集名由下面 episodeTitle 独立渲染）；
+                      //   普通源零变化。写库路径仍读 _liveTitle（t61 契约不动）。
+                      title: showTitleOf(_liveTitle, _episodes),
                       /*
                        * 弹幕信息：只在**弹幕这一层有话说**时挂出来。
                        * 没有绑定、没在取、也没失败 ⇒ 不给入口，免得用户点开

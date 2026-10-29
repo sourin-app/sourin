@@ -2811,9 +2811,22 @@ class _DetailPageState extends State<DetailPage> {
       final lineN = widget.isLocalFile ? 0 : _lineEpisodes.length;
       final lineM = _lineCount;
       final badge = lineM > 1 ? '本线路 $lineN 集 · 共 $lineM 条线路' : '$lineN 集';
+      /*
+       * ★★★ 标题跟随（Owner 解锁授权，2026-10-30）：右栏标题剥掉 CCTV 类源
+       * 内嵌的集数后缀、缀上**当前正在播**的集标题 —— 自动连播后跟随
+       * （真机读数 repro14：「《老舅》 第1集」连播到第 3 集仍显示第1集）。
+       * 判据是公共函数 detailDisplayTitle（episode_filter.dart）：普通源
+       * 原样返回，展示零变化；写库/导航路径不经过这里。
+       */
+      final displayTitle = detailDisplayTitle(
+        d.title,
+        _episodes,
+        _episodeById(_activeEpisodeId)?.title,
+      );
       return _Info(
         part: part,
         detail: d,
+        displayTitle: displayTitle,
         // ★ task-12 ⑤：本地模式下"集数"换成**已下载集数**（Owner：除了集数的展示）
         episodeCount: lineN,
         episodeBadge: badge,
@@ -4029,6 +4042,7 @@ class _Info extends StatelessWidget {
     required this.detail,
     required this.episodeCount,
     this.episodeBadge,
+    this.displayTitle,
     this.localCount = 0,
     this.localMode = false,
     this.showActions = true,
@@ -4065,6 +4079,13 @@ class _Info extends StatelessWidget {
   /// —— 判据（_lineEpisodes/_lineCount）与选集抽屉共用一份
   /// （widgets/episode_filter.dart），不能在这里抄第二份。
   final String? episodeBadge;
+
+  /// ★★★ 标题跟随（Owner 解锁授权，2026-10-30）：头部标题的**展示串**
+  ///
+  /// 由调用方（_buildHeader）经公共函数 detailDisplayTitle 算好传入：
+  /// CCTV 类源 detail.title 内嵌「第N集」⇒ 剥后缀 + 缀当前在播集；
+  /// 普通源原样（null 之外的路径不会走到兜底）。**不改 detail.title 本体**。
+  final String? displayTitle;
 
   /// ★ task-12 ⑤：本地模式下的**已下载集数**（0 = 不画那一枚角标）
   ///
@@ -4242,8 +4263,10 @@ class _Info extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // ★ 标题跟随（2026-10-30）：displayTitle = 剥内嵌集数后缀 + 当前在播集
+        //  （普通源 detailDisplayTitle 原样返回 ⇒ 与改前逐字一致）
         Text(
-          detail.title,
+          displayTitle ?? detail.title,
           style: TextStyle(
             fontSize: FontSizes.xl,
             fontWeight: FontWeights.semibold,

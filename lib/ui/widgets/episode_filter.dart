@@ -98,3 +98,64 @@ int? episodeNumberOf(String? title) {
   final m2 = RegExp(r'\d+').firstMatch(title);
   return m2 == null ? null : int.tryParse(m2.group(0)!);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ★★★ 2026-10-30（Owner 解锁授权）：详情标题的**展示层**集数跟随
+//  ═══════════════════════════════════════════════════════════════════════
+//
+//  # 现象（实机抽测矩阵 #4 / repro14-20261030-004500.json）
+//  ```text
+//  CCTV 类源一集一个详情：detail.title = 「《老舅》 第1集」（集数编在标题里），
+//  但 episodes 列表是完整的 27 集 ⇒ 自动连播到第 3 集后，
+//  右栏标题 / 顶栏 / 遥控 title 仍显示「《老舅》 第1集」（陈旧）。
+//  ```
+//
+//  # 原则（lead 裁决）：**不改写 _title 本体**，只在展示层拼装
+//
+//  ```text
+//  剥后缀不是启发式：detail.title 以**某一条集标题**逐字结尾才剥
+//  （且该集标题含数字——防剧名尾部撞上短集名误剥），剥出来的就是剧名；
+//  「当前正在播第几集」用实时字段（_epIndex/当前集 id），不存在猜测。
+//  ```
+
+/// 详情标题剥离内嵌集数后缀后的**剧名**（纯函数）
+///
+/// ```text
+/// · detail.title 以某条集标题逐字结尾 ⇒ 返回去掉该后缀的剧名；
+/// · 找不到（普通源：detail.title 本来就是纯剧名）⇒ 原样返回，零变化；
+/// · 集**列表**是全集（各线路标题通常一致）；剥的是"标题里嵌的那次"，
+///   与当前在播第几集无关 ⇒ 自动连播不改变剧名。
+/// ```
+String showTitleOf(String detailTitle, List<Episode> episodes) {
+  final t = detailTitle.trim();
+  if (t.isEmpty) return t;
+  for (final e in episodes) {
+    final et = e.title.trim();
+    if (et.isEmpty || et.length >= t.length) continue;
+    // ★ 只认"含数字的集标题"当后缀 —— 防《西游记》尾部撞上集名「记」这类
+    //   误剥（判据复用 1.4 的 episodeNumberOf，不另写第二份）
+    if (episodeNumberOf(et) == null) continue;
+    if (!t.endsWith(et)) continue;
+    final base = t.substring(0, t.length - et.length).trim();
+    if (base.isNotEmpty) return base;
+  }
+  return t;
+}
+
+/// 详情标题的**展示串**（纯函数，右栏标题 / 遥控 title 共用）
+///
+/// ```text
+/// · 没剥掉后缀（普通源）⇒ 原样返回 —— 展示零变化；
+/// · 剥掉了 ⇒ 「剧名 + 当前正在播的集标题」—— 自动连播后跟随；
+///   当前集就是标题里嵌的那一集时，拼装结果与原串逐字相同（往返恒等）。
+/// ```
+String detailDisplayTitle(
+  String detailTitle,
+  List<Episode> episodes,
+  String? currentEpisodeTitle,
+) {
+  final base = showTitleOf(detailTitle, episodes);
+  if (base == detailTitle.trim()) return detailTitle;
+  final cur = currentEpisodeTitle?.trim() ?? '';
+  return cur.isEmpty ? base : '$base $cur';
+}

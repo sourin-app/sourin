@@ -195,6 +195,14 @@ pub fn cards_from(html: &str, what: &str) -> Result<Vec<CspItem>, String> {
         });
     }
     if out.is_empty() {
+        // ★ 2026-10-29 真网复测（reqwest 侧能拿到真页面；curl/python 在这台机器上是
+        //   TLS 层 EOF/alert，`curl: (35) SEC_E_ILLEGAL_MESSAGE` —— 那是客户端问题，不是站点）：
+        //   `https://www.hdmoli.com/search.php?searchkey=老舅` → **8199 字符**，
+        //     页内 `/movie/indexN.html` **0 个**、`vod-poster` **0 个**，正文逐字：
+        //     `<body>` 里「**对不起，没有找到任何关于老舅的记录**」+ `1/1` 分页。
+        //   `…?searchkey=末` → **27152 字符**，有真卡片（`a … href="/movie/indexN.html" title="…"`）。
+        //   `…search.php?searchtype=5&tid=1`（分类）→ **34932 字符**（`电影 - 第1页 共67页`）。
+        //   ⇒ 判据：**换词/换分类都能出 = 解析器没坏**；老舅这页是站点自己说"没找到"。
         return Err(format!(
             "上游 {what} 的 HTML 里没抓到卡片（页面 {} 字符；\
              站点自己的正则可能改版了）",

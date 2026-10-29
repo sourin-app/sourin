@@ -96,6 +96,28 @@ use super::{CspCategory, CspDetail, CspEpisode, CspHome, CspItem, CspList, CspPl
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
 /// DEX 逐字的站点前缀
+///
+/// # ★★ 2026-10-29 复测：**「curl 403」不等于「站点死」**（真网读数，别再判错一次）
+///
+/// ```text
+/// ① `curl --noproxy '*' -A <Chrome>` 打 `https://www.libvio.io/`（连 `/robots.txt`、
+///    `/detail/*`、`/search/*` 全都一样）⇒ **403 / 44 B**，body 只有一行
+///    `403 Forbidden: browser verification required`，响应头 `x-cdn-challenge: required`。
+///    ★ 拿这个当判据就会得出"站点已死/域名停用"的**错结论**（我这次就先判错了）。
+/// ② 补齐本类 `headers()` 那套（Accept / Accept-Language / **Referer** / Sec-Fetch-* /
+///    Upgrade-Insecure-Requests）⇒ 同一 URL **403 / 20359 B**，body 里逐字：
+///    `var TS = "…", SIG = "…", DIFF = "0000", MODE = "auto";` ⇒ **PoW 挑战页**。
+///    ⇒ 判据：**44 B = 我缺头**；**20359 B = 站点在按自己的 PoW 协议要验证**；
+///      两者都**不是**"站点没了"。
+/// ③ 按 PoW 解（本次 DIFF=0000、nonce=18166）⇒ 302 + `__cdn_verified` ⇒ 真页面：
+///      home          200 / 40464 字符 / 120 个 `/detail/N.html`
+///      search 末     200 / 11060 字符 /  24 个卡片链接（`href="/detail/714893781.html" title="末世行者"`）
+///      search 老舅   200 /  3739 字符 /   0 个，正文只有站点自己那句
+///                    「搜索空白，表示无此视频！」
+/// ```
+/// ⇒ **「搜不到老舅」是站点真的没有这个片**，既不是正则改版、也不是源不可用。
+///   本类现在的 PoW 分支仍然有效（挑战页照旧给 TS/SIG/DIFF/MODE），不要因为
+///   "看起来 403 了"就去删它或改成别的路。
 pub const SITE: &str = "https://www.libvio.io";
 /// PoW cookie 名（403 页里逐字：`var POW = "__cdn_pow"`）
 pub const POW_COOKIE: &str = "__cdn_pow";

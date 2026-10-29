@@ -96,6 +96,27 @@ use std::time::Duration;
 use super::{CspCategory, CspDetail, CspEpisode, CspHome, CspItem, CspList, CspPlay, CspSite};
 
 /// ext 缺省时的兜底镜像（订阅里给的就是这个）
+///
+/// # ★★ 2026-10-29 复测：**这个镜像的"搜索"在站点侧被关掉了**（不是我们的解析坏）
+///
+/// ```text
+/// ① `https://vip.wwgz.cn:5200/index.php?m=vod-search&wd=老舅`
+///      PC UA        → 200 /  66 B  「缺少文件：/data/img.wwgz.cn/template/pc/html//vod_search.html」
+///      本类 Android UA → 200 /  68 B  「缺少文件：/data/img.wwgz.cn/template/wap3/html//vod_search.html」
+///    ⇒ 两套模板**都没有搜索页**；站点自己在移动端顶栏把搜索按钮换成了
+///      `onclick="alert('抱歉！搜索功能升级中')"`（首页 46666 B 里逐字可见）。
+/// ② 同一镜像的**列表页还在**，但只有"完整 maccms 形态"能出内容（本类现在用的短形态是死的）：
+///      /index.php?m=vod-type-id-1-pg-1.html                     → 200 /  70 B「缺少文件：…//vod_type_movie.html」
+///      /index.php?m=vod-list-id-1-pg-1-order--by-time-class-0-year-0-letter--area--lang-.html
+///                                                              → 200 / 真列表（`共20720条数据 当前:1/691页`）
+/// ③ 另试过的入口（全部不是 200 真页面）：
+///      /index.php?m=vod-search&wd=…&page=2 / &tpl=wap3 / &ajax=1 / /vod-search-wd-….html → 200 / 66 B 同一条「缺少文件」
+///      /index.php/ajax/search?wd=… → 200 / 435 B（站点 404 页）
+///      /search.php?wd=…            → 404 / 548 B
+///      https://www.wwgz.cn、https://wwgz.cn → DNS 解不出（`wwgz.cn` 只有 SOA）
+/// ⇒ 结论：**search 不可用是上游行为**（模板缺失 + 站点自己弹"搜索功能升级中"），
+///   换 base 也没找到任何能给 200 + 搜索结果的镜像 ⇒ 不改解析、不改路径，只留这条取证。
+/// ```
 const DEFAULT_BASE: &str = "https://vip.wwgz.cn:5200";
 
 /// DEX `a()` 里的 UA（注意末尾那个 `uacq` 是原样的，不是笔误）

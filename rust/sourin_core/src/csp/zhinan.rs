@@ -270,6 +270,14 @@ pub fn parse_list(html: &str) -> Result<Vec<RawItem>, String> {
 /// 而不是埋在 `parse_list` 里靠"跑一遍看输出了啥"来验。
 /// ```
 fn empty_page_reason(html: &str, sites_only: usize) -> String {
+    // ★ 2026-10-29 真网复测（同一模板、只换搜索词，别再把这个 Err 读成"站点改版"）：
+    //   `https://4kzn.cc/?post_type=book&s=老舅` → **200 / 19063 B**，
+    //     `<body class="search search-no-results wp-theme-onenav …">`、`<article>` 计数 **0**
+    //     ⇒ WordPress 自己判的"没搜到"（这个 class 就是站点给的判据）。
+    //   `https://4kzn.cc/?post_type=book&s=龙珠` → **200 / 28680 B**、`<article>` **10 个**，
+    //     逐字 `<article class="posts-item book-item d-flex style-book-v post-21146">`
+    //     + `<h3 class="item-title line1"><a …>七龙珠</a></h3>` ⇒ `parse_list` 能出 10 条。
+    //   ⇒ 判据：**换词能出 = 解析器没坏**；老舅这一页是"真的没内容"，不是改版。
     // 页面里到底有几个 <article>（区分"一个都没有"和"有但不认"）
     let total_articles = re_item().captures_iter(html).count();
     if total_articles == 0 {

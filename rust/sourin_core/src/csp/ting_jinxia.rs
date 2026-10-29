@@ -268,10 +268,18 @@ pub fn parse_items(html: &str, where_: &str) -> Result<Vec<CspItem>, String> {
             });
         items.push(CspItem { id: href, title, cover, subtitle: sub });
     }
+    // ★ 2026-10-29 真网复测（别把这个 Err 当成"站点改版"的判据）：
+    //   `https://m.ting15.com/?s=ting-search-wd-老舅` → **200 / 3227 B**，
+    //     页里逐字 `<h1>搜索“老舅”结果</h1>` + `<div class="clist">` **空** +
+    //     `页次<span>1/1</span>`，`a[href$=.html]` 一个都没有 ⇒ 走下面这个 Err。
+    //   同一模板换有内容的词：`?s=ting-search-wd-无敌剑域` → **200 / 3795 B**，
+    //     `.clist a > dl > h3` 里 1 条（`<a href="/wuxiaxuanhuan/2117.html">…<h3>无敌剑域</h3>`）。
+    //   ⇒ 判据：**这个词本来就没有**；解析器没坏（换词能出就是硬证据）。
     if items.is_empty() {
         return Err(format!(
-            "{where_} 没解析出条目（页面 {} 字节）——可能是站点改版/风控壳页：\
-             `.clist a > dl > h3` 里一个书名都没有。已实现的判据：`a[href$=.html]` 内的 `<h3>` 标题。",
+            "{where_} 没解析出条目（页面 {} 字节）——可能是站点真的没有这个词，\
+             也可能是站点改版/风控壳页：`.clist a > dl > h3` 里一个书名都没有。\
+             已实现的判据：`a[href$=.html]` 内的 `<h3>` 标题。",
             h.len()
         ));
     }

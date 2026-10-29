@@ -47,7 +47,7 @@ async fn backup_preview_reports_counts() {
     cw::set_favorite(&st, "srca", "1", true, Some("剧A".into()), None, None, None)
         .await
         .unwrap();
-    cw::set_skip_marker(&st, "srca", "1", Some("剧A".into()), Some(0), Some(60), None, None, None)
+    cw::set_skip_marker(&st, "srca", "1", Some("剧A".into()), Some(0), Some(60), None, None, None, Vec::new())
         .unwrap();
 
     let p = cb::backup_preview(&st).expect("preview");
@@ -70,7 +70,7 @@ async fn backup_round_trip() {
 
     cw::save_progress(&st, "srca", "1", "剧A", None, Some("ep1".into()), Some("第1集".into()), 100, 1000, None).unwrap();
     cw::set_favorite(&st, "srca", "1", true, Some("剧A".into()), None, None, None).await.unwrap();
-    cw::set_skip_marker(&st, "srca", "1", Some("剧A".into()), Some(0), Some(60), None, None, Some(true)).unwrap();
+    cw::set_skip_marker(&st, "srca", "1", Some("剧A".into()), Some(0), Some(60), None, None, Some(true), Vec::new()).unwrap();
 
     let backup_path = st.data_dir.join("test-backup.json");
     let exported = cb::backup_export(&st, backup_path.to_str().unwrap(), None).expect("export");

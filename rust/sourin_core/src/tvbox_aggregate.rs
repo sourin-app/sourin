@@ -89,6 +89,16 @@ pub struct PanConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AggregateConfig {
     pub version: i64,
+    /// ★ 2026-10-29（Owner："还要可以起备注，如果有多个聚合源 有备注就能区分了"）
+    ///
+    /// 聚合源在列表里显示的名字是固定的「TVBox 聚合」；用户导入了多份订阅/多个聚合时
+    /// 靠这条**备注**区分（存配置、跟着配置走，不进 manifest —— manifest 是编译期常量）。
+    pub note: String,
+    /// ? 2026-10-29?Owner?"????????????? tvbox ???????"??
+    /// **?????**?? ?? ???????????/???????
+    /// ?????"??????"?`enabled_children` ?? enabled ???
+    /// ???????????????????????????????????
+    pub solo: bool,
     pub enabled_site_ids: Vec<String>,
     pub hidden_site_ids: Vec<String>,
     pub pan: PanConfig,
@@ -98,6 +108,8 @@ impl Default for AggregateConfig {
     fn default() -> Self {
         Self {
             version: 1,
+            note: String::new(),
+            solo: false,
             enabled_site_ids: Vec::new(),
             hidden_site_ids: Vec::new(),
             pan: PanConfig::default(),
@@ -109,6 +121,8 @@ impl AggregateConfig {
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "version": self.version,
+            "note": self.note,
+            "solo": self.solo,
             "enabledSiteIds": self.enabled_site_ids,
             "hiddenSiteIds": self.hidden_site_ids,
             "pan": {
@@ -124,6 +138,13 @@ impl AggregateConfig {
         if let Some(x) = v.get("version").and_then(|x| x.as_i64()) {
             out.version = x;
         }
+        out.note = v
+            .get("note")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        out.solo = v.get("solo").and_then(|x| x.as_bool()).unwrap_or(false);
         out.enabled_site_ids = str_list(v.get("enabledSiteIds"));
         out.hidden_site_ids = str_list(v.get("hiddenSiteIds"));
         if let Some(pan) = v.get("pan") {
@@ -192,6 +213,10 @@ pub struct SetPatch {
     pub enabled_site_ids: Option<Vec<String>>,
     pub pan_share_text: Option<String>,
     pub pan_pwd: Option<Option<String>>,
+    /// ★ 2026-10-29：备注（Owner："多个聚合源靠备注区分"）。`Some("")` = 清空
+    pub note: Option<String>,
+    /// ★ 2026-10-29：列表只留聚合源（测试用开关；不动子站的搜索）
+    pub solo: Option<bool>,
 }
 
 /// 校验 + 合并 + 落盘（**纯逻辑可离线测**；`known` = `(id, kind)` 全量子站）
@@ -229,6 +254,15 @@ pub fn apply_patch(
     }
     if let Some(p) = &patch.pan_pwd {
         next.pan.pwd = p.clone().filter(|s| !s.is_empty());
+    }
+    if let Some(solo) = patch.solo {
+        next.solo = solo;
+    }
+    if let Some(n) = &patch.note {
+        // 备注：trim 后最多 60 字（列表里要一行放得下；超长会撑破卡片）
+        let t = n.trim();
+        let clipped: String = t.chars().take(60).collect();
+        next.note = clipped;
     }
     save(data_dir, &next)?;
     Ok(next)
@@ -966,6 +1000,9 @@ fn build_response(st: &crate::state::AppState, cfg: &AggregateConfig) -> serde_j
         "ok": true,
         "version": cfg.version,
         "aggregateId": AGGREGATE_ID,
+        // ★ 2026-10-29：备注与"只显示聚合源"开关都要回给 UI（否则开关回显不了）
+        "note": cfg.note,
+        "solo": cfg.solo,
         "enabledSiteIds": cfg.enabled_site_ids,
         "sites": sites,
         "pan": {
@@ -1008,6 +1045,20 @@ pub fn command_set(
             // `null` 或 `""` ⇒ 清空；字符串 ⇒ 设置
             patch.pan_pwd = Some(p.as_str().filter(|s| !s.is_empty()).map(|s| s.to_string()));
         }
+    }
+    // ★ 2026-10-29：备注（缺省 = 不动；空串 = 清空）
+    if let Some(n) = args.get("note") {
+        let s = n
+            .as_str()
+            .ok_or_else(|| "note 必须是字符串".to_string())?;
+        patch.note = Some(s.to_string());
+    }
+    // ★ 2026-10-29：测试用开关「列表只留聚合源」（缺省 = 不动）
+    if let Some(v) = args.get("solo") {
+        patch.solo = Some(
+            v.as_bool()
+                .ok_or_else(|| "solo 必须是布尔值".to_string())?,
+        );
     }
     // 校验用的"已知源"：id + kind（非 tvbox 的要能报出专属错误）
     let known: Vec<(String, String)> = st
@@ -1163,6 +1214,88 @@ pub fn channels_of(registry: &Arc<Registry>, data_dir: &Path) -> Vec<(String, St
 ///  "channels":[{"id":"tvbox1","name":"某站","enabled":true}]}
 /// ```
 /// ★ 字段名逐字 `id`/`name`（Dart 侧已按此写）；外层是 `channels` **数组**，不是裸数组。
+/// ★★★ 2026-10-29（Owner："还要可以去重"）：把**重复的子源**停用，只保留第一个
+///
+/// # 什么叫"重复"
+/// ```text
+/// 同一份订阅导两次、或两份订阅里有同一个站 ⇒ 注册表里会出现两个 id、但**同一个站**：
+///   例：`csp-4kzhinan-79a914e4` 与 `csp-4kzhinan-47098b5a`（同一个 api、同一个站名）
+/// 判据取 `(站名, api)`：站名是给人看的那个名字，api 是它的实现类；
+///   两者都相同 = 用户眼里同一个源（点进去内容也一样）。
+/// ```
+///
+/// # 为什么"停用"而不是"删除"
+/// ```text
+/// 删除不可逆（配置里那条记录就没了）；停用可以一键恢复（源列表里勾回来）。
+/// 而且用户此刻的诉求是"列表别重复"，不是"把这些站从磁盘抹掉"。
+/// ```
+/// 去重的**纯逻辑**（给门禁穷举；`items` = `(id, 站名, api)`）
+///
+/// 返回 `(保留下来的 id 顺序, 判为重复的 id)`
+pub fn plan_dedupe(items: &[(String, String, String)]) -> (Vec<String>, Vec<String>) {
+    let mut first_of: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut kept: Vec<String> = Vec::new();
+    let mut dupes: Vec<String> = Vec::new();
+    for (id, name, api) in items {
+        let key = format!("{}|{}", name.trim(), api.trim());
+        match first_of.get(&key) {
+            None => {
+                first_of.insert(key, id.clone());
+                kept.push(id.clone());
+            }
+            Some(first) => {
+                if id != first {
+                    dupes.push(id.clone());
+                }
+            }
+        }
+    }
+    (kept, dupes)
+}
+
+pub fn command_dedupe_sites(
+    st: &crate::state::AppState,
+) -> Result<serde_json::Value, String> {
+    let metas = crate::tvbox::load_tvbox_metas(&st.data_dir);
+    let items: Vec<(String, String, String)> = st
+        .registry
+        .manifests()
+        .into_iter()
+        .filter(|m| m.kind == "tvbox" && m.id != AGGREGATE_ID)
+        .map(|m| {
+            let api = metas
+                .get(&m.id)
+                .map(|x| x.api.trim().to_string())
+                .unwrap_or_default();
+            (m.id, m.name, api)
+        })
+        .collect();
+    let (kept, dupes) = plan_dedupe(&items);
+    if dupes.is_empty() {
+        return Ok(serde_json::json!({ "duplicates": 0, "disabled": [] }));
+    }
+    let mut disabled = crate::commands::load_disabled(&st.data_dir);
+    for id in &dupes {
+        st.registry.set_enabled(id, false);
+        if !disabled.contains(id) {
+            disabled.push(id.clone());
+        }
+    }
+    crate::commands::save_disabled(&st.data_dir, &disabled)?;
+    log::warn!(
+        "[tvbox_agg] 去重：停用 {} 个重复子源（保留 {} 个）：{:?}",
+        dupes.len(),
+        kept.len(),
+        dupes
+    );
+    Ok(serde_json::json!({
+        "duplicates": dupes.len(),
+        "disabled": dupes,
+        "kept": kept.len(),
+    }))
+}
+
 pub fn command_channels(st: &crate::state::AppState) -> Result<serde_json::Value, String> {
     let channels: Vec<serde_json::Value> = channels_of(&st.registry, &st.data_dir)
         .into_iter()
@@ -1467,6 +1600,105 @@ mod tests {
             vec!["https://pan.quark.cn/s/09350e7add7c".to_string()],
             "★★★ 子站必须收到**裸 URL**（带前缀就认不出分享页 ⇒ 不能播放）"
         );
+    }
+
+    /// ★★★ 测试用开关 solo：存得住、读得回、默认关
+    ///
+    /// ```text
+    /// 语义（写在 `commands::list_providers` 里）：solo=true 时**列表**只留聚合源，
+    /// 子站的搜索/扇出**照旧** —— 因为 Owner 要的是"列表干净"，不是"把子站关掉"
+    /// （真关掉会让 `enabled_children` 变空 ⇒ 剩下一个空聚合源）。
+    /// 注入验证：把 `next.solo = solo` 删掉 ⇒ 本条 FAILED。
+    /// ```
+    #[test]
+    fn solo_flag_roundtrips_and_defaults_off() {
+        let dir = std::env::temp_dir().join(format!("agg-solo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!AggregateConfig::default().solo, "★ 默认必须是关（不许偷偷只剩一个源）");
+        let cur = AggregateConfig::default();
+        let on = apply_patch(
+            &dir,
+            &[],
+            &cur,
+            &SetPatch {
+                solo: Some(true),
+                ..Default::default()
+            },
+        )
+        .expect("开 solo 应成功");
+        assert!(on.solo);
+        assert!(load(&dir).solo, "★★ 必须落盘");
+        assert_eq!(
+            load(&dir).to_json().get("solo").and_then(|v| v.as_bool()),
+            Some(true),
+            "★★ FFI 响应要带 solo（UI 开关靠它回显）"
+        );
+        let off = apply_patch(
+            &dir,
+            &[],
+            &on,
+            &SetPatch {
+                solo: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!off.solo, "★ 关掉要能恢复");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★ 备注：存得住、读得回、超长要截断（Owner："多个聚合源靠备注区分"）
+    ///
+    /// ```text
+    /// 注入验证：把 `next.note = clipped` 改成 `next.note = String::new()` ⇒ 本条 FAILED。
+    /// ```
+    #[test]
+    fn note_roundtrips_and_clips() {
+        let dir = std::env::temp_dir().join(format!("agg-note-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cur = AggregateConfig::default();
+        let p = SetPatch {
+            note: Some("  家里那份订阅 · 2026 秋  ".to_string()),
+            ..Default::default()
+        };
+        let next = apply_patch(&dir, &[], &cur, &p).expect("保存备注应成功");
+        assert_eq!(next.note, "家里那份订阅 · 2026 秋", "★ 前后空白要 trim");
+        let back = load(&dir);
+        assert_eq!(back.note, next.note, "★★ 必须能从磁盘读回");
+        assert_eq!(
+            back.to_json().get("note").and_then(|v| v.as_str()),
+            Some("家里那份订阅 · 2026 秋"),
+            "★★ FFI 响应里也要带上 note（UI 要显示）"
+        );
+        // 超长截断到 60 字
+        let long = "备".repeat(80);
+        let p2 = SetPatch {
+            note: Some(long),
+            ..Default::default()
+        };
+        let n2 = apply_patch(&dir, &[], &back, &p2).unwrap();
+        assert_eq!(n2.note.chars().count(), 60, "★ 备注最多 60 字（卡片要一行放得下）");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★ 子源去重：同名 + 同 api 才算重复；第一个必须保留；不同 api 不许误删
+    ///
+    /// ```text
+    /// 真机依据：`csp-4kzhinan-79a914e4` 与 `csp-4kzhinan-47098b5a` 是同一个站（同 api 同站名），
+    /// 用户在子源列表里看到两行一样的东西。
+    /// 注入验证：把 key 改成只按 `name` ⇒ 第三条断言 FAILED（不同 api 会被误判重复）。
+    /// ```
+    #[test]
+    fn dedupe_keeps_first_and_respects_api() {
+        let items = vec![
+            ("a1".to_string(), "指南".to_string(), "csp_4KZhinan".to_string()),
+            ("a2".to_string(), "指南".to_string(), "csp_4KZhinan".to_string()),
+            ("b1".to_string(), "指南".to_string(), "csp_PanShare".to_string()),
+            ("c1".to_string(), "玩耦".to_string(), "csp_Wogg".to_string()),
+        ];
+        let (kept, dupes) = plan_dedupe(&items);
+        assert_eq!(kept, vec!["a1".to_string(), "b1".to_string(), "c1".to_string()]);
+        assert_eq!(dupes, vec!["a2".to_string()], "★ 只有 a2 是同名同 api 的重复项");
     }
 
     /// ★★★ 扇出必须**真的并发**（真机：47 子站串行 32.8s；原版是秒级）

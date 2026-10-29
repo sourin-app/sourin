@@ -165,6 +165,121 @@ pub fn uc_spec() -> PanDriveSpec {
 /// 一次 HTTP 的预算（网盘接口偶发慢；8s 是"还能忍"的上限）
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// ★★★ 临时转存的**专用目录名**（2026-10-29 Owner 明确要求）
+///
+/// # Owner 原话
+/// ```text
+/// 「这些网盘我都还要用，都放在根目录我就没办法用了」
+/// ```
+/// 改前：`share/sharepage/save` 的 `to_pdir_fid` 写死 `"0"`（= 网盘根目录）
+/// ⇒ 每播一次就往用户根目录扔一个视频文件，播完删（失败就留），
+///    用户自己的文件全被顶到后面去了。
+///
+/// # 为什么用**固定名字**而不是带设备 id
+/// ```text
+/// ① 同一账号多机登录时，共用一个 `sourin-temp` 才不会在根目录堆出
+///    `sourin-temp-abc`/`sourin-temp-def` 一串目录（那正是用户抱怨的形态）；
+/// ② 清理只删**我们自己记下的 fid**（`temp_saved()`），不整目录清空 ⇒
+///    两台机器各删各的，不会互删正在播的文件；
+/// ③ 参考实现用的也是固定名（dex 实证 `Quarktemp` / `UCtemp`，见
+///    `mkdir_*` 的取证注释）—— 固定名是这条路线的既有惯例。
+/// ```
+/// ⚠️ 刻意**不复用**参考实现的名字（`Quarktemp`/`UCtemp`）：
+///    那是原版客户端的目录，混用会让"我们没清掉的残留"和"原版的"分不清。
+pub const TEMP_DIR_NAME: &str = "sourin-temp";
+
+/// 建目录的 URL（**纯函数**；dex 实证：`merge.b.w.m`(夸克) / `merge.b.B.m`(UC)）
+///
+/// ```text
+/// 夸克：https://drive-pc.quark.cn/1/clouddrive/file?pr=ucpro&fr=pc
+/// UC  ：https://pc-api.uc.cn/1/clouddrive/file?pr=UCBrowser&fr=pc
+/// ```
+/// ★★ **不是** `file/mkdir` —— 真网实测该路径 **HTTP 404**
+///    （`{"status":404,"error":"Not Found","path":"/1/clouddrive/file/mkdir"}`）；
+///    而 `POST .../clouddrive/file` 在有体、无 cookie 时回 **401
+///    `{"code":31001,"message":"require login [guest]"}`** ⇒ 路由存在、只缺登录。
+///    原始请求/响应见 `.probe/pan-mkdir-live.md`。
+fn mkdir_url(spec: &PanDriveSpec) -> String {
+    format!("https://{}/1/clouddrive/file?{}", spec.api_host, spec.pr_fr)
+}
+
+/// 建目录的请求体（**纯函数**；键名逐字来自 dex 的 const-string）
+///
+/// dex 取证（`merge.b.w.m`，夸克）：`pdir_fid` `"0"` / `file_name` / `dir_path` /
+/// `dir_init_lock`；成功后取 `data.fid`；失败时类里有常量 `Quark_temp_folder_error`
+/// （UC 那份是 `UC_temp_folder_error`）。
+fn mkdir_body(name: &str) -> String {
+    format!(
+        "{{\"pdir_fid\":\"0\",\"file_name\":{},\"dir_path\":\"\",\"dir_init_lock\":false}}",
+        serde_json::Value::String(name.to_string())
+    )
+}
+
+/// 从建目录响应里取 `data.fid`（**纯函数**；取不到 ⇒ 空串，由调用方如实报错）
+fn mkdir_fid_of(v: &serde_json::Value) -> String {
+    v.get("data")
+        .and_then(|d| d.get("fid"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// 转存请求体（**纯函数**）——`to_pdir_fid` / `pdir_fid` 必须是**目标目录**
+///
+/// # 为什么抽成纯函数
+/// 这是本卡的门禁故障注入点：把 `to_pdir_fid` 改回 `"0"`，
+/// `t_pan_temp_dir::save_body_targets_temp_dir_not_root` 必须立刻变红。
+fn share_save_body(
+    fid: &str,
+    fid_token: &str,
+    share_id: &str,
+    stoken: &str,
+    to_pdir_fid: &str,
+) -> String {
+    format!(
+        "{{\"fid_list\":[{}],\"fid_token_list\":[{}],\"to_pdir_fid\":{},\
+          \"pwd_id\":{},\"stoken\":{},\"pdir_fid\":{},\"scene\":\"link\"}}",
+        serde_json::Value::String(fid.to_string()),
+        serde_json::Value::String(fid_token.to_string()),
+        serde_json::Value::String(to_pdir_fid.to_string()),
+        serde_json::Value::String(share_id.to_string()),
+        serde_json::Value::String(stoken.to_string()),
+        serde_json::Value::String(to_pdir_fid.to_string()),
+    )
+}
+
+/// 临时目录不可用时的**退回决策**（纯函数，门禁可测）
+///
+/// 返回 `(要用的目录 fid, 失败原因)`：
+/// ```text
+/// Ok(fid)  → (fid, None)         正常：转存进 sourin-temp
+/// Err(why) → ("0", Some(why))    退回根目录（**不阻断播放**，由调用方打 warn）
+/// ```
+/// ★ 为什么允许退回：Owner 要的是"别堆根目录"，但**播放不能因此失败**——
+///   建目录失败（权限/账号限流/接口改版）时，宁可这一次落根目录并留下 warn，
+///   也不要让用户点了播放什么都放不出来。
+fn temp_dir_or_root(r: Result<String, String>) -> (String, Option<String>) {
+    match r {
+        Ok(fid) if !fid.trim().is_empty() => (fid, None),
+        // 空 fid 与 Err 同待遇：拿不到有效目录就不许往那里转存
+        Ok(_) => ("0".to_string(), Some("建目录没有返回 fid".to_string())),
+        Err(e) => ("0".to_string(), Some(e)),
+    }
+}
+
+/// 进程内的"临时目录 fid"缓存（按盘 kind 分开：两家盘 fid 不通用）
+///
+/// ★ 为什么必须缓存：`resolve_share_play` 每次都先列根目录再建目录，
+///   会把播放延迟拉长一截；并且同一进程里重复建同名目录在某些账号上会
+///   返回 `相同文件已存在` 一类错误。缓存后同一进程只探/建一次。
+static TEMP_DIR_CACHE: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> =
+    std::sync::OnceLock::new();
+
+fn temp_dir_cache() -> &'static std::sync::Mutex<Vec<(String, String)>> {
+    TEMP_DIR_CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+
 /// 浏览器 UA（两端共用；参考实现在轮询/取数上用 Chrome UA）
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                   (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
@@ -208,6 +323,8 @@ impl PanDrive {
         passcode: &str,
         fid: &str,
         fid_token: &str,
+        // 转到哪个目录（`sourin-temp` 的 fid；退回时才是 `"0"`）
+        to_pdir_fid: &str,
     ) -> Result<String, String> {
         /*
          * ★★★ 2026-10-28 真网读数（Owner 现场 403/`41020 转存文件token校验异常`）：
@@ -237,14 +354,15 @@ impl PanDrive {
 
         // ② 转存
         let save_url = self.api(&format!("share/sharepage/save?{}", self.spec.pr_fr));
-        let save_body = format!(
-            "{{\"fid_list\":[{}],\"fid_token_list\":[{}],\"to_pdir_fid\":\"0\",\
-              \"pwd_id\":{},\"stoken\":{},\"pdir_fid\":\"0\",\"scene\":\"link\"}}",
-            serde_json::Value::String(fid.to_string()),
-            serde_json::Value::String(fid_token.to_string()),
-            serde_json::Value::String(share_id.to_string()),
-            serde_json::Value::String(stoken.clone()),
-        );
+        /*
+         * ★★★ 2026-10-29：目标目录**不再是根目录**。
+         *
+         * 改前这里写死 `"to_pdir_fid":"0","pdir_fid":"0"` ⇒ 每播一次就在用户
+         * 网盘根目录扔一个视频（Owner 原话：「这些网盘我都还要用，都放在根目录
+         * 我就没办法用了」）。现在由调用方（`save_into_temp_dir`）传
+         * `sourin-temp` 的 fid 进来；只有建目录失败时才会是 `"0"`（并打 warn）。
+         */
+        let save_body = share_save_body(fid, fid_token, share_id, &stoken, to_pdir_fid);
         let resp = self
             .client
             .post(&save_url)
@@ -332,8 +450,112 @@ impl PanDrive {
         ))
     }
 
-    pub fn with_spec(class: &'static str, spec: PanDriveSpec) -> Self {
-        // ⚠️ 与 `pan_web_share.rs` 同一条纪律：reqwest 默认读环境代理，
+    /// ★★★ 拿到（必要时**创建**）临时转存目录的 fid
+    ///
+    /// # 判据（Owner 硬要求：网盘根目录不许再堆临时转存）
+    /// ```text
+    /// ① 先 `file/sort` 列根目录找同名目录（夸克/UC 都可能已存在，比如上次登录建的）
+    /// ② 找不到 ⇒ `POST file` 建目录（dex 实证的端点与请求体，见 `mkdir_url`）
+    /// ③ 成功 ⇒ 记进进程内缓存，同一进程只探/建一次
+    /// ④ 失败 ⇒ 原样 Err（**不在这里吞**：退回根目录的决定与日志在
+    ///    `save_into_temp_dir`，那里才看得到"这次是退回了"的上下文）
+    /// ```
+    /// ⚠️ 只认**目录**：同名文件（极少数用户会自己建个 sourin-temp 文件）不算，
+    ///    否则转存会失败在一个根本不是目录的 fid 上。
+    async fn ensure_temp_dir(&self, cookie: &str) -> Result<String, String> {
+        let kind = self.spec.kind.code().to_string();
+        // ① 缓存
+        {
+            let guard = temp_dir_cache().lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((_, fid)) = guard.iter().find(|(k, _)| k == &kind) {
+                if !fid.trim().is_empty() {
+                    return Ok(fid.clone());
+                }
+            }
+        }
+        // ② 先找（★ 必须用**含子目录**的列法 —— `list_dir` 是 `_fetch_sub_dirs=0`，
+        //    用它找目录永远找不到 ⇒ 每启动一次多建一个 sourin-temp，真机实测踩过）
+        let found = if let Ok(entries) = self.list_dir_with_subdirs(cookie, "0").await {
+            entries
+                .into_iter()
+                .find(|e| e.is_dir && e.name == TEMP_DIR_NAME)
+                .map(|e| e.fid)
+        } else {
+            None
+        };
+        let fid = match found {
+            Some(f) => f,
+            None => {
+                // ③ 建
+                let resp = self
+                    .client
+                    .post(mkdir_url(&self.spec))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/plain, */*")
+                    .header("Referer", self.spec.share_host)
+                    .header("Cookie", cookie)
+                    .body(mkdir_body(TEMP_DIR_NAME))
+                    .send()
+                    .await
+                    .map_err(|e| format!("建临时目录 {TEMP_DIR_NAME} 请求失败：{e}"))?;
+                let status = resp.status();
+                let text = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
+                let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+                let fid = mkdir_fid_of(&v);
+                if fid.is_empty() {
+                    return Err(format!(
+                        "建临时目录 {TEMP_DIR_NAME} 没有拿到 fid（HTTP {status}，响应：{}）",
+                        short(&text)
+                    ));
+                }
+                log::info!(
+                    "[PAN] 已建临时转存目录 kind={kind} name={TEMP_DIR_NAME} fid={fid}（不再往根目录堆）"
+                );
+                fid
+            }
+        };
+        // ④ 缓存
+        {
+            let mut guard = temp_dir_cache().lock().unwrap_or_else(|e| e.into_inner());
+            guard.retain(|(k, _)| k != &kind);
+            guard.push((kind, fid.clone()));
+        }
+        Ok(fid)
+    }
+
+    /// 转存到**临时目录**（建目录失败 ⇒ 退回根目录 + warn，绝不整体失败）
+    ///
+    /// 两个调用点（`play` 的分享分支、`resolve_share_play`）都走这里，
+    /// 保证"往哪转"只有一份判断 —— 两处各写一份必然漂移。
+    async fn save_into_temp_dir(
+        &self,
+        cookie: &str,
+        share_id: &str,
+        passcode: &str,
+        fid: &str,
+        fid_token: &str,
+    ) -> Result<String, String> {
+        let (dir, fallback) = temp_dir_or_root(self.ensure_temp_dir(cookie).await);
+        if let Some(why) = fallback.as_deref() {
+            log::warn!(
+                "[PAN] 临时目录 {TEMP_DIR_NAME} 不可用（{why}）⇒ 本次转存退回网盘根目录（不阻断播放）"
+            );
+        }
+        match self
+            .share_save(cookie, share_id, passcode, fid, fid_token, &dir)
+            .await
+        {
+            Ok(saved) => Ok(saved),
+            // ★ 文案里必须写清"这次是退回了根目录" —— 否则用户看到根目录里又多一个
+            //   文件，会以为修复没生效（那正是 Owner 这次要解决的问题）。
+            Err(e) => Err(match fallback {
+                Some(why) => format!("{e}（临时目录不可用，已退回根目录：{why}）"),
+                None => e,
+            }),
+        }
+    }
+
+    pub fn with_spec(class: &'static str, spec: PanDriveSpec) -> Self {        // ⚠️ 与 `pan_web_share.rs` 同一条纪律：reqwest 默认读环境代理，
         //    而用户机器上的代理会把"接口可用"测成"全失败"。
         let client = reqwest::Client::builder()
             .user_agent(UA)
@@ -402,6 +624,17 @@ impl PanDrive {
     /// ```
     async fn list_dir(&self, cookie: &str, dir: &str) -> Result<Vec<DriveEntry>, String> {
         let url = list_dir_url(&self.spec, dir);
+        let v = self.get_json(cookie, &url).await?;
+        Ok(parse_entries(&v))
+    }
+
+    /// 列目录（**含子目录**）—— 只给 `ensure_temp_dir` 用（见 `list_dir_url_with_subdirs` 的注释）
+    async fn list_dir_with_subdirs(
+        &self,
+        cookie: &str,
+        dir: &str,
+    ) -> Result<Vec<DriveEntry>, String> {
+        let url = list_dir_url_with_subdirs(&self.spec, dir);
         let v = self.get_json(cookie, &url).await?;
         Ok(parse_entries(&v))
     }
@@ -501,6 +734,22 @@ fn list_dir_url(spec: &PanDriveSpec, dir: &str) -> String {
          &_page=1&_size={}&_fetch_total=1&_fetch_sub_dirs=0&_sort=file_type:asc,file_name:asc",
         spec.api_host, spec.pr_fr, spec.page_size
     )
+}
+
+/// 拼"列文件（**含子目录**）"的 URL —— 只给"找临时目录"用
+///
+/// # 为什么必须单独一条（真网实测抓到的真缺陷）
+/// ```text
+/// `list_dir_url` 是 `_fetch_sub_dirs=0`（照参考实现逐字，门禁还钉着它）⇒
+/// **列不出目录条目**。而 `ensure_temp_dir` 第一步就是"在根目录找同名目录"：
+///   用 list_dir 找 ⇒ 永远找不到 ⇒ **每启动一次就在根目录多建一个 sourin-temp**。
+/// 2026-10-29 真机读数（我自己的登录态）：
+///   [PAN-DIR] PanQuark 临时目录 sourin-temp fid=430959de…
+///   [PAN-DIR] PanQuark 根目录条目 10 个；其中 sourin-temp = None   ← 找不着
+/// ⇒ 找目录必须 `_fetch_sub_dirs=1`；**列货架仍用 0**（那条不能动，门禁逐字断言）。
+/// ```
+fn list_dir_url_with_subdirs(spec: &PanDriveSpec, dir: &str) -> String {
+    list_dir_url(spec, dir).replace("_fetch_sub_dirs=0", "_fetch_sub_dirs=1")
 }
 
 /// 解析货架下标（**纯函数** —— 抽出来是为了让判据不依赖凭据）
@@ -1039,7 +1288,9 @@ impl CspSite for PanDrive {
          *   ★ 解码收进 `parse_share_item`（与 `item_id_of` 成对，形状由门禁钉死）。
          */
         let fid = if let Some((share_id, sfid, token)) = parse_share_item(raw_id) {
-            self.share_save(&cookie, &share_id, "", &sfid, &token).await?
+            // ★ 走临时目录（建不出来才退回根目录），见 `save_into_temp_dir`
+            self.save_into_temp_dir(&cookie, &share_id, "", &sfid, &token)
+                .await?
         } else {
             raw_id.to_string()
         };
@@ -1343,6 +1594,13 @@ impl PanDrive {
         }
         let Some(cookie) = self.cookie() else { return };
         for fid in victims {
+            /*
+             * ★ 2026-10-29：日志写清"从 sourin-temp 清理"。
+             *
+             * 为什么强调：这条 fid 是**转存进临时目录**的那份（见 `save_into_temp_dir`），
+             * 不是用户自己的文件。日志里不写清目录名，现场排查时就分不清
+             * "我们删的是自己扔进去的"还是"误删了用户的东西"。
+             */
             match self
                 .client
                 .post(file_delete_url(&self.spec))
@@ -1354,10 +1612,17 @@ impl PanDrive {
                 .await
             {
                 Ok(r) if r.status().is_success() => {
-                    log::info!("[PAN] 已清理上次的临时转存 kind={kind} fid={fid}");
+                    log::info!(
+                        "[PAN] 已从 {TEMP_DIR_NAME} 清理临时转存 kind={kind} fid={fid}（action_type=2 移入回收站）"
+                    );
                 }
-                Ok(r) => log::warn!("[PAN] 清理临时转存失败 kind={kind} fid={fid} HTTP {}", r.status()),
-                Err(e) => log::warn!("[PAN] 清理临时转存请求失败 kind={kind} fid={fid} err={e}"),
+                Ok(r) => log::warn!(
+                    "[PAN] 清理 {TEMP_DIR_NAME} 里的临时转存失败 kind={kind} fid={fid} HTTP {}",
+                    r.status()
+                ),
+                Err(e) => log::warn!(
+                    "[PAN] 清理 {TEMP_DIR_NAME} 里的临时转存请求失败 kind={kind} fid={fid} err={e}"
+                ),
             }
         }
     }
@@ -1400,7 +1665,7 @@ impl PanDrive {
         let picked = self.pick_share_video(&cookie, share_id, passcode).await?;
         let token = picked.fid_token.clone().unwrap_or_default();
         let new_fid = self
-            .share_save(&cookie, share_id, passcode, &picked.fid, &token)
+            .save_into_temp_dir(&cookie, share_id, passcode, &picked.fid, &token)
             .await?;
         self.remember_temp(&new_fid);
         // 复用 `play`（`share_save` 已把文件放进我自己的网盘 ⇒ 走到裸 fid 那条路）
@@ -2341,6 +2606,170 @@ mod tests {
                 "★★ {} 不走夸克/UC 的分享链路（协议结构不同）",
                 k.display()
             );
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  t_pan_temp_dir —— 临时转存**不许堆在网盘根目录**（2026-10-29 Owner 要求）
+    //
+    //  Owner 原话：「这些网盘我都还要用，都放在根目录我就没办法用了」
+    //  改前：`share/sharepage/save` 的 `to_pdir_fid`/`pdir_fid` 写死 `"0"`。
+    //  改后：转到 `sourin-temp` 的 fid；建目录失败才退回 `"0"` 并打 warn。
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// 目录名必须是我们的、且不能是根目录哨兵
+    #[test]
+    fn temp_dir_name_is_ours_and_not_root() {
+        assert_eq!(TEMP_DIR_NAME, "sourin-temp");
+        assert!(!TEMP_DIR_NAME.trim().is_empty(), "★ 目录名不能为空");
+        assert_ne!(TEMP_DIR_NAME, "0", "★★ `0` 是根目录哨兵，绝不能当目录名");
+        assert!(
+            !TEMP_DIR_NAME.contains('/') && !TEMP_DIR_NAME.contains('\\'),
+            "★ 目录名里不许带路径分隔符（那会变成 dir_path 语义）"
+        );
+        // ★ 反面对照：**不许**复用参考实现的两个名字 —— 混用会让
+        //   "我们没清掉的残留" 和 "原版客户端的" 分不清（见常量注释）
+        assert_ne!(TEMP_DIR_NAME, "Quarktemp");
+        assert_ne!(TEMP_DIR_NAME, "UCtemp");
+    }
+
+    /// 建目录的 URL / 请求体必须与 dex 实证逐字一致（两家各一次）
+    ///
+    /// dex 取证：`merge.b.w.m`（夸克）、`merge.b.B.m`（UC）里的 const-string。
+    #[test]
+    fn mkdir_request_matches_the_reference_dex() {
+        let q = quark_spec();
+        let u = uc_spec();
+        assert_eq!(
+            mkdir_url(&q),
+            "https://drive-pc.quark.cn/1/clouddrive/file?pr=ucpro&fr=pc"
+        );
+        assert_eq!(
+            mkdir_url(&u),
+            "https://pc-api.uc.cn/1/clouddrive/file?pr=UCBrowser&fr=pc"
+        );
+        // ★★ 端点不是 `file/mkdir`：真网实测该路径 404（证据 .probe/pan-mkdir-live.md）
+        assert!(
+            !mkdir_url(&q).contains("file/mkdir"),
+            "★★ 建目录端点是 POST .../clouddrive/file（file/mkdir 实测 404）"
+        );
+        // 请求体：四个键逐字来自 dex，且父目录是根（"0" 在这里是**对的**：
+        // sourin-temp 本身就该建在根目录下，用户才看得见、找得到）
+        let body = mkdir_body(TEMP_DIR_NAME);
+        let v: serde_json::Value = serde_json::from_str(&body).expect("请求体必须是合法 JSON");
+        assert_eq!(v["pdir_fid"], "0", "★ 建目录的父目录是根目录");
+        assert_eq!(v["file_name"], TEMP_DIR_NAME);
+        assert_eq!(v["dir_path"], "");
+        assert_eq!(v["dir_init_lock"], serde_json::json!(false));
+    }
+
+    /// 建目录响应里取 `data.fid`
+    #[test]
+    fn mkdir_fid_is_read_from_data_fid() {
+        let v = serde_json::json!({"status":200,"code":0,"data":{"fid":"dir_fid_123"}});
+        assert_eq!(mkdir_fid_of(&v), "dir_fid_123");
+        // 取不到 ⇒ 空串（调用方据此如实报错，不许编一个 fid）
+        assert_eq!(mkdir_fid_of(&serde_json::json!({"status":401})), "");
+        assert_eq!(mkdir_fid_of(&serde_json::json!({"data":{}})), "");
+    }
+
+    /// ★★★ 转存请求必须指向**临时目录**，不是根目录
+    ///
+    /// 注入：把 `share_save_body` 里的 `to_pdir_fid` 改回 `"0"` ⇒ 本条必须红。
+    #[test]
+    fn save_body_targets_temp_dir_not_root() {
+        let temp_fid = "dir_fid_abc";
+        let body = share_save_body("file1", "tok1", "share1", "stoken1", temp_fid);
+        let v: serde_json::Value = serde_json::from_str(&body).expect("转存请求体必须是合法 JSON");
+        assert_eq!(
+            v["to_pdir_fid"], temp_fid,
+            "★★ 转存目标必须是临时目录 fid（不是 \"0\" 根目录）：{body}"
+        );
+        assert_eq!(
+            v["pdir_fid"], temp_fid,
+            "★★ `pdir_fid` 也必须跟着走，否则部分账号按根目录处理：{body}"
+        );
+        assert_ne!(v["to_pdir_fid"], "0", "★★ 不许落根目录：{body}");
+        // 其余键不许被这次改动带歪
+        assert_eq!(v["pwd_id"], "share1");
+        assert_eq!(v["stoken"], "stoken1");
+        assert_eq!(v["scene"], "link");
+        assert_eq!(v["fid_list"][0], "file1");
+        assert_eq!(v["fid_token_list"][0], "tok1");
+    }
+
+    /// 「建目录失败 ⇒ 退回根目录」这条**分支**本身
+    ///
+    /// ★ 为什么单独测：退回是"播放不许整体失败"的最后一道闸，而它永远走不到
+    ///   （建目录成功时）—— 不抽出纯函数就只能靠真网把目录删掉才能测。
+    #[test]
+    fn temp_dir_or_root_falls_back_and_explains() {
+        // 正常：用临时目录
+        let (dir, why) = temp_dir_or_root(Ok("dir_fid_abc".to_string()));
+        assert_eq!(dir, "dir_fid_abc");
+        assert!(why.is_none(), "成功时不该有退回原因");
+
+        // 失败：退回根目录，并**带着原因**（日志与错误文案都靠它）
+        let (dir, why) = temp_dir_or_root(Err("建目录 401".to_string()));
+        assert_eq!(dir, "0", "★★ 建目录失败 ⇒ 退回根目录");
+        assert_eq!(why.as_deref(), Some("建目录 401"), "★ 原因必须原样保留");
+
+        // 阴性对照：`Ok("")`（接口说成功但没给 fid）也算失败 ——
+        // 空 fid 拿去转存只会得到一句上游错误，不如直接退回
+        let (dir, why) = temp_dir_or_root(Ok("   ".to_string()));
+        assert_eq!(dir, "0");
+        assert!(why.is_some(), "★ 空 fid 必须算失败并说明");
+    }
+
+    /// ★ 真网用例（ignored）：真登录态下建目录并打印 fid
+    ///
+    /// ```text
+    /// SOURIN_LIVE_PAN_DIR=1 cargo test --lib csp::pan_drive --release -- --ignored --nocapture
+    /// ```
+    /// 判据（打印给人看）：
+    ///   · 建目录/复用目录的 fid
+    ///   · 根目录列表里确实有 `sourin-temp`（证明不再堆文件在根目录）
+    #[tokio::test]
+    #[ignore = "真网络 + 真登录态：需要系统钥匙串里已保存的夸克 cookie"]
+    async fn live_temp_dir_created_with_real_cookie() {
+        if std::env::var("SOURIN_LIVE_PAN_DIR").ok().as_deref() != Some("1") {
+            eprintln!("[PAN-DIR] 未设置 SOURIN_LIVE_PAN_DIR=1 ⇒ 跳过");
+            return;
+        }
+        for (class, spec) in [("PanQuark", quark_spec()), ("PanUC", uc_spec())] {
+            let d = PanDrive::with_spec(class, spec);
+            let Some(cookie) = d.cookie() else {
+                eprintln!("[PAN-DIR] {class}：钥匙串里没有 cookie ⇒ 跳过（不是失败）");
+                continue;
+            };
+            match d.ensure_temp_dir(&cookie).await {
+                Ok(fid) => {
+                    eprintln!("[PAN-DIR] {class} 临时目录 {TEMP_DIR_NAME} fid={fid}");
+                    match d.list_dir_with_subdirs(&cookie, "0").await {
+                        Ok(entries) => {
+                            let hit = entries
+                                .iter()
+                                .find(|e| e.name == TEMP_DIR_NAME)
+                                .map(|e| (e.fid.clone(), e.is_dir));
+                            eprintln!(
+                                "[PAN-DIR] {class} 根目录（含子目录）条目 {} 个；其中 {} = {:?}",
+                                entries.len(),
+                                TEMP_DIR_NAME,
+                                hit
+                            );
+                            assert!(hit.is_some(), "★ 建完之后根目录里必须能看到 {TEMP_DIR_NAME}");
+                            /* ★★ 幂等：再调一次必须**复用同一个 fid**（否则每次启动多一个目录，
+                             *    正是 Owner 说的"都放根目录就没法用"的变体） */
+                            if let Ok(again) = d.ensure_temp_dir(&cookie).await {
+                                eprintln!("[PAN-DIR] {class} 第二次 ensure ⇒ fid={again}");
+                                assert_eq!(again, fid, "★★ 第二次必须复用同一个临时目录");
+                            }
+                        }
+                        Err(e) => eprintln!("[PAN-DIR] {class} 列根目录失败：{e}"),
+                    }
+                }
+                Err(e) => eprintln!("[PAN-DIR] {class} 建目录失败：{e}"),
+            }
         }
     }
 }

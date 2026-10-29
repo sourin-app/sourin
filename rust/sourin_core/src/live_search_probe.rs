@@ -14,8 +14,7 @@
 //   · 聚合那一路（`tvbox_agg`）出了多少条、耗时多少
 //   · 总数与"原版 75 条"的差距
 #[cfg(test)]
-mod live_search_probe {
-    #[tokio::test]
+mod live_search_probe {    #[tokio::test]
     #[ignore = "真网络：需要本机数据目录与已启用源"]
     async fn live_search_count() {
         if std::env::var("SOURIN_LIVE_SEARCH").ok().as_deref() != Some("1") {
@@ -74,6 +73,22 @@ mod live_search_probe {
         // ★ 聚合的候选子站数（判断"扇出到底覆盖了多少源"）
         let kids = crate::tvbox_aggregate::enabled_children(&st.registry, &st.data_dir);
         eprintln!("[LIVE] ★ 聚合候选子站数 = {}", kids.len());
+        // ? UI ?"????"? `tvbox_agg_channels` ??????????????????????
+        if let Ok(v) = crate::tvbox_aggregate::command_channels(&st) {
+            let items = v.get("items").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+            let named = items
+                .iter()
+                .filter(|i| i.get("name").and_then(|n| n.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false))
+                .count();
+            eprintln!("[LIVE] ? ????{} ?????? {} ??", items.len(), named);
+            for i in items.iter().take(5) {
+                eprintln!(
+                    "[LIVE]    {} | {}",
+                    i.get("id").and_then(|x| x.as_str()).unwrap_or(""),
+                    i.get("name").and_then(|x| x.as_str()).unwrap_or("")
+                );
+            }
+        }
         let mut total = 0usize;
         let mut per_child: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
@@ -398,6 +413,118 @@ mod live_search_probe {
             if !done {
                 eprintln!("[PLAY] 搜索结果里没找到分享页条目（换关键词再试）");
             }
+        }
+    }
+}
+
+// ???????????????????????????????????????????????????????????????????????
+//  ?????**????**????????????????? ext ??
+// ???????????????????????????????????????????????????????????????????????
+//
+// ???
+// ```text
+// set SOURIN_LIVE_IMPORT=1 && cargo test --lib live_reimport_subscription --release -- --ignored --nocapture
+// ???SOURIN_SUB=<?? JSON ??>??? <repo>/.probe/ref-subscription.json?
+//       SOURIN_DATA_DIR=<????>??? %APPDATA%\app.sourin.player?
+// ```
+//
+// ???????`2026-10-29-ext-sources-dropped-on-probe-failure` ???"????? ext"?
+// ?**??????????????** ?? ? 5 ? App ??? builtin ? ext ???
+// ???????????????**????**???????imported/skipped/probeFailed??
+#[cfg(test)]
+mod live_reimport {
+    #[tokio::test]
+    #[ignore = "??? + ?????????"]
+    async fn live_reimport_subscription() {
+        if std::env::var("SOURIN_LIVE_IMPORT").ok().as_deref() != Some("1") {
+            eprintln!("[IMPORT] ??? SOURIN_LIVE_IMPORT=1 ? ??");
+            return;
+        }
+        let dir = std::env::var("SOURIN_DATA_DIR").unwrap_or_else(|_| {
+            let base = std::env::var("APPDATA").unwrap_or_default();
+            format!("{base}\\app.sourin.player")
+        });
+        let sub = std::env::var("SOURIN_SUB").unwrap_or_else(|_| {
+            format!("{}/../../.probe/ref-subscription.json", env!("CARGO_MANIFEST_DIR"))
+        });
+        let text = std::fs::read_to_string(&sub).expect("?????");
+        eprintln!("[IMPORT] ????={dir} ??={sub} ??={}", text.len());
+        let st = crate::state::AppState::bootstrap(std::path::PathBuf::from(&dir))
+            .await
+            .expect("bootstrap");
+        match crate::tvbox::import_tvbox_config(&st, &text).await {
+            Ok(rep) => {
+                let imported = rep.get("imported").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                let skipped = rep.get("skipped").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                let lives = rep.get("liveImported").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                eprintln!("[IMPORT] ???imported={imported} liveImported={lives} skipped={skipped}");
+                if let Some(arr) = rep.get("skipped").and_then(|v| v.as_array()) {
+                    for s in arr.iter().take(12) {
+                        eprintln!(
+                            "[IMPORT]   skipped: {} | {}",
+                            s.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
+                            s.get("reason").and_then(|v| v.as_str()).unwrap_or("?").chars().take(80).collect::<String>()
+                        );
+                    }
+                }
+                if let Some(arr) = rep.get("imported").and_then(|v| v.as_array()) {
+                    for s in arr.iter().take(6) {
+                        eprintln!(
+                            "[IMPORT]   imported: {} | probeFailed={} extLen={}",
+                            s.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
+                            s.get("probeFailed").map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                            s.get("extLen").map(|v| v.to_string()).unwrap_or_else(|| "-".into())
+                        );
+                    }
+                }
+            }
+            Err(e) => eprintln!("[IMPORT] ?????{e}"),
+        }
+    }
+}
+
+
+// ???????????????????????????????????????????????????????????????????????
+//  ????????????????????Owner ?????????????
+// ???????????????????????????????????????????????????????????????????????
+// ???SOURIN_LIVE_SOLO=1 cargo test --lib live_set_solo --release -- --ignored --nocapture
+#[cfg(test)]
+mod live_solo {
+    #[tokio::test]
+    #[ignore = "?????????"]
+    async fn live_set_solo() {
+        if std::env::var("SOURIN_LIVE_SOLO").ok().as_deref() != Some("1") {
+            eprintln!("[SOLO] ??? SOURIN_LIVE_SOLO=1 ? ??");
+            return;
+        }
+        let dir = std::env::var("SOURIN_DATA_DIR").unwrap_or_else(|_| {
+            let base = std::env::var("APPDATA").unwrap_or_default();
+            format!("{base}\\app.sourin.player")
+        });
+        let st = crate::state::AppState::bootstrap(std::path::PathBuf::from(&dir))
+            .await
+            .expect("bootstrap");
+        let before = st.registry.manifests().len();
+        let args = serde_json::json!({ "solo": true });
+        match crate::tvbox_aggregate::command_set(&st, &args) {
+            Ok(v) => {
+                eprintln!("[SOLO] ???? solo={:?} ??? {before} ?", v.get("solo"));
+                // ??????list_providers ?????
+                match crate::commands::list_providers(&st) {
+                    Ok(list) => {
+                        eprintln!("[SOLO] list_providers ?? {} ??{:?}", list.len(),
+                            list.iter().map(|m| m.id.clone()).collect::<Vec<_>>());
+                        assert_eq!(list.len(), 1, "?? solo ???????????");
+                        assert_eq!(list[0].id, crate::tvbox_aggregate::AGGREGATE_ID);
+                    }
+                    Err(e) => eprintln!("[SOLO] list_providers ???{e}"),
+                }
+                // ???????????
+                let kids = crate::tvbox_aggregate::enabled_children(&st.registry, &st.data_dir).len();
+                eprintln!("[SOLO] ???????? {kids} ??solo ??????");
+                assert!(kids > 10, "?? solo ??????????????????");
+            }
+            Err(e) => eprintln!("[SOLO] ?????{e}"),
         }
     }
 }

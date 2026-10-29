@@ -1523,6 +1523,35 @@ class SourinApp extends StatefulWidget {
   State<SourinApp> createState() => _SourinAppState();
 }
 
+/// ★★★ P1（2026-10-30，预授权）：剥掉 id 里的 provider 路由前缀（纯函数）
+///
+/// # 手机端 id 的形状（遥控搜索结果原样回传）
+/// ```text
+/// 聚合条目 id = 'tvbox_agg:csp-xxx::19106'
+///   = MediaId.as_key()（Rust model.rs:70）：provider + ':' + native，
+///     native 里是 '<子站id>::<原始id>'（tvbox_aggregate.rs wrap_item）
+/// ```
+///
+/// # 为什么必须剥（真机读数：.probe/play-driver/results/drive-20261029-234208.json）
+/// ```text
+/// 改前：_openItemFromRemote('tvbox_agg', 'tvbox_agg:csp-xxx::19106')
+///   → Rust get_detail: MediaId::new(provider, id) —— id **原样**当 native
+///   → 聚合 route() 按 '::' 切出 child = 'tvbox_agg:csp-xxx' ⇒ registry 里没有
+///   → 「找不到子站 tvbox_agg:csp-xxx」 ⇒ play_item ok=false（手机点了没反应）
+/// ```
+///
+/// # 为什么剥一次就对
+/// App 自己的搜索打开路径（search_page.dart `_open`）**总是**把复合 id 按第一个
+/// ':' 切成 provider + native 再往下走 —— 本函数补齐同样的形状。
+/// 语义与 Rust MediaId::parse 的 split-once 同源：**只剥一次**（native 里本就
+/// 允许出现 ':'，子站原始 id 可能是 '19106' 也可能是 URL，再剥会把子站 id 弄坏）。
+@visibleForTesting
+String stripProviderRoutePrefix(String provider, String id) {
+  final p = provider.trim();
+  if (p.isEmpty || id.isEmpty) return id;
+  return id.startsWith('$p:') ? id.substring(p.length + 1) : id;
+}
+
 class _SourinAppState extends State<SourinApp>
     with WidgetsBindingObserver {
   /// ★★★ 遥控桥的「全局能力」—— 三件与**页面无关**的事（集成任务 M2）
@@ -1650,13 +1679,19 @@ class _SourinAppState extends State<SourinApp>
     debugPrint('[REMOTE] play_item → 打开 $provider:$id'
         '（手机给的标题="${title ?? "(无)"}"）');
 
+    // ── ⓪ P1：剥掉 id 里的 provider 路由前缀（理由见函数文档）──
+    final nativeId = stripProviderRoutePrefix(provider, id);
+    if (nativeId != id) {
+      debugPrint('[REMOTE] play_item 已剥路由前缀: $id → $nativeId');
+    }
+
     // ── ① 尽力补齐：详情 → 首个线路 → 该线路的剧集 ──
     var shownTitle = title ?? '';
     String? cover;
     String? srcCode;
     List<Episode> eps = const [];
     try {
-      final d = await SourinApi.getDetail(provider, id);
+      final d = await SourinApi.getDetail(provider, nativeId);
       // 详情里的标题比手机端传的更准（手机那个是搜索结果里的短标题）
       if (d.title.isNotEmpty) shownTitle = d.title;
       cover = d.cover;
@@ -1669,7 +1704,7 @@ class _SourinAppState extends State<SourinApp>
        */
       if (srcCode != null && srcCode.isNotEmpty) {
         try {
-          final more = await SourinApi.getEpisodes(provider, id, srcCode);
+          final more = await SourinApi.getEpisodes(provider, nativeId, srcCode);
           if (more.isNotEmpty) eps = more;
         } catch (e) {
           debugPrint('[REMOTE] play_item 取剧集失败（沿用详情的）: $e');
@@ -1714,7 +1749,9 @@ class _SourinAppState extends State<SourinApp>
     shell._openPlayer(
       PlayRequestData(
         provider: provider,
-        id: id,
+        // ★ P1：会话 id 用剥过前缀的 native（与 getDetail/getEpisodes 同一形状）；
+        //   resolveStream 也走它 —— 否则 Rust 侧同样"找不到子站"。
+        id: nativeId,
         title: shownTitle,
         cover: cover,
         episodeId: first?.id,

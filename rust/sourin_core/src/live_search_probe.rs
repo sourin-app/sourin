@@ -333,5 +333,71 @@ mod live_search_probe {
                 eprintln!("[LIVE] 前 12 个子站里没有发现把分享页当剧集的条目");
             }
         }
+        /*
+         * ★★★ 2026-10-29：**端到端复现 Owner 的"夸克不能播放"**
+         * ```text
+         * 走真实链路：聚合搜索结果 → detail → 取那条"网盘分享页" → registry.resolve
+         *   （= TvboxAggregate::resolve 剥 <child>:: 前缀 → CspProvider::resolve → 分享页兜底）
+         * 再用返回的 headers 真发一次 Range GET：
+         *   200 + video ⇒ 这条路真能播；403 XML ⇒ Cookie 丢了（前缀/头传递又断了）
+         * ```
+         */
+        if std::env::var("SOURIN_LIVE_PLAY").ok().as_deref() == Some("1") {
+            let mut done = false;
+            'play: for (_pid, _name, page) in &res.results {
+                for it in page.items.iter() {
+                    if done {
+                        break 'play;
+                    }
+                    let Some(p) = st.registry.route(&it.id) else { continue };
+                    let Ok(d) = p.detail(&it.id).await else { continue };
+                    for e in &d.episodes {
+                        if !e.id.contains("pan.quark.cn/s/") && !e.id.contains("drive.uc.cn/s/") {
+                            continue;
+                        }
+                        eprintln!("[PLAY] 命中分享页：{:?} 集={:?}", d.title, e.title);
+                        let req = crate::model::PlayRequest {
+                            source_code: None,
+                            episode_id: Some(e.id.clone()),
+                            quality: None,
+                            flag: Some(e.flag.clone()),
+                        };
+                        match p.resolve(&it.id, &req).await {
+                            Ok(list) => {
+                                for c in &list {
+                                    eprintln!(
+                                        "[PLAY] 候选 url={} header_keys={:?}",
+                                        c.url.chars().take(70).collect::<String>(),
+                                        c.headers.iter().map(|(k, _)| k).collect::<Vec<_>>()
+                                    );
+                                    if let Ok(cl) = reqwest::Client::builder().no_proxy().build() {
+                                        let mut rb = cl.get(&c.url).header("Range", "bytes=0-1");
+                                        for (k, v) in &c.headers {
+                                            rb = rb.header(k, v);
+                                        }
+                                        match rb.send().await {
+                                            Ok(r) => eprintln!(
+                                                "[PLAY] 直链 GET status={} ct={}",
+                                                r.status(),
+                                                r.headers()
+                                                    .get("content-type")
+                                                    .and_then(|v| v.to_str().ok())
+                                                    .unwrap_or("-")
+                                            ),
+                                            Err(err) => eprintln!("[PLAY] 直链 GET 失败：{err}"),
+                                        }
+                                    }
+                                }
+                            }
+                            Err(err) => eprintln!("[PLAY] resolve 失败：{err}"),
+                        }
+                        done = true;
+                    }
+                }
+            }
+            if !done {
+                eprintln!("[PLAY] 搜索结果里没找到分享页条目（换关键词再试）");
+            }
+        }
     }
 }

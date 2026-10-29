@@ -1071,6 +1071,40 @@ pub async fn probe_site(
     }
 }
 
+/// 导入探测失败时，这条站还该不该**照样落盘**？
+///
+/// # 为什么必须有这条判断（2026-10-29 现场）
+/// 用户数据目录里这 5 条一直在报"缺配置"，而**原始订阅里它们的 `ext` 是有的**
+/// （真证据：`.probe/ext-real-fragments.json` 逐字抄自 `.probe/ref-subscription.json`）：
+/// ```text
+/// csp-app99        ext 不是合法 JSON：EOF while parsing a value at line 1 column 0
+/// csp-app-get      ext 里缺 dataKey
+/// csp-app-rj       ext 里没有站点地址（`url`）
+/// csp-hj-zhen-cai  需要 ext 里的站点地址（键 `site`）
+/// csp-wogg         需要 ext 里的镜像列表（键 `site`）
+/// ```
+/// 报错的是 `state.rs` 给每个 csp 类自动建的**内置占位源**（`ext` 恒为空），
+/// 而带 `ext` 的那条**从来没落过盘**：
+/// ```text
+/// ① 导入那一刻该类还没实现 → 进 skipped（"csp_X 尚未实现"）→ 不落盘
+/// ② 该类后来实现了 → 没有任何东西会回头重导 → 占位源一直替它报"缺配置"
+/// ③ 今天即便重导，只要探测那一下抖动（站点 5xx/超时），本函数之前也会
+///    `continue` 把整条丢掉 —— `ext` 就此**真的**丢了，而且报错还说"配置里没有"
+/// ```
+/// ⇒ 判据：**csp 类 + 配置里带了 ext** ⇒ 生产源（`ext` 就是它的全部配置），
+///    探测失败只影响"分类表能不能预先探到"，不影响"这条源存不存在"。
+///
+/// # 为什么不套用到苹果CMS
+/// 苹果CMS 的 api 是配置里唯一的东西，探测失败 = 那个 api 当下就是死的；
+/// 落一条死源只会在源列表里留一个点进去必报错的条目（本仓最忌讳的"看起来有"）。
+/// csp 源相反：`ext` 是**用户的选择**（站点列表/密钥），一次超时不代表它失效。
+///
+/// ⚠️ 这是本卡的门禁故障注入点：把它改成恒 `false`，
+///    `t_ext_import::probe_failure_still_persists_real_ext` 必须立刻变红。
+pub fn keep_ext_on_probe_failure(job: &SiteJob) -> bool {
+    job.csp.is_some() && !job.ext.trim().is_empty()
+}
+
 /// 按站点类型建 Provider（苹果CMS / csp 的 Rust 实现）
 ///
 /// `id` / 名称 / api 的语义与 `collect_sites` 产出的 [`SiteJob`] 一致；
@@ -1914,16 +1948,37 @@ pub async fn import_tvbox_config(
     // (源 id, site key, 名称, 接口) —— 只用于落盘订阅来源
     let mut meta_rows: Vec<(String, String, String, String)> = Vec::new();
     for (idx, job) in jobs.iter().enumerate() {
+        // ★ 探测失败但"配置还在"的 csp 源：照样往下走（见 keep_ext_on_probe_failure）
+        let mut probe_failed: Option<String> = None;
         let ok = match results.get_mut(idx).and_then(|x| x.take()) {
             Some(Ok(ok)) => ok,
             Some(Err(reason)) => {
-                skipped.push(serde_json::json!({
-                    "name": job.name,
-                    "type": job.kind,
-                    "stage": "probe",
-                    "reason": reason,
-                }));
-                continue;
+                /*
+                 * ⚠️ **保留的源不进 `skipped`**。
+                 *
+                 * 两个列表的语义必须泾渭分明（界面直接照搬这两个列表）：
+                 * ```text
+                 * skipped  = 这次**没**进源列表的（用户不必对它抱期待）
+                 * imported = 这次**进了**源列表的（probeFailed 说明"没探通但配置在"）
+                 * ```
+                 * 同一条站同时出现在两个列表里，界面就会一边说"已导入"一边说
+                 * "跳过"，用户无从判断 —— 那是本仓最忌讳的分裂。
+                 */
+                if !keep_ext_on_probe_failure(job) {
+                    skipped.push(serde_json::json!({
+                        "name": job.name,
+                        "type": job.kind,
+                        "stage": "probe",
+                        "reason": reason,
+                    }));
+                    continue;
+                }
+                probe_failed = Some(reason);
+                // 分类留空：运行期 home() 再问，绝不在这里编一个假分类
+                ProbeOk {
+                    classes: Vec::new(),
+                    total: 0,
+                }
             }
             None => {
                 skipped.push(serde_json::json!({
@@ -1987,6 +2042,13 @@ pub async fn import_tvbox_config(
             //   csp 源现在也落盘 ⇒ 一律 true（旧值 job.csp.is_none() 已废）
             "persisted": true,
             "kindTag": if job.csp.is_some() { "csp" } else { "appleCms" },
+            /*
+             * ★ 2026-10-29：`ext` 在、但探测没通的 csp 源**也会**走到这里。
+             * 必须把"没探通"和"探通了但 0 个分类"分开说 —— 否则界面把前者
+             * 显示成"导入成功、分类 0"，用户点进去看到运行期报错会以为是新 bug。
+             */
+            "extLen": job.ext.trim().len(),
+            "probeFailed": probe_failed,
         }));
         // 记下 (id, site key, 名称, 接口) —— 落盘订阅来源时要用（见下）
         meta_rows.push((
@@ -2886,15 +2948,30 @@ pub async fn update_tvbox_source(
         let Some(job) = jobs.get(*remote_idx) else {
             continue;
         };
+        /*
+         * ★ 与首次导入**同一判据**（`keep_ext_on_probe_failure`）：
+         * 带 ext 的 csp 源探测失败 ⇒ 仍然落盘（ext 就是它的配置），
+         * 只把原因挂到报告行上。否则"检测更新"会把用户改好的 ext 又丢一次
+         * —— 那正是本卡要修的那条丢失路径的副本。
+         */
+        let mut probe_failed: Option<String> = None;
         let ok = match results.get_mut(idx).and_then(|x| x.take()) {
             Some(Ok(ok)) => ok,
             Some(Err(reason)) => {
-                failed_out.push(serde_json::json!({
-                    "name": job.name,
-                    "api": normalize_api_url(&job.api),
-                    "reason": reason,
-                }));
-                continue;
+                if !keep_ext_on_probe_failure(job) {
+                    failed_out.push(serde_json::json!({
+                        "name": job.name,
+                        "api": normalize_api_url(&job.api),
+                        "reason": reason,
+                    }));
+                    continue;
+                }
+                probe_failed = Some(reason);
+                // 分类留空：运行期 home() 再问（不编假分类）
+                ProbeOk {
+                    classes: Vec::new(),
+                    total: 0,
+                }
             }
             None => {
                 failed_out.push(serde_json::json!({
@@ -2972,6 +3049,9 @@ pub async fn update_tvbox_source(
             "total": ok.total,
             // csp 源现在也落盘 ⇒ 一律 true
             "persisted": true,
+            // ★ 没探通但配置在：如实标（与首次导入同名字段）
+            "extLen": job.ext.trim().len(),
+            "probeFailed": probe_failed,
         });
         if is_new {
             added_out.push(row);
@@ -6454,5 +6534,365 @@ mod t1042_contract_fixes {
             );
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// t_ext_import —— 「导入链路把 ext 弄丢」的门禁（App99/AppGet/AppRJ/HJZhenCai/Wogg）
+//
+// # 现场（`.probe/each-post-migration.txt`，2026-10-29）
+// ```text
+// csp-app99        错：ext 不是合法 JSON：EOF while parsing a value at line 1 column 0
+// csp-app-get      错：ext 里缺 dataKey（本站响应体是 AES/CBC 密文，缺密钥无法解）
+// csp-app-rj       错：ext 里没有站点地址（DEX init 读的是 ext 的 `url` 字段）
+// csp-hj-zhen-cai  错：HJZhenCai 需要 ext 里的站点地址（键 `site`）
+// csp-wogg         错：Wogg 需要 ext 里的镜像列表（键 `site`）
+// ```
+// 这 5 条都是 **builtin** 源（`state.rs` 给每个 csp 类自动建的那条，`ext` 恒空）。
+// 而**原始订阅里这几类是有 ext 的**（`.probe/ext-real-fragments.json` 逐字抄自
+// `.probe/ref-subscription.json`）⇒ ext 是在**导入这一跳**丢的，不是配置里没有。
+// ═══════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod t_ext_import {
+    use super::*;
+
+    /// 真实 ext 片段仓（`.probe/ext-real-fragments.json`，由参考订阅逐字抄出）
+    fn fixture_path() -> std::path::PathBuf {
+        if let Ok(p) = std::env::var("SOURIN_EXT_FIXTURE") {
+            return std::path::PathBuf::from(p);
+        }
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.probe/ext-real-fragments.json")
+    }
+
+    fn fixture() -> serde_json::Value {
+        let p = fixture_path();
+        let raw = std::fs::read_to_string(&p)
+            .unwrap_or_else(|e| panic!("读不到真实 ext 片段仓 {}：{e}", p.display()));
+        serde_json::from_str(&raw).expect("片段仓必须是合法 JSON")
+    }
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "sourin-ext-{tag}-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        std::fs::create_dir_all(&d).expect("建临时目录失败");
+        std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+        d
+    }
+
+    /// 把片段仓里那几个站拼成一份**真实现场形状**的 TVBox 配置
+    fn config_from_fixture() -> String {
+        let f = fixture();
+        let sites: Vec<serde_json::Value> = f["sites"]
+            .as_array()
+            .expect("sites 应是数组")
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "key": s["key"],
+                    "name": s["name"],
+                    "type": 3,
+                    "api": s["api"],
+                    "ext": parse_loose_json(s["extText"].as_str().unwrap_or("{}"))
+                        .expect("片段仓里的 extText 必须是合法 JSON"),
+                })
+            })
+            .collect();
+        serde_json::json!({ "sites": sites }).to_string()
+    }
+
+    /// ★ 诊断（真网络，ignored）：把真实 ext 配置走一遍**真导入链路**，逐条打印归处。
+    ///
+    /// 给了 `SOURIN_DATA_DIR` ⇒ 就导入到那个目录并**保留**（供随后跑
+    /// `live_search_count` 直接看"这几家能不能真搜到"）；否则用临时目录并在末尾删掉。
+    #[tokio::test]
+    #[ignore = "真网络：片段仓里的镜像要真的发请求"]
+    async fn diag_import_real_ext_sites() {
+        let keep = std::env::var("SOURIN_DATA_DIR").ok();
+        let dir = match &keep {
+            Some(d) => {
+                let p = std::path::PathBuf::from(d);
+                std::fs::create_dir_all(&p).expect("建数据目录失败");
+                std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+                p
+            }
+            None => tmp("diag"),
+        };
+        let st = crate::state::AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+        let cfg = config_from_fixture();
+        let rep = import_tvbox_config(&st, &cfg).await.expect("导入应当返回报告");
+        eprintln!("[EXT-DIAG] 报告 imported={} skipped={}",
+            rep["imported"].as_array().map(|a| a.len()).unwrap_or(0),
+            rep["skipped"].as_array().map(|a| a.len()).unwrap_or(0));
+        for r in rep["imported"].as_array().cloned().unwrap_or_default() {
+            eprintln!("[EXT-DIAG] 导入 {} | {} | 分类={} | 落盘={}",
+                r["id"], r["api"], r["categories"], r["persisted"]);
+        }
+        for r in rep["skipped"].as_array().cloned().unwrap_or_default() {
+            eprintln!("[EXT-DIAG] 跳过 {} | stage={} | {}",
+                r["name"], r["stage"], r["reason"]);
+        }
+        let saved = crate::persist::load_persisted(&dir);
+        for p in &saved {
+            if let crate::model::PersistedProvider::Tvbox { api, ext, .. } = p {
+                let e = ext.as_deref().unwrap_or("");
+                eprintln!("[EXT-DIAG] 落盘 {} extLen={} 可解析={}",
+                    api, e.len(), parse_loose_json(e).is_ok());
+            }
+        }
+        if keep.is_none() {
+            let _ = std::fs::remove_dir_all(&dir);
+        } else {
+            eprintln!("[EXT-DIAG] 数据目录保留在 {}（可直接跑 live_search_count）", dir.display());
+        }
+    }
+
+    /// 每类源**必须**带的那几个 ext 键（判据逐字来自真实现场的报错文案）
+    fn required_keys(api: &str) -> &'static [&'static str] {
+        match api {
+            // "HJZhenCai 需要 ext 里的站点地址（键 `site`）"
+            "csp_HJZhenCai" | "csp_Wogg" | "csp_SeedHub" | "csp_4KZhinan" => &["site"],
+            // "ext 里没有站点地址（DEX init 读的是 ext 的 `url` 字段）"
+            "csp_AppRJ" => &["url"],
+            // "ext 里缺 dataKey（本站响应体是 AES/CBC 密文）"
+            "csp_AppGet" => &["url", "dataKey"],
+            // App99：DEX systemInit 用 host + appkey（真响应 200 application/json）
+            "csp_App99" => &["host", "appkey"],
+            _ => &[],
+        }
+    }
+
+    // ── 门禁 ①：真实 ext 片段经「配置 → SiteJob」不许被改写/丢掉 ──────────
+    //
+    // 判据三条，缺一条这条链就不算通：
+    // ```text
+    // ① ext 的**语义**不许变：
+    //      字符串形态 → 逐字相同（`ext_text` 对字符串是原样透传）
+    //      对象形态   → 解析后**值相等**（不是逐字：serde_json 默认 BTreeMap，
+    //                   多键 ext 的键序会被排成字典序 —— 那是等价 JSON，不是丢失。
+    //                   2026-10-29 实测：App99 的 8 键 ext 因此假红过一次，
+    //                   判据改成"值相等"才是真契约）
+    // ② 仍是合法 JSON（`parse_loose_json` 能读）
+    // ③ 该类的必需键都在（site / url / dataKey / host+appkey）
+    // ```
+    #[test]
+    fn real_ext_fragment_passes_through_collect_sites() {
+        let cfg_text = config_from_fixture();
+        let cfg = parse_loose_json(&cfg_text).expect("配置必须可解析");
+        let (jobs, _, _) = collect_sites(&cfg, "");
+        let frags = fixture();
+        let want = frags["sites"].as_array().expect("sites").clone();
+        assert_eq!(jobs.len(), want.len(), "每一条片段都必须进 jobs：{jobs:?}");
+        for (job, w) in jobs.iter().zip(want.iter()) {
+            let api = w["api"].as_str().unwrap_or("");
+            let ext_text = w["extText"].as_str().unwrap_or("");
+            if matches!(w["extRaw"], serde_json::Value::String(_)) {
+                assert_eq!(
+                    job.ext, ext_text,
+                    "★★ {api} 的 ext 是字符串形态 ⇒ 必须**逐字**透传"
+                );
+            }
+            let back = parse_loose_json(&job.ext)
+                .unwrap_or_else(|e| panic!("★★ {api} 的 ext 不是合法 JSON（{e}）：{:?}", job.ext));
+            let want_v = parse_loose_json(ext_text)
+                .unwrap_or_else(|e| panic!("片段仓里 {api} 的 extText 不合法：{e}"));
+            assert_eq!(
+                back, want_v,
+                "★★ {api} 的 ext 过了导入链路后**值必须一模一样**（丢键/改值/截断都算坏）"
+            );
+            for k in required_keys(api) {
+                assert!(
+                    back.get(*k).is_some(),
+                    "★★ {api} 的 ext 缺必需键 `{k}`：{:?}",
+                    job.ext
+                );
+            }
+        }
+    }
+
+    // ── 门禁 ②：导入时**探测失败**也不许把带 ext 的 csp 源丢掉 ───────────
+    //
+    // # 为什么必须是"真导入一次"而不是只测纯函数
+    // 丢 ext 的那一跳在 `import_tvbox_config` 的探测结果分支里
+    // （旧行为：`Some(Err(reason)) => { skipped.push(..); continue; }`）。
+    // 只断言 `keep_ext_on_probe_failure` 返回 true 是**测自己写的 true**：
+    // 把调用点删掉，它照样绿。所以这里走真导入，再从**清单文件**读回来。
+    //
+    // # 探测失败怎么做到**确定性**（不吃网络）
+    // 片段仓里 Wogg 的镜像四个域名是活的，真打过去反而可能成功（那就测不到
+    // "探测失败"这一支）。所以把 `site` 指向本机闭合端口 —— 连接立刻被拒，
+    // 与"站点临时挂了"是**同一条代码路径**，且不看外网脸色。
+    //
+    // # 阴性对照（同一份配置里）
+    // 一条**苹果CMS** 站也指向闭合端口 ⇒ 探测失败 ⇒ 必须**不落盘**。
+    // 没有这条对照，把 `keep_ext_on_probe_failure` 改成恒 true 也会绿。
+    #[tokio::test]
+    async fn probe_failure_still_persists_ext_csp_source() {
+        let dir = tmp("probe-fail");
+        let dead = "http://127.0.0.1:1";
+        let wogg_ext = format!(r#"{{"site":["{dead}"]}}"#);
+        let cfg = serde_json::json!({
+            "sites": [
+                { "key": "Wogg", "name": "玩耦丨4K臻享", "type": 3, "api": "csp_Wogg",
+                  "ext": parse_loose_json(&wogg_ext).expect("ext 是 JSON") },
+                // 阴性对照：苹果CMS + 死接口
+                { "key": "dead", "name": "死接口站", "type": 1,
+                  "api": "http://127.0.0.1:1/api.php/provide/vod" }
+            ]
+        })
+        .to_string();
+
+        let st = crate::state::AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+        let rep = import_tvbox_config(&st, &cfg).await.expect("导入应返回报告");
+        drop(st);
+
+        // ① 报告：这条源**被保留**，且如实标了"探测没通"
+        let imported = rep["imported"].as_array().cloned().unwrap_or_default();
+        let row = imported
+            .iter()
+            .find(|r| r["api"] == "csp_Wogg")
+            .unwrap_or_else(|| panic!("★★ 带 ext 的 csp 源不许因探测失败而消失：{rep}"));
+        assert_eq!(row["persisted"], serde_json::json!(true), "必须真落盘：{rep}");
+        assert!(
+            row["probeFailed"].is_string(),
+            "★★ 必须如实标出「探测没通」（不许伪装成探测成功）：{rep}"
+        );
+
+        // ② 清单文件本体：ext 逐字在、可解析、键齐
+        let saved = crate::persist::load_persisted(&dir);
+        let ext = saved
+            .iter()
+            .find_map(|p| match p {
+                crate::model::PersistedProvider::Tvbox { api, ext, .. } if api == "csp_Wogg" => {
+                    Some(ext.clone().unwrap_or_default())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("★★ 清单里必须有这条 csp 源：{saved:?}"));
+        let back = parse_loose_json(&ext)
+            .unwrap_or_else(|e| panic!("★★ 落盘的 ext 必须可解析（{e}）：{ext:?}"));
+        assert!(
+            back.get("site").is_some(),
+            "★★ 落盘的 ext 必须带 `site` 键：{ext:?}"
+        );
+
+        // ③ 阴性对照：苹果CMS 死接口**不许**落盘（否则等于把所有死源都摆给用户）
+        assert!(
+            !saved.iter().any(|p| matches!(p,
+                crate::model::PersistedProvider::Tvbox { api, .. } if api.contains("127.0.0.1:1"))),
+            "★ 苹果CMS 探测失败仍必须丢弃：{saved:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 假订阅源站（本地 HTTP，吐一段配置文本）→ 返回订阅地址
+    fn fake_sub_url(body: String) -> String {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("绑定假源站失败");
+        let port = listener.local_addr().expect("取端口失败").port();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut stream) = conn else { break };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                loop {
+                    let mut h = String::new();
+                    match reader.read_line(&mut h) {
+                        Ok(0) => break,
+                        Ok(_) if h == "\r\n" || h == "\n" => break,
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        format!("http://127.0.0.1:{port}/tvbox.json")
+    }
+
+    // ── 门禁 ③：「检测更新」那条路也必须保住 ext（同一条丢失路径的副本）──────
+    //
+    // # 为什么单独一条
+    // `update_tvbox_source` 有**自己的一份**探测结果分支（不是 import 那个循环）。
+    // 只修 import ⇒ 用户点一次「检测更新」，带 ext 的 csp 源又被丢一次，
+    // 而且这次连 ext 都不会出现在任何报告里（只进 `failed`）。
+    #[tokio::test]
+    async fn update_path_also_keeps_ext_on_probe_failure() {
+        let dir = tmp("update-ext-keep");
+        let dead = "http://127.0.0.1:1";
+        let cfg_body = format!(
+            r#"{{"sites":[{{"key":"wogg","name":"玩耦丨4K臻享","type":3,"api":"csp_Wogg","ext":{{"site":["{dead}"]}}}}]}}"#
+        );
+        let sub_url = fake_sub_url(cfg_body);
+
+        // 本地已有"同订阅"里的一条源：update 要求这个 id 存在且带 srcUrl
+        crate::persist::save_persisted(
+            &dir,
+            &[crate::model::PersistedProvider::Tvbox {
+                id: "tvbox0".to_string(),
+                name: "老源".to_string(),
+                api: "http://127.0.0.1:1/api.php/provide/vod".to_string(),
+                categories: Vec::new(),
+                parsers: Vec::new(),
+                ext: None,
+            }],
+        )
+        .expect("写清单");
+        write_tvbox_meta(
+            &dir,
+            "tvbox0",
+            &TvboxSourceMeta {
+                source_url: Some(sub_url.clone()),
+                site_key: "old".to_string(),
+                site_name: "老源".to_string(),
+                api: "http://127.0.0.1:1/api.php/provide/vod".to_string(),
+                installed_at: now_secs(),
+            },
+        )
+        .expect("写 meta");
+
+        let st = crate::state::AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+        // apply_new=true ⇒ 远端这条"新增的 csp 源"要真的加进来
+        let upd = update_tvbox_source(&st, "tvbox0", true, false)
+            .await
+            .expect("更新不该失败");
+        drop(st);
+        eprintln!("[EVIDENCE] update-keep-ext {upd}");
+
+        let added = upd["added"].as_array().cloned().unwrap_or_default();
+        let row = added
+            .iter()
+            .find(|r| r["api"] == "csp_Wogg")
+            .unwrap_or_else(|| panic!("★★ 更新路径也不许丢带 ext 的 csp 源：{upd}"));
+        assert_eq!(row["persisted"], serde_json::json!(true), "{upd}");
+        assert!(row["probeFailed"].is_string(), "必须如实标探测没通：{upd}");
+
+        let saved = crate::persist::load_persisted(&dir);
+        let ext = saved
+            .iter()
+            .find_map(|p| match p {
+                crate::model::PersistedProvider::Tvbox { api, ext, .. } if api == "csp_Wogg" => {
+                    Some(ext.clone().unwrap_or_default())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("★★ 更新后清单里必须有这条源：{saved:?}"));
+        assert!(
+            parse_loose_json(&ext).map(|v| v.get("site").is_some()).unwrap_or(false),
+            "★★ 更新后落盘的 ext 必须仍带 `site`：{ext:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -2169,7 +2169,7 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// 来源 = `SourinApi.tvboxAggregateGet()` 的 `TvboxAggregate.note`
   /// （Owner 在聚合设置页给聚合源起的名字）。**只在** `_provider` 是
-  /// [kTvboxAggregateProviderId] 时参与展示（见 [_topBarSourceName]）。
+  /// [kTvboxAggregateProviderId] 时参与展示（见 [_refreshAggregateTitleInPlace]）。
   /// ```text
   /// '' = 没配备注 / 非聚合源 / 读取失败 —— 三种情况顶栏都不画括号
   ///      （aggregateSourceTitle 的"空 note 不画括号"口径）。
@@ -4120,18 +4120,21 @@ class _PlayerPageState extends State<PlayerPage>
     return _positionNotifier.value.inMilliseconds;
   }
 
-  /// ★★★ 现场反馈批次（任务2 Dart）：顶栏站名 pill 的**真源**
+  /// ★★★ 现场反馈批次（任务2 Dart，2026-10-30）：聚合源把顶栏 pill 直接算成
+  /// 「TVBox 聚合(<备注>) · <label>」复合串
   ///
+  /// # 为什么写进 [_providerName] 而不是另立 getter
   /// ```text
-  /// 非聚合源 → _providerName（原行为，一个字不动）
-  /// 聚合源   → 「TVBox 聚合(<备注>) · <当前线路 label>」
-  ///            （Owner 验收②；label = Rust 填的「子源 · 线路」）
+  /// task-32 的接线契约是逐字断言：调用点必须是 `providerName: _providerName,`
+  /// （"只加参数不传 = 永远不显示"）—— 另立 getter 会把这条契约弄断
+  /// （批末门禁甄别出的回归，2026-10-30 已修）。
+  /// ⇒ 复合串在**写入点**算：[_loadProviderName]（会话/换源）与
+  ///   [_startPlayback]（换线路/换清晰度，label 要跟当前流走）各刷一次；
+  ///   非聚合源本方法是 no-op，_providerName 原样。
   /// ```
-  /// label 取**当前正在播的那条流**（`_current`）—— 候选列表里别的行
-  /// 由线路抽屉自己拼（见 `_StreamSheet` 的行标题），顶栏只回答"现在在看哪条"。
-  String? get _topBarSourceName {
-    if (_provider != kTvboxAggregateProviderId) return _providerName;
-    return aggregateSourceTitle(note: _aggNote, label: _current?.label);
+  void _refreshAggregateTitleInPlace() {
+    if (_provider != kTvboxAggregateProviderId) return;
+    _providerName = aggregateSourceTitle(note: _aggNote, label: _current?.label);
   }
 
   Future<void> _loadProviderName() async {
@@ -4187,6 +4190,9 @@ class _PlayerPageState extends State<PlayerPage>
       return;
     }
     setState(() => _providerName = n);
+    // ★ 任务2：聚合源把 pill 算成「TVBox 聚合(备注) · label」复合串
+    //   （接线契约 `providerName: _providerName` 逐字保留；非聚合源 no-op）
+    if (mounted) setState(_refreshAggregateTitleInPlace);
   }
 
   // ═════════════════════════════════════════════════════════════════════
@@ -6160,6 +6166,9 @@ class _PlayerPageState extends State<PlayerPage>
     _startPlaybackCalls++;
     setState(() {
       _current = st;
+      // ★ 任务2：换线路/换清晰度 ⇒ 顶栏 pill 的 label 跟着当前流刷
+      //   （聚合源才生效；非聚合源 no-op，见 _refreshAggregateTitleInPlace）
+      _refreshAggregateTitleInPlace();
       // ★ 错误三件套 + loading 走单点（探针同调一份）
       _neutralizeErrorState(loading: true);
       // 换流后旧的判决作废（看门狗靠代次号自行放弃）
@@ -16822,8 +16831,9 @@ class _PlayerPageState extends State<PlayerPage>
                           ? _episodes[_epIndex].title
                           : widget.episodeTitle,
                       isLive: _isLive,
-                      // ★ 任务2 Dart（2026-10-30）：聚合源显示「TVBox 聚合(备注) · label」
-                      providerName: _topBarSourceName,
+                      // ★ task-32 接线契约（逐字）：state 必须传进 providerName；
+                      //   聚合源的复合串在写入点算（见 _refreshAggregateTitleInPlace）
+                      providerName: _providerName,
                       /*
                        * 弹幕信息：只在**弹幕这一层有话说**时挂出来。
                        * 没有绑定、没在取、也没失败 ⇒ 不给入口，免得用户点开
@@ -19702,10 +19712,11 @@ bool debugPlayerSetStreamsForProbe(List<StreamCandidate> streams) {
 /// ★ 任务2 Dart（2026-10-30）门禁探针：注入**聚合备注 + 当前线路**
 ///
 /// ```text
-/// 顶栏 pill 读 `_topBarSourceName` = aggregateSourceTitle(_aggNote, _current.label)。
-/// 两者在生产里分别来自 tvboxAggregateGet（FFI）与 resolve 结果 ——
-/// flutter_tester 里 FFI 加载不了 ⇒ 用本探针直灌**生产 state**，
-/// 测的仍是真 `_TopBar` / 真 getter，不是手抄副本（task-72 同一纪律）。
+/// 顶栏 pill = `_providerName`（聚合源在写入点被 `_refreshAggregateTitleInPlace`
+/// 算成「TVBox 聚合(<备注>) · <label>」复合串）。两者在生产里分别来自
+/// tvboxAggregateGet（FFI）与 resolve 结果 —— flutter_tester 里 FFI 加载不了
+/// ⇒ 用本探针直灌**生产 state** 并走**生产刷新方法**，
+/// 测的仍是真 `_TopBar` / 真 pill，不是手抄副本（task-72 同一纪律）。
 /// ```
 /// 返回 false = 播放页没挂上（调用方必须据此判红）。
 bool debugPlayerSetAggregateTitleForProbe({
@@ -19717,6 +19728,7 @@ bool debugPlayerSetAggregateTitleForProbe({
   s.setState(() {
     if (note != null) s._aggNote = note;
     if (current != null) s._current = current;
+    s._refreshAggregateTitleInPlace();
   });
   return true;
 }
@@ -23603,8 +23615,6 @@ class _StreamSheet extends StatelessWidget {
                         dense: true,
                         selected: active,
                         selectedTileColor: Colors.white12,
-                        // DRM 流明确标出来 —— 不让用户对着绿屏猜
-                        enabled: s.isPlayable,
                         // ★ task-72【①】线路名下再标一枚**清晰度**徽章
                         //   · 数据源是 `s.quality`（一直都在，只是被
                         //     `displayName` 的 `??` 短路吃掉了）
@@ -23655,6 +23665,11 @@ class _StreamSheet extends StatelessWidget {
                                 ),
                               )
                             : null,
+                        // DRM 流明确标出来 —— 不让用户对着绿屏猜
+                        //（防黑屏契约：enabled=false + onTap=null；与 DRM 副标题
+                        //  紧邻摆放 —— test/zz_t33_drm_ui_verify_test ④ 的窗口
+                        //  判据量的是它们之间的距离，别再挪开）
+                        enabled: s.isPlayable,
                         onTap: s.isPlayable ? () => onPick(s) : null,
                       );
                     },

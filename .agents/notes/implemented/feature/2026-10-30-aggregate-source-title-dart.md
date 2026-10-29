@@ -96,5 +96,20 @@ flutter analyze lib/ui/player_page.dart → 0 errors（18 条警告全为既有 
 
 ## Relations
 
+### ★ 补记（2026-10-30 批末，回归修复后的实现修正）
+
+上面 Decision ② 的 `_topBarSourceName` getter 方案**被批末门禁甄别为回归**并已改：
+task-32 的接线契约是逐字断言（调用点必须是 `providerName: _providerName,`，
+"只加参数不传 = 永远不显示"，`test/task32_source_name_test.dart` ③ 与
+`test/zz_cr_local_session_player_test.dart` F1），getter 方案把它弄断了。
+
+现行实现：删除 getter，调用点恢复逐字接线；聚合复合串改在**写入点**算 ——
+新私有方法 `_refreshAggregateTitleInPlace()`（非聚合源 no-op），由三处调用：
+`_loadProviderName`（会话/换源，`setState(() => _providerName = n);` 契约行
+逐字保留、其后追加一次刷新）与 `_startPlayback`（换线路/换清晰度，label 跟
+当前流走）。门禁探针同步改为走该生产刷新方法。两条契约（task-32 接线 +
+任务2 聚合前缀）同时成立：task32 ③ 16 passed / F1 13 passed /
+t20261030_agg_source_title_test 5 passed。
+
 - Rust 半边（label 本体）：task-4（rust-core，quark_pick_degrade / agg_label）
 - 同批选集判据公共化：[./2026-10-30-right-detail-line-filter-and-badge.md](./2026-10-30-right-detail-line-filter-and-badge.md)

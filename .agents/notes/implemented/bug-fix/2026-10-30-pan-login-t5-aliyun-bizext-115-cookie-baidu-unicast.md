@@ -118,3 +118,39 @@ Alternatives：
 2. 115 真网用例目标：换 cookie 响应含 cookie 段（UID/CID/SEID/KID 四键）；如仍 401，读
    `pan115_server_message` 解码后的服务端文案再定位（本轮已把 40100000 的根因修在表单字段上）。
 3. 4.4 天翼按纪律未动。
+
+## 七、真网读数（2026-10-30 06:34–06:37，Owner 已授权自行补验；证据 .probe/pan-login-t5-livenet-2026-10-30.log，一次性探针脚本已删）
+
+**115（三态 A/B 对照）**
+```text
+① GET token/ → HTTP 200 {state:1, code:0, uid:40位, time, sign:32位}（脱敏后照录）
+② GET get/status/?uid&time&sign → 长轮询 12s 0 字节超时（未扫的正常中途态；jar 无新增 cookie）
+③ POST login/qrcode/ 同一新鲜 uid，两套表单：
+   旧表单 uid-only            → {"code":40100000, "message":"参数错误！"}   ← 精确复现现场故障
+   新表单 account+app=qandroid → {"code":40101017, "message":"老乡验证失败！"}
+④ 40101017 语义定位：真实未扫 uid / 伪造 uid / 全零 uid 三态同码 ⇒ 防枚举的统一业务错
+   （=无已确认的扫码会话），不是参数错。带 acw_tc/USERSESSIONID cookie 与否不影响。
+结论：参数层已修复（40100000 消失），推进到"需要真实扫码确认"为止；扫码后是否直达
+UID/CID/SEID/KID 四键，批末真机扫码验证。
+```
+
+**百度**
+```text
+① GET getqrcode → HTTP 200 {errno:0, sign:32位, imgurl, prompt}（与 2026-10-29 现场读数一致）
+② GET unicast?channel_id=<sign>（dex 修正形态）→ 长轮询 30s 后 {"errno":1}（无事件，参数层接受）
+   A/B：+&v=<sign>（旧形态）→ 同样 30s/errno:1 ⇒ 两种在未扫态都"被接受"，
+   参数差异要到确认态才显形（channel_v 只在有事件时下发）——dex 逐字形态为准。
+③ 换态（qrbdusslogin）需 BDUSS=channel_v.v，必须有真扫码 ⇒ 停在如实记录。
+```
+
+**阿里**
+```text
+① GET generate.do → HTTP 200 content.data{ck, codeContent, t, processFinished, resultCode}
+   （bizExt 在 PENDING 态不存在 ✓ 与 dex 只在 CONFIRMED 读 bizExt 一致）
+② POST query.do：新表单 11 字段 与 旧表单 ck/t/_bx-v 都返回
+   {content.data.qrCodeStatus:"NEW", resultCode:100, success:true} ⇒ 参数层两种都接受，
+   表单差异不改变 PENDING 态行为；bizExt 真实向量只能来自 CONFIRMED 响应（等 driver-ops 转发）。
+```
+
+真网侧总体：115/百度/阿里三家的取码+轮询+换态参数全部被服务端接受，全部卡点收敛到
+"需要手机扫码确认"这一件事上（批末统一真机验证）。凭据/令牌零落盘（日志全部脱敏）。

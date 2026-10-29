@@ -27,6 +27,7 @@
 // ```
 import 'dart:async' show unawaited;
 
+// ★ characters 扩展（clampNoteTo60 用）由 material_ui 转出，无需单独 import
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/ffi.dart' show userErrorText;
@@ -485,6 +486,29 @@ class TvboxAggregateLinkDialog extends StatefulWidget {
       _TvboxAggregateLinkDialogState();
 }
 
+/// 备注限长：**提交时**按「字」截 60（与 Rust 侧 `tvbox_aggregate.rs` 的
+/// `chars().take(60)` 同一语义），输入框自身不再设 `maxLength`。
+///
+/// # 为什么不能留在输入框上（task-3，Owner 现场反馈「中文输入失效」）
+/// ```text
+/// Flutter 的 maxLength 由 LengthLimitingTextInputFormatter 实现，
+/// 它对 **IME 组合中（composing）**的文本同样计数/截断：
+/// 拼音串还没上屏就被削断 ⇒ 组合被打断 ⇒ Windows 桌面端连打中文"失效"。
+/// ⇒ 限长只能出现在**提交路径**；输入期不干预组合态。
+/// ```
+/// # 为什么按 characters（字形簇）而不是 code unit
+/// ```text
+/// Rust 按 `chars()`（Unicode 标量值）截；Dart 的 String 索引是 UTF-16 code unit，
+/// 直接 substring 可能把代理对拦腰截断。用 `characters` 按字形簇截，
+/// emoji/组合字符不会被截出半个，长度上与 Rust 的 60 上限同界。
+/// ```
+String clampNoteTo60(String raw) {
+  final t = raw.trim();
+  final c = t.characters;
+  if (c.length <= 60) return t;
+  return c.take(60).toString();
+}
+
 class _TvboxAggregateLinkDialogState extends State<TvboxAggregateLinkDialog> {
   late final TextEditingController _link =
       TextEditingController(text: widget.currentLink);
@@ -520,7 +544,9 @@ class _TvboxAggregateLinkDialogState extends State<TvboxAggregateLinkDialog> {
       if (rep != null && link.isNotEmpty && link != widget.currentLink) {
         await SourinApi.setTvboxSource(rep, link);
       }
-      final a = await SourinApi.tvboxAggregateSet(note: _note.text.trim());
+      final a = await SourinApi.tvboxAggregateSet(
+        note: clampNoteTo60(_note.text),
+      );
       if (!mounted) return;
       Navigator.of(context).pop(a);
     } catch (e) {
@@ -585,8 +611,10 @@ class _TvboxAggregateLinkDialogState extends State<TvboxAggregateLinkDialog> {
               key: const ValueKey<String>('agg-note-input'),
               controller: _note,
               enabled: !_busy,
-              // 与 Rust 侧同一条上限（服务端会截到 60，这里提前挡住多打的字）
-              maxLength: 60,
+              // ★ task-3：这里**故意没有 maxLength** —— 它会在 Windows 上参与
+              //   IME 组合期截断，打断中文输入。限长移到提交时（clampNoteTo60，
+              //   与 Rust 侧 chars().take(60) 对齐）；门禁 test/ime_field_gate_test.dart
+              //   守着"不得加回"。
               decoration: const InputDecoration(
                 isDense: true,
                 labelText: '备注（用于区分多个聚合源）',

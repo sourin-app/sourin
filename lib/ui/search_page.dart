@@ -264,6 +264,37 @@ class SearchPageState extends State<SearchPage> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
 
+  /// 「文本是否为空」的上一次取值（[_onSearchChanged] 的重建闸门用）
+  ///
+  /// ★ task-3 IME：清空按钮的可见性、搜索按钮的可用性都只依赖
+  ///   `_controller.text` **是否为空**这一点 —— 状态没翻转就不需要重建。
+  ///   初始 controller 为空 ⇒ `true`。
+  bool _wasEmpty = true;
+
+  /// onChanged 的重建闸门：只在「文本是否为空」**翻转**时才 setState
+  ///
+  /// # 改之前的真缺陷（task-3，Owner 现场反馈「连续输入中文会失效」）
+  /// ```text
+  /// 原来是 onChanged: (_) => setState(() {}) —— IME 组合期（拼音串还没上屏）
+  /// 的**每一次组合更新**都会触发 onChanged ⇒ 全页 setState。本页的搜索框住在
+  /// SliverPersistentHeader 里，delegate.shouldRebuild 因 child 每次都是新实例
+  /// 而恒为 true ⇒ 组合期内**每一帧**都在重建页头 delegate + 结果栅格。
+  /// ```
+  ///
+  /// # 为什么改成"空/非空翻转才重建"是**行为等价**的
+  /// ```text
+  /// build 里依赖 _controller.text 的只有两处：清空按钮（text.isNotEmpty 才画）
+  /// 与搜索按钮（text.trim().isEmpty 才禁用）—— 都只看"是否为空"。
+  /// 组合期文本从非空到非空的更新，两处的取值都不变 ⇒ 不重建是等价的。
+  /// （搜索按钮还依赖 _searching，但那几处本来就有自己的 setState。）
+  /// ```
+  void _onSearchChanged() {
+    final empty = _controller.text.isEmpty;
+    if (empty != _wasEmpty) {
+      setState(() => _wasEmpty = empty);
+    }
+  }
+
   /// 搜索框那层 `Container` 的 GlobalKey
   ///
   /// ★ task-74：搜索框现在住在 `SliverPersistentHeader` 里，而
@@ -684,6 +715,7 @@ class SearchPageState extends State<SearchPage> {
     _cancelCurrent();
     setState(() {
       _controller.clear();
+      _wasEmpty = true; // ★ 与闸门的缓存同步，否则下一次输入的首字翻转会被漏掉
       _hits = [];
       _skipped = [];
       _searched = false;
@@ -877,7 +909,10 @@ class SearchPageState extends State<SearchPage> {
                         autofocus: true,
                         textInputAction: TextInputAction.search,
                         onSubmitted: (_) => _doSearch(),
-                        onChanged: (_) => setState(() {}),
+                        // ★ task-3 IME：重建走闸门 —— 组合期（拼音未上屏）
+                        //   的每次组合更新只更新 controller，不重建全页；
+                        //   「空/非空」翻转时才 setState（见 _onSearchChanged）。
+                        onChanged: (_) => _onSearchChanged(),
                         decoration: const InputDecoration(
                           hintText: '输入片名、剧名或关键词…',
                           /*

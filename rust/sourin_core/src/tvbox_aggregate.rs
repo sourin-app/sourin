@@ -1602,6 +1602,34 @@ mod tests {
         );
     }
 
+    /// ★★★ 去重命令必须**真的接到 FFI 上**（只写函数没人调 = 没做）
+    ///
+    /// ```text
+    /// 本仓既有先例：`pan_drive` 用 include_str! 守"命令名与调用点都在"。
+    /// 注入验证：删掉 ffi.rs 里那条 arm ⇒ 本条 FAILED。
+    /// ```
+    #[test]
+    fn dedupe_command_is_wired_in_ffi() {
+        let ffi = include_str!("ffi.rs");
+        assert!(
+            ffi.contains("\"tvbox_aggregate_dedupe_sites\""),
+            "★ 命令名必须逐字存在（Dart 侧 `SourinApi.tvboxAggregateDedupeSites` 靠它）"
+        );
+        assert!(
+            ffi.contains("command_dedupe_sites"),
+            "★ 必须真的调到实现，不许是空分支"
+        );
+        // 备注/开关要在响应里回给 UI（否则弹窗回显不了）—— 由下面的序列化断言守
+        let cfg = AggregateConfig {
+            note: "n".into(),
+            solo: true,
+            ..Default::default()
+        };
+        let j = cfg.to_json();
+        assert_eq!(j.get("note").and_then(|v| v.as_str()), Some("n"));
+        assert_eq!(j.get("solo").and_then(|v| v.as_bool()), Some(true));
+    }
+
     /// ★★★ 测试用开关 solo：存得住、读得回、默认关
     ///
     /// ```text

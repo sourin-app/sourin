@@ -72,10 +72,21 @@ dex 实证：参考实现有 `QuarkTempDelete` / `UCTempDelete` + `file/delete`�
 
 **最强理由**：与原版行为最接近，网盘最干净。
 
-**否掉的原因（本轮）**：结束事件在 Dart 播放器层，要在播放器 `dispose`/`stop` 时回调一次 FFI；
-本轮的改动面已经横跨 Rust 取流层，再把播放器生命周期接进来风险偏高。
-⇒ 现在用"下一次解析前清理"（每个盘最多留 1 份），并把它写成显式边界；
-真正"播完即删"留给播放器侧那一跳（已记在 Consequences）。
+**否掉的原因（第一版）**：结束事件在 Dart 播放器层，要在播放器 `dispose`/`stop` 时回调一次 FFI；
+第一版改动面已经横跨 Rust 取流层，再把播放器生命周期接进来风险偏高。
+
+**后来还是做了（2026-10-29 同批补）**：Owner 追问"原软件是不是播一次存一次、不复用不删除"，
+确认原版**播完就删**后补上：
+
+```text
+· Rust：`purge_all_previous()`（清 quark/uc 两家上一次的临时转存）
+· FFI ：`pan_cleanup_temp`（非阻塞、返回 {}）
+· Dart：`player_page.dispose()` 里 `unawaited(SourinCore.callAsync('pan_cleanup_temp', …))`
+        —— fire-and-forget，收尾路径不被网络阻塞；失败仍有"下次解析前清理"兜底
+· 门禁：`cleanup_command_is_wired_for_playback_end`（Rust 读 ffi.rs 源码断言命令与调用点）
+        + `test/zz_pan_cleanup_on_dispose_test.dart`（Dart 源码断言：命令名逐字、在 dispose 里、unawaited）
+        注入：把 Dart 侧命令名改成 `pan_cleanup` ⇒ 门禁 FAILED（已实测）
+```
 
 ### D. 对超限文件（23018）自动降级到"转码播放/预览接口"
 
@@ -96,7 +107,8 @@ dex 实证：参考实现有 `QuarkTempDelete` / `UCTempDelete` + `file/delete`�
 **代价与边界**
 
 - 临时文件落在**网盘根目录**（原版大概是专用临时目录）；建目录要先取证 `file/mkdir` 参数，本轮没做。
-- "播完即删"没做（见 Alternatives C）：现在是"下次解析前清"。
+- "播完即删"**已补上**（见 Alternatives C 后段）：播放器 `dispose` → `pan_cleanup_temp` → 清两家上一次的临时件；
+  另有"下次解析前清"作为兜底（fire-and-forget 失败时文件最多多留一会儿）。
 - 超限文件（`23018`）如实报错，不做转码兜底。
 - 未登录 ⇒ `NEED_LOGIN:<盘种>|…`（UI 弹二维码），不是"文件不存在"。
 

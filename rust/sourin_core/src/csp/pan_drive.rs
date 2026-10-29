@@ -1513,6 +1513,25 @@ fn is_video_name(name: &str) -> bool {
     EXT.contains(&ext)
 }
 
+/// 清理**所有盘**上一次留下的临时转存（播放结束时调用；失败只记日志）
+///
+/// # 为什么是"所有盘"而不是"当前这个盘"
+/// ```text
+/// 播放器 dispose 时只知道自己播完了一条，**不知道它是哪家盘的分享**（那是 resolve 阶段的上下文）。
+/// 而临时表里的条目本来就少（每个盘最多 1 条）⇒ 全清最省事，也不会误删自己网盘里的用户文件
+/// （只删我们自己转存进去、且还没清的那几个 fid）。
+/// ```
+pub async fn purge_all_previous() {
+    for kind in [PanKind::Quark, PanKind::Uc] {
+        let drive = match kind {
+            PanKind::Quark => PanDrive::with_spec("PanQuark", quark_spec()),
+            PanKind::Uc => PanDrive::with_spec("PanUC", uc_spec()),
+            _ => continue,
+        };
+        drive.purge_previous().await;
+    }
+}
+
 /// 人读的文件大小
 fn human_size(b: u64) -> String {
     const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
@@ -2067,7 +2086,27 @@ mod tests {
     ///   ① 把 `item_id_of` 的分享分支改回 `e.fid.clone()` ⇒ 本条 FAILED（token 丢了）
     ///   ② 把 `parse_share_item` 的 `splitn(3, ':')` 改成 `splitn(2, ':')` ⇒ 本条 FAILED
     /// ```
-    /// ★★★ 清理临时转存的 URL/体（与 dex 取证逐字一致）
+    /// ★★★ "播完即删"必须**真的接上**：FFI 有命令、实现有入口
+    ///
+    /// ```text
+    /// 只写一个 pub fn 没人调 = 没做。这里读 `ffi.rs` 源码断言命令名与调用点都在
+    /// （本仓既有先例：`tvbox_aggregate.rs` 用 include_str! 守"注释里的判据"）。
+    /// 注入验证：删掉 ffi.rs 里那条 arm ⇒ 本条 FAILED。
+    /// ```
+    #[test]
+    fn cleanup_command_is_wired_for_playback_end() {
+        let ffi = include_str!("../ffi.rs");
+        assert!(
+            ffi.contains("\"pan_cleanup_temp\""),
+            "★★ Dart 在播放器 dispose 时调的命令必须在 FFI 里有分支"
+        );
+        assert!(
+            ffi.contains("purge_all_previous"),
+            "★ 命令要真的调到清理实现，不许是空分支"
+        );
+    }
+
+    /// ★★★ 清理 URL/体（与 dex 取证逐字一致）
     ///
     /// ```text
     /// 注入验证：把 `action_type` 从 2 改成 1 ⇒ 本条 FAILED

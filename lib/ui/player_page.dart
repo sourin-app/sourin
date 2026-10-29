@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════
 //  播放器 —— 对齐原版 PlayerView.vue（4775 行）的**操作逻辑**
 // ═══════════════════════════════════════════════════════════════════════
 //
@@ -10786,6 +10786,16 @@ class _PlayerPageState extends State<PlayerPage>
       setState(() {
         // 整批替换（新源的 id/剧集/线路全变了）
         _episodes = eps;
+        /*
+         * ★★★ 2026-10-28（Owner 图4：「左侧出现多个重复剧集，应该是多个线路区分出来的」）
+         * ```text
+         * 换源/换剧会整批替换 `_episodes`，但**没有同步"所选线路"** ⇒
+         * `_selectedFlag` 还停在旧值（或 null）⇒ `episodeLineFilter` 原样返回全部
+         * ⇒ 面板把 N 条线路的集**平铺**成一大串（第01集…第26集 / 第1集…第26集 …）。
+         * 修法：替换后立刻让线路落到合法值（与 initState / updateEpisodes 同一处理）。
+         * ```
+         */
+        _syncSelectedFlag();
         _epIndex = keep != null ? eps.indexOf(keep) : 0;
         _current = null;
         _streams = [];
@@ -11019,6 +11029,8 @@ class _PlayerPageState extends State<PlayerPage>
       _provider = req.provider;
       _contentId = req.id;
       _episodes = req.episodes;
+      // ★ 2026-10-28：同上 —— 换会话也必须重算"所选线路"，否则选集面板平铺所有线路
+      _syncSelectedFlag();
       _epIndex = req.episodes.isEmpty ? 0 : newIdx;
       _sourceCode = req.sourceCode;
       /*
@@ -15527,6 +15539,22 @@ class _PlayerPageState extends State<PlayerPage>
   @override
   void dispose() {
     _reportLivePlaybackExit();
+    /*
+     * ★★★ 2026-10-29（Owner 问的"播一次存一次、不复用不删除吗"）：**播完即删**。
+     * ```text
+     * 原版行为（dex: QuarkTempDelete / UCTempDelete + file/delete action_type:2）：
+     *   每次播都转存一份到网盘 → 播完删掉（进回收站，可恢复）。
+     * 我们原来只在"下一次解析前"清（每盘最多留 1 份）；这里补上播放结束这一跳。
+     *
+     * ⚠️ **fire-and-forget**：播放器 dispose 不能被网络阻塞（那是 UI 线程的收尾路径）；
+     *    失败只会让文件多留一会儿（下次解析前还有一次清理兜底），不影响任何功能。
+     * ⚠️ 命令名与 Rust `ffi.rs` 的 `"pan_cleanup"` 逐字一致。
+     * ```
+     */
+    unawaited(
+      SourinCore.callAsync('pan_cleanup_temp', const <String, dynamic>{})
+          .catchError((Object _) => <String, dynamic>{}),
+    );
     /*
      * ★ 2026-10-08（Owner 第 9 条）：控制条动画控制器必须跟着本页销毁 ——
      *   否则 flutter_test 会判红（AnimationController 泄漏）。
@@ -23455,3 +23483,5 @@ class _LiveChannelsSheet extends StatelessWidget {
     );
   }
 }
+
+

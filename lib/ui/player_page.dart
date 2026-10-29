@@ -1,4 +1,4 @@
-﻿// ═══════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
 //  播放器 —— 对齐原版 PlayerView.vue（4775 行）的**操作逻辑**
 // ═══════════════════════════════════════════════════════════════════════
 //
@@ -428,6 +428,38 @@ String? providerNameLookupId({
 ///    没有依赖（本文件不 import 详情页）⇒ 相等性由门禁
 ///    `test/zz_cr_local_session_player_test.dart` 直接读两个文件钉住。
 const String kLocalSessionSourceLabel = '本地';
+
+/// ★★★ 现场反馈批次（任务2 Dart，2026-10-30）：TVBox 聚合源的 provider id
+///
+/// Rust 侧常量（`tvbox_aggregate.rs:42 AGGREGATE_ID`，**固定值**）。
+/// 本仓已在 `home_page.dart` / `settings_page.dart` 各自定义同一常量
+/// （同样的"不跨页面 import"纪律）—— 本文件不 import 那两个页面，
+/// 照它们的先例自带一枚，值由门禁钉住。
+const String kTvboxAggregateProviderId = 'tvbox_agg';
+
+/// 聚合源展示名（顶栏站名 pill 与「线路/清晰度」抽屉行**共用**；纯函数）
+///
+/// # Owner 验收②（现场反馈批次 任务2）
+/// ```text
+/// 播放页顶部显示「TVBox 聚合(备注) · 子源名 · 线路」，聚合名读 AggregateConfig.note
+/// ```
+///
+/// # 三态（与 `TvboxAggregate.note` 的"空串不显示"契约同一口径）
+/// ```text
+/// · note 空 / 未配 ⇒ 不画括号 —— 绝不画「TVBox 聚合()」这种空括号；
+/// · label 空       ⇒ 只显示聚合名（流还没解析出来的瞬间）；
+/// · label 非空     ⇒ 「TVBox 聚合(<note>) · <label>」。
+/// ```
+/// label 的来源是 Rust 侧 `StreamCandidate.label`（tvbox 聚合 resolve 时填
+/// 「<子源显示名> · <线路名/分享页文件名>」—— rust-組任务）；
+/// 非聚合源的 label/quality 语义不变，**不走**本函数。
+@visibleForTesting
+String aggregateSourceTitle({String? note, String? label}) {
+  final n = note?.trim() ?? '';
+  final base = n.isEmpty ? 'TVBox 聚合' : 'TVBox 聚合($n)';
+  final l = label?.trim() ?? '';
+  return l.isEmpty ? base : '$base · $l';
+}
 
 /// ★★★ task-33（B①）：这个 provider 是不是「本地文件会话」
 ///
@@ -2027,6 +2059,19 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ 换源（`_switchSource`）会改 `_provider` —— 那时必须**重新取**
   ///    名字，否则顶栏会一直显示旧站名（详见 `_switchSource` 里的调用）。
   String? _providerName;
+
+  /// ★★★ 现场反馈批次（任务2 Dart，2026-10-30）：聚合源备注
+  ///
+  /// 来源 = `SourinApi.tvboxAggregateGet()` 的 `TvboxAggregate.note`
+  /// （Owner 在聚合设置页给聚合源起的名字）。**只在** `_provider` 是
+  /// [kTvboxAggregateProviderId] 时参与展示（见 [_topBarSourceName]）。
+  /// ```text
+  /// '' = 没配备注 / 非聚合源 / 读取失败 —— 三种情况顶栏都不画括号
+  ///      （aggregateSourceTitle 的"空 note 不画括号"口径）。
+  /// ```
+  /// 读取点与站名同批（[_loadProviderName]）：换源会改 `_provider`，
+  /// 备注必须跟着会话走，不能只读一次。
+  String _aggNote = '';
 
   /// 全屏状态
   bool _fullscreen = false;
@@ -3967,6 +4012,21 @@ class _PlayerPageState extends State<PlayerPage>
     if (_isLive) return null; // 直播没有「进度」这个概念
     return _positionNotifier.value.inMilliseconds;
   }
+
+  /// ★★★ 现场反馈批次（任务2 Dart）：顶栏站名 pill 的**真源**
+  ///
+  /// ```text
+  /// 非聚合源 → _providerName（原行为，一个字不动）
+  /// 聚合源   → 「TVBox 聚合(<备注>) · <当前线路 label>」
+  ///            （Owner 验收②；label = Rust 填的「子源 · 线路」）
+  /// ```
+  /// label 取**当前正在播的那条流**（`_current`）—— 候选列表里别的行
+  /// 由线路抽屉自己拼（见 `_StreamSheet` 的行标题），顶栏只回答"现在在看哪条"。
+  String? get _topBarSourceName {
+    if (_provider != kTvboxAggregateProviderId) return _providerName;
+    return aggregateSourceTitle(note: _aggNote, label: _current?.label);
+  }
+
   Future<void> _loadProviderName() async {
     /*
      * 判据在**发起时**算一次，并且与代次保护用**同一个**值 ——
@@ -3976,6 +4036,30 @@ class _PlayerPageState extends State<PlayerPage>
       provider: _provider,
       originProvider: widget.originProvider,
     );
+    /*
+     * ★ 现场反馈批次（任务2 Dart）：聚合源顺带取**备注**
+     *
+     * `tvboxAggregateGet` 是 sync 命令（只读注册表+配置，零网络）；
+     * 失败/旧 DLL 没这条命令 ⇒ catch 住归空串 —— 备注是装饰性信息，
+     * 不能因为它失败让站名加载整个报废（与 providerDisplayName 的
+     * "永不抛"同一条纪律）。
+     */
+    if (id == kTvboxAggregateProviderId) {
+      try {
+        final agg = await SourinApi.tvboxAggregateGet();
+        if (!mounted) return;
+        if (id !=
+            providerNameLookupId(
+              provider: _provider,
+              originProvider: widget.originProvider,
+            )) {
+          return; // ★ 取备注期间换了会话 ⇒ 过期读数丢弃
+        }
+        setState(() => _aggNote = agg.note);
+      } catch (e) {
+        debugPrint('[PLAYER] 读聚合备注失败（顶栏不画括号）: $e');
+      }
+    }
     /*
      * 没有**站点**可查（本地会话且没有旁文件）⇒ 顶栏如实写「本地」
      * （[kLocalSessionSourceLabel]），**绝不**把 `_provider` 那个续播
@@ -16518,7 +16602,8 @@ class _PlayerPageState extends State<PlayerPage>
                           ? _episodes[_epIndex].title
                           : widget.episodeTitle,
                       isLive: _isLive,
-                      providerName: _providerName,
+                      // ★ 任务2 Dart（2026-10-30）：聚合源显示「TVBox 聚合(备注) · label」
+                      providerName: _topBarSourceName,
                       /*
                        * 弹幕信息：只在**弹幕这一层有话说**时挂出来。
                        * 没有绑定、没在取、也没失败 ⇒ 不给入口，免得用户点开
@@ -18026,6 +18111,12 @@ class _PlayerPageState extends State<PlayerPage>
                             child: _StreamSheet(
                               streams: _streams,
                               current: _current,
+                              // ★ 任务2 Dart（2026-10-30）：聚合源行标题
+                              //   带「TVBox 聚合(<备注>) · 」前缀
+                              aggregateNote:
+                                  _provider == kTvboxAggregateProviderId
+                                      ? _aggNote
+                                      : null,
                               onPick: (s) {
                                 setState(() => _streamSheetOpen = false);
                                 // ★ Owner 2026-10-11 第 2 条：选完线路关面板 ⇒ 顶/底栏一起回来。
@@ -19383,6 +19474,28 @@ bool debugPlayerSetStreamsForProbe(List<StreamCandidate> streams) {
   final s = _livePlayerState;
   if (s == null) return false;
   s.setState(() => s._streams = streams);
+  return true;
+}
+
+/// ★ 任务2 Dart（2026-10-30）门禁探针：注入**聚合备注 + 当前线路**
+///
+/// ```text
+/// 顶栏 pill 读 `_topBarSourceName` = aggregateSourceTitle(_aggNote, _current.label)。
+/// 两者在生产里分别来自 tvboxAggregateGet（FFI）与 resolve 结果 ——
+/// flutter_tester 里 FFI 加载不了 ⇒ 用本探针直灌**生产 state**，
+/// 测的仍是真 `_TopBar` / 真 getter，不是手抄副本（task-72 同一纪律）。
+/// ```
+/// 返回 false = 播放页没挂上（调用方必须据此判红）。
+bool debugPlayerSetAggregateTitleForProbe({
+  String? note,
+  StreamCandidate? current,
+}) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s.setState(() {
+    if (note != null) s._aggNote = note;
+    if (current != null) s._current = current;
+  });
   return true;
 }
 
@@ -23067,12 +23180,18 @@ class _StreamSheet extends StatelessWidget {
     required this.current,
     required this.onPick,
     required this.onClose,
+    this.aggregateNote,
   });
 
   final List<StreamCandidate> streams;
   final StreamCandidate? current;
   final void Function(StreamCandidate) onPick;
   final VoidCallback onClose;
+
+  /// ★ 任务2 Dart（2026-10-30）：非 null = 聚合源 ⇒ 行标题拼成
+  /// 「TVBox 聚合(<备注>) · <label>」（Owner 验收②的"换源列表"半边）。
+  /// null = 非聚合源 ⇒ 行为与改前逐字一致（displayName 原样）。
+  final String? aggregateNote;
 
   @override
   Widget build(BuildContext context) {
@@ -23196,6 +23315,14 @@ class _StreamSheet extends StatelessWidget {
                     itemBuilder: (_, i) {
                       final s = streams[i];
                       final active = s.url == current?.url;
+                      // ★ 任务2 Dart（2026-10-30）：聚合源的行标题带
+                      // 「TVBox 聚合(<备注>) · 」前缀（label 由 Rust 填
+                      // 「子源 · 线路」⇒ 用户一眼看到这条线路来自哪个子源）。
+                      // 非聚合源 aggregateNote == null ⇒ displayName 原样。
+                      final rowTitle = aggregateNote == null
+                          ? s.displayName
+                          : aggregateSourceTitle(
+                              note: aggregateNote, label: s.displayName);
                       return ListTile(
                         dense: true,
                         selected: active,
@@ -23214,7 +23341,7 @@ class _StreamSheet extends StatelessWidget {
                           children: [
                             Flexible(
                               child: Text(
-                                s.displayName,
+                                rowTitle,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                   color: s.isPlayable

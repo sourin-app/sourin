@@ -619,10 +619,22 @@ class RemoteBridge {
       final out = <Map<String, dynamic>>[];
       for (final id in ids) {
         final p = byId[id];
+        /*
+         * ★★★ 2026-10-29（Owner："其他源暂时全部关闭，只保留 tvbox 聚合源用来测试"）
+         * ```text
+         * 顺序表 `provider-order.json` 里是**全部注册 id**（108 个），而
+         * `listProviders()` 现在已经按"只显示聚合源"过滤过（返回 1 个）。
+         * 我原来无条件按 ids 生成 ⇒ 遥控面板把 108 个全列出来，
+         * 与设置页（只显示 1 个）自相矛盾 ⇒ 同一条"过滤"在两处不一致。
+         * ⇒ 只上报**同时出现在 listProviders 里的** id：过滤逻辑只有一处（Rust），
+         *   这里只负责排序。
+         * ```
+         */
+        if (p == null) continue;
         out.add({
           'id': id,
-          'name': p?.name ?? id,
-          'enabled': p?.enabled ?? true,
+          'name': p.name,
+          'enabled': p.enabled ?? true,
         });
       }
       for (final p in list) {

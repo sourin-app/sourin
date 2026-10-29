@@ -165,7 +165,22 @@ pub async fn resolve_stream(
     let mut list = p
         .resolve(&mid, &req.unwrap_or_default())
         .await
-        .map_err(|e| e.message)?;
+        /*
+         * ★ 2026-10-30（23018 猎捕二轮·观测黑洞，lead 授权修复）：resolve 阶段的
+         *   失败此前**一行日志都不落盘** —— Dart 侧 catch 只进 `_error`
+         *   （player_page.dart:5702 无 AppLog），而 [PLAY] 只在拿到流之后才写
+         *   （player_page.dart:6350）⇒ 现场"连失败日志都没有"无法归因。
+         *   脱敏口径（lead 指定）：只记 provider / 错误类别 / id 前缀（截 24 字符），
+         *   **不含完整 URL 参数与 token**。
+         */
+        .map_err(|e| {
+            let id_head: String = id.chars().take(24).collect();
+            log::warn!(
+                "[PLAY] resolve 失败 provider={provider} id~={id_head} kind={:?} needs_login={}",
+                e.kind, e.needs_login
+            );
+            e.message
+        })?;
 
     // ②③ 逐个候选流处理：流地址 + 独立音轨
     for c in &mut list {

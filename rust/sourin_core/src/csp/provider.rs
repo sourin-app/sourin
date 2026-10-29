@@ -320,6 +320,25 @@ fn classify_err(class: &str, e: String) -> ProviderError {
     }
 }
 
+/// 剧集 id 是否可**直接交给 site.play()**（无需再走一次 detail 二跳）
+///
+/// # 2026-10-30（23018 猎捕二轮·行号级诊断，lead 授权修复）
+/// ```text
+/// 原判据只认 `contains('|')`（bili 的 `bvid|cid` 形）。而 zhinan 这类源的剧集 id
+/// 是**纯 URL**（`https://pan.quark.cn/s/xxx`，zhinan.rs:406-415）⇒ 被误判成
+/// "只给了条目 id" ⇒ 拿 URL 再走一次 detail（resolve 的 detail 二跳）⇒
+/// zhinan.rs:524 拼出 /book/https://pan.quark.cn/s/xxx.html ⇒ 实测 HTTP 404
+/// ⇒ resolve 整体 Err，分享兜底（parse_share_page → resolve_share_play）根本
+/// 到不了 —— 23018 猎捕二轮 4K网盘子站 9 条全灭、日志零痕迹的死点。
+/// ⇒ 判据补：URL 形（http:// / https://）也是"可直接播"的 id 形态。
+/// ```
+/// 门禁：`tests/csp_episode_direct_play.rs`（注入删掉 URL 直通 ⇒ 红）。
+pub fn episode_id_is_direct_play(episode: &str) -> bool {
+    episode.contains('|')
+        || episode.starts_with("http://")
+        || episode.starts_with("https://")
+}
+
 fn to_item(provider_id: &str, it: super::CspItem) -> MediaItem {
     MediaItem {
         id: MediaId::new(provider_id, it.id),
@@ -452,7 +471,7 @@ impl MediaProvider for CspProvider {
             _ => id.native.clone(),
         };
         // 只给了条目 id（bvid）而没有 cid ⇒ 先取详情拿第一集，别猜一个 cid
-        let episode = if episode.contains('|') {
+        let episode = if episode_id_is_direct_play(&episode) {
             episode
         } else {
             let d = self

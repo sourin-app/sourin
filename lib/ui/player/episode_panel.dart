@@ -30,8 +30,8 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/models.dart';
 import '../tokens.dart';
-import '../widgets/episode_strip.dart'
-    show EpisodeLineBar, episodeLineFilter;
+import '../widgets/episode_filter.dart' show effectiveFlag, episodesForLine;
+import '../widgets/episode_strip.dart' show EpisodeLineBar;
 import '../../design/icons/app_icons.dart';
 
 /// 选集面板的形态（按端分流，判据只在本件内做一次）
@@ -117,32 +117,16 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
   /// 本线路的集（2026-10-26 修：面板原先**从不按 `selectedFlag` 过滤**，
   /// 31 条线路时网格里是 124 格、切线路只换高亮 ⇒ 用户眼里"选了没用"）
   ///
-  /// `episodeLineFilter` 在 `selectedFlag == null`（单线路源）时**原样返回**，
-  /// 所以单线路路径零变化、一集都不会少。
-  ///
-  /// ★★★ 2026-10-29（Owner："右侧没有区分线路，重复的集数一大把"）：
+  /// ★★★ 2026-10-30（现场反馈批次 1.1）：判据**抽成公共函数**
+  /// `episodesForLine`（`../widgets/episode_filter.dart`），本面板与
+  /// 右侧详情栏（`detail_page.dart` 的 `_bodyEpisodes`）两条渲染路径共用 ——
+  /// 语义不变：
   /// ```text
-  /// 真机：老舅的详情是 **17 条线路 × 27 集 = 459 条**（探针实测；
-  ///   flag = BD/BF/FF/HH/HN/JS/JY/KC/LZ/MT/NN/SD/SN/UK/WJ/XL/YZ），
-  ///   而面板把 459 条全铺出来 ⇒ 「第01集」出现 17 次，看起来就是"重复一大堆"。
-  /// 根因：`selectedFlag` 传进来是 null（上游没同步/被清空）时，`episodeLineFilter`
-  ///   会**原样返回全部** —— 那个"单线路零开销"的语义在多线路场景下变成了灾难。
-  /// ⇒ 面板**自己兜底**：有 flag 就用第一条线路，只有**真的没有 flag**（单线路源）才原样返回。
-  ///   这样无论上游状态如何，面板都不会再把 N 条线路平铺。
+  /// · selectedFlag 合法 ⇒ 只画那条线路；
+  /// · 没传 / 指向旧源的已消失线路 ⇒ 兜底第一条线路；
+  /// · 单线路源（全无 flag）⇒ 原样返回，一集不丢。
   /// ```
-  List<Episode> get _eps {
-    final flag = widget.selectedFlag ?? _firstFlag;
-    return episodeLineFilter(widget.episodes, flag);
-  }
-
-  /// 第一条出现的线路名（没有 flag 的集不参与；全都没有 ⇒ null = 单线路源）
-  String? get _firstFlag {
-    for (final e in widget.episodes) {
-      final f = e.flag;
-      if (f != null && f.isNotEmpty) return f;
-    }
-    return null;
-  }
+  List<Episode> get _eps => episodesForLine(widget.episodes, widget.selectedFlag);
 
   /// 全部线路名（上游给了就用上游的；没给就从 episodes 推，去重保序）
   List<String> get _flags {
@@ -295,7 +279,7 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
             const SizedBox(height: Sp.x3),
             EpisodeLineBar(
               flags: _flags,
-              selected: widget.selectedFlag ?? _firstFlag,
+              selected: effectiveFlag(widget.episodes, widget.selectedFlag),
               onPick: (f) => widget.onPickFlag?.call(f),
             ),
           ],

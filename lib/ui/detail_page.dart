@@ -68,6 +68,9 @@ import 'widgets/app_toast.dart';
 import 'widgets/app_menu.dart';
 import 'widgets/cover_image.dart';
 import 'widgets/detail_raw_meta.dart';
+// ★★★ 2026-10-30（现场反馈批次 1.1/1.2）：多线路选集的**公共判据**
+//   （与 `lib/ui/player/episode_panel.dart` 同一份 —— 两条渲染路径不许各写一份）。
+import 'widgets/episode_filter.dart';
 import 'widgets/provider_name.dart';
 import 'widgets/source_switch_dialog.dart';
 import '../design/icons/app_icons.dart';
@@ -979,6 +982,44 @@ class _DetailPageState extends State<DetailPage> {
   /// 当前源下的剧集
   List<Episode> _episodes = [];
   bool _epsLoading = false;
+
+  // ══════════════════════════════════════════════════════════════════════
+  //  ★★★ 2026-10-30（现场反馈批次 1.1/1.2）：右侧选集按**线路**过滤
+  // ══════════════════════════════════════════════════════════════════════
+  //
+  // # 真机读数（Owner 图5 兰香如故 / 图8 老舅）
+  //
+  // ```text
+  // 老舅：17 条线路 × 27 集 = 459 条；_bodyEpisodes 原来把 459 条全部平铺
+  // ⇒ 「第01集」出现 17 次 —— Owner 说的"重复一大把"。
+  // ```
+  //
+  // # "当前线路"上下文从**播放态**取（lead 2026-10-30 裁决：技术方案自决）
+  //
+  // ```text
+  // 播放器在播的那一集（_activeEpisodeId）属于哪条线路，右侧栏就画哪条线路；
+  // 播放器还没报（进入页面的瞬间）⇒ 退回公共判据 effectiveFlag 的兜底
+  // （第一条线路），与 PlayerEpisodePanel 的兜底逐字同源。
+  // ```
+  //
+  // ⚠️ 只收窄**渲染**：[_episodes] 本身一个字不动 ——
+  //    高亮/滚动（_epKeys 按 id）、_currentEpisodeIndex（episodeIndex 落库
+  //    用的全集下标）、下载全部集这些读数的语义**全部保持原样**。
+  String? get _currentLineFlag {
+    final id = _activeEpisodeId;
+    if (id != null) {
+      for (final e in _episodes) {
+        if (e.id == id) return e.flag;
+      }
+    }
+    return null;
+  }
+
+  /// 右侧选集网格实际渲染的那份（本线路的集；单线路源 = 全集）
+  List<Episode> get _lineEpisodes => episodesForLine(_episodes, _currentLineFlag);
+
+  /// 多线路源才 > 1（徽标「本线路 N 集 · 共 M 条线路」的 M 判据）
+  int get _lineCount => lineCountOf(_episodes);
 
   // ══════════════════════════════════════════════════════════════════════
   //  ★★★ 2026-09-26 第二轮：选集的**独立滚动**（B + C）
@@ -2751,11 +2792,31 @@ class _DetailPageState extends State<DetailPage> {
     ///   窄档要把"标题+徽章"跟封面并排、其余通栏（见下面 `w < 620` 的长注释）。
     ///   ⚠️ 两个构造器传的是**同一组实参**（只有一个 `_Info` 定义），
     ///      所以不存在"两半用了不同数据"的可能。
-    _Info info({_InfoPart part = _InfoPart.full}) => _Info(
-          part: part,
-          detail: d,
-          // ★ task-12 ⑤：本地模式下"集数"换成**已下载集数**（Owner：除了集数的展示）
-          episodeCount: widget.isLocalFile ? 0 : _episodes.length,
+    _Info info({_InfoPart part = _InfoPart.full}) {
+      /*
+       * ★★★ 2026-10-30（现场反馈批次 1.2）：「853 集」徽标改**单线路**集数
+       *
+       * # 真机读数
+       * ```text
+       * 改前 chip = '$episodeCount 集'，episodeCount = _episodes.length
+       *           = 17 条线路 × 27 集 = 459（兰香如故甚至 853）——
+       *           用户眼里"一部剧哪来 853 集"。
+       * ```
+       * # 改后文案（Owner 指定）
+       * ```text
+       * 多线路： 「本线路 N 集 · 共 M 条线路」（N = 当前线路的集数）
+       * 单线路： 「N 集」（与改前逐字一致 —— 单线路没有"共 M 条"可报）
+       * ```
+       */
+      final lineN = widget.isLocalFile ? 0 : _lineEpisodes.length;
+      final lineM = _lineCount;
+      final badge = lineM > 1 ? '本线路 $lineN 集 · 共 $lineM 条线路' : '$lineN 集';
+      return _Info(
+        part: part,
+        detail: d,
+        // ★ task-12 ⑤：本地模式下"集数"换成**已下载集数**（Owner：除了集数的展示）
+        episodeCount: lineN,
+        episodeBadge: badge,
           localCount: widget.isLocalFile ? widget.localEpisodeCount : 0,
           sourceCount: sourceCount,
           // ★ task-12 ⑤：本地模式的"来源"是 _localOrigin（站点名 / 「本地」）；
@@ -2775,7 +2836,8 @@ class _DetailPageState extends State<DetailPage> {
           onSwitchSource: _openSwitchSource,
           onDownloadCurrent: _downloadCurrent,
           onDownloadAll: _downloadAll,
-        );
+      );
+    }
 
     return LayoutBuilder(
       builder: (ctx, c) {
@@ -3673,7 +3735,18 @@ class _DetailPageState extends State<DetailPage> {
                         spacing: Sp.x2,
                         runSpacing: Sp.x2,
                         children: [
-                          for (final ep in _episodes)
+                          /*
+                           * ★★★ 2026-10-30（现场反馈批次 1.1）：
+                           * 原来遍历 [_episodes]（全集）—— 多线路源（17 线路 × 27 集）
+                           * 会把 459 条全部平铺，「第01集」出现 17 次
+                           * （Owner 图5/图8）。改遍历 [_lineEpisodes]：只画
+                           * 播放器**正在播的那条线路**（判据与选集抽屉
+                           * PlayerEpisodePanel 同一份公共函数，
+                           * 见 ../widgets/episode_filter.dart）。
+                           * ⚠️ 高亮/滚动按 episode id 查 key 表，
+                           *    当前集必然属于本线路 ⇒ 两个行为都不受影响。
+                           */
+                          for (final ep in _lineEpisodes)
                             KeyedSubtree(
                               /*
                                * ★ 每一集要有**稳定的 key** ——
@@ -3955,6 +4028,7 @@ class _Info extends StatelessWidget {
     this.part = _InfoPart.full,
     required this.detail,
     required this.episodeCount,
+    this.episodeBadge,
     this.localCount = 0,
     this.localMode = false,
     this.showActions = true,
@@ -3979,6 +4053,18 @@ class _Info extends StatelessWidget {
   final _InfoPart part;
 
   final int episodeCount;
+
+  /// ★★★ 2026-10-30（现场反馈批次 1.2）：徽章**文案**由调用方算好传入
+  ///
+  /// ```text
+  /// 多线路源：'本线路 N 集 · 共 M 条线路'（N = 当前线路集数，不是全集总数）
+  /// 单线路源：'N 集'（与改前逐字一致）
+  /// null    ⇒ 退回旧的 '$episodeCount 集'（调用方没传时的兜底，正常路径不会走到）
+  /// ```
+  /// 为什么不让 _Info 自己算：它只拿到 episodeCount 一个数，算不出"M 条线路"
+  /// —— 判据（_lineEpisodes/_lineCount）与选集抽屉共用一份
+  /// （widgets/episode_filter.dart），不能在这里抄第二份。
+  final String? episodeBadge;
 
   /// ★ task-12 ⑤：本地模式下的**已下载集数**（0 = 不画那一枚角标）
   ///
@@ -4177,7 +4263,8 @@ class _Info extends StatelessWidget {
             runSpacing: 6,
             children: [
               for (final b in badges) _Chip(text: b, brand: true),
-              if (episodeCount > 0) _Chip(text: '$episodeCount 集'),
+              if (episodeCount > 0)
+                _Chip(text: episodeBadge ?? '$episodeCount 集'),
               if (localCount > 0) _Chip(text: '已下载 $localCount 集', brand: true),
               if (sourceCount > 1) _Chip(text: '$sourceCount 个播放源'),
               /*

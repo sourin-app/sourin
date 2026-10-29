@@ -26,7 +26,9 @@
 // 调用方（设置页）在解析失败时要**只显示 URL 文本** ——
 // 二维码是便利功能，不是必需品，不该因为它挂了就整页报错。
 
+import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:material_ui/material_ui.dart';
@@ -63,8 +65,30 @@ class QrSvgData {
 /// 从 Rust 生成的 SVG 里解析出二维码
 ///
 /// 返回 null 表示"结构不认识" —— 调用方应降级成只显示 URL。
-QrSvgData? parseQrSvg(String svg) {
-  if (svg.isEmpty) return null;
+/// 从 SVG 里取出**内嵌的 PNG/JPEG**（`<image href="data:image/png;base64,…">`）
+///
+/// # 为什么需要它
+/// ```text
+/// 百度的二维码是**图片**而不是矢量模块：Rust 侧把 PNG 内嵌进 SVG 的 `<image href>`。
+/// 本文件原来的解析器只认 `<rect>` + `<path>` ⇒ 那张图会降级成一句"二维码不可用"。
+/// 这里把它解出来交给 `Image.memory`，其余形态仍走原来的矢量描摹。
+/// 两种写法都认：`href=` 与 `xlink:href=`（Rust 侧为了兼容渲染器两个都写了）。
+/// ```
+Uint8List? qrSvgEmbeddedPng(String svg) {
+  final m = RegExp(
+    r'''<image[^>]*(?:xlink:href|href)="data:image/(?:png|jpeg);base64,([A-Za-z0-9+/=\s]+)"''',
+  ).firstMatch(svg);
+  final b64 = m?.group(1);
+  if (b64 == null || b64.trim().isEmpty) return null;
+  try {
+    return base64Decode(b64.replaceAll(RegExp(r'\s'), ''));
+  } catch (_) {
+    // 解不出来就退回矢量路径 —— 不把整个二维码判死
+    return null;
+  }
+}
+
+QrSvgData? parseQrSvg(String svg) {  if (svg.isEmpty) return null;
 
   // ── viewBox：拿画布尺寸 ──
   final vb = RegExp(r'viewBox="([\d.\s-]+)"').firstMatch(svg);
@@ -168,6 +192,33 @@ class QrView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    /*
+     * ★★★ 2026-10-29（百度）：有的盘**不给你二维码文本**，只给一张二维码**图片**。
+     * ```text
+     * 百度 getqrcode 真报文：`{"imgurl":"passport.baidu.com/v2/api/qrcode?sign=…","sign":"…"}`
+     * ⇒ Rust 侧把那张 PNG 取回来、以 `data:image/png;base64,…` 内嵌进 SVG
+     *   （`<svg><image href="data:image/png;base64,…"/></svg>`）。
+     * 而本组件原来只认 `<rect>` + `<path>` ⇒ 这张图会被判"结构不认识"降级成图片地址文本
+     * （Owner 现场看到的就是一行 URL）。
+     * ⇒ 先认内嵌 PNG：解出来直接 `Image.memory`，其余仍走原来的矢量描摹。
+     * ```
+     */
+    final embedded = qrSvgEmbeddedPng(svg);
+    if (embedded != null) {
+      return SizedBox(
+        width: size,
+        height: size,
+        child: Image.memory(
+          embedded,
+          width: size,
+          height: size,
+          fit: BoxFit.contain,
+          // 二维码是浅底深码：白底是扫码识别率的前提，不随主题反色
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) => fallback ?? const SizedBox.shrink(),
+        ),
+      );
+    }
     final data = parseQrSvg(svg);
     if (data == null || !data.isValid) {
       return SizedBox(

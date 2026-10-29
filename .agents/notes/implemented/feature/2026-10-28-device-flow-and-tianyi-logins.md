@@ -2,6 +2,15 @@
 
 Status: implemented
 
+> **后续（2026-10-29，事实更正 + 真读数落地 —— 不改本文当时关于光鸭/迅雷的决定）**
+> 1. **光鸭/迅雷**：device/code 端点真网 200（`expires_in:120, interval:2`，
+>    token 端点未确认时 `400 authorization_pending`）⇒ 本文标为"推断"的三项**全部坐实**；
+>    出码与首轮 Pending 的 `#[ignore]` 真网 smoke 已通过。
+>    另修：三条错误分支原本**没有 write_log**（现场"点了没反应"就是这个：网络一挂整条链静默）。
+> 2. **天翼**：本文"三跳全逐字，直接实现"**已失效** —— 真网 `loginUrl.action` 不再给 `lt`/`reqId`，
+>    appConf 回 22001、轮询回 -20099 ⇒ 现在如实报"做不完整"。见
+>    [../bug-fix/2026-10-29-tianyi-qr-cannot-complete-now.md](../bug-fix/2026-10-29-tianyi-qr-cannot-complete-now.md)。
+
 Independent: 本条**推翻** [./2026-10-28-remaining-pans-honest-reasons-not-generic.md](./2026-10-28-remaining-pans-honest-reasons-not-generic.md)
 的四条判断中的三条（光鸭/迅雷/天翼），并保留第四条（123 没有扫码）。
 推翻的**不是**"如实说原因"这条纪律，而是那三条**事实依据**：

@@ -1582,6 +1582,41 @@ class SourinApi {
   static Future<PanShareListing> Function(String text, String? pwd)?
       debugPanListShareFetcher;
 
+  /// **123 云盘的账号密码登录**（`pan_password_login`）
+  ///
+  /// # 为什么 123 是表单而不是二维码
+  /// ```text
+  /// 全 dex 取证：`login.123pan.com` 下**只有** `api/user/sign_in`（账号密码，两套报文），
+  /// 全池 qrcode 命中 22 条逐条核对，**没有一条属于 123**
+  /// （`.probe/pan-login-evidence-remaining.md` §5.3）。
+  /// ⇒ 它压根没有扫码这条路；Owner 明确要求给它表单登录。
+  /// ```
+  ///
+  /// # 两套报文（Rust 侧先①后②，两次都失败才回错）
+  /// ```text
+  /// ① {"passport":"<账号>","password":"<密码>","remember":true}  判 message == "success"
+  /// ② {"mail":"<账号>","password":"<密码>","type":<int>}          判 code == 200
+  /// 两者 token 都在 data.token；成功后就地落系统钥匙串（access_token=<token>）。
+  /// ```
+  ///
+  /// # 失败语义：**抛**（不返回 ok:false 让界面自己猜）
+  /// Rust 侧回的是可读 Err（HTTP 码 + 两段响应摘要，**不含密码**），
+  /// 这里跟着抛，界面用 [userErrorText] 收口成一句人话。
+  ///
+  /// ⚠️ `password` 只在这里过一手：**不打印、不落盘、不进任何日志**。
+  static Future<PanPasswordLoginResult> panPasswordLogin(
+    String kind,
+    String account,
+    String password,
+  ) async {
+    final r = await SourinCore.callAsync('pan_password_login', {
+      'kind': kind,
+      'account': account,
+      'password': password,
+    });
+    return PanPasswordLoginResult.fromJson(jmap(r));
+  }
+
   /// 导入 TVBox 配置（task-5）
   ///
   /// [config] 既可以是 TVBox 配置的 **JSON 文本**，也可以是配置的 **URL**
@@ -5128,6 +5163,32 @@ class PanShareListing {
       resolvable: j['resolvable'] == true,
     );
   }
+}
+
+/// 一次**账号密码登录**的结果（`pan_password_login`）
+///
+/// # 为什么不带 token / cookie
+/// ```text
+/// 凭据只进系统钥匙串（`pan_auth::save`），**绝不**经过 Dart 侧 ——
+/// 界面拿到 token 就等于把它放进了一棵可能被 dump 的对象树里，
+/// 而界面需要的只有一句"登上了：<账号>"。
+/// ```
+/// 字段与 Rust `pan_login_123::command_password_login` 的返回**逐字对应**：
+/// `{"ok": true, "account": "<账号>"}`。
+class PanPasswordLoginResult {
+  const PanPasswordLoginResult({required this.ok, required this.account});
+
+  /// 是否成功（Rust 侧失败是**抛**，所以正常路径恒 true；留着是为了形状稳定）
+  final bool ok;
+
+  /// 账号显示名（成功时 = 用户填的那个账号；空串 = 链路没给）
+  final String account;
+
+  factory PanPasswordLoginResult.fromJson(Map<String, dynamic> j) =>
+      PanPasswordLoginResult(
+        ok: j['ok'] == true,
+        account: '${j['account'] ?? ''}',
+      );
 }
 
 // ═══════════════════════════════════════════════════════════════════════

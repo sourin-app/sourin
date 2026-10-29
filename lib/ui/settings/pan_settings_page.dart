@@ -34,6 +34,8 @@
 // pan_qr_login_start  {kind}    → { key, url, svg, hint? }
 // pan_qr_login_poll   {kind,key}→ { status, message?, account? }
 // pan_logout          {kind}    → {}（清钥匙串条目，等价 pan_auth::clear）
+// pan_password_login  {kind,account,password} → { ok, account }
+//                               （**只有 123**：它没有扫码这条路，见 §123 那段）
 // ```
 // 这批命令注册之前，生产路径调它们会得到可读错误 —— 页面把错误原样
 // 收口成一句人话显示，**这是刻意的**：宁可显示"没读到"，不显示假的。
@@ -41,7 +43,8 @@
 // # 门禁注入点（生产恒 null；Rust 命令到位后**置空即接真命令**）
 // ```text
 // debugPanCredentialStatusFetcher / debugPanQrLoginStarter /
-// debugPanQrLoginPoller / debugPanLogoutCaller / debugPanIdentifyFetcher
+// debugPanQrLoginPoller / debugPanLogoutCaller / debugPanIdentifyFetcher /
+// debugPasswordLogin
 // ```
 // 与 `debugTvboxAggregateFetcher`（tvbox_aggregate_page）同一条纪律。
 import 'dart:async';
@@ -219,6 +222,27 @@ Future<void> Function(String kind)? debugPanLogoutCaller;
 @visibleForTesting
 Future<PanShareStatus> Function(String text)? debugPanIdentifyFetcher;
 
+/// **123 账号密码登录**的替身（生产走 `SourinApi.panPasswordLogin`）
+///
+/// # 为什么需要它
+/// ```text
+/// 真登录 = 打 123 的 sign_in + 写系统钥匙串。`flutter test` 里两样都没有
+/// （没有 dll、也不该出网、更不该往真实钥匙串写东西）
+/// ⇒ 表单的判据（"填了什么就传什么""成功后真的刷新了状态"）只能靠替身喂。
+/// ```
+/// # 一条纪律（与上面几个替身同）
+/// 替身只替**传输**，不替**判断**：账号/密码逐字转发给替身，
+/// 界面自己不改写、不 trim 掉用户的输入（服务端/实现层才是权威）。
+@visibleForTesting
+Future<PanPasswordLoginResult> Function(
+  String kind,
+  String account,
+  String password,
+)? debugPasswordLogin;
+
+/// 123 云盘的 kind 码（`PanKind::Pan123.code()`）—— 表单只挂在这一行上
+const String pan123KindCode = '123';
+
 // ═══════════════════════════════════════════════════════════════════════
 //  页面本体
 // ═══════════════════════════════════════════════════════════════════════
@@ -288,6 +312,20 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
   /// 列目录进行中
   bool _listBusy = false;
 
+  // ── ④ 123 账号密码登录（只给 123：它没有扫码这条路）──
+  //
+  // 为什么状态是单份而不是按盘 map：**只有 123 有表单**（其余 8 家走扫码/设备码），
+  // 一份控制器就够；等真有第二家密码登录再抽成 map（不为"将来可能要"提前抽象）。
+  final TextEditingController _pwdAccount = TextEditingController();
+  final TextEditingController _pwdPassword = TextEditingController();
+  bool _pwdBusy = false;
+
+  /// 失败原因（显示在「登录」按钮下方；空 = 没有错误）
+  String _pwdError = '';
+
+  /// 成功文案（空 = 还没成功过）
+  String _pwdOkText = '';
+
   @override
   void initState() {
     super.initState();
@@ -298,6 +336,8 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
   void dispose() {
     _pollTimer?.cancel();
     _shareText.dispose();
+    _pwdAccount.dispose();
+    _pwdPassword.dispose();
     super.dispose();
   }
 
@@ -466,6 +506,55 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
         _qrKey = null;
         _qrBusy = false;
       });
+    }
+  }
+
+  // ── ④ 123 账号密码登录：校验 → 调命令 → 就地刷新登录状态 ──
+  //
+  // ★ 为什么不 trim 再传：账号里的空格归服务端/实现层判定（Rust 侧自己 trim），
+  //   界面**不改写用户输入** —— 否则"我明明填对了"会变成一句无法复现的抱怨。
+  Future<void> _passwordLogin() async {
+    final account = _pwdAccount.text;
+    final password = _pwdPassword.text;
+    if (account.trim().isEmpty) {
+      setState(() {
+        _pwdError = '请先填 123 云盘的账号（手机号或邮箱）';
+        _pwdOkText = '';
+      });
+      return;
+    }
+    if (password.isEmpty) {
+      setState(() {
+        _pwdError = '请先填 123 云盘的密码';
+        _pwdOkText = '';
+      });
+      return;
+    }
+    setState(() {
+      _pwdBusy = true;
+      _pwdError = '';
+      _pwdOkText = '';
+    });
+    try {
+      final f = debugPasswordLogin;
+      final PanPasswordLoginResult r = f != null
+          ? await f(pan123KindCode, account, password)
+          : await SourinApi.panPasswordLogin(pan123KindCode, account, password);
+      if (!mounted) return;
+      setState(() {
+        _pwdOkText =
+            '登录成功：${r.account.isEmpty ? account.trim() : r.account}';
+        // ★ 成功即清掉输入框里的密码（内存里少留一份就少一份）
+        _pwdPassword.clear();
+      });
+      // ★ 就地刷新登录状态（凭据已在 Rust 侧落盘 ⇒ 这里读回来才是真状态）
+      await _loadStatuses();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() =>
+          _pwdError = userErrorText(e, fallback: '登录没有完成，请稍后重试'));
+    } finally {
+      if (mounted) setState(() => _pwdBusy = false);
     }
   }
 
@@ -668,63 +757,159 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
         borderRadius: Radii.rMd,
         border: Border.all(color: colors.outlineVariant),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          Icon(
-            ok ? AppIcons.check_circle : AppIcons.error_outline,
-            size: 16,
-            color: accent,
-          ),
-          const SizedBox(width: Sp.x1),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Text(
-                  a.kindName,
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    fontWeight: FontWeight.w600,
-                    color: colors.onSurface,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                // ★ 分档逐字文案（照 reason_text 语义）—— 这是这行的重点
-                Text(
-                  panAccountTierText(a.tier, a.kindName),
-                  key: ValueKey<String>('pan-account-tier-${a.kind}'),
-                  style: TextStyle(fontSize: FontSizes.cap, color: accent),
-                ),
-                if (a.account.isNotEmpty) ...<Widget>[
-                  const SizedBox(height: 2),
-                  Text(
-                    '账号：${a.account}',
-                    key: ValueKey<String>('pan-account-name-${a.kind}'),
-                    style: TextStyle(
-                      fontSize: FontSizes.cap,
-                      color: colors.onSurfaceVariant,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Icon(
+                ok ? AppIcons.check_circle : AppIcons.error_outline,
+                size: 16,
+                color: accent,
+              ),
+              const SizedBox(width: Sp.x1),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Text(
+                      a.kindName,
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        fontWeight: FontWeight.w600,
+                        color: colors.onSurface,
+                      ),
                     ),
-                  ),
-                ],
-                if (!a.keyringAvailable) ...<Widget>[
-                  const SizedBox(height: 2),
-                  Text(
-                    '本机没有可用的系统钥匙串，登录状态存不住',
-                    style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
-                  ),
-                ],
+                    const SizedBox(height: 2),
+                    // ★ 分档逐字文案（照 reason_text 语义）—— 这是这行的重点
+                    Text(
+                      panAccountTierText(a.tier, a.kindName),
+                      key: ValueKey<String>('pan-account-tier-${a.kind}'),
+                      style: TextStyle(fontSize: FontSizes.cap, color: accent),
+                    ),
+                    if (a.account.isNotEmpty) ...<Widget>[
+                      const SizedBox(height: 2),
+                      Text(
+                        '账号：${a.account}',
+                        key: ValueKey<String>('pan-account-name-${a.kind}'),
+                        style: TextStyle(
+                          fontSize: FontSizes.cap,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                    if (!a.keyringAvailable) ...<Widget>[
+                      const SizedBox(height: 2),
+                      Text(
+                        '本机没有可用的系统钥匙串，登录状态存不住',
+                        style:
+                            TextStyle(fontSize: FontSizes.cap, color: colors.error),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              // 登出只在**确实有凭据**时出现（未登录给登出按钮 = 假入口）
+              if (a.hasCredential) ...<Widget>[
+                const SizedBox(width: Sp.x1),
+                AppTextButton(
+                  key: ValueKey<String>('pan-account-logout-${a.kind}'),
+                  onPressed: () => _logout(a.kind),
+                  child: const Text('登出'),
+                ),
               ],
+            ],
+          ),
+          /*
+           * ★★★ 123 这一行**展开成账号密码表单**（其余 8 家这一行保持原样）。
+           * ```text
+           * 为什么只有 123：全 dex 里 `login.123pan.com` 下只有 `api/user/sign_in`，
+           * 且全池 qrcode 命中 22 条**没有一条属于 123**
+           * （`.probe/pan-login-evidence-remaining.md` §5.3）
+           * ⇒ 它不是"扫码没做"，是**没有扫码这条路**；给它画二维码只会扫不动。
+           * 反过来，其余 8 家**没有**密码表单（它们的密码登录协议不存在/未取证）
+           * ⇒ 若哪天真接了第二家，这里按 kind 加分支即可，不是写死成"123 专属页"。
+           * ```
+           */
+          if (a.kind == pan123KindCode) _passwordLoginForm(colors),
+        ],
+      ),
+    );
+  }
+
+  // ───────────────────────────────────────────────────────────────
+  //  ④ 123 的账号密码表单（账号 / 密码 + 登录；失败原因在按钮下方）
+  // ───────────────────────────────────────────────────────────────
+  Widget _passwordLoginForm(ColorScheme colors) {
+    return Padding(
+      padding: const EdgeInsets.only(top: Sp.x2),
+      child: Column(
+        key: const ValueKey<String>('pan-password-123-form'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          // ★ 含 TextField ⇒ 就地补透明 Material 宿主（外壳规矩，同扫码/分享两区）
+          Material(
+            type: MaterialType.transparency,
+            child: TextField(
+              key: const ValueKey<String>('pan-password-123-account'),
+              controller: _pwdAccount,
+              textAlign: TextAlign.left,
+              enabled: !_pwdBusy,
+              decoration: const InputDecoration(
+                labelText: '123 账号（手机号或邮箱）',
+                isDense: true,
+              ),
             ),
           ),
-          // 登出只在**确实有凭据**时出现（未登录给登出按钮 = 假入口）
-          if (a.hasCredential) ...<Widget>[
-            const SizedBox(width: Sp.x1),
-            AppTextButton(
-              key: ValueKey<String>('pan-account-logout-${a.kind}'),
-              onPressed: () => _logout(a.kind),
-              child: const Text('登出'),
+          const SizedBox(height: Sp.x1),
+          Material(
+            type: MaterialType.transparency,
+            child: TextField(
+              key: const ValueKey<String>('pan-password-123-password'),
+              controller: _pwdPassword,
+              textAlign: TextAlign.left,
+              enabled: !_pwdBusy,
+              // ★ 密码框必须遮蔽（不许明文回显在屏幕上/截图里）
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: '密码',
+                isDense: true,
+              ),
+              onSubmitted: (_) => _passwordLogin(),
+            ),
+          ),
+          const SizedBox(height: Sp.x2),
+          Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: Sp.x2,
+            runSpacing: Sp.x1,
+            children: <Widget>[
+              AppTextButton(
+                key: const ValueKey<String>('pan-password-123-submit'),
+                onPressed: _pwdBusy ? null : _passwordLogin,
+                child: Text(_pwdBusy ? '正在登录…' : '登录'),
+              ),
+            ],
+          ),
+          // 失败原因显示在**按钮下方**（用户视线的落点），原样透出后端那句话
+          if (_pwdError.isNotEmpty) ...<Widget>[
+            const SizedBox(height: Sp.x1),
+            Text(
+              _pwdError,
+              key: const ValueKey<String>('pan-password-123-error'),
+              style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+            ),
+          ],
+          if (_pwdOkText.isNotEmpty) ...<Widget>[
+            const SizedBox(height: Sp.x1),
+            Text(
+              _pwdOkText,
+              key: const ValueKey<String>('pan-password-123-ok'),
+              style: TextStyle(fontSize: FontSizes.cap, color: colors.primary),
             ),
           ],
         ],
@@ -789,13 +974,25 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
               isDense: true,
             ),
             items: <DropdownMenuItem<String>>[
+              /*
+               * ★ 2026-10-29：这份下拉只列**真能出码**的盘。
+               * ```text
+               * 摘掉 123：它没有扫码端点（官方只有账号密码 sign_in 与 open-api 令牌），
+               *   留在下拉里只会让用户点了看到一句"没有扫码"——那正是"点了才撞墙"的形态；
+               *   它的登录入口是上面那张账号/密码表单。
+               * 补上 光鸭/迅雷：设备码族，码内容是服务端给的 verification_uri_complete（真链接）。
+               * 天翼保留：虽然当前只到"做不完整"的如实报错，但它是可做的一家，
+               *   摘掉会让用户以为"天翼不支持"——报错文案里已写清缺哪一步。
+               * ```
+               */
               for (final e in const <String, String>{
                 'quark': '夸克网盘',
                 'uc': 'UC 网盘',
                 'baidu': '百度网盘',
                 'aliyun': '阿里云盘',
-                '123': '123 网盘',
                 '115': '115 网盘',
+                'guangya': '光鸭网盘',
+                'xunlei': '迅雷云盘',
                 'tianyi': '天翼云盘',
               }.entries)
                 DropdownMenuItem<String>(value: e.key, child: Text(e.value)),

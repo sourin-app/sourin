@@ -748,7 +748,8 @@ async fn uc_poll(token: &str) -> Result<PollOutcome, String> {
 //
 // ```text
 // ① 取二维码  GET passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc
-//             → data.channel_id / data.sign（参考实现拿它当 `v`）/ data.url（二维码内容）
+//             → ★ 顶层 { sign, imgurl, errno, prompt }
+//               （`imgurl` 是一张 **PNG 图片** 的地址，且**不带 scheme** —— 见下面的真读数）
 // ② 轮询      GET passport.baidu.com/channel/unicast?channel_id=<cid>&v=<v>
 //             → ★ 登录态在**响应头 set-cookie 的 BDUSS**
 // ③ 换登录态  GET passport.baidu.com/v3/login/main/qrbdusslogin?v=<v>&bduss=<BDUSS>
@@ -758,7 +759,7 @@ async fn uc_poll(token: &str) -> Result<PollOutcome, String> {
 //
 // # 与夸克/UC 的**结构差异**（所以没有合并成一个实现）
 // ```text
-// ① 二维码不是"把 token 拼进固定 URL"，而是**响应里直接给 url 字段**；
+// ① 二维码不是"把 token 拼进固定 URL"，而是**响应里给一张二维码图片的地址**；
 // ② "扫中了"的信号不是业务码，而是**响应头里出现 BDUSS**；
 // ③ 换登录态是"拿 BDUSS 再换一次"，cookie 来自**两次**响应 + 一次 pan 域请求。
 // ```
@@ -769,6 +770,68 @@ async fn uc_poll(token: &str) -> Result<PollOutcome, String> {
 // 扫码未确认时**一律 Pending**（不靠关键词猜"已扫"）—— 百度侧没有可判定的业务码读数，
 // 猜成 Scanned 只会让 UI 显示"已扫描，请在手机上确认"而用户根本没扫。
 // ```
+//
+// ═══════════════════════════════════════════════════════════════════════
+// ★★★ 真读数（2026-10-29，Owner 用 curl 逐字打的）—— 它**推翻了**上一版实现
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ```text
+// GET https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc
+// → {"imgurl":"passport.baidu.com/v2/api/qrcode?sign=<sign>&lp=pc&qrloginfrom=pc",
+//    "errno":0,"sign":"<sign>","prompt":"登录后..."}
+// ```
+//
+// # 旧实现错在哪（留在这里防回退）
+// ```text
+// 旧代码按取证文档的用词去找 `data.channel_id` + `data.url`，而真报文里有三处不同：
+//   ① 字段在**顶层**，不在 `data` 里；
+//   ② **没有** `channel_id`，只有 `sign`；
+//   ③ **没有**"二维码文本"，只有 `imgurl` —— 一张 PNG 图片的地址，而且**不带 scheme**。
+// ⇒ 表现：`baidu_start` 直接报"字段不全"，二维码永远出不来。
+// ```
+//
+// # 现在的五步
+// ```text
+// ① 取码  GET  /v2/api/getqrcode                → sign + imgurl
+// ② 出图  GET  https:// + imgurl                → PNG 字节 ⇒ 内嵌进 SVG
+// ③ 轮询  GET  /channel/unicast?channel_id=<sign>&v=<sign>
+// ④ 换态  GET  /v3/login/main/qrbdusslogin?v=<sign>&bduss=<BDUSS>
+// ⑤ 补全  GET  pan.baidu.com/disk/main（STOKEN 等在这条响应里）
+// ```
+//
+// # ⚠️ 未取证：`channel_id` 与 `v` 的**参数对应关系**
+// ```text
+// 真报文只给了一个 `sign`，而 unicast 要 `channel_id` 与 `v` 两个参数。
+// 本仓的取法：**两个都填 sign**。这一条**没有取证**（真报文里根本没有 channel_id，
+//   社区实现是拿 sign 当 v 用）⇒ 允许这样试，但配套三条纪律：
+//   · 每次轮询把 body 与 Set-Cookie 的**键名**写进日志（不写值）；
+//   · 拿不到 BDUSS ⇒ 一律 Pending；
+//   · `errno` 非 0 ⇒ 同样 Pending 并记日志。
+//   不许把任何一次失败伪造成成功 —— 猜成 Confirmed 会去落一份假凭据。
+// ```
+//
+// # ⚠️ 关于 `QrSession.svg`（这里放的是**位图**，不是矢量码）
+// ```text
+// 百度不给二维码文本 ⇒ 无法用 `qrcode` crate 自己重画 ⇒ 只能把服务端那张 PNG
+// 以 `data:image/png;base64,…` 内嵌进 SVG（见 `svg_with_embedded_png`）。
+// ⚠️ Dart 侧 `qr_view.dart:parseQrSvg` 只认 `<rect>` + `<path d=…>`，
+//    **不认 `<image href=…>`** ⇒ 那边会降级成 `fallback`（= 图片地址文本）。
+//    这条是 UI 侧的事，本模块不改 Dart；此处只保证**产出的 SVG 是对的**。
+// ```
+
+/// 百度轮询用的**单次**超时（长轮询：这段窗口内没事件就一个字节都不回）
+///
+/// # ★ 真读数（2026-10-29，curl 实测三次）
+/// ```text
+/// GET /channel/unicast?channel_id=<sign>&v=<sign>
+///   → 30 秒**0 字节**（curl: (28) Operation timed out with 0 bytes received）
+/// 加 cookie（把 getqrcode 下发的 BAIDUID/BAIDUID_BFESS 带上）→ 同样 0 字节
+/// 加 `&callback=jsonp1`                                  → 同样 0 字节
+/// 去掉 `v`（只留 channel_id）                            → 同样 0 字节
+/// ⇒ 它是**长轮询**：没事件时连接挂着不回。⇒ 用默认 10s 超时会被判成"请求失败"，
+///   而其实这是**正常的中途态**。所以这一跳单独给 3 秒窗口，超时 ⇒ Pending。
+/// ```
+const BAIDU_UNICAST_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// 百度（passport）用的桌面 UA —— 逐字取自取证
 const UA_BAIDU: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -779,9 +842,13 @@ fn baidu_qrcode_url() -> &'static str {
     "https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc"
 }
 
-/// 百度轮询（`v` = 取码响应里的 `sign`）
-fn baidu_unicast_url(channel_id: &str, v: &str) -> String {
-    format!("https://passport.baidu.com/channel/unicast?channel_id={channel_id}&v={v}")
+/// 百度轮询 —— `channel_id` 与 `v` **都填 `sign`**（参数对应关系未取证，见上面说明）
+///
+/// ★ 为什么把"两个都填 sign"写进**纯函数**而不是调用点：
+///   这是本家族整条链路里**唯一没有取证**的一处。写成纯函数 ⇒ 门禁能逐字断言
+///   "我们发的就是这个形状"，真机读数变了只改这里一处。
+fn baidu_unicast_url(sign: &str) -> String {
+    format!("https://passport.baidu.com/channel/unicast?channel_id={sign}&v={sign}")
 }
 
 /// 百度用 BDUSS 换登录态
@@ -789,30 +856,215 @@ fn baidu_qrbduss_url(v: &str, bduss: &str) -> String {
     format!("https://passport.baidu.com/v3/login/main/qrbdusslogin?v={v}&bduss={bduss}")
 }
 
-/// 从取码响应里取 `(channel_id, v, url)`
+/// `imgurl` → 可 GET 的图片地址（真报文**不带 scheme**，这里补 `https://`）
 ///
-/// # 为什么 `v` 要按候选字段找
+/// # 为什么不是"二维码内容"
 /// ```text
-/// 取证里写的是"响应含 channel_id + v"，而实际报文里那个值是 `sign`
-/// （社区实现都拿 `sign` 当 `v` 用）。两个名字都试：
-///   先 `sign`（真报文），再 `v`（取证用词）。
-/// 都找不到 ⇒ None（由调用方报"协议可能变了"），**不编一个默认值**。
+/// 百度**不返回二维码文本**，`imgurl` 是那张二维码**图片**的地址。
+/// 所以 `QrSession.url` 放的就是这个图片地址（不是"扫出来的那个 URL"）。
+/// 已经带 scheme 的原样返回（幂等：重复调用不会拼出 `https://https://…`）。
 /// ```
-fn baidu_qr_fields(body: &str) -> Option<(String, String, String)> {
-    let v: serde_json::Value = serde_json::from_str(body).ok()?;
-    let data = v.get("data")?;
-    let cid = data.get("channel_id")?.as_str()?.trim().to_string();
-    let url = data.get("url")?.as_str()?.trim().to_string();
-    let sig = ["sign", "v"]
-        .iter()
-        .find_map(|k| data.get(*k).and_then(|x| x.as_str()))
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if cid.is_empty() || url.is_empty() || sig.is_empty() {
+fn baidu_img_url(imgurl: &str) -> String {
+    let t = imgurl.trim();
+    if t.is_empty() {
+        String::new()
+    } else if t.starts_with("https://") || t.starts_with("http://") {
+        t.to_string()
+    } else {
+        format!("https://{t}")
+    }
+}
+
+/// 百度取码响应解析出来的两样
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BaiduQrFields {
+    /// 轮询用的 `v` 与 `channel_id`（真报文只有这一个值）
+    sign: String,
+    /// 二维码**图片**地址（已补 scheme）
+    img_url: String,
+}
+
+/// 从取码响应里取 `(sign, img_url)`
+///
+/// # 三处硬线
+/// ```text
+/// ① 字段在**顶层**；`data.*` 只作兜底（旧取证口径写过 data.*，真报文是顶层）；
+/// ② `errno` 存在且非 0 ⇒ Err（服务端**明说**失败，不猜、不硬解析）；
+/// ③ 缺 `sign` 或 `imgurl` ⇒ Err，**点名缺哪个**并附 body 摘要 —— 不编默认值。
+/// ```
+fn baidu_qr_fields(body: &str) -> Result<BaiduQrFields, String> {
+    let v: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("百度取码响应不是 JSON（{e}）：{}", tail(body)))?;
+
+    if let Some(n) = v.get("errno").and_then(|x| x.as_i64()) {
+        if n != 0 {
+            return Err(format!(
+                "百度取码返回 errno={n}（服务端明说失败）prompt={:?}：{}",
+                v.get("prompt").and_then(|x| x.as_str()).unwrap_or(""),
+                tail(body)
+            ));
+        }
+    }
+
+    // 顶层优先，`data.*` 兜底（两种都认，但真报文是顶层）
+    let pick = |key: &str| -> String {
+        for node in [Some(&v), v.get("data")].into_iter().flatten() {
+            if let Some(s) = node.get(key).and_then(|x| x.as_str()) {
+                let s = s.trim();
+                if !s.is_empty() {
+                    return s.to_string();
+                }
+            }
+        }
+        String::new()
+    };
+
+    let sign = pick("sign");
+    let raw_img = pick("imgurl");
+    let mut missing: Vec<&str> = Vec::new();
+    if sign.is_empty() {
+        missing.push("sign");
+    }
+    if raw_img.is_empty() {
+        missing.push("imgurl");
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "百度取码响应里缺 {}（协议可能变了）：{}",
+            missing.join("/"),
+            tail(body)
+        ));
+    }
+
+    let img_url = baidu_img_url(&raw_img);
+    if !img_url.starts_with("https://") {
+        return Err(format!(
+            "百度取码响应的 imgurl 补 scheme 后仍不是 https（协议可能变了）：{}",
+            tail(&raw_img)
+        ));
+    }
+    Ok(BaiduQrFields { sign, img_url })
+}
+
+/// 从响应体里取 `errno`（只用于写日志；判定以 BDUSS 与 errno 非 0 为准）
+fn baidu_errno_of(body: &str) -> Option<i64> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("errno")?
+        .as_i64()
+}
+
+// ── PNG → SVG（把位图内嵌进 SVG，代替"自己重画二维码"） ────────────────────
+
+/// 标准 base64 **编码**（与 `b64_decode` 同族，零依赖、可单测）
+///
+/// # 为什么要自己写
+/// ```text
+/// 本仓无 base64 依赖（`b64_decode` 就是自带的那一份）。这里只要"把 PNG 字节
+/// 变成一个能塞进 `data:` URI 的串"，20 行够用，且能离线拿**独立算出的值**对照。
+/// ```
+/// ⚠️ 只输出标准字母表（`+/`）与 `=` 填充 —— `data:` URI 里按规范要求如此
+///    （变体 `urlsafe` 在 href 里会被当成路径分隔符解释出错）。
+fn b64_encode(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// 从 PNG 头里读像素尺寸（`IHDR` 的 width/height，大端 u32）
+///
+/// 返回 `None` = 不是 PNG（签名不对）或尺寸不合理 ⇒ 调用方降级。
+fn png_size(data: &[u8]) -> Option<(u32, u32)> {
+    const SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if data.len() < 24 || &data[..8] != SIG {
         return None;
     }
-    Some((cid, sig, url))
+    let w = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+    let h = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+    // 二维码图片不会太大；越界说明这不是我们要的那张图
+    if w == 0 || h == 0 || w > 4096 || h > 4096 {
+        return None;
+    }
+    Some((w, h))
+}
+
+/// 把 PNG 字节内嵌成一张 SVG（`<image href="data:image/png;base64,…">`）
+///
+/// # 为什么是"内嵌"而不是"落盘再引用"
+/// ```text
+/// `QrSession.svg` 是**一个字符串**、要原样交给 UI 层；落盘会多出一个生命周期
+/// （谁清理、路径怎么传、Android 上文件权限）。
+/// 内嵌的代价是 SVG 变大（一张 200×200 的二维码 PNG ≈ 3~8KB ⇒ base64 后 ≈ 4~11KB），
+/// 对这个字段的用途完全可接受。
+/// ```
+/// `None` = 不是 PNG（由调用方退回文本码 / 报错）。
+fn svg_with_embedded_png(png: &[u8]) -> Option<String> {
+    let (w, h) = png_size(png)?;
+    let b64 = b64_encode(png);
+    Some(format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" \
+xmlns:xlink=\"http://www.w3.org/1999/xlink\" \
+width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\">\
+<image x=\"0\" y=\"0\" width=\"{w}\" height=\"{h}\" \
+href=\"data:image/png;base64,{b64}\" xlink:href=\"data:image/png;base64,{b64}\"/>\
+</svg>"
+    ))
+}
+
+/// 拉百度那张二维码 PNG 并内嵌成 SVG
+///
+/// 用**同一个** `client(UA_BAIDU)`（同一 UA / 不走代理 / 同一超时）——
+/// 换一个 client 就等于换一个出口指纹，而百度对 Referer/UA 敏感。
+async fn baidu_qr_image_svg(c: &reqwest::Client, img_url: &str) -> Result<String, String> {
+    let resp = c
+        .get(img_url)
+        .header("Accept", "image/png,image/*;q=0.8,*/*;q=0.5")
+        .header("Referer", "https://pan.baidu.com/")
+        .send()
+        .await
+        .map_err(|e| format!("GET 二维码图片失败：{e}"))?;
+    let status = resp.status();
+    let ctype = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("读二维码图片响应失败：{e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "二维码图片返回 HTTP {status}（content-type={ctype}，{} 字节）",
+            bytes.len()
+        ));
+    }
+    svg_with_embedded_png(&bytes).ok_or_else(|| {
+        format!(
+            "二维码图片不是 PNG（content-type={ctype}，{} 字节，前 8 字节={:02x?}）",
+            bytes.len(),
+            &bytes[..bytes.len().min(8)]
+        )
+    })
 }
 
 /// 从 cookie 串里取 `BDUSS` 的值（这是"已确认"的唯一判据）
@@ -853,67 +1105,123 @@ fn merge_cookie(base: &str, extra: &str) -> String {
     out.into_iter().map(|(_, kv)| kv).collect::<Vec<_>>().join("; ")
 }
 
-/// 百度：第一步拿二维码
+/// 百度：第一步拿二维码（sign + 图片地址），第二步把图片内嵌成 SVG
 async fn baidu_start() -> Result<QrSession, String> {
     let c = client(UA_BAIDU)?;
+    write_log("取码开始 kind=baidu GET /v2/api/getqrcode");
     let resp = c
         .get(baidu_qrcode_url())
         .header("Accept", "application/json, text/plain, */*")
         .header("Referer", "https://pan.baidu.com/")
         .send()
         .await
-        .map_err(|e| format!("请求百度二维码接口失败：{e}"))?;
+        .map_err(|e| {
+            // ★ 出错路径也必须落日志：现场"点了没反应"最常见的原因就是这条被吞了
+            write_log(&format!("取码请求失败 kind=baidu err={e}"));
+            format!("请求百度二维码接口失败：{e}")
+        })?;
     let status = resp.status();
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("读百度响应失败：{e}"))?;
+    let body = resp.text().await.map_err(|e| {
+        write_log(&format!("读取码响应失败 kind=baidu err={e}"));
+        format!("读百度响应失败：{e}")
+    })?;
     if !status.is_success() {
+        write_log(&format!(
+            "取码失败 kind=baidu HTTP {status} body={}",
+            tail(&body)
+        ));
         return Err(format!("百度二维码接口返回 HTTP {status}：{}", tail(&body)));
     }
-    let (channel_id, v, url) = baidu_qr_fields(&body).ok_or_else(|| {
-        write_log(&format!("取码失败 kind=baidu 字段不全 body={}", tail(&body)));
-        format!("百度响应里没有 channel_id/sign/url（协议可能变了）：{}", tail(&body))
-    })?;
-    let svg = crate::remote::qr_svg_for(&url).unwrap_or_default();
+
+    let fields = match baidu_qr_fields(&body) {
+        Ok(f) => f,
+        Err(e) => {
+            write_log(&format!("取码失败 kind=baidu {e}"));
+            return Err(e);
+        }
+    };
     write_log(&format!(
-        "取码成功 kind=baidu cid_len={} v_len={} url_len={} svg_len={}",
-        channel_id.len(),
-        v.len(),
-        url.len(),
-        svg.len()
+        "取码成功 kind=baidu sign_len={} img_url_len={} img_url_is_https={}",
+        fields.sign.len(),
+        fields.img_url.len(),
+        fields.img_url.starts_with("https://")
     ));
 
+    // ② 拉那张 PNG，内嵌成 SVG。失败 ⇒ 退回"文本码"并在 hint 里说明（不许假装有图）
+    let (svg, note) = match baidu_qr_image_svg(&c, &fields.img_url).await {
+        Ok(s) => {
+            write_log(&format!("二维码图片内嵌成功 kind=baidu svg_len={}", s.len()));
+            (s, String::new())
+        }
+        Err(e) => {
+            write_log(&format!(
+                "二维码图片取不到 kind=baidu err={e} ⇒ 退回文本码（显示图片地址）"
+            ));
+            let fallback = crate::remote::qr_svg_for(&fields.img_url).unwrap_or_default();
+            (
+                fallback,
+                format!("（二维码图片没取到：{e}。下面显示的是图片地址，可在浏览器打开）"),
+            )
+        }
+    };
+
     let created_at = now();
+    let key = fields.sign.clone();
     sessions()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(
-            kind_key(PanKind::Baidu, &channel_id),
+            kind_key(PanKind::Baidu, &key),
             SessionRecord {
-                // 轮询要 `(channel_id, v)`，key 只能是其中一个 ⇒ v 编进 token
-                token: format!("{channel_id}|{v}"),
+                // 轮询要 (channel_id, v)，两者都填 sign（未取证，见节首说明）
+                token: fields.sign.clone(),
                 created_at,
             },
         );
     Ok(QrSession {
-        key: channel_id,
-        url,
+        key,
+        // ★ 这是**二维码图片**的地址，不是"扫出来的 URL"（百度不给那个）
+        url: fields.img_url,
         svg,
-        hint: "用百度网盘 App 扫这个码（扫码后需在手机上确认）".to_string(),
+        hint: format!("用百度网盘 App 扫这个码（扫码后需在手机上确认）{note}"),
         created_at,
     })
 }
 
 /// 百度：轮询 + 用 BDUSS 换登录态
+///
+/// # 三条不许越的线（都是"别把失败演成成功"）
+/// ```text
+/// ① 拿不到 BDUSS ⇒ Pending（**包括** HTTP 非 2xx：把一次 500 判成 Failed 会让
+///    UI 停表，而百度侧偶发 4xx 是常态 —— 但每次都会落日志，不会被掩盖）；
+/// ② `errno` 非 0 ⇒ Pending + 日志里带 errno；
+/// ③ 只有"Set-Cookie 里真的有 BDUSS"才走换态那两步；换不到 ⇒ 如实 Err。
+/// ```
+///
+/// # ★ 第四条（真读数逼出来的）：**长轮询超时**也要 Pending
+/// ```text
+/// `channel/unicast` 未确认时 30 秒 0 字节（见 `BAIDU_UNICAST_TIMEOUT` 的读数）。
+/// 所以这一跳只给 3 秒，超时 ⇒ Pending；**非超时**的传输错（DNS/TLS/拒连）
+/// 仍按真失败走 Err —— 那条线不能一起放宽，否则网络死了会永远"等待扫码"。
+/// ```
 async fn baidu_poll(channel_id: &str) -> Result<PollOutcome, String> {
+    let pending = |msg: String| PollOutcome {
+        status: QrStatus::Pending,
+        message: msg,
+        credential: None,
+    };
+
     let v = sessions()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(&kind_key(PanKind::Baidu, channel_id))
-        .and_then(|r| r.token.split_once('|').map(|(_, v)| v.to_string()))
+        .map(|r| r.token.clone())
         .unwrap_or_default();
     if v.is_empty() {
+        write_log(&format!(
+            "轮询 kind=baidu 会话不在 key_len={}",
+            channel_id.len()
+        ));
         return Ok(PollOutcome {
             status: QrStatus::Expired,
             message: "这个二维码已失效（会话不在），请重新获取".to_string(),
@@ -922,28 +1230,63 @@ async fn baidu_poll(channel_id: &str) -> Result<PollOutcome, String> {
     }
 
     let c = client(UA_BAIDU)?;
-    let resp = c
-        .get(baidu_unicast_url(channel_id, &v))
+    let send_result = c
+        .get(baidu_unicast_url(channel_id))
         .header("Accept", "application/json, text/plain, */*")
         .header("Referer", "https://pan.baidu.com/")
+        // ★ 这一跳是**长轮询**：3 秒内没事件就一个字节都不回（真读数见常量文档）
+        .timeout(BAIDU_UNICAST_TIMEOUT)
         .send()
-        .await
-        .map_err(|e| format!("轮询百度扫码状态失败：{e}"))?;
+        .await;
+    let resp = match send_result {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => {
+            // ★ 正常的"还没扫" —— 不是失败。若把这里当 Err，UI 会立刻停表并报错，
+            //   而用户其实正要扫码（这就是"扫了没反应"的一种来源）。
+            write_log(&format!(
+                "轮询 kind=baidu {}s 内无事件（长轮询，正常）⇒ Pending",
+                BAIDU_UNICAST_TIMEOUT.as_secs()
+            ));
+            return Ok(pending("等待扫码…".to_string()));
+        }
+        Err(e) => {
+            // 非超时的传输错（DNS / TLS / 连接被拒）才是真失败 —— 如实报，不吞
+            write_log(&format!("轮询请求失败 kind=baidu err={e}"));
+            return Err(format!("轮询百度扫码状态失败：{e}"));
+        }
+    };
     // ★ 先收响应头（body 一读 header 就没了）
+    let status = resp.status();
     let set_cookie = collect_set_cookie(&resp);
     let body = resp.text().await.unwrap_or_default();
 
+    // ★★ 每次轮询都留读数：body 摘要 + Set-Cookie **键名**（`cookie_digest` 只给键名与总长，
+    //    绝不写值）。这是"参数对应关系未取证"那一处的唯一观测手段。
+    let errno = baidu_errno_of(&body);
+    write_log(&format!(
+        "轮询 kind=baidu HTTP {status} errno={errno:?} set_cookie={} body={}",
+        cookie_digest(&set_cookie),
+        tail(&body)
+    ));
+
+    if !status.is_success() {
+        // 不把 HTTP 错判成终态：百度侧偶发 4xx 是常态，判 Failed 会让 UI 停在一个
+        // 其实"再等一秒就好"的状态上。但读数已经进日志了，不会被掩盖。
+        return Ok(pending(format!(
+            "等待扫码…（服务端返回 HTTP {status}，已记录）"
+        )));
+    }
+
     let Some(bduss) = bduss_from_cookie(&set_cookie) else {
-        write_log(&format!(
-            "轮询 kind=baidu 尚未确认 body={}",
-            tail(&body)
-        ));
-        return Ok(PollOutcome {
-            status: QrStatus::Pending,
-            message: "等待扫码…".to_string(),
-            credential: None,
-        });
+        // 没有 BDUSS 就是"还没确认" —— 无论 errno 是什么（errno 非 0 也一样 Pending，
+        // 只是日志里能看到它是几）。
+        let why = match errno {
+            Some(n) if n != 0 => format!("等待扫码…（errno={n}）"),
+            _ => "等待扫码…".to_string(),
+        };
+        return Ok(pending(why));
     };
+    write_log("轮询 kind=baidu 拿到 BDUSS ⇒ 开始换登录态");
 
     // ③ 用 BDUSS 换登录态
     let resp = c
@@ -956,18 +1299,37 @@ async fn baidu_poll(channel_id: &str) -> Result<PollOutcome, String> {
             write_log(&format!("换登录态请求失败 kind=baidu err={e}"));
             format!("换取百度登录态失败：{e}")
         })?;
-    let mut cookie = merge_cookie(&set_cookie, &collect_set_cookie(&resp));
-    let _ = resp.text().await; // body 里也有 errno，但判据用 cookie（下面）
+    let step_status = resp.status();
+    let step_cookie = collect_set_cookie(&resp);
+    let step_body = resp.text().await.unwrap_or_default();
+    write_log(&format!(
+        "换登录态 kind=baidu HTTP {step_status} set_cookie={} body={}",
+        cookie_digest(&step_cookie),
+        tail(&step_body)
+    ));
+    let mut cookie = merge_cookie(&set_cookie, &step_cookie);
 
     // ④ 补 pan 域 cookie（STOKEN 等在这条响应里）
-    if let Ok(r) = c
+    match c
         .get("https://pan.baidu.com/disk/main?from=homeFlow")
         .header("Cookie", &cookie)
         .header("Referer", "https://pan.baidu.com/")
         .send()
         .await
     {
-        cookie = merge_cookie(&cookie, &collect_set_cookie(&r));
+        Ok(r) => {
+            let extra = collect_set_cookie(&r);
+            write_log(&format!(
+                "补 pan 域 cookie kind=baidu HTTP {} set_cookie={}",
+                r.status(),
+                cookie_digest(&extra)
+            ));
+            cookie = merge_cookie(&cookie, &extra);
+        }
+        Err(e) => {
+            // 这一步失败不必中断：BDUSS/PTOKEN 已经在手，盘接口缺 STOKEN 只影响后续列表
+            write_log(&format!("补 pan 域 cookie 失败 kind=baidu err={e}"));
+        }
     }
     if bduss_from_cookie(&cookie).is_none() {
         write_log("换 cookie 失败 kind=baidu 合并后仍无 BDUSS");
@@ -1029,8 +1391,15 @@ fn pan115_token_url() -> &'static str {
 }
 
 /// 115 轮询（纯函数）
-fn pan115_status_url(uid: &str) -> String {
-    format!("https://qrcodeapi.115.com/get/status/?uid={uid}&_=0")
+///
+/// ★★★ 2026-10-28 现场读数（Owner 扫码"没反应"）：
+/// ```text
+/// 旧实现只带 uid ⇒ 服务端回 `{"state":0,"code":40199002,"message":"key invalid"}`
+/// （每一轮都是这条，UI 就永远"等待扫码"）。
+/// 真读数（curl 取码接口）：`data{uid,time,sign,qrcode}` —— **time 与 sign 必须一起带上**。
+/// ```
+fn pan115_status_url(uid: &str, time: &str, sign: &str) -> String {
+    format!("https://qrcodeapi.115.com/get/status/?uid={uid}&time={time}&sign={sign}&_=0")
 }
 
 /// 115 换 cookie（纯函数；POST，表单只带 uid）
@@ -1043,31 +1412,32 @@ fn pan115_qr_url(uid: &str) -> String {
     format!("https://115.com/scan/dg-{uid}")
 }
 
-/// 从取码响应里取 `uid`
-fn pan115_uid(body: &str) -> Option<String> {
+/// 从取码响应里取 `(uid, time, sign, qrcode)`
+///
+/// ★ 真读数（2026-10-28 现场 curl）：
+/// ```text
+/// {"state":1,"code":0,"data":{"uid":"fa45…","time":1793197822,
+///   "sign":"421e…","qrcode":"https://115.com/scan/dg-fa45…"}}
+/// ⇒ 轮询必须带 uid+time+sign（只带 uid ⇒ `40199002 key invalid`，现场"扫了没反应"）
+/// ```
+fn pan115_token_fields(body: &str) -> Option<(String, String, String, String)> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
-    for path in [["data", "uid"], ["uid", ""]] {
-        let mut cur = &v;
-        let mut ok = true;
-        for k in path.iter().filter(|k| !k.is_empty()) {
-            match cur.get(k) {
-                Some(n) => cur = n,
-                None => {
-                    ok = false;
-                    break;
-                }
-            }
-        }
-        if ok {
-            if let Some(s) = cur.as_str() {
-                let s = s.trim();
-                if !s.is_empty() {
-                    return Some(s.to_string());
-                }
-            }
-        }
+    let d = v.get("data").unwrap_or(&v);
+    let s = |k: &str| {
+        d.get(k)
+            .map(|x| match x {
+                serde_json::Value::String(s) => s.trim().to_string(),
+                other => other.to_string(),
+            })
+            .unwrap_or_default()
+    };
+    let uid = s("uid");
+    let tm = s("time");
+    let sign = s("sign");
+    if uid.is_empty() || tm.is_empty() || sign.is_empty() {
+        return None;
     }
-    None
+    Some((uid, tm, sign, s("qrcode")))
 }
 
 /// 115 的状态映射（`(QrStatus, 原始码)`；码打日志用）
@@ -1148,15 +1518,25 @@ async fn pan115_start() -> Result<QrSession, String> {
     if !status.is_success() {
         return Err(format!("115 二维码接口返回 HTTP {status}：{}", tail(&body)));
     }
-    let uid = pan115_uid(&body).ok_or_else(|| {
-        write_log(&format!("取码失败 kind=115 无 uid body={}", tail(&body)));
-        format!("115 响应里没有 uid（协议可能变了）：{}", tail(&body))
+    let (uid, tm, sign, qr) = pan115_token_fields(&body).ok_or_else(|| {
+        write_log(&format!("取码失败 kind=115 字段不全 body={}", tail(&body)));
+        format!(
+            "115 取码响应缺 uid/time/sign（协议可能变了）：{}",
+            tail(&body)
+        )
     })?;
-    let url = pan115_qr_url(&uid);
+    // 真读数里 `qrcode` 字段就是二维码内容；缺失时按 `dg-<uid>` 拼（两者等价，已按真响应核对）
+    let url = if qr.trim().is_empty() {
+        pan115_qr_url(&uid)
+    } else {
+        qr.trim().to_string()
+    };
     let svg = crate::remote::qr_svg_for(&url).unwrap_or_default();
     write_log(&format!(
-        "取码成功 kind=115 uid_len={} svg_len={}",
+        "取码成功 kind=115 uid_len={} time={} sign_len={} svg_len={}",
         uid.len(),
+        tm,
+        sign.len(),
         svg.len()
     ));
 
@@ -1167,7 +1547,8 @@ async fn pan115_start() -> Result<QrSession, String> {
         .insert(
             kind_key(PanKind::Pan115, &uid),
             SessionRecord {
-                token: uid.clone(),
+                // 轮询要 `(uid, time, sign)` 三样 ⇒ 用 `|` 拼起来存（与 UC/Aliyun 同一手法）
+                token: format!("{uid}|{tm}|{sign}"),
                 created_at,
             },
         );
@@ -1182,13 +1563,45 @@ async fn pan115_start() -> Result<QrSession, String> {
 
 /// 115：轮询 + 换 cookie
 async fn pan115_poll(uid: &str) -> Result<PollOutcome, String> {
+    // 取回 time/sign（现场"扫了没反应"就是因为没带这两样：key invalid）
+    let compound = sessions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&kind_key(PanKind::Pan115, uid))
+        .map(|r| r.token.clone())
+        .unwrap_or_default();
+    let mut it = compound.split('|');
+    let _uid = it.next().unwrap_or(uid);
+    let tm = it.next().unwrap_or("");
+    let sign = it.next().unwrap_or("");
     let c = client(UA_115)?;
-    let resp = c
-        .get(pan115_status_url(uid))
+    /*
+     * ★★★ 2026-10-28 现场真读数（Owner："115 扫了没反应"，UI 报 `error sending request`）：
+     * ```text
+     * `/get/status/` 是**长轮询**：未扫时服务端保持连接、**一个字节都不回**
+     * （curl -m 30 ⇒ `HTTP=000 SIZE=0` 超时）。
+     * 而我们共用的 client 超时是 10s ⇒ 每次都 Err ⇒ UI 显示网络错误、永远等不到扫码。
+     * ⇒ 这里**单次请求**收紧到 8s，并把超时当 Pending：扫中后的下一次轮询会拿到 body。
+     * ```
+     */
+    let resp = match c
+        .get(pan115_status_url(uid, tm, sign))
+        .timeout(std::time::Duration::from_secs(8))
         .header("Accept", "application/json, text/plain, */*")
+        .header("Referer", "https://115.com/")
         .send()
         .await
-        .map_err(|e| format!("轮询 115 扫码状态失败：{e}"))?;
+    {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => {
+            return Ok(PollOutcome {
+                status: QrStatus::Pending,
+                message: "等待扫码…".to_string(),
+                credential: None,
+            });
+        }
+        Err(e) => return Err(format!("轮询 115 扫码状态失败：{e}")),
+    };
     let body = resp
         .text()
         .await
@@ -1432,8 +1845,9 @@ async fn aliyun_start() -> Result<QrSession, String> {
         .map_err(|e| format!("阿里二维码响应不是 JSON（{e}）：{}", tail(&body)))?;
     let data = v.get("content").and_then(|c| c.get("data"));
     let url = data
-        .and_then(|d| d.get("qrCodeUrl"))
+        .and_then(|d| d.get("codeContent"))
         .and_then(|x| x.as_str())
+        .or_else(|| data.and_then(|d| d.get("qrCodeUrl")).and_then(|x| x.as_str()))
         .unwrap_or("")
         .trim()
         .to_string();
@@ -2168,10 +2582,17 @@ mod tests {
             pan115_token_url(),
             "https://qrcodeapi.115.com/api/1.0/qandroid/1.0/token/"
         );
+        // ★ 现场读数修正：只带 uid 会 `40199002 key invalid` ⇒ time/sign 必须带
         assert_eq!(
-            pan115_status_url("u1"),
-            "https://qrcodeapi.115.com/get/status/?uid=u1&_=0"
+            pan115_status_url("u1", "1793197822", "s1"),
+            "https://qrcodeapi.115.com/get/status/?uid=u1&time=1793197822&sign=s1&_=0"
         );
+        // 取码响应的四字段（真读数）—— 缺 time/sign 就没有可用的轮询
+        let body = r#"{"state":1,"code":0,"data":{"uid":"u1","time":1793197822,
+            "sign":"s1","qrcode":"https://115.com/scan/dg-u1"}}"#;
+        let (uid, tm, sign, qr) = pan115_token_fields(body).expect("真报文必须能解析");
+        assert_eq!((uid.as_str(), tm.as_str(), sign.as_str()), ("u1", "1793197822", "s1"));
+        assert_eq!(qr, "https://115.com/scan/dg-u1");
         assert_eq!(
             pan115_login_url(),
             "https://passportapi.115.com/app/1.0/qandroid/1.0/login/qrcode/"
@@ -2305,11 +2726,12 @@ mod tests {
     //  百度扫码（2026-10-28 接通）—— passport 族，与 CAS 不同
     // ══════════════════════════════════════════════════════════════════
 
-    /// ★★ 三条 URL 逐字对齐取证
+    /// ★★ 三条 URL 逐字对齐（unicast 的 `channel_id`/`v` **都填 sign**）
     ///
     /// ```text
-    /// 注入验证：把 unicast 的 `v=` 改成 `sign=` ⇒ 本条 FAILED。
+    /// 注入验证：把 unicast 里的 `v={sign}` 改成 `sign={sign}` ⇒ 本条 FAILED。
     /// （百度那一步的参数名是 `v`，值才是 sign —— 名字写错服务端不认，且不报错）
+    /// 注入验证（已实测真红）：把 `channel_id` 改成 `cid` ⇒ 本条 FAILED。
     /// ```
     #[test]
     fn baidu_urls_match_the_documented_flow() {
@@ -2318,8 +2740,8 @@ mod tests {
             "https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc"
         );
         assert_eq!(
-            baidu_unicast_url("cid1", "sig1"),
-            "https://passport.baidu.com/channel/unicast?channel_id=cid1&v=sig1"
+            baidu_unicast_url("sig1"),
+            "https://passport.baidu.com/channel/unicast?channel_id=sig1&v=sig1"
         );
         assert_eq!(
             baidu_qrbduss_url("sig1", "bd1"),
@@ -2327,25 +2749,275 @@ mod tests {
         );
     }
 
-    /// ★★★ 取码响应：真报文用 `sign`，取证用词是 `v` —— 两种都要认
+    /// ★★ 长轮询窗口必须**小于**全局 HTTP 超时（否则"没事件"会被判成"请求失败"）
     ///
     /// ```text
-    /// 注入验证：把候选键里的 "sign" 删掉 ⇒ 第一条断言 FAILED。
+    /// 真读数：unicast 在未确认时 30 秒 0 字节 ⇒ 它就是长轮询。
+    /// 若把这一跳的窗口设成 ≥ 全局超时，表现会退化成"轮询报错、UI 停表"，
+    /// 而用户其实正要扫码 —— 正是"扫了没反应"的一种来源。
+    /// 注入验证：把 BAIDU_UNICAST_TIMEOUT 改成 10s（= HTTP_TIMEOUT）⇒ 本条 FAILED。
     /// ```
     #[test]
-    fn baidu_qr_fields_accept_sign_or_v() {
-        let real = r#"{"errno":0,"msg":"","data":{"channel_id":"cid1",
-            "sign":"sig1","url":"https://wappass.baidu.com/wp/?qrlogin&t=1"}}"#;
-        let (cid, v, url) = baidu_qr_fields(real).expect("真报文必须能解析");
-        assert_eq!((cid.as_str(), v.as_str()), ("cid1", "sig1"));
-        assert!(url.starts_with("https://wappass.baidu.com/wp/"), "{url}");
+    fn baidu_unicast_timeout_is_shorter_than_the_global_one() {
+        assert!(
+            BAIDU_UNICAST_TIMEOUT < HTTP_TIMEOUT,
+            "★★ 长轮询窗口 {:?} 必须短于全局 {:?}",
+            BAIDU_UNICAST_TIMEOUT,
+            HTTP_TIMEOUT
+        );
+        assert_eq!(BAIDU_UNICAST_TIMEOUT.as_secs(), 3, "本仓取 3 秒（可改，但要一起改注释）");
+    }
 
-        let alt = r#"{"data":{"channel_id":"cid2","v":"vv","url":"https://x"}}"#;
-        assert_eq!(baidu_qr_fields(alt).map(|(_, v, _)| v).as_deref(), Some("vv"));
+    /// ★★★ 真读数 → 门禁：`imgurl` 是**图片地址**、**不带 scheme**，要补成 `https://`
+    ///
+    /// ```text
+    /// 真读数（2026-10-29，curl 逐字）：
+    ///   {"imgurl":"passport.baidu.com/v2/api/qrcode?sign=<sign>&lp=pc&qrloginfrom=pc",
+    ///    "errno":0,"sign":"<sign>","prompt":"登录后..."}
+    /// 注入验证（已实测真红）：把 `baidu_img_url` 里的 `https://` 前缀去掉
+    ///   ⇒ 第一条断言 FAILED（图片地址没有 scheme ⇒ reqwest 直接 builder error）。
+    /// 注入验证：把它改成 `https://{t}` 但**不判断已带 scheme** ⇒ 第三条断言 FAILED
+    ///   （会拼出 `https://https://…`）。
+    /// ```
+    #[test]
+    fn baidu_imgurl_becomes_qr_image_url() {
+        // 第一层：纯函数补 scheme
+        assert_eq!(
+            baidu_img_url("passport.baidu.com/v2/api/qrcode?sign=s1&lp=pc"),
+            "https://passport.baidu.com/v2/api/qrcode?sign=s1&lp=pc"
+        );
+        // 幂等：已经带 scheme 的原样返回（不拼两层）
+        assert_eq!(
+            baidu_img_url("https://passport.baidu.com/x?sign=s1"),
+            "https://passport.baidu.com/x?sign=s1"
+        );
+        assert_eq!(baidu_img_url("  http://h/x  "), "http://h/x");
+        assert_eq!(baidu_img_url(""), "");
 
-        // 缺字段 ⇒ None（不许编默认值）
-        assert!(baidu_qr_fields(r#"{"data":{"channel_id":"c"}}"#).is_none());
-        assert!(baidu_qr_fields("not json").is_none());
+        // 第二层：真报文 → 结构体
+        let real = r#"{"imgurl":"passport.baidu.com/v2/api/qrcode?sign=sig1&lp=pc&qrloginfrom=pc",
+            "errno":0,"sign":"sig1","prompt":"登录后可同步"}"#;
+        let f = baidu_qr_fields(real).expect("真报文必须能解析");
+        assert_eq!(f.sign, "sig1");
+        assert_eq!(
+            f.img_url,
+            "https://passport.baidu.com/v2/api/qrcode?sign=sig1&lp=pc&qrloginfrom=pc"
+        );
+        assert!(
+            f.img_url.starts_with("https://"),
+            "★★ 必须补 scheme，否则 reqwest 报 builder error：{}",
+            f.img_url
+        );
+        // ★ 它**不是**二维码文本：里面没有 wappass 那种"扫码后跳转"的 URL
+        assert!(
+            !f.img_url.contains("wappass"),
+            "★ imgurl 是图片地址，不是二维码内容：{}",
+            f.img_url
+        );
+    }
+
+    /// ★★★ 缺字段 / errno 非 0 / 非 JSON ⇒ **一律 Err**（不许编默认值）
+    ///
+    /// ```text
+    /// 旧实现的病就在这里：它去找 `data.channel_id`+`data.url`，真报文没有 ⇒
+    /// 报"字段不全"但**看不出缺什么**。现在每条 Err 都点名缺哪个字段。
+    /// 注入验证（已实测真红）：把 `if sign.is_empty()` 那段整块删掉 ⇒ 第二条断言 FAILED
+    ///   （缺 sign 却返回 Ok ⇒ 轮询会用一个空 sign 去撞服务端，表现是"永远 Pending"）。
+    /// ```
+    #[test]
+    fn baidu_missing_fields_are_errors() {
+        // 缺 imgurl
+        let e = baidu_qr_fields(r#"{"errno":0,"sign":"s1"}"#).expect_err("缺 imgurl 必须失败");
+        assert!(e.contains("imgurl"), "{e}");
+        // 缺 sign
+        let e = baidu_qr_fields(r#"{"errno":0,"imgurl":"passport.baidu.com/x"}"#)
+            .expect_err("缺 sign 必须失败");
+        assert!(e.contains("sign"), "{e}");
+        // 两个都缺 ⇒ 名字都要点到
+        let e = baidu_qr_fields(r#"{"errno":0}"#).expect_err("两个都缺必须失败");
+        assert!(e.contains("sign") && e.contains("imgurl"), "{e}");
+        // errno 非 0
+        let e = baidu_qr_fields(r#"{"errno":-6,"prompt":"登录失败"}"#)
+            .expect_err("errno 非 0 必须失败");
+        assert!(e.contains("errno=-6"), "{e}");
+        // 不是 JSON
+        let e = baidu_qr_fields("<html>502</html>").expect_err("非 JSON 必须失败");
+        assert!(e.contains("不是 JSON"), "{e}");
+        // 空串
+        assert!(baidu_qr_fields("").is_err());
+    }
+
+    /// ★★★ 真网 smoke（默认 ignored）：百度那一步**真的**能取到码并内嵌出 PNG
+    ///
+    /// ```text
+    /// 跑法：cargo test --lib pan_login --release -- --ignored --nocapture
+    /// 前提：SOURIN_LIVE_BAIDU=1（缺了就跳过 —— 不在离线/CI 上自动联网）
+    /// 它验三件此时就能验的事（不需要账号）：
+    ///   ① getqrcode 真网回的字段形状（把这轮的读数打出来）；
+    ///   ② `https://` + imgurl 真的能 GET 到一张 PNG；
+    ///   ③ 内嵌出的 SVG 里带 `data:image/png;base64,`。
+    /// ```
+    #[tokio::test]
+    #[ignore = "真网；需要 SOURIN_LIVE_BAIDU=1"]
+    async fn live_baidu_start_embeds_the_real_qr_png() {
+        if std::env::var("SOURIN_LIVE_BAIDU").as_deref() != Ok("1") {
+            eprintln!("[skip] 未设 SOURIN_LIVE_BAIDU=1 ⇒ 不联网");
+            return;
+        }
+        // ① 先看原始响应形状（sign 值打码，它是这一轮会话的钥匙）
+        let c = client(UA_BAIDU).expect("建客户端");
+        let body = c
+            .get(baidu_qrcode_url())
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Referer", "https://pan.baidu.com/")
+            .send()
+            .await
+            .expect("getqrcode 必须可达")
+            .text()
+            .await
+            .expect("读响应");
+        let masked = {
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let sign = v.get("sign").and_then(|x| x.as_str()).unwrap_or("");
+            let img = v.get("imgurl").and_then(|x| x.as_str()).unwrap_or("");
+            let mut m = body.replace(sign, "<sign>");
+            // imgurl 里也含 sign（已被上一步替掉）
+            eprintln!("getqrcode errno={:?}", v.get("errno"));
+            eprintln!("getqrcode sign_len={}", sign.len());
+            eprintln!("getqrcode imgurl_len={} imgurl={}", img.len(), img);
+            m = m.replace(sign, "<sign>");
+            m
+        };
+        eprintln!("getqrcode body(masked)={mashed}", mashed = masked);
+
+        // ② 走真实现
+        let s = baidu_start().await.expect("百度取码必须成功");
+        eprintln!(
+            "start OK key_len={} url={} svg_len={} hint={}",
+            s.key.len(),
+            s.url,
+            s.svg.len(),
+            s.hint
+        );
+        assert!(s.url.starts_with("https://passport.baidu.com/"), "{}", s.url);
+        assert!(
+            s.svg.contains("data:image/png;base64,iVBORw0KGgo"),
+            "★★ 内嵌的必须是真 PNG（base64 以 PNG 签名开头）。svg 前 120 字：{}",
+            s.svg.chars().take(120).collect::<String>()
+        );
+        eprintln!("svg 前 90 字：{}", s.svg.chars().take(90).collect::<String>());
+
+        // ③ 轮询一次：未确认 ⇒ 必须 Pending（且不许产出凭据）
+        let out = baidu_poll(&s.key).await.expect("轮询不该是 Err");
+        eprintln!("poll #1 status={} message={}", out.status.code(), out.message);
+        assert_eq!(out.status, QrStatus::Pending, "未确认必须 Pending");
+        assert!(out.credential.is_none(), "未确认不许产出凭据");
+    }
+
+    #[test]
+    fn baidu_top_level_wins_over_data() {
+        let body = r#"{"errno":0,"sign":"top","imgurl":"passport.baidu.com/a",
+            "data":{"sign":"nested","imgurl":"passport.baidu.com/b"}}"#;
+        let f = baidu_qr_fields(body).expect("必须能解析");
+        assert_eq!(f.sign, "top", "★★ 顶层优先（真报文就是顶层）");
+        assert_eq!(f.img_url, "https://passport.baidu.com/a");
+
+        let only_data = r#"{"data":{"sign":"d1","imgurl":"passport.baidu.com/c"}}"#;
+        let f = baidu_qr_fields(only_data).expect("data 兜底也要认");
+        assert_eq!((f.sign.as_str(), f.img_url.as_str()), ("d1", "https://passport.baidu.com/c"));
+    }
+
+    /// ★★★ 自带 base64 **编码**必须与标准实现逐字一致（否则内嵌的 PNG 全坏）
+    ///
+    /// ```text
+    /// 期望值全部由**独立实现**（PowerShell `[Convert]::ToBase64String`，与 Python
+    /// `base64.b64encode` 同值）算出，不是拿被测函数反推。
+    /// 注入验证（已实测真红）：把字母表里的 `a..z` 换成 `a..y` ⇒ 本条 FAILED。
+    /// 注入验证：把 padding 分支写成永远 `'='` ⇒ 第 4/5 条断言（长度非 3 倍的）FAILED。
+    /// ```
+    #[test]
+    fn b64_encode_matches_standard() {
+        assert_eq!(b64_encode(b"hello"), "aGVsbG8=");
+        assert_eq!(b64_encode(br#"{"a":1}"#), "eyJhIjoxfQ==");
+        assert_eq!(b64_encode(b"hi"), "aGk="); // 2 字节 ⇒ 一个 '='
+        assert_eq!(b64_encode(b"Man"), "TWFu"); // 3 字节 ⇒ 无填充
+        assert_eq!(b64_encode(b"May"), "TWF5"); // 同上，但换字母表位置
+        assert_eq!(b64_encode(&[0x00, 0x01, 0x02]), "AAEC");
+        assert_eq!(b64_encode(&[0xFF, 0xFE, 0xFD]), "//79"); // +/ 两个符号都要对
+        assert_eq!(
+            b64_encode(b"any carnal pleasure."),
+            "YW55IGNhcm5hbCBwbGVhc3VyZS4="
+        );
+        assert_eq!(b64_encode(b""), "");
+        // PNG 签名 → 与标准实现一致（这条直接护住内嵌 PNG 的头部）
+        assert_eq!(b64_encode(b"\x89PNG\r\n\x1a\n"), "iVBORw0KGgo=");
+    }
+
+    /// ★★ 编码/解码必须互逆（两套实现互相校准，任一处偏移都会露出来）
+    #[test]
+    fn b64_roundtrip_is_lossless() {
+        for raw in [
+            &b""[..],
+            b"f",
+            b"fo",
+            b"foo",
+            b"foob",
+            b"fooba",
+            b"foobar",
+            b"\x00\xFF\x10\x20",
+        ] {
+            let enc = b64_encode(raw);
+            assert_eq!(
+                b64_decode(&enc).as_deref(),
+                Some(raw),
+                "往返失败：raw={raw:?} enc={enc}"
+            );
+        }
+    }
+
+    /// ★★★ PNG → SVG：`<image href="data:image/png;base64,…">`，尺寸取自 IHDR
+    ///
+    /// ```text
+    /// 注入验证（已实测真红）：把 `png_size` 里的 `w > 4096` 判断删掉并把 `data[16..20]`
+    ///   换成 `data[20..24]`（width/height 读反）⇒ 第一条断言 FAILED（尺寸对不上）。
+    /// 注入验证：把 `href` 里的 `data:image/png;base64,` 改成 `data:image/png,` ⇒ 第一条 FAILED。
+    /// ```
+    #[test]
+    fn svg_embeds_png_as_data_uri() {
+        // 手里造一张"只有文件头"的 PNG：签名(8) + 段长(4) + "IHDR"(4) + w(4) + h(4)
+        // ★ 宽高**故意不相等**（231×257）：相等的话"读反了 w/h"这种错就测不出来
+        let mut png: Vec<u8> = Vec::new();
+        png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&231u32.to_be_bytes());
+        png.extend_from_slice(&257u32.to_be_bytes());
+        assert_eq!(png.len(), 24, "这条夹具就是 24 字节");
+
+        assert_eq!(
+            png_size(&png),
+            Some((231, 257)),
+            "★★ 宽高必须从 IHDR 的正确偏移读出来（读反/读错位这里立刻红）"
+        );
+
+        let svg = svg_with_embedded_png(&png).expect("PNG 必须能内嵌成 SVG");
+        assert!(svg.starts_with("<svg "), "{svg}");
+        assert!(svg.contains(r#"width="231" height="257""#), "{svg}");
+        assert!(svg.contains(r#"viewBox="0 0 231 257""#), "{svg}");
+        assert!(
+            svg.contains("<image") && svg.contains("data:image/png;base64,iVBORw0KGgo"),
+            "★★ 必须是 data URI 且以 PNG 签名的 base64 开头（24 字节 = 3 的整数倍 ⇒ 无 `=`）：{svg}"
+        );
+        assert!(svg.trim_end().ends_with("</svg>"), "{svg}");
+
+        // 非 PNG ⇒ None（不是"编一个 SVG 出来"）
+        assert!(png_size(b"not a png").is_none());
+        assert!(svg_with_embedded_png(b"not a png").is_none());
+        assert!(svg_with_embedded_png(b"").is_none());
+        // 尺寸为 0 ⇒ None（避免产出 0×0 的 SVG）
+        let mut zero = png.clone();
+        zero[16..20].copy_from_slice(&0u32.to_be_bytes());
+        assert!(png_size(&zero).is_none());
     }
 
     /// ★★★ "已确认"的唯一判据：响应头里出现 `BDUSS`

@@ -205,39 +205,35 @@ impl PanDrive {
         &self,
         cookie: &str,
         share_id: &str,
+        passcode: &str,
         fid: &str,
         fid_token: &str,
     ) -> Result<String, String> {
+        /*
+         * ★★★ 2026-10-28 真网读数（Owner 现场 403/`41020 转存文件token校验异常`）：
+         * ```text
+         * `share_fid_token` 绑定在**换出它的那次 stoken** 上。
+         * 我第一版：用 A 次 stoken 列目录拿 token，再让本函数换一个 B 次 stoken 去 save
+         *   ⇒ 服务端判"校验异常"，真网复现两次。
+         * ⇒ 现在按 fid 重新取回 `(stoken, token)` **一对**，save 用同一对。
+         * ```
+         */
         let referer = format!("{}/s/{share_id}", self.spec.share_host);
-        // ① 换 share token
-        let token_url = self.api(&format!("share/sharepage/token?{}", self.spec.pr_fr));
-        let token_body = format!(
-            "{{\"pwd_id\":{},\"passcode\":\"\"}}",
-            serde_json::Value::String(share_id.to_string())
-        );
-        let resp = self
-            .client
-            .post(&token_url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/plain, */*")
-            .header("Referer", &referer)
-            .header("Cookie", cookie)
-            .body(token_body)
-            .send()
+        let (fresh_stoken, fresh_token) = self
+            .refresh_fid_token(cookie, share_id, passcode, fid)
             .await
-            .map_err(|e| format!("换分享 token 请求失败：{e}"))?;
-        let text = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
-        let v: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("换分享 token 返回的不是 JSON（{e}）：{}", short(&text)))?;
-        let stoken = v
-            .get("data")
-            .and_then(|d| d.get("stoken"))
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        if stoken.is_empty() {
-            return Err(format!("换分享 token 没有 stoken（响应：{}）", short(&text)));
-        }
+            .unwrap_or_default();
+        let fid_token = if fresh_token.is_empty() {
+            fid_token
+        } else {
+            fresh_token.as_str()
+        };
+        // ① 换 share token（refresh 已经换过一次 ⇒ 只有它失败时才自己再换）
+        let stoken = if fresh_stoken.is_empty() {
+            self.share_stoken(cookie, share_id, passcode).await?
+        } else {
+            fresh_stoken
+        };
 
         // ② 转存
         let save_url = self.api(&format!("share/sharepage/save?{}", self.spec.pr_fr));
@@ -273,9 +269,14 @@ impl PanDrive {
             return Err(format!("转存没有拿到 task_id（响应：{}）", short(&text)));
         }
 
-        // ③ 轮询任务（最多 ~10 秒；超时如实报，不猜地址）
-        for _ in 0..10 {
-            tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+        // ③ 轮询任务（最多 ~30 秒；超时如实报，不猜地址）
+        //
+        // ★ 2026-10-28 现场：9 秒窗口对真分享（64GB ISO 那种）不够；并且成功态是
+        //   `status:2` + `save_as.save_as_top_fids:[…]`（数组），
+        //   我第一版找 `save_as.top_fid`（单数）⇒ 永远取不到 ⇒ 空转超时。真读数见提交说明。
+        let mut last = String::new();
+        for _ in 0..30 {
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
             let task_url = self.api(&format!(
                 "task?{}&task_id={}&retry_index=0",
                 self.spec.pr_fr, task_id
@@ -291,18 +292,29 @@ impl PanDrive {
                 .map_err(|e| format!("查询转存任务失败：{e}"))?;
             let text = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
             let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-            // 有的盘把 saved fid 放在 data.save_as.top_fid，有的在更深一层
+            // 真读数：成功态 status=2，fid 在 `save_as.save_as_top_fids[0]`（数组）
             let saved = v
                 .get("data")
-                .and_then(|d| {
-                    d.get("save_as")
-                        .and_then(|s| s.get("top_fid"))
-                        .or_else(|| d.get("top_fid"))
+                .and_then(|d| d.get("save_as"))
+                .and_then(|s| {
+                    s.get("save_as_top_fids")
+                        .or_else(|| s.get("save_as_select_top_fids"))
                 })
+                .and_then(|a| a.as_array())
+                .and_then(|a| a.first())
                 .and_then(|x| x.as_str())
-                .unwrap_or("");
-            if !saved.is_empty() {
-                return Ok(saved.to_string());
+                .filter(|x| !x.is_empty())
+                .map(|x| x.to_string())
+                .or_else(|| {
+                    v.get("data")
+                        .and_then(|d| d.get("save_as"))
+                        .and_then(|s| s.get("top_fid"))
+                        .and_then(|x| x.as_str())
+                        .filter(|x| !x.is_empty())
+                        .map(|x| x.to_string())
+                });
+            if let Some(saved) = saved {
+                return Ok(saved);
             }
             let status = v
                 .get("data")
@@ -312,8 +324,12 @@ impl PanDrive {
             if status == 3 {
                 return Err(format!("转存任务失败（status=3，响应：{}）", short(&text)));
             }
+            last = text;
         }
-        Err("转存任务超时（约 9 秒未完成）⇒ 现在给不出地址，不伪造".to_string())
+        Err(format!(
+            "转存任务 30 秒未完成 ⇒ 现在给不出地址，不伪造（最后一次响应：{}）",
+            last
+        ))
     }
 
     pub fn with_spec(class: &'static str, spec: PanDriveSpec) -> Self {
@@ -1023,7 +1039,7 @@ impl CspSite for PanDrive {
          *   ★ 解码收进 `parse_share_item`（与 `item_id_of` 成对，形状由门禁钉死）。
          */
         let fid = if let Some((share_id, sfid, token)) = parse_share_item(raw_id) {
-            self.share_save(&cookie, &share_id, &sfid, &token).await?
+            self.share_save(&cookie, &share_id, "", &sfid, &token).await?
         } else {
             raw_id.to_string()
         };
@@ -1171,7 +1187,7 @@ impl PanDrive {
     ) -> Result<Vec<DriveEntry>, String> {
         if share_family_wired(self.spec.kind) {
             // ★ 同族两家（端点路径逐字相同，host/pr 来自 spec）
-            return self.share_list_family(cookie, share_id, folder).await;
+            return self.share_list_family(cookie, share_id, "", folder).await;
         }
         Err(format!(
             "分享货架（share_id={share_id}）需要先换 share token（两步接口），\
@@ -1192,11 +1208,23 @@ impl PanDrive {
         &self,
         cookie: &str,
         share_id: &str,
+        passcode: &str,
         folder: &str,
     ) -> Result<Vec<DriveEntry>, String> {
+        let stoken = self.share_stoken(cookie, share_id, passcode).await?;
+        self.share_detail_with_stoken(cookie, share_id, &stoken, folder)
+            .await
+    }
+
+    /// 换 share token（**唯一生产点**；`list` 与 `save` 都用它，保证同一次会话）
+    async fn share_stoken(
+        &self,
+        cookie: &str,
+        share_id: &str,
+        passcode: &str,
+    ) -> Result<String, String> {
         let kind = self.spec.kind.display();
         let referer = format!("{}/s/{share_id}", self.spec.share_host);
-        // ① 换 token
         let resp = self
             .client
             .post(share_token_url(&self.spec))
@@ -1204,7 +1232,7 @@ impl PanDrive {
             .header("Accept", "application/json, text/plain, */*")
             .header("Referer", &referer)
             .header("Cookie", cookie)
-            .body(share_token_body(share_id, ""))
+            .body(share_token_body(share_id, passcode))
             .send()
             .await
             .map_err(|e| format!("{kind} 换分享 token 请求失败：{e}"))?;
@@ -1226,8 +1254,20 @@ impl PanDrive {
                 short(&body)
             ));
         }
-        // ② 列目录
-        let url = share_detail_url(&self.spec, share_id, &stoken, folder, 1);
+        Ok(stoken)
+    }
+
+    /// 用**指定的 stoken** 列分享目录（不自己换 token —— save 必须与它配对）
+    async fn share_detail_with_stoken(
+        &self,
+        cookie: &str,
+        share_id: &str,
+        stoken: &str,
+        folder: &str,
+    ) -> Result<Vec<DriveEntry>, String> {
+        let kind = self.spec.kind.display();
+        let referer = format!("{}/s/{share_id}", self.spec.share_host);
+        let url = share_detail_url(&self.spec, share_id, stoken, folder, 1);
         let resp = self
             .client
             .get(&url)
@@ -1245,6 +1285,232 @@ impl PanDrive {
         let v = share_envelope(&kind, &body, "列分享目录")?;
         require_share_entries(parse_share_entries(&v), share_id)
     }
+
+    /// 按 fid 反查**与同一次 stoken 配套**的 `share_fid_token`，返回 `(stoken, token)`
+    ///
+    /// ★ 真网读数：token 与 stoken 是**一对**；分开取必被判 `41020 校验异常`。
+    async fn refresh_fid_token(
+        &self,
+        cookie: &str,
+        share_id: &str,
+        passcode: &str,
+        fid: &str,
+    ) -> Result<(String, String), String> {
+        let stoken = self.share_stoken(cookie, share_id, passcode).await?;
+        let mut frontier: Vec<String> = vec!["0".to_string()];
+        for depth in 0..=SHARE_PICK_MAX_DEPTH {
+            let mut next: Vec<String> = Vec::new();
+            for folder in &frontier {
+                let entries = self
+                    .share_detail_with_stoken(cookie, share_id, &stoken, folder)
+                    .await?;
+                for e in entries {
+                    if e.fid == fid {
+                        return Ok((stoken, e.fid_token.unwrap_or_default()));
+                    }
+                    if e.is_dir && depth < SHARE_PICK_MAX_DEPTH {
+                        next.push(e.fid);
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        Ok((stoken, String::new()))
+    }
+
+    /// 清掉**上一次**播放留下的临时转存（best-effort；只清同一家盘）
+    pub async fn purge_previous(&self) {
+        let kind = self.spec.kind.code().to_string();
+        let victims: Vec<String> = {
+            let mut guard = temp_saved().lock().unwrap_or_else(|e| e.into_inner());
+            let mut keep: Vec<(String, String)> = Vec::new();
+            let mut victims = Vec::new();
+            for (k, fid) in guard.drain(..) {
+                if k == kind {
+                    victims.push(fid);
+                } else {
+                    keep.push((k, fid));
+                }
+            }
+            *guard = keep;
+            victims
+        };
+        if victims.is_empty() {
+            return;
+        }
+        let Some(cookie) = self.cookie() else { return };
+        for fid in victims {
+            match self
+                .client
+                .post(file_delete_url(&self.spec))
+                .header("Content-Type", "application/json")
+                .header("Cookie", &cookie)
+                .header("Referer", self.spec.share_host)
+                .body(file_delete_body(&fid))
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
+                    log::info!("[PAN] 已清理上次的临时转存 kind={kind} fid={fid}");
+                }
+                Ok(r) => log::warn!("[PAN] 清理临时转存失败 kind={kind} fid={fid} HTTP {}", r.status()),
+                Err(e) => log::warn!("[PAN] 清理临时转存请求失败 kind={kind} fid={fid} err={e}"),
+            }
+        }
+    }
+
+    /// 记下这次转存的 fid（下次解析前清理）
+    fn remember_temp(&self, fid: &str) {
+        temp_saved()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((self.spec.kind.code().to_string(), fid.to_string()));
+    }
+
+    /// ★★★ 把**分享页 URL** 解析成可播直链（给"把分享页当剧集"的那些 csp 源用）
+    ///
+    /// # 原版行为（Owner 问的"播一次存一次、不复用不删除？"）
+    /// ```text
+    /// dex 实证：参考实现有 `QuarkTempDelete` / `UCTempDelete` + `file/delete`（action_type:2）
+    /// ⇒ **每次播放都转存一份（不复用），播完删掉**（"Temp" 就是这个意思）。
+    /// 所以这里：进入解析先清上一次的，转存成功后记住这一次的。
+    /// 不在播到一半时删 —— 直链绑 fid，删了会断流。
+    /// ```
+    pub async fn resolve_share_play(
+        &self,
+        share_id: &str,
+        passcode: &str,
+    ) -> Result<CspPlay, String> {
+        let share_id = share_id.trim();
+        if share_id.is_empty() {
+            return Err("分享 id 为空（分享页 URL 解析失败）".to_string());
+        }
+        let Some(cookie) = self.cookie() else {
+            return Err(format!(
+                "NEED_LOGIN:{}|{}",
+                self.spec.kind.code(),
+                login_hint(self.spec.kind)
+            ));
+        };
+        // 先清上一次的临时转存（best-effort）
+        self.purge_previous().await;
+        let picked = self.pick_share_video(&cookie, share_id, passcode).await?;
+        let token = picked.fid_token.clone().unwrap_or_default();
+        let new_fid = self
+            .share_save(&cookie, share_id, passcode, &picked.fid, &token)
+            .await?;
+        self.remember_temp(&new_fid);
+        // 复用 `play`（`share_save` 已把文件放进我自己的网盘 ⇒ 走到裸 fid 那条路）
+        let mut plays = self.play("", &new_fid, "").await?;
+        let mut out = plays
+            .pop()
+            .ok_or_else(|| "转存后取直链没有返回地址".to_string())?;
+        out.label = Some(format!("分享页 · {}", picked.name));
+        Ok(out)
+    }
+
+    /// 在分享里挑一个**视频文件**（BFS ≤ [`SHARE_PICK_MAX_DEPTH`] 层，取体积最大者）
+    async fn pick_share_video(
+        &self,
+        cookie: &str,
+        share_id: &str,
+        passcode: &str,
+    ) -> Result<DriveEntry, String> {
+        let mut frontier: Vec<String> = vec!["0".to_string()];
+        let mut scanned = 0usize;
+        let mut best: Option<DriveEntry> = None;
+        // 兜底：扩展名不认识但确实是文件的最大一个（真分享里 .iso/.exe 伪装很常见）
+        let mut best_any: Option<DriveEntry> = None;
+        for depth in 0..=SHARE_PICK_MAX_DEPTH {
+            let mut next: Vec<String> = Vec::new();
+            for folder in &frontier {
+                let entries = self
+                    .share_list_family(cookie, share_id, passcode, folder)
+                    .await?;
+                scanned += entries.len();
+                for e in entries {
+                    if e.is_dir {
+                        if depth < SHARE_PICK_MAX_DEPTH {
+                            next.push(e.fid);
+                        }
+                        continue;
+                    }
+                    if e.size > 0 && best_any.as_ref().map(|b| e.size > b.size).unwrap_or(true) {
+                        best_any = Some(e.clone());
+                    }
+                    if !is_video_name(&e.name) {
+                        continue;
+                    }
+                    if best.as_ref().map(|b| e.size > b.size).unwrap_or(true) {
+                        best = Some(e);
+                    }
+                }
+            }
+            if best.is_some() {
+                break;
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        if let Some(v) = best {
+            return Ok(v);
+        }
+        if let Some(any) = best_any {
+            return Ok(any);
+        }
+        Err(format!(
+            "分享 {share_id} 里没有任何文件（已扫描 {scanned} 个条目）—— 不是\"没登录\"，是这个分享是空的"
+        ))
+    }
+}
+
+/// 分享里找视频时最多下钻几层目录（整季分文件夹是常态）
+const SHARE_PICK_MAX_DEPTH: usize = 2;
+
+/// 上一次播放留下的**临时转存文件**（下一次解析前删掉）
+///
+/// # 原版行为（Owner 问的正是这件事）
+/// ```text
+/// dex 实证：`QuarkTempDelete` / `UCTempDelete` + `file/delete`（action_type:2）
+/// ⇒ **每次播放转存一份（不复用），播完删掉**。
+/// 我们此前只做了前半截 ⇒ 用户网盘里会一直堆；这里记下 fid，下次解析开始时清掉。
+/// ```
+static TEMP_SAVED: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> =
+    std::sync::OnceLock::new();
+
+fn temp_saved() -> &'static std::sync::Mutex<Vec<(String, String)>> {
+    TEMP_SAVED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// 清理用的 URL（**纯函数**，与取证逐字一致）
+fn file_delete_url(spec: &PanDriveSpec) -> String {
+    format!(
+        "https://{}/1/clouddrive/file/delete?{}",
+        spec.api_host, spec.pr_fr
+    )
+}
+
+/// 清理用的请求体（**纯函数**；`action_type:2` = 移入回收站）
+fn file_delete_body(fid: &str) -> String {
+    format!(
+        "{{\"action_type\":2,\"filelist\":[{}],\"exclude_fids\":[]}}",
+        serde_json::Value::String(fid.to_string())
+    )
+}
+
+/// 这个文件名看起来是可播视频吗（**纯函数**）
+fn is_video_name(name: &str) -> bool {
+    const EXT: [&str; 12] = [
+        "mp4", "mkv", "ts", "m3u8", "flv", "avi", "wmv", "mov", "m4v", "rmvb", "mpg", "webm",
+    ];
+    let lower = name.to_ascii_lowercase();
+    let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    EXT.contains(&ext)
 }
 
 /// 人读的文件大小
@@ -1801,6 +2067,93 @@ mod tests {
     ///   ① 把 `item_id_of` 的分享分支改回 `e.fid.clone()` ⇒ 本条 FAILED（token 丢了）
     ///   ② 把 `parse_share_item` 的 `splitn(3, ':')` 改成 `splitn(2, ':')` ⇒ 本条 FAILED
     /// ```
+    /// ★★★ 清理临时转存的 URL/体（与 dex 取证逐字一致）
+    ///
+    /// ```text
+    /// 注入验证：把 `action_type` 从 2 改成 1 ⇒ 本条 FAILED
+    ///   （1 = 真删、2 = 移入回收站；原版用 2，删错了用户找不回）。
+    /// ```
+    #[test]
+    fn temp_cleanup_matches_the_reference() {
+        let q = quark_spec();
+        assert_eq!(
+            file_delete_url(&q),
+            "https://drive-pc.quark.cn/1/clouddrive/file/delete?pr=ucpro&fr=pc"
+        );
+        assert_eq!(
+            file_delete_body("f1"),
+            r#"{"action_type":2,"filelist":["f1"],"exclude_fids":[]}"#
+        );
+        assert_eq!(
+            file_delete_url(&uc_spec()),
+            "https://pc-api.uc.cn/1/clouddrive/file/delete?pr=UCBrowser&fr=pc"
+        );
+    }
+
+    /// ★★ 挑视频的判据（纯函数）
+    #[test]
+    fn video_name_detection_is_narrow() {
+        assert!(is_video_name("第01集.mp4"));
+        assert!(is_video_name("MOVIE.MKV"), "大小写不敏感");
+        assert!(!is_video_name("字幕.ass"));
+        assert!(!is_video_name("封面.jpg"));
+        assert!(!is_video_name("没有扩展名"));
+    }
+
+    /// ★★★ 真网络：用**本机钥匙串里的夸克登录态**解析一个真分享页（默认 ignored）
+    ///
+    /// ```text
+    /// cargo test --lib quark_share_live_resolves --release -- --ignored --nocapture
+    /// 判据：打印直链前缀；`__puus` 必须已在 Cookie 里（缺它 CDN 403）。
+    /// 大小超限 / 分享失效都是**真实边界**，打印出来让人判读，不伪造成功。
+    /// ```
+    #[tokio::test]
+    #[ignore = "真网络：需要本机钥匙串里的夸克登录态"]
+    async fn quark_share_live_resolves() {
+        let share = std::env::var("SHARE_ID").unwrap_or_else(|_| "6c3812f483a6".to_string());
+        let d = PanDrive::with_spec("PanQuark", quark_spec());
+        match d.resolve_share_play(&share, "").await {
+            Ok(p) => {
+                eprintln!("[LIVE] 分享 {share} ⇒ 直链 {}", p.url.chars().take(110).collect::<String>());
+                assert!(p.url.starts_with("http"));
+                assert!(p
+                    .headers
+                    .iter()
+                    .any(|(k, v)| k == "Cookie" && v.contains("__puus")));
+            }
+            Err(e) => {
+                eprintln!("[LIVE] 分享 {share} 解析失败：{e}");
+            }
+        }
+    }
+
+    /// ★★ 真网络：把分享根目录逐条打出来（诊断"转存 token 校验异常"用）
+    #[tokio::test]
+    #[ignore = "真网络：需要本机钥匙串里的夸克登录态"]
+    async fn quark_share_live_list() {
+        let share = std::env::var("SHARE_ID").unwrap_or_else(|_| "6c3812f483a6".to_string());
+        let d = PanDrive::with_spec("PanQuark", quark_spec());
+        let Some(cookie) = d.cookie() else {
+            eprintln!("[LIVE] 没有夸克登录态 ⇒ 跳过");
+            return;
+        };
+        match d.share_list_family(&cookie, &share, "", "0").await {
+            Ok(list) => {
+                eprintln!("[LIVE] 分享 {share} 根目录 {} 条：", list.len());
+                for e in &list {
+                    eprintln!(
+                        "  name={:?} dir={} size={} token_len={}",
+                        e.name,
+                        e.is_dir,
+                        e.size,
+                        e.fid_token.as_deref().map(|t| t.len()).unwrap_or(0)
+                    );
+                }
+            }
+            Err(e) => eprintln!("[LIVE] 列目录失败：{e}"),
+        }
+    }
+
     #[test]
     fn share_item_id_roundtrip() {
         let share_shelf = Shelf {

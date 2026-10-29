@@ -67,6 +67,11 @@ pub mod sou4k;
 pub mod yinhai;
 pub mod web1905;
 pub mod pan_drive;
+
+/// 分享页 → 直链：把 `pan.quark.cn/s/<id>` 这类"当剧集用的分享页"交给 `PanDrive` 解析
+///
+/// 存在的理由见该文件头：csp 源把分享页原样交回时，播放器只会报"格式解不了"。
+pub mod pan_share_play;
 pub mod short_haokan;
 pub mod ting_shijie;
 pub mod hxq;

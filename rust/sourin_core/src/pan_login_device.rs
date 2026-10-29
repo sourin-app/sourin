@@ -80,6 +80,44 @@
 //! ⑦ 整条链路**没有真账号跑过**。失败一律如实报"哪一步 HTTP 多少 + 响应摘要"。
 //! ```
 //!
+//! # ★★★ 真读数（2026-10-29，curl 直接打端点；**修掉了上表 ①②③ 三条"推断"**）
+//!
+//! ```text
+//! 【光鸭】POST https://account.guangyapan.com/v1/auth/device/code
+//!   Content-Type: application/json; charset=utf-8   ← ★ 真网证明"JSON 而非表单"是对的
+//!   {"client_id":"aMe-8VSlkrbQXpUR","scope":"user"}
+//!   → 200 {"device_code":"AWriittPL185…","user_code":"AWriitvRm_m7ffZG9g",
+//!          "expires_in":120,"interval":2,
+//!          "verification_url":"https://account.guangyapan.com/__/auth/device/?…",
+//!          "verification_uri_complete":"https://account.guangyapan.com/__/auth/device/?…&user_code=AWriitvRm_m7ffZG9g"}
+//!
+//! 【迅雷】POST https://xluser-ssl.xunlei.com/v1/auth/device/code
+//!   {"client_id":"XW-G4v1H72tgfJym","scope":""}
+//!   → 200 {"device_code":"AWriitswoiyd…","user_code":"AWriitvVUMpI_NcMJQ",
+//!          "expires_in":120,"interval":2,
+//!          "verification_uri_complete":"https://i.xunlei.com/center/account/personal/qrcode-login/?…&user_code=…",
+//!          "short_uri_complete":"https://xluser-ssl.xunlei.com/api/v1/reurl?action=scan&code=PNJNb"}
+//!
+//! 【两家的 token 端点（未确认时）】POST /v1/auth/token   ⇒ **HTTP 400** + 
+//!   {"error":"authorization_pending","error_code":4050,
+//!    "error_description":"Precondition Required","details":[…"message":"Authorizing"]}
+//! ```
+//!
+//! # 这三条读数改了什么（不要改回去）
+//! ```text
+//! ① `interval` **真的存在**（=2 秒）⇒ 上表①"没有这个字段"是错的。
+//!    但本仓仍以 UI 的 2 秒节拍轮询，`DEVICE_POLL_INTERVAL_SECS` 保持 5（不在协议里用），
+//!    仅在日志里记服务端给的值（判读节奏用）。
+//! ② `expires_in` **真的给了**（=120 秒）⇒ 会话 TTL 走 `min(120, 300) = 120`。
+//! ③ `authorization_pending` **就是真串** ⇒ `classify_device_error` 那条不再是纯推断
+//!    （`slow_down` / `expired_token` / `access_denied` 仍未观测到，如实保留标注）。
+//!    ★ 同时证明：**未确认时是 HTTP 400**，所以"按 HTTP 码判失败"会把正常的等待
+//!      当成错误 ⇒ 现有实现（先看 body 再判）是对的。
+//! ④ 迅雷换 token 用哪个 client_id（`Xp6vsxz_7IYVw2BB` vs `XW-G4v1H72tgfJym`）
+//!    **仍未证实**：两个都在 authorization_pending 阶段被接受（服务端此时还没校验
+//!    client 与 code 的绑定）⇒ 只能等真账号确认那一刻才见分晓。dex 的证词不变。
+//! ```
+//!
 //! # 契约（`pan_login` 的 dispatch 调这四个）
 //!
 //! ```rust
@@ -382,6 +420,31 @@ fn tail(s: &str) -> String {
     let t = s.trim();
     let cut = t.char_indices().nth(200).map(|(i, _)| i).unwrap_or(t.len());
     format!("{}…（共 {} 字节）", &t[..cut], t.len())
+}
+
+/// JSON **顶层键名**（逗号分隔；**只键名，不取值**）
+///
+/// # 为什么需要它
+/// ```text
+/// 申请设备码的响应里有 `device_code` —— 它是换 token 的**唯一**钥匙，等同凭据。
+/// 所以不能像别处那样把 body 摘要直接写日志。但"响应到底有哪些字段"是现场判读的
+/// 关键（服务端加个 `interval` 我们就能对上节奏）⇒ 只记键名。
+/// 非 JSON ⇒ 回 "<非 JSON>"，让日志里一眼看出"回来的不是 JSON"。
+/// ```
+fn json_keys(body: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return "<非 JSON>".to_string();
+    };
+    let Some(obj) = v.as_object() else {
+        return "<非对象>".to_string();
+    };
+    obj.keys().cloned().collect::<Vec<_>>().join(",")
+}
+
+/// 顶层某个数值字段（数字或数字串都给；读不到 ⇒ None）
+fn top_level_i64(body: &str, key: &str) -> Option<i64> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    num_i64(v.get(key)?)
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -709,22 +772,44 @@ fn token_credential_string(access: &str, refresh: &str) -> String {
 
 /// 申请设备码并建一个会话（两家共用）
 async fn device_start(spec: &DeviceFlowSpec) -> Result<QrSession, String> {
-    let c = client(spec.ua)?;
+    // ★★ 第一行就落日志：Owner 现场"点了获取二维码、**没有任何日志、也没反应**"
+    //    ⇒ 一条日志都没有时，连"到底走到哪一步"都无从判断。所以从建客户端开始，
+    //    每一步（含**所有**出错分支）都必须留一行。
+    write_log(&format!(
+        "申请设备码开始 kind={} url={} body_len={}",
+        spec.kind.code(),
+        (spec.device_code_url)(),
+        device_code_body(spec.device_client_id, spec.scope).len()
+    ));
+    let c = client(spec.ua).map_err(|e| {
+        write_log(&format!(
+            "建 HTTP 客户端失败 kind={} err={e}",
+            spec.kind.code()
+        ));
+        e
+    })?;
     let body = device_code_body(spec.device_client_id, spec.scope);
     let mut req = c.post((spec.device_code_url)()).body(body);
     for (k, v) in auth_step_headers() {
         req = req.header(k, v);
     }
 
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("请求{}设备码接口失败：{e}", spec.label))?;
+    let resp = req.send().await.map_err(|e| {
+        // 这条分支原来**完全静默**：网络/TLS/超时失败时现场看不到任何痕迹
+        write_log(&format!(
+            "申请设备码请求失败 kind={} err={e} （检查 DNS/防火墙/是否需代理）",
+            spec.kind.code()
+        ));
+        format!("请求{}设备码接口失败：{e}", spec.label)
+    })?;
     let status = resp.status();
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("读{}设备码响应失败：{e}", spec.label))?;
+    let body = resp.text().await.map_err(|e| {
+        write_log(&format!(
+            "读设备码响应失败 kind={} HTTP {status} err={e}",
+            spec.kind.code()
+        ));
+        format!("读{}设备码响应失败：{e}", spec.label)
+    })?;
     if !status.is_success() {
         write_log(&format!(
             "申请设备码失败 kind={} HTTP {status} body={}",
@@ -738,7 +823,25 @@ async fn device_start(spec: &DeviceFlowSpec) -> Result<QrSession, String> {
         ));
     }
 
-    let info = device_code_info(&body, spec.label)?;
+    // ★ 只记**键名**与几个数值：`device_code` 是轮询钥匙（等同凭据），不许进日志
+    write_log(&format!(
+        "申请设备码响应 kind={} HTTP {status} body_len={} keys=[{}] interval={:?}",
+        spec.kind.code(),
+        body.len(),
+        json_keys(&body),
+        top_level_i64(&body, "interval")
+    ));
+
+    let info = match device_code_info(&body, spec.label) {
+        Ok(i) => i,
+        Err(e) => {
+            write_log(&format!(
+                "解析设备码响应失败 kind={} err={e}",
+                spec.kind.code()
+            ));
+            return Err(e);
+        }
+    };
 
     // 有效期：`min(本地兜底, 服务端 expires_in)`（`expires_in` 未取证 ⇒ 通常走兜底）
     let ttl = match info.expires_in {
@@ -808,21 +911,33 @@ async fn device_poll(spec: &DeviceFlowSpec, key: &str) -> Result<PollOutcome, St
         });
     };
 
-    let c = client(spec.ua)?;
+    let c = client(spec.ua).map_err(|e| {
+        write_log(&format!(
+            "轮询前建 HTTP 客户端失败 kind={} err={e}",
+            spec.kind.code()
+        ));
+        e
+    })?;
     let body = token_body(spec.token_client_id, &device_code);
     let mut req = c.post((spec.token_url)()).body(body);
     for (k, v) in auth_step_headers() {
         req = req.header(k, v);
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("轮询{}登录状态失败：{e}", spec.label))?;
+    let resp = req.send().await.map_err(|e| {
+        write_log(&format!(
+            "轮询请求失败 kind={} err={e}",
+            spec.kind.code()
+        ));
+        format!("轮询{}登录状态失败：{e}", spec.label)
+    })?;
     let status = resp.status();
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("读{}轮询响应失败：{e}", spec.label))?;
+    let body = resp.text().await.map_err(|e| {
+        write_log(&format!(
+            "读轮询响应失败 kind={} HTTP {status} err={e}",
+            spec.kind.code()
+        ));
+        format!("读{}轮询响应失败：{e}", spec.label)
+    })?;
 
     let step = token_step_of(&body);
     write_log(&format!(
@@ -1416,5 +1531,86 @@ mod tests {
         assert!(tail("").contains("0 字节"));
         let s = "光".repeat(300);
         assert!(tail(&s).contains("共"));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  真网 smoke test（默认 **ignored**；缺环境变量就跳过）
+    // ══════════════════════════════════════════════════════════════════
+
+    /// ★★★ 真网 smoke：两家各走一次 `device/code` → 立刻 `token`（应当 Pending）
+    ///
+    /// ```text
+    /// 跑法（本机 2026-10-29 真跑过，读数见文件头的"真读数"段）：
+    ///   cargo test --lib pan_login_device --release -- --ignored --nocapture
+    /// 前提：`SOURIN_LIVE_DEVICE=1`（缺了就跳过 —— 不许在 CI/离线机器上自动联网）。
+    /// ```
+    ///
+    /// # 它验的不是"能不能登录"（那要真账号），而是三件**此刻就能验的**事
+    /// ```text
+    /// ① 端点与请求形状（JSON + 那个 Content-Type + 那家自己的 UA）在真网**接受**；
+    /// ② `verification_uri_complete` 真的给了 ⇒ 二维码有东西可编（这才是 Owner 点
+    ///    "获取登录二维码"要看到的东西）；
+    /// ③ 未确认时 token 端点回的是**可识别**的 pending（不是被我们当失败吞掉）。
+    /// ```
+    #[tokio::test]
+    #[ignore = "真网；需要 SOURIN_LIVE_DEVICE=1"]
+    async fn live_device_flow_reaches_device_code_and_pending() {
+        if std::env::var("SOURIN_LIVE_DEVICE").as_deref() != Ok("1") {
+            eprintln!("[skip] 未设 SOURIN_LIVE_DEVICE=1 ⇒ 不联网（这条是真网 smoke）");
+            return;
+        }
+
+        for spec in [guangya_spec(), xunlei_spec()] {
+            eprintln!(
+                "\n===== {} =====",
+                spec.label
+            );
+            let session = device_start(&spec)
+                .await
+                .unwrap_or_else(|e| panic!("{}申请设备码必须成功：{e}", spec.label));
+            eprintln!(
+                "start OK key_len={} url_host={} svg_len={}",
+                session.key.len(),
+                session
+                    .url
+                    .split('/')
+                    .nth(2)
+                    .unwrap_or("<no-host>"),
+                session.svg.len()
+            );
+            assert!(
+                session.url.starts_with("https://"),
+                "{}的二维码 URL 必须是 https：{}",
+                spec.label,
+                session.url
+            );
+            assert!(
+                !session.svg.is_empty(),
+                "★ {}出了码但 svg 是空的 ⇒ UI 上什么都看不到（就是 Owner 说的『没反应』）",
+                spec.label
+            );
+
+            // 立刻轮询一次：服务端此时**必然**未确认 ⇒ 我们应该如实 Pending
+            let out = device_poll(&spec, &session.key)
+                .await
+                .unwrap_or_else(|e| panic!("{}轮询不该是 Err：{e}", spec.label));
+            eprintln!(
+                "poll #1 status={} message={}",
+                out.status.code(),
+                out.message
+            );
+            assert_eq!(
+                out.status,
+                QrStatus::Pending,
+                "★★ {}未确认时必须 Pending（拿到凭据才算 Confirmed）：{}",
+                spec.label,
+                out.message
+            );
+            assert!(
+                out.credential.is_none(),
+                "★★ {}未确认却产出了凭据 —— 这就是「把失败伪造成成功」",
+                spec.label
+            );
+        }
     }
 }

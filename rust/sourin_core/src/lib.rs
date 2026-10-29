@@ -159,3 +159,5 @@ pub extern "C" fn sourin_core_version_u8() -> *const u8 {
     static V: &[u8] = b"sourin-core 0.1.0\0";
     V.as_ptr()
 }
+
+pub mod pan_login_123;

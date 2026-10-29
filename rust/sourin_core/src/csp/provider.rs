@@ -478,17 +478,43 @@ impl MediaProvider for CspProvider {
                 "取流没有返回任何地址（上游没给 durl）",
             ));
         }
-        Ok(plays
-            .into_iter()
-            .map(|p| {
-                let mut c = StreamCandidate::new(p.url, StreamKind::Mp4)
-                    .with_headers(p.headers);
-                if let Some(label) = p.label {
+        /*
+         * ★★★ 2026-10-28（Owner 现场：`冰雪奇缘` · 线路「夸克网盘（分享页）」⇒ "这个格式解不了"）
+         * ```text
+         * 4K指南 / 咕咕 / 魔术 这类 csp 源，详情页给的"线路"**就是分享页 URL**；
+         * 它们自己的 play() 只能原样交回 ⇒ 播放器拿到的不是媒体流。
+         * ⇒ 在这里补一跳：认出分享页就交给 `PanDrive::resolve_share_play`（转存 → 直链 + __puus）。
+         *   认不出的**原样返回** —— 不许把能播的直链也吞掉。
+         * ```
+         */
+        let mut out: Vec<StreamCandidate> = Vec::new();
+        for p in plays {
+            if let Some(sr) = crate::csp::pan_share_play::parse_share_page(&p.url) {
+                let drive = crate::csp::pan_share_play::drive_for(sr.kind).ok_or_else(|| {
+                    ProviderError::new(
+                        ErrorKind::Other,
+                        format!("{} 的分享页解析尚未接入", sr.kind.display()),
+                    )
+                })?;
+                let resolved = drive
+                    .resolve_share_play(&sr.share_id, &sr.passcode)
+                    .await
+                    .map_err(|e| classify_err(self.site.class(), e))?;
+                let mut c =
+                    StreamCandidate::new(resolved.url, StreamKind::Mp4).with_headers(resolved.headers);
+                if let Some(label) = resolved.label {
                     c = c.with_label(label);
                 }
-                c
-            })
-            .collect())
+                out.push(c);
+                continue;
+            }
+            let mut c = StreamCandidate::new(p.url, StreamKind::Mp4).with_headers(p.headers);
+            if let Some(label) = p.label {
+                c = c.with_label(label);
+            }
+            out.push(c);
+        }
+        Ok(out)
     }
 }
 

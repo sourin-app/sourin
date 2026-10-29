@@ -54,6 +54,18 @@ const CHILD_TIMEOUT: Duration = Duration::from_secs(8);
 ///        同时不至于对"同主机多子站"（同一采集站家族）瞬间打出 10 个并发请求。
 /// ```
 const AGG_FANOUT_LIMIT: usize = 10;
+/// 上一次扇出的**失败明细**（子站 id + 原因）—— 给真机探针看"为什么只有十来个源有结果"
+static LAST_FAILS: std::sync::OnceLock<Mutex<Vec<(String, String)>>> = std::sync::OnceLock::new();
+
+fn last_fails() -> &'static Mutex<Vec<(String, String)>> {
+    LAST_FAILS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// 上一次扇出里**失败/超时**的子站（生产不读；探针与排障用）
+pub fn last_fanout_failures() -> Vec<(String, String)> {
+    last_fails().lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// 上一次扇出的**峰值并发**（门禁靠它证明"真的并发"，而不是"看起来并发"）
 static FANOUT_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -317,6 +329,13 @@ pub fn enabled_children(
         .iter()
         .filter(|id| enabled_ids.contains(*id))
         .filter_map(|id| registry.get(id))
+        /*
+         * ★ 2026-10-29 试过按 `capabilities.search` 预筛掉"不支持搜索"的子站，
+         *   但真机读数证明**筛不掉**：那 17 家（直播/豆瓣/网盘/短视频）的 manifest
+         *   声明的是 `search: true`，真正拒绝发生在 `search()` 里（返回 Unsupported）。
+         *   ⇒ 预筛只会制造"以为干净了"的假象，还会误伤测试里的假源 ⇒ **回退**。
+         *   现状保留：它们进扇出、立刻返回 Unsupported、进 fails（探针里能看见原因）。
+         */
         .collect();
     if !picked.is_empty() {
         return picked;
@@ -593,6 +612,12 @@ impl TvboxAggregate {
             }
         }
         FANOUT_PEAK.store(peak.load(std::sync::atomic::Ordering::SeqCst), std::sync::atomic::Ordering::SeqCst);
+        // 记下失败明细（探针/排障用；不参与业务判断）
+        {
+            let mut g = last_fails().lock().unwrap_or_else(|e| e.into_inner());
+            g.clear();
+            g.extend(fails.iter().cloned());
+        }
         // 顺序稳定：按子站 id 排序后再拼接（否则"哪个源先回来"会决定列表顺序 ⇒ 每次刷新都变）
         got.sort_by(|a, b| a.0.cmp(&b.0));
         let mut all = Vec::new();
@@ -803,13 +828,36 @@ impl MediaProvider for TvboxAggregate {
     ) -> Result<Vec<StreamCandidate>, ProviderError> {
         let (child, native) = self.route(&id.native)?;
         let cid = Self::child_id(&child);
+        /*
+         * ★★★ 2026-10-29 现场（Owner："夸克的还是不能播放"）—— 真根因就是这里：
+         * ```text
+         * `detail()` 把**每一集的 id 也加了 `<child>::` 前缀**（见本文件 791-795 行），
+         * 而 `resolve()` 只剥了 `id.native` 的前缀，**`req.episode_id` 原样透传**给子站。
+         * ⇒ 子站拿到 `csp-gui-gui::https://pan.quark.cn/s/xxx`：
+         *     · 它自己的 `play()` 认不出这是分享页（前缀挡着）⇒ 原样交回
+         *     · 我新加的分享页兜底也认不出（`parse_share_page` 要求 host 精确匹配）
+         *     ⇒ 播放器收到带前缀的"URL" ⇒ 报"格式解不了/不能播放"。
+         * 真网对照：直接用同一 share_id 调 `resolve_share_play` 能拿到直链，
+         *   且 CDN 在带 Cookie 时回 `video/mp4`（不带 Cookie 是 403 XML）—— 证明解析没错、是前缀断了链路。
+         * ```
+         * ⇒ 这里把 `episode_id` 的前缀**对称剥掉**（与 detail 加前缀成对）。
+         */
+        let prefix = format!("{cid}{SEP}");
+        let stripped = req.episode_id.as_deref().map(|e| match e.strip_prefix(&prefix) {
+            Some(rest) => rest.to_string(),
+            None => e.to_string(),
+        });
+        let fixed = PlayRequest {
+            episode_id: stripped,
+            ..req.clone()
+        };
         child
             .resolve(
                 &MediaId {
                     provider: cid,
                     native,
                 },
-                req,
+                &fixed,
             )
             .await
     }
@@ -1322,6 +1370,86 @@ mod tests {
         assert!(
             w.iter().any(|m| m.contains("全部 2 个子站都搜不到")),
             "汇总也要进 warn：{w:?}"
+        );
+    }
+
+    /// ★★★ `episode_id` 的前缀必须**对称剥掉**（Owner："夸克不能播放"的真根因）
+    ///
+    /// ```text
+    /// detail() 给每集 id 加了 `<child>::`；resolve() 若不剥，子站拿到
+    /// `csp-gui-gui::https://pan.quark.cn/s/xxx` ⇒ 认不出分享页 ⇒ 播放器拿到的不是媒体流。
+    /// 注入验证：把 `strip_prefix` 那三行删掉 ⇒ 本条 FAILED（记录到的还是带前缀的串）。
+    /// ```
+    #[tokio::test]
+    async fn resolve_strips_child_prefix_from_episode_id() {
+        struct RecChild {
+            manifest: ProviderManifest,
+            seen: Arc<Mutex<Vec<String>>>,
+        }
+        #[async_trait]
+        impl MediaProvider for RecChild {
+            fn manifest(&self) -> &ProviderManifest {
+                &self.manifest
+            }
+            async fn home(&self) -> Result<Vec<Section>, ProviderError> {
+                Ok(vec![])
+            }
+            async fn categories(&self) -> Result<Vec<Category>, ProviderError> {
+                Ok(vec![])
+            }
+            async fn list(&self, _req: ListRequest) -> Result<Page<MediaItem>, ProviderError> {
+                Ok(Page { items: vec![], page: 1, page_count: None, total: None })
+            }
+            async fn search(&self, _kw: &str, _page: u32) -> Result<Page<MediaItem>, ProviderError> {
+                Ok(Page { items: vec![], page: 1, page_count: None, total: None })
+            }
+            async fn detail(&self, _id: &MediaId) -> Result<MediaDetail, ProviderError> {
+                Ok(MediaDetail {
+                    id: MediaId { provider: self.manifest.id.clone(), native: "n".into() },
+                    title: "t".into(),
+                    kind: MediaKind::Movie,
+                    cover: None,
+                    description: None,
+                    badges: Vec::new(),
+                    meta: Default::default(),
+                    sources: Vec::new(),
+                    episodes: Vec::new(),
+                })
+            }
+            async fn resolve(
+                &self,
+                _id: &MediaId,
+                req: &PlayRequest,
+            ) -> Result<Vec<StreamCandidate>, ProviderError> {
+                self.seen.lock().unwrap().push(req.episode_id.clone().unwrap_or_default());
+                Ok(vec![])
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let child: Arc<dyn MediaProvider> = Arc::new(RecChild {
+            manifest: manifest("csp-gui-gui", "csp"),
+            seen: seen.clone(),
+        });
+        let agg = agg_with("prefix", vec![child], &["csp-gui-gui"]);
+        let id = MediaId {
+            provider: AGGREGATE_ID.to_string(),
+            native: format!("csp-gui-gui{SEP}n"),
+        };
+        let req = PlayRequest {
+            source_code: None,
+            episode_id: Some(format!(
+                "csp-gui-gui{SEP}https://pan.quark.cn/s/09350e7add7c"
+            )),
+            quality: None,
+            flag: Some("网盘分享页".into()),
+        };
+        agg.resolve(&id, &req).await.expect("resolve 应成功");
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(
+            got,
+            vec!["https://pan.quark.cn/s/09350e7add7c".to_string()],
+            "★★★ 子站必须收到**裸 URL**（带前缀就认不出分享页 ⇒ 不能播放）"
         );
     }
 

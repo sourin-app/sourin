@@ -119,8 +119,42 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
   ///
   /// `episodeLineFilter` 在 `selectedFlag == null`（单线路源）时**原样返回**，
   /// 所以单线路路径零变化、一集都不会少。
-  List<Episode> get _eps =>
-      episodeLineFilter(widget.episodes, widget.selectedFlag);
+  ///
+  /// ★★★ 2026-10-29（Owner："右侧没有区分线路，重复的集数一大把"）：
+  /// ```text
+  /// 真机：老舅的详情是 **17 条线路 × 27 集 = 459 条**（探针实测；
+  ///   flag = BD/BF/FF/HH/HN/JS/JY/KC/LZ/MT/NN/SD/SN/UK/WJ/XL/YZ），
+  ///   而面板把 459 条全铺出来 ⇒ 「第01集」出现 17 次，看起来就是"重复一大堆"。
+  /// 根因：`selectedFlag` 传进来是 null（上游没同步/被清空）时，`episodeLineFilter`
+  ///   会**原样返回全部** —— 那个"单线路零开销"的语义在多线路场景下变成了灾难。
+  /// ⇒ 面板**自己兜底**：有 flag 就用第一条线路，只有**真的没有 flag**（单线路源）才原样返回。
+  ///   这样无论上游状态如何，面板都不会再把 N 条线路平铺。
+  /// ```
+  List<Episode> get _eps {
+    final flag = widget.selectedFlag ?? _firstFlag;
+    return episodeLineFilter(widget.episodes, flag);
+  }
+
+  /// 第一条出现的线路名（没有 flag 的集不参与；全都没有 ⇒ null = 单线路源）
+  String? get _firstFlag {
+    for (final e in widget.episodes) {
+      final f = e.flag;
+      if (f != null && f.isNotEmpty) return f;
+    }
+    return null;
+  }
+
+  /// 全部线路名（上游给了就用上游的；没给就从 episodes 推，去重保序）
+  List<String> get _flags {
+    if (widget.flags.isNotEmpty) return widget.flags;
+    final out = <String>[];
+    for (final e in widget.episodes) {
+      final f = e.flag;
+      if (f == null || f.isEmpty) continue;
+      if (!out.contains(f)) out.add(f);
+    }
+    return out;
+  }
 
   /// ★ `widget.currentIndex` 是**全集索引**，但面板渲染的是 `_eps`（线路内索引）
   /// ⇒ 必须映射，否则高亮会停在旧位置（切线路后指到别人家的第 N 集）。
@@ -254,11 +288,14 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
         children: [
           _header(),
           // ★ 多线路才画线路条（单线路不画 —— 不给用户多余 UI）
-          if (widget.flags.length > 1) ...[
+          //
+          // ★ 2026-10-29：上游没传 `flags` 时**自己从 episodes 推**（顺序 = 首次出现顺序），
+          //   否则"有 17 条线路却没有线路条"⇒ 用户没法切，只能看到一堆重复集。
+          if (_flags.length > 1) ...[
             const SizedBox(height: Sp.x3),
             EpisodeLineBar(
-              flags: widget.flags,
-              selected: widget.selectedFlag,
+              flags: _flags,
+              selected: widget.selectedFlag ?? _firstFlag,
               onPick: (f) => widget.onPickFlag?.call(f),
             ),
           ],

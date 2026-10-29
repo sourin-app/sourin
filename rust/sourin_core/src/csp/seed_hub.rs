@@ -11,6 +11,27 @@
 //   ③ **Rust 客户端真的取到数据 ✗**（Cloudflare 挑战 rustls，详见文件尾"没有 register_site!"）
 //   ⇒ 本类为「做实现、**不注册**」状态。
 //
+// # ★★ 2026-10-29 客户端矩阵（"不注册"的硬证据；别再为它换 TLS 栈重走一遍）
+// ```text
+// 同一分钟 / 同一出口 IP / 同一 URL（https://seeduck.cc/）：
+//   curl 8.13 (Schannel, 协商到 TLS1.2)   → 200 / 42104 B  ✔
+//   python3  (OpenSSL 3.x, TLS1.3/AES256) → 200 / 42104 B  ✔
+//   .NET HttpClient (Schannel, TLS1.3)    → 403 "Just a moment..."  ✗
+//   reqwest/rustls (本仓唯一栈, TLS1.3)    → 403 "Just a moment..."  ✗
+// ⇒ 卡的是 **Cloudflare 的 JA3/JA4 + TLS 版本**（OpenSSL 指纹、或 Schannel@1.2 才放行），
+//   不是缺头、不是缺 cookie、不是站点死：三个镜像 + seedog.cc 的页面用 curl/python 全 200。
+//   已排除的无效改法（都实测过）：强制 HTTP/1.1、补全 Sec-Fetch-*/sec-ch-ua/Referer 头。
+//
+// ★ Rust 侧**无法钉 TLS1.2**（这是本批最贵的一条教训，别重试）：
+//   · `native-tls 0.2.18` 的 `TlsConnectorBuilder` **没有** min_proto_version /
+//     max_proto_version（只有 danger_accept_invalid_*）⇒ Schannel 会自己谈 1.3 ⇒ 同样 403；
+//   · `reqwest::use_preconfigured_tls` 只接受 `native_tls::TlsConnector`（不是 rustls 配置）
+//     ⇒ 换后端也钉不住版本。
+//   ⇒ 要过只能上 **vendored OpenSSL**（OpenSSL 指纹）。已评估：为一个源把全局 TLS 栈换成
+//     需要编译 openssl 的方案，构建代价 + 回归风险不值 ⇒ **决定不做**。
+//   ⇒ 该尝试已回滚（`Cargo.toml` 里 native-tls 出现次数 = 0，临时模块 http_tls.rs 已删）。
+// ```
+//
 // # 抓取形态（2026-10-27 直连实测，`curl --noproxy '*'`，不是推测）
 // ```text
 // home      GET {mirror}/
@@ -1093,5 +1114,76 @@ mod tests {
             .expect("play 应能跟到分享页");
         println!("LIVE seed_hub play: {} · label={:?}", p[0].url, p[0].label);
         assert!(is_pan_share(&p[0].url), "play 落点必须是网盘分享页");
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  ★ 2026-10-29 真页面片段（`curl --noproxy '*'` 直连抓的，逐字截取）
+    //    判据来源：`.probe/hf-sh-s_%E8%80%81%E8%88%85.html`（搜索「老舅」→ 200/21179 B）
+    // ══════════════════════════════════════════════════════════════════
+    const SEARCH_LAODJU_FRAGMENT: &str = r#"
+  <div class="cover-container">
+    <div class="cover">
+      <a target="_blank" rel="noopener noreferrer" title="老舅" class="image" href="/movies/126348/"><img src="https://sh1.pcie.pppoe.top/static/pics/p1766077407771394767.jpg" alt="老舅" ></a>
+      <ul>
+        <li><h2><a target="_blank" rel="noopener noreferrer" href="/movies/126348/" aria-hidden="true" class="header-anchor">#</a> 老舅</h2></li>
+
+        <li>2025 / 剧集 / 中国大陆 / 汉语普通话 / 郭京飞 王佳佳 </li>
+        <li>类型: <a target="_blank" title="喜剧" href="/categories/3/types/39/movies/">喜剧</a> / <a target="_blank" title="剧情" href="/categories/3/types/33/movies/">剧情</a></li>
+        <li>豆瓣评分: <a target="_blank" rel="noopener noreferrer nofollow" href="https://movie.douban.com/subject/36638134/">7.6</a></li>
+      </ul>
+    </div>
+  </div>
+"#;
+
+    /// 真片段 ⇒ 1 条，id 就是 `/movies/126348/`，标题「老舅」
+    #[test]
+    fn live_2026_10_29_search_fragment_yields_the_one_real_item() {
+        assert!(has_result_container(SEARCH_LAODJU_FRAGMENT), "真搜索页必须有 cover-container");
+        let items = parse_items(SEARCH_LAODJU_FRAGMENT);
+        assert_eq!(items.len(), 1, "「老舅」真搜索页只有 1 条：{items:?}");
+        assert_eq!(items[0].id, "126348");
+        assert_eq!(items[0].title, "老舅");
+        assert!(items[0]
+            .cover
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("https://sh1.pcie.pppoe.top/"));
+    }
+
+    /// ★ 故障注入（红）：把条目外壳 `<div class="cover">` 改名 ⇒ 同一份真页面必须掉到 0 条
+    ///
+    /// ```text
+    /// 这条证明 `parse_items` 的切分判据是**承重**的（不是"恰好有链接就能出"）：
+    /// 真实文件上 items=1，改坏外壳后 items=0；而 `cover-container` 仍在 ⇒
+    /// 还能区分"整页改版（容器也没了）"和"条目外壳改版（容器在、条目为 0）"。
+    /// ```
+    #[test]
+    fn injection_broken_item_shell_must_yield_zero() {
+        let broken = SEARCH_LAODJU_FRAGMENT.replace(r#"<div class="cover">"#, r#"<div class="coverXX">"#);
+        assert_eq!(
+            parse_items(&broken).len(),
+            0,
+            "★ 注入后仍解析出条目 ⇒ 门禁是假绿（判据没有承重）"
+        );
+        assert!(
+            has_result_container(&broken),
+            "只改条目外壳时容器应仍在（这正是两种失败的分界）"
+        );
+    }
+
+    /// ★ 故障注入（红）②：把详情页 `class="pan-links"` 改名 ⇒ 夸克/百度那组网盘条目必须消失
+    #[test]
+    fn injection_broken_pan_links_loses_the_pan_episodes() {
+        let html = format!("{HOME_FRAGMENT}{DETAIL_FRAGMENT}");
+        let base = parse_detail(&html, "1", "https://sidhub.cc").expect("真片段应解析得出来");
+        let broken = html.replace(r#"class="pan-links""#, r#"class="pan-linksXX""#);
+        let after = parse_detail(&broken, "1", "https://sidhub.cc")
+            .map(|d| d.episodes.len())
+            .unwrap_or(0);
+        assert!(
+            after < base.episodes.len(),
+            "★ 改坏 pan-links 后集数应减少：改前 {} → 改后 {after}",
+            base.episodes.len()
+        );
     }
 }

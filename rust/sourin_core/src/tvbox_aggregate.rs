@@ -44,6 +44,23 @@ pub const AGGREGATE_ID: &str = "tvbox_agg";
 pub const FILE_NAME: &str = "tvbox-aggregate.json";
 /// 单个子站的超时（隔离用：超时算这个子站失败，不影响别人）
 const CHILD_TIMEOUT: Duration = Duration::from_secs(8);
+/// 聚合搜索的**并发上限**（真机度量后定的：47 子站串行要 32.8s）
+///
+/// ```text
+/// 取值依据（真机，搜「老舅」）：
+///   串行           → 32.8s（240 条，条数本来就够，慢在"一个等一个"）
+///   8~12 路并发    → 与 registry 搜索内核同一档位（那边实测 12 路是拐点）
+/// 取 10：47 个子站里大多数 0.5~2s，10 路能把总耗时压到个位数秒级；
+///        同时不至于对"同主机多子站"（同一采集站家族）瞬间打出 10 个并发请求。
+/// ```
+const AGG_FANOUT_LIMIT: usize = 10;
+/// 上一次扇出的**峰值并发**（门禁靠它证明"真的并发"，而不是"看起来并发"）
+static FANOUT_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// 上一个测试/上一次扇出的峰值并发（暴露给门禁；生产不读）
+pub fn last_fanout_peak() -> usize {
+    FANOUT_PEAK.load(std::sync::atomic::Ordering::SeqCst)
+}
 /// 子站 native 的分隔符：`<child_id>::<原始 native>`
 const SEP: &str = "::";
 
@@ -515,25 +532,72 @@ impl TvboxAggregate {
             return Ok(Vec::new());
         }
         let total = children.len();
-        let mut all = Vec::new();
-        // ★ 失败明细：`(子站 id, 原因)` —— 用于 ①汇总 warn ②"全部失败"时透给 registry
-        let mut fails: Vec<(String, String)> = Vec::new();
+        /*
+         * ★★★ 2026-10-29（真机度量：搜「老舅」出 240 条，但耗时 **32.8 秒**）
+         * ```text
+         * 改前：逐个子站 `await`（串行）⇒ 47 个子站 × 每站 0.5~3s = 30s 量级。
+         *   条数早就够了（240 ≥ 原版 75），但用户等不了 —— 原版是秒级出结果。
+         * 改后：**有界并发**（[AGG_FANOUT_LIMIT] 路），与 registry 的搜索内核同一精神：
+         *   · 单站失败/超时仍只记原因，不中断（硬纪律①不变）；
+         *   · 结果按**子站 id 排序**再拼接 ⇒ 顺序稳定，不随完成次序抖动；
+         *   · 峰值并发由 [FANOUT_PEAK] 可观测（门禁靠它证明"真的并发"）。
+         * ⚠️ 不用 `join_all` 一把梭：那会等最慢的那个才返回，且没有上限。
+         * ```
+         */
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(AGG_FANOUT_LIMIT));
+        let live = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut set: tokio::task::JoinSet<(String, Result<Page<MediaItem>, String>)> =
+            tokio::task::JoinSet::new();
+        let kw_owned = kw.to_string();
         for p in children {
             let cid = Self::child_id(&p);
-            // ★ 硬纪律①：单站失败只记原因，**不中断**
-            match tokio::time::timeout(CHILD_TIMEOUT, p.search(kw, page)).await {
-                Ok(Ok(page)) => all.extend(page.items.into_iter().map(|i| Self::wrap_item(&cid, i))),
-                Ok(Err(e)) => {
-                    let why = format!("{e}");
+            let sem = sem.clone();
+            let live = live.clone();
+            let peak = peak.clone();
+            let kw = kw_owned.clone();
+            set.spawn(async move {
+                let _permit = match sem.acquire_owned().await {
+                    Ok(g) => g,
+                    Err(_) => {
+                        return (
+                            cid,
+                            Err("内部错误：并发闸门已关闭".to_string()),
+                        )
+                    }
+                };
+                let now = live.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                peak.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                let r = match tokio::time::timeout(CHILD_TIMEOUT, p.search(&kw, page)).await {
+                    Ok(Ok(page)) => Ok(page),
+                    Ok(Err(e)) => Err(format!("{e}")),
+                    Err(_) => Err(format!("超时（{}s）", CHILD_TIMEOUT.as_secs())),
+                };
+                live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                (cid, r)
+            });
+        }
+        let mut got: Vec<(String, Page<MediaItem>)> = Vec::new();
+        let mut fails: Vec<(String, String)> = Vec::new();
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok((cid, Ok(page))) => got.push((cid, page)),
+                Ok((cid, Err(why))) => {
                     self.warn(format!("子站 {cid} 搜索失败：{why}"));
                     fails.push((cid, why));
                 }
-                Err(_) => {
-                    let why = format!("超时（{}s）", CHILD_TIMEOUT.as_secs());
-                    self.warn(format!("子站 {cid} 搜索{why}"));
-                    fails.push((cid, why));
+                Err(e) => {
+                    self.warn(format!("子站任务 join 失败：{e}"));
+                    fails.push(("<join>".to_string(), format!("{e}")));
                 }
             }
+        }
+        FANOUT_PEAK.store(peak.load(std::sync::atomic::Ordering::SeqCst), std::sync::atomic::Ordering::SeqCst);
+        // 顺序稳定：按子站 id 排序后再拼接（否则"哪个源先回来"会决定列表顺序 ⇒ 每次刷新都变）
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut all = Vec::new();
+        for (cid, page) in got {
+            all.extend(page.items.into_iter().map(|i| Self::wrap_item(&cid, i)));
         }
         /*
          * ══════════════════════════════════════════════════════════════
@@ -1259,6 +1323,96 @@ mod tests {
             w.iter().any(|m| m.contains("全部 2 个子站都搜不到")),
             "汇总也要进 warn：{w:?}"
         );
+    }
+
+    /// ★★★ 扇出必须**真的并发**（真机：47 子站串行 32.8s；原版是秒级）
+    ///
+    /// ```text
+    /// 判据：`last_fanout_peak()` —— 上一次扇出的**峰值并发**。
+    ///   串行实现恒为 1；有界并发应 > 1 且 ≤ AGG_FANOUT_LIMIT。
+    /// 为什么不用"耗时断言"：CI 上时间抖动大，容易假红/假绿；峰值并发是确定性判据。
+    /// 注入验证：把 AGG_FANOUT_LIMIT 改成 1 ⇒ 本条 FAILED（峰值=1）。
+    /// ```
+    #[tokio::test]
+    async fn fanout_runs_concurrently_within_the_limit() {
+        struct SlowChild {
+            manifest: ProviderManifest,
+            delay_ms: u64,
+        }
+        #[async_trait]
+        impl MediaProvider for SlowChild {
+            fn manifest(&self) -> &ProviderManifest {
+                &self.manifest
+            }
+            async fn home(&self) -> Result<Vec<Section>, ProviderError> {
+                Ok(vec![])
+            }
+            async fn categories(&self) -> Result<Vec<Category>, ProviderError> {
+                Ok(vec![])
+            }
+            async fn list(&self, _req: ListRequest) -> Result<Page<MediaItem>, ProviderError> {
+                Ok(Page {
+                    items: vec![],
+                    page: 1,
+                    page_count: None,
+                    total: None,
+                })
+            }
+            async fn search(&self, _kw: &str, _page: u32) -> Result<Page<MediaItem>, ProviderError> {
+                tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+                Ok(Page {
+                    items: vec![item(&self.manifest.id, "同一部剧")],
+                    page: 1,
+                    page_count: None,
+                    total: None,
+                })
+            }
+            async fn detail(&self, id: &MediaId) -> Result<MediaDetail, ProviderError> {
+                Err(ProviderError::new(ErrorKind::NotFound, format!("{:?}", id)))
+            }
+            async fn resolve(
+                &self,
+                _id: &MediaId,
+                _req: &PlayRequest,
+            ) -> Result<Vec<StreamCandidate>, ProviderError> {
+                Ok(vec![])
+            }
+        }
+
+        let mut children: Vec<Arc<dyn MediaProvider>> = Vec::new();
+        let mut ids: Vec<String> = Vec::new();
+        for i in 0..8 {
+            let id = format!("slow{i}");
+            ids.push(id.clone());
+            children.push(Arc::new(SlowChild {
+                manifest: manifest(&id, "tvbox"),
+                delay_ms: 60,
+            }) as Arc<dyn MediaProvider>);
+        }
+        let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let agg = agg_with("concurrency", children, &refs);
+        let page = agg.search("x", 1).await.expect("应成功");
+        assert_eq!(page.items.len(), 8, "★ 并发不许丢结果（8 个子站各 1 条）");
+        let peak = last_fanout_peak();
+        assert!(peak > 1, "★★ 串行实现（峰值=1）会让 47 子站搜索 30 秒以上：peak={peak}");
+        assert!(
+            peak <= AGG_FANOUT_LIMIT,
+            "★★ 峰值并发不许超过上限 {AGG_FANOUT_LIMIT}：peak={peak}"
+        );
+        // ★ 顺序稳定：结果按子站 id 排序拼接（否则"谁先回来"决定顺序，每次刷新都变）
+        let order: Vec<String> = page
+            .items
+            .iter()
+            .map(|i| {
+                i.id.native
+                    .split_once(SEP)
+                    .map(|(c, _)| c.to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let mut sorted = order.clone();
+        sorted.sort();
+        assert_eq!(order, sorted, "★★ 结果顺序必须与完成次序无关：{order:?}");
     }
 
     /// ★★★ 跨源同名**不许合并**（原版"全部"就是按源逐条列 —— 几十条的来源）

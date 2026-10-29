@@ -20,6 +20,28 @@
 // ★ 我**没有**把"猜的域名"写进代码：候选域名（bdjm.cc / bdjmcc.com / bdjm.tv …）
 //   全部 DNS 不解析（2026-10-28 实测），把其中一个写死只会制造"能注册"的假象。
 //
+// # ★★ 2026-10-29 host 追猎（**四路全空**，如实登记；脚本与输出在 `.probe/`）
+// ```text
+// ① 订阅原文（`https://8815.kstore.vip/tvbox/wmz`，base64 解出，`.probe/bdjmcc-sub.dec.json`）：
+//    {"key":"北斗","name":"🛸北斗丨蓝光秒播","api":"csp_Bdjmcc","type":3,
+//     "searchable":0,"quickSearch":0,"filterable":1}      ← **没有 ext 字段**
+// ② spider jar（订阅里的 `261028.jar`，2.4MB，`.probe/bdjmcc-spider.jar`）：
+//    Bdjmcc 的 16 个字段里 `SITE` 的**字段值 = null**（`.probe/bdjmcc-dexscan.out.txt`、
+//    `.probe/decompiled/r3dex-spider.json` 的 `"values": ["null", …]`）；
+//    `<clinit>` 只有 8 条正则、`<init>` 一条常量都没有 ⇒ 无站点常量
+// ③ 模板指纹扫全网候选（Bdjmcc 四个一级分类 code 或 `a.picture[href=/v/…]` 任一命中）：
+//    · jar 里 594 条 URL → **247 台主机**全打 `/` ⇒ **0 命中**（`.probe/bdjmcc-hunt.out.txt`）
+//    · 订阅里 69 台 ext 主机同样扫 ⇒ **0 命中**（`.probe/bdjmcc-hunt2.out.txt`）
+// ④ 域名侧：`bdjm.cc/bdjm.tv/bdjm.top/bdjm.vip/bdjm.app/bdjm.club/bdjm.fun` **NXDOMAIN**；
+//    `bdjmcc.com` / `bdjm.net` TLS 握手失败（停放）；`bdjm.xyz` = **停放跳转页**
+//    （`<script>window.location.href="/lander"</script>`，114 字节，`.probe/bdjmcc-bdjm-xyz.txt`）
+// ⑤ 参考 APK（139MB）的 3 个 dex + **全部 zip 条目**里没有 `csp_Bdjmcc` / `北斗` / `bdjm`
+//    ⇒ 客户端不内置站点表（`.probe/bdjmcc-apk-scan.py`）
+// ⇒ 结论：**该类的 host 在任何可得产物里都不存在**（原配置作者漏了 ext）⇒ 仍**不注册**。
+//    一旦拿到 host（例如 lead 从别处补 `{"url":"https://…"}`），本实现即可用；
+//    真网联调用例 `bdjmcc_live_segments_if_host_given` 用环境变量 `BDJMCC_HOST` 直接验。
+// ```
+//
 // # 协议（DEX 常量逐字还原，按行为重写）
 // ```text
 // 形态：**图片卡片站**（不是 AppleCMS：路径 /v/<slug>.html、/p/<code>/<n>/<m>.html）
@@ -90,24 +112,29 @@ impl Bdjmcc {
         Self { client }
     }
 
-    /// 从 ext 取 host（`site` 数组 / `host` / 裸字符串）
+    /// 从 ext 取 host（`site` 数组 / `host` / `url` / 任意含 http 的字符串 / 裸字符串）
     ///
     /// ★ 本类是「**做实现、不注册**」：订阅里 ext 为 null，DEX 里也没有站点常量。
     ///   一旦某份配置给了 `{"site":["https://…"]}`，本实现就能直接用。
+    ///
+    /// # 2026-10-29 扩展：真实订阅里 ext 的三种写法都要认
+    /// ```text
+    /// {"site":["https://x"]}    ← TVBox csp 常见
+    /// {"host":"https://x"}
+    /// {"url":"http://x"}        ← 本仓参考订阅里 AppRJ 就是这个形状
+    /// "https://x"               ← 裸字符串
+    /// ```
+    /// 实现：**递归收集 JSON 里的所有字符串**，返回第一条 `http(s)://…`；
+    /// JSON 解不出就退回"按分隔符切、找 http 片段"（容错手写配置）。
+    ///
+    /// ⚠️ 两条路径**互斥**（JSON 解析成功就只走递归）—— 这条纪律是门禁逼出来的：
+    ///    若 JSON 分支之后**再**做字符串切分兜底，那"删掉对象分支"这种注入不会让门禁变红
+    ///    （切分也能从 `{"url":"http://x"}` 里切出 URL）⇒ 判据就成了假绿。
     pub fn host_of(ext: &str) -> Option<String> {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(ext) {
-            for key in ["site", "host"] {
-                if let Some(arr) = v.get(key).and_then(|x| x.as_array()) {
-                    if let Some(u) = arr.iter().filter_map(|x| x.as_str()).next() {
-                        return norm(u);
-                    }
-                }
-                if let Some(u) = v.get(key).and_then(|x| x.as_str()) {
-                    if let Some(h) = norm(u) {
-                        return Some(h);
-                    }
-                }
-            }
+            let mut found: Option<String> = None;
+            collect_host(&v, &mut found);
+            return found;
         }
         for piece in ext.split(|c: char| c == '"' || c == '\'' || c == ',' || c == ' ') {
             if let Some(h) = norm(piece) {
@@ -155,6 +182,63 @@ fn norm(raw: &str) -> Option<String> {
         Some(u.to_string())
     } else {
         None
+    }
+}
+
+/// 递归收集 JSON 里的 URL 字符串（优先 `site` / `host` / `url` 三个键）
+///
+/// 判据：`host_of_accepts_common_ext_shapes`（四种真实 ext 形状逐条）。
+fn collect_host(v: &serde_json::Value, out: &mut Option<String>) {
+    if out.is_some() {
+        return;
+    }
+    match v {
+        serde_json::Value::String(s) => {
+            if let Some(h) = norm(s) {
+                *out = Some(h);
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for x in a {
+                collect_host(x, out);
+            }
+        }
+        serde_json::Value::Object(o) => {
+            for k in ["site", "host", "url"] {
+                if let Some(x) = o.get(k) {
+                    collect_host(x, out);
+                }
+            }
+            for (_, x) in o {
+                collect_host(x, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 分类页路径（DEX：`/list/` + code + `/` + page + `.html`）
+pub fn list_path(code: &str, page: u32) -> String {
+    format!("/list/{}/{}.html", code.trim(), page.max(1))
+}
+
+/// 详情页路径（DEX：`/v/<slug>.html`；列表给的是完整 `/v/…` 就原样用）
+pub fn detail_path(id: &str) -> String {
+    let id = id.trim();
+    if id.starts_with('/') {
+        id.to_string()
+    } else {
+        format!("/v/{id}.html")
+    }
+}
+
+/// 播放页路径（DEX：`/p/<code>/<n>/<m>.html`；详情给的是完整 `/p/…` 就原样用）
+pub fn play_path(id: &str) -> String {
+    let id = id.trim();
+    if id.starts_with('/') {
+        id.to_string()
+    } else {
+        format!("/p/{id}")
     }
 }
 
@@ -350,7 +434,7 @@ impl CspSite for Bdjmcc {
         let host = Self::need_host(ext)?;
         let page = if page == 0 { 1 } else { page };
         let html = self
-            .get_html(&format!("{host}/list/{tid}/{page}.html"))
+            .get_html(&format!("{host}{}", list_path(tid, page)))
             .await?;
         let items = parse_cards(&html);
         if items.is_empty() {
@@ -381,11 +465,7 @@ impl CspSite for Bdjmcc {
         }
         let host = Self::need_host(ext)?;
         // id 可能是列表给的完整路径（`/v/<slug>.html`），也可能只是 slug
-        let path = if id.starts_with('/') {
-            id.to_string()
-        } else {
-            format!("/v/{id}.html")
-        };
+        let path = detail_path(id);
         let html = self.get_html(&format!("{host}{path}")).await?;
         let d = detail_from_html(&html, id);
         if d.episodes.is_empty() {
@@ -411,11 +491,7 @@ impl CspSite for Bdjmcc {
     /// 取流：播放页 → iframe → 解析参数；**解析接口地址未取证** ⇒ 如实拒绝
     async fn play(&self, _flag: &str, id: &str, ext: &str) -> Result<Vec<CspPlay>, String> {
         let host = Self::need_host(ext)?;
-        let path = if id.starts_with('/') {
-            id.to_string()
-        } else {
-            format!("/p/{id}")
-        };
+        let path = play_path(id);
         let html = self.get_html(&format!("{host}{path}")).await?;
         let src = iframe_src(&html).ok_or_else(|| {
             format!("Bdjmcc 播放页 {path} 里没有 iframe src（页面结构可能改版，或该播放页已失效）")
@@ -565,5 +641,86 @@ mod tests {
         let p = flat.find(".no_proxy()").expect("★ no_proxy 必须存在");
         let b = flat.find(".build()").expect("build");
         assert!(t < p && p < b, "timeout → no_proxy → build");
+    }
+
+    #[test]
+    /// ★★ ext 的四种真实形状都要认（2026-10-29 扩了递归收集）
+    ///
+    /// 判据来源：参考订阅里 `csp_AppRJ` 的 ext 就是 `{"url":"http://v.rbotv.cn"}`；
+    /// TVBox 的 csp 约定是 `{"site":["…"]}`。只认 `site`/`host` 会在别的源上直接失效。
+    /// 注入：把 `collect_host` 的对象分支删掉（只留 Array/String）⇒ 本条红。
+    fn host_of_accepts_common_ext_shapes() {
+        let cases = [
+            (r#"{"site":["https://a.example/"]}"#, Some("https://a.example")),
+            (r#"{"host":"https://b.example"}"#, Some("https://b.example")),
+            (r#"{"url":"http://c.example"}"#, Some("http://c.example")),
+            (r#"{"url":"http://c.example","other":1}"#, Some("http://c.example")),
+            (r#"["https://d.example"]"#, Some("https://d.example")),
+            ("https://e.example", Some("https://e.example")),
+            ("null", None),
+            ("", None),
+            ("{}", None),
+            (r#"{"site":[]}"#, None),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(
+                Bdjmcc::host_of(raw).as_deref(),
+                want,
+                "★ ext={raw} 应解出 {want:?}"
+            );
+        }
+        // 尾巴斜杠要去掉（后面统一拼 `{host}/…`）
+        assert_eq!(
+            Bdjmcc::host_of(r#"{"site":["https://f.example///"]}"#).as_deref(),
+            Some("https://f.example")
+        );
+    }
+
+    #[test]
+    /// ★★ 三个路径形态逐字对 DEX（`/list/<code>/<page>.html`、`/v/<slug>.html`、`/p/<code>/<n>/<m>.html`）
+    ///
+    /// DEX 常量：`'/list/'` + `'/'` + `'.html'`；详情 `'/v/'`；播放 `'/p/'`。
+    /// 注入：把 `list_path` 的 `.html` 去掉 ⇒ 本条红。
+    fn paths_match_dex_shapes() {
+        assert_eq!(list_path("A051pCM47kBg2", 1), "/list/A051pCM47kBg2/1.html");
+        assert_eq!(list_path(" A051pCM47kBg2 ", 0), "/list/A051pCM47kBg2/1.html");
+        assert_eq!(detail_path("/v/ab12cd.html"), "/v/ab12cd.html");
+        assert_eq!(detail_path("ab12cd"), "/v/ab12cd.html");
+        assert_eq!(play_path("/p/ab12cd/1/2.html"), "/p/ab12cd/1/2.html");
+        assert_eq!(play_path("ab12cd/1/2.html"), "/p/ab12cd/1/2.html");
+    }
+
+    /// ★★ 真网络联调（`BDJMCC_HOST` 给了才跑）：一旦有 host，一条命令就能验证全链路
+    ///
+    /// 判据（不做假成功）：
+    /// ```text
+    /// ① 没给 BDJMCC_HOST ⇒ 打印"该类当前无 host"并 return（不给假绿）
+    /// ② 给了 host ⇒ home 必须能解析出卡片或**明确报错**；list 同；detail 同
+    ///    （报错必须带状态码/原因，不许含糊）
+    /// ```
+    #[tokio::test]
+    #[ignore = "真网络：BDJMCC_HOST=https://… cargo test --lib bdjmcc_live -- --ignored --nocapture"]
+    async fn bdjmcc_live_segments_if_host_given() {
+        let host = match std::env::var("BDJMCC_HOST") {
+            Ok(h) if !h.trim().is_empty() => h,
+            _ => {
+                eprintln!(
+                    "[LIVE] BDJMCC_HOST 未设置 ⇒ 该类 2026-10-29 仍无 host（四路追猎全空，见文件头）"
+                );
+                return;
+            }
+        };
+        let ext = format!("{{\"url\":\"{}\"}}", host.trim());
+        eprintln!("[LIVE] ext = {ext}");
+        let s = Bdjmcc::new();
+        match s.home(&ext).await {
+            Ok(h) => eprintln!("[LIVE] home: 分类 {} 个，卡片 {} 条", h.categories.len(), h.items.len()),
+            Err(e) => eprintln!("[LIVE] home 如实失败：{e}"),
+        }
+        let code = CATEGORIES[0].0;
+        match s.list(code, 1, &ext).await {
+            Ok(l) => eprintln!("[LIVE] list({code}): {} 条", l.items.len()),
+            Err(e) => eprintln!("[LIVE] list 如实失败：{e}"),
+        }
     }
 }

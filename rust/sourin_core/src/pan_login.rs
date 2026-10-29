@@ -790,24 +790,27 @@ async fn uc_poll(token: &str) -> Result<PollOutcome, String> {
 // ⇒ 表现：`baidu_start` 直接报"字段不全"，二维码永远出不来。
 // ```
 //
-// # 现在的五步
+// # 现在的五步（2026-10-30 dex 逐字取证后修正）
 // ```text
 // ① 取码  GET  /v2/api/getqrcode                → sign + imgurl
-// ② 出图  GET  https:// + imgurl                → PNG 字节 ⇒ 内嵌进 SVG
-// ③ 轮询  GET  /channel/unicast?channel_id=<sign>&v=<sign>
-// ④ 换态  GET  /v3/login/main/qrbdusslogin?v=<sign>&bduss=<BDUSS>
+// ② 出图  GET  https:// + imgurl + &logPage=traceId%3Apc_loginv5_1742970205%2ClogPage%3Aloginv5
+//         → PNG 字节 ⇒ 内嵌进 SVG
+// ③ 轮询  GET  /channel/unicast?channel_id=<sign>        ← ★ 没有 &v 参数
+//         → body: errno + channel_v（JSON 串）→ channel_v.status==0 / channel_v.v
+// ④ 换态  GET  /v3/login/main/qrbdusslogin?v=<当前毫秒>&bduss=<channel_v.v>
+//         → ★ 登录态（含 BDUSS）在这一步的 Set-Cookie 响应头里
 // ⑤ 补全  GET  pan.baidu.com/disk/main（STOKEN 等在这条响应里）
 // ```
 //
-// # ⚠️ 未取证：`channel_id` 与 `v` 的**参数对应关系**
+// # ★ 2026-10-30 修正记录（旧"未取证"段作废）
 // ```text
-// 真报文只给了一个 `sign`，而 unicast 要 `channel_id` 与 `v` 两个参数。
-// 本仓的取法：**两个都填 sign**。这一条**没有取证**（真报文里根本没有 channel_id，
-//   社区实现是拿 sign 当 v 用）⇒ 允许这样试，但配套三条纪律：
-//   · 每次轮询把 body 与 Set-Cookie 的**键名**写进日志（不写值）；
-//   · 拿不到 BDUSS ⇒ 一律 Pending；
-//   · `errno` 非 0 ⇒ 同样 Pending 并记日志。
-//   不许把任何一次失败伪造成成功 —— 猜成 Confirmed 会去落一份假凭据。
+// 旧版两个猜错（都是"channel_id 与 v 都填 sign"这个猜测的产物）：
+//   ① unicast 多带了 `&v={sign}`（参考实现没有这个参数）；
+//   ② BDUSS 从 unicast 的 Set-Cookie 里找 ⇒ 永远找不到 ⇒ 一直"等待/重取"（现场现象）。
+// dex 逐字（.probe/pan-login-t5-forensics2.log §A / forensics3.log §③）：
+//   channel_v JSON 的 `v` 字段 = 换登录态的 bduss 参数值；qrbdusslogin 的 v = 毫秒时间戳；
+//   BDUSS 出现在 qrbdusslogin 响应的 set-cookie 头。
+// 真机扫码验证攒到批末（同批其余家）。
 // ```
 //
 // # ⚠️ 关于 `QrSession.svg`（这里放的是**位图**，不是矢量码）
@@ -842,13 +845,74 @@ fn baidu_qrcode_url() -> &'static str {
     "https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc"
 }
 
-/// 百度轮询 —— `channel_id` 与 `v` **都填 `sign`**（参数对应关系未取证，见上面说明）
+/// 百度轮询 —— **只带 `channel_id`，没有 `v` 参数**
 ///
-/// ★ 为什么把"两个都填 sign"写进**纯函数**而不是调用点：
-///   这是本家族整条链路里**唯一没有取证**的一处。写成纯函数 ⇒ 门禁能逐字断言
-///   "我们发的就是这个形状"，真机读数变了只改这里一处。
+/// # ★★★ 2026-10-30 dex 逐字取证（`.probe/pan-login-t5-forensics2.log` §A merge.b.j.t 0x0008–0x0012）
+/// ```text
+/// 参考实现 com.github.catvod.spider.merge.b.j.t：
+///   unicast URL = "https://passport.baidu.com/channel/unicast?channel_id=" + <sign>
+///   （StringBuilder 只 append 一次；**没有 `&v=`**）
+/// 旧实现画蛇添足的 `&v={sign}` 已删（对应关系"未取证"的整段猜测随之作废——
+///   真正的对应关系是：channel_v JSON 里的 `v` 字段才是换态用的值，见 `baidu_channel_v_of`）。
+/// ```
 fn baidu_unicast_url(sign: &str) -> String {
-    format!("https://passport.baidu.com/channel/unicast?channel_id={sign}&v={sign}")
+    format!("https://passport.baidu.com/channel/unicast?channel_id={sign}")
+}
+
+/// 换登录态时 `v` 参数的取值：参考实现逐字用 **当前毫秒时间戳**
+///
+/// # dex 出处（`.probe/pan-login-t5-forensics3.log` §③ 0x0058–0x0061）
+/// ```text
+/// qrbdusslogin URL = ".../qrbdusslogin?v=" + System.currentTimeMillis() + "&bduss=" + <bduss>
+/// 其中 <bduss> = unicast 响应 `channel_v` JSON 里的 **`v` 字段**（optString）。
+/// ```
+fn baidu_now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 从 unicast 响应体里解析 `channel_v`（★ 换登录态的 BDUSS 载体）
+///
+/// # dex 出处（`.probe/pan-login-t5-forensics3.log` §③ 0x0032–0x0052）
+/// ```text
+/// 参考实现：body.optString("channel_v") → new JSONObject(channel_v) →
+///   status = optInt("status")（==0 才算确认）、v = optString("v")
+/// `channel_v.v` 随后被拼进 qrbdusslogin 的 **bduss** 参数 ⇒ 它就是登录态载体。
+/// 旧实现从 unicast 的 Set-Cookie 头里找 BDUSS ⇒ 永远找不到 ⇒ UI 一直"等待/重取"（图2 现象）。
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BaiduChannelV {
+    /// `channel_v.status`（参考实现 ==0 进成功分支）
+    status: Option<i64>,
+    /// `channel_v.v`（换登录态时当 bduss 用；非空才有意义）
+    v: String,
+}
+
+fn baidu_channel_v_of(body: &str) -> Option<BaiduChannelV> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let inner = v.get("channel_v")?.as_str()?;
+    let j: serde_json::Value = serde_json::from_str(inner.trim()).ok()?;
+    Some(BaiduChannelV {
+        status: j.get("status").and_then(|x| x.as_i64()),
+        v: j.get("v")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+    })
+}
+
+/// 二维码**图片**的取图地址（在 `imgurl` 后追加参考实现逐字的 logPage 串）
+///
+/// # dex 出处（`.probe/pan-login-t5-forensics2.log` §A merge.b.j.o 0x0039）
+/// ```text
+/// 取图 URL = "https://" + imgurl + "&logPage=traceId%3Apc_loginv5_1742970205%2ClogPage%3Aloginv5"
+/// （QrSession.url 展示仍用不带后缀的 imgurl；这个后缀只用于 GET 图片字节。）
+/// ```
+fn baidu_img_fetch_url(img_url: &str) -> String {
+    format!("{img_url}&logPage=traceId%3Apc_loginv5_1742970205%2ClogPage%3Aloginv5")
 }
 
 /// 百度用 BDUSS 换登录态
@@ -1147,8 +1211,9 @@ async fn baidu_start() -> Result<QrSession, String> {
         fields.img_url.starts_with("https://")
     ));
 
-    // ② 拉那张 PNG，内嵌成 SVG。失败 ⇒ 退回"文本码"并在 hint 里说明（不许假装有图）
-    let (svg, note) = match baidu_qr_image_svg(&c, &fields.img_url).await {
+    // ② 拉那张 PNG（取图地址追加 logPage 串，dex 逐字见 `baidu_img_fetch_url`），内嵌成 SVG。
+    //    失败 ⇒ 退回"文本码"并在 hint 里说明（不许假装有图）
+    let (svg, note) = match baidu_qr_image_svg(&c, &baidu_img_fetch_url(&fields.img_url)).await {
         Ok(s) => {
             write_log(&format!("二维码图片内嵌成功 kind=baidu svg_len={}", s.len()));
             (s, String::new())
@@ -1173,7 +1238,8 @@ async fn baidu_start() -> Result<QrSession, String> {
         .insert(
             kind_key(PanKind::Baidu, &key),
             SessionRecord {
-                // 轮询要 (channel_id, v)，两者都填 sign（未取证，见节首说明）
+                // 轮询只带 channel_id（= sign）；确认态载体是响应体 channel_v（dex 逐字，
+                // 见 `baidu_channel_v_of` / `baidu_unicast_url`）
                 token: fields.sign.clone(),
                 created_at,
             },
@@ -1211,13 +1277,13 @@ async fn baidu_poll(channel_id: &str) -> Result<PollOutcome, String> {
         credential: None,
     };
 
-    let v = sessions()
+    let sess = sessions()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(&kind_key(PanKind::Baidu, channel_id))
         .map(|r| r.token.clone())
         .unwrap_or_default();
-    if v.is_empty() {
+    if sess.is_empty() {
         write_log(&format!(
             "轮询 kind=baidu 会话不在 key_len={}",
             channel_id.len()
@@ -1277,20 +1343,29 @@ async fn baidu_poll(channel_id: &str) -> Result<PollOutcome, String> {
         )));
     }
 
-    let Some(bduss) = bduss_from_cookie(&set_cookie) else {
-        // 没有 BDUSS 就是"还没确认" —— 无论 errno 是什么（errno 非 0 也一样 Pending，
-        // 只是日志里能看到它是几）。
+    // ②' 解析 channel_v（★ 确认态的唯一载体；dex 逐字见 `baidu_channel_v_of`）
+    //    旧实现从这里走 `bduss_from_cookie(&set_cookie)` —— BDUSS 根本不在 unicast 的
+    //    Set-Cookie 里（它在换登录态那一步的响应头），⇒ 永远 Pending ⇒ UI 一直重取二维码。
+    let Some(cv) = baidu_channel_v_of(&body) else {
         let why = match errno {
             Some(n) if n != 0 => format!("等待扫码…（errno={n}）"),
             _ => "等待扫码…".to_string(),
         };
         return Ok(pending(why));
     };
-    write_log("轮询 kind=baidu 拿到 BDUSS ⇒ 开始换登录态");
+    if cv.status != Some(0) || cv.v.is_empty() {
+        write_log(&format!(
+            "轮询 kind=baidu channel_v status={:?} v_len={} ⇒ 未确认，Pending",
+            cv.status,
+            cv.v.len()
+        ));
+        return Ok(pending("等待扫码…".to_string()));
+    }
+    write_log("轮询 kind=baidu channel_v status=0 ⇒ 已确认，开始换登录态");
 
-    // ③ 用 BDUSS 换登录态
+    // ③ 换登录态：`v` = 当前毫秒时间戳、`bduss` = channel_v.v（dex 逐字，见 `baidu_now_millis`）
     let resp = c
-        .get(baidu_qrbduss_url(&v, &bduss))
+        .get(baidu_qrbduss_url(&baidu_now_millis().to_string(), &cv.v))
         .header("Accept", "application/json, text/plain, */*")
         .header("Referer", "https://pan.baidu.com/")
         .send()
@@ -1307,6 +1382,18 @@ async fn baidu_poll(channel_id: &str) -> Result<PollOutcome, String> {
         cookie_digest(&step_cookie),
         tail(&step_body)
     ));
+    // ★ BDUSS 的判据在这一步的 Set-Cookie（dex：对 qrbdusslogin 响应头逐条收 cookie，
+    //   contains("BDUSS=") 才拼进 Cookie 头）。
+    let Some(bduss) = bduss_from_cookie(&step_cookie) else {
+        write_log(&format!(
+            "换登录态 kind=baidu 响应 Set-Cookie 无 BDUSS body={}",
+            tail(&step_body)
+        ));
+        return Ok(pending(
+            "等待扫码…（服务端确认了但未下发登录态，已记录）".to_string(),
+        ));
+    };
+    let _ = bduss; // BDUSS 存在性已确证；完整登录态以合并后的 cookie 为准
     let mut cookie = merge_cookie(&set_cookie, &step_cookie);
 
     // ④ 补 pan 域 cookie（STOKEN 等在这条响应里）
@@ -1458,6 +1545,84 @@ fn pan115_status_of(body: &str) -> (QrStatus, Option<i64>) {
         Some(n) if n >= 2 => (QrStatus::Confirmed, st),
         _ => (QrStatus::Pending, st),
     }
+}
+
+/// 115 换 cookie（纯函数；POST 表单）
+///
+/// # ★★★ 2026-10-30 dex 逐字取证（`.probe/pan-login-t5-forensics.log` §②b Qr115.login）
+/// ```text
+/// 参考实现 com.github.catvod.spider.Qr115.login（154 insns）：
+///   form.put("account", Qr115$Token.uid)   ← 键名是 **account**，不是 uid
+///   form.put("app",     "qandroid")        ← 与 URL 路径 /app/1.0/qandroid/1.0/ 同值
+///   POST https://passportapi.115.com/app/1.0/qandroid/1.0/login/qrcode/
+///   头：Qr115.head() = 只有 User-Agent: Mozilla/5.0 115disk/30.1.0
+/// 旧实现只发 `uid` 一个字段 ⇒ 服务端 40100000「参数错误」（现场真读数，图2）。
+/// ```
+fn pan115_login_form(uid: &str) -> Vec<(String, String)> {
+    vec![
+        ("account".to_string(), uid.to_string()),
+        ("app".to_string(), "qandroid".to_string()),
+    ]
+}
+
+/// 把 JSON 文案里的 `\uXXXX` 转义解成真字符（只做这一种转义，别的原样保留）
+///
+/// # 为什么要有它
+/// ```text
+/// 115 的错误 message 是 JSON 编码过的中文（现场读数：`"\u53c2\u6570\u9519\u8bef"` 形态），
+/// 直接把 body 原文塞进报错文案，用户看到的是一串 `\uXXXX`。
+/// 解码只服务"给用户看的文案"，解析仍走 serde_json（不重复造轮子）。
+/// ```
+fn unescape_json_u(s: &str) -> String {
+    if !s.contains("\\u") {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('u') => {
+                let hex: String = it.by_ref().take(4).collect();
+                if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                    if let Some(ch) = char::from_u32(n) {
+                        out.push(ch);
+                    } else {
+                        // 不认识的码位：原样回退，不吞字符
+                        out.push_str("\\u");
+                        out.push_str(&hex);
+                    }
+                } else {
+                    out.push_str("\\u");
+                    out.push_str(&hex);
+                }
+            }
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// 从换 cookie 响应里取出服务端 `message`（已解 \uXXXX；取不到就返回空串）
+fn pan115_server_message(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("message")
+                .or_else(|| v.get("data").and_then(|d| d.get("message")))
+                .and_then(|m| m.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .map(|s| unescape_json_u(&s))
+        .unwrap_or_default()
 }
 
 /// 从换 cookie 响应里拼出 `UID=…; CID=…; SEID=…; KID=…`
@@ -1626,11 +1791,11 @@ async fn pan115_poll(uid: &str) -> Result<PollOutcome, String> {
         });
     }
 
-    // ③ 换 cookie（POST 表单只带 uid —— 取证没给字段名，不多编）
+    // ③ 换 cookie（POST 表单 = account + app=qandroid，dex 逐字取证见 `pan115_login_form`）
     let resp = c
         .post(pan115_login_url())
         .header("Accept", "application/json, text/plain, */*")
-        .form(&[("uid", uid)])
+        .form(&pan115_login_form(uid))
         .send()
         .await
         .map_err(|e| {
@@ -1640,9 +1805,26 @@ async fn pan115_poll(uid: &str) -> Result<PollOutcome, String> {
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(format!("115 换 cookie 返回 HTTP {status}：{}", tail(&body)));
+        let msg = pan115_server_message(&body);
+        let extra = if msg.is_empty() {
+            String::new()
+        } else {
+            format!("（服务端：{msg}）")
+        };
+        return Err(format!(
+            "115 换 cookie 返回 HTTP {status}{extra}：{}",
+            tail(&body)
+        ));
     }
-    let cookie = pan115_cookie_from_body(&body)?;
+    let cookie = pan115_cookie_from_body(&body).map_err(|e| {
+        // 现场读数：115 的 message 是 \uXXXX 转义的中文 ⇒ 解码后再给用户
+        let msg = pan115_server_message(&body);
+        if msg.is_empty() {
+            e
+        } else {
+            format!("{e}（服务端：{msg}）")
+        }
+    })?;
     write_log(&format!(
         "换 cookie 成功 kind=115 摘要={}",
         cookie_digest(&cookie)
@@ -1687,11 +1869,16 @@ async fn pan115_poll(uid: &str) -> Result<PollOutcome, String> {
 //   消费方（将来的阿里驱动）按 `access_token=` 取，**不许**把它当 Cookie 头直接发。
 // ```
 //
-// # ⚠️ 未取证点（集中在此处，批末真机读数来了只改这里）
+// # 2026-10-30 dex 取证更新（原"未取证点"两条均已闭合，出处 .probe/pan-login-t5-forensics2/5.log）
 // ```text
-// ① generate/query 的**报文形状**（哪些参数在 query、哪些在表单）取自社区通行实现，
-//    本仓取证只有端点字符串 ⇒ 失败时会如实报 HTTP/业务字段，不会伪造成功。
-// ② `bizExt` 是 base64 JSON（含 pds_login_result.access_token）—— 解析失败即报错。
+// ① query.do 的**表单形状**已逐字取证（merge.d.d.d()）：t / ck / appName / appEntrance /
+//    isMobile / lang / returnUrl / fromSite / bizParams / navlanguage / navPlatform
+//    —— 已照抄进 aliyun_poll（URL 上的 _bx-v=2.2.3 保留，dex 端点串自带）。
+// ② bizExt 无需解密：merge.d.d.g 字段 @SerializedName("bizExt") ⇒ Base64 直接解码 →
+//    Gson(merge.d.a) → pds_login_result.refreshToken（camelCase）。全 dex 无 AES 调用
+//    归属此链路 ⇒ "AES key"不存在，旧的"invalid utf-8 index 200"是 base64 字母表变体
+//    （'-'/'_' 被当非法字符跳过 ⇒ 位错位）造成的，已在 b64_decode 修正。
+//    真实密文向量（真抓 qr 响应）批末随真机扫码一并取证，落 .probe/ 并脱敏。
 // ```
 
 /// 阿里云盘的桌面 UA（与网盘网页版一致）
@@ -1728,14 +1915,24 @@ fn aliyun_token_url() -> &'static str {
 /// ⚠️ 只支持标准字母表与 `=` 填充（阿里返回的就是标准 base64）；
 ///    非字母字符一律跳过（容忍换行），非法长度 ⇒ None（由调用方报"解析失败"）。
 /// ```
+/// # ★ 2026-10-30 修正：`-`/`_` 按 URL-safe 字母表解（**不是跳过**）
+/// ```text
+/// 现场真读数（图1）：bizExt 解出来 "invalid utf-8 … index 200" ⇒ 解码产出的是垃圾。
+/// 根因：旧实现把 `-`/`_` 当"非字母字符"跳过 ⇒ 若 bizExt 是 URL-safe 变体，
+///   每跳过一个字符位流就错 6 位 ⇒ 后面全变随机字节（UTF-8 在中段必炸，与 index 200 吻合）。
+/// dex 取证（.probe/pan-login-t5-forensics5.log）：参考实现 merge.d.d.e() 对
+///   @SerializedName("bizExt") 字段直接 Base64 解码 → Gson 解析 → 取 pds_login_result.refreshToken
+///   —— **全程无 AES/Cipher**（全 dex 的 AES 常量都在无关 spider 类里）⇒ "无密钥可取证"，
+///   需要修的是字母表变体，不是解密。
+/// ```
 fn b64_decode(s: &str) -> Option<Vec<u8>> {
     fn val(c: u8) -> Option<u8> {
         match c {
             b'A'..=b'Z' => Some(c - b'A'),
             b'a'..=b'z' => Some(c - b'a' + 26),
             b'0'..=b'9' => Some(c - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
+            b'+' | b'-' => Some(62),
+            b'/' | b'_' => Some(63),
             _ => None,
         }
     }
@@ -1786,6 +1983,14 @@ fn aliyun_status_of(body: &str) -> (QrStatus, String) {
 }
 
 /// 从 CONFIRMED 响应的 `bizExt`（base64 JSON）里取 `(access_token, refresh_token, expires_in)`
+///
+/// # ★ 2026-10-30 dex 逐字取证（`.probe/pan-login-t5-forensics5.log`）
+/// ```text
+/// bizExt 解码后的 JSON 键是 **camelCase**（参考实现 merge.d.a POJO 的 @SerializedName）：
+///   pds_login_result.{ accessToken, refreshToken, expiresIn, defaultDriveId, ... }
+/// 社区公开实现通行的是 snake_case（access_token/refresh_token）⇒ 两套都认：
+///   camel 优先（dex 逐字），snake 兜底；都取不到才报错（不猜）。
+/// ```
 fn aliyun_token_from_body(body: &str) -> Result<(String, String, Option<i64>), String> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| format!("阿里轮询响应不是 JSON（{e}）：{}", tail(body)))?;
@@ -1802,17 +2007,30 @@ fn aliyun_token_from_body(body: &str) -> Result<(String, String, Option<i64>), S
     let raw = b64_decode(&biz)
         .ok_or_else(|| format!("阿里的 bizExt 不是合法 base64（协议可能变了）：{}", tail(&biz)))?;
     let text = String::from_utf8(raw)
-        .map_err(|e| format!("阿里的 bizExt 解出来不是 UTF-8（{e}）"))?;
+        .map_err(|e| format!("阿里的 bizExt 解出来不是 UTF-8（{e}）⇒ base64 变体或密文形态超出取证范围"))?;
     let j: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("阿里的 bizExt 解出来不是 JSON（{e}）：{}", tail(&text)))?;
-    // 两种层级都认：`pds_login_result.{…}` 或顶层
+    // 两种层级都认：`pds_login_result.{…}` 或顶层；键名 camel（dex）与 snake（社区）都认
     let src = j.get("pds_login_result").unwrap_or(&j);
-    let access = src.get("access_token").and_then(|x| x.as_str()).unwrap_or("").to_string();
-    let refresh = src.get("refresh_token").and_then(|x| x.as_str()).unwrap_or("").to_string();
-    let expires = src.get("expires_in").and_then(|x| x.as_i64());
+    let pick = |keys: [&str; 2]| -> String {
+        for k in keys {
+            if let Some(s) = src.get(k).and_then(|x| x.as_str()) {
+                if !s.trim().is_empty() {
+                    return s.trim().to_string();
+                }
+            }
+        }
+        String::new()
+    };
+    let access = pick(["accessToken", "access_token"]);
+    let refresh = pick(["refreshToken", "refresh_token"]);
+    let expires = src
+        .get("expiresIn")
+        .and_then(|x| x.as_i64())
+        .or_else(|| src.get("expires_in").and_then(|x| x.as_i64()));
     if access.is_empty() || refresh.is_empty() {
         return Err(format!(
-            "阿里的 bizExt 里缺 access_token/refresh_token（协议可能变了）：{}",
+            "阿里的 bizExt 里缺 accessToken/refreshToken（camel/snake 两套键都不在，协议可能变了）：{}",
             tail(&text)
         ));
     }
@@ -1909,10 +2127,27 @@ async fn aliyun_poll(ck: &str) -> Result<PollOutcome, String> {
         .and_then(|r| r.token.split_once('|').map(|(_, t)| t.to_string()))
         .unwrap_or_default();
     let c = client(UA_ALIYUN)?;
+    // 表单 = 参考 merge.d.d.d() 逐字（.probe/pan-login-t5-forensics2.log §C4 d 方法）：
+    //   t / ck / appName=aliyun_drive / appEntrance=web / isMobile=false / lang=zh_CN /
+    //   returnUrl= / fromSite=52 / bizParams= / navlanguage=zh-CN / navPlatform=MacIntel
+    // 旧版只发 ck/t/_bx-v ⇒ 表单字段少发不报错、只让服务端返回另一套字段（静默偏差）。
+    let form: Vec<(String, String)> = vec![
+        ("t".to_string(), t.clone()),
+        ("ck".to_string(), ck.to_string()),
+        ("appName".to_string(), "aliyun_drive".to_string()),
+        ("appEntrance".to_string(), "web".to_string()),
+        ("isMobile".to_string(), "false".to_string()),
+        ("lang".to_string(), "zh_CN".to_string()),
+        ("returnUrl".to_string(), String::new()),
+        ("fromSite".to_string(), "52".to_string()),
+        ("bizParams".to_string(), String::new()),
+        ("navlanguage".to_string(), "zh-CN".to_string()),
+        ("navPlatform".to_string(), "MacIntel".to_string()),
+    ];
     let resp = c
         .post(aliyun_query_url())
         .header("Accept", "application/json, text/plain, */*")
-        .form(&[("ck", ck), ("t", t.as_str()), ("_bx-v", "2.2.3")])
+        .form(&form)
         .send()
         .await
         .map_err(|e| format!("轮询阿里扫码状态失败：{e}"))?;
@@ -2451,6 +2686,10 @@ pub fn kind_from_code(code: &str) -> Result<PanKind, String> {
         })
 }
 
+// 2026-10-30 task-5（rust-login）的门禁：新建独立文件，不动上面的既有测试
+#[cfg(test)]
+mod pan_login_t5_gate;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2711,7 +2950,8 @@ mod tests {
         let bad_biz = "eyJwZHNfbG9naW5fcmVzdWx0Ijp7InJlZnJlc2hfdG9rZW4iOiJSVCJ9fQ==";
         let bad = format!(r#"{{"content":{{"data":{{"bizExt":"{bad_biz}"}}}}}}"#);
         let e = aliyun_token_from_body(&bad).expect_err("缺 access_token 必须失败");
-        assert!(e.contains("access_token"), "{e}");
+        // 2026-10-30：报错点名 camel/snake 两套键（dex 取证见 aliyun_token_from_body）
+        assert!(e.contains("accessToken"), "{e}");
     }
 
     /// ★★ 凭据是**约定键名**（`access_token=`），不许写成 Cookie 头的样子
@@ -2726,12 +2966,14 @@ mod tests {
     //  百度扫码（2026-10-28 接通）—— passport 族，与 CAS 不同
     // ══════════════════════════════════════════════════════════════════
 
-    /// ★★ 三条 URL 逐字对齐（unicast 的 `channel_id`/`v` **都填 sign**）
+    /// ★★ 三条 URL 逐字对齐（2026-10-30 dex 修正：unicast **只带 channel_id**，没有 &v）
     ///
     /// ```text
-    /// 注入验证：把 unicast 里的 `v={sign}` 改成 `sign={sign}` ⇒ 本条 FAILED。
-    /// （百度那一步的参数名是 `v`，值才是 sign —— 名字写错服务端不认，且不报错）
+    /// dex 逐字出处：.probe/pan-login-t5-forensics2.log §A merge.b.j.t（unicast URL 只
+    ///   append 一次 channel_id）/ forensics3.log §③（qrbdusslogin 的 v=毫秒、bduss=channel_v.v）。
+    /// 旧断言（unicast 带 `&v={sign}`）钉的是已作废的猜测，随 dex 取证修正。
     /// 注入验证（已实测真红）：把 `channel_id` 改成 `cid` ⇒ 本条 FAILED。
+    /// 新增证红在 pan_login_t5_gate：unicast URL 出现 `&v=` ⇒ 红。
     /// ```
     #[test]
     fn baidu_urls_match_the_documented_flow() {
@@ -2741,7 +2983,7 @@ mod tests {
         );
         assert_eq!(
             baidu_unicast_url("sig1"),
-            "https://passport.baidu.com/channel/unicast?channel_id=sig1&v=sig1"
+            "https://passport.baidu.com/channel/unicast?channel_id=sig1"
         );
         assert_eq!(
             baidu_qrbduss_url("sig1", "bd1"),

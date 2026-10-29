@@ -57,6 +57,7 @@
 // > 用它算百分比会让"续播位置"偏到离谱的地方。
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 // ★★★ task-22 P1-11：`videoZoomToMpv()` 要把百分比换成 mpv 的 `video-zoom`
 //   （log2），为此只需要 `log` —— `dart:math` 不进面板，只在本文件用。
@@ -459,6 +460,85 @@ String aggregateSourceTitle({String? note, String? label}) {
   final base = n.isEmpty ? 'TVBox 聚合' : 'TVBox 聚合($n)';
   final l = label?.trim() ?? '';
   return l.isEmpty ? base : '$base · $l';
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ★★★ 现场反馈批次（1.3，2026-10-30）：20 秒样片线路
+//  ═══════════════════════════════════════════════════════════════════════
+//
+//  Owner 现象：聚合源里不少线路是「20 秒样片」，起播没多久就停，
+//  还**默认选中**第一条这样的线路。判据 = duration < 60s。
+//  duration 只有**起播后**才知道 ⇒ 用「线路时长缓存」（同剧同线路记一次，
+//  UiPrefs 持久化，不增加起播延迟）；resolve 阶段轻量探测 m3u8 首分片时长
+//  是备选方案（会增加起播延迟，本批不启用 —— 两个方案都写进了决策笔记）。
+
+/// 疑似样片的时长上界（**不含**）：`0 < d < 60s` 才算样片
+const int kSampleLineThresholdSeconds = 60;
+
+/// 线路时长缓存的 UiPrefs 键（JSON：{线路键: 秒}）
+const String kLineDurationPrefsKey = 'dsh.player.lineDurations';
+
+/// 缓存条目上限（防无限增长；超出按插入序淘汰最旧）
+const int kLineDurationCacheCap = 400;
+
+/// 判「这条线路是不是疑似样片」（纯函数）
+///
+/// ```text
+/// · null / ≤0  ⇒ 不是（没量过/量坏了不冤枉线路 —— 只按真实读数标注）
+/// · 0 < d < 60 ⇒ 是（Owner 指定判据）
+/// · ≥ 60       ⇒ 不是
+/// ```
+@visibleForTesting
+bool isSuspectedSampleLine(int? durationSeconds) =>
+    durationSeconds != null && durationSeconds > 0 &&
+    durationSeconds < kSampleLineThresholdSeconds;
+
+/// 秒 → 「m:ss」（Owner 指定的标注格式：疑似样片 (0:20)）
+@visibleForTesting
+String formatLineDuration(int seconds) =>
+    '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')}';
+
+/// 一条线路在缓存里的键（纯函数）
+///
+/// ```text
+/// label 优先（tvbox 聚合 = 「子源 · 线路」，Rust 侧稳定生成）
+/// ⇒ 无 label 退 quality（普通源的清晰度线）
+/// ⇒ 都空 ⇒ 空尾巴键 —— 调用方（_recordLineDuration）对空尾巴**不记**：
+///    认不出线路的读数落到哪条都可能是张冠李戴，宁缺勿错。
+/// ```
+@visibleForTesting
+String lineDurationKey({
+  required String provider,
+  required String contentId,
+  required StreamCandidate s,
+}) {
+  final label = s.label?.trim() ?? '';
+  final quality = s.quality?.trim() ?? '';
+  final id = label.isNotEmpty ? label : quality;
+  return '$provider:$contentId:$id';
+}
+
+/// 默认线路挑选（纯函数 —— 1.3 的核心判据）
+///
+/// # 语义（Owner 指定）
+/// ```text
+/// 输入 = 已过滤 isPlayable 的候选（原顺序）
+/// ① 第一条「不是疑似样片」的线路（没缓存读数的也算正常 —— 不冤枉没量过的）；
+/// ② 全都是疑似样片 ⇒ 返回第一条（保持原序，由抽屉统一标注，
+///    用户自己挑 —— 不许"全都异常就一个都不选"）。
+/// 输出 null = 没有可播候选（调用方走既有报错路径）。
+/// ```
+/// 注入点 [durationOf] 由调用方接 `_lineDurationCache` —— 纯函数本身不摸存储。
+@visibleForTesting
+StreamCandidate? pickDefaultPlayable(
+  List<StreamCandidate> playable,
+  int? Function(StreamCandidate) durationOf,
+) {
+  if (playable.isEmpty) return null;
+  for (final s in playable) {
+    if (!isSuspectedSampleLine(durationOf(s))) return s;
+  }
+  return playable.first;
 }
 
 /// ★★★ task-33（B①）：这个 provider 是不是「本地文件会话」
@@ -3372,6 +3452,8 @@ class _PlayerPageState extends State<PlayerPage>
     _livePlayerState = this;
     // ★ 多线路：默认选第一条线路（`_flagsOf` 为空 ⇒ 保持 null ⇒ 线路条不画）
     _syncSelectedFlag();
+    // ★ 1.3：读回「线路时长缓存」（同剧同线路记一次 —— 跨页面实例、跨重启）
+    _loadLineDurations();
 
     /*
      * ══════════════════════════════════════════════════════════════════
@@ -4080,6 +4162,81 @@ class _PlayerPageState extends State<PlayerPage>
       return;
     }
     setState(() => _providerName = n);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  ★★★ 现场反馈批次（1.3）：线路时长缓存（同剧同线路记一次）
+  //  ═════════════════════════════════════════════════════════════════════
+  //
+  //  # 为什么是缓存而不是"起播时探测"
+  //  ```text
+  //  duration 起播后才有 ⇒ 要在**下一次**选择默认线路时避开样片，
+  //  只能记住"上次这条线路播出来是多少秒"。
+  //  方案A（本批采用）：起播后把 duration 写进缓存（UiPrefs 持久化）——
+  //    零起播延迟；第一次遇到某条样片线路仍会中招一次，但**只中一次**。
+  //  方案B（备选，本批不启用）：resolve 阶段轻量探测 m3u8 首分片时长 ——
+  //    首次就能避开，但每条线路多一次网络往返，**增加起播延迟**。
+  //  两案都写进决策笔记；Owner 若要"首次也避开"，再启用 B。
+  //  ```
+  final Map<String, int> _lineDurationCache = {};
+
+  /// 从 UiPrefs 读回缓存（initState 一次；坏 JSON ⇒ 整体丢弃，不半读）
+  void _loadLineDurations() {
+    final raw = UiPrefs.get(kLineDurationPrefsKey);
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      for (final e in decoded.entries) {
+        final v = e.value;
+        if (v is num && v > 0) _lineDurationCache['${e.key}'] = v.toInt();
+      }
+    } catch (e) {
+      debugPrint('[PLAYER] 线路时长缓存读回失败（按空缓存继续）: $e');
+    }
+  }
+
+  /// 缓存里这条线路的秒数（没记过 ⇒ null）
+  int? _cachedLineDuration(StreamCandidate s) {
+    final key = lineDurationKey(
+      provider: _provider,
+      contentId: _contentId,
+      s: s,
+    );
+    if (key.endsWith(':')) return null; // 认不出线路 ⇒ 无读数（不冤枉）
+    return _lineDurationCache[key];
+  }
+
+  /// 起播后记录这条线路的真实时长（duration 广播的落点）
+  void _recordLineDuration(Duration d) {
+    final s = _current;
+    if (s == null || d <= Duration.zero) return;
+    final key = lineDurationKey(
+      provider: _provider,
+      contentId: _contentId,
+      s: s,
+    );
+    if (key.endsWith(':')) return; // 认不出线路 ⇒ 不记（宁缺勿错）
+    _lineDurationCache[key] = d.inSeconds;
+    // 超上限按插入序淘汰最旧（LinkedHashMap 保插入序）
+    while (_lineDurationCache.length > kLineDurationCacheCap) {
+      _lineDurationCache.remove(_lineDurationCache.keys.first);
+    }
+    try {
+      UiPrefs.set(kLineDurationPrefsKey, jsonEncode(_lineDurationCache));
+    } catch (e) {
+      debugPrint('[PLAYER] 线路时长缓存落盘失败（不影响本次播放）: $e');
+    }
+  }
+
+  /// 抽屉行的样片标注（null = 不是样片/没读数）
+  ///
+  /// ⚠️ 标注判据**只**认缓存读数 —— 正在播的这条即使 `_duration` 已经
+  /// 出来，也必须经过缓存（`_recordLineDuration` 先写）再读，
+  /// 判据只有一份，不在这里抄第二份。
+  String? _sampleBadgeFor(StreamCandidate s) {
+    final d = _cachedLineDuration(s);
+    return isSuspectedSampleLine(d) ? '疑似样片 (${formatLineDuration(d!)})' : null;
   }
 
   /// 从 [UiPrefs] 读连播策略 / 音量 / 倍速
@@ -4799,6 +4956,9 @@ class _PlayerPageState extends State<PlayerPage>
         // 真实时长以流里的为准（元数据不准）
         if (d > Duration.zero) _realDuration = d;
       });
+      // ★ 1.3：起播后把这条线路的真实时长记进缓存
+      //   （下一轮默认选线才能避开样片；_current 为 null 时 _recordLineDuration 自己会退）
+      _recordLineDuration(d);
     });
     _player.stream.buffering.listen((v) {
       if (mounted) setState(() => _buffering = v);
@@ -5380,8 +5540,18 @@ class _PlayerPageState extends State<PlayerPage>
        * > 原版是取第一个非 DRM 的候选。**排序是产品决定** ——
        * > 如果这里偷偷按清晰度重排，用户看到的默认清晰度就会
        * > 和原版不一致（违反「操作逻辑保持一致」）。
+       *
+       * ★★★ 1.3（2026-10-30）：在"第一个能播"之上再跳过**疑似样片线路**
+       * （缓存时长 < 60s 的；判据见 [pickDefaultPlayable]）——
+       * Owner 现象：默认选中的第一条经常是 20 秒样片。
+       * ⚠️ 候选**顺序**一个字不动（只改默认选中那条）；
+       *    全部疑似样片 ⇒ 仍播第一条并由抽屉统一标注，保持原版"取第一个"的兜底。
        */
-      final first = list.where((s) => s.isPlayable).firstOrNull;
+      final playableCandidates = list.where((s) => s.isPlayable).toList();
+      final first = pickDefaultPlayable(
+        playableCandidates,
+        _cachedLineDuration,
+      );
       if (first == null) {
         setState(() {
           _error = list.isEmpty ? '该内容没有可播放的地址' : '所有线路都不可播（可能受 DRM 保护）';
@@ -18117,6 +18287,8 @@ class _PlayerPageState extends State<PlayerPage>
                                   _provider == kTvboxAggregateProviderId
                                       ? _aggNote
                                       : null,
+                              // ★ 1.3：疑似样片线路标注（读线路时长缓存）
+                              sampleBadgeOf: _sampleBadgeFor,
                               onPick: (s) {
                                 setState(() => _streamSheetOpen = false);
                                 // ★ Owner 2026-10-11 第 2 条：选完线路关面板 ⇒ 顶/底栏一起回来。
@@ -19495,6 +19667,26 @@ bool debugPlayerSetAggregateTitleForProbe({
   s.setState(() {
     if (note != null) s._aggNote = note;
     if (current != null) s._current = current;
+  });
+  return true;
+}
+
+/// ★ 1.3（2026-10-30）门禁探针：把**线路时长缓存**整表灌进生产 state
+///
+/// ```text
+/// 样片标注与默认选线的判据都读 `_lineDurationCache`；缓存的生产写入点
+/// 在"起播后的 duration 广播"（FFI/真播放）—— flutter_tester 里到不了。
+/// 本探针替换整表（不是合并），测试之间互不污染；键值形状与生产一致
+/// （lineDurationKey 产出 → 秒）。
+/// ```
+/// 返回 false = 播放页没挂上（调用方必须据此判红）。
+bool debugPlayerSetLineDurationsForProbe(Map<String, int> durations) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s.setState(() {
+    s._lineDurationCache
+      ..clear()
+      ..addAll(durations);
   });
   return true;
 }
@@ -23181,6 +23373,7 @@ class _StreamSheet extends StatelessWidget {
     required this.onPick,
     required this.onClose,
     this.aggregateNote,
+    this.sampleBadgeOf,
   });
 
   final List<StreamCandidate> streams;
@@ -23192,6 +23385,11 @@ class _StreamSheet extends StatelessWidget {
   /// 「TVBox 聚合(<备注>) · <label>」（Owner 验收②的"换源列表"半边）。
   /// null = 非聚合源 ⇒ 行为与改前逐字一致（displayName 原样）。
   final String? aggregateNote;
+
+  /// ★ 1.3（2026-10-30）：行的「疑似样片 (m:ss)」标注。
+  /// null = 不是样片/没读数（调用方 `_sampleBadgeFor` 读**缓存**判，判据单源）。
+  /// null 之外的形态照旧 —— 与清晰度徽章同一套 `_QualityBadge` 视觉语言。
+  final String? Function(StreamCandidate)? sampleBadgeOf;
 
   @override
   Widget build(BuildContext context) {
@@ -23355,6 +23553,16 @@ class _StreamSheet extends StatelessWidget {
                               const SizedBox(width: Sp.x2),
                               _QualityBadge(
                                 text: qualityBadgeFor(s),
+                                dimmed: !s.isPlayable,
+                              ),
+                            ],
+                            // ★ 1.3（2026-10-30）：疑似样片线路标注
+                            //   （读缓存时长，<60s 才标；与清晰度徽章同排）
+                            if (sampleBadgeOf != null &&
+                                sampleBadgeOf!(s) != null) ...[
+                              const SizedBox(width: Sp.x2),
+                              _QualityBadge(
+                                text: sampleBadgeOf!(s)!,
                                 dimmed: !s.isPlayable,
                               ),
                             ],

@@ -140,6 +140,8 @@ import 'widgets/danmaku_overlay.dart';
 import 'widgets/danmaku_settings_dialog.dart';
 import 'danmaku_search_page.dart';
 import 'widgets/episode_strip.dart';
+// ★ 1.4（2026-10-30）：集号归一化判据与选集抽屉/详情栏同源（公共文件）
+import 'widgets/episode_filter.dart' show episodeNumberOf;
 // ★ 第 16 项：内嵌 / 全屏**共用**的播放动作契约（第 16 项闭合用）
 import 'widgets/live_embedded_player.dart'
     show LivePlaybackAction, LivePlaybackTarget, dispatchLivePlaybackAction, livePlaybackActionForKey;
@@ -1983,16 +1985,37 @@ class _PlayerPageState extends State<PlayerPage>
     }
   }
 
-  /// 用户切线路：只改"所选线路"，并把当前集对齐到新线路的同名集
+  /// 用户切线路：只改"所选线路"，并把当前集对齐到新线路的**同集号**那一集
   ///
   /// 同一集在不同线路是**不同 id** ⇒ 不映射的话切完线路会跳到"第 1 集"。
+  ///
+  /// ★★★ 1.4（2026-10-30）：匹配从「标题全等」改成「**集号归一化**」
+  /// ```text
+  /// 改前：e.title == cur.title —— 各线路标题形态不同时匹配不到
+  ///       （真机形态：「第2集」 vs 「第02集」、「01」 vs 「第 1 集」），
+  ///       于是停在旧线路的集上（高亮错位/集数对不上）。
+  /// 改后：episodeNumberOf（episode_filter.dart 公共判据）提取数字比较，
+  ///       01/1、第2集/第02集 归一；数字也提不出（特别篇等）⇒ 退标题全等；
+  ///       两层都匹配不到 ⇒ **停在当前集号**（_epIndex 不动，绝不跳 1）。
+  /// ```
   void _pickEpisodeFlag(String flag) {
     if (flag == _selectedFlag) return;
     final cur = _epIndex >= 0 && _epIndex < _episodes.length ? _episodes[_epIndex] : null;
     setState(() {
       _selectedFlag = flag;
       if (cur != null) {
-        final i = _episodes.indexWhere((e) => e.flag == flag && e.title == cur.title);
+        final order = episodeNumberOf(cur.title);
+        var i = -1;
+        if (order != null) {
+          i = _episodes.indexWhere(
+            (e) => e.flag == flag && episodeNumberOf(e.title) == order,
+          );
+        }
+        if (i < 0) {
+          // 退标题全等（无数字标题 / 归一化匹配不到但同名的兜底）
+          i = _episodes.indexWhere((e) => e.flag == flag && e.title == cur.title);
+        }
+        // i < 0 ⇒ 停在当前集号（不跳 1）—— 本行刻意不写 else
         if (i >= 0) _epIndex = i;
       }
     });
@@ -19690,6 +19713,23 @@ bool debugPlayerSetLineDurationsForProbe(Map<String, int> durations) {
   });
   return true;
 }
+
+/// ★ 1.4（2026-10-30）门禁探针：走**生产** `_pickEpisodeFlag` 切线路
+///
+/// ```text
+/// 集数对齐的判据在 `_pickEpisodeFlag` 内部（真方法）——
+/// 探针只负责触发它并让用例能读回 `_epIndex`，不替它算。
+/// ```
+bool debugPlayerPickEpisodeFlagForProbe(String flag) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._pickEpisodeFlag(flag);
+  return true;
+}
+
+/// ★ 1.4 门禁读数：当前集下标（全集索引，与 `_epIndex` 同义）
+int debugPlayerEpisodeIndexForProbe() =>
+    _livePlayerState?._epIndex ?? -1;
 
 /// 打开「线路 / 清晰度」抽屉（探针用，返回是否成功）
 ///

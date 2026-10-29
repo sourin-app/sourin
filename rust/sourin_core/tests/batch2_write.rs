@@ -246,6 +246,7 @@ async fn skip_marker_round_trip() {
         None,
         None,
         Some(true),
+        Vec::new(),
     )
     .expect("set_skip_marker");
 
@@ -277,12 +278,12 @@ async fn skip_marker_rejects_invalid_ranges() {
     let st = fresh_state("skip-bad").await;
 
     // ① 区间内部 start >= end
-    let e = cw::set_skip_marker(&st, "p", "1", None, Some(100), Some(50), None, None, None)
+    let e = cw::set_skip_marker(&st, "p", "1", None, Some(100), Some(50), None, None, None, Vec::new())
         .unwrap_err();
     assert!(e.contains("片头"), "应报片头错误: {e}");
     println!("✓ 拒绝 intro_start(100) >= intro_end(50): {e}");
 
-    let e = cw::set_skip_marker(&st, "p", "1", None, None, None, Some(100), Some(50), None)
+    let e = cw::set_skip_marker(&st, "p", "1", None, None, None, Some(100), Some(50), None, Vec::new())
         .unwrap_err();
     assert!(e.contains("片尾"), "应报片尾错误: {e}");
     println!("✓ 拒绝 outro_start(100) >= outro_end(50): {e}");
@@ -298,6 +299,7 @@ async fn skip_marker_rejects_invalid_ranges() {
         Some(100),
         Some(200),
         None,
+        Vec::new(),
     )
     .unwrap_err();
     assert!(e.contains("片头必须结束于片尾开始之前"), "应报跨区间错误: {e}");
@@ -314,12 +316,13 @@ async fn skip_marker_rejects_invalid_ranges() {
         Some(1300),
         Some(1400),
         None,
+        Vec::new(),
     )
     .expect("合法区间应通过");
     println!("✓ 合法区间 [0,60] + [1300,1400] 通过");
 
     // ④ 只给一半（没有 end）不该报错 —— 用户在编辑器里逐步填
-    cw::set_skip_marker(&st, "p", "half", None, Some(30), None, None, None, None)
+    cw::set_skip_marker(&st, "p", "half", None, Some(30), None, None, None, None, Vec::new())
         .expect("只有 intro_start 应允许（编辑中间态）");
     println!("✓ 只有 intro_start 时允许（编辑中间态）");
 }

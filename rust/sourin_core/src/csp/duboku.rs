@@ -10,16 +10,27 @@
 // ```
 // ⇒ **没有 ext**：站点写死 `https://www.duboku.tv/`（DEX `c()` 里的 Referer 常量）。
 //
-// # ★★ 分档：**协议已复刻，上游当前不可用**（如实分档，不假装）
+// # ★★ 分档：**参数 bug 已修；上游仍然不可用**（两件事分开记）
 //
 // ```text
-// 2026-10-27 实测：
-//   GET https://api.dbokutv.com/home                       ⇒ HTTP **400 / 7b body=`Failure`**
-//   GET https://www.duboku.tv/                             ⇒ **连接失败（000）**
-//   GET https://dbokutv.com/                               ⇒ 空响应
-// ⇒ 结论：**这两个域名当前都不提供可用服务**。
-//   这不是"我们的 bug"，也不是"协议没实现对"—— 协议本身已从 DEX 完整复原（见下）。
-//   ★ 因此本实现的真网读数**只能是"上游当前不可用"**，我不会假装它通了。
+// 2026-10-27 实测（第一轮，当时误判为"上游死了，与参数无关"）：
+//   GET https://api.dbokutv.com/home   ⇒ HTTP **400 / 7b body=`Failure`**
+//   GET https://www.duboku.tv/         ⇒ **连接失败（000）**
+//   GET https://dbokutv.com/           ⇒ 空响应
+//
+// 2026-10-29 重测（**这一轮把"参数"和"上游"拆开了**，证据在
+//   `.probe/api-fix/duboku_token_probe.out.txt`）：
+//   GET /home、/vodshow/…、/vodsearch…、/、/zzz-nonexistent（**不要任何参数**）
+//        ⇒ 全部 HTTP 400 / `Failure`（catch-all，不区分路径）
+//   GET 同批路径 **带上 DEX `b()` 的 `?sign=&ssid=&token=`**
+//        ⇒ 全部 HTTP **417** / `Failure`；`/` 那次变 500 + Cloudflare troubleshooting JSON
+//   ⇒ 结论 ①：**400 有一半是我们的 bug** —— 本类以前**从未**调用过 `token_query()`，
+//              而上游确实按这三段分叉（400 → 417 是服务端行为变化，不是巧合）。
+//   ⇒ 结论 ②：417/500 是 **worker 已转发、origin 不响应** ⇒ **上游当前不可用**，
+//              这一档不是我们能修的，也不许假装修好。
+//   ⇒ 域名侧：`duboku.tv` 的 NS 已是 `ns1/ns2.662.parklogic.com`（**停放商**，A=162.4.84.239），
+//              `w.duboku.io`（DEX 播放器的 origin/referer，:629/:632）**已不解析**，
+//              `api.dbokutv.com` 仍由 Cloudflare 承载但 origin 死。
 // ```
 //
 // # 协议复原（DEX 逐条 + **离线判据**验证）
@@ -183,18 +194,151 @@ pub fn rand_str(len: usize, table: &str) -> String {
     out
 }
 
+/// `java.util.Random` 的**位级复刻**（48 位 LCG；JDK 的 `nextInt(bound)` 拒绝采样）
+///
+/// # 为什么必须位级复刻（不是"随便造个随机数"）
+/// ```text
+/// DEX `b()` 的第 0..22 条指令是：
+///   new Random(System.currentTimeMillis() * 1000)
+///   r = Math.abs(rnd.nextInt(0x2faf0800))       ← 0x2faf0800 = 800000000
+///   然后再用 r 去算明文里的两段数字（见 `b_plain`）
+/// ⇒ 服务端要复算的是**同一个 Java Random 序列**。用 xorshift 之类的自造 PRNG 会得到
+///   完全不同的 r，明文就"不是那个算法算出来的"了。
+/// ⇒ 这里按 JDK 的 `Random` 实现逐条移植：seed = (seed ^ 0x5DEECE66D) & ((1<<48)-1)，
+///   next(bits) = (seed = seed*0x5DEECE66D + 0xB) >> (48-bits)，nextInt 用拒绝采样。
+/// ```
+/// 判据：`dex_b_plain_vectors` 用 Python 侧（同一算法）算出的定值向量逐字比对。
+struct JavaRandom {
+    seed: u64,
+}
+
+const LCGP_MUL: u64 = 0x5DEE_CE66D;
+const LCGP_ADD: u64 = 0xB;
+const MASK48: u64 = (1 << 48) - 1;
+
+impl JavaRandom {
+    fn new(seed: u64) -> Self {
+        Self {
+            seed: (seed ^ LCGP_MUL) & MASK48,
+        }
+    }
+
+    fn next(&mut self, bits: u32) -> u64 {
+        self.seed = (self
+            .seed
+            .wrapping_mul(LCGP_MUL)
+            .wrapping_add(LCGP_ADD))
+            & MASK48;
+        self.seed >> (48 - bits)
+    }
+
+    /// JDK `nextInt(bound)`：2 的幂走乘法路径，否则拒绝采样
+    fn next_int(&mut self, bound: u64) -> u64 {
+        if bound == 0 {
+            return 0;
+        }
+        if bound & bound.wrapping_neg() == bound {
+            return (bound * self.next(31)) >> 31;
+        }
+        loop {
+            let bits = self.next(31);
+            let val = bits % bound;
+            /*
+             * ★ 必须是 **32 位有符号**溢出语义（JDK 的 `bits - val + (bound-1) < 0` 是 int 运算）：
+             *   用 u64 算永远 ≥ 0 ⇒ 拒绝采样形同不存在 ⇒ 与 JDK 序列分叉。
+             */
+            let probe = (bits as i32)
+                .wrapping_sub(val as i32)
+                .wrapping_add(bound as i32 - 1);
+            if probe >= 0 {
+                return val;
+            }
+        }
+    }
+}
+
+/// DEX `b()` 的**明文**（交错串；`Base64` 之前的那一层）
+///
+/// ```text
+/// s2 = String.valueOf(System.currentTimeMillis())          ← 13 位
+/// s3 = String.valueOf(0x5f5e100 + r) + String.valueOf(0x35a4e900 - r)   ← 9+9 位
+/// 明文 = 逐字符交错(s2, s3) 到 min(len)，再把两边剩下的各自接上
+/// ```
+/// 判据：`dex_b_plain_vectors`（定值向量来自 `.probe/api-fix/duboku_vectors.out.txt`）。
+pub fn b_plain(now_ms: u64) -> String {
+    let mut rnd = JavaRandom::new(now_ms.wrapping_mul(1000));
+    let r = rnd.next_int(0x2FAF_0800) % 0x2FAF_0801;
+    let s2 = format!("{now_ms}");
+    let s3 = format!("{}{}", 100_000_000u64.wrapping_add(r), 900_000_000u64.wrapping_sub(r));
+    let a: Vec<char> = s2.chars().collect();
+    let b: Vec<char> = s3.chars().collect();
+    let n = a.len().min(b.len());
+    let mut out = String::with_capacity(a.len() + b.len());
+    for i in 0..n {
+        out.push(a[i]);
+        out.push(b[i]);
+    }
+    out.extend(a[n..].iter());
+    out.extend(b[n..].iter());
+    out
+}
+
+/// `b()` 的 token 段：`encode_token(明文)`（UTF-8 → Base64 → `=`→`.` → 每 3 字符反转）
+pub fn b_token(now_ms: u64) -> String {
+    encode_token(&b_plain(now_ms))
+}
+
 /// 组装 `b()` 的三段（DEX 逐字：`?sign=` + sign + `&ssid=` + ssid + `&token=` + token）
 ///
 /// ```text
-/// sign  = a(60, 60, 33)   ← T1
-/// ssid  = a(38, 38, 88)   ← T2
-/// token = encode_token(<明文>)   ← 经 rev3 + '.'↔'='
+/// sign  = a(60, 60, 33)      ← T1（DEX 的 sign 是"随机串"，服务端不复算）
+/// ssid  = a(38, 38, 88)      ← T2
+/// token = encode_token(明文) ← 服务端**要复算**（见 `b_plain`）
 /// ```
-pub fn token_query(token_plain: &str) -> String {
+///
+/// ★ 2026-10-29 实测（`.probe/api-fix/duboku_token_probe.out.txt`）：
+/// ```text
+///   不带这三段：GET /home ⇒ HTTP 400 body=`Failure`
+///   带这三段  ：GET /home ⇒ HTTP 417 body=`Failure`（worker 换了分支 ⇒ 参数被接受，origin 不可达）
+/// ⇒ 这三段是**上游必需参数**，不是"可选装饰"。本函数以前**从来没被请求路径调用过**，
+///   那正是 400 的一半原因。
+/// ```
+pub fn token_query_at(now_ms: u64) -> String {
     let sign = rand_str(60, T1);
     let ssid = rand_str(38, T2);
-    let token = encode_token(token_plain);
+    let token = b_token(now_ms);
     format!("?sign={sign}&ssid={ssid}&token={token}")
+}
+
+/// 当前时刻的 `b()` 参数串
+pub fn token_query() -> String {
+    token_query_at(now_millis())
+}
+
+/// 拼一个**带 `b()` 参数**的 API 地址（DEX 里每个入口都 `append(b())`，见下）
+///
+/// ```text
+/// home    : 'https://api.dbokutv.com/home'        + b()          （DEX :497/:499-501）
+/// search  : 'https://api.dbokutv.com/vodsearch'   + b() + '&wd=' + kw  （DEX :642-651）
+/// list    : 'https://api.dbokutv.com/vodshow/…'   + b()          （DEX :250-268）
+/// detail  : 'https://api.dbokutv.com' + d(DId)    + b()          （DEX :350-355）
+/// ⇒ `b()` 是 **query 串**（以 `?` 开头）⇒ 地址里已经有 `?` 时必须用 `&` 接。
+/// ```
+pub fn api_url(path_and_query: &str) -> String {
+    let q = token_query();
+    if path_and_query.contains('?') {
+        format!("{API}{path_and_query}&{}", &q[1..])
+    } else {
+        format!("{API}{path_and_query}{q}")
+    }
+}
+
+fn now_millis() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// 上游判据：Duboku 用数字 `code`（**1 = 成功**）—— 与 DEX 里 `getInt("code")` 一致
@@ -357,6 +501,34 @@ pub struct Duboku {
     client: reqwest::Client,
 }
 
+/// 上游非 2xx 的**分档**（把"我们的参数错"与"上游死"分开，别混成一句话）
+///
+/// # 2026-10-29 真网判据（`.probe/api-fix/duboku_token_probe.out.txt`）
+/// ```text
+/// 不带 b() 三段：/home、/vodshow/…、/vodsearch、/、/zzz-nonexistent ⇒ **400** `Failure`
+/// 带 b() 三段  ：同一批路径                                       ⇒ **417** `Failure`
+///                （`/` 那次甚至是 500 + Cloudflare 的 troubleshooting JSON）
+/// ⇒ 400 = "少了上游要求的参数"（我们的 bug，已修）；
+///   417/5xx = worker 已在按 origin 转发 ⇒ **上游不可用**（不是我们能修的）。
+/// ```
+/// 注入：把 `417 | 500..=599` 那支删掉 ⇒ `real_upstream_transcripts_classify` 红。
+pub fn classify_upstream(status: u16, body: &str) -> &'static str {
+    match status {
+        400 => "上游 400：缺上游要求的参数（本站要 DEX 的 b() 三段 sign/ssid/token）",
+        401 | 403 => "上游拒绝：鉴权/风控",
+        404 => "上游路由不存在：路径形态与上游不符",
+        417 => "上游不可用：worker 已转发但 origin 不响应（417 Expectation Failed）",
+        500..=599 => "上游不可用：origin 5xx",
+        _ => {
+            if body.trim() == "Failure" {
+                "上游异常：body 就是英文 `Failure`（不是 JSON 错误体）"
+            } else {
+                "上游异常"
+            }
+        }
+    }
+}
+
 impl Duboku {
     pub const CLASS: &'static str = "Duboku";
 
@@ -414,9 +586,11 @@ impl Duboku {
              */
             let head = body.chars().take(60).collect::<String>();
             return Err(format!(
-                "上游 Duboku 返回 HTTP {status}（{url}）：body={head:?} —— \
-                 ★ 实测 2026-10-27 本站就是 400/`Failure`（上游不可用），\
-                 该错误形态与「参数校验失败」（JSON）不同"
+                "上游 Duboku 返回 HTTP {status}（{url}）：body={head:?} —— {}；\
+                 分档：400=我方缺参数（本站要 DEX 的 b() 三段）；417/5xx=**上游不可用**\
+                 （实测 2026-10-29 就是这条：带 b() 三段后由 400 变 417）\
+                 （证据：.probe/api-fix/duboku_token_probe.out.txt）",
+                classify_upstream(status.as_u16(), &body)
             ));
         }
         serde_json::from_str(&body).map_err(|e| {
@@ -441,8 +615,8 @@ impl CspSite for Duboku {
     }
 
     async fn home(&self, _ext: &str) -> Result<CspHome, String> {
-        // DEX homeContent 打首页；本站不可用 ⇒ 错误由 get_json 如实带出
-        let v = self.get_json(API, "首页").await?;
+        // DEX homeContent：`https://api.dbokutv.com/home` + `b()`
+        let v = self.get_json(&api_url("/home"), "首页").await?;
         Ok(CspHome {
             categories: cats_of(&v)?,
             items: Vec::new(),
@@ -450,8 +624,18 @@ impl CspSite for Duboku {
     }
 
     async fn list(&self, tid: &str, page: u32, _ext: &str) -> Result<CspList, String> {
-        let url = format!("{API}/list/{tid}/{page}");
-        let v = self.get_json(&url, &format!("分类 {tid} 第 {page} 页")).await?;
+        /*
+         * ⚠️ 路径形态如实分档（**不猜**）：
+         * ```text
+         * DEX 的 list 入口是 `/vodshow/` + cateId + 4 段筛选 + page（const-string 只有
+         *   '/vodshow/'、'-'、'----'、'---'，中间那几个 `merge.b.x.a(...)` 的参数顺序
+         *   没能逐字复原）⇒ 本实现**保留**原来的 `/list/{tid}/{page}` 形态并明确标注
+         *   "细节待证"，只补齐**已由实测证明必需**的 `b()` 三段。
+         * ```
+         */
+        let v = self
+            .get_json(&api_url(&format!("/list/{tid}/{page}")), &format!("分类 {tid} 第 {page} 页"))
+            .await?;
         Ok(CspList {
             items: items_of(&v, &format!("分类 {tid}"))?,
             page,
@@ -461,7 +645,8 @@ impl CspSite for Duboku {
     }
 
     async fn search(&self, kw: &str, page: u32, _ext: &str) -> Result<CspList, String> {
-        let url = format!("{API}/search/{}/{}", urlencoding::encode(kw), page);
+        // DEX searchContent 逐字：`https://api.dbokutv.com/vodsearch` + b() + `&wd=` + URLEncoder.encode(kw)
+        let url = api_url(&format!("/vodsearch?wd={}", urlencoding::encode(kw)));
         let v = self.get_json(&url, "搜索").await?;
         Ok(CspList {
             items: items_of(&v, "搜索")?,
@@ -476,8 +661,9 @@ impl CspSite for Duboku {
     }
 
     async fn detail(&self, id: &str, _ext: &str) -> Result<CspDetail, String> {
-        let url = format!("{API}/detail/{id}");
-        let v = self.get_json(&url, &format!("详情 {id}")).await?;
+        let v = self
+            .get_json(&api_url(&format!("/detail/{id}")), &format!("详情 {id}"))
+            .await?;
         let d = v.get("data").unwrap_or(&v);
         Ok(CspDetail {
             id: id.to_string(),
@@ -615,10 +801,12 @@ mod tests {
     /// ★★ 参数串形态逐字：`?sign=<60> &ssid=<38> &token=<非空>`
     ///
     /// 三个长度也来自 DEX（`a(60,60,33)` / `a(38,38,88)`）—— 抄错长度会让签名长度不对。
+    /// token 的明文必须**等于** `b_plain(now)`（DEX 的交错串算法），不是任意占位。
     /// 注入：把 `rand_str(60, T1)` 改成 `rand_str(8, T1)` ⇒ 本条红。
     #[test]
     fn token_query_shape() {
-        let q = token_query("plain-text");
+        let now = 1_793_256_000_123u64;
+        let q = token_query_at(now);
         assert!(q.starts_with("?sign="), "{q}");
         assert!(q.contains("&ssid="), "{q}");
         assert!(q.contains("&token="), "{q}");
@@ -637,12 +825,107 @@ mod tests {
         assert!(!token.is_empty(), "token 不该空");
         assert_eq!(
             decode_token(token).unwrap(),
-            "plain-text",
-            "★ token 必须是 encode_token(明文)（可解回）"
+            b_plain(now),
+            "★ token 必须解回 DEX 的 b() 明文（交错串），不是任意占位"
         );
         // rand_str 的变化性（同一进程内两次调用不该完全相同）
         assert_ne!(rand_str(60, T1), rand_str(60, T1), "★ 伪随机串该有变化");
         assert_eq!(rand_str(0, T1), "", "长度 0 ⇒ 空");
+    }
+
+    #[test]
+    /// ★★ `b()` 明文的**定值向量**（Java Random 位级复刻的判据）
+    ///
+    /// 向量由 `.probe/api-fix/duboku_vectors.py` 生成，输出存在
+    /// `.probe/api-fix/duboku_vectors.out.txt`（同一算法的 Python 侧独立实现）。
+    /// 注入：把 `JavaRandom::next_int` 的拒绝采样改成 `% bound` 直接取 ⇒ 本条红（值会差）。
+    #[test]
+    fn dex_b_plain_vectors() {
+        for (now, want_plain, want_token) in [
+            (
+                1_793_256_000_123u64,
+                "1673933426566902040316263533076",
+                "YTMzM3MzkyQzUjNjN2Mwk0AjMDMjNxM2IzUzAzMgN3..",
+            ),
+            (
+                1_793_256_000_999u64,
+                "1676963829516400060393939108594",
+                "YTMjN3M2kygzUTOjNxMwQ2ADMDMzM5OzkwETUDOAN5..",
+            ),
+            (1u64, "1825110487174889513", "gTMTNyMxE4QDEzNDN3O4gxUT.wM."),
+            (0u64, "0869741360130258640", "gDMTO2M0c2MTEDMDMzO1I0YD.AM."),
+        ] {
+            assert_eq!(b_plain(now), want_plain, "★ b() 明文不对（now={now}）");
+            assert_eq!(b_token(now), want_token, "★ b() token 不对（now={now}）");
+        }
+        // 明文形态：长度 = len(now)+18（交错后拼接），且全是数字
+        let p = b_plain(1_793_256_000_123);
+        assert_eq!(p.chars().count(), 13 + 18, "★ 明文长度 = 13 位时间 + 18 位数字");
+        assert!(p.chars().all(|c| c.is_ascii_digit()), "★ 明文必须是纯数字：{p}");
+    }
+
+    #[test]
+    /// ★★ **每个 API 入口都必须带 `b()` 三段**（这是 400 变 417 的那个开关）
+    ///
+    /// 2026-10-29 真网（`.probe/api-fix/duboku_token_probe.out.txt`）：
+    /// ```text
+    /// /home            无 token ⇒ 400；带 token ⇒ 417
+    /// /vodshow/…       无 token ⇒ 400；带 token ⇒ 417
+    /// /vodsearch…      无 token ⇒ 400；带 token ⇒ 417
+    /// ```
+    /// 注入：把 `api_url` 里 `token_query()` 那段删掉（只返回 `{API}{path}`）⇒ 本条红。
+    #[test]
+    fn api_url_carries_token() {
+        for path in [
+            "/home",
+            "/list/1/1",
+            "/vodsearch?wd=%E8%80%81%E8%88%85",
+            "/detail/1104007",
+        ] {
+            let u = api_url(path);
+            assert!(u.starts_with("https://api.dbokutv.com"), "{u}");
+            for k in ["sign=", "ssid=", "token="] {
+                assert!(u.contains(k), "★ {path} 少了 `{k}` ⇒ 上游必 400：{u}");
+            }
+            // 已有 `?` 的路径必须用 `&` 接（否则 `?a=1?sign=` 是坏 query）
+            assert!(!u.contains("?sign") || !u.contains("??"), "{u}");
+            if path.contains('?') {
+                assert!(u.contains("&sign="), "★ 已带 query 的路径必须用 & 接：{u}");
+                assert!(!u.matches('?').count().gt(&1), "★ 只该有 1 个 `?`：{u}");
+            }
+        }
+    }
+
+    #[test]
+    /// ★★ 真实响应转录的**分档判据**（离线；转录文件在 `.probe/api-fix/`）
+    ///
+    /// ```text
+    /// duboku_token_probe.out.txt：
+    ///   `== 无 token ==`   /home -> 400 b'Failure'
+    ///   `== 带 DEX 复刻 token ==` /home -> 417 b'Failure'
+    /// ```
+    /// 注入：把 `classify_upstream` 的 `417` 支删掉 ⇒ 本条红（417 会落到"上游异常"）。
+    #[test]
+    fn real_upstream_transcripts_classify() {
+        // 逐字来自 .probe/api-fix/duboku_token_probe.out.txt 的真实 body
+        let body = "Failure";
+        assert_eq!(
+            classify_upstream(400, body),
+            "上游 400：缺上游要求的参数（本站要 DEX 的 b() 三段 sign/ssid/token）",
+            "★ 400 必须落在「我们缺参数」这一档"
+        );
+        assert_eq!(
+            classify_upstream(417, body),
+            "上游不可用：worker 已转发但 origin 不响应（417 Expectation Failed）",
+            "★ 417 必须落在「上游不可用」这一档（这是今天真读数的那一档）"
+        );
+        assert!(classify_upstream(502, body).contains("上游不可用"));
+        assert!(classify_upstream(403, "").contains("鉴权"));
+        assert!(classify_upstream(404, "").contains("路由"));
+        // 三档必须互不相同（否则"分档"是假的）
+        let a = classify_upstream(400, body);
+        let b = classify_upstream(417, body);
+        assert_ne!(a, b);
     }
 
     #[test]
@@ -811,6 +1094,8 @@ mod tests {
     // ── 真网络（CSP_LIVE=1 + --ignored）──
     /// ★★ 这条**预期是"上游不可用"**，所以它的判据不是"必须成功"，
     ///    而是"**必须如实报出上游不可用**，且读起来与'我们参数错'能分开"。
+    ///
+    /// 2026-10-29 实测：带 `b()` 三段后上游由 400 变 **417**（worker 已转发、origin 不响应）。
     #[tokio::test]
     #[ignore = "真网络：CSP_LIVE=1 cargo test --lib csp_live_duboku -- --ignored --nocapture"]
     async fn csp_live_duboku_reports_upstream_state() {
@@ -822,7 +1107,7 @@ mod tests {
         let s = Duboku::new();
         match s.home("").await {
             Ok(h) => eprintln!(
-                "[LIVE] home 成功：分类 {} 个（首={}）—— ★ 上游**活了**（与 2026-10-27 的 400 不同）",
+                "[LIVE] home 成功：分类 {} 个（首={}）—— ★ 上游**活了**（与 2026-10-29 的 417 不同）",
                 h.categories.len(),
                 h.categories.first().map(|c| c.name.clone()).unwrap_or_default()
             ),
@@ -830,11 +1115,73 @@ mod tests {
                 eprintln!("[LIVE] home 如实失败：{e}");
                 // ★ 判据：错误里必须能看出"上游不可用"（而不是含糊的失败）
                 assert!(
-                    e.contains("上游不可用") || e.contains("HTTP 400") || e.contains("Failure"),
+                    e.contains("上游不可用")
+                        || e.contains("HTTP 400")
+                        || e.contains("HTTP 417")
+                        || e.contains("Failure"),
                     "★ 上游不可用要报得明确（读得出是哪一种错）：{e}"
                 );
                 eprintln!("[LIVE] ⇒ 结论：**该站上游当前不可用**（协议已复刻，无从真网验证）");
             }
+        }
+    }
+
+    /// ★★ 真网络：**token 是 400→417 的开关**（这条是"我们参数错"与"上游死"的分界线）
+    ///
+    /// 判据（不做假成功）：
+    /// ```text
+    /// ① 不带 b() 三段 ⇒ 必须 400（证明缺参数确实是 400 的原因）
+    /// ② 带 b() 三段   ⇒ 必须 **不是 400**（417/5xx/200 都算通过；今天实测 417）
+    /// ③ 两条都打印真实状态码与 body 前 60 字
+    /// ```
+    /// 注入：把 `api_url` 的 token 去掉 ⇒ ② 红（会变成 400）。
+    #[tokio::test]
+    #[ignore = "真网络：CSP_LIVE=1 cargo test --lib csp_live_duboku_token -- --ignored --nocapture"]
+    async fn csp_live_duboku_token_transition() {
+        assert_eq!(
+            std::env::var("CSP_LIVE").ok().as_deref(),
+            Some("1"),
+            "★ 真网络用例：必须显式给 CSP_LIVE=1"
+        );
+        let c = reqwest::Client::builder()
+            .no_proxy()
+            .user_agent(UA)
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .expect("client");
+        let get = |u: String| {
+            let c = c.clone();
+            async move {
+                let r = c
+                    .get(u)
+                    .header(reqwest::header::REFERER, REFERER)
+                    .header(reqwest::header::ACCEPT, "application/json")
+                    .send()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let st = r.status().as_u16();
+                let b = r.text().await.unwrap_or_default();
+                Ok::<(u16, String), String>((st, b))
+            }
+        };
+        let bare = format!("{API}/home");
+        let (s1, b1) = get(bare.clone()).await.expect("裸请求应能拿到响应");
+        eprintln!("[LIVE] 无 token：{bare} ⇒ HTTP {s1} body={:?}", b1.chars().take(60).collect::<String>());
+        assert_eq!(s1, 400, "★ 裸请求必须 400（否则前提变了，要看新读数）");
+
+        let with_tok = api_url("/home");
+        let (s2, b2) = get(with_tok.clone()).await.expect("带 token 请求应能拿到响应");
+        eprintln!("[LIVE] 带 token：HTTP {s2} body={:?}", b2.chars().take(60).collect::<String>());
+        assert_ne!(
+            s2, 400,
+            "★ 带 b() 三段后不该还是 400（那就是我们参数仍错）：{b2:?}"
+        );
+        match s2 {
+            200 => eprintln!("[LIVE] ⇒ 上游活了，且接受了我们的 b() 三段"),
+            417 | 500..=599 => {
+                eprintln!("[LIVE] ⇒ 参数已过：{}", classify_upstream(s2, &b2))
+            }
+            other => eprintln!("[LIVE] ⇒ 新状态码 {other}（如实记录）"),
         }
     }
 }

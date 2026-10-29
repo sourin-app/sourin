@@ -47,17 +47,36 @@
 // # ⚠️ 上游反爬（如实分档：**协议对，但上游当前打不通**）
 //
 // ```text
-// 2026-10-27 实测：
+// 2026-10-27 首测：
 //   GET https://www.1905.com/vod/list/n_1/o3p1.html      ⇒ HTTP 403 / 6072b
 //   GET https://www.1905.com/                            ⇒ HTTP 403 / 6072b
 //   GET /api/content/?m=Vod&a=getVodSidebar&id=1&fomat=json ⇒ HTTP 403 / 6072b
 //   body 是 "Embed Iframe" 反爬页（本站对所有非浏览器请求的统一拦页面）
 //   ⚠️ 但 GET https://profile.m1905.com/mvod/getVideoinfo.php ⇒ HTTP 200 / 110b
 //      ⇒ 取流域名**没被同一层拦**；被拦的是 www.1905.com 那三个入口。
-// ⇒ 处置：**协议按上面逐字实现**（这是它自己的签名协议，不是"攻破防护"），
-//   打不通就由请求本身如实报 HTTP 状态，不假装拿到数据。
-//   ★ 本实现**不做**任何反爬绕过（不做 UA 伪造以外的指纹伪装、不做验证码解题、
-//     不走第三方代理绕地域）—— 本批边界是"实现站点自己的协议"。
+//
+// 2026-10-29 复测（**把"WAF"与"签名"拆成两件事**；证据全在 `.probe/api-fix/`）：
+//   ① WAF（www 全部入口，无差别）—— 证据 `1905-list-403.txt` / `1905-list-noheaders.txt`
+//      / `ws_sec_page.js`：
+//      - 403 响应头：`Server: nginx`、`x-via: 1.1 PS-XFN-…(Cdn Cache Server V2.0)`（网宿）、
+//        `x-ws-request-id: …`、裸请求额外有 **`Ws-Action: bot`**、`Cache-Control: no-store`
+//      - body 6072 字节：`<title>Embed Iframe</title>` + `window._jsc_ch_conf={…}` +
+//        `/_jsc_sbu/ws_sec_page.js?sc=…&chID=…&chHash=…`（JS 挑战页；脚本本身再取也是 403）
+//      - 覆盖面：`/`、`/robots.txt`、`/favicon.ico`、`/vod/list/…`、`/api/content/…` 全 403；
+//        `http://` 302 到 https；无 www 的 `1905.com` 也 302 到 www ⇒ **没有可绕的入口**
+//      - 浏览器全套头（sec-ch-ua / Sec-Fetch-* / Accept-Language / 完整 Accept）复测仍 403
+//      ⇒ 判据：**站点侧 WAF 的 JS 挑战**，不是我们少 header
+//   ② 取流签名（profile.m1905.com，HTTP 200 但**业务码**分档）——
+//      证据 `1905-playinfo-signed.txt` / `1905_sig_matrix.out.txt`：
+//      - 参数齐全 + DEX 逐字 SHA-1 ⇒ `{"StatusCode":403,"info":"HTTP请求不合法,请求参数可能被篡改"}`
+//      - 缺 `signature` 或缺 `page`  ⇒ `{"StatusCode":400,"info":"请求参数不完整或不正确"}`
+//        ⇒ **参数完整性这一层我们是对的**（400/403 的差别就是判据）
+//      - 52 个变体全 403（page 单/双/不转义 × uuid 带/不带后缀 × ms/s × sha1/md5 × 大写/小写，
+//        外加只签 page、只签 cid+page、去掉 expiretime 等 4 个简化式）
+//      ⇒ 判据：**服务端签名密钥/算法已变**，不是我们编码错
+// ⇒ 处置：协议按 DEX 逐字实现，打不通就**如实报状态 + 分档**，不假装拿到数据；
+//   **不做** WAF 绕过（不跑它的挑战 JS、不做验证码/指纹伪装、不走代理绕地域）。
+// ```
 //
 // # ⚠️ 已知缺口（Lead 已裁定本批不做，如实登记）
 // ```text
@@ -466,6 +485,59 @@ pub struct Web1905 {
     client: reqwest::Client,
 }
 
+/// 非 2xx 的**分档**（判据：`real_waf_403_is_classified`）
+///
+/// # 2026-10-29 真网（`.probe/api-fix/1905-list-403.txt` 与 `1905-list-noheaders.txt`）
+/// ```text
+/// HTTP/1.1 403 Forbidden
+/// x-via: 1.1 PS-XFN-01eRo37 (Cdn Cache Server V2.0)      ← 网宿 CDN
+/// Ws-Action: bot                                          ← WAF 判定"机器人"（裸请求才有）
+/// <title>Embed Iframe</title> … /_jsc_sbu/ws_sec_page.js   ← JS 挑战页（6072 字节）
+/// ```
+/// 对 `/`、`/robots.txt`、`/favicon.ico`、`/vod/list/…`、`/api/content/…` **全都一样**
+/// ⇒ 这是"站点侧反爬"，不是我们少带了某个 header（已用浏览器全套头 + http/https + 无 www 复测）。
+pub fn classify_http_error(status: u16, ws_action: &str, body: &str) -> &'static str {
+    let is_waf = ws_action.eq_ignore_ascii_case("bot")
+        || body.contains("Embed Iframe")
+        || body.contains("ws_sec_page.js");
+    match status {
+        403 if is_waf => "站点侧 WAF 的 JS 挑战页（非浏览器请求一律 403）⇒ 该源当前不可用",
+        403 => "上游拒绝（403）",
+        404 => "上游路由不存在（路径形态与上游不符）",
+        500..=599 => "上游不可用（5xx）",
+        _ => "上游异常",
+    }
+}
+
+/// 取流响应的**业务状态码**分档（1905 的 `getVideoinfo.php` 是 HTTP 200 + JSON 里的 `StatusCode`）
+///
+/// # 2026-10-29 真网（`.probe/api-fix/1905-playinfo-signed.txt`、`1905_sig_matrix.out.txt`）
+/// ```text
+/// 参数齐全 + DEX 逐字的 SHA-1 签名 ⇒ HTTP 200 + `{"StatusCode":403,
+///   "info":"HTTP请求不合法,请求参数可能被篡改","data":""}`
+/// 缺 signature/page               ⇒ HTTP 200 + `{"StatusCode":400,"info":"请求参数不完整或不正确"}`
+/// ⇒ 参数完整性这一层我们**是对的**（400 vs 403 的差别就是证据）；
+///   被拒的是**签名**（52 个变体全 403，见 `1905_sig_matrix.out.txt`）⇒ 服务端的签名密钥/算法已变。
+/// ```
+pub fn play_status_error(v: &Value) -> Option<String> {
+    let code = v.get("StatusCode").and_then(|c| c.as_i64())?;
+    if code == 200 {
+        return None;
+    }
+    let info = v.get("info").and_then(|s| s.as_str()).unwrap_or("");
+    Some(match code {
+        403 => format!(
+            "上游 1905 取流被拒：StatusCode=403（{info}）—— 参数齐全但**签名不被接受**；\
+             DEX 逐字的 SHA-1 变体 52 种全 403（.probe/api-fix/1905_sig_matrix.out.txt）\
+             ⇒ 服务端签名密钥/算法已变，该源取流当前不可用"
+        ),
+        400 => format!(
+            "上游 1905 取流参数不完整：StatusCode=400（{info}）—— 与我们发的参数有关"
+        ),
+        _ => format!("上游 1905 取流返回 StatusCode={code}（{info}）"),
+    })
+}
+
 impl Web1905 {
     pub const CLASS: &'static str = "Web1905";
 
@@ -510,6 +582,12 @@ impl Web1905 {
             .await
             .map_err(|e| format!("请求上游失败（{url}）：{e}"))?;
         let status = resp.status();
+        let waf = resp
+            .headers()
+            .get("ws-action")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
         let body = resp
             .text()
             .await
@@ -517,13 +595,17 @@ impl Web1905 {
         if !status.is_success() {
             /*
              * ★ 如实区分"上游反爬/不可用"与"我们的 bug"：
-             *   实测 1905 对所有非浏览器请求返 403 + "Embed Iframe" 页。
-             *   这里把状态码与 body 前 80 字带出来，别让调用方猜。
+             *   2026-10-29 实测：1905 的 `www.1905.com` 对**所有**路径（含 `/`、`/robots.txt`、
+             *   `/favicon.ico`）返 403 + `Ws-Action: bot` + 6072 字节的 `Embed Iframe` 挑战页
+             *   （`/_jsc_sbu/ws_sec_page.js` 那套网宿 WAF）。证据：
+             *   `.probe/api-fix/1905-list-403.txt`（带浏览器头）、`1905-list-noheaders.txt`（裸）。
+             *   ⇒ 把状态码 + WAF 头 + body 头 80 字带出来，别让调用方猜。
              */
             let head = body.chars().take(80).collect::<String>();
             return Err(format!(
-                "上游 1905 返回 HTTP {status}（{url}）—— 本站对非浏览器请求会返反爬页；\
-                 body 前 80 字：{head}"
+                "上游 1905 返回 HTTP {status}（{url}）—— {}；Ws-Action={waf:?}；\
+                 body 前 80 字：{head}",
+                classify_http_error(status.as_u16(), &waf, &body)
             ));
         }
         Ok(body)
@@ -627,6 +709,10 @@ impl CspSite for Web1905 {
                 raw.chars().take(100).collect::<String>()
             )
         })?;
+        // ★ 先看业务状态码（HTTP 200 + StatusCode≠200 是本站的常态错误形态）
+        if let Some(e) = play_status_error(&v) {
+            return Err(e);
+        }
         let url = play_url_from(&v)?;
         Ok(vec![CspPlay {
             url,
@@ -959,6 +1045,93 @@ mod tests {
         match s.list("n_1", 1, "").await {
             Ok(l) => eprintln!("[LIVE] list(n_1): {} 条，首条={}", l.items.len(), l.items[0].title),
             Err(e) => eprintln!("[LIVE] list(n_1) 如实失败：{e}"),
+        }
+    }
+
+    #[test]
+    /// ★★ 真实 WAF 403 转录的**分档判据**（离线；转录在 `.probe/api-fix/1905-list-403.txt`）
+    ///
+    /// 转录逐字：`HTTP/1.1 403 Forbidden` / `Ws-Action: bot` / `<title>Embed Iframe</title>`
+    /// 注入：把 `classify_http_error` 里 `403 if is_waf` 那一支删掉 ⇒ 本条红。
+    fn real_waf_403_is_classified() {
+        // 逐字取自 .probe/api-fix/1905-list-noheaders.txt（裸请求，带 Ws-Action: bot）
+        let body = "<!doctype html><html><head><meta charset=utf-8><title>403 Forbidden</title>";
+        let c = classify_http_error(403, "bot", body);
+        assert!(
+            c.contains("WAF") && c.contains("不可用"),
+            "★ 403+Ws-Action=bot 必须判成「站点侧 WAF ⇒ 该源当前不可用」，实际：{c}"
+        );
+        // 逐字取自 .probe/api-fix/1905-list-403.txt（带浏览器头，没有 Ws-Action，但 body 是挑战页）
+        let body2 = "<!DOCTYPE html>\n<html lang=\"en\">\n<head>…<title>Embed Iframe</title>";
+        assert!(classify_http_error(403, "", body2).contains("WAF"), "★ 靠 body 也要认出来");
+        // 反面：普通 403 不该被误判成 WAF
+        assert!(!classify_http_error(403, "", "<html>denied</html>").contains("WAF"));
+        assert!(classify_http_error(502, "", "").contains("上游不可用"));
+    }
+
+    #[test]
+    /// ★★ 取流业务状态码的**分档判据**（真实响应转录在 `.probe/api-fix/1905-playinfo-signed.txt`）
+    ///
+    /// 转录逐字：`cb1({"StatusCode":403,"info":"HTTP请求不合法,请求参数可能被篡改","data":""})`
+    /// 另一条：    `null({"StatusCode":400,"info":"请求参数不完整或不正确","data":""})`
+    /// 注入：把 `play_status_error` 的 `403` 支删掉（落到 `_`）⇒ 本条红。
+    fn real_play_status_is_classified() {
+        let v: Value = serde_json::from_str(
+            r#"{"StatusCode":403,"info":"HTTP请求不合法,请求参数可能被篡改","data":""}"#,
+        )
+        .unwrap();
+        let e = play_status_error(&v).expect("★ 403 必须 Err");
+        assert!(e.contains("签名"), "★ 必须说清是签名被拒：{e}");
+        assert!(e.contains("不可用"), "★ 必须给出「取流当前不可用」的结论：{e}");
+
+        let v400: Value =
+            serde_json::from_str(r#"{"StatusCode":400,"info":"请求参数不完整或不正确","data":""}"#)
+                .unwrap();
+        let e400 = play_status_error(&v400).expect("★ 400 必须 Err");
+        assert!(e400.contains("参数不完整"), "{e400}");
+        assert_ne!(e, e400, "★ 400 与 403 必须给出不同结论（否则等于没分档）");
+
+        // 200 ⇒ 放行（不许把成功也判成错）
+        let ok: Value = serde_json::from_str(r#"{"StatusCode":200,"data":{"sign":{}}}"#).unwrap();
+        assert!(play_status_error(&ok).is_none(), "★ 200 不该被拦");
+    }
+
+    /// ★★ 真网络：1905 的**两个入口分别**取证（一个 WAF、一个签名）
+    ///
+    /// 判据（不做假成功）：
+    /// ```text
+    /// ① www 列表页 ⇒ 必须是非 2xx，且错误里带得出「WAF / 不可用」的分档
+    /// ② profile 取流 ⇒ HTTP 200（域名没被 WAF 拦），但 StatusCode=403（签名被拒）
+    ///    ⇒ 必须能从错误里读出"签名不被接受"，而不是含糊的"没有 data"
+    /// ```
+    #[tokio::test]
+    #[ignore = "真网络：CSP_LIVE=1 cargo test --lib csp_live_web1905_waf_and_sign -- --ignored --nocapture"]
+    async fn csp_live_web1905_waf_and_sign() {
+        assert_eq!(
+            std::env::var("CSP_LIVE").ok().as_deref(),
+            Some("1"),
+            "★ 真网络用例：必须显式给 CSP_LIVE=1"
+        );
+        let s = Web1905::new();
+        match s.list("n_1", 1, "").await {
+            Ok(l) => eprintln!("[LIVE] list 成功 {} 条（WAF 放行了？如实记录）", l.items.len()),
+            Err(e) => {
+                eprintln!("[LIVE] list 如实失败：{e}");
+                assert!(
+                    e.contains("WAF") || e.contains("不可用") || e.contains("403"),
+                    "★ WAF 要判得出来：{e}"
+                );
+            }
+        }
+        match s.play("1905", "1464376", "").await {
+            Ok(p) => eprintln!("[LIVE] play 成功：{}", p[0].url),
+            Err(e) => {
+                eprintln!("[LIVE] play 如实失败：{e}");
+                assert!(
+                    e.contains("签名") || e.contains("StatusCode") || e.contains("参数不完整"),
+                    "★ 取流失败要给业务状态码分档：{e}"
+                );
+            }
         }
     }
 }

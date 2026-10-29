@@ -115,12 +115,26 @@ void main() {
       await t.pumpWidget(host(const TvboxAggregatePage(showCredentialPanels: false)));
       await t.pumpAndSettle();
 
+      /*
+       * ★ 2026-10-29（弹窗拆分后的**必要**改动，不是放宽断言）：
+       *   勾选与保存按钮已搬进「管理子源…」弹窗（Owner：子源管理单独一个弹窗），
+       *   所以路径变成 页面 → 点 agg-manage-sites → 弹窗里勾选 → agg-sites-save。
+       *   本用例守的东西**没变**：保存的 enabledSiteIds 恰好这 3 个、且按 site 原序。
+       */
+      await t.tap(find.byKey(const ValueKey<String>('agg-manage-sites')));
+      await t.pumpAndSettle();
+
       // 故意**逆序**勾：tv9 → tv2 → tv5
       for (final id in <String>['tv9', 'tv2', 'tv5']) {
-        await t.tap(find.byKey(ValueKey<String>('agg-site-check-$id')));
+        final f = find.byKey(ValueKey<String>('agg-site-check-$id'));
+        // ★ 弹窗内容区是**可滚动**的（16 行放不进 420px）⇒ 先滚到可见再点，
+        //   否则 tv9 在视口外，tap 会"点空"（实测只勾上 2 个）
+        await t.ensureVisible(f);
+        await t.pump();
+        await t.tap(f);
         await t.pump();
       }
-      await t.tap(find.byKey(const ValueKey<String>('agg-save')));
+      await t.tap(find.byKey(const ValueKey<String>('agg-sites-save')));
       await t.pumpAndSettle();
 
       expect(saved, <String>['tv2', 'tv5', 'tv9'],
@@ -143,12 +157,18 @@ void main() {
       await t.pumpWidget(host(const TvboxAggregatePage(showCredentialPanels: false)));
       await t.pumpAndSettle();
 
-      await t.tap(find.byKey(const ValueKey<String>('agg-site-check-tv1')));
-      await t.pump();
-      await t.tap(find.byKey(const ValueKey<String>('agg-save')));
+      // ★ 同上：勾选/保存在「管理子源…」弹窗里
+      await t.tap(find.byKey(const ValueKey<String>('agg-manage-sites')));
       await t.pumpAndSettle();
 
-      final err = find.byKey(const ValueKey<String>('agg-save-error'));
+      await t.tap(find.byKey(const ValueKey<String>('agg-site-check-tv1')));
+      await t.pump();
+      await t.tap(find.byKey(const ValueKey<String>('agg-sites-save')));
+      await t.pumpAndSettle();
+
+      // ★ 错误上屏的位置也跟着搬：页面级 `agg-save-error` → 弹窗级 `agg-sites-error`
+      //   （保存失败时弹窗**不关**，用户就在原地看到原因 —— 这比关掉弹窗再回页面找更对）
+      final err = find.byKey(const ValueKey<String>('agg-sites-error'));
       expect(err, findsOneWidget,
           reason: '★★★ 非法 id 必须**报错**，不能静默丢；'
               '注入「catch 里不清空/不显示」本条立刻红');

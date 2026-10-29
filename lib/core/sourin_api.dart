@@ -265,21 +265,42 @@ class SourinApi {
   ///
   /// `enabledSiteIds` 是"整体替换"；`pan` 是字段级合并。
   /// 非法 id ⇒ Rust 侧返回可读错误（不许静默丢弃）。
+  ///
+  /// # `note`（2026-10-29，Owner："聚合源应该可以自己起名字"）
+  /// ```text
+  /// 契约（Rust 侧已实装）：
+  ///   · 不传 / null ⇒ **不改**（部分更新语义）
+  ///   · ""          ⇒ **清空**
+  ///   · >60 字      ⇒ 服务端截到 60（界面不重复截，避免"我截了它也截"两套口径）
+  /// ⇒ 本方法只做"把调用方给的值原样带过去"，不在 Dart 侧做长度裁剪。
+  /// ```
+  /// # `solo`（2026-10-29，Owner："其他源暂时全部关闭，只保留 tvbox 聚合源用来测试"）
+  /// ```text
+  /// 契约（Rust 侧已实装）：
+  ///   · 不传 / null ⇒ **不改**
+  ///   · true  ⇒ 源列表**只显示聚合源**（子站的搜索/扇出**照旧**参与）
+  ///   · false ⇒ 恢复
+  /// ⚠️ 语义是"列表里藏起来"，**不是**把子站停用 —— 真停用会让聚合源变空（正好相反）。
+  /// ```
   static Future<TvboxAggregate> tvboxAggregateSet({
     List<String>? enabledSiteIds,
     String? panShareText,
     String? panPwd,
+    String? note,
+    bool? solo,
   }) async {
-    final updater = debugTvboxAggregateUpdater;
-    if (updater != null) {
-      return updater(
-        enabledSiteIds: enabledSiteIds,
-        panShareText: panShareText,
-        panPwd: panPwd,
-      );
-    }
+    final dbg = _viaDebugUpdater(
+      enabledSiteIds: enabledSiteIds,
+      panShareText: panShareText,
+      panPwd: panPwd,
+      note: note,
+      solo: solo,
+    );
+    if (dbg != null) return dbg;
     final r = await SourinCore.callAsync('tvbox_aggregate_set', {
       if (enabledSiteIds != null) 'enabledSiteIds': enabledSiteIds,
+      if (note != null) 'note': note,
+      if (solo != null) 'solo': solo,
       if (panShareText != null || panPwd != null)
         'pan': <String, dynamic>{
           if (panShareText != null) 'shareText': panShareText,
@@ -287,6 +308,24 @@ class SourinApi {
         },
     });
     return TvboxAggregate.fromJson(jmap(r));
+  }
+
+  /// 去重聚合子源（**站名 + api** 都相同才算重复；保留第一个，其余**停用**）
+  ///
+  /// # 契约（Rust 侧 `tvbox_aggregate_dedupe_sites`，已实装）
+  /// ```text
+  /// 响应：{ "duplicates": N, "disabled": [ids], "kept": M }
+  ///   · duplicates = 本次停用的重复条数（**幂等**：没有重复 ⇒ 0）
+  ///   · disabled   = 被停用的子站 id（不是删除 —— 用户还能手工勾回来）
+  ///   · kept       = 当前仍启用的子站数
+  /// ```
+  /// ⚠️ 判据是"站名 + api"，**不是**"名字相同就删"：同名不同 api 的两个源
+  ///    （比如一个 csp、一个 appleCms）是**两个不同的内容源**，不许合。
+  static Future<TvboxDedupeResult> tvboxAggregateDedupeSites() async {
+    final f = debugTvboxAggregateDedupe;
+    if (f != null) return f();
+    final r = await SourinCore.callAsync('tvbox_aggregate_dedupe_sites', const {});
+    return TvboxDedupeResult.fromJson(jmap(r));
   }
 
   /// 配置里的 TVBox site 总数（**只读 sidecar**，毫秒级零网络）
@@ -315,12 +354,85 @@ class SourinApi {
   static Future<TvboxAggregate> Function()? debugTvboxAggregateFetcher;
 
   /// 门禁注入点：`tvbox_aggregate_set` 的替身（**生产恒 null**）
+  ///
+  /// # ★ 为什么类型是 `Object?` 而不是具体函数类型（2026-10-29）
+  /// ```text
+  /// 这次给 `tvbox_aggregate_set` 加了 `note` 参数 ⇒ 若把注入点钉成
+  ///   Function({enabledSiteIds, panShareText, panPwd, note})
+  /// 那**所有既有门禁**里那种三参闭包（`zz_t1049` 有两处）都会**编译失败**
+  /// —— 一个测试文件因为"参数多了一个"整份红掉，而它测的是别的东西。
+  /// ⇒ 这里用 `Object?` + 运行时 `is` 派发：三参、四参两种形状都收；
+  ///   形状不认识时**抛 StateError**（绝不静默当成"没注入"去真打核心）。
+  /// ```
   @visibleForTesting
-  static Future<TvboxAggregate> Function({
+  static Object? debugTvboxAggregateUpdater;
+
+  /// 用注入点跑 `tvbox_aggregate_set`（没注入 ⇒ `null`，调用方走真命令）
+  ///
+  /// 形状派发顺序：**5 参**（含 note+solo）→ **4 参**（含 note）→ **3 参**（老门禁）。
+  /// 每次给命令加字段都会多一代形状，所以这里按"最新优先"逐级回退。
+  static Future<TvboxAggregate>? _viaDebugUpdater({
     List<String>? enabledSiteIds,
     String? panShareText,
     String? panPwd,
-  })? debugTvboxAggregateUpdater;
+    String? note,
+    bool? solo,
+  }) {
+    final u = debugTvboxAggregateUpdater;
+    if (u == null) return null;
+    if (u
+        is Future<TvboxAggregate> Function({
+          List<String>? enabledSiteIds,
+          String? panShareText,
+          String? panPwd,
+          String? note,
+          bool? solo,
+        })) {
+      return u(
+        enabledSiteIds: enabledSiteIds,
+        panShareText: panShareText,
+        panPwd: panPwd,
+        note: note,
+        solo: solo,
+      );
+    }
+    if (u
+        is Future<TvboxAggregate> Function({
+          List<String>? enabledSiteIds,
+          String? panShareText,
+          String? panPwd,
+          String? note,
+        })) {
+      return u(
+        enabledSiteIds: enabledSiteIds,
+        panShareText: panShareText,
+        panPwd: panPwd,
+        note: note,
+      );
+    }
+    if (u
+        is Future<TvboxAggregate> Function({
+          List<String>? enabledSiteIds,
+          String? panShareText,
+          String? panPwd,
+        })) {
+      return u(
+        enabledSiteIds: enabledSiteIds,
+        panShareText: panShareText,
+        panPwd: panPwd,
+      );
+    }
+    throw StateError(
+      'debugTvboxAggregateUpdater 的形状不认识：需要 3 / 4 / 5 参命名闭包'
+      '（{enabledSiteIds, panShareText, panPwd[, note[, solo]]}）',
+    );
+  }
+
+  /// 门禁注入点：`tvbox_aggregate_dedupe_sites` 的替身（**生产恒 null**）
+  ///
+  /// 去重是**改磁盘状态**的命令（会停用子源）⇒ 门禁绝不许真打核心。
+  @visibleForTesting
+  static Future<TvboxDedupeResult> Function()? debugTvboxAggregateDedupe;
 
   static Future<List<ProviderManifest>> listProviders() async {
     final r = await SourinCore.callAsync('list_providers');
@@ -5263,6 +5375,8 @@ class TvboxAggregate {
     this.sites = const <TvboxAggregateSite>[],
     this.panShareText = '',
     this.panPwd,
+    this.note = '',
+    this.solo = false,
   });
 
   final int version;
@@ -5271,6 +5385,28 @@ class TvboxAggregate {
   final List<TvboxAggregateSite> sites;
   final String panShareText;
   final String? panPwd;
+
+  /// 用户给这个聚合源起的备注（用于区分多个聚合源）
+  ///
+  /// # 契约（Rust `tvbox_aggregate_get` 的 `note` 字段）
+  /// ```text
+  /// · 空串 / 缺字段 ⇒ 界面**不显示**备注行（绝不画一个空标签）
+  /// · 服务端最多存 60 字（<60 才可能溢出；界面按原样显示，不重复裁剪）
+  /// · ★ 缺字段按空串兼容旧核心：旧 DLL 这条路上没有 `note`，
+  ///   而"读不到就崩"会让整个聚合页打不开（这类兼容口径与 `persisted` 同一套）
+  /// ```
+  final String note;
+
+  /// 「只显示聚合源（测试用）」开关
+  ///
+  /// # 语义（Rust 侧已实装，**别看错**）
+  /// ```text
+  /// true  ⇒ 源列表里**只显示聚合源**；子站的搜索/扇出**照旧**参与
+  ///         （真把子站停用会让聚合源变空 —— 正好相反）
+  /// false ⇒ 恢复显示全部源
+  /// ```
+  /// ★ 缺字段按 `false` 兼容旧核心（旧 DLL 没这个键，不能因此把开关画成"开"）。
+  final bool solo;
 
   factory TvboxAggregate.fromJson(Map<String, dynamic> j) {
     final rawSites = j['sites'];
@@ -5297,7 +5433,47 @@ class TvboxAggregate {
       sites: sites,
       panShareText: '${pan['shareText'] ?? ''}',
       panPwd: pan['pwd'] as String?,
+      note: '${j['note'] ?? ''}'.trim(),
+      solo: j['solo'] == true,
     );
   }
 }
+
+/// [SourinApi.tvboxAggregateDedupeSites] 的返回
+///
+/// ```text
+/// { "duplicates": N, "disabled": [ids], "kept": M }
+///   · duplicates = 本次**停用**的重复条数（幂等：没有重复 ⇒ 0）
+///   · disabled   = 被停用的子站 id（停用 ≠ 删除：用户还能手工勾回来）
+///   · kept       = 当前仍启用的子站数
+/// ```
+/// ★ 界面文案只依赖 [duplicates]（0 ⇒ "没有重复子源"），
+///   但 [disabled] 必须原样保留 —— 将来要"一键恢复本次被停用的"只能靠它。
+class TvboxDedupeResult {
+  const TvboxDedupeResult({
+    this.duplicates = 0,
+    this.disabled = const <String>[],
+    this.kept = 0,
+  });
+
+  final int duplicates;
+  final List<String> disabled;
+  final int kept;
+
+  factory TvboxDedupeResult.fromJson(Map<String, dynamic> j) {
+    final raw = j['disabled'];
+    final ids = <String>[];
+    if (raw is List) {
+      for (final id in raw) {
+        if (id is String && id.trim().isNotEmpty) ids.add(id);
+      }
+    }
+    return TvboxDedupeResult(
+      duplicates: (j['duplicates'] as num?)?.toInt() ?? 0,
+      disabled: ids,
+      kept: (j['kept'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
 

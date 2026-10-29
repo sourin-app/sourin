@@ -65,7 +65,6 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
   bool _loading = true;
   String _error = '';
   String _saveError = '';
-  bool _saving = false;
   TvboxAggregate? _agg;
 
   /// 配置里的 site 总数（读不到 ⇒ null ⇒ 底部说明整行不画）
@@ -182,41 +181,85 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
     setState(() => _subs = subs);
   }
 
-  Future<void> _save() async {
-    setState(() {
-      _saving = true;
-      _saveError = '';
-    });
-    try {
-      // ★ 顺序稳定：按 sites 的原始顺序输出，而不是 Set 的插入序
-      final ordered = <String>[
-        for (final s in _agg?.sites ?? const <TvboxAggregateSite>[])
-          if (_selected.contains(s.id)) s.id,
-      ];
-      final a = await SourinApi.tvboxAggregateSet(enabledSiteIds: ordered);
-      if (!mounted) return;
-      setState(() {
-        _agg = a;
-        _saving = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _saveError = userErrorText(e, fallback: '保存聚合配置失败，请稍后重试');
-        _saving = false;
-      });
-    }
+  /// 打开「编辑链接…」弹窗（**只有订阅链接 + 备注**两类输入）
+  ///
+  /// # 为什么单独一个弹窗（2026-10-29 Owner 原话）
+  /// ```text
+  /// > 聚合源编辑的时候只能编辑链接，子源管理单独做一个编辑配置弹窗
+  /// ⇒ "改这条订阅从哪来 / 这坨源叫什么" 与 "这坨源里启用哪几个" 是**两件事**，
+  ///   塞在同一个长页面里会互相干扰（460px 高的内容区，勾选行一多就把链接挤没）。
+  /// ⇒ 本弹窗**只**放 link + note；勾选、测试连通、去重全部搬到「管理子源…」。
+  /// ```
+  Future<void> _openLinkDialog(TvboxAggregate a) async {
+    final updated = await showAppDialog<TvboxAggregate>(
+      context: context,
+      /*
+       * ★ 为什么要自己给一层 `Material`（实测踩到）：`showAppDialog` 走的是
+       *   `DialogRoute`，**不是** `Dialog`/`AlertDialog` ⇒ 路由里没有 Material 祖先，
+       *   而「编辑链接」弹窗里有 `TextField` ⇒ 直接抛
+       *   `No Material widget found (TextField widgets require a Material widget ancestor)`。
+       *   transparency 不改变外观，只补祖先。
+       */
+      builder: (_) => Material(
+        type: MaterialType.transparency,
+        child: TvboxAggregateLinkDialog(
+          aggregate: a,
+          repId: _repIdOf(a),
+          currentLink: _currentLinkOf(a),
+        ),
+      ),
+    );
+    if (updated == null || !mounted) return;
+    setState(() => _agg = updated);
+    // 链接可能变了 ⇒ 订阅表要重拉（非阻塞，理由见 `_load()` 那段）
+    unawaited(_loadSubscriptionLinks());
   }
 
-  void _toggle(String id, bool on) {
+  /// 打开「管理子源…」弹窗（勾选 / 测试连通 / 去重）
+  Future<void> _openSitesDialog(TvboxAggregate a) async {
+    final updated = await showAppDialog<TvboxAggregate>(
+      context: context,
+      // ★ 同 `_openLinkDialog`：路由里没有 Material 祖先，而弹窗里有 Checkbox/Switch/
+      //   ListTile（都要 Material 画水波纹）⇒ 必须自己补一层 transparency。
+      builder: (_) => Material(
+        type: MaterialType.transparency,
+        child: TvboxAggregateSitesDialog(
+          aggregate: a,
+          sourceOf: _subOf,
+        ),
+      ),
+    );
+    if (updated == null || !mounted) return;
     setState(() {
-      if (on) {
-        _selected.add(id);
-      } else {
-        _selected.remove(id);
-      }
-      _saveError = '';
+      _agg = updated;
+      _selected
+        ..clear()
+        ..addAll(
+          updated.sites
+              .where((s) => s.implemented && s.enabled)
+              .map((s) => s.id),
+        );
     });
+  }
+
+  /// 一个聚合源的**代表 id**（命令按 id 寻址；同一条链接下用哪个 id 都命中）
+  ///
+  /// 有链接的先挑（那才是"这个聚合源"），否则退回第一个子站 id。
+  String? _repIdOf(TvboxAggregate a) {
+    for (final s in a.sites) {
+      final url = _subs[s.id]?.sourceUrl;
+      if (url != null && url.trim().isNotEmpty) return s.id;
+    }
+    return a.sites.isEmpty ? null : a.sites.first.id;
+  }
+
+  /// 当前订阅链接（没有 ⇒ 空串；界面据此把输入框留空，而不是写一句假链接）
+  String _currentLinkOf(TvboxAggregate a) {
+    for (final s in a.sites) {
+      final url = _subs[s.id]?.sourceUrl;
+      if (url != null && url.trim().isNotEmpty) return url.trim();
+    }
+    return '';
   }
 
   /// 取某子站的订阅信息（没登记 ⇒ null）
@@ -237,15 +280,9 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           AppTextButton(
+            key: const ValueKey<String>('agg-close'),
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('关闭'),
-          ),
-          SizedBox(width: Sp.x2),
-          AppTextButton(
-            key: const ValueKey<String>('agg-save'),
-            onPressed: (_loading || _saving || a == null) ? null : _save,
-            foregroundColor: colors.primary,
-            child: Text(_saving ? '保存中…' : '保存'),
           ),
         ],
       ),
@@ -273,80 +310,63 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
                 else if (a != null) ...<Widget>[
                   /*
                    * ══════════════════════════════════════════════════════
-                   * ★★★ N8b-2（2026-10-27）：聚合源一行四个操作
+                   * ★★★ 2026-10-29（Owner）：**两个入口，各管一件事**
                    * ══════════════════════════════════════════════════════
                    *
                    * Owner 原话：
-                   * > tvbox聚合源本来就是一个链接，要主动更新的，
-                   * > 现在我都不能编辑和替换地址了。
-                   * > tvbox聚合源应该可以自己起名字、可以编辑链接、
-                   * > 可以测试这个聚合源是否能用。
+                   * > 聚合源编辑的时候只能编辑链接，子源管理单独做一个编辑配置弹窗
                    *
-                   * # ★★★ 「一个聚合源」在命令层到底是**哪个 id**（实网取证，不是推断）
                    * ```text
-                   * 探针 `.probe/n8a-n8b2-n8b4-real-network.dart` 起真核心读真数据：
-                   *   `check_tvbox_updates(id:'tvbox_agg')`
-                   *     ⇒ SourinCoreException(other): **没有找到 TVBox 源 tvbox_agg**
-                   *   `list_tvbox_sources()` ⇒ total=16（全是 csp 子站 id）
-                   *   `list_providers()`     ⇒ 37 条，含 tvbox_agg(kind=tvbox, hidden=false)
-                   * ⇒ 三条命令（set_tvbox_source / check_tvbox_updates /
-                   *   update_tvbox_source）的 id 解析都走 `local_tvbox_sources()`，
-                   *   而它**只认 persisted 里的 `PersistedProvider::Tvbox`** ——
-                   *   聚合入口 `tvbox_agg` **不在其中**（它是 registry 里注册的，
-                   *   third-party-providers.json 里没有它，实测 20 条里没有）。
-                   * ⇒ **能编辑/测试/更新的"聚合源"，就是那 16 个子站 id**
-                   *   （它们共享同一条订阅链接；命令层按链接分组，一次下载对比全部）。
-                   * ⇒ 本区按**订阅链接**归组渲染：一条链接 = 一行 = 四个操作。
-                   *   不拿 `tvbox_agg` 去做这三件事 —— 那会必然报"没有找到"。
+                   * 改前（本页一个长列表）：源勾选 + 链接 / 测试 / 更新 + 网盘凭据
+                   *   ⇒ 三件事挤在 460px 高的内容区里，勾选一多就把别的挤到看不见。
+                   * 改后（本页只留"摘要 + 两个入口"）：
+                   *   · 「编辑链接…」= TvboxAggregateLinkDialog → **只有**订阅链接 + 备注
+                   *   · 「管理子源…」= TvboxAggregateSitesDialog → 勾选 + 测试连通 + **去重**
+                   *   · 「网盘与凭据」区**从本页移除**（已拆成公用配置：网盘账号页）
+                   *     ⇒ 类 `TvboxAggregateCredentialsSection` 保留（别处可能引用），只是这里不挂。
                    * ```
                    *
-                   * # 为什么放在这里（聚合二级页）而不是卡片上
+                   * ⚠️ 命令层的寻址规则没变（这条是实网取证，别推翻）：
                    * ```text
-                   * 本页本来就是"聚合源配置"的家（`_Block` 的「配置」入口 +
-                   * 源列表多选）。Owner 说的"没有单独的配置页面"指的正是
-                   * 这一类能力缺位 ⇒ 放本页语义最顺，也不动卡片版式
-                   * （卡片版式有一堆几何门禁钉着）。
+                   * 能编辑/测试/更新的"聚合源"就是**子站 id**（它们共享同一条订阅链接，
+                   * 命令层按链接分组）—— 拿 `tvbox_agg` 去调必然报"没有找到 TVBox 源"。
+                   * ⇒ 两个弹窗都按"代表 id"（有链接的第一个子站）寻址，见 `_repIdOf`。
                    * ```
                    */
-                  TvboxAggregateSitesList(
-                    sites: a.sites,
-                    selected: _selected,
-                    onToggle: _toggle,
+                  TvboxAggregateIdentityBlock(
+                    note: a.note,
+                    listedSites: a.sites.length,
+                    enabledSites: _selected.length,
+                  ),
+                  const SizedBox(height: Sp.x3),
+                  Row(
+                    children: <Widget>[
+                      AppTextButton(
+                        key: const ValueKey<String>('agg-edit-link'),
+                        onPressed: () => _openLinkDialog(a),
+                        foregroundColor: colors.primary,
+                        child: const Text('编辑链接…'),
+                      ),
+                      const SizedBox(width: Sp.x2),
+                      AppTextButton(
+                        key: const ValueKey<String>('agg-manage-sites'),
+                        onPressed: () => _openSitesDialog(a),
+                        foregroundColor: colors.primary,
+                        child: const Text('管理子源…'),
+                      ),
+                    ],
                   ),
                   TvboxAggregateUnimplementedNote(
                     totalSites: _configSiteTotal,
                     listedSites: a.sites.length,
                   ),
-                  /*
-                   * ⚠️ N8b-2 的管理区放在**源列表之后** —— 这不是随手排的：
-                   *    放前面会把那 16 行复选框往下推（本页内容区只有 460px 高）
-                   *    ⇒ 既有门禁 `zz_t1049` 的 `agg-site-check-tv9`
-                   *      被推出可视区、`tap()` 点不到（实测 768 > 600 视口）
-                   *      ⇒ 那条既有用例会红，而它测的是**别的东西**
-                   *        （启用集合顺序稳定），不该被我的版式改动打断。
-                   *    ★ 产品上也更顺：本页的主操作是"选哪些子站启用"，
-                   *      "链接 / 测试 / 更新"是围绕它的次操作 ⇒ 主在前、次在后。
-                   */
-                  if (a.sites.isNotEmpty) ...<Widget>[
-                    SizedBox(height: Sp.x3),
-                    TvboxAggregateManageSection(
-                      sites: a.sites,
-                      sourceOf: _subOf,
-                    ),
-                  ],
                   if (_saveError.isNotEmpty) ...<Widget>[
-                    SizedBox(height: Sp.x2),
+                    const SizedBox(height: Sp.x2),
                     Text(
                       _saveError,
                       key: const ValueKey<String>('agg-save-error'),
                       style:
                           TextStyle(fontSize: FontSizes.cap, color: colors.error),
-                    ),
-                  ],
-                  if (widget.showCredentialPanels) ...<Widget>[
-                    SizedBox(height: Sp.x3),
-                    TvboxAggregateCredentialsSection(
-                      aggregateId: a.aggregateId,
                     ),
                   ],
                 ],
@@ -371,6 +391,476 @@ class _SectionTitle extends StatelessWidget {
           color: Theme.of(context).colorScheme.onSurface,
         ),
       );
+}
+
+/// 「这个聚合源是谁」—— 备注（Owner 说的"自己起名字"）+ 子源统计
+///
+/// # 为什么备注空就**不画**（而不是画一行"（无备注）"）
+/// ```text
+/// 空备注是常态（历史配置都没有它）。画一个空槽位会让每个聚合源都多一行灰字，
+/// 反而看不出"哪些源被用户标注过" ⇒ 空 ⇒ 整行不渲染（与 `TvboxAggregateUnimplementedNote`
+/// 的"diff<=0 就不画"同一条口径：不许出现 0 信息的行）。
+/// ```
+class TvboxAggregateIdentityBlock extends StatelessWidget {
+  const TvboxAggregateIdentityBlock({
+    super.key,
+    required this.note,
+    required this.listedSites,
+    required this.enabledSites,
+  });
+
+  /// 用户备注（`TvboxAggregate.note`；空串 = 没起名字）
+  final String note;
+
+  /// `sites[]` 长度（本机认得的子源数）
+  final int listedSites;
+
+  /// 其中已启用的数量
+  final int enabledSites;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final n = note.trim();
+    return Column(
+      key: const ValueKey<String>('agg-identity'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        if (n.isNotEmpty) ...<Widget>[
+          Text(
+            n,
+            key: const ValueKey<String>('agg-note'),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: FontSizes.sm,
+              fontWeight: FontWeight.w600,
+              color: colors.onSurface,
+            ),
+          ),
+          const SizedBox(height: Sp.x1),
+        ],
+        Text(
+          '已启用 $enabledSites / $listedSites 个子源',
+          key: const ValueKey<String>('agg-counts'),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 「编辑链接…」弹窗 —— **只有**订阅链接 + 备注两类输入
+///
+/// # 为什么这里**不许**出现子源勾选 / 网盘凭据（Owner 定的拆法）
+/// ```text
+/// > 聚合源编辑的时候只能编辑链接，子源管理单独做一个编辑配置弹窗
+/// ⇒ 本弹窗的职责边界是"这条订阅从哪来、它叫什么"，
+///   勾选与去重在 `TvboxAggregateSitesDialog`，网盘凭据已挪到公用"网盘账号"页。
+/// ⇒ 门禁 `zz_agg_split_*` 会断言：本弹窗里 `Checkbox` **0 个**、
+///   `agg-credentials` / `网盘与凭据` **都不存在**（多塞一样东西立刻红）。
+/// ```
+class TvboxAggregateLinkDialog extends StatefulWidget {
+  const TvboxAggregateLinkDialog({
+    super.key,
+    required this.aggregate,
+    this.repId,
+    this.currentLink = '',
+  });
+
+  final TvboxAggregate aggregate;
+
+  /// 命令层的寻址 id（有链接的第一个子站；`null` = 没有可写的子站）
+  final String? repId;
+
+  /// 现在的订阅链接（空串 = 没有链接，输入框留空）
+  final String currentLink;
+
+  @override
+  State<TvboxAggregateLinkDialog> createState() =>
+      _TvboxAggregateLinkDialogState();
+}
+
+class _TvboxAggregateLinkDialogState extends State<TvboxAggregateLinkDialog> {
+  late final TextEditingController _link =
+      TextEditingController(text: widget.currentLink);
+  late final TextEditingController _note =
+      TextEditingController(text: widget.aggregate.note);
+  bool _busy = false;
+  String _error = '';
+
+  @override
+  void dispose() {
+    _link.dispose();
+    _note.dispose();
+    super.dispose();
+  }
+
+  /// 保存：**两条独立命令**
+  ///
+  /// ```text
+  /// ① 订阅链接 → `set_tvbox_source {id, url}`（存在 sidecar，和聚合配置不是一份）
+  ///    仅在"有代表 id + 非空 + 与原来不同"时才发 ⇒ 不把"没改"写成"改成空"
+  ///    （那会把用户的链接清掉 —— 这是很贵的误操作）
+  /// ② 备注 → `tvbox_aggregate_set {note}`（部分更新；"" = 清空，服务端已实现）
+  /// ```
+  Future<void> _save() async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _error = '';
+    });
+    try {
+      final link = _link.text.trim();
+      final rep = widget.repId;
+      if (rep != null && link.isNotEmpty && link != widget.currentLink) {
+        await SourinApi.setTvboxSource(rep, link);
+      }
+      final a = await SourinApi.tvboxAggregateSet(note: _note.text.trim());
+      if (!mounted) return;
+      Navigator.of(context).pop(a);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = userErrorText(e, fallback: '保存失败，请稍后重试');
+        _busy = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return AppGlassDialog(
+      title: '编辑链接',
+      maxWidth: 460,
+      actions: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          AppTextButton(
+            key: const ValueKey<String>('agg-link-cancel'),
+            onPressed: _busy ? null : () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          const SizedBox(width: Sp.x2),
+          AppTextButton(
+            key: const ValueKey<String>('agg-link-save'),
+            onPressed: _busy ? null : _save,
+            foregroundColor: colors.primary,
+            child: Text(_busy ? '保存中…' : '保存'),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          key: const ValueKey<String>('agg-link-dialog'),
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Text(
+              '订阅链接',
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: Sp.x1),
+            TextField(
+              key: const ValueKey<String>('agg-link-input'),
+              controller: _link,
+              enabled: !_busy,
+              decoration: const InputDecoration(
+                isDense: true,
+                hintText: 'https://…（粘贴订阅链接）',
+              ),
+              style: const TextStyle(fontSize: FontSizes.cap),
+            ),
+            const SizedBox(height: Sp.x2),
+            TextField(
+              key: const ValueKey<String>('agg-note-input'),
+              controller: _note,
+              enabled: !_busy,
+              // 与 Rust 侧同一条上限（服务端会截到 60，这里提前挡住多打的字）
+              maxLength: 60,
+              decoration: const InputDecoration(
+                isDense: true,
+                labelText: '备注（用于区分多个聚合源）',
+              ),
+              style: const TextStyle(fontSize: FontSizes.cap),
+            ),
+            if (_error.isNotEmpty)
+              Text(
+                _error,
+                key: const ValueKey<String>('agg-link-error'),
+                style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 「管理子源…」弹窗 —— 勾选 / 测试连通 / **去重**
+///
+/// # 为什么整块搬（不是复制一份）
+/// ```text
+/// 勾选（`TvboxAggregateSitesList`）与"链接 / 测试 / 更新"（`TvboxAggregateManageSection`）
+/// 本来就在本文件里、且已有自己的门禁 ⇒ 这里只是**换个容器**挂它们，
+/// 不重写内部实现（重写就会出现两套行为）。
+/// ```
+/// # 去重为什么不放在"编辑链接"里
+/// ```text
+/// 去重动的是**子源集合**（停用重复项），与"这条订阅从哪来"无关；
+/// 放在子源管理里，用户才找得到"我按哪个按钮才会少掉这些行"。
+/// ```
+class TvboxAggregateSitesDialog extends StatefulWidget {
+  const TvboxAggregateSitesDialog({
+    super.key,
+    required this.aggregate,
+    required this.sourceOf,
+    this.panelBuilder,
+  });
+
+  final TvboxAggregate aggregate;
+
+  /// id → 订阅信息（管理区按链接归组用）
+  final TvboxSourceInfo? Function(String id) sourceOf;
+
+  /// 测试缝：替换管理区每行的面板（生产恒 null）
+  final Widget Function(String id, String name, String? sourceUrl)? panelBuilder;
+
+  @override
+  State<TvboxAggregateSitesDialog> createState() =>
+      _TvboxAggregateSitesDialogState();
+}
+
+class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
+  late TvboxAggregate _agg = widget.aggregate;
+  late final Set<String> _selected = <String>{
+    ...widget.aggregate.sites
+        .where((s) => s.implemented && s.enabled)
+        .map((s) => s.id),
+  };
+  bool _busy = false;
+  String _error = '';
+
+  /// 去重结果文案（空 = 还没点过；**不许**在点之前先说"没有重复"）
+  String _dedupeMsg = '';
+
+  /// 「只显示聚合源（测试用）」—— 初值来自 `TvboxAggregate.solo`（旧核心没这个键 ⇒ false）
+  late bool _solo = widget.aggregate.solo;
+
+  /// 切换 solo：**立刻发命令**（Owner 的用途是"点一下马上看列表变化"，不是攒到保存）
+  ///
+  /// ```text
+  /// 语义再强调一次（Rust 注释逐字）：solo=true 只是"源列表只显示聚合源"，
+  ///   **子站的搜索/扇出照旧** —— 所以这里绝不能顺手把子站停用
+  ///   （那会让聚合源变空，与需求正好相反）。
+  /// 失败要回滚开关位置：开关停在"开"但服务端没存 ⇒ 下次打开又变回去 = 骗人。
+  /// ```
+  Future<void> _toggleSolo(bool v) async {
+    final prev = _solo;
+    setState(() {
+      _solo = v;
+      _error = '';
+    });
+    try {
+      await SourinApi.tvboxAggregateSet(solo: v);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _solo = prev;
+        _error = userErrorText(e, fallback: '切换失败，请稍后重试');
+      });
+    }
+  }
+
+  void _toggle(String id, bool on) {
+    setState(() {
+      if (on) {
+        _selected.add(id);
+      } else {
+        _selected.remove(id);
+      }
+      _error = '';
+    });
+  }
+
+  Future<void> _save() async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _error = '';
+    });
+    try {
+      // ★ 顺序稳定：按 sites 的原始顺序输出，而不是 Set 的插入序
+      final ordered = <String>[
+        for (final s in _agg.sites)
+          if (_selected.contains(s.id)) s.id,
+      ];
+      final a = await SourinApi.tvboxAggregateSet(enabledSiteIds: ordered);
+      if (!mounted) return;
+      Navigator.of(context).pop(a);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = userErrorText(e, fallback: '保存聚合配置失败，请稍后重试');
+        _busy = false;
+      });
+    }
+  }
+
+  /// 去重：`tvbox_aggregate_dedupe_sites` → **成功后刷新列表** → 按钮下方给结果
+  ///
+  /// ```text
+  /// 判据（Rust 侧）：站名 + api 都相同才算重复；保留第一个，其余**停用**（不是删除）。
+  /// ⇒ 刷新必须重新读 `tvbox_aggregate_get()`（被停用的行要立刻显示成未勾选），
+  ///   而不是本地把行删掉 —— 删掉会让用户以为"源被移除了"。
+  /// ```
+  Future<void> _dedupe() async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _error = '';
+      _dedupeMsg = '';
+    });
+    try {
+      final r = await SourinApi.tvboxAggregateDedupeSites();
+      final a = await SourinApi.tvboxAggregateGet();
+      if (!mounted) return;
+      setState(() {
+        _agg = a;
+        _selected
+          ..clear()
+          ..addAll(a.sites.where((s) => s.implemented && s.enabled).map((s) => s.id));
+        _dedupeMsg =
+            r.duplicates == 0 ? '没有重复子源' : '已停用 ${r.duplicates} 个重复子源';
+        _busy = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = userErrorText(e, fallback: '去重没有完成，请稍后重试');
+        _busy = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return AppGlassDialog(
+      title: '管理子源',
+      maxWidth: 560,
+      actions: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          AppTextButton(
+            key: const ValueKey<String>('agg-sites-cancel'),
+            onPressed: _busy ? null : () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          const SizedBox(width: Sp.x2),
+          AppTextButton(
+            key: const ValueKey<String>('agg-sites-save'),
+            onPressed: _busy ? null : _save,
+            foregroundColor: colors.primary,
+            child: Text(_busy ? '保存中…' : '保存'),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 500,
+        height: 420,
+        child: SingleChildScrollView(
+          child: Column(
+            key: const ValueKey<String>('agg-sites-dialog'),
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              TvboxAggregateSitesList(
+                sites: _agg.sites,
+                selected: _selected,
+                onToggle: _toggle,
+              ),
+              if (_agg.sites.isNotEmpty) ...<Widget>[
+                const SizedBox(height: Sp.x3),
+                TvboxAggregateManageSection(
+                  sites: _agg.sites,
+                  sourceOf: widget.sourceOf,
+                  panelBuilder: widget.panelBuilder,
+                ),
+              ],
+              const SizedBox(height: Sp.x3),
+              /*
+               * ★ 必须给 SwitchListTile 套一层 `Material`（实测断言，不是洁癖）：
+               *   玻璃卡片外框是 `DecoratedBox(带背景色)`，ListTile 会把底色/水波纹
+               *   画在**最近的 Material 祖先**上 ⇒ 框架直接抛
+               *   「ListTile background color or ink splashes may be invisible」，
+               *   在测试里表现为**整条用例红**。transparency 只补祖先，不改外观。
+               */
+              Material(
+                type: MaterialType.transparency,
+                child: SwitchListTile(
+                  key: const ValueKey<String>('agg-solo'),
+                  value: _solo,
+                  onChanged: _busy ? null : _toggleSolo,
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: Text(
+                    '只显示聚合源（测试用）',
+                    style: TextStyle(
+                      fontSize: FontSizes.sm,
+                      color: colors.onSurface,
+                    ),
+                  ),
+                  // ★ 这句不是装饰：solo 容易被误解成"把子站关掉"，而真相是相反
+                  subtitle: Text(
+                    '子站仍参与搜索，只是列表里不显示',
+                    key: const ValueKey<String>('agg-solo-hint'),
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: Sp.x3),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: AppTextButton(
+                  key: const ValueKey<String>('agg-dedupe'),
+                  onPressed: _busy ? null : _dedupe,
+                  child: Text(_busy ? '处理中…' : '去重'),
+                ),
+              ),
+              if (_dedupeMsg.isNotEmpty)
+                Text(
+                  _dedupeMsg,
+                  key: const ValueKey<String>('agg-dedupe-result'),
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              if (_error.isNotEmpty)
+                Text(
+                  _error,
+                  key: const ValueKey<String>('agg-sites-error'),
+                  style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// 把子站按**订阅链接**归组（N8b-2 的"一个聚合源"= 一条链接）
@@ -621,7 +1111,7 @@ class TvboxAggregateEmptyState extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return Container(
       key: const ValueKey<String>('agg-empty'),
-      padding: EdgeInsets.all(Sp.x4),
+      padding: const EdgeInsets.all(Sp.x4),
       decoration: BoxDecoration(
         color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
         borderRadius: Radii.rLg,
@@ -713,7 +1203,7 @@ class _PanShareBodyState extends State<PanShareBody> {
             isDense: true,
             hintText: '粘贴网盘分享链接或整段分享文字',
           ),
-          style: TextStyle(fontSize: FontSizes.cap),
+          style: const TextStyle(fontSize: FontSizes.cap),
         ),
         Align(
           alignment: Alignment.centerLeft,
@@ -787,10 +1277,10 @@ class TvboxAggregateCredentialsSection extends StatelessWidget {
         ),
         Row(
           children: <Widget>[
-            AppTextButton(
-              key: const ValueKey<String>('agg-credentials-login'),
+            const AppTextButton(
+              key: ValueKey<String>('agg-credentials-login'),
               onPressed: null,
-              child: const Text('去登录'),
+              child: Text('去登录'),
             ),
             const SizedBox(width: Sp.x2),
             Expanded(

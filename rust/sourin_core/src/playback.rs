@@ -170,14 +170,20 @@ pub async fn resolve_stream(
          *   失败此前**一行日志都不落盘** —— Dart 侧 catch 只进 `_error`
          *   （player_page.dart:5702 无 AppLog），而 [PLAY] 只在拿到流之后才写
          *   （player_page.dart:6350）⇒ 现场"连失败日志都没有"无法归因。
+         *   ★ 落盘走 applog::write_file_log（tag=PLAY，对齐 Dart [PLAY] 惯例）：
+         *     `log` 门面在本 crate 无 sink（streamproxy.rs:2179），log::warn 会被
+         *     整个丢弃 —— 2026-10-30 真机已实锤过一次。
          *   脱敏口径（lead 指定）：只记 provider / 错误类别 / id 前缀（截 24 字符），
          *   **不含完整 URL 参数与 token**。
          */
         .map_err(|e| {
             let id_head: String = id.chars().take(24).collect();
-            log::warn!(
-                "[PLAY] resolve 失败 provider={provider} id~={id_head} kind={:?} needs_login={}",
-                e.kind, e.needs_login
+            crate::applog::write_file_log(
+                "PLAY",
+                &format!(
+                    "resolve 失败 provider={provider} id~={id_head} kind={:?} needs_login={}",
+                    e.kind, e.needs_login
+                ),
             );
             e.message
         })?;

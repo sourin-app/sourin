@@ -46,6 +46,9 @@ pub mod hostpool;
 pub mod proxy;
 pub mod streamproxy;
 
+// ── 文件日志直写器（log 门面无 sink，文件日志唯一 crate 级入口；见 applog.rs 头）──
+pub mod applog;
+
 // ── 功能 ──
 pub mod follow;
 pub mod backup;

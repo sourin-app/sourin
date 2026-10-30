@@ -1840,11 +1840,17 @@ where
                 if !is_size_limit_error(&e) {
                     return Err(e);
                 }
-                log::warn!(
-                    "[PAN] 降级：第 {} 大的文件 {}（{}）超出下载上限 ⇒ 改试次大候选（{e}）",
-                    i + 1,
-                    entry.name,
-                    human_size(entry.size)
+                // ★ 2026-10-30：降级过程必须落**文件日志**（tag=PAN，对齐既有 [PAN] 惯例）。
+                //   `log` 门面在本 crate 无 sink（streamproxy.rs:2179），log::warn 会被
+                //   整个丢弃 —— 真机实锤过「整个降级过程零 [PAN] 输出」的黑洞。
+                crate::applog::write_file_log(
+                    "PAN",
+                    &format!(
+                        "降级：第 {} 大的文件 {}（{}）超出下载上限 ⇒ 改试次大候选（{e}）",
+                        i + 1,
+                        entry.name,
+                        human_size(entry.size)
+                    ),
                 );
                 notes.push(format!(
                     "已跳过超限文件 {}（{}）",

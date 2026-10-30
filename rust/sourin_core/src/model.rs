@@ -556,6 +556,34 @@ pub struct StreamCandidate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<std::collections::BTreeMap<String, String>>,
 
+    /// ★★★ task-8（2026-10-30）：HLS 清单的**真实整集时长**（`#EXTINF` 求和，毫秒）
+    ///
+    /// # 为什么需要它（Owner：「大部分都是播放都是6秒，根本就不是完整的视频内容」）
+    /// ```text
+    /// 真机取证：那条 dur=6 的「第33集」清单实为 17 段 EXTINF 求和 82.72s
+    /// + 两个 #EXT-X-DISCONTINUITY；mpv 在不连续点重建时间轴 ⇒
+    /// stream.duration 报的是"当前分片时长"（6/4/3s）、pos 反复归零。
+    /// ⇒ 错的是**时长读数**，不是内容 —— 清单自己就能给出可信的整集时长。
+    /// ⚠️ `#EXT-X-TARGETDURATION` 不是内容时长（6 是分片目标时长），绝不混用。
+    /// ```
+    /// 硬约束（lead 定死）：只有 `#EXT-X-ENDLIST`（点播已完结）才填；
+    /// **直播清单必须 None**（直播本来没有总时长）；读取失败/超时留 None 不阻断起播。
+    /// 事实来源：`hls_facts::probe_playlist`（resolve 链路只对 hls 候选读，1500ms 预算）。
+    #[serde(rename = "playlistTotalMs", default, skip_serializing_if = "Option::is_none")]
+    pub playlist_total_ms: Option<u64>,
+
+    /// ★ task-8：清单声明了 `#EXT-X-DISCONTINUITY`（时间轴会跳）
+    ///
+    /// **事实标记，不许据此判定流好坏**（合法的广告拼接也会用它）。
+    /// 取证依据：DISCONTINUITY 处 mpv 重建时间轴 ⇒ duration/pos 跳变 ——
+    /// UI 可据此提示"该线路时间轴可能跳变"，播放层可据此不做跨段 seek。
+    #[serde(
+        rename = "playlistDiscontinuous",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub playlist_discontinuous: bool,
+
     // ─────── 宿主解析契约（task-33，2026-10-17）───────
 
     /// ★★ [url] 是**播放页 URL**，需要宿主先解出真实地址
@@ -637,6 +665,8 @@ impl StreamCandidate {
             needs_host_resolve: false,
             site_id: None,
             stream_flags: StreamFlags::default(),
+            playlist_total_ms: None,
+            playlist_discontinuous: false,
         }
     }
 

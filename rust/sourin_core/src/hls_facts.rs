@@ -139,6 +139,138 @@ pub fn parse_playlist_facts(text: &str) -> PlaylistFacts {
     f
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  resolve 链路接线（task-8，2026-10-30）：读清单 → 候选字段
+// ═══════════════════════════════════════════════════════════════════════
+
+/// 清单探测预算（lead 定死：1500ms；超时/失败一律留 None，绝不阻断起播）
+pub const PROBE_BUDGET_MS: u64 = 1500;
+
+/// 探测结果 = 要填进 `StreamCandidate` 的两个字段（task-8 契约）
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PlaylistProbe {
+    /// 清单真实整集时长（仅 `#EXT-X-ENDLIST` 时有值；直播/失败 = None）
+    pub total_ms: Option<u64>,
+    /// 清单声明了 DISCONTINUITY（事实标记，不判好坏）
+    pub discontinuous: bool,
+}
+
+/// 纯决策：清单事实 → 候选字段（离线门禁直接喂，不发网络）
+///
+/// ```text
+/// 约束①：只有 has_endlist（点播已完结）才填 total —— 直播清单必须 None
+///         （直播本来没有总时长，填了就是错的）。
+/// 约束⑤：discontinuous 照实反映 DISCONTINUITY 计数>0 —— 事实标记，不判好坏。
+/// total_ms==0（有 ENDLIST 但解析不出分片）也不填 —— 0 毫秒同样是错误读数。
+/// ```
+pub fn fields_from_facts(f: &PlaylistFacts) -> PlaylistProbe {
+    PlaylistProbe {
+        total_ms: if f.has_endlist && f.total_ms > 0 {
+            Some(f.total_ms)
+        } else {
+            None
+        },
+        discontinuous: f.timeline_discontinuous(),
+    }
+}
+
+fn probe_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            // 与 csp 站点同一条纪律：不读系统代理（代理会把「清单可读」测成「全失败」）
+            .no_proxy()
+            .build()
+            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底")
+    })
+}
+
+/// master 清单里第一个变体子清单的 URI（`#EXT-X-STREAM-INF` 后的第一条非注释行）
+fn master_variant_uri(text: &str) -> Option<String> {
+    let mut pending = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with("#EXT-X-STREAM-INF") {
+            pending = true;
+            continue;
+        }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if pending {
+            return Some(line.to_string());
+        }
+        pending = false;
+    }
+    None
+}
+
+/// 相对 URI → 绝对（够 HLS 用的最小实现：绝对 URL 原样；`/` 开头接 scheme://host；
+/// 其余接 base 的目录前缀）
+fn resolve_uri(base: &str, uri: &str) -> String {
+    if uri.starts_with("http://") || uri.starts_with("https://") {
+        return uri.to_string();
+    }
+    if let Some(rest) = uri.strip_prefix('/') {
+        if let Some(scheme_end) = base.find("://") {
+            if let Some(host_end) = base[scheme_end + 3..].find('/') {
+                let host = &base[..scheme_end + 3 + host_end];
+                return format!("{host}/{rest}");
+            }
+        }
+    }
+    match base.rfind('/') {
+        Some(i) => format!("{}{}", &base[..=i], uri),
+        None => uri.to_string(),
+    }
+}
+
+async fn fetch_text(url: &str, headers: &[(String, String)]) -> Option<String> {
+    let mut req = probe_client().get(url);
+    for (k, v) in headers {
+        // 头解析失败就丢这一条（探测是 best-effort，绝不因头坏而失败）
+        if let (Ok(name), Ok(val)) = (
+            reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+            reqwest::header::HeaderValue::from_str(v),
+        ) {
+            req = req.header(name, val);
+        }
+    }
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.text().await.ok()
+}
+
+/// 读清单事实并按硬约束产出两个字段（task-8 接线入口）
+///
+/// ```text
+/// 预算：整体 1500ms（PROBE_BUDGET_MS）—— master + 子清单两次取数共用这一份预算，
+///       超时/非 200/解析失败一律返回默认值（None/false），绝不 Err、绝不阻断起播。
+/// 约束②：master 清单追一层子清单再取事实（实测案例2：master→720/hls/index.m3u8，
+///       子清单才是分片；master 本身 EXTINF 求和恒为 0）。
+/// ```
+pub async fn probe_playlist(url: &str, headers: &[(String, String)]) -> PlaylistProbe {
+    let mut out = PlaylistProbe::default();
+    let work = async {
+        let text = fetch_text(url, headers).await?;
+        let facts = parse_playlist_facts(&text);
+        let facts = if facts.is_master {
+            let uri = master_variant_uri(&text)?;
+            let child = resolve_uri(url, &uri);
+            let child_text = fetch_text(&child, headers).await?;
+            parse_playlist_facts(&child_text)
+        } else {
+            facts
+        };
+        out = fields_from_facts(&facts);
+        Some(())
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(PROBE_BUDGET_MS), work).await;
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +356,24 @@ mod tests {
         assert_eq!(f.discontinuity_count, 0);
         assert!(!f.timeline_discontinuous());
         assert_eq!(f.total_ms, 8000);
+    }
+
+    /// ★ task-8 硬约束①的**正向常驻门禁**（lead 要求长期跑在 --lib 里）：
+    /// 直播形态清单（有 EXTINF 分片、**无** DISCONTINUITY 也**无** ENDLIST）
+    /// ⇒ fields_from_facts 的 total 必须是 None（直播没有总时长，填了就是错的）。
+    #[test]
+    fn live_form_without_endlist_yields_none_total() {
+        let live = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n\
+#EXTINF:4.0,\na.ts\n#EXTINF:4.0,\nb.ts\n";
+        let f = parse_playlist_facts(live);
+        assert!(!f.has_endlist, "前置：直播形态（无 ENDLIST）");
+        assert_eq!(f.discontinuity_count, 0, "前置：也无 DISCONTINUITY");
+        assert_eq!(f.total_ms, 8000, "EXTINF 求和照样算得出（但语义不是整集）");
+        let probe = fields_from_facts(&f);
+        assert_eq!(
+            probe.total_ms, None,
+            "★ 硬约束①：无 ENDLIST ⇒ total 必须 None（注入证红的正向常驻对）"
+        );
+        assert!(!probe.discontinuous, "无 DISCONTINUITY ⇒ 事实标记为 false");
     }
 }

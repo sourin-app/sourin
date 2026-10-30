@@ -206,6 +206,10 @@ impl MediaProvider for M3uLiveProvider {
             site_id: None,
             // 直播流是 HLS：不涉及 DRM、不需要 host 二级解析
             stream_flags: Default::default(),
+            // ★ task-8：直播清单无 ENDLIST ⇒ 永远不该填整集时长（硬约束①）；
+            //   起播后由 resolve 链路的 probe_playlist 按事实补 discontinuous。
+            playlist_total_ms: None,
+            playlist_discontinuous: false,
         }])
     }
 }

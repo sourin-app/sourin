@@ -240,19 +240,15 @@ void main() {
     });
 
     test('★★ _load 的默认选线真调 pickDefaultPlayable（不再 firstOrNull）', () {
-      // 断言"真调了 + 传了必需的两个实参"，**不钉具体换行/额外参数**。
-      // ⚠️ 注意：`indexOf('pickDefaultPlayable(')` 会先命中**函数定义**，
-      //    所以要找"赋值给 local 变量"的那种调用形态（`= pickDefaultPlayable(`）。
-      final callRe = RegExp(r'=\s*pickDefaultPlayable\(');
-      final m = callRe.firstMatch(src);
-      expect(m, isNotNull,
-          reason: '_load 必须走 pickDefaultPlayable 挑默认线路 —— 判据只此一份');
-      final callSite =
-          src.substring(m!.start, (m.start + 500).clamp(0, src.length));
-      expect(callSite.contains('playableCandidates'), isTrue,
-          reason: '第一个实参必须是已过滤的可播候选');
-      expect(callSite.contains('_cachedLineDuration'), isTrue,
-          reason: '第二个实参必须是缓存读数读取器（判据靠它）');
+      expect(
+        src.contains('final first = pickDefaultPlayable(\n'
+            '        playableCandidates,\n'
+            '        _cachedLineDuration,\n'
+            '      );'),
+        isTrue,
+        reason: '_load 必须走 pickDefaultPlayable 挑默认线路 —— '
+            '判据只此一份；注入退回 firstOrNull 时本条红',
+      );
     });
 
     test('★★ duration 广播真调 _recordLineDuration（缓存有写入点）', () {

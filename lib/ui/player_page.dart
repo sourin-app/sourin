@@ -480,114 +480,6 @@ String aggregateSourceTitle({String? note, String? label}) {
 /// 疑似样片的时长上界（**不含**）：`0 < d < 60s` 才算样片
 const int kSampleLineThresholdSeconds = 60;
 
-/// 「按内容形态」判片段的最低期望时长（秒）
-///
-/// # 为什么需要第二道判据（2026-10-30 Owner 现场反馈）
-///
-/// ```text
-/// Owner 原话：「我今天还看了你大部分的都是播放都是6秒，根本就不是完整的视频内容」
-///
-/// 真机抽测（43 源 × 124 条）实测到的短时长：
-///   2s   csp-appyqk「老舅 第1集」
-///   6s   csp-appyqk「老舅除三害 第1集」
-///   79s  csp-gui-gui「老舅除三害（80集）」
-///   360s csp-biliys「流浪地球2」      ← 电影只有 6 分钟
-///
-/// ⇒ 只卡 `< 60s` 抓不到 79s/360s 这两类，但它们**同样不是完整正片**。
-/// ```
-///
-/// # ⚠️ 阈值怎么定的（踩过一次坑，记录在此）
-///
-/// 第一版把剧集阈值定成 3 分钟，门禁立刻抓到反例：**90 秒一集的短剧是合法的**
-/// （短剧平台常见 60~120 秒一集），3 分钟会把它冤枉成"片段"。
-/// ⇒ 改成两级：
-///
-/// ```text
-/// · 电影（单条无集数）    ⇒ 期望 ≥ 20 分钟，不足判「疑似片段」
-///                           （电影不可能 6 分钟）
-/// · 剧集（有集数）        ⇒ 期望 ≥ 60 秒，不足判「疑似片段」
-///                           （只与"绝对样片"判据重叠的部分保持不判 —— 见下）
-/// · shortform（音乐/直播）⇒ 不判
-/// ```
-/// 剧集这一档实际**只在 60~? 区间起作用**：`< 60s` 已经被 `isSuspectedSampleLine`
-/// 标成「疑似样片」（更强的判断），所以这里专注于"60s 以上但明显不像一集"的情况。
-/// 但为了不冤枉短剧，剧集档**只在有明确"剧集"证据且时长极端**时才触发 ——
-/// 见 `implausibleDurationTag` 里对 `kEpisodeMinSeconds` 的用法。
-const int kFeatureFilmMinSeconds = 20 * 60;
-
-/// 剧集档的最低期望秒数：**只用于"有集数 + 时长极短"的组合**
-///
-/// 取 60s 而不是 180s：短剧 90s 一集合法（门禁实测抓到的反例），
-/// 而"60s 以上但连一集都算不上"的情况主要落在 60~120s 的预告/花絮，
-/// 但那与短剧无法从时长上区分 ⇒ **剧集档不再按纯阈值判**，
-/// 只保留 `isSuspectedSampleLine`（<60s）这一道。本常量保留给影片档的分界说明。
-const int kEpisodeMinSeconds = 60;
-
-/// 内容形态（判片段用；与 UI 展示无关）
-enum ContentShape {
-  /// 电影（标题含「电影」「片名」或时长期望 90min+ 的那类）
-  film,
-
-  /// 剧集/综艺/其它长视频
-  episode,
-
-  /// 音乐 / DJ / 直播 / 短内容 —— 不参与片段判定
-  shortform,
-}
-
-/// 从标题 + 集数形态推断内容形态（纯函数）
-///
-/// ```text
-/// ① 标题含 DJ/Dj/音乐/MV/Live/直播/演唱会 ⇒ shortform（本来就可以只有几分钟）
-/// ② 有集数（episode_count > 1）或有「第N集」字样 ⇒ episode
-/// ③ 其它 ⇒ film（单条的电影条目）
-/// ```
-@visibleForTesting
-ContentShape inferContentShape({required String title, required int episodeCount}) {
-  final t = title.toLowerCase();
-  const shortformHints = <String>[
-    'dj', '音乐', 'mv', 'live', '直播', '演唱会', '歌曲', '演奏', 'remix', 'rmx',
-  ];
-  for (final h in shortformHints) {
-    if (t.contains(h)) return ContentShape.shortform;
-  }
-  // 「第N集」这类集数标记 ⇒ 剧集
-  if (episodeCount > 1) return ContentShape.episode;
-  if (RegExp(r'第\s*\d+\s*集').hasMatch(title)) return ContentShape.episode;
-  if (RegExp(r'[（(]\s*\d+\s*集').hasMatch(title)) return ContentShape.episode;
-  return ContentShape.film;
-}
-
-/// 这条时长读数与内容形态是否**明显不符**（纯函数）
-///
-/// 返回 null = 不判定（没读数 / 短内容形态 / 时长合理）
-/// 返回描述 = 该标注的文案种子（如「疑似片段」）
-///
-/// # ⚠️ 剧集档不像电影档那样按纯阈值判（实测反例驱动）
-///
-/// ```text
-/// 第一版：剧集 < 3min 判片段 ⇒ 门禁抓到反例「90 秒一集的短剧」被冤枉。
-/// 短剧平台 60~120 秒一集是常态，纯时长阈值无法与"预告/花絮"区分。
-/// ⇒ 剧集档**只保留 `< 60s`（= isSuspectedSampleLine 那道，标「疑似样片」）**，
-///   本函数对 episode 形态不做额外判定（返回 null）。
-///   79s 那类"剧集但明显太短"的样本，交给用户在线路抽屉里自己看时长判断 ——
-///   我们不猜，避免把合法短剧标成片段。
-/// ```
-/// 电影档不受此影响：电影 6 分钟（360s）在任何语境下都不可能是完整正片。
-@visibleForTesting
-String? implausibleDurationTag({
-  required int? durationSeconds,
-  required ContentShape shape,
-}) {
-  if (durationSeconds == null || durationSeconds <= 0) return null;
-  if (shape == ContentShape.shortform) return null;
-  // 只有"单条电影"这一档能靠时长确定性地判"这是片段"
-  if (shape == ContentShape.film && durationSeconds < kFeatureFilmMinSeconds) {
-    return '疑似片段';
-  }
-  return null;
-}
-
 /// 线路时长缓存的 UiPrefs 键（JSON：{线路键: 秒}）
 const String kLineDurationPrefsKey = 'dsh.player.lineDurations';
 
@@ -642,27 +534,15 @@ String lineDurationKey({
 /// 输出 null = 没有可播候选（调用方走既有报错路径）。
 /// ```
 /// 注入点 [durationOf] 由调用方接 `_lineDurationCache` —— 纯函数本身不摸存储。
-///
-/// # 2026-10-30 扩展：第二道「形态判据」
-///
-/// Owner 反馈"播的都是 6 秒"后，抽测实测到 79s/360s 这类**只卡 60s 抓不到**的片段。
-/// 现在再给一个可选注入点 [implausibleOf]：返回 true 表示"该线路时长与内容形态不符"。
-/// **不传就退回原行为**（纯样片判据）—— 保持既有门禁/调用点零改动。
 @visibleForTesting
 StreamCandidate? pickDefaultPlayable(
   List<StreamCandidate> playable,
-  int? Function(StreamCandidate) durationOf, {
-  bool Function(StreamCandidate)? implausibleOf,
-}) {
+  int? Function(StreamCandidate) durationOf,
+) {
   if (playable.isEmpty) return null;
-  // ① 先避开"绝对样片"
   for (final s in playable) {
-    if (!isSuspectedSampleLine(durationOf(s))) {
-      // ② 再避开"形态不符的片段"；没有该注入点时本步恒 false（原行为）
-      if (implausibleOf == null || !implausibleOf(s)) return s;
-    }
+    if (!isSuspectedSampleLine(durationOf(s))) return s;
   }
-  // ③ 全都不合格 ⇒ 保持原序第一条（用户自己挑）
   return playable.first;
 }
 
@@ -4386,31 +4266,9 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ 标注判据**只**认缓存读数 —— 正在播的这条即使 `_duration` 已经
   /// 出来，也必须经过缓存（`_recordLineDuration` 先写）再读，
   /// 判据只有一份，不在这里抄第二份。
-  ///
-  /// # 两道判据（2026-10-30 Owner 反馈「播的都是 6 秒」后补第二道）
-  ///
-  /// ```text
-  /// ① 绝对判据：0 < d < 60s ⇒ 「疑似样片 (m:ss)」   （原判据，保留）
-  /// ② 形态判据：与内容形态明显不符 ⇒ 「疑似片段 (m:ss)」
-  ///      电影 < 20min、剧集 < 3min（音乐/直播不判）
-  /// ①优先（样片是更强的判断）；②兜住 79s 预告、360s 半部电影这类
-  /// 只卡 60s 抓不到的情况。
-  /// ```
   String? _sampleBadgeFor(StreamCandidate s) {
     final d = _cachedLineDuration(s);
-    if (isSuspectedSampleLine(d)) {
-      return '疑似样片 (${formatLineDuration(d!)})';
-    }
-    // 形态判据需要知道"这条内容是什么形态" ⇒ 用标题 + 集数推断
-    final shape = inferContentShape(
-      title: _title,
-      episodeCount: _episodes.length,
-    );
-    final tag = implausibleDurationTag(durationSeconds: d, shape: shape);
-    if (tag != null) {
-      return '$tag (${formatLineDuration(d!)})';
-    }
-    return null;
+    return isSuspectedSampleLine(d) ? '疑似样片 (${formatLineDuration(d!)})' : null;
   }
 
   /// 从 [UiPrefs] 读连播策略 / 音量 / 倍速
@@ -5745,19 +5603,6 @@ class _PlayerPageState extends State<PlayerPage>
       final first = pickDefaultPlayable(
         playableCandidates,
         _cachedLineDuration,
-        // ② 形态判据：把"这条线路的时长与内容形态不符"接进来
-        //   （Owner 2026-10-30：默认选线也不许停在 6 秒/79s/半部电影上）
-        implausibleOf: (s) {
-          final shape = inferContentShape(
-            title: _title,
-            episodeCount: _episodes.length,
-          );
-          return implausibleDurationTag(
-                durationSeconds: _cachedLineDuration(s),
-                shape: shape,
-              ) !=
-              null;
-        },
       );
       if (first == null) {
         setState(() {

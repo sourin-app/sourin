@@ -39,6 +39,7 @@
 //
 // ⚠️ 只打印事实 + 断言；不打印结论。
 
+@Tags(['native-media'])
 import 'dart:io';
 
 import 'package:flutter/gestures.dart' show PointerDeviceKind;

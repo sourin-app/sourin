@@ -74,6 +74,7 @@
 //    `pumpWidget` 一个真的 `MediaPage`，然后读它渲染出来的
 //    `ClipRRect` / `ColoredBox` 的**实际几何**。
 //    源码文本断言只作为补充（本仓铁律：静态断言容易被注释/影子副本骗过）。
+@Tags(['native-media'])
 import 'dart:io';
 
 import 'package:flutter/rendering.dart' show RenderClipRRect;

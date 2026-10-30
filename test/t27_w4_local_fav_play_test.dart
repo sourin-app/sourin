@@ -33,6 +33,7 @@
 //
 // # 跑法
 //   flutter test test/t27_w4_local_fav_play_test.dart --concurrency=1
+@Tags(['native-media'])
 library;
 
 import 'dart:io';

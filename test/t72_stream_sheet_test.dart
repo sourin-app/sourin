@@ -25,6 +25,7 @@
 //
 // ⚠️ 只断言事实，不做主观判断。
 
+@Tags(['native-media'])
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';

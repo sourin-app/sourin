@@ -22,6 +22,7 @@
 //
 // ⚠️ 数据一律造在系统临时目录（clip_download 的 dataDir 也指向它），
 //    **绝不碰** %APPDATA%\app.sourin.player 与 Owner 真实下载目录。
+@Tags(['native-media'])
 library;
 
 import 'dart:io';

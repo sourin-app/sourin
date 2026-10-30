@@ -24,7 +24,7 @@
 // ```powershell
 // flutter test test/zz_t66_player_jank_perf_test.dart --run-skipped --tags perf-timing --concurrency=1
 // ```
-@Tags(<String>['perf-timing'])
+@Tags(<String>['perf-timing', 'native-media'])
 library;
 
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
@@ -92,7 +92,6 @@ Future<int> _timedPump(
   sw.stop();
   return sw.elapsedMicroseconds;
 }
-
 void main() {
   testWidgets('T1-perf 隐藏后 1 次 hover 叫回：p50 在预算内、p95 允许一次尖峰', (t) async {
     MediaKit.ensureInitialized();

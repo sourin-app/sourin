@@ -50,6 +50,7 @@
 //
 // ⚠️ 需要 libmpv（`Player(...)` 要它才能建出来）⇒ 缺件时 markTestSkipped。
 
+@Tags(['native-media'])
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';

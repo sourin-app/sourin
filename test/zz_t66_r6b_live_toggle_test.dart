@@ -52,6 +52,7 @@
 //  每个用例 `ClipDownloader.debugSetDataDir(<临时目录>)`，收尾传 null ——
 //  防止 `pumpWidget` 探针写到真实数据目录（AGENTS.md §8 的专门坑）。
 //  ```
+@Tags(['native-media'])
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';

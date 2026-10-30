@@ -308,6 +308,97 @@ async fn start_batch_up(media: &str, n: usize, delay_ms: u64) -> String {
     format!("http://{addr}")
 }
 
+/// 混合延迟的假站：前 `fast_n` 个端点立刻返回，其余延迟 `slow_ms`
+///
+/// 用于验证"部分成功 + 部分超时"这种最容易被写错的场景：
+/// 快的必须拿到事实，慢的必须是 None（而不是被写成 0 或别的默认数字）。
+async fn start_mixed_up(media: &str, fast_n: usize, slow_n: usize, slow_ms: u64) -> String {
+    #[derive(Clone)]
+    struct MixedUp {
+        media: Arc<String>,
+        slow: Arc<bool>,
+        slow_ms: Arc<u64>,
+    }
+    async fn serve(State(up): State<MixedUp>) -> String {
+        if *up.slow {
+            tokio::time::sleep(std::time::Duration::from_millis(*up.slow_ms)).await;
+        }
+        (*up.media).clone()
+    }
+    let mut app = Router::new();
+    for i in 0..fast_n {
+        app = app.route(
+            &format!("/f{i}.m3u8"),
+            axum::routing::get(serve).with_state(MixedUp {
+                media: Arc::new(media.to_string()),
+                slow: Arc::new(false),
+                slow_ms: Arc::new(slow_ms),
+            }),
+        );
+    }
+    for i in 0..slow_n {
+        app = app.route(
+            &format!("/s{i}.m3u8"),
+            axum::routing::get(serve).with_state(MixedUp {
+                media: Arc::new(media.to_string()),
+                slow: Arc::new(true),
+                slow_ms: Arc::new(slow_ms),
+            }),
+        );
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}")
+}
+
+/// ★ P9 混合场景：快的必须拿到事实、慢的必须留 None（不许被写成假数字）
+///
+/// 这是 P9 最容易写错的一处：若回填逻辑写成"对每个候选都写一个默认值"，
+/// 慢的候选就会从 None 变成某个编造的数字，下游会把"未知"当"已知"。
+#[tokio::test]
+async fn p9_mixed_fast_and_slow_keeps_unknown_as_none() {
+    const FAST: usize = 3;
+    const SLOW: usize = 3;
+    // 慢端 9000ms 远大于批截止 2500ms ⇒ 必然探不到
+    let base = start_mixed_up(REAL_CASE, FAST, SLOW, 9000).await;
+    let mut list: Vec<StreamCandidate> = (0..FAST)
+        .map(|i| StreamCandidate::new(format!("{base}/f{i}.m3u8"), StreamKind::Hls))
+        .chain(
+            (0..SLOW).map(|i| StreamCandidate::new(format!("{base}/s{i}.m3u8"), StreamKind::Hls)),
+        )
+        .collect();
+
+    let sw = std::time::Instant::now();
+    probe_candidates(&mut list).await;
+    let elapsed_ms = sw.elapsed().as_millis() as u64;
+
+    for (i, c) in list.iter().take(FAST).enumerate() {
+        assert_eq!(
+            c.playlist_total_ms,
+            Some(82_720),
+            "快候选 {i} 必须拿到清单事实（82.72s）"
+        );
+    }
+    for (i, c) in list.iter().skip(FAST).enumerate() {
+        assert_eq!(
+            c.playlist_total_ms, None,
+            "★ 慢候选 {i} 超时后必须是 None（未知），绝不许被写成任何数字"
+        );
+        assert!(
+            !c.playlist_discontinuous,
+            "慢候选 {i} 没有事实 ⇒ discontinuous 也必须是 false"
+        );
+    }
+    assert!(
+        elapsed_ms <= 4_500,
+        "混合场景墙钟 {elapsed_ms}ms 超界（慢端 9000ms 说明没被批截止拦住）"
+    );
+    println!("P9_MIXED fast={FAST} slow={SLOW} elapsed_ms={elapsed_ms}");
+}
+
 /// ★ P9 主判据：8 条候选、每条清单慢 1200ms ⇒ 批探测总耗时必须有硬上限
 ///
 /// 串行实现的实测最坏 = 8×1200 ≈ 9600ms ⇒ **本条必红**（红即立案成立）。

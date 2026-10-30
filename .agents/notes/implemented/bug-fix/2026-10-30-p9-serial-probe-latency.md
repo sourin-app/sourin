@@ -77,16 +77,55 @@ Owner 在 1.3 明确过「先试缓存方案（不增加起播延迟）」。为
 这比"等 38 秒把所有读数凑齐"好得多——用户要的是能马上播，时长读数是次要信息，
 且没探到的线路退回修复前行为（mpv 广播值），不会更差。
 
-门禁读数（带退出码，非"grep 没匹配到 FAILED"）：
+**门禁读数（2026-10-30 批末复跑，带退出码）**：
 
 ```text
-cargo test --test playlist_facts_wire --release  ⇒ 12 passed / 0 failed（RC=0）
-cargo test --lib --release                       ⇒ 1933 passed / 0 failed（RC=0）
-cargo test --tests --release                     ⇒ 见下方最终读数
+cargo test --lib --release   ⇒ 1933 passed / 0 failed（RC=0）
+flutter test 本批三门禁       ⇒ 25 passed / 0 failed（RC=0）
+flutter analyze              ⇒ errors=0（warnings=385 / info=1609，均非本批引入）
+agent_notes_gate             ⇒ tree / format / archived 三绿
 ```
 
 源码级门禁同时钉住反向约束：`!src.contains("probe_candidate(c).await;")`
 ——不许退回循环内逐个 await。
+
+## 真机复核（2026-10-30 23:07 / 23:10，appqk「仙逆」第1集）
+
+并发化后在真机上补测过。遥控 `play_item` → `/api/state` 轮询到 `playing=true` 的墙钟：
+
+```text
+23:07:25.531 [PLAY] 清单事实 id~=csp-appyqk-af741cf6::129 total_ms=Some(1315633) discontinuous=true
+             ⇒ /api/state 同上：dur=1315（清单真值，非 mpv 分片伪影）
+23:07:58.821 又一次 total_ms=Some(1235833) ⇒ dur=1235
+```
+
+即：并发化后**清单事实照样条条拿到**（这两条都走了 master.m3u8 追子清单的路径），
+起播没有被 2500ms 批截止截掉 —— 修 P9 没有以牺牲 P7 的读数为代价。
+
+**必须如实记的反例（同一条目第三次，23:10:01）**：
+
+```text
+23:10:01.129 [PLAY] 起播 kind=mp4 url=…master.m3u8?sign=…&t=1793372999
+             —— 前一行没有「清单事实」，/api/state dur=6（mpv 分片伪影读数）
+23:10:30.305 [PLAY] 起播 kind=mp4 url=…/2478077/…/master.m3u8?t=1793373028
+23:10:36.161 [PLAY] 起播失败：Failed to open …（耗时 5.88s，network-timeout=5s）
+```
+
+三次起播的是同一条内容、同一个上游域名，前两次拿到事实、第三次留 None。
+差异在**上游对这次探测的响应速度**，不在代码分支 —— 候选都是 kind=mp4 但 URL 以
+`.m3u8` 结尾，走的是同一个 `should_probe_candidate` 判据，`t=` 时间戳参数每次都不同。
+最合理的解释：单候选 1500ms 预算内这次上游没应答（或整体撞上 2500ms 批截止），
+按约束③留 None，于是 Dart 侧退回 mpv 广播值 6。
+
+**结论：这是设计内行为，不是回归。** 约束③本来就是"读不到就留 None，绝不编读数"，
+代价是这次的时长读数退回修复前形态。反面印证了当初**不许**为了凑齐读数而放宽预算
+的取舍是对的：若为了这次拿到事实去加预算，就是拿起播延迟换次要信息。
+
+**仍未闭环的一项（如实记录）**：真机「多线路内容点开变快了多少」至今没有可信数字。
+本批实测到的都是单候选形态（sources=1，聚合条目 resolve 后只剩 1 条可播候选），
+修前 9615ms/38457ms 那两个数是**门禁里构造的 8/32 候选慢清单**，真机里没有出现过
+8 条候选同时需探测的样本。所以"真机上 N×1500ms 的排队到底消没消"这个问题，
+本批**证到并发化没拖慢起播、没丢读数即可，加速幅度无真机样本，不编数字**。
 
 如实记录的边界：
 

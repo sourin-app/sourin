@@ -1,12 +1,13 @@
-# resolve 链路读 HLS 清单，把真实整集时长带进候选（task-8「6 秒」问题）
+# Agent Note: resolve 链路读 HLS 清单，把真实整集时长带进候选（task-8「6 秒」问题）
 
-- Status: implemented
-- 日期: 2026-10-30
-- 任务: task-8（Owner「大部分都是播放都是6秒」——真机取证定论：时长读数错，不是内容短）
-- 相关: [../feature/2026-10-29-share-page-play-resolves-to-direct-link.md](../feature/2026-10-29-share-page-play-resolves-to-direct-link.md)
+Status: implemented
+
+日期: 2026-10-30
+任务: task-8（Owner「大部分都是播放都是6秒」——真机取证定论：时长读数错，不是内容短）
+相关: [../feature/2026-10-29-share-page-play-resolves-to-direct-link.md](../feature/2026-10-29-share-page-play-resolves-to-direct-link.md)
   （同一 resolve 出口填字段，链路本身不动）。Independent: 不取代该篇。
 
-## 取证事实（lead 定论，勿再猜）
+## Problem
 
 ```text
 那条 dur=6 的「第33集」清单原文（.probe 取证，tests/live_probe_6s_stream.rs）：
@@ -18,7 +19,7 @@
 Owner 否掉时长阈值做法（「不应该以时间判断」），已 revert（49345b0）。
 ```
 
-## 改动
+## Decision
 
 1. `model.rs` StreamCandidate 新增两字段（serde camelCase，契约逐字）：
    - `playlist_total_ms: Option<u64>` → JSON `playlistTotalMs`（skip if None）
@@ -34,7 +35,7 @@ Owner 否掉时长阈值做法（「不应该以时间判断」），已 revert�
    拿到事实就 `applog::write_file_log("PLAY", "清单事实 …")` 落文件日志（排障用）。
 4. `providers/m3u_live.rs`：补新字段初始化（直播流恒 None/false —— 硬约束①的静态形态）。
 
-## Alternatives
+## Alternatives considered
 
 ```text
 A. 用时长阈值标样片/跳过 —— Owner 逐字否掉（「不应该以时间判断」），已 revert（49345b0）。
@@ -44,7 +45,7 @@ D. 每候选各给 1500ms —— 3 条 hls 候选最坏 4.5s，起播被拖慢�
 E. 在 maybe_proxy 之后读清单 —— 本地代理地址读清单无意义且可能改变事实来源，砍。
 ```
 
-## 验证结果（门禁 + 注入证红 + 全量）
+## Consequences
 
 ```text
 门禁 rust/sourin_core/tests/playlist_facts_wire.rs（独立新建）:
@@ -65,7 +66,7 @@ E. 在 maybe_proxy 之后读清单 —— 本地代理地址读清单无意义�
   --tests 口径读数见提交前最终记录（无编译错）。
 ```
 
-## 守卫补漏（同日真机实测，仍在本任务范围）
+## Consequences（续）：守卫补漏
 
 ```text
 现象：csp-appyqk「老舅除三害」（就是取证里 82.72s 的清单）起播了但无「清单事实」行、

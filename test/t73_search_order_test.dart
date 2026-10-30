@@ -642,9 +642,31 @@ void main() {
         isTrue,
         reason: '切片没覆盖 _addHit 的函数体 ⇒ 下面的断言是空判据',
       );
-      expect(body.contains('rankHitGroups(keyword, ['), isTrue);
-      expect(body.contains('items: rankItemsByTitleDesc(keyword, ev.items),'),
-          isTrue);
+      // ★ 2026-10-28（4aa0f35）起聚合事件先按子站拆开再入表：
+      //   splitAggregateHit 产出每子站一组 ⇒ 逐组 rankItemsByTitleDesc
+      //   ⇒ 整表仍走 rankHitGroups 重排。四条都要在位，缺一条就退化回旧行为。
+      expect(
+        body.contains('rankHitGroups(keyword, ['),
+        isTrue,
+        reason: '整表（含拆开的子站组）仍必须走 rankHitGroups 重排',
+      );
+      expect(
+        body.contains('splitAggregateHit(ev'),
+        isTrue,
+        reason: '聚合事件必须先按子站拆开（splitAggregateHit）——'
+            '把整事件挤成一组是 4aa0f35 之前的旧行为',
+      );
+      expect(
+        body.contains('for (final g in groups)'),
+        isTrue,
+        reason: '拆出的每个子站组都必须单独成条',
+      );
+      expect(
+        body.contains('items: rankItemsByTitleDesc(keyword, g.items),'),
+        isTrue,
+        reason: '组内必须逐子站组用 rankItemsByTitleDesc 排 —— '
+            '老锚点钉的是整事件单组形态（ev.items），4aa0f35 后是 g.items',
+      );
     });
 
     test('⑧-4 hit 分支走 _addHit（关键词是闭包捕获的 kw）', () {
@@ -721,10 +743,29 @@ void main() {
     test('⑨-1 纯追加的写法已消失', () {
       final clean = stripComments(srcOf('lib/ui/search_page.dart'));
       // 改之前：_hits = [..._hits, (provider: ev.provider, name: ..., items: ev.items)];
+      //
+      // ★ 2026-10-28（4aa0f35）：唯一合法的 `items: ev.items` 在
+      //   splitAggregateHit 的非聚合兜底分支里 —— 那是**拆分器**的输入
+      //   透传，排序由调用方（rankHitGroups + 组内 rankItemsByTitleDesc）
+      //   补上。⇒ 把 splitAggregateHit 函数体整体挖掉后再断言：
+      //   其余任何地方（尤其 _addHit 的入表路径）出现 `items: ev.items`
+      //   都算纯追加回归。
+      const defAnchor = 'List<SearchHitGroup> splitAggregateHit(';
+      const endAnchor = 'class SearchPage extends StatefulWidget {';
+      final a = clean.indexOf(defAnchor);
+      final b = a < 0 ? -1 : clean.indexOf(endAnchor, a);
       expect(
-        clean.contains('items: ev.items'),
+        a >= 0 && b > a,
+        isTrue,
+        reason: 'splitAggregateHit 函数不见了或门禁锚点漂移 ⇒ 本条失效，'
+            '必须随代码同步更新（不许静默放行）',
+      );
+      final outside = clean.substring(0, a) + clean.substring(b);
+      expect(
+        outside.contains('items: ev.items'),
         isFalse,
-        reason: '组内没有排序（直接透传 ev.items）',
+        reason: '拆分器之外出现 items: ev.items ⇒ 组内没有排序'
+            '（绕过 rankItemsByTitleDesc 直接透传），纯追加写法回来了',
       );
     });
 

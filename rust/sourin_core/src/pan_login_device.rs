@@ -635,7 +635,7 @@ fn device_code_info(body: &str, label: &str) -> Result<DeviceCodeInfo, String> {
     if verification_uri_complete.is_empty() {
         return Err(format!(
             "{label}的设备码响应里没有 verification_uri_complete ⇒ 没有可编成二维码的 URL。\
-             （本模块**不**用别的字段拼一个替代品：那会造出一个看起来能扫、实际扫不动的码）\
+             （本模块不用别的字段拼一个替代品：那会造出一个看起来能扫、实际扫不动的码）\
              响应摘要：{}",
             tail(body)
         ));

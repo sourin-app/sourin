@@ -527,7 +527,7 @@ pub fn play_status_error(v: &Value) -> Option<String> {
     let info = v.get("info").and_then(|s| s.as_str()).unwrap_or("");
     Some(match code {
         403 => format!(
-            "上游 1905 取流被拒：StatusCode=403（{info}）—— 参数齐全但**签名不被接受**；\
+            "上游 1905 取流被拒：StatusCode=403（{info}）—— 参数齐全但签名不被接受；\
              DEX 逐字的 SHA-1 变体 52 种全 403（.probe/api-fix/1905_sig_matrix.out.txt）\
              ⇒ 服务端签名密钥/算法已变，该源取流当前不可用"
         ),

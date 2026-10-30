@@ -587,7 +587,7 @@ impl Duboku {
             let head = body.chars().take(60).collect::<String>();
             return Err(format!(
                 "上游 Duboku 返回 HTTP {status}（{url}）：body={head:?} —— {}；\
-                 分档：400=我方缺参数（本站要 DEX 的 b() 三段）；417/5xx=**上游不可用**\
+                 分档：400=我方缺参数（本站要 DEX 的 b() 三段）；417/5xx=上游不可用\
                  （实测 2026-10-29 就是这条：带 b() 三段后由 400 变 417）\
                  （证据：.probe/api-fix/duboku_token_probe.out.txt）",
                 classify_upstream(status.as_u16(), &body)

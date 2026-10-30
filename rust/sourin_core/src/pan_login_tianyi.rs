@@ -44,7 +44,7 @@ pub fn is_tianyi_login(kind: PanKind) -> bool {
 }
 
 /// 天翼出码的失败文案（**唯一一处**，`start` 与测试共用同一句判据）
-pub const TIANYI_UNSUPPORTED: &str = "天翼云盘的扫码登录**做不完整**：出码那一跳（getUUID.do）能通，\
+pub const TIANYI_UNSUPPORTED: &str = "天翼云盘的扫码登录做不完整：出码那一跳（getUUID.do）能通，\
      但轮询（qrcodeLoginState.do）依赖 logbox 会话里的 `paramId/reqId`，\
      而 `loginUrl.action` 改版后只给 `paras/sign`（appConf.do 直接回 22001 非正确来源，\
      qrcodeLoginState.do 回 -20099 页面已过期）⇒ 给一个扫了也没结果的码没有意义。\

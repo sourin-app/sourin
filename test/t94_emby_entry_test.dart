@@ -207,6 +207,30 @@ void main() {
          *   （它是公开入口、在别的文件里被引用）⇒ 真正的"漏接线"仍被守住。
          */
         'EpisodeSheet': 'EpisodePanel 的内部实现件（同文件）；公开入口 EpisodePanel 已被接线',
+        /*
+         * ★★★ TvboxAggregateLinkDialog / TvboxAggregateSitesDialog（2026-10-31 排查）：
+         *   与 EpisodeSheet **同一形态**的误报 —— 「公开壳（页面）+ 内部弹窗同文件」。
+         * ```text
+         * tvbox_aggregate_page.dart:
+         *   class TvboxAggregatePage        ← 公开入口：settings_page.dart 5 处
+         *                                     `const TvboxAggregatePage()`（已接线 ✓）
+         *   class TvboxAggregateLinkDialog  ← 内部件：只被本文件 _openLinkDialog 构造
+         *                                     （「编辑链接…」按钮 agg-edit-link）
+         *   class TvboxAggregateSitesDialog ← 内部件：只被本文件 _openSitesDialog 构造
+         *                                     （「管理子源…」按钮 agg-manage-sites）
+         * ```
+         * 用户真实路径存在：设置 → TVBox 聚合 → 编辑链接… / 管理子源…
+         * （git 取证：50ada81 拆出这两个弹窗时就放在页面同文件里，从未有外部
+         *   引用；当时守卫已扫 *Dialog ⇒ 本条红自那一提交起，是**口径盲区**
+         *   而不是漏接 —— 该提交只跑了 zz_t1049/zz_t1088，没跑 t94。）
+         * ⚠️ 不是"放它一马"：接线另有行为层守卫 —— zz_t1049 会真点
+         *   `agg-manage-sites` 按钮走完弹窗流程，zz_t1088 直挂两个弹窗断言职责
+         *   边界；谁把按钮摘掉，那两处会当场红，白名单不会替它遮掩。
+         */
+        'TvboxAggregateLinkDialog':
+            'TvboxAggregatePage 的内部弹窗（同文件「编辑链接…」按钮打开）；页面已被 settings_page.dart 接线，行为由 zz_t1088 直挂守住',
+        'TvboxAggregateSitesDialog':
+            'TvboxAggregatePage 的内部弹窗（同文件「管理子源…」按钮打开）；页面已被 settings_page.dart 接线，点击路径由 zz_t1049 守住',
       };
 
       for (final e in dir.listSync(recursive: true)) {

@@ -2385,7 +2385,7 @@ pub async fn qr_login_start(kind: PanKind) -> Result<QrSession, String> {
          * ⇒ 画一个码只会扫不动。
          */
         PanKind::Pan123 => Err(
-            "123 云盘**没有扫码登录**这条路：官方只有账号密码登录\
+            "123 云盘没有扫码登录这条路：官方只有账号密码登录\
              （login.123pan.com/api/user/sign_in）与 open-api 开发者令牌，\
              两者都不是二维码 ⇒ 不画一个扫不动的码"
                 .to_string(),

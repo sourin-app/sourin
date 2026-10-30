@@ -1,4 +1,4 @@
-﻿{
+{
     "live_cctv_real_test.dart":  {
                                      "audited":  true,
                                      "lastAudited":  "2026-10-21",
@@ -6,10 +6,10 @@
                                      "result":  "+1 ~0 -0"
                                  },
     "live_keyboard_shortcuts_test.dart":  {
-                                              "audited":  false,
+                                              "audited":  true,
                                               "lastAudited":  "2026-10-31",
-                                              "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                              "result":  null
+                                              "note":  "单跑 --run-skipped --tags native-media：+7 全绿",
+                                              "result":  "+7"
                                           },
     "live_referer_onwire_test.dart":  {
                                           "audited":  true,
@@ -78,46 +78,46 @@
                                              "result":  "+16 ~0 -0"
                                          },
     "t20261030_agg_source_title_test.dart":  {
-                                                 "audited":  false,
+                                                 "audited":  true,
                                                  "lastAudited":  "2026-10-31",
-                                                 "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                                 "result":  null
+                                                 "note":  "单跑 --run-skipped --tags native-media：+5 全绿",
+                                                 "result":  "+5"
                                              },
     "t20261030_display_title_follow_test.dart":  {
-                                                     "audited":  false,
+                                                     "audited":  true,
                                                      "lastAudited":  "2026-10-31",
-                                                     "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                                     "result":  null
+                                                     "note":  "单跑 --run-skipped --tags native-media：+10 全绿",
+                                                     "result":  "+10"
                                                  },
     "t20261030_duration_arrival_no_replay_test.dart":  {
-                                                           "audited":  false,
+                                                           "audited":  true,
                                                            "lastAudited":  "2026-10-31",
-                                                           "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                                           "result":  null
+                                                           "note":  "单跑 --run-skipped --tags native-media：+3 全绿",
+                                                           "result":  "+3"
                                                        },
     "t20261030_episode_number_align_test.dart":  {
-                                                     "audited":  false,
+                                                     "audited":  true,
                                                      "lastAudited":  "2026-10-31",
-                                                     "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                                     "result":  null
+                                                     "note":  "单跑 --run-skipped --tags native-media：+3 全绿",
+                                                     "result":  "+3"
                                                  },
     "t20261030_playlist_total_duration_test.dart":  {
-                                                        "audited":  false,
+                                                        "audited":  true,
                                                         "lastAudited":  "2026-10-31",
-                                                        "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                                        "result":  null
+                                                        "note":  "单跑 --run-skipped --tags native-media：+6 全绿",
+                                                        "result":  "+6"
                                                     },
     "t20261030_remote_state_line_test.dart":  {
-                                                  "audited":  false,
+                                                  "audited":  true,
                                                   "lastAudited":  "2026-10-31",
-                                                  "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                                  "result":  null
+                                                  "note":  "run1 ② 组 setUpAll 偶发失败（+3 -1），按规程重试一次 +3 全绿 —— 偶发环境抖动，非恒红断言",
+                                                  "result":  "+3"
                                               },
     "t20261030_sample_line_test.dart":  {
-                                            "audited":  false,
+                                            "audited":  true,
                                             "lastAudited":  "2026-10-31",
-                                            "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                            "result":  null
+                                            "note":  "单跑 --run-skipped --tags native-media：+9 全绿",
+                                            "result":  "+9"
                                         },
     "t26_w4_mirror_episode_test.dart":  {
                                             "audited":  true,
@@ -126,10 +126,10 @@
                                             "result":  "+2 ~0 -0"
                                         },
     "t27_w1_online_first_test.dart":  {
-                                          "audited":  false,
+                                          "audited":  true,
                                           "lastAudited":  "2026-10-31",
-                                          "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                          "result":  null
+                                          "note":  "单跑 --run-skipped --tags native-media：+3 全绿（T27W1-③ 读数正常打印）",
+                                          "result":  "+3"
                                       },
     "t27_w15_return_cache_norebuild_test.dart":  {
                                                      "audited":  false,
@@ -168,16 +168,16 @@
                                                   "result":  "+4 ~0 -0"
                                               },
     "t27_w4_local_fav_play_test.dart":  {
-                                            "audited":  false,
+                                            "audited":  true,
                                             "lastAudited":  "2026-10-31",
-                                            "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                            "result":  null
+                                            "note":  "单跑 --run-skipped --tags native-media：+5 全绿",
+                                            "result":  "+5"
                                         },
     "t27_w6_live_switch_adopt_test.dart":  {
-                                               "audited":  false,
+                                               "audited":  true,
                                                "lastAudited":  "2026-10-31",
-                                               "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                               "result":  null
+                                               "note":  "单跑 --run-skipped --tags native-media：+1 全绿",
+                                               "result":  "+1"
                                            },
     "t27_w9_bar_linkage_test.dart":  {
                                          "audited":  true,
@@ -264,16 +264,16 @@
                                                "result":  "+1 ~0 -0"
                                            },
     "zz_cr_local_row_trash_hover_test.dart":  {
-                                                  "audited":  false,
+                                                  "audited":  true,
                                                   "lastAudited":  "2026-10-31",
-                                                  "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                                  "result":  null
+                                                  "note":  "单跑 --run-skipped --tags native-media：+4 全绿",
+                                                  "result":  "+4"
                                               },
     "zz_cr_local_select_ui_test.dart":  {
-                                            "audited":  false,
+                                            "audited":  true,
                                             "lastAudited":  "2026-10-31",
-                                            "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                            "result":  null
+                                            "note":  "单跑 --run-skipped --tags native-media：+5 全绿",
+                                            "result":  "+5"
                                         },
     "zz_cr_panel_double_enter_test.dart":  {
                                                "audited":  true,
@@ -306,10 +306,10 @@
                                                     "result":  "+7 ~0 -0"
                                                 },
     "zz_media_r1_local_open_probe_test.dart":  {
-                                                   "audited":  false,
+                                                   "audited":  true,
                                                    "lastAudited":  "2026-10-31",
-                                                   "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                                   "result":  null
+                                                   "note":  "单跑 --run-skipped --tags native-media：+1 全绿（R2 含「第0」行数=3）",
+                                                   "result":  "+1"
                                                },
     "zz_media_shots_test.dart":  {
                                      "audited":  true,
@@ -372,10 +372,10 @@
                                                     "result":  "+16 ~0 -0"
                                                 },
     "zz_t1024_chrome_autohide_hittest_test.dart":  {
-                                                       "audited":  false,
+                                                       "audited":  true,
                                                        "lastAudited":  "2026-10-31",
-                                                       "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                                       "result":  null
+                                                       "note":  "单跑 --run-skipped --tags native-media：+2 全绿",
+                                                       "result":  "+2"
                                                    },
     "zz_t1024_midroll_skip_test.dart":  {
                                             "audited":  true,
@@ -414,10 +414,10 @@
                                              "result":  "+7 ~0 -0"
                                          },
     "zz_t12_defect_a_probe_test.dart":  {
-                                            "audited":  false,
+                                            "audited":  true,
                                             "lastAudited":  "2026-10-31",
-                                            "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                            "result":  null
+                                            "note":  "单跑 --run-skipped --tags native-media：+3 全绿",
+                                            "result":  "+3"
                                         },
     "zz_t12_local_play_probe_test.dart":  {
                                               "audited":  true,
@@ -426,10 +426,10 @@
                                               "result":  "+1 ~0 -0"
                                           },
     "zz_t20261030_native_media_tag_gate_test.dart":  {
-                                                         "audited":  false,
+                                                         "audited":  true,
                                                          "lastAudited":  "2026-10-31",
-                                                         "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                                         "result":  null
+                                                         "note":  "门禁自身不挂 native-media 标签（源码扫描型），--tags native-media 跑 0 匹配（RC=79 无测试可跑，非崩溃）；去 tag 选择器单跑 +3 全绿",
+                                                         "result":  "+3"
                                                      },
     "zz_t3_flash_probe_test.dart":  {
                                         "audited":  true,
@@ -450,16 +450,16 @@
                                                     "result":  "+9 ~0 -0"
                                                 },
     "zz_t66_n11_bottombar_test.dart":  {
-                                           "audited":  false,
+                                           "audited":  true,
                                            "lastAudited":  "2026-10-31",
-                                           "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                           "result":  null
+                                           "note":  "单跑 --run-skipped --tags native-media：+6 全绿（T4 p50=6.3ms max=7.2ms）",
+                                           "result":  "+6"
                                        },
     "zz_t66_player_jank_perf_test.dart":  {
-                                              "audited":  false,
+                                              "audited":  true,
                                               "lastAudited":  "2026-10-31",
-                                              "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                              "result":  null
+                                              "note":  "单跑 --run-skipped --tags native-media：+3 全绿（p50/p99 均在预算内）",
+                                              "result":  "+3"
                                           },
     "zz_t66_player_jank_test.dart":  {
                                          "audited":  true,
@@ -474,15 +474,15 @@
                                                   "result":  "+1 ~0 -0"
                                               },
     "zz_t66_r5_live_mute_default_test.dart":  {
-                                                  "audited":  false,
+                                                  "audited":  true,
                                                   "lastAudited":  "2026-10-31",
-                                                  "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                                  "result":  null
+                                                  "note":  "单跑 --run-skipped --tags native-media：+1 全绿（初始化音量 muted=true）",
+                                                  "result":  "+1"
                                               },
     "zz_t66_r6b_live_toggle_test.dart":  {
-                                             "audited":  false,
+                                             "audited":  true,
                                              "lastAudited":  "2026-10-31",
-                                             "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
-                                             "result":  null
+                                             "note":  "单跑 --run-skipped --tags native-media：+8 全绿",
+                                             "result":  "+8"
                                          }
 }

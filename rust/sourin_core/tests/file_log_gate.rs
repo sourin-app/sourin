@@ -124,3 +124,40 @@ fn call_sites_wire_write_file_log() {
         seg.lines().next().unwrap_or("")
     );
 }
+
+/// 错误消息脱敏门禁（2026-10-30 真机抽测暴露：67 条失败只记 kind=Other，等于没写日志）
+///
+/// 判据三条，缺一不可：
+/// ```text
+/// ① URL 的 query/fragment 必须去掉（凭据常在 pwd=/token= 里）
+/// ② >=40 字符的连续 token 串必须整体替换成 <redacted>（JWT / OSS 签名 / md5）
+/// ③ 正常中文错误消息必须**原样保留**（脱敏不许把诊断价值一起洗掉）
+/// ```
+/// 注入证红：把 scrub_err_msg 改成恒等函数 ⇒ ①② 必红。
+#[test]
+fn scrub_err_msg_removes_credentials_keeps_diagnosis() {
+    use sourin_core::applog::scrub_err_msg;
+
+    // ① query / fragment 去掉，但 host+path 保留（那是诊断要看的）
+    let raw = "解析失败 https://pan.quark.cn/s/abc123?pwd=x9f2&token=abc#frag";
+    let got = scrub_err_msg(raw);
+    assert!(got.contains("pan.quark.cn/s/abc123"), "host+path 必须保留：{got}");
+    assert!(!got.contains("pwd="), "query 必须去掉：{got}");
+    assert!(!got.contains("token="), "query 必须去掉：{got}");
+    assert!(!got.contains("#frag"), "fragment 必须去掉：{got}");
+
+    // ② 长 token 整体脱敏（OSS 签名 / JWT 那类）
+    let raw = "取直链返回 HTTP 400 Signature=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef";
+    let got = scrub_err_msg(raw);
+    assert!(!got.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef"), "长串必须脱敏：{got}");
+    assert!(got.contains("<redacted>"), "必须留下脱敏标记（否则看不出这里被处理过）：{got}");
+    assert!(got.contains("HTTP 400"), "状态码必须保留（诊断要用）：{got}");
+
+    // ③ 正常中文错误原文逐字保留（不许把诊断价值洗掉）
+    let raw = "该分享的文件超出夸克下载上限，请换一条线路（已尝试 1 个候选）";
+    assert_eq!(scrub_err_msg(raw), raw, "正常错误文案必须原样保留");
+
+    // ④ 短 token 不误伤（文件名 / 短 id 不该被抹）
+    let raw = "找不到子站 csp-4kzhinan-47098b5a::20327";
+    assert_eq!(scrub_err_msg(raw), raw, "短标识不该被脱敏");
+}

@@ -55,6 +55,85 @@ fn log_file_path() -> Option<std::path::PathBuf> {
     )
 }
 
+/// 错误消息脱敏：保留"人能看懂哪里错了"的部分，去掉可能带凭据的 URL query 与长串
+///
+/// # 为什么要它（2026-10-30 真机抽测暴露）
+///
+/// `resolve 失败 … kind=Other` 这种日志**等于没写** —— 67 条失败全是 `Other`，
+/// 一个原因都看不出来。必须记 `e.message`，但 message 里常带分享页 URL / token：
+///
+/// ```text
+/// 原始：解析失败 https://pan.quark.cn/s/abc?pwd=xxxx&token=eyJhbGciOi...
+/// 脱敏：解析失败 https://pan.quark.cn/s/abc
+/// ```
+///
+/// # 规则（保守：宁可少记，不可漏记凭据）
+///
+/// ```text
+/// ① 去掉每个 URL 的 `?query` 与 `#fragment`
+/// ② 连续 >=40 字符的 [A-Za-z0-9_\-\.=] 长串 → `<redacted>`
+///    （JWT / OSS 签名 / md5 token 都在这个形态里）
+/// ③ 总长截到 240 字符（够看清原因，不撑爆日志）
+/// ```
+pub fn scrub_err_msg(raw: &str) -> String {
+    // ① 去 URL query / fragment：逐字符扫，遇到 '?' 或 '#' 且当前在 URL 里就跳过直到空白
+    let mut no_query = String::with_capacity(raw.len());
+    let mut in_url = false;
+    let mut skipping = false;
+    for ch in raw.chars() {
+        if skipping {
+            // query 段一直吃到空白或引号
+            if ch.is_whitespace() || ch == '"' || ch == '\'' || ch == ')' {
+                skipping = false;
+                no_query.push(ch);
+            }
+            continue;
+        }
+        if !in_url && ch == ':' {
+            // 粗略判断：下一个是 '//' 说明进了 URL（本函数只用于日志，不求精确）
+            in_url = true;
+        }
+        if in_url && (ch == '?' || ch == '#') {
+            skipping = true;
+            continue;
+        }
+        if ch.is_whitespace() {
+            in_url = false;
+        }
+        no_query.push(ch);
+    }
+
+    // ② 长串脱敏：连续 token 字符 >= 40 视为凭据
+    let mut out = String::with_capacity(no_query.len());
+    let mut run = String::new();
+    let is_tok = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '=');
+    let flush = |run: &mut String, out: &mut String| {
+        if run.chars().count() >= 40 {
+            out.push_str("<redacted>");
+        } else {
+            out.push_str(run);
+        }
+        run.clear();
+    };
+    for ch in no_query.chars() {
+        if is_tok(ch) {
+            run.push(ch);
+        } else {
+            flush(&mut run, &mut out);
+            out.push(ch);
+        }
+    }
+    flush(&mut run, &mut out);
+
+    // ③ 截长
+    let trimmed: String = out.chars().take(240).collect();
+    if trimmed.chars().count() < out.chars().count() {
+        format!("{trimmed}…")
+    } else {
+        trimmed
+    }
+}
+
 /// 往当天日志文件追加一行 `<ts> [<tag>] <msg>`（失败静默）
 ///
 /// 行格式与 Dart `AppLog`（lib/core/app_log.dart:53-60）逐字同形：

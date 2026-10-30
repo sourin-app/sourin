@@ -178,10 +178,19 @@ pub async fn resolve_stream(
          */
         .map_err(|e| {
             let id_head: String = id.chars().take(24).collect();
+            /*
+             * ★★★ 2026-10-30（本批真机抽测暴露）：原来只记 `kind={:?}`（错误类别枚举），
+             * 结果 67 条失败全是 `kind=Other` —— **真实原因一个字都没有**，
+             * 等于白加了这条日志。排障必须看到 `e.message`。
+             *
+             * 脱敏口径（不变）：message 里可能带 URL/token，所以走 scrub_err_msg
+             * 去掉 query 部分与长串凭据，只保留"人能看懂哪里错了"的那截。
+             */
+            let msg = crate::applog::scrub_err_msg(&e.message);
             crate::applog::write_file_log(
                 "PLAY",
                 &format!(
-                    "resolve 失败 provider={provider} id~={id_head} kind={:?} needs_login={}",
+                    "resolve 失败 provider={provider} id~={id_head} kind={:?} needs_login={} msg={msg}",
                     e.kind, e.needs_login
                 ),
             );

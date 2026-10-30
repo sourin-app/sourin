@@ -1,6 +1,8 @@
 # Agent Note: 线路切换集数对齐 —— _pickEpisodeFlag 改集号归一化，匹配不到停当前集号
 
-Status: implemented（面板切线路路径）；遥控 switch_source 路径**等真机复现**（见边界）
+Status: implemented
+
+Scope: 面板切线路路径已落地；遥控 switch_source 路径等真机复现（见边界）。
 
 Independent: 判据本体 episodeNumberOf 与 1.1 同文件（widgets/episode_filter.dart）；
 与 2026-10-29-aggregate-episode-id-prefix-broke-pan-play（播放链路 id 前缀）不同层。

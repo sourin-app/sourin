@@ -117,4 +117,4 @@ cargo test --lib csp::seed_hub --release → 18 passed / 0 failed / 1 ignored
 ## Relations
 
 - 同批源数口径：[../feature/2026-10-29-restore-auto-disabled-sources.md](../feature/2026-10-29-restore-auto-disabled-sources.md)
-- 另一类"源坏"（上游关搜索/站点死）：[./2026-10-29-five-failing-sources-triage.md](./2026-10-29-five-failing-sources-triage.md)
+- 另一类"源坏"（上游关搜索/站点死）：[../bug-fix/2026-10-29-five-failing-sources-triage.md](../bug-fix/2026-10-29-five-failing-sources-triage.md)

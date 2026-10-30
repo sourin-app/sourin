@@ -1,14 +1,15 @@
-# csp resolve 剧集 id「URL 直通」判据（23018 猎捕二轮零日志死点）
+# Agent Note: csp resolve 剧集 id「URL 直通」判据（23018 猎捕二轮零日志死点）
 
-- Status: implemented
-- 日期: 2026-10-30
-- 任务: 23018 猎捕二轮诊断的修复（lead 授权：判据行 + playback 日志行，最小面）
-- 相关: [../bug-fix/2026-10-29-aggregate-episode-id-prefix-broke-pan-play.md](../bug-fix/2026-10-29-aggregate-episode-id-prefix-broke-pan-play.md)
+Status: implemented
+
+日期: 2026-10-30
+任务: 23018 猎捕二轮诊断的修复（lead 授权：判据行 + playback 日志行，最小面）
+相关: [../bug-fix/2026-10-29-aggregate-episode-id-prefix-broke-pan-play.md](../bug-fix/2026-10-29-aggregate-episode-id-prefix-broke-pan-play.md)
   （同一条 resolve 链路的上一段修复——聚合 episode 前缀对称剥离；本篇修的是剥完前缀之后的**下一跳**，不取代它）；
   [../feature/2026-10-29-share-page-play-resolves-to-direct-link.md](../feature/2026-10-29-share-page-play-resolves-to-direct-link.md)
   （分享兜底→直链链路本身原样保留，本篇只是让 URL 形剧集 id 能**走到**它）。
 
-## 现象与死点（行号级，现场取证）
+## Problem
 
 ```text
 现象：4K网盘子站（csp-4kzhinan-*）真实剧集条目 9 条全部未起播，
@@ -23,7 +24,7 @@
       无 resolve 缓存短路（playback.rs:149-168 直通）；dedupe 停用不挡 route（registry.get 不看 enabled）。
 ```
 
-## 改动
+## Decision
 
 1. `csp/provider.rs`：判据抽成 pub 纯函数 `episode_id_is_direct_play`——
    `contains('|') || starts_with("http://") || starts_with("https://")`；
@@ -38,7 +39,7 @@
    （include_str! 先例：tvbox_aggregate.rs:2720；`for_test` 是 `#[cfg(test)] pub(crate)`，
    集成测试拿不到 ⇒ resolve 级假 site 门禁在 tests/ 搭不了，接线用源码级断言等价钉住）。
 
-## Alternatives
+## Alternatives considered
 
 ```text
 A. 在 zhinan.rs 里特判 URL 形 episode —— 只救一家；gui_gui/hd_moli/juhe_so 等 URL 形剧集
@@ -49,7 +50,7 @@ C. 给 CspProvider 加 pub 测试构造器搭假 site 门禁 —— 超出本次
 D. 只加日志不动判据 —— 日志只能让"零日志"变"一行错误日志"，播放还是死的，砍。
 ```
 
-## 验证结果（门禁 + 注入证红 + 回归）
+## Consequences
 
 ```text
 cargo test --test csp_episode_direct_play --release

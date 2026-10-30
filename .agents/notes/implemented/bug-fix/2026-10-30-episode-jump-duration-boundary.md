@@ -1,12 +1,18 @@
 # Agent Note: ep2→ep1 单次回跳排查 —— 5a07e73 链排除 + duration 边界钉住
 
-Status: implemented（排查 + 边界门禁；非缺陷修复 —— 深查结论见下）
+Status: implemented
+
+Scope: 排查 + 边界门禁；非缺陷修复 —— 深查结论见下。
 
 Independent: 起因是标题跟随真机核对（老舅 cctv 10s 样片连播 70s）中的单次
 ep2→ep1 回跳（t=30→35s，仅一次未复现）。与 cead042/3668667 的无关联判定
 已在上一轮给出（调用图可达性排除）。
 
-## driver-ops 假设（假设标记）与代码级排查结论
+## Problem
+
+主诉：单次 ep2→ep1 回跳（t=30→35s，仅一次未复现）。
+
+**driver-ops 假设（假设标记）与代码级排查结论**
 
 ```text
 假设：10s clip 起播 ~3s 后 duration 测量完成（<60s 命中 1.3 样片判据）
@@ -35,7 +41,9 @@ _onEnded 单集循环是 seek(0)+play 同一条流（无 resolve、无集变化�
 ⇒ App Dart 层没有任何自动路径能产生"落点 ep1"的二次 resolve。
 ```
 
-## 结论（判定）
+## Decision
+
+判定结论：
 
 ```text
 最可能形态：**播放内核/流层重开**，而非 App 切集 ——
@@ -77,7 +85,9 @@ _onEnded 单集循环是 seek(0)+play 同一条流（无 resolve、无集变化�
 否掉的原因：现有链路（completed→_onEnded→index+1）结构性到不了更小 index，
 守卫判不出任何东西（假守卫）；真回跳若来自内核重开，App 侧守卫也拦不住。
 
-## 验证结果（已发生）
+## Consequences
+
+**验证结果（已发生）**
 
 ```text
 门禁：t20261030_duration_arrival_no_replay_test 3 passed
@@ -93,5 +103,5 @@ widget 测试结束时报"Timer still pending"假红 —— 测试内 pump 过�
 
 ## Relations
 
-- 1.3（被假设波及的功能）：[./2026-10-30-sample-line-duration-cache.md](./2026-10-30-sample-line-duration-cache.md)
+- 1.3（被假设波及的功能）：[../feature/2026-10-30-sample-line-duration-cache.md](../feature/2026-10-30-sample-line-duration-cache.md)
 - 标题跟随（真机核对引出本次排查）：[./2026-10-30-display-title-follows-autonext.md](./2026-10-30-display-title-follows-autonext.md)

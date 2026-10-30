@@ -86,4 +86,4 @@ flutter test test/zz_episode_panel_line_segregation_test.dart → 3 passed
 ## Relations
 
 - 播放链路修复（同一天、同一部剧）：[./2026-10-29-aggregate-episode-id-prefix-broke-pan-play.md](./2026-10-29-aggregate-episode-id-prefix-broke-pan-play.md)
-- 聚合搜索按源分组（另一个"分组"口径）：[../feature/2026-10-28-aggregate-keeps-cross-source-same-title.md](../feature/2026-10-28-aggregate-keeps-cross-source-same-title.md)
+- 聚合搜索按源分组（另一个"分组"口径）：[../bug-fix/2026-10-28-aggregate-keeps-cross-source-same-title.md](../bug-fix/2026-10-28-aggregate-keeps-cross-source-same-title.md)

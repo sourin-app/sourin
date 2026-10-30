@@ -87,4 +87,4 @@ cargo test --lib csp::bdjmcc --release → 11 passed / 0 failed / 1 ignored（�
 ## Relations
 
 - 同批"有 host 但取不到"：[./2026-10-29-cloudflare-tls-fingerprint-blocks-seedhub.md](./2026-10-29-cloudflare-tls-fingerprint-blocks-seedhub.md)
-- ext 丢失的另一类原因：[./2026-10-29-ext-sources-dropped-on-probe-failure.md](./2026-10-29-ext-sources-dropped-on-probe-failure.md)
+- ext 丢失的另一类原因：[../bug-fix/2026-10-29-ext-sources-dropped-on-probe-failure.md](../bug-fix/2026-10-29-ext-sources-dropped-on-probe-failure.md)

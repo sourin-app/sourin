@@ -112,4 +112,4 @@ task-32 的接线契约是逐字断言（调用点必须是 `providerName: _prov
 t20261030_agg_source_title_test 5 passed。
 
 - Rust 半边（label 本体）：task-4（rust-core，quark_pick_degrade / agg_label）
-- 同批选集判据公共化：[./2026-10-30-right-detail-line-filter-and-badge.md](./2026-10-30-right-detail-line-filter-and-badge.md)
+- 同批选集判据公共化：[../bug-fix/2026-10-30-right-detail-line-filter-and-badge.md](../bug-fix/2026-10-30-right-detail-line-filter-and-badge.md)

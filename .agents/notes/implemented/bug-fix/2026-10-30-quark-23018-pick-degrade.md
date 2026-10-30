@@ -1,16 +1,17 @@
-# 夸克 23018「download file size limit」选文件策略降级重试
+# Agent Note: 夸克 23018「download file size limit」选文件策略降级重试
 
-- Status: implemented
-- 日期: 2026-10-30
-- 任务: 现场反馈批次任务 5（task-4，执行者 rust-quark）
-- 计划: .probe/plan-2026-10-30-field-feedback-batch.md「### 5 夸克 23018」
-- 相关: [../feature/2026-10-29-share-page-play-resolves-to-direct-link.md](../feature/2026-10-29-share-page-play-resolves-to-direct-link.md)
+Status: implemented
+
+日期: 2026-10-30
+任务: 现场反馈批次任务 5（task-4，执行者 rust-quark）
+计划: .probe/plan-2026-10-30-field-feedback-batch.md「### 5 夸克 23018」
+相关: [../feature/2026-10-29-share-page-play-resolves-to-direct-link.md](../feature/2026-10-29-share-page-play-resolves-to-direct-link.md)
   （那篇建了 resolve_share_play 直链链路与"挑最大"的 pick_share_video，本篇只改**选文件策略**为降级重试，链路本身不动）；
   [../feature/2026-10-29-pan-temp-dir-for-share-save.md](../feature/2026-10-29-pan-temp-dir-for-share-save.md)
   （临时目录转存语义沿用；本篇补"失败尝试也 remember_temp"防堆积）。
   Independent: 不取代上述两篇 —— 它们交付的链路与目录语义原样保留。
 
-## 现状与根因
+## Problem
 
 ```text
 resolve_share_play（rust/sourin_core/src/csp/pan_drive.rs）原逻辑：
@@ -19,7 +20,7 @@ resolve_share_play（rust/sourin_core/src/csp/pan_drive.rs）原逻辑：
 ⇒ 整条链路直接失败 —— 分享里明明有能播的小文件（图4 现场）。
 ```
 
-## 改动
+## Decision
 
 1. `pick_share_video` → `pick_share_candidates`：BFS 收集**候选清单**按体积降序返回
    （视频优先；无视频退回"任意文件"清单，保持旧兜底语义；某层凑够 3 个候选即不再下钻）。
@@ -34,7 +35,7 @@ resolve_share_play（rust/sourin_core/src/csp/pan_drive.rs）原逻辑：
    `play` 对裸 23018 错误追加「（该文件超出账号单文件下载上限）」。
 5. 文案用 `kind.display().trim_end_matches("网盘")`（夸克网盘→夸克 / UC网盘→UC），与 Owner 指定文案逐字对齐。
 
-## Alternatives（为什么这么做）
+## Alternatives considered
 
 ```text
 A. 转 123/网盘中转解析  —— 超范围，砍。
@@ -43,7 +44,7 @@ C. resolve 失败后整体重扫分享 —— 每次都要重新转存+取直链
 D. 降级时把中间错误也弹给用户 —— 会淹没「换线路」主文案；降级过程只进日志 + label 注记。
 ```
 
-## 验证结果（门禁 + 注入证红）
+## Consequences
 
 ```text
 门禁文件: rust/sourin_core/tests/quark_pick_degrade.rs（独立新建，不动共享测试）

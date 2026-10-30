@@ -1,14 +1,15 @@
-# crate 级文件日志直写器 applog::write_file_log（观测黑洞修复·方案 A）
+# Agent Note: crate 级文件日志直写器 applog::write_file_log（观测黑洞修复·方案 A）
 
-- Status: implemented
-- 日期: 2026-10-30
-- 任务: b749c8d 真机读数「降级链已触发但文件日志零 [PAN]、resolve warn 不落盘」的修复（lead 批准方案 A 保守版）
-- 相关: [../bug-fix/2026-10-30-csp-episode-url-direct-play.md](../bug-fix/2026-10-30-csp-episode-url-direct-play.md)
+Status: implemented
+
+日期: 2026-10-30
+任务: b749c8d 真机读数「降级链已触发但文件日志零 [PAN]、resolve warn 不落盘」的修复（lead 批准方案 A 保守版）
+相关: [../bug-fix/2026-10-30-csp-episode-url-direct-play.md](../bug-fix/2026-10-30-csp-episode-url-direct-play.md)
   （那篇给 resolve 失败加的是 `log::warn!`——本篇查实 log 门面无 sink 后把它换成真落盘的 write_file_log；
   不取代它，脱敏口径沿用）；[../bug-fix/2026-10-30-quark-23018-pick-degrade.md](../bug-fix/2026-10-30-quark-23018-pick-degrade.md)
   （降级链路本身原样，本篇只把它的日志从死掉的 log 门面接到文件直写器）。
 
-## 根因（行号级取证）
+## Problem
 
 ```text
 本 crate 从未初始化 logger（三处既有审计逐字：streamproxy.rs:76「从来没有初始化 logger」、
@@ -20,7 +21,7 @@ logs\sourin-*.log 实际由三个各自为政的直写器负责（无 FFI log �
   · streamproxy.rs:146 write_sp_log_file（[streamproxy] 行）
 ```
 
-## 改动（lead 批准的最小面）
+## Decision
 
 1. 新建 `src/applog.rs`：`pub fn write_file_log(tag, msg)`——形态逐字复用 pan_login.rs:211-248
    （SOURIN_LOG_FILE 覆盖优先 → in_test_process 早退 → %APPDATA%\app.sourin.player\logs\sourin-<day>.log
@@ -33,7 +34,7 @@ logs\sourin-*.log 实际由三个各自为政的直写器负责（无 FFI log �
 4. `pan_drive.rs` 降级：`log::warn!` → `applog::write_file_log("PAN", …)`（对齐既有 [PAN] 惯例）——
    顺带修掉「整个降级过程零 [PAN]」的观测黑洞。
 
-## Alternatives
+## Alternatives considered
 
 ```text
 A. 装一个真正的 logger（fern/env_logger + 文件 sink）—— 一处初始化全局生效，
@@ -44,7 +45,7 @@ C. 共用 pan_login 的 write_log —— 那是 rust-pan 模块且为私有 fn�
 D. 经 Dart AppLog 桥回写（FFI 反调）—— 依赖 UI 层存活，Rust 侧启动期/无 UI 时丢日志，砍。
 ```
 
-## 验证结果（门禁 + 注入证红 + 回归）
+## Consequences
 
 ```text
 门禁 rust/sourin_core/tests/file_log_gate.rs（独立新建）:

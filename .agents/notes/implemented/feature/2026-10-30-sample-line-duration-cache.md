@@ -93,5 +93,5 @@ flutter analyze lib/ui/player_page.dart → 0 errors
 
 ## Relations
 
-- 同批判据公共化：[./2026-10-30-right-detail-line-filter-and-badge.md](./2026-10-30-right-detail-line-filter-and-badge.md)
+- 同批判据公共化：[../bug-fix/2026-10-30-right-detail-line-filter-and-badge.md](../bug-fix/2026-10-30-right-detail-line-filter-and-badge.md)
 - 同批聚合显示（标注所在行的前缀）：[./2026-10-30-aggregate-source-title-dart.md](./2026-10-30-aggregate-source-title-dart.md)

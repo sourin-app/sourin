@@ -1,6 +1,8 @@
-# task-5 网盘登录修复：阿里 bizExt / 115 换 cookie / 百度 unicast（2026-10-30）
+# Agent Note: task-5 网盘登录修复：阿里 bizExt / 115 换 cookie / 百度 unicast（2026-10-30）
 
-Status: implemented（门禁绿；真机扫码验证攒到批末统一做）
+Status: implemented
+
+Scope: 门禁绿；真机扫码验证需人工扫码（参数层已由真网读数证实）。
 
 部分取代（修的是这三篇里"未取证/按通行实现写"的部分，主体协议流程仍有效）：
 - [../feature/2026-10-28-aliyun-qr-login-and-token-shape.md](../feature/2026-10-28-aliyun-qr-login-and-token-shape.md) —— 4.1 修正其"bizExt 是 base64 JSON(snake_case)"的假设：键名实为 camelCase、base64 是 URL-safe 字母表。
@@ -10,7 +12,15 @@ Status: implemented（门禁绿；真机扫码验证攒到批末统一做）
 执行者：rust-login（task-5）。同仓并行约束：只碰 pan 登录模块（aliyun/115/baidu），
 夸克与 tvbox 聚合模块（rust-quark）未触碰；4.4 天翼维持现状未动。
 
-## 一、取证出处（全部只读，脚本与日志在 .probe/）
+## Problem
+
+现场三处网盘登录缺陷（图1/2/3）：
+
+1. **4.1 阿里**：出码后报 `bizExt 解出来不是 UTF-8 (invalid utf-8 … index 200)` —— 判定为"解密密文失败"。
+2. **4.2 115**：扫码 status=2 已通，但换 cookie 一步服务端回 40100000「参数错误」，响应里没有 cookie 段。
+3. **4.3 百度**：一直重新获取二维码，长轮询 3s 超时被当 Pending（参数当时未取证）。
+
+## 取证
 
 | # | 证据 | 出处 |
 |---|---|---|
@@ -93,7 +103,19 @@ Alternatives：
 - 保留 `&v=` 兼容两种服务端：多一个未取证参数就是给 401/另一套字段留口子，dex 没有就删。
 - v 参数也用 channel_v 里的其它值：dex 逐字是 currentTimeMillis，照抄。
 
-## 五、验证结果
+## Decision
+
+三家按 dex 逐字修正实现（详见下文二/三/四节）：阿里改 URL-safe base64 解码 + camelCase/snake_case 双认 + 11 字段表单；115 换 cookie 表单补 app=qandroid + \uXXXX 错误文案解码；百度 unicast 去 &v、确认态改读 channel_v、BDUSS 判据移到换态响应头。
+
+## Alternatives considered
+
+- 阿里：曾假设需 AES 密钥 —— dex 全链路零 Cipher 归属阿里登录链路，假设被推翻，无需密钥。
+- 115：曾按社区通行实现只发 uid —— dex 逐字是 account+app=qandroid，通行实现是错的。
+- 百度：曾假设 channel_id 与 v 都填 sign —— dex 显示 unicast 无 v 参数、确认态载体是 channel_v JSON。
+
+## Consequences
+
+**验证结果**
 
 ```text
 · 门禁（新建独立文件 src/pan_login/pan_login_t5_gate.rs，14 条，cargo test --lib pan_login_t5_gate --release）

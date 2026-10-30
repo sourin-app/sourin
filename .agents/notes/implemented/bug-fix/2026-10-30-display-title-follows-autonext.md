@@ -94,4 +94,4 @@ analyze（player_page/detail_page/episode_filter）→ 0 errors
 ## Relations
 
 - 判据同源：[./2026-10-30-right-detail-line-filter-and-badge.md](./2026-10-30-right-detail-line-filter-and-badge.md)
-- 同批标题相关：[./2026-10-30-aggregate-source-title-dart.md](./2026-10-30-aggregate-source-title-dart.md)
+- 同批标题相关：[../feature/2026-10-30-aggregate-source-title-dart.md](../feature/2026-10-30-aggregate-source-title-dart.md)

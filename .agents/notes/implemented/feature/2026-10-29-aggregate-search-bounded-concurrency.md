@@ -90,5 +90,5 @@ cargo test --lib tvbox_aggregate --release → 22 passed / 0 failed
 
 ## Relations
 
-- 去重口径（条数为什么是"几十上百"）：[./2026-10-28-aggregate-keeps-cross-source-same-title.md](./2026-10-28-aggregate-keeps-cross-source-same-title.md)
-- 候选集（为什么能搜到 csp 源）：[./2026-10-28-aggregate-only-saw-hidden-children.md](./2026-10-28-aggregate-only-saw-hidden-children.md)
+- 去重口径（条数为什么是"几十上百"）：[../bug-fix/2026-10-28-aggregate-keeps-cross-source-same-title.md](../bug-fix/2026-10-28-aggregate-keeps-cross-source-same-title.md)
+- 候选集（为什么能搜到 csp 源）：[../bug-fix/2026-10-28-aggregate-only-saw-hidden-children.md](../bug-fix/2026-10-28-aggregate-only-saw-hidden-children.md)

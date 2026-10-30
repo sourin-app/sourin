@@ -310,6 +310,122 @@ pub async fn probe_candidate(c: &mut crate::model::StreamCandidate) {
     c.playlist_discontinuous = probe.discontinuous;
 }
 
+/// 批处理入口（task-8 在 resolve 出口的唯一调用点）
+///
+/// # 为什么要有这一层（P9 立案，实测数字）
+///
+/// ```text
+/// 单候选预算 PROBE_BUDGET_MS=1500，且 master 还要在同一预算内追子清单。
+/// 按候选**串行** await 的实测墙钟（门禁 p9_batch_probe_wallclock_has_hard_cap，
+/// 每条清单故意慢 1200ms）：
+///     8 条候选  = 9615ms
+///     32 条候选 = 38457ms      ⇒ 完全线性（N×单候选）
+/// 真机形态里多线路内容很常见（思君如故 8 线路、聚合条目十几条候选），
+/// 这些时间**全部堆在首帧之前** ⇒ 与 Owner 在 1.3 定的「不增加起播延迟」直接冲突。
+/// ```
+///
+/// # 现在的做法（并发 + 限流 + 批级截止）
+///
+/// ```text
+/// · 只对通过守卫（should_probe_candidate）的候选探测 ⇒ mp4 直链零成本；
+/// · 同时在飞上限 PROBE_MAX_CONCURRENCY=8（不给单台上游砸并发，与 registry
+///   搜索并发取 12 的理由同源）；
+/// · 整批硬截止 PROBE_BATCH_DEADLINE_MS=2500：到点没探完的候选**一律留 None**
+///   —— 约束③「失败/没读到 ⇒ None，绝不编读数」；宁可这条线路没有权威时长
+///   （退回 mpv 广播值，行为与修复前一致），也不让它继续拖住起播。
+/// ```
+///
+/// 剩余代价（如实记录）：worst case 仍会为首帧前探测花到 2500ms（只在候选多
+/// 且上游慢时出现）；彻底消除需把探测挪到起播后台回填，那要动推送通道，另议。
+pub async fn probe_candidates(list: &mut [crate::model::StreamCandidate]) {
+    /// 同时在飞的探测上限（与 registry 搜索并发取 12 同源：不给同一上游砸满并发）
+    const PROBE_MAX_CONCURRENCY: usize = 8;
+    /// 整批硬截止（与候选数无关）—— 超预算的候选留 None，绝不为凑齐而拖住起播
+    const PROBE_BATCH_DEADLINE_MS: u64 = 2500;
+
+    let targets: Vec<ProbeTarget> = list
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| should_probe_candidate(&c.kind, &c.url))
+        .map(|(i, c)| ProbeTarget {
+            idx: i,
+            url: c.url.clone(),
+            headers: c.headers.clone(),
+            total_ms: None,
+            discontinuous: false,
+        })
+        .collect();
+    if targets.is_empty() {
+        return;
+    }
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(PROBE_BATCH_DEADLINE_MS),
+        drain_probes(list, targets, PROBE_MAX_CONCURRENCY),
+    )
+    .await;
+    // 超时 ⇒ 上面的 future 被丢弃，未回填的候选保持 None/false（约束③）。
+    // ⚠️ 准确说法：drop JoinSet 是**脱管**（detached）而非 abort —— 已在飞的探测任务
+    //    会继续跑完它自己那 1500ms 预算，只是没人再接收结果。
+    //    安全性来自"回填只发生在 drain_probes 的接收循环里"：那个循环随 future
+    //    一起被丢弃 ⇒ 绝不会有任务往 list 写，也就不存在写脏或写下标越界。
+    //    代价是最多多耗几个后台任务的网络往返，不影响起播（起播不等它们）。
+}
+
+/// 一个待探测候选（spawn 的 future 必须 'static ⇒ 字段全 owned）
+///
+/// `total_ms`/`discontinuous` 由探测任务回填；初值 None/false 就是约束③的语义
+/// （没读到 ⇒ 没有读数，绝不编）。
+#[derive(Clone)]
+struct ProbeTarget {
+    idx: usize,
+    url: String,
+    headers: Vec<(String, String)>,
+    total_ms: Option<u64>,
+    discontinuous: bool,
+}
+
+/// 并发探测并把结果回填到 list[idx]，限流 max_in_flight
+async fn drain_probes(list: &mut [crate::model::StreamCandidate], targets: Vec<ProbeTarget>, max_in_flight: usize) {
+    let mut set = tokio::task::JoinSet::new();
+    let mut launched = 0usize;
+    while launched < max_in_flight.min(targets.len()) {
+        let mut t = targets[launched].clone();
+        launched += 1;
+        set.spawn(async move {
+            let probe = probe_playlist(&t.url, &t.headers).await;
+            t.total_ms = probe.total_ms;
+            t.discontinuous = probe.discontinuous;
+            t
+        });
+    }
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok(done) => {
+                if let Some(c) = list.get_mut(done.idx) {
+                    c.playlist_total_ms = done.total_ms;
+                    c.playlist_discontinuous = done.discontinuous;
+                }
+            }
+            Err(e) => {
+                // 任务 panic/被取消 ⇒ 该候选保持 None（约束③），不阻断其它候选。
+                // ★ 落文件日志走 applog（本 crate 的 log 门面从未装 sink，
+                //   log::warn 会被整个丢弃 —— 2026-10-30 真机已实锤过一次）。
+                crate::applog::write_file_log("PLAY", &format!("清单探测任务失败（该线路留无读数）：{e}"));
+            }
+        }
+        if launched < targets.len() {
+            let mut t = targets[launched].clone();
+            launched += 1;
+            set.spawn(async move {
+                let probe = probe_playlist(&t.url, &t.headers).await;
+                t.total_ms = probe.total_ms;
+                t.discontinuous = probe.discontinuous;
+                t
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

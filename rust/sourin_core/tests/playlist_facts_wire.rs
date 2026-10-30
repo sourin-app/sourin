@@ -226,9 +226,25 @@ async fn probe_candidate_fills_mislabeled_mp4_hls() {
 #[test]
 fn playback_probes_via_candidate_entry() {
     let src = include_str!("../src/playback.rs").replace("\r\n", "\n");
+    // ★ P9 后的接线契约：必须走**批处理入口**一次探完，不许退回按候选串行 await。
     assert!(
-        src.contains("crate::hls_facts::probe_candidate(c).await;"),
-        "playback.rs 必须经 probe_candidate 探测（守卫收口在 should_probe_candidate）"
+        src.contains("crate::hls_facts::probe_candidates(&mut list).await;"),
+        "playback.rs 必须经 probe_candidates 批处理探测（串行 = 起播延迟随线路数线性增长）"
+    );
+    assert!(
+        !src.contains("crate::hls_facts::probe_candidate(c).await;"),
+        "★P9：不许在候选循环里逐个 await 探测（实测 8 条 = 9615ms、32 条 = 38457ms）"
+    );
+    // 批探测必须在 maybe_proxy 之前 —— 代理后的本地地址读不到上游清单
+    let i_batch = src
+        .find("crate::hls_facts::probe_candidates(&mut list).await;")
+        .expect("批探测调用点缺失");
+    let i_proxy = src
+        .find("crate::streamproxy::maybe_proxy(")
+        .expect("maybe_proxy 调用点缺失");
+    assert!(
+        i_batch < i_proxy,
+        "批探测必须在 maybe_proxy 之前（用原始上游 URL + 候选自带头）：batch={i_batch} proxy={i_proxy}"
     );
     let facts = include_str!("../src/hls_facts.rs").replace("\r\n", "\n");
     let seg = facts
@@ -240,4 +256,132 @@ fn playback_probes_via_candidate_entry() {
         body.contains("looks_like_hls_url(url)"),
         "守卫必须含 URL 事实兜底（appyqk 错标 Mp4 的教训，注入删掉它 ⇒ Mp4 m3u8 用例红）"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  P9：批探测的**起播延迟**必须量化，不能靠读代码断言"应该没问题"
+// ═══════════════════════════════════════════════════════════════════════
+//
+// task-8 为了修时长读数，在 resolve 出口给每个 HLS 候选读一次清单
+// （单候选预算 1500ms）。若按候选**串行** await ⇒ 多线路内容（真机实测：
+// 思君如故 8 线路、聚合条目十几条候选）最坏 N×预算全部堆在**首帧之前**
+// ⇒ 与 Owner 在 1.3 定的「不增加起播延迟」冲突。
+//
+// 这两条门禁的作用：
+//   ① 把"修前最坏多少 ms"用实测数字钉在案发现场（串行实现必红）；
+//   ② 钉住修后的两个要求：总延迟与候选数无关（有硬上限）、
+//      以及**不许为了快把没探到的候选编出假事实**（只能 None）。
+
+use sourin_core::hls_facts::probe_candidates;
+
+#[derive(Clone)]
+struct BatchUp {
+    media: Arc<String>,
+    delay_ms: Arc<u64>,
+}
+
+async fn serve_batch(State(up): State<BatchUp>) -> String {
+    if *up.delay_ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(*up.delay_ms)).await;
+    }
+    (*up.media).clone()
+}
+
+/// 起 N 个慢清单端点（/s0.m3u8 … /s{N-1}.m3u8），每个都延迟 delay_ms
+async fn start_batch_up(media: &str, n: usize, delay_ms: u64) -> String {
+    let up = BatchUp {
+        media: Arc::new(media.to_string()),
+        delay_ms: Arc::new(delay_ms),
+    };
+    let mut app = Router::new();
+    for i in 0..n {
+        app = app.route(
+            &format!("/s{i}.m3u8"),
+            axum::routing::get(serve_batch).with_state(up.clone()),
+        );
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}")
+}
+
+/// ★ P9 主判据：8 条候选、每条清单慢 1200ms ⇒ 批探测总耗时必须有硬上限
+///
+/// 串行实现的实测最坏 = 8×1200 ≈ 9600ms ⇒ **本条必红**（红即立案成立）。
+/// 并发化后应 ≈ 单个 1200ms，且 8 条候选都要拿到真实事实（不许为快漏探）。
+#[tokio::test]
+async fn p9_batch_probe_wallclock_has_hard_cap() {
+    const N: usize = 8;
+    const SLOW_MS: u64 = 1200;
+    let base = start_batch_up(REAL_CASE, N, SLOW_MS).await;
+    let mut list: Vec<StreamCandidate> = (0..N)
+        .map(|i| {
+            StreamCandidate::new(format!("{base}/s{i}.m3u8"), StreamKind::Hls)
+        })
+        .collect();
+
+    let sw = std::time::Instant::now();
+    probe_candidates(&mut list).await;
+    let elapsed_ms = sw.elapsed().as_millis() as u64;
+
+    // 事实完整性：每条都必须拿到 82.72s（"只探第一条"的偷懒修法在这里红）
+    for (i, c) in list.iter().enumerate() {
+        assert_eq!(
+            c.playlist_total_ms,
+            Some(82_720),
+            "候选 {i} 没拿到清单事实 —— 不许为了少花时间跳过候选（那是把缺陷藏起来）"
+        );
+    }
+
+    assert!(
+        elapsed_ms <= 2_500,
+        "★P9：{N} 条候选 × {SLOW_MS}ms 的批探测墙钟 = {elapsed_ms}ms，超硬上限 2500ms。\
+         串行实现 ≈ N×单候选耗时（{expected}ms）⇒ 起播延迟随线路数线性增长，\
+         违反 Owner 在 1.3 定的「不增加起播延迟」。修法=并发化（限流）+ 批级截止。",
+        expected = N as u64 * SLOW_MS
+    );
+}
+
+/// ★ P9 第二条：候选数更多时延迟仍必须有上限，且**不许编假事实**
+///
+/// 32 条候选、每条 1200ms：并发+限流+批截止 ⇒ 墙钟仍须有界；
+/// 来不及探的候选只能是 None（"没读到"），绝不能是某个编造的数字。
+#[tokio::test]
+async fn p9_batch_probe_scales_without_fabricating() {
+    const N: usize = 32;
+    const SLOW_MS: u64 = 1200;
+    let base = start_batch_up(REAL_CASE, N, SLOW_MS).await;
+    let mut list: Vec<StreamCandidate> = (0..N)
+        .map(|i| {
+            StreamCandidate::new(format!("{base}/s{i}.m3u8"), StreamKind::Hls)
+        })
+        .collect();
+
+    let sw = std::time::Instant::now();
+    probe_candidates(&mut list).await;
+    let elapsed_ms = sw.elapsed().as_millis() as u64;
+
+    let got: usize = list.iter().filter(|c| c.playlist_total_ms.is_some()).count();
+    for (i, c) in list.iter().enumerate() {
+        match c.playlist_total_ms {
+            None => {}
+            Some(v) => assert_eq!(v, 82_720, "候选 {i} 的读数必须是清单真值，不许编"),
+        }
+    }
+    assert!(
+        elapsed_ms <= 4_500,
+        "★P9：{N} 条候选墙钟 {elapsed_ms}ms 仍随候选数线性增长（32×{SLOW_MS}=\
+         {}ms 是纯串行的量级），必须有界。\
+         上限取 4500 的理由：批截止 {deadline}ms + 被丢弃那一批在飞探测各自的单候选\
+         预算 {budget}ms + 调度余量；纯串行是 {ser}ms，两者相差一个量级，本判据能区分。\
+         （修前实测 N=32 = 38457ms）",
+        N as u64 * SLOW_MS,
+        deadline = 2500,
+        budget = 1500,
+        ser = N as u64 * SLOW_MS
+    );
+    println!("P9_SCALING N={N} elapsed_ms={elapsed_ms} got_facts={got}/{N}");
 }

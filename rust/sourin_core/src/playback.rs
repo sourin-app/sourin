@@ -197,35 +197,46 @@ pub async fn resolve_stream(
             e.message
         })?;
 
+    /*
+     * ★★★ task-8（2026-10-30）：resolve 出口先读一遍清单，把**真实整集时长**带进候选。
+     * ```text
+     * 真机取证：那条 dur=6 的清单实为 17 段 EXTINF 求和 82.72s + 2 个 DISCONTINUITY；
+     * mpv 在不连续点重建时间轴 ⇒ stream.duration 报"当前分片时长"、pos 反复归零
+     * ⇒ Owner 看到的「播放都是6秒」是时长读数错，不是内容短。
+     * 硬约束（lead 定死）：①只有 ENDLIST（点播完结）才填 total，直播留 None；
+     *   ②master 追一层子清单；③失败/超时留 None 不阻断起播；
+     *   ④守卫 = kind==Hls 或 URL path 以 .m3u8 结尾（appyqk 把 master.m3u8
+     *     错标成 Mp4 的实测教训：只认 kind 会漏）；⑤discontinuous 只作事实标记。
+     *
+     * ★ P9（2026-10-30 自查立案）：必须在循环**之前**一次批处理，不能按候选串行 await。
+     *   实测串行代价（门禁 p9_batch_probe_wallclock_has_hard_cap，每条清单慢 1200ms）：
+     *       8 条候选 = 9615ms / 32 条候选 = 38457ms  ⇒ 完全线性，且全堆在首帧之前，
+     *   与 Owner 在 1.3 定的「不增加起播延迟」直接冲突。
+     *   probe_candidates 内部并发（限流 8）+ 整批硬截止 2500ms；超截止的候选留 None。
+     *
+     * ⚠️ 必须在 maybe_proxy **之前**读 —— 用原始上游 URL 与候选自带头
+     *   （Cookie/Referer/UA），本地代理地址读清单没有意义。
+     * ```
+     */
+    crate::hls_facts::probe_candidates(&mut list).await;
+    {
+        let id_head: String = id.chars().take(24).collect();
+        for c in &list {
+            if c.playlist_total_ms.is_some() || c.playlist_discontinuous {
+                // 拿到事实就落文件日志（排障用；什么都没读到就不写，避免刷屏）
+                crate::applog::write_file_log(
+                    "PLAY",
+                    &format!(
+                        "清单事实 id~={id_head} total_ms={:?} discontinuous={}",
+                        c.playlist_total_ms, c.playlist_discontinuous
+                    ),
+                );
+            }
+        }
+    }
+
     // ②③ 逐个候选流处理：流地址 + 独立音轨
     for c in &mut list {
-        /*
-         * ★★★ task-8（2026-10-30）：候选先读一遍清单，把**真实整集时长**带进候选。
-         * ```text
-         * 真机取证：那条 dur=6 的清单实为 17 段 EXTINF 求和 82.72s + 2 个 DISCONTINUITY；
-         * mpv 在不连续点重建时间轴 ⇒ stream.duration 报"当前分片时长"、pos 反复归零
-         * ⇒ Owner 看到的「播放都是6秒」是时长读数错，不是内容短。
-         * 硬约束（lead 定死）：①只有 ENDLIST（点播完结）才填 total，直播留 None；
-         *   ②master 追一层子清单；③1500ms 预算，任何失败留 None 不阻断起播；
-         *   ④守卫 = kind==Hls 或 URL path 以 .m3u8 结尾（appyqk 把 master.m3u8
-         *     错标成 Mp4 的实测教训：只认 kind 会漏）；⑤discontinuous 只作事实标记。
-         * ⚠️ 必须在 maybe_proxy **之前**读 —— 用原始上游 URL 与候选自带头
-         *   （Cookie/Referer/UA），本地代理地址读清单没有意义。
-         * ```
-         */
-        crate::hls_facts::probe_candidate(c).await;
-        if c.playlist_total_ms.is_some() || c.playlist_discontinuous {
-            // 拿到事实就落文件日志（排障用；什么都没读到就不写，避免刷屏）
-            let id_head: String = id.chars().take(24).collect();
-            crate::applog::write_file_log(
-                "PLAY",
-                &format!(
-                    "清单事实 id~={id_head} total_ms={:?} discontinuous={}",
-                    c.playlist_total_ms, c.playlist_discontinuous
-                ),
-            );
-        }
-
         if let Some(local) =
             crate::streamproxy::maybe_proxy(&state.stream_proxy, &c.url, &c.headers, c.not_web_ready)
                 .await

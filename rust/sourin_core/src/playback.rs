@@ -200,33 +200,30 @@ pub async fn resolve_stream(
     // ②③ 逐个候选流处理：流地址 + 独立音轨
     for c in &mut list {
         /*
-         * ★★★ task-8（2026-10-30）：hls 候选先读一遍清单，把**真实整集时长**带进候选。
+         * ★★★ task-8（2026-10-30）：候选先读一遍清单，把**真实整集时长**带进候选。
          * ```text
          * 真机取证：那条 dur=6 的清单实为 17 段 EXTINF 求和 82.72s + 2 个 DISCONTINUITY；
          * mpv 在不连续点重建时间轴 ⇒ stream.duration 报"当前分片时长"、pos 反复归零
          * ⇒ Owner 看到的「播放都是6秒」是时长读数错，不是内容短。
          * 硬约束（lead 定死）：①只有 ENDLIST（点播完结）才填 total，直播留 None；
          *   ②master 追一层子清单；③1500ms 预算，任何失败留 None 不阻断起播；
-         *   ④只对 hls 读，mp4 直链不读；⑤discontinuous 只作事实标记。
+         *   ④守卫 = kind==Hls 或 URL path 以 .m3u8 结尾（appyqk 把 master.m3u8
+         *     错标成 Mp4 的实测教训：只认 kind 会漏）；⑤discontinuous 只作事实标记。
          * ⚠️ 必须在 maybe_proxy **之前**读 —— 用原始上游 URL 与候选自带头
          *   （Cookie/Referer/UA），本地代理地址读清单没有意义。
          * ```
          */
-        if matches!(c.kind, crate::model::StreamKind::Hls) {
-            let probe = crate::hls_facts::probe_playlist(&c.url, &c.headers).await;
-            c.playlist_total_ms = probe.total_ms;
-            c.playlist_discontinuous = probe.discontinuous;
-            if probe.total_ms.is_some() || probe.discontinuous {
-                // 拿到事实就落文件日志（排障用；什么都没读到就不写，避免刷屏）
-                let id_head: String = id.chars().take(24).collect();
-                crate::applog::write_file_log(
-                    "PLAY",
-                    &format!(
-                        "清单事实 id~={id_head} total_ms={:?} discontinuous={}",
-                        c.playlist_total_ms, c.playlist_discontinuous
-                    ),
-                );
-            }
+        crate::hls_facts::probe_candidate(c).await;
+        if c.playlist_total_ms.is_some() || c.playlist_discontinuous {
+            // 拿到事实就落文件日志（排障用；什么都没读到就不写，避免刷屏）
+            let id_head: String = id.chars().take(24).collect();
+            crate::applog::write_file_log(
+                "PLAY",
+                &format!(
+                    "清单事实 id~={id_head} total_ms={:?} discontinuous={}",
+                    c.playlist_total_ms, c.playlist_discontinuous
+                ),
+            );
         }
 
         if let Some(local) =

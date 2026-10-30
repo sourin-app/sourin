@@ -168,27 +168,76 @@ async fn probe_timeout_leaves_fields_none() {
     );
 }
 
-/// 硬约束④（接线）：playback 只对 hls 候选探测 —— mp4 直链不读
-///
-/// 源码级断言（include_str! 先例 tvbox_aggregate.rs:2720）：探测调用必须被
-/// `matches!(c.kind, …StreamKind::Hls)` 守卫包住。
+// ═══════════════════════════════════════════════════════════════════════
+//  守卫补漏（2026-10-30 真机实测）：kind 错标 Mp4 的 m3u8 也必须读
+// ═══════════════════════════════════════════════════════════════════════
+
+use sourin_core::hls_facts::{looks_like_hls_url, probe_candidate, should_probe_candidate};
+use sourin_core::model::{StreamCandidate, StreamKind};
+
 #[test]
-fn playback_probes_only_hls_candidates() {
-    let src = include_str!("../src/playback.rs").replace("\r\n", "\n");
-    let seg = src
-        .split("if matches!(c.kind, crate::model::StreamKind::Hls) {")
-        .nth(1)
-        .expect("playback.rs 的探测必须由 StreamKind::Hls 守卫（约束④：mp4 不读）");
-    let probe_seg = seg
-        .split("}")
-        .next()
-        .expect("守卫块必须闭合");
-    assert!(
-        probe_seg.contains("hls_facts::probe_playlist"),
-        "Hls 守卫块内必须调 probe_playlist"
+fn looks_like_hls_url_matches_path_fact_only() {
+    // 大小写与 query 形态都要认（.m3u8?token=… 是现场常见形态）
+    assert!(looks_like_hls_url("https://usaydd.example/720/master.m3u8"));
+    assert!(looks_like_hls_url("https://usaydd.example/720/MASTER.M3U8"));
+    assert!(looks_like_hls_url("https://usaydd.example/720/master.m3u8?sign=abc&exp=1"));
+    assert!(looks_like_hls_url("https://usaydd.example/720/master.m3u8#frag"));
+    // mp4 直链与无后缀不是清单
+    assert!(!looks_like_hls_url("https://cdn.example/v.mp4"));
+    assert!(!looks_like_hls_url("https://cdn.example/v"));
+    assert!(!looks_like_hls_url("https://cdn.example/v.mp4?x=.m3u8"), "query 不算 path");
+}
+
+#[test]
+fn should_probe_or_combines_kind_and_url_fact() {
+    // kind 自述是 Hls ⇒ 无论 URL 形态都读
+    assert!(should_probe_candidate(&StreamKind::Hls, "https://cdn.example/v"));
+    // ★ 真机教训：标 Mp4 实为 m3u8 ⇒ URL 事实兜底必须读
+    assert!(should_probe_candidate(&StreamKind::Mp4, "https://usaydd.example/720/master.m3u8"));
+    assert!(should_probe_candidate(&StreamKind::Mp4, "https://usaydd.example/v.m3u8?sign=1"));
+    // 标 Mp4 且确实是 mp4/无后缀 ⇒ 不读（不给起播加延迟）
+    assert!(!should_probe_candidate(&StreamKind::Mp4, "https://cdn.example/v.mp4"));
+    assert!(!should_probe_candidate(&StreamKind::Mp4, "https://cdn.example/v"));
+}
+
+/// ★ 守卫补漏的全链门禁：kind=Mp4 但 url 是 master.m3u8 ⇒ 照样读出 82.72s
+///
+/// （appyqk「老舅除三害」现场的镜像：旧守卫按 kind==Hls 判正好跳过。
+///  注入删掉 URL 兜底那半 ⇒ 本条必红。）
+#[tokio::test]
+async fn probe_candidate_fills_mislabeled_mp4_hls() {
+    let master =
+        "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=128\n720/hls/index.m3u8\n".to_string();
+    let base = start_up(REAL_CASE, Some(master), false).await;
+    let mut c = StreamCandidate::new(format!("{base}/master.m3u8?sign=abc"), StreamKind::Mp4);
+    probe_candidate(&mut c).await;
+    assert_eq!(
+        c.playlist_total_ms,
+        Some(82_720),
+        "kind 错标 Mp4 不许挡住清单事实（82.72s，不是 6）"
     );
+    assert!(c.playlist_discontinuous);
+}
+
+/// 硬约束④（守卫）：只对「kind==Hls 或 URL path 明显是 .m3u8」的候选探测
+///
+/// 源码级断言（include_str! 先例 tvbox_aggregate.rs:2720）：playback 必须调
+/// probe_candidate（守卫收在 hls_facts::should_probe_candidate 一处）。
+#[test]
+fn playback_probes_via_candidate_entry() {
+    let src = include_str!("../src/playback.rs").replace("\r\n", "\n");
     assert!(
-        src.contains("probe_playlist(&c.url, &c.headers)"),
-        "探测必须用原始上游 URL 与候选自带头（在 maybe_proxy 之前）"
+        src.contains("crate::hls_facts::probe_candidate(c).await;"),
+        "playback.rs 必须经 probe_candidate 探测（守卫收口在 should_probe_candidate）"
+    );
+    let facts = include_str!("../src/hls_facts.rs").replace("\r\n", "\n");
+    let seg = facts
+        .split("pub fn should_probe_candidate(")
+        .nth(1)
+        .expect("hls_facts 必须有 should_probe_candidate");
+    let body = seg.split('}').next().unwrap_or("");
+    assert!(
+        body.contains("looks_like_hls_url(url)"),
+        "守卫必须含 URL 事实兜底（appyqk 错标 Mp4 的教训，注入删掉它 ⇒ Mp4 m3u8 用例红）"
     );
 }

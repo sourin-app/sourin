@@ -207,10 +207,15 @@ fn master_variant_uri(text: &str) -> Option<String> {
 
 /// 相对 URI → 绝对（够 HLS 用的最小实现：绝对 URL 原样；`/` 开头接 scheme://host；
 /// 其余接 base 的目录前缀）
+///
+/// ⚠️ base 必须先剥 query/fragment —— 现场 URL 形如 `master.m3u8?sign=…`，
+///    不剥的话子清单会拼进 query 后面（`720/…index.m3u8?sign=…` 之后）必 404
+///    （门禁 probe_candidate_fills_mislabeled_mp4_hls 抓到的真 bug）。
 fn resolve_uri(base: &str, uri: &str) -> String {
     if uri.starts_with("http://") || uri.starts_with("https://") {
         return uri.to_string();
     }
+    let base = base.split(['?', '#']).next().unwrap_or(base);
     if let Some(rest) = uri.strip_prefix('/') {
         if let Some(scheme_end) = base.find("://") {
             if let Some(host_end) = base[scheme_end + 3..].find('/') {
@@ -269,6 +274,40 @@ pub async fn probe_playlist(url: &str, headers: &[(String, String)]) -> Playlist
     };
     let _ = tokio::time::timeout(std::time::Duration::from_millis(PROBE_BUDGET_MS), work).await;
     out
+}
+
+/// URL 是否**明显是 HLS 清单**（客观事实：去 query/fragment 后 path 以 `.m3u8` 结尾）
+///
+/// # 为什么只有 kind==Hls 不够（2026-10-30 真机实测）
+/// ```text
+/// csp-appyqk「老舅除三害」（就是取证里 82.72s 的 DISCONTINUITY 清单）把一个
+/// 实际是 master.m3u8 的流标成了 kind=Mp4 ⇒ 守卫按 kind==Hls 判，正好跳过
+/// ⇒ 日志无「清单事实」行、duration 没被修正。这类"标 mp4 实为 m3u8"
+///   在插件源里不会是孤例 ⇒ kind（源的自述）之外补 URL path 事实，两条件取或。
+/// ```
+pub fn looks_like_hls_url(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.to_ascii_lowercase().ends_with(".m3u8")
+}
+
+/// 该候选要不要读清单（task-8 硬约束④的**唯一判据**）
+///
+/// ```text
+/// kind==Hls（源的自述）或 URL path 明显是 .m3u8（客观事实）⇒ 读；
+/// mp4 直链/无后缀且非 Hls ⇒ 不读（不给起播加延迟）。
+/// ```
+pub fn should_probe_candidate(kind: &crate::model::StreamKind, url: &str) -> bool {
+    matches!(kind, crate::model::StreamKind::Hls) || looks_like_hls_url(url)
+}
+
+/// 候选级入口：按守卫探测并就地填两字段（playback.rs 的 resolve 出口调用）
+pub async fn probe_candidate(c: &mut crate::model::StreamCandidate) {
+    if !should_probe_candidate(&c.kind, &c.url) {
+        return;
+    }
+    let probe = probe_playlist(&c.url, &c.headers).await;
+    c.playlist_total_ms = probe.total_ms;
+    c.playlist_discontinuous = probe.discontinuous;
 }
 
 #[cfg(test)]

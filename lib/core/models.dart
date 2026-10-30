@@ -893,6 +893,8 @@ class StreamCandidate {
     this.needsHostResolve = false,
     this.siteId,
     this.streamFlags = const StreamFlags(),
+    this.playlistTotalMs,
+    this.playlistDiscontinuous = false,
   });
 
   /// 播放地址。
@@ -997,6 +999,36 @@ class StreamCandidate {
   /// 不是插件能选的能力位（曾拟过 `needsHostDecode`，已砍掉）。
   final StreamFlags streamFlags;
 
+  /// ★ task-9（2026-10-30）：HLS 清单事实——**权威整集时长**（毫秒）
+  ///
+  /// 来源 = Rust 侧 resolve 时读清单（hls_facts）算出的 EXTINF 求和；
+  /// **仅当清单有 #EXT-X-ENDLIST（点播已完结）时非空**——直播清单没有
+  /// 总时长，留 null（填了就是错的）。
+  ///
+  /// # 为什么需要它（真机取证 repro/「6 秒」问题）
+  /// ```text
+  /// 带 #EXT-X-DISCONTINUITY 的清单：mpv 在不连续点重建时间轴，
+  /// stream.duration 只报**当前分片**时长（实测 6/4/3s 交替），
+  /// 而整集真实是 82.72s——内容正常播，错的是时长读数。
+  /// ```
+  ///
+  /// ⚠️ 旧 DLL 没这两个键 ⇒ 解析降级 null/false，**不许抛**
+  /// （与 persisted/solo 的旧核心兼容口径同一套）。
+  final int? playlistTotalMs;
+
+  /// ★ task-9：清单含 #EXT-X-DISCONTINUITY 的**中性事实标记**
+  ///
+  /// `true` ⇒ 这条线路的时间轴会跳（mpv 在不连续点重建，进度可能在段间
+  /// 归零）。**不许**据此判流坏/判"疑似片段"——它与能不能播、完不完整
+  /// 无关，只是时间轴形态。
+  final bool playlistDiscontinuous;
+
+  /// 权威整集时长（task-9）：清单事实可用时用它，否则 null（调用方退回
+  /// stream.duration 观测值）。
+  Duration? get authoritativeDuration => (playlistTotalMs != null && playlistTotalMs! > 0)
+      ? Duration(milliseconds: playlistTotalMs!)
+      : null;
+
   /// 是否可以直接交给播放器
   ///
   /// DRM 流不能播；其余都可以（代理已经在核心侧处理好了）。
@@ -1037,6 +1069,8 @@ class StreamCandidate {
     bool? needsHostResolve,
     String? siteId,
     StreamFlags? streamFlags,
+    int? playlistTotalMs,
+    bool? playlistDiscontinuous,
   }) =>
       StreamCandidate(
         url: url ?? this.url,
@@ -1051,6 +1085,8 @@ class StreamCandidate {
         needsHostResolve: needsHostResolve ?? this.needsHostResolve,
         siteId: siteId ?? this.siteId,
         streamFlags: streamFlags ?? this.streamFlags,
+        playlistTotalMs: playlistTotalMs ?? this.playlistTotalMs,
+        playlistDiscontinuous: playlistDiscontinuous ?? this.playlistDiscontinuous,
       );
 
   factory StreamCandidate.fromJson(Map<String, dynamic> j) => StreamCandidate(
@@ -1076,6 +1112,10 @@ class StreamCandidate {
               ? (j['stream_flags'] as Map).cast<String, dynamic>()
               : const <String, dynamic>{},
         ),
+        // ★ task-9：serde camelCase（与 quality/label 同风格）。缺键（旧 DLL）
+        //   安全降级 null/false —— 与 persisted/solo 的旧核心兼容口径同一套。
+        playlistTotalMs: (j['playlistTotalMs'] as num?)?.toInt(),
+        playlistDiscontinuous: j['playlistDiscontinuous'] as bool? ?? false,
       );
 }
 

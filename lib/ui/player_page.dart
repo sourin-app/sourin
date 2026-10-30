@@ -4974,15 +4974,47 @@ class _PlayerPageState extends State<PlayerPage>
   /// 选线/重解析/跳集（见订阅处的边界注释与对应门禁）。
   void _onDurationTick(Duration d) {
     if (!mounted) return;
+    /*
+     * ★★★ task-9（2026-10-30）：清单事实覆盖不可靠的 duration 读数
+     *
+     * ```text
+     * 真机取证（「6 秒」问题，勿再猜）：带 #EXT-X-DISCONTINUITY 的清单，
+     * mpv 在不连续点重建时间轴 ⇒ stream.duration 只报当前分片
+     * （6/4/3s 交替），整集真实 82.72s——内容正常播，错的是时长读数。
+     * ```
+     * 判据 = [_current.playlistTotalMs]（Rust 读清单算出的 EXTINF 求和，
+     * 仅点播 ENDLIST 时非空）：非空且 >0 ⇒ **覆盖**（authoritative），
+     * 否则原样用广播值（普通源零变化）。**禁止引入任何时长阈值猜测**
+     * （Owner：「不应该以时间判断」——已有 49345b0 revert 先例）。
+     *
+     * 覆盖 vs max 的取舍见决策笔记（.agents/notes/implemented/bug-fix/
+     * 2026-10-30-playlist-total-duration.md）：清单是"从清单本身量出来的
+     * 事实"，mpv 读数是"分片伪影"——两者不是同一口径的竞争值，
+     * max 会把伪影保留在判据里。
+     */
+    final authoritative = _current?.authoritativeDuration ?? d;
+    if (_current?.playlistDiscontinuous == true) {
+      // ★ playlistDiscontinuous 只做**中性事实**日志（时间轴会跳、进度可能
+      //   段间归零），不判流坏、不写"疑似片段"——每条流只记一次。
+      if (_discontinuityLoggedFor != _current?.url) {
+        _discontinuityLoggedFor = _current?.url;
+        debugPrint('[PLAYER] 该线路清单含 DISCONTINUITY，时间轴可能跳变'
+            '（总时长已用清单值 ${authoritative.inMilliseconds}ms 修正）');
+      }
+    }
     setState(() {
-      _duration = d;
+      _duration = authoritative;
       // 真实时长以流里的为准（元数据不准）
-      if (d > Duration.zero) _realDuration = d;
+      if (authoritative > Duration.zero) _realDuration = authoritative;
     });
     // ★ 1.3：起播后把这条线路的真实时长记进缓存
     //   （下一轮默认选线才能避开样片；_current 为 null 时 _recordLineDuration 自己会退）
-    _recordLineDuration(d);
+    //   ⚠️ 记的是**权威值**——分片伪影（6s）会把 82.72s 的完整内容误判成样片。
+    _recordLineDuration(authoritative);
   }
+
+  /// 中性事实日志的去重键（task-9：每条流只记一次 DISCONTINUITY 提示）
+  String? _discontinuityLoggedFor;
 
   void _bindPlayerStreams() {
     _player.stream.playing.listen((v) {

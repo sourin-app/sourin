@@ -252,7 +252,11 @@ void main() {
     });
 
     test('★★ duration 广播真调 _recordLineDuration（缓存有写入点）', () {
-      expect(src.contains('_recordLineDuration(d);'), isTrue,
+      // ★ 2026-10-30（task-9）：实参从广播值 d 改为权威值 authoritative
+      //   （DISCONTINUITY 清单下分片伪影 6s 会把 82.72s 完整内容误判成样片
+      //   —— 缓存记权威值是修正的一部分，运行时证明见
+      //   t20261030_playlist_total_duration_test 的缓存断言）。
+      expect(src.contains('_recordLineDuration(authoritative);'), isTrue,
           reason: 'duration 监听里必须真记缓存 —— 没有写入点，'
               '标注与跳过永远等不到读数；注入删掉调用时本条红');
     });

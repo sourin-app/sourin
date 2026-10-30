@@ -1,416 +1,488 @@
-{
-  "live_cctv_real_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+1 ~0 -0"
-  },
-  "live_referer_onwire_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+1 ~0 -0"
-  },
-  "pc_arrow_keys_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+17 ~0 -0"
-  },
-  "player_episode_nav_boundary_test.dart": {
-    "audited": false,
-    "lastAudited": "2026-10-21",
-    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
-    "result": null
-  },
-  "player_panel_dark_and_boundary_test.dart": {
-    "audited": false,
-    "lastAudited": "2026-10-21",
-    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
-    "result": null
-  },
-  "player_panel_wiring_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "登记过期更正：实测全绿（原登记 +0 -1）",
-    "result": "+5 ~0 -0"
-  },
-  "player_ux_shot_test.dart": {
-    "audited": false,
-    "lastAudited": "2026-10-21",
-    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
-    "result": null
-  },
-  "t102_playback_failure_banner_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "Lead 终局对账（task-30 指出过期）：本轮新增 ⑥_bottomOccupied 静态审计与 ⑦「重试」可点 + 真触发 _load，条数 5→7",
-    "result": "+7 ~0 -0"
-  },
-  "t103_danmaku_hint_ui_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+10 ~0 -0"
-  },
-  "t104_overlay_exit_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "计数迁移 settings_page 5→9 / provider_import_dialog 2→3 / sync_panel 2→3 / total 15→21（live-accept 把裸 showDialog 改成 showAppDialog）",
-    "result": "+20 ~0 -0"
-  },
-  "t108_danmaku_manual_search_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "D 类迁移完成：内联搜索框已迁到独立搜索页；页签切换改成 ensureVisible+tapAt(getCenter) 并把「切过去没有」做成断言（锚：测试连接在 + 显示弹幕不在）；三连跑一致",
-    "result": "+5 ~0 -0"
-  },
-  "t118_control_bars_link_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "登记过期更正：实测全绿（原登记 +15 -1）",
-    "result": "+16 ~0 -0"
-  },
-  "t26_w4_mirror_episode_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+2 ~0 -0"
-  },
-  "t27_w13_chrome_ssot_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+8 ~0 -0"
-  },
-  "t27_w13_defect4_bar_linkage_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+5 ~0 -0"
-  },
-  "t27_w14_danmaku_bar_form_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+9 ~0 -0"
-  },
-  "t27_w15_danmaku_quick_panel_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+4 ~0 -0"
-  },
-  "t27_w15_return_cache_norebuild_test.dart": {
-    "audited": false,
-    "lastAudited": "2026-10-21",
-    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
-    "result": null
-  },
-  "t27_w17_close_sheet_restores_bars_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+6 ~0 -0"
-  },
-  "t27_w18_danmaku_blockwords_enter_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+4 ~0 -0"
-  },
-  "t27_w20_skip_auto_seek_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+7 ~0 -0"
-  },
-  "t27_w21_return_jank_signature_test.dart": {
-    "audited": false,
-    "lastAudited": "2026-10-21",
-    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
-    "result": null
-  },
-  "t27_w22_danmaku_slider_jank_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+4 ~0 -0"
-  },
-  "t27_w9_bar_linkage_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "_chromeVisible 门控字面 11→12 项（本批新增 !_danmakuSearchOpen）；B1/B3 前提从「等 _load 自然失败」改成显式 debugPlayerInjectStreamErrorForProbe",
-    "result": "+16 ~0 -0"
-  },
-  "t458_hints_entry_ui_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+3 ~0 -0"
-  },
-  "t48_live_embedded_doubletap_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+5 ~0 -0"
-  },
-  "t58_media_page_layout_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+16 ~0 -0"
-  },
-  "t61_panel_radius_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+6 ~0 -0"
-  },
-  "t63_shot_ui_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+5 ~0 -0"
-  },
-  "t68_android_adapt_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+15 ~0 -0"
-  },
-  "t72_jank_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+5 ~0 -0"
-  },
-  "t72_stream_sheet_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+11 ~0 -0"
-  },
-  "t74_embed_visibility_gate_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+2 ~0 -0"
-  },
-  "t78_video_zoom_hwdec_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+21 ~0 -0"
-  },
-  "t79_assrt_wiring_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+13 ~0 -0"
-  },
-  "t92_bottom_bar_row_fit_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "D 类：旧判据找的是已搬走的按钮（截图/弹幕设置进「更多」菜单，more_vert→more_horiz）；按真实底栏重写后绿，注入两处变异 ⇒ +3 -4",
-    "result": "+7 ~0 -0"
-  },
-  "t92_embed_first_frame_hint_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+9 ~0 -0"
-  },
-  "t98_settings_open_order_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+7 ~0 -0"
-  },
-  "zz_cr_backbtn_backarrow_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "② 曾红：真产品缺陷（顶栏看得见点不到，_autoHideNow 漏 _pushControlsLive）；产品 1 行修复后转绿，仪表打印 ignoring=false inHitPath=true 闭环",
-    "result": "+7 ~0 -0"
-  },
-  "zz_cr_dmk_c_import_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "文案按站名铁律中性化（具体站名→外部视频站），两处断言同步迁移",
-    "result": "+4 ~0 -0"
-  },
-  "zz_cr_dmk_d_badge_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+3 ~0 -0"
-  },
-  "zz_cr_jank_titlebar_flip_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+1 ~0 -0"
-  },
-  "zz_cr_panel_double_enter_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+1 ~0 -0"
-  },
-  "zz_cr_panel_notch_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+3 ~0 -0"
-  },
-  "zz_media_shots_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+7 ~0 -0"
-  },
-  "zz_ops13_mirror_write_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+7 ~0 -0"
-  },
-  "zz_ops13_resume_read_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+9 ~0 -0"
-  },
-  "zz_pr10_stale_skip_marker_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+5 ~0 -0"
-  },
-  "zz_r65_error_shots_test.dart": {
-    "audited": false,
-    "lastAudited": "2026-10-21",
-    "note": "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
-    "result": null
-  },
-  "zz_rewatch_prompt_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+14 ~0 -0"
-  },
-  "zz_t1015b_dash_audio_native_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+1 ~0 -0"
-  },
-  "zz_t1023_player_route_exit_order_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-24",
-    "note": "全绿",
-    "result": "+3 ~0 -0"
-  },
-  "zz_t1023_player_search_integration_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-24",
-    "note": "全绿",
-    "result": "+2 ~0 -0"
-  },
-  "zz_t1023_player_seek_behavior_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "Lead 终局对账（task-30 指出漏登）：本轮改动后单跑全绿 16 条",
-    "result": "+16 ~0 -0"
-  },
-  "zz_t12_local_play_probe_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+1 ~0 -0"
-  },
-  "zz_t3_flash_probe_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+1 ~0 -0"
-  },
-  "zz_t42_player_keys_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+15 ~0 -0"
-  },
-  "zz_t66_danmaku_send_predicate_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+9 ~0 -0"
-  },
-  "zz_t66_r1_three_way_compare_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-21",
-    "note": "全绿",
-    "result": "+1 ~0 -0"
-  },
-  "zz_t1024_skip_respects_user_seek_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：用户 seek 豁免 + pendingSeek 让位 + 阴性对照；2026-10-25 增补 ⑥「继续观看」行为用例与 ⑤ 裸 seek 枚举门禁后由 +5 变 +6（交叉复核 task-20 指出登记过期，已按实跑更正）",
-    "result": "+6 ~0 -0"
-  },
-  "zz_t1024_player_banner_order_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：横幅在底栏之后 + 恢复判据 + 让位",
-    "result": "+5 ~0 -0"
-  },
-  "zz_t1025_switch_resume_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：详情区/播放器内换源续播契约",
-    "result": "+7 ~0 -0"
-  },
-  "zz_t1024_player_failure_attribution_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：timeout 第七档 + elapsed 窗口由常量算",
-    "result": "+7 ~0 -0"
-  },
-  "zz_t1024_player_live_keys_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-25",
-    "note": "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：全屏态空格/M 经共享 LivePlaybackTarget 派发；打字态不抢键",
-    "result": "+3 ~0 -0"
-  },
-  "zz_ikan_multiline_player_path_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-26",
-    "note": "31 线路 UI 可跑；+7 全绿",
-    "result": "+7 ~0 -0"
-  },
-  "zz_demuxer_override_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-26",
-    "note": "demuxer 覆盖下发/清空；+2 全绿",
-    "result": "+2 ~0 -0"
-  },
-  "zz_cycani_firstframe_probe_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-26",
-    "note": "真文件首帧探针（人工抽检）",
-    "result": "待跑：探针在写，暂不计绿"
-  },
-  "zz_t1024_midroll_skip_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-26",
-    "note": "中插广告接线：片头/中插同段 seek、grace 前置、片尾不入 windowsOf；+4 全绿",
-    "result": "+4 ~0 -0"
-  },
-  "zz_t66_player_jank_test.dart": {
-    "audited": true,
-    "lastAudited": "2026-10-27",
-    "note": "顶栏 hover 不整页重建（真 PlayerPage + 真 libmpv）。2026-10-27 挂 native-media 后抽检：run2/run3 各 +9 全绿，run1 进程级秒死（rc=79 / 6s / +0 通过 / 14 条 did not complete）⇒ 已知 libmpv native 崩溃限制；轻量等价判据在 zz_t66_hover_behavior_light_test（untagged，全量必跑）",
-    "result": "+9 ~0 -0（run2/run3）；run1 native 崩溃未计"
-  }
+﻿{
+    "live_cctv_real_test.dart":  {
+                                     "audited":  true,
+                                     "lastAudited":  "2026-10-21",
+                                     "note":  "全绿",
+                                     "result":  "+1 ~0 -0"
+                                 },
+    "live_keyboard_shortcuts_test.dart":  {
+                                              "audited":  false,
+                                              "lastAudited":  "2026-10-31",
+                                              "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                              "result":  null
+                                          },
+    "live_referer_onwire_test.dart":  {
+                                          "audited":  true,
+                                          "lastAudited":  "2026-10-21",
+                                          "note":  "全绿",
+                                          "result":  "+1 ~0 -0"
+                                      },
+    "pc_arrow_keys_test.dart":  {
+                                    "audited":  true,
+                                    "lastAudited":  "2026-10-21",
+                                    "note":  "全绿",
+                                    "result":  "+17 ~0 -0"
+                                },
+    "player_episode_nav_boundary_test.dart":  {
+                                                  "audited":  false,
+                                                  "lastAudited":  "2026-10-21",
+                                                  "note":  "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
+                                                  "result":  null
+                                              },
+    "player_panel_dark_and_boundary_test.dart":  {
+                                                     "audited":  false,
+                                                     "lastAudited":  "2026-10-21",
+                                                     "note":  "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
+                                                     "result":  null
+                                                 },
+    "player_panel_wiring_test.dart":  {
+                                          "audited":  true,
+                                          "lastAudited":  "2026-10-25",
+                                          "note":  "登记过期更正：实测全绿（原登记 +0 -1）",
+                                          "result":  "+5 ~0 -0"
+                                      },
+    "player_ux_shot_test.dart":  {
+                                     "audited":  false,
+                                     "lastAudited":  "2026-10-21",
+                                     "note":  "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
+                                     "result":  null
+                                 },
+    "t102_playback_failure_banner_test.dart":  {
+                                                   "audited":  true,
+                                                   "lastAudited":  "2026-10-25",
+                                                   "note":  "Lead 终局对账（task-30 指出过期）：本轮新增 ⑥_bottomOccupied 静态审计与 ⑦「重试」可点 + 真触发 _load，条数 5→7",
+                                                   "result":  "+7 ~0 -0"
+                                               },
+    "t103_danmaku_hint_ui_test.dart":  {
+                                           "audited":  true,
+                                           "lastAudited":  "2026-10-21",
+                                           "note":  "全绿",
+                                           "result":  "+10 ~0 -0"
+                                       },
+    "t104_overlay_exit_test.dart":  {
+                                        "audited":  true,
+                                        "lastAudited":  "2026-10-25",
+                                        "note":  "计数迁移 settings_page 5→9 / provider_import_dialog 2→3 / sync_panel 2→3 / total 15→21（live-accept 把裸 showDialog 改成 showAppDialog）",
+                                        "result":  "+20 ~0 -0"
+                                    },
+    "t108_danmaku_manual_search_test.dart":  {
+                                                 "audited":  true,
+                                                 "lastAudited":  "2026-10-25",
+                                                 "note":  "D 类迁移完成：内联搜索框已迁到独立搜索页；页签切换改成 ensureVisible+tapAt(getCenter) 并把「切过去没有」做成断言（锚：测试连接在 + 显示弹幕不在）；三连跑一致",
+                                                 "result":  "+5 ~0 -0"
+                                             },
+    "t118_control_bars_link_test.dart":  {
+                                             "audited":  true,
+                                             "lastAudited":  "2026-10-25",
+                                             "note":  "登记过期更正：实测全绿（原登记 +15 -1）",
+                                             "result":  "+16 ~0 -0"
+                                         },
+    "t20261030_agg_source_title_test.dart":  {
+                                                 "audited":  false,
+                                                 "lastAudited":  "2026-10-31",
+                                                 "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                                 "result":  null
+                                             },
+    "t20261030_display_title_follow_test.dart":  {
+                                                     "audited":  false,
+                                                     "lastAudited":  "2026-10-31",
+                                                     "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                                     "result":  null
+                                                 },
+    "t20261030_duration_arrival_no_replay_test.dart":  {
+                                                           "audited":  false,
+                                                           "lastAudited":  "2026-10-31",
+                                                           "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                                           "result":  null
+                                                       },
+    "t20261030_episode_number_align_test.dart":  {
+                                                     "audited":  false,
+                                                     "lastAudited":  "2026-10-31",
+                                                     "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                                     "result":  null
+                                                 },
+    "t20261030_playlist_total_duration_test.dart":  {
+                                                        "audited":  false,
+                                                        "lastAudited":  "2026-10-31",
+                                                        "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                                        "result":  null
+                                                    },
+    "t20261030_remote_state_line_test.dart":  {
+                                                  "audited":  false,
+                                                  "lastAudited":  "2026-10-31",
+                                                  "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                                  "result":  null
+                                              },
+    "t20261030_sample_line_test.dart":  {
+                                            "audited":  false,
+                                            "lastAudited":  "2026-10-31",
+                                            "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                            "result":  null
+                                        },
+    "t26_w4_mirror_episode_test.dart":  {
+                                            "audited":  true,
+                                            "lastAudited":  "2026-10-21",
+                                            "note":  "全绿",
+                                            "result":  "+2 ~0 -0"
+                                        },
+    "t27_w1_online_first_test.dart":  {
+                                          "audited":  false,
+                                          "lastAudited":  "2026-10-31",
+                                          "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                          "result":  null
+                                      },
+    "t27_w15_return_cache_norebuild_test.dart":  {
+                                                     "audited":  false,
+                                                     "lastAudited":  "2026-10-21",
+                                                     "note":  "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
+                                                     "result":  null
+                                                 },
+    "t27_w17_close_sheet_restores_bars_test.dart":  {
+                                                        "audited":  true,
+                                                        "lastAudited":  "2026-10-21",
+                                                        "note":  "全绿",
+                                                        "result":  "+6 ~0 -0"
+                                                    },
+    "t27_w18_danmaku_blockwords_enter_test.dart":  {
+                                                       "audited":  true,
+                                                       "lastAudited":  "2026-10-21",
+                                                       "note":  "全绿",
+                                                       "result":  "+4 ~0 -0"
+                                                   },
+    "t27_w20_skip_auto_seek_test.dart":  {
+                                             "audited":  true,
+                                             "lastAudited":  "2026-10-21",
+                                             "note":  "全绿",
+                                             "result":  "+7 ~0 -0"
+                                         },
+    "t27_w21_return_jank_signature_test.dart":  {
+                                                    "audited":  false,
+                                                    "lastAudited":  "2026-10-21",
+                                                    "note":  "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
+                                                    "result":  null
+                                                },
+    "t27_w22_danmaku_slider_jank_test.dart":  {
+                                                  "audited":  true,
+                                                  "lastAudited":  "2026-10-21",
+                                                  "note":  "全绿",
+                                                  "result":  "+4 ~0 -0"
+                                              },
+    "t27_w4_local_fav_play_test.dart":  {
+                                            "audited":  false,
+                                            "lastAudited":  "2026-10-31",
+                                            "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                            "result":  null
+                                        },
+    "t27_w6_live_switch_adopt_test.dart":  {
+                                               "audited":  false,
+                                               "lastAudited":  "2026-10-31",
+                                               "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                               "result":  null
+                                           },
+    "t27_w9_bar_linkage_test.dart":  {
+                                         "audited":  true,
+                                         "lastAudited":  "2026-10-25",
+                                         "note":  "_chromeVisible 门控字面 11→12 项（本批新增 !_danmakuSearchOpen）；B1/B3 前提从「等 _load 自然失败」改成显式 debugPlayerInjectStreamErrorForProbe",
+                                         "result":  "+16 ~0 -0"
+                                     },
+    "t458_hints_entry_ui_test.dart":  {
+                                          "audited":  true,
+                                          "lastAudited":  "2026-10-21",
+                                          "note":  "全绿",
+                                          "result":  "+3 ~0 -0"
+                                      },
+    "t58_media_page_layout_test.dart":  {
+                                            "audited":  true,
+                                            "lastAudited":  "2026-10-21",
+                                            "note":  "全绿",
+                                            "result":  "+16 ~0 -0"
+                                        },
+    "t61_panel_radius_test.dart":  {
+                                       "audited":  true,
+                                       "lastAudited":  "2026-10-21",
+                                       "note":  "全绿",
+                                       "result":  "+6 ~0 -0"
+                                   },
+    "t63_shot_ui_test.dart":  {
+                                  "audited":  true,
+                                  "lastAudited":  "2026-10-21",
+                                  "note":  "全绿",
+                                  "result":  "+5 ~0 -0"
+                              },
+    "t72_jank_test.dart":  {
+                               "audited":  true,
+                               "lastAudited":  "2026-10-21",
+                               "note":  "全绿",
+                               "result":  "+5 ~0 -0"
+                           },
+    "t72_stream_sheet_test.dart":  {
+                                       "audited":  true,
+                                       "lastAudited":  "2026-10-21",
+                                       "note":  "全绿",
+                                       "result":  "+11 ~0 -0"
+                                   },
+    "t74_embed_visibility_gate_test.dart":  {
+                                                "audited":  true,
+                                                "lastAudited":  "2026-10-21",
+                                                "note":  "全绿",
+                                                "result":  "+2 ~0 -0"
+                                            },
+    "t92_bottom_bar_row_fit_test.dart":  {
+                                             "audited":  true,
+                                             "lastAudited":  "2026-10-25",
+                                             "note":  "D 类：旧判据找的是已搬走的按钮（截图/弹幕设置进「更多」菜单，more_vert→more_horiz）；按真实底栏重写后绿，注入两处变异 ⇒ +3 -4",
+                                             "result":  "+7 ~0 -0"
+                                         },
+    "t98_settings_open_order_test.dart":  {
+                                              "audited":  true,
+                                              "lastAudited":  "2026-10-21",
+                                              "note":  "全绿",
+                                              "result":  "+7 ~0 -0"
+                                          },
+    "zz_cr_backbtn_backarrow_test.dart":  {
+                                              "audited":  true,
+                                              "lastAudited":  "2026-10-25",
+                                              "note":  "② 曾红：真产品缺陷（顶栏看得见点不到，_autoHideNow 漏 _pushControlsLive）；产品 1 行修复后转绿，仪表打印 ignoring=false inHitPath=true 闭环",
+                                              "result":  "+7 ~0 -0"
+                                          },
+    "zz_cr_dmk_c_import_test.dart":  {
+                                         "audited":  true,
+                                         "lastAudited":  "2026-10-25",
+                                         "note":  "文案按站名铁律中性化（具体站名→外部视频站），两处断言同步迁移",
+                                         "result":  "+4 ~0 -0"
+                                     },
+    "zz_cr_dmk_d_badge_test.dart":  {
+                                        "audited":  true,
+                                        "lastAudited":  "2026-10-21",
+                                        "note":  "全绿",
+                                        "result":  "+3 ~0 -0"
+                                    },
+    "zz_cr_jank_titlebar_flip_test.dart":  {
+                                               "audited":  true,
+                                               "lastAudited":  "2026-10-21",
+                                               "note":  "全绿",
+                                               "result":  "+1 ~0 -0"
+                                           },
+    "zz_cr_local_row_trash_hover_test.dart":  {
+                                                  "audited":  false,
+                                                  "lastAudited":  "2026-10-31",
+                                                  "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                                  "result":  null
+                                              },
+    "zz_cr_local_select_ui_test.dart":  {
+                                            "audited":  false,
+                                            "lastAudited":  "2026-10-31",
+                                            "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                            "result":  null
+                                        },
+    "zz_cr_panel_double_enter_test.dart":  {
+                                               "audited":  true,
+                                               "lastAudited":  "2026-10-21",
+                                               "note":  "全绿",
+                                               "result":  "+1 ~0 -0"
+                                           },
+    "zz_cr_panel_notch_test.dart":  {
+                                        "audited":  true,
+                                        "lastAudited":  "2026-10-21",
+                                        "note":  "全绿",
+                                        "result":  "+3 ~0 -0"
+                                    },
+    "zz_cycani_firstframe_probe_test.dart":  {
+                                                 "audited":  true,
+                                                 "lastAudited":  "2026-10-26",
+                                                 "note":  "真文件首帧探针（人工抽检）",
+                                                 "result":  "待跑：探针在写，暂不计绿"
+                                             },
+    "zz_demuxer_override_test.dart":  {
+                                          "audited":  true,
+                                          "lastAudited":  "2026-10-26",
+                                          "note":  "demuxer 覆盖下发/清空；+2 全绿",
+                                          "result":  "+2 ~0 -0"
+                                      },
+    "zz_ikan_multiline_player_path_test.dart":  {
+                                                    "audited":  true,
+                                                    "lastAudited":  "2026-10-26",
+                                                    "note":  "31 线路 UI 可跑；+7 全绿",
+                                                    "result":  "+7 ~0 -0"
+                                                },
+    "zz_media_r1_local_open_probe_test.dart":  {
+                                                   "audited":  false,
+                                                   "lastAudited":  "2026-10-31",
+                                                   "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                                   "result":  null
+                                               },
+    "zz_media_shots_test.dart":  {
+                                     "audited":  true,
+                                     "lastAudited":  "2026-10-21",
+                                     "note":  "全绿",
+                                     "result":  "+7 ~0 -0"
+                                 },
+    "zz_ops13_mirror_write_test.dart":  {
+                                            "audited":  true,
+                                            "lastAudited":  "2026-10-21",
+                                            "note":  "全绿",
+                                            "result":  "+7 ~0 -0"
+                                        },
+    "zz_ops13_resume_read_test.dart":  {
+                                           "audited":  true,
+                                           "lastAudited":  "2026-10-21",
+                                           "note":  "全绿",
+                                           "result":  "+9 ~0 -0"
+                                       },
+    "zz_pr10_stale_skip_marker_test.dart":  {
+                                                "audited":  true,
+                                                "lastAudited":  "2026-10-21",
+                                                "note":  "全绿",
+                                                "result":  "+5 ~0 -0"
+                                            },
+    "zz_r65_error_shots_test.dart":  {
+                                         "audited":  false,
+                                         "lastAudited":  "2026-10-21",
+                                         "note":  "原生崩溃 exit=79 + No tests were found（libmpv 加载后 flutter_tester c0000005）—— D 类环境问题，不是断言失败",
+                                         "result":  null
+                                     },
+    "zz_rewatch_prompt_test.dart":  {
+                                        "audited":  true,
+                                        "lastAudited":  "2026-10-21",
+                                        "note":  "全绿",
+                                        "result":  "+14 ~0 -0"
+                                    },
+    "zz_t1015b_dash_audio_native_test.dart":  {
+                                                  "audited":  true,
+                                                  "lastAudited":  "2026-10-21",
+                                                  "note":  "全绿",
+                                                  "result":  "+1 ~0 -0"
+                                              },
+    "zz_t1023_player_route_exit_order_test.dart":  {
+                                                       "audited":  true,
+                                                       "lastAudited":  "2026-10-24",
+                                                       "note":  "全绿",
+                                                       "result":  "+3 ~0 -0"
+                                                   },
+    "zz_t1023_player_search_integration_test.dart":  {
+                                                         "audited":  true,
+                                                         "lastAudited":  "2026-10-24",
+                                                         "note":  "全绿",
+                                                         "result":  "+2 ~0 -0"
+                                                     },
+    "zz_t1023_player_seek_behavior_test.dart":  {
+                                                    "audited":  true,
+                                                    "lastAudited":  "2026-10-25",
+                                                    "note":  "Lead 终局对账（task-30 指出漏登）：本轮改动后单跑全绿 16 条",
+                                                    "result":  "+16 ~0 -0"
+                                                },
+    "zz_t1024_chrome_autohide_hittest_test.dart":  {
+                                                       "audited":  false,
+                                                       "lastAudited":  "2026-10-31",
+                                                       "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                                       "result":  null
+                                                   },
+    "zz_t1024_midroll_skip_test.dart":  {
+                                            "audited":  true,
+                                            "lastAudited":  "2026-10-26",
+                                            "note":  "中插广告接线：片头/中插同段 seek、grace 前置、片尾不入 windowsOf；+4 全绿",
+                                            "result":  "+4 ~0 -0"
+                                        },
+    "zz_t1024_player_banner_order_test.dart":  {
+                                                   "audited":  true,
+                                                   "lastAudited":  "2026-10-25",
+                                                   "note":  "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：横幅在底栏之后 + 恢复判据 + 让位",
+                                                   "result":  "+5 ~0 -0"
+                                               },
+    "zz_t1024_player_failure_attribution_test.dart":  {
+                                                          "audited":  true,
+                                                          "lastAudited":  "2026-10-25",
+                                                          "note":  "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：timeout 第七档 + elapsed 窗口由常量算",
+                                                          "result":  "+7 ~0 -0"
+                                                      },
+    "zz_t1024_player_live_keys_test.dart":  {
+                                                "audited":  true,
+                                                "lastAudited":  "2026-10-25",
+                                                "note":  "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：全屏态空格/M 经共享 LivePlaybackTarget 派发；打字态不抢键",
+                                                "result":  "+3 ~0 -0"
+                                            },
+    "zz_t1024_skip_respects_user_seek_test.dart":  {
+                                                       "audited":  true,
+                                                       "lastAudited":  "2026-10-25",
+                                                       "note":  "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：用户 seek 豁免 + pendingSeek 让位 + 阴性对照；2026-10-25 增补 ⑥「继续观看」行为用例与 ⑤ 裸 seek 枚举门禁后由 +5 变 +6（交叉复核 task-20 指出登记过期，已按实跑更正）",
+                                                       "result":  "+6 ~0 -0"
+                                                   },
+    "zz_t1025_switch_resume_test.dart":  {
+                                             "audited":  true,
+                                             "lastAudited":  "2026-10-25",
+                                             "note":  "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：详情区/播放器内换源续播契约",
+                                             "result":  "+7 ~0 -0"
+                                         },
+    "zz_t12_defect_a_probe_test.dart":  {
+                                            "audited":  false,
+                                            "lastAudited":  "2026-10-31",
+                                            "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                            "result":  null
+                                        },
+    "zz_t12_local_play_probe_test.dart":  {
+                                              "audited":  true,
+                                              "lastAudited":  "2026-10-21",
+                                              "note":  "全绿",
+                                              "result":  "+1 ~0 -0"
+                                          },
+    "zz_t20261030_native_media_tag_gate_test.dart":  {
+                                                         "audited":  false,
+                                                         "lastAudited":  "2026-10-31",
+                                                         "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                                         "result":  null
+                                                     },
+    "zz_t3_flash_probe_test.dart":  {
+                                        "audited":  true,
+                                        "lastAudited":  "2026-10-21",
+                                        "note":  "全绿",
+                                        "result":  "+1 ~0 -0"
+                                    },
+    "zz_t42_player_keys_test.dart":  {
+                                         "audited":  true,
+                                         "lastAudited":  "2026-10-21",
+                                         "note":  "全绿",
+                                         "result":  "+15 ~0 -0"
+                                     },
+    "zz_t66_danmaku_send_predicate_test.dart":  {
+                                                    "audited":  true,
+                                                    "lastAudited":  "2026-10-21",
+                                                    "note":  "全绿",
+                                                    "result":  "+9 ~0 -0"
+                                                },
+    "zz_t66_n11_bottombar_test.dart":  {
+                                           "audited":  false,
+                                           "lastAudited":  "2026-10-31",
+                                           "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                           "result":  null
+                                       },
+    "zz_t66_player_jank_perf_test.dart":  {
+                                              "audited":  false,
+                                              "lastAudited":  "2026-10-31",
+                                              "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                              "result":  null
+                                          },
+    "zz_t66_player_jank_test.dart":  {
+                                         "audited":  true,
+                                         "lastAudited":  "2026-10-27",
+                                         "note":  "顶栏 hover 不整页重建（真 PlayerPage + 真 libmpv）。2026-10-27 挂 native-media 后抽检：run2/run3 各 +9 全绿，run1 进程级秒死（rc=79 / 6s / +0 通过 / 14 条 did not complete）⇒ 已知 libmpv native 崩溃限制；轻量等价判据在 zz_t66_hover_behavior_light_test（untagged，全量必跑）",
+                                         "result":  "+9 ~0 -0（run2/run3）；run1 native 崩溃未计"
+                                     },
+    "zz_t66_r1_three_way_compare_test.dart":  {
+                                                  "audited":  true,
+                                                  "lastAudited":  "2026-10-21",
+                                                  "note":  "全绿",
+                                                  "result":  "+1 ~0 -0"
+                                              },
+    "zz_t66_r5_live_mute_default_test.dart":  {
+                                                  "audited":  false,
+                                                  "lastAudited":  "2026-10-31",
+                                                  "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                                  "result":  null
+                                              },
+    "zz_t66_r6b_live_toggle_test.dart":  {
+                                             "audited":  false,
+                                             "lastAudited":  "2026-10-31",
+                                             "note":  "2026-10-30 批末修复全量 did-not-complete 崩溃时补挂 native-media 标签（此前漏标/错位导致文件被全量真跑、随机 native 崩溃）；单文件 --run-skipped 抽检待做，见标签门禁 zz_t20261030_native_media_tag_gate_test.dart",
+                                             "result":  null
+                                         }
 }

@@ -82,7 +82,7 @@ episode id 传给新 sourceCode 的 resolve，回落行为在 Rust 侧 —— �
 ## 真机复现结论（2026-10-30 00:45，driver-ops 执行，lead 裁决：未复现 ⇒ 不额外接线）
 
 ```text
-复现单：老舅（cctv 直连源，official/cdn 两线路）goto_episode=2 →
+复现单：老舅（某直播频道源，official/cdn 两线路）goto_episode=2 →
   switch_source{code:'cdn'} → 终态。
 读数：ep 保持 2/27 且位置续播；终态 episode_order=3 是 10s 样片**自动连播**
   到第 3 集（非跳 1）。换线前后 episode id 无前缀污染。

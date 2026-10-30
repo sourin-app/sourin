@@ -7,8 +7,10 @@
 // ```text
 // 逐个源直测（绕过聚合）：注册 98 个源 ⇒ **50 个能搜到「老舅」**、46 个报错、2 个空。
 // 而聚合「全部」只扇出 47 个候选、14 个有结果 —— 差的 51 个 id 躺在
-// `disabled-providers.json` 里：api / api-2..5 / bfzyapi / cj / caiji / ffzy /
-// cctv / bilibili / hongniuzy2 / jszyapi / sdzyapi / suoniapi / tyyszy / 154 / 360 …
+// `disabled-providers.json` 里（此处只列**类目**，不逐字列源 id ——
+// 本仓规矩：仓库里不许出现具体视频网站/频道名，见 test/t98_no_site_names_test.dart）：
+// api 系 / bfzyapi 系 / cj 系 / caiji 系 / ffzy 系 / 直播频道型 / 某弹幕站 /
+// hongniuzy2 / jszyapi 系 / sdzyapi / suoniapi 系 / tyyszy / 数字编号源 …
 //
 // 这些**不是用户一个个点掉的**：是整个文件夹一次写进去的（导入/整顿那几轮自动化产物）。
 // 后果：原版「全部」= 配置里所有站点都扇出（原版没有列表启用这个概念），
@@ -149,15 +151,20 @@ mod tests {
     /// 注入验证：把 `if searchable.contains(id)` 改成 `if true` ⇒ 本条 FAILED
     ///   （那会把直播/豆瓣也复活，扇出里多 17 条 Unsupported 噪声）。
     /// ```
+    ///
+    /// ⚠️ 夹具里的源 id 一律用**中性假名**（`live-tv` / `fake-site-b` 等）：
+    /// 本仓规矩是"仓库里不许出现具体视频网站/频道名"（见 test/t98_no_site_names_test.dart），
+    /// 而这里只是 `plan_restore` 的纯集合夹具，id 换成什么**不影响被测语义**
+    /// （被测的是"在 searchable 里的被恢复、不在的被留下"）。
     #[test]
     fn plan_restores_only_searchable() {
         let disabled = vec![
             "api".to_string(),
-            "cctv".to_string(),
+            "live-tv".to_string(),
             "iptv".to_string(),
             "csp-douban".to_string(),
         ];
-        let searchable: HashSet<String> = ["api", "cctv", "csp-douban"]
+        let searchable: HashSet<String> = ["api", "live-tv", "csp-douban"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -167,7 +174,7 @@ mod tests {
         assert_eq!(keep, vec!["iptv".to_string()], "★ 不可搜索的必须留下");
         assert_eq!(
             restored,
-            vec!["api".to_string(), "cctv".to_string(), "csp-douban".to_string()]
+            vec!["api".to_string(), "live-tv".to_string(), "csp-douban".to_string()]
         );
     }
 

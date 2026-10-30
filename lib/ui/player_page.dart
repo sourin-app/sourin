@@ -12003,7 +12003,7 @@ class _PlayerPageState extends State<PlayerPage>
      * ★★★ 标题跟随（Owner 解锁授权，2026-10-30）：遥控 title 用**展示层拼装**
      *
      * ```text
-     * 真机读数（repro14）：CCTV 类源 detail.title = 「《老舅》 第1集」，
+     * 真机读数（repro14）：直播频道型源 detail.title = 「《老舅》 第1集」，
      * 自动连播到第 3 集后 episode_order=3 而 title 仍「第1集」（陈旧快照）。
      * 修法（lead 裁决）：title = 剥掉内嵌集数后缀的剧名 + 「第N集」（order
      * 实时准确）；**不改写 _title 本体**（写库路径 t61 契约不动）。
@@ -16901,7 +16901,7 @@ class _PlayerPageState extends State<PlayerPage>
                       // ★ task-32 接线契约（逐字）：state 必须传进 providerName；
                       //   聚合源的复合串在写入点算（见 _refreshAggregateTitleInPlace）
                       providerName: _providerName,
-                      // ★ 标题跟随（Owner 解锁授权）：顶栏剧名剥掉 CCTV 类源
+                      // ★ 标题跟随（Owner 解锁授权）：顶栏剧名剥掉直播频道型源
                       //   内嵌的集数后缀（集名由下面 episodeTitle 独立渲染）；
                       //   普通源零变化。写库路径仍读 _liveTitle（t61 契约不动）。
                       title: showTitleOf(_liveTitle, _episodes),

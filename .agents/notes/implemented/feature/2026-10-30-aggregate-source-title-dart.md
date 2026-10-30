@@ -83,7 +83,7 @@ Owner 验收②（现场反馈批次任务2）：播放页顶部与换源列表�
   ① 纯函数 3 条（空 note 不画括号 / 非空画括号 / label 拼「 · 」与空白 trim）
   ② 真树 tvbox_agg：顶栏 pill = 「TVBox 聚合(我的聚合) · 子站A · 线路1」；
      抽屉当前行同串、候选行（子站B）带前缀；裸 displayName 不许出现
-  ③ 真树 cctv：行标题「主线」原样、前缀一个字不添（就算误注入了 note）
+  ③ 真树（直播频道型源）：行标题「主线」原样、前缀一个字不添（就算误注入了 note）
   夹具：真 PlayerPage + debugPlayerSetStreamsForProbe /
   debugPlayerSetAggregateTitleForProbe / debugPlayerClearErrorForProbe
 回归：test/t72_stream_sheet_test.dart → 11 passed（清晰度徽章/点空白关闭无回归）

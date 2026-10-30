@@ -398,8 +398,9 @@ pub fn enabled_children(
          * ```text
          * 真机读数（逐个源直测，绕过聚合）：注册 98 个源 ⇒ **50 个能搜到「老舅」**。
          * 而聚合扇出只有 47 个候选（14 出结果）—— 差在 `disabled-providers.json`
-         * 里躺着我方自动化写进去的 **51 个 id**（api/bfzyapi/cj/caiji/ffzy/cctv/bilibili…），
-         * 它们被 `enabled_manifests()` 整体排除。
+         * 里躺着我方自动化写进去的 **51 个 id**（只列类目不逐字列源 id ——
+         * 本仓规矩：仓库里不许出现具体视频网站/频道名，
+         * 见 test/t98_no_site_names_test.dart），它们被 `enabled_manifests()` 整体排除。
          *
          * 试过在**这里**忽略停用（直接 `manifests()`）⇒ 扇出 98、结果 50，
          * 但把 R2-B「用户显式停用就不搜」也一起推翻了，4 个门禁立刻红。

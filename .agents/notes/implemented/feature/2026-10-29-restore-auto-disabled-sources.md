@@ -16,11 +16,13 @@ Owner：「75 个源，就是 tvbox 聚合源支持的那个」。
 聚合「全部」实际只扇出 47 个候选 ⇒ 14 个源有结果
 ```
 
-差的 51 个 id 在 `disabled-providers.json` 里：
-`api, api-2..5, bfzyapi(-2), cj(-2,-3), caiji(-2), cctv, 154, 360, bilibili, ffzy,
-hongniuzy2, jszyapi(-2), sdzyapi, suoniapi(-2), tyyszy, csp-bili-* ×10, csp-panwebshare-* ×6 …`
+差的 51 个 id 在 `disabled-providers.json` 里（此处只列**类目**，不逐字列源 id ——
+本仓规矩：仓库里不许出现具体视频网站/频道名，见 `test/t98_no_site_names_test.dart`）：
+「api 系 5 个、bfzyapi 系 2 个、cj 系 3 个、caiji 系 2 个、直播频道型源 1 个、
+数字编号源 2 个、某弹幕站 1 个、ffzy / hongniuzy2 / jszyapi 系 / sdzyapi /
+suoniapi 系 / tyyszy 各若干、csp-bili-* ×10、csp-panwebshare-* ×6 …」
 
-这些都是**能搜到「老舅」的站**（cctv 54 条、api 4 条、bilibili 20 条…），
+这些都是**能搜到「老舅」的站**（其中直播频道型源 54 条、api 系 4 条、某弹幕站 20 条…），
 但它们被 `enabled_manifests()` 过滤掉 ⇒ 连搜索都不参与。
 
 ## Decision

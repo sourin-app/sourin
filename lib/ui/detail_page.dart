@@ -2812,7 +2812,7 @@ class _DetailPageState extends State<DetailPage> {
       final lineM = _lineCount;
       final badge = lineM > 1 ? '本线路 $lineN 集 · 共 $lineM 条线路' : '$lineN 集';
       /*
-       * ★★★ 标题跟随（Owner 解锁授权，2026-10-30）：右栏标题剥掉 CCTV 类源
+       * ★★★ 标题跟随（Owner 解锁授权，2026-10-30）：右栏标题剥掉直播频道型源
        * 内嵌的集数后缀、缀上**当前正在播**的集标题 —— 自动连播后跟随
        * （真机读数 repro14：「《老舅》 第1集」连播到第 3 集仍显示第1集）。
        * 判据是公共函数 detailDisplayTitle（episode_filter.dart）：普通源
@@ -4083,7 +4083,7 @@ class _Info extends StatelessWidget {
   /// ★★★ 标题跟随（Owner 解锁授权，2026-10-30）：头部标题的**展示串**
   ///
   /// 由调用方（_buildHeader）经公共函数 detailDisplayTitle 算好传入：
-  /// CCTV 类源 detail.title 内嵌「第N集」⇒ 剥后缀 + 缀当前在播集；
+  /// 直播频道型源 detail.title 内嵌「第N集」⇒ 剥后缀 + 缀当前在播集；
   /// 普通源原样（null 之外的路径不会走到兜底）。**不改 detail.title 本体**。
   final String? displayTitle;
 

@@ -4,16 +4,18 @@
 //
 // # 关键认知修正（2026-10-30，本轮自查）
 //
-// 上一版测试在 `registry.search_all` 层面统计，得到"107 子源只有 cctv 有命中"，
+// 上一版测试在 `registry.search_all` 层面统计，得到"107 子源只有 1 个有命中"，
 // **这是误判**：TVBox 导入的子站都被标 `hidden: true`（列表不展示），
 // `registry::for_each_search` 会**刻意跳过 hidden 源**（避免与聚合源扇出重复搜索），
 // 真正对子站扇出的是 `tvbox_agg` 自己。所以正确口径是：
 //
 // ```text
-// registry.search_all → 只搜非 hidden（≈ 1 个：cctv）+ tvbox_agg（它自己扇出全部子站）
+// registry.search_all → 只搜非 hidden（≈ 1 个：某直播频道源）+ tvbox_agg（扇出全部子站）
 // tvbox_agg.search    → 扇出全部 enabled 子站，这才是"聚合搜索"的真实覆盖面
 // ```
 //
+// ⚠️ 本文只用"某直播频道源"这样的类目说法：本仓规矩是仓库里不许出现
+// 具体视频网站/频道名（见 test/t98_no_site_names_test.dart）。
 // # 本测试要回答的问题
 //
 // ```text

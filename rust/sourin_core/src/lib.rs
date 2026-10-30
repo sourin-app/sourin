@@ -83,6 +83,8 @@ pub mod args;
 
 /// m3u / txt 直播播放列表解析（TVBox lives[] 导入的前置能力）
 pub mod m3u;
+/// HLS 清单的客观结构判定（不靠时长阈值，读清单自身的 DISCONTINUITY/ENDLIST 标记）
+pub mod hls_facts;
 
 /// 网盘分享链接识别（网盘能力的第一个跳）
 pub mod pan;

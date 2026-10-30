@@ -400,12 +400,30 @@ async fn drain_probes(list: &mut [crate::model::StreamCandidate], targets: Vec<P
     }
     while let Some(joined) = set.join_next().await {
         match joined {
-            Ok(done) => {
-                if let Some(c) = list.get_mut(done.idx) {
+            Ok(done) => match list.get_mut(done.idx) {
+                Some(c) => {
                     c.playlist_total_ms = done.total_ms;
                     c.playlist_discontinuous = done.discontinuous;
                 }
-            }
+                None => {
+                    /*
+                     * idx 来自 enumerate()，正常不可能越界 —— 所以走到这里说明
+                     * 回填索引逻辑本身坏了。**必须留痕**：静默跳过就是"事实被丢了
+                     * 却没人知道"，与本批反复批评的静默失败同形
+                     * （[PLAY] resolve 失败曾只记 kind=Other 等于没写）。
+                     * 不 panic（探测是 best-effort，不许因它炸掉整个 resolve），
+                     * 但要能在 logs\sourin-*.log 里查到。
+                     */
+                    crate::applog::write_file_log(
+                        "PLAY",
+                        &format!(
+                            "清单探测回填索引越界 idx={} len={}（该候选留无读数，属实现缺陷）",
+                            done.idx,
+                            list.len()
+                        ),
+                    );
+                }
+            },
             Err(e) => {
                 // 任务 panic/被取消 ⇒ 该候选保持 None（约束③），不阻断其它候选。
                 // ★ 落文件日志走 applog（本 crate 的 log 门面从未装 sink，

@@ -4966,6 +4966,24 @@ class _PlayerPageState extends State<PlayerPage>
     }
   }
 
+  /// duration 广播的**唯一**处理点（mpv 订阅与门禁探针共用）
+  ///
+  /// 与 [_onPositionTick] 同一模式：监听体抽成方法，探针直调生产实现
+  /// （测的就是生产路径，不是复刻件）。
+  /// ⚠️ 边界契约：只更新时长状态 + 写线路时长缓存；**不许**在这里做
+  /// 选线/重解析/跳集（见订阅处的边界注释与对应门禁）。
+  void _onDurationTick(Duration d) {
+    if (!mounted) return;
+    setState(() {
+      _duration = d;
+      // 真实时长以流里的为准（元数据不准）
+      if (d > Duration.zero) _realDuration = d;
+    });
+    // ★ 1.3：起播后把这条线路的真实时长记进缓存
+    //   （下一轮默认选线才能避开样片；_current 为 null 时 _recordLineDuration 自己会退）
+    _recordLineDuration(d);
+  }
+
   void _bindPlayerStreams() {
     _player.stream.playing.listen((v) {
       if (mounted) {
@@ -4981,17 +4999,19 @@ class _PlayerPageState extends State<PlayerPage>
       }
     });
     _player.stream.position.listen(_onPositionTick);
-    _player.stream.duration.listen((d) {
-      if (!mounted) return;
-      setState(() {
-        _duration = d;
-        // 真实时长以流里的为准（元数据不准）
-        if (d > Duration.zero) _realDuration = d;
-      });
-      // ★ 1.3：起播后把这条线路的真实时长记进缓存
-      //   （下一轮默认选线才能避开样片；_current 为 null 时 _recordLineDuration 自己会退）
-      _recordLineDuration(d);
-    });
+    _player.stream.duration.listen(_onDurationTick);
+    // ═══════════════════════════════════════════════════════════════════
+    //  ★★★ 2026-10-30（真机 ep 回跳排查）：duration 到账的**行为边界**
+    //  ═══════════════════════════════════════════════════════════════════
+    //
+    //  `_onDurationTick` 只做两件事：更新 `_duration`/`_realDuration` + 写
+    //  线路时长缓存（1.3）。**绝不**重选线、重解析、跳集 —— 真机曾观测一次
+    //  ep2→ep1 回跳，driver-ops 假设是"duration 到账触发默认选线重评估"；
+    //  代码级排查已排除（pickDefaultPlayable 唯一调用点在 _load 内部，
+    //  duration 广播不会进入它），本边界由门禁
+    //  t20261030_duration_arrival_no_replay_test 钉住，防止将来有人把
+    //  "选线/重试"逻辑挂进这条监听。
+    //  ═══════════════════════════════════════════════════════════════════
     _player.stream.buffering.listen((v) {
       if (mounted) setState(() => _buffering = v);
     });
@@ -20588,6 +20608,19 @@ bool debugPlayerSkipOpenForProbe = false;
 void debugPlayerPushPositionForProbe(Duration p) {
   _livePlayerState?._onPositionTick(p);
 }
+
+/// ★ 标题/样片排查（2026-10-30）门禁探针：把一次 duration 广播**灌进真实处理路径**
+///
+/// 与 [debugPlayerPushPositionForProbe] 同一模式 —— 直调生产 `_onDurationTick`，
+/// 测的就是 mpv duration 到账后的真实处理（缓存写入 + 状态更新），
+/// 验「duration 到账**绝不**二次起播/换集」这条边界（ep 回跳排查的产物）。
+void debugPlayerPushDurationForProbe(Duration d) {
+  _livePlayerState?._onDurationTick(d);
+}
+
+/// ★ 同上：读线路时长缓存（键由 lineDurationKey 产出；null = 未记录）
+int? debugPlayerLineDurationForProbe(String key) =>
+    _livePlayerState?._lineDurationCache[key];
 
 /// ★★★ OPS-13（反馈 C）探针：**真的走一遍生产落盘路径**（`_saveProgress`）
 ///

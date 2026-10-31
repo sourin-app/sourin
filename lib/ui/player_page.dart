@@ -126,6 +126,7 @@ import 'app_theme.dart';
 import 'remote_bridge.dart';
 import 'titlebar_visibility.dart';
 import 'media_session.dart';
+import 'player/nonmedia_guard.dart';
 import 'cast/cast_button.dart';
 import 'player/episode_panel.dart';
 import 'player/player_bottom_bar.dart';
@@ -6232,6 +6233,37 @@ class _PlayerPageState extends State<PlayerPage>
       _startFailureElapsed = null;
     });
     /*
+     * ★★★ T4-I（2026-10-31）：非媒体预检 —— mpv 前的最后一道关口
+     *
+     * # 为什么放在这里（cleanenv 审计实锤）
+     * ```text
+     * csp-yinhai ×3 / csp-apprj ×2 / csp-appysv2 ×1：resolve 报 ok，mpv 报
+     * 「Failed to recognize file format」。离线复现（带头/不带头一致 ⇒ 不是头丢失）：
+     *   mpv 收到的 URL 本身就不是媒体流 —— 网盘分享页（HTML）、第三方解析
+     *   接口（JSON 信封，真流在 `url` 字段）、iqiyi 页面链接。
+     * 头链路两端都完好（Dart `Media(st.url, httpHeaders: st.httpHeaders)`、
+     * Rust maybe_proxy 门控）⇒ 在 open 之前拦：能换直链的换（解析接口信封 /
+     * 页里刮出的 m3u8），换不了的给人话错误 —— 不再让用户看"格式解不了"。
+     * 网盘分享页要真播需要网盘账号链路（Rust pan 模块，另案），本层只如实报错。
+     * ```
+     * 判据与实现见 `player/nonmedia_guard.dart`（纯函数 + 注入证红）。
+     * ⚠️ 放在「起播失败耗时」计时起点之前：预检属于"还没交给 mpv"的阶段。
+     */
+    final NonMediaCheck precheck = await precheckNonMedia(st.url, st.httpHeaders);
+    if (precheck.error != null) {
+      AppLog.write('PLAY', '非媒体预检剔除（不再报"格式解不了"）：${precheck.error}');
+      if (mounted) {
+        setState(() {
+          _error = precheck.error!;
+          _errorKind = null; // 非核心层异常 ⇒ 没有结构化类别
+          _loading = false;
+        });
+      }
+      return;
+    }
+    final String playUrl = precheck.url ?? st.url;
+
+    /*
      * ★★★ 缺陷⑧（2026-10-25）：「起播失败耗时」的**计时起点**
      *
      * 必须在 `open()` **紧邻之前**取，而不是在 `_load()` 入口 ——
@@ -6303,7 +6335,7 @@ class _PlayerPageState extends State<PlayerPage>
       await _applyDemuxerOverride();
       if (!debugPlayerSkipOpenForProbe) {
         await _player.open(
-          Media(st.url, httpHeaders: st.httpHeaders),
+          Media(playUrl, httpHeaders: st.httpHeaders),
           play: !_isLive || (widget.initialLivePlayback?.playing ?? true),
         );
       }
@@ -6369,7 +6401,7 @@ class _PlayerPageState extends State<PlayerPage>
        *    不该出现在正式日志里。
        */
       if (kPlaybackTiming) {
-        debugPrint('[TIMING] 起播地址 = ${st.url}');
+        debugPrint('[TIMING] 起播地址 = $playUrl');
       }
       debugPrint(
         '[PLAYER] open: kind=${st.kind} drm=${st.drmProtected} '
@@ -6399,7 +6431,9 @@ class _PlayerPageState extends State<PlayerPage>
        */
       AppLog.write(
         'PLAY',
-        '起播 kind=${st.kind} drm=${st.drmProtected} url=${st.url}',
+        // ★ T4-I：playUrl 可能是预检换出来的直链（解析接口信封/页里刮的 m3u8），
+        //   故障取证要的是**真正 open 的地址**，不是候选原地址。
+        '起播 kind=${st.kind} drm=${st.drmProtected} url=$playUrl',
       );
 
       /*

@@ -88,6 +88,7 @@ pub mod hls_facts;
 
 /// 网盘分享链接识别（网盘能力的第一个跳）
 pub mod pan;
+pub mod pan_check;
 pub mod pan_list;
 
 /// 网盘登录凭据管理（系统钥匙串，cookie 不落盘）

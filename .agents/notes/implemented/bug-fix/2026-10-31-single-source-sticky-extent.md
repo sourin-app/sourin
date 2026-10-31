@@ -24,6 +24,7 @@ batch-20261031/13-home-top.png）显示「我的」分段控件下方直接是 s
 
 帮凶：home_page.dart:2573 / :2772-2773 的注释仍写旧语义「源少于 2 个时那条返回
       SizedBox.shrink()」⇒ 改闸门①的人据此以为没有第二道门槛。
+```
 
 ## Decision
 

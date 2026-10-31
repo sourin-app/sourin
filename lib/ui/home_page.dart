@@ -2570,8 +2570,17 @@ class HomePageState extends State<HomePage> {
             pinned: true,
             delegate: _StickySourceBar(
               // ★ 与 `SourceBar` 用**同一个**过滤结果算 extent ——
-              //   源少于 2 个时那条返回 `SizedBox.shrink()`，
-              //   此刻吸附条必须完全不占位（见 `extentFor` 的长注释）。
+              //   两者必须同步（详见 `extentFor` 的长注释）。
+              //
+              // ⚠️ 2026-10-31 Owner 改判：**单源也占位**。
+              //   旧注释写的是"源少于 2 个时那条返回 `SizedBox.shrink()`，
+              //   此刻吸附条必须完全不占位"—— 那是**改判前**的语义，
+              //   而且它就是**本次漏改的帮凶**：正因为这里写着"不占位"，
+              //   删 source_bar 早退时没人想到本文件还有第二道门槛。
+              //   现在的口径：**只有一个源也照样给它 `_extent`**
+              //   （Owner 逐字：「首页就算只有一个源也要显示那个液态选择的」）；
+              //   点击重选零副作用由 `_switchSource` 的同源守卫保证，
+              //   与 `source_bar.dart` 同源。
               visibleCount: visibleSourceList(_enabled).length,
               // ⚠️ 必须传**同一个 GlobalKey** 给 SourceBar
               //    （见 `_sourceBarKey` 的说明：不用 key 的话
@@ -2769,18 +2778,31 @@ class _StickySourceBar extends SliverPersistentHeaderDelegate {
   ///
   /// # 16.0 是怎么来的（探针实测，`test/t1009_sliver_probe_test.dart`）
   ///
-  /// `SourceBar` 在**可见源少于 2 个**时返回 `SizedBox.shrink()`
-  /// （`source_bar.dart`：`if (sources.length <= 1) return SizedBox.shrink()`）。
-  /// 而 `_StickySourceBar.build` 给它包了 `Padding(vertical: 8)`：
+  /// ⚠️ 这段是**改判前的成因**，保留它是为了让后人知道 16 这个数从哪来
+  ///    —— 但它描述的形态现在已经**不复存在**，别拿它当现状：
   ///
   /// ```text
-  /// 8（上） + 0（shrink） + 8（下） = 16  ← childExtent = 16
+  /// 那时  `SourceBar` 在可见源少于 2 个时返回 `SizedBox.shrink()`
+  ///       （`source_bar.dart`：`if (sources.length <= 1) return …`）
+  ///       而 `_StickySourceBar.build` 给它包了 `Padding(vertical: 8)`：
+  ///         8（上） + 0（shrink） + 8（下） = 16  ← childExtent = 16
+  ///       外层照报 `min == max == 60` ⇒ 60 > 16 ⇒ 断言炸。
   /// ```
   ///
-  /// 而外层照报 `min == max == 60` ⇒ 60 > 16 ⇒ 断言炸。
+  /// ★★ 2026-10-31 起两侧都变了，且必须**同向**：
+  /// ```text
+  /// SourceBar：单源早退**已删**（Owner「就算只有一个源也要显示」）
+  /// extentFor：单源也不再归零（`== 0` 而非 `<= 1`，见本页下面那段）
+  /// ⇒ 单源时 childExtent = 8 + 44（真药丸）+ 8 = 60，与 maxExtent 一致
+  ///   ⇒ 那个"60 > 16"的非法几何在**两种**形态下都不存在了。
+  /// ```
+  /// ⚠️ **反向的记忆**：正因为当年是"靠两边对齐才不炸"，
+  ///    所以删早退时**必须同时**改这里的 extent —— 只改一半就会一边通行
+  ///    （本批真机判读打回的正是这半个改动：单源时条画出来了，
+  ///    但宿主把它压成 0 高度，肉眼完全看不到）。
   ///
   /// ⚠️ 这是**每个用户都会踩**的形态：新装、只用了一个源、或者把源都停了。
-  ///   真机上它表现为整个页面**每帧抛异常**，也就是"到处都卡"的来源之一。
+  ///   真机上一旦不对齐表现为整个页面**每帧抛异常**，也就是"到处都卡"的来源之一。
   /// ⚠️ 也因此这条修复是**全局**的：它对所有页面都生效（首页是这个 sliver 的
   ///   唯一宿主），而 `flutter test` 里因为没有核心库、源恒为 0，**必现**。
   ///
@@ -2788,7 +2810,35 @@ class _StickySourceBar extends SliverPersistentHeaderDelegate {
   ///
   /// 判据与 `SourceBar` 共用 [visibleSourceList] 的结果（调用方传进来），
   /// 不在这里重写一遍"少于 2 个就隐藏"—— 两处各写一遍必然漂。
-  static double extentFor(int visibleCount) => visibleCount <= 1 ? 0 : _extent;
+  ///
+  /// # ★★★ 2026-10-31 Owner 改判：**单源也显示**（`<= 1` ⇒ `== 0`）
+  ///
+  /// Owner 原话（逐字）：
+  /// > 首页就算只有一个源也要显示那个液态选择的
+  ///
+  /// ```text
+  /// 改前   visibleCount <= 1 ? 0 : _extent
+  ///        ⇒ 单源时 SourceBar 自己会画（早退已删），
+  ///          但**宿主把整条压成 0 高度** ⇒ 肉眼**完全看不到**。
+  ///          （commit 6452525 只删了 source_bar.dart 那一半 —— 这里漏了。）
+  /// 改后   visibleCount == 0 ? 0 : _extent
+  ///        ⇒ 只有"一个可用源都没有"才不占位；单个源**照常占位 60**。
+  /// ```
+  ///
+  /// # ⚠️ 真正"没有"的门槛是 **0**，不是 1
+  /// ```text
+  /// 0 个源 ⇒ 条上没有任何药丸 ⇒ 占位才是纯粹的空白（该隐藏）
+  /// 1 个源 ⇒ 条上有**一颗**选中态药丸 ⇒ 它就是要给用户看的那个东西
+  /// ```
+  ///
+  /// # 点击重选为什么零副作用（早退删掉后唯一的顾虑）
+  /// ```text
+  /// 单源时那颗药丸默认就是选中态（current 必然等于它）⇒ 再点它 =
+  /// `_switchSource` 的同源守卫（`if (id == _currentSource) return`）直接短路
+  /// ⇒ **零重载**。这条守卫是 SourceBar 与这里共用的同一份保证
+  /// （见 `source_bar.dart` 的"单源**也渲染**"注释）。
+  /// ```
+  static double extentFor(int visibleCount) => visibleCount == 0 ? 0 : _extent;
 
   /// 源条自身高度 44 + 上下各 8 的呼吸空间
   ///
@@ -2820,10 +2870,15 @@ class _StickySourceBar extends SliverPersistentHeaderDelegate {
      *    `SliverPersistentHeader` 给的是**紧约束**（高度 == extent），
      *    子项如果直接是 44px 的 Center 会溢出。
      *
-     * ★ 源条隐藏时（源 < 2 个，见 [extentOf]）**连 Padding 都不能给**：
+     * ★ 源条隐藏时（**一个可用源都没有**，见 [extentFor]）
+     *   **连 Padding 都不能给**：
      *   Padding(vertical: 8) 即便包着 `SizedBox.shrink()` 也有 16 高，
      *   而此刻 extent 是 0 ⇒ `layoutExtent(0) > paintExtent(16)`
      *   反而**多造一处**非法几何。两者必须同步。
+     *
+     * ⚠️ 门槛是 **0 个源**，不是 1 个（2026-10-31 Owner 改判）：
+     *    单源时这里必须**照常**给 Padding —— 不给的话 childExtent 变 44，
+     *    而 maxExtent 是 60 ⇒ 又一处 `60 > 44` 的非法几何。
      */
     if (_extentNow == 0) return child;
     return Padding(
@@ -2832,13 +2887,50 @@ class _StickySourceBar extends SliverPersistentHeaderDelegate {
     );
   }
 
-  /// ★ 必须比 extent：源数跨过 1/2 的门槛时 extent 会变
-  /// （`SourceBar` 在源 < 2 个时返回 `SizedBox.shrink()`），
+  /// ★ 必须比 extent：源数跨过 0/1 的门槛时 extent 会变
+  /// （2026-10-31 起门槛是 **0** —— 单个源也占位，见 [extentFor]）；
   /// 不比它就会用着**上一次**的 extent —— 那正是非法几何的来源。
   @override
   bool shouldRebuild(_StickySourceBar old) =>
       old.child != child || old._extentNow != _extentNow;
 }
+
+/// ★★ 门禁注入点：造一个**真正的** `_StickySourceBar`（不是测试复刻品）
+///
+/// # 为什么必须有它（2026-10-31 T4 收尾：单源漏改的补漏）
+/// ```text
+/// 已有的 `test/source_bar_test.dart` 里有一个同构的 `_TestHeader` ——
+/// 它再像也不是产品代码。本批真机判读打回的那个缺口是：
+///   source_bar.dart 的单源早退**已经删了**，
+///   但 home_page.dart 的 `extentFor` 还留着 `visibleCount <= 1 ? 0`
+///   ⇒ 单源时宿主把整条压成 0 高度 ⇒ 肉眼完全看不到。
+/// 而**只挂 SourceBar 自己**的门禁（zz_source_pill_unify）永远抓不到它 ——
+///   源条自己画得出来，是**宿主没给它空间**。
+/// ⇒ 门禁必须能拿到**生产那一个 delegate** 去量 extent，
+///   否则"判据与被测对象不同源"，漏改会静静地再来一次。
+/// ```
+/// ⚠️ 与 `debugSkipGlassAggChannelRail` / `debugSetAggChannelFetchers`
+///    同一条纪律：它只是把**私有类的构造函数**暴露出来，
+///    判据（extent 怎么算）仍然只在 `extentFor` 一处 —— 没有第二份实现。
+/// ⚠️ `key` 参数留给需要复用同一个 SourceBar State 的门禁；
+///    不传就走 `sourceBarKey`（与生产同一个）。
+@visibleForTesting
+_StickySourceBar debugStickySourceBar({
+  required int visibleCount,
+  required List<ProviderManifest> sources,
+  required String current,
+  required ValueChanged<String> onSelect,
+  Key? key,
+}) =>
+    _StickySourceBar(
+      visibleCount: visibleCount,
+      child: SourceBar(
+        key: key ?? sourceBarKey,
+        sources: sources,
+        current: current,
+        onSelect: onSelect,
+      ),
+    );
 
 // ═══════════════════════════════════════════════════════════════════════
 //  区块

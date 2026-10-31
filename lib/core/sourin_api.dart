@@ -61,6 +61,98 @@ import 'stream_prepare.dart';
  */
 export 'models.dart';
 
+/// ★★★ T1b 接线①（2026-11-01）：网盘分享链接**零凭据预检**的结果类型
+///
+/// # 它解决什么
+/// ```text
+/// 网盘线路里一大类是「分享链接本身就是死的」（过期/取消/审核未通过/不存在）。
+/// 这类失败在点开**之前**就能发现 —— Rust 侧 `tvbox_pan_check` 已经能零凭据
+/// 探活（commit b84dd9d），但 Dart 侧**零消费点** ⇒ 引擎建好了、用户一行都
+/// 看不到（本批 T5 的教训：功能加了 ≠ 用户看得见）。
+/// ```
+///
+/// # 契约（逐字来自 `rust/sourin_core/src/pan_check.rs` 模块头）
+/// ```text
+/// 入参 {"items": "<JSON 数组字符串>"}  ← 序列化成字符串传：
+///   ffi.rs 的参数解析器只有 `a.str(`，没有数组方法 ⇒ 外面包一层字符串。
+/// 出参 {"ok":true,"results":[{"url","kind","shareId","state","summary",
+///                            "cacheable"}],"truncated":N}
+///   state ∈ ok/locked/bad/uncertain/unsupported
+///   results 与 items 等长等序；超过 100 条被截断并在 truncated 里标注。
+/// ```
+///
+/// # 状态语义（UI 不许自作主张）
+/// ```text
+/// bad          = 死链（过期/取消/违规/审核未通过/文件不存在/格式无效）
+/// locked       = 需要提取码 —— ★ 不等于死：用户有码就能播，UI 必须仍可点
+/// ok           = 链接有效
+/// uncertain    = 没测出来（网络失败/风控/签名被拒）—— 不下结论
+/// unsupported  = 该盘的预检没接入（115/123/天翼/光鸭…）—— 不下结论
+/// ```
+///
+/// ⚠️ 为什么这两个类型挂在**顶层**而不是 `SourinApi` 里：
+///    Dart **不允许** class 内嵌 enum / class。方法与注入点仍留在
+///    `SourinApi`（见 `SourinApi.panCheck` / `SourinApi.debugPanCheckFetcher`）。
+enum PanCheckState {
+  ok,
+  locked,
+  bad,
+  uncertain,
+  unsupported,
+}
+
+/// 一条预检结果（见 [PanCheckState] 的契约与语义说明）
+class PanCheckResult {
+  const PanCheckResult({
+    required this.url,
+    required this.state,
+    required this.summary,
+    this.kind = '',
+    this.shareId = '',
+    this.cacheable = false,
+  });
+
+  final String url;
+
+  /// 网盘种类码（Rust `PanKind::code()`，如 `quark`）
+  final String kind;
+  final String shareId;
+  final PanCheckState state;
+
+  /// 给用户看的一句归因（**逐字来自 Rust**，Dart 侧不自造文案）
+  final String summary;
+  final bool cacheable;
+
+  /// 解析一条（**宽容**：坏元素交给调用方跳过，不抛）
+  ///
+  /// # 为什么未知 state 落 `uncertain` 而不是抛或猜
+  /// ```text
+  /// Rust 若以后加一档（那是契约演进），Dart 侧最稳的处置是"不下结论"——
+  /// 与 `uncertain` 的语义（没测出来 ⇒ 不标注）天然一致。
+  /// 抛会让整页白屏，猜会把新状态当成已有的某一档 ⇒ 两种都更糟。
+  /// ```
+  factory PanCheckResult.fromJson(Map<String, dynamic> j) => PanCheckResult(
+        url: j['url'] is String ? j['url'] as String : '',
+        kind: j['kind'] is String ? j['kind'] as String : '',
+        shareId: j['shareId'] is String ? j['shareId'] as String : '',
+        state: panCheckStateOf(j['state'] is String ? j['state'] as String : ''),
+        summary: j['summary'] is String ? j['summary'] as String : '',
+        cacheable: j['cacheable'] == true,
+      );
+}
+
+/// 机器可读 state 码 → 枚举（**纯函数**，门禁可直接喂）
+///
+/// 未知/缺失一律落 [PanCheckState.uncertain]（理由见 [PanCheckResult.fromJson]）。
+@visibleForTesting
+PanCheckState panCheckStateOf(String code) => switch (code) {
+      'ok' => PanCheckState.ok,
+      'locked' => PanCheckState.locked,
+      'bad' => PanCheckState.bad,
+      'unsupported' => PanCheckState.unsupported,
+      _ => PanCheckState.uncertain,
+    };
+
 /// 源影核心 API
 ///
 /// 全部方法都是静态的 —— 核心是单例（`SourinCore` 内部就是静态状态），
@@ -1693,6 +1785,91 @@ class SourinApi {
   @visibleForTesting
   static Future<PanShareListing> Function(String text, String? pwd)?
       debugPanListShareFetcher;
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ★★★ T1b 接线①（2026-11-01）：网盘分享链接**零凭据预检**
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 它解决什么
+  // ```text
+  // 网盘线路里一大类是「分享链接本身就是死的」（过期/取消/审核未通过/不存在）。
+  // 这类失败在点开之前就能发现 —— Rust 侧 `tvbox_pan_check` 已经能零凭据探活
+  // （commit b84dd9d），但 Dart 侧**零消费点** ⇒ 引擎建好了、用户一行都看不到
+  // （本批 T5 的教训：功能加了 ≠ 用户看得见）。
+  // ```
+  //
+  // # 契约（逐字来自 `rust/sourin_core/src/pan_check.rs` 模块头）
+  // ```text
+  // 入参 {"items": "<JSON 数组字符串>"}  ← 序列化成字符串传：
+  //   ffi.rs 的参数解析器只有 `a.str(`，没有数组方法 ⇒ 外面包一层字符串。
+  // 出参 {"ok":true,"results":[{"url","kind","shareId","state","summary",
+  //                            "cacheable"}],"truncated":N}
+  //   state ∈ ok/locked/bad/uncertain/unsupported
+  //   results 与 items 等长等序；超过 100 条被截断并在 truncated 里标注。
+  // ```
+  //
+  // # 状态语义（UI 不许自作主张）
+  // ```text
+  // bad          = 死链（过期/取消/违规/审核未通过/文件不存在/格式无效）
+  // locked       = 需要提取码 —— ★ 不等于死：用户有码就能播，UI 必须仍可点
+  // ok           = 链接有效
+  // uncertain    = 没测出来（网络失败/风控/签名被拒）—— 不下结论
+  // unsupported  = 该盘的预检没接入（115/123/天翼/光鸭…）—— 不下结论
+  // ```
+  //
+  // ⚠️ 两个类型定义**必须挂在顶层**（Dart 不允许 class 内嵌 enum / class），
+  //    方法留在 `SourinApi` 里 —— 它们通过 `export 'models.dart';` 一起对外。
+
+  /// **网盘分享链接零凭据预检**（`tvbox_pan_check`）
+  ///
+  /// # 失败语义：**抛**（与 `panListShare` 同一条纪律）
+  /// 返回空列表会被上层读成"没有需要标注的" —— 那是不实陈述。
+  /// 真正的失败必须让调用方 catch 到（播放页据此留痕，但不打断播放）。
+  ///
+  /// # 空入参 ⇒ **不发请求**（直接返回空）
+  /// ```text
+  /// 没有网盘链接时（绝大多数源）不该为"零条"发一次 FFI 往返。
+  /// 调用方负责先筛（见 `isPanShareUrl`）；这里只是第二道闸。
+  /// ```
+  static Future<List<PanCheckResult>> panCheck(
+    List<({String url, String? pwd})> items,
+  ) async {
+    if (items.isEmpty) return const <PanCheckResult>[];
+    final f = debugPanCheckFetcher;
+    if (f != null) return f(items);
+    /*
+     * ★ items **序列化成字符串**再传 —— 不是设计癖好，是 FFI 参数解析器的
+     *   硬约束（`args.rs` 只有 `a.str(`，没有数组方法）。改成传 List 会让
+     *   Rust 侧拿到空串 ⇒ 报「items 不是 JSON 数组」。
+     */
+    final payload = jsonEncode(<Map<String, String>>[
+      for (final it in items)
+        <String, String>{
+          'url': it.url,
+          if (it.pwd != null && it.pwd!.isNotEmpty) 'pwd': it.pwd!,
+        },
+    ]);
+    final r = await SourinCore.callAsync('tvbox_pan_check', {'items': payload});
+    final raw = jmap(r)['results'];
+    if (raw is! List) return const <PanCheckResult>[];
+    return <PanCheckResult>[
+      for (final e in raw)
+        if (e is Map) PanCheckResult.fromJson(e.cast<String, dynamic>()),
+    ];
+  }
+
+  /// 门禁注入点：`tvbox_pan_check` 的替身（**生产恒 null**）
+  ///
+  /// # 为什么允许注入
+  /// ```text
+  /// 预检是**真网络**（要打各家网盘），flutter test 里既没有 dll 也不该出网。
+  /// 而"bad 的行置灰、locked 的行仍可点"是纯渲染 ⇒ 喂数据就能真验。
+  /// ⚠️ 与 `debugPanListShareFetcher` 同一条纪律：**生产路径永不为非 null**。
+  /// ```
+  @visibleForTesting
+  static Future<List<PanCheckResult>> Function(
+    List<({String url, String? pwd})> items,
+  )? debugPanCheckFetcher;
 
   /// **123 云盘的账号密码登录**（`pan_password_login`）
   ///

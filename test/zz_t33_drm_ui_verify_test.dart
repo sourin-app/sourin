@@ -107,10 +107,31 @@ void main() {
         (idx - 2000).clamp(0, src.length),
         (idx + 800).clamp(0, src.length),
       );
-      expect(window.contains('enabled: s.isPlayable'), isTrue,
-          reason: 'DRM 行必须 enabled=false，否则用户点了必然黑屏');
-      expect(window.contains('onTap: s.isPlayable ?'), isTrue,
-          reason: 'DRM 行必须 onTap=null');
+      /*
+       * ★ 2026-11-01（T1b 接线①）：字面锚点随语义演进更新。
+       *
+       * 原字面是 `enabled: s.isPlayable` / `onTap: s.isPlayable ?`。
+       * T1b 新增「网盘死链（预检 bad）也不可点」之后，产品侧变成
+       * `s.isPlayable && !isPanDead` —— 它是**更严**的判据：
+       *   · DRM 行         s.isPlayable=false ⇒ 仍不可点（本条守的语义不变）
+       *   · 网盘死链行     isPanDead=true     ⇒ 也不可点（T1b 新增，同归不可点）
+       * ⇒ 多出来的 `&& !isPanDead` 是 T1b 的死链不可点，**不是放宽本门禁**。
+       *
+       * ⚠️ 只更新**锚点的字面**，不动断言方向：仍要求"必须不可点"
+       *   （不许改成"可以可点"—— 那才是放水）。
+       * ⚠️ 反面教材是本批 T4：语义改了而锚点/注释没跟着改 ⇒ 旧注释成了
+       *   漏改的帮凶。所以本条与产品侧那两行必须**同改**，改一个就红。
+       */
+      expect(window.contains('enabled: s.isPlayable && !isPanDead'), isTrue,
+          reason: 'DRM 行必须 enabled=false，否则用户点了必然黑屏'
+              '（T1b：网盘死链同样不可点，故字面为 s.isPlayable && !isPanDead）');
+      expect(window.contains('onTap: s.isPlayable && !isPanDead ?'), isTrue,
+          reason: 'DRM 行必须 onTap=null'
+              '（T1b：死链同样不给 onTap，故字面同上）');
+      // ★ 阴性对照：不许退回"只看 isPlayable"—— 那会让死链重新可点
+      expect(window.contains('onTap: s.isPlayable ? '), isFalse,
+          reason: '★ 退回 onTap: s.isPlayable ? 会让 bad（死链）行重新可点 —— '
+              '那正是 T1b 要防的"点了必然失败"（本条是防放水的闸）');
     });
   });
 

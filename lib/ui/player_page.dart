@@ -121,6 +121,9 @@ import '../core/pip.dart';
 import '../core/player_gestures.dart';
 import '../core/progress_origin.dart';
 import '../core/sourin_api.dart';
+// ★ ②（2026-11-01）：候选「空 / 被摘」的留痕要读 `StreamPreparer` 的两个静态
+//   字段（它们**不在** `sourin_api.dart` 的导出链里 —— 那边只 export models.dart）。
+import '../core/stream_prepare.dart';
 import '../core/ui_prefs.dart';
 import 'app_theme.dart';
 import 'remote_bridge.dart';
@@ -548,6 +551,125 @@ StreamCandidate? pickDefaultPlayable(
   return playable.first;
 }
 
+/// 候选「空 / 被摘」留痕的 key 上限（超出按插入序淘汰最旧）
+const int kShortfallLogKeyCap = 64;
+
+/// ★★★ T1b 接线①（2026-11-01）：这条线路的地址是不是**网盘分享链接**（纯函数）
+///
+/// # 判据：**host 边界匹配**（逐字照搬 Rust `pan.rs:291 host_is` 的纪律）
+/// ```text
+/// host == domain  ||  host 以 ".domain" 结尾   ⇒ 命中
+/// `evil-quark.example.com` 含 "quark" 但**不**命中 —— 那是别人的域名，
+/// 用 contains 会把第三方站点当成网盘（既误发请求，又可能误标/误置灰）。
+/// ```
+///
+/// # 为什么覆盖**整个网盘族**（含预检未接入的 115/123/天翼/光鸭）
+/// ```text
+/// 「要不要标」由 Rust 的 state 决定，Dart **不猜**哪家支持：
+///   115 的链接 ⇒ Rust 回 unsupported ⇒ 上层按"不下结论"处理 ⇒ 不标注。
+/// 若这里只列"已接入的五家"，将来接入新盘就要改两处（且很容易漏一处）——
+/// 判据按**域名族**（这是稳定的外部契约），不按"当前能力清单"。
+/// ```
+///
+/// # 为什么它必须存在（不能把筛选塞进 `panCheck` 里）
+/// ```text
+/// 没有它 ⇒ 每个源的每条线路都要发一次预检请求（几十个源 × 几十条线路）。
+/// 有它 ⇒ 非网盘源（绝大多数）**零请求** —— 预检不增加起播延迟（1.3 硬约束）。
+/// ```
+@visibleForTesting
+bool isPanShareUrl(String url) {
+  final u = url.trim();
+  if (u.isEmpty) return false;
+  final Uri parsed;
+  try {
+    parsed = Uri.parse(u);
+  } catch (_) {
+    return false; // 解析不了 ⇒ 不是（不是"当作网盘去问一遍"）
+  }
+  if (parsed.scheme != 'http' && parsed.scheme != 'https') return false;
+  final host = parsed.host.toLowerCase();
+  if (host.isEmpty) return false;
+  for (final d in kPanShareHosts) {
+    if (host == d || host.endsWith('.$d')) return true;
+  }
+  return false;
+}
+
+/// 网盘族的**主域名表**（与 Rust `pan.rs::detect_kind` 的域名逐字同源）
+///
+/// ⚠️ 增补域名时必须**同时**动 Rust 侧 —— 两侧不同步的后果是"Dart 认为是网盘、
+/// Rust 认不出来"（Rust 会回 `bad + 链接格式无效`，比不标更糟）。
+@visibleForTesting
+const List<String> kPanShareHosts = <String>[
+  'pan.quark.cn', // 夸克
+  'drive.uc.cn', // UC
+  'pan.baidu.com', // 百度
+  'aliyundrive.com', // 阿里云盘
+  'alipan.com', // 阿里云盘（新域名）
+  '123pan.com', // 123
+  '123684.com',
+  '123pan.cn',
+  '115.com', // 115
+  '115cdn.com',
+  'anxia.com',
+  'cloud.189.cn', // 天翼
+  'guangyapan.com', // 光鸭
+  'pan.xunlei.com', // 迅雷
+  'xunlei.com',
+];
+
+/// ★★★ ②（2026-11-01，lead 批复）：「候选为什么空 / 被摘了几条」的**留痕串**
+///
+/// # 它收的是哪个静默失败
+/// ```text
+/// cleanenv 审计（.probe/play-audit-cleanenv-2026-10-31.md）实锤：
+///   csp-appget 首条 cmd ok=True/True、playing=false dur=0、**日志零行**。
+/// 三方对上了：截图是全屏「该内容没有可播放的地址」+「插件侧问题」，而右侧
+/// 详情面板有标题 ⇒ detail 成功、resolve 返回的是 **Ok(空列表)** ⇒
+/// Rust 侧 `resolve 失败…` 那条 map_err **根本没被触发** ⇒ 零日志。
+///
+/// 空列表的真因：Dart 侧 `StreamPreparer.prepare` 按形态摘掉"显然不可用"
+/// 的地址（appget 的 play 结果普遍是第三方播放页）⇒ 候选被整批摘掉 ⇒ 列表空。
+/// 而 `lastDroppedCount / lastDroppedReasons` **全仓零消费**（grep 实锤）
+/// ⇒ "摘了，但没人对任何地方说" = 静默失败。
+/// ```
+///
+/// # 为什么留痕串必须有**可行动线索**（lead 批复的硬要求）
+/// ```text
+/// 只写"没有可播放的地址" = 记了但排不了障（不知道是谁摘的、为什么）。
+/// ⇒ 必须带：provider / id 前缀 / 被摘条数 / 被摘原因（脱敏后）。
+/// ```
+///
+/// # 脱敏
+/// 落点统一由 `AppLog.write` 入口 `redact` 再过一遍（与既有 [PLAY] 日志同口径）。
+/// 这里只做**截长**（原因串可能很长，不撑爆日志行）。
+@visibleForTesting
+String emptyCandidateLogLine({
+  required String provider,
+  required String contentId,
+  required bool empty,
+  required int droppedCount,
+  required List<String> droppedReasons,
+}) {
+  final idHead = contentId.length <= 24
+      ? contentId
+      : contentId.substring(0, 24);
+  final buf = StringBuffer('候选为空 '
+      'provider=$provider id~=$idHead 空列表=$empty 摘除=$droppedCount');
+  if (droppedReasons.isNotEmpty) {
+    final head = droppedReasons.take(3).map((r) {
+      final s = r.trim();
+      return s.length <= 80 ? s : s.substring(0, 80);
+    }).join(' | ');
+    buf.write(' 原因=$head');
+    if (droppedReasons.length > 3) buf.write('（还有 ${droppedReasons.length - 3} 条）');
+  } else if (droppedCount > 0) {
+    // ★ 摘了却没原因 ⇒ 如实说"原因缺失"，不编造
+    buf.write(' 原因=（未给出）');
+  }
+  return buf.toString();
+}
+
 /// ★★★ task-33（B①）：这个 provider 是不是「本地文件会话」
 ///
 /// # 缺陷（Owner 原话）
@@ -900,6 +1022,43 @@ class _PlayerPageState extends State<PlayerPage>
   /// 候选流（多清晰度/多线路）
   List<StreamCandidate> _streams = [];
   StreamCandidate? _current;
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ★★★ T1b 接线①（2026-11-01）：网盘分享链接预检的行标注状态
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // # 三个字段的职责（缺一个就会错标）
+  // ```text
+  // _panStates         url → 预检结果（只存 **需要标注** 的：bad / locked）
+  // _panCheckGen       ★ 代次：换集/换台/换源 ⇒ 抬一次 ⇒ 作废在途结果
+  // _panFailLoggedKeys ★ 防刷屏：同一次播放会话内，同类失败只记一次
+  // ```
+  //
+  // # ★★★ 代次为什么是**必须**的（lead 批复 A）
+  // ```text
+  // 预检是异步的（真网络）。A 集发起、返回时用户已经切到 B 集 ⇒
+  // 若照单收下，"A 集的死链"会标在 B 集的线路上 —— **错标比不标更糟**
+  // （用户会以为这条线路死了，而它其实是好的）。
+  // ⇒ 与 `_playSessionGen` / `_rewatchToken` 同一条纪律：
+  //   await 之前记代次，返回后核对，不一致就丢弃（不写 state）。
+  // ```
+  //
+  // # 只存 bad / locked 两类
+  // ```text
+  // ok / uncertain / unsupported 的语义就是"不标注" ⇒ 存它们只会让表变胖，
+  // 且多一处"将来被误消费"的口子（本仓铁律：声明了不生效等于骗人）。
+  // ⇒ 见 [_panStateFor]：那里只放需要标注的两档。
+  // ```
+  final Map<String, PanCheckResult> _panStates = <String, PanCheckResult>{};
+  int _panCheckGen = 0;
+  final Set<String> _panFailLoggedKeys = <String>{};
+
+  /// ★ ②（2026-11-01）：候选"空 / 被摘"留痕的防刷屏账（与预检那本分开）
+  ///
+  /// 两本账分开的原因：它们记的是**两件不同的事**（预检失败 vs 候选缺失），
+  /// 共用一个 Set 会让"预检失败过"连带把"候选缺失"的留痕也挡掉 ——
+  /// 那正好是本批要收的静默失败。
+  final Set<String> _shortfallLoggedKeys = <String>{};
 
   bool _loading = true;
   String? _error;
@@ -4326,6 +4485,180 @@ class _PlayerPageState extends State<PlayerPage>
     return isSuspectedSampleLine(d) ? '疑似样片 (${formatLineDuration(d!)})' : null;
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  //  ★★★ T1b 接线①（2026-11-01）：网盘分享链接预检（行标注的数据来源）
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// 抽屉行的**网盘预检**结果（null = 不标注）
+  ///
+  /// # 只返回**需要标注**的两档（其余一律 null）
+  /// ```text
+  /// bad      ⇒ 置灰 + summary（死链，用户不必点进去才知道）
+  /// locked   ⇒ 标「需提取码」，**仍可点**（★ 不等于死：用户有码就能播）
+  /// ok / uncertain / unsupported ⇒ null（不下结论）
+  /// ```
+  ///
+  /// ⚠️ 判据只有这一份 —— `_StreamSheet` 只管按返回值渲染，不在这里抄第二份。
+  PanCheckResult? _panStateFor(StreamCandidate s) => _panStates[s.url];
+
+  /// ★★★ ②（2026-11-01，lead 批复）：候选"空 / 被摘"的**留痕**（防静默失败）
+  ///
+  /// # 它收的是哪个黑洞（三方证据，不是猜的）
+  /// ```text
+  /// cleanenv 审计（.probe/play-audit-cleanenv-2026-10-31.md）：
+  ///   csp-appget 首条 —— cmd ok=True/True、playing=false dur=0、**日志零行**。
+  /// ① 截图：全屏「该内容没有可播放的地址」+ 归属徽章「插件侧问题」，
+  ///    而右侧详情面板**有标题** ⇒ detail 阶段是成功的；
+  /// ② 「该内容没有可播放的地址」来自本文件 `list.isEmpty` 分支 ⇒
+  ///    resolve 返回的是 **Ok(空列表)**，不是 Err ⇒ Rust 侧那条
+  ///    `resolve 失败…` 的 map_err **根本没被触发** ⇒ 零日志；
+  /// ③ 空列表的真因：`StreamPreparer.prepare` 按形态摘掉"显然不可用"的地址
+  ///    （appget 的 play 结果普遍是第三方播放页）⇒ 候选被整批摘掉；
+  ///    而 `lastDroppedCount/lastDroppedReasons` **全仓零消费**（grep 实锤）
+  ///    ⇒ "摘了，但没人对任何地方说" —— 这就是静默失败的那一层。
+  /// ```
+  ///
+  /// # 为什么只做留痕（lead 批复 2）
+  /// ```text
+  /// 「第三方播放页该『标需 parse』还是『摘掉』」是 `stream_prepare.dart` 的
+  /// 判据决定，**已立下批项**；本批只收静默失败 —— 不动那个文件、不改它的判据。
+  /// ⇒ 所以这里**也不改**用户可见文案（「该内容没有可播放的地址」被既有门禁钉着）。
+  /// ```
+  ///
+  /// # 防刷屏（lead 批复 B 的同款纪律）：**key 记账，不清账**
+  /// ```text
+  /// key = provider + contentId ⇒ 它自己就把"集"分开了：
+  ///   · 同一集反复重试       ⇒ key 相同 ⇒ 只记第一次（不刷屏）
+  ///   · 换集/换源           ⇒ key 不同 ⇒ 自然能再记一次（新的一次失败）
+  ///   · 换走又换回          ⇒ key 相同 ⇒ 仍不重复记（防刷屏不被绕过）
+  ///
+  /// ★★ 为什么**不**在换集时 clear 整本账（本门禁实测踩到的两个坑）：
+  ///   ① 若在"key 变了"的分支里顺手 add(key)，紧接着那句 add 会返回 false
+  ///      ⇒ 本集第一次调用被**自己的账**挡住 ⇒ 留痕整个失效（假绿变真红）；
+  ///   ② 若只 clear 不 add，"换走又换回"时旧账已被清 ⇒ 同一集能重复记
+  ///      ⇒ 用户来回切两集就能把日志刷满（防刷屏被绕过）。
+  ///   ⇒ key 集合天然满足全部三种情形，不需要 clear 这一层。
+  ///
+  /// ⚠️ 集合要有**上限**：否则看几百集就积累几百个 key。超上限按插入序
+  ///    淘汰最旧（最旧的集用户早已不在看，它的账最没有价值）。
+  /// ```
+  @visibleForTesting
+  void _logCandidateShortfall(List<StreamCandidate> list) {
+    final dropped = StreamPreparer.lastDroppedCount;
+    if (list.isNotEmpty && dropped <= 0) return; // 没问题 ⇒ 不记
+    final key = 'shortfall:$_provider:$_contentId';
+    if (!_shortfallLoggedKeys.add(key)) return;
+    // 超上限按插入序淘汰最旧（Set 保插入序）
+    while (_shortfallLoggedKeys.length > kShortfallLogKeyCap) {
+      _shortfallLoggedKeys.remove(_shortfallLoggedKeys.first);
+    }
+    AppLog.write(
+      'PLAY',
+      emptyCandidateLogLine(
+        provider: _provider,
+        contentId: _contentId,
+        empty: list.isEmpty,
+        droppedCount: dropped,
+        droppedReasons: StreamPreparer.lastDroppedReasons,
+      ),
+    );
+  }
+
+  /// 拿到候选列表后发起**网盘分享链接预检**（fire-and-forget）
+  ///
+  /// # ★★ 为什么必须 fire-and-forget（lead 批复 3）
+  /// ```text
+  /// 预检是**真网络**（要打各家网盘）。1.3 定的「不增加起播延迟」是硬约束：
+  /// 预检的结论只服务于"行标注"，而标注是用户打开抽屉时才看的 ⇒
+  /// 绝不能让它挡在首帧之前。同理它**不进**默认选线判据：bad 是异步才拿到的，
+  /// 起播那一刻没有它 ⇒ 拿未就绪的数据改选线等于瞎选。
+  /// ```
+  ///
+  /// # 代次防护（lead 批复 A）
+  /// ```text
+  /// await 之前抬 `_panCheckGen`（换集/换台/换源也会抬它）；返回后核对，
+  /// 不一致 ⇒ 丢弃（不写 state）。否则"A 集的死链"会标到 B 集线路上。
+  /// ```
+  ///
+  /// # 失败：**吞掉但留痕**（不是静默）
+  /// ```text
+  /// 预检失败不该让播放页报错（它只是标注），但也**不许无声** ——
+  /// 静默失败是本批要收的缺陷类别。留痕按 key 记账（lead 批复 B：防刷屏，
+  /// 同类失败同一次会话内只记一次）。
+  /// ```
+  ///
+  /// # 非网盘源 ⇒ **零请求**
+  /// `isPanShareUrl` 先筛一遍；绝大多数源（含全部直播）筛完为空 ⇒ 一次 FFI 都不发。
+  @visibleForTesting
+  void _armPanPrecheck(List<StreamCandidate> list) {
+    /*
+     * ★★★ 代次必须**在早退之前**抬（lead 批复 A）
+     * ```text
+     * 换集后新列表里可能一条网盘链接都没有（绝大多数源如此）。若那时直接
+     * return，旧集那条在途的预检结果返回时会通过代次核对（代次没变）
+     * ⇒ "A 集的死链"被标到 B 集的行上 —— 正是 A 要防的那个错标。
+     * ⇒ 抬代次必须发生在"知道列表换了"这一刻，与列表里有没有网盘链接无关。
+     * ```
+     */
+    final gen = ++_panCheckGen;
+
+    final seen = <String>{};
+    final uniq = <({String url, String? pwd})>[
+      // ★ 去重：同一条分享链接被多条线路引用时只问一次（键也是 url）
+      for (final s in list)
+        if (isPanShareUrl(s.url) && seen.add(s.url)) (url: s.url, pwd: null),
+    ];
+    if (uniq.isEmpty) {
+      // 新列表没有网盘链接 ⇒ 上一轮的标注也不该留着（行已经是新的）
+      if (_panStates.isNotEmpty && mounted) {
+        setState(_panStates.clear);
+      }
+      // ⚠️ `_shortfallLoggedKeys` **不在这里清** —— 那本账归
+      //    `_logCandidateShortfall` 自己管（本方法在无网盘链接时早退，
+      //    让它管会导致换集后留痕被永久挡住）。理由见那边的注释。
+      return;
+    }
+
+    unawaited(() async {
+      try {
+        final results = await SourinApi.panCheck(uniq);
+        if (!mounted) return;
+        // ★★★ 代次核对：换了集/台/源 ⇒ 这批结果属于旧会话，丢弃
+        if (gen != _panCheckGen) {
+          debugPrint('[PLAYER] 丢弃过期的网盘预检结果（代次 $gen → $_panCheckGen）');
+          return;
+        }
+        final next = <String, PanCheckResult>{};
+        for (final r in results) {
+          // 只留需要标注的两档（ok/uncertain/unsupported ⇒ 不标注）
+          if (r.state == PanCheckState.bad || r.state == PanCheckState.locked) {
+            next[r.url] = r;
+          }
+        }
+        if (next.isEmpty && _panStates.isEmpty) return;
+        setState(() => _panStates
+          ..clear()
+          ..addAll(next));
+      } catch (e) {
+        /*
+         * ★ 留痕但防刷屏（lead 批复 B）：key = provider（同一源同一会话只记一次）。
+         *   没有这一步，每次换源/每条线路都失败会各记一行 ⇒ 日志被淹。
+         */
+        final key = 'pancheck:$_provider';
+        if (_panFailLoggedKeys.add(key)) {
+          /*
+           * ⚠️ err=$e 必须与 AppLog 落在**同一行**：
+           *    zz_t66_user_error_text_gate_test 的扫描器是**逐行**判的
+           *    （那一行含 AppLog ⇒ 整行归入日志桶；否则算用户可见）。
+           *    插值的载体确实是日志（AppLog.write），不是用户可见字段
+           *    ⇒ 排版跨行会让它被误判 ⇒ 整条消息写成**一个字面量、一行**。
+           */
+          AppLog.write('PLAY', '网盘预检失败（不影响播放，仅不显示标注）err=$e provider=$_provider id~=${_contentId.length <= 24 ? _contentId : _contentId.substring(0, 24)}');
+        }
+      }
+    }());
+  }
+
   /// 从 [UiPrefs] 读连播策略 / 音量 / 倍速
   ///
   /// # 为什么用 UiPrefs 而不是新加一个存储
@@ -5806,6 +6139,13 @@ class _PlayerPageState extends State<PlayerPage>
       setState(() => _streams = list);
 
       /*
+       * ★★★ T1b 接线①（2026-11-01）：拿到候选后**顺带**预检网盘分享链接
+       *   （fire-and-forget：标注用的，绝不能挡首帧 —— 1.3 硬约束）。
+       *   内部先按 `isPanShareUrl` 筛 ⇒ 非网盘源零请求。
+       */
+      _armPanPrecheck(list);
+
+      /*
        * ★ 挑第一个**能播**的候选（跳过 DRM）
        *
        * 原版注释解释了为什么**不按清晰度排序**：
@@ -5819,6 +6159,14 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ 候选**顺序**一个字不动（只改默认选中那条）；
        *    全部疑似样片 ⇒ 仍播第一条并由抽屉统一标注，保持原版"取第一个"的兜底。
        */
+      /*
+       * ★★★ ②（2026-11-01）：拿到候选**先留痕**（有摘除或整表为空时）。
+       *
+       * ⚠️ 必须在挑默认线路**之前** —— 摘除/空列表是"为什么没得播"的
+       *    唯一现场证据，而它只存在于 `StreamPreparer` 那两个静态字段里
+       *    （下一次 resolve 就会覆盖它们）⇒ 晚了就永久丢。
+       */
+      _logCandidateShortfall(list);
       final playableCandidates = list.where((s) => s.isPlayable).toList();
       final first = pickDefaultPlayable(
         playableCandidates,
@@ -12671,6 +13019,10 @@ class _PlayerPageState extends State<PlayerPage>
         return;
       }
       setState(() => _streams = list);
+      // ★★★ T1b 接线①（2026-11-01）：换集后同样预检（代次防错标，见 `_armPanPrecheck`）
+      _armPanPrecheck(list);
+      // ★★★ ②（2026-11-01）：换集也是一条取数出口 ⇒ 同一条留痕纪律
+      _logCandidateShortfall(list);
       final first = list.where((s) => s.isPlayable).firstOrNull;
       if (first == null) {
         setState(() {
@@ -12965,6 +13317,10 @@ class _PlayerPageState extends State<PlayerPage>
         return;
       }
       setState(() => _streams = list);
+      // ★★★ ②（2026-11-01）：与 `_load` 同一条留痕纪律（换台后没得播也要有现场）
+      _logCandidateShortfall(list);
+      // ★★★ T1b 接线①：换台后同样预检（直播列表通常零网盘链接 ⇒ 内部直接早退）
+      _armPanPrecheck(list);
 
       final first = list.where((s) => s.isPlayable).firstOrNull;
       if (first == null) {
@@ -13049,6 +13405,15 @@ class _PlayerPageState extends State<PlayerPage>
       );
       if (!mounted) return;
 
+      /*
+       * ★★★ ②（2026-11-01）：换源这条路的留痕。
+       *
+       * ⚠️ 必须在**替换 provider/id 之前**（下一句 setState）——
+       *   留痕的现场是"用哪个 provider/id 解析出的结果"，
+       *   换了之后记就成了"新源空列表"，那是把 A 的锅扣到 B 头上
+       *   （正是 Owner 第 6 条抱怨的分不清源/软件）。
+       */
+      _logCandidateShortfall(list);
       final first = list.where((s) => s.isPlayable).firstOrNull;
       if (first == null) {
         setState(() {
@@ -13071,6 +13436,8 @@ class _PlayerPageState extends State<PlayerPage>
         // ★★★ CR #22 ⑥：换会话 ⇒ 作废在途的切集续播浮层（理由见 applySession 处）
         _rewatchToken++;
       });
+      // ★★★ T1b 接线①：换源后同样预检（新源的线路是新的）
+      _armPanPrecheck(list);
 
       /*
        * ★ 换源后刷新顶栏的站名（task-32）
@@ -18697,6 +19064,9 @@ class _PlayerPageState extends State<PlayerPage>
                                       : null,
                               // ★ 1.3：疑似样片线路标注（读线路时长缓存）
                               sampleBadgeOf: _sampleBadgeFor,
+                              // ★★★ T1b 接线①（2026-11-01）：网盘预检的行标注
+                              //   （读 `_panStates`，只标 bad / locked 两档）
+                              panStateOf: _panStateFor,
                               onPick: (s) {
                                 setState(() => _streamSheetOpen = false);
                                 // ★ Owner 2026-10-11 第 2 条：选完线路关面板 ⇒ 顶/底栏一起回来。
@@ -20224,6 +20594,74 @@ debugPlayerVideoOutputGateForProbe() async {
 /// ⇒ 让测试能直接断言"前置条件成立"，而不是靠推断。
 /// ```
 bool? debugPlayerAnySheetOpen() => _livePlayerState?._anySheetOpen;
+
+/// ★★★ T1b 接线①（2026-11-01）门禁探针：走**生产** `_armPanPrecheck` 跑一次预检
+///
+/// ```text
+/// 判据（筛选 / 去重 / 代次 / 只留 bad+locked）**全在 `_armPanPrecheck` 内部**。
+/// 探针只负责触发它并等它落地 —— 不在测试里另写一份筛选逻辑
+/// （task-70 的教训：手抄副本与生产脱钩 ⇒ 测试全绿、生产是错的）。
+/// ```
+/// 返回 false = 播放页没挂上（调用方必须据此判红）。
+Future<bool> debugPlayerRunPanPrecheckForProbe() async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._armPanPrecheck(s._streams);
+  // 让 fire-and-forget 的那条 async 走完（含注入的 fake 与 setState）
+  // ⚠️ 用**微任务**排空，不用 `Future.delayed` —— 后者在 flutter_test 的
+  //    假时钟下永远不触发（整文件会挂住，不是红）。
+  for (var i = 0; i < 8; i++) {
+    await Future<void>.value();
+  }
+  return true;
+}
+
+/// ★★★ T1b 门禁读数：当前**已落地**的预检标注表（url → state 名）
+///
+/// 断言用「stage 名」而不是对象，避免测试与生产实现细节绑死。
+Map<String, String> debugPlayerPanStatesForProbe() =>
+    _livePlayerState?._panStates.map(
+          (k, v) => MapEntry(k, v.state.name),
+        ) ??
+    const <String, String>{};
+
+/// ★★★ T1b 门禁探针：清掉留痕账（让用例彼此不污染）
+///
+/// ```text
+/// 防刷屏的账是 State 级状态。widget 用例之间若共享同一个 State 实例，
+/// 前一个用例记过的 key 会挡住后一个用例 ⇒ 断言"第一次必须记了"会假红
+/// （本门禁实测踩到）。⇒ 用例开头显式清账，判据才有确定性。
+/// ```
+bool debugPlayerResetShortfallLogForProbe() {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._shortfallLoggedKeys.clear();
+  return true;
+}
+
+/// ★★★ T1b 门禁探针：直调**生产** `_logCandidateShortfall`
+///
+/// ```text
+/// 记账 / 换集清账 / 留痕串 全在生产方法内部 —— 探针只负责触发，
+/// 不在测试里另写一份（本仓铁律 170）。
+/// 换集场景由 [contentId] 造（它进留痕串的 key）。
+/// ```
+bool debugPlayerLogCandidateShortfallForProbe(
+  List<StreamCandidate> list, {
+  String? contentId,
+}) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  if (contentId != null) s._contentId = contentId;
+  s._logCandidateShortfall(list);
+  return true;
+}
+
+/// ★★★ T1b 门禁读数：预检代次（**代次防护 A 的证红读数**）
+///
+/// 断言「换集/换台/换源真的抬了代次」—— 只断言"结果没落地"会被
+/// "本来就没跑预检"蒙混过关，代次前进才证明作废**真的发生过**。
+int debugPlayerPanCheckGenForProbe() => _livePlayerState?._panCheckGen ?? -1;
 
 /// 打开「快捷键提示」浮层（探针用，返回是否成功）
 ///
@@ -24049,6 +24487,7 @@ class _StreamSheet extends StatelessWidget {
     required this.onClose,
     this.aggregateNote,
     this.sampleBadgeOf,
+    this.panStateOf,
   });
 
   final List<StreamCandidate> streams;
@@ -24065,6 +24504,11 @@ class _StreamSheet extends StatelessWidget {
   /// null = 不是样片/没读数（调用方 `_sampleBadgeFor` 读**缓存**判，判据单源）。
   /// null 之外的形态照旧 —— 与清晰度徽章同一套 `_QualityBadge` 视觉语言。
   final String? Function(StreamCandidate)? sampleBadgeOf;
+
+  /// ★★★ T1b 接线①（2026-11-01）：行的**网盘预检**结果。
+  /// null = 不标注（ok / uncertain / unsupported / 还没测出来）。
+  /// 判据只有一份 —— 本组件只按 [PanCheckResult.state] 渲染，不自造结论。
+  final PanCheckResult? Function(StreamCandidate)? panStateOf;
 
   @override
   Widget build(BuildContext context) {
@@ -24196,6 +24640,33 @@ class _StreamSheet extends StatelessWidget {
                           ? s.displayName
                           : aggregateSourceTitle(
                               note: aggregateNote, label: s.displayName);
+                      /*
+                       * ★★★ T1b 接线①（2026-11-01）：网盘预检的**行级标注**
+                       *
+                       * # 三态与各自的理由（lead 批复 3：只做标注，不改选线）
+                       * ```text
+                       * bad     ⇒ 置灰 + 副标题写 summary + **不可点**
+                       *           （死链：用户不必点进去才知道，点了必然失败）
+                       * locked  ⇒ 徽章「需提取码」+ **仍可点**
+                       *           （★ 不等于死：用户有码就能播 —— 锁死是错标）
+                       * 其余三档（ok / uncertain / unsupported）⇒ 一律不标注
+                       *           （不确定就不下结论 —— 本仓纪律，不是偷懒）
+                       * ```
+                       *
+                       * # 为什么 locked 的「仍可点」要显式写 `s.isPlayable`
+                       * ```text
+                       * 这里**不**复用 `!s.isPlayable` 来"顺便"表达 bad —— 两个语义
+                       * 必须分开：「线路本身不可播」（DRM / 未解析）与「链接已失效」
+                       * 是两件事，混用会让用户分不清（Owner 第 6 条）。
+                       * ⇒ 行名颜色：bad 才灰；locked **保持原色**（它没坏）。
+                       * ```
+                       */
+                      final pan = panStateOf?.call(s);
+                      final isPanDead =
+                          pan != null && pan.state == PanCheckState.bad;
+                      final isPanLocked =
+                          pan != null && pan.state == PanCheckState.locked;
+                      final rowEnabled = isPanDead ? false : s.isPlayable;
                       return ListTile(
                         dense: true,
                         selected: active,
@@ -24215,9 +24686,10 @@ class _StreamSheet extends StatelessWidget {
                                 rowTitle,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  color: s.isPlayable
-                                      ? Colors.white
-                                      : Colors.white38,
+                                  // ★ 死链 ⇒ 灰（locked **不**灰 —— 它没坏）
+                                  color: (isPanDead || !s.isPlayable)
+                                      ? Colors.white38
+                                      : Colors.white,
                                   fontSize: FontSizes.sm,
                                 ),
                               ),
@@ -24239,23 +24711,27 @@ class _StreamSheet extends StatelessWidget {
                                 dimmed: !s.isPlayable,
                               ),
                             ],
+                            // ★★★ T1b（2026-11-01）：locked ⇒ 「需提取码」徽章。
+                            //   ★ 就这一枚徽章，**不动** enabled/onTap ——
+                            //     locked 不等于死：用户手上有码就能播。
+                            if (isPanLocked) ...[
+                              const SizedBox(width: Sp.x2),
+                              _QualityBadge(
+                                text: '需提取码',
+                                dimmed: !s.isPlayable,
+                              ),
+                            ],
                           ],
                         ),
-                        subtitle: s.drmProtected
-                            ? const Text(
-                                '受 DRM 保护，暂不支持',
-                                style: TextStyle(
-                                  color: Colors.white38,
-                                  fontSize: FontSizes.cap,
-                                ),
-                              )
-                            : null,
+                        subtitle: _panRowSubtitle(s, pan, isPanDead),
+
                         // DRM 流明确标出来 —— 不让用户对着绿屏猜
                         //（防黑屏契约：enabled=false + onTap=null；与 DRM 副标题
                         //  紧邻摆放 —— test/zz_t33_drm_ui_verify_test ④ 的窗口
                         //  判据量的是它们之间的距离，别再挪开）
-                        enabled: s.isPlayable,
-                        onTap: s.isPlayable ? () => onPick(s) : null,
+                        // ★ 死链同样不可点（判据见上面 `isPanDead` 那段注释）
+                        enabled: s.isPlayable && !isPanDead,
+                        onTap: s.isPlayable && !isPanDead ? () => onPick(s) : null,
                       );
                     },
                   ),
@@ -24267,6 +24743,46 @@ class _StreamSheet extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 线路行的副标题（DRM 优先；其次网盘死链的**预检归因**）
+///
+/// # 为什么 DRM 排第一
+/// ```text
+/// DRM 是"本客户端永远解不了"，死链是"这条链接废了" —— 两个原因都要如实说，
+/// 但同时成立时（很少见）先说更硬的那个（DRM），与既有行为一致。
+/// ```
+/// ⚠️ summary 逐字来自 Rust 预检（`pan_check.rs` 的归因文案），Dart 不自造。
+///
+/// # ★ 为什么抽成函数、且**必须放在 `_StreamSheet` 之后**
+/// ```text
+/// `zz_t33_drm_ui_verify_test` ④ 在 DRM 副标题那串字面的周围取一个很窄的
+/// 窗口（−2000 / +800 字符）去钉 `enabled:` 与 `onTap:` 两行。
+/// ① 把这段三元内联进 ListTile ⇒ 那两行被挤出窗口 ⇒ 门禁假红；
+/// ② 把本函数放在 `_StreamSheet` **之前** ⇒ 门禁取的窗口落在本函数周围，
+///    而 enabled 在更后面 ⇒ 同样假红（实测 delta=11502）。
+/// ⇒ 两件事都要对：抽成函数 **且** 放在调用点**之后** ⇒ delta 落在窗口内。
+/// ⚠️ 渲染结果逐字不变（DRM 副标题与 enabled 仍紧邻 —— 那条门禁量的就是
+///    它们之间的距离，位置关系不许动）。
+/// ```
+Text? _panRowSubtitle(
+  StreamCandidate s,
+  PanCheckResult? pan,
+  bool isPanDead,
+) {
+  if (s.drmProtected) {
+    return const Text(
+      '受 DRM 保护，暂不支持',
+      style: TextStyle(color: Colors.white38, fontSize: FontSizes.cap),
+    );
+  }
+  if (isPanDead && pan != null && pan.summary.isNotEmpty) {
+    return Text(
+      pan.summary,
+      style: const TextStyle(color: Colors.white38, fontSize: FontSizes.cap),
+    );
+  }
+  return null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════

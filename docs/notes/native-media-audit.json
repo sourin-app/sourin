@@ -113,7 +113,12 @@
                                                   "note":  "run1 ② 组 setUpAll 偶发失败（+3 -1），按规程重试一次 +3 全绿 —— 偶发环境抖动，非恒红断言",
                                                   "result":  "+3"
                                               },
-    "t20261030_sample_line_test.dart":  {
+    "t20261101_pan_line_precheck_test.dart":  {
+                                                  "audited":  true,
+                                                  "lastAudited":  "2026-11-01",
+                                                  "note":  "T1b wiring gate. Ran: flutter test test/t20261101_pan_line_precheck_test.dart --run-skipped --tags native-media --concurrency=1 -> +15 all green (bad row dimmed+unclickable; locked row badged but still clickable; generation invalidation; shortfall log once per key). Fault injection P-1..P-4 all RED.",
+                                                  "result":  "+15"
+                                              },    "t20261030_sample_line_test.dart":  {
                                             "audited":  true,
                                             "lastAudited":  "2026-10-31",
                                             "note":  "单跑 --run-skipped --tags native-media：+9 全绿",

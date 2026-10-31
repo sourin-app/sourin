@@ -280,14 +280,16 @@ void main() {
       );
     });
 
-    testWidgets('★★ 只剩 1 个可见源时整条**自己隐藏**（不是显示 1 个药丸）',
+    testWidgets('★★ 只剩 1 个可见源时仍显示那颗药丸（2026-10-31 Owner 改判）',
         (t) async {
       /*
-       * 原版 `visible = computed(() => props.sources.length > 1)`。
+       * 原版 `visible = computed(() => props.sources.length > 1)` 曾让
+       * "过滤后只剩 1 个"的整条隐藏。**2026-10-31 Owner 明确推翻**：
+       * 「首页就算只有一个源也要显示那个液态选择的」。
        *
-       * ⚠️ 这条判据必须算在**过滤后**：3 个源里停用 2 个 → 实际只剩 1 个
-       *    → 应该整条隐藏。用未过滤的长度会显示一条"只有一个药丸"的
-       *    切换条（纯噪音，正是原版要避免的）。
+       * ⚠️ 过滤判据本身没变、也必须算在**过滤后**：3 个源里停用 2 个
+       *    → 条上只有 1 颗药丸（停用的仍不许出现）—— 本用例守的就是这个：
+       *    隐藏行为没了，"停用源不出现"的过滤还得在。
        */
       await t.pumpWidget(_host(SourceBar(
         sources: [
@@ -302,8 +304,19 @@ void main() {
 
       expect(
         find.text('唯一'),
+        findsOneWidget,
+        reason: '★ 单一可见源也渲染（Owner 2026-10-31 逐字）——'
+            '但只渲染可见的那颗：停用源不在条上',
+      );
+      expect(
+        find.text('停1'),
         findsNothing,
-        reason: '★ 过滤后只剩 1 个源 → 整条隐藏（原版 visible 的逻辑）',
+        reason: '★ 过滤判据不变：enabled=false 的源不许出现在药丸里',
+      );
+      expect(
+        find.text('停2'),
+        findsNothing,
+        reason: '★ 同上',
       );
     });
 

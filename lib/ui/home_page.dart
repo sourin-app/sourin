@@ -3717,8 +3717,6 @@ class _AggChannelRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-
     // ★ 读数（同源：本函数跑了 ⇒ 条真的被画了）
     debugHomeAggChannelRenders.add((
       channels: channels.length,
@@ -3775,44 +3773,29 @@ class _AggChannelRail extends StatelessWidget {
           final ch = channels[i];
           final active = ch.id == current;
           /*
-           * ★ 药丸形态与 `source_bar` 的 `_SourcePill` 同一套意图
-            *（**透明底** + 仅选中项"更亮一层"）。这里用 `ActionChip`
-            * 而不是再造一个 `_SourcePill`：
-            * ```text
-            * `_SourcePill` 是 source_bar.dart 的**私有**组件（`_` 前缀），
-            *   跨文件够不到；而它那套材质是"源条自己那个玻璃容器上"的
-            *   层级语义（--surface-4），搬到本块会把两套令牌混起来。
-            * ⇒ 用框架的 ActionChip（本文件 `_LiveStrip` 的既有用法），
-            *   描边/圆角显式给死 ⇒ 与直播条**同款**，不引入第二套视觉。
-            * ```
-            * ⚠️ **R2-#4**：材质在**外层**那个 `GlassContainer` 上（见 build 顶部），
-            *    所以药丸这里必须**保持透明**（`ActionChip` 默认底就是透明的）——
-            *    给它加任何不透明底都会把外层玻璃糊住 ⇒ 看起来又"不是玻璃"了。
-            *    ★ 这与 `_SourcePill` 的取舍**同源**：源条的 pill 也是透明的，
-            *      材质由它外面那块玻璃容器承担。
-            */
+           * ★★★ 2026-10-31（Owner 逐字）：**药丸与源条同一件**
+           * ```text
+           * > tvbox 聚合源下面的也要跟那个液态玻璃选择的样式一样，
+           * > 这里样式都不一样，要优化和矫正
+           * ```
+           * 改前这里用框架 `ActionChip`（描边 + Material 芯片样式）——
+           * R2-#4 只统一了**外层玻璃容器**，药丸本体仍是另一套视觉
+           * （这正是 Owner 这次点名"样式都不一样"的残余落点）。
+           *
+           * ⇒ 改用 `SourcePill`（source_bar.dart 的**公共药丸**，源条同款）：
+           * ```text
+           * · 选中态 = 白色高亮层（--surface-4）+ 加粗，无描边 —— 与源条同款；
+           * · 材质仍在外层 GlassContainer（药丸透明，N7"材质只落一层"不变）；
+           * · "改一处两处同变"：药丸样式只活在 SourcePill 一个类里。
+           * ```
+           * ★ 历史注脚：R2-#4 当年选 ActionChip 的理由（"_SourcePill 是私有
+           *   组件跨文件够不到"）随着 SourcePill 抽成公共件**已不成立**。
+           */
           return Center(
-            child: ActionChip(
-              onPressed: () => onSelect(ch.id),
-              label: Text(
-                ch.name,
-                style: TextStyle(
-                  fontSize: FontSizes.sm,
-                  color: colors.onSurface,
-                  fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-                ),
-              ),
-              side: BorderSide(
-                color: active ? colors.primary : colors.outlineVariant,
-              ),
-              shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
-              padding: const EdgeInsets.symmetric(
-                horizontal: Sp.x4,
-                vertical: Sp.x2,
-              ),
-              labelPadding: EdgeInsets.zero,
-              visualDensity: VisualDensity.compact,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            child: SourcePill(
+              label: ch.name,
+              active: active,
+              onTap: () => onSelect(ch.id),
             ),
           );
         },

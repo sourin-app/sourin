@@ -168,8 +168,9 @@ Future<void> _pumpBlock(
 
   await tester.pumpWidget(
     MaterialApp(
-      // ★ 必须有 Scaffold（= Material 祖先）：渠道条的药丸与 `_LiveStrip`
-      //   用的是 `ActionChip`，它要求上方有 Material —— 生产里这个祖先由
+      // ★ 必须有 Scaffold（= Material 祖先）：渠道条的药丸（2026-10-31 起
+      //   与源条统一用 `SourcePill`，其 InkWell 与改前的 `ActionChip` 一样）
+      //   要求上方有 Material —— 生产里这个祖先由
       //   `shell.dart` 的 Scaffold 提供。夹具缺了它 ⇒ 报的是**夹具**的错
       //   （"No Material widget found"），不是被测对象的错。
       home: Scaffold(

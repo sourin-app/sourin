@@ -1,4 +1,4 @@
-﻿// ═══════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
 //  多源切换条 —— 对齐原版 SourceBar.vue
 // ═══════════════════════════════════════════════════════════════════════
 //
@@ -7,10 +7,15 @@
 // 「**下面的内容区显示哪个源**」—— 通栏横排，放在「我的」之后、
 // 内容之前。位置上贴着内容，而不是贴着页头。
 //
-// # ★ 只有一个源时**自己隐藏**
+// # ★ 单源也显示（2026-10-31 Owner 改判）
 //
-// 原版 `visible` 计算属性：`sources.length > 1` 才显示。
-// 理由：只有一个源时这一条是纯噪音（占一行却没有可切换的东西）。
+// 原版 `visible` 计算属性：`sources.length > 1` 才显示，理由是
+// "只有一个源时这一条是纯噪音"。**2026-10-31 Owner 明确推翻**：
+// ```text
+// > 首页就算只有一个源也要显示那个液态选择的
+// ```
+// ⇒ 单源也渲染这条液态玻璃（默认选中该源；再点它 = 重选，无副作用）。
+//   "多少个源"信息（`_showCount`）仍 >3 才显示，噪音判据不变。
 //
 // # 为什么用横向滚动而不是下拉
 //
@@ -175,8 +180,15 @@ class _SourceBarState extends State<SourceBar> {
   Widget build(BuildContext context) {
     final sources = _visible;
 
-    // ★ 只有一个源时不显示（原版 `visible` 的逻辑）
-    if (sources.length <= 1) return const SizedBox.shrink();
+    /*
+     * ★ 单源**也渲染**（2026-10-31 Owner 改判，见文件头说明）
+     *
+     * 改前这里是 `if (sources.length <= 1) return SizedBox.shrink()`。
+     * 单源时唯一那颗药丸默认就是选中态（`current` 必然等于它）；
+     * 再点它 = `_switchSource` 的同源守卫（`home_page.dart:2115`
+     * `if (id == _currentSource) return`）直接短路 ⇒ **无谓重载不存在**，
+     * 重选天然无害。多源同款：点当前源也是零成本 no-op。
+     */
 
     final colors = Theme.of(context).colorScheme;
 
@@ -275,13 +287,17 @@ class _SourceBarState extends State<SourceBar> {
                         final s = sources[i];
                         final active = s.id == widget.current;
                         final focused = i == widget.focusedIndex;
+                        final working = s.working;
 
                         return Center(
-                          child: _SourcePill(
-                            source: s,
+                          child: SourcePill(
+                            label: s.name,
+                            icon: s.icon,
                             active: active,
                             focused: focused,
-                            colors: colors,
+                            // 源探测失败 ⇒ 药丸上画感叹号（tooltip 给原因）
+                            errorTooltip:
+                                working ? null : (s.brokenReason ?? '该源当前不可用'),
                             onTap: () => widget.onSelect(s.id),
                           ),
                         );
@@ -353,36 +369,68 @@ class _SourceBarState extends State<SourceBar> {
   }
 }
 
-/// 单个源 pill（**透明**；只有选中那个有"更亮一层"的底）
+/// 源 / 渠道**共用**的选择药丸（2026-10-31 从 `_SourcePill` 抽公共件）
 ///
+/// # 为什么必须是公共件（Owner 原话，逐字）
+/// ```text
+/// > tvbox 聚合源下面的也要跟那个液态玻璃选择的样式一样，这里样式都不一样，
+/// > 要优化和矫正
+/// ```
+/// 判据是"改一处两处同变" —— 样式参数（选中高亮、圆角、字号字重、
+/// 焦点环、失效标记）**只活在这一个类里**，两个消费方都不许自带一份：
+/// ```text
+/// · source_bar.dart  SourceBar        —— 首页液态玻璃源条（本文件）
+/// · home_page.dart   _AggChannelRail  —— TVBox 聚合渠道条（替代 ActionChip）
+/// ```
 /// 照原版 `.srcbar__pill` / `.srcbar__pill.is-active`：
 /// ```css
 /// .srcbar__pill            { background: transparent; color: var(--text-secondary); }
 /// .srcbar__pill.is-active  { background: var(--surface-4); box-shadow: var(--shadow-sm); }
 /// ```
-/// ⚠️ **不是玻璃** —— 玻璃在外层容器上（见 `build` 里的说明）。
-class _SourcePill extends StatelessWidget {
-  const _SourcePill({
-    required this.source,
+/// ⚠️ **不是玻璃** —— 玻璃在消费方的外层容器上（两个消费方都已各自挂了
+///     同款 `GlassContainer(superellipse 999)`，材质只落一层，N7 裁定）。
+class SourcePill extends StatelessWidget {
+  const SourcePill({
+    super.key,
+    required this.label,
+    this.icon,
     required this.active,
-    required this.focused,
-    required this.colors,
+    this.focused = false,
+    this.errorTooltip,
     required this.onTap,
   });
 
-  final dynamic source;
+  /// 药丸文字（源名 / 渠道名）
+  final String label;
+
+  /// 源图标（emoji/单字短文本才画；URL 或超长文本 ⇒ 忽略，见 build 内规则）
+  final String? icon;
+
+  /// 是否选中（选中 ⇒ "更亮一层"的 `--surface-4` 底 + 加粗）
   final bool active;
+
+  /// TV 遥控焦点（-1 语义在调用方；true ⇒ 画焦点环）
   final bool focused;
-  final ColorScheme colors;
+
+  /// 非 null ⇒ 画失效感叹号，tooltip 用它的文本；源/渠道可用时传 null
+  final String? errorTooltip;
+
   final VoidCallback onTap;
+
+  /// 短文本图标（emoji/单字才画）；null / 空串 / >4 字符 / http 开头 ⇒ null
+  ///
+  /// ⚠️ 判定落在这里（局部变量做判空链）：实例字段 Dart 不做空安全提升。
+  String? get _shortIconText {
+    final ic = icon;
+    if (ic == null || ic.isEmpty) return null;
+    if (ic.length > 4 || ic.startsWith('http')) return null;
+    return ic;
+  }
 
   @override
   Widget build(BuildContext context) {
-    final s = source;
-    final icon = s.icon as String?;
-    final name = s.name as String;
-    final working = s.working as bool;
-    final brokenReason = s.brokenReason as String?;
+    final colors = Theme.of(context).colorScheme;
+    final iconText = _shortIconText;
 
     /*
      * ★ 主题判据（`--srcbar-pill-bg` 的两套值）
@@ -563,20 +611,20 @@ class _SourcePill extends StatelessWidget {
              * 这里只处理**短文本**（emoji/单字）——
              * 如果是 URL 就跳过（那是网络图，单独加载会闪）。
              * 原版也是这么做的（`icon.length <= 2` 才算 emoji）。
+             *
+             * ⚠️ 短文本判定收进 [_shortIconText]：实例字段（this.icon）Dart
+             *    不做空安全提升，判空链必须先落**局部**变量才编译得过。
              */
-            if (icon != null &&
-                icon.isNotEmpty &&
-                icon.length <= 4 &&
-                !icon.startsWith('http'))
+            if (iconText != null)
               Padding(
                 padding: const EdgeInsets.only(right: Sp.x1),
                 child: Text(
-                  icon,
+                  iconText,
                   style: const TextStyle(fontSize: FontSizes.sm),
                 ),
               ),
             Text(
-              name,
+              label,
               style: TextStyle(
                 fontSize: FontSizes.sm,
                 fontWeight: active ? FontWeight.w600 : FontWeight.w400,
@@ -621,11 +669,11 @@ class _SourcePill extends StatelessWidget {
             ),
             // 失效标记：源探测失败时明确标出来，
             // 而不是让用户点了没反应还不知道为什么
-            if (!working)
+            if (errorTooltip != null)
               Padding(
                 padding: const EdgeInsets.only(left: Sp.x1),
                 child: Tooltip(
-                  message: brokenReason ?? '该源当前不可用',
+                  message: errorTooltip!,
                   child: Icon(
                     AppIcons.error_outline,
                     size: FontSizes.sm,

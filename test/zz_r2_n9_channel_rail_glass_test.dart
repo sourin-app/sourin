@@ -73,6 +73,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/ui/home_page.dart';
 import 'package:sourin_spike/ui/widgets/sourin_scroll_behavior.dart';
+import 'package:sourin_spike/ui/widgets/source_bar.dart';
 
 const Size _kView = Size(520, 300);
 const ValueKey<String> _kBoundary = ValueKey<String>('r2n9-boundary');
@@ -584,8 +585,9 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await _shot(tester, glass: true);
 
-      // 药丸是 ActionChip；它里面不许有 GlassContainer
-      final chip = find.byType(ActionChip).first;
+      // 药丸是 SourcePill（2026-10-31 统一：与源条同一件公共药丸，
+      // 替代改前的 ActionChip）；它里面不许有 GlassContainer
+      final chip = find.byType(SourcePill).first;
       expect(
         find.descendant(of: chip, matching: find.byType(GlassContainer)),
         findsNothing,

@@ -88,7 +88,7 @@ Color? _textColor(WidgetTester t, String label) {
 
 void main() {
   group('源条 —— 基本显示规则', () {
-    testWidgets('★ 只有一个源时**自己隐藏**（原版 visible 的逻辑）', (t) async {
+    testWidgets('★ 单源也渲染液态玻璃条（2026-10-31 Owner 改判）', (t) async {
       await t.pumpWidget(_host(
         SourceBar(
           sources: _sources(1),
@@ -98,9 +98,10 @@ void main() {
       ));
       await t.pumpAndSettle();
 
-      expect(find.text('源0'), findsNothing,
-          reason: '单一选项的切换器是纯噪音 —— 原版 `visible` 就是 '
-              '`sources.length > 1`');
+      expect(find.text('源0'), findsOneWidget,
+          reason: 'Owner 2026-10-31 逐字：「首页就算只有一个源也要显示那个'
+              '液态选择的」—— 原版 `sources.length > 1` 的隐藏行为已推翻。\n'
+              '单源默认选中；点击重选被 `_switchSource` 的同源守卫短路，无害。');
     });
 
     testWidgets('★ 两个源以上才显示', (t) async {

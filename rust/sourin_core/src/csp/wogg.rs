@@ -31,8 +31,9 @@
 // ① 详情路径：DEX 常量里没有详情路径，真站给的是 `/voddetail/<id>.html`
 //    （不是 MacCMS 的 `/index.php/vod/detail/id/<id>.html`）⇒ 按真站来。
 // ② 取流：DEX 的父类 `Pan` 把分享链接接到 `http://127.0.0.1:5266`（TVBox 自带
-//    的本机转发服务）再由它换直链。本仓**没有** 5266 服务 ⇒ `play` 如实拒绝，
-//    绝不把分享页 URL 伪装成视频流（详见 `play` 的注释）。
+//    的本机转发服务）再由它换直链。★ 2026-10-31（T1a）改判：夸克/UC 族改走
+//    本仓原生的 `PanDrive::resolve_share_play`（转存→直链，4kzhinan 等已真机
+//    验证）—— 见 `play`；其它网盘族维持如实拒绝（T1b 取证后另接）。
 // ```
 //
 // # 镜像回退（契约第 2 条）
@@ -507,14 +508,16 @@ impl CspSite for Wogg {
         })
     }
 
-    /// 取流：网盘分享页 → 需要 5266 本机转发服务（本仓没有）⇒ 如实拒绝
+    /// 取流：直链原样给；**夸克/UC 分享页交回给原生直链转换**（T1a）；
+    /// 其它网盘族如实拒绝（T1b 取证后另接）
     ///
-    /// # 为什么不返回分享页 URL 当"播放地址"
+    /// # ★ 2026-10-31 改判（此前"一律 Err"的理由已过时）
     /// ```text
-    /// 详情页给的是 `https://pan.quark.cn/s/…` 这类**分享页**，不是媒体流。
-    /// 把它塞进 `CspPlay.url` 会让播放器去请求一个 HTML 页面（必然失败），
-    /// 用户看到的是"这个源能点但放不出来" —— 比明说"需要账号/转发"更糟。
-    /// ⇒ 只有**本身就是直链媒体**的 id 才放行。
+    /// 改前：分享页塞进 CspPlay.url = 播放器请求 HTML 必然失败 —— 在"只有
+    ///       5266 转发服务能换直链"的年代成立。现在 provider.rs resolve 出口
+    ///       的 `parse_share_page → PanDrive::resolve_share_play` 是**本仓原生**
+    ///       的转存→直链链路（4kzhinan 等源已真机验证），夸克/UC 族的分享页
+    ///       交回去就能换直链，不会再进 mpv ⇒ 交回 + label 如实。
     /// ```
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
         let raw = id.trim();
@@ -530,10 +533,14 @@ impl CspSite for Wogg {
                 label: Some("直链".to_string()),
             }]);
         }
+        // ★ T1a：夸克/UC 族分享页 → 原生转换（判据在 pan_share_play，非新域名清单）
+        if let Some(p) = crate::csp::pan_share_play::share_page_play(url, UA) {
+            return Ok(vec![p]);
+        }
         Err(match UrlPanKind::of(url) {
             Some(kind) => format!(
-                "这条是{}分享页（不是媒体流）：转到直链需要登录网盘账号 + 本机 5266 转发服务，\
-                 本仓两者都没有 ⇒ 暂时放不了；浏览与搜索不受影响",
+                "这条是{}分享页（不是媒体流）：本仓还没有它的分享→直链转换（T1b 取证后接入）\
+                 ⇒ 暂时放不了；浏览与搜索不受影响",
                 kind.label()
             ),
             None => format!(
@@ -707,6 +714,53 @@ mod tests {
         );
         let flat = crate::csp::shared::impl_src_only(include_str!("wogg.rs"));
         assert!(flat.contains("register_site!(Wogg)"));
+    }
+
+    /// ★★★ T1a 门禁（2026-10-31）：夸克/UC 分享页交回**原生直链转换**；其它族维持如实 Err
+    ///
+    /// # 夹具来源（真网抓取，lead 条件①：不许自造）
+    /// ```text
+    /// wogg 114504「老舅（臻彩）」详情页（https://www.wogg.net/voddetail/114504.html）
+    /// 2026-10-31 真抓：UC 带 ?public=1（audit n=115 的实际族）、夸克、百度 ?pwd=wogg。
+    /// play 的分享分支是纯本地判断（不打网络）⇒ 离线可测。
+    /// ```
+    #[tokio::test]
+    async fn play_hands_quark_uc_share_pages_to_native_conversion() {
+        let site = Wogg::new();
+        let got = site
+            .play("", "pan|https://drive.uc.cn/s/8e1d7a0ade134?public=1", "")
+            .await
+            .expect("UC 分享页要交回原生转换");
+        assert_eq!(got[0].url, "https://drive.uc.cn/s/8e1d7a0ade134?public=1");
+        let got = site
+            .play("", "pan|https://pan.quark.cn/s/384ca6d78a7b", "")
+            .await
+            .expect("夸克分享页要交回原生转换");
+        assert_eq!(got[0].url, "https://pan.quark.cn/s/384ca6d78a7b");
+        let err = site
+            .play("", "pan|https://pan.baidu.com/s/1iLOQ464Uz5Q3MYQ3Qu0y9w?pwd=wogg", "")
+            .await
+            .expect_err("百度族 T1b 前必须如实 Err");
+        assert!(err.contains("百度网盘"), "{err}");
+        assert!(err.contains("T1b"), "{err}");
+        assert!(!err.contains("5266"), "5266 是过时口径：{err}");
+    }
+
+    /// 接线断言：play 的分享分支必须真的走 share_page_play（不许只改文案）
+    ///
+    /// ```text
+    /// ★ 断言完整的 `if let Some(p) = …` 守卫形态 —— 只 contains 调用串的话，
+    ///   把调用包进 `if false {}` 注入也能骗过（T1a 证红实测抓到的假绿）。
+    /// ```
+    #[test]
+    fn play_wires_share_page_play() {
+        let src = include_str!("wogg.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(
+            prod
+                .contains("if let Some(p) = crate::csp::pan_share_play::share_page_play(url, UA)"),
+            "play 必须以 if-let 守卫把夸克/UC 分享页交给 share_page_play（原生转换入口）"
+        );
     }
 
     /// 真网络（`#[ignore]`，必须显式点名 + `CSP_LIVE=1`；不设变量就 assert 失败）

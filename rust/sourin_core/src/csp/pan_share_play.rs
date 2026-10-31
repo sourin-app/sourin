@@ -125,6 +125,32 @@ pub fn drive_for(kind: PanKind) -> Option<PanDrive> {
     }
 }
 
+/// ★★★ T1a（2026-10-31）：分享页 URL → **本仓原生直链转换**的入口凭据
+///
+/// 认出夸克/UC 族的分享页 ⇒ 交回 `CspPlay`（给 csp 源的 `play()` 用）——
+/// resolve 出口的原生钩子（provider.rs）会把它交给
+/// [`PanDrive::resolve_share_play`](super::pan_drive::PanDrive)：转存 sourin-temp
+/// → 直链 + `__puus`，含 23018 超限降级；未登录返回 `NEED_LOGIN`，
+/// 由 `classify_err` 翻译成 Unauthorized（4kzhinan 等源已走同一条链路验证）。
+///
+/// # 判据落在网盘族上（**不是新域名清单**）
+/// ```text
+/// `parse_share_page` 的精确 host + `/s/<id>` 判据就是 pan_drive 夸克/UC 两族的
+/// 入口 —— 这里只复用它。其它网盘族（百度/迅雷/115/阿里/139/…）返回 None ⇒
+/// 调用方维持既有如实文案（T1b 取证后另接，见 .probe/plan-2026-10-31-…md T1）。
+/// ```
+///
+/// 夹具全部来自真网抓取（wogg 114504 / hjzhencai 754 / hdmoli 2857，2026-10-31），
+/// 见 `mod tests`。`ua` 用调用方站点的（这层只透传，真正取直链的是 PanDrive）。
+pub fn share_page_play(url: &str, ua: &str) -> Option<super::CspPlay> {
+    let sr = parse_share_page(url)?;
+    Some(super::CspPlay {
+        url: url.trim().to_string(),
+        headers: vec![("User-Agent".to_string(), ua.to_string())],
+        label: Some(format!("网盘分享页（原生转直链：{}）", sr.kind.display())),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +193,43 @@ mod tests {
         assert_eq!(passcode_of("https://x/s/a?passcode=zz"), "zz");
         assert_eq!(passcode_of("https://x/s/a?q=1"), "", "别的参数不算提取码");
         assert_eq!(passcode_of("https://x/s/a"), "");
+    }
+
+    /// ★★★ T1a 门禁（2026-10-31）：share_page_play 只认夸克/UC 族，真 URL 形态全过
+    ///
+    /// # 夹具来源（**全部真网抓取，不自造** —— lead 条件①）
+    /// ```text
+    /// · wogg 114504「老舅（臻彩）」详情页（www.wogg.net/voddetail/114504.html）
+    ///   2026-10-31 真抓：UC 带 ?public=1（多余参数最坏形态）、夸克、百度 ?pwd=wogg
+    /// · hjzhencai 754 详情页 2026-10-31 真抓：夸克 f84677cde4ff、百度 ?pwd=vp3x
+    /// · hdmoli 2857 详情页 2026-10-31 真抓（cleanenv 审计 n=60 的实际条目）
+    /// · yidong_4k 的 139 分享页 resUrl（真站形态，其它族反例）
+    /// ```
+    #[test]
+    fn share_page_play_converts_quark_uc_family_only() {
+        let ua = "Mozilla/5.0";
+        // 夸克族真 URL（wogg 真抓）
+        let p = share_page_play("https://pan.quark.cn/s/384ca6d78a7b", ua).expect("真夸克分享页");
+        assert_eq!(p.url, "https://pan.quark.cn/s/384ca6d78a7b");
+        let lab = p.label.as_deref().unwrap_or("");
+        assert!(lab.contains("原生转直链") && lab.contains("夸克"), "{lab}");
+        // UC 族真 URL：带多余参数 ?public=1（wogg 真抓的最坏形态）
+        let p = share_page_play("https://drive.uc.cn/s/8e1d7a0ade134?public=1", ua)
+            .expect("真 UC 分享页（带 public 参数）");
+        assert_eq!(p.url, "https://drive.uc.cn/s/8e1d7a0ade134?public=1");
+        assert!(p.label.as_deref().unwrap_or("").contains("UC"));
+        // UA 要带上（调用方站点的）
+        assert_eq!(p.headers[0].0, "User-Agent");
+        assert_eq!(p.headers[0].1, ua);
+        // http 明文形态也要认（audit 里百度线路有 http 形态的先例）
+        assert!(share_page_play("http://pan.quark.cn/s/8efcd269e4b7", ua).is_some());
+        // 其它网盘族真 URL（带提取码的最坏形态）⇒ None（T1b 前维持如实文案）
+        assert!(share_page_play("https://pan.baidu.com/s/1iLOQ464Uz5Q3MYQ3Qu0y9w?pwd=wogg", ua).is_none());
+        assert!(share_page_play("https://pan.baidu.com/s/1yCHnLlsJLd_yyoaZjvRSEg?pwd=vp3x", ua).is_none());
+        // 139（yidong_4k 真 resUrl 形态）⇒ None
+        assert!(share_page_play("https://yun.139.com/shareweb/#/w/i/2yA8x3HAXdV06", ua).is_none());
+        // 直链媒体不是分享页 ⇒ None
+        assert!(share_page_play("https://cdn.example/vod/a.m3u8", ua).is_none());
     }
 
     /// ★★★ T4-C 门禁（2026-10-31）：share_id 混进控制字符 ⇒ 拒认（防御纵深）

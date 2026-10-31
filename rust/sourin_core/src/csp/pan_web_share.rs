@@ -33,10 +33,12 @@
 // # 因此本实现的分工（**不许越界**）
 // ```text
 // home / list / detail  → 纯 HTTP 抓该站 HTML，真数据（不需要登录）        ✅ 本文件实现
-// play（网盘分享链接）   → 需要「网盘账号 cookie」+「5266 本地转发服务」      ⛔ 本仓没有
-//                          ⇒ 如实返回「需要登录网盘账号」类错误，绝不伪造直链
+// play（夸克/UC 分享页） → 本仓原生直链转换（T1a，2026-10-31）              ✅
+//                          （交回 CspPlay ⇒ provider resolve 出口的
+//                           PanDrive::resolve_share_play 换直链；未登录弹引导）
+// play（其它网盘族）     → 分享→直链协议未取证（T1b）                      ⛔ 如实 Err
 // ```
-// ★ 这是**能力边界**，不是偷懒：没有 5266 转发，就算有 cookie 也放不出直链；
+// ★ 这是**能力边界**，不是偷懒：不能换直链的分享页绝不伪装成直链 ——
 //   伪造一个 m3u8 只会让用户点进去得到 404。
 
 // # ⚠️ 取证踩过的坑：本机 HTTP 代理会把"站点可用"测成"全宕"
@@ -692,11 +694,20 @@ impl CspSite for PanWebShare {
                 label: Some("直链".to_string()),
             }]);
         }
-        // ② 网盘分享：本仓没有 5266 转发服务 ⇒ 明确说清
+        // ② 网盘分享：夸克/UC 族 → **本仓原生直链转换**（T1a）；其它族如实说清
+        //
+        // ★ 2026-10-31 改判：旧文案"播放需要登录账号后才能取直链"只对"没有
+        //   转换链路"成立。现在 provider.rs resolve 出口的
+        //   `parse_share_page → PanDrive::resolve_share_play` 是本仓原生的
+        //   转存→直链链路（4kzhinan 等源已真机验证）—— 夸克/UC 族交回就换，
+        //   未登录由它返回 NEED_LOGIN（弹登录引导）。判据在 pan_share_play。
+        if let Some(p) = crate::csp::pan_share_play::share_page_play(url, UA) {
+            return Ok(vec![p]);
+        }
         match UrlPanKind::of(url) {
             Some(kind) => Err(format!(
-                "这条是{}分享：未登录也能列出分享里的文件（详见网盘条目），但播放需要登录账号后才能取直链；\
-                 本机还没有接入网盘转发服务，所以暂时放不了（其余内容不受影响）",
+                "这条是{}分享：本仓还没有它的分享→直链转换（T1b 取证后接入）\
+                 ⇒ 暂时放不了（其余内容不受影响）",
                 kind.label()
             )),
             None => Err(format!(
@@ -821,19 +832,36 @@ mod tests {
         assert_eq!(UrlPanKind::of("https://example.com/x"), None);
     }
 
+    /// ★★★ T1a 门禁（2026-10-31）：夸克/UC 分享页交回**原生直链转换**；其它族维持如实 Err
+    ///
+    /// # 夹具来源（真网抓取，lead 条件①：不许自造）
+    /// ```text
+    /// · 夸克：wogg 114504「老舅（臻彩）」详情页 2026-10-31 真抓
+    /// · 百度带提取码：同页真抓（?pwd=wogg）—— 其它网盘族的反例
+    /// 旧断言（quark ⇒ Err"需要登录"）随 T1a 改判废弃：分享页交回后由
+    /// provider.rs resolve 出口的 PanDrive::resolve_share_play 原生换直链。
+    /// ```
     #[tokio::test]
-    async fn play_returns_honest_login_error_for_pan_links() {
+    async fn play_hands_quark_uc_share_pages_to_native_conversion() {
         let site = PanWebShare::new();
-        let err = site
-            .play("", "pan|https://pan.quark.cn/s/abcd1234", "")
+        let got = site
+            .play("", "pan|https://pan.quark.cn/s/384ca6d78a7b", "")
             .await
-            .expect_err("网盘分享链接在本仓必然取不到直链");
-        assert!(err.contains("夸克网盘"), "要点名是哪家盘：{err}");
-        assert!(err.contains("需要登录"), "要说明是登录问题：{err}");
+            .expect("夸克分享页要交回原生转换");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].url, "https://pan.quark.cn/s/384ca6d78a7b");
         assert!(
-            !err.contains("尚未实现"),
-            "这条不是「类未实现」（类是实现了的），不许混用文案：{err}"
+            got[0].label.as_deref().unwrap_or("").contains("原生转直链"),
+            "label 要如实：{:?}",
+            got[0].label
         );
+        let err = site
+            .play("", "pan|https://pan.baidu.com/s/1iLOQ464Uz5Q3MYQ3Qu0y9w?pwd=wogg", "")
+            .await
+            .expect_err("百度族 T1b 前必须如实 Err");
+        assert!(err.contains("百度网盘"), "要点名是哪家盘：{err}");
+        assert!(err.contains("T1b"), "文案要点明转换归属：{err}");
+        assert!(!err.contains("5266"), "5266 是过时口径（原生链路已存在）：{err}");
     }
 
     #[tokio::test]
@@ -852,6 +880,22 @@ mod tests {
         let site = PanWebShare::new();
         let err = site.play("", "1234", "").await.expect_err("裸 id 不是可播地址");
         assert!(err.contains("既不是分享链接也不是直链"), "实际 {err}");
+    }
+
+    /// 接线断言：play 的分享分支必须真的走 share_page_play（不许只改文案）
+    ///
+    /// ```text
+    /// ★ 断言完整的 `if let Some(p) = …` 守卫形态（`if false {}` 注入骗不过）。
+    /// ```
+    #[test]
+    fn play_wires_share_page_play() {
+        let src = include_str!("pan_web_share.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(
+            prod
+                .contains("if let Some(p) = crate::csp::pan_share_play::share_page_play(url, UA)"),
+            "play 必须以 if-let 守卫把夸克/UC 分享页交给 share_page_play（原生转换入口）"
+        );
     }
 
     // ── 空结果必须 Err（"假装支持"的唯一出口）──

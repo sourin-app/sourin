@@ -42,8 +42,9 @@
 // # 能力边界（与 `Pan` 父类同一个：取流不在本仓）
 // ```text
 // browse（home/list/search/detail）→ 真 HTTP，真数据              ✅
-// play  → 网盘分享页；转直链要「网盘账号 cookie + 本机 5266 转发」  ⛔ 本仓没有
-//         ⇒ 如实 Err，绝不把分享页 URL 当视频流返回（那是假通）
+// play  → 夸克/UC 分享页：本仓原生直链转换（T1a，2026-10-31）        ✅
+//         其它族（百度/迅雷/115/阿里/139/…）：如实 Err（T1b 另接）  ⛔
+//         ⇒ 绝不把不能换直链的分享页 URL 当视频流返回（那是假通）
 // ```
 //
 // # 代理纪律
@@ -547,7 +548,15 @@ impl CspSite for HJZhenCai {
         })
     }
 
-    /// 取流：网盘分享页 → 需要账号 + 5266 转发（本仓没有）⇒ 如实拒绝
+    /// 取流：直链原样给；**夸克/UC 分享页交回给原生直链转换**（T1a）；
+    /// 其它网盘族如实拒绝（T1b 取证后另接）
+    ///
+    /// # ★ 2026-10-31 改判（与 wogg 同款）
+    /// ```text
+    /// "塞给 CspPlay 会让播放器请求 HTML"只对"没有转换链路"成立。现在
+    /// provider.rs resolve 出口的 `parse_share_page → PanDrive::resolve_share_play`
+    /// 是本仓原生链路（4kzhinan 等已真机验证）⇒ 夸克/UC 族交回即换直链。
+    /// ```
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
         let raw = id.trim();
         let url = raw.strip_prefix("pan|").unwrap_or(raw);
@@ -562,9 +571,13 @@ impl CspSite for HJZhenCai {
                 label: Some("直链".to_string()),
             }]);
         }
+        // ★ T1a：夸克/UC 族分享页 → 原生转换（判据在 pan_share_play，非新域名清单）
+        if let Some(p) = crate::csp::pan_share_play::share_page_play(url, UA) {
+            return Ok(vec![p]);
+        }
         Err(format!(
-            "这条是{}分享页（不是媒体流）：转直链需要登录网盘账号 + 本机 5266 转发服务，\
-             本仓两者都没有 ⇒ 暂时放不了；home/list/search/detail 不受影响",
+            "这条是{}分享页（不是媒体流）：本仓还没有它的分享→直链转换（T1b 取证后接入）\
+             ⇒ 暂时放不了；home/list/search/detail 不受影响",
             disk_label(url)
         ))
     }
@@ -825,5 +838,51 @@ mod tests {
             eprintln!("[LIVE]   - {} {}", e.flag, e.id);
         }
         assert!(!d.episodes.is_empty());
+    }
+
+    /// ★★★ T1a 门禁（2026-10-31）：夸克/UC 分享页交回**原生直链转换**；其它族维持如实 Err
+    ///
+    /// # 夹具来源（真网抓取，lead 条件①：不许自造）
+    /// ```text
+    /// hjzhencai 754 详情页（https://www.hjzhencai.top/index.php/vod/detail/id/754.html）
+    /// 2026-10-31 真抓：夸克 f84677cde4ff、百度 ?pwd=vp3x（后者是其它族的反例）。
+    /// play 的分享分支是纯本地判断（不打网络）⇒ 离线可测。
+    /// ```
+    #[tokio::test]
+    async fn play_hands_quark_uc_share_pages_to_native_conversion() {
+        let site = HJZhenCai::new();
+        let got = site
+            .play("", "pan|https://pan.quark.cn/s/f84677cde4ff", "")
+            .await
+            .expect("夸克分享页要交回原生转换");
+        assert_eq!(got[0].url, "https://pan.quark.cn/s/f84677cde4ff");
+        assert!(
+            got[0].label.as_deref().unwrap_or("").contains("原生转直链"),
+            "label 要如实：{:?}",
+            got[0].label
+        );
+        let err = site
+            .play("", "pan|https://pan.baidu.com/s/1yCHnLlsJLd_yyoaZjvRSEg?pwd=vp3x", "")
+            .await
+            .expect_err("百度族 T1b 前必须如实 Err");
+        assert!(err.contains("百度网盘"), "{err}");
+        assert!(err.contains("T1b"), "{err}");
+        assert!(!err.contains("5266"), "5266 是过时口径：{err}");
+    }
+
+    /// 接线断言：play 的分享分支必须真的走 share_page_play（不许只改文案）
+    ///
+    /// ```text
+    /// ★ 断言完整的 `if let Some(p) = …` 守卫形态（`if false {}` 注入骗不过）。
+    /// ```
+    #[test]
+    fn play_wires_share_page_play() {
+        let src = include_str!("hjzhen_cai.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(
+            prod
+                .contains("if let Some(p) = crate::csp::pan_share_play::share_page_play(url, UA)"),
+            "play 必须以 if-let 守卫把夸克/UC 分享页交给 share_page_play（原生转换入口）"
+        );
     }
 }

@@ -63,6 +63,33 @@ Future<void> pumpPanel(WidgetTester t, DanmakuSettingsState s) async {
   addTearDown(t.view.reset);
   await t.pumpWidget(dialogHost(s));
   await t.pump();
+  /*
+   * ★ 2026-10-31（t27_w12 全量偶红修正 —— 顺序敏感，不是布局问题）：
+   *
+   * # 现象与根因
+   * ```text
+   * 单跑/默认声明序恒绿，随机顺序（--test-randomize-ordering-seed）下 ③/④ 的
+   * testWidgets 红：「A Timer is still pending even after the widget tree was
+   * disposed」。
+   * 链条：③④ 都调 DanmakuConfig.setEnabled(true) ⇒ UiPrefs.set ⇒ _flushSoon()
+   * 排一个 300ms 的 flush 定时器 —— 在 testWidgets 的 FakeAsync zone 里它就是
+   * 一个到测试结束都没跑的 pending Timer（本文件没有任何 pump 推进假时间）。
+   * 默认序为什么恒绿：①② 两个纯 test（真 zone）先跑，各自留下一个真 zone 的
+   * _pending（Future 句柄），而 _flushSoon 有防重入闸 `if (_pending != null)
+   * return;` ⇒ 轮到 ③④ 时 setEnabled 的排程被闸挡掉 ⇒ FakeAsync 里没有定时器
+   * ⇒ 绿。随机顺序里 ③/④ 先跑时没有这层"真 zone 挡箭牌" ⇒ 红。
+   * （UiPrefs.debugResetForTest 只重置 _data/_file/_dirty，不重置 _pending ——
+   *   那是 core 的事，本修复不动它。）
+   * ```
+   *
+   * # 修法
+   * ```text
+   * 在 pumpPanel 里把 300ms 假时间走完，让 flush 定时器在测试内自然落地
+   * （flush 在测试环境 _file==null ⇒ 空转，无 IO）。**判据一字未动** ——
+   * 修的是"测试没消化自己触发的异步副作用"，不是放宽断言。
+   * ```
+   */
+  await t.pump(const Duration(milliseconds: 300));
 }
 
 void main() {

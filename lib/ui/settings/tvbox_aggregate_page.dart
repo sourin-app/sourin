@@ -41,7 +41,11 @@ import '../widgets/pan_share_dialog.dart' show PanShareListingSection;
 import '../widgets/provider_login_panel.dart';
 import '../widgets/proxy_panel.dart';
 // ★ N8b-2：聚合源管理面板（链接可改 / 测试连通 / 立即更新）
-import '../widgets/tvbox_source_panel.dart' show TvboxSourceManagePanel;
+import '../widgets/tvbox_source_panel.dart'
+    show
+        TvboxSourceManagePanel,
+        tvboxLastUpdateFailed,
+        tvboxLastUpdateText;
 
 /// 打开聚合二级页（设置页入口一行调用它）
 Future<void> showTvboxAggregatePage(BuildContext context) {
@@ -80,6 +84,15 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
   ///   （set / check / update）都按这个 id 走 `local_tvbox_sources`，
   ///   而同一个链接下的全部子站共享同一条结果（命令层按链接去重）。
   Map<String, TvboxSourceInfo> _subs = const <String, TvboxSourceInfo>{};
+
+  /// ★ T5：本聚合源的「上次更新」（后端把所含子站的章聚合成 max）
+  ///
+  /// ```text
+  /// 它是 Rust 顶层 `aggregate` 字段 —— 不在 sources[] 里
+  /// （塞进去会让设置页给聚合卡多出一个必然报错的"检测更新"按钮）。
+  /// null = 后端没给（旧核心）⇒ 头部说明整行不画（不编"从未更新"）。
+  /// ```
+  TvboxSourceInfo? _aggregateSource;
 
   @override
   void initState() {
@@ -156,6 +169,7 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
   /// ⚠️ 两道保险的理由见 `_load()` 里那段长注释（实测踩到 `_loading` 卡 true）。
   Future<void> _loadSubscriptionLinks() async {
     var subs = <String, TvboxSourceInfo>{};
+    TvboxSourceInfo? aggregateSource;
     try {
       /*
        * ⚠️ `.timeout` 本身在**测试**里会留下一个 pending Timer
@@ -173,13 +187,18 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
        */
       final l = await SourinApi.listTvboxSources();
       subs = {for (final s in l.sources) s.id: s};
+      // ★ T5：聚合时间走顶层字段（与设置页同一份口径）
+      aggregateSource = l.aggregate;
     } catch (e) {
       // ★ 读不到就保持空表（= 全部子站按"无链接"归一组）——
       //   宁可少显示「测试连通」的前置数据，也不许假告警/编一个链接。
       debugPrint('[AGG] TVBox 订阅链接加载失败（不影响源列表）: $e');
     }
     if (!mounted) return;
-    setState(() => _subs = subs);
+    setState(() {
+      _subs = subs;
+      _aggregateSource = aggregateSource;
+    });
   }
 
   /// 打开「编辑链接…」弹窗（**只有订阅链接 + 备注**两类输入）
@@ -334,6 +353,33 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
                    * ⇒ 两个弹窗都按"代表 id"（有链接的第一个子站）寻址，见 `_repIdOf`。
                    * ```
                    */
+                  /*
+                   * ★ T5（2026-11-01）：聚合源自己的「上次更新」行
+                   *
+                   * ```text
+                   * Owner：「源 里面的没有显示上次更新时间」—— 而在一级列表里
+                   * 用户唯一看得见的 TVBox 卡片就是聚合源这条。
+                   * 它是 Rust 内置 provider ⇒ sidecar 里没有它这一条 ⇒ 没有章
+                   * ⇒ 时间来自"其所含子站章的聚合"（Rust 侧 max，单一事实源）。
+                   * ```
+                   *
+                   * ⚠️ 文案复用 `tvboxLastUpdateText`（与设置页卡片**同一份**口径），
+                   *    不在这里另写一遍（写两遍必然漂移）。
+                   * ⚠️ 后端没给（旧核心）⇒ `null` ⇒ 整行不画 —— 不编「从未更新」。
+                   */
+                  if (tvboxLastUpdateText(_aggregateSource) != null) ...<Widget>[
+                    Text(
+                      tvboxLastUpdateText(_aggregateSource)!,
+                      key: const ValueKey<String>('agg-last-update'),
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: tvboxLastUpdateFailed(_aggregateSource)
+                            ? colors.error
+                            : colors.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: Sp.x3),
+                  ],
                   TvboxAggregateIdentityBlock(
                     note: a.note,
                     listedSites: a.sites.length,

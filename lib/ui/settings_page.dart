@@ -491,6 +491,39 @@ class SettingsPageState extends State<SettingsPage> {
    */
   Map<String, TvboxSourceInfo> _tvboxSources = const {};
 
+  /*
+   * ★ T5（2026-11-01）：聚合源（`tvbox_agg`）的订阅信息
+   *
+   * # 为什么它不在 `_tvboxSources` 里，却必须单独存一份
+   * ```text
+   * tvbox_agg 是 Rust **内置** provider ⇒ 不在 list_tvbox_sources 的 sources[]
+   * ⇒ _tvboxSources['tvbox_agg'] == null ⇒ 卡片上「上次更新」整行不画
+   *   （正是真机判读打回的那一条：功能加了但用户看不见）。
+   * 而 Owner 要的"源里面显示上次更新时间"首先指的就是这一张卡 ——
+   * 它是一级列表里唯一看得见的 TVBox 卡片。
+   * ```
+   *
+   * # 为什么**不**把它塞进 `_tvboxSources`
+   * ```text
+   * 卡片上的「检测更新」按钮判据是 _tvboxSources.containsKey(id)。
+   * 塞进去 ⇒ 聚合卡多出一个按钮 ⇒ 点了必然报
+   *   "没有找到 TVBox 源 tvbox_agg"（update_tvbox_source 认不出内置源）
+   * ⇒ 一个永远必然报错的按钮（本仓最忌讳的东西）。
+   * ```
+   *
+   * ⇒ 它只用于**显示**「上次更新」这一行，不参与任何按钮判据。
+   *   取值 = Rust 侧把其所含子站的章聚合成的 max（见 tvbox.rs
+   *   `tvbox_aggregate_last_update`）—— 是真实时间，不是"从未更新"兜底。
+   */
+  TvboxSourceInfo? _tvboxAggregateSource;
+
+  /// 卡片该显示哪份订阅信息（聚合源走单独那份，其余照旧）
+  ///
+  /// ⚠️ 只有**这一处**做分派 —— 别的地方一律查 `_tvboxSources`，
+  ///    聚合源才不会"意外地"变成一条可更新的源。
+  TvboxSourceInfo? _tvboxSourceOf(String id) =>
+      id == kTvboxAggregateId ? _tvboxAggregateSource : _tvboxSources[id];
+
   // ── 遥控 ──
   RemoteStatus? _remote;
   bool _remoteAutoStart = true;
@@ -686,9 +719,12 @@ class SettingsPageState extends State<SettingsPage> {
        * 也不能在没有来源的情况下显示「检测更新」骗用户）。
        */
       var tvboxSources = <String, TvboxSourceInfo>{};
+      TvboxSourceInfo? aggregateSource;
       try {
         final tvs = await SourinApi.listTvboxSources();
         tvboxSources = {for (final s in tvs.sources) s.id: s};
+        // ★ T5：聚合源的时间在**顶层字段**里（不在 sources[] —— 理由见字段注释）
+        aggregateSource = tvs.aggregate;
       } catch (e) {
         debugPrint('[SETTINGS] TVBox 订阅链接加载失败（不影响其它区块）: $e');
       }
@@ -702,6 +738,7 @@ class SettingsPageState extends State<SettingsPage> {
         _skipMarkers = markers;
         _pluginSources = sources;
         _tvboxSources = tvboxSources;
+        _tvboxAggregateSource = aggregateSource;
       });
     } catch (e) {
       debugPrint('[SETTINGS] 加载失败: $e');
@@ -3751,7 +3788,7 @@ VoidCallback? _configOf(String id) {
                       ? () => _openTvboxUpdate(live[i].id, live[i].name)
                       : null,
                   // ★ T5：TVBox 源的「上次更新」行（非 TVBox 源 = null ⇒ 不画）
-                  tvboxSource: _tvboxSources[live[i].id],
+                  tvboxSource: _tvboxSourceOf(live[i].id),
                 ),
               ),
             ),
@@ -4599,7 +4636,7 @@ VoidCallback? _configOf(String id) {
               // ★ 第 06 项：源个性化覆盖层入口（按源，不改原件）
               onOverride: () => _openOverrideEditor(visible[i].id, visible[i].name),
               // ★ T5：TVBox 源的「上次更新」行（非 TVBox 源 = null ⇒ 不画）
-              tvboxSource: _tvboxSources[visible[i].id],
+              tvboxSource: _tvboxSourceOf(visible[i].id),
               /*
                * ★★ 只有**有安装链接**的插件才有这个入口（task-23）
                *

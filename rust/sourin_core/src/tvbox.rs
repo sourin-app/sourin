@@ -2102,17 +2102,37 @@ pub async fn import_tvbox_config(
         } else {
             Some(base_url.clone())
         };
+        /*
+         * ★ B3（2026-11-01）：**链接导入成功 ⇒ 盖 installed 时刻的初始章**
+         *
+         * # 为什么原来那句注释是错的
+         * ```text
+         * 旧注释：「导入 ≠ 订阅更新：新导入的源如实显示「从未更新」」。
+         * 这个**前提只对"贴配置文本导入"成立** —— 那种情况 base_url 为空，
+         * 磁盘上确实没有可核对的链接，"从未更新"是实话。
+         * 但"填链接导入"时，我们**刚刚从那个链接成功下载并完成安装** ——
+         * 这是一次真实的成功核对。把它显示成"从未更新"
+         * = **把已发生的事实显示成未发生**（读数说谎，比漏修更糟），
+         *   而且用户要等 24h 定时第一轮跑完才第一次看见时间。
+         * ```
+         * ⇒ 精确口径（覆盖两条导入路径，各自如实）：
+         * ```text
+         * 文本导入（base_url 空）        ⇒ last_update_at = 0（无可核对链接）
+         * 链接导入且下载安装成功（走到这里）⇒ last_update_at = now, ok = true
+         * 链接导入但下载/解析失败         ⇒ 压根走不到这里（上面已 return Err）
+         * ```
+         */
+        let initial_stamp = src.is_some();
+        let stamp_at = now_secs();
         for (id, key, name, api) in meta_rows.iter() {
             let meta = TvboxSourceMeta {
                 source_url: src.clone(),
                 site_key: key.clone(),
                 site_name: name.clone(),
                 api: api.clone(),
-                installed_at: now_secs(),
-                // 导入 ≠ 订阅更新：新导入的源如实显示「从未更新」，
-                // 等第一次（手动或定时）订阅更新成功才盖章。
-                last_update_at: 0,
-                last_update_ok: false,
+                installed_at: stamp_at,
+                last_update_at: if initial_stamp { stamp_at } else { 0 },
+                last_update_ok: initial_stamp,
                 last_update_error: None,
             };
             if let Err(e) = write_tvbox_meta(&state.data_dir, id, &meta) {
@@ -2186,7 +2206,18 @@ pub struct TvboxSourceMeta {
     /// Unix 秒
     #[serde(default)]
     pub installed_at: i64,
-    /// ★ 上次订阅更新的时间（Unix 秒；0 = 从未更新过 —— 界面据此显示「从未更新」）
+    /// ★ 上次订阅更新的时间（Unix 秒）
+    ///
+    /// # 三态（界面据此如实显示，不许合并）
+    /// ```text
+    /// 0     = 从未更新过 ⇒ 界面如实「从未更新」
+    ///        · 且**必须区分两种"0"**（本批真机判读打回的根因）：
+    ///          (a) 有订阅链接、只是还没轮到/没成功 ⇒ 等更新跑一次就有数
+    ///          (b) 压根没有订阅链接（贴文本导入）   ⇒ 永远不会自动更新，
+    ///              界面要如实报原因 + 指出路（去聚合页补链接）
+    ///          ⇒ 判据看 `source_url`：None 是 (b)，Some 是 (a)
+    /// >0    = 上次核对的时刻（成功与否看 `last_update_ok`）
+    /// ```
     ///
     /// 成功的判定覆盖 `update_tvbox_source` 的**两条**出口：
     /// 远端有变化并应用、以及「远端与本地一致无需更新」（后者也是一次成功的核对，
@@ -2208,6 +2239,51 @@ struct TvboxMetaFile {
     version: u32,
     #[serde(default)]
     sources: std::collections::HashMap<String, TvboxSourceMeta>,
+}
+
+/// 订阅来源 sidecar 的**写锁**（★ P2-2：五条写路径共用同一把）
+///
+/// # 为什么锁在**最底层**而不是逐个入口加
+///
+/// ```text
+/// 写 sidecar 的入口有五条：import / set_tvbox_source / remove /
+/// restore_tvbox_js / update（盖章）。
+/// 它们最终都走同一个形状：load 整份 map → 改一条 → save 整份（rename）。
+/// ⇒ 只给 update 那一条加锁（本批 T5 初版就是这么做的）等于没加：
+///   用户点"导入"的同时定时器在盖章，两边各自读到旧整份、各自写回
+///   ⇒ 后写的那份**整份覆盖**先写的 ⇒ 先写那次改动凭空消失
+///   （表现为"刚导入的源，重启后订阅链接没了"）。
+/// ⇒ 锁必须建在「load→改→save」这个**临界区**上，五条路径一次性全覆盖。
+/// ```
+///
+/// # 为什么用 `std::sync::Mutex` 而不是 tokio 的
+///
+/// 临界区内没有 `.await`（全是文件读写），持 std 锁不会阻塞线程池。
+/// tokio 那把 `UPDATE_LOCK` 管的是另一件事（同一条链接别并发下载），二者并存。
+static TVBOX_META_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 订阅链接的**归一形态**（★ P3-2：三处匹配必须用同一个形状）
+///
+/// # 为什么必须有它
+///
+/// ```text
+/// 用户从网页/聊天窗口复制出来的链接常带前后空白或换行（" http://x/a.json\n"）。
+/// 写入侧（set_tvbox_source）存的是 trim **后**的值，
+/// 而 stamp 的匹配曾经写的是 `m.source_url.as_deref() == Some(url)`（URL 原样），
+/// collect_due_links 传进来的又是 trim 后的值 ——
+/// ⇒ 三处形状不一致时，"刚补完链接、立即更新"会盖不上章
+///   （表现为界面永远停在「从未更新」，而定时器还每 60s 重复下载一次）。
+/// ```
+///
+/// ⚠ 空串归一成 None：sidecar 里"没有链接"只有一种形态（键不存在），
+///    不许同时存在 `Some("")` 这种第二种形态 —— 两种形态必然漏判一处。
+pub fn norm_source_url(u: Option<&str>) -> Option<String> {
+    let s = u?.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }
 
 fn tvbox_meta_version() -> u32 {
@@ -2259,6 +2335,8 @@ pub fn read_tvbox_meta(dir: &std::path::Path, id: &str) -> Option<TvboxSourceMet
 }
 
 /// 原子写回整份 map（先写 .tmp 再 rename —— 与 persist::save_persisted 同一手法）
+///
+/// ⚠ 调用方必须已持有 `TVBOX_META_LOCK`（见该锁的注释：五条写路径共用）。
 fn save_tvbox_metas(
     dir: &std::path::Path,
     map: &std::collections::HashMap<String, TvboxSourceMeta>,
@@ -2275,6 +2353,10 @@ fn save_tvbox_metas(
 }
 
 /// 写/覆盖某个源的订阅来源（自动建目录）
+///
+/// ★ P2-2：整段「load → insert → save」在 `TVBOX_META_LOCK` 里完成。
+/// ★ P3-2：链接**存进去之前**就归一（trim）⇒ 磁盘上只有一种形态，
+///         从源头消灭"写入是 A 形态、匹配是 B 形态"的缝隙。
 pub fn write_tvbox_meta(
     dir: &std::path::Path,
     id: &str,
@@ -2283,16 +2365,25 @@ pub fn write_tvbox_meta(
     if id.is_empty() {
         return Err("源 id 为空，无法记录订阅链接".to_string());
     }
+    let _guard = TVBOX_META_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut meta = meta.clone();
+    meta.source_url = norm_source_url(meta.source_url.as_deref());
     std::fs::create_dir_all(dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
     let mut map = load_tvbox_metas(dir);
-    map.insert(id.to_string(), meta.clone());
+    map.insert(id.to_string(), meta);
     save_tvbox_metas(dir, &map)
 }
 
 /// 忘掉某个源的订阅来源（源被移除时调用）
 ///
 /// ⚠️ 幂等：没有这个 id / 文件不存在都算成功 —— 调用方不该为此写错误处理。
+/// ★ P2-2：同样在 `TVBOX_META_LOCK` 里。
 pub fn forget_tvbox_meta(dir: &std::path::Path, id: &str) -> std::result::Result<(), String> {
+    let _guard = TVBOX_META_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut map = load_tvbox_metas(dir);
     if map.remove(id).is_none() {
         return Ok(());
@@ -2395,10 +2486,11 @@ pub fn collect_due_links(
     let mut out: Vec<(String, String)> = Vec::new();
     for (id, _name, _api, _ext) in sources.iter() {
         let Some(m) = metas.get(id) else { continue };
-        let Some(url) = m.source_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) else {
+        // ★ P3-2：与 stamp / in_link 同一把尺子（三处只能有一个判据）
+        let Some(url) = norm_source_url(m.source_url.as_deref()) else {
             continue;
         };
-        if out.iter().any(|(u, _)| u == url) {
+        if out.iter().any(|(u, _)| u == &url) {
             continue;
         }
         if tvbox_update_due(m.last_update_at, interval_secs, now, enabled) {
@@ -2705,6 +2797,69 @@ pub fn multi_repo_repos(cfg: &serde_json::Value, base_url: &str) -> Vec<serde_js
     out
 }
 
+/// ★ A1：聚合源（`tvbox_agg`）的「上次更新」= 其所含子站章的**聚合**
+///
+/// # 为什么聚合源自己没有章，却必须显示一个真实时间
+///
+/// ```text
+/// tvbox_agg 是 Rust **内置 provider**（state.rs 的 bootstrap 里直接 register），
+/// 不是 PersistedProvider::Tvbox ⇒ 不在 third_party ⇒ local_tvbox_sources 挑不到它
+/// ⇒ sidecar 里也没有它这一条 ⇒ 没有任何路径会给它盖章。
+/// 而它恰恰是用户在一级列表里**唯一看得见**的那条 TVBox 卡片 ——
+/// Owner 要的「源里面显示上次更新时间」首先指的就是这一条。
+/// ⇒ 它的时间只能从"它实际由哪些子站构成"推导出来，不能凭空造。
+/// ```
+///
+/// # 三个口径（都是"如实"取向，不是取巧）
+///
+/// ```text
+/// 时间  = 子站章的 **max**（最近一次真核对过的时刻）
+///         · 不用 min：一条老源会把整个聚合拖成很旧 —— 那是误导，等于说谎
+///         · 不用"平均值"：那是一个从来没有发生过的时刻
+/// ok    = 全部**已盖章**子站都成功才 true
+///         · 任一子站上次失败 ⇒ 整条聚合标失败 ——
+///           定时更新一直在失败这件事，用户必须能一眼看见（硬要求）
+/// error = 第一个失败子站的原因（原样，不改写）
+/// ```
+///
+/// # 返回 `None` 的两种情形（都不许显示成"从未更新"以外的假象）
+///
+/// ```text
+/// · 一个子站章都没有（全部从未更新）⇒ None ⇒ 界面显示「从未更新」
+/// · 传入的子站集为空（聚合里没有任何 TVBox 子站）⇒ None
+/// ```
+///
+/// ⚠️ **纯函数**（不读文件、不联网）—— 门禁可以直接穷举。
+pub fn tvbox_aggregate_last_update(
+    metas: &std::collections::HashMap<String, TvboxSourceMeta>,
+    child_ids: &[String],
+) -> Option<(i64, bool, Option<String>)> {
+    let mut at = 0i64;
+    let mut ok = true;
+    let mut err: Option<String> = None;
+    let mut any = false;
+    for id in child_ids {
+        let Some(m) = metas.get(id) else { continue };
+        if m.last_update_at <= 0 {
+            continue; // 还没盖过章的子站不参与（它自己也是"从未更新"）
+        }
+        any = true;
+        if m.last_update_at > at {
+            at = m.last_update_at;
+        }
+        if !m.last_update_ok && err.is_none() {
+            err = m.last_update_error.clone().or(Some("更新失败（后端没有给出原因）".to_string()));
+        }
+        if !m.last_update_ok {
+            ok = false;
+        }
+    }
+    if !any {
+        return None;
+    }
+    Some((at, ok, err))
+}
+
 /// 从本地已注册的源里挑出 TVBox 源（id / name / api）
 fn local_tvbox_sources(
     state: &crate::state::AppState,
@@ -2741,13 +2896,26 @@ pub fn list_tvbox_sources(
 ) -> std::result::Result<serde_json::Value, String> {
     let sources = local_tvbox_sources(state)?;
     let metas = load_tvbox_metas(&state.data_dir);
+    /*
+     * ★ A2：聚合源的时间从"它实际由哪些子站构成"推导 ——
+     *   子站集 = 本地 TVBox 源 ∩ sidecar 里有记录的
+     *   （与 tvbox_aggregate::channels_of 判"用户导入"用的是同一份 provenance：
+     *     sidecar 存在性 —— 同一件事在本仓只有一个判据）。
+     *   内置 csp 源若从未导入过（没有 sidecar）就不算它的子站，
+     *   否则一条没章的内置源会把聚合永远拖成"从未更新"。
+     */
+    let child_ids: Vec<String> = sources
+        .iter()
+        .map(|(id, _, _, _)| id.clone())
+        .filter(|id| metas.contains_key(id))
+        .collect();
+    let agg = tvbox_aggregate_last_update(&metas, &child_ids);
     let mut out = Vec::new();
     let mut with_source = 0usize;
     for (id, name, api, _ext) in sources.iter() {
         let meta = metas.get(id);
-        let url = meta
-            .and_then(|m| m.source_url.clone())
-            .filter(|u| !u.trim().is_empty());
+        // ★ P3-2：对外也只有一种形态（写入侧已归一，这里是双保险 + 空串当没有）
+        let url = norm_source_url(meta.and_then(|m| m.source_url.as_deref()));
         if url.is_some() {
             with_source += 1;
         }
@@ -2769,6 +2937,36 @@ pub fn list_tvbox_sources(
         "sources": out,
         "total": sources.len(),
         "withSource": with_source,
+        /*
+         * ★ A2：聚合源（`tvbox_agg`）的上次更新 —— 走**顶层字段**
+         *
+         * # 为什么不能塞进 `sources[]`
+         * ```text
+         * Dart 侧的「检测更新」按钮判据是 `_tvboxSources.containsKey(id)`。
+         * 一旦把 tvbox_agg 塞进 sources[]，那张卡就多出一个"检测更新"按钮，
+         * 而 update_tvbox_source 的第一句就是
+         *   `if !sources.iter().any(|(sid,_,_,_)| sid == id)` ⇒ "没有找到 TVBox 源 tvbox_agg"
+         * ⇒ 一个永远必然报错的按钮（聚合页 tvbox_aggregate_page.dart:333 已注明同款坑）。
+         * ```
+         * 顶层字段是**附加信息**，不进 sources[] ⇒ 零副作用。
+         *
+         * ⚠️ 一个子站都没盖过章 ⇒ `null`（Dart 侧据此显示"从未更新"）——
+         *    绝不返回一个 0 假装"更新过"。
+         */
+        "aggregate": {
+            "id": crate::tvbox_aggregate::AGGREGATE_ID,
+            "lastUpdateAt": agg.as_ref().map(|(at, _, _)| *at).unwrap_or(0),
+            "lastUpdateOk": agg.as_ref().map(|(_, ok, _)| *ok).unwrap_or(false),
+            "lastUpdateError": agg.and_then(|(_, _, e)| e),
+            /*
+             * ★ 必须显式给 false：Dart 侧 `needsSource` 的缺省是 **true**
+             *   （`j['needsSource'] != false`），不给就会把聚合源判成
+             *   "没有订阅链接" ⇒ 显示「无法定时更新，去补链接」——
+             *   而聚合源根本不是一条源，它没有（也不需要）自己的链接，
+             *   它的时间来自子站。那是把"不适用"说成"配置缺失"。
+             */
+            "needsSource": false,
+        },
     }))
 }
 
@@ -3049,9 +3247,12 @@ pub async fn update_tvbox_source(
     let _guard = UPDATE_LOCK.lock().await;
     let r = update_tvbox_source_inner(state, id, apply_new, delete_missing).await;
     if let Err(e) = &r {
-        let url = read_tvbox_meta(&state.data_dir, id)
-            .and_then(|m| m.source_url)
-            .filter(|u| !u.trim().is_empty());
+        // ★ P3-2：与 stamp 同一把尺子（否则"链接带空白 + 更新失败"盖不上失败章）
+        let url = norm_source_url(
+            read_tvbox_meta(&state.data_dir, id)
+                .and_then(|m| m.source_url)
+                .as_deref(),
+        );
         if let Some(url) = url {
             log::warn!("TVBox 订阅更新失败（{url}）：{e}");
             stamp_link_update(&state.data_dir, &url, now_secs(), false, Some(e.clone()));
@@ -3072,10 +3273,18 @@ fn stamp_link_update(
     ok: bool,
     error: Option<String>,
 ) {
+    // ★ P3-2：两边都按同一把尺子归一后再比（写入侧存的是 trim 后的值，
+    //   这里的 url 可能来自用户输入/配置文件，带空白是常态）。
+    let Some(want) = norm_source_url(Some(url)) else {
+        return;
+    };
+    let _guard = TVBOX_META_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut map = load_tvbox_metas(dir);
     let mut touched = 0usize;
     for m in map.values_mut() {
-        if m.source_url.as_deref() == Some(url) {
+        if norm_source_url(m.source_url.as_deref()).as_deref() == Some(want.as_str()) {
             m.last_update_at = now;
             m.last_update_ok = ok;
             m.last_update_error = if ok { None } else { error.clone() };
@@ -3101,10 +3310,11 @@ async fn update_tvbox_source_inner(
     if !sources.iter().any(|(sid, _, _, _)| sid == id) {
         return Err(format!("没有找到 TVBox 源 {id}"));
     }
-    let Some(url) = read_tvbox_meta(&state.data_dir, id)
-        .and_then(|m| m.source_url)
-        .filter(|u| !u.trim().is_empty())
-    else {
+    let Some(url) = norm_source_url(
+        read_tvbox_meta(&state.data_dir, id)
+            .and_then(|m| m.source_url)
+            .as_deref(),
+    ) else {
         return Err("这个源没有订阅链接，无法更新（请先填入链接）".to_string());
     };
 
@@ -3125,11 +3335,13 @@ async fn update_tvbox_source_inner(
     // （in_link=true）—— 见 LocalSite::in_link 的说明。
     let metas = load_tvbox_metas(&state.data_dir);
     let in_link = |sid: &str| -> bool {
-        metas
-            .get(sid)
-            .and_then(|m| m.source_url.as_deref())
-            .map(|u| u == url)
-            .unwrap_or(false)
+        norm_source_url(
+            metas
+                .get(sid)
+                .and_then(|m| m.source_url.as_deref()),
+        )
+        .as_deref()
+            == norm_source_url(Some(&url)).as_deref()
     };
     let locals: Vec<LocalSite> = sources
         .iter()
@@ -5771,6 +5983,525 @@ mod task12_subscription {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  T5 真机判读打回项（2026-11-01）：功能加了但**用户看不见**
+    // ═════════════════════════════════════════════════════════════════
+    //
+    // 打回的两条：
+    // ```text
+    // ① 聚合源 tvbox_agg 永远显示不出来（sidecar 里没有它这一条）
+    // ② 64 条子站永远盖不上章（它们是贴文本导入的，source_url=None）
+    // ```
+    //
+    // 下面四条门禁共用**一套真形状夹具**（见 `real_shape_fixture`）：
+    // 只用两条理想夹具是上一版漏网的直接原因 —— 真数据 64 条、
+    // 每条只有 siteKey/siteName/api/installedAt、没有 lastUpdate 三件套。
+
+    /// 真 sidecar 形状的一条（`csp-xxx` 形态 id + 四个字段，**没有** source_url
+    /// / lastUpdateAt —— 与真机 `tvbox-sources.json` 逐字同形）
+    fn real_shape_entry(site_key: &str, name: &str, api: &str) -> TvboxSourceMeta {
+        TvboxSourceMeta {
+            source_url: None,
+            site_key: site_key.to_string(),
+            site_name: name.to_string(),
+            api: api.to_string(),
+            installed_at: 1_793_268_523, // 真机那批的同一个时刻
+            last_update_at: 0,
+            last_update_ok: false,
+            last_update_error: None,
+        }
+    }
+
+    /// ★ 夹具自证：**必须**是真形状（否则下面四条门禁全是空转的假绿）
+    ///
+    /// ```text
+    /// 若哪天有人给夹具补上 source_url / lastUpdateAt，
+    /// "补链接后能盖章""聚合能取到时间"就变成恒真 —— 门禁失效且看不出来。
+    /// 这条先钉住夹具本身：n 条、全部无链接、全部未盖章、字段名逐字。
+    /// ```
+    fn real_shape_fixture(dir: &std::path::Path, n: usize) -> Vec<String> {
+        let mut ids = Vec::new();
+        for i in 0..n {
+            // 真机 id 形状：`csp-<类名 kebab>-<8 位十六进制>`
+            let id = format!(
+                "csp-fixture-{:08x}",
+                (i as u32).wrapping_mul(0x9e3779b1u32).wrapping_add(0x51ed270b)
+            );
+            write_tvbox_meta(dir, &id, &real_shape_entry(&format!("k{i}"), &format!("站{i}"), "csp_Fixture"))
+                .expect("写真形状夹具失败");
+            ids.push(id);
+        }
+        // 夹具自证（反假绿）
+        let metas = load_tvbox_metas(dir);
+        assert_eq!(metas.len(), n, "夹具条数不对：{}", metas.len());
+        for id in ids.iter() {
+            let m = &metas[id];
+            assert!(m.source_url.is_none(), "{id} 必须是「无订阅链接」（真形状）");
+            assert_eq!(m.last_update_at, 0, "{id} 必须是「从未更新」（真形状）");
+            assert!(!m.site_key.is_empty() && !m.api.is_empty(), "{id} 应带 siteKey/api");
+        }
+        // 磁盘上也不许出现 source_url 键（`skip_serializing_if` ⇒ None 就整个键不落盘，
+        // 真机那份文件正是这样 —— 这正是"文本导入"在磁盘上的唯一证据）
+        let raw = std::fs::read_to_string(tvbox_meta_file(dir)).expect("读夹具失败");
+        assert!(
+            !raw.contains("source_url"),
+            "真形状夹具里不许出现 source_url 键（真机那份是 None ⇒ 键不存在）"
+        );
+        // lastUpdateAt 是**没有** skip_serializing_if 的（T5 才加的字段，
+        // 真机那份文件早于 T5 ⇒ 压根没有这个键）。所以这里不能判"键不存在"，
+        // 判"值全为 0"—— 语义上等价（0 = 从未更新过）。
+        let zeros = raw.matches("\"lastUpdateAt\": 0").count();
+        assert_eq!(
+            zeros, n,
+            "真形状夹具的 lastUpdateAt 必须全为 0（实际 {zeros}/{n}）—— 有一个非 0 就是夹具被污染了"
+        );
+        ids
+    }
+
+    /// ★ R1：聚合源更新后能取到**非空** lastUpdateAt，且等于子站章的 max
+    ///
+    /// 证红：把 `tvbox_aggregate_last_update` 改成返回 None（或就地返回 0）
+    ///      ⇒ 本条红（且红在"聚合时间是 0"这一行，不是别处）。
+    #[test]
+    fn t5_aggregate_last_update_is_real() {
+        let dir = super::task5_ab_restart::unique_tmp_dir("t5agg");
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+
+        // 真形状：64 条、无链接、未盖章
+        let ids = real_shape_fixture(&dir, 64);
+        let mut metas = load_tvbox_metas(&dir);
+
+        // ① 全未盖章 ⇒ 聚合也必须是 None（不许返回 0 假装"更新过"）
+        assert!(
+            tvbox_aggregate_last_update(&metas, &ids).is_none(),
+            "一个子站都没盖过章 ⇒ 聚合必须是 None"
+        );
+
+        // ② 只给**其中几条**盖章（模拟"这条链接下既有子站已更新"）
+        let t_old = 1_800_000_000i64;
+        let t_new = 1_800_006_000i64;
+        metas.get_mut(&ids[0]).unwrap().last_update_at = t_old;
+        metas.get_mut(&ids[0]).unwrap().last_update_ok = true;
+        metas.get_mut(&ids[7]).unwrap().last_update_at = t_new;
+        metas.get_mut(&ids[7]).unwrap().last_update_ok = true;
+
+        let (at, ok, err) = tvbox_aggregate_last_update(&metas, &ids)
+            .expect("★ 有子站盖过章 ⇒ 聚合必须能取到时间（不能永远'从未更新'）");
+        assert_eq!(at, t_new, "★ 口径是 max（最近一次真核对），不是 min/平均：{at}");
+        assert!(ok, "全部子站都成功 ⇒ ok=true");
+        assert!(err.is_none(), "成功不该带原因");
+
+        // ③ 任一子站上次失败 ⇒ 整条聚合标失败（定时更新一直在失败必须看得见）
+        metas.get_mut(&ids[3]).unwrap().last_update_at = t_old;
+        metas.get_mut(&ids[3]).unwrap().last_update_ok = false;
+        metas.get_mut(&ids[3]).unwrap().last_update_error = Some("下载配置失败：连接被拒".to_string());
+        let (at2, ok2, err2) = tvbox_aggregate_last_update(&metas, &ids).unwrap();
+        assert_eq!(at2, t_new, "失败子站不改变 max 口径");
+        assert!(!ok2, "★ 任一子站失败 ⇒ 聚合必须标失败（否则用户看不见定时一直在失败）");
+        assert!(
+            err2.as_deref().unwrap_or("").contains("下载配置失败"),
+            "失败原因要带上：{err2:?}"
+        );
+
+        // ④ 子站集为空 ⇒ None（不是 0，不是 panic）
+        assert!(tvbox_aggregate_last_update(&metas, &[]).is_none());
+        // ⑤ 不存在的 id 不参与（不许凭空造章）
+        assert_eq!(
+            tvbox_aggregate_last_update(&metas, &["no-such-id".to_string()]),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ R1-e2e：走**生产命令** `list_tvbox_sources` ⇒ 顶层 `aggregate` 字段
+    /// 带真实时间，且 **sources[] 里没有 tvbox_agg**（防"检测更新按钮误出现"）
+    ///
+    /// 证红：把顶层 `aggregate` 拿掉 / 把 tvbox_agg 塞进 sources[] ⇒ 本条红。
+    #[tokio::test]
+    async fn t5_list_exposes_aggregate_last_update() {
+        std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+        let dir = super::task5_ab_restart::unique_tmp_dir("t5aggcmd");
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+
+        // 真形状：64 个子站（注册进 third_party + sidecar）
+        let ids = real_shape_fixture(&dir, 64);
+        {
+            let mut list = st.third_party.write().expect("锁中毒");
+            for (i, id) in ids.iter().enumerate() {
+                list.push(crate::model::PersistedProvider::Tvbox {
+                    id: id.clone(),
+                    name: format!("站{i}"),
+                    api: "csp_Fixture".to_string(),
+                    categories: Vec::new(),
+                    parsers: Vec::new(),
+                    ext: None,
+                });
+            }
+        }
+        crate::commands_provider::persist_from_registry(&st).expect("落盘失败");
+
+        // 盖章前：聚合时间是 0（如实 —— 不许伪造）
+        let before = list_tvbox_sources(&st).expect("列出源失败");
+        assert_eq!(
+            before["aggregate"]["lastUpdateAt"].as_i64().unwrap_or(-1),
+            0,
+            "★ 一个子站都没更新过 ⇒ 聚合如实为 0：{before}"
+        );
+
+        // 给其中 3 条盖章（真实路径：走 stamp_link_update）
+        for id in ids.iter().take(3) {
+            let mut m = read_tvbox_meta(&dir, id).unwrap();
+            m.source_url = Some("http://cfg/real.json".to_string());
+            write_tvbox_meta(&dir, id, &m).expect("补链接失败");
+        }
+        stamp_link_update(&dir, "http://cfg/real.json", 1_800_009_999, true, None);
+
+        let got = list_tvbox_sources(&st).expect("列出源失败");
+        println!("[EVIDENCE] T5-agg-list aggregate={}", got["aggregate"]);
+
+        // ① 顶层 aggregate：非空 + 真实时间 + 成功
+        let agg_at = got["aggregate"]["lastUpdateAt"].as_i64().unwrap_or(0);
+        assert_eq!(agg_at, 1_800_009_999, "★ 聚合必须取到真实时间：{got}");
+        assert_eq!(got["aggregate"]["id"], "tvbox_agg");
+        assert_eq!(got["aggregate"]["lastUpdateOk"], serde_json::Value::Bool(true));
+        // ★ 聚合源**不是**一条源 ⇒ 不许被判成"没有订阅链接"
+        //   （Dart 侧 needsSource 缺省 true ⇒ 必须显式给 false，
+        //    否则界面会对聚合源显示"无法定时更新，去补链接"——那是错的）
+        assert_eq!(
+            got["aggregate"]["needsSource"],
+            serde_json::Value::Bool(false),
+            "★ 聚合源没有自己的订阅链接，但那不是'缺链接'：{got}"
+        );
+
+        // ② ★ 聚合**不许**进 sources[]（否则卡片多出一个必然报错的"检测更新"按钮）
+        let in_sources = got["sources"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .any(|x| x["id"] == "tvbox_agg");
+        assert!(
+            !in_sources,
+            "★ tvbox_agg 不许出现在 sources[] —— 它会让 Dart 侧多出「检测更新」按钮，点了必然报'没有找到 TVBox 源'"
+        );
+        // 顺带钉住：子站们确实都在（聚合时间不是凭空来的）
+        assert_eq!(got["total"], 64u64, "{got}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ R2：一次订阅更新后，该链接下的**既有子站条目**（不只本次新增/变更的）
+    /// **全部**带上 lastUpdateAt
+    ///
+    /// 真形状夹具：64 条、无链接、未盖章 ⇒ 先补链接（用户归属动作），
+    /// 再跑一次更新 ⇒ 64 条**一条不落**全部有章。
+    ///
+    /// 证红：把 `stamp_link_update` 改成只盖 added/changed ⇒ 本条红
+    ///      （红在"第 N 条没盖章"，N 是一个未变更的既有子站）。
+    #[tokio::test]
+    async fn t5_existing_sub_sites_all_stamped() {
+        std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+        let sink = super::task5_ab_restart::start_sink(super::task5_ab_restart::SHARE_PLAIN);
+        let dir = super::task5_ab_restart::unique_tmp_dir("t5allstamp");
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+
+        // ── 真形状夹具：64 条既有子站 ──────────────────────────────────
+        let ids = real_shape_fixture(&dir, 64);
+        let api = format!("{}/api.php/provide/vod", sink.url());
+        {
+            let mut list = st.third_party.write().expect("锁中毒");
+            for (i, id) in ids.iter().enumerate() {
+                list.push(crate::model::PersistedProvider::Tvbox {
+                    id: id.clone(),
+                    name: format!("站{i}"),
+                    api: api.clone(),
+                    categories: Vec::new(),
+                    parsers: Vec::new(),
+                    ext: None,
+                });
+            }
+        }
+        crate::commands_provider::persist_from_registry(&st).expect("落盘失败");
+
+        // 起点自证：64 条**全部**没有章（真形状）
+        for id in ids.iter() {
+            assert_eq!(
+                read_tvbox_meta(&dir, id).unwrap().last_update_at,
+                0,
+                "{id} 起点必须是「从未更新」"
+            );
+        }
+
+        // ── 归属：给全部 64 条补上同一条订阅链接（= 用户去聚合页补链接）──
+        let sub_url = format!("{}/cfg/v2.json", sink.url());
+        for id in ids.iter() {
+            let mut m = read_tvbox_meta(&dir, id).unwrap();
+            m.source_url = Some(sub_url.clone());
+            write_tvbox_meta(&dir, id, &m).expect("补链接失败");
+        }
+
+        // ── 一次更新（代表源任选一条：命令层按链接整条核对）──────────────
+        let rep = ids[0].clone();
+        let upd = update_tvbox_source(&st, &rep, true, false).await;
+        println!("[EVIDENCE] T5-all-stamp upd={upd:?}");
+
+        // ★ 核心判据：64 条**既有子站一条不落**全部带上章
+        let metas = load_tvbox_metas(&dir);
+        let mut missing: Vec<String> = Vec::new();
+        for id in ids.iter() {
+            match metas.get(id) {
+                Some(m) if m.last_update_at > 0 => {}
+                other => missing.push(format!("{id} -> {other:?}")),
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "★ 该链接下的既有子站必须全部盖章（不只本次新增/变更的）：{} 条没盖：{missing:?}",
+            missing.len()
+        );
+
+        // 且这些里绝大多数是**本次未变更**的既有条目 ——
+        // 若只盖 added/changed，这里必然只剩 1~2 条有章。
+        let stamped = metas
+            .iter()
+            .filter(|(_, m)| m.last_update_at > 0)
+            .count();
+        assert_eq!(
+            stamped, 64,
+            "★ 64 条既有子站应全部有章（实际 {stamped}）—— 只有 1~2 条说明章只盖了 added/changed"
+        );
+
+        // 章是成功章（这条链接可达且解析成功）
+        let any_fail = metas.values().filter(|m| m.last_update_at > 0 && !m.last_update_ok).count();
+        assert_eq!(any_fail, 0, "可达链接 ⇒ 应全是成功章");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ P3-2 证红：链接带前后空白/换行时**也必须盖得上**
+    ///
+    /// ```text
+    /// 修前：stamp 用 `m.source_url.as_deref() == Some(url)`（URL 原样），
+    ///      而 collect_due_links 传的是 trim 后的值 ⇒ 两边形状不一致 ⇒ 盖不上。
+    /// 修后：三处统一走 norm_source_url ⇒ 盖得上。
+    /// ```
+    /// 证红：把 stamp/in_link 改回 `== Some(url)` 原样比较 ⇒ 本条红。
+    #[tokio::test]
+    async fn t5_stamp_survives_whitespace_in_link() {
+        std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+        let sink = super::task5_ab_restart::start_sink(super::task5_ab_restart::SHARE_PLAIN);
+        let dir = super::task5_ab_restart::unique_tmp_dir("t5ws");
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+
+        let api = format!("{}/api.php/provide/vod", sink.url());
+        let id = "csp-ws-00000001".to_string();
+        {
+            let mut list = st.third_party.write().expect("锁中毒");
+            list.push(crate::model::PersistedProvider::Tvbox {
+                id: id.clone(),
+                name: "空白站".to_string(),
+                api: api.clone(),
+                categories: Vec::new(),
+                parsers: Vec::new(),
+                ext: None,
+            });
+        }
+        crate::commands_provider::persist_from_registry(&st).expect("落盘失败");
+
+        // 用户从网页复制出来的链接：**带前后空白和换行**（真机常态）
+        let dirty = format!("  {}/cfg/v2.json\n", sink.url());
+        write_tvbox_meta(
+            &dir,
+            &id,
+            &TvboxSourceMeta {
+                source_url: Some(dirty.clone()),
+                ..Default::default()
+            },
+        )
+        .expect("写 sidecar 失败");
+
+        // ① 写入即归一：磁盘上存的必须是 trim 后的形态
+        let stored = read_tvbox_meta(&dir, &id).unwrap().source_url.unwrap_or_default();
+        assert_eq!(
+            stored,
+            format!("{}/cfg/v2.json", sink.url()),
+            "★ 写入侧必须存 trim 后的值（从源头消灭两种形态）：{stored:?}"
+        );
+
+        // ② 到点判定：空白链接也能被挑出来（不是被跳过）
+        let sources = local_tvbox_sources(&st).expect("列源失败");
+        let metas = load_tvbox_metas(&dir);
+        let due = collect_due_links(&sources, &metas, true, 86_400, now_secs());
+        assert_eq!(
+            due.len(),
+            1,
+            "★ 带空白的链接也必须被挑出来更新（否则定时器永远跳过它）：{due:?}"
+        );
+        assert_eq!(due[0].0, format!("{}/cfg/v2.json", sink.url()));
+
+        // ③ 真跑一次更新 ⇒ 章必须落上（P3-2 的正主判据）
+        let upd = update_tvbox_source(&st, &id, true, false).await;
+        println!("[EVIDENCE] T5-ws upd={upd:?}");
+        let m = read_tvbox_meta(&dir, &id).unwrap();
+        assert!(
+            m.last_update_at > 0,
+            "★ 链接带空白也必须盖得上章（修前这里恒为 0 ⇒ 界面永远'从未更新'）：{m:?}"
+        );
+        assert!(m.last_update_ok, "可达链接 ⇒ 成功章：{m:?}");
+
+        // ④ stamp 传"脏 URL"也要能盖上（调用方没 trim 的情况）
+        stamp_link_update(&dir, &dirty, 1_800_000_123, false, Some("炸了".to_string()));
+        let m2 = read_tvbox_meta(&dir, &id).unwrap();
+        assert_eq!(
+            m2.last_update_at, 1_800_000_123,
+            "★ stamp 收到未 trim 的 URL 也必须匹配上（三处同一把尺子）：{m2:?}"
+        );
+        assert!(!m2.last_update_ok, "失败章：{m2:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ P2-2：sidecar 的**五条**写路径共用同一把锁 —— 并发写不丢条目
+    ///
+    /// ```text
+    /// 写 sidecar 的形状是 load 整份 → 改一条 → save 整份。
+    /// 不加锁时 N 个线程各读到旧整份、各自写回 ⇒ 后写的整份覆盖先写的
+    /// ⇒ 先写那次改动**凭空消失**（"刚导入的源，重启后订阅链接没了"）。
+    /// ```
+    /// 证红：把 write_tvbox_meta / forget_tvbox_meta 里的锁去掉 ⇒ 本条红
+    ///      （红在"丢了 K 条"，K>0）。
+    #[test]
+    fn t5_sidecar_writes_are_serialized() {
+        let dir = super::task5_ab_restart::unique_tmp_dir("t5lock");
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+
+        const N: usize = 32;
+        let mut handles = Vec::new();
+        for i in 0..N {
+            let d = dir.clone();
+            handles.push(std::thread::spawn(move || {
+                let id = format!("csp-lock-{i:04}");
+                write_tvbox_meta(
+                    &d,
+                    &id,
+                    &TvboxSourceMeta {
+                        source_url: Some(format!("http://cfg/{i}.json")),
+                        site_key: format!("k{i}"),
+                        site_name: format!("站{i}"),
+                        api: "csp_Fixture".to_string(),
+                        installed_at: 1,
+                        last_update_at: i as i64 + 1,
+                        last_update_ok: true,
+                        last_update_error: None,
+                    },
+                )
+                .expect("并发写失败");
+            }));
+        }
+        for h in handles {
+            h.join().expect("线程 panic");
+        }
+
+        let metas = load_tvbox_metas(&dir);
+        assert_eq!(
+            metas.len(),
+            N,
+            "★ {N} 个并发写一条都不许丢（丢了说明写路径没上锁）：实际 {}",
+            metas.len()
+        );
+        for i in 0..N {
+            let id = format!("csp-lock-{i:04}");
+            let m = metas.get(&id).unwrap_or_else(|| panic!("{id} 被覆盖了"));
+            assert_eq!(m.site_key, format!("k{i}"), "{id} 内容不对：{m:?}");
+            assert_eq!(m.last_update_at, i as i64 + 1, "{id} 章被覆盖：{m:?}");
+        }
+
+        // 另一条路径（forget）也在锁里：并发删不互相覆盖
+        let mut handles2 = Vec::new();
+        for i in 0..8 {
+            let d = dir.clone();
+            handles2.push(std::thread::spawn(move || {
+                forget_tvbox_meta(&d, &format!("csp-lock-{i:04}")).expect("并发删失败");
+            }));
+        }
+        for h in handles2 {
+            h.join().expect("线程 panic");
+        }
+        let left = load_tvbox_metas(&dir);
+        assert_eq!(left.len(), N - 8, "并发删应精确删掉 8 条：{}", left.len());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ B3：链接导入成功 ⇒ 盖 installed 时刻的初始章；文本导入 ⇒ 不盖
+    ///
+    /// ```text
+    /// 链接导入：刚刚从那个链接成功下载并安装 ⇒ 那是**已发生的事实**，
+    ///          显示成"从未更新"= 把已发生的说成未发生（读数说谎）。
+    /// 文本导入：磁盘上确实没有可核对的链接 ⇒ "从未更新"才是实话。
+    /// ```
+    /// 证红：把 import 里的 `last_update_at` 改回恒 0 ⇒ 第一条红。
+    #[tokio::test]
+    async fn t5_link_import_stamps_initial_time() {
+        std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+        let sink = super::task5_ab_restart::start_sink(super::task5_ab_restart::SHARE_PLAIN);
+        let api = fake_api(&sink);
+
+        // ── ① 链接导入：应当盖初始章 ───────────────────────────────────
+        let dir = super::task5_ab_restart::unique_tmp_dir("t5initlink");
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+        let sub_url = format!("{}/cfg/v2.json", sink.url());
+        let res = import_tvbox_config(&st, &sub_url).await.expect("链接导入失败");
+        let link_ids: Vec<String> = res["imported"]
+            .as_array()
+            .map(|a| a.iter().map(|x| x["id"].as_str().unwrap_or_default().to_string()).collect())
+            .unwrap_or_default();
+        assert!(!link_ids.is_empty(), "链接导入应产出源：{res}");
+        for id in link_ids.iter() {
+            let m = read_tvbox_meta(&dir, id).unwrap();
+            assert!(
+                m.last_update_at > 0,
+                "★ 链接导入成功必须盖初始章（否则用户要等 24h 才第一次看见时间）：{m:?}"
+            );
+            assert!(m.last_update_ok, "初始章是成功章：{m:?}");
+            assert_eq!(
+                m.last_update_at, m.installed_at,
+                "★ 初始章的时间 == 安装时刻（那是真实下载完成的时刻）：{m:?}"
+            );
+        }
+        drop(st);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // ── ② 文本导入：如实不盖（没有可核对的链接）────────────────────
+        let dir2 = super::task5_ab_restart::unique_tmp_dir("t5inittext");
+        std::fs::create_dir_all(&dir2).expect("建临时目录失败");
+        let st2 = AppState::bootstrap(dir2.clone()).await.expect("bootstrap 失败");
+        let cfg_text = format!(
+            "{{\"sites\":[{{\"key\":\"k1\",\"name\":\"甲站\",\"type\":1,\"api\":\"{api}\"}}]}}"
+        );
+        let res2 = import_tvbox_config(&st2, &cfg_text).await.expect("文本导入失败");
+        let text_ids: Vec<String> = res2["imported"]
+            .as_array()
+            .map(|a| a.iter().map(|x| x["id"].as_str().unwrap_or_default().to_string()).collect())
+            .unwrap_or_default();
+        assert!(!text_ids.is_empty(), "文本导入应产出源：{res2}");
+        for id in text_ids.iter() {
+            let m = read_tvbox_meta(&dir2, id).unwrap();
+            assert_eq!(
+                m.last_update_at, 0,
+                "★ 文本导入没有可核对的链接 ⇒ 如实「从未更新」（不盖章）：{m:?}"
+            );
+            assert!(m.source_url.is_none(), "文本导入不该有 source_url：{m:?}");
+        }
+        drop(st2);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 }
 

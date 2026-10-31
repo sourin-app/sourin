@@ -227,16 +227,47 @@ TvboxProbeResult tvboxProbeOf(TvboxUpdateItem? it) {
 ///
 /// ```text
 /// info == null            → null（整行不画 —— 非 TVBox 源 / 宿主没给）
+/// 没有订阅链接（needsSource）→ 「无法定时更新：…（去补链接）」
 /// 从未更新（at == 0）      → 「从未更新」
 /// 成功                    → 「上次更新：MM-dd HH:mm」
 /// 失败                    → 「上次更新失败 MM-dd HH:mm」（调用方红色渲染）
 /// ```
+///
+/// # ★★ 为什么"没有订阅链接"不能显示成「从未更新」（2026-11-01 真机打回）
+///
+/// ```text
+/// 真机那 64 条是**贴配置文本导入**的 ⇒ sidecar 里 source_url = None
+/// ⇒ 定时器第一道闸就把它们全跳过 ⇒ 它们**永远**不会有章。
+/// 若统一显示「从未更新」，用户读到的是"还没轮到更新"，
+/// 而真相是"这条根本没有可更新的来源，也永远不会自动更新" ——
+/// ⇒ 那是把"不可能"说成"还没发生"（读数说谎），
+///   且用户不知道该去哪里补救（静默黑洞）。
+/// ⇒ 如实报原因 + 给出路：本仓一贯口径（宁可少一个按钮，也不给假的）。
+/// ```
 String? tvboxLastUpdateText(TvboxSourceInfo? info) {
   if (info == null) return null;
+  // ★ 没有可更新的来源 ≠ 还没更新过 —— 这两件事不许合并成一句
+  if (info.needsSource) return tvboxNoSourceHint;
   if (info.lastUpdateAt <= 0) return '从未更新';
   final t = tvboxShortTime(info.lastUpdateAt);
   return info.lastUpdateOk ? '上次更新：$t' : '上次更新失败 $t';
 }
+
+/// 「没有订阅链接」时的如实文案（原因 + 出路，**单一事实源**）
+///
+/// 聚合源/源卡片/管理面板三处共用同一句 —— 各写一遍必然漂移。
+/// ⚠️ 必须含"为什么"和"去哪儿补"，缺一半用户就卡住。
+const String tvboxNoSourceHint = '无法定时更新：这条没有订阅链接（去聚合页补填）';
+
+/// 是否处于"没有订阅链接"这一态（调用方据此不用失败红渲染 —— 它不是失败）
+///
+/// ```text
+/// 「从没查过」和「上次查失败了」是两件事：
+///   前者是配置缺失（提示去补），后者是运行故障（要报红）。
+///   都染成红色，用户会以为定时更新一直在出错。
+/// ```
+bool tvboxLastUpdateNoSource(TvboxSourceInfo? info) =>
+    info != null && info.needsSource;
 
 /// Unix 秒 → 「MM-dd HH:mm」（跨年带年份，避免"去年"读成"今年"）
 String tvboxShortTime(int secs) {
@@ -1324,12 +1355,21 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
           Tooltip(
             message: tvboxLastUpdateFailed(widget.info)
                 ? '失败原因：${widget.info!.lastUpdateError ?? '后端没有给出原因'}'
-                : '',
+                : (tvboxLastUpdateNoSource(widget.info)
+                    /*
+                     * ★ 没有链接时的**完整**解释（行内 60 字放不下，Tooltip 补）：
+                     *   它是什么时候装的 / 为什么不能自动更新 / 去哪儿补。
+                     *   行内那句只讲"为什么 + 去哪儿"，这里补"它从哪来"。
+                     */
+                    ? '这条是粘贴配置文本导入的，没有记录订阅来源 ⇒ 无法定时核对。\n'
+                        '到「TVBox 聚合」页填入它当初的配置地址即可开始定时更新。'
+                    : ''),
             child: Text(
               tvboxLastUpdateText(widget.info)!,
               key: const ValueKey<String>('tvbox-manage-last-update'),
               style: TextStyle(
                 fontSize: FontSizes.cap,
+                // ★ 三态三色：失败=红 / 缺链接=onSurfaceVariant（提示，不是故障）/ 正常
                 color: tvboxLastUpdateFailed(widget.info)
                     ? colors.error
                     : colors.onSurfaceVariant,

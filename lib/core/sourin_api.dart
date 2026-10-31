@@ -3640,6 +3640,7 @@ class TvboxSourceList {
     this.sources = const [],
     this.total = 0,
     this.withSource = 0,
+    this.aggregate,
   });
 
   final List<TvboxSourceInfo> sources;
@@ -3650,10 +3651,29 @@ class TvboxSourceList {
   /// 其中**有订阅链接**的个数（= 能检测更新的个数）
   final int withSource;
 
+  /// ★ T5：聚合源（`tvbox_agg`）的上次更新（Rust 侧顶层 `aggregate` 字段）
+  ///
+  /// # 为什么单独一个字段，而不是塞进 [sources]
+  /// ```text
+  /// 卡片上的「检测更新」按钮判据是"这个 id 在 sources 里出现过"。
+  /// tvbox_agg 是 Rust **内置** provider（不在 third_party 里），
+  /// update_tvbox_source 认不出它 ⇒ 塞进 sources 会让它多出一个
+  /// 点了必然报「没有找到 TVBox 源 tvbox_agg」的按钮。
+  /// ⇒ 它是**附加信息**，不是一条源。
+  /// ```
+  ///
+  /// null = 后端没给（旧核心）⇒ 调用方按「没有聚合信息」处理。
+  final TvboxSourceInfo? aggregate;
+
   factory TvboxSourceList.fromJson(Map<String, dynamic> j) => TvboxSourceList(
         sources: jlist(j['sources'], TvboxSourceInfo.fromJson),
         total: (j['total'] as num?)?.toInt() ?? 0,
         withSource: (j['withSource'] as num?)?.toInt() ?? 0,
+        aggregate: j['aggregate'] is Map
+            ? TvboxSourceInfo.fromJson(
+                Map<String, dynamic>.from(j['aggregate'] as Map),
+              )
+            : null,
       );
 
   /// 没有链接的源（界面如实说明"查不了"的那些）

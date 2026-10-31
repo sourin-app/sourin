@@ -228,6 +228,28 @@ dependencies:
   # silently change behavior.
   desktop_webview_window: 0.4.0
 
+  # webHome 自定义 HTML 首页 (T6, approved 2026-10-31, probe-verified).
+  #
+  # Why flutter_inappwebview (in addition to desktop_webview_window, not
+  # instead of it): the W1 cookie-capture concern (#2314/#2783) is about
+  # HttpOnly capture, and the T6 probe (.probe/t6-webview-probe-report.md)
+  # empirically confirmed CookieManager.getCookies DOES return HttpOnly
+  # cookies on windows 0.6.0. T6 needs an EMBEDDED widget (login popup
+  # shape cannot host the homepage); desktop_webview_window 0.4.0 is a
+  # standalone native window only (webview_window.cc WS_OVERLAPPEDWINDOW).
+  #  - Embedded InAppWebView widget + addJavaScriptHandler bridge +
+  #    UserScript at DOCUMENT_START all verified by the probe
+  #    (.probe/t6_webview_probe, 50/50 bridge roundtrips, DWW coexist OK).
+  #  - webHome profile is incognito (no disk cookies) => cookie capture is
+  #    not exercised by this feature at all.
+  #  - Build needs nuget.exe on PATH (CMakeLists find_program(NUGET nuget));
+  #    NuGet caches must be workspace-local under the DSH sandbox.
+  #    FIRST BUILD NEEDS api.nuget.org access.
+  #
+  # Version pinning (same rule as desktop_webview_window): EXACT pin,
+  # resolved windows implementation 0.6.0 recorded in pubspec.lock.
+  flutter_inappwebview: 6.1.5
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

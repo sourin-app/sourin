@@ -65,6 +65,9 @@ import 'widgets/motion_prefs.dart';
 import 'widgets/my_shelf.dart';
 import 'widgets/source_bar.dart';
 import 'widgets/sourin_scroll_behavior.dart';
+import 'webhome/webhome_page.dart';
+import 'webhome/webhome_settings_sheet.dart';
+import 'webhome/webhome_store.dart';
 import '../design/icons/app_icons.dart';
 
 /// 首页直播条只展示这几个常用频道，完整列表在「直播」页
@@ -1480,12 +1483,22 @@ class HomePageState extends State<HomePage> {
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => loadAll(force: true, reason: 'initState'),
     );
+    // ★ T6 webHome：双模式开关（加载/启用/停用/自动回退都经它通知）
+    WebHomeController.instance
+      ..addListener(_onWebHomeChanged)
+      ..ensureLoaded();
+  }
+
+  void _onWebHomeChanged() {
+    if (_disposed) return;
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     // ★ task-11：先置 flag 再 super —— 异步回来的后台刷新会看它
     _disposed = true;
+    WebHomeController.instance.removeListener(_onWebHomeChanged);
     _scrollController.dispose();
     super.dispose();
   }
@@ -2384,6 +2397,29 @@ class HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    /*
+     * ══════════════════════════════════════════════════════════════════
+     * ★ T6 webHome 双模式接入点（唯一）
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * 判据收口在 `WebHomeController.showWebHome`（启用 + 未回退 + HTML
+     * 非空）。命中时整页交给 HTML 首页 —— 回调复用 shell 传进来的
+     * onOpenDetail / onOpenLive（与原生卡片同一去路，不另造导航）。
+     *
+     * # 为什么在 build 顶部而不是包一层
+     * 原生分支零改动（下面的 RefreshIndicator 原样）—— HTML 模式出任何
+     * 问题，回退路径就是"不再命中这个 if"，原生首页一行没动。
+     */
+    if (WebHomeController.instance.showWebHome) {
+      return WebHomePage(
+        onOpenDetail: widget.onOpenDetail,
+        onOpenLive: widget.onOpenLive,
+        onBackToNative: () =>
+            WebHomeController.instance.backToNativeForThisSession(),
+        onOpenSettings: () => showWebHomeSettingsSheet(context),
+      );
+    }
+
     final visible = _groups.where((g) => g.provider == _currentSource).toList();
 
     /*
@@ -2462,7 +2498,14 @@ class HomePageState extends State<HomePage> {
        *    原版 TV 的 `max-width: none` ⇒ 没有居中那一步，只有 5vw 内边距。
        *    所以 TV 的容器层 = `0 + max(24, 5%×band)`，逐位等于 `max(var(--sp-6), --tv-safe-x)`。
        */
-      child: Padding(
+      // ★ T6 webHome：原生模式下右上角浮层入口（HTML 首页设置）。
+      //   用 Stack 包裹而不是动 SourceBar —— 源条是被门禁量过几何的
+      //   （t94/t4），浮层只占自身小矩形，命中测试对原有部件零影响。
+      //   ⚠️ 内层缩进保持原样以压缩 diff（RefreshIndicator 以下原文未动）。
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: Padding(
         padding: Layout.horizontalInsetOf(context),
         child: CustomScrollView(
         clipBehavior: Clip.antiAlias,
@@ -2659,6 +2702,15 @@ class HomePageState extends State<HomePage> {
         ],
       ),
       ),   // ← 内容带那层 Padding 的收口（见上面那段长注释）
+          ), // Positioned.fill
+          // ★ T6：浮层入口（见 build 顶部注释）
+          const Positioned(
+            top: 6,
+            right: 10,
+            child: WebHomeEntryButton(),
+          ),
+        ],
+      ),
     );
   }
 }

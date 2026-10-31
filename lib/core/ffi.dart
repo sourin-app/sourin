@@ -173,7 +173,7 @@ typedef _CancelStreamDart = void Function(int);
 
 /// 核心抛出的错误（对应 Rust 的 `{"error":..,"kind":..}`）
 class SourinCoreException implements Exception {
-  SourinCoreException(this.message, this.kind);
+  SourinCoreException(this.message, this.kind, {this.loginKind});
 
   final String message;
 
@@ -187,6 +187,14 @@ class SourinCoreException implements Exception {
   /// other        → 兜底
   /// ```
   final String kind;
+
+  /// ★ T9 连带修复（2026-10-31，lead 批复）：需要登录的是**哪个盘**。
+  ///
+  /// Rust `ProviderError.login_kind`（model.rs:1361，classify_err 只对网盘类
+  /// 填）原样透传；`null` = 与某个具体盘无关。UI 靠它决定"弹哪个盘的
+  /// 二维码"（`showPanQrLoginDialog`），不用再按 providerId/文案猜。
+  /// ⚠️ 可选参默认 null ⇒ 既有构造点零改动。
+  final String? loginKind;
 
   /// ★★★ 给**用户看**的文案（Owner 第 7 条，2026-10-17）
   ///
@@ -639,6 +647,8 @@ class SourinCore {
           SourinCoreException(
             value['error'].toString(),
             (value['kind'] ?? 'other').toString(),
+            // ★ T9 连带修复：ProviderError.login_kind（网盘类才有，见 model.rs:1361）
+            loginKind: value['login_kind']?.toString(),
           ),
         );
       } else {

@@ -153,6 +153,7 @@ import 'widgets/motion_prefs.dart';
 import 'widgets/overlay_motion.dart';
 import 'widgets/player_settings_sheet.dart';
 import 'widgets/provider_login_panel.dart';
+import 'widgets/pan_qr_login_dialog.dart' show showPanQrLoginDialog;
 import 'widgets/provider_name.dart';
 import 'widgets/skip_marker_dialog.dart';
 import '../core/skip_window.dart' show SkipWindow, skipTarget, windowsOf;
@@ -921,6 +922,18 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ `null` 表示"这个错误没有结构化类别"（例如本页自己拼的中文串，
   ///    或 `media_kit` 的播放错误）→ 调用方**必须**回退到字符串判据。
   String? _errorKind;
+
+  /// ★ T9 连带修复（2026-10-31，lead 批复）：错误里带的**网盘登录类别**。
+  ///
+  /// 来源链：Rust `classify_err` 把 `NEED_LOGIN:quark|人话` 翻成
+  /// `kind=unauthorized + login_kind`（csp/provider.rs:237-307）→ FFI 信封
+  /// `login_kind` 字段（ffi.rs err_json，本批接上）→
+  /// `SourinCoreException.loginKind`（ffi.dart，本批接上）→ 这里存下。
+  /// `_loginAndRetry` 靠它分流：非空 ⇒ 直接弹该盘的扫码/网页登录
+  /// （聚合/分享源 providerId 是 `tvbox_agg`/`csp-wogg-*`，`panKindOfProvider`
+  /// 认不出 ⇒ 不能走它，否则"点一下直接登录"断在半路）；`null` ⇒ 原面板兜底。
+  /// 生命周期与 [_errorKind] 相同（同一批复位点同清）。
+  String? _errorLoginKind;
 
   /// 直播只剩音频线路时的**非阻断提示**（不是错误）
   ///
@@ -3269,6 +3282,13 @@ class _PlayerPageState extends State<PlayerPage>
     return d.isNegative ? null : d;
   }
 
+  /// ★ T9-P1 分段④落点：`open()` 返回那一刻的 `_loadClock` 读数（ms）
+  ///
+  /// 分段⑤「首帧已出」用它算**自 open 的耗时**（真机 p90=20.4s 的长尾里，
+  /// "open→首帧"与"resolve→open"是两条不同的病，必须分开量）。
+  /// 每次起播（[_startPlayback] 入口）清空；零行为影响，纯仪表。
+  int? _openDoneAtMs;
+
   // ═══════════════════════════════════════════════════════════════════
   //  ★★ 起播阶段计时（task-24：用户要「播放提速」，先量化再动手）
   // ═══════════════════════════════════════════════════════════════════
@@ -3919,6 +3939,8 @@ class _PlayerPageState extends State<PlayerPage>
         setState(() {
           _error = e.toString();
           _errorKind = _kindOf(e);
+          // ★ T9 连带修复：登录类别同生命周期（不清 ⇒ 陈旧 loginKind 误分流窗口）
+          _errorLoginKind = e is SourinCoreException ? e.loginKind : null;
           _loading = false;
           _playbackFailure = null;
         });
@@ -5256,6 +5278,8 @@ class _PlayerPageState extends State<PlayerPage>
         // ★ 有画面了 ⇒ 之前那条"起播失败"已经不成立，全屏错误层必须撤掉
         _error = null;
         _errorKind = null;
+        // ★ T9 连带修复：登录类别同清（防陈旧 loginKind 误分流）
+        _errorLoginKind = null;
         _loading = false;
         _playbackFailure = null;
         // ★ 缺陷⑧：出画面了 ⇒ 上一次起播失败的耗时不再代表当前状态
@@ -5301,6 +5325,8 @@ class _PlayerPageState extends State<PlayerPage>
   void _neutralizeErrorState({required bool loading}) {
     _error = null;
     _errorKind = null;
+    // ★ T9 连带修复：登录类别与错误同生命周期（不清会残留到下一次错误）
+    _errorLoginKind = null;
     _playbackFailure = null;
     _loading = loading;
   }
@@ -5327,6 +5353,12 @@ class _PlayerPageState extends State<PlayerPage>
       'PLAY',
       '首帧已出（${w}x${_player.state.height}）—— '
           '此刻之后的 stream.error 按"可恢复中断"处理，不再盖全屏',
+    );
+    // ★ T9-P1 分段⑤：首帧已出（自 open 的耗时 = open→首帧那一段，p90 长尾的关键读数）
+    final openMs = _openDoneAtMs;
+    AppLog.write(
+      'PLAY',
+      '起播分段 ⑤ 首帧已出 自open=${openMs == null ? '未知' : '${_loadClock.elapsedMilliseconds - openMs}ms'}',
     );
     setState(() {
       _sawFirstFrame = true;
@@ -5758,6 +5790,8 @@ class _PlayerPageState extends State<PlayerPage>
           _error = e.toString();
           // ★ 结构化类别（能从 SourinCoreException 拿到就记下来）
           _errorKind = _kindOf(e);
+          // ★ T9 连带修复：登录类别同生命周期（不清 ⇒ 陈旧 loginKind 误分流窗口）
+          _errorLoginKind = e is SourinCoreException ? e.loginKind : null;
           _loading = false;
           // ★ 全屏错误与非阻断横幅**不许同屏**（两条都是"出事了"）
           _playbackFailure = null;
@@ -6231,6 +6265,8 @@ class _PlayerPageState extends State<PlayerPage>
       _sawFirstFrame = false;
       // ★ 缺陷⑧：本次起播的失败耗时重新计
       _startFailureElapsed = null;
+      // ★ T9-P1：分段④的时间锚点跟着新一轮起播重置
+      _openDoneAtMs = null;
     });
     /*
      * ★★★ T4-I（2026-10-31）：非媒体预检 —— mpv 前的最后一道关口
@@ -6256,6 +6292,7 @@ class _PlayerPageState extends State<PlayerPage>
         setState(() {
           _error = precheck.error!;
           _errorKind = null; // 非核心层异常 ⇒ 没有结构化类别
+          _errorLoginKind = null; // 预检人话错误不该弹登录（lead 批复确认）
           _loading = false;
         });
       }
@@ -6353,6 +6390,16 @@ class _PlayerPageState extends State<PlayerPage>
        *    两者之差 = **首帧解码 + 缓冲填充**的耗时，那才是"卡着不起来"的主体。
        */
       _bootMark('③ player.open() 返回', 'kind=${st.kind}');
+      /*
+       * ★ T9-P1 分段④（2026-10-31）：open 完成（与 Rust 侧 ①②③ 对时用）。
+       * ⑤ 首帧在 `_handleFirstFrame`（唯一首帧处理点）。
+       * ⚠️ 只加日志与时间锚点，零行为变化。
+       */
+      _openDoneAtMs = _loadClock.elapsedMilliseconds;
+      AppLog.write(
+        'PLAY',
+        '起播分段 ④ open 完成 kind=${st.kind} url=$playUrl',
+      );
       if (_isLive) _liveSwitchMark('③ open 返回', 'kind=${st.kind}');
 
       /*
@@ -6628,6 +6675,8 @@ class _PlayerPageState extends State<PlayerPage>
           _error = e.toString();
           // ★ 结构化类别（能从 SourinCoreException 拿到就记下来）
           _errorKind = _kindOf(e);
+          // ★ T9 连带修复：网盘登录类别同生命周期存下（_loginAndRetry 分流用）
+          _errorLoginKind = e is SourinCoreException ? e.loginKind : null;
           _loading = false;
           // ★ 缺陷⑧：`open()` 抛异常同样要带耗时（归因才分得清"等太久"与"真打不开"）
           _startFailureElapsed = _elapsedSinceLoadStart();
@@ -10032,6 +10081,8 @@ class _PlayerPageState extends State<PlayerPage>
       //   把「网络问题」显示成「请重新登录」（陈旧 kind 误判）。
       //   由 test/login_prompt_trigger_test.dart 的「8 / 9 → 9 / 9」那条盯着。
       _errorKind = null;
+      // ★ T9 连带修复：登录类别同清（防陈旧 loginKind 误分流）
+      _errorLoginKind = null;
       _loading = false;
       _playing = true;
       _controlsVisible = true;
@@ -12430,6 +12481,8 @@ class _PlayerPageState extends State<PlayerPage>
       _loading = true;
       _error = null;
       _errorKind = null;
+      // ★ T9 连带修复：登录类别同清（防陈旧 loginKind 误分流）
+      _errorLoginKind = null;
     });
     /*
      * ★★★ CR #22 ⑤（PRRT_kwDOVAfO4s6rtKj8）：记下发请求那一刻的切集令牌。
@@ -12479,6 +12532,8 @@ class _PlayerPageState extends State<PlayerPage>
           _error = e.toString();
           // ★ 结构化类别（能从 SourinCoreException 拿到就记下来）
           _errorKind = _kindOf(e);
+          // ★ T9 连带修复：登录类别同生命周期（不清 ⇒ 陈旧 loginKind 误分流窗口）
+          _errorLoginKind = e is SourinCoreException ? e.loginKind : null;
           _loading = false;
         });
       }
@@ -12703,6 +12758,8 @@ class _PlayerPageState extends State<PlayerPage>
       _loading = true;
       _error = null;
       _errorKind = null;
+      // ★ T9 连带修复：登录类别同清（防陈旧 loginKind 误分流）
+      _errorLoginKind = null;
     });
 
     /*
@@ -12804,6 +12861,8 @@ class _PlayerPageState extends State<PlayerPage>
       setState(() {
         _error = e.toString();
         _errorKind = _kindOf(e);
+        // ★ T9 连带修复：登录类别同生命周期（不清 ⇒ 陈旧 loginKind 误分流窗口）
+        _errorLoginKind = e is SourinCoreException ? e.loginKind : null;
         _loading = false;
       });
     }
@@ -12824,6 +12883,8 @@ class _PlayerPageState extends State<PlayerPage>
       _loading = true;
       _error = null;
       _errorKind = null;
+      // ★ T9 连带修复：登录类别同清（防陈旧 loginKind 误分流）
+      _errorLoginKind = null;
     });
     try {
       final list = await SourinApi.resolveStream(
@@ -12876,6 +12937,8 @@ class _PlayerPageState extends State<PlayerPage>
           _error = e.toString();
           // ★ 结构化类别（能从 SourinCoreException 拿到就记下来）
           _errorKind = _kindOf(e);
+          // ★ T9 连带修复：登录类别同生命周期（不清 ⇒ 陈旧 loginKind 误分流窗口）
+          _errorLoginKind = e is SourinCoreException ? e.loginKind : null;
           _loading = false;
         });
       }
@@ -15641,6 +15704,31 @@ class _PlayerPageState extends State<PlayerPage>
   /// 只在登录**成功**时才重试：失败还去重试等于白打一次请求，
   /// 而且会把用户刚输错密码的提示冲掉，让他以为"点了没反应"。
   Future<void> _loginAndRetry() async {
+    /*
+     * ★★★ T9 连带修复（2026-10-31，lead 批复，T1a 组查实的登录缺口）：
+     * 按错误里的 `loginKind` **先分流网盘登录**。
+     * ```text
+     * 缺口：聚合/分享源 resolve 失败带 NEED_LOGIN:quark|… ⇒ kind=unauthorized
+     *   + login_kind（FFI 信封已带）⇒ 原来这里无条件 showProviderLoginDialog(providerId)
+     *   ⇒ provider_login_panel.dart:1419 按 panKindOfProvider(providerId) 分流，
+     *     而映射表只认 csp-pan-quark 等**盘源 id** ⇒ tvbox_agg / csp-wogg-* /
+     *     csp-panwebshare-* 弹的是 csp 源自己的面板（没有网盘登录）⇒ 断在半路。
+     * 修法：loginKind 非空 ⇒ 直接弹该盘的扫码/网页登录（showPanQrLoginDialog）；
+     *   空 ⇒ 原面板兜底（csp 源自己的登录不受影响）。
+     * ⚠️ 非媒体预检的人话错误 `_errorLoginKind` 恒为 null ⇒ 本来就不该弹登录，
+     *   走不到这条分支。
+     * ```
+     */
+    final panKind = _errorLoginKind;
+    if (panKind != null && panKind.isNotEmpty) {
+      if (!mounted) return;
+      debugPrint('[PLAYER] 按 loginKind 直弹网盘登录：$panKind');
+      final ok = await showPanQrLoginDialog(context, kind: panKind);
+      if (!mounted || !ok) return;
+      debugPrint('[PLAYER] 网盘登录成功，自动重试播放');
+      await _load();
+      return;
+    }
     /*
      * 弹窗标题要显示源的**中文名**（"登录 某动画站"），而不是 id（"animesource"）。
      * 播放页只持有 id（`widget.provider`），所以现查一次 ——

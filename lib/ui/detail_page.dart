@@ -1851,6 +1851,18 @@ class _DetailPageState extends State<DetailPage> {
 
   Future<void> _init() async {
     try {
+      /*
+       * ★ T9-P3（2026-10-31，lead 批复）：进度读取与详情/剧集**零依赖**，
+       *   原来串行排在链尾（原 :1943）⇒ 白等"detail + episodes + 收藏追更"全程。
+       *   实测单次 FFI getProgress = 0.81ms（.probe/t9_ffi_timing.dart，n=100，
+       *   TV 按 2~3 倍估 ≈2ms/条；串行条数=1 ⇒ 可省同量级，外加与 getDetail
+       *   网络段重叠）。⇒ 与 getDetail 并行起跑，尾部再取结果。
+       *   语义不变：正常路径尾部 await，错误照旧进本函数 catch；
+       *   若前序先抛错走 catch，catchError 分支兜住 —— 不让这条 future
+       *   变成未处理异常（假红来源）。
+       */
+      final progressFuture = SourinApi.getProgress(widget.provider, widget.id);
+      unawaited(progressFuture.catchError((Object _) => null));
       final d = await SourinApi.getDetail(widget.provider, widget.id);
       if (!mounted) return;
       setState(() {
@@ -1940,7 +1952,8 @@ class _DetailPageState extends State<DetailPage> {
         });
       }
 
-      final r = await SourinApi.getProgress(widget.provider, widget.id);
+      // ★ T9-P3：取开头并行起跑的那条结果（错误语义不变，见 _init 顶部注释）
+      final r = await progressFuture;
       if (mounted) setState(() => _resume = r);
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());

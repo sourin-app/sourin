@@ -176,12 +176,43 @@ pub async fn get_episodes(
 ///
 /// `maybe_proxy` 内部会跳过已经是本地代理地址的 URL，
 /// 所以重复调用不会把地址套娃（URL 越套越长）。
+/// ProviderError → 命令层错误串（resolve 等 `map_err` 的统一出口）
+///
+/// login_kind 非空时追加**私有序列化标记** `\u{1f}login_kind=<盘种>`：
+/// ffi.rs 的 `err_json` 统一剥离并发射成可选字段（跨端断言见 ffi.rs tests）。
+/// 盘种取值 = Rust `login_kind`（quark/uc/baidu/115/aliyun/tianyi/guangya/xunlei），
+/// Dart `showPanQrLoginDialog(kind:…)` 直接吃这个串。
+pub(crate) fn provider_err_to_string(e: &crate::model::ProviderError) -> String {
+    match &e.login_kind {
+        Some(k) if !k.trim().is_empty() => {
+            format!("{}\u{1f}login_kind={}", e.message, k.trim())
+        }
+        _ => e.message.clone(),
+    }
+}
+
 pub async fn resolve_stream(
     state: &AppState,
     provider: &str,
     id: &str,
     req: Option<PlayRequest>,
 ) -> Result<Vec<StreamCandidate>, String> {
+    /*
+     * ★★★ T9-P1（2026-10-31，lead 批复）：起播链路分段打点。
+     * 真机基线（74 对）：起播→首帧 p50=4.0s / p90=20.4s —— 长尾没法归因，
+     * 因为各段耗时只存在于内存里。本批在 [PLAY] 落五个时间戳：
+     *   ① resolve 开始（本行）② 探测结束 ③ maybe_proxy 结束（本文件）
+     *   ④ open 完成 / ⑤ 首帧已出（Dart player_page.dart）
+     * 脱敏口径沿用 resolve 失败那两条：只记 provider / id 前缀（截 24 字符）。
+     * ★ 零行为变化：只加 Instant 计时与日志，不动任何控制流。
+     */
+    let seg_t0 = std::time::Instant::now();
+    let seg_id_head: String = id.chars().take(24).collect();
+    crate::applog::write_file_log(
+        "PLAY",
+        &format!("起播分段 ① resolve 开始 provider={provider} id~={seg_id_head}"),
+    );
+
     // ① 取流前先确保会话可用
     if let Some(false) = state.registry.ensure_session(provider).await {
         return Err("登录已失效，请到「设置 → 账号登录」重新登录".into());
@@ -224,7 +255,19 @@ pub async fn resolve_stream(
                     e.kind, e.needs_login
                 ),
             );
-            e.message
+            /*
+             * ★★★ T9 连带修复·互检打回（2026-10-31）：login_kind 必须越过这条边界。
+             * 原来只返回 e.message ⇒ ProviderError.login_kind（classify_err 翻好的
+             * "哪个盘要登录"）在这里被丢掉 ⇒ ffi err_json 拿不到 ⇒ Dart 恒 null
+             * ⇒ 播放页"点一下直接登录"永远走不到网盘扫码（互检实证：假绿）。
+             *
+             * 私有序列化标记（lead 定的形态）：`\u{1f}login_kind=<盘种>` 追加在
+             * 消息尾部（\x1f = ASCII 单元分隔符，错误正文不可能出现）⇒
+             * dispatch 通用出口 err_json（ffi.rs）统一剥离并发射成可选字段，
+             * **不动 FFI 错误信封的大形状**。⚠️ 追加在落盘**之后**：
+             * 上面的排障日志不吃标记，scrub 后的 message 保持人话。
+             */
+            provider_err_to_string(&e)
         })?;
 
     /*
@@ -251,6 +294,15 @@ pub async fn resolve_stream(
     crate::hls_facts::probe_candidates(&mut list).await;
     {
         let id_head: String = id.chars().take(24).collect();
+        // ★ T9-P1 分段②：探测结束（含上游 resolve 全程；P9 的 2500ms 批截止在这段里）
+        crate::applog::write_file_log(
+            "PLAY",
+            &format!(
+                "起播分段 ② 探测结束 provider={provider} id~={id_head} 候选={} 自resolve开始={}ms",
+                list.len(),
+                seg_t0.elapsed().as_millis()
+            ),
+        );
         for c in &list {
             if c.playlist_total_ms.is_some() || c.playlist_discontinuous {
                 // 拿到事实就落文件日志（排障用；什么都没读到就不写，避免刷屏）
@@ -266,12 +318,14 @@ pub async fn resolve_stream(
     }
 
     // ②③ 逐个候选流处理：流地址 + 独立音轨
+    let mut seg_proxied = 0usize;
     for c in &mut list {
         if let Some(local) =
             crate::streamproxy::maybe_proxy(&state.stream_proxy, &c.url, &c.headers, c.not_web_ready)
                 .await
         {
             c.url = local;
+            seg_proxied += 1;
         }
 
         // ★ 独立音轨也要走同一个代理（漏了就是"有画面没声音"）
@@ -288,6 +342,14 @@ pub async fn resolve_stream(
             }
         }
     }
+    // ★ T9-P1 分段③：maybe_proxy 结束（此后交回 Dart，open 由播放页发起）
+    crate::applog::write_file_log(
+        "PLAY",
+        &format!(
+            "起播分段 ③ maybe_proxy 结束 provider={provider} id~={seg_id_head} proxied={seg_proxied} 自resolve开始={}ms",
+            seg_t0.elapsed().as_millis()
+        ),
+    );
 
     Ok(list)
 }
@@ -414,6 +476,41 @@ mod detail_failure_log_tests {
         assert!(
             prod.contains("log_detail_failure(provider, id, &e);"),
             "get_detail 的 detail 失败必须调 log_detail_failure（不许无声 map_err）"
+        );
+    }
+}
+
+#[cfg(test)]
+mod play_segment_seam_tests {
+    /// ★★★ T9-P1 门禁（2026-10-31）：起播分段打点必须齐全且有序（离线断言）
+    ///
+    /// ```text
+    /// 五段 = ① resolve 开始 / ② 探测结束 / ③ maybe_proxy 结束（本文件）
+    ///      + ④ open 完成 / ⑤ 首帧已出（player_page.dart，由
+    ///        test/ui/playback_segment_seam_test.dart 钉）。
+    /// 长尾归因（真机 p90=20.4s）全靠这五段的时间戳 —— 删任何一段，长尾就没法分解。
+    /// ```
+    #[test]
+    fn play_segment_logs_1_2_3_are_pinned_in_order() {
+        let src = include_str!("playback.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or("");
+        let s1 = prod
+            .find("起播分段 ① resolve 开始")
+            .expect("分段① resolve 开始丢了 —— 起播链路打点被删");
+        let s2 = prod
+            .find("起播分段 ② 探测结束")
+            .expect("分段② 探测结束丢了 —— 长尾里 hls 探测那段就没法量了");
+        let s3 = prod
+            .find("起播分段 ③ maybe_proxy 结束")
+            .expect("分段③ maybe_proxy 结束丢了 —— 代理段就没法量了");
+        assert!(
+            s1 < s2 && s2 < s3,
+            "分段必须按 ①→②→③ 出现（s1={s1} s2={s2} s3={s3}）"
+        );
+        // 脱敏纪律（与 resolve 失败行同一条）：只记 id 前缀（截 24 字符）
+        assert!(
+            prod.contains("seg_id_head: String = id.chars().take(24)"),
+            "分段日志的脱敏口径丢了（id 必须截 24 字符）"
         );
     }
 }

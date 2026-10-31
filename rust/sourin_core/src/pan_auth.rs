@@ -28,6 +28,14 @@
 //! `roundtrip` 读到了另一个测试写进去的值（`left "q=1"` vs `right "sess=abc123"`）。
 //! ⇒ 每个用例用各自的盘，从根上消除共享，而不是依赖执行顺序。
 //!
+//! # 测试纪律：钥匙串测试必须用**独立服务名**（2026-10-31 事故后新增）
+//!
+//! 2026-10-31 真实事故：测试在**真服务名**下 save/clear，删掉了 Owner 的
+//! 真实凭据（UC 被普通全量测试删掉、115 被 `--ignored` 跑删掉）。
+//! 修法：钥匙串入口 service 名优先读 `SOURIN_KEYRING_SERVICE`
+//! （生产进程不设置 ⇒ 零变化），测试模块把它一次性指到 `-test`
+//! 命名空间 ⇒ 真实条目在任何跑法下都物理不可达。
+//!
 //! # 与 `PanKind` 的关系
 //!
 //! 一个盘一份凭据（键名 `pan/<kind.code()>`）。同一账号重复登录会**覆盖**，
@@ -36,7 +44,17 @@
 use crate::pan::PanKind;
 
 /// 钥匙串服务名（与 `proxy.rs` 的服务名并列，互不干扰）
+///
+/// ⚠️ 测试隔离（2026-10-31 事故后新增）：测试进程通过环境变量
+/// `SOURIN_KEYRING_SERVICE` 把实际服务名指到独立命名空间（`-test` 后缀，
+/// 见测试模块的 `isolate_keyring`）。生产进程不设置该变量 ⇒ 恒用下面的
+/// 生产值，生产行为零变化。
 const KEYRING_SERVICE: &str = "dsh-media-client-pan";
+
+/// 实际生效的钥匙串服务名：优先取环境变量，未设置用生产值
+fn service_name() -> String {
+    std::env::var("SOURIN_KEYRING_SERVICE").unwrap_or_else(|_| KEYRING_SERVICE.to_string())
+}
 
 /// 一份网盘登录凭据
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,7 +87,7 @@ impl PanCredential {
 }
 
 fn entry(kind: PanKind) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(KEYRING_SERVICE, &format!("pan/{}", kind.code()))
+    keyring::Entry::new(&service_name(), &format!("pan/{}", kind.code()))
         .map_err(|e| format!("系统钥匙串不可用：{e}"))
 }
 
@@ -153,7 +171,7 @@ pub fn clear(kind: PanKind) -> Result<(), String> {
 /// 那种环境下**不能假装**登录功能可用 —— 用户点了登录、cookie 存不住，
 /// 下次启动又要重登，还查不出原因。
 pub fn keyring_available() -> bool {
-    match keyring::Entry::new(KEYRING_SERVICE, "__probe__") {
+    match keyring::Entry::new(&service_name(), "__probe__") {
         Ok(e) => {
             // 真正读一次：能建 Entry 不代表后端能用
             match e.get_password() {
@@ -294,6 +312,44 @@ mod tests {
 
     // ── 需要钥匙串的（无后端时明确 skip，不静默通过）──
 
+    /// ★★★ 所有需要钥匙串的测试**第一句必须调它**（2026-10-31 事故后新增）
+    ///
+    /// ```text
+    /// 2026-10-31 的真实事故：
+    ///   empty_cookie_acts_as_logout 没挂 ignore，普通 cargo test 真跑，
+    ///   在真钥匙串上 save(Uc)→clear ⇒ Owner 的 UC 凭据被删（被迫重登）；
+    ///   同日 14:20 有人跑 --ignored，roundtrip / collide 又在真条目上写删 ⇒ 115 凭据也没了。
+    /// 修法：钥匙串入口的 service 名优先读 SOURIN_KEYRING_SERVICE（生产不设置 ⇒ 零变化）；
+    ///   测试进程在这里把它**一次性**设到独立命名空间（生产服务名 + "-test" 后缀），
+    ///   三个钥匙串测试全部跑在隔离空间里 ⇒ 真实条目任何跑法下都碰不到。
+    /// ```
+    fn isolate_keyring() {
+        static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        ONCE.get_or_init(|| {
+            std::env::set_var("SOURIN_KEYRING_SERVICE", "dsh-media-client-pan-test");
+        });
+    }
+
+    /// ★★★ 源码门禁：测试模块不许出现裸的**生产服务名**（防回退）
+    ///
+    /// 隔离方案成立的前提是测试只引用带 `-test` 后缀的服务名。
+    /// 谁要是把真服务名（无后缀）硬写回测试模块 —— 哪怕只在注释里 —— 这条就红。
+    /// 判据用 `concat!` 拼出来，免得门禁自己的源码文本命中自己（:282 的"自证陷阱"同款）。
+    /// 切分锚点用 `mod tests` 而不是 `#[cfg(test)]`：后者的字面量出现在
+    /// :297 的文档注释里，会把扫描区在半路截断（证红时真踩过 —— 门禁假绿）。
+    #[test]
+    fn tests_never_reference_real_keyring_service() {
+        let src = include_str!("pan_auth.rs");
+        let test_part = src.split("mod tests").nth(1).expect("应有测试模块");
+        let real = concat!("dsh-media-client-", "pan");
+        let cleaned = test_part.replace(&format!("{real}-test"), "");
+        assert!(
+            !cleaned.contains(real),
+            "★★ 测试模块出现了裸的生产服务名 ⇒ 测试会写删真实凭据（2026-10-31 事故回潮）；\
+             钥匙串测试只能用 isolate_keyring() 指定的 -test 命名空间"
+        );
+    }
+
     ///
     /// ★ 2026-10-27：**改成显式 `#[ignore]`**。
     ///
@@ -307,6 +363,7 @@ mod tests {
     #[test]
     #[ignore = "需要 OS 钥匙串：cargo test --lib pan_auth -- --ignored -Zunstable…（本机无钥匙串时会失败，属预期）"]
     fn roundtrip_through_keyring_when_available() {
+        isolate_keyring();
         if !keyring_available() {
             panic!("本机没有可用的系统钥匙串 ⇒ 这条只能在没有后端的环境里被跳过（--ignored 才跑）");
         }
@@ -326,11 +383,19 @@ mod tests {
         assert!(load(PanKind::Quark).is_none(), "清除后应读不到");
     }
 
+    /// ★ 2026-10-31：补挂 `#[ignore]` 并摘掉"运行时 return"反模式
+    ///
+    /// 改前它没挂 ignore，每次普通 `cargo test` 都真跑（if 兜底假跳过），
+    /// 在**真钥匙串**上 save(Uc)→clear —— 2026-10-31 Owner 的 UC 凭据
+    /// 就是这么被全量测试删掉的（:298 早已给兄弟测试挂了 ignore，这条漏网）。
+    /// 现在与兄弟测试同款：显式 ignore，且跑时必在 `isolate_keyring()` 的
+    /// 测试命名空间里 ⇒ 真实凭据不可达。
     #[test]
+    #[ignore = "需要 OS 钥匙串（同 roundtrip_through_keyring_when_available）"]
     fn empty_cookie_acts_as_logout() {
+        isolate_keyring();
         if !keyring_available() {
-            println!("[SKIP] 系统钥匙串不可用 ⇒ 跳过");
-            return;
+            panic!("本机没有可用的系统钥匙串 ⇒ --ignored 跑这条会失败（预期）");
         }
         save(&cred(PanKind::Uc, "x=y", None)).expect("先存一份");
         assert!(load(PanKind::Uc).is_some());
@@ -343,6 +408,7 @@ mod tests {
     #[test]
     #[ignore = "需要 OS 钥匙串（同 roundtrip_through_keyring_when_available）"]
     fn credentials_of_different_kinds_do_not_collide() {
+        isolate_keyring();
         if !keyring_available() {
             panic!("本机没有可用的系统钥匙串 ⇒ --ignored 跑这条会失败（预期）");
         }

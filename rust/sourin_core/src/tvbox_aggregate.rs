@@ -1215,23 +1215,29 @@ pub async fn channel_home_of(
 /// 没勾就兜底全部 hidden 子站。顺序即展示顺序（勾选顺序 / 兜底按 id 排序）。
 pub fn channels_of(registry: &Arc<Registry>, data_dir: &Path) -> Vec<(String, String, bool)> {
     /*
-     * ★★★ 2026-10-28（修我自己上一处改动的连带）：**渠道条只列用户导入的子站**
+     * ★★★ 2026-10-31（修我自己 2026-10-28 那处判据的**前提塌了**：渠道条 49 个 chip）
      *
      * ```text
-     * 上一处把"兜底候选集"从 `.filter(hidden)` 放开成"所有启用源"——那是对的，
-     * 因为 Owner 要的是搜索像原版那样**扇出所有源**（73 条 vs 我们 0 条）。
-     * 但 `enabled_children` 被**两处**共用：扇出 + 这里的"渠道条"。
-     * ⇒ 放开的副作用是：首页那条横向渠道条从 1 个变成 **49 个 chip**（内置源全上条）。
-     *   门禁 `zz_n9_agg_channel_rail` 的 ⑥ 立刻抓到（Expected 1 / Actual 49）。
-     *
-     * ⇒ 分工写死在这里：
-     *   · **扇出（home/list/search）**：所有启用源（原版行为）
-     *   · **渠道条（channels）**  ：只列"用户导入的隐藏子站"（那是用户自己的分组概念）
+     * 10-28 那版把"渠道条只列用户导入的子站"实现成 `.filter(hidden)` ——
+     * 当时成立，因为**只有 TVBox 导入的子站**才 hidden。
+     * 同一天晚些（Owner 图1「聚合源…应该属于第二个的二级页面」），state.rs 的
+     * 内置 csp 源自动注册也置了 `hidden: true`（48 个类全藏进聚合二级页）
+     * ⇒ `hidden` 的含义从"用户导入的"漂移成"藏进聚合二级页的（含全部内置）"
+     * ⇒ 渠道条 = 48 内置 + N 导入，门禁 zz_n9_agg_channel_rail ⑥ 抓到（Expected 1 / Actual 49）。
      * ```
+     *
+     * ⇒ "用户导入"改用**导入来源 sidecar**（`<data_dir>/tvbox-sources.json`，
+     *    导入流程逐站落记录；内置源没有 —— 与 `command_dedupe_sites` 判
+     *    "重复子源"用的是同一份 provenance，同一件事在本仓只有一个判据）。
+     *    `hidden` 保留：导入子站恒 hidden，它是第二道闸（防将来出现"有 meta
+     *    却可见"的源混上渠道条）。
      */
+    let imported: std::collections::HashSet<String> =
+        crate::tvbox::load_tvbox_metas(data_dir).into_keys().collect();
     enabled_children(registry, data_dir)
         .into_iter()
         .filter(|p| p.manifest().hidden)
+        .filter(|p| imported.contains(&p.manifest().id))
         .collect::<Vec<_>>()
         .into_iter()
         .map(|p| {
@@ -2308,6 +2314,22 @@ mod tests {
                 fail_search: false,
             }) as Arc<dyn MediaProvider>
         };
+        /*
+         * ★ 2026-10-31：渠道清单的"用户导入"判据改成了**导入来源 sidecar**
+         *   （见 channels_of 的注释）⇒ 假子站也要有导入记录才算渠道。
+         *   agg_with 用的是同一个 tmp_dir(tag)，先落 sidecar 再建聚合器。
+         */
+        for id in ["aaa", "bbb"] {
+            crate::tvbox::write_tvbox_meta(
+                &tmp_dir("n9channels"),
+                id,
+                &crate::tvbox::TvboxSourceMeta {
+                    site_name: id.to_string(),
+                    ..Default::default()
+                },
+            )
+            .expect("写导入 sidecar");
+        }
         let agg = agg_with("n9channels", vec![mk("aaa"), mk("bbb")], &["bbb", "aaa"]);
 
         let ch = agg.channels();
@@ -2348,6 +2370,17 @@ mod tests {
             items: vec![],
             fail_search: false,
         }) as Arc<dyn MediaProvider>;
+        // ★ 2026-10-31：同上 —— tvbox1 要有导入 sidecar 才算渠道（plug1 没有，
+        //   且它 hidden=false，两道闸都拦它）
+        crate::tvbox::write_tvbox_meta(
+            &tmp_dir("n9filter"),
+            "tvbox1",
+            &crate::tvbox::TvboxSourceMeta {
+                site_name: "tvbox1".to_string(),
+                ..Default::default()
+            },
+        )
+        .expect("写导入 sidecar");
         let agg = agg_with("n9filter", vec![tv, plug], &["tvbox1"]);
 
         let ids: Vec<String> = agg.channels().into_iter().map(|(id, _, _)| id).collect();

@@ -162,13 +162,13 @@ void main() {
         playerSrc.contains('Media(st.url)'),
         isFalse,
         reason: '`Media(st.url)` 会把 headers 全丢掉 —— 直播因此 403/黑屏。'
-            '必须写成 `Media(st.url, httpHeaders: st.httpHeaders)`',
+            '必须写成 `Media(playUrl, httpHeaders: st.httpHeaders)`',
       );
     });
 
     test('★ 起播处确实传了 httpHeaders', () {
       expect(
-        playerSrc.contains('Media(st.url, httpHeaders: st.httpHeaders)'),
+        playerSrc.contains('Media(playUrl, httpHeaders: st.httpHeaders)'),
         isTrue,
         reason: '起播必须带上核心层给的请求头（央视直播需要 Referer，'
             '实测不带 → 403，带 → 200）',

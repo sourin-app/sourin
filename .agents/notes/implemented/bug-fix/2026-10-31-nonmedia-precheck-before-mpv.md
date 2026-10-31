@@ -16,7 +16,7 @@ yinhai  ×3：resolve 交给 mpv 的 URL 是网盘分享页本身
 apprj   ×2：URL 是第三方解析接口 api.nbyjson.top:7788/api/?key=…&url=…
             → application/json，真流藏在 JSON 的 url 字段里
             （实测取出 http://…/nby/m3u8/getM3u8?… 是真 m3u8）
-appysv2 ×1：iqiyi.com/v_xxx.html → text/html
+appysv2 ×1：某视频站的播放页链接 → text/html
 同源内其它条目能播 = 那些集给的是真直链。
 ```
 

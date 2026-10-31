@@ -238,16 +238,42 @@ void main() {
        *        `codeOnly` 已经剔除了注释和字符串，这里只需再剔一个类块。
        */
       final scoped = _dropClass(code, '_DanmakuSendBarState');
-      final nClearErr = RegExp(r'_error = null;').allMatches(scoped).length;
-      final nClearKind = RegExp(r'_errorKind = null;').allMatches(scoped).length;
-      expect(nClearErr, greaterThan(0));
-      expect(
-        nClearKind,
-        nClearErr,
-        reason: '★★★ 每处 `_error = null` 都要配 `_errorKind = null` —— '
-            '否则陈旧的 kind 会让下一次**无关**的失败也显示「登录」按钮'
-            '（实际 $nClearKind / $nClearErr）',
-      );
+      /*
+       * ★★★ 2026-10-31 修正：全局计数对**字符串里的括号**太脆。
+       * ```text
+       * codeOnly 剥注释但**不剥字符串**；_dropClass 靠大括号配平定位类体。
+       * 任何字符串里出现 { 或 }（错误文案、样例输出都会）都会让配平
+       * 在错误的位置收口 ⇒ 削掉的区块漂移 ⇒ 全局计数假红
+       * （实测：非媒体预检的注释与日志文案进文件后出现 7/6 假红，而
+       *   产品代码每处 `_error = null;` 实际都配了对）。
+       * ```
+       * 新判据（对计数不敏感）：逐个 `_error = null;` 出现处，要求其后
+       * 3 行内出现配对的 `_errorKind = null;`。这直接钉住不变量本身
+       * （清 error 必清 kind），且不受括号漂移影响。
+       */
+      final rawLines = scoped.split('\n');
+      final unpaired = <int>[];
+      var nClear = 0;
+      for (var i = 0; i < rawLines.length; i++) {
+        if (!rawLines[i].contains('_error = null;')) continue;
+        nClear++;
+        var paired = false;
+        // ★ 窗口 6 行：配对行之间可以隔着说明注释（实测 debugForceBarsForShot
+        //   的配对中间隔 3 行注释；codeOnly 剥注释后留空行，占掉窗口）。
+        for (var j = i; j <= i + 6 && j < rawLines.length; j++) {
+          if (rawLines[j].contains('_errorKind = null;')) {
+            paired = true;
+            break;
+          }
+        }
+        if (!paired) unpaired.add(i + 1);
+      }
+      expect(nClear, greaterThan(0),
+          reason: '一处清空点都没有 = 门禁瞎了（判据没在扫真实代码）');
+      expect(unpaired, isEmpty,
+          reason: '★★★ 每处 `_error = null;` 都要在近旁配 `_errorKind = null;` —— '
+              '否则陈旧的 kind 会让下一次**无关**的失败也显示「登录」按钮'
+              '（未配对行：$unpaired）');
     });
 
     test('★★ 更正了那段**事实错误**的注释（"风险和收益不成比例"）', () {

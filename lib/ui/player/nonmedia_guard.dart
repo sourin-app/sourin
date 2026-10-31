@@ -12,7 +12,7 @@
 //     （网盘分享页 SPA 壳 —— yinhai 的 play() 本来就交回分享页 + 空 headers）
 //   · api.nbyjson.top:7788/api/?key=…&url=… → application/json
 //     （第三方解析接口信封，真流在 JSON 的 `url` 字段里 —— 实测取出的是真 m3u8）
-//   · www.iqiyi.com/v_xxx.html → text/html（页面链接）
+//   · 某视频站的播放页链接 → text/html（页面链接，站点名按仓规不写）
 // mpv 对三类的报错一模一样，用户只会看到"格式解不了"。
 // ```
 //

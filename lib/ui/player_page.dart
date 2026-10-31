@@ -6240,7 +6240,7 @@ class _PlayerPageState extends State<PlayerPage>
      * csp-yinhai ×3 / csp-apprj ×2 / csp-appysv2 ×1：resolve 报 ok，mpv 报
      * 「Failed to recognize file format」。离线复现（带头/不带头一致 ⇒ 不是头丢失）：
      *   mpv 收到的 URL 本身就不是媒体流 —— 网盘分享页（HTML）、第三方解析
-     *   接口（JSON 信封，真流在 `url` 字段）、iqiyi 页面链接。
+     *   接口（JSON 信封，真流在 `url` 字段）、某视频站的播放页链接（站点名按仓规不写）。
      * 头链路两端都完好（Dart `Media(st.url, httpHeaders: st.httpHeaders)`、
      * Rust maybe_proxy 门控）⇒ 在 open 之前拦：能换直链的换（解析接口信封 /
      * 页里刮出的 m3u8），换不了的给人话错误 —— 不再让用户看"格式解不了"。

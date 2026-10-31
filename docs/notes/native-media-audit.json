@@ -49,9 +49,9 @@
                                  },
     "t102_playback_failure_banner_test.dart":  {
                                                    "audited":  true,
-                                                   "lastAudited":  "2026-10-25",
-                                                   "note":  "Lead 终局对账（task-30 指出过期）：本轮新增 ⑥_bottomOccupied 静态审计与 ⑦「重试」可点 + 真触发 _load，条数 5→7",
-                                                   "result":  "+7 ~0 -0"
+                                                   "lastAudited":  "2026-11-01",
+                                                   "note":  "2026-11-01 复检（fix-quark-link-drop：_handleStreamError 增 HLS 分片 EOF 归并 + 抖动抑制，纯新增未动既有分流形态）：单跑 --run-skipped --tags native-media --concurrency=1 ⇒ +7 全绿（原登记 +7，条数未变、无回归）",
+                                                   "result":  "+7"
                                                },
     "t103_danmaku_hint_ui_test.dart":  {
                                            "audited":  true,
@@ -367,9 +367,9 @@
                                                      },
     "zz_t1023_player_seek_behavior_test.dart":  {
                                                     "audited":  true,
-                                                    "lastAudited":  "2026-10-25",
-                                                    "note":  "Lead 终局对账（task-30 指出漏登）：本轮改动后单跑全绿 16 条",
-                                                    "result":  "+16 ~0 -0"
+                                                    "lastAudited":  "2026-11-01",
+                                                    "note":  "2026-11-01 复检（fix-quark-link-drop 改动后）：单跑 --run-skipped --tags native-media --concurrency=1 ⇒ +16 全绿（含「播放中断了（画面还在，可以重试）」横幅断言，无回归）",
+                                                    "result":  "+16"
                                                 },
     "zz_t1024_chrome_autohide_hittest_test.dart":  {
                                                        "audited":  true,
@@ -385,9 +385,9 @@
                                         },
     "zz_t1024_player_banner_order_test.dart":  {
                                                    "audited":  true,
-                                                   "lastAudited":  "2026-10-25",
-                                                   "note":  "Lead 亲自单跑（--run-skipped --concurrency=1）全绿：横幅在底栏之后 + 恢复判据 + 让位",
-                                                   "result":  "+5 ~0 -0"
+                                                   "lastAudited":  "2026-11-01",
+                                                   "note":  "2026-11-01 复检（fix-quark-link-drop 改动后）：单跑 --run-skipped --tags native-media --concurrency=1 ⇒ +5 全绿（横幅在底栏之后 + 恢复判据 + 让位，无回归）",
+                                                   "result":  "+5"
                                                },
     "zz_t1024_player_failure_attribution_test.dart":  {
                                                           "audited":  true,

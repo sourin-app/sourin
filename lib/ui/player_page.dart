@@ -969,6 +969,38 @@ class _PlayerPageState extends State<PlayerPage>
   Duration _recoveryProgress = Duration.zero;
 
   // ───────────────────────────────────────────────────────────────────
+  //  ★★★ 2026-11-01：抖动抑制的状态（配合上面的纯函数）
+  // ───────────────────────────────────────────────────────────────────
+  //
+  // # 修的是什么（Owner 报的"横幅在闪"）
+  // ```text
+  // HLS 每个 10s 分片读到尾都会发一次 AVERROR_EOF（`0xdfb9b0bb`）。
+  // 分片边界的 EOF 被 `_handleStreamError` 当成真断流 ⇒ 每片弹一次横幅，
+  // 3 秒后位置推进又清掉 ⇒ 横幅每 10 秒闪一次。
+  // ```
+  // # 两份状态
+  // ```text
+  // · `_errorJitterCounts`：按去重键累计次数（跨错误类型分别计数）
+  // · `_errorJitterLastAt`：该键**上次**出现的时刻（判窗口用）
+  // ```
+  // ⚠️ 只在"已有画面之后"的抖动上记账；起播失败（`_error`）不进这套账，
+  //    那是要如实全屏报错的（护栏 A）。
+  final Map<String, int> _errorJitterCounts = <String, int>{};
+  final Map<String, DateTime> _errorJitterLastAt = <String, DateTime>{};
+
+  /// 上一次收到 stream.error 的时刻（判抖动窗口）
+  DateTime? _lastStreamErrorAt;
+
+  /// 「HLS 分片 EOF ⇒ 续片」被识别并吞掉的次数（★ 护栏 C：可观测，仅探针读）
+  int _hlsSegmentEofSwallowed = 0;
+
+  /// 「抖动被抑制」的次数（★ 护栏 C：可观测，仅探针读）
+  int _errorJitterSuppressed = 0;
+
+  /// 位置**停止推进**的起始时刻（护栏 B：真卡死 ⇒ 解除抑制；null = 在推进）
+  DateTime? _stallSince;
+
+  // ───────────────────────────────────────────────────────────────────
   //  ★★★ 缺陷①（2026-10-25）：用户主动 seek 的**豁免窗口**
   // ───────────────────────────────────────────────────────────────────
   //
@@ -5418,6 +5450,79 @@ class _PlayerPageState extends State<PlayerPage>
             '判据窗口 ±${kPlaybackTimeoutWindowSlack.inMilliseconds}ms）',
       );
     }
+    /*
+     * ★★★ 2026-11-01【根修 ①】：HLS 分片边界的 EOF ⇒ 续片，不是故障
+     *
+     * 判据（护栏 A，三条全满足才吞）：
+     *   ① `sawFirstFrame == true`（起播阶段的 EOF 不许吞 —— 可能是空清单/坏地址）
+     *   ② 当前是 HLS（kind=hls 或 URL 是 .m3u8）
+     *   ③ 错误码是 AVERROR_EOF（`0xdfb9b0bb` / `-541478725`）
+     *
+     * ★ 护栏 C：吞掉的每一次都要落日志（带 key 与计数），不许静默吞。
+     */
+    final isHls = playerStreamIsHls(
+      kind: _current?.kind,
+      url: _current?.url,
+    );
+    if (had && playerErrorIsHlsSegmentEof(e, sawFirstFrame: had, isHls: isHls)) {
+      _hlsSegmentEofSwallowed++;
+      final key = playerErrorJitterKey(e);
+      AppLog.write(
+        'PLAY',
+        '分片续接（HLS 分片边界 EOF，非故障）⇒ 不弹横幅；'
+            'key=$key 已吞 $_hlsSegmentEofSwallowed 次 kind=${_current?.kind ?? '-'}',
+      );
+      // 续片不是错误 ⇒ 中断横幅若正挂着，也一并撤掉（画面一直在走）
+      if (_playbackFailure != null) {
+        setState(() => _playbackFailure = null);
+      }
+      _lastStreamErrorAt = DateTime.now();
+      return had;
+    }
+
+    /*
+     * ★★★ 2026-11-01【根修 ③】：抖动抑制
+     *
+     * 只在"已有画面之后的抖动"上记账（`had == true`）。
+     *
+     * ★ 护栏 B：下面这些情况**不走**抑制，直接如实报错：
+     *   · 起播阶段（`had == false`）⇒ 上面 if 已经排除
+     *   · 错误升级为 HTTP 4xx/5xx / DNS / 超时 ⇒ `playerErrorIsSevere` 判出后不抑制
+     */
+    final jitterKey = playerErrorJitterKey(e);
+    final now = DateTime.now();
+    final sinceLast = _lastStreamErrorAt == null
+        ? null
+        : now.difference(_lastStreamErrorAt!);
+    final decision = playerErrorJitterDecide(
+      key: jitterKey,
+      previousCount: _errorJitterCounts[jitterKey],
+      sinceLast: sinceLast,
+    );
+    _errorJitterCounts[jitterKey] = decision.count;
+    _errorJitterLastAt[jitterKey] = now;
+    _lastStreamErrorAt = now;
+
+    final severe = playerErrorIsSevere(e);
+    if (had && decision.suppress && !severe) {
+      _errorJitterSuppressed++;
+      AppLog.write(
+        'PLAY',
+        '抖动抑制：同类错误重复出现 ⇒ 不重复弹横幅；'
+            'key=$jitterKey 第 ${decision.count} 次（${decision.reason}）'
+            '累计抑制 $_errorJitterSuppressed 次',
+      );
+      return had;
+    }
+    if (had && severe) {
+      AppLog.write(
+        'PLAY',
+        '错误升级（HTTP/DNS/超时类）⇒ 解除抑制，如实报错；key=$jitterKey',
+      );
+      // 升级 ⇒ 这个 key 的账清零，下次重新计数（不让它一直卡在升级态）
+      _errorJitterCounts.remove(jitterKey);
+    }
+
     setState(() {
       /*
        * ⚠️ 这里**必须**保留 `if (_sawFirstFrame) {` 这个字面形态：
@@ -5517,6 +5622,38 @@ class _PlayerPageState extends State<PlayerPage>
       }
     } else {
       _recoveryProgress = Duration.zero;
+    }
+    /*
+     * ★★★ 2026-11-01【护栏 B】：位置停止推进 ⇒ **解除**抖动抑制
+     *
+     * # 为什么必须有这一条
+     * ```text
+     * 抖动抑制只能压"秒级自恢复"的抖动。若错误一直在发、而位置**不再推进**
+     * ⇒ 那不是抖动，是真卡死（例如服务端真的掐了连接、流真的结束了）。
+     * 这时候抑制必须失效，否则用户看到的是"没任何提示但画面不动"。
+     * ⇒ 位置停滞超过阈值 ⇒ 清空所有抑制账，之后同类错误一律如实报错。
+     * ```
+     * ⚠️ 只清账、不主动弹横幅：下一次 stream.error 会走正常路径如实弹出
+     *   （账已清空 ⇒ `decision.suppress == false`）。这样"如实报错"的
+     *   触发点仍然只有 `_handleStreamError` 一个，不新增第二条弹横幅的路径。
+     */
+    if (p > _position) {
+      _stallSince = null;
+    } else if (_stallSince == null) {
+      _stallSince = DateTime.now();
+    } else {
+      final stalled = DateTime.now().difference(_stallSince!);
+      if (stalled >= kPositionStallUnsuppressAfter &&
+          (_errorJitterCounts.isNotEmpty || _hlsSegmentEofSwallowed > 0)) {
+        AppLog.write(
+          'PLAY',
+          '位置停滞 ${stalled.inSeconds}s ⇒ 解除抖动抑制（真卡死，不再吞错误）；'
+              '清空 ${_errorJitterCounts.length} 个 key 的账',
+        );
+        _errorJitterCounts.clear();
+        _errorJitterLastAt.clear();
+        _stallSince = null;
+      }
     }
     _position = p; // ★ 无条件更新（读值语义不变）
     if (secChanged) {
@@ -19408,6 +19545,218 @@ String debugPlayerGestureState() {
       'visibleButtons=$visibleButtons';
 }
 
+/// ★★★ 2026-11-01：「播放中断」横幅周期性闪烁的根因分诊（纯函数层）
+///
+/// # 现场（Owner 报 bug）
+/// ```text
+/// 明明在正常的播放，最下面却每 10.0 秒提示一次「播放中断」，
+/// 3 秒后又「播放已恢复」 —— 中断 81 次 / 恢复 80 次，横幅在闪。
+/// ```
+///
+/// # 定性结论（决定性实验，非猜测）
+/// ```text
+/// ① 错误码 `tcp: ffurl_read returned 0xdfb9b0bb`：
+///    MKTAG('E','O','F',' ') = 0x20464F45 = 541478725；
+///    0xDFB9B0BB = 3753488571；两者之和 = 4294967296 = 2^32
+///    ⇒ 0xDFB9B0BB 正是 -0x20464F45 的 32 位补码，即 FFmpeg **AVERROR_EOF**
+///    ⇒ 它不是连接错误/超时/鉴权失败，而是「读到流尾」。
+/// ② 严格 10 秒的来源：该 HLS 源 `450.m3u8` 里
+///    `#EXT-X-TARGETDURATION:10` + 每个分片 `#EXTINF:10.000000`
+///    ⇒ 分片时长 10.000s == 观测到的中断间隔 10.00s。
+/// ③ ffmpeg 离线复现：读同一条 master m3u8，debug 日志里
+///    每读完一个分片就 `Opening '.../450/N.ts'` 开下一个；
+///    对照组直接读单个 `0.ts`（连续流、不经 HLS 封装）30s，EOF 次数 = 0。
+/// ```
+/// ⇒ **HLS 每个分片读到尾产生的 EOF 被当成 stream error 上报**，
+///   `_handleStreamError` 未区分「分片正常结束」与「真断流」⇒ 横幅每片闪一次。
+///
+/// # ⚠️ 护栏 A（Lead 批复）：只认错误码，且必须同时满足"已有画面 + HLS"
+/// ```text
+/// · 认 `0xdfb9b0bb` / `-541478725` 这两个数值形态（补码与真值都要认）
+/// · 必须 `sawFirstFrame == true`（起播阶段的 EOF 不许吞 —— 那可能是空清单/坏地址）
+/// · 必须 `isHls == true`（kind=hls 或 URL 是 .m3u8）
+/// ```
+/// 三条缺一不可 ⇒ 非 HLS 的 EOF、起播期的 EOF 一律照旧如实报错。
+
+/// 位置停滞多久 ⇒ 判定"真卡死"并解除抖动抑制（★ 护栏 B）
+///
+/// 取 5s：明显长于一个 HLS 分片的自恢复时间（3s 推进判据），
+/// 又短到不会让真断流长时间无提示。
+const Duration kPositionStallUnsuppressAfter = Duration(seconds: 5);
+
+/// FFmpeg `AVERROR_EOF` 的真值（-MKTAG('E','O','F',' ')）
+const int kMpvErrorEof = -541478725;
+
+/// FFmpeg `AVERROR_EOF` 的 32 位补码（mpv 日志里打印出来的形态）
+const int kMpvErrorEofUnsigned = 0xdfb9b0bb;
+
+/// 抖动抑制窗口（Lead 批复：30s —— 真断流的暴露延迟要短）
+const Duration kErrorJitterWindow = Duration(seconds: 30);
+
+/// 同一 key 连续出现达到这个次数 ⇒ **升级**提示（不再抑制），
+/// 这是"30s 下仍闪"的兜底：不靠拉长窗口，而靠计数升级。
+const int kErrorJitterEscalateAt = 4;
+
+/// 当前流的 kind / URL 是否为 HLS（分片流）
+///
+/// # 为什么 kind 与 URL 都要看
+/// ```text
+/// 上游给的 kind 不总是准（有的源给 mp4 但 URL 仍是 .m3u8，见日志
+/// `起播 kind=mp4 ... index.m3u8`）⇒ 只信 kind 会漏，只信 URL 会把
+/// 伪装成 .m3u8 的其它流也算进来（那种本来就该按真错误处理，影响方向是安全的）。
+/// ```
+bool playerStreamIsHls({String? kind, String? url}) {
+  final k = (kind ?? '').trim().toLowerCase();
+  if (k == 'hls' || k == 'm3u8' || k.contains('mpegurl')) return true;
+  final u = (url ?? '').trim().toLowerCase();
+  final path = u.split('?').first.split('#').first;
+  return path.endsWith('.m3u8');
+}
+
+/// 这条 `stream.error` 文案里是否带着 AVERROR_EOF
+///
+/// # 为什么按数值而不是按 "End of file" 之类的词
+/// ```text
+/// 文案里根本没有 "EOF" 字样，只有 `ffurl_read returned 0xdfb9b0bb`。
+/// 按词匹配 ⇒ 匹配不到（等于没修）；按数值匹配 ⇒ 与 ffmpeg 的定义对齐，
+/// 且换语言/换措辞都不失效。
+/// ```
+bool playerErrorIsEof(String e) {
+  final s = e.toLowerCase();
+  // 十进制真值形态（-541478725）
+  if (s.contains(kMpvErrorEof.toString())) return true;
+  // 十六进制补码形态：`0xdfb9b0bb`（大小写都已由 toLowerCase 归一）
+  final hex = kMpvErrorEofUnsigned.toRadixString(16);
+  if (s.contains(hex)) return true;
+  if (s.contains('0x$hex')) return true;
+  return false;
+}
+
+/// 这条错误是否属于「HLS 分片边界的 EOF ⇒ 续片，不是故障」
+///
+/// 三条护栏全满足才返回 true（见 [playerStreamIsHls] 的说明）。
+bool playerErrorIsHlsSegmentEof(
+  String e, {
+  required bool sawFirstFrame,
+  required bool isHls,
+}) {
+  if (!sawFirstFrame) return false; // ★ 起播阶段的 EOF 不许吞
+  if (!isHls) return false; // ★ 非 HLS 的 EOF 按真错误处理
+  return playerErrorIsEof(e);
+}
+
+/// 抖动抑制用的**去重键**
+///
+/// # 为什么要归一化
+/// ```text
+/// 同一类抖动的原文每次都可能带不同的地址/偏移量/端口
+/// （`ffurl_read returned 0xdfb9b0bb` 里那个数是常驻的，但别的错误带指针）。
+/// 直接拿原文当 key ⇒ 每次都是新 key ⇒ 抑制永远不生效（假修）。
+/// ```
+/// 归一化：脱掉十六进制地址（0x 开头的长串）与长十进制数字串，
+/// 只留"错误的骨架" ⇒ 同类抖动收敛到同一个 key。
+String playerErrorJitterKey(String e) {
+  var s = e.trim().toLowerCase();
+  // 脱 `0x` 开头的十六进制串（地址/错误码）
+  s = s.replaceAll(RegExp(r'0x[0-9a-f]+'), '0x#');
+  // 脱 5 位以上的十进制数字串（偏移量 / 字节数 / 端口）
+  s = s.replaceAll(RegExp(r'\b\d{5,}\b'), '#');
+  return s;
+}
+
+/// 这条错误是否属于**升级类**（HTTP 4xx/5xx / DNS / 超时 / 连接被拒）
+///
+/// # ★ 护栏 B：真断流不得被抑制
+/// ```text
+/// 抖动抑制只能压"同源同类的重复抖动"。一旦错误升级成
+/// 4xx/5xx、DNS 失败、超时、连接被拒 —— 那是真的拿不到数据了，
+/// 抑制它等于把真故障藏起来（用户看到"能播但一直卡"却没有任何提示）。
+/// ⇒ 这类错误**必须**如实弹横幅，并且不进抑制账。
+/// ```
+bool playerErrorIsSevere(String e) {
+  final s = e.toLowerCase();
+  // HTTP 状态码：4xx / 5xx（含 "http 404"、"HTTP/1.1 503" 等形态）
+  if (RegExp(r'\b(4\d\d|5\d\d)\b').hasMatch(s) &&
+      (s.contains('http') || s.contains('server returned') || s.contains('code'))) {
+    return true;
+  }
+  const severeMarkers = <String>[
+    'timed out',
+    'timeout',
+    'timedout',
+    'dns',
+    'name resolution',
+    'name or service not known',
+    'connection refused',
+    'connection reset',
+    'connection aborted',
+    'no route to host',
+    'network is unreachable',
+    'unable to open',
+    'failed to open',
+    'server returned',
+    '403',
+    '404',
+    '500',
+    '502',
+    '503',
+  ];
+  for (final m in severeMarkers) {
+    if (s.contains(m)) return true;
+  }
+  return false;
+}
+
+/// 抖动抑制的判定结果
+class ErrorJitterDecision {
+  const ErrorJitterDecision({
+    required this.suppress,
+    required this.count,
+    required this.key,
+    required this.reason,
+  });
+
+  /// true = 这次**不要**弹横幅（被抑制）
+  final bool suppress;
+
+  /// 该 key 在当前窗口内累计出现的次数（含本次）
+  final int count;
+
+  final String key;
+
+  /// 供日志落盘的原因（护栏 C：不许静默吞）
+  final String reason;
+}
+
+/// 抖动抑制的**纯函数**判据
+///
+/// # 规则
+/// ```text
+/// · 窗口外（距上次 > 30s）⇒ 不抑制，计数重置为 1
+/// · 窗口内且未达升级阈值（< 4 次）⇒ 抑制，计数 +1
+/// · 窗口内且已达升级阈值（>= 4 次）⇒ **不抑制**（升级为如实报错）
+/// ```
+/// ★ 护栏 B：真断流不得被抑制 —— 那是调用方的责任：
+///   位置不推进 / 错误升级为 HTTP 4xx/5xx/DNS/超时 ⇒ 调用方**不调**本函数，
+///   直接如实报错。这里只管"同源同类的重复抖动"。
+ErrorJitterDecision playerErrorJitterDecide({
+  required String key,
+  required int? previousCount,
+  required Duration? sinceLast,
+}) {
+  final freshWindow = sinceLast == null || sinceLast > kErrorJitterWindow;
+  final count = freshWindow ? 1 : (previousCount ?? 0) + 1;
+  final escalate = !freshWindow && count >= kErrorJitterEscalateAt;
+  return ErrorJitterDecision(
+    suppress: !freshWindow && !escalate,
+    count: count,
+    key: key,
+    reason: freshWindow
+        ? '窗口外首次'
+        : (escalate ? '连续第 $count 次 ⇒ 升级如实报错' : '窗口内重复第 $count 次 ⇒ 抑制'),
+  );
+}
+
 /// 当前正在渲染的播放页 state（探针用，未挂载时为 null）
 ///
 /// # 为什么要登记一个全局引用
@@ -20632,6 +20981,18 @@ String debugPlayerPlaybackFailureState() {
   return 'hasFrame=${s._sawFirstFrame} '
       'failure=${s._playbackFailure ?? "-"} '
       'error=${s._error ?? "-"}';
+}
+
+/// ★ 护栏 C 的可观测读数：分片 EOF 吞掉次数 / 抖动抑制次数 / 抑制账规模
+///
+/// 排障时若"横幅不闪了"却怀疑漏报错，读这一行就能看出到底吞了多少次。
+String debugPlayerJitterState() {
+  final s = _livePlayerState;
+  if (s == null) return 'no-state';
+  return 'eofSwallowed=${s._hlsSegmentEofSwallowed} '
+      'suppressed=${s._errorJitterSuppressed} '
+      'keys=${s._errorJitterCounts.length} '
+      'stallSince=${s._stallSince == null ? '-' : 'yes'}';
 }
 
 /// 读「底栏是否可见」（★ 第 3 条：关掉面板后底栏必须回来）

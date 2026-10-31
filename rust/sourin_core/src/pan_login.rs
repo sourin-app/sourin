@@ -247,6 +247,31 @@ fn write_log(msg: &str) {
     }
 }
 
+/// 把一次扫码流程的**完整**原始 body 落 exports（不截断），返回落盘路径
+///
+/// ★ 只服务排障：日志 tail() 只留 170 字符，而 bizExt/换 cookie 的真向量动辄 3KB+
+///   ——没有全量，离线分析就是瞎猜。凭据敏感 ⇒ 只落本机 exports（仓库外 +
+///   .gitignore 双保险），绝不进 git。测试进程不落（保持夹具干净）。
+fn dump_pan_body(kind: &str, body: &str) -> Option<String> {
+    if in_test_process() {
+        return None;
+    }
+    let base = std::env::var("APPDATA").ok()?;
+    let dir = std::path::PathBuf::from(base)
+        .join("app.sourin.player")
+        .join("exports");
+    std::fs::create_dir_all(&dir).ok()?;
+    let stamp = chrono::Local::now().format("%H%M%S%.3f");
+    let path = dir.join(format!("pan-{kind}-body-{stamp}.json"));
+    std::fs::write(&path, body).ok()?;
+    write_log(&format!(
+        "原始 body 已落盘 kind={kind} path={} 字节={}",
+        path.display(),
+        body.len()
+    ));
+    Some(path.display().to_string())
+}
+
 /// 脱敏后的 cookie 摘要（**只写键名与长度，绝不写值**）
 ///
 /// ★ 硬规矩：cookie 是登录凭据，**不许进日志**（与 `pan_auth` 只把 cookie 放钥匙串同源）。
@@ -1362,6 +1387,7 @@ async fn baidu_poll(channel_id: &str) -> Result<PollOutcome, String> {
         return Ok(pending("等待扫码…".to_string()));
     }
     write_log("轮询 kind=baidu channel_v status=0 ⇒ 已确认，开始换登录态");
+    let _ = dump_pan_body("baidu", &body); // 排障：完整原始 body 进 exports（见 dump_pan_body）
 
     // ③ 换登录态：`v` = 当前毫秒时间戳、`bduss` = channel_v.v（dex 逐字，见 `baidu_now_millis`）
     let resp = c
@@ -2006,8 +2032,28 @@ fn aliyun_token_from_body(body: &str) -> Result<(String, String, Option<i64>), S
     }
     let raw = b64_decode(&biz)
         .ok_or_else(|| format!("阿里的 bizExt 不是合法 base64（协议可能变了）：{}", tail(&biz)))?;
-    let text = String::from_utf8(raw)
-        .map_err(|e| format!("阿里的 bizExt 解出来不是 UTF-8（{e}）⇒ base64 变体或密文形态超出取证范围"))?;
+    /*
+     * ★★★ 2026-10-31：严格 UTF-8 解不出 ⇒ 用 lossy 续解，不在此处终审。
+     * ```text
+     * 真机 CONFIRMED 实测（09:35:06，bizExt 3222B）：解码产物前 ~200 字节是明文 JSON
+     *   {"pds_login_result":{"role":"user"…，index 200 起有非 UTF-8 字节。
+     * 最可能形态：JSON 里昵称等字段的非 UTF-8 编码（GBK 类）——而
+     *   accessToken/refreshToken 全是 ASCII，损坏不影响它们。
+     * 严格 from_utf8 在这里"整体拒绝"等于登录永远失败；lossy 只把损坏处变
+     *   U+FFFD，JSON 结构与 ASCII 字段保全。若 lossy 后 JSON 都解不出，再如实报
+     *   （那时才轮到"密文形态"假设，且原始 body 已 dump 可离线取证）。
+     * ```
+     */
+    let text = match String::from_utf8(raw.clone()) {
+        Ok(t) => t,
+        Err(e) => {
+            let lossy = String::from_utf8_lossy(&raw).into_owned();
+            write_log(&format!(
+                "bizExt 非严格 UTF-8（{e}）⇒ 用 lossy 续解（损坏只影响显示，不影响 ASCII token）"
+            ));
+            lossy
+        }
+    };
     let j: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("阿里的 bizExt 解出来不是 JSON（{e}）：{}", tail(&text)))?;
     // 两种层级都认：`pds_login_result.{…}` 或顶层；键名 camel（dex）与 snake（社区）都认
@@ -2174,7 +2220,28 @@ async fn aliyun_poll(ck: &str) -> Result<PollOutcome, String> {
         });
     }
 
-    let (access, refresh, expires_in) = aliyun_token_from_body(&body)?;
+    /*
+     * ★★★ 2026-10-31 埋点：CONFIRMED 的**完整** body 落 exports。
+     * ```text
+     * 09:35:06 真机 CONFIRMED 后流程静默（零日志）——日志 write_log 的 tail() 只留
+     * 170 字符，3222 字节的 bizExt 拿不到全量 ⇒ 离线分析无从下手。
+     * bizExt 里是登录凭据 ⇒ 只落**本机 exports 目录**（仓库外 + .gitignore 双保险，
+     * 与 pan-credentials 备份同一待遇），绝不进 git 与普通日志。
+     * ```
+     */
+    let dump = dump_pan_body("aliyun", &body);
+    let (access, refresh, expires_in) = match aliyun_token_from_body(&body) {
+        Ok(x) => x,
+        Err(e) => {
+            // ★ 静默失败修复：CONFIRMED 后的任何失败必须留痕（此前这里 Err 直接
+            //   冒泡，日志一行都没有 ⇒ Owner 只看到 UI 报错，排障无从下手）
+            write_log(&format!(
+                "换 token 失败 kind=aliyun 原因={e}（原始 body 已 dump 到 {}）",
+                dump.as_deref().unwrap_or("<dump 失败>")
+            ));
+            return Err(e);
+        }
+    };
     write_log(&format!(
         "换 token 成功 kind=aliyun access_len={} 有效期={:?}",
         access.len(),
@@ -2952,6 +3019,44 @@ mod tests {
         let e = aliyun_token_from_body(&bad).expect_err("缺 access_token 必须失败");
         // 2026-10-30：报错点名 camel/snake 两套键（dex 取证见 aliyun_token_from_body）
         assert!(e.contains("accessToken"), "{e}");
+    }
+
+    /// ★★★ 2026-10-31 真机形态：bizExt 解码产物中段有非 UTF-8 字节（index 200），
+    /// 但 token 全是 ASCII ⇒ lossy 续解后必须照样取到 token（不许整体拒绝）。
+    ///
+    /// ```text
+    /// 构造：JSON 里塞一个含非 UTF-8 字节（GBK「测」= 0xB2 0xE2，单独 0xE2 在
+    /// UTF-8 里是坏序列）的昵称字段，token 放在它**之后**——
+    /// 这样能证明"损坏不拦 ASCII token"，正是 09:35:06 真机 CONFIRMED 的形态
+    /// （那次的 access/refresh 就在 index 200 之后）。
+    /// ```
+    #[test]
+    fn aliyun_token_from_biz_ext_survives_non_utf8_middle() {
+        // JSON 文本：{"pds_login_result":{"role":"user","nick_name":"<0xB2><0xE2>xx","access_token":"AT","refresh_token":"RT"}}
+        let mut json = Vec::new();
+        json.extend_from_slice(br#"{"pds_login_result":{"role":"user","nick_name":"#);
+        json.push(b'"');
+        json.extend_from_slice(&[0xB2, 0xE2]); // 非 UTF-8 序列（真机形态：昵称字段的中段损坏）
+        json.extend_from_slice(br#"xx","access_token":"AT","refresh_token":"RT"}}"#);
+        // 手工 base64 编码（标准字母表 + 填充）
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut b64 = String::new();
+        for ch in json.chunks(3) {
+            let b = [
+                ch[0],
+                *ch.get(1).unwrap_or(&0),
+                *ch.get(2).unwrap_or(&0),
+            ];
+            let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+            b64.push(alphabet[(n >> 18) as usize & 63] as char);
+            b64.push(alphabet[(n >> 12) as usize & 63] as char);
+            b64.push(if ch.len() > 1 { alphabet[(n >> 6) as usize & 63] as char } else { '=' });
+            b64.push(if ch.len() > 2 { alphabet[n as usize & 63] as char } else { '=' });
+        }
+        let body = format!(r#"{{"content":{{"data":{{"bizExt":"{b64}"}}}}}}"#);
+        let (a, r, _e) =
+            aliyun_token_from_body(&body).expect("中段非 UTF-8 不许拦住 ASCII token");
+        assert_eq!((a.as_str(), r.as_str()), ("AT", "RT"));
     }
 
     /// ★★ 凭据是**约定键名**（`access_token=`），不许写成 Cookie 头的样子

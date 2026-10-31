@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:sourin_spike/ui/player_page.dart';
@@ -8,6 +10,38 @@ void main() {
   // ─────────────────────────────────────────────────────────────
   const eofMsg = 'tcp: ffurl_read returned 0xdfb9b0bb';
   const eofDecimal = 'tcp: ffurl_read returned -541478725';
+
+  group('⓪ 日志措辞（入口不许预设"中断"）', () {
+    /*
+     * ★ 2026-11-01 真机实测踩到：入口那行写死「播放中断（已有画面…）」时，
+     *   续片/抑制两种情况日志里会先落一行误导性的"中断"（横幅其实没弹）。
+     *   后来人据此会以为 bug 复发。⇒ 入口必须是中性措辞、定性由各分支补写。
+     */
+    test('★ 注入证红：入口改回"播放中断" ⇒ 本条必须红', () {
+      final src = File('lib/ui/player_page.dart').readAsStringSync();
+      final code = src
+          .split('\n')
+          .where((l) => !l.trimLeft().startsWith('//'))
+          .join('\n');
+      // 入口那行（had 三元的第一支）必须是中性措辞
+      expect(
+        code.contains("had ? '播放中断（已有画面，非阻断）"),
+        isFalse,
+        reason: '入口不许预设"中断"——续片/抑制会先落一行误导性的"播放中断"',
+      );
+      expect(
+        code.contains("had ? '播放期 stream.error（待定性）"),
+        isTrue,
+        reason: '入口必须是中性事实（待定性），定性交给续片/抑制/兜底各分支',
+      );
+      // 兜底定性仍在：真断流的日志里必须有"播放中断"
+      expect(
+        code.contains("'播放中断（已有画面，非阻断）：\$e'"),
+        isTrue,
+        reason: '兜底分支仍要定性为播放中断，否则真断流日志缺定性',
+      );
+    });
+  });
 
   group('① EOF 识别（只认错误码）', () {
     test('认补码形态 0xdfb9b0bb 与十进制真值 -541478725', () {

@@ -122,7 +122,8 @@ fn into_c(s: String) -> *mut c_char {
     // 真有的话就换成错误 JSON，怎么都比 panic 好（panic 跨 FFI 是 UB，不能让宿主崩）。
     match CString::new(s) {
         Ok(c) => c.into_raw(),
-        Err(_) => CString::new("{\"error\":\"瀛楃涓插惈 NUL 字节\"}")
+        // ★ 2026-11-01：这行原本是被二次编码破坏的乱码，而它是**用户可见**的错误消息，必须能读懂 —— 按语义还原（"字符串含 NUL 字节"）。
+        Err(_) => CString::new("{\"error\":\"字符串含 NUL 字节\"}")
             .unwrap()
             .into_raw(),
     }
@@ -2970,7 +2971,7 @@ mod tests {
         let msg = v["error"].as_str().unwrap();
         assert!(
             msg.contains("sourin_start"),
-            "错误消息应告诉调用方怎么修（要提□sourin_start□□□□□□□ {msg}"
+            "错误消息应告诉调用方怎么修（要提到 sourin_start）：{msg}"
         );
     }
 

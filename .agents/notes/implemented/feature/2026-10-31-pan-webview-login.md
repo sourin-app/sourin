@@ -2,7 +2,7 @@
 
 Status: implemented
 
-Independent: 与 [2026-10-30-pan-login-t5-aliyun-bizext-115-cookie-baidu-unicast.md](2026-10-30-pan-login-t5-aliyun-bizext-115-cookie-baidu-unicast.md)
+Independent: 与 [2026-10-30-pan-login-t5-aliyun-bizext-115-cookie-baidu-unicast.md](../bug-fix/2026-10-30-pan-login-t5-aliyun-bizext-115-cookie-baidu-unicast.md)
 （扫码登录协议修复）互补不冲突——那篇管"扫码链路通不通"，本篇加的是
 **第二条登录路径**（网页登录回调），保存入口复用同一个 pan_auth::save。
 与 2026-10-31-aliyun-bizext-lossy-and-body-dump.md（bizExt 解码）也无关

@@ -3665,3 +3665,167 @@ mod tests {
         );
     }
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  网页登录（W1，2026-10-31）—— webview 捕获 cookie 的落盘命令（**仅新增**，不改既有函数）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 链路与分工
+// ```text
+// Dart（lib/ui/widgets/pan_web_login.dart）：
+//   WebView2 独立窗口打开登录页 → 每 2s getAllCookies →
+//   纯函数判据（目标域 + 登录态键全存在）→ 拼接 "k=v; …" → 本命令
+// 本侧（薄封装，Owner 批复口径）：
+//   kind 合法性（白名单四家）+ cookie 非空校验 + 复用 pan_auth::save +
+//   write_log 一行（cookie_digest 只记键名与总长，**绝不记值**）。
+// ```
+//
+// # 为什么只放四家（quark / uc / baidu / 115）
+// ```text
+// 天翼     —— 网页态适配未完成，维持"如实报错"不动（本批范围外）；
+// 阿里     —— 网页登录态是 bearer token（access_token/refresh_token），
+//             从 webview cookie 里**映射不出**本仓的 token 形凭据 ⇒ 放了必是假入口；
+// 光鸭/迅雷 —— 设备码族（pan_login_device），已有自己的登录路，网页 cookie 不适配；
+// 123      —— 没有网页扫码路，走 pan_password_login 的账号密码表单。
+// ```
+//
+// # 判据归属（Lead 批复附加 ④）
+// ```text
+// "目标域 + 登录态键存在"的判定在 **Dart 侧纯函数**（键名来自扫码链路的实测基线
+// 与 Owner 批复：__pus/__kps、BDUSS、UID/CID/SEID）；本侧不重复判键 ——
+// 两处判键必然漂，一处判键 + 这里的脱敏日志足够事后核形状。
+// ```
+
+/// 网页登录的白名单（纯函数；返回 Err 的文案要告诉用户该用哪条路）
+fn web_login_kind_of(code: &str) -> Result<PanKind, String> {
+    let kind = kind_from_code(code)?;
+    match kind {
+        PanKind::Quark | PanKind::Uc | PanKind::Baidu | PanKind::Pan115 => Ok(kind),
+        PanKind::Tianyi => Err(
+            "天翼云盘暂不放网页登录入口：网页登录态的适配没有完成，请用扫码登录（它的现状不变）"
+                .to_string(),
+        ),
+        PanKind::Aliyun => Err(
+            "阿里云盘不放网页登录入口：网页登录态是 bearer token（access_token/refresh_token），\
+             从网页 cookie 里映射不出来，请用扫码登录"
+                .to_string(),
+        ),
+        PanKind::Guangya | PanKind::Xunlei => Err(format!(
+            "{}走设备码登录，网页 cookie 捕获不适配，请用扫码登录",
+            kind.display()
+        )),
+        PanKind::Pan123 => Err(
+            "123 云盘请用账号密码表单登录（它没有网页登录这条路）".to_string(),
+        ),
+        other => Err(format!("{} 不支持网页登录", other.display())),
+    }
+}
+
+/// 纯校验（**不落盘**：单测不打真实钥匙串）
+///
+/// 返回 `(kind, account, cookie)`：account 为空时回落到盘名（与扫码链路
+/// baidu/115 的 "百度网盘"/"115 网盘" 口径一致）。
+fn validate_web_login_credential(
+    kind_code: &str,
+    account: &str,
+    cookie: &str,
+) -> Result<(PanKind, String, String), String> {
+    let kind = web_login_kind_of(kind_code)?;
+    let cookie = cookie.trim();
+    if cookie.is_empty() {
+        return Err(
+            "没有捕获到登录态 cookie：请在登录窗口里完成登录后再试".to_string(),
+        );
+    }
+    let account = account.trim();
+    let account = if account.is_empty() {
+        kind.display().to_string()
+    } else {
+        account.to_string()
+    };
+    Ok((kind, account, cookie.to_string()))
+}
+
+/// `pan_save_credential` 命令体：`{ ok: true, account }`
+///
+/// # 与 pan_password_login 的返回契约对齐（UI 侧读 `ok` / `account`）
+pub fn command_save_credential(
+    kind_code: &str,
+    account: &str,
+    cookie: &str,
+) -> Result<serde_json::Value, String> {
+    let (kind, account, cookie) = validate_web_login_credential(kind_code, account, cookie)?;
+    let cred = crate::pan_auth::PanCredential {
+        kind,
+        account: account.clone(),
+        cookie: cookie.clone(),
+        saved_at: now(),
+        // 网页 cookie 没有本仓可读的过期时间 ⇒ None（`PanCredential` 既有语义：
+        // 过期与否由后续 API 的 401 暴露，与本文件扫码族的处置一致）
+        expires_at: None,
+    };
+    crate::pan_auth::save(&cred)?;
+    // ★ 唯一一行日志：键名 + 总长（cookie_digest 的既有纪律：绝不写值）
+    write_log(&format!(
+        "网页登录凭据已落盘 kind={} account={} 摘要={}",
+        kind.code(),
+        account,
+        cookie_digest(&cookie)
+    ));
+    Ok(serde_json::json!({ "ok": true, "account": account }))
+}
+
+// ── W1 门禁（纯函数，不碰钥匙串/网络；新建独立 mod，不动上面既有测试）──
+
+#[cfg(test)]
+mod web_login_gate {
+    use super::*;
+
+    /// ★★★ 白名单：四家放行，其余盘必须**说清该用哪条路**（不许笼统拒绝）
+    #[test]
+    fn web_login_whitelist_is_exactly_four_kinds() {
+        for code in ["quark", "uc", "baidu", "115"] {
+            assert!(web_login_kind_of(code).is_ok(), "{code} 应在白名单内");
+        }
+        let e = web_login_kind_of("aliyun").expect_err("阿里不放网页登录");
+        assert!(e.contains("阿里"), "{e}");
+        assert!(e.contains("扫码"), "要指路扫码：{e}");
+        let e = web_login_kind_of("tianyi").expect_err("天翼不放网页登录");
+        assert!(e.contains("天翼") && e.contains("扫码"), "{e}");
+        let e = web_login_kind_of("123").expect_err("123 走密码表单");
+        assert!(e.contains("123") && e.contains("账号密码"), "{e}");
+        for code in ["guangya", "xunlei"] {
+            let e = web_login_kind_of(code).expect_err("设备码族不放网页登录");
+            assert!(e.contains("设备码"), "{e}");
+        }
+        let e = web_login_kind_of("nope").expect_err("未知 kind 必须报错");
+        assert!(e.contains("认不出"), "{e}");
+    }
+
+    /// ★★★ cookie 非空校验（空/纯空白一律拒绝 —— 落盘空 cookie = 静默假成功）
+    #[test]
+    fn web_login_rejects_empty_cookie() {
+        assert!(validate_web_login_credential("quark", "", "  ").is_err());
+        assert!(validate_web_login_credential("quark", "", "").is_err());
+    }
+
+    /// ★★ account 空则回落盘名；两端空白要 trim
+    #[test]
+    fn web_login_account_falls_back_to_kind_name() {
+        let (_, a1, _) = validate_web_login_credential("baidu", "", "BDUSS=x")
+            .expect("合法输入必须通过");
+        assert_eq!(a1, "百度网盘", "空 account 回落盘名：{a1}");
+        let (_, a2, _) = validate_web_login_credential("baidu", "  张三  ", "BDUSS=x")
+            .expect("合法输入必须通过");
+        assert_eq!(a2, "张三", "★ account 要 trim：{a2}");
+    }
+
+    /// ★★ cookie 两端空白要 trim（拼接串带首尾空格会让 Cookie 头形状变脏）
+    #[test]
+    fn web_login_trims_cookie() {
+        let (_, _, c) = validate_web_login_credential("115", "", "  UID=1; CID=2; SEID=3  ")
+            .expect("合法输入必须通过");
+        assert_eq!(c, "UID=1; CID=2; SEID=3", "★ cookie 要 trim：{c}");
+    }
+}

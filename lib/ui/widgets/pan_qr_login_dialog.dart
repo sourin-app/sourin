@@ -33,6 +33,7 @@ import '../tokens.dart';
 import 'app_loading.dart';
 import 'overlay_motion.dart' show showAppDialog;
 import 'qr_view.dart';
+import 'pan_web_login.dart';
 
 /// `csp-pan115` / `csp-pan-ali` 这类源 id → 盘种 code（与 Rust `PanKind::code()` 同一套词）
 ///
@@ -135,11 +136,18 @@ class _PanQrLoginDialogState extends State<_PanQrLoginDialog> {
 
   /// 已经拿到终态就不再轮询（成功/过期/失败）
   bool _finished = false;
+  /*
+   * ★ 网页登录（W1）：Runtime 探测（false ⇒ 「网页登录」置灰）。
+   *   只给四家（quark/uc/baidu/115）；探测未完成（null）先可点，有双保险兜底。
+   */
+  bool? _webLoginAvailable;
+  static const Set<String> _webLoginKinds = <String>{'quark', 'uc', 'baidu', '115'};
 
   @override
   void initState() {
     super.initState();
     unawaited(_start());
+    unawaited(_probeWebLogin());
   }
 
   @override
@@ -148,6 +156,17 @@ class _PanQrLoginDialogState extends State<_PanQrLoginDialog> {
     super.dispose();
   }
 
+  Future<void> _probeWebLogin() async {
+    final ok = await panWebviewRuntimeAvailable();
+    if (mounted) setState(() => _webLoginAvailable = ok);
+  }
+
+  /// 网页登录（W1）：成功 ⇒ 关掉扫码弹窗并返回 true（调用方重试播放）；
+  /// 取消/失败 ⇒ 留在扫码弹窗（二维码那条路还在）。
+  Future<void> _openWebLogin() async {
+    final ok = await showPanWebLogin(context, kind: widget.kind);
+    if (ok && mounted) Navigator.of(context).pop(true);
+  }
   Future<void> _start() async {
     try {
       final r = await SourinCore.callAsync(
@@ -277,12 +296,22 @@ class _PanQrLoginDialogState extends State<_PanQrLoginDialog> {
                 ),
               ],
               const SizedBox(height: Sp.x4),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () => Navigator.of(context).pop(false),
-                  child: const Text('关闭'),
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  // ★ 网页登录（W1）：只放四家；Runtime 缺失 ⇒ 置灰（不许点了没反应）
+                  if (_webLoginKinds.contains(widget.kind))
+                    TextButton(
+                      key: const ValueKey<String>('pan-qr-login-web'),
+                      onPressed: _webLoginAvailable == false ? null : _openWebLogin,
+                      child: const Text('网页登录'),
+                    ),
+                  const SizedBox(width: Sp.x1),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('关闭'),
+                  ),
+                ],
               ),
             ],
           ),

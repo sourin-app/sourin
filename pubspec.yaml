@@ -199,6 +199,35 @@ dependencies:
   screen_retriever: ^0.2.2
   tray_manager: 0.5.3
 
+  # Pan web login (W1, approved 2026-10-31).
+  #
+  # Why desktop_webview_window (chosen over webview_flutter_windows /
+  # flutter_inappwebview):
+  #  (1) Windows cookie capture confirmed at source level: 0.4.0
+  #      windows/web_view_window_plugin.cc implements getAllCookies via
+  #      WebView2 ICoreWebView2CookieManager - HttpOnly keys (__pus/__kps/
+  #      BDUSS/UID...) are readable. document.cookie cannot read HttpOnly,
+  #      so a native cookie manager is mandatory for this feature.
+  #  (2) It is a separate native browser window (native title bar):
+  #      exactly the "login popup" shape; user closes window = cancel;
+  #      no airspace issues.
+  #  (3) No windows/runner changes: 0.4.0 removed the old
+  #      runWebViewTitleBarWidget hook; WebView2 SDK is fetched from NuGet
+  #      by CMake at build time (FIRST BUILD NEEDS api.nuget.org access),
+  #      and the product no longer ships WebView2Loader.dll.
+  #  (4) Runtime needs: Windows 10 1809+ + WebView2 Runtime (built into
+  #      Win11 / recent Win10). Dart-side panWebviewRuntimeAvailable()
+  #      probes it; when missing the web-login buttons are disabled with a
+  #      plain-language hint (Lead approval item 3).
+  #  (5) Community: 222 likes / 682k downloads / verified publisher;
+  #      requires Flutter >= 3.44, this repo is on 3.47.
+  #
+  # Version pinning (Lead approval item 1): 0.4.0 is a fresh breaking
+  # release; the pubspec constraint is pinned EXACT (no caret) and
+  # pubspec.lock records the exact resolved version, so API drift cannot
+  # silently change behavior.
+  desktop_webview_window: 0.4.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

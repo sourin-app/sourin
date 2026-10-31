@@ -61,6 +61,7 @@ import '../tokens.dart';
 import '../widgets/overlay_motion.dart' show showAppDialog;
 import '../widgets/pan_share_dialog.dart' show PanShareListingSection;
 import '../widgets/qr_view.dart';
+import '../widgets/pan_web_login.dart';
 
 /// 打开网盘账号配置页（设置页入口一行调用它；接线点在 settings_page.dart，由 Lead 统一接）
 Future<void> showPanSettingsPage(BuildContext context) {
@@ -284,6 +285,21 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
    *   `null` = 还没探测过（首屏就是它）⇒ 入口照常画，点了自然走真命令。
    */
   bool? _qrBackendAvailable;
+  /*
+   * ★ 网页登录（W1，2026-10-31）：WebView2 Runtime 探测结果。
+   * ```text
+   * null  = 还没探完（首屏）⇒ 按钮先照常画，点了走 startPanWebLogin 的双保险；
+   * false = 本机没有 WebView2 Runtime ⇒ 「网页登录」按钮**置灰**，
+   *         且登录状态区给一句人话提示（去哪装 Runtime）——
+   *         不许"点了没反应"（Lead 批复附加 ③）。
+   * true  = 可用，按钮正常。
+   * ```
+   */
+  bool? _webLoginAvailable;
+
+  /// 网页登录只放四家（其余盘没有条目：天翼/阿里如实不放、123 走密码表单、
+  /// 光鸭/迅雷走设备码 —— 与 Rust 侧 pan_login.rs 白名单同一口径）
+  static const Set<String> _webLoginKinds = <String>{'quark', 'uc', 'baidu', '115'};
 
   // ── ② 扫码登录 ──
   String _qrKind = 'quark';
@@ -330,6 +346,7 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
   void initState() {
     super.initState();
     _loadStatuses();
+    _probeWebLogin();
   }
 
   @override
@@ -397,6 +414,20 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
     }
   }
 
+
+  // ── ⑤ 网页登录（W1）：探测 Runtime → 弹独立浏览器窗口 → 捕获 cookie 落盘 ──
+  Future<void> _probeWebLogin() async {
+    final ok = await panWebviewRuntimeAvailable();
+    if (!mounted) return;
+    setState(() => _webLoginAvailable = ok);
+  }
+
+  /// 成功才刷新登录状态（取消/失败时登录状态没变，刷了也只是白转一圈）
+  Future<void> _webLogin(String kind) async {
+    final ok = await showPanWebLogin(context, kind: kind);
+    if (!mounted) return;
+    if (ok) await _loadStatuses();
+  }
   // ── ② 扫码登录：start → QrView → 2 秒轮询 → 终态停表 ──
   Future<void> _startQrLogin() async {
     setState(() {
@@ -641,6 +672,17 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
               ),
             ),
             const SizedBox(height: Sp.x2),
+            if (_webLoginAvailable == false) ...<Widget>[
+              Text(
+                '本机没有可用的 WebView2 运行时，「网页登录」不可用；'
+                '请安装 Microsoft Edge WebView2 Runtime'
+                '（https://go.microsoft.com/fwlink/p/?LinkId=2124703）'
+                '后重启应用再试。',
+                key: const ValueKey<String>('pan-weblogin-unavailable'),
+                style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+              ),
+              const SizedBox(height: Sp.x2),
+            ],
             _statusSection(colors),
             const SizedBox(height: Sp.x4),
 
@@ -812,6 +854,21 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
                   ],
                 ),
               ),
+              /*
+               * ★ 网页登录（W1）：只放四家。Runtime 不可用 ⇒ 置灰（不是隐藏）——
+               *   灰按钮 + 状态区提示能让人知道"有这个功能、缺什么"；
+               *   探测未完成（null）先照常可点，点了有 startPanWebLogin 的双保险兜底。
+               */
+              if (_webLoginKinds.contains(a.kind)) ...<Widget>[
+                const SizedBox(width: Sp.x1),
+                AppTextButton(
+                  key: ValueKey<String>('pan-account-weblogin-${a.kind}'),
+                  onPressed: _webLoginAvailable == false
+                      ? null
+                      : () => unawaited(_webLogin(a.kind)),
+                  child: const Text('网页登录'),
+                ),
+              ],
               // 登出只在**确实有凭据**时出现（未登录给登出按钮 = 假入口）
               if (a.hasCredential) ...<Widget>[
                 const SizedBox(width: Sp.x1),

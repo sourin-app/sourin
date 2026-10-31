@@ -2,7 +2,7 @@
 
 Status: implemented
 
-Independent: 兑现 [2026-10-31-aliyun-bizext-lossy-and-body-dump.md](../../bug-fix/2026-10-31-aliyun-bizext-lossy-and-body-dump.md)
+Independent: 兑现 [2026-10-31-aliyun-bizext-lossy-and-body-dump.md](../bug-fix/2026-10-31-aliyun-bizext-lossy-and-body-dump.md)
 同批的凭据地基（7 盘钥匙串在库）与 [crank 线路诊断](../../../../.probe/crank-20261031-line-diagnosis.md)
 的 A 类归因（68 条 FAIL 中 35 条/51% 是"分享页需原生转换"）。
 

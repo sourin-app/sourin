@@ -332,11 +332,33 @@ fn classify_err(class: &str, e: String) -> ProviderError {
 /// 到不了 —— 23018 猎捕二轮 4K网盘子站 9 条全灭、日志零痕迹的死点。
 /// ⇒ 判据补：URL 形（http:// / https://）也是"可直接播"的 id 形态。
 /// ```
-/// 门禁：`tests/csp_episode_direct_play.rs`（注入删掉 URL 直通 ⇒ 红）。
+/// # ★★ 2026-10-31（T4-C：hdmoli/libvio「夸克网盘 换分享 token 请求失败：builder error」）
+/// ```text
+/// 复合剧集 id（`{vid}\u{1}{分享页URL}`，HDMoli/Libvio 的 detail_of 产出形态）同样
+/// 是"可直接交给 play()"的 id —— 它**已经**是剧集 id，再走 detail 二跳会把整个复合 id
+/// 拼进 detail_url：hdmoli 路由宽松（污染 URL 实测返回 200 正常页）⇒ detail_of 用
+/// 污染 id 再拼一层 `\u{1}` ⇒ 双重复合 ⇒ `split_ep_id` 按**第一个** `\u{1}` 切分后
+/// URL 段内含 `\x01` ⇒ `parse_share_page` 在 `/` 截断 ⇒ share_id = `8efcd269e4b7\x01https:`
+/// ⇒ `share_stoken` 把它拼进 Referer ⇒ http crate 的 HeaderValue 拒绝控制字符
+/// （\x00-\x1F/\x7F）⇒ reqwest send 报 **Error::builder**（4kzhinan 纯 URL id 无二跳
+/// ⇒ 同函数同 cookie 成功 —— 与 10-31 审计时间线完全吻合）。
+/// 判据：`\u{1}` 之后的载荷能被 `parse_share_page` 认成夸克/UC 分享页 ⇒ 直通。
+/// 只认分享页载荷 —— sao_huo/app_get 等其它复合 id 源的行为一字不动。
+/// ```
+/// 门禁：`tests/csp_episode_direct_play.rs` + 本文件 `mod tests`（注入删掉本分支 ⇒ 红）。
 pub fn episode_id_is_direct_play(episode: &str) -> bool {
     episode.contains('|')
         || episode.starts_with("http://")
         || episode.starts_with("https://")
+        || share_page_composite(episode)
+}
+
+/// 复合剧集 id 且 `\u{1}` 之后的载荷是夸克/UC 分享页（见 [`episode_id_is_direct_play`]）
+fn share_page_composite(episode: &str) -> bool {
+    match episode.split_once('\u{1}') {
+        Some((_, tail)) => crate::csp::pan_share_play::parse_share_page(tail).is_some(),
+        None => false,
+    }
 }
 
 fn to_item(provider_id: &str, it: super::CspItem) -> MediaItem {
@@ -579,6 +601,37 @@ mod tests {
         // ★ 文案的唯一来源是 `unimplemented_reason`（App99 这种"有具体原因"的类
         //   文案会是"暂不可用：…"，硬编码"尚未实现"就会随升级假红）
         assert_eq!(err, crate::csp::unimplemented_reason(sample));
+    }
+
+    /// ★★★ T4-C 门禁（2026-10-31）：分享页复合剧集 id 必须直通 play（不再 detail 二跳）
+    ///
+    /// ```text
+    /// 根因：复合 id 被旧判据当成"裸条目 id"⇒ detail 二跳 ⇒ hdmoli 宽松路由回 200
+    /// ⇒ detail_of 用污染 id 再拼一层 `\u{1}` ⇒ split_ep_id 后 URL 段含 `\x01`
+    /// ⇒ share_stoken 的 Referer 非法 ⇒ reqwest `Error::builder`（真机 C 类 ×6）。
+    /// 注入证红：把 episode_id_is_direct_play 里的 `share_page_composite(episode)`
+    ///   分支删掉 ⇒ 本条红。
+    /// ```
+    #[test]
+    fn share_page_composite_episode_ids_are_direct_play() {
+        // HDMoli / Libvio 的真实形态：`{详情id}\u{1}{分享页URL}`（真机审计 n=60/72）
+        assert!(episode_id_is_direct_play(
+            "2857\u{1}https://pan.quark.cn/s/8efcd269e4b7"
+        ));
+        assert!(episode_id_is_direct_play(
+            "714891227\u{1}https://pan.quark.cn/s/3859962d7e13?pwd=ab12"
+        ));
+        // UC 同族同理
+        assert!(episode_id_is_direct_play(
+            "9\u{1}https://drive.uc.cn/s/ba2e2f0417114"
+        ));
+        // ★ 载荷不是分享页的复合 id 不受影响（sao_huo/app_get 等其它复合源照旧走二跳）
+        assert!(!episode_id_is_direct_play("sao\u{1}flag\u{1}0"));
+        assert!(!episode_id_is_direct_play("2857\u{1}https://cdn.example/x.m3u8"));
+        // 既有判据不许回归（对照 tests/csp_episode_direct_play.rs）
+        assert!(episode_id_is_direct_play("bvid|cid"));
+        assert!(episode_id_is_direct_play("https://pan.quark.cn/s/abc"));
+        assert!(!episode_id_is_direct_play("2857"));
     }
 
 

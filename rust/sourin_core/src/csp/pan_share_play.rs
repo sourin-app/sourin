@@ -98,6 +98,17 @@ pub fn parse_share_page(url: &str) -> Option<ShareRef> {
     if share_id.is_empty() {
         return None;
     }
+    /*
+     * ★ 2026-10-31（T4-C 防御纵深）：share_id 里混进**控制字符**就不是分享 id 了
+     * （真 id 是十六进制串）。混入途径实测过：复合剧集 id 双重拼接后 `\u{1}` 落进
+     * URL 段（见 provider.rs::episode_id_is_direct_play 的根因注释）。
+     * 放它过去 ⇒ 它会进 Referer header ⇒ reqwest `Error::builder`（客户端构造失败，
+     * 一个字节都没发出去，报错完全没指向性）。这里认不出就**如实交回 None**，
+     * 由调用方原样处理 —— 不猜、不洗数据。
+     */
+    if share_id.chars().any(char::is_control) {
+        return None;
+    }
     Some(ShareRef {
         kind,
         share_id: share_id.to_string(),
@@ -156,5 +167,25 @@ mod tests {
         assert_eq!(passcode_of("https://x/s/a?passcode=zz"), "zz");
         assert_eq!(passcode_of("https://x/s/a?q=1"), "", "别的参数不算提取码");
         assert_eq!(passcode_of("https://x/s/a"), "");
+    }
+
+    /// ★★★ T4-C 门禁（2026-10-31）：share_id 混进控制字符 ⇒ 拒认（防御纵深）
+    ///
+    /// ```text
+    /// 根因实测形态：复合剧集 id 双重拼接后 `\u{1}` 落进 URL 段 ⇒
+    /// `parse_share_page` 在 `/` 截断产出 `8efcd269e4b7\u{1}https:` —— 旧代码照单
+    /// 全收 ⇒ 它进 Referer ⇒ reqwest `Error::builder`。
+    /// 注入证红：把 `share_id.chars().any(char::is_control)` 那个分支删掉 ⇒ 本条红。
+    /// ```
+    #[test]
+    fn rejects_share_ids_with_control_chars() {
+        // 根因现场形态（provider.rs 判据注释里的完整链条）
+        assert!(parse_share_page("https://pan.quark.cn/s/8efcd269e4b7\u{1}https:").is_none());
+        // 其它控制字符同样拒
+        assert!(parse_share_page("https://pan.quark.cn/s/ab\u{7}cd").is_none());
+        assert!(parse_share_page("https://pan.quark.cn/s/ab\ncd").is_none());
+        // 正常 id（含提取码）不受影响
+        assert!(parse_share_page("https://pan.quark.cn/s/8efcd269e4b7").is_some());
+        assert!(parse_share_page("https://drive.uc.cn/s/ba2e2f0417114?pwd=8x2k").is_some());
     }
 }

@@ -335,7 +335,7 @@ impl PanDrive {
          * ⇒ 现在按 fid 重新取回 `(stoken, token)` **一对**，save 用同一对。
          * ```
          */
-        let referer = format!("{}/s/{share_id}", self.spec.share_host);
+        let referer = share_referer(&self.spec, share_id)?;
         let (fresh_stoken, fresh_token) = self
             .refresh_fid_token(cookie, share_id, passcode, fid)
             .await
@@ -956,6 +956,28 @@ fn share_token_url(spec: &PanDriveSpec) -> String {
     )
 }
 
+/// 分享链路共用的 Referer（`{share_host}/s/{share_id}`）
+///
+/// # ★ 2026-10-31（T4-C）：构造点显式校验，**不可能产出非法 header**
+/// ```text
+/// share_id 会被拼进 Referer（token/save/detail 三处）。http crate 的 HeaderValue
+/// 拒绝控制字符（\x00-\x1F、\x7F）⇒ 脏值一路 format! 到 reqwest `.send()` 才爆
+/// `Error::builder` —— 客户端构造失败，一个字节没发出去，报错毫无指向性
+/// （10-31 真机审计 C 类「夸克网盘 换分享 token 请求失败：builder error」×6 的形态，
+///   根因是复合剧集 id 双重拼接后 `\u{1}` 落进了 share_id，见 provider.rs 判据注释）。
+/// ⇒ 在构造点拒绝并返回**带原值**的明确错误（Debug 转义让 \u{1} 可见）；
+///   入口侧 `parse_share_page` 同步把这类垃圾挡掉（pan_share_play.rs）。
+/// ```
+fn share_referer(spec: &PanDriveSpec, share_id: &str) -> Result<String, String> {
+    if share_id.chars().any(char::is_control) {
+        return Err(format!(
+            "分享 id 含非法控制字符，拒绝构造请求（原始值：{share_id:?}）—— \
+             通常是上游把剧集 id 分隔符（\\u{{1}}）之类混进了分享链接"
+        ));
+    }
+    Ok(format!("{}/s/{share_id}", spec.share_host))
+}
+
 /// 换 token 的 body —— **JSON**（表单一律 500/15000，见上面对照读数 ①②）
 fn share_token_body(share_id: &str, passcode: &str) -> String {
     format!(
@@ -1480,7 +1502,7 @@ impl PanDrive {
         passcode: &str,
     ) -> Result<String, String> {
         let kind = self.spec.kind.display();
-        let referer = format!("{}/s/{share_id}", self.spec.share_host);
+        let referer = share_referer(&self.spec, share_id)?;
         let resp = self
             .client
             .post(share_token_url(&self.spec))
@@ -1522,7 +1544,7 @@ impl PanDrive {
         folder: &str,
     ) -> Result<Vec<DriveEntry>, String> {
         let kind = self.spec.kind.display();
-        let referer = format!("{}/s/{share_id}", self.spec.share_host);
+        let referer = share_referer(&self.spec, share_id)?;
         let url = share_detail_url(&self.spec, share_id, stoken, folder, 1);
         let resp = self
             .client
@@ -2469,6 +2491,48 @@ mod tests {
         assert!(
             !d.contains("pc-api.uc.cn") && !d.contains("UCBrowser"),
             "★★ 夸克不许借用 UC 的 host/pr：{d}"
+        );
+    }
+
+    /// ★★★ T4-C 门禁（2026-10-31）：分享 Referer 构造点拒绝控制字符并带原值
+    ///
+    /// ```text
+    /// 根因实测形态：复合剧集 id 双重拼接后 `\u{1}` 落进 share_id
+    /// （`8efcd269e4b7\u{1}https:`）⇒ 旧代码直接 format! 进 Referer ⇒
+    /// reqwest send 时 `Error::builder`（一个字节没发出去）。
+    /// 注入证红：把三处调用点改回 `format!("{}/s/{share_id}", …)` ⇒
+    ///   接线断言红；把 share_referer 的控制字符分支删掉 ⇒ 行为断言红。
+    /// ```
+    #[test]
+    fn share_referer_rejects_control_chars_with_original_value() {
+        let spec = quark_spec();
+        // 干净 id：逐字拼出（既有行为不许变）
+        assert_eq!(
+            share_referer(&spec, "8efcd269e4b7").unwrap(),
+            "https://pan.quark.cn/s/8efcd269e4b7"
+        );
+        // 根因实测形态：拒绝，且错误里带原值（Debug 转义让 \u{1} 可见）
+        let e = share_referer(&spec, "8efcd269e4b7\u{1}https:").unwrap_err();
+        assert!(e.contains("非法控制字符"), "要点明拒绝原因：{e}");
+        assert!(e.contains("\\u{1}"), "错误必须带原值（Debug 转义）：{e}");
+        // 别的控制字符同样拒（\r/\n 是最常见的注入形态）
+        assert!(share_referer(&spec, "abc\r\ndef").is_err());
+    }
+
+    /// 接线断言：分享链路三处 Referer 构造（save/token/detail）都必须走校验
+    ///
+    /// ```text
+    /// ★ 只数 `#[cfg(test)]` **之前**的代码段 —— 不然本测试自己的源码字面量
+    ///   也算一处（T4-C 实测抓到的假绿：注入掉一个调用点后断言仍绿）。
+    /// ```
+    #[test]
+    fn share_chain_wires_share_referer() {
+        let src = include_str!("pan_drive.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or("");
+        let n = prod.matches("share_referer(&self.spec, share_id)?").count();
+        assert!(
+            n >= 3,
+            "save/token/detail 三处 Referer 都必须走 share_referer 校验，实际 {n} 处"
         );
     }
 

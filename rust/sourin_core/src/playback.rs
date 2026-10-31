@@ -57,9 +57,39 @@ pub async fn get_detail(
         .registry
         .route(&mid)
         .ok_or_else(|| format!("无法路由: {provider}:{id}"))?;
-    let mut d = p.detail(&mid).await.map_err(|e| e.message)?;
+    let mut d = p.detail(&mid).await.map_err(|e| {
+        /*
+         * ★★★ T4-C 附带（2026-10-31，lead addendum：csp-appget 静默失败必留痕）
+         * cleanenv 审计实锤（.probe/play-audit-cleanenv-2026-10-31.md n=10）：
+         * play_item cmd ok、日志零行、playing=false —— resolve 阶段的失败有
+         * 1214799 补的 write_file_log，而 **detail 阶段**的失败（上游偶发断连）
+         * 在 `map_err(|e| e.message)` 里无声消失 ⇒ 排障黑洞，与 resolve 同构。
+         * 落盘口径与 resolve 完全同款：tag=PLAY、scrub_err_msg 脱敏、id 截 24 字符。
+         */
+        log_detail_failure(provider, id, &e);
+        e.message
+    })?;
     proxy_cover_one(state, provider, &mut d.cover).await;
     Ok(d)
+}
+
+/// detail 失败的落盘（与 [`resolve_stream`] 的 resolve 失败**同款口径**）
+///
+/// ```text
+/// 抽成函数的原因：① get_detail 里内联会把成功路径的缩进搅乱；
+/// ② 门禁可以直接喂 ProviderError 验证落盘行为（SOURIN_LOG_FILE 重定向），
+///   不必为它起一个 AppState/registry（bootstrap 在测试进程会绑 8642）。
+/// ```
+fn log_detail_failure(provider: &str, id: &str, e: &crate::model::ProviderError) {
+    let id_head: String = id.chars().take(24).collect();
+    let msg = crate::applog::scrub_err_msg(&e.message);
+    crate::applog::write_file_log(
+        "PLAY",
+        &format!(
+            "detail 失败 provider={provider} id~={id_head} kind={:?} needs_login={} msg={msg}",
+            e.kind, e.needs_login
+        ),
+    );
 }
 
 /// 列出可用播放源（多源换源的一级）
@@ -320,4 +350,70 @@ pub async fn resolve_first_playable(
 ) -> Result<Option<StreamCandidate>, String> {
     let list = resolve_stream(state, provider, id, req).await?;
     Ok(list.into_iter().find(|c| !c.drm_protected))
+}
+
+#[cfg(test)]
+mod detail_failure_log_tests {
+    use super::*;
+
+    /// ★★★ T4-C 门禁（2026-10-31，lead addendum：csp-appget 静默失败必留痕）
+    ///
+    /// ```text
+    /// 行为断言：log_detail_failure 必须把失败写进文件日志（SOURIN_LOG_FILE 覆盖
+    ///   优先于测试进程守卫 —— applog::log_file_path 的第一分支，与
+    ///   tests/file_log_gate.rs 同一套重定向手法）。
+    /// 注入证红：把 log_detail_failure 里的 write_file_log 删掉 ⇒ 本条红。
+    /// ```
+    #[test]
+    fn detail_failure_lands_in_file_log() {
+        let dir = std::env::temp_dir().join(format!(
+            "sourin-detail-log-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let log = dir.join("sourin-test.log");
+        std::env::set_var("SOURIN_LOG_FILE", &log);
+        let e = crate::model::ProviderError::new(
+            crate::model::ErrorKind::Network,
+            "请求上游失败（https://up.example/api.php/getappapi.index/vodDetail）",
+        );
+        log_detail_failure("csp-appget-97d9adc9", "357566@轮播|0|https://x/y.m3u8", &e);
+        std::env::remove_var("SOURIN_LOG_FILE");
+        let body = std::fs::read_to_string(&log).expect("detail 失败必须落盘");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            body.contains("detail 失败 provider=csp-appget-97d9adc9"),
+            "必须点明是 detail 阶段失败：{body}"
+        );
+        assert!(
+            body.contains("id~=357566@轮播|0|https://x/y"),
+            "id 截 24 字符：{body}"
+        );
+        assert!(
+            body.contains("msg=请求上游失败"),
+            "脱敏后原因必须可见：{body}"
+        );
+    }
+
+    /// 接线断言：get_detail 的 map_err 必须真的调 log_detail_failure
+    ///
+    /// ```text
+    /// ★ 只看 `#[cfg(test)]` **之前**的代码段 —— 不然本测试自己的注释里的调用串
+    ///   也算命中（T4-C 实测抓到的假绿：注入删掉调用后断言仍绿）。
+    /// 注入证红：把 get_detail map_err 里的 `log_detail_failure(provider, id, &e);`
+    /// 删掉 ⇒ 本条红（源码级守卫，先例：tests/csp_episode_direct_play.rs）。
+    /// ```
+    #[test]
+    fn get_detail_wires_detail_failure_logging() {
+        let src = include_str!("playback.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(
+            prod.contains("log_detail_failure(provider, id, &e);"),
+            "get_detail 的 detail 失败必须调 log_detail_failure（不许无声 map_err）"
+        );
+    }
 }

@@ -58,6 +58,7 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/services.dart';
 
 import '../core/device.dart';
+import '../core/ffi.dart' show userErrorText;
 import '../core/player_gestures.dart';
 import '../core/sourin_api.dart';
 import '../core/ui_prefs.dart';
@@ -3749,6 +3750,8 @@ VoidCallback? _configOf(String id) {
                       : _tvboxSources.containsKey(live[i].id)
                       ? () => _openTvboxUpdate(live[i].id, live[i].name)
                       : null,
+                  // ★ T5：TVBox 源的「上次更新」行（非 TVBox 源 = null ⇒ 不画）
+                  tvboxSource: _tvboxSources[live[i].id],
                 ),
               ),
             ),
@@ -4375,6 +4378,15 @@ VoidCallback? _configOf(String id) {
             ),
         ),
         /*
+         * ★ T5：TVBox 订阅自动更新（Owner：「…定时更新」）
+         *
+         * 放在源列表区块顶部：它管的是**全部** TVBox 订阅源（一份配置
+         * 产出几十个源共用一个链接 ⇒ 定时是按链接的，不是按卡片），
+         * 放任何一张卡上都会造成"别的卡也要各自设一遍"的误读。
+         * 读不到配置时组件自己返回零尺寸（附加信息，不拖垮整页）。
+         */
+        const TvboxAutoUpdateRow(),
+        /*
          * ★ 2026-10-26（Owner 架构要求 A′ 的 **B 半**）：
          *   TVBox 导入出来的源不再散成 16 张"平级卡"，而是收进
          *   **「TVBox 聚合」**这一个可折叠分组标题下：
@@ -4586,6 +4598,8 @@ VoidCallback? _configOf(String id) {
               onCopy: _copy,
               // ★ 第 06 项：源个性化覆盖层入口（按源，不改原件）
               onOverride: () => _openOverrideEditor(visible[i].id, visible[i].name),
+              // ★ T5：TVBox 源的「上次更新」行（非 TVBox 源 = null ⇒ 不画）
+              tvboxSource: _tvboxSources[visible[i].id],
               /*
                * ★★ 只有**有安装链接**的插件才有这个入口（task-23）
                *
@@ -5445,6 +5459,7 @@ class _ProviderCard extends StatelessWidget {
     this.onPluginUpdate,
     this.onCopy,
     this.onOverride,
+    this.tvboxSource,
     this.expanded = false,
     this.onToggleDetails,
     this.proxySummaryLoader,
@@ -5475,6 +5490,12 @@ class _ProviderCard extends StatelessWidget {
   /// 代理摘要行的**测试缝**（N5a）：生产传 null 走 `SourinApi`；
   /// 测试注入假 loader 驱动真实渲染。见 [_ProxyModeSummary]。
   final Future<ProxyConfig> Function(String id)? proxySummaryLoader;
+
+  /// ★ T5：这个源的订阅信息（`list_tvbox_sources` sidecar；非 TVBox 源 = null）
+  ///
+  /// null ⇒ 卡片上**不画**「上次更新」行（高度与改动前逐像素相同，
+  /// 与 task-7 插件卡「缺值整行不画」同一条纪律）。
+  final TvboxSourceInfo? tvboxSource;
 
   /// 点「正文那一格」时回调宿主切换展开态
   ///
@@ -5876,6 +5897,21 @@ class _ProviderCard extends StatelessWidget {
                               if (_sourceMetaLine != null) ...[
                                 const SizedBox(height: 4),
                                 _sourceMetaText(colors),
+                              ],
+                              /*
+                       * ★ T5：TVBox 源的「上次更新」行
+                       *
+                       * Owner 原话：「源 里面的没有显示上次更新时间，这个要显示出来」。
+                       * 数据来自 `list_tvbox_sources` sidecar 的 lastUpdateAt/Ok/Error
+                       * （`update_tvbox_source` 成功/失败都会盖章，见 tvbox.rs）。
+                       *
+                       * ⚠️ 只有 TVBox 源（`tvboxSource != null`）才画 ——
+                       *    JS 插件卡的时间在 task-7 那行（上面的 `_sourceMetaLine`），
+                       *    内置源两样都没有 ⇒ 整行不画，高度零回归。
+                       */
+                              if (_tvboxUpdatedLine != null) ...[
+                                const SizedBox(height: 4),
+                                _tvboxUpdatedText(colors),
                               ],
                               /*
                        * ⚠️ `Capabilities` **没有** `hasAny` 之类的聚合 getter
@@ -6440,6 +6476,40 @@ class _ProviderCard extends StatelessWidget {
     );
     if (tips.isEmpty) return text;
     return Tooltip(message: tips.join('\n'), child: text);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ★ T5：TVBox 源的「上次更新」行（Owner：「源里面没显示上次更新时间」）
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// 副标题文案；**`null` = 整行不画**（非 TVBox 源 / 没有订阅信息时）
+  ///
+  /// 文案口径单一来源：`tvboxLastUpdateText`（tvbox_source_panel.dart），
+  /// 与聚合二级页管理面板**同一份**（两处各写一遍必然漂移）。
+  /// ⚠️ 失败必须**看得出来**：只显示时间不显示成败，用户会把
+  ///    "定时更新一直在失败"读成"一直有在更新"。
+  String? get _tvboxUpdatedLine => tvboxLastUpdateText(tvboxSource);
+
+  /// 「上次更新」那一行（失败态红色；原因在 Tooltip 里，不丢字节）
+  Widget _tvboxUpdatedText(ColorScheme colors) {
+    final s = tvboxSource!;
+    final failed = tvboxLastUpdateFailed(s);
+    final text = Text(
+      _tvboxUpdatedLine!,
+      key: const ValueKey<String>('tvbox-updated-line'),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: FontSizes.cap,
+        color: failed ? colors.error : colors.onSurfaceVariant,
+        height: 1.4,
+      ),
+    );
+    if (!failed || (s.lastUpdateError ?? '').isEmpty) return text;
+    return Tooltip(
+      message: '失败原因：${s.lastUpdateError}',
+      child: text,
+    );
   }
 
   /// 能力标签行
@@ -9057,6 +9127,192 @@ class TvboxGroupHeader extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TVBox 订阅自动更新设置行（T5：Owner「…定时更新」）
+// ═══════════════════════════════════════════════════════════════════════
+
+/// 「TVBox 订阅自动更新」开关 + 间隔档位（关 / 6 小时 / 12 小时 / 24 小时）
+///
+/// # 它管的是什么
+/// ```text
+/// 后台循环在 Rust 侧（state.rs bootstrap 起的 60s 轮询，到点调用
+/// 既有的 update_tvbox_source）。本行只是那份配置
+/// （<数据目录>/tvbox-update-schedule.json）的界面 —— 改完最迟
+/// 60s 生效，不用重启。
+/// ```
+///
+/// # 为什么放在源列表顶部而不是某张卡上
+/// 一份配置产出几十个源、共用一个链接 ⇒ 定时是**按链接**的，
+/// 放在卡上会让人以为每张卡要各设一遍。
+///
+/// # 读不到配置时**整个组件返回零尺寸**
+/// 与 tvboxSources 的加载同一口径：它是附加信息，不该让源列表打不开；
+/// 但**写失败必须显示**（用户点了开关却没有反应 = 假 UI）。
+class TvboxAutoUpdateRow extends StatefulWidget {
+  const TvboxAutoUpdateRow({super.key});
+
+  /// 档位秒数（**纯数据**；「关」由开关表达，不进这组）
+  static const List<int> kIntervalChoices = <int>[21600, 43200, 86400];
+
+  /// 档位 → 文案（**纯函数**，门禁钉）。未知值按小时数如实折算 ——
+  /// 不编一个「其它」：配置里真有 8h（比如手改过文件），显示「8 小时」。
+  static String intervalLabel(int secs) {
+    switch (secs) {
+      case 21600:
+        return '6 小时';
+      case 43200:
+        return '12 小时';
+      case 86400:
+        return '24 小时';
+      default:
+        return '${secs ~/ 3600} 小时';
+    }
+  }
+
+  @override
+  State<TvboxAutoUpdateRow> createState() => _TvboxAutoUpdateRowState();
+}
+
+class _TvboxAutoUpdateRowState extends State<TvboxAutoUpdateRow> {
+  /// 当前配置（null = 还没读到 / 读失败 ⇒ 整个组件不画）
+  TvboxUpdateSchedule? _sched;
+
+  bool _saving = false;
+
+  /// 保存失败的原因（用户点了就必须有回音）
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final s = await SourinApi.tvboxUpdateScheduleGet();
+      if (!mounted) return;
+      setState(() => _sched = s);
+    } catch (e) {
+      // 读不到就不画（附加信息；与 tvboxSources 加载同一口径）
+      debugPrint('[SETTINGS] 订阅自动更新配置加载失败: $e');
+    }
+  }
+
+  Future<void> _save({bool? enabled, int? intervalSecs}) async {
+    final cur = _sched!;
+    final nextEnabled = enabled ?? cur.enabled;
+    final nextSecs = intervalSecs ?? cur.intervalSecs;
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final r = await SourinApi.tvboxUpdateScheduleSet(
+        enabled: nextEnabled,
+        intervalSecs: nextSecs,
+      );
+      if (!mounted) return;
+      setState(() {
+        _sched = r;
+        _saving = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      // ★ 收口（zz_t66_user_error_text_gate ③）：用户可见字段不许倒异常原文
+      setState(() {
+        _saving = false;
+        _error = userErrorText(e, fallback: '保存订阅自动更新设置失败，请稍后重试');
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final s = _sched;
+    if (s == null) return const SizedBox.shrink();
+    // 写失败必须显示（用户点了开关没回音 = 假 UI）；_error 只在这一处产生
+    final err = _error;
+    return Column(
+      key: const ValueKey<String>('tvbox-auto-update-row'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Container(
+      margin: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: 0.4),
+        borderRadius: Radii.rMd,
+      ),
+      child: Row(
+        children: <Widget>[
+          AppSwitch(
+            key: const ValueKey<String>('tvbox-auto-update-switch'),
+            value: s.enabled,
+            onChanged: _saving
+                ? null
+                : (v) => _save(enabled: v),
+          ),
+          const SizedBox(width: Sp.x2),
+          Expanded(
+            child: Column(
+              key: const ValueKey<String>('tvbox-auto-update-labels'),
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text(
+                  'TVBox 订阅自动更新',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
+                ),
+                Text(
+                  s.enabled
+                      ? '按链接定时核对订阅并应用更新（当前 ${TvboxAutoUpdateRow.intervalLabel(s.intervalSecs)}）'
+                      : '已关闭：只在手动点「立即更新」时联网',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (s.enabled) ...<Widget>[
+            const SizedBox(width: Sp.x2),
+            for (final secs in TvboxAutoUpdateRow.kIntervalChoices) ...<Widget>[
+              ChoiceChip(
+                key: ValueKey<String>('tvbox-auto-update-interval-$secs'),
+                label: Text(TvboxAutoUpdateRow.intervalLabel(secs)),
+                selected: s.intervalSecs == secs,
+                onSelected: _saving
+                    ? null
+                    : (_) => _save(intervalSecs: secs),
+              ),
+              const SizedBox(width: Sp.x1),
+            ],
+          ],
+        ],
+        ),
+        ),
+        if (err != null)
+          Padding(
+            key: const ValueKey<String>('tvbox-auto-update-error'),
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(
+              err,
+              style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+            ),
+          ),
+      ],
     );
   }
 }

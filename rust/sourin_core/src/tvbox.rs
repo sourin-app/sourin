@@ -2109,6 +2109,11 @@ pub async fn import_tvbox_config(
                 site_name: name.clone(),
                 api: api.clone(),
                 installed_at: now_secs(),
+                // 导入 ≠ 订阅更新：新导入的源如实显示「从未更新」，
+                // 等第一次（手动或定时）订阅更新成功才盖章。
+                last_update_at: 0,
+                last_update_ok: false,
+                last_update_error: None,
             };
             if let Err(e) = write_tvbox_meta(&state.data_dir, id, &meta) {
                 log::warn!("记录 TVBox 订阅来源失败（{id}）：{e}");
@@ -2181,6 +2186,19 @@ pub struct TvboxSourceMeta {
     /// Unix 秒
     #[serde(default)]
     pub installed_at: i64,
+    /// ★ 上次订阅更新的时间（Unix 秒；0 = 从未更新过 —— 界面据此显示「从未更新」）
+    ///
+    /// 成功的判定覆盖 `update_tvbox_source` 的**两条**出口：
+    /// 远端有变化并应用、以及「远端与本地一致无需更新」（后者也是一次成功的核对，
+    /// 不盖章的话定时器会把同一条链接判成永远超期、每轮重复下载）。
+    #[serde(default)]
+    pub last_update_at: i64,
+    /// 上次更新是否成功（`last_update_at > 0 && !ok` = 上次失败，原因见 error）
+    #[serde(default)]
+    pub last_update_ok: bool,
+    /// 上次失败的原因（成功 / 从未更新为 None；Dart 界面据此显示失败行）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_update_error: Option<String>,
 }
 
 /// sidecar 的磁盘形态（带版本号，将来能迁移）
@@ -2280,6 +2298,197 @@ pub fn forget_tvbox_meta(dir: &std::path::Path, id: &str) -> std::result::Result
         return Ok(());
     }
     save_tvbox_metas(dir, &map)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  订阅定时自动更新（T5：Owner「源里面没显示上次更新时间…定时更新」）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// # 复用而非重写
+//
+// 到点之后做的就是**既有的** `update_tvbox_source`（apply_new=true,
+// delete_missing=false —— 与手动一键更新同一组保守默认值）。
+// 本节只补三件事：配置落盘、到点判定、后台循环。
+
+/// 订阅自动更新配置（`<data_dir>/tvbox-update-schedule.json`）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TvboxUpdateSchedule {
+    /// 总开关（Owner 要的是「定时更新」，默认**开** —— 关掉是他明确动作才算数）
+    pub enabled: bool,
+    /// 间隔秒数（默认 24h；合法档位 6h/12h/24h —— 白名单在 `tvbox_update_schedule_set`）
+    pub interval_secs: i64,
+}
+
+impl Default for TvboxUpdateSchedule {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_secs: 86_400,
+        }
+    }
+}
+
+fn tvbox_update_schedule_file(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("tvbox-update-schedule.json")
+}
+
+/// 读自动更新配置（文件不存在 / 坏了 ⇒ 默认值，不让设置页打不开）
+pub fn load_tvbox_update_schedule(dir: &std::path::Path) -> TvboxUpdateSchedule {
+    let p = tvbox_update_schedule_file(dir);
+    let Ok(raw) = std::fs::read_to_string(&p) else {
+        return TvboxUpdateSchedule::default();
+    };
+    match serde_json::from_str(&raw) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("订阅自动更新配置解析失败（按默认值处理）: {p:?}: {e}");
+            TvboxUpdateSchedule::default()
+        }
+    }
+}
+
+/// 写自动更新配置（原子写，与 sidecar 同一手法）
+pub fn save_tvbox_update_schedule(
+    dir: &std::path::Path,
+    sched: &TvboxUpdateSchedule,
+) -> std::result::Result<(), String> {
+    let p = tvbox_update_schedule_file(dir);
+    let tmp = p.with_extension("json.tmp");
+    let body = serde_json::to_string_pretty(sched)
+        .map_err(|e| format!("序列化订阅自动更新配置失败: {e}"))?;
+    std::fs::write(&tmp, body).map_err(|e| format!("写入订阅自动更新配置失败: {e}"))?;
+    std::fs::rename(&tmp, &p).map_err(|e| format!("替换订阅自动更新配置失败: {e}"))
+}
+
+/// ★ 到点判定（**纯函数** —— 门禁钉的就是它）
+///
+/// ```text
+/// 从未更新过（at ≤ 0）      ⇒ 到点（冷启动补一次，正是 Owner 要的）
+/// 距上次 ≥ interval         ⇒ 到点
+/// 其余（含禁用 / interval≤0）⇒ 不到点
+/// ```
+pub fn tvbox_update_due(last_update_at: i64, interval_secs: i64, now: i64, enabled: bool) -> bool {
+    if !enabled || interval_secs <= 0 {
+        return false;
+    }
+    if last_update_at <= 0 {
+        return true;
+    }
+    now >= last_update_at.saturating_add(interval_secs)
+}
+
+/// 从本地源清单里挑出到点要更新的**链接**（**纯函数**，返回 `(url, 代表源 id)`）
+///
+/// # 为什么按链接去重
+///
+/// 一份配置产出几十个源共用一个链接；`update_tvbox_source` 对任一代表源
+/// 调用一次就会核对整条链接并给全部 in_link 源盖章（见 `stamp_link_update`）
+/// ⇒ 每条链接只挑**第一个**到点的源当代表，绝不重复下载。
+pub fn collect_due_links(
+    sources: &[(String, String, String, Option<String>)],
+    metas: &std::collections::HashMap<String, TvboxSourceMeta>,
+    enabled: bool,
+    interval_secs: i64,
+    now: i64,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (id, _name, _api, _ext) in sources.iter() {
+        let Some(m) = metas.get(id) else { continue };
+        let Some(url) = m.source_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) else {
+            continue;
+        };
+        if out.iter().any(|(u, _)| u == url) {
+            continue;
+        }
+        if tvbox_update_due(m.last_update_at, interval_secs, now, enabled) {
+            out.push((url.to_string(), id.clone()));
+        }
+    }
+    out
+}
+
+/// 后台循环：每 60s 醒一次，把到点的订阅链接各更新一次
+///
+/// ```text
+/// · 首轮先等 60s：避开启动恢复风暴，但仍是「冷启动超期即补一次」
+/// · 每轮重新读配置 ⇒ 用户改开关/间隔最迟 60s 生效，不用重启
+/// · 失败只 warn（update_tvbox_source 已盖章 + 落日志），绝不 panic ——
+///   定时任务崩了比不跑更糟
+/// ```
+pub fn spawn_auto_update(state: &std::sync::Arc<crate::state::AppState>) {
+    let st = state.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        loop {
+            ticker.tick().await;
+            let sched = load_tvbox_update_schedule(&st.data_dir);
+            let sources = match local_tvbox_sources(&st) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::warn!("TVBox 定时更新：列本地源失败（本轮跳过）: {e}");
+                    continue;
+                }
+            };
+            if sources.is_empty() {
+                continue;
+            }
+            let metas = load_tvbox_metas(&st.data_dir);
+            let due =
+                collect_due_links(&sources, &metas, sched.enabled, sched.interval_secs, now_secs());
+            for (url, rep) in due {
+                log::info!("TVBox 订阅定时更新开始：{url}（代表源 {rep}）");
+                match update_tvbox_source(&st, &rep, true, false).await {
+                    Ok(_) => log::info!("TVBox 订阅定时更新完成：{url}"),
+                    Err(e) => log::warn!("TVBox 订阅定时更新失败（已保留旧配置）：{e}"),
+                }
+            }
+        }
+    });
+}
+
+/// 读自动更新配置（FFI：设置页的开关 + 间隔）
+pub fn tvbox_update_schedule_get(
+    state: &crate::state::AppState,
+) -> std::result::Result<serde_json::Value, String> {
+    let s = load_tvbox_update_schedule(&state.data_dir);
+    Ok(serde_json::json!({
+        "enabled": s.enabled,
+        "intervalSecs": s.interval_secs,
+    }))
+}
+
+/// 写自动更新配置（FFI：设置页的开关 + 间隔）
+///
+/// # ★ 档位白名单（互检 P3-1）
+///
+/// ```text
+/// 只收 6h / 12h / 24h 三档（「关」由 enabled=false 表达，不占间隔档位）。
+/// 其它值一律拒绝 —— 防手改配置文件或直调 FFI 塞个 60 秒上来，
+/// 把订阅更新变成"每分钟下载一次"（那是对上游的攻击，也是对自己流量的浪费）。
+/// ```
+pub fn tvbox_update_schedule_set(
+    state: &crate::state::AppState,
+    enabled: bool,
+    interval_secs: i64,
+) -> std::result::Result<serde_json::Value, String> {
+    const ALLOWED: [i64; 3] = [21_600, 43_200, 86_400];
+    if !ALLOWED.contains(&interval_secs) {
+        return Err(format!(
+            "订阅自动更新的间隔只支持 6 小时 / 12 小时 / 24 小时（收到 {interval_secs} 秒）"
+        ));
+    }
+    let sched = TvboxUpdateSchedule {
+        enabled,
+        interval_secs,
+    };
+    save_tvbox_update_schedule(&state.data_dir, &sched)?;
+    Ok(serde_json::json!({
+        "enabled": sched.enabled,
+        "intervalSecs": sched.interval_secs,
+    }))
 }
 
 // ── 远端 vs 本地的站点差异 ─────────────────────────────────────────────
@@ -2550,6 +2759,10 @@ pub fn list_tvbox_sources(
             "needsSource": url.is_none(),
             "siteKey": meta.map(|m| m.site_key.clone()).unwrap_or_default(),
             "installedAt": meta.map(|m| m.installed_at).unwrap_or(0),
+            // ★ T5：上次订阅更新（0 = 从未更新；ok=false 时界面显示失败行）
+            "lastUpdateAt": meta.map(|m| m.last_update_at).unwrap_or(0),
+            "lastUpdateOk": meta.map(|m| m.last_update_ok).unwrap_or(false),
+            "lastUpdateError": meta.and_then(|m| m.last_update_error.clone()),
         }));
     }
     Ok(serde_json::json!({
@@ -2592,6 +2805,10 @@ pub fn set_tvbox_source(
         site_name: if old.site_name.is_empty() { found.1.clone() } else { old.site_name },
         api: if old.api.is_empty() { found.2.clone() } else { old.api },
         installed_at: if old.installed_at == 0 { now_secs() } else { old.installed_at },
+        // 换/补链接不等于更新过：保留旧章（没有就还是「从未更新」）
+        last_update_at: old.last_update_at,
+        last_update_ok: old.last_update_ok,
+        last_update_error: old.last_update_error,
     };
     write_tvbox_meta(&state.data_dir, id, &meta)?;
     Ok(serde_json::json!({
@@ -2805,7 +3022,76 @@ pub async fn check_tvbox_updates(
 ///
 /// ⚠️ 第 ④ 条是这个功能的核心：配置作者临时删掉一个站又加回来是常事，
 ///    静默删掉用户本地的东西是不可逆的伤害。
+/// 进程级订阅更新锁：手动更新（FFI 命令）与定时更新共用
+///
+/// sidecar 是整份读改写（`write_tvbox_meta` = load → insert → save），
+/// 两个并发更新同一条链接会互相覆盖盖章结果 ⇒ 一律串行。
+static UPDATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 更新一个 TVBox 源（入口：FFI 命令 / 定时任务都走这里）
+///
+/// # ★ 失败也要留下痕迹（T5；「静默失败 = 缺陷」）
+///
+/// ```text
+/// 内层 _inner 失败时只把 Err 抛给调用方 —— 手动更新界面能显示，
+/// 但定时更新只拿得到日志。这里统一收口：
+///   · log::warn!（落日志，stderr 可见）
+///   · 给同一条链接的全部源盖「失败章」（时间 + 原因）
+///     ⇒ 界面的「上次更新」行如实显示失败，而不是停留在旧的成功时间
+/// 「没有找到这个源 / 没有订阅链接」不算更新失败（根本没有可更新的东西）⇒ 不盖章。
+/// ```
 pub async fn update_tvbox_source(
+    state: &crate::state::AppState,
+    id: &str,
+    apply_new: bool,
+    delete_missing: bool,
+) -> std::result::Result<serde_json::Value, String> {
+    let _guard = UPDATE_LOCK.lock().await;
+    let r = update_tvbox_source_inner(state, id, apply_new, delete_missing).await;
+    if let Err(e) = &r {
+        let url = read_tvbox_meta(&state.data_dir, id)
+            .and_then(|m| m.source_url)
+            .filter(|u| !u.trim().is_empty());
+        if let Some(url) = url {
+            log::warn!("TVBox 订阅更新失败（{url}）：{e}");
+            stamp_link_update(&state.data_dir, &url, now_secs(), false, Some(e.clone()));
+        }
+    }
+    r
+}
+
+/// 给同一条订阅链接下的全部源盖一次章（成功或失败）
+///
+/// 一份配置产出几十个源、共用同一个链接 —— 一次下载核对的是**整条链接**，
+/// 所以章也必须盖整条：只盖 added/changed 的话，未变的源 `last_update_at`
+/// 不动，定时器每轮都会把这条链接判成超期、重复下载。
+fn stamp_link_update(
+    dir: &std::path::Path,
+    url: &str,
+    now: i64,
+    ok: bool,
+    error: Option<String>,
+) {
+    let mut map = load_tvbox_metas(dir);
+    let mut touched = 0usize;
+    for m in map.values_mut() {
+        if m.source_url.as_deref() == Some(url) {
+            m.last_update_at = now;
+            m.last_update_ok = ok;
+            m.last_update_error = if ok { None } else { error.clone() };
+            touched += 1;
+        }
+    }
+    if touched == 0 {
+        return;
+    }
+    if let Err(e) = save_tvbox_metas(dir, &map) {
+        // 盖章失败不该连累更新本身，但必须留日志（静默失败 = 缺陷）
+        log::warn!("写 TVBox 订阅更新时间失败（{url}）：{e}");
+    }
+}
+
+async fn update_tvbox_source_inner(
     state: &crate::state::AppState,
     id: &str,
     apply_new: bool,
@@ -2874,6 +3160,9 @@ pub async fn update_tvbox_source(
 
     let want_delete = delete_missing && !diff.removed.is_empty();
     if diff.added.is_empty() && diff.changed.is_empty() && !want_delete {
+        // ★ 「远端与本地一致」也是一次成功的核对 ⇒ 盖成功章。
+        //   不盖的话这条链接在定时器眼里永远没更新过，每 60s 都会重复下载。
+        stamp_link_update(&state.data_dir, &url, now_secs(), true, None);
         return Ok(serde_json::json!({
             "updated": false,
             "reason": "远端配置与本地一致，无需更新",
@@ -3039,6 +3328,11 @@ pub async fn update_tvbox_source(
                 site_name: job.name.clone(),
                 api: api_norm.clone(),
                 installed_at: now_secs(),
+                // 走到这里的源刚被这次更新重写 ⇒ 盖成功章
+                //（同链接下没变的源由下面的 stamp_link_update 统一补章）
+                last_update_at: now_secs(),
+                last_update_ok: true,
+                last_update_error: None,
             },
         ));
         let row = serde_json::json!({
@@ -3082,6 +3376,8 @@ pub async fn update_tvbox_source(
     for (sid, meta) in meta_writes.iter() {
         write_tvbox_meta(&state.data_dir, sid, meta)?;
     }
+    // ★ 成功路径收尾：同链接下**没变化**的源也要补章（见 stamp_link_update 的注释）
+    stamp_link_update(&state.data_dir, &url, now_secs(), true, None);
 
     // ── 远端消失的站：默认只报告 ────────────────────────────────────
     let mut deleted_out: Vec<serde_json::Value> = Vec::new();
@@ -3366,6 +3662,10 @@ pub async fn restore_tvbox_js(
             site_name: manifest.name.clone(),
             api: upstream.clone(),
             installed_at: now_secs(),
+            // 还原 ≠ 订阅更新过 ⇒ 如实「从未更新」
+            last_update_at: 0,
+            last_update_ok: false,
+            last_update_error: None,
         },
     );
 
@@ -4978,6 +5278,7 @@ mod task12_subscription {
                 site_name: if i == 0 { "甲站".to_string() } else { "乙站".to_string() },
                 api: api.clone(),
                 installed_at: now_secs(),
+                ..Default::default()
             };
             write_tvbox_meta(&dir, id, &meta).expect("写 sidecar 失败");
         }
@@ -5136,6 +5437,7 @@ mod task12_subscription {
             site_name: "甲".to_string(),
             api: "http://x.test/api".to_string(),
             installed_at: 1,
+            ..Default::default()
         };
         write_tvbox_meta(&dir, "id1", &meta).expect("覆盖坏文件失败");
         let got = read_tvbox_meta(&dir, "id1").expect("应能读回");
@@ -5155,6 +5457,320 @@ mod task12_subscription {
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  T5：上次更新盖章 + 定时判定（Owner：「源…上次更新时间…定时更新」）
+    // ═════════════════════════════════════════════════════════════════
+
+    /// ★ 到点判定（纯函数）四象限：从未更新 / 新鲜 / 超期 / 禁用
+    #[test]
+    fn t5_due_judgment() {
+        let now: i64 = 1_800_000_000;
+        // 从未更新过（at=0）⇒ 到点（冷启动补一次的判据）
+        assert!(
+            tvbox_update_due(0, 86_400, now, true),
+            "从未更新过必须判到点，否则冷启动永远不会补"
+        );
+        // 新鲜（at 在间隔内）⇒ 不到点
+        assert!(!tvbox_update_due(now - 3_600, 86_400, now, true));
+        // 超期（at + interval ≤ now）⇒ 到点（边界含等号）
+        assert!(tvbox_update_due(now - 86_400, 86_400, now, true), "到点即该更新（边界含等号）");
+        // 禁用 ⇒ 永远不到点（哪怕超期一万年）
+        assert!(!tvbox_update_due(0, 86_400, now, false));
+        assert!(!tvbox_update_due(now - 999_999, 86_400, now, false));
+        // interval 非法 ⇒ 不到点（不留"开着但间隔非法"的中间态）
+        assert!(!tvbox_update_due(0, 0, now, true));
+        assert!(!tvbox_update_due(0, -1, now, true));
+    }
+
+    /// ★ 链接挑选（纯函数）：按链接去重、无链接跳过、禁用不出
+    #[test]
+    fn t5_collect_due_links_dedupes_by_link() {
+        let sources = vec![
+            ("a".to_string(), "甲".to_string(), "http://x/api".to_string(), None),
+            ("b".to_string(), "乙".to_string(), "http://x/api".to_string(), None),
+            ("c".to_string(), "丙".to_string(), "http://y/api".to_string(), None),
+            ("d".to_string(), "丁".to_string(), "http://z/api".to_string(), None),
+        ];
+        let mut metas = std::collections::HashMap::new();
+        // a、b 同一条链接 L1：a 超期、b 新鲜 ⇒ 只该出一条，代表是 a
+        metas.insert(
+            "a".to_string(),
+            TvboxSourceMeta { source_url: Some("http://cfg/1.json".into()), last_update_at: 0, ..Default::default() },
+        );
+        metas.insert(
+            "b".to_string(),
+            TvboxSourceMeta {
+                source_url: Some("http://cfg/1.json".into()),
+                last_update_at: 1_800_000_000,
+                last_update_ok: true,
+                ..Default::default()
+            },
+        );
+        // c 另一条链接 L2，也超期 ⇒ 第二条
+        metas.insert(
+            "c".to_string(),
+            TvboxSourceMeta { source_url: Some("http://cfg/2.json".into()), last_update_at: 0, ..Default::default() },
+        );
+        // d 没有订阅链接 ⇒ 永远不该出现
+        metas.insert("d".to_string(), TvboxSourceMeta { source_url: None, ..Default::default() });
+
+        let got = collect_due_links(&sources, &metas, true, 86_400, 1_800_000_000);
+        assert_eq!(
+            got,
+            vec![
+                ("http://cfg/1.json".to_string(), "a".to_string()),
+                ("http://cfg/2.json".to_string(), "c".to_string()),
+            ],
+            "同链接去重成一条（代表 a），无链接的 d 不该出现：{got:?}"
+        );
+
+        // 禁用 ⇒ 空
+        assert!(
+            collect_due_links(&sources, &metas, false, 86_400, 1_800_000_000).is_empty(),
+            "总开关关着就不该挑出任何链接"
+        );
+    }
+
+    /// 配置文件：默认值（开 + 24h）/ 往返 / 坏文件回退默认
+    #[test]
+    fn t5_schedule_persist_roundtrip() {
+        let dir = super::task5_ab_restart::unique_tmp_dir("t5sched");
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+
+        // 文件不存在 ⇒ 默认：开 + 24h（Lead 批复的默认档位）
+        let d = load_tvbox_update_schedule(&dir);
+        assert!(d.enabled && d.interval_secs == 86_400, "默认必须是 开+24h：{d:?}");
+
+        // 往返
+        save_tvbox_update_schedule(&dir, &TvboxUpdateSchedule { enabled: false, interval_secs: 21_600 })
+            .expect("写配置失败");
+        let r = load_tvbox_update_schedule(&dir);
+        assert!(!r.enabled && r.interval_secs == 21_600, "写读应往返：{r:?}");
+
+        // 坏文件 ⇒ 回退默认（设置页不能因此打不开）
+        std::fs::write(tvbox_update_schedule_file(&dir), "{not json").expect("写坏文件失败");
+        let b = load_tvbox_update_schedule(&dir);
+        assert!(b.enabled && b.interval_secs == 86_400, "坏文件应回退默认：{b:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ 档位白名单（互检 P3-1）：只收 6/12/24 小时；非法值拒绝且**不改写现有配置**
+    ///
+    /// ```text
+    /// 注入证红：把 tvbox_update_schedule_set 的白名单判断摘掉 ⇒ 本条红。
+    /// 防的场景：手改配置文件 / 直调 FFI 塞 60 秒 ⇒ 订阅变成"每分钟下载"。
+    /// ```
+    #[tokio::test]
+    async fn t5_schedule_set_whitelist() {
+        std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+        let dir = super::task5_ab_restart::unique_tmp_dir("t5wl");
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+
+        // 合法档位：三档 + 关（关由 enabled 表达，间隔仍须合法）
+        for (en, secs) in [(true, 21_600), (true, 43_200), (true, 86_400), (false, 21_600)] {
+            let r = tvbox_update_schedule_set(&st, en, secs).expect("合法档位应成功");
+            assert_eq!(r["intervalSecs"], secs, "{r}");
+            let s = load_tvbox_update_schedule(&dir);
+            assert_eq!(s.interval_secs, secs, "写盘应生效：{s:?}");
+            assert_eq!(s.enabled, en, "{s:?}");
+        }
+
+        // 非法值：拒绝 + 原因可读 + **现有配置不被改写**
+        let before = load_tvbox_update_schedule(&dir);
+        for bad in [0i64, -1, 60, 3_600, 172_800] {
+            let e = tvbox_update_schedule_set(&st, true, bad)
+                .expect_err("非法档位必须拒绝");
+            assert!(e.contains("6 小时"), "拒绝原因要说清支持哪些档：{e}");
+            let after = load_tvbox_update_schedule(&dir);
+            assert_eq!(
+                (after.enabled, after.interval_secs),
+                (before.enabled, before.interval_secs),
+                "拒绝 {bad} 秒时不得改写现有配置：{after:?}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ 盖章只碰**同一条链接**的源（别的链接 / 无链接的源不许被牵连）
+    #[test]
+    fn t5_stamp_touches_only_same_link() {
+        let dir = super::task5_ab_restart::unique_tmp_dir("t5stamp");
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+        let mk = |u: Option<&str>| TvboxSourceMeta {
+            source_url: u.map(String::from),
+            ..Default::default()
+        };
+        write_tvbox_meta(&dir, "l1a", &mk(Some("http://cfg/1.json"))).unwrap();
+        write_tvbox_meta(&dir, "l1b", &mk(Some("http://cfg/1.json"))).unwrap();
+        write_tvbox_meta(&dir, "l2", &mk(Some("http://cfg/2.json"))).unwrap();
+        write_tvbox_meta(&dir, "nolink", &mk(None)).unwrap();
+
+        // 失败章（带原因）只应落在 l1a / l1b
+        stamp_link_update(&dir, "http://cfg/1.json", 1_234, false, Some("下载配置失败：炸了".into()));
+
+        let m = load_tvbox_metas(&dir);
+        for id in ["l1a", "l1b"] {
+            let x = &m[id];
+            assert_eq!(x.last_update_at, 1_234, "{id} 应盖章");
+            assert!(!x.last_update_ok, "{id} 应是失败章");
+            assert_eq!(
+                x.last_update_error.as_deref(),
+                Some("下载配置失败：炸了"),
+                "{id} 应带原因"
+            );
+        }
+        assert_eq!(m["l2"].last_update_at, 0, "别的链接不许被牵连");
+        assert!(!m["nolink"].last_update_ok, "无链接的源不许被牵连");
+
+        // 成功章清掉原因
+        stamp_link_update(&dir, "http://cfg/1.json", 2_345, true, None);
+        let m = load_tvbox_metas(&dir);
+        assert!(m["l1a"].last_update_ok && m["l1a"].last_update_error.is_none());
+        assert_eq!(m["l1a"].last_update_at, 2_345);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ e2e：远端无变化（「无需更新」早退路径）也必须盖成功章 ——
+    ///   且**同链接两个源都盖**。不盖的话定时器每轮都把这条链接判成超期，
+    ///   60s 重复下载一次（这正是盖章要防的那个回潮）。
+    #[tokio::test]
+    async fn t5_update_unchanged_stamps_all_in_link_sources() {
+        std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+        let sink = super::task5_ab_restart::start_sink(super::task5_ab_restart::SHARE_PLAIN);
+        let api = fake_api(&sink);
+        let dir = super::task5_ab_restart::unique_tmp_dir("t5unchanged");
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+
+        // 本地导入与 /cfg/v2.json **完全一致**的配置（k1 甲站 + k3 丙站）
+        let cfg_local = format!(
+            "{{\"sites\":[\
+               {{\"key\":\"k1\",\"name\":\"甲站\",\"type\":1,\"api\":\"{api}\"}},\
+               {{\"key\":\"k3\",\"name\":\"丙站\",\"type\":1,\"api\":\"{}/api3/vod\"}}\
+             ]}}",
+            sink.url()
+        );
+        let res = import_tvbox_config(&st, &cfg_local).await.expect("导入失败");
+        let ids: Vec<String> = res["imported"]
+            .as_array()
+            .map(|a| a.iter().map(|x| x["id"].as_str().unwrap_or_default().to_string()).collect())
+            .unwrap_or_default();
+        assert_eq!(ids.len(), 2, "应导入 2 个源：{res}");
+
+        // 两个源都记上同一条订阅链接（sidecar 直接写，与 e2e 既有写法一致）
+        let sub_url = format!("{}/cfg/v2.json", sink.url());
+        for id in ids.iter() {
+            write_tvbox_meta(
+                &dir,
+                id,
+                &TvboxSourceMeta {
+                    source_url: Some(sub_url.clone()),
+                    ..Default::default()
+                },
+            )
+            .expect("写 sidecar 失败");
+        }
+        // 盖章前清零（导入路径不盖章 ⇒ 本来就是 0；这里断言起点）
+        for id in ids.iter() {
+            assert_eq!(read_tvbox_meta(&dir, id).unwrap().last_update_at, 0);
+        }
+
+        let upsink_before = sink
+            .hits()
+            .iter()
+            .filter(|h| h.method.eq_ignore_ascii_case("GET"))
+            .count();
+        let upd = update_tvbox_source(&st, &ids[0], true, false).await.expect("更新失败");
+        assert_eq!(upd["updated"], serde_json::Value::Bool(false), "远端一致 ⇒ 无需更新：{upd}");
+
+        // ★ 两个源都必须盖上成功章 —— 这是本条的核心判据
+        for id in ids.iter() {
+            let m = read_tvbox_meta(&dir, id).unwrap();
+            assert!(m.last_update_at > 0, "{id} 必须盖章（否则定时器会重复下载）：{m:?}");
+            assert!(m.last_update_ok, "{id} 应是成功章：{m:?}");
+            assert!(m.last_update_error.is_none(), "{id} 成功章不该带原因：{m:?}");
+        }
+        let upsink_after = sink
+            .hits()
+            .iter()
+            .filter(|h| h.method.eq_ignore_ascii_case("GET"))
+            .count();
+        assert_eq!(
+            upsink_after,
+            upsink_before + 1,
+            "远端一致时只应下载一次配置（hits: {} -> {}）",
+            upsink_before,
+            upsink_after
+        );
+
+        // list 输出也要带上新字段（Dart 界面的数据源）
+        let listed = list_tvbox_sources(&st).expect("列出源失败");
+        let one = &listed["sources"][0];
+        assert!(one["lastUpdateAt"].as_i64().unwrap_or(0) > 0, "list 应带 lastUpdateAt：{one}");
+        assert_eq!(one["lastUpdateOk"], serde_json::Value::Bool(true), "{one}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ e2e：更新失败盖**失败章**（时间 + 原因），本地源原样保留
+    #[tokio::test]
+    async fn t5_update_failure_stamps_error() {
+        std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+        let sink = super::task5_ab_restart::start_sink(super::task5_ab_restart::SHARE_PLAIN);
+        let api = fake_api(&sink);
+        let dir = super::task5_ab_restart::unique_tmp_dir("t5fail");
+        std::fs::create_dir_all(&dir).expect("建临时目录失败");
+        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+
+        let cfg_local = format!(
+            "{{\"sites\":[{{\"key\":\"k1\",\"name\":\"甲站\",\"type\":1,\"api\":\"{api}\"}}]}}"
+        );
+        let res = import_tvbox_config(&st, &cfg_local).await.expect("导入失败");
+        let id = res["imported"][0]["id"].as_str().unwrap_or_default().to_string();
+        // 指向一个必然拒连的端口（既有测试同款：127.0.0.1:1）
+        write_tvbox_meta(
+            &dir,
+            &id,
+            &TvboxSourceMeta {
+                source_url: Some("http://127.0.0.1:1/cfg/v2.json".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("写 sidecar 失败");
+
+        let upd = update_tvbox_source(&st, &id, true, false).await;
+        assert!(upd.is_err(), "拒连地址必须报错：{upd:?}");
+
+        // ★ 失败章：时间 + 原因（用户界面据此显示"上次更新失败"）
+        let m = read_tvbox_meta(&dir, &id).unwrap();
+        assert!(m.last_update_at > 0, "失败也要盖时间章：{m:?}");
+        assert!(!m.last_update_ok, "必须标失败：{m:?}");
+        let why = m.last_update_error.clone().unwrap_or_default();
+        assert!(why.contains("下载配置失败"), "原因要进章：{why:?}");
+
+        // list 输出如实带失败信息（Dart 界面的数据源）
+        let listed = list_tvbox_sources(&st).expect("列出源失败");
+        let one = listed["sources"]
+            .as_array()
+            .and_then(|a| a.iter().find(|x| x["id"] == id.as_str()))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        assert_eq!(one["lastUpdateOk"], serde_json::Value::Bool(false), "{one}");
+        assert!(!one["lastUpdateError"].as_str().unwrap_or_default().is_empty(), "{one}");
+
+        // 本地源本体原样（「失败不影响旧配置」）
+        assert!(
+            st.third_party.read().unwrap().iter().any(|p| p.id() == id),
+            "失败后本地源必须还在"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -5359,6 +5975,7 @@ mod real_sites {
                     site_name: "非凡┃影视".to_string(),
                     api: "http://cj.ffzyapi.com/api.php/provide/vod".to_string(),
                     installed_at: now_secs(),
+                    ..Default::default()
                 },
             )
             .expect("写 sidecar 失败");
@@ -5848,6 +6465,7 @@ async fn update_path_persists_ext_for_new_csp_source() {
             site_name: "老源".to_string(),
             api: "http://cj.example.com/api.php/provide/vod".to_string(),
             installed_at: now_secs(),
+            ..Default::default()
         },
     )
     .expect("写 meta");
@@ -6336,6 +6954,7 @@ mod t1042_contract_fixes {
                     site_name: "直连站".to_string(),
                     api: "http://127.0.0.1:1/api.php/provide/vod".to_string(),
                     installed_at: now_secs(),
+                    ..Default::default()
                 },
             )
             .expect("写 meta");
@@ -6859,6 +7478,7 @@ mod t_ext_import {
                 site_name: "老源".to_string(),
                 api: "http://127.0.0.1:1/api.php/provide/vod".to_string(),
                 installed_at: now_secs(),
+                ..Default::default()
             },
         )
         .expect("写 meta");

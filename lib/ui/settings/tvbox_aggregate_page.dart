@@ -1015,6 +1015,8 @@ class TvboxAggregateManageSection extends StatelessWidget {
                   id: repId,
                   name: displayName,
                   sourceUrl: url,
+                  // ★ T5：管理面板也显示「上次更新」（同一份 sidecar 数据）
+                  info: info,
                 ),
             ],
           ),

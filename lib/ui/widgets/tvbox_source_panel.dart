@@ -223,6 +223,34 @@ TvboxProbeResult tvboxProbeOf(TvboxUpdateItem? it) {
   );
 }
 
+/// 「上次更新」的一行文案（**纯函数**，源卡片与管理面板共用口径）
+///
+/// ```text
+/// info == null            → null（整行不画 —— 非 TVBox 源 / 宿主没给）
+/// 从未更新（at == 0）      → 「从未更新」
+/// 成功                    → 「上次更新：MM-dd HH:mm」
+/// 失败                    → 「上次更新失败 MM-dd HH:mm」（调用方红色渲染）
+/// ```
+String? tvboxLastUpdateText(TvboxSourceInfo? info) {
+  if (info == null) return null;
+  if (info.lastUpdateAt <= 0) return '从未更新';
+  final t = tvboxShortTime(info.lastUpdateAt);
+  return info.lastUpdateOk ? '上次更新：$t' : '上次更新失败 $t';
+}
+
+/// Unix 秒 → 「MM-dd HH:mm」（跨年带年份，避免"去年"读成"今年"）
+String tvboxShortTime(int secs) {
+  final l = DateTime.fromMillisecondsSinceEpoch(secs * 1000).toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  final md = '${two(l.month)}-${two(l.day)}';
+  final hm = '${two(l.hour)}:${two(l.minute)}';
+  return l.year == DateTime.now().year ? '$md $hm' : '${l.year}-$md $hm';
+}
+
+/// 「上次更新」是否处于**失败态**（调用方据此红色渲染；纯函数）
+bool tvboxLastUpdateFailed(TvboxSourceInfo? info) =>
+    info != null && info.lastUpdateAt > 0 && !info.lastUpdateOk;
+
 /// 打开「TVBox 订阅更新」弹窗
 ///
 /// 返回 `true` 表示**本地源列表变过**（用户点了一键更新），调用方要刷新。
@@ -1031,6 +1059,7 @@ class TvboxSourceManagePanel extends StatefulWidget {
     required this.id,
     required this.name,
     this.sourceUrl,
+    this.info,
     this.linkSaver,
     this.probeRunner,
     this.updater,
@@ -1044,6 +1073,9 @@ class TvboxSourceManagePanel extends StatefulWidget {
 
   /// 打开时已知的订阅链接（null / 空 = 没有链接）
   final String? sourceUrl;
+
+  /// ★ T5：这个源的订阅信息（`listTvboxSources` sidecar；null = 宿主没给 ⇒ 不画更新时间行）
+  final TvboxSourceInfo? info;
 
   /// 测试缝：保存链接（生产 null ⇒ 走 `SourinApi.setTvboxSource`）
   final Future<void> Function(String id, String url)? linkSaver;
@@ -1286,6 +1318,25 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
               : '这个源是贴文本导入的，没有订阅链接 —— 查不了更新。填入当初的配置地址即可。',
           style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
         ),
+        // ── ★ T5：上次更新时间（失败红色；原因进 Tooltip，一个字节不丢）──
+        if (tvboxLastUpdateText(widget.info) != null) ...<Widget>[
+          const SizedBox(height: Sp.x1),
+          Tooltip(
+            message: tvboxLastUpdateFailed(widget.info)
+                ? '失败原因：${widget.info!.lastUpdateError ?? '后端没有给出原因'}'
+                : '',
+            child: Text(
+              tvboxLastUpdateText(widget.info)!,
+              key: const ValueKey<String>('tvbox-manage-last-update'),
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: tvboxLastUpdateFailed(widget.info)
+                    ? colors.error
+                    : colors.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
         const SizedBox(height: Sp.x3),
 
         // ── ② 测试连通 + ③ 立即更新 ──

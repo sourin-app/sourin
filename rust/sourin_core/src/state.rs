@@ -938,6 +938,16 @@ impl AppState {
             }
         }
 
+        /*
+         * ④ ★ TVBox 订阅定时自动更新（T5，Owner：「源…定时更新」）
+         *
+         * 起一个后台循环（60s 一轮），到点的订阅链接各走一次既有的
+         * `update_tvbox_source` —— 复用而非重写。开关/间隔在
+         * `<data_dir>/tvbox-update-schedule.json`（默认开 + 24h），
+         * 每轮重读 ⇒ 用户改设置最迟 60s 生效。冷启动超期由首轮 tick 补上。
+         */
+        crate::tvbox::spawn_auto_update(&state);
+
         // 启动自检：registry 里的真实源数（含第三方）——
         // 就是 listProviders 会给前端的东西，便于与界面核对
         log::info!(

@@ -1878,6 +1878,44 @@ class SourinApi {
     return r is Map && r['removed'] == true;
   }
 
+  // ── TVBox 订阅定时自动更新（T5）────────────────────────────────────
+  //
+  // 后台循环在 Rust 侧（state.rs bootstrap 起的 60s 轮询）；这两个命令
+  // 只是读/写那份配置（`tvbox-update-schedule.json`），给设置页的
+  // 开关 + 间隔下拉用。默认（没有配置文件）= 开 + 24h。
+
+  /// 门禁注入点：订阅自动更新配置的替身（生产恒 null）
+  static Future<TvboxUpdateSchedule> Function()? debugTvboxScheduleFetcher;
+
+  /// 门禁注入点：写订阅自动更新配置的替身（生产恒 null）
+  static Future<TvboxUpdateSchedule> Function(bool enabled, int intervalSecs)?
+      debugTvboxScheduleSetter;
+
+  /// 读订阅自动更新配置
+  static Future<TvboxUpdateSchedule> tvboxUpdateScheduleGet() async {
+    final f = debugTvboxScheduleFetcher;
+    if (f != null) return f();
+    final r = await SourinCore.callAsync('tvbox_update_schedule_get', const {});
+    return TvboxUpdateSchedule.fromJson(jmap(r) ?? {});
+  }
+
+  /// 写订阅自动更新配置
+  ///
+  /// ⚠️ 间隔走**档位白名单**（6h/12h/24h，互检 P3-1）：其它值 Rust 侧
+  /// 直接拒绝并返回错误 —— UI 只发这三个值；「关」由 enabled=false 表达。
+  static Future<TvboxUpdateSchedule> tvboxUpdateScheduleSet({
+    required bool enabled,
+    required int intervalSecs,
+  }) async {
+    final s = debugTvboxScheduleSetter;
+    if (s != null) return s(enabled, intervalSecs);
+    final r = await SourinCore.callAsync('tvbox_update_schedule_set', {
+      'enabled': enabled,
+      'intervalSecs': intervalSecs,
+    });
+    return TvboxUpdateSchedule.fromJson(jmap(r) ?? {});
+  }
+
   /// 读插件的配置项（声明 + 当前值）
   ///
   /// 返回的两部分：
@@ -3520,6 +3558,9 @@ class TvboxSourceInfo {
     this.needsSource = true,
     this.siteKey = '',
     this.installedAt = 0,
+    this.lastUpdateAt = 0,
+    this.lastUpdateOk = false,
+    this.lastUpdateError,
   });
 
   final String id;
@@ -3540,6 +3581,15 @@ class TvboxSourceInfo {
   /// Unix 秒（0 = 未知）
   final int installedAt;
 
+  /// ★ 上次订阅更新的时间（Unix 秒；0 = 从未更新 —— 界面据此显示「从未更新」）
+  final int lastUpdateAt;
+
+  /// 上次更新是否成功（`lastUpdateAt > 0 && !lastUpdateOk` = 上次失败）
+  final bool lastUpdateOk;
+
+  /// 上次失败的原因（成功 / 从未更新为 null）
+  final String? lastUpdateError;
+
   factory TvboxSourceInfo.fromJson(Map<String, dynamic> j) => TvboxSourceInfo(
         id: j['id'] as String? ?? '',
         name: j['name'] as String? ?? '',
@@ -3550,6 +3600,11 @@ class TvboxSourceInfo {
         needsSource: j['needsSource'] != false,
         siteKey: j['siteKey'] as String? ?? '',
         installedAt: (j['installedAt'] as num?)?.toInt() ?? 0,
+        lastUpdateAt: (j['lastUpdateAt'] as num?)?.toInt() ?? 0,
+        lastUpdateOk: j['lastUpdateOk'] == true,
+        lastUpdateError: (j['lastUpdateError'] as String?)?.trim().isEmpty ?? true
+            ? null
+            : (j['lastUpdateError'] as String).trim(),
       );
 }
 
@@ -3604,6 +3659,26 @@ class TvboxSourceList {
   /// 没有链接的源（界面如实说明"查不了"的那些）
   List<TvboxSourceInfo> get withoutSource =>
       sources.where((s) => s.needsSource).toList(growable: false);
+}
+
+/// TVBox 订阅自动更新配置（[SourinApi.tvboxUpdateScheduleGet] / Set 的返回）
+///
+/// 权威定义在 Rust 侧 `tvbox.rs::TvboxUpdateSchedule`（camelCase 一致）。
+/// 默认（没有配置文件）= 开 + 24h；`intervalSecs <= 0` 由 Rust 侧按「关」收口。
+class TvboxUpdateSchedule {
+  const TvboxUpdateSchedule({
+    this.enabled = true,
+    this.intervalSecs = 86400,
+  });
+
+  final bool enabled;
+  final int intervalSecs;
+
+  factory TvboxUpdateSchedule.fromJson(Map<String, dynamic> j) =>
+      TvboxUpdateSchedule(
+        enabled: j['enabled'] != false,
+        intervalSecs: (j['intervalSecs'] as num?)?.toInt() ?? 86400,
+      );
 }
 
 /// 一条**新增**的远端站点（本地还没有）

@@ -16,10 +16,19 @@ CapturedCookie ck(String domain, String name, String value) =>
 
 void main() {
   group('每盘配置表（判据来源 = Lead 批复 + 扫码链路实测基线）', () {
-    test('只有四家有网页登录配置', () {
-      for (final kind in ['quark', 'uc', 'baidu', '115']) {
+    test('只有三家有网页登录配置（115 已撤，2026-11-01）', () {
+      for (final kind in ['quark', 'uc', 'baidu']) {
         expect(PanWebLoginSpec.of(kind), isNotNull, reason: kind);
       }
+      /*
+       * ★★ 115 已撤（Owner 报"点了网页登录没反应"的根因）：
+       * 115 的登录态 UID/CID/SEID/KID 是**扫码协议**从服务端响应体下发的，
+       * 网页 cookie 里没有；而 Rust 侧 is_logged 只认 cookie 含不含 UID=
+       * ⇒ 网页登录存进去也会被显示成未登录（读数说谎）⇒ 撤，不硬凑判据。
+       * 完整论证见 test/t20261101_pan_web_login_115_test.dart 文件头。
+       */
+      expect(PanWebLoginSpec.of('115'), isNull,
+          reason: '★ 115 已撤：网页 cookie 拿不到含 UID= 的凭据');
       // 其余盘必须没有条目（放了就是假入口：Rust 白名单会拒，但按钮根本不该出现）
       for (final kind in ['aliyun', 'tianyi', '123', 'guangya', 'xunlei', 'nope']) {
         expect(PanWebLoginSpec.of(kind), isNull, reason: kind);
@@ -33,7 +42,7 @@ void main() {
       expect(PanWebLoginSpec.of('quark')!.requiredKeys, ['__pus', '__kps']);
       expect(PanWebLoginSpec.of('uc')!.requiredKeys, ['__pus', '__kps']);
       expect(PanWebLoginSpec.of('baidu')!.requiredKeys, ['BDUSS']);
-      expect(PanWebLoginSpec.of('115')!.requiredKeys, ['UID', 'CID', 'SEID']);
+      // 115 已撤 ⇒ 不再有键名判据（它那四个键是扫码协议产物，不是网页 cookie）
     });
 
     test('登录入口 URL 与目标域逐字对齐取证', () {
@@ -46,9 +55,7 @@ void main() {
       final baidu = PanWebLoginSpec.of('baidu')!;
       expect(baidu.loginUrl, startsWith('https://passport.baidu.com/'));
       expect(baidu.cookieDomainSuffix, 'baidu.com');
-      final p115 = PanWebLoginSpec.of('115')!;
-      expect(p115.loginUrl, 'https://www.115.com/');
-      expect(p115.cookieDomainSuffix, '115.com');
+      // 115 已撤 ⇒ 没有登录入口 URL / 域判据（见上面两条的说明）
     });
   });
 
@@ -170,9 +177,9 @@ void main() {
     });
 
     test('值的内部等号保留（base64 形值的形状不许破坏）', () {
-      final cookies = [ck('.115.com', 'UID', 'ab==')];
-      final s = panWebBuildCookieString(cookies, PanWebLoginSpec.of('115')!);
-      expect(s, 'UID=ab==');
+      final cookies = [ck('.quark.cn', '__pus', 'ab==')];
+      final s = panWebBuildCookieString(cookies, quark);
+      expect(s, '__pus=ab==');
     });
   });
 }

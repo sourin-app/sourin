@@ -297,9 +297,26 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
    */
   bool? _webLoginAvailable;
 
-  /// 网页登录只放四家（其余盘没有条目：天翼/阿里如实不放、123 走密码表单、
-  /// 光鸭/迅雷走设备码 —— 与 Rust 侧 pan_login.rs 白名单同一口径）
-  static const Set<String> _webLoginKinds = <String>{'quark', 'uc', 'baidu', '115'};
+  /// 网页登录只放**三家**（其余盘没有条目：115 已撤、天翼/阿里如实不放、
+  /// 123 走密码表单、光鸭/迅雷走设备码 —— 与 Rust 侧 pan_login.rs 白名单
+  /// 同一口径）
+  ///
+  /// # ★★ 115 为什么撤（2026-11-01，Owner 报"115 网页登录没反应"）
+  /// ```text
+  /// 根因见 lib/ui/widgets/pan_web_login.dart 文件头「115 为什么被撤掉」：
+  /// 115 的登录态 UID/CID/SEID/KID 是**扫码协议**从服务端响应体里下发的，
+  /// 网页 cookie 里没有；而 Rust 侧判登录只看 cookie 含不含 UID=
+  /// （csp/pan115.rs is_logged）⇒ 网页登录那套"捕获 cookie 落盘"的路
+  /// **拿不到能过判据的凭据**，存进去也会被显示成未登录（读数说谎）。
+  /// 加上入口 URL www.115.com 实测只是个跳到官网首页的壳页 ⇒ 用户在首页上
+  /// 根本没有登录页可进 ⇒ 静默转圈。故撤，不在本行放按钮。
+  ///
+  /// ⚠️ 半边已知：lib/ui/widgets/pan_qr_login_dialog.dart:144 还有一份
+  ///    同名 _webLoginKinds 仍含 '115'（不在本批允许改动清单）⇒ 那颗按钮还在；
+  ///    但 showPanWebLogin 对 spec==null 已改成弹如实说明对话框（不再静默
+  ///    return false）⇒ 点了一定有人话反馈，不会退回"没反应"。下批同步。
+  /// ```
+  static const Set<String> _webLoginKinds = <String>{'quark', 'uc', 'baidu'};
 
   // ── ② 扫码登录 ──
   String _qrKind = 'quark';
@@ -880,6 +897,25 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
               ],
             ],
           ),
+          /*
+           * ★★ 被撤掉网页登录的盘（当前只有 115）：**不许只剩"未登录"**
+           * ```text
+           * 撤功能 ≠ 让用户面对一句"需要先登录"然后不知道该干嘛 —— 那是假入口。
+           * 这里把 PanWebLoginSpec.panWebLoginUnsupportedReason 的原句显示出来：
+           * 它说清了**为什么没有网页登录** + **该用哪条路（扫码）**，可行动。
+           * 真源在 pan_web_login.dart 那一处（一处写、处处用，不复制文案）——
+           * 与上面 _webLoginKinds 那份名单**必须同真源**，改一处就够。
+           * 放在 Row 下面而不是塞进 Row：这句是长文本，挤在按钮行里会溢出。
+           * ```
+           */
+          if (PanWebLoginSpec.panWebLoginRetired(a.kind)) ...<Widget>[
+            const SizedBox(height: Sp.x1),
+            Text(
+              PanWebLoginSpec.panWebLoginUnsupportedReason(a.kind)!,
+              key: ValueKey<String>('pan-account-weblogin-retired-${a.kind}'),
+              style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+            ),
+          ],
           /*
            * ★★★ 123 这一行**展开成账号密码表单**（其余 8 家这一行保持原样）。
            * ```text

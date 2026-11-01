@@ -235,6 +235,60 @@ class DanmakuComment {
     return DanmakuComment.parse(cid: cid, p: p, m: m, shift: shift);
   }
 
+  /// 六键形态的**单个元素**解析（T8 · 弹幕对标补齐）
+  ///
+  /// # 形态探测次序
+  /// ```text
+  /// ① 元素带 `p` / `m` 字段 ⇒ 是弹弹play wire（见 [fromJson]），照既有路走
+  /// ② 否则按泛化字段 `{time, text[, mode][, color][, uid][, cid][, id]}` 解析
+  /// ```
+  ///
+  /// # ② 的取证边界（如实声明，不编）
+  /// ```text
+  /// T2 取证（benchmark ③）只到「六键 + 键名层」，元素内的字段名没有逐字
+  /// 取证。泛化字段映射是**按探测实现**的设计决定，用单测钉住；将来拿到
+  /// 真实样本如果字段名不同，改这里即可（调用方只有 [danmakuListFromAnyJson]）。
+  /// ```
+  ///
+  /// # 时间的毫秒歧义
+  /// ```text
+  /// 弹幕时间在「秒」与「毫秒」两种单位下撞在同一个数值域
+  /// （30000ms=30s vs 30000s=8.3h）。判据：> 36000（10 小时）按毫秒解释 ——
+  /// 片内弹幕时间不会超过 10 小时，而毫秒值必然超过。
+  /// ```
+  ///
+  /// `cid` 缺失时用 [fallbackCid] 补位（下标+1）—— 与 Rust 桥接层对插件
+  /// 弹幕 cid 的补位是**同一条纪律**（fromJson 在 cid 缺失时整条丢弃，
+  /// 但六键形态本来就没有 cid 的概念，不补位会全军覆没）。
+  static DanmakuComment? fromAnyJson(
+    Object? e, {
+    double shift = 0,
+    int fallbackCid = 0,
+  }) {
+    if (e is! Map<String, dynamic>) return null;
+    if (e.containsKey('p') || e.containsKey('m')) {
+      return fromJson(e, shift: shift);
+    }
+    // time 必须真的存在且可解析——缺失当 0 会把弹幕全钉在片头
+    final tRaw = e['time'];
+    final t0 =
+        tRaw is num ? tRaw.toDouble() : double.tryParse('$tRaw'.trim());
+    if (t0 == null) return null;
+    var t = t0;
+    if (t < 0) return null;
+    if (t > 36000) t = t / 1000; // 毫秒歧义（见文档）
+    final m = e['text']?.toString() ?? '';
+    if (m.trim().isEmpty) return null;
+    final cid = _asInt(e['cid'] ?? e['id']) ?? fallbackCid;
+    final modeV = _asInt(e['mode']);
+    final colorV = _asInt(e['color']);
+    return DanmakuComment.parse(
+      cid: cid,
+      p: '${t + shift},${modeV ?? 1},${colorV ?? 0},${e['uid']?.toString() ?? ''}',
+      m: m,
+    );
+  }
+
   @override
   String toString() => 'DanmakuComment(#$cid ${time.toStringAsFixed(2)}s '
       '${mode.label} #${color.toRadixString(16).padLeft(6, "0")} "$text")';
@@ -339,6 +393,79 @@ double _asDouble(Object? v) {
   if (v == null) return 0;
   if (v is num) return v.toDouble();
   return double.tryParse(v.toString()) ?? 0;
+}
+
+// -----------------------------------------------------------------------
+// 六键兼容（T8 · T2 取证 benchmark ③）：参考 fork Danmaku.arrayFrom 的多形态
+// -----------------------------------------------------------------------
+
+/// 六键形态的候选键名（T2 逐字取证：`danmaku / data / list / result /
+/// results / items`）。
+///
+/// 参考 fork 的 `Danmaku.arrayFrom` 靠这六个键吃下各家源的弹幕 JSON——
+/// 弹幕数组可能挂在**任意层**的其中一个键下（`data`、`data.list`、
+/// `result.items`……），所以按「沿树探测」而不是「固定路径」实现。
+const List<String> kDanmakuSixKeys = <String>[
+  'danmaku',
+  'data',
+  'list',
+  'result',
+  'results',
+  'items',
+];
+
+/// 从任意形态的弹幕 JSON 里**探测**弹幕数组（六键兼容，T8）
+///
+/// # 返回 null 的语义（与空列表分开，别混）
+/// ```text
+/// null  = 没有 Six 键形态 ⇒ 调用方维持既有解析的判定（该报错报错、该空空）
+/// 非null = 找到了（哪怕 0 条——「这个键下确实是弹幕数组但没弹幕」是有效形态）
+/// ```
+///
+/// # 与既有解析的并存（Owner 批复的硬门禁）
+/// ```text
+/// 既有 `comments`（弹弹play CommentResponseV2）形态由调用方**先判**——
+/// 命中就走 [ExternalDanmakuClient._parseComments] 原路，绝不进这里。
+/// ⇒ 既有源（弹弹play 协议族）的解析**零变化**；六键只在既有形态
+///   未命中时才被尝试。
+/// ```
+///
+/// # 缺层容错
+/// ```text
+/// 键不存在 / 值不是数组 ⇒ 不停在这层，继续沿子对象往下找（深度上限 8）。
+/// 裸数组本身就是一种形态（有的源直接给数组）。
+/// 元素解析见 [DanmakuComment.fromAnyJson]（p/m wire 优先，泛化字段兜底）。
+/// ```
+List<DanmakuComment>? danmakuListFromAnyJson(Object? raw, {double shift = 0}) {
+  if (raw is List) return _danmakuListFromArray(raw, shift);
+  if (raw is! Map) return null;
+  final queue = <(Object?, int)>[(raw, 0)];
+  while (queue.isNotEmpty) {
+    final (node, depth) = queue.removeAt(0);
+    if (depth > 8 || node is! Map) continue;
+    for (final k in kDanmakuSixKeys) {
+      final v = node[k];
+      if (v is List) return _danmakuListFromArray(v, shift);
+    }
+    for (final v in node.values) {
+      if (v is Map) queue.add((v, depth + 1));
+    }
+  }
+  return null;
+}
+
+List<DanmakuComment> _danmakuListFromArray(List raw, double shift) {
+  final out = <DanmakuComment>[];
+  for (var i = 0; i < raw.length; i++) {
+    final c = DanmakuComment.fromAnyJson(
+      raw[i],
+      shift: shift,
+      fallbackCid: i + 1,
+    );
+    if (c != null) out.add(c);
+  }
+  out.sort((a, b) => a.time.compareTo(b.time));
+  return out;
 }
 
 // -----------------------------------------------------------------------
@@ -2578,6 +2705,14 @@ class ExternalDanmakuClient {
       headers: _authHeaders(path),
     );
     final j = _decode(resp, '获取弹幕', uri);
+    // ★ T8 六键兼容：**既有 comments 形态命中走原路（零变化——Owner 批复的
+    //   硬门禁）**；未命中才试六键形态探测，仍未命中则维持原判
+    //   （_parseComments 对无 comments 的响应返回空列表，与改前逐字一致）。
+    if (j['comments'] is List) {
+      return _parseComments(j, shift: shift);
+    }
+    final alt = danmakuListFromAnyJson(j, shift: shift);
+    if (alt != null) return alt;
     return _parseComments(j, shift: shift);
   }
 

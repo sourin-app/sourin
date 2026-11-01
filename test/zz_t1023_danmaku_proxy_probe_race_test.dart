@@ -60,7 +60,17 @@ void main() {
             await tester.ensureVisible(proxyAddress);
             await tester.enterText(proxyAddress, newProxy);
           } else {
-            await tester.ensureVisible(find.text('跟随系统代理'));
+            // ★ 与下方第二个用例块同款手法（scrollUntilVisible 而非
+            //   ensureVisible）：页面变长（T8 站源弹幕区块）后，
+            //   ensureVisible 在懒 Sliver 的滚动行程估算下会欠滚，
+            //   目标留在视口下沿外 ⇒ tap 打空（实测 'system' 断言拿到
+            //   未变更的 'direct'）。delta 负值 = 向下滚。
+            await tester.scrollUntilVisible(
+              find.text('跟随系统代理'), -250,
+              scrollable: find.byType(Scrollable).first,
+            );
+            // 旧请求尚未完成，加载动画持续运行，此处只推进滚动帧。
+            await tester.pump(const Duration(milliseconds: 400));
             await tester.tap(find.text('跟随系统代理'));
           }
           await tester.pump();

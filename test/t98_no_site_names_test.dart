@@ -423,6 +423,33 @@ const List<(String fileSubstr, String lineMarker, String why)> _exemptLines =
     '("bilibili", "哔哩M")',
     '同上（映射表逐字项，生产路径在用）。'
   ),
+  /*
+   * ★★★ 2026-11-01（T8 弹幕对标补齐）：站源原生弹幕拉取端点（mopen 网关）
+   *
+   * ```text
+   * T2 取证（benchmark ③）+ T8 live probe（.probe/mopen-danmu-probe-result.md）
+   * 实证的**真实运行期端点**：站源弹幕 provider（lib/core/danmaku_mopen.dart）
+   * 拉弹幕必须逐字打这三个串。
+   * ⇒ 与上面 bilibili 端点同类：删/改 ⇒ 拉取**静默失效**（无编译错误）。
+   * ```
+   * ★ 只豁免含主机名的那 3 行；同文件别处（含注释）一律中性化，新加照样报。
+   */
+  (
+    'lib/core/danmaku_mopen.dart',
+    'https://acs.youku.com',
+    '站源原生弹幕拉取的**真实网关端点**（T2 取证逐字 + T8 live probe 实测）：'
+        '删/改 ⇒ 拉取静默失效。运行期必需主机名，与 bilibili 端点同类。'
+  ),
+  (
+    'lib/core/danmaku_mopen.dart',
+    "apiName = 'mopen.youku.danmu.list'",
+    '同上：网关 API 名（URL 的 api= 参数值），取证逐字——改了请求就打不到该 API。'
+  ),
+  (
+    'lib/core/danmaku_mopen.dart',
+    "gatewayOrigin = 'https://www.youku.com'",
+    '同上：请求头 Origin/Referer 的网关域（probe 实测口径），改了可能被网关按来源域拒绝。'
+  ),
 ];
 
 /// 该行是否命中某条行级豁免

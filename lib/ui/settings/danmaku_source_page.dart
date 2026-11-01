@@ -46,8 +46,11 @@ import 'dart:io' show SocketException;
 import '../../core/danmaku_network_diagnostics.dart';
 
 import '../../core/danmaku.dart';
+import '../../core/danmaku_mopen.dart';
+import '../../core/ffi.dart' show userErrorText;
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
+import '../widgets/app_inline_spinner.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
 // ★ 2026-10-19（R3-③/⑦）：与播放页弹幕面板**共用**同一份失败分类，
@@ -57,7 +60,12 @@ import '../widgets/danmaku_settings_dialog.dart'
 import '../../design/icons/app_icons.dart';
 
 class DanmakuSourcePage extends StatefulWidget {
-  const DanmakuSourcePage({super.key, this.probeOverride, this.dohOverride});
+  const DanmakuSourcePage({
+    super.key,
+    this.probeOverride,
+    this.dohOverride,
+    this.mopenFetchOverride,
+  });
 
   /// 测试注入口：替换真实网络探测（同弹幕面板的同名参数）
   final Future<DanmakuLocalStatus> Function(DanmakuEndpoint?)? probeOverride;
@@ -67,6 +75,13 @@ class DanmakuSourcePage extends StatefulWidget {
   /// ★ 只在**判定了"本机解析到伪造段"之后**才被调用（见 [_diagnose]），
   ///   与 [probeOverride] 一样是"零联网"纪律的出口：注入后不产生真实 DoH 请求。
   final Future<List<String>> Function(String host)? dohOverride;
+
+  /// 测试注入口：替换站源弹幕的真实拉取（T8）
+  ///
+  /// 与 [probeOverride] 同一条"零联网"纪律：注入后「拉取测试」不产生真实
+  /// 网络请求。null = 生产路径（真打 [MopenDanmuClient]）。
+  final Future<List<DanmakuComment>> Function(String vid, int mat)?
+      mopenFetchOverride;
 
   @override
   State<DanmakuSourcePage> createState() => _DanmakuSourcePageState();
@@ -111,6 +126,31 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
   /// 自定义代理地址（仅 [_proxyMode] == custom 时有意义）
   late final TextEditingController _proxyUrl;
 
+  // ── 站源弹幕（T8）──
+  // 开关默认关（MopenDanmuConfig 缺省 false）⇒ 不配置时这条路根本不存在，
+  // 既有来源的一切行为零变化（Owner 批复的默认行为零变化门禁）。
+
+  /// 来源开关（与 [MopenDanmuConfig.enabled] 同一份真相）
+  bool _mopenEnabled = false;
+
+  /// 站源拉取客户端（**页面级字段**：initState 建一次、dispose 关）
+  ///
+  /// ⚠️ 频控/缓存在 core 是**类级**状态（互检 P2），跨实例也生效；
+  ///   这里再提为页面级是双保险：连接池不随每次按压重建。
+  late final MopenDanmuClient _mopenClient;
+
+  /// 用户输入：站源 vid（裸 vid 或含 `id_X…` 段的播放链接）
+  late final TextEditingController _mopenVid;
+
+  /// 「拉取测试」的结果行（成功 = 条数/时间轴；失败 = 原文）
+  String? _mopenStatus;
+
+  /// 站源拉取的在途序号（与 [_seq] 同一条"旧结果作废"纪律，互不干扰）
+  int _mopenSeq = 0;
+  int? _mopenRunningSeq;
+
+  bool get _mopenRunning => _mopenRunningSeq != null;
+
   @override
   void initState() {
     super.initState();
@@ -120,6 +160,9 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
     final proxy = currentDanmakuProxySetting();
     _proxyMode = proxy.mode;
     _proxyUrl = TextEditingController(text: proxy.url);
+    _mopenEnabled = MopenDanmuConfig.enabled;
+    _mopenVid = TextEditingController(text: MopenDanmuConfig.vid);
+    _mopenClient = MopenDanmuClient();
   }
 
   @override
@@ -127,6 +170,8 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
     _url.dispose();
     _token.dispose();
     _proxyUrl.dispose();
+    _mopenVid.dispose();
+    _mopenClient.close();
     super.dispose();
   }
 
@@ -348,6 +393,72 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
     });
   }
 
+  // ── 站源弹幕（T8）────────────────────────────────────────────────────
+
+  /// 开关切换并**立即落盘**（与 [_setProxy] 同一条"单选即生效"直觉）
+  void _toggleMopen(bool v) {
+    setState(() {
+      _mopenEnabled = v;
+      _mopenStatus = null;
+    });
+    MopenDanmuConfig.setEnabled(v);
+  }
+
+  /// 「拉取测试」：真实打一次站源拉取（或走注入），结果行**原文照透**
+  ///
+  /// # 失败绝不静默（Owner 批复的红线）
+  /// ```text
+  /// 任何失败（网络 / 网关 ret / 风控冷却 / 解析未接入）都原样进 [_mopenStatus]，
+  /// 用户看到的是"为什么拿不到"，而不是一个装作成功的空结果。
+  /// ```
+  Future<void> _fetchMopen() async {
+    final mySeq = ++_mopenSeq;
+    final raw = _mopenVid.text;
+    final vid = MopenDanmuClient.vidFromInput(raw);
+    if (vid == null) {
+      setState(() {
+        _mopenRunningSeq = null;
+        _mopenStatus = 'vid 格式不对：填站源视频 id（X 开头）或含 id_XXXX 的播放链接';
+      });
+      return;
+    }
+    MopenDanmuConfig.setVid(raw); // 发起时落盘（与 _probe 同一条纪律）
+    final mat = MopenDanmuConfig.mat;
+    setState(() => _mopenRunningSeq = mySeq);
+    try {
+      final fetch = widget.mopenFetchOverride ??
+          // ★ 用页面级 [_mopenClient]（不每次按压新建）——频控/缓存在 core
+          //   是类级状态，跨实例本就生效；这里复用连接池只是少建少关。
+          (String v, int m) => _mopenClient.fetch(vid: v, mat: m);
+      final comments = await fetch(vid, mat);
+      if (!mounted || mySeq != _mopenSeq) return;
+      final t0 = comments.isEmpty
+          ? ''
+          : '，时间轴 ${comments.first.time.toStringAsFixed(1)}s'
+              ' ~ ${comments.last.time.toStringAsFixed(1)}s';
+      setState(() {
+        _mopenRunningSeq = null;
+        _mopenStatus = '拉到 ${comments.length} 条$t0';
+      });
+    } on DanmakuException catch (e) {
+      if (!mounted || mySeq != _mopenSeq) return;
+      // ★ e.message 是 DanmakuException 设计好的**用户主文案**（含网关 ret
+      //   中文/风控冷却/解析未接入说明），不是异常原文——写它不是倒原文。
+      setState(() {
+        _mopenRunningSeq = null;
+        _mopenStatus = '失败：${e.message}';
+      });
+    } catch (e) {
+      if (!mounted || mySeq != _mopenSeq) return;
+      // ★ 收口（zz_t66_user_error_text_gate）：异常原文只进日志
+      //   （userErrorText 内部 debugPrint），界面拿人话。
+      setState(() {
+        _mopenRunningSeq = null;
+        _mopenStatus = '失败：${userErrorText(e, fallback: '站源弹幕拉取没有完成，请稍后重试')}';
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -482,6 +593,66 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
                 ),
               ],
             ),
+          ],
+        ),
+        const SizedBox(height: Sp.x5),
+        // ── 站源弹幕（T8）：开关默认关 ⇒ 不配置时既有来源零变化（Owner 批复）──
+        SettingsBlock(
+          title: '站源弹幕（原生接口）',
+          trailing: Text(
+            _mopenEnabled ? '已启用' : '默认关',
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
+          ),
+          children: [
+            SwitchListTile(
+              value: _mopenEnabled,
+              onChanged: _toggleMopen,
+              title: const Text('启用站源弹幕来源'),
+              subtitle:
+                  const Text('直接向视频站自家的弹幕接口拉取（不经弹弹play 协议）'),
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+            ),
+            if (_mopenEnabled) ...[
+              const SizedBox(height: Sp.x2),
+              _label('视频 vid（或粘贴含 id_XXXX 的播放链接）'),
+              const SizedBox(height: Sp.x2),
+              TextField(
+                controller: _mopenVid,
+                style:
+                    TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
+                decoration: const InputDecoration(
+                  hintText: 'X 开头的视频 id',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                onSubmitted: (_) => _fetchMopen(),
+              ),
+              const SizedBox(height: Sp.x2),
+              _hint('打开该站的播放页，地址里 id_ 后面那段就是 vid。'
+                  '拉取已可用；播放页自动聚合未接入（另批）。'
+                  '失败会显示网关原文，不静默。'),
+              const SizedBox(height: Sp.x3),
+              if (_mopenStatus != null) ...[
+                _hint(_mopenStatus!),
+                const SizedBox(height: Sp.x2),
+              ],
+              FilledButton.icon(
+                onPressed: _mopenRunning ? null : _fetchMopen,
+                icon: _mopenRunning
+                    ? // ★ 已迁走控件门禁（zz_t64）：用自建 AppInlineSpinner，
+                      //   不许再构造裸 CircularProgressIndicator
+                      AppInlineSpinner(
+                        size: 14,
+                        color: Theme.of(context).colorScheme.onPrimary,
+                      )
+                    : const Icon(AppIcons.download, size: 18),
+                label: Text(_mopenRunning ? '拉取中…' : '拉取测试'),
+              ),
+            ],
           ],
         ),
         const SizedBox(height: Sp.x5),

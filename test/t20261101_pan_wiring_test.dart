@@ -188,9 +188,17 @@ void main() {
           reason: '字符串字面量必须保住 —— 否则真代码被削掉变成假红');
     });
 
-    test('边界：stream_prepare.dart 的摘除判据本批**不许**动（已立下批项）', () {
+    test('边界：stream_prepare.dart 的三态判据（N1 已落地）—— 判据形态不许静默漂移', () {
+      // ★ 2026-11-01 更新：N1 已把规则⑤从"摘"改"留+标（需解析）"（gsuus 实证
+      //   有可播路径），原"本批不许动"文案过时。本条升级为钉住三态判据的
+      //   关键符号仍在：PrepareVerdict / verdictOf / _whyUnusable。
+      //   判据内部的命中集等价性由 zz_r65 与 t20261101_n1_three_state 门禁对拍。
+      expect(prepare.contains('enum PrepareVerdict'), isTrue,
+          reason: '★ 三态判据（N1）必须存在');
+      expect(prepare.contains('PrepareVerdict verdictOf('), isTrue,
+          reason: '★ 三态判据纯函数（N1）必须存在');
       expect(prepare.contains('String? _whyUnusable(String url)'), isTrue,
-          reason: '★ 摘除判据的改动已立下批项，本批只收留痕 —— 动了就报给 Lead');
+          reason: '★ 摘除理由函数仍在（S1/S2 留痕口径依赖它）');
     });
 
     test('★ 换源弹层**不接**（候选是搜索条目、无 URL）—— 这条是决定，不是遗漏', () {

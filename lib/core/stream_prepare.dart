@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 import 'models.dart';
 import 'sourin_api.dart';
 
@@ -41,6 +43,49 @@ import 'sourin_api.dart';
 //  ⇒ 未注入解析器时，`needsHostResolve` 的候选会被**如实标为不可播**，
 //    而不是静默失败或假装成功。
 // ```
+//
+// # ★ N1（2026-11-01，lead 批复①②）：appget 类源的候选摘除判据三态化
+//
+// ```text
+// 背景（.probe/play-audit-cleanenv-2026-10-31.md 实锤）：appget 类源的 play
+// 结果普遍是第三方播放页 ⇒ 改前判据 ⑤ 按形态整批摘掉 ⇒ 列表空
+// ⇒ 「该内容没有可播放的地址」—— appget 类源完全不能播的直因。
+//
+// 管线核实（「有路径才保留」）：生产唯一可达的解析路径 = 起播预检
+// player/nonmedia_guard.dart::precheckNonMedia（信封/页刮换直链）。
+// 实测（appget gsuus）：播放页 HTML 壳内嵌 vid m3u8，GET 200 +
+// application/vnd.apple.mpegurl + 合法 #EXTM3U（AES-128 + 真 .ts 分段）
+// ⇒ 页面形态候选保留后有真实可播路径，不是"保留一条点了必死的候选"。
+// StreamPreparer.resolver 生产零注入（死代码路径），不算依据。
+//
+// ⚠️ 残余边界（如实，不许当作"已解决"）：
+// ① VIP 大站播放页（需 jx 解析接口）页内无流、仓内无 jx ⇒ 预检给人话报错
+//    —— 播不了，但不是黑屏/静默；
+// ② 页面若嵌假流 ⇒ 预检刮出后 mpv open 失败。
+// 两者都由预检兜底；判据层只保证"不摘有路径的候选"。
+// ```
+
+/// 三态判据的结论（[StreamPreparer.verdictOf] 的返回值）
+enum PrepareVerdict {
+  /// 摘：无任何后续路径（空 / 非 http(s) / 无 host / 猜拼媒体后缀；
+  /// 证红模式下页面形态也退回这一档）
+  drop,
+
+  /// 留 + 标「需解析」：页面形态（改前判据 ⑤ 的命中集），
+  /// 起播预检可换真流（见文件头 N1 的实测依据）
+  keepMarked,
+
+  /// 直通：直链 / HLS，行为与改前逐字一致
+  passthrough,
+}
+
+/// N1 三态判据的**证红开关**（仅测试）
+///
+/// 置真 ⇒ 页面形态退回改前的「摘」⇒ 三态门禁（`t20261101_n1_three_state_prepare_test.dart`）
+/// 与 `zz_r65_stream_validation_test.dart` 混合③必须变红 —— 证明新字面有牙。
+/// 生产代码**永不**写它。
+@visibleForTesting
+bool debugShortCircuitPageKeep = false;
 
 /// 把「播放页 URL」解析成「可播地址」的能力
 ///
@@ -79,6 +124,14 @@ class StreamPreparer {
   /// 只读：上一轮被摘掉的候选**为什么**被摘（给日志与探针用）
   static List<String> lastDroppedReasons = const <String>[];
 
+  /// 只读：上一轮有多少条候选因「页面形态」被**保留并标注**「需解析」（N1）
+  ///
+  /// 三态留痕的对齐位：[lastDroppedCount] 只收「无任何后续路径」的形态；
+  /// 页面形态（有起播预检路径）从这里读数。
+  /// ⚠️ **不复用** [lastNeedsResolveCount] —— 它的「needsHostResolve 条数」
+  ///    语义被 `zz_t33_stream_prepare_test.dart` 钉着，两回事不许混。
+  static int lastKeptNeedsResolveCount = 0;
+
   /// 判断一条候选的地址**本身**能不能用（不看网络，只看形态）
   ///
   /// # 为什么宿主必须自己校验（第 8 条 D 类）
@@ -101,7 +154,9 @@ class StreamPreparer {
   /// ④ 同一路径里出现两段 .m3u8 / .mp4      ⇒ 不可用
   ///    实测形态：…/play/dBBBRBxd/index.m3u8 里路径本已带 play 页标记，
   ///    再拼 .m3u8 是插件**凭猜**补的，几乎必然 404
-  /// ⑤ 明显是播放页（路径含 /play/ 且以页面而不是媒体扩展结尾）⇒ 不可用
+  /// ⑤ 明显是播放页（路径含页面段且无媒体扩展）⇒ **不再在这里判死**（N1），
+  ///    交 [verdictOf] 分三态处置（默认留+标「需解析」）；
+  ///    仅证红开关（[debugShortCircuitPageKeep]）置真时退回本函数的原判。
   /// ```
   ///
   /// ⚠️ **宁可漏放，不可错杀**：判据只覆盖"显然不可用"的形态。
@@ -131,15 +186,6 @@ class StreamPreparer {
      *      同时结尾又是媒体扩展 ⇒ 几乎必然是插件拼的（页面不会正好以 .m3u8 结尾）。
      */
     final path = parsed.path.toLowerCase();
-    final endsWithMedia = path.endsWith('.m3u8') ||
-        path.endsWith('.m3u') ||
-        path.endsWith('.mp4') ||
-        path.endsWith('.flv') ||
-        path.endsWith('.mpd');
-    final looksLikePage = path.contains('/play/') ||
-        path.contains('/video/') ||
-        path.contains('/vodplay/') ||
-        path.contains('/index.php/');
 
     /*
      * ★★★ 判据 ④ 只在「拼出来的痕迹」很明显时才拦
@@ -165,19 +211,129 @@ class StreamPreparer {
     }
 
     /*
-     * ⑤ 明显是播放页（路径里有 /play/ 段，且**完全没有**媒体扩展）
+     * ⑤ 页面形态（改前判据：路径有页面段，且完全没有媒体扩展）
      *
-     * ⚠️ 只在没有媒体扩展时拦 —— 有扩展就当作可信（宁可漏放，不可错杀）。
+     * N1：不再在这里判死 —— 命中集抽成 [_pageShapePathOf]，
+     *     由 [verdictOf] 分三态处置（默认留+标「需解析」）。
+     *     仅 [debugShortCircuitPageKeep] 置真（证红）时，保留改前的摘除原句。
      */
-    final hasMediaExt = endsWithMedia ||
-        path.contains('.m3u8?') ||
-        path.contains('.mp4?') ||
-        path.contains('.mpd?');
-    if (looksLikePage && !hasMediaExt) {
-      return '看起来是播放页而不是媒体地址：$path';
+    final pagePath = _pageShapePathOf(u);
+    if (pagePath != null && debugShortCircuitPageKeep) {
+      return '看起来是播放页而不是媒体地址：$pagePath';
     }
 
     return null;
+  }
+
+  /// 页面形态判据（纯函数）：路径有页面段（/play/ /video/ /vodplay/ /index.php/）
+  /// 且**完全没有**媒体扩展 —— 即改前判据 ⑤ 的命中集
+  ///
+  /// ```text
+  /// ⚠️ 只在没有媒体扩展时算页面 —— 有扩展就当作可信（宁可漏放，不可错杀）。
+  /// 返回非空 = 命中（值是去参后的小写 path，供摘除理由/日志复用）；null = 不是页面形态。
+  /// ```
+  static String? _pageShapePathOf(String url) {
+    final u = url.trim();
+    if (u.isEmpty) return null;
+    final Uri parsed;
+    try {
+      parsed = Uri.parse(u);
+    } catch (_) {
+      return null;
+    }
+    if ((parsed.scheme != 'http' && parsed.scheme != 'https') ||
+        parsed.host.isEmpty) {
+      return null;
+    }
+    final path = parsed.path.toLowerCase();
+    final hasMediaExt = path.endsWith('.m3u8') ||
+        path.endsWith('.m3u') ||
+        path.endsWith('.mp4') ||
+        path.endsWith('.flv') ||
+        path.endsWith('.mpd') ||
+        path.contains('.m3u8?') ||
+        path.contains('.mp4?') ||
+        path.contains('.mpd?');
+    final looksLikePage = path.contains('/play/') ||
+        path.contains('/video/') ||
+        path.contains('/vodplay/') ||
+        path.contains('/index.php/');
+    return (looksLikePage && !hasMediaExt) ? path : null;
+  }
+
+  /// 三态判据（**纯函数**，门禁直测的入口；N1，lead 批复的判据表）
+  ///
+  /// ```text
+  /// S1 空 / 非 http(s) / 无 host                  ⇒ drop（无任何后续路径）
+  /// S2 猜拼媒体后缀（…/play/<id>/index.m3u8 等）    ⇒ drop（既有 r65 门禁，本批不动）
+  /// S3 页面段且无媒体扩展（改前判据 ⑤）             ⇒ keepMarked（留+标「需解析」）
+  ///    —— 依据见文件头 N1：起播预检真实可达，页面内嵌 vid 可刮出换直链
+  ///       （appget gsuus 实证 200 + 合法 #EXTM3U）。
+  /// S4 直链 / HLS（媒体扩展，含带 query）           ⇒ passthrough（逐字不变）
+  /// S5 needsHostResolve=true                      ⇒ 编排层不变（t33 契约）
+  /// ```
+  ///
+  /// # 为什么留/摘按**形态**判，不按 Rust 的 label 声明
+  /// ```text
+  /// appget 自家页（/play/<id>）在 Rust 侧 needs_parse **根本不声明**
+  /// （needs_parse 只认 PAGE_HOSTS + .html 结尾）⇒ 只认声明会漏掉主修目标。
+  /// ```
+  ///
+  /// [debugShortCircuitPageKeep] = true ⇒ S3 退回 drop（改前行为，证红注入点）。
+  @visibleForTesting
+  static PrepareVerdict verdictOf(String url) {
+    // S2（猜拼后缀）与 S3（页面形态）互斥：前者带媒体扩展、后者没有
+    // ⇒ 先查谁都不会改变结果；这里先查页面形态，让证红开关只管 S3 一档。
+    if (_pageShapePathOf(url) != null) {
+      return debugShortCircuitPageKeep
+          ? PrepareVerdict.drop
+          : PrepareVerdict.keepMarked;
+    }
+    return _whyUnusable(url) == null
+        ? PrepareVerdict.passthrough
+        : PrepareVerdict.drop;
+  }
+
+  /// 摘除理由（仅 [PrepareVerdict.drop] 的候选调用）
+  ///
+  /// S1/S2 来自 [_whyUnusable]；证红模式下的页面形态用**改前原句**
+  /// （保证退回旧行为时日志/留痕逐字一致）。
+  static String _dropReasonOf(String url) {
+    final why = _whyUnusable(url);
+    if (why != null) return why;
+    final pagePath = _pageShapePathOf(url);
+    if (pagePath != null) return '看起来是播放页而不是媒体地址：$pagePath';
+    // 不可达：verdict==drop 必有理由（S1/S2 或证红下的页面形态）。
+    // 兜底串不许编造形态 —— 如实说"没给出"。
+    return '（未给出）';
+  }
+
+  /// 给页面形态候选追加「（需解析）」标注（返回原实例或 copyWith 的新实例）
+  ///
+  /// # 为什么**不走** needsHostResolve=true
+  /// ```text
+  /// 那会让 isPlayable=false ⇒ 候选被筛掉 ⇒ 列表又空了 —— 等于白改。
+  /// 标注只进 label（用户在抽屉/标题里看得到），可用性判断不碰。
+  /// ```
+  ///
+  /// # 防重复加
+  /// Rust 侧 `label_with_parse_hint` 已给声明过的候选标了「（需 parse）」；
+  /// label 里已有「需 parse」或「需解析」的不再追加。
+  ///
+  /// # 已核实（lead 补充 1）：追加串不会触发任何按 label 判事的逻辑
+  /// ```text
+  /// 全仓 label 内容消费点三处 ——
+  /// · live_availability.dart:97 isAudioOnlyLine：只认 音频/广播/audio
+  /// · player_page.dart:24358 qualityBadgeFor：只认 label 是否含 quality
+  /// · player_page.dart:525 lineDurationKey：label 作缓存键（S3 候选改前
+  ///   根本不存在 ⇒ 无旧键回归）
+  /// 「（需解析）」不含以上任何关键字；门禁里有对应断言钉着。
+  /// ```
+  static StreamCandidate _withResolveMark(StreamCandidate c) {
+    final lab = c.label ?? '';
+    if (lab.contains('需 parse') || lab.contains('需解析')) return c;
+    final marked = lab.isEmpty ? '需解析' : '$lab（需解析）';
+    return c.copyWith(label: marked);
   }
 
   /// 预处理一批候选
@@ -204,8 +360,9 @@ class StreamPreparer {
 
     /*
      * ★★★ 第 65 轮第 8 条 D 类：插件给的地址**本身**不可用 ⇒ 在这里摘掉
+     *（N1 起按 [verdictOf] 三态处置：摘 / 留+标「需解析」/ 直通）
      *
-     * # 为什么必须摘，而不是原样交给播放器
+     * # 为什么必须摘（对 drop 档），而不是原样交给播放器
      * ```text
      * 摘掉 ⇒ 该候选 isPlayable=false ⇒ 与"所有线路都不可播"同一条路，
      *        用户看到「这个源没有返回可播放地址」—— 说的是实话
@@ -220,9 +377,10 @@ class StreamPreparer {
      * 新开一个函数就必须有人记得去两处调用（本仓"written ≠ wired"的坑）。
      * ```
      *
-     * ⚠️ 只摘**显然不可用**的（见 [_whyUnusable]）；拿不准的原样放行。
+     * ⚠️ 只摘**显然不可用**的（[PrepareVerdict.drop]）；页面形态保留并标注；
+     *    拿不准的原样放行。
      * ⚠️ needIdx 为空时也要跑这一步 —— 坏地址跟 needsHostResolve 无关。
-     * ⚠⚠ 但**一条都没摘时保持返回原实例** —— 既有门禁
+     * ⚠⚠ 但**零摘且零标时保持返回原实例** —— 既有门禁
      *    （`zz_t33_stream_prepare_test.dart` 的「原样返回（零副作用）」）
      *    钉的就是这个契约：没要改的东西，调用方拿到的必须是同一个 List。
      *    复制一份虽然内容相同，但会让 `identical()` 判据失效，
@@ -230,28 +388,32 @@ class StreamPreparer {
      */
     final dropped = <String>[];
     final kept = <StreamCandidate>[];
+    var keptNeedsResolve = 0;
     for (final c in list) {
-      final why = _whyUnusable(c.url);
-      if (why == null) {
-        kept.add(c);
-      } else {
+      final v = verdictOf(c.url);
+      if (v == PrepareVerdict.drop) {
         dropped.add(
-          '${(c.label ?? '').isEmpty ? (c.quality ?? '-') : c.label}: $why',
+          '${(c.label ?? '').isEmpty ? (c.quality ?? '-') : c.label}: '
+          '${_dropReasonOf(c.url)}',
         );
+      } else if (v == PrepareVerdict.keepMarked) {
+        kept.add(_withResolveMark(c));
+        keptNeedsResolve++;
+      } else {
+        kept.add(c);
       }
     }
     lastDroppedCount = dropped.length;
     lastDroppedReasons = List<String>.unmodifiable(dropped);
+    lastKeptNeedsResolveCount = keptNeedsResolve;
 
     /*
-     * ★ 一条都没摘 ⇒ **返回原实例**（既有契约，见上面的说明）
+     * ★ 零摘且零标 ⇒ **返回原实例**（既有契约，见上面的说明）
      *
-     * 这一步必须在算 needIdx2 之前做：没摘过就说明 kept 与 list 逐项相同，
+     * 这一步必须在算 needIdx2 之前做：零摘零标就说明 kept 与 list 逐项相同，
      * 直接把 list 交回去最安全（identical 判据保住、下游也不会误判"改过"）。
      */
-    final working = kept.isEmpty && dropped.isNotEmpty
-        ? kept // 全被摘了，kept 为空是真实结果，别退回 list
-        : (dropped.isEmpty ? list : kept);
+    final working = (dropped.isEmpty && keptNeedsResolve == 0) ? list : kept;
     final needIdx2 = <int>[];
     for (var i = 0; i < working.length; i++) {
       if (working[i].needsHostResolve) needIdx2.add(i);
@@ -306,5 +468,6 @@ class StreamPreparer {
     lastNeedsResolveCount = 0;
     lastDroppedCount = 0;
     lastDroppedReasons = const <String>[];
+    lastKeptNeedsResolveCount = 0;
   }
 }

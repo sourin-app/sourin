@@ -159,18 +159,38 @@ void main() {
       expect(StreamPreparer.lastDroppedCount, 3, reason: '三条都要记上');
     });
 
-    test('③ 坏地址与 needsHostResolve 同时存在时互不干扰', () async {
+    test('③ 坏地址与 needsHostResolve / 页面形态候选共存（N1 三态改判）', () async {
+      // ★ N1（2026-11-01，lead 批复②）：`/play/xyz` 纯页面从「摘」改「留+标」——
+      //   appget 类页面保留后有实测可播路径（gsuus 实证：页壳内嵌 vid m3u8，
+      //   200 + 合法 #EXTM3U + 真 .ts 分段；起播预检可刮出换直链），故改为留+标。
+      //   证红：把 StreamPreparer.debugShortCircuitPageKeep 置真（规则⑤退回「摘」）
+      //   ⇒ 本条与 t20261101_n1_three_state_prepare_test.dart 必须变红。
       StreamPreparer.debugReset();
       final out = await StreamPreparer.prepare([
         cand('', needsHost: false),                                   // 坏
-        cand('https://page.example/play/xyz', needsHost: true),        // 要宿主解
+        cand('https://page.example/play/xyz', needsHost: true),        // 页面形态 ⇒ 留+标
         cand('https://cdn.example.com/ok.m3u8', needsHost: false),     // 好
       ]);
-      // 坏的被摘；要宿主解的保留（但 isPlayable=false）；好的留下
-      expect(StreamPreparer.lastDroppedCount, 2,
-          reason: '空地址 + 播放页地址都要摘');
-      expect(out.length, 1, reason: '只剩那条能直接播的');
-      expect(out.single.url, 'https://cdn.example.com/ok.m3u8');
+      // 坏的被摘；页面形态的保留（三态标注与 needsHostResolve 各管各的）；
+      // 直链留下
+      expect(StreamPreparer.lastDroppedCount, 1,
+          reason: '★ 只有空地址要摘 —— 页面形态改留+标，不再计入摘除');
+      expect(StreamPreparer.lastKeptNeedsResolveCount, 1,
+          reason: '★ 页面候选进「留+标」计数（留痕语义与新三态对齐）');
+      expect(out.length, 2, reason: '页面候选保留后还剩两条');
+      expect(out.map((e) => e.url).toList(),
+          containsAll(<String>['https://page.example/play/xyz',
+                               'https://cdn.example.com/ok.m3u8']),
+          reason: '★ 页面候选的 url 逐字不变 —— 换直链是起播预检的活');
+      final page = out.firstWhere((e) => e.url == 'https://page.example/play/xyz');
+      expect(page.label, '需解析',
+          reason: '★ 页面候选标「需解析」—— 用户看得见，点开走预检');
+      expect(page.needsHostResolve, isTrue,
+          reason: '★ 三态标注不许动 needsHostResolve（t33 契约各管各的）');
+      expect(page.isPlayable, isFalse,
+          reason: 'needsHostResolve=true 的仍不可播（原契约不变）');
+      final good = out.firstWhere((e) => e.url == 'https://cdn.example.com/ok.m3u8');
+      expect(good.label, '', reason: '直链条目逐字原样（夹具默认空串 label）');
     });
   });
 

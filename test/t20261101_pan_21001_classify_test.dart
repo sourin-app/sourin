@@ -119,4 +119,46 @@ void main() {
       }
     });
   });
+
+  // ════════════════════════════════════════════════════════════════════
+  //  ④ tempCopyStuck（N-23018 v2）：自愈穷尽后的"去重卡住"终态
+  // ════════════════════════════════════════════════════════════════════
+  //
+  // 真机缺口（部署版实测）：v1 自愈重转存仍回吐同一个死 fid（去重作用域
+  // 超出目录清单）⇒ 终态曾笼统报"文件已不存在"——不准确（分享的文件还在）。
+  // v2 Rust 穷尽后改报"临时转存副本被网盘同名去重卡住…稍后重试通常可恢复"，
+  // Dart 以"转存副本"标记分档 ⇒ 可重试语义（canRetry=true）。
+  group('④ tempCopyStuck：去重卡住终态（可重试语义）', () {
+    const dedupeStuck =
+        '夸克网盘 临时转存副本被网盘同名去重卡住（下载报 code=21001 file not found）：'
+        '分享的文件还在，稍后重试通常可恢复，或换一条线路';
+
+    test('★ Rust v2 终态文案逐字归类：tempCopyStuck + 可重试', () {
+      final f = PlaybackErrorText.classify(dedupeStuck);
+      expect(f.kind, PlaybackFailureKind.tempCopyStuck,
+          reason: '★ "转存副本"标记 ⇒ 去重卡住档，不许落到 shareFileGone'
+              '（那句 headline 说"文件已不存在"，对这一态是假话）');
+      expect(f.canRetry, isTrue,
+          reason: '★ 分享的文件还在，网盘处理完成后重试通常可恢复——'
+              '这与"真不存在"的不可重试是两态分层的核心');
+      expect(f.headline, '网盘文件的临时转存副本暂时取不出');
+      expect(f.nextStep, contains('稍后点「重试」'));
+    });
+
+    test('★ 两态不许混：同含 21001 双特征，标记串决定各走各档', () {
+      // 同一份 21001 双特征下，有无"转存副本"标记 = 两个不同的现实
+      final stuck = PlaybackErrorText.classify(dedupeStuck).kind;
+      final gone = PlaybackErrorText.classify(selfHealExhausted).kind;
+      expect(stuck, PlaybackFailureKind.tempCopyStuck);
+      expect(gone, PlaybackFailureKind.shareFileGone);
+      expect(stuck, isNot(gone));
+    });
+
+    test('★ 无标记串（play 的"文件已不存在"）仍归 shareFileGone（零回归）', () {
+      expect(
+        PlaybackErrorText.classify(selfHealExhausted).kind,
+        PlaybackFailureKind.shareFileGone,
+      );
+    });
+  });
 }

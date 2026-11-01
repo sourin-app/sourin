@@ -200,7 +200,22 @@ pub const TEMP_DIR_NAME: &str = "sourin-temp";
 ///    `{"code":31001,"message":"require login [guest]"}`** ⇒ 路由存在、只缺登录。
 ///    原始请求/响应见 `.probe/pan-mkdir-live.md`。
 fn mkdir_url(spec: &PanDriveSpec) -> String {
-    format!("https://{}/1/clouddrive/file?{}", spec.api_host, spec.pr_fr)
+    format!("{}/1/clouddrive/file?{}", api_root(spec), spec.pr_fr)
+}
+
+/// API 根（`https://<api_host>`；生产恒此形，逐字节同旧实现）
+///
+/// ★ 测试缝（N-23018 v2 假网盘夹具）：`cfg!(test)` 运行时判别 —— 夹具把根
+/// 换成 `http://127.0.0.1:<port>`（drive API 明文 JSON，本地 TCP 可回放）。
+/// 实现与存储都在**文件尾的测试缝块**（share_referer 门禁按首个测试 cfg
+/// 标记切生产段，标记不许落在生产代码之前）。
+fn api_root(spec: &PanDriveSpec) -> String {
+    if cfg!(test) {
+        if let Some(base) = PanDrive::test_api_base_for(&spec.api_host) {
+            return base;
+        }
+    }
+    format!("https://{}", spec.api_host)
 }
 
 /// 建目录的请求体（**纯函数**；键名逐字来自 dex 的 const-string）
@@ -209,8 +224,18 @@ fn mkdir_url(spec: &PanDriveSpec) -> String {
 /// `dir_init_lock`；成功后取 `data.fid`；失败时类里有常量 `Quark_temp_folder_error`
 /// （UC 那份是 `UC_temp_folder_error`）。
 fn mkdir_body(name: &str) -> String {
+    mkdir_body_under(name, "0")
+}
+
+/// 建目录的请求体（**指定父目录**版）—— `pdir_fid` = 父目录 fid（`"0"` = 根目录）
+///
+/// ★ N-23018 v2：21001 自愈的最后一次尝试要在一个**一次性子目录**里转存，
+/// 确定性躲开"同名目录内去重"（对内容级去重无效但无害，见 degrade_attempt 注释）。
+/// 根目录形态（[`mkdir_body`]）逐字节不变 —— 既有门禁钉着它的取证形状。
+fn mkdir_body_under(name: &str, pdir_fid: &str) -> String {
     format!(
-        "{{\"pdir_fid\":\"0\",\"file_name\":{},\"dir_path\":\"\",\"dir_init_lock\":false}}",
+        "{{\"pdir_fid\":{},\"file_name\":{},\"dir_path\":\"\",\"dir_init_lock\":false}}",
+        serde_json::Value::String(pdir_fid.to_string()),
         serde_json::Value::String(name.to_string())
     )
 }
@@ -450,6 +475,60 @@ impl PanDrive {
         ))
     }
 
+    /// 在指定父目录下拿到（必要时**创建**）名为 `name` 的**子目录** fid
+    ///
+    /// ★ N-23018 v2：从 [`ensure_temp_dir`] 泛化出来 —— "列父目录找同名 → 没有就建"
+    /// 是同一套动作，临时目录与自愈的**一次性重试子目录**共用一份实现
+    /// （两处各写一份必然漂移）。不带缓存 —— 进程内缓存只有常驻的临时目录需要。
+    /// ⚠️ 只认**目录**：同名文件不算（否则转存会落在一个非目录 fid 上）。
+    async fn ensure_dir_under(
+        &self,
+        cookie: &str,
+        parent_fid: &str,
+        name: &str,
+    ) -> Result<String, String> {
+        // ① 先找（★ 必须用**含子目录**的列法 —— `list_dir` 是 `_fetch_sub_dirs=0`，
+        //    用它找目录永远找不到 ⇒ 每启动一次多建一个 sourin-temp，真机实测踩过）
+        let found = if let Ok(entries) = self.list_dir_with_subdirs(cookie, parent_fid).await {
+            entries
+                .into_iter()
+                .find(|e| e.is_dir && e.name == name)
+                .map(|e| e.fid)
+        } else {
+            None
+        };
+        if let Some(fid) = found {
+            return Ok(fid);
+        }
+        // ② 建
+        let kind = self.spec.kind.code();
+        let resp = self
+            .client
+            .post(mkdir_url(&self.spec))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Referer", self.spec.share_host)
+            .header("Cookie", cookie)
+            .body(mkdir_body_under(name, parent_fid))
+            .send()
+            .await
+            .map_err(|e| format!("建目录 {name} 请求失败：{e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        let fid = mkdir_fid_of(&v);
+        if fid.is_empty() {
+            return Err(format!(
+                "建目录 {name} 没有拿到 fid（HTTP {status}，响应：{}）",
+                short(&text)
+            ));
+        }
+        log::info!(
+            "[PAN] 已建目录 kind={kind} name={name} fid={fid}（父目录 {parent_fid}）"
+        );
+        Ok(fid)
+    }
+
     /// ★★★ 拿到（必要时**创建**）临时转存目录的 fid
     ///
     /// # 判据（Owner 硬要求：网盘根目录不许再堆临时转存）
@@ -473,47 +552,8 @@ impl PanDrive {
                 }
             }
         }
-        // ② 先找（★ 必须用**含子目录**的列法 —— `list_dir` 是 `_fetch_sub_dirs=0`，
-        //    用它找目录永远找不到 ⇒ 每启动一次多建一个 sourin-temp，真机实测踩过）
-        let found = if let Ok(entries) = self.list_dir_with_subdirs(cookie, "0").await {
-            entries
-                .into_iter()
-                .find(|e| e.is_dir && e.name == TEMP_DIR_NAME)
-                .map(|e| e.fid)
-        } else {
-            None
-        };
-        let fid = match found {
-            Some(f) => f,
-            None => {
-                // ③ 建
-                let resp = self
-                    .client
-                    .post(mkdir_url(&self.spec))
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "application/json, text/plain, */*")
-                    .header("Referer", self.spec.share_host)
-                    .header("Cookie", cookie)
-                    .body(mkdir_body(TEMP_DIR_NAME))
-                    .send()
-                    .await
-                    .map_err(|e| format!("建临时目录 {TEMP_DIR_NAME} 请求失败：{e}"))?;
-                let status = resp.status();
-                let text = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
-                let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-                let fid = mkdir_fid_of(&v);
-                if fid.is_empty() {
-                    return Err(format!(
-                        "建临时目录 {TEMP_DIR_NAME} 没有拿到 fid（HTTP {status}，响应：{}）",
-                        short(&text)
-                    ));
-                }
-                log::info!(
-                    "[PAN] 已建临时转存目录 kind={kind} name={TEMP_DIR_NAME} fid={fid}（不再往根目录堆）"
-                );
-                fid
-            }
-        };
+        // ②③ 找/建（泛化实现，见 [`ensure_dir_under`]）
+        let fid = self.ensure_dir_under(cookie, "0", TEMP_DIR_NAME).await?;
         // ④ 缓存
         {
             let mut guard = temp_dir_cache().lock().unwrap_or_else(|e| e.into_inner());
@@ -521,6 +561,17 @@ impl PanDrive {
             guard.push((kind, fid.clone()));
         }
         Ok(fid)
+    }
+
+    /// 21001 自愈第 3 档：在临时目录下拿一个**一次性重试子目录**
+    ///
+    /// 名字由 [`retry_subdir_name`] 保证唯一 ⇒ 子目录里不可能已有同名文件 ⇒
+    /// save 的同名去重必然落空（对内容级去重无效但无害 —— 见 `degrade_attempt`）。
+    /// 目录 fid 由调用方 `remember_temp` 记账（purge LIFO：先删文件再删本目录，
+    /// 别只建不清 —— 又一个目录垃圾源）。
+    async fn ensure_retry_subdir(&self, cookie: &str, temp_fid: &str) -> Result<String, String> {
+        let name = retry_subdir_name();
+        self.ensure_dir_under(cookie, temp_fid, &name).await
     }
 
     /// 转存到**临时目录**（建目录失败 ⇒ 退回根目录 + warn，绝不整体失败）
@@ -537,8 +588,12 @@ impl PanDrive {
     ) -> Result<String, String> {
         let (dir, fallback) = temp_dir_or_root(self.ensure_temp_dir(cookie).await);
         if let Some(why) = fallback.as_deref() {
-            log::warn!(
-                "[PAN] 临时目录 {TEMP_DIR_NAME} 不可用（{why}）⇒ 本次转存退回网盘根目录（不阻断播放）"
+            // ⚠️ PAN 侧日志必须走 applog::write_file_log（log 门面在本 crate 无 sink）
+            crate::applog::write_file_log(
+                "PAN",
+                &format!(
+                    "临时目录 {TEMP_DIR_NAME} 不可用（{why}）⇒ 本次转存退回网盘根目录（不阻断播放）"
+                ),
             );
         }
         match self
@@ -575,12 +630,25 @@ impl PanDrive {
     /// 若这里缓存到字段里，用户刚扫码成功、这边还用旧值 = "要重启"的观感。
     /// ```
     fn cookie(&self) -> Option<String> {
+        if let Some(c) = self.test_cookie_override() {
+            return Some(c);
+        }
         crate::pan_auth::load(self.spec.kind).map(|c| c.cookie)
+    }
+
+    /// ★ 测试缝（**仅测试编译存在**，release 构建恒 None）：
+    /// 假服务器夹具需要"已登录"态，而真 cookie 在系统钥匙串里 ——
+    /// 注入/清除走文件尾的 `debug_set_test_cookie`（实现也放文件尾：
+    /// `share_chain_wires_share_referer` 门禁按首个**测试 cfg 标记**切生产段，
+    /// 测试缝的标记必须落在全部生产代码之后，别把边界截短）。
+    #[cfg(not(test))]
+    fn test_cookie_override(&self) -> Option<String> {
+        None
     }
 
     /// 拼一个 API URL（把 `{pr_fr}` 之类的固定参数带上）
     fn api(&self, path: &str) -> String {
-        format!("https://{}/1/clouddrive/{}", self.spec.api_host, path)
+        format!("{}/1/clouddrive/{}", api_root(&self.spec), path)
     }
 
     /// 带 cookie 发一次 GET（缺 cookie ⇒ 由调用方先拦）
@@ -730,9 +798,10 @@ fn short(s: &str) -> String {
 /// ```
 fn list_dir_url(spec: &PanDriveSpec, dir: &str) -> String {
     format!(
-        "https://{}/1/clouddrive/file/sort?{}&uc_param_str=&pdir_fid={dir}\
+        "{}/1/clouddrive/file/sort?{}&uc_param_str=&pdir_fid={dir}\
          &_page=1&_size={}&_fetch_total=1&_fetch_sub_dirs=0&_sort=file_type:asc,file_name:asc",
-        spec.api_host, spec.pr_fr, spec.page_size
+        api_root(spec),
+        spec.pr_fr, spec.page_size
     )
 }
 
@@ -951,8 +1020,9 @@ const PAN_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.
 ///   同一份实现的前提（否则 UC 的实现会给夸克发错 host）。
 fn share_token_url(spec: &PanDriveSpec) -> String {
     format!(
-        "https://{}/1/clouddrive/share/sharepage/token?{}",
-        spec.api_host, spec.pr_fr
+        "{}/1/clouddrive/share/sharepage/token?{}",
+        api_root(spec),
+        spec.pr_fr
     )
 }
 
@@ -996,11 +1066,11 @@ fn share_detail_url(
     page: u32,
 ) -> String {
     format!(
-        "https://{}/1/clouddrive/share/sharepage/detail?{}\
+        "{}/1/clouddrive/share/sharepage/detail?{}\
          &pwd_id={share_id}&stoken={}&pdir_fid={folder}&force=0\
          &_page={}&_size=50&_fetch_total=1\
          &_sort=file_type:asc,updated_at:desc",
-        spec.api_host,
+        api_root(spec),
         spec.pr_fr,
         urlencode_min(stoken),
         if page == 0 { 1 } else { page }
@@ -1642,7 +1712,9 @@ impl PanDrive {
         }
         let Some(cookie) = self.cookie() else { return };
         let deadline = std::time::Instant::now() + PURGE_DELETE_WAIT_BUDGET;
-        for fid in victims {
+        // ★ LIFO（N-23018 v2）：自愈的"一次性子目录"先记目录、后记其文件 ⇒
+        //   倒序清理 = 先删文件再删其目录 —— 正序会把非空目录的删除打在前面（必失败）。
+        for fid in victims.into_iter().rev() {
             /*
              * ★ 2026-10-29：日志写清"从 sourin-temp 清理"。
              *
@@ -1873,16 +1945,22 @@ impl PanDrive {
     /// ★ 失败的尝试**也** `remember_temp` —— 转存可能已成功（超限发生在取直链一步），
     ///   不记下来下次 purge 就清不掉 ⇒ 用户网盘里堆垃圾（正是上批修掉的问题）。
     ///
-    /// ★★★ N-23018（2026-11-01，lead 批复 B）：下载遇 21001「file not found」⇒
-    /// **自愈重转存一次**（只做一次，防循环）。
+    /// ★★★ N-23018 v2（2026-11-01，lead 批复）：下载遇 21001 ⇒ **有界自愈循环**
     /// ```text
-    /// 为什么会 21001：重试解析开头的 purge 删掉了上一次的转存，而 save 对
-    /// 同名文件去重可能回吐"刚删/索引未落地"的同一 fid（真机实锤，见
-    /// purge_previous 与 is_file_not_found_21001 的注释）。
-    /// 自愈三步：① 等旧 fid 从临时目录清单消失（[SELFHEAL_LISTING_WAIT] 预算）
-    ///          ② 重新转存（删除已落地 ⇒ 必新建副本 ⇒ 新 fid）
-    ///          ③ 再取直链；仍 21001 ⇒ 如实报（play 已归"文件已不存在"终态）。
-    /// 自愈动作落 AppLog（自愈了什么、为什么）—— 不静默。
+    /// v1 的真机缺口（部署版实测）：重转存一次后仍 21001 —— wait_fid_gone 确认
+    /// 清单里已无旧 fid，重转存仍回吐同一个死 fid ⇒ 夸克 save 去重的作用域
+    /// 不止活跃目录清单（至少含回收站，可能是内容秒传级）。
+    /// v2 = 组合升级（每档都验证 save 回吐的 fid ≠ 死 fid）：
+    ///   第 2 次转存：同目录等退避（对"删除落地慢/索引收敛"有效）；
+    ///   第 3 次转存：一次性子目录（确定性躲开同名去重；对内容级去重无效但无害）。
+    /// 预算：重转存 ≤ [SELFHEAL_RESAVE_ATTEMPTS] 次、总预算 [SELFHEAL_TOTAL_BUDGET]、
+    ///       退避 = [SELFHEAL_BACKOFF_BASE] × 次数（2s → 4s）。
+    /// 穷尽后终态**分两态**（真机缺口的文案修正）：
+    ///   · 末次 save 仍回吐死 fid（去重卡住）⇒「临时转存副本被网盘同名去重卡住…
+    ///     稍后重试通常可恢复」——可重试语义（分享的文件明明还在）；
+    ///   · 末次 save 拿到新 fid 但下载仍 21001 ⇒「文件已不存在…换一条线路」
+    ///     （网盘/分享侧真没了，维持上批文案）。
+    /// 每一档动作都落 AppLog（自愈了什么、为什么）—— 不静默。
     /// ```
     async fn degrade_attempt(
         &self,
@@ -1892,30 +1970,101 @@ impl PanDrive {
         entry: &DriveEntry,
     ) -> Result<CspPlay, String> {
         let token = entry.fid_token.clone().unwrap_or_default();
-        let new_fid = self
+        let mut fid = self
             .save_into_temp_dir(cookie, share_id, passcode, &entry.fid, &token)
             .await?;
-        self.remember_temp(&new_fid);
+        self.remember_temp(&fid);
         // 复用 `play`（`share_save` 已把文件放进我自己的网盘 ⇒ 走到裸 fid 那条路）
-        let mut plays = match self.play("", &new_fid, "").await {
-            Ok(plays) => plays,
-            Err(e) if is_file_not_found_21001(&e) => {
-                crate::applog::write_file_log(
-                    "PAN",
-                    &format!(
-                        "21001 自愈：文件 {} 的转存下载报 file not found（上次解析的 purge 删除与 save 去重竞态）⇒ 重转存一次（仅一次）",
-                        entry.name
-                    ),
-                );
-                self.wait_fid_gone(cookie, &new_fid).await;
-                let fid2 = self
-                    .save_into_temp_dir(cookie, share_id, passcode, &entry.fid, &token)
-                    .await?;
-                self.remember_temp(&fid2);
-                self.play("", &fid2, "").await?
+        let deadline = std::time::Instant::now() + SELFHEAL_TOTAL_BUDGET;
+        let mut resaves: u32 = 0;
+        // 末次转存是否被网盘去重回吐了死 fid（决定穷尽终态走哪一态）
+        let mut dedupe_echo = false;
+        let result = loop {
+            match self.play("", &fid, "").await {
+                Ok(plays) => break Ok(plays),
+                Err(e) if is_file_not_found_21001(&e) => {
+                    if resaves >= SELFHEAL_RESAVE_ATTEMPTS
+                        || std::time::Instant::now() >= deadline
+                    {
+                        // ★ 穷尽终态分两态（真机缺口的文案修正，lead 批复②）：
+                        // 去重回吐型可重试（分享的文件明明还在）；真没了才说"已不存在"。
+                        break Err(if dedupe_echo {
+                            format!(
+                                "{} 临时转存副本被网盘同名去重卡住（下载报 code=21001 file not found）：分享的文件还在，稍后重试通常可恢复，或换一条线路",
+                                self.spec.kind.display()
+                            )
+                        } else {
+                            e
+                        });
+                    }
+                    resaves += 1;
+                    let dead = fid.clone();
+                    let use_subdir = resaves >= 2;
+                    crate::applog::write_file_log(
+                        "PAN",
+                        &format!(
+                            "21001 自愈（重转存 {resaves}/{}，{}）：文件 {} 的转存下载报 file not found（purge 删除与 save 去重竞态）",
+                            SELFHEAL_RESAVE_ATTEMPTS,
+                            if use_subdir { "换一次性子目录" } else { "同目录等退避" },
+                            entry.name
+                        ),
+                    );
+                    tokio::time::sleep(SELFHEAL_BACKOFF_BASE * resaves).await;
+                    if use_subdir {
+                        // ③ 换一次性子目录：确定性躲开"同名目录内去重"
+                        //   （对内容级去重无效但无害 —— 两类成因无法静态区分，都兜）。
+                        //   目录 fid 也记账（purge LIFO：先删文件再删本目录，别只建不清）。
+                        let temp = temp_dir_or_root(self.ensure_temp_dir(cookie).await).0;
+                        match self
+                            .ensure_dir_under(cookie, &temp, &retry_subdir_name())
+                            .await
+                        {
+                            Ok(sub) => {
+                                self.remember_temp(&sub);
+                                fid = self
+                                    .share_save(
+                                        cookie, share_id, passcode, &entry.fid, &token, &sub,
+                                    )
+                                    .await?;
+                            }
+                            Err(why) => {
+                                crate::applog::write_file_log(
+                                    "PAN",
+                                    &format!(
+                                        "21001 自愈：重试子目录建失败（{why}）⇒ 退回同目录重转存"
+                                    ),
+                                );
+                                self.wait_fid_gone(cookie, &dead).await;
+                                fid = self
+                                    .save_into_temp_dir(
+                                        cookie, share_id, passcode, &entry.fid, &token,
+                                    )
+                                    .await?;
+                            }
+                        }
+                    } else {
+                        // ② 同目录等退避：等删除落地/索引收敛后再转存
+                        self.wait_fid_gone(cookie, &dead).await;
+                        fid = self
+                            .save_into_temp_dir(cookie, share_id, passcode, &entry.fid, &token)
+                            .await?;
+                    }
+                    dedupe_echo = fid == dead;
+                    self.remember_temp(&fid);
+                    // ★★ 核心判据（真机缺口）：save 回吐的 fid 必须 ≠ 死 fid。
+                    //   相同 = 去重回吐（旧文件删除尚未在服务端生效）；已是最后一次
+                    //   ⇒ 直接进"卡住"终态，不再空打一次必死的下载。
+                    if fid == dead && resaves >= SELFHEAL_RESAVE_ATTEMPTS {
+                        break Err(format!(
+                            "{} 临时转存副本被网盘同名去重卡住（下载报 code=21001 file not found）：分享的文件还在，稍后重试通常可恢复，或换一条线路",
+                            self.spec.kind.display()
+                        ));
+                    }
+                }
+                Err(e) => break Err(e),
             }
-            Err(e) => return Err(e),
         };
+        let mut plays = result?;
         plays
             .pop()
             .ok_or_else(|| "转存后取直链没有返回地址".to_string())
@@ -2029,6 +2178,21 @@ pub const PURGE_DELETE_WAIT_BUDGET: std::time::Duration = std::time::Duration::f
 /// 21001 自愈里等"旧 fid 从临时目录清单消失"的预算（回收站/索引最终一致性）
 pub const SELFHEAL_LISTING_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// 21001 自愈的**重转存次数上限**（不含首次转存；lead 批复：有界，如 3 次转存）
+///
+/// ★ 真机缺口（2026-11-01 部署版实测）：v1 只重转存一次，而夸克 save 的同名
+///   去重作用域**不止活跃目录清单**（回收站/内容级）——wait_fid_gone 确认清单
+///   里已无旧 fid，重转存仍回吐同一个死 fid ⇒ 下载还是 21001。v2 改为有界循环：
+///   每次重转存**验证新 fid ≠ 死 fid**，相同 ⇒ 换下一档手段（等退避 → 一次性子目录）。
+pub const SELFHEAL_RESAVE_ATTEMPTS: u32 = 2;
+
+/// 21001 自愈的**总预算**（含重转存的任务轮询、退避、清单等待；超时即终态，
+/// 不许把 resolve 无限挂住 —— save 单次本就有 30s 轮询上限，这里兜加总）
+pub const SELFHEAL_TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(40);
+
+/// 自愈重转存的退避基数（第 n 次重转存前等 `BASE × n`：2s → 4s）
+pub const SELFHEAL_BACKOFF_BASE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// PAN 侧轮询间隔（删除任务 / 清单确认共用）
 pub const PAN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -2088,6 +2252,20 @@ where
     ))
 }
 
+/// 21001 自愈第 3 档的重试子目录名（**纯函数**：秒级时间戳 + 进程内序号 ⇒ 唯一）
+///
+/// 唯一性是"确定性躲开同名去重"的前提 —— 名字撞了，子目录里就可能已有同名文件，
+/// 去重又会回吐死 fid（真机缺口的同款）。中性命名（t98 铁律），不用具体盘名。
+pub fn retry_subdir_name() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("retry-{secs}-{n}")
+}
+
 /// 分享里找视频时最多下钻几层目录（整季分文件夹是常态）
 const SHARE_PICK_MAX_DEPTH: usize = 2;
 
@@ -2109,8 +2287,9 @@ fn temp_saved() -> &'static std::sync::Mutex<Vec<(String, String)>> {
 /// 清理用的 URL（**纯函数**，与取证逐字一致）
 fn file_delete_url(spec: &PanDriveSpec) -> String {
     format!(
-        "https://{}/1/clouddrive/file/delete?{}",
-        spec.api_host, spec.pr_fr
+        "{}/1/clouddrive/file/delete?{}",
+        api_root(spec),
+        spec.pr_fr
     )
 }
 
@@ -2252,6 +2431,93 @@ impl CspSite for PanUc {
 crate::csp::register_site!(PanQuark);
 crate::csp::register_site!(PanUc);
 
+// ═══════════════════════════════════════════════════════════════════════
+//  ★ 测试缝（2026-11-01，N-23018 v2）：假服务器夹具的 cookie 注入点
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠️ 本块必须位于**全部生产代码之后**：`share_chain_wires_share_referer`
+//    门禁按文件里首个 `#[cfg(test)]` 切出"生产段"再数接线，
+//    这里的 cfg 标记若落在 share_referer 调用点之前，会把生产段截短（实测踩过）。
+#[cfg(test)]
+static TEST_COOKIE_OVERRIDES: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> =
+    std::sync::OnceLock::new();
+
+/// ★ 测试缝：假网盘夹具的 API 根，**按 api_host 键控**
+///
+/// 键控的原因：cargo test 的用例默认并行 —— 若用单一全局覆盖，夹具会把
+/// 同进程并行的 URL 字节级门禁（quark_spec 的 drive-pc.quark.cn）一起改道。
+/// 夹具把自己的 spec.api_host 设成哨兵 host（127.0.0.1:port）再键入覆盖 ⇒
+/// 其它测试查不到 ⇒ 平行安全。
+#[cfg(test)]
+static TEST_API_BASES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+    std::sync::OnceLock::new();
+
+/// ★ 测试缝：夹具互斥锁 —— `TEMP_SAVED` 账本是**进程级共享**的，三个夹具
+/// 并行会互相 purge 掉对方的记账（LIFO 断言被打乱）⇒ 夹具整体串行。
+#[cfg(test)]
+static FIXTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+impl PanDrive {
+    /// ★ 测试缝（仅测试编译存在）：假服务器夹具需要"已登录"态，而真 cookie
+    ///   在系统钥匙串里 —— 夹具从这里注入；生产构建本函数不存在（恒 None）。
+    #[cfg(test)]
+    fn test_cookie_override(&self) -> Option<String> {
+        let guard = TEST_COOKIE_OVERRIDES
+            .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard
+            .iter()
+            .find(|(k, _)| k == &self.spec.kind.code().to_string())
+            .map(|(_, c)| c.clone())
+    }
+
+    /// 仅供测试（见上文）：注入/清除假 cookie。cookie 传空串 ⇒ 清除该盘的注入。
+    #[cfg(test)]
+    fn debug_set_test_cookie(kind: &str, cookie: &str) {
+        let mut guard = TEST_COOKIE_OVERRIDES
+            .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.retain(|(k, _)| k != kind);
+        if !cookie.is_empty() {
+            guard.push((kind.to_string(), cookie.to_string()));
+        }
+    }
+
+    /// 仅供测试：见 `api_root`（假网盘夹具的 API 根，按 api_host 键控）。
+    #[cfg(test)]
+    fn test_api_base_for(host: &str) -> Option<String> {
+        TEST_API_BASES
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(host)
+            .cloned()
+    }
+
+    /// 仅供测试：设置/清除假网盘 API 根（键 = api_host；base 空串 ⇒ 清除）。
+    #[cfg(test)]
+    fn debug_set_test_api_base(host: &str, base: &str) {
+        let mut guard = TEST_API_BASES
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if base.is_empty() {
+            guard.remove(host);
+        } else {
+            guard.insert(host.to_string(), base.to_string());
+        }
+    }
+}
+
+#[cfg(not(test))]
+impl PanDrive {
+    fn test_api_base_for(_host: &str) -> Option<String> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2339,6 +2605,10 @@ mod tests {
         // ⚠️ 测试环境里钥匙串通常没有夸克凭据 ⇒ 天然就是"无 cookie"路径。
         //    若某台机器**恰好有**（开发者真登录过），本用例会失真 ——
         //    所以先探一下：有凭据就跳过（如实打印原因，不静默）。
+        // ⚠️ 还要躲开假网盘夹具的 cookie 注入窗（FIXTURE_LOCK 串行化，
+        //    N-23018 v2）：夹具运行期间本用例若并行，会把"假 cookie 在场"
+        //    误当成"登录态"⇒ 握手报网络/业务错误而不是"登录"。
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         if crate::pan_auth::load(PanKind::Quark).is_some() {
             eprintln!("本机钥匙串已有夸克凭据 ⇒ 跳过『无 cookie』用例（避免假绿/假红）");
             return;
@@ -2361,6 +2631,8 @@ mod tests {
     /// ★★★ 货架下标越界必须报错（不许静默返回空列表）
     #[tokio::test]
     async fn list_with_out_of_range_shelf_is_error() {
+        // 躲开假网盘夹具的 cookie 注入窗（同 without_cookie 用例的说明）
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         if crate::pan_auth::load(PanKind::Quark).is_some() {
             eprintln!("有凭据 ⇒ 跳过（本用例需要一个确定的『无凭据』或『有凭据』路径）");
             // 有凭据时也应报错（下标越界与凭据无关），继续测
@@ -3240,6 +3512,359 @@ mod tests {
             }
         }
         eprintln!("[PAN-21001] 判读通过：重试错误串里没有 21001（竞态已由 A+B 兜住）");
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  ★ 假网盘夹具（N-23018 v2）：本地 TCP 回放"save 去重回吐"全链路
+    // ════════════════════════════════════════════════════════════════════
+    //
+    // 与 app99 的假站夹具同一条思路：drive API 是明文 JSON + Cookie（无应用层
+    // 加密）⇒ 本地 TCP 按路径路由即可。脚本化三件事：
+    //   · save 第 n 次回吐哪个 fid（末位重复 —— "恒回吐同一死 fid"就靠它）
+    //   · file/download 对哪些 fid 一律 404(21001)
+    //   · file/delete 逐个记录（断言 purge LIFO 与子目录清理）
+
+    struct PanScript {
+        /// save 第 n 次调用回吐的 fid（越界取末位 ⇒ "恒回吐"）
+        save_fids: std::sync::Mutex<Vec<String>>,
+        /// 这些 fid 的 file/download 一律 HTTP 404(21001)（其余成功）
+        dead_fids: Vec<String>,
+        saves: std::sync::atomic::AtomicUsize,
+        downloads: std::sync::Mutex<Vec<String>>,
+        deletes: std::sync::Mutex<Vec<String>>,
+        mkdirs: std::sync::Mutex<Vec<String>>,
+        task_fid_of: std::sync::Mutex<std::collections::HashMap<String, String>>,
+        del_seq: std::sync::atomic::AtomicUsize,
+    }
+
+    impl PanScript {
+        fn new(save_fids: Vec<String>, dead_fids: Vec<String>) -> Self {
+            Self {
+                save_fids: std::sync::Mutex::new(save_fids),
+                dead_fids,
+                saves: std::sync::atomic::AtomicUsize::new(0),
+                downloads: std::sync::Mutex::new(Vec::new()),
+                deletes: std::sync::Mutex::new(Vec::new()),
+                mkdirs: std::sync::Mutex::new(Vec::new()),
+                task_fid_of: std::sync::Mutex::new(std::collections::HashMap::new()),
+                del_seq: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        async fn spawn(self: std::sync::Arc<Self>) -> String {
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut sock, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let script = self.clone();
+                    tokio::spawn(async move {
+                        let mut buf: Vec<u8> = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        let mut head_end = 0usize;
+                        loop {
+                            let n = match sock.read(&mut chunk).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(n) => n,
+                            };
+                            buf.extend_from_slice(&chunk[..n]);
+                            if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                head_end = p + 4;
+                                break;
+                            }
+                        }
+                        let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+                        let path = head.split(' ').nth(1).unwrap_or("").to_string();
+                        let clen: usize = head
+                            .to_ascii_lowercase()
+                            .lines()
+                            .find_map(|l| {
+                                l.strip_prefix("content-length:")
+                                    .map(|v| v.trim().to_string())
+                            })
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0);
+                        while buf.len() < head_end + clen {
+                            let n = match sock.read(&mut chunk).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => n,
+                            };
+                            buf.extend_from_slice(&chunk[..n]);
+                        }
+                        let body_text = String::from_utf8_lossy(&buf[head_end..]).to_string();
+                        let (code, body) = script.route(&path, &body_text);
+                        let resp = format!(
+                            "HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                    });
+                }
+            });
+            format!("{addr}")
+        }
+
+        fn route(&self, path: &str, req_body: &str) -> (String, String) {
+            let ok = |v: serde_json::Value| ("200 OK".to_string(), v.to_string());
+            // ── 分享链路（同族信封：status=200 + code=0 双确认）──
+            if path.contains("/share/sharepage/token") {
+                return ok(serde_json::json!({
+                    "status": 200, "code": 0, "data": {"stoken": "st"}
+                }));
+            }
+            if path.contains("/share/sharepage/detail") {
+                return ok(serde_json::json!({
+                    "status": 200, "code": 0,
+                    "data": {"list": [{
+                        "fid": "SHAREFILE-1", "file_name": "movie.mkv",
+                        "size": 5_500_000_000u64, "share_fid_token": "tok"
+                    }]}
+                }));
+            }
+            if path.contains("/share/sharepage/save") {
+                let idx = self
+                    .saves
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let fids = self.save_fids.lock().unwrap_or_else(|e| e.into_inner());
+                let fid = fids.get(idx).unwrap_or(fids.last().unwrap_or(&String::new())).clone();
+                drop(fids);
+                let task_id = format!("T{idx}");
+                self.task_fid_of
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(task_id.clone(), fid);
+                return ok(serde_json::json!({
+                    "status": 200, "code": 0, "data": {"task_id": task_id}
+                }));
+            }
+            if path.contains("/task") {
+                let tid = path
+                    .split("task_id=")
+                    .nth(1)
+                    .map(|s| s.split('&').next().unwrap_or("").to_string())
+                    .unwrap_or_default();
+                let map = self.task_fid_of.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(fid) = map.get(&tid) {
+                    return ok(serde_json::json!({
+                        "status": 200, "code": 0,
+                        "data": {"status": 2, "save_as": {"save_as_top_fids": [fid]}}
+                    }));
+                }
+                // 删除任务：终态即可（delete_task_done 只读 status）
+                return ok(serde_json::json!({
+                    "status": 200, "code": 0, "data": {"status": 2}
+                }));
+            }
+            // ── 网盘文件操作 ──
+            if path.contains("/file/download") {
+                let fid = req_body
+                    .split("\"fids\":[\"")
+                    .nth(1)
+                    .map(|s| s.split('"').next().unwrap_or("").to_string())
+                    .unwrap_or_default();
+                self.downloads
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(fid.clone());
+                if self.dead_fids.contains(&fid) {
+                    return (
+                        "404 Not Found".to_string(),
+                        serde_json::json!({
+                            "status": 404, "code": 21001,
+                            "message": format!("file not found [{fid}]")
+                        })
+                        .to_string(),
+                    );
+                }
+                return ok(serde_json::json!({
+                    "code": 0,
+                    "data": [{"download_url": "https://cdn.example.com/x.m3u8"}]
+                }));
+            }
+            if path.contains("/file/sort") {
+                // 根目录里有 sourin-temp；临时目录/子目录内为空（wait_fid_gone 直接过）
+                let is_root = path.contains("pdir_fid=0");
+                let list = if is_root {
+                    serde_json::json!([{"fid": "DIRT", "file_name": TEMP_DIR_NAME, "dir": true}])
+                } else {
+                    serde_json::json!([])
+                };
+                return ok(serde_json::json!({"code": 0, "data": {"list": list}}));
+            }
+            if path.ends_with("/file") || path.contains("/file?") {
+                let name = req_body
+                    .split("\"file_name\":")
+                    .nth(1)
+                    .map(|s| s.split('"').nth(1).unwrap_or("").to_string())
+                    .unwrap_or_default();
+                self.mkdirs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(name);
+                return ok(serde_json::json!({"code": 0, "data": {"fid": "DIR-NEW"}}));
+            }
+            if path.contains("/file/delete") {
+                let n = self
+                    .del_seq
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let fid = req_body
+                    .split("\"filelist\":[\"")
+                    .nth(1)
+                    .map(|s| s.split('"').next().unwrap_or("").to_string())
+                    .unwrap_or_default();
+                self.deletes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(fid);
+                return ok(serde_json::json!({
+                    "code": 0, "data": {"task_id": format!("D{n}")}
+                }));
+            }
+            (
+                "404 Not Found".to_string(),
+                serde_json::json!({"status": 404, "error": "Not Found", "path": path}).to_string(),
+            )
+        }
+    }
+
+    /// ★ 夹具门禁 1（真机缺口回放）：save **恒回吐同一死 fid** ⇒
+    /// 有界重试（3 次转存）+ 一次性子目录 + 诚实终态（"同名去重卡住"，可重试语义）。
+    ///
+    /// ```text
+    /// 回放 = 2026-11-01 部署版真机：首次转存 E → 下载 21001 → v1 自愈重转存
+    /// 仍回吐 E → 终态"文件已不存在"（不准确）。v2 应：同目录等退避重转存（仍 E）
+    /// → 换一次性子目录重转存（仍 E，内容级去重）⇒ 终态改报"同名去重卡住"，
+    /// 且不再空打第三次必死的下载（download 恰好 2 次）。
+    /// 注入证红：把 degrade_attempt 的 `fid == dead` 判据删掉 ⇒ 本条红
+    /// （终态回到 play 的"文件已不存在"、download 变 3 次）。
+    /// ```
+    #[tokio::test]
+    async fn fixture_save_dedupe_echo_runs_bounded_retries_and_honest_terminal() {
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // 起点清账：账本进程级共享，前面夹具留下的记账不许泄进本用例
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "k=test");
+        const DEAD: &str = "E2d3230fdeadbeef";
+        let script = std::sync::Arc::new(PanScript::new(
+            vec![DEAD.to_string()],
+            vec![DEAD.to_string()],
+        ));
+        let host = script.clone().spawn().await;
+        PanDrive::debug_set_test_api_base(&host, &format!("http://{host}"));
+        // api_host 是 &'static str ⇒ 夹具把本地地址 leak 成静态串（测试夹具级微泄漏）
+        let mut spec = quark_spec();
+        spec.api_host = Box::leak(host.clone().into_boxed_str());
+        let d = PanDrive::with_spec("PanQuark", spec);
+        let err = d
+            .resolve_share_play("abc123def456", "")
+            .await
+            .expect_err("恒回吐死 fid ⇒ 必须终态（不能成功也不许挂死）");
+        assert!(
+            err.contains("同名去重卡住"),
+            "★ 穷尽终态必须如实报\"转存副本被去重卡住\"：{err}"
+        );
+        assert!(err.contains("稍后重试"), "★ 可重试语义要点破：{err}");
+        assert!(
+            !err.contains("文件已不存在"),
+            "★ 分享的文件还在 —— 不许再报上批那句不准确的\"文件已不存在\"：{err}"
+        );
+        // 有界：恰 3 次转存（1 正常 + 2 自愈重转存）
+        assert_eq!(
+            script.saves.load(std::sync::atomic::Ordering::Relaxed),
+            3,
+            "★ 转存次数必须有界（1 + SELFHEAL_RESAVE_ATTEMPTS=2）"
+        );
+        // 不空打：终态前的下载恰好 2 次（E 两次；第 3 次被 post-save 判据拦下）
+        assert_eq!(
+            script.downloads.lock().unwrap_or_else(|e| e.into_inner()).as_slice(),
+            &[DEAD.to_string(), DEAD.to_string()],
+        );
+        // 一次性子目录确实建了（且只建一个）
+        let mkdirs = script.mkdirs.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(mkdirs.len(), 1, "★ 只有自愈第 3 档建子目录：{mkdirs:?}");
+        assert!(
+            mkdirs[0].starts_with("retry-"),
+            "★ 子目录名走 retry_subdir_name（中性 + 唯一）：{:?}",
+            mkdirs
+        );
+        PanDrive::debug_set_test_cookie("quark", "");
+    }
+
+    /// ★ 夹具门禁 2：save 第二次回吐**新 fid** ⇒ 自愈成功，下载用新 fid。
+    #[tokio::test]
+    async fn fixture_selfheal_succeeds_when_resave_returns_fresh_fid() {
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // 起点清账（账本进程级共享，见门禁 1）
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "k=test");
+        const DEAD: &str = "E2d3230fdeadbeef";
+        const FRESH: &str = "F9aa1fresh";
+        let script = std::sync::Arc::new(PanScript::new(
+            vec![DEAD.to_string(), FRESH.to_string()],
+            vec![DEAD.to_string()],
+        ));
+        let host = script.clone().spawn().await;
+        PanDrive::debug_set_test_api_base(&host, &format!("http://{host}"));
+        let mut spec = quark_spec();
+        spec.api_host = Box::leak(host.clone().into_boxed_str());
+        let d = PanDrive::with_spec("PanQuark", spec);
+        let out = d
+            .resolve_share_play("abc123def456", "")
+            .await
+            .expect("★ 重转存拿到新 fid ⇒ 自愈成功");
+        assert_eq!(
+            script.downloads.lock().unwrap_or_else(|e| e.into_inner()).as_slice(),
+            &[DEAD.to_string(), FRESH.to_string()],
+            "★ 死 fid 撞一次 21001 后，下载必须换成新 fid"
+        );
+        assert_eq!(
+            script.saves.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "★ 一次重转存就成功 ⇒ 不许再多打（有界）"
+        );
+        assert!(out.url.contains("cdn.example.com"));
+        PanDrive::debug_set_test_cookie("quark", "");
+    }
+
+    /// ★ 夹具门禁 3（lead 补充约束）：**子目录的清理验证** ——
+    /// 终态后"下次解析的 purge"必须清掉 retry- 目录**及其文件**，且 LIFO
+    /// （先文件后目录；正序会把非空目录的删除打在前面，必失败）。
+    #[tokio::test]
+    async fn fixture_purge_lifo_cleans_retry_subdir_and_file() {
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // 起点清账（账本进程级共享，见门禁 1）
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "k=test");
+        const DEAD: &str = "E2d3230fdeadbeef";
+        let script = std::sync::Arc::new(PanScript::new(
+            vec![DEAD.to_string()],
+            vec![DEAD.to_string()],
+        ));
+        let host = script.clone().spawn().await;
+        PanDrive::debug_set_test_api_base(&host, &format!("http://{host}"));
+        let mut spec = quark_spec();
+        spec.api_host = Box::leak(host.clone().into_boxed_str());
+        let d = PanDrive::with_spec("PanQuark", spec);
+        let _ = d.resolve_share_play("abc123def456", "").await; // 终态（同门禁 1）
+        // 第二次 resolve = 触发 purge（清上一次的临时转存，含一次性子目录）
+        let _ = d.resolve_share_play("abc123def456", "").await;
+        let deletes = script.deletes.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // 记账序（resolve1）：[E, E, dirR, E] ⇒ LIFO 删除序 [E, dirR, E, E]
+        // ★ 第 2 个删除的就是 retry- 子目录 —— 且排在它的文件之后
+        assert_eq!(
+            deletes.first().map(|s| s.as_str()),
+            Some(DEAD),
+            "★ LIFO：先删文件（最新记的）"
+        );
+        assert!(
+            deletes.len() >= 2 && deletes[1] == "DIR-NEW",
+            "★ retry- 子目录必须在它的文件之后被删（LIFO），实际删除序：{deletes:?}"
+        );
+        assert_eq!(deletes.len(), 4, "★ 4 条记账（E/E/子目录/E）都要被清：{deletes:?}");
+        PanDrive::debug_set_test_cookie("quark", "");
     }
 }
 

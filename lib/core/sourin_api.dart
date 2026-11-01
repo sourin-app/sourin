@@ -4674,6 +4674,14 @@ enum PlaybackFailureKind {
   /// 与 23018 同类：文件属性/存在性问题，重试无出路 ⇒ canRetry=false。
   shareFileGone,
 
+  /// ★ 第九档（2026-11-01，N-23018 v2）：**临时转存副本被网盘同名去重卡住**——
+  /// 分享的文件明明还在，但我们自己的临时副本被删除/去重竞态卡死
+  /// （真机实锤：重转存回吐同一个已在回收站的 fid）。
+  ///
+  /// 与 [shareFileGone] 的区分是 Rust 侧终态串的"转存副本"标记：
+  /// 这一档**可重试**（网盘处理完成后重试通常可恢复）⇒ canRetry=true。
+  tempCopyStuck,
+
   /// 归不到任何一类
   unknown,
 }
@@ -4735,6 +4743,7 @@ class PlaybackFailure {
      */
     PlaybackFailureKind.timeout => '这条流等太久了',
     PlaybackFailureKind.shareFileGone => '分享的这个文件已不存在',
+    PlaybackFailureKind.tempCopyStuck => '网盘文件的临时转存副本暂时取不出',
     PlaybackFailureKind.unknown => '播放失败',
   };
 
@@ -4752,6 +4761,8 @@ class PlaybackFailure {
     PlaybackFailureKind.network => '等一会儿再点「重试」。',
     PlaybackFailureKind.timeout => '点「重试」；一直这样就把日志发给我们。',
     PlaybackFailureKind.shareFileGone => '换一条线路试试（右上角的线路列表）。',
+    PlaybackFailureKind.tempCopyStuck =>
+        '稍后点「重试」通常可恢复；不行就换一条线路。',
     PlaybackFailureKind.unknown => '',
   };
 
@@ -4854,6 +4865,12 @@ PlaybackFailureOwner ownerOf(PlaybackFailureKind kind) => switch (kind) {
   // 文件没了是**网盘/分享侧的内容现实**——插件只是如实转述（它取流没错），
   // 播放器更没问题。与 permission 同一条"不冒认"纪律：归 `unknown`。
   PlaybackFailureKind.shareFileGone => PlaybackFailureOwner.unknown,
+
+  // ── 临时转存副本被去重卡住（N-23018 v2）────────────────
+  // 卡住 = **我们自己发起的清理**与网盘删除/去重处理的交互所致
+  // （purge 异步删除 + save 同名去重）——认在自己头上（service）
+  // 比 unknown 更有行动指向：这是宿主能修/能等好的那一类。
+  PlaybackFailureKind.tempCopyStuck => PlaybackFailureOwner.service,
 
   // ── 说不清 ──────────────────────────────────────────────
   PlaybackFailureKind.unknown => PlaybackFailureOwner.unknown,
@@ -5170,6 +5187,17 @@ class PlaybackErrorText {
      * 判据：业务码 + message 短语**双特征**（裸 404 / 单独 21001 不误伤；
      * 与 Rust 侧 `is_file_not_found_21001` 同一条判据、两个实现各自有门禁）。
      */
+    // ⓪″ 先分"去重卡住"（v2）：临时转存副本被同名去重卡住 ⇒ **可重试**。
+    //    Rust 终态串带"转存副本"标记（play 的"文件已不存在"文案没有它）
+    //    ⇒ 两态各走各档，不许混。排在 ⓪′ 之前（它的文本同样含 21001 双特征）。
+    if (lower.contains('21001') &&
+        lower.contains('file not found') &&
+        text.contains('转存副本')) {
+      return PlaybackFailure(
+        kind: PlaybackFailureKind.tempCopyStuck,
+        detail: display,
+      );
+    }
     if (lower.contains('21001') && lower.contains('file not found')) {
       return PlaybackFailure(
         kind: PlaybackFailureKind.shareFileGone,

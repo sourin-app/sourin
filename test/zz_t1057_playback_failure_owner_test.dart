@@ -35,7 +35,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 
 void main() {
-  group('① 映射表：八档逐档（漏一档 = 那一档会悄悄错档）', () {
+  group('① 映射表：九档逐档（漏一档 = 那一档会悄悄错档）', () {
     test('★★★ 每一档都必须有明确归属，且与下表逐档一致', () {
       const expected = <PlaybackFailureKind, PlaybackFailureOwner>{
         PlaybackFailureKind.source: PlaybackFailureOwner.plugin,
@@ -46,6 +46,8 @@ void main() {
         PlaybackFailureKind.network: PlaybackFailureOwner.remote,
         // N-23018：分享的文件已不存在 = 网盘/分享侧的内容现实（插件如实转述）
         PlaybackFailureKind.shareFileGone: PlaybackFailureOwner.unknown,
+        // N-23018 v2：临时转存副本被去重卡住 = 我们发起的清理与网盘处理的交互
+        PlaybackFailureKind.tempCopyStuck: PlaybackFailureOwner.service,
         PlaybackFailureKind.unknown: PlaybackFailureOwner.unknown,
       };
 
@@ -123,6 +125,22 @@ void main() {
           isNot(PlaybackFailureOwner.service));
       expect(ownerOf(PlaybackFailureKind.shareFileGone),
           isNot(PlaybackFailureOwner.player));
+    });
+
+    test('★★★ tempCopyStuck（N-23018 v2）⇒ service（认在自己头上）', () {
+      // 与 shareFileGone 相反：卡住是**我们发起的清理**与网盘处理交互所致
+      // （purge 异步删除 + save 同名去重）⇒ 判成 unknown 会让用户以为
+      // 谁都没办法，而"稍后重试"恰好是宿主这层能等好的。
+      expect(ownerOf(PlaybackFailureKind.tempCopyStuck),
+          PlaybackFailureOwner.service,
+          reason: '★ 卡住源自宿主的 purge/自愈交互 —— service 认账，'
+              '用户才知道"等一等/重试"是有效动作');
+      expect(ownerOf(PlaybackFailureKind.tempCopyStuck),
+          isNot(PlaybackFailureOwner.plugin),
+          reason: '★ 插件只是取流，去重卡住与它无关');
+      expect(ownerOf(PlaybackFailureKind.tempCopyStuck),
+          isNot(PlaybackFailureOwner.unknown),
+          reason: '★ 这不是"说不清"——成因明确在宿主这层');
     });
   });
 

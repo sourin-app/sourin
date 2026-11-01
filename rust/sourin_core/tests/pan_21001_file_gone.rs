@@ -7,7 +7,11 @@
 //! 同 fid 27 秒"在→不在"：上次解析的 purge（file/delete 异步、不等待）把文件删了，
 //! save 对同名文件去重回吐刚删的 fid ⇒ 下载 404(21001)。
 //! 修复（lead 批复 A+B）：A = purge 等删除任务终态（预算封顶）；B = 下载遇 21001
-//! 自愈重转存一次（等旧 fid 从清单消失 → 重新 save → 再下载）。
+//! 自愈重转存（等旧 fid 从清单消失 → 重新 save → 再下载）。
+//! v2（真机缺口：save 去重作用域超出目录清单，重转存仍回吐死 fid）：
+//! 自愈改有界循环——每档验证 fid ≠ 死 fid，末次换一次性子目录，穷尽后两态终态
+//! （去重卡住=可重试 / 真不存在=不可重试），夹具回放见 pan_drive.rs mod tests 的
+//! fixture_save_dedupe_* / fixture_selfheal_* / fixture_purge_lifo_* 三个用例。
 //! ```
 //!
 //! # 门禁怎么打（注入证红）
@@ -20,8 +24,8 @@
 //! ```
 
 use sourin_core::csp::pan_drive::{
-    delete_task_done, is_file_not_found_21001, PAN_POLL_INTERVAL, PURGE_DELETE_WAIT_BUDGET,
-    SELFHEAL_LISTING_WAIT,
+    delete_task_done, is_file_not_found_21001, retry_subdir_name, PAN_POLL_INTERVAL,
+    PURGE_DELETE_WAIT_BUDGET, SELFHEAL_LISTING_WAIT,
 };
 
 // ── ① 21001 判据（纯函数）────────────────────────────────────────────
@@ -106,6 +110,23 @@ fn purge_wait_budget_is_bounded() {
     );
 }
 
+// ── ②b v2 自愈的一次性子目录名（纯函数）────────────────────────────
+
+#[test]
+fn retry_subdir_names_are_unique_and_neutral() {
+    // 唯一性 = "确定性躲开同名去重"的前提：名字撞了 ⇒ 子目录里可能已有
+    // 同名文件 ⇒ 去重又回吐死 fid（真机缺口的同款）
+    let a = retry_subdir_name();
+    let b = retry_subdir_name();
+    assert_ne!(a, b, "★ 连续两次生成的子目录名必须不同");
+    assert!(a.starts_with("retry-") && b.starts_with("retry-"));
+    // t98 铁律：中性命名（不含盘名/站名）；且不许带路径分隔（防目录穿越）
+    for n in [&a, &b] {
+        assert!(!n.contains("quark") && !n.contains("uc"), "中性命名：{n}");
+        assert!(!n.contains('/') && !n.contains('\\'), "不许带路径分隔：{n}");
+    }
+}
+
 // ── ③ 接线断言（源码级：written == wired）────────────────────────────
 
 const SRC: &str = include_str!("../src/csp/pan_drive.rs");
@@ -121,20 +142,21 @@ fn degrade_attempt_src() -> &'static str {
 
 #[test]
 fn selfheal_is_wired_exactly_once_in_degrade_attempt() {
-    // degrade_attempt 里：21001 检测 → 等清单消失 → 重转存一次 → 再下载。
-    // ★ "重转存"调用在**本函数内**只允许出现两处：正常路 + 自愈路
-    //   （resolve_share_play 里还有一处同名调用，不在本断言范围）。
+    // degrade_attempt（v2 有界循环）里：21001 检测 → 同目录等清单消失/换一次性
+    // 子目录 → 重转存 → 再下载。★ "重转存"调用在**本函数内**只允许出现两处：
+    // 正常路 + 同目录自愈路（子目录路走 share_save 直调，不计入）。
+    // （resolve_share_play 里还有一处同名调用，不在本断言范围。）
     let body = degrade_attempt_src();
     let count = body
         .matches("save_into_temp_dir(cookie, share_id, passcode, &entry.fid, &token)")
         .count();
     assert_eq!(
         count, 2,
-        "★ degrade_attempt 应有「正常转存 + 自愈重转存」两次调用；\
-         数量变了 = 自愈被删（证红）或被复制成循环（违反\"只做一次\"批复）"
+        "★ degrade_attempt 应有「正常转存 + 自愈同目录重转存」两次调用；\
+         数量变了 = 自愈被删（证红）或被复制成循环（违反有界批复）"
     );
-    // 自愈分支必须先等旧 fid 消失（回收站/索引最终一致性）再重转存
-    let heal = body.find("21001 自愈：文件").expect("自愈日志标记不见了");
+    // 自愈日志标记（v2 文案）+ 核心判据（fid ≠ 死 fid）+ 两态终态都在
+    let heal = body.find("21001 自愈（重转存").expect("自愈日志标记不见了");
     let wait = body[heal..]
         .find("wait_fid_gone")
         .expect("自愈分支必须先 wait_fid_gone（等删除落地）再重转存");
@@ -144,6 +166,18 @@ fn selfheal_is_wired_exactly_once_in_degrade_attempt() {
     assert!(
         wait < resave,
         "★ 自愈顺序必须是「等清单消失 → 重转存」——先转存等于没等"
+    );
+    for marker in [
+        "fid == dead",       // 核心判据：save 回吐 ≠ 死 fid
+        "被网盘同名去重卡住",  // 两态终态：去重卡住（可重试）
+        "retry_subdir_name", // 末次换一次性子目录
+    ] {
+        assert!(body.contains(marker), "★ v2 自愈要素缺失：{marker}");
+    }
+    // "真不存在"终态文案在 play()（全文件级）——两态各归各
+    assert!(
+        SRC.contains("文件已不存在（code=21001 file not found）"),
+        "★ play 的 21001 终态文案不见了"
     );
 }
 

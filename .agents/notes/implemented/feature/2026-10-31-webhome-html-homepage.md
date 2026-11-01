@@ -22,9 +22,10 @@ issue 在 0.6.0 已修复（顺带核实）。
 V1 切口（最小可用）：粘贴/本地 HTML → 内嵌 InAppWebView 渲染 → fm 六方法
 白名单桥（playVod/openLive/net.request/cache 三件/log/toast）→ 原生/HTML
 双模式自动回退（加载失败/8s 白屏看门狗 ⇒ 本次会话回退原生 + 常驻回原生按钮）。
-安全：net.request 两段 SSRF（字面量 + DNS 解析后逐 IP 复判防 rebinding，
-2MB 响应上限 + 20s 超时）；console 五级劫持落 AppLog（凭据零打印：
-仅 method+host+path）；webHome profile incognito 强隔离（探针实证纯内存
+安全：net.request 两段 SSRF（字面量 + DNS 解析后逐 IP 复判，2MB 响应上限
++ 20s 超时）；N3b 起连接只拨**校验过的那批 IP**（connectionFactory 直连），
+解析与连接同源——DNS rebinding TOCTOU 闭合；console 五级劫持落 AppLog
+（凭据零打印：仅 method+host+path）；webHome profile incognito 强隔离（探针实证纯内存
 不落盘，含持久 cookie）；HTML 来源粘贴/本地路径，零新依赖。
 六项明确不做：扩展引擎/站点级 webHome/远程 URL/资源服务器/inline 播放/
 分块回传——V1 之后按需立项。
@@ -52,11 +53,33 @@ V1 切口（最小可用）：粘贴/本地 HTML → 内嵌 InAppWebView 渲染 
   （按解析 IP 直连为下批项，威胁模型自洽：HTML 用户自写）。
 - 门禁：test/t20261031_webhome_pure_gate_test.dart 22/22（含证红）；
   analyze webhome = No issues found。
+- N3b TOCTOU 闭合（2026-11-01，Lead 批复，取代上一条的"收窄未闭合"措辞）：
+  net.request 连接实现从 webhome_page 整体迁入 lib/ui/webhome/fm_net_request.dart，
+  HttpClient.connectionFactory 只拨**校验过的那批 IP**——解析与连接同源、
+  无第二次 DNS，rebinding 窗口闭合。两个 SDK 层实锤否决项：①
+  connectionFactory 路径 SDK 对返回 socket **不做 TLS 升级**，而
+  SecureSocket.startConnect(IP) 会拿 IP 当 SNI/校验主机名、真域名证书必挂
+  ⇒ https 改为裸拨 IP 后 SecureSocket.secure(raw, host: 原域名)（SNI/证书
+  校验保持按真域名）经 ConnectionTask.fromSocket 包回（Dart 3.13 稳定线
+  API，文档原文即为此场景）；② 备胎本机 127.0.0.1 CONNECT 中继已论证但
+  未启用（fromSocket 可用，无需中继）。
+- ★ 有意行为收紧（Lead 批复，N3b）：net.request 显式 findProxy=DIRECT，
+  不再读 HTTP_PROXY/HTTPS_PROXY 等 env 代理。理由：本机长期挂
+  HTTP_PROXY=127.0.0.1:7890，走代理意味着校验通过后由代理二次解析/重绑，
+  "校验 IP = 连接 IP"被架空（与 t69 假红事故同源）。net.request 从此是
+  确定性直连通道。
+- N3b 门禁：test/t20261101_webhome_net_dial_test.dart 6/6——行为断言为
+  "拨号口（Socket.startConnect 第一参）恒为已验证 InternetAddress、
+  hostname 字符串零出现"（IOOverrides 拦截 + 本地 ServerSocket 承接）；
+  rebinding 注入（首调 8.8.8.8/次调 10.0.0.1）证绿、legacy 对照（hostname
+  交还拨号口）跑同一断言证红；解析与连接全链路只解析一次。
+  t20261031 纯函数门禁 22/22 全保留；analyze 本批文件零告警。
 - 真机渲染的产品路径留批末 T11 验收（纯函数门禁 + 编译已闭环）。
 
 ## 边界（如实）
 
 - V1 的 HTML 沙箱边界 = WebView2 进程隔离 + incognito + 白名单桥；
   HTML 作者即用户本人，威胁模型自洽。
-- net.request 的 DNS rebinding TOCTOU 未闭合（收窄），按解析 IP 直连下批。
+- net.request 的 DNS rebinding TOCTOU 已由 N3b 闭合（解析与连接同 IP，
+  connectionFactory 直连）；net.request 不走 env 代理（DIRECT，有意收紧）。
 - 与原生首页的关系是双模式切换，原生首页是回归底线，不是被替换。

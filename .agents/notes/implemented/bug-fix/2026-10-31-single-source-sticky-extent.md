@@ -2,7 +2,7 @@
 
 Status: implemented
 
-Independent: 接续 [2026-10-31-liquid-glass-selector-unify.md](2026-10-31-liquid-glass-selector-unify.md)
+Independent: 接续 [2026-10-31-liquid-glass-selector-unify.md](../feature/2026-10-31-liquid-glass-selector-unify.md)
 （本篇是它的收尾：那一篇删了 SourceBar 的单源早退，却漏了宿主的第二道闸门，
 真机判读才把它抓出来）。
 

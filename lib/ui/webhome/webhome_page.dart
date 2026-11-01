@@ -9,13 +9,12 @@
 //
 // # 安全边界执行点
 // - 方法白名单：FmBridge.dispatch（白名单外一律 unknown-method）；
-// - net.request：字面量判据 + **DNS 解析后再判**（防 rebinding）；
+// - net.request：字面量判据 + 解析段判据 + **按已解析 IP 直连**
+//   （fm_net_request.dart：解析与连接同源，TOCTOU 已闭合，N3b）；
 // - 凭据零打印：日志只有 method + host + path（query 都不给），headers/body 不落日志。
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
-import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 // ★ 主题体系门禁（theme_regression ① / r7 ⑤）：lib/ 禁 flutter/material，
@@ -25,6 +24,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../core/app_log.dart';
 import '../widgets/app_toast.dart';
 import 'fm_bridge.dart';
+import 'fm_net_request.dart';
 import 'fm_sdk_js.dart';
 import 'webhome_store.dart';
 
@@ -72,7 +72,7 @@ class _WebHomePageState extends State<WebHomePage> {
             'WEBHOME', 'app.openLive provider=$provider channel=$channelId');
         widget.onOpenLive?.call(provider, channelId, name);
       },
-      onNetRequest: _netRequest,
+      onNetRequest: fmNetRequest,
       onCacheGet: (k) => _cache!.get(k),
       onCacheSet: (k, v) => _cache!.set(k, v),
       onCacheDelete: (k) => _cache!.del(k),
@@ -92,67 +92,6 @@ class _WebHomePageState extends State<WebHomePage> {
     _blankTimer?.cancel();
     super.dispose();
   }
-
-  /// # net.request 宿主代发
-  ///
-  /// 字面量判据（桥层已过）之后**必须**再做解析段判据：
-  /// DNS 解析出的每个 IP 重过白名单。
-  /// ⚠️ 措辞纪律（T6 互检 P2-1）：双判**收窄 TOCTOU 窗口**，**未闭合**
-  /// DNS rebinding —— 解析与连接之间的窗口仍在；按解析出的 IP 直连
-  /// （绑定 socket）是下批项（威胁模型自洽：HTML 是用户自写）。
-  Future<Map<String, Object?>> _netRequest(FmNetRequest req) async {
-    final uri = Uri.tryParse(req.url);
-    if (uri == null || uri.host.isEmpty) {
-      return const {'error': 'bad-args'};
-    }
-    try {
-      final ips = await InternetAddress.lookup(uri.host)
-          .timeout(const Duration(seconds: 10));
-      if (!isNetRequestTargetAllowed(uri,
-          resolvedIps: ips.map((e) => e.address))) {
-        AppLog.write('WEBHOME', 'net.request rejected(dns): ${_describe(uri)}');
-        return const {'error': 'target-not-allowed'};
-      }
-      final client = HttpClient()
-        ..connectionTimeout = const Duration(seconds: 10);
-      try {
-        final request = await client.openUrl(req.method, uri);
-        // ⚠️ headers 可能带凭据：只加不记。
-        req.headers.forEach(request.headers.add);
-        if (req.body != null) request.add(utf8.encode(req.body!));
-        final response =
-            await request.close().timeout(netRequestTimeout);
-        final builder = BytesBuilder(copy: false);
-        var total = 0;
-        var truncated = false;
-        await for (final chunk in response) {
-          total += chunk.length;
-          if (total > netResponseMaxBytes) {
-            truncated = true;
-            break;
-          }
-          builder.add(chunk);
-        }
-        final body = utf8.decode(builder.takeBytes(), allowMalformed: true);
-        // ★ 日志只有 method + host + path（query 可能带 token，不给）。
-        AppLog.write('WEBHOME',
-            'net.request ${req.method} ${_describe(uri)} → ${response.statusCode}${truncated ? ' (truncated)' : ''}');
-        return {
-          'status': response.statusCode,
-          'contentType': response.headers.value('content-type') ?? '',
-          'body': body,
-          if (truncated) 'truncated': true,
-        };
-      } finally {
-        client.close(force: true);
-      }
-    } catch (e) {
-      AppLog.write('WEBHOME', 'net.request failed: ${_describe(uri)} $e');
-      return {'error': 'network-error'};
-    }
-  }
-
-  static String _describe(Uri u) => '${u.host}${u.path}';
 
   Future<Object?> _handleFm(List<dynamic> args) async {
     if (args.isEmpty || args.first is! String) {

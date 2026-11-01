@@ -345,22 +345,18 @@ void main() {
       );
     });
 
-    test('E2 半边已知：pan_qr_login_dialog 那份名单未同步 ⇒ 注释必须写明', () {
+    test('E2 ★ 已同步（N3a）：pan_qr_login_dialog 那份名单已改为读真源', () {
       /*
-       * ★★★ 两道闸门只改一道是本批踩过两次的坑，不许假装只有一处。
-       * pan_qr_login_dialog.dart 不在本批允许改动清单 ⇒ 那份名单仍含 '115'；
-       * 靠 showPanWebLogin 的兜底（C1）保证点了有人话反馈。
-       * 这里钉的是"这件事被如实登记了"，不是"它已被修好"。
+       * 前半批的"半边已知"已在 N3a 根治：扫码弹窗不再维护第二份手抄名单，
+       * 改读 PanWebLoginSpec 真源，115 不再画按钮（改渲染撤除原因原句）。
+       * 剥注释后的同真源断言（名单字面量零容忍 + 注入证红）在
+       * test/t20261101_pan_qr_dialog_web_source_test.dart 的 N1。
        */
-      final a = File('lib/ui/widgets/pan_web_login.dart').readAsStringSync();
-      expect(a.contains('pan_qr_login_dialog.dart'), isTrue,
-          reason: '★ 必须写明另一处在 pan_qr_login_dialog.dart（不许假装只有一处）');
-      expect(a.contains('下批需同步'), isTrue,
-          reason: '★ 必须显式标注"下批需同步"');
-      // 那处确实还含 115（本批没偷偷改它）
       final b = File('lib/ui/widgets/pan_qr_login_dialog.dart').readAsStringSync();
-      expect(b.contains("'115'"), isTrue,
-          reason: '本批未动该文件 ⇒ 它仍含 115，靠兜底保证点击有反馈');
+      expect(b.contains('static const Set<String> _webLoginKinds'), isFalse,
+          reason: '★★ 注入证红：把手抄名单加回 pan_qr_login_dialog ⇒ 本条红');
+      expect(b.contains('PanWebLoginSpec'), isTrue,
+          reason: '★ 必须读真源（与设置页同源，才不会再漂）');
     });
   });
 }

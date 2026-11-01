@@ -138,10 +138,12 @@ class _PanQrLoginDialogState extends State<_PanQrLoginDialog> {
   bool _finished = false;
   /*
    * ★ 网页登录（W1）：Runtime 探测（false ⇒ 「网页登录」置灰）。
-   *   只给四家（quark/uc/baidu/115）；探测未完成（null）先可点，有双保险兜底。
+   *   放不放按钮只看真源 PanWebLoginSpec.all（与设置页同源）——
+   *   这里不再维护第二份手抄名单（"两道闸门只改一道"踩过两次，N3a 根治）。
+   *   已撤的盘（如 115）不画按钮，改显示 panWebLoginUnsupportedReason 的
+   *   原句（指路扫码），文案不复制。
    */
   bool? _webLoginAvailable;
-  static const Set<String> _webLoginKinds = <String>{'quark', 'uc', 'baidu', '115'};
 
   @override
   void initState() {
@@ -236,6 +238,10 @@ class _PanQrLoginDialogState extends State<_PanQrLoginDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    // 网页登录按钮的有无与撤除原因都取自 pan_web_login.dart 的真源（N3a）
+    final webLoginSpec = PanWebLoginSpec.of(widget.kind);
+    final webLoginRetiredReason =
+        PanWebLoginSpec.panWebLoginUnsupportedReason(widget.kind);
     // R4-EXCEPTION: 自建外壳（裸 Dialog）那一类 —— 本弹窗要自己定宽（380）并把
     // 二维码居中，AppGlassDialog 只收 String 标题、不能承载 QrView 的定尺画布；
     // 控件只有 Text/Column/QrView/TextButton，无任何输入控件。
@@ -295,12 +301,27 @@ class _PanQrLoginDialogState extends State<_PanQrLoginDialog> {
                   style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
                 ),
               ],
+              // ★ 已撤的盘（如 115）没有网页登录 ⇒ 把撤除原因原句显示出来
+              //   （指路扫码；文案只在 pan_web_login.dart 一处，这里不复制）
+              if (webLoginRetiredReason != null) ...[
+                const SizedBox(height: Sp.x2),
+                Text(
+                  webLoginRetiredReason,
+                  key: const ValueKey<String>('pan-qr-login-web-retired'),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
               const SizedBox(height: Sp.x4),
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  // ★ 网页登录（W1）：只放四家；Runtime 缺失 ⇒ 置灰（不许点了没反应）
-                  if (_webLoginKinds.contains(widget.kind))
+                  // ★ 网页登录（W1）：有无按钮只看真源（PanWebLoginSpec.all）；
+                  //   Runtime 缺失 ⇒ 置灰（不许点了没反应）
+                  if (webLoginSpec != null)
                     TextButton(
                       key: const ValueKey<String>('pan-qr-login-web'),
                       onPressed: _webLoginAvailable == false ? null : _openWebLogin,

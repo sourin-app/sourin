@@ -142,9 +142,17 @@ Future<void> sizeView(WidgetTester t, Size size) async {
 /// 网格里同一行的卡片 `top` **相同**、`left` 不同 ⇒
 /// 只比 `top` 无法区分左右顺序（**假通过**）。
 double readingKey(WidgetTester t, String text) {
-  final r = t.getRect(find.text(text));
+  final r = t.getRect(resultsText(text));
   return r.top * 10000 + r.left;
 }
+
+/// ★ 2026-11-01（左栏源切换）：源名会**同时**出现在左栏行与结果组标题
+/// ⇒ 组标题相关断言/几何读取必须**限定在结果滚动区**内
+/// （左栏在 `search-results-scroll` 外面；无左栏时该 scoped 查找与原样等价）。
+Finder resultsText(String text) => find.descendant(
+      of: find.byKey(const ValueKey<String>('search-results-scroll')),
+      matching: find.text(text),
+    );
 
 /// 把一组标题按**渲染出来的阅读顺序**（先上后下、同行先左后右）排出来。
 List<String> readingOrder(WidgetTester t, List<String> titles) {
@@ -170,7 +178,8 @@ Future<SearchPageState> seeded(WidgetTester t, Size size) async {
 /// 断言某段文本**恰好命中 1 个** widget —— 证明卡片真的渲染出来了
 /// （铁律 149：候选集为空时"顺序"断言恒真）。
 void expectExactlyOne(WidgetTester t, String text, {String? because}) {
-  final n = t.widgetList(find.text(text)).length;
+  // ★ 2026-11-01（左栏源切换）：限定在结果滚动区 —— 源名在左栏行里还有一份
+  final n = t.widgetList(resultsText(text)).length;
   expect(
     n,
     1,

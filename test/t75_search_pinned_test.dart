@@ -163,10 +163,21 @@ void main() {
         reason: '搜索页的骨架必须是 CustomScrollView —— '
             'ListView 的子项是平级的，没有一个能"钉住"',
       );
+      /*
+       * ★ 2026-11-01（左栏源切换）更新判据：
+       * 左栏侧板（`_SourceRail`，Owner 要求的"左侧源切换"）自身是一个 ListView，
+       * 但它在结果滚动区**外面** —— "改回 ListView 就不可能吸顶"防的是
+       * **结果区本体**。⇒ 断言限定到 `search-results-scroll` 内部：
+       * 那里面不许有任何 ListView；侧板的 ListView 不在此列。
+       */
       expect(
-        find.byType(ListView),
+        find.descendant(
+          of: find.byKey(const ValueKey<String>('search-results-scroll')),
+          matching: find.byType(ListView),
+        ),
         findsNothing,
-        reason: '改回 ListView 就不可能吸顶了',
+        reason: '改回 ListView 就不可能吸顶了（结果滚动区内部不许有 ListView；'
+            '左栏侧板的 ListView 在本滚动区外，不算）',
       );
 
       final headers = find.byType(SliverPersistentHeader);
@@ -251,9 +262,20 @@ void main() {
        *    "内容带宽 ≤ 上限"由 test/zz_t66_layout_home_test.dart 守（另一条判据）
        * ```
        */
-      expect((r.left - (kViewport.width - r.right)).abs(), lessThan(0.5),
-          reason: '★ 搜索框必须水平居中 —— 左右留白相等。'
-              'left=${r.left} right=${r.right} 视口=${kViewport.width}');
+      /*
+       * ★ 2026-11-01（左栏源切换）更新判据：宽窗口下结果滚动区在左栏**右侧**
+       * （左栏占 224 + 间距）⇒ "水平居中"不变量改为**相对结果滚动区**成立 ——
+       * 无左栏时该区域 == 视口，语义逐字节相同；有左栏时搜索框在结果区内居中。
+       * （与第 66 轮同理：产品行为变了，测试锁的**不变量**跟着换参照系。）
+       */
+      final resultsRect = t.getRect(
+          find.byKey(const ValueKey<String>('search-results-scroll')));
+      expect(
+          (r.left - resultsRect.left - (resultsRect.right - r.right))
+              .abs(),
+          lessThan(0.5),
+          reason: '★ 搜索框必须在**结果滚动区内**水平居中 —— 左右留白相等。'
+              'left=${r.left} right=${r.right} 结果区=${resultsRect.left}..${resultsRect.right}');
       expect(r.left, greaterThanOrEqualTo(kContentPad - 0.5),
           reason: '★ 不许贴边 —— 左留白至少一个内容内边距');
       expect(kViewport.width - r.right,

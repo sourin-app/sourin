@@ -43,15 +43,16 @@
 //   ⇒ 解密链路**不是**"理论可行"，是实测解开过。
 // ```
 //
-// ## ② 未确证 / 未打通
+// ## ② 未确证 / 已处置
 // ```text
-// · 第二段握手 POST {host}/app/userInfo 被服务端**明确拒绝**：
+// · 第二段握手 POST {host}/app/userInfo 被部分站点**明确拒绝**（游客态）：
 //     {"code":1,"msg":"user info error","userInfo":"","params":{…回显我们的入参…}}
 //   ⇒ 参数被服务端收到并回显（说明签名/加密都对），但内容不被接受（登录态拿不到）。
 // · ★ 但**浏览不需要它**：2026-10-26 实测 `home()` 拿到 8 个分类、`list("测试")` 拿到
 //   20 条真实条目（解密 + zlib + JSON 全通）。⇒ token 只影响"登录态"场景。
-// · 推测（未确证，故不做）：可能缺 systemInit 响应里的某个 token 字段、
-//   或 device 指纹某几项要按服务端下发的值填。
+// · ★★ 2026-11-01 起：userInfo 被拒**不再阻断握手**——降级为空 token 继续
+//   （旧实现 `await?` 把整站搜索废掉，Owner 真机报"胖妞/剧圈搜不到"；
+//    见 handshake 里 2026-11-01 注释与 handshake_degrades_when_userinfo_rejected 单测）。
 // · 点 3（systemInit 的 `v/n/s`）已确证：v=versionName、n=**name**、s=buildSignature
 //   （init:150-162 的寄存器：put('v',v6=versionName) / put('n',v3=name) / put('s',v4=buildSignature)）
 //   —— 注意 `n` 是 name，**不是** buildNumber；buildNumber/package 只做非空校验、
@@ -67,8 +68,9 @@
 // detail→ 1 集，首集地址 = 真 m3u8
 // play  → 1 条候选（该 m3u8，带 UA 头）
 // ```
-// ⚠️ 但**登录态**仍不可用：第二段 `POST /app/userInfo` 被服务端拒（code:1 user info error）。
-//    这不影响浏览/取流（上面四段都是在无 token 下跑通的）。
+// ⚠️ **登录态**在部分站点拿不到（userInfo 被拒）——2026-11-01 起**不再阻断**：
+//    降级空 token 继续握手（浏览/搜索/取流都不需要它；真要登录态的业务被站点
+//    拒绝时按该站自己的错误如实透出）。
 // ⚠️ **play 的边界**：已验证的是"能拿到并返回播放地址"，**"真起播"没验过** ——
 //    要 media_kit/mpv 真把那串 m3u8 拉起来才算端到端。别把这条读成"已经播过"。
 // 证据：.probe/app99-live*.log、.probe/dex-App99-disasm.md
@@ -620,6 +622,20 @@ impl App99 {
         }
 
         // ── 第二步：userInfo 拿 token（指令级依据见 init:325-643）──
+        /*
+         * ★★ 2026-11-01（Owner 真机：聚合搜「老舅」胖妞/剧圈两站缺失）：token **降级获取**。
+         * ```text
+         * 实测（.probe/pn-diag-source.log）：部分站点对游客明确拒绝 userInfo——
+         *   {"code":1,"msg":"user info error"} ⇒ require_token 报 Err。
+         * 旧行为：`await?` 把 Err 传播 ⇒ **整站握手失败 ⇒ search 全废** ⇒
+         *   该站从聚合搜索结果里整体消失（Owner 报的"没有这个源结果"）。
+         * 而浏览**不需要** token：2026-10-26 四段链路（home/list/detail/play）全在
+         *   无 token 下真网跑通（见文件头②）；DEX 语义也是"字段 b 为空就空着"。
+         * ⇒ 现行为：userInfo 失败 ⇒ 记原因（含 host，可排障）⇒ **空 token 继续握手**；
+         *   业务请求若真需要 token 被站点拒 ⇒ 那是该站自己的错误，如实进扇出 fails——
+         *   诚实容错，不猜、不编造"登录态可用"。
+         * ```
+         */
         let token = {
             let direct = v
                 .get("userInfo")
@@ -630,18 +646,23 @@ impl App99 {
             if !direct.is_empty() {
                 direct
             } else {
-                self.user_info_token(&host, &key, &uuid, &ver_for_body, &name, &pkg, &num, &sig, &now)
-                    .await?
+                match self
+                    .user_info_token(&host, &key, &uuid, &ver_for_body, &name, &pkg, &num, &sig, &now)
+                    .await
+                {
+                    Ok(t) => t,
+                    Err(why) => {
+                        log::warn!(
+                            "[APP99] {host} userInfo 未给 token（{why}）⇒ 以空 token 继续握手（浏览不需要登录态）"
+                        );
+                        String::new()
+                    }
+                }
             }
         };
-        /*
-         * ★ token 允许为空：systemInit 的响应是 `{"code":0,"msg":"init",…}`（**成功**），
-         *   里面本来就没有 token —— token 只用于"登录态"场景。先按空 token 继续，
-         *   让搜索去验证"到底需不需要它"（这是唯一不靠猜的判据）。
-         */
         if token.is_empty() {
-            eprintln!(
-                "[APP99] 两段握手都没有 token（systemInit 返回 code=0 即成功）⇒ 先用空 token 试业务请求"
+            log::info!(
+                "[APP99] {host} 两段握手都没有 token（systemInit 返回 code=0 即成功）⇒ 用空 token 发业务请求"
             );
         }
         *self.state.lock().map_err(|_| "状态锁中毒".to_string())? = Some(Handshaken {
@@ -1288,10 +1309,12 @@ mod tests {
         assert!(parse_envelope("/vod/search", &none).is_ok());
     }
 
-    // ── ★ 空 token 必须 Err，不许静默降级（复核第 3 条）──
+    // ── ★ token 判定器：空 ⇒ Err（判定职责不变；**降级发生在 handshake 层**——
+    //    2026-11-01 起 userInfo 被站点拒绝 ⇒ handshake 记原因后以空 token 继续，
+    //    不再把"拿不到登录态"当"整站不可用"。见 handshake_degrades_when_userinfo_rejected）──
     #[test]
     fn require_token_rejects_empty() {
-        let err = require_token(String::new()).expect_err("空 token 必须 Err");
+        let err = require_token(String::new()).expect_err("空 token 必须 Err（判定器语义）");
         assert!(err.contains("未给 user_token"), "{err}");
         assert!(require_token("  ".to_string()).is_err(), "空白也算没有");
         assert_eq!(require_token("tk".to_string()).unwrap(), "tk");
@@ -1355,6 +1378,146 @@ mod tests {
                 }
             }
             Err(e) => panic!("[LIVE] App99 search 失败（如实记录）：{e}"),
+        }
+    }
+
+    // ── ★ 夹具单测（2026-11-01 互检修复）：userInfo 被站点拒绝 ⇒ 握手降级空 token，搜索照走 ──
+    //
+    // 行为级（真 HTTP，无注入）：本地起一个"胖妞形态"的假站——
+    //   systemInit → code:0（响应里无 token）；userInfo → code:1 user info error；
+    //   /vod/search → code:0 + 1 条数据。判据：握手 Ok（空 token）+ search 拿到那条数据。
+    // 注入证红：把 handshake 的降级改回 `.await?` ⇒ 本条红（整站握手失败，胖妞同款）。
+    #[tokio::test]
+    async fn handshake_degrades_when_userinfo_rejected() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        // 固定 uuid ⇒ key 已知，假站响应用同一把钥匙加密
+        let uuid = "aabbccddeeff00112233445566778899";
+        let key = key_of(uuid).unwrap();
+
+        // "服务端那样的"响应：明文 → zlib 压缩 → AES-CBC(key,iv) → IV‖密文 → base64
+        let seal = move |plain: &str| -> String {
+            use std::io::Write as _;
+            let mut comp = Vec::new();
+            {
+                let mut z =
+                    flate2::write::ZlibEncoder::new(&mut comp, flate2::Compression::default());
+                z.write_all(plain.as_bytes()).unwrap();
+                z.finish().unwrap();
+            }
+            let iv = iv16(comp.len() as u64, 3);
+            let mut buf = vec![0u8; (comp.len() / 16 + 1) * 16];
+            buf[..comp.len()].copy_from_slice(&comp);
+            let ct = Aes256CbcEnc::new_from_slices(&key, &iv)
+                .unwrap()
+                .encrypt_padded_mut::<Pkcs7>(&mut buf, comp.len())
+                .unwrap()
+                .to_vec();
+            let mut all = Vec::new();
+            all.extend_from_slice(&iv);
+            all.extend_from_slice(&ct);
+            b64_encode(&all)
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf: Vec<u8> = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let head_end;
+                loop {
+                    let n = sock.read(&mut chunk).await.unwrap();
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        head_end = p + 4;
+                        break;
+                    }
+                }
+                let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+                let path = head.split(' ').nth(1).unwrap_or("").to_string();
+                let clen: usize = head
+                    .to_ascii_lowercase()
+                    .lines()
+                    .find_map(|l| {
+                        l.strip_prefix("content-length:")
+                            .map(|v| v.trim().to_string())
+                    })
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                while buf.len() < head_end + clen {
+                    let n = sock.read(&mut chunk).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let body = match path.as_str() {
+                    "/app/systemInit" => seal(
+                        r#"{"code":0,"msg":"init","categorys":{"data":[{"id":"1","name":"全部"}]}}"#,
+                    ),
+                    "/app/userInfo" => {
+                        seal(r#"{"code":1,"msg":"user info error","userInfo":""}"#)
+                    }
+                    "/vod/search" => seal(
+                        r#"{"code":0,"data":[{"id":77,"name":"老舅（2023）","pic":"http://p/77.jpg","remarks":"33集"}]}"#,
+                    ),
+                    _ => String::new(),
+                };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let ext = format!(
+            r#"{{"host":"http://{addr}","name":"夹具站","buildSignature":"SIG","buildNumber":"1","versionName":"1.0.0","package":"com.fixture.t","uuid":"{uuid}"}}"#
+        );
+        // ⚠️ 生产 handshake 每次成功都会把响应落成 `.probe/app99-known-systeminit.json`
+        //   （真实抓包验收的夹具）。本测试的假站握手会冲掉真抓包 ⇒ 先存后还。
+        let fixture_paths: Vec<std::path::PathBuf> = [
+            "../.probe/app99-known-systeminit.json",
+            "../../.probe/app99-known-systeminit.json",
+        ]
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+        let saved: Vec<(std::path::PathBuf, Option<Vec<u8>>)> = fixture_paths
+            .iter()
+            .map(|p| (p.clone(), std::fs::read(p).ok()))
+            .collect();
+        let site = App99::new();
+        // ① 握手：userInfo 被拒 ⇒ 降级空 token ⇒ 握手必须成功
+        let home = site.home(&ext).await;
+        assert!(
+            home.is_ok(),
+            "★★ 降级后握手必须成功（旧实现 `?` 直接整站失败，胖妞/剧圈同款）：{:?}",
+            home.err()
+        );
+        // ② 搜索：空 token 的业务请求照走，拿到假站的数据
+        let list = site.search("老舅", 1, &ext).await;
+        let l = list.expect("★ 空 token 业务请求必须能走通（该站不要求 token）");
+        assert_eq!(l.items.len(), 1);
+        assert_eq!(l.items[0].title, "老舅（2023）");
+        server.abort();
+        // 还原真实抓包夹具（假站握手的副产物按原样退回）
+        for (p, old) in &saved {
+            match old {
+                Some(bytes) => {
+                    let _ = std::fs::write(p, bytes);
+                }
+                None => {
+                    let _ = std::fs::remove_file(p);
+                }
+            }
         }
     }
 }

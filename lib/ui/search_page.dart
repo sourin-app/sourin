@@ -221,6 +221,17 @@ class SearchPageState extends State<SearchPage> {
    */
   static const double _kContentMaxWidth = 1440;
 
+  /// ★ 2026-11-01：左栏源切换的两个常量
+  ///
+  /// ```text
+  /// · _kSourceRailWidth      左栏玻璃卡宽度（224 ≈ 一行"源名+条数"的舒适宽）
+  /// · _kSourceRailBreakpoint 内容带 ≥ 720px 走左右分栏；更窄走顶部 chips
+  ///   （720 与文件头注释里"窄屏 640 断点"同档位再放宽一档 —— chips 在
+  ///    640 以下会横向挤爆；分栏在 720 以下会把结果区压到不可读）
+  /// ```
+  static const double _kSourceRailWidth = 224;
+  static const double _kSourceRailBreakpoint = 720;
+
   /*
    * ══════════════════════════════════════════════════════════════════════
    * ★★★ 为什么**没有**"搜索框独立宽度上限"（第一版有 720，已删）
@@ -319,6 +330,31 @@ class SearchPageState extends State<SearchPage> {
   ///
   /// ★ 顺序 = **匹配度降序**（不是到达顺序）—— 见 `rankHitGroups`。
   List<SearchHitGroup> _hits = [];
+
+  /// ★ 2026-11-01（Owner：对标参考的搜索聚合 UX）：左栏选中的源
+  ///
+  /// ```text
+  /// null            = 「全部」（默认 ⇒ 行为零变化：右侧列出所有源的结果组）
+  /// 非空（组 name） = 只看该源的结果 —— 数据就是 _hits 里已有的那一组，
+  ///                   过滤纯展示层，不发新请求、不改排序规则。
+  /// ```
+  /// 换词/清空时复位（见 _doSearch/_clear）——旧关键词的选中源对新词无意义。
+  String? _selectedSource;
+
+  /// 左栏/筛选生效后真正渲染的结果组
+  List<SearchHitGroup> get _visibleHits => _selectedSource == null
+      ? _hits
+      : _hits.where((h) => h.name == _selectedSource).toList(growable: false);
+
+  /// 左栏数据：null = 不画左栏（一个源的命中都还没有 ⇒ 无源可切）
+  ///
+  /// 每行 = (源显示名, 该源条数)；顺序跟随 `_hits`（匹配度降序）。
+  /// 失败源不进左栏（它们在 `_SkippedList` 有专门的去处，两处不重复）。
+  List<({String name, int count})>? get _sourceRailData => _hits.isEmpty
+      ? null
+      : [
+          for (final h in _hits) (name: h.name, count: h.items.length),
+        ];
 
   /// 被跳过的源：(provider, reason)
   List<({String provider, String name, String reason})> _skipped = [];
@@ -483,6 +519,8 @@ class SearchPageState extends State<SearchPage> {
        */
       _hits = [];
       _skipped = [];
+      // ★ 换词 ⇒ 旧词的选中源对新词无意义，回到「全部」
+      _selectedSource = null;
       // ★ 事件的打分基准 —— 必须在清空结果的同时定下来
       _lastKeyword = kw;
     });
@@ -632,6 +670,7 @@ class SearchPageState extends State<SearchPage> {
       _settled = 0;
       _hits = [];
       _skipped = [];
+      _selectedSource = null; // ★ 与 _doSearch 同一复位（换词回「全部」）
       _lastKeyword = keyword;
     });
   }
@@ -718,6 +757,7 @@ class SearchPageState extends State<SearchPage> {
       _wasEmpty = true; // ★ 与闸门的缓存同步，否则下一次输入的首字翻转会被漏掉
       _hits = [];
       _skipped = [];
+      _selectedSource = null; // ★ 清空 ⇒ 回「全部」
       _searched = false;
       _searching = false;
       _settled = 0;
@@ -785,7 +825,18 @@ class SearchPageState extends State<SearchPage> {
         alignment: Alignment.topCenter,
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: _kContentMaxWidth),
-          child: CustomScrollView(
+          /*
+           * ★ 2026-11-01（Owner：对标参考的搜索聚合 UX）：左栏源切换。
+           * ```text
+           * · 无命中源（_sourceRailData == null） ⇒ 原树逐字节（零破坏底线）
+           * · 宽窗口（≥ _kSourceRailBreakpoint） ⇒ 左栏 224px 玻璃卡 + 右侧结果
+           * · 窄窗口                             ⇒ 顶部横向 chips + 下方结果
+           * 两种形态同一份交互：点源 ⇒ 只看该源；点「全部」⇒ 还原。
+           * ```
+           */
+          child: LayoutBuilder(builder: (context, cons) {
+            final rail = _sourceRailData;
+            final results = CustomScrollView(
             // ★ 主滚动区**显式 key**：门禁按 key 定位它再滚动
             //
             // 为什么不能靠 `find.byType(Scrollable).first`：
@@ -1019,7 +1070,8 @@ class SearchPageState extends State<SearchPage> {
                 if (_totalResults == 0 && !_searching)
                   const _NoResult()
                 else if (_totalResults > 0)
-                  for (final h in _hits) _ResultGroup(group: h, onOpen: _open),
+                  // ★ 左栏选中某源时只渲染该组（_visibleHits 已按 _selectedSource 过滤）
+                  for (final h in _visibleHits) _ResultGroup(group: h, onOpen: _open),
 
                 /*
                  * ★ 还在搜：进度行**与「有没有结果」无关**，一律显示
@@ -1063,7 +1115,38 @@ class SearchPageState extends State<SearchPage> {
         //    `invalid_constant`。同款写法见 `settings_sub_page.dart:275`。
         SliverToBoxAdapter(child: SizedBox(height: Sp.bottomBarInset)),
           ],
-        ),
+        );
+            if (rail == null) return results;
+            if (cons.maxWidth >= _kSourceRailBreakpoint) {
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: _kSourceRailWidth,
+                    child: _SourceRail(
+                      key: const ValueKey<String>('search-source-rail'),
+                      selected: _selectedSource,
+                      sources: rail,
+                      onSelect: (name) => setState(() => _selectedSource = name),
+                    ),
+                  ),
+                  const SizedBox(width: Sp.x4),
+                  Expanded(child: results),
+                ],
+              );
+            }
+            return Column(
+              children: [
+                _SourceChips(
+                  key: const ValueKey<String>('search-source-chips'),
+                  selected: _selectedSource,
+                  sources: rail,
+                  onSelect: (name) => setState(() => _selectedSource = name),
+                ),
+                Expanded(child: results),
+              ],
+            );
+          }),
         ),
       ),
     );
@@ -1567,6 +1650,195 @@ class _SearchSkeleton extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ★ 2026-11-01：左栏源切换（对标参考的搜索聚合 UX）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Owner 原话：
+// > 搜索页，在左侧加上搜索出来的源，我可以快速切换点击源，切换到对应源的结果，查看
+//
+// # 设计要点
+// ```text
+// · 数据 = `_hits`（已按源拆组），左栏只是同一份数据的另一种呈现 —— 不发新请求。
+// · 「全部」永远在第一行（选中态即默认态 ⇒ 零破坏）；
+// · 每源一行 = 源显示名 + 该源条数（用户凭它判断"哪个源有货"）；
+// · 失败源不在这里（`_SkippedList` 是它们的去处，两处不重复）；
+// · 视觉沿用玻璃卡片配方（surfaceContainerHigh + Radii.rLg，与 AppGlassDialog 内层一致）。
+// ```
+
+/// 左栏（宽窗口）：玻璃卡 + 「全部 N」+ 每源行
+class _SourceRail extends StatelessWidget {
+  const _SourceRail({
+    super.key,
+    required this.selected,
+    required this.sources,
+    required this.onSelect,
+  });
+
+  final String? selected;
+  final List<({String name, int count})> sources;
+  final ValueChanged<String?> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    // ⚠️ 用 Material 语义色（Theme.of）而不是 AppTheme.of——后者对 AppThemeScope
+    //   祖先有硬断言，本页既有测试宿主都不包它 ⇒ 左栏一出现整页崩。
+    //   surfaceContainerHigh 与玻璃卡语义色是同一映射（见 AppGlassDialog 注释）。
+    final c = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: c.surfaceContainerHigh,
+        borderRadius: Radii.rLg,
+      ),
+      // 玻璃卡的 1px 描边（与 AppGlassDialog 内层同款视觉锚）
+      foregroundDecoration: BoxDecoration(
+        borderRadius: Radii.rLg,
+        border: Border.all(color: c.outline.withValues(alpha: 0.4)),
+      ),
+      child: ListView(
+        padding: const EdgeInsets.all(Sp.x2),
+        children: [
+          _sourceRow(
+            context,
+            name: '全部',
+            count: sources.fold(0, (n, s) => n + s.count),
+            rowKey: const ValueKey<String>('search-source-all'),
+            isAll: true,
+          ),
+          for (final s in sources)
+            _sourceRow(context, name: s.name, count: s.count, isAll: false),
+        ],
+      ),
+    );
+  }
+
+  Widget _sourceRow(
+    BuildContext context, {
+    required String name,
+    required int count,
+    required bool isAll,
+    Key? rowKey,
+  }) {
+    final c = Theme.of(context).colorScheme;
+    final isSel = isAll ? selected == null : selected == name;
+    return Padding(
+      key: rowKey ?? ValueKey<String>('search-source-row-$name'),
+      padding: const EdgeInsets.only(bottom: Sp.x1),
+      child: Material(
+        color: isSel ? c.primary.withValues(alpha: 0.14) : Colors.transparent,
+        borderRadius: Radii.rMd,
+        child: InkWell(
+          borderRadius: Radii.rMd,
+          onTap: () => onSelect(isAll ? null : name),
+          child: Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: Sp.x2),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      fontWeight:
+                          isSel ? FontWeights.semibold : FontWeights.regular,
+                      color: isSel ? c.primary : c.onSurface,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: Sp.x1),
+                Text(
+                  '$count',
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: isSel ? c.primary : c.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 窄窗口降级：顶部横向 chips（同一份数据同一份交互）
+class _SourceChips extends StatelessWidget {
+  const _SourceChips({
+    super.key,
+    required this.selected,
+    required this.sources,
+    required this.onSelect,
+  });
+
+  final String? selected;
+  final List<({String name, int count})> sources;
+  final ValueChanged<String?> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = Theme.of(context).colorScheme;
+    Widget chip({
+      required String label,
+      required bool isSel,
+      required VoidCallback onTap,
+      Key? key,
+    }) =>
+        Padding(
+          key: key,
+          padding: const EdgeInsets.only(right: Sp.x2),
+          child: Material(
+            color: isSel
+                ? c.primary.withValues(alpha: 0.14)
+                : c.surfaceContainerHigh,
+            borderRadius: Radii.rLg,
+            child: InkWell(
+              borderRadius: Radii.rLg,
+              onTap: onTap,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: Sp.x3, vertical: Sp.x1),
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    fontWeight:
+                        isSel ? FontWeights.semibold : FontWeights.regular,
+                    color: isSel ? c.primary : c.onSurface,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      // ⚠️ contentPaddingOf 不是常量 ⇒ 这里不能 const（analyze E0067）
+      padding: EdgeInsets.symmetric(
+          horizontal: Layout.contentPaddingOf(context), vertical: Sp.x2),
+      child: Row(
+        children: [
+          chip(
+            key: const ValueKey<String>('search-source-all'),
+            label: '全部',
+            isSel: selected == null,
+            onTap: () => onSelect(null),
+          ),
+          for (final s in sources)
+            chip(
+              label: '${s.name} ${s.count}',
+              isSel: selected == s.name,
+              onTap: () => onSelect(s.name),
+            ),
+        ],
+      ),
     );
   }
 }

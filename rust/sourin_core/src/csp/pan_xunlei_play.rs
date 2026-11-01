@@ -544,11 +544,9 @@ async fn get_json(
     let status = resp.status();
     let body = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
     if !status.is_success() {
-        // ★ 注入②：摘 401 映射（证红用，随即还原）
-        if false {
-            if let Some(e) = login_expired_error(status.as_u16(), &body) {
-                return Err(e);
-            }
+        // ★ P2-2：token 过期 ⇒ 引导重登（不是裸 HTTP 401 文案）
+        if let Some(e) = login_expired_error(status.as_u16(), &body) {
+            return Err(e);
         }
         return Err(format!("迅雷返回 HTTP {}：{}", status.as_u16(), short(&body)));
     }

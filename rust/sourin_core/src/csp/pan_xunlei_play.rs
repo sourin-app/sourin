@@ -243,18 +243,26 @@ fn direct_link_of(it: &serde_json::Value) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// 进程内记下的本次转存文件 id（下一次解析开头清理 —— 与夸克族同节律）
-static TEMP_SAVED: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
+/// 进程内记下的转存文件 id（下一次解析开头清理 —— 与夸克族同节律）
+///
+/// ★ 账本键是 **(API 根, fid)** 二元组（2026-11-01 互检 P2 并行红点修正）：
+/// ```text
+/// 原来账本只存 fid ⇒ 清理拿"当前端点"去删别的端点记下的 fid ——
+/// 并行用例（各自回放服务不同端口）互相盲删。修成按端点分账本：
+/// 清理只删"本端点记下的"，与夸克族"只删自记"同一条纪律。
+/// ```
+static TEMP_SAVED: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> =
+    std::sync::OnceLock::new();
 
-fn temp_saved() -> &'static std::sync::Mutex<Vec<String>> {
+fn temp_saved() -> &'static std::sync::Mutex<Vec<(String, String)>> {
     TEMP_SAVED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
-fn remember_temp(fid: &str) {
+fn remember_temp(base: &str, fid: &str) {
     temp_saved()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push(fid.to_string());
+        .push((base.to_string(), fid.to_string()));
 }
 
 /// ★★★ 把迅雷分享页解析成可播直链（给 provider.rs 的 resolve 出口钩子用）
@@ -448,7 +456,7 @@ async fn attempt(
                 cand.name
             )
         })?;
-    remember_temp(&restored.id);
+    remember_temp(&ep.base, &restored.id);
 
     // 直链：清单条目若自带 web_content_link 就直接用；否则 files/{id}?usage=CONSUME
     let link = match restored.web_content_link.clone().filter(|s| !s.is_empty()) {
@@ -474,10 +482,23 @@ async fn attempt(
 }
 
 /// 清上一次的临时转存（DELETE files/{id}?space= 逐字；best-effort）
+///
+/// ★ 只删**本端点账本**记下的 fid（"只删自记"）—— 别的端点记的留在账本里，
+///   绝不拿当前端点去盲删（并行/换端点场景会删错，互检 P2 红点）。
 async fn purge_previous(client: &reqwest::Client, ep: &XunleiEndpoints, token: &str) {
     let fids: Vec<String> = {
         let mut g = temp_saved().lock().unwrap_or_else(|e| e.into_inner());
-        std::mem::take(&mut *g)
+        // 摘走本端点的账，别的端点的**原样保留**
+        let mut mine = Vec::new();
+        g.retain(|(base, fid)| {
+            if base == &ep.base {
+                mine.push(fid.clone());
+                false
+            } else {
+                true
+            }
+        });
+        mine
     };
     for fid in fids {
         let url = format!("{}/files/{}?space=", ep.base, urlencode(&fid));
@@ -596,10 +617,12 @@ mod tests {
         })
         .expect("写测试凭据失败");
     }
-    fn clear_test_credential() {
-        isolate_keyring();
-        let _ = crate::pan_auth::clear(PanKind::Xunlei);
-    }
+    // 注：clear_test_credential 已删 —— "清凭据"与并发用例的"写凭据"互踩
+    //（并行竞态），且用例里凭据参数直接传 None 即可表达"未登录"。
+    // 注：账本**不再用"全局 reset"做用例隔离** —— 那本身就是并发互扰通道
+    //（并行用例的 reset 会把别的用例刚记下的账清掉）。账本按端点分账后，
+    // 各回放服务端口唯一 ⇒ base 唯一 ⇒ 用例天然互不见账目，无需 reset。
+    // 见 ledger_scoped_to_endpoint_and_resettable 的门禁注释。
 
     // ── 回放服务（真 HTTP，逐字形状夹具）────────────────────────────────
     #[derive(Debug, Clone)]
@@ -834,9 +857,11 @@ mod tests {
     }
 
     /// ★ 未登录 ⇒ NEED_LOGIN（classify_err 翻译成 Unauthorized，与夸克族同约定）
+    ///
+    /// ★ 并行安全：凭据传 **None**（不碰钥匙串）——并发用例在写同一把测试
+    ///   凭据，这里任何"先清空"的动作都会跟它们互踩（2026-11-02 复盘）。
     #[tokio::test]
     async fn no_credential_is_need_login() {
-        clear_test_credential();
         let srv = spawn_replay(full_routes());
         let ep = XunleiEndpoints { base: srv.base.clone() };
         let err = resolve_with(&ep, None, "share123", "")
@@ -914,6 +939,46 @@ mod tests {
             .await
             .expect_err("转存跳过期同样必须引导重登");
         assert!(err.starts_with("NEED_LOGIN:xunlei|"), "{err}");
+    }
+
+    /// ★★ 并行安全断言（互检 P2 红点的回归门禁）：账本按端点分账、用例可重置
+    ///
+    /// ```text
+    /// · 端点 A 解析一次（A 的账本记下 fid）
+    /// · 端点 B 解析一次 ⇒ B 的账本为空 ⇒ 对 B **不许有任何 DELETE**
+    ///   （旧实现拿"当前端点"删全量账本 ⇒ 并行/换端点场景盲删）
+    /// · 回到 A 再解析 ⇒ A 清**A 自己记的** fid（files/xf1）
+    /// ```
+    #[tokio::test]
+    async fn ledger_scoped_to_endpoint_and_resettable() {
+        save_test_credential();
+        // 端点 A：解析一次（记下 A 的账）
+        let srv_a = spawn_replay(full_routes());
+        let ep_a = XunleiEndpoints { base: srv_a.base.clone() };
+        resolve_with(&ep_a, Some("access_token=TESTTOK"), "share123", "pwd9")
+            .await
+            .expect("A 第一次解析");
+        // 端点 B：B 的账本为空 ⇒ 不许对 B 发任何 DELETE
+        let srv_b = spawn_replay(full_routes());
+        let ep_b = XunleiEndpoints { base: srv_b.base.clone() };
+        resolve_with(&ep_b, Some("access_token=TESTTOK"), "share123", "pwd9")
+            .await
+            .expect("B 解析");
+        assert!(
+            srv_b.requests().iter().all(|r| r.method != "DELETE"),
+            "★ 跨端点盲删：A 记的 fid 不许拿 B 的端点去删"
+        );
+        // 回到 A：A 清 A 自己的账
+        resolve_with(&ep_a, Some("access_token=TESTTOK"), "share123", "pwd9")
+            .await
+            .expect("A 第二次解析");
+        let deletes: Vec<Recorded> = srv_a
+            .requests()
+            .into_iter()
+            .filter(|r| r.method == "DELETE")
+            .collect();
+        assert_eq!(deletes.len(), 1, "A 的第二次解析清 A 自己记的 fid");
+        assert!(deletes[0].target.contains("files/xf1"), "{}", deletes[0].target);
     }
 
     /// ★ 轮询预算封顶：任务一直 RUNNING ⇒ 到点如实报"转存未完成"

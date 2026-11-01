@@ -97,7 +97,10 @@ pub async fn fetch_config_text(
     if !status.is_success() {
         return Err(format!("HTTP {}", status.as_u16()));
     }
-    Ok(text)
+    // ★ 血缘批次（2026-11-01）：野外配置常以 base64** 包裹，不剥掉的话
+    //   import / 检测更新 / 定时更新三条路径全部报"配置不是合法 JSON"。
+    //   真实案例：https://8815.kstore.vip/tvbox/wmz（Owner 指定的订阅链接）。
+    unwrap_tvbox_config_text(&text)
 }
 /// 第三方网页解析服务（前缀 + urlencoded(目标页)）
 ///
@@ -211,6 +214,54 @@ pub fn parse_loose_json(text: &str) -> std::result::Result<serde_json::Value, St
     }
     let cleaned = remove_trailing_commas(&cleaned);
     serde_json::from_str(&cleaned).map_err(|e| e.to_string())
+}
+
+/// 剥掉 TVBox 野外混淆形态的 `base64**` 包裹（血缘批次，2026-11-01）
+///
+/// # 形态考证（真链接实抓，`.probe/bdjmcc-sub.json`）
+///
+/// `https://8815.kstore.vip/tvbox/wmz` 的响应体是：
+///
+/// ```text
+/// "\n" + "YmFzZTY0**" + base64(JSON)
+/// ```
+///
+/// `YmFzZTY0` 恰是 base64("base64") —— 即 TVBox 的 `base64**` 包裹标记
+/// （标记自身也按 base64 写出）。不剥掉它，import / 检测更新 / 定时更新
+/// 三条链接路径全部死在「配置不是合法 JSON」—— 用户于是被迫走文本粘贴
+/// 导入，血缘（source_url）就此丢失（64 条子站「从未更新」的根因）。
+///
+/// # 解包语义
+///
+/// ```text
+/// · 只认明确以 `base64**` 或 `YmFzZTY0**` 开头的形态，其余原样返回（绝不猜）
+/// · 该标记按设计可嵌套（剥一层出来还可能再包一层）⇒ 循环解包，上限 3 层，
+///   超限报清晰错误 —— 上限防的是恶意套娃，不是正常配置
+/// · base64 解码用 csp::shared::b64_decode（仓内自带宽容实现，零新依赖）
+/// ```
+pub fn unwrap_tvbox_config_text(text: &str) -> std::result::Result<String, String> {
+    const MAX_LAYERS: usize = 3;
+    let mut cur = text.trim().to_string();
+    for _ in 0..MAX_LAYERS {
+        let rest = match cur.strip_prefix("base64**") {
+            Some(r) => r,
+            None => match cur.strip_prefix("YmFzZTY0**") {
+                Some(r) => r,
+                // 不是混淆形态（普通 JSON / JSONP / 带注释的宽松配置）⇒ 原样放行。
+                // trim 是无害的：parse_loose_json 自己也先 trim。
+                None => return Ok(cur),
+            },
+        };
+        let bytes = crate::csp::shared::b64_decode(rest)
+            .map_err(|e| format!("TVBox 配置是 base64** 混淆形态，但解码失败：{e}"))?;
+        cur = String::from_utf8(bytes)
+            .map_err(|_| "TVBox 配置 base64** 解码后不是合法 UTF-8 文本".to_string())?
+            .trim()
+            .to_string();
+    }
+    Err(format!(
+        "TVBox 配置的 base64** 包裹嵌套超过 {MAX_LAYERS} 层，拒绝处理（疑似恶意套娃）"
+    ))
 }
 
 /// 把字符串字面量里的裸控制字符补成转义序列
@@ -3014,6 +3065,140 @@ pub fn set_tvbox_source(
     }))
 }
 
+/// ★ 血缘修复（2026-11-01）：把「贴文本导入 ⇒ source_url=None」的存量子站
+/// 与一条订阅链接做**验证型认领**关联
+///
+/// # 背景（考证结论）
+///
+/// 真机 64 条子站是上一批智能体把解码后的配置**文本**灌进导入产生的
+/// （链接路径当时解不了 base64** 包裹，见 `unwrap_tvbox_config_text`），
+/// 于是 sidecar 全部 source_url=None ⇒ `collect_due_links` 永远挑不到链接
+/// ⇒ 定时更新从不下载 ⇒ 聚合卡永远「从未更新」。
+///
+/// # 为什么是"验证型认领"，不是重导、也不是逐条补链接
+///
+/// ```text
+/// 重导              ：id 含名字成分，远端改名 ⇒ 新 id ⇒ 双份；还要重探测 64 站
+/// 逐条 set_tvbox_source：没有配对验证，无法保证只给"真属于这条链接"的源补
+/// 认领（本函数）      ：下载该链接、按 diff_sites 同一把尺子配对，命中才写
+/// ```
+///
+/// # 认领规则
+///
+/// ```text
+/// · 只动 source_url=None 的条目（已认领/已有链接的绝不碰 ⇒ 幂等，无双份）
+/// · 配对判据与 diff_sites 同一把尺子：① site key 精确 ② 归一化 api
+/// · 命中多少认领多少；未命中的数量在返回值里如实带出（远端可能已改名/删站）
+/// · 一条都配不上 ⇒ Err（多半是链接给错了），绝不盲写
+/// · 章不动：认领本身不比对子站内容；下一轮订阅更新（last≤0 ⇒ 到点）盖真章
+/// ```
+pub async fn adopt_tvbox_orphans(
+    state: &crate::state::AppState,
+    url: &str,
+) -> std::result::Result<serde_json::Value, String> {
+    let url = url.trim();
+    if !starts_http(url) {
+        return Err(format!("订阅链接必须是 http/https 地址：{url}"));
+    }
+
+    // 下载 + 解析（fetch_config_text 已带 base64** 解包）
+    let client = probe_client();
+    let text = fetch_config_text(&client, url)
+        .await
+        .map_err(|e| format!("下载配置失败（{url}）：{e}"))?;
+    let cfg = parse_loose_json(&text).map_err(|e| format!("配置不是合法 JSON：{e}"))?;
+    if cfg.get("sites").and_then(|v| v.as_array()).is_none() {
+        return Err(format!(
+            "远端链接 {url} 没有 sites 段（多仓配置请先选子仓，用子仓链接认领）"
+        ));
+    }
+    let (remote_jobs, _skipped, _lives) = collect_sites(&cfg, url);
+
+    // 无主子站 = 已注册的 TVBox 源里、sidecar 记着 source_url=None 的
+    let sources = local_tvbox_sources(state)?;
+    let metas = load_tvbox_metas(&state.data_dir);
+    let orphan_ids: Vec<String> = sources
+        .iter()
+        .filter(|(sid, _, _, _)| {
+            norm_source_url(metas.get(sid).and_then(|m| m.source_url.as_deref())).is_none()
+        })
+        .map(|(sid, _, _, _)| sid.clone())
+        .collect();
+
+    let mut used_remote = vec![false; remote_jobs.len()];
+    let mut claimed: Vec<String> = Vec::new();
+    let mut unmatched: Vec<serde_json::Value> = Vec::new();
+    for sid in &orphan_ids {
+        let Some(m) = metas.get(sid) else { continue };
+        let key = m.site_key.trim();
+        let api_norm = normalize_api_url(&m.api);
+        let mut hit: Option<usize> = None;
+        // ① site key 精确配对
+        if !key.is_empty() {
+            for (ri, job) in remote_jobs.iter().enumerate() {
+                if !used_remote[ri] && job.key == key {
+                    hit = Some(ri);
+                    break;
+                }
+            }
+        }
+        // ② 剩下的按归一化 api 兜底（与 diff_sites 第②步同一判据）
+        if hit.is_none() && !api_norm.is_empty() {
+            for (ri, job) in remote_jobs.iter().enumerate() {
+                if !used_remote[ri] && normalize_api_url(&job.api) == api_norm {
+                    hit = Some(ri);
+                    break;
+                }
+            }
+        }
+        match hit {
+            Some(ri) => {
+                used_remote[ri] = true;
+                let old = m.clone();
+                write_tvbox_meta(
+                    &state.data_dir,
+                    sid,
+                    &TvboxSourceMeta {
+                        // ★ 只补血缘，站点身份字段原样保留（换的是"从哪来"，不是站点）
+                        source_url: norm_source_url(Some(url)),
+                        site_key: old.site_key,
+                        site_name: old.site_name,
+                        api: old.api,
+                        installed_at: old.installed_at,
+                        last_update_at: old.last_update_at,
+                        last_update_ok: old.last_update_ok,
+                        last_update_error: old.last_update_error,
+                    },
+                )?;
+                claimed.push(sid.clone());
+            }
+            None => unmatched.push(serde_json::json!({
+                "id": sid,
+                "siteKey": m.site_key,
+                "siteName": m.site_name,
+            })),
+        }
+    }
+
+    // ★ 如实：一条都配不上不许写成功
+    if !orphan_ids.is_empty() && claimed.is_empty() {
+        return Err(format!(
+            "该链接与任何无主子站都配不上（无主 {} 条，远端站点 {} 条），拒绝认领——请核对链接",
+            orphan_ids.len(),
+            remote_jobs.len()
+        ));
+    }
+
+    Ok(serde_json::json!({
+        "sourceUrl": url,
+        "orphans": orphan_ids.len(),
+        "claimed": claimed.len(),
+        "claimedIds": claimed,
+        "unmatched": unmatched.len(),
+        "unmatchedList": unmatched,
+    }))
+}
+
 /// 移除一个 TVBox 源，并**同时忘掉它的订阅链接**
 ///
 /// # ★ 为什么必须同时清 sidecar（不能只调 remove_provider）
@@ -4752,10 +4937,20 @@ mod task5_ab_restart {
             // task-12：假的 TVBox 配置 —— 订阅链接指向它
             // api 占位符换成**请求里带的 Host** —— 常量里不知道端口
             let base = format!("http://{host}");
-            let body = if pq.contains("/cfg/v2.json") {
+            let plain_v2 = || {
                 CFG_V2_BODY
                     .replace("@@API1@@", &format!("{base}/api.php/provide/vod"))
                     .replace("@@API3@@", &format!("{base}/api3/vod"))
+            };
+            let body = if pq.contains("/cfg/v2b64.json") {
+                // 血缘批次（2026-11-01）：同一份 v2 配置但套 base64** 包裹
+                //（真链接 https://8815.kstore.vip/tvbox/wmz 的实抓形态）
+                format!(
+                    "YmFzZTY0**{}",
+                    crate::csp::shared::b64_encode(plain_v2().as_bytes())
+                )
+            } else if pq.contains("/cfg/v2.json") {
+                plain_v2()
             } else if pq.contains("/cfg/v3.json") {
                 CFG_V3_BODY
                     .replace("@@API9@@", &format!("{base}/api9/vod"))
@@ -8245,5 +8440,334 @@ mod t_ext_import {
             "★★ 更新后落盘的 ext 必须仍带 `site`：{ext:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  血缘修复批次（2026-11-01）：base64** 解包 + 验证型认领
+    // ═════════════════════════════════════════════════════════════════
+    //
+    // 考证结论（决策笔记）：真机 64 条子站是"解码后的文本"灌进导入产生的
+    // （链接路径当时解不了 base64** 包裹）⇒ source_url=None ⇒ 从不更新。
+    // 本批两件事：① 链接路径学会剥 base64**；② 存量无主子站验证型认领。
+    mod lineage_adopt {
+        use super::*;
+        use crate::state::AppState;
+
+        fn b64(s: &str) -> String {
+            crate::csp::shared::b64_encode(s.as_bytes())
+        }
+        fn wrap(t: &str) -> String {
+            format!("YmFzZTY0**{}", b64(t))
+        }
+
+        /// ★ G1：真链接实抓形态（`\n` + `YmFzZTY0**` + base64(JSON)）解得开；
+        ///       字面标记 `base64**` 同样认。
+        ///
+        /// 证红：把 unwrap_tvbox_config_text 改成恒等函数 ⇒ 本条红（解出来还是乱码）。
+        #[test]
+        fn unwrap_strips_base64_marker_real_shape() {
+            let cfg = r#"{"spider":"http://x/jar;md5;abc","sites":[{"key":"k","name":"站","type":3,"api":"csp_X"}]}"#;
+            let out = super::unwrap_tvbox_config_text(&wrap(cfg))
+                .expect("★ 真形态必须解得开（这就是 Owner 那条链接的形状）");
+            let v = parse_loose_json(&out).expect("解包后必须是合法 JSON");
+            assert_eq!(v["sites"][0]["key"], "k", "{v}");
+            // 带前导换行 + 字面 `base64**` 标记的变体也要认
+            let out2 = super::unwrap_tvbox_config_text(&format!("\nbase64**{}", b64(cfg)))
+                .expect("字面标记也要认");
+            assert_eq!(
+                parse_loose_json(&out2).unwrap()["sites"][0]["api"],
+                "csp_X",
+                "{out2}"
+            );
+        }
+
+        /// ★ G2：嵌套语义 —— 2 层在限内解得开；4 层报清晰错误，不许糊死/死循环。
+        #[test]
+        fn unwrap_two_layers_ok_but_four_rejected() {
+            let cfg = r#"{"sites":[]}"#;
+            let two = super::unwrap_tvbox_config_text(&wrap(&wrap(cfg)))
+                .expect("2 层在 3 层限内，必须解得开");
+            assert!(
+                parse_loose_json(&two).is_ok(),
+                "解到底应该是明文 JSON：{two}"
+            );
+            let four = wrap(&wrap(&wrap(&wrap(cfg))));
+            let err = super::unwrap_tvbox_config_text(&four)
+                .expect_err("★ 4 层超过上限，必须报错");
+            assert!(err.contains("3 层"), "错误里要说明上限：{err}");
+        }
+
+        /// ★ G3：普通配置原样放行（解包只认明确标记，绝不猜）；坏 base64 报清晰错误。
+        #[test]
+        fn unwrap_passes_plain_config_through_and_bad_b64_errors() {
+            // 普通 JSON / 前导空白 —— 原样放行
+            let out = super::unwrap_tvbox_config_text("\n {\"sites\":[]} ")
+                .expect("普通配置不该报错");
+            assert!(parse_loose_json(&out).is_ok(), "{out}");
+            // JSONP / 注释等宽松形态也不许被误伤（仍是 parse_loose_json 的职责）
+            let out2 = super::unwrap_tvbox_config_text("foo({\"a\":1});").expect("JSONP 原样放行");
+            assert_eq!(out2, "foo({\"a\":1});");
+            let err = super::unwrap_tvbox_config_text("YmFzZTY0**!!!not-base64!!!")
+                .expect_err("坏 base64 必须报错");
+            assert!(err.contains("解码失败"), "{err}");
+        }
+
+        /// 血缘认领用的三条真形状夹具：k1/k3 属于远端配置（CFG_V2），kx 是
+        /// 别的来源的无主子站（远端没有它 —— 验证"未命中的如实带出"）。
+        /// 返回 (id, name, api) 供 provider 注册复用（api 必须与远端一致，
+        /// 这样 update 的 diff 是干净的 unchanged ⇒ 只走盖章，不掺探测变量）。
+        fn adopt_fixture(dir: &std::path::Path, sink_url: &str) -> Vec<(String, String, String)> {
+            let mk = |key: &str, name: &str, api: &str| TvboxSourceMeta {
+                source_url: None,
+                site_key: key.to_string(),
+                site_name: name.to_string(),
+                api: api.to_string(),
+                // 真机那批的同一个时刻（real_shape_entry 同款）
+                installed_at: 1_793_268_523,
+                last_update_at: 0,
+                last_update_ok: false,
+                last_update_error: None,
+            };
+            let rows = [
+                (
+                    "csp-fixture-k1",
+                    mk("k1", "甲站", &format!("{sink_url}/api.php/provide/vod")),
+                ),
+                ("csp-fixture-k3", mk("k3", "丙站", &format!("{sink_url}/api3/vod"))),
+                // 远端配置里没有的站：认领必须**不碰**它并如实上报
+                ("csp-fixture-kx", mk("kx", "外来站", "csp_Outsider")),
+            ];
+            for (id, meta) in rows.iter() {
+                write_tvbox_meta(dir, id, meta).expect("写认领夹具失败");
+            }
+            // 夹具自证：磁盘上不许有 source_url 键（真形状）
+            let raw = std::fs::read_to_string(tvbox_meta_file(dir)).expect("读夹具失败");
+            assert!(!raw.contains("source_url"), "夹具必须是真形状（无链接）");
+            rows.iter()
+                .map(|(id, m)| (id.to_string(), m.site_name.clone(), m.api.clone()))
+                .collect()
+        }
+
+        /// ★ G4（本批核心）：认领 → 订阅更新 → **既有子站全部盖章** → 聚合 max。
+        ///
+        /// 全链路：sink 吐的是 **base64** 包裹**的配置（真链接形态）⇒ 解包
+        /// 必须先成立。认领只动 source_url=None 的条目；更新后 in_link 的全部
+        /// 盖章；聚合时间 = 子站 max。
+        ///
+        /// 证红：把认领的配对判据去掉（claimed 恒空）⇒ 本条红在 claimed==0；
+        ///      把 stamp_link_update 改成只盖 added/changed ⇒ 红在"k3 没盖章"。
+        #[tokio::test]
+        async fn adopt_then_update_stamps_all_orphans() {
+            std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+            let sink = super::task5_ab_restart::start_sink(super::task5_ab_restart::SHARE_PLAIN);
+            let dir = super::task5_ab_restart::unique_tmp_dir("adopt-e2e");
+            std::fs::create_dir_all(&dir).expect("建临时目录失败");
+            let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+
+            let rows = adopt_fixture(&dir, &sink.url());
+            let (id1, id3, idx) = (
+                rows[0].0.clone(),
+                rows[1].0.clone(),
+                rows[2].0.clone(),
+            );
+            // 三条都注册成 provider（真机上它们都是注册过的源）；
+            // api/name 与 sidecar 同源 ⇒ update 的 diff 是干净的 unchanged
+            {
+                let mut list = st.third_party.write().expect("锁中毒");
+                for (id, name, api) in rows.iter() {
+                    list.push(crate::model::PersistedProvider::Tvbox {
+                        id: id.clone(),
+                        name: name.clone(),
+                        api: api.clone(),
+                        categories: Vec::new(),
+                        parsers: Vec::new(),
+                        ext: None,
+                    });
+                }
+            }
+            crate::commands_provider::persist_from_registry(&st).expect("落盘失败");
+
+            // ★ 修好的链接路径：sink 吐 base64** 包裹配置，fetch_config_text 自动解包
+            let sub_url = format!("{}/cfg/v2b64.json", sink.url());
+            let res = super::adopt_tvbox_orphans(&st, &sub_url)
+                .await
+                .expect("★ 认领不该失败");
+            println!("[EVIDENCE] adopt res={res}");
+            assert_eq!(res["claimed"], 2, "★ k1/k3 配得上 ⇒ 认领 2 条：{res}");
+            assert_eq!(res["unmatched"], 1, "★ kx 远端没有 ⇒ 如实带出：{res}");
+            assert_eq!(res["orphans"], 3, "{res}");
+            assert_eq!(res["sourceUrl"], sub_url.as_str(), "{res}");
+
+            // 认领只补血缘：installed_at / site_key 原样保留
+            let metas = load_tvbox_metas(&dir);
+            assert_eq!(
+                metas[&id1].source_url.as_deref(),
+                Some(sub_url.as_str()),
+                "k1 必须带上链接"
+            );
+            assert_eq!(
+                metas[&id1].installed_at, 1_793_268_523,
+                "★ 认领不许改 installed_at（安装时刻是历史事实）"
+            );
+            assert_eq!(metas[&id1].site_key, "k1", "site_key 原样保留");
+            assert!(
+                metas[&idx].source_url.is_none(),
+                "★ 外来站远端没有 ⇒ 不许被误认领：{:?}",
+                metas[&idx]
+            );
+
+            // 重复调用：剩余的 kx 真的与该链接配不上 ⇒ 如实 Err（"一条都配不上
+            // 才 Err"），且**盘上什么都不写** —— 这就是"不产生双份"的结构保证。
+            // （64 条全配得上的真机场景里，二次调用 orphans=0 ⇒ Ok{claimed:0}。）
+            let again = super::adopt_tvbox_orphans(&st, &sub_url)
+                .await
+                .expect_err("★ 剩一条配不上 ⇒ 如实 Err");
+            assert!(again.contains("配不上"), "{again}");
+            let metas = load_tvbox_metas(&dir);
+            assert_eq!(
+                metas[&id1].source_url.as_deref(),
+                Some(sub_url.as_str()),
+                "Err 路径不许动已认领的条目"
+            );
+            assert_eq!(metas[&idx].source_url, None, "Err 路径不许盲写");
+
+            // ── 一次订阅更新（走生产命令，代表源任选已认领的一条）─────────
+            let upd = super::update_tvbox_source(&st, &id1, true, false)
+                .await
+                .expect("更新不该失败");
+            println!("[EVIDENCE] adopt-e2e upd={upd}");
+
+            // ★ 核心判据：已认领的既有子站**全部**盖章；外来站仍是从未更新
+            let metas = load_tvbox_metas(&dir);
+            for id in [&id1, &id3] {
+                assert!(
+                    metas[id].last_update_at > 0 && metas[id].last_update_ok,
+                    "★ {id} 必须盖上成功章（这是本批要闭环的读数）"
+                );
+            }
+            assert_eq!(
+                metas[&idx].last_update_at, 0,
+                "外来站不属于这条链接 ⇒ 不许盖错章"
+            );
+
+            // 聚合时间 = 子站 max ⇒ 设置页聚合卡从此显示真实「上次更新」
+            let ids = vec![id1.clone(), id3.clone(), idx.clone()];
+            let (at, ok, err) = super::tvbox_aggregate_last_update(&metas, &ids)
+                .expect("★ 有子站盖过章 ⇒ 聚合必须拿到时间");
+            assert_eq!(at, metas[&id1].last_update_at.max(metas[&id3].last_update_at), "{at}");
+            assert!(ok && err.is_none(), "全部成功 ⇒ ok=true：{ok} {err:?}");
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// ★ G5：认领的诚实性/边界 —— 一条都配不上 ⇒ Err 且不写盘；
+        ///       url 空/非 http ⇒ Err（FFI 不留洞）。
+        ///
+        /// 证红：把"claimed 为空 ⇒ Err"的守卫删掉 ⇒ 本条红（应该 Err 却 Ok 了）。
+        #[tokio::test]
+        async fn adopt_rejects_no_pair_and_bad_url() {
+            std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+            let sink = super::task5_ab_restart::start_sink(super::task5_ab_restart::SHARE_PLAIN);
+            let dir = super::task5_ab_restart::unique_tmp_dir("adopt-reject");
+            std::fs::create_dir_all(&dir).expect("建临时目录失败");
+            let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+
+            // 一条无主子站，key/api 都与远端（k1/k3）对不上
+            write_tvbox_meta(
+                &dir,
+                "csp-fixture-kz",
+                &TvboxSourceMeta {
+                    source_url: None,
+                    site_key: "kz".to_string(),
+                    site_name: "对不上".to_string(),
+                    api: "csp_Nobody".to_string(),
+                    installed_at: 1_793_268_523,
+                    ..Default::default()
+                },
+            )
+            .expect("写夹具失败");
+            {
+                let mut list = st.third_party.write().expect("锁中毒");
+                list.push(crate::model::PersistedProvider::Tvbox {
+                    id: "csp-fixture-kz".to_string(),
+                    name: "对不上".to_string(),
+                    api: "csp_Nobody".to_string(),
+                    categories: Vec::new(),
+                    parsers: Vec::new(),
+                    ext: None,
+                });
+            }
+            crate::commands_provider::persist_from_registry(&st).expect("落盘失败");
+
+            let sub_url = format!("{}/cfg/v2b64.json", sink.url());
+            let err = super::adopt_tvbox_orphans(&st, &sub_url)
+                .await
+                .expect_err("★ 一条都配不上必须 Err（不许静默成功）");
+            println!("[EVIDENCE] adopt-reject err={err}");
+            assert!(err.contains("配不上"), "{err}");
+            // 拒绝认领 ⇒ 盘上什么都没写（source_url 仍是 None）
+            let metas = load_tvbox_metas(&dir);
+            assert!(
+                metas["csp-fixture-kz"].source_url.is_none(),
+                "Err 路径不许有半截写入"
+            );
+
+            // args 校验：空 / 非 http 一律 Err（不给 FFI 留"空参盲写"的洞）
+            assert!(super::adopt_tvbox_orphans(&st, "").await.is_err(), "空 url 必须 Err");
+            assert!(
+                super::adopt_tvbox_orphans(&st, "not-a-url").await.is_err(),
+                "非 http url 必须 Err"
+            );
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// ★ G6：修好的**链接导入**路径 —— base64** 包裹的配置能导入，
+        ///       且 source_url 落盘 + 盖 installed 初始章（B3 口径）。
+        ///
+        /// 这就是"上一批智能体被迫走文本粘贴"的那条路 —— 修完它，下次
+        /// 正规导入不会再产生 source_url=None 的孤儿。
+        ///
+        /// 证红：把 fetch_config_text 里的 unwrap 拿掉 ⇒ 本条红（导入报
+        ///      "配置不是合法 JSON"）。
+        #[tokio::test]
+        async fn import_via_link_unwraps_base64_and_records_source_url() {
+            std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+            let dir = tmp("adopt-import");
+            // csp+ext ⇒ 探测失败照样落盘（127.0.0.1:1 闭合端口，离线确定性）
+            let dead = "http://127.0.0.1:1";
+            let cfg_body = format!(
+                r#"{{"sites":[{{"key":"wogg","name":"玩耦丨4K臻享","type":3,"api":"csp_Wogg","ext":{{"site":["{dead}"]}}}}]}}"#
+            );
+            let sub_url = fake_sub_url(wrap(&cfg_body));
+
+            let st = crate::state::AppState::bootstrap(dir.clone()).await.expect("bootstrap");
+            let res = super::import_tvbox_config(&st, &sub_url)
+                .await
+                .expect("★ 链接导入必须成功（这是本批修的主路径）");
+            println!("[EVIDENCE] import-b64 res={res}");
+            assert_eq!(
+                res["imported"].as_array().map(|a| a.len()),
+                Some(1),
+                "csp+ext 探测失败也要保留：{res}"
+            );
+
+            let metas = load_tvbox_metas(&dir);
+            let m = metas
+                .values()
+                .next()
+                .unwrap_or_else(|| panic!("★ sidecar 必须有这条源：{metas:?}"));
+            assert_eq!(
+                m.source_url.as_deref(),
+                Some(sub_url.as_str()),
+                "★ 血缘必须落盘（这次的导入走的是链接，不许再丢）：{m:?}"
+            );
+            assert!(
+                m.last_update_at > 0 && m.last_update_ok,
+                "★ 链接导入成功 ⇒ 盖 installed 初始章（B3 口径）：{m:?}"
+            );
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

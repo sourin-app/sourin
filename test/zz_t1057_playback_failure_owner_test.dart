@@ -35,7 +35,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 
 void main() {
-  group('① 映射表：七档逐档（漏一档 = 那一档会悄悄错档）', () {
+  group('① 映射表：八档逐档（漏一档 = 那一档会悄悄错档）', () {
     test('★★★ 每一档都必须有明确归属，且与下表逐档一致', () {
       const expected = <PlaybackFailureKind, PlaybackFailureOwner>{
         PlaybackFailureKind.source: PlaybackFailureOwner.plugin,
@@ -44,6 +44,8 @@ void main() {
         PlaybackFailureKind.decode: PlaybackFailureOwner.player,
         PlaybackFailureKind.permission: PlaybackFailureOwner.unknown,
         PlaybackFailureKind.network: PlaybackFailureOwner.remote,
+        // N-23018：分享的文件已不存在 = 网盘/分享侧的内容现实（插件如实转述）
+        PlaybackFailureKind.shareFileGone: PlaybackFailureOwner.unknown,
         PlaybackFailureKind.unknown: PlaybackFailureOwner.unknown,
       };
 
@@ -107,6 +109,20 @@ void main() {
       expect(ownerOf(PlaybackFailureKind.network), PlaybackFailureOwner.remote);
       expect(ownerOf(PlaybackFailureKind.unknown),
           PlaybackFailureOwner.unknown);
+    });
+
+    test('★★ shareFileGone（N-23018）⇒ 说不清（不冒认，permission 同款纪律）', () {
+      expect(ownerOf(PlaybackFailureKind.shareFileGone),
+          PlaybackFailureOwner.unknown,
+          reason: '★ 文件在网盘/分享侧没了 —— 插件只是如实转述，'
+              '判成 plugin 冤枉插件、判成 player 引去查解码器，'
+              '判成 service 更是八竿子打不着 ⇒ 如实说"说不清"');
+      expect(ownerOf(PlaybackFailureKind.shareFileGone),
+          isNot(PlaybackFailureOwner.plugin));
+      expect(ownerOf(PlaybackFailureKind.shareFileGone),
+          isNot(PlaybackFailureOwner.service));
+      expect(ownerOf(PlaybackFailureKind.shareFileGone),
+          isNot(PlaybackFailureOwner.player));
     });
   });
 

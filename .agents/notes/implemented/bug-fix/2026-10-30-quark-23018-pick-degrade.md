@@ -57,4 +57,7 @@ cargo test --test quark_pick_degrade --release
       degrade_all_exceeded_gives_clear_guidance / degrade_uses_candidates_shorter_than_max 全红）
   ⇒ 恢复实现后复跑 7 passed / 0 failed。
 真机播放验证（播此前 23018 的线路）按批次纪律攒到批末由 lead 统一安排。
+后续（2026-11-01）：23018 失败后的**重试**曾必现 404(21001)（purge 竞态），
+已修并新增 21001 分类/自愈门禁——
+见 [夸克重试 404(21001) 竞态修复](2026-11-01-quark-retry-404-21001-purge-race-and-selfheal.md)。
 ```

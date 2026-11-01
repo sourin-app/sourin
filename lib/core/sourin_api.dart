@@ -4667,6 +4667,13 @@ enum PlaybackFailureKind {
   /// ```
   timeout,
 
+  /// ★ 第八档（2026-11-01，N-23018）：夸克 21001「file not found」——
+  /// 网盘分享的这个文件**已不存在**（转存被清 / 分享者删源）
+  ///
+  /// 与登录毫无关系（真机实测 Owner 已登录仍报 404(21001)）；
+  /// 与 23018 同类：文件属性/存在性问题，重试无出路 ⇒ canRetry=false。
+  shareFileGone,
+
   /// 归不到任何一类
   unknown,
 }
@@ -4727,6 +4734,7 @@ class PlaybackFailure {
      *    逐字断言）—— 这一档存在的全部意义就是**不再把锅甩给代理**。
      */
     PlaybackFailureKind.timeout => '这条流等太久了',
+    PlaybackFailureKind.shareFileGone => '分享的这个文件已不存在',
     PlaybackFailureKind.unknown => '播放失败',
   };
 
@@ -4743,6 +4751,7 @@ class PlaybackFailure {
     PlaybackFailureKind.permission => '换一个源。这不是客户端能绕过的东西。',
     PlaybackFailureKind.network => '等一会儿再点「重试」。',
     PlaybackFailureKind.timeout => '点「重试」；一直这样就把日志发给我们。',
+    PlaybackFailureKind.shareFileGone => '换一条线路试试（右上角的线路列表）。',
     PlaybackFailureKind.unknown => '',
   };
 
@@ -4840,6 +4849,11 @@ PlaybackFailureOwner ownerOf(PlaybackFailureKind kind) => switch (kind) {
 
   // ── 源站网络侧 ──────────────────────────────────────────
   PlaybackFailureKind.network => PlaybackFailureOwner.remote,
+
+  // ── 网盘分享内容已不存在（N-23018）──────────────────────
+  // 文件没了是**网盘/分享侧的内容现实**——插件只是如实转述（它取流没错），
+  // 播放器更没问题。与 permission 同一条"不冒认"纪律：归 `unknown`。
+  PlaybackFailureKind.shareFileGone => PlaybackFailureOwner.unknown,
 
   // ── 说不清 ──────────────────────────────────────────────
   PlaybackFailureKind.unknown => PlaybackFailureOwner.unknown,
@@ -5139,6 +5153,30 @@ class PlaybackErrorText {
      */
     final display = hideInternalUrls(text);
     final lower = text.toLowerCase();
+
+    /*
+     * ── ⓪′ 夸克 21001「file not found」＝文件已不存在（N-23018，2026-11-01）──
+     *
+     * # 为什么必须排在 HTTP 状态码归因**之前**
+     * ```text
+     * 真机实测（sourin-2026-11-01.log 14:39:40）：
+     *   「夸克网盘 取下载地址返回 HTTP 404 Not Found：{"code":21001,
+     *     "message":"file not found …"}」
+     * 若按下面的 HTTP 分支走，404 ⇒ kind=source（"这个源没有返回可播放地址"）
+     * ⇒ 归因错档、canRetry=true（用户点重试必然再撞同一堵墙）。
+     * 21001 的语义是**这个文件在网盘里已经没了**（转存被清 / 分享者删源），
+     * 与登录无关（Owner 已登录仍复现）、重试无出路 ⇒ canRetry=false。
+     * ```
+     * 判据：业务码 + message 短语**双特征**（裸 404 / 单独 21001 不误伤；
+     * 与 Rust 侧 `is_file_not_found_21001` 同一条判据、两个实现各自有门禁）。
+     */
+    if (lower.contains('21001') && lower.contains('file not found')) {
+      return PlaybackFailure(
+        kind: PlaybackFailureKind.shareFileGone,
+        detail: display,
+        canRetry: false,
+      );
+    }
 
     /*
      * ── ⓪ 先按 **HTTP 状态码** 归因（轨道 H · 2026-10-18 新增）─────────

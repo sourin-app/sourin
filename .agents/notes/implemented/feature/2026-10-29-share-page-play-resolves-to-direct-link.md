@@ -111,6 +111,10 @@ dex 实证：参考实现有 `QuarkTempDelete` / `UCTempDelete` + `file/delete`�
   另有"下次解析前清"作为兜底（fire-and-forget 失败时文件最多多留一会儿）。
 - 超限文件（`23018`）如实报错，不做转码兜底。
 - 未登录 ⇒ `NEED_LOGIN:<盘种>|…`（UI 弹二维码），不是"文件不存在"。
+- ★ 时序修订（2026-11-01）："下次解析前清"的 fire-and-forget 与 `sharepage/save`
+  的同名去重存在竞态——重试必现 404(21001) file not found（真机 4+ 次复发）。
+  purge 现已改为**等删除任务终态** + 21001 单次自愈，
+  见 [夸克重试 404(21001) 竞态修复](../bug-fix/2026-11-01-quark-retry-404-21001-purge-race-and-selfheal.md)。
 
 ## 验证结果（已发生）
 

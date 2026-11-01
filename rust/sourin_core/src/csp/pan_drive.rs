@@ -1347,6 +1347,16 @@ impl CspSite for PanDrive {
         }
         let text = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
         if !status.is_success() {
+            // ★ N-23018（2026-11-01，lead 批复③）：夸克 21001「file not found」=
+            //   **文件已不存在**（真机实锤：重试被自己上一次解析的 purge 竞态删掉；
+            //   也可能是分享者删源）。它与登录毫无关系（Owner 已登录仍复现），
+            //   与网络抖动也无关 ⇒ 归"文件已不存在"终态，人话点破"换一条线路"。
+            if is_file_not_found_21001(&text) {
+                return Err(format!(
+                    "{} 文件已不存在（code=21001 file not found），无法播放，请换一条线路",
+                    self.spec.kind.display()
+                ));
+            }
             return Err(format!(
                 "{} 取下载地址返回 HTTP {status}：{}",
                 self.spec.kind.display(),
@@ -1600,6 +1610,17 @@ impl PanDrive {
     }
 
     /// 清掉**上一次**播放留下的临时转存（best-effort；只清同一家盘）
+    ///
+    /// ★★★ N-23018（2026-11-01，lead 批复 A）：删完**等删除任务到终态**再返回
+    /// ```text
+    /// 改前：POST file/delete 只看 HTTP 状态就走 —— 但删除是异步任务（回收站），
+    ///       随后的 sharepage/save 对同名文件**去重**，会回吐"刚删/正在删"的
+    ///       同一个 fid ⇒ 紧接着 file/download 404(21001) file not found。
+    ///       真机实锤：14:39:13 的 23018 与 14:39:40 的 404 带同一个 fid。
+    /// 改后：响应里带 task_id 就轮询到终态（总预算 [PURGE_DELETE_WAIT_BUDGET]，
+    ///       lead 护栏：不许无限挂住 resolve）；超时/形态认不出 ⇒ 如实 warn 后
+    ///       继续走 —— 残余竞态由 degrade_attempt 的 21001 自愈兜底。
+    /// ```
     pub async fn purge_previous(&self) {
         let kind = self.spec.kind.code().to_string();
         let victims: Vec<String> = {
@@ -1620,6 +1641,7 @@ impl PanDrive {
             return;
         }
         let Some(cookie) = self.cookie() else { return };
+        let deadline = std::time::Instant::now() + PURGE_DELETE_WAIT_BUDGET;
         for fid in victims {
             /*
              * ★ 2026-10-29：日志写清"从 sourin-temp 清理"。
@@ -1627,6 +1649,9 @@ impl PanDrive {
              * 为什么强调：这条 fid 是**转存进临时目录**的那份（见 `save_into_temp_dir`），
              * 不是用户自己的文件。日志里不写清目录名，现场排查时就分不清
              * "我们删的是自己扔进去的"还是"误删了用户的东西"。
+             *
+             * ⚠️ PAN 侧日志必须走 `applog::write_file_log`（`log` 门面在本 crate
+             *    无 sink，23018 猎捕二轮实锤的黑洞）。
              */
             match self
                 .client
@@ -1639,19 +1664,125 @@ impl PanDrive {
                 .await
             {
                 Ok(r) if r.status().is_success() => {
-                    log::info!(
-                        "[PAN] 已从 {TEMP_DIR_NAME} 清理临时转存 kind={kind} fid={fid}（action_type=2 移入回收站）"
-                    );
+                    // 删除是异步任务 ⇒ 带 task_id 就等到终态；响应形态认不出
+                    // （没有 task_id，可能同步删除）⇒ 如实记一笔后当已生效。
+                    let body = r.text().await.unwrap_or_default();
+                    let task_id = serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("data")
+                                .and_then(|d| d.get("task_id"))
+                                .and_then(|x| x.as_str())
+                                .filter(|x| !x.is_empty())
+                                .map(|x| x.to_string())
+                        });
+                    let confirmed = match task_id {
+                        Some(id) => self.wait_delete_task(&cookie, &id, deadline).await,
+                        None => {
+                            crate::applog::write_file_log(
+                                "PAN",
+                                &format!(
+                                    "清理 {TEMP_DIR_NAME}：删除响应里没有 task_id（形态与预期不符，不猜）kind={kind} fid={fid} ⇒ 视为已生效"
+                                ),
+                            );
+                            true
+                        }
+                    };
+                    if confirmed {
+                        crate::applog::write_file_log(
+                            "PAN",
+                            &format!(
+                                "已从 {TEMP_DIR_NAME} 清理临时转存 kind={kind} fid={fid}（已确认删除完成，等价 action_type=2 移入回收站）"
+                            ),
+                        );
+                    } else {
+                        crate::applog::write_file_log(
+                            "PAN",
+                            &format!(
+                                "清理 {TEMP_DIR_NAME} 的删除任务未在预算内确认完成 kind={kind} fid={fid} ⇒ 继续解析（残余竞态由 21001 自愈兜底）"
+                            ),
+                        );
+                    }
                 }
-                Ok(r) => log::warn!(
-                    "[PAN] 清理 {TEMP_DIR_NAME} 里的临时转存失败 kind={kind} fid={fid} HTTP {}",
-                    r.status()
+                Ok(r) => crate::applog::write_file_log(
+                    "PAN",
+                    &format!(
+                        "清理 {TEMP_DIR_NAME} 里的临时转存失败 kind={kind} fid={fid} HTTP {}",
+                        r.status()
+                    ),
                 ),
-                Err(e) => log::warn!(
-                    "[PAN] 清理 {TEMP_DIR_NAME} 里的临时转存请求失败 kind={kind} fid={fid} err={e}"
+                Err(e) => crate::applog::write_file_log(
+                    "PAN",
+                    &format!(
+                        "清理 {TEMP_DIR_NAME} 里的临时转存请求失败 kind={kind} fid={fid} err={e}"
+                    ),
                 ),
             }
         }
+    }
+
+    /// 轮询删除任务到终态（`sharepage/save` 同族的 `task?` 读数）
+    ///
+    /// 返回 true = 确认删除完成；false = 任务失败 / 预算耗尽 / 读数拿不到。
+    /// 预算上限由调用方的 `deadline` 控制（[PURGE_DELETE_WAIT_BUDGET] 总预算）。
+    async fn wait_delete_task(&self, cookie: &str, task_id: &str, deadline: std::time::Instant) -> bool {
+        let referer = self.spec.share_host;
+        while std::time::Instant::now() < deadline {
+            tokio::time::sleep(PAN_POLL_INTERVAL).await;
+            let url = self.api(&format!(
+                "task?{}&task_id={task_id}&retry_index=0",
+                self.spec.pr_fr
+            ));
+            let resp = match self
+                .client
+                .get(&url)
+                .header("Accept", "application/json, text/plain, */*")
+                .header("Referer", referer)
+                .header("Cookie", cookie)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => return false,
+            };
+            let text = match resp.text().await {
+                Ok(t) => t,
+                Err(_) => return false,
+            };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+                return false;
+            };
+            if let Some(done) = delete_task_done(&v) {
+                return done;
+            }
+        }
+        false
+    }
+
+    /// 21001 自愈的前置确认：等"刚删除的 fid"从临时目录清单里**消失**
+    /// （回收站/索引最终一致性；预算 [SELFHEAL_LISTING_WAIT]，到点没消失也继续
+    /// —— 重转存尽力而为，再 21001 就如实报）。
+    async fn wait_fid_gone(&self, cookie: &str, fid: &str) {
+        let (dir, fallback) = temp_dir_or_root(self.ensure_temp_dir(cookie).await);
+        if fallback.is_some() {
+            // 临时目录本来就不可用 ⇒ 没有可确认的清单，直接进重转存
+            return;
+        }
+        let deadline = std::time::Instant::now() + SELFHEAL_LISTING_WAIT;
+        while std::time::Instant::now() < deadline {
+            if let Ok(entries) = self.list_dir(cookie, &dir).await {
+                if !entries.iter().any(|e| e.fid == fid) {
+                    return;
+                }
+            }
+            tokio::time::sleep(PAN_POLL_INTERVAL).await;
+        }
+        crate::applog::write_file_log(
+            "PAN",
+            &format!(
+                "21001 自愈：临时目录清单 {SELFHEAL_LISTING_WAIT:?} 内仍见旧 fid ⇒ 仍按计划重转存（若再 21001 则如实报）"
+            ),
+        );
     }
 
     /// 记下这次转存的 fid（下次解析前清理）
@@ -1741,6 +1872,18 @@ impl PanDrive {
     ///
     /// ★ 失败的尝试**也** `remember_temp` —— 转存可能已成功（超限发生在取直链一步），
     ///   不记下来下次 purge 就清不掉 ⇒ 用户网盘里堆垃圾（正是上批修掉的问题）。
+    ///
+    /// ★★★ N-23018（2026-11-01，lead 批复 B）：下载遇 21001「file not found」⇒
+    /// **自愈重转存一次**（只做一次，防循环）。
+    /// ```text
+    /// 为什么会 21001：重试解析开头的 purge 删掉了上一次的转存，而 save 对
+    /// 同名文件去重可能回吐"刚删/索引未落地"的同一 fid（真机实锤，见
+    /// purge_previous 与 is_file_not_found_21001 的注释）。
+    /// 自愈三步：① 等旧 fid 从临时目录清单消失（[SELFHEAL_LISTING_WAIT] 预算）
+    ///          ② 重新转存（删除已落地 ⇒ 必新建副本 ⇒ 新 fid）
+    ///          ③ 再取直链；仍 21001 ⇒ 如实报（play 已归"文件已不存在"终态）。
+    /// 自愈动作落 AppLog（自愈了什么、为什么）—— 不静默。
+    /// ```
     async fn degrade_attempt(
         &self,
         cookie: &str,
@@ -1754,7 +1897,25 @@ impl PanDrive {
             .await?;
         self.remember_temp(&new_fid);
         // 复用 `play`（`share_save` 已把文件放进我自己的网盘 ⇒ 走到裸 fid 那条路）
-        let mut plays = self.play("", &new_fid, "").await?;
+        let mut plays = match self.play("", &new_fid, "").await {
+            Ok(plays) => plays,
+            Err(e) if is_file_not_found_21001(&e) => {
+                crate::applog::write_file_log(
+                    "PAN",
+                    &format!(
+                        "21001 自愈：文件 {} 的转存下载报 file not found（上次解析的 purge 删除与 save 去重竞态）⇒ 重转存一次（仅一次）",
+                        entry.name
+                    ),
+                );
+                self.wait_fid_gone(cookie, &new_fid).await;
+                let fid2 = self
+                    .save_into_temp_dir(cookie, share_id, passcode, &entry.fid, &token)
+                    .await?;
+                self.remember_temp(&fid2);
+                self.play("", &fid2, "").await?
+            }
+            Err(e) => return Err(e),
+        };
         plays
             .pop()
             .ok_or_else(|| "转存后取直链没有返回地址".to_string())
@@ -1830,6 +1991,46 @@ pub fn is_size_limit_error(text: &str) -> bool {
     text.contains("code=23018")
         || text.to_lowercase().contains("download file size limit")
 }
+
+/// 夸克业务码 21001「file not found」——文件在网盘里**已不存在**
+///
+/// **纯函数**：只看错误/响应文本，不发请求。
+/// ```text
+/// 真机实测（2026-11-01，sourin-2026-11-01.log）：
+///   14:39:13 取下载地址 400 code=23018 file size limit[e2d3230f…]
+///   14:39:40 取下载地址 404 {"code":21001,"message":"file not found [e2d3230f…]"}
+/// 同一个 fid 27 秒内从"存在但超限"变"不存在" —— 我们上一次解析的
+/// purge 把它删了，而 save 对同名文件去重回吐了这个刚删的 fid（竞态）。
+/// ```
+/// 判据：**双特征确认**（业务码 + message 短语都命中才算）——
+/// 裸 "404" / 单独 "21001" 都不许误伤（普通网页 404 不是这回事）。
+pub fn is_file_not_found_21001(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("21001") && lower.contains("file not found")
+}
+
+/// 删除任务是否已到**终态**（`sharepage/save` 同族的 `task?` 轮询读数）
+///
+/// **纯函数**：`Some(true)`=删除完成（status=2）/ `Some(false)`=任务失败（status=3）
+/// / `None`=还在跑或形态认不出（继续等；等不到由调用方超时放行）。
+pub fn delete_task_done(v: &serde_json::Value) -> Option<bool> {
+    let status = v.get("data")?.get("status")?.as_i64()?;
+    match status {
+        2 => Some(true),
+        3 => Some(false),
+        _ => None,
+    }
+}
+
+/// purge 等删除任务完成的**总预算**（lead 批复 A 护栏：不许无限挂住 resolve；
+/// 超时继续走，残余竞态由 21001 自愈兜底）
+pub const PURGE_DELETE_WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 21001 自愈里等"旧 fid 从临时目录清单消失"的预算（回收站/索引最终一致性）
+pub const SELFHEAL_LISTING_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// PAN 侧轮询间隔（删除任务 / 清单确认共用）
+pub const PAN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// 降级重试**最多试几个候选**（Owner 指定：遇 23018 回退次大，最多试 3 个）
 pub const SHARE_PICK_MAX_TRIES: usize = 3;
@@ -2966,6 +3167,79 @@ mod tests {
                 Err(e) => eprintln!("[PAN-DIR] {class} 建目录失败：{e}"),
             }
         }
+    }
+
+    /// ★ 真网用例（ignored）：N-23018 的**端到端复测**——重试不再出 21001
+    ///
+    /// ```text
+    /// SOURIN_LIVE_21001=1 SOURIN_LIVE_SHARE_URL="https://pan.quark.cn/s/<pwd_id>" \
+    ///   cargo test --lib csp::pan_drive::tests::live_21001_retry_race_probe --release -- --ignored --nocapture
+    /// ```
+    /// 判据：
+    /// ```text
+    /// ① 第一次 resolve：非会员账号对大文件多半 23018（账号现实，不是缺陷）；
+    /// ② 紧接着第二次 resolve（= Owner 按「重试」）：修复前必出
+    ///    404(21001) file not found（purge 竞态 + save 去重回吐死 fid，
+    ///    10-31/11-01 日志 4 次复发）；修复后**错误里不许再出现 21001** ——
+    ///    要么成功，要么 23018/超限类账号现实终态，要么自愈后成功。
+    /// ```
+    /// ⚠️ 真网络 + 真登录态 + 真分享：会真实转存/删除临时文件（都在
+    ///    sourin-temp，播完即清）。不打印直链/cookie/签名。
+    #[tokio::test]
+    #[ignore = "真网络 + 真登录态：需要钥匙串 cookie 与 SOURIN_LIVE_SHARE_URL"]
+    async fn live_21001_retry_race_probe() {
+        if std::env::var("SOURIN_LIVE_21001").ok().as_deref() != Some("1") {
+            eprintln!("[PAN-21001] 未设置 SOURIN_LIVE_21001=1 ⇒ 跳过");
+            return;
+        }
+        let Ok(url) = std::env::var("SOURIN_LIVE_SHARE_URL") else {
+            eprintln!("[PAN-21001] 未设置 SOURIN_LIVE_SHARE_URL ⇒ 跳过");
+            return;
+        };
+        let share_id = url
+            .trim()
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        assert!(
+            !share_id.is_empty() && share_id.len() >= 8,
+            "SOURIN_LIVE_SHARE_URL 里提不出 pwd_id：{url}"
+        );
+        let d = PanDrive::with_spec("PanQuark", quark_spec());
+        if d.cookie().is_none() {
+            eprintln!("[PAN-21001] 钥匙串里没有夸克 cookie ⇒ 跳过（不是失败）");
+            return;
+        }
+        // 第一次 resolve（建基线：多半 23018 / 或成功）
+        let first = d.resolve_share_play(&share_id, "").await;
+        eprintln!(
+            "[PAN-21001] 第一次 resolve：{}",
+            match &first {
+                Ok(p) => format!("成功 label={:?}", p.label),
+                Err(e) => format!("Err（前 120 字）{}", &e.chars().take(120).collect::<String>()),
+            }
+        );
+        // 第二次 resolve = Owner 按「重试」的那一步 —— 修复前在这里出 21001
+        let second = d.resolve_share_play(&share_id, "").await;
+        match &second {
+            Ok(p) => eprintln!("[PAN-21001] 第二次 resolve：成功 label={:?}", p.label),
+            Err(e) => {
+                eprintln!(
+                    "[PAN-21001] 第二次 resolve：Err（前 160 字）{}",
+                    &e.chars().take(160).collect::<String>()
+                );
+                assert!(
+                    !is_file_not_found_21001(e),
+                    "★★★ 重试仍报 21001 —— purge 等待 + 自愈没兜住，修复无效"
+                );
+            }
+        }
+        eprintln!("[PAN-21001] 判读通过：重试错误串里没有 21001（竞态已由 A+B 兜住）");
     }
 }
 

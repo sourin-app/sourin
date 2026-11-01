@@ -263,6 +263,34 @@ pub fn clear_skip_marker(state: &AppState, provider: &str, id: &str) -> Result<(
     state.db.clear_skip_marker(&item_key(provider, id))
 }
 
+/// 记忆一条片头终点（T7 记忆式；一期只有 intro 分支——片尾推理被批复砍掉）
+///
+/// # 返回值
+/// `Ok(true)` = 写入；`Ok(false)` = 被「声明优先」拦截（库级兜底，见
+/// `upsert_skip_memory`）——调用方据此**不打扰用户**（不出 flash）。
+pub fn set_skip_memory(
+    state: &AppState,
+    provider: &str,
+    id: &str,
+    title: Option<String>,
+    intro_end: Option<u64>,
+) -> Result<bool, String> {
+    if let Some(v) = intro_end {
+        if v == 0 {
+            return Err("记忆的片头终点必须大于 0 秒".into());
+        }
+    }
+    state.db.upsert_skip_memory(&crate::store::SkipMemory {
+        key: item_key(provider, id),
+        provider: provider.to_string(),
+        native_id: id.to_string(),
+        title: title.unwrap_or_default(),
+        intro_end,
+        outro_start: None,
+        updated_at: chrono::Utc::now().timestamp_millis(),
+    })
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  收藏 / 追更
 // ═══════════════════════════════════════════════════════════════════════

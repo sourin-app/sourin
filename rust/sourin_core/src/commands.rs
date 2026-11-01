@@ -263,6 +263,22 @@ pub fn get_skip_marker(
     state.db.get_skip_marker(&item_key(provider, id))
 }
 
+/// 读「生效」跳过点：声明式 ⊕ 记忆式（T7，[`merge_skip`] 字段级 fallback）
+///
+/// ⚠️ 消费方只有播放页的 `_loadSkipMarker`（一换一换到这里）。
+/// `get_skip_marker` 保持**纯声明**语义——跳过弹窗用它做草稿预填，
+/// 绝不能被记忆值污染（否则弹窗把记忆当声明展示）。
+pub fn get_effective_skip_marker(
+    state: &AppState,
+    provider: &str,
+    id: &str,
+) -> Result<Option<crate::store::SkipMarker>, String> {
+    let key = item_key(provider, id);
+    let declared = state.db.get_skip_marker(&key)?;
+    let memory = state.db.get_skip_memory(&key)?;
+    Ok(crate::store::merge_skip(declared, memory))
+}
+
 /// 列出全部跳过点（同步用；设置页做统计也用）
 pub fn list_skip_markers(
     state: &AppState,

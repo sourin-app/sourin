@@ -328,6 +328,56 @@ async fn skip_marker_rejects_invalid_ranges() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  记忆式跳过（T7）：命令层（声明优先拦截 / 0 值防呆 / 生效合并）
+// ═══════════════════════════════════════════════════════════════════════
+
+/// ★ 硬要求 A（命令层）：声明在 ⇒ 记忆写不进（返回 false），生效值仍是声明
+#[tokio::test]
+async fn skip_memory_command_blocked_when_declared() {
+    let st = fresh_state("mem-bad").await;
+
+    cw::set_skip_marker(&st, "p", "1", Some("剧".into()), Some(0), Some(50), None, None, None, Vec::new())
+        .expect("先声明片头");
+
+    let wrote = cw::set_skip_memory(&st, "p", "1", Some("剧".into()), Some(120)).expect("不报错");
+    assert!(!wrote, "★ 声明优先 ⇒ 记忆不得落库");
+
+    let m = commands::get_effective_skip_marker(&st, "p", "1")
+        .unwrap()
+        .expect("生效值必须存在");
+    assert_eq!(m.intro_end, Some(50), "★★ 生效值必须还是声明的 50（读数不许倒置）");
+    println!("✓ 声明在 ⇒ 记忆被拦，生效值仍是声明");
+}
+
+/// ★ 0 值防呆（同"把整个视频设成片头"一族的库级兜底）+ 无声明时正常写并合并
+#[tokio::test]
+async fn skip_memory_command_roundtrip_and_merge() {
+    let st = fresh_state("mem-ok").await;
+
+    let e = cw::set_skip_memory(&st, "p", "1", None, Some(0)).unwrap_err();
+    assert!(e.contains("大于 0"), "应拒绝 0: {e}");
+    println!("✓ 拒绝 intro_end=0: {e}");
+
+    // 没声明 ⇒ 写入成功，get_effective 合并出可消费标记（片头起点固定 0）
+    let wrote = cw::set_skip_memory(&st, "p", "1", Some("剧".into()), Some(69)).expect("写入");
+    assert!(wrote);
+    let m = commands::get_effective_skip_marker(&st, "p", "1")
+        .unwrap()
+        .expect("生效值必须存在");
+    assert_eq!(m.intro_start, Some(0));
+    assert_eq!(m.intro_end, Some(69));
+
+    // ⚠️ 纯声明读法不受记忆污染（弹窗草稿预填走这条）
+    assert!(commands::get_skip_marker(&st, "p", "1").unwrap().is_none());
+    println!("✓ 记忆合并进生效值；get_skip_marker（弹窗预填）保持纯声明");
+
+    // 清除声明 ⇒ 连记忆一起清（对齐参考清理语义）
+    cw::clear_skip_marker(&st, "p", "1").unwrap();
+    assert!(commands::get_effective_skip_marker(&st, "p", "1").unwrap().is_none());
+    println!("✓ 清除连带记忆");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  收藏 / 追更 —— 独立状态
 // ═══════════════════════════════════════════════════════════════════════
 

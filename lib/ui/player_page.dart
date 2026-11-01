@@ -160,6 +160,7 @@ import 'widgets/pan_qr_login_dialog.dart' show showPanQrLoginDialog;
 import 'widgets/provider_name.dart';
 import 'widgets/skip_marker_dialog.dart';
 import '../core/skip_window.dart' show SkipWindow, skipTarget, windowsOf;
+import '../core/skip_memory.dart' show classifyIntroMemorySeek;
 import 'widgets/source_switch_dialog.dart';
 import '../ui/app_scaffold.dart';
 import '../design/icons/app_icons.dart';
@@ -2085,7 +2086,7 @@ class _PlayerPageState extends State<PlayerPage>
    *
    * `_loadSkipMarker()` 里那一步是 `await` 的：
    * ```dart
-   * final m = await SourinApi.getSkipMarker(_provider, widget.id);
+   * final m = await SourinApi.getEffectiveSkipMarker(_provider, widget.id);
    * if (!mounted) return;
    * setState(() => _skipMarker = m);   // ← 无条件写，且随后立刻补判 + 可能 seek
    * _skipAfterMarkerLoad();
@@ -3205,6 +3206,35 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 是否自动跳过片头（原版 `prefs.autoSkip`，默认 true）
   bool _autoSkip = true;
+
+  /// ★ T7：「记忆式片头」总开关（默认**关** ⇒ 不读不写不跳，行为零变化）
+  ///
+  /// 开了之后：用户在片头区主动拖走 ⇒ 记下落点（`_memoryIntroEnd`），
+  /// 下次起播由 Rust `merge_skip` 并进生效标记、走既有 `_maybeSkip` 自动跳。
+  /// 判据在 `lib/core/skip_memory.dart`（纯函数）；落库走 `set_skip_memory`
+  ///（Rust 侧还有一道「声明优先」兜底拦截）。
+  bool _skipMemoryEnabled = false;
+
+  /// ★ T7：本会话已记忆的片头终点（秒；null = 还没记过）
+  ///
+  /// 用途：同值去重（同一落点不重复落库、不重复 flash）。
+  /// ⚠️ 它是**会话内缓存**，不是真值源 —— 真值在 Rust `skip_memory` 表，
+  /// 下次起播经 `get_effective_skip_marker` 合并读回。换集/换源清 `_skipMarker`
+  /// 的三条路会一并清它（防上一集的记忆值污染本集的去重判断）。
+  int? _memoryIntroEnd;
+
+  /// ★ 互检 P1-2：抑制**下一次** seek 的记忆挂钩（一次性，用完即清）
+  ///
+  /// 服务于两条"seek 落点**不是**片头信号"的路径：
+  /// ```text
+  /// · continueFromRewatchPrompt —— from≈0、to=上次观看位置，
+  ///   pos∈(90,600] 会被误记成片头终点 ⇒ 下次起播静默跳掉前几分钟；
+  /// · 远端 skip_preview（手机微调、电视出画面）—— 预览位置更不是意图，
+  ///   且用户此刻多半在标声明，记一条记忆纯添乱。
+  /// ```
+  /// ⚠️ 不能用"改 `_seekByUser` 签名加开关参数"——zz_t1024 ⑤ 的结构门禁
+  ///   按 `Future<void> _seekByUser(Duration target)` 锚定函数体，签名一变门禁红。
+  bool _suppressMemorySeekOnce = false;
 
   /// ★★★ fix/rewatch-prompt：切到**另一集**时怎么起播（Owner 第 1011 条）
   ///
@@ -4684,6 +4714,11 @@ class _PlayerPageState extends State<PlayerPage>
         UiPrefs.get('dsh.playprefs.countdownBeforeNext') != '0';
     _keepSourceOnNext = UiPrefs.get('dsh.playprefs.keepSourceOnNext') != '0';
     _autoSkip = UiPrefs.get('dsh.playprefs.autoSkip') != '0';
+    /*
+     * ★ T7：记忆式片头总开关。**缺省 = 关**（`== '1'` 而不是 `!= '0'`）——
+     *    老用户升级后（键不存在）行为一个字都不变；这是 UX 底线第 ① 条。
+     */
+    _skipMemoryEnabled = UiPrefs.get('dsh.playprefs.skipMemory') == '1';
     /*
      * ★★★ fix/rewatch-prompt：切集起播策略（Owner 第 1011 条）。
      *
@@ -6725,6 +6760,10 @@ class _PlayerPageState extends State<PlayerPage>
      * ③ `++_seekToken`        ⇒ 作废在途的续播 waiter（他刚选了位置，别被抢）
      * ```
      */
+    // ★ 互检 P1-2：续播落点不是片头信号 ⇒ 抑制记忆。⚠️ 必须在 _seekByUser
+    //   **之前**置位 —— 记忆挂钩在 _seekByUser 的同步段里执行，放后面就晚了。
+    //   （from≈0、to=pos，必然误记；抑制标志在 hook 内一次性消费。）
+    _suppressMemorySeekOnce = true;
     unawaited(_seekByUser(pos));
     // ★ N10：用户主动「继续观看」⇒ 跳到中间位置，预取会让路（见 _beginPrefetchYield）
     _beginPrefetchYield();
@@ -10744,6 +10783,8 @@ class _PlayerPageState extends State<PlayerPage>
       countdownBeforeNext: _countdownBeforeNext,
       keepSourceOnNext: _keepSourceOnNext,
       autoSkip: _autoSkip,
+      // ★ T7：记忆式片头开关（回调为 null 时不画 —— 这里必传，行必现）
+      skipMemoryEnabled: _skipMemoryEnabled,
       rate: _rate,
       isPlaying: _playing,
       clipDownloading: _clipDownloading,
@@ -10816,6 +10857,17 @@ class _PlayerPageState extends State<PlayerPage>
           _introSkipped = false;
           _outroSkipped = false;
         }
+      },
+      /*
+       * ★ T7：面板的「记忆式跳过片头」开关 —— 与远端 skip_toggle_memory
+       *   同一份落库（dsh.playprefs.skipMemory，缺省关；判定纯函数见
+       *   lib/core/skip_memory.dart）。真写键的只有三处：这里、远端命令、
+       *   _loadPlayPrefs 的读 —— 门禁 skip_memory_test 钉着键名。
+       */
+      onSetSkipMemory: (v) {
+        setState(() => _skipMemoryEnabled = v);
+        _savePlayPref('skipMemory', v ? '1' : '0');
+        _flash(v ? '片头记忆已开启' : '片头记忆已关闭');
       },
       /*
        * ★ task-21 P1-8：倍速落到与底栏 `onRate`（:7881）**同一个落点**
@@ -11003,7 +11055,23 @@ class _PlayerPageState extends State<PlayerPage>
      */
     final gen = _playSessionGen;
     try {
-      final m = await SourinApi.getSkipMarker(_provider, widget.id);
+      /*
+       * ★ T7（互检 P1-1 关≠不跳）：**开关关 ⇒ 读纯声明**。
+       *
+       * 只拦写侧是不够的：记忆行一旦落库就独立存在，用户关掉开关后
+       * 若仍读"生效值"（声明 ⊕ 记忆），已记的片头照样被跳——
+       * "关了还跳"比"没这功能"更糟。所以读侧也分流：
+       * ```text
+       * 关（默认）⇒ get_skip_marker          纯声明，与 T7 之前逐字节同行为
+       * 开       ⇒ get_effective_skip_marker 声明 ⊕ 记忆（批复③的一换一）
+       * ```
+       * 同异步模式、同 `gen` 守卫，起播路径零新增调用（二选一，不是二加一）。
+       * ⚠️ 合并后的 `_skipMarker` 是**生效值**：后续消费（`_maybeSkip`）、
+       * 弹窗回填、远端确认读它都不用改——判定语义只有一份。
+       */
+      final m = _skipMemoryEnabled
+          ? await SourinApi.getEffectiveSkipMarker(_provider, widget.id)
+          : await SourinApi.getSkipMarker(_provider, widget.id);
       if (!mounted) return; // ⚠️ 卸载后 setState 会抛；也拦掉 unmounted 的补判
       /*
        * ★★★ 会话已变 ⇒ **丢弃**这次响应（CodeRabbit PR #10）
@@ -11729,6 +11797,7 @@ class _PlayerPageState extends State<PlayerPage>
         _current = null;
         _streams = [];
         _skipMarker = null;
+        _memoryIntroEnd = null; // ★ T7：上一集的记忆缓存不适用于本集（去重判据换键了）
         _playSessionGen++; // ★ 换源 = 会话变了 ⇒ 丢弃在途的旧标记响应
         _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
         // ★ 换源 ⇒ 上一集下载过的那份文件不再代表「当前这一集」
@@ -11976,6 +12045,7 @@ class _PlayerPageState extends State<PlayerPage>
       _streams = [];
       _current = null;
       _skipMarker = null;
+      _memoryIntroEnd = null; // ★ T7：换会话同理（去重判据换键了）
       _playSessionGen++; // ★ 换会话 = 会话变了 ⇒ 丢弃在途的旧标记响应
       /*
        * ★★★ CR #22 ⑥（PRRT_kwDOVAfO4s6rtKkC）：会话被换掉时**同时**作废
@@ -12398,6 +12468,7 @@ class _PlayerPageState extends State<PlayerPage>
       _introSkipped = false;
       _outroSkipped = false;
       _skipMarker = null;
+      _memoryIntroEnd = null; // ★ T7：切集同理（去重判据换键了）
       _playSessionGen++; // ★ 切集 = 会话变了 ⇒ 丢弃在途的旧标记响应
         _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
       // ★ 换集 ⇒ 上一集的「已下载」不适用于这一集
@@ -12839,6 +12910,12 @@ class _PlayerPageState extends State<PlayerPage>
         final pos = c.number('position')?.toInt();
         if (pos == null || _isLive) return;
         final t = Duration(seconds: pos < 0 ? 0 : pos);
+        /*
+         * ★ 互检 P1-2：预览落点不是片头信号 ⇒ 抑制记忆（用户此刻多半在标
+         *   声明，记一条记忆纯添乱）。⚠️ 必须在 _seekByUser **之前**置位
+         *   （记忆挂钩在其同步段里执行）。
+         */
+        _suppressMemorySeekOnce = true;
         await _seekByUser(t > _duration ? _duration : t);
         // ★ N10：手机微调、电视出画面 —— 最需要立即出画面的场景之一
         _beginPrefetchYield();
@@ -12860,6 +12937,18 @@ class _PlayerPageState extends State<PlayerPage>
         // ⚠️ `UiPrefs.set` 返回 void（同步落盘），不能 await
         UiPrefs.set('dsh.playprefs.autoSkip', on ? '1' : '0');
         _flash(on ? '自动跳过已开启' : '自动跳过已关闭');
+        return;
+
+      case 'skip_toggle_memory':
+        /*
+         * ★ T7：「记忆式片头」总开关（远端入口）。默认关（UX 底线①）。
+         * ⚠️ 与上面 `on` 不同名 —— Dart 的 switch 分支共享作用域，重名直接编译错。
+         */
+        final memOn = c.flag('on');
+        if (memOn == null) return;
+        setState(() => _skipMemoryEnabled = memOn);
+        UiPrefs.set('dsh.playprefs.skipMemory', memOn ? '1' : '0');
+        _flash(memOn ? '片头记忆已开启' : '片头记忆已关闭');
         return;
 
       default:
@@ -14227,7 +14316,67 @@ class _PlayerPageState extends State<PlayerPage>
      *    清回 false，而后者是单调时钟上的一个时间戳，不受那些复位影响。
      */
     _noteUserSeek(target);
+    // ★ T7：记忆式片头（默认关；判定是纯函数，见 lib/core/skip_memory.dart）
+    _rememberIntroFromUserSeek(target);
     return (_userSeekForProbe ?? _player.seek)(target);
+  }
+
+  /// ★ T7：用户 seek 落点若符合「片头终点」形态 ⇒ 记忆（异步落库 + 可见反馈）
+  ///
+  /// # 触发时机（批复定稿）
+  /// ```text
+  /// 挂在 [_seekByUser] 内 —— 六条用户 seek 路径（进度条/键盘/点百分比/
+  /// 远端 seek_to/远端 skip_preview/继续观看）的唯一汇聚点。
+  /// 自动跳过是 programmatic seek，**不进**本方法 ⇒ 无"跳过→记忆→再跳"回写环。
+  /// ```
+  /// # 硬性保证
+  /// ```text
+  /// · 总开关关（默认）           ⇒ 第一行早退，什么都不发生（UX 底线①）
+  /// · 直播                      ⇒ 不记（跳过体系对直播整体关闭）
+  /// · 判据全部在纯函数里          ⇒ classifyIntroMemorySeek（含声明优先、同值去重）
+  /// · 命中                       ⇒ fire-and-forget 落库 + _flash 可见反馈（UX 底线②）
+  /// · seek 主路径零阻塞           ⇒ unawaited，写库在后台
+  /// ```
+  void _rememberIntroFromUserSeek(Duration target) {
+    // ★ 互检 P1-2：被抑制的路径（「继续观看」/远端预览）整条短路。
+    //   「继续观看」的形态是 from≈0、to=上次观看位置 —— pos∈(90,600] 全部
+    //   会被判成片头终点 ⇒ 下次起播静默跳掉前几分钟（正是"静默吃内容"）。
+    if (_suppressMemorySeekOnce) {
+      _suppressMemorySeekOnce = false;
+      return;
+    }
+    if (!_skipMemoryEnabled || _isLive) return;
+    final d = classifyIntroMemorySeek(
+      from: _position,
+      to: target,
+      duration: _realDuration > Duration.zero ? _realDuration : _duration,
+      /*
+       * ★ 互检 P2-1：**不传** _skipMarker?.introEnd 当"声明"——
+       *   _skipMarker 是合并后的**生效值**，记忆来源的字段若被当成声明
+       *   短路，记忆就永远无法被新 seek 修正（跨会话冻结）。
+       *   声明的保护在 Rust upsert_skip_memory（库级兜底，写不进 + 返回 false），
+       *   这里不重演一遍。**记忆可修正**是批复语义，别改回去。
+       */
+      memoryIntroEnd: _memoryIntroEnd,
+    );
+    if (d == null) return;
+    // ★ 互检 P2-2：必须**等写库结果**——false = 被声明优先拦截，
+    //   用户视角什么都没发生，**不给 flash**（sourin_api 的文档纪律）。
+    //   _memoryIntroEnd 也只在真写入后更新，否则被拦的候选值会污染去重。
+    unawaited(SourinApi.setSkipMemory(
+      _provider,
+      widget.id,
+      title: _liveTitle,
+      introEnd: d.inSeconds,
+    ).then((ok) {
+      if (!ok) return;
+      _memoryIntroEnd = d.inSeconds;
+      _flash('已记住片头到 ${d.inSeconds}s，下次自动跳过');
+      AppLog.write(
+        'PLAY',
+        '记忆片头终点 ${d.inSeconds}s（用户 seek，$_provider:${widget.id}）',
+      );
+    }));
   }
 
   void _seekBy(int seconds) {
@@ -20381,6 +20530,7 @@ bool debugPlayerBumpSessionForProbe() {
   if (s == null) return false;
   s._playSessionGen++;
   s._skipMarker = null;
+  s._memoryIntroEnd = null; // ★ T7：与三条生产清理路同口径
   s._position = Duration.zero;
   return true;
 }
@@ -20424,6 +20574,31 @@ bool debugPlayerSetAutoSkipForProbe(bool v) {
   final s = _livePlayerState;
   if (s == null) return false;
   s._autoSkip = v;
+  return true;
+}
+
+/// ★ T7 探针：拨动「记忆式片头」总开关 `_skipMemoryEnabled`
+///
+/// 走的是生产字段（`_rememberIntroFromUserSeek` 第一行判的就是它），
+/// 不是另写一份 —— 所以它验的是"真闸门"。返回 false = 没挂页。
+bool debugPlayerSetSkipMemoryForProbe(bool v) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._skipMemoryEnabled = v;
+  return true;
+}
+
+/// ★ T7 探针：读会话内已记忆的片头终点（`_memoryIntroEnd`；null = 没记过）
+///
+/// 与 [debugPlayerSkipMarkerForProbe] 同口径：null 既可能是没挂页、
+/// 也可能真没记 —— 调用方先用别的探针确认页面挂着。
+int? debugPlayerRememberedIntroForProbe() => _livePlayerState?._memoryIntroEnd;
+
+/// ★ T7 探针：写/清会话内记忆缓存（造「已记过 90s」之类的前置）
+bool debugPlayerSetRememberedIntroForProbe(int? sec) {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  s._memoryIntroEnd = sec;
   return true;
 }
 

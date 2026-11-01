@@ -1152,6 +1152,17 @@ async fn dispatch_inner(req: &str) -> String {
             };
             with_state(|st| crate::commands::get_skip_marker(st, &provider, &id))
         }
+        "get_effective_skip_marker" => {
+            let provider = match a.str("provider") {
+                Ok(s) => s.to_string(),
+                Err(e) => return err_json(&e, "other"),
+            };
+            let id = match a.str("id") {
+                Ok(s) => s.to_string(),
+                Err(e) => return err_json(&e, "other"),
+            };
+            with_state(|st| crate::commands::get_effective_skip_marker(st, &provider, &id))
+        }
         "list_skip_markers" => with_state(|st| crate::commands::list_skip_markers(st)),
         "list_favorites" => {
             /*
@@ -1294,6 +1305,21 @@ async fn dispatch_inner(req: &str) -> String {
                 Err(e) => return err_json(&e, "other"),
             };
             with_state(move |st| crate::commands_write::clear_skip_marker(st, &provider, &id))
+        }
+        "set_skip_memory" => {
+            let provider = match a.str("provider") {
+                Ok(s) => s.to_string(),
+                Err(e) => return err_json(&e, "other"),
+            };
+            let id = match a.str("id") {
+                Ok(s) => s.to_string(),
+                Err(e) => return err_json(&e, "other"),
+            };
+            let title = a.str("title").ok().map(|s| s.to_string());
+            let intro_end = a.u64_opt("intro_end");
+            with_state(move |st| {
+                crate::commands_write::set_skip_memory(st, &provider, &id, title, intro_end)
+            })
         }
         "mark_favorite_read" => {
             let key = match a.str("key") {
@@ -2546,6 +2572,22 @@ async fn dispatch_inner(req: &str) -> String {
             let url = a.str_or("url", "").to_string();
             // 纯本地写 sidecar → 同步
             with_state(move |st| crate::tvbox::set_tvbox_source(st, &id, &url))
+        }
+        "adopt_tvbox_orphans" => {
+            /*
+             * ★ 血缘修复（2026-11-01）：给「贴文本导入 ⇒ source_url=None」的
+             *   存量子站验证型认领一条订阅链接（见 tvbox::adopt_tvbox_orphans）。
+             *   url 缺失/非 http 都必须 Err —— 不给 FFI 留"空参盲写"的洞。
+             */
+            let url = match a.str("url") {
+                Ok(s) => s.to_string(),
+                Err(e) => return err_json(&e, "other"),
+            };
+            // 走网络（下载配置做配对验证）→ async
+            with_state_async(move |st| async move {
+                crate::tvbox::adopt_tvbox_orphans(st, &url).await
+            })
+            .await
         }
         "remove_tvbox_source" => {
             let id = match a.str("id") {

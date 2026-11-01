@@ -435,6 +435,13 @@ class PlayerSettingsSheet extends StatefulWidget {
      */
     this.episodeStartAction = PlayEpisodeStartAction.fromStart,
     this.onSetEpisodeStartAction,
+    /*
+     * ★ T7：记忆式片头开关，**可选**（同一纪律：带默认值 ⇒ 三个测试夹具
+     *   player_capability / t62 / t68 一行都不用改）。
+     * 回调为 null ⇒ 整行不画（与 onOpenSubtitleSearch 同款）。
+     */
+    this.skipMemoryEnabled = false,
+    this.onSetSkipMemory,
   });
 
   /// 直播 —— 隐藏"连播"整段（直播没有"播完"这回事）
@@ -540,6 +547,12 @@ class PlayerSettingsSheet extends StatefulWidget {
   final ValueChanged<bool> onSetCountdown;
   final ValueChanged<bool> onSetKeepSource;
   final ValueChanged<bool> onSetAutoSkip;
+
+  /// ★ T7：「记忆式片头」总开关（缺省 false = 关 —— UX 底线①：不开记忆就不跳）
+  final bool skipMemoryEnabled;
+
+  /// ★ T7：开关回调。null = 宿主没接 ⇒ 整行不画（与 onOpenSubtitleSearch 同纪律）
+  final ValueChanged<bool>? onSetSkipMemory;
 
   final VoidCallback onClose;
 
@@ -1576,6 +1589,18 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           widget.onSetAutoSkip,
           hint: '片尾仍会先倒计时',
         ),
+        /*
+         * ★ T7：记忆式片头开关 —— 与「自动跳过片头」同区块同组件（批复裁定②）。
+         * 回调为 null 时不画（测试夹具不传 ⇒ 行为不变）。
+         * 文案按批复写清两点：这是**记忆式**、记忆**可清除**。
+         */
+        if (widget.onSetSkipMemory != null)
+          _switchRow(
+            '记忆式跳过片头',
+            widget.skipMemoryEnabled,
+            widget.onSetSkipMemory!,
+            hint: '记忆式：拖过片头自动记住（可在设置清除）',
+          ),
         /*
          * ⚠️ 「连播沿用线路」在**原版里也是死开关** —— 如实照抄，不自己发明行为。
          *

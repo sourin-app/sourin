@@ -413,6 +413,74 @@ pub struct SkipMarker {
     pub updated_at: i64,
 }
 
+/// 每条目「记忆式」跳过（T7，对标参考 APK 的 `History.opening/ending`）
+///
+/// # 与 [`SkipMarker`]（声明式）的关系
+/// ```text
+/// 两层独立存储、字段级 fallback：声明 > 记忆（见 [`merge_skip`]）。
+/// 声明 = 用户/内容方明确设过的场景表；记忆 = 从用户 seek 行为推断的片头终点。
+/// ```
+/// 一期只写 `intro_end`（片尾推理被砍，见建表注释）；outro 列为二期保留。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SkipMemory {
+    /// `provider:native_id`（与 skip_markers 同键）
+    pub key: String,
+    pub provider: String,
+    pub native_id: String,
+    pub title: String,
+    /// 记忆的片头**结束**位置（秒），起点固定 0。`None` = 未记
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intro_end: Option<u64>,
+    /// 记忆的片尾**开始**位置（秒）。一期恒空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outro_start: Option<u64>,
+    pub updated_at: i64,
+}
+
+/// 声明式 ⊕ 记忆式：**字段级 fallback，声明优先**（T7 设计批复）
+///
+/// ```text
+/// effective.intro_end   = 声明.intro_end   ?? 记忆.intro_end
+/// effective.outro_start = 声明.outro_start ?? 记忆.outro_start
+/// ```
+/// 声明只设了一个字段时，另一字段仍可用记忆；记忆行不存在时原样返回声明。
+/// ⚠️ 消费方只有 `get_effective_skip_marker`（播放页读取）——
+/// `get_skip_marker`（跳过弹窗草稿预填）**绝不能**走这里，
+/// 否则弹窗把记忆当声明展示 = 静默改用户数据。
+pub fn merge_skip(declared: Option<SkipMarker>, memory: Option<SkipMemory>) -> Option<SkipMarker> {
+    let mem = match memory {
+        Some(m) => m,
+        // 没有记忆 ⇒ 声明原样（含 None ⇒ None，行为与 T7 之前逐字节相同）
+        None => return declared,
+    };
+    Some(match declared {
+        Some(mut d) => {
+            if d.intro_end.is_none() {
+                d.intro_end = mem.intro_end;
+            }
+            if d.outro_start.is_none() {
+                d.outro_start = mem.outro_start;
+            }
+            d
+        }
+        None => SkipMarker {
+            key: mem.key,
+            provider: mem.provider,
+            native_id: mem.native_id,
+            title: mem.title,
+            // 记忆片头是单点语义（参考 opening）：起点固定 0。
+            // intro_end 也为空时不给起点（否则 windowsOf 拿到 [0, 无) 这种残区间）
+            intro_start: if mem.intro_end.is_some() { Some(0) } else { None },
+            intro_end: mem.intro_end,
+            outro_start: mem.outro_start,
+            outro_end: None,
+            midrolls: Vec::new(),
+            auto_skip: None,
+            updated_at: mem.updated_at,
+        },
+    })
+}
+
 /// 追更检查结果
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UpdateInfo {
@@ -613,6 +681,27 @@ impl Db {
                 updated_at  INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_skip_updated ON skip_markers(updated_at DESC);
+
+            -- ★★ T7：每条目「记忆式」跳过层（对标参考 APK 的 History.opening/ending）
+            --
+            -- 为什么单独一张表而不是给 skip_markers 加列：
+            -- `list_skip_markers` / 设置页「N 个作品已设置」数的是**声明**，
+            -- 记忆行混进去会把"没人声明过的作品"也数出来（静默改用户数据的观感）。
+            --
+            -- 一期只有 intro_end 会写（片尾推理被 Owner/Lead 砍掉：
+            -- 片尾误记的代价是静默吃掉结局）；outro_start 列保留给二期，免迁移。
+            CREATE TABLE IF NOT EXISTS skip_memory (
+                key         TEXT PRIMARY KEY,   -- provider:native_id（与 skip_markers 同键）
+                provider    TEXT NOT NULL,
+                native_id   TEXT NOT NULL,
+                title       TEXT NOT NULL DEFAULT '',
+                -- 记忆的片头**结束**位置（秒）。起点固定 0（参考 opening 的单点语义）
+                intro_end   INTEGER,
+                -- 记忆的片尾**开始**位置（秒）。一期恒空
+                outro_start INTEGER,
+                updated_at  INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_skip_memory_updated ON skip_memory(updated_at DESC);
             "#,
         )
         .map_err(|e| format!("建表失败: {e}"))?;
@@ -1559,6 +1648,21 @@ impl Db {
         })
     }
 
+    /// ★ T7：`skip_memory` 的列清单（顺序即 [`Self::row_to_memory`] 的索引）
+    const SKIP_MEMORY_COLS: &'static str = "key,provider,native_id,title,intro_end,outro_start,updated_at";
+
+    fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<SkipMemory> {
+        Ok(SkipMemory {
+            key: r.get(0)?,
+            provider: r.get(1)?,
+            native_id: r.get(2)?,
+            title: r.get(3)?,
+            intro_end: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+            outro_start: r.get::<_, Option<i64>>(5)?.map(|v| v as u64),
+            updated_at: r.get(6)?,
+        })
+    }
+
     /// 读某作品的跳过点（不存在返回 `None`）
     pub fn get_skip_marker(&self, key: &str) -> Result<Option<SkipMarker>, String> {
         let conn = self.conn.lock().unwrap();
@@ -1637,11 +1741,85 @@ impl Db {
     }
 
     /// 清除某作品的跳过设置（「取消跳过」用）
+    ///
+    /// ★ T7：**连记忆一起删**（对齐参考的清理语义：删 History 即清 opening/ending）。
+    /// 设置页/弹窗/远端三条既有清除路径都汇到本方法 ⇒ 记忆的清除零新增 UI。
     pub fn clear_skip_marker(&self, key: &str) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM skip_markers WHERE key=?1", params![key])
             .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM skip_memory WHERE key=?1", params![key])
+            .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    // ─────────────────── 记忆式跳过（T7） ───────────────────
+
+    /// 读某作品的记忆行（不存在返回 `None`）
+    pub fn get_skip_memory(&self, key: &str) -> Result<Option<SkipMemory>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {} FROM skip_memory WHERE key=?1",
+                Self::SKIP_MEMORY_COLS
+            ))
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query_map(params![key], Self::row_to_memory).map_err(|e| e.to_string())?;
+        match rows.next() {
+            Some(Ok(m)) => Ok(Some(m)),
+            Some(Err(e)) => Err(e.to_string()),
+            None => Ok(None),
+        }
+    }
+
+    /// 写入/更新记忆行
+    ///
+    /// # 返回值：`Ok(false)` = 被「声明优先」拦截，没写
+    ///
+    /// ★ 硬要求 A（T7 批复）：该字段已有**声明**值 ⇒ 不写。
+    /// 否则"用户再怎么 seek 都落库"，声明被记忆值悄悄顶掉（读数倒置）。
+    /// Dart 侧分类器也拦一道（那里还管 flash 不打扰用户），这里是库级兜底——
+    /// 遥控端/脚本可能直接发命令，不经过 Dart。
+    pub fn upsert_skip_memory(&self, m: &SkipMemory) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        /*
+         * ⚠️ 列可能是 NULL（声明行只设了片尾）⇒ 内层必须取 `Option<i64>`：
+         *    `.optional()` 只把「行不存在」变 None，**不**把「NULL 列」变 None
+         *    （实测：外层标 Option<i64> 会让闭包被推导成 `i64`，
+         *    NULL 行直接炸 `Invalid column type Null` —— 有单测钉着这一条）。
+         */
+        let declared: Option<Option<i64>> = conn
+            .query_row(
+                "SELECT intro_end FROM skip_markers WHERE key=?1",
+                params![m.key],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if declared.flatten().is_some() && m.intro_end.is_some() {
+            return Ok(false);
+        }
+        conn.execute(
+            r#"INSERT INTO skip_memory
+                (key,provider,native_id,title,intro_end,outro_start,updated_at)
+               VALUES (?1,?2,?3,?4,?5,?6,?7)
+               ON CONFLICT(key) DO UPDATE SET
+                 title       = excluded.title,
+                 intro_end   = COALESCE(excluded.intro_end,   skip_memory.intro_end),
+                 outro_start = COALESCE(excluded.outro_start, skip_memory.outro_start),
+                 updated_at  = excluded.updated_at"#,
+            params![
+                m.key,
+                m.provider,
+                m.native_id,
+                m.title,
+                m.intro_end.map(|v| v as i64),
+                m.outro_start.map(|v| v as i64),
+                m.updated_at,
+            ],
+        )
+        .map_err(|e| format!("写入记忆跳过点失败: {e}"))?;
+        Ok(true)
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -2411,6 +2589,71 @@ impl Db {
             }
         }
 
+        // ── ⑤ skip_memory（T7：与 ④ 同一套手法 —— FROM 非 null 优先，缺的用 TO 补）──
+        {
+            let from: Option<SkipMemory> = tx
+                .query_row(
+                    &format!("SELECT {} FROM skip_memory WHERE key=?1", Self::SKIP_MEMORY_COLS),
+                    params![from_key],
+                    Self::row_to_memory,
+                )
+                .optional()
+                .map_err(|e| format!("换源迁移：读 skip_memory 失败: {e}"))?;
+
+            if let Some(f) = from {
+                let to: Option<SkipMemory> = tx
+                    .query_row(
+                        &format!("SELECT {} FROM skip_memory WHERE key=?1", Self::SKIP_MEMORY_COLS),
+                        params![to_key],
+                        Self::row_to_memory,
+                    )
+                    .optional()
+                    .map_err(|e| format!("换源迁移：读 skip_memory(目标) 失败: {e}"))?;
+
+                let merged = match to {
+                    None => SkipMemory {
+                        key: to_key.to_string(),
+                        provider: to_provider.clone(),
+                        native_id: to_native_id.clone(),
+                        ..f
+                    },
+                    Some(t) => SkipMemory {
+                        key: to_key.to_string(),
+                        provider: to_provider.clone(),
+                        native_id: to_native_id.clone(),
+                        title: t.title,
+                        intro_end: f.intro_end.or(t.intro_end),
+                        outro_start: f.outro_start.or(t.outro_start),
+                        updated_at: f.updated_at.max(t.updated_at),
+                    },
+                };
+                tx.execute(
+                    &format!(
+                        "INSERT INTO skip_memory ({}) \
+                         VALUES (?1,?2,?3,?4,?5,?6,?7) \
+                         ON CONFLICT(key) DO UPDATE SET \
+                           provider=excluded.provider, native_id=excluded.native_id, \
+                           title=excluded.title, intro_end=excluded.intro_end, \
+                           outro_start=excluded.outro_start, updated_at=excluded.updated_at",
+                        Self::SKIP_MEMORY_COLS
+                    ),
+                    params![
+                        merged.key,
+                        merged.provider,
+                        merged.native_id,
+                        merged.title,
+                        merged.intro_end.map(|v| v as i64),
+                        merged.outro_start.map(|v| v as i64),
+                        merged.updated_at,
+                    ],
+                )
+                .map_err(|e| format!("换源迁移：写 skip_memory 失败: {e}"))?;
+
+                tx.execute("DELETE FROM skip_memory WHERE key=?1", params![from_key])
+                    .map_err(|e| format!("换源迁移：删旧 skip_memory 失败: {e}"))?;
+            }
+        }
+
         tx.commit()
             .map_err(|e| format!("换源迁移提交事务失败: {e}"))?;
         Ok(())
@@ -2793,6 +3036,171 @@ mod tests {
 
     fn span(a: u64, b: u64) -> SkipSpan {
         SkipSpan { start: a, end: b }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  记忆式跳过 skip_memory（T7）
+    //  —— 判据全部注入证红：改坏任何一条 ⇒ 对应用例立刻红
+    // ══════════════════════════════════════════════════════════════════
+
+    fn memory(key: &str, intro_end: Option<u64>) -> SkipMemory {
+        SkipMemory {
+            key: key.into(),
+            provider: "p".into(),
+            native_id: "n".into(),
+            title: "剧".into(),
+            intro_end,
+            outro_start: None,
+            updated_at: 1_700_000_100,
+        }
+    }
+
+    /// 记忆往返 + **重开库**还在（"真持久化"的唯一证据，同 midrolls 门禁①口径）
+    #[test]
+    fn skip_memory_roundtrip_survives_reopen() {
+        let (path, st) = tmp_store("mem_roundtrip");
+        st.upsert_skip_memory(&memory("p:n", Some(69))).expect("写入");
+        drop(st);
+
+        let st2 = Db::open(&path).expect("重开库");
+        let got = st2.get_skip_memory("p:n").expect("读").expect("必须存在");
+        assert_eq!(got.intro_end, Some(69), "★ 记忆必须真的落进 SQLite");
+        assert_eq!(got.outro_start, None, "★ 一期不写片尾记忆");
+    }
+
+    /// ★ 硬要求 A（库级兜底）：该字段已有**声明**值 ⇒ 记忆不写（返回 false）
+    ///
+    /// 注入：删掉 upsert_skip_memory 里的声明拦截 ⇒ 本条红。
+    #[test]
+    fn skip_memory_write_blocked_when_declared() {
+        let (_p, st) = tmp_store("mem_declared");
+        let mut m = marker("p:n", "剧");
+        m.intro_end = Some(50);
+        st.upsert_skip_marker(&m).expect("先写声明");
+
+        let wrote = st
+            .upsert_skip_memory(&memory("p:n", Some(120)))
+            .expect("不应报错");
+        assert!(!wrote, "★★ 声明在 ⇒ 记忆不得落库（否则声明被悄悄顶掉）");
+        assert!(st.get_skip_memory("p:n").expect("读").is_none());
+    }
+
+    /// 声明行存在但 **intro_end 为空**（只声明了片尾）⇒ 记忆照常写（字段级，不是行级）
+    #[test]
+    fn skip_memory_write_allowed_when_declared_field_empty() {
+        let (_p, st) = tmp_store("mem_declared_partial");
+        let mut m = marker("p:n", "剧");
+        m.outro_start = Some(900);
+        st.upsert_skip_marker(&m).expect("先写声明（仅片尾）");
+
+        let wrote = st.upsert_skip_memory(&memory("p:n", Some(69))).expect("不应报错");
+        assert!(wrote, "★ 拦截是**字段级**的：片头没声明 ⇒ 记忆照写");
+    }
+
+    /// 清除声明 ⇒ **连记忆一起删**（对齐参考清理语义；三条清除路径都汇到这里）
+    #[test]
+    fn clear_skip_marker_also_clears_memory() {
+        let (_p, st) = tmp_store("mem_clear");
+        st.upsert_skip_memory(&memory("p:n", Some(69))).expect("写入");
+        st.clear_skip_marker("p:n").expect("清除");
+        assert!(
+            st.get_skip_memory("p:n").expect("读").is_none(),
+            "★★ 清除必须连带记忆 —— 否则声明清掉后旧记忆复燃误跳"
+        );
+    }
+
+    /// merge：声明优先，字段级 fallback（含"声明只设了一个字段"）
+    #[test]
+    fn merge_skip_declared_wins_field_level() {
+        let mut d = marker("p:n", "声明");
+        d.intro_end = Some(50); // 声明了片头
+        let mem = memory("p:n", Some(120)); // 记忆了另一个值
+
+        let got = merge_skip(Some(d.clone()), Some(mem.clone())).expect("有声明必有结果");
+        assert_eq!(got.intro_end, Some(50), "★ 声明优先：记忆不得顶掉声明");
+        assert_eq!(got.outro_start, None, "★ 双方都没片尾 ⇒ 保持空");
+
+        d.outro_start = Some(900);
+        let got = merge_skip(Some(d), Some(mem));
+        assert_eq!(got.expect("有").outro_start, Some(900));
+    }
+
+    /// merge：只有记忆 ⇒ 变成可消费的 SkipMarker（片头起点固定 0，参考 opening 单点）
+    #[test]
+    fn merge_skip_memory_only_becomes_marker() {
+        let got = merge_skip(None, Some(memory("p:n", Some(69)))).expect("记忆在 ⇒ 有结果");
+        assert_eq!(got.intro_start, Some(0), "★ 记忆片头是单点语义：起点固定 0");
+        assert_eq!(got.intro_end, Some(69));
+        assert_eq!(got.midrolls, Vec::new());
+        assert_eq!(got.auto_skip, None, "★ 跟随全局开关");
+
+        // 没记忆没声明 ⇒ None（与 T7 之前逐字节同行为）
+        assert!(merge_skip(None, None).is_none());
+        // 有声明没记忆 ⇒ 声明原样
+        let d = marker("p:n", "声明");
+        let got = merge_skip(Some(d), None).expect("有");
+        assert_eq!(got.title, "声明");
+    }
+
+    /// ★ ON CONFLICT DO UPDATE 分支常驻覆盖（复审点名：此前实证过但测试用完即删）
+    ///
+    /// ① 同 key 二写必须**真覆盖**（`intro_end` 不是 COALESCE 保旧的列）
+    /// ② 对照：声明出现后写被拦，记忆行保持原值，生效值读数仍是声明
+    #[test]
+    fn skip_memory_upsert_updates_same_key_and_declared_still_wins() {
+        let (_p, st) = tmp_store("mem_update");
+        // ① 同 key 二写：90 → 150 ⇒ 覆盖为 150（记忆可修正，互检 P2-1 的库侧证据）
+        st.upsert_skip_memory(&memory("p:n", Some(90))).expect("第一次写入");
+        let wrote = st.upsert_skip_memory(&memory("p:n", Some(150))).expect("第二次写入");
+        assert!(wrote);
+        let got = st.get_skip_memory("p:n").expect("读").expect("行必须存在");
+        assert_eq!(
+            got.intro_end,
+            Some(150),
+            "★★ ON CONFLICT 分支必须覆盖为最新值——若这里读到 90，说明更新语义坏了"
+        );
+
+        // ② 对照：声明 50 ⇒ 记忆写被拦（false），记忆行保持 150 不动
+        let mut d = marker("p:n", "剧");
+        d.intro_end = Some(50);
+        st.upsert_skip_marker(&d).expect("先声明");
+        let wrote = st.upsert_skip_memory(&memory("p:n", Some(200))).expect("不报错");
+        assert!(!wrote, "★ 声明在 ⇒ 记忆写被拦");
+        assert_eq!(
+            st.get_skip_memory("p:n").unwrap().unwrap().intro_end,
+            Some(150),
+            "被拦 ⇒ 记忆行保持原值（不被半写）"
+        );
+        // 生效值（播放页读的）= 声明 50 —— 读数不许倒置
+        let eff = merge_skip(
+            st.get_skip_marker("p:n").unwrap(),
+            st.get_skip_memory("p:n").unwrap(),
+        )
+        .expect("声明在 ⇒ 有生效值");
+        assert_eq!(eff.intro_end, Some(50), "★★ 生效值必须还是声明的 50");
+    }
+
+    /// 换源迁移：记忆跟着搬 + 旧行删掉（与 skip_markers ④ 同一套手法）
+    #[test]
+    fn repoint_moves_skip_memory_and_deletes_old() {
+        let dir = std::env::temp_dir().join(format!(
+            "store_mem_repoint_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("s.db");
+        let _ = std::fs::remove_file(&p);
+        let db = Db::open(&p).expect("建库");
+
+        db.upsert_skip_memory(&memory("from:1", Some(69))).expect("写入 FROM 侧");
+        db.repoint_item("from:1", "to:2").expect("迁移");
+        drop(db);
+
+        let st2 = Db::open(&p).expect("重开库");
+        assert!(st2.get_skip_memory("from:1").expect("读").is_none(), "★ 旧行必须删掉");
+        let got = st2.get_skip_memory("to:2").expect("读").expect("★ 记忆必须跟着内容走");
+        assert_eq!(got.intro_end, Some(69));
+        assert_eq!(got.provider, "to", "★ provider/native_id 从 to_key 解析（函数内不变量）");
     }
 
     /// ★★★ 门禁①：写入 ⇒ **关连接并重开库** ⇒ 读回来一模一样

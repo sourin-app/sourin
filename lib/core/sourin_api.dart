@@ -1570,6 +1570,32 @@ class SourinApi {
     return m == null ? null : SkipMarker.fromJson(m);
   }
 
+  /// 读「生效」跳过点：声明式 ⊕ 记忆式（T7；合并在 Rust 侧 `merge_skip`）
+  ///
+  /// ★ `_loadSkipMarker` 一换一从 [getSkipMarker] 换到这里（批复③）：
+  /// 同异步模式、同会话守卫 ⇒ 起播路径零新增调用、零首帧延迟。
+  ///
+  /// ⚠️ 复用 [debugSkipMarkerFetcher] 注入点：老门禁（t27 等）靠它驱动
+  /// `_loadSkipMarker`，换了命令注入口必须跟上，否则所有老用例红。
+  /// ⚠️ 跳过弹窗草稿预填**继续用 [getSkipMarker]**（纯声明）——
+  /// 记忆值混进弹窗 = 把记忆当声明展示。
+  static Future<SkipMarker?> getEffectiveSkipMarker(
+    String provider,
+    String id,
+  ) async {
+    final fake = debugSkipMarkerFetcher;
+    if (fake != null) {
+      // 门禁/探针注入：fake 顶替核心层传输。生产路径永为 null。
+      return fake(provider, id);
+    }
+    final r = await SourinCore.callAsync('get_effective_skip_marker', {
+      'provider': provider,
+      'id': id,
+    });
+    final m = jmapOrNull(r);
+    return m == null ? null : SkipMarker.fromJson(m);
+  }
+
   /// 列出全部跳过点
   static Future<List<SkipMarker>> listSkipMarkers() async {
     final r = await SourinCore.callAsync('list_skip_markers');
@@ -1668,6 +1694,42 @@ class SourinApi {
       'provider': provider,
       'id': id,
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  记忆式片头（T7）
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// 记忆一条片头终点
+  ///
+  /// # ⚠️ 返回 `false` = 被 Rust 侧「声明优先」拦截
+  ///
+  /// `set_skip_memory` 在库里核对该字段是否已有声明值——有则**不写**并返回
+  /// false（库级兜底；Dart 分类器已先拦一道，这里防遥控端/脚本直发命令）。
+  /// 返回 false 时调用方**不得**给 flash（用户什么都没发生）。
+  ///
+  /// 写路径注入点：与 [debugSkipMarkerWriter] 同一纪律
+  /// （生产路径永不为非 null，默认 null ⇒ 生产路径逐字不变）。
+  @visibleForTesting
+  static Future<bool> Function({required int introEnd})? debugSkipMemoryWriter;
+
+  static Future<bool> setSkipMemory(
+    String provider,
+    String id, {
+    String? title,
+    required int introEnd,
+  }) {
+    final fake = debugSkipMemoryWriter;
+    if (fake != null) {
+      // 门禁注入：fake 顶替核心层传输。生产路径永为 null。
+      return fake(introEnd: introEnd);
+    }
+    return SourinCore.callAsync('set_skip_memory', {
+      'provider': provider,
+      'id': id,
+      if (title != null) 'title': title,
+      'intro_end': introEnd,
+    }).then((v) => v == true);
   }
 
   // ═══════════════════════════════════════════════════════════════════

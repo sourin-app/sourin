@@ -549,6 +549,40 @@ impl MediaProvider for CspProvider {
                 out.push(c);
                 continue;
             }
+            /*
+             * ★ T1b 取流（2026-11-01）：迅雷/百度分享页接到原生直链转换
+             * ```text
+             * 迅雷：转存 → 轮询 → files/{id} → web_content_link（web 客户端逐字取证）
+             * 百度：verify → share/list（已证跳）；dlink 请求形状未取证 ⇒
+             *       走到那里如实 Err（不假装能播，115/123 先例）。
+             * 判据复用 pan.rs 的 9 族（detect_kind/extract_share_id/pwd）——
+             * 认不出的原样返回，与夸克/UC 那条同一条"不吞能播的直链"纪律。
+             * ```
+             */
+            let ps = crate::pan::parse_share(&p.url);
+            if !ps.share_id.is_empty() {
+                let passcode = ps.pwd_in_url.clone().unwrap_or_default();
+                let attempted = match ps.kind {
+                    crate::pan::PanKind::Xunlei => Some(
+                        crate::csp::pan_xunlei_play::resolve(&ps.share_id, &passcode).await,
+                    ),
+                    crate::pan::PanKind::Baidu => Some(
+                        crate::csp::pan_baidu_play::resolve(&ps.share_id, &passcode).await,
+                    ),
+                    _ => None,
+                };
+                if let Some(resolved) = attempted {
+                    let resolved =
+                        resolved.map_err(|e| classify_err(self.site.class(), e))?;
+                    let mut c = StreamCandidate::new(resolved.url, StreamKind::Mp4)
+                        .with_headers(resolved.headers);
+                    if let Some(label) = resolved.label {
+                        c = c.with_label(label);
+                    }
+                    out.push(c);
+                    continue;
+                }
+            }
             let mut c = StreamCandidate::new(p.url, StreamKind::Mp4).with_headers(p.headers);
             if let Some(label) = p.label {
                 c = c.with_label(label);

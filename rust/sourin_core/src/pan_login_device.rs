@@ -120,7 +120,11 @@
 //!
 //! # 契约（`pan_login` 的 dispatch 调这四个）
 //!
-//! ```rust
+//! ★ 2026-11-01：围栏从 ```rust 改 ```text——这四行是**契约示意**（签名无函数体），
+//!   rustdoc 会把 ```rust 块当 doctest 编译 ⇒ "free function without a body"。
+//!   真实现就在本文件下方（带函数体），以代码为准。
+//!
+//! ```text
 //! pub async fn guangya_start() -> Result<QrSession, String>;
 //! pub async fn guangya_poll(key: &str) -> Result<PollOutcome, String>;
 //! pub async fn xunlei_start()  -> Result<QrSession, String>;

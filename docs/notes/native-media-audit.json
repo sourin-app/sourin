@@ -489,5 +489,11 @@
                                              "lastAudited":  "2026-10-31",
                                              "note":  "单跑 --run-skipped --tags native-media：+8 全绿",
                                              "result":  "+8"
-                                         }
+                                         },
+    "skip_memory_rewatch_gate_test.dart": {
+      "audited": true,
+      "lastAudited": "2026-11-01",
+      "note": "2026-11-01 首检（fix-t7-intro-skip：T7 记忆式片头跳过行为门禁，真挂页驱动生产 continueFromRewatchPrompt）：单跑 --run-skipped --tags native-media --concurrency=1，3 passed / 0 failed（rewatch 零落库 / 阴性对照照记 / 被拦不出 flash）；lead 亲跑复验一致",
+      "result": "+3"
+    }
 }

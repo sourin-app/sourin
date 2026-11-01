@@ -1699,19 +1699,33 @@ class _SourceRail extends StatelessWidget {
         borderRadius: Radii.rLg,
         border: Border.all(color: c.outline.withValues(alpha: 0.4)),
       ),
-      child: ListView(
+      child: ListView.builder(
         padding: const EdgeInsets.all(Sp.x2),
-        children: [
-          _sourceRow(
-            context,
-            name: '全部',
-            count: sources.fold(0, (n, s) => n + s.count),
-            rowKey: const ValueKey<String>('search-source-all'),
-            isAll: true,
-          ),
-          for (final s in sources)
-            _sourceRow(context, name: s.name, count: s.count, isAll: false),
-        ],
+        /*
+         * ★ 2026-11-01（t74 重建面预算）：必须用 **builder**，不许 `children:`。
+         *   流式搜索下每来一个源这里就多一行（75 源 ⇒ 76 行）；
+         *   `children:` 把**全部**行急切构建 ⇒ 每帧重建面随源数线性涨
+         *   （t74 PA 实测 289→1043，预算 917，被左栏顶破）。
+         *   builder 只建**可见**的几行 ⇒ 重建面与源数解耦（真实优化，
+         *   不是放宽预算）。cacheExtent 0 = 连屏外缓存行也不建——
+         *   行内容是纯文本（构建便宜、滚动重建也便宜），流式期间
+         *   每帧只付"可见行"的构建成本。
+         */
+        cacheExtent: 0,
+        itemCount: sources.length + 1,
+        itemBuilder: (context, i) {
+          if (i == 0) {
+            return _sourceRow(
+              context,
+              name: '全部',
+              count: sources.fold(0, (n, s) => n + s.count),
+              rowKey: const ValueKey<String>('search-source-all'),
+              isAll: true,
+            );
+          }
+          final s = sources[i - 1];
+          return _sourceRow(context, name: s.name, count: s.count, isAll: false);
+        },
       ),
     );
   }

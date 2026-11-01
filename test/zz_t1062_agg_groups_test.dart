@@ -80,6 +80,14 @@ Future<void> sizeView(WidgetTester t, Size size) async {
   addTearDown(t.view.reset);
 }
 
+/// ★ 2026-11-01（左栏源切换）：源名会**同时**出现在左栏行与结果组标题
+/// ⇒ 组标题断言/几何读取限定在结果滚动区内（左栏在 `search-results-scroll`
+///   外面；无左栏时该 scoped 查找与原样等价。与 t73 同款修法）。
+Finder resultsText(String text) => find.descendant(
+      of: find.byKey(const ValueKey<String>('search-results-scroll')),
+      matching: find.text(text),
+    );
+
 void main() {
   tearDown(() {
     SearchPageState.debugAggChannelNamesFetcher = null;
@@ -197,14 +205,14 @@ void main() {
       await t.pump();
 
       // ★ 铁律 149：先证明真的渲染了，再断言结构
-      expect(find.text('源甲'), findsOneWidget, reason: '子站名必须成为组标题');
-      expect(find.text('源乙'), findsOneWidget);
+      expect(resultsText('源甲'), findsOneWidget, reason: '子站名必须成为组标题');
+      expect(resultsText('源乙'), findsOneWidget);
       expect(find.text('老舅 甲站'), findsOneWidget);
       expect(find.text('老舅 乙站'), findsOneWidget);
 
       // 组标题按到达顺序：源甲在上
-      final a = t.getRect(find.text('源甲')).top;
-      final b = t.getRect(find.text('源乙')).top;
+      final a = t.getRect(resultsText('源甲')).top;
+      final b = t.getRect(resultsText('源乙')).top;
       expect(a, lessThan(b), reason: '先到的子站排在前面（源甲 $a / 源乙 $b）');
     });
 
@@ -224,7 +232,7 @@ void main() {
       ]));
       await t.pump();
 
-      expect(find.text('源A'), findsOneWidget);
+      expect(resultsText('源A'), findsOneWidget);
       expect(find.text('2 个结果'), findsOneWidget, reason: '两条都在同一组里');
     });
   });

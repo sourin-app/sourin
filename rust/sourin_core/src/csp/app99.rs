@@ -1483,6 +1483,28 @@ mod tests {
         );
         // ⚠️ 生产 handshake 每次成功都会把响应落成 `.probe/app99-known-systeminit.json`
         //   （真实抓包验收的夹具）。本测试的假站握手会冲掉真抓包 ⇒ 先存后还。
+        //
+        // ★★ 2026-11-01（P2）：恢复必须 **panic-safe** —— 测试体任何断言失败
+        //   都会 unwind，落在函数尾部的"手工还原"就永远不执行 ⇒ 真抓包被打碎
+        //   （自愈批实锤过一次，靠 CSP_LIVE 重抓才救回）。⇒ 用 Drop guard：
+        //   无论测试怎么退场（正常 / panic），夹具都按原样退回。
+        struct FixtureRestoreGuard {
+            saved: Vec<(std::path::PathBuf, Option<Vec<u8>>)>,
+        }
+        impl Drop for FixtureRestoreGuard {
+            fn drop(&mut self) {
+                for (p, old) in &self.saved {
+                    match old {
+                        Some(bytes) => {
+                            let _ = std::fs::write(p, bytes);
+                        }
+                        None => {
+                            let _ = std::fs::remove_file(p);
+                        }
+                    }
+                }
+            }
+        }
         let fixture_paths: Vec<std::path::PathBuf> = [
             "../.probe/app99-known-systeminit.json",
             "../../.probe/app99-known-systeminit.json",
@@ -1494,6 +1516,7 @@ mod tests {
             .iter()
             .map(|p| (p.clone(), std::fs::read(p).ok()))
             .collect();
+        let _guard = FixtureRestoreGuard { saved: saved.clone() };
         let site = App99::new();
         // ① 握手：userInfo 被拒 ⇒ 降级空 token ⇒ 握手必须成功
         let home = site.home(&ext).await;
@@ -1508,15 +1531,18 @@ mod tests {
         assert_eq!(l.items.len(), 1);
         assert_eq!(l.items[0].title, "老舅（2023）");
         server.abort();
-        // 还原真实抓包夹具（假站握手的副产物按原样退回）
+        drop(_guard); // guard 先还夹具（panic 路径由 Drop 兜底）
+        // ★★ 护栏断言：恢复后的夹具必须与保存前**逐字节一致**——
+        //   假站响应（uuid=aabbcc… 的 categorys-only 假 systemInit）一旦
+        //   漏进真抓包文件，"真实响应验收"测试就会拿假响应当真 ⇒ 假绿。
         for (p, old) in &saved {
-            match old {
-                Some(bytes) => {
-                    let _ = std::fs::write(p, bytes);
-                }
-                None => {
-                    let _ = std::fs::remove_file(p);
-                }
+            if let Some(bytes) = old {
+                assert_eq!(
+                    std::fs::read(p).unwrap_or_default(),
+                    *bytes,
+                    "★ 抓包夹具被假响应污染（{}）——真响应验收会假绿",
+                    p.display()
+                );
             }
         }
     }

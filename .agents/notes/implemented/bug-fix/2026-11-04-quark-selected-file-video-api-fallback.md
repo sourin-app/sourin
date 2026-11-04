@@ -71,6 +71,44 @@ not claim full-episode playback or completed user acceptance.
   Newly built DLL, production-account decode and physical UI acceptance remain
   separate pending checks, not inferred from an old application's DLL.
 
+Final artifact and account follow-up, recorded separately from those earlier
+pending checks:
+
+- `playback-ux-core-build-20261104.result.json` is exit 0. New core SHA256 is
+  `25DA90D8F1FDA85D7F9FC0FB224A55D50D06213A8E1B88023814A576237DF7D7`.
+  `playback-ux-windows-build-evidence-v3-repair1-20261104/summary.json` confirms
+  a fresh complete Windows build, 258 unchanged source inputs and 43 package
+  files. Root independently hashes every package file; core and libmpv match
+  the native playback instruments. App and UI were not launched.
+- `app99-headless-v3-20261104-203507` uses that new core. Both NSYS and PAN1
+  second-episode native decode and closed-consumer checks exit 0. Root views
+  both third-frame images and observes clear scene, person and credits.
+- `panfile-account-play-v8-20261104-live1/summary.json` is exit 0, no timeout:
+  production precheck is Ok, detail has 31 real file references, and original
+  fid, complete episode ID, filename 02.mp4 and order 2 all match. Production
+  resolve and same-consumer closure pass, with every media header preserved.
+  Native decode records 68 real new frames and three distinct nonblack images;
+  Root views frames 01 and 03. Sampling remains second 20 to about 22.72, not
+  twenty seconds of continuous playback, complete-episode or Flutter UI proof.
+- V3-V5 account instruments initially misreject the production's legal Base64
+  padding. V6 fixes only that parser, retaining the entire original ID hash;
+  actual mutation proves the rejection. V6 then stops before decoding because
+  profile isolation hides user-installed Pillow. V7 binds only the hash-locked
+  existing Pillow package without exposing user site paths or startup scripts;
+  removal is actual red and isolated qualification is green.
+- V7 proves native decoding but exits 1 because the live SQLite handle prevents
+  worker-local file deletion. Its original report stays frozen. V8 defers only
+  local filesystem cleanup after an otherwise verified chain; parent observes
+  worker exit 0 and actually removes the isolated data after process exit before
+  reporting success. Main failures, nonzero exits, timeouts and failed parent
+  cleanup never recover. Both adversarial mutations fail and 18 offline groups
+  pass before live use. Server-side cloud deletion remains not independently
+  observed; an accepted FFI cleanup receipt is not that proof.
+- Baidu full-file playback remains unresolved in
+  `baidu-account-playback-status-20261104.md`. Physical UI/line-switch acceptance
+  and the Owner's five interaction changes still require direct client review.
+  The full user goal remains active.
+
 ## Relations
 
 [Selected episodes and real line switching](2026-11-04-selected-episode-parser-and-real-line-switch.md)

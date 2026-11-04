@@ -26,7 +26,7 @@
 //    （init:150-227，`v/n/s` 的寄存器口径见 md 的"点3"）
 // ```
 //
-// # ⚠️ 当前状态（2026-10-26 实测）：**未通电，故意未注册**
+// # 当前状态（2026-11-04）：已注册，支持站点下发的媒体解析配置
 //
 // ## ① 已确证（指令级 + 真网络双证）
 // ```text
@@ -78,7 +78,8 @@
 //
 // # 能力边界（如实）
 // ```text
-// ✅ 握手 / 搜索 / 详情 / 取流（`play_url` 里的**直链**可播；播放页/分享页地址会**如实报错**）
+// 握手 / 搜索 / 全线路详情 / 取流；媒体解析走 /app/vodParser，网盘分享交统一出口。
+// 未解析的播放页不作为媒体候选返回；真实首帧仍须播放器端验收。
 // ⛔ 需要登录的条目：服务端会在响应里给空/错误，我们**如实透出**，不伪造
 // ⛔ 分类页：`categories` 由握手响应下发；下发了就用，没下发就如实报"该源没给分类"
 // ```
@@ -95,6 +96,7 @@ use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvI
 use cbc::{Decryptor, Encryptor};
 
 use super::{CspCategory, CspDetail, CspEpisode, CspHome, CspItem, CspList, CspPlay, CspSite};
+use crate::csp::shared::split_lines;
 use crate::tvbox::{parse_loose_json, strip_tags};
 
 type Aes256CbcEnc = Encryptor<aes::Aes256>;
@@ -327,11 +329,91 @@ pub struct App99 {
 }
 
 struct Handshaken {
+    ext: String,
     host: String,
     uuid: String,
     token: String,
     version: String,
     categories: Vec<CspCategory>,
+    players: serde_json::Value,
+    parser_ids: Vec<i64>,
+}
+
+const EPISODE_PREFIX: &str = "app99:";
+const PARSE_BUDGET: Duration = Duration::from_secs(40);
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct EpisodeRef {
+    url: String,
+    code: String,
+    title: String,
+    index: usize,
+}
+
+pub(crate) fn is_episode_id(id: &str) -> bool {
+    id.starts_with(EPISODE_PREFIX)
+}
+
+pub(crate) fn episode_context(id: &str) -> Option<(String, u32)> {
+    let episode = decode_episode(id).ok()?;
+    Some((episode.title, u32::try_from(episode.index).ok()?))
+}
+
+pub(crate) fn episode_url(id: &str) -> Option<String> {
+    decode_episode(id).ok().map(|episode| episode.url)
+}
+
+fn decode_episode(id: &str) -> Result<EpisodeRef, String> {
+    let body = id.strip_prefix(EPISODE_PREFIX)
+        .ok_or_else(|| "剧集标识格式无效".to_string())?;
+    let bytes = b64_decode(body).map_err(|_| "剧集标识格式无效".to_string())?;
+    serde_json::from_slice(&bytes).map_err(|_| "剧集标识格式无效".to_string())
+}
+
+fn encode_episode(url: &str, code: &str, title: &str, index: usize) -> String {
+    let ep = EpisodeRef {
+        url: url.to_string(),
+        code: code.to_string(),
+        title: title.to_string(),
+        index,
+    };
+    format!("{EPISODE_PREFIX}{}", b64_encode(&serde_json::to_vec(&ep).expect("episode JSON")))
+}
+
+fn int_field(v: &serde_json::Value, key: &str) -> Option<i64> {
+    v.get(key).and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()))
+}
+
+fn player_name(players: &serde_json::Value, code: &str) -> String {
+    let name = players.get(code).and_then(|p| p.get("name"))
+        .and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty())
+        .unwrap_or(code);
+    let duplicates = players.as_object().map(|map| map.values()
+        .filter(|p| p.get("name").and_then(|v| v.as_str()) == Some(name)).count())
+        .unwrap_or(0);
+    if duplicates > 1 { format!("{name} ({code})") } else { name.to_string() }
+}
+
+fn http_url(raw: &str) -> bool {
+    if raw.chars().any(char::is_control) {
+        return false;
+    }
+    reqwest::Url::parse(raw).ok()
+        .map(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
+        .unwrap_or(false)
+}
+
+fn direct_media_url(raw: &str) -> bool {
+    let Some(url) = reqwest::Url::parse(raw).ok() else { return false };
+    if !http_url(raw) { return false; }
+    let path = url.path().to_ascii_lowercase();
+    [".m3u8", ".mp4", ".mkv", ".ts", ".flv", ".avi", ".mov", ".webm", ".m4v"]
+        .iter().any(|ext| path.ends_with(ext))
+}
+
+fn native_share_url(raw: &str) -> bool {
+    let share = crate::pan::parse_share(raw);
+    http_url(raw) && share.kind != crate::pan::PanKind::Unknown && !share.share_id.is_empty()
 }
 
 impl App99 {
@@ -488,8 +570,7 @@ impl App99 {
                 .map(|o| o.keys().cloned().collect())
                 .unwrap_or_default();
             eprintln!(
-                "[APP99] userInfo 明文：顶层键={top:?}；userInfo 键={ui:?}；前 240 字符={}",
-                &plain[..plain.len().min(240)]
+                "[APP99] userInfo 顶层键={top:?}；userInfo 键={ui:?}"
             );
         }
         require_token(token)
@@ -497,6 +578,11 @@ impl App99 {
 
     /// 握手：POST `{host}/app/systemInit` → 解密 → 拿 token / categories
     async fn handshake(&self, ext: &str) -> Result<(), String> {
+        if self.state.lock().map_err(|_| "状态锁中毒".to_string())?
+            .as_ref().map(|s| s.ext == ext).unwrap_or(false)
+        {
+            return Ok(());
+        }
         let (host, name, sig, num, ver, uuid) = Self::ext_fields(ext)?;
         let (pkg, ver_for_body) = (Self::ext_pkg(ext), ver.clone());
         let key = key_of(&uuid)?;
@@ -543,6 +629,9 @@ impl App99 {
         }
         // ★ 落一份**真实响应夹具**（uuid + 原始 base64），供离线验收用例复算。
         //   只存这与解密相关的两样东西，不含任何用户数据（响应是公开目录接口的返回）。
+        if std::env::var("CSP_LIVE").ok().as_deref() == Some("1")
+            && reqwest::Url::parse(&host).ok().and_then(|u| u.host_str().map(str::to_string))
+                .map(|h| h != "127.0.0.1" && h != "localhost" && h != "::1").unwrap_or(false)
         {
             let fixture = serde_json::json!({
                 "captured_at": "2026-10-26",
@@ -558,7 +647,7 @@ impl App99 {
             }
         }
         let plain = decrypt_body(&key, text.trim()).map_err(|e| format!("握手响应解密失败：{e}"))?;
-        let v = parse_loose_json(&plain).map_err(|e| format!("握手响应不是 JSON：{e}：{plain:.200}"))?;
+        let v = parse_loose_json(&plain).map_err(|e| format!("握手响应不是 JSON：{e}"))?;
         // ★ systemInit 也有 code（实测成功时是 0）；!=0 必须如实报
         let v = parse_envelope("/app/systemInit", &v)?;
         // 结构 dump（只打键名，便于找 token 的嵌套位置）
@@ -666,11 +755,16 @@ impl App99 {
             );
         }
         *self.state.lock().map_err(|_| "状态锁中毒".to_string())? = Some(Handshaken {
+            ext: ext.to_string(),
             host,
             uuid,
             token,
             version: ver,
             categories,
+            players: v.get("player").cloned().unwrap_or(serde_json::Value::Null),
+            parser_ids: v.get("parser_api").and_then(|p| p.as_array())
+                .map(|ids| ids.iter().filter_map(|p| int_field(p, "id")).collect())
+                .unwrap_or_default(),
         });
         Ok(())
     }
@@ -748,6 +842,103 @@ impl App99 {
         let v = parse_loose_json(&plain).map_err(|e| format!("{path} 响应不是 JSON：{e}"))?;
         // ★ code != 0 必须原样报出来（别归因成"字段名改了"）
         parse_envelope(path, &v)
+    }
+
+    async fn resolve_episode(&self, episode: &EpisodeRef, flag: &str) -> Result<CspPlay, String> {
+        if episode.url.is_empty() || episode.url.chars().any(char::is_control) {
+            return Err("这条剧集没有有效的播放标识，请切换线路".to_string());
+        }
+        if direct_media_url(&episode.url) || native_share_url(&episode.url) {
+            return Ok(CspPlay {
+                url: episode.url.clone(),
+                headers: vec![("User-Agent".to_string(), UA.to_string())],
+                label: Some(flag.to_string()),
+            });
+        }
+        let (player, ids) = {
+            let state = self.state.lock().map_err(|_| "状态锁中毒".to_string())?;
+            let state = state.as_ref().ok_or_else(|| "该线路没有媒体解析配置，请切换线路".to_string())?;
+            let player = state.players.get(&episode.code).or_else(|| {
+                state.players.as_object()?.iter()
+                    .find(|(code, _)| player_name(&state.players, code) == flag)
+                    .map(|(_, value)| value)
+            }).cloned().ok_or_else(|| "该线路没有媒体解析配置，请切换线路".to_string())?;
+            (player, state.parser_ids.clone())
+        };
+        if int_field(&player, "type") == Some(0) {
+            if !http_url(&episode.url) {
+                return Err("这条直连线路没有有效的播放地址，请切换线路".to_string());
+            }
+            self.verify_media_response(&episode.url).await?;
+            return Ok(CspPlay {
+                url: episode.url.clone(),
+                headers: vec![("User-Agent".to_string(), UA.to_string())],
+                label: Some(flag.to_string()),
+            });
+        }
+        let allowed: Vec<&str> = player.get("parseUrl").and_then(|v| v.as_str())
+            .unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+        let mut failures = Vec::new();
+        for id in ids {
+            if !allowed.is_empty() && !allowed.iter().any(|value| *value == id.to_string()) {
+                continue;
+            }
+            let response = self.call("/app/vodParser", serde_json::json!({
+                "id":id,"url":episode.url
+            })).await;
+            match response {
+                Ok(value) => {
+                    if let Some(url) = value.get("data").and_then(|v| v.as_str())
+                        .map(str::trim).filter(|url| http_url(url))
+                    {
+                        if !direct_media_url(url) && !native_share_url(url)
+                            && self.verify_media_response(url).await.is_err()
+                        {
+                            failures.push(format!("解析器 {id} 未返回媒体内容"));
+                            continue;
+                        }
+                        return Ok(CspPlay {
+                            url: url.to_string(),
+                            headers: vec![("User-Agent".to_string(), UA.to_string())],
+                            label: Some(flag.to_string()),
+                        });
+                    }
+                    failures.push(format!("解析器 {id} 未返回媒体地址"));
+                }
+                Err(_) => failures.push(format!("解析器 {id} 请求失败")),
+            }
+        }
+        Err(if failures.is_empty() {
+            "该线路没有可用的媒体解析器，请切换线路".to_string()
+        } else {
+            format!("播放链接解析失败：{}。请切换线路", failures.join("；"))
+        })
+    }
+
+    async fn verify_media_response(&self, url: &str) -> Result<(), String> {
+        let mut response = self.client.get(url).header("Range", "bytes=0-511")
+            .send().await.map_err(|_| "无法读取这条线路的媒体，请稍后重试".to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("媒体请求返回 HTTP {}，请切换线路", response.status().as_u16()));
+        }
+        let content_type = response.headers().get("Content-Type")
+            .and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+        if content_type.contains("text/html") || content_type.contains("application/json") {
+            return Err("这条线路返回的是播放网页，没有可播放的媒体，请切换线路".to_string());
+        }
+        let chunk = response.chunk().await
+            .map_err(|_| "无法读取这条线路的媒体，请稍后重试".to_string())?
+            .ok_or_else(|| "这条线路没有返回媒体内容，请切换线路".to_string())?;
+        let media_type = content_type.starts_with("video/") || content_type.starts_with("audio/")
+            || content_type.contains("mpegurl");
+        let magic = chunk.starts_with(b"#EXTM3U") || chunk.get(4..8) == Some(b"ftyp")
+            || chunk.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
+            || (chunk.first() == Some(&0x47) && chunk.get(188) == Some(&0x47));
+        if media_type || magic {
+            Ok(())
+        } else {
+            Err("这条线路没有返回可识别的媒体内容，请切换线路".to_string())
+        }
     }
 }
 
@@ -840,6 +1031,7 @@ impl CspSite for App99 {
     }
 
     async fn detail(&self, id: &str, _ext: &str) -> Result<CspDetail, String> {
+        self.handshake(_ext).await?;
         let body = serde_json::json!({ "id": id.trim() });
         let v = self.call("/vod/detail", body).await?;
         let d = v
@@ -849,7 +1041,9 @@ impl CspSite for App99 {
         if d.is_null() {
             return Err("详情响应里没有 data 字段".to_string());
         }
-        detail_of(&d, id)
+        let players = self.state.lock().map_err(|_| "状态锁中毒".to_string())?
+            .as_ref().map(|s| s.players.clone()).unwrap_or(serde_json::Value::Null);
+        detail_of(&d, id, &players)
     }
 
     /// 搜索：与 `list()` **同一条链路**（`POST /vod/search`，body 里 `kw`），
@@ -875,22 +1069,23 @@ impl CspSite for App99 {
             .map(|items| CspList { items, page, page_count: None, total: None })
     }
 
-    async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
+    async fn play(&self, flag: &str, id: &str, ext: &str) -> Result<Vec<CspPlay>, String> {
         let raw = id.trim();
-        if raw.starts_with("http") {
-            let lower = raw.to_ascii_lowercase();
-            if lower.contains(".m3u8") || lower.contains(".mp4") {
-                return Ok(vec![CspPlay {
-                    url: raw.to_string(),
-                    headers: vec![("User-Agent".to_string(), UA.to_string())],
-                    label: Some("直链".to_string()),
-                }]);
-            }
-            return Err(format!(
-                "这条是分享/播放页地址，本机还没有对应的解析器：{raw}"
-            ));
+        if raw.is_empty() {
+            return Err("播放 id 为空".to_string());
         }
-        Err(format!("播放 id 不是可播地址：{raw}"))
+        let episode = if is_episode_id(raw) {
+            decode_episode(raw)?
+        } else {
+            EpisodeRef { url: raw.to_string(), code: flag.to_string(), title: String::new(), index: 0 }
+        };
+        if !direct_media_url(&episode.url) && !native_share_url(&episode.url) && !ext.is_empty() {
+            self.handshake(ext).await?;
+        }
+        // Parser attempts share one deadline; a slow configured parser cannot hang playback.
+        let play = tokio::time::timeout(PARSE_BUDGET, self.resolve_episode(&episode, flag))
+            .await.map_err(|_| "媒体解析超时，请稍后重试或切换线路".to_string())??;
+        Ok(vec![play])
     }
 }
 
@@ -928,7 +1123,11 @@ fn items_of(v: &serde_json::Value) -> Result<Vec<CspItem>, String> {
         .collect())
 }
 
-fn detail_of(d: &serde_json::Value, id: &str) -> Result<CspDetail, String> {
+fn detail_of(
+    d: &serde_json::Value,
+    id: &str,
+    players: &serde_json::Value,
+) -> Result<CspDetail, String> {
     let title = d.get("name").and_then(|s| s.as_str()).unwrap_or("").to_string();
     let desc = d.get("blurb").and_then(|s| s.as_str()).unwrap_or("").to_string();
     /*
@@ -946,22 +1145,20 @@ fn detail_of(d: &serde_json::Value, id: &str) -> Result<CspDetail, String> {
     let from = pick("play_from", "vod_play_from");
     let urls = pick("play_url", "vod_play_url");
     let mut episodes: Vec<CspEpisode> = Vec::new();
-    for (i, seg) in urls.split("$$$").next().unwrap_or("").split('#').enumerate() {
-        let mut it = seg.split('$');
-        let name = it.next().unwrap_or("").to_string();
-        let url = it.next().unwrap_or("").to_string();
-        if url.is_empty() {
-            continue;
+    let lines = split_lines(from, urls);
+    for (flag_name, eps) in &lines {
+        let flag = player_name(players, flag_name);
+        for (index, (name, url)) in eps.iter().enumerate() {
+            if url.is_empty() {
+                continue;
+            }
+            episodes.push(CspEpisode {
+                // Display names are not protocol keys; carry the raw code with each episode.
+                id: encode_episode(url, flag_name, name, index + 1),
+                title: name.clone(),
+                flag: flag.clone(),
+            });
         }
-        episodes.push(CspEpisode {
-            id: url,
-            title: if name.is_empty() {
-                format!("第{}集", i + 1)
-            } else {
-                name
-            },
-            flag: "默认".to_string(),
-        });
     }
     if episodes.is_empty() {
         // 不猜字段名：把真实结构打出来（只打键名）
@@ -969,7 +1166,7 @@ fn detail_of(d: &serde_json::Value, id: &str) -> Result<CspDetail, String> {
             .as_object()
             .map(|o| o.keys().cloned().collect())
             .unwrap_or_default();
-        eprintln!("[APP99] detail.data 顶层键={top:?}；前 200 字符={}", &d.to_string()[..d.to_string().len().min(200)]);
+        eprintln!("[APP99] detail.data 顶层键={top:?}");
         return Err(format!(
             "这个条目没有可播地址（vod_play_url 为空；线路={from}）；data 顶层键={top:?}"
         ));
@@ -1004,6 +1201,246 @@ crate::csp::register_site!(App99);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn seal_fixture(key: &[u8], plain: &serde_json::Value) -> String {
+        use std::io::Write as _;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(plain.to_string().as_bytes()).unwrap();
+        let comp = z.finish().unwrap();
+        let iv = iv16(comp.len() as u64, 3);
+        let mut buf = vec![0u8; (comp.len() / 16 + 1) * 16];
+        buf[..comp.len()].copy_from_slice(&comp);
+        let ct = Aes256CbcEnc::new_from_slices(key, &iv)
+            .unwrap()
+            .encrypt_padded_mut::<Pkcs7>(&mut buf, comp.len())
+            .unwrap();
+        b64_encode(&[iv.as_slice(), ct].concat())
+    }
+
+    fn open_request(key: &[u8], body: &str) -> serde_json::Value {
+        let mut all = b64_decode(body).unwrap();
+        let (iv, ct) = all.split_at_mut(16);
+        let plain = Aes256CbcDec::new_from_slices(key, iv)
+            .unwrap()
+            .decrypt_padded_mut::<Pkcs7>(ct)
+            .unwrap();
+        serde_json::from_slice(plain).unwrap()
+    }
+
+    #[tokio::test]
+    async fn app99_parser_receives_selected_episode_and_configured_parser_id() {
+        use axum::{extract::State, http::{HeaderMap, Uri}, routing::post, Router};
+        use std::sync::{Arc, Mutex};
+
+        type Seen = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
+        let uuid = "aabbccddeeff00112233445566778899";
+        let key = key_of(uuid).unwrap();
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        let state = (key.clone(), seen.clone());
+        async fn endpoint(
+            State((key, seen)): State<(Vec<u8>, Seen)>,
+            uri: Uri,
+            headers: HeaderMap,
+            body: String,
+        ) -> String {
+            let request = open_request(&key, &body);
+            let ts = headers.get("timestamp").unwrap().to_str().unwrap();
+            let nonce = headers.get("nonce").unwrap().to_str().unwrap();
+            let token = request.get("token").and_then(|v| v.as_str()).unwrap_or("");
+            assert_eq!(
+                headers.get("sign").unwrap().to_str().unwrap(),
+                sign_of(&body, ts, nonce, token),
+                "the actual POST must carry the protocol signature"
+            );
+            seen.lock().unwrap().push((uri.path().to_string(), request));
+            let response = match uri.path() {
+                "/app/systemInit" => serde_json::json!({
+                    "code":0,
+                    "userInfo":{"user_token":"fixture-token"},
+                    "categorys":{"data":[{"id":"1","name":"全部"}]},
+                    "player":{
+                        "line-a":{"name":"蓝光","type":1,"parseUrl":"7"},
+                        "line-b":{"name":"备用","type":0}
+                    },
+                    "parser_api":[{"id":6},{"id":7}]
+                }),
+                "/vod/detail" => serde_json::json!({
+                    "code":0,
+                    "data":{"id":"77","name":"测试剧",
+                        "play_from":"line-a$$$line-b",
+                        "play_url":"第1集$opaque-episode-1#第2集$opaque-episode-2$$$第1集$https://media.invalid/1.mp4"}
+                }),
+                "/app/vodParser" => serde_json::json!({
+                    "code":0,"data":"https://media.invalid/selected-2.m3u8"
+                }),
+                _ => serde_json::json!({"code":1,"msg":"unexpected endpoint"})
+            };
+            seal_fixture(&key, &response)
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().fallback(post(endpoint)).with_state(state);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let ext = serde_json::json!({
+            "host":format!("http://{addr}"),"name":"fixture","buildSignature":"SIG",
+            "buildNumber":"1","versionName":"1.0","package":"com.fixture","uuid":uuid
+        }).to_string();
+        let site = App99::new();
+        let detail = site.detail("77", &ext).await.unwrap();
+        assert_eq!(detail.episodes.len(), 3);
+        assert_eq!(detail.episodes[1].flag, "蓝光", "display names come from player");
+        assert_eq!(detail.episodes[2].flag, "备用");
+        let chosen = &detail.episodes[1];
+        let plays = site.play(&chosen.flag, &chosen.id, &ext).await.unwrap();
+        assert_eq!(plays.len(), 1);
+        assert_eq!(plays[0].url, "https://media.invalid/selected-2.m3u8");
+        let seen = seen.lock().unwrap();
+        let parses: Vec<_> = seen.iter().filter(|(path, _)| path == "/app/vodParser").collect();
+        assert_eq!(parses.len(), 1, "parseUrl must exclude parser 6");
+        assert_eq!(parses[0].1["id"], 7);
+        assert_eq!(parses[0].1["url"], "opaque-episode-2");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn app99_never_hands_unresolved_html_page_to_player() {
+        for url in ["https://page.invalid/watch/2", "https://page.invalid/s/looks-like-share"] {
+            let err = App99::new().play("", url, "").await
+                .expect_err("an unresolved HTML page is not a stream");
+            assert!(!err.contains("https://"), "errors must not leak playback URLs");
+        }
+        assert!(native_share_url("https://pan.quark.cn/s/fixture"));
+    }
+
+    #[test]
+    fn app99_episode_id_preserves_protocol_code_and_line_local_index() {
+        let url = "https://example.invalid/vod?file=a@b&signature=x";
+        let id = encode_episode(url, "raw-code", "第2集", 2);
+        assert!(is_episode_id(&id));
+        let episode = decode_episode(&id).unwrap();
+        assert_eq!(episode.url, url);
+        assert_eq!(episode.code, "raw-code");
+        assert_eq!(episode_context(&id), Some(("第2集".to_string(), 2)));
+        assert_eq!(episode_url(&id).as_deref(), Some(url));
+        assert!(episode_context("app99:not-valid!").is_none());
+        assert!(episode_url("app99:not-valid!").is_none());
+        assert!(!is_episode_id(url));
+        let players = serde_json::json!({
+            "a":{"name":"蓝光","type":0},
+            "b":{"name":"蓝光","type":1}
+        });
+        assert_ne!(player_name(&players, "a"), player_name(&players, "b"));
+    }
+
+    #[tokio::test]
+    async fn app99_type_zero_rejects_html_and_accepts_media_bytes() {
+        use axum::{http::{header, HeaderValue}, routing::get, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/html", get(|| async { ([(header::CONTENT_TYPE, HeaderValue::from_static("text/html"))], "<html>player</html>") }))
+            .route("/media", get(|| async { ([(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"))], "#EXTM3U\n#EXTINF:10,\nchunk.ts\n") }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let site = App99::new();
+        *site.state.lock().unwrap() = Some(Handshaken {
+            ext:String::new(),host:String::new(),uuid:String::new(),token:String::new(),
+            version:String::new(),categories:Vec::new(),
+            players:serde_json::json!({"direct":{"name":"直连","type":0}}),parser_ids:Vec::new()
+        });
+        let opaque = encode_episode("opaque-episode-2", "direct", "第2集", 2);
+        assert!(site.play("直连", &opaque, "").await.expect_err(
+            "opaque identifiers belong to parser lines, not direct media"
+        ).contains("直连"));
+        let html = encode_episode(&format!("http://{addr}/html"), "direct", "第1集", 1);
+        let err = site.play("直连", &html, "").await.expect_err("type 0 still must not emit HTML");
+        assert!(err.contains("播放网页"));
+        let media = encode_episode(&format!("http://{addr}/media"), "direct", "第1集", 1);
+        let plays = site.play("直连", &media, "").await.unwrap();
+        assert_eq!(plays.len(), 1);
+        assert!(plays[0].url.ends_with("/media"));
+        server.abort();
+    }
+
+    // Independent network capture proves the protocol; this case runs the production resolver.
+    // It checks actual media bytes, not decoded frames. Player acceptance remains separate.
+    #[tokio::test]
+    #[ignore = "live isolated configuration: APP99_LIVE_RUN=1 plus APP99_LIVE_CONFIG/PROVIDER/LINE/QUERY"]
+    async fn app99_live_selected_episode_has_media_bytes() {
+        assert_eq!(std::env::var("APP99_LIVE_RUN").as_deref(), Ok("1"));
+        let path = std::path::PathBuf::from(
+            std::env::var("APP99_LIVE_CONFIG").expect("APP99_LIVE_CONFIG is required")
+        ).canonicalize().expect("isolated config exists");
+        let probe = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.probe").canonicalize().expect("probe directory exists");
+        assert!(path.starts_with(probe), "live config must stay in isolated .probe");
+        let providers: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(path).expect("read isolated configuration")
+        ).expect("parse isolated configuration");
+        let provider_id = std::env::var("APP99_LIVE_PROVIDER").expect("provider id is required");
+        let provider = providers.as_array().expect("provider array").iter()
+            .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(provider_id.as_str()))
+            .expect("provider is present in isolated configuration");
+        let ext = provider.get("ext").and_then(|v| v.as_str()).expect("provider has ext");
+        let query = std::env::var("APP99_LIVE_QUERY").expect("query is required");
+        let line_code = std::env::var("APP99_LIVE_LINE").expect("line code is required");
+        let index = std::env::var("APP99_LIVE_EPISODE").unwrap_or_else(|_| "2".to_string())
+            .parse::<usize>().expect("episode index is numeric");
+        assert!(index > 0);
+        let site = App99::new();
+        let hits = site.search(&query, 1, ext).await.expect("production search succeeds");
+        let hit = hits.items.iter().find(|hit| hit.title == query)
+            .expect("the requested exact title is present");
+        let detail = site.detail(&hit.id, ext).await.expect("production detail succeeds");
+        let selected = detail.episodes.iter().find(|ep| {
+            decode_episode(&ep.id).map(|reference| {
+                reference.code == line_code && reference.index == index
+            }).unwrap_or(false)
+        }).expect("selected line and episode are present");
+        let plays = site.play(&selected.flag, &selected.id, ext).await
+            .expect("production parser resolves selected episode");
+        assert_eq!(plays.len(), 1);
+        eprintln!("[LIVE-MEDIA] lines={} selected_line={} episode_index={} episode_title={}",
+            detail.episodes.iter().map(|ep| &ep.flag)
+                .collect::<std::collections::HashSet<_>>().len(),
+            selected.flag, index, selected.title);
+        let mut url = reqwest::Url::parse(&plays[0].url).expect("resolver returns an HTTP URL");
+        for depth in 0..6 {
+            let mut request = site.client.get(url.clone()).header("Range", "bytes=0-4095");
+            for (key, value) in &plays[0].headers {
+                request = request.header(key, value);
+            }
+            let mut response = request.send().await
+                .map_err(|_| "media transport failed").expect("media request succeeds");
+            let status = response.status().as_u16();
+            assert!(response.status().is_success(), "media HTTP {status}");
+            let mut bytes = Vec::new();
+            while bytes.len() < 4096 {
+                let chunk = response.chunk().await
+                    .map_err(|_| "media chunk transport failed").expect("media body reads");
+                let Some(chunk) = chunk else { break };
+                bytes.extend_from_slice(&chunk[..chunk.len().min(4096 - bytes.len())]);
+            }
+            if bytes.starts_with(b"#EXTM3U") {
+                let text = std::str::from_utf8(&bytes).expect("HLS is UTF-8");
+                let child = text.lines().map(str::trim)
+                    .find(|line| !line.is_empty() && !line.starts_with('#'))
+                    .expect("HLS contains a playable child");
+                url = response.url().join(child).expect("HLS child URL resolves");
+                eprintln!("[LIVE-MEDIA] depth={depth} HTTP={status} format=HLS");
+                continue;
+            }
+            let ts_offset = (0..bytes.len().saturating_sub(376)).find(|offset|
+                bytes[*offset] == 0x47 && bytes[*offset + 188] == 0x47
+                    && bytes[*offset + 376] == 0x47);
+            let mp4 = bytes.get(4..8) == Some(b"ftyp");
+            let mkv = bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]);
+            assert!(ts_offset.is_some() || mp4 || mkv, "media magic is absent");
+            eprintln!("[LIVE-MEDIA] HTTP={status} bytes={} TS_offset={ts_offset:?} MP4={mp4} MKV={mkv}",
+                bytes.len());
+            return;
+        }
+        panic!("HLS traversal did not reach media bytes");
+    }
 
     #[test]
     fn base64_roundtrip_matches_known_vectors() {
@@ -1131,21 +1568,19 @@ mod tests {
             !from.is_empty(),
             "★ `play_from` 不许为空 —— 之前只打印不断言，字段名再写错一次也不会红"
         );
-        eprintln!("[FIXTURE-DETAIL] play_from={from:?} play_url 前 120 字符={}", &url[..url.len().min(120)]);
+        eprintln!("[FIXTURE-DETAIL] play_from={from:?} play_url bytes={}", url.len());
 
         // 还能映射成播放候选（否则"解得开但用不了"）
-        let det = detail_of(&data, &want_id).expect("应能映射成 CspDetail");
+        let det = detail_of(&data, &want_id, &serde_json::Value::Null).expect("应能映射成 CspDetail");
         assert!(!det.episodes.is_empty(), "至少 1 集");
         assert!(
-            det.episodes[0].id.starts_with("http"),
-            "首集应是 http(s) 地址，实际 {}",
-            det.episodes[0].id
+            http_url(&decode_episode(&det.episodes[0].id).unwrap().url),
+            "首集应携带 http(s) 地址"
         );
         eprintln!(
-            "[FIXTURE-DETAIL] 映射结果：标题={} 集数={} 首集={}",
+            "[FIXTURE-DETAIL] 映射结果：标题={} 集数={}",
             det.title,
-            det.episodes.len(),
-            det.episodes[0].id
+            det.episodes.len()
         );
     }
 
@@ -1192,8 +1627,7 @@ mod tests {
             keys.iter().any(|k| k == "parser_api"),
             "★ 还应含 parser_api，实际 {keys:?}"
         );
-        // 前 200 字符（对公开展示无敏感信息；仍只打在测试输出里）
-        eprintln!("[FIXTURE] 明文前 200 字符 = {}", &plain[..plain.len().min(200)]);
+        eprintln!("[FIXTURE] 解密 bytes={}", plain.len());
     }
 
     // ── ★ 真实响应验收（唯一能证明"实现可用"的用例）──────────────────
@@ -1269,10 +1703,9 @@ mod tests {
         let det = site.detail(&first, ext).await;
         match &det {
             Ok(d) => eprintln!(
-                "[LIVE] 详情成功：id={first} 标题={} 集数={} 首集地址={}",
+                "[LIVE] 详情成功：id={first} 标题={} 集数={}",
                 d.title,
-                d.episodes.len(),
-                d.episodes.first().map(|e| e.id.clone()).unwrap_or_default()
+                d.episodes.len()
             ),
             Err(e) => eprintln!("[LIVE] 详情失败：{e}"),
         }
@@ -1283,9 +1716,8 @@ mod tests {
                 let p = site.play("", &ep.id, ext).await;
                 match &p {
                     Ok(v) => eprintln!(
-                        "[LIVE] 取流成功：{} 条，首条={}",
-                        v.len(),
-                        v.first().map(|x| x.url.clone()).unwrap_or_default()
+                        "[LIVE] 取流成功：{} 条",
+                        v.len()
                     ),
                     Err(e) => eprintln!("[LIVE] 取流失败（如实记录，不算可用）：{e}"),
                 }
@@ -1335,9 +1767,11 @@ mod tests {
                 "vod_play_from":"<某线路>","vod_play_url":"第1集$http://a/1.m3u8#第2集$http://a/2.m3u8"}"#,
         )
         .unwrap();
-        let det = detail_of(&d, "7").expect("详情应解析");
+        let det = detail_of(&d, "7", &serde_json::Value::Null).expect("详情应解析");
         assert_eq!(det.episodes.len(), 2);
-        assert_eq!(det.episodes[1].id, "http://a/2.m3u8");
+        let ep = decode_episode(&det.episodes[1].id).unwrap();
+        assert_eq!(ep.url, "http://a/2.m3u8");
+        assert_eq!(ep.index, 2);
         assert_eq!(det.episodes[0].title, "第1集");
     }
 

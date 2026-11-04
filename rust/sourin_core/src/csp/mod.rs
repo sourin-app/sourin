@@ -72,6 +72,8 @@ pub mod pan_drive;
 ///
 /// 存在的理由见该文件头：csp 源把分享页原样交回时，播放器只会报"格式解不了"。
 pub mod pan_share_play;
+pub mod pan_episode_select;
+pub mod pan_playback_guard;
 
 /// T1b 取流（2026-11-01）：迅雷/百度分享页的原生直链转换
 /// （迅雷=转存→直链全链；百度=verify→list 已证跳 + dlink 未取证如实停）

@@ -72,10 +72,12 @@ Owner 真机对比（2026-11-01）：参考 APK 搜《老舅》是 **69/69 全�
 · 教训留档：本批一次用 PowerShell Set-Content 改无 BOM 的 UTF-8 测试文件，
   Get-Content 默认按 ANSI 误读 ⇒ 中文全部乱码、换行被吞（违反"禁 WriteAllLines
   同类"纪律）。已用完整已知内容重建。改文件一律走 edit/write 逐处工具。
-· 生产 `handshake` 每次成功都会把响应落成 `.probe/app99-known-systeminit.json`
-  （真实抓包验收夹具）——本批新测试的假站握手曾把它冲掉，导致
-  decrypts_known_systeminit_fixture_to_json 红。已在测试里加保存/恢复，
-  被冲掉的真实夹具用 live 重抓恢复。后续给 App99 加测试必须记得这个副作用。
+· 本批历史事故：`handshake` 无条件写 `.probe/app99-known-systeminit.json`，
+  假站握手冲掉真实夹具，导致 decrypts_known_systeminit_fixture_to_json 红；
+  当时通过保存/恢复与 live 重抓处置。2026-11-04 实现将写出限制为显式 live
+  取证且排除 loopback，普通生产握手与离线测试不再改写真实夹具。
 ```
 
 相关：[App99 加密协议真实响应验收](../feature/2026-10-26-encrypted-protocol-needs-real-response.md)（覆盖口径纪律）、[聚合搜索跨源同名保留](2026-10-28-aggregate-keeps-cross-source-same-title.md)（上一轮"老舅 0 条"的另一根因）、[聚合搜索有界并发](../feature/2026-10-29-aggregate-search-bounded-concurrency.md)（扇出内核，本诊断证实其无站点数截断）。
+
+后续：[具体集媒体解析与真实换线](2026-11-04-selected-episode-parser-and-real-line-switch.md) 修正“返回播放地址”不足以证明真实媒体的覆盖边界；本篇搜索修复不作为胖妞已真实起播的证据。

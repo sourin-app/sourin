@@ -350,6 +350,8 @@ pub fn episode_id_is_direct_play(episode: &str) -> bool {
     episode.contains('|')
         || episode.starts_with("http://")
         || episode.starts_with("https://")
+        || super::pan_episode_select::is_file_id(episode)
+        || super::app99::is_episode_id(episode)
         || share_page_composite(episode)
 }
 
@@ -449,11 +451,16 @@ impl MediaProvider for CspProvider {
             .detail(&id.native, &self.ext)
             .await
             .map_err(|e| classify_err(self.site.class(), e))?;
+        let d = super::pan_episode_select::expand_detail(d).await;
+        let mut line_orders = std::collections::HashMap::<String, u32>::new();
         let episodes: Vec<Episode> = d
             .episodes
             .iter()
             .enumerate()
-            .map(|(i, e)| Episode {
+            .map(|(i, e)| {
+                let order = line_orders.entry(e.flag.clone()).or_default();
+                *order += 1;
+                Episode {
                 // ★ 剧集 id 就是 `bvid|cid`，resolve() 直接用它取流
                 id: e.id.clone(),
                 title: if e.title.is_empty() {
@@ -461,11 +468,11 @@ impl MediaProvider for CspProvider {
                 } else {
                     e.title.clone()
                 },
-                order: (i + 1) as u32,
+                order: *order,
                 player_id: None,
                 // ★ 线路名透出到 wire（多线路源靠它分组；单线路源是"默认"/play_from 名）
                 flag: e.flag.clone(),
-            })
+            }})
             .collect();
         Ok(MediaDetail {
             id: MediaId::new(&self.manifest.id, d.id),
@@ -486,11 +493,22 @@ impl MediaProvider for CspProvider {
     }
 
     async fn resolve(&self, id: &MediaId, req: &PlayRequest) -> Result<Vec<StreamCandidate>> {
+        let owner = super::pan_playback_guard::owner_from_payload(
+            req.extra.as_ref().unwrap_or(&serde_json::Value::Null)
+        ).and_then(super::pan_playback_guard::register)
+            .map_err(|e| classify_err(self.site.class(), e))?;
+        super::pan_playback_guard::with_scope(owner, async {
+        let result = async {
         // ★ 与 tvbox.rs 的 appleCMS 分支同一条规矩（那边踩过「第二集播出第一集」）：
         //   剧集 id（这里形如 `bvid|cid`）优先于条目 id。
         let episode = match req.episode_id.as_deref() {
             Some(e) if !e.trim().is_empty() => e.trim().to_string(),
             _ => id.native.clone(),
+        };
+        let context = super::app99::episode_context(&episode);
+        let mut spec = super::pan_episode_select::EpisodeSpec {
+            title: req.episode_title.clone().or_else(|| context.as_ref().map(|c| c.0.clone())).unwrap_or_default(),
+            order: req.episode_order.or_else(|| context.as_ref().map(|c| c.1)),
         };
         // 只给了条目 id（bvid）而没有 cid ⇒ 先取详情拿第一集，别猜一个 cid
         let episode = if episode_id_is_direct_play(&episode) {
@@ -501,11 +519,24 @@ impl MediaProvider for CspProvider {
                 .detail(&episode, &self.ext)
                 .await
                 .map_err(|e| classify_err(self.site.class(), e))?;
-            d.episodes
-                .first()
-                .map(|e| e.id.clone())
-                .ok_or_else(|| ProviderError::new(ErrorKind::NotFound, "这个条目没有可播放的剧集"))?
+            super::pan_playback_guard::check_current()
+                .map_err(|e| classify_err(self.site.class(), e))?;
+            let d = super::pan_episode_select::expand_detail(d).await;
+            let selected = d.episodes.first()
+                .ok_or_else(|| ProviderError::new(ErrorKind::NotFound, "这个条目没有可播放的剧集"))?;
+            if spec.title.is_empty() { spec.title = selected.title.clone(); }
+            if spec.order.is_none() { spec.order = Some(1); }
+            selected.id.clone()
         };
+        super::pan_playback_guard::check_current()
+            .map_err(|e| classify_err(self.site.class(), e))?;
+        if super::pan_episode_select::is_file_id(&episode) {
+            let play = super::pan_episode_select::resolve_file_id(&episode, &spec).await
+                .map_err(|e| classify_err(self.site.class(), e))?;
+            let mut candidate = StreamCandidate::new(play.url, StreamKind::Mp4).with_headers(play.headers);
+            if let Some(label) = play.label { candidate = candidate.with_label(label); }
+            return Ok(vec![candidate]);
+        }
         // ★ 真 flag：来自 PlayRequest.flag（UI 选了哪条线路就传哪条），缺省空串
         let flag = req.flag.clone().unwrap_or_default();
         let plays = self
@@ -513,74 +544,32 @@ impl MediaProvider for CspProvider {
             .play(&flag, &episode, &self.ext)
             .await
             .map_err(|e| classify_err(self.site.class(), e))?;
+        super::pan_playback_guard::check_current()
+            .map_err(|e| classify_err(self.site.class(), e))?;
         if plays.is_empty() {
             return Err(ProviderError::new(
                 ErrorKind::Other,
                 "取流没有返回任何地址（上游没给 durl）",
             ));
         }
-        /*
-         * ★★★ 2026-10-28（Owner 现场：`冰雪奇缘` · 线路「夸克网盘（分享页）」⇒ "这个格式解不了"）
-         * ```text
-         * 4K指南 / 咕咕 / 魔术 这类 csp 源，详情页给的"线路"**就是分享页 URL**；
-         * 它们自己的 play() 只能原样交回 ⇒ 播放器拿到的不是媒体流。
-         * ⇒ 在这里补一跳：认出分享页就交给 `PanDrive::resolve_share_play`（转存 → 直链 + __puus）。
-         *   认不出的**原样返回** —— 不许把能播的直链也吞掉。
-         * ```
-         */
+        // 分享页必须检查并选出具体文件，不能把页面或最大文件当作所选集。
         let mut out: Vec<StreamCandidate> = Vec::new();
         for p in plays {
-            if let Some(sr) = crate::csp::pan_share_play::parse_share_page(&p.url) {
-                let drive = crate::csp::pan_share_play::drive_for(sr.kind).ok_or_else(|| {
-                    ProviderError::new(
-                        ErrorKind::Other,
-                        format!("{} 的分享页解析尚未接入", sr.kind.display()),
-                    )
-                })?;
-                let resolved = drive
-                    .resolve_share_play(&sr.share_id, &sr.passcode)
-                    .await
+            let ps = crate::pan::parse_share(&p.url);
+            if ps.kind != crate::pan::PanKind::Unknown && !ps.share_id.is_empty() {
+                let resolved = super::pan_episode_select::resolve_share(&p.url, None, &spec).await
                     .map_err(|e| classify_err(self.site.class(), e))?;
-                let mut c =
-                    StreamCandidate::new(resolved.url, StreamKind::Mp4).with_headers(resolved.headers);
-                if let Some(label) = resolved.label {
-                    c = c.with_label(label);
-                }
+                let mut c = StreamCandidate::new(resolved.url, StreamKind::Mp4).with_headers(resolved.headers);
+                if let Some(label) = resolved.label { c = c.with_label(label); }
                 out.push(c);
                 continue;
             }
-            /*
-             * ★ T1b 取流（2026-11-01）：迅雷/百度分享页接到原生直链转换
-             * ```text
-             * 迅雷：转存 → 轮询 → files/{id} → web_content_link（web 客户端逐字取证）
-             * 百度：verify → share/list（已证跳）；dlink 请求形状未取证 ⇒
-             *       走到那里如实 Err（不假装能播，115/123 先例）。
-             * 判据复用 pan.rs 的 9 族（detect_kind/extract_share_id/pwd）——
-             * 认不出的原样返回，与夸克/UC 那条同一条"不吞能播的直链"纪律。
-             * ```
-             */
-            let ps = crate::pan::parse_share(&p.url);
-            if !ps.share_id.is_empty() {
-                let passcode = ps.pwd_in_url.clone().unwrap_or_default();
-                let attempted = match ps.kind {
-                    crate::pan::PanKind::Xunlei => Some(
-                        crate::csp::pan_xunlei_play::resolve(&ps.share_id, &passcode).await,
-                    ),
-                    crate::pan::PanKind::Baidu => Some(
-                        crate::csp::pan_baidu_play::resolve(&ps.share_id, &passcode).await,
-                    ),
-                    _ => None,
-                };
-                if let Some(resolved) = attempted {
-                    let resolved =
-                        resolved.map_err(|e| classify_err(self.site.class(), e))?;
-                    let mut c = StreamCandidate::new(resolved.url, StreamKind::Mp4)
-                        .with_headers(resolved.headers);
-                    if let Some(label) = resolved.label {
-                        c = c.with_label(label);
-                    }
-                    out.push(c);
-                    continue;
+            if ps.kind != crate::pan::PanKind::Unknown {
+                let shell = reqwest::Url::parse(&p.url).ok().is_some_and(|url| {
+                    matches!(url.path(), "/" | "/s" | "/s/" | "/pan") || url.path().starts_with("/share")
+                });
+                if shell {
+                    return Err(ProviderError::new(ErrorKind::NotFound, "网盘分享地址缺少有效的分享标识，不能作为媒体播放"));
                 }
             }
             let mut c = StreamCandidate::new(p.url, StreamKind::Mp4).with_headers(p.headers);
@@ -590,6 +579,11 @@ impl MediaProvider for CspProvider {
             out.push(c);
         }
         Ok(out)
+        }.await;
+        super::pan_playback_guard::check_current()
+            .map_err(|e| classify_err(self.site.class(), e))?;
+        result
+        }).await
     }
 }
 
@@ -737,6 +731,141 @@ mod tests {
     struct FakeSite {
         supports: bool,
         seen: std::sync::Mutex<Vec<(String, u32, String)>>,
+    }
+
+    struct EpisodeFixtureSite {
+        episodes: Vec<crate::csp::CspEpisode>,
+        details: std::sync::atomic::AtomicUsize,
+        plays: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl CspSite for EpisodeFixtureSite {
+        fn class(&self) -> &'static str { "EpisodeFixture" }
+        fn supports_search(&self) -> bool { false }
+        async fn home(&self, _: &str) -> std::result::Result<crate::csp::CspHome, String> { Ok(Default::default()) }
+        async fn list(&self, _: &str, _: u32, _: &str) -> std::result::Result<CspList, String> { Ok(Default::default()) }
+        async fn search(&self, _: &str, _: u32, _: &str) -> std::result::Result<CspList, String> { Err("夹具不支持搜索".into()) }
+        async fn detail(&self, id: &str, _: &str) -> std::result::Result<crate::csp::CspDetail, String> {
+            self.details.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::csp::CspDetail { id:id.into(), title:"剧集".into(), episodes:self.episodes.clone(), ..Default::default() })
+        }
+        async fn play(&self, _: &str, _: &str, _: &str) -> std::result::Result<Vec<crate::csp::CspPlay>, String> {
+            self.plays.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err("分享文件不应调用源的播放页解析".into())
+        }
+    }
+
+    fn episode_fixture(episodes: Vec<crate::csp::CspEpisode>) -> Arc<EpisodeFixtureSite> {
+        Arc::new(EpisodeFixtureSite {
+            episodes, details: std::sync::atomic::AtomicUsize::new(0),
+            plays: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    #[tokio::test]
+    async fn episode_detail_keeps_selected_file_ids_and_counts_order_per_line() {
+        let ids: Vec<String> = (1..=4).map(|n| super::super::pan_episode_select::encode_file_id(
+            crate::pan::PanKind::Quark, "fixture", "", &format!("fid-{n}")
+        )).collect();
+        let site = episode_fixture(ids.iter().enumerate().map(|(i, id)| crate::csp::CspEpisode {
+            id:id.clone(), title:format!("第{}集", i % 2 + 1), flag:if i < 2 { "A".into() } else { "B".into() },
+        }).collect());
+        let provider = CspProvider::for_test("episode-fixture", site, "");
+        let detail = provider.detail(&MediaId::new("episode-fixture", "item")).await.unwrap();
+        assert_eq!(detail.episodes.iter().map(|e| e.order).collect::<Vec<_>>(), [1, 2, 1, 2]);
+        assert_eq!(detail.episodes.iter().map(|e| e.id.clone()).collect::<Vec<_>>(), ids);
+    }
+
+    #[tokio::test]
+    async fn episode_file_ids_bypass_site_play_in_direct_and_detail_fallback_paths() {
+        let site = episode_fixture(vec![crate::csp::CspEpisode {
+            id:"panfile:invalid".into(), title:"第3集".into(), flag:"A".into(),
+        }]);
+        let provider = CspProvider::for_test("episode-fixture", site.clone(), "");
+        let id = MediaId::new("episode-fixture", "item");
+        let request = PlayRequest { episode_id:Some("panfile:invalid".into()), ..Default::default() };
+        let err = provider.resolve(&id, &request).await.unwrap_err();
+        assert!(!err.message.contains("没有可播放"), "具体文件不能再当条目id调用detail");
+        assert_eq!(site.details.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(site.plays.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(provider.resolve(&id, &PlayRequest::default()).await.is_err());
+        assert_eq!(site.details.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(site.plays.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    struct SlowPlaybackSite {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        owners: std::sync::Mutex<Vec<Option<super::super::pan_playback_guard::PlaybackOwner>>>,
+    }
+
+    #[async_trait]
+    impl CspSite for SlowPlaybackSite {
+        fn class(&self) -> &'static str { "SlowPlaybackFixture" }
+        fn supports_search(&self) -> bool { false }
+        async fn home(&self, _: &str) -> std::result::Result<crate::csp::CspHome, String> { Ok(Default::default()) }
+        async fn list(&self, _: &str, _: u32, _: &str) -> std::result::Result<CspList, String> { Ok(Default::default()) }
+        async fn search(&self, _: &str, _: u32, _: &str) -> std::result::Result<CspList, String> { Err("不支持搜索".into()) }
+        async fn detail(&self, _: &str, _: &str) -> std::result::Result<crate::csp::CspDetail, String> { Err("不应调用详情".into()) }
+        async fn play(&self, _: &str, id: &str, _: &str) -> std::result::Result<Vec<crate::csp::CspPlay>, String> {
+            self.owners.lock().unwrap().push(super::super::pan_playback_guard::current_owner());
+            if id.contains("slow") {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            if id.contains("error") { return Err("上游迟到的错误".into()); }
+            Ok(vec![crate::csp::CspPlay {
+                url:"https://cdn.example/video.mp4".into(), headers:Vec::new(), label:None,
+            }])
+        }
+    }
+
+    #[tokio::test]
+    async fn playback_provider_registers_before_parser_and_rejects_stale_success_and_error() {
+        for (index, old_id) in ["slow-success", "slow-error"].into_iter().enumerate() {
+            let site = Arc::new(SlowPlaybackSite {
+                entered:tokio::sync::Notify::new(), release:tokio::sync::Notify::new(),
+                owners:std::sync::Mutex::new(Vec::new()),
+            });
+            let provider = CspProvider::for_test("slow-fixture", site.clone(), "");
+            let id = MediaId::new("slow-fixture", "item");
+            let consumer = format!("provider-slow-parser-{index}");
+            let request = |generation, episode: &str| PlayRequest {
+                episode_id:Some(format!("https://cdn.example/{episode}")),
+                extra:Some(serde_json::json!({"play_consumer":consumer,"play_generation":generation})),
+                ..Default::default()
+            };
+            let old = request(1, old_id);
+            let (old_result, ()) = tokio::join!(
+                provider.resolve(&id, &old),
+                async {
+                    tokio::time::timeout(std::time::Duration::from_secs(2), site.entered.notified()).await.unwrap();
+                    assert_eq!(provider.resolve(&id, &request(2, "new-success")).await.unwrap().len(), 1);
+                    site.release.notify_one();
+                }
+            );
+            assert!(old_result.unwrap_err().message.contains("已过期"), "迟到的成功及错误都不能覆盖新播放");
+            let owners = site.owners.lock().unwrap();
+            assert_eq!(owners.iter().map(|o| o.as_ref().unwrap().generation).collect::<Vec<_>>(), [1, 2],
+                "真实源play future必须继承请求scope，不能在首await之后才登记");
+        }
+    }
+
+    #[tokio::test]
+    async fn playback_provider_rejects_incomplete_owner_before_source_call() {
+        let site = Arc::new(SlowPlaybackSite {
+            entered:tokio::sync::Notify::new(), release:tokio::sync::Notify::new(),
+            owners:std::sync::Mutex::new(Vec::new()),
+        });
+        let provider = CspProvider::for_test("owner-fixture", site.clone(), "");
+        let request = PlayRequest {
+            episode_id:Some("https://cdn.example/ready".into()),
+            extra:Some(serde_json::json!({"play_consumer":"partial-owner"})),
+            ..Default::default()
+        };
+        assert!(provider.resolve(&MediaId::new("owner-fixture", "item"), &request).await.is_err());
+        assert!(site.owners.lock().unwrap().is_empty());
     }
 
     #[async_trait]

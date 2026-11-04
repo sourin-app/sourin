@@ -2415,7 +2415,19 @@ async fn dispatch_inner(req: &str) -> String {
              *   （dex: QuarkTempDelete/UCTempDelete + file/delete action_type:2）。
              * Dart 在播放器 dispose 时 fire-and-forget 调这里；失败只记日志。
              */
-            crate::csp::pan_drive::purge_all_previous().await;
+            let owner = match crate::csp::pan_playback_guard::owner_from_payload(&v["args"]) {
+                Ok(owner) => owner,
+                Err(e) => return err_json(&e, "other"),
+            };
+            if a.bool_or("invalidate", false) {
+                if let Some(owner) = &owner { crate::csp::pan_playback_guard::invalidate(owner); }
+            }
+            if owner.is_none() {
+                crate::csp::pan_drive::purge_all_previous().await;
+            } else {
+                crate::csp::pan_drive::purge_for_owner(owner.clone()).await;
+            }
+            crate::csp::pan_xunlei_play::purge_for_owner(owner).await;
             with_state(|_st| Ok::<_, String>(serde_json::json!({})))
         }
         "pan_logout" => {
@@ -2903,6 +2915,240 @@ fn split_login_kind_marker(msg: &str) -> (&str, Option<&str>) {
 // ═══════════════════════════════════════════════════════════════════════
 //  测试
 // ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod pan_cleanup_envelope_tests {
+    use super::dispatch_inner;
+    use crate::csp::{pan_drive, pan_playback_guard as guard, pan_xunlei_play};
+    use crate::pan::PanKind;
+    use serde_json::{json, Value};
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct Replay {
+        events: Arc<Mutex<Vec<(String, String)>>>,
+        server: tokio::task::JoinHandle<()>,
+        base: String,
+        _credentials: crate::pan_auth::TestCredentialGuard,
+        _drive_bases: pan_drive::TestApiBaseGuard,
+        _xunlei_base: pan_xunlei_play::TestEndpointGuard,
+    }
+
+    impl Drop for Replay {
+        fn drop(&mut self) { self.server.abort(); }
+    }
+
+    impl Replay {
+        async fn new() -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let captured = events.clone();
+            let server = tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut bytes = Vec::new();
+                    let (header_end, content_length) = loop {
+                        let mut chunk = [0u8; 4096];
+                        let count = stream.read(&mut chunk).await.unwrap();
+                        assert!(count > 0 && bytes.len() < 32768, "invalid replay request");
+                        bytes.extend_from_slice(&chunk[..count]);
+                        if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                            let header = std::str::from_utf8(&bytes[..end]).unwrap();
+                            let length = header.lines().find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            }).unwrap_or(0);
+                            break (end + 4, length);
+                        }
+                    };
+                    while bytes.len() < header_end + content_length {
+                        let mut chunk = [0u8; 4096];
+                        let count = stream.read(&mut chunk).await.unwrap();
+                        assert!(count > 0, "incomplete replay body");
+                        bytes.extend_from_slice(&chunk[..count]);
+                    }
+                    let header = std::str::from_utf8(&bytes[..header_end]).unwrap();
+                    let mut request = header.lines().next().unwrap().split_whitespace();
+                    let method = request.next().unwrap();
+                    let path = request.next().unwrap();
+                    let event = if method == "POST" && path.contains("/file/delete") {
+                        let body: Value = serde_json::from_slice(
+                            &bytes[header_end..header_end + content_length],
+                        ).unwrap();
+                        let kind = if path.starts_with("/q/") { "q" } else if path.starts_with("/u/") { "u" } else {
+                            panic!("unexpected replay route");
+                        };
+                        Some((kind.to_string(), body["filelist"][0].as_str().unwrap().to_string()))
+                    } else if method == "DELETE" && path.starts_with("/x/files/") {
+                        let fid = path.trim_start_matches("/x/files/").split('?').next().unwrap();
+                        Some(("x".to_string(), fid.to_string()))
+                    } else { None };
+                    let (status, body) = if let Some(event) = event {
+                        captured.lock().unwrap().push(event);
+                        ("200 OK", r#"{"code":0}"#)
+                    } else { ("400 Bad Request", "{}") };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len(),
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            });
+            let credential = |kind, cookie: &str| crate::pan_auth::PanCredential {
+                kind, account: "fixture".into(), cookie: cookie.into(), saved_at: 1, expires_at: None,
+            };
+            let credentials = crate::pan_auth::debug_override_credentials(vec![
+                credential(PanKind::Quark, "fixture=1"),
+                credential(PanKind::Uc, "fixture=1"),
+                credential(PanKind::Xunlei, "access_token=FIXTURE"),
+            ]);
+            let drive_bases = pan_drive::debug_override_api_bases(vec![
+                (pan_drive::quark_spec().api_host.into(), format!("{base}/q")),
+                (pan_drive::uc_spec().api_host.into(), format!("{base}/u")),
+            ]);
+            let xunlei_base = pan_xunlei_play::debug_override_endpoint(format!("{base}/x"));
+            Self { events, server, base, _credentials: credentials,
+                _drive_bases: drive_bases, _xunlei_base: xunlei_base }
+        }
+
+        async fn seed(&self, owner: Option<guard::PlaybackOwner>, fid: &str) {
+            guard::with_scope(owner, async {
+                pan_drive::PanDrive::with_spec("PanQuark", pan_drive::quark_spec()).remember_temp(fid);
+                pan_drive::PanDrive::with_spec("PanUC", pan_drive::uc_spec()).remember_temp(fid);
+                pan_xunlei_play::debug_remember_temp(&format!("{}/x", self.base), "FIXTURE", fid);
+            }).await;
+        }
+
+        fn take(&self) -> Vec<(String, String)> {
+            let mut events = std::mem::take(&mut *self.events.lock().unwrap());
+            events.sort();
+            events
+        }
+
+        fn expect(&self, fids: &[&str]) {
+            let mut expected: Vec<_> = ["q", "u", "x"].into_iter().flat_map(|kind| {
+                fids.iter().map(move |fid| (kind.to_string(), fid.to_string()))
+            }).collect();
+            expected.sort();
+            assert_eq!(self.take(), expected, "actual dispatcher cleanup must be owner-scoped");
+        }
+    }
+
+    fn owner(consumer: &str, generation: u64) -> guard::PlaybackOwner {
+        guard::PlaybackOwner { consumer: consumer.into(), generation }
+    }
+
+    async fn cleanup(owner: Option<&guard::PlaybackOwner>, invalidate: bool) -> Value {
+        let request = match owner {
+            Some(owner) => json!({"cmd":"pan_cleanup_temp","args":{
+                "play_consumer":owner.consumer, "play_generation":owner.generation,
+                "invalidate":invalidate,
+            }}),
+            None => json!({"cmd":"pan_cleanup_temp"}),
+        };
+        serde_json::from_str(&dispatch_inner(&request.to_string()).await).unwrap()
+    }
+
+    async fn current(owner: &guard::PlaybackOwner) -> bool {
+        guard::with_scope(Some(owner.clone()), async { guard::check_current().is_ok() }).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ffi_pan_cleanup_envelope_invalidates_and_deletes_only_target_epoch() {
+        let _serial = pan_drive::FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let replay = Replay::new().await;
+        let target = owner("ffi-envelope-disposed", 2);
+        let other = owner("ffi-envelope-other", 1);
+        let future = owner(&target.consumer, 3);
+        guard::register(Some(target.clone())).unwrap();
+        guard::register(Some(other.clone())).unwrap();
+        replay.seed(Some(owner(&target.consumer, 1)), "closed-old").await;
+        replay.seed(Some(target.clone()), "closed-current").await;
+        replay.seed(Some(future.clone()), "closed-future").await;
+        replay.seed(Some(other.clone()), "closed-other").await;
+        replay.seed(None, "closed-legacy").await;
+
+        cleanup(Some(&target), true).await;
+        let closed = !current(&target).await;
+        let other_live = current(&other).await;
+        let cannot_reopen = guard::register(Some(owner(&target.consumer, 99))).is_err();
+        assert!(closed && other_live && cannot_reopen,
+            "full cmd+args envelope must close only its consumer permanently");
+        replay.expect(&["closed-old", "closed-current"]);
+
+        cleanup(Some(&future), false).await;
+        replay.expect(&["closed-future"]);
+        cleanup(Some(&other), false).await;
+        replay.expect(&["closed-other"]);
+        cleanup(None, false).await;
+        replay.expect(&["closed-legacy"]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ffi_pan_cleanup_envelope_stale_dispose_preserves_newer_request() {
+        let _serial = pan_drive::FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let replay = Replay::new().await;
+        let old = owner("ffi-envelope-stale", 1);
+        let new = owner(&old.consumer, 2);
+        guard::register(Some(new.clone())).unwrap();
+        replay.seed(Some(old.clone()), "stale-old").await;
+        replay.seed(Some(new.clone()), "stale-new").await;
+        replay.seed(None, "stale-legacy").await;
+        cleanup(Some(&old), true).await;
+        assert!(current(&new).await, "late old dispose must not close a newer request");
+        replay.expect(&["stale-old"]);
+        cleanup(Some(&new), false).await;
+        assert!(current(&new).await, "invalidate:false must not close the consumer");
+        replay.expect(&["stale-new"]);
+        cleanup(None, false).await;
+        replay.expect(&["stale-legacy"]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ffi_pan_cleanup_envelope_invalid_context_never_falls_back_to_legacy() {
+        let _serial = pan_drive::FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let replay = Replay::new().await;
+        let active = owner("ffi-envelope-invalid", 1);
+        guard::register(Some(active.clone())).unwrap();
+        replay.seed(Some(active.clone()), "invalid-active").await;
+        replay.seed(None, "invalid-legacy").await;
+        for args in [
+            json!({"play_consumer":active.consumer,"invalidate":true}),
+            json!({"play_generation":1,"invalidate":true}),
+            json!({"play_consumer":null,"play_generation":1,"invalidate":true}),
+            json!({"play_consumer":active.consumer,"play_generation":0,"invalidate":true}),
+            json!({"play_consumer":active.consumer,"play_generation":"1","invalidate":true}),
+        ] {
+            let request = json!({"cmd":"pan_cleanup_temp","args":args});
+            let reply: Value = serde_json::from_str(&dispatch_inner(&request.to_string()).await).unwrap();
+            assert!(reply["error"].as_str().is_some_and(|e| e.contains("播放解析请求")),
+                "invalid nested context must be rejected before cleanup");
+            assert!(current(&active).await);
+            replay.expect(&[]);
+        }
+        cleanup(Some(&active), false).await;
+        replay.expect(&["invalid-active"]);
+        cleanup(None, false).await;
+        replay.expect(&["invalid-legacy"]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ffi_pan_cleanup_envelope_legacy_request_preserves_modern_consumers() {
+        let _serial = pan_drive::FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let replay = Replay::new().await;
+        let active = owner("ffi-envelope-legacy", 1);
+        guard::register(Some(active.clone())).unwrap();
+        replay.seed(Some(active.clone()), "legacy-active").await;
+        replay.seed(None, "legacy-only").await;
+        cleanup(None, false).await;
+        assert!(current(&active).await);
+        replay.expect(&["legacy-only"]);
+        cleanup(Some(&active), false).await;
+        replay.expect(&["legacy-active"]);
+    }
+}
 
 #[cfg(test)]
 mod tests {

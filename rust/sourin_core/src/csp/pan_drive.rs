@@ -341,13 +341,13 @@ impl PanDrive {
     /// 分享里的文件**不能直接下**（CDN 只认自己网盘里的 fid）。
     /// 原版就是这样做的；不转存就只能拿到分享页（播放器报"格式解不了"）。
     /// ```
-    async fn share_save(
+    pub(crate) async fn share_save(
         &self,
         cookie: &str,
         share_id: &str,
         passcode: &str,
         fid: &str,
-        fid_token: &str,
+        _fid_token: &str,
         // 转到哪个目录（`sourin-temp` 的 fid；退回时才是 `"0"`）
         to_pdir_fid: &str,
     ) -> Result<String, String> {
@@ -361,21 +361,13 @@ impl PanDrive {
          * ```
          */
         let referer = share_referer(&self.spec, share_id)?;
-        let (fresh_stoken, fresh_token) = self
+        let (stoken, fid_token) = self
             .refresh_fid_token(cookie, share_id, passcode, fid)
-            .await
-            .unwrap_or_default();
-        let fid_token = if fresh_token.is_empty() {
-            fid_token
-        } else {
-            fresh_token.as_str()
-        };
-        // ① 换 share token（refresh 已经换过一次 ⇒ 只有它失败时才自己再换）
-        let stoken = if fresh_stoken.is_empty() {
-            self.share_stoken(cookie, share_id, passcode).await?
-        } else {
-            fresh_stoken
-        };
+            .await?;
+        super::pan_playback_guard::check_current()?;
+        if fid_token.is_empty() {
+            return Err("所选分享文件缺少转存校验，无法确认有效；请刷新详情后重试".into());
+        }
 
         // ② 转存
         let save_url = self.api(&format!("share/sharepage/save?{}", self.spec.pr_fr));
@@ -387,7 +379,7 @@ impl PanDrive {
          * 我就没办法用了」）。现在由调用方（`save_into_temp_dir`）传
          * `sourin-temp` 的 fid 进来；只有建目录失败时才会是 `"0"`（并打 warn）。
          */
-        let save_body = share_save_body(fid, fid_token, share_id, &stoken, to_pdir_fid);
+        let save_body = share_save_body(fid, &fid_token, share_id, &stoken, to_pdir_fid);
         let resp = self
             .client
             .post(&save_url)
@@ -457,6 +449,7 @@ impl PanDrive {
                         .map(|x| x.to_string())
                 });
             if let Some(saved) = saved {
+                self.check_temp_owner(&saved)?;
                 return Ok(saved);
             }
             let status = v
@@ -481,7 +474,7 @@ impl PanDrive {
     /// 是同一套动作，临时目录与自愈的**一次性重试子目录**共用一份实现
     /// （两处各写一份必然漂移）。不带缓存 —— 进程内缓存只有常驻的临时目录需要。
     /// ⚠️ 只认**目录**：同名文件不算（否则转存会落在一个非目录 fid 上）。
-    async fn ensure_dir_under(
+    pub(crate) async fn ensure_dir_under(
         &self,
         cookie: &str,
         parent_fid: &str,
@@ -501,6 +494,7 @@ impl PanDrive {
             return Ok(fid);
         }
         // ② 建
+        super::pan_playback_guard::check_current()?;
         let kind = self.spec.kind.code();
         let resp = self
             .client
@@ -523,6 +517,10 @@ impl PanDrive {
                 short(&text)
             ));
         }
+        if super::pan_playback_guard::current_owner().is_some() && name != TEMP_DIR_NAME {
+            self.check_temp_owner(&fid)?;
+            self.remember_temp(&fid);
+        }
         log::info!(
             "[PAN] 已建目录 kind={kind} name={name} fid={fid}（父目录 {parent_fid}）"
         );
@@ -541,7 +539,7 @@ impl PanDrive {
     /// ```
     /// ⚠️ 只认**目录**：同名文件（极少数用户会自己建个 sourin-temp 文件）不算，
     ///    否则转存会失败在一个根本不是目录的 fid 上。
-    async fn ensure_temp_dir(&self, cookie: &str) -> Result<String, String> {
+    pub(crate) async fn ensure_temp_dir(&self, cookie: &str) -> Result<String, String> {
         let kind = self.spec.kind.code().to_string();
         // ① 缓存
         {
@@ -569,16 +567,16 @@ impl PanDrive {
     /// save 的同名去重必然落空（对内容级去重无效但无害 —— 见 `degrade_attempt`）。
     /// 目录 fid 由调用方 `remember_temp` 记账（purge LIFO：先删文件再删本目录，
     /// 别只建不清 —— 又一个目录垃圾源）。
-    async fn ensure_retry_subdir(&self, cookie: &str, temp_fid: &str) -> Result<String, String> {
+    pub(crate) async fn ensure_retry_subdir(&self, cookie: &str, temp_fid: &str) -> Result<String, String> {
         let name = retry_subdir_name();
         self.ensure_dir_under(cookie, temp_fid, &name).await
     }
 
-    /// 转存到**临时目录**（建目录失败 ⇒ 退回根目录 + warn，绝不整体失败）
+    /// 现代播放独占一次性子目录，建目录失败即停止；无上下文的旧协议保留原回退。
     ///
     /// 两个调用点（`play` 的分享分支、`resolve_share_play`）都走这里，
     /// 保证"往哪转"只有一份判断 —— 两处各写一份必然漂移。
-    async fn save_into_temp_dir(
+    pub(crate) async fn save_into_temp_dir(
         &self,
         cookie: &str,
         share_id: &str,
@@ -586,6 +584,16 @@ impl PanDrive {
         fid: &str,
         fid_token: &str,
     ) -> Result<String, String> {
+        super::pan_playback_guard::check_current()?;
+        if super::pan_playback_guard::current_owner().is_some() {
+            let temp = self.ensure_temp_dir(cookie).await
+                .map_err(|_| "临时转存目录不可用，请稍后重试".to_string())?;
+            super::pan_playback_guard::check_current()?;
+            let dir = self.ensure_retry_subdir(cookie, &temp).await
+                .map_err(|_| "无法建立本次播放的独立临时目录，请稍后重试".to_string())?;
+            super::pan_playback_guard::check_current()?;
+            return self.share_save(cookie, share_id, passcode, fid, fid_token, &dir).await;
+        }
         let (dir, fallback) = temp_dir_or_root(self.ensure_temp_dir(cookie).await);
         if let Some(why) = fallback.as_deref() {
             // ⚠️ PAN 侧日志必须走 applog::write_file_log（log 门面在本 crate 无 sink）
@@ -629,11 +637,15 @@ impl PanDrive {
     /// 而 `pan_auth::load` 直读系统钥匙串 ⇒ 天然热。
     /// 若这里缓存到字段里，用户刚扫码成功、这边还用旧值 = "要重启"的观感。
     /// ```
-    fn cookie(&self) -> Option<String> {
+    pub(crate) fn cookie(&self) -> Option<String> {
         if let Some(c) = self.test_cookie_override() {
             return Some(c);
         }
         crate::pan_auth::load(self.spec.kind).map(|c| c.cookie)
+    }
+
+    pub(crate) fn kind(&self) -> PanKind {
+        self.spec.kind
     }
 
     /// ★ 测试缝（**仅测试编译存在**，release 构建恒 None）：
@@ -1018,7 +1030,7 @@ const PAN_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.
 ///
 /// ★ 2026-10-28：从"写死 UC 的 host/pr"改成"跟着 spec 走" —— 这是夸克能共用
 ///   同一份实现的前提（否则 UC 的实现会给夸克发错 host）。
-fn share_token_url(spec: &PanDriveSpec) -> String {
+pub(crate) fn share_token_url(spec: &PanDriveSpec) -> String {
     format!(
         "{}/1/clouddrive/share/sharepage/token?{}",
         api_root(spec),
@@ -1058,7 +1070,7 @@ fn share_token_body(share_id: &str, passcode: &str) -> String {
 }
 
 /// 列分享目录的 URL（`stoken` 必须 URL 编码：实测值含 `+` `/` `=`）
-fn share_detail_url(
+pub(crate) fn share_detail_url(
     spec: &PanDriveSpec,
     share_id: &str,
     stoken: &str,
@@ -1096,7 +1108,7 @@ fn urlencode_min(s: &str) -> String {
 /// ★ 字段名全部来自**实测响应**（读数 ③）：`fid` / `file_name` / `file_type` /
 ///   `size` / `dir` / `share_fid_token`。与 `parse_entries`（`file/sort` 那一路）
 ///   **分开放**：两边的取证来源不同，混用一个函数会让"哪条证据支持哪个字段"糊掉。
-fn parse_share_entries(v: &serde_json::Value) -> Vec<DriveEntry> {
+pub(crate) fn parse_share_entries(v: &serde_json::Value) -> Vec<DriveEntry> {
     let Some(arr) = v
         .get("data")
         .and_then(|d| d.get("list"))
@@ -1153,7 +1165,7 @@ fn require_share_entries(
 ///
 /// ★ `kind` 只用于**报错文案点名是哪一家**（夸克/UC 共用这一份判据；
 ///   文案里写错盘名会让用户按错的方向去排查）。
-fn share_envelope(kind: &str, body: &str, what: &str) -> Result<serde_json::Value, String> {
+pub(crate) fn share_envelope(kind: &str, body: &str, what: &str) -> Result<serde_json::Value, String> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| format!("{kind} {what} 返回的不是 JSON（{e}）：{}", short(body)))?;
     let status = v.get("status").and_then(|c| c.as_i64());
@@ -1365,6 +1377,7 @@ impl CspSite for PanDrive {
     /// 那是另一件事，本轮不猜。
     /// ```
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
+        super::pan_playback_guard::check_current()?;
         let cookie = match self.cookie() {
             Some(c) => c,
             None => return Err(login_hint(self.spec.kind)),
@@ -1379,14 +1392,24 @@ impl CspSite for PanDrive {
          *   自己网盘的文件（裸 fid）走原来的路。
          *   ★ 解码收进 `parse_share_item`（与 `item_id_of` 成对，形状由门禁钉死）。
          */
+        let _mutation = if parse_share_item(raw_id).is_some() {
+            Some(super::pan_playback_guard::mutation_lock(self.spec.kind.code()).await)
+        } else {
+            None
+        };
+        super::pan_playback_guard::check_current()?;
         let fid = if let Some((share_id, sfid, token)) = parse_share_item(raw_id) {
             // ★ 走临时目录（建不出来才退回根目录），见 `save_into_temp_dir`
-            self.save_into_temp_dir(&cookie, &share_id, "", &sfid, &token)
-                .await?
+            self.purge_previous().await;
+            super::pan_playback_guard::check_current()?;
+            let fid = self.save_into_temp_dir(&cookie, &share_id, "", &sfid, &token).await?;
+            self.remember_temp(&fid);
+            fid
         } else {
             raw_id.to_string()
         };
         let url = self.api(&format!("file/download?{}", self.spec.pr_fr));
+        super::pan_playback_guard::check_current()?;
         let body = format!(
             "{{\"fids\":[{}]}}",
             serde_json::Value::String(fid.to_string())
@@ -1416,6 +1439,7 @@ impl CspSite for PanDrive {
             }
         }
         let text = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
+        super::pan_playback_guard::check_current()?;
         if !status.is_success() {
             // ★ N-23018（2026-11-01，lead 批复③）：夸克 21001「file not found」=
             //   **文件已不存在**（真机实锤：重试被自己上一次解析的 purge 竞态删掉；
@@ -1562,7 +1586,7 @@ impl PanDrive {
     /// 但调用本函数的前提是 `list()` 已经过了登录闸（用户登录过）——
     /// 把 cookie 一起带上不会更糟，且账号自己的分享能看到完整列表（未验）。
     /// ```
-    async fn share_list_family(
+    pub(crate) async fn share_list_family(
         &self,
         cookie: &str,
         share_id: &str,
@@ -1575,7 +1599,7 @@ impl PanDrive {
     }
 
     /// 换 share token（**唯一生产点**；`list` 与 `save` 都用它，保证同一次会话）
-    async fn share_stoken(
+    pub(crate) async fn share_stoken(
         &self,
         cookie: &str,
         share_id: &str,
@@ -1616,16 +1640,28 @@ impl PanDrive {
     }
 
     /// 用**指定的 stoken** 列分享目录（不自己换 token —— save 必须与它配对）
-    async fn share_detail_with_stoken(
+    pub(crate) async fn share_detail_with_stoken(
         &self,
         cookie: &str,
         share_id: &str,
         stoken: &str,
         folder: &str,
     ) -> Result<Vec<DriveEntry>, String> {
+        let v = self.share_detail_page_with_stoken(cookie, share_id, stoken, folder, 1).await?;
+        require_share_entries(parse_share_entries(&v), share_id)
+    }
+
+    async fn share_detail_page_with_stoken(
+        &self,
+        cookie: &str,
+        share_id: &str,
+        stoken: &str,
+        folder: &str,
+        page: u32,
+    ) -> Result<serde_json::Value, String> {
         let kind = self.spec.kind.display();
         let referer = share_referer(&self.spec, share_id)?;
-        let url = share_detail_url(&self.spec, share_id, stoken, folder, 1);
+        let url = share_detail_url(&self.spec, share_id, stoken, folder, page);
         let resp = self
             .client
             .get(&url)
@@ -1641,7 +1677,82 @@ impl PanDrive {
             return Err(format!("{kind} 列分享目录返回 HTTP {status}：{}", short(&body)));
         }
         let v = share_envelope(&kind, &body, "列分享目录")?;
-        require_share_entries(parse_share_entries(&v), share_id)
+        if v.get("data").and_then(|d| d.get("list")).and_then(|l| l.as_array()).is_none() {
+            return Err(format!("{kind} 列分享目录没有返回文件清单"));
+        }
+        Ok(v)
+    }
+
+    /// 选集必须扫描所有分页和子目录，不能用「凑够三个最大文件」的候选预算。
+    pub(crate) async fn share_video_files(
+        &self, cookie: &str, share_id: &str, passcode: &str, folder: &str,
+    ) -> Result<Vec<DriveEntry>, String> {
+        tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            let stoken = self.share_stoken(cookie, share_id, passcode).await?;
+            self.share_video_files_with_stoken(cookie, share_id, &stoken, folder).await
+        }).await.map_err(|_| "列网盘分享文件超时，请稍后重试".to_string())?
+    }
+
+    async fn share_video_files_with_stoken(
+        &self, cookie: &str, share_id: &str, stoken: &str, root: &str,
+    ) -> Result<Vec<DriveEntry>, String> {
+        self.share_files_with_stoken(cookie, share_id, stoken, root, true).await
+    }
+
+    async fn share_files_with_stoken(
+        &self, cookie: &str, share_id: &str, stoken: &str, root: &str, videos_only: bool,
+    ) -> Result<Vec<DriveEntry>, String> {
+        const MAX_DEPTH: usize = 8;
+        const MAX_REQUESTS: usize = 128;
+        let mut folders = std::collections::VecDeque::from([(root.to_string(), String::new(), 0usize)]);
+        let mut seen_folders = std::collections::HashSet::new();
+        let mut seen_files = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        let mut requests = 0;
+        while let Some((folder, path, depth)) = folders.pop_front() {
+            if !seen_folders.insert(folder.clone()) { continue; }
+            let mut page = 1;
+            let mut page_seen = std::collections::HashSet::new();
+            loop {
+                requests += 1;
+                if requests > MAX_REQUESTS {
+                    return Err("分享文件过多，尚未列举完整；请改用更小的分享目录".into());
+                }
+                let v = self.share_detail_page_with_stoken(cookie, share_id, stoken, &folder, page).await?;
+                let raw_len = v.get("data").and_then(|d| d.get("list")).and_then(|l| l.as_array())
+                    .map_or(0, Vec::len);
+                let entries = parse_share_entries(&v);
+                let page_ids: Vec<String> = entries.iter().map(|e| e.fid.clone()).collect();
+                if raw_len >= 50 && !page_seen.insert(page_ids) {
+                    return Err("网盘重复返回同一页文件，无法确认完整清单；请稍后重试".into());
+                }
+                for mut entry in entries {
+                    if entry.is_dir {
+                        if depth >= MAX_DEPTH {
+                            return Err("分享目录层级过深，尚未列举完整；请改用具体剧集目录".into());
+                        }
+                        let child_path = if path.is_empty() { entry.name.clone() } else { format!("{path}/{}", entry.name) };
+                        folders.push_back((entry.fid, child_path, depth + 1));
+                    } else if (!videos_only || (entry.size > 0 && is_video_name(&entry.name)))
+                        && seen_files.insert(entry.fid.clone()) {
+                        if !path.is_empty() { entry.name = format!("{path}/{}", entry.name); }
+                        out.push(entry);
+                    }
+                }
+                if raw_len < 50 { break; }
+                page += 1;
+            }
+        }
+        if out.is_empty() && videos_only {
+            return Err("分享里没有可播放的视频文件".into());
+        }
+        out.sort_by(|a, b| {
+            super::pan_episode_select::episode_number(&a.name)
+                .cmp(&super::pan_episode_select::episode_number(&b.name))
+                .then_with(|| a.name.cmp(&b.name))
+                .then_with(|| a.fid.cmp(&b.fid))
+        });
+        Ok(out)
     }
 
     /// 按 fid 反查**与同一次 stoken 配套**的 `share_fid_token`，返回 `(stoken, token)`
@@ -1655,26 +1766,12 @@ impl PanDrive {
         fid: &str,
     ) -> Result<(String, String), String> {
         let stoken = self.share_stoken(cookie, share_id, passcode).await?;
-        let mut frontier: Vec<String> = vec!["0".to_string()];
-        for depth in 0..=SHARE_PICK_MAX_DEPTH {
-            let mut next: Vec<String> = Vec::new();
-            for folder in &frontier {
-                let entries = self
-                    .share_detail_with_stoken(cookie, share_id, &stoken, folder)
-                    .await?;
-                for e in entries {
-                    if e.fid == fid {
-                        return Ok((stoken, e.fid_token.unwrap_or_default()));
-                    }
-                    if e.is_dir && depth < SHARE_PICK_MAX_DEPTH {
-                        next.push(e.fid);
-                    }
-                }
-            }
-            if next.is_empty() {
-                break;
-            }
-            frontier = next;
+        let entries = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            self.share_files_with_stoken(cookie, share_id, &stoken, "0", false),
+        ).await.map_err(|_| "刷新分享文件校验超时，请稍后重试".to_string())??;
+        if let Some(entry) = entries.into_iter().find(|e| e.fid == fid) {
+            return Ok((stoken, entry.fid_token.unwrap_or_default()));
         }
         Ok((stoken, String::new()))
     }
@@ -1692,16 +1789,21 @@ impl PanDrive {
     ///       继续走 —— 残余竞态由 degrade_attempt 的 21001 自愈兜底。
     /// ```
     pub async fn purge_previous(&self) {
+        self.purge_owned(super::pan_playback_guard::current_owner()).await;
+    }
+
+    async fn purge_owned(&self, target: Option<super::pan_playback_guard::PlaybackOwner>) {
+        let Some(cookie) = self.cookie() else { return };
         let kind = self.spec.kind.code().to_string();
-        let victims: Vec<String> = {
+        let victims: Vec<TempSaved> = {
             let mut guard = temp_saved().lock().unwrap_or_else(|e| e.into_inner());
-            let mut keep: Vec<(String, String)> = Vec::new();
+            let mut keep = Vec::new();
             let mut victims = Vec::new();
-            for (k, fid) in guard.drain(..) {
-                if k == kind {
-                    victims.push(fid);
+            for saved in guard.drain(..) {
+                if saved.kind == kind && super::pan_playback_guard::cleanup_matches(&saved.owner, &target) {
+                    victims.push(saved);
                 } else {
-                    keep.push((k, fid));
+                    keep.push(saved);
                 }
             }
             *guard = keep;
@@ -1710,11 +1812,12 @@ impl PanDrive {
         if victims.is_empty() {
             return;
         }
-        let Some(cookie) = self.cookie() else { return };
         let deadline = std::time::Instant::now() + PURGE_DELETE_WAIT_BUDGET;
         // ★ LIFO（N-23018 v2）：自愈的"一次性子目录"先记目录、后记其文件 ⇒
         //   倒序清理 = 先删文件再删其目录 —— 正序会把非空目录的删除打在前面（必失败）。
-        for fid in victims.into_iter().rev() {
+        let mut failed = Vec::new();
+        for victim in victims.into_iter().rev() {
+            let fid = &victim.fid;
             /*
              * ★ 2026-10-29：日志写清"从 sourin-temp 清理"。
              *
@@ -1725,7 +1828,7 @@ impl PanDrive {
              * ⚠️ PAN 侧日志必须走 `applog::write_file_log`（`log` 门面在本 crate
              *    无 sink，23018 猎捕二轮实锤的黑洞）。
              */
-            match self
+            let confirmed = match self
                 .client
                 .post(file_delete_url(&self.spec))
                 .header("Content-Type", "application/json")
@@ -1739,18 +1842,22 @@ impl PanDrive {
                     // 删除是异步任务 ⇒ 带 task_id 就等到终态；响应形态认不出
                     // （没有 task_id，可能同步删除）⇒ 如实记一笔后当已生效。
                     let body = r.text().await.unwrap_or_default();
-                    let task_id = serde_json::from_str::<serde_json::Value>(&body)
-                        .ok()
-                        .and_then(|v| {
+                    let value = serde_json::from_str::<serde_json::Value>(&body).ok();
+                    let accepted = value.as_ref().is_some_and(|v| {
+                        v.get("code").and_then(|c| c.as_i64()) == Some(0)
+                            || (v.get("code").is_none() && v.get("status").and_then(|s| s.as_i64()) == Some(200))
+                    });
+                    let task_id = value.as_ref().and_then(|v| {
                             v.get("data")
                                 .and_then(|d| d.get("task_id"))
                                 .and_then(|x| x.as_str())
                                 .filter(|x| !x.is_empty())
                                 .map(|x| x.to_string())
                         });
-                    let confirmed = match task_id {
-                        Some(id) => self.wait_delete_task(&cookie, &id, deadline).await,
-                        None => {
+                    let confirmed = match (accepted, task_id) {
+                        (false, _) => false,
+                        (true, Some(id)) => self.wait_delete_task(&cookie, &id, deadline).await,
+                        (true, None) => {
                             crate::applog::write_file_log(
                                 "PAN",
                                 &format!(
@@ -1775,22 +1882,33 @@ impl PanDrive {
                             ),
                         );
                     }
+                    confirmed
                 }
-                Ok(r) => crate::applog::write_file_log(
+                Ok(r) => {
+                    crate::applog::write_file_log(
                     "PAN",
                     &format!(
                         "清理 {TEMP_DIR_NAME} 里的临时转存失败 kind={kind} fid={fid} HTTP {}",
                         r.status()
                     ),
-                ),
-                Err(e) => crate::applog::write_file_log(
+                    );
+                    false
+                }
+                Err(e) => {
+                    crate::applog::write_file_log(
                     "PAN",
                     &format!(
                         "清理 {TEMP_DIR_NAME} 里的临时转存请求失败 kind={kind} fid={fid} err={e}"
                     ),
-                ),
+                    );
+                    false
+                }
+            };
+            if !confirmed && victim.owner.is_some() {
+                failed.push(victim);
             }
         }
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).extend(failed.into_iter().rev());
     }
 
     /// 轮询删除任务到终态（`sharepage/save` 同族的 `task?` 读数）
@@ -1857,12 +1975,27 @@ impl PanDrive {
         );
     }
 
+    fn check_temp_owner(&self, fid: &str) -> Result<(), String> {
+        let owner = super::pan_playback_guard::current_owner();
+        let kind = self.spec.kind.code();
+        if temp_saved().lock().unwrap_or_else(|e| e.into_inner()).iter().any(|saved| {
+            saved.kind == kind && saved.fid == fid && saved.owner != owner
+        }) {
+            return Err("网盘转存回吐了其他播放请求的临时副本，无法确认本次文件归属；请稍后重试或换一条线路".into());
+        }
+        Ok(())
+    }
+
     /// 记下这次转存的 fid（下次解析前清理）
-    fn remember_temp(&self, fid: &str) {
+    pub(crate) fn remember_temp(&self, fid: &str) {
         temp_saved()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push((self.spec.kind.code().to_string(), fid.to_string()));
+            .push(TempSaved {
+                kind: self.spec.kind.code().to_string(),
+                fid: fid.to_string(),
+                owner: super::pan_playback_guard::current_owner(),
+            });
     }
 
     /// ★★★ 把**分享页 URL** 解析成可播直链（给"把分享页当剧集"的那些 csp 源用）
@@ -1890,8 +2023,6 @@ impl PanDrive {
                 login_hint(self.spec.kind)
             ));
         };
-        // 先清上一次的临时转存（best-effort）
-        self.purge_previous().await;
         /*
          * ★★★ 2026-10-30（现场反馈批次任务 5，Owner 图4：23018「download file size limit」）
          * ```text
@@ -1902,6 +2033,10 @@ impl PanDrive {
          * ```
          */
         let candidates = self.pick_share_candidates(&cookie, share_id, passcode).await?;
+        let _mutation = super::pan_playback_guard::mutation_lock(self.spec.kind.code()).await;
+        super::pan_playback_guard::check_current()?;
+        self.purge_previous().await;
+        super::pan_playback_guard::check_current()?;
         // 「夸克网盘」→「夸克」：Owner 指定的文案是「该分享的文件超出夸克下载上限」
         let short_kind = self
             .spec
@@ -1927,6 +2062,7 @@ impl PanDrive {
             },
         )
         .await?;
+        super::pan_playback_guard::check_current()?;
         // UI 文案：降级过要让人看见「跳过了几个超限文件」（否则像没发生一样）
         out.label = Some(if notes.is_empty() {
             format!("分享页 · {}", candidates[_idx].name)
@@ -1962,12 +2098,22 @@ impl PanDrive {
     ///     （网盘/分享侧真没了，维持上批文案）。
     /// 每一档动作都落 AppLog（自愈了什么、为什么）—— 不静默。
     /// ```
-    async fn degrade_attempt(
+    pub(crate) async fn degrade_attempt(
         &self,
         cookie: &str,
         share_id: &str,
         passcode: &str,
         entry: &DriveEntry,
+    ) -> Result<CspPlay, String> {
+        super::pan_playback_guard::check_current()?;
+        self.degrade_attempt_with_budget(
+            cookie, share_id, passcode, entry, SELFHEAL_TOTAL_BUDGET, SELFHEAL_BACKOFF_BASE,
+        ).await
+    }
+
+    async fn degrade_attempt_with_budget(
+        &self, cookie: &str, share_id: &str, passcode: &str, entry: &DriveEntry,
+        budget: std::time::Duration, backoff: std::time::Duration,
     ) -> Result<CspPlay, String> {
         let token = entry.fid_token.clone().unwrap_or_default();
         let mut fid = self
@@ -1975,17 +2121,18 @@ impl PanDrive {
             .await?;
         self.remember_temp(&fid);
         // 复用 `play`（`share_save` 已把文件放进我自己的网盘 ⇒ 走到裸 fid 那条路）
-        let deadline = std::time::Instant::now() + SELFHEAL_TOTAL_BUDGET;
+        // 首次转存不计入自愈预算；此后所有下载、退避、目录与转存 await 统一封顶。
+        let deadline = tokio::time::Instant::now() + budget;
         let mut resaves: u32 = 0;
         // 末次转存是否被网盘去重回吐了死 fid（决定穷尽终态走哪一态）
         let mut dedupe_echo = false;
-        let result = loop {
+        let result = tokio::time::timeout_at(deadline, async {
+        loop {
+            super::pan_playback_guard::check_current()?;
             match self.play("", &fid, "").await {
                 Ok(plays) => break Ok(plays),
                 Err(e) if is_file_not_found_21001(&e) => {
-                    if resaves >= SELFHEAL_RESAVE_ATTEMPTS
-                        || std::time::Instant::now() >= deadline
-                    {
+                    if resaves >= SELFHEAL_RESAVE_ATTEMPTS {
                         // ★ 穷尽终态分两态（真机缺口的文案修正，lead 批复②）：
                         // 去重回吐型可重试（分享的文件明明还在）；真没了才说"已不存在"。
                         break Err(if dedupe_echo {
@@ -2009,18 +2156,25 @@ impl PanDrive {
                             entry.name
                         ),
                     );
-                    tokio::time::sleep(SELFHEAL_BACKOFF_BASE * resaves).await;
+                    tokio::time::sleep(backoff * resaves).await;
+                    super::pan_playback_guard::check_current()?;
                     if use_subdir {
                         // ③ 换一次性子目录：确定性躲开"同名目录内去重"
                         //   （对内容级去重无效但无害 —— 两类成因无法静态区分，都兜）。
                         //   目录 fid 也记账（purge LIFO：先删文件再删本目录，别只建不清）。
-                        let temp = temp_dir_or_root(self.ensure_temp_dir(cookie).await).0;
+                        let modern = super::pan_playback_guard::current_owner().is_some();
+                        let temp = if modern {
+                            self.ensure_temp_dir(cookie).await?
+                        } else {
+                            temp_dir_or_root(self.ensure_temp_dir(cookie).await).0
+                        };
+                        super::pan_playback_guard::check_current()?;
                         match self
                             .ensure_dir_under(cookie, &temp, &retry_subdir_name())
                             .await
                         {
                             Ok(sub) => {
-                                self.remember_temp(&sub);
+                                if !modern { self.remember_temp(&sub); }
                                 fid = self
                                     .share_save(
                                         cookie, share_id, passcode, &entry.fid, &token, &sub,
@@ -2028,6 +2182,9 @@ impl PanDrive {
                                     .await?;
                             }
                             Err(why) => {
+                                if modern {
+                                    return Err("无法建立本次播放的独立临时目录，请稍后重试".into());
+                                }
                                 crate::applog::write_file_log(
                                     "PAN",
                                     &format!(
@@ -2063,8 +2220,14 @@ impl PanDrive {
                 }
                 Err(e) => break Err(e),
             }
-        };
+        }
+        }).await.unwrap_or_else(|_| Err(if dedupe_echo {
+            format!("{} 临时转存副本被网盘同名去重卡住，自愈超过时间预算；分享的文件还在，请稍后重试或换一条线路", self.spec.kind.display())
+        } else {
+            format!("{} 临时转存自愈超过时间预算，请稍后重试或换一条线路", self.spec.kind.display())
+        }));
         let mut plays = result?;
+        super::pan_playback_guard::check_current()?;
         plays
             .pop()
             .ok_or_else(|| "转存后取直链没有返回地址".to_string())
@@ -2078,7 +2241,7 @@ impl PanDrive {
     /// 层数语义不变：**浅层优先** —— 某层凑够 [`SHARE_PICK_MAX_TRIES`] 个视频就不再下钻；
     /// 一个视频都没有 ⇒ 兜底用"任意文件"清单（.iso/.exe 伪装很常见，真分享里见得到）。
     /// ```
-    async fn pick_share_candidates(
+    pub(crate) async fn pick_share_candidates(
         &self,
         cookie: &str,
         share_id: &str,
@@ -2267,7 +2430,7 @@ pub fn retry_subdir_name() -> String {
 }
 
 /// 分享里找视频时最多下钻几层目录（整季分文件夹是常态）
-const SHARE_PICK_MAX_DEPTH: usize = 2;
+pub(crate) const SHARE_PICK_MAX_DEPTH: usize = 2;
 
 /// 上一次播放留下的**临时转存文件**（下一次解析前删掉）
 ///
@@ -2277,10 +2440,16 @@ const SHARE_PICK_MAX_DEPTH: usize = 2;
 /// ⇒ **每次播放转存一份（不复用），播完删掉**。
 /// 我们此前只做了前半截 ⇒ 用户网盘里会一直堆；这里记下 fid，下次解析开始时清掉。
 /// ```
-static TEMP_SAVED: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> =
+struct TempSaved {
+    kind: String,
+    fid: String,
+    owner: Option<super::pan_playback_guard::PlaybackOwner>,
+}
+
+static TEMP_SAVED: std::sync::OnceLock<std::sync::Mutex<Vec<TempSaved>>> =
     std::sync::OnceLock::new();
 
-fn temp_saved() -> &'static std::sync::Mutex<Vec<(String, String)>> {
+fn temp_saved() -> &'static std::sync::Mutex<Vec<TempSaved>> {
     TEMP_SAVED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
@@ -2302,31 +2471,31 @@ fn file_delete_body(fid: &str) -> String {
 }
 
 /// 这个文件名看起来是可播视频吗（**纯函数**）
-fn is_video_name(name: &str) -> bool {
-    const EXT: [&str; 12] = [
+pub(crate) fn is_video_name(name: &str) -> bool {
+    const EXT: [&str; 15] = [
         "mp4", "mkv", "ts", "m3u8", "flv", "avi", "wmv", "mov", "m4v", "rmvb", "mpg", "webm",
+        "m2ts", "iso", "rm",
     ];
     let lower = name.to_ascii_lowercase();
     let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     EXT.contains(&ext)
 }
 
-/// 清理**所有盘**上一次留下的临时转存（播放结束时调用；失败只记日志）
-///
-/// # 为什么是"所有盘"而不是"当前这个盘"
-/// ```text
-/// 播放器 dispose 时只知道自己播完了一条，**不知道它是哪家盘的分享**（那是 resolve 阶段的上下文）。
-/// 而临时表里的条目本来就少（每个盘最多 1 条）⇒ 全清最省事，也不会误删自己网盘里的用户文件
-/// （只删我们自己转存进去、且还没清的那几个 fid）。
-/// ```
+/// 无会话上下文的旧调用方只清理无归属的临时副本，不触碰现代播放页。
 pub async fn purge_all_previous() {
+    purge_for_owner(None).await;
+}
+
+/// 播放页退出只回收其归属的副本；旧协议不会触碰现代会话的副本。
+pub async fn purge_for_owner(target: Option<super::pan_playback_guard::PlaybackOwner>) {
     for kind in [PanKind::Quark, PanKind::Uc] {
         let drive = match kind {
             PanKind::Quark => PanDrive::with_spec("PanQuark", quark_spec()),
             PanKind::Uc => PanDrive::with_spec("PanUC", uc_spec()),
             _ => continue,
         };
-        drive.purge_previous().await;
+        let _mutation = super::pan_playback_guard::mutation_lock(kind.code()).await;
+        drive.purge_owned(target.clone()).await;
     }
 }
 
@@ -2455,7 +2624,33 @@ static TEST_API_BASES: std::sync::OnceLock<std::sync::Mutex<std::collections::Ha
 /// ★ 测试缝：夹具互斥锁 —— `TEMP_SAVED` 账本是**进程级共享**的，三个夹具
 /// 并行会互相 purge 掉对方的记账（LIFO 断言被打乱）⇒ 夹具整体串行。
 #[cfg(test)]
-static FIXTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static FIXTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+thread_local! {
+    static TEST_SCOPED_API_BASES: std::cell::RefCell<Vec<(String, String)>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
+#[cfg(test)]
+pub(crate) struct TestApiBaseGuard {
+    previous: Vec<(String, String)>,
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for TestApiBaseGuard {
+    fn drop(&mut self) {
+        TEST_SCOPED_API_BASES.with(|slot| *slot.borrow_mut() = std::mem::take(&mut self.previous));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn debug_override_api_bases(bases: Vec<(String, String)>) -> TestApiBaseGuard {
+    let previous = TEST_SCOPED_API_BASES.with(|slot| slot.replace(bases));
+    TestApiBaseGuard { previous, _thread_bound: std::marker::PhantomData }
+}
 
 impl PanDrive {
     /// ★ 测试缝（仅测试编译存在）：假服务器夹具需要"已登录"态，而真 cookie
@@ -2488,6 +2683,11 @@ impl PanDrive {
     /// 仅供测试：见 `api_root`（假网盘夹具的 API 根，按 api_host 键控）。
     #[cfg(test)]
     fn test_api_base_for(host: &str) -> Option<String> {
+        if let Some(base) = TEST_SCOPED_API_BASES.with(|slot| {
+            slot.borrow().iter().find(|(key, _)| key == host).map(|(_, base)| base.clone())
+        }) {
+            return Some(base);
+        }
         TEST_API_BASES
             .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
             .lock()
@@ -3525,6 +3725,7 @@ mod tests {
     //   · file/delete 逐个记录（断言 purge LIFO 与子目录清理）
 
     struct PanScript {
+        selection: Option<SelectionReplay>,
         /// save 第 n 次调用回吐的 fid（越界取末位 ⇒ "恒回吐"）
         save_fids: std::sync::Mutex<Vec<String>>,
         /// 这些 fid 的 file/download 一律 HTTP 404(21001)（其余成功）
@@ -3540,6 +3741,7 @@ mod tests {
     impl PanScript {
         fn new(save_fids: Vec<String>, dead_fids: Vec<String>) -> Self {
             Self {
+                selection: None,
                 save_fids: std::sync::Mutex::new(save_fids),
                 dead_fids,
                 saves: std::sync::atomic::AtomicUsize::new(0),
@@ -3595,6 +3797,22 @@ mod tests {
                             buf.extend_from_slice(&chunk[..n]);
                         }
                         let body_text = String::from_utf8_lossy(&buf[head_end..]).to_string();
+                        if let Some(selection) = &script.selection {
+                            if path.contains("/share/sharepage/detail")
+                                && selection.tokens.load(std::sync::atomic::Ordering::SeqCst) >= 2
+                                && selection.pause_fresh.is_some()
+                                && !selection.fresh_paused.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                let (entered, release) = selection.pause_fresh.as_ref().unwrap();
+                                entered.notify_one();
+                                release.notified().await;
+                            }
+                            if path.contains("/share/sharepage/detail")
+                                && selection.slow_after_token.is_some_and(|n| {
+                                    selection.tokens.load(std::sync::atomic::Ordering::SeqCst) >= n
+                                }) {
+                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            }
+                        }
                         let (code, body) = script.route(&path, &body_text);
                         let resp = format!(
                             "HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -3609,6 +3827,48 @@ mod tests {
 
         fn route(&self, path: &str, req_body: &str) -> (String, String) {
             let ok = |v: serde_json::Value| ("200 OK".to_string(), v.to_string());
+            if let Some(selection) = &self.selection {
+                if path.contains("/gatepage") {
+                    return ("200 OK".into(), String::new());
+                }
+                if path.contains("/gate_token") {
+                    selection.events.lock().unwrap().push("check".into());
+                    return ok(selection.gate.clone());
+                }
+                if path.contains("/gate_detail") {
+                    return ok(serde_json::json!({"status":200,"code":0,"data":{"list":[{
+                        "fid":"check-file","file_name":"check.mp4","file_type":1,"size":1
+                    }]}}));
+                }
+                if path.contains("/share/sharepage/token") {
+                    selection.events.lock().unwrap().push("token".into());
+                    let n = selection.tokens.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    return ok(serde_json::json!({"status":200,"code":0,"data":{"stoken":format!("st-{n}")}}));
+                }
+                if path.contains("/share/sharepage/detail") {
+                    selection.events.lock().unwrap().push("list".into());
+                    let url = reqwest::Url::parse(&format!("http://fixture{path}")).unwrap();
+                    let query: std::collections::HashMap<String, String> = url.query_pairs().into_owned().collect();
+                    let folder = query.get("pdir_fid").cloned().unwrap_or_default();
+                    let page = query.get("_page").and_then(|p| p.parse::<u32>().ok()).unwrap_or(1);
+                    let stoken = query.get("stoken").cloned().unwrap_or_default();
+                    let mut list = selection.pages.get(&(folder, page)).cloned().unwrap_or_default();
+                    for file in &mut list {
+                        let fid = file.get("fid").and_then(|f| f.as_str()).unwrap_or("").to_string();
+                        if !selection.omit_token {
+                            file["share_fid_token"] = serde_json::json!(format!("{stoken}/{fid}"));
+                        }
+                    }
+                    return ok(serde_json::json!({"status":200,"code":0,"data":{"list":list}}));
+                }
+                if path.contains("/share/sharepage/save") {
+                    selection.events.lock().unwrap().push("save".into());
+                    selection.saved.lock().unwrap().push(serde_json::from_str(req_body).unwrap());
+                }
+                if path.contains("/file/download") {
+                    selection.events.lock().unwrap().push("download".into());
+                }
+            }
             // ── 分享链路（同族信封：status=200 + code=0 双确认）──
             if path.contains("/share/sharepage/token") {
                 return ok(serde_json::json!({
@@ -3700,11 +3960,18 @@ mod tests {
                     .nth(1)
                     .map(|s| s.split('"').nth(1).unwrap_or("").to_string())
                     .unwrap_or_default();
-                self.mkdirs
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(name);
-                return ok(serde_json::json!({"code": 0, "data": {"fid": "DIR-NEW"}}));
+                let mut mkdirs = self.mkdirs.lock().unwrap_or_else(|e| e.into_inner());
+                mkdirs.push(name);
+                let index = mkdirs.len() - 1;
+                if self.selection.as_ref().is_some_and(|s| s.deny_mkdir) {
+                    return ("403 Forbidden".into(), serde_json::json!({
+                        "code":403, "message":"credential-fixture-secret"
+                    }).to_string());
+                }
+                let fid = if self.selection.as_ref().is_some_and(|s| s.repeat_mkdir_fid) {
+                    "DIR-NEW-0".into()
+                } else if self.selection.is_some() { format!("DIR-NEW-{index}") } else { "DIR-NEW".into() };
+                return ok(serde_json::json!({"code": 0, "data": {"fid": fid}}));
             }
             if path.contains("/file/delete") {
                 let n = self
@@ -3719,6 +3986,11 @@ mod tests {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push(fid);
+                if self.selection.as_ref().is_some_and(|s| {
+                    s.fail_delete_once.swap(false, std::sync::atomic::Ordering::SeqCst)
+                }) {
+                    return ("503 Service Unavailable".into(), serde_json::json!({"code":503}).to_string());
+                }
                 return ok(serde_json::json!({
                     "code": 0, "data": {"task_id": format!("D{n}")}
                 }));
@@ -3728,6 +4000,448 @@ mod tests {
                 serde_json::json!({"status": 404, "error": "Not Found", "path": path}).to_string(),
             )
         }
+    }
+
+    struct SelectionReplay {
+        gate: serde_json::Value,
+        pages: std::collections::HashMap<(String, u32), Vec<serde_json::Value>>,
+        events: std::sync::Mutex<Vec<String>>,
+        saved: std::sync::Mutex<Vec<serde_json::Value>>,
+        tokens: std::sync::atomic::AtomicUsize,
+        omit_token: bool,
+        slow_after_token: Option<usize>,
+        pause_fresh: Option<(std::sync::Arc<tokio::sync::Notify>, std::sync::Arc<tokio::sync::Notify>)>,
+        fresh_paused: std::sync::atomic::AtomicBool,
+        deny_mkdir: bool,
+        repeat_mkdir_fid: bool,
+        fail_delete_once: std::sync::atomic::AtomicBool,
+    }
+
+    impl SelectionReplay {
+        fn new(gate: serde_json::Value) -> Self {
+            let video = |fid: &str, name: &str, size: u64| serde_json::json!({
+                "fid":fid,"file_name":name,"size":size,"dir":false
+            });
+            let mut root = vec![
+                video("large", "第1集.mkv", 900000),
+                video("second", "第2集.mkv", 800000),
+                video("fourth", "第4集.mkv", 700000),
+                serde_json::json!({"fid":"dir-a","file_name":"版本A","dir":true}),
+                serde_json::json!({"fid":"dir-b","file_name":"版本B","dir":true}),
+            ];
+            root.extend((0..45).map(|n| video(&format!("text-{n}"), "notes.txt", 100)));
+            Self {
+                gate,
+                pages: std::collections::HashMap::from([
+                    (("0".into(), 1), root),
+                    (("0".into(), 2), vec![video("page-two", "第57集.mkv", 100)]),
+                    (("dir-a".into(), 1), vec![video("unrelated", "第13集.mkv", 500000)]),
+                    (("dir-b".into(), 1), vec![serde_json::json!({"fid":"deep","file_name":"剧集","dir":true})]),
+                    (("deep".into(), 1), vec![video("deep-third", "第3集.mkv", 10)]),
+                ]),
+                events: std::sync::Mutex::new(Vec::new()),
+                saved: std::sync::Mutex::new(Vec::new()),
+                tokens: std::sync::atomic::AtomicUsize::new(0),
+                omit_token: false,
+                slow_after_token: None,
+                pause_fresh: None,
+                fresh_paused: std::sync::atomic::AtomicBool::new(false),
+                deny_mkdir: false,
+                repeat_mkdir_fid: false,
+                fail_delete_once: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    async fn selection_fixture(replay: SelectionReplay) -> (
+        std::sync::Arc<PanScript>, PanDrive, crate::pan_check::PanChecker
+    ) {
+        let mut script = PanScript::new(vec!["COPIED".into()], vec![]);
+        script.selection = Some(replay);
+        let script = std::sync::Arc::new(script);
+        let host = script.clone().spawn().await;
+        let base = format!("http://{host}");
+        PanDrive::debug_set_test_api_base(&host, &base);
+        let mut spec = quark_spec();
+        spec.api_host = Box::leak(host.into_boxed_str());
+        let drive = PanDrive::with_spec("PanQuark", spec);
+        let checker = crate::pan_check::PanChecker::with_endpoints(crate::pan_check::PanEndpoints {
+            quark_page: format!("{base}/gatepage"),
+            quark_token: format!("{base}/gate_token"),
+            quark_detail: format!("{base}/gate_detail"),
+            ..crate::pan_check::PanEndpoints::default()
+        });
+        (script, drive, checker)
+    }
+
+    #[tokio::test]
+    async fn selection_protocol_validates_then_plays_deep_and_second_page_files() {
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        let (script, drive, checker) = selection_fixture(SelectionReplay::new(serde_json::json!({
+            "status":200,"code":0,"data":{"stoken":"CHECK"}
+        }))).await;
+        for (title, order, fid) in [("第57集", 57, "page-two"), ("第3集", 3, "deep-third")] {
+            let spec = super::super::pan_episode_select::EpisodeSpec { title:title.into(), order:Some(order) };
+            let out = super::super::pan_episode_select::resolve_family_with(
+                &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", None, &spec
+            ).await.unwrap();
+            assert!(out.url.contains("cdn.example.com"));
+            let replay = script.selection.as_ref().unwrap();
+            let saved = replay.saved.lock().unwrap();
+            let body = saved.last().unwrap();
+            assert_eq!(body["fid_list"][0], fid, "必须转存用户所选集，不能选择最大文件");
+            let stoken = body["stoken"].as_str().unwrap();
+            assert_eq!(body["fid_token_list"][0], format!("{stoken}/{fid}"), "同一轮校验必须成对");
+        }
+        let events = script.selection.as_ref().unwrap().events.lock().unwrap();
+        assert_eq!(events.first().map(String::as_str), Some("check"));
+        assert!(events.iter().position(|e| e == "list").unwrap() < events.iter().position(|e| e == "save").unwrap());
+        assert!(events.iter().position(|e| e == "save").unwrap() < events.iter().position(|e| e == "download").unwrap());
+        assert_eq!(script.saves.load(std::sync::atomic::Ordering::SeqCst), 2);
+        PanDrive::debug_set_test_cookie("quark", "");
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    #[tokio::test]
+    async fn selection_protocol_bad_locked_and_unverified_files_never_transfer() {
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        for message in ["分享已过期", "提取码错误"] {
+            let (script, drive, checker) = selection_fixture(SelectionReplay::new(
+                serde_json::json!({"status":41003,"message":message})
+            )).await;
+            assert!(super::super::pan_episode_select::resolve_family_with(
+                &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", None,
+                &super::super::pan_episode_select::EpisodeSpec::default()
+            ).await.is_err());
+            assert_eq!(script.saves.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(*script.selection.as_ref().unwrap().events.lock().unwrap(), ["check"]);
+        }
+        // 预检形状未知，只能由真实文件列表确认，不能直接转存。
+        let mut replay = SelectionReplay::new(serde_json::json!({"message":"unrecognized"}));
+        replay.pages.clear();
+        let (script, drive, checker) = selection_fixture(replay).await;
+        assert!(super::super::pan_episode_select::resolve_family_with(
+            &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", None,
+            &super::super::pan_episode_select::EpisodeSpec::default()
+        ).await.is_err());
+        assert!(script.selection.as_ref().unwrap().events.lock().unwrap().iter().any(|e| e == "list"));
+        assert_eq!(script.saves.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // 预检无法判定但真实文件列表成功时，可继续播放指定文件。
+        let (script, drive, checker) = selection_fixture(SelectionReplay::new(
+            serde_json::json!({"message":"unrecognized"})
+        )).await;
+        assert!(super::super::pan_episode_select::resolve_family_with(
+            &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("page-two"),
+            &super::super::pan_episode_select::EpisodeSpec::default()
+        ).await.is_ok());
+        assert_eq!(script.saves.load(std::sync::atomic::Ordering::SeqCst), 1);
+        PanDrive::debug_set_test_cookie("quark", "");
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    #[tokio::test]
+    async fn selection_protocol_missing_fresh_file_token_never_transfers() {
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        let mut replay = SelectionReplay::new(serde_json::json!({"status":200,"code":0,"data":{"stoken":"CHECK"}}));
+        replay.omit_token = true;
+        let (script, drive, checker) = selection_fixture(replay).await;
+        let err = super::super::pan_episode_select::resolve_family_with(
+            &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("deep-third"),
+            &super::super::pan_episode_select::EpisodeSpec::default()
+        ).await.unwrap_err();
+        assert!(err.contains("校验"), "{err}");
+        assert_eq!(script.saves.load(std::sync::atomic::Ordering::SeqCst), 0);
+        PanDrive::debug_set_test_cookie("quark", "");
+    }
+
+    #[tokio::test]
+    async fn selection_protocol_selfheal_budget_cancels_slow_fresh_listing() {
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        let mut replay = SelectionReplay::new(serde_json::json!({"status":200,"code":0,"data":{"stoken":"CHECK"}}));
+        replay.slow_after_token = Some(2);
+        let mut script = PanScript::new(vec!["DEAD".into(), "FRESH".into()], vec!["DEAD".into()]);
+        script.selection = Some(replay);
+        let script = std::sync::Arc::new(script);
+        let host = script.clone().spawn().await;
+        PanDrive::debug_set_test_api_base(&host, &format!("http://{host}"));
+        let mut spec = quark_spec();
+        spec.api_host = Box::leak(host.into_boxed_str());
+        let drive = PanDrive::with_spec("PanQuark", spec);
+        let entry = DriveEntry {
+            fid:"deep-third".into(), name:"第3集.mkv".into(), size:10, is_dir:false, fid_token:None,
+        };
+        let started = std::time::Instant::now();
+        let err = drive.degrade_attempt_with_budget(
+            "fixture=1", "fixture", "", &entry,
+            std::time::Duration::from_millis(200), std::time::Duration::ZERO,
+        ).await.unwrap_err();
+        assert!(err.contains("时间预算"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_millis(1500), "慢fresh列举必须被自愈预算实际取消");
+        assert_eq!(script.saves.load(std::sync::atomic::Ordering::SeqCst), 1, "超时后不能继续重转存");
+        assert_eq!(script.selection.as_ref().unwrap().tokens.load(std::sync::atomic::Ordering::SeqCst), 2);
+        PanDrive::debug_set_test_cookie("quark", "");
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    fn playback_owner(consumer: &str, generation: u64) -> super::super::pan_playback_guard::PlaybackOwner {
+        super::super::pan_playback_guard::PlaybackOwner { consumer:consumer.into(), generation }
+    }
+
+    #[tokio::test]
+    async fn selection_protocol_owner_cleanup_preserves_other_page_and_legacy_boundaries() {
+        use super::super::pan_playback_guard as guard;
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        let (script, drive, checker) = selection_fixture(SelectionReplay::new(serde_json::json!({
+            "status":200,"code":0,"data":{"stoken":"CHECK"}
+        }))).await;
+        *script.save_fids.lock().unwrap() = vec!["COPY-A".into(), "COPY-B".into(), "COPY-LEGACY".into()];
+        let a = playback_owner("protocol-owned-page-a", 1);
+        let b = playback_owner("protocol-owned-page-b", 2);
+        for owner in [Some(a.clone()), Some(b.clone()), None] {
+            guard::register(owner.clone()).unwrap();
+            guard::with_scope(owner, super::super::pan_episode_select::resolve_family_with(
+                &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("deep-third"),
+                &super::super::pan_episode_select::EpisodeSpec::default()
+            )).await.unwrap();
+        }
+        let parents: Vec<String> = script.selection.as_ref().unwrap().saved.lock().unwrap()
+            .iter().map(|b| b["to_pdir_fid"].as_str().unwrap().to_string()).collect();
+        assert_eq!(parents, ["DIR-NEW-0", "DIR-NEW-1", "DIRT"]);
+        assert!(script.deletes.lock().unwrap().is_empty(), "不同页面不能清理仍在播放的副本");
+        drive.purge_owned(None).await;
+        assert_eq!(*script.deletes.lock().unwrap(), ["COPY-LEGACY"], "旧清理不能删除现代页面");
+        guard::invalidate(&a);
+        drive.purge_owned(Some(a)).await;
+        assert_eq!(*script.deletes.lock().unwrap(), ["COPY-LEGACY", "COPY-A", "DIR-NEW-0"]);
+        assert_eq!(temp_saved().lock().unwrap().iter().map(|e| e.fid.clone()).collect::<Vec<_>>(),
+            ["DIR-NEW-1", "COPY-B"], "旧页面退出必须保留新页面的目录及具体视频");
+        guard::invalidate(&b);
+        drive.purge_owned(Some(b)).await;
+        assert!(temp_saved().lock().unwrap().is_empty());
+        PanDrive::debug_set_test_cookie("quark", "");
+    }
+
+    #[tokio::test]
+    async fn selection_protocol_late_old_parser_cannot_mutate_after_new_success() {
+        use super::super::pan_playback_guard as guard;
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        let (script, drive, checker) = selection_fixture(SelectionReplay::new(serde_json::json!({
+            "status":200,"code":0,"data":{"stoken":"CHECK"}
+        }))).await;
+        let old = playback_owner("protocol-late-parser", 1);
+        let new = playback_owner("protocol-late-parser", 2);
+        guard::register(Some(old.clone())).unwrap();
+        guard::register(Some(new.clone())).unwrap();
+        guard::with_scope(Some(new.clone()), super::super::pan_episode_select::resolve_family_with(
+            &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("deep-third"),
+            &super::super::pan_episode_select::EpisodeSpec::default()
+        )).await.unwrap();
+        let err = guard::with_scope(Some(old.clone()), super::super::pan_episode_select::resolve_family_with(
+            &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("second"),
+            &super::super::pan_episode_select::EpisodeSpec::default()
+        )).await.unwrap_err();
+        assert!(err.contains("已过期"), "{err}");
+        drive.purge_owned(Some(old)).await;
+        assert_eq!(script.saves.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(script.deletes.lock().unwrap().is_empty(), "旧代次也不能通过迟到的cleanup删掉新副本");
+        assert_eq!(script.mkdirs.lock().unwrap().len(), 1);
+        guard::invalidate(&new);
+        drive.purge_owned(Some(new)).await;
+        PanDrive::debug_set_test_cookie("quark", "");
+    }
+
+    #[tokio::test]
+    async fn selection_protocol_fresh_token_await_rechecks_generation_before_save() {
+        use super::super::pan_playback_guard as guard;
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let mut replay = SelectionReplay::new(serde_json::json!({"status":200,"code":0,"data":{"stoken":"CHECK"}}));
+        replay.pause_fresh = Some((entered.clone(), release.clone()));
+        let (script, drive, checker) = selection_fixture(replay).await;
+        let old = playback_owner("protocol-fresh-token", 1);
+        let new = playback_owner("protocol-fresh-token", 2);
+        guard::register(Some(old.clone())).unwrap();
+        let spec = super::super::pan_episode_select::EpisodeSpec::default();
+        let (result, ()) = tokio::join!(
+            guard::with_scope(Some(old.clone()), super::super::pan_episode_select::resolve_family_with(
+                &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("deep-third"),
+                &spec
+            )),
+            async {
+                tokio::time::timeout(std::time::Duration::from_secs(3), entered.notified()).await.unwrap();
+                guard::register(Some(new.clone())).unwrap();
+                release.notify_one();
+            }
+        );
+        assert!(result.unwrap_err().contains("已过期"));
+        assert_eq!(script.saves.load(std::sync::atomic::Ordering::SeqCst), 0, "fresh列表晚返回后不许继续真实转存");
+        drive.purge_owned(Some(old)).await;
+        assert_eq!(*script.deletes.lock().unwrap(), ["DIR-NEW-0"], "已建但未转存的目录也必须回收");
+        PanDrive::debug_set_test_cookie("quark", "");
+    }
+
+    #[tokio::test]
+    async fn selection_protocol_owned_mkdir_failure_never_falls_back_or_leaks_error() {
+        use super::super::pan_playback_guard as guard;
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        let mut replay = SelectionReplay::new(serde_json::json!({"status":200,"code":0,"data":{"stoken":"CHECK"}}));
+        replay.deny_mkdir = true;
+        let (script, drive, checker) = selection_fixture(replay).await;
+        let owner = playback_owner("protocol-denied-directory", 1);
+        guard::register(Some(owner.clone())).unwrap();
+        let err = guard::with_scope(Some(owner), super::super::pan_episode_select::resolve_family_with(
+            &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("deep-third"),
+            &super::super::pan_episode_select::EpisodeSpec::default()
+        )).await.unwrap_err();
+        assert!(err.contains("独立临时目录"), "{err}");
+        assert!(!err.contains("credential-fixture-secret"), "不能把上游响应里的凭据样式内容带回UI");
+        assert_eq!(script.saves.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(temp_saved().lock().unwrap().is_empty());
+        PanDrive::debug_set_test_cookie("quark", "");
+    }
+
+    #[tokio::test]
+    async fn selection_protocol_owned_failed_delete_keeps_ledger_for_real_retry() {
+        use super::super::pan_playback_guard as guard;
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        let replay = SelectionReplay::new(serde_json::json!({"status":200,"code":0,"data":{"stoken":"CHECK"}}));
+        let (script, drive, checker) = selection_fixture(replay).await;
+        let owner = playback_owner("protocol-cleanup-retry", 1);
+        guard::register(Some(owner.clone())).unwrap();
+        guard::with_scope(Some(owner.clone()), super::super::pan_episode_select::resolve_family_with(
+            &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("deep-third"),
+            &super::super::pan_episode_select::EpisodeSpec::default()
+        )).await.unwrap();
+        script.selection.as_ref().unwrap().fail_delete_once.store(true, std::sync::atomic::Ordering::SeqCst);
+        guard::invalidate(&owner);
+        drive.purge_owned(Some(owner.clone())).await;
+        assert_eq!(temp_saved().lock().unwrap().iter().map(|e| e.fid.clone()).collect::<Vec<_>>(), ["COPIED"]);
+        drive.purge_owned(Some(owner)).await;
+        assert_eq!(script.deletes.lock().unwrap().iter().filter(|fid| *fid == "COPIED").count(), 2);
+        assert!(temp_saved().lock().unwrap().is_empty());
+        PanDrive::debug_set_test_cookie("quark", "");
+    }
+
+    #[tokio::test]
+    async fn selection_protocol_echoed_file_rejects_cross_consumer_and_legacy_claims() {
+        use super::super::pan_playback_guard as guard;
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        for legacy_first in [false, true] {
+            temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+            let (script, drive, checker) = selection_fixture(SelectionReplay::new(serde_json::json!({
+                "status":200,"code":0,"data":{"stoken":"CHECK"}
+            }))).await;
+            let a = playback_owner("protocol-echo-page-a", 1);
+            let b = playback_owner("protocol-echo-page-b", 2);
+            let first = if legacy_first { None } else { Some(a.clone()) };
+            guard::register(first.clone()).unwrap();
+            guard::with_scope(first.clone(), super::super::pan_episode_select::resolve_family_with(
+                &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("deep-third"),
+                &super::super::pan_episode_select::EpisodeSpec::default()
+            )).await.unwrap();
+            let attempts = if legacy_first { vec![Some(b.clone())] } else { vec![Some(b.clone()), None] };
+            for owner in attempts {
+                guard::register(owner.clone()).unwrap();
+                let error = guard::with_scope(owner, super::super::pan_episode_select::resolve_family_with(
+                    &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("deep-third"),
+                    &super::super::pan_episode_select::EpisodeSpec::default()
+                )).await.unwrap_err();
+                assert!(error.contains("文件归属"), "{error}");
+            }
+            assert_eq!(script.downloads.lock().unwrap().len(), 1, "冲突副本不能交给另一个播放器");
+            let owners: Vec<_> = temp_saved().lock().unwrap_or_else(|e| e.into_inner()).iter()
+                .filter(|e| e.fid == "COPIED").map(|e| e.owner.clone()).collect();
+            assert_eq!(owners, [first.clone()], "服务端回吐相同fid时不能产生另一归属的删除账");
+            drive.purge_owned(Some(b)).await;
+            assert!(!script.deletes.lock().unwrap().iter().any(|f| f == "COPIED"),
+                "冲突请求退出不能删除原页面的播放文件");
+            drive.purge_owned(first).await;
+            assert!(temp_saved().lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+        }
+        PanDrive::debug_set_test_cookie("quark", "");
+    }
+
+    #[tokio::test]
+    async fn selection_protocol_echoed_file_rejects_new_generation_when_old_delete_failed() {
+        use super::super::pan_playback_guard as guard;
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        let (script, drive, checker) = selection_fixture(SelectionReplay::new(serde_json::json!({
+            "status":200,"code":0,"data":{"stoken":"CHECK"}
+        }))).await;
+        let old = playback_owner("protocol-echo-generation", 1);
+        let new = playback_owner("protocol-echo-generation", 2);
+        guard::register(Some(old.clone())).unwrap();
+        guard::with_scope(Some(old.clone()), super::super::pan_episode_select::resolve_family_with(
+            &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("deep-third"),
+            &super::super::pan_episode_select::EpisodeSpec::default()
+        )).await.unwrap();
+        script.selection.as_ref().unwrap().fail_delete_once.store(true, std::sync::atomic::Ordering::SeqCst);
+        guard::register(Some(new.clone())).unwrap();
+        let error = guard::with_scope(Some(new.clone()), super::super::pan_episode_select::resolve_family_with(
+            &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("second"),
+            &super::super::pan_episode_select::EpisodeSpec::default()
+        )).await.unwrap_err();
+        assert!(error.contains("文件归属"), "{error}");
+        let owners: Vec<_> = temp_saved().lock().unwrap_or_else(|e| e.into_inner()).iter()
+            .filter(|e| e.fid == "COPIED").map(|e| e.owner.clone()).collect();
+        assert_eq!(owners, [Some(old.clone())]);
+        assert_eq!(script.downloads.lock().unwrap().len(), 1);
+        drive.purge_owned(Some(old)).await;
+        assert_eq!(temp_saved().lock().unwrap_or_else(|e| e.into_inner()).iter()
+            .map(|e| e.fid.clone()).collect::<Vec<_>>(), ["DIR-NEW-1"]);
+        drive.purge_owned(Some(new)).await;
+        PanDrive::debug_set_test_cookie("quark", "");
+    }
+
+    #[tokio::test]
+    async fn selection_protocol_echoed_directory_never_registers_other_owner_fid() {
+        use super::super::pan_playback_guard as guard;
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        let mut replay = SelectionReplay::new(serde_json::json!({"status":200,"code":0,"data":{"stoken":"CHECK"}}));
+        replay.repeat_mkdir_fid = true;
+        let (script, drive, checker) = selection_fixture(replay).await;
+        let a = playback_owner("protocol-echo-directory-a", 1);
+        let b = playback_owner("protocol-echo-directory-b", 2);
+        guard::register(Some(a.clone())).unwrap();
+        guard::with_scope(Some(a.clone()), super::super::pan_episode_select::resolve_family_with(
+            &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("deep-third"),
+            &super::super::pan_episode_select::EpisodeSpec::default()
+        )).await.unwrap();
+        guard::register(Some(b.clone())).unwrap();
+        let error = guard::with_scope(Some(b.clone()), super::super::pan_episode_select::resolve_family_with(
+            &checker, &drive, "https://pan.quark.cn/s/fixture", "fixture", "", Some("second"),
+            &super::super::pan_episode_select::EpisodeSpec::default()
+        )).await.unwrap_err();
+        assert!(error.contains("独立临时目录"), "{error}");
+        assert_eq!(script.saves.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drive.purge_owned(Some(b)).await;
+        assert!(script.deletes.lock().unwrap().is_empty());
+        drive.purge_owned(Some(a)).await;
+        PanDrive::debug_set_test_cookie("quark", "");
     }
 
     /// ★ 夹具门禁 1（真机缺口回放）：save **恒回吐同一死 fid** ⇒

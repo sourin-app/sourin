@@ -1633,6 +1633,9 @@ mod tests {
             )),
             quality: None,
             flag: Some("网盘分享页".into()),
+            episode_title: Some("第2集".into()),
+            episode_order: Some(2),
+            extra: None,
         };
         agg.resolve(&id, &req).await.expect("resolve 应成功");
         let got = seen.lock().unwrap().clone();

@@ -66,19 +66,20 @@
 //   无账号时按各家的原版文案（`[F0]` 那一族）报错，**绝不**把分享页当流。
 // ```
 
+// 当前链路：同族盘和迅雷先检查有效性，再完整列举分享文件；
+// 详情用稳定网盘文件 id，播放严格按文件 id 转存取流，不选择最大文件。
+// 上面的取证记录保留原始时间点，未接入的盘仍如实报告能力边界。
+
 use async_trait::async_trait;
 use std::time::Duration;
 
-use super::{CspCategory, CspDetail, CspEpisode, CspHome, CspItem, CspList, CspPlay, CspSite};
+use super::{CspCategory, CspDetail, CspHome, CspItem, CspList, CspPlay, CspSite};
 
 /// 配置为空时的文案 —— **逐字**取自 DEX `[d]`
 const CONF_EMPTY: &str = "分享配置为空,请检查 ext 指向的 share.json";
 
 /// 目录空/分享失效 —— **逐字**取自 DEX `[render]`
 const DIR_EMPTY: &str = "这个目录是空的，或分享已失效";
-
-/// 详情里没有可播内容 —— **逐字**取自 DEX `[detailS]`
-const NO_VIDEO: &str = "目录内没有可播放的视频";
 
 /// 条目坏 —— **逐字**取自 DEX `[clone]`
 const BAD_ENTRY: &str = "无效的条目";
@@ -282,6 +283,9 @@ pub struct ShareFile {
 }
 
 /// 条目 id：`drive~shareId~passcode~folder`
+///
+/// ★ task-3（2026-11-03）：`collect_playable` 提为 `pub(crate)`，供
+///   `pan_episode_select`（先验链接有效性再选片）复用 —— **只改可见性，逻辑一字不动**。
 pub fn encode_id(drive: &str, share_id: &str, passcode: &str, folder: &str) -> String {
     format!("{drive}{ID_SEP}{share_id}{ID_SEP}{passcode}{ID_SEP}{folder}")
 }
@@ -314,7 +318,7 @@ fn brief(s: &str) -> String {
     format!("{}…（共 {} 字节）", &t[..cut], t.len())
 }
 
-fn human_size(b: u64) -> String {
+pub(crate) fn human_size(b: u64) -> String {
     const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = b as f64;
     let mut i = 0;
@@ -380,6 +384,7 @@ fn urlencode(s: &str) -> String {
 }
 
 /// 同族信封：`{"status":200,"code":0,…}`
+#[cfg(test)]
 fn envelope(body: &str) -> Result<serde_json::Value, String> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| format!("返回的不是 JSON（{e}）：{}", brief(body)))?;
@@ -393,6 +398,7 @@ fn envelope(body: &str) -> Result<serde_json::Value, String> {
 }
 
 /// 抽条目（同族：`data.list`，字段 `fid`/`file_name`/`file_type`/`size`/`dir`/`share_fid_token`）
+#[cfg(test)]
 fn parse_files(v: &serde_json::Value) -> Vec<ShareFile> {
     let Some(arr) = v.get("data").and_then(|d| d.get("list")).and_then(|l| l.as_array()) else {
         return Vec::new();
@@ -466,67 +472,6 @@ impl PanShare {
         ))
     }
 
-    /// 同族：换 token
-    async fn family_token(&self, spec: &DriveSpec, share_id: &str, pwd: &str) -> Result<String, String> {
-        let url = token_url(spec).ok_or_else(|| UNSUPPORTED.to_string())?;
-        let (_, _, share_host) = family(spec).unwrap();
-        let resp = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/plain, */*")
-            .header("Referer", format!("{share_host}/s/{share_id}"))
-            .body(token_body(share_id, pwd))
-            .send()
-            .await
-            .map_err(|e| format!("{} 换 token 失败：{e}", spec.display))?;
-        let status = resp.status();
-        let body = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
-        if !status.is_success() {
-            return Err(format!("{} 换 token 返回 HTTP {status}：{}", spec.display, brief(&body)));
-        }
-        let v = envelope(&body)?;
-        let stoken = v
-            .get("data")
-            .and_then(|d| d.get("stoken"))
-            .and_then(|s| s.as_str())
-            .unwrap_or("")
-            .to_string();
-        if stoken.is_empty() {
-            return Err(format!("{} 换 token 成功但没有 stoken（{}）", spec.display, brief(&body)));
-        }
-        Ok(stoken)
-    }
-
-    /// 同族：列某个分享目录
-    async fn family_list(
-        &self,
-        spec: &DriveSpec,
-        share_id: &str,
-        stoken: &str,
-        dir: &str,
-        page: u32,
-    ) -> Result<Vec<ShareFile>, String> {
-        let url = detail_url(spec, share_id, stoken, dir, page)
-            .ok_or_else(|| UNSUPPORTED.to_string())?;
-        let (_, _, share_host) = family(spec).unwrap();
-        let resp = self
-            .client
-            .get(&url)
-            .header("Accept", "application/json, text/plain, */*")
-            .header("Referer", format!("{share_host}/s/{share_id}"))
-            .send()
-            .await
-            .map_err(|e| format!("{} 列目录失败：{e}", spec.display))?;
-        let status = resp.status();
-        let body = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
-        if !status.is_success() {
-            return Err(format!("{} 列目录返回 HTTP {status}：{}", spec.display, brief(&body)));
-        }
-        let v = envelope(&body)?;
-        Ok(parse_files(&v))
-    }
-
     /// 递归收集可播文件（**深度上限 2**：分享里常见"分享 → 剧集目录 → 文件"）
     ///
     /// # 为什么要限深
@@ -535,7 +480,8 @@ impl PanShare {
     /// （本仓已有一条"16 镜像串行 122s"的教训）。
     /// ⇒ 限 2 层，超出就在错误里说清"还更深，需要进目录再看"。
     /// ```
-    fn collect_playable<'a>(files: &'a [ShareFile], _depth: usize) -> Vec<&'a ShareFile> {
+    #[cfg(test)]
+    pub(crate) fn collect_playable<'a>(files: &'a [ShareFile], _depth: usize) -> Vec<&'a ShareFile> {
         files.iter().filter(|f| !f.is_dir && is_video(&f.name)).collect()
     }
 }
@@ -624,37 +570,26 @@ impl CspSite for PanShare {
                 spec.display
             ));
         }
-        match spec.anon_list {
-            AnonList::Verified | AnonList::FamilyUnverified => {
-                let stoken = self.family_token(spec, &share_id, &passcode).await?;
-                let files = self.family_list(spec, &share_id, &stoken, &folder, 1).await?;
-                if files.is_empty() {
-                    return Err(DIR_EMPTY.to_string());
-                }
-                let playable = Self::collect_playable(&files, 0);
-                if playable.is_empty() {
-                    // 只有目录 ⇒ 往下走**一层**（分享里常见"分享 → 剧集目录"）
-                    if let Some(dir) = files.iter().find(|f| f.is_dir) {
-                        let inner = self.family_list(spec, &share_id, &stoken, &dir.fid, 1).await?;
-                        if inner.is_empty() {
-                            return Err(DIR_EMPTY.to_string());
-                        }
-                        let playable2 = Self::collect_playable(&inner, 1);
-                        if playable2.is_empty() {
-                            return Err(NO_VIDEO.to_string());
-                        }
-                        return Ok(self.detail_of(&share_id, &passcode, &dir.name, playable2));
-                    }
-                    return Err(NO_VIDEO.to_string());
-                }
-                Ok(self.detail_of(&share_id, &passcode, spec.display, playable))
-            }
-            AnonList::NeedsAccount => Err(format!(
+        if matches!(spec.key, "quark" | "uc" | "xl") {
+            let kind = super::pan_episode_select::kind_of_code(
+                if spec.key == "xl" { "xunlei" } else { spec.key }
+            ).ok_or(UNSUPPORTED)?;
+            let url = super::pan_episode_select::share_url(kind, &share_id, &passcode)?;
+            let episodes = if matches!(kind, crate::pan::PanKind::Quark | crate::pan::PanKind::Uc) {
+                super::pan_episode_select::family_episodes_at(&url, spec.display, &folder).await?
+            } else {
+                super::pan_episode_select::share_episodes(&url, spec.display).await?
+            };
+            return Ok(CspDetail {
+                id: id.to_string(), title: spec.display.to_string(), cover: None,
+                description: Some("网盘分享文件".to_string()), episodes,
+            });
+        }
+        Err(format!(
                 "「{}」的分享目录需要该网盘账号 —— 原版靠 share.json 里的账号配置 + \
                  DEX `[{}]` 那套端点（本实现未接，如实报而不是给你一个空目录）",
                 spec.display, spec.key
-            )),
-        }
+            ))
     }
 
     fn supports_search(&self) -> bool {
@@ -683,47 +618,23 @@ impl CspSite for PanShare {
     /// ⇒ 按各家原版文案（DEX `[F0]`）报错，把"要登录"这件事说清楚。
     /// ```
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
-        let (drive_key, share_id, _pwd, _folder) = decode_id(id)?;
+        let episode = super::pan_episode_select::EpisodeSpec::default();
+        if super::pan_episode_select::is_file_id(id) {
+            return Ok(vec![super::pan_episode_select::resolve_file_id(id, &episode).await?]);
+        }
+        let (drive_key, share_id, pwd, fid) = decode_id(id)?;
         let spec = drive_of_key(&drive_key).ok_or_else(|| format!("{UNSUPPORTED}（键 `{drive_key}`）"))?;
         if share_id.is_empty() {
             return Err(format!("获取播放地址失败：这是你自己的{}，需要账号", spec.display));
         }
-        Err(format!(
-            "获取播放地址失败：{} 的分享文件要「转存到自己网盘 → 取直链」，\
-             需要该网盘账号（本类目前只做到匿名列目录，不把分享页当流）",
-            spec.display
-        ))
-    }
-}
-
-impl PanShare {
-    /// 把可播文件包成详情（id 里保留 share/pwd，供 play 解码出上下文）
-    fn detail_of(
-        &self,
-        share_id: &str,
-        passcode: &str,
-        title: &str,
-        playable: Vec<&ShareFile>,
-    ) -> CspDetail {
-        let episodes = playable
-            .into_iter()
-            .map(|f| CspEpisode {
-                id: encode_id("", share_id, passcode, &f.fid),
-                title: if f.is_dir {
-                    f.name.clone()
-                } else {
-                    format!("{}（{}）", f.name, human_size(f.size))
-                },
-                flag: "分享".to_string(),
-            })
-            .collect();
-        CspDetail {
-            id: encode_id("", share_id, passcode, "0"),
-            title: title.to_string(),
-            cover: None,
-            description: Some(format!("分享 {share_id}")),
-            episodes,
+        if fid.is_empty() || fid == "0" {
+            return Err("获取播放地址失败：请先打开分享文件列表，选择具体视频后转存播放".into());
         }
+        let kind = super::pan_episode_select::kind_of_code(
+            if spec.key == "xl" { "xunlei" } else { spec.key }
+        ).ok_or(UNSUPPORTED)?;
+        let url = super::pan_episode_select::share_url(kind, &share_id, &pwd)?;
+        Ok(vec![super::pan_episode_select::resolve_share(&url, Some(&fid), &episode).await?])
     }
 }
 
@@ -898,7 +809,7 @@ mod tests {
     #[tokio::test]
     async fn needs_account_drives_say_so_instead_of_faking() {
         let s = PanShare::new();
-        for key in ["115", "baidu", "ali", "tianyi", "xl", "guangya", "pan123"] {
+        for key in ["115", "baidu", "ali", "tianyi", "guangya", "pan123"] {
             let id = encode_id(key, "someid", "", "0");
             let e = s.detail(&id, "").await.expect_err("必须 Err");
             assert!(

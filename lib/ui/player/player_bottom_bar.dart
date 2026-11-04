@@ -28,6 +28,7 @@
 //  全部写死白/深灰，不读 `Theme.of(context).colorScheme`。
 
 import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/services.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
     show GlassContainer, LiquidRoundedRectangle;
 import 'package:material_ui/material_ui.dart';
@@ -115,6 +116,7 @@ class PlayerPopoverIds {
 
   static const rate = 'rate';
   static const quality = 'quality';
+  static const lines = 'episode-lines';
   static const tracks = 'tracks';
 
   /// ★★★ Owner 1011 反馈第 1 条：弹幕**轻量悬浮窗**的 id
@@ -426,6 +428,8 @@ class PlayerBottomBar extends StatelessWidget {
     this.qualityOptions = const <PopoverOption<String>>[],
     this.onPickQuality,
     this.currentQuality = '',
+    this.lineOptions = const <PopoverOption<String>>[],
+    this.onPickLine,
     this.trackGroups = const <String, List<PopoverOption<String>>>{},
     this.onPickTrack,
     this.danmakuEnabled = false,
@@ -499,6 +503,9 @@ class PlayerBottomBar extends StatelessWidget {
   final List<PopoverOption<String>> qualityOptions;
   final void Function(String)? onPickQuality;
   final String currentQuality;
+
+  final List<PopoverOption<String>> lineOptions;
+  final ValueChanged<String>? onPickLine;
 
   /// 字幕 / 音轨：分组 → 选项
   final Map<String, List<PopoverOption<String>>> trackGroups;
@@ -610,6 +617,14 @@ class PlayerBottomBar extends StatelessWidget {
           tooltip: '清晰度',
           popoverId: PlayerPopoverIds.quality,
           active: controller.isOpen(PlayerPopoverIds.quality),
+        ),
+      if (lineOptions.length > 1)
+        _BarAction(
+          icon: AppIcons.swap_horiz,
+          label: '线路',
+          tooltip: '线路',
+          popoverId: PlayerPopoverIds.lines,
+          active: controller.isOpen(PlayerPopoverIds.lines),
         ),
       /*
        * ★ OPS-5 ②（Owner 2026-10-10 反馈第 2 条）：这里原来还有一枚「倍速」
@@ -805,6 +820,7 @@ class PlayerBottomBar extends StatelessWidget {
       PlayerPopoverIds.quality when qualityOptions.isNotEmpty => _panelSurface(
         _qualityRows(),
       ),
+      PlayerPopoverIds.lines when lineOptions.length > 1 => _linePanel(),
       PlayerPopoverIds.tracks when trackGroups.isNotEmpty => _panelSurface([
         for (final entry in trackGroups.entries) ...[
           PopoverGroupLabel(entry.key),
@@ -835,6 +851,12 @@ class PlayerBottomBar extends StatelessWidget {
           children: rows,
         ),
       );
+
+  Widget _linePanel() => _LinePopover(
+    controller: controller,
+    options: lineOptions,
+    onPick: onPickLine,
+  );
 
   // ═══════════════════════════════════════════════════════════════════════
   //  ★★★ Owner 1011 反馈第 1 条：弹幕轻量悬浮窗（某视频站图 1 那种）
@@ -1890,13 +1912,193 @@ class _PopoverButton extends StatelessWidget {
     );
     // 有 popover 的入口才包一层悬停展开；纯动作按钮不包（悬停开一个空面板很怪）
     if (onTap != null || id.isEmpty) return button;
-    return PopoverAnchorButton(
+    final anchor = PopoverAnchorButton(
       controller: controller,
       id: id,
       tooltip: tooltip,
       child: button,
     );
+    if (id != PlayerPopoverIds.lines) return anchor;
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: (_, event) {
+        if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+          return KeyEventResult.ignored;
+        }
+        final key = event.logicalKey;
+        if (_isLineConfirmKey(key)) {
+          if (event is KeyDownEvent) controller.toggle(id);
+          return KeyEventResult.handled;
+        }
+        final direction = switch (key) {
+          LogicalKeyboardKey.arrowUp => TraversalDirection.up,
+          LogicalKeyboardKey.arrowDown => TraversalDirection.down,
+          LogicalKeyboardKey.arrowLeft => TraversalDirection.left,
+          LogicalKeyboardKey.arrowRight => TraversalDirection.right,
+          _ => null,
+        };
+        if (direction == null) return KeyEventResult.ignored;
+        FocusScope.of(context).focusInDirection(direction);
+        return KeyEventResult.handled;
+      },
+      child: anchor,
+    );
   }
+}
+
+bool _isLineConfirmKey(LogicalKeyboardKey key) =>
+    key == LogicalKeyboardKey.enter ||
+    key == LogicalKeyboardKey.select ||
+    key == LogicalKeyboardKey.gameButtonA ||
+    key == LogicalKeyboardKey.space;
+
+class _LinePopover extends StatefulWidget {
+  const _LinePopover({
+    required this.controller,
+    required this.options,
+    required this.onPick,
+  });
+
+  final PopoverController controller;
+  final List<PopoverOption<String>> options;
+  final ValueChanged<String>? onPick;
+
+  @override
+  State<_LinePopover> createState() => _LinePopoverState();
+}
+
+class _LinePopoverState extends State<_LinePopover> {
+  FocusNode? _returnFocus;
+  final _nodes = <FocusNode>[];
+
+  @override
+  void initState() {
+    super.initState();
+    _returnFocus = FocusManager.instance.primaryFocus;
+    _resetNodes();
+  }
+
+  @override
+  void didUpdateWidget(_LinePopover oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.options.length != widget.options.length) _resetNodes();
+  }
+
+  void _resetNodes() {
+    for (final node in _nodes) {
+      node.dispose();
+    }
+    _nodes
+      ..clear()
+      ..addAll([
+        for (var i = 0; i < widget.options.length; i++)
+          FocusNode(debugLabel: 'player-line-$i', skipTraversal: true),
+      ]);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final checked = widget.options.indexWhere((o) => o.enabled && o.checked);
+      _focusLine(
+        checked < 0 ? widget.options.indexWhere((o) => o.enabled) : checked,
+      );
+    });
+  }
+
+  void _focusLine(int index) {
+    if (index < 0 || index >= _nodes.length) return;
+    var target = _nodes[index];
+    for (final node in target.descendants) {
+      if (!node.canRequestFocus || node.skipTraversal) continue;
+      target = node;
+      break;
+    }
+    target.requestFocus();
+    final context = _nodes[index].context;
+    if (context != null) Scrollable.ensureVisible(context);
+  }
+
+  void _pickLine(int index) {
+    if (index < 0 || !widget.options[index].enabled) return;
+    widget.onPick?.call(widget.options[index].value);
+    widget.controller.close();
+  }
+
+  KeyEventResult _onKey(FocusNode _, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+      if (event is KeyDownEvent) widget.controller.close();
+      return KeyEventResult.handled;
+    }
+    final current = _nodes.indexWhere((n) => n.hasFocus);
+    if (_isLineConfirmKey(key)) {
+      if (event is KeyDownEvent) _pickLine(current);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight) {
+      return KeyEventResult.handled;
+    }
+    final step = key == LogicalKeyboardKey.arrowUp
+        ? -1
+        : key == LogicalKeyboardKey.arrowDown
+        ? 1
+        : 0;
+    if (step == 0) return KeyEventResult.ignored;
+    for (var i = current + step; i >= 0 && i < _nodes.length; i += step) {
+      if (!widget.options[i].enabled) continue;
+      _focusLine(i);
+      break;
+    }
+    return KeyEventResult.handled;
+  }
+
+  @override
+  void dispose() {
+    final returnFocus = _returnFocus;
+    final controller = widget.controller;
+    for (final node in _nodes) {
+      node.dispose();
+    }
+    // The menu is a sibling of the tool, so return its keyboard focus explicitly.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (controller.openId == null && returnFocus?.context != null) {
+        returnFocus!.requestFocus();
+      }
+    });
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Focus(
+    canRequestFocus: false,
+    skipTraversal: true,
+    onKeyEvent: _onKey,
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 320),
+      child: PlayerPopoverSurface(
+        width: 240,
+        child: SingleChildScrollView(
+          primary: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < widget.options.length; i++)
+                PopoverRow(
+                  focusNode: _nodes[i],
+                  label: widget.options[i].label,
+                  hint: widget.options[i].hint,
+                  checked: widget.options[i].checked,
+                  onTap: widget.options[i].enabled ? () => _pickLine(i) : null,
+                ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 /// 音量：静音键 + 滑杆

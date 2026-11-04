@@ -43,6 +43,7 @@ import 'package:sourin_spike/ui/player_page.dart';
 import 'package:sourin_spike/ui/remote_bridge.dart';
 
 import 't102_playback_failure_banner_test.dart' as fixture;
+import 'support/strip_comments.dart';
 
 /// 挂页，并把**核心传输**换成可控夹具（只换网络，不换生产会话逻辑）
 ///
@@ -215,18 +216,49 @@ void main() {
   });
 
   test('⑦ 源码契约：详情区换源的 resumeFrom 来自 `currentPosition` 且真的传下去', () {
-    final src = File('lib/ui/media_page.dart').readAsStringSync();
+    final src = stripComments(File(const String.fromEnvironment(
+      'PLAYER_RESUME_GATE_SOURCE',
+      defaultValue: 'lib/ui/media_page.dart',
+    )).readAsStringSync());
     final start = src.indexOf('Future<void> _onDetailSwitchSource(');
     expect(start, greaterThan(-1), reason: '锚点不存在：`_onDetailSwitchSource`');
-    final sub = src.substring(start, start + 6000);
-    expect(sub, contains('_session?.currentPosition'),
-        reason: '★★ 续播起点必须取自 `MediaSession.currentPosition`');
-    expect(sub, contains('resumeFrom: resumeFrom'),
-        reason: '★★★ 拿到了却不传给 `applySession` 等于没修（改前就是这个形态）');
+    final end = src.indexOf('Future<void> _onDetailLoaded(', start);
+    expect(end, greaterThan(start), reason: '换源方法范围必须可定位');
+    final sub = src.substring(start, end);
+    expect(
+      RegExp(r'final\s+fromSession\s*=\s*_session\?\.currentPosition\s*;')
+          .hasMatch(sub),
+      isTrue,
+      reason: '续播点的生产者必须读取当前播放会话',
+    );
+    expect(
+      RegExp(
+        r'final\s+effectiveResume\s*=\s*\(\s*fromSession\s*!=\s*null\s*&&'
+        r'\s*fromSession\s*>\s*Duration\.zero\s*\)\s*\?\s*fromSession'
+        r'\s*:\s*resumeFrom\s*;',
+      ).hasMatch(sub),
+      isTrue,
+      reason: '有效会话位置优先；会话无位置时保留弹层resumeFrom回退',
+    );
+    expect(
+      RegExp(
+        r'await\s+_session\?\.applySession\(\s*PlayRequestData\('
+        r'[\s\S]*?resumeFrom:\s*effectiveResume\s*,[\s\S]*?\)\s*\)\s*;',
+      ).hasMatch(sub),
+      isTrue,
+      reason: '消费端必须把已选择的effectiveResume送入真实applySession',
+    );
 
-    final player = File('lib/ui/player_page.dart').readAsStringSync();
-    expect(player, contains('req.resumeFrom != null'),
-        reason: '★ `applySession` 必须消费 `resumeFrom`');
+    final player = stripComments(File('lib/ui/player_page.dart').readAsStringSync());
+    expect(
+      RegExp(
+        r'_pendingSeek\s*=\s*req\.resumeFrom\s*!=\s*null\s*&&'
+        r'\s*req\.resumeFrom!\s*>\s*const\s+Duration\(seconds:\s*3\)'
+        r'\s*\?\s*req\.resumeFrom\s*:\s*null\s*;',
+      ).hasMatch(player),
+      isTrue,
+      reason: '播放器必须实际消费>3秒的请求位置，小于阈值不续播',
+    );
     expect(player, contains('_pendingSeek = null;'),
         reason: '★ 换集路径仍然清 `_pendingSeek`（「换集不续播」不变）');
   });

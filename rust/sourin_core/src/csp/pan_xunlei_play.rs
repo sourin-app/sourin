@@ -8,11 +8,12 @@
 // host   : https://api-pan.xunlei.com/drive/v1/…（web 客户端 production env 映射逐字）
 // 列表   : GET  share?share_id=&pass_code=&limit=100&pass_code_token=&page_token=
 //          （hp0 逐字参数集；响应 share_status_text="OK" + 文件清单）
+// 建目录 : POST files {"parent_id":"","name":…,"kind":"drive#folder","space":""}
+//          response.file.id；web 端 withCaptcha:true，拒绝时不退回根目录。
 // 转存   : POST share/restore
-//          {"parent_id":"","share_id":…,"pass_code_token":…,
+//          {"parent_id":<本次自建目录>,"share_id":…,"pass_code_token":…,
 //           "ancestor_ids":[],"file_ids":[…],"specify_parent_id":true}
-//          （web 客户端 onAppSave 调用点逐字；parent_id="" = 根目录，
-//           web 端选"我的云盘"根时 restoreFolder.id 就是 ""）
+//          （web 客户端 restoreFolder.id / specify_parent_id 调用点逐字）
 // 轮询   : GET  tasks/{restore_task_id}（checkRestoreStatus 逐字；预算封顶）
 // 文件   : GET  files/{id}?usage=CONSUME（getFileInfo 逐字）⇒ 直链字段
 //          web_content_link（103.js 三处消费逐字：原图/BT/详情）
@@ -36,16 +37,15 @@
 // ```text
 // · 播完不删 —— 直链绑文件，删了断流；**下一次解析开头**清上一次的
 //   （"Temp" 节律：每次播放转存一份、不复用，与参考实现一致）。
-// · 夸克族有 sourin-temp 固定目录；迅雷的**建目录端点在懒加载 chunk 里
-//   未逐字取证** ⇒ 先转存根目录（parent_id=""，web 端默认值），
-//   残存文件由下一次播放的清理收走。二期取证到建目录后并进 sourin-temp
-//   同款纪律 —— 不猜参数。
-// · 体积超限类错误（limit/exceed/size 字样）⇒ 降级试次大文件（≤3 个），
-//   归因文案照夸克族口径（23018 教训：宁可跳过超限文件也不整体失败）。
+// · 每次新建独立目录，仅登记服务端返回的本次目录 ID；不枚举根目录差集，
+//   不复用同名用户目录。建目录协议已逐字取证，但登录态是否足够须真网验收；
+//   服务端要求验证码时诚实失败，不退回根目录。
+// · 指定集/文件失败不换最大或次大文件；没有具体选片上下文时只接受唯一视频。
 // ```
 
 use crate::pan::PanKind;
 use super::CspPlay;
+use super::pan_playback_guard::{self, PlaybackOwner};
 
 /// API 根（web 客户端 production 档逐字；可被测试回放服务替换）
 #[derive(Debug, Clone)]
@@ -56,6 +56,10 @@ pub struct XunleiEndpoints {
 
 impl Default for XunleiEndpoints {
     fn default() -> Self {
+        #[cfg(test)]
+        if let Some(base) = TEST_ENDPOINT.with(|slot| slot.borrow().clone()) {
+            return Self { base };
+        }
         Self { base: "https://api-pan.xunlei.com/drive/v1".to_string() }
     }
 }
@@ -72,13 +76,9 @@ const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
 /// 转存轮询预算（次数 × 间隔）。lead 批复：必须封顶，超时如实报。
 const RESTORE_POLL_MAX: usize = 10;
 const RESTORE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
-/// 降级重试上限（与夸克族 SHARE_PICK_MAX_TRIES 同口径）
-const PICK_MAX_TRIES: usize = 3;
-
-fn short(s: &str) -> String {
-    let t: String = s.chars().take(160).collect();
-    t
-}
+const SHARE_MAX_DEPTH: usize = 4;
+const SHARE_MAX_REQUESTS: usize = 128;
+const SHARE_LIST_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// 进程内稳定的 device-id（x-device-id 头）
 ///
@@ -138,12 +138,19 @@ pub struct XunleiFile {
 ///
 /// web 端消费者用 `files` 键、hp0 用 `share/list` 族 ⇒ 两把键都认；
 /// 条目字段 `id`/`file_id`、`name`、`size`、`kind` 同理。形状认不出 ⇒
-/// Err 带截断原文（不猜、不编）。
+/// 形状认不出给静态错误，不回传可能含凭据的原文。
 fn parse_file_items(v: &serde_json::Value) -> Result<Vec<XunleiFile>, String> {
+    Ok(parse_entries(v)?
+        .into_iter()
+        .filter(|f| f.kind != "drive#folder")
+        .collect())
+}
+
+fn parse_entries(v: &serde_json::Value) -> Result<Vec<XunleiFile>, String> {
     let arr = ["files", "list", "file_list", "resources"]
         .iter()
         .find_map(|k| v.get(k).and_then(|x| x.as_array()))
-        .ok_or_else(|| format!("响应里没有文件清单键（files/list/file_list/resources）：{}", short(&v.to_string())))?;
+        .ok_or_else(|| "响应里没有文件清单键（files/list/file_list/resources）".to_string())?;
     let mut out = Vec::new();
     for it in arr {
         let id = it
@@ -156,24 +163,15 @@ fn parse_file_items(v: &serde_json::Value) -> Result<Vec<XunleiFile>, String> {
             continue;
         }
         let kind = it.get("kind").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        if kind == "drive#folder" {
-            continue; // 目录不是候选
-        }
         out.push(XunleiFile {
             id,
             name: it.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            size: it.get("size").and_then(|x| x.as_u64()).unwrap_or(0),
+            size: it.get("size").and_then(|x| x.as_u64().or_else(|| x.as_str()?.parse().ok())).unwrap_or(0),
             kind,
             web_content_link: direct_link_of(it),
         });
     }
     Ok(out)
-}
-
-/// 按体积降序的候选（配合降级重试：超限就试次大）
-fn pick_candidates(mut files: Vec<XunleiFile>) -> Vec<XunleiFile> {
-    files.sort_by(|a, b| b.size.cmp(&a.size));
-    files
 }
 
 /// 体积超限类错误（降级触发词）—— 迅雷的具体配额码未逐字取证，
@@ -213,10 +211,11 @@ fn parse_restore(v: &serde_json::Value) -> RestoreOutcome {
     {
         return RestoreOutcome::Task(tid.to_string());
     }
-    RestoreOutcome::Failed(format!(
-        "restore_status={status:?} 原文：{}",
-        short(&v.to_string())
-    ))
+    RestoreOutcome::Failed(if is_size_limit_error(&v.to_string()) {
+        "文件大小或账号配额限制（size limit），请检查迅雷账号配额".to_string()
+    } else {
+        "服务端未确认转存完成，请稍后重试".to_string()
+    })
 }
 
 /// 任务轮询的终态判定：true = 完成
@@ -243,26 +242,34 @@ fn direct_link_of(it: &serde_json::Value) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// 进程内记下的转存文件 id（下一次解析开头清理 —— 与夸克族同节律）
-///
-/// ★ 账本键是 **(API 根, fid)** 二元组（2026-11-01 互检 P2 并行红点修正）：
-/// ```text
-/// 原来账本只存 fid ⇒ 清理拿"当前端点"去删别的端点记下的 fid ——
-/// 并行用例（各自回放服务不同端口）互相盲删。修成按端点分账本：
-/// 清理只删"本端点记下的"，与夸克族"只删自记"同一条纪律。
-/// ```
-static TEMP_SAVED: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> =
+/// 仅记本次 POST 返回的自建目录；按端点、账号、播放器会话与代次清理。
+#[derive(Clone)]
+struct SavedDirectory {
+    base: String,
+    account: u64,
+    owner: Option<PlaybackOwner>,
+    fid: String,
+}
+
+static TEMP_SAVED: std::sync::OnceLock<std::sync::Mutex<Vec<SavedDirectory>>> =
     std::sync::OnceLock::new();
 
-fn temp_saved() -> &'static std::sync::Mutex<Vec<(String, String)>> {
+fn temp_saved() -> &'static std::sync::Mutex<Vec<SavedDirectory>> {
     TEMP_SAVED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
-fn remember_temp(base: &str, fid: &str) {
+fn account_key(token: &str) -> u64 {
+    token.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
+}
+
+fn remember_temp(base: &str, token: &str, fid: &str) {
     temp_saved()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push((base.to_string(), fid.to_string()));
+        .push(SavedDirectory {
+            base: base.to_string(), account: account_key(token),
+            owner: pan_playback_guard::current_owner(), fid: fid.to_string(),
+        });
 }
 
 /// ★★★ 把迅雷分享页解析成可播直链（给 provider.rs 的 resolve 出口钩子用）
@@ -271,6 +278,169 @@ fn remember_temp(base: &str, fid: &str) {
 pub async fn resolve(share_id: &str, passcode: &str) -> Result<CspPlay, String> {
     let credential = crate::pan_auth::load(PanKind::Xunlei).map(|c| c.cookie);
     resolve_with(&XunleiEndpoints::default(), credential.as_deref(), share_id, passcode).await
+}
+
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(UA)
+        .timeout(std::time::Duration::from_secs(15))
+        .no_proxy()
+        .build()
+        .expect("HTTP client 构建失败（TLS 后端不可用）")
+}
+
+struct ShareListing {
+    files: Vec<XunleiFile>,
+    pass_code_token: String,
+}
+
+/// The share API itself validates availability before any file is restored.
+pub async fn list_share_files(share_id: &str, passcode: &str) -> Result<Vec<XunleiFile>, String> {
+    let client = http_client();
+    let ep = XunleiEndpoints::default();
+    let anonymous = list_share_with(&client, &ep, None, share_id, passcode).await;
+    match anonymous {
+        Ok(list) => Ok(list.files),
+        Err(why) => {
+            let credential = crate::pan_auth::load(PanKind::Xunlei).map(|c| c.cookie);
+            let token = credential.as_deref().and_then(access_token_of);
+            match token {
+                Some(token) => list_share_with(&client, &ep, Some(&token), share_id, passcode)
+                    .await.map(|list| list.files),
+                None => Err(why),
+            }
+        }
+    }
+}
+
+async fn list_share_with(
+    client: &reqwest::Client,
+    ep: &XunleiEndpoints,
+    token: Option<&str>,
+    share_id: &str,
+    passcode: &str,
+) -> Result<ShareListing, String> {
+    tokio::time::timeout(SHARE_LIST_BUDGET, async {
+        use std::collections::{HashSet, VecDeque};
+        if share_id.trim().is_empty() {
+            return Err("迅雷分享 id 为空".to_string());
+        }
+        let mut folders = VecDeque::from([(String::new(), 0usize)]);
+        let mut visited = HashSet::from([String::new()]);
+        let mut file_ids = HashSet::new();
+        let mut files = Vec::new();
+        let mut pass_code_token = String::new();
+        let mut requests = 0usize;
+        while let Some((folder, depth)) = folders.pop_front() {
+            let mut page_token = String::new();
+            let mut pages_seen = HashSet::new();
+            loop {
+                requests += 1;
+                if requests > SHARE_MAX_REQUESTS {
+                    return Err("迅雷分享目录过大，未能完整列出文件，请使用更具体的分享目录".to_string());
+                }
+                let path = if folder.is_empty() { "share" } else { "share/detail" };
+                let mut url = reqwest::Url::parse(&format!("{}/{path}", ep.base))
+                    .map_err(|_| "迅雷分享 API 地址无效".to_string())?;
+                {
+                    let mut q = url.query_pairs_mut();
+                    q.append_pair("share_id", share_id)
+                        .append_pair("pass_code_token", &pass_code_token)
+                        .append_pair("limit", "100")
+                        .append_pair("page_token", &page_token)
+                        .append_pair("thumbnail_size", "SIZE_MEDIUM");
+                    if folder.is_empty() {
+                        q.append_pair("pass_code", passcode);
+                    } else {
+                        q.append_pair("parent_id", &folder);
+                    }
+                }
+                let v = get_json_optional(client, token, url.as_str()).await?;
+                let status = v.get("share_status_text")
+                    .or_else(|| v.get("shareStatusText"))
+                    .or_else(|| v.get("share_status"))
+                    .and_then(|x| x.as_str()).unwrap_or("");
+                if !status.is_empty() && status != "OK" {
+                    return Err(match status {
+                        "CRITICAL_PRESSURE" | "DELETED" | "EXPIRED" | "NOT_FOUND" | "PASS_CODE_ERROR" =>
+                            format!("迅雷分享不可用（share_status_text={status}）"),
+                        _ => "迅雷分享不可用，服务端未确认分享有效".to_string(),
+                    });
+                }
+                if let Some(pct) = v.get("pass_code_token")
+                    .or_else(|| v.get("passCodeToken"))
+                    .and_then(|x| x.as_str()).filter(|s| !s.is_empty()) {
+                    pass_code_token = pct.to_string();
+                }
+                for f in parse_entries(&v)? {
+                    if f.kind == "drive#folder" {
+                        if visited.insert(f.id.clone()) {
+                            if depth >= SHARE_MAX_DEPTH {
+                                return Err("迅雷分享目录层级过深，未能完整列出文件，请使用更具体的分享目录".to_string());
+                            }
+                            folders.push_back((f.id, depth + 1));
+                        }
+                    } else if super::pan_drive::is_video_name(&f.name) && file_ids.insert(f.id.clone()) {
+                        files.push(f);
+                    }
+                }
+                let next = v.get("next_page_token").and_then(|x| x.as_str()).unwrap_or("");
+                if next.is_empty() {
+                    break;
+                }
+                if !pages_seen.insert(next.to_string()) {
+                    return Err("迅雷分享分页未推进，请稍后重试".to_string());
+                }
+                page_token = next.to_string();
+            }
+        }
+        if files.is_empty() {
+            return Err("迅雷分享里没有可播的视频文件".to_string());
+        }
+        Ok(ShareListing { files, pass_code_token })
+    }).await.map_err(|_| "迅雷分享文件检查超时，请稍后重试".to_string())?
+}
+
+pub async fn resolve_selected(
+    share_id: &str,
+    passcode: &str,
+    fid: Option<&str>,
+    spec: &super::pan_episode_select::EpisodeSpec,
+) -> Result<CspPlay, String> {
+    let credential = crate::pan_auth::load(PanKind::Xunlei).map(|c| c.cookie);
+    resolve_selected_with(&XunleiEndpoints::default(), credential.as_deref(), share_id, passcode, fid, spec).await
+}
+
+pub async fn resolve_selected_with(
+    ep: &XunleiEndpoints,
+    credential: Option<&str>,
+    share_id: &str,
+    passcode: &str,
+    fid: Option<&str>,
+    spec: &super::pan_episode_select::EpisodeSpec,
+) -> Result<CspPlay, String> {
+    let token = credential.and_then(access_token_of).ok_or_else(|| {
+        "NEED_LOGIN:xunlei|还未登录迅雷云盘账号，请前往【配置中心】登录".to_string()
+    })?;
+    let client = http_client();
+    // Listing proves that the selected file still belongs to this live share.
+    let list = list_share_with(&client, ep, Some(&token), share_id, passcode).await?;
+    let selected = match fid.filter(|s| !s.is_empty()) {
+        Some(fid) => list.files.iter().position(|f| f.id == fid)
+            .ok_or_else(|| "迅雷分享中已找不到所选视频文件，请刷新选集".to_string())?,
+        None => super::pan_episode_select::pick_episode_index(
+            spec, &list.files.iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
+        )?,
+    };
+    let _mutation = pan_playback_guard::mutation_lock("xunlei").await;
+    pan_playback_guard::check_current()?;
+    purge_previous(&client, ep, &token, &pan_playback_guard::current_owner()).await;
+    pan_playback_guard::check_current()?;
+    let cand = &list.files[selected];
+    let mut play = attempt(&client, ep, &token, share_id, &list.pass_code_token, cand).await?;
+    play.label = Some(format!("迅雷云盘 · {}", cand.name));
+    pan_playback_guard::check_current()?;
+    Ok(play)
 }
 
 /// 可注入端点 + 可注入凭据的内核（门禁用回放服务直接打）
@@ -282,91 +452,59 @@ pub async fn resolve_with(
     share_id: &str,
     passcode: &str,
 ) -> Result<CspPlay, String> {
-    let share_id = share_id.trim();
-    if share_id.is_empty() {
-        return Err("迅雷分享 id 为空（分享页 URL 解析失败）".to_string());
-    }
-    let Some(credential) = credential else {
-        return Err(format!(
-            "NEED_LOGIN:{}|还未登录迅雷云盘账号，请前往【配置中心】登录",
-            PanKind::Xunlei.code()
-        ));
-    };
-    let Some(token) = access_token_of(credential) else {
-        // 凭据在但形状不对（没有 access_token=）——登录态坏了，如实说
-        return Err(format!(
-            "NEED_LOGIN:{}|迅雷登录态不完整，请到【配置中心】重新扫码登录",
-            PanKind::Xunlei.code()
-        ));
-    };
-
-    // 与 pan_web_share.rs / PanDrive 同一条纪律：reqwest 默认读环境代理 ⇒ 显式禁
-    let client = reqwest::Client::builder()
-        .user_agent(UA)
-        .timeout(std::time::Duration::from_secs(15))
-        .no_proxy()
-        .build()
-        .expect("HTTP client 构建失败（TLS 后端不可用）");
-
-    // ── ① 清上一次的临时转存（best-effort；失败不阻断本次播放）──────────
-    purge_previous(&client, ep, &token).await;
-
-    // ── ② 分享清单：share_status_text 必须 OK；候选按体积降序 ──────────
-    let list_url = format!(
-        "{}/share?share_id={}&pass_code={}&limit=100&pass_code_token=&page_token=&thumbnail_size=SIZE_SMALL",
-        ep.base,
-        urlencode(share_id),
-        urlencode(passcode)
-    );
-    let lv = get_json(&client, ep, &token, &list_url).await?;
-    let status = lv
-        .get("share_status_text")
-        .or_else(|| lv.get("shareStatusText"))
-        .and_then(|x| x.as_str())
-        .unwrap_or("");
-    if status != "OK" && !status.is_empty() {
-        return Err(format!("迅雷分享不可用（share_status_text={status}）"));
-    }
-    let pass_code_token = lv
-        .get("pass_code_token")
-        .or_else(|| lv.get("passCodeToken"))
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .to_string();
-    let files = parse_file_items(&lv)?;
-    if files.is_empty() {
-        return Err(format!(
-            "迅雷分享里没有可播的文件（清单为空或全是目录）：{}",
-            short(&lv.to_string())
-        ));
-    }
-    let candidates = pick_candidates(files);
-
-    // ── ③ 逐候选：转存 → 轮询 → 找到转存后的文件 → 取直链 ─────────────
-    let tries = candidates.len().min(PICK_MAX_TRIES);
-    let mut last_err = String::new();
-    for cand in candidates.iter().take(tries) {
-        match attempt(&client, ep, &token, share_id, &pass_code_token, cand).await {
-            Ok(mut play) => {
-                play.label = Some(format!("迅雷云盘 · {}", cand.name));
-                return Ok(play);
-            }
-            Err(e) => {
-                crate::applog::write_file_log(
-                    "PAN",
-                    &format!("[XL-PLAY] 候选「{}」失败：{e}", cand.name),
-                );
-                last_err = e;
-                if !is_size_limit_error(&last_err) {
-                    break; // 只有"限制类"错误才降级，其余如实失败
-                }
-            }
-        }
-    }
-    Err(last_err)
+    let spec = super::pan_episode_select::EpisodeSpec { title: String::new(), order: None };
+    resolve_selected_with(ep, credential, share_id, passcode, None, &spec).await
 }
 
-/// 单个候选的尝试：restore → (轮询) → 根目录对名找文件 → 直链
+async fn post_json(
+    client: &reqwest::Client, ep: &XunleiEndpoints, token: &str,
+    path: &str, body: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let resp = client.post(format!("{}/{path}", ep.base))
+        .bearer_auth(token)
+        .header("x-device-id", device_id())
+        .header("x-client-id", CLIENT_ID)
+        .header("x-client-version", CLIENT_VERSION)
+        .header("Origin", "https://pan.xunlei.com")
+        .header("Referer", "https://pan.xunlei.com/")
+        .json(body).send().await
+        .map_err(|e| format!("迅雷请求失败：{}", e.without_url()))?;
+    let status = resp.status().as_u16();
+    let body = resp.text().await.map_err(|e| format!("读迅雷响应失败：{}", e.without_url()))?;
+    if let Some(err) = login_expired_error(status, &body) { return Err(err); }
+    if !(200..300).contains(&status) {
+        return Err(if is_size_limit_error(&body) {
+            format!("迅雷返回 HTTP {status}：文件大小或账号配额限制（size limit）")
+        } else {
+            format!("迅雷返回 HTTP {status}，请求被拒绝，请检查登录态或验证码要求")
+        });
+    }
+    serde_json::from_str(&body).map_err(|_| "迅雷响应不是 JSON，请稍后重试".to_string())
+}
+
+async fn create_owned_directory(
+    client: &reqwest::Client, ep: &XunleiEndpoints, token: &str,
+) -> Result<String, String> {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    pan_playback_guard::check_current()?;
+    let v = post_json(client, ep, token, "files", &serde_json::json!({
+        "parent_id":"", "name":format!("sourin-play-{}-{seq}", device_id()),
+        "kind":"drive#folder", "space":"",
+    })).await?;
+    let file = v.get("file").ok_or("迅雷未返回新建目录标识，不能安全转存")?;
+    let fid = file.get("id").and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty() && !s.chars().any(char::is_control))
+        .ok_or("迅雷未返回新建目录标识，不能安全转存")?;
+    if file.get("kind").and_then(|v| v.as_str()).is_some_and(|s| s != "drive#folder") {
+        return Err("迅雷返回的对象不是目录，不能安全转存".into());
+    }
+    remember_temp(&ep.base, token, fid);
+    pan_playback_guard::check_current()?;
+    Ok(fid.to_string())
+}
+
+/// 单个候选：新建专属目录 → restore → 轮询 → 目录内确认文件 → 直链。
 async fn attempt(
     client: &reqwest::Client,
     ep: &XunleiEndpoints,
@@ -375,88 +513,35 @@ async fn attempt(
     pass_code_token: &str,
     cand: &XunleiFile,
 ) -> Result<CspPlay, String> {
-    // 转存（web 调用点逐字 body；parent_id="" = 根目录，见文件头注释）
-    let body = format!(
-        "{{\"parent_id\":\"\",\"share_id\":{},\"pass_code_token\":{},\
-          \"ancestor_ids\":[],\"file_ids\":[{}],\"specify_parent_id\":true}}",
-        json_str(share_id),
-        json_str(pass_code_token),
-        json_str(&cand.id),
-    );
-    let restore_url = format!("{}/share/restore", ep.base);
-    let resp = client
-        .post(&restore_url)
-        .bearer_auth(token)
-        .header("x-device-id", device_id())
-        .header("x-client-id", CLIENT_ID)
-        .header("x-client-version", CLIENT_VERSION)
-        .header("Origin", "https://pan.xunlei.com")
-        .header("Referer", "https://pan.xunlei.com/")
-        .header("Content-Type", "application/json")
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| format!("迅雷转存请求失败：{e}"))?;
-    let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("读转存响应失败：{e}"))?;
-    if !status.is_success() {
-        // ★ P2-2：转存那跳同样可能 token 过期 ⇒ 引导重登
-        if let Some(e) = login_expired_error(status.as_u16(), &text) {
-            return Err(e);
-        }
-        return Err(format!("迅雷转存返回 HTTP {}：{}", status.as_u16(), short(&text)));
-    }
-    let rv: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("迅雷转存响应不是 JSON（{e}）：{}", short(&text)))?;
+    let directory = create_owned_directory(client, ep, token).await?;
+    pan_playback_guard::check_current()?;
+    let rv = post_json(client, ep, token, "share/restore", &serde_json::json!({
+        "parent_id":directory, "share_id":share_id, "pass_code_token":pass_code_token,
+        "ancestor_ids":[], "file_ids":[cand.id], "specify_parent_id":true,
+    })).await?;
     match parse_restore(&rv) {
         RestoreOutcome::Failed(why) => return Err(format!("迅雷转存被拒：{why}")),
         RestoreOutcome::Task(tid) => {
-            // 轮询到终态（预算封顶 —— lead 批复约束）
-            let poll_url = format!("{}/tasks/{}", ep.base, urlencode(&tid));
-            let mut done = false;
-            for _ in 0..RESTORE_POLL_MAX {
-                tokio::time::sleep(RESTORE_POLL_INTERVAL).await;
-                let tv = get_json(client, ep, token, &poll_url).await?;
-                match task_done(&tv) {
-                    Some(true) => {
-                        done = true;
-                        break;
-                    }
-                    Some(false) => {
-                        return Err(format!(
-                            "迅雷转存任务失败：{}",
-                            short(&tv.to_string())
-                        ));
-                    }
-                    None => continue,
-                }
-            }
-            if !done {
-                return Err("迅雷转存未完成（轮询预算内没有到终态，已保留任务可稍后重试）".to_string());
-            }
+            poll_until_done(client, ep, token, &tid, RESTORE_POLL_INTERVAL).await?;
         }
         RestoreOutcome::Complete => {}
     }
 
-    // 找到转存后的文件：转存落在根目录（parent_id=""）⇒ 在根目录清单里
-    // 按"名字一致"对号（web 端 restore 响应的 file_id 是**目标目录**，不是文件）。
-    let list_url = format!(
-        "{}/files?parent_id=&limit=100&with=has_subfolder",
-        ep.base
-    );
-    let fv = get_json(client, ep, token, &list_url).await?;
-    let root_files = parse_file_items(&fv)?;
-    let restored = root_files
-        .iter()
-        .find(|f| f.name == cand.name && f.size == cand.size)
-        .or_else(|| root_files.iter().find(|f| f.name == cand.name))
-        .ok_or_else(|| {
+    pan_playback_guard::check_current()?;
+    let files = list_directory_files(client, ep, token, &directory).await?;
+    let matches: Vec<_> = files.iter()
+        .filter(|f| f.name == cand.name && f.size == cand.size)
+        .collect();
+    let restored = match matches.as_slice() {
+        [file] => *file,
+        [] => return Err(
             format!(
-                "迅雷转存完成，但根目录清单里找不到「{}」（转存与清单一时不同步）",
+                "迅雷转存完成，但本次专属目录里找不到所选「{}」（清单可能尚未同步）",
                 cand.name
             )
-        })?;
-    remember_temp(&ep.base, &restored.id);
+        ),
+        _ => return Err("迅雷转存后出现多个同名同大小文件，无法确认所选文件，请稍后重试".to_string()),
+    };
 
     // 直链：清单条目若自带 web_content_link 就直接用；否则 files/{id}?usage=CONSUME
     let link = match restored.web_content_link.clone().filter(|s| !s.is_empty()) {
@@ -464,16 +549,12 @@ async fn attempt(
         None => {
             let info_url = format!("{}/files/{}?usage=CONSUME", ep.base, urlencode(&restored.id));
             let iv = get_json(client, ep, token, &info_url).await?;
-            direct_link_of(&iv).ok_or_else(|| {
-                format!(
-                    "迅雷文件详情里没有 web_content_link：{}",
-                    short(&iv.to_string())
-                )
-            })?
+            direct_link_of(&iv).ok_or_else(|| "迅雷文件详情里没有 web_content_link".to_string())?
         }
     };
     // 直链的 UA 约束未取证（web 端直链消费不在本轮证据里）⇒ 带桌面 UA 交给
     // 真机验收暴露；响应里若有 UA 提示字段，见到再加（不猜）。
+    pan_playback_guard::check_current()?;
     Ok(CspPlay {
         url: link,
         headers: vec![("User-Agent".to_string(), UA.to_string())],
@@ -481,27 +562,70 @@ async fn attempt(
     })
 }
 
+async fn list_directory_files(
+    client: &reqwest::Client,
+    ep: &XunleiEndpoints,
+    token: &str,
+    directory: &str,
+) -> Result<Vec<XunleiFile>, String> {
+    tokio::time::timeout(SHARE_LIST_BUDGET, async {
+        let mut files = Vec::new();
+        let mut page = String::new();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..SHARE_MAX_REQUESTS {
+            let mut url = reqwest::Url::parse(&format!("{}/files", ep.base))
+                .map_err(|_| "迅雷文件 API 地址无效".to_string())?;
+            url.query_pairs_mut().append_pair("parent_id", directory)
+                .append_pair("limit", "100").append_pair("with", "has_subfolder")
+                .append_pair("page_token", &page);
+            let v = get_json(client, ep, token, url.as_str()).await?;
+            files.extend(parse_file_items(&v)?);
+            let next = v.get("next_page_token").and_then(|x| x.as_str()).unwrap_or("");
+            if next.is_empty() {
+                return Ok(files);
+            }
+            if !seen.insert(next.to_string()) {
+                return Err("迅雷文件清单分页未推进，请稍后重试".to_string());
+            }
+            page = next.to_string();
+        }
+        Err("迅雷文件清单过大，无法确认本次转存文件".to_string())
+    }).await.map_err(|_| "迅雷转存文件确认超时，请稍后重试".to_string())?
+}
+
+async fn poll_until_done(
+    client: &reqwest::Client,
+    ep: &XunleiEndpoints,
+    token: &str,
+    task_id: &str,
+    interval: std::time::Duration,
+) -> Result<(), String> {
+    let url = format!("{}/tasks/{}", ep.base, urlencode(task_id));
+    for _ in 0..RESTORE_POLL_MAX {
+        tokio::time::sleep(interval).await;
+        let tv = get_json(client, ep, token, &url).await?;
+        match task_done(&tv) {
+            Some(true) => return Ok(()),
+            Some(false) => return Err("迅雷转存任务失败，请稍后重试".to_string()),
+            None => continue,
+        }
+    }
+    Err("迅雷转存未完成（轮询预算内没有到终态，已保留任务可稍后重试）".to_string())
+}
+
 /// 清上一次的临时转存（DELETE files/{id}?space= 逐字；best-effort）
 ///
 /// ★ 只删**本端点账本**记下的 fid（"只删自记"）—— 别的端点记的留在账本里，
 ///   绝不拿当前端点去盲删（并行/换端点场景会删错，互检 P2 红点）。
-async fn purge_previous(client: &reqwest::Client, ep: &XunleiEndpoints, token: &str) {
-    let fids: Vec<String> = {
-        let mut g = temp_saved().lock().unwrap_or_else(|e| e.into_inner());
-        // 摘走本端点的账，别的端点的**原样保留**
-        let mut mine = Vec::new();
-        g.retain(|(base, fid)| {
-            if base == &ep.base {
-                mine.push(fid.clone());
-                false
-            } else {
-                true
-            }
-        });
-        mine
-    };
-    for fid in fids {
-        let url = format!("{}/files/{}?space=", ep.base, urlencode(&fid));
+async fn purge_previous(
+    client: &reqwest::Client, ep: &XunleiEndpoints, token: &str, target: &Option<PlaybackOwner>,
+) {
+    let dirs: Vec<SavedDirectory> = temp_saved().lock().unwrap_or_else(|e| e.into_inner())
+        .iter().filter(|saved| saved.base == ep.base && saved.account == account_key(token)
+            && pan_playback_guard::cleanup_matches(&saved.owner, target)).cloned().collect();
+    for saved in dirs {
+        let fid = &saved.fid;
+        let url = format!("{}/files/{}?space=", ep.base, urlencode(fid));
         let r = client
             .delete(&url)
             .bearer_auth(token)
@@ -511,7 +635,11 @@ async fn purge_previous(client: &reqwest::Client, ep: &XunleiEndpoints, token: &
             .send()
             .await;
         match r {
-            Ok(resp) if resp.status().is_success() => {
+            Ok(resp) if resp.status().is_success() || matches!(resp.status().as_u16(), 404 | 410) => {
+                temp_saved().lock().unwrap_or_else(|e| e.into_inner()).retain(|entry| {
+                    !(entry.base == saved.base && entry.account == saved.account
+                        && entry.owner == saved.owner && entry.fid == saved.fid)
+                });
                 crate::applog::write_file_log("PAN", &format!("[XL-PLAY] 已清理上次临时转存 fid={fid}"));
             }
             Ok(resp) => {
@@ -521,10 +649,17 @@ async fn purge_previous(client: &reqwest::Client, ep: &XunleiEndpoints, token: &
                 );
             }
             Err(e) => {
-                crate::applog::write_file_log("PAN", &format!("[XL-PLAY] 清理临时转存请求失败 fid={fid} err={e}"));
+                crate::applog::write_file_log("PAN", &format!("[XL-PLAY] 清理临时转存请求失败：{}", e.without_url()));
             }
         }
     }
+}
+
+pub async fn purge_for_owner(target: Option<PlaybackOwner>) {
+    let credential = crate::pan_auth::load(PanKind::Xunlei).map(|c| c.cookie);
+    let Some(token) = credential.as_deref().and_then(access_token_of) else { return };
+    let _mutation = pan_playback_guard::mutation_lock("xunlei").await;
+    purge_previous(&http_client(), &XunleiEndpoints::default(), &token, &target).await;
 }
 
 /// token 过期/无效的响应形态（HTTP 401，或响应体里的 unauthenticated 族）
@@ -552,30 +687,35 @@ async fn get_json(
     token: &str,
     url: &str,
 ) -> Result<serde_json::Value, String> {
-    let resp = client
-        .get(url)
-        .bearer_auth(token)
+    get_json_optional(client, Some(token), url).await
+}
+
+async fn get_json_optional(
+    client: &reqwest::Client,
+    token: Option<&str>,
+    url: &str,
+) -> Result<serde_json::Value, String> {
+    let mut request = client.get(url)
         .header("x-device-id", device_id())
         .header("x-client-id", CLIENT_ID)
         .header("Accept", "application/json, text/plain, */*")
-        .header("Referer", "https://pan.xunlei.com/")
-        .send()
+        .header("Referer", "https://pan.xunlei.com/");
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    let resp = request.send()
         .await
-        .map_err(|e| format!("迅雷请求失败：{e}"))?;
+        .map_err(|e| format!("迅雷请求失败：{}", e.without_url()))?;
     let status = resp.status();
-    let body = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
+    let body = resp.text().await.map_err(|e| format!("读响应失败：{}", e.without_url()))?;
     if !status.is_success() {
         // ★ P2-2：token 过期 ⇒ 引导重登（不是裸 HTTP 401 文案）
         if let Some(e) = login_expired_error(status.as_u16(), &body) {
             return Err(e);
         }
-        return Err(format!("迅雷返回 HTTP {}：{}", status.as_u16(), short(&body)));
+        return Err(format!("迅雷返回 HTTP {}", status.as_u16()));
     }
-    serde_json::from_str(&body).map_err(|e| format!("迅雷响应不是 JSON（{e}）：{}", short(&body)))
-}
-
-fn json_str(s: &str) -> String {
-    serde_json::Value::String(s.to_string()).to_string()
+    serde_json::from_str(&body).map_err(|_| "迅雷响应不是 JSON，请稍后重试".to_string())
 }
 
 /// query 值转义（仓库无 url crate —— 与 pan.rs 同一个做法，最小实现）
@@ -590,6 +730,37 @@ fn urlencode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ENDPOINT: std::cell::RefCell<Option<String>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) struct TestEndpointGuard {
+    previous: Option<String>,
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for TestEndpointGuard {
+    fn drop(&mut self) {
+        TEST_ENDPOINT.with(|slot| *slot.borrow_mut() = self.previous.take());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn debug_override_endpoint(base: String) -> TestEndpointGuard {
+    let previous = TEST_ENDPOINT.with(|slot| slot.replace(Some(base)));
+    TestEndpointGuard { previous, _thread_bound: std::marker::PhantomData }
+}
+
+#[cfg(test)]
+pub(crate) fn debug_remember_temp(base: &str, token: &str, fid: &str) {
+    remember_temp(base, token, fid);
 }
 
 #[cfg(test)]
@@ -697,9 +868,15 @@ mod tests {
                         body,
                     });
                 }
-                let hit = routes
-                    .iter()
-                    .find(|(m, p, _, _)| method.eq_ignore_ascii_case(m) && target.starts_with(p.as_str()));
+                let matching: Vec<_> = routes.iter()
+                    .filter(|(m, p, _, _)| method.eq_ignore_ascii_case(m) && target.starts_with(p.as_str()))
+                    .collect();
+                let hit = matching.first().map(|first| {
+                    let count = hits_bg.lock().unwrap().iter()
+                        .filter(|r| r.method == method && r.target.starts_with(first.1.as_str()))
+                        .count();
+                    matching[(count - 1) % matching.len()]
+                });
                 let (status, resp_body) = match hit {
                     Some((_, _, s, b)) => (*s, b.clone()),
                     None => (404u16, "{\"error\":\"not in replay\"}".to_string()),
@@ -751,6 +928,15 @@ mod tests {
                     .into(),
             ),
             ("DELETE".into(), "/drive/v1/files/".into(), 200, "{}".into()),
+            (
+                "GET".into(),
+                "/drive/v1/files?".into(),
+                200,
+                r#"{"files":[{"id":"xf1","name":"movie.mkv","size":123,"kind":"drive#file"}]}"#.into(),
+            ),
+            ("GET".into(), "/drive/v1/share/detail?".into(), 200, r#"{"files":[]}"#.into()),
+            ("POST".into(), "/drive/v1/files".into(), 200,
+                r#"{"file":{"id":"owned-dir","kind":"drive#folder"}}"#.into()),
         ])
     }
 
@@ -800,7 +986,7 @@ mod tests {
 
     // ── 全链门禁（真 HTTP 回放）────────────────────────────────────────
 
-    /// ★★ 快乐路径：清单 OK → restore（body 逐字参数）→ 根目录对名 → 直链。
+    /// 清单 OK → 新建目录 → restore（body 逐字参数）→ 目录内选片 → 直链。
     ///
     /// 证红：把 get_json/restore 的 `bearer_auth` 拿掉 ⇒ 本条红
     ///      （红在"请求缺 Bearer 头"——服务端记账逐请求断言）。
@@ -831,7 +1017,7 @@ mod tests {
             .iter()
             .find(|r| r.target.starts_with("/drive/v1/share/restore"))
             .expect("必须有转存请求");
-        assert!(restore.body.contains("\"parent_id\":\"\""), "根目录形态：{}", restore.body);
+        assert!(restore.body.contains("\"parent_id\":\"owned-dir\""), "专属目录形态：{}", restore.body);
         assert!(restore.body.contains("\"specify_parent_id\":true"), "{}", restore.body);
         assert!(restore.body.contains("\"ancestor_ids\":[]"), "{}", restore.body);
         assert!(restore.body.contains("\"file_ids\":[\"f1\"]"), "{}", restore.body);
@@ -853,7 +1039,7 @@ mod tests {
             .filter(|r| r.method == "DELETE")
             .collect();
         assert_eq!(deletes.len(), 1, "第二次解析开头必须 DELETE 上一次的转存");
-        assert!(deletes[0].target.contains("files/xf1"), "{}", deletes[0].target);
+        assert!(deletes[0].target.contains("files/owned-dir"), "{}", deletes[0].target);
     }
 
     /// ★ 未登录 ⇒ NEED_LOGIN（classify_err 翻译成 Unauthorized，与夸克族同约定）
@@ -932,6 +1118,9 @@ mod tests {
                 401,
                 r#"{"error":"unauthorized"}"#.into(),
             ),
+            ("GET".into(), "/drive/v1/files?".into(), 200, r#"{"files":[]}"#.into()),
+            ("POST".into(), "/drive/v1/files".into(), 200,
+                r#"{"file":{"id":"owned-dir","kind":"drive#folder"}}"#.into()),
         ]);
         let srv2 = spawn_replay(routes2);
         let ep2 = XunleiEndpoints { base: srv2.base.clone() };
@@ -978,7 +1167,7 @@ mod tests {
             .filter(|r| r.method == "DELETE")
             .collect();
         assert_eq!(deletes.len(), 1, "A 的第二次解析清 A 自己记的 fid");
-        assert!(deletes[0].target.contains("files/xf1"), "{}", deletes[0].target);
+        assert!(deletes[0].target.contains("files/owned-dir"), "{}", deletes[0].target);
     }
 
     /// ★ 轮询预算封顶：任务一直 RUNNING ⇒ 到点如实报"转存未完成"
@@ -1018,35 +1207,11 @@ mod tests {
         assert_eq!(polls, RESTORE_POLL_MAX, "轮询次数必须正好封顶");
     }
 
-    /// 轮询内核（生产路径走 RESTORE_POLL_INTERVAL；测试传短间隔）
-    async fn poll_until_done(
-        client: &reqwest::Client,
-        ep: &XunleiEndpoints,
-        token: &str,
-        task_id: &str,
-        interval: std::time::Duration,
-    ) -> Result<(), String> {
-        let url = format!("{}/tasks/{}", ep.base, urlencode(task_id));
-        for _ in 0..RESTORE_POLL_MAX {
-            tokio::time::sleep(interval).await;
-            let tv = get_json(client, ep, token, &url).await?;
-            match task_done(&tv) {
-                Some(true) => return Ok(()),
-                Some(false) => return Err(format!("迅雷转存任务失败：{}", short(&tv.to_string()))),
-                None => continue,
-            }
-        }
-        Err("迅雷转存未完成（轮询预算内没有到终态，已保留任务可稍后重试）".to_string())
-    }
-
-    /// ★ 转存成功但"根目录对名"失败 ⇒ 如实报；此时文件 id 未知（restore 响应的
-    ///   file_id 是**目标目录**不是文件）⇒ 无法登记清理 —— 残存文件只能靠用户
-    ///   手动删或下次同名对上后再清。这是"建目录端点未取证"边界的连带代价，
-    ///   在文件头注释里如实声明（不许假装清理过）。
+    /// 文件匹配失败明确报错；本次已知自建目录仍留账，下次同会话清理。
     #[tokio::test]
     async fn failed_match_after_restore_is_honest() {
         save_test_credential();
-        // restore 成功，但根目录清单里对不上名 ⇒ attempt 失败
+        // restore 成功，但专属目录清单里对不上名 ⇒ attempt 失败
         let routes = Arc::new(vec![
             ("GET".into(), "/drive/v1/share?".into(), 200,
              r#"{"share_status_text":"OK","files":[{"id":"f1","name":"movie.mkv","size":123,"kind":"drive#file"}]}"#.into()),
@@ -1055,6 +1220,8 @@ mod tests {
             ("GET".into(), "/drive/v1/files?".into(), 200,
              r#"{"files":[{"id":"other","name":"别的文件","size":1,"kind":"drive#file"}]}"#.into()),
             ("DELETE".into(), "/drive/v1/files/".into(), 200, "{}".into()),
+            ("POST".into(), "/drive/v1/files".into(), 200,
+                r#"{"file":{"id":"owned-dir","kind":"drive#folder"}}"#.into()),
         ]);
         let srv = spawn_replay(routes);
         let ep = XunleiEndpoints { base: srv.base.clone() };
@@ -1062,10 +1229,252 @@ mod tests {
             .await
             .expect_err("对不上名必须 Err");
         assert!(err.contains("找不到"), "{err}");
-        // 此时不许有 DELETE（文件 id 未知 —— 删不得，删了是假装清理过）
+        // 当前尝试不立即删除：目录内的异步转存仍可能尚未结束。
         assert!(
             srv.requests().iter().all(|r| r.method != "DELETE"),
             "对不上名时没有任何已知 fid，DELETE 就是盲删"
         );
+    }
+
+    #[tokio::test]
+    async fn selected_file_does_not_restore_largest_or_another_episode() {
+        let mut routes = full_routes().as_ref().clone();
+        routes[0].3 = r#"{"share_status_text":"OK","pass_code_token":"pctok","files":[
+            {"id":"largest","name":"第1集.mkv","size":"9999","kind":"drive#file"},
+            {"id":"f2","name":"第2集.mkv","size":"123","kind":"drive#file"}]}"#.into();
+        routes[2].3 = r#"{"files":[{"id":"xf2","name":"第2集.mkv","size":"123","kind":"drive#file"}]}"#.into();
+        routes[3].1 = "/drive/v1/files/xf2?".into();
+        let srv = spawn_replay(Arc::new(routes));
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        let spec = super::super::pan_episode_select::EpisodeSpec {
+            title: "第2集".into(), order: Some(2),
+        };
+        let out = resolve_selected_with(&ep, Some("access_token=TESTTOK"), "share", "", Some("f2"), &spec)
+            .await.expect("指定第二集");
+        assert!(out.label.as_deref().unwrap_or("").contains("第2集"));
+        let restore = srv.requests().into_iter().find(|r| r.target == "/drive/v1/share/restore").unwrap();
+        let body: serde_json::Value = serde_json::from_str(&restore.body).unwrap();
+        assert_eq!(body["file_ids"], serde_json::json!(["f2"]));
+    }
+
+    #[tokio::test]
+    async fn absent_selected_file_is_rejected_before_restore() {
+        let srv = spawn_replay(full_routes());
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        let spec = super::super::pan_episode_select::EpisodeSpec { title: "第2集".into(), order: Some(2) };
+        let err = resolve_selected_with(&ep, Some("access_token=TESTTOK"), "share", "", Some("gone"), &spec)
+            .await.expect_err("不能退回最大文件");
+        assert!(err.contains("找不到"), "{err}");
+        assert!(srv.requests().iter().all(|r| r.method != "POST" && r.method != "DELETE"));
+    }
+
+    #[tokio::test]
+    async fn share_listing_traverses_directories_and_filters_non_video_files() {
+        let routes = Arc::new(vec![
+            ("GET".into(), "/drive/v1/share?".into(), 200,
+                r#"{"share_status_text":"OK","pass_code_token":"pct","files":[
+                {"id":"sub","name":"剧集","kind":"drive#folder"},
+                {"id":"poster","name":"poster.jpg","kind":"drive#file"}]}"#.into()),
+            ("GET".into(), "/drive/v1/share/detail?".into(), 200,
+                r#"{"files":[{"id":"f3","name":"第3集.mkv","size":"100","kind":"drive#file"}]}"#.into()),
+        ]);
+        let srv = spawn_replay(routes);
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        let out = list_share_with(&http_client(), &ep, None, "share", "pwd").await.unwrap();
+        assert_eq!(out.files.len(), 1);
+        assert_eq!(out.files[0].id, "f3");
+        assert_eq!(out.files[0].size, 100);
+        let reqs = srv.requests();
+        assert!(reqs.iter().all(|r| r.authorization.is_empty()));
+        let child = reqs.iter().find(|r| r.target.contains("/share/detail?")).unwrap();
+        assert!(child.target.contains("parent_id=sub") && child.target.contains("pass_code_token=pct"));
+    }
+
+    #[tokio::test]
+    async fn repeated_share_page_token_is_not_partial_success() {
+        let srv = spawn_replay(Arc::new(vec![
+            ("GET".into(), "/drive/v1/share?".into(), 200,
+                r#"{"share_status_text":"OK","next_page_token":"same","files":[
+                {"id":"f1","name":"第1集.mp4","kind":"drive#file"}]}"#.into()),
+        ]));
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        let err = list_share_with(&http_client(), &ep, None, "share", "").await.err().unwrap();
+        assert!(err.contains("分页"), "{err}");
+        assert_eq!(srv.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn production_restore_checks_task_failure_before_file_lookup() {
+        let mut routes = full_routes().as_ref().clone();
+        routes[1].3 = r#"{"restore_status":"RESTORING","restore_task_id":"t9"}"#.into();
+        routes.push(("GET".into(), "/drive/v1/tasks/t9".into(), 200, r#"{"status":"FAILED"}"#.into()));
+        let srv = spawn_replay(Arc::new(routes));
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        let err = resolve_with(&ep, Some("access_token=TESTTOK"), "share", "").await.expect_err("失败任务不能取流");
+        assert!(err.contains("任务失败"), "{err}");
+        let reqs = srv.requests();
+        assert_eq!(reqs.iter().filter(|r| r.target.contains("/tasks/")).count(), 1);
+        let task = reqs.iter().position(|r| r.target.contains("/tasks/")).unwrap();
+        assert!(reqs[task + 1..].iter().all(|r| !r.target.contains("/files?")));
+    }
+
+    #[tokio::test]
+    async fn preexisting_root_file_is_never_queried_or_registered_for_cleanup() {
+        let mut routes = full_routes().as_ref().clone();
+        routes.insert(0, ("GET".into(), "/drive/v1/files?parent_id=&".into(), 200,
+            r#"{"files":[{"id":"user-file","name":"movie.mkv","size":123}]}"#.into()));
+        let srv = spawn_replay(Arc::new(routes));
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        resolve_with(&ep, Some("access_token=TESTTOK"), "share", "").await.unwrap();
+        resolve_with(&ep, Some("access_token=TESTTOK"), "share", "").await.unwrap();
+        let reqs = srv.requests();
+        assert!(reqs.iter().all(|r| !r.target.contains("user-file")));
+        assert!(reqs.iter().filter(|r| r.method == "GET")
+            .all(|r| !r.target.starts_with("/drive/v1/files?parent_id=&")));
+    }
+
+    #[tokio::test]
+    async fn restore_targets_a_new_owned_directory_not_root_delta() {
+        let srv = spawn_replay(Arc::new(vec![
+            ("GET".into(), "/drive/v1/share?".into(), 200,
+                r#"{"share_status_text":"OK","files":[{"id":"f1","name":"movie.mkv","size":123}]}"#.into()),
+            ("POST".into(), "/drive/v1/files".into(), 200,
+                r#"{"file":{"id":"owned-dir","kind":"drive#folder"}}"#.into()),
+            ("POST".into(), "/drive/v1/share/restore".into(), 200,
+                r#"{"restore_status":"RESTORE_COMPLETE"}"#.into()),
+            ("GET".into(), "/drive/v1/files?parent_id=owned-dir".into(), 200,
+                r#"{"files":[{"id":"ours","name":"movie.mkv","size":123,"web_content_link":"http://127.0.0.1:9/ours.mkv"}]}"#.into()),
+            ("GET".into(), "/drive/v1/files?".into(), 200, r#"{"files":[]}"#.into()),
+            ("GET".into(), "/drive/v1/files?".into(), 200,
+                r#"{"files":[{"id":"user-upload","name":"movie.mkv","size":123,"web_content_link":"http://127.0.0.1:9/user.mkv"}]}"#.into()),
+        ]));
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        let spec = super::super::pan_episode_select::EpisodeSpec { title: "movie".into(), order: Some(1) };
+        let out = resolve_selected_with(&ep, Some("access_token=TESTTOK"), "share", "", Some("f1"), &spec)
+            .await.expect("独立目录转存");
+        assert_eq!(out.url, "http://127.0.0.1:9/ours.mkv", "不能误播并发的用户上传");
+        let reqs = srv.requests();
+        let create = reqs.iter().find(|r| r.method == "POST" && r.target == "/drive/v1/files")
+            .expect("必须新建目录");
+        let body: serde_json::Value = serde_json::from_str(&create.body).unwrap();
+        assert_eq!(body["kind"], "drive#folder");
+        assert_eq!(body["parent_id"], "");
+        assert_eq!(body["space"], "");
+        assert!(body["name"].as_str().unwrap().starts_with("sourin-play-"));
+        let restore = reqs.iter().find(|r| r.target == "/drive/v1/share/restore").unwrap();
+        let body: serde_json::Value = serde_json::from_str(&restore.body).unwrap();
+        assert_eq!(body["parent_id"], "owned-dir");
+        assert!(reqs.iter().filter(|r| r.method == "GET" && r.target.starts_with("/drive/v1/files?"))
+            .all(|r| r.target.contains("parent_id=owned-dir")));
+    }
+
+    #[tokio::test]
+    async fn refused_directory_creation_never_falls_back_to_root() {
+        let mut routes = full_routes().as_ref().clone();
+        routes[7].2 = 403;
+        routes[7].3 = r#"{"error":"captcha_required","token":"DO_NOT_EXPOSE_SENTINEL"}"#.into();
+        let srv = spawn_replay(Arc::new(routes));
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        let spec = super::super::pan_episode_select::EpisodeSpec { title: "movie".into(), order: Some(1) };
+        let err = resolve_selected_with(&ep, Some("access_token=TESTTOK"), "share", "", Some("f1"), &spec)
+            .await.expect_err("没有专属目录不得转存");
+        assert!(!err.contains("DO_NOT_EXPOSE_SENTINEL"));
+        assert!(srv.requests().iter().all(|r| !r.target.contains("/share/restore") && r.method != "DELETE"));
+    }
+
+    #[tokio::test]
+    async fn restore_errors_never_expose_response_body_or_unknown_status() {
+        for (status, body) in [
+            (500, r#"{"token":"DO_NOT_EXPOSE_SENTINEL","url":"https://private.invalid/DO_NOT_EXPOSE_SENTINEL"}"#),
+            (200, "DO_NOT_EXPOSE_SENTINEL not json"),
+            (200, r#"{"restore_status":"DO_NOT_EXPOSE_SENTINEL","token":"DO_NOT_EXPOSE_SENTINEL"}"#),
+        ] {
+            let mut routes = full_routes().as_ref().clone();
+            routes[1].2 = status;
+            routes[1].3 = body.into();
+            let srv = spawn_replay(Arc::new(routes));
+            let ep = XunleiEndpoints { base: srv.base.clone() };
+            let spec = super::super::pan_episode_select::EpisodeSpec { title: "movie".into(), order: Some(1) };
+            let err = resolve_selected_with(&ep, Some("access_token=TESTTOK"), "share", "", Some("f1"), &spec)
+                .await.expect_err("上游错误");
+            assert!(!err.contains("DO_NOT_EXPOSE_SENTINEL"), "不能泄露响应原文");
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_parser_result_never_mutates_a_newer_playback_directory() {
+        let srv = spawn_replay(full_routes());
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        let old = PlaybackOwner { consumer: format!("xl-stale-{}", ep.base), generation: 1 };
+        let new = PlaybackOwner { consumer: old.consumer.clone(), generation: 2 };
+        pan_playback_guard::register(Some(old.clone())).unwrap();
+        pan_playback_guard::register(Some(new.clone())).unwrap();
+        pan_playback_guard::with_scope(Some(new), async {
+            remember_temp(&ep.base, "TESTTOK", "current-playing-dir");
+        }).await;
+        let spec = super::super::pan_episode_select::EpisodeSpec { title: "movie".into(), order: Some(1) };
+        let err = pan_playback_guard::with_scope(Some(old), async {
+            resolve_selected_with(&ep, Some("access_token=TESTTOK"), "share", "", Some("f1"), &spec).await
+        }).await.expect_err("旧解析不能覆盖新会话");
+        assert!(err.contains("过期"));
+        assert!(srv.requests().iter().all(|r| r.method == "GET"), "旧解析不得建目录、转存或清理");
+    }
+
+    #[tokio::test]
+    async fn cleanup_cannot_delete_later_generation_other_consumer_or_other_account() {
+        let srv = spawn_replay(full_routes());
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        let owner = PlaybackOwner { consumer: format!("xl-cleanup-{}", ep.base), generation: 7 };
+        for (saved_owner, token, fid) in [
+            (Some(owner.clone()), "TESTTOK", "mine-old"),
+            (Some(PlaybackOwner { generation: 8, ..owner.clone() }), "TESTTOK", "mine-current"),
+            (Some(PlaybackOwner { consumer: "other-page".into(), generation: 1 }), "TESTTOK", "other-page-dir"),
+            (Some(owner.clone()), "OTHER-ACCOUNT", "other-account-dir"),
+            (None, "TESTTOK", "legacy-dir"),
+        ] {
+            pan_playback_guard::with_scope(saved_owner, async { remember_temp(&ep.base, token, fid); }).await;
+        }
+        purge_previous(&http_client(), &ep, "TESTTOK", &Some(owner)).await;
+        let deletes: Vec<_> = srv.requests().into_iter().filter(|r| r.method == "DELETE").collect();
+        assert_eq!(deletes.len(), 1);
+        assert!(deletes[0].target.contains("/files/mine-old?"));
+    }
+
+    #[tokio::test]
+    async fn legacy_share_with_multiple_files_requires_a_concrete_selection() {
+        let mut routes = full_routes().as_ref().clone();
+        routes[0].3 = r#"{"share_status_text":"OK","files":[
+            {"id":"f1","name":"第1集.mkv","size":123},
+            {"id":"largest","name":"第2集.mkv","size":9999}]}"#.into();
+        let srv = spawn_replay(Arc::new(routes));
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        assert!(resolve_with(&ep, Some("access_token=TESTTOK"), "share", "").await.is_err());
+        assert!(srv.requests().iter().all(|r| r.method == "GET"));
+    }
+
+    #[tokio::test]
+    async fn failed_directory_cleanup_keeps_ownership_for_a_later_retry() {
+        let srv = spawn_replay(Arc::new(vec![
+            ("DELETE".into(), "/drive/v1/files/".into(), 503, "{}".into()),
+            ("DELETE".into(), "/drive/v1/files/".into(), 200, "{}".into()),
+        ]));
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        remember_temp(&ep.base, "TESTTOK", "retry-dir");
+        purge_previous(&http_client(), &ep, "TESTTOK", &None).await;
+        purge_previous(&http_client(), &ep, "TESTTOK", &None).await;
+        assert_eq!(srv.requests().len(), 2, "清理失败不能丢失自己的目录账目");
+        purge_previous(&http_client(), &ep, "TESTTOK", &None).await;
+        assert_eq!(srv.requests().len(), 2, "成功清理后不得重复删除");
+    }
+
+    #[tokio::test]
+    async fn unknown_share_status_never_exposes_server_payload() {
+        let srv = spawn_replay(Arc::new(vec![
+            ("GET".into(), "/drive/v1/share?".into(), 200,
+                r#"{"share_status_text":"https://private.invalid/DO_NOT_EXPOSE_SENTINEL"}"#.into()),
+        ]));
+        let ep = XunleiEndpoints { base: srv.base.clone() };
+        let err = resolve_with(&ep, Some("access_token=TESTTOK"), "share", "").await.expect_err("不可用");
+        assert!(!err.contains("DO_NOT_EXPOSE_SENTINEL"));
     }
 }

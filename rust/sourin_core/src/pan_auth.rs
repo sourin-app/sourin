@@ -152,6 +152,12 @@ pub fn save(cred: &PanCredential) -> Result<(), String> {
 
 /// 读取凭据（没有/钥匙串不可用 ⇒ `None`）
 pub fn load(kind: PanKind) -> Option<PanCredential> {
+    #[cfg(test)]
+    if let Some(credential) = TEST_CREDENTIALS.with(|slot| {
+        slot.borrow().as_ref().map(|all| all.iter().find(|c| c.kind == kind).cloned())
+    }) {
+        return credential;
+    }
     let e = entry(kind).ok()?;
     let raw = e.get_password().ok()?;
     decode(&raw).filter(|c| !c.cookie.trim().is_empty())
@@ -183,6 +189,33 @@ pub fn keyring_available() -> bool {
         }
         Err(_) => false,
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CREDENTIALS: std::cell::RefCell<Option<Vec<PanCredential>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) struct TestCredentialGuard {
+    previous: Option<Vec<PanCredential>>,
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for TestCredentialGuard {
+    fn drop(&mut self) {
+        TEST_CREDENTIALS.with(|slot| *slot.borrow_mut() = self.previous.take());
+    }
+}
+
+/// The override covers every kind, including absent credentials, without OS fallback.
+#[cfg(test)]
+pub(crate) fn debug_override_credentials(credentials: Vec<PanCredential>) -> TestCredentialGuard {
+    let previous = TEST_CREDENTIALS.with(|slot| slot.replace(Some(credentials)));
+    TestCredentialGuard { previous, _thread_bound: std::marker::PhantomData }
 }
 
 #[cfg(test)]

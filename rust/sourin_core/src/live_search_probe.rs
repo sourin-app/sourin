@@ -376,6 +376,9 @@ mod live_search_probe {    #[tokio::test]
                             episode_id: Some(e.id.clone()),
                             quality: None,
                             flag: Some(e.flag.clone()),
+                            episode_title: Some(e.title.clone()),
+                            episode_order: Some(e.order),
+                            ..Default::default()
                         };
                         match p.resolve(&it.id, &req).await {
                             Ok(list) => {

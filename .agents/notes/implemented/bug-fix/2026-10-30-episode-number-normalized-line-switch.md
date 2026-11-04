@@ -2,7 +2,7 @@
 
 Status: implemented
 
-Scope: 面板切线路路径已落地；遥控 switch_source 路径等真机复现（见边界）。
+Scope: 本篇记录集号对齐的原始决定；面板生产换流与当前边界由后续笔记补充，遥控 sourceCode 维度保留。
 
 Independent: 判据本体 episodeNumberOf 与 1.1 同文件（widgets/episode_filter.dart）；
 与 2026-10-29-aggregate-episode-id-prefix-broke-pan-play（播放链路 id 前缀）不同层。
@@ -23,6 +23,8 @@ Owner 现场：切换线路后集数错位（/api/state 的集数疑似跳回第
 ```
 
 ## Decision
+
+下面是原批次的集号对齐决定。2026-11-04 生产路径改为唯一精确标题优先、明确集号次之，并实际重新解析起播；缺集保持当前集且显示错误，默认线路跟随当前集。详见 [后续具体集媒体解析与真实换线](2026-11-04-selected-episode-parser-and-real-line-switch.md)。公共 `episodeNumberOf` 的展示层用途保留，但新换线不使用其首数字宽松兜底。
 
 ```text
 _pickEpisodeFlag 匹配改两层：
@@ -62,9 +64,8 @@ episode id 传给新 sourceCode 的 resolve，回落行为在 Rust 侧 —— �
 **代价与边界**
 - episodeNumberOf 的数字兜底对「2024 重映版」会归一成 2024 —— 只影响
   跨线路匹配（匹配不到就停当前集），且「第 N 集/话/回」正则优先，风险有界。
-- initState 的 `_syncSelectedFlag` 默认第一条线路、与进入时 episodeId 所属线路
-  可能不一致 —— 这是**进入路径**的另一个问题（与门禁②的夹具状态对齐有关），
-  未复现前不动；如实记录，等真机读数归入 1.4 或另开任务。
+- 原批次未处理默认第一条线路与进入集所属线路不一致；2026-11-04 的
+  `_syncSelectedFlag` 跟随当前集，新增 B 线初始集与跨线同 ID 回归。
 
 ## 验证结果（已发生）
 

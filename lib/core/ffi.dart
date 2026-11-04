@@ -285,6 +285,11 @@ class SourinCore {
   static _CancelStreamDart? _cancelStreamFn;
   static _FreeDart? _freeFn;
 
+  /// Replaces only native transport so tests can observe real command payloads.
+  @visibleForTesting
+  static Future<dynamic> Function(String, Map<String, dynamic>?)?
+      debugCallAsyncTransport;
+
   /// 是否已加载
   static bool get isLoaded => _lib != null;
 
@@ -718,6 +723,10 @@ class SourinCore {
   /// });
   /// ```
   static Future<dynamic> callAsync(String cmd, [Map<String, dynamic>? args]) {
+    final transport = debugCallAsyncTransport;
+    if (transport != null) {
+      return transport(cmd, args);
+    }
     _ensureBound();
     _ensureCallbackReady();
 

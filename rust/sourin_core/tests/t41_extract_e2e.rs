@@ -114,7 +114,7 @@ globalThis.plugin = {{
     let streams = p
         .resolve(
             &MediaId::new("demo", "demo-1"),
-            &PlayRequest { source_code: None, episode_id: None, quality: None, flag: None },
+            &PlayRequest::default(),
         )
         .await
         .expect("插件 resolve 应成功");

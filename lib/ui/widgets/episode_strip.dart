@@ -1504,26 +1504,29 @@ class LineChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = AppPalette.of(context);
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
-        decoration: BoxDecoration(
-          color: selected ? colors.primary : colors.card,
-          borderRadius: BorderRadius.circular(Radii.sm),
-          border: Border.all(
-            color: selected ? colors.primary : colors.border,
-          ),
-        ),
-        child: Text(
+    return Material(
+      type: MaterialType.transparency,
+      child: ChoiceChip(
+        label: Text(
           flag,
+          overflow: TextOverflow.ellipsis,
           style: TextStyle(
-            fontSize: 13,
+            fontSize: FontSizes.sm,
             color: selected ? colors.primaryForeground : colors.mutedForeground,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
           ),
         ),
+        selected: selected,
+        onSelected: (_) => onTap(),
+        showCheckmark: false,
+        backgroundColor: colors.card,
+        selectedColor: colors.primary,
+        side: BorderSide(color: selected ? colors.primary : colors.border),
+        shape: const RoundedRectangleBorder(borderRadius: Radii.rSm),
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
+        labelPadding: EdgeInsets.zero,
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       ),
     );
   }

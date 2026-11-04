@@ -32,6 +32,8 @@ import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/ui/widgets/episode_strip.dart';
 
+import 'support/strip_comments.dart';
+
 Episode _ep(String id, String title, String? flag) =>
     Episode(id: id, title: title, index: 0, flag: flag);
 
@@ -196,22 +198,28 @@ void main() {
               '恒传第一条/不传 flag ⇒ 用户切了线路却在播另一条');
     });
 
-    testWidgets('静态钉住：player_page 两处 PlayRequest 都带 flag', (t) async {
-      final src = File('lib/ui/player_page.dart').readAsStringSync();
-      // 两处构造点（换集 / 首播）都必须把 `_selectedFlag` 传下去
-      final sites = RegExp(r'req: PlayRequest\(').allMatches(src).length;
-      final withFlag =
-          RegExp(r'PlayRequest\((?:[^()]|\([^()]*\))*?flag:\s*_selectedFlag')
-              .allMatches(src)
-              .length;
-      expect(sites, 2, reason: '前置：player_page 里应恰好有 2 处 PlayRequest 构造');
-      expect(withFlag, 2,
-          reason: '★★ 两处都必须在构造里传 `flag: _selectedFlag`（实际 $withFlag/2）');
-      // 且状态机三件套存在（默认选第一条 / 切线路 / 换集同步）
-      expect(src.contains('_selectedFlag = flags.first'), isTrue,
-          reason: '★ 默认必须取第一条线路');
-      expect(src.contains('void _pickEpisodeFlag(String flag)'), isTrue,
-          reason: '★ 切线路入口必须存在');
+    testWidgets('静态接线：三个取流出口共用当前集的线路上下文', (t) async {
+      final src = stripComments(File(const String.fromEnvironment(
+        'PLAYER_REQUEST_GATE_SOURCE',
+        defaultValue: 'lib/ui/player_page.dart',
+      )).readAsStringSync());
+      final sites = RegExp(r'req:\s*_episodePlayRequest\(').allMatches(src).length;
+      expect(sites, 3, reason: '首播/重试、换集/换线、换源都必须消费统一请求上下文');
+      final start = src.indexOf('PlayRequest _episodePlayRequest(');
+      final end = src.indexOf('static (int?, int)? _lineEpisodeNumber(', start);
+      expect(start, greaterThan(-1), reason: '请求上下文构造器必须存在');
+      expect(end, greaterThan(start), reason: '请求构造器范围必须可定位');
+      final request = src.substring(start, end);
+      expect(request, contains('_episodes[_epIndex]'),
+          reason: '当前集身份不能退回不可变的widget初始集');
+      expect(request, contains('flag: ep?.flag ?? _selectedFlag'),
+          reason: '实际所选集的线路必须进入请求');
+      expect(request, contains('episodeTitle: ep?.title'),
+          reason: '网盘文件选择需要当前集原始标题');
+      expect(request, contains('_episodes.where((e) => e.flag == ep.flag)'),
+          reason: '集顺序必须先按线路过滤');
+      expect(request, contains('episodeOrder: order < 0 ? null : order + 1'),
+          reason: '请求发送线路内的一起始序号，而不是全列表index');
     });
   });
 }

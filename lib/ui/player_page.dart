@@ -144,11 +144,10 @@ import 'widgets/danmaku_overlay.dart';
 import 'widgets/danmaku_settings_dialog.dart';
 import 'danmaku_search_page.dart';
 import 'widgets/episode_strip.dart';
-// ★ 1.4（2026-10-30）：集号归一化判据与选集抽屉/详情栏同源（公共文件）
 // ★ 遥控端选集过滤（1.1 类推，lead 预授权）也用同一份判据
 // ★ 标题跟随（Owner 解锁授权）：详情标题展示层剥离内嵌集数后缀
 import 'widgets/episode_filter.dart'
-    show episodeNumberOf, episodesForLine, showTitleOf;
+    show episodesForLine, showTitleOf;
 // ★ 第 16 项：内嵌 / 全屏**共用**的播放动作契约（第 16 项闭合用）
 import 'widgets/live_embedded_player.dart'
     show LivePlaybackAction, LivePlaybackTarget, dispatchLivePlaybackAction, livePlaybackActionForKey;
@@ -2114,6 +2113,20 @@ class _PlayerPageState extends State<PlayerPage>
    */
   int _playSessionGen = 0;
 
+  static int _globalPlayGeneration = 0;
+  static int _globalPlayConsumer = 0;
+  static final String _playConsumerPrefix =
+      'player-${DateTime.now().microsecondsSinceEpoch}';
+  final String _playConsumer =
+      '$_playConsumerPrefix-${++_globalPlayConsumer}';
+  int _playGeneration = ++_globalPlayGeneration;
+  bool _playClosed = false;
+
+  int _beginPlayResolve() => _playGeneration = ++_globalPlayGeneration;
+
+  bool _isCurrentPlayResolve(int generation) =>
+      mounted && !_playClosed && generation == _playGeneration;
+
   /// 是否已触发过片头跳过（避免反复跳）
   bool _introSkipped = false;
 
@@ -2163,9 +2176,9 @@ class _PlayerPageState extends State<PlayerPage>
   /// # 为什么是"所选线路"而不是"当前集的线路"
   /// ```text
   /// 用户切线路时选集列表要跟着换（同一集在不同线路是**不同 id**），
-  /// 所以线路是**独立于当前集**的选择状态；切集不该改线路。
+  /// 所以线路可先用于浏览；明确选中某集后线路跟随该集。
   /// ```
-  /// 默认值 = 第一条线路（见 `_syncSelectedFlag()`）。
+  /// 默认值跟随当前集；没有当前集时使用第一条线路。
   String? _selectedFlag;
 
   /// 全部线路名（**去重保序**；未标注 flag 的集不参与）
@@ -2179,7 +2192,7 @@ class _PlayerPageState extends State<PlayerPage>
     return out;
   }
 
-  /// 让 `_selectedFlag` 落在"存在且默认第一条"的合法值上
+  /// 让 `_selectedFlag` 落在存在的线路上，初始线路跟随当前集。
   ///
   /// ⚠️ 拿到新 episodes 之后必须调用（initState / updateEpisodes / applySession），
   ///    否则换源后 `_selectedFlag` 会指向旧源里不存在的线路 ⇒ 选集列表**全空**。
@@ -2190,44 +2203,132 @@ class _PlayerPageState extends State<PlayerPage>
       return;
     }
     if (_selectedFlag == null || !flags.contains(_selectedFlag)) {
-      _selectedFlag = flags.first; // ★ 默认第一条
+      final ep = _epIndex >= 0 && _epIndex < _episodes.length
+          ? _episodes[_epIndex]
+          : null;
+      _selectedFlag = flags.contains(ep?.flag) ? ep!.flag : flags.first;
     }
   }
 
-  /// 用户切线路：只改"所选线路"，并把当前集对齐到新线路的**同集号**那一集
-  ///
-  /// 同一集在不同线路是**不同 id** ⇒ 不映射的话切完线路会跳到"第 1 集"。
-  ///
-  /// ★★★ 1.4（2026-10-30）：匹配从「标题全等」改成「**集号归一化**」
-  /// ```text
-  /// 改前：e.title == cur.title —— 各线路标题形态不同时匹配不到
-  ///       （真机形态：「第2集」 vs 「第02集」、「01」 vs 「第 1 集」），
-  ///       于是停在旧线路的集上（高亮错位/集数对不上）。
-  /// 改后：episodeNumberOf（episode_filter.dart 公共判据）提取数字比较，
-  ///       01/1、第2集/第02集 归一；数字也提不出（特别篇等）⇒ 退标题全等；
-  ///       两层都匹配不到 ⇒ **停在当前集号**（_epIndex 不动，绝不跳 1）。
-  /// ```
+  PlayRequest _episodePlayRequest({
+    required String? sourceCode,
+    required int generation,
+    String? episodeId,
+    bool selectedLine = true,
+  }) {
+    final current = _epIndex >= 0 && _epIndex < _episodes.length
+        ? _episodes[_epIndex]
+        : null;
+    final id = episodeId ?? current?.id ?? widget.episodeId;
+    final matches = _episodes.where((e) => e.id == id).toList();
+    final selected = matches.where((e) => e.flag == _selectedFlag).toList();
+    final ep = current?.id == id
+        ? current
+        : selected.length == 1
+            ? selected.single
+            : matches.length == 1
+                ? matches.single
+                : null;
+    if (selectedLine && ep != null && ep.flag != _selectedFlag) {
+      throw StateError('这条线路没有当前集，请选择其他集');
+    }
+    final line = ep == null
+        ? const <Episode>[]
+        : _episodes.where((e) => e.flag == ep.flag).toList();
+    final order = ep == null ? -1 : line.indexOf(ep);
+    return PlayRequest(
+      sourceCode: sourceCode,
+      extra: {
+        'play_consumer': _playConsumer,
+        'play_generation': generation,
+      },
+      episodeId: id,
+      flag: ep?.flag ?? _selectedFlag,
+      episodeTitle: ep?.title ??
+          (selectedLine &&
+                  _provider == widget.provider &&
+                  _contentId == widget.id &&
+                  id == widget.episodeId
+              ? widget.episodeTitle
+              : null),
+      episodeOrder: order < 0 ? null : order + 1,
+    );
+  }
+
+  static (int?, int)? _lineEpisodeNumber(String? title) {
+    final text = title?.trim() ?? '';
+    final season = RegExp(
+      r'^S(\d{1,2})[\s._-]*E(\d{1,3})(?:$|\b)',
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (season != null) {
+      return (int.parse(season.group(1)!), int.parse(season.group(2)!));
+    }
+    final explicit = RegExp(r'第\s*(\d+)\s*[集话回]').allMatches(text).toList();
+    if (explicit.length > 1) return null;
+    if (explicit.length == 1) {
+      return (null, int.parse(explicit.single.group(1)!));
+    }
+    final ep = RegExp(r'^(?:EP|E)\s*(\d{1,3})(?:$|\b)', caseSensitive: false)
+        .firstMatch(text);
+    if (ep != null) return (null, int.parse(ep.group(1)!));
+    if (RegExp(r'^\d{1,3}$').hasMatch(text)) {
+      return (null, int.parse(text));
+    }
+    return null;
+  }
+
+  /// Resolve the same episode on another line and reuse the existing resume path.
   void _pickEpisodeFlag(String flag) {
-    if (flag == _selectedFlag) return;
+    if (flag == _selectedFlag || !_flagsOf(_episodes).contains(flag)) return;
     final cur = _epIndex >= 0 && _epIndex < _episodes.length ? _episodes[_epIndex] : null;
+    final order = _lineEpisodeNumber(cur?.title);
+    final line = _episodes.where((e) => e.flag == flag).toList();
+    final exact = line.where((e) => e.title == cur?.title).toList();
+    final numbered = order == null
+        ? const <Episode>[]
+        : line.where((e) {
+            final targetOrder = _lineEpisodeNumber(e.title);
+            return targetOrder != null &&
+                targetOrder.$2 == order.$2 &&
+                (targetOrder.$1 == null ||
+                    order.$1 == null ||
+                    targetOrder.$1 == order.$1);
+          }).toList();
+    final target = exact.length == 1
+        ? exact.single
+        : numbered.length == 1
+            ? numbered.single
+            : cur == null && line.length == 1
+                ? line.single
+                : null;
+    final position = _pendingSeek ?? _position;
+    _rewatchToken++;
+    _seekToken++;
+    _cancelNextCountdown();
+    _cancelRewatchPrompt();
     setState(() {
       _selectedFlag = flag;
-      if (cur != null) {
-        final order = episodeNumberOf(cur.title);
-        var i = -1;
-        if (order != null) {
-          i = _episodes.indexWhere(
-            (e) => e.flag == flag && episodeNumberOf(e.title) == order,
-          );
-        }
-        if (i < 0) {
-          // 退标题全等（无数字标题 / 归一化匹配不到但同名的兜底）
-          i = _episodes.indexWhere((e) => e.flag == flag && e.title == cur.title);
-        }
-        // i < 0 ⇒ 停在当前集号（不跳 1）—— 本行刻意不写 else
-        if (i >= 0) _epIndex = i;
+      _playSessionGen++;
+      _skipMarker = null;
+      _memoryIntroEnd = null;
+      _introSkipped = false;
+      _outroSkipped = false;
+      _clipDownloaded = false;
+      _clipDownloadError = null;
+      _pendingSeek = position > const Duration(seconds: 3) ? position : null;
+      if (target != null) {
+        _epIndex = _episodes.indexOf(target);
+      } else {
+        _error = '这条线路没有当前集，请选择其他集';
+        _errorKind = null;
+        _errorLoginKind = null;
+        _loading = false;
       }
     });
+    if (target == null) return;
+    _reportEpisodeChanged();
+    unawaited(_reload());
   }
   late String _provider = widget.provider;
   late String _contentId = widget.id;
@@ -6062,6 +6163,8 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   Future<void> _load() async {
+    if (!mounted || _playClosed) return;
+    final generation = _beginPlayResolve();
     /*
      * ★ task-14（2026-10-25）：`_load` 的**调用次数**（仅探针读）
      *
@@ -6140,13 +6243,10 @@ class _PlayerPageState extends State<PlayerPage>
         list = await SourinApi.resolveStream(
           _provider,
           _contentId,
-          req: widget.sourceCode != null || widget.episodeId != null
-              ? PlayRequest(
-                  sourceCode: _sourceCode,
-                  episodeId: widget.episodeId,
-                  flag: _selectedFlag,
-                )
-              : null,
+          req: _episodePlayRequest(
+            sourceCode: _sourceCode,
+            generation: generation,
+          ),
         );
       }
 
@@ -6161,7 +6261,7 @@ class _PlayerPageState extends State<PlayerPage>
         '${list.length} 条 · 首条 playable=${list.where((s) => s.isPlayable).isNotEmpty}',
       );
 
-      if (!mounted) return;
+      if (!_isCurrentPlayResolve(generation)) return;
       /*
        * ★ task-26：换集/换源已经推进代次 ⇒ 本次结果属于**旧会话**，丢弃。
        *   不收尾 `_loading`（新会话自己会收尾，见上面的字段注释）。
@@ -6315,15 +6415,18 @@ class _PlayerPageState extends State<PlayerPage>
        *   反而是上一集的流**（实测：换集后多出一次 `起播`，且它排在最后）。
        *   与上面 resolve 之后那道同一条判据，只是检查点更晚。
        */
-      if (!mounted || genAtLoadStart != _playSessionGen) {
+      if (!_isCurrentPlayResolve(generation) ||
+          genAtLoadStart != _playSessionGen) {
         debugPrint('[PLAYER] 丢弃过期的起播（续播准备期间换了集/会话：代次 '
             '$genAtLoadStart → $_playSessionGen）');
         return;
       }
       await _startPlayback(first);
+      if (!_isCurrentPlayResolve(generation)) return;
       await _loadSkipMarker();
     } catch (e) {
-      if (mounted) {
+      if (_isCurrentPlayResolve(generation) &&
+          genAtLoadStart == _playSessionGen) {
         setState(() {
           _error = e.toString();
           // ★ 结构化类别（能从 SourinCoreException 拿到就记下来）
@@ -6385,6 +6488,7 @@ class _PlayerPageState extends State<PlayerPage>
      *    这个管跨集"换了集就别自动续播"。判据、时机、作用域都不同，不许合并。
      */
     final genAtEntry = _playSessionGen;
+    final generation = _playGeneration;
     final epAtEntry = _epIndex;
     // 本次会话已经续播过（重复调用会覆盖用户当前的播放位置）
     if (_resumedThisSession) return;
@@ -6550,7 +6654,9 @@ class _PlayerPageState extends State<PlayerPage>
        * 位置：必须放在**所有 await 之后、写入 `_pendingSeek` 之前** ——
        *   放前面只能挡住"进入时就已切换"，挡不住"读完才切换"（真实现场）。
        */
-      if (!mounted || _playSessionGen != genAtEntry || _epIndex != epAtEntry) {
+      if (!_isCurrentPlayResolve(generation) ||
+          _playSessionGen != genAtEntry ||
+          _epIndex != epAtEntry) {
         debugPrint('[PLAYER] 读进度期间换了集/会话 ⇒ 本次续播作废'
             '（代次 $genAtEntry → $_playSessionGen，集 $epAtEntry → $_epIndex）');
         return;
@@ -6793,6 +6899,8 @@ class _PlayerPageState extends State<PlayerPage>
   int _rewatchToken = 0;
 
   Future<void> _startPlayback(StreamCandidate st) async {
+    final session = _playSessionGen;
+    final generation = _playGeneration;
     _startPlaybackCalls++;
     setState(() {
       _current = st;
@@ -6828,6 +6936,7 @@ class _PlayerPageState extends State<PlayerPage>
      * ⚠️ 放在「起播失败耗时」计时起点之前：预检属于"还没交给 mpv"的阶段。
      */
     final NonMediaCheck precheck = await precheckNonMedia(st.url, st.httpHeaders);
+    if (!_isCurrentPlayResolve(generation) || session != _playSessionGen) return;
     if (precheck.error != null) {
       AppLog.write('PLAY', '非媒体预检剔除（不再报"格式解不了"）：${precheck.error}');
       if (mounted) {
@@ -6912,12 +7021,14 @@ class _PlayerPageState extends State<PlayerPage>
        */
       // ★ 伪装的 .mp3（其实是 mp4）必须在 open 前纠正 demuxer，否则只有音轨
       await _applyDemuxerOverride();
+      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen) return;
       if (!debugPlayerSkipOpenForProbe) {
         await _player.open(
           Media(playUrl, httpHeaders: st.httpHeaders),
           play: !_isLive || (widget.initialLivePlayback?.playing ?? true),
         );
       }
+      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen) return;
       /*
        * ★★★ task-22 P1-11：`video-zoom` 是**逐文件**属性 —— mpv 换文件时会
        *   把它复位。只在 `_setHwdec()` 里下发一次是不够的（换集后缩放就没了），
@@ -7171,6 +7282,7 @@ class _PlayerPageState extends State<PlayerPage>
        *    慢的源（HLS / 大 MP4）3 秒还没 demux 完，快的源白等 3 秒。
        *    轮询是"该等多久等多久"。
        */
+      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen) return;
       final pending = _pendingSeek;
       if (pending != null && pending > Duration.zero) {
         // 保持续播意图，直到 seek 落地；等待 duration 时禁止自动片头抢跑。
@@ -7212,7 +7324,7 @@ class _PlayerPageState extends State<PlayerPage>
        */
       unawaited(_applySubtitleStyle());
     } catch (e) {
-      if (mounted) {
+      if (_isCurrentPlayResolve(generation) && session == _playSessionGen) {
         setState(() {
           _error = e.toString();
           // ★ 结构化类别（能从 SourinCoreException 拿到就记下来）
@@ -11792,8 +11904,9 @@ class _PlayerPageState extends State<PlayerPage>
          * 修法：替换后立刻让线路落到合法值（与 initState / updateEpisodes 同一处理）。
          * ```
          */
-        _syncSelectedFlag();
         _epIndex = keep != null ? eps.indexOf(keep) : 0;
+        _selectedFlag = null;
+        _syncSelectedFlag();
         _current = null;
         _streams = [];
         _skipMarker = null;
@@ -12028,8 +12141,9 @@ class _PlayerPageState extends State<PlayerPage>
       _contentId = req.id;
       _episodes = req.episodes;
       // ★ 2026-10-28：同上 —— 换会话也必须重算"所选线路"，否则选集面板平铺所有线路
-      _syncSelectedFlag();
       _epIndex = req.episodes.isEmpty ? 0 : newIdx;
+      _selectedFlag = null;
+      _syncSelectedFlag();
       _sourceCode = req.sourceCode;
       /*
        * ★ 标题也要跟着换 —— 否则顶栏还写着**上一部**的名字。
@@ -12302,7 +12416,6 @@ class _PlayerPageState extends State<PlayerPage>
     setState(() {
       _episodes = episodes;
       // ★ 多线路：换了一批集后让"所选线路"落到合法值（默认第一条）
-      _syncSelectedFlag();
       /*
        * ★ 下标要**夹取**：当前 `_epIndex` 是基于**旧**列表算的。
        * 若新列表更短，不夹取就会越界 ⇒ `_episodes[_epIndex]` 抛异常。
@@ -12310,6 +12423,7 @@ class _PlayerPageState extends State<PlayerPage>
       if (_epIndex >= _episodes.length) {
         _epIndex = _episodes.isEmpty ? 0 : _episodes.length - 1;
       }
+      _syncSelectedFlag();
     });
     /*
      * ★ 列表变了 ⇒ 立刻报一次"当前集"
@@ -12382,7 +12496,12 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 切到某一集
   Future<void> _gotoEpisode(Episode ep) async {
-    final i = _episodes.indexWhere((e) => e.id == ep.id);
+    var i = _episodes.indexOf(ep);
+    if (i < 0) {
+      i = _episodes.indexWhere(
+        (e) => e.id == ep.id && e.flag == ep.flag && e.title == ep.title,
+      );
+    }
     if (i < 0) return;
     // Cancel the previous media's waiter before any asynchronous transition.
     ++_seekToken;
@@ -12464,6 +12583,7 @@ class _PlayerPageState extends State<PlayerPage>
     _cancelNextCountdown();
     setState(() {
       _epIndex = i;
+      _selectedFlag = ep.flag;
       _episodeSheetOpen = false;
       _introSkipped = false;
       _outroSkipped = false;
@@ -13069,6 +13189,8 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   Future<void> _reload() async {
+    if (!mounted || _playClosed) return;
+    final generation = _beginPlayResolve();
     setState(() {
       _loading = true;
       _error = null;
@@ -13079,7 +13201,7 @@ class _PlayerPageState extends State<PlayerPage>
     /*
      * ★★★ CR #22 ⑤（PRRT_kwDOVAfO4s6rtKj8）：记下发请求那一刻的切集令牌。
      *
-     * 本方法唯一的生产调用者是 `_gotoEpisode`（见它末尾）。解析流要几百
+     * 换集和换线路都调用本方法。解析流要几百
      * 毫秒到几秒，期间用户可能又切了一集（或整个会话被换掉）—— 那时
      * `_rewatchToken` 已经更大。若这里不核对，本调用会把**旧目标集**的流
      * 重新起播（`_startPlayback`），把用户刚选的那一集顶掉。
@@ -13091,17 +13213,15 @@ class _PlayerPageState extends State<PlayerPage>
      */
     final token = _rewatchToken;
     try {
-      final ep = _epIndex < _episodes.length ? _episodes[_epIndex] : null;
       final list = await SourinApi.resolveStream(
         _provider,
         _contentId,
-        req: PlayRequest(
+        req: _episodePlayRequest(
           sourceCode: _sourceCode,
-          episodeId: ep?.id,
-          flag: _selectedFlag,
+          generation: generation,
         ),
       );
-      if (!mounted) return;
+      if (!_isCurrentPlayResolve(generation)) return;
       if (token != _rewatchToken) {
         debugPrint(
             '[PLAYER] 丢弃过期的换集解析结果（切集令牌 $token → $_rewatchToken）');
@@ -13121,9 +13241,10 @@ class _PlayerPageState extends State<PlayerPage>
         return;
       }
       await _startPlayback(first);
+      if (!_isCurrentPlayResolve(generation)) return;
       await _loadSkipMarker();
     } catch (e) {
-      if (mounted) {
+      if (_isCurrentPlayResolve(generation) && token == _rewatchToken) {
         setState(() {
           _error = e.toString();
           // ★ 结构化类别（能从 SourinCoreException 拿到就记下来）
@@ -13479,6 +13600,9 @@ class _PlayerPageState extends State<PlayerPage>
     String? episodeId,
     String? sourceCode,
   ) async {
+    if (!mounted || _playClosed) return;
+    final generation = _beginPlayResolve();
+    final session = _playSessionGen;
     setState(() {
       _loading = true;
       _error = null;
@@ -13490,9 +13614,16 @@ class _PlayerPageState extends State<PlayerPage>
       final list = await SourinApi.resolveStream(
         provider,
         contentId,
-        req: PlayRequest(sourceCode: sourceCode, episodeId: episodeId),
+        req: _episodePlayRequest(
+          sourceCode: sourceCode,
+          generation: generation,
+          episodeId: episodeId,
+          selectedLine: false,
+        ),
       );
-      if (!mounted) return;
+      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen) {
+        return;
+      }
 
       /*
        * ★★★ ②（2026-11-01）：换源这条路的留痕。
@@ -13543,7 +13674,7 @@ class _PlayerPageState extends State<PlayerPage>
 
       await _startPlayback(first);
     } catch (e) {
-      if (mounted) {
+      if (_isCurrentPlayResolve(generation) && session == _playSessionGen) {
         setState(() {
           _error = e.toString();
           // ★ 结构化类别（能从 SourinCoreException 拿到就记下来）
@@ -16712,6 +16843,7 @@ class _PlayerPageState extends State<PlayerPage>
 
   @override
   void dispose() {
+    _playClosed = true;
     _reportLivePlaybackExit();
     /*
      * ★★★ 2026-10-29（Owner 问的"播一次存一次、不复用不删除吗"）：**播完即删**。
@@ -16722,11 +16854,15 @@ class _PlayerPageState extends State<PlayerPage>
      *
      * ⚠️ **fire-and-forget**：播放器 dispose 不能被网络阻塞（那是 UI 线程的收尾路径）；
      *    失败只会让文件多留一会儿（下次解析前还有一次清理兜底），不影响任何功能。
-     * ⚠️ 命令名与 Rust `ffi.rs` 的 `"pan_cleanup"` 逐字一致。
+     * The consumer scope closes pending resolves before cleaning this page only.
      * ```
      */
     unawaited(
-      SourinCore.callAsync('pan_cleanup_temp', const <String, dynamic>{})
+      SourinCore.callAsync('pan_cleanup_temp', <String, dynamic>{
+        'play_consumer': _playConsumer,
+        'play_generation': _playGeneration,
+        'invalidate': true,
+      })
           .catchError((Object _) => <String, dynamic>{}),
     );
     /*
@@ -17568,6 +17704,13 @@ class _PlayerPageState extends State<PlayerPage>
                         message: _error!,
                         onRetry: _load,
                         onBack: () => unawaited(_exitPlayer()),
+                        onLines: _flagsOf(_episodes).length > 1
+                            ? () {
+                                _collapseControlsForSheet();
+                                setState(() => _episodeSheetOpen = true);
+                                _pauseForEpisodeSheet();
+                              }
+                            : null,
                         /*
                      * ★ 只有**确实是登录问题**时才给登录按钮（用户要求）
                      *
@@ -18331,6 +18474,15 @@ class _PlayerPageState extends State<PlayerPage>
                         onPickQuality: _pickQualityByLabel,
                         currentQuality:
                             _current?.label ?? _current?.quality ?? '',
+                        lineOptions: [
+                          for (final flag in _flagsOf(_episodes))
+                            PopoverOption<String>(
+                              value: flag,
+                              label: flag,
+                              checked: flag == _selectedFlag,
+                            ),
+                        ],
+                        onPickLine: _pickEpisodeFlag,
                         trackGroups: _trackPopoverGroups(),
                         onPickTrack: _pickTrackFromPopover,
                         moreGroups: _moreMenuGroups(context),
@@ -19372,12 +19524,14 @@ class _ErrorOverlay extends StatelessWidget {
     required this.onRetry,
     required this.onBack,
     this.onLogin,
+    this.onLines,
     this.failure,
   });
 
   final String message;
   final VoidCallback onRetry;
   final VoidCallback onBack;
+  final VoidCallback? onLines;
 
   /// ★ 非 null = 这次失败**确实是登录问题**，显示「登录」按钮
   ///
@@ -19513,6 +19667,33 @@ class _ErrorOverlay extends StatelessWidget {
                 onPressed: onLogin,
                 icon: const Icon(AppIcons.login, size: 18),
                 label: const Text('登录'),
+              ),
+              const SizedBox(height: Sp.x3),
+            ],
+            if (onLines != null) ...[
+              Focus(
+                canRequestFocus: false,
+                skipTraversal: true,
+                // This entry is under the video shortcut Focus until it opens.
+                onKeyEvent: (_, event) {
+                  if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                    return KeyEventResult.ignored;
+                  }
+                  final key = event.logicalKey;
+                  if (key != LogicalKeyboardKey.enter &&
+                      key != LogicalKeyboardKey.select &&
+                      key != LogicalKeyboardKey.gameButtonA &&
+                      key != LogicalKeyboardKey.space) {
+                    return KeyEventResult.ignored;
+                  }
+                  if (event is KeyDownEvent) onLines!();
+                  return KeyEventResult.handled;
+                },
+                child: OutlinedButton.icon(
+                  onPressed: onLines,
+                  icon: const Icon(AppIcons.swap_horiz, size: 18),
+                  label: const Text('线路'),
+                ),
               ),
               const SizedBox(height: Sp.x3),
             ],
@@ -21922,6 +22103,35 @@ bool debugPlayerContinueRewatchForProbe() {
 /// 第 02 项「点重试 ⇒ 真的重新起播」用它做**差值**断言（+1）。
 int? debugPlayerLoadCallsForProbe() => _livePlayerState?._loadCalls;
 
+/// Drives the production retry entry without replacing its request or guards.
+Future<bool> debugPlayerLoadForProbe() async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  await s._load();
+  return true;
+}
+
+/// Drives the production episode/line resolver without changing session tokens.
+Future<bool> debugPlayerReloadForProbe() async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  await s._reload();
+  return true;
+}
+
+/// Drives the production source resolver while tests control only transport.
+Future<bool> debugPlayerResolveAndPlayForProbe({
+  required String provider,
+  required String id,
+  String? episodeId,
+  String? sourceCode,
+}) async {
+  final s = _livePlayerState;
+  if (s == null) return false;
+  await s._resolveAndPlay(provider, id, episodeId, sourceCode);
+  return true;
+}
+
 /// ★ task-26 探针：`_startPlayback()` 至今被调用了几次（`null` = 没挂页）
 ///
 /// 用来钉住「换集后不许再用**旧候选**起播」：点开作品后立刻切集，
@@ -24041,6 +24251,8 @@ class _BottomBar extends StatelessWidget {
     this.qualityOptions = const <PopoverOption<String>>[],
     this.onPickQuality,
     this.currentQuality = '',
+    this.lineOptions = const <PopoverOption<String>>[],
+    this.onPickLine,
     this.trackGroups = const <String, List<PopoverOption<String>>>{},
     this.onPickTrack,
     this.moreGroups = const <MoreMenuGroup>[],
@@ -24218,6 +24430,8 @@ class _BottomBar extends StatelessWidget {
   final List<PopoverOption<String>> qualityOptions;
   final void Function(String)? onPickQuality;
   final String currentQuality;
+  final List<PopoverOption<String>> lineOptions;
+  final ValueChanged<String>? onPickLine;
   final Map<String, List<PopoverOption<String>>> trackGroups;
   final void Function(String group, String id)? onPickTrack;
 
@@ -24270,6 +24484,8 @@ class _BottomBar extends StatelessWidget {
       qualityOptions: qualityOptions,
       onPickQuality: onPickQuality,
       currentQuality: currentQuality,
+      lineOptions: lineOptions,
+      onPickLine: onPickLine,
       trackGroups: trackGroups,
       onPickTrack: onPickTrack,
       danmakuEnabled: danmakuEnabled,

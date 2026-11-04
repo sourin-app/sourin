@@ -50,20 +50,11 @@ fn path_of(url: &str) -> &str {
 
 /// `?pwd=` / `&pwd=` 的值（大小写不敏感；没有 ⇒ 空串）
 fn passcode_of(url: &str) -> String {
-    let Some((_, query)) = url.split_once('?') else {
-        return String::new();
-    };
-    let query = query.split('#').next().unwrap_or("");
-    for kv in query.split('&') {
-        let (k, v) = match kv.split_once('=') {
-            Some(p) => p,
-            None => continue,
-        };
-        if k.eq_ignore_ascii_case("pwd") || k.eq_ignore_ascii_case("passcode") {
-            return v.trim().to_string();
-        }
-    }
-    String::new()
+    let Ok(parsed) = reqwest::Url::parse(url) else { return String::new(); };
+    parsed.query_pairs().find(|(key, _)| {
+        ["pwd", "passcode", "password", "code"].iter().any(|alias| key.eq_ignore_ascii_case(alias))
+    }).map(|(_, value)| value.trim().to_string())
+        .or_else(|| crate::pan::parse_share(url).pwd_in_url).unwrap_or_default()
 }
 
 /// 识别"分享页 URL"。**纯函数**（门禁直接喂 URL，不碰网络）
@@ -191,6 +182,9 @@ mod tests {
         assert_eq!(passcode_of("https://x/s/a?pwd=ab12"), "ab12");
         assert_eq!(passcode_of("https://x/s/a?PWD=ab12&t=1"), "ab12");
         assert_eq!(passcode_of("https://x/s/a?passcode=zz"), "zz");
+        assert_eq!(passcode_of("https://x/s/a?password=a%2Bb%2F%3D"), "a+b/=");
+        assert_eq!(passcode_of("https://pan.quark.cn/s/a#pwd=zz12"), "zz12");
+        assert_eq!(parse_share_page("https://drive.uc.cn/s/a#pwd=ab12").unwrap().passcode, "ab12");
         assert_eq!(passcode_of("https://x/s/a?q=1"), "", "别的参数不算提取码");
         assert_eq!(passcode_of("https://x/s/a"), "");
     }

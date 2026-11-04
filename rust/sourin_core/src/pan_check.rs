@@ -312,13 +312,14 @@ impl PanChecker {
     }
 
     /// 单条预检（分类 → 缓存 → 冷却 → 分发）
-    async fn check_one(&self, url: &str, pwd: Option<&str>) -> (CheckOutcome, PanKind, String) {
+    pub(crate) async fn check_one(&self, url: &str, pwd: Option<&str>) -> (CheckOutcome, PanKind, String) {
         let share = crate::pan::parse_share(url);
         let kind = share.kind;
         let share_id = share.share_id.clone();
         // 提取码：调用方显式给的 > URL/正文里抓的
         let pwd_owned: Option<String> = pwd.map(|s| s.to_string()).or(share.pwd_in_url);
-        let key = url.trim().to_string();
+        // 同一链接补提取码后必须重新检查，不能沿用无码时的 locked 缓存。
+        let key = format!("{}\u{0}{}", url.trim(), pwd_owned.as_deref().unwrap_or(""));
 
         // ① 分类层第一刀：**不是分享链接**（认不出网盘）⇒ bad + 链接格式无效（hp0.d）
         if kind == PanKind::Unknown {
@@ -343,7 +344,7 @@ impl PanChecker {
             }
         }
         // ⑤ 该 host 冷却中 ⇒ 直接 uncertain（退避，不是硬重试）
-        let host = host_of(&key);
+        let host = host_of(url.trim());
         if let Ok(cd) = self.shared.cooldown.lock() {
             if let Some(until) = cd.get(&host) {
                 if *until > Instant::now() {
@@ -797,7 +798,7 @@ fn cookies_of(resp: &reqwest::Response) -> String {
 
 static GLOBAL: OnceLock<PanChecker> = OnceLock::new();
 
-fn global_checker() -> &'static PanChecker {
+pub(crate) fn global_checker() -> &'static PanChecker {
     GLOBAL.get_or_init(PanChecker::new)
 }
 
@@ -964,6 +965,39 @@ mod tests {
         r#"{"status":200,"code":0,"message":"ok","data":{"stoken":"ST","title":"甲"}}"#;
     const QDETAIL_OK: &str =
         r#"{"status":200,"code":0,"data":{"list":[{"fid":"f1","file_name":"A.mp4","file_type":0,"size":"1"}]}}"#;
+
+    #[tokio::test]
+    async fn supplied_password_does_not_reuse_locked_cache() {
+        use axum::response::IntoResponse;
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let app = axum::Router::new().fallback(move |req: axum::extract::Request| {
+            let hits = counter.clone();
+            async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                if req.uri().path().contains("qtoken") {
+                    let body = axum::body::to_bytes(req.into_body(), 4096).await.unwrap();
+                    let value: Value = serde_json::from_slice(&body).unwrap();
+                    return if value["passcode"] == "correct" { QTOKEN_OK.to_string() } else {
+                        r#"{"status":41009,"message":"提取码错误"}"#.to_string()
+                    }.into_response();
+                }
+                QDETAIL_OK.to_string().into_response()
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let checker = PanChecker::with_endpoints(endpoints_at(&base));
+        let url = "https://pan.quark.cn/s/cache-fixture";
+        assert_eq!(checker.check_one(url, None).await.0.state, CheckState::Locked);
+        let before = hits.load(Ordering::SeqCst);
+        assert_eq!(checker.check_one(url, Some("correct")).await.0.state, CheckState::Ok);
+        assert!(hits.load(Ordering::SeqCst) > before);
+        let before = hits.load(Ordering::SeqCst);
+        assert_eq!(checker.check_one(url, Some("correct")).await.0.state, CheckState::Ok);
+        assert_eq!(hits.load(Ordering::SeqCst), before, "同提取码可复用有效缓存");
+    }
 
     #[tokio::test]
     async fn quark_ok_locked_expired_replay() {

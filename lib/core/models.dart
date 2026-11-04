@@ -1416,6 +1416,8 @@ class PlayRequest {
     this.quality,
     this.extra,
     this.flag,
+    this.episodeTitle,
+    this.episodeOrder,
   });
 
   final String? sourceCode;
@@ -1428,12 +1430,18 @@ class PlayRequest {
   /// 单线路时不填（`null` ⇒ 不发这个键），保持后端"没写就是没有"的语义。
   final String? flag;
 
+  /// Original title and one-based position within the selected episode line.
+  final String? episodeTitle;
+  final int? episodeOrder;
+
   Map<String, dynamic> toJson() => {
         if (sourceCode != null) 'source_code': sourceCode,
         if (episodeId != null) 'episode_id': episodeId,
         if (quality != null) 'quality': quality,
         if (extra != null) 'extra': extra,
         if (flag != null) 'flag': flag,
+        if (episodeTitle != null) 'episode_title': episodeTitle,
+        if (episodeOrder != null) 'episode_order': episodeOrder,
       };
 }
 

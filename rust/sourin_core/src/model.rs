@@ -713,6 +713,14 @@ pub struct PlayRequest {
     /// 线路名（多线路源必带；对应 `Episode.flag`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flag: Option<String>,
+    /// 用户选择的文件/集标题；分享页解析不能靠文件大小代替选集。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode_title: Option<String>,
+    /// 当前线路内的集序号，旧调用方可省略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode_order: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra: Option<serde_json::Value>,
 }
 
 // ─────────────────────────── 直播 & EPG ───────────────────────────
@@ -1420,6 +1428,26 @@ pub type Result<T> = std::result::Result<T, ProviderError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn play_request_episode_metadata_is_optional_and_roundtrips() {
+        let old: PlayRequest = serde_json::from_value(serde_json::json!({"episode_id":"file"})).unwrap();
+        assert_eq!(old.episode_title, None);
+        assert_eq!(old.episode_order, None);
+        let value = serde_json::to_value(&old).unwrap();
+        assert!(value.get("episode_title").is_none());
+        assert!(value.get("episode_order").is_none());
+        assert!(value.get("extra").is_none());
+        let new: PlayRequest = serde_json::from_value(serde_json::json!({
+            "episode_id":"file", "episode_title":"第3集", "episode_order":3,
+            "extra":{"play_consumer":"page-fixture","play_generation":4}
+        })).unwrap();
+        let value = serde_json::to_value(new).unwrap();
+        assert_eq!(value["episode_title"], "第3集");
+        assert_eq!(value["episode_order"], 3);
+        assert_eq!(value["extra"]["play_consumer"], "page-fixture");
+        assert_eq!(value["extra"]["play_generation"], 4);
+    }
 
     /// ★ 铁律：MediaId 必须序列化成 `"provider:native"` 字符串。
     /// 一旦退回 derive 的对象形态，前端 `indexOf(":")` 全线崩溃（点海报没反应）。

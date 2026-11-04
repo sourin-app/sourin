@@ -79,6 +79,48 @@ tests proves full Baidu file playback.
 
 ## Relations
 
+Root final release follow-up: the first whole-library run was 2133 passed /
+1 failed / 94 ignored because PanWebShare still asserted the old Baidu rejection.
+The same real consumer now asserts a pending host candidate and keeps an
+unsupported-drive rejection. Its new full-provider gate has actual failure
+evidence when Baidu support is removed. The restored final whole-library run
+is 2135 passed / 0 failed / 94 ignored, exit 0, in
+`.probe/baidu-share-dispatch-rust-final-full-v2-20261104.result.json`.
+All 145 source/manifest inputs match the v2 freeze after that run. Current-core
+production share inspection and physical UI acceptance remain separate checks;
+no Baidu complete-file playback is inferred from this result.
+
+Current-core follow-up on November 5:
+
+- Fresh core `E9F6263C760F740E5FDBF3DAE5681FDCD8CD017A7E756A232EFF21B0E8DA5BFF`
+  is bound into a new copy of the completed b842e44 frontend. The 43-file
+  package is `baidu-share-dispatch-windows-release-20261105`; no app is launched.
+  FatNiu NSYS/PAN1 native decoding and Quark exact 02.mp4 production precheck,
+  selected-file resolve, native decode and closed-consumer checks pass with
+  this same core. Root views the actual frame images. These remain short native
+  samples, not Flutter UI or whole-episode acceptance.
+- The initial Baidu production preface probe rejects an old hardcoded share
+  association before account activation. Safe diagnostics prove the source,
+  content ID and title match, but the current unique Baidu share differs.
+  It is not an account-failure result and the old report remains unchanged.
+- Anonymous V5 discovery obtains a schema-checked manifest for the same fixed
+  source/content's current unique Baidu entry, without account activation.
+  Root approves manifest SHA `05304BE17D9030119F65F01C3FA500FE0ABE5E0BDBD67B3C5D3D035425D36D60`
+  before one separately authorized read-only production request. That request
+  rechecks every target hash and returns an error after reaching production
+  resolve; there are no cloud writes, cleanup commands or media requests.
+- `baidu-production-preface-probe-v5-20261104-readonly1/summary.json` is exit 1,
+  no timeout, with error SHA `5F01C1CADCFAD2F721E4B573F3CBB150DFC28F9640C231ADBA27130EBBC92CC9`.
+  Root independently hashes the fixed production login-entry error and obtains
+  that exact SHA. The current request does not obtain the share page; this does
+  not prove stored account expiry. File-list preface, concrete Baidu file,
+  complete download protocol and UI acceptance remain unverified.
+- Manifest-approved current-resource inspection does not replace historical
+  movie-share acceptance. Owner reports they do not know the official-browser
+  state; no password, cookie, direct link or technical diagnosis is requested
+  from them. A future user-operated new-client login can provide the missing
+  live session evidence without background desktop interaction.
+
 [Selected episodes and real line switching](2026-11-04-selected-episode-parser-and-real-line-switch.md)
 retains the existing validity, selection and ownership pipeline. This note fixes
 the earlier source-to-host handoff, without replacing those decisions.

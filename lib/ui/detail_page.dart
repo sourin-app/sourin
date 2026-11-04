@@ -39,6 +39,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 
 import '../core/app_log.dart';
 import '../core/download_dir.dart';
@@ -52,7 +53,7 @@ import 'widgets/overlay_motion.dart';
 // ★ task-12 ⑤：只取一个常量（kLocalProvider）—— 本地命名空间必须**只有一处定义**，
 //   在本文件里再写一份字面量就是第二个契约（本仓反复踩过这个形态）。
 import 'cache_page.dart'
-    show CachedDelete, CachedWork, humanBytes, kLocalProvider;
+    show CachedDelete, CachedWork, canonicalLocalPath, humanBytes, kLocalProvider;
 import 'media_session.dart';
 import '../core/network_status.dart';
 import '../design/widgets/app_glass_dialog.dart';
@@ -675,6 +676,7 @@ class DetailPage extends StatefulWidget {
     this.isTv = false,
     this.embedded = false,
     this.currentEpisodeId,
+    this.playbackProgress,
     /*
      * ★★★ task-12 ⑤：本地文件模式的参数（全部有默认值 ⇒ 在线路径一个字都不用改）
      */
@@ -760,6 +762,7 @@ final void Function(
   /// ⚠️ `null` 的语义是"播放器**还没报告**"，**不是**"没有当前集" ⇒
   ///    此时必须**回退**到 ② / ③，不能当成"没有"。
   final String? currentEpisodeId;
+  final ValueListenable<MediaPlaybackProgress?>? playbackProgress;
 
   /// ★★★ task-12 ⑤（2026-10-09）：**本地文件模式** —— 非 null ⇒ 本页不向核心要详情
   ///
@@ -1200,6 +1203,31 @@ class _DetailPageState extends State<DetailPage> {
   bool _isFav = false;
   bool _following = false;
   Progress? _resume;
+  int _playbackGeneration = -1;
+  int _progressEpoch = 0;
+
+  void _observePlaybackProgress() {
+    final progress = widget.playbackProgress?.value;
+    if (!mounted || progress == null || progress.provider != widget.provider ||
+        progress.id != widget.id ||
+        progress.generation < _playbackGeneration) {
+      return;
+    }
+    _playbackGeneration = progress.generation;
+    _progressEpoch++;
+    setState(() {
+      _resume = Progress(
+        key: '',
+        provider: progress.provider,
+        nativeId: progress.id,
+        title: _detail?.title ?? widget.localTitle ?? '',
+        episodeId: progress.episodeId,
+        episodeTitle: progress.episodeTitle,
+        position: progress.position.inSeconds,
+        duration: progress.duration.inSeconds,
+      );
+    });
+  }
   // ★ 2026-10-18（Owner 第 12 条）：`String? _toast` 字段已删除 ——
   //   `_flash` 改走 `showAppToast`，本页不再自己持有提示状态。
 
@@ -1301,6 +1329,12 @@ class _DetailPageState extends State<DetailPage> {
   @override
   void didUpdateWidget(covariant DetailPage old) {
     super.didUpdateWidget(old);
+    if (old.playbackProgress != widget.playbackProgress) {
+      old.playbackProgress?.removeListener(_observePlaybackProgress);
+      _playbackGeneration = -1;
+      widget.playbackProgress?.addListener(_observePlaybackProgress);
+      _observePlaybackProgress();
+    }
     if (old.currentEpisodeId == widget.currentEpisodeId) return;
     if (widget.currentEpisodeId == null) return;
     debugPrint('[DETAIL] 播放器切集 → ${widget.currentEpisodeId}（自动滚动）');
@@ -1310,6 +1344,8 @@ class _DetailPageState extends State<DetailPage> {
   @override
   void initState() {
     super.initState();
+    widget.playbackProgress?.addListener(_observePlaybackProgress);
+    _observePlaybackProgress();
     /*
      * ★★★ task-12 ⑤：本地模式**短路**掉"向核心要详情"那条路。
      *
@@ -1377,6 +1413,7 @@ class _DetailPageState extends State<DetailPage> {
 
   @override
   void dispose() {
+    widget.playbackProgress?.removeListener(_observePlaybackProgress);
     // ★ 自己创建的控制器要自己释放（否则热重载/反复进页会泄漏）
     _epsCtrl.dispose();
     super.dispose();
@@ -1459,8 +1496,11 @@ class _DetailPageState extends State<DetailPage> {
      *    ⚠️ 独立 try/catch：读进度失败不该影响页面其它部分。
      */
     try {
+      final epoch = _progressEpoch;
       final p = await SourinApi.getProgress(widget.provider, widget.id);
-      if (mounted) setState(() => _resume = p);
+      if (mounted && epoch == _progressEpoch && _progressEpoch == 0) {
+        setState(() => _resume = p);
+      }
     } catch (e) {
       debugPrint('[DETAIL] 本地模式读续播进度失败（不影响其它区块）: $e');
     }
@@ -1862,6 +1902,7 @@ class _DetailPageState extends State<DetailPage> {
        *   变成未处理异常（假红来源）。
        */
       final progressFuture = SourinApi.getProgress(widget.provider, widget.id);
+      final progressEpoch = _progressEpoch;
       unawaited(progressFuture.catchError((Object _) => null));
       final d = await SourinApi.getDetail(widget.provider, widget.id);
       if (!mounted) return;
@@ -1954,7 +1995,9 @@ class _DetailPageState extends State<DetailPage> {
 
       // ★ T9-P3：取开头并行起跑的那条结果（错误语义不变，见 _init 顶部注释）
       final r = await progressFuture;
-      if (mounted) setState(() => _resume = r);
+      if (mounted && progressEpoch == _progressEpoch && _progressEpoch == 0) {
+        setState(() => _resume = r);
+      }
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
     } finally {
@@ -3510,7 +3553,21 @@ class _DetailPageState extends State<DetailPage> {
   /// ⚠️ 高度用 [kLocalEpsViewportH] + **内部**滚动：与在线选集视口同一条纪律
   ///    （外层 Column 里没有可滚体，见 t61 的断言）。
   List<Widget> _localEpisodesSection() {
-    final eps = widget.localEpisodes;
+    final progress = _resume;
+    final eps = [
+      for (final ref in widget.localEpisodes)
+        if (progress != null && progress.provider == kLocalProvider &&
+            progress.nativeId == canonicalLocalPath(ref.absolutePath) &&
+            progress.duration > 0)
+          LocalEpisodeRef(
+            fileName: ref.fileName,
+            episodeTitle: ref.episodeTitle,
+            absolutePath: ref.absolutePath,
+            bytes: ref.bytes,
+            watchRatio: (progress.position / progress.duration).clamp(0, 1),
+          )
+        else ref,
+    ];
     return [
       // ── 标题行：普通态是「已下载」，选择态变成一整条操作栏 ──
       if (_localSelectMode && eps.isNotEmpty)

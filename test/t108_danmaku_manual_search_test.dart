@@ -167,7 +167,7 @@ Future<void> _settleTimers(WidgetTester t) async {
   _claim(t);
 }
 
-/// 切到「高级」页签，并**断言真的切过去了**
+/// 切到「弹幕来源」页签，并**断言真的切过去了**
 ///
 /// # 为什么不用 `tester.tap`
 /// ```text
@@ -180,8 +180,8 @@ Future<void> _settleTimers(WidgetTester t) async {
 ///   那是**产品的可点区域/滚动视口**问题，不是测试写法问题。
 /// ```
 Future<void> _switchToSourcesTab(WidgetTester t) async {
-  final tab = find.text('高级');
-  expect(tab, findsOneWidget, reason: '前置：面板必须有「高级」页签');
+  final tab = find.text('弹幕来源').first;
+  expect(tab, findsOneWidget, reason: '前置：面板必须有「弹幕来源」页签');
   await t.ensureVisible(tab);
   await t.pump();
   await t.tapAt(t.getCenter(tab));
@@ -189,14 +189,14 @@ Future<void> _switchToSourcesTab(WidgetTester t) async {
   await t.pump(const Duration(milliseconds: 300));
   _claim(t);
   // ★★ 这就是"点了页签必须真的切过去"的判据（本文件最有价值的一条之一）
-  expect(find.text('测试连接'), findsOneWidget,
-      reason: '★★ 点了「高级」页签后必须出现「来源」页的内容（找「测试连接」作锚）——'
+  expect(find.text('搜索…'), findsOneWidget,
+      reason: '★★ 点了来源页签后必须出现真正的搜索入口——'
           '若这里红，说明页签**点了但没切**（可点区域/滚动视口问题，真产品缺陷）');
   expect(find.text('显示弹幕'), findsNothing,
       reason: '★★ 切到「来源」页后「显示」那组必须消失（否则是两页叠着画）');
 }
 
-/// 打开面板但**不滚动**（搜索入口在「高级」页签，不需要滚到旧搜索区）
+/// 打开面板但**不滚动**（搜索入口在「弹幕来源」页签）
 Future<void> _openPanelOnly(WidgetTester t) async {
   expect(
     debugPlayerOpenDanmakuSettingsForProbe(),
@@ -279,14 +279,14 @@ void main() {
      */
     final entry = find.text('搜索…');
     expect(entry, findsOneWidget,
-        reason: '★ 面板「高级」页签里必须有 `搜索…` 入口（搜索区的唯一门）');
+        reason: '★ 面板「弹幕来源」页签里必须有 `搜索…` 入口');
     await t.ensureVisible(entry);
     await t.pump();
     await t.tapAt(t.getCenter(entry));
     await t.pump();
     await t.pump(const Duration(milliseconds: 300));
     _claim(t);
-    expect(find.text('跨渠道搜索关键词'), findsOneWidget,
+    expect(find.text('剧名或关键词'), findsOneWidget,
         reason: '★ 独立搜索页的关键词输入框必须在（labelText 就是它）');
 
     // 走**生产**的 `_searchDanmaku`（flutter_tester 里指针回调不触发，
@@ -300,17 +300,10 @@ void main() {
     expect(_searched, contains('某番'),
         reason: '★ 宿主没把关键词送到搜索接口 ⇒ 搜索框是假 UI');
 
-    /*
-     * 2026-10-15：结果行改成**两行**显示（标题 / 集数分开）。
-     *
-     * 改前是一行 `'$title · $ep'`；加了封面之后横排空间不够，
-     * 所以拆成「作品名」+「集数」两行，不再用「·」拼。
-     * ⚠️ 这条断言就是那次改版的**回归守卫** —— 别改回一行。
-     */
     expect(find.textContaining('某番'), findsWidgets,
-        reason: '搜索页里必须画出结果行（单行 match.label，例：某番 第 1 集）');
-    expect(find.textContaining('第 1 集'), findsWidgets, reason: '第 1 集那条结果要在');
-    expect(find.textContaining('第 2 集'), findsWidgets, reason: '第 2 集那条结果要在');
+        reason: '搜索页里必须画出真实结果行');
+    expect(find.text('某番 · 第1集'), findsOneWidget, reason: '第 1 集那条结果要在');
+    expect(find.text('某番 · 第2集'), findsOneWidget, reason: '第 2 集那条结果要在');
     await _settleTimers(t);
   });
 
@@ -369,7 +362,7 @@ void main() {
     await t.pump();
     await t.pump(const Duration(milliseconds: 200));
     _claim(t);
-    expect(find.textContaining('第 1 集'), findsWidgets);
+    expect(find.text('某番 · 第1集'), findsOneWidget);
 
     // 再搜一个"没有的" ⇒ 结果列表清空 + 空态文案出现
     await debugPlayerDanmakuSearchForProbe('查无此番');
@@ -377,7 +370,7 @@ void main() {
     await t.pump(const Duration(milliseconds: 200));
     _claim(t);
 
-    expect(find.textContaining('第 1 集'), findsNothing,
+    expect(find.text('某番 · 第1集'), findsNothing,
         reason: '★ 新搜索必须清掉上一次的结果（否则会被误读成"这次搜到的"）');
     expect(find.text('dan-api 未找到匹配剧集'), findsOneWidget,
         reason: '★★ 空结果显示空白 ⇒ 用户以为程序卡住了'

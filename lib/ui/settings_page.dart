@@ -193,6 +193,7 @@ import 'settings/playback_page.dart';
 import 'settings/skip_page.dart';
 import 'settings/theme_page.dart';
 import 'settings/touch_gestures_page.dart';
+import 'webhome/webhome_settings_page.dart';
 /*
  * ★ 2026-10-06（task-33 ⑦）：Emby 二级页的入口 —— 补上**唯一**那行缺失的接线
  *
@@ -298,6 +299,24 @@ class SettingsPageState extends State<SettingsPage> {
   /// 「TVBox 聚合」分组是否展开（Owner A′ 的 B 半：默认展开，先让用户看见）
   bool _tvboxExpanded = true;
 
+  String _sourceQuery = '';
+  bool? _sourceEnabledFilter;
+  SourceClass? _sourceClassFilter;
+
+  void _setSourceFilter({
+    String? query,
+    bool? enabled,
+    SourceClass? sourceClass,
+    bool setEnabled = false,
+    bool setClass = false,
+  }) {
+    setState(() {
+      if (query != null) _sourceQuery = query;
+      if (setEnabled) _sourceEnabledFilter = enabled;
+      if (setClass) _sourceClassFilter = sourceClass;
+    });
+    _dataRev.value++;
+  }
 
   /// 切换某张卡的详情区展开态
   void _toggleProviderDetails(String id) {
@@ -1224,11 +1243,15 @@ class SettingsPageState extends State<SettingsPage> {
   ///
   /// ⚠️ 与 `_OrderDialog._move` 的边界处理**必须一致** ——
   ///    那边也是 `if (j < 0 || j >= len) return;`。
-  Future<void> _moveProviderBy(String id, int delta) async {
+  Future<void> _moveProviderBy(
+    String id,
+    int delta, {
+    List<ProviderManifest>? within,
+  }) async {
     // ★ 位置必须算在「JS 插件」tab 渲染的那个子序列里（`list` 就是它），
     //   再用 [reorderSubsetIds] 把换位落到**新的全局顺序**上。
     //   旧代码拿 `_providers` 的全局下标切表 ⇒ 移走的是别的源。
-    final subset = _nonLiveProviders;
+    final subset = within ?? _nonLiveProviders;
     final ids = subset.map((p) => p.id).toList();
     final i = ids.indexOf(id);
     // id 不在列表里（列表过期）→ 如实提示，不静默
@@ -3003,6 +3026,12 @@ VoidCallback? _configOf(String id) {
               subtitle: '${_providers.length} 个内容源 · 安装 / 编辑 / 更新 / 排序 / 代理',
               onTap: _openPluginsPage,
             ),
+            SettingsEntryRow(
+              icon: Icons.web_outlined,
+              title: '自定义 HTML 首页',
+              subtitle: '首页配置',
+              onTap: () => _openSubPage(const WebHomeSettingsPage()),
+            ),
             /*
              * ★★★ 2026-10-06（task-33 ⑦）：Emby 二级页入口 —— 补上**缺失的接线**
              *
@@ -3820,7 +3849,11 @@ VoidCallback? _configOf(String id) {
      *   子序列内部，落盘时返回的仍是**新的全局顺序**，
      *   直播源之间的相对顺序一个都不动。
      */
-    final list = visibleProviders(_nonLiveProviders);
+    final allVisible = visibleProviders(_nonLiveProviders);
+    final list = filterManagedSources(
+      allVisible, query: _sourceQuery,
+      enabled: _sourceEnabledFilter, sourceClass: _sourceClassFilter,
+    );
     // ★ 展示序列（TVBox 聚合组可折叠）：其他源在前、聚合组在后；折叠时整组省掉
     //   纯函数 `tvboxGroupOrder` 不读 State ⇒ 门禁可直接注入（见 zz_t1048）
     final visible = tvboxGroupOrder(list, expanded: _tvboxExpanded);
@@ -4040,6 +4073,18 @@ VoidCallback? _configOf(String id) {
            * 正常情况下这一行**一个像素都不占**；只有确实有源没恢复时才出现。
            */
           const TvboxRestoreFailuresView(),
+          SourceManagerToolbar(
+            query: _sourceQuery,
+            enabled: _sourceEnabledFilter,
+            sourceClass: _sourceClassFilter,
+            resultCount: list.length,
+            totalCount: allVisible.length,
+            onQuery: (query) => _setSourceFilter(query: query),
+            onEnabled: (enabled) => _setSourceFilter(enabled: enabled, setEnabled: true),
+            onClass: (sourceClass) =>
+                _setSourceFilter(sourceClass: sourceClass, setClass: true),
+          ),
+          const SizedBox(height: Sp.x3),
           /*
            * ★★ 2026-10-10：8 个按钮 → 2 个常驻 + 一个 ⋮ 菜单
            *
@@ -4066,6 +4111,18 @@ VoidCallback? _configOf(String id) {
             runSpacing: Sp.x2,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
+              FilledButton.icon(
+                key: const ValueKey<String>('source-manager-import'),
+                onPressed: _openImportDialog,
+                icon: const Icon(AppIcons.add, size: 16),
+                label: const Text('导入源'),
+              ),
+              IconButton(
+                key: const ValueKey<String>('source-manager-order'),
+                tooltip: '调整顺序',
+                onPressed: _openOrderDialog,
+                icon: const Icon(AppIcons.reorder, size: 18),
+              ),
               FilledButton.icon(
                 onPressed: _installPlugin,
                 icon: const Icon(AppIcons.download, size: 16),
@@ -4407,13 +4464,18 @@ VoidCallback? _configOf(String id) {
          *   门禁 `zz_t1046` 用注入证明"有源时不许画"。
          */
         SourcesEmptyState(
-          isEmpty: list.isEmpty,
+          isEmpty: allVisible.isEmpty,
           onImport: _openImportDialog,
           onConfigure: () => showAppDialog<void>(
               context: context,
               builder: (_) => const TvboxAggregatePage(),
             ),
         ),
+        if (list.isEmpty && allVisible.isNotEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Text('没有匹配的源'),
+          ),
         /*
          * ★ T5：TVBox 订阅自动更新（Owner：「…定时更新」）
          *
@@ -4607,8 +4669,8 @@ VoidCallback? _configOf(String id) {
                */
               canMoveUp: i > 0,
               canMoveDown: i < list.length - 1,
-              onMoveUp: () => _moveProviderBy(visible[i].id, -1),
-              onMoveDown: () => _moveProviderBy(visible[i].id, 1),
+              onMoveUp: () => _moveProviderBy(visible[i].id, -1, within: visible),
+              onMoveDown: () => _moveProviderBy(visible[i].id, 1, within: visible),
               onToggle: () => _toggleProvider(visible[i]),
               onRemove: _removeOf(visible[i]),
               onEdit: () => _editProvider(visible[i]),
@@ -8932,6 +8994,107 @@ enum SourceClass {
 
   /// 分组标题文案
   final String label;
+}
+
+List<ProviderManifest> filterManagedSources(
+  List<ProviderManifest> providers, {
+  String query = '',
+  bool? enabled,
+  SourceClass? sourceClass,
+}) {
+  final needle = query.trim().toLowerCase();
+  return visibleProviders(providers).where((p) =>
+      (enabled == null || p.enabled == enabled) &&
+      (sourceClass == null || sourceClassOf(p) == sourceClass) &&
+      (needle.isEmpty || '${p.name} ${p.id}'.toLowerCase().contains(needle)))
+      .toList(growable: false);
+}
+
+class SourceManagerToolbar extends StatefulWidget {
+  const SourceManagerToolbar({
+    super.key, required this.query, required this.enabled,
+    required this.sourceClass, required this.resultCount, required this.totalCount,
+    required this.onQuery, required this.onEnabled, required this.onClass,
+  });
+
+  final String query;
+  final bool? enabled;
+  final SourceClass? sourceClass;
+  final int resultCount;
+  final int totalCount;
+  final ValueChanged<String> onQuery;
+  final ValueChanged<bool?> onEnabled;
+  final ValueChanged<SourceClass?> onClass;
+
+  @override
+  State<SourceManagerToolbar> createState() => _SourceManagerToolbarState();
+}
+
+class _SourceManagerToolbarState extends State<SourceManagerToolbar> {
+  late final _search = TextEditingController(text: widget.query);
+
+  @override
+  void didUpdateWidget(SourceManagerToolbar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_search.text != widget.query) _search.text = widget.query;
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) => Wrap(
+      spacing: 12,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        SizedBox(
+          width: constraints.maxWidth > 360 ? 360 : constraints.maxWidth,
+          child: TextField(
+            key: const ValueKey<String>('source-manager-search'),
+            controller: _search,
+            onChanged: widget.onQuery,
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: '搜索源名称或标识',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: widget.query.isEmpty ? null : IconButton(
+                tooltip: '清空搜索', icon: const Icon(Icons.clear),
+                onPressed: () => widget.onQuery(''),
+              ),
+            ),
+          ),
+        ),
+        DropdownButton<bool>(
+          value: widget.enabled,
+          hint: const Text('全部状态'),
+          onChanged: widget.onEnabled,
+          items: const [
+            DropdownMenuItem<bool>(value: null, child: Text('全部状态')),
+            DropdownMenuItem<bool>(value: true, child: Text('已启用')),
+            DropdownMenuItem<bool>(value: false, child: Text('已停用')),
+          ],
+        ),
+        DropdownButton<SourceClass>(
+          value: widget.sourceClass,
+          hint: const Text('全部类型'),
+          onChanged: widget.onClass,
+          items: [
+            const DropdownMenuItem<SourceClass>(
+                value: null, child: Text('全部类型')),
+            for (final sourceClass in SourceClass.values)
+              DropdownMenuItem<SourceClass>(
+                  value: sourceClass, child: Text(sourceClass.label)),
+          ],
+        ),
+        Text('${widget.resultCount}/${widget.totalCount}'),
+      ],
+    ),
+  );
 }
 
 /// 判定一个源属于哪一类（**纯函数**，不读 State ⇒ 门禁可直接注入）

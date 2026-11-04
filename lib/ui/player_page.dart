@@ -985,7 +985,7 @@ final _arrowKeys = <LogicalKeyboardKey>{
 
 class _PlayerPageState extends State<PlayerPage>
     with SingleTickerProviderStateMixin
-    implements MediaSession, LivePlaybackTarget {
+    implements MediaSession, MediaProgressSession, LivePlaybackTarget {
   late final Player _player;
   late final VideoController _controller;
 
@@ -1280,6 +1280,7 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 当前播放位置 / 时长（秒）
   Duration _position = Duration.zero;
+  int _positionObservationEpoch = 0;
 
   /// ★ 2026-10-09（Owner 第 10 条「很多地方卡卡的」）：播放位置的**局部**真源
   ///
@@ -3204,6 +3205,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ 与 `_biliCid` **不合并**：那个是"当前这一集的弹幕身份"（跨集保留），
   ///    这个是"刚刚点的那一下"（一次性）。两者生命周期不同。
   int? _pinnedEpisodeId;
+  int _pinnedEpisodeGeneration = -1;
 
   /// ★ 打开面板那一刻的 `_danmakuFetchToken`
   ///
@@ -5535,6 +5537,7 @@ class _PlayerPageState extends State<PlayerPage>
     //   （下一轮默认选线才能避开样片；_current 为 null 时 _recordLineDuration 自己会退）
     //   ⚠️ 记的是**权威值**——分片伪影（6s）会把 82.72s 的完整内容误判成样片。
     _recordLineDuration(authoritative);
+    _publishPlaybackProgress();
   }
 
   /// 中性事实日志的去重键（task-9：每条流只记一次 DISCONTINUITY 提示）
@@ -6142,6 +6145,7 @@ class _PlayerPageState extends State<PlayerPage>
         _stallSince = null;
       }
     }
+    _positionObservationEpoch++;
     _position = p; // ★ 无条件更新（读值语义不变）
     if (secChanged) {
       debugPlayerPositionSetStates++; // ★ 仅探针计数
@@ -6159,6 +6163,7 @@ class _PlayerPageState extends State<PlayerPage>
       if (_danmakuSheetOpen) _refreshDanmakuReadout();
     }
     _maybeSkip(p);
+    _publishPlaybackProgress();
     _scheduleSave(p);
   }
 
@@ -8006,7 +8011,9 @@ class _PlayerPageState extends State<PlayerPage>
   Future<DanmakuLocalStatus> _ensureDanmakuLocalStatus() async {
     final cached = _danmakuLocalStatus;
     if (cached != null) return cached;
-    final st = await DanmakuLocalService.probe();
+    final st = await DanmakuLocalService.probe(
+      transport: debugPlayerDanmakuLocalProbeTransportForTest,
+    );
     _danmakuLocalStatus = st;
     return st;
   }
@@ -8455,6 +8462,8 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   Future<void> _loadDanmakuNamed(String fileName) async {
+    final generation = _playSessionGen;
+    final token = ++_danmakuFetchToken;
     /*
      * ★★★ OPS-10 ⑤（Owner 逐字：「导入externaldanmaku弹幕之后,并没有提示任何信息
      *     和反馈,返回播放页继续,也没有出现弹幕」）
@@ -8503,7 +8512,7 @@ class _PlayerPageState extends State<PlayerPage>
     //   设置面板、手动搜索四条路一起被关掉，直播间不会有任何
     //   `/api/v2/match` 出网。见 `_toggleDanmaku` 的同一条守卫。
     if (_isLive) return;
-    final dmBind = loadDanmakuBind(widget.provider, widget.id);
+    final dmBind = loadDanmakuBind(_provider, _contentId);
     final boundId = dmBind?.episodes[_epIndex] ?? 0;
     if (boundId > 0) {
       debugPrint('[DMK] 整部绑定命中：第${_epIndex + 1}集 ⇒ #$boundId');
@@ -8658,6 +8667,7 @@ class _PlayerPageState extends State<PlayerPage>
      *   本地服务就是 danmaku-service 协议 ⇒ 成功状态仍用「danmaku-service · 」前缀。
      */
     final localStatus = await _ensureDanmakuLocalStatus();
+    if (!mounted || generation != _playSessionGen || token != _danmakuFetchToken) return;
     _danmakuSourceLine = '数据源：${localStatus.line}';
     /*
      * ★★★ T27-14（CodeRabbit A7）：自动路由 = 「本机在线就优先本机」。
@@ -8677,7 +8687,6 @@ class _PlayerPageState extends State<PlayerPage>
       _danmakuUsingLocal = usingLocal;
       _resetDanmakuClient();
     }
-    final token = ++_danmakuFetchToken;
     final client = _ensureDanmakuClient(unsignedLocal: usingLocal);
     if (mounted) {
       setState(() {
@@ -8756,13 +8765,17 @@ class _PlayerPageState extends State<PlayerPage>
        *    却会取回「整部绑定」里第 1 集的那条 —— 手选被静默吞掉。
        * ⇒ 只在**没有**手选 pin 时才用整部绑定。
        */
+      if (_pinnedEpisodeGeneration != generation) _pinnedEpisodeId = null;
       if (_pinnedEpisodeId == null && boundId > 0) _pinnedEpisodeId = boundId;
       final pinned = _pinnedEpisodeId;
       if (pinned != null) {
         _pinnedEpisodeId = null; // 一次性
         try {
           final cs = await client.fetchComments(pinned);
-          if (!mounted || token != _danmakuFetchToken) return;
+          if (!mounted || generation != _playSessionGen ||
+              token != _danmakuFetchToken) {
+            return;
+          }
           /*
            * ★★★ 2026-10-17（Owner 第 9 条）：**聚合**
            *
@@ -8776,7 +8789,10 @@ class _PlayerPageState extends State<PlayerPage>
             primarySource: DanmakuInfoSource.library,
             token: token,
           );
-          if (!mounted || token != _danmakuFetchToken) return;
+          if (!mounted || generation != _playSessionGen ||
+              token != _danmakuFetchToken) {
+            return;
+          }
           setState(() {
             _danmakuComments = agg.comments;
             _danmakuError = null;
@@ -8803,7 +8819,10 @@ class _PlayerPageState extends State<PlayerPage>
         videoDuration: _duration.inSeconds,
         anime: fileName,
       );
-      if (!mounted || token != _danmakuFetchToken) return;
+      if (!mounted || generation != _playSessionGen ||
+          token != _danmakuFetchToken) {
+        return;
+      }
       /*
        * ★★★ 2026-10-17（Owner 第 9 条）：**聚合**
        *
@@ -8823,7 +8842,10 @@ class _PlayerPageState extends State<PlayerPage>
             : DanmakuInfoSource.service,
         token: token,
       );
-      if (!mounted || token != _danmakuFetchToken) return;
+      if (!mounted || generation != _playSessionGen ||
+          token != _danmakuFetchToken) {
+        return;
+      }
       setState(() {
         _danmakuComments = agg.comments;
         /*
@@ -8901,7 +8923,10 @@ class _PlayerPageState extends State<PlayerPage>
       });
       _armDanmakuBadgeExpiry(kDanmakuBadgeEmptyMs);
     } on DanmakuException catch (e) {
-      if (!mounted || token != _danmakuFetchToken) return;
+      if (!mounted || generation != _playSessionGen ||
+          token != _danmakuFetchToken) {
+        return;
+      }
       setState(() {
         _danmakuComments = const <DanmakuComment>[];
         _danmakuStatus = '';
@@ -9002,7 +9027,10 @@ class _PlayerPageState extends State<PlayerPage>
             : '弹幕失败：$why ｜ ${h.title}（打开弹幕设置可一键处理；这是 danmaku-service 的凭证，与 外部视频站弹幕无关）',
       );
     } catch (e) {
-      if (!mounted || token != _danmakuFetchToken) return;
+      if (!mounted || generation != _playSessionGen ||
+          token != _danmakuFetchToken) {
+        return;
+      }
       _armDanmakuBadgeExpiry();
       final wrapped = DanmakuException(e.toString());
       setState(() {
@@ -9241,8 +9269,25 @@ class _PlayerPageState extends State<PlayerPage>
   Future<void> _searchDanmaku(String keyword) async {
     final kw = keyword.trim();
     if (kw.isEmpty) return;
+    final generation = _playSessionGen;
+    final searchToken = _danmakuFetchToken;
+    bool rejectStale() {
+      if (!mounted) return true;
+      if (generation == _playSessionGen && searchToken == _danmakuFetchToken) return false;
+      setState(() {
+        _danmakuSearchLoading = false;
+        _danmakuSearchError = null;
+        _danmakuSearchResults = const <DanmakuMatch>[];
+        _danmakuSettings = _danmakuSettings.copyWith(
+          searchLoading: false, clearSearchError: true,
+          searchResults: const <DanmakuMatch>[], searchStale: true,
+        );
+      });
+      return true;
+    }
     // 探一次本机（同 `_loadDanmaku`：进程内缓存，面板路径本身不探）
     final localStatus = await _ensureDanmakuLocalStatus();
+    if (rejectStale()) return;
     _danmakuSourceLine = '数据源：${localStatus.line}';
     final usingLocal = localStatus.online && !_danmakuForceOfficial;
     if (usingLocal != _danmakuUsingLocal) {
@@ -9252,7 +9297,6 @@ class _PlayerPageState extends State<PlayerPage>
     }
     final client = _ensureDanmakuClient(unsignedLocal: usingLocal);
     // ★ 记下"发起搜索时的令牌"，回来时用它判是否已换集（见字段注释）
-    final searchToken = _danmakuFetchToken;
     if (!mounted) return;
     setState(() {
       _danmakuSearchLoading = true;
@@ -9282,7 +9326,7 @@ class _PlayerPageState extends State<PlayerPage>
        * the first whitespace segment finds it. Measured against the live API.
        */
       final found = await client.searchEpisodesSmart(kw);
-      if (!mounted) return;
+      if (rejectStale()) return;
       final stale = searchToken != _danmakuFetchToken;
       setState(() {
         _danmakuSearchResults = found;
@@ -9297,7 +9341,7 @@ class _PlayerPageState extends State<PlayerPage>
         );
       });
     } on DanmakuException catch (e) {
-      if (!mounted) return;
+      if (rejectStale()) return;
       setState(() {
         _danmakuSearchLoading = false;
         _danmakuSearchError = e;
@@ -9311,7 +9355,7 @@ class _PlayerPageState extends State<PlayerPage>
       });
       _flash('搜索失败：${e.message}');
     } catch (e) {
-      if (!mounted) return;
+      if (rejectStale()) return;
       final wrapped = DanmakuException(e.toString());
       setState(() {
         _danmakuSearchLoading = false;
@@ -9366,20 +9410,58 @@ class _PlayerPageState extends State<PlayerPage>
     List<BatchBindPlanItem> items,
     String workTitle,
   ) async {
-    if (items.isEmpty) return;
-    saveDanmakuBind(
-      widget.provider,
-      widget.id,
-      DanmakuBindStore(
-        workTitle: workTitle,
-        episodes: <int, int>{
-          for (final it in items) it.episodeIndex: it.episodeId,
-        },
-        updatedAt: DateTime.now().millisecondsSinceEpoch,
-      ),
-    );
-    if (!mounted) return;
+    if (!_saveDanmakuPlan(items, workTitle)) return;
+    _completeDanmakuBatchBinding(items);
     _flash('整部绑定完成：「$workTitle」绑了 ${items.length} 集');
+  }
+
+  bool _saveDanmakuPlan(List<BatchBindPlanItem> items, String workTitle) {
+    if (!mounted || items.isEmpty) return false;
+    final targets = <int>{};
+    final ids = <int>{};
+    for (final item in items) {
+      if (item.episodeIndex < 0 || item.episodeIndex >= _episodes.length ||
+          item.episodeId <= 0 || !targets.add(item.episodeIndex) ||
+          !ids.add(item.episodeId)) {
+        _flash('对应关系有冲突，请调整后再确认');
+        return false;
+      }
+    }
+    try {
+      saveDanmakuBind(
+        _provider,
+        _contentId,
+        DanmakuBindStore(
+          workTitle: workTitle,
+          episodes: {for (final item in items)
+            item.episodeIndex: item.episodeId},
+          updatedAt: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+      return true;
+    } catch (_) {
+      _flash('绑定未保存，请重试');
+      return false;
+    }
+  }
+
+  void _completeDanmakuBatchBinding(List<BatchBindPlanItem> items) {
+    for (final item in items) {
+      if (item.episodeIndex != _epIndex) continue;
+      _pickDanmakuMatch(DanmakuMatch(
+        episodeId: item.episodeId,
+        episodeTitle: item.episodeTitle,
+        animeTitle: item.workTitle,
+        shift: item.shift,
+      ));
+      return;
+    }
+    setState(() {
+      _danmakuSheetOpen = false;
+      _danmakuSearchOpen = false;
+    });
+    _restoreBarsAfterSheet();
+    _holdSheetGuard();
   }
 
   Future<void> _batchBindDanmaku(List<DanmakuMatch> results) async {
@@ -9411,18 +9493,8 @@ class _PlayerPageState extends State<PlayerPage>
      *   只能靠**存储分开**。
      * ```
      */
-    saveDanmakuBind(
-      widget.provider,
-      widget.id,
-      DanmakuBindStore(
-        workTitle: plan.workTitle,
-        episodes: <int, int>{
-          for (final it in plan.items) it.episodeIndex: it.episodeId,
-        },
-        updatedAt: DateTime.now().millisecondsSinceEpoch,
-      ),
-    );
-    if (!mounted) return;
+    if (!_saveDanmakuPlan(plan.items, plan.workTitle)) return;
+    _completeDanmakuBatchBinding(plan.items);
     /*
      * 如实报数 —— 尤其是**没绑上的那几集**。
      * 只报“绑了 N 集”而吞掉“有 3 集没绑”，
@@ -9456,6 +9528,7 @@ class _PlayerPageState extends State<PlayerPage>
      *     落到的**不是**用户点的那一集 —— 见 `_pinnedEpisodeId` 的说明）。
      */
     _pinnedEpisodeId = m.episodeId;
+    _pinnedEpisodeGeneration = _playSessionGen;
     /*
      * ★ 载入成功与否都**关掉面板**：用户点了一条 = 他要看结果
      *   （同 `_openBiliSheet` 的语义 —— 动作落地就收起遮罩）。
@@ -9464,7 +9537,13 @@ class _PlayerPageState extends State<PlayerPage>
      *   载入的错误由既有的弹幕失败角标 + 提示条负责 —— 两条通路不混）。
      */
     if (mounted) {
-      setState(() => _danmakuSheetOpen = false);
+      DanmakuConfig.setEnabled(true);
+      setState(() {
+        _danmakuSheetOpen = false;
+        _danmakuSearchOpen = false;
+        _danmakuEnabled = true;
+        _danmakuSettings = _danmakuSettings.copyWith(enabled: true);
+      });
       _restoreBarsAfterSheet();
       // ★★ 2026-10-19（R3-④ 补漏）：**选中即关**这条路同样要守卫 ——
       //    用户在面板里双击选中一条弹幕库，第 2 击会落到播放区。
@@ -11070,6 +11149,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// [immediate] 用于退出/切集/换源前 —— 那些时刻必须**立刻**保存，
   /// 否则用户切走时最后几秒的进度会丢。
   Future<void> _saveProgress({bool immediate = false}) async {
+    _publishPlaybackProgress();
     if (_isLive) return; // 直播没有进度概念
     if (_duration <= Duration.zero) return;
 
@@ -12080,6 +12160,37 @@ class _PlayerPageState extends State<PlayerPage>
   @override
   Duration get currentPosition => _position;
 
+  final _playbackProgress = ValueNotifier<MediaPlaybackProgress?>(null);
+
+  @override
+  ValueListenable<MediaPlaybackProgress?> get playbackProgress =>
+      _playbackProgress;
+
+  void _publishPlaybackProgress() {
+    if (_isLive || _playClosed || !mounted) return;
+    final episode = _epIndex >= 0 && _epIndex < _episodes.length
+        ? _episodes[_epIndex] : null;
+    final duration = _realDuration > Duration.zero ? _realDuration : _duration;
+    final previous = _playbackProgress.value;
+    if (previous != null && previous.provider == _provider &&
+        previous.id == _contentId && previous.generation == _playSessionGen &&
+        previous.episodeId == (episode?.id ?? widget.episodeId) &&
+        previous.episodeTitle == (episode?.title ?? widget.episodeTitle) &&
+        previous.position.inSeconds == _position.inSeconds &&
+        previous.duration.inSeconds == duration.inSeconds) {
+      return;
+    }
+    _playbackProgress.value = MediaPlaybackProgress(
+      provider: _provider,
+      id: _contentId,
+      generation: _playSessionGen,
+      episodeId: episode?.id ?? widget.episodeId,
+      episodeTitle: episode?.title ?? widget.episodeTitle,
+      position: _position,
+      duration: duration,
+    );
+  }
+
   @override
   Future<void> applySession(PlayRequestData req) async {
     /*
@@ -12445,6 +12556,7 @@ class _PlayerPageState extends State<PlayerPage>
   ///   写三遍必然漂 —— 本项目已踩过"两处同构必须一起改"的坑。
   String? _lastReportedEpisodeId;
   void _reportEpisodeChanged() {
+    _publishPlaybackProgress();
     final id = currentEpisodeId;
     if (id == _lastReportedEpisodeId) return;
     _lastReportedEpisodeId = id;
@@ -14435,7 +14547,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// · `_seekAfterReady` 续播落地       `(_resumeSeekForProbe ?? _player.seek)(t)`
   /// · `debugPlayerSeekForProbe`       探针直驱原生边界
   /// ```
-  Future<void> _seekByUser(Duration target) {
+  Future<void> _seekByUser(Duration target) async {
     _introSkipped = true;
     _pendingSeek = null;
     ++_seekToken;
@@ -14449,7 +14561,19 @@ class _PlayerPageState extends State<PlayerPage>
     _noteUserSeek(target);
     // ★ T7：记忆式片头（默认关；判定是纯函数，见 lib/core/skip_memory.dart）
     _rememberIntroFromUserSeek(target);
-    return (_userSeekForProbe ?? _player.seek)(target);
+    final generation = _playSessionGen;
+    final token = _seekToken;
+    final positionEpoch = _positionObservationEpoch;
+    await (_userSeekForProbe ?? _player.seek)(target);
+    if (!mounted || _playClosed || generation != _playSessionGen ||
+        token != _seekToken) {
+      return;
+    }
+    if (positionEpoch == _positionObservationEpoch) {
+      _position = target;
+      _positionNotifier.value = target;
+    }
+    _publishPlaybackProgress();
   }
 
   /// ★ T7：用户 seek 落点若符合「片头终点」形态 ⇒ 记忆（异步落库 + 可见反馈）
@@ -16941,6 +17065,7 @@ class _PlayerPageState extends State<PlayerPage>
      */
     _onFullscreenChanged = null;
     _onEpisodeChanged = null;
+    _playbackProgress.dispose();
     // ★ popover 的唯一真值源（ChangeNotifier ⇒ 必须 dispose）
     //   ⚠️ 先摘掉监听（缺陷 ⑤）再 dispose —— 顺序反了会在 removeListener
     //     时撞上已 dispose 的 notifier 断言。
@@ -18924,7 +19049,7 @@ class _PlayerPageState extends State<PlayerPage>
                            * 为什么不是"搜索页去查一次"：那会多一条数据通路，
                            * 且两个来源迟早漂移（本仓踩过"两处同构必须一起改"的坑）。
                            */
-                          workTitle: widget.title,
+                          workTitle: _title.isNotEmpty ? _title : widget.title,
                           localTitles: _episodes.map((e) => e.title).toList(),
                           onSearch: (keyword) => unawaited(_searchDanmaku(keyword)),
                           onBiliSearch: _biliSearch,
@@ -18945,6 +19070,13 @@ class _PlayerPageState extends State<PlayerPage>
                            */
                           onReload: () => unawaited(_loadDanmaku()),
                           onOpenLocal: _useLocalDanmakuSource,
+                          onBack: () {
+                            setState(() {
+                              _danmakuSearchOpen = false;
+                              _danmakuSheetOpen = true;
+                            });
+                            _holdSheetGuard();
+                          },
                           onClose: () {
                             setState(() => _danmakuSearchOpen = false);
                             _restoreBarsAfterSheet();
@@ -22345,6 +22477,10 @@ DanmakuSettingsState? debugPlayerDanmakuSettingsState() =>
 Future<void> debugPlayerDanmakuSearchForProbe(String keyword) async {
   await _livePlayerState?._searchDanmaku(keyword);
 }
+
+/// Only replaces local probe HTTP; the real owner/cache/loader still execute.
+@visibleForTesting
+DanmakuTransport? debugPlayerDanmakuLocalProbeTransportForTest;
 
 /// 走生产 `_pickDanmakuMatch(match)`（= 用户点了结果里的一条）
 void debugPlayerPickDanmakuMatchForProbe(DanmakuMatch m) {

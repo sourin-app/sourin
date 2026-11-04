@@ -107,7 +107,7 @@ void main() {
       expect(
           panAccountTierText(
               PanAccountTier.loggedInNoDirectLink, '夸克网盘'),
-          '已登录夸克网盘：能列出分享里的文件，但本版本仍未接入取直链');
+          '已登录夸克网盘（应用已读取保存的凭据）');
     });
   });
 
@@ -122,9 +122,9 @@ void main() {
           findsOneWidget);
       // 三档逐字
       expect(
-          find.text('已登录夸克网盘：能列出分享里的文件，但本版本仍未接入取直链'),
+          find.text('已登录夸克网盘（应用已读取保存的凭据）'),
           findsOneWidget,
-          reason: '★★⑤ 已登录档必须带"仍未接入取直链"的边界（不许只报好消息）');
+          reason: '已登录只表示应用读到了保存的凭据，不承诺远端会话有效');
       expect(find.text('UC 网盘的登录已过期，请重新登录'), findsOneWidget,
           reason: '★★④ 过期档如实报，不许冒充已登录');
       expect(find.text('需要先登录百度网盘'), findsOneWidget,
@@ -218,6 +218,12 @@ void main() {
               '注入「initState 里塞一份已登录假状态」本条立刻红');
       expect(find.textContaining('登录成功'), findsNothing,
           reason: '★ 同理，扫码成功文案也不许凭空出现');
+      await t.pump(const Duration(seconds: 16));
+      await t.pump();
+      expect(find.textContaining('已登录'), findsNothing,
+          reason: '读取期限结束后仍不能凭空确认账号');
+      expect(find.byKey(const ValueKey<String>('pan-status-error')),
+          findsOneWidget, reason: '无响应的凭据链路必须有界进入错误态');
     });
 
     testWidgets('★★ 链路失败 ⇒ 如实显示错误，错误态里也不许出现"已登录"',
@@ -276,7 +282,7 @@ void main() {
       expect(find.byType(QrView), findsOneWidget,
           reason: '★★★ 二维码必须用现成 QrView 渲染（复用，不是重造）；'
               '注入「自己画个方块冒充二维码」这条依旧绿但 ⑥ 的复用判据会红');
-      expect(find.byKey(const ValueKey<String>('pan-qr-view')), findsOneWidget);
+      expect(find.byKey(const ValueKey<String>('pan-qr-login-view')), findsOneWidget);
 
       // pending（轮询定时器 2 秒一跳）
       await t.pump(const Duration(seconds: 2));
@@ -294,8 +300,9 @@ void main() {
       await t.pump(const Duration(seconds: 2));
       await t.pump();
       await t.pump();
-      expect(find.text('登录成功'), findsOneWidget);
-      expect(statusFetches, 2,
+      await t.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey<String>('pan-qr-login-view')), findsNothing);
+      expect(statusFetches, 3,
           reason: '★★★ confirmed 后必须重新拉登录状态（否则列表停在"未登录"）');
       expect(pollCalls, 3, reason: '★ 三个状态各轮询一次');
 
@@ -480,8 +487,14 @@ void main() {
       // 复用判据
       expect(src.contains('PanShareListingSection'), isTrue,
           reason: '★★ 列目录必须复用 pan_share_dialog 的现成组件');
-      expect(src.contains("import '../widgets/qr_view.dart'"), isTrue,
-          reason: '★★ 二维码必须复用 qr_view（不是自己画）');
+      expect(src.contains('showPanQrLoginDialog('), isTrue);
+      final dialog =
+          File('lib/ui/widgets/pan_qr_login_dialog.dart').readAsStringSync();
+      expect(
+        dialog.contains("import 'qr_view.dart'"),
+        isTrue,
+        reason: '独立扫码弹窗仍必须复用 qr_view',
+      );
       // 注入点先于 FFI：fetcher 非 null 时不许碰 callAsync（照 panListShare 的写法）
       expect(
           src.indexOf('debugPanCredentialStatusFetcher') <

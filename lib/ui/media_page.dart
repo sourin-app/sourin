@@ -451,6 +451,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
       if (epId == _currentEpisodeId) return;
       debugPrint('[MEDIA] 播放器通知：当前集=$epId ⇒ 转给详情区（高亮 + 滚入可视区）');
       setState(() => _currentEpisodeId = epId);
+      if (_resolvedLocalPath != null) unawaited(_loadLocalProgress());
     };
 
     /*
@@ -1334,13 +1335,15 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
 
   /// 本地命名空间下的**全部观看进度**（懒加载一次）
   Map<String, Progress> _localProgress = const <String, Progress>{};
+  int _localProgressEpoch = 0;
 
   /// ⇒ 只在**本地会话**下查（在线页不需要，那里的进度在章节里就有）
   Future<void> _loadLocalProgress() async {
     if (_resolvedLocalPath == null) return; // ★ T27-04：判据统一走本页裁决值
+    final epoch = ++_localProgressEpoch;
     try {
       final all = await SourinApi.listAllProgress();
-      if (!mounted) return;
+      if (!mounted || epoch != _localProgressEpoch) return;
       setState(() {
         _localProgress = <String, Progress>{
           for (final p in all)
@@ -1697,6 +1700,9 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
        *    （`_activeEpisodeId`），**不能**当成"没有当前集"。
        */
       currentEpisodeId: _currentEpisodeId,
+      playbackProgress: _session is MediaProgressSession
+          ? (_session! as MediaProgressSession).playbackProgress
+          : null,
       /*
        * ★★★ task-12 ⑤ + T27-04：本地播放时把详情区切成**本地模式**（见 _localEpisodeRefs 上面那段）。
        * ⚠️ T27-04：判据统一走本页 [_resolvedLocalPath] —— 已缓存页入口与

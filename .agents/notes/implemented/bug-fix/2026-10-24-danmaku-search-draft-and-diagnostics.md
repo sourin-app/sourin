@@ -91,3 +91,9 @@ draft.keyword 为空 ⇒ 回退宿主的 state.searchKeyword（剧名预填）
 **以上均为专项测试证据，不替代实机验收。** 首次安装、旧配置迁移、主动关闭后重启、部分来源失败四类场景仍需实机确认；搜索页诊断区的实际可展开性、高级页签拥挤度、封面渲染效果均需亲眼看过。
 
 Independent: 本篇记录 2026-10-27 批内一次具体改动的决策；已按标题关键词在 .agents/notes 全树检索（同日与相关主题），未发现记录同一决定的笔记，故不构成取代关系。正文未改，仅补声明。
+
+## Relations
+
+[Live progress and modal workflow](2026-11-04-player-progress-and-danmaku-modal-workflow.md)
+supersedes only the placement of source controls in Advanced. Session-owned
+drafts, the independent search boundary and expandable diagnostics remain.

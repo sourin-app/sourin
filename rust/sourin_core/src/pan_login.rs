@@ -3732,10 +3732,42 @@ fn validate_web_login_credential(
     cookie: &str,
 ) -> Result<(PanKind, String, String), String> {
     let kind = web_login_kind_of(kind_code)?;
+    if cookie.chars().any(|c| c.is_ascii_control()) {
+        return Err("登录态格式无法保存，请重新登录；凭据内容不会显示".to_string());
+    }
     let cookie = cookie.trim();
     if cookie.is_empty() {
         return Err(
             "没有捕获到登录态 cookie：请在登录窗口里完成登录后再试".to_string(),
+        );
+    }
+    let mut values = std::collections::HashMap::new();
+    for part in cookie.split(';') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (name, value) = part
+            .split_once('=')
+            .ok_or_else(|| "登录态格式无法保存，请重新登录".to_string())?;
+        let name = name.trim();
+        if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_ascii_control()) {
+            return Err("登录态格式无法保存，请重新登录".to_string());
+        }
+        values.insert(name, value.trim());
+    }
+    let required: &[&str] = match kind {
+        PanKind::Quark | PanKind::Uc => &["__pus", "__kps"],
+        PanKind::Baidu => &["BDUSS"],
+        PanKind::Pan115 => &["UID", "CID", "SEID"],
+        _ => &[],
+    };
+    if required.iter().any(|name| {
+        values.get(name).map(|value| value.is_empty()).unwrap_or(true)
+    }) {
+        return Err(
+            "没有捕获到完整账号登录态，请在登录窗口完成登录后重新检测，或改用扫码登录"
+                .to_string(),
         );
     }
     let account = account.trim();
@@ -3827,5 +3859,56 @@ mod web_login_gate {
         let (_, _, c) = validate_web_login_credential("115", "", "  UID=1; CID=2; SEID=3  ")
             .expect("合法输入必须通过");
         assert_eq!(c, "UID=1; CID=2; SEID=3", "★ cookie 要 trim：{c}");
+    }
+}
+
+#[cfg(test)]
+mod pan_login_ux_gate {
+    use super::validate_web_login_credential;
+
+    #[test]
+    fn login_keys_are_required_not_only_nonempty_cookie() {
+        for (kind, cookie) in [
+            ("quark", "ctoken=local-test-value"),
+            ("uc", "__pus=local-test-value"),
+            ("baidu", "OTHER=local-test-value"),
+            ("115", "UID=local-test-value"),
+        ] {
+            assert!(validate_web_login_credential(kind, "", cookie).is_err());
+        }
+    }
+
+    #[test]
+    fn cleared_duplicate_login_key_is_not_an_old_session() {
+        assert!(
+            validate_web_login_credential("baidu", "", "BDUSS=old-test-value; BDUSS=")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cookie_control_characters_are_rejected_without_echoing_credentials() {
+        let secret = "local-test-secret";
+        for cookie in [
+            format!("BDUSS={secret}\r\nHeader: value"),
+            format!("BDUSS={secret}; bad\tname=value"),
+            format!("BDUSS={secret}\n"),
+        ] {
+            let error = validate_web_login_credential("baidu", "", &cookie)
+                .expect_err("malformed authentication cookie must fail");
+            assert!(!error.contains(secret));
+        }
+    }
+
+    #[test]
+    fn known_login_shapes_still_pass_without_network_or_keyring() {
+        for (kind, cookie) in [
+            ("quark", "__pus=local-test-value; __kps=local-test-value"),
+            ("uc", "__pus=local-test-value; __kps=local-test-value"),
+            ("baidu", "BDUSS=local-test-value"),
+            ("115", "UID=1; CID=2; SEID=3"),
+        ] {
+            assert!(validate_web_login_credential(kind, "", cookie).is_ok());
+        }
     }
 }

@@ -1,9 +1,12 @@
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import '../core/danmaku.dart';
 import '../core/batch_bind.dart';
 import 'widgets/danmaku_settings_dialog.dart';
+import 'widgets/app_dialog_shell.dart';
 import 'widgets/bili_import_dialog.dart';
 import 'widgets/cover_image.dart';
+import 'tokens.dart';
 
 /// Session-owned, in-memory search draft. The host controls its lifetime.
 class DanmakuSearchDraft {
@@ -21,7 +24,7 @@ class DanmakuSearchPage extends StatefulWidget {
     required this.onPickMatch, required this.onBatchBind, required this.onBiliImport,
     this.onBatchBindPlan,
     required this.onBiliSelectPage, required this.onClose, this.draft,
-    this.onReload, this.onOpenLocal, this.workTitle});
+    this.onReload, this.onOpenLocal, this.workTitle, this.onBack});
   final DanmakuSettingsState state;
   final BiliImportState biliState;
   final List<String> localTitles;
@@ -39,6 +42,7 @@ class DanmakuSearchPage extends StatefulWidget {
   final ValueChanged<String> onBiliImport;
   final ValueChanged<int> onBiliSelectPage;
   final VoidCallback onClose;
+  final VoidCallback? onBack;
   final VoidCallback? onReload;
   final VoidCallback? onOpenLocal;
   final DanmakuSearchDraft? draft;
@@ -62,10 +66,14 @@ class DanmakuSearchPage extends StatefulWidget {
   State<DanmakuSearchPage> createState() => _DanmakuSearchPageState();
 }
 
+enum _SearchChannel { all, danApi, video }
+
 class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
   final _keyword = TextEditingController();
   final _selected = <int>{};
   bool _preview = false;
+  bool _dispatching = false;
+  _SearchChannel _channel = _SearchChannel.all;
 
   /// 候选 episodeId → 本地集下标（-1 = 明确不绑定）；缺省由计划决定
   final Map<int, int> _assign = <int, int>{};
@@ -114,6 +122,7 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
         restored.isNotEmpty ? restored : widget.state.searchKeyword;
     _selected.addAll(draft?.selectedEpisodeIds ?? <int>{});
     _preview = draft?.previewing ?? false;
+    if (_preview) _seedAssign();
     _keyword.addListener(_saveDraft);
   }
   void _saveDraft() {
@@ -137,7 +146,21 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
     super.didUpdateWidget(oldWidget);
     final available = widget.state.searchResults.map((m) => m.episodeId).toSet();
     _selected.removeWhere((id) => !available.contains(id));
-    if (oldWidget.state.searchResults != widget.state.searchResults) _preview = false;
+    if (oldWidget.state.searchResults != widget.state.searchResults ||
+        oldWidget.state.searchKeyword != widget.state.searchKeyword ||
+        !listEquals(oldWidget.localTitles, widget.localTitles)) {
+      _preview = false;
+      _assign.clear();
+      _order.clear();
+    }
+    if (!widget.state.searchLoading && !widget.biliState.loading &&
+        (oldWidget.state.searchLoading || oldWidget.biliState.loading ||
+            oldWidget.state.searchResults != widget.state.searchResults ||
+            oldWidget.state.searchError != widget.state.searchError ||
+            oldWidget.biliState.searchResults != widget.biliState.searchResults ||
+            oldWidget.biliState.error != widget.biliState.error)) {
+      _dispatching = false;
+    }
     _saveDraft();
   }
   /// 候选行的标题：番剧名 · 第N集（解析不出集号就用原集名；都没有就说"无集名"）
@@ -204,6 +227,20 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
     ];
   }
 
+  Map<int, List<DanmakuMatch>> _assignmentConflicts() {
+    final byLocal = <int, List<DanmakuMatch>>{};
+    for (final match in widget.state.searchResults) {
+      final index = _assign[match.episodeId];
+      if (!_selected.contains(match.episodeId) || index == null ||
+          index < 0 || index >= widget.localTitles.length) {
+        continue;
+      }
+      byLocal.putIfAbsent(index, () => []).add(match);
+    }
+    byLocal.removeWhere((_, matches) => matches.length < 2);
+    return byLocal;
+  }
+
   /// 底部动作按钮的排布规范：**内容宽 + 左对齐**（与搜索按钮同一条）
   ///
   /// # 为什么抽成函数而不是两处各写一个 `Align`
@@ -211,15 +248,78 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
   /// 规范要"一处可读、一处可改"：同一条版式规则散在两处时，
   /// 下一轮只会改到其中一处（搜索按钮窄了、动作按钮还通栏 —— 这正是本轮返工的原因）。
   /// ```
-  Widget _actionSlot(Widget child) =>
-      Align(alignment: Alignment.centerLeft, child: child);
-
   void _search() {
     final keyword = _keyword.text.trim();
-    if (keyword.isEmpty) return;
-    setState(() { _selected.clear(); _preview = false; _saveDraft(); });
+    if (keyword.isEmpty || widget.state.searchLoading ||
+        widget.biliState.loading || _dispatching) {
+      return;
+    }
+    setState(() {
+      _selected.clear();
+      _assign.clear();
+      _order.clear();
+      _preview = false;
+      _dispatching = true;
+      _saveDraft();
+    });
     widget.onSearch(keyword);
     widget.onBiliSearch(keyword);
+  }
+
+  Widget _queryBar() => Padding(
+    key: const ValueKey('danmaku-search-group'),
+    padding: const EdgeInsets.fromLTRB(Sp.x4, 0, Sp.x4, Sp.x3),
+    child: Column(children: [
+      Row(children: [
+        Expanded(child: TextField(
+          controller: _keyword,
+          textInputAction: TextInputAction.search,
+          onSubmitted: (_) => _search(),
+          decoration: const InputDecoration(
+            labelText: '剧名或关键词',
+            isDense: true,
+            border: OutlineInputBorder(),
+          ),
+        )),
+        const SizedBox(width: Sp.x2),
+        IconButton.filled(
+          tooltip: '搜索 dan-api 与视频站',
+          onPressed: widget.state.searchLoading || widget.biliState.loading ||
+              _dispatching ? null : _search,
+          icon: const Icon(Icons.search),
+        ),
+      ]),
+      const SizedBox(height: Sp.x3),
+      SizedBox(width: double.infinity, child: SegmentedButton<_SearchChannel>(
+        segments: [
+          const ButtonSegment(value: _SearchChannel.all, label: Text('全部')),
+          ButtonSegment(value: _SearchChannel.danApi,
+            label: Text('dan-api ${widget.state.searchResults.length}')),
+          ButtonSegment(value: _SearchChannel.video,
+            label: Text('视频 ${widget.biliState.searchResults.length}')),
+        ],
+        selected: {_channel},
+        showSelectedIcon: false,
+        onSelectionChanged: (value) => setState(() => _channel = value.first),
+      )),
+    ]),
+  );
+
+  void _confirmBinding() {
+    final selected = widget.state.searchResults
+        .where((match) => _selected.contains(match.episodeId)).toList();
+    if (!_preview || widget.state.searchLoading || widget.state.searchStale ||
+        _assignmentConflicts().isNotEmpty ||
+        batchBindConflicts(selected).isNotEmpty) {
+      return;
+    }
+    final items = _planItems();
+    if (items.isEmpty) return;
+    if (widget.onBatchBindPlan != null) {
+      widget.onBatchBindPlan!(items, items.first.workTitle);
+    } else {
+      widget.onBatchBind(selected);
+    }
   }
 
   /// 热路径失败的**归因块**（零网络）—— 第 05 项复核修复 B 的接线点
@@ -268,31 +368,56 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
     final b = widget.biliState;
     final selected = s.searchResults.where((m) => _selected.contains(m.episodeId)).toList();
     final conflicts = batchBindConflicts(selected);
-    final plan = buildBatchBindPlan(localTitles: widget.localTitles, matches: selected);
-    return Material(
-      child: SafeArea(
-        child: Column(children: [
-          Row(children: [
-            IconButton(onPressed: widget.onClose, icon: const Icon(Icons.close)),
-            /*
-             * ★★★ 2026-10-28（N4-3 #1）：**顶栏要有"我在给哪部剧搜"**
-             *
-             * 改前：只有 `搜索弹幕与绑定剧集`，右侧 800px 空白（真机截图）⇒ 用户无法核对。
-             * 现在：宿主传了 `workTitle` 就并进标题；没传就还是原来那句
-             *      （占位/无剧上下文时不该出现"搜索弹幕 · " 这种半截标题）。
-             * ⚠️ 标题**只加信息、不改可点区**：关闭按钮与列表位置一格没动。
-             */
-            Expanded(
-              child: Text(
-                (widget.workTitle == null || widget.workTitle!.trim().isEmpty)
-                    ? '搜索弹幕与绑定剧集'
-                    : '搜索弹幕 · ${widget.workTitle!.trim()}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+    final assignments = _assignmentConflicts();
+    final items = _planItems();
+    return AppDialogShell(
+      title: (widget.workTitle == null || widget.workTitle!.trim().isEmpty)
+          ? '搜索弹幕与绑定剧集'
+          : '搜索弹幕 · ${widget.workTitle!.trim()}',
+      fill: false,
+      // Mapping rows need the shared wide-dialog size.
+      width: 820,
+      margin: const EdgeInsets.all(Sp.x4),
+      scrollable: false,
+      onClose: widget.onClose,
+      footer: Padding(
+        padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x2, Sp.x4, Sp.x3),
+        child: Wrap(
+          spacing: Sp.x2,
+          runSpacing: Sp.x2,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            if (widget.onBack != null)
+              IconButton(
+                tooltip: '返回弹幕设置',
+                onPressed: widget.onBack,
+                icon: const Icon(Icons.arrow_back),
               ),
+            Text('已选 ${selected.length} 集'),
+            OutlinedButton(
+              onPressed: selected.isEmpty || s.searchLoading || s.searchStale
+                  ? null : () => setState(() {
+                    _seedAssign();
+                    _preview = true;
+                    _channel = _SearchChannel.danApi;
+                    _saveDraft();
+                  }),
+              child: const Text('预览批量绑定'),
             ),
-          ]),
+            if (_preview)
+              FilledButton(
+                onPressed: conflicts.isNotEmpty || assignments.isNotEmpty ||
+                    items.isEmpty || s.searchLoading || s.searchStale
+                    ? null : _confirmBinding,
+                child: const Text('确认并交由播放器绑定'),
+              ),
+          ],
+        ),
+      ),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+          _queryBar(),
           Expanded(child: SingleChildScrollView(
+            key: const ValueKey('danmaku-search-results-scroll'),
             /*
              * ★★★ 2026-10-28（N4-3 #9）：**左右必须对称、内容要吃到边**
              *
@@ -317,83 +442,6 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
             child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              /*
-               * ★★★ 2026-10-28（N4-3 #4）：**把说明文字变成"本段的前置说明"**
-               *
-               * 改前：这句在**按钮下面**、与按钮同色同号 ⇒ 读起来像按钮的副标题，
-               * 用户以为"这句话是按钮的一部分"。
-               * 现在：挪到输入框**上面**、字号更小、颜色用 `onSurfaceVariant`（弱化）⇒
-               * 它先说明"这一块要干什么"，再出现输入与按钮（从上到下的阅读顺序）。
-               */
-              Text(
-                '搜索、启用、绑定与加载是不同状态；确认绑定前请核对剧集。',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 8),
-              /*
-               * ★★★ 2026-10-28（N4-3 #2/#3）：**输入与按钮是同一组，但主次分明**
-               *
-               * 改前：无边框输入行 + 紧贴其下的通栏按钮 ⇒
-               *   ① 输入框看起来像一段普通文字（不知道能点）
-               *   ② 按钮比输入框"重"三倍 ⇒ 主次颠倒
-               *   ③ 两者之间零间距 ⇒ 按钮像输入框的下边框
-               * 现在：一块浅底 + 描边的**搜索组**把它们圈在一起；输入框给可见描边；
-               *   组内 12px 间距；按钮按内容宽左对齐（不通栏）。
-               * ⚠️ 只改容器与间距，**不动** `_search()` 的触发路径与"按钮禁用条件"。
-               */
-              Container(
-                key: const ValueKey('danmaku-search-group'),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Theme.of(context)
-                      .colorScheme
-                      .surfaceContainerHighest
-                      .withValues(alpha: 0.35),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: Theme.of(context).colorScheme.outlineVariant,
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    TextField(
-                      controller: _keyword,
-                      onSubmitted: (_) => _search(),
-                      decoration: InputDecoration(
-                        labelText: '跨渠道搜索关键词',
-                        isDense: true,
-                        filled: true,
-                        fillColor:
-                            Theme.of(context).colorScheme.surface.withValues(alpha: 0.6),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(
-                            color: Theme.of(context).colorScheme.outline,
-                            width: 1,
-                          ),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(
-                            color: Theme.of(context).colorScheme.outline,
-                            width: 1,
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    // 不通栏：按内容宽、左对齐（`Align` + 内在宽度 ⇒ 宽屏下不会被拉满）
-                    _actionSlot(FilledButton(
-                      onPressed: s.searchLoading || b.loading ? null : _search,
-                      child: const Text('搜索 dan-api 与视频站'),
-                    )),
-                  ],
-                ),
-              ),
               if (s.searchLoading || b.loading) const LinearProgressIndicator(),
               /*
                * ★★★ 2026-10-28（N4-3 #11）：**过期态必须说出原因**
@@ -435,8 +483,7 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                       SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          '结果已过期：搜索页开着期间换了集或换了源，'
-                          '下面这些条目已不能再绑定。请重新点「搜索 dan-api 与视频站」。',
+                          '结果已过期：播放会话已变化，请重新搜索。',
                           style: TextStyle(fontSize: 12),
                         ),
                       ),
@@ -451,6 +498,7 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                * 现在：标题加粗 + 上留白，并且**下面一条 Divider** 把它与条目分开。
                * ⚠️ 文案逐字不变（既有门禁按 `dan-api` 匹配分区标题）。
                */
+              if (_channel != _SearchChannel.video) ...[
               Padding(
                 padding: const EdgeInsets.only(top: 12),
                 child: Text(
@@ -500,7 +548,7 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                */
               if (!s.searchSearched && !s.searchLoading && s.searchResults.isEmpty)
                 const Text(
-                  '还没有结果：输入剧名后点上面的按钮。',
+                  '尚未搜索',
                   style: TextStyle(fontSize: 12),
                 ),
               if (s.searchSearched && !s.searchLoading && s.searchResults.isEmpty)
@@ -581,13 +629,17 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                     ),
                     child: Row(children: <Widget>[
                       // ★ 保留**逐字**的 '渠道：dan-api'：既有门禁用 find.text 精确匹配它
-                      const Text('渠道：dan-api'),
-                      const Text(' · 对应本地'),
+                      const Expanded(child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('渠道：dan-api'),
+                          Text('对应本地'),
+                        ],
+                      )),
                       /*
                        * 下拉仍在带子的右端（`Spacer` 把它推到尽头）——
                        * 但它现在**在带子里**：中间那段不再是"空白"，而是同一条底纹。
                        */
-                      const Spacer(),
                       _LocalPick(
                         value: _assign[match.episodeId] ?? -1,
                         titles: widget.localTitles,
@@ -605,6 +657,7 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                   onChanged: s.searchLoading || s.searchStale ? null : (checked) => setState(() {
                     if (checked == true) {
                       _selected.add(match.episodeId);
+                      _seedAssign();
                     } else {
                       _selected.remove(match.episodeId);
                       /*
@@ -670,10 +723,11 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                * ⚠️ 只包一层 `Align`：**不动** `onPressed` 的禁用条件、不动按钮文案、
                *    不动它在列表里的位置（空态引导 #10 与诊断区的高度因此一格没变）。
                */
-              _actionSlot(OutlinedButton(onPressed: selected.isEmpty || s.searchLoading || s.searchStale ? null : () => setState(() { _seedAssign(); _preview = true; _saveDraft(); }),
-                child: const Text('预览批量绑定'))),
               if (_preview) ...[
-                Text('将匹配 ${plan.items.length} / ${widget.localTitles.length} 集；未匹配 ${plan.unmatchedLocal.length} 集'),
+                Text('将匹配 ${items.length} / ${widget.localTitles.length} 集；未匹配 ${widget.localTitles.length - items.length} 集'),
+                for (final conflict in assignments.entries)
+                  Text('本地第${conflict.key + 1}集有多个候选，请修改对应集数。',
+                    style: TextStyle(color: Theme.of(context).colorScheme.error)),
                 // 2026-10-26：预览行带名字，且**可拖动**（顺序 = 提交顺序）
                 ReorderableListView(
                   shrinkWrap: true,
@@ -720,26 +774,9 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                       _saveDraft();
                     }), child: Text('选择 ${candidate.label} (#${candidate.episodeId})')),
                 ],
-                _actionSlot(FilledButton(onPressed: conflicts.isNotEmpty || _planItems().isEmpty || s.searchLoading || s.searchStale ? null : () {
-                  setState(() { _preview = false; _saveDraft(); });
-                  /*
-                   * ★ 2026-10-26：这里曾有 `..sort((a,b) => a.episodeId.compareTo(...))` ——
-                   *   那是**注入验证（④ 拖动顺序）时留下的残留**，它不是功能代码。
-                   *   危害很直接：它把用户拖动出来的顺序重新按 episodeId 排回去 ⇒
-                   *   门禁 ④「预览区改顺序 ⇒ 提交顺序跟着变」一直红，而其它三条绿。
-                   *   ⇒ 提交必须**原样用 `_planItems()` 的顺序**（顺序 = 拖动结果）。
-                   */
-                  final items = _planItems();
-                  if (widget.onBatchBindPlan != null) {
-                    widget.onBatchBindPlan!(
-                      items,
-                      items.isEmpty ? '' : items.first.workTitle,
-                    );
-                  } else {
-                    widget.onBatchBind(selected);
-                  }
-                }, child: const Text('确认并交由播放器绑定'))),
               ],
+              ],
+              if (_channel != _SearchChannel.danApi) ...[
               const Divider(),
               const Text('视频站视频与分P'),
               if (b.error != null) Text(b.error.toString()),
@@ -811,7 +848,7 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
               for (final page in b.pages)
                 ListTile(title: Text('P${page.page}'),
                   onTap: b.loading ? null : () => widget.onBiliSelectPage(page.page)),
-              const Text('视频站使用既有视频导入与分P绑定链路，不转换成 dan-api 剧集编号。'),
+              ],
               const Divider(),
               ExpansionTile(
                 title: const Text('请求与服务端详情'),
@@ -860,7 +897,6 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
             ),
           )),
         ]),
-      ),
     );
   }
 }
@@ -901,6 +937,7 @@ class _LocalPick extends StatelessWidget {
     final safe = value >= titles.length ? -1 : value;
     return Container(
       key: const ValueKey<String>('danmaku-local-pick'),
+      width: 100,
       constraints: const BoxConstraints(minHeight: 32),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -912,6 +949,7 @@ class _LocalPick extends StatelessWidget {
       ),
       child: DropdownButton<int>(
         value: safe,
+        isExpanded: true,
         isDense: true,
         underline: const SizedBox.shrink(),
         icon: Icon(
@@ -921,7 +959,8 @@ class _LocalPick extends StatelessWidget {
         items: <DropdownMenuItem<int>>[
           const DropdownMenuItem<int>(value: -1, child: Text('不绑定')),
           for (var i = 0; i < titles.length; i++)
-            DropdownMenuItem<int>(value: i, child: Text('第${i + 1}集')),
+            DropdownMenuItem<int>(value: i, child: Text('第${i + 1}集',
+              maxLines: 1, overflow: TextOverflow.ellipsis)),
         ],
         onChanged: onChanged,
       ),

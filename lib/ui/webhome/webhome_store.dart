@@ -1,11 +1,11 @@
 // ═══════════════════════════════════════════════════════════════════════
-//  T6 webHome：存储与控制器 —— 开关（UiPrefs）+ HTML 本体（独立文件）+ 缓存
+//  T6 webHome：存储与控制器 —— 命名首页目录 + 独立 HTML 本体 + 缓存
 // ═══════════════════════════════════════════════════════════════════════
 //
 // # 为什么 HTML 不放进 UiPrefs
 // UiPrefs 是**单个 JSON 文件**的 kv（shell.dart:663 启动时整载），
 // 塞 2MB 的 HTML 会让每次 flush 都重写它 —— HTML 落独立文件
-// `<dataDir>/webhome/home.html`，UiPrefs 里只放开关与元信息。
+// `<dataDir>/webhome/`；library.json 管理命名模板，旧 home.html 原样保留。
 //
 // # 数据目录
 // 对齐 shell.dart 的约定：桌面 = `%APPDATA%\app.sourin.player`（原版
@@ -34,8 +34,22 @@ bool webhomeHtmlAcceptable(String html) {
   return utf8.encode(t).length <= webhomeHtmlMaxBytes;
 }
 
-/// webHome 的 UiPrefs 键（v1：全局一个自定义首页，站点级是二期）
+/// Legacy preference; the v2 library is authoritative after migration.
 const String webhomeEnabledKey = 'webhome.enabled';
+
+class WebHomeTemplate {
+  const WebHomeTemplate({
+    required this.id,
+    required this.name,
+    required this.file,
+  });
+
+  final String id;
+  final String name;
+  final String file;
+
+  Map<String, String> toJson() => {'id': id, 'name': name, 'file': file};
+}
 
 /// 控制器：home_page 的双模式开关订阅它。
 class WebHomeController extends ChangeNotifier {
@@ -47,7 +61,12 @@ class WebHomeController extends ChangeNotifier {
   bool _enabled = false;
   String _html = '';
   String? _htmlPath;
-  bool _loading = false;
+  Future<void>? _loadFuture;
+  Future<void> _writes = Future<void>.value();
+  List<WebHomeTemplate> _templates = [];
+  String? _activeId;
+  bool _loadFailed = false;
+  String? lastStorageError;
 
   /// 本次会话内 HTML 首页是否已回退（加载失败/白屏后置位；重启用时清）。
   bool fallbackThisSession = false;
@@ -58,66 +77,321 @@ class WebHomeController extends ChangeNotifier {
   bool get enabled => _enabled;
   String get html => _html;
   String? get htmlPath => _htmlPath;
+  String? get activeId => _activeId;
+  List<WebHomeTemplate> get templates => List.unmodifiable(_templates);
 
   /// 是否该显示 HTML 首页（build 判据，一处收口防散落）。
   bool get showWebHome =>
       _enabled && !fallbackThisSession && _html.trim().isNotEmpty;
 
   /// 启动后由 home_page 触发一次（幂等）。UiPrefs 已由 shell load 完。
-  Future<void> ensureLoaded() async {
-    if (_loaded || _loading) return;
-    _loading = true;
+  Future<void> ensureLoaded() {
+    if (_loaded) return Future<void>.value();
+    return _loadFuture ??= _load().whenComplete(() => _loadFuture = null);
+  }
+
+  Future<void> reload() => _serialize(() async {
+    if (_loadFuture != null) await _loadFuture;
+    _loaded = false;
+    await ensureLoaded();
+  });
+
+  Future<String> _homeDir() async =>
+      '${await dataDir()}${Platform.pathSeparator}webhome';
+
+  Future<void> _load() async {
+    _templates = [];
+    _activeId = null;
+    _enabled = false;
+    _html = '';
+    _htmlPath = null;
+    fallbackThisSession = false;
+    lastFallbackReason = null;
+    lastStorageError = null;
+    _loadFailed = false;
     try {
-      _enabled = UiPrefs.get(webhomeEnabledKey) == '1';
-      final path = await _htmlFilePath();
-      final f = File(path);
-      if (await f.exists()) {
-        _html = await f.readAsString();
-        _htmlPath = path;
+      final dir = await _homeDir();
+      final catalog = File('$dir${Platform.pathSeparator}library.json');
+      if (await catalog.exists()) {
+        final value = jsonDecode(await catalog.readAsString());
+        if (value is! Map || value['version'] != 2 || value['items'] is! List) {
+          throw const FormatException('Invalid home library');
+        }
+        final ids = <String>{};
+        for (final row in value['items'] as List) {
+          if (row is! Map ||
+              row['id'] is! String ||
+              row['name'] is! String ||
+              row['file'] is! String ||
+              !RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(row['id'] as String) ||
+              !RegExp(r'^[a-zA-Z0-9_-]+\.html$')
+                  .hasMatch(row['file'] as String) ||
+              (row['name'] as String).trim().isEmpty ||
+              !ids.add(row['id'] as String)) {
+            throw const FormatException('Invalid home template');
+          }
+          _templates.add(
+            WebHomeTemplate(
+              id: row['id'] as String,
+              name: row['name'] as String,
+              file: row['file'] as String,
+            ),
+          );
+        }
+        _activeId = value['activeId'] is String
+            ? value['activeId'] as String
+            : null;
+        _enabled = value['enabled'] == true && ids.contains(_activeId);
+        if (_activeId != null && !ids.contains(_activeId)) _activeId = null;
+        if (_activeId != null) {
+          _htmlPath =
+              '$dir${Platform.pathSeparator}'
+              '${_templates.firstWhere((t) => t.id == _activeId).file}';
+          try {
+            _html = await readTemplate(_activeId!);
+          } catch (e) {
+            AppLog.write('WEBHOME', 'active template unreadable: $e');
+            fallbackThisSession = true;
+            lastFallbackReason = 'template-unreadable';
+            lastStorageError = '当前首页文件读取失败，已使用原生首页；可编辑修复或切换配置';
+          }
+        }
+      } else {
+        final legacy = File('$dir${Platform.pathSeparator}home.html');
+        if (await legacy.exists()) {
+          if (await legacy.length() > webhomeHtmlMaxBytes) {
+            throw const FormatException('Legacy home exceeds limit');
+          }
+          final html = await legacy.readAsString();
+          if (webhomeHtmlAcceptable(html)) {
+            final enabled = UiPrefs.get(webhomeEnabledKey) == '1';
+            final entry = WebHomeTemplate(
+              id: 'legacy',
+              name: '默认首页',
+              file: 'legacy-${_revision()}.html',
+            );
+            final body = File('$dir${Platform.pathSeparator}${entry.file}');
+            await _writeAtomic(body, html);
+            try {
+              await _commit([entry], entry.id, enabled, html);
+            } catch (_) {
+              await body.delete();
+              rethrow;
+            }
+          }
+        }
       }
-      _loaded = true;
     } catch (e) {
-      // 读失败按"未启用"处理 —— 绝不让首页因 webHome 存储坏了而白屏。
       AppLog.write('WEBHOME', 'ensureLoaded failed: $e');
       _enabled = false;
-      _loaded = true;
+      _loadFailed = true;
+      lastStorageError = '首页配置读取失败，已使用原生首页；原文件已保留';
     } finally {
-      _loading = false;
+      _loaded = true;
       notifyListeners();
     }
   }
 
-  /// 保存 HTML 并启用（设置页「保存并启用」）。
-  Future<bool> saveAndEnable(String html) async {
-    if (!webhomeHtmlAcceptable(html)) return false;
+  String _revision() => DateTime.now().microsecondsSinceEpoch.toString();
+
+  Future<T> _serialize<T>(Future<T> Function() action) {
+    final result = _writes.then((_) => action());
+    _writes = result.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    return result;
+  }
+
+  Future<String> readTemplate(String id) async {
+    final entry = _templates.firstWhere((t) => t.id == id);
+    final body = File(
+      '${await _homeDir()}${Platform.pathSeparator}${entry.file}',
+    );
+    if (await body.length() > webhomeHtmlMaxBytes) {
+      throw const FormatException('Home template exceeds limit');
+    }
+    final html = await body.readAsString();
+    if (!webhomeHtmlAcceptable(html)) {
+      throw const FormatException('Empty home template');
+    }
+    return html;
+  }
+
+  Future<void> _writeAtomic(File target, String value) async {
+    await target.parent.create(recursive: true);
+    final temporary = File('${target.path}.${_revision()}.tmp');
     try {
-      final path = await _htmlFilePath();
-      final f = File(path);
-      await f.parent.create(recursive: true);
-      await f.writeAsString(html, flush: true);
-      _htmlPath = path;
-      _html = html;
-      _enabled = true;
+      await temporary.writeAsString(value, flush: true);
+      await temporary.rename(target.path);
+    } finally {
+      if (await temporary.exists()) await temporary.delete();
+    }
+  }
+
+  Future<void> _commit(
+    List<WebHomeTemplate> entries,
+    String? active,
+    bool enabled,
+    String html, {
+    bool resetFallback = false,
+  }) async {
+    final dir = await _homeDir();
+    await _writeAtomic(
+      File('$dir${Platform.pathSeparator}library.json'),
+      jsonEncode({
+        'version': 2,
+        'items': entries.map((t) => t.toJson()).toList(),
+        'activeId': active,
+        'enabled': enabled,
+      }),
+    );
+    _templates = entries;
+    _activeId = active;
+    _enabled = enabled;
+    _html = html;
+    _htmlPath = active == null
+        ? null
+        : '$dir${Platform.pathSeparator}${entries.firstWhere((t) => t.id == active).file}';
+    if (resetFallback) {
       fallbackThisSession = false;
       lastFallbackReason = null;
-      UiPrefs.set(webhomeEnabledKey, '1');
+    }
+    lastStorageError = null;
+    // The library is committed; legacy preferences must never roll it back.
+    try {
+      UiPrefs.set(webhomeEnabledKey, enabled ? '1' : '0');
       await UiPrefs.flush();
+    } catch (e) {
+      AppLog.write('WEBHOME', 'legacy preference sync failed: $e');
+    }
+    notifyListeners();
+  }
+
+  Future<WebHomeTemplate?> saveTemplate({
+    String? id,
+    required String name,
+    required String html,
+    bool activate = false,
+  }) => _serialize(() async {
+    await ensureLoaded();
+    if (_loadFailed) return null;
+    if (name.trim().isEmpty ||
+        name.trim().length > 128 ||
+        !webhomeHtmlAcceptable(html)) {
+      return null;
+    }
+    File? newBody;
+    try {
+      final old = _templates.where((t) => t.id == id).firstOrNull;
+      if (id != null && old == null) return null;
+      final nextId = old?.id ?? 'home-${_revision()}';
+      final entry = WebHomeTemplate(
+        id: nextId,
+        name: name.trim(),
+        file: '$nextId-${_revision()}.html',
+      );
+      newBody = File(
+        '${await _homeDir()}${Platform.pathSeparator}${entry.file}',
+      );
+      await _writeAtomic(newBody, html);
+      final entries = [
+        for (final t in _templates)
+          if (t.id == nextId) entry else t,
+        if (old == null) entry,
+      ];
+      final active = activate ? nextId : _activeId;
+      await _commit(
+        entries,
+        active,
+        activate || _enabled,
+        active == nextId ? html : _html,
+        resetFallback: activate || active == nextId,
+      );
+      newBody = null;
+      if (old != null) await _removeBody(old);
+      return entry;
+    } catch (e) {
+      if (newBody != null && await newBody.exists()) await newBody.delete();
+      AppLog.write('WEBHOME', 'save template failed: $e');
+      lastStorageError = '保存失败，原配置已保留';
       notifyListeners();
+      return null;
+    }
+  });
+
+  Future<bool> activateTemplate(String id) => _serialize(() async {
+    await ensureLoaded();
+    if (_loadFailed) return false;
+    try {
+      final html = await readTemplate(id);
+      await _commit([..._templates], id, true, html, resetFallback: true);
       return true;
     } catch (e) {
-      AppLog.write('WEBHOME', 'saveAndEnable failed: $e');
+      AppLog.write('WEBHOME', 'activate template failed: $e');
+      lastStorageError = '启用失败，原配置已保留';
+      notifyListeners();
       return false;
+    }
+  });
+
+  Future<bool> deleteTemplate(String id) => _serialize(() async {
+    await ensureLoaded();
+    if (_loadFailed) return false;
+    final old = _templates.where((t) => t.id == id).firstOrNull;
+    if (old == null) return false;
+    try {
+      final active = _activeId == id ? null : _activeId;
+      await _commit(
+        _templates.where((t) => t.id != id).toList(),
+        active,
+        active != null && _enabled,
+        active == null ? '' : _html,
+        resetFallback: _activeId == id,
+      );
+      await _removeBody(old);
+      return true;
+    } catch (e) {
+      AppLog.write('WEBHOME', 'delete template failed: $e');
+      lastStorageError = '删除失败，请稍后重试';
+      notifyListeners();
+      return false;
+    }
+  });
+
+  Future<void> _removeBody(WebHomeTemplate entry) async {
+    try {
+      final file = File(
+        '${await _homeDir()}${Platform.pathSeparator}${entry.file}',
+      );
+      if (await file.exists()) await file.delete();
+    } catch (e) {
+      // A committed library is valid even if an obsolete body cannot be removed.
+      AppLog.write('WEBHOME', 'obsolete template cleanup failed: $e');
     }
   }
 
-  /// 停用（设置页「回到原生首页」）。HTML 保留，再启用不用重贴。
-  Future<void> disable() async {
-    _enabled = false;
-    fallbackThisSession = false;
-    UiPrefs.set(webhomeEnabledKey, '0');
-    await UiPrefs.flush();
-    notifyListeners();
+  Future<bool> saveAndEnable(String html) async {
+    await ensureLoaded();
+    return await saveTemplate(
+          id: _activeId,
+          name:
+              _templates.where((t) => t.id == _activeId).firstOrNull?.name ??
+              '默认首页',
+          html: html,
+          activate: true,
+        ) !=
+        null;
   }
+
+  Future<void> disable() => _serialize(() async {
+    await ensureLoaded();
+    if (_loadFailed) return;
+    await _commit(
+      [..._templates],
+      _activeId,
+      false,
+      _html,
+      resetFallback: true,
+    );
+  });
 
   /// HTML 首页加载失败 / 白屏超时 → 本次会话回退原生。
   /// ★ 不落盘（下次启动再给 HTML 一次机会），只挡住当前会话的循环失败。
@@ -138,11 +412,6 @@ class WebHomeController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<String> _htmlFilePath() async {
-    final dir = await dataDir();
-    return '$dir${Platform.pathSeparator}webhome${Platform.pathSeparator}home.html';
-  }
-
   // ── 数据目录（与 shell.dart 对齐；测试可注入）──
   static String? _dataDirOverride;
 
@@ -154,10 +423,13 @@ class WebHomeController extends ChangeNotifier {
     final override = _dataDirOverride;
     if (override != null) return override;
     if (!kIsWeb && Platform.isWindows) {
-      final appdata = Platform.environment['APPDATA'] ??
+      final appdata =
+          Platform.environment['APPDATA'] ??
           Platform.environment['HOME'] ??
           '.';
-      final dir = Directory('$appdata${Platform.pathSeparator}app.sourin.player');
+      final dir = Directory(
+        '$appdata${Platform.pathSeparator}app.sourin.player',
+      );
       if (!await dir.exists()) await dir.create(recursive: true);
       return dir.path;
     }
@@ -235,7 +507,10 @@ class WebHomeCache {
         ? 0
         : utf8.encode(key).length + utf8.encode(replaced).length;
     if (!cacheWriteAllowed(
-        current - replacedBytes, incoming, webhomeCacheQuotaBytes)) {
+      current - replacedBytes,
+      incoming,
+      webhomeCacheQuotaBytes,
+    )) {
       return false;
     }
     _map[key] = value;

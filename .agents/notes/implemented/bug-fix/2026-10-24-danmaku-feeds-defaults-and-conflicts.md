@@ -38,3 +38,10 @@ Status: implemented
 搜索页关闭再打开会恢复关键词、选中集与预览态；草稿跟着播放器会话走，换片即失效。代价是 `player_page.dart` 多持有一个对象并多传一个参数。
 
 证据边界：红测首轮因定位器写错（来源行是自定义 `Icon` 行，不是 `Checkbox`）抛 `No element`／空串，已作废不计红；有效红为 `.probe/danmaku-regressions-red-v2.log`（3 项断言失败，EXIT_CODE=1），修复后 `.probe/danmaku-regressions-green-v2.log` 4 项通过 EXIT_CODE=0；四项故障注入 `.probe/danmaku-fault-{default,persistence,conflict,draft}.log` 均按预期失败且已恢复；最终 `.probe/danmaku-regressions-final.log` 覆盖新回归与既有 search page、batch bind 共 23 项通过、EXIT_CODE=0。Leader 独立串行复跑该文件与另四组共 22 项通过、EXIT_CODE=0（`.probe/lead-r5-final-serial.log`）。这些都是专项测试证据，不替代真实客户端验收：默认全开在真实首启、旧配置迁移、部分来源失败三类场景下仍需实机确认。
+
+## Relations
+
+- [Live progress and modal workflow](2026-11-04-player-progress-and-danmaku-modal-workflow.md)
+  retains these feed defaults, persistence and explicit numeric conflicts. It
+  extends collision checks to manual local targets and reconnects accepted
+  bindings to the active player; this note's original decisions are retained.

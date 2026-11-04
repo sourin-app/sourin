@@ -37,7 +37,7 @@ class WebHomePage extends StatefulWidget {
     this.onOpenDetail,
     this.onOpenLive,
     required this.onBackToNative,
-    required this.onOpenSettings,
+    this.onOpenSettings,
   });
 
   /// 与 HomePage 同名回调同语义（shell 注入，本页原样转发）
@@ -45,7 +45,8 @@ class WebHomePage extends StatefulWidget {
   final void Function(String provider, String channelId, String name)?
       onOpenLive;
   final VoidCallback onBackToNative;
-  final VoidCallback onOpenSettings;
+  /// Legacy constructor argument; configuration is now settings-only.
+  final VoidCallback? onOpenSettings;
 
   @override
   State<WebHomePage> createState() => _WebHomePageState();
@@ -203,7 +204,7 @@ JSON.stringify({
               },
             ),
           ),
-          // ── 常驻右上角：回原生首页 + 设置 ──
+          // ── 常驻右上角：回原生首页 ──
           Positioned(
             top: 8,
             right: 12,
@@ -214,12 +215,6 @@ JSON.stringify({
                   icon: Icons.home_outlined,
                   label: '回原生首页',
                   onTap: widget.onBackToNative,
-                ),
-                const SizedBox(width: 6),
-                _PillButton(
-                  icon: Icons.tune,
-                  label: 'HTML 首页',
-                  onTap: widget.onOpenSettings,
                 ),
               ],
             ),

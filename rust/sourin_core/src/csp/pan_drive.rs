@@ -218,6 +218,31 @@ fn api_root(spec: &PanDriveSpec) -> String {
     format!("https://{}", spec.api_host)
 }
 
+fn playback_cookie(cookie: &str, updates: &[String]) -> String {
+    let mut merged = cookie.to_string();
+    for pair in updates {
+        let key = pair.split('=').next().unwrap_or("").trim();
+        if key.is_empty() {
+            continue;
+        }
+        let kept: Vec<_> = merged.split(';').map(str::trim)
+            .filter(|part| !part.is_empty() && !part.starts_with(&format!("{key}=")))
+            .collect();
+        merged = if kept.is_empty() {
+            pair.clone()
+        } else {
+            format!("{}; {pair}", kept.join("; "))
+        };
+    }
+    merged
+}
+
+fn response_cookies(headers: &reqwest::header::HeaderMap) -> Vec<String> {
+    headers.get_all(reqwest::header::SET_COOKIE).iter()
+        .filter_map(|header| header.to_str().ok()?.split(';').next())
+        .map(str::trim).filter(|pair| !pair.is_empty()).map(str::to_string).collect()
+}
+
 /// 建目录的请求体（**纯函数**；键名逐字来自 dex 的 const-string）
 ///
 /// dex 取证（`merge.b.w.m`，夸克）：`pdir_fid` `"0"` / `file_name` / `dir_path` /
@@ -324,6 +349,80 @@ pub struct PanDrive {
 }
 
 impl PanDrive {
+
+    /// Official Quark web 4.6.7 uses this separate API for video playback.
+    /// The fallback preserves the selected copied fid; it never reselects a file.
+    async fn video_play(&self, fid: &str, cookie: &str) -> Result<Vec<CspPlay>, String> {
+        super::pan_playback_guard::check_current()?;
+        let response = self.client
+            .post(self.api(&format!("file/v2/play?{}", self.spec.pr_fr)))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Referer", self.spec.share_host)
+            .header("Cookie", cookie)
+            .json(&serde_json::json!({
+                "fid": fid,
+                "resolutions": "normal,low,high,super,2k,4k",
+                "supports": "fmp4,m3u8",
+            }))
+            .send().await.map_err(|_| "夸克视频播放请求失败，请稍后重试".to_string())?;
+        let status = response.status();
+        let updates = response_cookies(response.headers());
+        let text = response.text().await
+            .map_err(|_| "夸克视频播放响应读取失败，请稍后重试".to_string())?;
+        super::pan_playback_guard::check_current()?;
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|_| "夸克视频播放接口没有返回有效结果，请稍后重试".to_string())?;
+        let code = value.get("code").and_then(serde_json::Value::as_i64);
+        if !status.is_success() || code != Some(0) {
+            let error = format!("夸克视频播放接口拒绝请求（HTTP {}，code={}）",
+                status.as_u16(), code.map_or("未知".into(), |code| code.to_string()));
+            if code == Some(31001) {
+                return Err(format!("NEED_LOGIN:quark|{error}，请重新登录"));
+            }
+            return Err(error);
+        }
+        let data = value.get("data").ok_or("夸克视频播放接口缺少视频信息")?;
+        let variants = data.get("video_list").and_then(serde_json::Value::as_array)
+            .ok_or("夸克视频播放接口缺少画质清单")?;
+        let merged = playback_cookie(cookie, &updates);
+        let mut result = Vec::new();
+        for variant in variants {
+            if variant.get("accessable").and_then(serde_json::Value::as_bool) != Some(true)
+                || variant.get("trans_status").and_then(serde_json::Value::as_str) != Some("success") {
+                continue;
+            }
+            let Some(direct) = variant.get("video_info").and_then(|info| info.get("url"))
+                .and_then(serde_json::Value::as_str) else { continue };
+            let valid = reqwest::Url::parse(direct).ok().is_some_and(|url| {
+                url.scheme() == "https" && url.host_str().is_some()
+                    && url.username().is_empty() && url.password().is_none()
+                    && !direct.chars().any(char::is_control)
+            });
+            if !valid { continue; }
+            let resolution = variant.get("resolution").and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let label = match resolution {
+                "normal" => "原画", "low" => "流畅", "high" => "高清", "super" => "超清",
+                "2k" => "2K", "4k" => "4K", _ => "视频播放",
+            };
+            result.push((resolution, CspPlay {
+                url: direct.to_string(),
+                headers: vec![
+                    ("Cookie".into(), merged.clone()),
+                    ("Referer".into(), self.spec.share_host.to_string()),
+                    ("User-Agent".into(), PAN_UA.to_string()),
+                ],
+                label: Some(label.into()),
+            }));
+        }
+        if result.is_empty() {
+            return Err("夸克视频播放没有可用画质（可能正在转码或账号无权限），请稍后重试或换一条线路".into());
+        }
+        let preferred = data.get("default_resolution").and_then(serde_json::Value::as_str);
+        result.sort_by_key(|(resolution, _)| Some(*resolution) != preferred);
+        Ok(result.into_iter().map(|(_, play)| play).collect())
+    }
 
     /// 把分享里的一个文件**转存到我的网盘**，返回转存后的 fid
     ///
@@ -1427,19 +1526,13 @@ impl CspSite for PanDrive {
             .map_err(|e| format!("{} 取下载地址请求失败：{e}", self.spec.kind.display()))?;
         let status = resp.status();
         // ★ 必须**在 text() 之前**收：响应体一读，headers 就没了
-        let mut set_cookie: Vec<String> = Vec::new();
-        for v in resp.headers().get_all("set-cookie") {
-            if let Ok(t) = v.to_str() {
-                if let Some(kv) = t.split(';').next() {
-                    let kv = kv.trim();
-                    if !kv.is_empty() {
-                        set_cookie.push(kv.to_string());
-                    }
-                }
-            }
-        }
+        let set_cookie = response_cookies(resp.headers());
         let text = resp.text().await.map_err(|e| format!("读响应失败：{e}"))?;
         super::pan_playback_guard::check_current()?;
+        if self.spec.kind == PanKind::Quark && serde_json::from_str::<serde_json::Value>(&text)
+            .ok().and_then(|value| value.get("code").and_then(serde_json::Value::as_i64)) == Some(23018) {
+            return self.video_play(&fid, &playback_cookie(&cookie, &set_cookie)).await;
+        }
         if !status.is_success() {
             // ★ N-23018（2026-11-01，lead 批复③）：夸克 21001「file not found」=
             //   **文件已不存在**（真机实锤：重试被自己上一次解析的 purge 竞态删掉；
@@ -1498,23 +1591,7 @@ impl CspSite for PanDrive {
             ));
         }
         // 把 Set-Cookie（主要是 `__puus`）并进 Cookie —— 缺它 CDN 一律 403
-        let mut merged = cookie.clone();
-        for kv in &set_cookie {
-            let key = kv.split('=').next().unwrap_or("").trim();
-            if key.is_empty() {
-                continue;
-            }
-            let kept: Vec<&str> = merged
-                .split(';')
-                .map(|p| p.trim())
-                .filter(|p| !p.is_empty() && !p.starts_with(&format!("{key}=")))
-                .collect();
-            merged = if kept.is_empty() {
-                kv.clone()
-            } else {
-                format!("{}; {}", kept.join("; "), kv)
-            };
-        }
+        let merged = playback_cookie(&cookie, &set_cookie);
         Ok(vec![CspPlay {
             url: direct.to_string(),
             headers: vec![
@@ -4581,4 +4658,8 @@ mod tests {
         PanDrive::debug_set_test_cookie("quark", "");
     }
 }
+
+#[cfg(test)]
+#[path = "pan_drive_video_tests.rs"]
+mod video_fallback_tests;
 

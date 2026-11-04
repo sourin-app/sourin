@@ -172,7 +172,7 @@ void main() {
       await t.pumpWidget(_host(_panel(biliCount: 1200, onOpenBili: () {})));
       await t.pumpAndSettle();
       // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
-      await _tapTab(t, '高级');
+      await _tapTab(t, '弹幕来源');
 
       /*
        * ⚠️ 这里断言"四行来源都在"，用的是**可见文字**而不是类型 ——
@@ -195,7 +195,7 @@ void main() {
       )));
       await t.pumpAndSettle();
       // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
-      await _tapTab(t, '高级');
+      await _tapTab(t, '弹幕来源');
       await t.tap(find.text('打开…'));
       await t.pumpAndSettle();
       expect(opened, 1, reason: '★★ 画了按钮就得能点');
@@ -210,7 +210,7 @@ void main() {
       await t.pumpWidget(_host(_panel(biliCount: 1200, onOpenBili: () {})));
       await t.pumpAndSettle();
       // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
-      await _tapTab(t, '高级');
+      await _tapTab(t, '弹幕来源');
 
       expect(find.textContaining('插件提供'), findsNothing,
           reason: '★★★ Owner 第 2 条：他明确说了这个词他不懂。'
@@ -222,7 +222,7 @@ void main() {
       await t.pumpWidget(_host(_panel(biliCount: 1200, onOpenBili: () {})));
       await t.pumpAndSettle();
       // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
-      await _tapTab(t, '高级');
+      await _tapTab(t, '弹幕来源');
 
       /*
        * Owner 第 2 条原话：「那么就默认导入他自身的就行了」
@@ -239,7 +239,7 @@ void main() {
       await t.pumpWidget(_host(_panel(biliCount: null, onOpenBili: () {})));
       await t.pumpAndSettle();
       // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
-      await _tapTab(t, '高级');
+      await _tapTab(t, '弹幕来源');
 
       expect(find.text('本片源没有提供'), findsOneWidget,
           reason: '★ 如实 —— 不能显示"0 条"（0 是"供了但为空"，语义不同）');
@@ -275,7 +275,7 @@ void main() {
       )));
       await t.pumpAndSettle();
       // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
-      await _tapTab(t, '高级');
+      await _tapTab(t, '弹幕来源');
 
       expect(find.text('dan-api'), findsOneWidget,
           reason: '★★★ Owner 第 3 条：dan-api 必须能搜、能选、能绑，'
@@ -305,7 +305,7 @@ void main() {
       )));
       await t.pumpAndSettle();
       // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
-      await _tapTab(t, '高级');
+      await _tapTab(t, '弹幕来源');
       await t.tap(find.text('搜索…'));
       await t.pumpAndSettle();
 
@@ -393,7 +393,7 @@ void main() {
      * 光断言「存在」会漏掉 b（能发却说不能发）和 d（说了但说不清）；
      * ⇒ 成对断言：该在的在、不该在的不在、说到的原因对得上。
      */
-    const hint = '发送只在支持发送的片源里提供';
+    const hint = '此片源不支持发送弹幕';
 
     testWidgets('★★★ 不能发（已绑定）⇒ 有说明，且说明的是「片源不支持」',
         (t) async {
@@ -404,14 +404,14 @@ void main() {
       )));
       await t.pumpAndSettle();
       // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
-      await _tapTab(t, '高级');
+      await _tapTab(t, '弹幕来源');
 
       expect(find.textContaining(hint), findsOneWidget,
           reason: '★★★ 不能发就必须解释，否则用户以为功能坏了');
 
       final msg = t.widget<Text>(find.textContaining(hint)).data ?? '';
-      expect(msg, contains('可以看'),
-          reason: '★ 按 R6 先例给「能做什么」，不是干瘪的否定');
+      expect(msg, contains('不支持发送弹幕'),
+          reason: 'The state must describe source capability, not a tutorial.');
       expect(msg, contains('片源'),
           reason: '★★ 必须说清原因在**片源**');
       for (final wrong in ['网络', '登录', '设置', '失败', '错误', '暂不']) {
@@ -430,7 +430,7 @@ void main() {
       await t.pumpWidget(_host(_panel(canSendDanmaku: false)));
       await t.pumpAndSettle();
       // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
-      await _tapTab(t, '高级');
+      await _tapTab(t, '弹幕来源');
 
       expect(find.textContaining(hint), findsOneWidget,
           reason: '★★★ 「不能发」与「没绑定」是两件事，前者为假就该解释');
@@ -444,7 +444,7 @@ void main() {
       )));
       await t.pumpAndSettle();
       // 第12项取代旧来源页内选择：在高级真实操作，保留来源语义断言。
-      await _tapTab(t, '高级');
+      await _tapTab(t, '弹幕来源');
 
       expect(find.textContaining(hint), findsNothing,
           reason: '★★ 能发的时候说"不支持"就是错误信息');

@@ -56,18 +56,7 @@
 // ⇒ 结论：撤掉 115 的网页登录入口，如实说明原因并指路扫码。不硬凑判据。
 // ```
 //
-// # ★★ 两处名单只改了一处（本批已知未同步，靠兜底保证点击有反馈）
-// ```text
-// 网页登录的"放不放按钮"有**两道闸门**：本文件的 PanWebLoginSpec.all，以及
-// lib/ui/widgets/pan_qr_login_dialog.dart:144 那份同名的 _webLoginKinds
-// （扫码弹窗里的那颗按钮）。本批**只改了本文件** —— pan_qr_login_dialog.dart
-// 不在本批允许改动清单内（他人/W1 在制品边界），故那份名单仍含 '115'。
-// 半边改不到 ⇒ 靠 showPanWebLogin 的兜底：spec == null 时**弹如实说明对话框**
-// 而不是静默 return false ⇒ 即使扫码弹窗里的那颗按钮还在，点了也有人话反馈，
-// 绝不会退回 Owner 报的"点了没反应"。
-// ⚠️ 下批需同步：把 pan_qr_login_dialog.dart:144 的 _webLoginKinds 也去掉 '115'
-//    （或改成直接读 PanWebLoginSpec.all，两处同一真源，才不会再漂）。
-// ```
+// 网页入口统一读取 PanWebLoginSpec；扫码弹窗不再维护第二份盘种名单。
 //
 // # 三家以外的盘为什么不放（与 Rust 侧 pan_login.rs 注释同一口径）
 // ```text
@@ -83,12 +72,12 @@ import 'dart:async';
 import 'package:desktop_webview_window/desktop_webview_window.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../../core/ffi.dart' show SourinCore, userErrorText;
 import '../../design/widgets/app_glass_dialog.dart';
 import '../../design/widgets/app_text_button.dart';
 import '../tokens.dart';
 import 'app_loading.dart';
 import 'overlay_motion.dart' show showAppDialog;
+import 'pan_login_session.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  每盘配置与判据（纯函数，test/pan_web_login_test.dart 直接单测）
@@ -148,8 +137,7 @@ class PanWebLoginSpec {
     'baidu': PanWebLoginSpec(
       kind: 'baidu',
       kindName: '百度网盘',
-      loginUrl:
-          'https://passport.baidu.com/v2/?login&u=https%3A%2F%2Fpan.baidu.com%2Fdisk%2Fmain',
+      loginUrl: 'https://passport.baidu.com/v2/?login&u=https%3A%2F%2Fpan.baidu.com%2Fdisk%2Fmain',
       cookieDomainSuffix: 'baidu.com',
       requiredKeys: <String>['BDUSS'],
     ),
@@ -212,7 +200,9 @@ class CapturedCookie {
 /// ```
 Future<bool> panWebviewRuntimeAvailable() async {
   try {
-    return await WebviewWindow.isWebviewAvailable();
+    return await WebviewWindow.isWebviewAvailable().timeout(
+      panLoginRequestTimeout,
+    );
   } catch (_) {
     return false;
   }
@@ -238,7 +228,9 @@ List<CapturedCookie> panWebTargetDomainCookies(
   PanWebLoginSpec spec,
 ) {
   return cookies
-      .where((c) => panWebCookieDomainMatches(c.domain, spec.cookieDomainSuffix))
+      .where(
+        (c) => panWebCookieDomainMatches(c.domain, spec.cookieDomainSuffix),
+      )
       .toList(growable: false);
 }
 
@@ -250,13 +242,8 @@ List<CapturedCookie> panWebTargetDomainCookies(
 /// bduss_from_cookie 对空值不算的口径一致）。
 /// ```
 bool panWebLoginCaptured(List<CapturedCookie> cookies, PanWebLoginSpec spec) {
-  if (spec.requiredKeys.isEmpty) return false;
-  final target = panWebTargetDomainCookies(cookies, spec);
-  for (final key in spec.requiredKeys) {
-    final hit = target.any((c) => c.name.trim() == key && c.value.trim().isNotEmpty);
-    if (!hit) return false;
-  }
-  return true;
+  return spec.requiredKeys.isNotEmpty &&
+      panWebLoginMissingKeys(cookies, spec).isEmpty;
 }
 
 /// 目标域上**还缺哪几个**登录态键（全齐 ⇒ 空表）
@@ -273,11 +260,10 @@ List<String> panWebLoginMissingKeys(
   List<CapturedCookie> cookies,
   PanWebLoginSpec spec,
 ) {
-  final target = panWebTargetDomainCookies(cookies, spec);
+  final target = _panWebCookieValues(cookies, spec);
   final missing = <String>[];
   for (final key in spec.requiredKeys) {
-    final hit = target.any((c) => c.name.trim() == key && c.value.trim().isNotEmpty);
-    if (!hit) missing.add(key);
+    if (target[key]?.isNotEmpty != true) missing.add(key);
   }
   return missing;
 }
@@ -286,8 +272,7 @@ List<String> panWebLoginMissingKeys(
 int panWebLoginTargetCookieCount(
   List<CapturedCookie> cookies,
   PanWebLoginSpec spec,
-) =>
-    panWebTargetDomainCookies(cookies, spec).length;
+) => panWebTargetDomainCookies(cookies, spec).length;
 
 /// "还没检测到登录态"的人话（**可行动**，不许只说"再等等"）
 ///
@@ -344,20 +329,30 @@ String? panWebBuildCookieString(
   List<CapturedCookie> cookies,
   PanWebLoginSpec spec,
 ) {
-  final target = panWebTargetDomainCookies(cookies, spec);
-  final parts = <String, String>{};
-  for (final c in target) {
-    final name = c.name.trim();
-    final value = c.value.trim();
-    if (name.isEmpty || value.isEmpty) continue;
-    if (name.contains(';') || name.contains('=') || name.contains(' ')) continue;
-    if (value.contains(';') || value.contains('\n') || value.contains('\r')) {
-      continue;
-    }
-    parts[name] = '$name=$value'; // 后到覆盖（Map 保持首次插入的位置，值取新）
-  }
+  final parts = _panWebCookieValues(cookies, spec);
+  parts.removeWhere((_, value) => value.isEmpty);
   if (parts.isEmpty) return null;
-  return parts.values.join('; ');
+  return parts.entries.map((entry) => '${entry.key}=${entry.value}').join('; ');
+}
+
+Map<String, String> _panWebCookieValues(
+  List<CapturedCookie> cookies,
+  PanWebLoginSpec spec,
+) {
+  final values = <String, String>{};
+  final invalidName = RegExp(r'[=;\s\x00-\x1f\x7f]');
+  final invalidValue = RegExp(r'[;\x00-\x1f\x7f]');
+  final controlCharacter = RegExp(r'[\x00-\x1f\x7f]');
+  for (final cookie in panWebTargetDomainCookies(cookies, spec)) {
+    if (controlCharacter.hasMatch(cookie.name)) continue;
+    final name = cookie.name.trim();
+    if (name.isEmpty || invalidName.hasMatch(name)) continue;
+    // A later empty or unusable value invalidates an older authentication key.
+    values[name] = invalidValue.hasMatch(cookie.value)
+        ? ''
+        : cookie.value.trim();
+  }
+  return values;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -379,7 +374,10 @@ String? panWebBuildCookieString(
 /// ⇒ 即使别处（pan_qr_login_dialog.dart:144 那份名单）还给这家画了按钮，
 ///   点了也一定有人话反馈。撤功能 ≠ 点了没反应。
 /// ```
-Future<bool> showPanWebLogin(BuildContext context, {required String kind}) async {
+Future<bool> showPanWebLogin(
+  BuildContext context, {
+  required String kind,
+}) async {
   final spec = PanWebLoginSpec.of(kind);
   if (spec == null) {
     final reason = PanWebLoginSpec.panWebLoginUnsupportedReason(kind);
@@ -400,24 +398,44 @@ Future<bool> showPanWebLogin(BuildContext context, {required String kind}) async
     return false;
   }
   if (!context.mounted) return false;
-  final Webview webview;
+  Webview? createdWindow;
+  var abandonedCreation = false;
   try {
-    webview = await WebviewWindow.create(
+    final creation = WebviewWindow.create(
       configuration: CreateConfiguration(
         title: '登录${spec.kindName}',
         windowWidth: 1080,
         windowHeight: 800,
       ),
     );
-    await webview.launch(spec.loginUrl);
+    // A native creation completing after timeout still needs its window closed.
+    unawaited(
+      creation.then<void>((window) {
+        if (abandonedCreation) {
+        unawaited(_closePanWebLoginWindow(window.close));
+        }
+      }, onError: (Object _, StackTrace __) {}),
+    );
+    createdWindow = await creation.timeout(
+      panLoginRequestTimeout,
+      onTimeout: () {
+        abandonedCreation = true;
+        throw TimeoutException('Login window creation timed out');
+      },
+    );
+    await createdWindow.launch(spec.loginUrl).timeout(panLoginRequestTimeout);
   } catch (e) {
+    abandonedCreation = true;
+    if (createdWindow != null) {
+      unawaited(_closePanWebLoginWindow(createdWindow.close));
+    }
     if (!context.mounted) return false;
     await showAppDialog<void>(
       context: context,
       builder: (dctx) => AppGlassDialog(
         title: '网页登录',
         content: Text(
-          userErrorText(e, fallback: '登录窗口打不开，请稍后重试'),
+          panLoginErrorText(e, fallback: '登录窗口打不开，请重新登录；仍失败时请改用扫码登录'),
         ),
         actions: Row(
           mainAxisAlignment: MainAxisAlignment.end,
@@ -432,12 +450,17 @@ Future<bool> showPanWebLogin(BuildContext context, {required String kind}) async
     );
     return false;
   }
-  if (!context.mounted) return false;
-  final ok = await showAppDialog<bool>(
-    context: context,
-    builder: (_) => _PanWebLoginWaitingDialog(webview: webview, spec: spec),
-  );
-  return ok ?? false;
+  final webview = NativePanWebLoginWindow(createdWindow);
+  try {
+    if (!context.mounted) return false;
+    final ok = await showAppDialog<bool>(
+      context: context,
+      builder: (_) => PanWebLoginWaitingDialog(webview: webview, spec: spec),
+    );
+    return ok ?? false;
+  } finally {
+    unawaited(_closePanWebLoginWindow(webview.close));
+  }
 }
 
 /// 这家**没有**网页登录（如 115）⇒ 点了也要给一句人话 + 指路，不许静默
@@ -512,20 +535,60 @@ class _WebView2MissingDialog extends StatelessWidget {
 }
 
 /// 等待弹窗：登录窗口开着，这里每 2 秒查一次 cookie store
-class _PanWebLoginWaitingDialog extends StatefulWidget {
-  const _PanWebLoginWaitingDialog({required this.webview, required this.spec});
+abstract interface class PanWebLoginWindow {
+  Future<void> get onClose;
+  Future<List<CapturedCookie>> readCookies();
+  Future<void> close();
+}
 
+Future<void> _closePanWebLoginWindow(Future<void> Function() close) async {
+  try {
+    await close().timeout(panLoginRequestTimeout);
+  } catch (_) {
+    // Native cleanup failures must not expose cookie-bearing plugin errors.
+  }
+}
+
+class NativePanWebLoginWindow implements PanWebLoginWindow {
+  const NativePanWebLoginWindow(this.webview);
   final Webview webview;
+  @override
+  Future<void> get onClose => webview.onClose;
+  @override
+  Future<void> close() => webview.close();
+  @override
+  Future<List<CapturedCookie>> readCookies() async => [
+    for (final cookie in await webview.getAllCookies())
+      CapturedCookie(
+        domain: cookie.domain,
+        name: cookie.name,
+        value: cookie.value,
+      ),
+  ];
+}
+
+class PanWebLoginWaitingDialog extends StatefulWidget {
+  const PanWebLoginWaitingDialog({
+    super.key,
+    required this.webview,
+    required this.spec,
+  });
+
+  final PanWebLoginWindow webview;
   final PanWebLoginSpec spec;
 
   @override
-  State<_PanWebLoginWaitingDialog> createState() =>
+  State<PanWebLoginWaitingDialog> createState() =>
       _PanWebLoginWaitingDialogState();
 }
 
-class _PanWebLoginWaitingDialogState extends State<_PanWebLoginWaitingDialog> {
+class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
   Timer? _timer;
+  Timer? _deadline;
   bool _finished = false;
+  bool _cancelled = false;
+  bool _pollBusy = false;
+  bool _windowClosed = false;
   String _state = '登录窗口已打开：请在弹出的窗口里完成登录，检测到登录态后这里会自动保存';
   String _error = '';
   String _hint = '';
@@ -535,31 +598,51 @@ class _PanWebLoginWaitingDialogState extends State<_PanWebLoginWaitingDialog> {
   void initState() {
     super.initState();
     _waited.start();
-    unawaited(widget.webview.onClose.then((_) => _onWindowClosed()));
-    _timer = Timer.periodic(const Duration(seconds: 2), (_) => unawaited(_poll()));
+    unawaited(
+      widget.webview.onClose.then<void>(
+        (_) => _onWindowClosed(),
+        onError: (Object _, StackTrace __) {},
+      ),
+    );
+    _timer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => unawaited(_poll()),
+    );
+    _deadline = Timer(panWebLoginTimeout, () => _onTimeout(const []));
   }
 
   @override
   void dispose() {
+    _cancelled = true;
+    _finished = true;
+    _waited.stop();
     _timer?.cancel();
+    _deadline?.cancel();
+    unawaited(_closeWindow());
     super.dispose();
   }
 
+  Future<void> _closeWindow() =>
+      _closePanWebLoginWindow(() => widget.webview.close());
+
   /// 用户直接关了登录窗口 = 取消
   void _onWindowClosed() {
+    _windowClosed = true;
     if (_finished) return;
     _finished = true;
     _waited.stop();
     _timer?.cancel();
+    _deadline?.cancel();
     if (mounted) Navigator.of(context).pop(false);
   }
 
   /// 超时 ⇒ **停表 + 终态错误 + 明确下一步**（不许无限转圈让人猜）
   void _onTimeout(List<String> missing) {
+    if (_finished || !mounted) return;
     _finished = true;
     _waited.stop();
     _timer?.cancel();
-    unawaited(widget.webview.close());
+    _deadline?.cancel();
     if (!mounted) return;
     setState(() {
       _state = '';
@@ -569,95 +652,132 @@ class _PanWebLoginWaitingDialogState extends State<_PanWebLoginWaitingDialog> {
   }
 
   Future<void> _poll() async {
-    if (_finished) return;
-    final List<WebviewCookie> raw;
+    if (_finished || _pollBusy || !mounted) return;
+    _pollBusy = true;
     try {
-      raw = await widget.webview.getAllCookies();
-    } catch (_) {
-      return; // 单次查询失败不下结论（窗口刚开/正在跳转都可能出现），下一轮继续
-    }
-    if (_finished) return;
-    final cookies = <CapturedCookie>[
-      for (final c in raw)
-        CapturedCookie(domain: c.domain, name: c.name, value: c.value),
-    ];
+      final List<CapturedCookie> cookies;
+      try {
+        cookies = await widget.webview.readCookies().timeout(
+          panLoginRequestTimeout,
+        );
+      } catch (error) {
+        if (!_finished && mounted) {
+          _stopWithError(
+            panLoginErrorText(
+              error,
+              fallback: '无法读取登录窗口状态，请点击「重新检测」；仍失败时请改用扫码登录',
+            ),
+          );
+        }
+        return;
+      }
+      if (_finished) return;
+      final waited = _waited.elapsed;
+      final missing = panWebLoginMissingKeys(cookies, widget.spec);
+      if (waited >= panWebLoginTimeout) {
+        _onTimeout(missing);
+        return;
+      }
 
-    final waited = _waited.elapsed;
-    final missing = panWebLoginMissingKeys(cookies, widget.spec);
-    if (waited >= panWebLoginTimeout) {
-      _onTimeout(missing);
-      return;
-    }
+      if (!panWebLoginCaptured(cookies, widget.spec)) {
+        // ★ 修静默：等过一小会儿还没捕获 ⇒ 如实说"还没检测到 + 在哪等 + 差什么"
+        if (!mounted) return;
+        setState(() {
+          _state = '登录窗口已打开：请在弹出的窗口里完成登录';
+          _hint = panWebTargetDomainCookies(cookies, widget.spec).isEmpty
+              ? panWebLoginNoCookieHint(widget.spec)
+              : panWebLoginNotDetectedHint(
+                  widget.spec,
+                  missing,
+                  waitedSeconds: waited.inSeconds,
+                );
+        });
+        return;
+      }
 
-    if (!panWebLoginCaptured(cookies, widget.spec)) {
-      // ★ 修静默：等过一小会儿还没捕获 ⇒ 如实说"还没检测到 + 在哪等 + 差什么"
-      if (!mounted) return;
+      // 命中判据 ⇒ 拼串落盘（键名+长度只进 Rust 侧日志，值绝不落）
+      final cookie = panWebBuildCookieString(cookies, widget.spec);
+      if (cookie == null || cookie.isEmpty) {
+        // ★ 旧行为是静默 return（永远转圈）；现在如实说拼不出来
+        if (!mounted) return;
+        setState(() {
+          _hint =
+              '已在 ${widget.spec.cookieDomainSuffix} 域上看到登录态键，'
+              '但拼不出可保存的 cookie 串（键名/值含分隔符）⇒ 本次不保存。'
+              '请取消后用「扫码登录」。';
+        });
+        return;
+      }
+      _waited.stop();
+      _timer?.cancel();
+      if (!mounted || _cancelled) return;
       setState(() {
-        _state = '登录窗口已打开：请在弹出的窗口里完成登录';
-        _hint = panWebTargetDomainCookies(cookies, widget.spec).isEmpty
-            ? panWebLoginNoCookieHint(widget.spec)
-            : panWebLoginNotDetectedHint(
-                widget.spec,
-                missing,
-                waitedSeconds: waited.inSeconds,
-              );
+        _state = '正在保存登录态并检查应用是否识别账号…';
+        _hint = '';
       });
-      return;
+      try {
+        await saveAndRecognizePanWebLogin(
+          kind: widget.spec.kind,
+          cookie: cookie,
+          isCurrent: () => mounted && !_cancelled && !_finished,
+        );
+      } catch (e) {
+        if (!mounted || _cancelled || _finished) return;
+        _stopWithError(
+          panLoginErrorText(e, fallback: '登录态已拿到，但应用没有确认保存结果，请点击「重新检测」'),
+        );
+        return;
+      }
+      _finished = true;
+      _deadline?.cancel();
+      unawaited(_closeWindow());
+      if (!mounted || _cancelled) return;
+      Navigator.of(context).pop(true);
+    } finally {
+      _pollBusy = false;
     }
+  }
 
-    // 命中判据 ⇒ 拼串落盘（键名+长度只进 Rust 侧日志，值绝不落）
-    final cookie = panWebBuildCookieString(cookies, widget.spec);
-    if (cookie == null || cookie.isEmpty) {
-      // ★ 旧行为是静默 return（永远转圈）；现在如实说拼不出来
-      if (!mounted) return;
-      setState(() {
-        _hint = '已在 ${widget.spec.cookieDomainSuffix} 域上看到登录态键，'
-            '但拼不出可保存的 cookie 串（键名/值含分隔符）⇒ 本次不保存。'
-            '请取消后用「扫码登录」。';
-      });
-      return;
-    }
+  void _stopWithError(String message) {
     _finished = true;
     _waited.stop();
     _timer?.cancel();
-    String account = '';
-    try {
-      final r = await SourinCore.callAsync('pan_save_credential', {
-        'kind': widget.spec.kind,
-        'account': '',
-        'cookie': cookie,
-      }) as Map<String, dynamic>;
-      account = '${r['account'] ?? ''}';
-    } catch (e) {
-      if (!mounted) return;
-      unawaited(widget.webview.close());
-      setState(() {
-        _state = '';
-        _hint = '';
-        _error = userErrorText(e, fallback: '登录态已拿到，但保存没有完成，请稍后重试');
-      });
-      return;
-    }
-    unawaited(widget.webview.close());
-    if (!mounted) return;
+    _deadline?.cancel();
     setState(() {
-      _state = account.isEmpty
-          ? '登录成功'
-          : '登录成功：$account';
+      _state = '';
       _hint = '';
+      _error = message;
     });
-    Navigator.of(context).pop(true);
+  }
+
+  void _recheck() {
+    if (_pollBusy || _cancelled || _windowClosed) return;
+    _finished = false;
+    _waited
+      ..reset()
+      ..start();
+    setState(() {
+      _error = '';
+      _hint = '';
+      _state = '正在重新检测登录状态…';
+    });
+    _timer?.cancel();
+    _timer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => unawaited(_poll()),
+    );
+    _deadline?.cancel();
+    _deadline = Timer(panWebLoginTimeout, () => _onTimeout(const []));
+    unawaited(_poll());
   }
 
   void _cancel() {
+    _cancelled = true;
     _waited.stop();
-    if (_finished) {
-      Navigator.of(context).pop(false);
-      return;
-    }
     _finished = true;
     _timer?.cancel();
-    unawaited(widget.webview.close());
+    _deadline?.cancel();
+    unawaited(_closeWindow());
     Navigator.of(context).pop(false);
   }
 
@@ -666,7 +786,7 @@ class _PanWebLoginWaitingDialogState extends State<_PanWebLoginWaitingDialog> {
     final colors = Theme.of(context).colorScheme;
     return AppGlassDialog(
       title: '网页登录${widget.spec.kindName}',
-      maxWidth: 420,
+      maxWidth: 460,
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -675,7 +795,10 @@ class _PanWebLoginWaitingDialogState extends State<_PanWebLoginWaitingDialog> {
             Text(
               _state,
               key: const ValueKey<String>('pan-web-login-status'),
-              style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurface),
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurface,
+              ),
             ),
             const SizedBox(height: Sp.x2),
           ],
@@ -683,8 +806,10 @@ class _PanWebLoginWaitingDialogState extends State<_PanWebLoginWaitingDialog> {
             Text(
               _hint,
               key: const ValueKey<String>('pan-web-login-hint'),
-              style:
-                  TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+              ),
             ),
           if (_state.isNotEmpty) const SizedBox(height: Sp.x2),
           // ★ 转圈只在**还没到终态**时出现：有错误/超时还转 = 假象（"还在干活"）
@@ -692,11 +817,7 @@ class _PanWebLoginWaitingDialogState extends State<_PanWebLoginWaitingDialog> {
             const Padding(
               padding: EdgeInsets.symmetric(vertical: Sp.x2),
               child: Center(
-                child: SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: AppLoading(),
-                ),
+                child: SizedBox(width: 22, height: 22, child: AppLoading()),
               ),
             ),
           ],
@@ -711,6 +832,12 @@ class _PanWebLoginWaitingDialogState extends State<_PanWebLoginWaitingDialog> {
       actions: Row(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
+          AppTextButton(
+            key: const ValueKey<String>('pan-web-login-recheck'),
+            onPressed: _pollBusy || _windowClosed ? null : _recheck,
+            child: const Text('重新检测'),
+          ),
+          const SizedBox(width: Sp.x1),
           AppTextButton(
             key: const ValueKey<String>('pan-web-login-cancel'),
             onPressed: _cancel,

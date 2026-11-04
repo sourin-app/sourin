@@ -1,148 +1,84 @@
-// ═══════════════════════════════════════════════════════════════════════
-//  网盘扫码登录弹窗 —— 「点登录要出二维码，不是空白」
-// ═══════════════════════════════════════════════════════════════════════
-//
-// # 由来（Owner 2026-10-28 逐字）
-// ```text
-// > tvbox 聚合源播放的时候，如果是需要网盘登录 应该提示 然后点击登录出现二维码进行登录，
-// > 而不是 点击登录 出现空白
-// ```
-//
-// # 为什么会空白
-// ```text
-// 播放页的「登录」按钮走的是 `showProviderLoginDialog` → `ProviderLoginPanel`。
-// 那个面板画的是**源自己声明的登录字段**（账号/密码/cookie 之类）。
-// 而网盘类 csp 源（`csp-pan115` 等）**没有任何登录字段**（它们的凭据是扫码拿的）
-// ⇒ 面板是空的 ⇒ 用户看到一片空白。
-// ```
-//
-// # 这个弹窗做什么
-// ```text
-// 复用已经跑通的那条链路（pan_settings_page 的 ② 区）：
-//   pan_qr_login_start(kind) → QrView 出二维码 → 每 2 秒 pan_qr_login_poll(kind, key)
-//   → status=confirmed ⇒ 关闭并返回 true（调用方据此重试播放）
-// 组件一律复用（QrView / SourinCore.callAsync），不另造一套。
-// ```
-
 import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
-import '../../core/ffi.dart';  // userErrorText 也在这里
+import '../../design/widgets/app_glass_dialog.dart';
+import '../../design/widgets/app_text_button.dart';
 import '../tokens.dart';
 import 'app_loading.dart';
 import 'overlay_motion.dart' show showAppDialog;
-import 'qr_view.dart';
+import 'pan_login_session.dart';
 import 'pan_web_login.dart';
+import 'qr_view.dart';
 
-/// `csp-pan115` / `csp-pan-ali` 这类源 id → 盘种 code（与 Rust `PanKind::code()` 同一套词）
-///
-/// # 为什么按源 id 映射（而不是让后端多带一个字段）
-/// ```text
-/// 源 id 是**我们自己造的**、且稳定（`state.rs` 的 `csp-<kebab 类名>`）。
-/// 网盘种从类名一一对应，映射表放这里、配一条门禁就够；
-/// 让后端再带一个字段等于把同一份信息传两遍，还会在"导入的老配置"上缺字段。
-/// ```
-/// 返回 null ⇒ 不是网盘类 ⇒ 走原来的 `ProviderLoginPanel`。
-String? panKindOfProvider(String providerId) {
-  switch (providerId) {
-    case 'csp-pan115':
-      return '115';
-    case 'csp-pan123':
-      return '123';
-    case 'csp-pan-ali':
-      return 'aliyun';
-    case 'csp-pan-tianyi':
-      return 'tianyi';
-    case 'csp-pan-xunlei':
-      return 'xunlei';
-    case 'csp-pan-guangya':
-      return 'guangya';
-    case 'csp-pan-share':
-      // 分享链接解析走 UC/夸克的分享接口，登录态按 UC 处理
-      return 'uc';
-    case 'csp-pan-uc':
-      return 'uc';
-    case 'csp-pan-quark':
-      return 'quark';
-    default:
-      return null;
-  }
-}
+String? panKindOfProvider(String providerId) => switch (providerId) {
+  'csp-pan115' => '115',
+  'csp-pan123' => '123',
+  'csp-pan-ali' => 'aliyun',
+  'csp-pan-tianyi' => 'tianyi',
+  'csp-pan-xunlei' => 'xunlei',
+  'csp-pan-guangya' => 'guangya',
+  'csp-pan-share' || 'csp-pan-uc' => 'uc',
+  'csp-pan-quark' => 'quark',
+  _ => null,
+};
 
-/// 盘种 code → 面向用户的名字（与 Rust `PanKind::display()` 对齐；认不出就原样显示 code）
-String panKindDisplay(String kind) {
-  switch (kind) {
-    case 'quark':
-      return '夸克网盘';
-    case 'uc':
-      return 'UC 网盘';
-    case 'baidu':
-      return '百度网盘';
-    case 'aliyun':
-      return '阿里云盘';
-    case '123':
-      return '123 网盘';
-    case '115':
-      return '115 网盘';
-    case 'tianyi':
-      return '天翼云盘';
-    case 'guangya':
-      return '光鸭云盘';
-    case 'xunlei':
-      return '迅雷云盘';
-    default:
-      return kind;
-  }
-}
+String panKindDisplay(String kind) => switch (kind) {
+  'quark' => '夸克网盘',
+  'uc' => 'UC 网盘',
+  'baidu' => '百度网盘',
+  'aliyun' => '阿里云盘',
+  '123' => '123 网盘',
+  '115' => '115 网盘',
+  'tianyi' => '天翼云盘',
+  'guangya' => '光鸭云盘',
+  'xunlei' => '迅雷云盘',
+  _ => kind,
+};
 
-/// 弹出「扫码登录 <盘>」；扫码成功返回 true。
-///
-/// 判据（调用方必须按它行动）：
-/// ```text
-/// true  ⇒ 凭据已写入钥匙串，可以**立刻重试**播放；
-/// false ⇒ 用户关掉了 / 二维码过期 / 后端没有这条命令 —— 调用方**不许**重试
-///         （重试只会再失败一次，把用户刚看到的提示冲掉）。
-/// ```
 Future<bool> showPanQrLoginDialog(
   BuildContext context, {
   required String kind,
-}) async {
-  final ok = await showAppDialog<bool>(
-    context: context,
-    builder: (ctx) => _PanQrLoginDialog(kind: kind),
-  );
-  return ok ?? false;
-}
+  PanLoginCommandCaller? commandCaller,
+  void Function(Object error)? onFailure,
+}) async =>
+    await showAppDialog<bool>(
+      context: context,
+      builder: (_) => PanQrLoginDialog(
+        kind: kind,
+        commandCaller: commandCaller,
+        onFailure: onFailure,
+      ),
+    ) ??
+    false;
 
-class _PanQrLoginDialog extends StatefulWidget {
-  const _PanQrLoginDialog({required this.kind});
-
+class PanQrLoginDialog extends StatefulWidget {
+  const PanQrLoginDialog({
+    super.key,
+    required this.kind,
+    this.commandCaller,
+    this.onFailure,
+  });
   final String kind;
+  final PanLoginCommandCaller? commandCaller;
+  final void Function(Object error)? onFailure;
 
   @override
-  State<_PanQrLoginDialog> createState() => _PanQrLoginDialogState();
+  State<PanQrLoginDialog> createState() => _PanQrLoginDialogState();
 }
 
-class _PanQrLoginDialogState extends State<_PanQrLoginDialog> {
+class _PanQrLoginDialogState extends State<PanQrLoginDialog> {
   Timer? _timer;
-
+  Timer? _deadline;
+  int _generation = 0;
   bool _busy = true;
+  bool _pollBusy = false;
+  bool _webBusy = false;
+  bool _finished = false;
   String _error = '';
   String _key = '';
   String _svg = '';
-  String _url = '';
   String _state = '正在获取二维码…';
-
-  /// 已经拿到终态就不再轮询（成功/过期/失败）
-  bool _finished = false;
-  /*
-   * ★ 网页登录（W1）：Runtime 探测（false ⇒ 「网页登录」置灰）。
-   *   放不放按钮只看真源 PanWebLoginSpec.all（与设置页同源）——
-   *   这里不再维护第二份手抄名单（"两道闸门只改一道"踩过两次，N3a 根治）。
-   *   已撤的盘（如 115）不画按钮，改显示 panWebLoginUnsupportedReason 的
-   *   原句（指路扫码），文案不复制。
-   */
   bool? _webLoginAvailable;
 
   @override
@@ -154,7 +90,10 @@ class _PanQrLoginDialogState extends State<_PanQrLoginDialog> {
 
   @override
   void dispose() {
+    _generation++;
+    _finished = true;
     _timer?.cancel();
+    _deadline?.cancel();
     super.dispose();
   }
 
@@ -163,180 +102,209 @@ class _PanQrLoginDialogState extends State<_PanQrLoginDialog> {
     if (mounted) setState(() => _webLoginAvailable = ok);
   }
 
-  /// 网页登录（W1）：成功 ⇒ 关掉扫码弹窗并返回 true（调用方重试播放）；
-  /// 取消/失败 ⇒ 留在扫码弹窗（二维码那条路还在）。
-  Future<void> _openWebLogin() async {
-    final ok = await showPanWebLogin(context, kind: widget.kind);
-    if (ok && mounted) Navigator.of(context).pop(true);
-  }
-  Future<void> _start() async {
-    try {
-      final r = await SourinCore.callAsync(
-        'pan_qr_login_start',
-        {'kind': widget.kind},
-      ) as Map<String, dynamic>;
-      if (!mounted) return;
-      final key = '${r['key'] ?? ''}';
-      if (key.isEmpty) {
-        setState(() {
-          _busy = false;
-          _error = '没有拿到登录二维码，请稍后重试';
-        });
-        return;
-      }
-      setState(() {
-        _key = key;
-        _svg = '${r['svg'] ?? ''}';
-        _url = '${r['url'] ?? ''}';
-        _state = '用手机扫码登录${panKindDisplay(widget.kind)}';
-        _busy = false;
-      });
-      _timer = Timer.periodic(const Duration(seconds: 2), (_) => unawaited(_poll()));
-    } catch (e) {
-      if (!mounted) return;
+  bool _current(int generation) =>
+      mounted && generation == _generation && !_finished;
+
+  void _stop(String message) {
+    _finished = true;
+    _timer?.cancel();
+    _deadline?.cancel();
+    if (mounted) {
       setState(() {
         _busy = false;
-        // ★ 不许把异常原文倒进用户可见字段（门禁 zz_t66_user_error_text_gate）
-        _error = userErrorText(e, fallback: '扫码登录暂时用不了，请稍后重试');
+        _error = message;
+        _state = '';
+        _svg = '';
+        _key = '';
       });
     }
   }
 
-  Future<void> _poll() async {
-    if (_finished || _key.isEmpty) return;
+  Future<void> _start() async {
+    if (_webBusy) return;
+    final generation = ++_generation;
+    _timer?.cancel();
+    _deadline?.cancel();
+    _finished = false;
+    setState(() {
+      _busy = true;
+      _error = '';
+      _key = '';
+      _svg = '';
+      _state = '正在获取二维码…';
+    });
     try {
-      final r = await SourinCore.callAsync(
-        'pan_qr_login_poll',
-        {'kind': widget.kind, 'key': _key},
-      ) as Map<String, dynamic>;
-      if (!mounted) return;
-      final status = '${r['status'] ?? ''}';
-      if (status == 'confirmed') {
-        _finished = true;
-        _timer?.cancel();
-        if (mounted) Navigator.of(context).pop(true);
+      final result = await callPanLoginCommand('pan_qr_login_start', {
+        'kind': widget.kind,
+      }, caller: widget.commandCaller);
+      if (!_current(generation)) return;
+      final key = '${result['key'] ?? ''}';
+      final svg = '${result['svg'] ?? ''}';
+      final url = '${result['url'] ?? ''}';
+      if (key.isEmpty || (svg.isEmpty && url.isEmpty)) {
+        _stop('没有拿到完整登录二维码，请重新获取');
         return;
       }
       setState(() {
-        _state = switch (status) {
-          'scanned' => '已扫码，请在手机上确认',
-          'expired' => '二维码已过期，请重新打开',
-          'failed' => '登录失败，请重试',
-          _ => '等待扫码…',
-        };
+        _key = key;
+        _svg = svg;
+        _busy = false;
+        _state = '等待扫码…';
       });
-      if (status == 'expired' || status == 'failed') {
-        _finished = true;
-        _timer?.cancel();
-      }
-    } catch (_) {
-      // 轮询失败不下结论（网络抖动很常见），下一轮继续；
-      // 真正的失败由 status=failed 或用户关闭来体现。
+      _timer = Timer.periodic(
+        const Duration(seconds: 2),
+        (_) => unawaited(_poll()),
+      );
+      _deadline = Timer(const Duration(minutes: 3), () {
+        if (_current(generation)) _stop('本次扫码已超时，请重新获取二维码');
+      });
+    } catch (error) {
+      if (!_current(generation)) return;
+      widget.onFailure?.call(error);
+      _stop(panLoginErrorText(error, fallback: '扫码登录暂时用不了，请重新获取二维码'));
     }
+  }
+
+  Future<void> _poll() async {
+    if (_finished || _pollBusy || _key.isEmpty) return;
+    final generation = _generation;
+    _pollBusy = true;
+    try {
+      final result = await callPanLoginCommand('pan_qr_login_poll', {
+        'kind': widget.kind,
+        'key': _key,
+      }, caller: widget.commandCaller);
+      if (!_current(generation)) return;
+      switch (result['status']) {
+        case 'confirmed':
+          _timer?.cancel();
+          setState(() => _state = '正在检查应用是否识别账号…');
+          await verifyPanLoginRecognition(
+            widget.kind,
+            caller: widget.commandCaller,
+          );
+          if (!mounted || !_current(generation)) return;
+          _finished = true;
+          _deadline?.cancel();
+          Navigator.of(context).pop(true);
+        case 'pending':
+          setState(() => _state = '等待扫码…');
+        case 'scanned':
+          setState(() => _state = '已扫码，请在手机上确认');
+        case 'expired':
+          _stop('二维码已失效，请重新获取');
+        default:
+          _stop('扫码登录未完成，请重新获取二维码');
+      }
+    } catch (error) {
+      if (_current(generation)) {
+        _stop(panLoginErrorText(error, fallback: '扫码状态查询失败，请重新获取二维码'));
+      }
+    } finally {
+      _pollBusy = false;
+    }
+  }
+
+  Future<void> _openWebLogin() async {
+    if (_webBusy) return;
+    setState(() => _webBusy = true);
+    _generation++;
+    _finished = true;
+    _timer?.cancel();
+    _deadline?.cancel();
+    try {
+      final ok = await showPanWebLogin(context, kind: widget.kind);
+      if (!mounted) return;
+      if (ok) {
+        Navigator.of(context).pop(true);
+      } else {
+        _stop('网页登录未完成，可重新获取二维码登录');
+      }
+    } catch (error) {
+      if (mounted) {
+        _stop(panLoginErrorText(error, fallback: '网页登录未完成，可重新获取二维码登录'));
+      }
+    } finally {
+      if (mounted) setState(() => _webBusy = false);
+    }
+  }
+
+  Future<void> _retry() async {
+    if (_busy || _webBusy) return;
+    await _start();
+  }
+
+  void _close() {
+    _generation++;
+    _finished = true;
+    _timer?.cancel();
+    _deadline?.cancel();
+    Navigator.of(context).pop(false);
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    // 网页登录按钮的有无与撤除原因都取自 pan_web_login.dart 的真源（N3a）
-    final webLoginSpec = PanWebLoginSpec.of(widget.kind);
-    final webLoginRetiredReason =
-        PanWebLoginSpec.panWebLoginUnsupportedReason(widget.kind);
-    // R4-EXCEPTION: 自建外壳（裸 Dialog）那一类 —— 本弹窗要自己定宽（380）并把
-    // 二维码居中，AppGlassDialog 只收 String 标题、不能承载 QrView 的定尺画布；
-    // 控件只有 Text/Column/QrView/TextButton，无任何输入控件。
-    // 见 _siteExemptions 同名键。
-    return Dialog(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 380),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(Sp.x5, Sp.x5, Sp.x5, Sp.x4),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Text(
-                '扫码登录${panKindDisplay(widget.kind)}',
-                style: TextStyle(
-                  fontSize: FontSizes.lg,
-                  fontWeight: FontWeights.semibold,
-                  color: colors.onSurface,
-                ),
+    return AppGlassDialog(
+      title: '扫码登录${panKindDisplay(widget.kind)}',
+      maxWidth: 460,
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_busy)
+            const Padding(padding: EdgeInsets.all(Sp.x4), child: AppLoading())
+          else if (_error.isNotEmpty)
+            Text(
+              _error,
+              key: const ValueKey('pan-qr-login-error'),
+              style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+            )
+          else ...[
+            QrView(
+              key: const ValueKey('pan-qr-login-view'),
+              svg: _svg,
+              size: 180,
+              fallback: const Text(
+                '二维码无法显示，请重新获取',
+                textAlign: TextAlign.center,
               ),
-              const SizedBox(height: Sp.x1),
-              Text(
-                '这个源要用你的${panKindDisplay(widget.kind)}账号才能取到播放地址。',
-                style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
-              ),
-              const SizedBox(height: Sp.x3),
-              if (_busy)
-                // ★ 不许直接用 CircularProgressIndicator（门禁 zz_t64_migrated_widget_gate：
-                //   本项目已把它迁到 AppLoading，自绘 _AppSpinner）
-                const Padding(
-                  padding: EdgeInsets.all(Sp.x4),
-                  child: AppLoading(),
-                )
-              else if (_error.isNotEmpty)
-                Text(
-                  _error,
-                  key: const ValueKey<String>('pan-qr-login-error'),
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
-                )
-              else ...[
-                QrView(
-                  key: const ValueKey<String>('pan-qr-login-view'),
-                  svg: _svg,
-                  size: 180,
-                  fallback: Text(
-                    _url,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurface),
-                  ),
-                ),
-                const SizedBox(height: Sp.x2),
-                Text(
-                  _state,
-                  key: const ValueKey<String>('pan-qr-login-status'),
-                  style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
-                ),
-              ],
-              // ★ 已撤的盘（如 115）没有网页登录 ⇒ 把撤除原因原句显示出来
-              //   （指路扫码；文案只在 pan_web_login.dart 一处，这里不复制）
-              if (webLoginRetiredReason != null) ...[
-                const SizedBox(height: Sp.x2),
-                Text(
-                  webLoginRetiredReason,
-                  key: const ValueKey<String>('pan-qr-login-web-retired'),
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
-              const SizedBox(height: Sp.x4),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  // ★ 网页登录（W1）：有无按钮只看真源（PanWebLoginSpec.all）；
-                  //   Runtime 缺失 ⇒ 置灰（不许点了没反应）
-                  if (webLoginSpec != null)
-                    TextButton(
-                      key: const ValueKey<String>('pan-qr-login-web'),
-                      onPressed: _webLoginAvailable == false ? null : _openWebLogin,
-                      child: const Text('网页登录'),
-                    ),
-                  const SizedBox(width: Sp.x1),
-                  TextButton(
-                    onPressed: () => Navigator.of(context).pop(false),
-                    child: const Text('关闭'),
-                  ),
-                ],
-              ),
-            ],
+            ),
+            const SizedBox(height: Sp.x2),
+            Text(_state, key: const ValueKey('pan-qr-login-status')),
+          ],
+          if (PanWebLoginSpec.panWebLoginUnsupportedReason(widget.kind)
+              case final String reason) ...[
+            const SizedBox(height: Sp.x2),
+            Text(
+              reason,
+              key: const ValueKey<String>('pan-qr-login-web-retired'),
+            ),
+          ],
+        ],
+      ),
+      actions: Wrap(
+        alignment: WrapAlignment.end,
+        spacing: Sp.x1,
+        children: [
+          if (PanWebLoginSpec.of(widget.kind) != null)
+            AppTextButton(
+              key: const ValueKey<String>('pan-qr-login-web'),
+              onPressed: _webBusy || _webLoginAvailable == false
+                  ? null
+                  : _openWebLogin,
+              child: const Text('网页登录'),
+            ),
+          AppTextButton(
+            key: const ValueKey('pan-qr-login-retry'),
+            onPressed: _busy || _webBusy ? null : _retry,
+            child: const Text('重新获取'),
           ),
-        ),
+          AppTextButton(
+            key: const ValueKey('pan-qr-login-close'),
+            onPressed: _close,
+            child: const Text('关闭'),
+          ),
+        ],
       ),
     );
   }

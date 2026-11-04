@@ -2,6 +2,10 @@
 
 Status: implemented
 
+后续局部更新：[独立登录弹窗与本地识别](../bug-fix/2026-11-04-pan-login-modal-and-local-recognition.md)
+补齐有界失败、取消与保存后状态回读。本文原生 CookieManager 和保存入口决定保留；
+本地成功回读不证明远端会话有效。
+
 Independent: 与 [2026-10-30-pan-login-t5-aliyun-bizext-115-cookie-baidu-unicast.md](../bug-fix/2026-10-30-pan-login-t5-aliyun-bizext-115-cookie-baidu-unicast.md)
 （扫码登录协议修复）互补不冲突——那篇管"扫码链路通不通"，本篇加的是
 **第二条登录路径**（网页登录回调），保存入口复用同一个 pan_auth::save。

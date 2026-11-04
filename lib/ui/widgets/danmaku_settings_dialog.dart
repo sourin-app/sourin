@@ -1881,12 +1881,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
            * （见 enum DanmakuPanelTab 的文档：与第 6 条不冲突）
            * ```
            */
-          if (widget.onOpenSearch != null)
-            FilledButton.tonal(
-              onPressed: widget.onOpenSearch,
-              child: const Text('搜索弹幕与绑定剧集'),
-            ),
-          const Text('来源开关位于高级设置。启用来源不代表已绑定或加载成功。'),
+          _group(_sourcesSection()),
         ] else ...[
           /*
            * 高级：要填地址 / 凭证的，99% 用户不需要。
@@ -1896,8 +1891,6 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
            *   它的 `_sourceSection` / `_credentialsSection` **保留但不调用**
            *   （理由见那两个方法上的注释）。
            */
-          _group(_sourcesSection()),
-          _gap(),
           _group(_selfHostedSection()),
         ],
         _gap(),
@@ -1935,25 +1928,33 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
      */
     final body = Padding(
       padding: const EdgeInsets.symmetric(horizontal: Sp.x6),
-      child: SingleChildScrollView(
-        key: const ValueKey('danmaku-settings-scroll'),
-        padding: const EdgeInsets.only(top: Sp.x3, bottom: Sp.x4),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _statusSection(),
-            _sourceStatusStrip(),
-            _tabBar(),
-            settings,
-          ],
-        ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _tabBar(),
+          const SizedBox(height: Sp.x2),
+          Flexible(
+            child: SingleChildScrollView(
+              key: const ValueKey('danmaku-settings-scroll'),
+              padding: const EdgeInsets.only(bottom: Sp.x4),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _statusSection(),
+                  _sourceStatusStrip(),
+                  const SizedBox(height: Sp.x3),
+                  settings,
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
 
     // ★ 外壳接管遮罩/动效/定位；标题与副标题逐字不变
     final shelled = AppDialogShell(
       title: '弹幕设置',
-      subtitle: '显示 / 过滤 / 请求',
       onClose: widget.onClose,
       fill: widget.fill,
       // ★ 本面板改前就用 OverlayScrim + OverlayCardMotion（t99 门禁钉着）
@@ -2219,8 +2220,6 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// ```
   /// 底色用 `onSurface` 的极低 alpha（而非写死白/黑）⇒ 明暗主题都成立。
   Widget _group(Widget child) {
-    final scheme = Theme.of(context).colorScheme;
-    final bg = scheme.onSurface.withValues(alpha: 0.04);
     /*
      * ★★ 必须用 `Material` 而不是 `Container` + `BoxDecoration`（2026-10-16）
      *
@@ -2262,10 +2261,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
        *     而不是看它自己有没有 color。
        */
       child: Material(
-        color: bg,
-        type: MaterialType.card,
-        clipBehavior: Clip.antiAlias,
-        shape: const RoundedRectangleBorder(borderRadius: Radii.rMd),
+        type: MaterialType.transparency,
         child: SizedBox(width: double.infinity, child: child),
       ),
     );
@@ -3919,11 +3915,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionTitle('弹幕来源', note: '可多选 · 勾上即合并'),
-        _hint(
-          '勾上的来源会「同时加载并合并」（重复的自动去掉）。'
-          '本片源自带默认勾上 —— 那是视频本身带的弹幕。',
-        ),
+        _sectionTitle('来源状态'),
         const SizedBox(height: Sp.x2),
         /*
          * ① 本片源自带 —— **默认勾上**
@@ -3979,7 +3971,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           const Padding(
             padding: EdgeInsets.only(left: Sp.x6, top: 2),
             child: Text(
-              '弹幕可以看、调样式、合并多路来源；发送只在支持发送的片源里提供',
+              '此片源不支持发送弹幕',
               style: TextStyle(
                 color: DanmakuTextColors.muted,
                 fontSize: FontSizes.cap,
@@ -4143,6 +4135,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     final label = channel.label;
     final tappable = onChanged != null;
     final row = Row(
+      key: ValueKey('danmaku-feed-${channel.name}'),
       children: [
         Icon(
           checked
@@ -4153,22 +4146,27 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         ),
         const SizedBox(width: Sp.x2),
         Expanded(
-          child: Text(
-            label,
-            style: TextStyle(
-              color: checked
-                  ? DanmakuTextColors.body
-                  : DanmakuTextColors.secondary,
-              fontSize: FontSizes.cap,
-              fontWeight: checked ? FontWeight.w600 : FontWeight.normal,
-            ),
-          ),
-        ),
-        Text(
-          detail,
-          style: const TextStyle(
-            color: DanmakuTextColors.muted,
-            fontSize: FontSizes.cap,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  color: checked
+                      ? DanmakuTextColors.body
+                      : DanmakuTextColors.secondary,
+                  fontSize: FontSizes.cap,
+                  fontWeight: checked ? FontWeight.w600 : FontWeight.normal,
+                ),
+              ),
+              Text(
+                detail,
+                style: const TextStyle(
+                  color: DanmakuTextColors.muted,
+                  fontSize: FontSizes.cap,
+                ),
+              ),
+            ],
           ),
         ),
         if (trailing != null) ...[const SizedBox(width: Sp.x2), trailing],
@@ -4183,7 +4181,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
       onTap: () => onChanged(!checked),
       borderRadius: Radii.rSm,
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2),
+        padding: const EdgeInsets.symmetric(vertical: Sp.x2),
         child: row,
       ),
     );

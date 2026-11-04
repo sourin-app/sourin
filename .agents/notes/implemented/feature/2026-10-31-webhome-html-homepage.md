@@ -2,6 +2,10 @@
 
 Status: implemented
 
+后续局部更新：[设置页多模板管理](2026-11-04-settings-owned-html-home-library-and-source-filters.md)
+取代首页配置入口及单 HTML 存储形态，兼容迁移旧文件；本文渲染、白名单桥、
+网络安全和原生回退决定继续有效。
+
 Independent: 机制底稿 = [reference-apk-benchmark](../../../../.probe/reference-apk-benchmark.md)
 第⑥节（FongMi fork 的 webHome 子系统逐字取证）；渲染栈 = 本批
 [pan-webview-login](2026-10-31-pan-webview-login.md) 引入的 WebView2 家族。

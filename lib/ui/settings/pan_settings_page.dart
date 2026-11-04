@@ -21,7 +21,7 @@
 //
 // # 扫码登录为什么长这样（复用两条既有先例，不重造）
 // ```text
-// 组件    → QrView（qr_view.dart，解析 Rust 签发的二维码 SVG，失败降级显示 URL）
+// 组件    → QrView（qr_view.dart，解析 Rust 签发的二维码 SVG，失败提示重新获取）
 // 链路形状 → 旧19 provider_qr_login_start / provider_qr_login_poll：
 //           start 返回 {key, url, svg}；poll 按 ~2 秒间隔问一次，
 //           status ∈ pending / scanned / confirmed / expired / failed
@@ -60,7 +60,8 @@ import '../../design/widgets/app_text_button.dart';
 import '../tokens.dart';
 import '../widgets/overlay_motion.dart' show showAppDialog;
 import '../widgets/pan_share_dialog.dart' show PanShareListingSection;
-import '../widgets/qr_view.dart';
+import '../widgets/pan_qr_login_dialog.dart';
+import '../widgets/pan_login_session.dart';
 import '../widgets/pan_web_login.dart';
 
 /// 打开网盘账号配置页（设置页入口一行调用它；接线点在 settings_page.dart，由 Lead 统一接）
@@ -107,7 +108,7 @@ enum PanAccountTier {
   /// ④ 登录过期（reason_tier::Expired）
   expired,
 
-  /// ⑤ 已登录未过期，但取直链未接入（reason_tier::LoggedInNoDirectLink）
+  /// ⑤ 本地已读取凭据。保留历史枚举名，不承诺远端会话或播放能力。
   loggedInNoDirectLink,
 }
 
@@ -117,13 +118,16 @@ enum PanAccountTier {
 /// 未登录必须先判 —— 一份已过期的凭据在链路侧回来是
 /// `loggedIn=true, expired=true`；要是把"过期"排在"未登录"前面，
 /// 一个从未登录过的盘就会被报成"已过期"。
-PanAccountTier panAccountTierOf({required bool loggedIn, required bool expired}) {
+PanAccountTier panAccountTierOf({
+  required bool loggedIn,
+  required bool expired,
+}) {
   if (!loggedIn) return PanAccountTier.needLogin;
   if (expired) return PanAccountTier.expired;
   return PanAccountTier.loggedInNoDirectLink;
 }
 
-/// 逐字文案（对齐 Rust `pan::reason_text` 的 ③④⑤ 三档；改字必须两边同步）
+/// 本地账号状态文案；具体集的播放能力由后续检验与取流决定。
 String panAccountTierText(PanAccountTier tier, String kindName) {
   switch (tier) {
     case PanAccountTier.needLogin:
@@ -131,7 +135,7 @@ String panAccountTierText(PanAccountTier tier, String kindName) {
     case PanAccountTier.expired:
       return '$kindName的登录已过期，请重新登录';
     case PanAccountTier.loggedInNoDirectLink:
-      return '已登录$kindName：能列出分享里的文件，但本版本仍未接入取直链';
+      return '已登录$kindName（应用已读取保存的凭据）';
   }
 }
 
@@ -167,13 +171,13 @@ class PanAccountStatus {
   bool get hasCredential => loggedIn || expired;
 
   factory PanAccountStatus.fromJson(Map<String, dynamic> j) => PanAccountStatus(
-        kind: '${j['kind'] ?? ''}',
-        kindName: (j['kindName'] as String?) ?? '未知网盘',
-        loggedIn: j['loggedIn'] == true,
-        expired: j['expired'] == true,
-        keyringAvailable: j['keyringAvailable'] != false,
-        account: '${j['account'] ?? ''}',
-      );
+    kind: '${j['kind'] ?? ''}',
+    kindName: (j['kindName'] as String?) ?? '未知网盘',
+    loggedIn: j['loggedIn'] == true,
+    expired: j['expired'] == true,
+    keyringAvailable: j['keyringAvailable'] != false,
+    account: '${j['account'] ?? ''}',
+  );
 }
 
 /// 分层判定：这个异常是不是"**命令根本没接线**"（而不是"接线了但这次失败"）
@@ -212,11 +216,14 @@ Future<Map<String, dynamic>> Function(String kind)? debugPanQrLoginStarter;
 /// 扫码轮询的替身（生产走 `pan_qr_login_poll`）
 @visibleForTesting
 Future<Map<String, dynamic>> Function(String kind, String key)?
-    debugPanQrLoginPoller;
+debugPanQrLoginPoller;
 
 /// 登出的替身（生产走 `pan_logout`）
 @visibleForTesting
 Future<void> Function(String kind)? debugPanLogoutCaller;
+
+@visibleForTesting
+Future<bool> Function(String kind)? debugPanWebLoginCaller;
 
 /// 分享识别的替身（生产走 `SourinApi.identifyPanShare`；
 /// sourin_api.dart 是既有文件不许动，替身只能放在本文件）
@@ -239,7 +246,8 @@ Future<PanPasswordLoginResult> Function(
   String kind,
   String account,
   String password,
-)? debugPasswordLogin;
+)?
+debugPasswordLogin;
 
 /// 123 云盘的 kind 码（`PanKind::Pan123.code()`）—— 表单只挂在这一行上
 const String pan123KindCode = '123';
@@ -311,24 +319,25 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
   /// 加上入口 URL www.115.com 实测只是个跳到官网首页的壳页 ⇒ 用户在首页上
   /// 根本没有登录页可进 ⇒ 静默转圈。故撤，不在本行放按钮。
   ///
-  /// ⚠️ 半边已知：lib/ui/widgets/pan_qr_login_dialog.dart:144 还有一份
-  ///    同名 _webLoginKinds 仍含 '115'（不在本批允许改动清单）⇒ 那颗按钮还在；
-  ///    但 showPanWebLogin 对 spec==null 已改成弹如实说明对话框（不再静默
-  ///    return false）⇒ 点了一定有人话反馈，不会退回"没反应"。下批同步。
+  /// 网页入口与扫码弹窗统一读取 PanWebLoginSpec，没有第二份盘种名单。
   /// ```
-  static const Set<String> _webLoginKinds = <String>{'quark', 'uc', 'baidu'};
+  static const Set<String> _qrKinds = <String>{
+    'quark',
+    'uc',
+    'baidu',
+    'aliyun',
+    '115',
+    'guangya',
+    'xunlei',
+  };
 
   // ── ② 扫码登录 ──
   String _qrKind = 'quark';
   bool _qrBusy = false;
+  bool _webBusy = false;
+  bool get _loginBusy => _qrBusy || _webBusy;
+  String _webError = '';
   String _qrError = '';
-
-  /// 扫码进行中要轮询的凭据（null = 没有进行中的扫码）
-  String? _qrKey;
-  String _qrSvg = '';
-  String _qrUrl = '';
-  String _qrState = '';
-  Timer? _pollTimer;
 
   // ── ③ 分享文件浏览 ──
   final TextEditingController _shareText = TextEditingController();
@@ -368,7 +377,6 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
 
   @override
   void dispose() {
-    _pollTimer?.cancel();
     _shareText.dispose();
     _pwdAccount.dispose();
     _pwdPassword.dispose();
@@ -385,14 +393,16 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
       final f = debugPanCredentialStatusFetcher;
       final List<PanAccountStatus> accounts;
       if (f != null) {
-        accounts = await f();
+        accounts = await f().timeout(panLoginRequestTimeout);
       } else {
-        final r = await SourinCore.callAsync('pan_auth_status', const {});
+        final request = SourinCore.callAsync('pan_auth_status', const {});
+        final r = await request.timeout(panLoginRequestTimeout);
         final raw = (r is Map ? r['accounts'] : null) as List?;
         accounts = <PanAccountStatus>[
           if (raw != null)
             for (final e in raw)
-              if (e is Map) PanAccountStatus.fromJson(e.cast<String, dynamic>()),
+              if (e is Map)
+                PanAccountStatus.fromJson(e.cast<String, dynamic>()),
         ];
       }
       if (!mounted) return;
@@ -406,7 +416,7 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
         // 读不到就如实说：错误态 + 空列表。
         // 绝不在这里塞"看起来登录了"的假数据（t1050 ③ 反假绿钉死这条）。
         _accounts = const <PanAccountStatus>[];
-        _statusError = userErrorText(e, fallback: '没有读到网盘登录状态，请稍后重试');
+        _statusError = panLoginErrorText(e, fallback: '没有读到网盘登录状态，请重新检测');
         // ★ R2-#3：`pan_auth_status` 都没接线 ⇒ 整条扫码登录链路不可用（实测同一条读数）
         if (panCommandMissing(e)) _qrBackendAvailable = false;
         _statusLoading = false;
@@ -415,6 +425,7 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
   }
 
   Future<void> _logout(String kind) async {
+    if (_loginBusy) return;
     setState(() => _statusError = '');
     try {
       final f = debugPanLogoutCaller;
@@ -426,11 +437,9 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
       await _loadStatuses();
     } catch (e) {
       if (!mounted) return;
-      setState(() =>
-          _statusError = userErrorText(e, fallback: '登出没有完成，请稍后重试'));
+      setState(() => _statusError = userErrorText(e, fallback: '登出没有完成，请稍后重试'));
     }
   }
-
 
   // ── ⑤ 网页登录（W1）：探测 Runtime → 弹独立浏览器窗口 → 捕获 cookie 落盘 ──
   Future<void> _probeWebLogin() async {
@@ -439,122 +448,92 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
     setState(() => _webLoginAvailable = ok);
   }
 
-  /// 成功才刷新登录状态（取消/失败时登录状态没变，刷了也只是白转一圈）
+  /// 成功才刷新登录状态；启动窗口期间也保持 QR/Web 入口互斥。
   Future<void> _webLogin(String kind) async {
-    final ok = await showPanWebLogin(context, kind: kind);
-    if (!mounted) return;
-    if (ok) await _loadStatuses();
-  }
-  // ── ② 扫码登录：start → QrView → 2 秒轮询 → 终态停表 ──
-  Future<void> _startQrLogin() async {
+    if (_loginBusy) return;
     setState(() {
-      _qrBusy = true;
+      _webBusy = true;
+      _webError = '';
       _qrError = '';
-      _qrKey = null;
-      _qrSvg = '';
-      _qrUrl = '';
-      _qrState = '';
     });
-    _pollTimer?.cancel();
     try {
-      final f = debugPanQrLoginStarter;
-      final Map<String, dynamic> r;
-      if (f != null) {
-        r = await f(_qrKind);
-      } else {
-        r = await SourinCore.callAsync('pan_qr_login_start', {'kind': _qrKind})
-            as Map<String, dynamic>;
-      }
-      final key = '${r['key'] ?? ''}';
+      final caller = debugPanWebLoginCaller;
+      final ok = caller != null
+          ? await caller(kind)
+          : await showPanWebLogin(context, kind: kind);
       if (!mounted) return;
-      if (key.isEmpty) {
+      if (ok) await _loadStatuses();
+    } catch (error) {
+      if (mounted) {
         setState(() {
-          _qrBusy = false;
-          _qrError = '没有拿到登录二维码，请稍后重试';
+          _webError = panLoginErrorText(
+            error,
+            fallback: '网页登录未完成，请重新登录或改用扫码登录',
+          );
         });
-        return;
       }
-      setState(() {
-        _qrKey = key;
-        _qrSvg = '${r['svg'] ?? ''}';
-        _qrUrl = '${r['url'] ?? ''}';
-        _qrState = '等待扫码…';
-        _qrBusy = false;
-      });
-      _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _pollOnce());
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _qrBusy = false;
-        // ★ R2-#3：如果是"命令没接线"，记下来 ⇒ 这一区改成**如实说明**（见 `_qrSection`），
-        //   不再留一个点一次报一次错的按钮。
-        if (panCommandMissing(e)) _qrBackendAvailable = false;
-        _qrError = userErrorText(e, fallback: '扫码登录暂时用不了，请稍后重试');
-      });
+    } finally {
+      if (mounted) setState(() => _webBusy = false);
     }
   }
 
-  Future<void> _pollOnce() async {
-    final key = _qrKey;
-    if (key == null || _qrBusy) return;
-    setState(() => _qrBusy = true);
+  // ── ② 扫码登录：start → QrView → 2 秒轮询 → 终态停表 ──
+  Future<void> _startQrLogin({String? kind}) async {
+    if (_loginBusy) return;
+    setState(() {
+      _qrBusy = true;
+      _qrError = '';
+      _webError = '';
+    });
     try {
-      final f = debugPanQrLoginPoller;
-      final Map<String, dynamic> r;
-      if (f != null) {
-        r = await f(_qrKind, key);
-      } else {
-        r = await SourinCore.callAsync('pan_qr_login_poll',
-            {'kind': _qrKind, 'key': key}) as Map<String, dynamic>;
-      }
-      if (!mounted) return;
-      final status = '${r['status'] ?? ''}';
-      final message = '${r['message'] ?? ''}';
-      switch (status) {
-        case 'pending':
+      final ok = await showPanQrLoginDialog(
+        context,
+        kind: kind ?? _qrKind,
+        commandCaller: _qrCommand,
+        onFailure: (error) {
+          if (!mounted) return;
           setState(() {
-            _qrState = '等待扫码…';
-            _qrBusy = false;
+            if (panCommandMissing(error)) _qrBackendAvailable = false;
+            _qrError = panLoginErrorText(error, fallback: '扫码登录未完成，请重新获取');
           });
-        case 'scanned':
-          setState(() {
-            _qrState = '已扫码，请在手机上确认';
-            _qrBusy = false;
-          });
-        case 'confirmed':
-          _pollTimer?.cancel();
-          setState(() {
-            _qrState = '登录成功';
-            _qrKey = null;
-            _qrBusy = false;
-          });
-          await _loadStatuses();
-        case 'expired':
-          _pollTimer?.cancel();
-          setState(() {
-            _qrState = '二维码已失效，请重新获取';
-            _qrKey = null;
-            _qrBusy = false;
-          });
-        default:
-          // failed / 认不出的状态：终态停表，把后端给的原因说出来
-          _pollTimer?.cancel();
-          setState(() {
-            _qrState = message.isEmpty ? '扫码登录没有完成，请稍后重试' : message;
-            _qrKey = null;
-            _qrBusy = false;
-          });
-      }
-    } catch (e) {
-      if (!mounted) return;
-      _pollTimer?.cancel();
-      setState(() {
-        _qrState = '';
-        _qrError = userErrorText(e, fallback: '扫码状态查询没有完成，请稍后重试');
-        _qrKey = null;
-        _qrBusy = false;
-      });
+        },
+      );
+      if (ok && mounted) await _loadStatuses();
+    } finally {
+      if (mounted) setState(() => _qrBusy = false);
     }
+  }
+
+  Future<dynamic> _qrCommand(
+    String command,
+    Map<String, dynamic> arguments,
+  ) async {
+    if (command == 'pan_qr_login_start' && debugPanQrLoginStarter != null) {
+      return debugPanQrLoginStarter!(arguments['kind'] as String);
+    }
+    if (command == 'pan_qr_login_poll' && debugPanQrLoginPoller != null) {
+      return debugPanQrLoginPoller!(
+        arguments['kind'] as String,
+        arguments['key'] as String,
+      );
+    }
+    if (command == 'pan_auth_status' &&
+        debugPanCredentialStatusFetcher != null) {
+      final rows = await debugPanCredentialStatusFetcher!();
+      return {
+        'accounts': [
+          for (final row in rows)
+            {
+              'kind': row.kind,
+              'loggedIn': row.loggedIn,
+              'expired': row.expired,
+              'keyringAvailable': row.keyringAvailable,
+              'account': row.account,
+            },
+        ],
+      };
+    }
+    return SourinCore.callAsync(command, arguments);
   }
 
   // ── ④ 123 账号密码登录：校验 → 调命令 → 就地刷新登录状态 ──
@@ -590,8 +569,7 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
           : await SourinApi.panPasswordLogin(pan123KindCode, account, password);
       if (!mounted) return;
       setState(() {
-        _pwdOkText =
-            '登录成功：${r.account.isEmpty ? account.trim() : r.account}';
+        _pwdOkText = '登录成功：${r.account.isEmpty ? account.trim() : r.account}';
         // ★ 成功即清掉输入框里的密码（内存里少留一份就少一份）
         _pwdPassword.clear();
       });
@@ -599,8 +577,7 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
       await _loadStatuses();
     } catch (e) {
       if (!mounted) return;
-      setState(() =>
-          _pwdError = userErrorText(e, fallback: '登录没有完成，请稍后重试'));
+      setState(() => _pwdError = userErrorText(e, fallback: '登录没有完成，请稍后重试'));
     } finally {
       if (mounted) setState(() => _pwdBusy = false);
     }
@@ -628,8 +605,7 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
       setState(() => _shareStatus = s);
     } catch (e) {
       if (!mounted) return;
-      setState(() =>
-          _shareError = userErrorText(e, fallback: '识别没有完成，请稍后重试'));
+      setState(() => _shareError = userErrorText(e, fallback: '识别没有完成，请稍后重试'));
     } finally {
       if (mounted) setState(() => _identifyBusy = false);
     }
@@ -652,8 +628,7 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
       setState(() => _listing = l);
     } catch (e) {
       if (!mounted) return;
-      setState(() =>
-          _listError = userErrorText(e, fallback: '列目录没有完成，请稍后重试'));
+      setState(() => _listError = userErrorText(e, fallback: '列目录没有完成，请稍后重试'));
     } finally {
       if (mounted) setState(() => _listBusy = false);
     }
@@ -682,7 +657,7 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
             ),
             const SizedBox(height: Sp.x1),
             Text(
-              '凭据只保存在系统钥匙串里，不会写进本机的任何文件',
+              '这里显示应用读取到的账号状态；远端会话是否有效由实际请求确认',
               style: TextStyle(
                 fontSize: FontSizes.cap,
                 color: colors.onSurfaceVariant,
@@ -701,6 +676,20 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
               const SizedBox(height: Sp.x2),
             ],
             _statusSection(colors),
+            if (_webError.isNotEmpty)
+              Text(
+                _webError,
+                key: const ValueKey('pan-web-login-start-error'),
+                style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+              ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: AppTextButton(
+                key: const ValueKey('pan-status-recheck'),
+                onPressed: _statusLoading ? null : _loadStatuses,
+                child: const Text('重新检测'),
+              ),
+            ),
             const SizedBox(height: Sp.x4),
 
             // ── ② 扫码登录 ──
@@ -711,29 +700,6 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
                 fontSize: FontSizes.sm,
                 fontWeight: FontWeight.w600,
                 color: colors.onSurface,
-              ),
-            ),
-            const SizedBox(height: Sp.x1),
-            Text(
-              /*
-               * ★★★ R2-#3：这段话改过（Owner 实测「点击获取二维码 报错」）。
-               *
-               * 改前那句把"各网盘是否支持扫码"说成"以实际结果为准"
-               *   ⇒ 读起来像"可以扫码，只是要看盘支不支持" ⇒ 用户点了才撞到 `unsupported`。
-               * 改后：**先说清楚这个能力当前没接**，再说能做什么 ——
-               *   与 `pan_auth.rs` 头部那句「未做：调网盘 API 换 token ← 需要真账号」同一口径。
-               * ⚠️ 不留"点了只会报错的入口"：真点过之后本区会整块换成一句说明（见 `_qrSection`）。
-               *
-               * ⚠️⚠️ 本注释**刻意不复现那句旧文案的原文** —— 门禁 t1062 ⑤ 会扫
-               *    `pan_settings_page.dart` 里有没有那个措辞（"把能力说成可用"的判据），
-               *    而它的扫描**包含注释** ⇒ 原样抄进来会被判成"没改"（我自己踩了一次）。
-               *    描述它"说了什么"用中文即可，别复现它的原句。
-               */
-              '扫码登录这条链路本版本还没有接入后端实现，暂时拿不到二维码。'
-              '登录状态、登出与分享文件浏览不受影响。',
-              style: TextStyle(
-                fontSize: FontSizes.cap,
-                color: colors.onSurfaceVariant,
               ),
             ),
             const SizedBox(height: Sp.x2),
@@ -774,7 +740,10 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
       return Text(
         '正在读取登录状态…',
         key: const ValueKey<String>('pan-status-loading'),
-        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: colors.onSurfaceVariant,
+        ),
       );
     }
     if (_statusError.isNotEmpty) {
@@ -788,7 +757,10 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
       return Text(
         '还没有登录任何网盘账号',
         key: const ValueKey<String>('pan-status-empty'),
-        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: colors.onSurfaceVariant,
+        ),
       );
     }
     return Column(
@@ -864,39 +836,59 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
                       const SizedBox(height: 2),
                       Text(
                         '本机没有可用的系统钥匙串，登录状态存不住',
-                        style:
-                            TextStyle(fontSize: FontSizes.cap, color: colors.error),
+                        style: TextStyle(
+                          fontSize: FontSizes.cap,
+                          color: colors.error,
+                        ),
                       ),
                     ],
                   ],
                 ),
               ),
-              /*
-               * ★ 网页登录（W1）：只放四家。Runtime 不可用 ⇒ 置灰（不是隐藏）——
-               *   灰按钮 + 状态区提示能让人知道"有这个功能、缺什么"；
-               *   探测未完成（null）先照常可点，点了有 startPanWebLogin 的双保险兜底。
-               */
-              if (_webLoginKinds.contains(a.kind)) ...<Widget>[
-                const SizedBox(width: Sp.x1),
+            ],
+          ),
+          const SizedBox(height: Sp.x1),
+          Wrap(
+            spacing: Sp.x1,
+            runSpacing: Sp.x1,
+            children: [
+              if (_qrKinds.contains(a.kind))
                 AppTextButton(
-                  key: ValueKey<String>('pan-account-weblogin-${a.kind}'),
-                  onPressed: _webLoginAvailable == false
+                  key: ValueKey('pan-account-qrlogin-${a.kind}'),
+                  onPressed:
+                      _loginBusy ||
+                          !a.keyringAvailable ||
+                          _qrBackendAvailable == false
+                      ? null
+                      : () {
+                          unawaited(_startQrLogin(kind: a.kind));
+                        },
+                  child: Text(
+                    a.kind == 'guangya' || a.kind == 'xunlei'
+                        ? '设备码登录'
+                        : '扫码登录',
+                  ),
+                ),
+              if (PanWebLoginSpec.of(a.kind) != null)
+                AppTextButton(
+                  key: ValueKey('pan-account-weblogin-${a.kind}'),
+                  onPressed:
+                      _loginBusy ||
+                          _webLoginAvailable == false ||
+                          !a.keyringAvailable
                       ? null
                       : () => unawaited(_webLogin(a.kind)),
                   child: const Text('网页登录'),
                 ),
-              ],
-              // 登出只在**确实有凭据**时出现（未登录给登出按钮 = 假入口）
-              if (a.hasCredential) ...<Widget>[
-                const SizedBox(width: Sp.x1),
+              if (a.hasCredential)
                 AppTextButton(
-                  key: ValueKey<String>('pan-account-logout-${a.kind}'),
-                  onPressed: () => _logout(a.kind),
+                  key: ValueKey('pan-account-logout-${a.kind}'),
+                  onPressed: _loginBusy ? null : () => _logout(a.kind),
                   child: const Text('登出'),
                 ),
-              ],
             ],
           ),
+          if (a.kind == 'tianyi') const Text('天翼登录协议尚未完成，当前没有可用的登录方式'),
           /*
            * ★★ 被撤掉网页登录的盘（当前只有 115）：**不许只剩"未登录"**
            * ```text
@@ -968,10 +960,7 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
               enabled: !_pwdBusy,
               // ★ 密码框必须遮蔽（不许明文回显在屏幕上/截图里）
               obscureText: true,
-              decoration: const InputDecoration(
-                labelText: '密码',
-                isDense: true,
-              ),
+              decoration: const InputDecoration(labelText: '密码', isDense: true),
               onSubmitted: (_) => _passwordLogin(),
             ),
           ),
@@ -1046,7 +1035,10 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
           '本版本还没有接入网盘扫码登录（这条链路还缺后端实现），'
           '所以这里暂时拿不到二维码。登录状态一栏仍可用。',
           key: const ValueKey<String>('pan-qr-unavailable-text'),
-          style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
         ),
       );
     }
@@ -1062,10 +1054,7 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
             key: const ValueKey<String>('pan-qr-kind'),
             initialValue: _qrKind,
             isDense: true,
-            decoration: const InputDecoration(
-              labelText: '选择网盘',
-              isDense: true,
-            ),
+            decoration: const InputDecoration(labelText: '选择网盘', isDense: true),
             items: <DropdownMenuItem<String>>[
               /*
                * ★ 2026-10-29：这份下拉只列**真能出码**的盘。
@@ -1086,11 +1075,10 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
                 '115': '115 网盘',
                 'guangya': '光鸭网盘',
                 'xunlei': '迅雷云盘',
-                'tianyi': '天翼云盘',
               }.entries)
                 DropdownMenuItem<String>(value: e.key, child: Text(e.value)),
             ],
-            onChanged: _qrKey == null
+            onChanged: !_loginBusy
                 ? (v) => setState(() => _qrKind = v ?? _qrKind)
                 : null, // 扫码进行中不许换盘（换了二维码就作废）
           ),
@@ -1103,12 +1091,8 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
           children: <Widget>[
             AppTextButton(
               key: const ValueKey<String>('pan-qr-start'),
-              onPressed: _qrBusy ? null : _startQrLogin,
-              child: Text(
-                _qrBusy
-                    ? '正在获取二维码…'
-                    : (_qrKey == null ? '获取登录二维码' : '重新获取二维码'),
-              ),
+              onPressed: _loginBusy ? null : _startQrLogin,
+              child: Text(_loginBusy ? '登录进行中…' : '获取登录二维码'),
             ),
           ],
         ),
@@ -1118,27 +1102,6 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
             _qrError,
             key: const ValueKey<String>('pan-qr-error'),
             style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
-          ),
-        ],
-        // 二维码只在实际拿到之后画（没拿过不许占位）
-        if (_qrSvg.isNotEmpty || _qrUrl.isNotEmpty) ...<Widget>[
-          const SizedBox(height: Sp.x2),
-          QrView(
-            key: const ValueKey<String>('pan-qr-view'),
-            svg: _qrSvg,
-            size: 180,
-            // 解析失败降级成 URL 文本（qr_view.dart 的约定）
-            fallback: Text(
-              _qrUrl,
-              textAlign: TextAlign.left,
-              style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurface),
-            ),
-          ),
-          const SizedBox(height: Sp.x1),
-          Text(
-            _qrState,
-            key: const ValueKey<String>('pan-qr-status'),
-            style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurface),
           ),
         ],
       ],
@@ -1206,10 +1169,7 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
         if (_listError.isNotEmpty || _listing != null) ...<Widget>[
           const SizedBox(height: Sp.x2),
           // ★ 列目录三态容器是**复用**的（pan_share_dialog.dart），不重造
-          PanShareListingSection(
-            listing: _listing,
-            error: _listError,
-          ),
+          PanShareListingSection(listing: _listing, error: _listError),
         ],
       ],
     );
@@ -1249,7 +1209,7 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
           Text(
             s.loggedIn
                 ? '登录状态：已登录${s.account != null && s.account!.isNotEmpty ? '（${s.account}）' : ''}'
-                    '${s.expired ? '，但已过期' : ''}'
+                      '${s.expired ? '，但已过期' : ''}'
                 : '登录状态：未登录',
             style: TextStyle(
               fontSize: FontSizes.cap,

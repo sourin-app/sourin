@@ -93,6 +93,11 @@ Owner 驳回上一批实机结果：搜索能看到胖妞，但资源不能播�
 
 ## Relations
 
+[Quark selected-file video fallback](2026-11-04-quark-selected-file-video-api-fallback.md)
+adds the official video API for download code 23018. This note's precheck,
+selected-file identity, scoped ownership and real line-switching decisions
+remain in force; the new account-playback evidence is recorded separately.
+
 本篇部分更新 [App99 游客握手与搜索源切换](2026-11-01-app99-guest-handshake-degrade-and-search-source-rail.md) 的播放覆盖边界与夹具写出事实，握手降级及搜索决定保留。
 
 本篇部分更新 [线路集号对齐](2026-10-30-episode-number-normalized-line-switch.md) 的面板生产动作和默认线路事实，遥控 sourceCode 维度不扩大到本批。

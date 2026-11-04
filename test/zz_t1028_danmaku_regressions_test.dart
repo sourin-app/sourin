@@ -23,7 +23,7 @@ Future<void> openSources(WidgetTester t) async {
     })));
   await t.pumpAndSettle();
   await t.tap(find.descendant(of: find.byType(SegmentedButton<DanmakuPanelTab>),
-    matching: find.text('高级')));
+    matching: find.text('弹幕来源')));
   await t.pumpAndSettle();
 }
 Finder sourceRow(String label) => find.ancestor(

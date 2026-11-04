@@ -20,6 +20,33 @@
 // `detail_page.dart` 改为 `export` 本文件，保持它自己的 import 者不受影响。
 
 import '../core/models.dart';
+import 'package:flutter/foundation.dart';
+
+/// A transient playback observation, not a completed-episode/history record.
+class MediaPlaybackProgress {
+  const MediaPlaybackProgress({
+    required this.provider,
+    required this.id,
+    required this.generation,
+    required this.episodeId,
+    required this.episodeTitle,
+    required this.position,
+    required this.duration,
+  });
+
+  final String provider;
+  final String id;
+  final int generation;
+  final String? episodeId;
+  final String? episodeTitle;
+  final Duration position;
+  final Duration duration;
+}
+
+/// Optional capability so legacy session implementations remain compatible.
+abstract interface class MediaProgressSession {
+  ValueListenable<MediaPlaybackProgress?> get playbackProgress;
+}
 
 /// 播放请求 —— 「要播哪一个作品的哪一集/哪条线路」
 ///

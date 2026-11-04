@@ -724,6 +724,22 @@ class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
   bool _busy = false;
   String _error = '';
 
+  String _siteQuery = '';
+  bool? _siteEnabledFilter;
+
+  List<TvboxAggregateSite> get _visibleSites => filterManagedSites(
+      _agg.sites, selected: _selected, query: _siteQuery, enabled: _siteEnabledFilter);
+
+  void _selectVisible(bool on) {
+    if (_busy) return;
+    setState(() {
+      final next = selectionForVisibleSites(_selected, _visibleSites, on);
+      _selected
+        ..clear()
+        ..addAll(next);
+    });
+  }
+
   /// 去重结果文案（空 = 还没点过；**不许**在点之前先说"没有重复"）
   String _dedupeMsg = '';
 
@@ -756,6 +772,7 @@ class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
   }
 
   void _toggle(String id, bool on) {
+    if (_busy || !_agg.sites.any((s) => s.id == id && s.implemented)) return;
     setState(() {
       if (on) {
         _selected.add(id);
@@ -858,8 +875,47 @@ class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
+              TextField(
+                key: const ValueKey<String>('agg-sites-search'),
+                onChanged: (query) => setState(() => _siteQuery = query),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  hintText: '搜索子站名称或标识',
+                  prefixIcon: Icon(Icons.search),
+                ),
+              ),
+              Wrap(
+                spacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  DropdownButton<bool>(
+                    value: _siteEnabledFilter,
+                    hint: const Text('全部状态'),
+                    onChanged: (enabled) =>
+                        setState(() => _siteEnabledFilter = enabled),
+                    items: const [
+                      DropdownMenuItem<bool>(value: null, child: Text('全部状态')),
+                      DropdownMenuItem<bool>(value: true, child: Text('已选择')),
+                      DropdownMenuItem<bool>(value: false, child: Text('未选择')),
+                    ],
+                  ),
+                  TextButton.icon(
+                    key: const ValueKey<String>('agg-sites-select-visible'),
+                    onPressed: _busy || _visibleSites.isEmpty ? null : () => _selectVisible(true),
+                    icon: const Icon(Icons.select_all),
+                    label: const Text('全选当前结果'),
+                  ),
+                  TextButton.icon(
+                    key: const ValueKey<String>('agg-sites-clear-visible'),
+                    onPressed: _busy || _visibleSites.isEmpty ? null : () => _selectVisible(false),
+                    icon: const Icon(Icons.deselect),
+                    label: const Text('清空当前结果'),
+                  ),
+                  Text('${_visibleSites.length}/${_agg.sites.length} · 已选 ${_selected.length}'),
+                ],
+              ),
               TvboxAggregateSitesList(
-                sites: _agg.sites,
+                sites: _visibleSites,
                 selected: _selected,
                 onToggle: _toggle,
               ),
@@ -935,6 +991,31 @@ class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
       ),
     );
   }
+}
+
+List<TvboxAggregateSite> filterManagedSites(
+  List<TvboxAggregateSite> sites, {
+  required Set<String> selected,
+  String query = '',
+  bool? enabled,
+}) {
+  final needle = query.trim().toLowerCase();
+  return sites.where((s) =>
+      (enabled == null || selected.contains(s.id) == enabled) &&
+      (needle.isEmpty || '${s.name} ${s.id} ${s.kindTag}'.toLowerCase().contains(needle)))
+      .toList(growable: false);
+}
+
+Set<String> selectionForVisibleSites(
+    Set<String> selected, List<TvboxAggregateSite> visible, bool on) {
+  final next = {...selected};
+  final ids = visible.where((s) => s.implemented).map((s) => s.id);
+  if (on) {
+    next.addAll(ids);
+  } else {
+    next.removeAll(ids);
+  }
+  return next;
 }
 
 /// 把子站按**订阅链接**归组（N8b-2 的"一个聚合源"= 一条链接）

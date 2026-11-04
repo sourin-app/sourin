@@ -103,3 +103,7 @@ flutter analyze（episode_filter/episode_panel/detail_page）→ No issues found
 ## Relations
 
 - 抽屉路径的同一根因（上批已修）：[./2026-10-29-episode-panel-flattened-all-lines.md](./2026-10-29-episode-panel-flattened-all-lines.md)
+- [Live progress and modal workflow](2026-11-04-player-progress-and-danmaku-modal-workflow.md)
+  updates the live resume observation in this same detail pane. Current-line
+  filtering and honest episode counts remain unchanged; neither decision
+  supersedes the other.

@@ -154,8 +154,11 @@ void main() {
         reason: '★ 按钮必须还在（三家零变化）');
     expect(src.contains('panWebviewRuntimeAvailable()'), isTrue,
         reason: '★ Runtime 探测还在（缺失 ⇒ 置灰）');
-    expect(src.contains('_webLoginAvailable == false ? null : _openWebLogin'),
-        isTrue, reason: '★ 置灰判据原样（不许点了没反应）');
+    expect(
+        RegExp(r'onPressed:\s*_webBusy \|\| _webLoginAvailable == false'
+                r'\s*\?\s*null\s*:\s*_openWebLogin')
+            .hasMatch(src),
+        isTrue, reason: 'Runtime 缺失或网页登录进行中必须置灰，仍走同一真实入口');
     expect(src.contains('showPanWebLogin(context, kind: widget.kind)'), isTrue,
         reason: '★ 点击回调仍走 showPanWebLogin');
     expect(src.contains("Text('网页登录')"), isTrue, reason: '★ 按钮文案不变');

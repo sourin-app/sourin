@@ -325,22 +325,23 @@ void main() {
   });
 
   group('E. 设置页：115 行必须有替代路径（不许只剩"未登录"）', () {
-    test('E1 _webLoginKinds 只剩三家 + 115 行渲染撤除原因', () {
-      final src = File('lib/ui/settings/pan_settings_page.dart').readAsStringSync();
-      // 名单：三家（不许还含 '115'）
-      final line = src.indexOf('static const Set<String> _webLoginKinds');
-      expect(line, greaterThan(0));
-      final decl = src.substring(line, src.indexOf(';', line));
-      expect(decl.contains("'quark'"), isTrue);
-      expect(decl.contains("'uc'"), isTrue);
-      expect(decl.contains("'baidu'"), isTrue);
-      expect(decl.contains("'115'"), isFalse,
-          reason: '★★ 注入证红：把 115 加回名单 ⇒ 本条红（又变回四家）');
+    test('E1 登录入口使用唯一真源 + 115 行渲染撤除原因', () {
+      final src =
+          File('lib/ui/settings/pan_settings_page.dart').readAsStringSync();
+      expect(src.contains('static const Set<String> _webLoginKinds'), isFalse);
+      expect(src.contains('PanWebLoginSpec.of(a.kind)'), isTrue);
+      expect(PanWebLoginSpec.all.keys.toSet(), {'quark', 'uc', 'baidu'});
+      expect(PanWebLoginSpec.of('115'), isNull);
       // 115 行的替代路径：必须引用那句原因（一处写、处处用）
-      expect(src.contains('PanWebLoginSpec.panWebLoginRetired(a.kind)'), isTrue,
-          reason: '★ 115 行必须显示撤除原因 + 指路扫码，不许只剩"未登录"');
       expect(
-        src.contains("ValueKey<String>('pan-account-weblogin-retired-\${a.kind}')"),
+        src.contains('PanWebLoginSpec.panWebLoginRetired(a.kind)'),
+        isTrue,
+        reason: '★ 115 行必须显示撤除原因 + 指路扫码，不许只剩"未登录"',
+      );
+      expect(
+        src.contains(
+          "ValueKey<String>('pan-account-weblogin-retired-\${a.kind}')",
+        ),
         isTrue,
       );
     });

@@ -66,7 +66,6 @@ import 'widgets/my_shelf.dart';
 import 'widgets/source_bar.dart';
 import 'widgets/sourin_scroll_behavior.dart';
 import 'webhome/webhome_page.dart';
-import 'webhome/webhome_settings_sheet.dart';
 import 'webhome/webhome_store.dart';
 import '../design/icons/app_icons.dart';
 
@@ -2412,11 +2411,12 @@ class HomePageState extends State<HomePage> {
      */
     if (WebHomeController.instance.showWebHome) {
       return WebHomePage(
+        key: ValueKey<String>(
+            '${WebHomeController.instance.activeId}:${WebHomeController.instance.html.hashCode}'),
         onOpenDetail: widget.onOpenDetail,
         onOpenLive: widget.onOpenLive,
         onBackToNative: () =>
             WebHomeController.instance.backToNativeForThisSession(),
-        onOpenSettings: () => showWebHomeSettingsSheet(context),
       );
     }
 
@@ -2498,10 +2498,7 @@ class HomePageState extends State<HomePage> {
        *    原版 TV 的 `max-width: none` ⇒ 没有居中那一步，只有 5vw 内边距。
        *    所以 TV 的容器层 = `0 + max(24, 5%×band)`，逐位等于 `max(var(--sp-6), --tv-safe-x)`。
        */
-      // ★ T6 webHome：原生模式下右上角浮层入口（HTML 首页设置）。
-      //   用 Stack 包裹而不是动 SourceBar —— 源条是被门禁量过几何的
-      //   （t94/t4），浮层只占自身小矩形，命中测试对原有部件零影响。
-      //   ⚠️ 内层缩进保持原样以压缩 diff（RefreshIndicator 以下原文未动）。
+      // HTML 配置入口移至设置页；保留内容的既有布局约束。
       child: Stack(
         children: [
           Positioned.fill(
@@ -2712,12 +2709,6 @@ class HomePageState extends State<HomePage> {
       ),
       ),   // ← 内容带那层 Padding 的收口（见上面那段长注释）
           ), // Positioned.fill
-          // ★ T6：浮层入口（见 build 顶部注释）
-          const Positioned(
-            top: 6,
-            right: 10,
-            child: WebHomeEntryButton(),
-          ),
         ],
       ),
     );

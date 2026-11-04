@@ -2,6 +2,9 @@
 
 Status: implemented
 
+后续局部扩展：[源筛选与多模板管理](2026-11-04-settings-owned-html-home-library-and-source-filters.md)
+增加筛选范围内批选和排序，保留屏外选择；本文独立编辑入口、源身份和扇出决定不变。
+
 Independent: 与 `2026-10-29-restore-auto-disabled-sources.md`（谁参与搜索）不同：
 本篇只改**配置入口与配置项**（弹窗结构、备注、去重、列表过滤），不改扇出、不改搜索。
 

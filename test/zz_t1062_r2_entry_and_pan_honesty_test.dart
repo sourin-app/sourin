@@ -332,12 +332,19 @@ void main() {
   // ───────────────────────────────────────────────────────────────
   group('⑤ #3 页面文案不许再暗示「能扫码」', () {
     test('★★ 源码里不再有"以实际结果为准"这种把能力说成可用的措辞', () {
-      final src = File('lib/ui/settings/pan_settings_page.dart').readAsStringSync();
-      expect(src.contains('各网盘是否支持扫码以实际结果为准'), isFalse,
-          reason: '★★★ 改前这句读起来像"可以扫码，只是看盘支不支持" ⇒ '
-              '用户点了才撞 unsupported。注入「把这句改回去」⇒ 本条红');
-      expect(src.contains('还没有接入后端实现'), isTrue,
-          reason: '★ 必须如实说当前没接入');
+      final src =
+          File('lib/ui/settings/pan_settings_page.dart').readAsStringSync();
+      expect(
+        src.contains('各网盘是否支持扫码以实际结果为准'),
+        isFalse,
+        reason: '★★★ 改前这句读起来像"可以扫码，只是看盘支不支持" ⇒ '
+            '用户点了才撞 unsupported。注入「把这句改回去」⇒ 本条红',
+      );
+      expect(
+        src.contains('showPanQrLoginDialog('),
+        isTrue,
+        reason: '扫码必须走独立弹窗，不再常驻显示历史未接入文案',
+      );
     });
 
     test('★★ 命令名一个都没删（后端接上时能自动恢复）', () {

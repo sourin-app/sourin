@@ -15,7 +15,7 @@
 // ```text
 // ① WebviewWindow.isWebviewAvailable() 探测 ⇒ 不可用 ⇒ 按钮置灰 + 提示装 Runtime
 // ② WebviewWindow.create + launch(登录入口 URL)   （独立原生窗口，关窗 = 取消）
-// ③ 每 2 秒 getAllCookies() → 纯函数判据：目标域 + 登录态键全存在
+// ③ 导航前读取认证键基线；轮询仅自动保存新键，已有会话需显式确认
 // ④ 命中 ⇒ 拼接 "k=v; …"（只取目标域，同名后到覆盖，注入键丢弃）
 //    → SourinCore.callAsync('pan_save_credential', {kind, account, cookie})
 //    → Rust pan_login::command_save_credential → pan_auth::save（钥匙串唯一入口）
@@ -355,6 +355,24 @@ Map<String, String> _panWebCookieValues(
   return values;
 }
 
+Map<String, String> panWebAuthBaseline(
+  List<CapturedCookie> cookies,
+  PanWebLoginSpec spec,
+) {
+  final values = _panWebCookieValues(cookies, spec);
+  return Map.unmodifiable({for (final key in spec.requiredKeys) key: values[key] ?? ''});
+}
+
+bool panWebAuthenticationChanged(
+  List<CapturedCookie> cookies,
+  PanWebLoginSpec spec,
+  Map<String, String>? baseline,
+) {
+  if (baseline == null || !panWebLoginCaptured(cookies, spec)) return false;
+  final current = panWebAuthBaseline(cookies, spec);
+  return spec.requiredKeys.any((key) => current[key] != (baseline[key] ?? ''));
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  UI 链路（独立原生窗口 + Flutter 侧等待弹窗）
 // ═══════════════════════════════════════════════════════════════════════
@@ -399,6 +417,7 @@ Future<bool> showPanWebLogin(
   }
   if (!context.mounted) return false;
   Webview? createdWindow;
+  Map<String, String>? initialAuthKeys;
   var abandonedCreation = false;
   try {
     final creation = WebviewWindow.create(
@@ -423,6 +442,17 @@ Future<bool> showPanWebLogin(
         throw TimeoutException('Login window creation timed out');
       },
     );
+    try {
+      final cookies = await NativePanWebLoginWindow(createdWindow).readCookies()
+          .timeout(panLoginRequestTimeout);
+      initialAuthKeys = panWebAuthBaseline(cookies, spec);
+    } catch (_) {
+      // Unknown is not an empty profile: automatic capture remains disabled.
+    }
+    if (!context.mounted) {
+      unawaited(_closePanWebLoginWindow(createdWindow.close));
+      return false;
+    }
     await createdWindow.launch(spec.loginUrl).timeout(panLoginRequestTimeout);
   } catch (e) {
     abandonedCreation = true;
@@ -455,7 +485,9 @@ Future<bool> showPanWebLogin(
     if (!context.mounted) return false;
     final ok = await showAppDialog<bool>(
       context: context,
-      builder: (_) => PanWebLoginWaitingDialog(webview: webview, spec: spec),
+      builder: (_) => PanWebLoginWaitingDialog(
+        webview: webview, spec: spec, initialAuthKeys: initialAuthKeys,
+      ),
     );
     return ok ?? false;
   } finally {
@@ -572,10 +604,12 @@ class PanWebLoginWaitingDialog extends StatefulWidget {
     super.key,
     required this.webview,
     required this.spec,
+    this.initialAuthKeys,
   });
 
   final PanWebLoginWindow webview;
   final PanWebLoginSpec spec;
+  final Map<String, String>? initialAuthKeys;
 
   @override
   State<PanWebLoginWaitingDialog> createState() =>
@@ -589,14 +623,17 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
   bool _cancelled = false;
   bool _pollBusy = false;
   bool _windowClosed = false;
-  String _state = '登录窗口已打开：请在弹出的窗口里完成登录，检测到登录态后这里会自动保存';
+  String _state = '登录窗口已打开：正在检测网页登录态';
   String _error = '';
   String _hint = '';
   final Stopwatch _waited = Stopwatch();
+  Map<String, String>? _initialAuthKeys;
 
   @override
   void initState() {
     super.initState();
+    _initialAuthKeys = widget.initialAuthKeys == null
+        ? null : Map.unmodifiable(widget.initialAuthKeys!);
     _waited.start();
     unawaited(
       widget.webview.onClose.then<void>(
@@ -613,6 +650,7 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
 
   @override
   void dispose() {
+    _initialAuthKeys = null;
     _cancelled = true;
     _finished = true;
     _waited.stop();
@@ -651,7 +689,7 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
     });
   }
 
-  Future<void> _poll() async {
+  Future<void> _poll({bool confirmExisting = false}) async {
     if (_finished || _pollBusy || !mounted) return;
     _pollBusy = true;
     try {
@@ -695,7 +733,17 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
         return;
       }
 
-      // 命中判据 ⇒ 拼串落盘（键名+长度只进 Rust 侧日志，值绝不落）
+      if (!confirmExisting &&
+          !panWebAuthenticationChanged(cookies, widget.spec, _initialAuthKeys)) {
+        if (!mounted || _finished) return;
+        setState(() {
+          _hint = _initialAuthKeys == null
+              ? '检测到网页登录态，尚未确认使用'
+              : '检测到已有网页登录态，尚未确认使用';
+        });
+        return;
+      }
+      // Only a new authentication key or explicit current-state confirmation saves.
       final cookie = panWebBuildCookieString(cookies, widget.spec);
       if (cookie == null || cookie.isEmpty) {
         // ★ 旧行为是静默 return（永远转圈）；现在如实说拼不出来
@@ -750,7 +798,7 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
     });
   }
 
-  void _recheck() {
+  void _recheck({bool confirmExisting = false}) {
     if (_pollBusy || _cancelled || _windowClosed) return;
     _finished = false;
     _waited
@@ -768,7 +816,7 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
     );
     _deadline?.cancel();
     _deadline = Timer(panWebLoginTimeout, () => _onTimeout(const []));
-    unawaited(_poll());
+    unawaited(_poll(confirmExisting: confirmExisting));
   }
 
   void _cancel() {
@@ -829,15 +877,22 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
             ),
         ],
       ),
-      actions: Row(
-        mainAxisAlignment: MainAxisAlignment.end,
+      actions: Wrap(
+        alignment: WrapAlignment.end,
+        spacing: Sp.x1,
+        runSpacing: Sp.x1,
         children: [
           AppTextButton(
+            key: const ValueKey<String>('pan-web-login-confirm-existing'),
+            onPressed: _pollBusy || _windowClosed
+                ? null : () => _recheck(confirmExisting: true),
+            child: const Text('使用当前登录态'),
+          ),
+          AppTextButton(
             key: const ValueKey<String>('pan-web-login-recheck'),
-            onPressed: _pollBusy || _windowClosed ? null : _recheck,
+            onPressed: _pollBusy || _windowClosed ? null : () => _recheck(),
             child: const Text('重新检测'),
           ),
-          const SizedBox(width: Sp.x1),
           AppTextButton(
             key: const ValueKey<String>('pan-web-login-cancel'),
             onPressed: _cancel,

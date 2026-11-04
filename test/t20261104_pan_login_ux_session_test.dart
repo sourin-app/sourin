@@ -75,6 +75,7 @@ Future<void> openWeb(WidgetTester tester, LocalWindow window) async {
               builder: (_) => PanWebLoginWaitingDialog(
                 webview: window,
                 spec: PanWebLoginSpec.of('quark')!,
+                initialAuthKeys: const {},
               ),
             ),
             child: const Text('open'),

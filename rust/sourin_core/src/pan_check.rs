@@ -545,17 +545,25 @@ impl PanChecker {
             Err(_) => return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
         };
         // ③ detail（非空文件列表 = 链接有效；根目录 pdir_fid=0 —— nav_params 同款）
-        let detail = format!(
-            "{detail_url}?pr={pr}&fr={fr}&pwd_id={share_id}&stoken={stoken}&force=0&_page=1&_size=50"
-        );
-        match self
-            .get_text(
-                &detail,
-                ua,
-                &[("Origin", origin.to_string()), ("Referer", page.to_string())],
-            )
-            .await
-        {
+        let mut detail = match reqwest::Url::parse(detail_url) {
+            Ok(url) => url,
+            Err(_) => return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
+        };
+        detail.query_pairs_mut().extend_pairs([
+            ("pr", pr),
+            ("fr", fr),
+            ("pwd_id", share_id),
+            ("stoken", stoken.as_str()),
+            ("force", "0"),
+            ("_page", "1"),
+            ("_size", "50"),
+        ]);
+        detail.query_pairs_mut().extend_pairs(crate::pan_list::nav_params(kind, None));
+        let mut headers = vec![("Origin", origin.to_string()), ("Referer", page.to_string())];
+        if !cookies.is_empty() {
+            headers.push(("Cookie", cookies));
+        }
+        match self.get_text(detail.as_str(), ua, &headers).await {
             Ok((status, body)) => {
                 if let Some(mapped) = quark_family_response_failure(status, &body) {
                     return mapped;
@@ -1009,6 +1017,105 @@ mod tests {
         r#"{"status":200,"code":0,"message":"ok","data":{"stoken":"ST","title":"甲"}}"#;
     const QDETAIL_OK: &str =
         r#"{"status":200,"code":0,"data":{"list":[{"fid":"f1","file_name":"A.mp4","file_type":0,"size":"1"}]}}"#;
+
+    async fn observed_family_detail_context(
+        kind: PanKind,
+        stoken: &'static str,
+    ) -> (String, Vec<(String, String)>) {
+        use axum::response::IntoResponse;
+        let observed = Arc::new(Mutex::new(None));
+        let captured = observed.clone();
+        let token_body = json!({
+            "status": 200, "code": 0, "data": {"stoken": stoken, "title": "fixture"}
+        })
+        .to_string();
+        let app = axum::Router::new().fallback(move |req: axum::extract::Request| {
+            let captured = captured.clone();
+            let token_body = token_body.clone();
+            async move {
+                let path = req.uri().path();
+                if path.contains("page") {
+                    return (
+                        [(axum::http::header::SET_COOKIE, "ctoken=fixture; Path=/; HttpOnly")],
+                        "share page",
+                    )
+                        .into_response();
+                }
+                if path.contains("token") {
+                    return token_body.into_response();
+                }
+                if path.contains("detail") {
+                    let cookie = req
+                        .headers()
+                        .get(axum::http::header::COOKIE)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    let url =
+                        reqwest::Url::parse(&format!("http://localhost{}", req.uri())).unwrap();
+                    let query = url.query_pairs().into_owned().collect::<Vec<_>>();
+                    *captured.lock().unwrap() = Some((cookie, query));
+                    return QDETAIL_OK.into_response();
+                }
+                axum::http::StatusCode::NOT_FOUND.into_response()
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let checker = PanChecker::with_endpoints(endpoints_at(&base));
+        let share = match kind {
+            PanKind::Quark => "https://pan.quark.cn/s/context-fixture",
+            PanKind::Uc => "https://drive.uc.cn/s/context-fixture",
+            _ => unreachable!(),
+        };
+        let result = checker.check_one(share, None).await.0;
+        server.abort();
+        let _ = server.await;
+        assert_eq!(result.state, CheckState::Ok);
+        let context = observed.lock().unwrap().take().expect("production detail was requested");
+        context
+    }
+
+    #[tokio::test]
+    async fn family_detail_request_keeps_share_page_cookie() {
+        for kind in [PanKind::Quark, PanKind::Uc] {
+            let (cookie, _) = observed_family_detail_context(kind, "ST").await;
+            assert_eq!(cookie, "ctoken=fixture", "{kind:?} detail must retain anonymous session");
+            assert!(!cookie.contains("HttpOnly"));
+        }
+    }
+
+    #[tokio::test]
+    async fn family_detail_request_selects_root_directory() {
+        for kind in [PanKind::Quark, PanKind::Uc] {
+            let (_, query) = observed_family_detail_context(kind, "ST").await;
+            let roots = query
+                .iter()
+                .filter(|(key, _)| key == "pdir_fid")
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(roots, vec!["0"], "{kind:?} detail must explicitly request the share root");
+        }
+    }
+
+    #[tokio::test]
+    async fn family_detail_request_roundtrips_reserved_token() {
+        let token = "ST+/=&next=%value";
+        for kind in [PanKind::Quark, PanKind::Uc] {
+            let (_, query) = observed_family_detail_context(kind, token).await;
+            let tokens = query
+                .iter()
+                .filter(|(key, _)| key == "stoken")
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(tokens, vec![token], "{kind:?} token must survive URL decoding");
+            assert!(
+                !query.iter().any(|(key, _)| key == "next"),
+                "token must not inject parameters"
+            );
+        }
+    }
 
     async fn check_family_replay(
         kind: PanKind,

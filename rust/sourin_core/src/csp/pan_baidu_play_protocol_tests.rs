@@ -645,3 +645,62 @@ async fn cookie_lifetime_keeps_unexpired_values_and_max_age_overrides_expires() 
     }
     assert!(!list.contains_key("SHORT_MAX_AGE_WINS") && !list.contains_key("DELETE_WINS"));
 }
+
+#[tokio::test]
+async fn late_private_page_preserves_expired_generation_error_without_followup() {
+    use super::super::pan_playback_guard as guard;
+    let mut page = Reply::ok("/s/5Ab_Cd", SHARE_PAGE);
+    page.delay = std::time::Duration::from_millis(350);
+    let replay = Replay::start(vec![
+        page,
+        Reply::ok("/share/verify", VERIFY_OK),
+        Reply::ok("/share/list", LIST_OK),
+    ])
+    .await;
+    let owner = guard::PlaybackOwner {
+        consumer: "baidu-private-late-page".into(),
+        generation: 1,
+    };
+    guard::register(Some(owner.clone())).unwrap();
+    let request = guard::with_scope(Some(owner.clone()), replay.resolve("pwd"));
+    let invalidate = async {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while replay.requests().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        guard::register(Some(guard::PlaybackOwner {
+            generation: 2,
+            ..owner
+        }))
+        .unwrap();
+    };
+    let (error, _) = tokio::join!(request, invalidate);
+    assert_eq!(error, "播放解析请求已过期");
+    assert_eq!(
+        replay.requests().len(),
+        1,
+        "stale page cannot send account cookies again"
+    );
+}
+
+#[tokio::test]
+async fn expired_private_generation_is_rejected_before_first_request() {
+    use super::super::pan_playback_guard as guard;
+    let replay = Replay::standard(SHARE_PAGE, VERIFY_OK, LIST_OK).await;
+    let owner = guard::PlaybackOwner {
+        consumer: "baidu-private-expired-entry".into(),
+        generation: 1,
+    };
+    guard::register(Some(owner.clone())).unwrap();
+    guard::register(Some(guard::PlaybackOwner {
+        generation: 2,
+        ..owner.clone()
+    }))
+    .unwrap();
+    let error = guard::with_scope(Some(owner), replay.resolve("pwd")).await;
+    assert_eq!(error, "播放解析请求已过期");
+    assert!(replay.requests().is_empty());
+}

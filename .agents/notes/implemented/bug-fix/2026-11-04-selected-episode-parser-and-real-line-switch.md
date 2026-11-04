@@ -93,6 +93,10 @@ Owner 驳回上一批实机结果：搜索能看到胖妞，但资源不能播�
 
 ## Relations
 
+[Supported share handoff](2026-11-04-supported-share-candidate-handoff.md)
+repairs the HJ/Wogg source boundary for supported Baidu/Xunlei shares; these
+remain intermediate candidates until the host checks and resolves them.
+
 [Quark selected-file video fallback](2026-11-04-quark-selected-file-video-api-fallback.md)
 adds the official video API for download code 23018. This note's precheck,
 selected-file identity, scoped ownership and real line-switching decisions

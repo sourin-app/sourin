@@ -7,6 +7,13 @@ retains this request/carry/error decision and adds future expiration checks to
 both header and value lookup. The earlier 24-test result remains historical;
 the final targeted suite includes all 27 tests.
 
+[Anonymous shared-protocol precheck](2026-11-04-baidu-anonymous-precheck-shared-protocol.md)
+now uses the same request inspector, without reading credentials or treating
+successful metadata and unknown authentication errors as a dead share.
+[Source-to-host share handoff](2026-11-04-supported-share-candidate-handoff.md)
+lets supported real source episodes reach this preface. Neither follow-up
+implements complete Baidu file playback.
+
 ## Problem
 
 The Baidu resolver puts t/surl in the verify form instead of the official URL

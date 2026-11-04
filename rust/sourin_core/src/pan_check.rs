@@ -580,107 +580,46 @@ impl PanChecker {
         }
     }
 
-    // ── 百度（page → [verify] → share/list；hp0 的 JSON 端点） ──
+    // ── 百度：复用生产只读协议；匿名检查不加载账号或扫描成功元数据 ──
 
     async fn check_baidu(&self, share_id: &str, pwd: Option<&str>) -> CheckOutcome {
-        // surl：/s/1xxx 的前导 1 是路径前缀（pan_list.rs:725 实测注释）
-        let surl_eff = if share_id.len() > 1 && share_id.starts_with('1') {
-            share_id[1..].to_string()
-        } else {
-            share_id.to_string()
+        use crate::csp::pan_baidu_play::{
+            inspect_anonymous, BaiduEndpoints, BaiduFailureCause, BaiduInspection, BaiduStage,
         };
-        let page = format!("{}/{}", self.shared.endpoints.baidu_page, share_id);
-        let mut cookies = self
-            .page_cookies(&format!("{page}?pwd={}", pwd.unwrap_or("")), UA_DESKTOP)
-            .await;
-        // 提交已知提取码（verify；没码就跳过，靠 share/list 的 HasPwd 判 locked）
-        if let Some(code) = pwd {
-            let verify = format!(
-                "{}?surl={}&channel=chunlei&web=1&app_id=250528&clienttype=0",
-                self.shared.endpoints.baidu_verify, surl_eff
-            );
-            match self
-                .shared
-                .client
-                .post(&verify)
-                .header(reqwest::header::USER_AGENT, UA_DESKTOP)
-                .header(reqwest::header::REFERER, &page)
-                .header(reqwest::header::ORIGIN, "https://pan.baidu.com")
-                .form(&[("pwd", code), ("vcode", ""), ("vcode_str", "")])
-                .send()
-                .await
-            {
-                Ok(r) => {
-                    let extra = cookies_of(&r);
-                    if !extra.is_empty() {
-                        cookies = if cookies.is_empty() { extra } else { format!("{cookies}; {extra}") };
+        let endpoints = BaiduEndpoints {
+            page: self.shared.endpoints.baidu_page.clone(),
+            verify: self.shared.endpoints.baidu_verify.clone(),
+            list: self.shared.endpoints.baidu_list.clone(),
+        };
+        match inspect_anonymous(&endpoints, share_id, pwd.unwrap_or("")).await {
+            Ok(BaiduInspection::Files) => CheckOutcome::new(CheckState::Ok, TEXT_OK),
+            Ok(BaiduInspection::Empty) => CheckOutcome::new(CheckState::Bad, TEXT_NO_FILE),
+            Ok(BaiduInspection::NeedsPasscode) => CheckOutcome::new(CheckState::Locked, TEXT_LOCKED),
+            Err(failure) => {
+                match failure.cause {
+                    BaiduFailureCause::Http(403 | 429) => {
+                        return CheckOutcome::new(CheckState::Uncertain, TEXT_UNVERIFIABLE);
                     }
-                    let body = r.text().await.unwrap_or_default();
-                    let errno = serde_json::from_str::<Value>(&body)
-                        .ok()
-                        .and_then(|v| v.get("errno").and_then(|x| x.as_i64()));
-                    if errno.unwrap_or(-1) != 0 {
-                        // 码交了还被拒 ⇒ 还是 locked（用户有别的码可再试，不判死）
+                    BaiduFailureCause::Business(BaiduStage::Verify, -9) => {
+                        // Official verify explicitly identifies -9 as extraction-code refusal.
                         return CheckOutcome::new(CheckState::Locked, TEXT_LOCKED);
                     }
+                    BaiduFailureCause::Business(_, -6 | -12 | -62 | -19 | -63 | 8046 | -64 | -65) => {
+                        return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED);
+                    }
+                    BaiduFailureCause::Business(_, _) => {}
+                    _ => return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
                 }
-                Err(_) => return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
-            }
-        }
-        // share/list（hp0 的 JSON 端点）
-        let mut list_url = format!(
-            "{}?web=1&page=1&num=20&order=time&desc=1&showempty=0&shorturl={surl_eff}&root=1&clienttype=0",
-            self.shared.endpoints.baidu_list
-        );
-        if let Some(code) = pwd {
-            list_url.push_str(&format!("&receive_code={code}"));
-        }
-        let mut req = self
-            .shared
-            .client
-            .get(&list_url)
-            .header(reqwest::header::USER_AGENT, UA_DESKTOP)
-            .header("X-Requested-With", "XMLHttpRequest")
-            .header(reqwest::header::REFERER, "https://pan.baidu.com/");
-        if !cookies.is_empty() {
-            req = req.header(reqwest::header::COOKIE, cookies);
-        }
-        let body = match req.send().await {
-            Ok(r) => match r.text().await {
-                Ok(t) => t,
-                Err(_) => return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
-            },
-            Err(_) => return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
-        };
-        if let Some(mapped) = map_upstream_text(&body) {
-            return mapped;
-        }
-        let v: Value = match serde_json::from_str(&body) {
-            Ok(v) => v,
-            Err(_) => return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
-        };
-        // hp0 判据键：HasPwd / errno / list（share_state/forbid_reason 走关键词归因）
-        if v.get("HasPwd").and_then(|x| x.as_bool()).unwrap_or(false) {
-            return CheckOutcome::new(CheckState::Locked, TEXT_LOCKED);
-        }
-        let count = v.get("list").and_then(|x| x.as_array()).map(|a| a.len()).unwrap_or(0);
-        match v.get("errno").and_then(|x| x.as_i64()) {
-            Some(0) | None => {
-                if count > 0 {
-                    CheckOutcome::new(CheckState::Ok, TEXT_OK)
-                } else {
-                    CheckOutcome::new(CheckState::Bad, TEXT_NO_FILE)
+                let error_text = failure.error_messages.join("\n").to_lowercase();
+                // An authentication/captcha refusal cannot establish a dead share.
+                if ["登录", "认证", "验证码", "captcha", "authentication", "unauthorized",
+                    "not logged", "login", "token", "cookie", "session", "credential", "bduss"]
+                    .iter().any(|word| error_text.contains(word))
+                {
+                    return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED);
                 }
-            }
-            Some(e) => {
-                // ★ summary 保持 hp0 逐字文案（文案唯一来源纪律）。
-                // ★ 日志只打 errno 与"有没有带提取码"的布尔——**URL 不落日志**：
-                //   list_url 里含 receive_code=<提取码>，打进日志就是凭据泄漏（P3-3）。
-                log::debug!(
-                    "[pan_check] baidu share/list errno={e} with_receive_code={}",
-                    pwd.is_some()
-                );
-                CheckOutcome::new(CheckState::Bad, TEXT_DEAD)
+                map_upstream_text(&error_text)
+                    .unwrap_or_else(|| CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED))
             }
         }
     }
@@ -850,7 +789,40 @@ fn cookies_of(resp: &reqwest::Response) -> String {
 
 static GLOBAL: OnceLock<PanChecker> = OnceLock::new();
 
+#[cfg(test)]
+thread_local! {
+    static TEST_GLOBAL_CHECKER: std::cell::Cell<Option<&'static PanChecker>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) struct ScopedCheckerOverride {
+    previous: Option<&'static PanChecker>,
+    thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for ScopedCheckerOverride {
+    fn drop(&mut self) {
+        TEST_GLOBAL_CHECKER.with(|slot| slot.set(self.previous));
+    }
+}
+
+/// Current-thread tests only; the guard is not Send and restores nested overrides.
+#[cfg(test)]
+pub(crate) fn override_global_checker_for_tests(checker: &'static PanChecker) -> ScopedCheckerOverride {
+    ScopedCheckerOverride {
+        previous: TEST_GLOBAL_CHECKER.with(|slot| slot.replace(Some(checker))),
+        thread_bound: std::marker::PhantomData,
+    }
+}
+
 pub(crate) fn global_checker() -> &'static PanChecker {
+    #[cfg(test)]
+    if let Some(checker) = TEST_GLOBAL_CHECKER.with(|slot| slot.get()) {
+        return checker;
+    }
     GLOBAL.get_or_init(PanChecker::new)
 }
 
@@ -873,6 +845,10 @@ pub async fn command_check(items_json: &str) -> Result<Value, String> {
 // ══════════════════════════════════════════════════════════════════════
 //  门禁
 // ══════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+#[path = "pan_check_baidu_protocol_tests.rs"]
+mod baidu_protocol_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1411,7 +1387,8 @@ mod tests {
     async fn baidu_haspwd_errno_replay() {
         // 无码 + HasPwd ⇒ locked
         let base = spawn_replay(
-            vec![("/share/list", 200, r#"{"errno":0,"HasPwd":true,"list":[],"count":0}"#.into())],
+            vec![("/bs", 200, "share page".into()),
+                ("/share/list", 200, r#"{"errno":0,"HasPwd":true,"list":[],"count":0}"#.into())],
             Arc::new(AtomicUsize::new(0)),
         )
         .await;
@@ -1422,7 +1399,8 @@ mod tests {
 
         // 有文件 ⇒ ok
         let base2 = spawn_replay(
-            vec![("/share/list", 200, r#"{"errno":0,"list":[{"fs_id":1}],"count":1}"#.into())],
+            vec![("/bs", 200, "share page".into()),
+                ("/share/list", 200, r#"{"errno":0,"list":[{"fs_id":1,"server_filename":"a.mkv"}],"count":1}"#.into())],
             Arc::new(AtomicUsize::new(0)),
         )
         .await;
@@ -1430,16 +1408,18 @@ mod tests {
         let (out, _, _) = c2.check_one("https://pan.baidu.com/s/1AbCd", None).await;
         assert_eq!(out.state, CheckState::Ok);
 
-        // errno != 0（无关键词）⇒ bad + 链接失效
+        // 未知 errno 没有明确拒绝信息，不证明分享失效。
         let base3 = spawn_replay(
-            vec![("/share/list", 200, r#"{"errno":105,"list":[]}"#.into())],
+            vec![("/bs", 200, "share page".into()),
+                ("/share/list", 200, r#"{"errno":105,"list":[]}"#.into())],
             Arc::new(AtomicUsize::new(0)),
         )
         .await;
         let c3 = PanChecker::with_endpoints(endpoints_at(&base3));
         let (out, _, _) = c3.check_one("https://pan.baidu.com/s/1AbCd", None).await;
-        assert_eq!(out.state, CheckState::Bad);
-        assert_eq!(out.summary, TEXT_DEAD);
+        assert_eq!(out.state, CheckState::Uncertain);
+        assert_eq!(out.summary, TEXT_FAILED);
+        assert!(!out.cacheable);
     }
 
     #[tokio::test]
@@ -1509,7 +1489,8 @@ mod tests {
     async fn risk_response_sets_cooldown_and_not_cached() {
         let hits = Arc::new(AtomicUsize::new(0));
         let base = spawn_replay(
-            vec![("/share/list", 429, r#"{"errno":429,"message":"请求过于频繁"}"#.into())],
+            vec![("/bs", 200, "share page".into()),
+                ("/share/list", 429, r#"{"errno":429,"message":"请求过于频繁"}"#.into())],
             hits.clone(),
         )
         .await;

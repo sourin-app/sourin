@@ -617,6 +617,10 @@ pub async fn probe_categories(
 }
 
 #[cfg(test)]
+#[path = "pan_host_dispatch_tests.rs"]
+mod share_dispatch_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

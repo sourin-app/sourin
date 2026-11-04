@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════
-//  分享页当剧集 —— 把 `pan.quark.cn/s/<id>` / `drive.uc.cn/s/<id>` 解析成直链
+//  分享页识别与宿主中间候选；候选地址不是可直接播放的媒体
 // ═══════════════════════════════════════════════════════════════════════
 //
 // # 为什么需要这一层（Owner 现场：`冰雪奇缘` 点开 ⇒ "这个格式解不了"）
@@ -15,7 +15,7 @@
 // （否则每个源都要自己接一遍网盘，等于把协议抄 N 份）。
 // ```
 //
-// # 只认"分享页"这一种形状，不猜
+// # parse_share_page 仍只认 Quark/UC 两族分享形状，不猜
 // ```text
 // 认：`pan.quark.cn/s/<id>`、`drive.uc.cn/s/<id>`（可带 `?pwd=xxxx`）
 // 不认：直链、播放页、别的网盘（百度/115/阿里/天翼/迅雷/123/光鸭）
@@ -116,31 +116,39 @@ pub fn drive_for(kind: PanKind) -> Option<PanDrive> {
     }
 }
 
-/// ★★★ T1a（2026-10-31）：分享页 URL → **本仓原生直链转换**的入口凭据
-///
-/// 认出夸克/UC 族的分享页 ⇒ 交回 `CspPlay`（给 csp 源的 `play()` 用）——
-/// resolve 出口的原生钩子（provider.rs）会把它交给
-/// [`PanDrive::resolve_share_play`](super::pan_drive::PanDrive)：转存 sourin-temp
-/// → 直链 + `__puus`，含 23018 超限降级；未登录返回 `NEED_LOGIN`，
-/// 由 `classify_err` 翻译成 Unauthorized（4kzhinan 等源已走同一条链路验证）。
-///
-/// # 判据落在网盘族上（**不是新域名清单**）
-/// ```text
-/// `parse_share_page` 的精确 host + `/s/<id>` 判据就是 pan_drive 夸克/UC 两族的
-/// 入口 —— 这里只复用它。其它网盘族（百度/迅雷/115/阿里/139/…）返回 None ⇒
-/// 调用方维持既有如实文案（T1b 取证后另接，见 .probe/plan-2026-10-31-…md T1）。
-/// ```
-///
-/// 夹具全部来自真网抓取（wogg 114504 / hjzhencai 754 / hdmoli 2857，2026-10-31），
-/// 见 `mod tests`。`ua` 用调用方站点的（这层只透传，真正取直链的是 PanDrive）。
+/// 分享页的中间候选，不是播放器可直接使用的媒体地址。
+/// Quark/UC 继续复用两族识别器；Baidu/Xunlei 只交给宿主已接管的预检与解析。
+/// provider.resolve 必须拦截这些候选，百度仍可能停在完整取流未接入的诚实边界。
 pub fn share_page_play(url: &str, ua: &str) -> Option<super::CspPlay> {
-    let sr = parse_share_page(url)?;
+    let label = if let Some(sr) = parse_share_page(url) {
+        format!("网盘分享页（原生转直链：{}）", sr.kind.display())
+    } else {
+        if url.chars().any(char::is_control) { return None; }
+        let parsed = reqwest::Url::parse(url.trim()).ok()?;
+        let authority = url.trim().split_once("://")?.1.split(['/', '?', '#']).next()?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none()
+            || !parsed.username().is_empty() || parsed.password().is_some() || authority.contains('@') {
+            return None;
+        }
+        let share = crate::pan::parse_share(parsed.as_str());
+        if !matches!(share.kind, PanKind::Baidu | PanKind::Xunlei)
+            || share.share_id.is_empty()
+            || !share.share_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+            || share.pwd_in_url.as_deref().is_some_and(|pwd| pwd.chars().any(char::is_control)) {
+            return None;
+        }
+        format!("网盘分享页（待宿主检查解析：{}）", share.kind.display())
+    };
     Some(super::CspPlay {
         url: url.trim().to_string(),
         headers: vec![("User-Agent".to_string(), ua.to_string())],
-        label: Some(format!("网盘分享页（原生转直链：{}）", sr.kind.display())),
+        label: Some(label),
     })
 }
+
+#[cfg(test)]
+#[path = "pan_share_dispatch_tests.rs"]
+mod share_dispatch_tests;
 
 #[cfg(test)]
 mod tests {
@@ -200,7 +208,7 @@ mod tests {
     /// · yidong_4k 的 139 分享页 resUrl（真站形态，其它族反例）
     /// ```
     #[test]
-    fn share_page_play_converts_quark_uc_family_only() {
+    fn share_page_play_preserves_family_and_offers_host_supported_shares() {
         let ua = "Mozilla/5.0";
         // 夸克族真 URL（wogg 真抓）
         let p = share_page_play("https://pan.quark.cn/s/384ca6d78a7b", ua).expect("真夸克分享页");
@@ -217,9 +225,9 @@ mod tests {
         assert_eq!(p.headers[0].1, ua);
         // http 明文形态也要认（audit 里百度线路有 http 形态的先例）
         assert!(share_page_play("http://pan.quark.cn/s/8efcd269e4b7", ua).is_some());
-        // 其它网盘族真 URL（带提取码的最坏形态）⇒ None（T1b 前维持如实文案）
-        assert!(share_page_play("https://pan.baidu.com/s/1iLOQ464Uz5Q3MYQ3Qu0y9w?pwd=wogg", ua).is_none());
-        assert!(share_page_play("https://pan.baidu.com/s/1yCHnLlsJLd_yyoaZjvRSEg?pwd=vp3x", ua).is_none());
+        // 百度候选只用于宿主检查/解析，不宣称本层已经返回媒体。
+        assert!(share_page_play("https://pan.baidu.com/s/1iLOQ464Uz5Q3MYQ3Qu0y9w?pwd=wogg", ua).unwrap().label.unwrap().contains("宿主检查解析"));
+        assert!(share_page_play("https://pan.baidu.com/s/1yCHnLlsJLd_yyoaZjvRSEg?pwd=vp3x", ua).is_some());
         // 139（yidong_4k 真 resUrl 形态）⇒ None
         assert!(share_page_play("https://yun.139.com/shareweb/#/w/i/2yA8x3HAXdV06", ua).is_none());
         // 直链媒体不是分享页 ⇒ None

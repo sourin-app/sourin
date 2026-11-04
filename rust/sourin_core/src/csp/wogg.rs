@@ -508,17 +508,8 @@ impl CspSite for Wogg {
         })
     }
 
-    /// 取流：直链原样给；**夸克/UC 分享页交回给原生直链转换**（T1a）；
-    /// 其它网盘族如实拒绝（T1b 取证后另接）
-    ///
-    /// # ★ 2026-10-31 改判（此前"一律 Err"的理由已过时）
-    /// ```text
-    /// 改前：分享页塞进 CspPlay.url = 播放器请求 HTML 必然失败 —— 在"只有
-    ///       5266 转发服务能换直链"的年代成立。现在 provider.rs resolve 出口
-    ///       的 `parse_share_page → PanDrive::resolve_share_play` 是**本仓原生**
-    ///       的转存→直链链路（4kzhinan 等源已真机验证），夸克/UC 族的分享页
-    ///       交回去就能换直链，不会再进 mpv ⇒ 交回 + label 如实。
-    /// ```
+    /// 直链保持原样；已接管的网盘分享只交回宿主检查解析。
+    /// 本层不执行转存或选文件，百度完整取流仍由宿主如实报告未接入。
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
         let raw = id.trim();
         let url = raw.strip_prefix("pan|").unwrap_or(raw);
@@ -533,7 +524,7 @@ impl CspSite for Wogg {
                 label: Some("直链".to_string()),
             }]);
         }
-        // ★ T1a：夸克/UC 族分享页 → 原生转换（判据在 pan_share_play，非新域名清单）
+        // 中间分享候选由宿主预检解析，不能直接作为媒体流。
         if let Some(p) = crate::csp::pan_share_play::share_page_play(url, UA) {
             return Ok(vec![p]);
         }
@@ -737,13 +728,11 @@ mod tests {
             .await
             .expect("夸克分享页要交回原生转换");
         assert_eq!(got[0].url, "https://pan.quark.cn/s/384ca6d78a7b");
-        let err = site
+        let got = site
             .play("", "pan|https://pan.baidu.com/s/1iLOQ464Uz5Q3MYQ3Qu0y9w?pwd=wogg", "")
             .await
-            .expect_err("百度族 T1b 前必须如实 Err");
-        assert!(err.contains("百度网盘"), "{err}");
-        assert!(err.contains("T1b"), "{err}");
-        assert!(!err.contains("5266"), "5266 是过时口径：{err}");
+            .expect("百度应交给已接管的宿主检查解析");
+        assert!(got[0].label.as_deref().unwrap().contains("宿主检查解析"));
     }
 
     /// 接线断言：play 的分享分支必须真的走 share_page_play（不许只改文案）

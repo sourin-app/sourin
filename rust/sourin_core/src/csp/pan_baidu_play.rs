@@ -28,8 +28,95 @@ impl Default for BaiduEndpoints {
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                   (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BaiduInspection {
+    Files,
+    Empty,
+    NeedsPasscode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BaiduStage {
+    Verify,
+    List,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BaiduFailureCause {
+    Protocol,
+    Expired,
+    Http(u16),
+    Business(BaiduStage, i64),
+}
+
+pub(crate) struct BaiduInspectionFailure {
+    pub(crate) message: String,
+    pub(crate) cause: BaiduFailureCause,
+    // Selected failure-envelope fields only; never reflected in user text or Debug.
+    pub(crate) error_messages: Vec<String>,
+}
+
+impl std::fmt::Debug for BaiduInspectionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BaiduInspectionFailure")
+            .field("cause", &self.cause)
+            .field("message", &self.message)
+            .finish()
+    }
+}
+
+impl From<String> for BaiduInspectionFailure {
+    fn from(message: String) -> Self {
+        let cause = if message == "播放解析请求已过期" {
+            BaiduFailureCause::Expired
+        } else {
+            BaiduFailureCause::Protocol
+        };
+        Self {
+            message,
+            cause,
+            error_messages: Vec::new(),
+        }
+    }
+}
+
+impl From<&str> for BaiduInspectionFailure {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+impl BaiduInspectionFailure {
+    fn business(stage: BaiduStage, errno: i64, value: &serde_json::Value) -> Self {
+        let message = match stage {
+            BaiduStage::Verify => format!("百度分享校验未通过（verify errno={errno}）"),
+            BaiduStage::List => format!("百度分享列表失败（share/list errno={errno}）"),
+        };
+        let mut error_messages = Vec::new();
+        for key in ["message", "msg", "errmsg", "error_description", "error"] {
+            if let Some(message) = value.get(key).and_then(serde_json::Value::as_str) {
+                error_messages.push(message.into());
+            }
+        }
+        if let Some(error) = value.get("error").and_then(serde_json::Value::as_object) {
+            for key in ["message", "name", "code"] {
+                if let Some(message) = error.get(key).and_then(serde_json::Value::as_str) {
+                    error_messages.push(message.into());
+                }
+            }
+        }
+        Self {
+            message,
+            cause: BaiduFailureCause::Business(stage, errno),
+            error_messages,
+        }
+    }
+}
+
 pub async fn resolve(share_id: &str, passcode: &str) -> Result<CspPlay, String> {
+    super::pan_playback_guard::check_current()?;
     let cookie = crate::pan_auth::load(PanKind::Baidu).map(|c| c.cookie);
+    super::pan_playback_guard::check_current()?;
     resolve_with(
         &BaiduEndpoints::default(),
         cookie.as_deref(),
@@ -45,6 +132,7 @@ pub async fn resolve_with(
     share_id: &str,
     passcode: &str,
 ) -> Result<CspPlay, String> {
+    super::pan_playback_guard::check_current()?;
     let share_id = share_id.trim();
     if share_id.is_empty() {
         return Err("百度分享 id 为空（分享页 URL 解析失败）".into());
@@ -55,6 +143,38 @@ pub async fn resolve_with(
             PanKind::Baidu.code()
         ));
     };
+    let inspection = inspect_with(ep, cookie, share_id, passcode)
+        .await
+        .map_err(|failure| failure.message)?;
+    match inspection {
+        BaiduInspection::Empty => Err("百度分享里没有列出文件（list 为空）".into()),
+        BaiduInspection::NeedsPasscode => Err("百度分享需要提取码（share/list HasPwd）".into()),
+        BaiduInspection::Files => Err("百度分享文件列表已取得，但本版本仍未接入完整文件取直链 \
+            （dlink 请求形状未取证；列表成功不证明账号远端有效）"
+            .into()),
+    }
+}
+
+/// Shares the production protocol without loading any stored account credential.
+pub(crate) async fn inspect_anonymous(
+    ep: &BaiduEndpoints,
+    share_id: &str,
+    passcode: &str,
+) -> Result<BaiduInspection, BaiduInspectionFailure> {
+    inspect_with(ep, "", share_id, passcode).await
+}
+
+async fn inspect_with(
+    ep: &BaiduEndpoints,
+    cookie: &str,
+    share_id: &str,
+    passcode: &str,
+) -> Result<BaiduInspection, BaiduInspectionFailure> {
+    super::pan_playback_guard::check_current()?;
+    let share_id = share_id.trim();
+    if share_id.is_empty() {
+        return Err("百度分享 id 为空（分享页 URL 解析失败）".into());
+    }
     let mut page_url = endpoint(&ep.page)?;
     let verify_url = endpoint(&ep.verify)?;
     let list_url = endpoint(&ep.list)?;
@@ -131,7 +251,11 @@ pub async fn resolve_with(
         let value = response_json(&body, "verify")?;
         let errno = integer_errno(&value, "verify")?;
         if errno != 0 {
-            return Err(format!("百度分享校验未通过（verify errno={errno}）"));
+            return Err(BaiduInspectionFailure::business(
+                BaiduStage::Verify,
+                errno,
+                &value,
+            ));
         }
         bdclnd = value
             .get("randsk")
@@ -183,18 +307,48 @@ pub async fn resolve_with(
     let value = response_json(&body, "share/list")?;
     let errno = integer_errno(&value, "share/list")?;
     if errno != 0 {
-        return Err(format!("百度分享列表失败（share/list errno={errno}）"));
+        return Err(BaiduInspectionFailure::business(
+            BaiduStage::List,
+            errno,
+            &value,
+        ));
+    }
+    let needs_passcode = value.get("HasPwd").and_then(serde_json::Value::as_bool) == Some(true);
+    if needs_passcode && value.get("list").is_none() && passcode.trim().is_empty() {
+        return Ok(BaiduInspection::NeedsPasscode);
     }
     let items = value
         .get("list")
         .and_then(|value| value.as_array())
         .ok_or_else(|| "百度 share/list 未提供文件列表".to_string())?;
     if items.is_empty() {
-        return Err("百度分享里没有列出文件（list 为空）".into());
+        return Ok(if needs_passcode {
+            BaiduInspection::NeedsPasscode
+        } else {
+            BaiduInspection::Empty
+        });
     }
-    Err("百度分享文件列表已取得，但本版本仍未接入完整文件取直链 \
-        （dlink 请求形状未取证；列表成功不证明账号远端有效）"
-        .into())
+    if !items.iter().all(valid_file_entry) {
+        return Err("百度 share/list 文件条目结构无效".into());
+    }
+    Ok(BaiduInspection::Files)
+}
+
+fn valid_file_entry(value: &serde_json::Value) -> bool {
+    let Some(entry) = value.as_object() else {
+        return false;
+    };
+    let id = entry
+        .get("fs_id")
+        .and_then(|id| id.as_u64().or_else(|| id.as_str()?.parse().ok()));
+    id.is_some_and(|id| id > 0)
+        && entry
+            .get("server_filename")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| !name.trim().is_empty())
+        && entry
+            .get("isdir")
+            .is_none_or(|flag| matches!(flag.as_u64(), Some(0 | 1)))
 }
 
 fn endpoint(value: &str) -> Result<Url, String> {
@@ -243,11 +397,12 @@ async fn send(
     origin: &Url,
     deadline: tokio::time::Instant,
     stage: &str,
-) -> Result<(String, Url), String> {
+) -> Result<(String, Url), BaiduInspectionFailure> {
     for hop in 0..=5 {
+        super::pan_playback_guard::check_current()?;
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Err(format!("百度 {stage} 请求总预算耗尽"));
+            return Err(format!("百度 {stage} 请求总预算耗尽").into());
         }
         *request.timeout_mut() = Some(remaining.min(std::time::Duration::from_secs(15)));
         request.headers_mut().remove(header::COOKIE);
@@ -262,14 +417,14 @@ async fn send(
         let next_request = request
             .try_clone()
             .ok_or_else(|| format!("百度 {stage} 请求不可重试"))?;
-        let mut response = client
-            .execute(next_request)
-            .await
-            .map_err(|_| format!("百度 {stage} 请求传输失败"))?;
+        super::pan_playback_guard::check_current()?;
+        let response = client.execute(next_request).await;
+        super::pan_playback_guard::check_current()?;
+        let mut response = response.map_err(|_| format!("百度 {stage} 请求传输失败"))?;
         cookies.observe(response.headers(), response.url());
         if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
             if hop == 5 {
-                return Err(format!("百度 {stage} 跳转次数超限"));
+                return Err(format!("百度 {stage} 跳转次数超限").into());
             }
             let destination = response
                 .headers()
@@ -291,27 +446,32 @@ async fn send(
             continue;
         }
         if !response.status().is_success() {
-            return Err(format!(
-                "百度 {stage} 返回 HTTP {}",
-                response.status().as_u16()
-            ));
+            let status = response.status().as_u16();
+            return Err(BaiduInspectionFailure {
+                message: format!("百度 {stage} 返回 HTTP {status}"),
+                cause: BaiduFailureCause::Http(status),
+                error_messages: Vec::new(),
+            });
         }
         let final_url = response.url().clone();
         let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| format!("百度 {stage} 响应读取失败"))?
-        {
+        loop {
+            super::pan_playback_guard::check_current()?;
+            let chunk = response.chunk().await;
+            super::pan_playback_guard::check_current()?;
+            let Some(chunk) = chunk.map_err(|_| format!("百度 {stage} 响应读取失败"))?
+            else {
+                break;
+            };
             if body.len() + chunk.len() > 2 * 1024 * 1024 {
-                return Err(format!("百度 {stage} 响应超过大小限制"));
+                return Err(format!("百度 {stage} 响应超过大小限制").into());
             }
             body.extend_from_slice(&chunk);
         }
         let body = String::from_utf8(body).map_err(|_| format!("百度 {stage} 响应编码无效"))?;
         return Ok((body, final_url));
     }
-    Err(format!("百度 {stage} 跳转次数超限"))
+    Err(format!("百度 {stage} 跳转次数超限").into())
 }
 
 fn response_json(body: &str, stage: &str) -> Result<serde_json::Value, String> {
@@ -876,6 +1036,6 @@ mod tests {
         let err = resolve_with(&ep_of(&srv), Some("BDUSS=x"), "1NoPwd", "")
             .await
             .expect_err("需要提取码而没给 ⇒ Err");
-        assert!(err.contains("list 为空"), "{err}");
+        assert!(err.contains("需要提取码"), "{err}");
     }
 }

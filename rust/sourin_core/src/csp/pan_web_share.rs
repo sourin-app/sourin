@@ -832,7 +832,7 @@ mod tests {
         assert_eq!(UrlPanKind::of("https://example.com/x"), None);
     }
 
-    /// ★★★ T1a 门禁（2026-10-31）：夸克/UC 分享页交回**原生直链转换**；其它族维持如实 Err
+    /// Known share URLs are intermediate host candidates, not media addresses.
     ///
     /// # 夹具来源（真网抓取，lead 条件①：不许自造）
     /// ```text
@@ -855,13 +855,19 @@ mod tests {
             "label 要如实：{:?}",
             got[0].label
         );
-        let err = site
+        let baidu = site
             .play("", "pan|https://pan.baidu.com/s/1iLOQ464Uz5Q3MYQ3Qu0y9w?pwd=wogg", "")
             .await
-            .expect_err("百度族 T1b 前必须如实 Err");
-        assert!(err.contains("百度网盘"), "要点名是哪家盘：{err}");
-        assert!(err.contains("T1b"), "文案要点明转换归属：{err}");
-        assert!(!err.contains("5266"), "5266 是过时口径（原生链路已存在）：{err}");
+            .expect("百度分享应交给宿主检查与解析");
+        assert_eq!(baidu.len(), 1);
+        assert_eq!(baidu[0].url, "https://pan.baidu.com/s/1iLOQ464Uz5Q3MYQ3Qu0y9w?pwd=wogg");
+        assert!(baidu[0].label.as_deref().unwrap_or("").contains("待宿主检查解析"));
+        assert!(!baidu[0].label.as_deref().unwrap_or("").contains("原生转直链"));
+        let err = site
+            .play("", "pan|https://www.aliyundrive.com/s/unsupported-share", "")
+            .await
+            .expect_err("未接管的网盘仍须明确拒绝");
+        assert!(err.contains("阿里"), "{err}");
     }
 
     #[tokio::test]

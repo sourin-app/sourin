@@ -161,6 +161,51 @@ fn map_upstream_text(text: &str) -> Option<CheckOutcome> {
     None
 }
 
+fn quark_family_response_failure(http_status: u16, body: &str) -> Option<CheckOutcome> {
+    if matches!(http_status, 403 | 429) {
+        return Some(CheckOutcome::new(CheckState::Uncertain, TEXT_UNVERIFIABLE));
+    }
+    if http_status >= 500 {
+        return Some(CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED));
+    }
+    let response = serde_json::from_str::<Value>(body).ok();
+    let api_failed = response.as_ref().is_some_and(|value| {
+        value.get("code").is_some_and(|code| code.as_i64() != Some(0))
+            || value.get("status").is_some_and(|status| !matches!(status.as_i64(), Some(0 | 200)))
+            || (value.is_object()
+                && value.get("code").is_none()
+                && value.get("data").is_none()
+                && ["message", "error", "error_description", "msg", "errmsg"]
+                    .iter()
+                    .any(|key| value.get(key).is_some()))
+    });
+    if (200..300).contains(&http_status) && !api_failed {
+        return None;
+    }
+    // Error fields are authoritative only in a failed envelope, never in data.
+    let mut error_text = String::new();
+    if let Some(value) = response {
+        for key in ["message", "error", "error_description", "msg", "errmsg", "code"] {
+            if let Some(text) = value.get(key).and_then(Value::as_str) {
+                error_text.push_str(text);
+                error_text.push('\n');
+            }
+        }
+        if let Some(error) = value.get("error").and_then(Value::as_object) {
+            for key in ["message", "code", "name"] {
+                if let Some(text) = error.get(key).and_then(Value::as_str) {
+                    error_text.push_str(text);
+                    error_text.push('\n');
+                }
+            }
+        }
+    }
+    Some(
+        map_upstream_text(&error_text)
+            .unwrap_or_else(|| CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED)),
+    )
+}
+
 // ══════════════════════════════════════════════════════════════════════
 //  端点（可注入 ⇒ 协议门禁用 axum 假服务器回放）
 // ══════════════════════════════════════════════════════════════════════
@@ -482,22 +527,22 @@ impl PanChecker {
         if !cookies.is_empty() {
             req = req.header(reqwest::header::COOKIE, cookies.clone());
         }
-        let body = match req.send().await {
-            Ok(r) => match r.text().await {
-                Ok(t) => t,
-                Err(_) => return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
-            },
+        let (status, body) = match req.send().await {
+            Ok(r) => {
+                let status = r.status().as_u16();
+                match r.text().await {
+                    Ok(t) => (status, t),
+                    Err(_) => return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
+                }
+            }
             Err(_) => return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
         };
-        if let Some(mapped) = map_upstream_text(&body) {
+        if let Some(mapped) = quark_family_response_failure(status, &body) {
             return mapped;
         }
         let (stoken, _title) = match parse_token(&body) {
             Ok(v) => v,
-            Err(e) => {
-                return map_upstream_text(&e)
-                    .unwrap_or_else(|| CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED))
-            }
+            Err(_) => return CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
         };
         // ③ detail（非空文件列表 = 链接有效；根目录 pdir_fid=0 —— nav_params 同款）
         let detail = format!(
@@ -511,8 +556,8 @@ impl PanChecker {
             )
             .await
         {
-            Ok((_, body)) => {
-                if let Some(mapped) = map_upstream_text(&body) {
+            Ok((status, body)) => {
+                if let Some(mapped) = quark_family_response_failure(status, &body) {
                     return mapped;
                 }
                 match parse_detail(&body) {
@@ -520,8 +565,7 @@ impl PanChecker {
                         CheckOutcome::new(CheckState::Bad, TEXT_NO_FILE)
                     }
                     Ok(_) => CheckOutcome::new(CheckState::Ok, TEXT_OK),
-                    Err(e) => map_upstream_text(&e)
-                        .unwrap_or_else(|| CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED)),
+                    Err(_) => CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
                 }
             }
             Err(_) => CheckOutcome::new(CheckState::Uncertain, TEXT_FAILED),
@@ -965,6 +1009,206 @@ mod tests {
         r#"{"status":200,"code":0,"message":"ok","data":{"stoken":"ST","title":"甲"}}"#;
     const QDETAIL_OK: &str =
         r#"{"status":200,"code":0,"data":{"list":[{"fid":"f1","file_name":"A.mp4","file_type":0,"size":"1"}]}}"#;
+
+    async fn check_family_replay(
+        kind: PanKind,
+        token_status: u16,
+        token: String,
+        detail_status: u16,
+        detail: String,
+    ) -> (PanChecker, Arc<AtomicUsize>, CheckOutcome) {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let base = spawn_replay(
+            vec![
+                ("/qtoken", token_status, token.clone()),
+                ("/utoken", token_status, token),
+                ("/qdetail", detail_status, detail.clone()),
+                ("/udetail", detail_status, detail),
+            ],
+            hits.clone(),
+        )
+        .await;
+        let checker = PanChecker::with_endpoints(endpoints_at(&base));
+        let url = match kind {
+            PanKind::Quark => "https://pan.quark.cn/s/metadata-fixture",
+            PanKind::Uc => "https://drive.uc.cn/s/metadata-fixture",
+            _ => unreachable!(),
+        };
+        let outcome = checker.check_one(url, None).await.0;
+        (checker, hits, outcome)
+    }
+
+    #[tokio::test]
+    async fn family_success_token_metadata_does_not_classify_as_error() {
+        for kind in [PanKind::Quark, PanKind::Uc] {
+            for title in ["不存在的电影", "取消的约定", "审核", "密码", "Limit", "metadata-only"]
+            {
+                let token = json!({
+                    "status": 200,
+                    "code": 0,
+                    "data": if title == "metadata-only" {
+                        json!({"stoken": "ST", "expired": false, "pass_code": ""})
+                    } else {
+                        json!({"stoken": "ST", "title": title})
+                    }
+                })
+                .to_string();
+                let (checker, hits, outcome) =
+                    check_family_replay(kind, 200, token, 200, QDETAIL_OK.into()).await;
+                assert_eq!(outcome.state, CheckState::Ok, "{kind:?}: {title}");
+                assert_eq!(hits.load(Ordering::SeqCst), 3, "page, token, detail");
+                assert!(outcome.cacheable);
+                assert!(checker.shared.cooldown.lock().unwrap().is_empty());
+                assert!(checker
+                    .shared
+                    .cache
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .all(|(cached, _)| cached.state == CheckState::Ok));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn family_success_detail_names_do_not_classify_as_error() {
+        for kind in [PanKind::Quark, PanKind::Uc] {
+            for name in ["密码.E01.mp4", "Limit.E01.mp4", "不存在.E01.mp4", "过期.E01.mp4"] {
+                let detail = json!({
+                    "status": 200,
+                    "code": 0,
+                    "data": {"list": [{"fid": "F", "file_name": name, "file_type": 1, "size": 1}]}
+                })
+                .to_string();
+                let (checker, hits, outcome) =
+                    check_family_replay(kind, 200, QTOKEN_OK.into(), 200, detail).await;
+                assert_eq!(outcome.state, CheckState::Ok, "{kind:?}: {name}");
+                assert_eq!(hits.load(Ordering::SeqCst), 3);
+                assert!(checker.shared.cooldown.lock().unwrap().is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn family_failed_http_or_status_cannot_accept_success_payload() {
+        for kind in [PanKind::Quark, PanKind::Uc] {
+            for status in [403, 429, 500] {
+                let (checker, hits, outcome) =
+                    check_family_replay(kind, status, QTOKEN_OK.into(), 200, QDETAIL_OK.into())
+                        .await;
+                assert_eq!(outcome.state, CheckState::Uncertain, "{kind:?} token HTTP {status}");
+                let risk = matches!(status, 403 | 429);
+                let summary = if risk { TEXT_UNVERIFIABLE } else { TEXT_FAILED };
+                assert_eq!(outcome.summary, summary);
+                assert_eq!(!checker.shared.cooldown.lock().unwrap().is_empty(), risk);
+                assert!(!outcome.cacheable);
+                assert_eq!(hits.load(Ordering::SeqCst), 2, "failed token must not request detail");
+                let (checker, hits, outcome) =
+                    check_family_replay(kind, 200, QTOKEN_OK.into(), status, QDETAIL_OK.into())
+                        .await;
+                assert_eq!(outcome.state, CheckState::Uncertain, "{kind:?} detail HTTP {status}");
+                assert_eq!(outcome.summary, summary);
+                assert_eq!(!checker.shared.cooldown.lock().unwrap().is_empty(), risk);
+                assert!(!outcome.cacheable);
+                assert_eq!(hits.load(Ordering::SeqCst), 3);
+            }
+            let token = json!({"status": 500, "code": 0, "data": {"stoken": "ST"}}).to_string();
+            let (_, hits, outcome) =
+                check_family_replay(kind, 200, token, 200, QDETAIL_OK.into()).await;
+            assert_eq!(outcome.state, CheckState::Uncertain, "{kind:?} token envelope status");
+            assert_eq!(hits.load(Ordering::SeqCst), 2);
+            let detail = json!({
+                "status": 500,
+                "code": 0,
+                "data": {"list": [{"fid": "F", "file_name": "A.mp4", "file_type": 1}]}
+            })
+            .to_string();
+            let (_, _, outcome) =
+                check_family_replay(kind, 200, QTOKEN_OK.into(), 200, detail).await;
+            assert_eq!(outcome.state, CheckState::Uncertain, "{kind:?} detail envelope status");
+        }
+    }
+
+    #[tokio::test]
+    async fn family_failure_attribution_uses_error_fields_not_data() {
+        for kind in [PanKind::Quark, PanKind::Uc] {
+            for (error, expected, summary) in [
+                (json!({"message": "分享已过期"}), CheckState::Bad, TEXT_DEAD),
+                (json!({"error": "分享已过期"}), CheckState::Bad, TEXT_DEAD),
+                (json!({"error": {"message": "分享已过期"}}), CheckState::Bad, TEXT_DEAD),
+                (json!({"error": {"code": "ShareExpiredError"}}), CheckState::Bad, TEXT_DEAD),
+                (json!({"error": {"name": "ShareNotFound"}}), CheckState::Bad, TEXT_MISSING),
+                (json!({"error_description": "分享已过期"}), CheckState::Bad, TEXT_DEAD),
+                (json!({"msg": "分享已过期"}), CheckState::Bad, TEXT_DEAD),
+                (json!({"errmsg": "分享已过期"}), CheckState::Bad, TEXT_DEAD),
+                (json!({"message": "请输入提取码"}), CheckState::Locked, TEXT_LOCKED),
+                (json!({"error": "请输入提取码"}), CheckState::Locked, TEXT_LOCKED),
+                (
+                    json!({"message": "limit", "error": "pass_code"}),
+                    CheckState::Uncertain,
+                    TEXT_UNVERIFIABLE,
+                ),
+                (json!({"message": "unknown failure"}), CheckState::Uncertain, TEXT_FAILED),
+            ] {
+                for sparse in [false, true] {
+                    let mut response = error.clone();
+                    if !sparse {
+                        response["code"] = json!(123);
+                        response["data"] = json!({"title": "密码过期Limit", "expired": false});
+                    }
+                    let (checker, hits, outcome) =
+                        check_family_replay(kind, 200, response.to_string(), 200, QDETAIL_OK.into())
+                            .await;
+                    assert_eq!(outcome.state, expected, "{kind:?}: {response}");
+                    assert_eq!(outcome.summary, summary);
+                    assert_eq!(
+                        !checker.shared.cooldown.lock().unwrap().is_empty(),
+                        summary == TEXT_UNVERIFIABLE
+                    );
+                    assert_eq!(hits.load(Ordering::SeqCst), 2);
+                    let (checker, hits, outcome) =
+                        check_family_replay(kind, 200, QTOKEN_OK.into(), 200, response.to_string())
+                            .await;
+                    assert_eq!(outcome.state, expected, "{kind:?} detail: {response}");
+                    assert_eq!(outcome.summary, summary);
+                    assert_eq!(
+                        !checker.shared.cooldown.lock().unwrap().is_empty(),
+                        summary == TEXT_UNVERIFIABLE
+                    );
+                    assert_eq!(hits.load(Ordering::SeqCst), 3);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn family_malformed_success_response_is_uncertain_not_content_attribution() {
+        for kind in [PanKind::Quark, PanKind::Uc] {
+            for token in [
+                r#"{"code":0,"data":{"title":"过期密码Limit"}}"#,
+                "<html>分享过期 密码 Limit</html>",
+            ] {
+                let (_, hits, outcome) =
+                    check_family_replay(kind, 200, token.into(), 200, QDETAIL_OK.into()).await;
+                assert_eq!(outcome.state, CheckState::Uncertain, "{kind:?}: {token}");
+                assert_eq!(outcome.summary, TEXT_FAILED);
+                assert!(!outcome.cacheable);
+                assert_eq!(hits.load(Ordering::SeqCst), 2);
+            }
+            for detail in [
+                r#"{"code":0,"data":{"title":"过期密码Limit"}}"#,
+                "<html>分享过期 密码 Limit</html>",
+            ] {
+                let (checker, hits, outcome) =
+                    check_family_replay(kind, 200, QTOKEN_OK.into(), 200, detail.into()).await;
+                assert_eq!(outcome.state, CheckState::Uncertain, "{kind:?}: {detail}");
+                assert_eq!(outcome.summary, TEXT_FAILED);
+                assert!(!outcome.cacheable);
+                assert!(checker.shared.cooldown.lock().unwrap().is_empty());
+                assert_eq!(hits.load(Ordering::SeqCst), 3);
+            }
+        }
+    }
 
     #[tokio::test]
     async fn supplied_password_does_not_reuse_locked_cache() {

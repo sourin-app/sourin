@@ -233,8 +233,8 @@ pub async fn resolve_share(url: &str, fid: Option<&str>, spec: &EpisodeSpec) -> 
     let outcome = check_before_listing(crate::pan_check::global_checker(), url, passcode).await?;
     match share.kind {
         PanKind::Xunlei => super::pan_xunlei_play::resolve_selected(&share.share_id, passcode, fid, spec).await,
-        // 此解析器会先列真实文件再给出缺少取址的明确错误，不把网页交回播放器。
-        PanKind::Baidu => super::pan_baidu_play::resolve(&share.share_id, passcode).await,
+        // 百度使用真实文件标识与完整下载直链，不把分享页交回播放器。
+        PanKind::Baidu => super::pan_baidu_play::resolve_selected(&share.share_id, passcode, fid, spec).await,
         _ => Err(format!("{}的分享播放尚未接入：{}", share.kind.display(), outcome.summary)),
     }
 }
@@ -271,6 +271,10 @@ pub async fn share_episodes(url: &str, flag: &str) -> Result<Vec<CspEpisode>, St
     let passcode = share.pwd_in_url.as_deref().unwrap_or("");
     let outcome = check_before_listing(crate::pan_check::global_checker(), url, passcode).await?;
     match share.kind {
+        PanKind::Baidu => {
+            let files = super::pan_baidu_play::list_share_files(&share.share_id, passcode).await?;
+            Ok(baidu_episodes(&share.share_id, passcode, flag, files))
+        }
         PanKind::Xunlei => {
             let files = super::pan_xunlei_play::list_share_files(&share.share_id, passcode).await?;
             Ok(files.into_iter().map(|f| CspEpisode {
@@ -281,6 +285,14 @@ pub async fn share_episodes(url: &str, flag: &str) -> Result<Vec<CspEpisode>, St
         }
         _ => Err(format!("{}的分享文件列表尚未接入：{}", share.kind.display(), outcome.summary)),
     }
+}
+
+pub(crate) fn baidu_episodes(share_id: &str, passcode: &str, flag: &str, files: Vec<DriveEntry>) -> Vec<CspEpisode> {
+    files.into_iter().map(|file| CspEpisode {
+        id: encode_file_id(PanKind::Baidu, share_id, passcode, &file.fid),
+        title: file.name,
+        flag: flag.into(),
+    }).collect()
 }
 
 fn share_page_payload(id: &str) -> String {
@@ -296,7 +308,7 @@ pub async fn expand_detail(mut detail: CspDetail) -> CspDetail {
     for (index, episode) in detail.episodes.iter().enumerate() {
         let url = share_page_payload(&episode.id);
         let share = crate::pan::parse_share(&url);
-        if !matches!(share.kind, PanKind::Quark | PanKind::Uc | PanKind::Xunlei) || share.share_id.is_empty() { continue; }
+        if !matches!(share.kind, PanKind::Quark | PanKind::Uc | PanKind::Xunlei | PanKind::Baidu) || share.share_id.is_empty() { continue; }
         shares.entry(url).or_default().push(index);
     }
     for (url, indexes) in shares {

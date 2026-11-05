@@ -1,7 +1,7 @@
-//! Baidu share verification/list preconditions only, not complete-file playback.
-//! Official request evidence: .probe/baidu-forensics/initNew-all_98048b2.js
-//! and boot_7dd69c6.js. Listing success does not prove account validity.
-//! No page URL or limited preview is returned as a playable result.
+//! Baidu share inspection, actual file episodes and selected-file downloads.
+//! Official request evidence includes the archived share scripts and the public
+//! home.6c242846.js download/user-info helpers. No page or limited preview is
+//! returned as media; live account and decoded content require separate evidence.
 
 use super::CspPlay;
 use crate::pan::PanKind;
@@ -27,6 +27,7 @@ impl Default for BaiduEndpoints {
 
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                   (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+const WEB_QUERY: [(&str, &str); 3] = [("clienttype", "0"), ("app_id", "250528"), ("web", "1")];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BaiduInspection {
@@ -132,6 +133,45 @@ pub async fn resolve_with(
     share_id: &str,
     passcode: &str,
 ) -> Result<CspPlay, String> {
+    resolve_selected_with(
+        ep,
+        cookie,
+        share_id,
+        passcode,
+        None,
+        &super::pan_episode_select::EpisodeSpec::default(),
+    )
+    .await
+}
+
+pub async fn resolve_selected(
+    share_id: &str,
+    passcode: &str,
+    fid: Option<&str>,
+    spec: &super::pan_episode_select::EpisodeSpec,
+) -> Result<CspPlay, String> {
+    super::pan_playback_guard::check_current()?;
+    let cookie = crate::pan_auth::load(PanKind::Baidu).map(|c| c.cookie);
+    super::pan_playback_guard::check_current()?;
+    resolve_selected_with(
+        &BaiduEndpoints::default(),
+        cookie.as_deref(),
+        share_id,
+        passcode,
+        fid,
+        spec,
+    )
+    .await
+}
+
+pub async fn resolve_selected_with(
+    ep: &BaiduEndpoints,
+    cookie: Option<&str>,
+    share_id: &str,
+    passcode: &str,
+    fid: Option<&str>,
+    spec: &super::pan_episode_select::EpisodeSpec,
+) -> Result<CspPlay, String> {
     super::pan_playback_guard::check_current()?;
     let share_id = share_id.trim();
     if share_id.is_empty() {
@@ -143,15 +183,13 @@ pub async fn resolve_with(
             PanKind::Baidu.code()
         ));
     };
-    let inspection = inspect_with(ep, cookie, share_id, passcode)
+    let context = inspect_context(ep, cookie, share_id, passcode)
         .await
         .map_err(|failure| failure.message)?;
-    match inspection {
+    match context.inspection {
         BaiduInspection::Empty => Err("百度分享里没有列出文件（list 为空）".into()),
         BaiduInspection::NeedsPasscode => Err("百度分享需要提取码（share/list HasPwd）".into()),
-        BaiduInspection::Files => Err("百度分享文件列表已取得，但本版本仍未接入完整文件取直链 \
-            （dlink 请求形状未取证；列表成功不证明账号远端有效）"
-            .into()),
+        BaiduInspection::Files => download_selected(context, fid, spec).await,
     }
 }
 
@@ -170,6 +208,30 @@ async fn inspect_with(
     share_id: &str,
     passcode: &str,
 ) -> Result<BaiduInspection, BaiduInspectionFailure> {
+    Ok(inspect_context(ep, cookie, share_id, passcode)
+        .await?
+        .inspection)
+}
+
+struct InspectionContext {
+    inspection: BaiduInspection,
+    items: Vec<serde_json::Value>,
+    page: String,
+    page_url: Url,
+    share_id: String,
+    cookies: Cookies,
+    client: reqwest::Client,
+    deadline: tokio::time::Instant,
+    list_url: Url,
+    list_query: Vec<(&'static str, String)>,
+}
+
+async fn inspect_context(
+    ep: &BaiduEndpoints,
+    cookie: &str,
+    share_id: &str,
+    passcode: &str,
+) -> Result<InspectionContext, BaiduInspectionFailure> {
     super::pan_playback_guard::check_current()?;
     let share_id = share_id.trim();
     if share_id.is_empty() {
@@ -289,7 +351,7 @@ async fn inspect_with(
         ]);
     }
     let request = client
-        .get(list_url)
+        .get(list_url.clone())
         .query(&query)
         .header("X-Requested-With", "XMLHttpRequest")
         .header("Referer", page_url.as_str())
@@ -315,23 +377,440 @@ async fn inspect_with(
     }
     let needs_passcode = value.get("HasPwd").and_then(serde_json::Value::as_bool) == Some(true);
     if needs_passcode && value.get("list").is_none() && passcode.trim().is_empty() {
-        return Ok(BaiduInspection::NeedsPasscode);
+        return Ok(InspectionContext {
+            inspection: BaiduInspection::NeedsPasscode,
+            items: vec![],
+            page,
+            page_url,
+            share_id: share_id.into(),
+            cookies,
+            client,
+            deadline,
+            list_url,
+            list_query: query,
+        });
     }
     let items = value
         .get("list")
         .and_then(|value| value.as_array())
         .ok_or_else(|| "百度 share/list 未提供文件列表".to_string())?;
     if items.is_empty() {
-        return Ok(if needs_passcode {
+        let inspection = if needs_passcode {
             BaiduInspection::NeedsPasscode
         } else {
             BaiduInspection::Empty
+        };
+        return Ok(InspectionContext {
+            inspection,
+            items: vec![],
+            page,
+            page_url,
+            share_id: share_id.into(),
+            cookies,
+            client,
+            deadline,
+            list_url,
+            list_query: query,
         });
     }
     if !items.iter().all(valid_file_entry) {
         return Err("百度 share/list 文件条目结构无效".into());
     }
-    Ok(BaiduInspection::Files)
+    Ok(InspectionContext {
+        inspection: BaiduInspection::Files,
+        items: items.clone(),
+        page,
+        page_url,
+        share_id: share_id.into(),
+        cookies,
+        client,
+        deadline,
+        list_url,
+        list_query: query,
+    })
+}
+
+pub async fn list_share_files(
+    share_id: &str,
+    passcode: &str,
+) -> Result<Vec<super::pan_drive::DriveEntry>, String> {
+    list_share_files_with(&BaiduEndpoints::default(), share_id, passcode).await
+}
+
+pub async fn list_share_files_with(
+    ep: &BaiduEndpoints,
+    share_id: &str,
+    passcode: &str,
+) -> Result<Vec<super::pan_drive::DriveEntry>, String> {
+    let mut ctx = inspect_context(ep, "", share_id, passcode)
+        .await
+        .map_err(|v| v.message)?;
+    match ctx.inspection {
+        BaiduInspection::NeedsPasscode => Err("百度分享需要提取码（share/list HasPwd）".into()),
+        BaiduInspection::Empty => Ok(vec![]),
+        BaiduInspection::Files => collect_share_files(&mut ctx).await,
+    }
+}
+
+async fn collect_share_files(
+    ctx: &mut InspectionContext,
+) -> Result<Vec<super::pan_drive::DriveEntry>, String> {
+    let uk = page_scalar(&ctx.page, "share_uk")
+        .filter(|v| unsigned_text(v).is_some_and(|v| v > 0))
+        .ok_or("百度分享 uk 元数据缺失")?;
+    let shareid = page_scalar(&ctx.page, "shareid")
+        .filter(|v| unsigned_text(v).is_some_and(|v| v > 0))
+        .ok_or("百度分享 id 元数据缺失")?;
+    let mut queue = std::collections::VecDeque::from([(None::<String>, ctx.items.clone(), 1u32)]);
+    let mut seen_dirs = std::collections::HashSet::new();
+    let mut seen_files = std::collections::HashSet::new();
+    ctx.items.clear();
+    let mut requests = 0usize;
+    while let Some((dir, mut items, mut page_number)) = queue.pop_front() {
+        loop {
+            super::pan_playback_guard::check_current()?;
+            let full = items.len() == 20;
+            if items.len() > 20 {
+                return Err("百度列表超过请求分页大小".into());
+            }
+            for item in items {
+                if !valid_file_entry(&item) {
+                    return Err("百度列表文件结构无效".into());
+                }
+                match item.get("isdir").and_then(|v| v.as_u64()) {
+                    Some(1) => {
+                        let path = item
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .filter(|v| {
+                                v.starts_with('/')
+                                    && !v.chars().any(char::is_control)
+                                    && !v.split('/').any(|s| matches!(s, "." | ".."))
+                            })
+                            .ok_or("百度目录路径缺失或无效")?;
+                        if !seen_dirs.insert(path.to_string()) {
+                            return Err("百度目录循环或重复路径".into());
+                        }
+                        queue.push_back((Some(path.into()), vec![], 0));
+                    }
+                    Some(0) => {
+                        let id = item
+                            .get("fs_id")
+                            .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+                            .ok_or("百度文件标识无效")?;
+                        if !seen_files.insert(id) {
+                            return Err("百度列表重复文件标识".into());
+                        }
+                        ctx.items.push(item);
+                    }
+                    _ => return Err("百度文件目录标记缺失或无效".into()),
+                }
+            }
+            if seen_dirs.len() > 64 || ctx.items.len() > 2560 {
+                return Err("百度分享目录或分页遍历超过限制".into());
+            }
+            if page_number > 0 && !full {
+                break;
+            }
+            requests += 1;
+            if requests > 128 || seen_dirs.len() > 64 || ctx.items.len() > 2560 {
+                return Err("百度分享目录或分页遍历超过限制".into());
+            }
+            page_number += 1;
+            let mut query = ctx.list_query.clone();
+            query.retain(|(key, _)| !matches!(*key, "page" | "root" | "order" | "desc"));
+            query.push(("page", page_number.to_string()));
+            if let Some(dir) = &dir {
+                query.retain(|(key, _)| *key != "shorturl");
+                query.extend([
+                    ("uk", uk.clone()),
+                    ("shareid", shareid.clone()),
+                    ("order", "name".into()),
+                    ("desc", "0".into()),
+                    ("view_mode", "1".into()),
+                    ("dir", dir.clone()),
+                ]);
+            } else {
+                query.extend([
+                    ("root", "1".into()),
+                    ("order", "time".into()),
+                    ("desc", "1".into()),
+                ]);
+            }
+            let req = ctx
+                .client
+                .get(ctx.list_url.clone())
+                .query(&query)
+                .header("Referer", ctx.page_url.as_str())
+                .header("X-Requested-With", "XMLHttpRequest")
+                .build()
+                .map_err(|_| "百度目录列表请求构建失败")?;
+            let (body, _) = send(
+                &ctx.client,
+                &mut ctx.cookies,
+                req,
+                &ctx.page_url,
+                ctx.deadline,
+                "share/list",
+            )
+            .await
+            .map_err(|v| v.message)?;
+            let value = response_json(&body, "share/list")?;
+            let errno = integer_errno(&value, "share/list")?;
+            if errno != 0 {
+                return Err(format!("百度分享列表失败（errno={errno}）"));
+            }
+            items = value
+                .get("list")
+                .and_then(|v| v.as_array())
+                .ok_or("百度目录列表缺失")?
+                .clone();
+        }
+    }
+    let mut files = Vec::new();
+    for item in &ctx.items {
+        let id = item
+            .get("fs_id")
+            .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+            .filter(|id| *id > 0)
+            .ok_or("百度文件标识无效")?;
+        let name = item
+            .get("server_filename")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty() && !v.chars().any(char::is_control))
+            .ok_or("百度文件名无效")?;
+        if item.get("isdir").and_then(|v| v.as_u64()) != Some(0) {
+            return Err("百度文件目录标记缺失或无效".into());
+        }
+        let size = item
+            .get("size")
+            .and_then(|v| v.as_u64())
+            .ok_or("百度文件大小缺失或无效")?;
+        files.push(super::pan_drive::DriveEntry {
+            fid: id.to_string(),
+            name: name.into(),
+            size,
+            is_dir: false,
+            fid_token: None,
+        });
+    }
+    super::pan_playback_guard::check_current()?;
+    if tokio::time::Instant::now() >= ctx.deadline {
+        return Err("百度请求总预算耗尽".into());
+    }
+    Ok(files
+        .into_iter()
+        .filter(|file| file.size > 0 && super::pan_drive::is_video_name(&file.name))
+        .collect())
+}
+
+async fn download_selected(
+    mut ctx: InspectionContext,
+    fid: Option<&str>,
+    spec: &super::pan_episode_select::EpisodeSpec,
+) -> Result<CspPlay, String> {
+    let files = collect_share_files(&mut ctx).await?;
+    let selected = super::pan_episode_select::pick_episode_file(spec, &files, fid)?;
+    let uk = page_scalar(&ctx.page, "share_uk").ok_or("百度分享 uk 元数据缺失")?;
+    let shareid = page_scalar(&ctx.page, "shareid").ok_or("百度分享 id 元数据缺失")?;
+    // Account metadata must belong to the viewer, not the share owner.
+    let mut login = ctx.page_url.clone();
+    login.set_path("/api/loginStatus");
+    login.set_query(None);
+    let req = ctx
+        .client
+        .get(login)
+        .query(&WEB_QUERY)
+        .header("Referer", ctx.page_url.as_str())
+        .header("X-Requested-With", "XMLHttpRequest")
+        .build()
+        .map_err(|_| "百度账户信息请求构建失败")?;
+    let (body, _) = send(
+        &ctx.client,
+        &mut ctx.cookies,
+        req,
+        &ctx.page_url,
+        ctx.deadline,
+        "loginStatus",
+    )
+    .await
+    .map_err(|v| v.message)?;
+    let viewer = response_json(&body, "loginStatus")?;
+    let errno = integer_errno(&viewer, "loginStatus")?;
+    if errno != 0 {
+        return Err(format!("百度当前请求未获得账户信息（errno={errno}）"));
+    }
+    let viewer = viewer.get("login_info").ok_or("百度 viewer 信息缺失")?;
+    if !viewer
+        .get("uk")
+        .and_then(unsigned_value)
+        .is_some_and(|v| v > 0)
+    {
+        return Err("百度 viewer uk 缺失或无效".into());
+    }
+    let token = viewer
+        .get("bdstoken")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty() && !v.chars().any(char::is_control))
+        .ok_or("百度 viewer bdstoken 缺失或无效")?
+        .to_string();
+    let vip = viewer
+        .get("vip_identity")
+        .and_then(unsigned_value)
+        .map(|v| (v / 10).to_string())
+        .ok_or("百度 viewer vip_identity 缺失或无效")?;
+    let mut tpl = ctx.page_url.clone();
+    tpl.set_path("/share/tplconfig");
+    tpl.set_query(None);
+    let surl = if ctx.share_id.starts_with('5') {
+        format!("1{}", &ctx.share_id[1..])
+    } else {
+        ctx.share_id.clone()
+    };
+    let req = ctx
+        .client
+        .get(tpl)
+        .query(&WEB_QUERY)
+        .query(&[
+            ("surl", surl.as_str()),
+            ("fields", "sign,timestamp"),
+            ("bdstoken", token.as_str()),
+        ])
+        .header("Referer", ctx.page_url.as_str())
+        .header("X-Requested-With", "XMLHttpRequest")
+        .build()
+        .map_err(|_| "百度签名请求构建失败")?;
+    let (body, _) = send(
+        &ctx.client,
+        &mut ctx.cookies,
+        req,
+        &ctx.page_url,
+        ctx.deadline,
+        "tplconfig",
+    )
+    .await
+    .map_err(|v| v.message)?;
+    let value = response_json(&body, "tplconfig")?;
+    let errno = integer_errno(&value, "tplconfig")?;
+    if errno != 0 {
+        return Err(format!("百度签名请求失败（errno={errno}）"));
+    }
+    let data = value.get("data").ok_or("百度签名元数据缺失")?;
+    let sign = data
+        .get("sign")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty() && !v.chars().any(char::is_control))
+        .ok_or("百度签名缺失或无效")?;
+    let timestamp = data
+        .get("timestamp")
+        .and_then(unsigned_value)
+        .filter(|v| *v > 0)
+        .ok_or("百度签名时间缺失或无效")?
+        .to_string();
+    let fsid = selected
+        .fid
+        .parse::<u64>()
+        .map_err(|_| "百度文件标识无效")?;
+    let fid_list = serde_json::to_string(&[fsid]).map_err(|_| "百度文件标识序列化失败")?;
+    let mut api = ctx.page_url.clone();
+    api.set_path("/api/sharedownload");
+    api.set_query(None);
+    let req = ctx
+        .client
+        .post(api)
+        .query(&WEB_QUERY)
+        .query(&[
+            ("sign", sign),
+            ("timestamp", timestamp.as_str()),
+            ("bdstoken", token.as_str()),
+            ("channel", "chunlei"),
+        ])
+        .header("Referer", ctx.page_url.as_str())
+        .header("X-Requested-With", "XMLHttpRequest")
+        .form(&[
+            ("encrypt", "0"),
+            ("product", "share"),
+            ("vip", vip.as_str()),
+            ("fid_list", fid_list.as_str()),
+            ("uk", uk.as_str()),
+            ("primaryid", shareid.as_str()),
+        ])
+        .build()
+        .map_err(|_| "百度取直链请求构建失败")?;
+    let (body, _) = send(
+        &ctx.client,
+        &mut ctx.cookies,
+        req,
+        &ctx.page_url,
+        ctx.deadline,
+        "sharedownload",
+    )
+    .await
+    .map_err(|v| v.message)?;
+    let value = response_json(&body, "sharedownload")?;
+    let errno = integer_errno(&value, "sharedownload")?;
+    if errno != 0 {
+        return Err(format!("百度完整文件下载未获允许（errno={errno}）"));
+    }
+    let entries = value
+        .get("list")
+        .and_then(|v| v.as_array())
+        .ok_or("百度下载响应缺少文件列表")?;
+    if entries.len() != 1 {
+        return Err("百度下载响应文件数量不匹配".into());
+    }
+    let out = &entries[0];
+    if out
+        .get("fs_id")
+        .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+        != Some(fsid)
+    {
+        return Err("百度下载响应文件标识不匹配".into());
+    }
+    let raw = out
+        .get("dlink")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.chars().any(char::is_control))
+        .ok_or("百度下载响应缺少有效直链")?;
+    let url = Url::parse(raw).map_err(|_| "百度下载直链格式无效")?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("百度下载直链格式无效".into());
+    }
+    if matches!(url.host_str(), Some("pan.baidu.com" | "passport.baidu.com")) {
+        return Err("百度下载响应返回分享或认证页面，不能播放".into());
+    }
+    super::pan_playback_guard::check_current()?;
+    if tokio::time::Instant::now() >= ctx.deadline {
+        return Err("百度请求总预算耗尽".into());
+    }
+    let mut headers = vec![
+        ("User-Agent".into(), UA.into()),
+        ("Referer".into(), ctx.page_url.to_string()),
+    ];
+    let cookie = ctx.cookies.header(&url);
+    if !cookie.is_empty() {
+        headers.push(("Cookie".into(), cookie));
+    }
+    Ok(CspPlay {
+        url: url.to_string(),
+        headers,
+        label: Some(format!("百度网盘 · {}", selected.name)),
+    })
+}
+
+fn unsigned_text(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.bytes().all(|v| v.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+fn unsigned_value(value: &serde_json::Value) -> Option<u64> {
+    value.as_u64().or_else(|| unsigned_text(value.as_str()?))
 }
 
 fn valid_file_entry(value: &serde_json::Value) -> bool {
@@ -886,6 +1365,54 @@ mod tests {
     const LOGIN_PAGE: &str = "<title>登录百度网盘</title><script>window.localStorage.setItem('passLoginType','qrcode')</script>";
     const OK_PAGE: &str = "<html><body>分享页内容（正常）</body></html>";
 
+    #[tokio::test]
+    async fn selected_file_dlink_exact_fid() {
+        let srv = spawn_replay(Arc::new(vec![
+            ("GET".into(), "/s/1AbCd".into(), 200, r#"<script>locals.mset({shareid:12,share_uk:34,vip_identity:0,bdstoken:"fixture"});</script>"#.into(), vec![]),
+            ("GET".into(), "/share/list".into(), 200, r#"{"errno":0,"list":[{"fs_id":9007199254740993,"server_filename":"EP03.mp4","size":42,"isdir":0},{"fs_id":2,"server_filename":"EP01.mp4","size":99,"isdir":0}]}"#.into(), vec![]),
+            ("GET".into(), "/share/tplconfig".into(), 200, r#"{"errno":0,"data":{"sign":"fixture","timestamp":123}}"#.into(), vec![]),
+            ("GET".into(), "/api/loginStatus".into(), 200, r#"{"errno":0,"login_info":{"vip_identity":0,"bdstoken":"fixture","uk":56}}"#.into(), vec![]),
+            ("POST".into(), "/api/sharedownload".into(), 200, r#"{"errno":0,"list":[{"fs_id":9007199254740993,"dlink":"https://cdn.example.test/full.mp4"}]}"#.into(), vec![]),
+        ]));
+        let play = resolve_selected_with(
+            &ep_of(&srv),
+            Some("BDUSS=fixture"),
+            "1AbCd",
+            "",
+            Some("9007199254740993"),
+            &super::super::pan_episode_select::EpisodeSpec {
+                title: "EP01".into(),
+                order: Some(1),
+            },
+        )
+        .await
+        .expect("exact selected file must resolve");
+        assert_eq!(play.url, "https://cdn.example.test/full.mp4");
+        assert!(play.label.unwrap().contains("EP03.mp4"));
+        let reqs = srv.requests();
+        let post = reqs
+            .iter()
+            .find(|v| v.target.starts_with("/api/sharedownload"))
+            .unwrap();
+        assert!(post.body.contains("9007199254740993"));
+        for path in ["/api/loginStatus", "/share/tplconfig", "/api/sharedownload"] {
+            let request = reqs
+                .iter()
+                .find(|request| request.target.starts_with(path))
+                .unwrap();
+            let url =
+                reqwest::Url::parse(&format!("http://fixture.invalid{}", request.target)).unwrap();
+            let query: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+            for (key, value) in [("clienttype", "0"), ("app_id", "250528"), ("web", "1")] {
+                assert_eq!(
+                    query.get(key).map(String::as_str),
+                    Some(value),
+                    "official request defaults missing from {path}"
+                );
+            }
+        }
+    }
+
     /// ★ 门禁 ①：未登录 ⇒ NEED_LOGIN（classify_err 翻译成 Unauthorized）
     #[tokio::test]
     async fn no_credential_is_need_login() {
@@ -925,9 +1452,9 @@ mod tests {
     }
 
     /// ★ 门禁 ③：verify 成功 ⇒ randsk 进 BDCLND → share/list 带 sekey 参数
-    ///            （web 逐字）→ 走到"dlink 未取证"的诚实边界为止。
+    ///            （web 逐字）→ 分享元数据不足时仍停止取直链。
     #[tokio::test]
-    async fn verify_then_list_reaches_honest_wall() {
+    async fn verify_then_list_missing_share_metadata_stops_download() {
         let routes = Arc::new(vec![
             (
                 "GET".into(),
@@ -954,10 +1481,10 @@ mod tests {
         let srv = spawn_replay(routes);
         let err = resolve_with(&ep_of(&srv), Some("BDUSS=x"), "1AbCd", "pwd99")
             .await
-            .expect_err("dlink 未取证 ⇒ 必须停在诚实边界");
+            .expect_err("分享元数据不足时必须停止取直链");
         assert!(
-            err.contains("仍未接入完整文件取直链") && err.contains("dlink"),
-            "要停在 dlink 未取证的如实文案：{err}"
+            err.contains("uk 元数据缺失"),
+            "应明确报告缺失的分享元数据：{err}"
         );
         let reqs = srv.requests();
         // Official verify puts surl in the query, while pwd remains in the form.

@@ -1,4 +1,4 @@
-use super::{resolve_with, BaiduEndpoints};
+use super::{inspect_with, resolve_with, BaiduEndpoints, BaiduInspection};
 use axum::{
     body::{to_bytes, Body},
     http::{HeaderMap, Request, StatusCode},
@@ -10,6 +10,239 @@ use std::sync::{Arc, Mutex};
 const SHARE_PAGE: &str = r#"<html><script>locals.mset({"shareid":123,"share_uk":456,"bdstoken":"PAGE_TOKEN"});</script></html>"#;
 const VERIFY_OK: &str = r#"{"errno":0,"randsk":"RANDOM_SHARE_KEY"}"#;
 const LIST_OK: &str = r#"{"errno":0,"list":[{"fs_id":1,"server_filename":"episode01.mkv"}]}"#;
+
+#[tokio::test]
+async fn full_resolver_late_sign_cannot_send_download() {
+    use super::super::pan_playback_guard as guard;
+    let mut sign = Reply::ok(
+        "/share/tplconfig",
+        r#"{"errno":0,"data":{"sign":"fixture","timestamp":123}}"#,
+    );
+    sign.delay = std::time::Duration::from_millis(150);
+    let replay = Replay::start(vec![
+        Reply::ok("/s/5Ab_Cd", SHARE_PAGE),
+        Reply::ok(
+            "/share/list",
+            r#"{"errno":0,"list":[{"fs_id":11,"server_filename":"EP03.mp4","isdir":0,"size":42}]}"#,
+        ),
+        Reply::ok(
+            "/api/loginStatus",
+            r#"{"errno":0,"login_info":{"uk":56,"bdstoken":"viewer","vip_identity":0}}"#,
+        ),
+        sign,
+    ])
+    .await;
+    let owner = guard::PlaybackOwner {
+        consumer: "baidu-full-late-sign".into(),
+        generation: 1,
+    };
+    guard::register(Some(owner.clone())).unwrap();
+    let spec = super::super::pan_episode_select::EpisodeSpec::default();
+    let resolve = guard::with_scope(
+        Some(owner.clone()),
+        super::resolve_selected_with(
+            &replay.endpoints,
+            Some("BDUSS=SEED"),
+            "5Ab_Cd",
+            "",
+            Some("11"),
+            &spec,
+        ),
+    );
+    let invalidate = async {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !replay
+                .requests()
+                .iter()
+                .any(|v| v.path == "/share/tplconfig")
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        guard::register(Some(guard::PlaybackOwner {
+            generation: 2,
+            ..owner
+        }))
+        .unwrap();
+    };
+    let (result, _) = tokio::join!(resolve, invalidate);
+    assert_eq!(result.unwrap_err(), "播放解析请求已过期");
+    assert!(!replay
+        .requests()
+        .iter()
+        .any(|v| v.path == "/api/sharedownload"));
+}
+
+#[tokio::test]
+async fn full_resolver_permission_and_unsafe_urls_are_not_playback() {
+    for response in [
+        r#"{"errno":118,"errmsg":"BDUSS=SECRET https://private.invalid"}"#,
+        r#"{"errno":0,"list":[{"fs_id":11,"dlink":"https://user:password@cdn.example/full.mp4"}]}"#,
+        r#"{"errno":0,"list":[{"fs_id":11,"dlink":"https://pan.baidu.com/s/not-media"}]}"#,
+        r#"{"errno":0,"list":[{"fs_id":11,"dlink":"file:///private"}]}"#,
+    ] {
+        let replay = Replay::start(vec![
+            Reply::ok("/s/5Ab_Cd", SHARE_PAGE),
+            Reply::ok("/share/list", r#"{"errno":0,"list":[{"fs_id":11,"server_filename":"EP03.mp4","isdir":0,"size":42}]}"#),
+            Reply::ok("/api/loginStatus", r#"{"errno":0,"login_info":{"uk":"56","bdstoken":"viewer","vip_identity":"0"}}"#),
+            Reply::ok("/share/tplconfig", r#"{"errno":0,"data":{"sign":"fixture","timestamp":123}}"#),
+            Reply::ok("/api/sharedownload", response),
+        ]).await;
+        let spec = super::super::pan_episode_select::EpisodeSpec::default();
+        let error = super::resolve_selected_with(
+            &replay.endpoints,
+            Some("BDUSS=SEED"),
+            "5Ab_Cd",
+            "",
+            Some("11"),
+            &spec,
+        )
+        .await
+        .expect_err("unsafe or forbidden download fails");
+        assert!(
+            !error.contains("SECRET") && !error.contains("https://") && !error.contains("password")
+        );
+        assert!(replay
+            .requests()
+            .iter()
+            .any(|v| v.path == "/api/sharedownload"));
+    }
+}
+
+#[tokio::test]
+async fn full_resolver_deleted_or_ambiguous_file_stops_before_sign() {
+    for fid in [None, Some("deleted")] {
+        let replay = Replay::start(vec![
+            Reply::ok("/s/5Ab_Cd", SHARE_PAGE),
+            Reply::ok("/share/list", r#"{"errno":0,"list":[{"fs_id":11,"server_filename":"EP03.mp4","isdir":0,"size":42},{"fs_id":12,"server_filename":"EP03.mkv","isdir":0,"size":42}]}"#),
+        ]).await;
+        let spec = super::super::pan_episode_select::EpisodeSpec {
+            title: "EP03".into(),
+            order: Some(3),
+        };
+        assert!(super::resolve_selected_with(
+            &replay.endpoints,
+            Some("BDUSS=SEED"),
+            "5Ab_Cd",
+            "",
+            fid,
+            &spec
+        )
+        .await
+        .is_err());
+        assert_eq!(replay.requests().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn full_resolver_selects_episode_on_second_root_page() {
+    let items: Vec<_> = (1..=20).map(|id| serde_json::json!({"fs_id":id,"server_filename":format!("note{id}.txt"),"isdir":0,"size":1})).collect();
+    let first = serde_json::json!({"errno":0,"list":items}).to_string();
+    let replay = Replay::start(vec![
+        Reply::ok("/s/5Ab_Cd", SHARE_PAGE),
+        Reply::ok("/share/list", &first),
+        Reply::ok(
+            "/share/list",
+            r#"{"errno":0,"list":[{"fs_id":21,"server_filename":"EP03.mp4","isdir":0,"size":42}]}"#,
+        ),
+        Reply::ok(
+            "/api/loginStatus",
+            r#"{"errno":0,"login_info":{"uk":56,"bdstoken":"viewer","vip_identity":0}}"#,
+        ),
+        Reply::ok(
+            "/share/tplconfig",
+            r#"{"errno":0,"data":{"sign":"fixture","timestamp":123}}"#,
+        ),
+        Reply::ok(
+            "/api/sharedownload",
+            r#"{"errno":0,"list":[{"fs_id":21,"dlink":"https://cdn.example.test/full.mp4"}]}"#,
+        ),
+    ])
+    .await;
+    let spec = super::super::pan_episode_select::EpisodeSpec {
+        title: "episode".into(),
+        order: Some(3),
+    };
+    let play = super::resolve_selected_with(
+        &replay.endpoints,
+        Some("BDUSS=SEED"),
+        "5Ab_Cd",
+        "",
+        None,
+        &spec,
+    )
+    .await
+    .expect("second page episode resolves");
+    assert!(play.label.unwrap().contains("EP03.mp4"));
+    assert!(replay
+        .requests()
+        .iter()
+        .any(|v| v.path == "/share/list" && v.target.contains("page=2")));
+}
+
+#[tokio::test]
+async fn full_resolver_nested_selected_file_keeps_rotated_session() {
+    let mut viewer = Reply::ok(
+        "/api/loginStatus",
+        r#"{"errno":0,"login_info":{"uk":56,"bdstoken":"viewer","vip_identity":0}}"#,
+    );
+    viewer.cookie_headers.push("BDUSS=ROTATED; Path=/".into());
+    let replay = Replay::start(vec![
+        Reply::ok("/s/5Ab_Cd", SHARE_PAGE),
+        Reply::ok("/share/list", r#"{"errno":0,"list":[{"fs_id":10,"server_filename":"Season","isdir":1,"path":"/Season"}]}"#),
+        Reply::ok("/share/list", r#"{"errno":0,"list":[{"fs_id":11,"server_filename":"EP03.mp4","isdir":0,"size":42},{"fs_id":12,"server_filename":"EP01.mp4","isdir":0,"size":99}]}"#),
+        Reply::ok("/share/list", r#"{"errno":0,"list":[{"fs_id":10,"server_filename":"Season","isdir":1,"path":"/Season"}]}"#),
+        Reply::ok("/share/list", r#"{"errno":0,"list":[{"fs_id":11,"server_filename":"EP03.mp4","isdir":0,"size":42},{"fs_id":12,"server_filename":"EP01.mp4","isdir":0,"size":99}]}"#),
+        viewer,
+        Reply::ok("/share/tplconfig", r#"{"errno":0,"data":{"sign":"fixture","timestamp":123}}"#),
+        Reply::ok("/api/sharedownload", r#"{"errno":0,"list":[{"fs_id":11,"dlink":"https://cdn.example.test/full.mp4"}]}"#),
+    ]).await;
+    let files = super::list_share_files_with(&replay.endpoints, "5Ab_Cd", "")
+        .await
+        .expect("anonymous nested listing");
+    let episodes = super::super::pan_episode_select::baidu_episodes("5Ab_Cd", "", "Baidu", files);
+    assert_eq!(episodes.len(), 2);
+    assert!(replay
+        .requests()
+        .iter()
+        .all(|v| v.path != "/api/loginStatus" && v.headers.get("cookie").is_none()));
+    let file = super::super::pan_episode_select::decode_file_id(&episodes[0].id).unwrap();
+    assert_eq!(file.kind, "baidu");
+    assert_eq!(file.fid, "11");
+    let spec = super::super::pan_episode_select::EpisodeSpec {
+        title: "EP01".into(),
+        order: Some(1),
+    };
+    let play = super::resolve_selected_with(
+        &replay.endpoints,
+        Some("BDUSS=SEED"),
+        &file.share_id,
+        &file.passcode,
+        Some(&file.fid),
+        &spec,
+    )
+    .await
+    .expect("nested exact selected file resolves");
+    assert!(play.label.unwrap().contains("EP03.mp4"));
+    let seen = replay.requests();
+    let lists: Vec<_> = seen.iter().filter(|v| v.path == "/share/list").collect();
+    assert_eq!(lists.len(), 4);
+    assert!(lists[1].target.contains("dir=%2FSeason") && lists[1].target.contains("uk=456"));
+    let post = seen
+        .iter()
+        .find(|v| v.path == "/api/sharedownload")
+        .unwrap();
+    assert!(post.body.contains("fid_list=%5B11%5D"));
+    assert!(post
+        .headers
+        .get("cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("BDUSS=ROTATED"));
+}
 const ECHO: &str = "SYNTHETIC_RESPONSE_MUST_NOT_ESCAPE";
 
 #[derive(Clone)]
@@ -72,7 +305,17 @@ impl Replay {
                     headers,
                     body: String::from_utf8(body.to_vec()).unwrap(),
                 });
-                let response = replies.iter().find(|reply| path == reply.path);
+                let index = capture
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|v| v.path == path)
+                    .count()
+                    .saturating_sub(1);
+                let matching: Vec<_> = replies.iter().filter(|reply| path == reply.path).collect();
+                let response = matching
+                    .get(index.min(matching.len().saturating_sub(1)))
+                    .copied();
                 let Some(response) = response else {
                     return (StatusCode::NOT_FOUND, HeaderMap::new(), String::new());
                 };
@@ -120,14 +363,11 @@ impl Replay {
     }
 
     async fn resolve(&self, pwd: &str) -> String {
-        resolve_with(
-            &self.endpoints,
-            Some("BDUSS=SEED; BAIDUID=abc"),
-            "5Ab_Cd",
-            pwd,
-        )
-        .await
-        .expect_err("the complete-file dlink boundary must remain an error")
+        match inspect_with(&self.endpoints, "BDUSS=SEED; BAIDUID=abc", "5Ab_Cd", pwd).await {
+            Ok(BaiduInspection::Files) => "dlink inspection prerequisite satisfied".into(),
+            Ok(_) => "inspection did not list files".into(),
+            Err(failure) => failure.message,
+        }
     }
 }
 
@@ -443,8 +683,8 @@ async fn cookie_paths_and_max_age_deletions_are_observed_on_wire() {
         "pwd",
     )
     .await
-    .expect_err("dlink is not integrated");
-    assert!(error.contains("dlink"));
+    .expect_err("incomplete file metadata must stop download");
+    assert!(error.contains("目录标记缺失"));
     let seen = replay.requests();
     let verify = cookies(
         seen.iter()
@@ -703,4 +943,197 @@ async fn expired_private_generation_is_rejected_before_first_request() {
     let error = guard::with_scope(Some(owner), replay.resolve("pwd")).await;
     assert_eq!(error, "播放解析请求已过期");
     assert!(replay.requests().is_empty());
+}
+
+#[derive(Clone, Copy)]
+enum TraversalCase {
+    Cycle,
+    RepeatedPage,
+    TooManyDirectories,
+    TooManyRequests,
+}
+
+async fn traversal_replay(case: TraversalCase) -> Replay {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let capture = seen.clone();
+    let router = Router::new().fallback(move |request: Request<Body>| {
+        let capture = capture.clone();
+        async move {
+            let path = request.uri().path().to_string();
+            let query = pairs(request.uri().query().unwrap_or(""));
+            capture.lock().unwrap().push(Seen {
+                path: path.clone(),
+                target: request.uri().to_string(),
+                headers: request.headers().clone(),
+                body: String::new(),
+            });
+            if path.starts_with("/s/") {
+                return (StatusCode::OK, SHARE_PAGE.to_string());
+            }
+            if path != "/share/list" {
+                return (StatusCode::NOT_FOUND, String::new());
+            }
+            let directory = |index: usize| {
+                serde_json::json!({
+                    "fs_id": index + 1, "server_filename": format!("d{index}"),
+                    "path": format!("/d{index}"), "isdir": 1, "size": 0,
+                })
+            };
+            let file = |index: usize| {
+                serde_json::json!({
+                    "fs_id": index + 1000, "server_filename": format!("EP{index}.mkv"),
+                    "isdir": 0, "size": 42,
+                })
+            };
+            let page = query.get("page").unwrap().parse::<usize>().unwrap();
+            let dir = query.get("dir").map(String::as_str);
+            let items: Vec<_> = match case {
+                TraversalCase::Cycle => vec![directory(0)],
+                TraversalCase::RepeatedPage => (0..20).map(file).collect(),
+                TraversalCase::TooManyDirectories => {
+                    let index = dir
+                        .map(|dir| dir[2..].parse::<usize>().unwrap() + 1)
+                        .unwrap_or(0);
+                    vec![directory(index)]
+                }
+                TraversalCase::TooManyRequests => match dir {
+                    None => (((page - 1) * 20)..(page * 20).min(64))
+                        .map(directory)
+                        .collect(),
+                    Some(dir) if page == 1 => {
+                        let index = dir[2..].parse::<usize>().unwrap();
+                        (index * 20..index * 20 + 20).map(file).collect()
+                    }
+                    Some(_) => vec![],
+                },
+            };
+            (
+                StatusCode::OK,
+                serde_json::json!({"errno":0,"list":items}).to_string(),
+            )
+        }
+    });
+    let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    Replay {
+        endpoints: BaiduEndpoints {
+            page: format!("{base}/s"),
+            verify: format!("{base}/share/verify"),
+            list: format!("{base}/share/list"),
+        },
+        seen,
+        task,
+    }
+}
+
+#[tokio::test]
+async fn selected_guards_directory_cycles_and_repeated_pages_stop_before_account_requests() {
+    for (case, message) in [
+        (TraversalCase::Cycle, "目录循环"),
+        (TraversalCase::RepeatedPage, "重复文件标识"),
+    ] {
+        let replay = traversal_replay(case).await;
+        let error = super::list_share_files_with(&replay.endpoints, "5Ab_Cd", "")
+            .await
+            .unwrap_err();
+        assert!(error.contains(message));
+        let seen = replay.requests();
+        assert_eq!(
+            seen.iter()
+                .filter(|request| request.path == "/share/list")
+                .count(),
+            2
+        );
+        assert!(seen
+            .iter()
+            .all(|request| !request.path.starts_with("/api/")));
+        assert!(seen
+            .iter()
+            .all(|request| !request.headers.contains_key("cookie")));
+    }
+}
+
+#[tokio::test]
+async fn selected_guards_directory_and_request_limits_apply_to_real_traversal() {
+    for (case, expected_requests) in [
+        (TraversalCase::TooManyDirectories, 65),
+        (TraversalCase::TooManyRequests, 129),
+    ] {
+        let replay = traversal_replay(case).await;
+        let error = super::list_share_files_with(&replay.endpoints, "5Ab_Cd", "")
+            .await
+            .unwrap_err();
+        assert!(error.contains("遍历超过限制"));
+        let seen = replay.requests();
+        assert_eq!(
+            seen.iter()
+                .filter(|request| request.path == "/share/list")
+                .count(),
+            expected_requests
+        );
+        assert!(seen
+            .iter()
+            .all(|request| !request.path.starts_with("/api/")));
+    }
+}
+
+#[tokio::test]
+async fn selected_guards_export_only_cookies_in_the_media_urls_scope() {
+    for (url, same_domain) in [
+        ("http://127.0.0.1:7777/full.mp4", true),
+        ("https://unrelated.example.test/full.mp4", false),
+    ] {
+        let mut page = Reply::ok("/s/5Ab_Cd", SHARE_PAGE);
+        page.headers = vec![("set-cookie", "PAGE_COOKIE=present; Path=/")];
+        let mut download = Reply::ok(
+            "/api/sharedownload",
+            &serde_json::json!({
+                "errno":0,"list":[{"fs_id":3,"dlink":url}],
+            })
+            .to_string(),
+        );
+        download.headers = vec![
+            ("set-cookie", "BDUSS=LATEST; Path=/"),
+            ("set-cookie", "API_ONLY=private; Path=/api"),
+            ("set-cookie", "SHARE_ONLY=private; Path=/share"),
+        ];
+        let replay = Replay::start(vec![
+            page,
+            Reply::ok("/share/list", r#"{"errno":0,"list":[{"fs_id":3,"server_filename":"EP03.mp4","isdir":0,"size":42}]}"#),
+            Reply::ok("/api/loginStatus", r#"{"errno":0,"login_info":{"uk":56,"bdstoken":"fixture","vip_identity":0}}"#),
+            Reply::ok("/share/tplconfig", r#"{"errno":0,"data":{"sign":"fixture","timestamp":123}}"#),
+            download,
+        ]).await;
+        let play = super::resolve_selected_with(
+            &replay.endpoints,
+            Some("BDUSS=SEED"),
+            "5Ab_Cd",
+            "",
+            Some("3"),
+            &super::super::pan_episode_select::EpisodeSpec::default(),
+        )
+        .await
+        .unwrap();
+        let cookie = play
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("cookie"));
+        if same_domain {
+            let values: BTreeMap<_, _> = cookie
+                .unwrap()
+                .1
+                .split(';')
+                .filter_map(|part| part.trim().split_once('='))
+                .collect();
+            assert_eq!(values.get("BDUSS"), Some(&"LATEST"));
+            assert_eq!(values.get("PAGE_COOKIE"), Some(&"present"));
+            assert!(!values.contains_key("API_ONLY") && !values.contains_key("SHARE_ONLY"));
+        } else {
+            assert!(
+                cookie.is_none(),
+                "Unrelated media hosts must not receive account cookies"
+            );
+        }
+    }
 }

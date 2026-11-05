@@ -28,6 +28,7 @@
 //
 // ⚠️ 但**必须**先 `await UiPrefs.load(dir)` 再用，否则读到空值。
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -38,6 +39,8 @@ class UiPrefs {
   static Map<String, String> _data = {};
   static File? _file;
   static bool _dirty = false;
+  static Future<void>? _writing;
+  static int _generation = 0;
 
   /// 是否已加载
   static bool get isLoaded => _file != null;
@@ -47,9 +50,12 @@ class UiPrefs {
   /// 为什么需要：`_data` 是 static，同一个 isolate 里多个测试文件会互相
   /// 看到对方写过的键；单测要的是"从空开始"的确定性。
   static void debugResetForTest([Map<String, String>? data]) {
+    _generation++;
+    _cancelScheduledFlush();
     _data = <String, String>{...?data};
     _file = null;
     _dirty = false;
+    // An already-started write retains ownership until its captured file settles.
   }
 
   /// 从数据目录加载
@@ -59,17 +65,24 @@ class UiPrefs {
   /// 文件损坏 / 权限不足时降级成"空偏好"：
   /// 表现是"上次选的播放源没记住"，而不是白屏。
   static Future<void> load(String dataDir) async {
+    final generation = ++_generation;
+    _cancelScheduledFlush();
+    await flush();
+    if (generation != _generation) return;
     final f = File('$dataDir${Platform.pathSeparator}ui-prefs.json');
     _file = f;
+    _dirty = false;
     try {
       if (await f.exists()) {
         final txt = await f.readAsString();
+        if (generation != _generation) return;
         final m = jsonDecode(txt);
         if (m is Map) {
           _data = m.map((k, v) => MapEntry(k.toString(), v.toString()));
         }
       }
     } catch (e) {
+      if (generation != _generation) return;
       // 损坏 → 用空偏好继续（不删文件，用户可能想自己看看）
       debugLog('偏好文件读取失败（降级为空）: $e');
       _data = {};
@@ -98,29 +111,58 @@ class UiPrefs {
     _flushSoon();
   }
 
-  static Future<void>? _pending;
+  static Timer? _pending;
+
+  static void _cancelScheduledFlush() {
+    _pending?.cancel();
+    _pending = null;
+  }
 
   /// 合并短时间内的多次写入
   ///
   /// 为什么：用户快速切几个播放源会触发多次写。
   /// 每次都落盘是浪费（且可能写坏 —— 两个异步写重叠）。
   static void _flushSoon() {
-    if (_pending != null) return;
-    _pending = Future.delayed(const Duration(milliseconds: 300), () async {
+    if (_pending != null || _writing != null) return;
+    _pending = Timer(const Duration(milliseconds: 300), () {
       _pending = null;
-      await flush();
+      unawaited(flush());
     });
   }
 
   /// 立刻落盘（退出前调一次，或测试里用）
-  static Future<void> flush() async {
-    if (!_dirty || _file == null) return;
-    _dirty = false;
+  static Future<void> flush() {
+    _cancelScheduledFlush();
+    final writing = _writing;
+    if (writing != null) return writing;
+    if (!_dirty || _file == null) return Future<void>.value();
+    final completion = Completer<void>();
+    _writing = completion.future;
+    unawaited(_writeDirty(completion));
+    return completion.future;
+  }
+
+  static Future<void> _writeDirty(Completer<void> completion) async {
     try {
-      await _file!.writeAsString(jsonEncode(_data));
-    } catch (e) {
-      debugLog('偏好落盘失败: $e');
-      // 写失败不算致命 —— 内存里还是对的，本次会话不受影响
+      while (_dirty && _file != null) {
+        final file = _file!;
+        final generation = _generation;
+        final snapshot = jsonEncode(_data);
+        _dirty = false;
+        try {
+          await file.writeAsString(snapshot);
+        } catch (e) {
+          debugLog('偏好落盘失败: $e');
+          if (generation == _generation) {
+            // Keep the snapshot retryable, but do not loop on a failing device.
+            _dirty = true;
+            break;
+          }
+        }
+      }
+    } finally {
+      _writing = null;
+      completion.complete();
     }
   }
 

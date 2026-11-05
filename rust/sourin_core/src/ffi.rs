@@ -687,6 +687,20 @@ pub(crate) fn state() -> Option<&'static std::sync::Arc<crate::state::AppState>>
 //  命令分发
 // ═══════════════════════════════════════════════════════════════════════
 
+fn parse_optional_play_request(
+    v: &serde_json::Value,
+) -> Result<Option<crate::model::PlayRequest>, &'static str> {
+    match v.get("args").and_then(|args| args.get("req")) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(req @ serde_json::Value::Object(_)) => {
+            serde_json::from_value::<crate::model::PlayRequest>(req.clone())
+                .map(Some)
+                .map_err(|_| "resolve_stream req must be a valid PlayRequest")
+        }
+        Some(_) => Err("resolve_stream req must be a valid PlayRequest"),
+    }
+}
+
 /// 解析 `{cmd, args}` 并分发
 ///
 /// # 为什么错误也返回 JSON 而不是抛
@@ -1088,10 +1102,10 @@ async fn dispatch_inner(req: &str) -> String {
             };
             // req 是可选的：原版 `invoke("resolve_stream", { provider, id })`
             // 不带 req 也合法（用 PlayRequest::default()）。
-            let req = v
-                .get("args")
-                .and_then(|x| x.get("req"))
-                .and_then(|r| serde_json::from_value::<crate::model::PlayRequest>(r.clone()).ok());
+            let req = match parse_optional_play_request(&v) {
+                Ok(req) => req,
+                Err(e) => return err_json(e, "other"),
+            };
             with_state_async(move |st| async move {
                 crate::playback::resolve_stream(st, &provider, &id, req).await
             }).await
@@ -3153,6 +3167,196 @@ mod pan_cleanup_envelope_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn optional_play_request_quark_files() -> Vec<crate::csp::pan_drive::DriveEntry> {
+        (1..=7)
+            .map(|episode| crate::csp::pan_drive::DriveEntry {
+                fid: format!("synthetic-file-{episode:02}"),
+                name: if episode == 3 {
+                    "Synthetic S03 E03 (1).mp4".into()
+                } else {
+                    format!("Synthetic S03 E{episode:02}.mp4")
+                },
+                is_dir: false,
+                size: 1024,
+                fid_token: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn optional_play_request_quark_typed_fields_survive() {
+        let files = optional_play_request_quark_files();
+        let episodes: Vec<_> = files
+            .iter()
+            .map(|file| {
+                crate::csp::pan_episode_select::encode_file_id(
+                    crate::pan::PanKind::Quark,
+                    "synthetic-contract-share",
+                    "",
+                    &file.fid,
+                )
+            })
+            .collect();
+        let selected = &files[2];
+        let request = crate::model::PlayRequest {
+            source_code: Some("synthetic-line".into()),
+            episode_id: Some(format!("csp-quark-contract::{}", episodes[2])),
+            quality: Some("original".into()),
+            flag: Some("Quark".into()),
+            episode_title: Some(selected.name.clone()),
+            episode_order: Some(3),
+            extra: Some(serde_json::json!({
+                "trace": "synthetic-contract",
+                "selection": "episode03"
+            })),
+        };
+        let wire = serde_json::to_value(&request).unwrap();
+        let parsed = parse_optional_play_request(&serde_json::json!({
+            "args": {"req": wire}
+        }))
+        .unwrap()
+        .expect("an explicitly selected concrete file must remain a request");
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+        assert_eq!(files.len(), 7);
+        assert!(selected.name.ends_with("(1).mp4"));
+    }
+
+    #[test]
+    fn optional_play_request_legacy_omitted_null_and_empty_object_remain_valid() {
+        for request in [
+            serde_json::json!({}),
+            serde_json::json!({"args": {}}),
+            serde_json::json!({"args": {"req": null}}),
+        ] {
+            assert!(parse_optional_play_request(&request).unwrap().is_none());
+        }
+        let parsed = parse_optional_play_request(&serde_json::json!({
+            "args": {"req": {}}
+        }))
+        .unwrap()
+        .expect("an empty object remains a default PlayRequest");
+        assert_eq!(serde_json::to_value(parsed).unwrap(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn optional_play_request_malformed_shapes_fail_closed() {
+        for (label, req) in [
+            ("array", serde_json::json!([])),
+            ("string", serde_json::json!("synthetic-do-not-echo")),
+            ("boolean", serde_json::json!(false)),
+            ("integer", serde_json::json!(3)),
+            ("fraction", serde_json::json!(3.5)),
+        ] {
+            assert!(
+                parse_optional_play_request(&serde_json::json!({"args": {"req": req}}))
+                    .is_err(),
+                "present malformed {label} request must not become an absent request"
+            );
+        }
+    }
+
+    #[test]
+    fn optional_play_request_malformed_fields_fail_closed() {
+        for (label, req) in [
+            ("episode_id", serde_json::json!({"episode_id": 3})),
+            ("episode_title", serde_json::json!({"episode_title": []})),
+            ("source_code", serde_json::json!({"source_code": true})),
+            ("flag", serde_json::json!({"flag": {}})),
+            ("quality", serde_json::json!({"quality": 1080})),
+            ("order_string", serde_json::json!({"episode_order": "3"})),
+            ("order_negative", serde_json::json!({"episode_order": -1})),
+            ("order_overflow", serde_json::json!({"episode_order": 4294967296_u64})),
+            ("order_fraction", serde_json::json!({"episode_order": 3.5})),
+        ] {
+            assert!(
+                parse_optional_play_request(&serde_json::json!({"args": {"req": req}}))
+                    .is_err(),
+                "present malformed {label} must not discard the selected request"
+            );
+        }
+    }
+
+    #[test]
+    fn optional_play_request_malformed_ffi_error_is_safe() {
+        let request = CString::new(
+            serde_json::json!({
+                "cmd": "resolve_stream",
+                "args": {
+                    "provider": "synthetic-provider",
+                    "id": "synthetic-item",
+                    "req": {
+                        "episode_id": "synthetic-do-not-echo",
+                        "episode_order": "synthetic-do-not-echo"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let response = unsafe { sourin_call(request.as_ptr()) };
+        assert!(!response.is_null());
+        let text = unsafe { CStr::from_ptr(response) }.to_str().unwrap().to_string();
+        unsafe { sourin_free(response) };
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let error_stage = if parsed["error"] == "resolve_stream req must be a valid PlayRequest" {
+            "optional_request"
+        } else if parsed["error"].as_str().is_some_and(|error| error.contains("sourin_start")) {
+            "core_not_started"
+        } else {
+            "other"
+        };
+        println!("QUARK_REQUEST_CONTRACT_FFI_ERROR_STAGE={error_stage}");
+        assert_eq!(parsed["kind"], "other");
+        assert_eq!(
+            parsed["error"],
+            "resolve_stream req must be a valid PlayRequest"
+        );
+        assert!(!text.contains("synthetic-do-not-echo"));
+    }
+
+    #[test]
+    fn optional_play_request_duplicate_suffix_uses_concrete_identity() {
+        use crate::csp::pan_episode_select::{
+            decode_file_id, encode_file_id, pick_episode_file, EpisodeSpec,
+        };
+        let files = optional_play_request_quark_files();
+        let selected = &files[2];
+        let request = crate::model::PlayRequest {
+            episode_id: Some(encode_file_id(
+                crate::pan::PanKind::Quark,
+                "synthetic-contract-share",
+                "",
+                &selected.fid,
+            )),
+            episode_title: Some(selected.name.clone()),
+            episode_order: Some(3),
+            ..Default::default()
+        };
+        let parsed = parse_optional_play_request(&serde_json::json!({
+            "args": {"req": serde_json::to_value(&request).unwrap()}
+        }))
+        .unwrap()
+        .unwrap();
+        let reference = decode_file_id(parsed.episode_id.as_deref().unwrap()).unwrap();
+        let spec = EpisodeSpec {
+            title: parsed.episode_title.unwrap(),
+            order: parsed.episode_order,
+        };
+        assert_eq!(
+            pick_episode_file(&spec, &files, Some(&reference.fid)).unwrap(),
+            selected
+        );
+        let remaining: Vec<_> = files
+            .iter()
+            .filter(|file| file.fid != reference.fid)
+            .cloned()
+            .collect();
+        assert!(
+            pick_episode_file(&spec, &remaining, Some(&reference.fid)).is_err(),
+            "a missing concrete file must not resolve another listed file"
+        );
+    }
 
     #[test]
     fn version_is_callable_and_nul_terminated() {

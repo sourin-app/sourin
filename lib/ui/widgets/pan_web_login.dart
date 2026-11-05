@@ -68,6 +68,9 @@
 // ```
 
 import 'dart:async';
+import 'dart:io' show Platform;
+
+import 'package:flutter/services.dart';
 
 import 'package:desktop_webview_window/desktop_webview_window.dart';
 import 'package:material_ui/material_ui.dart';
@@ -360,7 +363,9 @@ Map<String, String> panWebAuthBaseline(
   PanWebLoginSpec spec,
 ) {
   final values = _panWebCookieValues(cookies, spec);
-  return Map.unmodifiable({for (final key in spec.requiredKeys) key: values[key] ?? ''});
+  return Map.unmodifiable({
+    for (final key in spec.requiredKeys) key: values[key] ?? '',
+  });
 }
 
 bool panWebAuthenticationChanged(
@@ -422,6 +427,7 @@ Future<bool> showPanWebLogin(
   try {
     final creation = WebviewWindow.create(
       configuration: CreateConfiguration(
+        composerArguments: Platform.isWindows ? 'sourin-pan-login-v1' : null,
         title: '登录${spec.kindName}',
         windowWidth: 1080,
         windowHeight: 800,
@@ -431,7 +437,7 @@ Future<bool> showPanWebLogin(
     unawaited(
       creation.then<void>((window) {
         if (abandonedCreation) {
-        unawaited(_closePanWebLoginWindow(window.close));
+          unawaited(_closePanWebLoginWindow(window.close));
         }
       }, onError: (Object _, StackTrace __) {}),
     );
@@ -443,7 +449,8 @@ Future<bool> showPanWebLogin(
       },
     );
     try {
-      final cookies = await NativePanWebLoginWindow(createdWindow).readCookies()
+      final cookies = await NativePanWebLoginWindow(createdWindow)
+          .readCookies()
           .timeout(panLoginRequestTimeout);
       initialAuthKeys = panWebAuthBaseline(cookies, spec);
     } catch (_) {
@@ -486,7 +493,10 @@ Future<bool> showPanWebLogin(
     final ok = await showAppDialog<bool>(
       context: context,
       builder: (_) => PanWebLoginWaitingDialog(
-        webview: webview, spec: spec, initialAuthKeys: initialAuthKeys,
+        webview: webview,
+        spec: spec,
+        initialAuthKeys: initialAuthKeys,
+        nativeBrowserId: Platform.isWindows ? webview.webview.id : null,
       ),
     );
     return ok ?? false;
@@ -605,11 +615,13 @@ class PanWebLoginWaitingDialog extends StatefulWidget {
     required this.webview,
     required this.spec,
     this.initialAuthKeys,
+    this.nativeBrowserId,
   });
 
   final PanWebLoginWindow webview;
   final PanWebLoginSpec spec;
   final Map<String, String>? initialAuthKeys;
+  final int? nativeBrowserId;
 
   @override
   State<PanWebLoginWaitingDialog> createState() =>
@@ -617,11 +629,43 @@ class PanWebLoginWaitingDialog extends StatefulWidget {
 }
 
 class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
+  static const _nativeChannel = MethodChannel('sourin/pan-web-login');
+  Future<void> _nativeState(String state) async {
+    if (widget.nativeBrowserId == null) return;
+    try {
+      await _nativeChannel
+          .invokeMethod<void>('setState', {
+            'browserId': widget.nativeBrowserId,
+            'state': state,
+          })
+          .timeout(panLoginRequestTimeout);
+    } catch (_) {}
+  }
+
+  Future<dynamic> _nativeConfirm(MethodCall call) async {
+    if (call.method != 'confirm' ||
+        call.arguments is! Map ||
+        (call.arguments as Map)['browserId'] != widget.nativeBrowserId ||
+        !mounted ||
+        _cancelled ||
+        _windowClosed) {
+      return;
+    }
+    if (_pollBusy) {
+      if (!_pollExplicitConsent) _nativeConfirmationPending = true;
+      await _nativeState('busy');
+      return;
+    }
+    _recheck(confirmExisting: true);
+  }
+
   Timer? _timer;
   Timer? _deadline;
   bool _finished = false;
   bool _cancelled = false;
   bool _pollBusy = false;
+  bool _nativeConfirmationPending = false;
+  bool _pollExplicitConsent = false;
   bool _windowClosed = false;
   String _state = '登录窗口已打开：正在检测网页登录态';
   String _error = '';
@@ -632,8 +676,13 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
   @override
   void initState() {
     super.initState();
+    if (widget.nativeBrowserId != null) {
+      _nativeChannel.setMethodCallHandler(_nativeConfirm);
+      unawaited(_nativeState('waiting'));
+    }
     _initialAuthKeys = widget.initialAuthKeys == null
-        ? null : Map.unmodifiable(widget.initialAuthKeys!);
+        ? null
+        : Map.unmodifiable(widget.initialAuthKeys!);
     _waited.start();
     unawaited(
       widget.webview.onClose.then<void>(
@@ -650,6 +699,9 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
 
   @override
   void dispose() {
+    if (widget.nativeBrowserId != null) {
+      _nativeChannel.setMethodCallHandler(null);
+    }
     _initialAuthKeys = null;
     _cancelled = true;
     _finished = true;
@@ -681,6 +733,7 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
     _waited.stop();
     _timer?.cancel();
     _deadline?.cancel();
+    unawaited(_nativeState('error'));
     if (!mounted) return;
     setState(() {
       _state = '';
@@ -692,6 +745,8 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
   Future<void> _poll({bool confirmExisting = false}) async {
     if (_finished || _pollBusy || !mounted) return;
     _pollBusy = true;
+    _pollExplicitConsent = confirmExisting;
+    if (confirmExisting) unawaited(_nativeState('busy'));
     try {
       final List<CapturedCookie> cookies;
       try {
@@ -734,7 +789,11 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
       }
 
       if (!confirmExisting &&
-          !panWebAuthenticationChanged(cookies, widget.spec, _initialAuthKeys)) {
+          !panWebAuthenticationChanged(
+            cookies,
+            widget.spec,
+            _initialAuthKeys,
+          )) {
         if (!mounted || _finished) return;
         setState(() {
           _hint = _initialAuthKeys == null
@@ -759,6 +818,8 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
       _waited.stop();
       _timer?.cancel();
       if (!mounted || _cancelled) return;
+      _pollExplicitConsent = true;
+      unawaited(_nativeState('busy'));
       setState(() {
         _state = '正在保存登录态并检查应用是否识别账号…';
         _hint = '';
@@ -783,10 +844,28 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
       Navigator.of(context).pop(true);
     } finally {
       _pollBusy = false;
+      _pollExplicitConsent = false;
+      if (_nativeConfirmationPending &&
+          mounted &&
+          !_cancelled &&
+          !_windowClosed) {
+        _nativeConfirmationPending = false;
+        if (!_finished || _error.isNotEmpty) {
+          _recheck(confirmExisting: true);
+        }
+      }
+      if (mounted &&
+          !_pollBusy &&
+          !_cancelled &&
+          !_windowClosed &&
+          !_finished) {
+        unawaited(_nativeState('waiting'));
+      }
     }
   }
 
   void _stopWithError(String message) {
+    unawaited(_nativeState('error'));
     _finished = true;
     _waited.stop();
     _timer?.cancel();
@@ -885,7 +964,8 @@ class _PanWebLoginWaitingDialogState extends State<PanWebLoginWaitingDialog> {
           AppTextButton(
             key: const ValueKey<String>('pan-web-login-confirm-existing'),
             onPressed: _pollBusy || _windowClosed
-                ? null : () => _recheck(confirmExisting: true),
+                ? null
+                : () => _recheck(confirmExisting: true),
             child: const Text('使用当前登录态'),
           ),
           AppTextButton(

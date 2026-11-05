@@ -2171,6 +2171,8 @@ class _PlayerPageState extends State<PlayerPage>
    * 初始化时从 widget 取，换源时整批替换。
    */
   late List<Episode> _episodes = widget.episodes;
+  late String? _unlistedEpisodeId = widget.episodeId;
+  late String? _unlistedEpisodeTitle = widget.episodeTitle;
 
   /// 当前线路（多线路源才非 null；单线路恒 null ⇒ 线路条不画）
   ///
@@ -2220,7 +2222,7 @@ class _PlayerPageState extends State<PlayerPage>
     final current = _epIndex >= 0 && _epIndex < _episodes.length
         ? _episodes[_epIndex]
         : null;
-    final id = episodeId ?? current?.id ?? widget.episodeId;
+    final id = episodeId ?? current?.id ?? _unlistedEpisodeId;
     final matches = _episodes.where((e) => e.id == id).toList();
     final selected = matches.where((e) => e.flag == _selectedFlag).toList();
     final ep = current?.id == id
@@ -2246,12 +2248,7 @@ class _PlayerPageState extends State<PlayerPage>
       episodeId: id,
       flag: ep?.flag ?? _selectedFlag,
       episodeTitle: ep?.title ??
-          (selectedLine &&
-                  _provider == widget.provider &&
-                  _contentId == widget.id &&
-                  id == widget.episodeId
-              ? widget.episodeTitle
-              : null),
+          (id == _unlistedEpisodeId ? _unlistedEpisodeTitle : null),
       episodeOrder: order < 0 ? null : order + 1,
     );
   }
@@ -5907,7 +5904,12 @@ class _PlayerPageState extends State<PlayerPage>
      * ⇒ 入口只落中性事实，定性交给下面各分支各自补写。
      * ```
      */
-    AppLog.write('PLAY', had ? '播放期 stream.error（待定性）：$e' : '起播失败：$e');
+    AppLog.write(
+      'PLAY',
+      PlaybackErrorText.forDisplay(
+        had ? '播放期 stream.error（待定性）：$e' : '起播失败：$e',
+      ),
+    );
     /*
      * ★ 直播**起播失败**（未出画面）优先怀疑地址本身已坏 ⇒ 踢掉该频道
      *   的取址缓存，让用户重试时能拿到新地址（否则 30s TTL 内一直命中
@@ -5952,7 +5954,7 @@ class _PlayerPageState extends State<PlayerPage>
       AppLog.write(
         'PLAY',
         '分片续接（HLS 分片边界 EOF，非故障）⇒ 不弹横幅；'
-            'key=$key 已吞 $_hlsSegmentEofSwallowed 次 kind=${_current?.kind ?? '-'}',
+            'key=${PlaybackErrorText.forDisplay(key)} 已吞 $_hlsSegmentEofSwallowed 次 kind=${_current?.kind ?? '-'}',
       );
       // 续片不是错误 ⇒ 中断横幅若正挂着，也一并撤掉（画面一直在走）
       if (_playbackFailure != null) {
@@ -5991,7 +5993,7 @@ class _PlayerPageState extends State<PlayerPage>
       AppLog.write(
         'PLAY',
         '抖动抑制：同类错误重复出现 ⇒ 不重复弹横幅；'
-            'key=$jitterKey 第 ${decision.count} 次（${decision.reason}）'
+            'key=${PlaybackErrorText.forDisplay(jitterKey)} 第 ${decision.count} 次（${decision.reason}）'
             '累计抑制 $_errorJitterSuppressed 次',
       );
       return had;
@@ -5999,7 +6001,7 @@ class _PlayerPageState extends State<PlayerPage>
     if (had && severe) {
       AppLog.write(
         'PLAY',
-        '错误升级（HTTP/DNS/超时类）⇒ 解除抑制，如实报错；key=$jitterKey',
+        '错误升级（HTTP/DNS/超时类）⇒ 解除抑制，如实报错；key=${PlaybackErrorText.forDisplay(jitterKey)}',
       );
       // 升级 ⇒ 这个 key 的账清零，下次重新计数（不让它一直卡在升级态）
       _errorJitterCounts.remove(jitterKey);
@@ -6010,7 +6012,10 @@ class _PlayerPageState extends State<PlayerPage>
      *   真断流仍然写着「播放中断」，而续片/抑制不会先落一行误导性的"中断"。
      */
     if (had) {
-      AppLog.write('PLAY', '播放中断（已有画面，非阻断）：$e');
+      AppLog.write(
+        'PLAY',
+        PlaybackErrorText.forDisplay('播放中断（已有画面，非阻断）：$e'),
+      );
     }
 
     setState(() {
@@ -6579,11 +6584,9 @@ class _PlayerPageState extends State<PlayerPage>
        * ② 按**集号**校验，避免上一集的进度串到这一集
        *
        * 原版：`if (p.episode_id && s.episodeId && p.episode_id !== s.episodeId) return;`
-       * 我们的对应物是当前集的 id（`_episodes` 优先，回退到 widget 传来的）。
+       * 当前会话的集 id 包含列表尚未回填时的显式文件选择。
        */
-      final curEpId = _epIndex < _episodes.length
-          ? _episodes[_epIndex].id
-          : widget.episodeId;
+      final curEpId = currentEpisodeId;
       /*
        * ★★★ OPS-13 反馈 C（本地进度不与在线同步）③：改前这里是
        * `if (p.episodeId != null && curEpId != null && p.episodeId != curEpId) {不续播}`。
@@ -11223,8 +11226,8 @@ class _PlayerPageState extends State<PlayerPage>
          */
         title: _title.isNotEmpty ? _title : widget.title,
         cover: _cover ?? widget.cover,
-        episodeId: ep?.id ?? widget.episodeId,
-        episodeTitle: ep?.title ?? widget.episodeTitle,
+        episodeId: ep?.id ?? _unlistedEpisodeId,
+        episodeTitle: ep?.title ?? _unlistedEpisodeTitle,
         position: pos,
         duration: _realDuration.inSeconds > 0
             ? _realDuration.inSeconds
@@ -11985,6 +11988,8 @@ class _PlayerPageState extends State<PlayerPage>
          * ```
          */
         _epIndex = keep != null ? eps.indexOf(keep) : 0;
+        _unlistedEpisodeId = keep?.id;
+        _unlistedEpisodeTitle = keep?.title;
         _selectedFlag = null;
         _syncSelectedFlag();
         _current = null;
@@ -12034,7 +12039,7 @@ class _PlayerPageState extends State<PlayerPage>
 
   String? get _currentEpisodeTitle => _epIndex < _episodes.length
       ? _episodes[_epIndex].title
-      : widget.episodeTitle;
+      : _unlistedEpisodeTitle;
 
   // ═══════════════════════════════════════════════════════════════════
   //  ★ task-32 ②：投屏（DLNA）
@@ -12174,8 +12179,8 @@ class _PlayerPageState extends State<PlayerPage>
     final previous = _playbackProgress.value;
     if (previous != null && previous.provider == _provider &&
         previous.id == _contentId && previous.generation == _playSessionGen &&
-        previous.episodeId == (episode?.id ?? widget.episodeId) &&
-        previous.episodeTitle == (episode?.title ?? widget.episodeTitle) &&
+        previous.episodeId == (episode?.id ?? _unlistedEpisodeId) &&
+        previous.episodeTitle == (episode?.title ?? _unlistedEpisodeTitle) &&
         previous.position.inSeconds == _position.inSeconds &&
         previous.duration.inSeconds == duration.inSeconds) {
       return;
@@ -12184,8 +12189,8 @@ class _PlayerPageState extends State<PlayerPage>
       provider: _provider,
       id: _contentId,
       generation: _playSessionGen,
-      episodeId: episode?.id ?? widget.episodeId,
-      episodeTitle: episode?.title ?? widget.episodeTitle,
+      episodeId: episode?.id ?? _unlistedEpisodeId,
+      episodeTitle: episode?.title ?? _unlistedEpisodeTitle,
       position: _position,
       duration: duration,
     );
@@ -12203,7 +12208,7 @@ class _PlayerPageState extends State<PlayerPage>
       provider: _provider,
       id: _contentId,
       title: _title,
-      episodeId: _epIndex < _episodes.length ? _episodes[_epIndex].id : null,
+      episodeId: currentEpisodeId,
       sourceCode: _sourceCode,
       episodes: _episodes,
       episodeIndex: _epIndex < _episodes.length ? _epIndex : null,
@@ -12251,6 +12256,8 @@ class _PlayerPageState extends State<PlayerPage>
       _provider = req.provider;
       _contentId = req.id;
       _episodes = req.episodes;
+      _unlistedEpisodeId = req.episodeId;
+      _unlistedEpisodeTitle = req.episodeTitle;
       // ★ 2026-10-28：同上 —— 换会话也必须重算"所选线路"，否则选集面板平铺所有线路
       _epIndex = req.episodes.isEmpty ? 0 : newIdx;
       _selectedFlag = null;
@@ -12308,7 +12315,7 @@ class _PlayerPageState extends State<PlayerPage>
      *   （见它自己的注释："播放器页的 widget.provider/id 是 final，没法改，
      *     所以这里直接调 resolveStream 拿新流并播放，不重建整个页面"）。
      */
-    final epId = _epIndex < _episodes.length ? _episodes[_epIndex].id : null;
+    final epId = currentEpisodeId;
 
     /*
      * ★★★ 2026-09-26 第二轮：换会话后通知"当前集变了"
@@ -12463,7 +12470,7 @@ class _PlayerPageState extends State<PlayerPage>
   @override
   String? get currentEpisodeId => _epIndex >= 0 && _epIndex < _episodes.length
       ? _episodes[_epIndex].id
-      : null;
+      : _unlistedEpisodeId;
 
   /// ★★★ 注册"当前剧集变化"的回调（`MediaSession` 的实现）
   ///
@@ -12477,6 +12484,22 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   void Function(String? episodeId)? _onEpisodeChanged;
+
+  static bool _isConcretePanEpisode(String? id) =>
+      id?.split('::').last.startsWith('panfile:') ?? false;
+
+  void _restartExpandedPanEpisode() {
+    if (!mounted || _playClosed || _isLive) return;
+    setState(() {
+      _playSessionGen++;
+      _rewatchToken++;
+      _skipMarker = null;
+      _memoryIntroEnd = null;
+      _neutralizeErrorState(loading: true);
+    });
+    _publishPlaybackProgress();
+    unawaited(_load());
+  }
 
   /// ★★★ 让详情页把**剧集列表**回填给播放器（`MediaSession` 的实现）
   ///
@@ -12499,39 +12522,57 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// ```text
   /// applySession      ⇒ 换会话 ⇒ 重新解析流（黑屏 + 丢进度）
-  /// updateEpisodes    ⇒ **只补列表** ⇒ 不动流、不重置位置
+  /// updateEpisodes    ⇒ 补列表；未解析的分享请求遇到具体文件时重新取流
   /// ```
   /// ★ 所以**不能**用 `applySession` 代劳 —— 那会在"详情刚加载完"这个
   ///   无害时刻白重启一次流（正是 `updateDisplayTitle` 那条注释记录的教训）。
   @override
   void updateEpisodes(List<Episode> episodes) {
     if (episodes.isEmpty) return;
-    /*
-     * 幂等判据：**长度 + 首尾 id** 相同就认为没变。
-     *
-     * ⚠️ 不能只比 `length` —— 换源后长度可能相同而内容是另一部剧。
-     * ⚠️ 也不能比整个列表（`List` 没有值相等）⇒ 比首尾 id 是低成本且
-     *    对本场景（同一部剧的集列表）足够强的判据。
-     */
     final same =
         _episodes.length == episodes.length &&
-        (_episodes.isEmpty ||
-            (_episodes.first.id == episodes.first.id &&
-                _episodes.last.id == episodes.last.id));
+        Iterable<int>.generate(_episodes.length).every((i) =>
+            _episodes[i].id == episodes[i].id &&
+            _episodes[i].title == episodes[i].title &&
+            _episodes[i].flag == episodes[i].flag);
     if (same) return;
 
+    final previousId = currentEpisodeId;
+    final previousTitle = _currentEpisodeTitle ?? _unlistedEpisodeTitle;
+    final previousFlag = _epIndex >= 0 && _epIndex < _episodes.length
+        ? _episodes[_epIndex].flag
+        : _selectedFlag;
+    final retainedIndex = episodes.indexWhere((e) =>
+        e.id == previousId &&
+        (previousFlag == null || e.flag == previousFlag));
+    final oldFile = _isConcretePanEpisode(previousId);
+    final selectedIndex = retainedIndex >= 0
+        ? retainedIndex
+        : _epIndex.clamp(0, episodes.length - 1);
+    final shouldHandoff = !_isLive &&
+        _current == null &&
+        !oldFile &&
+        _isConcretePanEpisode(episodes[selectedIndex].id);
     debugPrint(
       '[PLAYER] updateEpisodes：${_episodes.length} → ${episodes.length} 集'
-      '（只补列表，不重启流）',
+      '（${shouldHandoff ? "分享请求接管到具体文件" : "保留当前播放"}）',
     );
     setState(() {
       _episodes = episodes;
+      _unlistedEpisodeId = previousId;
+      _unlistedEpisodeTitle = previousTitle;
+      if (retainedIndex >= 0) {
+        _epIndex = retainedIndex;
+      } else if (oldFile) {
+        // A disappeared selected file must not become another episode by position.
+        _epIndex = _episodes.length;
+      }
       // ★ 多线路：换了一批集后让"所选线路"落到合法值（默认第一条）
       /*
        * ★ 下标要**夹取**：当前 `_epIndex` 是基于**旧**列表算的。
        * 若新列表更短，不夹取就会越界 ⇒ `_episodes[_epIndex]` 抛异常。
        */
-      if (_epIndex >= _episodes.length) {
+      if (!oldFile && _epIndex >= _episodes.length) {
         _epIndex = _episodes.isEmpty ? 0 : _episodes.length - 1;
       }
       _syncSelectedFlag();
@@ -12541,6 +12582,7 @@ class _PlayerPageState extends State<PlayerPage>
      *   （详情页要靠它把当前集高亮 + 滚入可视区；否则要等用户手动切集才动）
      */
     _reportEpisodeChanged();
+    if (shouldHandoff) _restartExpandedPanEpisode();
 
     /*
      * ★ task-31 ④：集列表被换掉 ⇒ 绑定里的「本地集序 → cid」映射可能变了
@@ -17955,9 +17997,7 @@ class _PlayerPageState extends State<PlayerPage>
                     ListenableBuilder(
                       listenable: _controlsLive,
                       builder: (context, _) => _TopBar(
-                      episodeTitle: _epIndex < _episodes.length
-                          ? _episodes[_epIndex].title
-                          : widget.episodeTitle,
+                      episodeTitle: _currentEpisodeTitle,
                       isLive: _isLive,
                       // ★ task-32 接线契约（逐字）：state 必须传进 providerName；
                       //   聚合源的复合串在写入点算（见 _refreshAggregateTitleInPlace）
@@ -19697,9 +19737,7 @@ class _ErrorOverlay extends StatelessWidget {
   /// 第 7 条要求「只显示插件原文」，那条要求对**所有**错误都成立，
   /// 不该因为「这条归不到类」就把 SourinCoreException(other): 又露出来。
   /// ```
-  String get _body => PlaybackErrorText.stripHostErrorNoise(
-    PlaybackErrorText.hideInternalUrls(failure?.detail ?? message),
-  );
+  String get _body => PlaybackErrorText.forDisplay(failure?.detail ?? message);
 
   @override
   Widget build(BuildContext context) => ColoredBox(
@@ -20246,12 +20284,11 @@ class _VideoOutputDeadBanner extends StatelessWidget {
 ///
 /// # 现在的做法
 /// ```text
-/// ① 内部代理地址 → 抹掉（PlaybackErrorText.hideInternalUrls）
-/// ② 剩下的**上游/插件原文**照抄 —— 那部分才是真线索，一个字都不改
+/// ① 播放地址与凭据 → 抹掉（PlaybackErrorText.forDisplay）
+/// ② 剩下的**上游/插件原文**照抄，保留真正的错误原因
 /// ③ 前面加一句归类好的中文（这个源没返回地址 / 内置代理没起来 / …）
 /// ```
-/// ⚠️ 完整的原始地址仍进 `AppLog`（`_bindPlayerStreams` 里那条 write），
-///    排查时从日志里拿 —— **文案与日志的取舍不同**，这一点没变。
+/// 同一播放失败路径的 AppLog 也会脱敏，导出时不会重新暴露地址。
 class _PlaybackFailureBanner extends StatelessWidget {
   const _PlaybackFailureBanner({required this.message, required this.onRetry});
 
@@ -20303,13 +20340,11 @@ class _PlaybackFailureBanner extends StatelessWidget {
                      * 原文形如「Failed to open http://127.0.0.1:63534/s/18dc…/」，
                      * 那个端口是**内置代理**、随进程退出失效，用户拿它判断
                      * 不了任何事（Owner 原话：不知道是源的问题还是软件问题）。
-                     * ⇒ 抹成「内置代理取不到这条流」，上游真址若在原文里则原样保留。
+                     * ⇒ 隐藏内部和外部播放地址及凭据，保留错误原因。
                      *
-                     * ⚠️ 完整原文仍进 AppLog（见 `_bindPlayerStreams`），排查不受影响。
+                     * 同一播放失败路径的 AppLog 也会脱敏。
                      */
-                    PlaybackErrorText.stripHostErrorNoise(
-                      PlaybackErrorText.hideInternalUrls(message),
-                    ),
+                    PlaybackErrorText.forDisplay(message),
                     // ★ 原文可能很长（带完整 URL）⇒ 最多两行 + 省略号，
                     //   免得把横幅撑成半屏
                     maxLines: 2,
@@ -20330,6 +20365,12 @@ class _PlaybackFailureBanner extends StatelessWidget {
     ),
   );
 }
+
+@visibleForTesting
+Widget playerPlaybackFailureBannerForProbe({
+  required String message,
+  required VoidCallback onRetry,
+}) => _PlaybackFailureBanner(message: message, onRetry: onRetry);
 
 /// 交付实测用：读**真实渲染树**里播放器手势的挂载状态
 ///

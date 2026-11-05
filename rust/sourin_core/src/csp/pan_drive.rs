@@ -4152,6 +4152,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quark_selected_episode_yinhai_detail_to_provider_resolves_exact_fid() {
+        use crate::provider::MediaProvider;
+        let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PanDrive::debug_set_test_cookie("quark", "fixture=1");
+        let mut replay = SelectionReplay::new(serde_json::json!({
+            "status":200, "code":0, "data":{"stoken":"CHECK"}
+        }));
+        replay.pages = std::collections::HashMap::from([(("0".into(), 1), (1..=7).map(|n| {
+            let episode = if n == 4 { 3 } else { n };
+            serde_json::json!({
+                "fid":format!("file-{n}"),
+                "file_name":format!("Anime - {episode:02} (1080p).{}", if n == 4 { "mp4" } else { "mkv" }),
+                "size":10000 / n, "dir":false
+            })
+        }).collect())]);
+        let (script, drive, checker) = selection_fixture(replay).await;
+        let _api_scope = debug_override_api_bases(vec![(
+            quark_spec().api_host.into(), format!("http://{}", drive.spec.api_host)
+        )]);
+        let _checker_scope = crate::pan_check::override_global_checker_for_tests(
+            Box::leak(Box::new(checker))
+        );
+        let _credentials = crate::pan_auth::debug_override_credentials(Vec::new());
+        let provider = super::super::provider::CspProvider::for_test(
+            "yinhai-fixture", std::sync::Arc::new(super::super::yinhai::Yinhai::new()), ""
+        );
+        let id = crate::model::MediaId::new(
+            "yinhai-fixture", "quark\u{1}https://pan.quark.cn/s/selected-fixture"
+        );
+        let detail = provider.detail(&id).await.unwrap();
+        assert_eq!(detail.episodes.len(), 7);
+        let selected = detail.episodes.iter().find(|episode| {
+            super::super::pan_episode_select::decode_file_id(&episode.id).unwrap().fid == "file-3"
+        }).unwrap();
+        let request = crate::model::PlayRequest {
+            episode_id: Some(selected.id.clone()),
+            episode_title: Some("Anime - 01 (1080p).mkv".into()),
+            episode_order: Some(1),
+            flag: Some(selected.flag.clone()),
+            ..Default::default()
+        };
+        let streams = provider.resolve(&id, &request).await.unwrap();
+        assert_eq!(streams.len(), 1);
+        assert!(streams[0].label.as_deref().unwrap_or("").contains("Anime - 03"));
+        let replay = script.selection.as_ref().unwrap();
+        let saved = replay.saved.lock().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0]["fid_list"][0], "file-3",
+            "selected stable fid must beat first/largest file, wrong metadata and duplicate episode versions");
+        let token = saved[0]["stoken"].as_str().unwrap();
+        assert_eq!(saved[0]["fid_token_list"][0], format!("{token}/file-3"));
+        drop(saved);
+        let events = replay.events.lock().unwrap();
+        assert_eq!(events.first().map(String::as_str), Some("check"));
+        let list = events.iter().position(|event| event == "list").unwrap();
+        let save = events.iter().position(|event| event == "save").unwrap();
+        let download = events.iter().position(|event| event == "download").unwrap();
+        assert!(list < save && save < download);
+        drop(events);
+        let missing = crate::model::PlayRequest {
+            episode_id: Some(super::super::pan_episode_select::encode_file_id(
+                PanKind::Quark, "selected-fixture", "", "vanished-file"
+            )),
+            ..Default::default()
+        };
+        let error = provider.resolve(&id, &missing).await.unwrap_err();
+        assert!(error.message.contains("所选视频已不在分享里"));
+        assert_eq!(replay.saved.lock().unwrap().len(), 1,
+            "a vanished selected fid must not transfer another file");
+        PanDrive::debug_set_test_cookie("quark", "");
+        temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    #[tokio::test]
     async fn selection_protocol_validates_then_plays_deep_and_second_page_files() {
         let _serial = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         temp_saved().lock().unwrap_or_else(|e| e.into_inner()).clear();

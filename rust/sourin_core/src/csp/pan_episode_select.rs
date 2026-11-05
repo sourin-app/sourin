@@ -295,7 +295,7 @@ pub(crate) fn baidu_episodes(share_id: &str, passcode: &str, flag: &str, files: 
     }).collect()
 }
 
-fn share_page_payload(id: &str) -> String {
+pub(crate) fn share_page_payload(id: &str) -> String {
     super::app99::episode_url(id)
         .unwrap_or_else(|| id.split_once('\u{1}').map(|(_, tail)| tail).unwrap_or(id).to_string())
 }

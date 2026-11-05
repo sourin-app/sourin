@@ -5032,6 +5032,55 @@ class PlaybackErrorText {
     return s.trim();
   }
 
+  static final RegExp _playbackUrls = RegExp(
+    r'''https?://[^\s<>"]+''',
+    caseSensitive: false,
+  );
+  static final RegExp _remoteOpenFailure = RegExp(
+    r'''failed to open\s+https?://[^\s<>"]+'''
+    r'''(?:\r?\n[ \t]*(?:[?&][^\s<>"]+|[A-Fa-f0-9]{32,}[^\s<>"]*))*''',
+    caseSensitive: false,
+  );
+  static final RegExp _credentialHeaders = RegExp(
+    r'^(\s*(?:authorization|proxy-authorization|cookie|set-cookie)\s*:)[^\r\n]*',
+    caseSensitive: false,
+    multiLine: true,
+  );
+  static final RegExp _credentialAssignments = RegExp(
+    r'''(\b(?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|apikey|secret|password|passwd|pwd|authorization|auth|signature|sign|cookie|set-cookie)\b["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s&,;\r\n]+)''',
+    caseSensitive: false,
+  );
+  static final RegExp _authorizationValue = RegExp(
+    r'\b(Bearer|Basic)\s+[A-Za-z0-9\-._~+/=]{6,}',
+    caseSensitive: false,
+  );
+
+  /// User-visible text and log exports; classification reads the raw error.
+  static String forDisplay(String raw) {
+    var text = hideInternalUrls(stripHostErrorNoise(raw));
+    text = text.replaceAll(_remoteOpenFailure, '无法打开播放地址');
+    text = text.replaceAllMapped(_playbackUrls, (match) {
+      final hit = match[0]!;
+      var end = hit.length;
+      while (end > 0 && '.,;:!?'.contains(hit[end - 1])) {
+        end--;
+      }
+      return '（播放地址已隐藏）${hit.substring(end)}';
+    });
+    text = text.replaceAllMapped(
+      _credentialHeaders,
+      (match) => '${match[1]} （凭据已隐藏）',
+    );
+    text = text.replaceAllMapped(
+      _authorizationValue,
+      (match) => '${match[1]} （凭据已隐藏）',
+    );
+    return text.replaceAllMapped(
+      _credentialAssignments,
+      (match) => '${match[1]}（凭据已隐藏）',
+    );
+  }
+
   /// 归因：把一条失败**归到几类之一**（第 6 条）
   ///
   /// # 判据全部来自**实测读数**（不是猜）
@@ -5168,7 +5217,7 @@ class PlaybackErrorText {
      *   「hideInternalUrls 的产物『内置代理…』让 proxyDown 恒真」那个误判环。
      * ⇒ 两个用途，两份文本，不许混用。
      */
-    final display = hideInternalUrls(text);
+    final display = forDisplay(text);
     final lower = text.toLowerCase();
 
     /*
@@ -5420,7 +5469,7 @@ class PlaybackErrorText {
       );
     }
 
-    return PlaybackFailure(kind: PlaybackFailureKind.unknown, detail: text);
+    return PlaybackFailure(kind: PlaybackFailureKind.unknown, detail: display);
   }
 }
 

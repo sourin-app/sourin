@@ -848,23 +848,37 @@ impl App99 {
         if episode.url.is_empty() || episode.url.chars().any(char::is_control) {
             return Err("这条剧集没有有效的播放标识，请切换线路".to_string());
         }
-        if direct_media_url(&episode.url) || native_share_url(&episode.url) {
+        if native_share_url(&episode.url) {
             return Ok(CspPlay {
                 url: episode.url.clone(),
                 headers: vec![("User-Agent".to_string(), UA.to_string())],
                 label: Some(flag.to_string()),
             });
         }
-        let (player, ids) = {
+        let configured = {
             let state = self.state.lock().map_err(|_| "状态锁中毒".to_string())?;
-            let state = state.as_ref().ok_or_else(|| "该线路没有媒体解析配置，请切换线路".to_string())?;
-            let player = state.players.get(&episode.code).or_else(|| {
-                state.players.as_object()?.iter()
-                    .find(|(code, _)| player_name(&state.players, code) == flag)
-                    .map(|(_, value)| value)
-            }).cloned().ok_or_else(|| "该线路没有媒体解析配置，请切换线路".to_string())?;
-            (player, state.parser_ids.clone())
+            state.as_ref().and_then(|state| {
+                let player = state.players.get(&episode.code).or_else(|| {
+                    state.players.as_object()?.iter()
+                        .find(|(code, _)| player_name(&state.players, code) == flag)
+                        .map(|(_, value)| value)
+                })?;
+                Some((player.clone(), state.parser_ids.clone()))
+            })
         };
+        let requires_parser = configured.as_ref()
+            .and_then(|(player, _)| int_field(player, "type"))
+            .map(|kind| kind != 0).unwrap_or(false);
+        // Media-shaped inputs on parser lines still carry the selected episode to vodParser.
+        if direct_media_url(&episode.url) && !requires_parser {
+            return Ok(CspPlay {
+                url: episode.url.clone(),
+                headers: vec![("User-Agent".to_string(), UA.to_string())],
+                label: Some(flag.to_string()),
+            });
+        }
+        let (player, ids) = configured
+            .ok_or_else(|| "该线路没有媒体解析配置，请切换线路".to_string())?;
         if int_field(&player, "type") == Some(0) {
             if !http_url(&episode.url) {
                 return Err("这条直连线路没有有效的播放地址，请切换线路".to_string());
@@ -1079,7 +1093,7 @@ impl CspSite for App99 {
         } else {
             EpisodeRef { url: raw.to_string(), code: flag.to_string(), title: String::new(), index: 0 }
         };
-        if !direct_media_url(&episode.url) && !native_share_url(&episode.url) && !ext.is_empty() {
+        if !native_share_url(&episode.url) && !ext.is_empty() {
             self.handshake(ext).await?;
         }
         // Parser attempts share one deadline; a slow configured parser cannot hang playback.
@@ -1225,6 +1239,73 @@ mod tests {
             .decrypt_padded_mut::<Pkcs7>(ct)
             .unwrap();
         serde_json::from_slice(plain).unwrap()
+    }
+
+    #[tokio::test]
+    async fn app99_parser_resolves_media_shaped_input() {
+        use axum::{extract::State, http::{HeaderMap, Uri}, routing::post, Router};
+        use std::sync::Arc;
+
+        type Seen = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
+        let uuid = "aabbccddeeff00112233445566778899";
+        let key = key_of(uuid).unwrap();
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        async fn endpoint(
+            State((key, seen)): State<(Vec<u8>, Seen)>,
+            uri: Uri,
+            headers: HeaderMap,
+            body: String,
+        ) -> String {
+            let request = open_request(&key, &body);
+            assert_eq!(
+                headers.get("sign").unwrap().to_str().unwrap(),
+                sign_of(
+                    &body,
+                    headers.get("timestamp").unwrap().to_str().unwrap(),
+                    headers.get("nonce").unwrap().to_str().unwrap(),
+                    request["token"].as_str().unwrap(),
+                )
+            );
+            seen.lock().unwrap().push((uri.path().to_string(), request));
+            seal_fixture(&key, &serde_json::json!({
+                "code":0,"data":"https://media.invalid/resolved-episode-2.m3u8"
+            }))
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().fallback(post(endpoint)).with_state((key, seen.clone()));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let site = App99::new();
+        *site.state.lock().unwrap() = Some(Handshaken {
+            ext: String::new(), host: format!("http://{addr}"), uuid: uuid.to_string(),
+            token: "fixture-token".to_string(), version: "1".to_string(), categories: Vec::new(),
+            players: serde_json::json!({"parsed":{"name":"Parser","type":1,"parseUrl":"7"}}),
+            parser_ids: vec![6, 7],
+        });
+        // DEX playerContent checks line type before selecting direct media or a parser.
+        for input in [
+            "https://media.invalid/source-episode-2.m3u8",
+            "https://media.invalid/source-episode-2.ts?token=fixture",
+        ] {
+            let id = encode_episode(input, "parsed", "Episode 2", 2);
+            let plays = site.play("Parser", &id, "").await.unwrap();
+            assert!(
+                plays[0].url == "https://media.invalid/resolved-episode-2.m3u8",
+                "a media suffix does not override the configured parser line type"
+            );
+        }
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        for (index, (path, request)) in requests.iter().enumerate() {
+            assert_eq!(path, "/app/vodParser");
+            assert_eq!(request["id"], 7, "parseUrl filters the actual encrypted request");
+            assert!(request["url"] == if index == 0 {
+                "https://media.invalid/source-episode-2.m3u8"
+            } else {
+                "https://media.invalid/source-episode-2.ts?token=fixture"
+            }, "the selected input must reach the parser unchanged");
+        }
+        server.abort();
     }
 
     #[tokio::test]

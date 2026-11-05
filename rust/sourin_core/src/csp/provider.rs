@@ -510,7 +510,7 @@ impl MediaProvider for CspProvider {
             title: req.episode_title.clone().or_else(|| context.as_ref().map(|c| c.0.clone())).unwrap_or_default(),
             order: req.episode_order.or_else(|| context.as_ref().map(|c| c.1)),
         };
-        // 只给了条目 id（bvid）而没有 cid ⇒ 先取详情拿第一集，别猜一个 cid
+        // Bare item IDs need detail lookup; explicit selection still takes precedence.
         let episode = if episode_id_is_direct_play(&episode) {
             episode
         } else {
@@ -522,10 +522,33 @@ impl MediaProvider for CspProvider {
             super::pan_playback_guard::check_current()
                 .map_err(|e| classify_err(self.site.class(), e))?;
             let d = super::pan_episode_select::expand_detail(d).await;
-            let selected = d.episodes.first()
+            let line = req.flag.as_deref().filter(|flag| !flag.is_empty());
+            let episodes: Vec<_> = d.episodes.iter().enumerate()
+                .filter(|(_, episode)| line.map_or(true, |flag| episode.flag == flag))
+                .collect();
+            let first = episodes.first()
                 .ok_or_else(|| ProviderError::new(ErrorKind::NotFound, "这个条目没有可播放的剧集"))?;
-            if spec.title.is_empty() { spec.title = selected.title.clone(); }
-            if spec.order.is_none() { spec.order = Some(1); }
+            let names: Vec<_> = episodes.iter().map(|(index, episode)| {
+                if episode.title.is_empty() { format!("第{}集", index + 1) }
+                else { episode.title.clone() }
+            }).collect();
+            let sole_share = episodes.len() == 1 && {
+                let payload = super::pan_episode_select::share_page_payload(&first.1.id);
+                let share = crate::pan::parse_share(&payload);
+                matches!(share.kind, crate::pan::PanKind::Quark | crate::pan::PanKind::Uc
+                    | crate::pan::PanKind::Baidu | crate::pan::PanKind::Xunlei)
+                    && !share.share_id.is_empty()
+            };
+            // An unexpanded share is not a concrete file: keep the selection for fresh listing.
+            let selected_index = if sole_share || (spec.title.is_empty() && spec.order.is_none()) {
+                0
+            } else {
+                super::pan_episode_select::pick_episode_index(&spec, &names)
+                    .map_err(|e| classify_err(self.site.class(), e))?
+            };
+            let selected = episodes[selected_index].1;
+            if spec.title.is_empty() { spec.title = names[selected_index].clone(); }
+            if spec.order.is_none() { spec.order = Some(selected_index as u32 + 1); }
             selected.id.clone()
         };
         super::pan_playback_guard::check_current()
@@ -741,6 +764,7 @@ mod tests {
         episodes: Vec<crate::csp::CspEpisode>,
         details: std::sync::atomic::AtomicUsize,
         plays: std::sync::atomic::AtomicUsize,
+        played_ids: std::sync::Mutex<Vec<String>>,
     }
 
     #[async_trait]
@@ -754,8 +778,9 @@ mod tests {
             self.details.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(crate::csp::CspDetail { id:id.into(), title:"剧集".into(), episodes:self.episodes.clone(), ..Default::default() })
         }
-        async fn play(&self, _: &str, _: &str, _: &str) -> std::result::Result<Vec<crate::csp::CspPlay>, String> {
+        async fn play(&self, _: &str, id: &str, _: &str) -> std::result::Result<Vec<crate::csp::CspPlay>, String> {
             self.plays.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.played_ids.lock().unwrap().push(id.into());
             Err("分享文件不应调用源的播放页解析".into())
         }
     }
@@ -764,7 +789,133 @@ mod tests {
         Arc::new(EpisodeFixtureSite {
             episodes, details: std::sync::atomic::AtomicUsize::new(0),
             plays: std::sync::atomic::AtomicUsize::new(0),
+            played_ids: std::sync::Mutex::new(Vec::new()),
         })
+    }
+
+    #[tokio::test]
+    async fn quark_selected_episode_metadata_survives_item_fallback() {
+        let site = episode_fixture((1..=7).map(|n| crate::csp::CspEpisode {
+            id: format!("https://cdn.example/episode-{n}.mp4"),
+            title: format!("Anime - {n:02} (1080p).mkv"),
+            flag: "夸克".into(),
+        }).collect());
+        let provider = CspProvider::for_test("selected-fixture", site.clone(), "");
+        let request = PlayRequest {
+            episode_id: Some("item".into()),
+            episode_title: Some("Anime - 03 (1080p).mkv".into()),
+            episode_order: Some(3),
+            flag: Some("夸克".into()),
+            ..Default::default()
+        };
+        let _ = provider.resolve(&MediaId::new("selected-fixture", "item"), &request).await;
+        assert_eq!(*site.played_ids.lock().unwrap(), ["https://cdn.example/episode-3.mp4"],
+            "item fallback must preserve the selected episode, not choose the first file");
+    }
+
+    #[tokio::test]
+    async fn quark_selected_episode_fallback_does_not_guess_missing_file() {
+        let site = episode_fixture((1..=7).map(|n| crate::csp::CspEpisode {
+            id: format!("https://cdn.example/episode-{n}.mp4"),
+            title: format!("Anime - {n:02} (1080p).mkv"),
+            flag: "夸克".into(),
+        }).collect());
+        let provider = CspProvider::for_test("selected-fixture", site.clone(), "");
+        let request = PlayRequest {
+            episode_id: Some("item".into()),
+            episode_title: Some("Anime - 08 (1080p).mkv".into()),
+            episode_order: Some(8),
+            flag: Some("夸克".into()),
+            ..Default::default()
+        };
+        let error = provider.resolve(&MediaId::new("selected-fixture", "item"), &request).await.unwrap_err();
+        assert!(site.played_ids.lock().unwrap().is_empty(),
+            "a missing selected episode must fail before any source playback call");
+        assert!(error.message.contains("第8集"), "the error must name the missing selection");
+    }
+
+    #[tokio::test]
+    async fn quark_selected_episode_fallback_respects_line_and_rejects_ambiguity() {
+        for flag in [Some("B"), None] {
+            let site = episode_fixture(["A", "B"].into_iter().map(|line| crate::csp::CspEpisode {
+                id: format!("https://cdn.example/{line}/episode-3.mp4"),
+                title: "Anime - 03 (1080p).mkv".into(),
+                flag: line.into(),
+            }).collect());
+            let provider = CspProvider::for_test("selected-fixture", site.clone(), "");
+            let request = PlayRequest {
+                episode_id: Some("item".into()),
+                episode_title: Some("Anime - 03 (1080p).mkv".into()),
+                episode_order: Some(3),
+                flag: flag.map(str::to_string),
+                ..Default::default()
+            };
+            let _ = provider.resolve(&MediaId::new("selected-fixture", "item"), &request).await;
+            let seen = site.played_ids.lock().unwrap();
+            if flag.is_some() {
+                assert_eq!(*seen, ["https://cdn.example/B/episode-3.mp4"],
+                    "identical names on another line cannot override the selected line");
+            } else {
+                assert!(seen.is_empty(), "ambiguous selected files cannot fall back to the first line");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn quark_selected_episode_single_unexpanded_share_keeps_selection_for_listing() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let app = axum::Router::new().fallback(|| async {
+                r#"{"status":41003,"message":"分享已过期"}"#
+            });
+            axum::serve(listener, app).await.unwrap();
+        });
+        let checker = Box::leak(Box::new(crate::pan_check::PanChecker::with_endpoints(
+            crate::pan_check::PanEndpoints {
+                quark_page: format!("{base}/page"),
+                quark_token: format!("{base}/token"),
+                quark_detail: format!("{base}/detail"),
+                ..Default::default()
+            }
+        )));
+        let _checker_scope = crate::pan_check::override_global_checker_for_tests(checker);
+        let _credentials = crate::pan_auth::debug_override_credentials(Vec::new());
+        let share = "https://pan.quark.cn/s/unexpanded-fixture";
+        let site = episode_fixture(vec![crate::csp::CspEpisode {
+            id: share.into(), title: "夸克分享页".into(), flag: "夸克".into(),
+        }]);
+        let provider = CspProvider::for_test("selected-fixture", site.clone(), "");
+        let request = PlayRequest {
+            episode_id: Some("item".into()),
+            episode_title: Some("Anime - 03 (1080p).mkv".into()),
+            episode_order: Some(3),
+            flag: Some("夸克".into()),
+            ..Default::default()
+        };
+        let _ = provider.resolve(&MediaId::new("selected-fixture", "item"), &request).await;
+        server.abort();
+        assert_eq!(*site.played_ids.lock().unwrap(), [share],
+            "a sole unexpanded share must delegate the selection to a fresh file listing");
+    }
+
+    #[tokio::test]
+    async fn quark_selected_episode_fallback_matches_display_titles_for_unnamed_entries() {
+        let site = episode_fixture((1..=3).map(|n| crate::csp::CspEpisode {
+            id: format!("https://cdn.example/episode-{n}.mp4"),
+            title: String::new(),
+            flag: "夸克".into(),
+        }).collect());
+        let provider = CspProvider::for_test("selected-fixture", site.clone(), "");
+        let request = PlayRequest {
+            episode_id: Some("item".into()),
+            episode_title: Some("第3集".into()),
+            episode_order: Some(3),
+            flag: Some("夸克".into()),
+            ..Default::default()
+        };
+        let _ = provider.resolve(&MediaId::new("selected-fixture", "item"), &request).await;
+        assert_eq!(*site.played_ids.lock().unwrap(), ["https://cdn.example/episode-3.mp4"]);
     }
 
     #[tokio::test]

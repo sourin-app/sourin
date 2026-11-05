@@ -282,7 +282,7 @@ void main() {
     test('★★ display 仍然是用户可见那一份（两处都在，不是只剩一个）', () {
       final src = _readRepo('lib/core/sourin_api.dart');
       final body = bodyOf(src, 'static PlaybackFailure classify(');
-      expect(body, contains('final display = hideInternalUrls('),
+      expect(body, contains('final display = forDisplay('),
           reason: '净化版必须仍然存在（分家 = 两个都在，不是删一个）');
       expect(body, contains('final text = stripHostErrorNoise('));
     });

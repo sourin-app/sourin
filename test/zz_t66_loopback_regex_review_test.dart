@@ -190,7 +190,7 @@ void main() {
   group('③ classify 的判据读哪一份文本（AGENTS §4 同源比较）', () {
     test('★ 源码级：classify 必须用**两份**文本（display 净化 / lower 原文）', () {
       final src = _readLib('lib/core/sourin_api.dart');
-      expect(src.contains('final display = hideInternalUrls(text);'), isTrue,
+      expect(src.contains('final display = forDisplay(text);'), isTrue,
           reason: '★★ classify 必须先算出净化版 `display` 供用户看');
       expect(src.contains('final lower = text.toLowerCase();'), isTrue,
           reason: '★★ 归因判据必须读**原文** `text`，'

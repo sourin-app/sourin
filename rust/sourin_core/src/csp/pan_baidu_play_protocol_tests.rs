@@ -439,6 +439,16 @@ async fn official_verify_query_form_and_ajax_metadata_are_observed_on_wire() {
         .to_str()
         .unwrap()
         .starts_with("application/x-www-form-urlencoded"));
+    let list = seen
+        .iter()
+        .find(|request| request.path == "/share/list")
+        .unwrap();
+    let list_query = pairs(list.target.split_once('?').unwrap().1);
+    assert_eq!(
+        list_query.get("shorturl").map(String::as_str),
+        Some("Ab_Cd"),
+        "official share-list helper removes the leading share marker"
+    );
 }
 
 #[tokio::test]

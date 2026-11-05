@@ -53,6 +53,10 @@ Those three direct guards now exercise the real anonymous traversal and selected
 
 The common selected-file model regression `.probe/baidu-selected-episode-model-regression-20261105/summary.json` passes eight tests, exit 0, with unchanged inputs. The nineteen-file headless frontend batch `.probe/playback-ux-combined-headless-20261105/summary.json` passes 145 tests with child exit 0 and an isolated account/data namespace; native-media files are deliberately not counted as passed there. Release-wide regression, final DLL binding and actual UI/content remain separate acceptance work.
 
+Release regression at commit 14885e8 passes 2144 tests, 0 failed and 94 ignored with exit 0, in `.probe/baidu-selected-release-full-20261105/summary.json`. This is not UI, account or playback acceptance.
+
+Subsequent source review finds the official root share-list helper at offset 714931 removes the leading share marker before using shorturl. The initial wire gate fails specifically with actual shorturl=5Ab_Cd instead of Ab_Cd: `.probe/baidu-list-shorturl-red-20261105/summary.json`, compiled behavior exit 101, 0 passed/1 failed. Root aligns root listing with the existing verify normalization for leading 1/5, while preserving the original share ID for references and signing. `.probe/baidu-list-shorturl-final-green-20261105/summary.json` then passes all 38 Baidu tests with exit 0 and unchanged inputs. The preceding release-wide result must not be attributed to this later short-code tree; final release and DLL binding remain pending.
+
 ## Consequences
 
 No real account, keyring/profile, external endpoint, CDN playback or UI was accessed

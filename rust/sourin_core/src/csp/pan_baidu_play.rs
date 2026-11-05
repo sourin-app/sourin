@@ -335,7 +335,14 @@ async fn inspect_context(
         ("order", "time".into()),
         ("desc", "1".into()),
         ("showempty", "0".into()),
-        ("shorturl", share_id.into()),
+        (
+            "shorturl",
+            share_id
+                .strip_prefix('1')
+                .or_else(|| share_id.strip_prefix('5'))
+                .unwrap_or(share_id)
+                .into(),
+        ),
         ("root", "1".into()),
     ]);
     if !bdclnd.is_empty() {

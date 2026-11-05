@@ -48,8 +48,8 @@
 // · 第二段握手 POST {host}/app/userInfo 被部分站点**明确拒绝**（游客态）：
 //     {"code":1,"msg":"user info error","userInfo":"","params":{…回显我们的入参…}}
 //   ⇒ 参数被服务端收到并回显（说明签名/加密都对），但内容不被接受（登录态拿不到）。
-// · ★ 但**浏览不需要它**：2026-10-26 实测 `home()` 拿到 8 个分类、`list("测试")` 拿到
-//   20 条真实条目（解密 + zlib + JSON 全通）。⇒ token 只影响"登录态"场景。
+// · 2026-10-26 实测部分空 token 路径可浏览：`home()` 拿到 8 个分类、`list("测试")`
+//   拿到 20 条真实条目；这不证明所有线路的取流都不需要 token。
 // · ★★ 2026-11-01 起：userInfo 被拒**不再阻断握手**——降级为空 token 继续
 //   （旧实现 `await?` 把整站搜索废掉，Owner 真机报"胖妞/剧圈搜不到"；
 //    见 handshake 里 2026-11-01 注释与 handshake_degrades_when_userinfo_rejected 单测）。
@@ -69,8 +69,8 @@
 // play  → 1 条候选（该 m3u8，带 UA 头）
 // ```
 // ⚠️ **登录态**在部分站点拿不到（userInfo 被拒）——2026-11-01 起**不再阻断**：
-//    降级空 token 继续握手（浏览/搜索/取流都不需要它；真要登录态的业务被站点
-//    拒绝时按该站自己的错误如实透出）。
+//    降级空 token 继续握手；已观察部分浏览路径可用，不代表所有取流路径可用。
+//    需要登录态的业务被站点拒绝时如实透出，不把空结果归因成已证的协议根因。
 // ⚠️ **play 的边界**：已验证的是"能拿到并返回播放地址"，**"真起播"没验过** ——
 //    要 media_kit/mpv 真把那串 m3u8 拉起来才算端到端。别把这条读成"已经播过"。
 // 证据：.probe/app99-live*.log、.probe/dex-App99-disasm.md
@@ -484,6 +484,50 @@ impl App99 {
             .unwrap_or_default()
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn signed_post(
+        &self,
+        url: &str,
+        uuid: &str,
+        version: &str,
+        timestamp: &str,
+        nonce: &str,
+        token: &str,
+        encrypted: &str,
+    ) -> reqwest::RequestBuilder {
+        self.client.post(url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .header("client_type", "android")
+            .header("uuid", uuid)
+            .header("version", version)
+            .header("api_version", "v1")
+            .header("timestamp", timestamp)
+            .header("nonce", nonce)
+            .header("sign", sign_of(encrypted, timestamp, nonce, token))
+            .body(encrypted.to_string())
+    }
+
+    fn transport_failure(stage: &str, error: &reqwest::Error) -> String {
+        let kind = if error.is_timeout() { "timeout" }
+            else if error.is_connect() { "connect" }
+            else if error.is_builder() { "request" }
+            else { "transport" };
+        format!("{stage} 请求失败（{kind}）")
+    }
+
+    fn guest_device_id() -> Result<String, String> {
+        use ring::rand::{SecureRandom, SystemRandom};
+        let mut bytes = [0u8; 16];
+        SystemRandom::new().fill(&mut bytes)
+            .map_err(|_| "生成游客设备标识失败".to_string())?;
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        Ok(format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12],
+            &hex[12..16], &hex[16..20], &hex[20..32]))
+    }
+
     /// 握手第二步：POST `{host}{LoginPath}` 拿 `userInfo.user_token`
     ///
     /// 指令级依据（`init:325-643`）：先做 systemInit，再打 userInfo，
@@ -494,7 +538,9 @@ impl App99 {
         host: &str,
         key: &[u8],
         uuid: &str,
-        version: &str,
+        app_version: &str,
+        header_version: &str,
+        login_path: &str,
         name: &str,
         pkg: &str,
         build_number: &str,
@@ -503,24 +549,31 @@ impl App99 {
     ) -> Result<String, String> {
         // 设备信息是**写死的小米机型**（DEX init:362-477 的常量），照抄即可 —— 这不是"编数据"，
         // 是协议要求的固定指纹；改了反而可能被服务端拒绝。
-        let device = serde_json::json!({
+        let installed_at = now_ms().parse::<u64>()
+            .map_err(|_| "生成游客安装时间失败".to_string())?;
+        let did = Self::guest_device_id()?;
+        let nonce = nonce_now();
+        let ts = now_ms();
+        let body = serde_json::json!({
             "os": "android", "name": "xiaomi", "version": "15", "sdkInt": 32,
             "device": "xiaomi", "brand": "xiaomi", "manufacturer": "xiaomi",
             "product": "b0q", "hardware": "xiaomi", "isPhysicalDevice": true,
             "androidId": "V417IR", "bootloader": "unknown",
             "display": "V417IR release-keys", "host": "a11-gz01-test",
             "tags": "release-keys", "type": "user",
-            "finger": "xiaomi/b0q/b0q:15/V619IR/613:user/release-keys"
-        });
-        let ts = now_ms();
-        let nonce = nonce_now();
-        let body = serde_json::json!({
-            "version": version,
-            "name": name,
-            "package": pkg,
-            "buildNumber": build_number,
-            "buildSignature": build_sig,
-            "device": device,
+            "finger": "xiaomi/b0q/b0q:15/V619IR/613:user/release-keys",
+            "app": {
+                "version": app_version,
+                "name": name,
+                "package": pkg,
+                "buildNumber": build_number,
+                "buildSignature": build_sig,
+                "install": installed_at,
+                "update": installed_at
+            },
+            "did": did,
+            "apiVersion": "v2",
+            "channel": "",
             "token": "",
             "timestamp": ts,
             "nonce": nonce,
@@ -528,30 +581,23 @@ impl App99 {
         .to_string();
         let iv = iv16(*now, 21);
         let enc = encrypt_body(key, &body, &iv)?;
-        let sign = sign_of(&enc, &ts, &nonce, "");
-        let url = format!("{host}/app/userInfo");
+        let url = format!("{host}{login_path}");
         let resp = self
-            .client
-            .post(&url)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .header("client_type", "android")
-            .header("uuid", uuid)
-            .header("timestamp", &ts)
-            .header("nonce", &nonce)
-            .header("sign", &sign)
-            .body(enc)
+            .signed_post(&url, uuid, header_version, &ts, &nonce, "", &enc)
             .send()
             .await
-            .map_err(|e| format!("userInfo 请求失败：{e}"))?;
+            .map_err(|e| Self::transport_failure("userInfo", &e))?;
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| format!("读 userInfo 响应失败：{e}"))?;
         if !status.is_success() {
-            let head: String = text.chars().take(160).collect();
-            return Err(format!("userInfo HTTP {}：{head}", status.as_u16()));
+            return Err(format!("userInfo HTTP {}", status.as_u16()));
         }
+        let text = resp.text().await.map_err(|e| Self::transport_failure("userInfo 响应", &e))?;
         let plain = decrypt_body(key, text.trim()).map_err(|e| format!("userInfo 解密失败：{e}"))?;
         let v = parse_loose_json(&plain).map_err(|e| format!("userInfo 不是 JSON：{e}"))?;
+        let code = v.get("code").and_then(|value| value.as_i64()).unwrap_or(0);
+        if code != 0 {
+            return Err(format!("userInfo 返回 code={code}"));
+        }
         let token = v
             .get("userInfo")
             .and_then(|u| u.get("user_token"))
@@ -585,6 +631,11 @@ impl App99 {
         }
         let (host, name, sig, num, ver, uuid) = Self::ext_fields(ext)?;
         let (pkg, ver_for_body) = (Self::ext_pkg(ext), ver.clone());
+        let config = parse_loose_json(ext).map_err(|_| "ext 不是合法 JSON".to_string())?;
+        let header_version = config.get("version").and_then(|value| value.as_str())
+            .unwrap_or(&ver).to_string();
+        let login_path = config.get("LoginPath").and_then(|value| value.as_str())
+            .unwrap_or("/app/userInfo").to_string();
         let key = key_of(&uuid)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -605,28 +656,17 @@ impl App99 {
         .to_string();
         let iv = iv16(now, 9);
         let enc = encrypt_body(&key, &body, &iv)?;
-        let sign = sign_of(&enc, &ts, &nonce, "");
         let url = format!("{host}/app/systemInit");
         let resp = self
-            .client
-            .post(&url)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .header("client_type", "android")
-            .header("uuid", &uuid)
-            .header("timestamp", &ts)
-            .header("nonce", &nonce)
-            .header("sign", &sign)
-            .body(enc)
+            .signed_post(&url, &uuid, &header_version, &ts, &nonce, "", &enc)
             .send()
             .await
-            .map_err(|e| format!("握手请求失败：{e}"))?;
+            .map_err(|e| Self::transport_failure("systemInit", &e))?;
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| format!("读握手响应失败：{e}"))?;
         if !status.is_success() {
-            let head: String = text.chars().take(160).collect();
-            return Err(format!("握手 HTTP {}：{head}", status.as_u16()));
+            return Err(format!("systemInit HTTP {}", status.as_u16()));
         }
+        let text = resp.text().await.map_err(|e| Self::transport_failure("systemInit 响应", &e))?;
         // ★ 落一份**真实响应夹具**（uuid + 原始 base64），供离线验收用例复算。
         //   只存这与解密相关的两样东西，不含任何用户数据（响应是公开目录接口的返回）。
         if std::env::var("CSP_LIVE").ok().as_deref() == Some("1")
@@ -718,9 +758,9 @@ impl App99 {
          *   {"code":1,"msg":"user info error"} ⇒ require_token 报 Err。
          * 旧行为：`await?` 把 Err 传播 ⇒ **整站握手失败 ⇒ search 全废** ⇒
          *   该站从聚合搜索结果里整体消失（Owner 报的"没有这个源结果"）。
-         * 而浏览**不需要** token：2026-10-26 四段链路（home/list/detail/play）全在
-         *   无 token 下真网跑通（见文件头②）；DEX 语义也是"字段 b 为空就空着"。
-         * ⇒ 现行为：userInfo 失败 ⇒ 记原因（含 host，可排障）⇒ **空 token 继续握手**；
+         * 已观察部分空 token 路径可浏览；这不证明所有线路取流都不需要 token。
+         *   DEX 语义也是"字段 b 为空就空着"。
+         * ⇒ 现行为：userInfo 失败 ⇒ 记无敏感值的原因 ⇒ **空 token 继续握手**；
          *   业务请求若真需要 token 被站点拒 ⇒ 那是该站自己的错误，如实进扇出 fails——
          *   诚实容错，不猜、不编造"登录态可用"。
          * ```
@@ -736,13 +776,14 @@ impl App99 {
                 direct
             } else {
                 match self
-                    .user_info_token(&host, &key, &uuid, &ver_for_body, &name, &pkg, &num, &sig, &now)
+                    .user_info_token(&host, &key, &uuid, &ver_for_body, &header_version,
+                        &login_path, &name, &pkg, &num, &sig, &now)
                     .await
                 {
                     Ok(t) => t,
                     Err(why) => {
                         log::warn!(
-                            "[APP99] {host} userInfo 未给 token（{why}）⇒ 以空 token 继续握手（浏览不需要登录态）"
+                            "[APP99] userInfo 未给 token（{why}）⇒ 以空 token 继续握手，业务鉴权由上游决定"
                         );
                         String::new()
                     }
@@ -751,7 +792,7 @@ impl App99 {
         };
         if token.is_empty() {
             log::info!(
-                "[APP99] {host} 两段握手都没有 token（systemInit 返回 code=0 即成功）⇒ 用空 token 发业务请求"
+                "[APP99] 两段握手都没有 token（systemInit 返回 code=0）⇒ 用空 token 发业务请求"
             );
         }
         *self.state.lock().map_err(|_| "状态锁中毒".to_string())? = Some(Handshaken {
@@ -759,7 +800,7 @@ impl App99 {
             host,
             uuid,
             token,
-            version: ver,
+            version: header_version,
             categories,
             players: v.get("player").cloned().unwrap_or(serde_json::Value::Null),
             parser_ids: v.get("parser_api").and_then(|p| p.as_array())
@@ -804,29 +845,17 @@ impl App99 {
                 enc,
             )
         };
-        let sign = sign_of(&enc, &ts, &nonce, &token);
         let url = format!("{host}{path}");
         let resp = self
-            .client
-            .post(&url)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .header("client_type", "android")
-            .header("uuid", &uuid)
-            .header("version", &version)
-            .header("timestamp", &ts)
-            .header("nonce", &nonce)
-            .header("sign", &sign)
-            .body(enc)
+            .signed_post(&url, &uuid, &version, &ts, &nonce, &token, &enc)
             .send()
             .await
-            .map_err(|e| format!("请求 {path} 失败：{e}"))?;
+            .map_err(|e| Self::transport_failure("业务", &e))?;
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| format!("读 {path} 响应失败：{e}"))?;
         if !status.is_success() {
-            let head: String = text.chars().take(160).collect();
-            return Err(format!("{path} HTTP {}：{head}", status.as_u16()));
+            return Err(format!("业务 HTTP {}", status.as_u16()));
         }
+        let text = resp.text().await.map_err(|e| Self::transport_failure("业务响应", &e))?;
         if text.trim().is_empty() {
             return Err(format!("{path} 返回空响应"));
         }
@@ -1046,7 +1075,9 @@ impl CspSite for App99 {
 
     async fn detail(&self, id: &str, _ext: &str) -> Result<CspDetail, String> {
         self.handshake(_ext).await?;
-        let body = serde_json::json!({ "id": id.trim() });
+        let body = serde_json::json!({
+            "id": id.trim(), "eps": "1", "v": "2.0.0", "pl": 1
+        });
         let v = self.call("/vod/detail", body).await?;
         let d = v
             .get("data")
@@ -1239,6 +1270,284 @@ mod tests {
             .decrypt_padded_mut::<Pkcs7>(ct)
             .unwrap();
         serde_json::from_slice(plain).unwrap()
+    }
+
+    async fn assert_guest_handshake_contract(
+        header_version_override: Option<&str>,
+        login_path: &str,
+        reject_guest: bool,
+    ) {
+        use axum::{extract::State, http::{HeaderMap, Uri}, routing::post, Router};
+        use std::sync::Arc;
+
+        type Seen = Arc<Mutex<Vec<(String, HeaderMap, serde_json::Value, bool)>>>;
+        let uuid = "aabbccddeeff00112233445566778899";
+        let key = key_of(uuid).unwrap();
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        async fn endpoint(
+            State((key, seen, reject)): State<(Vec<u8>, Seen, bool)>,
+            uri: Uri,
+            headers: HeaderMap,
+            body: String,
+        ) -> String {
+            let request = open_request(&key, &body);
+            let header = |name| headers.get(name).and_then(|value| value.to_str().ok()).unwrap_or("");
+            let signature_input = format!(
+                "{}:{}:{}:{}", body, header("timestamp"), header("nonce"),
+                request["token"].as_str().unwrap_or("")
+            );
+            let hash = ring::digest::digest(&ring::digest::SHA256, signature_input.as_bytes());
+            let expected: String = hash.as_ref().iter().map(|byte| format!("{byte:02x}")).collect();
+            let signature_matches = header("sign") == expected;
+            let response = match uri.path() {
+                "/app/systemInit" => serde_json::json!({
+                    "code":0,"categorys":{"data":[{"id":"1","name":"fixture"}]}
+                }),
+                "/vod/search" => serde_json::json!({
+                    "code":0,"data":[{"id":77,"name":"fixture"}]
+                }),
+                _ if reject => serde_json::json!({
+                    "code":1,"msg":"user info error","userInfo":""
+                }),
+                _ => serde_json::json!({
+                    "code":0,"userInfo":{"user_token":"fixture-guest-token"}
+                }),
+            };
+            seen.lock().unwrap().push((uri.path().to_string(), headers, request, signature_matches));
+            seal_fixture(&key, &response)
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().fallback(post(endpoint))
+            .with_state((key, seen.clone(), reject_guest));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut ext = serde_json::json!({
+            "host":format!("http://{addr}"),"name":"fixture-app","buildSignature":"FIXTURE-SIG",
+            "buildNumber":"2001","versionName":"3.5.8","package":"com.fixture",
+            "uuid":uuid,"LoginPath":login_path
+        });
+        if let Some(version) = header_version_override {
+            ext["version"] = serde_json::json!(version);
+        }
+        let ext = ext.to_string();
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let site = App99::new();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+            site.search("fixture", 1, &ext).await?;
+            site.search("fixture", 2, &ext).await
+        }).await;
+        server.abort();
+        assert!(matches!(outcome, Ok(Ok(_))), "guest response must not block browsing");
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 4, "cached handshake must not add guest requests");
+        let paths: Vec<_> = requests.iter().map(|request| request.0.as_str()).collect();
+        assert_eq!(paths, vec!["/app/systemInit", login_path, "/vod/search", "/vod/search"]);
+        let expected_version = header_version_override.unwrap_or("3.5.8");
+        for (_, headers, request, signature_matches) in requests.iter() {
+            let header = |name| headers.get(name).and_then(|value| value.to_str().ok());
+            assert!(header("version") == Some(expected_version), "all stages need the configured version header");
+            assert!(header("api_version") == Some("v1"), "all stages need api_version=v1");
+            assert!(header("uuid") == Some(uuid), "configured encryption uuid must be retained");
+            assert!(header("client_type") == Some("android"));
+            assert!(header("accept") == Some("application/json"));
+            assert!(header("content-type") == Some("application/json"));
+            assert!(header("user-agent") == Some(UA));
+            assert!(header("timestamp") == request["timestamp"].as_str());
+            assert!(header("nonce") == request["nonce"].as_str());
+            assert!(request["timestamp"].as_str().unwrap().parse::<u64>().is_ok());
+            assert!(b64_decode(request["nonce"].as_str().unwrap()).unwrap().len() == 16);
+            assert!(*signature_matches, "signature must cover actual ciphertext, headers and request token");
+        }
+        let init = &requests[0].2;
+        assert!(init["v"] == "3.5.8", "header override must not change systemInit body version");
+        assert!(init["n"] == "fixture-app");
+        assert!(init["s"] == "FIXTURE-SIG");
+        assert!(init["pl"] == "1");
+        assert!(init["apiVersion"] == "v2");
+        assert!(init["token"] == "");
+        let guest = &requests[1].2;
+        let expected_device = serde_json::json!({
+            "os":"android","name":"xiaomi","version":"15","sdkInt":32,
+            "device":"xiaomi","brand":"xiaomi","manufacturer":"xiaomi","product":"b0q",
+            "hardware":"xiaomi","isPhysicalDevice":true,"androidId":"V417IR",
+            "bootloader":"unknown","display":"V417IR release-keys","host":"a11-gz01-test",
+            "tags":"release-keys","type":"user",
+            "finger":"xiaomi/b0q/b0q:15/V619IR/613:user/release-keys"
+        });
+        for (field, value) in expected_device.as_object().unwrap() {
+            assert!(guest.get(field) == Some(value), "device constants belong at guest body top level");
+        }
+        let mut expected_keys: std::collections::BTreeSet<_> =
+            expected_device.as_object().unwrap().keys().map(String::as_str).collect();
+        expected_keys.extend(["app", "did", "apiVersion", "channel", "token", "timestamp", "nonce"]);
+        let actual_keys: std::collections::BTreeSet<_> =
+            guest.as_object().unwrap().keys().map(String::as_str).collect();
+        assert!(actual_keys == expected_keys, "guest body keys must match the DEX contract");
+        let guest_app = &guest["app"];
+        assert!(guest_app["version"] == "3.5.8", "application version remains versionName");
+        assert!(guest_app["name"] == "fixture-app");
+        assert!(guest_app["package"] == "com.fixture");
+        assert!(guest_app["buildNumber"] == "2001");
+        assert!(guest_app["buildSignature"] == "FIXTURE-SIG");
+        let install = guest_app["install"].as_u64().expect("install is numeric milliseconds");
+        assert!(guest_app["update"].as_u64() == Some(install));
+        assert!(install >= before && install <= after);
+        let app_keys: std::collections::BTreeSet<_> =
+            guest_app.as_object().unwrap().keys().map(String::as_str).collect();
+        assert!(app_keys == ["version", "name", "package", "buildNumber", "buildSignature", "install", "update"]
+            .into_iter().collect());
+        let did = guest["did"].as_str().expect("did is an independent UUID");
+        assert!(did != uuid && did.len() == 36);
+        assert!(did.chars().enumerate().all(|(index, ch)| {
+            if [8, 13, 18, 23].contains(&index) { ch == '-' } else { ch.is_ascii_hexdigit() }
+        }));
+        assert!(guest["apiVersion"] == "v2");
+        assert!(guest["channel"] == "");
+        assert!(guest["token"] == "");
+        let business_token = if reject_guest { "" } else { "fixture-guest-token" };
+        for (_, _, request, _) in requests.iter().skip(2) {
+            assert!(request["token"] == business_token, "business must carry the guest result without invention");
+        }
+    }
+
+    #[tokio::test]
+    async fn app99_guest_handshake_dex_default_version_and_body_contract() {
+        assert_guest_handshake_contract(None, "/app/userInfo", false).await;
+    }
+
+    #[tokio::test]
+    async fn app99_guest_handshake_dex_login_path_and_version_override_contract() {
+        assert_guest_handshake_contract(Some("header-override"), "/fixture/guest", false).await;
+    }
+
+    #[tokio::test]
+    async fn app99_guest_handshake_dex_rejected_guest_keeps_anonymous_browsing() {
+        assert_guest_handshake_contract(Some("header-override"), "/fixture/guest", true).await;
+    }
+
+    async fn assert_guest_http_error_privacy(status: u16) {
+        use axum::{http::StatusCode, routing::post, Router};
+        let marker = "fixture-private-credential-marker";
+        let echoed = format!("token={marker}; address=https://fixture.invalid/private?sign={marker}");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let status = StatusCode::from_u16(status).unwrap();
+        let app = Router::new().fallback(post(move || {
+            let echoed = echoed.clone();
+            async move { (status, echoed) }
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let uuid = "aabbccddeeff00112233445566778899";
+        let key = key_of(uuid).unwrap();
+        let host = format!("http://{addr}");
+        let ext = serde_json::json!({
+            "host":host,"name":"fixture","buildSignature":"SIG","buildNumber":"1",
+            "versionName":"3.5.8","package":"com.fixture","uuid":uuid
+        }).to_string();
+        let site = App99::new();
+        let init_error = site.handshake(&ext).await.expect_err("fixture init must fail");
+        let guest_error = site.user_info_token(&host, &key, uuid, "3.5.8", "3.5.8",
+            "/app/userInfo", "fixture", "com.fixture", "1", "SIG", &1)
+            .await.expect_err("fixture guest request must fail");
+        *site.state.lock().unwrap() = Some(Handshaken {
+            ext, host, uuid:uuid.to_string(), token:String::new(), version:"3.5.8".to_string(),
+            categories:Vec::new(), players:serde_json::Value::Null, parser_ids:Vec::new()
+        });
+        let business_error = site.call_raw("/vod/search", serde_json::json!({"kw":"fixture"}))
+            .await.expect_err("fixture business request must fail");
+        server.abort();
+        for error in [init_error, guest_error, business_error] {
+            assert!(error.contains(&status.as_u16().to_string()), "HTTP status must remain visible");
+            assert!(!error.contains(marker), "credential echoes must not enter errors");
+            assert!(!error.contains("https://") && !error.contains("token=") && !error.contains("sign="),
+                "HTTP response bodies must not enter errors");
+        }
+    }
+
+    #[tokio::test]
+    async fn app99_guest_handshake_dex_http_500_error_is_private() {
+        assert_guest_http_error_privacy(500).await;
+    }
+
+    #[tokio::test]
+    async fn app99_guest_handshake_dex_http_403_error_is_private() {
+        assert_guest_http_error_privacy(403).await;
+    }
+
+    #[tokio::test]
+    async fn app99_guest_handshake_dex_transport_error_is_private() {
+        let marker = "fixture-private-query-marker";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let host = format!("http://{addr}/private?token={marker}");
+        let ext = serde_json::json!({
+            "host":host,"name":"fixture","buildSignature":"SIG","buildNumber":"1",
+            "versionName":"3.5.8","package":"com.fixture",
+            "uuid":"aabbccddeeff00112233445566778899"
+        }).to_string();
+        let error = App99::new().handshake(&ext).await.expect_err("closed loopback port must fail");
+        assert!(!error.contains(marker) && !error.contains("127.0.0.1") && !error.contains("token="),
+            "transport errors must not include the request URL or query");
+    }
+
+    #[tokio::test]
+    async fn app99_detail_dex_request_contract() {
+        use axum::{extract::State, http::Uri, routing::post, Router};
+        use std::sync::Arc;
+
+        let uuid = "aabbccddeeff00112233445566778899";
+        let key = key_of(uuid).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        async fn endpoint(
+            State((key, seen)): State<(Vec<u8>, Arc<Mutex<Vec<serde_json::Value>>>)>,
+            uri: Uri,
+            body: String,
+        ) -> String {
+            let request = open_request(&key, &body);
+            let response = match uri.path() {
+                "/app/systemInit" => serde_json::json!({
+                    "code":0,"categorys":{"data":[]}
+                }),
+                "/app/userInfo" => serde_json::json!({
+                    "code":0,"userInfo":{"user_token":""}
+                }),
+                "/vod/detail" => {
+                    seen.lock().unwrap().push(request);
+                    serde_json::json!({
+                        "code":0,"data":{
+                            "id":234900,"name":"fixture","play_from":"NBY",
+                            "play_url":"1$fixture-selected-input"
+                        }
+                    })
+                }
+                _ => serde_json::json!({"code":1}),
+            };
+            seal_fixture(&key, &response)
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = Router::new().fallback(post(endpoint)).with_state((key, seen.clone()));
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let ext = serde_json::json!({
+            "host":format!("http://{addr}"),"name":"fixture","buildSignature":"SIG",
+            "buildNumber":"1","versionName":"3.5.8","uuid":uuid,"package":"com.fixture"
+        }).to_string();
+        let result = tokio::time::timeout(Duration::from_secs(5),
+            App99::new().detail(" 234900 ", &ext)).await;
+        server.abort();
+        assert!(matches!(result, Ok(Ok(_))), "detail must use the received fixture");
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert!(request["id"] == "234900", "detail ID must remain the selected ID");
+        assert!(request["eps"] == "1", "DEX detail eps is a string");
+        assert!(request["v"] == "2.0.0", "DEX detail uses its own protocol version");
+        assert!(request["pl"].as_i64() == Some(1), "DEX detail pl is numeric");
+        assert!(request["token"] == "", "anonymous detail must not invent a token");
     }
 
     #[tokio::test]

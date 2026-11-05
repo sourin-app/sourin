@@ -3210,6 +3210,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// 那一集" —— 令牌变了就说明中途换过集，那次操作的结果必须丢掉
   /// （与 `_danmakuFetchToken` 同一条规矩）。
   int _biliPanelToken = 0;
+  int _biliSearchSerial = 0;
 
   /// ★★★ task-31 ⑤：「在线搜索字幕」（assrt.net）面板是否打开
   bool _subtitlePanelOpen = false;
@@ -9991,6 +9992,25 @@ class _PlayerPageState extends State<PlayerPage>
     final kw = keyword.trim();
     if (kw.isEmpty) return;
     final token = _biliPanelToken;
+    final serial = ++_biliSearchSerial;
+    final generation = _playSessionGen;
+    final fetchToken = _danmakuFetchToken;
+    bool rejectStale() {
+      if (!mounted || serial != _biliSearchSerial || token != _biliPanelToken) {
+        return true;
+      }
+      if (generation == _playSessionGen && fetchToken == _danmakuFetchToken) {
+        return false;
+      }
+      setState(() {
+        _biliState = _biliState.copyWith(
+          loading: false,
+          clearError: true,
+          searchResults: const <BiliSearchItem>[],
+        );
+      });
+      return true;
+    }
     setState(() {
       _biliState = _biliState.copyWith(
         loading: true,
@@ -10002,7 +10022,7 @@ class _PlayerPageState extends State<PlayerPage>
     });
     try {
       final list = await _ensureBiliApi().searchVideos(kw);
-      if (!mounted || token != _biliPanelToken) return;
+      if (rejectStale()) return;
       setState(() {
         _biliState = _biliState.copyWith(
           loading: false,
@@ -10011,7 +10031,7 @@ class _PlayerPageState extends State<PlayerPage>
         );
       });
     } on DanmakuException catch (e) {
-      if (!mounted || token != _biliPanelToken) return;
+      if (rejectStale()) return;
       setState(() {
         _biliState = _biliState.copyWith(
           loading: false,
@@ -10021,7 +10041,7 @@ class _PlayerPageState extends State<PlayerPage>
         );
       });
     } catch (e) {
-      if (!mounted || token != _biliPanelToken) return;
+      if (rejectStale()) return;
       _biliFail('搜索失败：$e');
     }
   }
@@ -18991,9 +19011,17 @@ class _PlayerPageState extends State<PlayerPage>
                     Positioned.fill(
                       child: SheetExitMotion(
                         visible: _danmakuSheetOpen,
-                        child: DanmakuSettingsDialog(
+                        // Share the quick live values without rebuilding PlayerPage.
+                        child: ValueListenableBuilder<DanmakuQuickValues>(
+                          valueListenable: _danmakuQuickLive,
+                          builder: (context, qv, _) => DanmakuSettingsDialog(
                           fill: false,
-                          state: _danmakuSettings,
+                          state: _danmakuSettings.copyWith(
+                            fontScale: qv.fontScale,
+                            opacity: qv.opacity,
+                            speed: qv.speed,
+                            area: qv.area,
+                          ),
                           readout: _danmakuReadout,
                           /*
                            * 2026-10-15 (Owner): the status strip shows how many
@@ -19071,6 +19099,7 @@ class _PlayerPageState extends State<PlayerPage>
                              */
                             _holdSheetGuard();
                           },
+                          ),
                         ),
                       ),
                     ),

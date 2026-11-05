@@ -497,7 +497,7 @@ impl App99 {
     ) -> reqwest::RequestBuilder {
         self.client.post(url)
             .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json; charset=utf-8")
             .header("client_type", "android")
             .header("uuid", uuid)
             .header("version", version)
@@ -1272,6 +1272,79 @@ mod tests {
         serde_json::from_slice(plain).unwrap()
     }
 
+    #[tokio::test]
+    async fn app99_signed_post_matches_reference_okhttp_wire_contract() {
+        use axum::{
+            body::Bytes, extract::State, http::HeaderMap, routing::post, Router,
+        };
+        use std::sync::Arc;
+
+        type Seen = Arc<Mutex<Vec<(HeaderMap, Bytes)>>>;
+        async fn capture(
+            State(seen): State<Seen>, headers: HeaderMap, body: Bytes,
+        ) -> axum::http::StatusCode {
+            seen.lock().unwrap().push((headers, body));
+            axum::http::StatusCode::NO_CONTENT
+        }
+
+        let uuid = "aabbccddeeff00112233445566778899";
+        let timestamp = "1700000000000";
+        let nonce = b64_encode(&[0u8; 16]);
+        let payload = serde_json::json!({
+            "id": 1, "url": "fixture+opaque/input==", "token": "",
+            "timestamp": timestamp, "nonce": nonce,
+        });
+        let key = key_of(uuid).unwrap();
+        let encrypted = encrypt_body(&key, &payload.to_string(), &iv16(1, 2)).unwrap();
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = Router::new().route("/vod/parser", post(capture)).with_state(seen.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let request = App99::new().signed_post(
+            &format!("http://{addr}/vod/parser"), uuid, "fixture-version",
+            timestamp, &nonce, "", &encrypted,
+        );
+        let response = tokio::time::timeout(Duration::from_secs(5), request.send()).await;
+        server.abort();
+        let _ = server.await;
+        let response = response.expect("loopback request must be bounded")
+            .expect("production signed_post must reach the loopback sink");
+        assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 1, "one signed POST must produce exactly one request");
+        let (headers, body) = &requests[0];
+        let header = |name| headers.get(name).and_then(|value| value.to_str().ok());
+        assert!(body.as_ref() == encrypted.as_bytes(), "encrypted body bytes must not change");
+        let captured = open_request(&key, std::str::from_utf8(body).unwrap());
+        assert!(captured == payload, "numeric parser ID and all original fields must remain unchanged");
+        let signature_input = format!("{encrypted}:{timestamp}:{nonce}:");
+        let hash = ring::digest::digest(&ring::digest::SHA256, signature_input.as_bytes());
+        let signature: String = hash.as_ref().iter().map(|byte| format!("{byte:02x}")).collect();
+        assert!(header("sign") == Some(signature.as_str()),
+            "signature must cover the exact ciphertext, timestamp, nonce and empty token");
+        for (name, expected) in [
+            ("accept", "application/json"), ("client_type", "android"), ("uuid", uuid),
+            ("version", "fixture-version"), ("api_version", "v1"),
+            ("timestamp", timestamp), ("nonce", nonce.as_str()), ("user-agent", UA),
+        ] {
+            assert!(header(name) == Some(expected), "signed header {name} must remain unchanged");
+        }
+        assert!(header("content-encoding").is_none(), "request body must not be compressed");
+        assert!(header("transfer-encoding").is_none(), "fixed body must not become chunked");
+        assert!(header("content-length") == Some(encrypted.len().to_string().as_str()));
+        let body_hash = ring::digest::digest(&ring::digest::SHA256, body);
+        let body_hash: String = body_hash.as_ref().iter().map(|byte| format!("{byte:02x}")).collect();
+        eprintln!(
+            "[APP99-WIRE] body_sha256={body_hash} body_unchanged=true signature_matches=true \
+             fields_unchanged=true content_type={:?}", header("content-type"),
+        );
+        assert_eq!(
+            header("content-type"), Some("application/json; charset=utf-8"),
+            "reference OkHttp bridge uses the RequestBody media type on the wire",
+        );
+    }
+
     async fn assert_guest_handshake_contract(
         header_version_override: Option<&str>,
         login_path: &str,
@@ -1353,7 +1426,7 @@ mod tests {
             assert!(header("uuid") == Some(uuid), "configured encryption uuid must be retained");
             assert!(header("client_type") == Some("android"));
             assert!(header("accept") == Some("application/json"));
-            assert!(header("content-type") == Some("application/json"));
+            assert!(header("content-type") == Some("application/json; charset=utf-8"));
             assert!(header("user-agent") == Some(UA));
             assert!(header("timestamp") == request["timestamp"].as_str());
             assert!(header("nonce") == request["nonce"].as_str());

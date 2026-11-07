@@ -19,6 +19,7 @@ Status: implemented
 拷   ui-prefs.json           按 key 过滤后的界面/外观/播放偏好
 拷   状态 json + dsh-media.db 三件套（收藏/历史/进度/片头片尾）
 拷   tvbox-sources.json      仅导入身份字段，不含订阅链接或更新结果
+拷   tvbox-aggregate.json    仅启用/隐藏源 ID、solo 与格式版本
 不拷 sync-settings.json / remote-pref.json / plugins/.data/
 不拷 ui-prefs 的 dsh.bili.* / dsh.speedtest.* / dsh.srcpref.* / dsh.homeSource
 ```
@@ -30,6 +31,13 @@ Status: implemented
 `siteKey`、`siteName`、`api`、`installedAt`；`sourceUrl` 与
 `lastUpdateError` 可能携带凭据，更新状态在无订阅链接的副本里也不沿用。
 保持默认不覆盖、显式 `-Force` 重播的语义。
+
+2026-11-08 补齐聚合选择播种：导入身份不能替代启用集合，空集合也必须原样
+保留，不能把所有已导入子源自动启用。仅复制 `enabledSiteIds`、`hiddenSiteIds`
+中的字符串和 `solo`，不携带 `pan` 分享文本、密码、备注或未知字段。外观白名单
+同时加入 `dsh.appearance.logo`，保持隔离预览所选标识。假源的敏感字段诱饵、
+默认保留、Force 重播、空选择和逐文件哈希测试均覆盖；纯净旧代码下新用例因
+缺少聚合选择文件失败。
 
 Independent: 播种只读且不带凭据。开发数据安全的一条独立规则。
 

@@ -144,7 +144,8 @@ $seedPluginGlob = @(
 #   dsh.homeSource    首页当前选中的源标识
 $seedPrefExact = @(
     'dsh.theme',
-    'dsh.themepack'
+    'dsh.themepack',
+    'dsh.appearance.logo'
 )
 $seedPrefPrefixes = @(
     'dsh.danmaku.',
@@ -332,6 +333,31 @@ if (Test-Path -LiteralPath $srcTvbox) {
         [IO.File]::WriteAllText($dstTvbox, $json, (New-Object Text.UTF8Encoding($false)))
         $script:copied++
         Write-Host "  * TVBox 导入记录：$($sources.Count) 个（不携带订阅链接或更新错误）" -ForegroundColor DarkGray
+    }
+}
+
+# 聚合选择不能丢：只有导入记录却没有启用集合，会把有内容的开发副本
+# 显示为空；重建时仅搬源 ID 与 solo，网盘分享文本、密码、备注等均不带。
+$srcAggregate = Join-Path $Source 'tvbox-aggregate.json'
+$dstAggregate = Join-Path $Target 'tvbox-aggregate.json'
+if (Test-Path -LiteralPath $srcAggregate) {
+    if ((Test-Path -LiteralPath $dstAggregate) -and (-not $Force)) {
+        $script:kept++
+    } else {
+        if ((Test-Path -LiteralPath $dstAggregate) -and
+            (Resolve-RealPath $dstAggregate).StartsWith($srcReal + $sep, [StringComparison]::OrdinalIgnoreCase)) {
+            throw '目标 TVBox 聚合选择指向源目录，拒绝写入。'
+        }
+        $aggregate = Get-Content -LiteralPath $srcAggregate -Raw -Encoding UTF8 | ConvertFrom-Json
+        $selection = @{
+            version = 1
+            solo = ($aggregate.solo -eq $true)
+            enabledSiteIds = @($aggregate.enabledSiteIds | Where-Object { $_ -is [string] })
+            hiddenSiteIds = @($aggregate.hiddenSiteIds | Where-Object { $_ -is [string] })
+        }
+        [IO.File]::WriteAllText($dstAggregate, ($selection | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+        $script:copied++
+        Write-Host "  * TVBox 聚合选择：$($selection.enabledSiteIds.Count) 个（不携带网盘分享或密码）" -ForegroundColor DarkGray
     }
 }
 

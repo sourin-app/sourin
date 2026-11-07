@@ -69,6 +69,15 @@ Directory buildFakeSource() {
 
   // （ui-prefs 夹具见下 —— 要与「观看痕迹」区分开）
   File(d.path + '/provider-order.json').writeAsStringSync('["a","b"]');
+  File(d.path + '/tvbox-aggregate.json').writeAsStringSync(jsonEncode({
+    'version': 1,
+    'solo': true,
+    'enabledSiteIds': ['imported-example'],
+    'hiddenSiteIds': ['imported-example'],
+    'pan': {'shareText': 'SECRET-SHARE', 'pwd': 'SECRET-PASSWORD'},
+    'note': 'SECRET-NOTE',
+    'futureCredential': 'SECRET',
+  }));
   File(d.path + '/tvbox-sources.json').writeAsStringSync(jsonEncode({
     'version': 1,
     'sources': {
@@ -103,6 +112,7 @@ Directory buildFakeSource() {
   // ui-prefs 夹具：界面偏好（该带走）+ 观看痕迹/绑定（不该带走）各占一半
   File(d.path + '/ui-prefs.json').writeAsStringSync(jsonEncode(<String, String>{
         'dsh.theme': 'dark',
+        'dsh.appearance.logo': '03-current',
         'dsh.danmaku.enabled': '1',
         'dsh.bili.bind.someprovider:42': '{"b":"BV1xx"}',
         'dsh.speedtest.someprovider': '{"items":[]}',
@@ -164,6 +174,33 @@ void main() {
   }
 
   group('T1015 · 开发数据目录播种', () {
+    test('TVBox 聚合选择保持启用范围，不带分享或密码，空选择不扩大', () {
+      if (!requirePs()) return;
+      final before = snapshot(src);
+      expect(runSeed(<String>[]).exitCode, 0);
+      final output = File(dst.path + '/tvbox-aggregate.json');
+      expect(output.existsSync(), isTrue);
+      expect(jsonDecode(output.readAsStringSync()), {
+        'version': 1,
+        'solo': true,
+        'enabledSiteIds': ['imported-example'],
+        'hiddenSiteIds': ['imported-example'],
+      });
+      expect(output.readAsStringSync(), isNot(contains('SECRET')));
+      final prefs = jsonDecode(File(dst.path + '/ui-prefs.json').readAsStringSync());
+      expect(prefs['dsh.appearance.logo'], '03-current');
+      expect(snapshot(src), before);
+
+      output.writeAsStringSync('{"version":1,"solo":false,"enabledSiteIds":[],"hiddenSiteIds":[]}');
+      expect(runSeed(<String>[]).exitCode, 0);
+      expect(jsonDecode(output.readAsStringSync())['enabledSiteIds'], isEmpty);
+      expect(runSeed(<String>['-Force']).exitCode, 0);
+      expect(jsonDecode(output.readAsStringSync())['enabledSiteIds'], ['imported-example']);
+      File(src.path + '/tvbox-aggregate.json').writeAsStringSync('{"version":1,"solo":true,"enabledSiteIds":[],"hiddenSiteIds":[]}');
+      expect(runSeed(<String>['-Force']).exitCode, 0);
+      expect(jsonDecode(output.readAsStringSync())['enabledSiteIds'], isEmpty);
+    });
+
     test('TVBox 导入记录随内容播种，订阅凭据与错误不带入', () {
       if (!requirePs()) return;
       expect(runSeed(<String>[]).exitCode, 0);

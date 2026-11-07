@@ -4,6 +4,7 @@ use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -14,6 +15,10 @@ use std::{
 
 const FILE: &str = "github-discovery.json";
 const MAX_BYTES: usize = 2 * 1024 * 1024;
+const MAX_REPOSITORIES: usize = 12;
+const MAX_CONFIGS: usize = 48;
+const MAX_NATIVE_CANDIDATES: usize = 36;
+const MAX_UNSUPPORTED_CANDIDATES: usize = 12;
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 static RUN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -27,6 +32,17 @@ pub struct Discovery {
     pub last_error: String,
     pub candidates: Vec<Candidate>,
     pub notices: Vec<Notice>,
+    pub coverage: Coverage,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Coverage {
+    pub repositories: usize,
+    pub configurations: usize,
+    pub native_candidates: usize,
+    pub unsupported_candidates: usize,
+    pub duplicate_candidates: usize,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -92,9 +108,12 @@ pub fn status(state: &AppState) -> Result<Value, String> {
         serde_json::to_value(read(&state.data_dir)?).map_err(|_| "无法读取源发现状态")?;
     if let Some(candidates) = value["candidates"].as_array_mut() {
         for c in candidates {
-            c["installed"] = json!(c["installPending"] != true && c["providerId"]
-                .as_str()
-                .is_some_and(|id| state.registry.get(id).is_some()));
+            c["installed"] = json!(
+                c["installPending"] != true
+                    && c["providerId"]
+                        .as_str()
+                        .is_some_and(|id| state.registry.get(id).is_some())
+            );
         }
     }
     value["running"] = json!(RUNNING.load(Ordering::Acquire));
@@ -294,12 +313,20 @@ fn scalar_id(value: &Value) -> Option<String> {
 }
 fn trim_candidates(candidates: &mut Vec<Candidate>) {
     candidates.sort_by_key(|c| std::cmp::Reverse(c.checked_at));
+    let mut native_apis: HashSet<String> = candidates
+        .iter()
+        .filter(|c| c.provider_id.is_some())
+        .filter_map(native_identity)
+        .collect();
     let mut remaining = 200;
     candidates.retain(|c| {
         if c.provider_id.is_some() {
             return true;
         }
         if remaining == 0 {
+            return false;
+        }
+        if native_identity(c).is_some_and(|api| !native_apis.insert(api)) {
             return false;
         }
         remaining -= 1;
@@ -327,6 +354,7 @@ impl Drop for RunFlag {
 struct Collection {
     candidates: Vec<Candidate>,
     warning: String,
+    coverage: Coverage,
 }
 async fn bounded_text(
     client: &reqwest::Client,
@@ -337,161 +365,311 @@ async fn bounded_text(
         .await
         .unwrap_or_else(|_| Err("本轮请求时间已用完".into()))
 }
-async fn collect(client: &reqwest::Client, api: &str, raw: &str) -> Result<Collection, String> {
-    // Return partial results before the shared FFI client's 120-second timeout.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    let response: Value = serde_json::from_str(
-        &bounded_text(
-            client,
-            &format!("{api}/search/repositories?q=topic%3Atvbox&sort=updated&per_page=5"),
-            deadline,
+// Match the installed provider's request identity, including query/fragment removal.
+// Config mirrors and renamed keys must not consume repeated validation slots.
+fn native_identity(c: &Candidate) -> Option<String> {
+    matches!(c.kind, Some(0 | 1)).then(|| {
+        let base = tvbox::normalize_api_url(&c.api);
+        reqwest::Url::parse(&base)
+            .map(|u| u.to_string())
+            .unwrap_or(base)
+    })
+}
+
+async fn fetch_batch(
+    client: &reqwest::Client,
+    urls: &[String],
+    deadline: tokio::time::Instant,
+) -> Vec<Result<String, String>> {
+    let mut results = vec![Err("本轮请求时间已用完".into()); urls.len()];
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
+    let mut tasks = tokio::task::JoinSet::new();
+    for (index, url) in urls.iter().cloned().enumerate() {
+        let client = client.clone();
+        let semaphore = semaphore.clone();
+        tasks.spawn(async move {
+            let _permit = semaphore.acquire_owned().await;
+            (index, bounded_text(&client, &url, deadline).await)
+        });
+    }
+    while !tasks.is_empty() {
+        match tokio::time::timeout_at(deadline, tasks.join_next()).await {
+            Ok(Some(Ok((index, result)))) => results[index] = result,
+            Ok(Some(Err(_))) => (),
+            Ok(None) => break,
+            Err(_) => {
+                tasks.abort_all();
+                break;
+            }
+        }
+    }
+    results
+}
+
+fn config_paths(tree: &Value) -> Option<Vec<String>> {
+    let mut paths: Vec<String> = tree
+        .get("tree")?
+        .as_array()?
+        .iter()
+        .filter(|f| {
+            f.get("type").and_then(Value::as_str) == Some("blob")
+                && f.get("size").and_then(Value::as_u64).unwrap_or(0) <= MAX_BYTES as u64
+        })
+        .filter_map(|f| f.get("path").and_then(Value::as_str))
+        .filter(|p| {
+            [".json", ".txt", ".conf"]
+                .iter()
+                .any(|ext| p.to_ascii_lowercase().ends_with(ext))
+        })
+        .map(str::to_owned)
+        .collect();
+    paths.sort_by_key(|p| {
+        let lower = p.to_ascii_lowercase();
+        (
+            !(["catalog", "vod", "采集"].iter().any(|k| lower.contains(k))),
+            !(["tvbox", "config", "source", "tv.json"]
+                .iter()
+                .any(|k| lower.contains(k))),
+            p.matches('/').count(),
+            p.len(),
+            p.clone(),
         )
-        .await?,
-    )
-    .map_err(|_| "GitHub 搜索响应无效")?;
-    let repos = response
-        .get("items")
+    });
+    paths.truncate(6);
+    Some(paths)
+}
+
+fn config_candidates(config: &Value, repository: &str, url: &str) -> Vec<Candidate> {
+    let mut native_apis = HashSet::new();
+    let mut unsupported = 0;
+    config
+        .get("sites")
         .and_then(Value::as_array)
-        .ok_or("GitHub 未返回仓库列表")?;
-    let mut found = Vec::new();
-    let mut configs = 0;
+        .into_iter()
+        .flatten()
+        .filter_map(|site| {
+            let api = site.get("api")?.as_str()?;
+            let api = tvbox::resolve_api(api, url).unwrap_or_else(|| api.to_string());
+            let key = site.get("key").and_then(Value::as_str).unwrap_or("");
+            let kind = site
+                .get("type")
+                .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()));
+            Some(Candidate {
+                id: format!("{:x}", Md5::digest(format!("{url}|{key}|{api}"))),
+                repository: repository.into(),
+                config_url: url.into(),
+                api,
+                key: key.into(),
+                kind,
+                name: site
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("未命名源")
+                    .chars()
+                    .take(100)
+                    .collect(),
+                status: "failed".into(),
+                message: "本轮未完成校验，请重新发现".into(),
+                checked_at: now(),
+                ..Default::default()
+            })
+        })
+        // Bound retained allocations per response without stopping before native
+        // entries near the end of a large script or duplicated catalog.
+        .filter(|candidate| {
+            if let Some(api) = native_identity(candidate) {
+                native_apis.len() < MAX_NATIVE_CANDIDATES && native_apis.insert(api)
+            } else if unsupported < MAX_UNSUPPORTED_CANDIDATES {
+                unsupported += 1;
+                true
+            } else {
+                false
+            }
+        })
+        .collect()
+}
+
+async fn collect(client: &reqwest::Client, api: &str, raw: &str) -> Result<Collection, String> {
+    // Leave validation its own time share; collection must not consume its deadline.
+    let started = tokio::time::Instant::now();
+    let collection_deadline = started + Duration::from_secs(55);
+    let deadline = started + Duration::from_secs(95);
+    let mut searches = Vec::new();
+    for (query, sort) in [
+        ("topic:tvbox archived:false", "updated"),
+        ("tvbox in:name,description archived:false", "stars"),
+        ("tvbox 采集 in:readme archived:false", "updated"),
+    ] {
+        let mut url = reqwest::Url::parse(&format!("{api}/search/repositories"))
+            .map_err(|_| "GitHub 地址无效")?;
+        url.query_pairs_mut()
+            .append_pair("q", query)
+            .append_pair("sort", sort)
+            .append_pair("per_page", "8");
+        searches.push(url.to_string());
+    }
     let mut failures = 0;
-    for repo in repos.iter().take(5) {
-        if configs >= 12 || found.len() >= 48 || tokio::time::Instant::now() >= deadline {
-            break;
+    let mut groups = Vec::new();
+    for result in fetch_batch(client, &searches, collection_deadline).await {
+        match result.and_then(|body| serde_json::from_str::<Value>(&body).map_err(|_| "".into())) {
+            Ok(value) if value.get("items").and_then(Value::as_array).is_some() => {
+                if value["incomplete_results"] == true {
+                    failures += 1;
+                }
+                groups.push(value["items"].as_array().unwrap().clone());
+            }
+            _ => failures += 1,
         }
-        let Some(name) = repo.get("full_name").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(branch) = repo.get("default_branch").and_then(Value::as_str) else {
-            continue;
-        };
-        if name.split('/').count() != 2
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
-        {
-            continue;
+    }
+    // Interleave cohorts before the repository cap, so recent topic updates cannot
+    // crowd out established configs or repositories that have no topic tag.
+    let mut repos = Vec::new();
+    let mut seen_repos = HashSet::new();
+    for index in 0..8 {
+        for group in &groups {
+            let Some(repo) = group.get(index) else {
+                continue;
+            };
+            let Some(name) = repo.get("full_name").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(branch) = repo.get("default_branch").and_then(Value::as_str) else {
+                continue;
+            };
+            if repos.len() >= MAX_REPOSITORIES
+                || name.split('/').count() != 2
+                || name
+                    .split('/')
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
+                || !seen_repos.insert(name.to_ascii_lowercase())
+            {
+                continue;
+            }
+            repos.push((name.to_string(), branch.to_string()));
         }
-        let mut tree_url = reqwest::Url::parse(api).map_err(|_| "GitHub 地址无效")?;
-        tree_url
-            .path_segments_mut()
+    }
+    let mut tree_urls = Vec::new();
+    for (name, branch) in &repos {
+        let mut url = reqwest::Url::parse(api).map_err(|_| "GitHub 地址无效")?;
+        url.path_segments_mut()
             .map_err(|_| "GitHub 地址无效")?
             .extend(["repos"])
             .extend(name.split('/'))
             .extend(["git", "trees", branch]);
-        tree_url.set_query(Some("recursive=1"));
-        let tree: Value = match bounded_text(client, tree_url.as_str(), deadline)
-            .await
-            .and_then(|t| serde_json::from_str(&t).map_err(|_| "仓库列表无效".into()))
-        {
-            Ok(v) => v,
-            Err(_) => {
-                failures += 1;
-                continue;
+        url.set_query(Some("recursive=1"));
+        tree_urls.push(url.to_string());
+    }
+    let mut coverage = Coverage::default();
+    let mut paths_by_repo = Vec::new();
+    for ((name, branch), result) in repos
+        .into_iter()
+        .zip(fetch_batch(client, &tree_urls, collection_deadline).await)
+    {
+        match result.and_then(|body| serde_json::from_str::<Value>(&body).map_err(|_| "".into())) {
+            Ok(tree) if config_paths(&tree).is_some() => {
+                coverage.repositories += 1;
+                if tree["truncated"] == true {
+                    failures += 1;
+                }
+                paths_by_repo.push((name, branch, config_paths(&tree).unwrap()));
             }
-        };
-        let Some(files) = tree.get("tree").and_then(Value::as_array) else {
-            failures += 1;
-            continue;
-        };
-        let mut paths: Vec<&str> = files
-            .iter()
-            .filter(|f| {
-                f.get("type").and_then(Value::as_str) == Some("blob")
-                    && f.get("size").and_then(Value::as_u64).unwrap_or(0) <= MAX_BYTES as u64
-            })
-            .filter_map(|f| f.get("path").and_then(Value::as_str))
-            .filter(|p| {
-                [".json", ".txt", ".conf"]
-                    .iter()
-                    .any(|ext| p.to_ascii_lowercase().ends_with(ext))
-            })
-            .collect();
-        // Give each repository a share of the budget and prefer likely configurations.
-        paths.sort_by_key(|p| {
-            let lower = p.to_ascii_lowercase();
-            (
-                !(["tvbox", "config", "source", "tv.json"]
-                    .iter()
-                    .any(|k| lower.contains(k))),
-                p.matches('/').count(),
-                p.len(),
-            )
-        });
-        for path in paths.into_iter().take(3) {
-            if configs >= 12 || found.len() >= 48 || tokio::time::Instant::now() >= deadline {
+            _ => failures += 1,
+        }
+    }
+    let mut configurations = Vec::new();
+    for index in 0..6 {
+        for (name, branch, paths) in &paths_by_repo {
+            let Some(path) = paths.get(index) else {
+                continue;
+            };
+            if configurations.len() >= MAX_CONFIGS {
                 break;
             }
-            configs += 1;
             let mut url = reqwest::Url::parse(raw).map_err(|_| "GitHub 地址无效")?;
             url.path_segments_mut()
                 .map_err(|_| "GitHub 地址无效")?
                 .extend(name.split('/'))
                 .push(branch)
                 .extend(path.split('/'));
-            let cfg = match bounded_text(client, url.as_str(), deadline)
-                .await
-                .and_then(|t| tvbox::parse_loose_json(&t))
-            {
-                Ok(v) => v,
-                Err(_) => {
-                    failures += 1;
-                    continue;
-                }
-            };
-            let Some(sites) = cfg.get("sites").and_then(Value::as_array) else {
-                continue;
-            };
-            let mut sites: Vec<&Value> = sites.iter().collect();
-            // Large script catalogs must not hide native entries beyond the cap.
-            sites.sort_by_key(|site| {
-                let kind = site
-                    .get("type")
-                    .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()));
-                !matches!(kind, Some(0 | 1))
-            });
-            for site in sites.into_iter().take(24) {
-                if found.len() >= 48 {
+            configurations.push((name.clone(), url.to_string()));
+        }
+    }
+    let urls: Vec<_> = configurations.iter().map(|(_, url)| url.clone()).collect();
+    let mut pools = Vec::new();
+    for ((name, url), result) in configurations
+        .into_iter()
+        .zip(fetch_batch(client, &urls, collection_deadline).await)
+    {
+        match result
+            .and_then(|body| tvbox::unwrap_tvbox_config_text(&body))
+            .and_then(|body| tvbox::parse_loose_json(&body))
+        {
+            Ok(config) => {
+                coverage.configurations += 1;
+                pools.push(config_candidates(&config, &name, &url));
+            }
+            Err(_) => failures += 1,
+        }
+    }
+    let mut found = Vec::new();
+    // Native and unsupported entries have independent caps. Round-robin each
+    // configuration within each kind so a single large catalog cannot monopolize it.
+    for native in [true, false] {
+        let mut iterators: Vec<_> = pools
+            .iter()
+            .map(|pool| {
+                pool.iter()
+                    .filter(move |c| native_identity(c).is_some() == native)
+            })
+            .collect();
+        let mut seen = HashSet::new();
+        let limit = if native {
+            MAX_NATIVE_CANDIDATES
+        } else {
+            MAX_UNSUPPORTED_CANDIDATES
+        };
+        let mut count = 0;
+        loop {
+            let mut progressed = false;
+            for candidates in &mut iterators {
+                for candidate in candidates.by_ref() {
+                    progressed = true;
+                    let identity =
+                        native_identity(candidate).unwrap_or_else(|| candidate.id.clone());
+                    if !seen.insert(identity) {
+                        coverage.duplicate_candidates += 1;
+                        continue;
+                    }
+                    found.push(candidate.clone());
+                    count += 1;
                     break;
                 }
-                let Some(api) = site.get("api").and_then(Value::as_str) else {
-                    continue;
-                };
-                let api = tvbox::resolve_api(api, url.as_str()).unwrap_or_else(|| api.to_string());
-                let key = site.get("key").and_then(Value::as_str).unwrap_or("");
-                let digest = format!("{:x}", Md5::digest(format!("{}|{}|{}", url, key, api)));
-                let kind = site
-                    .get("type")
-                    .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()));
-                if found.iter().any(|c: &Candidate| c.id == digest) {
-                    continue;
+                if count >= limit {
+                    break;
                 }
-                found.push(Candidate {
-                    id: digest,
-                    repository: name.into(),
-                    config_url: url.to_string(),
-                    api,
-                    key: key.into(),
-                    kind,
-                    name: site
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("未命名源")
-                        .chars()
-                        .take(100)
-                        .collect(),
-                    status: "failed".into(),
-                    message: "本轮未完成校验，请重新发现".into(),
-                    checked_at: now(),
-                    ..Default::default()
-                });
             }
+            if !progressed || count >= limit {
+                break;
+            }
+        }
+        if native {
+            coverage.native_candidates = count;
+        } else {
+            coverage.unsupported_candidates = count;
         }
     }
     let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
     let mut tasks = tokio::task::JoinSet::new();
-    for (index, c) in found.iter().cloned().enumerate() {
+    for (index, candidate) in found.iter_mut().enumerate() {
+        if native_identity(candidate).is_none() {
+            candidate.status = "unsupported".into();
+            candidate.message = "此类型无法在强制代理通道内校验，暂不启用".into();
+            continue;
+        }
+        let c = candidate.clone();
         let client = client.clone();
         let semaphore = semaphore.clone();
         tasks.spawn(async move {
@@ -538,6 +716,7 @@ async fn collect(client: &reqwest::Client, api: &str, raw: &str) -> Result<Colle
         } else {
             String::new()
         },
+        coverage,
     })
 }
 pub async fn scan(state: &AppState) -> Result<Value, String> {
@@ -568,9 +747,35 @@ async fn scan_at(state: &AppState, api: &str, raw: &str) -> Result<Value, String
                 let ready = candidates.iter().filter(|c| c.status == "ready").count();
                 let count = candidates.len();
                 for mut c in candidates {
-                    if let Some(old) = s.candidates.iter_mut().find(|old| old.id == c.id) {
+                    let identity = native_identity(&c);
+                    let existing = s
+                        .candidates
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, old)| {
+                            old.id == c.id
+                                || identity
+                                    .as_ref()
+                                    .is_some_and(|api| native_identity(old).as_ref() == Some(api))
+                        })
+                        // Older scans may have stored an uninstalled mirror before
+                        // its installed original. Refresh the durable record first.
+                        .min_by_key(|(_, old)| (old.provider_id.is_none(), old.id != c.id))
+                        .map(|(index, _)| index);
+                    if let Some(index) = existing {
+                        let old = &mut s.candidates[index];
+                        c.id = old.id.clone();
                         c.provider_id = old.provider_id.clone();
                         c.install_pending = old.install_pending;
+                        // An installed record retains its original attribution and
+                        // provider id when a mirror exposes the same API later.
+                        if old.provider_id.is_some() {
+                            c.repository = old.repository.clone();
+                            c.config_url = old.config_url.clone();
+                            c.key = old.key.clone();
+                            c.name = old.name.clone();
+                            c.api = old.api.clone();
+                        }
                         *old = c;
                     } else {
                         s.candidates.push(c);
@@ -579,13 +784,15 @@ async fn scan_at(state: &AppState, api: &str, raw: &str) -> Result<Value, String
                 // Keep installed provenance indefinitely; bound uninstalled candidates.
                 trim_candidates(&mut s.candidates);
                 s.last_error = collection.warning;
+                s.coverage = collection.coverage;
                 notice(
                     s,
-                    format!("GitHub 发现完成：检查 {count} 个候选，{ready} 个可手动启用"),
+                    format!("GitHub 发现完成：读取 {} 个仓库、{} 份配置，检查 {count} 个候选，{ready} 个可手动启用", s.coverage.repositories, s.coverage.configurations),
                 );
             }
             Err(e) => {
                 s.last_error = e;
+                s.coverage = Coverage::default();
                 notice(s, "GitHub 发现未完成，请查看发现页".into());
             }
         }
@@ -720,6 +927,10 @@ pub fn spawn_auto_discovery(state: &Arc<AppState>) {
 }
 
 #[cfg(test)]
+#[path = "source_discovery_coverage_tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
@@ -819,7 +1030,7 @@ mod tests {
         assert_eq!(response["candidates"][1]["status"], "unsupported");
         assert_eq!(state.registry.manifests().len(), before);
         let targets = hits.lock().unwrap();
-        assert_eq!(targets.len(), 5);
+        assert_eq!(targets.len(), 7);
         assert!(targets.iter().all(|s| s.starts_with("http://")));
         assert!(targets.iter().any(|s| s.contains("raw.invalid")));
         assert_eq!(
@@ -982,10 +1193,16 @@ mod tests {
             .enabled_manifests()
             .iter()
             .any(|m| m.id == id));
-        assert_eq!(status(&restored).unwrap()["candidates"][0]["installed"], false);
+        assert_eq!(
+            status(&restored).unwrap()["candidates"][0]["installed"],
+            false
+        );
         std::fs::remove_dir(&aggregate_path).unwrap();
         enable(&restored, &candidate.id).await.unwrap();
-        assert_eq!(status(&restored).unwrap()["candidates"][0]["installed"], true);
+        assert_eq!(
+            status(&restored).unwrap()["candidates"][0]["installed"],
+            true
+        );
         assert!(restored
             .registry
             .enabled_manifests()

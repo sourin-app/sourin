@@ -243,6 +243,304 @@ async fn full_resolver_nested_selected_file_keeps_rotated_session() {
         .unwrap()
         .contains("BDUSS=ROTATED"));
 }
+
+#[tokio::test]
+async fn full_resolver_string_directory_flags_keep_exact_anonymous_selection() {
+    let root = r#"{"errno":0,"list":[{"fs_id":"10","server_filename":"Season","isdir":"1","path":"/Season"}]}"#;
+    let nested = r#"{"errno":0,"list":[{"fs_id":"11","server_filename":"EP03.mp4","isdir":"0","size":42},{"fs_id":"12","server_filename":"EP01.mp4","isdir":"0","size":99}]}"#;
+    let replay = Replay::start(vec![
+        Reply::ok("/s/5Ab_Cd", SHARE_PAGE),
+        Reply::ok("/share/list", root),
+        Reply::ok("/share/list", nested),
+        Reply::ok("/share/list", root),
+        Reply::ok("/share/list", nested),
+        Reply::ok(
+            "/api/loginStatus",
+            r#"{"errno":0,"login_info":{"uk":56,"bdstoken":"viewer","vip_identity":0}}"#,
+        ),
+        Reply::ok(
+            "/share/tplconfig",
+            r#"{"errno":0,"data":{"sign":"fixture","timestamp":123}}"#,
+        ),
+        Reply::ok(
+            "/api/sharedownload",
+            r#"{"errno":0,"list":[{"fs_id":11,"dlink":"https://cdn.example.test/full.mp4"}]}"#,
+        ),
+    ])
+    .await;
+    let (files, rejected_shape) = super::with_initial_list_rejection_shape(
+        super::list_share_files_with(&replay.endpoints, "5Ab_Cd", ""),
+    )
+    .await;
+    let files = files.expect("canonical text directory and file flags list anonymously");
+    assert!(rejected_shape.is_none());
+    let episodes = super::super::pan_episode_select::baidu_episodes("5Ab_Cd", "", "Baidu", files);
+    assert_eq!(episodes.len(), 2);
+    let file = episodes
+        .iter()
+        .map(|episode| super::super::pan_episode_select::decode_file_id(&episode.id).unwrap())
+        .find(|file| file.fid == "11")
+        .expect("EP03 has an exact selected file identity");
+    let anonymous = replay.requests();
+    assert_eq!(anonymous.len(), 3);
+    assert!(anonymous.iter().all(|request| {
+        !request.path.starts_with("/api/") && !request.headers.contains_key("cookie")
+    }));
+    let spec = super::super::pan_episode_select::EpisodeSpec {
+        title: "EP01".into(),
+        order: Some(1),
+    };
+    let play = super::resolve_selected_with(
+        &replay.endpoints,
+        Some("BDUSS=SEED"),
+        &file.share_id,
+        &file.passcode,
+        Some(&file.fid),
+        &spec,
+    )
+    .await
+    .expect("string flags preserve EP03 rather than the EP01 title hint");
+    assert!(play.label.unwrap().contains("EP03.mp4"));
+    let seen = replay.requests();
+    let downloads: Vec<_> = seen
+        .iter()
+        .filter(|request| request.path == "/api/sharedownload")
+        .collect();
+    assert_eq!(downloads.len(), 1);
+    let form = pairs(&downloads[0].body);
+    let selected: Vec<u64> = serde_json::from_str(form.get("fid_list").unwrap()).unwrap();
+    assert_eq!(selected, vec![11]);
+    let lists: Vec<_> = seen
+        .iter()
+        .filter(|request| request.path == "/share/list")
+        .collect();
+    assert_eq!(lists.len(), 4);
+    for index in [1, 3] {
+        let query = pairs(lists[index].target.split_once('?').unwrap().1);
+        assert_eq!(query.get("dir").map(String::as_str), Some("/Season"));
+        assert_eq!(query.get("uk").map(String::as_str), Some("456"));
+    }
+}
+
+#[tokio::test]
+async fn full_resolver_mixed_directory_flags_cover_root_and_nested_second_pages() {
+    let mut root = vec![serde_json::json!({
+        "fs_id": 10, "server_filename": "Season", "isdir": "1", "path": "/Season"
+    })];
+    root.extend((100..119).map(|id| {
+        serde_json::json!({
+            "fs_id": id, "server_filename": format!("root{id}.txt"),
+            "isdir": if id % 2 == 0 { serde_json::json!(0) } else { serde_json::json!("0") },
+            "size": 1
+        })
+    }));
+    let nested: Vec<_> = (200..220)
+        .map(|id| {
+            serde_json::json!({
+                "fs_id": id, "server_filename": format!("nested{id}.txt"),
+                "isdir": if id % 2 == 0 { serde_json::json!("0") } else { serde_json::json!(0) },
+                "size": 1
+            })
+        })
+        .collect();
+    let pages = [
+        serde_json::json!({"errno":0,"list":root}).to_string(),
+        serde_json::json!({"errno":0,"list":[
+            {"fs_id":12,"server_filename":"EP01.mp4","isdir":0,"size":99},
+            {"fs_id":13,"server_filename":"root-last.txt","isdir":"0","size":1}
+        ]})
+        .to_string(),
+        serde_json::json!({"errno":0,"list":nested}).to_string(),
+        serde_json::json!({"errno":0,"list":[
+            {"fs_id":"11","server_filename":"EP03.mp4","isdir":"0","size":42},
+            {"fs_id":14,"server_filename":"nested-last.txt","isdir":0,"size":1}
+        ]})
+        .to_string(),
+    ];
+    let mut replies = vec![Reply::ok("/s/5Ab_Cd", SHARE_PAGE)];
+    for _ in 0..2 {
+        replies.extend(pages.iter().map(|page| Reply::ok("/share/list", page)));
+    }
+    replies.extend([
+        Reply::ok(
+            "/api/loginStatus",
+            r#"{"errno":0,"login_info":{"uk":56,"bdstoken":"viewer","vip_identity":0}}"#,
+        ),
+        Reply::ok(
+            "/share/tplconfig",
+            r#"{"errno":0,"data":{"sign":"fixture","timestamp":123}}"#,
+        ),
+        Reply::ok(
+            "/api/sharedownload",
+            r#"{"errno":0,"list":[{"fs_id":11,"dlink":"https://cdn.example.test/full.mp4"}]}"#,
+        ),
+    ]);
+    let replay = Replay::start(replies).await;
+    let files = super::list_share_files_with(&replay.endpoints, "5Ab_Cd", "")
+        .await
+        .expect("mixed flags traverse both second pages anonymously");
+    let episodes = super::super::pan_episode_select::baidu_episodes("5Ab_Cd", "", "Baidu", files);
+    assert_eq!(episodes.len(), 2);
+    let file = episodes
+        .iter()
+        .map(|episode| super::super::pan_episode_select::decode_file_id(&episode.id).unwrap())
+        .find(|file| file.fid == "11")
+        .unwrap();
+    let anonymous = replay.requests();
+    assert_eq!(anonymous.len(), 5);
+    assert!(anonymous
+        .iter()
+        .all(|request| !request.headers.contains_key("cookie")));
+    let spec = super::super::pan_episode_select::EpisodeSpec {
+        title: "EP01".into(),
+        order: Some(1),
+    };
+    let play = super::resolve_selected_with(
+        &replay.endpoints,
+        Some("BDUSS=SEED"),
+        &file.share_id,
+        &file.passcode,
+        Some(&file.fid),
+        &spec,
+    )
+    .await
+    .expect("nested second-page EP03 remains the selected file");
+    assert!(play.label.unwrap().contains("EP03.mp4"));
+    let seen = replay.requests();
+    let lists: Vec<_> = seen
+        .iter()
+        .filter(|request| request.path == "/share/list")
+        .collect();
+    assert_eq!(lists.len(), 8);
+    for pass in lists.chunks_exact(4) {
+        for (request, page, dir) in [
+            (pass[0], "1", None),
+            (pass[1], "2", None),
+            (pass[2], "1", Some("/Season")),
+            (pass[3], "2", Some("/Season")),
+        ] {
+            let query = pairs(request.target.split_once('?').unwrap().1);
+            assert_eq!(query.get("page").map(String::as_str), Some(page));
+            assert_eq!(query.get("dir").map(String::as_str), dir);
+            if dir.is_some() {
+                assert_eq!(query.get("uk").map(String::as_str), Some("456"));
+                assert!(!query.contains_key("root") && !query.contains_key("shorturl"));
+            } else {
+                assert_eq!(query.get("root").map(String::as_str), Some("1"));
+            }
+        }
+    }
+    let downloads: Vec<_> = seen
+        .iter()
+        .filter(|request| request.path == "/api/sharedownload")
+        .collect();
+    assert_eq!(downloads.len(), 1);
+    let form = pairs(&downloads[0].body);
+    let selected: Vec<u64> = serde_json::from_str(form.get("fid_list").unwrap()).unwrap();
+    assert_eq!(selected, vec![11]);
+}
+
+#[tokio::test]
+async fn full_resolver_invalid_directory_flags_stop_before_account_requests_at_every_page() {
+    let invalid_flags = [
+        serde_json::json!("01"),
+        serde_json::json!("+0"),
+        serde_json::json!(" 0"),
+        serde_json::json!("0 "),
+        serde_json::json!(""),
+        serde_json::json!("2"),
+        serde_json::json!(2),
+        serde_json::json!(null),
+        serde_json::json!(0.0),
+        serde_json::json!(1.5),
+        serde_json::json!(true),
+        serde_json::json!([]),
+        serde_json::json!({}),
+    ];
+    for flag in invalid_flags {
+        for stage in ["initial", "root-second", "nested-first", "nested-second"] {
+            // A permissive parse of "01" cannot fail merely because a directory path is missing.
+            let invalid = serde_json::json!({
+                "fs_id": 11, "server_filename": "EP03.mp4", "isdir": flag,
+                "path": "/Invalid", "size": 42, "debug": ECHO
+            });
+            let full: Vec<_> = (100..120)
+                .map(|id| {
+                    serde_json::json!({
+                        "fs_id": id, "server_filename": format!("note{id}.txt"),
+                        "isdir": 0, "size": 1
+                    })
+                })
+                .collect();
+            let full = serde_json::json!({"errno":0,"list":full}).to_string();
+            let directory = r#"{"errno":0,"list":[{"fs_id":10,"server_filename":"Season","isdir":"1","path":"/Season"}]}"#;
+            let invalid = serde_json::json!({"errno":0,"list":[invalid]}).to_string();
+            let pages = match stage {
+                "initial" => vec![invalid],
+                "root-second" => vec![full, invalid],
+                "nested-first" => vec![directory.into(), invalid],
+                "nested-second" => vec![directory.into(), full, invalid],
+                _ => unreachable!(),
+            };
+            for authenticated in [false, true] {
+                let mut replies = vec![Reply::ok("/s/5Ab_Cd", SHARE_PAGE)];
+                replies.extend(pages.iter().map(|page| Reply::ok("/share/list", page)));
+                replies.extend([
+                    Reply::ok(
+                        "/api/loginStatus",
+                        r#"{"errno":0,"login_info":{"uk":56,"bdstoken":"viewer","vip_identity":0}}"#,
+                    ),
+                    Reply::ok(
+                        "/share/tplconfig",
+                        r#"{"errno":0,"data":{"sign":"fixture","timestamp":123}}"#,
+                    ),
+                    Reply::ok(
+                        "/api/sharedownload",
+                        r#"{"errno":0,"list":[{"fs_id":11,"dlink":"https://cdn.example.test/full.mp4"}]}"#,
+                    ),
+                ]);
+                let replay = Replay::start(replies).await;
+                let error = if authenticated {
+                    super::resolve_selected_with(
+                        &replay.endpoints,
+                        Some("BDUSS=SEED"),
+                        "5Ab_Cd",
+                        "",
+                        Some("11"),
+                        &super::super::pan_episode_select::EpisodeSpec::default(),
+                    )
+                    .await
+                    .expect_err("invalid flag cannot reach authenticated download")
+                } else {
+                    super::list_share_files_with(&replay.endpoints, "5Ab_Cd", "")
+                        .await
+                        .expect_err("invalid flag cannot become an anonymous episode")
+                };
+                assert!(
+                    !error.contains(ECHO) && !error.contains("SEED") && !error.contains("https://"),
+                    "invalid list errors must not echo response or session values"
+                );
+                let seen = replay.requests();
+                assert_eq!(
+                    seen.iter()
+                        .filter(|request| request.path == "/share/list")
+                        .count(),
+                    pages.len(),
+                    "invalid flag must stop at its listing page"
+                );
+                assert!(seen.iter().all(|request| {
+                    !request.path.starts_with("/api/") && request.path != "/share/tplconfig"
+                }));
+                if !authenticated {
+                    assert!(seen
+                        .iter()
+                        .all(|request| !request.headers.contains_key("cookie")));
+                }
+            }
+        }
+    }
+}
+
 const ECHO: &str = "SYNTHETIC_RESPONSE_MUST_NOT_ESCAPE";
 
 #[derive(Clone)]

@@ -50,6 +50,119 @@ pub(crate) enum BaiduFailureCause {
     Business(BaiduStage, i64),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BaiduJsonShape {
+    NotApplicable,
+    Missing,
+    Null,
+    Boolean,
+    UnsignedInteger,
+    SignedInteger,
+    FloatingNumber,
+    String,
+    Array,
+    Object,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BaiduListShapeStage {
+    InitialList,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct BaiduFieldShape {
+    pub kind: BaiduJsonShape,
+    pub rejected: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct BaiduInitialEntryShape {
+    pub stage: BaiduListShapeStage,
+    pub entry_kind: BaiduJsonShape,
+    pub fs_id: BaiduFieldShape,
+    pub server_filename: BaiduFieldShape,
+    pub isdir: BaiduFieldShape,
+}
+
+tokio::task_local! {
+    static INITIAL_LIST_SHAPE: std::cell::Cell<Option<BaiduInitialEntryShape>>;
+}
+
+/// Observe only the first rejected initial-list entry; no response values are retained.
+pub async fn with_initial_list_rejection_shape<T>(
+    future: impl std::future::Future<Output = T>,
+) -> (T, Option<BaiduInitialEntryShape>) {
+    INITIAL_LIST_SHAPE
+        .scope(std::cell::Cell::new(None), async {
+            let result = future.await;
+            let shape = INITIAL_LIST_SHAPE.with(std::cell::Cell::get);
+            (result, shape)
+        })
+        .await
+}
+
+fn json_shape(value: Option<&serde_json::Value>) -> BaiduJsonShape {
+    use BaiduJsonShape::*;
+    match value {
+        None => Missing,
+        Some(serde_json::Value::Null) => Null,
+        Some(serde_json::Value::Bool(_)) => Boolean,
+        Some(serde_json::Value::Number(number)) if number.as_u64().is_some() => UnsignedInteger,
+        Some(serde_json::Value::Number(number)) if number.as_i64().is_some() => SignedInteger,
+        Some(serde_json::Value::Number(_)) => FloatingNumber,
+        Some(serde_json::Value::String(_)) => String,
+        Some(serde_json::Value::Array(_)) => Array,
+        Some(serde_json::Value::Object(_)) => Object,
+    }
+}
+
+fn initial_entry_shape(value: &serde_json::Value) -> BaiduInitialEntryShape {
+    let not_applicable = BaiduFieldShape {
+        kind: BaiduJsonShape::NotApplicable,
+        rejected: None,
+    };
+    let mut shape = BaiduInitialEntryShape {
+        stage: BaiduListShapeStage::InitialList,
+        entry_kind: json_shape(Some(value)),
+        fs_id: not_applicable,
+        server_filename: not_applicable,
+        isdir: not_applicable,
+    };
+    if let Some(entry) = value.as_object() {
+        let id = entry
+            .get("fs_id")
+            .and_then(|id| id.as_u64().or_else(|| id.as_str()?.parse::<u64>().ok()));
+        shape.fs_id = BaiduFieldShape {
+            kind: json_shape(entry.get("fs_id")),
+            rejected: Some(!id.is_some_and(|id| id > 0)),
+        };
+        shape.server_filename = BaiduFieldShape {
+            kind: json_shape(entry.get("server_filename")),
+            rejected: Some(!entry
+                .get("server_filename")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| !name.trim().is_empty())),
+        };
+        shape.isdir = BaiduFieldShape {
+            kind: json_shape(entry.get("isdir")),
+            rejected: Some(!entry
+                .get("isdir")
+                .is_none_or(|flag| directory_flag(flag).is_some())),
+        };
+    }
+    shape
+}
+
+fn observe_initial_rejection_if_scoped(value: &serde_json::Value) {
+    let _ = INITIAL_LIST_SHAPE.try_with(|slot| {
+        if slot.get().is_none() {
+            slot.set(Some(initial_entry_shape(value)));
+        }
+    });
+}
+
 pub(crate) struct BaiduInspectionFailure {
     pub(crate) message: String,
     pub(crate) cause: BaiduFailureCause,
@@ -420,7 +533,8 @@ async fn inspect_context(
             list_query: query,
         });
     }
-    if !items.iter().all(valid_file_entry) {
+    if let Some(rejected) = items.iter().find(|item| !valid_file_entry(item)) {
+        observe_initial_rejection_if_scoped(rejected);
         return Err("百度 share/list 文件条目结构无效".into());
     }
     Ok(InspectionContext {
@@ -484,7 +598,7 @@ async fn collect_share_files(
                 if !valid_file_entry(&item) {
                     return Err("百度列表文件结构无效".into());
                 }
-                match item.get("isdir").and_then(|v| v.as_u64()) {
+                match item.get("isdir").and_then(directory_flag) {
                     Some(1) => {
                         let path = item
                             .get("path")
@@ -586,7 +700,7 @@ async fn collect_share_files(
             .and_then(|v| v.as_str())
             .filter(|v| !v.trim().is_empty() && !v.chars().any(char::is_control))
             .ok_or("百度文件名无效")?;
-        if item.get("isdir").and_then(|v| v.as_u64()) != Some(0) {
+        if item.get("isdir").and_then(directory_flag) != Some(0) {
             return Err("百度文件目录标记缺失或无效".into());
         }
         let size = item
@@ -820,6 +934,17 @@ fn unsigned_value(value: &serde_json::Value) -> Option<u64> {
     value.as_u64().or_else(|| unsigned_text(value.as_str()?))
 }
 
+fn directory_flag(value: &serde_json::Value) -> Option<u64> {
+    match value {
+        serde_json::Value::String(flag) => match flag.as_str() {
+            "0" => Some(0),
+            "1" => Some(1),
+            _ => None,
+        },
+        _ => value.as_u64().filter(|flag| matches!(*flag, 0 | 1)),
+    }
+}
+
 fn valid_file_entry(value: &serde_json::Value) -> bool {
     let Some(entry) = value.as_object() else {
         return false;
@@ -834,7 +959,7 @@ fn valid_file_entry(value: &serde_json::Value) -> bool {
             .is_some_and(|name| !name.trim().is_empty())
         && entry
             .get("isdir")
-            .is_none_or(|flag| matches!(flag.as_u64(), Some(0 | 1)))
+            .is_none_or(|flag| directory_flag(flag).is_some())
 }
 
 fn endpoint(value: &str) -> Result<Url, String> {
@@ -1261,6 +1386,242 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
+
+    fn initial_list_shape_cases() -> Vec<serde_json::Value> {
+        let mut cases = vec![
+            serde_json::json!(null),
+            serde_json::json!(false),
+            serde_json::json!(1),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("synthetic"),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ];
+        let valid = serde_json::json!({
+            "fs_id": 1, "server_filename": "synthetic.mp4", "isdir": 0
+        });
+        cases.push(valid.clone());
+        for flag in ["0", "1", "00", "01", "+0", " 1", "1 "] {
+            let mut entry = valid.clone();
+            entry["isdir"] = serde_json::json!(flag);
+            cases.push(entry);
+        }
+        for field in ["fs_id", "server_filename", "isdir"] {
+            let mut missing = valid.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            cases.push(missing);
+            for value in [
+                serde_json::json!(null),
+                serde_json::json!(false),
+                serde_json::json!(1),
+                serde_json::json!(-1),
+                serde_json::json!(1.5),
+                serde_json::json!("3"),
+                serde_json::json!([]),
+                serde_json::json!({}),
+            ] {
+                let mut entry = valid.clone();
+                entry[field] = value;
+                cases.push(entry);
+            }
+        }
+        for id in [
+            serde_json::json!(0),
+            serde_json::json!(u64::MAX),
+            serde_json::json!("+1"),
+            serde_json::json!("01"),
+            serde_json::json!("18446744073709551615"),
+            serde_json::json!("18446744073709551616"),
+            serde_json::json!(" 1"),
+            serde_json::json!("1 "),
+            serde_json::json!("-1"),
+            serde_json::json!(""),
+            serde_json::json!("++1"),
+        ] {
+            let mut entry = valid.clone();
+            entry["fs_id"] = id;
+            cases.push(entry);
+        }
+        for name in ["", " \t\n"] {
+            let mut entry = valid.clone();
+            entry["server_filename"] = serde_json::json!(name);
+            cases.push(entry);
+        }
+        let mut directory = valid;
+        directory["isdir"] = serde_json::json!(2);
+        cases.push(directory);
+        cases
+    }
+
+    #[test]
+    fn directory_flag_accepts_only_numeric_or_canonical_text_binary_values() {
+        for (value, expected) in [
+            (serde_json::json!(0), 0),
+            (serde_json::json!(1), 1),
+            (serde_json::json!("0"), 0),
+            (serde_json::json!("1"), 1),
+        ] {
+            assert_eq!(directory_flag(&value), Some(expected));
+            let entry = serde_json::json!({
+                "fs_id": 1, "server_filename": "synthetic.mp4", "isdir": value
+            });
+            assert!(valid_file_entry(&entry));
+            assert_eq!(initial_entry_shape(&entry).isdir.rejected, Some(false));
+        }
+        for value in [
+            serde_json::json!(null), serde_json::json!(true), serde_json::json!(false),
+            serde_json::json!(-1), serde_json::json!(2), serde_json::json!(0.0),
+            serde_json::json!(1.0), serde_json::json!([]), serde_json::json!({}),
+            serde_json::json!(""), serde_json::json!("00"), serde_json::json!("01"),
+            serde_json::json!("+0"), serde_json::json!("-0"), serde_json::json!(" 1"),
+            serde_json::json!("1 "), serde_json::json!("1\n"), serde_json::json!("2"),
+        ] {
+            assert_eq!(directory_flag(&value), None);
+            let entry = serde_json::json!({
+                "fs_id": 1, "server_filename": "synthetic.mp4", "isdir": value
+            });
+            assert!(!valid_file_entry(&entry));
+            assert_eq!(initial_entry_shape(&entry).isdir.rejected, Some(true));
+        }
+    }
+
+    #[test]
+    fn initial_list_shape_projection_matches_the_unchanged_guard() {
+        let cases = initial_list_shape_cases();
+        for value in &cases {
+            let shape = initial_entry_shape(value);
+            let accepted = shape.entry_kind == BaiduJsonShape::Object
+                && [shape.fs_id, shape.server_filename, shape.isdir]
+                    .iter()
+                    .all(|field| field.rejected == Some(false));
+            assert_eq!(accepted, valid_file_entry(value));
+            if value.as_object().is_none() {
+                for field in [shape.fs_id, shape.server_filename, shape.isdir] {
+                    assert_eq!(field.kind, BaiduJsonShape::NotApplicable);
+                    assert_eq!(field.rejected, None);
+                }
+            }
+        }
+        for first in &cases {
+            for second in &cases {
+                let items = [first, second];
+                let rejected = items.iter().find(|item| !valid_file_entry(item));
+                assert_eq!(rejected.is_none(), items.iter().all(|item| valid_file_entry(item)));
+                let expected = if !valid_file_entry(first) {
+                    Some(first)
+                } else if !valid_file_entry(second) {
+                    Some(second)
+                } else {
+                    None
+                };
+                assert_eq!(rejected.copied(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn initial_list_shape_nine_field_kinds_and_missing_directory() {
+        use BaiduJsonShape::*;
+        let kinds = [
+            (None, Missing),
+            (Some(serde_json::json!(null)), Null),
+            (Some(serde_json::json!(true)), Boolean),
+            (Some(serde_json::json!(1)), UnsignedInteger),
+            (Some(serde_json::json!(-1)), SignedInteger),
+            (Some(serde_json::json!(1.5)), FloatingNumber),
+            (Some(serde_json::json!("synthetic")), String),
+            (Some(serde_json::json!([])), Array),
+            (Some(serde_json::json!({})), Object),
+        ];
+        for field in ["fs_id", "server_filename", "isdir"] {
+            for (value, kind) in &kinds {
+                let mut entry = serde_json::json!({
+                    "fs_id": 1, "server_filename": "synthetic.mp4", "isdir": 0
+                });
+                match value {
+                    Some(value) => entry[field] = value.clone(),
+                    None => { entry.as_object_mut().unwrap().remove(field); }
+                }
+                let shape = initial_entry_shape(&entry);
+                let projected = match field {
+                    "fs_id" => shape.fs_id,
+                    "server_filename" => shape.server_filename,
+                    _ => shape.isdir,
+                };
+                assert_eq!(projected.kind, *kind);
+            }
+        }
+        let entry = serde_json::json!({"fs_id": "+1", "server_filename": "synthetic.mp4"});
+        let shape = initial_entry_shape(&entry);
+        assert!(valid_file_entry(&entry));
+        assert_eq!(shape.fs_id.rejected, Some(false));
+        assert_eq!(shape.isdir.kind, Missing);
+        assert_eq!(shape.isdir.rejected, Some(false));
+    }
+
+    #[tokio::test]
+    async fn initial_list_shape_unarmed_and_valid_scopes_retain_nothing() {
+        observe_initial_rejection_if_scoped(&serde_json::json!(null));
+        assert!(INITIAL_LIST_SHAPE.try_with(std::cell::Cell::get).is_err());
+        let (result, shape) = with_initial_list_rejection_shape(async {
+            let items = [serde_json::json!({"fs_id": 1, "server_filename": "synthetic.mp4"})];
+            if let Some(rejected) = items.iter().find(|item| !valid_file_entry(item)) {
+                observe_initial_rejection_if_scoped(rejected);
+            }
+            items.iter().all(valid_file_entry)
+        }).await;
+        assert!(result);
+        assert!(shape.is_none());
+        assert!(INITIAL_LIST_SHAPE.try_with(std::cell::Cell::get).is_err());
+    }
+
+    #[tokio::test]
+    async fn initial_list_shape_first_only_and_task_local_isolation() {
+        let first = serde_json::json!({"fs_id": 0, "server_filename": "synthetic.mp4"});
+        let expected = initial_entry_shape(&first);
+        let a = with_initial_list_rejection_shape(async {
+            observe_initial_rejection_if_scoped(&first);
+            tokio::task::yield_now().await;
+            observe_initial_rejection_if_scoped(&serde_json::json!([]));
+            "unchanged-result"
+        });
+        let b = with_initial_list_rejection_shape(async {
+            tokio::task::yield_now().await;
+            observe_initial_rejection_if_scoped(&serde_json::json!(null));
+            7
+        });
+        let ((result_a, shape_a), (result_b, shape_b)) = tokio::join!(a, b);
+        assert_eq!(result_a, "unchanged-result");
+        assert_eq!(shape_a, Some(expected));
+        assert_eq!(result_b, 7);
+        assert_eq!(shape_b, Some(initial_entry_shape(&serde_json::json!(null))));
+        assert!(INITIAL_LIST_SHAPE.try_with(std::cell::Cell::get).is_err());
+        let (_, next) = with_initial_list_rejection_shape(async {}).await;
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn initial_list_shape_serialization_contains_only_fixed_schema() {
+        let entry = serde_json::json!({
+            "fs_id": "synthetic-do-not-echo",
+            "server_filename": "synthetic-do-not-echo",
+            "isdir": "synthetic-do-not-echo",
+            "synthetic-do-not-echo": {"value": "synthetic-do-not-echo"}
+        });
+        let serialized = serde_json::to_string(&initial_entry_shape(&entry)).unwrap();
+        assert!(!serialized.contains("synthetic-do-not-echo"));
+        let shape: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        let mut keys: Vec<_> = shape.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["entry_kind", "fs_id", "isdir", "server_filename", "stage"]);
+        assert_eq!(shape["stage"], "initialList");
+        for field in ["fs_id", "server_filename", "isdir"] {
+            let mut keys: Vec<_> = shape[field].as_object().unwrap().keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["kind", "rejected"]);
+        }
+    }
 
     #[derive(Debug, Clone)]
     struct Recorded {

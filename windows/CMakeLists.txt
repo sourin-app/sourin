@@ -57,6 +57,11 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# Keep plugin cleanup within the engine/thread lifetime. These compatibility
+# fixes compile private source copies and leave the shared Pub cache untouched.
+include(cmake/desktop_webview_shutdown.cmake)
+include(cmake/inappwebview_shutdown.cmake)
+
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can

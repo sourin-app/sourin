@@ -12,11 +12,11 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
-import '../../core/app_tray.dart';
-import '../../core/app_update/app_update_controller.dart';
-import '../../core/app_update/client.dart';
-import '../../core/app_update/install.dart';
-import '../../core/app_update/release.dart';
+import '../core/app_tray.dart';
+import '../core/app_update/app_update_controller.dart';
+import '../core/app_update/client.dart';
+import '../core/app_update/install.dart';
+import '../core/app_update/release.dart';
 import 'widgets/app_toast.dart';
 import 'widgets/update_dialog.dart';
 

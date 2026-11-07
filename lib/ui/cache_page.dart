@@ -104,7 +104,7 @@ import 'widgets/app_toast.dart';
 import 'widgets/cover_image.dart';
 import 'widgets/motion_prefs.dart';
 import 'widgets/overlay_motion.dart' show showAppDialog;
-import '../../design/widgets/app_glass_dialog.dart';
+import '../design/widgets/app_glass_dialog.dart';
 import 'widgets/poster_card.dart';
 import '../design/icons/app_icons.dart';
 

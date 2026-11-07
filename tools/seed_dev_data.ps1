@@ -94,6 +94,7 @@ $Target = $Target.TrimEnd("\")
 #                        文件名里带**用户配的源标识**，写死就等于把某个
 #                        具体站名钉进仓库（仓库硬约束，见 CONTRIBUTING）
 #   provider-order / disabled-providers / third-party-providers  源列表与顺序
+#   tvbox-sources.json  只重建导入身份字段；订阅链接与更新错误可能含凭据，不带入
 #   ui-prefs.json        见白名单③ —— **按 key 过滤**，不整份拷
 #
 # ★★ 明确**不拷**（仓库安全规矩 docs/AGENTS.md §3 点名的那三样）：
@@ -303,6 +304,36 @@ function Copy-One([string]$Rel) {
 }
 
 foreach ($rel in $seedFiles) { Copy-One $rel }
+
+# 聚合渠道用 tvbox-sources.json 识别用户导入的子站。只拷 provider 会导致
+# 已有子站被页面显示为「未导入」。按字段白名单重建，不复制可能带 token 的
+# sourceUrl / lastUpdateError，也不把缺少订阅链接的副本标为更新成功。
+$srcTvbox = Join-Path $Source 'tvbox-sources.json'
+$dstTvbox = Join-Path $Target 'tvbox-sources.json'
+if (Test-Path -LiteralPath $srcTvbox) {
+    if ((Test-Path -LiteralPath $dstTvbox) -and (-not $Force)) {
+        $script:kept++
+    } else {
+        if ((Test-Path -LiteralPath $dstTvbox) -and
+            (Resolve-RealPath $dstTvbox).StartsWith($srcReal + $sep, [StringComparison]::OrdinalIgnoreCase)) {
+            throw '目标 TVBox 导入记录指向源目录，拒绝写入。'
+        }
+        $tvbox = Get-Content -LiteralPath $srcTvbox -Raw -Encoding UTF8 | ConvertFrom-Json
+        $sources = @{}
+        foreach ($entry in $tvbox.sources.PSObject.Properties) {
+            $meta = @{}
+            foreach ($key in @('siteKey', 'siteName', 'api', 'installedAt')) {
+                $prop = $entry.Value.PSObject.Properties[$key]
+                if ($null -ne $prop) { $meta[$key] = $prop.Value }
+            }
+            $sources[$entry.Name] = $meta
+        }
+        $json = @{ version = 1; sources = $sources } | ConvertTo-Json -Depth 8
+        [IO.File]::WriteAllText($dstTvbox, $json, (New-Object Text.UTF8Encoding($false)))
+        $script:copied++
+        Write-Host "  * TVBox 导入记录：$($sources.Count) 个（不携带订阅链接或更新错误）" -ForegroundColor DarkGray
+    }
+}
 
 # ★ 从「绝对路径」求「相对 Source 的路径」——**不能**用 $f.FullName.Substring($Source.Length + 1)。
 #

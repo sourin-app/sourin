@@ -69,6 +69,22 @@ Directory buildFakeSource() {
 
   // （ui-prefs 夹具见下 —— 要与「观看痕迹」区分开）
   File(d.path + '/provider-order.json').writeAsStringSync('["a","b"]');
+  File(d.path + '/tvbox-sources.json').writeAsStringSync(jsonEncode({
+    'version': 1,
+    'sources': {
+      'imported-example': {
+        'siteKey': 'example',
+        'siteName': 'Example channel',
+        'api': 'csp_Example',
+        'installedAt': 123,
+        'sourceUrl': 'https://example.invalid/config?token=SECRET',
+        'lastUpdateAt': 456,
+        'lastUpdateOk': false,
+        'lastUpdateError': 'request with SECRET failed',
+        'futureCredential': 'SECRET',
+      },
+    },
+  }));
   File(d.path + '/dsh-media.db')
       .writeAsBytesSync(List<int>.generate(512, (i) => i % 251));
   File(d.path + '/device-id').writeAsStringSync('REAL-DEVICE-ID');
@@ -148,6 +164,32 @@ void main() {
   }
 
   group('T1015 · 开发数据目录播种', () {
+    test('TVBox 导入记录随内容播种，订阅凭据与错误不带入', () {
+      if (!requirePs()) return;
+      expect(runSeed(<String>[]).exitCode, 0);
+      final file = File(dst.path + '/tvbox-sources.json');
+      expect(file.existsSync(), isTrue,
+          reason: '聚合渠道依赖导入记录，缺失会把已有子源显示为未导入');
+      final meta = jsonDecode(file.readAsStringSync()) as Map;
+      expect(meta['version'], 1);
+      expect(meta['sources'], {
+        'imported-example': {
+          'siteKey': 'example',
+          'siteName': 'Example channel',
+          'api': 'csp_Example',
+          'installedAt': 123,
+        },
+      });
+      expect(file.readAsStringSync(), isNot(contains('SECRET')));
+
+      file.writeAsStringSync('{"version":1,"sources":{}}');
+      expect(runSeed(<String>[]).exitCode, 0);
+      expect((jsonDecode(file.readAsStringSync()) as Map)['sources'], isEmpty);
+      expect(runSeed(<String>['-Force']).exitCode, 0);
+      expect((jsonDecode(file.readAsStringSync()) as Map)['sources'],
+          contains('imported-example'));
+    });
+
     test('★ 跑完源目录一个字节都没变（用户数据铁律，逐文件哈希）', () {
       if (!requirePs()) return;
       final before = snapshot(src);

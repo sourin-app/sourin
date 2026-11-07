@@ -18,11 +18,18 @@ Status: implemented
 拷   plugins/*.js            用户自己装的插件源码
 拷   ui-prefs.json           按 key 过滤后的界面/外观/播放偏好
 拷   状态 json + dsh-media.db 三件套（收藏/历史/进度/片头片尾）
+拷   tvbox-sources.json      仅导入身份字段，不含订阅链接或更新结果
 不拷 sync-settings.json / remote-pref.json / plugins/.data/
 不拷 ui-prefs 的 dsh.bili.* / dsh.speedtest.* / dsh.srcpref.* / dsh.homeSource
 ```
 
 播种是**单向**的：跑完源目录必须逐文件哈希不变。
+
+适用：2026-11-07 起的播种脚本。聚合渠道以 `tvbox-sources.json` 判定导入来源，
+因此它与 `third-party-providers.json` 必须一起进入隔离目录。只保留
+`siteKey`、`siteName`、`api`、`installedAt`；`sourceUrl` 与
+`lastUpdateError` 可能携带凭据，更新状态在无订阅链接的副本里也不沿用。
+保持默认不覆盖、显式 `-Force` 重播的语义。
 
 Independent: 播种只读且不带凭据。开发数据安全的一条独立规则。
 
@@ -43,5 +50,6 @@ Independent: 播种只读且不带凭据。开发数据安全的一条独立规�
 - **收益**：临时目录里不出现用户凭据；开发环境具备真实的插件与观看状态。
 - **代价与已知上限**：插件播过去后是「未配置」状态，要自己重新填。
   这个代价换的是「临时目录里不出现用户凭据」。
+  TVBox 子站可按既有配置读取内容，但隔离副本不自动更新原订阅。
 - **重访条件**：不加默认值。若确实需要带凭据调试，应做成**显式的**
   `-IncludeCredentials` 开关并在输出里回显警告，而不是放开白名单。

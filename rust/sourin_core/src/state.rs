@@ -950,6 +950,7 @@ impl AppState {
          * 每轮重读 ⇒ 用户改设置最迟 60s 生效。冷启动超期由首轮 tick 补上。
          */
         crate::tvbox::spawn_auto_update(&state);
+        crate::source_discovery::spawn_auto_discovery(&state);
 
         // 启动自检：registry 里的真实源数（含第三方）——
         // 就是 listProviders 会给前端的东西，便于与界面核对

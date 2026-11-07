@@ -70,7 +70,9 @@ import '../design/widgets/app_text_button.dart';
 import 'app_theme.dart';
 import 'remote_bridge.dart';
 import 'tokens.dart';
+import 'settings/source_discovery_page.dart';
 import 'settings/tvbox_aggregate_page.dart';
+import 'widgets/settings_motion_panel.dart';
 import 'widgets/app_loading.dart';
 import 'widgets/app_inline_spinner.dart';
 import 'widgets/app_menu.dart';
@@ -228,7 +230,6 @@ import 'widgets/override_editor_dialog.dart';
 import 'widgets/plugin_speedtest.dart';
 import 'widgets/settings_kit.dart';
 // ★ task-55：动画效果选择项（`PageTransitionStyle` / `PageTransitionStyleStore`）
-import 'widgets/settings_motion_panel.dart';
 /*
  * ★ task-43：「JS 插件」二级页用 `SettingsSubPage` 做外壳
  *   （与另外 5 个二级页**完全一致**：它自带返回按钮 + Esc/遥控返回，
@@ -3026,6 +3027,7 @@ VoidCallback? _configOf(String id) {
               subtitle: '${_providers.length} 个内容源 · 安装 / 编辑 / 更新 / 排序 / 代理',
               onTap: _openPluginsPage,
             ),
+            SourceDiscoveryEntry(onSourcesChanged: () { loadAll(); widget.onProvidersChanged?.call(); }),
             SettingsEntryRow(
               icon: Icons.web_outlined,
               title: '自定义 HTML 首页',
@@ -5018,6 +5020,12 @@ class _PluginsPageState extends State<_PluginsPage> {
     return CustomScrollView(
       clipBehavior: Clip.antiAlias,
       slivers: [
+        SliverToBoxAdapter(
+          child: SourceDiscoveryEntry(onSourcesChanged: () {
+            host.loadAll();
+            host.widget.onProvidersChanged?.call();
+          }),
+        ),
         /*
          * ★ tab 条：`pinned: true` 就是「滚到哪都留在视口顶」的**全部来源**。
          *
@@ -5937,6 +5945,7 @@ class _ProviderCard extends StatelessWidget {
                               _nameRow(colors),
                               const SizedBox(height: 3),
                               _descLine(colors),
+                              GithubSourceOrigin(providerId: provider.id),
                               /*
                        * ★ task-5（缺陷 5）：来源标识 + 上游链接
                        *

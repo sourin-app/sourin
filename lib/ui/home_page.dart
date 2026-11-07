@@ -44,6 +44,7 @@
 // force    → 全拉（用户手动刷新）
 // ```
 
+import 'settings/source_discovery_page.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -2542,6 +2543,8 @@ class HomePageState extends State<HomePage> {
            *    > 它管的是**下面的内容区显示哪个源**，
            *    > 所以「我的」在前、源切换条在后。
            */
+          SliverToBoxAdapter(child: SourceDiscoveryEntry(noticeOnly: true,
+            onSourcesChanged: () => loadAll(force: true, reason: 'github-source-enabled'))),
           SliverToBoxAdapter(
             child: MyShelf(
               key: _shelfKey,

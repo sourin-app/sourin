@@ -25,6 +25,7 @@
 // ⇒ 这里新增 `PanShareBody`（与对话框同构的识别+列目录体），
 //   **对话框暂不重构**，待这轮 UI 稳定后统一（已记在交付说明里）。
 // ```
+import 'source_discovery_page.dart';
 import 'dart:async' show unawaited;
 
 // ★ characters 扩展（clampNoteTo60 用）由 material_ui 转出，无需单独 import
@@ -1229,6 +1230,7 @@ class TvboxAggregateSitesList extends StatelessWidget {
                               : colors.onSurface.withValues(alpha: 0.45),
                         ),
                       ),
+                      GithubSourceOrigin(providerId: s.id),
                       if (s.kindTag.isNotEmpty)
                         Text(
                           s.kindTag,

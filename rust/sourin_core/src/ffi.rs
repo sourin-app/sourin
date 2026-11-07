@@ -2329,6 +2329,22 @@ async fn dispatch_inner(req: &str) -> String {
                 crate::tvbox::import_tvbox_config(st, &config).await
             }).await
         }
+        "source_discovery_status" => with_state(crate::source_discovery::status),
+        "source_discovery_read" => with_state(crate::source_discovery::mark_read),
+        "source_discovery_scan" => with_state_async(crate::source_discovery::scan).await,
+        "source_discovery_configure" => {
+            let proxy = match a.str("proxy_url") {
+                Ok(v) => v.to_string(), Err(e) => return err_json(&e, "other"),
+            };
+            let automatic = v.get("args").and_then(|v| v.get("automatic")).and_then(|v| v.as_bool()).unwrap_or(false);
+            with_state(move |st| crate::source_discovery::configure(st, &proxy, automatic))
+        }
+        "source_discovery_enable" => {
+            let id = match a.str("id") {
+                Ok(v) => v.to_string(), Err(e) => return err_json(&e, "other"),
+            };
+            with_state_async(move |st| async move { crate::source_discovery::enable(st, &id).await }).await
+        }
         /*
          * ★★★ N9（2026-10-27）：按通道取数 —— 前端切渠道后只发该通道的请求。
          *

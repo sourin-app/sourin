@@ -9,6 +9,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'windows_package_inventory.ps1')
 
 function Assert-OwnerConfiguration([string]$Target, [string[]]$Defines) {
     if ($Target.Replace('\', '/') -ne 'lib/shell.dart') {
@@ -58,14 +59,13 @@ if ($encodedDefines[0].Groups[1].Value) {
 }
 Assert-OwnerConfiguration $targets[0].Groups[1].Value $defines
 
-$release = Join-Path $project 'build\windows\x64\runner\Release'
-$builtFiles = @(Get-ChildItem -LiteralPath $release -File -Recurse)
+$builtFiles = @(Get-WindowsPackageInventory $project)
 $packageFiles = @(Get-ChildItem -LiteralPath $package -File -Recurse)
 if ($builtFiles.Count -eq 0 -or $builtFiles.Count -ne $packageFiles.Count) {
     throw 'Package file inventory differs from the verified build output'
 }
 foreach ($file in $builtFiles) {
-    $relative = [IO.Path]::GetRelativePath($release, $file.FullName)
+    $relative = $file.Relative
     $delivered = Join-Path $package $relative
     if (-not (Test-Path -LiteralPath $delivered -PathType Leaf) -or
         (Get-FileHash -LiteralPath $file.FullName).Hash -ne
@@ -88,6 +88,7 @@ if ((Get-FileHash -LiteralPath $core).Hash -ne $ExpectedCoreSha256.ToUpperInvari
     dataDirectoryMode = 'owner-default'
     dataDirectoryOverride = ''
     filesVerified = $builtFiles.Count
+    inventory = 'cmake-install-manifest-and-runtime-build-outputs'
     executableSha256 = (Get-FileHash -LiteralPath $exe).Hash
     aotSha256 = (Get-FileHash -LiteralPath $aot).Hash
     coreSha256 = (Get-FileHash -LiteralPath $core).Hash

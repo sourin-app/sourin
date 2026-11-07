@@ -2,6 +2,9 @@
 
 Status: implemented
 
+Follow-up: [clean runtime inventory](2026-11-08-windows-package-runtime-inventory.md)
+uses CMake's install manifest for build comparison, excluding earlier run caches.
+
 Relations: [Native login completion](2026-11-05-pan-web-native-toolbar-and-completion.md)
 and [selected Baidu episodes](2026-11-05-baidu-selected-episodes.md) retain their
 behavior and isolated test evidence. This corrects only the runtime profile of

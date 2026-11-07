@@ -69,6 +69,7 @@ class PosterCard extends StatefulWidget {
     this.width,
     this.focused = false,
     this.titleLines = 1,
+    this.showCaption = true,
   }) : assert(titleLines >= 1, 'titleLines 至少 1 行');
 
   final String title;
@@ -108,6 +109,7 @@ class PosterCard extends StatefulWidget {
   ///     `AppMetrics.posterMetaHeight(titleLines: 2)`（= 65.6）
   ///   ★ 两处必须是**同一个**常量来源，否则会出现"卡片算 1 行、容器按 2 行"。
   final int titleLines;
+  final bool showCaption;
 
   @override
   State<PosterCard> createState() => _PosterCardState();
@@ -600,6 +602,7 @@ class _PosterCardState extends State<PosterCard> {
               ),
 
               // ── 标题 / 副标题 ──
+              if (widget.showCaption) ...[
               const SizedBox(height: Sp.x2),
               /*
                * ★★★ 2026-10-09（Owner：「已缓存的视频高度不一致,名字会换行,
@@ -703,6 +706,7 @@ class _PosterCardState extends State<PosterCard> {
                     ),
                   ),
                 ),
+              ],
             ],
           ),
         ),

@@ -53,6 +53,7 @@
 // > 但**全项目 0 个调用点** —— 「删除历史」功能**实际不存在**。
 // > 播放历史的隐私属性比收藏/追更强，没有清空入口是个真实缺口。
 
+import 'compact_shelf_card.dart';
 import '../../core/library_cover_recovery.dart';
 import 'dart:async';
 import 'dart:math' as math;
@@ -205,6 +206,7 @@ class MyShelf extends StatefulWidget {
     this.onOpenDetail,
     this.isTv = false,
     this.onSeeAll,
+    this.compact = false,
   });
 
   /// 点卡片 → 进播放器（续播）
@@ -219,6 +221,7 @@ class MyShelf extends StatefulWidget {
   final void Function(String provider, String id)? onOpenDetail;
 
   final bool isTv;
+  final bool compact;
 
   /// ★★ task-65：「查看更多」被点击 —— 参数是**追更页的 tab key**
   ///
@@ -1811,7 +1814,11 @@ class MyShelfState extends State<MyShelf> {
 
         // ── 内容 ──
         if (_loading)
-          const _ShelfSkeleton()
+          if (widget.compact)
+            SizedBox(height: CompactShelfCard.heightOf(context),
+              child: const Center(child: CircularProgressIndicator()))
+          else
+            const _ShelfSkeleton()
         else if (cards.isEmpty)
           /*
            * ★ 内容带：外层这圈横向 24 **归零** —— 原版 `.mine__empty` 是
@@ -1844,6 +1851,31 @@ class MyShelfState extends State<MyShelf> {
                 ),
               ),
             ),
+          )
+        else if (widget.compact)
+          SizedBox(
+            height: CompactShelfCard.heightOf(context),
+            child: SourinHorizontalRail(child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: EdgeInsets.zero,
+              itemCount: cards.length,
+              separatorBuilder: (_, __) => const SizedBox(width: Sp.x3),
+              itemBuilder: (context, i) {
+                final c = cards[i];
+                return SizedBox(
+                  width: (MediaQuery.sizeOf(context).width - Sp.x12)
+                      .clamp(Sp.x16 * 3, Sp.x16 * 5),
+                  child: CompactShelfCard(title: c.title, cover: c.cover,
+                    subtitle: c.subtitle, percent: c.pct,
+                    unread: c.unread ?? 0,
+                    onTap: () {
+                      if (c.provider.isNotEmpty && c.id.isNotEmpty) {
+                        widget.onOpenDetail?.call(c.provider, c.id);
+                      }
+                    }),
+                );
+              },
+            )),
           )
         else
           SizedBox(

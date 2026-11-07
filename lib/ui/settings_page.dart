@@ -228,7 +228,7 @@ import 'widgets/override_editor_dialog.dart';
 import 'widgets/plugin_speedtest.dart';
 import 'widgets/settings_kit.dart';
 // ★ task-55：动画效果选择项（`PageTransitionStyle` / `PageTransitionStyleStore`）
-import 'widgets/page_transition.dart';
+import 'widgets/settings_motion_panel.dart';
 /*
  * ★ task-43：「JS 插件」二级页用 `SettingsSubPage` 做外壳
  *   （与另外 5 个二级页**完全一致**：它自带返回按钮 + Esc/遥控返回，
@@ -3375,31 +3375,7 @@ VoidCallback? _configOf(String id) {
              *    （片头片尾 / 直播源配置 / JS 插件 / 云存储 / 主题 / 关于）
              */
             const SettingsGroupLabel(text: '外观'),
-            _Block(
-              title: '动画效果',
-              children: [
-                SettingsGestureChoice<PageTransitionStyle>(
-                  label: '页面切换动画',
-                  options: PageTransition.options,
-                  value: PageTransitionStyleStore.current.value,
-                  labelOf: (s) => s.label,
-                  onChanged: (s) => setState(() {
-                    // ★ 一行搞定：立刻生效（notifier）+ 持久化（UiPrefs）
-                    PageTransitionStyleStore.set(s);
-                  }),
-                ),
-                const SizedBox(height: Sp.x2),
-                Text(
-                  // ★ 动态显示"当前这种效果是什么样" ——
-                  //   用户不用试就知道选了什么
-                  PageTransitionStyleStore.current.value.hint,
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
+            const SettingsMotionPanel(),
 
             /*
              * 布局骨架选择器已移除（Owner 2026-10-17 第 13 条）
@@ -3439,7 +3415,7 @@ VoidCallback? _configOf(String id) {
             ),
             SettingsEntryRow(
               icon: AppIcons.palette_outlined,
-              title: '主题',
+              title: '外观',
               subtitle: '当前：${AppTheme.mode.label} · 跟随系统 / 浅色 / 深色',
               onTap: () => _openSubPage(const ThemeSettingsPage()),
             ),

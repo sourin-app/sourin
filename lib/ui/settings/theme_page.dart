@@ -764,4 +764,3 @@ class ThemePreviewBody extends StatelessWidget {
     );
   }
 }
-

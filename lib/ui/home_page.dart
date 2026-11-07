@@ -2545,6 +2545,7 @@ class HomePageState extends State<HomePage> {
           SliverToBoxAdapter(
             child: MyShelf(
               key: _shelfKey,
+              compact: true,
               isTv: widget.isTv,
               onPlay: widget.onShelfPlay,
               onOpenDetail: widget.onOpenDetail,

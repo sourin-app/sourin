@@ -1,0 +1,108 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:sourin_spike/core/sourin_api.dart';
+import 'package:sourin_spike/core/ui_prefs.dart';
+import 'package:sourin_spike/ui/app_scaffold.dart';
+import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/ui/widgets/compact_shelf_card.dart';
+import 'package:sourin_spike/ui/widgets/my_shelf.dart';
+import 'package:sourin_spike/ui/widgets/poster_card.dart';
+
+void main() {
+  for (final width in [360.0, 1280.0]) {
+    testWidgets(
+      'compact shelf at $width keeps details and first screen height',
+      (t) async {
+        UiPrefs.debugResetForTest();
+        debugShelfLoadOverride = () async =>
+            (<Favorite>[], <Favorite>[], <Progress>[]);
+        addTearDown(() {
+          debugShelfLoadOverride = null;
+          UiPrefs.debugResetForTest();
+        });
+        await t.binding.setSurfaceSize(Size(width, 800));
+        addTearDown(() => t.binding.setSurfaceSize(null));
+        final selected = <String>[];
+        final key = GlobalKey<MyShelfState>();
+        final theme = AppTheme.themeFor(Brightness.light);
+        await t.pumpWidget(
+          MaterialApp(
+            theme: theme,
+            builder: (_, child) => AppThemeHost(data: theme, child: child!),
+            home: Scaffold(
+              body: SingleChildScrollView(
+                child: MyShelf(
+                  key: key,
+                  compact: true,
+                  onOpenDetail: (p, id) => selected.add('$p:$id'),
+                ),
+              ),
+            ),
+          ),
+        );
+        await t.pump();
+        key.currentState!.debugSetData(
+          following: const [
+            Favorite(
+              key: 'fixture:work',
+              provider: 'fixture',
+              nativeId: 'work',
+              title: 'Example series',
+              following: true,
+              lastEpisodeTitle: '第 8 集',
+            ),
+          ],
+          remaining: {'fixture:work': 3},
+        );
+        await t.pump();
+        expect(find.byType(CompactShelfCard), findsOneWidget);
+        expect(t.getSize(find.byType(CompactShelfCard)).height, lessThan(150));
+        expect(t.getSize(find.byType(MyShelf)).height, lessThan(260));
+        expect(find.text('第 8 集'), findsOneWidget);
+        expect(
+          t.widget<PosterCard>(find.byType(PosterCard)).showCaption,
+          isFalse,
+        );
+        await t.tap(find.text('Example series'));
+        await t.pump();
+        expect(selected, ['fixture:work']);
+        expect(t.takeException(), isNull);
+        await t.pumpWidget(const SizedBox());
+        await t.pump(const Duration(seconds: 5));
+      },
+    );
+  }
+  testWidgets('large text and progress fit inside a compact card', (t) async {
+    final theme = AppTheme.themeFor(Brightness.dark);
+    await t.pumpWidget(
+      MaterialApp(
+        theme: theme,
+        home: Scaffold(
+          body: MediaQuery(
+            data: const MediaQueryData(textScaler: TextScaler.linear(1.6)),
+            child: Builder(
+              builder: (context) => SizedBox(
+                width: 312,
+                height: CompactShelfCard.heightOf(context),
+                child: CompactShelfCard(
+                  title: 'A long title across two lines',
+                  subtitle: '第 20 集',
+                  percent: 42,
+                  unread: 3,
+                  onTap: () {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(
+      t
+          .widget<LinearProgressIndicator>(find.byType(LinearProgressIndicator))
+          .value,
+      .42,
+    );
+    expect(t.takeException(), isNull);
+  });
+}

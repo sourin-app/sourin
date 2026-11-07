@@ -3553,10 +3553,9 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// # 为什么不复用 `_seekToken`
   ///
-  /// `_seekToken` 只在**有续播位置时**才自增（见 `_startPlayback` 里
-  /// `if (pending != null && ...)` 那一段）。首次进入播放页通常没有
-  /// 续播位置 → 它永远停在 0 → 代次保护形同虚设。
-  /// hwdec 取证是**每次起播都要做**的，所以需要自己的、无条件自增的代次。
+  /// `_seekToken` follows resume cancellation, including `_load` and user seeks.
+  /// hwdec diagnostics belong to each native open, including `_reload` and local
+  /// playback, so they keep their own unconditionally advanced generation.
   int _hwdecToken = 0;
 
   // ───────────────────────────────────────────────────────────────────
@@ -6175,6 +6174,8 @@ class _PlayerPageState extends State<PlayerPage>
 
   Future<void> _load() async {
     if (!mounted || _playClosed) return;
+    // Cancel the previous resume waiter before resolving a replacement stream.
+    ++_seekToken;
     final generation = _beginPlayResolve();
     /*
      * ★ task-14（2026-10-25）：`_load` 的**调用次数**（仅探针读）
@@ -6501,9 +6502,6 @@ class _PlayerPageState extends State<PlayerPage>
     final genAtEntry = _playSessionGen;
     final generation = _playGeneration;
     final epAtEntry = _epIndex;
-    // 本次会话已经续播过（重复调用会覆盖用户当前的播放位置）
-    if (_resumedThisSession) return;
-
     /*
      * ⓪ 重试路径：错误浮层的「重试」会再走一遍 `_load()`
      *
@@ -6517,6 +6515,9 @@ class _PlayerPageState extends State<PlayerPage>
       debugPrint('[PLAYER] 重试：保持当前位置 ${_position.inSeconds}s');
       return;
     }
+
+    // Stored progress is read once; retry always prefers the current position.
+    if (_resumedThisSession) return;
 
     try {
       /*
@@ -7372,7 +7373,10 @@ class _PlayerPageState extends State<PlayerPage>
 
     // 等 duration 出来（最多 12 秒）
     var waited = 0;
-    while (waited < 48 && _duration <= Duration.zero && mounted) {
+    while (waited < 48 &&
+        _duration <= Duration.zero &&
+        mounted &&
+        token == _seekToken) {
       await Future<void>.delayed(const Duration(milliseconds: 250));
       waited++;
     }
@@ -12018,6 +12022,7 @@ class _PlayerPageState extends State<PlayerPage>
         _memoryIntroEnd = null; // ★ T7：上一集的记忆缓存不适用于本集（去重判据换键了）
         _playSessionGen++; // ★ 换源 = 会话变了 ⇒ 丢弃在途的旧标记响应
         _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
+        _positionNotifier.value = Duration.zero;
         // ★ 换源 ⇒ 上一集下载过的那份文件不再代表「当前这一集」
         //   （Lead 审计 team-message-914508ce【低】第 4 条：这两个字段原先从不重置）
         _clipDownloaded = false;
@@ -12314,6 +12319,7 @@ class _PlayerPageState extends State<PlayerPage>
        */
       _rewatchToken++;
       _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
+      _positionNotifier.value = Duration.zero;
       // ★ 换会话 ⇒ 同上去掉「已下载 / 上次失败」的残留状态
       _clipDownloaded = false;
       _clipDownloadError = null;
@@ -12764,7 +12770,8 @@ class _PlayerPageState extends State<PlayerPage>
       _skipMarker = null;
       _memoryIntroEnd = null; // ★ T7：切集同理（去重判据换键了）
       _playSessionGen++; // ★ 切集 = 会话变了 ⇒ 丢弃在途的旧标记响应
-        _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
+      _position = Duration.zero; // ★ 同步复位 —— 否则补判会读到**上一集**的位置
+      _positionNotifier.value = Duration.zero;
       // ★ 换集 ⇒ 上一集的「已下载」不适用于这一集
       _clipDownloaded = false;
       _clipDownloadError = null;
@@ -24820,7 +24827,7 @@ class _TipBubble extends StatelessWidget {
       borderRadius: Radii.rFull,
     ),
     child: Text(
-      text,
+      PlaybackErrorText.forDisplay(text),
       style: const TextStyle(color: Colors.white, fontSize: FontSizes.base),
     ),
   );

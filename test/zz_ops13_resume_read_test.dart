@@ -69,6 +69,7 @@ void main() {
   late Directory caseDir;
   late String videoPath;
   late String localId;
+  var playerTeardownRegistered = false;
 
   setUpAll(() async {
     /*
@@ -120,6 +121,7 @@ void main() {
   });
 
   setUp(() {
+    playerTeardownRegistered = false;
     RemoteBridge.instance.stop(); // 同写入侧：掐掉 400ms 轮询定时器
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
@@ -148,6 +150,30 @@ void main() {
     localId = canonicalLocalPath(videoPath);
   });
 
+  Future<void> finishPlayerTest(WidgetTester t) async {
+    try {
+      await t.pumpWidget(const mui.SizedBox.shrink());
+      // Drain before the callback returns and binding checks pending timers.
+      for (var i = 0; i < 60; i++) {
+        await t.pump(const Duration(seconds: 3));
+      }
+      expect(
+        t.takeException(),
+        isNull,
+        reason: 'Player fixture teardown must not hide framework errors',
+      );
+    } finally {
+      await t.binding.setSurfaceSize(null);
+    }
+  }
+
+  Future<void> preparePlayerMount(WidgetTester t) async {
+    if (playerTeardownRegistered) return;
+    playerTeardownRegistered = true;
+    await t.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => finishPlayerTest(t));
+  }
+
   /// 挂一个**本地会话**页（真 PlayerPage）
   Future<void> mountLocal(
     WidgetTester t, {
@@ -156,8 +182,7 @@ void main() {
     String? originEpisodeId,
     String tag = 'a',
   }) async {
-    await t.binding.setSurfaceSize(const Size(1280, 800));
-    addTearDown(() => t.binding.setSurfaceSize(null));
+    await preparePlayerMount(t);
     await t.pumpWidget(_appWith(mui.Scaffold(
       body: PlayerPage(
         /*
@@ -199,8 +224,7 @@ void main() {
     required String provider,
     required String id,
   }) async {
-    await t.binding.setSurfaceSize(const Size(1280, 800));
-    addTearDown(() => t.binding.setSurfaceSize(null));
+    await preparePlayerMount(t);
     await t.pumpWidget(_appWith(mui.Scaffold(
       body: PlayerPage(
         // ★ 与本地那棵树**不同的 key** ⇒ 强制重建 State（见 mountLocal 的说明）
@@ -289,6 +313,7 @@ void main() {
               'null = 「本地和线上彻底分开」原样没修（这就是 Owner 报的那条）');
       expect(seek!.inSeconds, 30,
           reason: '★★★ 必须续到本地看到的那一秒');
+      await finishPlayerTest(t);
     });
   });
 
@@ -370,6 +395,7 @@ void main() {
             '⇒ 本地每次都从头播。这条就是那个回归的锁',
       );
       expect(seek!.inSeconds, 300, reason: '★ 必须续到本地键记的那一秒');
+      await finishPlayerTest(t);
     });
 
     testWidgets('★★★ 镜像那条属于**别的集** ⇒ 丢弃镜像、回落到本地那条', (t) async {
@@ -444,6 +470,7 @@ void main() {
       );
       expect(seek!.inSeconds, 300,
           reason: '★★ 必须回落到**本地那条**的 300s（不是镜像的 1000s）');
+      await finishPlayerTest(t);
     });
   });
 
@@ -475,6 +502,7 @@ void main() {
           reason: '★★★ 在线看过的进度必须能在**本地**会话里续上 —— '
               'null = 只读自己那个键 = 两个命名空间还是分开的');
       expect(seek!.inSeconds, 321);
+      await finishPlayerTest(t);
     });
 
     testWidgets('★★★ 两侧都有 ⇒ 取 updatedAt **更新**的那条（不是无脑用镜像）',
@@ -518,6 +546,7 @@ void main() {
       expect(seek!.inSeconds, 800,
           reason: '★★★ 必须取 updatedAt **更新**的那条 —— '
               '无脑用镜像 = 本地刚看的进度被一条更旧的记录顶掉');
+      await finishPlayerTest(t);
     });
 
     testWidgets('★★ 没有来源 ⇒ 只用自己那个键（行为与改前逐字一致）', (t) async {
@@ -537,6 +566,7 @@ void main() {
       debugPrint('OPS13-R 无来源 ⇒ 续播到 = $seek');
       expect(seek!.inSeconds, 55,
           reason: '★ 老数据（没有旁文件）必须继续能续播 —— 行为退化成今天的样子');
+      await finishPlayerTest(t);
     });
   });
 
@@ -611,6 +641,7 @@ void main() {
       expect(seek!.inSeconds, 254,
           reason: '★★★ 必须是 254（在线那条），不是 3（本地那条）—— '
               '两条根因（按时间戳选边 + 按集误杀）同时修好才能取到 254');
+      await finishPlayerTest(t);
     });
 
     testWidgets('★★ 两侧集号都是站点集 id 且不等 ⇒ 仍拒绝（多集场景不能丢）',
@@ -639,8 +670,7 @@ void main() {
           ));
 
       // 挂**在线**会话：widget.episodeId = 当前集 51463（站点集 id）
-      await t.binding.setSurfaceSize(const Size(1280, 800));
-      addTearDown(() => t.binding.setSurfaceSize(null));
+      await preparePlayerMount(t);
       await t.pumpWidget(_appWith(mui.Scaffold(
         body: PlayerPage(
           key: const ValueKey('online-mismatch'),
@@ -659,6 +689,7 @@ void main() {
       expect(seek, isNull,
           reason: '★★ 两侧都是站点集 id 且不等 ⇒ 必须**拒绝**（否则上一集的进度串到这一集，'
               '点开新集直接被 seek 到结尾）—— 证明放宽没有把守卫整个丢掉');
+      await finishPlayerTest(t);
     });
   });
 
@@ -726,6 +757,7 @@ void main() {
        */
       expect(got.title, '本地剧',
           reason: '★★ CR-07：镜像的 title 是**作品标题**（不是集标题）');
+      await finishPlayerTest(t);
     });
   });
 }

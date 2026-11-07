@@ -717,7 +717,15 @@ pub async fn import_declarative_provider(
         .map(|p| p.with_data_dir(state.data_dir.clone()))
         .map_err(|e| format!("{:?}: {}", e.kind, e.message))?;
     let manifest = crate::provider::MediaProvider::manifest(&p).clone();
+    // Replacing a provider creates a fresh enabled handle at the end of the
+    // registry. Preserve user preferences before the UI refreshes the list.
+    let order = crate::commands::get_provider_order(state)?;
+    let disabled = crate::commands::load_disabled(&state.data_dir);
     state.registry.register(std::sync::Arc::new(p));
+    state.registry.reorder(&order);
+    if disabled.iter().any(|id| id == &manifest.id) {
+        state.registry.set_enabled(&manifest.id, false);
+    }
 
     // ★ 记住来源，重启后自动重建（否则用户每次开机都要重装）
     {

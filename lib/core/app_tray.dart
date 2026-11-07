@@ -8,7 +8,7 @@
 //
 // # 三件事，逐条对齐
 // ```text
-// ① 托盘图标        `TrayManager.setIcon('assets/tray.ico')` + 悬停提示
+// ① 托盘图标        跟随外观页选中的应用标识 + 悬停提示
 // ② 点 X 第一次问   `setPreventClose(true)` 拦住系统关闭，弹一个三选一
 // ③ 之后按上次的来  `dsh.closeAction` 落盘（'ask' / 'tray' / 'quit'）
 // ```
@@ -48,6 +48,7 @@ import '../ui/widgets/overlay_motion.dart';
 import '../design/widgets/app_glass_dialog.dart';
 import '../design/widgets/app_text_button.dart';
 import 'ui_prefs.dart';
+import 'app_logo.dart';
 import '../ui/widgets/plugin_speedtest.dart' show SpeedTestCancelToken;
 
 /// 关闭行为（落盘在 `dsh.closeAction`）
@@ -91,10 +92,35 @@ class AppTray with TrayListener, WindowListener {
   static final GlobalKey<NavigatorState> navigatorKey =
       GlobalKey<NavigatorState>();
 
-  /// 托盘图标资源（相对 `assets/`，与 pubspec 声明一致）
-  static const String _iconAsset = 'assets/tray.ico';
-
   bool _started = false;
+  Future<void> _iconUpdate = Future<void>.value();
+
+  void _onLogoChanged() {
+    unawaited(_refreshIcon());
+  }
+
+  // Serialize updates so rapid selection cannot leave an older native icon last.
+  Future<void> _refreshIcon() {
+    _iconUpdate = _iconUpdate.then((_) async {
+      if (!_started) return;
+      final style = AppLogoPreference.current.value;
+      try {
+        await trayManager.setIcon(
+          Platform.isWindows ? style.windowsAsset : style.imageAsset,
+        );
+      } catch (e) {
+        debugPrint('[TRAY] 图标更新失败: $e');
+      }
+      if (Platform.isWindows && _started) {
+        try {
+          await windowManager.setIcon(style.windowsAsset);
+        } catch (e) {
+          debugPrint('[TRAY] 窗口图标更新失败: $e');
+        }
+      }
+    });
+    return _iconUpdate;
+  }
 
   /// 真的退出中（`_quit()` 里先置位再 `close()`）
   ///
@@ -126,6 +152,7 @@ class AppTray with TrayListener, WindowListener {
     }
     if (_started) return;
     _started = true;
+    AppLogoPreference.current.addListener(_onLogoChanged);
     try {
       /*
        * ★ 顺序：先 `setPreventClose` 再注册图标。
@@ -137,7 +164,7 @@ class AppTray with TrayListener, WindowListener {
       await windowManager.setPreventClose(true);
       windowManager.addListener(this);
       trayManager.addListener(this);
-      await trayManager.setIcon(_iconAsset);
+      await _refreshIcon();
       await trayManager.setToolTip('源影 —— 跨端视频客户端');
       await trayManager.setContextMenu(
         Menu(items: [
@@ -159,6 +186,8 @@ class AppTray with TrayListener, WindowListener {
   Future<void> dispose() async {
     if (!_started) return;
     _started = false;
+    AppLogoPreference.current.removeListener(_onLogoChanged);
+    await _iconUpdate;
     try {
       trayManager.removeListener(this);
       windowManager.removeListener(this);

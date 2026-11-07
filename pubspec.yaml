@@ -283,6 +283,7 @@ flutter:
   # ⇒ 必须走 assets 声明，不能直接传绝对路径。
   assets:
     - assets/tray.ico
+    - assets/logos/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

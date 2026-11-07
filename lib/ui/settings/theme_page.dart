@@ -1,5 +1,6 @@
 // Product appearance has one light/dark/system choice; old packs are preview-only.
 import 'package:material_ui/material_ui.dart';
+import '../../core/app_logo.dart';
 
 import '../app_theme.dart';
 import '../theme/theme_language.dart' show kDefaultRadius, kDefaultBorderWidth, kDefaultDividerThickness;
@@ -46,6 +47,47 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
               color: Theme.of(context).colorScheme.onSurfaceVariant)),
         ],
       ),
+      SettingsBlock(title: '应用标识', children: [
+        ValueListenableBuilder<AppLogoStyle>(
+          valueListenable: AppLogoPreference.current,
+          builder: (context, selected, _) => Wrap(
+            spacing: Sp.x3,
+            runSpacing: Sp.x3,
+            children: [
+              for (final style in AppLogoStyle.values)
+                Semantics(
+                  selected: selected == style,
+                  button: true,
+                  label: style.label,
+                  child: OutlinedButton(
+                    key: ValueKey('app-logo-${style.id}'),
+                    onPressed: () => AppLogoPreference.select(style),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.all(Sp.x4),
+                      backgroundColor: selected == style
+                          ? Theme.of(context).colorScheme.primaryContainer
+                          : Theme.of(context).colorScheme.surface,
+                      side: BorderSide(color: selected == style
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).colorScheme.outlineVariant),
+                      shape: const RoundedRectangleBorder(borderRadius: Radii.rMd),
+                    ),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Image.asset(style.imageAsset, width: Sp.x16, height: Sp.x16),
+                      const SizedBox(height: Sp.x2),
+                      Text(style == AppLogoStyle.orbit ? '${style.label} · 默认' : style.label),
+                      const SizedBox(height: Sp.x1),
+                      Icon(selected == style ? Icons.check_circle : Icons.circle_outlined,
+                        size: Sp.x4),
+                    ]),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: Sp.x3),
+        const Text('切换后立即生效，下次启动保留你的选择。'),
+      ]),
       SettingsBlock(title: '界面预览', children: [
         SettingsGestureToggle(label: '试试开关', hint: '预览当前外观的控件样式',
           value: _previewEnabled,

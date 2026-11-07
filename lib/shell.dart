@@ -72,6 +72,8 @@ import 'package:window_manager/window_manager.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'core/app_tray.dart';
+import 'core/app_logo.dart';
+import 'ui/widgets/app_logo.dart';
 import 'ui/app_update_bootstrap.dart';
 import 'core/device.dart';
 import 'core/disk_cache.dart';
@@ -661,6 +663,7 @@ Future<void> main() async {
      *    晚加载的话第一次进详情页会读不到（表现为"记住的源没生效"）。
      */
     await UiPrefs.load(dir);
+    AppLogoPreference.load();
 
     /*
      * ★★★ 磁盘缓存：注入数据目录 + 预热首页快照（Owner 2026-10-15）
@@ -6615,19 +6618,7 @@ class _CustomTitleBar extends StatelessWidget implements PreferredSizeWidget {
     return Row(
       children: [
         const SizedBox(width: 14),
-        // 应用图标（画一个，不用图片资源）
-        Container(
-          width: 18,
-          height: 18,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(5),
-            gradient: const LinearGradient(
-              colors: [Color(0xFF5B8DEF), Color(0xFF8B5CF6)],
-            ),
-          ),
-          child: const Icon(AppIcons.play_arrow_rounded,
-              size: 13, color: Colors.white),
-        ),
+        const AppLogo(),
         const SizedBox(width: 9),
         Text(
           '源影',

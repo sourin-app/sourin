@@ -42,7 +42,7 @@ void main() {
         },
       ));
       await tester.pumpAndSettle();
-      expect(find.byType(miuix.MiuixCard), findsNWidgets(2));
+      expect(find.byType(miuix.MiuixCard), findsNWidgets(3));
       expect(find.byType(miuix.MiuixSwitchPreference), findsOneWidget);
       expect(find.byType(ThemeGrid), findsNothing);
       await tester.tap(find.text('深色'));
@@ -53,6 +53,8 @@ void main() {
       expect(miuix.MiuixTheme.of(context).brightness, Brightness.dark);
       final switchFinder = find.byType(miuix.MiuixSwitchPreference);
       expect(tester.widget<miuix.MiuixSwitchPreference>(switchFinder).value, isTrue);
+      await tester.ensureVisible(find.text('试试开关'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('试试开关'));
       await tester.pumpAndSettle();
       expect(tester.widget<miuix.MiuixSwitchPreference>(switchFinder).value, isFalse);

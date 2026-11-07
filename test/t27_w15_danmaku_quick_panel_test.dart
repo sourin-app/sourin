@@ -28,6 +28,8 @@
 // ══════════════════════════════════════════════════════════════════════
 
 import 'package:flutter/widgets.dart';
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart' as mui;
 
@@ -113,6 +115,8 @@ Future<void> _pump(
   addTearDown(tester.view.reset);
   final theme = AppTheme.themeFor(mui.Brightness.dark);
   final bar = _bar(spy, controller);
+  final bottomInset = ValueNotifier(0.0);
+  addTearDown(bottomInset.dispose);
   await tester.pumpWidget(
     mui.MaterialApp(
       theme: theme,
@@ -125,11 +129,14 @@ Future<void> _pump(
             children: <Widget>[
               Stack(children: <Widget>[bar]),
               ListenableBuilder(
-                listenable: controller,
+                listenable: Listenable.merge([controller, bottomInset]),
                 builder: (context, _) => Positioned.fill(
                   child: Align(
                     alignment: Alignment.bottomRight,
-                    child: bar.buildPopoverLayer(),
+                    child: Padding(
+                      padding: EdgeInsets.only(bottom: bottomInset.value),
+                      child: bar.buildPopoverLayer(),
+                    ),
                   ),
                 ),
               ),
@@ -139,6 +146,10 @@ Future<void> _pump(
       ),
     ),
   );
+  // Production reserves the rendered bottom bar's height for this sibling
+  // layer. Omitting it lets the panel cover its own anchor in this fixture.
+  bottomInset.value = tester.getSize(find.byType(PlayerBottomBar)).height;
+  await tester.pump();
   /*
    * ★ 这里原来有一句 `while (tester.takeException() != null) {}` —— 已删。
    *
@@ -168,6 +179,98 @@ Future<void> _openPanel(
 }
 
 void main() {
+  testWidgets('Escape closes focused quick search without submitting', (
+    t,
+  ) async {
+    final spy = _Spy();
+    final controller = PopoverController();
+    addTearDown(controller.dispose);
+    await _openPanel(t, spy, controller);
+    await t.enterText(find.byType(mui.TextFormField), '未提交的片名');
+    await t.pump();
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await t.pump();
+    expect(find.byKey(PlayerBottomBar.danmakuQuickPanelKey), findsNothing);
+    expect(spy.searches, isEmpty);
+  });
+
+  testWidgets('focused quick search survives leaving panel and anchor', (
+    t,
+  ) async {
+    final spy = _Spy();
+    final controller = PopoverController();
+    addTearDown(controller.dispose);
+    await _openPanel(t, spy, controller);
+    final field = find.descendant(
+      of: find.byKey(PlayerBottomBar.danmakuQuickPanelKey),
+      matching: find.byType(mui.TextFormField),
+    );
+    final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: t.getCenter(field));
+    addTearDown(mouse.removePointer);
+    await t.enterText(field, '保留正在输入的片名');
+    await t.pump();
+
+    // Both the panel and its anchor can schedule a close. Neither should
+    // discard a keyboard session because the pointer happens to move away.
+    await mouse.moveTo(const Offset(5, 5));
+    await t.pump(
+      PopoverController.closeDelay + const Duration(milliseconds: 1),
+    );
+    expect(field, findsOneWidget);
+    await mouse.moveTo(
+      t.getCenter(find.byKey(PlayerBottomBar.danmakuSettingsKey)),
+    );
+    await t.pump();
+    await mouse.moveTo(const Offset(5, 5));
+    await t.pump(
+      PopoverController.closeDelay + const Duration(milliseconds: 1),
+    );
+    expect(field, findsOneWidget);
+    expect(t.widget<mui.TextFormField>(field).controller!.text, '保留正在输入的片名');
+    await t.testTextInput.receiveAction(TextInputAction.search);
+    expect(spy.searches, ['保留正在输入的片名']);
+  });
+
+  testWidgets('quick search closes after focus and pointer both leave', (
+    t,
+  ) async {
+    final spy = _Spy();
+    final controller = PopoverController();
+    addTearDown(controller.dispose);
+    await _openPanel(t, spy, controller);
+    final field = find.byType(mui.TextFormField);
+    final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: t.getCenter(field));
+    addTearDown(mouse.removePointer);
+    await t.enterText(field, '保留草稿');
+    await t.pump();
+    await mouse.moveTo(const Offset(5, 5));
+    await t.pump();
+    FocusScope.of(t.element(field)).unfocus();
+    await t.pump();
+    await t.pump(
+      PopoverController.closeDelay + const Duration(milliseconds: 1),
+    );
+    expect(find.byKey(PlayerBottomBar.danmakuQuickPanelKey), findsNothing);
+    expect(spy.searches, isEmpty);
+  });
+
+  testWidgets('explicit close still dismisses a focused quick search', (
+    t,
+  ) async {
+    final spy = _Spy();
+    final controller = PopoverController();
+    addTearDown(controller.dispose);
+    await _openPanel(t, spy, controller);
+    await t.enterText(find.byType(mui.TextFormField), '未提交');
+    await t.pump();
+    await t.tap(find.byKey(PlayerBottomBar.danmakuSettingsKey));
+    await t.pump();
+    expect(find.byKey(PlayerBottomBar.danmakuQuickPanelKey), findsNothing);
+    expect(spy.searches, isEmpty);
+  });
+
   testWidgets(
     'search is available in the first floating panel without advanced settings',
     (t) async {

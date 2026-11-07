@@ -36,6 +36,7 @@ import 'dart:async';
 //   （material_ui 只 re-export 了 widgets.dart，没有 rendering.dart ⇒ 这里必须显式引）。
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart' show KeyDownEvent, LogicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
@@ -81,6 +82,8 @@ class PopoverOption<T> {
 class PopoverController extends ChangeNotifier {
   String? _openId;
   Timer? _closeTimer;
+  Object? _closeTimerOwner;
+  final Map<Object, String> _focusHolds = <Object, String>{};
 
   /// 每个 popover 入口的**屏幕矩形**（id → 那枚按钮当前占据的 Rect）
   ///
@@ -160,11 +163,11 @@ class PopoverController extends ChangeNotifier {
   /// 只搭「下一帧发生时的顺风车」：每帧结束后自己量一次（globalToLocal 走的是
   /// 逐级 applyPaintTransform，**不受层复用影响**），跟控制器里存的对一下，
   /// 不一样就通知面板挪位。
-  /// 
+  ///
   /// 为什么这样比探针可靠：探针的 paint 只在「子树真的重画」时跑，而这条路径
   /// 依赖的正是「子树没重画」；反过来由消费者（控制器）主动量，
   /// 无论框架走的是重画还是层复用，读到的都是本帧的真值。
-  /// 
+  ///
   /// 成本：每帧一次 Rect 比较 + 一次 localToGlobal（面板关着时 _openId 为 null
   /// 直接返回，一个字节都不量）。**不排帧、不重绘**。
   /// ```
@@ -255,12 +258,35 @@ class PopoverController extends ChangeNotifier {
   /// 指针**进了面板** —— 取消「收起」计时
   void holdOpen() {
     _closeTimer?.cancel();
+    _closeTimerOwner = null;
+  }
+
+  /// Editing or keyboard navigation keeps this panel open even when the mouse
+  /// leaves its anchor. Explicit close/toggle still takes effect immediately.
+  void setFocusWithin(Object owner, {required bool focused}) {
+    if (focused && _openId != null) {
+      _focusHolds[owner] = _openId!;
+      holdOpen();
+    } else {
+      _focusHolds.remove(owner);
+    }
+  }
+
+  /// A panel can disappear while its focus-loss notification is pending.
+  /// Cancel only that panel's delayed close, not a newer anchor's request.
+  void releaseFocusOwner(Object owner) {
+    _focusHolds.remove(owner);
+    if (identical(_closeTimerOwner, owner)) {
+      _closeTimer?.cancel();
+      _closeTimerOwner = null;
+    }
   }
 
   /// 指针**离开了面板** —— 重新武装收起计时
-  void armClose() {
-    if (_openId == null) return;
+  void armClose({Object? owner}) {
+    if (_openId == null || _focusHolds.containsValue(_openId)) return;
     _closeTimer?.cancel();
+    _closeTimerOwner = owner;
     _closeTimer = Timer(closeDelay, close);
   }
 
@@ -298,11 +324,11 @@ class PopoverController extends ChangeNotifier {
    */
   static const Duration closeDelay = Duration(milliseconds: 450);
 
-
   @override
   void dispose() {
     _disposed = true;
     _closeTimer?.cancel();
+    _focusHolds.clear();
     super.dispose();
   }
 }
@@ -509,7 +535,31 @@ class PopoverKeepAlive extends StatefulWidget {
 }
 
 class _PopoverKeepAliveState extends State<PopoverKeepAlive> {
-  /// 本层**保持原样** —— 不在这里补桥。
+  bool _pointerInside = false;
+  bool _focused = false;
+
+  void _onFocusChange(bool focused) {
+    _focused = focused;
+    widget.controller.setFocusWithin(this, focused: focused);
+    if (!focused && !_pointerInside) widget.controller.armClose(owner: this);
+  }
+
+  @override
+  void didUpdateWidget(covariant PopoverKeepAlive oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.releaseFocusOwner(this);
+      widget.controller.setFocusWithin(this, focused: _focused);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.releaseFocusOwner(this);
+    super.dispose();
+  }
+
+  /// 焦点保活不改变几何；鼠标区域仍不在这里补桥。
   ///
   /// # 试过、且实测失败的三版（记下免得后人重走）
   /// ```text
@@ -527,10 +577,30 @@ class _PopoverKeepAliveState extends State<PopoverKeepAlive> {
   ///   保留**唯一**那个安全改动：`PopoverController.closeDelay` 250ms → 450ms
   ///   （见那里的推导）—— 它只改"给多少时间"，不动任何几何。
   @override
-  Widget build(BuildContext context) => MouseRegion(
-    onEnter: (_) => widget.controller.holdOpen(),
-    onExit: (_) => widget.controller.armClose(),
-    child: widget.child,
+  Widget build(BuildContext context) => Focus(
+    canRequestFocus: false,
+    skipTraversal: true,
+    onFocusChange: _onFocusChange,
+    onKeyEvent: (_, event) {
+      if (event is KeyDownEvent &&
+          event.logicalKey == LogicalKeyboardKey.escape &&
+          widget.controller.openId != null) {
+        widget.controller.close();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    },
+    child: MouseRegion(
+      onEnter: (_) {
+        _pointerInside = true;
+        widget.controller.holdOpen();
+      },
+      onExit: (_) {
+        _pointerInside = false;
+        widget.controller.armClose(owner: this);
+      },
+      child: widget.child,
+    ),
   );
 }
 
@@ -693,6 +763,7 @@ class _RenderPopoverAnchorProbe extends RenderProxyBox {
     super.detach();
   }
 }
+
 class PopoverAnchorButton extends StatefulWidget {
   const PopoverAnchorButton({
     super.key,

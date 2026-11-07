@@ -4,6 +4,9 @@ Status: implemented
 
 Applies: 2026-11-08, product MediaPage and PlayerPage.
 
+Follow-up: [focused panel lifetime](../bug-fix/2026-11-08-player-popover-focus-lifetime.md)
+keeps the search draft open while editing and handles Escape inside the panel.
+
 Partially supersedes [right detail line filtering](../bug-fix/2026-10-30-right-detail-line-filter-and-badge.md): the pane now has an explicit line selection control; episode filtering and counts remain. Partially supersedes [danmaku search boundary](../bug-fix/2026-10-23-danmaku-settings-search-boundary.md): the entry moves to the first floating panel, while the independent search page and single request/binding state remain. The search layout, draft/diagnostics, feed defaults and remote episode filtering notes were audited and remain unchanged.
 
 ## Problem

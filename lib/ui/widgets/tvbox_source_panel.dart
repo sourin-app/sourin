@@ -244,10 +244,10 @@ TvboxProbeResult tvboxProbeOf(TvboxUpdateItem? it) {
 ///   且用户不知道该去哪里补救（静默黑洞）。
 /// ⇒ 如实报原因 + 给出路：本仓一贯口径（宁可少一个按钮，也不给假的）。
 /// ```
-String? tvboxLastUpdateText(TvboxSourceInfo? info) {
+String? tvboxLastUpdateText(TvboxSourceInfo? info, {bool? needsSource}) {
   if (info == null) return null;
   // ★ 没有可更新的来源 ≠ 还没更新过 —— 这两件事不许合并成一句
-  if (info.needsSource) return tvboxNoSourceHint;
+  if (needsSource ?? info.needsSource) return tvboxNoSourceHint;
   if (info.lastUpdateAt <= 0) return '从未更新';
   final t = tvboxShortTime(info.lastUpdateAt);
   return info.lastUpdateOk ? '上次更新：$t' : '上次更新失败 $t';
@@ -1129,6 +1129,10 @@ class TvboxSourceManagePanel extends StatefulWidget {
 class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
   late final TextEditingController _urlCtl;
 
+  // The parent metadata predates edits within this open panel. Override only
+  // after a successful save; typing or a rejected save must not change status.
+  bool? _savedNeedsSource;
+
   bool _saving = false;
   bool _probing = false;
   bool _updating = false;
@@ -1186,6 +1190,7 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
       setState(() {
         _saving = false;
         _hasLink = url.isNotEmpty;
+        _savedNeedsSource = url.isEmpty;
         // 链接变了 ⇒ 旧的结论失效（否则显示的是**上一条链接**的结果）
         _probe = null;
         _applied = null;
@@ -1293,6 +1298,10 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
     final colors = Theme.of(context).colorScheme;
     final busy = _saving || _probing || _updating;
     final probe = _probe;
+    final noSource = _savedNeedsSource ?? tvboxLastUpdateNoSource(widget.info);
+    final updateFailed = !noSource && tvboxLastUpdateFailed(widget.info);
+    final updateText =
+        tvboxLastUpdateText(widget.info, needsSource: _savedNeedsSource);
 
     return Column(
       key: const ValueKey<String>('tvbox-manage'),
@@ -1350,12 +1359,12 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
           style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
         ),
         // ── ★ T5：上次更新时间（失败红色；原因进 Tooltip，一个字节不丢）──
-        if (tvboxLastUpdateText(widget.info) != null) ...<Widget>[
+        if (updateText != null) ...<Widget>[
           const SizedBox(height: Sp.x1),
           Tooltip(
-            message: tvboxLastUpdateFailed(widget.info)
+            message: updateFailed
                 ? '失败原因：${widget.info!.lastUpdateError ?? '后端没有给出原因'}'
-                : (tvboxLastUpdateNoSource(widget.info)
+                : (noSource
                     /*
                      * ★ 没有链接时的**完整**解释（行内 60 字放不下，Tooltip 补）：
                      *   它是什么时候装的 / 为什么不能自动更新 / 去哪儿补。
@@ -1365,12 +1374,12 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
                         '到「TVBox 聚合」页填入它当初的配置地址即可开始定时更新。'
                     : ''),
             child: Text(
-              tvboxLastUpdateText(widget.info)!,
+              updateText,
               key: const ValueKey<String>('tvbox-manage-last-update'),
               style: TextStyle(
                 fontSize: FontSizes.cap,
                 // ★ 三态三色：失败=红 / 缺链接=onSurfaceVariant（提示，不是故障）/ 正常
-                color: tvboxLastUpdateFailed(widget.info)
+                color: updateFailed
                     ? colors.error
                     : colors.onSurfaceVariant,
               ),

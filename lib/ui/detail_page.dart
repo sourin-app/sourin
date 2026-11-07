@@ -671,6 +671,7 @@ class DetailPage extends StatefulWidget {
     required this.provider,
     required this.id,
     this.onPlay,
+    this.onPickLine,
     this.onOpenDetail,
     this.onLoaded,
     this.isTv = false,
@@ -695,6 +696,7 @@ class DetailPage extends StatefulWidget {
 
   /// 点「播放」/ 选集 → 进播放器
   final void Function(PlayRequestData req)? onPlay;
+  final ValueChanged<String>? onPickLine;
 
   /// 换源后跳到新源的详情页（整页重新加载）
   /// ★★★ N2（2026-10-27）：跨源换源回调。
@@ -1008,7 +1010,13 @@ class _DetailPageState extends State<DetailPage> {
   // ⚠️ 只收窄**渲染**：[_episodes] 本身一个字不动 ——
   //    高亮/滚动（_epKeys 按 id）、_currentEpisodeIndex（episodeIndex 落库
   //    用的全集下标）、下载全部集这些读数的语义**全部保持原样**。
+  String? _browsedLineFlag;
+
   String? get _currentLineFlag {
+    if (_browsedLineFlag != null &&
+        _episodes.any((e) => e.flag == _browsedLineFlag)) {
+      return _browsedLineFlag;
+    }
     final id = _activeEpisodeId;
     if (id != null) {
       for (final e in _episodes) {
@@ -1312,7 +1320,7 @@ class _DetailPageState extends State<DetailPage> {
     return i >= 0 ? i + 1 : 0;
   }
 
-  bool get _hasMultiSource => _sourceNodes.length > 1;
+  bool get _hasMultiSource => _sourceNodes.expand((s) => s.flattened).length > 1;
 
   /// ★★★ 触发路径 ③：播放器切集（上一集/下一集/自动连播）
   ///
@@ -1336,6 +1344,7 @@ class _DetailPageState extends State<DetailPage> {
       _observePlaybackProgress();
     }
     if (old.currentEpisodeId == widget.currentEpisodeId) return;
+    _browsedLineFlag = null;
     if (widget.currentEpisodeId == null) return;
     debugPrint('[DETAIL] 播放器切集 → ${widget.currentEpisodeId}（自动滚动）');
     _scheduleEpisodeScroll();
@@ -3373,6 +3382,23 @@ class _DetailPageState extends State<DetailPage> {
               sources: _sourceNodes,
               active: _activeSource,
               onPick: _pickSource,
+            ),
+            const SizedBox(height: Sp.x6),
+          ],
+          if (!widget.isLocalFile && _lineCount > 1) ...[
+            const _BlockTitle(text: '播放线路'),
+            DetailSourcePicker(
+              sources: [
+                for (final flag in _episodes.map((e) => e.flag)
+                    .whereType<String>().where((s) => s.isNotEmpty).toSet())
+                  PlaySource(code: flag, title: flag,
+                    count: _episodes.where((e) => e.flag == flag).length),
+              ],
+              active: effectiveFlag(_episodes, _currentLineFlag) ?? '',
+              onPick: (line) {
+                setState(() => _browsedLineFlag = line.code);
+                widget.onPickLine?.call(line.code);
+              },
             ),
             const SizedBox(height: Sp.x6),
           ],

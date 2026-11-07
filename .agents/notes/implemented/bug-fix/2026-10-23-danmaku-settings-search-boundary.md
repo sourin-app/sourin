@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Current entry contract: [direct player controls](../feature/2026-11-08-player-direct-controls.md) moves production search access to the first floating danmaku panel. The independent search page and shared host-owned state in this decision remain applicable; the advanced-settings entry is superseded.
+
 ## Problem
 
 弹幕设置同时承载来源、请求详情、搜索结果与显示调节，固定区域在小窗口中挤占可用高度。搜索与绑定已有播放器回调和状态，复制请求或绑定状态会形成第二真源。旧诊断绕开当前代理直接解析 DNS 和连接 TCP，并将递归解析差异当作劫持证据，和实际请求路径不一致。

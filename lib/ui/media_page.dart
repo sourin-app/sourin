@@ -1682,6 +1682,12 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
       isTv: widget.isTv,
       // ★ 详情区不再自己 push 播放器 ⇒ 请求交回本页转发
       onPlay: _onDetailPlay,
+      onPickLine: (flag) {
+        final session = _session;
+        if (session is MediaLineSession) {
+          (session as MediaLineSession).selectEpisodeLine(flag);
+        }
+      },
       onOpenDetail: _onDetailSwitchSource,
       // ★ 详情加载完 ⇒ 把真标题转给播放器顶栏（见 `_onDetailLoaded`）
       onLoaded: _onDetailLoaded,

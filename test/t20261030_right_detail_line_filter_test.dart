@@ -83,6 +83,7 @@ Future<void> _mount(
   WidgetTester t,
   List<Episode> eps, {
   String? currentEpisodeId,
+  ValueChanged<String>? onPickLine,
 }) async {
   await t.binding.setSurfaceSize(const Size(1280, 800));
   addTearDown(() => t.binding.setSurfaceSize(null));
@@ -94,6 +95,7 @@ Future<void> _mount(
       id: '3862',
       embedded: true,
       currentEpisodeId: currentEpisodeId,
+      onPickLine: onPickLine,
     ),
   )));
   await t.pump();
@@ -105,6 +107,17 @@ Future<void> _mount(
 }
 
 void main() {
+  testWidgets('episode flags render as wrapping clickable lines and switch the episode list', (t) async {
+    final picked = <String>[];
+    await _mount(t, _episodes17x27(), onPickLine: picked.add);
+    expect(find.text('播放线路'), findsOneWidget);
+    await t.tap(find.text('BF').first);
+    await t.pump();
+    expect(picked, ['BF']);
+    expect(find.text('BF_第01集'), findsOneWidget);
+    expect(find.text('BD_第01集'), findsNothing);
+    expect(t.takeException(), isNull);
+  });
   group('episode_filter 纯函数（两渲染路径共用的判据本体）', () {
     test('effectiveFlag：合法 selectedFlag 直通', () {
       final eps = _episodes17x27();

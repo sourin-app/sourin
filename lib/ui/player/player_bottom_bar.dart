@@ -338,6 +338,9 @@ class DanmakuQuickPanelData {
     required this.onSetShowBottom,
     required this.onSetColorOnly,
     required this.onOpenAdvanced,
+    this.onOpenSearch,
+    this.onSearch,
+    this.searchKeyword = '',
     this.onAreaGuide,
     this.live,
   });
@@ -384,6 +387,9 @@ class DanmakuQuickPanelData {
 
   /// 「高级设置」⇒ 宿主打开全屏大卡片（`_openDanmakuSettings`）
   final VoidCallback onOpenAdvanced;
+  final VoidCallback? onOpenSearch;
+  final ValueChanged<String>? onSearch;
+  final String searchKeyword;
 
   /// ★ 2026-10-14（卡顿修复）：四根**可拖动**滑杆的实时值载体。
   ///
@@ -881,6 +887,7 @@ class PlayerBottomBar extends StatelessWidget {
       ValueKey<String>('t27-danmaku-quick-panel');
   static const Key danmakuQuickAdvancedKey =
       ValueKey<String>('t27-danmaku-quick-advanced');
+  static const Key danmakuQuickSearchKey = ValueKey('danmaku-quick-search');
 
   /// 三类弹幕「一键开关」的 key（门禁抓手，按 id 对齐）
   static const Key danmakuQuickScrollKey =
@@ -913,6 +920,21 @@ class PlayerBottomBar extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (d.onOpenSearch != null) ...[
+          PopoverRow(
+            key: danmakuQuickSearchKey,
+            label: '搜索弹幕',
+            hint: '搜索 / 选集绑定',
+            onTap: d.onOpenSearch!,
+          ),
+          if (d.onSearch != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(Sp.x3, 0, Sp.x3, Sp.x3),
+              child: _QuickDanmakuSearch(
+                keyword: d.searchKeyword, onSearch: d.onSearch!),
+            ),
+          const PopoverDivider(),
+        ],
         const PopoverGroupLabel('显示哪几类'),
         // ① 按类型过滤 —— 四枚一键开关（滚动 / 顶部 / 底部 / 彩色）
         //
@@ -2650,4 +2672,35 @@ class _DanmakuSendInlineState extends State<DanmakuSendInline> {
       ],
     );
   }
+}
+
+class _QuickDanmakuSearch extends StatefulWidget {
+  const _QuickDanmakuSearch({required this.keyword, required this.onSearch});
+  final String keyword;
+  final ValueChanged<String> onSearch;
+  @override
+  State<_QuickDanmakuSearch> createState() => _QuickDanmakuSearchState();
+}
+
+class _QuickDanmakuSearchState extends State<_QuickDanmakuSearch> {
+  late final _controller = TextEditingController(text: widget.keyword);
+  @override
+  void dispose() { _controller.dispose(); super.dispose(); }
+  void _submit() {
+    final keyword = _controller.text.trim();
+    if (keyword.isNotEmpty) widget.onSearch(keyword);
+  }
+  @override
+  Widget build(BuildContext context) => TextFormField(
+    controller: _controller,
+    textInputAction: TextInputAction.search,
+    onFieldSubmitted: (_) => _submit(),
+    style: const TextStyle(color: Colors.white, fontSize: FontSizes.sm),
+    decoration: InputDecoration(
+      hintText: '输入片名', hintStyle: const TextStyle(color: Colors.white60),
+      isDense: true, contentPadding: const EdgeInsets.all(Sp.x3),
+      suffixIcon: IconButton(tooltip: '搜索弹幕', onPressed: _submit,
+        icon: const Icon(AppIcons.search, color: Colors.white)),
+    ),
+  );
 }

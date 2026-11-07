@@ -985,7 +985,7 @@ final _arrowKeys = <LogicalKeyboardKey>{
 
 class _PlayerPageState extends State<PlayerPage>
     with SingleTickerProviderStateMixin
-    implements MediaSession, MediaProgressSession, LivePlaybackTarget {
+    implements MediaSession, MediaProgressSession, MediaLineSession, LivePlaybackTarget {
   late final Player _player;
   late final VideoController _controller;
 
@@ -2328,6 +2328,9 @@ class _PlayerPageState extends State<PlayerPage>
     _reportEpisodeChanged();
     unawaited(_reload());
   }
+
+  @override
+  void selectEpisodeLine(String flag) => _pickEpisodeFlag(flag);
   late String _provider = widget.provider;
   late String _contentId = widget.id;
   late String? _sourceCode = widget.sourceCode;
@@ -2578,6 +2581,19 @@ class _PlayerPageState extends State<PlayerPage>
   /// 弹幕设置面板是否打开
   bool _danmakuSheetOpen = false;
   bool _danmakuSearchOpen = false;
+
+  void _openDanmakuSearch([String? keyword]) {
+    _popover.close();
+    if (keyword != null) _danmakuSearchDraft.keyword = keyword.trim();
+    setState(() {
+      _danmakuSheetOpen = false;
+      _biliSheetOpen = false;
+      _danmakuSearchOpen = true;
+    });
+    if (keyword != null && keyword.trim().isNotEmpty) {
+      unawaited(_searchDanmaku(keyword));
+    }
+  }
 
   /// 独立弹幕搜索页的会话内草稿（第 11/12 项：关闭再打开不丢关键词与选择）。
   ///
@@ -18618,6 +18634,10 @@ class _PlayerPageState extends State<PlayerPage>
                           onSetColorOnly: _setDanmakuColorOnly,
                           onAreaGuide: _setDanmakuAreaGuide,
                           onOpenAdvanced: _openDanmakuSettings,
+                          onOpenSearch: _openDanmakuSearch,
+                          onSearch: _openDanmakuSearch,
+                          searchKeyword: _danmakuSearchDraft.keyword.isNotEmpty
+                              ? _danmakuSearchDraft.keyword : _liveTitle.trim(),
                         ),
                         /*
                      * ★★★ task-22 P1-5 / P1-11：画面缩放
@@ -19070,11 +19090,6 @@ class _PlayerPageState extends State<PlayerPage>
                           onSetArea: _setDanmakuArea,
                           onReload: _reloadDanmaku,
                           onOpenBili: _openBiliSheet,
-                          onOpenSearch: () => setState(() {
-                            _danmakuSheetOpen = false;
-                            _biliSheetOpen = false;
-                            _danmakuSearchOpen = true;
-                          }),
                           // ★★★ 2026-10-14（Owner）：「搜索番剧」区的两个回调
                           //   面板只把关键词 / 选中的一条递过来，网络与状态全在宿主。
                           onSearch: (kw) => unawaited(_searchDanmaku(kw)),
@@ -19149,8 +19164,8 @@ class _PlayerPageState extends State<PlayerPage>
                           onBack: () {
                             setState(() {
                               _danmakuSearchOpen = false;
-                              _danmakuSheetOpen = true;
                             });
+                            _popover.toggle('danmakuQuick');
                             _holdSheetGuard();
                           },
                           onClose: () {

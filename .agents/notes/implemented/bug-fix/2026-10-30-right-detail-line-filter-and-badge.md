@@ -2,6 +2,8 @@
 
 Status: implemented
 
+2026-11-08 applicable update: [direct player controls](../feature/2026-11-08-player-direct-controls.md) partially supersedes the playback-only line choice described here. The pane provides a wrapping line selector and temporary browsing choice; player reports resynchronize it. Filtering, episode counts and the full episode-list contract remain in force.
+
 Independent: 与 `2026-10-29-episode-panel-flattened-all-lines.md`（选集**抽屉**那条，
 已修）同根因的另一条渲染路径 —— Owner 图5/图8 证明右侧**详情栏**不走 PlayerEpisodePanel。
 

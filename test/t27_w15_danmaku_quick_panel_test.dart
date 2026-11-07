@@ -39,6 +39,8 @@ import 'package:sourin_spike/ui/player/player_popover.dart';
 
 class _Spy {
   int advanced = 0;
+  int searchOpened = 0;
+  final searches = <String>[];
   final List<double> fontScale = <double>[];
   final List<double> opacity = <double>[];
   int showScroll = 0;
@@ -48,55 +50,58 @@ class _Spy {
 }
 
 PlayerBottomBar _bar(_Spy spy, PopoverController controller) => PlayerBottomBar(
-      controller: controller,
-      playing: true,
-      positionListenable: ValueNotifier<Duration>(Duration.zero),
-      duration: const Duration(minutes: 24),
-      isLive: false,
-      rate: 1.0,
-      volume: 60,
-      muted: false,
-      fullscreen: false,
-      onTogglePlay: () {},
-      onSeek: (_) {},
-      onVolume: (_) {},
-      onToggleMute: () {},
-      onRate: (_) {},
-      onToggleFullscreen: () {},
-      onEpisodes: () {},
-      hasEpisodes: false,
-      showEpisodeNav: false,
-      onNext: () {},
-      hasNext: false,
-      more: const PlayerMoreMenuData(groups: []),
-      streams: const <StreamCandidate>[
-        StreamCandidate(url: 'https://a/1.m3u8'),
-        StreamCandidate(url: 'https://a/2.m3u8'),
-      ],
-      danmakuEnabled: false,
-      danmakuBusy: false,
-      onDanmakuToggle: () {},
-      onDanmakuSettings: () {},
-      danmakuQuick: DanmakuQuickPanelData(
-        fontScale: 1.0,
-        opacity: 1.0,
-        speed: 8.0,
-        area: 1.0,
-        showScroll: true,
-        showTop: true,
-        showBottom: true,
-        colorOnly: false,
-        onSetFontScale: spy.fontScale.add,
-        onSetOpacity: spy.opacity.add,
-        onSetSpeed: (_) {},
-        onSetArea: (_) {},
-        onSetShowScroll: (_) => spy.showScroll++,
-        onSetShowTop: (_) => spy.showTop++,
-        onSetShowBottom: (_) => spy.showBottom++,
-        onSetColorOnly: (_) => spy.colorOnly++,
-        onOpenAdvanced: () => spy.advanced++,
-      ),
-    );
+  controller: controller,
+  playing: true,
+  positionListenable: ValueNotifier<Duration>(Duration.zero),
+  duration: const Duration(minutes: 24),
+  isLive: false,
+  rate: 1.0,
+  volume: 60,
+  muted: false,
+  fullscreen: false,
+  onTogglePlay: () {},
+  onSeek: (_) {},
+  onVolume: (_) {},
+  onToggleMute: () {},
+  onRate: (_) {},
+  onToggleFullscreen: () {},
+  onEpisodes: () {},
+  hasEpisodes: false,
+  showEpisodeNav: false,
+  onNext: () {},
+  hasNext: false,
+  more: const PlayerMoreMenuData(groups: []),
+  streams: const <StreamCandidate>[
+    StreamCandidate(url: 'https://a/1.m3u8'),
+    StreamCandidate(url: 'https://a/2.m3u8'),
+  ],
+  danmakuEnabled: false,
+  danmakuBusy: false,
+  onDanmakuToggle: () {},
+  onDanmakuSettings: () {},
+  danmakuQuick: DanmakuQuickPanelData(
+    fontScale: 1.0,
+    opacity: 1.0,
+    speed: 8.0,
+    area: 1.0,
+    showScroll: true,
+    showTop: true,
+    showBottom: true,
+    colorOnly: false,
+    onSetFontScale: spy.fontScale.add,
+    onSetOpacity: spy.opacity.add,
+    onSetSpeed: (_) {},
+    onSetArea: (_) {},
+    onSetShowScroll: (_) => spy.showScroll++,
+    onSetShowTop: (_) => spy.showTop++,
+    onSetShowBottom: (_) => spy.showBottom++,
+    onSetColorOnly: (_) => spy.colorOnly++,
+    onOpenAdvanced: () => spy.advanced++,
+    onOpenSearch: () => spy.searchOpened++,
+    onSearch: spy.searches.add,
+    searchKeyword: '当前作品',
+  ),
+);
 
 Future<void> _pump(
   WidgetTester tester,
@@ -111,10 +116,8 @@ Future<void> _pump(
   await tester.pumpWidget(
     mui.MaterialApp(
       theme: theme,
-      builder: (context, child) => AppThemeHost(
-        data: theme,
-        child: child ?? const SizedBox(),
-      ),
+      builder: (context, child) =>
+          AppThemeHost(data: theme, child: child ?? const SizedBox()),
       home: mui.Scaffold(
         body: mui.Material(
           type: mui.MaterialType.transparency,
@@ -157,11 +160,40 @@ Future<void> _openPanel(
   await tester.tap(find.byKey(PlayerBottomBar.danmakuSettingsKey));
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 300));
-  expect(find.byKey(PlayerBottomBar.danmakuQuickPanelKey), findsOneWidget,
-      reason: '前置：悬浮窗必须已经弹出来');
+  expect(
+    find.byKey(PlayerBottomBar.danmakuQuickPanelKey),
+    findsOneWidget,
+    reason: '前置：悬浮窗必须已经弹出来',
+  );
 }
 
 void main() {
+  testWidgets(
+    'search is available in the first floating panel without advanced settings',
+    (t) async {
+      final spy = _Spy();
+      final controller = PopoverController();
+      addTearDown(controller.dispose);
+      await _openPanel(t, spy, controller);
+      final field = find.descendant(
+        of: find.byKey(PlayerBottomBar.danmakuQuickPanelKey),
+        matching: find.byType(mui.TextFormField),
+      );
+      expect(field, findsOneWidget);
+      await t.enterText(field, '另一部作品');
+      await t.testTextInput.receiveAction(TextInputAction.search);
+      expect(spy.searches, ['另一部作品']);
+      await t.enterText(field, '  按钮搜索  ');
+      await t.tap(find.byTooltip('搜索弹幕'));
+      expect(spy.searches, ['另一部作品', '按钮搜索']);
+      await t.enterText(field, '  ');
+      await t.tap(find.byTooltip('搜索弹幕'));
+      expect(spy.searches, hasLength(2));
+      await t.tap(find.byKey(PlayerBottomBar.danmakuQuickSearchKey));
+      expect(spy.searchOpened, 1);
+      expect(spy.advanced, 0);
+    },
+  );
   testWidgets('Q1 点齿轮 ⇒ 弹出轻量悬浮窗（贴按钮的小卡片）', (t) async {
     final spy = _Spy();
     final controller = PopoverController();
@@ -191,8 +223,11 @@ void main() {
       const Offset(40, 0),
     );
     await t.pump();
-    expect(spy.fontScale, isNotEmpty,
-        reason: '★★ 拖字号滑杆必须回调宿主 —— 这是「弹出来直接操作」的判据');
+    expect(
+      spy.fontScale,
+      isNotEmpty,
+      reason: '★★ 拖字号滑杆必须回调宿主 —— 这是「弹出来直接操作」的判据',
+    );
 
     await t.drag(
       find.byKey(PlayerBottomBar.danmakuQuickOpacityKey),
@@ -231,7 +266,10 @@ void main() {
 
     await t.tap(find.byKey(PlayerBottomBar.danmakuQuickAdvancedKey));
     await t.pump();
-    expect(spy.advanced, 1,
-        reason: '★★ 「高级设置」必须把用户送进全屏大卡片（宿主 _openDanmakuSettings）');
+    expect(
+      spy.advanced,
+      1,
+      reason: '★★ 「高级设置」必须把用户送进全屏大卡片（宿主 _openDanmakuSettings）',
+    );
   });
 }

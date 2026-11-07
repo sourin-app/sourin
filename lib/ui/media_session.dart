@@ -48,6 +48,11 @@ abstract interface class MediaProgressSession {
   ValueListenable<MediaPlaybackProgress?> get playbackProgress;
 }
 
+/// Windowed detail controls reuse the player's episode matching and resume path.
+abstract interface class MediaLineSession {
+  void selectEpisodeLine(String flag);
+}
+
 /// 播放请求 —— 「要播哪一个作品的哪一集/哪条线路」
 ///
 /// ⚠️ 必须把**当前源 + 该源下的剧集列表 + 剧集下标**一起交给播放器：

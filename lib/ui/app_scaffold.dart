@@ -21,6 +21,8 @@
 
 import 'package:flutter/widgets.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'theme/miuix_palette.dart';
 
 /// 页面外壳
 class AppScaffold extends StatelessWidget {
@@ -92,5 +94,11 @@ class AppThemeHost extends StatelessWidget {
   final Widget child;
 
   @override
-  Widget build(BuildContext context) => Theme(data: data, child: child);
+  Widget build(BuildContext context) => Theme(
+    data: data,
+    child: miuix.MiuixTheme(
+      data: miuixThemeData(data.brightness),
+      child: child,
+    ),
+  );
 }

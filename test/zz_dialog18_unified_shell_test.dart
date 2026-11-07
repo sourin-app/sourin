@@ -23,12 +23,10 @@ import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
 import 'package:sourin_spike/design/widgets/app_glass_dialog.dart';
 import 'package:sourin_spike/design/widgets/app_text_button.dart';
-import 'package:sourin_spike/design/icons/app_icons.dart';
 import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/settings/theme_page.dart';
 import 'package:sourin_spike/ui/settings_page.dart';
-import 'package:sourin_spike/ui/theme/theme_pack.dart';
 import 'package:sourin_spike/ui/widgets/backup_panel.dart';
 import 'package:sourin_spike/ui/widgets/download_panel.dart';
 import 'package:sourin_spike/ui/widgets/overlay_motion.dart';
@@ -530,94 +528,22 @@ void main() {
     });
 
     // ── ⑤⑥ theme「粘贴主题包 JSON」+「单套大预览」──
-    testWidgets('⑤⑥ theme 粘贴 JSON / 单套大预览：真点两处入口读返回值与顺序', (t) async {
+    testWidgets('appearance has direct mode selection without theme pack dialogs', (t) async {
       await t.pumpWidget(MaterialApp(
         theme: AppTheme.themeFor(Brightness.dark),
-        themeAnimationDuration: Duration.zero,
         home: const Scaffold(body: ThemeSettingsPage()),
       ));
-      await t.pump();
-      await t.pump(const Duration(milliseconds: 600));
-      expect(t.takeException(), isNull, reason: '前提：主题页能挂起来');
-
-      // ⑤ 粘贴 JSON：入口是页面上的药丸（可能在折叠线以下 ⇒ 先滚到可见）
-      await t.ensureVisible(find.text('粘贴 JSON'));
-      await t.pump();
-      await t.tap(find.text('粘贴 JSON'));
-      await t.pump();
-      await t.pump(const Duration(milliseconds: 900));
-      expect(find.text('粘贴主题包 JSON'), findsOneWidget, reason: '★ 标题逐字');
-      expect(find.byType(TextField), findsOneWidget,
-          reason: '★★ 多行输入框必须真的建出来（机制② 就地补 Material 宿主）');
-      // 多行输入框的输入区必须左对齐（机制⑤ 的**视觉语义**）
-      final merge = t.widgetList<DefaultTextStyle>(find.descendant(
-        of: find.byType(AppGlassDialog),
-        matching: find.byType(DefaultTextStyle),
-      ));
-      expect(merge.any((d) => d.textAlign == TextAlign.left), isTrue,
-          reason: '★★ 外壳内容区默认 textAlign: center ⇒ 必须显式左对齐，'
-              '否则 JSON 粘贴框里的多行内容会被逐行居中');
-
-      // 取消 ⇒ pop(null) ⇒ 调用方 `if (src == null …) return;` ⇒ 不许导入
-      final packsBefore = ThemePackStore.loadAll().length;
-      await t.tap(find.text('取消'));
-      await t.pump();
-      await t.pump(const Duration(milliseconds: 900));
-      expect(find.text('粘贴主题包 JSON'), findsNothing, reason: '★ 取消应关掉');
-      expect(ThemePackStore.loadAll().length, packsBefore,
-          reason: '★★ 取消（pop null）**不能**触发导入 —— 改前的判据 `src == null` 一字未改');
-
-      // ⑥ 单套大预览：卡片右侧的眼睛图标
-      final eye = find.byIcon(AppIcons.visibility_outlined);
-      /*
-       * ★ 分类判据（B1 表）：**入口容器必须存在，缺的只允许是"数据"**。
-       * ```text
-       * ThemeGrid 不存在            → 主题区块被删/坏了 ⇒ 必须红（结构回归）
-       * ThemeGrid 在但没有卡片       → 本机没装主题包 ⇒ 环境缺件，允许 skip
-       * ```
-       * 没有这一句，整个主题区块被删掉时这条用例会安静地 skip 过去。
-       */
-      expect(find.byType(ThemeGrid), findsOneWidget,
-          reason: '★ 主题区块必须渲染（ThemeGrid）—— 少了它是结构回归，不是缺件');
-      if (eye.evaluate().isEmpty) {
-        /*
-         * ⚠️ 覆盖边界（如实标注，不造假绿）：
-         * 预览入口只在**已有主题包卡片**时渲染（`ThemeGrid` 的
-         * `if (onPreview != null)` 分支，卡片来自 `ThemePackStore.loadAll()`）。
-         * 空数据 + 隔离 UiPrefs 环境下没有卡片 ⇒ 入口不可达。
-         * 该处迁移（机制① 宽度显式 560、机制⑤ 左对齐、Material 宿主）的
-         * 等价性已由 `_previewPack` 源码语义 + ① 组仪器自检（Switch 必须补宿主）
-         * 与 ⑬ download 的同形态左对齐断言覆盖；此处不弱化断言。
-         */
-        // 环境缺件（数据依赖）：本机没装主题包 ⇒ ThemeGrid 不渲染卡片。
-        // ★ 只允许这一类 skip；若已装包却仍渲染不出，应由下面 findsOneWidget 变红。
-        markTestSkipped('环境缺件：本机未安装任何主题包（ThemeGrid 无卡片可点）；'
-            '替代覆盖：主题预览的结构断言与本文件 ① 外壳 Material 探针；'
-            '该处宽度/左对齐/Material 宿主已由 ① 组仪器自检与 ⑬ 同形态断言覆盖。');
-        return;
-      }
-      final selectedBefore = ThemePackStore.selectedId;
-      await t.ensureVisible(eye.first);
-      await t.pump();
-      await t.tap(eye.first);
-      await t.pump();
-      await t.pump(const Duration(milliseconds: 900));
-      expect(find.textContaining('预览 · '), findsOneWidget,
-          reason: '★ 预览弹窗标题（改前是自绘 Text + 调色板前景色）');
-      expect(find.text('用这套'), findsOneWidget, reason: '★ 两个入口都在（关闭 / 用这套）');
-
-      // 「用这套」= 先 pop 再切主题（顺序不能反）
-      await t.tap(find.text('用这套'));
-      await t.pump();
-      await t.pump(const Duration(milliseconds: 900));
-      expect(find.textContaining('预览 · '), findsNothing,
-          reason: '★★ 「用这套」必须先关窗再切主题 —— 否则切主题引发的整树重建'
-              '会打在已 pop 的路由上');
-      expect(ThemePackStore.selectedId, isNot(selectedBefore),
-          reason: '★★ 副作用：主题真的切了（`_pickPack` → `ThemePackStore.select`）');
+      await t.pumpAndSettle();
+      expect(find.text('粘贴 JSON'), findsNothing);
+      expect(find.byType(ThemeGrid), findsNothing);
+      await t.tap(find.text('浅色'));
+      await t.pumpAndSettle();
+      expect(AppTheme.mode, AppThemeMode.light);
+      expect(find.byType(AppGlassDialog), findsNothing);
+      expect(find.text('界面预览'), findsOneWidget);
+      expect(t.takeException(), isNull);
     });
 
-    // ── ① settings「_promptText」（含 TextField；2 个生产调用点之一：安装 JS 插件）──
     testWidgets('① settings _promptText：真点「安装 JS 插件」→ 取消 ⇒ null（不装）', (t) async {
       if (!_coreReady) {
         // 环境缺件 ⇒ 允许 skip；点名缺件与替代覆盖

@@ -15,6 +15,7 @@ import '../core/ui_prefs.dart';
 import 'app_palette.dart';
 import 'theme/theme_pack.dart';
 import 'theme_bridge.dart';
+import 'theme/miuix_palette.dart';
 
 export 'theme_bridge.dart' show LightTokens;
 
@@ -93,149 +94,13 @@ class AppTheme {
     }
   }
 
-  /// 当前生效的主题包
-  ///
-  /// ⚠️ 用户选了主题包就用它（它自带明暗），否则退回「跟随系统 / 浅色 / 深色」
-  ///    这套三态。这就是两者的衔接点：主题包是**叠加**在明暗之上的，
-  ///    不是替换 —— 删掉主题包选择就回到原来的三态行为。
+  /// Legacy pack files stay available for explicit previews and export only.
   static ThemePack get pack => ThemePackStore.current();
 
-  /// 该明暗下的语义色（供需要「不建整套 ThemeData 也能取色」的地方用）
-  ///
-  /// ══════════════════════════════════════════════════════════════════
-  /// ★★★ T7（2026-10-17）：**必须与 [themeFor] 同源**，否则主题割裂
-  /// ══════════════════════════════════════════════════════════════════
-  ///
-  /// # 改前的缺陷（Owner 第 11 条：「主题非常的割裂」）
-  ///
-  /// 改前这里写的是：
-  /// ```dart
-  /// final p = selectedPack;
-  /// if (p != null && p.brightness == b) return p.palette;   // ← 只在「恰好相等」时用包
-  /// return b == Brightness.light ? _buildLightColors() : AppPalette.dark;
-  /// ```
-  /// 也就是**只有包与传入的 b 恰好同明暗**才用包，否则**整个包被忽略**、
-  /// 按 `b` 返回内置亮/暗。而 [themeFor] 走 [themeForPack]，是
-  /// `pack?.brightness ?? b` —— **包说了算**。
-  /// ⇒ 两者**优先级相反**，一旦 `dsh.theme` 与所选主题包的 `brightness`
-  ///   冲突，它们就返回**相反**的明暗。
-  ///
-  /// # 实测读数（`.probe/probe_tests/zz_t7d_rootcause_test.dart`，纯函数）
-  ///
-  /// ```text
-  /// dsh.theme=dark  pack=builtin.daylight | resolve=dark | pack?.brightness=light
-  ///   | themeFor().brightness=light   ← 包说了算（浅）
-  ///   | floorColor=#0A0A0A            ← b 说了算（深）  ★ 相反
-  /// ```
-  /// 真机像素（`.probe/shots/t7_dark_home.png`，1444x845）：
-  /// ```text
-  /// y=8   标题栏 = (27,27,27)      深 ✓
-  /// y=42  内容区 = (238,240,246)   = #EEF0F6 ★ 浅 ✗ ⇒ 与标题栏 13.6:1 割裂
-  /// ```
-  ///
-  /// # 为什么症状长成「标题栏深、内容区浅」
-  ///
-  /// 标题栏与窗口外框**不经过**这里 —— 它们走 [floorColor] → 本方法，
-  /// 而更外层还有 `MaterialApp.builder` 那层 `ColoredBox(floorColor)`
-  /// （见 `shell.dart`）。但**内容区**（`AppScaffold` / `Scaffold` /
-  /// `Material` 的默认底色）取的是 **`MaterialApp.theme`**，也就是
-  /// [themeFor] 的结果（浅）。⇒ 两层各取一个源，必然割裂。
-  ///
-  /// # 修法：优先级**唯一** —— 与 [themeForPack] 逐字对齐
-  ///
-  /// ```dart
-  /// final p = selectedPack;
-  /// if (p != null) return p.palette;        // ★ 包永远优先（自带明暗）
-  /// return b == Brightness.light ? ... : AppPalette.dark;
-  /// ```
-  /// 这样 `colorsFor(b)` 与 `themeFor(b)` 在**任何** `b` 与包组合下都同明暗，
-  /// 结构上不可能再出现「地板深、内容浅」。
-  ///
-  /// ⚠️ 不冲突时**行为逐字不变**（对照读数见上面的探针）：
-  /// ```text
-  /// dsh.theme=dark  pack=builtin.midnight（同为深） ⇒ 一致（改前也一致）
-  /// dsh.theme=light pack=builtin.daylight（同为浅） ⇒ 一致（改前也一致）
-  /// dsh.theme=dark  pack=(无)                      ⇒ 一致（改前也一致）
-  /// ```
-  /// ⇒ 只有「冲突组合」这一种情形的输出会变，而它改前本来就是错的。
-  static AppPalette colorsFor(Brightness b) {
-    // ★ 包自带明暗 ⇒ 选了包就以包为准（与 themeForPack 的
-    //   `pack?.brightness ?? b` 同一条优先级）。绝不能在这里再与 b 比一次。
-    final p = selectedPack;
-    if (p != null) return p.palette;
-    return b == Brightness.light
-        ? (_lightColors ??= _buildLightColors())
-        : AppPalette.dark;
-  }
+  static AppPalette colorsFor(Brightness b) => miuixPalette(b);
 
-  static AppPalette? _lightColors;
-
-  static AppPalette _buildLightColors() => AppPalette.light.copyWith(
-        background: LightTokens.bgBase,
-        foreground: LightTokens.textPrimary,
-        mutedForeground: LightTokens.textSecondary,
-        secondary: const Color(0xFFE8EAF0),
-        secondaryForeground: LightTokens.textPrimary,
-        muted: const Color(0xFFE8EAF0),
-        card: LightTokens.bgElevated,
-        border: LightTokens.glassStroke,
-        primary: LightTokens.brand,
-        primaryForeground: Colors.white,
-        error: LightTokens.error,
-      );
-
-  /// 该明暗下的完整 Material 主题（按用户当前的选择）
-  ///
-  /// ★★★ 2026-10-17 修（dlg-source 实测发现的真 bug）
-  ///
-  /// # 缺陷现场
-  /// ```text
-  /// 改前：themeFor(b) => themeForPack(b, selectedPack)
-  ///       而 themeForPack 无条件用 pack?.brightness ?? b
-  ///
-  /// ⇒ 用户选「樱粉」+ 模式「跟随系统」：
-  ///     系统切浅色 ⇒ 仍然返回樱粉**深色**
-  ///     系统切深色 ⇒ 同样返回樱粉**深色**
-  ///     ⇒ 两档完全一样，浅色版永远用不到
-  ///
-  /// 实测：
-  ///   selected=builtin.sakura, mode=system
-  ///   system=light => dark  ★
-  ///   system=dark  => dark
-  ///   SAME? = true
-  /// ```
-  ///
-  /// # 为什么这是 11-A 的致命伤
-  /// ```text
-  /// 11-A 补的 8 个浅色版（midnight/oled/midnightBlue/sakura/forest/
-  /// glass/neoBrutal/minimal 各一个），在「跟随系统」这条路径上
-  /// **一次都不会被用到** ⇒ 全是死代码。
-  ///
-  /// 而 ThemePackStore.siblingOf() / isDual() 早就写好了，只是没人调用。
-  /// ```
-  ///
-  /// # 修法
-  /// ```text
-  /// 先按用户传进来的明暗 b，去同家族里找**兄弟版本**：
-  ///   樱粉(深) + 系统浅色 ⇒ 樱粉·浅
-  ///   樱粉·浅 + 系统深色 ⇒ 樱粉(深)
-  ///
-  /// 找不到兄弟版本（单档家族，如某些导入的主题）⇒ 用原包
-  ///   （宁可明暗不跟随，也不要静默换成无关主题）
-  /// ```
-  static ThemeData themeFor(Brightness b) {
-    final sel = selectedPack;
-    if (sel == null) return themeForPack(b, null);
-
-    // 用户显式选了「浅色」/「深色」时，b 就是那个模式算出来的值；
-    // 选了「跟随系统」时，b 来自系统。两种情况都用 b 去挑兄弟版本。
-    final sib = ThemePackStore.siblingOf(ThemePackStore.builtins, sel);
-    if (sib != null && sib.brightness == b) {
-      return themeForPack(b, sib);
-    }
-    // 兄弟版本不对（单档家族）⇒ 用原包，保持它自己的明暗
-    return themeForPack(b, sel);
-  }
+  /// Product appearance follows the requested brightness, including old profiles.
+  static ThemeData themeFor(Brightness b) => buildAppTheme(b);
 
   /// 指定一个主题包来建主题（`themeFor` 的可注入版本）
   ///

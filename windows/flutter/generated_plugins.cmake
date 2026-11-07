@@ -4,6 +4,7 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   desktop_webview_window
+  dynamic_color
   file_selector_windows
   flutter_inappwebview_windows
   media_kit_libs_windows_video

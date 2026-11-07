@@ -49,6 +49,7 @@
 
 import 'package:flutter/widgets.dart';
 import 'package:material_ui/material_ui.dart';
+import 'theme/miuix_palette.dart';
 
 import 'app_palette.dart';
 import 'app_typeface.dart';
@@ -129,9 +130,10 @@ PageTransitionsTheme buildPageTransitionsTheme() {
 ///    函数 —— 因为要补的角色不同（浅色要反过来设 surface / onSurface / 描边）。
 ///    ★ 所以**任何一处修复都必须在另一处同步做**，否则只有一半主题被修好。
 ThemeData buildAppTheme(Brightness brightness, {ThemePack? pack}) {
+  if (pack == null) return _buildMiuix(brightness);
   final td = brightness == Brightness.light
-      ? _buildLight(pack?.palette)
-      : _buildDark(pack?.palette);
+      ? _buildLight(pack.palette)
+      : _buildDark(pack.palette);
 
   /*
    * ══════════════════════════════════════════════════════════════════
@@ -165,6 +167,32 @@ ThemeData buildAppTheme(Brightness brightness, {ThemePack? pack}) {
    *    而漂移的表现正是"某个维度在某个主题包上不生效"。
    */
   return ThemeLanguage.apply(td, pack);
+}
+
+ThemeData _buildMiuix(Brightness brightness) {
+  final c = miuixPalette(brightness);
+  final m = miuixThemeData(brightness).colors;
+  final scheme = c.toColorScheme().copyWith(
+    surfaceContainerLowest: m.background,
+    surfaceContainerLow: m.surface,
+    surfaceContainer: m.surfaceContainer,
+    surfaceContainerHigh: m.surfaceContainerHigh,
+    surfaceContainerHighest: m.surfaceContainerHighest,
+    onSurfaceVariant: m.onSurfaceSecondary,
+    outline: m.outline,
+    outlineVariant: m.dividerLine,
+    primaryContainer: m.primaryContainer,
+    onPrimaryContainer: m.onPrimaryContainer,
+    secondaryContainer: m.secondaryContainer,
+    onSecondaryContainer: m.onSecondaryContainer,
+    errorContainer: m.errorContainer,
+    onErrorContainer: m.onErrorContainer,
+    surfaceTint: Colors.transparent,
+  );
+  return _withColors(
+    _shared(ThemeData(useMaterial3: true, brightness: brightness,
+      colorScheme: scheme), c, AppTypeface.forPlatform(brightness)), c,
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════

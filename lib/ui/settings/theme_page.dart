@@ -1,52 +1,13 @@
-// ═══════════════════════════════════════════════════════════════════════
-//  二级页：主题（明暗三态 + 多套调色板 + 外部主题包）
-// ═══════════════════════════════════════════════════════════════════════
-//
-// # Owner 的两条原话，对应本页的两个区块
-//
-// > 主题如果可以做多主题就是外部插件式 或者之类的,能做的话就做一下
-//
-// ⇒ 上半部分「明暗」是原有的跟随系统 / 浅色 / 深色三态（保留，不动）；
-//   下半部分「配色」是主题包卡片网格（内置 6 套 + 可导入外部 .json）。
-//
-// ★ 为什么「明暗」与「配色」是**两个独立区块**而不是合成一个下拉
-//
-//   把两件事合成一个选择器，用户就配不出"深色 + 日间配色"这种组合，
-//   也看不出自己到底改了什么。分开之后：
-//   ```text
-//   明暗 = 这个界面是亮底还是暗底   （跟着系统的那个开关）
-//   配色 = 这个界面的具体颜色        （挑一套皮肤）
-//   ```
-//
-// # 为什么每张卡片都带一个**小预览**而不是只给名字
-//
-//   主题名是没法比较的（"森绿"和"午夜"哪个好看？）。给出缩略图之后，
-//   用户看到的是**结果**。预览用的是主题自己的调色板真色，
-//   所以卡片看起来什么样，切过去就是什么样 —— 不会"预览与实物不符"。
-//
-// # 播放器画面的处理
-//
-//   播放器画面区域**永远深色**，不跟主题变（与 player agent 的约定）。
-//   本页不做任何与播放器相关的事。
-
-import 'dart:io';
-
-import 'package:file_selector/file_selector.dart';
-import 'package:flutter/foundation.dart' show XFile;
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
+// Product appearance has one light/dark/system choice; old packs are preview-only.
 import 'package:material_ui/material_ui.dart';
 
 import '../app_theme.dart';
 import '../theme/theme_language.dart' show kDefaultRadius, kDefaultBorderWidth, kDefaultDividerThickness;
 import '../theme/theme_pack.dart';
 import '../tokens.dart';
-import '../widgets/app_toast.dart';
-import '../widgets/overlay_motion.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
 import '../../design/icons/app_icons.dart';
-import '../../design/widgets/app_glass_dialog.dart';
-import '../../design/widgets/app_text_button.dart';
 
 class ThemeSettingsPage extends StatefulWidget {
   const ThemeSettingsPage({super.key});
@@ -56,320 +17,46 @@ class ThemeSettingsPage extends StatefulWidget {
 }
 
 class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
-  /// 导入时可能出现的警告（缺字段 / 非法值 / 版本过新 …）
-  String? _warn;
-
-  /// 手动刷新主题包列表
-  ///
-  /// ⚠️ 不能靠 `setState` 刷新**应用的主题** —— `MaterialApp` 在树的顶层，
-  ///    本页 `setState` 只重画自己（那正是 `notifyThemeChanged()` 存在的理由）。
-  ///    这里 `setState` 只是重画**这张列表**，主题生效走全局通知。
-  void _reload() => setState(() {});
+  bool _previewEnabled = true;
+  void _pickMode(AppThemeMode mode) {
+    AppTheme.setMode(mode);
+    notifyThemeChanged();
+    setState(() {});
+  }
 
   @override
-  Widget build(BuildContext context) {
-    final packs = ThemePackStore.loadAll();
-    final selectedId = ThemePackStore.selectedId;
-    final picked = ThemePackStore.selectedId.isEmpty
-        ? null
-        : packs.where((p) => p.id == selectedId).firstOrNull;
-
-    return SettingsSubPage(
-      title: '主题',
-      subtitle: '明暗与配色分开设置，都即时生效',
-      children: [
-        // ── 区块 1：明暗（原有的三态，保留液态玻璃）──────────────────────
-        SettingsBlock(
-          title: '明暗',
-          trailing: Text(
-            AppTheme.mode.label,
-            style: TextStyle(
-              fontSize: FontSizes.cap,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-          ),
-          children: [
-            GlassContainer(
-              // 胶囊形 —— 与底栏同一个形状语言。
-              // ⚠️ 必须包**容器**而不是 pill：`SettingsGesturePill` 被手势配置
-              //    复用，改 pill 会让那边也跟着变玻璃，而 Owner 只要求改主题。
-              shape: const LiquidRoundedSuperellipse(borderRadius: 999),
-              quality: GlassQuality.standard,
-              // 让 pill 与玻璃边缘留呼吸空间：玻璃效果作用在**边缘**，
-              // pill 紧贴边缘会让选中高亮压住折射带，看起来像"玻璃没生效"。
-              padding: const EdgeInsets.all(Sp.x2),
-              child: Wrap(
-                spacing: Sp.x2,
-                runSpacing: Sp.x2,
-                children: [
-                  for (final m in AppThemeMode.values)
-                    SettingsGesturePill(
-                      text: m.label,
-                      selected: AppTheme.mode == m,
-                      onTap: () => _pickMode(context, m),
-                    ),
-                ],
-              ),
-            ),
-            const SizedBox(height: Sp.x3),
-            Text(
-              '「跟随系统」会随系统明暗偏好自动切换，无需重启。',
-              style: TextStyle(
-                fontSize: FontSizes.cap,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-
-        // ── 区块 2：配色（主题包网格）────────────────────────────────────
-        SettingsBlock(
-          title: '配色',
-          trailing: Text(
-            picked?.name ?? '默认',
-            style: TextStyle(
-              fontSize: FontSizes.cap,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-          ),
-          children: [
-            ThemeGrid(
-              packs: packs,
-              selectedId: selectedId,
-              onPick: (p) => _pickPack(context, p),
-              onDelete: (p) => _deletePack(context, p),
-              onPreview: (p) => _previewPack(context, p),
-            ),
-            const SizedBox(height: Sp.x3),
-            Row(children: [
+  Widget build(BuildContext context) => SettingsSubPage(
+    title: '外观',
+    subtitle: '简洁的界面，舒适的明暗',
+    children: [
+      SettingsBlock(
+        title: '显示模式',
+        children: [
+          Wrap(spacing: Sp.x3, runSpacing: Sp.x3, children: [
+            for (final mode in AppThemeMode.values)
               SettingsGesturePill(
-                text: '从文件导入',
-                selected: false,
-                onTap: () => _importFile(context),
+                text: mode.label,
+                selected: AppTheme.mode == mode,
+                onTap: () => _pickMode(mode),
               ),
-              const SizedBox(width: Sp.x2),
-              SettingsGesturePill(
-                text: '粘贴 JSON',
-                selected: false,
-                onTap: () => _pasteJson(context),
-              ),
-            ]),
-            if (_warn != null) ...[
-              const SizedBox(height: Sp.x3),
-              _Warning(text: _warn!),
-            ],
-            const SizedBox(height: Sp.x3),
-            Text(
-              '主题包是��个 JSON 文件，放在「${ThemePackStore.dir.path}」'
-              '目录下就能自动出现在上面的列表里。',
-              style: TextStyle(
-                fontSize: FontSizes.cap,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  /// 切明暗
-  ///
-  /// ★ 必须通知顶层重建：`MaterialApp` 在树的最顶层，本页在很深的子树里，
-  ///   没有共同的 State 可提升。`setState` 只会重画本页 ——
-  ///   底栏、标题栏、所有已缓存的页面都不会变色。
-  void _pickMode(BuildContext context, AppThemeMode m) {
-    AppTheme.setMode(m);
-    notifyThemeChanged();
-  }
-
-  /// 切配色
-  void _pickPack(BuildContext context, ThemePack p) {
-    ThemePackStore.select(p.id);
-    notifyThemeChanged();
-    showAppToast(context, '已切换到「${p.name}」', style: okToastStyle());
-  }
-
-  /// 打开「单套大预览」弹窗 —— **只看不换**
-  ///
-  /// ⚠️ 这里刻意**不调用** `ThemePackStore.select()`：
-  ///    预览的语义是"我先看看"，点了就切会变成"试了就换"。
-  ///    用户想换的时候点卡片本体（那条路径才切）。
-  Future<void> _previewPack(BuildContext context, ThemePack p) async {
-    await showAppDialog<void>(
-      context: context,
-      builder: (ctx) => AppGlassDialog(
-        // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
-        //   → 统一外壳。逐项等价（先读原语义，不是机械替换）：
-        //   · 返回值 `void` 不变：两个出口都是 `Navigator.pop(ctx)`（无值），
-        //     「用这套」仍是**先 pop 再 _pickPack**（顺序一字未改 —— 先关窗再
-        //     切主题，否则切主题引发的整树重建会打在已 pop 的路由上）。
-        //   · 按钮文案与顺序不变（关闭 / 用这套）。
-        //   · 宽度：content 是**固定 460 宽**的主题预览面板
-        //     （`ThemePreviewBody` 自绘 `Container(width: 460)`）⇒ 显式传
-        //     `maxWidth: 560`（§3.5 白名单档；外壳内容区可用宽 = 560 − 48 = 512
-        //     > 460 ⇒ 460 不会被夹取）。
-        //   ⚠️ 两处**有意的观感变化**（这是本次统一的目标，不是副作用）：
-        //     ① 卡片底色从 `p.palette.card`（每套主题自己的卡色）改为外壳统一
-        //        的卡片色；被预览的主题色仍由 ThemePreviewBody 内部自绘的
-        //        `p.background` 完整展示（就是那块 460 宽的预览），语义不丢。
-        //     ② 内容内边距从 0 改为外壳的 24/22/24/16（§3.5 规范值）。
-        //     这两条原先是登记为「待组件补 padding/backgroundColor 参数」的
-        //     R4-EXCEPTION；本轮按「弹窗样式不统一」的口径收拢，残留差异
-        //     已写进决策笔记。
-        //   ⚠️ 必须补 Material 宿主：预览里有 2 个 `Switch`，实测抛
-        //     「_MaterialSwitch widgets require a Material widget ancestor」
-        //     （见 test/zz_dialog18_unified_shell_test.dart 的仪器自检）。
-        maxWidth: 560,
-        title: '预览 · ${p.name}',
-        content: Material(
-          type: MaterialType.transparency,
-          child: ThemePreviewBody(pack: p),
-        ),
-        actions: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            AppTextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('关闭'),
-            ),
-            const SizedBox(width: Sp.x1),
-            AppTextButton(
-              // 「用这套」是唯一会真正切换的入口，并且立即关掉弹窗
-              onPressed: () {
-                Navigator.pop(ctx);
-                _pickPack(context, p);
-              },
-              foregroundColor: Theme.of(ctx).colorScheme.primary,
-              child: const Text('用这套'),
-            ),
-          ],
-        ),
+          ]),
+          const SizedBox(height: Sp.x4),
+          Text('跟随系统会自动切换明暗，所有页面即时生效。',
+            style: TextStyle(fontSize: FontSizes.sm,
+              color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        ],
       ),
-    );
-  }
+      SettingsBlock(title: '界面预览', children: [
+        SettingsGestureToggle(label: '试试开关', hint: '预览当前外观的控件样式',
+          value: _previewEnabled,
+          onChanged: (value) => setState(() => _previewEnabled = value)),
+      ]),
+    ],
+  );
 
-  void _deletePack(BuildContext context, ThemePack p) {
-    final ok = ThemePackStore.delete(p);
-    if (!ok) {
-      showAppToast(context, '内置主题不可删除', style: errToastStyle());
-      return;
-    }
-    notifyThemeChanged();
-    _reload();
-    showAppToast(context, '已删除「${p.name}」');
-  }
-
-  Future<void> _importFile(BuildContext context) async {
-    // ⚠️ 选文件器在 Linux/部分环境下不可用；捕获异常并提示，
-    //    不要让"没装那个平台插件"变成"点一下就崩"。
-    XFile? pickedFile;
-    try {
-      pickedFile = await openFile(acceptedTypeGroups: [
-        const XTypeGroup(label: '主题包', extensions: ['json']),
-      ]);
-    } catch (e) {
-      if (!mounted) return;
-      showAppToast(context, '无法打开文件选择器：$e', style: errToastStyle());
-      return;
-    }
-    if (pickedFile == null || !mounted) return;
-    final r = ThemePackStore.importFromFile(pickedFile);
-    notifyThemeChanged();
-    _reload();
-    _applyImport(context, r, pickedFile.path);
-  }
-
-  Future<void> _pasteJson(BuildContext context) async {
-    final ctl = TextEditingController();
-    final src = await showAppDialog<String>(
-      context: context,
-      builder: (ctx) => AppGlassDialog(
-        // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
-        //   → 统一外壳。逐项等价（先读原语义，不是机械替换）：
-        //   · 返回值 `String?` 语义完全不变：取消 = `Navigator.pop(ctx)`（**null**，
-        //     调用方 `if (src == null || !mounted) return;` 一字未改）；
-        //     导入 = `pop(ctx, ctl.text)`（**空串也是有效返回值**，照旧会去
-        //     importFromString —— 不要顺手加"空就不返回"的判断，那是行为变更）。
-        //   · `ctl.dispose()` 仍在 await 之后（顺序不变）。
-        //   · 宽度：content 是**固定 460 宽**的多行输入框 ⇒ 显式传
-        //     `maxWidth: 560`（§3.5 白名单档；内容区可用宽 512 > 460 不夹取）。
-        //   ⚠️ 两条能力缺口在原处补齐（**不改共享组件** —— 它不在本项写入范围）：
-        //     ① 机制②：外壳内容区零 Material 宿主，实测 TextField 抛
-        //        「TextField widgets require a Material widget ancestor」
-        //        ⇒ 就地包一层 `MaterialType.transparency`（只作光标/选择手柄/
-        //        墨水的宿主，不画底色、不裁剪，外壳视觉不变）。
-        //     ② 机制⑤：外壳内容区 `DefaultTextStyle` 写死 `textAlign: center`，
-        //        多行输入框的内容会逐行居中 ⇒ 显式 merge 回左对齐。
-        maxWidth: 560,
-        title: '粘贴主题包 JSON',
-        content: Material(
-          type: MaterialType.transparency,
-          child: DefaultTextStyle.merge(
-            textAlign: TextAlign.left,
-            child: SizedBox(
-              width: 460,
-              child: TextField(
-                controller: ctl,
-                maxLines: 10,
-                minLines: 6,
-                decoration: const InputDecoration(
-                  hintText: '{\n  "name": "我的主题",\n  "brightness": "dark",\n'
-                      '  "colors": { "primary": "#8ED9A8" }\n}',
-                ),
-              ),
-            ),
-          ),
-        ),
-        actions: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            AppTextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('取消'),
-            ),
-            const SizedBox(width: Sp.x1),
-            AppTextButton(
-              onPressed: () => Navigator.pop(ctx, ctl.text),
-              foregroundColor: Theme.of(ctx).colorScheme.primary,
-              child: const Text('导入'),
-            ),
-          ],
-        ),
-      ),
-    );
-    ctl.dispose();
-    if (src == null || !mounted) return;
-    final r = ThemePackStore.importFromString(src);
-    notifyThemeChanged();
-    _reload();
-    _applyImport(context, r, '粘贴的 JSON');
-  }
-
-  /// 导入后的反馈：**先说清楚发生了什么，再说成功/失败**
-  ///
-  /// ⚠️ 之所以要分开：一份缺字段的主题包是**可用**的（缺的用默认值），
-  ///   如果只弹「导入成功」，用户会以为每个字段都按他写的生效了。
-  void _applyImport(BuildContext context, ThemePackResult r, String from) {
-    setState(() => _warn = r.warnings.isEmpty ? null : r.warnings.join('\n'));
-    if (r.warnings.isEmpty) {
-      showAppToast(context, '已导入「${r.pack.name}」', style: okToastStyle());
-    } else {
-      // 有警告但仍可用 —— 明确说"已导入 + 有 N 处被忽略"
-      showAppToast(
-        context,
-        '已导入「${r.pack.name}」，但有 ${r.warnings.length} 处被忽略',
-        style: errToastStyle(),
-      );
-    }
-    debugPrint('[THEME] 从 $from 导入：${r.warnings.join(' / ')}');
-  }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  主题卡片网格
-// ═══════════════════════════════════════════════════════════════════════
-
+// Legacy pack previews remain usable by the explicit preview tooling.
 class ThemeGrid extends StatelessWidget {
   const ThemeGrid({
     required this.packs,
@@ -1078,38 +765,3 @@ class ThemePreviewBody extends StatelessWidget {
   }
 }
 
-class _Warning extends StatelessWidget {
-  const _Warning({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(Sp.x3),
-      decoration: BoxDecoration(
-        // 错误容器色：比实心红淡得多，但仍能一眼认出"有问题"
-        color: cs.errorContainer,
-        borderRadius: Radii.rSm,
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(AppIcons.info_outline, size: 16, color: cs.onErrorContainer),
-          const SizedBox(width: Sp.x2),
-          Expanded(
-            child: Text(
-              text,
-              style: TextStyle(
-                fontSize: FontSizes.cap,
-                color: cs.onErrorContainer,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}

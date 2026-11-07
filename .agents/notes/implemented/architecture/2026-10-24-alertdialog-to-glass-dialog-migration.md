@@ -2,13 +2,15 @@
 
 Status: implemented
 
+Partially superseded by: [Miuix appearance](../feature/2026-11-08-miuix-appearance.md). 适用范围：除主题页导入与大预览外的现行弹窗契约；主题页只提供明暗模式与内联控件预览，旧主题弹窗的历史验收读数不代表现行入口。
+
 本篇与既有弹窗笔记的关系：接在 [弹窗外壳统一与 hover 粘滞位](../feature/2026-10-19-dialog-shell-unification-and-hover-sticky-bit.md) 之后，是其「统一外壳已建立、残留待收拢」的**续作**；宽度夹取的实现细节见 [外壳宽度夹取不是高度](../bug-fix/2026-10-21-dialog-shell-width-clamp-not-height.md)；实机像素验收方法沿用 [R4 弹窗设备像素验收](../testing/2026-10-20-r4-dialog-device-pixel-acceptance.md)。三篇均为**部分重叠**：本篇只新增"13 处残留调用点如何逐处等价迁移"，未推翻其中任何决定，故三篇全部保留、不归档。
 
 ## Problem
 
 仓库已有统一弹窗外壳：`lib/ui/widgets/app_dialog_shell.dart` 的 `AppDialogShell`（文件头写明「全仓统一弹窗外壳 —— 所有 AppDialog 必须走这里」），以及基于它封装的 `AppGlassDialog`（`lib/design/widgets/app_glass_dialog.dart`）。规范见 `docs/AGENTS.md` §3.5：宽度默认 560（窄 460／宽 820 须显式传并注释原因）、最大高度**绝对值 620** 再按视口夹取、圆角 `Radii.rLg`、标题栏 title+subtitle+右侧关闭、内容区滚动、底部 actions 可选。
 
-但仍有 13 处生产代码直接使用 Material 原生 `AlertDialog(`：`settings_page.dart` 4、`backup_panel.dart` 3、`sync_panel.dart` 2、`theme_page.dart` 2、`download_panel.dart` 1、`tvbox_source_panel.dart` 1。样式与动效因此与其余弹窗不一致——这正是 Owner 报的「全局弹窗样式统一遗漏」。
+但仍有 13 处生产代码直接使用 Material 原生 `AlertDialog(`：`settings_page.dart` 4、`backup_panel.dart` 3、`sync_panel.dart` 2、主题页的旧入口 2（现已由 Miuix 外观替代）、`download_panel.dart` 1、`tvbox_source_panel.dart` 1。样式与动效因此与其余弹窗不一致——这正是 Owner 报的「全局弹窗样式统一遗漏」。
 
 `test/zz_t66_r4_dialog_consistency_test.dart` 早已用「逐处豁免登记」的方式记录了这 13 处**为什么当时不能换**，每条都写明具体机制，不是笼统的"待办"。
 
@@ -41,7 +43,7 @@ Status: implemented
 代价与边界：
 
 - 机制②/③/⑤ 的补法**在每个调用点重复**（透明 `Material` 包了 6 处以上）。这是"不改共享组件"这一范围约束的直接代价；后续若补组件参数，可逐处删掉这层包装。
-- `theme_page` 的两处**有意观感变化**：卡片底色从每套主题自己的 `p.palette.card` 改为外壳统一卡片色，内容内边距从 0 改为外壳的 24/22/24/16。这是第 18 项的目标而非副作用，但**单测抓不到"变丑"**，必须进批末实机截图验收。
+- 已退役的 `theme_page` 两处入口的历史观感记录：卡片底色从每套主题自己的 `p.palette.card` 改为外壳统一卡片色，内容内边距从 0 改为外壳的 24/22/24/16。这是第 18 项的目标而非副作用，但**单测抓不到"变丑"**，必须进批末实机截图验收。
 - `tvbox` 的 `title` 从「`Row` + `Flexible` + ellipsis 单行截断」变为「超长名字换行」（`AppGlassDialog.title` 只收 `String` 且不设 `maxLines`）。不溢出、不抛异常，仅观感差异。
 - `zz_dialog18_unified_shell_test.dart` 有 2 条用例在**入口不可达时明确 `markTestSkipped` 并说明原因**（备份导出需真实凭证与文件写入；主题预览需已装主题包），不是把断言弱化成"存在即通过"。这两处的等价性由 ① 组仪器自检与 ⑬ download 的同形态断言间接覆盖；如实标注为覆盖边界。
 - 门禁有效性已验证：`zz_t66_r4_dialog_consistency_test.dart` 抽掉一条真豁免 → `+11 -2` 退出码 1，恢复后 `+13` 全绿；`zz_dialog18_unified_shell_test.dart` 把 `textAlign: TextAlign.left` 改成 `right` → `+11 ~2 -1` 退出码 1，恢复后 `+12 ~2` 全绿。
@@ -53,4 +55,4 @@ Status: implemented
 - `flutter test test/zz_dialog18_unified_shell_test.dart --run-skipped --concurrency=1` → `+12 ~2: All tests passed!`，退出码 0（`.probe/dialog18-final-lead.log`）。
 - 同一测试故障注入：`download_panel` 的 `textAlign: TextAlign.left` 改 `right` → `+11 ~2 -1`，退出码 1（`.probe/dialog18-inject.log`）；恢复后复跑 `+12 ~2`。
 - 仪器自检已实测外壳内容区的 Material 依赖名单：裸 `TextField` / `ListTile` / `Switch` / `SwitchListTile` / `InkWell` 抛，Material 按钮不抛，包透明 `Material` 后不抛。**该自检刻意走真实 `showAppDialog` 路由**——在 `MaterialApp(home: Scaffold(...))` 里直接摆一个会被 Scaffold 白送 Material 祖先，得出"TextField 能用"的假结论（R4 当年改判就是这个仪器问题）。
-- 上述均为专项测试证据，**不替代实机验收**。`theme_page` 的两处观感变化、`tvbox` 的标题换行、13 处弹窗的实际观感必须进批末实机截图逐项确认。
+- 上述均为专项测试证据，**不替代实机验收**。现行 `tvbox` 的标题换行、13 处弹窗的实际观感必须进批末实机截图逐项确认。

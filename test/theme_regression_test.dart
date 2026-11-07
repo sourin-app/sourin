@@ -156,7 +156,7 @@ void main() {
 
       expect(brightness, Brightness.dark,
           reason: '拿到亮色 = 主题没生效（就是那个 1.16:1 的 bug）');
-      expect(onSurface, const Color(0xFFFAFAFA));
+      expect(onSurface, theme.colorScheme.onSurface);
     });
   });
 

@@ -28,6 +28,7 @@
 //    这正是项目铁律⑥「断言跟着实际承担者走」，不是把定义搬回去。
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../tokens.dart';
 import '../../design/icons/app_icons.dart';
@@ -254,31 +255,9 @@ class SettingsBlock extends StatelessWidget {
           if (!boxed)
             inner
           else
-            Container(
-              padding: const EdgeInsets.all(Sp.x4),
-              decoration: BoxDecoration(
-                color: colors.surfaceContainerHighest.withValues(alpha: 0.3),
-                borderRadius: Radii.rLg,
-                border: Border.all(color: colors.outlineVariant),
-              ),
-              /*
-               * ★★ 2026-10-10：内框自带 `Material`（**不**改变视觉）
-               *
-               * 区块里不少控件是 `ListTile` 家族（`SwitchListTile` /
-               * `CheckboxListTile` …），它们把底色与**涟漪画在最近的
-               * `Material` 祖先**上。改动前这个 `Container`（一个
-               * `DecoratedBox`）就是那个祖先之外更近的一层有底色的盒子
-               * ⇒ Flutter 直接在 debug 下断言：
-               * ```text
-               * ListTile background color or ink splashes may be invisible.
-               * ```
-               * 在 release 下不报，但**点开关时看不到任何涟漪反馈** ——
-               * 用户以为没点到。
-               *
-               * ⇒ 这里补一层 `Material`（透明，不画任何底色）作为
-               *    `ListTile` 的绘制面。外层 `Container` 的底色与边框
-               *    一像素不变，只是涟漪终于有地方画了。
-               */
+            miuix.MiuixCard(
+              cornerRadius: Radii.lg,
+              insideMargin: const EdgeInsets.all(Sp.x4),
               child: Material(
                 type: MaterialType.transparency,
                 child: inner,
@@ -313,47 +292,12 @@ class SettingsGestureToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    /*
-     * ★★ 2026-10-15（Owner：「…换成 ui 框架提供的…非必要情况，不手写组件」）
-     *
-     * 改前是手写 Row：Expanded(Column(标题 + 副标题)) + SizedBox + Switch
-     * —— 一个重造的 ListTile。
-     *
-     * 现在用框架的 SwitchListTile，title/subtitle 正好对应原来的标题/副标题。
-     * 换来的东西：
-     *   ① 整行可点（原来只有那枚开关本身能点，副标题那段是死区）
-     *   ② 涟漪 + 水波纹 + 焦点环
-     *   ③ 读屏把标题/副标题/开关读成一个控件，而不是三段散装文字
-     *
-     * ⚠️ 字号/颜色显式给死：ListTile 默认吃 titleMedium/bodyMedium，
-     *    比改前的 FontSizes.sm(14)/FontSizes.cap(12) 大一号。
-     * ⚠️ contentPadding: EdgeInsets.zero —— 调用方（设置页）自己已有内边距，
-     *    再叠一层默认的 16 会让所有开关行集体右缩进。
-     * ⚠️ dense: true —— 压回与改前一致的行高节奏。
-     */
-    return SwitchListTile(
-      contentPadding: EdgeInsets.zero,
-      dense: true,
+    return miuix.MiuixSwitchPreference(
       value: value,
       onChanged: onChanged,
-      title: Text(
-        label,
-        style: TextStyle(
-          fontSize: FontSizes.sm,
-          color: colors.onSurface,
-        ),
-      ),
-      subtitle: Padding(
-        padding: const EdgeInsets.only(top: 2),
-        child: Text(
-          hint,
-          style: TextStyle(
-            fontSize: FontSizes.cap,
-            color: colors.onSurfaceVariant,
-          ),
-        ),
-      ),
+      title: label,
+      summary: hint,
+      insideMargin: const EdgeInsets.symmetric(vertical: Sp.x3),
     );
   }
 }
@@ -433,49 +377,18 @@ class SettingsGesturePill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    /*
-     * ★★ 2026-10-15（Owner：「…换成 ui 框架提供的…非必要情况，不手写组件」）
-     *
-     * 改前是 InkWell + Container(decoration:) 手写药丸（底色/圆角/描边/
-     * 文字色全自己画）。换成框架的 ChoiceChip：颜色/描边/圆角全部显式
-     * 给死，长相与改前一致；换来三样手写版没有的东西：
-     *   ① 选中语义（读屏念「已选中」，而不是一句光秃秃的文字）
-     *   ② 涟漪 + 焦点环 + 禁用态（Material 状态层）
-     *   ③ 命中区域与内边距按 Material 规范走
-     *
-     * ⚠️ showCheckmark: false —— 默认选中会在左边加对勾，把药丸撑宽、
-     *    文字右移，且与「选中＝填色」语义重复。
-     * ⚠️ 不取 ChipTheme 默认色：默认来自 secondaryContainer，与这里的
-     *    primary/secondary 是两套色，直接吃默认会整体变色。
-     * ⚠️ visualDensity: compact + shrinkWrap：ChoiceChip 默认最小点击区
-     *    高 48，会让这一行比改前高出一截、把下面内容顶下去。
-     */
-    return ChoiceChip(
-      label: Text(
-        text,
-        style: TextStyle(
-          fontSize: FontSizes.cap,
-          fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-          color: selected ? colors.onPrimary : colors.onSurface,
-        ),
-      ),
+    return Semantics(
       selected: selected,
-      onSelected: (_) => onTap(),
-      showCheckmark: false,
-      backgroundColor: colors.secondary,
-      selectedColor: colors.primary,
-      side: BorderSide(
-        color: selected ? colors.primary : colors.outlineVariant,
-        width: 1,
+      child: miuix.MiuixButton(
+        onPressed: onTap,
+        minHeight: Sp.x10,
+        cornerRadius: Radii.md,
+        insideMargin: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x2),
+        colors: selected
+            ? miuix.MiuixButtonDefaults.buttonColorsPrimary(context)
+            : miuix.MiuixButtonDefaults.buttonColors(context),
+        child: Text(text, style: const TextStyle(fontSize: FontSizes.sm)),
       ),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(Radii.full),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x2),
-      labelPadding: EdgeInsets.zero,
-      visualDensity: VisualDensity.compact,
-      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
   }
 }

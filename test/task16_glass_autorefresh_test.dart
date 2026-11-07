@@ -58,12 +58,10 @@ void main() {
   ///
   /// ⚠️ 断言的**语义一条都没放松**（仍然是"必须 GlassContainer"、
   ///    仍然是"pill 本体不得加玻璃"），只是换了查找的文件。
-  late String themePage;
 
   setUpAll(() {
     follow = File('lib/ui/follow_page.dart').readAsStringSync();
     settings = File('lib/ui/settings_page.dart').readAsStringSync();
-    themePage = File('lib/ui/settings/theme_page.dart').readAsStringSync();
   });
 
   /// 去掉注释后的源码（**只用于"不得出现"这类否定断言**）
@@ -318,64 +316,9 @@ void main() {
   });
 
   // ═══════════════════════════════════════════════════════════════════
-  group('⑥ 设置页「主题」区块用液态玻璃', () {
-    test('★ 主题区块用 GlassContainer', () {
-      /*
-       * ★ 2026-09-25 任务 ㉙：区块搬到 `lib/ui/settings/theme_page.dart`。
-       *   断言**语义不变**（仍然是"主题区块必须用 GlassContainer"），
-       *   只是跟着代码换了查找的文件 —— 铁律⑥。
-       */
-      expect(themePage, contains("import 'package:liquid_glass_widgets/"),
-          reason: '★ 主题页要用开源包（与底栏同一个组件）');
-      // 定位「主题」区块，确认玻璃在它里面
-      final i = themePage.indexOf("title: '主题'");
-      expect(i > 0, isTrue, reason: '应能找到「主题」区块');
-      final seg = themePage.substring(i, i + 3500);
-      expect(seg.contains('GlassContainer('), isTrue,
-          reason: '★ 「主题」区块必须有 GlassContainer');
-      expect(seg.contains('LiquidRoundedSuperellipse(borderRadius: 999)'),
-          isTrue,
-          reason: '★ 胶囊形 —— 与底栏同一个形状语言');
-      expect(seg.contains('GlassQuality.standard'), isTrue,
-          reason: '★ 与底栏同一档质量');
-    });
+  // Appearance now uses Miuix. Its rendered controls, keyboard activation,
+  // spacing and mode changes are exercised by miuix_appearance_test.dart.
 
-    test('★★ 只包容器，**不改** `_GesturePill`（它被手势配置复用）', () {
-      /*
-       * `_GesturePill` 有两个使用点：
-       * ```text
-       * _GestureChoice（手势配置，设置页多处）  → Wrap(for o in options)
-       * 主题区块                                 → Wrap(for m in AppThemeMode.values)
-       * ```
-       * 用户只要求改「主题」这一块 —— 改 pill 本身会让**手势配置
-       * 那几处也跟着变玻璃**，那是范围外的影响。
-       *
-       * ★ 2026-09-25 任务 ㉙：`_GesturePill` 搬进 `widgets/settings_kit.dart`
-       *   并公开为 `SettingsGesturePill`（跨文件必须公开）。
-       *   **断言的意思完全一样**：pill 本体里不得出现 `GlassContainer`。
-       */
-      final kit = File('lib/ui/widgets/settings_kit.dart').readAsStringSync();
-      final pillStart =
-          // ★ 2026-10-17：只匹配类名，不写死基类
-          kit.indexOf('class SettingsGesturePill');
-      expect(pillStart > 0, isTrue,
-          reason: '应该还能找到 pill 类（搬来后叫 `SettingsGesturePill`）');
-      final pillBody = kit.substring(pillStart, pillStart + 1200);
-      expect(pillBody.contains('GlassContainer'), isFalse,
-          reason: '★★ pill 本体不得加玻璃 —— 它被手势配置复用，'
-              '用户只要求改「主题」区块');
-    });
-
-    test('★ 玻璃容器要有 padding（否则 pill 压住折射带，看起来像没生效）', () {
-      final i = themePage.indexOf("title: '主题'");
-      final seg = themePage.substring(i, i + 3500);
-      expect(seg.contains('padding: const EdgeInsets.all(Sp.x2)'), isTrue,
-          reason: '★ 玻璃效果作用在边缘 —— pill 紧贴边缘会盖住折射带'
-              '（my_shelf 用的是 4px，同一个道理）');
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════════
   group('不破坏既有成果', () {
     test('★ 追更页仍不 import flutter/material（两套 Theme 串台）', () {
       expect(follow.contains("import 'package:flutter/material.dart'"), isFalse,

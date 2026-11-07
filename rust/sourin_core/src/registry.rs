@@ -48,8 +48,12 @@ impl Registry {
     pub fn register(&self, provider: Arc<dyn MediaProvider>) {
         let mut list = self.providers.write().unwrap();
         let id = provider.manifest().id.clone();
-        // 同 id 覆盖（支持热重载/覆写机制）
-        list.retain(|h| h.provider.manifest().id != id);
+        // Replacing implementation must not reset the user's disabled flag or
+        // position. Imports, subscription updates and plugin reloads share this path.
+        if let Some(handle) = list.iter_mut().find(|h| h.provider.manifest().id == id) {
+            handle.provider = provider;
+            return;
+        }
         list.push(ProviderHandle::new(provider));
         // 按优先级稳定排序
         list.sort_by_key(|h| h.priority);
@@ -59,9 +63,12 @@ impl Registry {
     pub fn register_with_priority(&self, provider: Arc<dyn MediaProvider>, priority: i32) {
         let mut list = self.providers.write().unwrap();
         let id = provider.manifest().id.clone();
+        let enabled = list.iter().find(|h| h.provider.manifest().id == id)
+            .map(|h| h.enabled).unwrap_or(true);
         list.retain(|h| h.provider.manifest().id != id);
         let mut handle = ProviderHandle::new(provider);
         handle.priority = priority;
+        handle.enabled = enabled;
         list.push(handle);
         list.sort_by_key(|h| h.priority);
     }

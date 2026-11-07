@@ -107,16 +107,9 @@ pub fn list_providers(state: &AppState) -> Result<Vec<crate::model::ProviderMani
     for m in &mut list {
         m.enabled = Some(!disabled.iter().any(|x| x == &m.id));
     }
-    /*
-     * ★★★ 2026-10-29（Owner："其他源暂时全部关闭，只保留 tvbox 聚合源用来测试"）
-     * ```text
-     * 他的真实意图是"**列表里只看到聚合源**"，不是"把子站的搜索也关掉"——
-     * 后者会把聚合源自己的子站一起清空（`enabled_children` 只认 enabled 的源），
-     * 结果就是"只剩下一个空的聚合源"，跟他要的正好相反。
-     * ⇒ 做法：`AggregateConfig::solo` 为真时**只在列表层过滤**，扇出与搜索一切照旧。
-     *   好处：随时关掉就恢复，不动 `disabled-providers.json`（那是用户的长期意图）。
-     * ```
-     */
+    // TVBox test mode limits both visible providers and command-level searches.
+    // The aggregate retains its enabled imported children without rewriting
+    // persistent enable preferences for unrelated sources.
     let agg = crate::tvbox_aggregate::load(&state.data_dir);
     if agg.solo {
         list.retain(|m| m.id == crate::tvbox_aggregate::AGGREGATE_ID);
@@ -467,12 +460,27 @@ pub fn list_platform_history(
 /// ③ `skipped` 字段列出**被跳过的源及原因** ——
 ///    UI 据此明确告知用户「哪些源没搜到」，而不是静默失败
 /// ```
+fn search_registry(state: &AppState) -> std::sync::Arc<crate::registry::Registry> {
+    if !crate::tvbox_aggregate::load(&state.data_dir).solo {
+        return state.registry.clone();
+    }
+    let scoped = std::sync::Arc::new(crate::registry::Registry::new());
+    if state.registry.enabled_manifests().iter()
+        .any(|m| m.id == crate::tvbox_aggregate::AGGREGATE_ID)
+    {
+        if let Some(aggregate) = state.registry.get(crate::tvbox_aggregate::AGGREGATE_ID) {
+            scoped.register(aggregate);
+        }
+    }
+    scoped
+}
+
 pub async fn search_all(
     state: &AppState,
     keyword: &str,
     page: u32,
 ) -> Result<crate::registry::SearchAllResult, String> {
-    let mut r = state.registry.search_all(keyword, page).await;
+    let mut r = search_registry(state).search_all(keyword, page).await;
 
     /*
      * ★ 搜索结果的封面也要代取
@@ -619,7 +627,7 @@ where
      * `Registry` 是 `Arc<Registry>`（`AppState.registry`），
      * 内部用 `RwLock`，可以跨任务共享。
      */
-    let registry = state.registry.clone();
+    let registry = search_registry(state);
     let keyword_owned = keyword.to_string();
     let producer = tokio::spawn(async move {
         registry

@@ -326,112 +326,32 @@ pub fn fallback_allowed(registry: &Arc<Registry>) -> bool {
         .unwrap_or(true)
 }
 
-/// 已启用的子 provider（现查 registry，注册顺序无关）
-///
-/// ★ 2026-10-27（N9）：从 `TvboxAggregate::enabled_children` 的方法体抽成
-///   **自由函数**，让下面三条路径共用同一份口径，避免三处各写一遍再漂移：
-///   ```text
-///   ① TvboxAggregate 的各 provider 方法（home/list/search/categories）
-///   ② command_channels()     渠道清单
-///   ③ command_channel_home() 按渠道取数
-///   ```
-///   口径本身（含 fail-open 的理由）见下面 `TvboxAggregate::enabled_children`
-///   的原始注释 —— 逻辑一字未改，只换了归属。
-///
-/// ★★ 2026-10-27（R2-B）：**两个分支都必须尊重"停用"**
-/// ```text
-/// 改前两处都不看 `enabled`：
-///   · `registry.get(id)`（:127）**不看 enabled** ⇒ 显式勾选的停用源也能被取到
-///   · 兜底分支用 `registry.manifests()`（不看 enabled）⇒ 停用源照样扇出
-/// ⇒ 这就是"首页关了、搜索还能搜出来"的最后一段链路。
-/// 改法：两个分支的**入口都换成 `enabled_manifests()`**（只含 enabled）。
-/// ```
+/// Resolve the current aggregate scope without widening an explicit selection.
+/// In TVBox-only mode, provenance is required: hidden built-ins are not imports.
 pub fn enabled_children(
     registry: &Arc<Registry>,
     data_dir: &Path,
 ) -> Vec<Arc<dyn MediaProvider>> {
-    // ★ 入口就只要**已启用**的那些 ⇒ 显式勾选的停用源不会被 `registry.get` 放进来
-    //   （`registry.get` 本身不看 enabled —— 那是它的既有语义，不改它）
-    let enabled_ids: std::collections::HashSet<String> = registry
-        .enabled_manifests()
-        .into_iter()
-        .map(|m| m.id)
-        .collect();
     let cfg = load(data_dir);
-    let picked: Vec<Arc<dyn MediaProvider>> = cfg
-        .enabled_site_ids
-        .iter()
-        .filter(|id| enabled_ids.contains(*id))
-        .filter_map(|id| registry.get(id))
-        /*
-         * ★ 2026-10-29 试过按 `capabilities.search` 预筛掉"不支持搜索"的子站，
-         *   但真机读数证明**筛不掉**：那 17 家（直播/豆瓣/网盘/短视频）的 manifest
-         *   声明的是 `search: true`，真正拒绝发生在 `search()` 里（返回 Unsupported）。
-         *   ⇒ 预筛只会制造"以为干净了"的假象，还会误伤测试里的假源 ⇒ **回退**。
-         *   现状保留：它们进扇出、立刻返回 Unsupported、进 fails（探针里能看见原因）。
-         */
-        .collect();
-    if !picked.is_empty() {
-        return picked;
-    }
-    // 空启用集合 ⇒ **兜底**：退回"仍启用的 hidden 子站"（= TVBox 导入的那批）
-    //
-    // ★★★ R2-B 主修（两个机制各管一件事，叠加才完整）：
-    //   · 候选集已按 enabled 过滤 ⇒ **停用的一律不在**（无论走不走兜底）
-    //   · 下面这个 `fallback_allowed` 只管"**要不要走兜底这条退路**"——
-    //     用户已显式停用过源 ⇒ 不再拿"没勾选"当借口退回（那才是 Owner 报的 bug）
-    /*
-     * ★★★ 2026-10-28（Owner 现场对照原版：搜索"老舅"原版 73 条，我们 0 条）
-     * ```text
-     * 改前：兜底只收 `.filter(|m| m.hidden)` —— 也就是**只有 TVBox 导入的隐藏子站**。
-     *       内置 csp 源（`csp-*`，不 hidden）永远进不了聚合；
-     *       而你那批导入的 hidden 子站在 disabled-providers.json 里全被停用
-     *       ⇒ 候选集为空 ⇒ 聚合 0 个渠道 ⇒ 搜索 0 条。
-     * 原版的行为是**"全部" = 所有站都扇出**（他截图里左侧十几个源分组、73/73）。
-     * ⇒ 兜底改成：**所有仍启用的 provider，除了聚合自己**。
-     *   `hidden` 只该决定"要不要在源列表里露脸"，不该决定"能不能被搜到"。
-     * ```
-     */
-    let mut all: Vec<Arc<dyn MediaProvider>> = registry
-        /*
-         * ★★★ 2026-10-29（Owner："75 个源，就是 tvbox 聚合源支持的那个"）
-         * ```text
-         * 真机读数（逐个源直测，绕过聚合）：注册 98 个源 ⇒ **50 个能搜到「老舅」**。
-         * 而聚合扇出只有 47 个候选（14 出结果）—— 差在 `disabled-providers.json`
-         * 里躺着我方自动化写进去的 **51 个 id**（只列类目不逐字列源 id ——
-         * 本仓规矩：仓库里不许出现具体视频网站/频道名，
-         * 见 test/t98_no_site_names_test.dart），它们被 `enabled_manifests()` 整体排除。
-         *
-         * 试过在**这里**忽略停用（直接 `manifests()`）⇒ 扇出 98、结果 50，
-         * 但把 R2-B「用户显式停用就不搜」也一起推翻了，4 个门禁立刻红。
-         * ⇒ 正确做法是**修数据而不是破坏规则**：新增一次性迁移
-         *   [`crate::provider_migration::restore_auto_disabled_searchable`]，
-         *   把"自动化停用、且本身可搜索"的源从 disabled 列表里摘出来；
-         *   这里继续只用 `enabled_manifests()`（R2-B 不变，用户手停的仍不参与）。
-         * ```
-         */
+    let imported = cfg.solo.then(|| crate::tvbox::load_tvbox_metas(data_dir));
+    let eligible: std::collections::HashSet<String> = registry
         .enabled_manifests()
         .into_iter()
         .filter(|m| m.id != AGGREGATE_ID)
-        .filter_map(|m| registry.get(&m.id))
+        .filter(|m| imported.as_ref().is_none_or(|metas| metas.contains_key(&m.id)))
+        .map(|m| m.id)
         .collect();
+
+    // An explicit selection that becomes disabled, removed or out of scope is
+    // empty. Falling back here would silently search sources the user did not pick.
+    if !cfg.enabled_site_ids.is_empty() {
+        return cfg.enabled_site_ids.iter()
+            .filter(|id| eligible.contains(*id))
+            .filter_map(|id| registry.get(id))
+            .collect();
+    }
+    let mut all: Vec<_> = eligible.iter().filter_map(|id| registry.get(id)).collect();
     all.sort_by(|a, b| a.manifest().id.cmp(&b.manifest().id));
-    if !fallback_allowed(registry) {
-        // 用户已表达过停用 ⇒ 兜底仍可"扇出**仍启用的**那些"，但**不许**因为
-        // "集合是空的"就把已停用的也拉回来 —— 候选集已经保证它们不在，
-        // 这里只是记一条可查日志（区分这两类意图）。
-        log::debug!(
-            "[tvbox_agg] 启用集合为空、且用户已显式停用过源 ⇒ 兜底只含「仍启用」的 {} 个子站",
-            all.len()
-        );
-        return all;
-    }
-    if !all.is_empty() {
-        log::warn!(
-            "[tvbox_agg] 启用集合为空 ⇒ 兜底扇出全部 {} 个导入子站（否则 csp 源搜不到）",
-            all.len()
-        );
-    }
     all
 }
 
@@ -1677,7 +1597,7 @@ mod tests {
     /// ★★★ 测试用开关 solo：存得住、读得回、默认关
     ///
     /// ```text
-    /// 语义（写在 `commands::list_providers` 里）：solo=true 时**列表**只留聚合源，
+    /// 语义：solo=true 时列表与搜索仅保留聚合，子源限定为启用且有导入记录的源。
     /// 子站的搜索/扇出**照旧** —— 因为 Owner 要的是"列表干净"，不是"把子站关掉"
     /// （真关掉会让 `enabled_children` 变空 ⇒ 剩下一个空聚合源）。
     /// 注入验证：把 `next.solo = solo` 删掉 ⇒ 本条 FAILED。

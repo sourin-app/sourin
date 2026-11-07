@@ -12,6 +12,8 @@ A stored theme pack can override requested brightness and give window chrome a d
 
 ## Decision
 
+The [home-card surface contract](../bug-fix/2026-11-08-home-card-and-motion-boundaries.md) applies the shared surface-container role to compact library cards.
+
 Use flutter_miuix 1.3.0 actual theme, cards, buttons and switches. This is the Flutter community implementation; the reference Android application uses the Kotlin Miuix implementation. AppThemeHost injects both Miuix and the existing material_ui theme using a shared palette. Neutral page/card layers preserve hierarchy. The primary color supports small white text at 4.5:1; alpha text roles are composited before entering existing contrast calculations.
 
 Product AppTheme resolves light/dark/system independently of legacy pack selection. Explicit pack preview tooling remains available to its callers, but the product appearance page provides direct modes and an interactive switch preview. Shared settings controls use the actual Miuix widgets, including keyboard activation.

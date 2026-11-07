@@ -12,6 +12,8 @@ The native homepage library consumes too much of the first screen. Animation sel
 
 ## Decision
 
+The [home-card and motion boundary contract](../bug-fix/2026-11-08-home-card-and-motion-boundaries.md) governs reduced font sizing, visible card surfaces and direct shell switches.
+
 Only HomePage opts into compact MyShelf cards. Cards combine a small poster with title, episode text, unread count and viewing progress, retaining the existing detail action and horizontal mouse/keyboard navigation. Poster loading and retry behavior are shared. Text scaling increases the card height; the loading state reserves the same compact space. Other MyShelf users retain the original poster layout.
 
 SettingsMotionPanel uses the production PageTransition implementation for an inline preview, repeats that preview on demand, and opens an ordinary MaterialPageRoute for navigation verification. It reads the same preference notifier as the shell. System reduced motion stays authoritative and is explained in place. No separate animation implementation or forced system override is introduced.

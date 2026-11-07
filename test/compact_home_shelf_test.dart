@@ -77,26 +77,30 @@ void main() {
     await t.pumpWidget(
       MaterialApp(
         theme: theme,
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            textScaler: const TextScaler.linear(1.6),
+          ),
+          child: child!,
+        ),
         home: Scaffold(
-          body: MediaQuery(
-            data: const MediaQueryData(textScaler: TextScaler.linear(1.6)),
-            child: Builder(
-              builder: (context) => SizedBox(
-                width: 312,
-                height: CompactShelfCard.heightOf(context),
-                child: CompactShelfCard(
-                  title: 'A long title across two lines',
-                  subtitle: '第 20 集',
-                  percent: 42,
-                  unread: 3,
-                  onTap: () {},
-                ),
+          body: Builder(
+            builder: (context) => SizedBox(
+              width: 312,
+              height: CompactShelfCard.heightOf(context),
+              child: CompactShelfCard(
+                title: 'A long title across two lines',
+                subtitle: '第 20 集',
+                percent: 42,
+                unread: 3,
+                onTap: () {},
               ),
             ),
           ),
         ),
       ),
     );
+    expect(t.getSize(find.byType(PosterCard)).height, greaterThanOrEqualTo(96));
     expect(
       t
           .widget<LinearProgressIndicator>(find.byType(LinearProgressIndicator))
@@ -105,4 +109,77 @@ void main() {
     );
     expect(t.takeException(), isNull);
   });
+
+  testWidgets('small system text preserves the whole poster and its inset', (
+    t,
+  ) async {
+    final theme = AppTheme.themeFor(Brightness.light);
+    var opened = 0;
+    await t.pumpWidget(
+      MaterialApp(
+        theme: theme,
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            textScaler: const TextScaler.linear(0.8),
+          ),
+          child: child!,
+        ),
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 312,
+                height: CompactShelfCard.heightOf(context),
+                child: CompactShelfCard(
+                  title: 'Small text keeps the full cover',
+                  subtitle: '第 20 集',
+                  percent: 42,
+                  onTap: () => opened++,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final card = t.getRect(find.byType(CompactShelfCard));
+    final poster = t.getRect(find.byType(PosterCard));
+    expect(poster.height, greaterThanOrEqualTo(96));
+    expect(poster.top - card.top, greaterThanOrEqualTo(12));
+    expect(card.bottom - poster.bottom, greaterThanOrEqualTo(12));
+    await t.tap(find.text('Small text keeps the full cover'));
+    await t.pump();
+    expect(opened, 1);
+    expect(t.takeException(), isNull);
+  });
+
+  for (final brightness in Brightness.values) {
+    testWidgets('compact card has a visible Miuix surface in $brightness', (
+      t,
+    ) async {
+      final theme = AppTheme.themeFor(brightness);
+      await t.pumpWidget(
+        MaterialApp(
+          theme: theme,
+          home: Scaffold(
+            body: SizedBox(
+              width: 312,
+              height: 120,
+              child: CompactShelfCard(title: 'Library item', onTap: () {}),
+            ),
+          ),
+        ),
+      );
+      final surface = t.widget<Material>(
+        find.descendant(
+          of: find.byType(CompactShelfCard),
+          matching: find.byType(Material),
+        ).first,
+      );
+      expect(surface.color, theme.colorScheme.surfaceContainer);
+      expect(surface.color, isNot(theme.scaffoldBackgroundColor));
+      expect(t.takeException(), isNull);
+    });
+  }
 }

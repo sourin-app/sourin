@@ -22,18 +22,20 @@ class CompactShelfCard extends StatelessWidget {
   final int unread;
   final VoidCallback onTap;
 
+  // Smaller text must not shrink the fixed poster or its vertical padding.
   static double heightOf(BuildContext context) =>
       Sp.x16 / AppMetrics.posterAspect +
       Sp.x6 +
       (MediaQuery.textScalerOf(context).scale(FontSizes.base) -
-              FontSizes.base) *
+              FontSizes.base)
+          .clamp(0.0, double.infinity) *
           4;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     return Material(
-      color: Theme.of(context).cardColor,
+      color: colors.surfaceContainer,
       borderRadius: Radii.rLg,
       clipBehavior: Clip.antiAlias,
       child: InkWell(

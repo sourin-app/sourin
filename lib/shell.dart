@@ -1206,7 +1206,9 @@ class _KeepAliveTransitionState extends State<_KeepAliveTransition>
      * ★ 只在"从不可见变成可见"时重播 ——
      *   否则父级任何 rebuild（如 _unread 变化）都会重播动画，很难看。
      */
-    if (widget.active && !old.active) {
+    if (widget.style == PageTransitionStyle.none) {
+      _c.value = 1;
+    } else if (widget.active && !old.active) {
       _c.forward(from: 0);
     }
   }
@@ -4229,27 +4231,25 @@ class _ShellPageState extends State<ShellPage>
         ..insert(_stackOrder.indexOf(t), from);
     }
     _leavingTimer?.cancel();
-    _leavingTab = from;
-    /*
-     * ★ 2026-10-08（Owner 第 2 条）：离场页的淡出与离场窗口**同一条时间线**
-     *   （都是 Motion.base）—— 窗口一结束它就被 offstage，
-     *   所以这条动画只需覆盖窗口内那 260ms。
-     */
-    _leaveC.duration = MotionPrefs.duration(context, Motion.base);
-    _leaveC.forward(from: 0);
-    _leavingTimer = Timer(Motion.base, () {
-      if (!mounted) return;
-      /*
-       * 窗口结束 ⇒ 离场页重新 offstage，绘制顺序也回到声明顺序。
-       * ⚠️ 这里必须 setState：offstage 变了要重建。
-       * ⚠️ mounted 守卫：shell 可能在窗口期内被销毁（dispose 已取消定时器，
-       *    这行是双保险）。
-       */
-      setState(() {
-        _leavingTab = null;
-        _stackOrder = AppTab.values.toList();
+    _leavingTimer = null;
+    if (MotionPrefs.resolvedCurrent(context) == PageTransitionStyle.none) {
+      // A direct switch must retire both transition layers in the same frame.
+      // Keeping the outgoing page would still draw it below transparent pages.
+      _leavingTab = null;
+      _stackOrder = AppTab.values.toList();
+      _leaveC.value = 1;
+    } else {
+      _leavingTab = from;
+      _leaveC.duration = Motion.base;
+      _leaveC.forward(from: 0);
+      _leavingTimer = Timer(Motion.base, () {
+        if (!mounted) return;
+        setState(() {
+          _leavingTab = null;
+          _stackOrder = AppTab.values.toList();
+        });
       });
-    });
+    }
     setState(() {
       _prevIndex = _tab.index;
       _tab = t;

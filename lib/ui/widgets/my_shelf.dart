@@ -53,6 +53,7 @@
 // > 但**全项目 0 个调用点** —— 「删除历史」功能**实际不存在**。
 // > 播放历史的隐私属性比收藏/追更强，没有清空入口是个真实缺口。
 
+import '../../core/library_cover_recovery.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -789,6 +790,9 @@ class MyShelfState extends State<MyShelf> {
        *      仪器的除数，不能动。
        */
       await _refreshRemaining();
+      unawaited(LibraryCoverRecovery.repair().then((changed) async {
+        if (changed > 0 && mounted) await load();
+      }));
     } catch (e) {
       debugPrint('[SHELF] 加载失败: $e');
     } finally {

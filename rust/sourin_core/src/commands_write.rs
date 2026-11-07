@@ -100,7 +100,7 @@ pub fn save_progress(
     let now = chrono::Utc::now().timestamp_millis();
 
     // ★ 落库前还原封面原始地址
-    let cover = cover.map(|c| state.stream_proxy.unproxy_cover_or_keep(&c));
+    let cover = crate::library_covers::durable(state, cover.as_deref());
 
     state.db.upsert_progress(&Progress {
         key: key.clone(),
@@ -347,7 +347,7 @@ pub async fn set_favorite(
     let key = item_key(provider, id);
     let now = chrono::Utc::now().timestamp_millis();
 
-    let cover = cover.map(|c| state.stream_proxy.unproxy_cover_or_keep(&c));
+    let cover = crate::library_covers::durable(state, cover.as_deref());
 
     let mut fav = match state.db.get_favorite(&key)? {
         Some(f) => f,
@@ -484,6 +484,7 @@ pub async fn set_following(
     cover: Option<String>,
     kind: Option<String>,
 ) -> Result<Option<Favorite>, String> {
+    let cover = crate::library_covers::durable(state, cover.as_deref());
     let key = item_key(provider, id);
     let now = chrono::Utc::now().timestamp_millis();
 
@@ -536,7 +537,7 @@ pub async fn set_following(
             fav.title = t;
         }
     }
-    fav.cover = fav.cover.or(cover);
+    fav.cover = crate::library_covers::durable(state, fav.cover.as_deref()).or(cover);
 
     // ★ 从「不追更」→「追更」= 新开追更，要记基准
     if following && !fav.following {

@@ -1248,6 +1248,11 @@ class SourinApi {
   /// deleted=0      "行还活着"（可能只是追更、没收藏）
   /// favorited=1    ★ "在收藏列表里"
   /// ```
+  static Future<int> repairLibraryCovers() async {
+    final result = await SourinCore.callAsync('repair_library_covers', {});
+    return result is num ? result.toInt() : 0;
+  }
+
   static Future<List<Favorite>> listFavorites({
     bool followingOnly = false,
   }) async {

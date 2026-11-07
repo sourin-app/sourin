@@ -504,7 +504,7 @@ pub async fn toggle_favorite(
     let key = format!("{provider}:{id}");
     let now = chrono::Utc::now().timestamp_millis();
 
-    let cover = cover.map(|c| state.stream_proxy.unproxy_cover_or_keep(&c));
+    let cover = crate::library_covers::durable(state, cover.as_deref());
 
     // 已存在 → 更新；不存在 → 新建
     let mut fav = state

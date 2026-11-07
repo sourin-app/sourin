@@ -232,6 +232,31 @@ pub fn continue_watching(
     state.db.continue_watching(limit.unwrap_or(20))
 }
 
+/// Library display path; synchronization still uses the durable DB representation.
+pub async fn continue_watching_for_ui(
+    state: &AppState, limit: Option<u32>,
+) -> Result<Vec<crate::store::Progress>, String> {
+    let mut items = continue_watching(state, limit)?;
+    for item in &mut items {
+        item.cover = crate::library_covers::for_display(
+            state, &item.provider, &item.native_id, item.cover.as_deref(),
+        ).await;
+    }
+    Ok(items)
+}
+
+pub async fn list_history_for_ui(
+    state: &AppState, limit: Option<u32>,
+) -> Result<Vec<crate::store::HistoryEntry>, String> {
+    let mut items = list_history(state, limit)?;
+    for item in &mut items {
+        item.cover = crate::library_covers::for_display(
+            state, &item.provider, &item.native_id, item.cover.as_deref(),
+        ).await;
+    }
+    Ok(items)
+}
+
 /// 全部进度（同步用）
 pub fn list_all_progress(
     state: &AppState,
@@ -332,85 +357,10 @@ pub async fn list_favorites(
         state.db.list_favorites(false)?
     };
 
-    /*
-     * ★★★ 读出来时**重新包一层封面代理**
-     *     （真 bug 的另一半，原版 2026-09-20 实测发现）
-     *
-     * # 为什么需要（我第一版漏了这段）
-     *
-     * 库里存的是**原始 URL**（`set_favorite` 里刻意 unproxy 过 ——
-     * 临时代理地址不能落库，端口每次启动都变）。但展示时如果直接用原始 URL：
-     * ```text
-     * 某视频站封面 https://i1.hdslb.com/...  + 页面 Referer = tauri.localhost
-     *   → HTTP 403（实测确认，CDN 有防盗链）
-     * ```
-     * 所以必须在这里重新登记一次代理，前端拿到的才是能加载的地址。
-     *
-     * 这也正是「**详情页正常、收藏列表裂开**」的另一半原因：
-     * 详情页每次都走 `proxy_cover_one`，而这里原先什么都没做。
-     *
-     * ⚠️ 每个源用它自己的 `cover_headers` —— 不同 CDN 要的头不一样
-     *    （某视频站要 Referer，其他源可能不要）。
-     *    没有声明 `coverHeaders` 的源跳过（直连本来就能加载）。
-     *
-     * ⚠️ 代理启动失败时**保持原 URL 不变** ——
-     *    让用户看到"图挂了"，而不是整个列表报错。
-     */
-    for fav in list.iter_mut() {
-        let Some(c) = fav.cover.clone() else { continue };
-
-        /*
-         * ★★★ 自愈：清掉历史遗留的**失效代理地址**
-         *     （一次性数据修复，原版 2026-09-20）
-         *
-         * 修好"临时地址不落库"之后，**之前已经写进库里的那些死地址**还在
-         *（实测用户库里就有 `http://127.0.0.1:51604/s/18d6c...`）。
-         * 那些 token 在重启后已经不存在了，代理层也还原不出原始 URL
-         *（内存表是空的）—— 所以只能**置空**。
-         *
-         * 置空后前端会显示首字占位（不显示破图），
-         * 用户重新收藏一次就会写入正确的原始 URL。
-         *
-         * ⚠️ 为什么不尝试"猜"原始 URL：做不到。
-         *    token 是随机串，映射表在内存里、重启即失。
-         *    诚实置空 > 留一个永远裂开的地址。
-         *
-         * ⚠️ 只在**还原不出来**时置空 —— 如果代理还活着（同一次运行内），
-         *    `unproxy_cover` 会正常还原，不该误伤。
-         */
-        if c.starts_with("http://127.0.0.1:") {
-            match state.stream_proxy.unproxy_cover(&c) {
-                // 还活着 → 还原成原始地址（正常路径）
-                Some(raw) => fav.cover = Some(raw),
-                // 已失效 → 置空，让界面显示占位而不是破图
-                None => {
-                    log::debug!("收藏封面是一个已失效的代理地址，已清空（等用户重新收藏）");
-                    fav.cover = None;
-                }
-            }
-            continue;
-        }
-
-        let Some(m) = state
-            .registry
-            .manifests()
-            .into_iter()
-            .find(|m| m.id == fav.provider)
-        else {
-            continue;
-        };
-        if m.cover_headers.is_empty() {
-            continue;
-        }
-        if let Err(e) = state.stream_proxy.ensure_started().await {
-            log::warn!("封面代理启动失败，收藏封面将直连（很可能 403）: {e}");
-            break;
-        }
-        fav.cover = Some(
-            state
-                .stream_proxy
-                .register_cover(&c, m.cover_headers.clone()),
-        );
+    for item in &mut list {
+        item.cover = crate::library_covers::for_display(
+            state, &item.provider, &item.native_id, item.cover.as_deref(),
+        ).await;
     }
 
     Ok(list)

@@ -149,32 +149,10 @@ pub async fn proxy_covers(
     provider: &str,
     items: &mut [crate::model::MediaItem],
 ) {
-    // ① 该源没声明封面头 → 直连
-    let Some(m) = state.registry.manifests().into_iter().find(|m| m.id == provider) else {
-        return;
-    };
-    if m.cover_headers.is_empty() {
-        return;
-    }
-
-    // ② 代理没起来就尽力启动一次
-    if let Err(e) = state.stream_proxy.ensure_started().await {
-        log::warn!("封面代理启动失败，封面将直连（很可能 403）: {e}");
-        return;
-    }
-
-    for it in items.iter_mut() {
-        if let Some(c) = it.cover.as_ref() {
-            // ③ 已经是本地代理地址就别重复包一层（幂等）
-            if c.starts_with("http://127.0.0.1:") {
-                continue;
-            }
-            it.cover = Some(
-                state
-                    .stream_proxy
-                    .register_cover(c, m.cover_headers.clone()),
-            );
-        }
+    for item in items {
+        item.cover = crate::library_covers::for_display(
+            state, provider, &item.id.native, item.cover.as_deref(),
+        ).await;
     }
 }
 

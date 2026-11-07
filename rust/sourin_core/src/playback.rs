@@ -69,7 +69,7 @@ pub async fn get_detail(
         log_detail_failure(provider, id, &e);
         e.message
     })?;
-    proxy_cover_one(state, provider, &mut d.cover).await;
+    proxy_cover_one(state, provider, id, &mut d.cover).await;
     Ok(d)
 }
 
@@ -366,27 +366,8 @@ pub async fn resolve_stream(
 /// ```
 /// 两者的跳过条件与代理启动逻辑完全一致 ——
 /// 这里抽成共用实现，避免「改了一个忘了另一个」。
-pub async fn proxy_cover_one(state: &AppState, provider: &str, cover: &mut Option<String>) {
-    let Some(c) = cover.as_ref() else { return };
-    // 已经是本地代理地址 → 跳过（幂等）
-    if c.starts_with("http://127.0.0.1:") {
-        return;
-    }
-    let Some(m) = state.registry.manifests().into_iter().find(|m| m.id == provider) else {
-        return;
-    };
-    if m.cover_headers.is_empty() {
-        return;
-    }
-    if let Err(e) = state.stream_proxy.ensure_started().await {
-        log::warn!("封面代理启动失败: {e}");
-        return;
-    }
-    *cover = Some(
-        state
-            .stream_proxy
-            .register_cover(c, m.cover_headers.clone()),
-    );
+pub async fn proxy_cover_one(state: &AppState, provider: &str, native_id: &str, cover: &mut Option<String>) {
+    *cover = crate::library_covers::for_display(state, provider, native_id, cover.as_deref()).await;
 }
 
 /// 便利函数：解析并返回**第一个可播流**

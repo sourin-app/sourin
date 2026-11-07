@@ -74,6 +74,8 @@ pub struct AppState {
     pub remote: Arc<RemoteHub>,
     /// ★ 本地流代理（给「播放需要自定义请求头」的流用，如 外部视频站的 Referer）
     pub stream_proxy: Arc<StreamProxy>,
+    /// Serializes background cover repair and advances past unavailable items.
+    pub(crate) cover_repair_cursor: tokio::sync::Mutex<usize>,
     /// ★ 内容源配置的最后修改时间（毫秒）—— 云同步的 LWW 判据
     ///
     /// 每次导入 / 编辑 / 移除源时刷新。**必须由所有写路径维护**，
@@ -571,6 +573,7 @@ impl AppState {
             third_party: RwLock::new(persisted),
             remote: Arc::new(RemoteHub::new()),
             stream_proxy: Arc::new(StreamProxy::new()),
+            cover_repair_cursor: tokio::sync::Mutex::new(0),
             // 启动时以「现在」为基线：本地磁盘上的配置就是本机当前状态，
             // 若云端更新，下一次同步会正确地采用云端那份
             providers_updated_at: AtomicI64::new(chrono::Utc::now().timestamp_millis()),

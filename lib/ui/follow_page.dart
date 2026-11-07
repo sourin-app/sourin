@@ -39,6 +39,7 @@
 // > 后面的 `load()` 不执行 —— 界面停在旧状态，
 // > 用户以为点成功了。现在无论成败都刷新。
 
+import '../core/library_cover_recovery.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -581,6 +582,9 @@ class FollowPageState extends State<FollowPage>
        *    （`build` 每帧都可能跑 ⇒ 会变成每帧一个网络请求）。
        */
       unawaited(_backfillTitles());
+      unawaited(LibraryCoverRecovery.repair().then((changed) async {
+        if (changed > 0 && mounted) await _load(silent: true);
+      }));
     } catch (e) {
       debugPrint('[FOLLOW] 加载追更失败: $e');
     } finally {

@@ -1148,12 +1148,19 @@ async fn dispatch_inner(req: &str) -> String {
         }
         "continue_watching" => {
             let limit = a.u32_opt("limit");
-            with_state(|st| crate::commands::continue_watching(st, limit))
+            with_state_async(move |st| async move {
+                crate::commands::continue_watching_for_ui(st, limit).await
+            }).await
+        }
+        "repair_library_covers" => {
+            with_state_async(move |st| async move { crate::library_covers::repair(st).await }).await
         }
         "list_all_progress" => with_state(|st| crate::commands::list_all_progress(st)),
         "list_history" => {
             let limit = a.u32_opt("limit");
-            with_state(|st| crate::commands::list_history(st, limit))
+            with_state_async(move |st| async move {
+                crate::commands::list_history_for_ui(st, limit).await
+            }).await
         }
         "get_skip_marker" => {
             let provider = match a.str("provider") {
@@ -1210,7 +1217,9 @@ async fn dispatch_inner(req: &str) -> String {
             }).await
         }
         "list_following_for_ui" => {
-            with_state(|st| crate::commands::list_following_for_ui(st))
+            with_state_async(move |st| async move {
+                crate::commands::list_favorites(st, true).await
+            }).await
         }
         "total_unread" => with_state(|st| crate::commands::total_unread(st)),
         "list_platform_history" => {

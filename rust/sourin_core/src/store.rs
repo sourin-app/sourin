@@ -1158,6 +1158,24 @@ impl Db {
     }
 
     /// 收藏列表（**只看 favorited**，与追更无关）
+    pub fn repair_library_cover(
+        &self, provider: &str, native_id: &str, expected: &[Option<String>], cover: &str,
+    ) -> Result<usize, String> {
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn.transaction().map_err(|e| e.to_string())?;
+        let mut changed = 0;
+        for table in ["favorites", "progress", "history"] {
+            for old in expected {
+                changed += transaction.execute(
+                    &format!("UPDATE {table} SET cover=?1 WHERE provider=?2 AND native_id=?3 AND cover IS ?4"),
+                    params![cover, provider, native_id, old],
+                ).map_err(|e| e.to_string())?;
+            }
+        }
+        transaction.commit().map_err(|e| e.to_string())?;
+        Ok(changed)
+    }
+
     pub fn list_favorites(&self, include_deleted: bool) -> Result<Vec<Favorite>, String> {
         let conn = self.conn.lock().unwrap();
         /*

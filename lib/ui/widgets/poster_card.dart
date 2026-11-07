@@ -31,6 +31,7 @@
 //    那种由核心层的封面代理解决（`proxy_covers`），
 //    核心会把封面换成 `http://127.0.0.1:<port>/s/...` 并附上正确请求头。
 
+import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 // ★★★ 第 66 轮 M 批次：玻璃组件（Owner：「彻底不用 Material 组件，全部自建/玻璃」）
 //   ⚠️ 包实际版本是 **1.11.0**（pubspec 写 ^1.7.2，锁到 1.11.0）
@@ -118,6 +119,31 @@ class _PosterCardState extends State<PosterCard> {
 
   /// 是否加载失败（失败后不再重试，显示首字占位）
   bool _failed = false;
+  Timer? _retryTimer;
+  int _retryCount = 0;
+
+  void _imageFailed(String? cover) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || cover != widget.cover || _failed) return;
+      setState(() => _failed = true);
+      if (_retryCount >= 2) return;
+      _retryCount++;
+      _retryTimer = Timer(Duration(seconds: 2 * _retryCount), () {
+        if (mounted && cover == widget.cover) {
+          setState(() {
+            _loaded = false;
+            _failed = false;
+          });
+        }
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _retryTimer?.cancel();
+    super.dispose();
+  }
 
   /// 鼠标是否**悬停**在本卡片上（task-50 候选 C1）
   ///
@@ -139,6 +165,8 @@ class _PosterCardState extends State<PosterCard> {
      * 列表滚动复用 widget 时特别容易触发。
      */
     if (old.cover != widget.cover) {
+      _retryTimer?.cancel();
+      _retryCount = 0;
       setState(() {
         _loaded = false;
         _failed = false;
@@ -349,11 +377,7 @@ class _PosterCardState extends State<PosterCard> {
                               },
                               errorBuilder: (context, error, stack) {
                                 // 加载失败 → 记下来，改用首字占位
-                                WidgetsBinding.instance.addPostFrameCallback((_) {
-                                  if (mounted && !_failed) {
-                                    setState(() => _failed = true);
-                                  }
-                                });
+                                _imageFailed(widget.cover);
                                 return const SizedBox.shrink();
                               },
                             ),

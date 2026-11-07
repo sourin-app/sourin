@@ -38,6 +38,7 @@ pub mod providers;
 
 // ── 存储 ──
 pub mod store;
+pub mod library_covers;
 
 // ── 域名池（插件给候选、宿主选路）──
 pub mod hostpool;

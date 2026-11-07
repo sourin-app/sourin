@@ -248,9 +248,9 @@ pub struct StreamProxy {
     table: Mutex<HashMap<String, StreamEntry>>,
     /// 封面：token → 取图信息
     cover_table: Mutex<HashMap<String, StreamEntry>>,
-    /// 封面去重索引：**URL → token**
+    /// 封面去重索引：**(URL, 请求头) → token**
     ///
-    /// 这是封面能复用 token 的关键 —— 同一个 URL 永远映射到同一个 token。
+    /// 相同 URL 和请求头复用 token，不同源的请求头互不覆盖。
     cover_index: Mutex<HashMap<String, String>>,
     /*
      * ★★ 请求头表：token → 头列表
@@ -974,9 +974,12 @@ impl StreamProxy {
 
     pub fn register_cover(&self, url: &str, headers: Vec<(String, String)>) -> String {
         let mut idx = self.cover_index.lock().unwrap_or_else(|e| e.into_inner());
+        // A URL can belong to different sources with different required headers.
+        // Reusing a URL-only token silently keeps the first source's authorization.
+        let index_key = serde_json::to_string(&(url, &headers)).expect("serializable cover key");
 
         // 已登记过 → 复用同一个 token（这是保住浏览器缓存的关键）
-        if let Some(t) = idx.get(url).cloned() {
+        if let Some(t) = idx.get(&index_key).cloned() {
             let port = self.port();
             drop(idx);
             return format!("http://127.0.0.1:{port}/s/{t}");
@@ -1000,32 +1003,10 @@ impl StreamProxy {
         }
 
         let token = new_token();
-        idx.insert(url.to_string(), token.clone());
-        drop(idx);
-
-        /*
-         * 封面也登记一份头（用同一个 token）
-         *
-         * 封面正常不会返回 m3u8，所以 `hdr_token` 多半用不上；
-         * 但登记它有两个好处：
-         *   · `StreamEntry` 的字段语义统一（不留空值特例）
-         *   · 万一某个"封面"地址实际是播放列表，也能正常改写
-         */
-        if let Ok(mut h) = self.hdr_table.lock() {
-            /*
-             * ★ issue #9：改前这里是 `h.clear()`（全清）。
-             *   这张表被**正在播的**分片请求按 token 查（`handle_proxied`），
-             *   全清会让"代理地址已失效，请重新选择线路"突然出现在播放中途。
-             *   与流表一样，只淘汰最旧的一半。
-             */
-            if h.len() > STREAM_MAX {
-                let victims: Vec<String> = h.keys().take(h.len() / 2).cloned().collect();
-                for v in victims {
-                    h.remove(&v);
-                }
-            }
-            h.insert(token.clone(), headers.clone());
-        }
+        idx.insert(index_key, token.clone());
+        // Cover headers live in cover_table. Browsing posters must never evict
+        // the headers of an active HLS stream. Keep the index lock until the
+        // entry is ready, so concurrent registration cannot expose an absent token.
 
         if let Ok(mut tbl) = self.cover_table.lock() {
             tbl.insert(token.clone(), StreamEntry {
@@ -1034,6 +1015,7 @@ impl StreamProxy {
                 hdr_token: token.clone(),
             });
         }
+        drop(idx);
 
         let port = self.port();
         format!("http://127.0.0.1:{port}/s/{token}")
@@ -1326,7 +1308,10 @@ async fn handle_proxied(
     let headers = {
         let t = proxy.hdr_table.lock().unwrap_or_else(|e| e.into_inner());
         t.get(&token).cloned()
-    };
+    }.or_else(|| {
+        proxy.cover_table.lock().unwrap_or_else(|e| e.into_inner())
+            .get(&token).map(|entry| entry.headers.clone())
+    });
     let Some(headers) = headers else {
         // ★ issue #9：同 `/s/` 的 404 —— 改前完全静默（log::* 被丢弃）
         splog!(

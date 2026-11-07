@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter/foundation.dart' show listEquals;
 import '../core/danmaku.dart';
 import '../core/batch_bind.dart';
+import '../core/sourin_api.dart' show PlaybackErrorText;
 import 'widgets/danmaku_settings_dialog.dart';
 import 'widgets/app_dialog_shell.dart';
 import 'widgets/bili_import_dialog.dart';
@@ -351,14 +352,15 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
         ),
         Text(r.remedy, style: const TextStyle(fontSize: 12)),
         /*
-         * ★ 原文**必须留着**（归因是结论，原文是证据）。
+         * ★ 原错误原因保留（归因是结论，原文是证据），凭据仅在展示时脱敏。
          * `test/zz_t1028_danmaku_search_page_test.dart:88` 用
          * `find.textContaining('dan-api 这一路超时') == findsOneWidget` 钉住
          * 「渠道失败原因必须透出」—— 那是第 11 项的验收原文。
          * ⇒ 这一行是它**唯一**的承载点（详情区那块同名文本在收起时是
          *   offstage，默认 finder 会跳过）。删了它会把别人的门禁弄红。
          */
-        Text(e.toString(), style: const TextStyle(fontSize: 12)),
+        Text(PlaybackErrorText.forDisplay(e.toString()),
+          style: const TextStyle(fontSize: 12)),
       ],
     );
   }
@@ -779,7 +781,8 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
               if (_channel != _SearchChannel.danApi) ...[
               const Divider(),
               const Text('视频站视频与分P'),
-              if (b.error != null) Text(b.error.toString()),
+              if (b.error != null)
+                Text(PlaybackErrorText.forDisplay(b.error.toString())),
               for (final item in b.searchResults)
                 /*
                  * ★★ 2026-10-27（R2-#7 Owner 实测）：**「搜索出来的视频站条目**
@@ -874,15 +877,19 @@ class _DanmakuSearchPageState extends State<DanmakuSearchPage> {
                        * ⇒ 归因放在**列表层**（搜索失败那处 `_hotPathFailure`），
                        *   诊断区仍是"原文证据"，不再挤占可点区域。
                        */
-                      SelectableText(error.toString()),
-                      if (error.body.isNotEmpty) SelectableText(error.body),
+                      SelectableText(
+                        PlaybackErrorText.forDisplay(error.toString())),
+                      if (error.body.isNotEmpty)
+                        SelectableText(PlaybackErrorText.forDisplay(error.body)),
                       if (error.statusCode == 401 || error.statusCode == 403)
                         // 补救动作位于本诊断区，不再引用旧设置弹窗的请求节或凭证入口。
                         Text('这是凭证问题。可行的几步（按代价从低到高）：'
                           '${widget.onOpenLocal != null ? "点「改用本机外部弹幕」（免签名）。" : ""}'
                           '${widget.onReload != null ? "再点「重新获取弹幕」。" : ""}'),
                     ],
-                  if (b.error != null) SelectableText(b.error.toString()),
+                  if (b.error != null)
+                    SelectableText(
+                      PlaybackErrorText.forDisplay(b.error.toString())),
                   if (widget.onOpenLocal != null)
                     TextButton(onPressed: widget.onOpenLocal,
                       child: const Text('改用本机外部弹幕')),

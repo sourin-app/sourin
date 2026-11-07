@@ -520,6 +520,19 @@ pub fn parse_episodes(s: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+fn native_episode_url(id: &str) -> Option<&str> {
+    if starts_http(id) { return Some(id); }
+    let (line, url) = id.strip_prefix("tvbox-line:")?.split_once(':')?;
+    line.parse::<usize>().ok()?;
+    starts_http(url).then_some(url)
+}
+
+fn is_direct_file_url(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
+    [".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v"]
+        .iter().any(|extension| path.ends_with(extension))
+}
+
 /// HTML 实体解码（对应插件模板的 decodeEntities）
 ///
 /// # ★★ 顺序是**实测**定的，不是推理定的：`&amp;` 必须**最后**解
@@ -1675,25 +1688,30 @@ impl MediaProvider for TvboxAppleCmsProvider {
                 ProviderError::new(ErrorKind::NotFound, "取不到详情（上游没有返回这个条目）")
             })?;
 
-        // vod_play_url 可能有多组线路（$$$ 分隔）—— 与转换器一致，只取第一组
+        // Keep all lines. First-line URL ids remain compatible with saved history;
+        // later lines carry an index so even a shared URL has distinct identity.
         let play = jstr(&d, "vod_play_url");
-        let first_group = play.split("$$$").next().unwrap_or("").to_string();
-        let eps = parse_episodes(&first_group);
-        let episodes: Vec<Episode> = eps
-            .iter()
-            .enumerate()
-            .map(|(i, (nm, u))| Episode {
-                id: u.clone(),
-                title: if nm.is_empty() {
-                    format!("第{}集", i + 1)
-                } else {
-                    nm.clone()
-                },
-                order: (i + 1) as u32,
-                player_id: None,
-                flag: String::new(),
-            })
-            .collect();
+        let from = jstr(&d, "vod_play_from");
+        let names: Vec<&str> = from.split("$$$").collect();
+        let mut used = HashSet::new();
+        let mut episodes = Vec::new();
+        for (line, group) in play.split("$$$").enumerate() {
+            let raw_name = names.get(line).map(|s| s.trim()).filter(|s| !s.is_empty());
+            let mut flag = raw_name.map(str::to_string).unwrap_or_else(|| format!("线路 {}", line + 1));
+            if !used.insert(flag.clone()) {
+                flag = format!("{flag} ({})", line + 1);
+                while !used.insert(flag.clone()) { flag.push('_'); }
+            }
+            for (index, (name, url)) in parse_episodes(group).into_iter().enumerate() {
+                episodes.push(Episode {
+                    id: if line == 0 { url } else { format!("tvbox-line:{line}:{url}") },
+                    title: if name.is_empty() { format!("第{}集", index + 1) } else { name },
+                    order: (episodes.len() + 1) as u32,
+                    player_id: None,
+                    flag: flag.clone(),
+                });
+            }
+        }
 
         let vid = {
             let v = jstr(&d, "vod_id");
@@ -1741,22 +1759,22 @@ impl MediaProvider for TvboxAppleCmsProvider {
          *
          * 本模块是"应用内直接导入 TVBox 配置"走的那条路（Rust 原生 Provider，
          * 不生成 JS 插件，见文件头说明）。它与转换插件**同构**：
-         *   · detail() 里剧集的 id **就是剧集地址**（上面 :${Episode.id = u}）
+         *   · detail() 的首线路 id 是剧集地址，后续线路是 tvbox-line:<序号>:<地址>
          *   · resolve() 原来只认 id.native（条目 id），**忽略 req**
          * ⇒ 无论点第几集，都会掉进下面 ① 分支、取 episodes.first() = 第一集。
          *
          * # 判据与 plugins/mod.rs 保持一致（必须一致，否则两条路行为不同）
          *
-         * req.episode_id 是 http(s) URL ⇒ 它就是剧集地址，直接用；
+         * req.episode_id 是 http(s) URL 或上述带线路序号的 id ⇒ 还原剧集地址；
          * 否则（None / 空 / 纯数字条目 id）⇒ 维持原行为，走 ① 取第一集。
          *
          * ⚠️ 不能无条件信任 episode_id：别的 provider 用这个字段表达别的东西
-         *    （如 srca 拿它当 section_id），所以必须用 starts_http 精确判断。
+         *    （如 srca 拿它当 section_id），所以必须校验格式及还原后的 HTTP 地址。
          *    本条只影响"episode_id 明确是 URL"的情形 —— 那种情形下**只有**
          *    tvbox 系（转换插件 / 本模块）会产生，语义无歧义。
          */
-        let mut url = match req.episode_id.as_deref() {
-            Some(ep) if starts_http(ep) => ep.to_string(),
+        let mut url = match req.episode_id.as_deref().and_then(native_episode_url) {
+            Some(ep) => ep.to_string(),
             _ => id.native.clone(),
         };
 
@@ -1771,8 +1789,8 @@ impl MediaProvider for TvboxAppleCmsProvider {
             url = first.id.clone();
         }
 
-        // ② 不是 m3u8 → 先当网页找 m3u8，找不到再上第三方解析
-        if !url.to_lowercase().contains(".m3u8") {
+        // ② 非明确媒体直链 → 先当网页找 m3u8，找不到再上第三方解析
+        if !url.to_lowercase().contains(".m3u8") && !is_direct_file_url(&url) {
             let page_url = url.clone();
             let mut found = match self.get_text(&page_url).await {
                 Ok(html) => extract_m3u8(&html, &page_url),
@@ -1794,15 +1812,7 @@ impl MediaProvider for TvboxAppleCmsProvider {
         }
 
         // ③ kind：只有明确的媒体文件才判 mp4，其余一律 hls
-        let lower = {
-            let s = url.split('?').next().unwrap_or(&url);
-            let s = s.split('#').next().unwrap_or(s);
-            s.to_lowercase()
-        };
-        let is_direct = [".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v"]
-            .iter()
-            .any(|e| lower.ends_with(e));
-        let kind = if is_direct {
+        let kind = if is_direct_file_url(&url) {
             StreamKind::Mp4
         } else {
             StreamKind::Hls

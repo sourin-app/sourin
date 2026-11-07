@@ -40,6 +40,8 @@ pub mod providers;
 pub mod store;
 pub mod library_covers;
 pub mod source_discovery;
+#[cfg(test)]
+mod native_catalog_line_tests;
 
 // ── 域名池（插件给候选、宿主选路）──
 pub mod hostpool;
